@@ -1765,10 +1765,10 @@ public class PerformanceTests
 
 ## 参考资源
 
-- [SYNTAX.md](./SYNTAX.md) - Latte 完整语法规范
+- [SYNTAX.md](../../SYNTAX.md) - Latte 完整语法规范
 - [FRONTEND_TYPES.md](./FRONTEND_TYPES.md) - 前端数据类型说明
-- [BIL_STANDARD.md](./BIL_STANDARD.md) - BIL 中间表示标准
-- [RUNTIME.md](./RUNTIME.md) - 运行时模型
+- [BIL_STANDARD.md](../../BIL_STANDARD.md) - BIL 中间表示标准
+- [RUNTIME.md](../../RUNTIME.md) - 运行时模型
 
 ---
 

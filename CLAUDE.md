@@ -4,7 +4,8 @@
 
 **项目名**: LatteCompiler  
 **语言**: C# (.NET 8.0)  
-**开发阶段**: 早期 - Parser 实现中（P0 阶段已完成）  
+**开发阶段**: 早期 - Parser 实现中（P0 完成，P1 大部分完成，已进入 P2 准备阶段）  
+**版本控制**: Git（main 分支，2026-07-17 首次提交）  
 **文档版本**: 2026-07-17
 
 ---
@@ -37,7 +38,7 @@ LLVM Toolchain
 Native Executable
 ```
 
-**当前进度**: 实现 Parser 的 P0 阶段（核心基础），已完成字面量、类型引用、变量声明的解析。
+**当前进度**: P0 完成，P1 大部分完成（表达式后缀链、泛型参数、形参列表、结果传递机制、泛型 `\<` 语法迁移），下一步进入 P2 语句系统。
 
 ---
 
@@ -62,6 +63,23 @@ var result = (1 + 2) * 3    // = 9
 - Parser 设计大幅简化（无需优先级表）
 - 表达式解析直接检查括号结构
 - 遇到未括号化的多个运算符必须报错
+
+#### ⚠️ 泛型列表必须以 `\<` 开启（2026-07-17 语法修订）
+
+泛型的声明与使用统一写作 `Name\<...>`（反斜杠 + 小于号开启，`>` 闭合）：
+
+```latte
+class Container\<TElement> { ... }      // 声明
+var list: List\<i32>                     // 类型引用
+var sorted = myList.sort\<i32>()         // 泛型调用
+var map: List\<Map\<String, i32>>        // 嵌套闭合写 >>
+```
+
+**关键点**：
+- `<` 只属于比较运算符：`a < b` 是比较，`a\<b>` 是泛型，词法层面零歧义
+- Lexer 不合并 `>` 系列（`>=`/`>>`/`>>>` 由 ExpressionParserLayer 在运算符状态下重组）
+- BIL 自身的 `.array<T>` 等语法不受影响（BIL 无 `<` 运算符）
+- 详见 `docs/SYNTAX.md` §3.6
 
 #### ⚠️ rich 和 shared 的正确理解
 
@@ -156,37 +174,47 @@ LatteCompiler/
 ├── AST/                  # AST 节点定义
 │   ├── LiteralNodes.cs      # 6 种字面量节点
 │   ├── TypeNodes.cs         # 类型引用节点
-│   ├── DeclarationNodes.cs  # 声明节点
-│   └── ExpressionNodes.cs   # 10 种表达式节点
+│   ├── DeclarationNodes.cs  # 声明节点（变量/泛型参数/形参）
+│   └── ExpressionNodes.cs   # 表达式节点（含调用/索引/成员/实参）
 ├── Parser/               # Parser 层实现
+│   ├── Parser.cs              # 核心协议 + IResultProducer/IResultConsumer
+│   ├── RootParserLayer.cs     # 顶层入口分发
 │   ├── LiteralParserLayer.cs
 │   ├── TypeReferenceParserLayer.cs
 │   ├── VariableDeclarationParserLayer.cs
-│   ├── ExpressionParserLayer.cs
-│   ├── PathParserLayer.cs
-│   ├── RootParserLayer.cs
-│   ├── DeclarationParserLayer.cs
-│   ├── ImportParserLayer.cs
-│   └── CodeBlockParserLayer.cs
+│   ├── ExpressionParserLayer.cs   # 表达式框架（运算符 + 后缀链）
+│   ├── PathParserLayer.cs         # 符号路径（含 \< 泛型实参）
+│   ├── ArgumentListParserLayer.cs # 调用/索引/构造实参列表
+│   ├── GenericParametersParserLayer.cs # 泛型参数列表 \<...>
+│   ├── ParameterListParserLayer.cs     # 函数形参列表 (...)
+│   ├── DeclarationParserLayer.cs / ImportParserLayer.cs
+│   └── CodeBlockParserLayer.cs    # 骨架
 ├── Lexer/                # 词法分析
 │   ├── Lexer.cs
 │   └── LexerLayers.cs
 ├── Core/                 # 基础设施
-│   ├── Utilities.cs         # AST 节点、Token、Keywords
+│   ├── Utilities.cs         # Token、Keywords、Helper、部分 AST 基类
 │   └── FrontendTypesExtension.cs
-├── Tests/                # 测试
+├── Tests/                # 测试（自研控制台模式，非测试框架）
 │   ├── LiteralParserTests.cs
 │   ├── TypeReferenceParserTests.cs
-│   └── VariableDeclarationTests.cs
+│   ├── VariableDeclarationTests.cs
+│   ├── ExpressionParserTests.cs
+│   ├── GenericParsingTests.cs
+│   ├── GenericParametersTests.cs
+│   └── ParameterListTests.cs
 ├── docs/                 # 文档
 │   ├── SYNTAX.md            # **语言语法规范**（权威）
-│   ├── BIL_STANDARD.md      # BIL 中间语言规范
 │   ├── RUNTIME.md           # 运行时模型
-│   ├── PARSER_ROADMAP.md    # Parser 实现路线图
-│   ├── PROGRESS_REPORT.md   # 进度报告
-│   ├── PROJECT_STRUCTURE.md # 项目结构说明
-│   ├── EXPRESSION_ARCHITECTURE.md  # 表达式架构设计
-│   └── RICH_SHARED_CLARIFICATION.md  # rich/shared 澄清
+│   ├── BIL_STANDARD.md      # BIL 中间语言规范
+│   ├── PROGRESS_REPORT.md   # 进度报告（**进度唯一权威**）
+│   ├── RICH_SHARED_CLARIFICATION.md  # rich/shared 澄清
+│   └── compiler/frontend/   # 编译器前端实现文档
+│       ├── PARSER_ROADMAP.md       # Parser 实现路线图（计划）
+│       ├── EXPRESSION_ARCHITECTURE.md  # 表达式架构设计
+│       ├── FRONTEND_ARCHITECTURE.md    # 前端架构
+│       └── FRONTEND_TYPES.md           # 前端数据类型
+├── CLAUDE.md / AGENTS.md # AI 代理项目指南
 └── Program.cs            # 程序入口
 ```
 
@@ -196,7 +224,7 @@ LatteCompiler/
 |------|------|--------|
 | `docs/SYNTAX.md` | **语言语法规范** | ⭐⭐⭐ 最权威，有歧义时以此为准 |
 | `docs/RUNTIME.md` | 运行时模型与实现细节 | ⭐⭐⭐ 理解类型系统必读 |
-| `docs/PARSER_ROADMAP.md` | Parser 实现计划 | ⭐⭐ 了解开发进度 |
+| `docs/compiler/frontend/PARSER_ROADMAP.md` | Parser 实现计划 | ⭐⭐ 了解开发进度 |
 | `Core/Utilities.cs` | 所有 AST 节点和 Token 定义 | ⭐⭐⭐ 核心数据结构 |
 | `Parser/RootParserLayer.cs` | Parser 入口 | ⭐⭐ 理解解析流程 |
 
@@ -259,18 +287,30 @@ public class IfStatementTests
 cd C:\Users\SaRiv\source\repos\LatteCompiler\LatteCompiler
 dotnet build
 
-# 运行测试
-cd bin\Debug\net8.0
-echo "2" | .\LatteCompiler.exe  # 字面量测试
-echo "3" | .\LatteCompiler.exe  # 类型引用测试
-echo "4" | .\LatteCompiler.exe  # 变量声明测试
+# 运行测试（bin\Debug\net8.0 目录下）
+echo "2" | .\LatteCompiler.exe  # 字面量测试（15）
+echo "3" | .\LatteCompiler.exe  # 类型引用测试（3）
+echo "4" | .\LatteCompiler.exe  # 变量声明测试（10）
+echo "5" | .\LatteCompiler.exe  # 表达式测试（54）
+echo "6" | .\LatteCompiler.exe  # 泛型解析测试（18）
+echo "7" | .\LatteCompiler.exe  # 泛型参数列表测试（21）
+echo "8" | .\LatteCompiler.exe  # 函数形参列表测试（14）
 ```
 
-### 4.3 Git 工作流（当前不在 Git 仓库中）
+### 4.3 Git 工作流
 
-目前项目不在 Git 版本控制下。建议：
-- 重要改动前备份
-- 完成阶段性功能后创建文档记录
+项目已在 Git 版本控制下（`main` 分支，2026-07-17 首次提交）。约定：
+
+- 完成阶段性功能后提交，保持小步提交
+- 提交前确保 `dotnet build` 通过且全部测试套件无 FAIL
+- `git commit` 等变更操作需用户确认后执行
+
+### 4.4 进度对齐标准（必须遵守）
+
+- **`docs/PROGRESS_REPORT.md` 是项目进度的唯一权威来源**。不要新建单点完成报告/实现总结类文档（防止碎片化）。
+- **更新时机**：每完成一个里程碑（新增 ParserLayer、落地一项机制、完成一次语法迁移）必须立即更新。
+- **更新方式**：保持文档既有结构不变，同步刷新各节内容，并在「里程碑历史」**顶部**追加新段落（倒序）。
+- **分工**：`PARSER_ROADMAP.md` 管「计划」（要做什么、怎么做），`PROGRESS_REPORT.md` 管「现状」（做到了什么）。计划调整改 ROADMAP，进度推进改 PROGRESS_REPORT。
 
 ---
 
@@ -476,15 +516,21 @@ enum FloatParseState
 
 ## 6. 当前进度与下一步
 
-### 6.1 已完成（P0 阶段）✅
+### 6.1 已完成 ✅
 
 | 组件 | 功能 | 测试 |
 |------|------|------|
 | LiteralParserLayer | 所有字面量类型 | 15/15 (100%) |
-| TypeReferenceParserLayer | 类型引用解析 | 3/3 (100%) |
-| VariableDeclarationParserLayer | 变量声明解析 | 11/11 (100%) |
+| TypeReferenceParserLayer | 类型引用（含 `\<` 泛型、嵌套、可空） | 3/3 (100%) |
+| VariableDeclarationParserLayer | 变量声明（Initializer 经结果传递保存） | 10/10 (100%) |
+| ExpressionParserLayer | 运算符、括号分组、调用/索引/成员/泛型调用后缀链、new 构造参数 | 54/54 (100%) |
+| ArgumentListParserLayer | 位置/具名实参列表 | （含于表达式测试） |
+| GenericParametersParserLayer | 泛型参数列表 `\<...>`（声明/约束/型变/可变） | 21/21 (100%) |
+| ParameterListParserLayer | 函数形参列表（普通/默认/可变/具名可变） | 14/14 (100%) |
+| 结果传递机制 | IResultProducer/IResultConsumer + 弹层自动传递 | （含于各套件） |
+| 泛型语法迁移 | `\<...>` 语法 + `<` 解放为小于号 | 18/18 (100%) |
 
-**总计**: 29/29 测试通过 (100%)
+**总计**: 145/145 测试通过 (100%)
 
 **可解析的语法**：
 ```latte
@@ -492,36 +538,35 @@ enum FloatParseState
 42, 3.14, "Hello", true, null
 
 // 类型引用
-i32, String?, List\<T>, Map\<K,V>
+i32, String?, List\<T>, Map\<K,V>, List\<Map\<String, i32>>?
 
-// 变量声明
+// 变量声明（含完整初始化表达式）
 var x = 42
 const name: String = "Hello"
-var list: List\<String>
-var optional: i32? = null
+var v = foo(1, name = 2)
+var v = foo().bar[0]
+var v = new User(id = 42)
+var v = a.b\<i32>(x)
+var r = 1 + (2 * 3)
+
+// 泛型参数列表（独立组件，待接入类型/函数声明）
+\<TElement>, \<out T, in U>, \<named TValues... with Serializable>
+
+// 函数形参列表（独立组件，待接入函数声明）
+(a: i32, b: String = "x", rest: named i32...)
 ```
 
-### 6.2 下一步（P1 阶段）⏳
+### 6.2 下一步 ⏳
 
-**优先级 1**：
-1. **完善 ExpressionParserLayer**
-   - 二元运算符表达式（记住：需要括号！）
-   - 函数调用表达式
-   - 成员访问和索引
+**P1 收尾**（表达式层剩余）：
+- Lambda 表达式、if/switch 表达式、typeOf/as/is
 
-2. **表达式结果传递机制**
-   - 设计子 Layer 返回结果的方式
-   - 实现 Initializer 的正确保存
+**P2 语句系统**（下一主战场）：
+1. CodeBlockParserLayer 完善（语句识别与分发）
+2. if/else、while、for、return 语句
+3. 赋值语句
 
-3. **基本语句支持**
-   - if/else 语句
-   - while 循环
-   - return 语句
-
-**优先级 2**：
-- 函数声明解析
-- 代码块解析
-- 赋值语句
+**后续**: P3 类型声明（复用 GenericParametersParserLayer）、P4 函数声明（复用 ParameterListParserLayer）
 
 ---
 
@@ -529,9 +574,10 @@ var optional: i32? = null
 
 ### 7.1 已知限制
 
-1. **表达式解析简化** - 当前只支持字面量初始化
-2. **初始化表达式未保存** - 需要结果传递机制
-3. **字符字面量未实现** - 有占位符
+1. **字符字面量未实现** - 有占位符
+2. **wrapper 路径访问（`:`）未实现** - 留待 P5 Wrapper 阶段
+3. **typeOf/as/is、Lambda、if/switch 表达式未实现** - P1 收尾项
+4. **泛型参数/形参列表是独立组件** - 待 P3/P4 类型与函数声明接入
 
 ### 7.2 编译警告
 
@@ -553,8 +599,8 @@ var optional: i32? = null
 
 1. [docs/SYNTAX.md](docs/SYNTAX.md) - **最权威的语法规范**
 2. [docs/RUNTIME.md](docs/RUNTIME.md) - 运行时模型和类型系统
-3. [docs/PARSER_ROADMAP.md](docs/PARSER_ROADMAP.md) - Parser 实现计划
-4. [docs/EXPRESSION_ARCHITECTURE.md](docs/EXPRESSION_ARCHITECTURE.md) - 表达式架构设计
+3. [docs/compiler/frontend/PARSER_ROADMAP.md](docs/compiler/frontend/PARSER_ROADMAP.md) - Parser 实现计划
+4. [docs/compiler/frontend/EXPRESSION_ARCHITECTURE.md](docs/compiler/frontend/EXPRESSION_ARCHITECTURE.md) - 表达式架构设计
 5. [docs/RICH_SHARED_CLARIFICATION.md](docs/RICH_SHARED_CLARIFICATION.md) - rich/shared 澄清
 
 ### 8.2 外部资源

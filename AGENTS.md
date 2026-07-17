@@ -5,8 +5,8 @@
 
 **项目名**: LatteCompiler
 **语言**: C#（.NET 8.0，控制台程序，`Nullable` 与 `ImplicitUsings` 已启用）
-**开发阶段**: 早期 —— 编译器前端（Lexer + Parser）实现中，P0 阶段已完成
-**版本控制**: ⚠️ 项目**不在 Git 仓库中**（已验证），无 `.sln` 以外的工程管理，无 CI/CD
+**开发阶段**: 早期 —— 编译器前端（Lexer + Parser）实现中，P0 完成，P1 大部分完成
+**版本控制**: Git（`main` 分支，2026-07-17 首次提交，工作树干净；无 CI/CD）
 
 ---
 
@@ -111,8 +111,8 @@ LatteCompiler/
 | `docs/SYNTAX.md` | **语言语法规范（最权威）** | ⭐⭐⭐ 有歧义时以此为准，不要猜语法 |
 | `docs/RUNTIME.md` | 运行时模型与类型系统 | ⭐⭐⭐ |
 | `docs/BIL_STANDARD.md` | BIL 中间语言规范 | ⭐⭐ |
-| `docs/PARSER_ROADMAP.md` / `PROGRESS_REPORT.md` | Parser 路线图与进度 | ⭐⭐ |
-| `docs/EXPRESSION_ARCHITECTURE.md` / `RICH_SHARED_CLARIFICATION.md` | 专项设计澄清 | ⭐⭐ |
+| `docs/compiler/frontend/PARSER_ROADMAP.md` / `docs/PROGRESS_REPORT.md` | Parser 路线图与进度 | ⭐⭐ |
+| `docs/compiler/frontend/EXPRESSION_ARCHITECTURE.md` / `docs/RICH_SHARED_CLARIFICATION.md` | 专项设计澄清 | ⭐⭐ |
 | `Parser/Parser.cs` | 层栈式 Parser 的核心协议 | ⭐⭐⭐ |
 | `Core/Utilities.cs` | Token/Keywords/AST 基类等核心数据结构 | ⭐⭐⭐ |
 
@@ -135,7 +135,23 @@ var result = 1 + (2 * 3)     // ✅ 必须加括号
 - `shared`：所有类型可用，表示允许跨协程共享。
 - 使用类型时（变量声明、函数参数）**永远不写** `rich`/`shared`。因此 `TypeReferenceParserLayer` 不处理它们；它们属于 class/struct 声明解析的职责。
 
-### 4.3 Parser 架构：层栈 + 状态机
+### 4.3 ⚠️ 泛型列表必须以 `\<` 开启（2026-07-17 语法修订）
+
+泛型的声明与使用统一写作 `Name\<...>`（反斜杠 + 小于号开启，`>` 闭合）：
+
+```latte
+class Container\<TElement> { ... }      // 声明
+var list: List\<i32>                     // 使用
+var sorted = myList.sort\<i32>()         // 泛型调用
+var map: List\<Map\<String, i32>>        // 嵌套闭合写 >>
+```
+
+- `<` 只属于比较运算符：`a < b` 与 `a\<b>` 词法层面零歧义。
+- Lexer 不合并 `>` 系列；`>=`/`>>`/`>>>` 由 `ExpressionParserLayer` 在运算符状态下重组相邻 token。
+- BIL 自身的 `.array<T>` 等语法不受影响（BIL 用 `cmp.lt` 等指令，无 `<` 歧义）。
+- 详见 `docs/SYNTAX.md` §3.6。
+
+### 4.4 Parser 架构：层栈 + 状态机
 
 Parser 主循环维护一个 Layer 栈，每个 token 交给栈顶 Layer 处理。核心协议在 `Parser/Parser.cs`：
 
@@ -147,7 +163,7 @@ Parser 主循环维护一个 Layer 栈，每个 token 交给栈顶 Layer 处理�
 - **每个 Layer 内部用状态机驱动**（`private enum State` + switch），状态转换处要写注释。
 - 模块化原则："Delegate, don't implement" —— 框架层（如 `ExpressionParserLayer`）负责识别、路由、运算符处理；具体语法结构委托给专门 Layer。每个 Layer 职责单一、可独立测试。
 
-### 4.4 Lexer 的特点
+### 4.5 Lexer 的特点
 
 Lexer 只做简单字符识别，不理解语义。例如 `3.14` 会输出三个 token：`Word "3"`、`Notation "."`、`Word "14"` —— 由 `LiteralParserLayer` 的状态机组合成浮点字面量。不要在 Lexer 里加语义判断。
 
@@ -158,7 +174,7 @@ Lexer 只做简单字符识别，不理解语义。例如 `3.14` 会输出三个
 - **不使用任何测试框架**。测试是 `Tests/` 下的静态类，每个类提供 `public static void RunAll()`，通过 `Program.cs` 菜单（选项 2–8）触发。
 - 测试模式：每个用例把一小段 Latte 源码字符串依次过 `Lexer.Tokenize` → `Parser.Parse`，然后把得到的 AST 节点描述成字符串与期望比对，控制台打印 `[PASS]`/`[FAIL]`，结尾汇总 `N passed, M failed`。
 - **约定：每新增一个 ParserLayer，必须在 `Tests/` 添加对应测试类，并在 `Program.cs` 菜单注册一个新选项。**
-- 当前测试类（7 个）：`LiteralParserTests`、`TypeReferenceParserTests`、`VariableDeclarationTests`、`ExpressionParserTests`、`GenericParsingTests`、`GenericParametersTests`、`ParameterListTests`。
+- 当前测试类（7 个）：`LiteralParserTests`、`TypeReferenceParserTests`、`VariableDeclarationTests`、`ExpressionParserTests`、`GenericParsingTests`、`GenericParametersTests`、`ParameterListTests`，合计 145 个用例，当前全部通过。
 
 验证改动（已验证可用）：
 
@@ -188,11 +204,18 @@ echo "5" | dotnet run --no-build    # 按需替换菜单编号
 6. 在 `RootParserLayer`（或相应父层）接入委托入口
 7. `dotnet build` + 运行对应测试菜单项验证
 
+### 进度对齐标准（必须遵守）
+
+- **`docs/PROGRESS_REPORT.md` 是项目进度的唯一权威来源**。不要新建单点完成报告/实现总结类文档。
+- **更新时机**：每完成一个里程碑（新增 ParserLayer、落地一项机制、完成一次语法迁移）必须立即更新。
+- **更新方式**：保持文档既有结构不变，并在「里程碑历史」**顶部**追加新段落（倒序）。
+- **分工**：`PARSER_ROADMAP.md` 管「计划」，`PROGRESS_REPORT.md` 管「现状」。计划调整改 ROADMAP，进度推进改 PROGRESS_REPORT。
+
 ---
 
 ## 7. 注意事项与已知限制
 
-- 项目**没有 Git 版本控制**：改动前注意备份重要文件；不要执行任何 git 命令期望其生效。
+- 项目已在 **Git 版本控制**下（`main` 分支）：执行 `git commit` 等变更操作前先获得用户确认；提交前确保 `dotnet build` 通过且全部测试套件无 FAIL。
 - `Core/Utilities.cs` 里仍残留部分 AST 节点定义（`RootASTNode`、`SymbolASTNode`、`ImportASTNode`、`AcquisitionExpressionASTNode` 等），新增节点优先放到 `AST/` 目录对应文件。
 - 字符字面量（char literal）未实现，仅有占位。
 - 输出含 VERBOSE 调试日志属正常现象。
@@ -205,5 +228,5 @@ echo "5" | dotnet run --no-build    # 按需替换菜单编号
 1. **文档驱动** —— 先理解 SYNTAX.md，再写代码
 2. **测试驱动** —— 每个 ParserLayer 都有对应测试
 3. **模块化** —— 每个 Layer 职责单一，委托而非大包大揽
-4. **渐进式** —— 按 `docs/PARSER_ROADMAP.md` 逐步推进，不跳步
+4. **渐进式** —— 按 `docs/compiler/frontend/PARSER_ROADMAP.md` 逐步推进，不跳步
 5. **不要猜测** —— 不确定时查文档
