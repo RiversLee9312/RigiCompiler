@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dotnet build *)",
+      "Bash(./LatteCompiler.exe)",
+      "Read(//c/Users/SaRiv/source/repos/LatteCompiler/**)",
+      "Bash(powershell -Command \"Compress-Archive -Path 'LatteCompiler' -DestinationPath 'D:\\\\LatteCompiler_Backup_Before_Refactor.zip' -Force\")",
+      "Read(//d//**)",
+      "WebFetch(domain:claude.com)"
+    ]
+  }
+}

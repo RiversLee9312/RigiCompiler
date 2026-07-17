@@ -1,0 +1,462 @@
+using System;
+using System.Linq;
+
+namespace LatteCompiler
+{
+    /// <summary>
+    /// 泛型参数列表解析器
+    ///
+    /// 解析泛型声明中的 \<...> 参数列表（SYNTAX.md §3.6）：
+    /// - 参数声明子句：TElement、out TElement、in TElement、TArgs...、named TValues...
+    /// - 约束子句：TItem extends Comparable、X supers Y、TItem with Serializable
+    /// - 可变参数后可接约束：named TValues... with Serializable
+    ///
+    /// 状态流转：
+    /// Initial → BackslashSeen → ClauseStart →（各子句路径）→ Completed
+    ///
+    /// 委托说明（Delegate, don't implement）：
+    /// - 子句中的类型（约束 Target/Bound、参数名候选）委托 TypeReferenceParserLayer 解析
+    /// - out/in/named 前缀是关键字，由本层直接消费，不经过类型引用解析
+    /// </summary>
+    public class GenericParametersParserLayer : IParserLayer
+    {
+        private readonly GenericParameterListASTNode targetNode;
+
+        private enum State
+        {
+            Initial,              // 等待 \
+            BackslashSeen,        // 等待 <
+            ClauseStart,          // 等待子句开头：标识符 / out / in / named
+            VarianceNameExpected, // out/in 已读，等待参数名
+            NamedNameExpected,    // named 已读，等待参数名
+            PrefixParamSeen,      // 前缀路径参数名已读，等待 . , > 或约束关键字
+            Dots1,                // 前缀路径：已读第一个 .
+            Dots2,                // 前缀路径：已读第二个 .
+            DotsAwaitThird,       // TypeRef 路径：前两点已被符号解析消耗，等待第三个 .
+            VariadicDone,         // ... 已读完，等待 , > 或约束关键字
+            TargetParsed,         // 子句开头类型已解析，等待 , > . 或约束关键字
+            BoundParsed,          // 约束 Bound 已解析，等待 , 或 >
+            Completed             // 完成
+        }
+
+        private State state = State.Initial;
+
+        // 读取中的参数信息（在各路径中累积，完成时统一提交）
+        private string pendingName = "";
+        private GenericVariance pendingVariance = GenericVariance.None;
+        private bool pendingVariadic = false;
+        private bool pendingNamedVariadic = false;
+
+        // TypeRef 路径：子句开头解析出的类型（可能是参数名候选或约束 Target）
+        private TypeReferenceASTNode? pendingTarget = null;
+
+        public GenericParametersParserLayer(GenericParameterListASTNode target)
+        {
+            targetNode = target;
+        }
+
+        public ParserLayerResult ParseToken(Token currentToken, ParserLayerContext context)
+        {
+            switch (state)
+            {
+                case State.Initial:
+                    return HandleInitial(currentToken, context);
+                case State.BackslashSeen:
+                    return HandleBackslashSeen(currentToken, context);
+                case State.ClauseStart:
+                    return HandleClauseStart(currentToken, context);
+                case State.VarianceNameExpected:
+                    return HandleVarianceNameExpected(currentToken, context);
+                case State.NamedNameExpected:
+                    return HandleNamedNameExpected(currentToken, context);
+                case State.PrefixParamSeen:
+                    return HandlePrefixParamSeen(currentToken, context);
+                case State.Dots1:
+                    return HandleDots1(currentToken, context);
+                case State.Dots2:
+                    return HandleDots2(currentToken, context);
+                case State.DotsAwaitThird:
+                    return HandleDotsAwaitThird(currentToken, context);
+                case State.VariadicDone:
+                    return HandleVariadicDone(currentToken, context);
+                case State.TargetParsed:
+                    return HandleTargetParsed(currentToken, context);
+                case State.BoundParsed:
+                    return HandleBoundParsed(currentToken, context);
+                default:
+                    context.RaiseError($"Invalid GenericParametersParserLayer state: {state}");
+                    return new ParserLayerResult.PopLayer(false);
+            }
+        }
+
+        // 等待 \（泛型列表开启符的第一半）
+        private ParserLayerResult HandleInitial(Token currentToken, ParserLayerContext context)
+        {
+            if (currentToken is NotationToken nt && nt.Content == "\\")
+            {
+                state = State.BackslashSeen;
+                return ParserLayerResult.Continue.Instance;
+            }
+
+            context.RaiseError($"Expected '\\' to start generic parameter list, got: {currentToken}");
+            return new ParserLayerResult.PopLayer(false);
+        }
+
+        // 等待 <（泛型列表开启符的第二半）
+        private ParserLayerResult HandleBackslashSeen(Token currentToken, ParserLayerContext context)
+        {
+            if (currentToken is NotationToken nt && nt.Content == "<")
+            {
+                state = State.ClauseStart;
+                return ParserLayerResult.Continue.Instance;
+            }
+
+            context.RaiseError($"Expected '<' after '\\' in generic parameter list, got: {currentToken}");
+            return new ParserLayerResult.PopLayer(false);
+        }
+
+        // 子句开头：分派到前缀路径（out/in/named）或类型引用路径
+        private ParserLayerResult HandleClauseStart(Token currentToken, ParserLayerContext context)
+        {
+            if (currentToken is WordToken wt)
+            {
+                // out/in 型变前缀
+                if (wt.Content == Keywords.OUT)
+                {
+                    pendingVariance = GenericVariance.Out;
+                    state = State.VarianceNameExpected;
+                    return ParserLayerResult.Continue.Instance;
+                }
+                if (wt.Content == Keywords.IN)
+                {
+                    pendingVariance = GenericVariance.In;
+                    state = State.VarianceNameExpected;
+                    return ParserLayerResult.Continue.Instance;
+                }
+                // named 具名可变参数前缀
+                if (wt.Content == Keywords.NAMED)
+                {
+                    pendingNamedVariadic = true;
+                    state = State.NamedNameExpected;
+                    return ParserLayerResult.Continue.Instance;
+                }
+
+                // 其他标识符：委托 TypeReferenceParserLayer 解析子句开头的类型
+                // （可能是参数名候选，也可能是约束 Target）
+                pendingTarget = new TypeReferenceASTNode(targetNode);
+                state = State.TargetParsed;
+                return new ParserLayerResult.PushLayer(
+                    new TypeReferenceParserLayer(pendingTarget),
+                    true  // 保留当前 token
+                );
+            }
+
+            context.RaiseError(
+                $"Expected type parameter, 'out', 'in' or 'named' in generic parameter list, got: {currentToken}");
+            return new ParserLayerResult.PopLayer(false);
+        }
+
+        // out/in 已读：等待参数名
+        private ParserLayerResult HandleVarianceNameExpected(Token currentToken, ParserLayerContext context)
+        {
+            if (currentToken is WordToken wt)
+            {
+                pendingName = wt.Content;
+                state = State.PrefixParamSeen;
+                return ParserLayerResult.Continue.Instance;
+            }
+
+            context.RaiseError($"Expected type parameter name after variance modifier, got: {currentToken}");
+            return new ParserLayerResult.PopLayer(false);
+        }
+
+        // named 已读：等待参数名
+        private ParserLayerResult HandleNamedNameExpected(Token currentToken, ParserLayerContext context)
+        {
+            if (currentToken is WordToken wt)
+            {
+                pendingName = wt.Content;
+                state = State.PrefixParamSeen;
+                return ParserLayerResult.Continue.Instance;
+            }
+
+            context.RaiseError($"Expected type parameter name after 'named', got: {currentToken}");
+            return new ParserLayerResult.PopLayer(false);
+        }
+
+        // 前缀路径参数名已读：named 只接受 ...；out/in 还接受 , > 与约束关键字
+        private ParserLayerResult HandlePrefixParamSeen(Token currentToken, ParserLayerContext context)
+        {
+            if (currentToken is NotationToken nt && nt.Content == ".")
+            {
+                state = State.Dots1;
+                return ParserLayerResult.Continue.Instance;
+            }
+
+            // named 参数必须带 ...
+            if (pendingNamedVariadic)
+            {
+                context.RaiseError($"'named' variadic parameter requires '...', got: {currentToken}");
+                return new ParserLayerResult.PopLayer(false);
+            }
+
+            if (currentToken is NotationToken comma && comma.Content == ",")
+            {
+                CompleteParameter();
+                state = State.ClauseStart;
+                return ParserLayerResult.Continue.Instance;
+            }
+
+            if (currentToken is NotationToken close && close.Content == ">")
+            {
+                CompleteParameter();
+                state = State.Completed;
+                return new ParserLayerResult.PopLayer(false);
+            }
+
+            var kind = TryGetConstraintKind(currentToken);
+            if (kind != null)
+            {
+                // 型变参数 + 约束（如 out TElement extends Comparable）
+                string name = pendingName;
+                CompleteParameter();
+                return StartConstraint(kind.Value, MakeBareTypeRef(name), context);
+            }
+
+            context.RaiseError($"Expected '...', ',', '>' or constraint after parameter name, got: {currentToken}");
+            return new ParserLayerResult.PopLayer(false);
+        }
+
+        // 前缀路径：第一个 . 已读
+        private ParserLayerResult HandleDots1(Token currentToken, ParserLayerContext context)
+        {
+            if (currentToken is NotationToken nt && nt.Content == ".")
+            {
+                state = State.Dots2;
+                return ParserLayerResult.Continue.Instance;
+            }
+
+            context.RaiseError($"Expected '...' for variadic parameter, got: {currentToken}");
+            return new ParserLayerResult.PopLayer(false);
+        }
+
+        // 前缀路径：第二个 . 已读
+        private ParserLayerResult HandleDots2(Token currentToken, ParserLayerContext context)
+        {
+            if (currentToken is NotationToken nt && nt.Content == ".")
+            {
+                pendingVariadic = true;
+                state = State.VariadicDone;
+                return ParserLayerResult.Continue.Instance;
+            }
+
+            context.RaiseError($"Expected '...' for variadic parameter, got: {currentToken}");
+            return new ParserLayerResult.PopLayer(false);
+        }
+
+        // TypeRef 路径：符号解析已消耗前两个点（见 SymbolLayer 对连续 . 的处理），
+        // 这里等待第三个 .
+        private ParserLayerResult HandleDotsAwaitThird(Token currentToken, ParserLayerContext context)
+        {
+            if (currentToken is NotationToken nt && nt.Content == ".")
+            {
+                pendingVariadic = true;
+                state = State.VariadicDone;
+                return ParserLayerResult.Continue.Instance;
+            }
+
+            context.RaiseError($"Expected '...' for variadic parameter, got: {currentToken}");
+            return new ParserLayerResult.PopLayer(false);
+        }
+
+        // ... 已读完：等待 , > 或约束关键字（如 named TValues... with Serializable）
+        private ParserLayerResult HandleVariadicDone(Token currentToken, ParserLayerContext context)
+        {
+            if (currentToken is NotationToken comma && comma.Content == ",")
+            {
+                CompleteParameter();
+                state = State.ClauseStart;
+                return ParserLayerResult.Continue.Instance;
+            }
+
+            if (currentToken is NotationToken close && close.Content == ">")
+            {
+                CompleteParameter();
+                state = State.Completed;
+                return new ParserLayerResult.PopLayer(false);
+            }
+
+            var kind = TryGetConstraintKind(currentToken);
+            if (kind != null)
+            {
+                // 可变参数的约束 Target 隐含为刚完成的参数
+                string name = pendingName;
+                CompleteParameter();
+                return StartConstraint(kind.Value, MakeBareTypeRef(name), context);
+            }
+
+            context.RaiseError($"Expected ',', '>' or constraint after variadic parameter, got: {currentToken}");
+            return new ParserLayerResult.PopLayer(false);
+        }
+
+        // 子句开头类型已解析：判断是参数声明、可变参数还是约束子句
+        private ParserLayerResult HandleTargetParsed(Token currentToken, ParserLayerContext context)
+        {
+            var kind = TryGetConstraintKind(currentToken);
+            if (kind != null)
+            {
+                // 约束子句：已解析的类型即 Target
+                return StartConstraint(kind.Value, pendingTarget!, context);
+            }
+
+            if (currentToken is NotationToken nt)
+            {
+                if (nt.Content == ",")
+                {
+                    CommitParameterFromTarget(context);
+                    state = State.ClauseStart;
+                    return ParserLayerResult.Continue.Instance;
+                }
+
+                if (nt.Content == ">")
+                {
+                    CommitParameterFromTarget(context);
+                    state = State.Completed;
+                    return new ParserLayerResult.PopLayer(false);
+                }
+
+                if (nt.Content == ".")
+                {
+                    // 可变参数：前两个点已被符号解析消耗，还差一个。
+                    // 名字先入 pending 字段但不提交——待 ... 读完后由 VariadicDone 统一提交
+                    string? name = TryConvertToParamName(pendingTarget!, context);
+                    pendingName = name!;
+                    pendingTarget = null;
+                    state = State.DotsAwaitThird;
+                    return ParserLayerResult.Continue.Instance;
+                }
+            }
+
+            context.RaiseError(
+                $"Expected ',', '>', '...' or constraint after type in generic parameter list, got: {currentToken}");
+            return new ParserLayerResult.PopLayer(false);
+        }
+
+        // 约束 Bound 已解析：等待 , 或 >
+        private ParserLayerResult HandleBoundParsed(Token currentToken, ParserLayerContext context)
+        {
+            if (currentToken is NotationToken comma && comma.Content == ",")
+            {
+                state = State.ClauseStart;
+                return ParserLayerResult.Continue.Instance;
+            }
+
+            if (currentToken is NotationToken close && close.Content == ">")
+            {
+                state = State.Completed;
+                return new ParserLayerResult.PopLayer(false);
+            }
+
+            context.RaiseError($"Expected ',' or '>' after constraint, got: {currentToken}");
+            return new ParserLayerResult.PopLayer(false);
+        }
+
+        // ===== 辅助方法 =====
+
+        // 判断是否为约束关键字
+        private GenericConstraintKind? TryGetConstraintKind(Token token)
+        {
+            if (token is WordToken wt)
+            {
+                if (wt.Content == Keywords.EXTENDS) return GenericConstraintKind.Extends;
+                if (wt.Content == Keywords.SUPERS) return GenericConstraintKind.Supers;
+                if (wt.Content == Keywords.WITH) return GenericConstraintKind.With;
+            }
+            return null;
+        }
+
+        // 把 pending 字段累积的参数信息提交到 Parameters，并重置
+        private void CompleteParameter()
+        {
+            targetNode.Parameters.Add(new GenericParameterASTNode(targetNode)
+            {
+                Name = pendingName,
+                Variance = pendingVariance,
+                IsVariadic = pendingVariadic,
+                IsNamedVariadic = pendingNamedVariadic
+            });
+            ClearPending();
+        }
+
+        private void ClearPending()
+        {
+            pendingName = "";
+            pendingVariance = GenericVariance.None;
+            pendingVariadic = false;
+            pendingNamedVariadic = false;
+            pendingTarget = null;
+        }
+
+        // TypeRef 路径：把已解析的类型校验并转换为参数名后提交
+        private void CommitParameterFromTarget(ParserLayerContext context)
+        {
+            string? name = TryConvertToParamName(pendingTarget!, context);
+            pendingName = name!;
+            // TypeRef 路径不存在前缀修饰
+            pendingVariance = GenericVariance.None;
+            pendingNamedVariadic = false;
+            pendingTarget = null;
+            CompleteParameter();
+        }
+
+        // 类型引用 → 参数名：必须是裸标识符（单元素、无泛型实参、非可空）。
+        // 容忍可变参数解析在符号末尾留下的空名元素。
+        private string? TryConvertToParamName(TypeReferenceASTNode typeRef, ParserLayerContext context)
+        {
+            if (typeRef.IsNullable)
+            {
+                context.RaiseError("Nullable type cannot be a generic parameter name");
+                return null;
+            }
+
+            var nonEmpty = typeRef.TypeSymbol.symbol.elements
+                .Where(e => !string.IsNullOrEmpty(e.name))
+                .ToList();
+
+            if (nonEmpty.Count != 1 || nonEmpty[0].generics.Count > 0)
+            {
+                context.RaiseError(
+                    "Generic parameter name must be a plain identifier (no path, no generic arguments)");
+                return null;
+            }
+
+            return nonEmpty[0].name;
+        }
+
+        // 由裸名构建单元素类型引用（作为约束 Target）
+        private TypeReferenceASTNode MakeBareTypeRef(string name)
+        {
+            var typeRef = new TypeReferenceASTNode(targetNode);
+            typeRef.TypeSymbol.symbol.elements.Add(new SymbolElement { name = name });
+            return typeRef;
+        }
+
+        // 开始约束子句：记录 Target 与种类，委托 TypeReferenceParserLayer 解析 Bound
+        private ParserLayerResult StartConstraint(
+            GenericConstraintKind kind, TypeReferenceASTNode target, ParserLayerContext context)
+        {
+            var constraint = new GenericConstraintASTNode(targetNode)
+            {
+                Target = target,
+                Kind = kind
+            };
+            targetNode.Constraints.Add(constraint);
+
+            state = State.BoundParsed;
+            return new ParserLayerResult.PushLayer(
+                new TypeReferenceParserLayer(constraint.Bound),
+                false  // 消费掉 extends/supers/with 关键字
+            );
+        }
+    }
+}

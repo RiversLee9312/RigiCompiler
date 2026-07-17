@@ -1,0 +1,209 @@
+# LatteCompiler 项目指南（AGENTS.md）
+
+> **用途**: 为 AI 编码代理提供 Latte 编译器项目的完整上下文。读者默认对本项目一无所知。
+> 本文件与 `CLAUDE.md` 并存，内容以实际代码为准（已验证日期：2026-07-17）。
+
+**项目名**: LatteCompiler
+**语言**: C#（.NET 8.0，控制台程序，`Nullable` 与 `ImplicitUsings` 已启用）
+**开发阶段**: 早期 —— 编译器前端（Lexer + Parser）实现中，P0 阶段已完成
+**版本控制**: ⚠️ 项目**不在 Git 仓库中**（已验证），无 `.sln` 以外的工程管理，无 CI/CD
+
+---
+
+## 1. 项目概述
+
+Latte 是一门现代的、类型安全的编程语言，本仓库是它的编译器。语言设计目标：
+
+- **完全具化的泛型**：运行时类型信息完全保留（reified），不擦除
+- **协程为核心**：从 `main` 开始的原生协程支持
+- **值类型/引用类型分离**，`rich`/`shared` 类型声明修饰符
+- **Wrapper 系统**：类似 Python 装饰器 + Java 注解的修饰器机制
+- **无运算符优先级**：所有运算必须用括号明确指定（见 §4.1）
+
+编译器目标架构：
+
+```
+Latte 源码 (.latte) → Frontend (Lexer + Parser + 语义分析) ← 当前阶段
+                    → BIL (Basic Intermediate Language)
+                    → Middleware (LLVM IR Generator)
+                    → LLVM 工具链 → 原生可执行文件
+```
+
+**当前进度**：仅实现了 Lexer 和 Parser 的一部分。已可解析字面量、类型引用、变量声明、表达式、泛型参数列表、函数形参列表等。尚无语义分析、无代码生成、无 BIL 输出。
+
+---
+
+## 2. 构建与运行
+
+### 2.1 构建
+
+```bash
+dotnet build        # 在项目根目录执行；当前 0 警告 0 错误（已验证）
+dotnet clean
+```
+
+唯一配置文件是 `LatteCompiler.csproj`（无 NuGet 第三方依赖，纯 BCL）。另有 `LatteCompiler.sln`。
+
+### 2.2 运行
+
+`Program.cs` 是交互式入口，启动后显示菜单：
+
+```
+1. Parse file              → 输入 .latte 文件路径，打印 token 列表和 AST
+2. Run Literal tests
+3. Run TypeReference tests
+4. Run VariableDeclaration tests
+5. Run Expression tests
+6. Run Generic parsing tests
+7. Run GenericParameters tests
+8. Run ParameterList tests
+```
+
+非交互运行示例：
+
+```bash
+echo "2" | dotnet run        # 运行字面量测试
+echo "8" | dotnet run        # 运行形参列表测试
+```
+
+---
+
+## 3. 代码库结构
+
+```
+LatteCompiler/
+├── Program.cs                # 入口：交互菜单 + 文件解析流程
+├── LatteCompiler.csproj      # net8.0，Exe，Nullable enable
+├── AST/                      # AST 节点定义（按类别分文件）
+│   ├── LiteralNodes.cs          # 字面量节点（Int/Float/String/Bool/Null 等）
+│   ├── TypeNodes.cs             # 类型引用节点
+│   ├── DeclarationNodes.cs      # 声明节点（变量声明等）
+│   └── ExpressionNodes.cs       # 表达式节点
+├── Parser/                   # Parser 层实现（每层一个文件）
+│   ├── Parser.cs                # 核心接口：IParserLayer、ParserLayerResult、
+│   │                            #   IResultProducer / IResultConsumer、ParserLayerContext
+│   ├── RootParserLayer.cs       # 解析入口层，负责识别顶层结构并委托
+│   ├── LiteralParserLayer.cs    # 字面量
+│   ├── TypeReferenceParserLayer.cs  # 类型引用（不含 rich/shared，见 §4.2）
+│   ├── VariableDeclarationParserLayer.cs
+│   ├── ExpressionParserLayer.cs # 表达式框架（识别 + 运算符 + 委托）
+│   ├── PathParserLayer.cs       # 符号/路径/调用
+│   ├── DeclarationParserLayer.cs / ImportParserLayer.cs / CodeBlockParserLayer.cs
+│   ├── GenericParametersParserLayer.cs  # 泛型形参列表
+│   ├── ParameterListParserLayer.cs      # 函数形参列表
+│   └── ArgumentListParserLayer.cs       # 调用实参列表
+├── Lexer/                    # 词法分析
+│   ├── Lexer.cs                 # Tokenize(TextReader/string) 入口
+│   └── LexerLayers.cs
+├── Core/                     # 基础设施
+│   ├── Utilities.cs             # Token 定义、Keywords、Helper（打印工具）、
+│   │                            #   以及部分未迁出的 AST 基类/节点（ASTNode、RootASTNode、
+│   │                            #   SymbolASTNode、ImportASTNode 等）
+│   └── FrontendTypesExtension.cs
+├── Tests/                    # 自研控制台测试（非 xUnit/NUnit，见 §5）
+└── docs/                     # 设计与规范文档（全部为权威参考）
+```
+
+### 3.1 关键文件
+
+| 文件 | 用途 | 重要性 |
+|------|------|--------|
+| `docs/SYNTAX.md` | **语言语法规范（最权威）** | ⭐⭐⭐ 有歧义时以此为准，不要猜语法 |
+| `docs/RUNTIME.md` | 运行时模型与类型系统 | ⭐⭐⭐ |
+| `docs/BIL_STANDARD.md` | BIL 中间语言规范 | ⭐⭐ |
+| `docs/PARSER_ROADMAP.md` / `PROGRESS_REPORT.md` | Parser 路线图与进度 | ⭐⭐ |
+| `docs/EXPRESSION_ARCHITECTURE.md` / `RICH_SHARED_CLARIFICATION.md` | 专项设计澄清 | ⭐⭐ |
+| `Parser/Parser.cs` | 层栈式 Parser 的核心协议 | ⭐⭐⭐ |
+| `Core/Utilities.cs` | Token/Keywords/AST 基类等核心数据结构 | ⭐⭐⭐ |
+
+---
+
+## 4. 核心设计决策（改动代码前必须理解）
+
+### 4.1 ⚠️ Latte 没有运算符优先级
+
+```latte
+var result = 1 + 2 * 3       // ❌ 编译错误：歧义
+var result = 1 + (2 * 3)     // ✅ 必须加括号
+```
+
+对 Parser 的影响：不需要优先级表；遇到未括号化的连续运算符必须报错。实现表达式相关功能时不要引入优先级概念。
+
+### 4.2 ⚠️ `rich` / `shared` 是类型**声明**修饰符，不是类型引用修饰符
+
+- `rich`：**仅用于 struct / enum struct**（class 不能用）。允许值类型持有引用，但仍是值语义、unique ownership（类似 `unique_ptr`，**不是** `shared_ptr`）。
+- `shared`：所有类型可用，表示允许跨协程共享。
+- 使用类型时（变量声明、函数参数）**永远不写** `rich`/`shared`。因此 `TypeReferenceParserLayer` 不处理它们；它们属于 class/struct 声明解析的职责。
+
+### 4.3 Parser 架构：层栈 + 状态机
+
+Parser 主循环维护一个 Layer 栈，每个 token 交给栈顶 Layer 处理。核心协议在 `Parser/Parser.cs`：
+
+- `IParserLayer.ParseToken(token, context)` 返回 `ParserLayerResult`：
+  - `Continue`（单例）：本层继续消费
+  - `PushLayer(layer, shouldKeepToken)`：压入子 Layer（委托）
+  - `PopLayer(shouldKeepToken)`：本层完成，弹栈
+- 结果传递：`IResultProducer.GetResult()` 由产生结果的 Layer 实现；父层实现 `IResultConsumer.OnChildResult(...)` 接收子层结果。
+- **每个 Layer 内部用状态机驱动**（`private enum State` + switch），状态转换处要写注释。
+- 模块化原则："Delegate, don't implement" —— 框架层（如 `ExpressionParserLayer`）负责识别、路由、运算符处理；具体语法结构委托给专门 Layer。每个 Layer 职责单一、可独立测试。
+
+### 4.4 Lexer 的特点
+
+Lexer 只做简单字符识别，不理解语义。例如 `3.14` 会输出三个 token：`Word "3"`、`Notation "."`、`Word "14"` —— 由 `LiteralParserLayer` 的状态机组合成浮点字面量。不要在 Lexer 里加语义判断。
+
+---
+
+## 5. 测试策略
+
+- **不使用任何测试框架**。测试是 `Tests/` 下的静态类，每个类提供 `public static void RunAll()`，通过 `Program.cs` 菜单（选项 2–8）触发。
+- 测试模式：每个用例把一小段 Latte 源码字符串依次过 `Lexer.Tokenize` → `Parser.Parse`，然后把得到的 AST 节点描述成字符串与期望比对，控制台打印 `[PASS]`/`[FAIL]`，结尾汇总 `N passed, M failed`。
+- **约定：每新增一个 ParserLayer，必须在 `Tests/` 添加对应测试类，并在 `Program.cs` 菜单注册一个新选项。**
+- 当前测试类（7 个）：`LiteralParserTests`、`TypeReferenceParserTests`、`VariableDeclarationTests`、`ExpressionParserTests`、`GenericParsingTests`、`GenericParametersTests`、`ParameterListTests`。
+
+验证改动（已验证可用）：
+
+```bash
+dotnet build
+echo "5" | dotnet run --no-build    # 按需替换菜单编号
+```
+
+---
+
+## 6. 代码规范与开发约定
+
+- **命名**：标准 C# 约定（类/方法 PascalCase，局部变量与私有字段 camelCase）。
+- **缩进**：4 空格。
+- **注释语言**：中文。关键逻辑必须注释；状态机的状态含义与转换必须说明。
+- **文档语言**：中文。`docs/` 下的规范文档是权威来源——**先读 SYNTAX.md 再写代码，不要凭其他语言的经验猜语法**（项目已因此返工过）。
+- 新代码应模仿相邻文件的风格；项目无 linter/格式化工具配置。
+- 命名空间：主代码 `LatteCompiler`，测试 `LatteCompiler.Tests`。
+
+### 添加新 Parser 功能的标准流程
+
+1. 阅读 `docs/SYNTAX.md` 相关章节，理解规范与示例
+2. 设计状态机（画出状态转换）
+3. 在 `AST/` 对应文件中添加 AST 节点
+4. 在 `Parser/` 新建 ParserLayer（实现 `IParserLayer`，必要时实现 `IResultProducer`/`IResultConsumer`）
+5. 在 `Tests/` 添加测试类，在 `Program.cs` 菜单注册
+6. 在 `RootParserLayer`（或相应父层）接入委托入口
+7. `dotnet build` + 运行对应测试菜单项验证
+
+---
+
+## 7. 注意事项与已知限制
+
+- 项目**没有 Git 版本控制**：改动前注意备份重要文件；不要执行任何 git 命令期望其生效。
+- `Core/Utilities.cs` 里仍残留部分 AST 节点定义（`RootASTNode`、`SymbolASTNode`、`ImportASTNode`、`AcquisitionExpressionASTNode` 等），新增节点优先放到 `AST/` 目录对应文件。
+- 字符字面量（char literal）未实现，仅有占位。
+- 输出含 VERBOSE 调试日志属正常现象。
+- 无安全敏感面：本项目是本地控制台工具，不处理网络、凭据或用户隐私数据。唯一文件操作是 `Program.cs` 读取用户指定路径的 `.latte` 文件。
+
+---
+
+## 8. 项目原则
+
+1. **文档驱动** —— 先理解 SYNTAX.md，再写代码
+2. **测试驱动** —— 每个 ParserLayer 都有对应测试
+3. **模块化** —— 每个 Layer 职责单一，委托而非大包大揽
+4. **渐进式** —— 按 `docs/PARSER_ROADMAP.md` 逐步推进，不跳步
+5. **不要猜测** —— 不确定时查文档
