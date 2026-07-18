@@ -4,7 +4,7 @@
 
 **项目名**: LatteCompiler  
 **语言**: C# (.NET 8.0)  
-**开发阶段**: 早期 - Parser 实现中（P0、P1 完成，已进入 P2 准备阶段）  
+**开发阶段**: 早期 - Parser 实现中（P0、P1 完成，P2 进行中——语句系统核心已落地）  
 **版本控制**: Git（main 分支，2026-07-17 首次提交）  
 **文档版本**: 2026-07-18
 
@@ -38,7 +38,7 @@ LLVM Toolchain
 Native Executable
 ```
 
-**当前进度**: P0、P1 完成（表达式后缀链、Lambda/if/switch 表达式、typeOf/as/is、泛型参数、形参列表、结果传递机制、泛型 `\<` 语法迁移），下一步进入 P2 语句系统。
+**当前进度**: P0、P1 完成，P2 进行中（语句系统核心已落地：代码块/if 语句/循环/return/赋值；此前已完成表达式后缀链、Lambda/if/switch 表达式、typeOf/as/is、泛型参数、形参列表、结果传递机制、泛型 `\<` 语法迁移）。
 
 ---
 
@@ -531,10 +531,13 @@ enum FloatParseState
 | TypeOfExpressionParserLayer | typeOf(expr) | 7/7 (100%) |
 | GenericParametersParserLayer | 泛型参数列表 `\<...>`（声明/约束/型变/可变） | 21/21 (100%) |
 | ParameterListParserLayer | 函数形参列表（普通/默认/可变/具名可变） | 14/14 (100%) |
+| CodeBlockParserLayer | 代码块：语句识别与分发（含 return/break/continue/赋值） | 27/27 (100%) |
+| IfStatementParserLayer（语句模式） | if 语句（else 可选、else if 链） | 含于 CodeBlock 套件 |
+| LoopParserLayer | for-each/范围/while/do-while/named 标签 | 15/15 (100%) |
 | 结果传递机制 | IResultProducer/IResultConsumer + 弹层自动传递 | （含于各套件） |
 | 泛型语法迁移 | `\<...>` 语法 + `<` 解放为小于号 | 18/18 (100%) |
 
-**总计**: 184/184 测试通过 (100%)
+**总计**: 226/226 测试通过 (100%)
 
 **可解析的语法**：
 ```latte
@@ -565,6 +568,17 @@ var f = func{(x: i32): i32 -> (x + 1)}
 var loader = async func{(id: i32): SharedUser -> loadUserNow(id)}
 list.map{(item: String): i32 -> item.length}
 
+// 代码块与语句
+{ var x = 1
+  x = (1 + 2)
+  return x }
+
+// if 语句与循环
+if (x > 0) { foo() } else if (y > 0) { bar() } else { baz() }
+for (i in 0 to 10) named outer { break@outer }
+while (condition) { doSomething() }
+do { doSomething() } while (condition)
+
 // 泛型参数列表（独立组件，待接入类型/函数声明）
 \<TElement>, \<out T, in U>, \<named TValues... with Serializable>
 
@@ -574,12 +588,13 @@ list.map{(item: String): i32 -> item.length}
 
 ### 6.2 下一步 ⏳
 
-**P2 语句系统**（下一主战场）：
-1. CodeBlockParserLayer 完善（语句识别与分发）
-2. if/else、while、for、return 语句（if/switch 语句模式可直接扩展既有 Layer）
-3. 赋值语句
+**P2 剩余部分**：
+1. switch 语句模式评估（SYNTAX 当前仅定义 switch 表达式）
+2. TryCatchFinallyParserLayer（roadmap #10）
+3. SeqBlockParserLayer（roadmap #11，含 using/named/表达式形态）
+4. CoroutineOpsParserLayer（roadmap #12，await/yield/async）
 
-**后续**: P3 类型声明（复用 GenericParametersParserLayer）、P4 函数声明（复用 ParameterListParserLayer）
+**后续**: P3 类型声明（复用 GenericParametersParserLayer）、P4 函数声明（复用 ParameterListParserLayer + CodeBlockParserLayer）
 
 ---
 
@@ -589,9 +604,11 @@ list.map{(item: String): i32 -> item.length}
 
 1. **字符字面量未实现** - 有占位符
 2. **wrapper 路径访问（`:`）未实现** - 留待 P5 Wrapper 阶段
-3. **lambda 体与 if/switch 分支体仅支持单表达式** - 多语句块待 P2 CodeBlockParserLayer 落地后扩展
-4. **if/switch 仅表达式模式** - 语句模式待 P2
-5. **泛型参数/形参列表是独立组件** - 待 P3/P4 类型与函数声明接入
+3. **lambda 体与 if/switch 表达式分支体仅支持单表达式** - CodeBlock 已落地，表达式分支的多语句接入留待后续
+4. **switch 仅表达式模式** - SYNTAX 未定义语句形态
+5. **复合赋值（`+=`/`-=` 等）未实现** - Lexer 未合并这些 token，需重组机制
+6. **throw 语句未实现**
+7. **泛型参数/形参列表是独立组件** - 待 P3/P4 类型与函数声明接入
 
 ### 7.2 编译警告
 

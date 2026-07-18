@@ -6,8 +6,8 @@
 > 计划与分工见 `compiler/frontend/PARSER_ROADMAP.md`；本文档只记录「现状」。
 
 **报告日期**: 2026-07-18
-**当前阶段**: P0、P1 完成，准备进入 P2
-**测试总计**: 184/184 通过 (100%)
+**当前阶段**: P2 进行中（M7 语句系统核心完成），P0、P1 已完成
+**测试总计**: 226/226 通过 (100%)
 **版本控制**: Git `main` 分支（2026-07-17 首次提交）
 
 ---
@@ -22,7 +22,7 @@
 | M4 | GenericParametersParserLayer（roadmap #22） | ✅ | 2026-07-17 | 21/21 |
 | M5 | 表达式后缀链 + ArgumentListParserLayer（roadmap #4 大部分） | ✅ | 2026-07-17 | 54/54 |
 | M6 | ParameterListParserLayer（roadmap #5） | ✅ | 2026-07-17 | 14/14 |
-| M7 | P2 语句系统（CodeBlock/If/Loop/return） | ⏳ | - | - |
+| M7 | P2 语句系统核心（CodeBlock/if 语句/循环/return/赋值） | ✅ | 2026-07-18 | 42/42 |
 | M8 | P1 收尾（Lambda/if/switch 表达式 + typeOf/as/is） | ✅ | 2026-07-18 | 39/39 |
 
 ---
@@ -64,6 +64,24 @@ var f = func{(width: TSize)\<TSize extends Size>: TSize -> width}
 var loader = async func{(id: i32): SharedUser -> loadUserNow(id)}
 list.map{(item: String): i32 -> item.length}           // 脱糖为调用实参
 
+// 代码块与语句（语句以换行或 } 结束）
+{
+    var x = 1
+    x = (1 + 2)                                        // 赋值
+    foo().field = v
+    return x                                           // return / return@seq value
+    break@outer                                        // break/continue[@标签]
+}
+
+// if 语句（else 可选，支持 else if 链）
+if (x > 0) { foo() } else if (y > 0) { bar() } else { baz() }
+
+// 循环（for-each / 范围 / while / do-while / named 标签）
+for (item in collection) { print(item) }
+for (i in 0 to 10) named outer { break@outer }
+while (condition) { doSomething() }
+do { doSomething() } while (condition)
+
 // 泛型参数列表（独立组件，待接入类型/函数声明）
 \<TElement>, \<out T, in U>, \<named TValues... with Serializable>
 
@@ -83,15 +101,16 @@ list.map{(item: String): i32 -> item.length}           // 脱糖为调用实参
 | ExpressionParserLayer | ✅ | 67/67 | roadmap #4 全部落地 |
 | ArgumentListParserLayer | ✅ | 含于表达式套件 | 位置/具名/混合实参 |
 | LambdaExpressionParserLayer | ✅ | 15/15 | roadmap #21 提前落地；体为单表达式 |
-| IfStatementParserLayer | ✅ 表达式模式 | 8/8 | 语句模式待 P2 |
-| SwitchStatementParserLayer | ✅ 表达式模式 | 6/6 | 语句模式待 P2 |
+| SwitchStatementParserLayer | ✅ 表达式模式 | 6/6 | 语句模式待规范明确 |
 | TypeOfExpressionParserLayer | ✅ | 7/7 | typeOf(expr) |
+| CodeBlockParserLayer | ✅ | 27/27 | 语句识别与分发；return/break/continue 内联子状态 |
+| IfStatementParserLayer | ✅ 两种模式 | 含于各套件 | 表达式模式强制 else；语句模式 else 可选 + else if 链 |
+| LoopParserLayer | ✅ | 15/15 | for-each/范围/while/do-while/named 标签 |
 | GenericParametersParserLayer | ✅ | 21/21 | 声明/约束/型变/可变参数 |
 | ParameterListParserLayer | ✅ | 14/14 | 普通/默认/可变/具名可变 |
 | PathParserLayer | ✅ | 含于各套件 | 符号路径 + `\<` 泛型实参 |
 | RootParserLayer | ✅ | 含于各套件 | 顶层分发 |
 | DeclarationParserLayer / ImportParserLayer | ⚠️ 骨架 | - | 早期骨架，待 P3/P4 重建 |
-| CodeBlockParserLayer | ⚠️ 骨架 | - | 待 P2 完善 |
 
 ---
 
@@ -106,12 +125,13 @@ list.map{(item: String): i32 -> item.length}           // 脱糖为调用实参
 
 ## 5. 下一步计划
 
-**P2 语句系统（下一里程碑 M7）**：
-1. CodeBlockParserLayer 完善（语句识别与分发）
-2. if/else、while、for、return 语句（if/switch 语句模式可直接扩展既有 Layer）
-3. 赋值语句
+**P2 剩余部分**：
+1. switch 语句模式评估（SYNTAX 当前仅定义 switch 表达式，语句形态待规范明确）
+2. TryCatchFinallyParserLayer（roadmap #10）
+3. SeqBlockParserLayer（roadmap #11，含 using/named/表达式形态）
+4. CoroutineOpsParserLayer（roadmap #12，await/yield/async）
 
-**后续**：P3 类型声明（复用 GenericParametersParserLayer）、P4 函数声明（复用 ParameterListParserLayer）
+**后续**：P3 类型声明（复用 GenericParametersParserLayer）、P4 函数声明（复用 ParameterListParserLayer + CodeBlockParserLayer）
 
 ---
 
@@ -119,15 +139,26 @@ list.map{(item: String): i32 -> item.length}           // 脱糖为调用实参
 
 1. 字符字面量未实现（占位符）
 2. wrapper 路径访问（`:`）未实现（留待 P5）
-3. lambda 体与 if/switch 分支体仅支持单表达式，多语句块待 P2 CodeBlockParserLayer 落地后扩展
-4. if/switch 仅表达式模式，语句模式（无 else 的 if、无 default 的 switch 等）待 P2
-5. 泛型参数/形参列表为独立组件，待 P3/P4 接入声明解析
-6. DeclarationParserLayer / CodeBlockParserLayer 为早期骨架，将在 P2/P3 重建
-7. 4 个 nullable 编译警告（`Core/Utilities.cs`，不影响功能）
+3. lambda 体与 if/switch 表达式分支体仍仅支持单表达式（CodeBlock 已落地，表达式分支的多语句接入留待后续）
+4. switch 仅表达式模式（SYNTAX 未定义语句形态）
+5. 复合赋值（`+=`/`-=` 等）未实现：Lexer 未合并这些 token，需重组机制
+6. throw 语句未实现
+7. 泛型参数/形参列表为独立组件，待 P3/P4 接入声明解析
+8. DeclarationParserLayer / ImportParserLayer 为早期骨架，将在 P3/P4 重建
+9. 4 个 nullable 编译警告（`Core/Utilities.cs`，不影响功能）
 
 ---
 
 ## 7. 里程碑历史
+
+### 2026-07-18 · M7 P2 语句系统核心（CodeBlock / if 语句 / 循环 / return / 赋值）
+- CodeBlockParserLayer 重写：语句识别与分发中枢；语句以换行或 `}` 结束；var/const、if、for/while/do 委托专门层，return/break/continue 以内部子状态直接处理，表达式语句后跟 `=` 转为赋值
+- IfStatementParserLayer 扩展语句模式：else 可选、支持 else if 链（ElseBranch 为块或嵌套 IfStatement）
+- LoopParserLayer（roadmap #9）全形态：for-each/范围（`0 to 10` → RangeExpressionASTNode）/while/do-while/named 标签
+- 新增 AST/StatementNodes.cs（CodeBlock/IfStatement/Loop/Return/LoopControl/Assign）；Keywords 新增 return/break/continue/to/do
+- VariableDeclarationParserLayer 修复：`}` 可终止块内末语句（三个结束状态）
+- 顺带修复：return 带值时 handler 捕获已置空字段的 NRE；@标签/named 标签增加标识符首字符校验（拒绝数字）
+- 测试 184 → 226（+42：CodeBlock 27、Loop 15）
 
 ### 2026-07-18 · M8 P1 收尾（Lambda / if / switch 表达式 + typeOf/as/is）
 - LambdaExpressionParserLayer（roadmap #21 提前落地）：完整/泛型/async lambda、trailing lambda（脱糖为以 lambda 为唯一实参的调用）；形参/泛型形参/返回类型分别复用 ParameterList/GenericParameters/TypeReference 层

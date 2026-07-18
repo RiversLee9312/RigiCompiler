@@ -270,6 +270,11 @@ namespace LatteCompiler
         public const string ASYNC = "async";
         public const string SWITCH = "switch";
         public const string TYPEOF = "typeOf";
+        public const string RETURN = "return";
+        public const string BREAK = "break";
+        public const string CONTINUE = "continue";
+        public const string TO = "to";
+        public const string DO = "do";
         // 控制流关键字数组
         public static readonly string[] ControlStreamKeywords = 
         {
@@ -410,7 +415,11 @@ namespace LatteCompiler
         SwitchExpression,
         TypeOfExpression,
         CastExpression,
-        TypeCheckExpression
+        TypeCheckExpression,
+        LoopStatement,
+        ReturnStatement,
+        LoopControlStatement,
+        RangeExpression
     }
     public class AcquisitionExpressionASTNode : ASTNode
     {

@@ -268,6 +268,22 @@ namespace LatteCompiler
         public override ASTNodeType NodeType => ASTNodeType.CastExpression;
     }
 
+    // 范围表达式（SYNTAX.md §7.3）：for (i in 0 to 10) 中的 0 to 10
+    // to 由 LoopParserLayer 直接消费（上下文关键字，不进表达式层）
+    public class RangeExpressionASTNode : ExpressionASTNode
+    {
+        public ExpressionASTNode From;
+        public ExpressionASTNode To;
+
+        public RangeExpressionASTNode(ASTNode? parent) : base(parent)
+        {
+            From = null!;
+            To = null!;
+        }
+
+        public override ASTNodeType NodeType => ASTNodeType.RangeExpression;
+    }
+
     // 类型检查表达式（SYNTAX.md §3.5/§3.7）：
     // obj is String / obj supers Animal / obj with Serializable
     // 右侧也可以是 Type\<T> 值（词法上与类型名无歧义，统一按类型引用解析）

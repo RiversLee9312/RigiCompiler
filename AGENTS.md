@@ -5,7 +5,7 @@
 
 **项目名**: LatteCompiler
 **语言**: C#（.NET 8.0，控制台程序，`Nullable` 与 `ImplicitUsings` 已启用）
-**开发阶段**: 早期 —— 编译器前端（Lexer + Parser）实现中，P0、P1 完成，准备进入 P2
+**开发阶段**: 早期 —— 编译器前端（Lexer + Parser）实现中，P0、P1 完成，P2 进行中（语句系统核心已落地）
 **版本控制**: Git（`main` 分支，2026-07-17 首次提交，工作树干净；无 CI/CD）
 
 ---
@@ -29,7 +29,7 @@ Latte 源码 (.latte) → Frontend (Lexer + Parser + 语义分析) ← 当前阶
                     → LLVM 工具链 → 原生可执行文件
 ```
 
-**当前进度**：仅实现了 Lexer 和 Parser 的一部分。已可解析字面量、类型引用、变量声明、完整表达式（含 Lambda、if/switch 表达式、typeOf/as/is）、泛型参数列表、函数形参列表等。尚无语义分析、无代码生成、无 BIL 输出。
+**当前进度**：仅实现了 Lexer 和 Parser 的一部分。已可解析字面量、类型引用、变量声明、完整表达式（含 Lambda、if/switch 表达式、typeOf/as/is）、语句系统核心（代码块、if 语句、循环、return/break/continue、赋值）、泛型参数列表、函数形参列表等。尚无语义分析、无代码生成、无 BIL 输出。
 
 ---
 
@@ -61,6 +61,8 @@ dotnet clean
 10. Run if expression tests
 11. Run switch expression tests
 12. Run typeOf expression tests
+13. Run CodeBlock tests
+14. Run Loop tests
 ```
 
 非交互运行示例：
@@ -82,7 +84,8 @@ LatteCompiler/
 │   ├── LiteralNodes.cs          # 字面量节点（Int/Float/String/Bool/Null 等）
 │   ├── TypeNodes.cs             # 类型引用节点
 │   ├── DeclarationNodes.cs      # 声明节点（变量声明等）
-│   └── ExpressionNodes.cs       # 表达式节点
+│   ├── ExpressionNodes.cs       # 表达式节点
+│   └── StatementNodes.cs        # 语句节点（代码块/if/循环/return/赋值等）
 ├── Parser/                   # Parser 层实现（每层一个文件）
 │   ├── Parser.cs                # 核心接口：IParserLayer、ParserLayerResult、
 │   │                            #   IResultProducer / IResultConsumer、ParserLayerContext
@@ -97,9 +100,11 @@ LatteCompiler/
 │   ├── ParameterListParserLayer.cs      # 函数形参列表
 │   ├── ArgumentListParserLayer.cs       # 调用实参列表
 │   ├── LambdaExpressionParserLayer.cs   # Lambda 表达式（含 async、trailing）
-│   ├── IfStatementParserLayer.cs        # if 表达式（语句模式待 P2）
-│   ├── SwitchStatementParserLayer.cs    # switch 表达式（语句模式待 P2）
-│   └── TypeOfExpressionParserLayer.cs   # typeOf 表达式
+│   ├── IfStatementParserLayer.cs        # if 表达式 + if 语句（else if 链）
+│   ├── SwitchStatementParserLayer.cs    # switch 表达式（语句模式待规范明确）
+│   ├── TypeOfExpressionParserLayer.cs   # typeOf 表达式
+│   ├── CodeBlockParserLayer.cs          # 代码块：语句识别与分发
+│   └── LoopParserLayer.cs               # 循环（for/while/do-while/named 标签）
 ├── Lexer/                    # 词法分析
 │   ├── Lexer.cs                 # Tokenize(TextReader/string) 入口
 │   └── LexerLayers.cs
@@ -179,10 +184,10 @@ Lexer 只做简单字符识别，不理解语义。例如 `3.14` 会输出三个
 
 ## 5. 测试策略
 
-- **不使用任何测试框架**。测试是 `Tests/` 下的静态类，每个类提供 `public static void RunAll()`，通过 `Program.cs` 菜单（选项 2–12）触发。
+- **不使用任何测试框架**。测试是 `Tests/` 下的静态类，每个类提供 `public static void RunAll()`，通过 `Program.cs` 菜单（选项 2–14）触发。
 - 测试模式：每个用例把一小段 Latte 源码字符串依次过 `Lexer.Tokenize` → `Parser.Parse`，然后把得到的 AST 节点描述成字符串与期望比对，控制台打印 `[PASS]`/`[FAIL]`，结尾汇总 `N passed, M failed`。
 - **约定：每新增一个 ParserLayer，必须在 `Tests/` 添加对应测试类，并在 `Program.cs` 菜单注册一个新选项。**
-- 当前测试类（11 个）：`LiteralParserTests`、`TypeReferenceParserTests`、`VariableDeclarationTests`、`ExpressionParserTests`、`GenericParsingTests`、`GenericParametersTests`、`ParameterListTests`、`LambdaExpressionTests`、`IfExpressionTests`、`SwitchExpressionTests`、`TypeOfExpressionTests`，合计 184 个用例，当前全部通过。
+- 当前测试类（13 个）：`LiteralParserTests`、`TypeReferenceParserTests`、`VariableDeclarationTests`、`ExpressionParserTests`、`GenericParsingTests`、`GenericParametersTests`、`ParameterListTests`、`LambdaExpressionTests`、`IfExpressionTests`、`SwitchExpressionTests`、`TypeOfExpressionTests`、`CodeBlockTests`、`LoopTests`，合计 226 个用例，当前全部通过。
 
 验证改动（已验证可用）：
 

@@ -5,56 +5,84 @@ namespace LatteCompiler
     /// <summary>
     /// if 解析器（roadmap #7，SYNTAX.md §7.1）
     ///
-    /// 当前仅实现 if 表达式模式：if (cond) { then } else { else }
-    /// 作为表达式时必须有 else 分支（SYNTAX §7.1）；语句模式留待 P2。
-    /// if 关键字由 ExpressionParserLayer 消费，本层从 ( 开始。
+    /// 两种模式：
+    /// - 表达式模式：if (cond) { then } else { else }，必须有 else（SYNTAX §7.1）；
+    ///   if 关键字由 ExpressionParserLayer 消费，本层从 ( 开始，产出 IfExpressionASTNode
+    /// - 语句模式：if (cond) { ... } [else { ... } / else if ...]，else 可选；
+    ///   本层从 if 关键字开始，产出 IfStatementASTNode 挂入代码块
     ///
-    /// 状态流转：
-    /// OpenParenExpected → ConditionStart → CloseParenExpected
-    ///   → ThenOpenBraceExpected → ThenBodyStart → ThenCloseBraceExpected
-    ///   → ElseExpected → ElseOpenBraceExpected → ElseBodyStart → ElseCloseBraceExpected → 弹出
+    /// 状态流转（条件部分两模式共享）：
+    /// [IfKeywordExpected] → OpenParenExpected → ConditionStart → CloseParenExpected
+    ///   → 表达式：ThenOpenBraceExpected → ThenBodyStart → ThenCloseBraceExpected
+    ///     → ElseExpected → ElseOpenBraceExpected → ElseBodyStart → ElseCloseBraceExpected → 弹出
+    ///   → 语句：ThenBlockExpected（委托 CodeBlockParserLayer）→ ElseCheck
+    ///     → [ElseBranchExpected →（块/嵌套 if）→ Done] → 弹出
     ///
-    /// 委托说明：条件与两个分支均委托 ExpressionParserLayer（结果经 IResultConsumer 回填）。
-    /// 当前限制：分支仅支持单表达式，多语句块待 P2 CodeBlockParserLayer。
+    /// 委托说明：条件与分支均委托 ExpressionParserLayer / CodeBlockParserLayer
+    /// （表达式结果经 IResultConsumer 回填）。
     /// </summary>
     public class IfStatementParserLayer : IParserLayer, IResultProducer, IResultConsumer
     {
-        private readonly IfExpressionASTNode targetNode;
+        private readonly IfExpressionASTNode? exprNode;
+        private readonly IfStatementASTNode? stmtNode;
         private readonly bool isExpression;
 
         private enum State
         {
+            IfKeywordExpected,      // 语句模式：等待 if 关键字
             OpenParenExpected,      // 等待 (
             ConditionStart,         // ( 已读，等待条件表达式开始
             CloseParenExpected,     // 条件已解析，等待 )
+            // 表达式模式
             ThenOpenBraceExpected,  // 等待 then 分支 {
             ThenBodyStart,          // { 已读，等待 then 表达式开始
             ThenCloseBraceExpected, // then 已解析，等待 }
             ElseExpected,           // 等待 else 关键字
             ElseOpenBraceExpected,  // 等待 else 分支 {
             ElseBodyStart,          // { 已读，等待 else 表达式开始
-            ElseCloseBraceExpected  // else 已解析，等待 }
+            ElseCloseBraceExpected, // else 已解析，等待 }
+            // 语句模式
+            ThenBlockExpected,      // 等待 then 块 {（委托 CodeBlockParserLayer）
+            ElseCheck,              // then 块已结束：else 分支或弹出
+            ElseBranchExpected,     // else 已读：{ 或 if（else if 链）
+            Done                    // 语句模式收尾：直接弹出（保留 token）
         }
 
-        private State state = State.OpenParenExpected;
+        private State state;
 
         // 等待子 Layer 结果时的回填动作（委托前设置，OnChildResult 时消费）
         private Action<ASTNode?>? pendingResultHandler;
 
-        public IfStatementParserLayer(IfExpressionASTNode target, bool isExpression = true)
+        // 表达式模式：if 关键字已由 ExpressionParserLayer 消费
+        public IfStatementParserLayer(IfExpressionASTNode target)
         {
-            targetNode = target;
-            this.isExpression = isExpression;
-
-            // 语句模式（if 语句/elif 链）属于 P2，当前仅支持表达式模式
-            if (!isExpression)
-            {
-                throw new NotImplementedException("if 语句模式待 P2 实现，当前仅支持 if 表达式");
-            }
+            exprNode = target;
+            isExpression = true;
+            state = State.OpenParenExpected;
         }
 
-        // IResultProducer：返回填好的 if 表达式节点
-        public ASTNode? GetResult() => targetNode;
+        // 语句模式：创建 IfStatementASTNode 并挂入代码块
+        public IfStatementParserLayer(CodeBlockASTNode parentBlock)
+            : this(AttachStatement(parentBlock))
+        {
+        }
+
+        private IfStatementParserLayer(IfStatementASTNode node)
+        {
+            stmtNode = node;
+            isExpression = false;
+            state = State.IfKeywordExpected;
+        }
+
+        private static IfStatementASTNode AttachStatement(CodeBlockASTNode parentBlock)
+        {
+            var node = new IfStatementASTNode(parentBlock);
+            parentBlock.Children.Add(node);
+            return node;
+        }
+
+        // IResultProducer：表达式模式返回填好的 if 表达式节点；语句模式不产生结果
+        public ASTNode? GetResult() => isExpression ? exprNode : null;
 
         // IResultConsumer：接收条件/分支表达式的解析结果
         public void OnChildResult(ASTNode? result, IParserLayer child)
@@ -75,21 +103,26 @@ namespace LatteCompiler
 
             switch (state)
             {
+                case State.IfKeywordExpected:
+                    return HandleIfKeywordExpected(currentToken, context);
                 case State.OpenParenExpected:
                     return ExpectNotation(currentToken, context, "(", State.ConditionStart,
                         "Expected '(' after if");
                 case State.ConditionStart:
                     return DelegateExpression(State.CloseParenExpected,
-                        result => targetNode.Condition = (ExpressionASTNode)result!);
+                        result =>
+                        {
+                            if (isExpression) exprNode!.Condition = (ExpressionASTNode)result!;
+                            else stmtNode!.Condition = (ExpressionASTNode)result!;
+                        });
                 case State.CloseParenExpected:
-                    return ExpectNotation(currentToken, context, ")", State.ThenOpenBraceExpected,
-                        "Expected ')' after if condition");
+                    return HandleCloseParenExpected(currentToken, context);
                 case State.ThenOpenBraceExpected:
                     return ExpectNotation(currentToken, context, "{", State.ThenBodyStart,
                         "Expected '{' to start if-then branch");
                 case State.ThenBodyStart:
                     return DelegateExpression(State.ThenCloseBraceExpected,
-                        result => targetNode.ThenExpression = (ExpressionASTNode)result!);
+                        result => exprNode!.ThenExpression = (ExpressionASTNode)result!);
                 case State.ThenCloseBraceExpected:
                     return ExpectNotation(currentToken, context, "}", State.ElseExpected,
                         "Expected '}' to close if-then branch");
@@ -100,9 +133,18 @@ namespace LatteCompiler
                         "Expected '{' to start else branch");
                 case State.ElseBodyStart:
                     return DelegateExpression(State.ElseCloseBraceExpected,
-                        result => targetNode.ElseExpression = (ExpressionASTNode)result!);
+                        result => exprNode!.ElseExpression = (ExpressionASTNode)result!);
                 case State.ElseCloseBraceExpected:
                     return HandleElseCloseBraceExpected(currentToken, context);
+                case State.ThenBlockExpected:
+                    return HandleThenBlockExpected(currentToken, context);
+                case State.ElseCheck:
+                    return HandleElseCheck(currentToken, context);
+                case State.ElseBranchExpected:
+                    return HandleElseBranchExpected(currentToken, context);
+                case State.Done:
+                    // 语句模式收尾：不消费 token，交还给父层（代码块分发）
+                    return new ParserLayerResult.PopLayer(true);
                 default:
                     context.RaiseError($"Invalid IfStatementParserLayer state: {state}");
                     return new ParserLayerResult.PopLayer(false);
@@ -129,8 +171,39 @@ namespace LatteCompiler
         {
             state = nextState;
             pendingResultHandler = resultHandler;
-            return new ParserLayerResult.PushLayer(new ExpressionParserLayer(targetNode), true);
+            var parentNode = (ASTNode?)exprNode ?? stmtNode!;
+            return new ParserLayerResult.PushLayer(new ExpressionParserLayer(parentNode), true);
         }
+
+        // ===== 共享部分 =====
+
+        // 语句模式：等待 if 关键字
+        private ParserLayerResult HandleIfKeywordExpected(Token currentToken, ParserLayerContext context)
+        {
+            if (currentToken is WordToken wt && wt.Content == Keywords.IF)
+            {
+                state = State.OpenParenExpected;
+                return ParserLayerResult.Continue.Instance;
+            }
+
+            context.RaiseError($"Expected 'if', got: {currentToken}");
+            return new ParserLayerResult.PopLayer(false);
+        }
+
+        // 条件 ) 已读：按模式进入 then 分支
+        private ParserLayerResult HandleCloseParenExpected(Token currentToken, ParserLayerContext context)
+        {
+            if (currentToken is NotationToken nt && nt.Content == ")")
+            {
+                state = isExpression ? State.ThenOpenBraceExpected : State.ThenBlockExpected;
+                return ParserLayerResult.Continue.Instance;
+            }
+
+            context.RaiseError($"Expected ')' after if condition, got: {currentToken}");
+            return new ParserLayerResult.PopLayer(false);
+        }
+
+        // ===== 表达式模式 =====
 
         // 等待 else：if 表达式必须包含 else 分支（SYNTAX §7.1）
         private ParserLayerResult HandleElseExpected(Token currentToken, ParserLayerContext context)
@@ -154,6 +227,62 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected '}}' to close else branch, got: {currentToken}");
+            return new ParserLayerResult.PopLayer(false);
+        }
+
+        // ===== 语句模式 =====
+
+        // 等待 then 块 { ：委托 CodeBlockParserLayer（保留 token 交给它）
+        private ParserLayerResult HandleThenBlockExpected(Token currentToken, ParserLayerContext context)
+        {
+            if (currentToken is NotationToken nt && nt.Content == "{")
+            {
+                state = State.ElseCheck;
+                return new ParserLayerResult.PushLayer(
+                    new CodeBlockParserLayer(stmtNode!.ThenBlock), true);
+            }
+
+            context.RaiseError($"Expected '{{' to start if-then block, got: {currentToken}");
+            return new ParserLayerResult.PopLayer(false);
+        }
+
+        // then 块已结束：语句模式的 else 可选
+        private ParserLayerResult HandleElseCheck(Token currentToken, ParserLayerContext context)
+        {
+            if (currentToken is WordToken wt && wt.Content == Keywords.ELSE)
+            {
+                state = State.ElseBranchExpected;
+                return ParserLayerResult.Continue.Instance;
+            }
+
+            // 无 else：完成，保留 token 交还给代码块分发
+            return new ParserLayerResult.PopLayer(true);
+        }
+
+        // else 已读：{ 进入 else 块；if 进入 else if 链
+        private ParserLayerResult HandleElseBranchExpected(Token currentToken, ParserLayerContext context)
+        {
+            // else 块
+            if (currentToken is NotationToken nt && nt.Content == "{")
+            {
+                var elseBlock = new CodeBlockASTNode(stmtNode);
+                stmtNode!.ElseBranch = elseBlock;
+                state = State.Done;
+                return new ParserLayerResult.PushLayer(
+                    new CodeBlockParserLayer(elseBlock), true);
+            }
+
+            // else if 链：嵌套 IfStatementASTNode 作为 ElseBranch
+            if (currentToken is WordToken wt && wt.Content == Keywords.IF)
+            {
+                var nested = new IfStatementASTNode(stmtNode);
+                stmtNode!.ElseBranch = nested;
+                state = State.Done;
+                return new ParserLayerResult.PushLayer(
+                    new IfStatementParserLayer(nested), true);
+            }
+
+            context.RaiseError($"Expected '{{' or 'if' after else, got: {currentToken}");
             return new ParserLayerResult.PopLayer(false);
         }
     }

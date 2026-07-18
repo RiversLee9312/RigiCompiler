@@ -15,7 +15,9 @@ Console.WriteLine("9. Run Lambda expression tests");
 Console.WriteLine("10. Run if expression tests");
 Console.WriteLine("11. Run switch expression tests");
 Console.WriteLine("12. Run typeOf expression tests");
-Console.Write("Enter choice (1-12): ");
+Console.WriteLine("13. Run CodeBlock tests");
+Console.WriteLine("14. Run Loop tests");
+Console.Write("Enter choice (1-14): ");
 
 string? choice = Console.ReadLine();
 
@@ -83,6 +85,18 @@ else if (choice == "12")
 {
     // 运行 typeOf 表达式测试
     TypeOfExpressionTests.RunAll();
+    return;
+}
+else if (choice == "13")
+{
+    // 运行代码块测试
+    CodeBlockTests.RunAll();
+    return;
+}
+else if (choice == "14")
+{
+    // 运行循环测试
+    LoopTests.RunAll();
     return;
 }
 

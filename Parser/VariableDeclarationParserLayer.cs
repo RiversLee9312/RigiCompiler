@@ -153,6 +153,14 @@ namespace LatteCompiler
                 return new ParserLayerResult.PopLayer(true);
             }
 
+            // } 终止块内最后一条语句（保留 token 交给代码块层）
+            if (currentToken is NotationToken closeBrace && closeBrace.Content == "}")
+            {
+                context.LogWarning("Variable declaration without type or initializer");
+                state = State.Completed;
+                return new ParserLayerResult.PopLayer(true);
+            }
+
             context.RaiseError($"Expected ':', '=' or line break after variable name, got: {currentToken}");
             return new ParserLayerResult.PopLayer(false);
         }
@@ -186,6 +194,13 @@ namespace LatteCompiler
                 return new ParserLayerResult.PopLayer(true);
             }
 
+            // } 终止块内最后一条语句（保留 token 交给代码块层）
+            if (currentToken is NotationToken closeBrace && closeBrace.Content == "}")
+            {
+                state = State.Completed;
+                return new ParserLayerResult.PopLayer(true);
+            }
+
             context.RaiseError($"Expected '=' or line break after type annotation, got: {currentToken}");
             return new ParserLayerResult.PopLayer(false);
         }
@@ -210,6 +225,13 @@ namespace LatteCompiler
             {
                 state = State.Completed;
                 return new ParserLayerResult.PopLayer(false);
+            }
+
+            // } 终止块内最后一条语句（保留 token 交给代码块层）
+            if (currentToken is NotationToken nt && nt.Content == "}")
+            {
+                state = State.Completed;
+                return new ParserLayerResult.PopLayer(true);
             }
 
             context.RaiseError($"Unexpected token after initializer: {currentToken}");
