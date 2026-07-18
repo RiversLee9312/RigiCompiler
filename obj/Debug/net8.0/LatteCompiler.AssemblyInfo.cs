@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("LatteCompiler")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+9e00384b654a551a0db687de4cd0bc5a310d420a")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+9b08d3a2b364b872f768ac662fd211c1ca0ac282")]
 [assembly: System.Reflection.AssemblyProductAttribute("LatteCompiler")]
 [assembly: System.Reflection.AssemblyTitleAttribute("LatteCompiler")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

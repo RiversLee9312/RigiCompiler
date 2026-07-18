@@ -5,9 +5,9 @@
 > 更新时保持文档结构不变，并在「里程碑历史」追加一段。
 > 计划与分工见 `compiler/frontend/PARSER_ROADMAP.md`；本文档只记录「现状」。
 
-**报告日期**: 2026-07-17
-**当前阶段**: P1 大部分完成，准备进入 P2
-**测试总计**: 145/145 通过 (100%)
+**报告日期**: 2026-07-18
+**当前阶段**: P0、P1 完成，准备进入 P2
+**测试总计**: 184/184 通过 (100%)
 **版本控制**: Git `main` 分支（2026-07-17 首次提交）
 
 ---
@@ -23,6 +23,7 @@
 | M5 | 表达式后缀链 + ArgumentListParserLayer（roadmap #4 大部分） | ✅ | 2026-07-17 | 54/54 |
 | M6 | ParameterListParserLayer（roadmap #5） | ✅ | 2026-07-17 | 14/14 |
 | M7 | P2 语句系统（CodeBlock/If/Loop/return） | ⏳ | - | - |
+| M8 | P1 收尾（Lambda/if/switch 表达式 + typeOf/as/is） | ✅ | 2026-07-18 | 39/39 |
 
 ---
 
@@ -44,6 +45,25 @@ var v = new User(id = 42)
 var v = a.b\<i32>(x)
 var r = 1 + (2 * 3)          // 无优先级规则已强制：1 + 2 * 3 报错
 
+// 类型操作（is/supers/with 检查，as/as? 转换，typeOf）
+obj is String, obj supers Animal, obj with Serializable
+obj as String, obj as? String
+var t = typeOf(box)
+
+// if / switch 表达式（分支体当前为单表达式）
+var r = if (x > 0) { x } else { opposite(x) }          // 必须有 else
+var r = switch(expr) {
+    (1) -> { "one" }                                   // 值匹配
+    (_ > 10) -> { "big" }                              // 模式匹配（_ 引用 expr）
+    default -> { "other" }                             // 必须有 default
+}
+
+// Lambda（含泛型、async、trailing）
+var f = func{(x: i32): i32 -> (x + 1)}
+var f = func{(width: TSize)\<TSize extends Size>: TSize -> width}
+var loader = async func{(id: i32): SharedUser -> loadUserNow(id)}
+list.map{(item: String): i32 -> item.length}           // 脱糖为调用实参
+
 // 泛型参数列表（独立组件，待接入类型/函数声明）
 \<TElement>, \<out T, in U>, \<named TValues... with Serializable>
 
@@ -60,8 +80,12 @@ var r = 1 + (2 * 3)          // 无优先级规则已强制：1 + 2 * 3 报错
 | LiteralParserLayer | ✅ | 15/15 | 全部字面量；字符字面量占位未实现 |
 | TypeReferenceParserLayer | ✅ | 3/3 | 集成测试含于变量声明套件 |
 | VariableDeclarationParserLayer | ✅ | 10/10 | Initializer 经结果传递保存 |
-| ExpressionParserLayer | ✅ 大部分 | 54/54 | 缺 Lambda/if/switch 表达式、typeOf/as/is |
+| ExpressionParserLayer | ✅ | 67/67 | roadmap #4 全部落地 |
 | ArgumentListParserLayer | ✅ | 含于表达式套件 | 位置/具名/混合实参 |
+| LambdaExpressionParserLayer | ✅ | 15/15 | roadmap #21 提前落地；体为单表达式 |
+| IfStatementParserLayer | ✅ 表达式模式 | 8/8 | 语句模式待 P2 |
+| SwitchStatementParserLayer | ✅ 表达式模式 | 6/6 | 语句模式待 P2 |
+| TypeOfExpressionParserLayer | ✅ | 7/7 | typeOf(expr) |
 | GenericParametersParserLayer | ✅ | 21/21 | 声明/约束/型变/可变参数 |
 | ParameterListParserLayer | ✅ | 14/14 | 普通/默认/可变/具名可变 |
 | PathParserLayer | ✅ | 含于各套件 | 符号路径 + `\<` 泛型实参 |
@@ -82,12 +106,9 @@ var r = 1 + (2 * 3)          // 无优先级规则已强制：1 + 2 * 3 报错
 
 ## 5. 下一步计划
 
-**P1 收尾**：
-- Lambda 表达式、if/switch 表达式、typeOf/as/is
-
 **P2 语句系统（下一里程碑 M7）**：
 1. CodeBlockParserLayer 完善（语句识别与分发）
-2. if/else、while、for、return 语句
+2. if/else、while、for、return 语句（if/switch 语句模式可直接扩展既有 Layer）
 3. 赋值语句
 
 **后续**：P3 类型声明（复用 GenericParametersParserLayer）、P4 函数声明（复用 ParameterListParserLayer）
@@ -98,14 +119,23 @@ var r = 1 + (2 * 3)          // 无优先级规则已强制：1 + 2 * 3 报错
 
 1. 字符字面量未实现（占位符）
 2. wrapper 路径访问（`:`）未实现（留待 P5）
-3. typeOf/as/is、Lambda、if/switch 表达式未实现（P1 收尾）
-4. 泛型参数/形参列表为独立组件，待 P3/P4 接入声明解析
-5. DeclarationParserLayer / CodeBlockParserLayer 为早期骨架，将在 P2/P3 重建
-6. 4 个 nullable 编译警告（`Core/Utilities.cs`，不影响功能）
+3. lambda 体与 if/switch 分支体仅支持单表达式，多语句块待 P2 CodeBlockParserLayer 落地后扩展
+4. if/switch 仅表达式模式，语句模式（无 else 的 if、无 default 的 switch 等）待 P2
+5. 泛型参数/形参列表为独立组件，待 P3/P4 接入声明解析
+6. DeclarationParserLayer / CodeBlockParserLayer 为早期骨架，将在 P2/P3 重建
+7. 4 个 nullable 编译警告（`Core/Utilities.cs`，不影响功能）
 
 ---
 
 ## 7. 里程碑历史
+
+### 2026-07-18 · M8 P1 收尾（Lambda / if / switch 表达式 + typeOf/as/is）
+- LambdaExpressionParserLayer（roadmap #21 提前落地）：完整/泛型/async lambda、trailing lambda（脱糖为以 lambda 为唯一实参的调用）；形参/泛型形参/返回类型分别复用 ParameterList/GenericParameters/TypeReference 层
+- IfStatementParserLayer / SwitchStatementParserLayer（roadmap #7/#8 表达式模式）：if 表达式强制 else、switch 表达式强制 default；`_` 模式匹配按普通符号解析
+- TypeOfExpressionParserLayer；is/supers/with/as/as? 改为专用 AST 节点（CastExpressionASTNode/TypeCheckExpressionASTNode），右侧委托 TypeReferenceParserLayer，is/as 不再按二元运算符处理；as? 安全转换标记在类型操作等待态消费
+- 结构化 Layer 统一允许跨行书写：结构性等待状态跳过换行，表达式内部仍由 ExpressionParserLayer 按行终止
+- 新增 ASTNodeType：IfExpression/SwitchExpression/TypeOfExpression/CastExpression/TypeCheckExpression；新增 Keywords：async/switch/typeOf
+- 测试 145 → 184（+39：表达式套件 +13、Lambda 15、if 8、switch 6、typeOf 7）；roadmap #4 全部完成，P1 收官
 
 ### 2026-07-17 · M6 ParameterListParserLayer
 - 形参全态：普通/默认/可变/具名可变；默认值委托 ExpressionParserLayer，类型委托 TypeReferenceParserLayer

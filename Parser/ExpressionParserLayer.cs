@@ -53,11 +53,19 @@ namespace LatteCompiler
             SafeDotExpected,      // ? 之后等待 .
             GenericAngleExpected, // \ 之后等待 <（泛型实参列表）
             GenericArgParsed,     // 一个泛型实参已解析，等待 , 或 >
+            AsyncSeen,            // async 已读，等待 func（async lambda）
+            TypeOperatorSeen,     // 类型操作符 is/as/supers/with 已读，等待右侧类型
             Completed             // 完成
         }
 
         private State state = State.Initial;
         private string? pendingOperator = null;
+
+        // 类型操作（is/as/as?/supers/with）暂存：等待右侧类型引用解析
+        private string? pendingTypeOperator = null;
+        private CastExpressionASTNode? pendingCastNode = null;
+        private TypeCheckExpressionASTNode? pendingCheckNode = null;
+        private bool safeCastMarkConsumed = false;   // as? 的 ? 是否已消费
 
         // 后缀链状态
         private bool pendingSafeAccess = false;
@@ -112,6 +120,12 @@ namespace LatteCompiler
                 case State.GenericArgParsed:
                     return HandleGenericArgParsed(currentToken, context);
 
+                case State.AsyncSeen:
+                    return HandleAsyncSeen(currentToken, context);
+
+                case State.TypeOperatorSeen:
+                    return HandleTypeOperatorSeen(currentToken, context);
+
                 case State.Completed:
                     return HandleCompleted(currentToken, context);
 
@@ -140,6 +154,30 @@ namespace LatteCompiler
             if (currentToken is WordToken wt && wt.Content == Keywords.NEW)
             {
                 return DelegateNewParsing(context);
+            }
+
+            // 3.1 关键字起始的结构化表达式（SYNTAX §5/§7/§3.7）：
+            // lambda、async lambda、if、switch、typeOf
+            if (currentToken is WordToken kw)
+            {
+                switch (kw.Content)
+                {
+                    case Keywords.FUNC:
+                        return DelegateLambdaParsing(false);
+                    case Keywords.ASYNC:
+                        // 先消费 async，下一 token 必须是 func（AsyncSeen 状态处理）
+                        state = State.AsyncSeen;
+                        return ParserLayerResult.Continue.Instance;
+                    case Keywords.IF:
+                        var ifNode = new IfExpressionASTNode(parentNode);
+                        return DelegateStructuredParsing(ifNode, new IfStatementParserLayer(ifNode));
+                    case Keywords.SWITCH:
+                        var switchNode = new SwitchExpressionASTNode(parentNode);
+                        return DelegateStructuredParsing(switchNode, new SwitchStatementParserLayer(switchNode));
+                    case Keywords.TYPEOF:
+                        var typeOfNode = new TypeOfExpressionASTNode(parentNode);
+                        return DelegateStructuredParsing(typeOfNode, new TypeOfExpressionParserLayer(typeOfNode));
+                }
             }
 
             // 4. 一元前缀运算符
@@ -204,6 +242,57 @@ namespace LatteCompiler
                 new TypeReferenceParserLayer(newExpr.Type),
                 false  // 跳过 'new' token
             );
+        }
+
+        // 委托结构化表达式（if/switch/typeOf/lambda）：
+        // 子层产出完整节点，经结果传递回填为当前主表达式
+        private ParserLayerResult DelegateStructuredParsing(ExpressionASTNode node, IParserLayer layer)
+        {
+            pendingResultHandler = result => currentExpression = (ExpressionASTNode)result!;
+            state = State.PrimaryParsed;
+            // 起始关键字（if/switch/typeOf/func）已被本层消费，不保留
+            return new ParserLayerResult.PushLayer(layer, false);
+        }
+
+        // 委托 lambda 表达式解析（func 已消费；isAsync 标记 async lambda）
+        private ParserLayerResult DelegateLambdaParsing(bool isAsync)
+        {
+            var lambdaNode = new LambdaExpressionASTNode(parentNode) { IsAsync = isAsync };
+            return DelegateStructuredParsing(lambdaNode, new LambdaExpressionParserLayer(lambdaNode));
+        }
+
+        // async 已读：下一 token 必须是 func（async lambda，SYNTAX §5.3）
+        private ParserLayerResult HandleAsyncSeen(Token currentToken, ParserLayerContext context)
+        {
+            if (currentToken is WordToken wt && wt.Content == Keywords.FUNC)
+            {
+                return DelegateLambdaParsing(true);
+            }
+
+            context.RaiseError($"Expected 'func' after 'async' (async lambda), got: {currentToken}");
+            return new ParserLayerResult.PopLayer(false);
+        }
+
+        // 类型操作符已读：as 后可接一个 ?（安全转换），随后委托类型引用解析
+        private ParserLayerResult HandleTypeOperatorSeen(Token currentToken, ParserLayerContext context)
+        {
+            // as? 安全转换标记（仅 as 可用，且只能出现一次）
+            if (currentToken is NotationToken q && q.Content == "?")
+            {
+                if (pendingTypeOperator != Keywords.AS || safeCastMarkConsumed)
+                {
+                    context.RaiseError($"Unexpected '?' after type operator '{pendingTypeOperator}'");
+                }
+                pendingCastNode!.IsSafe = true;
+                safeCastMarkConsumed = true;
+                return ParserLayerResult.Continue.Instance;
+            }
+
+            // 委托 TypeReferenceParserLayer 解析右侧类型（保留 token）。
+            // 类型完成后本表达式即完成：后续再接运算符必须加括号（无优先级规则）
+            var targetType = pendingCastNode != null ? pendingCastNode.TargetType : pendingCheckNode!.TargetType;
+            state = State.Completed;
+            return new ParserLayerResult.PushLayer(new TypeReferenceParserLayer(targetType), true);
         }
 
         // 处理前缀一元运算符
@@ -331,6 +420,52 @@ namespace LatteCompiler
                     state = State.GenericAngleExpected;
                     return ParserLayerResult.Continue.Instance;
                 }
+
+                // trailing lambda（SYNTAX §5.2）：
+                // expr{...} 脱糖为以 lambda 为唯一实参的调用，如 list.map{...}
+                if (suffix.Content == "{")
+                {
+                    var lambdaNode = new LambdaExpressionASTNode(parentNode);
+                    var trailingCall = new CallExpressionASTNode(parentNode)
+                    {
+                        Callee = currentExpression!
+                    };
+                    currentExpression = trailingCall;
+                    pendingResultHandler = result =>
+                        trailingCall.Arguments.Add(
+                            new ArgumentASTNode(trailingCall, (ExpressionASTNode)result!));
+                    // { 交给 LambdaExpressionParserLayer 消费
+                    return new ParserLayerResult.PushLayer(new LambdaExpressionParserLayer(lambdaNode), true);
+                }
+            }
+
+            // 类型操作（SYNTAX §3.5/§3.7）：is / supers / with / as / as?
+            // 右侧是类型引用而非表达式，生成专用节点，委托 TypeReferenceParserLayer
+            if (currentToken is WordToken typeOp && IsTypeOperator(typeOp.Content))
+            {
+                pendingTypeOperator = typeOp.Content;
+                safeCastMarkConsumed = false;
+                if (typeOp.Content == Keywords.AS)
+                {
+                    pendingCastNode = new CastExpressionASTNode(parentNode)
+                    {
+                        Object = currentExpression!
+                    };
+                    pendingCheckNode = null;
+                    currentExpression = pendingCastNode;
+                }
+                else
+                {
+                    pendingCheckNode = new TypeCheckExpressionASTNode(parentNode)
+                    {
+                        Object = currentExpression!,
+                        Operator = typeOp.Content
+                    };
+                    pendingCastNode = null;
+                    currentExpression = pendingCheckNode;
+                }
+                state = State.TypeOperatorSeen;
+                return ParserLayerResult.Continue.Instance;
             }
 
             // 检查二元运算符
@@ -572,12 +707,18 @@ namespace LatteCompiler
             {
                 return wt.Content == Keywords.AND ||
                        wt.Content == Keywords.OR ||
-                       wt.Content == Keywords.IS ||
-                       wt.Content == Keywords.AS ||
                        wt.Content == Keywords.IN;
+                // is/as 不是二元运算符：右侧是类型引用，见 TypeOperatorSeen 状态
             }
 
             return false;
+        }
+
+        // 类型操作符（右操作数为类型引用）：is / as / supers / with
+        private static bool IsTypeOperator(string word)
+        {
+            return word == Keywords.IS || word == Keywords.AS ||
+                   word == Keywords.SUPERS || word == Keywords.WITH;
         }
 
         private string GetOperatorString(Token token)

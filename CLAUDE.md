@@ -4,9 +4,9 @@
 
 **项目名**: LatteCompiler  
 **语言**: C# (.NET 8.0)  
-**开发阶段**: 早期 - Parser 实现中（P0 完成，P1 大部分完成，已进入 P2 准备阶段）  
+**开发阶段**: 早期 - Parser 实现中（P0、P1 完成，已进入 P2 准备阶段）  
 **版本控制**: Git（main 分支，2026-07-17 首次提交）  
-**文档版本**: 2026-07-17
+**文档版本**: 2026-07-18
 
 ---
 
@@ -38,7 +38,7 @@ LLVM Toolchain
 Native Executable
 ```
 
-**当前进度**: P0 完成，P1 大部分完成（表达式后缀链、泛型参数、形参列表、结果传递机制、泛型 `\<` 语法迁移），下一步进入 P2 语句系统。
+**当前进度**: P0、P1 完成（表达式后缀链、Lambda/if/switch 表达式、typeOf/as/is、泛型参数、形参列表、结果传递机制、泛型 `\<` 语法迁移），下一步进入 P2 语句系统。
 
 ---
 
@@ -523,14 +523,18 @@ enum FloatParseState
 | LiteralParserLayer | 所有字面量类型 | 15/15 (100%) |
 | TypeReferenceParserLayer | 类型引用（含 `\<` 泛型、嵌套、可空） | 3/3 (100%) |
 | VariableDeclarationParserLayer | 变量声明（Initializer 经结果传递保存） | 10/10 (100%) |
-| ExpressionParserLayer | 运算符、括号分组、调用/索引/成员/泛型调用后缀链、new 构造参数 | 54/54 (100%) |
+| ExpressionParserLayer | 运算符、括号分组、调用/索引/成员/泛型调用后缀链、new 构造参数、类型操作（is/supers/with/as/as?） | 67/67 (100%) |
 | ArgumentListParserLayer | 位置/具名实参列表 | （含于表达式测试） |
+| LambdaExpressionParserLayer | Lambda（完整/泛型/async/trailing，体为单表达式） | 15/15 (100%) |
+| IfStatementParserLayer | if 表达式（强制 else；语句模式待 P2） | 8/8 (100%) |
+| SwitchStatementParserLayer | switch 表达式（值/模式匹配、强制 default；语句模式待 P2） | 6/6 (100%) |
+| TypeOfExpressionParserLayer | typeOf(expr) | 7/7 (100%) |
 | GenericParametersParserLayer | 泛型参数列表 `\<...>`（声明/约束/型变/可变） | 21/21 (100%) |
 | ParameterListParserLayer | 函数形参列表（普通/默认/可变/具名可变） | 14/14 (100%) |
 | 结果传递机制 | IResultProducer/IResultConsumer + 弹层自动传递 | （含于各套件） |
 | 泛型语法迁移 | `\<...>` 语法 + `<` 解放为小于号 | 18/18 (100%) |
 
-**总计**: 145/145 测试通过 (100%)
+**总计**: 184/184 测试通过 (100%)
 
 **可解析的语法**：
 ```latte
@@ -549,6 +553,18 @@ var v = new User(id = 42)
 var v = a.b\<i32>(x)
 var r = 1 + (2 * 3)
 
+// 类型操作
+obj is String, obj as? String, typeOf(box)
+
+// if / switch 表达式（分支体当前为单表达式）
+var r = if (x > 0) { x } else { opposite(x) }
+var r = switch(expr) { (1) -> { "one" } default -> { "other" } }
+
+// Lambda（含泛型、async、trailing）
+var f = func{(x: i32): i32 -> (x + 1)}
+var loader = async func{(id: i32): SharedUser -> loadUserNow(id)}
+list.map{(item: String): i32 -> item.length}
+
 // 泛型参数列表（独立组件，待接入类型/函数声明）
 \<TElement>, \<out T, in U>, \<named TValues... with Serializable>
 
@@ -558,12 +574,9 @@ var r = 1 + (2 * 3)
 
 ### 6.2 下一步 ⏳
 
-**P1 收尾**（表达式层剩余）：
-- Lambda 表达式、if/switch 表达式、typeOf/as/is
-
 **P2 语句系统**（下一主战场）：
 1. CodeBlockParserLayer 完善（语句识别与分发）
-2. if/else、while、for、return 语句
+2. if/else、while、for、return 语句（if/switch 语句模式可直接扩展既有 Layer）
 3. 赋值语句
 
 **后续**: P3 类型声明（复用 GenericParametersParserLayer）、P4 函数声明（复用 ParameterListParserLayer）
@@ -576,8 +589,9 @@ var r = 1 + (2 * 3)
 
 1. **字符字面量未实现** - 有占位符
 2. **wrapper 路径访问（`:`）未实现** - 留待 P5 Wrapper 阶段
-3. **typeOf/as/is、Lambda、if/switch 表达式未实现** - P1 收尾项
-4. **泛型参数/形参列表是独立组件** - 待 P3/P4 类型与函数声明接入
+3. **lambda 体与 if/switch 分支体仅支持单表达式** - 多语句块待 P2 CodeBlockParserLayer 落地后扩展
+4. **if/switch 仅表达式模式** - 语句模式待 P2
+5. **泛型参数/形参列表是独立组件** - 待 P3/P4 类型与函数声明接入
 
 ### 7.2 编译警告
 

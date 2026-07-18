@@ -12,3 +12,4 @@ C:\Users\SaRiv\source\repos\LatteCompiler\LatteCompiler\obj\Debug\net8.0\refint\
 C:\Users\SaRiv\source\repos\LatteCompiler\LatteCompiler\obj\Debug\net8.0\LatteCompiler.pdb
 C:\Users\SaRiv\source\repos\LatteCompiler\LatteCompiler\obj\Debug\net8.0\LatteCompiler.genruntimeconfig.cache
 C:\Users\SaRiv\source\repos\LatteCompiler\LatteCompiler\obj\Debug\net8.0\ref\LatteCompiler.dll
+C:\Users\SaRiv\source\repos\LatteCompiler\LatteCompiler\obj\Debug\net8.0\LatteCompiler.sourcelink.json

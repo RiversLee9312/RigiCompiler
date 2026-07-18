@@ -267,6 +267,9 @@ namespace LatteCompiler
         public const string INTERNAL = "internal";
         public const string EXTENSION = "extension";
         public const string PROXY = "proxy";
+        public const string ASYNC = "async";
+        public const string SWITCH = "switch";
+        public const string TYPEOF = "typeOf";
         // 控制流关键字数组
         public static readonly string[] ControlStreamKeywords = 
         {
@@ -402,7 +405,12 @@ namespace LatteCompiler
         ValueExpressionRoot,
         NewExpression,
         LambdaExpression,
-        Argument
+        Argument,
+        IfExpression,
+        SwitchExpression,
+        TypeOfExpression,
+        CastExpression,
+        TypeCheckExpression
     }
     public class AcquisitionExpressionASTNode : ASTNode
     {

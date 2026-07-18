@@ -213,6 +213,45 @@ namespace LatteCompiler.Tests
             Console.WriteLine();
         }
 
+        // ===== 14. 类型检查与转换（is/supers/with、as/as?） =====
+        public static void TestTypeOperators()
+        {
+            Console.WriteLine("=== Testing Type Operators (is/supers/with, as/as?) ===");
+
+            TestExpr("var v = obj is String", "Check(Sym(obj) is String)");
+            TestExpr("var v = obj supers Animal", "Check(Sym(obj) supers Animal)");
+            TestExpr("var v = obj with Serializable", "Check(Sym(obj) with Serializable)");
+            // is 右侧也可以是 Type\<T> 值（词法上统一按类型引用解析，SYNTAX §3.7）
+            TestExpr("var v = obj is t", "Check(Sym(obj) is t)");
+            TestExpr("var v = obj as String", "Cast(Sym(obj) as String)");
+            TestExpr("var v = obj as? String", "Cast(Sym(obj) as? String)");
+            // 泛型与可空目标类型
+            TestExpr("var v = obj as List\\<i32>", "Cast(Sym(obj) as List<i32>)");
+            TestExpr("var v = obj as String?", "Cast(Sym(obj) as String?)");
+            // 后缀链之后再做类型操作
+            TestExpr("var v = foo().bar as String", "Cast(Access(Call(Sym(foo), []), .bar) as String)");
+            // 括号化之后可继续参与运算
+            TestExpr("var v = (obj as String) + x",
+                "Binary(Group(Cast(Sym(obj) as String)) + Sym(x))");
+
+            Console.WriteLine();
+        }
+
+        // ===== 15. 类型操作错误用例 =====
+        public static void TestTypeOperatorErrorCases()
+        {
+            Console.WriteLine("=== Testing Type Operator Error Cases (expect ParserException) ===");
+
+            // as 后缺少类型
+            TestError("var e = obj as", "as 后缺少类型");
+            // ? 仅是 as 的安全转换标记，不能用于 is
+            TestError("var e = obj is? String", "? 不能用于 is");
+            // 类型操作后未加括号直接接二元运算符（无优先级规则）
+            TestError("var e = obj as String + x", "类型操作后未加括号");
+
+            Console.WriteLine();
+        }
+
         // ===== 测试辅助 =====
 
         // 解析一段变量声明代码，返回声明节点
@@ -350,6 +389,10 @@ namespace LatteCompiler.Tests
                     $"Access({DescribeExpression(m.Object)}, {(m.IsSafeAccess ? "?" : "")}.{m.MemberName}{DescribeGenericArgs(m)})",
                 NewExpressionASTNode n =>
                     $"New({DescribeType(n.Type)}, [{string.Join(", ", n.Arguments.Select(DescribeArgument))}])",
+                CastExpressionASTNode c =>
+                    $"Cast({DescribeExpression(c.Object)} as{(c.IsSafe ? "?" : "")} {DescribeType(c.TargetType)})",
+                TypeCheckExpressionASTNode t =>
+                    $"Check({DescribeExpression(t.Object)} {t.Operator} {DescribeType(t.TargetType)})",
                 _ => $"<{node.GetType().Name}>"
             };
         }
@@ -414,6 +457,8 @@ namespace LatteCompiler.Tests
             TestNewExpressions();
             TestGenericCallExpressions();
             TestSuffixErrorCases();
+            TestTypeOperators();
+            TestTypeOperatorErrorCases();
 
             Console.WriteLine($"=== Expression Tests Complete: {passCount} passed, {failCount} failed ===\n");
         }

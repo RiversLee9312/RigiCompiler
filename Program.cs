@@ -11,7 +11,11 @@ Console.WriteLine("5. Run Expression tests");
 Console.WriteLine("6. Run Generic parsing tests");
 Console.WriteLine("7. Run GenericParameters tests");
 Console.WriteLine("8. Run ParameterList tests");
-Console.Write("Enter choice (1-8): ");
+Console.WriteLine("9. Run Lambda expression tests");
+Console.WriteLine("10. Run if expression tests");
+Console.WriteLine("11. Run switch expression tests");
+Console.WriteLine("12. Run typeOf expression tests");
+Console.Write("Enter choice (1-12): ");
 
 string? choice = Console.ReadLine();
 
@@ -55,6 +59,30 @@ else if (choice == "8")
 {
     // 运行函数形参列表测试
     ParameterListTests.RunAll();
+    return;
+}
+else if (choice == "9")
+{
+    // 运行 Lambda 表达式测试
+    LambdaExpressionTests.RunAll();
+    return;
+}
+else if (choice == "10")
+{
+    // 运行 if 表达式测试
+    IfExpressionTests.RunAll();
+    return;
+}
+else if (choice == "11")
+{
+    // 运行 switch 表达式测试
+    SwitchExpressionTests.RunAll();
+    return;
+}
+else if (choice == "12")
+{
+    // 运行 typeOf 表达式测试
+    TypeOfExpressionTests.RunAll();
     return;
 }
 

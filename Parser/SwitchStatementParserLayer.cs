@@ -1,0 +1,216 @@
+using System;
+
+namespace LatteCompiler
+{
+    /// <summary>
+    /// switch 解析器（roadmap #8，SYNTAX.md §7.2）
+    ///
+    /// 当前仅实现 switch 表达式模式：
+    ///   switch(expr) { (pattern) -> { body } ... default -> { body } }
+    /// - 不含 _ 的分支为值匹配（要求编译期常量，语义检查留待后续阶段）
+    /// - 含 _ 的分支为模式匹配，_ 代表被检查的值，按普通符号解析
+    /// - 作为表达式时必须有 default 分支（SYNTAX §7.2）；语句模式留待 P2
+    /// switch 关键字由 ExpressionParserLayer 消费，本层从 ( 开始。
+    ///
+    /// 状态流转：
+    /// SelectorOpenParenExpected → SelectorStart → SelectorCloseParenExpected
+    ///   → OpenBraceExpected → CaseStart
+    ///     →（值/模式分支）PatternStart → PatternCloseParenExpected → CaseArrowExpected
+    ///       → CaseBodyOpenBraceExpected → CaseBodyStart → CaseBodyCloseBraceExpected → CaseStart
+    ///     →（default）DefaultArrowExpected → DefaultBodyOpenBraceExpected
+    ///       → DefaultBodyStart → DefaultBodyCloseBraceExpected → CaseStart
+    ///     → } → 弹出
+    ///
+    /// 委托说明：selector/pattern/body 均委托 ExpressionParserLayer（结果经 IResultConsumer 回填）。
+    /// 当前限制：分支体仅支持单表达式，多语句块待 P2 CodeBlockParserLayer。
+    /// </summary>
+    public class SwitchStatementParserLayer : IParserLayer, IResultProducer, IResultConsumer
+    {
+        private readonly SwitchExpressionASTNode targetNode;
+        private readonly bool isExpression;
+
+        private enum State
+        {
+            SelectorOpenParenExpected,   // 等待 selector 的 (
+            SelectorStart,               // ( 已读，等待 selector 表达式开始
+            SelectorCloseParenExpected,  // selector 已解析，等待 )
+            OpenBraceExpected,           // 等待分支列表 {
+            CaseStart,                   // 等待分支 ( 、default 或结束 }
+            PatternStart,                // 分支 ( 已读，等待 pattern 表达式开始
+            PatternCloseParenExpected,   // pattern 已解析，等待 )
+            CaseArrowExpected,           // 等待分支 ->
+            CaseBodyOpenBraceExpected,   // 等待分支体 {
+            CaseBodyStart,               // { 已读，等待分支体表达式开始
+            CaseBodyCloseBraceExpected,  // 分支体已解析，等待 }
+            DefaultArrowExpected,        // default 已读，等待 ->
+            DefaultBodyOpenBraceExpected,// 等待 default 体 {
+            DefaultBodyStart,            // { 已读，等待 default 体表达式开始
+            DefaultBodyCloseBraceExpected// default 体已解析，等待 }
+        }
+
+        private State state = State.SelectorOpenParenExpected;
+
+        // 读取中的分支（累积，} 时提交到 Cases）
+        private SwitchCaseASTNode? pendingCase = null;
+
+        // 等待子 Layer 结果时的回填动作（委托前设置，OnChildResult 时消费）
+        private Action<ASTNode?>? pendingResultHandler;
+
+        public SwitchStatementParserLayer(SwitchExpressionASTNode target, bool isExpression = true)
+        {
+            targetNode = target;
+            this.isExpression = isExpression;
+
+            // 语句模式属于 P2，当前仅支持表达式模式
+            if (!isExpression)
+            {
+                throw new NotImplementedException("switch 语句模式待 P2 实现，当前仅支持 switch 表达式");
+            }
+        }
+
+        // IResultProducer：返回填好的 switch 表达式节点
+        public ASTNode? GetResult() => targetNode;
+
+        // IResultConsumer：接收 selector/pattern/body 表达式的解析结果
+        public void OnChildResult(ASTNode? result, IParserLayer child)
+        {
+            var handler = pendingResultHandler;
+            pendingResultHandler = null;
+            handler?.Invoke(result);
+        }
+
+        public ParserLayerResult ParseToken(Token currentToken, ParserLayerContext context)
+        {
+            // 本层只处于结构性等待状态（括号/箭头/花括号/default），允许跨行；
+            // 表达式内部的换行终止仍由 ExpressionParserLayer 负责
+            if (currentToken is LineBreakToken)
+            {
+                return ParserLayerResult.Continue.Instance;
+            }
+
+            switch (state)
+            {
+                case State.SelectorOpenParenExpected:
+                    return ExpectNotation(currentToken, context, "(", State.SelectorStart,
+                        "Expected '(' after switch");
+                case State.SelectorStart:
+                    return DelegateExpression(State.SelectorCloseParenExpected,
+                        result => targetNode.Selector = (ExpressionASTNode)result!);
+                case State.SelectorCloseParenExpected:
+                    return ExpectNotation(currentToken, context, ")", State.OpenBraceExpected,
+                        "Expected ')' after switch selector");
+                case State.OpenBraceExpected:
+                    return ExpectNotation(currentToken, context, "{", State.CaseStart,
+                        "Expected '{' to start switch case list");
+                case State.CaseStart:
+                    return HandleCaseStart(currentToken, context);
+                case State.PatternStart:
+                    pendingCase = new SwitchCaseASTNode(targetNode);
+                    return DelegateExpression(State.PatternCloseParenExpected,
+                        result => pendingCase.Pattern = (ExpressionASTNode)result!);
+                case State.PatternCloseParenExpected:
+                    return ExpectNotation(currentToken, context, ")", State.CaseArrowExpected,
+                        "Expected ')' after switch case pattern");
+                case State.CaseArrowExpected:
+                    return ExpectNotation(currentToken, context, Notations.ARROW, State.CaseBodyOpenBraceExpected,
+                        "Expected '->' after switch case pattern");
+                case State.CaseBodyOpenBraceExpected:
+                    return ExpectNotation(currentToken, context, "{", State.CaseBodyStart,
+                        "Expected '{' to start switch case body");
+                case State.CaseBodyStart:
+                    return DelegateExpression(State.CaseBodyCloseBraceExpected,
+                        result => pendingCase!.Body = (ExpressionASTNode)result!);
+                case State.CaseBodyCloseBraceExpected:
+                    return HandleCaseBodyCloseBraceExpected(currentToken, context);
+                case State.DefaultArrowExpected:
+                    return ExpectNotation(currentToken, context, Notations.ARROW, State.DefaultBodyOpenBraceExpected,
+                        "Expected '->' after default");
+                case State.DefaultBodyOpenBraceExpected:
+                    return ExpectNotation(currentToken, context, "{", State.DefaultBodyStart,
+                        "Expected '{' to start default body");
+                case State.DefaultBodyStart:
+                    return DelegateExpression(State.DefaultBodyCloseBraceExpected,
+                        result => targetNode.DefaultBody = (ExpressionASTNode)result!);
+                case State.DefaultBodyCloseBraceExpected:
+                    return ExpectNotation(currentToken, context, "}", State.CaseStart,
+                        "Expected '}' to close default body");
+                default:
+                    context.RaiseError($"Invalid SwitchStatementParserLayer state: {state}");
+                    return new ParserLayerResult.PopLayer(false);
+            }
+        }
+
+        // 期待一个结构性符号：命中则消费并转入下一状态
+        private ParserLayerResult ExpectNotation(
+            Token currentToken, ParserLayerContext context,
+            string notation, State nextState, string errorMessage)
+        {
+            if (currentToken is NotationToken nt && nt.Content == notation)
+            {
+                state = nextState;
+                return ParserLayerResult.Continue.Instance;
+            }
+
+            context.RaiseError($"{errorMessage}, got: {currentToken}");
+            return new ParserLayerResult.PopLayer(false);
+        }
+
+        // 委托一个子表达式：压入 ExpressionParserLayer（保留 token），并登记回填动作
+        private ParserLayerResult DelegateExpression(State nextState, Action<ASTNode?> resultHandler)
+        {
+            state = nextState;
+            pendingResultHandler = resultHandler;
+            return new ParserLayerResult.PushLayer(new ExpressionParserLayer(targetNode), true);
+        }
+
+        // 分支列表入口：普通分支 ( 、default 分支或结束 }
+        private ParserLayerResult HandleCaseStart(Token currentToken, ParserLayerContext context)
+        {
+            // 普通分支：( pattern ) -> { body }
+            if (currentToken is NotationToken nt && nt.Content == "(")
+            {
+                state = State.PatternStart;
+                return ParserLayerResult.Continue.Instance;
+            }
+
+            // default 分支
+            if (currentToken is WordToken wt && wt.Content == Keywords.DEFAULT)
+            {
+                if (targetNode.DefaultBody != null)
+                {
+                    context.RaiseError("switch 表达式只允许一个 default 分支");
+                }
+                state = State.DefaultArrowExpected;
+                return ParserLayerResult.Continue.Instance;
+            }
+
+            // 分支列表结束：表达式形式必须有 default（SYNTAX §7.2）
+            if (currentToken is NotationToken close && close.Content == "}")
+            {
+                if (targetNode.DefaultBody == null)
+                {
+                    context.RaiseError("switch 表达式必须包含 default 分支（SYNTAX.md §7.2）");
+                }
+                return new ParserLayerResult.PopLayer(false);
+            }
+
+            context.RaiseError($"Expected '(', 'default' or '}}' in switch case list, got: {currentToken}");
+            return new ParserLayerResult.PopLayer(false);
+        }
+
+        // 分支体 } ：提交分支，回到 CaseStart 等待下一个分支
+        private ParserLayerResult HandleCaseBodyCloseBraceExpected(Token currentToken, ParserLayerContext context)
+        {
+            if (currentToken is NotationToken nt && nt.Content == "}")
+            {
+                targetNode.Cases.Add(pendingCase!);
+                pendingCase = null;
+                state = State.CaseStart;
+                return ParserLayerResult.Continue.Instance;
+            }
+
+            context.RaiseError($"Expected '}}' to close switch case body, got: {currentToken}");
+            return new ParserLayerResult.PopLayer(false);
+        }
+    }
+}
