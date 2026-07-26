@@ -393,6 +393,7 @@ namespace LatteCompiler.Tests
                     $"Cast({DescribeExpression(c.Object)} as{(c.IsSafe ? "?" : "")} {DescribeType(c.TargetType)})",
                 TypeCheckExpressionASTNode t =>
                     $"Check({DescribeExpression(t.Object)} {t.Operator} {DescribeType(t.TargetType)})",
+                EnumCaseExpressionASTNode ec => $"EnumCase(.{ec.CaseName})",
                 _ => $"<{node.GetType().Name}>"
             };
         }
@@ -434,6 +435,23 @@ namespace LatteCompiler.Tests
             return string.Join(".", parts);
         }
 
+        // ===== 15. 前导点 enum case 引用（SYNTAX §12，P5）=====
+        public static void TestEnumCaseReferences()
+        {
+            Console.WriteLine("=== Testing Enum Case References ===");
+
+            // 固定 case 引用（类型上下文由语义阶段校验，解析期只识别形态）
+            TestExpr("var r = .Success", "EnumCase(.Success)");
+            // 参数化 case 的调用：由后缀链自然脱糖为 Call
+            TestExpr("var f = .Failed(404)", "Call(EnumCase(.Failed), [Int(404,I32)])");
+            TestExpr("var n = .Failed(errorCode = 404)",
+                "Call(EnumCase(.Failed), [errorCode:Int(404,I32)])");
+            // 注解实参形态（@WrapperTarget(.Entity) 的同构表达式）
+            TestExpr("var t = .Entity", "EnumCase(.Entity)");
+
+            Console.WriteLine();
+        }
+
         // ===== 入口 =====
         public static void RunAll()
         {
@@ -459,6 +477,7 @@ namespace LatteCompiler.Tests
             TestSuffixErrorCases();
             TestTypeOperators();
             TestTypeOperatorErrorCases();
+            TestEnumCaseReferences();
 
             Console.WriteLine($"=== Expression Tests Complete: {passCount} passed, {failCount} failed ===\n");
         }

@@ -28,7 +28,8 @@ namespace LatteCompiler
 
         private enum State
         {
-            Modifiers,        // 收集修饰符，遇关键字分派
+            Modifiers,        // 收集修饰符与注解，遇关键字分派
+            AnnotationName,   // @ 已读、注解名已由 PathParserLayer 解析：判断有无 ( 实参
             CallableName,     // func/operator 已读：等待名称（init 跳过）
             CallableNameDot,  // ext 限定名的段间点已读：等待下一段名称
             ParamsExpected,   // 等待 (
@@ -54,11 +55,15 @@ namespace LatteCompiler
 
         private State state = State.Modifiers;
         private readonly List<string> modifiers = new List<string>();
+        // @ 注解暂存（SYNTAX §14.5）：注解先于声明本体解析，声明节点创建时统一挂接
+        private readonly List<AnnotationASTNode> pendingAnnotations = new List<AnnotationASTNode>();
         private CallableDeclarationASTNode? callable;
         private ASTNode? typeNode;                 // 正在解析的类型声明节点
         private List<TypeReferenceASTNode>? interfaceList;
         private bool enumSeen;
         private bool extSeen;                    // 修饰符含 ext：允许限定名（Type.member，§4.4）
+        private bool proxyNameSeen;              // operator 名以 . 开头（wrapper proxy 成员，§14.2）
+        private bool wildcardSeen;               // proxy 名已读 * 段（wildcard 必须收尾）
         private EnumCaseASTNode? currentCase;      // 正在解析的 enum case
 
         public ParserLayerResult ParseToken(Token t, ParserLayerContext context)
@@ -66,6 +71,7 @@ namespace LatteCompiler
             switch (state)
             {
                 case State.Modifiers: return OnModifiers(t, context);
+                case State.AnnotationName: return OnAnnotationName(t, context);
                 case State.CallableName: return OnCallableName(t, context);
                 case State.CallableNameDot: return OnCallableNameDot(t, context);
                 case State.ParamsExpected: return OnParamsExpected(t, context);
@@ -98,6 +104,18 @@ namespace LatteCompiler
         {
             if (t is LineBreakToken) return ParserLayerResult.Continue.Instance;
 
+            // 注解 / wrapper 应用（SYNTAX §14.5）：@Name[(args)]，可叠加多个
+            if (t is NotationToken at && at.Content == "@")
+            {
+                var ann = new AnnotationASTNode(parent);
+                pendingAnnotations.Add(ann);
+                state = State.AnnotationName;
+                // 注解名（可为 a.b 路径）复用 PathParserLayer
+                return new ParserLayerResult.PushLayer(
+                    new PathParserLayer(
+                        PathParserLayer.PathType.SymbolPath, ann.Name, lineBreakSensitive: true), false);
+            }
+
             if (t is WordToken w)
             {
                 if (Keywords.IsDescriptor(w.Content))
@@ -111,6 +129,7 @@ namespace LatteCompiler
                 {
                     var v = new VariableDeclarationASTNode(parent);
                     v.Modifiers.AddRange(modifiers);
+                    v.Annotations.AddRange(pendingAnnotations);
                     parent.Children.Add(v);
                     state = State.Finish;
                     // ext 允许限定名（pub ext var String.isEmpty: bool，§4.4）
@@ -152,10 +171,31 @@ namespace LatteCompiler
         {
             callable = new CallableDeclarationASTNode(parent) { Kind = kind };
             callable.Modifiers.AddRange(modifiers);
+            callable.Annotations.AddRange(pendingAnnotations);
             parent.Children.Add(callable);
             extSeen = modifiers.Contains(Keywords.EXT);
             state = next;
             return ParserLayerResult.Continue.Instance;
+        }
+
+        // ===== 注解（@Name[(args)]，SYNTAX §14.5）=====
+
+        // 注解名已解析：( 转实参列表（复用 ArgumentListParserLayer，开括号由本层消费——
+        // 与调用点既有约定一致）；否则注解结束，token 交给修饰符收集重新处理
+        private ParserLayerResult OnAnnotationName(Token t, ParserLayerContext context)
+        {
+            if (t is NotationToken n && n.Content == "(")
+            {
+                var ann = pendingAnnotations[pendingAnnotations.Count - 1];
+                ann.HasArguments = true;
+                state = State.Modifiers;
+                return new ParserLayerResult.PushLayer(
+                    new ArgumentListParserLayer(
+                        ann.Arguments, ArgumentListParserLayer.BracketKind.Round, parent), false);
+            }
+
+            state = State.Modifiers;
+            return OnModifiers(t, context);
         }
 
         // ===== Callable：func / operator / init 共用，全局与成员共用 =====
@@ -169,15 +209,41 @@ namespace LatteCompiler
                 state = State.ParamsExpected;
                 return ParserLayerResult.Continue.Instance;
             }
+            // wrapper proxy 成员（SYNTAX §14.2）：operator .proxy.<category?>.<name|*>，
+            // 名以 . 开头，仅 operator 且仅 wrapper 体内合法
+            if (t is NotationToken dot && dot.Content == "."
+                && callable!.Kind == CallableKind.Operator
+                && parent is WrapperDeclarationASTNode)
+            {
+                // 首段拼接时统一走 Name += "." + 段名，此处保持 Name 为空
+                proxyNameSeen = true;
+                state = State.CallableNameDot;
+                return ParserLayerResult.Continue.Instance;
+            }
             throw context.RaiseError($"Expected declaration name, got: {t}");
         }
 
-        // ext 限定名的段间点已读：拼接下一段（Type.member，可多段路径）
+        // ext/proxy 限定名的段间点已读：拼接下一段
+        // （ext：Type.member，可多段路径，§4.4；proxy：.proxy.<category?>.<name|*>，§14.2）
         private ParserLayerResult OnCallableNameDot(Token t, ParserLayerContext context)
         {
             if (t is LineBreakToken) return ParserLayerResult.Continue.Instance;
+            // wildcard 段：.proxy.* / .proxy.get.* / .proxy.set.* / .proxy.opr.*，必须收尾
+            if (t is NotationToken star && star.Content == "*" && proxyNameSeen)
+            {
+                callable!.Name += ".*";
+                wildcardSeen = true;
+                state = State.ParamsExpected;
+                return ParserLayerResult.Continue.Instance;
+            }
             if (t is WordToken w)
             {
+                // proxy 名首段固定为 proxy（§14 规定的代理入口前缀）
+                if (proxyNameSeen && callable!.Name.Length == 0 && w.Content != Keywords.PROXY)
+                {
+                    throw context.RaiseError(
+                        $"Wrapper proxy member name must start with '.proxy.', got: .{w.Content}");
+                }
                 callable!.Name += "." + w.Content;
                 state = State.ParamsExpected;
                 return ParserLayerResult.Continue.Instance;
@@ -207,8 +273,9 @@ namespace LatteCompiler
                     return new ParserLayerResult.PushLayer(
                         new GenericParametersParserLayer(callable.GenericParameters), true);
                 }
-                // ext 限定名的段间点（String.reversed，§4.4）：非 ext 落错误分支
-                if (extSeen && n.Content == ".")
+                // 限定名的段间点：ext（String.reversed，§4.4）或 wrapper proxy
+                // （.proxy.get.name，§14.2）；wildcard .* 后不允许再有点（* 必须收尾）
+                if (n.Content == "." && (extSeen || proxyNameSeen) && !wildcardSeen)
                 {
                     state = State.CallableNameDot;
                     return ParserLayerResult.Continue.Instance;
@@ -272,6 +339,7 @@ namespace LatteCompiler
                 _ => throw context.RaiseError($"Unsupported type keyword: {keyword}")
             };
             GetModifiers(node).AddRange(modifiers);
+            node.Annotations.AddRange(pendingAnnotations);
             parent.Children.Add(node);
             return node;
         }
@@ -479,11 +547,29 @@ namespace LatteCompiler
                     state = State.EnumCaseListOpen;
                     return ParserLayerResult.Continue.Instance;
                 }
+                // wrapper 体结束：校验同类 wildcard proxy 唯一（SYNTAX §14.6）
+                if (typeNode is WrapperDeclarationASTNode) ValidateWildcardUniqueness(context);
                 return new ParserLayerResult.PopLayer(false);
             }
 
             return new ParserLayerResult.PushLayer(
                 new DeclarationParserLayer(typeNode!), true);
+        }
+
+        // §14.6：同一 wrapper 中四类 wildcard proxy（.proxy.* / .proxy.get.* /
+        // .proxy.set.* / .proxy.opr.*）各自最多一个；specific proxy 不受限
+        private void ValidateWildcardUniqueness(ParserLayerContext context)
+        {
+            var wildcards = typeNode!.Children
+                .OfType<CallableDeclarationASTNode>()
+                .Where(c => c.Kind == CallableKind.Operator && c.Name.EndsWith(".*"))
+                .Select(c => c.Name)
+                .ToList();
+            if (wildcards.Distinct().Count() != wildcards.Count)
+            {
+                throw context.RaiseError(
+                    "Duplicate wildcard proxy of the same category in one wrapper (SYNTAX §14.6)");
+            }
         }
 
         // ===== enum struct 的 [case 列表]（SYNTAX §12）=====

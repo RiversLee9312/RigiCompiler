@@ -19,6 +19,8 @@ namespace LatteCompiler.Tests
     /// 11. enum struct 的 [case 列表]（固定/参数化 case、显式判别值、错误用例）
     /// 12. init 参数映射（_ -> field，含默认值/显式名/混合形态、错误用例）
     /// 13. like 委托（§9.6）与 ext 扩展成员（§4.4）
+    /// 14. @ 注解（wrapper 应用，§14.5，P5）
+    /// 15. wrapper proxy 成员（.proxy.* specific/wildcard，§14.2/§14.6，P5）
     /// </summary>
     public class TypeDeclarationTests
     {
@@ -485,6 +487,9 @@ namespace LatteCompiler.Tests
                 _ => $"<{node.GetType().Name}>"
             };
 
+            // @ 注解（SYNTAX §14.5）渲染在声明头之前（与源码书写位置一致）
+            head = FormatAnnotations(node) + head;
+
             if (node.Children.Count == 0 && node is not EnumStructDeclarationASTNode) return head;
 
             var body = node.Children.Count == 0
@@ -522,10 +527,27 @@ namespace LatteCompiler.Tests
         {
             LiteralExpressionASTNode lit => FormatExpr(lit.LiteralNode),
             IntLiteralASTNode i => i.Value.ToString(),
+            StringLiteralASTNode s => "\"" + s.Value + "\"",
             UnaryExpressionASTNode u => u.Operator + FormatExpr(u.Operand),
             SymbolReferenceASTNode sref => string.Join(".", sref.Symbol.symbol.elements.ConvertAll(el => el.name)),
+            EnumCaseExpressionASTNode ec => "." + ec.CaseName,
             _ => $"<{e.GetType().Name}>"
         };
+
+        // @ 注解渲染（SYNTAX §14.5）：@Name[(args)]，可叠加
+        private static string FormatAnnotations(ASTNode node)
+        {
+            if (node.Annotations.Count == 0) return "";
+            return string.Join(" ", node.Annotations.ConvertAll(FormatAnnotation)) + " ";
+        }
+
+        private static string FormatAnnotation(AnnotationASTNode a)
+        {
+            var s = "@" + string.Join(".", a.Name.symbol.elements.ConvertAll(el => el.name));
+            if (a.HasArguments)
+                s += "(" + string.Join(", ", a.Arguments.ConvertAll(FormatArgument)) + ")";
+            return s;
+        }
 
         private static string FormatCallable(CallableDeclarationASTNode f)
         {
@@ -609,6 +631,105 @@ namespace LatteCompiler.Tests
             return t.IsNullable ? s + "?" : s;
         }
 
+        // ===== 14. @ 注解（wrapper 应用，SYNTAX §14.5，P5）=====
+        public static void TestAnnotations()
+        {
+            Console.WriteLine("=== Testing @ Annotations (Wrapper Applications) ===");
+
+            // 编译器内建 wrapper：wrapper 类型标识（§14.2/14.3/14.4）
+            TestDeclaration("@WrapperTarget(.Entity)\npub wrapper Logged {}",
+                "@WrapperTarget(.Entity) pub wrapper Logged");
+            TestDeclaration("@WrapperTarget(.Value)\npub wrapper Clamped {}",
+                "@WrapperTarget(.Value) pub wrapper Clamped");
+            // 用户 wrapper 应用：类型 / 函数 / 全局变量
+            TestDeclaration("@Logged(\"DEBUG\")\npub class MyService {}",
+                "@Logged(\"DEBUG\") pub class MyService");
+            TestDeclaration("@Timed()\npub func heavyComputation() {}",
+                "@Timed() pub func heavyComputation() {}");
+            TestDeclaration("@Clamped(0, 100)\nvar health: i32 = 50",
+                "@Clamped(0, 100) var health");
+            // 多注解叠加（§14.5 示例形态）
+            TestDeclaration("@Logged(\"DEBUG\")\n@Serializable()\npub class MyService {}",
+                "@Logged(\"DEBUG\") @Serializable() pub class MyService");
+            // 注解名可为路径
+            TestDeclaration("@core.WrapperTarget(.Method)\npub wrapper Timed {}",
+                "@core.WrapperTarget(.Method) pub wrapper Timed");
+
+            Console.WriteLine();
+        }
+
+        // ===== 15. wrapper proxy 成员（.proxy.*，SYNTAX §14.2/§14.6，P5）=====
+        public static void TestWrapperProxy()
+        {
+            Console.WriteLine("=== Testing Wrapper Proxy Members ===");
+
+            // specific 方法代理（§14.2 示例形态）
+            TestDeclaration(
+                "pub wrapper Logged {\n" +
+                "    operator .proxy.doSomething(arg: i32): String {}\n" +
+                "}",
+                "pub wrapper Logged {operator .proxy.doSomething(arg): String {}}");
+            // specific 运算符代理 / getter 代理（带泛型）
+            TestDeclaration(
+                "wrapper W {\n" +
+                "    operator .proxy.opr.plus(another: TTarget): TTarget {}\n" +
+                "    operator .proxy.get.name\\<TField>(value: TField): TField {}\n" +
+                "}",
+                "wrapper W {operator .proxy.opr.plus(another): TTarget {}, " +
+                "operator .proxy.get.name\\<TField>(value): TField {}}");
+            // 四类 wildcard 共存（每类最多一个）
+            TestDeclaration(
+                "wrapper W {\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(symbol: String): TReturn {}\n" +
+                "    operator .proxy.get.*\\<TValue>(symbol: String, value: TValue): TValue {}\n" +
+                "    operator .proxy.set.*\\<TValue>(symbol: String, value: TValue) {}\n" +
+                "    operator .proxy.opr.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(symbol: String): TReturn {}\n" +
+                "}",
+                "wrapper W {" +
+                "operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(symbol): TReturn {}, " +
+                "operator .proxy.get.*\\<TValue>(symbol,value): TValue {}, " +
+                "operator .proxy.set.*\\<TValue>(symbol,value) {}, " +
+                "operator .proxy.opr.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(symbol): TReturn {}}");
+            // value wrapper（§14.3）与 method wrapper（§14.4）的 proxy 形态
+            TestDeclaration(
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper Clamped {\n" +
+                "    pub var min: i32\n" +
+                "    pub var max: i32\n" +
+                "    pub init(_ -> min, _ -> max)\n" +
+                "    operator .proxy.get\\<TValue>(value: TValue): TValue {}\n" +
+                "    operator .proxy.set\\<TValue>(value: TValue) {}\n" +
+                "}",
+                "@WrapperTarget(.Value) pub wrapper Clamped {pub var min, pub var max, " +
+                "pub init(_ -> min,_ -> max), operator .proxy.get\\<TValue>(value): TValue {}, " +
+                "operator .proxy.set\\<TValue>(value) {}}");
+            TestDeclaration(
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Timed {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call\\<TReturn extends Object>(): TReturn {}\n" +
+                "}",
+                "@WrapperTarget(.Method) pub wrapper Timed {pub init(), " +
+                "operator .proxy.call\\<TReturn extends Object>(): TReturn {}}");
+
+            // 错误：proxy 名只能出现在 wrapper 体内
+            TestError("pub class A { operator .proxy.f() {} }", "class 体内不允许 proxy 名");
+            TestError("operator .proxy.f() {}", "全局函数不允许 proxy 名");
+            // 错误：proxy 名首段必须是 proxy
+            TestError("wrapper W { operator .foo.f() {} }", "proxy 名首段必须是 proxy");
+            // 错误：同类 wildcard 重复（§14.6）
+            TestError(
+                "wrapper W {\n" +
+                "    operator .proxy.*\\<T>(symbol: String) {}\n" +
+                "    operator .proxy.*\\<T>(symbol: String) {}\n" +
+                "}",
+                "同类 wildcard 重复");
+            // 错误：wildcard 的 * 必须收尾
+            TestError("wrapper W { operator .proxy.*.f() {} }", "* 后不允许再有点");
+
+            Console.WriteLine();
+        }
+
         // ===== 入口 =====
         public static void RunAll()
         {
@@ -633,6 +754,8 @@ namespace LatteCompiler.Tests
             TestEnumCases();
             TestInitParameterMapping();
             TestLikeAndExtension();
+            TestAnnotations();
+            TestWrapperProxy();
 
             Console.WriteLine("╔════════════════════════════════════════════════════════╗");
             Console.WriteLine($"║  Total: {passCount + failCount,3} tests | Pass: {passCount,3} | Fail: {failCount,3}            ║");

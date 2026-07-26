@@ -236,12 +236,27 @@ namespace LatteCompiler.Tests
             };
         }
 
-        // 描述变量声明：var name: Type = init
+        // 描述变量声明：var name: Type = init（@ 注解为 SYNTAX §14.5 的 wrapper 应用）
         private static string DescribeVarDecl(VariableDeclarationASTNode v)
         {
             string desc = $"{(v.IsConst ? "const" : "var")} {v.Name}";
             if (v.TypeAnnotation != null) desc += $": {DescribeType(v.TypeAnnotation)}";
             if (v.Initializer != null) desc += $" = {DescribeExpression(v.Initializer)}";
+            return DescribeAnnotations(v) + desc;
+        }
+
+        // 描述注解列表（@Name[(args)]，可叠加）
+        private static string DescribeAnnotations(ASTNode node)
+        {
+            if (node.Annotations.Count == 0) return "";
+            return string.Join(" ", node.Annotations.Select(DescribeAnnotation)) + " ";
+        }
+
+        private static string DescribeAnnotation(AnnotationASTNode a)
+        {
+            var desc = "@" + DescribeSymbol(a.Name.symbol);
+            if (a.HasArguments)
+                desc += "(" + string.Join(", ", a.Arguments.Select(DescribeArgument)) + ")";
             return desc;
         }
 
@@ -298,6 +313,7 @@ namespace LatteCompiler.Tests
                     $"Access({DescribeExpression(m.Object)}, {(m.IsSafeAccess ? "?" : "")}.{m.MemberName})",
                 RangeExpressionASTNode r =>
                     $"Range({DescribeExpression(r.From)} to {DescribeExpression(r.To)})",
+                EnumCaseExpressionASTNode ec => $"EnumCase(.{ec.CaseName})",
                 _ => $"<{node.GetType().Name}>"
             };
         }
@@ -332,6 +348,21 @@ namespace LatteCompiler.Tests
             return string.Join(".", parts);
         }
 
+        // ===== 8. 栈上变量的 @ 注解（wrapper 应用，SYNTAX §14.3/§14.5，P5）=====
+        public static void TestAnnotatedDeclarations()
+        {
+            Console.WriteLine("=== Testing Annotated Declarations in Block ===");
+
+            // 规范 §14.3 示例形态：值 wrapper 修饰栈上变量
+            TestBlock("{\n    @Clamped(0, 100)\n    var health: i32 = 50\n}",
+                "[@Clamped(Int(0,I32), Int(100,I32)) var health: i32 = Int(50,I32)]");
+            // 无参注解（不写括号）
+            TestBlock("{\n    @Logged\n    var x: i32\n}",
+                "[@Logged var x: i32]");
+
+            Console.WriteLine();
+        }
+
         // ===== 入口 =====
         public static void RunAll()
         {
@@ -349,6 +380,7 @@ namespace LatteCompiler.Tests
             TestLoopControlStatements();
             TestIfStatements();
             TestErrorCases();
+            TestAnnotatedDeclarations();
 
             Console.WriteLine($"=== Code Block Tests Complete: {passCount} passed, {failCount} failed ===\n");
         }

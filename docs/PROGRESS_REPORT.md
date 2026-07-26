@@ -6,8 +6,8 @@
 > 计划与分工见 `compiler/frontend/PARSER_ROADMAP.md`；本文档只记录「现状」。
 
 **报告日期**: 2026-07-26
-**当前阶段**: P0、P1、P2、**P3 已完成**（P4 函数/init/operator 声明主体亦由统一声明层同步覆盖完成）；**下一步 P5**（wrapper 主体、模块系统）
-**测试总计**: 369/369 通过 (100%)
+**当前阶段**: P0–P4 已完成；**P5 进行中**（M20 已落地 wrapper 主体：@ 注解、`.proxy.*` 代理成员、前导点 enum case）；**下一步**：模块系统（namespace + ImportParserLayer 重建）、wrapper 路径访问（`:`）
+**测试总计**: 392/392 通过 (100%)
 **版本控制**: Git `main` 分支（2026-07-17 首次提交）
 
 ---
@@ -35,6 +35,7 @@
 | M17 | enum struct 的 `[]` case 列表（固定/参数化 case、显式判别值） | ✅ | 2026-07-26 | 10/10 |
 | M18 | init 参数映射（`_ -> field`，SYNTAX §9.3，roadmap #18 收尾） | ✅ | 2026-07-26 | 7/7 |
 | M19 | `like` 委托（§9.6）+ `ext` 扩展成员（§4.4）—— **P3/P4 收官** | ✅ | 2026-07-26 | 9/9 |
+| M20 | P5 起步：wrapper 主体（@ 注解 + `.proxy.*` 代理成员 + 前导点 enum case） | ✅ | 2026-07-26 | 23/23 |
 
 ---
 
@@ -188,6 +189,32 @@ var height: i32 {
 } = 200
 var area: i32 { get(_: _) { return (width * height) } }   // 计算属性（无 backing field）
 
+// @ 注解 / wrapper 应用（§14.5：可叠加，挂所有声明；含编译器内建 @WrapperTarget）
+@WrapperTarget(.Entity)
+pub wrapper Logged\<TTarget extends Object> { ... }
+@WrapperTarget(.Value)
+pub wrapper Clamped { ... }
+@Logged("DEBUG")
+@Serializable()
+pub class MyService { ... }
+@Timed()
+pub func heavyComputation(): i32 { ... }
+@Clamped(0, 100)
+var health: i32 = 50
+
+// wrapper proxy 成员（§14.2：specific + 四类 wildcard；同类 wildcard 唯一，§14.6）
+operator .proxy.doSomething(arg: i32): String { ... }       // specific 方法代理
+operator .proxy.opr.plus(another: TTarget): TTarget { ... } // specific 运算符代理
+operator .proxy.get.name\<TField>(value: TField): TField { ... }
+operator .proxy.*\<named TNamedArgs..., TUnnamedArgs..., TReturn>(symbol: String, ...): TReturn { ... }
+operator .proxy.get.*\<TValue>(symbol: String, value: TValue): TValue { ... }
+operator .proxy.set.*\<TValue>(symbol: String, value: TValue) { ... }
+operator .proxy.opr.*\<named TNamedArgs..., ...>(...): TReturn { ... }
+
+// 前导点 enum case 引用（§12：固定/参数化 case）
+const result: RequestResult = .Success
+const failed: RequestResult = .Failed(404)
+
 // 声明上的泛型参数（类型/函数/operator，含型变/约束/可变参数）
 class Container\<TElement> { ... }
 class Cache\<out TElement extends Comparable> { ... }
@@ -217,12 +244,12 @@ pub class Point {
 | LiteralParserLayer | ✅ | 15/15 | 全部字面量；字符字面量占位未实现 |
 | TypeReferenceParserLayer | ✅ | 3/3 | 集成测试含于变量声明套件 |
 | VariableDeclarationParserLayer | ✅ | 10/10 | Initializer 经结果传递保存；访问器块委托 PropertyAccessorParserLayer（M16） |
-| ExpressionParserLayer | ✅ | 67/67 | roadmap #4 全部落地 |
+| ExpressionParserLayer | ✅ | 71/71 | roadmap #4 全部落地；前导点 enum case（M20） |
 | ArgumentListParserLayer | ✅ | 含于表达式套件 | 位置/具名/混合实参 |
 | LambdaExpressionParserLayer | ✅ | 15/15 | roadmap #21 提前落地；体为单表达式 |
 | SwitchStatementParserLayer | ✅ 表达式模式 | 6/6 | 语句模式待规范明确 |
 | TypeOfExpressionParserLayer | ✅ | 7/7 | typeOf(expr) |
-| CodeBlockParserLayer | ✅ | 27/27 | 语句识别与分发；return/break/continue 内联子状态 |
+| CodeBlockParserLayer | ✅ | 29/29 | 语句识别与分发；return/break/continue 内联子状态；@ 注解声明分发（M20） |
 | IfStatementParserLayer | ✅ 两种模式 | 含于各套件 | 表达式模式强制 else；语句模式 else 可选 + else if 链 |
 | LoopParserLayer | ✅ | 15/15 | for-each/范围/while/do-while/named 标签 |
 | TryCatchFinallyParserLayer | ✅ | 9/9 | roadmap #10；多 catch 子句、finally(e)、嵌套 try |
@@ -233,7 +260,7 @@ pub class Point {
 | ParameterListParserLayer | ✅ | 14/14 | 普通/默认/可变/具名可变；已接入 func/operator/init 声明；init 参数映射 `_ -> field`（M18，allowMapping 开关） |
 | PathParserLayer | ✅ | 含于各套件 | 符号路径 + `\<` 泛型实参 |
 | RootParserLayer | ✅ | 含于各套件 | 顶层分发（声明统一委托 DeclarationParserLayer） |
-| DeclarationParserLayer | ✅ 统一声明层 | 77/77（TypeDeclaration 套件） | 任何位置任何声明的唯一入口：全局/成员/嵌套共用一套状态机；声明泛型参数（M15）、enum `[]` case 列表（M17）、like 委托与 ext 限定名（M19）已接入 |
+| DeclarationParserLayer | ✅ 统一声明层 | 94/94（TypeDeclaration 套件） | 任何位置任何声明的唯一入口：全局/成员/嵌套共用一套状态机；声明泛型参数（M15）、enum `[]` case 列表（M17）、like 委托与 ext 限定名（M19）、@ 注解与 wrapper `.proxy.*` 代理成员（M20）已接入 |
 | PropertyAccessorParserLayer | ✅ | 17/17 | §9.4 访问器块 `{ get... set... }`；backing field 判定与 get/set 一致性校验；三类定义位置经 VariableDeclaration 汇聚 |
 | ImportParserLayer | ⚠️ 骨架 | - | 早期骨架，待 P5 重建 |
 
@@ -252,15 +279,13 @@ pub class Point {
 
 ## 5. 下一步计划
 
-**P3 已完成（M13–M19）**：类型声明统一层、声明泛型参数、getter/setter、enum `[]` case 列表、
-init 参数映射、like 委托、ext 扩展成员全部落地；roadmap P4（func/init/operator 声明主体）
-亦被统一声明层同步覆盖完成。
+**P5 进行中（M20 已落地 wrapper 主体）**：@ 注解（wrapper 应用，含 @WrapperTarget 类型标识）、
+`.proxy.*` 代理成员（specific + 四类 wildcard）、前导点 enum case 引用均已完成。
 
-**P5（下一阶段）**：
+**P5（剩余）**：
 
-- wrapper 主体：entity/method/value 类型标识、`.proxy.*` 代理成员（specific/wildcard）
-- 模块系统：ImportParserLayer 重建
-- wrapper 路径访问（`:`，表达式侧）
+- 模块系统：namespace 声明（§15.1）+ ImportParserLayer 重建（§15.2）
+- wrapper 路径访问（`:`，表达式侧；PathParserLayer 的 ValuePath 模式有早期实现可对接）
 
 **再往后**：语义分析、BIL 输出
 
@@ -273,13 +298,35 @@ init 参数映射、like 委托、ext 扩展成员全部落地；roadmap P4（fu
 3. lambda 体与 if/switch 表达式分支体仍仅支持单表达式（CodeBlock 已落地，表达式分支的多语句接入留待后续）
 4. switch 仅表达式模式（SYNTAX 未定义语句形态）
 5. 复合赋值（`+=`/`-=` 等）未实现：Lexer 未合并这些 token，需重组机制
-6. wrapper 主体未实现：entity/method/value 类型标识、`.proxy.*` 代理成员（P5）
-7. ImportParserLayer 为早期骨架，将在 P5 重建
-8. 5 个 nullable 编译警告（`Core/Utilities.cs`，不影响功能）
+6. `is` 右侧的 enum case（`result is .Failed`，§12.3）未支持：`is` 右侧目前只走类型引用
+7. method wrapper canonical 形态中的 `.name` 保留参数名（§14.4 示例 `operator .proxy.call(.name: String, ...)`）未支持
+8. ImportParserLayer 为早期骨架，将在 P5 重建
+9. 5 个 nullable 编译警告（`Core/Utilities.cs`，不影响功能）
 
 ---
 
 ## 7. 里程碑历史
+
+### 2026-07-26 · M20 P5 起步：wrapper 主体（@ 注解 + `.proxy.*` 代理成员 + 前导点 enum case）
+- `@` 注解 / wrapper 应用（SYNTAX §14.5）：`@Name` / `@Name(args)`，可叠加，挂所有声明节点
+  - `ASTNode` 基类新增 `Annotations` 列表（仿 M14 `Children` 上移先例）；
+    新增 `AnnotationASTNode`（符号路径名 / HasArguments / Arguments）
+  - `DeclarationParserLayer` 新增 `AnnotationName` 状态：注解名复用 `PathParserLayer`、
+    实参复用 `ArgumentListParserLayer`；声明本体创建时统一挂接暂存注解
+  - `RootParserLayer` 的 `@` 预留入口就此接通；`CodeBlockParserLayer` 新增同款 `@` 分发
+    （栈上注解变量，§14.3）
+  - 规范判断：`@WrapperTarget(.Entity/.Value/.Method)` 即 wrapper 类型标识（§14.2–14.4），
+    与普通 wrapper 应用同一语法形态；roadmap 示例中的 `wrapper X entity` 后缀写法以规范为准，不实现
+- 前导点 enum case 引用（§12）：`ExpressionParserLayer` 新增 `EnumCaseNameExpected` 状态 +
+  `EnumCaseExpressionASTNode`；参数化 case 调用（`.Failed(404)`）由后缀链自然脱糖为 Call，零新增代码
+- `.proxy.*` 代理成员（§14.2/§14.6）：operator 名允许 `.proxy.<category?>.<name|*>` 限定名
+  （仅 wrapper 体内、仅 operator）；复用 `CallableNameDot` 状态拼接，首段必须为 `proxy`、
+  wildcard `*` 必须收尾；wrapper 体结束时校验同类 wildcard 唯一（与 enum case 校验同一先例）
+- 顺带修复：`CodeBlockASTNode` 隐藏了基类 `Children` 字段（M14 上移时的漏网之鱼）——
+  以 `ASTNode` 静态类型挂入的声明在块视角下不可见；删除隐藏字段，`Children` 回归基类唯一来源
+- 测试：TypeDeclaration 77 → 94（+17：@ 注解 7、proxy 10）、Expression 67 → 71（+4：enum case）、
+  CodeBlock 27 → 29（+2：栈上注解变量）；全量回归 2–20 无 FAIL
+- 测试总数 369 → 392
 
 ### 2026-07-26 · M19 like 委托 + ext 扩展成员 —— P3/P4 收官
 - `like` 委托（§9.6，roadmap #13 剩余项）：统一声明层新增 LikeExpected/AfterLike

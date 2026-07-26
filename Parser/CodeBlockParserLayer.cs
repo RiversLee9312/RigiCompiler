@@ -129,6 +129,14 @@ namespace LatteCompiler
                 return new ParserLayerResult.PopLayer(false);
             }
 
+            // 注解 / wrapper 应用（SYNTAX §14.5）：@ 起始的声明走统一声明层
+            // （与 RootParserLayer 的既有约定一致；注解后随 var/const/func 等声明）
+            if (currentToken is NotationToken at && at.Content == "@")
+            {
+                return new ParserLayerResult.PushLayer(
+                    new DeclarationParserLayer(targetNode), true);
+            }
+
             if (currentToken is WordToken wt)
             {
                 // 变量声明

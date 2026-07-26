@@ -10,13 +10,11 @@ namespace LatteCompiler
     // - 表达式语句以裸 ExpressionASTNode 作为块的子节点，无包装节点
 
     // 代码块 { ... }：一组有序语句
+    // 语句容器直接用 ASTNode.Children（M14 已上移到基类），不再另设字段
     public class CodeBlockASTNode : ASTNode
     {
-        public List<ASTNode> Children;
-
         public CodeBlockASTNode(ASTNode? parent) : base(parent)
         {
-            Children = new List<ASTNode>();
         }
 
         public override ASTNodeType NodeType => ASTNodeType.CodeBlockExpression;

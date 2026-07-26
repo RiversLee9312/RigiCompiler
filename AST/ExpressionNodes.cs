@@ -325,5 +325,21 @@ namespace LatteCompiler
 
         public override ASTNodeType NodeType => ASTNodeType.SeqBlockExpression;
     }
+
+    // 前导点 enum case 引用（SYNTAX.md §12）：.Success / .Entity
+    // 规范要求存在已确定 enum 类型的 receiver/期望类型上下文（语义阶段校验，
+    // 解析期只识别形态）；参数化 case 的调用（.Failed(404)）由后缀链
+    // 自然脱糖为 Call 节点，本节点不自带实参。
+    public class EnumCaseExpressionASTNode : ExpressionASTNode
+    {
+        public string CaseName;
+
+        public EnumCaseExpressionASTNode(ASTNode? parent) : base(parent)
+        {
+            CaseName = "";
+        }
+
+        public override ASTNodeType NodeType => ASTNodeType.EnumCaseExpression;
+    }
 }
 

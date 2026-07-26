@@ -456,7 +456,9 @@ namespace LatteCompiler
         EnumStructDeclaration,
         EnumCase,
         WrapperDeclaration,
-        PropertyAccessor
+        PropertyAccessor,
+        Annotation,
+        EnumCaseExpression
     }
     public class AcquisitionExpressionASTNode : ASTNode
     {
@@ -487,6 +489,9 @@ namespace LatteCompiler
 
         // 子声明容器（全局作用域、类型体、嵌套类型共用同一个容器）
         public List<ASTNode> Children = new List<ASTNode>();
+
+        // 注解 / wrapper 应用列表（SYNTAX §14.5）；仅声明节点使用，其余节点保持空
+        public List<AnnotationASTNode> Annotations = new List<AnnotationASTNode>();
     }
     public class RootASTNode : ASTNode
     {

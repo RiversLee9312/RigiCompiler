@@ -323,4 +323,24 @@ namespace LatteCompiler
 
         public override ASTNodeType NodeType => ASTNodeType.WrapperDeclaration;
     }
+
+    // 注解 / wrapper 应用（SYNTAX.md §14.5）：@Name 或 @Name(args)，可叠加多个。
+    // 编译器内建 wrapper（@WrapperTarget(.Entity) 等）与用户 wrapper 应用
+    // （@Logged("DEBUG")、@Clamped(0, 100)、@Timed()）共用同一语法形态。
+    // 挂在声明节点的 ASTNode.Annotations 上（声明本体在注解之后解析，先暂存后挂接）。
+    public class AnnotationASTNode : ASTNode
+    {
+        public SymbolASTNode Name;               // 注解名（可为 a.b 路径）
+        public bool HasArguments;                // 是否写了 ()（区分 @Logged 与 @Timed()）
+        public List<ArgumentASTNode> Arguments;  // 实参列表（复用调用实参结构）
+
+        public AnnotationASTNode(ASTNode? parent) : base(parent)
+        {
+            Name = new SymbolASTNode(this);
+            HasArguments = false;
+            Arguments = new List<ArgumentASTNode>();
+        }
+
+        public override ASTNodeType NodeType => ASTNodeType.Annotation;
+    }
 }

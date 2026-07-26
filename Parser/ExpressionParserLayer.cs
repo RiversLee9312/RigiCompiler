@@ -50,6 +50,7 @@ namespace LatteCompiler
             PrimaryParsed,        // 主表达式已解析
             OperatorSeen,         // 看到运算符
             MemberNameExpected,   // . 或 ?. 之后等待成员名
+            EnumCaseNameExpected, // 前导点 . 已读：等待 enum case 名（SYNTAX §12）
             SafeDotExpected,      // ? 之后等待 .
             GenericAngleExpected, // \ 之后等待 <（泛型实参列表）
             GenericArgParsed,     // 一个泛型实参已解析，等待 , 或 >
@@ -111,6 +112,9 @@ namespace LatteCompiler
                 case State.MemberNameExpected:
                     return HandleMemberNameExpected(currentToken, context);
 
+                case State.EnumCaseNameExpected:
+                    return HandleEnumCaseNameExpected(currentToken, context);
+
                 case State.SafeDotExpected:
                     return HandleSafeDotExpected(currentToken, context);
 
@@ -148,6 +152,14 @@ namespace LatteCompiler
             if (currentToken is NotationToken nt && nt.Content == "(")
             {
                 return DelegateGroupParsing(context);
+            }
+
+            // 2.1 前导点 enum case 引用（SYNTAX §12）：.Success / .Entity；
+            // 参数化 case 的调用（.Failed(404)）由后缀链自然脱糖为 Call
+            if (currentToken is NotationToken caseDot && caseDot.Content == ".")
+            {
+                state = State.EnumCaseNameExpected;
+                return ParserLayerResult.Continue.Instance;
             }
 
             // 3. new 表达式 - 委托给专门的 Layer
@@ -575,6 +587,23 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected member name after '.', got: {currentToken}");
+            return new ParserLayerResult.PopLayer(false);
+        }
+
+        // 前导点 . 已读：读取 case 名，创建 EnumCaseExpression 节点（SYNTAX §12）
+        private ParserLayerResult HandleEnumCaseNameExpected(Token currentToken, ParserLayerContext context)
+        {
+            if (currentToken is WordToken name)
+            {
+                currentExpression = new EnumCaseExpressionASTNode(parentNode)
+                {
+                    CaseName = name.Content
+                };
+                state = State.PrimaryParsed;
+                return ParserLayerResult.Continue.Instance;
+            }
+
+            context.RaiseError($"Expected enum case name after '.', got: {currentToken}");
             return new ParserLayerResult.PopLayer(false);
         }
 
