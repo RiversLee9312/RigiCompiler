@@ -147,6 +147,13 @@ namespace LatteCompiler
                         new LoopParserLayer(targetNode), true);
                 }
 
+                // try-catch-finally 语句
+                if (wt.Content == Keywords.TRY)
+                {
+                    return new ParserLayerResult.PushLayer(
+                        new TryCatchFinallyParserLayer(targetNode), true);
+                }
+
                 // return 语句（可选 @标签、可选值）
                 if (wt.Content == Keywords.RETURN)
                 {

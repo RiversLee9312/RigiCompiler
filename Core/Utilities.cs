@@ -275,6 +275,7 @@ namespace LatteCompiler
         public const string CONTINUE = "continue";
         public const string TO = "to";
         public const string DO = "do";
+        public const string THROW = "throw";
         // 控制流关键字数组
         public static readonly string[] ControlStreamKeywords = 
         {
@@ -419,7 +420,9 @@ namespace LatteCompiler
         LoopStatement,
         ReturnStatement,
         LoopControlStatement,
-        RangeExpression
+        RangeExpression,
+        TryCatchFinallyStatement,
+        CatchClause
     }
     public class AcquisitionExpressionASTNode : ASTNode
     {

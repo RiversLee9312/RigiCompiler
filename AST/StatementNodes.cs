@@ -118,4 +118,42 @@ namespace LatteCompiler
 
         public override ASTNodeType NodeType => ASTNodeType.AssignStatement;
     }
+
+    // catch 子句：catch (varName: Type) { ... } 或 catch (_: Type) { ... }（SYNTAX.md §8）
+    public class CatchClauseASTNode : ASTNode
+    {
+        public string? VariableName;           // 异常变量名（_ 时为 null，表示丢弃）
+        public TypeReferenceASTNode ExceptionType;
+        public CodeBlockASTNode Body;
+
+        public CatchClauseASTNode(ASTNode? parent) : base(parent)
+        {
+            VariableName = null;
+            ExceptionType = null!;
+            Body = new CodeBlockASTNode(this);
+        }
+
+        public override ASTNodeType NodeType => ASTNodeType.CatchClause;
+    }
+
+    // try-catch-finally 语句（SYNTAX.md §8）：
+    // try { ... } [catch ...]* [finally(e) { ... }]
+    // finally 的参数 e 代表 try/catch 中抛出的异常，无异常时为 null
+    public class TryCatchFinallyStatementASTNode : ASTNode
+    {
+        public CodeBlockASTNode TryBlock;
+        public List<CatchClauseASTNode> CatchClauses;
+        public string? FinallyParameter;       // finally(e) 的参数名（可选）
+        public CodeBlockASTNode? FinallyBlock;
+
+        public TryCatchFinallyStatementASTNode(ASTNode? parent) : base(parent)
+        {
+            TryBlock = new CodeBlockASTNode(this);
+            CatchClauses = new List<CatchClauseASTNode>();
+            FinallyParameter = null;
+            FinallyBlock = null;
+        }
+
+        public override ASTNodeType NodeType => ASTNodeType.TryCatchFinallyStatement;
+    }
 }

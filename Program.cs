@@ -17,7 +17,8 @@ Console.WriteLine("11. Run switch expression tests");
 Console.WriteLine("12. Run typeOf expression tests");
 Console.WriteLine("13. Run CodeBlock tests");
 Console.WriteLine("14. Run Loop tests");
-Console.Write("Enter choice (1-14): ");
+Console.WriteLine("15. Run TryCatchFinally tests");
+Console.Write("Enter choice (1-15): ");
 
 string? choice = Console.ReadLine();
 
@@ -97,6 +98,12 @@ else if (choice == "14")
 {
     // 运行循环测试
     LoopTests.RunAll();
+    return;
+}
+else if (choice == "15")
+{
+    // 运行 try-catch-finally 测试
+    TryCatchFinallyTests.RunAll();
     return;
 }
 

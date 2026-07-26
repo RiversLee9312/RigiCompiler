@@ -5,9 +5,9 @@
 > 更新时保持文档结构不变，并在「里程碑历史」追加一段。
 > 计划与分工见 `compiler/frontend/PARSER_ROADMAP.md`；本文档只记录「现状」。
 
-**报告日期**: 2026-07-18
-**当前阶段**: P2 进行中（M7 语句系统核心完成），P0、P1 已完成
-**测试总计**: 226/226 通过 (100%)
+**报告日期**: 2026-07-26
+**当前阶段**: P2 进行中（M9 异常处理完成），P0、P1 已完成
+**测试总计**: 235/235 通过 (100%)
 **版本控制**: Git `main` 分支（2026-07-17 首次提交）
 
 ---
@@ -24,6 +24,7 @@
 | M6 | ParameterListParserLayer（roadmap #5） | ✅ | 2026-07-17 | 14/14 |
 | M7 | P2 语句系统核心（CodeBlock/if 语句/循环/return/赋值） | ✅ | 2026-07-18 | 42/42 |
 | M8 | P1 收尾（Lambda/if/switch 表达式 + typeOf/as/is） | ✅ | 2026-07-18 | 39/39 |
+| M9 | TryCatchFinallyParserLayer（roadmap #10） | ✅ | 2026-07-26 | 9/9 |
 
 ---
 
@@ -82,6 +83,18 @@ for (i in 0 to 10) named outer { break@outer }
 while (condition) { doSomething() }
 do { doSomething() } while (condition)
 
+// try-catch-finally（SYNTAX.md §8）
+try {
+    riskyOperation()
+} catch (e: IOException) {
+    handleIO(e)
+} catch (_: RuntimeException) {
+    // 丢弃异常变量
+} finally(e) {
+    // e 为异常或 null
+    cleanup()
+}
+
 // 泛型参数列表（独立组件，待接入类型/函数声明）
 \<TElement>, \<out T, in U>, \<named TValues... with Serializable>
 
@@ -106,6 +119,7 @@ do { doSomething() } while (condition)
 | CodeBlockParserLayer | ✅ | 27/27 | 语句识别与分发；return/break/continue 内联子状态 |
 | IfStatementParserLayer | ✅ 两种模式 | 含于各套件 | 表达式模式强制 else；语句模式 else 可选 + else if 链 |
 | LoopParserLayer | ✅ | 15/15 | for-each/范围/while/do-while/named 标签 |
+| TryCatchFinallyParserLayer | ✅ | 9/9 | roadmap #10；多 catch 子句、finally(e)、嵌套 try |
 | GenericParametersParserLayer | ✅ | 21/21 | 声明/约束/型变/可变参数 |
 | ParameterListParserLayer | ✅ | 14/14 | 普通/默认/可变/具名可变 |
 | PathParserLayer | ✅ | 含于各套件 | 符号路径 + `\<` 泛型实参 |
@@ -126,10 +140,9 @@ do { doSomething() } while (condition)
 ## 5. 下一步计划
 
 **P2 剩余部分**：
-1. switch 语句模式评估（SYNTAX 当前仅定义 switch 表达式，语句形态待规范明确）
-2. TryCatchFinallyParserLayer（roadmap #10）
-3. SeqBlockParserLayer（roadmap #11，含 using/named/表达式形态）
-4. CoroutineOpsParserLayer（roadmap #12，await/yield/async）
+1. SeqBlockParserLayer（roadmap #11，含 using/named/表达式形态）
+2. CoroutineOpsParserLayer（roadmap #12，await/yield/async）
+3. switch 语句模式评估（SYNTAX 当前仅定义 switch 表达式，语句形态待规范明确）
 
 **后续**：P3 类型声明（复用 GenericParametersParserLayer）、P4 函数声明（复用 ParameterListParserLayer + CodeBlockParserLayer）
 
@@ -150,6 +163,17 @@ do { doSomething() } while (condition)
 ---
 
 ## 7. 里程碑历史
+
+### 2026-07-26 · M9 TryCatchFinallyParserLayer（roadmap #10）
+- TryCatchFinallyParserLayer 完整实现：try 块、多个 catch 子句（异常变量可为 _ 表示丢弃）、finally(e) 参数（e 为异常或 null）
+- catch 异常类型委托 TypeReferenceParserLayer 解析，支持完整类型引用（含泛型、可空）
+- catch/finally 代码块委托 CodeBlockParserLayer 解析，支持所有已实现语句类型
+- 新增 AST 节点：TryCatchFinallyStatementASTNode、CatchClauseASTNode
+- 新增 ASTNodeType：TryCatchFinallyStatement、CatchClause
+- 新增关键字：throw（常量定义，解析留待后续）
+- CodeBlockParserLayer 集成 try 语句分发：try 关键字触发 TryCatchFinallyParserLayer
+- 测试 226 → 235（+9：简单 try-catch、多 catch、丢弃变量、try-finally、try-catch-finally、嵌套 try、3 个错误用例）
+- 验证通过：至少一个 catch 或一个 finally、catch 后必须有类型、finally 后必须有参数
 
 ### 2026-07-18 · M7 P2 语句系统核心（CodeBlock / if 语句 / 循环 / return / 赋值）
 - CodeBlockParserLayer 重写：语句识别与分发中枢；语句以换行或 `}` 结束；var/const、if、for/while/do 委托专门层，return/break/continue 以内部子状态直接处理，表达式语句后跟 `=` 转为赋值
