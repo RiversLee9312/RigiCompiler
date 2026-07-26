@@ -305,7 +305,7 @@ namespace LatteCompiler
         // 声明关键字数组
         public static readonly string[] DeclarationKeywords =
         {
-    VAR, CONST, FUNC, OPERATOR, CLASS, WRAPPER, INTERFACE, STRUCT
+    VAR, CONST, FUNC, OPERATOR, CLASS, WRAPPER, INTERFACE, STRUCT, ENUM
 };
 
         // 字符串运算符数组
@@ -323,13 +323,14 @@ namespace LatteCompiler
         // 声明修饰符数组
         public static readonly string[] DeclarationDescriptors =
         {
-    PRIVATE, PUBLIC, FINAL, PROTECTED, INTERNAL, EXTENSION, PROXY
+    PRIVATE, PUBLIC, FINAL, PROTECTED, INTERNAL, EXTENSION, PROXY,
+    PUB, PRIV, OPEN, ABSTRACT, SINGLETON, SHARED, RICH, STATIC, OVERRIDE, ASYNC
 };
 
         // 类型关键字（class, struct, interface, wrapper, enum）
         public static readonly string[] TypeKeywords =
         {
-            CLASS, STRUCT, INTERFACE, WRAPPER
+            CLASS, STRUCT, INTERFACE, WRAPPER, ENUM
         };
 
         // 辅助方法
