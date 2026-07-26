@@ -1,180 +1,181 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace LatteCompiler
 {
+    /// <summary>
+    /// import 语句解析器（SYNTAX.md §15.2，P5 重建）
+    ///
+    /// 规范的三种形态：
+    ///   import core.collections.List             // 单个导入
+    ///   import core.collections.{List, Map}      // 多个导入（共享前缀路径）
+    ///   import core.collections.*                // 全部导入
+    ///
+    /// 前缀路径复用 PathParserLayer 解析：它遇 `*` / `{` / 换行会弹出并交还 token；
+    /// `.*` / `.{` 前被吞下的 `.` 会在符号末尾留下空名元素，弹出后统一清理
+    /// （与 GenericParameters 层对 `...` 残留空名元素的既有处理同款）。
+    /// 多导入列表中的每一项展开为独立的完整路径 ImportItem。
+    ///
+    /// 状态流转：
+    /// ImportKeyword → PathStart →（PathParserLayer 弹出）→ AfterPath
+    ///   → 换行：单导入完成，弹栈
+    ///   → * ：记录 importAll，WaitEnd 等换行弹栈
+    ///   → { ：ListItem → AfterListItem（`,` 循环 / `}` → WaitEnd）
+    /// </summary>
     public class ImportParserLayer : IParserLayer
     {
+        private enum State
+        {
+            ImportKeyword,   // 等待 import 关键字（RootParserLayer 以 keepToken 传入）
+            PathStart,       // 等待路径起点：委托 PathParserLayer
+            AfterPath,       // 路径已解析：换行（单导入）/ *（全导入）/ {（多导入列表）
+            ListItem,        // {} 列表内：等待标识符（} 空列表报错）
+            AfterListItem,   // 列表项已读：, 下一项 / } 结束
+            WaitEnd          // 收尾：等待换行弹栈
+        }
+
+        private readonly ImportASTNode self;
+        private State state = State.ImportKeyword;
+        private SymbolASTNode? pathSymbol;      // 前缀路径（单导入时即完整路径）
+        private bool pathFinalized;             // 空名尾元素是否已清理
+
         public ImportParserLayer(ImportASTNode self)
         {
             this.self = self;
         }
-        private enum InputStatementType
+
+        public ParserLayerResult ParseToken(Token t, ParserLayerContext context)
         {
-            SingleItem,
-            WithAlias,
-            MultiItem,
-            Unknown
-        }
-        private ImportASTNode self;
-        private bool isFirstToken = true;
-        private ImportItem currentItem = new();
-        private InputStatementType type = InputStatementType.Unknown;
-        public ParserLayerResult ParseToken(Token currentToken, ParserLayerContext context)
-        {
-            if(currentToken.Type is not( TokenType.Word or TokenType.LineBreak or TokenType.Notation))
+            switch (state)
             {
-                throw context.RaiseError($"Unexpected token appeared in import statement:{currentToken}");
+                case State.ImportKeyword: return OnImportKeyword(t, context);
+                case State.PathStart: return OnPathStart(t, context);
+                case State.AfterPath: return OnAfterPath(t, context);
+                case State.ListItem: return OnListItem(t, context);
+                case State.AfterListItem: return OnAfterListItem(t, context);
+                case State.WaitEnd: return OnWaitEnd(t, context);
+                default:
+                    throw context.RaiseError($"Invalid ImportParserLayer state: {state}");
             }
-            if (isFirstToken)
+        }
+
+        private ParserLayerResult OnImportKeyword(Token t, ParserLayerContext context)
+        {
+            if (t is WordToken w && w.Content == Keywords.IMPORT)
             {
-                if ((currentToken.Content != Keywords.IMPORT)||(currentToken is not WordToken))
+                state = State.PathStart;
+                return ParserLayerResult.Continue.Instance;
+            }
+            throw context.RaiseError($"Expected 'import', got: {t}");
+        }
+
+        // 路径起点：委托 PathParserLayer 解析 a.b.c 路径（复用轮子）
+        private ParserLayerResult OnPathStart(Token t, ParserLayerContext context)
+        {
+            if (t is LineBreakToken)
+                throw context.RaiseError("Import statement requires an import path (SYNTAX §15.2)");
+
+            pathSymbol = new SymbolASTNode(self);
+            state = State.AfterPath;
+            return new ParserLayerResult.PushLayer(
+                new PathParserLayer(
+                    PathParserLayer.PathType.SymbolPath, pathSymbol, lineBreakSensitive: true), true);
+        }
+
+        // PathParserLayer 弹出后：清末尾空名元素（`.*` / `.{` 前的 . 残留，只清一次）
+        private void FinalizePath()
+        {
+            if (pathFinalized) return;
+            pathFinalized = true;
+            var elements = pathSymbol!.symbol.elements;
+            if (elements.Count > 0 && elements[elements.Count - 1].name.Length == 0)
+                elements.RemoveAt(elements.Count - 1);
+        }
+
+        private ParserLayerResult OnAfterPath(Token t, ParserLayerContext context)
+        {
+            FinalizePath();
+            var elements = pathSymbol!.symbol.elements;
+
+            // 换行：单个导入完成
+            if (t is LineBreakToken)
+            {
+                if (elements.Count == 0)
+                    throw context.RaiseError("Import statement requires an import path (SYNTAX §15.2)");
+                self.importedSymbols.Add(new ImportItem { symbolNode = pathSymbol });
+                return new ParserLayerResult.PopLayer(false);
+            }
+
+            if (t is NotationToken n)
+            {
+                if (elements.Count == 0)
+                    throw context.RaiseError("Import statement requires an import path (SYNTAX §15.2)");
+
+                // 全部导入：import a.b.*
+                if (n.Content == "*")
                 {
-                    throw context.RaiseError($"Unexpected token appeared in import statement:{currentToken}");
+                    self.importedSymbols.Add(
+                        new ImportItem { symbolNode = pathSymbol, importAll = true });
+                    state = State.WaitEnd;
+                    return ParserLayerResult.Continue.Instance;
                 }
-                else
+
+                // 多个导入：import a.b.{X, Y}（共享前缀路径）
+                if (n.Content == "{")
                 {
-                    isFirstToken = false;
+                    state = State.ListItem;
                     return ParserLayerResult.Continue.Instance;
                 }
             }
-            else
+
+            throw context.RaiseError($"Unexpected token in import statement: {t}");
+        }
+
+        // {} 列表内：等待标识符（每项展开为 前缀 + 名称 的完整路径）
+        private ParserLayerResult OnListItem(Token t, ParserLayerContext context)
+        {
+            if (t is WordToken w)
             {
-                if (currentToken is LineBreakToken) {
-                    switch (type)
-                    {
-                        case InputStatementType.Unknown:
-                            throw context.RaiseError("Unexpected end of line in import statement");
-                        case InputStatementType.SingleItem or InputStatementType.MultiItem:
-                            if ((currentItem.alias != null)&&(type == InputStatementType.MultiItem))
-                            {
-                                throw context.RaiseError("Multiple import item has alias.");
-                            }
-                            else if (currentItem.symbolNode == null)
-                            {
-                                throw context.RaiseError("Import item missing symbol.");
-                            }
-                            else
-                            {
-                                self.importedSymbols.Add(currentItem);
-                                return new ParserLayerResult.PopLayer(shouldKeepToken: false);
-                            }
-                        case InputStatementType.WithAlias:
-                            if (currentItem.alias == null)
-                            {
-                                throw context.RaiseError("Import item missing alias.");
-                            }
-                            else if (currentItem.symbolNode == null)
-                            {
-                                throw context.RaiseError("Import item missing symbol.");
-                            }
-                            else if (self.importedSymbols.Count != 0)
-                            {
-                                throw context.RaiseError("Multiple import items with alias are not allowed.");
-                            }
-                            else
-                            {
-                                self.importedSymbols.Add(currentItem);
-                                return new ParserLayerResult.PopLayer(shouldKeepToken: false);
-                            }
-                        default:
-                            throw context.RaiseError("Unexpected state in import statement.");
-                    }
-                }
-                else
+                var itemSymbol = new SymbolASTNode(self);
+                foreach (var el in pathSymbol!.symbol.elements)
+                    itemSymbol.symbol.elements.Add(el);
+                itemSymbol.symbol.elements.Add(new SymbolElement { name = w.Content });
+                self.importedSymbols.Add(new ImportItem { symbolNode = itemSymbol });
+                state = State.AfterListItem;
+                return ParserLayerResult.Continue.Instance;
+            }
+            if (t is NotationToken n && n.Content == "}")
+                throw context.RaiseError("Import list cannot be empty (SYNTAX §15.2)");
+
+            throw context.RaiseError($"Expected identifier in import list, got: {t}");
+        }
+
+        private ParserLayerResult OnAfterListItem(Token t, ParserLayerContext context)
+        {
+            if (t is NotationToken n)
+            {
+                if (n.Content == ",")
                 {
-                    if (currentToken.Content == Keywords.AS)
-                    {
-                        if (type != InputStatementType.SingleItem)
-                        {
-                            throw context.RaiseError($"Unexpected token in import statement:{currentToken}.");
-                        }
-                        else
-                        {
-                            type = InputStatementType.WithAlias;
-                            return ParserLayerResult.Continue.Instance;
-                        }
-                    }
-                    else if (currentToken.Content == Notations.COMMA.ToString())
-                    {
-                        if(type == InputStatementType.WithAlias)
-                        {
-                            throw context.RaiseError("Multiple import items with alias are not allowed.");
-                        }
-                        else if(type == InputStatementType.Unknown)
-                        {
-                            throw context.RaiseError("Import item missing.");
-                        }
-                        else //type == InputStatementType.MultiItem or SingleItem
-                        {
-                            if (currentItem.symbolNode == null)
-                            {
-                                throw context.RaiseError("Import item missing symbol.");
-                            }else if(currentItem.alias != null)
-                            {
-                                throw context.RaiseError("Multiple import item has alias.");
-                            }
-                            self.importedSymbols.Add(currentItem);
-                            currentItem = new();
-                            type = InputStatementType.MultiItem;
-                            return ParserLayerResult.Continue.Instance;
-                        }
-                    }
-                    else if (currentToken is WordToken) {
-                        if (type == InputStatementType.WithAlias)
-                        {
-                            if(currentItem.symbolNode == null)
-                            {
-                                throw context.RaiseError("Import item missing symbol.");
-                            }
-                            else if(currentItem.alias != null)
-                            {
-                                throw context.RaiseError("Import item has multiple alias.");
-                            } else
-                            {
-                                currentItem.alias = currentToken.Content;
-                                return ParserLayerResult.Continue.Instance;
-                            }
-                        }
-                        else 
-                        {
-                            
-                            if(type == InputStatementType.Unknown)
-                            {
-                                type = InputStatementType.SingleItem;
-                            }
-                            var symbolNode = new SymbolASTNode(self);
-                            currentItem.symbolNode = symbolNode;
-                                return new ParserLayerResult.PushLayer(
-                                        shouldKeepToken: true,
-                                        layerToPush: new PathParserLayer(PathParserLayer.PathType.SymbolPath, symbolNode,true)
-                                    );
-                        }
-                    }
-                    else if(currentToken.Content == Notations.ASTERISK.ToString())
-                    {
-                        if (type == InputStatementType.WithAlias)
-                        {
-                            throw context.RaiseError("Unexpected token in alias:"+currentToken);
-                        }else if(type== InputStatementType.Unknown)
-                        {
-                            throw context.RaiseError("Import symbol missing.");
-                        }
-                        else
-                        {
-                            currentItem.importAll = true;
-                            return ParserLayerResult.Continue.Instance;
-                        }
-                    }
-                    else
-                    {
-                        throw context.RaiseError($"Unexpected token in import statement:{currentToken}.");
-                    }
+                    state = State.ListItem;
+                    return ParserLayerResult.Continue.Instance;
+                }
+                if (n.Content == "}")
+                {
+                    state = State.WaitEnd;
+                    return ParserLayerResult.Continue.Instance;
                 }
             }
+            throw context.RaiseError($"Expected ',' or '}}' in import list, got: {t}");
+        }
+
+        // 收尾：import 是单行语句，只允许换行结束
+        private ParserLayerResult OnWaitEnd(Token t, ParserLayerContext context)
+        {
+            if (t is LineBreakToken)
+                return new ParserLayerResult.PopLayer(false);
+
+            throw context.RaiseError($"Unexpected token after import statement: {t}");
         }
     }
 }

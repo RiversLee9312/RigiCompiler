@@ -51,6 +51,7 @@ namespace LatteCompiler
             OperatorSeen,         // 看到运算符
             MemberNameExpected,   // . 或 ?. 之后等待成员名
             EnumCaseNameExpected, // 前导点 . 已读：等待 enum case 名（SYNTAX §12）
+            WrapperNameExpected,  // : 已读：等待 wrapper 名（SYNTAX §14.1）
             SafeDotExpected,      // ? 之后等待 .
             GenericAngleExpected, // \ 之后等待 <（泛型实参列表）
             GenericArgParsed,     // 一个泛型实参已解析，等待 , 或 >
@@ -114,6 +115,9 @@ namespace LatteCompiler
 
                 case State.EnumCaseNameExpected:
                     return HandleEnumCaseNameExpected(currentToken, context);
+
+                case State.WrapperNameExpected:
+                    return HandleWrapperNameExpected(currentToken, context);
 
                 case State.SafeDotExpected:
                     return HandleSafeDotExpected(currentToken, context);
@@ -435,6 +439,13 @@ namespace LatteCompiler
                     return ParserLayerResult.Continue.Instance;
                 }
 
+                // wrapper 访问 :（SYNTAX §14.1，与成员访问同属路径后缀链；链式 obj:A:B 左结合）
+                if (suffix.Content == ":")
+                {
+                    state = State.WrapperNameExpected;
+                    return ParserLayerResult.Continue.Instance;
+                }
+
                 // 泛型实参 \<（挂在 MemberAccess 上，如 foo().bar\<i32>；
                 // 符号路径上的泛型已由 PathParserLayer 解析，不会到达这里）
                 if (suffix.Content == "\\")
@@ -604,6 +615,24 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected enum case name after '.', got: {currentToken}");
+            return new ParserLayerResult.PopLayer(false);
+        }
+
+        // : 已读：读取 wrapper 名，创建 WrapperAccess 节点（SYNTAX §14.1）
+        private ParserLayerResult HandleWrapperNameExpected(Token currentToken, ParserLayerContext context)
+        {
+            if (currentToken is WordToken name)
+            {
+                currentExpression = new WrapperAccessASTNode(parentNode)
+                {
+                    Object = currentExpression!,
+                    WrapperName = name.Content
+                };
+                state = State.PrimaryParsed;
+                return ParserLayerResult.Continue.Instance;
+            }
+
+            context.RaiseError($"Expected wrapper name after ':', got: {currentToken}");
             return new ParserLayerResult.PopLayer(false);
         }
 

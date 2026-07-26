@@ -6,8 +6,8 @@
 > 计划与分工见 `compiler/frontend/PARSER_ROADMAP.md`；本文档只记录「现状」。
 
 **报告日期**: 2026-07-26
-**当前阶段**: P0–P4 已完成；**P5 进行中**（M20 已落地 wrapper 主体：@ 注解、`.proxy.*` 代理成员、前导点 enum case）；**下一步**：模块系统（namespace + ImportParserLayer 重建）、wrapper 路径访问（`:`）
-**测试总计**: 392/392 通过 (100%)
+**当前阶段**: P0–P4 已完成；**P5 进行中**（M20 wrapper 主体、M21 import + wrapper 路径访问已落地；剩余 namespace 声明 §15.1）
+**测试总计**: 410/410 通过 (100%)
 **版本控制**: Git `main` 分支（2026-07-17 首次提交）
 
 ---
@@ -36,6 +36,7 @@
 | M18 | init 参数映射（`_ -> field`，SYNTAX §9.3，roadmap #18 收尾） | ✅ | 2026-07-26 | 7/7 |
 | M19 | `like` 委托（§9.6）+ `ext` 扩展成员（§4.4）—— **P3/P4 收官** | ✅ | 2026-07-26 | 9/9 |
 | M20 | P5 起步：wrapper 主体（@ 注解 + `.proxy.*` 代理成员 + 前导点 enum case） | ✅ | 2026-07-26 | 23/23 |
+| M21 | 模块系统 import（§15.2）+ wrapper 路径访问（`:`，§14.1/§3） | ✅ | 2026-07-26 | 18/18 |
 
 ---
 
@@ -215,6 +216,17 @@ operator .proxy.opr.*\<named TNamedArgs..., ...>(...): TReturn { ... }
 const result: RequestResult = .Success
 const failed: RequestResult = .Failed(404)
 
+// import（§15.2：单个/多个/全部三种形态；多个导入共享前缀路径）
+import core.collections.List
+import core.collections.{List, Map}
+import core.collections.*
+
+// wrapper 路径访问（§14.1/§3：与成员访问同属路径后缀链，链式左结合）
+var logger = service:Logged
+var w = obj:A:B
+var l = foo().bar[0]?.length:MyWrapper
+var t = service:Logged.level
+
 // 声明上的泛型参数（类型/函数/operator，含型变/约束/可变参数）
 class Container\<TElement> { ... }
 class Cache\<out TElement extends Comparable> { ... }
@@ -244,7 +256,7 @@ pub class Point {
 | LiteralParserLayer | ✅ | 15/15 | 全部字面量；字符字面量占位未实现 |
 | TypeReferenceParserLayer | ✅ | 3/3 | 集成测试含于变量声明套件 |
 | VariableDeclarationParserLayer | ✅ | 10/10 | Initializer 经结果传递保存；访问器块委托 PropertyAccessorParserLayer（M16） |
-| ExpressionParserLayer | ✅ | 71/71 | roadmap #4 全部落地；前导点 enum case（M20） |
+| ExpressionParserLayer | ✅ | 75/75 | roadmap #4 全部落地；前导点 enum case（M20）、wrapper 路径访问 `:`（M21） |
 | ArgumentListParserLayer | ✅ | 含于表达式套件 | 位置/具名/混合实参 |
 | LambdaExpressionParserLayer | ✅ | 15/15 | roadmap #21 提前落地；体为单表达式 |
 | SwitchStatementParserLayer | ✅ 表达式模式 | 6/6 | 语句模式待规范明确 |
@@ -262,7 +274,7 @@ pub class Point {
 | RootParserLayer | ✅ | 含于各套件 | 顶层分发（声明统一委托 DeclarationParserLayer） |
 | DeclarationParserLayer | ✅ 统一声明层 | 94/94（TypeDeclaration 套件） | 任何位置任何声明的唯一入口：全局/成员/嵌套共用一套状态机；声明泛型参数（M15）、enum `[]` case 列表（M17）、like 委托与 ext 限定名（M19）、@ 注解与 wrapper `.proxy.*` 代理成员（M20）已接入 |
 | PropertyAccessorParserLayer | ✅ | 17/17 | §9.4 访问器块 `{ get... set... }`；backing field 判定与 get/set 一致性校验；三类定义位置经 VariableDeclaration 汇聚 |
-| ImportParserLayer | ⚠️ 骨架 | - | 早期骨架，待 P5 重建 |
+| ImportParserLayer | ✅ | 14/14 | §15.2 三种形态（单个/`.{}` 多个/`.*` 全部）；前缀路径复用 PathParserLayer（M21 重建，菜单 21） |
 
 ---
 
@@ -279,13 +291,12 @@ pub class Point {
 
 ## 5. 下一步计划
 
-**P5 进行中（M20 已落地 wrapper 主体）**：@ 注解（wrapper 应用，含 @WrapperTarget 类型标识）、
-`.proxy.*` 代理成员（specific + 四类 wildcard）、前导点 enum case 引用均已完成。
+**P5 进行中（M20/M21 已落地）**：wrapper 主体（@ 注解、`.proxy.*` 代理成员、前导点 enum case）、
+模块系统 import（§15.2）、wrapper 路径访问（`:`）均已完成。
 
 **P5（剩余）**：
 
-- 模块系统：namespace 声明（§15.1）+ ImportParserLayer 重建（§15.2）
-- wrapper 路径访问（`:`，表达式侧；PathParserLayer 的 ValuePath 模式有早期实现可对接）
+- namespace 声明（§15.1）：`namespace com.example.myapp`，顶层单行声明
 
 **再往后**：语义分析、BIL 输出
 
@@ -294,18 +305,34 @@ pub class Point {
 ## 6. 技术债务与已知限制
 
 1. 字符字面量未实现（占位符）
-2. wrapper 路径访问（`:`）未实现（留待 P5）
+2. namespace 声明（§15.1）未实现（P5 收尾项）
 3. lambda 体与 if/switch 表达式分支体仍仅支持单表达式（CodeBlock 已落地，表达式分支的多语句接入留待后续）
 4. switch 仅表达式模式（SYNTAX 未定义语句形态）
 5. 复合赋值（`+=`/`-=` 等）未实现：Lexer 未合并这些 token，需重组机制
 6. `is` 右侧的 enum case（`result is .Failed`，§12.3）未支持：`is` 右侧目前只走类型引用
 7. method wrapper canonical 形态中的 `.name` 保留参数名（§14.4 示例 `operator .proxy.call(.name: String, ...)`）未支持
-8. ImportParserLayer 为早期骨架，将在 P5 重建
-9. 5 个 nullable 编译警告（`Core/Utilities.cs`，不影响功能）
+8. import 的 `{}` 列表项仅支持单标识符（`import a.{b.c}` 未支持；规范无示例）
+9. PathParserLayer 的 ValuePath / AcquisitionExpressionASTNode 为早期遗留模式（仅支持纯符号 base），与现有后缀链架构不兼容、未接入，待清理
+10. 5 个 nullable 编译警告（`Core/Utilities.cs`，不影响功能）
 
 ---
 
 ## 7. 里程碑历史
+
+### 2026-07-26 · M21 模块系统 import + wrapper 路径访问（`:`）
+- `ImportParserLayer` 重建（SYNTAX §15.2，roadmap P5）——三种规范形态：
+  单个导入 / `.{A, B}` 多个导入（共享前缀，展开为独立完整路径 `ImportItem`）/ `.*` 全部导入；
+  前缀路径复用 `PathParserLayer`（遇 `*`/`{`/换行弹出并交还，末尾空名元素统一清理——
+  与 GenericParameters 层对 `...` 的既有处理同款）；旧骨架的 `as` alias 与逗号分隔
+  多导入不在现行规范内，按规范移除
+- wrapper 路径访问（SYNTAX §14.1/§3）：`:` 接入 `ExpressionParserLayer` 后缀链
+  （与 `.`/`?.` 同框架——base 为任意路径表达式，如规范示例 `foo().bar[0]?.length:MyWrapper`；
+  链式 `obj:A:B` 左结合逐层嵌套）；新增 `WrapperAccessASTNode`
+  - 架构判断：`PathParserLayer` 遗留的 `ValuePath`/`AcquisitionExpressionASTNode` 模式
+    仅支持纯符号 base，与后缀链架构不兼容，未接入（记入技术债务待清理）
+- 新增 ImportTests 14 用例并注册菜单 21；Expression 71 → 75
+  （+4：wrapper 访问基本/链式/规范 §3 完整路径/后续成员后缀）
+- 测试总数 392 → 410
 
 ### 2026-07-26 · M20 P5 起步：wrapper 主体（@ 注解 + `.proxy.*` 代理成员 + 前导点 enum case）
 - `@` 注解 / wrapper 应用（SYNTAX §14.5）：`@Name` / `@Name(args)`，可叠加，挂所有声明节点

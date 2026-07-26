@@ -314,6 +314,8 @@ namespace LatteCompiler.Tests
                 RangeExpressionASTNode r =>
                     $"Range({DescribeExpression(r.From)} to {DescribeExpression(r.To)})",
                 EnumCaseExpressionASTNode ec => $"EnumCase(.{ec.CaseName})",
+                WrapperAccessASTNode w =>
+                    $"WrapperAccess({DescribeExpression(w.Object)}, :{w.WrapperName})",
                 _ => $"<{node.GetType().Name}>"
             };
         }

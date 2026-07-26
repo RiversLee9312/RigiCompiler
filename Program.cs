@@ -23,7 +23,8 @@ Console.WriteLine("17. Run ThrowStatement tests");
 Console.WriteLine("18. Run CoroutineOps tests");
 Console.WriteLine("19. Run TypeDeclaration tests");
 Console.WriteLine("20. Run PropertyAccessor tests");
-Console.Write("Enter choice (1-20): ");
+Console.WriteLine("21. Run Import tests");
+Console.Write("Enter choice (1-21): ");
 
 string? choice = Console.ReadLine();
 
@@ -139,6 +140,12 @@ else if (choice == "20")
 {
     // 运行属性访问器测试
     PropertyAccessorTests.RunAll();
+    return;
+}
+else if (choice == "21")
+{
+    // 运行 import 测试
+    ImportTests.RunAll();
     return;
 }
 

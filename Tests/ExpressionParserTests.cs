@@ -394,6 +394,8 @@ namespace LatteCompiler.Tests
                 TypeCheckExpressionASTNode t =>
                     $"Check({DescribeExpression(t.Object)} {t.Operator} {DescribeType(t.TargetType)})",
                 EnumCaseExpressionASTNode ec => $"EnumCase(.{ec.CaseName})",
+                WrapperAccessASTNode w =>
+                    $"WrapperAccess({DescribeExpression(w.Object)}, :{w.WrapperName})",
                 _ => $"<{node.GetType().Name}>"
             };
         }
@@ -452,6 +454,25 @@ namespace LatteCompiler.Tests
             Console.WriteLine();
         }
 
+        // ===== 16. wrapper 路径访问（SYNTAX §14.1，P5）=====
+        public static void TestWrapperAccess()
+        {
+            Console.WriteLine("=== Testing Wrapper Access ===");
+
+            // 基本形态：obj:Wrapper
+            TestExpr("var w = service:Logged", "WrapperAccess(Sym(service), :Logged)");
+            // 链式：obj:A:B 左结合（"obj 的修饰器 A 的修饰器 B"）
+            TestExpr("var w = obj:A:B", "WrapperAccess(WrapperAccess(Sym(obj), :A), :B)");
+            // 规范 §3 的完整路径示例：wrapper 访问在整条路径末尾
+            TestExpr("var l = foo().bar[0]?.length:MyWrapper",
+                "WrapperAccess(Access(Index(Access(Call(Sym(foo), []), .bar), [Int(0,I32)]), ?.length), :MyWrapper)");
+            // wrapper 访问后仍可继续成员后缀
+            TestExpr("var t = service:Logged.level",
+                "Access(WrapperAccess(Sym(service), :Logged), .level)");
+
+            Console.WriteLine();
+        }
+
         // ===== 入口 =====
         public static void RunAll()
         {
@@ -478,6 +499,7 @@ namespace LatteCompiler.Tests
             TestTypeOperators();
             TestTypeOperatorErrorCases();
             TestEnumCaseReferences();
+            TestWrapperAccess();
 
             Console.WriteLine($"=== Expression Tests Complete: {passCount} passed, {failCount} failed ===\n");
         }

@@ -458,7 +458,8 @@ namespace LatteCompiler
         WrapperDeclaration,
         PropertyAccessor,
         Annotation,
-        EnumCaseExpression
+        EnumCaseExpression,
+        WrapperAccess
     }
     public class AcquisitionExpressionASTNode : ASTNode
     {

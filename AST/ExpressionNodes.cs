@@ -341,5 +341,22 @@ namespace LatteCompiler
 
         public override ASTNodeType NodeType => ASTNodeType.EnumCaseExpression;
     }
+
+    // wrapper 访问表达式（SYNTAX.md §14.1）：obj:MyWrapper
+    // 链式 obj:A:B 左结合（"obj 的修饰器 A 的修饰器 B"，逐层后缀生成嵌套节点）；
+    // 与调用/索引/成员访问同属路径表达式后缀链（§3），在运算符之前整体形成
+    public class WrapperAccessASTNode : ExpressionASTNode
+    {
+        public ExpressionASTNode Object;
+        public string WrapperName;
+
+        public WrapperAccessASTNode(ASTNode? parent) : base(parent)
+        {
+            Object = null!;
+            WrapperName = "";
+        }
+
+        public override ASTNodeType NodeType => ASTNodeType.WrapperAccess;
+    }
 }
 
