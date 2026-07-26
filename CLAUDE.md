@@ -142,6 +142,22 @@ ExpressionParserLayer 直接实现所有表达式的解析逻辑
 - 通过委托复用其他 Layer
 - 使用状态机驱动
 
+#### ⚠️ 简洁优先：写代码前必须自问的三个问题
+
+在新增任何 AST 节点、Layer、状态或辅助方法之前，逐条回答：
+
+1. **这个真的有必要存在吗？** 不服务当前需求的字段、状态、抽象一律不写。
+2. **有没有更简洁更优雅的方法？** 能用现有状态机多一个分支解决的，不要新建一层。
+3. **可不可以复用已有的轮子？** 先翻一遍 `Parser/` 下已有的 Layer，不要自己造轮子。
+
+复用范例（已在项目中验证）：
+- `throw` / `yield` / `return` / `break` / `continue` 都是 `CodeBlockParserLayer` 里的内联子状态，没有各自的 Layer
+- `await` 只是在 `ExpressionParserLayer.IsPrefixUnaryOperator` 里加一个关键字，复用现有一元前缀运算符通路
+- `seq` 块的语句形态与表达式形态共用同一套 `CodeBlockParserLayer` 基建
+- 类型声明扩展的是既有的 `DeclarationParserLayer` 骨架，而不是新建 `ClassDeclarationParserLayer`
+
+只有当职责确实独立、且需要被多个父层复用时，才新建 Layer。
+
 ### 2.3 类型系统层级
 
 ```
@@ -650,6 +666,7 @@ do { doSomething() } while (condition)
 4. **渐进式** - 按 Roadmap 逐步实现，不跳步
 5. **质量优先** - 宁可慢一点，不要留技术债
 6. **不要猜测** - 不确定时查文档，不要凭直觉
+7. **简洁优先** - 写代码时始终自问：这个真的有必要存在吗？有没有更简洁更优雅的方法？可不可以复用已有的轮子（比如已有的 Layer）？不要自己造轮子（详见 §2.2）
 
 ---
 

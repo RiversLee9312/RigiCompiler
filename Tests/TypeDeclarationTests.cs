@@ -116,9 +116,8 @@ namespace LatteCompiler.Tests
             {
                 var lexer = new Lexer();
                 var tokens = lexer.Tokenize(source);
-                var root = new RootASTNode();
                 var parser = new Parser();
-                parser.Parse(tokens, new RootParserLayer(root));
+                var root = (RootASTNode)parser.Parse(tokens);
 
                 var formatted = FormatRoot(root);
                 if (formatted == expected)

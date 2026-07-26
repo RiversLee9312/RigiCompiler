@@ -176,7 +176,26 @@ Parser 主循环维护一个 Layer 栈，每个 token 交给栈顶 Layer 处理�
 - **每个 Layer 内部用状态机驱动**（`private enum State` + switch），状态转换处要写注释。
 - 模块化原则："Delegate, don't implement" —— 框架层（如 `ExpressionParserLayer`）负责识别、路由、运算符处理；具体语法结构委托给专门 Layer。每个 Layer 职责单一、可独立测试。
 
-### 4.5 Lexer 的特点
+### 4.5 ⚠️ 简洁优先：新增代码前必须自问的三个问题
+
+新增任何 AST 节点、Layer、状态或辅助方法之前，逐条回答：
+
+1. **这个真的有必要存在吗？** 不服务当前需求的字段、状态、抽象一律不写。
+2. **有没有更简洁更优雅的方法？** 能用现有状态机多一个分支解决的，不要新建一层。
+3. **可不可以复用已有的轮子？** 先翻一遍 `Parser/` 下已有的 Layer，不要自己造轮子。
+
+项目内已验证的复用范例：
+
+| 特性 | 复用方式 | 没有做的事 |
+|------|----------|-----------|
+| `throw` / `yield` / `return` / `break` / `continue` | `CodeBlockParserLayer` 的内联子状态 | 各建一个 Layer |
+| `await` | `ExpressionParserLayer.IsPrefixUnaryOperator` 加一个关键字 | 新建 AwaitParserLayer |
+| `seq` 语句形态 + 表达式形态 | 共用同一套 `CodeBlockParserLayer` 基建 | 两套独立实现 |
+| class/interface/struct/wrapper/enum 声明 | 扩展既有 `DeclarationParserLayer` 骨架 | 新建 ClassDeclarationParserLayer |
+
+只有当职责确实独立、且需要被多个父层复用时，才新建 Layer。
+
+### 4.6 Lexer 的特点
 
 Lexer 只做简单字符识别，不理解语义。例如 `3.14` 会输出三个 token：`Word "3"`、`Notation "."`、`Word "14"` —— 由 `LiteralParserLayer` 的状态机组合成浮点字面量。不要在 Lexer 里加语义判断。
 
@@ -243,3 +262,4 @@ echo "5" | dotnet run --no-build    # 按需替换菜单编号
 3. **模块化** —— 每个 Layer 职责单一，委托而非大包大揽
 4. **渐进式** —— 按 `docs/compiler/frontend/PARSER_ROADMAP.md` 逐步推进，不跳步
 5. **不要猜测** —— 不确定时查文档
+6. **简洁优先** —— 写代码时始终自问：这个真的有必要存在吗？有没有更简洁更优雅的方法？可不可以复用已有的轮子（比如已有的 Layer）？不要自己造轮子（详见 §4.5）
