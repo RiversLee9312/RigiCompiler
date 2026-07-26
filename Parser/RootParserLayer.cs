@@ -19,9 +19,6 @@ namespace LatteCompiler
                     // EOF 只由 Root 消费：收下后 Parser 主循环结束，栈恰好收敛为 Root
                     return ParserLayerResult.Continue.Instance;
 
-                case CommentToken:
-                    return ParserLayerResult.Continue.Instance;
-
                 case StringToken:
                     // 字符串字面量：父层创建 LiteralExpression 目标并挂接，子层原地填充
                     return PushLiteral();

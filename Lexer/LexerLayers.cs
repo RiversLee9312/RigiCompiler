@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -93,9 +93,11 @@ namespace LatteCompiler
             }
             else
             {
-                context.PushToken(currentToken, includesCurrentChar: true);
+                // 换行不属于注释：注释 token 到此为止，\n 回流给下层产出 LineBreakToken
+                // （Parser 以换行作为语句终止符，行注释不能把它吞掉）
+                context.PushToken(currentToken, includesCurrentChar: false);
                 currentToken = new CommentToken("");
-                return new LexerLayerResult.PopLayer(shouldKeepChar:false);
+                return new LexerLayerResult.PopLayer(shouldKeepChar: true);
             }
         }
     }
@@ -271,16 +273,69 @@ namespace LatteCompiler
         }
     }
 
-    public class BaseLexerLayer : ILexerLayer
+    /// <summary>
+    /// 斜杠分流层：除号 /、除法赋值 /=、行注释 //、块注释 /* 的统一入口。
+    /// Base 层看到 / 即推入本层（首个 / 已预消费），本层按下一个字符决定形态；
+    /// 注释形态转发给持有的注释层实例（Delegate, don't implement），
+    /// 注释层弹出时本层一并弹出。
+    /// </summary>
+    public class SlashLexerLayer : ILexerLayer
     {
-        private bool forwardSlashAppeared = false;
+        private enum State
+        {
+            Decision,     // 等待分流字符（/ * = 或其他）
+            LineComment,  // 行注释形态：转发 CommentLineLexerLayer
+            BlockComment  // 块注释形态：转发 CommentBlockLexerLayer
+        }
+
+        private State state = State.Decision;
+        private ILexerLayer? commentLayer = null;
+
         public LexerLayerResult ParseChar(char currentChar, LexerLayerContext context)
         {
-            if (forwardSlashAppeared&&((currentChar!=Notations.ASTERISK)&&(currentChar!=Notations.FORWARD_SLASH)))
+            switch (state)
             {
-                context.RaiseError($"Incorrect comment block or line start:/{currentChar} ");
-            }
+                case State.Decision:
+                    // 行注释 //
+                    if (currentChar == Notations.FORWARD_SLASH)
+                    {
+                        state = State.LineComment;
+                        commentLayer = new CommentLineLexerLayer();
+                        return LexerLayerResult.Continue.Instance;
+                    }
+                    // 块注释 /*
+                    if (currentChar == Notations.ASTERISK)
+                    {
+                        state = State.BlockComment;
+                        commentLayer = new CommentBlockLexerLayer();
+                        return LexerLayerResult.Continue.Instance;
+                    }
+                    // 除法赋值 /=
+                    if (currentChar == Notations.ASSIGN)
+                    {
+                        context.PushToken(new NotationToken("/="), includesCurrentChar: true);
+                        return new LexerLayerResult.PopLayer(shouldKeepChar: false);
+                    }
+                    // 除号 /：产出单字符 token，当前字符回流给下层重新分发
+                    context.PushToken(new NotationToken("/"), includesCurrentChar: false);
+                    return new LexerLayerResult.PopLayer(shouldKeepChar: true);
 
+                default:
+                    // 注释形态：转发给注释层；注释层弹出时本层同步弹出
+                    var result = commentLayer!.ParseChar(currentChar, context);
+                    if (result is LexerLayerResult.PopLayer pop)
+                    {
+                        return new LexerLayerResult.PopLayer(pop.shouldKeepChar);
+                    }
+                    return result;
+            }
+        }
+    }
+
+    public class BaseLexerLayer : ILexerLayer
+    {
+        public LexerLayerResult ParseChar(char currentChar, LexerLayerContext context)
+        {
             if (Char.IsLetterOrDigit(currentChar) || (currentChar == Notations.UNDERSCORE))
             {
 
@@ -301,37 +356,11 @@ namespace LatteCompiler
             }
             else if (currentChar == Notations.FORWARD_SLASH)
             {
-                if (forwardSlashAppeared)
-                {
-                    forwardSlashAppeared = false;
-                    return new LexerLayerResult.PushLayer(
-                        layerToPush: new CommentLineLexerLayer(),
-                        shouldKeepChar: false
-                    );
-                }
-                else
-                {
-                    forwardSlashAppeared = true;
-                    return LexerLayerResult.Continue.Instance;
-                }
-            }
-            else if (currentChar == Notations.ASTERISK)
-            {
-                if (forwardSlashAppeared)
-                {
-                    forwardSlashAppeared = false;
-                    return new LexerLayerResult.PushLayer(
-                        layerToPush: new CommentBlockLexerLayer(),
-                        shouldKeepChar: false
-                    );
-                }
-                else
-                {
-                    return new LexerLayerResult.PushLayer(
-                        layerToPush: new NotationLexerLayer(),
-                        shouldKeepChar: true
-                    );
-                }
+                // 斜杠家族（/、/=、//、/*）：委托 SlashLexerLayer 分流（/ 预消费）
+                return new LexerLayerResult.PushLayer(
+                    layerToPush: new SlashLexerLayer(),
+                    shouldKeepChar: false
+                );
             }
             else if (Char.IsWhiteSpace(currentChar)) { 
                 if(currentChar == '\n')

@@ -6,8 +6,8 @@
 > 计划与分工见 `compiler/frontend/PARSER_ROADMAP.md`；本文档只记录「现状」。
 
 **报告日期**: 2026-07-26
-**当前阶段**: Parser/PDA 大扫除（架构重构）完成（M23）；AST 结构标注与 Validator 重写完成（M24）；**下一步**：语义分析、BIL 输出
-**测试总计**: 430/430 通过 (100%)（23 个套件，`dotnet run -- --test-all` 单命令全量）
+**当前阶段**: Parser/PDA 大扫除（架构重构）完成（M23）；AST 结构标注与 Validator 重写完成（M24）；Lexer 修复（除法/EOF/注释）与 fuzz 基建完成（M25）；**下一步**：语义分析、BIL 输出
+**测试总计**: 453/453 通过 (100%) + Lexer fuzz 6000/6000（24 个套件，`dotnet run -- --test-all` 单命令全量）
 **版本控制**: Git `main` 分支（2026-07-17 首次提交）
 
 ---
@@ -40,6 +40,7 @@
 | M22 | namespace 声明（§15.1）—— **P5 收官** | ✅ | 2026-07-26 | 7/7 |
 | M23 | Parser/PDA 大扫除：TokenDisposition、施工目标协议、ExpressionRootASTNode、EOF 正式化、AST 完整性验证、测试基础设施 | ✅ | 2026-07-26 | 425/425（22 套件） |
 | M24 | AST 结构标注（ChildAstNode/ParentAstNode/AstCarrier）+ Validator 重写 + 删除 ASTNodeType + 5 个父子指针 bug 修复 | ✅ | 2026-07-26 | 430/430（23 套件） |
+| M25 | Lexer 修复：SlashLexerLayer（除法/注释分流）+ Lexer 输出 EOF + 注释集中跳过 + fuzz 基建 | ✅ | 2026-07-26 | 453/453 + fuzz 6000（24 套件） |
 
 ---
 
@@ -284,6 +285,7 @@ pub class Point {
 | NamespaceParserLayer | ✅ | 7/7 | §15.1 顶层单行声明；路径复用 PathParserLayer（M22，菜单 22） |
 | ASTIntegrityValidator | ✅ | 含于各套件 | Parse 成功后自动验证 AST 不变量（M23）；M24 重写为 Attribute 驱动遍历（[ChildAstNode]/[AstCarrier]），新增父子指针一致性校验；失败抛 CompilerInternalException |
 | ASTIntegrityValidatorTests | ✅ | 5/5 | 手工构造 AST 直调 Validate：合法树通过 + 四类结构破坏拒绝（M24，菜单 24） |
+| LexerFuzzTests | ✅ | 23/23 + fuzz 6000 | Slash/EOF/注释固定用例 + 纯随机/结构化/变异 fuzz（固定种子）+ Parser 注释跳过集成（M25，菜单 25） |
 | TokenDispositionTests | ✅ | 4/4 | Push/Pop × Consume/Replay 四组合协议测试（M23，菜单 23） |
 
 ---
@@ -293,7 +295,9 @@ pub class Point {
 - **施工目标协议**（M23 大扫除）：Parser Layer 栈只传递控制权；父 Layer 在 Push 前确定施工目标（具体节点或 ExpressionRootASTNode 等附加目标），子 Layer 原地施工或向目标附加节点；Pop 不传递任何数据。原 `IResultProducer`/`IResultConsumer`/`pendingResultHandler` 已全部删除
 - **TokenDisposition**：Push/Pop 的 token 处置使用具名枚举（Consume/Replay），替代原 `bool shouldKeepToken`
 - **ExpressionRootASTNode**：Syntax AST 中所有表达式位置的统一稳定挂载点；一次性 Attach、禁止替换；ASTNode.Parent 只能设置一次、**禁止任何形式重挂**（无 reparent）；「归属后知」场景以创建时归属即定的容器承载（ExpressionStatementASTNode 双 Root 槽、LoopStatementASTNode.RangeTo）或延迟一次性 AttachTo（注解）；解析成功后经 `ASTIntegrityValidator` 自动验证不变量
-- **EOF 正式 Token**：`EndOfFileToken` 由 Parser 在输入本地副本末尾追加，只由 RootParserLayer 消费；非 Root 层遇 EOF 要么 Pop(Replay) 层层上交，要么报 "Unexpected end of file"；原换行哨兵与 guard 收尾循环已删除
+- **EOF 正式 Token**：`EndOfFileToken` 由 Lexer 在输出末尾追加（M25；Parser 仅对绕过 Lexer 的调用方保持追加兼容），只由 RootParserLayer 消费；非 Root 层遇 EOF 要么 Pop(Replay) 层层上交，要么报 "Unexpected end of file"
+- **注释集中跳过**（M25）：CommentToken 由 Parser 主循环分发时统一跳过，各 Layer 不再自行处理；行注释不再吞掉结尾换行（回流由 Base 层产出 LineBreakToken）
+- **SlashLexerLayer**（M25）：`/`、`/=`、`//`、`/*` 统一分流入口；输入结束以虚拟换行冲刷帧（FlushLayers）弹栈，未闭合字符串/块注释即 LexerException
 - **泛型语法 `\<...>`**：`<` 仅作小于号；Lexer 不合并 `>` 系列，`>=`/`>>`/`>>>` 由表达式层重组（详见 `SYNTAX.md` §3.6）
 - **表达式后缀链**：纯符号路径保持 PathParserLayer 的 Symbol 形态；`(`/`[`/`.`/`?.`/`\<`/`:` 后缀由 ExpressionParserLayer 链接，底座为表达式时才产生 MemberAccessASTNode
 - **独立 Layer 可测性**：`Parser.Parse(tokens, baseLayer, entryLayer)` + `TestRootParserLayer`（只接受 EOF）支持任意 Layer 独立驱动测试，且拒绝被测 Layer 漏消费 token
@@ -331,6 +335,31 @@ ASTNodeType 枚举删除，节点类型判断全面改用 CLR 类型。
 ---
 
 ## 7. 里程碑历史
+
+### 2026-07-26 · M25 Lexer 修复：SlashLexerLayer、Lexer EOF、注释集中跳过 + fuzz 基建
+
+> 不改 Latte 语法；修复 Lexer 三个结构性缺陷（除法不可用、EOF 由 Parser
+> 伪造、注释处理散落），并建立 Lexer fuzz 测试基建。
+
+- **SlashLexerLayer**：`/`、`/=`、`//`、`/*` 统一分流入口——M25 前 Base 层
+  见到 `/` 后若下一字符非注释开头直接报错，**除法与 `/=` 完全不可用**；
+  注释形态转发给持有的注释层实例（Delegate, don't implement），
+  注释层弹出时本层同步弹出
+- **Lexer 输出 EOF**：`EndOfFileToken` 改由 `Lexer.Tokenize` 在输出末尾追加
+  （零长度 CharRange，位于文件末尾），Parser 不再自行伪造（仅对绕过 Lexer
+  的调用方保持追加兼容）；输入结束以虚拟换行冲刷帧（FlushLayers）驱动各层
+  弹栈、不产生任何 token；冲刷后栈不收敛（未闭合字符串/块注释）即
+  LexerException；顺带修复空输入 `content[0]` 越界与 `Tokenize(string)` 的
+  AggregateException 包装（改 `GetAwaiter().GetResult()` 原样抛出）
+- **注释集中跳过**：CommentToken 由 Parser 主循环分发时统一跳过，各
+  ParserLayer 不再自行处理（RootParserLayer 的 Comment 分支已删）；
+  行注释不再吞掉结尾换行（keepChar 回流，由 Base 层产出 LineBreakToken——
+  此前行尾注释会让下一条语句粘行）
+- **LexerFuzzTests**（固定用例 23 + fuzz 6000，固定种子可复现）：
+  除法/注释/EOF 精确 token 序列断言；纯随机/结构化片段/合法源码变异三类
+  fuzz 校验不变量（不崩——只允许 LexerException、EOF 存在且唯一、
+  位置单调不回退）；Parser 集成验证注释任意位置不炸语法
+- 测试：453/453（24 套件）+ fuzz 6000/6000
 
 ### 2026-07-26 · M24 AST 结构标注 + Validator 重写 + 删除 ASTNodeType + 父子指针 bug 修复
 

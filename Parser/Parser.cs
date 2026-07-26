@@ -115,8 +115,11 @@ namespace LatteCompiler
             var context = new ContextImpl();
             var stack = new Stack<IParserLayer>();
             int offset = 0;
-            // 不修改调用者的 token 列表：本地副本末尾追加正式 EOF token
-            var input = new List<Token>(tokens) { CreateEndOfFileToken(tokens) };
+            // Lexer 已在输出末尾追加正式 EOF token（M25）；
+            // 对绕过 Lexer 手工构造 token 流的调用方（如协议测试）保持末尾追加的兼容
+            var input = tokens.Count > 0 && tokens[tokens.Count - 1] is EndOfFileToken
+                ? tokens
+                : new List<Token>(tokens) { CreateEndOfFileToken(tokens) };
             stack.Push(baseLayer);
             if (entryLayer != null)
             {
@@ -124,6 +127,13 @@ namespace LatteCompiler
             }
             while(offset<input.Count) {
                 var token = input[offset];
+                // 注释 token 不参与语法：Parser 分发时统一跳过，
+                // 各 ParserLayer 不再自行处理（M25）
+                if (token is CommentToken)
+                {
+                    offset++;
+                    continue;
+                }
                 context.Log("Current token:"+token);
                 context.currentRange = token.CharRange;
                 IParserLayer? layer;

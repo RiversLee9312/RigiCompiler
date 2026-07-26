@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Diagnostics.Metrics;
@@ -107,11 +107,10 @@ namespace LatteCompiler
             //var result = new List<Token>();
             var content = await reader.ReadToEndAsync();
             content.ReplaceLineEndings("\n");
-            content += "\t";
             var lexerLayers = new Stack<ILexerLayer>();
             lexerLayers.Push(new BaseLexerLayer());
             var offset = 0;
-            var currentChar = content[0];
+            var currentChar = '\0';  // 初值不会被使用（keepChar 初始为 false，循环内总会先读字符）
             var keepChar = false;
             var context = new ContextImpl();
             context.position = new CharPosition() {
@@ -172,7 +171,49 @@ namespace LatteCompiler
                     context.RaiseError("Unexpected lexer end");
                 }
             }
+            // 冲刷帧：一次虚拟换行驱动各层冲刷手中 token 并弹栈（不产生任何 token）
+            FlushLayers(lexerLayers, context);
+            // 冲刷后栈必须收敛为 Base 层：未闭合的字符串/块注释即词法错误
+            if (lexerLayers.Count != 1)
+            {
+                context.RaiseError(
+                    $"Unterminated {lexerLayers.Peek().GetType().Name}");
+            }
+            // EOF 正式 token：由 Lexer 在输出末尾追加（Parser 不再自行追加）；
+            // CharRange 为零长度范围，位于源文件末尾
+            var eof = new EndOfFileToken();
+            eof.CharRange = new CharRange
+            {
+                Start = context.position,
+                End = context.position,
+                sourceName = sourceName
+            };
+            context.GetTokens().Add(eof);
             return context.GetTokens();
+        }
+
+        // 冲刷帧（M25）：输入结束时向栈顶发送一次虚拟换行，驱动 Word/Notation/
+        // 行注释/Slash 层冲刷手中 token 并弹栈；层回流（keepChar）的换行直接丢弃，
+        // 不交给 Base 层——虚拟换行不产生任何 token。
+        // 字符串层遇换行自行报错；块注释层收下换行不弹出（栈不收敛 → 调用方栈检查报错）。
+        private static void FlushLayers(Stack<ILexerLayer> lexerLayers, LexerLayerContext context)
+        {
+            while (lexerLayers.Count > 1 && lexerLayers.TryPeek(out var layer))
+            {
+                var result = layer.ParseChar('\n', context);
+                switch (result)
+                {
+                    case LexerLayerResult.PopLayer:
+                        lexerLayers.Pop();
+                        break;
+                    case LexerLayerResult.PushLayer push:
+                        lexerLayers.Push(push.layerToPush);
+                        break;
+                    case LexerLayerResult.Continue:
+                        // 层收下虚拟换行但不弹出（块注释/字符串）——无法收敛，交给栈检查
+                        return;
+                }
+            }
         }
 
         // 便捷方法：从字符串直接分词（用于测试）
@@ -181,9 +222,9 @@ namespace LatteCompiler
             using (var stream = new MemoryStream(Encoding.UTF8.GetBytes(code)))
             using (var reader = new StreamReader(stream))
             {
-                var task = Tokenize(reader, sourceName);
-                task.Wait();
-                return task.Result;
+                // GetAwaiter().GetResult() 不包 AggregateException：
+                // 词法错误以原始 LexerException 抛出
+                return Tokenize(reader, sourceName).GetAwaiter().GetResult();
             }
         }
     }

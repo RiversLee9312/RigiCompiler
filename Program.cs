@@ -33,7 +33,8 @@ Console.WriteLine("21. Run Import tests");
 Console.WriteLine("22. Run Namespace tests");
 Console.WriteLine("23. Run TokenDisposition tests");
 Console.WriteLine("24. Run ASTIntegrityValidator tests");
-Console.Write("Enter choice (1-24): ");
+Console.WriteLine("25. Run LexerFuzz tests");
+Console.Write("Enter choice (1-25): ");
 
 string? choice = Console.ReadLine();
 
@@ -175,6 +176,12 @@ else if (choice == "24")
     ASTIntegrityValidatorTests.RunAll();
     return;
 }
+else if (choice == "25")
+{
+    // 运行 Lexer fuzz 测试
+    LexerFuzzTests.RunAll();
+    return;
+}
 
 // 原有的文件解析逻辑
 Console.WriteLine("Please type the path of the test script:");
@@ -193,9 +200,8 @@ using(var stream = new FileStream(scriptPath, FileMode.Open, FileAccess.Read))
 {
     using(var reader = new StreamReader(stream))
     {
-        var task = lexer.Tokenize(reader,scriptPath);
-        task.Wait();
-        tokens = task.Result;
+        // GetAwaiter().GetResult() 不包 AggregateException：词法错误原样抛出
+        tokens = lexer.Tokenize(reader, scriptPath).GetAwaiter().GetResult();
         Helper.PrintTokenList(tokens);
         var parser = new Parser();
         var astTree = parser.Parse(tokens);

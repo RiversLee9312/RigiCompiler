@@ -5,7 +5,7 @@
 
 **项目名**: LatteCompiler
 **语言**: C#（.NET 8.0，控制台程序，`Nullable` 与 `ImplicitUsings` 已启用）
-**开发阶段**: 早期 —— 编译器前端（Lexer + Parser）已完成（roadmap P0–P5 全部落地），Parser/PDA 大扫除（架构重构）已完成；下一阶段：语义分析、BIL 输出
+**开发阶段**: 早期 —— 编译器前端（Lexer + Parser）已完成（roadmap P0–P5 全部落地），Parser/PDA 大扫除（架构重构）、AST 结构标注（M24）与 Lexer 修复（M25）已完成；下一阶段：语义分析、BIL 输出
 **版本控制**: Git（`main` 分支，2026-07-17 首次提交，工作树干净；CI 见 `.github/workflows/ci.yml`）
 
 ---
@@ -110,7 +110,9 @@ LatteCompiler/
 ├── Tests/                    # 自研控制台测试（非 xUnit/NUnit，见 §5）
 │   ├── TestRunner.cs            # --test-all 全量入口（套件注册表 + 退出码）
 │   ├── TestRootParserLayer.cs   # 独立 Layer 测试垫底层（只接受 EOF）
-│   └── TokenDispositionTests.cs # Token 流转协议测试（四种组合）
+│   ├── TokenDispositionTests.cs # Token 流转协议测试（四种组合）
+│   ├── ASTIntegrityValidatorTests.cs # Validator 直调测试（合法树 + 结构破坏拒绝）
+│   └── LexerFuzzTests.cs        # Lexer fuzz 测试（Slash/EOF/注释 + 6000 随机用例）
 └── docs/                     # 设计与规范文档（全部为权威参考）
 ```
 
@@ -192,10 +194,13 @@ Parser 主循环维护一个 Layer 栈，每个 token 交给栈顶 Layer 处理�
    `ASTNode.Parent` 只能设置一次。
 5. **子 Layer 禁止修改施工目标之外的 AST**（父节点、兄弟节点、
    经 Context 获得的全局位置、其他 Layer 正在施工的节点）。
-6. **EOF 是正式 Token**（`EndOfFileToken`）：由 Parser 在输入本地副本末尾追加，
-   只由 RootParserLayer 消费；非 Root 层遇 EOF：结构完整 → Pop(Replay) 上交，
+6. **EOF 是正式 Token**（`EndOfFileToken`）：由 Lexer 在输出 token 列表末尾
+   追加（M25；Parser 对绕过 Lexer 的调用方保持追加兼容），只由
+   RootParserLayer 消费；非 Root 层遇 EOF：结构完整 → Pop(Replay) 上交，
    不完整 → 抛 "Unexpected end of file"。禁止用换行伪装 EOF。
 7. **新 Layer 必须有独立测试**（`TestRootParserLayer` 驱动，见 §5）。
+8. **注释由 Parser 主循环统一跳过**（M25）：CommentToken 不参与语法，
+   分发时直接跳过；各 Layer 不再自行处理注释。
 
 解析成功后 `ASTIntegrityValidator` 自动验证 AST 不变量：遍历只走
 `[ChildAstNode]` 标注的成员（`[AstCarrier]` 对象深入其公共字段），校验每个
@@ -228,6 +233,10 @@ switch default 规则；失败抛 `CompilerInternalException`（内部编译器�
 ### 4.6 Lexer 的特点
 
 Lexer 只做简单字符识别，不理解语义。例如 `3.14` 会输出三个 token：`Word "3"`、`Notation "."`、`Word "14"` —— 由 `LiteralParserLayer` 的状态机组合成浮点字面量。不要在 Lexer 里加语义判断。
+
+- 斜杠家族（`/`、`/=`、`//`、`/*`）由专门的 `SlashLexerLayer` 分流（M25）；
+- `EndOfFileToken` 由 `Lexer.Tokenize` 在输出末尾追加（M25）；输入结束时以
+  虚拟换行冲刷帧（FlushLayers）弹栈，未闭合字符串/块注释即 LexerException。
 
 ---
 
