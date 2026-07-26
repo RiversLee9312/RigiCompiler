@@ -29,13 +29,13 @@ namespace LatteCompiler.Tests
             // 完整形态：修饰符 + (value: _) + 自定义体 + 初始化器
             TestDeclaration(
                 "var width: i32 { pub get(value: _) { return value } priv set(value: _) { log(value) } } = 100",
-                "var width: i32 {pub get(value){}, priv set(value){}} = NumberValue");
+                "var width: i32 {pub get(value){}, priv set(value){}} = LiteralExpressionASTNode");
 
             // 编译器生成访问器（仅访问控制，无参无体；自动访问器以换行分隔——
             // 与成员声明的换行分隔规则一致）
             TestDeclaration(
                 "var height: i32 {\n    pub get\n    priv set\n} = 200",
-                "var height: i32 {pub get, priv set} = NumberValue");
+                "var height: i32 {pub get, priv set} = LiteralExpressionASTNode");
 
             // 计算属性（_: _，无 backing field）
             TestDeclaration(
@@ -77,12 +77,12 @@ namespace LatteCompiler.Tests
                 "        log(value)\n" +
                 "    }\n" +
                 "} = 100",
-                "var width: i32 {pub get(value){}, priv set(value){}} = NumberValue");
+                "var width: i32 {pub get(value){}, priv set(value){}} = LiteralExpressionASTNode");
 
             // 自动访问器以换行收尾（无修饰符）
             TestDeclaration(
                 "var c: i32 {\n    get\n    set\n} = 0",
-                "var c: i32 {get, set} = NumberValue");
+                "var c: i32 {get, set} = LiteralExpressionASTNode");
 
             Console.WriteLine();
         }
@@ -101,13 +101,13 @@ namespace LatteCompiler.Tests
             // 全局变量
             TestDeclaration(
                 "var g: i32 {\n    pub get\n    priv set\n} = 1",
-                "var g: i32 {pub get, priv set} = NumberValue");
+                "var g: i32 {pub get, priv set} = LiteralExpressionASTNode");
 
             // 栈上局部变量（函数体 CodeBlock → VariableDeclarationParserLayer）
             TestNode(
                 "func example() { var localCounter: i32 { get(value: _) { return value } set(value: _) { log(value) } } = 0 }",
                 root => ((CallableDeclarationASTNode)root.Children[0]).Body!.Children[0],
-                "var localCounter: i32 {get(value){}, set(value){}} = NumberValue");
+                "var localCounter: i32 {get(value){}, set(value){}} = LiteralExpressionASTNode");
 
             Console.WriteLine();
         }
@@ -225,7 +225,7 @@ namespace LatteCompiler.Tests
                 sb.Append(" {").Append(string.Join(", ", accessors)).Append('}');
 
             // 初始化器只验证存在与节点种类（表达式本身的描述由表达式套件负责）
-            if (node.Initializer != null) sb.Append(" = ").Append(node.Initializer.Expression.NodeType);
+            if (node.Initializer != null) sb.Append(" = ").Append(node.Initializer.Expression.GetType().Name);
             return sb.ToString();
         }
 

@@ -12,15 +12,17 @@ namespace LatteCompiler
     /// - var/const → VariableDeclarationParserLayer
     /// - if → IfStatementParserLayer（语句模式）
     /// - for/while/do → LoopParserLayer
-    /// - 其他起点 → ExpressionParserLayer（表达式语句；后续跟 = 时转为赋值语句）
+    /// - 其他起点 → ExpressionParserLayer（表达式开头的语句，
+    ///   由 ExpressionStatementASTNode 统一承载：纯表达式语句或赋值语句）
     /// - return/break/continue 为简短 keyword 语句，由本层子状态直接处理
     ///   （参照 ExpressionParserLayer 内联处理一元/二元运算符的先例）
     ///
     /// 施工协议（大扫除后）：
     /// - 语句节点直接挂入 targetBlock.Children；
-    /// - 表达式语句先创建 ExpressionRootASTNode 挂载点，表达式层直接向其附加；
-    /// - 遇 = 转赋值时，已填充的 Root 由 AssignStatementASTNode 收养为 Target
-    ///   （Root 与表达式都只能附加一次，不能搬家，只能转移逻辑归属）。
+    /// - 表达式开头的语句先创建 ExpressionStatementASTNode（Parent = 本块），
+    ///   表达式层直接向其 Expression Root 附加；遇 = 时再建 AssignValue Root
+    ///   （Parent = 语句节点）解析右侧——两个 Root 槽创建时归属即定，
+    ///   无节点搬家、无 Parent 重挂。
     ///
     /// 状态流转：
     /// OpenBraceExpected → StatementDispatch
@@ -50,7 +52,7 @@ namespace LatteCompiler
         private State state = State.OpenBraceExpected;
 
         // 构建中的语句暂存
-        private ExpressionRootASTNode? pendingExpressionRoot = null;  // 表达式语句/赋值目标的挂载 Root
+        private ExpressionStatementASTNode? pendingExpressionStatement = null;  // 表达式语句/赋值语句（创建时 Parent 已定为块）
         private ReturnStatementASTNode? pendingReturn = null;
         private LoopControlStatementASTNode? pendingLoopControl = null;
         private ThrowStatementASTNode? pendingThrow = null;
@@ -218,36 +220,37 @@ namespace LatteCompiler
                 }
             }
 
-            // 其他起点：表达式语句（后续跟 = 时转为赋值语句）。
-            // 先创建 ExpressionRoot 挂载点，表达式层直接向其附加；
-            // 归属（表达式语句还是赋值目标）在 AfterExpression 决定。
-            var expressionStatement = new ExpressionRootASTNode(targetNode);
-            pendingExpressionRoot = expressionStatement;
+            // 其他起点：表达式开头的语句（纯表达式语句或赋值语句，统一容器承载）。
+            // 语句节点创建时 Parent 即定为本块；表达式层直接附加到其 Expression Root。
+            var expressionStatement = new ExpressionStatementASTNode(targetNode);
+            pendingExpressionStatement = expressionStatement;
             state = State.AfterExpression;
             return new ParserLayerResult.PushLayer(
-                new ExpressionParserLayer(expressionStatement), TokenDisposition.Replay);
+                new ExpressionParserLayer(expressionStatement.Expression), TokenDisposition.Replay);
         }
 
         // 表达式已解析：= 转赋值，换行/} 按表达式语句收尾
         private ParserLayerResult HandleAfterExpression(Token currentToken, ParserLayerContext context)
         {
-            // 赋值语句：target = value（已填充的 Root 由 assign 节点收养为 Target）
+            // 赋值语句：target = value
+            // 右侧解析到语句节点的 AssignValue Root（创建时 Parent 即定为语句节点）
             if (currentToken is NotationToken assign && assign.Content == "=")
             {
-                var assignNode = new AssignStatementASTNode(targetNode, pendingExpressionRoot!);
-                targetNode.Children.Add(assignNode);
-                pendingExpressionRoot = null;
+                var stmt = pendingExpressionStatement!;
+                stmt.AssignValue = new ExpressionRootASTNode(stmt);
+                targetNode.Children.Add(stmt);
+                pendingExpressionStatement = null;
 
                 state = State.StatementEnd;
                 return new ParserLayerResult.PushLayer(
-                    new ExpressionParserLayer(assignNode.Value), TokenDisposition.Consume);
+                    new ExpressionParserLayer(stmt.AssignValue), TokenDisposition.Consume);
             }
 
             // 表达式语句：换行结束
             if (currentToken is LineBreakToken)
             {
-                targetNode.Children.Add(pendingExpressionRoot!);
-                pendingExpressionRoot = null;
+                targetNode.Children.Add(pendingExpressionStatement!);
+                pendingExpressionStatement = null;
                 state = State.StatementDispatch;
                 return ParserLayerResult.Continue.Instance;
             }
@@ -255,8 +258,8 @@ namespace LatteCompiler
             // 表达式语句：} 结束（同时结束整个块）
             if (currentToken is NotationToken close && close.Content == "}")
             {
-                targetNode.Children.Add(pendingExpressionRoot!);
-                pendingExpressionRoot = null;
+                targetNode.Children.Add(pendingExpressionStatement!);
+                pendingExpressionStatement = null;
                 return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
             }
 

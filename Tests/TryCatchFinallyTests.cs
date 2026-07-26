@@ -237,9 +237,11 @@ namespace LatteCompiler.Tests
                     : "";
                 return $"Try({tryBlock}{(catches.Length > 0 ? ", " + catches : "")}{finally_part})";
             }
-            else if (node is ExpressionRootASTNode root)
+            else if (node is ExpressionStatementASTNode stmt)
             {
-                return DescribeExpression(root.Expression);
+                return stmt.AssignValue != null
+                    ? $"Assign({DescribeExpression(stmt.Expression.Expression)} = {DescribeExpression(stmt.AssignValue.Expression)})"
+                    : DescribeExpression(stmt.Expression.Expression);
             }
             else if (node is ExpressionASTNode expr)
             {
@@ -247,7 +249,7 @@ namespace LatteCompiler.Tests
             }
             else
             {
-                return $"Unknown({node.NodeType})";
+                return $"Unknown({node.GetType().Name})";
             }
         }
 

@@ -204,7 +204,9 @@ namespace LatteCompiler.Tests
                 TryCatchFinallyStatementASTNode tryCatch => FormatTryCatch(tryCatch),
                 IfStatementASTNode ifStmt => FormatIf(ifStmt),
                 LoopStatementASTNode loop => FormatLoop(loop),
-                ExpressionRootASTNode root => DescribeExpression(root.Expression),
+                ExpressionStatementASTNode s => s.AssignValue != null
+                    ? $"Assign({DescribeExpression(s.Expression.Expression)} = {DescribeExpression(s.AssignValue.Expression)})"
+                    : DescribeExpression(s.Expression.Expression),
                 ExpressionASTNode e => DescribeExpression(e),
                 _ => $"<{node.GetType().Name}>"
             };

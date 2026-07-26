@@ -7,7 +7,7 @@ using System.Text;
 using System.Threading.Tasks;
 
 namespace LatteCompiler
-{ 
+{
     public static class Helper
     {
         public static void PrintTokenList(List<Token> tokens)
@@ -74,7 +74,7 @@ namespace LatteCompiler
                 }
                 return;
             }
-            
+
             // 5. 处理复杂对象 (AST 节点) - 使用反射遍历属性
             FieldInfo[] fields = type.GetFields(BindingFlags.Public | BindingFlags.Instance);
 
@@ -299,7 +299,7 @@ namespace LatteCompiler
         public const string PRIV = "priv";
         public const string NAMESPACE = "namespace";
         // 控制流关键字数组
-        public static readonly string[] ControlStreamKeywords = 
+        public static readonly string[] ControlStreamKeywords =
         {
     IF, ELSE, ELIF, WHILE, FOR, FOREACH, WHEN, CASE, DEFAULT, TRY, CATCH, FINALLY,WITH
 };
@@ -317,7 +317,7 @@ namespace LatteCompiler
 };
 
         // 字符串值数组
-        public static readonly string[] StringValues = 
+        public static readonly string[] StringValues =
         {
     NULL, TRUE, FALSE, THIS, VALUE, INNER, BASE
 };
@@ -429,57 +429,6 @@ namespace LatteCompiler
         public LexerException(string message) : base(message) { }
     }
 
-    public enum ASTNodeType
-    {
-        AssignStatement,
-        InvokeStatemnt,
-        IfStatement,
-        SwitchStatement,
-        TwoValueExpression,
-        AcquisitionExpression,
-        NumberValue,
-        BoolValue,
-        StringValue,
-        Declaration,
-        ImportStatement,
-        CodeBlockExpression,
-        Root,
-        Symbol,
-        OneValueExpression,
-        ReceiverExpressionRoot,
-        ValueExpressionRoot,
-        GroupExpression,
-        NewExpression,
-        LambdaExpression,
-        Argument,
-        IfExpression,
-        SwitchExpression,
-        TypeOfExpression,
-        CastExpression,
-        TypeCheckExpression,
-        LoopStatement,
-        ReturnStatement,
-        LoopControlStatement,
-        RangeExpression,
-        TryCatchFinallyStatement,
-        CatchClause,
-        SeqBlockExpression,
-        UsingBinding,
-        ThrowStatement,
-        YieldStatement,
-        CallableDeclaration,
-        ClassDeclaration,
-        InterfaceDeclaration,
-        StructDeclaration,
-        EnumStructDeclaration,
-        EnumCase,
-        WrapperDeclaration,
-        PropertyAccessor,
-        Annotation,
-        EnumCaseExpression,
-        WrapperAccess,
-        NamespaceDeclaration
-    }
     public class AcquisitionExpressionASTNode : ASTNode
     {
         public AcquisitionExpressionASTNode(ASTNode? parent) : base(parent)
@@ -487,9 +436,8 @@ namespace LatteCompiler
             sourceSymbol = new(this);
             wrapperSymbols = new();
         }
-        public override ASTNodeType NodeType { get; } = ASTNodeType.AcquisitionExpression;
-        public SymbolASTNode sourceSymbol;
-        public List<SymbolASTNode> wrapperSymbols;
+        [ChildAstNode] public SymbolASTNode sourceSymbol;
+        [ChildAstNode] public List<SymbolASTNode> wrapperSymbols;
     }
 
     public class ParserException : Exception
@@ -497,12 +445,15 @@ namespace LatteCompiler
         public ParserException(string message) : base(message) { }
     }
 
+    // AST 节点基类。节点类型一律用 CLR 类型判断（is / GetType()），
+    // 不再有 ASTNodeType 枚举。子节点成员以 [ChildAstNode] 标注、
+    // 父指针以 [ParentAstNode] 标注，供 ASTIntegrityValidator 反射遍历校验。
     public abstract class ASTNode
     {
-        public abstract ASTNodeType NodeType { get; }
-
         // 父节点只能设置一次：构造函数传入，或通过 AttachTo（供 ExpressionRootASTNode.Attach
-        // 挂载未挂载表达式子树）。二次设置直接抛异常，保证 AST 不变量。
+        // 挂载未挂载表达式子树、DeclarationParserLayer 延迟挂接注解）。
+        // 二次设置直接抛异常；禁止任何形式的重挂 Parent。
+        [ParentAstNode]
         public ASTNode? Parent { get; private set; }
 
         protected ASTNode(ASTNode? parent)
@@ -525,15 +476,13 @@ namespace LatteCompiler
         }
 
         // 子声明容器（全局作用域、类型体、嵌套类型共用同一个容器）
-        public List<ASTNode> Children = new List<ASTNode>();
+        [ChildAstNode] public List<ASTNode> Children = new List<ASTNode>();
 
         // 注解 / wrapper 应用列表（SYNTAX §14.5）；仅声明节点使用，其余节点保持空
-        public List<AnnotationASTNode> Annotations = new List<AnnotationASTNode>();
+        [ChildAstNode] public List<AnnotationASTNode> Annotations = new List<AnnotationASTNode>();
     }
     public class RootASTNode : ASTNode
     {
-        public override ASTNodeType NodeType { get; } = ASTNodeType.Root;
-
         public RootASTNode() : base(null){ }
     }
     public class SymbolElement
@@ -555,9 +504,14 @@ namespace LatteCompiler
     {
         public SymbolASTNode(ASTNode? parent) : base(parent){ }
 
-        public override ASTNodeType NodeType { get; }= ASTNodeType.Symbol;
         public Symbol symbol = new();
     }
+
+    // import 列表项（SYNTAX §15.2）：携带一个符号路径节点。
+    // 不是 ASTNode（struct），以 [AstCarrier] 标注；配合 ImportASTNode.importedSymbols
+    // 上的 [ChildAstNode]，Validator 会深入本类型公共字段，把 symbolNode
+    // 视为 ImportASTNode 的子节点校验。
+    [AstCarrier]
     public struct ImportItem
     {
         public SymbolASTNode symbolNode;
@@ -566,12 +520,8 @@ namespace LatteCompiler
     }
     public class ImportASTNode : ASTNode
     {
-        
-        public List<ImportItem> importedSymbols = new();
+        [ChildAstNode] public List<ImportItem> importedSymbols = new();
         public ImportASTNode(ASTNode? parent) : base(parent){ }
-        
-        public override ASTNodeType NodeType { get; } = ASTNodeType.ImportStatement;
-
     }
 
     public abstract class Token

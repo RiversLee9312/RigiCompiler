@@ -9,7 +9,7 @@ namespace LatteCompiler.Tests
     ///
     /// 覆盖：
     /// 1. for-each 循环
-    /// 2. 范围循环（0 to 10 → RangeExpression）
+    /// 2. 范围循环（0 to 10 → Iterable 起点 + RangeTo 终点）
     /// 3. while 循环
     /// 4. do-while 循环
     /// 5. named 标签与 break@标签 / continue@标签
@@ -210,8 +210,9 @@ namespace LatteCompiler.Tests
         {
             return node switch
             {
-                AssignStatementASTNode a =>
-                    $"Assign({DescribeExpression(a.Target.Expression)} = {DescribeExpression(a.Value.Expression)})",
+                ExpressionStatementASTNode s => s.AssignValue != null
+                    ? $"Assign({DescribeExpression(s.Expression.Expression)} = {DescribeExpression(s.AssignValue.Expression)})"
+                    : DescribeExpression(s.Expression.Expression),
                 ReturnStatementASTNode r =>
                     $"Return{(r.Label != null ? "@" + r.Label : "")}" +
                     $"{(r.Value != null ? $"({DescribeExpression(r.Value!.Expression)})" : "")}",
@@ -219,7 +220,6 @@ namespace LatteCompiler.Tests
                     $"{(l.IsBreak ? "Break" : "Continue")}{(l.Label != null ? "@" + l.Label : "")}",
                 IfStatementASTNode i => DescribeIf(i),
                 LoopStatementASTNode l => DescribeLoop(l),
-                ExpressionRootASTNode root => DescribeExpression(root.Expression),
                 ExpressionASTNode e => DescribeExpression(e),
                 _ => $"<{node.GetType().Name}>"
             };
@@ -244,8 +244,9 @@ namespace LatteCompiler.Tests
             string label = l.Label != null ? $", named {l.Label}" : "";
             return l.Kind switch
             {
-                LoopKind.For =>
-                    $"For({l.VariableName}, {DescribeExpression(l.Iterable!.Expression)}{label}, {DescribeBlock(l.Body)})",
+                LoopKind.For => l.RangeTo != null
+                    ? $"For({l.VariableName}, Range({DescribeExpression(l.Iterable!.Expression)} to {DescribeExpression(l.RangeTo.Expression)}){label}, {DescribeBlock(l.Body)})"
+                    : $"For({l.VariableName}, {DescribeExpression(l.Iterable!.Expression)}{label}, {DescribeBlock(l.Body)})",
                 LoopKind.While =>
                     $"While({DescribeExpression(l.Condition!.Expression)}{label}, {DescribeBlock(l.Body)})",
                 _ =>
@@ -269,8 +270,6 @@ namespace LatteCompiler.Tests
                 GroupExpressionASTNode g => $"Group({DescribeExpression(g.InnerExpression.Expression)})",
                 CallExpressionASTNode c =>
                     $"Call({DescribeExpression(c.Callee.Expression)}, [{string.Join(", ", c.Arguments.Select(DescribeArgument))}])",
-                RangeExpressionASTNode r =>
-                    $"Range({DescribeExpression(r.From.Expression)} to {DescribeExpression(r.To.Expression)})",
                 _ => $"<{node.GetType().Name}>"
             };
         }

@@ -202,7 +202,9 @@ namespace LatteCompiler.Tests
                 ReturnStatementASTNode r => $"Return({(r.Value != null ? DescribeExpression(r.Value!.Expression) : "<none>")})",
                 IfStatementASTNode ifStmt => FormatIf(ifStmt),
                 LoopStatementASTNode loop => FormatLoop(loop),
-                ExpressionRootASTNode root => DescribeExpression(root.Expression),
+                ExpressionStatementASTNode s => s.AssignValue != null
+                    ? $"Assign({DescribeExpression(s.Expression.Expression)} = {DescribeExpression(s.AssignValue.Expression)})"
+                    : DescribeExpression(s.Expression.Expression),
                 ExpressionASTNode e => DescribeExpression(e),
                 _ => $"<{node.GetType().Name}>"
             };

@@ -34,6 +34,7 @@ namespace LatteCompiler.Tests
             ("Import", ImportTests.RunAll),
             ("Namespace", NamespaceTests.RunAll),
             ("TokenDisposition", TokenDispositionTests.RunAll),
+            ("ASTIntegrityValidator", ASTIntegrityValidatorTests.RunAll),
         };
 
         // 运行全部套件，返回失败用例总数（0 = 全部通过）

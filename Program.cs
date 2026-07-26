@@ -32,7 +32,8 @@ Console.WriteLine("20. Run PropertyAccessor tests");
 Console.WriteLine("21. Run Import tests");
 Console.WriteLine("22. Run Namespace tests");
 Console.WriteLine("23. Run TokenDisposition tests");
-Console.Write("Enter choice (1-23): ");
+Console.WriteLine("24. Run ASTIntegrityValidator tests");
+Console.Write("Enter choice (1-24): ");
 
 string? choice = Console.ReadLine();
 
@@ -166,6 +167,12 @@ else if (choice == "23")
 {
     // 运行 TokenDisposition 协议测试
     TokenDispositionTests.RunAll();
+    return;
+}
+else if (choice == "24")
+{
+    // 运行 AST 完整性验证器测试
+    ASTIntegrityValidatorTests.RunAll();
     return;
 }
 

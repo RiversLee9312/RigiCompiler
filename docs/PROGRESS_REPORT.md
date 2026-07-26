@@ -6,8 +6,8 @@
 > 计划与分工见 `compiler/frontend/PARSER_ROADMAP.md`；本文档只记录「现状」。
 
 **报告日期**: 2026-07-26
-**当前阶段**: Parser/PDA 大扫除（架构重构）完成（M23）；**下一步**：语义分析、BIL 输出
-**测试总计**: 425/425 通过 (100%)（22 个套件，`dotnet run -- --test-all` 单命令全量）
+**当前阶段**: Parser/PDA 大扫除（架构重构）完成（M23）；AST 结构标注与 Validator 重写完成（M24）；**下一步**：语义分析、BIL 输出
+**测试总计**: 430/430 通过 (100%)（23 个套件，`dotnet run -- --test-all` 单命令全量）
 **版本控制**: Git `main` 分支（2026-07-17 首次提交）
 
 ---
@@ -39,6 +39,7 @@
 | M21 | 模块系统 import（§15.2）+ wrapper 路径访问（`:`，§14.1/§3） | ✅ | 2026-07-26 | 18/18 |
 | M22 | namespace 声明（§15.1）—— **P5 收官** | ✅ | 2026-07-26 | 7/7 |
 | M23 | Parser/PDA 大扫除：TokenDisposition、施工目标协议、ExpressionRootASTNode、EOF 正式化、AST 完整性验证、测试基础设施 | ✅ | 2026-07-26 | 425/425（22 套件） |
+| M24 | AST 结构标注（ChildAstNode/ParentAstNode/AstCarrier）+ Validator 重写 + 删除 ASTNodeType + 5 个父子指针 bug 修复 | ✅ | 2026-07-26 | 430/430（23 套件） |
 
 ---
 
@@ -281,7 +282,8 @@ pub class Point {
 | PropertyAccessorParserLayer | ✅ | 17/17 | §9.4 访问器块 `{ get... set... }`；backing field 判定与 get/set 一致性校验；三类定义位置经 VariableDeclaration 汇聚 |
 | ImportParserLayer | ✅ | 14/14 | §15.2 三种形态（单个/`.{}` 多个/`.*` 全部）；前缀路径复用 PathParserLayer（M21 重建，菜单 21） |
 | NamespaceParserLayer | ✅ | 7/7 | §15.1 顶层单行声明；路径复用 PathParserLayer（M22，菜单 22） |
-| ASTIntegrityValidator | ✅ | 含于各套件 | Parse 成功后自动验证 AST 不变量（M23）；失败抛 CompilerInternalException |
+| ASTIntegrityValidator | ✅ | 含于各套件 | Parse 成功后自动验证 AST 不变量（M23）；M24 重写为 Attribute 驱动遍历（[ChildAstNode]/[AstCarrier]），新增父子指针一致性校验；失败抛 CompilerInternalException |
+| ASTIntegrityValidatorTests | ✅ | 5/5 | 手工构造 AST 直调 Validate：合法树通过 + 四类结构破坏拒绝（M24，菜单 24） |
 | TokenDispositionTests | ✅ | 4/4 | Push/Pop × Consume/Replay 四组合协议测试（M23，菜单 23） |
 
 ---
@@ -290,7 +292,7 @@ pub class Point {
 
 - **施工目标协议**（M23 大扫除）：Parser Layer 栈只传递控制权；父 Layer 在 Push 前确定施工目标（具体节点或 ExpressionRootASTNode 等附加目标），子 Layer 原地施工或向目标附加节点；Pop 不传递任何数据。原 `IResultProducer`/`IResultConsumer`/`pendingResultHandler` 已全部删除
 - **TokenDisposition**：Push/Pop 的 token 处置使用具名枚举（Consume/Replay），替代原 `bool shouldKeepToken`
-- **ExpressionRootASTNode**：Syntax AST 中所有表达式位置的统一稳定挂载点；一次性 Attach、禁止替换；ASTNode.Parent 只能设置一次；解析成功后经 `ASTIntegrityValidator` 自动验证不变量
+- **ExpressionRootASTNode**：Syntax AST 中所有表达式位置的统一稳定挂载点；一次性 Attach、禁止替换；ASTNode.Parent 只能设置一次、**禁止任何形式重挂**（无 reparent）；「归属后知」场景以创建时归属即定的容器承载（ExpressionStatementASTNode 双 Root 槽、LoopStatementASTNode.RangeTo）或延迟一次性 AttachTo（注解）；解析成功后经 `ASTIntegrityValidator` 自动验证不变量
 - **EOF 正式 Token**：`EndOfFileToken` 由 Parser 在输入本地副本末尾追加，只由 RootParserLayer 消费；非 Root 层遇 EOF 要么 Pop(Replay) 层层上交，要么报 "Unexpected end of file"；原换行哨兵与 guard 收尾循环已删除
 - **泛型语法 `\<...>`**：`<` 仅作小于号；Lexer 不合并 `>` 系列，`>=`/`>>`/`>>>` 由表达式层重组（详见 `SYNTAX.md` §3.6）
 - **表达式后缀链**：纯符号路径保持 PathParserLayer 的 Symbol 形态；`(`/`[`/`.`/`?.`/`\<`/`:` 后缀由 ExpressionParserLayer 链接，底座为表达式时才产生 MemberAccessASTNode
@@ -303,6 +305,11 @@ pub class Point {
 
 **Parser/PDA 大扫除（M23）已完成**：控制流系统与 AST 施工系统分离，
 施工目标协议、ExpressionRootASTNode、EOF 正式化、AST 完整性验证全部落地。
+
+**AST 结构标注与 Validator 重写（M24）已完成**：结构关系以
+[ChildAstNode]/[ParentAstNode]/[AstCarrier] 显式标注，Validator 改为
+Attribute 驱动并新增父子指针一致性校验，借此修复 5 个历史结构 bug；
+ASTNodeType 枚举删除，节点类型判断全面改用 CLR 类型。
 
 **下一阶段**：语义分析、BIL 输出（见 `../BIL_STANDARD.md`）
 
@@ -324,6 +331,44 @@ pub class Point {
 ---
 
 ## 7. 里程碑历史
+
+### 2026-07-26 · M24 AST 结构标注 + Validator 重写 + 删除 ASTNodeType + 父子指针 bug 修复
+
+> 本次重构不改 Latte 语法；把 AST 结构关系从「约定」变为「显式标注」，
+> Validator 改为 Attribute 驱动，并借此抓出并修复 5 个真实的父子指针 bug
+> （根因均为「先解析后决定归属 → 事后搬家」，与大扫除的施工协议相违）。
+
+- **结构标注 Attribute**（AST/ASTStructureAttributes.cs）：`[ChildAstNode]`
+  标记装子节点的字段/属性（单节点/节点集合/carrier 集合，含 private 字段如
+  ExpressionRootASTNode.expression）；`[ParentAstNode]` 标记父指针
+  （ASTNode.Parent）；`[AstCarrier]` 标记携带 ASTNode 的非节点对象
+  （ImportItem struct）——配合容纳它的成员上的 [ChildAstNode]，
+  Validator 深入其公共字段完成子节点遍历
+- **Validator 重写**：遍历只走 [ChildAstNode] 成员；新增父子指针一致性校验
+  （每个子节点的 Parent 必须指向持有者，carrier 情形为持有集合的节点）；
+  原「Expression.Parent 指向 Root」检查被通用校验覆盖；Root 未填充 /
+  节点无共享 / Parent 链无环 / switch default 规则保留
+- **彻底删除 ASTNodeType**：枚举本体、ASTNode.NodeType 抽象属性、约 50 处
+  override、ASTNodeTypeExtensions（无任何使用）全部删除；节点类型一律用
+  CLR 类型判断（is / GetType()）
+- **无 reparent 原则**：AttachTo 保持一次性；「归属后知」场景一律改用
+  创建时归属即定的结构，禁止任何形式的 Parent 重挂
+- **修复 Validator 抓出的 5 个父子指针 bug**：
+  1. Range 收养（LoopParserLayer）→ 删除 RangeExpressionASTNode，拍平为
+     LoopStatementASTNode.Iterable（起点）+ RangeTo（终点，null = 非范围循环）
+  2. Assign 收养（CodeBlockParserLayer）→ 删除 AssignStatementASTNode，
+     表达式语句与赋值语句统一为 ExpressionStatementASTNode
+     （Expression + AssignValue?，两个 Root 槽创建时 Parent 即定）
+  3. 注解 Parent 指向声明的父容器 → 构造时 parent 为 null，声明节点创建时
+     一次性 AttachTo（DeclarationParserLayer.AttachAnnotations 统一挂接点）
+  4. 泛型约束 Target 搬家（GenericParametersParserLayer）→ StartConstraint
+     把符号数据（Symbol 为纯数据）灌进 constraint 自带 Target 节点，
+     不再挂接外部已建成节点
+  5. 注解实参 Parent 指向父容器 → ArgumentListParserLayer 的 parentNode
+     改传注解节点本身
+- 测试：430/430（23 套件）；新增 ASTIntegrityValidatorTests（5 用例：
+  合法树通过 + Parent 指错/carrier 指错/Root 未填充/节点共享拒绝）；
+  各套件 Describe 类型分派更新，快照期望保持不变
 
 ### 2026-07-26 · M23 Parser/PDA 大扫除（架构重构，依据 great_clean_plan.md）
 

@@ -34,8 +34,6 @@ namespace LatteCompiler
         public IntLiteralASTNode(ASTNode? parent) : base(parent)
         {
         }
-
-        public override ASTNodeType NodeType => ASTNodeType.NumberValue;
     }
 
     // 浮点数字面量 AST 节点
@@ -47,8 +45,6 @@ namespace LatteCompiler
         public FloatLiteralASTNode(ASTNode? parent) : base(parent)
         {
         }
-
-        public override ASTNodeType NodeType => ASTNodeType.NumberValue;
     }
 
     // 字符串字面量 AST 节点
@@ -60,8 +56,6 @@ namespace LatteCompiler
         public StringLiteralASTNode(ASTNode? parent) : base(parent)
         {
         }
-
-        public override ASTNodeType NodeType => ASTNodeType.StringValue;
     }
 
     // 字符字面量 AST 节点
@@ -72,8 +66,6 @@ namespace LatteCompiler
         public CharLiteralASTNode(ASTNode? parent) : base(parent)
         {
         }
-
-        public override ASTNodeType NodeType => ASTNodeType.StringValue;
     }
 
     // 布尔字面量 AST 节点
@@ -84,8 +76,6 @@ namespace LatteCompiler
         public BoolLiteralASTNode(ASTNode? parent) : base(parent)
         {
         }
-
-        public override ASTNodeType NodeType => ASTNodeType.BoolValue;
     }
 
     // null 字面量 AST 节点
@@ -94,7 +84,5 @@ namespace LatteCompiler
         public NullLiteralASTNode(ASTNode? parent) : base(parent)
         {
         }
-
-        public override ASTNodeType NodeType => ASTNodeType.StringValue;
     }
 }

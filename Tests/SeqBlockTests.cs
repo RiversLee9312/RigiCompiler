@@ -245,7 +245,9 @@ namespace LatteCompiler.Tests
                 SeqBlockExpressionASTNode seq => FormatSeq(seq),
                 VariableDeclarationASTNode v => FormatVarDecl(v),
                 ReturnStatementASTNode r => FormatReturn(r),
-                ExpressionRootASTNode root => DescribeExpression(root.Expression),
+                ExpressionStatementASTNode s => s.AssignValue != null
+                    ? $"Assign({DescribeExpression(s.Expression.Expression)} = {DescribeExpression(s.AssignValue.Expression)})"
+                    : DescribeExpression(s.Expression.Expression),
                 ExpressionASTNode e => DescribeExpression(e),
                 _ => $"<{node.GetType().Name}>"
             };

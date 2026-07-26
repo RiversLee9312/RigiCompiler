@@ -27,8 +27,12 @@
 
 ## 3. AST 节点类型（语法分析器输出）
 
-**ASTNode**: 抽象基类（`parent` 指针、`NodeType`、`Children`），`Core/Utilities.cs`。
+**ASTNode**: 抽象基类（`Parent` 指针、`Children`），`Core/Utilities.cs`。
 `Children` 是统一的子节点容器（全局作用域、类型体、嵌套类型共用，M14 从 RootASTNode 上移到基类）。
+节点类型一律用 CLR 类型判断（原 ASTNodeType 枚举已删除）；装子节点的字段/属性以
+`[ChildAstNode]` 标注、父指针以 `[ParentAstNode]` 标注，携带 ASTNode 的非节点对象
+（如 import 列表项 ImportItem struct）以 `[AstCarrier]` 标注——供 ASTIntegrityValidator
+反射遍历并校验父子指针一致性（M24）。
 
 ### 3.1 根与符号（`Core/Utilities.cs`，待逐步迁出）
 - **RootASTNode**: 根节点（成员即基类的 `Children`）
@@ -85,7 +89,6 @@
 | **TypeOfExpressionASTNode** | Operand | typeOf(expr) |
 | **CastExpressionASTNode** | Object、TargetType、IsSafe | as / as? 转换 |
 | **TypeCheckExpressionASTNode** | Object、Operator、TargetType | is / supers / with 检查 |
-| **RangeExpressionASTNode** | From、To | 范围（`0 to 10`） |
 | **SeqBlockExpressionASTNode** | IsVolatile、UsingBindings、Label?、Body | seq 块（语句 + 表达式双形态） |
 
 ### 3.6 语句（`AST/StatementNodes.cs`）
@@ -94,10 +97,10 @@
 |------|----------|------|
 | **CodeBlockASTNode** | Children | `{ }` 代码块 |
 | **IfStatementASTNode** | Condition、ThenBlock、ElseBranch? | if 语句（ElseBranch 为块或嵌套 if） |
-| **LoopStatementASTNode** | Kind（LoopKind）、VariableName?、Iterable?、Condition?、Label?、Body | for-each/范围/while/do-while |
+| **LoopStatementASTNode** | Kind（LoopKind）、VariableName?、Iterable?、RangeTo?、Condition?、Label?、Body | for-each/范围/while/do-while（范围 = Iterable 起点 + RangeTo 终点） |
 | **ReturnStatementASTNode** | Label?、Value? | return / return@label |
 | **LoopControlStatementASTNode** | IsBreak、Label? | break / continue[@label] |
-| **AssignStatementASTNode** | Target、Value | 赋值 |
+| **ExpressionStatementASTNode** | Expression、AssignValue? | 表达式开头的语句：纯表达式语句或赋值语句（M24 合并，双 Root 槽创建时归属即定） |
 | **TryCatchFinallyStatementASTNode** | TryBlock、CatchClauses、FinallyParameter?、FinallyBlock? | 异常处理 |
 | **CatchClauseASTNode** | VariableName?、ExceptionType、Body | catch 子句（`_` 丢弃异常变量） |
 | **UsingBindingASTNode** | IsConst、VariableName、Type?、Initializer | seq using 资源绑定 |

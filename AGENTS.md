@@ -75,7 +75,7 @@ LatteCompiler/
 │   ├── DeclarationNodes.cs      # 声明节点（变量声明等）
 │   ├── ExpressionNodes.cs       # 表达式节点（含 ExpressionRootASTNode 挂载点）
 │   ├── StatementNodes.cs        # 语句节点（代码块/if/循环/return/赋值等）
-│   └── ASTIntegrityValidator.cs # AST 完整性验证器（Parse 成功后自动运行）
+│   └── ASTIntegrityValidator.cs # AST 完整性验证器（Parse 成功后自动运行，[ChildAstNode]/[AstCarrier] 标注驱动）
 ├── Parser/                   # Parser 层实现（每层一个文件）
 │   ├── Parser.cs                # 核心协议：IParserLayer、ParserLayerResult、
 │   │                            #   TokenDisposition、ParserLayerContext、Parser 主循环
@@ -197,9 +197,14 @@ Parser 主循环维护一个 Layer 栈，每个 token 交给栈顶 Layer 处理�
    不完整 → 抛 "Unexpected end of file"。禁止用换行伪装 EOF。
 7. **新 Layer 必须有独立测试**（`TestRootParserLayer` 驱动，见 §5）。
 
-解析成功后 `ASTIntegrityValidator` 自动验证 AST 不变量（Root 均已填充、
-Expression.Parent 指向 Root、节点无共享、Parent 链无环、switch default 规则），
-失败抛 `CompilerInternalException`（内部编译器错误，与用户语法错误区分）。
+解析成功后 `ASTIntegrityValidator` 自动验证 AST 不变量：遍历只走
+`[ChildAstNode]` 标注的成员（`[AstCarrier]` 对象深入其公共字段），校验每个
+子节点的 Parent 指向持有者，另含 Root 均已填充、节点无共享、Parent 链无环、
+switch default 规则；失败抛 `CompilerInternalException`（内部编译器错误，
+与用户语法错误区分）。节点类型一律用 CLR 类型判断（无 ASTNodeType 枚举）。
+「归属后知」的场景必须用创建时归属即定的结构承载
+（ExpressionStatementASTNode 双 Root 槽、LoopStatementASTNode.RangeTo）
+或延迟一次性 AttachTo（注解），**禁止任何形式的 Parent 重挂**。
 
 ### 4.5 ⚠️ 简洁优先：新增代码前必须自问的三个问题
 

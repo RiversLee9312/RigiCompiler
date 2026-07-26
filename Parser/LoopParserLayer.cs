@@ -7,7 +7,7 @@ namespace LatteCompiler
     ///
     /// 支持全部循环形态：
     /// - for-each：for (item in collection) { ... }
-    /// - 范围循环：for (i in 0 to 10) { ... }（0 to 10 解析为 RangeExpressionASTNode）
+    /// - 范围循环：for (i in 0 to 10) { ... }（起点在 Iterable，终点解析到 RangeTo Root）
     /// - while：while (condition) { ... }
     /// - do-while：do { ... } while (condition)
     /// - named 标签：for/while/do 均可带 named 标签，配合 break@标签 / continue@标签
@@ -228,16 +228,12 @@ namespace LatteCompiler
             return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
-        // to 已读：把已填充的起点 Root 包进 RangeExpression（收养，不搬家），
-        // Iterable 换为装范围表达式的新 Root，终点表达式解析到 range.To
+        // to 已读：起点表达式留在 Iterable 不动；为范围终点新建 RangeTo Root
+        // （Parent 创建即定为循环节点），终点表达式直接解析到该 Root——无节点搬家
         private ParserLayerResult HandleRangeEndStart(Token currentToken, ParserLayerContext context)
         {
-            var fromRoot = targetNode.Iterable!;
-            var range = new RangeExpressionASTNode(fromRoot);
-            var iterableRoot = new ExpressionRootASTNode(targetNode);
-            targetNode.Iterable = iterableRoot;
-            iterableRoot.Attach(range);
-            return DelegateExpression(State.CloseParenExpected, range.To);
+            targetNode.RangeTo = new ExpressionRootASTNode(targetNode);
+            return DelegateExpression(State.CloseParenExpected, targetNode.RangeTo);
         }
 
         // named 标签或循环体 {

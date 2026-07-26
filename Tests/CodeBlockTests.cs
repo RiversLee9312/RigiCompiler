@@ -221,8 +221,9 @@ namespace LatteCompiler.Tests
             return node switch
             {
                 VariableDeclarationASTNode v => DescribeVarDecl(v),
-                AssignStatementASTNode a =>
-                    $"Assign({DescribeExpression(a.Target.Expression)} = {DescribeExpression(a.Value.Expression)})",
+                ExpressionStatementASTNode s => s.AssignValue != null
+                    ? $"Assign({DescribeExpression(s.Expression.Expression)} = {DescribeExpression(s.AssignValue.Expression)})"
+                    : DescribeExpression(s.Expression.Expression),
                 ReturnStatementASTNode r =>
                     $"Return{(r.Label != null ? "@" + r.Label : "")}" +
                     $"{(r.Value != null ? $"({DescribeExpression(r.Value!.Expression)})" : "")}",
@@ -231,7 +232,6 @@ namespace LatteCompiler.Tests
                 IfStatementASTNode i => DescribeIf(i),
                 LoopStatementASTNode l => DescribeLoop(l),
                 CodeBlockASTNode b => DescribeBlock(b),
-                ExpressionRootASTNode root => DescribeExpression(root.Expression),
                 ExpressionASTNode e => DescribeExpression(e),
                 _ => $"<{node.GetType().Name}>"
             };
@@ -280,8 +280,9 @@ namespace LatteCompiler.Tests
             string label = l.Label != null ? $", named {l.Label}" : "";
             return l.Kind switch
             {
-                LoopKind.For =>
-                    $"For({l.VariableName}, {DescribeExpression(l.Iterable!.Expression)}{label}, {DescribeBlock(l.Body)})",
+                LoopKind.For => l.RangeTo != null
+                    ? $"For({l.VariableName}, Range({DescribeExpression(l.Iterable!.Expression)} to {DescribeExpression(l.RangeTo.Expression)}){label}, {DescribeBlock(l.Body)})"
+                    : $"For({l.VariableName}, {DescribeExpression(l.Iterable!.Expression)}{label}, {DescribeBlock(l.Body)})",
                 LoopKind.While =>
                     $"While({DescribeExpression(l.Condition!.Expression)}{label}, {DescribeBlock(l.Body)})",
                 _ =>
@@ -312,8 +313,6 @@ namespace LatteCompiler.Tests
                     $"Index({DescribeExpression(ix.Object.Expression)}, [{string.Join(", ", ix.Indices.Select(DescribeArgument))}])",
                 MemberAccessASTNode m =>
                     $"Access({DescribeExpression(m.Object.Expression)}, {(m.IsSafeAccess ? "?" : "")}.{m.MemberName})",
-                RangeExpressionASTNode r =>
-                    $"Range({DescribeExpression(r.From.Expression)} to {DescribeExpression(r.To.Expression)})",
                 EnumCaseExpressionASTNode ec => $"EnumCase(.{ec.CaseName})",
                 WrapperAccessASTNode w =>
                     $"WrapperAccess({DescribeExpression(w.Object.Expression)}, :{w.WrapperName})",

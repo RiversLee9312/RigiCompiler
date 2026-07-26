@@ -219,7 +219,7 @@ namespace LatteCompiler
                 // 型变参数 + 约束（如 out TElement extends Comparable）
                 string name = pendingName;
                 CompleteParameter();
-                return StartConstraint(kind.Value, MakeBareTypeRef(name), context);
+                return StartConstraint(kind.Value, MakeBareSymbol(name), false, context);
             }
 
             context.RaiseError($"Expected '...', ',', '>' or constraint after parameter name, got: {currentToken}");
@@ -291,7 +291,7 @@ namespace LatteCompiler
                 // 可变参数的约束 Target 隐含为刚完成的参数
                 string name = pendingName;
                 CompleteParameter();
-                return StartConstraint(kind.Value, MakeBareTypeRef(name), context);
+                return StartConstraint(kind.Value, MakeBareSymbol(name), false, context);
             }
 
             context.RaiseError($"Expected ',', '>' or constraint after variadic parameter, got: {currentToken}");
@@ -304,8 +304,9 @@ namespace LatteCompiler
             var kind = TryGetConstraintKind(currentToken);
             if (kind != null)
             {
-                // 约束子句：已解析的类型即 Target
-                return StartConstraint(kind.Value, pendingTarget!, context);
+                // 约束子句：已解析类型的符号数据灌进 constraint 自带 Target 节点
+                return StartConstraint(
+                    kind.Value, pendingTarget!.TypeSymbol.symbol, pendingTarget!.IsNullable, context);
             }
 
             if (currentToken is NotationToken nt)
@@ -432,23 +433,24 @@ namespace LatteCompiler
             return nonEmpty[0].name;
         }
 
-        // 由裸名构建单元素类型引用（作为约束 Target）
-        private TypeReferenceASTNode MakeBareTypeRef(string name)
+        // 由裸名构建单元素符号（作为约束 Target 的数据）
+        private static Symbol MakeBareSymbol(string name)
         {
-            var typeRef = new TypeReferenceASTNode(targetNode);
-            typeRef.TypeSymbol.symbol.elements.Add(new SymbolElement { name = name });
-            return typeRef;
+            var symbol = new Symbol();
+            symbol.elements.Add(new SymbolElement { name = name });
+            return symbol;
         }
 
-        // 开始约束子句：记录 Target 与种类，委托 TypeReferenceParserLayer 解析 Bound
+        // 开始约束子句：把 Target 的符号数据灌进 constraint 自带节点（其 Parent 已是
+        // constraint），再委托 TypeReferenceParserLayer 解析 Bound。
+        // 注意：禁止把外部已建成的 Target 节点挂进来——节点 Parent 在创建时即定、
+        // 禁止搬家；Symbol 是纯数据，可以安全转移。
         private ParserLayerResult StartConstraint(
-            GenericConstraintKind kind, TypeReferenceASTNode target, ParserLayerContext context)
+            GenericConstraintKind kind, Symbol targetSymbol, bool targetNullable, ParserLayerContext context)
         {
-            var constraint = new GenericConstraintASTNode(targetNode)
-            {
-                Target = target,
-                Kind = kind
-            };
+            var constraint = new GenericConstraintASTNode(targetNode) { Kind = kind };
+            constraint.Target.TypeSymbol.symbol = targetSymbol;
+            constraint.Target.IsNullable = targetNullable;
             targetNode.Constraints.Add(constraint);
 
             state = State.BoundParsed;

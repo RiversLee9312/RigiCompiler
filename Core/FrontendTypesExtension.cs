@@ -25,54 +25,6 @@ namespace LatteCompiler
     }
 
     // ============================================================================
-    // 扩展的 AST 节点类型枚举
-    // ============================================================================
-
-    // 这些扩展了 Utilities.cs 中已有的 ASTNodeType
-    public static class ASTNodeTypeExtensions
-    {
-        // 类型声明
-        public const string ClassDecl = "ClassDecl";
-        public const string StructDecl = "StructDecl";
-        public const string InterfaceDecl = "InterfaceDecl";
-        public const string EnumStructDecl = "EnumStructDecl";
-        public const string WrapperDecl = "WrapperDecl";
-
-        // 成员声明
-        public const string FieldDecl = "FieldDecl";
-        public const string MethodDecl = "MethodDecl";
-        public const string ConstructorDecl = "ConstructorDecl";
-        public const string OperatorDecl = "OperatorDecl";
-
-        // 类型节点
-        public const string PrimitiveType = "PrimitiveType";
-        public const string NamedType = "NamedType";
-        public const string NullableType = "NullableType";
-        public const string GenericTypeRef = "GenericTypeRef";
-        public const string ArrayType = "ArrayType";
-
-        // 语句
-        public const string VarDecl = "VarDecl";
-        public const string IfStmt = "IfStmt";
-        public const string ForStmt = "ForStmt";
-        public const string WhileStmt = "WhileStmt";
-        public const string ReturnStmt = "ReturnStmt";
-        public const string ThrowStmt = "ThrowStmt";
-        public const string TryStmt = "TryStmt";
-        public const string YieldStmt = "YieldStmt";
-
-        // 表达式
-        public const string BinaryOp = "BinaryOp";
-        public const string UnaryOp = "UnaryOp";
-        public const string CallExpr = "CallExpr";
-        public const string IndexExpr = "IndexExpr";
-        public const string MemberAccess = "MemberAccess";
-        public const string CastExpr = "CastExpr";
-        public const string NewExpr = "NewExpr";
-        public const string TypeOfExpr = "TypeOfExpr";
-    }
-
-    // ============================================================================
     // 符号表（语义分析用）
     // ============================================================================
 

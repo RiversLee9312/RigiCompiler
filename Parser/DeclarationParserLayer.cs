@@ -55,7 +55,8 @@ namespace LatteCompiler
 
         private State state = State.Modifiers;
         private readonly List<string> modifiers = new List<string>();
-        // @ 注解暂存（SYNTAX §14.5）：注解先于声明本体解析，声明节点创建时统一挂接
+        // @ 注解暂存（SYNTAX §14.5）：注解先于声明本体解析，构造时暂无父节点，
+        // 声明节点创建时由 AttachAnnotations 一次性 AttachTo 挂接
         private readonly List<AnnotationASTNode> pendingAnnotations = new List<AnnotationASTNode>();
         private CallableDeclarationASTNode? callable;
         private ASTNode? typeNode;                 // 正在解析的类型声明节点
@@ -107,7 +108,7 @@ namespace LatteCompiler
             // 注解 / wrapper 应用（SYNTAX §14.5）：@Name[(args)]，可叠加多个
             if (t is NotationToken at && at.Content == "@")
             {
-                var ann = new AnnotationASTNode(parent);
+                var ann = new AnnotationASTNode(null);  // 暂无父节点：声明创建时一次性 AttachTo
                 pendingAnnotations.Add(ann);
                 state = State.AnnotationName;
                 // 注解名（可为 a.b 路径）复用 PathParserLayer
@@ -129,7 +130,7 @@ namespace LatteCompiler
                 {
                     var v = new VariableDeclarationASTNode(parent);
                     v.Modifiers.AddRange(modifiers);
-                    v.Annotations.AddRange(pendingAnnotations);
+                    AttachAnnotations(v);
                     parent.Children.Add(v);
                     state = State.Finish;
                     // ext 允许限定名（pub ext var String.isEmpty: bool，§4.4）
@@ -167,11 +168,22 @@ namespace LatteCompiler
             throw context.RaiseError($"Unexpected token in declaration: {t}");
         }
 
+        // 注解挂接（大扫除 Validator 重写）：注解先于声明本体解析（构造时 parent 为 null），
+        // 声明节点创建后对每个暂存注解一次性 AttachTo，再挂到其 Annotations 列表
+        private void AttachAnnotations(ASTNode node)
+        {
+            foreach (var ann in pendingAnnotations)
+            {
+                ann.AttachTo(node);
+            }
+            node.Annotations.AddRange(pendingAnnotations);
+        }
+
         private ParserLayerResult StartCallable(CallableKind kind, State next)
         {
             callable = new CallableDeclarationASTNode(parent) { Kind = kind };
             callable.Modifiers.AddRange(modifiers);
-            callable.Annotations.AddRange(pendingAnnotations);
+            AttachAnnotations(callable);
             parent.Children.Add(callable);
             extSeen = modifiers.Contains(Keywords.EXT);
             state = next;
@@ -191,7 +203,7 @@ namespace LatteCompiler
                 state = State.Modifiers;
                 return new ParserLayerResult.PushLayer(
                     new ArgumentListParserLayer(
-                        ann.Arguments, ArgumentListParserLayer.BracketKind.Round, parent), TokenDisposition.Consume);
+                        ann.Arguments, ArgumentListParserLayer.BracketKind.Round, ann), TokenDisposition.Consume);
             }
 
             state = State.Modifiers;
@@ -339,7 +351,7 @@ namespace LatteCompiler
                 _ => throw context.RaiseError($"Unsupported type keyword: {keyword}")
             };
             GetModifiers(node).AddRange(modifiers);
-            node.Annotations.AddRange(pendingAnnotations);
+            AttachAnnotations(node);
             parent.Children.Add(node);
             return node;
         }
