@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -62,6 +62,16 @@ namespace LatteCompiler
                         root.Children.Add(importNode);
                         return new ParserLayerResult.PushLayer(
                                 layerToPush: new ImportParserLayer(importNode),
+                                shouldKeepToken: true
+                            );
+                    }
+                    // namespace 关键字（§15.1）
+                    else if(token.Content == Keywords.NAMESPACE)
+                    {
+                        var nsNode = new NamespaceDeclarationASTNode(root);
+                        root.Children.Add(nsNode);
+                        return new ParserLayerResult.PushLayer(
+                                layerToPush: new NamespaceParserLayer(nsNode),
                                 shouldKeepToken: true
                             );
                     }

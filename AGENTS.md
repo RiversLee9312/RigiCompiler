@@ -5,7 +5,7 @@
 
 **项目名**: LatteCompiler
 **语言**: C#（.NET 8.0，控制台程序，`Nullable` 与 `ImplicitUsings` 已启用）
-**开发阶段**: 早期 —— 编译器前端（Lexer + Parser）实现中，P0–P4 完成，P5 进行中（wrapper 主体、import、wrapper 路径访问已落地；剩余 namespace 声明）
+**开发阶段**: 早期 —— 编译器前端（Lexer + Parser）已完成（roadmap P0–P5 全部落地），下一阶段：语义分析、BIL 输出
 **版本控制**: Git（`main` 分支，2026-07-17 首次提交，工作树干净；无 CI/CD）
 
 ---
@@ -23,13 +23,13 @@ Latte 是一门现代的、类型安全的编程语言，本仓库是它的编�
 编译器目标架构：
 
 ```
-Latte 源码 (.latte) → Frontend (Lexer + Parser + 语义分析) ← 当前阶段
+Latte 源码 (.latte) → Frontend (Lexer + Parser) ✅ 完成 → 语义分析 ← 当前阶段
                     → BIL (Basic Intermediate Language)
                     → Middleware (LLVM IR Generator)
                     → LLVM 工具链 → 原生可执行文件
 ```
 
-**当前进度**：仅实现了 Lexer 和 Parser。已可解析字面量、类型引用、变量声明（含 getter/setter 属性访问器）、完整表达式（含 Lambda、if/switch 表达式、typeOf/as/is、seq 表达式形态、await、前导点 enum case 引用、wrapper 路径访问 `:`）、完整语句系统（代码块、if、循环、try-catch-finally、seq、throw、yield、return/break/continue、赋值）、泛型参数列表、函数形参列表（含 init `_ -> field` 参数映射）、统一声明层（全局字段/函数、class/interface/struct/wrapper 声明、成员方法与 init/operator、继承与 implements、like 委托、ext 限定名、嵌套类型、声明上的泛型参数、enum struct 的 `[]` case 列表）、wrapper 主体（`@` 注解/wrapper 应用、`@WrapperTarget(.X)` 类型标识、`.proxy.*` 代理成员）、模块系统 import（§15.2 三种形态）。尚无语义分析、无代码生成、无 BIL 输出。
+**当前进度**：编译器前端（Lexer + Parser）已完成。已可解析字面量、类型引用、变量声明（含 getter/setter 属性访问器）、完整表达式（含 Lambda、if/switch 表达式、typeOf/as/is、seq 表达式形态、await、前导点 enum case 引用、wrapper 路径访问 `:`）、完整语句系统（代码块、if、循环、try-catch-finally、seq、throw、yield、return/break/continue、赋值）、泛型参数列表、函数形参列表（含 init `_ -> field` 参数映射）、统一声明层（全局字段/函数、class/interface/struct/wrapper 声明、成员方法与 init/operator、继承与 implements、like 委托、ext 限定名、嵌套类型、声明上的泛型参数、enum struct 的 `[]` case 列表）、wrapper 主体（`@` 注解/wrapper 应用、`@WrapperTarget(.X)` 类型标识、`.proxy.*` 代理成员）、模块系统（import §15.2 三种形态、namespace 声明 §15.1）。尚无语义分析、无代码生成、无 BIL 输出。
 
 ---
 
@@ -70,6 +70,7 @@ dotnet clean
 19. Run TypeDeclaration tests
 20. Run PropertyAccessor tests
 21. Run Import tests
+22. Run Namespace tests
 ```
 
 非交互运行示例：
@@ -214,10 +215,10 @@ Lexer 只做简单字符识别，不理解语义。例如 `3.14` 会输出三个
 
 ## 5. 测试策略
 
-- **不使用任何测试框架**。测试是 `Tests/` 下的静态类，每个类提供 `public static void RunAll()`，通过 `Program.cs` 菜单（选项 2–21）触发。
+- **不使用任何测试框架**。测试是 `Tests/` 下的静态类，每个类提供 `public static void RunAll()`，通过 `Program.cs` 菜单（选项 2–22）触发。
 - 测试模式：每个用例把一小段 Latte 源码字符串依次过 `Lexer.Tokenize` → `Parser.Parse`，然后把得到的 AST 节点描述成字符串与期望比对，控制台打印 `[PASS]`/`[FAIL]`，结尾汇总 `N passed, M failed`。
 - **约定：每新增一个 ParserLayer，必须在 `Tests/` 添加对应测试类，并在 `Program.cs` 菜单注册一个新选项。**
-- 当前测试类（20 个）：`LiteralParserTests`、`TypeReferenceParserTests`、`VariableDeclarationTests`、`ExpressionParserTests`、`GenericParsingTests`、`GenericParametersTests`、`ParameterListTests`、`LambdaExpressionTests`、`IfExpressionTests`、`SwitchExpressionTests`、`TypeOfExpressionTests`、`CodeBlockTests`、`LoopTests`、`TryCatchFinallyTests`、`SeqBlockTests`、`ThrowStatementTests`、`CoroutineOpsTests`、`TypeDeclarationTests`、`PropertyAccessorTests`、`ImportTests`，合计 410 个用例，当前全部通过。
+- 当前测试类（21 个）：`LiteralParserTests`、`TypeReferenceParserTests`、`VariableDeclarationTests`、`ExpressionParserTests`、`GenericParsingTests`、`GenericParametersTests`、`ParameterListTests`、`LambdaExpressionTests`、`IfExpressionTests`、`SwitchExpressionTests`、`TypeOfExpressionTests`、`CodeBlockTests`、`LoopTests`、`TryCatchFinallyTests`、`SeqBlockTests`、`ThrowStatementTests`、`CoroutineOpsTests`、`TypeDeclarationTests`、`PropertyAccessorTests`、`ImportTests`、`NamespaceTests`，合计 417 个用例，当前全部通过。
 
 验证改动（已验证可用）：
 

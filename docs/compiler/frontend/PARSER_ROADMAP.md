@@ -1,8 +1,8 @@
 # Latte Compiler Parser 实现路线图
 
-> **版本**: 2.0  
+> **版本**: 2.1  
 > **创建日期**: 2026-07-17  
-> **状态**: 执行中（P0–P4 完成，P5 进行中——M20/M21 已落地，剩余 namespace 声明；进度现状见 ../../PROGRESS_REPORT.md）
+> **状态**: ✅ 全部完成（P0–P5 收官，M22 namespace 声明落地；进度现状见 ../../PROGRESS_REPORT.md；下一阶段：语义分析、BIL 输出）
 
 本文档详细描述 Latte Parser 的完整实现路线图，包括所有需要实现的 ParserLayer 组件、它们的依赖关系、优先级以及详细的实现指导。
 
@@ -1652,7 +1652,8 @@ public class PerformanceTests
   - [x] 前导点 enum case 引用（§12：`.Success` / `.Failed(404)`，M20）
   - [x] wrapper 路径访问（`:`，表达式侧后缀链，M21）
   - [x] 模块系统 import（§15.2 三种形态，ImportParserLayer 重建，M21）
-  - [x] 单元测试（含于 TypeDeclaration 94/94、Expression 75/75、CodeBlock 29/29、Import 14/14）
+  - [x] namespace 声明（§15.1，NamespaceParserLayer，M22）
+  - [x] 单元测试（含于 TypeDeclaration 94/94、Expression 75/75、CodeBlock 29/29、Import 14/14、Namespace 7/7）
 
 ### P6 - 高级特性
 - [x] 21. LambdaExpressionParserLayer（M8 提前落地）
@@ -1771,11 +1772,12 @@ public class PerformanceTests
 - ✅ P2 全部完成（语句系统：代码块、if/循环、try-catch-finally、seq、throw、await/yield）
 - ✅ P3 全部完成（M13–M19：统一声明层、声明泛型参数、getter/setter、enum case 列表、init 参数映射、like 委托、ext 扩展成员）
 - ✅ P4 全部完成（#17–19 由统一声明层同步覆盖：func/init/operator 声明、泛型、参数映射、ext）
-- ⏳ P5 进行中（M20 wrapper 主体、M21 import + wrapper 路径访问已落地；剩余 namespace 声明 §15.1）
-- 测试总计 410/410（菜单 2–21）
+- ✅ P5 全部完成（M20 wrapper 主体、M21 import + wrapper 路径访问、M22 namespace 声明）
+- 测试总计 417/417（菜单 2–22）
 
-**下一步**（P5 收尾）：
-1. namespace 声明（§15.1：`namespace com.example.myapp`，顶层单行声明）
+**下一步**（Parser 前端已收官，进入编译器下一阶段）：
+1. 语义分析
+2. BIL 输出（见 `../../BIL_STANDARD.md`）
 
 **历史目标**（已过时，保留存档）：
 1. ~~**立即开始**: 实现 `LiteralParserLayer`~~
@@ -1807,4 +1809,5 @@ public class PerformanceTests
 - v1.8 (2026-07-26): M19 `like` 委托（#13 完成）+ `ext` 扩展成员落地，**P3/P4 全部完成**；检查清单与「下一步」同步至 P5；测试 369/369
 - v1.9 (2026-07-26): M20 P5 起步——wrapper 主体落地（#20 完成）：@ 注解（wrapper 应用，类型标识以 SYNTAX §14 的 `@WrapperTarget(.X)` 为准）、`.proxy.*` 代理成员（specific + 四类 wildcard）、前导点 enum case 引用；顺带修复 CodeBlockASTNode 隐藏基类 Children 字段问题；测试 392/392
 - v2.0 (2026-07-26): M21 模块系统 import（§15.2 三种形态，ImportParserLayer 重建）+ wrapper 路径访问（`:` 接入表达式后缀链，#20 全部完成）；新增 ImportTests（菜单 21）；测试 410/410
+- v2.1 (2026-07-26): M22 namespace 声明（§15.1，NamespaceParserLayer）落地，**P5 收官、roadmap P0–P5 全部完成**；新增 NamespaceTests（菜单 22）；测试 417/417
 

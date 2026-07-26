@@ -24,7 +24,8 @@ Console.WriteLine("18. Run CoroutineOps tests");
 Console.WriteLine("19. Run TypeDeclaration tests");
 Console.WriteLine("20. Run PropertyAccessor tests");
 Console.WriteLine("21. Run Import tests");
-Console.Write("Enter choice (1-21): ");
+Console.WriteLine("22. Run Namespace tests");
+Console.Write("Enter choice (1-22): ");
 
 string? choice = Console.ReadLine();
 
@@ -146,6 +147,12 @@ else if (choice == "21")
 {
     // 运行 import 测试
     ImportTests.RunAll();
+    return;
+}
+else if (choice == "22")
+{
+    // 运行 namespace 测试
+    NamespaceTests.RunAll();
     return;
 }
 

@@ -343,4 +343,18 @@ namespace LatteCompiler
 
         public override ASTNodeType NodeType => ASTNodeType.Annotation;
     }
+
+    // namespace 声明（SYNTAX.md §15.1）：namespace com.example.myapp
+    // 顶层单行声明；唯一性与位置约束（应在文件首部）留待语义阶段
+    public class NamespaceDeclarationASTNode : ASTNode
+    {
+        public SymbolASTNode Name;               // 命名空间路径（a.b.c）
+
+        public NamespaceDeclarationASTNode(ASTNode? parent) : base(parent)
+        {
+            Name = new SymbolASTNode(this);
+        }
+
+        public override ASTNodeType NodeType => ASTNodeType.NamespaceDeclaration;
+    }
 }

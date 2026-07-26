@@ -297,6 +297,7 @@ namespace LatteCompiler
         public const string SET = "set";
         public const string PUB = "pub";
         public const string PRIV = "priv";
+        public const string NAMESPACE = "namespace";
         // 控制流关键字数组
         public static readonly string[] ControlStreamKeywords = 
         {
@@ -459,7 +460,8 @@ namespace LatteCompiler
         PropertyAccessor,
         Annotation,
         EnumCaseExpression,
-        WrapperAccess
+        WrapperAccess,
+        NamespaceDeclaration
     }
     public class AcquisitionExpressionASTNode : ASTNode
     {

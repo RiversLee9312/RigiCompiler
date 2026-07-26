@@ -6,8 +6,8 @@
 > 计划与分工见 `compiler/frontend/PARSER_ROADMAP.md`；本文档只记录「现状」。
 
 **报告日期**: 2026-07-26
-**当前阶段**: P0–P4 已完成；**P5 进行中**（M20 wrapper 主体、M21 import + wrapper 路径访问已落地；剩余 namespace 声明 §15.1）
-**测试总计**: 410/410 通过 (100%)
+**当前阶段**: P0–P5 全部完成（M22 namespace 声明落地，模块系统收官）；**下一步**：语义分析、BIL 输出
+**测试总计**: 417/417 通过 (100%)
 **版本控制**: Git `main` 分支（2026-07-17 首次提交）
 
 ---
@@ -37,6 +37,7 @@
 | M19 | `like` 委托（§9.6）+ `ext` 扩展成员（§4.4）—— **P3/P4 收官** | ✅ | 2026-07-26 | 9/9 |
 | M20 | P5 起步：wrapper 主体（@ 注解 + `.proxy.*` 代理成员 + 前导点 enum case） | ✅ | 2026-07-26 | 23/23 |
 | M21 | 模块系统 import（§15.2）+ wrapper 路径访问（`:`，§14.1/§3） | ✅ | 2026-07-26 | 18/18 |
+| M22 | namespace 声明（§15.1）—— **P5 收官** | ✅ | 2026-07-26 | 7/7 |
 
 ---
 
@@ -221,6 +222,9 @@ import core.collections.List
 import core.collections.{List, Map}
 import core.collections.*
 
+// namespace 声明（§15.1：顶层单行声明）
+namespace com.example.myapp
+
 // wrapper 路径访问（§14.1/§3：与成员访问同属路径后缀链，链式左结合）
 var logger = service:Logged
 var w = obj:A:B
@@ -275,6 +279,7 @@ pub class Point {
 | DeclarationParserLayer | ✅ 统一声明层 | 94/94（TypeDeclaration 套件） | 任何位置任何声明的唯一入口：全局/成员/嵌套共用一套状态机；声明泛型参数（M15）、enum `[]` case 列表（M17）、like 委托与 ext 限定名（M19）、@ 注解与 wrapper `.proxy.*` 代理成员（M20）已接入 |
 | PropertyAccessorParserLayer | ✅ | 17/17 | §9.4 访问器块 `{ get... set... }`；backing field 判定与 get/set 一致性校验；三类定义位置经 VariableDeclaration 汇聚 |
 | ImportParserLayer | ✅ | 14/14 | §15.2 三种形态（单个/`.{}` 多个/`.*` 全部）；前缀路径复用 PathParserLayer（M21 重建，菜单 21） |
+| NamespaceParserLayer | ✅ | 7/7 | §15.1 顶层单行声明；路径复用 PathParserLayer（M22，菜单 22） |
 
 ---
 
@@ -291,33 +296,41 @@ pub class Point {
 
 ## 5. 下一步计划
 
-**P5 进行中（M20/M21 已落地）**：wrapper 主体（@ 注解、`.proxy.*` 代理成员、前导点 enum case）、
-模块系统 import（§15.2）、wrapper 路径访问（`:`）均已完成。
+**P5 已全部完成（M20–M22）**：wrapper 主体（@ 注解、`.proxy.*` 代理成员、前导点 enum case）、
+模块系统（import §15.2 + namespace §15.1）、wrapper 路径访问（`:`）。
+**至此 Parser 前端规划（roadmap P0–P5）全部落地。**
 
-**P5（剩余）**：
-
-- namespace 声明（§15.1）：`namespace com.example.myapp`，顶层单行声明
-
-**再往后**：语义分析、BIL 输出
+**下一阶段**：语义分析、BIL 输出（见 `../BIL_STANDARD.md`）
 
 ---
 
 ## 6. 技术债务与已知限制
 
 1. 字符字面量未实现（占位符）
-2. namespace 声明（§15.1）未实现（P5 收尾项）
-3. lambda 体与 if/switch 表达式分支体仍仅支持单表达式（CodeBlock 已落地，表达式分支的多语句接入留待后续）
-4. switch 仅表达式模式（SYNTAX 未定义语句形态）
-5. 复合赋值（`+=`/`-=` 等）未实现：Lexer 未合并这些 token，需重组机制
-6. `is` 右侧的 enum case（`result is .Failed`，§12.3）未支持：`is` 右侧目前只走类型引用
-7. method wrapper canonical 形态中的 `.name` 保留参数名（§14.4 示例 `operator .proxy.call(.name: String, ...)`）未支持
-8. import 的 `{}` 列表项仅支持单标识符（`import a.{b.c}` 未支持；规范无示例）
+2. lambda 体与 if/switch 表达式分支体仍仅支持单表达式（CodeBlock 已落地，表达式分支的多语句接入留待后续）
+3. switch 仅表达式模式（SYNTAX 未定义语句形态）
+4. 复合赋值（`+=`/`-=` 等）未实现：Lexer 未合并这些 token，需重组机制
+5. `is` 右侧的 enum case（`result is .Failed`，§12.3）未支持：`is` 右侧目前只走类型引用
+6. method wrapper canonical 形态中的 `.name` 保留参数名（§14.4 示例 `operator .proxy.call(.name: String, ...)`）未支持
+7. import 的 `{}` 列表项仅支持单标识符（`import a.{b.c}` 未支持；规范无示例）
+8. namespace 的唯一性与位置约束（应在文件首部）未校验，留待语义阶段
 9. PathParserLayer 的 ValuePath / AcquisitionExpressionASTNode 为早期遗留模式（仅支持纯符号 base），与现有后缀链架构不兼容、未接入，待清理
 10. 5 个 nullable 编译警告（`Core/Utilities.cs`，不影响功能）
 
 ---
 
 ## 7. 里程碑历史
+
+### 2026-07-26 · M22 namespace 声明（§15.1）—— P5 收官
+- 新增 `NamespaceParserLayer`（小 Layer，与 ImportParserLayer 同款结构）：
+  `namespace` + 路径（复用 `PathParserLayer`）+ 换行收尾；空路径与路径后多余 token 报错；
+  唯一性与位置约束（应在文件首部）留待语义阶段
+- `RootParserLayer` 新增 `namespace` 分发（与 import 同款）；新增
+  `NamespaceDeclarationASTNode` 与 `Keywords.NAMESPACE`
+- 新增 NamespaceTests 7 用例（基本/与 import 组合/3 错误用例）并注册菜单 22；
+  全量回归 2–22 无 FAIL
+- 测试总数 410 → 417
+- **P5 全部完成，Parser 前端规划（roadmap P0–P5）收官**；下一阶段：语义分析、BIL 输出
 
 ### 2026-07-26 · M21 模块系统 import + wrapper 路径访问（`:`）
 - `ImportParserLayer` 重建（SYNTAX §15.2，roadmap P5）——三种规范形态：
