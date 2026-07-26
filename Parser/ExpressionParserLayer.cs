@@ -156,8 +156,8 @@ namespace LatteCompiler
                 return DelegateNewParsing(context);
             }
 
-            // 3.1 关键字起始的结构化表达式（SYNTAX §5/§7/§3.7）：
-            // lambda、async lambda、if、switch、typeOf
+            // 3.1 关键字起始的结构化表达式（SYNTAX §5/§7/§3.7/§6）：
+            // lambda、async lambda、if、switch、typeOf、seq
             if (currentToken is WordToken kw)
             {
                 switch (kw.Content)
@@ -177,6 +177,12 @@ namespace LatteCompiler
                     case Keywords.TYPEOF:
                         var typeOfNode = new TypeOfExpressionASTNode(parentNode);
                         return DelegateStructuredParsing(typeOfNode, new TypeOfExpressionParserLayer(typeOfNode));
+                    case Keywords.SEQ:
+                    case Keywords.VOLATILE:
+                        // seq 块可以作为表达式使用（通过 return@seq/return@label 返回值）
+                        // 保留当前 token，因为 SeqBlockParserLayer 需要重新读取它
+                        var seqNode = new SeqBlockExpressionASTNode(parentNode);
+                        return DelegateStructuredParsing(seqNode, new SeqBlockParserLayer(seqNode), shouldKeepToken: true);
                 }
             }
 
@@ -244,14 +250,18 @@ namespace LatteCompiler
             );
         }
 
-        // 委托结构化表达式（if/switch/typeOf/lambda）：
+        // 委托结构化表达式（if/switch/typeOf/lambda/seq）：
         // 子层产出完整节点，经结果传递回填为当前主表达式
-        private ParserLayerResult DelegateStructuredParsing(ExpressionASTNode node, IParserLayer layer)
+        private ParserLayerResult DelegateStructuredParsing(
+            ExpressionASTNode node,
+            IParserLayer layer,
+            bool shouldKeepToken = false)
         {
             pendingResultHandler = result => currentExpression = (ExpressionASTNode)result!;
             state = State.PrimaryParsed;
-            // 起始关键字（if/switch/typeOf/func）已被本层消费，不保留
-            return new ParserLayerResult.PushLayer(layer, false);
+            // 起始关键字（if/switch/typeOf/func）已被本层消费，默认不保留
+            // seq/volatile 需要保留，因为 SeqBlockParserLayer 需要重新读取
+            return new ParserLayerResult.PushLayer(layer, shouldKeepToken);
         }
 
         // 委托 lambda 表达式解析（func 已消费；isAsync 标记 async lambda）

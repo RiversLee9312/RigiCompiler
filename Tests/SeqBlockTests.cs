@@ -120,9 +120,17 @@ namespace LatteCompiler.Tests
         {
             Console.WriteLine("=== Testing Seq as Expression ===");
 
-            // TODO: seq 作为表达式需要在 ExpressionParserLayer 中识别
-            // 目前 seq 仅作为语句工作
-            Console.WriteLine("  (Seq as expression: TODO - requires ExpressionParserLayer integration)");
+            // return@seq
+            TestBlock("{ var result = seq { return@seq compute() } }",
+                "[Var(result = Seq([Return@seq(Call(Sym(compute), []))]))]");
+
+            // return@label
+            TestBlock("{ var r = seq named calc { return@calc getValue() } }",
+                "[Var(r = Seq(named calc, [Return@calc(Call(Sym(getValue), []))]))]");
+
+            // 复杂示例：SYNTAX.md §6.1
+            TestBlock("{ const result = seq { const ac = a * c\nreturn@seq ac } }",
+                "[Var(result = Seq([Var(ac = Binary(Sym(a) * Sym(c))), Return@seq(Sym(ac))]))]");
 
             Console.WriteLine();
         }
@@ -234,7 +242,7 @@ namespace LatteCompiler.Tests
         {
             return node switch
             {
-                SeqBlockStatementASTNode seq => FormatSeq(seq),
+                SeqBlockExpressionASTNode seq => FormatSeq(seq),
                 VariableDeclarationASTNode v => FormatVarDecl(v),
                 ReturnStatementASTNode r => FormatReturn(r),
                 ExpressionASTNode e => DescribeExpression(e),
@@ -242,7 +250,7 @@ namespace LatteCompiler.Tests
             };
         }
 
-        private static string FormatSeq(SeqBlockStatementASTNode seq)
+        private static string FormatSeq(SeqBlockExpressionASTNode seq)
         {
             var parts = new List<string>();
 
@@ -296,9 +304,11 @@ namespace LatteCompiler.Tests
                 StringLiteralASTNode s => $"Str(\"{s.Value}\")",
                 BoolLiteralASTNode b => $"Bool({b.Value})",
                 SymbolReferenceASTNode sref => $"Sym({DescribeSymbol(sref.Symbol.symbol)})",
+                BinaryExpressionASTNode bin =>
+                    $"Binary({DescribeExpression(bin.Left)} {bin.Operator} {DescribeExpression(bin.Right)})",
                 CallExpressionASTNode c =>
                     $"Call({DescribeExpression(c.Callee)}, [{string.Join(", ", c.Arguments.Select(a => DescribeExpression(a.Value)))}])",
-                SeqBlockStatementASTNode seq => FormatSeq(seq),
+                SeqBlockExpressionASTNode seq => FormatSeq(seq),
                 _ => $"<{node.GetType().Name}>"
             };
         }

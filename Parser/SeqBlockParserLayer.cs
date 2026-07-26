@@ -23,10 +23,10 @@ namespace LatteCompiler
     ///      → UsingInitializer → UsingCloseParen] → UsingOrNamed（继续或进入 Named/Body）
     ///   → [Named → NamedLabel] → Body（委托 CodeBlockParserLayer）→ Completed
     /// </summary>
-    public class SeqBlockParserLayer : IParserLayer, IResultConsumer
+    public class SeqBlockParserLayer : IParserLayer, IResultConsumer, IResultProducer
     {
         private readonly ASTNode parentNode;
-        private readonly SeqBlockStatementASTNode seqNode;
+        private readonly SeqBlockExpressionASTNode seqNode;
 
         private enum State
         {
@@ -55,8 +55,11 @@ namespace LatteCompiler
         public SeqBlockParserLayer(ASTNode parent)
         {
             parentNode = parent;
-            seqNode = new SeqBlockStatementASTNode(parent);
+            seqNode = new SeqBlockExpressionASTNode(parent);
         }
+
+        // IResultProducer：返回解析完成的 seq 节点
+        public ASTNode? GetResult() => seqNode;
 
         public void OnChildResult(ASTNode? result, IParserLayer child)
         {
@@ -408,7 +411,8 @@ namespace LatteCompiler
 
         private ParserLayerResult HandleCompleted(Token currentToken, ParserLayerContext context)
         {
-            // 将完整的 seq 节点添加到父节点
+            // seq 作为表达式时：通过 IResultProducer 返回，父层（ExpressionParserLayer）通过结果传递获取
+            // seq 作为语句时：需要添加到 CodeBlock 或 Root
             if (parentNode is CodeBlockASTNode codeBlock)
             {
                 codeBlock.Children.Add(seqNode);
@@ -417,10 +421,8 @@ namespace LatteCompiler
             {
                 root.Children.Add(seqNode);
             }
-            else
-            {
-                context.RaiseError("seq 块只能出现在代码块或顶层");
-            }
+            // 其他情况（如 VariableDeclarationASTNode）：
+            // 不添加到 Children，而是通过 GetResult() 返回给父层
 
             return new ParserLayerResult.PopLayer(true);
         }

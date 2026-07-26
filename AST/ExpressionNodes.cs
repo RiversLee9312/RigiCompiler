@@ -302,4 +302,28 @@ namespace LatteCompiler
 
         public override ASTNodeType NodeType => ASTNodeType.TypeCheckExpression;
     }
+
+    // seq 块表达式（SYNTAX.md §6）：
+    // [volatile] seq [using(...)]* [named label] { ... }
+    // 可作为语句（不产生值）或表达式（通过 return@seq/return@label 产生值）
+    // 注：继承自 ExpressionASTNode，因此可以在表达式位置使用；
+    //     在代码块中单独成行时，作为表达式语句
+    public class SeqBlockExpressionASTNode : ExpressionASTNode
+    {
+        public bool IsVolatile;                    // volatile 修饰符
+        public List<UsingBindingASTNode> UsingBindings;  // using 资源绑定列表
+        public string? Label;                      // named 标签（可选）
+        public CodeBlockASTNode Body;
+
+        public SeqBlockExpressionASTNode(ASTNode? parent) : base(parent)
+        {
+            IsVolatile = false;
+            UsingBindings = new List<UsingBindingASTNode>();
+            Label = null;
+            Body = new CodeBlockASTNode(this);
+        }
+
+        public override ASTNodeType NodeType => ASTNodeType.SeqBlockExpression;
+    }
 }
+

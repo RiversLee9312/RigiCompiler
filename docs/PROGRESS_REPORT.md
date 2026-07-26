@@ -6,8 +6,8 @@
 > 计划与分工见 `compiler/frontend/PARSER_ROADMAP.md`；本文档只记录「现状」。
 
 **报告日期**: 2026-07-26
-**当前阶段**: P2 进行中（M10 seq 块完成），P0、P1 已完成
-**测试总计**: 249/249 通过 (100%)
+**当前阶段**: P2 进行中（M10 seq 块完成，含表达式形态），P0、P1 已完成
+**测试总计**: 252/252 通过 (100%)
 **版本控制**: Git `main` 分支（2026-07-17 首次提交）
 
 ---
@@ -25,7 +25,7 @@
 | M7 | P2 语句系统核心（CodeBlock/if 语句/循环/return/赋值） | ✅ | 2026-07-18 | 42/42 |
 | M8 | P1 收尾（Lambda/if/switch 表达式 + typeOf/as/is） | ✅ | 2026-07-18 | 39/39 |
 | M9 | TryCatchFinallyParserLayer（roadmap #10） | ✅ | 2026-07-26 | 9/9 |
-| M10 | SeqBlockParserLayer（roadmap #11） | ✅ | 2026-07-26 | 14/14 |
+| M10 | SeqBlockParserLayer（roadmap #11，含表达式形态） | ✅ | 2026-07-26 | 17/17 |
 
 ---
 
@@ -96,7 +96,7 @@ try {
     cleanup()
 }
 
-// seq 块（SYNTAX.md §6）：作用域/using 资源管理/named 标签
+// seq 块（SYNTAX.md §6）：作用域/using 资源管理/named 标签/表达式形态
 seq {
     var temp = compute()
 }
@@ -109,6 +109,17 @@ seq using(const file = new File("path"))
 using(var stream = new FileInputStream(file))
 named readFile {
     process(stream)
+}
+
+// seq 作为表达式（return@seq/return@label）
+const result = seq {
+    const ac = a * c
+    const discriminant = (b * b) - (4.0 * ac)
+    return@seq sqrt(discriminant)  // 返回值
+}
+
+var r = seq named calc {
+    return@calc getValue()
 }
 
 // 泛型参数列表（独立组件，待接入类型/函数声明）
@@ -136,7 +147,7 @@ named readFile {
 | IfStatementParserLayer | ✅ 两种模式 | 含于各套件 | 表达式模式强制 else；语句模式 else 可选 + else if 链 |
 | LoopParserLayer | ✅ | 15/15 | for-each/范围/while/do-while/named 标签 |
 | TryCatchFinallyParserLayer | ✅ | 9/9 | roadmap #10；多 catch 子句、finally(e)、嵌套 try |
-| SeqBlockParserLayer | ✅ | 14/14 | roadmap #11；volatile/using/named；seq 作为表达式待集成 |
+| SeqBlockParserLayer | ✅ | 17/17 | roadmap #11；volatile/using/named；语句+表达式双形态 |
 | GenericParametersParserLayer | ✅ | 21/21 | 声明/约束/型变/可变参数 |
 | ParameterListParserLayer | ✅ | 14/14 | 普通/默认/可变/具名可变 |
 | PathParserLayer | ✅ | 含于各套件 | 符号路径 + `\<` 泛型实参 |
@@ -158,7 +169,7 @@ named readFile {
 
 **P2 剩余部分**：
 1. CoroutineOpsParserLayer（roadmap #12，await/yield/async）
-2. seq 作为表达式（需要在 ExpressionParserLayer 中集成）
+2. throw 语句实现（关键字已定义）
 3. switch 语句模式评估（SYNTAX 当前仅定义 switch 表达式，语句形态待规范明确）
 
 **后续**：P3 类型声明（复用 GenericParametersParserLayer）、P4 函数声明（复用 ParameterListParserLayer + CodeBlockParserLayer）
@@ -170,18 +181,26 @@ named readFile {
 1. 字符字面量未实现（占位符）
 2. wrapper 路径访问（`:`）未实现（留待 P5）
 3. lambda 体与 if/switch 表达式分支体仍仅支持单表达式（CodeBlock 已落地，表达式分支的多语句接入留待后续）
-4. seq 作为表达式：语句形态已完成，但作为表达式使用需要在 ExpressionParserLayer 中集成（return@seq/return@label 机制）
-5. switch 仅表达式模式（SYNTAX 未定义语句形态）
-6. 复合赋值（`+=`/`-=` 等）未实现：Lexer 未合并这些 token，需重组机制
-7. throw 语句未实现（关键字已定义）
-8. await/yield 协程操作未实现（roadmap #12）
-9. 泛型参数/形参列表为独立组件，待 P3/P4 接入声明解析
-10. DeclarationParserLayer / ImportParserLayer 为早期骨架，将在 P3/P4 重建
-11. 4 个 nullable 编译警告（`Core/Utilities.cs`，不影响功能）
+4. switch 仅表达式模式（SYNTAX 未定义语句形态）
+5. 复合赋值（`+=`/`-=` 等）未实现：Lexer 未合并这些 token，需重组机制
+6. throw 语句未实现（关键字已定义）
+7. await/yield 协程操作未实现（roadmap #12）
+8. 泛型参数/形参列表为独立组件，待 P3/P4 接入声明解析
+9. DeclarationParserLayer / ImportParserLayer 为早期骨架，将在 P3/P4 重建
+10. 4 个 nullable 编译警告（`Core/Utilities.cs`，不影响功能）
 
 ---
 
 ## 7. 里程碑历史
+
+### 2026-07-26 · M10 SeqBlockParserLayer（roadmap #11，含表达式形态）
+- SeqBlockExpressionASTNode：从 StatementNode 移至 ExpressionNode，继承自 ExpressionASTNode，实现语句+表达式双形态
+- SeqBlockParserLayer 实现 IResultProducer，支持作为表达式返回节点（通过结果传递机制）
+- ExpressionParserLayer 集成：在 Primary 状态识别 seq/volatile 关键字，委托给 SeqBlockParserLayer（shouldKeepToken: true）
+- seq 作为表达式：`var result = seq { return@seq compute() }`、`var r = seq named calc { return@calc getValue() }`
+- 架构洞察：seq/lambda/方法等的代码块共用 CodeBlockParserLayer 基建，解析逻辑统一
+- 测试 249 → 252（+3：seq 作为表达式的 3 个用例）
+- 完整覆盖：简单 seq、volatile、using（单个/多个/带类型）、named、组合、表达式形态、错误用例
 
 ### 2026-07-26 · M10 SeqBlockParserLayer（roadmap #11）
 - SeqBlockParserLayer 完整实现：seq 块的作用域、volatile 修饰符、using 资源绑定、named 标签
