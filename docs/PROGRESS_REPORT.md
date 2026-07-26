@@ -6,8 +6,8 @@
 > 计划与分工见 `compiler/frontend/PARSER_ROADMAP.md`；本文档只记录「现状」。
 
 **报告日期**: 2026-07-26
-**当前阶段**: P0、P1、**P2 已完成**；**P3 进行中**（统一声明层 + 声明泛型参数已落地，getter/setter/enum case 等待续）
-**测试总计**: 326/326 通过 (100%)
+**当前阶段**: P0、P1、P2、**P3 已完成**（P4 函数/init/operator 声明主体亦由统一声明层同步覆盖完成）；**下一步 P5**（wrapper 主体、模块系统）
+**测试总计**: 369/369 通过 (100%)
 **版本控制**: Git `main` 分支（2026-07-17 首次提交）
 
 ---
@@ -31,6 +31,10 @@
 | M13 | P3 类型声明解析基础（DeclarationParserLayer 重构） | ✅ | 2026-07-26 | 16/16 |
 | M14 | 统一声明层：全局/成员/嵌套共用一套 infra | ✅ | 2026-07-26 | 36/36 |
 | M15 | 声明泛型参数接入统一声明层（类型/函数/operator） | ✅ | 2026-07-26 | 15/15 |
+| M16 | 属性访问器 getter/setter（§9.4 三类位置，roadmap #23） | ✅ | 2026-07-26 | 17/17 |
+| M17 | enum struct 的 `[]` case 列表（固定/参数化 case、显式判别值） | ✅ | 2026-07-26 | 10/10 |
+| M18 | init 参数映射（`_ -> field`，SYNTAX §9.3，roadmap #18 收尾） | ✅ | 2026-07-26 | 7/7 |
+| M19 | `like` 委托（§9.6）+ `ext` 扩展成员（§4.4）—— **P3/P4 收官** | ✅ | 2026-07-26 | 9/9 |
 
 ---
 
@@ -151,11 +155,38 @@ pub rich struct Entry {}
 pub shared rich struct SharedEntry {}
 wrapper Logged {}
 
+// like 委托（§9.6，仅 class）与 ext 扩展成员（§4.4，限定名 Type.member）
+pub class Apple : Fruit like pear {
+    pub var pear: Pear = Pear()
+}
+pub ext func String.reversed(): String { ... }
+pub ext var String.isEmpty: bool { get(_: _) { return (this.length == 0) } }
+
+// enum struct 的 [case 列表]（§12：固定/参数化 case、_ 参数洞、显式判别值）
+pub enum struct RequestResult {
+    pub const errorCode: i32
+    pub init(code: i32)
+}[
+    Success(-1) -> 0,
+    Failed(errorCode = _) -> 1
+]
+
 // 全局字段与全局函数（与类成员走同一条解析路径）
 pub const MAX: i32
 var counter: i32
 func add(a: i32, b: i32): i32 { return (a + b) }
 pub static func helper()
+
+// 属性访问器（§9.4：类字段/全局变量/栈上变量三类位置同一条路径）
+var width: i32 {
+    pub get(value: _) { return value }       // backing field + 自定义体
+    priv set(value: _) { log(value) }
+} = 100
+var height: i32 {
+    pub get                                  // 编译器生成实现（无参无体）
+    priv set
+} = 200
+var area: i32 { get(_: _) { return (width * height) } }   // 计算属性（无 backing field）
 
 // 声明上的泛型参数（类型/函数/operator，含型变/约束/可变参数）
 class Container\<TElement> { ... }
@@ -166,6 +197,15 @@ pub operator plus\<TAnother extends Addable>(another: TAnother): V { ... }
 
 // 函数形参列表（已接入 func/operator/init 声明）
 (a: i32, b: String = "x", rest: named i32...)
+
+// init 参数映射（§9.3：_ 同名映射 / 显式名 / 默认值 / 与普通参数混合）
+pub class Point {
+    pub var x: i32
+    pub var y: i32
+    pub init(_ -> x, _ -> y)
+    pub init(_ -> x = 0, _ -> y = 0)
+    pub init(horizontal: i32 -> x, vertical: i32 -> y)
+}
 ```
 
 ---
@@ -176,7 +216,7 @@ pub operator plus\<TAnother extends Addable>(another: TAnother): V { ... }
 |------|------|------|------|
 | LiteralParserLayer | ✅ | 15/15 | 全部字面量；字符字面量占位未实现 |
 | TypeReferenceParserLayer | ✅ | 3/3 | 集成测试含于变量声明套件 |
-| VariableDeclarationParserLayer | ✅ | 10/10 | Initializer 经结果传递保存 |
+| VariableDeclarationParserLayer | ✅ | 10/10 | Initializer 经结果传递保存；访问器块委托 PropertyAccessorParserLayer（M16） |
 | ExpressionParserLayer | ✅ | 67/67 | roadmap #4 全部落地 |
 | ArgumentListParserLayer | ✅ | 含于表达式套件 | 位置/具名/混合实参 |
 | LambdaExpressionParserLayer | ✅ | 15/15 | roadmap #21 提前落地；体为单表达式 |
@@ -190,10 +230,11 @@ pub operator plus\<TAnother extends Addable>(another: TAnother): V { ... }
 | ThrowStatement（内联） | ✅ | 10/10 | throw expression；配合 try-catch 构成完整异常系统 |
 | CoroutineOps（await/yield） | ✅ | 13/13 | roadmap #12；await 一元前缀运算符，yield 语句 |
 | GenericParametersParserLayer | ✅ | 21/21 | 声明/约束/型变/可变参数；已接入类型/函数/operator 声明（M15） |
-| ParameterListParserLayer | ✅ | 14/14 | 普通/默认/可变/具名可变；已接入 func/operator/init 声明 |
+| ParameterListParserLayer | ✅ | 14/14 | 普通/默认/可变/具名可变；已接入 func/operator/init 声明；init 参数映射 `_ -> field`（M18，allowMapping 开关） |
 | PathParserLayer | ✅ | 含于各套件 | 符号路径 + `\<` 泛型实参 |
 | RootParserLayer | ✅ | 含于各套件 | 顶层分发（声明统一委托 DeclarationParserLayer） |
-| DeclarationParserLayer | ✅ 统一声明层 | 51/51（TypeDeclaration 套件） | 任何位置任何声明的唯一入口：全局/成员/嵌套共用一套状态机；声明泛型参数已接入（M15） |
+| DeclarationParserLayer | ✅ 统一声明层 | 77/77（TypeDeclaration 套件） | 任何位置任何声明的唯一入口：全局/成员/嵌套共用一套状态机；声明泛型参数（M15）、enum `[]` case 列表（M17）、like 委托与 ext 限定名（M19）已接入 |
+| PropertyAccessorParserLayer | ✅ | 17/17 | §9.4 访问器块 `{ get... set... }`；backing field 判定与 get/set 一致性校验；三类定义位置经 VariableDeclaration 汇聚 |
 | ImportParserLayer | ⚠️ 骨架 | - | 早期骨架，待 P5 重建 |
 
 ---
@@ -211,16 +252,17 @@ pub operator plus\<TAnother extends Addable>(another: TAnother): V { ... }
 
 ## 5. 下一步计划
 
-**P3 进行中**（统一声明层 M14 + 声明泛型参数 M15 已落地，同时覆盖了 roadmap P4 的函数/init 声明主体）：
+**P3 已完成（M13–M19）**：类型声明统一层、声明泛型参数、getter/setter、enum `[]` case 列表、
+init 参数映射、like 委托、ext 扩展成员全部落地；roadmap P4（func/init/operator 声明主体）
+亦被统一声明层同步覆盖完成。
 
-- getter/setter（SYNTAX.md §9.4：类/struct 字段、全局变量、栈上 var/const 三处）
-- enum struct 的 `[]` case 列表（含参数化 case）
-- wrapper 的代理成员（`.proxy.*`）与 `like` 委托
-- init 参数映射语法（`_ -> field`）
+**P5（下一阶段）**：
 
-**后续**：
-- **P5**：模块系统（ImportParserLayer 重建）、wrapper 路径访问（`:`）
-- 再往后：语义分析、BIL 输出
+- wrapper 主体：entity/method/value 类型标识、`.proxy.*` 代理成员（specific/wildcard）
+- 模块系统：ImportParserLayer 重建
+- wrapper 路径访问（`:`，表达式侧）
+
+**再往后**：语义分析、BIL 输出
 
 ---
 
@@ -231,13 +273,73 @@ pub operator plus\<TAnother extends Addable>(another: TAnother): V { ... }
 3. lambda 体与 if/switch 表达式分支体仍仅支持单表达式（CodeBlock 已落地，表达式分支的多语句接入留待后续）
 4. switch 仅表达式模式（SYNTAX 未定义语句形态）
 5. 复合赋值（`+=`/`-=` 等）未实现：Lexer 未合并这些 token，需重组机制
-6. 类型声明的待续项：getter/setter（§9.4）、enum `[]` case 列表、wrapper 代理成员与 `like` 委托、init 参数映射（`_ -> field`）
+6. wrapper 主体未实现：entity/method/value 类型标识、`.proxy.*` 代理成员（P5）
 7. ImportParserLayer 为早期骨架，将在 P5 重建
 8. 5 个 nullable 编译警告（`Core/Utilities.cs`，不影响功能）
 
 ---
 
 ## 7. 里程碑历史
+
+### 2026-07-26 · M19 like 委托 + ext 扩展成员 —— P3/P4 收官
+- `like` 委托（§9.6，roadmap #13 剩余项）：统一声明层新增 LikeExpected/AfterLike
+  两个状态，`class A : Base implements I like field {` 与省略基类的 `class A like x {`
+  均可解析；仅 class 可委托（struct/interface/wrapper 报错）；AST 为
+  `ClassDeclarationASTNode.LikeTarget`（可空字符串，不加节点）
+- `ext` 扩展成员（§4.4）：补 `ext` 关键字（Keywords.EXT + DeclarationDescriptors）；
+  限定名 `Type.member`（可多段路径）——Callable 侧在 ParamsExpected 加 `.` 分支
+  （extSeen 门控，非 ext 自然落错误分支），var/const 侧经
+  `VariableDeclarationParserLayer(allowExtension)` 同构支持；与 M16 会师：
+  `pub ext var String.isEmpty: bool { get(_: _) { ... } }` 完整可解析
+- 测试：TypeDeclaration 68 → 77（+9：like 规范形态/省略基类/2 错误、ext 函数/字段/2 错误）；
+  全量回归 2–20 无 FAIL
+- 测试总数 360 → 369
+- **P3（#13–16）与 P4（#17–19）全部完成**；下一阶段 P5：wrapper 主体、模块系统、
+  wrapper 路径访问（`:`）
+
+### 2026-07-26 · M18 init 参数映射（_ -> field，SYNTAX §9.3）
+- `ParameterListParserLayer` 增加 `allowMapping` 开关（默认 false，仅 init 传入 true）：
+  `_ -> x`（同名映射）、`_ -> x = 0`（带默认值）、`horizontal: i32 -> x`（显式名 + 类型）、
+  与普通参数混合；新增 MappedFieldExpected / AfterMappedField 两个状态
+- `ParameterASTNode` 增加 `MappedFieldName`（可空）；映射参数省略类型时
+  Type 保持空引用节点（沿用字段类型，语义阶段回填）
+- 非 init 形参列表出现 `->` 自然落到既有错误分支（func/lambda/operator 均拒绝）
+- 与 M17 会师：§12 Direction 规范示例（`priv init(_ -> degrees)` + `[case 列表]`）完整可解析
+- 测试：TypeDeclaration 61 → 68（+7：§9.3 全形态、混合、struct/enum 集成、3 个错误用例）；
+  全量回归 2–20 无 FAIL
+- 测试总数 353 → 360
+- 已知缺口：§9.3 语法行中的 `[modifier...]` 形参修饰符无任何规范示例，暂不支持（出现时按普通标识符报错）
+
+### 2026-07-26 · M17 enum struct 的 [] case 列表（SYNTAX §12）
+- 在统一 `DeclarationParserLayer` 内联扩展（不新建 Layer）：enum 体 `}` 后进入
+  case 列表子状态机（EnumCaseListOpen/EnumCaseStart/EnumAfterName/EnumAfterArgs/
+  EnumDiscriminant/EnumAfterCase 六个状态）
+- 形态全覆盖：固定 case（`North(0)`、无参 `Red`）、参数化 case（`_` 参数洞 +
+  具名实参 `Failed(errorCode = _)`）、显式判别值（`-> N`，§12.4）；
+  case 实参复用 `ArgumentListParserLayer`（开括号由本层消费——与调用点既有约定一致）
+- 解析期校验：case 名唯一、判别值唯一、「全显式或全分配」不得混用（§12.4）、
+  判别值必须是非负整数字面量
+- `[` 必须与 `}` 同行：换行即声明结束（与 callable 体 `{` 的既有约定一致），
+  同时保证 EOF 哨兵下无 case 的 enum 能正常收敛
+- 测试：TypeDeclaration 51 → 61（+10：固定/参数化/判别值/无 case 缺省 + 4 个错误用例）；
+  全量回归 2–20 无 FAIL
+- 测试总数 343 → 353
+
+### 2026-07-26 · M16 属性访问器 getter/setter（§9.4，roadmap #23）
+- 新增 `PropertyAccessorParserLayer` 解析变量声明后的 `{ get... set... }` 访问器块；
+  三类定义位置（类/struct 字段、全局变量、栈上 var/const）不经任何改动即覆盖——
+  它们早已统一汇聚到 `VariableDeclarationParserLayer`，只需在其 NameSeen/TypeSeen
+  状态各加一个 `{` 分支（Delegate, don't implement）
+- 访问器形态全覆盖：编译器生成（`pub get` 无参无体）、`(value: _) + 自定义体`
+  （backing field）、`(_: _) + 自定义体`（计算属性）；访问器体复用 CodeBlockParserLayer
+- 解析期校验：同块重复 get/set 报错、空块报错、`(_: _)` 与 `(value: _)` 混用报错
+  （§9.4「get 和 set 在是否需要 backing field 上必须保持一致」）
+- 自动访问器以换行或 `}` 收尾——与成员声明的换行分隔规则一致
+- AST：新增 `PropertyAccessorASTNode`（Kind/HasBackingField/Body），
+  `VariableDeclarationASTNode` 增加 Getter/Setter 两个可空字段，不加包装层
+- 测试：新增 PropertyAccessorTests 17 用例（形态/跨行/三类位置/5 个错误用例），
+  注册菜单选项 20；全量回归 2–20 无 FAIL
+- 测试总数 326 → 343
 
 ### 2026-07-26 · M15 声明泛型参数接入统一声明层
 - 类型/函数声明接入既有 `GenericParametersParserLayer`（roadmap P3 收尾第 1 项，不新建任何 Layer）：

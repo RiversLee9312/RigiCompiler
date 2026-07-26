@@ -12,6 +12,8 @@ namespace LatteCompiler
         public bool IsConst;                           // true = const, false = var
         public string Name;                            // 变量名
         public TypeReferenceASTNode? TypeAnnotation;   // 类型标注（可选）
+        public PropertyAccessorASTNode? Getter;        // 属性访问器块中的 get（§9.4，可选）
+        public PropertyAccessorASTNode? Setter;        // 属性访问器块中的 set（§9.4，可选）
         public ExpressionASTNode? Initializer;         // 初始化表达式（可选）
 
         public VariableDeclarationASTNode(ASTNode? parent) : base(parent)
@@ -19,6 +21,8 @@ namespace LatteCompiler
             IsConst = false;
             Name = "";
             TypeAnnotation = null;
+            Getter = null;
+            Setter = null;
             Initializer = null;
         }
 
@@ -96,12 +100,16 @@ namespace LatteCompiler
 
     // 函数形参（roadmap #5）：
     // name: Type [= default] [...] 或 name: named Type...
+    // init 参数映射（§9.3）：param_name[:type] -> field_name [= default]
+    // （param_name 为 _ 时参数名与字段名相同；type 省略时沿用字段类型，
+    //   此时 Type 保持为空引用节点、MappedFieldName 非空）
     public class ParameterASTNode : ASTNode
     {
         public string Name;
         public TypeReferenceASTNode Type;
         public bool IsVariadic;                // 位置可变：numbers: i32...
         public bool IsNamedVariadic;           // 具名可变：options: named String...
+        public string? MappedFieldName;        // init 参数映射的目标字段（无映射为 null）
         public ExpressionASTNode? DefaultValue;
 
         public ParameterASTNode(ASTNode? parent) : base(parent)
@@ -110,6 +118,7 @@ namespace LatteCompiler
             Type = new TypeReferenceASTNode(this);
             IsVariadic = false;
             IsNamedVariadic = false;
+            MappedFieldName = null;
             DefaultValue = null;
         }
 
@@ -127,6 +136,36 @@ namespace LatteCompiler
         }
 
         public override ASTNodeType NodeType => ASTNodeType.Declaration;
+    }
+
+    // 属性访问器种类（SYNTAX.md §9.4）
+    public enum AccessorKind
+    {
+        Get,
+        Set
+    }
+
+    // getter/setter 访问器（SYNTAX.md §9.4），挂在变量声明的访问器块 { ... } 中
+    //   (value: _) 或省略参数 → 需要编译器生成 backing field（HasBackingField = true）
+    //   (_: _)               → 计算属性，无 backing field
+    //   Body 为 null         → 编译器生成实现（如 `pub get` / `priv set` 仅定义访问控制）
+    // get 与 set 的 HasBackingField 必须一致（解析期校验）
+    public class PropertyAccessorASTNode : ASTNode
+    {
+        public List<string> Modifiers;         // pub/priv
+        public AccessorKind Kind;
+        public bool HasBackingField;
+        public CodeBlockASTNode? Body;
+
+        public PropertyAccessorASTNode(ASTNode? parent) : base(parent)
+        {
+            Modifiers = new List<string>();
+            Kind = AccessorKind.Get;
+            HasBackingField = true;
+            Body = null;
+        }
+
+        public override ASTNodeType NodeType => ASTNodeType.PropertyAccessor;
     }
 
     // ===== 可调用声明（P3）=====
@@ -168,7 +207,7 @@ namespace LatteCompiler
     // ===== 类型声明（P3）=====
 
     // 类声明（SYNTAX.md §9）
-    // [modifiers] class Name [<generics>] [: BaseClass] [implements Interface1, Interface2] { ... }
+    // [modifiers] class Name [<generics>] [: BaseClass] [implements Interface1, Interface2] [like field] { ... }
     public class ClassDeclarationASTNode : ASTNode
     {
         public List<string> Modifiers;                 // pub, open, abstract, singleton, shared, etc.
@@ -176,6 +215,7 @@ namespace LatteCompiler
         public GenericParameterListASTNode? GenericParameters;  // 可选泛型参数
         public TypeReferenceASTNode? BaseClass;        // 可选基类
         public List<TypeReferenceASTNode> Interfaces;  // implements 接口列表
+        public string? LikeTarget;                     // like 委托的目标字段（§9.6，可选）
         // 成员（字段/方法/init/嵌套类型）直接挂在 ASTNode.Children 上，不另设容器
 
         public ClassDeclarationASTNode(ASTNode? parent) : base(parent)
@@ -185,6 +225,7 @@ namespace LatteCompiler
             GenericParameters = null;
             BaseClass = null;
             Interfaces = new List<TypeReferenceASTNode>();
+            LikeTarget = null;
         }
 
         public override ASTNodeType NodeType => ASTNodeType.ClassDeclaration;

@@ -11,9 +11,12 @@ namespace LatteCompiler
     /// - var name: Type = value
     /// - const name: Type = value
     /// - var name: Type (无初始化)
+    /// - var name: Type { get... set... } = value (属性访问器块，SYNTAX §9.4)
+    /// - ext var Type.member: Type (ext 限定名，SYNTAX §4.4，仅 allowExtension 时)
     ///
     /// 状态流转：
-    /// Initial → KeywordSeen → NameSeen → [TypeColonSeen → TypeSeen] → [AssignSeen → ValueSeen] → Completed
+    /// Initial → KeywordSeen → NameSeen → [TypeColonSeen → TypeSeen]
+    ///   → [AccessorsSeen（委托 PropertyAccessorParserLayer）] → [AssignSeen → ValueSeen] → Completed
     ///
     /// 实现 IResultConsumer：初始化表达式由 ExpressionParserLayer 解析，
     /// 结果通过 OnChildResult 保存到 declNode.Initializer
@@ -21,14 +24,17 @@ namespace LatteCompiler
     public class VariableDeclarationParserLayer : IParserLayer, IResultConsumer
     {
         private readonly VariableDeclarationASTNode declNode;
+        private readonly bool allowExtension;   // ext 允许限定名（String.isEmpty，§4.4）
 
         private enum State
         {
             Initial,           // 初始状态
             KeywordSeen,       // 已看到 var/const
             NameSeen,          // 已看到变量名
+            NameDotSeen,       // ext 限定名的段间点已读：等待下一段名称
             TypeColonSeen,     // 已看到 :
             TypeSeen,          // 已看到类型
+            AccessorsSeen,     // 已看到属性访问器块 { get... set... }
             AssignSeen,        // 已看到 =
             ValueSeen,         // 已看到初始化值
             Completed          // 完成
@@ -36,9 +42,10 @@ namespace LatteCompiler
 
         private State state = State.Initial;
 
-        public VariableDeclarationParserLayer(VariableDeclarationASTNode node)
+        public VariableDeclarationParserLayer(VariableDeclarationASTNode node, bool allowExtension = false)
         {
             declNode = node;
+            this.allowExtension = allowExtension;
         }
 
         // IResultConsumer：接收 ExpressionParserLayer 的解析结果，保存为初始化表达式
@@ -63,11 +70,17 @@ namespace LatteCompiler
                 case State.NameSeen:
                     return HandleNameSeen(currentToken, context);
 
+                case State.NameDotSeen:
+                    return HandleNameDotSeen(currentToken, context);
+
                 case State.TypeColonSeen:
                     return HandleTypeColonSeen(currentToken, context);
 
                 case State.TypeSeen:
                     return HandleTypeSeen(currentToken, context);
+
+                case State.AccessorsSeen:
+                    return HandleAccessorsSeen(currentToken, context);
 
                 case State.AssignSeen:
                     return HandleAssignSeen(currentToken, context);
@@ -125,7 +138,7 @@ namespace LatteCompiler
             return new ParserLayerResult.PopLayer(false);
         }
 
-        // 已看到变量名 - 等待 : 或 = 或结束
+        // 已看到变量名 - 等待 : 或 = 或访问器块或结束
         private ParserLayerResult HandleNameSeen(Token currentToken, ParserLayerContext context)
         {
             if (currentToken is NotationToken nt)
@@ -140,6 +153,19 @@ namespace LatteCompiler
                 {
                     // 直接初始化，无类型标注
                     state = State.AssignSeen;
+                    return ParserLayerResult.Continue.Instance;
+                }
+                else if (nt.Content == "{")
+                {
+                    // 属性访问器块（§9.4）：委托 PropertyAccessorParserLayer
+                    state = State.AccessorsSeen;
+                    return new ParserLayerResult.PushLayer(
+                        new PropertyAccessorParserLayer(declNode), true);
+                }
+                else if (allowExtension && nt.Content == ".")
+                {
+                    // ext 限定名的段间点（String.isEmpty，§4.4）
+                    state = State.NameDotSeen;
                     return ParserLayerResult.Continue.Instance;
                 }
             }
@@ -165,6 +191,20 @@ namespace LatteCompiler
             return new ParserLayerResult.PopLayer(false);
         }
 
+        // ext 限定名的段间点已读：拼接下一段（Type.member，可多段路径）
+        private ParserLayerResult HandleNameDotSeen(Token currentToken, ParserLayerContext context)
+        {
+            if (currentToken is WordToken wt)
+            {
+                declNode.Name += "." + wt.Content;
+                state = State.NameSeen;
+                return ParserLayerResult.Continue.Instance;
+            }
+
+            context.RaiseError($"Expected member name after '.' in extension declaration, got: {currentToken}");
+            return new ParserLayerResult.PopLayer(false);
+        }
+
         // 已看到类型冒号 - 解析类型引用
         private ParserLayerResult HandleTypeColonSeen(Token currentToken, ParserLayerContext context)
         {
@@ -178,13 +218,21 @@ namespace LatteCompiler
             );
         }
 
-        // 已看到类型 - 等待 = 或结束
+        // 已看到类型 - 等待 = 或访问器块或结束
         private ParserLayerResult HandleTypeSeen(Token currentToken, ParserLayerContext context)
         {
             if (currentToken is NotationToken nt && nt.Content == "=")
             {
                 state = State.AssignSeen;
                 return ParserLayerResult.Continue.Instance;
+            }
+
+            // 属性访问器块（§9.4）：委托 PropertyAccessorParserLayer
+            if (currentToken is NotationToken openBrace && openBrace.Content == "{")
+            {
+                state = State.AccessorsSeen;
+                return new ParserLayerResult.PushLayer(
+                    new PropertyAccessorParserLayer(declNode), true);
             }
 
             if (currentToken is LineBreakToken)
@@ -202,6 +250,32 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected '=' or line break after type annotation, got: {currentToken}");
+            return new ParserLayerResult.PopLayer(false);
+        }
+
+        // 访问器块已解析 - 等待 = 或结束（与 TypeSeen 的收尾逻辑一致）
+        private ParserLayerResult HandleAccessorsSeen(Token currentToken, ParserLayerContext context)
+        {
+            if (currentToken is NotationToken nt && nt.Content == "=")
+            {
+                state = State.AssignSeen;
+                return ParserLayerResult.Continue.Instance;
+            }
+
+            if (currentToken is LineBreakToken)
+            {
+                state = State.Completed;
+                return new ParserLayerResult.PopLayer(true);
+            }
+
+            // } 终止块内最后一条语句（保留 token 交给代码块层）
+            if (currentToken is NotationToken closeBrace && closeBrace.Content == "}")
+            {
+                state = State.Completed;
+                return new ParserLayerResult.PopLayer(true);
+            }
+
+            context.RaiseError($"Expected '=' or line break after accessor block, got: {currentToken}");
             return new ParserLayerResult.PopLayer(false);
         }
 

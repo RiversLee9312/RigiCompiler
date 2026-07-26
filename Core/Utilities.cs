@@ -291,6 +291,7 @@ namespace LatteCompiler
         public const string OVERRIDE = "override";
         public const string IMPLEMENTS = "implements";
         public const string LIKE = "like";
+        public const string EXT = "ext";
         public const string INIT = "init";
         public const string GET = "get";
         public const string SET = "set";
@@ -324,7 +325,7 @@ namespace LatteCompiler
         public static readonly string[] DeclarationDescriptors =
         {
     PRIVATE, PUBLIC, FINAL, PROTECTED, INTERNAL, EXTENSION, PROXY,
-    PUB, PRIV, OPEN, ABSTRACT, SINGLETON, SHARED, RICH, STATIC, OVERRIDE, ASYNC
+    PUB, PRIV, OPEN, ABSTRACT, SINGLETON, SHARED, RICH, STATIC, OVERRIDE, ASYNC, EXT
 };
 
         // 类型关键字（class, struct, interface, wrapper, enum）
@@ -454,7 +455,8 @@ namespace LatteCompiler
         StructDeclaration,
         EnumStructDeclaration,
         EnumCase,
-        WrapperDeclaration
+        WrapperDeclaration,
+        PropertyAccessor
     }
     public class AcquisitionExpressionASTNode : ASTNode
     {

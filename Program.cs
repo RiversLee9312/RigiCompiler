@@ -22,7 +22,8 @@ Console.WriteLine("16. Run SeqBlock tests");
 Console.WriteLine("17. Run ThrowStatement tests");
 Console.WriteLine("18. Run CoroutineOps tests");
 Console.WriteLine("19. Run TypeDeclaration tests");
-Console.Write("Enter choice (1-19): ");
+Console.WriteLine("20. Run PropertyAccessor tests");
+Console.Write("Enter choice (1-20): ");
 
 string? choice = Console.ReadLine();
 
@@ -132,6 +133,12 @@ else if (choice == "19")
 {
     // 运行类型声明测试
     TypeDeclarationTests.RunAll();
+    return;
+}
+else if (choice == "20")
+{
+    // 运行属性访问器测试
+    PropertyAccessorTests.RunAll();
     return;
 }
 

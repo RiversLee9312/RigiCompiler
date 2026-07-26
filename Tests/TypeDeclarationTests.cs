@@ -16,6 +16,9 @@ namespace LatteCompiler.Tests
     /// 8. 继承与 implements 列表
     /// 9. 嵌套类型（多层）
     /// 10. 声明上的泛型参数（类型/函数/operator，含约束与可变参数）
+    /// 11. enum struct 的 [case 列表]（固定/参数化 case、显式判别值、错误用例）
+    /// 12. init 参数映射（_ -> field，含默认值/显式名/混合形态、错误用例）
+    /// 13. like 委托（§9.6）与 ext 扩展成员（§4.4）
     /// </summary>
     public class TypeDeclarationTests
     {
@@ -236,7 +239,186 @@ namespace LatteCompiler.Tests
             Console.WriteLine();
         }
 
+        // ===== 11. enum struct 的 [case 列表]（SYNTAX §12）=====
+        public static void TestEnumCases()
+        {
+            Console.WriteLine("=== Testing Enum Struct Case List ===");
+
+            // 固定 case（规范 Direction 示例形态；init 参数映射 _ -> 为 M18 内容）
+            TestDeclaration(
+                "pub enum struct Direction {\n" +
+                "    pub const degrees: i32\n" +
+                "    priv init(degrees: i32)\n" +
+                "}[\n" +
+                "    North(0),\n" +
+                "    South(180),\n" +
+                "    East(90),\n" +
+                "    West(270)\n" +
+                "]",
+                "pub enum struct Direction {pub const degrees, priv init(degrees)}[North(0), South(180), East(90), West(270)]");
+
+            // 参数化 case：_ 参数洞 + 具名实参
+            TestDeclaration(
+                "pub enum struct RequestResult {\n" +
+                "    pub const errorCode: i32\n" +
+                "    pub init(code: i32)\n" +
+                "}[\n" +
+                "    Success(-1),\n" +
+                "    Failed(errorCode = _)\n" +
+                "]",
+                "pub enum struct RequestResult {pub const errorCode, pub init(code)}[Success(-1), Failed(errorCode = _)]");
+
+            // 无实参的固定 case
+            TestDeclaration("enum struct Color {}[Red, Green, Blue]",
+                "enum struct Color[Red, Green, Blue]");
+
+            // 显式判别值（§12.4）
+            TestDeclaration(
+                "pub enum struct SteadyABIEnum {}[\n" +
+                "    First -> 0,\n" +
+                "    Second -> 2,\n" +
+                "    Third -> 1\n" +
+                "]",
+                "pub enum struct SteadyABIEnum[First -> 0, Second -> 2, Third -> 1]");
+
+            // 参数化 case + 显式判别值
+            TestDeclaration(
+                "pub enum struct StableRequestResult {\n" +
+                "    pub const errorCode: i32\n" +
+                "    pub init(code: i32)\n" +
+                "}[\n" +
+                "    Success(-1) -> 0,\n" +
+                "    Failed(errorCode = _) -> 1\n" +
+                "]",
+                "pub enum struct StableRequestResult {pub const errorCode, pub init(code)}[Success(-1) -> 0, Failed(errorCode = _) -> 1]");
+
+            // 无 case 列表（允许缺省，等价于空列表）
+            TestDeclaration("pub enum struct Empty {}", "pub enum struct Empty");
+
+            // 错误用例
+            TestError("enum struct E {}[A, A]", "case 名重复");
+            TestError("enum struct E {}[A -> 0, B -> 0]", "判别值重复");
+            TestError("enum struct E {}[A -> 0, B]", "显式/分配混用");
+            TestError("enum struct E {}[A -> -1]", "负判别值");
+
+            Console.WriteLine();
+        }
+
+        // ===== 12. init 参数映射（_ -> field，SYNTAX §9.3）=====
+        public static void TestInitParameterMapping()
+        {
+            Console.WriteLine("=== Testing Init Parameter Mapping ===");
+
+            // 规范 §9.3 示例形态：_ 映射 / 带默认值 / 显式参数名
+            TestDeclaration(
+                "pub class Point {\n" +
+                "    pub var x: i32\n" +
+                "    pub var y: i32\n" +
+                "    pub init(_ -> x, _ -> y)\n" +
+                "    pub init(_ -> x = 0, _ -> y = 0)\n" +
+                "    pub init(horizontal: i32 -> x, vertical: i32 -> y)\n" +
+                "}",
+                "pub class Point {pub var x, pub var y, pub init(_ -> x,_ -> y), pub init(_ -> x = 0,_ -> y = 0), pub init(horizontal: i32 -> x,vertical: i32 -> y)}");
+
+            // 混合：映射参数 + 普通参数（带体）
+            TestDeclaration(
+                "pub class P {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(_ -> x, label: String) {}\n" +
+                "}",
+                "pub class P {pub var x, pub init(_ -> x,label) {}}");
+
+            // struct 的 init 映射（§10 Vector2 风格）
+            TestDeclaration(
+                "pub struct Vector2 {\n" +
+                "    pub var x: float\n" +
+                "    pub var y: float\n" +
+                "    pub init(_ -> x, _ -> y)\n" +
+                "}",
+                "pub struct Vector2 {pub var x, pub var y, pub init(_ -> x,_ -> y)}");
+
+            // enum struct 规范示例（§12 Direction：M17 case 列表 + M18 init 映射会师）
+            TestDeclaration(
+                "pub enum struct Direction {\n" +
+                "    pub const degrees: i32\n" +
+                "    priv init(_ -> degrees)\n" +
+                "}[\n" +
+                "    North(0),\n" +
+                "    South(180)\n" +
+                "]",
+                "pub enum struct Direction {pub const degrees, priv init(_ -> degrees)}[North(0), South(180)]");
+
+            // 错误：非 init 的形参列表不允许映射
+            TestError("func f(x: i32 -> y) {}", "func 不允许参数映射");
+            TestError("class A { func g(_ -> x) {} }", "成员函数不允许参数映射");
+
+            // 错误：-> 后缺字段名
+            TestError("class A { init(_ -> ) }", "缺字段名");
+
+            Console.WriteLine();
+        }
+
+        // ===== 13. like 委托（§9.6）与 ext 扩展成员（§4.4）=====
+        public static void TestLikeAndExtension()
+        {
+            Console.WriteLine("=== Testing like Delegation / ext Extension ===");
+
+            // like 委托（规范 §9.6 示例形态）
+            TestDeclaration(
+                "pub class Apple : Fruit like pear {\n" +
+                "    pub var pear: Pear = Pear()\n" +
+                "}",
+                "pub class Apple : Fruit like pear {pub var pear}");
+
+            // like 跟在 implements 之后 / 无基类直接 like（解析层允许，语义待查）
+            TestDeclaration("class A implements Drawable like d {}",
+                "class A implements Drawable like d");
+            TestDeclaration("class A like x {}", "class A like x");
+
+            // 错误：非 class 不允许 like；like 后缺字段名
+            TestError("struct S like x {}", "struct 不允许 like");
+            TestError("class A like {}", "like 后缺字段名");
+
+            // ext 扩展函数与扩展字段（规范 §4.4 示例形态）
+            TestDeclaration("pub ext func String.reversed(): String {}",
+                "pub ext func String.reversed(): String {}");
+            TestDeclaration(
+                "pub ext var String.isEmpty: bool { get(_: _) { return (this.length == 0) } }",
+                "pub ext var String.isEmpty");
+
+            // 错误：限定名必须有 ext 修饰（全局函数与全局变量均拒绝）
+            TestError("func String.reversed(): String {}", "限定名缺 ext");
+            TestError("var a.b: i32", "限定名缺 ext");
+
+            Console.WriteLine();
+        }
+
         // ===== 辅助方法 =====
+
+        private static void TestError(string source, string reason)
+        {
+            try
+            {
+                var lexer = new Lexer();
+                var tokens = lexer.Tokenize(source);
+                var parser = new Parser();
+                parser.Parse(tokens);
+                Console.WriteLine($"FAIL: {source}");
+                Console.WriteLine($"  Expected ParserException ({reason}), but parse succeeded");
+                failCount++;
+            }
+            catch (ParserException)
+            {
+                Console.WriteLine($"PASS: {source}  (rejected: {reason})");
+                passCount++;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"FAIL: {source}");
+                Console.WriteLine($"  Expected ParserException ({reason}), got {ex.GetType().Name}: {ex.Message}");
+                failCount++;
+            }
+        }
 
         private static void TestDeclaration(string source, string expected)
         {
@@ -284,7 +466,8 @@ namespace LatteCompiler.Tests
             var head = node switch
             {
                 ClassDeclarationASTNode c => Mods(c.Modifiers) + "class " + c.ClassName
-                    + FormatGenerics(c.GenericParameters) + Bases(c.BaseClass, c.Interfaces),
+                    + FormatGenerics(c.GenericParameters) + Bases(c.BaseClass, c.Interfaces)
+                    + (c.LikeTarget != null ? " like " + c.LikeTarget : ""),
                 // interface 用 `:` 继承父接口（SYNTAX §11），故按 `:` 渲染
                 InterfaceDeclarationASTNode i => Mods(i.Modifiers) + "interface " + i.InterfaceName
                     + FormatGenerics(i.GenericParameters)
@@ -302,9 +485,47 @@ namespace LatteCompiler.Tests
                 _ => $"<{node.GetType().Name}>"
             };
 
-            if (node.Children.Count == 0) return head;
-            return head + " {" + string.Join(", ", node.Children.ConvertAll(FormatDeclaration)) + "}";
+            if (node.Children.Count == 0 && node is not EnumStructDeclarationASTNode) return head;
+
+            var body = node.Children.Count == 0
+                ? ""
+                : " {" + string.Join(", ", node.Children.ConvertAll(FormatDeclaration)) + "}";
+            // enum struct 的 [case 列表] 位于类型体 } 之后（SYNTAX §12）
+            var cases = node is EnumStructDeclarationASTNode es ? FormatEnumCases(es) : "";
+            return head + body + cases;
         }
+
+        private static string FormatEnumCases(EnumStructDeclarationASTNode e)
+        {
+            if (e.Cases.Count == 0) return "";
+            return "[" + string.Join(", ", e.Cases.ConvertAll(FormatEnumCase)) + "]";
+        }
+
+        private static string FormatEnumCase(EnumCaseASTNode c)
+        {
+            var s = c.CaseName;
+            if (c.Arguments.Count > 0)
+                s += "(" + string.Join(", ", c.Arguments.ConvertAll(FormatArgument)) + ")";
+            if (c.DiscriminantValue != null)
+                s += " -> " + c.DiscriminantValue.Value;
+            return s;
+        }
+
+        private static string FormatArgument(ArgumentASTNode a)
+        {
+            var v = FormatExpr(a.Value);
+            return a.Name != null ? a.Name + " = " + v : v;
+        }
+
+        // case 实参的紧凑渲染：只覆盖测试所需形态，复杂表达式回退为节点名
+        private static string FormatExpr(ASTNode e) => e switch
+        {
+            LiteralExpressionASTNode lit => FormatExpr(lit.LiteralNode),
+            IntLiteralASTNode i => i.Value.ToString(),
+            UnaryExpressionASTNode u => u.Operator + FormatExpr(u.Operand),
+            SymbolReferenceASTNode sref => string.Join(".", sref.Symbol.symbol.elements.ConvertAll(el => el.name)),
+            _ => $"<{e.GetType().Name}>"
+        };
 
         private static string FormatCallable(CallableDeclarationASTNode f)
         {
@@ -314,11 +535,24 @@ namespace LatteCompiler.Tests
                 CallableKind.Init => "",
                 _ => "func "
             };
-            var ps = string.Join(",", f.Parameters.Parameters.ConvertAll(p => p.Name));
+            var ps = string.Join(",", f.Parameters.Parameters.ConvertAll(FormatParam));
             var ret = f.ReturnType != null ? ": " + FormatType(f.ReturnType) : "";
             var body = f.Body != null ? " {}" : "";
             return Mods(f.Modifiers) + kind + f.Name + FormatGenerics(f.GenericParameters)
                 + "(" + ps + ")" + ret + body;
+        }
+
+        private static string FormatParam(ParameterASTNode p)
+        {
+            var s = p.Name;
+            // init 映射参数显式渲染类型（普通参数的类型渲染从简，保持既有风格）
+            if (p.MappedFieldName != null && p.Type.TypeSymbol.symbol.elements.Count > 0)
+                s += ": " + FormatType(p.Type);
+            if (p.MappedFieldName != null)
+                s += " -> " + p.MappedFieldName;
+            if (p.DefaultValue != null)
+                s += " = " + FormatExpr(p.DefaultValue);
+            return s;
         }
 
         // 泛型形参列表：与 GenericParametersTests 同一套 AST 结构，按声明上的位置内联渲染。
@@ -396,6 +630,9 @@ namespace LatteCompiler.Tests
             TestInheritance();
             TestNestedTypes();
             TestDeclarationGenericParameters();
+            TestEnumCases();
+            TestInitParameterMapping();
+            TestLikeAndExtension();
 
             Console.WriteLine("╔════════════════════════════════════════════════════════╗");
             Console.WriteLine($"║  Total: {passCount + failCount,3} tests | Pass: {passCount,3} | Fail: {failCount,3}            ║");

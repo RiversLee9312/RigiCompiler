@@ -1,8 +1,8 @@
 # Latte Compiler Parser 实现路线图
 
-> **版本**: 1.4  
+> **版本**: 1.8  
 > **创建日期**: 2026-07-17  
-> **状态**: 执行中（P0–P2 完成，P3 进行中；进度现状见 ../../PROGRESS_REPORT.md）
+> **状态**: 执行中（P0–P4 完成，下一阶段 P5；进度现状见 ../../PROGRESS_REPORT.md）
 
 本文档详细描述 Latte Parser 的完整实现路线图，包括所有需要实现的 ParserLayer 组件、它们的依赖关系、优先级以及详细的实现指导。
 
@@ -665,13 +665,13 @@ pub async func loadUser(id: i32): SharedUser {
 > 实际依据 SYNTAX.md §14.8（canonical symbol 类名段可为空、`.static.` 只是标记位）改为
 > **统一 `DeclarationParserLayer`**：全局/成员/嵌套任何声明共用一套状态机，
 > func/operator/init 共用 `CallableDeclarationASTNode`。类型声明头部、成员（字段/方法/init/operator）、
-> 继承与 implements、嵌套类型、声明泛型参数（M15）均已落地（TypeDeclaration 51/51）。
+> 继承与 implements、嵌套类型、声明泛型参数（M15）均已落地（TypeDeclaration 77/77）。
 > 以下 #13–16 的「状态」按此修订标注，剩余工作并入各条目。
 
 #### 13. Class 声明解析器 (`ClassDeclarationParserLayer.cs`)
 **优先级**: P3  
 **依赖**: DeclarationParserLayer (部分完成), TypeReferenceParserLayer, FunctionParserLayer  
-**状态**: ⏳ 已由统一 DeclarationParserLayer 落地（M13/M14，声明泛型参数 M15）；不再计划独立 Layer。剩余：`like` 委托
+**状态**: ✅ 已由统一 DeclarationParserLayer 落地（M13/M14，声明泛型参数 M15，`like` 委托 M19）；不再计划独立 Layer
 
 **功能描述**:
 解析类声明，包括：
@@ -846,7 +846,7 @@ pub interface Comparable\<T> {
 #### 16. Enum Struct 声明解析器 (`EnumStructDeclarationParserLayer.cs`)
 **优先级**: P3  
 **依赖**: StructDeclarationParserLayer, InitDeclarationParserLayer  
-**状态**: ⏳ 头部（`enum struct Name` + 体）已由统一 DeclarationParserLayer 识别（M13/M14）；剩余：`[]` case 列表（固定 case / 参数化 case），AST 节点（EnumStructDeclarationASTNode / EnumCaseASTNode）已就位
+**状态**: ✅ 已由统一 DeclarationParserLayer 落地（M13/M14 头部与体；M17 补齐 `[]` case 列表：固定 case / 参数化 case / 显式判别值，含唯一性与混用校验）
 
 **功能描述**:
 解析 enum struct 声明，包括：
@@ -911,15 +911,15 @@ const failed: RequestResult = .Failed(404)
 
 ### P4 - 函数和成员系统
 
-> **⚠️ 计划修订（2026-07-26，M14/M15）**：func/operator/init 的基本声明（修饰符、名称、形参列表、
+> **⚠️ 计划修订（2026-07-26，M14–M19）**：func/operator/init 的基本声明（修饰符、名称、形参列表、
 > 返回类型、函数体）已由统一 `DeclarationParserLayer` 一条路径覆盖，不再计划 #17–19 的独立 Layer；
-> 声明泛型参数亦已接入（M15）。
-> 剩余工作：init 参数映射（`_ -> field`）、`ext` 扩展成员、getter/setter（见 #23）。
+> 声明泛型参数（M15）、init 参数映射（M18）与 `ext` 扩展成员（M19）亦已接入。
+> **#17–19 全部完成。**
 
 #### 17. 函数声明解析器 (`FunctionDeclarationParserLayer.cs`)
 **优先级**: P4  
 **依赖**: TypeReferenceParserLayer, ParameterListParserLayer, CodeBlockParserLayer  
-**状态**: ⏳ 基本形态已由统一 DeclarationParserLayer 覆盖（M14，含可变参数、默认参数、无体声明；声明泛型参数 M15）；剩余：`ext` 扩展函数
+**状态**: ✅ 已由统一 DeclarationParserLayer 覆盖（M14 基本形态；声明泛型参数 M15；`ext` 扩展函数 M19）
 
 **功能描述**:
 解析函数声明，包括：
@@ -999,7 +999,7 @@ pub func config(options: named String...): Config {
 #### 18. 构造函数解析器 (`InitDeclarationParserLayer.cs`)
 **优先级**: P4  
 **依赖**: ParameterListParserLayer, CodeBlockParserLayer  
-**状态**: ⏳ 基本 init（普通形参 + 可选体）已由统一 DeclarationParserLayer 覆盖（M14，CallableKind.Init）；剩余：`_ -> field` 参数映射语法
+**状态**: ✅ 已由统一 DeclarationParserLayer 覆盖（M14 CallableKind.Init + M18 `_ -> field` 参数映射：同名/显式名/默认值/混合形态，ParameterListParserLayer allowMapping 开关）
 
 **功能描述**:
 解析 init 构造函数，特别支持参数映射语法。
@@ -1292,7 +1292,7 @@ func update\<named TValues... with Serializable>(configs: named TValues...)
 #### 23. 属性访问器解析器 (`PropertyAccessorParserLayer.cs`)
 **优先级**: P6  
 **依赖**: CodeBlockParserLayer  
-**状态**: 未开始
+**状态**: ✅ 已完成（2026-07-26 M16，17/17 测试通过；提前落地——三类定义位置经 VariableDeclarationParserLayer 统一接入，含 backing field 判定与 get/set 一致性校验）
 
 **功能描述**:
 解析 getter/setter 定义。
@@ -1596,10 +1596,10 @@ public class PerformanceTests
   - [x] 修饰符（pub/priv/open/abstract/singleton/shared/static/override/async）
   - [x] 继承（`: BaseClass`）
   - [x] 接口实现（implements 多接口列表）
-  - [ ] 委托 (like)
+  - [x] 委托 (like)（M19）
   - [x] 类体（字段/方法/init/operator/嵌套类型）
   - [x] 声明泛型参数（M15）
-  - [x] 单元测试（TypeDeclaration 51/51）
+  - [x] 单元测试（TypeDeclaration 77/77）
   
 - [x] 14. struct 声明（统一声明层，M13/M14）
   - [x] 基本 struct 声明
@@ -1607,39 +1607,39 @@ public class PerformanceTests
   - [x] shared rich struct
   - [x] 继承（`: BaseStruct`）
   - [x] 声明泛型参数（M15）
-  - [x] 单元测试（含于 TypeDeclaration 51/51）
+  - [x] 单元测试（含于 TypeDeclaration 77/77）
   
 - [x] 15. interface 声明（统一声明层，M13/M14）
   - [x] 接口声明（`: Base` → BaseInterfaces，SYNTAX §11）
   - [x] 默认实现（带体方法可解析）
   - [x] 声明泛型参数（M15）
-  - [x] 单元测试（含于 TypeDeclaration 51/51）
+  - [x] 单元测试（含于 TypeDeclaration 77/77）
   
-- [~] 16. enum struct 声明（统一声明层，M13/M14）
+- [x] 16. enum struct 声明（统一声明层，M13/M14/M17）
   - [x] enum struct 声明头部与体
-  - [ ] `[]` case 列表
-  - [ ] 固定 case
-  - [ ] 参数化 case
-  - [ ] 单元测试（enum struct 尚无专项用例，待 case 列表实现时一并补）
+  - [x] `[]` case 列表（M17）
+  - [x] 固定 case（M17）
+  - [x] 参数化 case（M17，`_` 参数洞 + 具名实参）
+  - [x] 单元测试（含于 TypeDeclaration 61/61）
 
 ### P4 - 函数和成员系统（基本形态已由统一声明层覆盖，见上文计划修订）
 - [~] 17. 函数声明（统一声明层，M14）
   - [x] 基本函数（修饰符/形参/返回类型/函数体/无体声明）
   - [x] 泛型函数（声明泛型参数 M15）
   - [x] async 函数（async 修饰符识别）
-  - [ ] 扩展函数（ext）
+  - [x] 扩展函数（ext，M19）
   - [x] 可变参数函数（复用 ParameterListParserLayer）
-  - [x] 单元测试（含于 TypeDeclaration 51/51）
+  - [x] 单元测试（含于 TypeDeclaration 77/77）
   
-- [~] 18. init 构造（统一声明层，M14，CallableKind.Init）
+- [x] 18. init 构造（统一声明层，M14 CallableKind.Init + M18 参数映射）
   - [x] 基本 init（普通形参 + 可选体）
-  - [ ] 参数映射（`_ -> field`）
-  - [x] 单元测试（含于 TypeDeclaration 51/51）
+  - [x] 参数映射（`_ -> field`，M18）
+  - [x] 单元测试（含于 TypeDeclaration 68/68）
   
 - [x] 19. operator 声明（统一声明层，M14，CallableKind.Operator）
   - [x] 二元运算符（如 `operator plus(o: V): V {}`）
   - [x] 一元运算符（同一路径）
-  - [x] 单元测试（含于 TypeDeclaration 51/51）
+  - [x] 单元测试（含于 TypeDeclaration 77/77）
 
 ### P5 - Wrapper 系统
 - [~] 20. Wrapper 声明（头部已由统一声明层识别，M13/M14）
@@ -1648,7 +1648,7 @@ public class PerformanceTests
   - [ ] Value wrapper（类型标识）
   - [ ] Specific proxy（`.proxy.name`）
   - [ ] Wildcard proxy（`.proxy.*`）
-  - [x] 单元测试（头部，含于 TypeDeclaration 51/51）
+  - [x] 单元测试（头部，含于 TypeDeclaration 77/77）
 
 ### P6 - 高级特性
 - [x] 21. LambdaExpressionParserLayer（M8 提前落地）
@@ -1666,11 +1666,11 @@ public class PerformanceTests
   - [x] 型变
   - [x] 单元测试（21/21 通过）
   
-- [ ] 23. PropertyAccessorParserLayer
-  - [ ] getter
-  - [ ] setter
-  - [ ] 编译器生成的访问器
-  - [ ] 单元测试
+- [x] 23. PropertyAccessorParserLayer（M16 提前落地）
+  - [x] getter
+  - [x] setter
+  - [x] 编译器生成的访问器
+  - [x] 单元测试（17/17）
 
 ---
 
@@ -1765,14 +1765,14 @@ public class PerformanceTests
 - ✅ P0 全部完成（字面量、类型引用、变量声明）
 - ✅ P1 全部完成（表达式系统：后缀链、Lambda、if/switch 表达式、typeOf/as/is、seq 表达式形态）
 - ✅ P2 全部完成（语句系统：代码块、if/循环、try-catch-finally、seq、throw、await/yield）
-- ⏳ P3 进行中：类型声明统一层已落地（M13/M14，全局/成员/嵌套一条路径），声明泛型参数已接入（M15，TypeDeclaration 51/51）
-- 测试总计 326/326（菜单 2–19）
+- ✅ P3 全部完成（M13–M19：统一声明层、声明泛型参数、getter/setter、enum case 列表、init 参数映射、like 委托、ext 扩展成员）
+- ✅ P4 全部完成（#17–19 由统一声明层同步覆盖：func/init/operator 声明、泛型、参数映射、ext）
+- 测试总计 369/369（菜单 2–20）
 
-**下一步**（P3 收尾，优先级从上到下）：
-1. getter/setter（#23，SYNTAX.md §9.4：类/struct 字段、全局变量、栈上变量三处）
-2. enum struct 的 `[]` case 列表（#16 剩余项）
-3. init 参数映射（`_ -> field`，#18 剩余项）、`like` 委托（#13 剩余项）、`ext` 扩展成员
-4. P5：wrapper 主体（entity/method/value 标识、`.proxy.*`）、模块系统（ImportParserLayer 重建）、wrapper 路径访问（`:`）
+**下一步**（P5，优先级从上到下）：
+1. wrapper 主体：entity/method/value 类型标识、`.proxy.*` 代理成员（specific/wildcard）（#20）
+2. 模块系统（ImportParserLayer 重建）
+3. wrapper 路径访问（`:`，表达式侧）
 
 **历史目标**（已过时，保留存档）：
 1. ~~**立即开始**: 实现 `LiteralParserLayer`~~
@@ -1798,4 +1798,8 @@ public class PerformanceTests
 - v1.2 (2026-07-17): #5 ParameterListParserLayer 完成；#4 调用/索引/成员访问/泛型调用后缀链与 new 构造参数完成
 - v1.3 (2026-07-26): P1/P2 全部完成（M7–M12：代码块、if/循环、try-catch-finally、seq、throw、await/yield、Lambda、if/switch 表达式、typeOf/as/is）；P3 计划修订——#13–19 不再各建独立 Layer，改为统一 DeclarationParserLayer（M13/M14）；检查清单与各组件状态同步；测试 311/311
 - v1.4 (2026-07-26): M15 声明泛型参数接入统一声明层（类型/函数/operator，复用 GenericParametersParserLayer，不新增状态）；检查清单与「下一步」同步；测试 326/326
+- v1.5 (2026-07-26): M16 #23 PropertyAccessorParserLayer 提前落地（§9.4 三类定义位置经 VariableDeclarationParserLayer 统一接入，backing field 判定与一致性校验）；测试 343/343
+- v1.6 (2026-07-26): M17 enum struct `[]` case 列表落地（统一声明层内联子状态，#16 完成；固定/参数化 case、显式判别值、唯一性与混用校验）；测试 353/353
+- v1.7 (2026-07-26): M18 init 参数映射 `_ -> field` 落地（#18 完成；ParameterListParserLayer 增 allowMapping 开关，同名/显式名/默认值/混合形态）；测试 360/360
+- v1.8 (2026-07-26): M19 `like` 委托（#13 完成）+ `ext` 扩展成员落地，**P3/P4 全部完成**；检查清单与「下一步」同步至 P5；测试 369/369
 

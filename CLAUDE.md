@@ -38,7 +38,7 @@ LLVM Toolchain
 Native Executable
 ```
 
-**当前进度**: P0、P1、P2 完成，P3 进行中（统一声明层 DeclarationParserLayer 已落地：全局/成员/嵌套任何声明一条路径，class/interface/struct/wrapper 头部与成员、继承与 implements、嵌套类型、声明上的泛型参数；此前已完成 P2 语句系统：代码块/if/循环/try-catch-finally/seq/throw/await/yield，以及 P1 表达式系统：后缀链、Lambda/if/switch 表达式、typeOf/as/is、泛型参数、形参列表、结果传递机制、泛型 `\<` 语法迁移）。测试 326/326。
+**当前进度**: P0、P1、P2、P3、P4 完成（统一声明层 DeclarationParserLayer：全局/成员/嵌套任何声明一条路径，class/interface/struct/wrapper 头部与成员、继承与 implements、嵌套类型、声明上的泛型参数、getter/setter 属性访问器、enum `[]` case 列表、init `_ -> field` 参数映射、like 委托、ext 限定名；此前已完成 P2 语句系统：代码块/if/循环/try-catch-finally/seq/throw/await/yield，以及 P1 表达式系统：后缀链、Lambda/if/switch 表达式、typeOf/as/is、泛型参数、形参列表、结果传递机制、泛型 `\<` 语法迁移）。测试 369/369。
 
 ---
 
@@ -563,11 +563,12 @@ enum FloatParseState
 | SeqBlockParserLayer | seq 块（volatile/using/named，语句 + 表达式双形态） | 17/17 (100%) |
 | ThrowStatement（内联） | throw 语句 | 10/10 (100%) |
 | CoroutineOps（await/yield） | await 前缀运算符 + yield 语句（未建独立 Layer） | 13/13 (100%) |
-| DeclarationParserLayer | 统一声明层：全局/成员/嵌套任何声明（class/interface/struct/wrapper、字段/方法/init/operator、继承与 implements、声明泛型参数） | 51/51 (100%) |
+| DeclarationParserLayer | 统一声明层：全局/成员/嵌套任何声明（class/interface/struct/wrapper、字段/方法/init/operator、继承与 implements、声明泛型参数、enum case 列表、like 委托、ext 限定名） | 77/77 (100%) |
+| PropertyAccessorParserLayer | 属性访问器块 `{ get... set... }`（§9.4，三类定义位置统一接入） | 17/17 (100%) |
 | 结果传递机制 | IResultProducer/IResultConsumer + 弹层自动传递 | （含于各套件） |
 | 泛型语法迁移 | `\<...>` 语法 + `<` 解放为小于号 | 18/18 (100%) |
 
-**总计**: 326/326 测试通过 (100%)
+**总计**: 369/369 测试通过 (100%)
 
 **可解析的语法**：
 ```latte

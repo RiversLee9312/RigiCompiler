@@ -10,10 +10,13 @@ namespace LatteCompiler
     /// - 默认参数：name: String = "World"
     /// - 位置可变参数：numbers: i32...
     /// - 具名可变参数：options: named String...
+    /// - init 参数映射（§9.3，仅 allowMapping 时）：_ -> x、horizontal: i32 -> x、_ -> x = 0
     ///
     /// 状态流转：
     /// Initial → ParamStart → NameSeen → TypeExpected → TypeParsed
     ///   → [DotsAwaitThird → VariadicDone] / [ValueParsed] → Completed
+    ///   →（allowMapping）NameSeen/TypeParsed → MappedFieldExpected → AfterMappedField
+    ///     → [ValueParsed] → Completed
     ///
     /// 委托说明（Delegate, don't implement）：
     /// - 参数类型委托 TypeReferenceParserLayer（原地写入 pendingType）
@@ -22,16 +25,19 @@ namespace LatteCompiler
     public class ParameterListParserLayer : IParserLayer, IResultConsumer
     {
         private readonly ParameterListASTNode targetNode;
+        private readonly bool allowMapping;   // 仅 init 形参列表允许 _ -> field 映射（§9.3）
 
         private enum State
         {
             Initial,          // 等待 (
             ParamStart,       // 等待参数名或 )
-            NameSeen,         // 已读参数名，等待 :
+            NameSeen,         // 已读参数名，等待 : 或 ->
             TypeExpected,     // : 已读，等待类型或 named
-            TypeParsed,       // 类型已解析，等待 = . , )
+            TypeParsed,       // 类型已解析，等待 = . , ) 或 ->
             DotsAwaitThird,   // 等待第三个 .（前两个点已被符号解析消耗）
             VariadicDone,     // ... 已读完，等待 , 或 )
+            MappedFieldExpected, // -> 已读，等待目标字段名
+            AfterMappedField, // 字段名已读，等待 = , )
             ValueParsed,      // 默认值已解析，等待 , 或 )
             Completed         // 完成
         }
@@ -43,11 +49,13 @@ namespace LatteCompiler
         private TypeReferenceASTNode? pendingType = null;
         private bool pendingVariadic = false;
         private bool pendingNamedVariadic = false;
+        private string? pendingMappedField = null;
         private ExpressionASTNode? pendingDefault = null;
 
-        public ParameterListParserLayer(ParameterListASTNode target)
+        public ParameterListParserLayer(ParameterListASTNode target, bool allowMapping = false)
         {
             targetNode = target;
+            this.allowMapping = allowMapping;
         }
 
         // IResultConsumer：接收 ExpressionParserLayer 的默认值解析结果
@@ -77,6 +85,10 @@ namespace LatteCompiler
                     return HandleDotsAwaitThird(currentToken, context);
                 case State.VariadicDone:
                     return HandleVariadicDone(currentToken, context);
+                case State.MappedFieldExpected:
+                    return HandleMappedFieldExpected(currentToken, context);
+                case State.AfterMappedField:
+                    return HandleAfterMappedField(currentToken, context);
                 case State.ValueParsed:
                     return HandleValueParsed(currentToken, context);
                 default:
@@ -118,13 +130,22 @@ namespace LatteCompiler
             return new ParserLayerResult.PopLayer(false);
         }
 
-        // 已读参数名：必须是 : （类型标注）
+        // 已读参数名：: （类型标注）；allowMapping 时 -> 直接转字段映射（类型沿用字段）
         private ParserLayerResult HandleNameSeen(Token currentToken, ParserLayerContext context)
         {
-            if (currentToken is NotationToken nt && nt.Content == ":")
+            if (currentToken is NotationToken nt)
             {
-                state = State.TypeExpected;
-                return ParserLayerResult.Continue.Instance;
+                if (nt.Content == ":")
+                {
+                    state = State.TypeExpected;
+                    return ParserLayerResult.Continue.Instance;
+                }
+
+                if (allowMapping && nt.Content == Notations.ARROW)
+                {
+                    state = State.MappedFieldExpected;
+                    return ParserLayerResult.Continue.Instance;
+                }
             }
 
             context.RaiseError($"Expected ':' after parameter name '{pendingName}', got: {currentToken}");
@@ -175,6 +196,13 @@ namespace LatteCompiler
                 if (nt.Content == ".")
                 {
                     state = State.DotsAwaitThird;
+                    return ParserLayerResult.Continue.Instance;
+                }
+
+                // init 参数映射：horizontal: i32 -> x（§9.3）
+                if (allowMapping && nt.Content == Notations.ARROW)
+                {
+                    state = State.MappedFieldExpected;
                     return ParserLayerResult.Continue.Instance;
                 }
 
@@ -230,6 +258,51 @@ namespace LatteCompiler
             return new ParserLayerResult.PopLayer(false);
         }
 
+        // -> 已读：等待映射目标字段名（§9.3）
+        private ParserLayerResult HandleMappedFieldExpected(Token currentToken, ParserLayerContext context)
+        {
+            if (currentToken is WordToken wt)
+            {
+                pendingMappedField = wt.Content;
+                state = State.AfterMappedField;
+                return ParserLayerResult.Continue.Instance;
+            }
+
+            context.RaiseError($"Expected field name after '->' in init parameter mapping, got: {currentToken}");
+            return new ParserLayerResult.PopLayer(false);
+        }
+
+        // 字段名已读：=（默认值，委托表达式）、, 或 )
+        private ParserLayerResult HandleAfterMappedField(Token currentToken, ParserLayerContext context)
+        {
+            if (currentToken is NotationToken nt)
+            {
+                if (nt.Content == "=")
+                {
+                    state = State.ValueParsed;
+                    return new ParserLayerResult.PushLayer(
+                        new ExpressionParserLayer(targetNode), false);
+                }
+
+                if (nt.Content == ",")
+                {
+                    CompleteParameter();
+                    state = State.ParamStart;
+                    return ParserLayerResult.Continue.Instance;
+                }
+
+                if (nt.Content == ")")
+                {
+                    CompleteParameter();
+                    state = State.Completed;
+                    return new ParserLayerResult.PopLayer(false);
+                }
+            }
+
+            context.RaiseError($"Expected '=', ',' or ')' after mapped field name, got: {currentToken}");
+            return new ParserLayerResult.PopLayer(false);
+        }
+
         // 默认值已解析：等待 , 或 )
         private ParserLayerResult HandleValueParsed(Token currentToken, ParserLayerContext context)
         {
@@ -252,16 +325,21 @@ namespace LatteCompiler
         // 把 pending 字段累积的参数信息提交到 Parameters，并重置
         private void CompleteParameter()
         {
-            CleanTrailingEmptyElements(pendingType!);
-
-            targetNode.Parameters.Add(new ParameterASTNode(targetNode)
+            var param = new ParameterASTNode(targetNode)
             {
                 Name = pendingName,
-                Type = pendingType!,
                 IsVariadic = pendingVariadic,
                 IsNamedVariadic = pendingNamedVariadic,
+                MappedFieldName = pendingMappedField,
                 DefaultValue = pendingDefault
-            });
+            };
+            // 映射参数可省略类型（沿用字段类型）：此时 Type 保持构造出的空引用节点
+            if (pendingType != null)
+            {
+                CleanTrailingEmptyElements(pendingType);
+                param.Type = pendingType;
+            }
+            targetNode.Parameters.Add(param);
             ClearPending();
         }
 
@@ -278,6 +356,7 @@ namespace LatteCompiler
             pendingType = null;
             pendingVariadic = false;
             pendingNamedVariadic = false;
+            pendingMappedField = null;
             pendingDefault = null;
         }
     }
