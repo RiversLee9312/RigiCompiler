@@ -23,10 +23,11 @@ namespace LatteCompiler
     ///     → DoWhileKeywordExpected → DoWhileOpenParenExpected → DoConditionStart
     ///     → DoWhileCloseParenExpected → Done → 弹出
     ///
-    /// 委托说明：迭代/范围/条件表达式委托 ExpressionParserLayer（结果经 IResultConsumer
-    /// 回填），循环体委托 CodeBlockParserLayer（原地写入 node.Body）。
+    /// 委托说明：迭代/范围/条件表达式由 ExpressionParserLayer 直接附加到目标节点的
+    /// 各 ExpressionRootASTNode（大扫除后的施工协议，无回传），
+    /// 循环体委托 CodeBlockParserLayer（原地写入 node.Body）。
     /// </summary>
-    public class LoopParserLayer : IParserLayer, IResultConsumer
+    public class LoopParserLayer : IParserLayer
     {
         private readonly LoopStatementASTNode targetNode;
 
@@ -63,25 +64,21 @@ namespace LatteCompiler
 
         private State state = State.KeywordExpected;
 
-        // 等待子 Layer 结果时的回填动作（委托前设置，OnChildResult 时消费）
-        private Action<ASTNode?>? pendingResultHandler;
-
         public LoopParserLayer(CodeBlockASTNode parentBlock)
         {
             targetNode = new LoopStatementASTNode(parentBlock);
             parentBlock.Children.Add(targetNode);
         }
 
-        // IResultConsumer：接收迭代/范围/条件表达式的解析结果
-        public void OnChildResult(ASTNode? result, IParserLayer child)
-        {
-            var handler = pendingResultHandler;
-            pendingResultHandler = null;
-            handler?.Invoke(result);
-        }
-
         public ParserLayerResult ParseToken(Token currentToken, ParserLayerContext context)
         {
+            // EOF：循环结构（子句/循环体）未完整时收到 EOF 均为不完整结构
+            if (currentToken is EndOfFileToken)
+            {
+                context.RaiseError("Unexpected end of file");
+                return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
+            }
+
             // 本层只处于结构性等待状态（括号/关键字/花括号），允许跨行；
             // 表达式内部的换行终止仍由 ExpressionParserLayer 负责
             if (currentToken is LineBreakToken)
@@ -101,21 +98,13 @@ namespace LatteCompiler
                 case State.InKeywordExpected:
                     return HandleInKeywordExpected(currentToken, context);
                 case State.IterableStart:
-                    return DelegateExpression(State.AfterIterable,
-                        result => targetNode.Iterable = (ExpressionASTNode)result!);
+                    // 迭代起点表达式先解析到 Iterable Root（此时不知道是否范围循环）
+                    targetNode.Iterable = new ExpressionRootASTNode(targetNode);
+                    return DelegateExpression(State.AfterIterable, targetNode.Iterable);
                 case State.AfterIterable:
                     return HandleAfterIterable(currentToken, context);
                 case State.RangeEndStart:
-                    return DelegateExpression(State.CloseParenExpected,
-                        result =>
-                        {
-                            // 起点 + 终点包成范围表达式
-                            targetNode.Iterable = new RangeExpressionASTNode(targetNode)
-                            {
-                                From = targetNode.Iterable!,
-                                To = (ExpressionASTNode)result!
-                            };
-                        });
+                    return HandleRangeEndStart(currentToken, context);
                 case State.CloseParenExpected:
                     return ExpectNotation(currentToken, context, ")", State.NamedCheck,
                         "Expected ')' after for clause");
@@ -123,8 +112,8 @@ namespace LatteCompiler
                     return ExpectNotation(currentToken, context, "(", State.ConditionStart,
                         "Expected '(' after while");
                 case State.ConditionStart:
-                    return DelegateExpression(State.WhileCloseParenExpected,
-                        result => targetNode.Condition = (ExpressionASTNode)result!);
+                    targetNode.Condition = new ExpressionRootASTNode(targetNode);
+                    return DelegateExpression(State.WhileCloseParenExpected, targetNode.Condition);
                 case State.WhileCloseParenExpected:
                     return ExpectNotation(currentToken, context, ")", State.NamedCheck,
                         "Expected ')' after while condition");
@@ -136,7 +125,7 @@ namespace LatteCompiler
                     return HandleBodyExpected(currentToken, context);
                 case State.BodyDone:
                     // 循环体已结束：保留 token 交还给代码块分发
-                    return new ParserLayerResult.PopLayer(true);
+                    return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
                 case State.DoNamedCheck:
                     return HandleDoNamedCheck(currentToken, context);
                 case State.DoLabelNameExpected:
@@ -149,16 +138,16 @@ namespace LatteCompiler
                     return ExpectNotation(currentToken, context, "(", State.DoConditionStart,
                         "Expected '(' after while");
                 case State.DoConditionStart:
-                    return DelegateExpression(State.DoWhileCloseParenExpected,
-                        result => targetNode.Condition = (ExpressionASTNode)result!);
+                    targetNode.Condition = new ExpressionRootASTNode(targetNode);
+                    return DelegateExpression(State.DoWhileCloseParenExpected, targetNode.Condition);
                 case State.DoWhileCloseParenExpected:
                     return ExpectNotation(currentToken, context, ")", State.Done,
                         "Expected ')' after do-while condition");
                 case State.Done:
-                    return new ParserLayerResult.PopLayer(true);
+                    return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
                 default:
                     context.RaiseError($"Invalid LoopParserLayer state: {state}");
-                    return new ParserLayerResult.PopLayer(false);
+                    return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
             }
         }
 
@@ -188,7 +177,7 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected 'for', 'while' or 'do', got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         // 等待循环变量名
@@ -202,7 +191,7 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected loop variable name, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         // 等待 in 关键字
@@ -215,7 +204,7 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected 'in' after loop variable, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         // 迭代表达式已解析：to（范围循环）或 )（for-each）
@@ -236,7 +225,19 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected 'to' or ')' after iterable, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
+        }
+
+        // to 已读：把已填充的起点 Root 包进 RangeExpression（收养，不搬家），
+        // Iterable 换为装范围表达式的新 Root，终点表达式解析到 range.To
+        private ParserLayerResult HandleRangeEndStart(Token currentToken, ParserLayerContext context)
+        {
+            var fromRoot = targetNode.Iterable!;
+            var range = new RangeExpressionASTNode(fromRoot);
+            var iterableRoot = new ExpressionRootASTNode(targetNode);
+            targetNode.Iterable = iterableRoot;
+            iterableRoot.Attach(range);
+            return DelegateExpression(State.CloseParenExpected, range.To);
         }
 
         // named 标签或循环体 {
@@ -252,11 +253,11 @@ namespace LatteCompiler
             {
                 state = State.BodyDone;
                 return new ParserLayerResult.PushLayer(
-                    new CodeBlockParserLayer(targetNode.Body), true);
+                    new CodeBlockParserLayer(targetNode.Body), TokenDisposition.Replay);
             }
 
             context.RaiseError($"Expected 'named' or '{{' after loop clause, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         // named 已读：等待标签名
@@ -270,7 +271,7 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected label name after 'named', got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         // 等待循环体 {
@@ -280,11 +281,11 @@ namespace LatteCompiler
             {
                 state = State.BodyDone;
                 return new ParserLayerResult.PushLayer(
-                    new CodeBlockParserLayer(targetNode.Body), true);
+                    new CodeBlockParserLayer(targetNode.Body), TokenDisposition.Replay);
             }
 
             context.RaiseError($"Expected '{{' to start loop body, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         // do：named 标签或体 {
@@ -300,11 +301,11 @@ namespace LatteCompiler
             {
                 state = State.DoWhileKeywordExpected;
                 return new ParserLayerResult.PushLayer(
-                    new CodeBlockParserLayer(targetNode.Body), true);
+                    new CodeBlockParserLayer(targetNode.Body), TokenDisposition.Replay);
             }
 
             context.RaiseError($"Expected 'named' or '{{' after do, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         // do 的 named 已读：等待标签名
@@ -318,7 +319,7 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected label name after 'named', got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         // 标识符首字符检查（标签不能是数字字面量；词法上数字也是 WordToken）
@@ -334,11 +335,11 @@ namespace LatteCompiler
             {
                 state = State.DoWhileKeywordExpected;
                 return new ParserLayerResult.PushLayer(
-                    new CodeBlockParserLayer(targetNode.Body), true);
+                    new CodeBlockParserLayer(targetNode.Body), TokenDisposition.Replay);
             }
 
             context.RaiseError($"Expected '{{' to start do body, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         // do 体已结束：等待 while
@@ -351,7 +352,7 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected 'while' after do block, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         // 期待一个结构性符号：命中则消费并转入下一状态
@@ -366,15 +367,16 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"{errorMessage}, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
-        // 委托一个子表达式：压入 ExpressionParserLayer（保留 token），并登记回填动作
-        private ParserLayerResult DelegateExpression(State nextState, Action<ASTNode?> resultHandler)
+        // 委托一个子表达式：压入 ExpressionParserLayer（保留 token），
+        // 表达式直接附加到目标 Root
+        private ParserLayerResult DelegateExpression(State nextState, ExpressionRootASTNode expressionTarget)
         {
             state = nextState;
-            pendingResultHandler = resultHandler;
-            return new ParserLayerResult.PushLayer(new ExpressionParserLayer(targetNode), true);
+            return new ParserLayerResult.PushLayer(
+                new ExpressionParserLayer(expressionTarget), TokenDisposition.Replay);
         }
     }
 }

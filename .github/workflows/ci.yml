@@ -1,0 +1,24 @@
+# 最简单的 CI：每次提交 / Pull Request 执行构建 + 全量测试（大扫除 §13.5）
+name: build-and-test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build
+        run: dotnet build
+
+      # 全量测试入口：任意失败返回非零退出码，CI 即失败
+      - name: Run all tests
+        run: dotnet run -- --test-all

@@ -225,7 +225,7 @@ namespace LatteCompiler.Tests
                 sb.Append(" {").Append(string.Join(", ", accessors)).Append('}');
 
             // 初始化器只验证存在与节点种类（表达式本身的描述由表达式套件负责）
-            if (node.Initializer != null) sb.Append(" = ").Append(node.Initializer.NodeType);
+            if (node.Initializer != null) sb.Append(" = ").Append(node.Initializer.Expression.NodeType);
             return sb.ToString();
         }
 
@@ -247,7 +247,7 @@ namespace LatteCompiler.Tests
         }
 
         // ===== 入口 =====
-        public static void RunAll()
+        public static int RunAll()
         {
             passCount = 0;
             failCount = 0;
@@ -266,6 +266,8 @@ namespace LatteCompiler.Tests
             Console.WriteLine($"║  Total: {passCount + failCount,3} tests | Pass: {passCount,3} | Fail: {failCount,3}            ║");
             Console.WriteLine("╚════════════════════════════════════════════════════════╝");
             Console.WriteLine();
+
+            return failCount;
         }
     }
 }

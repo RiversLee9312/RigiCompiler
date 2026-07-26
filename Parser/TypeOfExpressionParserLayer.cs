@@ -10,9 +10,10 @@ namespace LatteCompiler
     ///
     /// 状态流转：OpenParenExpected → OperandStart → CloseParenExpected → 弹出
     ///
-    /// 委托说明：操作数委托 ExpressionParserLayer，结果经 IResultConsumer 回填。
+    /// 施工协议（大扫除后）：操作数由 ExpressionParserLayer 直接附加到
+    /// targetNode.Operand（ExpressionRootASTNode），无任何结果回传。
     /// </summary>
-    public class TypeOfExpressionParserLayer : IParserLayer, IResultProducer, IResultConsumer
+    public class TypeOfExpressionParserLayer : IParserLayer
     {
         private readonly TypeOfExpressionASTNode targetNode;
 
@@ -25,27 +26,20 @@ namespace LatteCompiler
 
         private State state = State.OpenParenExpected;
 
-        // 等待子 Layer 结果时的回填动作（委托前设置，OnChildResult 时消费）
-        private Action<ASTNode?>? pendingResultHandler;
-
         public TypeOfExpressionParserLayer(TypeOfExpressionASTNode target)
         {
             targetNode = target;
         }
 
-        // IResultProducer：返回填好的 typeOf 节点
-        public ASTNode? GetResult() => targetNode;
-
-        // IResultConsumer：接收操作数表达式的解析结果
-        public void OnChildResult(ASTNode? result, IParserLayer child)
-        {
-            var handler = pendingResultHandler;
-            pendingResultHandler = null;
-            handler?.Invoke(result);
-        }
-
         public ParserLayerResult ParseToken(Token currentToken, ParserLayerContext context)
         {
+            // EOF：typeOf 必须由 ) 闭合，收到 EOF 是不完整结构
+            if (currentToken is EndOfFileToken)
+            {
+                context.RaiseError("Unexpected end of file");
+                return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
+            }
+
             // 本层只处于结构性等待状态（括号/关键字），允许跨行；
             // 表达式内部的换行终止仍由 ExpressionParserLayer 负责
             if (currentToken is LineBreakToken)
@@ -63,7 +57,7 @@ namespace LatteCompiler
                     return HandleCloseParenExpected(currentToken, context);
                 default:
                     context.RaiseError($"Invalid TypeOfExpressionParserLayer state: {state}");
-                    return new ParserLayerResult.PopLayer(false);
+                    return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
             }
         }
 
@@ -77,15 +71,15 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected '(' after typeOf, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         // 操作数开始：压入 ExpressionParserLayer（保留 token 交给它）
         private ParserLayerResult HandleOperandStart(Token currentToken, ParserLayerContext context)
         {
             state = State.CloseParenExpected;
-            pendingResultHandler = result => targetNode.Operand = (ExpressionASTNode)result!;
-            return new ParserLayerResult.PushLayer(new ExpressionParserLayer(targetNode), true);
+            return new ParserLayerResult.PushLayer(
+                new ExpressionParserLayer(targetNode.Operand), TokenDisposition.Replay);
         }
 
         // 等待 ) ：消费后完成解析，弹出本层
@@ -93,11 +87,11 @@ namespace LatteCompiler
         {
             if (currentToken is NotationToken nt && nt.Content == ")")
             {
-                return new ParserLayerResult.PopLayer(false);
+                return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
             }
 
             context.RaiseError($"Expected ')' to close typeOf expression, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
     }
 }

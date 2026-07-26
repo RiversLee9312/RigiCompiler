@@ -14,7 +14,7 @@ namespace LatteCompiler
         public TypeReferenceASTNode? TypeAnnotation;   // 类型标注（可选）
         public PropertyAccessorASTNode? Getter;        // 属性访问器块中的 get（§9.4，可选）
         public PropertyAccessorASTNode? Setter;        // 属性访问器块中的 set（§9.4，可选）
-        public ExpressionASTNode? Initializer;         // 初始化表达式（可选）
+        public ExpressionRootASTNode? Initializer;       // 初始化表达式（可选；不存在时为 null）
 
         public VariableDeclarationASTNode(ASTNode? parent) : base(parent)
         {
@@ -110,7 +110,7 @@ namespace LatteCompiler
         public bool IsVariadic;                // 位置可变：numbers: i32...
         public bool IsNamedVariadic;           // 具名可变：options: named String...
         public string? MappedFieldName;        // init 参数映射的目标字段（无映射为 null）
-        public ExpressionASTNode? DefaultValue;
+        public ExpressionRootASTNode? DefaultValue;    // 默认值的挂载 Root（无默认值时为 null）
 
         public ParameterASTNode(ASTNode? parent) : base(parent)
         {

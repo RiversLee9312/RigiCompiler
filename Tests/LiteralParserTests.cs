@@ -5,6 +5,10 @@ namespace LatteCompiler.Tests
 {
     public class LiteralParserTests
     {
+        // 测试计数（PASS 计入 passCount，FAIL/ERROR 计入 failCount）
+        private static int passCount = 0;
+        private static int failCount = 0;
+
         // 测试整数字面量
         public static void TestIntLiterals()
         {
@@ -78,23 +82,27 @@ namespace LatteCompiler.Tests
 
                     bool passed = result.Contains(expectedDesc.Split(':')[0]); // 简化检查
                     Console.WriteLine($"  [{(passed ? "PASS" : "FAIL")}] {code} => {result}");
+                    if (passed) passCount++; else failCount++;
                 }
                 else
                 {
                     Console.WriteLine($"  [FAIL] {code} => No AST node produced");
+                    failCount++;
                 }
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"  [ERROR] {code} => {ex.Message}");
+                failCount++;
             }
         }
 
-        // 描述字面量节点
+        // 描述字面量节点（顶层字面量现为 LiteralExpression 包装，先解包）
         private static string DescribeLiteral(ASTNode node)
         {
             return node switch
             {
+                LiteralExpressionASTNode litExpr => DescribeLiteral(litExpr.Literal),
                 IntLiteralASTNode intNode => $"IntLiteral: value={intNode.Value}, type={intNode.IntType}" +
                                              (intNode.IsHex ? ", hex=true" : ""),
                 FloatLiteralASTNode floatNode => $"FloatLiteral: value={floatNode.Value}, isFloat={floatNode.IsFloat}",
@@ -107,8 +115,11 @@ namespace LatteCompiler.Tests
         }
 
         // 运行所有测试
-        public static void RunAll()
+        public static int RunAll()
         {
+            passCount = 0;
+            failCount = 0;
+
             Console.WriteLine("\n╔════════════════════════════════════╗");
             Console.WriteLine("║  Literal Parser Layer Tests       ║");
             Console.WriteLine("╚════════════════════════════════════╝\n");
@@ -118,7 +129,8 @@ namespace LatteCompiler.Tests
             TestBoolAndNull();
             TestStringLiterals();
 
-            Console.WriteLine("=== All Tests Complete ===\n");
+            Console.WriteLine($"=== Literal Tests Complete: {passCount} passed, {failCount} failed ===\n");
+            return failCount;
         }
     }
 }

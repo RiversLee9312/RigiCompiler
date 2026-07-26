@@ -4,22 +4,74 @@ using System.Collections.Generic;
 namespace LatteCompiler
 {
     // 表达式基类
+    // 表达式节点允许在施工期间暂时没有父节点（作为未挂载子树组合），
+    // 最终通过某个 ExpressionRootASTNode.Attach() 设置父节点；
+    // 语句位置直接挂接的表达式（如代码块中的 seq）可在构造时传入父节点。
     public abstract class ExpressionASTNode : ASTNode
     {
-        protected ExpressionASTNode(ASTNode? parent) : base(parent) { }
+        protected ExpressionASTNode(ASTNode? parent = null) : base(parent) { }
+    }
+
+    // 表达式挂载点（Syntax AST 的正式节点）：
+    // 表示「一个语法上要求出现表达式的位置，以及最终填入该位置的一棵表达式子树」。
+    // 它不是临时回调对象，也不是 Parser 私有 slot；
+    // 在语义分析和 BIL Lowering 中被视为透明容器。
+    //
+    // 强制不变量：
+    // 1. 最多只能调用一次 Attach；2. 禁止替换已附加的表达式；
+    // 3. 禁止附加已拥有父节点的表达式；4. 一个表达式节点只能属于一个 Root；
+    // 5. 成功解析后的必需 Root 必须恰好包含一个表达式（缺失用 null Root 表示，
+    //    禁止「非 null 但为空的 Root」）。
+    public sealed class ExpressionRootASTNode : ASTNode
+    {
+        private ExpressionASTNode? expression;
+
+        public ExpressionRootASTNode(ASTNode parent)
+            : base(parent)
+        {
+        }
+
+        public bool IsAttached => expression is not null;
+
+        public ExpressionASTNode Expression =>
+            expression ?? throw new InvalidOperationException(
+                "ExpressionRootASTNode has no attached expression.");
+
+        public void Attach(ExpressionASTNode node)
+        {
+            ArgumentNullException.ThrowIfNull(node);
+
+            if (expression is not null)
+            {
+                throw new InvalidOperationException(
+                    "ExpressionRootASTNode already contains an expression.");
+            }
+
+            if (node.Parent is not null)
+            {
+                throw new InvalidOperationException(
+                    "The expression node is already attached to another AST node.");
+            }
+
+            node.AttachTo(this);
+            expression = node;
+        }
+
+        public override ASTNodeType NodeType =>
+            ASTNodeType.ValueExpressionRoot;
     }
 
     // 二元运算表达式
     public class BinaryExpressionASTNode : ExpressionASTNode
     {
-        public ExpressionASTNode Left;
-        public ExpressionASTNode Right;
+        public ExpressionRootASTNode Left { get; }
+        public ExpressionRootASTNode Right { get; }
         public string Operator;  // +, -, *, /, and, or, ==, !=, etc.
 
-        public BinaryExpressionASTNode(ASTNode? parent) : base(parent)
+        public BinaryExpressionASTNode()
         {
-            Left = null!;
-            Right = null!;
+            Left = new ExpressionRootASTNode(this);
+            Right = new ExpressionRootASTNode(this);
             Operator = "";
         }
 
@@ -29,13 +81,13 @@ namespace LatteCompiler
     // 一元运算表达式
     public class UnaryExpressionASTNode : ExpressionASTNode
     {
-        public ExpressionASTNode Operand;
+        public ExpressionRootASTNode Operand { get; }
         public string Operator;  // -, not, await
         public bool IsPrefix;    // true = 前缀, false = 后缀
 
-        public UnaryExpressionASTNode(ASTNode? parent) : base(parent)
+        public UnaryExpressionASTNode()
         {
-            Operand = null!;
+            Operand = new ExpressionRootASTNode(this);
             Operator = "";
             IsPrefix = true;
         }
@@ -43,17 +95,40 @@ namespace LatteCompiler
         public override ASTNodeType NodeType => ASTNodeType.OneValueExpression;
     }
 
-    // 字面量表达式（包装已有的字面量节点）
+    // 字面量表达式（包装一个字面量节点）
     public class LiteralExpressionASTNode : ExpressionASTNode
     {
-        public ASTNode LiteralNode;  // IntLiteralASTNode, StringLiteralASTNode, etc.
+        private LiteralASTNode? literal;
 
-        public LiteralExpressionASTNode(ASTNode? parent, ASTNode literalNode) : base(parent)
+        public LiteralExpressionASTNode(ASTNode? parent = null) : base(parent)
         {
-            LiteralNode = literalNode;
         }
 
-        public override ASTNodeType NodeType => LiteralNode.NodeType;
+        // 一次性附加字面量（重复附加抛异常；字面量节点的父节点即本节点）
+        public void AttachLiteral(LiteralASTNode node)
+        {
+            ArgumentNullException.ThrowIfNull(node);
+
+            if (literal is not null)
+            {
+                throw new InvalidOperationException(
+                    "LiteralExpressionASTNode already contains a literal.");
+            }
+
+            if (node.Parent != this)
+            {
+                throw new InvalidOperationException(
+                    "The literal node's parent must be this LiteralExpressionASTNode.");
+            }
+
+            literal = node;
+        }
+
+        public LiteralASTNode Literal =>
+            literal ?? throw new InvalidOperationException(
+                "LiteralExpressionASTNode has no attached literal.");
+
+        public override ASTNodeType NodeType => Literal.NodeType;
     }
 
     // 符号引用表达式（变量、函数调用等）
@@ -61,7 +136,7 @@ namespace LatteCompiler
     {
         public SymbolASTNode Symbol;
 
-        public SymbolReferenceASTNode(ASTNode? parent) : base(parent)
+        public SymbolReferenceASTNode(ASTNode? parent = null) : base(parent)
         {
             Symbol = new SymbolASTNode(this);
         }
@@ -72,14 +147,14 @@ namespace LatteCompiler
     // 括号分组表达式
     public class GroupExpressionASTNode : ExpressionASTNode
     {
-        public ExpressionASTNode InnerExpression;
+        public ExpressionRootASTNode InnerExpression { get; }
 
-        public GroupExpressionASTNode(ASTNode? parent) : base(parent)
+        public GroupExpressionASTNode()
         {
-            InnerExpression = null!;
+            InnerExpression = new ExpressionRootASTNode(this);
         }
 
-        public override ASTNodeType NodeType => ASTNodeType.ValueExpressionRoot;
+        public override ASTNodeType NodeType => ASTNodeType.GroupExpression;
     }
 
     // new 表达式
@@ -88,7 +163,7 @@ namespace LatteCompiler
         public TypeReferenceASTNode Type;
         public List<ArgumentASTNode> Arguments;
 
-        public NewExpressionASTNode(ASTNode? parent) : base(parent)
+        public NewExpressionASTNode()
         {
             Type = new TypeReferenceASTNode(this);
             Arguments = new List<ArgumentASTNode>();
@@ -101,12 +176,12 @@ namespace LatteCompiler
     public class ArgumentASTNode : ASTNode
     {
         public string? Name;           // 具名实参名；位置实参为 null
-        public ExpressionASTNode Value;
+        public ExpressionRootASTNode Value { get; }
 
-        public ArgumentASTNode(ASTNode? parent, ExpressionASTNode value, string? name = null) : base(parent)
+        public ArgumentASTNode(ASTNode? parent) : base(parent)
         {
-            Name = name;
-            Value = value;
+            Name = null;
+            Value = new ExpressionRootASTNode(this);
         }
 
         public override ASTNodeType NodeType => ASTNodeType.Argument;
@@ -115,12 +190,12 @@ namespace LatteCompiler
     // 函数调用表达式
     public class CallExpressionASTNode : ExpressionASTNode
     {
-        public ExpressionASTNode Callee;  // 被调用的表达式
+        public ExpressionRootASTNode Callee { get; }  // 被调用的表达式
         public List<ArgumentASTNode> Arguments;
 
-        public CallExpressionASTNode(ASTNode? parent) : base(parent)
+        public CallExpressionASTNode()
         {
-            Callee = null!;
+            Callee = new ExpressionRootASTNode(this);
             Arguments = new List<ArgumentASTNode>();
         }
 
@@ -130,12 +205,12 @@ namespace LatteCompiler
     // 索引访问表达式
     public class IndexExpressionASTNode : ExpressionASTNode
     {
-        public ExpressionASTNode Object;
+        public ExpressionRootASTNode Object { get; }
         public List<ArgumentASTNode> Indices;
 
-        public IndexExpressionASTNode(ASTNode? parent) : base(parent)
+        public IndexExpressionASTNode()
         {
-            Object = null!;
+            Object = new ExpressionRootASTNode(this);
             Indices = new List<ArgumentASTNode>();
         }
 
@@ -145,14 +220,14 @@ namespace LatteCompiler
     // 成员访问表达式
     public class MemberAccessASTNode : ExpressionASTNode
     {
-        public ExpressionASTNode Object;
+        public ExpressionRootASTNode Object { get; }
         public string MemberName;
         public bool IsSafeAccess;  // ?. 安全访问
         public List<TypeReferenceASTNode> GenericArguments;  // 泛型实参（foo().bar\<i32>）
 
-        public MemberAccessASTNode(ASTNode? parent) : base(parent)
+        public MemberAccessASTNode()
         {
-            Object = null!;
+            Object = new ExpressionRootASTNode(this);
             MemberName = "";
             IsSafeAccess = false;
             GenericArguments = new List<TypeReferenceASTNode>();
@@ -170,15 +245,15 @@ namespace LatteCompiler
         public ParameterListASTNode Parameters;           // 形参列表 (...)
         public GenericParameterListASTNode? GenericParameters;  // 泛型形参 \<...>（可选）
         public TypeReferenceASTNode ReturnType;           // 返回类型
-        public ExpressionASTNode Body;                    // lambda 体（单表达式）
+        public ExpressionRootASTNode Body { get; }        // lambda 体（单表达式）
 
-        public LambdaExpressionASTNode(ASTNode? parent) : base(parent)
+        public LambdaExpressionASTNode()
         {
             IsAsync = false;
             Parameters = new ParameterListASTNode(this);
             GenericParameters = null;
             ReturnType = new TypeReferenceASTNode(this);
-            Body = null!;
+            Body = new ExpressionRootASTNode(this);
         }
 
         public override ASTNodeType NodeType => ASTNodeType.LambdaExpression;
@@ -188,15 +263,15 @@ namespace LatteCompiler
     // 作为表达式时必须有 else 分支；分支当前仅支持单表达式
     public class IfExpressionASTNode : ExpressionASTNode
     {
-        public ExpressionASTNode Condition;
-        public ExpressionASTNode ThenExpression;
-        public ExpressionASTNode ElseExpression;
+        public ExpressionRootASTNode Condition { get; }
+        public ExpressionRootASTNode ThenExpression { get; }
+        public ExpressionRootASTNode ElseExpression { get; }
 
-        public IfExpressionASTNode(ASTNode? parent) : base(parent)
+        public IfExpressionASTNode()
         {
-            Condition = null!;
-            ThenExpression = null!;
-            ElseExpression = null!;
+            Condition = new ExpressionRootASTNode(this);
+            ThenExpression = new ExpressionRootASTNode(this);
+            ElseExpression = new ExpressionRootASTNode(this);
         }
 
         public override ASTNodeType NodeType => ASTNodeType.IfExpression;
@@ -206,13 +281,13 @@ namespace LatteCompiler
     // 不含 _ 的分支为值匹配（编译期常量）；含 _ 的为模式匹配（结果为 bool）
     public class SwitchCaseASTNode : ASTNode
     {
-        public ExpressionASTNode Pattern;
-        public ExpressionASTNode Body;
+        public ExpressionRootASTNode Pattern { get; }
+        public ExpressionRootASTNode Body { get; }
 
         public SwitchCaseASTNode(ASTNode? parent) : base(parent)
         {
-            Pattern = null!;
-            Body = null!;
+            Pattern = new ExpressionRootASTNode(this);
+            Body = new ExpressionRootASTNode(this);
         }
 
         public override ASTNodeType NodeType => ASTNodeType.SwitchExpression;
@@ -223,13 +298,13 @@ namespace LatteCompiler
     // 作为表达式时必须有 default 分支；分支体当前仅支持单表达式
     public class SwitchExpressionASTNode : ExpressionASTNode
     {
-        public ExpressionASTNode Selector;
+        public ExpressionRootASTNode Selector { get; }
         public List<SwitchCaseASTNode> Cases;
-        public ExpressionASTNode? DefaultBody;
+        public ExpressionRootASTNode? DefaultBody;
 
-        public SwitchExpressionASTNode(ASTNode? parent) : base(parent)
+        public SwitchExpressionASTNode()
         {
-            Selector = null!;
+            Selector = new ExpressionRootASTNode(this);
             Cases = new List<SwitchCaseASTNode>();
             DefaultBody = null;
         }
@@ -240,11 +315,11 @@ namespace LatteCompiler
     // typeOf 表达式（SYNTAX.md §3.7）：typeOf(expr)，返回 Type\<T>
     public class TypeOfExpressionASTNode : ExpressionASTNode
     {
-        public ExpressionASTNode Operand;
+        public ExpressionRootASTNode Operand { get; }
 
-        public TypeOfExpressionASTNode(ASTNode? parent) : base(parent)
+        public TypeOfExpressionASTNode()
         {
-            Operand = null!;
+            Operand = new ExpressionRootASTNode(this);
         }
 
         public override ASTNodeType NodeType => ASTNodeType.TypeOfExpression;
@@ -254,13 +329,13 @@ namespace LatteCompiler
     // obj as String（失败抛 core.CastException）/ obj as? String（失败返回 null）
     public class CastExpressionASTNode : ExpressionASTNode
     {
-        public ExpressionASTNode Object;
+        public ExpressionRootASTNode Object { get; }
         public TypeReferenceASTNode TargetType;
         public bool IsSafe;    // true = as? 安全转换
 
-        public CastExpressionASTNode(ASTNode? parent) : base(parent)
+        public CastExpressionASTNode()
         {
-            Object = null!;
+            Object = new ExpressionRootASTNode(this);
             TargetType = new TypeReferenceASTNode(this);
             IsSafe = false;
         }
@@ -270,15 +345,17 @@ namespace LatteCompiler
 
     // 范围表达式（SYNTAX.md §7.3）：for (i in 0 to 10) 中的 0 to 10
     // to 由 LoopParserLayer 直接消费（上下文关键字，不进表达式层）
+    // fromRoot：循环层已解析的范围起点表达式的挂载 Root（由本节点收养，
+    // 避免表达式在 Root 间搬家——Root 与表达式都只能附加一次）
     public class RangeExpressionASTNode : ExpressionASTNode
     {
-        public ExpressionASTNode From;
-        public ExpressionASTNode To;
+        public ExpressionRootASTNode From { get; }
+        public ExpressionRootASTNode To { get; }
 
-        public RangeExpressionASTNode(ASTNode? parent) : base(parent)
+        public RangeExpressionASTNode(ExpressionRootASTNode fromRoot)
         {
-            From = null!;
-            To = null!;
+            From = fromRoot;
+            To = new ExpressionRootASTNode(this);
         }
 
         public override ASTNodeType NodeType => ASTNodeType.RangeExpression;
@@ -289,13 +366,13 @@ namespace LatteCompiler
     // 右侧也可以是 Type\<T> 值（词法上与类型名无歧义，统一按类型引用解析）
     public class TypeCheckExpressionASTNode : ExpressionASTNode
     {
-        public ExpressionASTNode Object;
+        public ExpressionRootASTNode Object { get; }
         public string Operator;    // is / supers / with
         public TypeReferenceASTNode TargetType;
 
-        public TypeCheckExpressionASTNode(ASTNode? parent) : base(parent)
+        public TypeCheckExpressionASTNode()
         {
-            Object = null!;
+            Object = new ExpressionRootASTNode(this);
             Operator = "";
             TargetType = new TypeReferenceASTNode(this);
         }
@@ -307,7 +384,7 @@ namespace LatteCompiler
     // [volatile] seq [using(...)]* [named label] { ... }
     // 可作为语句（不产生值）或表达式（通过 return@seq/return@label 产生值）
     // 注：继承自 ExpressionASTNode，因此可以在表达式位置使用；
-    //     在代码块中单独成行时，作为表达式语句
+    //     在代码块中单独成行时，作为表达式语句（构造时传入块父节点）
     public class SeqBlockExpressionASTNode : ExpressionASTNode
     {
         public bool IsVolatile;                    // volatile 修饰符
@@ -315,7 +392,7 @@ namespace LatteCompiler
         public string? Label;                      // named 标签（可选）
         public CodeBlockASTNode Body;
 
-        public SeqBlockExpressionASTNode(ASTNode? parent) : base(parent)
+        public SeqBlockExpressionASTNode(ASTNode? parent = null) : base(parent)
         {
             IsVolatile = false;
             UsingBindings = new List<UsingBindingASTNode>();
@@ -334,7 +411,7 @@ namespace LatteCompiler
     {
         public string CaseName;
 
-        public EnumCaseExpressionASTNode(ASTNode? parent) : base(parent)
+        public EnumCaseExpressionASTNode()
         {
             CaseName = "";
         }
@@ -347,16 +424,15 @@ namespace LatteCompiler
     // 与调用/索引/成员访问同属路径表达式后缀链（§3），在运算符之前整体形成
     public class WrapperAccessASTNode : ExpressionASTNode
     {
-        public ExpressionASTNode Object;
+        public ExpressionRootASTNode Object { get; }
         public string WrapperName;
 
-        public WrapperAccessASTNode(ASTNode? parent) : base(parent)
+        public WrapperAccessASTNode()
         {
-            Object = null!;
+            Object = new ExpressionRootASTNode(this);
             WrapperName = "";
         }
 
         public override ASTNodeType NodeType => ASTNodeType.WrapperAccess;
     }
 }
-

@@ -7,7 +7,7 @@ namespace LatteCompiler
     //
     // 约定：
     // - 语句不产生结果，直接挂入 CodeBlockASTNode.Children
-    // - 表达式语句以裸 ExpressionASTNode 作为块的子节点，无包装节点
+    // - 表达式语句以 ExpressionRootASTNode 作为块的子节点（统一表达式挂载点）
 
     // 代码块 { ... }：一组有序语句
     // 语句容器直接用 ASTNode.Children（M14 已上移到基类），不再另设字段
@@ -24,13 +24,13 @@ namespace LatteCompiler
     // ElseBranch 为 CodeBlockASTNode（else 块）或嵌套 IfStatementASTNode（else if 链）
     public class IfStatementASTNode : ASTNode
     {
-        public ExpressionASTNode Condition;
+        public ExpressionRootASTNode Condition { get; }
         public CodeBlockASTNode ThenBlock;
         public ASTNode? ElseBranch;
 
         public IfStatementASTNode(ASTNode? parent) : base(parent)
         {
-            Condition = null!;
+            Condition = new ExpressionRootASTNode(this);
             ThenBlock = new CodeBlockASTNode(this);
             ElseBranch = null;
         }
@@ -53,10 +53,10 @@ namespace LatteCompiler
     public class LoopStatementASTNode : ASTNode
     {
         public LoopKind Kind;
-        public string? VariableName;           // 仅 For
-        public ExpressionASTNode? Iterable;    // 仅 For：集合或 RangeExpression
-        public ExpressionASTNode? Condition;   // 仅 While/DoWhile
-        public string? Label;                  // named 标签（可选）
+        public string? VariableName;              // 仅 For
+        public ExpressionRootASTNode? Iterable;   // 仅 For：集合或 RangeExpression（有循环项时非 null）
+        public ExpressionRootASTNode? Condition;  // 仅 While/DoWhile（非 null）
+        public string? Label;                     // named 标签（可选）
         public CodeBlockASTNode Body;
 
         public LoopStatementASTNode(ASTNode? parent) : base(parent)
@@ -75,8 +75,8 @@ namespace LatteCompiler
     // return 语句：return / return expr / return@标签 expr（SYNTAX.md §4.1/§6.1）
     public class ReturnStatementASTNode : ASTNode
     {
-        public string? Label;                  // @标签（可选，如 return@seq value）
-        public ExpressionASTNode? Value;
+        public string? Label;                     // @标签（可选，如 return@seq value）
+        public ExpressionRootASTNode? Value;      // 可选返回值（裸 return 为 null）
 
         public ReturnStatementASTNode(ASTNode? parent) : base(parent)
         {
@@ -103,15 +103,17 @@ namespace LatteCompiler
     }
 
     // 赋值语句：target = value（目标为符号/成员访问/索引表达式）
+    // targetRoot：代码块已解析出的赋值目标表达式的挂载 Root（由本节点收养，
+    // 避免表达式在 Root 间搬家——Root 与表达式都只能附加一次）
     public class AssignStatementASTNode : ASTNode
     {
-        public ExpressionASTNode Target;
-        public ExpressionASTNode Value;
+        public ExpressionRootASTNode Target { get; }
+        public ExpressionRootASTNode Value { get; }
 
-        public AssignStatementASTNode(ASTNode? parent) : base(parent)
+        public AssignStatementASTNode(ASTNode? parent, ExpressionRootASTNode targetRoot) : base(parent)
         {
-            Target = null!;
-            Value = null!;
+            Target = targetRoot;
+            Value = new ExpressionRootASTNode(this);
         }
 
         public override ASTNodeType NodeType => ASTNodeType.AssignStatement;
@@ -162,14 +164,14 @@ namespace LatteCompiler
         public bool IsConst;                       // const 或 var
         public string VariableName;
         public TypeReferenceASTNode? Type;         // 可选类型标注
-        public ExpressionASTNode Initializer;
+        public ExpressionRootASTNode Initializer { get; }
 
         public UsingBindingASTNode(ASTNode? parent) : base(parent)
         {
             IsConst = false;
             VariableName = null!;
             Type = null;
-            Initializer = null!;
+            Initializer = new ExpressionRootASTNode(this);
         }
 
         public override ASTNodeType NodeType => ASTNodeType.UsingBinding;
@@ -178,11 +180,11 @@ namespace LatteCompiler
     // throw 语句：throw expression
     public class ThrowStatementASTNode : ASTNode
     {
-        public ExpressionASTNode Exception;        // 要抛出的异常表达式
+        public ExpressionRootASTNode Exception { get; }   // 要抛出的异常表达式
 
         public ThrowStatementASTNode(ASTNode? parent) : base(parent)
         {
-            Exception = null!;
+            Exception = new ExpressionRootASTNode(this);
         }
 
         public override ASTNodeType NodeType => ASTNodeType.ThrowStatement;
@@ -193,7 +195,7 @@ namespace LatteCompiler
     // yield alarm              // 带 alarm 表达式
     public class YieldStatementASTNode : ASTNode
     {
-        public ExpressionASTNode? Alarm;           // 可选的 alarm 表达式
+        public ExpressionRootASTNode? Alarm;           // 可选的 alarm 表达式
 
         public YieldStatementASTNode(ASTNode? parent) : base(parent)
         {

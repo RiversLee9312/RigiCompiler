@@ -21,10 +21,11 @@ namespace LatteCompiler
     ///   → CatchOrFinally（继续）
     ///   → FinallyOpenParen → FinallyParameter → FinallyCloseParen
     ///   → FinallyBlock（委托 CodeBlockParserLayer）→ Completed
+    ///
+    /// 施工协议（大扫除后）：构造函数接收父层创建并挂接好的目标节点，只原地填充。
     /// </summary>
-    public class TryCatchFinallyParserLayer : IParserLayer, IResultConsumer
+    public class TryCatchFinallyParserLayer : IParserLayer
     {
-        private readonly ASTNode parentNode;
         private readonly TryCatchFinallyStatementASTNode tryNode;
 
         private enum State
@@ -46,24 +47,22 @@ namespace LatteCompiler
         }
 
         private State state = State.TryKeyword;
-        private Action<ASTNode?>? pendingResultHandler;
         private CatchClauseASTNode? currentCatch;
 
-        public TryCatchFinallyParserLayer(ASTNode parent)
+        public TryCatchFinallyParserLayer(TryCatchFinallyStatementASTNode target)
         {
-            parentNode = parent;
-            tryNode = new TryCatchFinallyStatementASTNode(parent);
-        }
-
-        public void OnChildResult(ASTNode? result, IParserLayer child)
-        {
-            var handler = pendingResultHandler;
-            pendingResultHandler = null;
-            handler?.Invoke(result);
+            tryNode = target;
         }
 
         public ParserLayerResult ParseToken(Token currentToken, ParserLayerContext context)
         {
+            // EOF：try-catch-finally 结构未完整时收到 EOF 均为不完整结构
+            if (currentToken is EndOfFileToken)
+            {
+                context.RaiseError("Unexpected end of file");
+                return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
+            }
+
             switch (state)
             {
                 case State.TryKeyword:
@@ -96,7 +95,7 @@ namespace LatteCompiler
                     return HandleCompleted(currentToken, context);
                 default:
                     context.RaiseError($"Invalid TryCatchFinallyParserLayer state: {state}");
-                    return new ParserLayerResult.PopLayer(false);
+                    return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
             }
         }
 
@@ -109,7 +108,7 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected 'try' keyword, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         private ParserLayerResult HandleTryBlock(Token currentToken, ParserLayerContext context)
@@ -123,7 +122,7 @@ namespace LatteCompiler
             // 委托给 CodeBlockParserLayer 解析 try 块
             state = State.CatchOrFinally;
             return new ParserLayerResult.PushLayer(
-                new CodeBlockParserLayer(tryNode.TryBlock), true);
+                new CodeBlockParserLayer(tryNode.TryBlock), TokenDisposition.Replay);
         }
 
         private ParserLayerResult HandleCatchOrFinally(Token currentToken, ParserLayerContext context)
@@ -156,7 +155,7 @@ namespace LatteCompiler
             if (tryNode.CatchClauses.Count == 0 && tryNode.FinallyBlock == null)
             {
                 context.RaiseError("try 语句必须至少有一个 catch 或一个 finally 子句");
-                return new ParserLayerResult.PopLayer(false);
+                return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
             }
 
             // 结束
@@ -179,7 +178,7 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected '(' after 'catch', got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         private ParserLayerResult HandleCatchVariable(Token currentToken, ParserLayerContext context)
@@ -207,7 +206,7 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected variable name or '_' in catch clause, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         private ParserLayerResult HandleCatchColon(Token currentToken, ParserLayerContext context)
@@ -224,11 +223,11 @@ namespace LatteCompiler
                 // 创建类型引用节点并关联到 catch 子句
                 currentCatch!.ExceptionType = new TypeReferenceASTNode(currentCatch);
                 return new ParserLayerResult.PushLayer(
-                    new TypeReferenceParserLayer(currentCatch!.ExceptionType), false);
+                    new TypeReferenceParserLayer(currentCatch!.ExceptionType), TokenDisposition.Consume);
             }
 
             context.RaiseError($"Expected ':' after catch variable, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         private ParserLayerResult HandleCatchType(Token currentToken, ParserLayerContext context)
@@ -253,7 +252,7 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected ')' after catch type, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         private ParserLayerResult HandleCatchBlock(Token currentToken, ParserLayerContext context)
@@ -269,7 +268,7 @@ namespace LatteCompiler
             currentCatch = null;
             state = State.CatchOrFinally;
             return new ParserLayerResult.PushLayer(
-                new CodeBlockParserLayer(tryNode.CatchClauses[tryNode.CatchClauses.Count - 1].Body), true);
+                new CodeBlockParserLayer(tryNode.CatchClauses[tryNode.CatchClauses.Count - 1].Body), TokenDisposition.Replay);
         }
 
         private ParserLayerResult HandleFinallyOpenParen(Token currentToken, ParserLayerContext context)
@@ -287,7 +286,7 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected '(' after 'finally', got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         private ParserLayerResult HandleFinallyParameter(Token currentToken, ParserLayerContext context)
@@ -306,7 +305,7 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected parameter name in finally clause, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         private ParserLayerResult HandleFinallyCloseParen(Token currentToken, ParserLayerContext context)
@@ -325,7 +324,7 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected ')' after finally parameter, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         private ParserLayerResult HandleFinallyBlock(Token currentToken, ParserLayerContext context)
@@ -339,22 +338,13 @@ namespace LatteCompiler
             // 委托给 CodeBlockParserLayer 解析 finally 块
             state = State.Completed;
             return new ParserLayerResult.PushLayer(
-                new CodeBlockParserLayer(tryNode.FinallyBlock!), true);
+                new CodeBlockParserLayer(tryNode.FinallyBlock!), TokenDisposition.Replay);
         }
 
         private ParserLayerResult HandleCompleted(Token currentToken, ParserLayerContext context)
         {
-            // 将完整的 try 节点添加到父节点
-            if (parentNode is CodeBlockASTNode codeBlock)
-            {
-                codeBlock.Children.Add(tryNode);
-            }
-            else
-            {
-                context.RaiseError("try 语句只能出现在代码块中");
-            }
-
-            return new ParserLayerResult.PopLayer(true);
+            // 目标节点在构造时已由父层挂接，弹出即完成
+            return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
         }
     }
 }

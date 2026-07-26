@@ -18,10 +18,10 @@ namespace LatteCompiler
     ///   → 语句：ThenBlockExpected（委托 CodeBlockParserLayer）→ ElseCheck
     ///     → [ElseBranchExpected →（块/嵌套 if）→ Done] → 弹出
     ///
-    /// 委托说明：条件与分支均委托 ExpressionParserLayer / CodeBlockParserLayer
-    /// （表达式结果经 IResultConsumer 回填）。
+    /// 施工协议（大扫除后）：条件与分支表达式由 ExpressionParserLayer 直接附加到
+    /// 目标节点的各 ExpressionRootASTNode，无任何结果回传。
     /// </summary>
-    public class IfStatementParserLayer : IParserLayer, IResultProducer, IResultConsumer
+    public class IfStatementParserLayer : IParserLayer
     {
         private readonly IfExpressionASTNode? exprNode;
         private readonly IfStatementASTNode? stmtNode;
@@ -49,9 +49,6 @@ namespace LatteCompiler
         }
 
         private State state;
-
-        // 等待子 Layer 结果时的回填动作（委托前设置，OnChildResult 时消费）
-        private Action<ASTNode?>? pendingResultHandler;
 
         // 表达式模式：if 关键字已由 ExpressionParserLayer 消费
         public IfStatementParserLayer(IfExpressionASTNode target)
@@ -81,19 +78,15 @@ namespace LatteCompiler
             return node;
         }
 
-        // IResultProducer：表达式模式返回填好的 if 表达式节点；语句模式不产生结果
-        public ASTNode? GetResult() => isExpression ? exprNode : null;
-
-        // IResultConsumer：接收条件/分支表达式的解析结果
-        public void OnChildResult(ASTNode? result, IParserLayer child)
-        {
-            var handler = pendingResultHandler;
-            pendingResultHandler = null;
-            handler?.Invoke(result);
-        }
-
         public ParserLayerResult ParseToken(Token currentToken, ParserLayerContext context)
         {
+            // EOF：if 结构（条件/分支/else）未完整时收到 EOF 均为不完整结构
+            if (currentToken is EndOfFileToken)
+            {
+                context.RaiseError("Unexpected end of file");
+                return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
+            }
+
             // 本层只处于结构性等待状态（括号/花括号/else），允许跨行；
             // 表达式内部的换行终止仍由 ExpressionParserLayer 负责
             if (currentToken is LineBreakToken)
@@ -110,19 +103,14 @@ namespace LatteCompiler
                         "Expected '(' after if");
                 case State.ConditionStart:
                     return DelegateExpression(State.CloseParenExpected,
-                        result =>
-                        {
-                            if (isExpression) exprNode!.Condition = (ExpressionASTNode)result!;
-                            else stmtNode!.Condition = (ExpressionASTNode)result!;
-                        });
+                        isExpression ? exprNode!.Condition : stmtNode!.Condition);
                 case State.CloseParenExpected:
                     return HandleCloseParenExpected(currentToken, context);
                 case State.ThenOpenBraceExpected:
                     return ExpectNotation(currentToken, context, "{", State.ThenBodyStart,
                         "Expected '{' to start if-then branch");
                 case State.ThenBodyStart:
-                    return DelegateExpression(State.ThenCloseBraceExpected,
-                        result => exprNode!.ThenExpression = (ExpressionASTNode)result!);
+                    return DelegateExpression(State.ThenCloseBraceExpected, exprNode!.ThenExpression);
                 case State.ThenCloseBraceExpected:
                     return ExpectNotation(currentToken, context, "}", State.ElseExpected,
                         "Expected '}' to close if-then branch");
@@ -132,8 +120,7 @@ namespace LatteCompiler
                     return ExpectNotation(currentToken, context, "{", State.ElseBodyStart,
                         "Expected '{' to start else branch");
                 case State.ElseBodyStart:
-                    return DelegateExpression(State.ElseCloseBraceExpected,
-                        result => exprNode!.ElseExpression = (ExpressionASTNode)result!);
+                    return DelegateExpression(State.ElseCloseBraceExpected, exprNode!.ElseExpression);
                 case State.ElseCloseBraceExpected:
                     return HandleElseCloseBraceExpected(currentToken, context);
                 case State.ThenBlockExpected:
@@ -144,10 +131,10 @@ namespace LatteCompiler
                     return HandleElseBranchExpected(currentToken, context);
                 case State.Done:
                     // 语句模式收尾：不消费 token，交还给父层（代码块分发）
-                    return new ParserLayerResult.PopLayer(true);
+                    return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
                 default:
                     context.RaiseError($"Invalid IfStatementParserLayer state: {state}");
-                    return new ParserLayerResult.PopLayer(false);
+                    return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
             }
         }
 
@@ -163,16 +150,16 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"{errorMessage}, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
-        // 委托一个子表达式：压入 ExpressionParserLayer（保留 token），并登记回填动作
-        private ParserLayerResult DelegateExpression(State nextState, Action<ASTNode?> resultHandler)
+        // 委托一个子表达式：压入 ExpressionParserLayer（保留 token），
+        // 表达式直接附加到目标 Root
+        private ParserLayerResult DelegateExpression(State nextState, ExpressionRootASTNode expressionTarget)
         {
             state = nextState;
-            pendingResultHandler = resultHandler;
-            var parentNode = (ASTNode?)exprNode ?? stmtNode!;
-            return new ParserLayerResult.PushLayer(new ExpressionParserLayer(parentNode), true);
+            return new ParserLayerResult.PushLayer(
+                new ExpressionParserLayer(expressionTarget), TokenDisposition.Replay);
         }
 
         // ===== 共享部分 =====
@@ -187,7 +174,7 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected 'if', got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         // 条件 ) 已读：按模式进入 then 分支
@@ -200,7 +187,7 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected ')' after if condition, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         // ===== 表达式模式 =====
@@ -215,7 +202,7 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"if 表达式必须包含 else 分支（SYNTAX.md §7.1），got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         // else 分支 } ：消费后完成解析，弹出本层
@@ -223,11 +210,11 @@ namespace LatteCompiler
         {
             if (currentToken is NotationToken nt && nt.Content == "}")
             {
-                return new ParserLayerResult.PopLayer(false);
+                return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
             }
 
             context.RaiseError($"Expected '}}' to close else branch, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         // ===== 语句模式 =====
@@ -239,11 +226,11 @@ namespace LatteCompiler
             {
                 state = State.ElseCheck;
                 return new ParserLayerResult.PushLayer(
-                    new CodeBlockParserLayer(stmtNode!.ThenBlock), true);
+                    new CodeBlockParserLayer(stmtNode!.ThenBlock), TokenDisposition.Replay);
             }
 
             context.RaiseError($"Expected '{{' to start if-then block, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         // then 块已结束：语句模式的 else 可选
@@ -256,7 +243,7 @@ namespace LatteCompiler
             }
 
             // 无 else：完成，保留 token 交还给代码块分发
-            return new ParserLayerResult.PopLayer(true);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
         }
 
         // else 已读：{ 进入 else 块；if 进入 else if 链
@@ -269,7 +256,7 @@ namespace LatteCompiler
                 stmtNode!.ElseBranch = elseBlock;
                 state = State.Done;
                 return new ParserLayerResult.PushLayer(
-                    new CodeBlockParserLayer(elseBlock), true);
+                    new CodeBlockParserLayer(elseBlock), TokenDisposition.Replay);
             }
 
             // else if 链：嵌套 IfStatementASTNode 作为 ElseBranch
@@ -279,11 +266,11 @@ namespace LatteCompiler
                 stmtNode!.ElseBranch = nested;
                 state = State.Done;
                 return new ParserLayerResult.PushLayer(
-                    new IfStatementParserLayer(nested), true);
+                    new IfStatementParserLayer(nested), TokenDisposition.Replay);
             }
 
             context.RaiseError($"Expected '{{' or 'if' after else, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
     }
 }

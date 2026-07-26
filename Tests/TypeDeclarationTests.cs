@@ -518,17 +518,17 @@ namespace LatteCompiler.Tests
 
         private static string FormatArgument(ArgumentASTNode a)
         {
-            var v = FormatExpr(a.Value);
+            var v = FormatExpr(a.Value.Expression);
             return a.Name != null ? a.Name + " = " + v : v;
         }
 
         // case 实参的紧凑渲染：只覆盖测试所需形态，复杂表达式回退为节点名
         private static string FormatExpr(ASTNode e) => e switch
         {
-            LiteralExpressionASTNode lit => FormatExpr(lit.LiteralNode),
+            LiteralExpressionASTNode lit => FormatExpr(lit.Literal),
             IntLiteralASTNode i => i.Value.ToString(),
             StringLiteralASTNode s => "\"" + s.Value + "\"",
-            UnaryExpressionASTNode u => u.Operator + FormatExpr(u.Operand),
+            UnaryExpressionASTNode u => u.Operator + FormatExpr(u.Operand.Expression),
             SymbolReferenceASTNode sref => string.Join(".", sref.Symbol.symbol.elements.ConvertAll(el => el.name)),
             EnumCaseExpressionASTNode ec => "." + ec.CaseName,
             _ => $"<{e.GetType().Name}>"
@@ -573,7 +573,7 @@ namespace LatteCompiler.Tests
             if (p.MappedFieldName != null)
                 s += " -> " + p.MappedFieldName;
             if (p.DefaultValue != null)
-                s += " = " + FormatExpr(p.DefaultValue);
+                s += " = " + FormatExpr(p.DefaultValue.Expression);
             return s;
         }
 
@@ -731,7 +731,7 @@ namespace LatteCompiler.Tests
         }
 
         // ===== 入口 =====
-        public static void RunAll()
+        public static int RunAll()
         {
             passCount = 0;
             failCount = 0;
@@ -761,6 +761,8 @@ namespace LatteCompiler.Tests
             Console.WriteLine($"║  Total: {passCount + failCount,3} tests | Pass: {passCount,3} | Fail: {failCount,3}            ║");
             Console.WriteLine("╚════════════════════════════════════════════════════════╝");
             Console.WriteLine();
+
+            return failCount;
         }
     }
 }

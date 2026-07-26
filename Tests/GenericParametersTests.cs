@@ -108,7 +108,7 @@ namespace LatteCompiler.Tests
             var tokens = lexer.Tokenize(code);
             var node = new GenericParameterListASTNode(null);
             var parser = new Parser();
-            parser.Parse(tokens, new GenericParametersParserLayer(node));
+            parser.Parse(tokens, new TestRootParserLayer(), new GenericParametersParserLayer(node));
             return node;
         }
 
@@ -217,7 +217,7 @@ namespace LatteCompiler.Tests
         }
 
         // ===== 入口 =====
-        public static void RunAll()
+        public static int RunAll()
         {
             Console.WriteLine("\n╔════════════════════════════════════╗");
             Console.WriteLine("║  Generic Parameters Tests          ║");
@@ -233,6 +233,8 @@ namespace LatteCompiler.Tests
             TestErrorCases();
 
             Console.WriteLine($"=== Generic Parameters Tests Complete: {passCount} passed, {failCount} failed ===\n");
+
+            return failCount;
         }
     }
 }

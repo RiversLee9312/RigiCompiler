@@ -125,11 +125,12 @@ namespace LatteCompiler.Tests
                 var lexer = new Lexer();
                 var tokens = lexer.Tokenize(source);
                 var root = new RootASTNode();
-                var layer = new ExpressionParserLayer(root);
+                var exprRoot = new ExpressionRootASTNode(root);
+                var layer = new ExpressionParserLayer(exprRoot);
                 var parser = new Parser();
-                parser.Parse(tokens, layer);
+                parser.Parse(tokens, new TestRootParserLayer(), layer);
 
-                var result = layer.GetResult();
+                var result = exprRoot.Expression;
                 var formatted = DescribeExpression(result);
                 if (formatted == expected)
                 {
@@ -161,7 +162,7 @@ namespace LatteCompiler.Tests
                 var tokens = lexer.Tokenize(source);
                 var block = new CodeBlockASTNode(null);
                 var parser = new Parser();
-                parser.Parse(tokens, new CodeBlockParserLayer(block));
+                parser.Parse(tokens, new TestRootParserLayer(), new CodeBlockParserLayer(block));
 
                 var formatted = FormatBlock(block);
                 if (formatted == expected)
@@ -196,11 +197,12 @@ namespace LatteCompiler.Tests
         {
             return node switch
             {
-                YieldStatementASTNode y => $"Yield({(y.Alarm == null ? "<none>" : DescribeExpression(y.Alarm))})",
-                VariableDeclarationASTNode v => $"Var({v.Name}{(v.Initializer != null ? " = " + DescribeExpression(v.Initializer) : "")})",
-                ReturnStatementASTNode r => $"Return({(r.Value != null ? DescribeExpression(r.Value) : "<none>")})",
+                YieldStatementASTNode y => $"Yield({(y.Alarm == null ? "<none>" : DescribeExpression(y.Alarm!.Expression))})",
+                VariableDeclarationASTNode v => $"Var({v.Name}{(v.Initializer != null ? " = " + DescribeExpression(v.Initializer!.Expression) : "")})",
+                ReturnStatementASTNode r => $"Return({(r.Value != null ? DescribeExpression(r.Value!.Expression) : "<none>")})",
                 IfStatementASTNode ifStmt => FormatIf(ifStmt),
                 LoopStatementASTNode loop => FormatLoop(loop),
+                ExpressionRootASTNode root => DescribeExpression(root.Expression),
                 ExpressionASTNode e => DescribeExpression(e),
                 _ => $"<{node.GetType().Name}>"
             };
@@ -215,7 +217,7 @@ namespace LatteCompiler.Tests
                 IfStatementASTNode nested => FormatIf(nested),
                 _ => $"<{ifStmt.ElseBranch.GetType().Name}>"
             };
-            return $"IfStmt({DescribeExpression(ifStmt.Condition)}, {FormatBlock(ifStmt.ThenBlock)}, {elsePart})";
+            return $"IfStmt({DescribeExpression(ifStmt.Condition.Expression)}, {FormatBlock(ifStmt.ThenBlock)}, {elsePart})";
         }
 
         private static string FormatLoop(LoopStatementASTNode loop)
@@ -223,7 +225,7 @@ namespace LatteCompiler.Tests
             return loop.Kind switch
             {
                 LoopKind.For =>
-                    $"For({loop.VariableName}, {DescribeExpression(loop.Iterable)}, {FormatBlock(loop.Body)})",
+                    $"For({loop.VariableName}, {DescribeExpression(loop.Iterable!.Expression)}, {FormatBlock(loop.Body)})",
                 _ => $"<{loop.Kind}>"
             };
         }
@@ -233,20 +235,20 @@ namespace LatteCompiler.Tests
             return node switch
             {
                 null => "<null>",
-                LiteralExpressionASTNode lit => DescribeExpression(lit.LiteralNode),
+                LiteralExpressionASTNode lit => DescribeExpression(lit.Literal),
                 IntLiteralASTNode i => $"Int({i.Value},{i.IntType})",
-                UnaryExpressionASTNode unary => $"Unary({unary.Operator} {DescribeExpression(unary.Operand)})",
+                UnaryExpressionASTNode unary => $"Unary({unary.Operator} {DescribeExpression(unary.Operand.Expression)})",
                 SymbolReferenceASTNode sref => $"Sym({sref.Symbol.symbol.elements[0].name})",
                 CallExpressionASTNode c =>
-                    $"Call({DescribeExpression(c.Callee)}, [{string.Join(", ", c.Arguments.Select(a => DescribeExpression(a.Value)))}])",
+                    $"Call({DescribeExpression(c.Callee.Expression)}, [{string.Join(", ", c.Arguments.Select(a => DescribeExpression(a.Value.Expression)))}])",
                 MemberAccessASTNode m =>
-                    $"MemberAccess({DescribeExpression(m.Object)}.{m.MemberName})",
+                    $"MemberAccess({DescribeExpression(m.Object.Expression)}.{m.MemberName})",
                 _ => $"<{node.GetType().Name}>"
             };
         }
 
         // ===== 入口 =====
-        public static void RunAll()
+        public static int RunAll()
         {
             passCount = 0;
             failCount = 0;
@@ -265,6 +267,8 @@ namespace LatteCompiler.Tests
             Console.WriteLine($"║  Total: {passCount + failCount,3} tests | Pass: {passCount,3} | Fail: {failCount,3}            ║");
             Console.WriteLine("╚════════════════════════════════════════════════════════╝");
             Console.WriteLine();
+
+            return failCount;
         }
     }
 }

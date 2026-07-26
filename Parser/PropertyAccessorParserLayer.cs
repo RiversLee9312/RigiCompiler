@@ -210,7 +210,7 @@ namespace LatteCompiler
                 CommitAccessor(context);
                 state = State.AccessorStart;
                 return new ParserLayerResult.PushLayer(
-                    new CodeBlockParserLayer(body), true);
+                    new CodeBlockParserLayer(body), TokenDisposition.Replay);
             }
 
             throw context.RaiseError($"Expected '{{' for accessor body, got: {currentToken}");
@@ -261,7 +261,7 @@ namespace LatteCompiler
                 throw context.RaiseError(
                     "'get' and 'set' must agree on whether a backing field is required (SYNTAX §9.4)");
 
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
     }
 }

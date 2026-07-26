@@ -5,11 +5,16 @@ namespace LatteCompiler.Tests
 {
     public class TypeReferenceParserTests
     {
+        // 失败计数（占位测试：仅组件创建异常计 1 个失败）
+        private static int failCount = 0;
+
         // TypeReferenceParserLayer 用于解析类型引用（使用类型）
         // 不处理 rich/shared，它们是类型声明的修饰符
 
-        public static void RunAll()
+        public static int RunAll()
         {
+            failCount = 0;
+
             Console.WriteLine("\n╔════════════════════════════════════╗");
             Console.WriteLine("║  Type Reference Parser Tests       ║");
             Console.WriteLine("╚════════════════════════════════════╝\n");
@@ -35,6 +40,7 @@ namespace LatteCompiler.Tests
             TestComponentCreation();
 
             Console.WriteLine("\n=== All Tests Complete ===\n");
+            return failCount;
         }
 
         // 测试组件创建
@@ -59,6 +65,7 @@ namespace LatteCompiler.Tests
             catch (Exception ex)
             {
                 Console.WriteLine($"  [ERROR] Component creation failed: {ex.Message}");
+                failCount++;
             }
         }
     }

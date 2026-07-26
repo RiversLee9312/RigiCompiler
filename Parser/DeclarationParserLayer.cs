@@ -92,7 +92,7 @@ namespace LatteCompiler
                 case State.EnumAfterArgs: return OnEnumAfterArgs(t, context);
                 case State.EnumDiscriminant: return OnEnumDiscriminant(t, context);
                 case State.EnumAfterCase: return OnEnumAfterCase(t, context);
-                case State.Finish: return new ParserLayerResult.PopLayer(true);
+                case State.Finish: return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
                 default:
                     throw context.RaiseError($"Invalid DeclarationParserLayer state: {state}");
             }
@@ -113,7 +113,7 @@ namespace LatteCompiler
                 // 注解名（可为 a.b 路径）复用 PathParserLayer
                 return new ParserLayerResult.PushLayer(
                     new PathParserLayer(
-                        PathParserLayer.PathType.SymbolPath, ann.Name, lineBreakSensitive: true), false);
+                        PathParserLayer.PathType.SymbolPath, ann.Name, lineBreakSensitive: true), TokenDisposition.Consume);
             }
 
             if (t is WordToken w)
@@ -135,7 +135,7 @@ namespace LatteCompiler
                     // ext 允许限定名（pub ext var String.isEmpty: bool，§4.4）
                     return new ParserLayerResult.PushLayer(
                         new VariableDeclarationParserLayer(
-                            v, allowExtension: modifiers.Contains(Keywords.EXT)), true);
+                            v, allowExtension: modifiers.Contains(Keywords.EXT)), TokenDisposition.Replay);
                 }
 
                 if (w.Content == Keywords.FUNC) return StartCallable(CallableKind.Func, State.CallableName);
@@ -191,7 +191,7 @@ namespace LatteCompiler
                 state = State.Modifiers;
                 return new ParserLayerResult.PushLayer(
                     new ArgumentListParserLayer(
-                        ann.Arguments, ArgumentListParserLayer.BracketKind.Round, parent), false);
+                        ann.Arguments, ArgumentListParserLayer.BracketKind.Round, parent), TokenDisposition.Consume);
             }
 
             state = State.Modifiers;
@@ -263,7 +263,7 @@ namespace LatteCompiler
                     // 仅 init 允许 _ -> field 参数映射（§9.3）
                     return new ParserLayerResult.PushLayer(
                         new ParameterListParserLayer(
-                            callable!.Parameters, allowMapping: callable.Kind == CallableKind.Init), true);
+                            callable!.Parameters, allowMapping: callable.Kind == CallableKind.Init), TokenDisposition.Replay);
                 }
                 if (n.Content == "\\")
                 {
@@ -271,7 +271,7 @@ namespace LatteCompiler
                     // 复用 GenericParametersParserLayer（它自己吃掉 \< 到 >）；
                     // 状态保持 ParamsExpected：泛型列表弹出后仍等待 (
                     return new ParserLayerResult.PushLayer(
-                        new GenericParametersParserLayer(callable.GenericParameters), true);
+                        new GenericParametersParserLayer(callable.GenericParameters), TokenDisposition.Replay);
                 }
                 // 限定名的段间点：ext（String.reversed，§4.4）或 wrapper proxy
                 // （.proxy.get.name，§14.2）；wildcard .* 后不允许再有点（* 必须收尾）
@@ -296,7 +296,7 @@ namespace LatteCompiler
                 if (n.Content == "{") return PushBody();
             }
             // 换行/其他：无体声明（接口方法、抽象方法、init 映射形态）
-            return new ParserLayerResult.PopLayer(t is not LineBreakToken);
+            return new ParserLayerResult.PopLayer(t is not LineBreakToken ? TokenDisposition.Replay : TokenDisposition.Consume);
         }
 
         private ParserLayerResult OnReturnType(Token t, ParserLayerContext context)
@@ -306,13 +306,13 @@ namespace LatteCompiler
             state = State.AfterReturnType;
             // 复用 TypeReferenceParserLayer
             return new ParserLayerResult.PushLayer(
-                new TypeReferenceParserLayer(callable.ReturnType), true);
+                new TypeReferenceParserLayer(callable.ReturnType), TokenDisposition.Replay);
         }
 
         private ParserLayerResult OnAfterReturnType(Token t, ParserLayerContext context)
         {
             if (t is NotationToken n && n.Content == "{") return PushBody();
-            return new ParserLayerResult.PopLayer(t is not LineBreakToken);
+            return new ParserLayerResult.PopLayer(t is not LineBreakToken ? TokenDisposition.Replay : TokenDisposition.Consume);
         }
 
         private ParserLayerResult PushBody()
@@ -321,7 +321,7 @@ namespace LatteCompiler
             state = State.Finish;
             // 复用 CodeBlockParserLayer（它自己吃掉 '{' 到 '}'）
             return new ParserLayerResult.PushLayer(
-                new CodeBlockParserLayer(callable.Body), true);
+                new CodeBlockParserLayer(callable.Body), TokenDisposition.Replay);
         }
 
         // ===== 类型声明：顶层与嵌套共用同一路径 =====
@@ -404,7 +404,7 @@ namespace LatteCompiler
                     // 状态保持 AfterTypeName：泛型列表弹出后仍等待 : / implements / {
                     var gp = new GenericParameterListASTNode(typeNode);
                     SetGenericParameters(typeNode!, gp);
-                    return new ParserLayerResult.PushLayer(new GenericParametersParserLayer(gp), true);
+                    return new ParserLayerResult.PushLayer(new GenericParametersParserLayer(gp), TokenDisposition.Replay);
                 }
                 if (n.Content == ":")
                 {
@@ -445,7 +445,7 @@ namespace LatteCompiler
                     throw context.RaiseError("This declaration cannot have a base type");
             }
             state = State.AfterBase;
-            return new ParserLayerResult.PushLayer(new TypeReferenceParserLayer(tr), true);
+            return new ParserLayerResult.PushLayer(new TypeReferenceParserLayer(tr), TokenDisposition.Replay);
         }
 
         private ParserLayerResult OnInterfaceExpected(Token t, ParserLayerContext context)
@@ -463,7 +463,7 @@ namespace LatteCompiler
             var tr = new TypeReferenceASTNode(typeNode);
             interfaceList.Add(tr);
             state = State.AfterBase;
-            return new ParserLayerResult.PushLayer(new TypeReferenceParserLayer(tr), true);
+            return new ParserLayerResult.PushLayer(new TypeReferenceParserLayer(tr), TokenDisposition.Replay);
         }
 
         private ParserLayerResult OnAfterBase(Token t, ParserLayerContext context)
@@ -539,6 +539,10 @@ namespace LatteCompiler
         {
             if (t is LineBreakToken) return ParserLayerResult.Continue.Instance;
 
+            // EOF：类型体必须由 } 闭合，收到 EOF 是不完整结构
+            if (t is EndOfFileToken)
+                throw context.RaiseError("Unexpected end of file");
+
             if (t is NotationToken n && n.Content == "}")
             {
                 // enum struct 体后可能紧跟 [case 列表]（SYNTAX §12）
@@ -549,11 +553,11 @@ namespace LatteCompiler
                 }
                 // wrapper 体结束：校验同类 wildcard proxy 唯一（SYNTAX §14.6）
                 if (typeNode is WrapperDeclarationASTNode) ValidateWildcardUniqueness(context);
-                return new ParserLayerResult.PopLayer(false);
+                return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
             }
 
             return new ParserLayerResult.PushLayer(
-                new DeclarationParserLayer(typeNode!), true);
+                new DeclarationParserLayer(typeNode!), TokenDisposition.Replay);
         }
 
         // §14.6：同一 wrapper 中四类 wildcard proxy（.proxy.* / .proxy.get.* /
@@ -584,7 +588,7 @@ namespace LatteCompiler
                 return ParserLayerResult.Continue.Instance;
             }
 
-            return new ParserLayerResult.PopLayer(t is not LineBreakToken);
+            return new ParserLayerResult.PopLayer(t is not LineBreakToken ? TokenDisposition.Replay : TokenDisposition.Consume);
         }
 
         // 等待 case 名或 ]（[] 内换行忽略）
@@ -620,8 +624,7 @@ namespace LatteCompiler
                     // 它从实参开始、自己吃掉闭合 )（与调用点的既有约定一致）
                     return new ParserLayerResult.PushLayer(
                         new ArgumentListParserLayer(
-                            currentCase!.Arguments, ArgumentListParserLayer.BracketKind.Round, currentCase),
-                        false);
+                            currentCase!.Arguments, ArgumentListParserLayer.BracketKind.Round, currentCase), TokenDisposition.Consume);
                 }
                 if (n.Content == Notations.ARROW)
                 {
@@ -710,7 +713,7 @@ namespace LatteCompiler
             if (explicitCases.Select(c => c.DiscriminantValue).Distinct().Count() != explicitCases.Count)
                 throw context.RaiseError("Duplicate enum discriminant value (SYNTAX §12.4)");
 
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
     }
 }

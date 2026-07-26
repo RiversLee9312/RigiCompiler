@@ -21,10 +21,11 @@ namespace LatteCompiler
     ///       → DefaultBodyStart → DefaultBodyCloseBraceExpected → CaseStart
     ///     → } → 弹出
     ///
-    /// 委托说明：selector/pattern/body 均委托 ExpressionParserLayer（结果经 IResultConsumer 回填）。
+    /// 委托说明：selector/pattern/body 均由 ExpressionParserLayer 直接附加到目标
+    /// 节点的各 ExpressionRootASTNode，无任何结果回传（大扫除后的施工协议）。
     /// 当前限制：分支体仅支持单表达式，多语句块待 P2 CodeBlockParserLayer。
     /// </summary>
-    public class SwitchStatementParserLayer : IParserLayer, IResultProducer, IResultConsumer
+    public class SwitchStatementParserLayer : IParserLayer
     {
         private readonly SwitchExpressionASTNode targetNode;
         private readonly bool isExpression;
@@ -53,9 +54,6 @@ namespace LatteCompiler
         // 读取中的分支（累积，} 时提交到 Cases）
         private SwitchCaseASTNode? pendingCase = null;
 
-        // 等待子 Layer 结果时的回填动作（委托前设置，OnChildResult 时消费）
-        private Action<ASTNode?>? pendingResultHandler;
-
         public SwitchStatementParserLayer(SwitchExpressionASTNode target, bool isExpression = true)
         {
             targetNode = target;
@@ -68,19 +66,15 @@ namespace LatteCompiler
             }
         }
 
-        // IResultProducer：返回填好的 switch 表达式节点
-        public ASTNode? GetResult() => targetNode;
-
-        // IResultConsumer：接收 selector/pattern/body 表达式的解析结果
-        public void OnChildResult(ASTNode? result, IParserLayer child)
-        {
-            var handler = pendingResultHandler;
-            pendingResultHandler = null;
-            handler?.Invoke(result);
-        }
-
         public ParserLayerResult ParseToken(Token currentToken, ParserLayerContext context)
         {
+            // EOF：switch 必须由 } 闭合，收到 EOF 是不完整结构
+            if (currentToken is EndOfFileToken)
+            {
+                context.RaiseError("Unexpected end of file");
+                return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
+            }
+
             // 本层只处于结构性等待状态（括号/箭头/花括号/default），允许跨行；
             // 表达式内部的换行终止仍由 ExpressionParserLayer 负责
             if (currentToken is LineBreakToken)
@@ -94,8 +88,7 @@ namespace LatteCompiler
                     return ExpectNotation(currentToken, context, "(", State.SelectorStart,
                         "Expected '(' after switch");
                 case State.SelectorStart:
-                    return DelegateExpression(State.SelectorCloseParenExpected,
-                        result => targetNode.Selector = (ExpressionASTNode)result!);
+                    return DelegateExpression(State.SelectorCloseParenExpected, targetNode.Selector);
                 case State.SelectorCloseParenExpected:
                     return ExpectNotation(currentToken, context, ")", State.OpenBraceExpected,
                         "Expected ')' after switch selector");
@@ -106,8 +99,7 @@ namespace LatteCompiler
                     return HandleCaseStart(currentToken, context);
                 case State.PatternStart:
                     pendingCase = new SwitchCaseASTNode(targetNode);
-                    return DelegateExpression(State.PatternCloseParenExpected,
-                        result => pendingCase.Pattern = (ExpressionASTNode)result!);
+                    return DelegateExpression(State.PatternCloseParenExpected, pendingCase.Pattern);
                 case State.PatternCloseParenExpected:
                     return ExpectNotation(currentToken, context, ")", State.CaseArrowExpected,
                         "Expected ')' after switch case pattern");
@@ -118,8 +110,7 @@ namespace LatteCompiler
                     return ExpectNotation(currentToken, context, "{", State.CaseBodyStart,
                         "Expected '{' to start switch case body");
                 case State.CaseBodyStart:
-                    return DelegateExpression(State.CaseBodyCloseBraceExpected,
-                        result => pendingCase!.Body = (ExpressionASTNode)result!);
+                    return DelegateExpression(State.CaseBodyCloseBraceExpected, pendingCase!.Body);
                 case State.CaseBodyCloseBraceExpected:
                     return HandleCaseBodyCloseBraceExpected(currentToken, context);
                 case State.DefaultArrowExpected:
@@ -129,14 +120,14 @@ namespace LatteCompiler
                     return ExpectNotation(currentToken, context, "{", State.DefaultBodyStart,
                         "Expected '{' to start default body");
                 case State.DefaultBodyStart:
-                    return DelegateExpression(State.DefaultBodyCloseBraceExpected,
-                        result => targetNode.DefaultBody = (ExpressionASTNode)result!);
+                    targetNode.DefaultBody = new ExpressionRootASTNode(targetNode);
+                    return DelegateExpression(State.DefaultBodyCloseBraceExpected, targetNode.DefaultBody);
                 case State.DefaultBodyCloseBraceExpected:
                     return ExpectNotation(currentToken, context, "}", State.CaseStart,
                         "Expected '}' to close default body");
                 default:
                     context.RaiseError($"Invalid SwitchStatementParserLayer state: {state}");
-                    return new ParserLayerResult.PopLayer(false);
+                    return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
             }
         }
 
@@ -152,15 +143,16 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"{errorMessage}, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
-        // 委托一个子表达式：压入 ExpressionParserLayer（保留 token），并登记回填动作
-        private ParserLayerResult DelegateExpression(State nextState, Action<ASTNode?> resultHandler)
+        // 委托一个子表达式：压入 ExpressionParserLayer（保留 token），
+        // 表达式直接附加到目标 Root
+        private ParserLayerResult DelegateExpression(State nextState, ExpressionRootASTNode expressionTarget)
         {
             state = nextState;
-            pendingResultHandler = resultHandler;
-            return new ParserLayerResult.PushLayer(new ExpressionParserLayer(targetNode), true);
+            return new ParserLayerResult.PushLayer(
+                new ExpressionParserLayer(expressionTarget), TokenDisposition.Replay);
         }
 
         // 分支列表入口：普通分支 ( 、default 分支或结束 }
@@ -191,11 +183,11 @@ namespace LatteCompiler
                 {
                     context.RaiseError("switch 表达式必须包含 default 分支（SYNTAX.md §7.2）");
                 }
-                return new ParserLayerResult.PopLayer(false);
+                return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
             }
 
             context.RaiseError($"Expected '(', 'default' or '}}' in switch case list, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         // 分支体 } ：提交分支，回到 CaseStart 等待下一个分支
@@ -210,7 +202,7 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected '}}' to close switch case body, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
     }
 }

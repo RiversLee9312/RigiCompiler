@@ -281,7 +281,7 @@ namespace LatteCompiler.Tests
                     return;
                 }
 
-                string actual = DescribeExpression(decl.Initializer);
+                string actual = DescribeExpression(decl.Initializer!.Expression);
                 if (actual == expectedDesc)
                 {
                     Pass(code, actual);
@@ -330,7 +330,7 @@ namespace LatteCompiler.Tests
 
                 string kind = decl.IsConst ? "const" : "var";
                 string? type = decl.TypeAnnotation != null ? DescribeType(decl.TypeAnnotation) : null;
-                string? init = decl.Initializer != null ? DescribeExpression(decl.Initializer) : null;
+                string? init = decl.Initializer != null ? DescribeExpression(decl.Initializer!.Expression) : null;
 
                 if (kind == expectedKind && type == expectedType && init == expectedInit)
                 {
@@ -370,32 +370,32 @@ namespace LatteCompiler.Tests
             return node switch
             {
                 null => "<null>",
-                LiteralExpressionASTNode lit => DescribeExpression(lit.LiteralNode),
+                LiteralExpressionASTNode lit => DescribeExpression(lit.Literal),
                 IntLiteralASTNode i => $"Int({i.Value},{i.IntType}{(i.IsHex ? ",hex" : "")})",
                 FloatLiteralASTNode f => $"Float({f.Value}{(f.IsFloat ? "f" : "")})",
                 StringLiteralASTNode s => $"Str(\"{s.Value}\")",
                 BoolLiteralASTNode b => $"Bool({b.Value})",
                 NullLiteralASTNode => "Null",
                 SymbolReferenceASTNode sref => $"Sym({DescribeSymbol(sref.Symbol.symbol)})",
-                UnaryExpressionASTNode u => $"Unary({u.Operator} {DescribeExpression(u.Operand)})",
+                UnaryExpressionASTNode u => $"Unary({u.Operator} {DescribeExpression(u.Operand.Expression)})",
                 BinaryExpressionASTNode b =>
-                    $"Binary({DescribeExpression(b.Left)} {b.Operator} {DescribeExpression(b.Right)})",
-                GroupExpressionASTNode g => $"Group({DescribeExpression(g.InnerExpression)})",
+                    $"Binary({DescribeExpression(b.Left.Expression)} {b.Operator} {DescribeExpression(b.Right.Expression)})",
+                GroupExpressionASTNode g => $"Group({DescribeExpression(g.InnerExpression.Expression)})",
                 CallExpressionASTNode c =>
-                    $"Call({DescribeExpression(c.Callee)}, [{string.Join(", ", c.Arguments.Select(DescribeArgument))}])",
+                    $"Call({DescribeExpression(c.Callee.Expression)}, [{string.Join(", ", c.Arguments.Select(DescribeArgument))}])",
                 IndexExpressionASTNode ix =>
-                    $"Index({DescribeExpression(ix.Object)}, [{string.Join(", ", ix.Indices.Select(DescribeArgument))}])",
+                    $"Index({DescribeExpression(ix.Object.Expression)}, [{string.Join(", ", ix.Indices.Select(DescribeArgument))}])",
                 MemberAccessASTNode m =>
-                    $"Access({DescribeExpression(m.Object)}, {(m.IsSafeAccess ? "?" : "")}.{m.MemberName}{DescribeGenericArgs(m)})",
+                    $"Access({DescribeExpression(m.Object.Expression)}, {(m.IsSafeAccess ? "?" : "")}.{m.MemberName}{DescribeGenericArgs(m)})",
                 NewExpressionASTNode n =>
                     $"New({DescribeType(n.Type)}, [{string.Join(", ", n.Arguments.Select(DescribeArgument))}])",
                 CastExpressionASTNode c =>
-                    $"Cast({DescribeExpression(c.Object)} as{(c.IsSafe ? "?" : "")} {DescribeType(c.TargetType)})",
+                    $"Cast({DescribeExpression(c.Object.Expression)} as{(c.IsSafe ? "?" : "")} {DescribeType(c.TargetType)})",
                 TypeCheckExpressionASTNode t =>
-                    $"Check({DescribeExpression(t.Object)} {t.Operator} {DescribeType(t.TargetType)})",
+                    $"Check({DescribeExpression(t.Object.Expression)} {t.Operator} {DescribeType(t.TargetType)})",
                 EnumCaseExpressionASTNode ec => $"EnumCase(.{ec.CaseName})",
                 WrapperAccessASTNode w =>
-                    $"WrapperAccess({DescribeExpression(w.Object)}, :{w.WrapperName})",
+                    $"WrapperAccess({DescribeExpression(w.Object.Expression)}, :{w.WrapperName})",
                 _ => $"<{node.GetType().Name}>"
             };
         }
@@ -404,8 +404,8 @@ namespace LatteCompiler.Tests
         private static string DescribeArgument(ArgumentASTNode arg)
         {
             return arg.Name != null
-                ? $"{arg.Name}:{DescribeExpression(arg.Value)}"
-                : DescribeExpression(arg.Value);
+                ? $"{arg.Name}:{DescribeExpression(arg.Value.Expression)}"
+                : DescribeExpression(arg.Value.Expression);
         }
 
         // 描述成员访问上的泛型实参
@@ -473,8 +473,89 @@ namespace LatteCompiler.Tests
             Console.WriteLine();
         }
 
+        // ===== 17. AST 结构断言（大扫除 §13.4，字符串快照之外的结构性校验） =====
+        public static void TestStructuralAssertions()
+        {
+            Console.WriteLine("=== Testing AST Structural Assertions ===");
+
+            // 用例 1：字面量初始化——Root 存在、已填充、Expression 类型、Parent 链
+            TestStructure("var x = 42", decl =>
+            {
+                Assert(decl.Initializer is not null, "Initializer Root 存在");
+                var root = decl.Initializer!;
+                Assert(root.IsAttached, "Root 已填充");
+                Assert(root.Expression is LiteralExpressionASTNode, "Expression 类型为 LiteralExpression");
+                Assert(root.Expression.Parent == root, "Expression.Parent 指向 Root");
+                Assert(root.Parent == decl, "Root.Parent 指向声明节点");
+                Assert(decl.Parent is RootASTNode, "声明的 Parent 是文件 Root");
+            });
+
+            // 用例 2：二元 + 分组——子 Root 均已填充、Parent 链正确
+            TestStructure("var m = 1 + (2 * 3)", decl =>
+            {
+                var bin = (BinaryExpressionASTNode)decl.Initializer!.Expression;
+                Assert(bin.Left.IsAttached && bin.Right.IsAttached, "二元左右 Root 均已填充");
+                Assert(bin.Left.Expression.Parent == bin.Left, "Left 表达式的 Parent 指向 Left Root");
+                Assert(bin.Right.Expression.Parent == bin.Right, "Right 表达式的 Parent 指向 Right Root");
+                var group = (GroupExpressionASTNode)bin.Right.Expression;
+                Assert(group.InnerExpression.IsAttached, "分组 InnerExpression 已填充");
+                Assert(group.InnerExpression.Expression.Parent == group.InnerExpression,
+                    "分组内表达式的 Parent 指向内层 Root");
+            });
+
+            // 用例 3：调用链——Callee Root 与实参 Value Root 均填充、节点无共享
+            TestStructure("var v = foo(1, name = 2)", decl =>
+            {
+                var call = (CallExpressionASTNode)decl.Initializer!.Expression;
+                Assert(call.Callee.IsAttached, "Callee Root 已填充");
+                Assert(call.Arguments.Count == 2, "两个实参");
+                Assert(call.Arguments[0].Value.IsAttached && call.Arguments[1].Value.IsAttached,
+                    "实参 Value Root 均已填充");
+                Assert(call.Arguments[0].Value.Expression != call.Arguments[1].Value.Expression,
+                    "实参表达式不共享节点");
+                Assert(call.Arguments[1].Name == "name", "具名实参名");
+            });
+
+            // 用例 4：无初始化——可选 Root 以 null 表示（禁止「非 null 但为空的 Root」）
+            TestStructure("var count: i64", decl =>
+            {
+                Assert(decl.Initializer is null, "无初始化时 Initializer 为 null Root");
+            });
+
+            Console.WriteLine();
+        }
+
+        // 结构断言辅助：解析后对声明节点执行一组结构检查
+        private static void TestStructure(string code, Action<VariableDeclarationASTNode> assertions)
+        {
+            try
+            {
+                var decl = ParseVarDecl(code);
+                if (decl == null)
+                {
+                    Fail(code, "no variable declaration node produced");
+                    return;
+                }
+                assertions(decl);
+                Console.WriteLine($"  [PASS] {code}");
+                passCount++;
+            }
+            catch (Exception ex)
+            {
+                Fail(code, $"structural assertion failed: {ex.Message}");
+            }
+        }
+
+        private static void Assert(bool condition, string message)
+        {
+            if (!condition)
+            {
+                throw new InvalidOperationException($"断言失败: {message}");
+            }
+        }
+
         // ===== 入口 =====
-        public static void RunAll()
+        public static int RunAll()
         {
             Console.WriteLine("\n╔════════════════════════════════════╗");
             Console.WriteLine("║  Expression Parser Tests           ║");
@@ -500,8 +581,11 @@ namespace LatteCompiler.Tests
             TestTypeOperatorErrorCases();
             TestEnumCaseReferences();
             TestWrapperAccess();
+            TestStructuralAssertions();
 
             Console.WriteLine($"=== Expression Tests Complete: {passCount} passed, {failCount} failed ===\n");
+
+            return failCount;
         }
     }
 }

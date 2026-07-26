@@ -49,16 +49,17 @@ namespace LatteCompiler
                     state = State.AfterPath;
                     return new ParserLayerResult.PushLayer(
                         new PathParserLayer(
-                            PathParserLayer.PathType.SymbolPath, self.Name, lineBreakSensitive: true),
-                        true);
+                            PathParserLayer.PathType.SymbolPath, self.Name, lineBreakSensitive: true), TokenDisposition.Replay);
 
                 case State.AfterPath:
-                    if (t is LineBreakToken)
+                    if (t is LineBreakToken || t is EndOfFileToken)
                     {
                         if (self.Name.symbol.elements.Count == 0)
                             throw context.RaiseError(
                                 "Namespace declaration requires a namespace path (SYNTAX §15.1)");
-                        return new ParserLayerResult.PopLayer(false);
+                        // 换行由本层消费；EOF 上交 Root
+                        return new ParserLayerResult.PopLayer(
+                            t is EndOfFileToken ? TokenDisposition.Replay : TokenDisposition.Consume);
                     }
                     throw context.RaiseError($"Unexpected token in namespace declaration: {t}");
 

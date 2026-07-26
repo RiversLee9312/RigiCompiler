@@ -94,7 +94,7 @@ namespace LatteCompiler.Tests
             var tokens = lexer.Tokenize(code);
             var node = new ParameterListASTNode(null);
             var parser = new Parser();
-            parser.Parse(tokens, new ParameterListParserLayer(node));
+            parser.Parse(tokens, new TestRootParserLayer(), new ParameterListParserLayer(node));
             return node;
         }
 
@@ -160,7 +160,7 @@ namespace LatteCompiler.Tests
             string desc = $"{param.Name}: {prefix}{DescribeType(param.Type)}{suffix}";
             if (param.DefaultValue != null)
             {
-                desc += $" = {DescribeExpression(param.DefaultValue)}";
+                desc += $" = {DescribeExpression(param.DefaultValue.Expression)}";
             }
             return desc;
         }
@@ -192,23 +192,23 @@ namespace LatteCompiler.Tests
             return node switch
             {
                 null => "<null>",
-                LiteralExpressionASTNode lit => DescribeExpression(lit.LiteralNode),
+                LiteralExpressionASTNode lit => DescribeExpression(lit.Literal),
                 IntLiteralASTNode i => $"Int({i.Value},{i.IntType}{(i.IsHex ? ",hex" : "")})",
                 FloatLiteralASTNode f => $"Float({f.Value}{(f.IsFloat ? "f" : "")})",
                 StringLiteralASTNode s => $"Str(\"{s.Value}\")",
                 BoolLiteralASTNode b => $"Bool({b.Value})",
                 NullLiteralASTNode => "Null",
                 SymbolReferenceASTNode sref => $"Sym({DescribeSymbol(sref.Symbol.symbol)})",
-                UnaryExpressionASTNode u => $"Unary({u.Operator} {DescribeExpression(u.Operand)})",
+                UnaryExpressionASTNode u => $"Unary({u.Operator} {DescribeExpression(u.Operand.Expression)})",
                 BinaryExpressionASTNode b =>
-                    $"Binary({DescribeExpression(b.Left)} {b.Operator} {DescribeExpression(b.Right)})",
-                GroupExpressionASTNode g => $"Group({DescribeExpression(g.InnerExpression)})",
+                    $"Binary({DescribeExpression(b.Left.Expression)} {b.Operator} {DescribeExpression(b.Right.Expression)})",
+                GroupExpressionASTNode g => $"Group({DescribeExpression(g.InnerExpression.Expression)})",
                 _ => $"<{node.GetType().Name}>"
             };
         }
 
         // ===== 入口 =====
-        public static void RunAll()
+        public static int RunAll()
         {
             Console.WriteLine("\n╔════════════════════════════════════╗");
             Console.WriteLine("║  Parameter List Tests              ║");
@@ -224,6 +224,8 @@ namespace LatteCompiler.Tests
             TestErrorCases();
 
             Console.WriteLine($"=== Parameter List Tests Complete: {passCount} passed, {failCount} failed ===\n");
+
+            return failCount;
         }
     }
 }

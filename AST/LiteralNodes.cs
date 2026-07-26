@@ -2,6 +2,15 @@ using System;
 
 namespace LatteCompiler
 {
+    // 字面量节点的公共基类：LiteralParserLayer 的施工目标类型
+    // （LiteralExpressionASTNode.AttachLiteral 只接受 LiteralASTNode）
+    public abstract class LiteralASTNode : ASTNode
+    {
+        protected LiteralASTNode(ASTNode? parent) : base(parent)
+        {
+        }
+    }
+
     // 整数类型枚举
     public enum IntType
     {
@@ -16,7 +25,7 @@ namespace LatteCompiler
     }
 
     // 整数字面量 AST 节点
-    public class IntLiteralASTNode : ASTNode
+    public class IntLiteralASTNode : LiteralASTNode
     {
         public long Value;
         public IntType IntType;
@@ -30,7 +39,7 @@ namespace LatteCompiler
     }
 
     // 浮点数字面量 AST 节点
-    public class FloatLiteralASTNode : ASTNode
+    public class FloatLiteralASTNode : LiteralASTNode
     {
         public double Value;
         public bool IsFloat;  // true = float, false = double
@@ -43,7 +52,7 @@ namespace LatteCompiler
     }
 
     // 字符串字面量 AST 节点
-    public class StringLiteralASTNode : ASTNode
+    public class StringLiteralASTNode : LiteralASTNode
     {
         public string Value = "";
         public bool HasInterpolation;  // 是否包含字符串插值
@@ -56,7 +65,7 @@ namespace LatteCompiler
     }
 
     // 字符字面量 AST 节点
-    public class CharLiteralASTNode : ASTNode
+    public class CharLiteralASTNode : LiteralASTNode
     {
         public char Value;
 
@@ -68,7 +77,7 @@ namespace LatteCompiler
     }
 
     // 布尔字面量 AST 节点
-    public class BoolLiteralASTNode : ASTNode
+    public class BoolLiteralASTNode : LiteralASTNode
     {
         public bool Value;
 
@@ -80,7 +89,7 @@ namespace LatteCompiler
     }
 
     // null 字面量 AST 节点
-    public class NullLiteralASTNode : ASTNode
+    public class NullLiteralASTNode : LiteralASTNode
     {
         public NullLiteralASTNode(ASTNode? parent) : base(parent)
         {

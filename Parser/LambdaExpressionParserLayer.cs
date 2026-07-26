@@ -18,11 +18,11 @@ namespace LatteCompiler
     /// - 形参列表委托 ParameterListParserLayer（原地写入 node.Parameters）
     /// - 泛型形参委托 GenericParametersParserLayer（原地写入 node.GenericParameters）
     /// - 返回类型委托 TypeReferenceParserLayer（原地写入 node.ReturnType）
-    /// - body 委托 ExpressionParserLayer（结果经 IResultConsumer 回填）
+    /// - body 委托 ExpressionParserLayer（直接附加到 node.Body Root，无回传）
     ///
     /// 当前限制：body 仅支持单表达式，多语句块待 P2 CodeBlockParserLayer。
     /// </summary>
-    public class LambdaExpressionParserLayer : IParserLayer, IResultProducer, IResultConsumer
+    public class LambdaExpressionParserLayer : IParserLayer
     {
         private readonly LambdaExpressionASTNode targetNode;
 
@@ -38,27 +38,20 @@ namespace LatteCompiler
 
         private State state = State.OpenBraceExpected;
 
-        // 等待子 Layer 结果时的回填动作（委托前设置，OnChildResult 时消费）
-        private Action<ASTNode?>? pendingResultHandler;
-
         public LambdaExpressionParserLayer(LambdaExpressionASTNode target)
         {
             targetNode = target;
         }
 
-        // IResultProducer：返回填好的 lambda 节点
-        public ASTNode? GetResult() => targetNode;
-
-        // IResultConsumer：接收 body 表达式的解析结果
-        public void OnChildResult(ASTNode? result, IParserLayer child)
-        {
-            var handler = pendingResultHandler;
-            pendingResultHandler = null;
-            handler?.Invoke(result);
-        }
-
         public ParserLayerResult ParseToken(Token currentToken, ParserLayerContext context)
         {
+            // EOF：lambda 必须由 } 闭合，收到 EOF 是不完整结构
+            if (currentToken is EndOfFileToken)
+            {
+                context.RaiseError("Unexpected end of file");
+                return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
+            }
+
             // 本层只处于结构性等待状态（括号/箭头/花括号），允许跨行；
             // 表达式内部的换行终止仍由 ExpressionParserLayer 负责
             if (currentToken is LineBreakToken)
@@ -82,7 +75,7 @@ namespace LatteCompiler
                     return HandleCloseBraceExpected(currentToken, context);
                 default:
                     context.RaiseError($"Invalid LambdaExpressionParserLayer state: {state}");
-                    return new ParserLayerResult.PopLayer(false);
+                    return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
             }
         }
 
@@ -93,11 +86,11 @@ namespace LatteCompiler
             {
                 state = State.AfterParameters;
                 return new ParserLayerResult.PushLayer(
-                    new ParameterListParserLayer(targetNode.Parameters), false);
+                    new ParameterListParserLayer(targetNode.Parameters), TokenDisposition.Consume);
             }
 
             context.RaiseError($"Expected '{{' to start lambda body, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         // 形参列表已解析：: 进入返回类型，\< 进入泛型形参（SYNTAX §5.1 泛型在形参列表之后）
@@ -107,7 +100,7 @@ namespace LatteCompiler
             {
                 state = State.ArrowExpected;
                 return new ParserLayerResult.PushLayer(
-                    new TypeReferenceParserLayer(targetNode.ReturnType), false);
+                    new TypeReferenceParserLayer(targetNode.ReturnType), TokenDisposition.Consume);
             }
 
             if (currentToken is NotationToken bs && bs.Content == "\\")
@@ -116,11 +109,11 @@ namespace LatteCompiler
                 state = State.AfterGenerics;
                 // GenericParametersParserLayer 初始状态等待 \，保留当前 token
                 return new ParserLayerResult.PushLayer(
-                    new GenericParametersParserLayer(targetNode.GenericParameters), true);
+                    new GenericParametersParserLayer(targetNode.GenericParameters), TokenDisposition.Replay);
             }
 
             context.RaiseError($"Expected ':' or '\\<' after lambda parameter list, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         // 泛型形参已解析：必须是 : （返回类型）
@@ -130,11 +123,11 @@ namespace LatteCompiler
             {
                 state = State.ArrowExpected;
                 return new ParserLayerResult.PushLayer(
-                    new TypeReferenceParserLayer(targetNode.ReturnType), false);
+                    new TypeReferenceParserLayer(targetNode.ReturnType), TokenDisposition.Consume);
             }
 
             context.RaiseError($"Expected ':' after lambda generic parameters, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         // 等待 ->
@@ -147,15 +140,15 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected '->' before lambda body, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
-        // body 开始：压入 ExpressionParserLayer（保留 token 交给它）
+        // body 开始：压入 ExpressionParserLayer（保留 token 交给它），直接附加到 Body Root
         private ParserLayerResult HandleBodyStart(Token currentToken, ParserLayerContext context)
         {
             state = State.CloseBraceExpected;
-            pendingResultHandler = result => targetNode.Body = (ExpressionASTNode)result!;
-            return new ParserLayerResult.PushLayer(new ExpressionParserLayer(targetNode), true);
+            return new ParserLayerResult.PushLayer(
+                new ExpressionParserLayer(targetNode.Body), TokenDisposition.Replay);
         }
 
         // 等待 } ：消费后完成解析，弹出本层
@@ -163,11 +156,11 @@ namespace LatteCompiler
         {
             if (currentToken is NotationToken nt && nt.Content == "}")
             {
-                return new ParserLayerResult.PopLayer(false);
+                return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
             }
 
             context.RaiseError($"Expected '}}' to close lambda expression, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
     }
 }

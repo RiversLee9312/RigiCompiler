@@ -17,15 +17,18 @@ namespace LatteCompiler
     /// - 作为表达式时，必须通过 return@seq 或 return@label 返回值
     /// - 作为语句时，可以不返回值
     ///
+    /// 施工协议（大扫除后）：构造函数接收父层创建好的 SeqBlockExpressionASTNode
+    /// （表达式位置由 ExpressionParserLayer 持有为当前表达式，语句位置已挂入代码块），
+    /// 本层只原地填充它，不产生任何返回值。
+    ///
     /// 状态流转：
     /// Initial → [Volatile] → SeqKeyword → UsingOrNamed
     ///   → [UsingOpenParen → UsingVarConst → UsingName → UsingColon → UsingType → UsingEquals
     ///      → UsingInitializer → UsingCloseParen] → UsingOrNamed（继续或进入 Named/Body）
     ///   → [Named → NamedLabel] → Body（委托 CodeBlockParserLayer）→ Completed
     /// </summary>
-    public class SeqBlockParserLayer : IParserLayer, IResultConsumer, IResultProducer
+    public class SeqBlockParserLayer : IParserLayer
     {
-        private readonly ASTNode parentNode;
         private readonly SeqBlockExpressionASTNode seqNode;
 
         private enum State
@@ -49,27 +52,22 @@ namespace LatteCompiler
         }
 
         private State state = State.Initial;
-        private Action<ASTNode?>? pendingResultHandler;
         private UsingBindingASTNode? currentUsing;
 
-        public SeqBlockParserLayer(ASTNode parent)
+        public SeqBlockParserLayer(SeqBlockExpressionASTNode target)
         {
-            parentNode = parent;
-            seqNode = new SeqBlockExpressionASTNode(parent);
-        }
-
-        // IResultProducer：返回解析完成的 seq 节点
-        public ASTNode? GetResult() => seqNode;
-
-        public void OnChildResult(ASTNode? result, IParserLayer child)
-        {
-            var handler = pendingResultHandler;
-            pendingResultHandler = null;
-            handler?.Invoke(result);
+            seqNode = target;
         }
 
         public ParserLayerResult ParseToken(Token currentToken, ParserLayerContext context)
         {
+            // EOF：seq 块必须由 } 闭合，收到 EOF 是不完整结构
+            if (currentToken is EndOfFileToken)
+            {
+                context.RaiseError("Unexpected end of file");
+                return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
+            }
+
             switch (state)
             {
                 case State.Initial:
@@ -106,7 +104,7 @@ namespace LatteCompiler
                     return HandleCompleted(currentToken, context);
                 default:
                     context.RaiseError($"Invalid SeqBlockParserLayer state: {state}");
-                    return new ParserLayerResult.PopLayer(false);
+                    return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
             }
         }
 
@@ -137,7 +135,7 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected 'volatile' or 'seq', got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         private ParserLayerResult HandleVolatile(Token currentToken, ParserLayerContext context)
@@ -155,7 +153,7 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected 'seq' after 'volatile', got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         private ParserLayerResult HandleSeqKeyword(Token currentToken, ParserLayerContext context)
@@ -196,11 +194,11 @@ namespace LatteCompiler
             {
                 state = State.Body;
                 return new ParserLayerResult.PushLayer(
-                    new CodeBlockParserLayer(seqNode.Body), true);
+                    new CodeBlockParserLayer(seqNode.Body), TokenDisposition.Replay);
             }
 
             context.RaiseError($"Expected 'using', 'named', or '{{' after 'seq', got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         private ParserLayerResult HandleUsingOpenParen(Token currentToken, ParserLayerContext context)
@@ -218,7 +216,7 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected '(' after 'using', got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         private ParserLayerResult HandleUsingVarConst(Token currentToken, ParserLayerContext context)
@@ -247,7 +245,7 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected 'const' or 'var' in using clause, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         private ParserLayerResult HandleUsingName(Token currentToken, ParserLayerContext context)
@@ -266,7 +264,7 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected variable name in using clause, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         private ParserLayerResult HandleUsingColon(Token currentToken, ParserLayerContext context)
@@ -283,20 +281,19 @@ namespace LatteCompiler
                 state = State.UsingType;
                 currentUsing!.Type = new TypeReferenceASTNode(currentUsing);
                 return new ParserLayerResult.PushLayer(
-                    new TypeReferenceParserLayer(currentUsing!.Type), false);
+                    new TypeReferenceParserLayer(currentUsing!.Type), TokenDisposition.Consume);
             }
 
             // 直接到 =
             if (currentToken is NotationToken nt2 && nt2.Content == "=")
             {
                 state = State.UsingInitializer;
-                pendingResultHandler = result => currentUsing!.Initializer = (ExpressionASTNode)result!;
                 return new ParserLayerResult.PushLayer(
-                    new ExpressionParserLayer(currentUsing!), false);
+                    new ExpressionParserLayer(currentUsing!.Initializer), TokenDisposition.Consume);
             }
 
             context.RaiseError($"Expected ':' or '=' in using clause, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         private ParserLayerResult HandleUsingType(Token currentToken, ParserLayerContext context)
@@ -317,13 +314,12 @@ namespace LatteCompiler
             if (currentToken is NotationToken nt && nt.Content == "=")
             {
                 state = State.UsingInitializer;
-                pendingResultHandler = result => currentUsing!.Initializer = (ExpressionASTNode)result!;
                 return new ParserLayerResult.PushLayer(
-                    new ExpressionParserLayer(currentUsing!), false);
+                    new ExpressionParserLayer(currentUsing!.Initializer), TokenDisposition.Consume);
             }
 
             context.RaiseError($"Expected '=' in using clause, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         private ParserLayerResult HandleUsingInitializer(Token currentToken, ParserLayerContext context)
@@ -353,7 +349,7 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected ')' after using initializer, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         private ParserLayerResult HandleNamed(Token currentToken, ParserLayerContext context)
@@ -370,7 +366,7 @@ namespace LatteCompiler
                 if (char.IsDigit(wt.Content[0]))
                 {
                     context.RaiseError($"Label name cannot start with a digit: {wt.Content}");
-                    return new ParserLayerResult.PopLayer(false);
+                    return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
                 }
 
                 seqNode.Label = wt.Content;
@@ -379,7 +375,7 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected label name after 'named', got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         private ParserLayerResult HandleNamedLabel(Token currentToken, ParserLayerContext context)
@@ -395,11 +391,11 @@ namespace LatteCompiler
             {
                 state = State.Body;
                 return new ParserLayerResult.PushLayer(
-                    new CodeBlockParserLayer(seqNode.Body), true);
+                    new CodeBlockParserLayer(seqNode.Body), TokenDisposition.Replay);
             }
 
             context.RaiseError($"Expected '{{' after named label, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         private ParserLayerResult HandleBody(Token currentToken, ParserLayerContext context)
@@ -411,20 +407,9 @@ namespace LatteCompiler
 
         private ParserLayerResult HandleCompleted(Token currentToken, ParserLayerContext context)
         {
-            // seq 作为表达式时：通过 IResultProducer 返回，父层（ExpressionParserLayer）通过结果传递获取
-            // seq 作为语句时：需要添加到 CodeBlock 或 Root
-            if (parentNode is CodeBlockASTNode codeBlock)
-            {
-                codeBlock.Children.Add(seqNode);
-            }
-            else if (parentNode is RootASTNode root)
-            {
-                root.Children.Add(seqNode);
-            }
-            // 其他情况（如 VariableDeclarationASTNode）：
-            // 不添加到 Children，而是通过 GetResult() 返回给父层
-
-            return new ParserLayerResult.PopLayer(true);
+            // seq 节点的归属在父层创建时已确定（表达式位置由 ExpressionParserLayer 持有，
+            // 语句位置已挂入代码块），本层只原地填充，弹出即完成
+            return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
         }
     }
 }

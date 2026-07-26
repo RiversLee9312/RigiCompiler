@@ -8,12 +8,19 @@ using System.Threading.Tasks;
 
 namespace LatteCompiler
 {
+    // Token 处置方式（具名枚举，替代原 bool shouldKeepToken）
+    public enum TokenDisposition
+    {
+        Consume,    // 当前 token 已被本层消费，Parser 前进到下一个 token
+        Replay      // 当前 token 原样交给 Push/Pop 后的新栈顶 Layer 重新处理
+    }
+
     public abstract record ParserLayerResult
     {
         // 使用 sealed record 来防止进一步继承
-        public sealed record PopLayer(bool shouldKeepToken) : ParserLayerResult;
+        public sealed record PopLayer(TokenDisposition Disposition) : ParserLayerResult;
 
-        public sealed record PushLayer(IParserLayer layerToPush, bool shouldKeepToken) : ParserLayerResult;
+        public sealed record PushLayer(IParserLayer LayerToPush, TokenDisposition Disposition) : ParserLayerResult;
 
         // 使用单例模式的 Continue 记录
         public sealed record Continue : ParserLayerResult
@@ -27,19 +34,6 @@ namespace LatteCompiler
         public ParserLayerResult ParseToken(Token currentToken, ParserLayerContext context);
     }
 
-    // 结果传递机制：产生解析结果的 Layer 实现此接口
-    // 当该 Layer 被弹出栈时，Parser 主循环会调用 GetResult() 取出结果
-    public interface IResultProducer
-    {
-        public ASTNode? GetResult();
-    }
-
-    // 结果传递机制：接收子 Layer 结果的父 Layer 实现此接口
-    // 子 Layer 弹出时，Parser 主循环调用 OnChildResult 把结果交给父层
-    public interface IResultConsumer
-    {
-        public void OnChildResult(ASTNode? result, IParserLayer child);
-    }
     public struct CharRange
     {
         public CharPosition Start = new CharPosition();
@@ -56,7 +50,6 @@ namespace LatteCompiler
         [DoesNotReturn]
         public abstract Exception RaiseError(string message);
         public abstract void LogWarning(string message);
-        public abstract RootASTNode GetRootNode();
         public abstract void Log(string message);
     }
 
@@ -67,17 +60,6 @@ namespace LatteCompiler
         private class ContextImpl : ParserLayerContext
         {
             public CharRange currentRange = new CharRange();
-            public RootASTNode root;
-            public ASTNode current;
-            public ContextImpl()
-            {
-                root = new RootASTNode();
-                current = root;
-            }
-            public override RootASTNode GetRootNode()
-            {
-                return root;
-            }
 
             public override CharRange GetLocation()
             {
@@ -109,21 +91,45 @@ namespace LatteCompiler
         // 用于独立测试某个 ParserLayer（Root 垫底，吞掉该层完成后的剩余 token）。
         public ASTNode Parse(List<Token> tokens, IParserLayer? entryLayer)
         {
+            // Parser 直接持有 Root 节点：Layer 无法经由 Context 触碰全局根，
+            // 只能施工传入的目标
+            var root = new RootASTNode();
+            ParseCore(tokens, new RootParserLayer(root), entryLayer);
+            // Parser 成功后、进入后续阶段前：AST 完整性验证（失败即内部编译器错误）
+            ASTIntegrityValidator.Validate(root);
+            return root;
+        }
+
+        // 测试专用：以 baseLayer 代替 RootParserLayer 垫底驱动被测 Layer
+        // （TestRootParserLayer 只接受 EOF：被测 Layer 提前结束或漏消费 token
+        // 会立即暴露）。被测目标的校验由调用方自行处理。
+        public void Parse(List<Token> tokens, IParserLayer baseLayer, IParserLayer entryLayer)
+        {
+            ParseCore(tokens, baseLayer, entryLayer);
+        }
+
+        // 主循环：只负责 Layer 栈与 Token 调度；Layer 之间只传递控制权，
+        // 不传递任何 AST 数据（施工目标在 Push 前已由父层确定）
+        private void ParseCore(List<Token> tokens, IParserLayer baseLayer, IParserLayer? entryLayer)
+        {
             var context = new ContextImpl();
             var stack = new Stack<IParserLayer>();
             int offset = 0;
-            tokens.Add(new LineBreakToken()); // Sentinel token
-            stack.Push(new RootParserLayer(context.GetRootNode()));
+            // 不修改调用者的 token 列表：本地副本末尾追加正式 EOF token
+            var input = new List<Token>(tokens) { CreateEndOfFileToken(tokens) };
+            stack.Push(baseLayer);
             if (entryLayer != null)
             {
                 stack.Push(entryLayer);
             }
-            while(offset<tokens.Count) {
-                var token = tokens[offset];
+            while(offset<input.Count) {
+                var token = input[offset];
                 context.Log("Current token:"+token);
                 context.currentRange = token.CharRange;
                 IParserLayer? layer;
                 if (stack.TryPeek(out layer)) {
+                    // 主循环只负责 Layer 栈与 Token 调度：Layer 之间只传递控制权，
+                    // 不传递任何 AST 数据（施工目标在 Push 前已由父层确定）
                     var result = layer.ParseToken(token,context);
                     var keepToken = false;
                     switch (result) {
@@ -131,21 +137,14 @@ namespace LatteCompiler
                             keepToken = false;
                             break;
                         case ParserLayerResult.PopLayer r:
-                            keepToken = r.shouldKeepToken;
+                            keepToken = r.Disposition == TokenDisposition.Replay;
                             var popped = stack.Pop();
                             context.Log("Popped parser layer:" + popped);
-                            // 结果传递：子层弹出时，把结果交给新的栈顶父层
-                            if (popped is IResultProducer producer &&
-                                stack.TryPeek(out var parentLayer) &&
-                                parentLayer is IResultConsumer consumer)
-                            {
-                                consumer.OnChildResult(producer.GetResult(), popped);
-                            }
                             break;
                         case ParserLayerResult.PushLayer r:
-                            keepToken = r.shouldKeepToken;
-                            stack.Push(r.layerToPush);
-                            context.Log("Pushed parser layer:" + r.layerToPush);
+                            keepToken = r.Disposition == TokenDisposition.Replay;
+                            stack.Push(r.LayerToPush);
+                            context.Log("Pushed parser layer:" + r.LayerToPush);
                             break;
                     }
                     if (!keepToken)
@@ -158,33 +157,28 @@ namespace LatteCompiler
                     throw context.RaiseError("Empty parser stack");
                 }
             }
-            // EOF 收尾：嵌套委托时，父层可能还需要一个终止 token 才能收尾
-            // （例：Declaration → VariableDeclaration，子层吃掉哨兵后父层仍在栈上）。
-            // 反复喂哨兵直到栈收敛或不再有进展。
-            int guard = 0;
-            while (stack.Count > 1 && guard++ < 64)
-            {
-                var top = stack.Peek();
-                int before = stack.Count;
-                var endResult = top.ParseToken(new LineBreakToken(), context);
-                if (endResult is ParserLayerResult.PopLayer)
-                {
-                    var popped = stack.Pop();
-                    if (popped is IResultProducer producer2 &&
-                        stack.TryPeek(out var parent2) &&
-                        parent2 is IResultConsumer consumer2)
-                    {
-                        consumer2.OnChildResult(producer2.GetResult(), popped);
-                    }
-                }
-                if (stack.Count >= before) break;   // 无进展，避免死循环
-            }
-
-            if (stack.Count > 1)
+            // EOF 自身必须已完成全部栈收敛：唯一剩余项是垫底 Layer
+            if (stack.Count != 1)
             {
                 throw context.RaiseError("Unexpected End");
             }
-            return context.GetRootNode();
+        }
+
+        // EOF 的 CharRange 是零长度范围，位置位于源文件最后一个 Token 的结束位置
+        private static EndOfFileToken CreateEndOfFileToken(List<Token> tokens)
+        {
+            var eof = new EndOfFileToken();
+            if (tokens.Count > 0)
+            {
+                var last = tokens[tokens.Count - 1].CharRange;
+                eof.CharRange = new CharRange
+                {
+                    Start = last.End,
+                    End = last.End,
+                    sourceName = last.sourceName
+                };
+            }
+            return eof;
         }
     }
 }

@@ -18,22 +18,22 @@ namespace LatteCompiler
     /// - 通过子 Layer 模块化处理各种表达式类型
     /// - 只负责框架性的工作（委托、运算符、组合）
     ///
-    /// 结果传递：
-    /// - 实现 IResultProducer：解析完成后通过 GetResult() 把表达式交给父层
-    /// - 实现 IResultConsumer：通过 pendingResultHandler 接收子 Layer 的结果
+    /// 施工协议（大扫除后）：
+    /// - 构造函数接收唯一的最终挂载位置 target（ExpressionRootASTNode，创建时必须为空）；
+    /// - 内部先把完整表达式构造为未挂载子树（currentExpression），
+    ///   后缀链/包装通过「新包装节点.Attach(旧子树)」逐层外卷；
+    /// - 表达式完整时执行且仅执行一次 target.Attach(currentExpression)，随后立即 Pop；
+    /// - 不产生任何返回值：委托出去的子 Layer 一律原地填充传入的目标节点。
     ///
     /// 重要：Latte 没有运算符优先级！
     /// 所有运算必须用括号明确指定，如 (1 + 2) * 3。
     /// 因此每层表达式最多消费一个二元运算符；右操作数与一元操作数
     /// 通过 allowBinaryOperator / allowPrefixUnary 禁止继续吞并运算符。
     /// </summary>
-    public class ExpressionParserLayer : IParserLayer, IResultProducer, IResultConsumer
+    public class ExpressionParserLayer : IParserLayer
     {
-        private readonly ASTNode parentNode;
+        private readonly ExpressionRootASTNode target;
         private ExpressionASTNode? currentExpression;
-
-        // 等待子 Layer 结果时的回填动作（委托前设置，OnChildResult 时消费）
-        private Action<ASTNode?>? pendingResultHandler;
 
         // 本层创建了一个括号分组，正在等待其右括号 )
         private bool expectClosingParen = false;
@@ -73,32 +73,29 @@ namespace LatteCompiler
         private bool pendingSafeAccess = false;
         private readonly List<TypeReferenceASTNode> pendingGenericArgs = new();
 
-        public ExpressionParserLayer(ASTNode parent, ExpressionASTNode? initialPrimary = null)
+        public ExpressionParserLayer(
+            ExpressionRootASTNode target,
+            ExpressionASTNode? initialExpression = null)
         {
-            parentNode = parent;
+            this.target = target;
 
-            // 调用方已解析出主表达式时（如具名实参判别后退化为位置实参），
-            // 直接从 PrimaryParsed 继续（可能跟随后缀链或运算符）
-            if (initialPrimary != null)
+            // seed：调用方已解析出未挂载的表达式起点时（如具名实参判别后退化为
+            // 位置实参的符号），直接从 PrimaryParsed 继续（可能跟随后缀链或运算符）
+            if (initialExpression != null)
             {
-                currentExpression = initialPrimary;
+                currentExpression = initialExpression;
                 state = State.PrimaryParsed;
             }
         }
 
-        // IResultProducer：返回解析出的表达式
-        public ASTNode? GetResult() => currentExpression;
-
-        // IResultConsumer：子 Layer 弹出时接收其结果
-        public void OnChildResult(ASTNode? result, IParserLayer child)
-        {
-            var handler = pendingResultHandler;
-            pendingResultHandler = null;
-            handler?.Invoke(result);
-        }
-
         public ParserLayerResult ParseToken(Token currentToken, ParserLayerContext context)
         {
+            // EOF：表达式已完整则挂载并弹出、上交 EOF；结构不完整（运算符后、括号内等）报错
+            if (currentToken is EndOfFileToken)
+            {
+                return HandleEndOfFile(context);
+            }
+
             switch (state)
             {
                 case State.Initial:
@@ -139,7 +136,7 @@ namespace LatteCompiler
 
                 default:
                     context.RaiseError($"Invalid ExpressionParserLayer state: {state}");
-                    return new ParserLayerResult.PopLayer(false);
+                    return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
             }
         }
 
@@ -185,20 +182,21 @@ namespace LatteCompiler
                         state = State.AsyncSeen;
                         return ParserLayerResult.Continue.Instance;
                     case Keywords.IF:
-                        var ifNode = new IfExpressionASTNode(parentNode);
+                        var ifNode = new IfExpressionASTNode();
                         return DelegateStructuredParsing(ifNode, new IfStatementParserLayer(ifNode));
                     case Keywords.SWITCH:
-                        var switchNode = new SwitchExpressionASTNode(parentNode);
+                        var switchNode = new SwitchExpressionASTNode();
                         return DelegateStructuredParsing(switchNode, new SwitchStatementParserLayer(switchNode));
                     case Keywords.TYPEOF:
-                        var typeOfNode = new TypeOfExpressionASTNode(parentNode);
+                        var typeOfNode = new TypeOfExpressionASTNode();
                         return DelegateStructuredParsing(typeOfNode, new TypeOfExpressionParserLayer(typeOfNode));
                     case Keywords.SEQ:
                     case Keywords.VOLATILE:
                         // seq 块可以作为表达式使用（通过 return@seq/return@label 返回值）
                         // 保留当前 token，因为 SeqBlockParserLayer 需要重新读取它
-                        var seqNode = new SeqBlockExpressionASTNode(parentNode);
-                        return DelegateStructuredParsing(seqNode, new SeqBlockParserLayer(seqNode), shouldKeepToken: true);
+                        var seqNode = new SeqBlockExpressionASTNode();
+                        return DelegateStructuredParsing(
+                            seqNode, new SeqBlockParserLayer(seqNode), TokenDisposition.Replay);
                 }
             }
 
@@ -220,70 +218,69 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Unexpected token at start of expression: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
-        // 委托字面量解析
+        // 委托字面量解析：本层创建 LiteralExpression 包装并作为当前主表达式，
+        // LiteralParserLayer 原地填充（AttachLiteral），无需回传
         private ParserLayerResult DelegateLiteralParsing(Token currentToken, ParserLayerContext context)
         {
-            // 先创建字面量表达式包装，字面量节点由结果传递机制回填
-            var literalExpr = new LiteralExpressionASTNode(parentNode, null!);
+            var literalExpr = new LiteralExpressionASTNode();
             currentExpression = literalExpr;
 
             state = State.PrimaryParsed;
-            pendingResultHandler = result => literalExpr.LiteralNode = result!;
 
-            return new ParserLayerResult.PushLayer(new LiteralParserLayer(literalExpr), true);
+            return new ParserLayerResult.PushLayer(
+                new LiteralParserLayer(literalExpr), TokenDisposition.Replay);
         }
 
-        // 委托括号分组解析
+        // 委托括号分组解析：内层表达式直接附加到 group.InnerExpression
         private ParserLayerResult DelegateGroupParsing(ParserLayerContext context)
         {
-            var groupExpr = new GroupExpressionASTNode(parentNode);
+            var groupExpr = new GroupExpressionASTNode();
             currentExpression = groupExpr;
 
             state = State.PrimaryParsed;
             expectClosingParen = true;
-            pendingResultHandler = result => groupExpr.InnerExpression = (ExpressionASTNode)result!;
 
             // 递归解析括号内的表达式（消费掉 ( token）
-            return new ParserLayerResult.PushLayer(new ExpressionParserLayer(groupExpr), false);
+            return new ParserLayerResult.PushLayer(
+                new ExpressionParserLayer(groupExpr.InnerExpression), TokenDisposition.Consume);
         }
 
         // 委托 new 表达式解析
         private ParserLayerResult DelegateNewParsing(ParserLayerContext context)
         {
-            var newExpr = new NewExpressionASTNode(parentNode);
+            var newExpr = new NewExpressionASTNode();
             currentExpression = newExpr;
 
-            // 使用 TypeReferenceParserLayer 解析类型（直接写入 newExpr.Type，无需结果传递）
-            // TODO: 构造参数列表 () 的解析在后续阶段实现
+            // 使用 TypeReferenceParserLayer 解析类型（原地填充 newExpr.Type）
             state = State.PrimaryParsed;
 
             return new ParserLayerResult.PushLayer(
                 new TypeReferenceParserLayer(newExpr.Type),
-                false  // 跳过 'new' token
+                TokenDisposition.Consume  // 跳过 'new' token
             );
         }
 
         // 委托结构化表达式（if/switch/typeOf/lambda/seq）：
-        // 子层产出完整节点，经结果传递回填为当前主表达式
+        // 节点由本层创建并作为当前主表达式，子 Layer 原地填充该节点，无需回传
         private ParserLayerResult DelegateStructuredParsing(
             ExpressionASTNode node,
             IParserLayer layer,
-            bool shouldKeepToken = false)
+            TokenDisposition disposition = TokenDisposition.Consume)
         {
-            pendingResultHandler = result => currentExpression = (ExpressionASTNode)result!;
+            currentExpression = node;
             state = State.PrimaryParsed;
             // 起始关键字（if/switch/typeOf/func）已被本层消费，默认不保留
             // seq/volatile 需要保留，因为 SeqBlockParserLayer 需要重新读取
-            return new ParserLayerResult.PushLayer(layer, shouldKeepToken);
+            return new ParserLayerResult.PushLayer(layer, disposition);
         }
 
         // 委托 lambda 表达式解析（func 已消费；isAsync 标记 async lambda）
         private ParserLayerResult DelegateLambdaParsing(bool isAsync)
         {
-            var lambdaNode = new LambdaExpressionASTNode(parentNode) { IsAsync = isAsync };
+            var lambdaNode = new LambdaExpressionASTNode() { IsAsync = isAsync };
             return DelegateStructuredParsing(lambdaNode, new LambdaExpressionParserLayer(lambdaNode));
         }
 
@@ -296,7 +293,7 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected 'func' after 'async' (async lambda), got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         // 类型操作符已读：as 后可接一个 ?（安全转换），随后委托类型引用解析
@@ -318,7 +315,8 @@ namespace LatteCompiler
             // 类型完成后本表达式即完成：后续再接运算符必须加括号（无优先级规则）
             var targetType = pendingCastNode != null ? pendingCastNode.TargetType : pendingCheckNode!.TargetType;
             state = State.Completed;
-            return new ParserLayerResult.PushLayer(new TypeReferenceParserLayer(targetType), true);
+            return new ParserLayerResult.PushLayer(
+                new TypeReferenceParserLayer(targetType), TokenDisposition.Replay);
         }
 
         // 处理前缀一元运算符
@@ -326,7 +324,7 @@ namespace LatteCompiler
         {
             string op = GetOperatorString(currentToken);
 
-            var unaryExpr = new UnaryExpressionASTNode(parentNode)
+            var unaryExpr = new UnaryExpressionASTNode()
             {
                 Operator = op,
                 IsPrefix = true
@@ -338,23 +336,22 @@ namespace LatteCompiler
             allowBinaryOperator = false;
 
             // 递归解析操作数：操作数内禁止二元运算符与连续一元运算符
-            var operandLayer = new ExpressionParserLayer(unaryExpr)
+            var operandLayer = new ExpressionParserLayer(unaryExpr.Operand)
             {
                 allowBinaryOperator = false,
                 allowPrefixUnary = false
             };
-            pendingResultHandler = result => unaryExpr.Operand = (ExpressionASTNode)result!;
 
-            return new ParserLayerResult.PushLayer(operandLayer, false);
+            return new ParserLayerResult.PushLayer(operandLayer, TokenDisposition.Consume);
         }
 
         // 委托符号解析
         private ParserLayerResult DelegateSymbolParsing(ParserLayerContext context, Token currentToken)
         {
-            var symbolExpr = new SymbolReferenceASTNode(parentNode);
+            var symbolExpr = new SymbolReferenceASTNode();
             currentExpression = symbolExpr;
 
-            // 使用 PathParserLayer 解析符号（直接写入 symbolExpr.Symbol，无需结果传递）
+            // 使用 PathParserLayer 解析符号（原地填充 symbolExpr.Symbol）
             state = State.PrimaryParsed;
 
             return new ParserLayerResult.PushLayer(
@@ -363,7 +360,7 @@ namespace LatteCompiler
                     symbolExpr.Symbol,
                     lineBreakSensitive: true
                 ),
-                true  // 保留当前 token
+                TokenDisposition.Replay  // 保留当前 token
             );
         }
 
@@ -381,7 +378,7 @@ namespace LatteCompiler
                 }
 
                 context.RaiseError($"Expected ')' to close group expression, got: {currentToken}");
-                return new ParserLayerResult.PopLayer(false);
+                return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
             }
 
             // 后缀链（SYNTAX.md §1.4：调用/索引/成员路径在运算符之前整体形成）
@@ -395,33 +392,29 @@ namespace LatteCompiler
                     {
                         return new ParserLayerResult.PushLayer(
                             new ArgumentListParserLayer(
-                                newExpr.Arguments, ArgumentListParserLayer.BracketKind.Round, parentNode),
-                            false);
+                                newExpr.Arguments, ArgumentListParserLayer.BracketKind.Round, newExpr),
+                            TokenDisposition.Consume);
                     }
 
-                    var callExpr = new CallExpressionASTNode(parentNode)
-                    {
-                        Callee = currentExpression!
-                    };
+                    var callExpr = new CallExpressionASTNode();
+                    callExpr.Callee.Attach(currentExpression!);
                     currentExpression = callExpr;
                     return new ParserLayerResult.PushLayer(
                         new ArgumentListParserLayer(
-                            callExpr.Arguments, ArgumentListParserLayer.BracketKind.Round, parentNode),
-                        false);
+                            callExpr.Arguments, ArgumentListParserLayer.BracketKind.Round, callExpr),
+                        TokenDisposition.Consume);
                 }
 
                 // 索引后缀 [
                 if (suffix.Content == "[")
                 {
-                    var indexExpr = new IndexExpressionASTNode(parentNode)
-                    {
-                        Object = currentExpression!
-                    };
+                    var indexExpr = new IndexExpressionASTNode();
+                    indexExpr.Object.Attach(currentExpression!);
                     currentExpression = indexExpr;
                     return new ParserLayerResult.PushLayer(
                         new ArgumentListParserLayer(
-                            indexExpr.Indices, ArgumentListParserLayer.BracketKind.Square, parentNode),
-                        false);
+                            indexExpr.Indices, ArgumentListParserLayer.BracketKind.Square, indexExpr),
+                        TokenDisposition.Consume);
                 }
 
                 // 成员访问 .
@@ -458,17 +451,18 @@ namespace LatteCompiler
                 // expr{...} 脱糖为以 lambda 为唯一实参的调用，如 list.map{...}
                 if (suffix.Content == "{")
                 {
-                    var lambdaNode = new LambdaExpressionASTNode(parentNode);
-                    var trailingCall = new CallExpressionASTNode(parentNode)
-                    {
-                        Callee = currentExpression!
-                    };
+                    var lambdaNode = new LambdaExpressionASTNode();
+                    var trailingCall = new CallExpressionASTNode();
+                    trailingCall.Callee.Attach(currentExpression!);
+                    // lambda 作为唯一实参直接挂入实参的 Root（未挂载节点，可安全 Attach）；
+                    // LambdaExpressionParserLayer 之后原地填充该 lambda 节点
+                    var argument = new ArgumentASTNode(trailingCall);
+                    argument.Value.Attach(lambdaNode);
+                    trailingCall.Arguments.Add(argument);
                     currentExpression = trailingCall;
-                    pendingResultHandler = result =>
-                        trailingCall.Arguments.Add(
-                            new ArgumentASTNode(trailingCall, (ExpressionASTNode)result!));
                     // { 交给 LambdaExpressionParserLayer 消费
-                    return new ParserLayerResult.PushLayer(new LambdaExpressionParserLayer(lambdaNode), true);
+                    return new ParserLayerResult.PushLayer(
+                        new LambdaExpressionParserLayer(lambdaNode), TokenDisposition.Replay);
                 }
             }
 
@@ -480,20 +474,18 @@ namespace LatteCompiler
                 safeCastMarkConsumed = false;
                 if (typeOp.Content == Keywords.AS)
                 {
-                    pendingCastNode = new CastExpressionASTNode(parentNode)
-                    {
-                        Object = currentExpression!
-                    };
+                    pendingCastNode = new CastExpressionASTNode();
+                    pendingCastNode.Object.Attach(currentExpression!);
                     pendingCheckNode = null;
                     currentExpression = pendingCastNode;
                 }
                 else
                 {
-                    pendingCheckNode = new TypeCheckExpressionASTNode(parentNode)
+                    pendingCheckNode = new TypeCheckExpressionASTNode
                     {
-                        Object = currentExpression!,
                         Operator = typeOp.Content
                     };
+                    pendingCheckNode.Object.Attach(currentExpression!);
                     pendingCastNode = null;
                     currentExpression = pendingCheckNode;
                 }
@@ -516,9 +508,8 @@ namespace LatteCompiler
                 return ParserLayerResult.Continue.Instance;
             }
 
-            // 没有后续操作，表达式完成
-            state = State.Completed;
-            return new ParserLayerResult.PopLayer(true);
+            // 没有后续操作，表达式完成：挂载最终外层节点并弹出
+            return CompleteExpression(context, TokenDisposition.Replay);
         }
 
         // 看到运算符后：解析右操作数
@@ -527,7 +518,7 @@ namespace LatteCompiler
             if (pendingOperator == null)
             {
                 context.RaiseError("Internal error: pendingOperator is null");
-                return new ParserLayerResult.PopLayer(false);
+                return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
             }
 
             // > 系列运算符的重新组合：
@@ -546,25 +537,24 @@ namespace LatteCompiler
                 // 其他组合（如 >>>>）不合法，落入正常流程后会在右操作数解析时报错
             }
 
-            // 创建二元表达式节点
-            var binaryExpr = new BinaryExpressionASTNode(parentNode)
+            // 创建二元表达式节点：左操作数挂入 Left Root（未挂载子树包装）
+            var binaryExpr = new BinaryExpressionASTNode
             {
-                Left = currentExpression!,
                 Operator = pendingOperator
             };
+            binaryExpr.Left.Attach(currentExpression!);
 
             // 递归解析右操作数：右操作数层禁止再消费二元运算符
             // （1 + 2 * 3 是编译错误，必须写成 1 + (2 * 3)）
-            var rightLayer = new ExpressionParserLayer(binaryExpr)
+            var rightLayer = new ExpressionParserLayer(binaryExpr.Right)
             {
                 allowBinaryOperator = false
             };
-            pendingResultHandler = result => binaryExpr.Right = (ExpressionASTNode)result!;
 
             currentExpression = binaryExpr;
             state = State.Completed;
 
-            return new ParserLayerResult.PushLayer(rightLayer, true);
+            return new ParserLayerResult.PushLayer(rightLayer, TokenDisposition.Replay);
         }
 
         // 二元表达式已完成：再来运算符就违反"无运算符优先级"规则
@@ -577,7 +567,7 @@ namespace LatteCompiler
                     "必须用括号明确运算顺序");
             }
 
-            return new ParserLayerResult.PopLayer(true);
+            return CompleteExpression(context, TokenDisposition.Replay);
         }
 
         // . 或 ?. 之后：读取成员名，创建 MemberAccess 节点
@@ -585,12 +575,12 @@ namespace LatteCompiler
         {
             if (currentToken is WordToken name)
             {
-                var accessExpr = new MemberAccessASTNode(parentNode)
+                var accessExpr = new MemberAccessASTNode()
                 {
-                    Object = currentExpression!,
                     MemberName = name.Content,
                     IsSafeAccess = pendingSafeAccess
                 };
+                accessExpr.Object.Attach(currentExpression!);
                 currentExpression = accessExpr;
                 pendingSafeAccess = false;
                 state = State.PrimaryParsed;
@@ -598,7 +588,7 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected member name after '.', got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         // 前导点 . 已读：读取 case 名，创建 EnumCaseExpression 节点（SYNTAX §12）
@@ -606,7 +596,7 @@ namespace LatteCompiler
         {
             if (currentToken is WordToken name)
             {
-                currentExpression = new EnumCaseExpressionASTNode(parentNode)
+                currentExpression = new EnumCaseExpressionASTNode()
                 {
                     CaseName = name.Content
                 };
@@ -615,7 +605,7 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected enum case name after '.', got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         // : 已读：读取 wrapper 名，创建 WrapperAccess 节点（SYNTAX §14.1）
@@ -623,17 +613,18 @@ namespace LatteCompiler
         {
             if (currentToken is WordToken name)
             {
-                currentExpression = new WrapperAccessASTNode(parentNode)
+                var wrapperExpr = new WrapperAccessASTNode()
                 {
-                    Object = currentExpression!,
                     WrapperName = name.Content
                 };
+                wrapperExpr.Object.Attach(currentExpression!);
+                currentExpression = wrapperExpr;
                 state = State.PrimaryParsed;
                 return ParserLayerResult.Continue.Instance;
             }
 
             context.RaiseError($"Expected wrapper name after ':', got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         // ? 之后：必须是 . （安全访问 ?.）
@@ -647,7 +638,7 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected '.' after '?' for safe member access, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         // \ 之后：必须是 < ，开始解析泛型实参列表
@@ -655,14 +646,15 @@ namespace LatteCompiler
         {
             if (currentToken is NotationToken nt && nt.Content == "<")
             {
-                var arg = new TypeReferenceASTNode(parentNode);
+                var arg = new TypeReferenceASTNode(currentExpression!);
                 pendingGenericArgs.Add(arg);
                 state = State.GenericArgParsed;
-                return new ParserLayerResult.PushLayer(new TypeReferenceParserLayer(arg), false);
+                return new ParserLayerResult.PushLayer(
+                    new TypeReferenceParserLayer(arg), TokenDisposition.Consume);
             }
 
             context.RaiseError($"Expected '<' after '\\' in generic argument list, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         // 一个泛型实参已解析：等待 , 或 >
@@ -672,9 +664,10 @@ namespace LatteCompiler
             {
                 if (nt.Content == ",")
                 {
-                    var arg = new TypeReferenceASTNode(parentNode);
+                    var arg = new TypeReferenceASTNode(currentExpression!);
                     pendingGenericArgs.Add(arg);
-                    return new ParserLayerResult.PushLayer(new TypeReferenceParserLayer(arg), false);
+                    return new ParserLayerResult.PushLayer(
+                        new TypeReferenceParserLayer(arg), TokenDisposition.Consume);
                 }
 
                 if (nt.Content == ">")
@@ -686,7 +679,7 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected ',' or '>' in generic argument list, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         // 把收集到的泛型实参挂到当前表达式上
@@ -719,6 +712,35 @@ namespace LatteCompiler
                 return;
             }
             pendingGenericArgs.Clear();
+        }
+
+        // ===== 表达式完成与 EOF =====
+
+        // 表达式完成：把最终外层表达式挂载到 target（成功路径必须且只能执行一次），随后弹出
+        private ParserLayerResult CompleteExpression(ParserLayerContext context, TokenDisposition disposition)
+        {
+            target.Attach(
+                currentExpression
+                    ?? throw context.RaiseError("Expression is incomplete.")
+            );
+            state = State.Completed;
+            return new ParserLayerResult.PopLayer(disposition);
+        }
+
+        // EOF 处理：表达式可以自然结束的状态挂载并弹栈、上交 EOF；其余状态为不完整结构
+        private ParserLayerResult HandleEndOfFile(ParserLayerContext context)
+        {
+            bool canComplete =
+                state == State.Completed ||
+                (state == State.PrimaryParsed && !expectClosingParen);
+
+            if (canComplete)
+            {
+                return CompleteExpression(context, TokenDisposition.Replay);
+            }
+
+            context.RaiseError("Unexpected end of file");
+            return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
         }
 
         // ===== 辅助判断方法 =====

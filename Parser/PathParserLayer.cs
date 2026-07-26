@@ -37,12 +37,12 @@ namespace LatteCompiler
                                 var symbol = new Symbol();
                                 currentElement.generics.Add(symbol);
                                 return new ParserLayerResult.PushLayer(
-                                        layerToPush: new SymbolLayer(symbol, lineBreakSensitive),
-                                        shouldKeepToken: true
+                                        new SymbolLayer(symbol, lineBreakSensitive),
+                                        TokenDisposition.Replay
                                     );
                             }
                             else { 
-                                return new ParserLayerResult.PopLayer(true);
+                                return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
                             } 
                         }
                         else
@@ -58,7 +58,7 @@ namespace LatteCompiler
                             {
                                 throw context.RaiseError("Unexpected token in symbol:" + currentToken);
                             }
-                            return new ParserLayerResult.PopLayer(shouldKeepToken:true);
+                            return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
                         }
                         switch (nt.Content[0]) {
                             case Notations.DOT:
@@ -66,7 +66,7 @@ namespace LatteCompiler
                                 {
                                     // 连续第二个 . （如 TArgs... 的可变参数标记）：
                                     // 本层无法判定其含义，交还给上层处理
-                                    return new ParserLayerResult.PopLayer(shouldKeepToken: true);
+                                    return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
                                 }else if (isParsingGeneric)
                                 {
                                     throw context.RaiseError("Unexpected token in symbol:" + currentToken);
@@ -85,7 +85,7 @@ namespace LatteCompiler
                                 {
                                     // 新语法（SYNTAX.md §3.6）：泛型列表必须以 \< 开启；
                                     // 裸 < 是小于号等运算符，交还给上层处理
-                                    return new ParserLayerResult.PopLayer(shouldKeepToken: true);
+                                    return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
                                 }
                                 backslashSeen = false;
                                 isParsingGeneric = true;
@@ -106,7 +106,7 @@ namespace LatteCompiler
                                 }
                                 else
                                 {
-                                    return new ParserLayerResult.PopLayer(shouldKeepToken: true);
+                                    return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
                                 }
                             case Notations.COMMA:
                                 if (isParsingGeneric)
@@ -114,19 +114,19 @@ namespace LatteCompiler
                                     var symbol = new Symbol();
                                     currentElement.generics.Add(symbol);
                                     return new ParserLayerResult.PushLayer(
-                                            layerToPush: new SymbolLayer(symbol, lineBreakSensitive),
-                                            shouldKeepToken: false
+                                            new SymbolLayer(symbol, lineBreakSensitive),
+                                            TokenDisposition.Consume
                                         );
                                 }
                                 else
                                 {
                                     return new ParserLayerResult.PopLayer(
-                                            shouldKeepToken: true
+                                            TokenDisposition.Replay
                                         );
                                 }
                             default:
                                 return new ParserLayerResult.PopLayer(
-                                            shouldKeepToken: true
+                                            TokenDisposition.Replay
                                         );
                         }
                     case LineBreakToken:
@@ -136,10 +136,10 @@ namespace LatteCompiler
                         }
                         else
                         {
-                            return new ParserLayerResult.PopLayer(shouldKeepToken:true);
+                            return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
                         }
                             default:
-                        return new ParserLayerResult.PopLayer(shouldKeepToken: true);
+                        return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
                 }
             }
         }
@@ -195,14 +195,14 @@ namespace LatteCompiler
                 }
                 if (symbolParsed)
                 {
-                    return new ParserLayerResult.PopLayer(shouldKeepToken: true);
+                    return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
                 }
                 else
                 {
                     symbolParsed = true;
                     return new ParserLayerResult.PushLayer(
-                            layerToPush: new SymbolLayer(symbolNode.symbol,lineBreakSensitive),
-                            shouldKeepToken: true);
+                            new SymbolLayer(symbolNode.symbol,lineBreakSensitive),
+                            TokenDisposition.Replay);
                 }
             }
             else
@@ -217,8 +217,8 @@ namespace LatteCompiler
                         acquisitionNode.sourceSymbol = new(acquisitionNode);
                         acqExprState = AcqExprParseState.SourceNotFinished;
                         return new ParserLayerResult.PushLayer(
-                                layerToPush:new SymbolLayer(acquisitionNode.sourceSymbol.symbol, lineBreakSensitive),
-                                shouldKeepToken: true);
+                                new SymbolLayer(acquisitionNode.sourceSymbol.symbol, lineBreakSensitive),
+                                TokenDisposition.Replay);
                     case AcqExprParseState.SourceNotFinished:
                         switch (currentToken)
                         {
@@ -229,18 +229,18 @@ namespace LatteCompiler
                                     var symbolNode = new SymbolASTNode(acquisitionNode);
                                     acquisitionNode.wrapperSymbols.Add(symbolNode);
                                     return new ParserLayerResult.PushLayer(
-                                            layerToPush: new SymbolLayer(symbolNode.symbol, lineBreakSensitive),
-                                            shouldKeepToken: false
+                                            new SymbolLayer(symbolNode.symbol, lineBreakSensitive),
+                                            TokenDisposition.Consume
                                         );
                                 }
                                 else
                                 {
-                                    return new ParserLayerResult.PopLayer(shouldKeepToken: true);
+                                    return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
                                 }
                             default:
                                 if (lineBreakSensitive)
                                 {
-                                    return new ParserLayerResult.PopLayer(shouldKeepToken: true);
+                                    return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
                                 }
                                 else
                                 {
@@ -253,8 +253,8 @@ namespace LatteCompiler
                             var symbolNode = new SymbolASTNode(acquisitionNode);
                             acquisitionNode.wrapperSymbols.Add(symbolNode);
                             return new ParserLayerResult.PushLayer(
-                                    layerToPush: new SymbolLayer(symbolNode.symbol, lineBreakSensitive),
-                                    shouldKeepToken: false
+                                    new SymbolLayer(symbolNode.symbol, lineBreakSensitive),
+                                    TokenDisposition.Consume
                                 );
                         }
                         else if((!lineBreakSensitive)&&(currentToken is LineBreakToken))
@@ -263,7 +263,7 @@ namespace LatteCompiler
                         }
                         else
                         {
-                            return new ParserLayerResult.PopLayer(shouldKeepToken: true);
+                            return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
                         }
                     default:
                         throw context.RaiseError("Illegal acqExpr PathParserLayer state:"+acqExprState);

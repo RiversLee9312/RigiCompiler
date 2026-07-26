@@ -169,7 +169,7 @@ namespace LatteCompiler.Tests
                 var tokens = lexer.Tokenize(source);
                 var block = new CodeBlockASTNode(null);
                 var parser = new Parser();
-                parser.Parse(tokens, new CodeBlockParserLayer(block));
+                parser.Parse(tokens, new TestRootParserLayer(), new CodeBlockParserLayer(block));
 
                 var formatted = FormatBlock(block);
                 if (formatted == expected)
@@ -202,7 +202,7 @@ namespace LatteCompiler.Tests
                 var tokens = lexer.Tokenize(source);
                 var block = new CodeBlockASTNode(null);
                 var parser = new Parser();
-                parser.Parse(tokens, new CodeBlockParserLayer(block));
+                parser.Parse(tokens, new TestRootParserLayer(), new CodeBlockParserLayer(block));
 
                 Console.WriteLine($"FAIL: {source.Replace("\n", "\\n")} (应该失败但成功了)");
                 Console.WriteLine($"  Expected error: {expectedError}");
@@ -245,6 +245,7 @@ namespace LatteCompiler.Tests
                 SeqBlockExpressionASTNode seq => FormatSeq(seq),
                 VariableDeclarationASTNode v => FormatVarDecl(v),
                 ReturnStatementASTNode r => FormatReturn(r),
+                ExpressionRootASTNode root => DescribeExpression(root.Expression),
                 ExpressionASTNode e => DescribeExpression(e),
                 _ => $"<{node.GetType().Name}>"
             };
@@ -265,7 +266,7 @@ namespace LatteCompiler.Tests
                 var type = binding.Type != null
                     ? $": {binding.Type.TypeSymbol.symbol.elements[0].name} "
                     : " ";
-                var init = DescribeExpression(binding.Initializer);
+                var init = DescribeExpression(binding.Initializer.Expression);
                 parts.Add($"using({constVar} {binding.VariableName}{type}= {init})");
             }
 
@@ -282,14 +283,14 @@ namespace LatteCompiler.Tests
 
         private static string FormatVarDecl(VariableDeclarationASTNode v)
         {
-            var init = v.Initializer != null ? $" = {DescribeExpression(v.Initializer)}" : "";
+            var init = v.Initializer != null ? $" = {DescribeExpression(v.Initializer!.Expression)}" : "";
             return $"Var({v.Name}{init})";
         }
 
         private static string FormatReturn(ReturnStatementASTNode r)
         {
             var label = r.Label != null ? $"@{r.Label}" : "";
-            var value = r.Value != null ? $"({DescribeExpression(r.Value)})" : "";
+            var value = r.Value != null ? $"({DescribeExpression(r.Value!.Expression)})" : "";
             return $"Return{label}{value}";
         }
 
@@ -299,15 +300,15 @@ namespace LatteCompiler.Tests
             return node switch
             {
                 null => "<null>",
-                LiteralExpressionASTNode lit => DescribeExpression(lit.LiteralNode),
+                LiteralExpressionASTNode lit => DescribeExpression(lit.Literal),
                 IntLiteralASTNode i => $"Int({i.Value},{i.IntType})",
                 StringLiteralASTNode s => $"Str(\"{s.Value}\")",
                 BoolLiteralASTNode b => $"Bool({b.Value})",
                 SymbolReferenceASTNode sref => $"Sym({DescribeSymbol(sref.Symbol.symbol)})",
                 BinaryExpressionASTNode bin =>
-                    $"Binary({DescribeExpression(bin.Left)} {bin.Operator} {DescribeExpression(bin.Right)})",
+                    $"Binary({DescribeExpression(bin.Left.Expression)} {bin.Operator} {DescribeExpression(bin.Right.Expression)})",
                 CallExpressionASTNode c =>
-                    $"Call({DescribeExpression(c.Callee)}, [{string.Join(", ", c.Arguments.Select(a => DescribeExpression(a.Value)))}])",
+                    $"Call({DescribeExpression(c.Callee.Expression)}, [{string.Join(", ", c.Arguments.Select(a => DescribeExpression(a.Value.Expression)))}])",
                 SeqBlockExpressionASTNode seq => FormatSeq(seq),
                 _ => $"<{node.GetType().Name}>"
             };
@@ -329,7 +330,7 @@ namespace LatteCompiler.Tests
         }
 
         // ===== 入口 =====
-        public static void RunAll()
+        public static int RunAll()
         {
             passCount = 0;
             failCount = 0;
@@ -351,6 +352,8 @@ namespace LatteCompiler.Tests
             Console.WriteLine($"║  Total: {passCount + failCount,3} tests | Pass: {passCount,3} | Fail: {failCount,3}            ║");
             Console.WriteLine("╚════════════════════════════════════════════════════════╝");
             Console.WriteLine();
+
+            return failCount;
         }
     }
 }

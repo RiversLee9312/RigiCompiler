@@ -2,6 +2,12 @@
 using LatteCompiler;
 using LatteCompiler.Tests;
 
+// 单命令全量测试：dotnet run -- --test-all（CI 入口；任意失败返回非零退出码）
+if (args.Length > 0 && args[0] == "--test-all")
+{
+    Environment.Exit(TestRunner.RunAllSuites());
+}
+
 Console.WriteLine("Latte Compiler - Choose mode:");
 Console.WriteLine("1. Parse file");
 Console.WriteLine("2. Run Literal tests");
@@ -25,7 +31,8 @@ Console.WriteLine("19. Run TypeDeclaration tests");
 Console.WriteLine("20. Run PropertyAccessor tests");
 Console.WriteLine("21. Run Import tests");
 Console.WriteLine("22. Run Namespace tests");
-Console.Write("Enter choice (1-22): ");
+Console.WriteLine("23. Run TokenDisposition tests");
+Console.Write("Enter choice (1-23): ");
 
 string? choice = Console.ReadLine();
 
@@ -153,6 +160,12 @@ else if (choice == "22")
 {
     // 运行 namespace 测试
     NamespaceTests.RunAll();
+    return;
+}
+else if (choice == "23")
+{
+    // 运行 TokenDisposition 协议测试
+    TokenDispositionTests.RunAll();
     return;
 }
 

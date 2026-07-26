@@ -85,7 +85,7 @@ namespace LatteCompiler
                     return HandleBoundParsed(currentToken, context);
                 default:
                     context.RaiseError($"Invalid GenericParametersParserLayer state: {state}");
-                    return new ParserLayerResult.PopLayer(false);
+                    return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
             }
         }
 
@@ -99,7 +99,7 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected '\\' to start generic parameter list, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         // 等待 <（泛型列表开启符的第二半）
@@ -112,7 +112,7 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected '<' after '\\' in generic parameter list, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         // 子句开头：分派到前缀路径（out/in/named）或类型引用路径
@@ -146,14 +146,13 @@ namespace LatteCompiler
                 pendingTarget = new TypeReferenceASTNode(targetNode);
                 state = State.TargetParsed;
                 return new ParserLayerResult.PushLayer(
-                    new TypeReferenceParserLayer(pendingTarget),
-                    true  // 保留当前 token
+                    new TypeReferenceParserLayer(pendingTarget), TokenDisposition.Replay  // 保留当前 token
                 );
             }
 
             context.RaiseError(
                 $"Expected type parameter, 'out', 'in' or 'named' in generic parameter list, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         // out/in 已读：等待参数名
@@ -167,7 +166,7 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected type parameter name after variance modifier, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         // named 已读：等待参数名
@@ -181,7 +180,7 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected type parameter name after 'named', got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         // 前缀路径参数名已读：named 只接受 ...；out/in 还接受 , > 与约束关键字
@@ -197,7 +196,7 @@ namespace LatteCompiler
             if (pendingNamedVariadic)
             {
                 context.RaiseError($"'named' variadic parameter requires '...', got: {currentToken}");
-                return new ParserLayerResult.PopLayer(false);
+                return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
             }
 
             if (currentToken is NotationToken comma && comma.Content == ",")
@@ -211,7 +210,7 @@ namespace LatteCompiler
             {
                 CompleteParameter();
                 state = State.Completed;
-                return new ParserLayerResult.PopLayer(false);
+                return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
             }
 
             var kind = TryGetConstraintKind(currentToken);
@@ -224,7 +223,7 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected '...', ',', '>' or constraint after parameter name, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         // 前缀路径：第一个 . 已读
@@ -237,7 +236,7 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected '...' for variadic parameter, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         // 前缀路径：第二个 . 已读
@@ -251,7 +250,7 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected '...' for variadic parameter, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         // TypeRef 路径：符号解析已消耗前两个点（见 SymbolLayer 对连续 . 的处理），
@@ -266,7 +265,7 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected '...' for variadic parameter, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         // ... 已读完：等待 , > 或约束关键字（如 named TValues... with Serializable）
@@ -283,7 +282,7 @@ namespace LatteCompiler
             {
                 CompleteParameter();
                 state = State.Completed;
-                return new ParserLayerResult.PopLayer(false);
+                return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
             }
 
             var kind = TryGetConstraintKind(currentToken);
@@ -296,7 +295,7 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected ',', '>' or constraint after variadic parameter, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         // 子句开头类型已解析：判断是参数声明、可变参数还是约束子句
@@ -322,7 +321,7 @@ namespace LatteCompiler
                 {
                     CommitParameterFromTarget(context);
                     state = State.Completed;
-                    return new ParserLayerResult.PopLayer(false);
+                    return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
                 }
 
                 if (nt.Content == ".")
@@ -339,7 +338,7 @@ namespace LatteCompiler
 
             context.RaiseError(
                 $"Expected ',', '>', '...' or constraint after type in generic parameter list, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         // 约束 Bound 已解析：等待 , 或 >
@@ -354,11 +353,11 @@ namespace LatteCompiler
             if (currentToken is NotationToken close && close.Content == ">")
             {
                 state = State.Completed;
-                return new ParserLayerResult.PopLayer(false);
+                return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
             }
 
             context.RaiseError($"Expected ',' or '>' after constraint, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         // ===== 辅助方法 =====
@@ -454,8 +453,7 @@ namespace LatteCompiler
 
             state = State.BoundParsed;
             return new ParserLayerResult.PushLayer(
-                new TypeReferenceParserLayer(constraint.Bound),
-                false  // 消费掉 extends/supers/with 关键字
+                new TypeReferenceParserLayer(constraint.Bound), TokenDisposition.Consume  // 消费掉 extends/supers/with 关键字
             );
         }
     }

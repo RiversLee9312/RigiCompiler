@@ -80,7 +80,7 @@ namespace LatteCompiler
             state = State.AfterPath;
             return new ParserLayerResult.PushLayer(
                 new PathParserLayer(
-                    PathParserLayer.PathType.SymbolPath, pathSymbol, lineBreakSensitive: true), true);
+                    PathParserLayer.PathType.SymbolPath, pathSymbol, lineBreakSensitive: true), TokenDisposition.Replay);
         }
 
         // PathParserLayer 弹出后：清末尾空名元素（`.*` / `.{` 前的 . 残留，只清一次）
@@ -104,7 +104,16 @@ namespace LatteCompiler
                 if (elements.Count == 0)
                     throw context.RaiseError("Import statement requires an import path (SYNTAX §15.2)");
                 self.importedSymbols.Add(new ImportItem { symbolNode = pathSymbol });
-                return new ParserLayerResult.PopLayer(false);
+                return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
+            }
+
+            // EOF：单个导入完成（结构完整），EOF 上交 Root
+            if (t is EndOfFileToken)
+            {
+                if (elements.Count == 0)
+                    throw context.RaiseError("Import statement requires an import path (SYNTAX §15.2)");
+                self.importedSymbols.Add(new ImportItem { symbolNode = pathSymbol });
+                return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
             }
 
             if (t is NotationToken n)
@@ -173,7 +182,11 @@ namespace LatteCompiler
         private ParserLayerResult OnWaitEnd(Token t, ParserLayerContext context)
         {
             if (t is LineBreakToken)
-                return new ParserLayerResult.PopLayer(false);
+                return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
+
+            // EOF：import 语句已完整，EOF 上交 Root
+            if (t is EndOfFileToken)
+                return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
 
             throw context.RaiseError($"Unexpected token after import statement: {t}");
         }

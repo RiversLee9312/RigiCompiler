@@ -1,12 +1,18 @@
 # Latte 编译器项目指南
 
-> **用途**: 为 Claude Code 和开发者提供 Latte 编译器项目的完整上下文
+> **用途**: 为 Claude Code 和开发者提供 Latte 编译器项目的完整上下文。
+>
+> **文档分工（避免漂移，必须遵守）**：
+> - **稳定架构规则与开发约定** → `AGENTS.md`（本文件引用它，不复制）
+> - **进度、测试数量、当前阶段** → `docs/PROGRESS_REPORT.md`（唯一权威）
+> - **语言语法** → `docs/SYNTAX.md`（最权威）
+>
+> 本文件只保存两类内容：① Latte 语言的核心设计决策（不易漂移）；
+> ② 常见问题与答案（Q&A）。其余一律以引用为准。
 
-**项目名**: LatteCompiler  
-**语言**: C# (.NET 8.0)  
-**开发阶段**: 早期 - Parser 实现中（P0、P1、P2 完成，P3 进行中——类型声明统一层已落地）  
-**版本控制**: Git（main 分支，2026-07-17 首次提交）  
-**文档版本**: 2026-07-26
+**项目名**: LatteCompiler
+**语言**: C# (.NET 8.0)
+**版本控制**: Git（main 分支，2026-07-17 首次提交）
 
 ---
 
@@ -22,12 +28,14 @@ Latte 是一门现代的、类型安全的编程语言，设计目标：
 - **Wrapper 系统**：类似 Python 装饰器 + Java 注解的强大修饰器机制
 - **无运算符优先级**：所有运算必须用括号明确指定，避免歧义
 
-### 1.2 编译器架构
+### 1.2 编译器架构与当前进度
 
 ```
 Latte Source Code (.latte)
     ↓
-Frontend (Parser + Semantic Analyzer) ← 当前阶段
+Frontend (Lexer + Parser) ✅ 已完成（含 Parser/PDA 大扫除）
+    ↓
+Semantic Analyzer            ← 当前阶段
     ↓
 BIL (Basic Intermediate Language)
     ↓
@@ -38,7 +46,13 @@ LLVM Toolchain
 Native Executable
 ```
 
-**当前进度**: P0、P1、P2、P3、P4 完成（统一声明层 DeclarationParserLayer：全局/成员/嵌套任何声明一条路径，class/interface/struct/wrapper 头部与成员、继承与 implements、嵌套类型、声明上的泛型参数、getter/setter 属性访问器、enum `[]` case 列表、init `_ -> field` 参数映射、like 委托、ext 限定名；此前已完成 P2 语句系统：代码块/if/循环/try-catch-finally/seq/throw/await/yield，以及 P1 表达式系统：后缀链、Lambda/if/switch 表达式、typeOf/as/is、泛型参数、形参列表、结果传递机制、泛型 `\<` 语法迁移）。测试 369/369。
+**当前进度、组件状态与测试数量**：见 `docs/PROGRESS_REPORT.md`（唯一权威来源）。
+
+### 1.3 Parser 架构规范
+
+Parser 的架构原则（层栈 + 状态机、TokenDisposition、施工目标协议、
+ExpressionRootASTNode、EOF 正式化、Layer 拆分标准、简洁优先三问等）
+**统一维护在 `AGENTS.md` §4**，本文件不复制——请以该节为准。
 
 ---
 
@@ -112,53 +126,11 @@ var logger: Logger = new Logger()        // 不写 shared
 
 **关键点**：
 - `rich` ≠ 引用计数共享（不是 `shared_ptr`）
-- `rich` = 值类型可以持有引用，但仍是**unique ownership**（类似 `unique_ptr`）
+- `rich` = 值类型可以持有引用，但仍是 **unique ownership**（类似 `unique_ptr`）
 - `rich` 和 `shared` 是**类型声明修饰符**，不是类型引用修饰符
 - 使用类型时（变量声明、函数参数等）永远不写 `rich`/`shared`
 
-### 2.2 Parser 架构原则
-
-#### 模块化与职责分离
-
-**正确的模块化原则**："Delegate, don't implement"
-
-```
-✅ 正确：
-ExpressionParserLayer (框架)
-  ├─ 识别表达式类型
-  ├─ 委托给专门的 Layer:
-  │   ├── LiteralParserLayer (字面量)
-  │   ├── PathParserLayer (符号/调用)
-  │   └── TypeReferenceParserLayer (类型)
-  └─ 处理运算符（框架职责）
-
-❌ 错误：
-ExpressionParserLayer 直接实现所有表达式的解析逻辑
-```
-
-**每个 ParserLayer 必须**：
-- 职责单一
-- 可独立测试
-- 通过委托复用其他 Layer
-- 使用状态机驱动
-
-#### ⚠️ 简洁优先：写代码前必须自问的三个问题
-
-在新增任何 AST 节点、Layer、状态或辅助方法之前，逐条回答：
-
-1. **这个真的有必要存在吗？** 不服务当前需求的字段、状态、抽象一律不写。
-2. **有没有更简洁更优雅的方法？** 能用现有状态机多一个分支解决的，不要新建一层。
-3. **可不可以复用已有的轮子？** 先翻一遍 `Parser/` 下已有的 Layer，不要自己造轮子。
-
-复用范例（已在项目中验证）：
-- `throw` / `yield` / `return` / `break` / `continue` 都是 `CodeBlockParserLayer` 里的内联子状态，没有各自的 Layer
-- `await` 只是在 `ExpressionParserLayer.IsPrefixUnaryOperator` 里加一个关键字，复用现有一元前缀运算符通路
-- `seq` 块的语句形态与表达式形态共用同一套 `CodeBlockParserLayer` 基建
-- 类型声明扩展的是既有的 `DeclarationParserLayer` 骨架，而不是新建 `ClassDeclarationParserLayer`
-
-只有当职责确实独立、且需要被多个父层复用时，才新建 Layer。
-
-### 2.3 类型系统层级
+### 2.2 类型系统层级
 
 ```
 Any
@@ -183,164 +155,30 @@ Any
 
 ---
 
-## 3. 代码库结构
+## 3. 代码库结构与开发工作流
 
-```
-LatteCompiler/
-├── AST/                  # AST 节点定义
-│   ├── LiteralNodes.cs      # 6 种字面量节点
-│   ├── TypeNodes.cs         # 类型引用节点
-│   ├── DeclarationNodes.cs  # 声明节点（变量/泛型参数/形参/可调用/类型声明）
-│   ├── ExpressionNodes.cs   # 表达式节点（含调用/索引/成员/实参/lambda/if/switch/seq）
-│   └── StatementNodes.cs    # 语句节点（代码块/if/循环/return/赋值/try/throw/yield）
-├── Parser/               # Parser 层实现
-│   ├── Parser.cs              # 核心协议 + IResultProducer/IResultConsumer + EOF 哨兵收尾
-│   ├── RootParserLayer.cs     # 顶层入口分发（声明统一委托 DeclarationParserLayer）
-│   ├── LiteralParserLayer.cs
-│   ├── TypeReferenceParserLayer.cs
-│   ├── VariableDeclarationParserLayer.cs
-│   ├── ExpressionParserLayer.cs   # 表达式框架（运算符 + 后缀链 + await 前缀）
-│   ├── PathParserLayer.cs         # 符号路径（含 \< 泛型实参）
-│   ├── ArgumentListParserLayer.cs # 调用/索引/构造实参列表
-│   ├── GenericParametersParserLayer.cs # 泛型参数列表 \<...>
-│   ├── ParameterListParserLayer.cs     # 函数形参列表 (...)
-│   ├── DeclarationParserLayer.cs  # 统一声明层：全局/成员/嵌套任何声明
-│   ├── ImportParserLayer.cs       # 早期骨架（待 P5 重建）
-│   ├── CodeBlockParserLayer.cs    # 代码块：语句识别与分发（return/break/continue/throw/yield 内联）
-│   ├── IfStatementParserLayer.cs  # if 语句 + if 表达式
-│   ├── SwitchStatementParserLayer.cs # switch 表达式
-│   ├── LoopParserLayer.cs         # for/while/do-while/named 标签
-│   ├── LambdaExpressionParserLayer.cs
-│   ├── TypeOfExpressionParserLayer.cs
-│   ├── SeqBlockParserLayer.cs     # seq 块（语句 + 表达式双形态）
-│   └── TryCatchFinallyParserLayer.cs
-├── Lexer/                # 词法分析
-│   ├── Lexer.cs
-│   └── LexerLayers.cs
-├── Core/                 # 基础设施
-│   ├── Utilities.cs         # Token、Keywords、Helper、部分 AST 基类
-│   └── FrontendTypesExtension.cs
-├── Tests/                # 测试（自研控制台模式，非测试框架，18 个测试类）
-│   ├── LiteralParserTests.cs / TypeReferenceParserTests.cs / VariableDeclarationTests.cs
-│   ├── ExpressionParserTests.cs / GenericParsingTests.cs / GenericParametersTests.cs
-│   ├── ParameterListTests.cs / LambdaExpressionTests.cs / IfExpressionTests.cs
-│   ├── SwitchExpressionTests.cs / TypeOfExpressionTests.cs / CodeBlockTests.cs
-│   ├── LoopTests.cs / TryCatchFinallyTests.cs / SeqBlockTests.cs
-│   ├── ThrowStatementTests.cs / CoroutineOpsTests.cs / TypeDeclarationTests.cs
-├── docs/                 # 文档
-│   ├── SYNTAX.md            # **语言语法规范**（权威）
-│   ├── RUNTIME.md           # 运行时模型
-│   ├── BIL_STANDARD.md      # BIL 中间语言规范
-│   ├── PROGRESS_REPORT.md   # 进度报告（**进度唯一权威**）
-│   ├── RICH_SHARED_CLARIFICATION.md  # rich/shared 澄清
-│   └── compiler/frontend/   # 编译器前端实现文档
-│       ├── PARSER_ROADMAP.md       # Parser 实现路线图（计划）
-│       ├── EXPRESSION_ARCHITECTURE.md  # 表达式架构设计
-│       ├── FRONTEND_ARCHITECTURE.md    # 前端架构
-│       └── FRONTEND_TYPES.md           # 前端数据类型
-├── CLAUDE.md / AGENTS.md # AI 代理项目指南
-└── Program.cs            # 程序入口
-```
+代码库结构、构建与运行方式、测试策略、添加新 Parser 功能的标准流程、
+代码规范——统一见 `AGENTS.md`（§2 构建与运行、§3 代码库结构、
+§5 测试策略、§6 代码规范与开发约定）。
 
-### 3.1 关键文件说明
-
-| 文件 | 用途 | 重要性 |
-|------|------|--------|
-| `docs/SYNTAX.md` | **语言语法规范** | ⭐⭐⭐ 最权威，有歧义时以此为准 |
-| `docs/RUNTIME.md` | 运行时模型与实现细节 | ⭐⭐⭐ 理解类型系统必读 |
-| `docs/compiler/frontend/PARSER_ROADMAP.md` | Parser 实现计划 | ⭐⭐ 了解开发进度 |
-| `Core/Utilities.cs` | 所有 AST 节点和 Token 定义 | ⭐⭐⭐ 核心数据结构 |
-| `Parser/RootParserLayer.cs` | Parser 入口 | ⭐⭐ 理解解析流程 |
-
----
-
-## 4. 开发工作流
-
-### 4.1 添加新的 Parser 功能
-
-**标准流程**：
-
-1. **阅读 SYNTAX.md** - 理解语法规范
-2. **设计状态机** - 画出状态转换图
-3. **创建 AST 节点** - 在 `AST/` 目录
-4. **实现 ParserLayer** - 在 `Parser/` 目录
-5. **编写测试** - 在 `Tests/` 目录
-6. **集成到 RootParserLayer** - 添加入口
-7. **编译验证** - `dotnet build`
-8. **运行测试** - 验证功能
-
-**示例**（添加 if 语句解析）：
-
-```csharp
-// 1. AST 节点 (AST/StatementNodes.cs)
-public class IfStatementASTNode : ASTNode
-{
-    public ExpressionASTNode Condition;
-    public ASTNode ThenBlock;
-    public ASTNode? ElseBlock;
-    // ...
-}
-
-// 2. Parser Layer (Parser/IfStatementParserLayer.cs)
-public class IfStatementParserLayer : IParserLayer
-{
-    private enum State
-    {
-        Initial,          // 等待 if 关键字
-        ConditionStart,   // 等待 (
-        ConditionParsing, // 解析条件表达式
-        ThenBlock,        // 解析 then 块
-        ElseCheck,        // 检查是否有 else
-        Completed
-    }
-    // ... 状态机实现
-}
-
-// 3. 测试 (Tests/IfStatementTests.cs)
-public class IfStatementTests
-{
-    public static void TestBasicIf() { ... }
-    public static void TestIfElse() { ... }
-}
-```
-
-### 4.2 编译和测试
+常用命令：
 
 ```bash
-# 编译
-cd C:\Users\SaRiv\source\repos\LatteCompiler\LatteCompiler
-dotnet build
-
-# 运行测试（bin\Debug\net8.0 目录下，菜单 2–19）
-echo "2" | .\LatteCompiler.exe  # 字面量测试（15）
-echo "3" | .\LatteCompiler.exe  # 类型引用测试（3）
-echo "4" | .\LatteCompiler.exe  # 变量声明测试（10）
-echo "5" | .\LatteCompiler.exe  # 表达式测试（67）
-echo "6" | .\LatteCompiler.exe  # 泛型解析测试（18）
-echo "7" | .\LatteCompiler.exe  # 泛型参数列表测试（21）
-echo "8" | .\LatteCompiler.exe  # 函数形参列表测试（14）
-echo "13" | .\LatteCompiler.exe # 代码块测试（27）
-echo "19" | .\LatteCompiler.exe # 类型声明测试（36）
+dotnet build                    # 编译
+dotnet run -- --test-all        # 全量测试（CI 入口；任意失败非零退出）
+echo "5" | dotnet run           # 单个测试套件（交互菜单）
 ```
 
-### 4.3 Git 工作流
+Git 约定：项目已在 Git 版本控制下（`main` 分支）；完成阶段性功能后提交，
+保持小步提交；提交前确保 `dotnet build` 通过且 `--test-all` 无失败；
+`git commit` 等变更操作需用户确认后执行。
 
-项目已在 Git 版本控制下（`main` 分支，2026-07-17 首次提交）。约定：
-
-- 完成阶段性功能后提交，保持小步提交
-- 提交前确保 `dotnet build` 通过且全部测试套件无 FAIL
-- `git commit` 等变更操作需用户确认后执行
-
-### 4.4 进度对齐标准（必须遵守）
-
-- **`docs/PROGRESS_REPORT.md` 是项目进度的唯一权威来源**。不要新建单点完成报告/实现总结类文档（防止碎片化）。
-- **更新时机**：每完成一个里程碑（新增 ParserLayer、落地一项机制、完成一次语法迁移）必须立即更新。
-- **更新方式**：保持文档既有结构不变，同步刷新各节内容，并在「里程碑历史」**顶部**追加新段落（倒序）。
-- **分工**：`PARSER_ROADMAP.md` 管「计划」（要做什么、怎么做），`PROGRESS_REPORT.md` 管「现状」（做到了什么）。计划调整改 ROADMAP，进度推进改 PROGRESS_REPORT。
+进度对齐：每完成一个里程碑必须立即更新 `docs/PROGRESS_REPORT.md`
+（在「里程碑历史」**顶部**追加新段落，倒序）。
 
 ---
 
-## 5. 常见问题与答案（Q&A）
+## 4. 常见问题与答案（Q&A）
 
 ### Q1: 为什么 Latte 没有运算符优先级？
 
@@ -374,22 +212,7 @@ var result = seq {
 - 但它**仍然是值类型**，仍然是 unique ownership
 - 类似 C++ 的 `unique_ptr<T>`，不是 `shared_ptr<T>`
 
-```cpp
-// C++ 类比
-struct NonRichPoint {
-    double x, y;
-    // ❌ 不能有 std::string，不能有指针
-};
-
-struct RichPoint {
-    double x, y;
-    std::unique_ptr<std::string> label;  // ✅ 可以持有引用
-    // 复制时 label 会移动（move），不是共享
-};
-```
-
 ```latte
-// Latte 对应
 struct Point {        // 普通 struct
     x: f64
     y: f64
@@ -420,18 +243,6 @@ rich struct RichPoint {  // rich struct
 | 跨函数传递可变数据 | `Array\<T>` | 引用语义 |
 | FFI、大量值类型数据 | `Span\<T>` | 零开销抽象 |
 
-```latte
-// Array\<T>：通用泛型容器
-var names: Array\<String> = ["Alice", "Bob"]
-names.append("Charlie")
-
-// Span\<T>：高性能同构数据
-var buffer: Span\<f32> = Span.alloc\<f32>(1000)
-for (i in 0 to 1000) {
-    buffer[i] = sin(i * 0.01)  // 零开销访问
-}
-```
-
 ### Q4: Parser 设计时，什么应该委托，什么应该直接实现？
 
 **A**:
@@ -446,39 +257,14 @@ for (i in 0 to 1000) {
 - 运算符处理（属于表达式框架的核心职责）
 - 状态转换逻辑
 
-```csharp
-// ✅ 好的设计
-public class ExpressionParserLayer
-{
-    private ParserLayerResult HandleInitial(...)
-    {
-        if (IsLiteralToken(token))
-            return DelegateLiteralParsing(...);  // 委托
-
-        if (IsBinaryOperator(token))
-            return HandleBinaryOperator(...);    // 直接处理
-
-        if (token is WordToken)
-            return DelegateSymbolParsing(...);   // 委托
-    }
-}
-
-// ❌ 坏的设计
-public class ExpressionParserLayer
-{
-    // 直接实现所有表达式类型的解析逻辑
-    // 违反单一职责原则，难以维护
-}
-```
-
 ### Q5: 为什么 TypeReferenceParserLayer 不处理 rich/shared？
 
 **A**: 因为 `rich` 和 `shared` 是**类型声明修饰符**，不是**类型引用修饰符**。
 
 **职责分配**：
 - `TypeReferenceParserLayer`：解析类型**使用**（变量声明、函数参数等）
-- `ClassDeclarationParserLayer`：解析类型**定义**（包括 shared class）
-- `StructDeclarationParserLayer`：解析类型**定义**（包括 rich struct）
+- `DeclarationParserLayer`：解析类型**定义**（class/struct/wrapper 声明，
+  包括 rich/shared 修饰符；统一声明层覆盖全部类型关键字）
 
 ```latte
 // TypeReferenceParserLayer 处理这些：
@@ -487,10 +273,8 @@ var name: String? = null
 var list: List\<String>
 func process(data: MyStruct) { }
 
-// ClassDeclarationParserLayer 处理这个：
+// DeclarationParserLayer 处理这些：
 shared class Logger { }
-
-// StructDeclarationParserLayer 处理这些：
 rich struct Point3D { }
 shared rich struct SharedData { }
 ```
@@ -503,22 +287,6 @@ shared rich struct SharedData { }
 - Lexer 的职责是简单的字符识别，不理解复杂语义
 - `.` 是 notation，Lexer 不知道它是浮点数还是成员访问
 - Parser 使用状态机识别这是浮点数，组合成 `FloatLiteralASTNode`
-
-```csharp
-// LiteralParserLayer 的浮点数状态机
-enum FloatParseState
-{
-    Initial,       // 等待整数部分
-    IntegerPart,   // 已有整数部分
-    DotSeen,       // 看到 .
-    Complete       // 完成
-}
-
-// 处理流程：
-// Token "3"    -> IntegerPart
-// Token "."    -> DotSeen
-// Token "14"   -> 组合成 3.14, Complete
-```
 
 ### Q7: 实现新功能前应该先做什么？
 
@@ -540,164 +308,39 @@ enum FloatParseState
 
 ---
 
-## 6. 当前进度与下一步
+## 5. 技术债务与注意事项
 
-### 6.1 已完成 ✅
+已知限制与技术债务的当前清单见 `docs/PROGRESS_REPORT.md` §6
+（该清单随里程碑推进变化，本文件不复制）。
 
-| 组件 | 功能 | 测试 |
-|------|------|------|
-| LiteralParserLayer | 所有字面量类型 | 15/15 (100%) |
-| TypeReferenceParserLayer | 类型引用（含 `\<` 泛型、嵌套、可空） | 3/3 (100%) |
-| VariableDeclarationParserLayer | 变量声明（Initializer 经结果传递保存） | 10/10 (100%) |
-| ExpressionParserLayer | 运算符、括号分组、调用/索引/成员/泛型调用后缀链、new 构造参数、类型操作（is/supers/with/as/as?）、await 前缀 | 67/67 (100%) |
-| ArgumentListParserLayer | 位置/具名实参列表 | （含于表达式测试） |
-| LambdaExpressionParserLayer | Lambda（完整/泛型/async/trailing，体为单表达式） | 15/15 (100%) |
-| IfStatementParserLayer | if 表达式（强制 else）+ if 语句（else 可选、else if 链） | 8/8 (100%) |
-| SwitchStatementParserLayer | switch 表达式（值/模式匹配、强制 default；语句模式待规范） | 6/6 (100%) |
-| TypeOfExpressionParserLayer | typeOf(expr) | 7/7 (100%) |
-| GenericParametersParserLayer | 泛型参数列表 `\<...>`（声明/约束/型变/可变；未接入声明） | 21/21 (100%) |
-| ParameterListParserLayer | 函数形参列表（普通/默认/可变/具名可变；已接入声明） | 14/14 (100%) |
-| CodeBlockParserLayer | 代码块：语句识别与分发（return/break/continue/throw/yield 内联、赋值） | 27/27 (100%) |
-| LoopParserLayer | for-each/范围/while/do-while/named 标签 | 15/15 (100%) |
-| TryCatchFinallyParserLayer | try/多 catch/finally(e)/嵌套 | 9/9 (100%) |
-| SeqBlockParserLayer | seq 块（volatile/using/named，语句 + 表达式双形态） | 17/17 (100%) |
-| ThrowStatement（内联） | throw 语句 | 10/10 (100%) |
-| CoroutineOps（await/yield） | await 前缀运算符 + yield 语句（未建独立 Layer） | 13/13 (100%) |
-| DeclarationParserLayer | 统一声明层：全局/成员/嵌套任何声明（class/interface/struct/wrapper、字段/方法/init/operator、继承与 implements、声明泛型参数、enum case 列表、like 委托、ext 限定名） | 77/77 (100%) |
-| PropertyAccessorParserLayer | 属性访问器块 `{ get... set... }`（§9.4，三类定义位置统一接入） | 17/17 (100%) |
-| 结果传递机制 | IResultProducer/IResultConsumer + 弹层自动传递 | （含于各套件） |
-| 泛型语法迁移 | `\<...>` 语法 + `<` 解放为小于号 | 18/18 (100%) |
+长期注意事项：
 
-**总计**: 369/369 测试通过 (100%)
-
-**可解析的语法**：
-```latte
-// 字面量
-42, 3.14, "Hello", true, null
-
-// 类型引用
-i32, String?, List\<T>, Map\<K,V>, List\<Map\<String, i32>>?
-
-// 变量声明（含完整初始化表达式）
-var x = 42
-const name: String = "Hello"
-var v = foo(1, name = 2)
-var v = foo().bar[0]
-var v = new User(id = 42)
-var v = a.b\<i32>(x)
-var r = 1 + (2 * 3)
-
-// 类型操作
-obj is String, obj as? String, typeOf(box)
-
-// if / switch 表达式（分支体当前为单表达式）
-var r = if (x > 0) { x } else { opposite(x) }
-var r = switch(expr) { (1) -> { "one" } default -> { "other" } }
-
-// Lambda（含泛型、async、trailing）
-var f = func{(x: i32): i32 -> (x + 1)}
-var loader = async func{(id: i32): SharedUser -> loadUserNow(id)}
-list.map{(item: String): i32 -> item.length}
-
-// 代码块与语句
-{ var x = 1
-  x = (1 + 2)
-  return x }
-
-// if 语句与循环
-if (x > 0) { foo() } else if (y > 0) { bar() } else { baz() }
-for (i in 0 to 10) named outer { break@outer }
-while (condition) { doSomething() }
-do { doSomething() } while (condition)
-
-// try-catch-finally 与 throw
-try { risky() } catch (e: IOException) { handle(e) } finally(e) { cleanup() }
-throw new IOException("File not found")
-
-// seq 块（语句 + 表达式形态）
-seq using(const file = new File("path")) named readFile { process(file) }
-const result = seq { return@seq compute() }
-
-// await/yield
-const user = await loadUser(42)
-yield sleep(1000)
-
-// 类型声明与全局声明（统一声明层）
-pub open class Dog : Animal implements Drawable {
-    pub var name: String
-    pub init(x: i32) {}
-    pub func speak(): String { return "Woof!" }
-    pub class Inner {}
-}
-pub rich struct Entry {}
-wrapper Logged {}
-pub const MAX: i32
-func add(a: i32, b: i32): i32 { return (a + b) }
-
-// 泛型参数列表（独立组件，未接入类型/函数声明）
-\<TElement>, \<out T, in U>, \<named TValues... with Serializable>
-
-// 函数形参列表（已接入 func/operator/init 声明）
-(a: i32, b: String = "x", rest: named i32...)
-```
-
-### 6.2 下一步 ⏳
-
-**P3 收尾**：
-1. 声明上的泛型参数（类型/函数声明接入 GenericParametersParserLayer）
-2. getter/setter（SYNTAX.md §9.4）
-3. enum struct 的 `[]` case 列表
-4. init 参数映射（`_ -> field`）、`like` 委托、`ext` 扩展成员
-
-**后续**: P5 wrapper 主体与 `:` 路径访问、模块系统（ImportParserLayer 重建）；再往后是语义分析与 BIL 输出
+- 字符字面量未实现（占位符）
+- 输出含 VERBOSE 调试日志属正常现象
+- `Core/Utilities.cs` 残留部分早期 AST 节点定义，新增节点优先放 `AST/` 目录
 
 ---
 
-## 7. 技术债务与注意事项
+## 6. 参考资源
 
-### 7.1 已知限制
+### 6.1 必读文档
 
-1. **字符字面量未实现** - 有占位符
-2. **wrapper 路径访问（`:`）未实现** - 留待 P5 Wrapper 阶段
-3. **lambda 体与 if/switch 表达式分支体仅支持单表达式** - CodeBlock 已落地，表达式分支的多语句接入留待后续
-4. **switch 仅表达式模式** - SYNTAX 未定义语句形态
-5. **复合赋值（`+=`/`-=` 等）未实现** - Lexer 未合并这些 token，需重组机制
-6. **泛型形参列表未接入类型/函数声明** - 形参列表已于 M14 接入
-7. **类型声明待续项** - getter/setter、enum `[]` case 列表、init 参数映射、`like` 委托、`ext` 扩展成员、wrapper 主体
+1. [AGENTS.md](AGENTS.md) - **稳定架构规则与开发约定**（Parser 架构规范所在）
+2. [docs/SYNTAX.md](docs/SYNTAX.md) - **最权威的语法规范**
+3. [docs/PROGRESS_REPORT.md](docs/PROGRESS_REPORT.md) - **进度唯一权威来源**
+4. [docs/RUNTIME.md](docs/RUNTIME.md) - 运行时模型和类型系统
+5. [docs/compiler/frontend/PARSER_ROADMAP.md](docs/compiler/frontend/PARSER_ROADMAP.md) - Parser 实现计划
+6. [docs/compiler/frontend/EXPRESSION_ARCHITECTURE.md](docs/compiler/frontend/EXPRESSION_ARCHITECTURE.md) - 表达式架构设计
+7. [docs/RICH_SHARED_CLARIFICATION.md](docs/RICH_SHARED_CLARIFICATION.md) - rich/shared 澄清
 
-### 7.2 编译警告
-
-- 5 个 nullable 相关警告（不影响功能）
-- 位于 `Core/Utilities.cs`
-
-### 7.3 代码规范
-
-- **命名**: 遵循 C# 约定（PascalCase 类名，camelCase 字段）
-- **缩进**: 4 空格
-- **注释**: 关键逻辑必须注释，状态机转换必须说明
-- **测试**: 每个 ParserLayer 必须有对应测试
-
----
-
-## 8. 参考资源
-
-### 8.1 必读文档
-
-1. [docs/SYNTAX.md](docs/SYNTAX.md) - **最权威的语法规范**
-2. [docs/RUNTIME.md](docs/RUNTIME.md) - 运行时模型和类型系统
-3. [docs/compiler/frontend/PARSER_ROADMAP.md](docs/compiler/frontend/PARSER_ROADMAP.md) - Parser 实现计划
-4. [docs/compiler/frontend/EXPRESSION_ARCHITECTURE.md](docs/compiler/frontend/EXPRESSION_ARCHITECTURE.md) - 表达式架构设计
-5. [docs/RICH_SHARED_CLARIFICATION.md](docs/RICH_SHARED_CLARIFICATION.md) - rich/shared 澄清
-
-### 8.2 外部资源
+### 6.2 外部资源
 
 - [Claude Code 官方文档](https://claude.com/blog/using-claude-md-files)
-- [CLAUDE.md 最佳实践](https://www.datacamp.com/tutorial/writing-the-best-claude-md)
 - .NET 8.0 文档
 
 ---
 
-## 9. 项目原则
+## 7. 项目原则
 
 1. **文档驱动** - 先理解 SYNTAX.md，再写代码
 2. **测试驱动** - 每个功能都有测试
@@ -705,31 +348,9 @@ func add(a: i32, b: i32): i32 { return (a + b) }
 4. **渐进式** - 按 Roadmap 逐步实现，不跳步
 5. **质量优先** - 宁可慢一点，不要留技术债
 6. **不要猜测** - 不确定时查文档，不要凭直觉
-7. **简洁优先** - 写代码时始终自问：这个真的有必要存在吗？有没有更简洁更优雅的方法？可不可以复用已有的轮子（比如已有的 Layer）？不要自己造轮子（详见 §2.2）
+7. **简洁优先** - 写代码时始终自问：这个真的有必要存在吗？有没有更简洁更优雅的方法？可不可以复用已有的轮子（比如已有的 Layer）？不要自己造轮子（详见 AGENTS.md §4.5）
 
 ---
 
-## 10. 快速命令参考
-
-```bash
-# 编译项目
-dotnet build
-
-# 运行字面量测试
-echo "2" | ./LatteCompiler.exe
-
-# 运行类型引用测试
-echo "3" | ./LatteCompiler.exe
-
-# 运行变量声明测试
-echo "4" | ./LatteCompiler.exe
-
-# 清理构建
-dotnet clean
-```
-
----
-
-**最后更新**: 2026-07-26  
-**维护者**: Claude Code AI Assistant  
+**最后更新**: 2026-07-26
 **项目状态**: 活跃开发中

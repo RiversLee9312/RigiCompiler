@@ -5,6 +5,10 @@ namespace LatteCompiler.Tests
 {
     public class VariableDeclarationTests
     {
+        // 测试计数（PASS 计入 passCount，FAIL/ERROR 计入 failCount）
+        private static int passCount = 0;
+        private static int failCount = 0;
+
         // 测试基本变量声明
         public static void TestBasicDeclarations()
         {
@@ -71,16 +75,19 @@ namespace LatteCompiler.Tests
 
                     Console.WriteLine($"  [{(passed ? "PASS" : "FAIL")}] {code}");
                     Console.WriteLine($"      => {result}");
+                    if (passed) passCount++; else failCount++;
                 }
                 else
                 {
                     Console.WriteLine($"  [FAIL] {code} => No AST node produced");
+                    failCount++;
                 }
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"  [ERROR] {code}");
                 Console.WriteLine($"      => {ex.Message}");
+                failCount++;
             }
         }
 
@@ -138,8 +145,11 @@ namespace LatteCompiler.Tests
         }
 
         // 运行所有测试
-        public static void RunAll()
+        public static int RunAll()
         {
+            passCount = 0;
+            failCount = 0;
+
             Console.WriteLine("\n╔════════════════════════════════════╗");
             Console.WriteLine("║  Variable Declaration Tests        ║");
             Console.WriteLine("╚════════════════════════════════════╝\n");
@@ -149,7 +159,8 @@ namespace LatteCompiler.Tests
             TestNullableDeclarations();
             TestGenericDeclarations();
 
-            Console.WriteLine("=== All Tests Complete ===\n");
+            Console.WriteLine($"=== Variable Declaration Tests Complete: {passCount} passed, {failCount} failed ===\n");
+            return failCount;
         }
     }
 }

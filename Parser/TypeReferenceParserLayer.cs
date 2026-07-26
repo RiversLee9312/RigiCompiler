@@ -43,7 +43,7 @@ namespace LatteCompiler
 
                 default:
                     context.RaiseError($"Invalid TypeReferenceParserLayer state: {state}");
-                    return new ParserLayerResult.PopLayer(false);
+                    return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
             }
         }
 
@@ -56,17 +56,17 @@ namespace LatteCompiler
                 state = State.TypeNameSeen;
 
                 return new ParserLayerResult.PushLayer(
-                    layerToPush: new PathParserLayer(
+                    new PathParserLayer(
                         PathParserLayer.PathType.SymbolPath,
                         targetNode.TypeSymbol,
                         lineBreakSensitive: true
                     ),
-                    shouldKeepToken: true
+                    TokenDisposition.Replay
                 );
             }
 
             context.RaiseError($"Expected type name, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         // 处理已看到类型名的状态 - 检查可空标记
@@ -77,12 +77,12 @@ namespace LatteCompiler
             {
                 targetNode.IsNullable = true;
                 state = State.Completed;
-                return new ParserLayerResult.PopLayer(false); // 消费 ? token，结束解析
+                return new ParserLayerResult.PopLayer(TokenDisposition.Consume); // 消费 ? token，结束解析
             }
 
             // 其他 token，类型引用解析完成
             state = State.Completed;
-            return new ParserLayerResult.PopLayer(true); // 保留当前 token
+            return new ParserLayerResult.PopLayer(TokenDisposition.Replay); // 保留当前 token
         }
     }
 }

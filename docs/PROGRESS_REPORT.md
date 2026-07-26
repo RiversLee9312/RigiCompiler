@@ -6,8 +6,8 @@
 > 计划与分工见 `compiler/frontend/PARSER_ROADMAP.md`；本文档只记录「现状」。
 
 **报告日期**: 2026-07-26
-**当前阶段**: P0–P5 全部完成（M22 namespace 声明落地，模块系统收官）；**下一步**：语义分析、BIL 输出
-**测试总计**: 417/417 通过 (100%)
+**当前阶段**: Parser/PDA 大扫除（架构重构）完成（M23）；**下一步**：语义分析、BIL 输出
+**测试总计**: 425/425 通过 (100%)（22 个套件，`dotnet run -- --test-all` 单命令全量）
 **版本控制**: Git `main` 分支（2026-07-17 首次提交）
 
 ---
@@ -38,6 +38,7 @@
 | M20 | P5 起步：wrapper 主体（@ 注解 + `.proxy.*` 代理成员 + 前导点 enum case） | ✅ | 2026-07-26 | 23/23 |
 | M21 | 模块系统 import（§15.2）+ wrapper 路径访问（`:`，§14.1/§3） | ✅ | 2026-07-26 | 18/18 |
 | M22 | namespace 声明（§15.1）—— **P5 收官** | ✅ | 2026-07-26 | 7/7 |
+| M23 | Parser/PDA 大扫除：TokenDisposition、施工目标协议、ExpressionRootASTNode、EOF 正式化、AST 完整性验证、测试基础设施 | ✅ | 2026-07-26 | 425/425（22 套件） |
 
 ---
 
@@ -259,8 +260,8 @@ pub class Point {
 |------|------|------|------|
 | LiteralParserLayer | ✅ | 15/15 | 全部字面量；字符字面量占位未实现 |
 | TypeReferenceParserLayer | ✅ | 3/3 | 集成测试含于变量声明套件 |
-| VariableDeclarationParserLayer | ✅ | 10/10 | Initializer 经结果传递保存；访问器块委托 PropertyAccessorParserLayer（M16） |
-| ExpressionParserLayer | ✅ | 75/75 | roadmap #4 全部落地；前导点 enum case（M20）、wrapper 路径访问 `:`（M21） |
+| VariableDeclarationParserLayer | ✅ | 10/10 | Initializer 经 ExpressionRootASTNode 直挂；访问器块委托 PropertyAccessorParserLayer（M16） |
+| ExpressionParserLayer | ✅ | 79/79 | roadmap #4 全部落地；前导点 enum case（M20）、wrapper 路径访问 `:`（M21）；含 AST 结构断言 4 例（M23） |
 | ArgumentListParserLayer | ✅ | 含于表达式套件 | 位置/具名/混合实参 |
 | LambdaExpressionParserLayer | ✅ | 15/15 | roadmap #21 提前落地；体为单表达式 |
 | SwitchStatementParserLayer | ✅ 表达式模式 | 6/6 | 语句模式待规范明确 |
@@ -280,25 +281,28 @@ pub class Point {
 | PropertyAccessorParserLayer | ✅ | 17/17 | §9.4 访问器块 `{ get... set... }`；backing field 判定与 get/set 一致性校验；三类定义位置经 VariableDeclaration 汇聚 |
 | ImportParserLayer | ✅ | 14/14 | §15.2 三种形态（单个/`.{}` 多个/`.*` 全部）；前缀路径复用 PathParserLayer（M21 重建，菜单 21） |
 | NamespaceParserLayer | ✅ | 7/7 | §15.1 顶层单行声明；路径复用 PathParserLayer（M22，菜单 22） |
+| ASTIntegrityValidator | ✅ | 含于各套件 | Parse 成功后自动验证 AST 不变量（M23）；失败抛 CompilerInternalException |
+| TokenDispositionTests | ✅ | 4/4 | Push/Pop × Consume/Replay 四组合协议测试（M23，菜单 23） |
 
 ---
 
 ## 4. 关键架构决策（摘要）
 
-- **结果传递机制**：`IResultProducer`/`IResultConsumer` 可选接口，Parser 主循环在弹层时自动把子层结果递给父层（详见 `compiler/frontend/EXPRESSION_ARCHITECTURE.md`）
+- **施工目标协议**（M23 大扫除）：Parser Layer 栈只传递控制权；父 Layer 在 Push 前确定施工目标（具体节点或 ExpressionRootASTNode 等附加目标），子 Layer 原地施工或向目标附加节点；Pop 不传递任何数据。原 `IResultProducer`/`IResultConsumer`/`pendingResultHandler` 已全部删除
+- **TokenDisposition**：Push/Pop 的 token 处置使用具名枚举（Consume/Replay），替代原 `bool shouldKeepToken`
+- **ExpressionRootASTNode**：Syntax AST 中所有表达式位置的统一稳定挂载点；一次性 Attach、禁止替换；ASTNode.Parent 只能设置一次；解析成功后经 `ASTIntegrityValidator` 自动验证不变量
+- **EOF 正式 Token**：`EndOfFileToken` 由 Parser 在输入本地副本末尾追加，只由 RootParserLayer 消费；非 Root 层遇 EOF 要么 Pop(Replay) 层层上交，要么报 "Unexpected end of file"；原换行哨兵与 guard 收尾循环已删除
 - **泛型语法 `\<...>`**：`<` 仅作小于号；Lexer 不合并 `>` 系列，`>=`/`>>`/`>>>` 由表达式层重组（详见 `SYNTAX.md` §3.6）
-- **表达式后缀链**：纯符号路径保持 PathParserLayer 的 Symbol 形态；`(`/`[`/`.`/`?.`/`\<` 后缀由 ExpressionParserLayer 链接，底座为表达式时才产生 MemberAccessASTNode
-- **独立 Layer 可测性**：`Parser.Parse(tokens, entryLayer)` 重载支持任意 Layer 独立驱动测试
+- **表达式后缀链**：纯符号路径保持 PathParserLayer 的 Symbol 形态；`(`/`[`/`.`/`?.`/`\<`/`:` 后缀由 ExpressionParserLayer 链接，底座为表达式时才产生 MemberAccessASTNode
+- **独立 Layer 可测性**：`Parser.Parse(tokens, baseLayer, entryLayer)` + `TestRootParserLayer`（只接受 EOF）支持任意 Layer 独立驱动测试，且拒绝被测 Layer 漏消费 token
 - **统一声明层**（M14，依据 SYNTAX.md §14.8）：canonical symbol 的类名段可为空、`.static.` 只是标记位，因此全局函数与成员方法结构同构——`DeclarationParserLayer` 一套状态机覆盖全局/成员/嵌套任何声明；`CallableDeclarationASTNode` 单节点覆盖 func/operator/init；成员统一挂 `ASTNode.Children`（已从 RootASTNode 上移到基类）
-- **EOF 哨兵收尾**（M14）：嵌套委托后父层可能还需一个终止 token 才能收敛，`Parser.Parse` 反复喂哨兵直到栈收敛或无进展（带 guard 防死循环）
 
 ---
 
 ## 5. 下一步计划
 
-**P5 已全部完成（M20–M22）**：wrapper 主体（@ 注解、`.proxy.*` 代理成员、前导点 enum case）、
-模块系统（import §15.2 + namespace §15.1）、wrapper 路径访问（`:`）。
-**至此 Parser 前端规划（roadmap P0–P5）全部落地。**
+**Parser/PDA 大扫除（M23）已完成**：控制流系统与 AST 施工系统分离，
+施工目标协议、ExpressionRootASTNode、EOF 正式化、AST 完整性验证全部落地。
 
 **下一阶段**：语义分析、BIL 输出（见 `../BIL_STANDARD.md`）
 
@@ -315,11 +319,57 @@ pub class Point {
 7. import 的 `{}` 列表项仅支持单标识符（`import a.{b.c}` 未支持；规范无示例）
 8. namespace 的唯一性与位置约束（应在文件首部）未校验，留待语义阶段
 9. PathParserLayer 的 ValuePath / AcquisitionExpressionASTNode 为早期遗留模式（仅支持纯符号 base），与现有后缀链架构不兼容、未接入，待清理
-10. 5 个 nullable 编译警告（`Core/Utilities.cs`，不影响功能）
+10. 编译 0 警告（大扫除消除了原 `Core/Utilities.cs` 的 nullable 警告）
 
 ---
 
 ## 7. 里程碑历史
+
+### 2026-07-26 · M23 Parser/PDA 大扫除（架构重构，依据 great_clean_plan.md）
+
+> 本次重构只调整 Parser 内部架构、AST 构造协议、Token 流转协议与测试基础设施，
+> **不修改 Latte 的任何既有语法与语义**（417 个语法用例逐一保持原断言并通过）。
+
+- **TokenDisposition**：`ParserLayerResult.PushLayer/PopLayer` 的 `bool shouldKeepToken`
+  全部机械替换为具名枚举 `TokenDisposition.Consume/Replay`（约 260 处调用点）
+- **彻底删除 Layer 返回值**：`IResultProducer`/`IResultConsumer`/`GetResult()`/
+  `OnChildResult()`/`pendingResultHandler` 全部删除（grep 验收 0 处）；Parser 主循环
+  不再包含任何 AST 结果传递逻辑，Layer 之间只传递控制权
+- **施工目标协议**：每个 Layer 的构造函数接收明确、强类型的施工目标；
+  父层创建/选择目标并传入子层构造函数，子层原地填充或向目标附加子节点；
+  数据流严格单向（父→子），禁止任何形式的回传替代机制
+- **ExpressionRootASTNode**：Syntax AST 中所有表达式位置的统一稳定挂载点
+  （§6.4 清单 30+ 个字段全部迁移）；一次性 `Attach`、禁止替换、禁止附加已有父节点的
+  表达式；可选表达式以 null Root 表示；`ASTNode.Parent` 改为只读（只能设置一次）；
+  表达式经「未挂载子树包装」组合，ExpressionParser 只在表达式完成时 Attach 最终外层节点；
+  赋值目标与范围起点经「Root 收养」转移逻辑归属（不搬家）
+- **GroupExpression 独立 NodeType**：`ASTNodeType.GroupExpression`，
+  `ValueExpressionRoot` 专属于 ExpressionRootASTNode
+- **LiteralASTNode 基类**：6 个字面量节点统一继承；
+  `LiteralExpressionASTNode.AttachLiteral` 一次性附加
+- **EOF 正式化**：`EndOfFileToken`（TokenType.EndOfFile）由 Parser 在输入**本地副本**
+  末尾追加（不再修改调用者列表）；只由 RootParserLayer 消费；非 Root 层遇 EOF：
+  结构完整 → Pop(Replay) 层层上交，不完整 → "Unexpected end of file"；
+  换行哨兵与 guard 收尾循环（`while stack.Count > 1 && guard++ < 64`）删除，
+  解析结束强制 `stack.Count == 1`
+- **ParserLayerContext 收缩**：删除 `GetRootNode()` 与 `ContextImpl.current`；
+  Parser 直接持有 RootASTNode，Layer 无法经 Context 触碰全局根
+- **AST 完整性验证**：新增 `ASTIntegrityValidator`（AST/ASTIntegrityValidator.cs），
+  Parse 成功后自动运行：Root 均已填充、Expression.Parent 指向 Root、节点无共享、
+  Parent 链无环、switch default 规则；失败抛 `CompilerInternalException`（内部错误，
+  与用户语法错误区分）
+- **测试基础设施**：
+  - `dotnet run -- --test-all` 单命令全量（`TestRunner` 注册全部套件，
+    任意失败非零退出码，输出失败套件名）；新增最小 CI（`.github/workflows/ci.yml`：
+    `dotnet build` + `--test-all`）
+  - `TestRootParserLayer`：独立 Layer 测试改为 `Parse(tokens, TestRoot, entryLayer)`
+    驱动——被测 Layer 提前结束或漏消费普通 token 立即失败（14 处调用全部迁移）
+  - `TokenDispositionTests`：假 Layer 验证 Push/Pop × Consume/Replay 四种组合的
+    token 接收序列（4 用例，菜单 23）
+  - 表达式套件新增 AST 结构断言（§13.4：Root 存在/已填充/Expression 类型/
+    Parent 链/子 Root 填充/无共享，4 用例，字符串快照不再是唯一验证方式）
+- **消除全部编译警告**（原 `Core/Utilities.cs` 的 nullable 警告随 `null!` 模式消失）
+- 测试总数 417 → 425（+4 结构断言、+4 TokenDisposition），22 个套件全绿
 
 ### 2026-07-26 · M22 namespace 声明（§15.1）—— P5 收官
 - 新增 `NamespaceParserLayer`（小 Layer，与 ImportParserLayer 同款结构）：

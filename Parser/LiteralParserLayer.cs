@@ -4,11 +4,11 @@ using System.Globalization;
 namespace LatteCompiler
 {
     // 字面量解析器层 - 使用状态机处理多个 token 组成的字面量
-    // 实现 IResultProducer：解析出的字面量节点通过 GetResult() 传递给父层
-    public class LiteralParserLayer : IParserLayer, IResultProducer
+    // 施工协议：构造函数接收 LiteralExpressionASTNode 目标，
+    // 解析出的字面量节点直接 AttachLiteral 到该目标，不产生任何返回值
+    public class LiteralParserLayer : IParserLayer
     {
-        private readonly ASTNode targetNode;
-        private ASTNode? parsedLiteral;
+        private readonly LiteralExpressionASTNode targetNode;
 
         // 状态机状态
         private enum ParserState
@@ -24,16 +24,19 @@ namespace LatteCompiler
         private string integerPart = "";
         private string fractionalPart = "";
 
-        public LiteralParserLayer(ASTNode target)
+        public LiteralParserLayer(LiteralExpressionASTNode target)
         {
             targetNode = target;
         }
 
-        // IResultProducer：返回解析出的字面量节点
-        public ASTNode? GetResult() => parsedLiteral;
-
         public ParserLayerResult ParseToken(Token currentToken, ParserLayerContext context)
         {
+            // EOF：整数/浮点半途状态按已读部分收尾并上交 EOF；尚未读到内容则报错
+            if (currentToken is EndOfFileToken)
+            {
+                return HandleEndOfFile(context);
+            }
+
             switch (state)
             {
                 case ParserState.Initial:
@@ -47,8 +50,22 @@ namespace LatteCompiler
 
                 default:
                     context.RaiseError($"Invalid parser state: {state}");
-                    return new ParserLayerResult.PopLayer(false);
+                    return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
             }
+        }
+
+        // EOF 处理：已读整数部分（含 `3.` 形态）按整数字面量收尾；Initial 为不完整结构
+        private ParserLayerResult HandleEndOfFile(ParserLayerContext context)
+        {
+            if (state == ParserState.IntegerPart || state == ParserState.DotSeen)
+            {
+                var intNode = ParseIntegerLiteral(integerPart, context);
+                AddLiteralToTarget(intNode);
+                return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
+            }
+
+            context.RaiseError("Unexpected end of file");
+            return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
         }
 
         // 处理初始状态
@@ -61,19 +78,19 @@ namespace LatteCompiler
                     if (word.Content == Keywords.TRUE)
                     {
                         AddLiteralToTarget(new BoolLiteralASTNode(targetNode) { Value = true });
-                        return new ParserLayerResult.PopLayer(false);
+                        return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
                     }
                     if (word.Content == Keywords.FALSE)
                     {
                         AddLiteralToTarget(new BoolLiteralASTNode(targetNode) { Value = false });
-                        return new ParserLayerResult.PopLayer(false);
+                        return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
                     }
 
                     // null 字面量
                     if (word.Content == Keywords.NULL)
                     {
                         AddLiteralToTarget(new NullLiteralASTNode(targetNode));
-                        return new ParserLayerResult.PopLayer(false);
+                        return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
                     }
 
                     // 数字字面量 - 检查是否包含小数点
@@ -84,7 +101,7 @@ namespace LatteCompiler
                         {
                             var floatNode = ParseFloatLiteral(word.Content, context);
                             AddLiteralToTarget(floatNode);
-                            return new ParserLayerResult.PopLayer(false);
+                            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
                         }
 
                         // 否则，可能是整数或浮点数的整数部分
@@ -98,7 +115,7 @@ namespace LatteCompiler
 
                 case StringToken str:
                     AddLiteralToTarget(ParseStringLiteral(str));
-                    return new ParserLayerResult.PopLayer(false);
+                    return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
 
                 case NotationToken notation when notation.Content == "'":
                     context.RaiseError("Character literal parsing not yet implemented");
@@ -109,7 +126,7 @@ namespace LatteCompiler
                     break;
             }
 
-            return new ParserLayerResult.PopLayer(false);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         // 处理已读取整数部分的状态
@@ -126,7 +143,7 @@ namespace LatteCompiler
             // 不是小数点，说明是纯整数
             var intNode = ParseIntegerLiteral(integerPart, context);
             AddLiteralToTarget(intNode);
-            return new ParserLayerResult.PopLayer(true); // 保留当前 token
+            return new ParserLayerResult.PopLayer(TokenDisposition.Replay); // 保留当前 token
         }
 
         // 处理已看到小数点的状态
@@ -142,7 +159,7 @@ namespace LatteCompiler
                 string fullNumber = integerPart + "." + fractionalPart;
                 var floatNode = ParseFloatLiteral(fullNumber, context);
                 AddLiteralToTarget(floatNode);
-                return new ParserLayerResult.PopLayer(false);
+                return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
             }
 
             // 小数点后不是数字，这可能是成员访问而不是浮点数
@@ -151,7 +168,7 @@ namespace LatteCompiler
             AddLiteralToTarget(intNode);
             context.LogWarning($"Parsed as integer followed by '.', not float. " +
                              $"Use explicit notation if float intended.");
-            return new ParserLayerResult.PopLayer(true); // 保留当前 token（即 "." 后的 token）
+            return new ParserLayerResult.PopLayer(TokenDisposition.Replay); // 保留当前 token（即 "." 后的 token）
         }
 
         // 判断是否为数字 token
@@ -325,17 +342,10 @@ namespace LatteCompiler
             };
         }
 
-        // 将字面量节点添加到目标节点
-        private void AddLiteralToTarget(ASTNode literalNode)
+        // 将字面量节点附加到施工目标（字面量节点的父节点即目标节点，一次性附加）
+        private void AddLiteralToTarget(LiteralASTNode literalNode)
         {
-            // 无论目标是什么，都先记录结果，供 IResultProducer.GetResult() 使用
-            parsedLiteral = literalNode;
-
-            if (targetNode is RootASTNode root)
-            {
-                root.Children.Add(literalNode);
-            }
-            // 目标不是 Root 时（作为子表达式解析），结果通过 GetResult() 传递给父层
+            targetNode.AttachLiteral(literalNode);
         }
     }
 }

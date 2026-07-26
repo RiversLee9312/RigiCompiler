@@ -108,7 +108,7 @@ namespace LatteCompiler.Tests
                     return;
                 }
 
-                string actual = DescribeExpression(decl.Initializer);
+                string actual = DescribeExpression(decl.Initializer!.Expression);
                 if (actual == expectedDesc)
                 {
                     Pass(code, actual);
@@ -165,17 +165,17 @@ namespace LatteCompiler.Tests
             return node switch
             {
                 null => "<null>",
-                LiteralExpressionASTNode lit => DescribeExpression(lit.LiteralNode),
+                LiteralExpressionASTNode lit => DescribeExpression(lit.Literal),
                 IntLiteralASTNode i => $"Int({i.Value},{i.IntType}{(i.IsHex ? ",hex" : "")})",
                 FloatLiteralASTNode f => $"Float({f.Value}{(f.IsFloat ? "f" : "")})",
                 StringLiteralASTNode s => $"Str(\"{s.Value}\")",
                 BoolLiteralASTNode b => $"Bool({b.Value})",
                 NullLiteralASTNode => "Null",
                 SymbolReferenceASTNode sref => $"Sym({DescribeSymbol(sref.Symbol.symbol)})",
-                UnaryExpressionASTNode u => $"Unary({u.Operator} {DescribeExpression(u.Operand)})",
+                UnaryExpressionASTNode u => $"Unary({u.Operator} {DescribeExpression(u.Operand.Expression)})",
                 BinaryExpressionASTNode b =>
-                    $"Binary({DescribeExpression(b.Left)} {b.Operator} {DescribeExpression(b.Right)})",
-                GroupExpressionASTNode g => $"Group({DescribeExpression(g.InnerExpression)})",
+                    $"Binary({DescribeExpression(b.Left.Expression)} {b.Operator} {DescribeExpression(b.Right.Expression)})",
+                GroupExpressionASTNode g => $"Group({DescribeExpression(g.InnerExpression.Expression)})",
                 SwitchExpressionASTNode s => DescribeSwitch(s),
                 _ => $"<{node.GetType().Name}>"
             };
@@ -185,9 +185,9 @@ namespace LatteCompiler.Tests
         private static string DescribeSwitch(SwitchExpressionASTNode s)
         {
             string cases = string.Join(", ", s.Cases.Select(
-                c => $"{DescribeExpression(c.Pattern)} -> {DescribeExpression(c.Body)}"));
-            string def = s.DefaultBody != null ? DescribeExpression(s.DefaultBody) : "<none>";
-            return $"Switch({DescribeExpression(s.Selector)}, [{cases}], default -> {def})";
+                c => $"{DescribeExpression(c.Pattern.Expression)} -> {DescribeExpression(c.Body.Expression)}"));
+            string def = s.DefaultBody != null ? DescribeExpression(s.DefaultBody.Expression) : "<none>";
+            return $"Switch({DescribeExpression(s.Selector.Expression)}, [{cases}], default -> {def})";
         }
 
         private static string DescribeSymbol(Symbol symbol)
@@ -206,7 +206,7 @@ namespace LatteCompiler.Tests
         }
 
         // ===== 入口 =====
-        public static void RunAll()
+        public static int RunAll()
         {
             Console.WriteLine("\n╔════════════════════════════════════╗");
             Console.WriteLine("║  switch Expression Tests           ║");
@@ -221,6 +221,8 @@ namespace LatteCompiler.Tests
             TestErrorCases();
 
             Console.WriteLine($"=== switch Expression Tests Complete: {passCount} passed, {failCount} failed ===\n");
+
+            return failCount;
         }
     }
 }

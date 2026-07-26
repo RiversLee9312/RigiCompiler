@@ -27,7 +27,7 @@ namespace LatteCompiler
             PrintRecursive(node, 0, "", new HashSet<object>());
         }
 
-        private static void PrintRecursive(object obj, int indentLevel, string propName, HashSet<object> visited)
+        private static void PrintRecursive(object? obj, int indentLevel, string propName, HashSet<object> visited)
         {
             // 生成缩进字符串
             string indent = new string(' ', indentLevel * 2);
@@ -81,9 +81,9 @@ namespace LatteCompiler
             foreach (var prop in fields)
             {
                 // 可选：跳过某些不需要打印的属性，例如 "Parent" 指针，防止干扰
-                if (prop.Name == nameof(ASTNode.parent)) continue;
+                if (prop.Name == nameof(ASTNode.Parent)) continue;
 
-                object value;
+                object? value;
                 try
                 {
                     value = prop.GetValue(obj);
@@ -99,9 +99,9 @@ namespace LatteCompiler
             foreach (var prop in props)
             {
                 // 可选：跳过某些不需要打印的属性，例如 "Parent" 指针，防止干扰
-                if (prop.Name == nameof(ASTNode.parent)) continue;
+                if (prop.Name == nameof(ASTNode.Parent)) continue;
 
-                object value;
+                object? value;
                 try
                 {
                     value = prop.GetValue(obj);
@@ -353,7 +353,8 @@ namespace LatteCompiler
         Comment,
         String,
         LineBreak,
-        Notation
+        Notation,
+        EndOfFile
     }
 
     public class WordToken : Token
@@ -397,6 +398,21 @@ namespace LatteCompiler
         public override TokenType Type { get; } = TokenType.LineBreak;
     }
 
+    // 文件结束 token（EOF 正式 Token，不再用换行伪装）：
+    // 由 Parser 在输入 token 列表的本地副本末尾追加；只由 RootParserLayer 消费。
+    // 非 Root Layer 收到 EOF 时：语法结构已完整则 PopLayer(Replay) 层层上交，
+    // 不完整则抛出 "Unexpected end of file"。
+    public sealed class EndOfFileToken : Token
+    {
+        public override string Content
+        {
+            get => "";
+            set { }
+        }
+
+        public override TokenType Type => TokenType.EndOfFile;
+    }
+
     public class NotationToken : Token
     {
         public NotationToken(String content)
@@ -432,6 +448,7 @@ namespace LatteCompiler
         OneValueExpression,
         ReceiverExpressionRoot,
         ValueExpressionRoot,
+        GroupExpression,
         NewExpression,
         LambdaExpression,
         Argument,
@@ -483,12 +500,29 @@ namespace LatteCompiler
     public abstract class ASTNode
     {
         public abstract ASTNodeType NodeType { get; }
-        public ASTNode(ASTNode? parent)
+
+        // 父节点只能设置一次：构造函数传入，或通过 AttachTo（供 ExpressionRootASTNode.Attach
+        // 挂载未挂载表达式子树）。二次设置直接抛异常，保证 AST 不变量。
+        public ASTNode? Parent { get; private set; }
+
+        protected ASTNode(ASTNode? parent)
         {
-            this.parent = parent;
+            Parent = parent;
         }
 
-        public ASTNode? parent;
+        // 把一个尚未拥有父节点的节点挂载到 parent（仅限一次）
+        internal void AttachTo(ASTNode parent)
+        {
+            ArgumentNullException.ThrowIfNull(parent);
+
+            if (Parent is not null)
+            {
+                throw new InvalidOperationException(
+                    "AST node already has a parent.");
+            }
+
+            Parent = parent;
+        }
 
         // 子声明容器（全局作用域、类型体、嵌套类型共用同一个容器）
         public List<ASTNode> Children = new List<ASTNode>();

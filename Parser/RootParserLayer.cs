@@ -15,15 +15,16 @@ namespace LatteCompiler
         public ParserLayerResult ParseToken(Token currentToken, ParserLayerContext context)
         {
             switch (currentToken) {
+                case EndOfFileToken:
+                    // EOF 只由 Root 消费：收下后 Parser 主循环结束，栈恰好收敛为 Root
+                    return ParserLayerResult.Continue.Instance;
+
                 case CommentToken:
                     return ParserLayerResult.Continue.Instance;
 
                 case StringToken:
-                    // 字符串字面量
-                    return new ParserLayerResult.PushLayer(
-                        layerToPush: new LiteralParserLayer(root),
-                        shouldKeepToken: true
-                    );
+                    // 字符串字面量：父层创建 LiteralExpression 目标并挂接，子层原地填充
+                    return PushLiteral();
 
                 case WordToken token:
                     // 检查是否为字面量关键字
@@ -31,18 +32,12 @@ namespace LatteCompiler
                         token.Content == Keywords.FALSE ||
                         token.Content == Keywords.NULL)
                     {
-                        return new ParserLayerResult.PushLayer(
-                            layerToPush: new LiteralParserLayer(root),
-                            shouldKeepToken: true
-                        );
+                        return PushLiteral();
                     }
                     // 检查是否为数字字面量
                     else if (IsNumericLiteral(token.Content))
                     {
-                        return new ParserLayerResult.PushLayer(
-                            layerToPush: new LiteralParserLayer(root),
-                            shouldKeepToken: true
-                        );
+                        return PushLiteral();
                     }
                     // 全局声明（var/const/func/class/... 及其修饰符）：统一交给通用声明层。
                     // 全局与类成员走同一个 Layer（见 SYNTAX.md §14.8：类名段可为空）。
@@ -51,8 +46,8 @@ namespace LatteCompiler
                         Keywords.DeclarationKeywords.Contains(token.Content))
                     {
                         return new ParserLayerResult.PushLayer(
-                                layerToPush: new DeclarationParserLayer(root),
-                                shouldKeepToken: true
+                                new DeclarationParserLayer(root),
+                                TokenDisposition.Replay
                             );
                     }
                     // import 关键字
@@ -61,8 +56,8 @@ namespace LatteCompiler
                         var importNode = new ImportASTNode(root);
                         root.Children.Add(importNode);
                         return new ParserLayerResult.PushLayer(
-                                layerToPush: new ImportParserLayer(importNode),
-                                shouldKeepToken: true
+                                new ImportParserLayer(importNode),
+                                TokenDisposition.Replay
                             );
                     }
                     // namespace 关键字（§15.1）
@@ -71,8 +66,8 @@ namespace LatteCompiler
                         var nsNode = new NamespaceDeclarationASTNode(root);
                         root.Children.Add(nsNode);
                         return new ParserLayerResult.PushLayer(
-                                layerToPush: new NamespaceParserLayer(nsNode),
-                                shouldKeepToken: true
+                                new NamespaceParserLayer(nsNode),
+                                TokenDisposition.Replay
                             );
                     }
                     else
@@ -84,8 +79,8 @@ namespace LatteCompiler
                     if(token.Content == Notations.AT_SIGN.ToString())
                     {
                         return new ParserLayerResult.PushLayer(
-                                layerToPush:new DeclarationParserLayer(root),
-                                shouldKeepToken:true
+                                new DeclarationParserLayer(root),
+                                TokenDisposition.Replay
                             );
                     }
                     else
@@ -99,6 +94,17 @@ namespace LatteCompiler
                 default:
                     throw context.RaiseError($"Unexpected Token:{currentToken}");
             }
+        }
+
+        // 顶层字面量：创建 LiteralExpression 目标并挂到 root，委托 LiteralParserLayer 填充
+        private ParserLayerResult PushLiteral()
+        {
+            var literalExpr = new LiteralExpressionASTNode(root);
+            root.Children.Add(literalExpr);
+            return new ParserLayerResult.PushLayer(
+                new LiteralParserLayer(literalExpr),
+                TokenDisposition.Replay
+            );
         }
 
         // 辅助方法：判断是否为数字字面量

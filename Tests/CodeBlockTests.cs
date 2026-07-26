@@ -148,7 +148,7 @@ namespace LatteCompiler.Tests
             var tokens = lexer.Tokenize(code);
             var parser = new Parser();
             var block = new CodeBlockASTNode(null);
-            parser.Parse(tokens, new CodeBlockParserLayer(block));
+            parser.Parse(tokens, new TestRootParserLayer(), new CodeBlockParserLayer(block));
             return block;
         }
 
@@ -222,15 +222,16 @@ namespace LatteCompiler.Tests
             {
                 VariableDeclarationASTNode v => DescribeVarDecl(v),
                 AssignStatementASTNode a =>
-                    $"Assign({DescribeExpression(a.Target)} = {DescribeExpression(a.Value)})",
+                    $"Assign({DescribeExpression(a.Target.Expression)} = {DescribeExpression(a.Value.Expression)})",
                 ReturnStatementASTNode r =>
                     $"Return{(r.Label != null ? "@" + r.Label : "")}" +
-                    $"{(r.Value != null ? $"({DescribeExpression(r.Value)})" : "")}",
+                    $"{(r.Value != null ? $"({DescribeExpression(r.Value!.Expression)})" : "")}",
                 LoopControlStatementASTNode l =>
                     $"{(l.IsBreak ? "Break" : "Continue")}{(l.Label != null ? "@" + l.Label : "")}",
                 IfStatementASTNode i => DescribeIf(i),
                 LoopStatementASTNode l => DescribeLoop(l),
                 CodeBlockASTNode b => DescribeBlock(b),
+                ExpressionRootASTNode root => DescribeExpression(root.Expression),
                 ExpressionASTNode e => DescribeExpression(e),
                 _ => $"<{node.GetType().Name}>"
             };
@@ -241,7 +242,7 @@ namespace LatteCompiler.Tests
         {
             string desc = $"{(v.IsConst ? "const" : "var")} {v.Name}";
             if (v.TypeAnnotation != null) desc += $": {DescribeType(v.TypeAnnotation)}";
-            if (v.Initializer != null) desc += $" = {DescribeExpression(v.Initializer)}";
+            if (v.Initializer != null) desc += $" = {DescribeExpression(v.Initializer!.Expression)}";
             return DescribeAnnotations(v) + desc;
         }
 
@@ -270,7 +271,7 @@ namespace LatteCompiler.Tests
                 IfStatementASTNode nested => DescribeIf(nested),
                 _ => $"<{i.ElseBranch.GetType().Name}>"
             };
-            return $"IfStmt({DescribeExpression(i.Condition)}, {DescribeBlock(i.ThenBlock)}, {elsePart})";
+            return $"IfStmt({DescribeExpression(i.Condition.Expression)}, {DescribeBlock(i.ThenBlock)}, {elsePart})";
         }
 
         // 描述循环语句（CodeBlockTests 仅覆盖 if 内嵌套循环的可能性，完整测试见 LoopTests）
@@ -280,11 +281,11 @@ namespace LatteCompiler.Tests
             return l.Kind switch
             {
                 LoopKind.For =>
-                    $"For({l.VariableName}, {DescribeExpression(l.Iterable)}{label}, {DescribeBlock(l.Body)})",
+                    $"For({l.VariableName}, {DescribeExpression(l.Iterable!.Expression)}{label}, {DescribeBlock(l.Body)})",
                 LoopKind.While =>
-                    $"While({DescribeExpression(l.Condition)}{label}, {DescribeBlock(l.Body)})",
+                    $"While({DescribeExpression(l.Condition!.Expression)}{label}, {DescribeBlock(l.Body)})",
                 _ =>
-                    $"DoWhile({DescribeExpression(l.Condition)}{label}, {DescribeBlock(l.Body)})"
+                    $"DoWhile({DescribeExpression(l.Condition!.Expression)}{label}, {DescribeBlock(l.Body)})"
             };
         }
 
@@ -294,28 +295,28 @@ namespace LatteCompiler.Tests
             return node switch
             {
                 null => "<null>",
-                LiteralExpressionASTNode lit => DescribeExpression(lit.LiteralNode),
+                LiteralExpressionASTNode lit => DescribeExpression(lit.Literal),
                 IntLiteralASTNode i => $"Int({i.Value},{i.IntType}{(i.IsHex ? ",hex" : "")})",
                 FloatLiteralASTNode f => $"Float({f.Value}{(f.IsFloat ? "f" : "")})",
                 StringLiteralASTNode s => $"Str(\"{s.Value}\")",
                 BoolLiteralASTNode b => $"Bool({b.Value})",
                 NullLiteralASTNode => "Null",
                 SymbolReferenceASTNode sref => $"Sym({DescribeSymbol(sref.Symbol.symbol)})",
-                UnaryExpressionASTNode u => $"Unary({u.Operator} {DescribeExpression(u.Operand)})",
+                UnaryExpressionASTNode u => $"Unary({u.Operator} {DescribeExpression(u.Operand.Expression)})",
                 BinaryExpressionASTNode b =>
-                    $"Binary({DescribeExpression(b.Left)} {b.Operator} {DescribeExpression(b.Right)})",
-                GroupExpressionASTNode g => $"Group({DescribeExpression(g.InnerExpression)})",
+                    $"Binary({DescribeExpression(b.Left.Expression)} {b.Operator} {DescribeExpression(b.Right.Expression)})",
+                GroupExpressionASTNode g => $"Group({DescribeExpression(g.InnerExpression.Expression)})",
                 CallExpressionASTNode c =>
-                    $"Call({DescribeExpression(c.Callee)}, [{string.Join(", ", c.Arguments.Select(DescribeArgument))}])",
+                    $"Call({DescribeExpression(c.Callee.Expression)}, [{string.Join(", ", c.Arguments.Select(DescribeArgument))}])",
                 IndexExpressionASTNode ix =>
-                    $"Index({DescribeExpression(ix.Object)}, [{string.Join(", ", ix.Indices.Select(DescribeArgument))}])",
+                    $"Index({DescribeExpression(ix.Object.Expression)}, [{string.Join(", ", ix.Indices.Select(DescribeArgument))}])",
                 MemberAccessASTNode m =>
-                    $"Access({DescribeExpression(m.Object)}, {(m.IsSafeAccess ? "?" : "")}.{m.MemberName})",
+                    $"Access({DescribeExpression(m.Object.Expression)}, {(m.IsSafeAccess ? "?" : "")}.{m.MemberName})",
                 RangeExpressionASTNode r =>
-                    $"Range({DescribeExpression(r.From)} to {DescribeExpression(r.To)})",
+                    $"Range({DescribeExpression(r.From.Expression)} to {DescribeExpression(r.To.Expression)})",
                 EnumCaseExpressionASTNode ec => $"EnumCase(.{ec.CaseName})",
                 WrapperAccessASTNode w =>
-                    $"WrapperAccess({DescribeExpression(w.Object)}, :{w.WrapperName})",
+                    $"WrapperAccess({DescribeExpression(w.Object.Expression)}, :{w.WrapperName})",
                 _ => $"<{node.GetType().Name}>"
             };
         }
@@ -324,8 +325,8 @@ namespace LatteCompiler.Tests
         private static string DescribeArgument(ArgumentASTNode arg)
         {
             return arg.Name != null
-                ? $"{arg.Name}:{DescribeExpression(arg.Value)}"
-                : DescribeExpression(arg.Value);
+                ? $"{arg.Name}:{DescribeExpression(arg.Value.Expression)}"
+                : DescribeExpression(arg.Value.Expression);
         }
 
         private static string DescribeType(TypeReferenceASTNode typeNode)
@@ -366,7 +367,7 @@ namespace LatteCompiler.Tests
         }
 
         // ===== 入口 =====
-        public static void RunAll()
+        public static int RunAll()
         {
             Console.WriteLine("\n╔════════════════════════════════════╗");
             Console.WriteLine("║  Code Block Tests                  ║");
@@ -385,6 +386,8 @@ namespace LatteCompiler.Tests
             TestAnnotatedDeclarations();
 
             Console.WriteLine($"=== Code Block Tests Complete: {passCount} passed, {failCount} failed ===\n");
+
+            return failCount;
         }
     }
 }
