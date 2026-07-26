@@ -44,25 +44,14 @@ namespace LatteCompiler
                             shouldKeepToken: true
                         );
                     }
-                    // 变量声明关键字 var/const
-                    else if (token.Content == Keywords.VAR || token.Content == Keywords.CONST)
-                    {
-                        var varDeclNode = new VariableDeclarationASTNode(root);
-                        root.Children.Add(varDeclNode);
-                        return new ParserLayerResult.PushLayer(
-                                layerToPush: new VariableDeclarationParserLayer(varDeclNode),
-                                shouldKeepToken: true
-                            );
-                    }
-                    // 其他声明关键字（func, class, etc.）
+                    // 全局声明（var/const/func/class/... 及其修饰符）：统一交给通用声明层。
+                    // 全局与类成员走同一个 Layer（见 SYNTAX.md §14.8：类名段可为空）。
                     else if (
                         Keywords.DeclarationDescriptors.Contains(token.Content)||
                         Keywords.DeclarationKeywords.Contains(token.Content))
                     {
-                        var declNode = new DeclarationASTNode(root);
-                        root.Children.Add(declNode);
                         return new ParserLayerResult.PushLayer(
-                                layerToPush: new DeclarationParserLayer(declNode),
+                                layerToPush: new DeclarationParserLayer(root),
                                 shouldKeepToken: true
                             );
                     }
@@ -84,10 +73,8 @@ namespace LatteCompiler
                 case NotationToken token:
                     if(token.Content == Notations.AT_SIGN.ToString())
                     {
-                        var declNode = new DeclarationASTNode(root);
-                        root.Children.Add(declNode);
                         return new ParserLayerResult.PushLayer(
-                                layerToPush:new DeclarationParserLayer(declNode),
+                                layerToPush:new DeclarationParserLayer(root),
                                 shouldKeepToken:true
                             );
                     }

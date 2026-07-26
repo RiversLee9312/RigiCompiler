@@ -4,8 +4,11 @@ using System.Collections.Generic;
 namespace LatteCompiler
 {
     // 变量声明 AST 节点
+    // 同一个节点覆盖：栈上局部变量、类/struct 字段、全局变量
+    // （§14.8 canonical symbol 的类名段可为空 —— 全局与成员同构）
     public class VariableDeclarationASTNode : ASTNode
     {
+        public List<string> Modifiers = new List<string>();  // pub/priv/static/... 局部变量为空
         public bool IsConst;                           // true = const, false = var
         public string Name;                            // 变量名
         public TypeReferenceASTNode? TypeAnnotation;   // 类型标注（可选）
@@ -126,6 +129,42 @@ namespace LatteCompiler
         public override ASTNodeType NodeType => ASTNodeType.Declaration;
     }
 
+    // ===== 可调用声明（P3）=====
+
+    // 一个节点覆盖全部可调用声明形态：
+    //   全局函数 / 实例方法 / 静态方法 / operator / init
+    // 依据 §14.8：canonical symbol 的类名段可为空，static 只是一个标记位，
+    // 因此"全局函数"与"成员方法"在结构上同构，不另立节点、不另立 Layer。
+    public enum CallableKind
+    {
+        Func,       // func name(...)
+        Operator,   // operator plus(...)
+        Init        // init(...)
+    }
+
+    public class CallableDeclarationASTNode : ASTNode
+    {
+        public List<string> Modifiers = new List<string>();
+        public CallableKind Kind;
+        public string Name;                          // init 时为 "init"
+        public GenericParameterListASTNode? GenericParameters;
+        public ParameterListASTNode Parameters;
+        public TypeReferenceASTNode? ReturnType;     // 省略即无返回值
+        public CodeBlockASTNode? Body;               // null = 抽象/接口无体声明
+
+        public CallableDeclarationASTNode(ASTNode? parent) : base(parent)
+        {
+            Kind = CallableKind.Func;
+            Name = "";
+            GenericParameters = null;
+            Parameters = new ParameterListASTNode(this);
+            ReturnType = null;
+            Body = null;
+        }
+
+        public override ASTNodeType NodeType => ASTNodeType.CallableDeclaration;
+    }
+
     // ===== 类型声明（P3）=====
 
     // 类声明（SYNTAX.md §9）
@@ -137,7 +176,7 @@ namespace LatteCompiler
         public GenericParameterListASTNode? GenericParameters;  // 可选泛型参数
         public TypeReferenceASTNode? BaseClass;        // 可选基类
         public List<TypeReferenceASTNode> Interfaces;  // implements 接口列表
-        public CodeBlockASTNode Body;                  // 类体（暂时用 CodeBlock，后续改为专门的 ClassBodyASTNode）
+        // 成员（字段/方法/init/嵌套类型）直接挂在 ASTNode.Children 上，不另设容器
 
         public ClassDeclarationASTNode(ASTNode? parent) : base(parent)
         {
@@ -146,7 +185,6 @@ namespace LatteCompiler
             GenericParameters = null;
             BaseClass = null;
             Interfaces = new List<TypeReferenceASTNode>();
-            Body = new CodeBlockASTNode(this);
         }
 
         public override ASTNodeType NodeType => ASTNodeType.ClassDeclaration;
@@ -159,7 +197,6 @@ namespace LatteCompiler
         public string InterfaceName;
         public GenericParameterListASTNode? GenericParameters;
         public List<TypeReferenceASTNode> BaseInterfaces;  // interface 可以继承多个 interface
-        public CodeBlockASTNode Body;
 
         public InterfaceDeclarationASTNode(ASTNode? parent) : base(parent)
         {
@@ -167,7 +204,6 @@ namespace LatteCompiler
             InterfaceName = null!;
             GenericParameters = null;
             BaseInterfaces = new List<TypeReferenceASTNode>();
-            Body = new CodeBlockASTNode(this);
         }
 
         public override ASTNodeType NodeType => ASTNodeType.InterfaceDeclaration;
@@ -181,7 +217,6 @@ namespace LatteCompiler
         public GenericParameterListASTNode? GenericParameters;
         public TypeReferenceASTNode? BaseStruct;       // struct 只能继承一个 struct
         public List<TypeReferenceASTNode> Interfaces;
-        public CodeBlockASTNode Body;
 
         public StructDeclarationASTNode(ASTNode? parent) : base(parent)
         {
@@ -190,7 +225,6 @@ namespace LatteCompiler
             GenericParameters = null;
             BaseStruct = null;
             Interfaces = new List<TypeReferenceASTNode>();
-            Body = new CodeBlockASTNode(this);
         }
 
         public override ASTNodeType NodeType => ASTNodeType.StructDeclaration;
@@ -202,7 +236,6 @@ namespace LatteCompiler
         public List<string> Modifiers;
         public string EnumName;
         public GenericParameterListASTNode? GenericParameters;
-        public CodeBlockASTNode Body;                  // enum 体（字段、方法）
         public List<EnumCaseASTNode> Cases;            // [] 中的 case 列表
 
         public EnumStructDeclarationASTNode(ASTNode? parent) : base(parent)
@@ -210,7 +243,6 @@ namespace LatteCompiler
             Modifiers = new List<string>();
             EnumName = null!;
             GenericParameters = null;
-            Body = new CodeBlockASTNode(this);
             Cases = new List<EnumCaseASTNode>();
         }
 
@@ -240,14 +272,12 @@ namespace LatteCompiler
         public List<string> Modifiers;
         public string WrapperName;
         public GenericParameterListASTNode? GenericParameters;
-        public CodeBlockASTNode Body;
 
         public WrapperDeclarationASTNode(ASTNode? parent) : base(parent)
         {
             Modifiers = new List<string>();
             WrapperName = null!;
             GenericParameters = null;
-            Body = new CodeBlockASTNode(this);
         }
 
         public override ASTNodeType NodeType => ASTNodeType.WrapperDeclaration;

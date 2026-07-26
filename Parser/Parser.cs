@@ -158,6 +158,28 @@ namespace LatteCompiler
                     throw context.RaiseError("Empty parser stack");
                 }
             }
+            // EOF 收尾：嵌套委托时，父层可能还需要一个终止 token 才能收尾
+            // （例：Declaration → VariableDeclaration，子层吃掉哨兵后父层仍在栈上）。
+            // 反复喂哨兵直到栈收敛或不再有进展。
+            int guard = 0;
+            while (stack.Count > 1 && guard++ < 64)
+            {
+                var top = stack.Peek();
+                int before = stack.Count;
+                var endResult = top.ParseToken(new LineBreakToken(), context);
+                if (endResult is ParserLayerResult.PopLayer)
+                {
+                    var popped = stack.Pop();
+                    if (popped is IResultProducer producer2 &&
+                        stack.TryPeek(out var parent2) &&
+                        parent2 is IResultConsumer consumer2)
+                    {
+                        consumer2.OnChildResult(producer2.GetResult(), popped);
+                    }
+                }
+                if (stack.Count >= before) break;   // 无进展，避免死循环
+            }
+
             if (stack.Count > 1)
             {
                 throw context.RaiseError("Unexpected End");

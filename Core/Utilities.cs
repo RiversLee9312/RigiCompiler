@@ -448,6 +448,7 @@ namespace LatteCompiler
         UsingBinding,
         ThrowStatement,
         YieldStatement,
+        CallableDeclaration,
         ClassDeclaration,
         InterfaceDeclaration,
         StructDeclaration,
@@ -481,11 +482,13 @@ namespace LatteCompiler
         }
 
         public ASTNode? parent;
+
+        // 子声明容器（全局作用域、类型体、嵌套类型共用同一个容器）
+        public List<ASTNode> Children = new List<ASTNode>();
     }
     public class RootASTNode : ASTNode
     {
         public override ASTNodeType NodeType { get; } = ASTNodeType.Root;
-        public List<ASTNode> Children = new List<ASTNode>();
 
         public RootASTNode() : base(null){ }
     }
