@@ -6,8 +6,8 @@
 > 计划与分工见 `compiler/frontend/PARSER_ROADMAP.md`；本文档只记录「现状」。
 
 **报告日期**: 2026-07-26
-**当前阶段**: P2 进行中（M9 异常处理完成），P0、P1 已完成
-**测试总计**: 235/235 通过 (100%)
+**当前阶段**: P2 进行中（M10 seq 块完成），P0、P1 已完成
+**测试总计**: 249/249 通过 (100%)
 **版本控制**: Git `main` 分支（2026-07-17 首次提交）
 
 ---
@@ -25,6 +25,7 @@
 | M7 | P2 语句系统核心（CodeBlock/if 语句/循环/return/赋值） | ✅ | 2026-07-18 | 42/42 |
 | M8 | P1 收尾（Lambda/if/switch 表达式 + typeOf/as/is） | ✅ | 2026-07-18 | 39/39 |
 | M9 | TryCatchFinallyParserLayer（roadmap #10） | ✅ | 2026-07-26 | 9/9 |
+| M10 | SeqBlockParserLayer（roadmap #11） | ✅ | 2026-07-26 | 14/14 |
 
 ---
 
@@ -95,6 +96,21 @@ try {
     cleanup()
 }
 
+// seq 块（SYNTAX.md §6）：作用域/using 资源管理/named 标签
+seq {
+    var temp = compute()
+}
+
+volatile seq {
+    // volatile 操作
+}
+
+seq using(const file = new File("path"))
+using(var stream = new FileInputStream(file))
+named readFile {
+    process(stream)
+}
+
 // 泛型参数列表（独立组件，待接入类型/函数声明）
 \<TElement>, \<out T, in U>, \<named TValues... with Serializable>
 
@@ -120,6 +136,7 @@ try {
 | IfStatementParserLayer | ✅ 两种模式 | 含于各套件 | 表达式模式强制 else；语句模式 else 可选 + else if 链 |
 | LoopParserLayer | ✅ | 15/15 | for-each/范围/while/do-while/named 标签 |
 | TryCatchFinallyParserLayer | ✅ | 9/9 | roadmap #10；多 catch 子句、finally(e)、嵌套 try |
+| SeqBlockParserLayer | ✅ | 14/14 | roadmap #11；volatile/using/named；seq 作为表达式待集成 |
 | GenericParametersParserLayer | ✅ | 21/21 | 声明/约束/型变/可变参数 |
 | ParameterListParserLayer | ✅ | 14/14 | 普通/默认/可变/具名可变 |
 | PathParserLayer | ✅ | 含于各套件 | 符号路径 + `\<` 泛型实参 |
@@ -140,8 +157,8 @@ try {
 ## 5. 下一步计划
 
 **P2 剩余部分**：
-1. SeqBlockParserLayer（roadmap #11，含 using/named/表达式形态）
-2. CoroutineOpsParserLayer（roadmap #12，await/yield/async）
+1. CoroutineOpsParserLayer（roadmap #12，await/yield/async）
+2. seq 作为表达式（需要在 ExpressionParserLayer 中集成）
 3. switch 语句模式评估（SYNTAX 当前仅定义 switch 表达式，语句形态待规范明确）
 
 **后续**：P3 类型声明（复用 GenericParametersParserLayer）、P4 函数声明（复用 ParameterListParserLayer + CodeBlockParserLayer）
@@ -153,16 +170,30 @@ try {
 1. 字符字面量未实现（占位符）
 2. wrapper 路径访问（`:`）未实现（留待 P5）
 3. lambda 体与 if/switch 表达式分支体仍仅支持单表达式（CodeBlock 已落地，表达式分支的多语句接入留待后续）
-4. switch 仅表达式模式（SYNTAX 未定义语句形态）
-5. 复合赋值（`+=`/`-=` 等）未实现：Lexer 未合并这些 token，需重组机制
-6. throw 语句未实现
-7. 泛型参数/形参列表为独立组件，待 P3/P4 接入声明解析
-8. DeclarationParserLayer / ImportParserLayer 为早期骨架，将在 P3/P4 重建
-9. 4 个 nullable 编译警告（`Core/Utilities.cs`，不影响功能）
+4. seq 作为表达式：语句形态已完成，但作为表达式使用需要在 ExpressionParserLayer 中集成（return@seq/return@label 机制）
+5. switch 仅表达式模式（SYNTAX 未定义语句形态）
+6. 复合赋值（`+=`/`-=` 等）未实现：Lexer 未合并这些 token，需重组机制
+7. throw 语句未实现（关键字已定义）
+8. await/yield 协程操作未实现（roadmap #12）
+9. 泛型参数/形参列表为独立组件，待 P3/P4 接入声明解析
+10. DeclarationParserLayer / ImportParserLayer 为早期骨架，将在 P3/P4 重建
+11. 4 个 nullable 编译警告（`Core/Utilities.cs`，不影响功能）
 
 ---
 
 ## 7. 里程碑历史
+
+### 2026-07-26 · M10 SeqBlockParserLayer（roadmap #11）
+- SeqBlockParserLayer 完整实现：seq 块的作用域、volatile 修饰符、using 资源绑定、named 标签
+- using 绑定支持多个资源，每个绑定为 `using(const/var name[:Type] = initializer)`
+- using 绑定委托 VariableDeclarationParserLayer 的子集逻辑：类型标注委托 TypeReferenceParserLayer，初始化委托 ExpressionParserLayer
+- seq 代码块委托 CodeBlockParserLayer 解析，支持所有已实现语句类型
+- 新增 AST 节点：SeqBlockStatementASTNode、UsingBindingASTNode
+- 新增 ASTNodeType：SeqBlockStatement、UsingBinding
+- 新增关键字：seq、using、volatile
+- CodeBlockParserLayer 集成 seq/volatile 语句分发
+- 测试 235 → 249（+14：简单 seq、volatile、using 单个/多个/带类型、named、组合、4 个错误用例）
+- 限制：seq 作为表达式（return@seq/return@label）需要在 ExpressionParserLayer 中集成，当前仅支持语句形态
 
 ### 2026-07-26 · M9 TryCatchFinallyParserLayer（roadmap #10）
 - TryCatchFinallyParserLayer 完整实现：try 块、多个 catch 子句（异常变量可为 _ 表示丢弃）、finally(e) 参数（e 为异常或 null）

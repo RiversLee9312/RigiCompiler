@@ -156,4 +156,45 @@ namespace LatteCompiler
 
         public override ASTNodeType NodeType => ASTNodeType.TryCatchFinallyStatement;
     }
+
+    // using 资源绑定：seq 块的资源管理子句（SYNTAX.md §6.2）
+    // using(const/var name = initializer)
+    public class UsingBindingASTNode : ASTNode
+    {
+        public bool IsConst;                       // const 或 var
+        public string VariableName;
+        public TypeReferenceASTNode? Type;         // 可选类型标注
+        public ExpressionASTNode Initializer;
+
+        public UsingBindingASTNode(ASTNode? parent) : base(parent)
+        {
+            IsConst = false;
+            VariableName = null!;
+            Type = null;
+            Initializer = null!;
+        }
+
+        public override ASTNodeType NodeType => ASTNodeType.UsingBinding;
+    }
+
+    // seq 块语句（SYNTAX.md §6）：
+    // [volatile] seq [using(...)]* [named label] { ... }
+    // 可作为语句（不产生值）或表达式（通过 return@seq/return@label 产生值）
+    public class SeqBlockStatementASTNode : ASTNode
+    {
+        public bool IsVolatile;                    // volatile 修饰符
+        public List<UsingBindingASTNode> UsingBindings;  // using 资源绑定列表
+        public string? Label;                      // named 标签（可选）
+        public CodeBlockASTNode Body;
+
+        public SeqBlockStatementASTNode(ASTNode? parent) : base(parent)
+        {
+            IsVolatile = false;
+            UsingBindings = new List<UsingBindingASTNode>();
+            Label = null;
+            Body = new CodeBlockASTNode(this);
+        }
+
+        public override ASTNodeType NodeType => ASTNodeType.SeqBlockStatement;
+    }
 }

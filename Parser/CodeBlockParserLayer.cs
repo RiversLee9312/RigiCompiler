@@ -154,6 +154,13 @@ namespace LatteCompiler
                         new TryCatchFinallyParserLayer(targetNode), true);
                 }
 
+                // seq 块语句（含 volatile/using/named）
+                if (wt.Content == Keywords.SEQ || wt.Content == Keywords.VOLATILE)
+                {
+                    return new ParserLayerResult.PushLayer(
+                        new SeqBlockParserLayer(targetNode), true);
+                }
+
                 // return 语句（可选 @标签、可选值）
                 if (wt.Content == Keywords.RETURN)
                 {

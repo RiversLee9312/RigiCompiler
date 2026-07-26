@@ -276,6 +276,9 @@ namespace LatteCompiler
         public const string TO = "to";
         public const string DO = "do";
         public const string THROW = "throw";
+        public const string SEQ = "seq";
+        public const string USING = "using";
+        public const string VOLATILE = "volatile";
         // 控制流关键字数组
         public static readonly string[] ControlStreamKeywords = 
         {
@@ -422,7 +425,9 @@ namespace LatteCompiler
         LoopControlStatement,
         RangeExpression,
         TryCatchFinallyStatement,
-        CatchClause
+        CatchClause,
+        SeqBlockStatement,
+        UsingBinding
     }
     public class AcquisitionExpressionASTNode : ASTNode
     {
