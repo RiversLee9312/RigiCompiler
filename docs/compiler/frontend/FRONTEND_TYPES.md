@@ -27,10 +27,11 @@
 
 ## 3. AST 节点类型（语法分析器输出）
 
-**ASTNode**: 抽象基类（`parent` 指针、`NodeType`），`Core/Utilities.cs`。
+**ASTNode**: 抽象基类（`parent` 指针、`NodeType`、`Children`），`Core/Utilities.cs`。
+`Children` 是统一的子节点容器（全局作用域、类型体、嵌套类型共用，M14 从 RootASTNode 上移到基类）。
 
 ### 3.1 根与符号（`Core/Utilities.cs`，待逐步迁出）
-- **RootASTNode**: 根节点（`Children: List<ASTNode>`）
+- **RootASTNode**: 根节点（成员即基类的 `Children`）
 - **SymbolASTNode**: 符号节点（`symbol: Symbol`）
 - **ImportASTNode**: import 声明
 - **AcquisitionExpressionASTNode**: 老式获取表达式（待评估去留）
@@ -48,7 +49,14 @@
 - 类型上的泛型实参挂在 `TypeSymbol.symbol.elements[*].generics`
 
 ### 3.4 声明（`AST/DeclarationNodes.cs`）
-- **VariableDeclarationASTNode**: IsConst、Name、TypeAnnotation?、Initializer?
+- **VariableDeclarationASTNode**: Modifiers、IsConst、Name、TypeAnnotation?、Initializer?（局部变量/字段/全局变量同一节点）
+- **CallableDeclarationASTNode**: Modifiers、Kind（CallableKind: Func/Operator/Init）、Name、GenericParameters?、Parameters、ReturnType?、Body?（全局函数/方法/静态方法/运算符/构造函数同一节点，M14）
+- **ClassDeclarationASTNode**: Modifiers、ClassName、GenericParameters?、BaseClass?、Interfaces（成员挂 `Children`）
+- **InterfaceDeclarationASTNode**: Modifiers、InterfaceName、GenericParameters?、BaseInterfaces
+- **StructDeclarationASTNode**: Modifiers、StructName、GenericParameters?、BaseStruct?、Interfaces
+- **EnumStructDeclarationASTNode**: Modifiers、EnumName、GenericParameters?、Cases（case 列表解析待实现）
+- **EnumCaseASTNode**: CaseName、Arguments、DiscriminantValue?
+- **WrapperDeclarationASTNode**: Modifiers、WrapperName、GenericParameters?（entity/method/value 标识与 proxy 成员待实现）
 - **GenericParameterListASTNode**: Parameters、Constraints
 - **GenericParameterASTNode**: Name、Variance（GenericVariance: None/Out/In）、IsVariadic、IsNamedVariadic
 - **GenericConstraintASTNode**: Target、Kind（GenericConstraintKind: Extends/Supers/With）、Bound
@@ -61,7 +69,7 @@
 | 节点 | 关键字段 | 说明 |
 |------|----------|------|
 | **BinaryExpressionASTNode** | Left、Operator、Right | 二元运算 |
-| **UnaryExpressionASTNode** | Operator、Operand、IsPrefix | 一元运算 |
+| **UnaryExpressionASTNode** | Operator、Operand、IsPrefix | 一元运算（含 await） |
 | **LiteralExpressionASTNode** | LiteralNode | 字面量包装（使字面量成为表达式） |
 | **SymbolReferenceASTNode** | Symbol（SymbolASTNode） | 符号引用/纯符号路径（含泛型实参） |
 | **GroupExpressionASTNode** | InnerExpression | 括号分组 |
@@ -69,7 +77,32 @@
 | **CallExpressionASTNode** | Callee、Arguments | 函数调用 |
 | **IndexExpressionASTNode** | Object、Indices | 索引访问 |
 | **MemberAccessASTNode** | Object、MemberName、IsSafeAccess、GenericArguments | 成员访问（底座为表达式时） |
-| **ArgumentASTNode** | Name?、Value | 调用/索引/构造实参（可具名） |
+| **ArgumentASTNode** | Name?、Value | 调用/索引/构造实参（可具名）；非 Expression 子类 |
+| **LambdaExpressionASTNode** | IsAsync、Parameters、GenericParameters?、ReturnType、Body | lambda（体为单表达式） |
+| **IfExpressionASTNode** | Condition、ThenExpression、ElseExpression | if 表达式（强制 else，分支为单表达式） |
+| **SwitchExpressionASTNode** | Selector、Cases、DefaultBody | switch 表达式（强制 default） |
+| **SwitchCaseASTNode** | Pattern、Body | case 分支；非 Expression 子类 |
+| **TypeOfExpressionASTNode** | Operand | typeOf(expr) |
+| **CastExpressionASTNode** | Object、TargetType、IsSafe | as / as? 转换 |
+| **TypeCheckExpressionASTNode** | Object、Operator、TargetType | is / supers / with 检查 |
+| **RangeExpressionASTNode** | From、To | 范围（`0 to 10`） |
+| **SeqBlockExpressionASTNode** | IsVolatile、UsingBindings、Label?、Body | seq 块（语句 + 表达式双形态） |
+
+### 3.6 语句（`AST/StatementNodes.cs`）
+
+| 节点 | 关键字段 | 说明 |
+|------|----------|------|
+| **CodeBlockASTNode** | Children | `{ }` 代码块 |
+| **IfStatementASTNode** | Condition、ThenBlock、ElseBranch? | if 语句（ElseBranch 为块或嵌套 if） |
+| **LoopStatementASTNode** | Kind（LoopKind）、VariableName?、Iterable?、Condition?、Label?、Body | for-each/范围/while/do-while |
+| **ReturnStatementASTNode** | Label?、Value? | return / return@label |
+| **LoopControlStatementASTNode** | IsBreak、Label? | break / continue[@label] |
+| **AssignStatementASTNode** | Target、Value | 赋值 |
+| **TryCatchFinallyStatementASTNode** | TryBlock、CatchClauses、FinallyParameter?、FinallyBlock? | 异常处理 |
+| **CatchClauseASTNode** | VariableName?、ExceptionType、Body | catch 子句（`_` 丢弃异常变量） |
+| **UsingBindingASTNode** | IsConst、VariableName、Type?、Initializer | seq using 资源绑定 |
+| **ThrowStatementASTNode** | Exception | throw 语句 |
+| **YieldStatementASTNode** | Alarm? | yield / yield alarm |
 
 ## 4. 符号表（语义分析器使用，`Core/FrontendTypesExtension.cs`）
 
@@ -108,7 +141,7 @@ Source Code
     ↓
 [Lexer] → List<Token>
     ↓
-[Parser] → AST (RootASTNode)                    ← 当前阶段（P1 大部分完成）
+[Parser] → AST (RootASTNode)                    ← 当前阶段（P0–P2 完成，P3 进行中）
     ↓
 [Symbol Table Builder] → SymbolTable + Symbol annotations
     ↓
@@ -130,7 +163,8 @@ Source Code
 ## 9. 下一步
 
 - ✅ 词法分析（Lexer）
-- ✅ 语法分析（Parser，P1 大部分完成）
+- ✅ 语法分析（Parser，P0–P2 完成，P3 类型声明统一层已落地）
+- ⏳ Parser P3 收尾（声明泛型、getter/setter、enum case 列表等）
 - ⏳ 符号表构建（Symbol Table Builder）
 - ⏳ 类型检查（Type Checker）
 - ⏳ 语义分析（Semantic Analyzer）

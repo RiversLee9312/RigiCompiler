@@ -3,7 +3,7 @@ using System;
 namespace LatteCompiler.Tests
 {
     /// <summary>
-    /// 类型声明解析测试（P3 M13 基础）
+    /// 类型声明解析测试（P3 M13/M14/M15 统一声明层）
     ///
     /// 覆盖：
     /// 1. 简单 class 声明（空 body）
@@ -11,9 +11,11 @@ namespace LatteCompiler.Tests
     /// 3. interface 声明
     /// 4. struct 声明
     /// 5. wrapper 声明
-    ///
-    /// 注：本阶段仅解析声明头部和空 body {}
-    ///     成员解析（字段、方法）将在后续实现
+    /// 6. 全局字段与全局函数
+    /// 7. 类成员（字段/方法/init/operator）
+    /// 8. 继承与 implements 列表
+    /// 9. 嵌套类型（多层）
+    /// 10. 声明上的泛型参数（类型/函数/operator，含约束与可变参数）
     /// </summary>
     public class TypeDeclarationTests
     {
@@ -184,6 +186,56 @@ namespace LatteCompiler.Tests
             Console.WriteLine();
         }
 
+        // ===== 10. 声明上的泛型参数（复用 GenericParametersParserLayer，SYNTAX §3.6）=====
+        public static void TestDeclarationGenericParameters()
+        {
+            Console.WriteLine("=== Testing Generic Parameters on Declarations ===");
+
+            // 类型声明
+            TestDeclaration("class Container\\<TElement> {}",
+                "class Container\\<TElement>");
+            TestDeclaration("interface Comparable\\<T> { func compareTo(other: T): i32 }",
+                "interface Comparable\\<T> {func compareTo(other): i32}");
+            TestDeclaration("class Producer\\<out TElement> {}",
+                "class Producer\\<out TElement>");
+            TestDeclaration("class Consumer\\<in TElement> {}",
+                "class Consumer\\<in TElement>");
+            TestDeclaration("pub struct Pair\\<TFirst, TSecond> {}",
+                "pub struct Pair\\<TFirst, TSecond>");
+            TestDeclaration("wrapper Logged\\<T> {}",
+                "wrapper Logged\\<T>");
+
+            // 泛型 + 继承 + implements（泛型列表在继承子句之前）
+            TestDeclaration("class MyList\\<TElement> : List implements Iterable {}",
+                "class MyList\\<TElement> : List implements Iterable");
+
+            // 函数声明（全局与成员共用一条路径）
+            TestDeclaration("func transform\\<TInput, TResult>(input: TInput): TResult {}",
+                "func transform\\<TInput, TResult>(input): TResult {}");
+            TestDeclaration("class A { func map\\<T>(x: T): T {} }",
+                "class A {func map\\<T>(x): T {}}");
+            TestDeclaration("struct V { pub operator plus\\<TAnother extends Addable>(another: TAnother): V {} }",
+                "struct V {pub operator plus\\<TAnother extends Addable>(another): V {}}");
+
+            // 约束子句（extends/supers/with；Target 裸标识符即隐含的泛型参数）
+            TestDeclaration("func process\\<TItem extends Comparable, Serializable supers BaseType>(item: TItem): TItem {}",
+                "func process\\<TItem extends Comparable, Serializable supers BaseType>(item): TItem {}");
+            TestDeclaration("func dump\\<TItem with Serializable>(item: TItem) {}",
+                "func dump\\<TItem with Serializable>(item) {}");
+
+            // 可变 / 具名可变泛型参数
+            TestDeclaration("func sum\\<TArgs...>(items: TArgs...) {}",
+                "func sum\\<TArgs...>(items) {}");
+            TestDeclaration("pub func update\\<named TValues... with Serializable>(configs: named TValues...): bool {}",
+                "pub func update\\<named TValues..., TValues with Serializable>(configs): bool {}");
+
+            // 型变参数 + 约束
+            TestDeclaration("class Cache\\<out TElement extends Comparable> {}",
+                "class Cache\\<out TElement, TElement extends Comparable>");
+
+            Console.WriteLine();
+        }
+
         // ===== 辅助方法 =====
 
         private static void TestDeclaration(string source, string expected)
@@ -231,15 +283,20 @@ namespace LatteCompiler.Tests
         {
             var head = node switch
             {
-                ClassDeclarationASTNode c => Mods(c.Modifiers) + "class " + c.ClassName + Bases(c.BaseClass, c.Interfaces),
+                ClassDeclarationASTNode c => Mods(c.Modifiers) + "class " + c.ClassName
+                    + FormatGenerics(c.GenericParameters) + Bases(c.BaseClass, c.Interfaces),
                 // interface 用 `:` 继承父接口（SYNTAX §11），故按 `:` 渲染
                 InterfaceDeclarationASTNode i => Mods(i.Modifiers) + "interface " + i.InterfaceName
+                    + FormatGenerics(i.GenericParameters)
                     + (i.BaseInterfaces.Count > 0
                         ? " : " + string.Join(",", i.BaseInterfaces.ConvertAll(FormatType))
                         : ""),
-                StructDeclarationASTNode s => Mods(s.Modifiers) + "struct " + s.StructName + Bases(s.BaseStruct, s.Interfaces),
-                EnumStructDeclarationASTNode e => Mods(e.Modifiers) + "enum struct " + e.EnumName,
-                WrapperDeclarationASTNode w => Mods(w.Modifiers) + "wrapper " + w.WrapperName,
+                StructDeclarationASTNode s => Mods(s.Modifiers) + "struct " + s.StructName
+                    + FormatGenerics(s.GenericParameters) + Bases(s.BaseStruct, s.Interfaces),
+                EnumStructDeclarationASTNode e => Mods(e.Modifiers) + "enum struct " + e.EnumName
+                    + FormatGenerics(e.GenericParameters),
+                WrapperDeclarationASTNode w => Mods(w.Modifiers) + "wrapper " + w.WrapperName
+                    + FormatGenerics(w.GenericParameters),
                 VariableDeclarationASTNode v => Mods(v.Modifiers) + (v.IsConst ? "const " : "var ") + v.Name,
                 CallableDeclarationASTNode f => FormatCallable(f),
                 _ => $"<{node.GetType().Name}>"
@@ -260,7 +317,42 @@ namespace LatteCompiler.Tests
             var ps = string.Join(",", f.Parameters.Parameters.ConvertAll(p => p.Name));
             var ret = f.ReturnType != null ? ": " + FormatType(f.ReturnType) : "";
             var body = f.Body != null ? " {}" : "";
-            return Mods(f.Modifiers) + kind + f.Name + "(" + ps + ")" + ret + body;
+            return Mods(f.Modifiers) + kind + f.Name + FormatGenerics(f.GenericParameters)
+                + "(" + ps + ")" + ret + body;
+        }
+
+        // 泛型形参列表：与 GenericParametersTests 同一套 AST 结构，按声明上的位置内联渲染。
+        // 注意约束的 Target 为裸标识符时即隐含的泛型参数（见 GenericConstraintASTNode 注释），
+        // 因此 extends/supers/with 子句渲染在参数之后（如 \<named TValues..., TValues with Serializable>）
+        private static string FormatGenerics(GenericParameterListASTNode? gp)
+        {
+            if (gp == null) return "";
+            var parts = gp.Parameters.ConvertAll(FormatGenericParam);
+            parts.AddRange(gp.Constraints.ConvertAll(FormatGenericConstraint));
+            return "\\<" + string.Join(", ", parts) + ">";
+        }
+
+        private static string FormatGenericParam(GenericParameterASTNode p)
+        {
+            var prefix = p.Variance switch
+            {
+                GenericVariance.Out => "out ",
+                GenericVariance.In => "in ",
+                _ => p.IsNamedVariadic ? "named " : ""
+            };
+            var suffix = (p.IsVariadic || p.IsNamedVariadic) ? "..." : "";
+            return prefix + p.Name + suffix;
+        }
+
+        private static string FormatGenericConstraint(GenericConstraintASTNode c)
+        {
+            var kind = c.Kind switch
+            {
+                GenericConstraintKind.Extends => "extends",
+                GenericConstraintKind.Supers => "supers",
+                _ => "with"
+            };
+            return FormatType(c.Target) + " " + kind + " " + FormatType(c.Bound);
         }
 
         private static string Mods(System.Collections.Generic.List<string> m)
@@ -290,7 +382,7 @@ namespace LatteCompiler.Tests
             failCount = 0;
 
             Console.WriteLine("╔════════════════════════════════════════════════════════╗");
-            Console.WriteLine("║  Type Declaration Tests (P3 M13 Basic)               ║");
+            Console.WriteLine("║  Type Declaration Tests (P3 M13/M14)                 ║");
             Console.WriteLine("╚════════════════════════════════════════════════════════╝");
             Console.WriteLine();
 
@@ -303,6 +395,7 @@ namespace LatteCompiler.Tests
             TestMembers();
             TestInheritance();
             TestNestedTypes();
+            TestDeclarationGenericParameters();
 
             Console.WriteLine("╔════════════════════════════════════════════════════════╗");
             Console.WriteLine($"║  Total: {passCount + failCount,3} tests | Pass: {passCount,3} | Fail: {failCount,3}            ║");

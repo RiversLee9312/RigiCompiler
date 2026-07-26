@@ -165,11 +165,16 @@ TypeInfo 提供两种比较方法：
 - 类型系统数据结构
 - Parser 核心组件（字面量、类型引用、变量声明、表达式框架与后缀链、
   泛型参数列表、函数形参列表、实参列表、结果传递机制）
+- Parser P1 表达式系统（Lambda、if/switch 表达式、typeOf/as/is、seq 表达式形态）
+- Parser P2 语句系统（CodeBlock、if/循环、try-catch-finally、seq、throw、await/yield）
+- Parser P3 类型声明统一层（DeclarationParserLayer：全局/成员/嵌套任何声明一条路径，
+  class/interface/struct/wrapper 头部与成员、继承与 implements、嵌套类型）
 
 ### 待实现 ⏳
-1. **完善 Parser**
-   - P2 语句系统（CodeBlock、if/while/for/return）
-   - P3 类型声明、P4 函数声明
+1. **Parser 收尾**
+   - 声明上的泛型参数（接入 GenericParametersParserLayer）
+   - getter/setter、enum `[]` case 列表、init 参数映射、`like` 委托、`ext` 扩展成员
+   - P5：wrapper 主体与 `:` 路径访问、模块系统
 
 2. **符号表构建器**
    - 遍历 AST 收集所有声明
@@ -188,7 +193,7 @@ TypeInfo 提供两种比较方法：
 
 ## 编译状态
 
-✅ **编译成功** - 0 个错误，4 个警告（nullable 相关，位于 `Core/Utilities.cs`，不影响功能）
+✅ **编译成功** - 0 个错误，5 个警告（nullable 相关，位于 `Core/Utilities.cs`，不影响功能）
 
 ## 使用示例
 

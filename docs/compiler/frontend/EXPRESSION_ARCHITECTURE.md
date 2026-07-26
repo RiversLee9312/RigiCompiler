@@ -263,15 +263,18 @@ ExpressionParserLayer
 | ArgumentListParserLayer | 调用/索引/构造实参列表 | ✅ |
 | GenericParametersParserLayer | 泛型参数列表 `\<...>`（声明侧） | ✅ |
 | ParameterListParserLayer | 函数形参列表 `(...)`（声明侧） | ✅ |
+| LambdaExpressionParserLayer | Lambda（完整/泛型/async/trailing） | ✅ M8 |
+| IfStatementParserLayer | if 表达式（强制 else）/ if 语句 | ✅ M7/M8 |
+| SwitchStatementParserLayer | switch 表达式（强制 default） | ✅ M8 |
+| TypeOfExpressionParserLayer | typeOf 表达式 | ✅ M8 |
+| SeqBlockParserLayer | seq 块（语句 + 表达式双形态） | ✅ M10 |
 
 ### 待实现的表达式能力
 | 能力 | 优先级 | 说明 |
 |------|--------|------|
-| Lambda 表达式 | P2/P6 | `func{(x: i32): i32 -> (x + 1)}` |
-| if / switch 表达式 | P2 | 作为表达式的控制流 |
-| typeOf / as / is | P1 收尾 | 类型操作 |
 | wrapper 路径访问 `:` | P5 | `obj:MyWrapper` |
-| 数组字面量 `[1, 2, 3]` | P2 | 与索引 `[]` 的语境区分 |
+| 数组字面量 `[1, 2, 3]` | P2 遗留 | 与索引 `[]` 的语境区分 |
+| 表达式分支多语句体 | 后续 | lambda 体与 if/switch 分支体当前仅单表达式 |
 
 ## 优势总结
 

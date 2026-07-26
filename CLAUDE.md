@@ -4,9 +4,9 @@
 
 **项目名**: LatteCompiler  
 **语言**: C# (.NET 8.0)  
-**开发阶段**: 早期 - Parser 实现中（P0、P1 完成，P2 进行中——语句系统核心已落地）  
+**开发阶段**: 早期 - Parser 实现中（P0、P1、P2 完成，P3 进行中——类型声明统一层已落地）  
 **版本控制**: Git（main 分支，2026-07-17 首次提交）  
-**文档版本**: 2026-07-18
+**文档版本**: 2026-07-26
 
 ---
 
@@ -38,7 +38,7 @@ LLVM Toolchain
 Native Executable
 ```
 
-**当前进度**: P0、P1 完成，P2 进行中（语句系统核心已落地：代码块/if 语句/循环/return/赋值；此前已完成表达式后缀链、Lambda/if/switch 表达式、typeOf/as/is、泛型参数、形参列表、结果传递机制、泛型 `\<` 语法迁移）。
+**当前进度**: P0、P1、P2 完成，P3 进行中（统一声明层 DeclarationParserLayer 已落地：全局/成员/嵌套任何声明一条路径，class/interface/struct/wrapper 头部与成员、继承与 implements、嵌套类型、声明上的泛型参数；此前已完成 P2 语句系统：代码块/if/循环/try-catch-finally/seq/throw/await/yield，以及 P1 表达式系统：后缀链、Lambda/if/switch 表达式、typeOf/as/is、泛型参数、形参列表、结果传递机制、泛型 `\<` 语法迁移）。测试 326/326。
 
 ---
 
@@ -190,35 +190,43 @@ LatteCompiler/
 ├── AST/                  # AST 节点定义
 │   ├── LiteralNodes.cs      # 6 种字面量节点
 │   ├── TypeNodes.cs         # 类型引用节点
-│   ├── DeclarationNodes.cs  # 声明节点（变量/泛型参数/形参）
-│   └── ExpressionNodes.cs   # 表达式节点（含调用/索引/成员/实参）
+│   ├── DeclarationNodes.cs  # 声明节点（变量/泛型参数/形参/可调用/类型声明）
+│   ├── ExpressionNodes.cs   # 表达式节点（含调用/索引/成员/实参/lambda/if/switch/seq）
+│   └── StatementNodes.cs    # 语句节点（代码块/if/循环/return/赋值/try/throw/yield）
 ├── Parser/               # Parser 层实现
-│   ├── Parser.cs              # 核心协议 + IResultProducer/IResultConsumer
-│   ├── RootParserLayer.cs     # 顶层入口分发
+│   ├── Parser.cs              # 核心协议 + IResultProducer/IResultConsumer + EOF 哨兵收尾
+│   ├── RootParserLayer.cs     # 顶层入口分发（声明统一委托 DeclarationParserLayer）
 │   ├── LiteralParserLayer.cs
 │   ├── TypeReferenceParserLayer.cs
 │   ├── VariableDeclarationParserLayer.cs
-│   ├── ExpressionParserLayer.cs   # 表达式框架（运算符 + 后缀链）
+│   ├── ExpressionParserLayer.cs   # 表达式框架（运算符 + 后缀链 + await 前缀）
 │   ├── PathParserLayer.cs         # 符号路径（含 \< 泛型实参）
 │   ├── ArgumentListParserLayer.cs # 调用/索引/构造实参列表
 │   ├── GenericParametersParserLayer.cs # 泛型参数列表 \<...>
 │   ├── ParameterListParserLayer.cs     # 函数形参列表 (...)
-│   ├── DeclarationParserLayer.cs / ImportParserLayer.cs
-│   └── CodeBlockParserLayer.cs    # 骨架
+│   ├── DeclarationParserLayer.cs  # 统一声明层：全局/成员/嵌套任何声明
+│   ├── ImportParserLayer.cs       # 早期骨架（待 P5 重建）
+│   ├── CodeBlockParserLayer.cs    # 代码块：语句识别与分发（return/break/continue/throw/yield 内联）
+│   ├── IfStatementParserLayer.cs  # if 语句 + if 表达式
+│   ├── SwitchStatementParserLayer.cs # switch 表达式
+│   ├── LoopParserLayer.cs         # for/while/do-while/named 标签
+│   ├── LambdaExpressionParserLayer.cs
+│   ├── TypeOfExpressionParserLayer.cs
+│   ├── SeqBlockParserLayer.cs     # seq 块（语句 + 表达式双形态）
+│   └── TryCatchFinallyParserLayer.cs
 ├── Lexer/                # 词法分析
 │   ├── Lexer.cs
 │   └── LexerLayers.cs
 ├── Core/                 # 基础设施
 │   ├── Utilities.cs         # Token、Keywords、Helper、部分 AST 基类
 │   └── FrontendTypesExtension.cs
-├── Tests/                # 测试（自研控制台模式，非测试框架）
-│   ├── LiteralParserTests.cs
-│   ├── TypeReferenceParserTests.cs
-│   ├── VariableDeclarationTests.cs
-│   ├── ExpressionParserTests.cs
-│   ├── GenericParsingTests.cs
-│   ├── GenericParametersTests.cs
-│   └── ParameterListTests.cs
+├── Tests/                # 测试（自研控制台模式，非测试框架，18 个测试类）
+│   ├── LiteralParserTests.cs / TypeReferenceParserTests.cs / VariableDeclarationTests.cs
+│   ├── ExpressionParserTests.cs / GenericParsingTests.cs / GenericParametersTests.cs
+│   ├── ParameterListTests.cs / LambdaExpressionTests.cs / IfExpressionTests.cs
+│   ├── SwitchExpressionTests.cs / TypeOfExpressionTests.cs / CodeBlockTests.cs
+│   ├── LoopTests.cs / TryCatchFinallyTests.cs / SeqBlockTests.cs
+│   ├── ThrowStatementTests.cs / CoroutineOpsTests.cs / TypeDeclarationTests.cs
 ├── docs/                 # 文档
 │   ├── SYNTAX.md            # **语言语法规范**（权威）
 │   ├── RUNTIME.md           # 运行时模型
@@ -303,14 +311,16 @@ public class IfStatementTests
 cd C:\Users\SaRiv\source\repos\LatteCompiler\LatteCompiler
 dotnet build
 
-# 运行测试（bin\Debug\net8.0 目录下）
+# 运行测试（bin\Debug\net8.0 目录下，菜单 2–19）
 echo "2" | .\LatteCompiler.exe  # 字面量测试（15）
 echo "3" | .\LatteCompiler.exe  # 类型引用测试（3）
 echo "4" | .\LatteCompiler.exe  # 变量声明测试（10）
-echo "5" | .\LatteCompiler.exe  # 表达式测试（54）
+echo "5" | .\LatteCompiler.exe  # 表达式测试（67）
 echo "6" | .\LatteCompiler.exe  # 泛型解析测试（18）
 echo "7" | .\LatteCompiler.exe  # 泛型参数列表测试（21）
 echo "8" | .\LatteCompiler.exe  # 函数形参列表测试（14）
+echo "13" | .\LatteCompiler.exe # 代码块测试（27）
+echo "19" | .\LatteCompiler.exe # 类型声明测试（36）
 ```
 
 ### 4.3 Git 工作流
@@ -539,21 +549,25 @@ enum FloatParseState
 | LiteralParserLayer | 所有字面量类型 | 15/15 (100%) |
 | TypeReferenceParserLayer | 类型引用（含 `\<` 泛型、嵌套、可空） | 3/3 (100%) |
 | VariableDeclarationParserLayer | 变量声明（Initializer 经结果传递保存） | 10/10 (100%) |
-| ExpressionParserLayer | 运算符、括号分组、调用/索引/成员/泛型调用后缀链、new 构造参数、类型操作（is/supers/with/as/as?） | 67/67 (100%) |
+| ExpressionParserLayer | 运算符、括号分组、调用/索引/成员/泛型调用后缀链、new 构造参数、类型操作（is/supers/with/as/as?）、await 前缀 | 67/67 (100%) |
 | ArgumentListParserLayer | 位置/具名实参列表 | （含于表达式测试） |
 | LambdaExpressionParserLayer | Lambda（完整/泛型/async/trailing，体为单表达式） | 15/15 (100%) |
-| IfStatementParserLayer | if 表达式（强制 else；语句模式待 P2） | 8/8 (100%) |
-| SwitchStatementParserLayer | switch 表达式（值/模式匹配、强制 default；语句模式待 P2） | 6/6 (100%) |
+| IfStatementParserLayer | if 表达式（强制 else）+ if 语句（else 可选、else if 链） | 8/8 (100%) |
+| SwitchStatementParserLayer | switch 表达式（值/模式匹配、强制 default；语句模式待规范） | 6/6 (100%) |
 | TypeOfExpressionParserLayer | typeOf(expr) | 7/7 (100%) |
-| GenericParametersParserLayer | 泛型参数列表 `\<...>`（声明/约束/型变/可变） | 21/21 (100%) |
-| ParameterListParserLayer | 函数形参列表（普通/默认/可变/具名可变） | 14/14 (100%) |
-| CodeBlockParserLayer | 代码块：语句识别与分发（含 return/break/continue/赋值） | 27/27 (100%) |
-| IfStatementParserLayer（语句模式） | if 语句（else 可选、else if 链） | 含于 CodeBlock 套件 |
+| GenericParametersParserLayer | 泛型参数列表 `\<...>`（声明/约束/型变/可变；未接入声明） | 21/21 (100%) |
+| ParameterListParserLayer | 函数形参列表（普通/默认/可变/具名可变；已接入声明） | 14/14 (100%) |
+| CodeBlockParserLayer | 代码块：语句识别与分发（return/break/continue/throw/yield 内联、赋值） | 27/27 (100%) |
 | LoopParserLayer | for-each/范围/while/do-while/named 标签 | 15/15 (100%) |
+| TryCatchFinallyParserLayer | try/多 catch/finally(e)/嵌套 | 9/9 (100%) |
+| SeqBlockParserLayer | seq 块（volatile/using/named，语句 + 表达式双形态） | 17/17 (100%) |
+| ThrowStatement（内联） | throw 语句 | 10/10 (100%) |
+| CoroutineOps（await/yield） | await 前缀运算符 + yield 语句（未建独立 Layer） | 13/13 (100%) |
+| DeclarationParserLayer | 统一声明层：全局/成员/嵌套任何声明（class/interface/struct/wrapper、字段/方法/init/operator、继承与 implements、声明泛型参数） | 51/51 (100%) |
 | 结果传递机制 | IResultProducer/IResultConsumer + 弹层自动传递 | （含于各套件） |
 | 泛型语法迁移 | `\<...>` 语法 + `<` 解放为小于号 | 18/18 (100%) |
 
-**总计**: 226/226 测试通过 (100%)
+**总计**: 326/326 测试通过 (100%)
 
 **可解析的语法**：
 ```latte
@@ -595,22 +609,46 @@ for (i in 0 to 10) named outer { break@outer }
 while (condition) { doSomething() }
 do { doSomething() } while (condition)
 
-// 泛型参数列表（独立组件，待接入类型/函数声明）
+// try-catch-finally 与 throw
+try { risky() } catch (e: IOException) { handle(e) } finally(e) { cleanup() }
+throw new IOException("File not found")
+
+// seq 块（语句 + 表达式形态）
+seq using(const file = new File("path")) named readFile { process(file) }
+const result = seq { return@seq compute() }
+
+// await/yield
+const user = await loadUser(42)
+yield sleep(1000)
+
+// 类型声明与全局声明（统一声明层）
+pub open class Dog : Animal implements Drawable {
+    pub var name: String
+    pub init(x: i32) {}
+    pub func speak(): String { return "Woof!" }
+    pub class Inner {}
+}
+pub rich struct Entry {}
+wrapper Logged {}
+pub const MAX: i32
+func add(a: i32, b: i32): i32 { return (a + b) }
+
+// 泛型参数列表（独立组件，未接入类型/函数声明）
 \<TElement>, \<out T, in U>, \<named TValues... with Serializable>
 
-// 函数形参列表（独立组件，待接入函数声明）
+// 函数形参列表（已接入 func/operator/init 声明）
 (a: i32, b: String = "x", rest: named i32...)
 ```
 
 ### 6.2 下一步 ⏳
 
-**P2 剩余部分**：
-1. switch 语句模式评估（SYNTAX 当前仅定义 switch 表达式）
-2. TryCatchFinallyParserLayer（roadmap #10）
-3. SeqBlockParserLayer（roadmap #11，含 using/named/表达式形态）
-4. CoroutineOpsParserLayer（roadmap #12，await/yield/async）
+**P3 收尾**：
+1. 声明上的泛型参数（类型/函数声明接入 GenericParametersParserLayer）
+2. getter/setter（SYNTAX.md §9.4）
+3. enum struct 的 `[]` case 列表
+4. init 参数映射（`_ -> field`）、`like` 委托、`ext` 扩展成员
 
-**后续**: P3 类型声明（复用 GenericParametersParserLayer）、P4 函数声明（复用 ParameterListParserLayer + CodeBlockParserLayer）
+**后续**: P5 wrapper 主体与 `:` 路径访问、模块系统（ImportParserLayer 重建）；再往后是语义分析与 BIL 输出
 
 ---
 
@@ -623,12 +661,12 @@ do { doSomething() } while (condition)
 3. **lambda 体与 if/switch 表达式分支体仅支持单表达式** - CodeBlock 已落地，表达式分支的多语句接入留待后续
 4. **switch 仅表达式模式** - SYNTAX 未定义语句形态
 5. **复合赋值（`+=`/`-=` 等）未实现** - Lexer 未合并这些 token，需重组机制
-6. **throw 语句未实现**
-7. **泛型参数/形参列表是独立组件** - 待 P3/P4 类型与函数声明接入
+6. **泛型形参列表未接入类型/函数声明** - 形参列表已于 M14 接入
+7. **类型声明待续项** - getter/setter、enum `[]` case 列表、init 参数映射、`like` 委托、`ext` 扩展成员、wrapper 主体
 
 ### 7.2 编译警告
 
-- 4 个 nullable 相关警告（不影响功能）
+- 5 个 nullable 相关警告（不影响功能）
 - 位于 `Core/Utilities.cs`
 
 ### 7.3 代码规范
@@ -691,6 +729,6 @@ dotnet clean
 
 ---
 
-**最后更新**: 2026-07-17  
+**最后更新**: 2026-07-26  
 **维护者**: Claude Code AI Assistant  
 **项目状态**: 活跃开发中

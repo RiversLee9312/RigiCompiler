@@ -6,8 +6,8 @@
 > 计划与分工见 `compiler/frontend/PARSER_ROADMAP.md`；本文档只记录「现状」。
 
 **报告日期**: 2026-07-26
-**当前阶段**: **P2 完成**（语句系统全部完成），P0、P1 已完成
-**测试总计**: 275/275 通过 (100%)
+**当前阶段**: P0、P1、**P2 已完成**；**P3 进行中**（统一声明层 + 声明泛型参数已落地，getter/setter/enum case 等待续）
+**测试总计**: 326/326 通过 (100%)
 **版本控制**: Git `main` 分支（2026-07-17 首次提交）
 
 ---
@@ -28,6 +28,9 @@
 | M10 | SeqBlockParserLayer（roadmap #11，含表达式形态） | ✅ | 2026-07-26 | 17/17 |
 | M11 | throw 语句 | ✅ | 2026-07-26 | 10/10 |
 | M12 | CoroutineOps：await/yield（roadmap #12） | ✅ | 2026-07-26 | 13/13 |
+| M13 | P3 类型声明解析基础（DeclarationParserLayer 重构） | ✅ | 2026-07-26 | 16/16 |
+| M14 | 统一声明层：全局/成员/嵌套共用一套 infra | ✅ | 2026-07-26 | 36/36 |
+| M15 | 声明泛型参数接入统一声明层（类型/函数/operator） | ✅ | 2026-07-26 | 15/15 |
 
 ---
 
@@ -137,10 +140,31 @@ await flushLogs()
 yield                         // 裸 yield
 yield sleep(1000)             // 带 alarm
 
-// 泛型参数列表（独立组件，待接入类型/函数声明）
-\<TElement>, \<out T, in U>, \<named TValues... with Serializable>
+// 类型声明（class/interface/struct/wrapper + 修饰符/继承/implements/嵌套）
+pub open class Dog : Animal implements Drawable, Serializable {
+    pub var name: String
+    pub init(x: i32) {}
+    pub func speak(): String { return "Woof!" }
+    pub class Inner {}                 // 嵌套类型，与顶层同一路径
+}
+pub rich struct Entry {}
+pub shared rich struct SharedEntry {}
+wrapper Logged {}
 
-// 函数形参列表（独立组件，待接入函数声明）
+// 全局字段与全局函数（与类成员走同一条解析路径）
+pub const MAX: i32
+var counter: i32
+func add(a: i32, b: i32): i32 { return (a + b) }
+pub static func helper()
+
+// 声明上的泛型参数（类型/函数/operator，含型变/约束/可变参数）
+class Container\<TElement> { ... }
+class Cache\<out TElement extends Comparable> { ... }
+func transform\<TInput, TResult>(input: TInput): TResult { ... }
+func update\<named TValues... with Serializable>(configs: named TValues...): bool { ... }
+pub operator plus\<TAnother extends Addable>(another: TAnother): V { ... }
+
+// 函数形参列表（已接入 func/operator/init 声明）
 (a: i32, b: String = "x", rest: named i32...)
 ```
 
@@ -165,11 +189,12 @@ yield sleep(1000)             // 带 alarm
 | SeqBlockParserLayer | ✅ | 17/17 | roadmap #11；volatile/using/named；语句+表达式双形态 |
 | ThrowStatement（内联） | ✅ | 10/10 | throw expression；配合 try-catch 构成完整异常系统 |
 | CoroutineOps（await/yield） | ✅ | 13/13 | roadmap #12；await 一元前缀运算符，yield 语句 |
-| GenericParametersParserLayer | ✅ | 21/21 | 声明/约束/型变/可变参数 |
-| ParameterListParserLayer | ✅ | 14/14 | 普通/默认/可变/具名可变 |
+| GenericParametersParserLayer | ✅ | 21/21 | 声明/约束/型变/可变参数；已接入类型/函数/operator 声明（M15） |
+| ParameterListParserLayer | ✅ | 14/14 | 普通/默认/可变/具名可变；已接入 func/operator/init 声明 |
 | PathParserLayer | ✅ | 含于各套件 | 符号路径 + `\<` 泛型实参 |
-| RootParserLayer | ✅ | 含于各套件 | 顶层分发 |
-| DeclarationParserLayer / ImportParserLayer | ⚠️ 骨架 | - | 早期骨架，待 P3/P4 重建 |
+| RootParserLayer | ✅ | 含于各套件 | 顶层分发（声明统一委托 DeclarationParserLayer） |
+| DeclarationParserLayer | ✅ 统一声明层 | 51/51（TypeDeclaration 套件） | 任何位置任何声明的唯一入口：全局/成员/嵌套共用一套状态机；声明泛型参数已接入（M15） |
+| ImportParserLayer | ⚠️ 骨架 | - | 早期骨架，待 P5 重建 |
 
 ---
 
@@ -179,17 +204,23 @@ yield sleep(1000)             // 带 alarm
 - **泛型语法 `\<...>`**：`<` 仅作小于号；Lexer 不合并 `>` 系列，`>=`/`>>`/`>>>` 由表达式层重组（详见 `SYNTAX.md` §3.6）
 - **表达式后缀链**：纯符号路径保持 PathParserLayer 的 Symbol 形态；`(`/`[`/`.`/`?.`/`\<` 后缀由 ExpressionParserLayer 链接，底座为表达式时才产生 MemberAccessASTNode
 - **独立 Layer 可测性**：`Parser.Parse(tokens, entryLayer)` 重载支持任意 Layer 独立驱动测试
+- **统一声明层**（M14，依据 SYNTAX.md §14.8）：canonical symbol 的类名段可为空、`.static.` 只是标记位，因此全局函数与成员方法结构同构——`DeclarationParserLayer` 一套状态机覆盖全局/成员/嵌套任何声明；`CallableDeclarationASTNode` 单节点覆盖 func/operator/init；成员统一挂 `ASTNode.Children`（已从 RootASTNode 上移到基类）
+- **EOF 哨兵收尾**（M14）：嵌套委托后父层可能还需一个终止 token 才能收敛，`Parser.Parse` 反复喂哨兵直到栈收敛或无进展（带 guard 防死循环）
 
 ---
 
 ## 5. 下一步计划
 
-**P2 完成！** 🎉
+**P3 进行中**（统一声明层 M14 + 声明泛型参数 M15 已落地，同时覆盖了 roadmap P4 的函数/init 声明主体）：
+
+- getter/setter（SYNTAX.md §9.4：类/struct 字段、全局变量、栈上 var/const 三处）
+- enum struct 的 `[]` case 列表（含参数化 case）
+- wrapper 的代理成员（`.proxy.*`）与 `like` 委托
+- init 参数映射语法（`_ -> field`）
 
 **后续**：
-- **P3**：类型声明（class/interface/struct/wrapper/enum，复用 GenericParametersParserLayer）
-- **P4**：函数声明（复用 ParameterListParserLayer + CodeBlockParserLayer）
-- **P5**：模块系统、wrapper 路径访问（`:`）
+- **P5**：模块系统（ImportParserLayer 重建）、wrapper 路径访问（`:`）
+- 再往后：语义分析、BIL 输出
 
 ---
 
@@ -200,13 +231,54 @@ yield sleep(1000)             // 带 alarm
 3. lambda 体与 if/switch 表达式分支体仍仅支持单表达式（CodeBlock 已落地，表达式分支的多语句接入留待后续）
 4. switch 仅表达式模式（SYNTAX 未定义语句形态）
 5. 复合赋值（`+=`/`-=` 等）未实现：Lexer 未合并这些 token，需重组机制
-6. 泛型参数/形参列表为独立组件，待 P3/P4 接入声明解析
-7. DeclarationParserLayer / ImportParserLayer 为早期骨架，将在 P3/P4 重建
-8. 4 个 nullable 编译警告（`Core/Utilities.cs`，不影响功能）
+6. 类型声明的待续项：getter/setter（§9.4）、enum `[]` case 列表、wrapper 代理成员与 `like` 委托、init 参数映射（`_ -> field`）
+7. ImportParserLayer 为早期骨架，将在 P5 重建
+8. 5 个 nullable 编译警告（`Core/Utilities.cs`，不影响功能）
 
 ---
 
 ## 7. 里程碑历史
+
+### 2026-07-26 · M15 声明泛型参数接入统一声明层
+- 类型/函数声明接入既有 `GenericParametersParserLayer`（roadmap P3 收尾第 1 项，不新建任何 Layer）：
+  - Callable（func/operator/init 共用）：`ParamsExpected` 状态识别 `\`，push 泛型层后**保持原状态**，列表弹出后仍等待 `(`
+  - 类型（class/interface/struct/enum struct/wrapper 共用）：`AfterTypeName` 状态识别 `\`，同样保持原状态，列表弹出后仍等待 `:` / `implements` / `{`
+  - 两处接入均不新增状态机状态，与 LambdaExpressionParserLayer 的既有接入模式一致（简洁优先三问：复用已有轮子，不加状态）
+  - 5 个类型节点的同名 `GenericParameters` 字段集中分派（新增 `SetGenericParameters`，与 `SetTypeName` 同一 pattern）
+- 覆盖 SYNTAX §3.6 全形态：多参数、out/in 型变、extends/supers/with 约束、可变/具名可变参数、型变+约束组合；全局函数与成员方法/operator 同一条路径；泛型列表位置与继承子句的先后关系符合规范（`Name\<T> : Base implements I {}`）
+- 测试：TypeDeclaration 36 → 51（+15：泛型类型/接口/struct/wrapper、泛型+继承+implements、全局与成员泛型函数、泛型 operator、约束、可变参数、型变+约束）；全量回归 2–19 无 FAIL
+- 测试总数 311 → 326
+
+### 2026-07-26 · M14 统一声明层：全局/成员/嵌套共用一套 infra
+- 核心依据 SYNTAX.md §14.8：canonical symbol 的类名段可为空、`.static.` 只是标记位，因此"全局函数"与"成员方法"结构同构——三类位置合并为一条代码路径，而不是各造轮子
+- `DeclarationParserLayer` 成为任何位置任何声明的唯一入口：
+  - 全局字段 / 类字段 → 复用 `VariableDeclarationParserLayer`
+  - 全局函数 / 方法 / static / operator / init → 同一套 Callable 状态，只改 `Kind`
+  - 参数列表 → 复用 `ParameterListParserLayer`；返回类型 / 基类 / 接口 → 复用 `TypeReferenceParserLayer`；函数体 → 复用 `CodeBlockParserLayer`
+  - 嵌套类型 → 类型体内递归 push 本层自身（与顶层同一路径）
+- 配套简化（删冗余，不加轮子）：
+  - 新增 `CallableDeclarationASTNode` 一个节点覆盖 func/operator/init（`CallableKind` 枚举）
+  - 删除 `DeclarationASTNode` 包装层（其 type 枚举与 Declaration 指针只是对 C# 节点类型的重复表达）
+  - 删除 5 个类型节点各自的 `CodeBlockASTNode Body` 字段，成员统一挂 `ASTNode.Children`（Children 从 RootASTNode 上移到基类）
+  - RootParserLayer 的 var/const 专用分支合并进通用声明分支
+- `Parser.cs` 修复 EOF 收尾：嵌套委托后父层仍需一个终止 token 才能收敛，原逻辑只喂一个哨兵便判定 `stack.Count > 1` → "Unexpected End"；改为反复喂哨兵直到栈收敛或无进展（带 guard 防死循环）
+- 规范判断：interface 的 `: Base` 按 SYNTAX §11 是父接口，落 `BaseInterfaces` 而非 `Interfaces`
+- 测试：TypeDeclaration 16 → 36（新增全局字段/全局函数、类成员、init/operator、继承与 implements 列表、三层嵌套类型）；全量回归 2–19 全绿（其中 5/6/9/10/11/12 由 EOF 修复恢复）
+- 测试总数 275 → 311
+
+### 2026-07-26 · 修复：TypeDeclaration 测试的 double-root 问题
+- 根因：`Parser.Parse` 内部已压入 RootParserLayer，测试又把 `new RootParserLayer(root)` 当 entryLayer 传入，栈里出现两个永不 pop 的 root 层，循环结束时 `stack.Count > 1` 触发 "Unexpected End"
+- 修复：测试改用 `parser.Parse(tokens)` 并取其返回值作为根节点（一行改动）
+- 同提交把「简洁优先三问」原则写入 CLAUDE.md / AGENTS.md（含项目内已验证的复用范例表）
+- 修完 TypeDeclaration 16/16 通过，套件 2–19 全量回归无失败
+
+### 2026-07-26 · M13 P3 类型声明解析基础（DeclarationParserLayer 重构）
+- 前置提交：5 个类型声明 AST 节点（Class/Interface/Struct/EnumStruct(+EnumCase)/Wrapper）+ 关键字补齐（pub/priv/open/abstract/singleton/shared/rich/implements/like/init/get/set 等）
+- 扩展现有 `DeclarationParserLayer` 骨架（不新建 Layer）解析类型声明头部：修饰符 → 类型名 → 继承/接口 → 体
+- 修饰符识别：pub, priv, open, abstract, singleton, shared, rich, static, override, async
+- 更新关键字数组：DeclarationKeywords/TypeKeywords 添加 enum，DeclarationDescriptors 添加全部新修饰符
+- 新增 TypeDeclarationTests 16 用例（简单声明、带修饰符、5 种类型），菜单注册选项 19
+- 提交时测试未过（WIP），由随后的 double-root 修复转绿
 
 ### 2026-07-26 · M12 CoroutineOps：await/yield（roadmap #12，P2 完成）
 - **await**：一元前缀运算符，在 ExpressionParserLayer 中处理（`IsPrefixUnaryOperator` 添加 `Keywords.AWAIT`）

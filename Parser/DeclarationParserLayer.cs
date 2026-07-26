@@ -13,7 +13,7 @@ namespace LatteCompiler
     ///   - operator / init          → 同上，只改 Kind
     ///   - 嵌套类型 / 顶层类型      → 类型体内递归 push 本层自身
     ///
-    /// 复用的既有 Layer：VariableDeclaration / ParameterList / TypeReference / CodeBlock。
+    /// 复用的既有 Layer：VariableDeclaration / ParameterList / GenericParameters / TypeReference / CodeBlock。
     /// </summary>
     public class DeclarationParserLayer : IParserLayer
     {
@@ -150,12 +150,23 @@ namespace LatteCompiler
         private ParserLayerResult OnParamsExpected(Token t, ParserLayerContext context)
         {
             if (t is LineBreakToken) return ParserLayerResult.Continue.Instance;
-            if (t is NotationToken n && n.Content == "(")
+            if (t is NotationToken n)
             {
-                state = State.AfterParams;
-                // 复用 ParameterListParserLayer（它自己吃掉 '(' 到 ')'）
-                return new ParserLayerResult.PushLayer(
-                    new ParameterListParserLayer(callable!.Parameters), true);
+                if (n.Content == "(")
+                {
+                    state = State.AfterParams;
+                    // 复用 ParameterListParserLayer（它自己吃掉 '(' 到 ')'）
+                    return new ParserLayerResult.PushLayer(
+                        new ParameterListParserLayer(callable!.Parameters), true);
+                }
+                if (n.Content == "\\")
+                {
+                    callable!.GenericParameters = new GenericParameterListASTNode(callable);
+                    // 复用 GenericParametersParserLayer（它自己吃掉 \< 到 >）；
+                    // 状态保持 ParamsExpected：泛型列表弹出后仍等待 (
+                    return new ParserLayerResult.PushLayer(
+                        new GenericParametersParserLayer(callable.GenericParameters), true);
+                }
             }
             throw context.RaiseError($"Expected '(' in declaration, got: {t}");
         }
@@ -242,6 +253,19 @@ namespace LatteCompiler
             }
         }
 
+        // 与 SetTypeName 同理：5 个类型节点的同名 GenericParameters 字段集中分派
+        private static void SetGenericParameters(ASTNode node, GenericParameterListASTNode gp)
+        {
+            switch (node)
+            {
+                case ClassDeclarationASTNode c: c.GenericParameters = gp; break;
+                case InterfaceDeclarationASTNode i: i.GenericParameters = gp; break;
+                case StructDeclarationASTNode s: s.GenericParameters = gp; break;
+                case EnumStructDeclarationASTNode e: e.GenericParameters = gp; break;
+                case WrapperDeclarationASTNode w: w.GenericParameters = gp; break;
+            }
+        }
+
         private ParserLayerResult OnTypeName(Token t, ParserLayerContext context)
         {
             if (t is LineBreakToken) return ParserLayerResult.Continue.Instance;
@@ -260,6 +284,14 @@ namespace LatteCompiler
 
             if (t is NotationToken n)
             {
+                if (n.Content == "\\")
+                {
+                    // 类型名后的泛型形参列表：复用 GenericParametersParserLayer；
+                    // 状态保持 AfterTypeName：泛型列表弹出后仍等待 : / implements / {
+                    var gp = new GenericParameterListASTNode(typeNode);
+                    SetGenericParameters(typeNode!, gp);
+                    return new ParserLayerResult.PushLayer(new GenericParametersParserLayer(gp), true);
+                }
                 if (n.Content == ":")
                 {
                     state = State.BaseExpected;
