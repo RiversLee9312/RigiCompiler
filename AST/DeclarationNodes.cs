@@ -125,4 +125,131 @@ namespace LatteCompiler
 
         public override ASTNodeType NodeType => ASTNodeType.Declaration;
     }
+
+    // ===== 类型声明（P3）=====
+
+    // 类声明（SYNTAX.md §9）
+    // [modifiers] class Name [<generics>] [: BaseClass] [implements Interface1, Interface2] { ... }
+    public class ClassDeclarationASTNode : ASTNode
+    {
+        public List<string> Modifiers;                 // pub, open, abstract, singleton, shared, etc.
+        public string ClassName;
+        public GenericParameterListASTNode? GenericParameters;  // 可选泛型参数
+        public TypeReferenceASTNode? BaseClass;        // 可选基类
+        public List<TypeReferenceASTNode> Interfaces;  // implements 接口列表
+        public CodeBlockASTNode Body;                  // 类体（暂时用 CodeBlock，后续改为专门的 ClassBodyASTNode）
+
+        public ClassDeclarationASTNode(ASTNode? parent) : base(parent)
+        {
+            Modifiers = new List<string>();
+            ClassName = null!;
+            GenericParameters = null;
+            BaseClass = null;
+            Interfaces = new List<TypeReferenceASTNode>();
+            Body = new CodeBlockASTNode(this);
+        }
+
+        public override ASTNodeType NodeType => ASTNodeType.ClassDeclaration;
+    }
+
+    // 接口声明（SYNTAX.md §11）
+    public class InterfaceDeclarationASTNode : ASTNode
+    {
+        public List<string> Modifiers;
+        public string InterfaceName;
+        public GenericParameterListASTNode? GenericParameters;
+        public List<TypeReferenceASTNode> BaseInterfaces;  // interface 可以继承多个 interface
+        public CodeBlockASTNode Body;
+
+        public InterfaceDeclarationASTNode(ASTNode? parent) : base(parent)
+        {
+            Modifiers = new List<string>();
+            InterfaceName = null!;
+            GenericParameters = null;
+            BaseInterfaces = new List<TypeReferenceASTNode>();
+            Body = new CodeBlockASTNode(this);
+        }
+
+        public override ASTNodeType NodeType => ASTNodeType.InterfaceDeclaration;
+    }
+
+    // struct 声明（SYNTAX.md §10）
+    public class StructDeclarationASTNode : ASTNode
+    {
+        public List<string> Modifiers;                 // pub, open, rich, shared, etc.
+        public string StructName;
+        public GenericParameterListASTNode? GenericParameters;
+        public TypeReferenceASTNode? BaseStruct;       // struct 只能继承一个 struct
+        public List<TypeReferenceASTNode> Interfaces;
+        public CodeBlockASTNode Body;
+
+        public StructDeclarationASTNode(ASTNode? parent) : base(parent)
+        {
+            Modifiers = new List<string>();
+            StructName = null!;
+            GenericParameters = null;
+            BaseStruct = null;
+            Interfaces = new List<TypeReferenceASTNode>();
+            Body = new CodeBlockASTNode(this);
+        }
+
+        public override ASTNodeType NodeType => ASTNodeType.StructDeclaration;
+    }
+
+    // enum struct 声明（SYNTAX.md §12）
+    public class EnumStructDeclarationASTNode : ASTNode
+    {
+        public List<string> Modifiers;
+        public string EnumName;
+        public GenericParameterListASTNode? GenericParameters;
+        public CodeBlockASTNode Body;                  // enum 体（字段、方法）
+        public List<EnumCaseASTNode> Cases;            // [] 中的 case 列表
+
+        public EnumStructDeclarationASTNode(ASTNode? parent) : base(parent)
+        {
+            Modifiers = new List<string>();
+            EnumName = null!;
+            GenericParameters = null;
+            Body = new CodeBlockASTNode(this);
+            Cases = new List<EnumCaseASTNode>();
+        }
+
+        public override ASTNodeType NodeType => ASTNodeType.EnumStructDeclaration;
+    }
+
+    // enum case 定义
+    public class EnumCaseASTNode : ASTNode
+    {
+        public string CaseName;
+        public List<ArgumentASTNode> Arguments;        // case 的参数（可能包含 _ 占位符）
+        public int? DiscriminantValue;                 // 可选的显式判别值（-> N）
+
+        public EnumCaseASTNode(ASTNode? parent) : base(parent)
+        {
+            CaseName = null!;
+            Arguments = new List<ArgumentASTNode>();
+            DiscriminantValue = null;
+        }
+
+        public override ASTNodeType NodeType => ASTNodeType.EnumCase;
+    }
+
+    // wrapper 声明（SYNTAX.md §14）
+    public class WrapperDeclarationASTNode : ASTNode
+    {
+        public List<string> Modifiers;
+        public string WrapperName;
+        public GenericParameterListASTNode? GenericParameters;
+        public CodeBlockASTNode Body;
+
+        public WrapperDeclarationASTNode(ASTNode? parent) : base(parent)
+        {
+            Modifiers = new List<string>();
+            WrapperName = null!;
+            GenericParameters = null;
+            Body = new CodeBlockASTNode(this);
+        }
+
+        public override ASTNodeType NodeType => ASTNodeType.WrapperDeclaration;
+    }
 }

@@ -281,6 +281,21 @@ namespace LatteCompiler
         public const string VOLATILE = "volatile";
         public const string AWAIT = "await";
         public const string YIELD = "yield";
+        public const string ENUM = "enum";
+        public const string OPEN = "open";
+        public const string ABSTRACT = "abstract";
+        public const string SINGLETON = "singleton";
+        public const string SHARED = "shared";
+        public const string RICH = "rich";
+        public const string STATIC = "static";
+        public const string OVERRIDE = "override";
+        public const string IMPLEMENTS = "implements";
+        public const string LIKE = "like";
+        public const string INIT = "init";
+        public const string GET = "get";
+        public const string SET = "set";
+        public const string PUB = "pub";
+        public const string PRIV = "priv";
         // 控制流关键字数组
         public static readonly string[] ControlStreamKeywords = 
         {
@@ -431,7 +446,13 @@ namespace LatteCompiler
         SeqBlockExpression,
         UsingBinding,
         ThrowStatement,
-        YieldStatement
+        YieldStatement,
+        ClassDeclaration,
+        InterfaceDeclaration,
+        StructDeclaration,
+        EnumStructDeclaration,
+        EnumCase,
+        WrapperDeclaration
     }
     public class AcquisitionExpressionASTNode : ASTNode
     {
