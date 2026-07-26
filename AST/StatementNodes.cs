@@ -189,4 +189,19 @@ namespace LatteCompiler
 
         public override ASTNodeType NodeType => ASTNodeType.ThrowStatement;
     }
+
+    // yield 语句（SYNTAX.md §7.5）：
+    // yield                    // 裸 yield
+    // yield alarm              // 带 alarm 表达式
+    public class YieldStatementASTNode : ASTNode
+    {
+        public ExpressionASTNode? Alarm;           // 可选的 alarm 表达式
+
+        public YieldStatementASTNode(ASTNode? parent) : base(parent)
+        {
+            Alarm = null;
+        }
+
+        public override ASTNodeType NodeType => ASTNodeType.YieldStatement;
+    }
 }

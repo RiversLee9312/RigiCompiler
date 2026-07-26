@@ -38,7 +38,8 @@ namespace LatteCompiler
             LoopControlLabel,    // break/continue 已读：可选 @标签
             LoopControlLabelName,// break/continue 的 @ 已读：等待标签名
             LoopControlEnd,      // break/continue 标签已读：等待换行或 }
-            ThrowValue           // throw 已读：等待异常表达式
+            ThrowValue,          // throw 已读：等待异常表达式
+            YieldValue           // yield 已读：可选 alarm 表达式或直接结束
         }
 
         private State state = State.OpenBraceExpected;
@@ -51,6 +52,7 @@ namespace LatteCompiler
         private ReturnStatementASTNode? pendingReturn = null;
         private LoopControlStatementASTNode? pendingLoopControl = null;
         private ThrowStatementASTNode? pendingThrow = null;
+        private YieldStatementASTNode? pendingYield = null;
 
         public CodeBlockParserLayer(CodeBlockASTNode target)
         {
@@ -91,6 +93,8 @@ namespace LatteCompiler
                     return HandleLoopControlEnd(currentToken, context);
                 case State.ThrowValue:
                     return HandleThrowValue(currentToken, context);
+                case State.YieldValue:
+                    return HandleYieldValue(currentToken, context);
                 default:
                     context.RaiseError($"Invalid CodeBlockParserLayer state: {state}");
                     return new ParserLayerResult.PopLayer(false);
@@ -189,6 +193,14 @@ namespace LatteCompiler
                 {
                     pendingThrow = new ThrowStatementASTNode(targetNode);
                     state = State.ThrowValue;
+                    return ParserLayerResult.Continue.Instance;
+                }
+
+                // yield 语句（可选 alarm 表达式）
+                if (wt.Content == Keywords.YIELD)
+                {
+                    pendingYield = new YieldStatementASTNode(targetNode);
+                    state = State.YieldValue;
                     return ParserLayerResult.Continue.Instance;
                 }
             }
@@ -405,6 +417,36 @@ namespace LatteCompiler
             pendingThrow = null;
             state = State.StatementEnd;
             pendingResultHandler = result => throwNode.Exception = (ExpressionASTNode)result!;
+            return new ParserLayerResult.PushLayer(new ExpressionParserLayer(targetNode), true);
+        }
+
+        // yield 已读：可选 alarm 表达式或直接结束
+        private ParserLayerResult HandleYieldValue(Token currentToken, ParserLayerContext context)
+        {
+            // 换行：裸 yield
+            if (currentToken is LineBreakToken)
+            {
+                targetNode.Children.Add(pendingYield!);
+                pendingYield = null;
+                state = State.StatementDispatch;
+                return ParserLayerResult.Continue.Instance;
+            }
+
+            // }：裸 yield 后直接结束块
+            if (currentToken is NotationToken nt && nt.Content == "}")
+            {
+                targetNode.Children.Add(pendingYield!);
+                pendingYield = null;
+                return new ParserLayerResult.PopLayer(false);
+            }
+
+            // 其他：带 alarm 表达式
+            // 先把节点入列并置空 pendingYield，handler 捕获局部变量
+            var yieldNode = pendingYield!;
+            targetNode.Children.Add(yieldNode);
+            pendingYield = null;
+            state = State.StatementEnd;
+            pendingResultHandler = result => yieldNode.Alarm = (ExpressionASTNode)result!;
             return new ParserLayerResult.PushLayer(new ExpressionParserLayer(targetNode), true);
         }
 

@@ -20,7 +20,8 @@ Console.WriteLine("14. Run Loop tests");
 Console.WriteLine("15. Run TryCatchFinally tests");
 Console.WriteLine("16. Run SeqBlock tests");
 Console.WriteLine("17. Run ThrowStatement tests");
-Console.Write("Enter choice (1-17): ");
+Console.WriteLine("18. Run CoroutineOps tests");
+Console.Write("Enter choice (1-18): ");
 
 string? choice = Console.ReadLine();
 
@@ -118,6 +119,12 @@ else if (choice == "17")
 {
     // 运行 throw 语句测试
     ThrowStatementTests.RunAll();
+    return;
+}
+else if (choice == "18")
+{
+    // 运行协程操作测试
+    CoroutineOpsTests.RunAll();
     return;
 }
 

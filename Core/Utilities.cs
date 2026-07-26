@@ -279,6 +279,8 @@ namespace LatteCompiler
         public const string SEQ = "seq";
         public const string USING = "using";
         public const string VOLATILE = "volatile";
+        public const string AWAIT = "await";
+        public const string YIELD = "yield";
         // 控制流关键字数组
         public static readonly string[] ControlStreamKeywords = 
         {
@@ -428,7 +430,8 @@ namespace LatteCompiler
         CatchClause,
         SeqBlockExpression,
         UsingBinding,
-        ThrowStatement
+        ThrowStatement,
+        YieldStatement
     }
     public class AcquisitionExpressionASTNode : ASTNode
     {

@@ -6,8 +6,8 @@
 > 计划与分工见 `compiler/frontend/PARSER_ROADMAP.md`；本文档只记录「现状」。
 
 **报告日期**: 2026-07-26
-**当前阶段**: P2 进行中（异常处理系统完成），P0、P1 已完成
-**测试总计**: 262/262 通过 (100%)
+**当前阶段**: **P2 完成**（语句系统全部完成），P0、P1 已完成
+**测试总计**: 275/275 通过 (100%)
 **版本控制**: Git `main` 分支（2026-07-17 首次提交）
 
 ---
@@ -27,6 +27,7 @@
 | M9 | TryCatchFinallyParserLayer（roadmap #10） | ✅ | 2026-07-26 | 9/9 |
 | M10 | SeqBlockParserLayer（roadmap #11，含表达式形态） | ✅ | 2026-07-26 | 17/17 |
 | M11 | throw 语句 | ✅ | 2026-07-26 | 10/10 |
+| M12 | CoroutineOps：await/yield（roadmap #12） | ✅ | 2026-07-26 | 13/13 |
 
 ---
 
@@ -130,6 +131,12 @@ var r = seq named calc {
     return@calc getValue()
 }
 
+// await/yield 协程操作（SYNTAX.md §7.5）
+const user = await loadUser(42)
+await flushLogs()
+yield                         // 裸 yield
+yield sleep(1000)             // 带 alarm
+
 // 泛型参数列表（独立组件，待接入类型/函数声明）
 \<TElement>, \<out T, in U>, \<named TValues... with Serializable>
 
@@ -157,6 +164,7 @@ var r = seq named calc {
 | TryCatchFinallyParserLayer | ✅ | 9/9 | roadmap #10；多 catch 子句、finally(e)、嵌套 try |
 | SeqBlockParserLayer | ✅ | 17/17 | roadmap #11；volatile/using/named；语句+表达式双形态 |
 | ThrowStatement（内联） | ✅ | 10/10 | throw expression；配合 try-catch 构成完整异常系统 |
+| CoroutineOps（await/yield） | ✅ | 13/13 | roadmap #12；await 一元前缀运算符，yield 语句 |
 | GenericParametersParserLayer | ✅ | 21/21 | 声明/约束/型变/可变参数 |
 | ParameterListParserLayer | ✅ | 14/14 | 普通/默认/可变/具名可变 |
 | PathParserLayer | ✅ | 含于各套件 | 符号路径 + `\<` 泛型实参 |
@@ -176,10 +184,12 @@ var r = seq named calc {
 
 ## 5. 下一步计划
 
-**P2 剩余部分**：
-1. CoroutineOpsParserLayer（roadmap #12，await/yield/async）
+**P2 完成！** 🎉
 
-**后续**：P3 类型声明（复用 GenericParametersParserLayer）、P4 函数声明（复用 ParameterListParserLayer + CodeBlockParserLayer）
+**后续**：
+- **P3**：类型声明（class/interface/struct/wrapper/enum，复用 GenericParametersParserLayer）
+- **P4**：函数声明（复用 ParameterListParserLayer + CodeBlockParserLayer）
+- **P5**：模块系统、wrapper 路径访问（`:`）
 
 ---
 
@@ -190,14 +200,25 @@ var r = seq named calc {
 3. lambda 体与 if/switch 表达式分支体仍仅支持单表达式（CodeBlock 已落地，表达式分支的多语句接入留待后续）
 4. switch 仅表达式模式（SYNTAX 未定义语句形态）
 5. 复合赋值（`+=`/`-=` 等）未实现：Lexer 未合并这些 token，需重组机制
-6. await/yield 协程操作未实现（roadmap #12）
-7. 泛型参数/形参列表为独立组件，待 P3/P4 接入声明解析
-8. DeclarationParserLayer / ImportParserLayer 为早期骨架，将在 P3/P4 重建
-9. 4 个 nullable 编译警告（`Core/Utilities.cs`，不影响功能）
+6. 泛型参数/形参列表为独立组件，待 P3/P4 接入声明解析
+7. DeclarationParserLayer / ImportParserLayer 为早期骨架，将在 P3/P4 重建
+8. 4 个 nullable 编译警告（`Core/Utilities.cs`，不影响功能）
 
 ---
 
 ## 7. 里程碑历史
+
+### 2026-07-26 · M12 CoroutineOps：await/yield（roadmap #12，P2 完成）
+- **await**：一元前缀运算符，在 ExpressionParserLayer 中处理（`IsPrefixUnaryOperator` 添加 `Keywords.AWAIT`）
+- await 产生 UnaryExpressionASTNode，operator 为 "await"
+- await 可在变量初始化、if 条件、return 等任意表达式位置使用
+- **yield**：语句，在 CodeBlockParserLayer 中内联处理（类似 return/throw）
+- YieldStatementASTNode：包含可选的 Alarm 表达式
+- 裸 yield（不带表达式）：直接结束当前执行段
+- yield alarm（带表达式）：委托 ExpressionParserLayer 解析 alarm
+- 添加 Keywords.AWAIT 和 Keywords.YIELD
+- 测试 262 → 275（+13：await 表达式、yield 语句、await+yield 组合、不同上下文）
+- **P2 语句系统全部完成！**
 
 ### 2026-07-26 · M11 throw 语句
 - 在 CodeBlockParserLayer 中内联处理 throw 语句（类似 return/break/continue）

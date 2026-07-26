@@ -695,8 +695,7 @@ namespace LatteCompiler
 
             if (token is WordToken wt)
             {
-                return wt.Content == Keywords.NOT;
-                // await 暂不支持，需要先添加到 Keywords
+                return wt.Content == Keywords.NOT || wt.Content == Keywords.AWAIT;
             }
 
             return false;
