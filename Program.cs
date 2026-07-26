@@ -19,7 +19,8 @@ Console.WriteLine("13. Run CodeBlock tests");
 Console.WriteLine("14. Run Loop tests");
 Console.WriteLine("15. Run TryCatchFinally tests");
 Console.WriteLine("16. Run SeqBlock tests");
-Console.Write("Enter choice (1-16): ");
+Console.WriteLine("17. Run ThrowStatement tests");
+Console.Write("Enter choice (1-17): ");
 
 string? choice = Console.ReadLine();
 
@@ -111,6 +112,12 @@ else if (choice == "16")
 {
     // 运行 seq 块测试
     SeqBlockTests.RunAll();
+    return;
+}
+else if (choice == "17")
+{
+    // 运行 throw 语句测试
+    ThrowStatementTests.RunAll();
     return;
 }
 

@@ -176,4 +176,17 @@ namespace LatteCompiler
 
         public override ASTNodeType NodeType => ASTNodeType.UsingBinding;
     }
+
+    // throw 语句：throw expression
+    public class ThrowStatementASTNode : ASTNode
+    {
+        public ExpressionASTNode Exception;        // 要抛出的异常表达式
+
+        public ThrowStatementASTNode(ASTNode? parent) : base(parent)
+        {
+            Exception = null!;
+        }
+
+        public override ASTNodeType NodeType => ASTNodeType.ThrowStatement;
+    }
 }

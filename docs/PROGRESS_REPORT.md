@@ -6,8 +6,8 @@
 > 计划与分工见 `compiler/frontend/PARSER_ROADMAP.md`；本文档只记录「现状」。
 
 **报告日期**: 2026-07-26
-**当前阶段**: P2 进行中（M10 seq 块完成，含表达式形态），P0、P1 已完成
-**测试总计**: 252/252 通过 (100%)
+**当前阶段**: P2 进行中（异常处理系统完成），P0、P1 已完成
+**测试总计**: 262/262 通过 (100%)
 **版本控制**: Git `main` 分支（2026-07-17 首次提交）
 
 ---
@@ -26,6 +26,7 @@
 | M8 | P1 收尾（Lambda/if/switch 表达式 + typeOf/as/is） | ✅ | 2026-07-18 | 39/39 |
 | M9 | TryCatchFinallyParserLayer（roadmap #10） | ✅ | 2026-07-26 | 9/9 |
 | M10 | SeqBlockParserLayer（roadmap #11，含表达式形态） | ✅ | 2026-07-26 | 17/17 |
+| M11 | throw 语句 | ✅ | 2026-07-26 | 10/10 |
 
 ---
 
@@ -84,7 +85,7 @@ for (i in 0 to 10) named outer { break@outer }
 while (condition) { doSomething() }
 do { doSomething() } while (condition)
 
-// try-catch-finally（SYNTAX.md §8）
+// try-catch-finally（SYNTAX.md §8）：完整异常处理系统
 try {
     riskyOperation()
 } catch (e: IOException) {
@@ -94,6 +95,13 @@ try {
 } finally(e) {
     // e 为异常或 null
     cleanup()
+}
+
+// throw 语句：抛出异常
+throw new IOException("File not found")
+throw getError()
+if (invalid) {
+    throw new ValidationError()
 }
 
 // seq 块（SYNTAX.md §6）：作用域/using 资源管理/named 标签/表达式形态
@@ -148,6 +156,7 @@ var r = seq named calc {
 | LoopParserLayer | ✅ | 15/15 | for-each/范围/while/do-while/named 标签 |
 | TryCatchFinallyParserLayer | ✅ | 9/9 | roadmap #10；多 catch 子句、finally(e)、嵌套 try |
 | SeqBlockParserLayer | ✅ | 17/17 | roadmap #11；volatile/using/named；语句+表达式双形态 |
+| ThrowStatement（内联） | ✅ | 10/10 | throw expression；配合 try-catch 构成完整异常系统 |
 | GenericParametersParserLayer | ✅ | 21/21 | 声明/约束/型变/可变参数 |
 | ParameterListParserLayer | ✅ | 14/14 | 普通/默认/可变/具名可变 |
 | PathParserLayer | ✅ | 含于各套件 | 符号路径 + `\<` 泛型实参 |
@@ -169,8 +178,6 @@ var r = seq named calc {
 
 **P2 剩余部分**：
 1. CoroutineOpsParserLayer（roadmap #12，await/yield/async）
-2. throw 语句实现（关键字已定义）
-3. switch 语句模式评估（SYNTAX 当前仅定义 switch 表达式，语句形态待规范明确）
 
 **后续**：P3 类型声明（复用 GenericParametersParserLayer）、P4 函数声明（复用 ParameterListParserLayer + CodeBlockParserLayer）
 
@@ -183,15 +190,23 @@ var r = seq named calc {
 3. lambda 体与 if/switch 表达式分支体仍仅支持单表达式（CodeBlock 已落地，表达式分支的多语句接入留待后续）
 4. switch 仅表达式模式（SYNTAX 未定义语句形态）
 5. 复合赋值（`+=`/`-=` 等）未实现：Lexer 未合并这些 token，需重组机制
-6. throw 语句未实现（关键字已定义）
-7. await/yield 协程操作未实现（roadmap #12）
-8. 泛型参数/形参列表为独立组件，待 P3/P4 接入声明解析
-9. DeclarationParserLayer / ImportParserLayer 为早期骨架，将在 P3/P4 重建
-10. 4 个 nullable 编译警告（`Core/Utilities.cs`，不影响功能）
+6. await/yield 协程操作未实现（roadmap #12）
+7. 泛型参数/形参列表为独立组件，待 P3/P4 接入声明解析
+8. DeclarationParserLayer / ImportParserLayer 为早期骨架，将在 P3/P4 重建
+9. 4 个 nullable 编译警告（`Core/Utilities.cs`，不影响功能）
 
 ---
 
 ## 7. 里程碑历史
+
+### 2026-07-26 · M11 throw 语句
+- 在 CodeBlockParserLayer 中内联处理 throw 语句（类似 return/break/continue）
+- ThrowStatementASTNode：包含异常表达式，必须紧跟 throw 关键字
+- throw 后委托 ExpressionParserLayer 解析异常表达式
+- 状态机：throw 已读 → ThrowValue（解析表达式）→ StatementEnd
+- 配合 try-catch-finally 构成完整异常处理系统
+- 测试 252 → 262（+10：简单 throw、throw 表达式、throw 构造、配合 try-catch、不同上下文、错误用例）
+- 异常处理系统完整：try-catch-finally（捕获）+ throw（抛出）
 
 ### 2026-07-26 · M10 SeqBlockParserLayer（roadmap #11，含表达式形态）
 - SeqBlockExpressionASTNode：从 StatementNode 移至 ExpressionNode，继承自 ExpressionASTNode，实现语句+表达式双形态

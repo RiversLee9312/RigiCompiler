@@ -427,7 +427,8 @@ namespace LatteCompiler
         TryCatchFinallyStatement,
         CatchClause,
         SeqBlockExpression,
-        UsingBinding
+        UsingBinding,
+        ThrowStatement
     }
     public class AcquisitionExpressionASTNode : ASTNode
     {

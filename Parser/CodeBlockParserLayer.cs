@@ -37,7 +37,8 @@ namespace LatteCompiler
             ReturnValue,         // return@标签 已读：可选值表达式
             LoopControlLabel,    // break/continue 已读：可选 @标签
             LoopControlLabelName,// break/continue 的 @ 已读：等待标签名
-            LoopControlEnd       // break/continue 标签已读：等待换行或 }
+            LoopControlEnd,      // break/continue 标签已读：等待换行或 }
+            ThrowValue           // throw 已读：等待异常表达式
         }
 
         private State state = State.OpenBraceExpected;
@@ -49,6 +50,7 @@ namespace LatteCompiler
         private ExpressionASTNode? pendingExpression = null;       // 表达式语句/赋值目标
         private ReturnStatementASTNode? pendingReturn = null;
         private LoopControlStatementASTNode? pendingLoopControl = null;
+        private ThrowStatementASTNode? pendingThrow = null;
 
         public CodeBlockParserLayer(CodeBlockASTNode target)
         {
@@ -87,6 +89,8 @@ namespace LatteCompiler
                     return HandleLoopControlLabelName(currentToken, context);
                 case State.LoopControlEnd:
                     return HandleLoopControlEnd(currentToken, context);
+                case State.ThrowValue:
+                    return HandleThrowValue(currentToken, context);
                 default:
                     context.RaiseError($"Invalid CodeBlockParserLayer state: {state}");
                     return new ParserLayerResult.PopLayer(false);
@@ -177,6 +181,14 @@ namespace LatteCompiler
                         IsBreak = wt.Content == Keywords.BREAK
                     };
                     state = State.LoopControlLabel;
+                    return ParserLayerResult.Continue.Instance;
+                }
+
+                // throw 语句（必须跟异常表达式）
+                if (wt.Content == Keywords.THROW)
+                {
+                    pendingThrow = new ThrowStatementASTNode(targetNode);
+                    state = State.ThrowValue;
                     return ParserLayerResult.Continue.Instance;
                 }
             }
@@ -375,6 +387,25 @@ namespace LatteCompiler
 
             context.RaiseError($"Expected line break or '}}' after break/continue label, got: {currentToken}");
             return new ParserLayerResult.PopLayer(false);
+        }
+
+        // throw 已读：解析异常表达式
+        private ParserLayerResult HandleThrowValue(Token currentToken, ParserLayerContext context)
+        {
+            // 跳过换行
+            if (currentToken is LineBreakToken)
+            {
+                return ParserLayerResult.Continue.Instance;
+            }
+
+            // throw 必须跟一个表达式
+            // 先把节点入列并置空 pendingThrow，handler 捕获局部变量
+            var throwNode = pendingThrow!;
+            targetNode.Children.Add(throwNode);
+            pendingThrow = null;
+            state = State.StatementEnd;
+            pendingResultHandler = result => throwNode.Exception = (ExpressionASTNode)result!;
+            return new ParserLayerResult.PushLayer(new ExpressionParserLayer(targetNode), true);
         }
 
         private void CompleteLoopControl()
