@@ -8,7 +8,11 @@ namespace LatteCompiler
     /// <summary>
     /// 统一 AST 遍历基建（M28）：深度优先先序（父先于子）。
     ///
-    /// 子节点枚举的唯一实现（ASTIntegrityValidator 与 AstJsonlSerializer 共用）：
+    /// 遍历逻辑可重载：VisitNode（遍历骨架）与 EnumerateChildren（子节点来源）
+    /// 均为 virtual，实现方可整体替换遍历方式或仅替换子节点枚举；
+    /// 默认实现即下述反射逻辑（AstStructureReflection）。
+    ///
+    /// 默认子节点枚举（ASTIntegrityValidator 与 AstJsonlSerializer 共用）：
     /// 只走以 [ChildAstNode] 标注的字段（Public+NonPublic 实例）与公共可读无参属性；
     /// 值形态：单 ASTNode / 集合（via 带 [i] 下标）/ [AstCarrier] 对象或集合
     /// （深入其公共实例字段，via 复合为 member[i](CarrierType.Field)）。
@@ -20,14 +24,24 @@ namespace LatteCompiler
         // 深度优先先序遍历整棵 AST（先父后子）
         public void Visit(ASTNode root) => VisitNode(root, parent: null, via: null);
 
-        private void VisitNode(ASTNode node, ASTNode? parent, string? via)
+        // 遍历骨架（virtual：实现方可整体重载遍历逻辑）。
+        // 默认：深度优先先序——先 OnNode，再递归 EnumerateChildren 枚举出的子节点。
+        // 重载时不调用 base.VisitNode 即不再下钻该子树（剪枝）；
+        // 只想替换子节点来源/顺序时重载 EnumerateChildren 即可，不必动本方法。
+        protected virtual void VisitNode(ASTNode node, ASTNode? parent, string? via)
         {
             OnNode(node, parent, via);
-            foreach (var (child, childVia) in AstStructureReflection.EnumerateChildren(node))
+            foreach (var (child, childVia) in EnumerateChildren(node))
             {
                 VisitNode(child, node, childVia);
             }
         }
+
+        // 子节点枚举（virtual：实现方可替换子节点来源）。
+        // 默认走 [ChildAstNode] 反射（AstStructureReflection.EnumerateChildren）；
+        // 重载可手写枚举、调整顺序或剪枝，返回的 via 串原样传给子节点的 OnNode。
+        protected virtual IEnumerable<(ASTNode Child, string Via)> EnumerateChildren(ASTNode node)
+            => AstStructureReflection.EnumerateChildren(node);
 
         // 访问一个节点。via：根为 null；单节点成员 = 成员名（如 Left、expression）；
         // 集合元素 = member[i]；carrier 字段 = member[i](CarrierType.Field)

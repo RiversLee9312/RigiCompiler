@@ -1,6 +1,6 @@
 # Frontend 数据类型说明
 
-本文档描述 LatteCompiler Frontend 阶段**实际使用**的数据类型（与当前代码一致，2026-07-17 修订）。
+本文档描述 LatteCompiler Frontend 阶段**实际使用**的数据类型（与当前代码一致，2026-07-27 修订）。
 
 ## 1. 位置信息
 
@@ -11,25 +11,27 @@
 
 ## 2. Token 类型（词法分析器输出）
 
-位于 `Core/Utilities.cs`。**Token**: 抽象基类，含 `Content`、`Type`、`CharRange`。
+位于 `Lexer/Tokens.cs`（M30 起；符号常量 `Notations` 在 `Lexer/Notations.cs`）。
+**Token**: 抽象基类，含 `Content`、`Type`、`CharRange`。
 
 | Token 类型 | TokenType | 说明 |
 |-----------|-----------|------|
 | **WordToken** | Word | 单词：标识符、关键字、数字字面量片段 |
 | **StringToken** | String | 字符串字面量（含插值原文） |
 | **NotationToken** | Notation | 符号：单字符（`(`、`.`、`<` 等）或多字符（`==`、`->`、`<=` 等） |
-| **CommentToken** | Comment | 注释 |
+| **CommentToken** | Comment | 注释（Parser 主循环统一跳过，不参与语法） |
 | **LineBreakToken** | LineBreak | 换行（Latte 的语句终止符） |
+| **EndOfFileToken** | EndOfFile | 文件结束（M25 起为正式 token）：Lexer 在输出末尾追加，只由 RootParserLayer 消费 |
 
 注意：
 
-- 关键字**不是**独立 Token 类型——以 WordToken 形式出现，由 Parser 比对 `Keywords` 常量识别。
+- 关键字**不是**独立 Token 类型——以 WordToken 形式出现，由 Parser 比对 `Keywords` 常量识别（`Parser/Keywords.cs`）。
 - `>` 系列（`>=`、`>>`、`>>>`）**不合并**为单个 token（嵌套泛型闭合需要独立 `>`）；由 ExpressionParserLayer 在运算符状态下重组。
 - Lexer 不理解语义：`3.14` 输出 `Word "3"` + `Notation "."` + `Word "14"`，由 LiteralParserLayer 组合。
 
 ## 3. AST 节点类型（语法分析器输出）
 
-**ASTNode**: 抽象基类（`Parent` 指针、`Span`），`Core/Utilities.cs`。
+**ASTNode**: 抽象基类（`Parent` 指针、`Span`），`AST/ASTNode.cs`（M30 起）。
 子节点容器不是基类共有字段（M29）：各节点以语义明确的 [ChildAstNode] 字段自持
 （`RootASTNode.Declarations`、`CodeBlockASTNode.Statements`、类型节点 `Members`）。
 `Span`（`CharRange?`，M28）是节点的源码范围：层目标由 Parser 主循环按 token 流经
@@ -38,22 +40,23 @@
 节点类型一律用 CLR 类型判断（原 ASTNodeType 枚举已删除）；装子节点的字段/属性以
 `[ChildAstNode]` 标注、父指针以 `[ParentAstNode]` 标注，携带 ASTNode 的非节点对象
 （如 import 列表项 ImportItem struct）以 `[AstCarrier]` 标注——ASTVisitor（`AST/ASTVisitor.cs`，M28）
-以统一实现反射遍历，ASTIntegrityValidator 校验父子指针一致性与 Span 合法性，
+以统一实现反射遍历（遍历骨架与子节点枚举均为 virtual 可重载，M30），
+ASTIntegrityValidator 校验父子指针一致性与 Span 合法性，
 并审计「装 ASTNode 却未标注」的成员（M24/M28）。
 
-### 3.1 根与符号（`Core/Utilities.cs`，待逐步迁出）
+### 3.1 根与符号（`AST/ASTNode.cs` / `AST/SymbolNodes.cs` / `AST/ImportNodes.cs`，M30）
 - **RootASTNode**: 根节点（顶层条目挂 `Declarations`，M29）
 - **SymbolASTNode**: 符号节点（`symbol: Symbol`）
-- **ImportASTNode**: import 声明
-- **AcquisitionExpressionASTNode**: 老式获取表达式（待评估去留）
+- **ImportASTNode**: import 声明（列表项为 `[AstCarrier]` struct **ImportItem**）
 - 符号结构：**Symbol**（`elements: SymbolElementSet`）→ **SymbolElement**（`name` + `generics: SymbolSet`）
 
 ### 3.2 字面量（`AST/LiteralNodes.cs`）
 - **IntLiteralASTNode**（Value、IntType、IsHex；IntType 枚举：I32/I64/I16/I8/U32/U64/U16/U8）
 - **FloatLiteralASTNode**（Value、IsFloat）
 - **StringLiteralASTNode**（Value、HasInterpolation）
-- **CharLiteralASTNode**（占位，未实现）
 - **BoolLiteralASTNode**、**NullLiteralASTNode**
+
+（字符字面量未实现，见 `../../PROGRESS_REPORT.md` §6。）
 
 ### 3.3 类型引用（`AST/TypeNodes.cs`）
 - **TypeReferenceASTNode**: TypeSymbol（SymbolASTNode）、IsNullable
@@ -65,9 +68,9 @@
 - **ClassDeclarationASTNode**: Modifiers、ClassName、GenericParameters?、BaseClass?、Interfaces（成员挂 `Members`，M29）
 - **InterfaceDeclarationASTNode**: Modifiers、InterfaceName、GenericParameters?、BaseInterfaces
 - **StructDeclarationASTNode**: Modifiers、StructName、GenericParameters?、BaseStruct?、Interfaces
-- **EnumStructDeclarationASTNode**: Modifiers、EnumName、GenericParameters?、Cases（case 列表解析待实现）
+- **EnumStructDeclarationASTNode**: Modifiers、EnumName、GenericParameters?、Cases（`[]` case 列表，M17）
 - **EnumCaseASTNode**: CaseName、Arguments、DiscriminantValue?
-- **WrapperDeclarationASTNode**: Modifiers、WrapperName、GenericParameters?（entity/method/value 标识与 proxy 成员待实现）
+- **WrapperDeclarationASTNode**: Modifiers、WrapperName、GenericParameters?（`@WrapperTarget` 类型标识与 `.proxy.*` 代理成员，M20）
 - **wrapper 挂载接口**（M29）：`IWrapperAttachable`（`Annotations` 属性）+ `IEntity/IMethod/IValueWrapperAttachable` 三个分类标记接口；Variable→Value、Callable→Method、5 个类型节点（含 enum struct）→Entity；5 个类型节点的成员容器均为 `Members`
 - **GenericParameterListASTNode**: Parameters、Constraints
 - **GenericParameterASTNode**: Name、Variance（GenericVariance: None/Out/In）、IsVariadic、IsNamedVariadic
@@ -115,67 +118,35 @@
 | **ThrowStatementASTNode** | Exception | throw 语句 |
 | **YieldStatementASTNode** | Alarm? | yield / yield alarm |
 
-## 4. 符号表（语义分析器使用，`Core/FrontendTypesExtension.cs`）
+## 4. 异常类
 
-- **SymbolTable**: `Define(SymbolInfo)`、`Resolve(string)`、`ResolveInCurrentScope(string)`
-- **SymbolKind** 枚举：Variable、Parameter、Function、Class、Struct、Interface、Enum、Wrapper、Field、Method
-- **SymbolInfo** 子类（已实现）：**VariableSymbolInfo**、**FunctionSymbolInfo**、**ClassSymbolInfo**、**StructSymbolInfo**
+- **LexerException**、**ParserException**（`Core/Exceptions.cs`）——用户源码的词法/语法错误
+- **CompilerInternalException**（`AST/ASTIntegrityValidator.cs`）——编译器内部错误
+  （AST 完整性校验失败等「不可能发生」的状态，与用户语法错误严格区分）
 
-注意与 AST 的 `Symbol`（Utilities.cs）区分：前者是语义阶段已解析的符号定义，后者是源码中的符号引用（详见 `FRONTEND_ARCHITECTURE.md` §4.1）。
-
-## 5. 类型系统（类型检查器使用，`Core/FrontendTypesExtension.cs`）
-
-**TypeInfo** 抽象基类：`IsCompatibleWith`（子类型兼容）、`IsStrictlyEqual`（BIL 严格相等）、`IsValueType`/`IsObjectType`/`IsShared`/`IsRich`。
-
-已实现的子类：
-
-- **PrimitiveTypeInfo**（PrimitiveKind：i8..u64/float/double/bool/char/string）
-- **ClassTypeInfo**（IsShared）
-- **StructTypeInfo**（IsRich、IsShared）
-- **FunctionTypeInfo**
-- **ErrorTypeInfo**（错误恢复）、**UnknownTypeInfo**（类型推断）
-
-辅助枚举：**IntegerSuffix**（None/L/S/B/U/UL/US/UB）。
-
-接口/枚举/泛型/Nullable/Array/Map/Pair/Span/TypeOf 等 TypeInfo 子类尚未实现，将随语义分析阶段补充。
-
-## 6. 异常类
-
-- **LexerException**（`Core/Utilities.cs`）
-- **ParserException**（`Core/Utilities.cs`）
-- **SemanticException**、**TypeCheckException**（`Core/FrontendTypesExtension.cs`）
-
-## 7. 使用流程
+## 5. 使用流程
 
 ```
 Source Code
     ↓
-[Lexer] → List<Token>
+[Lexer] → List<Token>                           ✅ 已完成
     ↓
-[Parser] → AST (RootASTNode)                    ← 当前阶段（P0–P2 完成，P3 进行中）
+[Parser] → AST (RootASTNode)                    ✅ 已完成（P0–P5，含 M23–M30 重构）
     ↓
-[Symbol Table Builder] → SymbolTable + Symbol annotations
-    ↓
-[Type Checker] → TypeInfo annotations
-    ↓
-[Semantic Analyzer] → Validated AST
+[Semantic Analyzer] → Validated AST             ← 下一阶段
     ↓
 [BIL Generator] → BIL
 ```
 
-## 8. 关键设计决策
+## 6. 关键设计决策
 
-1. **可变 class + 公有字段**：AST 节点为可变 class、公有字段，配合层栈式 Parser 的原地构建与结果回填
-2. **Node 与 Info 分离**：AST 节点（*ASTNode）表示源码结构，TypeInfo/SymbolInfo 表示语义信息
-3. **双轨符号系统**：AST 的 Symbol（源码引用）与语义阶段的 SymbolInfo（已解析定义）分离
-4. **严格类型检查**：TypeInfo 同时支持 `IsCompatibleWith`（子类型）和 `IsStrictlyEqual`（BIL 需要）
-5. **Rich/Shared 建模**：在类型系统层面直接支持 rich 和 shared 属性
+1. **可变 class + 公有字段**：AST 节点为可变 class、公有字段，配合层栈式 Parser 的原地构建与施工目标协议
+2. Parser 架构决策（层栈 + TokenDisposition + 施工目标协议、无优先级实现、简洁优先三问等）
+   见 `../../../AGENTS.md` §4 与 `EXPRESSION_ARCHITECTURE.md`
 
-## 9. 下一步
+## 7. 下一步
 
 - ✅ 词法分析（Lexer）
-- ✅ 语法分析（Parser，P0–P2 完成，P3 类型声明统一层已落地）
-- ⏳ Parser P3 收尾（声明泛型、getter/setter、enum case 列表等）
-- ⏳ 符号表构建（Symbol Table Builder）
-- ⏳ 类型检查（Type Checker）
+- ✅ 语法分析（Parser，P0–P5 全部完成）
 - ⏳ 语义分析（Semantic Analyzer）
+- ⏳ BIL 输出

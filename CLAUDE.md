@@ -319,9 +319,8 @@ shared rich struct SharedData { }
 
 长期注意事项：
 
-- 字符字面量未实现（占位符）
+- 字符字面量未实现
 - Verbose 调试日志默认关闭；需要时加 `--verbose` 子命令（控制台）或 `--log-to PATH`（全量 JSONL 落盘）
-- `Core/Utilities.cs` 残留部分早期 AST 节点定义，新增节点优先放 `AST/` 目录
 
 ---
 

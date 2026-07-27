@@ -5,7 +5,7 @@
 
 **项目名**: LatteCompiler
 **语言**: C#（.NET 8.0，控制台程序，`Nullable` 与 `ImplicitUsings` 已启用）
-**开发阶段**: 早期 —— 编译器前端（Lexer + Parser）已完成（roadmap P0–P5 全部落地），Parser/PDA 大扫除（架构重构）、AST 结构标注（M24）、Lexer 修复（M25）、日志系统 + AST JSONL 序列化（M26）、CLI 插件化（M27）与 Lexer 位置修复 + AST Source Span + ASTVisitor 统一遍历（M28）已完成；下一阶段：语义分析、BIL 输出
+**开发阶段**: 早期 —— 编译器前端（Lexer + Parser）已完成（roadmap P0–P5 全部落地），Parser/PDA 大扫除（架构重构）、AST 结构标注（M24）、Lexer 修复（M25）、日志系统 + AST JSONL 序列化（M26）、CLI 插件化（M27）、Lexer 位置修复 + AST Source Span + ASTVisitor 统一遍历（M28）、AST 容器重构（M29）与 Utilities.cs 拆分 + ASTVisitor 遍历可重载 + 文档幽灵清理（M30）已完成；下一阶段：语义分析、BIL 输出
 **版本控制**: Git（`main` 分支，2026-07-17 首次提交，工作树干净；CI 见 `.github/workflows/ci.yml`）
 
 ---
@@ -76,6 +76,9 @@ LatteCompiler/
 ├── Program.cs                # 薄入口：命令行解析 → 分发 → 退出码（M27 起无交互菜单）
 ├── LatteCompiler.csproj      # net8.0，Exe，Nullable enable
 ├── AST/                      # AST 节点定义（按类别分文件）
+│   ├── ASTNode.cs               # AST 节点基类 + RootASTNode（M30 迁出 Utilities.cs）
+│   ├── SymbolNodes.cs           # 符号结构（Symbol/SymbolElement/SymbolASTNode）
+│   ├── ImportNodes.cs           # import 声明节点（ImportASTNode + [AstCarrier] ImportItem）
 │   ├── LiteralNodes.cs          # 字面量节点（LiteralASTNode 基类 + Int/Float/String/Bool/Null 等）
 │   ├── TypeNodes.cs             # 类型引用节点
 │   ├── DeclarationNodes.cs      # 声明节点（变量声明等）
@@ -88,6 +91,7 @@ LatteCompiler/
 ├── Parser/                   # Parser 层实现（每层一个文件）
 │   ├── Parser.cs                # 核心协议：IParserLayer、ParserLayerResult、
 │   │                            #   TokenDisposition、ParserLayerContext、Parser 主循环
+│   ├── Keywords.cs              # 关键字常量（Lexer 不区分关键字，由 Parser 比对识别，M30）
 │   ├── RootParserLayer.cs       # 解析入口层，负责识别顶层结构并委托
 │   ├── LiteralParserLayer.cs    # 字面量
 │   ├── TypeReferenceParserLayer.cs  # 类型引用（不含 rich/shared，见 §4.2）
@@ -110,11 +114,11 @@ LatteCompiler/
 │   └── DeclarationParserLayer.cs        # 统一声明层：全局/成员/嵌套任何声明（P3）
 ├── Lexer/                    # 词法分析
 │   ├── Lexer.cs                 # Tokenize(TextReader/string) 入口
+│   ├── Tokens.cs                # Token 定义（TokenType + Word/String/Notation/Comment/LineBreak/EndOfFile，M30）
+│   ├── Notations.cs             # 符号常量（单字符/多字符记号，M30）
 │   └── LexerLayers.cs
 ├── Core/                     # 基础设施
-│   ├── Utilities.cs             # Token 定义（含 EndOfFileToken）、Keywords、
-│   │                            #   以及部分未迁出的 AST 基类/节点（ASTNode、RootASTNode、
-│   │                            #   SymbolASTNode、ImportASTNode 等）
+│   ├── Exceptions.cs            # LexerException / ParserException（用户源码错误，M30）
 │   ├── CommandLine.cs           # CLI 内核：CommandLineMask（选项自描述元数据）、数据驱动解析器、
 │   │                            #   注册表、帮助文本程序生成（M27）
 │   ├── Commands.cs              # CLI 插件：compile/test/help 三个 COMMAND 及其 --sub-cmd（M27）
@@ -139,7 +143,7 @@ LatteCompiler/
 | `docs/compiler/frontend/PARSER_ROADMAP.md` / `docs/PROGRESS_REPORT.md` | Parser 路线图与进度 | ⭐⭐ |
 | `docs/compiler/frontend/EXPRESSION_ARCHITECTURE.md` / `docs/RICH_SHARED_CLARIFICATION.md` | 专项设计澄清 | ⭐⭐ |
 | `Parser/Parser.cs` | 层栈式 Parser 的核心协议 | ⭐⭐⭐ |
-| `Core/Utilities.cs` | Token/Keywords/AST 基类等核心数据结构 | ⭐⭐⭐ |
+| `Lexer/Tokens.cs` / `Parser/Keywords.cs` / `AST/ASTNode.cs` | Token/关键字/AST 基类等核心数据结构（M30 拆分自原 `Core/Utilities.cs`） | ⭐⭐⭐ |
 
 ---
 
@@ -319,7 +323,6 @@ dotnet run -- test --all    # 全量；或：dotnet run -- test --run 5（单个
 ## 7. 注意事项与已知限制
 
 - 项目已在 **Git 版本控制**下（`main` 分支）：执行 `git commit` 等变更操作前先获得用户确认；提交前确保 `dotnet build` 通过且 `dotnet run -- test --all` 无失败。
-- `Core/Utilities.cs` 里仍残留部分 AST 节点定义（`RootASTNode`、`SymbolASTNode`、`ImportASTNode` 等），新增节点优先放到 `AST/` 目录对应文件。
 - 字符字面量（char literal）未实现。
 - Verbose 调试日志默认关闭，不再刷屏；需要时加 `--verbose` 子命令（控制台）或 `--log-to PATH`（全量 JSONL 落盘）。
 - 无安全敏感面：本项目是本地控制台工具，不处理网络、凭据或用户隐私数据。唯一文件操作是 `Program.cs` 读取用户指定路径的 `.latte` 文件。

@@ -6,7 +6,7 @@
 > 计划与分工见 `compiler/frontend/PARSER_ROADMAP.md`；本文档只记录「现状」。
 
 **报告日期**: 2026-07-27
-**当前阶段**: Parser/PDA 大扫除（架构重构）完成（M23）；AST 结构标注与 Validator 重写完成（M24）；Lexer 修复（除法/EOF/注释）与 fuzz 基建完成（M25）；日志系统与 AST JSONL 序列化完成（M26）；CLI 插件化重构（help/compile/test）完成（M27）；Lexer 位置修复 + AST Source Span + ASTVisitor 统一遍历完成（M28）；AST 容器重构（基类共有 Children/Annotations 删除，语义字段 + wrapper 挂载接口）完成（M29）；**下一步**：语义分析、BIL 输出
+**当前阶段**: Parser/PDA 大扫除（架构重构）完成（M23）；AST 结构标注与 Validator 重写完成（M24）；Lexer 修复（除法/EOF/注释）与 fuzz 基建完成（M25）；日志系统与 AST JSONL 序列化完成（M26）；CLI 插件化重构（help/compile/test）完成（M27）；Lexer 位置修复 + AST Source Span + ASTVisitor 统一遍历完成（M28）；AST 容器重构（基类共有 Children/Annotations 删除，语义字段 + wrapper 挂载接口）完成（M29）；Utilities.cs 拆分 + ASTVisitor 遍历可重载 + 文档幽灵清理完成（M30）；**下一步**：语义分析、BIL 输出
 **测试总计**: 556/556 通过 (100%) + Lexer fuzz 6000/6000（27 个套件，`dotnet run -- test --all` 单命令全量）
 **版本控制**: Git `main` 分支（2026-07-17 首次提交）
 
@@ -45,6 +45,7 @@
 | M27 | CLI 插件化重构：`<COMMAND> [--sub-cmd...]`（help/compile/test）+ CommandLineMask + 帮助程序生成 + 交互菜单删除 | ✅ | 2026-07-27 | 544/544 + fuzz 6000（27 套件） |
 | M28 | Lexer 位置修复（offset/列号/EOF 冲刷/token 头/sourceName 单源化）+ AST Source Span（ISpanReceiver 层 span 回填）+ ASTVisitor 统一遍历 + Validator span 检查与类型审计 | ✅ | 2026-07-27 | 556/556 + fuzz 6000（27 套件） |
 | M29 | AST 容器重构：基类共有 `Children`/`Annotations` 删除；语义字段（`Declarations`/`Statements`/`Members`）+ wrapper 挂载接口（`IWrapperAttachable` + Entity/Method/Value 三分类） | ✅ | 2026-07-27 | 27 套件全绿（用例无增删）+ fuzz 6000 |
+| M30 | `Core/Utilities.cs` 拆分（Token/Keywords/异常/AST 基类归位 7 文件）+ ASTVisitor 遍历可重载（VisitNode/EnumerateChildren virtual）+ 文档幽灵清理（FRONTEND_TYPES 修订、FRONTEND_ARCHITECTURE 删除、ROADMAP 头注） | ✅ | 2026-07-27 | 27 套件全绿（用例无增删）+ fuzz 6000 |
 
 ---
 
@@ -352,6 +353,14 @@ Validator 与 Serializer 遍历统一为 ASTVisitor，Validator 新增 span 校�
 `Members`；注解列表仅 7 种声明节点持有，按 SYNTAX §14 三类 wrapper 目标
 抽象为 `IWrapperAttachable` + `IEntity/IMethod/IValueWrapperAttachable` 接口。
 
+**Utilities.cs 拆分 + ASTVisitor 遍历可重载 + 文档清理（M30）已完成**：
+`Core/Utilities.cs` 按语义拆为 7 个文件（`Lexer/Tokens.cs`、`Lexer/Notations.cs`、
+`Parser/Keywords.cs`、`Core/Exceptions.cs`、`AST/ASTNode.cs`、`AST/SymbolNodes.cs`、
+`AST/ImportNodes.cs`），同命名空间纯搬移、零调用点改动；ASTVisitor 的
+`VisitNode`/`EnumerateChildren` 改为 virtual（默认仍走 [ChildAstNode] 反射）；
+文档中已删除代码的引用（FrontendTypesExtension 全系、AcquisitionExpressionASTNode、
+CharLiteralASTNode 等）与过时表述已清理，`FRONTEND_ARCHITECTURE.md` 删除。
+
 **下一阶段**：语义分析、BIL 输出（见 `../BIL_STANDARD.md`）
 
 ---
@@ -371,6 +380,38 @@ Validator 与 Serializer 遍历统一为 ASTVisitor，Validator 新增 span 校�
 ---
 
 ## 7. 里程碑历史
+
+### 2026-07-27 · M30 Utilities.cs 拆分 + ASTVisitor 遍历可重载 + 文档幽灵清理
+
+> 不改 Latte 语法；把 `Core/Utilities.cs` 按语义拆分为 7 个文件，
+> ASTVisitor 遍历逻辑开放重载，并清理文档中已删除代码的引用与过时表述。
+
+- **Utilities.cs 拆分**（同 `LatteCompiler` 命名空间纯搬移，零调用点改动，
+  原文件删除）：
+  - `Lexer/Tokens.cs`：Token 基类 + TokenType + 6 个 token 类
+    （顺带修正 EndOfFileToken 上 M25 前的过时注释——EOF 现由 Lexer 追加）
+  - `Lexer/Notations.cs`：符号常量；`Parser/Keywords.cs`：关键字常量
+    （使用方 100% 在 Parser）
+  - `Core/Exceptions.cs`：LexerException / ParserException
+  - `AST/ASTNode.cs`：ASTNode 基类 + RootASTNode；
+    `AST/SymbolNodes.cs`：Symbol 家族 + SymbolASTNode；
+    `AST/ImportNodes.cs`：ImportASTNode + [AstCarrier] ImportItem
+  - 原文件的幽灵 using（`System.Linq`/`System.Threading.Tasks`）随之清除
+- **ASTVisitor 遍历可重载**：`VisitNode`（遍历骨架）与 `EnumerateChildren`
+  （子节点来源）改为 protected virtual，默认仍走 [ChildAstNode] 反射；
+  Validator/Serializer/测试零改动
+- **文档幽灵清理**：
+  - `docs/compiler/frontend/FRONTEND_TYPES.md` 全量修订：删除幽灵引用——
+    `Core/FrontendTypesExtension.cs` 全系（SymbolTable/SymbolInfo/TypeInfo/
+    SemanticException 等，代码已不存在）、AcquisitionExpressionASTNode、
+    CharLiteralASTNode；修正过时表述（enum case 列表与 wrapper proxy 的
+    「待实现」标注、阶段标记），文件位置更新到 M30 拆分后布局，
+    Token 表补 EndOfFileToken 行
+  - `docs/compiler/frontend/FRONTEND_ARCHITECTURE.md` 删除：全文围绕已删除的
+    FrontendTypesExtension.cs，残余内容与 AGENTS.md §3、FRONTEND_TYPES 重复
+  - `PARSER_ROADMAP.md` 头部加注：正文为大扫除前原始计划记录，代码草图勿照搬
+  - `AGENTS.md`/`CLAUDE.md` 同步新文件布局，移除「Utilities.cs 残留」条目
+- **测试**：27 套件全绿（用例无增删）+ fuzz 6000；build 0 错误 0 警告
 
 ### 2026-07-27 · M29 AST 容器重构：语义字段 + wrapper 挂载接口
 
