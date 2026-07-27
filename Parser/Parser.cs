@@ -66,14 +66,16 @@ namespace LatteCompiler
                 return currentRange;
             }
 
+            // 日志统一走 Logger（禁止直接 Console.WriteLine）；
+            // source 标识子系统便于 grep，位置信息保留在 message 前缀里
             public override void Log(string message)
             {
-                Console.WriteLine($"VERBOSE [{currentRange.sourceName}][[Line {currentRange.Start.line} Col {currentRange.Start.column}]->[Line {currentRange.End.line} Col {currentRange.End.column}]] {message}");
+                Logger.Verbose("Parser", $"[{currentRange.sourceName}][[Line {currentRange.Start.line} Col {currentRange.Start.column}]->[Line {currentRange.End.line} Col {currentRange.End.column}]] {message}");
             }
 
             public override void LogWarning(string message)
             {
-                Console.WriteLine($"WARNING [{currentRange.sourceName}][[Line {currentRange.Start.line} Col {currentRange.Start.column}]->[Line {currentRange.End.line} Col {currentRange.End.column}]] {message}");
+                Logger.Warning("Parser", $"[{currentRange.sourceName}][[Line {currentRange.Start.line} Col {currentRange.Start.column}]->[Line {currentRange.End.line} Col {currentRange.End.column}]] {message}");
             }
 
             [DoesNotReturn]

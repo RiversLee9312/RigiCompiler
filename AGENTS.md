@@ -5,7 +5,7 @@
 
 **项目名**: LatteCompiler
 **语言**: C#（.NET 8.0，控制台程序，`Nullable` 与 `ImplicitUsings` 已启用）
-**开发阶段**: 早期 —— 编译器前端（Lexer + Parser）已完成（roadmap P0–P5 全部落地），Parser/PDA 大扫除（架构重构）、AST 结构标注（M24）与 Lexer 修复（M25）已完成；下一阶段：语义分析、BIL 输出
+**开发阶段**: 早期 —— 编译器前端（Lexer + Parser）已完成（roadmap P0–P5 全部落地），Parser/PDA 大扫除（架构重构）、AST 结构标注（M24）、Lexer 修复（M25）与日志系统 + AST JSONL 序列化（M26）已完成；下一阶段：语义分析、BIL 输出
 **版本控制**: Git（`main` 分支，2026-07-17 首次提交，工作树干净；CI 见 `.github/workflows/ci.yml`）
 
 ---
@@ -46,7 +46,7 @@ dotnet clean
 
 ### 2.2 运行
 
-`Program.cs` 是交互式入口，启动后显示菜单（选项 1 为解析文件，2–23 为各测试套件，最后一个选项为 TokenDisposition 协议测试）。
+`Program.cs` 是交互式入口，启动后显示菜单（选项 1 为解析文件，2–27 为各测试套件）。
 
 非交互运行示例：
 
@@ -59,6 +59,14 @@ echo "8" | dotnet run        # 运行形参列表测试
 
 ```bash
 dotnet run -- --test-all    # 自动运行全部套件；任意失败返回非零退出码并列出失败套件名
+```
+
+**命令行参数**（可任意组合，支持 `--name=value` 与 `--name value` 两形态）：
+
+```bash
+dotnet run -- --test-all --enable-verbose   # 控制台输出 verbose 级日志（默认只显示 Warning+）
+dotnet run -- --log-to run.jsonl            # 全量日志（含 verbose）以 JSONL 落盘
+dotnet run -- --dump-ast ast.jsonl          # 交互菜单解析文件成功后，把 AST 序列化为 JSONL
 ```
 
 ---
@@ -75,7 +83,8 @@ LatteCompiler/
 │   ├── DeclarationNodes.cs      # 声明节点（变量声明等）
 │   ├── ExpressionNodes.cs       # 表达式节点（含 ExpressionRootASTNode 挂载点）
 │   ├── StatementNodes.cs        # 语句节点（代码块/if/循环/return/赋值等）
-│   └── ASTIntegrityValidator.cs # AST 完整性验证器（Parse 成功后自动运行，[ChildAstNode]/[AstCarrier] 标注驱动）
+│   ├── ASTIntegrityValidator.cs # AST 完整性验证器（Parse 成功后自动运行，[ChildAstNode]/[AstCarrier] 标注驱动）
+│   └── AstJsonlSerializer.cs   # AST 树 JSONL 序列化（每节点一行 id/parent/via/type/fields，--dump-ast 输出）
 ├── Parser/                   # Parser 层实现（每层一个文件）
 │   ├── Parser.cs                # 核心协议：IParserLayer、ParserLayerResult、
 │   │                            #   TokenDisposition、ParserLayerContext、Parser 主循环
@@ -106,7 +115,9 @@ LatteCompiler/
 │   ├── Utilities.cs             # Token 定义（含 EndOfFileToken）、Keywords、Helper（打印工具）、
 │   │                            #   以及部分未迁出的 AST 基类/节点（ASTNode、RootASTNode、
 │   │                            #   SymbolASTNode、ImportASTNode 等）
-│   └── FrontendTypesExtension.cs
+│   ├── FrontendTypesExtension.cs
+│   └── Logger.cs                # 唯一日志出口：Verbose/Warning/Error 分级；verbose 默认关闭，
+│                                #   --enable-verbose 开控制台 verbose，--log-to 全量 JSONL 落盘
 ├── Tests/                    # 自研控制台测试（非 xUnit/NUnit，见 §5）
 │   ├── TestRunner.cs            # --test-all 全量入口（套件注册表 + 退出码）
 │   ├── TestRootParserLayer.cs   # 独立 Layer 测试垫底层（只接受 EOF）
@@ -267,6 +278,7 @@ dotnet run -- --test-all    # 全量；或：echo "5" | dotnet run --no-build（
 - **文档语言**：中文。`docs/` 下的规范文档是权威来源——**先读 SYNTAX.md 再写代码，不要凭其他语言的经验猜语法**（项目已因此返工过）。
 - 新代码应模仿相邻文件的风格；项目无 linter/格式化工具配置。
 - 命名空间：主代码 `LatteCompiler`，测试 `LatteCompiler.Tests`。
+- **日志**：Lexer/Parser 等编译器内部的日志一律走 `Core/Logger`（Verbose/Warning/Error），禁止直接 `Console.WriteLine`；verbose 默认关闭（`--enable-verbose` 打开控制台输出），`--log-to PATH` 把全量日志以 JSONL 落盘。测试的报告输出（`[PASS]`/`[FAIL]` 等）不受此限。
 
 ### 添加新 Parser 功能的标准流程
 
@@ -292,7 +304,7 @@ dotnet run -- --test-all    # 全量；或：echo "5" | dotnet run --no-build（
 - 项目已在 **Git 版本控制**下（`main` 分支）：执行 `git commit` 等变更操作前先获得用户确认；提交前确保 `dotnet build` 通过且 `dotnet run -- --test-all` 无失败。
 - `Core/Utilities.cs` 里仍残留部分 AST 节点定义（`RootASTNode`、`SymbolASTNode`、`ImportASTNode`、`AcquisitionExpressionASTNode` 等），新增节点优先放到 `AST/` 目录对应文件。
 - 字符字面量（char literal）未实现，仅有占位。
-- 输出含 VERBOSE 调试日志属正常现象。
+- Verbose 调试日志默认关闭，不再刷屏；需要时加 `--enable-verbose`（控制台）或 `--log-to PATH`（全量 JSONL 落盘）。
 - 无安全敏感面：本项目是本地控制台工具，不处理网络、凭据或用户隐私数据。唯一文件操作是 `Program.cs` 读取用户指定路径的 `.latte` 文件。
 
 ---

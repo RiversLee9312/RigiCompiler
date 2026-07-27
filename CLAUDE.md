@@ -167,6 +167,8 @@ Any
 dotnet build                    # 编译
 dotnet run -- --test-all        # 全量测试（CI 入口；任意失败非零退出）
 echo "5" | dotnet run           # 单个测试套件（交互菜单）
+# 诊断参数（可组合）：--enable-verbose（控制台 verbose）、
+#   --log-to run.jsonl（全量日志 JSONL 落盘）、--dump-ast ast.jsonl（AST 序列化）
 ```
 
 Git 约定：项目已在 Git 版本控制下（`main` 分支）；完成阶段性功能后提交，
@@ -316,7 +318,7 @@ shared rich struct SharedData { }
 长期注意事项：
 
 - 字符字面量未实现（占位符）
-- 输出含 VERBOSE 调试日志属正常现象
+- Verbose 调试日志默认关闭；需要时加 `--enable-verbose`（控制台）或 `--log-to PATH`（全量 JSONL 落盘）
 - `Core/Utilities.cs` 残留部分早期 AST 节点定义，新增节点优先放 `AST/` 目录
 
 ---

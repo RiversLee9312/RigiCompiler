@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
 using System.Text;
 
@@ -14,8 +13,6 @@ namespace LatteCompiler.Tests
     /// 2. 随机 fuzz（固定种子，可复现）：纯随机字符流 + 结构化片段拼接 + 合法源码变异，
     ///    校验不变量——不崩（只允许 LexerException）、EOF 存在且唯一、位置单调不回退；
     /// 3. Parser 集成：注释 token 由 Parser 主循环统一跳过，语句中的注释不再炸 Parser。
-    ///
-    /// fuzz 循环期间控制台重定向到 TextWriter.Null（避免几十万行 VERBOSE 日志）。
     /// </summary>
     public static class LexerFuzzTests
     {
@@ -103,30 +100,21 @@ namespace LatteCompiler.Tests
             var rng = new Random(20260726);
             int failedBefore = failCount;
 
-            // fuzz 循环期间屏蔽 VERBOSE 日志（每字符一条，百万行级）
-            var originalOut = Console.Out;
-            Console.SetOut(TextWriter.Null);
-            try
+            // verbose 日志默认关闭，fuzz 循环无需屏蔽控制台
+            // 2a. 纯随机字符流 ×2500
+            for (int i = 0; i < 2500; i++)
             {
-                // 2a. 纯随机字符流 ×2500
-                for (int i = 0; i < 2500; i++)
-                {
-                    FuzzOne(RandomFromPool(rng, CharPool, 200), "纯随机");
-                }
-                // 2b. 结构化片段拼接 ×2500
-                for (int i = 0; i < 2500; i++)
-                {
-                    FuzzOne(RandomFromFragments(rng), "结构化");
-                }
-                // 2c. 合法源码变异 ×1000
-                for (int i = 0; i < 1000; i++)
-                {
-                    FuzzOne(Mutate(rng, ValidSeeds[rng.Next(ValidSeeds.Length)]), "变异");
-                }
+                FuzzOne(RandomFromPool(rng, CharPool, 200), "纯随机");
             }
-            finally
+            // 2b. 结构化片段拼接 ×2500
+            for (int i = 0; i < 2500; i++)
             {
-                Console.SetOut(originalOut);
+                FuzzOne(RandomFromFragments(rng), "结构化");
+            }
+            // 2c. 合法源码变异 ×1000
+            for (int i = 0; i < 1000; i++)
+            {
+                FuzzOne(Mutate(rng, ValidSeeds[rng.Next(ValidSeeds.Length)]), "变异");
             }
 
             int fuzzCases = 2500 + 2500 + 1000;
@@ -160,8 +148,7 @@ namespace LatteCompiler.Tests
             }
         }
 
-        // fuzz 失败详情（恢复到真实控制台后排队打印——此处直接缓冲到静态列表，
-        // RunAll 末尾统一输出前 10 条，避免刷屏）
+        // fuzz 失败详情先缓冲到静态列表，RunAll 末尾统一输出前 10 条，避免刷屏
         private static readonly List<string> fuzzFailureLog = new();
 
         private static void ReportFuzzFailure(string source, string category, string problem)

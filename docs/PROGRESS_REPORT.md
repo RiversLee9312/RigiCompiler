@@ -6,8 +6,8 @@
 > 计划与分工见 `compiler/frontend/PARSER_ROADMAP.md`；本文档只记录「现状」。
 
 **报告日期**: 2026-07-26
-**当前阶段**: Parser/PDA 大扫除（架构重构）完成（M23）；AST 结构标注与 Validator 重写完成（M24）；Lexer 修复（除法/EOF/注释）与 fuzz 基建完成（M25）；**下一步**：语义分析、BIL 输出
-**测试总计**: 453/453 通过 (100%) + Lexer fuzz 6000/6000（24 个套件，`dotnet run -- --test-all` 单命令全量）
+**当前阶段**: Parser/PDA 大扫除（架构重构）完成（M23）；AST 结构标注与 Validator 重写完成（M24）；Lexer 修复（除法/EOF/注释）与 fuzz 基建完成（M25）；日志系统与 AST JSONL 序列化完成（M26）；**下一步**：语义分析、BIL 输出
+**测试总计**: 498/498 通过 (100%) + Lexer fuzz 6000/6000（26 个套件，`dotnet run -- --test-all` 单命令全量）
 **版本控制**: Git `main` 分支（2026-07-17 首次提交）
 
 ---
@@ -41,6 +41,7 @@
 | M23 | Parser/PDA 大扫除：TokenDisposition、施工目标协议、ExpressionRootASTNode、EOF 正式化、AST 完整性验证、测试基础设施 | ✅ | 2026-07-26 | 425/425（22 套件） |
 | M24 | AST 结构标注（ChildAstNode/ParentAstNode/AstCarrier）+ Validator 重写 + 删除 ASTNodeType + 5 个父子指针 bug 修复 | ✅ | 2026-07-26 | 430/430（23 套件） |
 | M25 | Lexer 修复：SlashLexerLayer（除法/注释分流）+ Lexer 输出 EOF + 注释集中跳过 + fuzz 基建 | ✅ | 2026-07-26 | 453/453 + fuzz 6000（24 套件） |
+| M26 | 日志系统（Logger 分级 + verbose 默认关闭 + JSONL 落盘）+ AST JSONL 序列化诊断 | ✅ | 2026-07-26 | 498/498 + fuzz 6000（26 套件） |
 
 ---
 
@@ -287,6 +288,8 @@ pub class Point {
 | ASTIntegrityValidatorTests | ✅ | 5/5 | 手工构造 AST 直调 Validate：合法树通过 + 四类结构破坏拒绝（M24，菜单 24） |
 | LexerFuzzTests | ✅ | 23/23 + fuzz 6000 | Slash/EOF/注释固定用例 + 纯随机/结构化/变异 fuzz（固定种子）+ Parser 注释跳过集成（M25，菜单 25） |
 | TokenDispositionTests | ✅ | 4/4 | Push/Pop × Consume/Replay 四组合协议测试（M23，菜单 23） |
+| Logger | ✅ | 7/7（LoggerTests，菜单 26） | 统一日志出口（Core/Logger.cs）：Verbose/Warning/Error 三级；控制台默认只显示 Warning+，`--enable-verbose` 放开 Verbose；`--log-to PATH` 全量（含 Verbose）JSONL 落盘（M26） |
+| AstJsonlSerializer | ✅ | 38/38（菜单 27） | AST 树 JSONL 序列化（AST/AstJsonlSerializer.cs）：每节点一行 `{id,parent,via,type,fields}`，[ChildAstNode] 驱动遍历；`--dump-ast PATH` 在文件解析成功后输出（M26） |
 
 ---
 
@@ -302,6 +305,8 @@ pub class Point {
 - **表达式后缀链**：纯符号路径保持 PathParserLayer 的 Symbol 形态；`(`/`[`/`.`/`?.`/`\<`/`:` 后缀由 ExpressionParserLayer 链接，底座为表达式时才产生 MemberAccessASTNode
 - **独立 Layer 可测性**：`Parser.Parse(tokens, baseLayer, entryLayer)` + `TestRootParserLayer`（只接受 EOF）支持任意 Layer 独立驱动测试，且拒绝被测 Layer 漏消费 token
 - **统一声明层**（M14，依据 SYNTAX.md §14.8）：canonical symbol 的类名段可为空、`.static.` 只是标记位，因此全局函数与成员方法结构同构——`DeclarationParserLayer` 一套状态机覆盖全局/成员/嵌套任何声明；`CallableDeclarationASTNode` 单节点覆盖 func/operator/init；成员统一挂 `ASTNode.Children`（已从 RootASTNode 上移到基类）
+- **日志系统**（M26）：`Core/Logger` 是唯一日志出口（Verbose/Warning/Error）；Lexer/Parser 的 ContextImpl 经 Logger 输出，禁止直接 `Console.WriteLine`；控制台门槛默认 Warning+，`--enable-verbose` 放开 Verbose；`--log-to` 把全量日志（含 Verbose）以 JSONL 落盘，文件不过滤级别，便于 grep 诊断
+- **AST JSONL 序列化**（M26）：`AstJsonlSerializer` 复用 Validator 的 [ChildAstNode] 反射下钻，深度优先每节点一行（id/parent/via/type/fields），`--dump-ast` 输出，供结构诊断
 
 ---
 
@@ -314,6 +319,10 @@ pub class Point {
 [ChildAstNode]/[ParentAstNode]/[AstCarrier] 显式标注，Validator 改为
 Attribute 驱动并新增父子指针一致性校验，借此修复 5 个历史结构 bug；
 ASTNodeType 枚举删除，节点类型判断全面改用 CLR 类型。
+
+**日志系统与 AST JSONL 序列化（M26）已完成**：Logger 统一日志出口、
+verbose 默认关闭（`--enable-verbose` 打开），`--log-to` 全量 JSONL 落盘；
+AST 树可经 `--dump-ast` 序列化为 JSONL 供诊断。
 
 **下一阶段**：语义分析、BIL 输出（见 `../BIL_STANDARD.md`）
 
@@ -335,6 +344,33 @@ ASTNodeType 枚举删除，节点类型判断全面改用 CLR 类型。
 ---
 
 ## 7. 里程碑历史
+
+### 2026-07-26 · M26 日志系统（Logger 分级 + JSONL 落盘）+ AST JSONL 序列化
+
+> 不改 Latte 语法；基础设施大扫除：日志分级与分流（控制台/文件），
+> 以及 AST 树的 JSONL 序列化诊断能力。
+
+- **Core/Logger.cs**（唯一日志出口）：`Verbose/Warning/Error` 三级；
+  控制台门槛默认 Warning+（verbose 默认关闭），`--enable-verbose` 放开；
+  `--log-to PATH` 把**全量**日志（含 Verbose）以 JSONL 落盘
+  （`{"ts","level","source","message"}` 每行一条，System.Text.Json 序列化），
+  文件不过滤级别——诊断时从一大坨日志里 grep 所需
+- **接入点收口**：Lexer/Parser 的 `ContextImpl.Log/LogWarning` 改经 Logger
+  输出（此前直接 `Console.WriteLine`）；删除 LexerFuzzTests 的
+  `Console.SetOut(TextWriter.Null)` 屏蔽 hack（verbose 默认关闭后无意义）
+- **AST/AstJsonlSerializer.cs**：AST 树深度优先序列化为 JSONL，每节点一行
+  `{id,parent,via,type,fields}`；遍历复用 Validator 的 [ChildAstNode] 反射
+  下钻（含 private 字段、IEnumerable 下标、[AstCarrier] 展开）；fields 收集
+  标量成员（Symbol 渲染为点分串），排除 Parent/索引器，先按声明类型过滤
+  再取值以避开未填充 ExpressionRoot 的抛异常属性
+- **Program.cs 参数解析**：从只认 `args[0]=="--test-all"` 扩为循环解析
+  （`--test-all` 单独使用行为不变，CI 不受影响）；新增 `--enable-verbose`、
+  `--log-to`、`--dump-ast`（支持 `--name=value` 与 `--name value` 两形态；
+  未知参数/缺路径 stderr 提示 + 退出码 2）；`--dump-ast` 在交互菜单
+  解析文件成功后写出 AST JSONL
+- 测试：498/498（26 套件）+ fuzz 6000/6000；新增 LoggerTests（7 用例：
+  JSONL 落盘与级别门控）与 AstJsonlSerializerTests（38 用例：JSON 合法性、
+  id/parent 链一致性、via/fields 内容断言）
 
 ### 2026-07-26 · M25 Lexer 修复：SlashLexerLayer、Lexer EOF、注释集中跳过 + fuzz 基建
 

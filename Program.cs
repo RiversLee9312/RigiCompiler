@@ -1,9 +1,76 @@
 // See https://aka.ms/new-console-template for more information
+using System.Text;
 using LatteCompiler;
 using LatteCompiler.Tests;
 
-// 单命令全量测试：dotnet run -- --test-all（CI 入口；任意失败返回非零退出码）
-if (args.Length > 0 && args[0] == "--test-all")
+// 命令行参数（可任意组合）：
+//   --test-all              全量测试（CI 入口：dotnet run -- --test-all；任意失败返回非零退出码）
+//   --enable-verbose        控制台输出 verbose 日志（默认只显示 warning 及以上）
+//   --log-to <path>         全部日志（含 verbose）以 JSONL 写入文件
+//   --dump-ast <path>       交互菜单解析文件成功后，把 AST 以 JSONL 写出
+// --log-to=<path> / --dump-ast=<path> 形态同样支持（先归一化拆成两个参数）
+var normalized = new List<string>();
+foreach (var arg in args)
+{
+    int eq = arg.IndexOf('=');
+    if (arg.StartsWith("--") && eq > 0)
+    {
+        normalized.Add(arg[..eq]);
+        normalized.Add(arg[(eq + 1)..]);
+    }
+    else
+    {
+        normalized.Add(arg);
+    }
+}
+
+bool testAll = false;
+string? dumpAstPath = null;
+for (int i = 0; i < normalized.Count; i++)
+{
+    switch (normalized[i])
+    {
+        case "--test-all":
+            testAll = true;
+            break;
+        case "--enable-verbose":
+            Logger.EnableVerbose();
+            break;
+        case "--log-to":
+        case "--dump-ast":
+            // 路径参数缺失（或下一个参数仍是选项）→ 明确报错
+            var option = normalized[i];
+            if (i + 1 >= normalized.Count || normalized[i + 1].Length == 0 || normalized[i + 1].StartsWith("--"))
+            {
+                Console.Error.WriteLine($"{option} 需要一个文件路径参数");
+                Environment.Exit(2);
+            }
+            var path = normalized[++i];
+            if (option == "--log-to")
+            {
+                try
+                {
+                    Logger.OpenLogFile(path);
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"无法打开日志文件 {path}: {ex.Message}");
+                    Environment.Exit(2);
+                }
+            }
+            else
+            {
+                dumpAstPath = path;
+            }
+            break;
+        default:
+            Console.Error.WriteLine($"未知参数: {normalized[i]}");
+            Environment.Exit(2);
+            break;
+    }
+}
+
+if (testAll)
 {
     Environment.Exit(TestRunner.RunAllSuites());
 }
@@ -34,7 +101,9 @@ Console.WriteLine("22. Run Namespace tests");
 Console.WriteLine("23. Run TokenDisposition tests");
 Console.WriteLine("24. Run ASTIntegrityValidator tests");
 Console.WriteLine("25. Run LexerFuzz tests");
-Console.Write("Enter choice (1-25): ");
+Console.WriteLine("26. Run Logger tests");
+Console.WriteLine("27. Run AstJsonlSerializer tests");
+Console.Write("Enter choice (1-27): ");
 
 string? choice = Console.ReadLine();
 
@@ -182,6 +251,18 @@ else if (choice == "25")
     LexerFuzzTests.RunAll();
     return;
 }
+else if (choice == "26")
+{
+    // 运行 Logger 测试
+    LoggerTests.RunAll();
+    return;
+}
+else if (choice == "27")
+{
+    // 运行 AST JSONL 序列化测试
+    AstJsonlSerializerTests.RunAll();
+    return;
+}
 
 // 原有的文件解析逻辑
 Console.WriteLine("Please type the path of the test script:");
@@ -206,5 +287,14 @@ using(var stream = new FileStream(scriptPath, FileMode.Open, FileAccess.Read))
         var parser = new Parser();
         var astTree = parser.Parse(tokens);
         Helper.PrintASTNode(astTree);
+        // --dump-ast：解析成功后把 AST 以 JSONL 写出（每节点一行，id/parent 引用）
+        if (dumpAstPath != null)
+        {
+            using (var astWriter = new StreamWriter(dumpAstPath, append: false, encoding: new UTF8Encoding(false)))
+            {
+                AstJsonlSerializer.Serialize(astTree, astWriter);
+            }
+            Console.WriteLine($"AST dumped to {dumpAstPath}");
+        }
     }
 }

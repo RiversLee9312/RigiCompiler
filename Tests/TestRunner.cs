@@ -36,6 +36,8 @@ namespace LatteCompiler.Tests
             ("TokenDisposition", TokenDispositionTests.RunAll),
             ("ASTIntegrityValidator", ASTIntegrityValidatorTests.RunAll),
             ("LexerFuzz", LexerFuzzTests.RunAll),
+            ("Logger", LoggerTests.RunAll),
+            ("AstJsonlSerializer", AstJsonlSerializerTests.RunAll),
         };
 
         // 运行全部套件，返回失败用例总数（0 = 全部通过）

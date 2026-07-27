@@ -77,14 +77,16 @@ namespace LatteCompiler
                 return tokens;
             }
 
+            // 日志统一走 Logger（禁止直接 Console.WriteLine）；
+            // source 标识子系统便于 grep，位置信息保留在 message 前缀里
             public override void Log(string message)
             {
-                Console.WriteLine($"VERBOSE [{position.sourceName}][Line {position.line} Col {position.column}]{message}");
+                Logger.Verbose("Lexer", $"[{position.sourceName}][Line {position.line} Col {position.column}]{message}");
             }
 
             public override void LogWarning(string message)
             {
-                Console.WriteLine($"WARNING [{position.sourceName}][Line {position.line} Col {position.column}]{message}");
+                Logger.Warning("Lexer", $"[{position.sourceName}][Line {position.line} Col {position.column}]{message}");
             }
 
             public override void PushToken(Token token,bool includesCurrentChar)
