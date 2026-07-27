@@ -38,7 +38,35 @@ namespace LatteCompiler.Tests
             ("LexerFuzz", LexerFuzzTests.RunAll),
             ("Logger", LoggerTests.RunAll),
             ("AstJsonlSerializer", AstJsonlSerializerTests.RunAll),
+            ("CommandLineParser", CommandLineParserTests.RunAll),
         };
+
+        // 套件数量（对外编号 1..SuiteCount，即注册表顺序）
+        public static int SuiteCount => Suites.Length;
+
+        // 打印测试选项菜单（test 裸用 / test --run 不带编号时）
+        public static void PrintMenu()
+        {
+            Console.WriteLine("可用测试套件（用 test --run <编号...> 运行，编号可多个、按顺序执行）：");
+            for (int i = 0; i < Suites.Length; i++)
+            {
+                Console.WriteLine($"{i + 1}. {Suites[i].Name}");
+            }
+        }
+
+        // 按编号（1 起）运行单个套件，返回失败用例数；编号越界由调用方校验
+        public static int RunSuite(int number) => Suites[number - 1].Run();
+
+        // 按编号依次运行多个套件，返回失败用例总数
+        public static int RunSuites(IReadOnlyList<int> numbers)
+        {
+            int totalFail = 0;
+            foreach (var n in numbers)
+            {
+                totalFail += RunSuite(n);
+            }
+            return totalFail;
+        }
 
         // 运行全部套件，返回失败用例总数（0 = 全部通过）
         public static int RunAllSuites()

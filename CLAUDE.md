@@ -164,15 +164,17 @@ Any
 常用命令：
 
 ```bash
-dotnet build                    # 编译
-dotnet run -- --test-all        # 全量测试（CI 入口；任意失败非零退出）
-echo "5" | dotnet run           # 单个测试套件（交互菜单）
-# 诊断参数（可组合）：--enable-verbose（控制台 verbose）、
-#   --log-to run.jsonl（全量日志 JSONL 落盘）、--dump-ast ast.jsonl（AST 序列化）
+dotnet build                        # 编译
+dotnet run -- test --all            # 全量测试（CI 入口；任意失败非零退出）
+dotnet run -- test --run 5          # 单个测试套件（编号见 dotnet run -- test 菜单）
+dotnet run -- compile --file a.latte --parse-only   # 只解析，AST JSONL 输出到 stdout
+dotnet run -- help                  # 全部命令帮助（help compile.file 看单个子命令）
+# 诊断子命令（compile/test 共有）：--verbose（控制台 verbose）、
+#   --log-to run.jsonl（全量日志 JSONL 落盘）、--dump-ast ast.jsonl（AST 写文件）
 ```
 
 Git 约定：项目已在 Git 版本控制下（`main` 分支）；完成阶段性功能后提交，
-保持小步提交；提交前确保 `dotnet build` 通过且 `--test-all` 无失败；
+保持小步提交；提交前确保 `dotnet build` 通过且 `test --all` 无失败；
 `git commit` 等变更操作需用户确认后执行。
 
 进度对齐：每完成一个里程碑必须立即更新 `docs/PROGRESS_REPORT.md`
@@ -318,7 +320,7 @@ shared rich struct SharedData { }
 长期注意事项：
 
 - 字符字面量未实现（占位符）
-- Verbose 调试日志默认关闭；需要时加 `--enable-verbose`（控制台）或 `--log-to PATH`（全量 JSONL 落盘）
+- Verbose 调试日志默认关闭；需要时加 `--verbose` 子命令（控制台）或 `--log-to PATH`（全量 JSONL 落盘）
 - `Core/Utilities.cs` 残留部分早期 AST 节点定义，新增节点优先放 `AST/` 目录
 
 ---

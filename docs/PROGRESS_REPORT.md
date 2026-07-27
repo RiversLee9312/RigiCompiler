@@ -5,9 +5,9 @@
 > 更新时保持文档结构不变，并在「里程碑历史」追加一段。
 > 计划与分工见 `compiler/frontend/PARSER_ROADMAP.md`；本文档只记录「现状」。
 
-**报告日期**: 2026-07-26
-**当前阶段**: Parser/PDA 大扫除（架构重构）完成（M23）；AST 结构标注与 Validator 重写完成（M24）；Lexer 修复（除法/EOF/注释）与 fuzz 基建完成（M25）；日志系统与 AST JSONL 序列化完成（M26）；**下一步**：语义分析、BIL 输出
-**测试总计**: 498/498 通过 (100%) + Lexer fuzz 6000/6000（26 个套件，`dotnet run -- --test-all` 单命令全量）
+**报告日期**: 2026-07-27
+**当前阶段**: Parser/PDA 大扫除（架构重构）完成（M23）；AST 结构标注与 Validator 重写完成（M24）；Lexer 修复（除法/EOF/注释）与 fuzz 基建完成（M25）；日志系统与 AST JSONL 序列化完成（M26）；CLI 插件化重构（help/compile/test）完成（M27）；**下一步**：语义分析、BIL 输出
+**测试总计**: 544/544 通过 (100%) + Lexer fuzz 6000/6000（27 个套件，`dotnet run -- test --all` 单命令全量）
 **版本控制**: Git `main` 分支（2026-07-17 首次提交）
 
 ---
@@ -42,6 +42,7 @@
 | M24 | AST 结构标注（ChildAstNode/ParentAstNode/AstCarrier）+ Validator 重写 + 删除 ASTNodeType + 5 个父子指针 bug 修复 | ✅ | 2026-07-26 | 430/430（23 套件） |
 | M25 | Lexer 修复：SlashLexerLayer（除法/注释分流）+ Lexer 输出 EOF + 注释集中跳过 + fuzz 基建 | ✅ | 2026-07-26 | 453/453 + fuzz 6000（24 套件） |
 | M26 | 日志系统（Logger 分级 + verbose 默认关闭 + JSONL 落盘）+ AST JSONL 序列化诊断 | ✅ | 2026-07-26 | 498/498 + fuzz 6000（26 套件） |
+| M27 | CLI 插件化重构：`<COMMAND> [--sub-cmd...]`（help/compile/test）+ CommandLineMask + 帮助程序生成 + 交互菜单删除 | ✅ | 2026-07-27 | 544/544 + fuzz 6000（27 套件） |
 
 ---
 
@@ -282,14 +283,15 @@ pub class Point {
 | RootParserLayer | ✅ | 含于各套件 | 顶层分发（声明统一委托 DeclarationParserLayer） |
 | DeclarationParserLayer | ✅ 统一声明层 | 94/94（TypeDeclaration 套件） | 任何位置任何声明的唯一入口：全局/成员/嵌套共用一套状态机；声明泛型参数（M15）、enum `[]` case 列表（M17）、like 委托与 ext 限定名（M19）、@ 注解与 wrapper `.proxy.*` 代理成员（M20）已接入 |
 | PropertyAccessorParserLayer | ✅ | 17/17 | §9.4 访问器块 `{ get... set... }`；backing field 判定与 get/set 一致性校验；三类定义位置经 VariableDeclaration 汇聚 |
-| ImportParserLayer | ✅ | 14/14 | §15.2 三种形态（单个/`.{}` 多个/`.*` 全部）；前缀路径复用 PathParserLayer（M21 重建，菜单 21） |
-| NamespaceParserLayer | ✅ | 7/7 | §15.1 顶层单行声明；路径复用 PathParserLayer（M22，菜单 22） |
+| ImportParserLayer | ✅ | 14/14 | §15.2 三种形态（单个/`.{}` 多个/`.*` 全部）；前缀路径复用 PathParserLayer（M21 重建） |
+| NamespaceParserLayer | ✅ | 7/7 | §15.1 顶层单行声明；路径复用 PathParserLayer（M22） |
 | ASTIntegrityValidator | ✅ | 含于各套件 | Parse 成功后自动验证 AST 不变量（M23）；M24 重写为 Attribute 驱动遍历（[ChildAstNode]/[AstCarrier]），新增父子指针一致性校验；失败抛 CompilerInternalException |
-| ASTIntegrityValidatorTests | ✅ | 5/5 | 手工构造 AST 直调 Validate：合法树通过 + 四类结构破坏拒绝（M24，菜单 24） |
-| LexerFuzzTests | ✅ | 23/23 + fuzz 6000 | Slash/EOF/注释固定用例 + 纯随机/结构化/变异 fuzz（固定种子）+ Parser 注释跳过集成（M25，菜单 25） |
-| TokenDispositionTests | ✅ | 4/4 | Push/Pop × Consume/Replay 四组合协议测试（M23，菜单 23） |
-| Logger | ✅ | 7/7（LoggerTests，菜单 26） | 统一日志出口（Core/Logger.cs）：Verbose/Warning/Error 三级；控制台默认只显示 Warning+，`--enable-verbose` 放开 Verbose；`--log-to PATH` 全量（含 Verbose）JSONL 落盘（M26） |
-| AstJsonlSerializer | ✅ | 38/38（菜单 27） | AST 树 JSONL 序列化（AST/AstJsonlSerializer.cs）：每节点一行 `{id,parent,via,type,fields}`，[ChildAstNode] 驱动遍历；`--dump-ast PATH` 在文件解析成功后输出（M26） |
+| ASTIntegrityValidatorTests | ✅ | 5/5 | 手工构造 AST 直调 Validate：合法树通过 + 四类结构破坏拒绝（M24） |
+| LexerFuzzTests | ✅ | 23/23 + fuzz 6000 | Slash/EOF/注释固定用例 + 纯随机/结构化/变异 fuzz（固定种子）+ Parser 注释跳过集成（M25） |
+| TokenDispositionTests | ✅ | 4/4 | Push/Pop × Consume/Replay 四组合协议测试（M23） |
+| Logger | ✅ | 7/7（LoggerTests） | 统一日志出口（Core/Logger.cs）：Verbose/Warning/Error 三级；控制台默认只显示 Warning+，`--verbose` 子命令放开 Verbose；`--log-to PATH` 全量（含 Verbose）JSONL 落盘（M26） |
+| AstJsonlSerializer | ✅ | 38/38 | AST 树 JSONL 序列化（AST/AstJsonlSerializer.cs）：每节点一行 `{id,parent,via,type,fields}`，[ChildAstNode] 驱动遍历；`compile --dump-ast PATH` 输出（M26） |
+| CommandLine | ✅ | 46/46（CommandLineParserTests） | CLI 内核（Core/CommandLine.cs + Core/Commands.cs）：CommandLineMask 自描述元数据驱动解析与 help 生成；`<COMMAND> [--sub-cmd...]` 结构（compile/test/help），交互菜单已删（M27） |
 
 ---
 
@@ -305,8 +307,9 @@ pub class Point {
 - **表达式后缀链**：纯符号路径保持 PathParserLayer 的 Symbol 形态；`(`/`[`/`.`/`?.`/`\<`/`:` 后缀由 ExpressionParserLayer 链接，底座为表达式时才产生 MemberAccessASTNode
 - **独立 Layer 可测性**：`Parser.Parse(tokens, baseLayer, entryLayer)` + `TestRootParserLayer`（只接受 EOF）支持任意 Layer 独立驱动测试，且拒绝被测 Layer 漏消费 token
 - **统一声明层**（M14，依据 SYNTAX.md §14.8）：canonical symbol 的类名段可为空、`.static.` 只是标记位，因此全局函数与成员方法结构同构——`DeclarationParserLayer` 一套状态机覆盖全局/成员/嵌套任何声明；`CallableDeclarationASTNode` 单节点覆盖 func/operator/init；成员统一挂 `ASTNode.Children`（已从 RootASTNode 上移到基类）
-- **日志系统**（M26）：`Core/Logger` 是唯一日志出口（Verbose/Warning/Error）；Lexer/Parser 的 ContextImpl 经 Logger 输出，禁止直接 `Console.WriteLine`；控制台门槛默认 Warning+，`--enable-verbose` 放开 Verbose；`--log-to` 把全量日志（含 Verbose）以 JSONL 落盘，文件不过滤级别，便于 grep 诊断
-- **AST JSONL 序列化**（M26）：`AstJsonlSerializer` 复用 Validator 的 [ChildAstNode] 反射下钻，深度优先每节点一行（id/parent/via/type/fields），`--dump-ast` 输出，供结构诊断
+- **日志系统**（M26）：`Core/Logger` 是唯一日志出口（Verbose/Warning/Error）；Lexer/Parser 的 ContextImpl 经 Logger 输出，禁止直接 `Console.WriteLine`；控制台门槛默认 Warning+，`--verbose` 子命令放开 Verbose；`--log-to` 把全量日志（含 Verbose）以 JSONL 落盘，文件不过滤级别，便于 grep 诊断
+- **AST JSONL 序列化**（M26）：`AstJsonlSerializer` 复用 Validator 的 [ChildAstNode] 反射下钻，深度优先每节点一行（id/parent/via/type/fields），`compile --dump-ast` 输出，供结构诊断
+- **CLI 插件化**（M27）：用法 `<COMMAND> [--sub-cmd [args...]...]`，COMMAND 为 help/compile/test；每个 COMMAND 与 --sub-cmd 都是插件，暴露 `CommandLineMask`（名称/描述/参数个数/互斥）自描述元数据；解析器与 `help` 文本完全由 Mask 注册表数据驱动、程序生成；交互菜单已删除
 
 ---
 
@@ -321,8 +324,13 @@ Attribute 驱动并新增父子指针一致性校验，借此修复 5 个历史�
 ASTNodeType 枚举删除，节点类型判断全面改用 CLR 类型。
 
 **日志系统与 AST JSONL 序列化（M26）已完成**：Logger 统一日志出口、
-verbose 默认关闭（`--enable-verbose` 打开），`--log-to` 全量 JSONL 落盘；
-AST 树可经 `--dump-ast` 序列化为 JSONL 供诊断。
+verbose 默认关闭（`--verbose` 子命令打开），`--log-to` 全量 JSONL 落盘；
+AST 树可经 `compile --dump-ast` 序列化为 JSONL 供诊断。
+
+**CLI 插件化重构（M27）已完成**：交互菜单删除，用法统一为
+`<COMMAND> [--sub-cmd [args...]...]`（help/compile/test 三个 COMMAND）；
+选项以 `CommandLineMask` 自描述、插件化注册，帮助文本程序生成；
+CI 入口改为 `dotnet run -- test --all`。
 
 **下一阶段**：语义分析、BIL 输出（见 `../BIL_STANDARD.md`）
 
@@ -344,6 +352,33 @@ AST 树可经 `--dump-ast` 序列化为 JSONL 供诊断。
 ---
 
 ## 7. 里程碑历史
+
+### 2026-07-27 · M27 CLI 插件化重构（help/compile/test）+ 交互菜单删除
+
+> 不改 Latte 语法；把 M26 的平铺 `--选项` 参数与用户交互菜单统一重构为
+> `<COMMAND> [--sub-cmd [args...]...]` 结构，选项全部插件化、帮助程序生成。
+
+- **用法定稿**：`dotnet run -- <COMMAND> [--sub-cmd [args...]...]`，
+  COMMAND 三个——`compile`（`--file <路径...>`、`--parse-only`、
+  `--dump-ast <路径>`、`--verbose`、`--log-to <路径>`）、`test`（`--all`、
+  `--run [编号...]`、`--verbose`、`--log-to`）、`help`（无参概览；
+  `help compile` 单 COMMAND；`help compile.file` 单个子命令，名不带 `--`）
+- **CommandLineMask**（Core/CommandLine.cs）：选项自描述元数据——Name/
+  Description/ArgsHint/MinArgs/MaxArgs（int.MaxValue 表任意个数）/
+  MutuallyExclusive；解析器（`--x=v` 与空格两形态、个数/互斥/重复/游离
+  参数校验）与 help 文本完全由注册表数据驱动，无手写帮助页
+- **插件承载行为**：COMMAND 插件带 `Execute`（解析结果 → 退出码）；
+  `--verbose`/`--log-to` 是 compile 与 test 共享的子命令插件类；
+  `--all` 与 `--run` 互斥；`test` 裸用或 `--run` 无编号打印套件菜单
+- **交互菜单删除**：Program.cs 从 304 行瘦身为 19 行薄入口（解析→分发→
+  退出码）；`--test-all` 更名 `test --all`，`--enable-verbose` 更名
+  `--verbose`；`--parse-only` 时 AST JSONL 默认输出到 stdout，
+  `--dump-ast` 指定文件；编译错误走 stderr，单文件失败不阻断后续文件，
+  退出码非零
+- **CI 同步**：`.github/workflows/ci.yml` 改为 `dotnet run -- test --all`
+- 测试：544/544（27 套件）+ fuzz 6000/6000；新增 CommandLineParserTests
+  （46 用例：注册表完整性、COMMAND/子命令匹配、两形态、参数个数、互斥、
+  游离参数、重复子命令）
 
 ### 2026-07-26 · M26 日志系统（Logger 分级 + JSONL 落盘）+ AST JSONL 序列化
 

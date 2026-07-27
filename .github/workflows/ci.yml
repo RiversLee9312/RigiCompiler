@@ -21,4 +21,4 @@ jobs:
 
       # 全量测试入口：任意失败返回非零退出码，CI 即失败
       - name: Run all tests
-        run: dotnet run -- --test-all
+        run: dotnet run -- test --all

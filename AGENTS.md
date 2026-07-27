@@ -1,11 +1,11 @@
 # LatteCompiler 项目指南（AGENTS.md）
 
 > **用途**: 为 AI 编码代理提供 Latte 编译器项目的完整上下文。读者默认对本项目一无所知。
-> 本文件与 `CLAUDE.md` 并存，内容以实际代码为准（已验证日期：2026-07-26）。
+> 本文件与 `CLAUDE.md` 并存，内容以实际代码为准（已验证日期：2026-07-27）。
 
 **项目名**: LatteCompiler
 **语言**: C#（.NET 8.0，控制台程序，`Nullable` 与 `ImplicitUsings` 已启用）
-**开发阶段**: 早期 —— 编译器前端（Lexer + Parser）已完成（roadmap P0–P5 全部落地），Parser/PDA 大扫除（架构重构）、AST 结构标注（M24）、Lexer 修复（M25）与日志系统 + AST JSONL 序列化（M26）已完成；下一阶段：语义分析、BIL 输出
+**开发阶段**: 早期 —— 编译器前端（Lexer + Parser）已完成（roadmap P0–P5 全部落地），Parser/PDA 大扫除（架构重构）、AST 结构标注（M24）、Lexer 修复（M25）、日志系统 + AST JSONL 序列化（M26）与 CLI 插件化（M27）已完成；下一阶段：语义分析、BIL 输出
 **版本控制**: Git（`main` 分支，2026-07-17 首次提交，工作树干净；CI 见 `.github/workflows/ci.yml`）
 
 ---
@@ -46,27 +46,25 @@ dotnet clean
 
 ### 2.2 运行
 
-`Program.cs` 是交互式入口，启动后显示菜单（选项 1 为解析文件，2–27 为各测试套件）。
-
-非交互运行示例：
+CLI 结构为 `<COMMAND> [--sub-cmd [args...]...]`，顶层 COMMAND 三个：`compile` / `test` / `help`（M27 起，交互菜单已删除）。裸 `dotnet run` 等价于 `help`。
 
 ```bash
-echo "2" | dotnet run        # 运行字面量测试
-echo "8" | dotnet run        # 运行形参列表测试
+dotnet run -- test --all                 # 全量测试（CI 入口；任意失败非零退出码并列出失败套件名）
+dotnet run -- test                       # 打印测试套件菜单（编号 + 名称）
+dotnet run -- test --run 2 8             # 按编号运行指定套件（字面量 + 形参列表）
+dotnet run -- compile --file a.latte                    # 编译（当前无后端，执行词法+语法解析）
+dotnet run -- compile --file a.latte --parse-only       # 只解析，AST 以 JSONL 输出到 stdout
+dotnet run -- compile --file a.latte --parse-only --dump-ast ast.jsonl   # AST JSONL 写文件
+dotnet run -- help                       # 全部 COMMAND 与子命令概览（文本由注册表程序生成）
+dotnet run -- help compile               # 单个 COMMAND 详情
+dotnet run -- help compile.file          # 单个子命令详情（子命令名不带 -- 前缀）
 ```
 
-**单命令全量测试（CI 入口，推荐）**：
+诊断子命令（`compile` 与 `test` 共有，可组合）：
 
 ```bash
-dotnet run -- --test-all    # 自动运行全部套件；任意失败返回非零退出码并列出失败套件名
-```
-
-**命令行参数**（可任意组合，支持 `--name=value` 与 `--name value` 两形态）：
-
-```bash
-dotnet run -- --test-all --enable-verbose   # 控制台输出 verbose 级日志（默认只显示 Warning+）
-dotnet run -- --log-to run.jsonl            # 全量日志（含 verbose）以 JSONL 落盘
-dotnet run -- --dump-ast ast.jsonl          # 交互菜单解析文件成功后，把 AST 序列化为 JSONL
+dotnet run -- test --all --verbose      # 控制台输出 verbose 级日志（默认只显示 Warning+）
+dotnet run -- test --all --log-to run.jsonl   # 全量日志（含 verbose）以 JSONL 落盘
 ```
 
 ---
@@ -75,7 +73,7 @@ dotnet run -- --dump-ast ast.jsonl          # 交互菜单解析文件成功后�
 
 ```
 LatteCompiler/
-├── Program.cs                # 入口：交互菜单 + 文件解析流程 + --test-all
+├── Program.cs                # 薄入口：命令行解析 → 分发 → 退出码（M27 起无交互菜单）
 ├── LatteCompiler.csproj      # net8.0，Exe，Nullable enable
 ├── AST/                      # AST 节点定义（按类别分文件）
 │   ├── LiteralNodes.cs          # 字面量节点（LiteralASTNode 基类 + Int/Float/String/Bool/Null 等）
@@ -116,10 +114,13 @@ LatteCompiler/
 │   │                            #   以及部分未迁出的 AST 基类/节点（ASTNode、RootASTNode、
 │   │                            #   SymbolASTNode、ImportASTNode 等）
 │   ├── FrontendTypesExtension.cs
+│   ├── CommandLine.cs           # CLI 内核：CommandLineMask（选项自描述元数据）、数据驱动解析器、
+│   │                            #   注册表、帮助文本程序生成（M27）
+│   ├── Commands.cs              # CLI 插件：compile/test/help 三个 COMMAND 及其 --sub-cmd（M27）
 │   └── Logger.cs                # 唯一日志出口：Verbose/Warning/Error 分级；verbose 默认关闭，
-│                                #   --enable-verbose 开控制台 verbose，--log-to 全量 JSONL 落盘
+│                                #   --verbose 开控制台 verbose，--log-to 全量 JSONL 落盘
 ├── Tests/                    # 自研控制台测试（非 xUnit/NUnit，见 §5）
-│   ├── TestRunner.cs            # --test-all 全量入口（套件注册表 + 退出码）
+│   ├── TestRunner.cs            # test 命令驱动（套件注册表、菜单打印、按编号运行、退出码）
 │   ├── TestRootParserLayer.cs   # 独立 Layer 测试垫底层（只接受 EOF）
 │   ├── TokenDispositionTests.cs # Token 流转协议测试（四种组合）
 │   ├── ASTIntegrityValidatorTests.cs # Validator 直调测试（合法树 + 结构破坏拒绝）
@@ -253,19 +254,19 @@ Lexer 只做简单字符识别，不理解语义。例如 `3.14` 会输出三个
 
 ## 5. 测试策略
 
-- **不使用任何测试框架**。测试是 `Tests/` 下的静态类，每个类提供 `public static int RunAll()`（返回失败用例数），通过 `Program.cs` 菜单触发，或由 `Tests/TestRunner.cs` 统一驱动。
-- **全量入口**：`dotnet run -- --test-all` 自动运行全部套件，任意失败返回非零退出码并列出失败套件名——这是 CI 与提交前验证的标准方式（CI 配置见 `.github/workflows/ci.yml`）。
+- **不使用任何测试框架**。测试是 `Tests/` 下的静态类，每个类提供 `public static int RunAll()`（返回失败用例数），由 `Tests/TestRunner.cs` 统一驱动（`test` 命令入口）。
+- **全量入口**：`dotnet run -- test --all` 自动运行全部套件，任意失败返回非零退出码并列出失败套件名——这是 CI 与提交前验证的标准方式（CI 配置见 `.github/workflows/ci.yml`）。
 - 测试模式：每个用例把一小段 Latte 源码字符串依次过 `Lexer.Tokenize` → `Parser.Parse`，然后把得到的 AST 节点描述成字符串与期望比对，控制台打印 `[PASS]`/`[FAIL]`，结尾汇总 `N passed, M failed`。
 - **AST 结构断言**：表达式类测试除字符串快照外，还应断言结构性事实（Root 是否存在/已填充、Expression 的具体类型、Parent 链、子 Root 填充、无节点共享）——快照不能作为唯一验证方式。
 - **独立 Layer 测试**：经 `Parser.Parse(tokens, new TestRootParserLayer(), entryLayer)` 驱动。`TestRootParserLayer` 只接受 EOF——被测 Layer 提前结束或漏消费普通 token 会立即失败，能发现 Layer 边界问题。
-- **约定：每新增一个 ParserLayer，必须在 `Tests/` 添加对应测试类，并在 `Program.cs` 菜单与 `TestRunner` 注册表各注册一处。**
+- **约定：每新增一个 ParserLayer，必须在 `Tests/` 添加对应测试类，并在 `TestRunner` 注册表注册（`test` 菜单与 `test --run N` 的编号即注册表顺序）。**
 - 测试数量与通过状态等易变数字只记录在 `docs/PROGRESS_REPORT.md`，本文件不保存。
 
 验证改动（已验证可用）：
 
 ```bash
 dotnet build
-dotnet run -- --test-all    # 全量；或：echo "5" | dotnet run --no-build（单个套件）
+dotnet run -- test --all    # 全量；或：dotnet run -- test --run 5（单个套件）
 ```
 
 ---
@@ -278,7 +279,7 @@ dotnet run -- --test-all    # 全量；或：echo "5" | dotnet run --no-build（
 - **文档语言**：中文。`docs/` 下的规范文档是权威来源——**先读 SYNTAX.md 再写代码，不要凭其他语言的经验猜语法**（项目已因此返工过）。
 - 新代码应模仿相邻文件的风格；项目无 linter/格式化工具配置。
 - 命名空间：主代码 `LatteCompiler`，测试 `LatteCompiler.Tests`。
-- **日志**：Lexer/Parser 等编译器内部的日志一律走 `Core/Logger`（Verbose/Warning/Error），禁止直接 `Console.WriteLine`；verbose 默认关闭（`--enable-verbose` 打开控制台输出），`--log-to PATH` 把全量日志以 JSONL 落盘。测试的报告输出（`[PASS]`/`[FAIL]` 等）不受此限。
+- **日志**：Lexer/Parser 等编译器内部的日志一律走 `Core/Logger`（Verbose/Warning/Error），禁止直接 `Console.WriteLine`；verbose 默认关闭（`--verbose` 子命令打开控制台输出），`--log-to PATH` 把全量日志以 JSONL 落盘。测试的报告输出（`[PASS]`/`[FAIL]` 等）不受此限。
 
 ### 添加新 Parser 功能的标准流程
 
@@ -286,9 +287,9 @@ dotnet run -- --test-all    # 全量；或：echo "5" | dotnet run --no-build（
 2. 设计状态机（画出状态转换）
 3. 在 `AST/` 对应文件中添加 AST 节点
 4. 在 `Parser/` 新建 ParserLayer（实现 `IParserLayer`，构造函数接收明确施工目标，见 §4.7）
-5. 在 `Tests/` 添加测试类，在 `Program.cs` 菜单注册
+5. 在 `Tests/` 添加测试类，在 `TestRunner` 注册表注册
 6. 在 `RootParserLayer`（或相应父层）接入委托入口
-7. `dotnet build` + 运行对应测试菜单项验证
+7. `dotnet build` + `dotnet run -- test --run N`（对应套件）验证
 
 ### 进度对齐标准（必须遵守）
 
@@ -301,10 +302,10 @@ dotnet run -- --test-all    # 全量；或：echo "5" | dotnet run --no-build（
 
 ## 7. 注意事项与已知限制
 
-- 项目已在 **Git 版本控制**下（`main` 分支）：执行 `git commit` 等变更操作前先获得用户确认；提交前确保 `dotnet build` 通过且 `dotnet run -- --test-all` 无失败。
+- 项目已在 **Git 版本控制**下（`main` 分支）：执行 `git commit` 等变更操作前先获得用户确认；提交前确保 `dotnet build` 通过且 `dotnet run -- test --all` 无失败。
 - `Core/Utilities.cs` 里仍残留部分 AST 节点定义（`RootASTNode`、`SymbolASTNode`、`ImportASTNode`、`AcquisitionExpressionASTNode` 等），新增节点优先放到 `AST/` 目录对应文件。
 - 字符字面量（char literal）未实现，仅有占位。
-- Verbose 调试日志默认关闭，不再刷屏；需要时加 `--enable-verbose`（控制台）或 `--log-to PATH`（全量 JSONL 落盘）。
+- Verbose 调试日志默认关闭，不再刷屏；需要时加 `--verbose` 子命令（控制台）或 `--log-to PATH`（全量 JSONL 落盘）。
 - 无安全敏感面：本项目是本地控制台工具，不处理网络、凭据或用户隐私数据。唯一文件操作是 `Program.cs` 读取用户指定路径的 `.latte` 文件。
 
 ---
