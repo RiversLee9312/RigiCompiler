@@ -27,7 +27,7 @@ namespace LatteCompiler
     /// 各 ExpressionRootASTNode（大扫除后的施工协议，无回传），
     /// 循环体委托 CodeBlockParserLayer（原地写入 node.Body）。
     /// </summary>
-    public class LoopParserLayer : IParserLayer
+    public class LoopParserLayer : IParserLayer, ISpanReceiver
     {
         private readonly LoopStatementASTNode targetNode;
 
@@ -68,6 +68,12 @@ namespace LatteCompiler
         {
             targetNode = new LoopStatementASTNode(parentBlock);
             parentBlock.Children.Add(targetNode);
+        }
+
+        // Span 回填（M28）：回填本层创建的循环节点
+        public void ReceiveSpan(CharRange span)
+        {
+            targetNode.Span ??= span;
         }
 
         public ParserLayerResult ParseToken(Token currentToken, ParserLayerContext context)

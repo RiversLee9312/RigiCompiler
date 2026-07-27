@@ -5,7 +5,7 @@
 
 **项目名**: LatteCompiler
 **语言**: C#（.NET 8.0，控制台程序，`Nullable` 与 `ImplicitUsings` 已启用）
-**开发阶段**: 早期 —— 编译器前端（Lexer + Parser）已完成（roadmap P0–P5 全部落地），Parser/PDA 大扫除（架构重构）、AST 结构标注（M24）、Lexer 修复（M25）、日志系统 + AST JSONL 序列化（M26）与 CLI 插件化（M27）已完成；下一阶段：语义分析、BIL 输出
+**开发阶段**: 早期 —— 编译器前端（Lexer + Parser）已完成（roadmap P0–P5 全部落地），Parser/PDA 大扫除（架构重构）、AST 结构标注（M24）、Lexer 修复（M25）、日志系统 + AST JSONL 序列化（M26）、CLI 插件化（M27）与 Lexer 位置修复 + AST Source Span + ASTVisitor 统一遍历（M28）已完成；下一阶段：语义分析、BIL 输出
 **版本控制**: Git（`main` 分支，2026-07-17 首次提交，工作树干净；CI 见 `.github/workflows/ci.yml`）
 
 ---
@@ -81,8 +81,10 @@ LatteCompiler/
 │   ├── DeclarationNodes.cs      # 声明节点（变量声明等）
 │   ├── ExpressionNodes.cs       # 表达式节点（含 ExpressionRootASTNode 挂载点）
 │   ├── StatementNodes.cs        # 语句节点（代码块/if/循环/return/赋值等）
-│   ├── ASTIntegrityValidator.cs # AST 完整性验证器（Parse 成功后自动运行，[ChildAstNode]/[AstCarrier] 标注驱动）
-│   └── AstJsonlSerializer.cs   # AST 树 JSONL 序列化（每节点一行 id/parent/via/type/fields，--dump-ast 输出）
+│   ├── ASTIntegrityValidator.cs # AST 完整性验证器（Parse 成功后自动运行，[ChildAstNode]/[AstCarrier] 标注驱动；
+│   │                            #   含 Span 校验与「未标注 AST 成员」类型审计，M28）
+│   ├── ASTVisitor.cs            # 统一 AST 遍历基建（[ChildAstNode] 子节点枚举唯一实现，M28）
+│   └── AstJsonlSerializer.cs   # AST 树 JSONL 序列化（每节点一行 id/parent/via/type/span/fields，--dump-ast 输出）
 ├── Parser/                   # Parser 层实现（每层一个文件）
 │   ├── Parser.cs                # 核心协议：IParserLayer、ParserLayerResult、
 │   │                            #   TokenDisposition、ParserLayerContext、Parser 主循环
@@ -113,7 +115,6 @@ LatteCompiler/
 │   ├── Utilities.cs             # Token 定义（含 EndOfFileToken）、Keywords、Helper（打印工具）、
 │   │                            #   以及部分未迁出的 AST 基类/节点（ASTNode、RootASTNode、
 │   │                            #   SymbolASTNode、ImportASTNode 等）
-│   ├── FrontendTypesExtension.cs
 │   ├── CommandLine.cs           # CLI 内核：CommandLineMask（选项自描述元数据）、数据驱动解析器、
 │   │                            #   注册表、帮助文本程序生成（M27）
 │   ├── Commands.cs              # CLI 插件：compile/test/help 三个 COMMAND 及其 --sub-cmd（M27）
@@ -217,11 +218,22 @@ Parser 主循环维护一个 Layer 栈，每个 token 交给栈顶 Layer 处理�
 解析成功后 `ASTIntegrityValidator` 自动验证 AST 不变量：遍历只走
 `[ChildAstNode]` 标注的成员（`[AstCarrier]` 对象深入其公共字段），校验每个
 子节点的 Parent 指向持有者，另含 Root 均已填充、节点无共享、Parent 链无环、
-switch default 规则；失败抛 `CompilerInternalException`（内部编译器错误，
+switch default 规则、**每节点 Span 合法（M28：非空、sourceName 非空、
+End 不早于 Start）**、**类型审计（M28：装 ASTNode 的字段/自动属性必须带
+[ChildAstNode]/[ParentAstNode] 标注）**；失败抛 `CompilerInternalException`（内部编译器错误，
 与用户语法错误区分）。节点类型一律用 CLR 类型判断（无 ASTNodeType 枚举）。
 「归属后知」的场景必须用创建时归属即定的结构承载
 （ExpressionStatementASTNode 双 Root 槽、LoopStatementASTNode.RangeTo）
 或延迟一次性 AttachTo（注解），**禁止任何形式的 Parent 重挂**。
+
+**Span 施工（M28）**：每个 AST 节点都有源码范围 `ASTNode.Span`（`CharRange?`）。
+约定：层目标节点由 Parser 主循环按 token 流计算 span，层弹出时经
+`ISpanReceiver.ReceiveSpan` 回填（一律 `target.Span ??= span` 只填空）——
+新 Layer 若有施工目标，应实现 `ISpanReceiver`；层内自建节点由所在层显式设置
+（创建记 Start，完成经 `ParserLayerContext.GetPreviousLocation()` 封 End）；
+`ExpressionRootASTNode` 未显式设置时透明继承内容表达式的 span。
+Validator 与 AstJsonlSerializer 遍历统一走 `AST/ASTVisitor.cs`（M28），
+禁止再写第三份 [ChildAstNode] 反射下钻。
 
 ### 4.5 ⚠️ 简洁优先：新增代码前必须自问的三个问题
 
@@ -248,7 +260,11 @@ Lexer 只做简单字符识别，不理解语义。例如 `3.14` 会输出三个
 
 - 斜杠家族（`/`、`/=`、`//`、`/*`）由专门的 `SlashLexerLayer` 分流（M25）；
 - `EndOfFileToken` 由 `Lexer.Tokenize` 在输出末尾追加（M25）；输入结束时以
-  虚拟换行冲刷帧（FlushLayers）弹栈，未闭合字符串/块注释即 LexerException。
+  虚拟换行冲刷帧（FlushLayers）弹栈，未闭合字符串/块注释即 LexerException；
+- 位置计量（M28 修复后）：`CharRange.sourceName` 是源名唯一来源
+  （`CharPosition` 不携带）；`CharPosition.offset` 是 0 起始字符索引；
+  行/列 1 起始，换行算当前行最后一列；token 头跳过空白字符；
+  EOF 冲刷帧占一个末尾虚拟位置，保证冲刷 token 的 End 正确。
 
 ---
 

@@ -21,7 +21,7 @@ namespace LatteCompiler
     /// 施工协议（大扫除后）：条件与分支表达式由 ExpressionParserLayer 直接附加到
     /// 目标节点的各 ExpressionRootASTNode，无任何结果回传。
     /// </summary>
-    public class IfStatementParserLayer : IParserLayer
+    public class IfStatementParserLayer : IParserLayer, ISpanReceiver
     {
         private readonly IfExpressionASTNode? exprNode;
         private readonly IfStatementASTNode? stmtNode;
@@ -76,6 +76,19 @@ namespace LatteCompiler
             var node = new IfStatementASTNode(parentBlock);
             parentBlock.Children.Add(node);
             return node;
+        }
+
+        // Span 回填（M28）：两模式共用入口，回填非 null 的那个施工目标
+        public void ReceiveSpan(CharRange span)
+        {
+            if (exprNode != null)
+            {
+                exprNode.Span ??= span;
+            }
+            else
+            {
+                stmtNode!.Span ??= span;
+            }
         }
 
         public ParserLayerResult ParseToken(Token currentToken, ParserLayerContext context)

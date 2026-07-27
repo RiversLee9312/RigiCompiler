@@ -22,7 +22,7 @@ namespace LatteCompiler
     ///
     /// 当前限制：body 仅支持单表达式，多语句块待 P2 CodeBlockParserLayer。
     /// </summary>
-    public class LambdaExpressionParserLayer : IParserLayer
+    public class LambdaExpressionParserLayer : IParserLayer, ISpanReceiver
     {
         private readonly LambdaExpressionASTNode targetNode;
 
@@ -42,6 +42,9 @@ namespace LatteCompiler
         {
             targetNode = target;
         }
+
+        // 层弹出时回填施工目标的源码范围（M28）
+        public void ReceiveSpan(CharRange span) => targetNode.Span ??= span;
 
         public ParserLayerResult ParseToken(Token currentToken, ParserLayerContext context)
         {

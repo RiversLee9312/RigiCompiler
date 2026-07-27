@@ -27,7 +27,7 @@ namespace LatteCompiler
     ///      → UsingInitializer → UsingCloseParen] → UsingOrNamed（继续或进入 Named/Body）
     ///   → [Named → NamedLabel] → Body（委托 CodeBlockParserLayer）→ Completed
     /// </summary>
-    public class SeqBlockParserLayer : IParserLayer
+    public class SeqBlockParserLayer : IParserLayer, ISpanReceiver
     {
         private readonly SeqBlockExpressionASTNode seqNode;
 
@@ -57,6 +57,12 @@ namespace LatteCompiler
         public SeqBlockParserLayer(SeqBlockExpressionASTNode target)
         {
             seqNode = target;
+        }
+
+        // Span 回填（M28）：回填施工目标 seq 节点
+        public void ReceiveSpan(CharRange span)
+        {
+            seqNode.Span ??= span;
         }
 
         public ParserLayerResult ParseToken(Token currentToken, ParserLayerContext context)
@@ -177,6 +183,9 @@ namespace LatteCompiler
                 if (wt.Content == Keywords.USING)
                 {
                     currentUsing = new UsingBindingASTNode(seqNode);
+                    // 显式设置 span：从 using 关键字开始（End 在初始化表达式解析完成后封闭）
+                    var location = context.GetLocation();
+                    currentUsing.Span = new CharRange { Start = location.Start, End = location.End, sourceName = location.sourceName };
                     state = State.UsingOpenParen;
                     return ParserLayerResult.Continue.Instance;
                 }
@@ -324,7 +333,14 @@ namespace LatteCompiler
 
         private ParserLayerResult HandleUsingInitializer(Token currentToken, ParserLayerContext context)
         {
-            // 初始化表达式已解析，现在等待 )
+            // 初始化表达式已解析：封 using 绑定 span 的 End 到表达式最后一个 token
+            // （当前 token 是 ) 等终止符、不属于表达式；表达式层 Replay 弹出未前进，
+            // 最近被消费的 token 即表达式末尾）
+            var bindingSpan = currentUsing!.Span!.Value;
+            bindingSpan.End = context.GetPreviousLocation().End;
+            currentUsing.Span = bindingSpan;
+
+            // 现在等待 )
             state = State.UsingCloseParen;
             return ParseToken(currentToken, context);
         }

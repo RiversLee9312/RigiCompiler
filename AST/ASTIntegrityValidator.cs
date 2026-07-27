@@ -1,5 +1,4 @@
 using System;
-using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
 
@@ -13,14 +12,12 @@ namespace LatteCompiler
     }
 
     /// <summary>
-    /// AST 完整性验证器（大扫除 §12；Attribute 驱动重写）
+    /// AST 完整性验证器（大扫除 §12；M28 基于 ASTVisitor 统一遍历重写）
     ///
     /// Parser 成功后、进入语义分析前运行一次。验证失败抛出 CompilerInternalException
     /// （内部编译器错误，而非用户语法错误）。
     ///
-    /// 遍历方式：只走以 [ChildAstNode] 标注的字段/属性（反射）——
-    /// 值为 ASTNode（子节点）、ASTNode 集合（元素为子节点）、或 [AstCarrier]
-    /// 对象/集合（深入其公共实例字段，其中的 ASTNode 为子节点）。
+    /// 遍历方式：ASTVisitor——只走以 [ChildAstNode] 标注的字段/属性（反射），
     /// 未被标注的成员（Symbol、string 等纯数据）一律不进入。
     ///
     /// 检查项：
@@ -31,7 +28,15 @@ namespace LatteCompiler
     /// 3. 所有 AST 节点最多被引用一次（无共享——同一表达式不可能属于两个 Root，
     ///    也不存在多父节点）；
     /// 4. AST 的 Parent 链不存在环；
-    /// 5. switch 表达式满足 default 规则（表达式模式必须有 default 分支）。
+    /// 5. switch 表达式满足 default 规则（表达式模式必须有 default 分支）；
+    /// 6. 每个节点都有合法源码范围 Span（M28）：非空（ExpressionRoot 可透明继承
+    ///    内容表达式）、sourceName 非空、End 不早于 Start；
+    /// 7. 类型审计（M28）：节点类型中「装着 ASTNode」的成员（ASTNode 派生、
+    ///    元素为 ASTNode 派生的集合、[AstCarrier] 类型或其集合）必须带
+    ///    [ChildAstNode] 或 [ParentAstNode] 标注——防止新增字段忘记标注、
+    ///    悄悄逃出遍历与校验；[ChildAstNode] 标在不装 ASTNode 的成员上同样拒绝。
+    ///    每种节点类型只审计一次；自动属性经 backing 字段识别（手动实现的
+    ///    视图属性如 ExpressionRootASTNode.Expression 不参与审计）。
     ///
     /// 类型引用等声明侧字段的完备性（如 init 映射参数的空 Type 属合法形态）
     /// 不在此处检查，留待语义分析阶段。
@@ -40,12 +45,38 @@ namespace LatteCompiler
     {
         public static void Validate(RootASTNode root)
         {
-            var visited = new HashSet<ASTNode>(ReferenceEqualityComparer.Instance);
-            var nodes = new List<ASTNode>();
-            CollectNode(root, expectedParent: null, viaMember: null, visited, nodes);
+            var visitor = new ValidatorVisitor();
+            visitor.Visit(root);
+            visitor.CheckParentChains();
+        }
 
-            foreach (var node in nodes)
+        private sealed class ValidatorVisitor : ASTVisitor
+        {
+            private readonly HashSet<ASTNode> visited = new(ReferenceEqualityComparer.Instance);
+            private readonly List<ASTNode> nodes = new();
+            // 类型审计缓存：每种节点类型只审计一次
+            private readonly HashSet<Type> auditedTypes = new();
+
+            protected override void OnNode(ASTNode node, ASTNode? parent, string? via)
             {
+                // 1. 父子指针一致
+                if (!ReferenceEquals(node.Parent, parent))
+                {
+                    throw new CompilerInternalException(
+                        $"AST node has an incorrect parent: {node.GetType().Name} " +
+                        $"(expected: {parent?.GetType().Name ?? "<null>"}, " +
+                        $"actual: {node.Parent?.GetType().Name ?? "<null>"}" +
+                        (via != null ? $", via member: {via}" : "") + ")");
+                }
+
+                // 3. 共享检测：同一节点第二次出现即共享错误
+                if (!visited.Add(node))
+                {
+                    throw new CompilerInternalException(
+                        $"AST node is shared by multiple parents: {node.GetType().Name}");
+                }
+                nodes.Add(node);
+
                 // 2. ExpressionRoot：必须已填充
                 if (node is ExpressionRootASTNode exprRoot && !exprRoot.IsAttached)
                 {
@@ -59,123 +90,99 @@ namespace LatteCompiler
                     throw new CompilerInternalException(
                         "Switch expression has no default branch (SYNTAX §7.2)");
                 }
+
+                // 6. Span 检查（M28）
+                ValidateSpan(node);
+
+                // 7. 类型审计（M28）
+                AuditType(node.GetType());
             }
 
-            // 4. Parent 链无环
-            foreach (var node in nodes)
+            // 4. Parent 链无环（遍历后基于收集到的节点检查）
+            public void CheckParentChains()
             {
-                var chain = new HashSet<ASTNode>(ReferenceEqualityComparer.Instance);
-                ASTNode? current = node;
-                while (current != null)
+                foreach (var node in nodes)
                 {
-                    if (!chain.Add(current))
+                    var chain = new HashSet<ASTNode>(ReferenceEqualityComparer.Instance);
+                    ASTNode? current = node;
+                    while (current != null)
                     {
-                        throw new CompilerInternalException(
-                            $"AST parent chain has a cycle at {current.GetType().Name}");
-                    }
-                    current = current.Parent;
-                }
-            }
-        }
-
-        // 递归收集一个 AST 节点：校验父子指针、登记共享检测，再按 [ChildAstNode] 成员下钻
-        private static void CollectNode(
-            ASTNode node, ASTNode? expectedParent, string? viaMember,
-            HashSet<ASTNode> visited, List<ASTNode> nodes)
-        {
-            // 1. 父子指针一致
-            if (!ReferenceEquals(node.Parent, expectedParent))
-            {
-                throw new CompilerInternalException(
-                    $"AST node has an incorrect parent: {node.GetType().Name} " +
-                    $"(expected: {expectedParent?.GetType().Name ?? "<null>"}, " +
-                    $"actual: {node.Parent?.GetType().Name ?? "<null>"}" +
-                    (viaMember != null ? $", via member: {viaMember}" : "") + ")");
-            }
-
-            // 3. 共享检测：同一节点第二次出现即共享错误
-            if (!visited.Add(node))
-            {
-                throw new CompilerInternalException(
-                    $"AST node is shared by multiple parents: {node.GetType().Name}");
-            }
-            nodes.Add(node);
-
-            // 按 [ChildAstNode] 标注的成员遍历子节点
-            var type = node.GetType();
-
-            // 字段（含 private，如 ExpressionRootASTNode.expression）
-            foreach (var field in type.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
-            {
-                if (field.GetCustomAttribute<ChildAstNodeAttribute>() == null) continue;
-                CollectChildValue(field.GetValue(node), node, field.Name, visited, nodes);
-            }
-
-            // 属性（get-only 挂载点属性，如 BinaryExpressionASTNode.Left）
-            foreach (var prop in type.GetProperties(BindingFlags.Public | BindingFlags.Instance))
-            {
-                if (prop.GetCustomAttribute<ChildAstNodeAttribute>() == null) continue;
-                if (!prop.CanRead || prop.GetIndexParameters().Length > 0) continue;
-                CollectChildValue(prop.GetValue(node), node, prop.Name, visited, nodes);
-            }
-        }
-
-        // 处理 [ChildAstNode] 成员的值：单节点 / 集合 / 单 carrier
-        private static void CollectChildValue(
-            object? value, ASTNode owner, string memberName,
-            HashSet<ASTNode> visited, List<ASTNode> nodes)
-        {
-            if (value == null || value is string) return;
-
-            if (value is ASTNode child)
-            {
-                CollectNode(child, owner, memberName, visited, nodes);
-                return;
-            }
-
-            if (value is IEnumerable enumerable)
-            {
-                foreach (var item in enumerable)
-                {
-                    CollectChildItem(item, owner, memberName, visited, nodes);
-                }
-                return;
-            }
-
-            CollectChildItem(value, owner, memberName, visited, nodes);
-        }
-
-        // 集合元素或单值：ASTNode → 子节点；[AstCarrier] → 深入其公共字段找 ASTNode
-        private static void CollectChildItem(
-            object? item, ASTNode owner, string memberName,
-            HashSet<ASTNode> visited, List<ASTNode> nodes)
-        {
-            if (item == null) return;
-
-            if (item is ASTNode child)
-            {
-                CollectNode(child, owner, memberName, visited, nodes);
-                return;
-            }
-
-            var itemType = item.GetType();
-            if (itemType.GetCustomAttribute<AstCarrierAttribute>() != null)
-            {
-                // carrier（如 ImportItem）：其中的 ASTNode 视为 owner 的子节点
-                foreach (var field in itemType.GetFields(BindingFlags.Public | BindingFlags.Instance))
-                {
-                    if (field.GetValue(item) is ASTNode carried)
-                    {
-                        CollectNode(carried, owner, $"{memberName}({itemType.Name}.{field.Name})", visited, nodes);
+                        if (!chain.Add(current))
+                        {
+                            throw new CompilerInternalException(
+                                $"AST parent chain has a cycle at {current.GetType().Name}");
+                        }
+                        current = current.Parent;
                     }
                 }
-                return;
             }
 
-            // [ChildAstNode] 成员装的不是节点/节点集合/carrier——标注本身有误
-            throw new CompilerInternalException(
-                $"[ChildAstNode] member '{memberName}' of {owner.GetType().Name} " +
-                $"holds a non-AST value of type {itemType.Name}");
+            // 6. 每个节点必须有源码范围：非空、sourceName 非空、End 不早于 Start
+            private static void ValidateSpan(ASTNode node)
+            {
+                if (node.Span is not { } span)
+                {
+                    throw new CompilerInternalException(
+                        $"AST node has no source span: {node.GetType().Name}");
+                }
+                if (string.IsNullOrEmpty(span.sourceName))
+                {
+                    throw new CompilerInternalException(
+                        $"AST node span has no source name: {node.GetType().Name}");
+                }
+                if (span.End.line < span.Start.line ||
+                    (span.End.line == span.Start.line && span.End.column < span.Start.column) ||
+                    span.End.offset < span.Start.offset)
+                {
+                    throw new CompilerInternalException(
+                        $"AST node span is inverted: {node.GetType().Name} " +
+                        $"[Line {span.Start.line} Col {span.Start.column}]->[Line {span.End.line} Col {span.End.column}]");
+                }
+            }
+
+            // 7. 类型审计：装 ASTNode 的成员必须带标注；标注成员必须真的装 ASTNode
+            private void AuditType(Type type)
+            {
+                if (!auditedTypes.Add(type)) return;
+
+                foreach (var field in type.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
+                {
+                    // 编译器生成的自动属性 backing 字段（<Name>k__BackingField）：以属性审计为准
+                    if (field.Name.StartsWith("<")) continue;
+                    AuditMember(type, field.Name, field.FieldType,
+                        hasChildAttr: field.GetCustomAttribute<ChildAstNodeAttribute>() != null,
+                        hasParentAttr: field.GetCustomAttribute<ParentAstNodeAttribute>() != null);
+                }
+
+                foreach (var prop in type.GetProperties(BindingFlags.Public | BindingFlags.Instance))
+                {
+                    if (prop.GetIndexParameters().Length > 0) continue;
+                    // 只审计自动属性（有编译器生成 backing 字段）：手动实现的视图属性
+                    // （如 ExpressionRootASTNode.Expression，数据在已标注的字段上）不参与
+                    if (type.GetField($"<{prop.Name}>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance) == null) continue;
+                    AuditMember(type, prop.Name, prop.PropertyType,
+                        hasChildAttr: prop.GetCustomAttribute<ChildAstNodeAttribute>() != null,
+                        hasParentAttr: prop.GetCustomAttribute<ParentAstNodeAttribute>() != null);
+                }
+            }
+
+            private static void AuditMember(Type ownerType, string memberName, Type memberType,
+                bool hasChildAttr, bool hasParentAttr)
+            {
+                bool holdsAstNodes = AstStructureReflection.MemberHoldsAstNodes(memberType);
+                if (holdsAstNodes && !hasChildAttr && !hasParentAttr)
+                {
+                    throw new CompilerInternalException(
+                        $"AST node type {ownerType.Name} has an AST-holding member without annotation: " +
+                        $"{memberName} (missing [ChildAstNode] or [ParentAstNode])");
+                }
+                if (!holdsAstNodes && hasChildAttr)
+                {
+                    throw new CompilerInternalException(
+                        $"[ChildAstNode] member '{memberName}' of {ownerType.Name} " +
+                        $"does not hold AST nodes (type: {memberType.Name})");
+                }
+            }
         }
     }
 }

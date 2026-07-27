@@ -43,6 +43,8 @@ namespace LatteCompiler
         private State state = State.Initial;
         private PropertyAccessorASTNode? current;   // 正在解析的访问器
         private string paramName = "";              // 当前访问器的参数名（value/_）
+        // 带体访问器：CommitAccessor 时体尚未解析，暂存于此，待体子层弹栈后封 span 的 End（M28）
+        private PropertyAccessorASTNode? pendingBodySeal = null;
 
         public PropertyAccessorParserLayer(VariableDeclarationASTNode node)
         {
@@ -88,6 +90,14 @@ namespace LatteCompiler
         // 访问器开头：} 收尾；否则收集修饰符、识别 get/set（结构性等待，跳过换行）
         private ParserLayerResult HandleAccessorStart(Token currentToken, ParserLayerContext context)
         {
+            // 带体访问器：token 能回到本状态意味着体子层（CodeBlockParserLayer）已弹栈，
+            // 最近消费的 token 即体的 }，在此封访问器 span 的 End（须在跳过换行之前）（M28）
+            if (pendingBodySeal != null)
+            {
+                SealAccessorSpan(pendingBodySeal, context);
+                pendingBodySeal = null;
+            }
+
             if (currentToken is LineBreakToken) return ParserLayerResult.Continue.Instance;
 
             if (currentToken is NotationToken close && close.Content == "}")
@@ -225,6 +235,9 @@ namespace LatteCompiler
             if (current != null) return current;
 
             current = new PropertyAccessorASTNode(declNode);
+            // span 起点：当前 token 即访问器第一个 token（pub/priv 修饰词或 get/set 关键字）（M28）
+            var loc = context.GetLocation();
+            current.Span = new CharRange { Start = loc.Start, End = loc.End, sourceName = loc.sourceName };
             return current;
         }
 
@@ -232,6 +245,13 @@ namespace LatteCompiler
         private void CommitAccessor(ParserLayerContext context)
         {
             if (current == null) return;
+
+            // 无体访问器（编译器生成实现）立即封 span 的 End（当前 token 是换行/} 等终止符）；
+            // 带体访问器暂存到 pendingBodySeal，待体子层弹栈后封口（M28）
+            if (current.Body == null)
+                SealAccessorSpan(current, context);
+            else
+                pendingBodySeal = current;
 
             if (current.Kind == AccessorKind.Get)
             {
@@ -248,6 +268,17 @@ namespace LatteCompiler
 
             current = null;
             paramName = "";
+        }
+
+        // 访问器 span 封 End（M28）：End = 最近被消费的 token
+        // （CharRange 是可变 struct：取出→改→写回）
+        private static void SealAccessorSpan(PropertyAccessorASTNode accessor, ParserLayerContext context)
+        {
+            if (accessor.Span is { } s)
+            {
+                s.End = context.GetPreviousLocation().End;
+                accessor.Span = s;
+            }
         }
 
         // } 收尾：空块无意义；get/set 在是否需要 backing field 上必须一致（§9.4）

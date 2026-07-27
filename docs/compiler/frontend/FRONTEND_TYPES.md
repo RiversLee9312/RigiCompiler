@@ -4,8 +4,10 @@
 
 ## 1. 位置信息
 
-- **CharPosition**: 字符位置（源文件名、行号、列号、偏移量），`Lexer/Lexer.cs`
-- **CharRange**: 字符范围（起始位置、结束位置、源文件名），`Parser/Parser.cs`
+- **CharPosition**: 字符位置（行号、列号、偏移量），`Lexer/Lexer.cs`。
+  行号 1 起始；列号 1 起始（换行算当前行最后一列）；`offset` 为 0 起始字符索引（M28 修复恒 0 bug）
+- **CharRange**: 字符范围（起始位置、结束位置、源文件名），`Parser/Parser.cs`。
+  `sourceName` 是源文件名的唯一来源（M28 起 `CharPosition` 不再携带）
 
 ## 2. Token 类型（词法分析器输出）
 
@@ -27,12 +29,16 @@
 
 ## 3. AST 节点类型（语法分析器输出）
 
-**ASTNode**: 抽象基类（`Parent` 指针、`Children`），`Core/Utilities.cs`。
+**ASTNode**: 抽象基类（`Parent` 指针、`Children`、`Span`），`Core/Utilities.cs`。
 `Children` 是统一的子节点容器（全局作用域、类型体、嵌套类型共用，M14 从 RootASTNode 上移到基类）。
+`Span`（`CharRange?`，M28）是节点的源码范围：层目标由 Parser 主循环按 token 流经
+`ISpanReceiver.ReceiveSpan` 回填，层内自建节点由所在层显式设置，
+`ExpressionRootASTNode` 未显式设置时透明继承内容表达式的 span。
 节点类型一律用 CLR 类型判断（原 ASTNodeType 枚举已删除）；装子节点的字段/属性以
 `[ChildAstNode]` 标注、父指针以 `[ParentAstNode]` 标注，携带 ASTNode 的非节点对象
-（如 import 列表项 ImportItem struct）以 `[AstCarrier]` 标注——供 ASTIntegrityValidator
-反射遍历并校验父子指针一致性（M24）。
+（如 import 列表项 ImportItem struct）以 `[AstCarrier]` 标注——ASTVisitor（`AST/ASTVisitor.cs`，M28）
+以统一实现反射遍历，ASTIntegrityValidator 校验父子指针一致性与 Span 合法性，
+并审计「装 ASTNode 却未标注」的成员（M24/M28）。
 
 ### 3.1 根与符号（`Core/Utilities.cs`，待逐步迁出）
 - **RootASTNode**: 根节点（成员即基类的 `Children`）

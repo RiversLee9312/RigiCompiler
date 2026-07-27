@@ -34,6 +34,14 @@ namespace LatteCompiler
         public ParserLayerResult ParseToken(Token currentToken, ParserLayerContext context);
     }
 
+    // Span 接收者（M28）：Parser 主循环在层弹出时，把该层消费的 token 范围
+    // 计算为 CharRange 回调给层；层用它回填施工目标的 Span
+    // （约定 target.Span ??= span——层内显式设置的 span 优先，层 span 只填空）。
+    public interface ISpanReceiver
+    {
+        public void ReceiveSpan(CharRange span);
+    }
+
     public struct CharRange
     {
         public CharPosition Start = new CharPosition();
@@ -47,6 +55,9 @@ namespace LatteCompiler
     public abstract class ParserLayerContext
     {
         public abstract CharRange GetLocation();
+        // 最近被消费的 token 范围（注释跳过不算消费；Replay 未前进不算消费）。
+        // 当前 token 不属于本结构时（Replay 弹出、语句终于换行），用它取前一 token 位置封 End。
+        public abstract CharRange GetPreviousLocation();
         [DoesNotReturn]
         public abstract Exception RaiseError(string message);
         public abstract void LogWarning(string message);
@@ -60,10 +71,17 @@ namespace LatteCompiler
         private class ContextImpl : ParserLayerContext
         {
             public CharRange currentRange = new CharRange();
+            // 最近被消费的 token 范围（由主循环在前进时维护）
+            public CharRange lastConsumedRange = new CharRange();
 
             public override CharRange GetLocation()
             {
                 return currentRange;
+            }
+
+            public override CharRange GetPreviousLocation()
+            {
+                return lastConsumedRange;
             }
 
             // 日志统一走 Logger（禁止直接 Console.WriteLine）；
@@ -97,6 +115,17 @@ namespace LatteCompiler
             // 只能施工传入的目标
             var root = new RootASTNode();
             ParseCore(tokens, new RootParserLayer(root), entryLayer);
+            // Root span：整文件范围（首 token Start → 末 token/EOF End）；
+            // RootParserLayer 永不弹栈，不走 ISpanReceiver
+            if (tokens.Count > 0)
+            {
+                root.Span = new CharRange
+                {
+                    Start = tokens[0].CharRange.Start,
+                    End = tokens[tokens.Count - 1].CharRange.End,
+                    sourceName = tokens[0].CharRange.sourceName
+                };
+            }
             // Parser 成功后、进入后续阶段前：AST 完整性验证（失败即内部编译器错误）
             ASTIntegrityValidator.Validate(root);
             return root;
@@ -110,22 +139,30 @@ namespace LatteCompiler
             ParseCore(tokens, baseLayer, entryLayer);
         }
 
+        // 层栈帧（M28）：层 + 首个分发给该层的 token 范围；
+        // 层弹出时据以计算该层消费的 token span，回填给 ISpanReceiver
+        private sealed class LayerFrame
+        {
+            public required IParserLayer Layer { get; init; }
+            public CharRange? FirstRange { get; set; }
+        }
+
         // 主循环：只负责 Layer 栈与 Token 调度；Layer 之间只传递控制权，
         // 不传递任何 AST 数据（施工目标在 Push 前已由父层确定）
         private void ParseCore(List<Token> tokens, IParserLayer baseLayer, IParserLayer? entryLayer)
         {
             var context = new ContextImpl();
-            var stack = new Stack<IParserLayer>();
+            var stack = new Stack<LayerFrame>();
             int offset = 0;
             // Lexer 已在输出末尾追加正式 EOF token（M25）；
             // 对绕过 Lexer 手工构造 token 流的调用方（如协议测试）保持末尾追加的兼容
             var input = tokens.Count > 0 && tokens[tokens.Count - 1] is EndOfFileToken
                 ? tokens
                 : new List<Token>(tokens) { CreateEndOfFileToken(tokens) };
-            stack.Push(baseLayer);
+            stack.Push(new LayerFrame { Layer = baseLayer });
             if (entryLayer != null)
             {
-                stack.Push(entryLayer);
+                stack.Push(new LayerFrame { Layer = entryLayer });
             }
             while(offset<input.Count) {
                 var token = input[offset];
@@ -138,11 +175,13 @@ namespace LatteCompiler
                 }
                 context.Log("Current token:"+token);
                 context.currentRange = token.CharRange;
-                IParserLayer? layer;
-                if (stack.TryPeek(out layer)) {
+                LayerFrame? frame;
+                if (stack.TryPeek(out frame)) {
+                    // 记录首个分发给该层的 token 范围（层 span 的起点）
+                    frame.FirstRange ??= token.CharRange;
                     // 主循环只负责 Layer 栈与 Token 调度：Layer 之间只传递控制权，
                     // 不传递任何 AST 数据（施工目标在 Push 前已由父层确定）
-                    var result = layer.ParseToken(token,context);
+                    var result = frame.Layer.ParseToken(token,context);
                     var keepToken = false;
                     switch (result) {
                         case ParserLayerResult.Continue:
@@ -151,16 +190,22 @@ namespace LatteCompiler
                         case ParserLayerResult.PopLayer r:
                             keepToken = r.Disposition == TokenDisposition.Replay;
                             var popped = stack.Pop();
-                            context.Log("Popped parser layer:" + popped);
+                            context.Log("Popped parser layer:" + popped.Layer);
+                            // 层弹出：把该层消费的 token 范围回填给施工目标（M28）
+                            if (popped.Layer is ISpanReceiver receiver && popped.FirstRange is { } firstRange)
+                            {
+                                receiver.ReceiveSpan(ComputeLayerSpan(firstRange, token, r.Disposition, context));
+                            }
                             break;
                         case ParserLayerResult.PushLayer r:
                             keepToken = r.Disposition == TokenDisposition.Replay;
-                            stack.Push(r.LayerToPush);
+                            stack.Push(new LayerFrame { Layer = r.LayerToPush });
                             context.Log("Pushed parser layer:" + r.LayerToPush);
                             break;
                     }
                     if (!keepToken)
                     {
+                        context.lastConsumedRange = token.CharRange;
                         offset++;
                     }
                 }
@@ -174,6 +219,31 @@ namespace LatteCompiler
             {
                 throw context.RaiseError("Unexpected End");
             }
+        }
+
+        // 层 span（M28）：首个分发 token 的 Start → 最后一个属于该层的 token 的 End。
+        // Consume 弹出且当前 token 非换行：当前 token 属于该层；
+        // 其余（Replay 弹出、换行处 Consume 弹出）：span 终于最近被消费的 token——
+        // 声明/语句的 span 不拖尾换行符到下一行。
+        private static CharRange ComputeLayerSpan(
+            CharRange firstRange, Token currentToken, TokenDisposition disposition, ParserLayerContext context)
+        {
+            var start = firstRange.Start;
+            CharPosition end;
+            if (disposition == TokenDisposition.Consume && currentToken is not LineBreakToken)
+            {
+                end = currentToken.CharRange.End;
+            }
+            else
+            {
+                end = context.GetPreviousLocation().End;
+            }
+            // 防御：层未消费任何 token（Replay 进 Replay 出）或位置倒置 → 起点处零宽 span
+            if (end.offset < start.offset)
+            {
+                end = start;
+            }
+            return new CharRange { Start = start, End = end, sourceName = firstRange.sourceName };
         }
 
         // EOF 的 CharRange 是零长度范围，位置位于源文件最后一个 Token 的结束位置

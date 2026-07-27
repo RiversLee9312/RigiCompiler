@@ -9,9 +9,10 @@ namespace LatteCompiler.Tests
     /// <summary>
     /// AST JSONL 序列化测试：解析小段 Latte 源码 → AstJsonlSerializer
     /// 序列化到 StringWriter → 断言：
-    /// - 每行是合法 JSON，id/parent/via/type/fields 五个键齐全；
+    /// - 每行是合法 JSON，id/parent/via/type/span/fields 六个键齐全；
     /// - id 从 1 连续自增（行数 == 节点数），parent 引用已出现的 id（根为 null）；
     /// - 非根行 via 非空，fields 不含 Parent；
+    /// - 每行 span 非空且首尾不颠倒（M28）；
     /// - 关键节点类型与 via/fields 内容出现（含 private 字段下钻、
     ///   carrier 下钻、Symbol 点分字符串渲染、enum 渲染为名字）。
     /// </summary>
@@ -164,7 +165,8 @@ namespace LatteCompiler.Tests
             return lines;
         }
 
-        // 结构断言：五个键齐全、id 连续、parent 引用已出现 id、via 规则、fields 不含 Parent
+        // 结构断言：六个键齐全、id 连续、parent 引用已出现 id、via 规则、
+        // fields 不含 Parent、span 非空且首尾不颠倒（M28）
         private static void CheckStructure(string label, List<JsonElement> lines)
         {
             Check($"{label}：首行是 RootASTNode（id=1, parent/via 为 null）",
@@ -179,6 +181,7 @@ namespace LatteCompiler.Tests
             bool parentsValid = true;
             bool viaValid = true;
             bool fieldsExcludeParent = true;
+            bool spanValid = true;
             for (int i = 0; i < lines.Count; i++)
             {
                 var line = lines[i];
@@ -186,6 +189,7 @@ namespace LatteCompiler.Tests
                     !line.TryGetProperty("parent", out var parentEl) ||
                     !line.TryGetProperty("via", out var viaEl) ||
                     !line.TryGetProperty("type", out _) ||
+                    !line.TryGetProperty("span", out var spanEl) ||
                     !line.TryGetProperty("fields", out var fieldsEl))
                 {
                     keysComplete = false;
@@ -207,12 +211,23 @@ namespace LatteCompiler.Tests
                     if (viaEl.ValueKind != JsonValueKind.String) viaValid = false;
                 }
                 if (fieldsEl.TryGetProperty("Parent", out _)) fieldsExcludeParent = false;
+                // span：解析产物必然非空；source 非空；End 不早于 Start
+                if (spanEl.ValueKind != JsonValueKind.Object ||
+                    string.IsNullOrEmpty(spanEl.GetProperty("source").GetString()) ||
+                    spanEl.GetProperty("endLine").GetInt64() < spanEl.GetProperty("startLine").GetInt64() ||
+                    (spanEl.GetProperty("endLine").GetInt64() == spanEl.GetProperty("startLine").GetInt64() &&
+                     spanEl.GetProperty("endCol").GetInt64() < spanEl.GetProperty("startCol").GetInt64()) ||
+                    spanEl.GetProperty("endOffset").GetInt64() < spanEl.GetProperty("startOffset").GetInt64())
+                {
+                    spanValid = false;
+                }
             }
-            Check($"{label}：每行 id/parent/via/type/fields 五键齐全", keysComplete);
+            Check($"{label}：每行 id/parent/via/type/span/fields 六键齐全", keysComplete);
             Check($"{label}：id 从 1 连续自增（行数 == 节点数）", idsSequential);
             Check($"{label}：parent 均引用已出现的 id（根为 null）", parentsValid);
             Check($"{label}：非根行 via 非空", viaValid);
             Check($"{label}：fields 不含 Parent", fieldsExcludeParent);
+            Check($"{label}：span 非空且首尾不颠倒（source 非空）", spanValid);
         }
 
         private static IEnumerable<JsonElement> OfType(List<JsonElement> lines, string type)

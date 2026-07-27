@@ -18,7 +18,7 @@ namespace LatteCompiler
     /// - 子句中的类型（约束 Target/Bound、参数名候选）委托 TypeReferenceParserLayer 解析
     /// - out/in/named 前缀是关键字，由本层直接消费，不经过类型引用解析
     /// </summary>
-    public class GenericParametersParserLayer : IParserLayer
+    public class GenericParametersParserLayer : IParserLayer, ISpanReceiver
     {
         private readonly GenericParameterListASTNode targetNode;
 
@@ -50,10 +50,19 @@ namespace LatteCompiler
         // TypeRef 路径：子句开头解析出的类型（可能是参数名候选或约束 Target）
         private TypeReferenceASTNode? pendingTarget = null;
 
+        // 子句起点的源码位置（out/in/named 前缀或类型首 token），作参数/约束 span 的 Start（M28）；
+        // 不在 ClearPending 清理：约束紧跟参数时 StartConstraint 仍需它，且每个子句入口都会重写
+        private CharPosition? pendingStart = null;
+        // 施工中的约束子句（StartConstraint 创建，BoundParsed 状态见到 , 或 > 时封 End）（M28）
+        private GenericConstraintASTNode? pendingConstraint = null;
+
         public GenericParametersParserLayer(GenericParameterListASTNode target)
         {
             targetNode = target;
         }
+
+        // 层弹出时回填泛型参数列表节点的源码范围（M28）
+        public void ReceiveSpan(CharRange span) => targetNode.Span ??= span;
 
         public ParserLayerResult ParseToken(Token currentToken, ParserLayerContext context)
         {
@@ -120,6 +129,9 @@ namespace LatteCompiler
         {
             if (currentToken is WordToken wt)
             {
+                // 子句起点：前缀修饰词（out/in/named）或类型首 token，即当前 token（M28）
+                pendingStart = context.GetLocation().Start;
+
                 // out/in 型变前缀
                 if (wt.Content == Keywords.OUT)
                 {
@@ -155,12 +167,17 @@ namespace LatteCompiler
             return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
+        // 前缀路径（out/in/named）参数名 token 的范围（M28）：
+        // 作为约束 Target（隐含为参数名裸符号）的 span 来源
+        private CharRange? pendingNameRange;
+
         // out/in 已读：等待参数名
         private ParserLayerResult HandleVarianceNameExpected(Token currentToken, ParserLayerContext context)
         {
             if (currentToken is WordToken wt)
             {
                 pendingName = wt.Content;
+                pendingNameRange = context.GetLocation();
                 state = State.PrefixParamSeen;
                 return ParserLayerResult.Continue.Instance;
             }
@@ -175,6 +192,7 @@ namespace LatteCompiler
             if (currentToken is WordToken wt)
             {
                 pendingName = wt.Content;
+                pendingNameRange = context.GetLocation();
                 state = State.PrefixParamSeen;
                 return ParserLayerResult.Continue.Instance;
             }
@@ -201,14 +219,14 @@ namespace LatteCompiler
 
             if (currentToken is NotationToken comma && comma.Content == ",")
             {
-                CompleteParameter();
+                CompleteParameter(context);
                 state = State.ClauseStart;
                 return ParserLayerResult.Continue.Instance;
             }
 
             if (currentToken is NotationToken close && close.Content == ">")
             {
-                CompleteParameter();
+                CompleteParameter(context);
                 state = State.Completed;
                 return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
             }
@@ -218,8 +236,8 @@ namespace LatteCompiler
             {
                 // 型变参数 + 约束（如 out TElement extends Comparable）
                 string name = pendingName;
-                CompleteParameter();
-                return StartConstraint(kind.Value, MakeBareSymbol(name), false, context);
+                CompleteParameter(context);
+                return StartConstraint(kind.Value, MakeBareSymbol(name), false, pendingNameRange, context);
             }
 
             context.RaiseError($"Expected '...', ',', '>' or constraint after parameter name, got: {currentToken}");
@@ -273,14 +291,14 @@ namespace LatteCompiler
         {
             if (currentToken is NotationToken comma && comma.Content == ",")
             {
-                CompleteParameter();
+                CompleteParameter(context);
                 state = State.ClauseStart;
                 return ParserLayerResult.Continue.Instance;
             }
 
             if (currentToken is NotationToken close && close.Content == ">")
             {
-                CompleteParameter();
+                CompleteParameter(context);
                 state = State.Completed;
                 return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
             }
@@ -290,8 +308,8 @@ namespace LatteCompiler
             {
                 // 可变参数的约束 Target 隐含为刚完成的参数
                 string name = pendingName;
-                CompleteParameter();
-                return StartConstraint(kind.Value, MakeBareSymbol(name), false, context);
+                CompleteParameter(context);
+                return StartConstraint(kind.Value, MakeBareSymbol(name), false, pendingNameRange, context);
             }
 
             context.RaiseError($"Expected ',', '>' or constraint after variadic parameter, got: {currentToken}");
@@ -304,9 +322,11 @@ namespace LatteCompiler
             var kind = TryGetConstraintKind(currentToken);
             if (kind != null)
             {
-                // 约束子句：已解析类型的符号数据灌进 constraint 自带 Target 节点
+                // 约束子句：已解析类型的符号数据灌进 constraint 自带 Target 节点；
+                // Target 原文范围即已解析类型的 span（M28）
                 return StartConstraint(
-                    kind.Value, pendingTarget!.TypeSymbol.symbol, pendingTarget!.IsNullable, context);
+                    kind.Value, pendingTarget!.TypeSymbol.symbol, pendingTarget!.IsNullable,
+                    pendingTarget!.Span, context);
             }
 
             if (currentToken is NotationToken nt)
@@ -331,6 +351,8 @@ namespace LatteCompiler
                     // 名字先入 pending 字段但不提交——待 ... 读完后由 VariadicDone 统一提交
                     string? name = TryConvertToParamName(pendingTarget!, context);
                     pendingName = name!;
+                    // 约束 Target 隐含为该参数名：其原文范围即已解析类型的 span（M28）
+                    pendingNameRange = pendingTarget!.Span;
                     pendingTarget = null;
                     state = State.DotsAwaitThird;
                     return ParserLayerResult.Continue.Instance;
@@ -347,18 +369,31 @@ namespace LatteCompiler
         {
             if (currentToken is NotationToken comma && comma.Content == ",")
             {
+                SealConstraintSpan(context);
                 state = State.ClauseStart;
                 return ParserLayerResult.Continue.Instance;
             }
 
             if (currentToken is NotationToken close && close.Content == ">")
             {
+                SealConstraintSpan(context);
                 state = State.Completed;
                 return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
             }
 
             context.RaiseError($"Expected ',' or '>' after constraint, got: {currentToken}");
             return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
+        }
+
+        // 约束子句完成（当前 token 是 , 或 >）：span 的 End 封到 Bound 最后一个 token（M28）
+        private void SealConstraintSpan(ParserLayerContext context)
+        {
+            if (pendingConstraint?.Span is { } s)
+            {
+                s.End = context.GetPreviousLocation().End;
+                pendingConstraint.Span = s;
+            }
+            pendingConstraint = null;
         }
 
         // ===== 辅助方法 =====
@@ -375,16 +410,27 @@ namespace LatteCompiler
             return null;
         }
 
-        // 把 pending 字段累积的参数信息提交到 Parameters，并重置
-        private void CompleteParameter()
+        // 把 pending 字段累积的参数信息提交到 Parameters，并重置。
+        // 此时当前 token 是 , > 或约束关键字（终止符、不属于参数），
+        // span 的 End 封到参数最后一个 token（M28）
+        private void CompleteParameter(ParserLayerContext context)
         {
-            targetNode.Parameters.Add(new GenericParameterASTNode(targetNode)
+            var parameter = new GenericParameterASTNode(targetNode)
             {
                 Name = pendingName,
                 Variance = pendingVariance,
                 IsVariadic = pendingVariadic,
                 IsNamedVariadic = pendingNamedVariadic
-            });
+            };
+            // Start 取子句起点；防御：未记录时退化为以最近消费 token 起点的单点 span
+            var prev = context.GetPreviousLocation();
+            parameter.Span = new CharRange
+            {
+                Start = pendingStart ?? prev.Start,
+                End = prev.End,
+                sourceName = prev.sourceName
+            };
+            targetNode.Parameters.Add(parameter);
             ClearPending();
         }
 
@@ -406,7 +452,7 @@ namespace LatteCompiler
             pendingVariance = GenericVariance.None;
             pendingNamedVariadic = false;
             pendingTarget = null;
-            CompleteParameter();
+            CompleteParameter(context);
         }
 
         // 类型引用 → 参数名：必须是裸标识符（单元素、无泛型实参、非可空）。
@@ -445,13 +491,24 @@ namespace LatteCompiler
         // constraint），再委托 TypeReferenceParserLayer 解析 Bound。
         // 注意：禁止把外部已建成的 Target 节点挂进来——节点 Parent 在创建时即定、
         // 禁止搬家；Symbol 是纯数据，可以安全转移。
+        // targetSpan：Target 原文的范围（M28）——TypeRef 路径即已解析类型的 span，
+        // 前缀/可变参数路径即参数名 token 的范围
         private ParserLayerResult StartConstraint(
-            GenericConstraintKind kind, Symbol targetSymbol, bool targetNullable, ParserLayerContext context)
+            GenericConstraintKind kind, Symbol targetSymbol, bool targetNullable,
+            CharRange? targetSpan, ParserLayerContext context)
         {
             var constraint = new GenericConstraintASTNode(targetNode) { Kind = kind };
             constraint.Target.TypeSymbol.symbol = targetSymbol;
             constraint.Target.IsNullable = targetNullable;
+            // 自带 Target 节点未经解析层施工，span 需按原文范围显式设置（含其符号节点）
+            constraint.Target.Span = targetSpan;
+            constraint.Target.TypeSymbol.Span = targetSpan;
             targetNode.Constraints.Add(constraint);
+            // 约束 span（M28）：Start 同子句起点（Target 首 token；前缀路径即 out/in 修饰词），
+            // End 待 Bound 解析完（BoundParsed 状态见到 , 或 >）时封闭
+            if (pendingStart is { } start)
+                constraint.Span = new CharRange { Start = start, End = start, sourceName = context.GetLocation().sourceName };
+            pendingConstraint = constraint;
 
             state = State.BoundParsed;
             return new ParserLayerResult.PushLayer(

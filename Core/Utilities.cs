@@ -80,8 +80,9 @@ namespace LatteCompiler
 
             foreach (var prop in fields)
             {
-                // 可选：跳过某些不需要打印的属性，例如 "Parent" 指针，防止干扰
+                // 可选：跳过某些不需要打印的属性，例如 "Parent" 指针与 Span 范围，防止干扰
                 if (prop.Name == nameof(ASTNode.Parent)) continue;
+                if (prop.Name == nameof(ASTNode.Span)) continue;
 
                 object? value;
                 try
@@ -98,8 +99,9 @@ namespace LatteCompiler
 
             foreach (var prop in props)
             {
-                // 可选：跳过某些不需要打印的属性，例如 "Parent" 指针，防止干扰
+                // 可选：跳过某些不需要打印的属性，例如 "Parent" 指针与 Span 范围，防止干扰
                 if (prop.Name == nameof(ASTNode.Parent)) continue;
+                if (prop.Name == nameof(ASTNode.Span)) continue;
 
                 object? value;
                 try
@@ -455,6 +457,11 @@ namespace LatteCompiler
         // 二次设置直接抛异常；禁止任何形式的重挂 Parent。
         [ParentAstNode]
         public ASTNode? Parent { get; private set; }
+
+        // 源码范围（M28）：诊断用。Parser 施工时填充（层目标由主循环按 token 流回填，
+        // 层内自建节点由所在层显式设置）；null = 未设置。
+        // Validator 校验每个节点均有合法 Span（ExpressionRootASTNode 可透明继承内容表达式）。
+        public virtual CharRange? Span { get; set; }
 
         protected ASTNode(ASTNode? parent)
         {

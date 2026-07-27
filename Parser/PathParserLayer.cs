@@ -6,7 +6,7 @@ using System.Threading.Tasks;
 
 namespace LatteCompiler
 {
-    public class PathParserLayer : IParserLayer
+    public class PathParserLayer : IParserLayer, ISpanReceiver
     {
         private class SymbolLayer : IParserLayer
         {
@@ -149,11 +149,13 @@ namespace LatteCompiler
             SymbolPath
         }
         private PathType pathType;
+        private readonly ASTNode self;  // 施工目标节点（保留构造函数的 self 引用，M28 用于回填 Span）
         private SymbolASTNode? symbolNode;
         private AcquisitionExpressionASTNode? acquisitionNode;
         private bool lineBreakSensitive;
         public PathParserLayer(PathType pathType,ASTNode self,bool lineBreakSensitive)
         {
+            this.self = self;
             this.pathType = pathType;
             this.lineBreakSensitive = lineBreakSensitive;
             switch (pathType)
@@ -178,6 +180,10 @@ namespace LatteCompiler
                     break;
             }
         }
+
+        // 层弹出时回填施工目标的源码范围（M28）
+        public void ReceiveSpan(CharRange span) => self.Span ??= span;
+
         private bool symbolParsed = false;
         private enum AcqExprParseState
         {

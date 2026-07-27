@@ -24,7 +24,7 @@ namespace LatteCompiler
     ///
     /// 施工协议（大扫除后）：构造函数接收父层创建并挂接好的目标节点，只原地填充。
     /// </summary>
-    public class TryCatchFinallyParserLayer : IParserLayer
+    public class TryCatchFinallyParserLayer : IParserLayer, ISpanReceiver
     {
         private readonly TryCatchFinallyStatementASTNode tryNode;
 
@@ -52,6 +52,12 @@ namespace LatteCompiler
         public TryCatchFinallyParserLayer(TryCatchFinallyStatementASTNode target)
         {
             tryNode = target;
+        }
+
+        // Span 回填（M28）：回填施工目标 try 节点
+        public void ReceiveSpan(CharRange span)
+        {
+            tryNode.Span ??= span;
         }
 
         public ParserLayerResult ParseToken(Token currentToken, ParserLayerContext context)
@@ -127,6 +133,16 @@ namespace LatteCompiler
 
         private ParserLayerResult HandleCatchOrFinally(Token currentToken, ParserLayerContext context)
         {
+            // 上一 catch 的代码块刚解析完：封 span 的 End 到块的最后消费 token（}）。
+            // 必须在跳过换行之前封口，否则换行符被消费后会污染最近消费位置
+            if (currentCatch != null)
+            {
+                var catchSpan = currentCatch.Span!.Value;
+                catchSpan.End = context.GetPreviousLocation().End;
+                currentCatch.Span = catchSpan;
+                currentCatch = null;
+            }
+
             // 跳过换行
             if (currentToken is LineBreakToken)
             {
@@ -139,6 +155,9 @@ namespace LatteCompiler
                 if (wt.Content == Keywords.CATCH)
                 {
                     currentCatch = new CatchClauseASTNode(tryNode);
+                    // 显式设置 span：从 catch 关键字开始（End 在 catch 代码块解析完成后封闭）
+                    var location = context.GetLocation();
+                    currentCatch.Span = new CharRange { Start = location.Start, End = location.End, sourceName = location.sourceName };
                     state = State.CatchOpenParen;
                     return ParserLayerResult.Continue.Instance;
                 }
@@ -264,8 +283,8 @@ namespace LatteCompiler
             }
 
             // 委托给 CodeBlockParserLayer 解析 catch 块
+            // （currentCatch 保持引用：待块解析完回到 CatchOrFinally 时封 span 的 End 再清空）
             tryNode.CatchClauses.Add(currentCatch!);
-            currentCatch = null;
             state = State.CatchOrFinally;
             return new ParserLayerResult.PushLayer(
                 new CodeBlockParserLayer(tryNode.CatchClauses[tryNode.CatchClauses.Count - 1].Body), TokenDisposition.Replay);

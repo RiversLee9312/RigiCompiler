@@ -68,6 +68,82 @@ namespace LatteCompiler.Tests
             Console.WriteLine();
         }
 
+        // ===== 1.5 位置精确性（M28）：逐 token 断言 CharRange =====
+
+        public static void TestPositions()
+        {
+            Console.WriteLine("=== Testing Token Positions (line/col/offset/sourceName) ===");
+
+            // 单行 + 换行 + 第二行：列号/offset/换行归属/EOF 位置
+            // 字符布局：a0 b1 ' '2 c3 d4 \n5 x6
+            ExpectRanges("ab cd\nx",
+                ("W(ab)", 1, 1, 0, 1, 2, 1),   // 首个 token：col 从 1 开始
+                ("W(cd)", 1, 4, 3, 1, 5, 4),   // 空白不进 token 头
+                ("LB", 1, 6, 5, 1, 6, 5),      // 换行算当前行最后一列（零宽）
+                ("W(x)", 2, 1, 6, 2, 1, 6),    // 第二行首字符 col 1
+                ("EOF", 2, 2, 7, 2, 2, 7));    // EOF：末尾零宽范围
+
+            // 缩进行：前导空格不进 token 头
+            // 字符布局：' '0 ' '1 a2 b3 \n4 ' '5 ' '6 c7 d8
+            ExpectRanges("  ab\n  cd",
+                ("W(ab)", 1, 3, 2, 1, 4, 3),
+                ("LB", 1, 5, 4, 1, 5, 4),
+                ("W(cd)", 2, 3, 7, 2, 4, 8),
+                ("EOF", 2, 5, 9, 2, 5, 9));
+
+            // EOF 处冲刷的 token：End 不少算字符（M28 修复的既有 bug）
+            // 字符布局：/ 0
+            ExpectRanges("/",
+                ("N(/)", 1, 1, 0, 1, 1, 0),
+                ("EOF", 1, 2, 1, 1, 2, 1));
+
+            Console.WriteLine();
+        }
+
+        // 逐 token 断言精确范围；sourceName 一律为 "<inline>"
+        private static void ExpectRanges(
+            string code,
+            params (string desc, int startLine, int startCol, int startOffset,
+                    int endLine, int endCol, int endOffset)[] expected)
+        {
+            try
+            {
+                var tokens = new Lexer().Tokenize(code);
+                string actualDesc = DescribeTokens(tokens);
+                if (tokens.Count != expected.Length)
+                {
+                    Fail(code, $"token 数量不符：expected {expected.Length}, got {tokens.Count} ({actualDesc})");
+                    return;
+                }
+                for (int i = 0; i < expected.Length; i++)
+                {
+                    var e = expected[i];
+                    var r = tokens[i].CharRange;
+                    string desc = DescribeTokens(new List<Token> { tokens[i] });
+                    if (desc != e.desc ||
+                        r.Start.line != e.startLine || r.Start.column != e.startCol ||
+                        r.Start.offset != e.startOffset ||
+                        r.End.line != e.endLine || r.End.column != e.endCol ||
+                        r.End.offset != e.endOffset ||
+                        r.sourceName != "<inline>")
+                    {
+                        Fail(code,
+                            $"token[{i}] {desc} 范围不符：expected {e.desc} " +
+                            $"[L{e.startLine} C{e.startCol} o{e.startOffset}]->[L{e.endLine} C{e.endCol} o{e.endOffset}], " +
+                            $"got [L{r.Start.line} C{r.Start.column} o{r.Start.offset}]->" +
+                            $"[L{r.End.line} C{r.End.column} o{r.End.offset}] source={r.sourceName}");
+                        return;
+                    }
+                }
+                Console.WriteLine($"  [PASS] {DescribeSource(code)}  => {actualDesc}（范围精确）");
+                passCount++;
+            }
+            catch (Exception ex)
+            {
+                Fail(code, $"unexpected {ex.GetType().Name}: {ex.Message}");
+            }
+        }
+
         // ===== 2. 随机 fuzz =====
 
         private static readonly char[] CharPool =
@@ -157,7 +233,8 @@ namespace LatteCompiler.Tests
                 $"  [FAIL] ({category}) {DescribeSource(source)}\n      => {problem}");
         }
 
-        // 不变量：EOF 存在且唯一（恰在末尾）；token 位置单调不回退、范围不颠倒
+        // 不变量：EOF 存在且唯一（恰在末尾）；token 位置单调不回退、范围不颠倒；
+        // 每个 token 都有 sourceName；offset 沿 token 流不回退（M28）
         private static string? CheckInvariants(List<Token> tokens)
         {
             if (tokens.Count == 0) return "token 流为空（至少应有 EOF）";
@@ -165,13 +242,24 @@ namespace LatteCompiler.Tests
             if (tokens.Count(t => t is EndOfFileToken) != 1) return "EOF token 不唯一";
 
             long lastLine = 0;
+            long lastOffset = 0;
             foreach (var t in tokens)
             {
+                if (string.IsNullOrEmpty(t.CharRange.sourceName))
+                    return $"token 缺少 sourceName @ {t}";
                 if (t.CharRange.Start.line < lastLine)
                     return $"token 位置回退 @ {t} (line {t.CharRange.Start.line} < {lastLine})";
                 lastLine = t.CharRange.Start.line;
                 if (t.CharRange.End.line < t.CharRange.Start.line)
                     return $"token 范围颠倒 @ {t}";
+                if (t.CharRange.End.line == t.CharRange.Start.line &&
+                    t.CharRange.End.column < t.CharRange.Start.column)
+                    return $"token 列号范围颠倒 @ {t}";
+                if (t.CharRange.End.offset < t.CharRange.Start.offset)
+                    return $"token offset 范围颠倒 @ {t}";
+                if (t.CharRange.Start.offset < lastOffset)
+                    return $"token offset 回退 @ {t} (offset {t.CharRange.Start.offset} < {lastOffset})";
+                lastOffset = t.CharRange.Start.offset;
             }
             return null;
         }
@@ -338,6 +426,7 @@ namespace LatteCompiler.Tests
 
             TestFixedCases();
             TestErrorCases();
+            TestPositions();
             TestRandomFuzz();
             TestParserIntegration();
 

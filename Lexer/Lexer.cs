@@ -24,9 +24,9 @@ namespace LatteCompiler
     }
     public struct CharPosition
     {
-        public string sourceName = "";
         public int column = 0;
         public long line = 0;
+        // 0 起始的字符索引（M28 修复：此前从未增长，恒为 0）
         public long offset = 0;
 
         public CharPosition()
@@ -53,15 +53,26 @@ namespace LatteCompiler
         {
             private bool updatePosition = true;
             private CharPosition _position = new();
+            // 源名唯一来源：CharRange.sourceName（M28 起 CharPosition 不再携带）
+            public string sourceName = "";
             public CharPosition position { 
                 get { return _position; }
                 set {
                     lastPosition = _position;
                     _position = value;
-                    if (updatePosition) { 
-                        tokenHeadPosition = _position;
-                        updatePosition = false;
-                    }
+                }
+            }
+
+            // 由主循环在每个字符处调用：上一个 token 推送后，首个非空白字符
+            // 成为下一个 token 的头（M28 修复：此前空白字符也会被记为 token 头，
+            // 缩进行 token 的 Start 总是落在前导空格上）。
+            // 换行是例外——它本身是 LineBreakToken，必须能当 token 头
+            public void CaptureTokenHead(char currentChar)
+            {
+                if (updatePosition && (!Char.IsWhiteSpace(currentChar) || currentChar == '\n'))
+                {
+                    tokenHeadPosition = position;
+                    updatePosition = false;
                 }
             }
             public List<Token> tokens = new List<Token>();
@@ -70,6 +81,14 @@ namespace LatteCompiler
             public override CharPosition GetPosition()
             {
                 return position;
+            }
+
+            // 初始化位置（M28）：不走 position setter——tokenHeadPosition
+            // 留给首个真实字符的位置，避免把 col 0 冻结成首个 token 的 Start
+            public void InitPosition(CharPosition p)
+            {
+                _position = p;
+                lastPosition = p;
             }
 
             public override List<Token> GetTokens()
@@ -81,23 +100,25 @@ namespace LatteCompiler
             // source 标识子系统便于 grep，位置信息保留在 message 前缀里
             public override void Log(string message)
             {
-                Logger.Verbose("Lexer", $"[{position.sourceName}][Line {position.line} Col {position.column}]{message}");
+                Logger.Verbose("Lexer", $"[{sourceName}][Line {position.line} Col {position.column}]{message}");
             }
 
             public override void LogWarning(string message)
             {
-                Logger.Warning("Lexer", $"[{position.sourceName}][Line {position.line} Col {position.column}]{message}");
+                Logger.Warning("Lexer", $"[{sourceName}][Line {position.line} Col {position.column}]{message}");
             }
 
             public override void PushToken(Token token,bool includesCurrentChar)
             {
                 token.CharRange.Start = tokenHeadPosition;
                 token.CharRange.End = includesCurrentChar?position:lastPosition;
+                // M28 修复：普通 token 的 sourceName 此前从未设置（仅 EOF 有）
+                token.CharRange.sourceName = sourceName;
                 updatePosition = true;
                 tokens.Add(token);
             }
             [DoesNotReturn]
-            public override Exception RaiseError(string message) => throw new LexerException($"ERROR [{position.sourceName}][Line {position.line} Col {position.column}]{message}");
+            public override Exception RaiseError(string message) => throw new LexerException($"ERROR [{sourceName}][Line {position.line} Col {position.column}]{message}");
 
         }
 
@@ -108,17 +129,23 @@ namespace LatteCompiler
         {
             //var result = new List<Token>();
             var content = await reader.ReadToEndAsync();
-            content.ReplaceLineEndings("\n");
+            content = content.ReplaceLineEndings("\n");
             var lexerLayers = new Stack<ILexerLayer>();
             lexerLayers.Push(new BaseLexerLayer());
             var offset = 0;
             var currentChar = '\0';  // 初值不会被使用（keepChar 初始为 false，循环内总会先读字符）
             var keepChar = false;
             var context = new ContextImpl();
-            context.position = new CharPosition() {
-                offset = offset,line = 1,column = 0,sourceName = sourceName
-            };
+            context.sourceName = sourceName;
+            // 初始位置不走 setter：tokenHeadPosition 留给首个真实字符的位置
+            // （M28 修复：此前经 setter 初始化，把 col 0 冻结成了首个 token 的 Start）
+            context.InitPosition(new CharPosition() {
+                offset = offset,line = 1,column = 0
+            });
 
+            // 换行挂起：换行符本身算当前行的最后一列，下一行首个字符从 col 1 开始
+            // （M28 修复：此前换行即切到下一行 col 1，导致第二行起所有列号 +1）
+            var newLinePending = false;
             while (offset < content.Length) {
                 ILexerLayer? currentLayer;
                 if (lexerLayers.TryPeek(out currentLayer))
@@ -128,21 +155,30 @@ namespace LatteCompiler
                     {
                         currentChar = content[offset];
                         context.Log($"Current char:{currentChar}");
-                        if (currentChar == '\n')
+                        if (newLinePending)
                         {
                             newPosition.line++;
                             newPosition.column = 1;
+                            newLinePending = false;
                         }
                         else
                         {
                             newPosition.column++;
                         }
+                        if (currentChar == '\n')
+                        {
+                            newLinePending = true;
+                        }
+                        // offset 同步进位置（M28 修复：此前 CharPosition.offset 恒为 0）
+                        newPosition.offset = offset;
                     }
                     else
                     {
                         keepChar = false;
                     }
                     context.position = newPosition;
+                    // 捕获下一个 token 的头（仅当上一个 token 已推送且当前字符非空白）
+                    context.CaptureTokenHead(currentChar);
 
                     var layerResult = currentLayer.ParseChar(
                         currentChar, context
@@ -174,6 +210,22 @@ namespace LatteCompiler
                 }
             }
             // 冲刷帧：一次虚拟换行驱动各层冲刷手中 token 并弹栈（不产生任何 token）
+            // 虚拟换行也占一个位置（最后一个字符之后）：冲刷出的 token 才能以
+            // 最近真实字符为 End——否则 includesCurrentChar:false 的 End 会回退一个字符
+            // （M28 修复：EOF 处 Word/Slash 层 token 的 End 少算一个字符、换行后甚至倒置）
+            var flushPosition = context.position;
+            if (newLinePending)
+            {
+                flushPosition.line++;
+                flushPosition.column = 1;
+                newLinePending = false;
+            }
+            else
+            {
+                flushPosition.column++;
+            }
+            flushPosition.offset = offset;
+            context.position = flushPosition;
             FlushLayers(lexerLayers, context);
             // 冲刷后栈必须收敛为 Base 层：未闭合的字符串/块注释即词法错误
             if (lexerLayers.Count != 1)

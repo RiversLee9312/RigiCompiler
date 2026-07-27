@@ -23,7 +23,7 @@ namespace LatteCompiler
     /// 默认值由 ExpressionParserLayer 直接附加到该节点的 DefaultValue Root，
     /// 无任何结果回传。
     /// </summary>
-    public class ParameterListParserLayer : IParserLayer
+    public class ParameterListParserLayer : IParserLayer, ISpanReceiver
     {
         private readonly ParameterListASTNode targetNode;
         private readonly bool allowMapping;   // 仅 init 形参列表允许 _ -> field 映射（§9.3）
@@ -56,6 +56,9 @@ namespace LatteCompiler
             targetNode = target;
             this.allowMapping = allowMapping;
         }
+
+        // 层弹出时回填形参列表节点的源码范围（M28）
+        public void ReceiveSpan(CharRange span) => targetNode.Span ??= span;
 
         public ParserLayerResult ParseToken(Token currentToken, ParserLayerContext context)
         {
@@ -118,8 +121,11 @@ namespace LatteCompiler
 
             if (currentToken is WordToken wt)
             {
-                // 读到参数名即创建参数节点（后续类型/默认值原地填充）
+                // 读到参数名即创建参数节点（后续类型/默认值原地填充）；
+                // span 起点即参数名 token（named 修饰词在 : 之后才出现，见 HandleTypeExpected）（M28）
                 currentParameter = new ParameterASTNode(targetNode) { Name = wt.Content };
+                var loc = context.GetLocation();
+                currentParameter.Span = new CharRange { Start = loc.Start, End = loc.End, sourceName = loc.sourceName };
                 state = State.NameSeen;
                 return ParserLayerResult.Continue.Instance;
             }
@@ -206,7 +212,7 @@ namespace LatteCompiler
                 // 下一个参数
                 if (nt.Content == ",")
                 {
-                    CompleteParameter();
+                    CompleteParameter(context);
                     state = State.ParamStart;
                     return ParserLayerResult.Continue.Instance;
                 }
@@ -214,7 +220,7 @@ namespace LatteCompiler
                 // 列表结束
                 if (nt.Content == ")")
                 {
-                    CompleteParameter();
+                    CompleteParameter(context);
                     state = State.Completed;
                     return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
                 }
@@ -244,7 +250,7 @@ namespace LatteCompiler
             if (currentToken is NotationToken nt && (nt.Content == "," || nt.Content == ")"))
             {
                 bool isClose = nt.Content == ")";
-                CompleteParameter();
+                CompleteParameter(context);
                 state = isClose ? State.Completed : State.ParamStart;
                 return isClose
                     ? new ParserLayerResult.PopLayer(TokenDisposition.Consume)
@@ -284,14 +290,14 @@ namespace LatteCompiler
 
                 if (nt.Content == ",")
                 {
-                    CompleteParameter();
+                    CompleteParameter(context);
                     state = State.ParamStart;
                     return ParserLayerResult.Continue.Instance;
                 }
 
                 if (nt.Content == ")")
                 {
-                    CompleteParameter();
+                    CompleteParameter(context);
                     state = State.Completed;
                     return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
                 }
@@ -307,7 +313,7 @@ namespace LatteCompiler
             if (currentToken is NotationToken nt && (nt.Content == "," || nt.Content == ")"))
             {
                 bool isClose = nt.Content == ")";
-                CompleteParameter();
+                CompleteParameter(context);
                 state = isClose ? State.Completed : State.ParamStart;
                 return isClose
                     ? new ParserLayerResult.PopLayer(TokenDisposition.Consume)
@@ -321,13 +327,26 @@ namespace LatteCompiler
         // ===== 辅助方法 =====
 
         // 把当前参数提交到 Parameters，并重置（映射参数省略类型时 Type 保持
-        // 构造出的空引用节点，沿用字段类型，语义阶段回填）
-        private void CompleteParameter()
+        // 构造出的空引用节点，沿用字段类型，语义阶段回填）。
+        // 此时当前 token 是 , 或 )（终止符、不属于参数），span 的 End 封到参数最后一个 token（M28）
+        private void CompleteParameter(ParserLayerContext context)
         {
-            currentParameter!.IsVariadic = pendingVariadic;
+            if (currentParameter!.Span is { } s)
+            {
+                s.End = context.GetPreviousLocation().End;
+                currentParameter.Span = s;
+            }
+            currentParameter.IsVariadic = pendingVariadic;
             currentParameter.IsNamedVariadic = pendingNamedVariadic;
             currentParameter.MappedFieldName = pendingMappedField;
             CleanTrailingEmptyElements(currentParameter.Type);
+            // 映射参数省略类型的空 Type 节点未经解析层施工：连同其符号节点
+            // 以参数 span 兜底（诊断时指向参数本身，M28）
+            if (currentParameter.Type.Span == null)
+            {
+                currentParameter.Type.Span = currentParameter.Span;
+                currentParameter.Type.TypeSymbol.Span ??= currentParameter.Span;
+            }
             targetNode.Parameters.Add(currentParameter);
             currentParameter = null;
             ClearPending();

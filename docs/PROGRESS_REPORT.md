@@ -6,8 +6,8 @@
 > 计划与分工见 `compiler/frontend/PARSER_ROADMAP.md`；本文档只记录「现状」。
 
 **报告日期**: 2026-07-27
-**当前阶段**: Parser/PDA 大扫除（架构重构）完成（M23）；AST 结构标注与 Validator 重写完成（M24）；Lexer 修复（除法/EOF/注释）与 fuzz 基建完成（M25）；日志系统与 AST JSONL 序列化完成（M26）；CLI 插件化重构（help/compile/test）完成（M27）；**下一步**：语义分析、BIL 输出
-**测试总计**: 544/544 通过 (100%) + Lexer fuzz 6000/6000（27 个套件，`dotnet run -- test --all` 单命令全量）
+**当前阶段**: Parser/PDA 大扫除（架构重构）完成（M23）；AST 结构标注与 Validator 重写完成（M24）；Lexer 修复（除法/EOF/注释）与 fuzz 基建完成（M25）；日志系统与 AST JSONL 序列化完成（M26）；CLI 插件化重构（help/compile/test）完成（M27）；Lexer 位置修复 + AST Source Span + ASTVisitor 统一遍历完成（M28）；**下一步**：语义分析、BIL 输出
+**测试总计**: 556/556 通过 (100%) + Lexer fuzz 6000/6000（27 个套件，`dotnet run -- test --all` 单命令全量）
 **版本控制**: Git `main` 分支（2026-07-17 首次提交）
 
 ---
@@ -43,6 +43,7 @@
 | M25 | Lexer 修复：SlashLexerLayer（除法/注释分流）+ Lexer 输出 EOF + 注释集中跳过 + fuzz 基建 | ✅ | 2026-07-26 | 453/453 + fuzz 6000（24 套件） |
 | M26 | 日志系统（Logger 分级 + verbose 默认关闭 + JSONL 落盘）+ AST JSONL 序列化诊断 | ✅ | 2026-07-26 | 498/498 + fuzz 6000（26 套件） |
 | M27 | CLI 插件化重构：`<COMMAND> [--sub-cmd...]`（help/compile/test）+ CommandLineMask + 帮助程序生成 + 交互菜单删除 | ✅ | 2026-07-27 | 544/544 + fuzz 6000（27 套件） |
+| M28 | Lexer 位置修复（offset/列号/EOF 冲刷/token 头/sourceName 单源化）+ AST Source Span（ISpanReceiver 层 span 回填）+ ASTVisitor 统一遍历 + Validator span 检查与类型审计 | ✅ | 2026-07-27 | 556/556 + fuzz 6000（27 套件） |
 
 ---
 
@@ -285,12 +286,13 @@ pub class Point {
 | PropertyAccessorParserLayer | ✅ | 17/17 | §9.4 访问器块 `{ get... set... }`；backing field 判定与 get/set 一致性校验；三类定义位置经 VariableDeclaration 汇聚 |
 | ImportParserLayer | ✅ | 14/14 | §15.2 三种形态（单个/`.{}` 多个/`.*` 全部）；前缀路径复用 PathParserLayer（M21 重建） |
 | NamespaceParserLayer | ✅ | 7/7 | §15.1 顶层单行声明；路径复用 PathParserLayer（M22） |
-| ASTIntegrityValidator | ✅ | 含于各套件 | Parse 成功后自动验证 AST 不变量（M23）；M24 重写为 Attribute 驱动遍历（[ChildAstNode]/[AstCarrier]），新增父子指针一致性校验；失败抛 CompilerInternalException |
-| ASTIntegrityValidatorTests | ✅ | 5/5 | 手工构造 AST 直调 Validate：合法树通过 + 四类结构破坏拒绝（M24） |
-| LexerFuzzTests | ✅ | 23/23 + fuzz 6000 | Slash/EOF/注释固定用例 + 纯随机/结构化/变异 fuzz（固定种子）+ Parser 注释跳过集成（M25） |
+| ASTIntegrityValidator | ✅ | 含于各套件 | Parse 成功后自动验证 AST 不变量（M23）；M24 重写为 Attribute 驱动遍历（[ChildAstNode]/[AstCarrier]），新增父子指针一致性校验；M28 基于 ASTVisitor 统一遍历重写，新增 Span 校验与「未标注 AST 成员」类型审计；失败抛 CompilerInternalException |
+| ASTIntegrityValidatorTests | ✅ | 10/10 | 手工构造 AST 直调 Validate：合法树通过 + 结构破坏/span 破坏/类型审计违规拒绝（M24/M28） |
+| ASTVisitor | ✅ | 含于 Validator/Serializer 套件 | 统一 AST 遍历基建（AST/ASTVisitor.cs）：[ChildAstNode] 子节点枚举唯一实现，Validator 与 Serializer 共用（M28） |
+| LexerFuzzTests | ✅ | 26/26 + fuzz 6000 | Slash/EOF/注释固定用例 + 位置精确性用例（M28）+ 纯随机/结构化/变异 fuzz（固定种子，不变量含 sourceName/offset/范围不颠倒）+ Parser 注释跳过集成（M25） |
 | TokenDispositionTests | ✅ | 4/4 | Push/Pop × Consume/Replay 四组合协议测试（M23） |
 | Logger | ✅ | 7/7（LoggerTests） | 统一日志出口（Core/Logger.cs）：Verbose/Warning/Error 三级；控制台默认只显示 Warning+，`--verbose` 子命令放开 Verbose；`--log-to PATH` 全量（含 Verbose）JSONL 落盘（M26） |
-| AstJsonlSerializer | ✅ | 38/38 | AST 树 JSONL 序列化（AST/AstJsonlSerializer.cs）：每节点一行 `{id,parent,via,type,fields}`，[ChildAstNode] 驱动遍历；`compile --dump-ast PATH` 输出（M26） |
+| AstJsonlSerializer | ✅ | 42/42 | AST 树 JSONL 序列化（AST/AstJsonlSerializer.cs）：每节点一行 `{id,parent,via,type,span,fields}`（M28 起含 span），ASTVisitor 驱动遍历；`compile --dump-ast PATH` 输出（M26） |
 | CommandLine | ✅ | 46/46（CommandLineParserTests） | CLI 内核（Core/CommandLine.cs + Core/Commands.cs）：CommandLineMask 自描述元数据驱动解析与 help 生成；`<COMMAND> [--sub-cmd...]` 结构（compile/test/help），交互菜单已删（M27） |
 
 ---
@@ -310,6 +312,9 @@ pub class Point {
 - **日志系统**（M26）：`Core/Logger` 是唯一日志出口（Verbose/Warning/Error）；Lexer/Parser 的 ContextImpl 经 Logger 输出，禁止直接 `Console.WriteLine`；控制台门槛默认 Warning+，`--verbose` 子命令放开 Verbose；`--log-to` 把全量日志（含 Verbose）以 JSONL 落盘，文件不过滤级别，便于 grep 诊断
 - **AST JSONL 序列化**（M26）：`AstJsonlSerializer` 复用 Validator 的 [ChildAstNode] 反射下钻，深度优先每节点一行（id/parent/via/type/fields），`compile --dump-ast` 输出，供结构诊断
 - **CLI 插件化**（M27）：用法 `<COMMAND> [--sub-cmd [args...]...]`，COMMAND 为 help/compile/test；每个 COMMAND 与 --sub-cmd 都是插件，暴露 `CommandLineMask`（名称/描述/参数个数/互斥）自描述元数据；解析器与 `help` 文本完全由 Mask 注册表数据驱动、程序生成；交互菜单已删除
+- **位置信息单源化**（M28）：`CharRange.sourceName` 是源名唯一来源（`CharPosition` 不再携带）；`CharPosition.offset` 为 0 起始字符索引（修复恒 0 bug）；换行算当前行最后一列（修复第二行起列号 +1）；token 头跳过空白（修复缩进行 token Start 落在前导空格）；EOF 冲刷帧占虚拟位置（修复 EOF 处 token End 少算/倒置）
+- **AST Source Span**（M28）：`ASTNode.Span`（`CharRange?`）记录节点源码范围；层目标由 Parser 主循环按 token 流计算、经 `ISpanReceiver.ReceiveSpan` 在层弹出时回填（`??=` 只填空），层内自建节点由所在层显式设置（创建记 Start、完成封 End，经 `ParserLayerContext.GetPreviousLocation()`）；`ExpressionRootASTNode` 透明继承内容表达式的 span；Validator 校验每节点 span 非空、sourceName 非空、End 不早于 Start
+- **ASTVisitor 统一遍历**（M28）：`AST/ASTVisitor.cs` 是 [ChildAstNode] 子节点枚举的唯一实现，ASTIntegrityValidator 与 AstJsonlSerializer 共用（via 统一为 `member[i]`/`member[i](Carrier.Field)` 格式）；Validator 新增类型审计——装 ASTNode 的成员（字段/自动属性）必须带 [ChildAstNode]/[ParentAstNode]，[ChildAstNode] 标在非 AST 成员上同样拒绝
 
 ---
 
@@ -332,6 +337,13 @@ AST 树可经 `compile --dump-ast` 序列化为 JSONL 供诊断。
 选项以 `CommandLineMask` 自描述、插件化注册，帮助文本程序生成；
 CI 入口改为 `dotnet run -- test --all`。
 
+**Lexer 位置修复 + AST Source Span + ASTVisitor（M28）已完成**：
+Lexer 的 offset/列号/token 头/EOF 冲刷位置全部修复，sourceName 单源化到
+CharRange；每个 AST 节点携带源码范围 Span（层目标由主循环经 ISpanReceiver
+回填、层内节点显式设置、ExpressionRoot 透明继承），JSONL 输出 span 键；
+Validator 与 Serializer 遍历统一为 ASTVisitor，Validator 新增 span 校验与
+「未标注 AST 成员」类型审计。
+
 **下一阶段**：语义分析、BIL 输出（见 `../BIL_STANDARD.md`）
 
 ---
@@ -352,6 +364,45 @@ CI 入口改为 `dotnet run -- test --all`。
 ---
 
 ## 7. 里程碑历史
+
+### 2026-07-27 · M28 Lexer 位置修复 + AST Source Span + ASTVisitor 统一遍历
+
+> 不改 Latte 语法；修复 Lexer 位置计量的五个 bug，给每个 AST 节点挂上
+> 源码范围 Span（JSONL 同步输出），并把 Validator 与 Serializer 的遍历
+> 统一为 ASTVisitor 基建，Validator 新增 span 校验与类型审计。
+
+- **Lexer 位置修复**（`Lexer/Lexer.cs`）：
+  - `CharPosition.offset` 恒为 0 —— 主循环从未把字符索引写进位置（已修，
+    0 起始字符索引）
+  - 普通 token 的 `CharRange.sourceName` 从未设置（仅 EOF 有）；sourceName
+    单源化到 `CharRange.sourceName`，`CharPosition.sourceName` 删除
+  - 换行即切下一行 col 1 —— 第二行起所有列号 +1（已修：换行算当前行
+    最后一列，下一行首字符 col 1）
+  - 空白字符被记为 token 头 —— 缩进行 token 的 Start 落在前导空格上
+    （已修：token 头跳过空白，换行除外——它是 LineBreakToken）
+  - EOF 冲刷帧不占位置 —— EOF 处 Word/Slash 层 token 的 End 少算一个
+    字符、换行后甚至范围倒置（已修：虚拟换行占末尾虚拟位置）
+- **AST Source Span**：`ASTNode.Span`（`CharRange?`）。填充分两级——
+  层目标由 Parser 主循环按层栈跟踪 token 流计算，层弹出时经新接口
+  `ISpanReceiver.ReceiveSpan` 回填（约定 `target.Span ??= span` 只填空；
+  换行处弹出不拖尾换行符）；层内自建节点由所在层显式设置（创建记
+  Start、完成经 `ParserLayerContext.GetPreviousLocation()` 封 End；
+  ExpressionParserLayer 以后缀包装/运算符/完成三处封口）。
+  `ExpressionRootASTNode` 覆写 Span getter 透明继承内容表达式
+  - **JSONL**：`AstJsonlSerializer` 每节点一行新增 `span` 键
+    （`{source,startLine,startCol,startOffset,endLine,endCol,endOffset}`）
+  - **Validator 新检查**：每节点 span 非空、sourceName 非空、End 不早于
+    Start；类型审计——装 ASTNode 的成员（字段/自动属性，经 backing 字段
+    识别）必须带 [ChildAstNode]/[ParentAstNode]，[ChildAstNode] 标在非
+    AST 成员上同样拒绝
+- **ASTVisitor 统一遍历**（`AST/ASTVisitor.cs`）：[ChildAstNode] 子节点
+  枚举的唯一实现（含 carrier 下钻、集合下标 via），ASTIntegrityValidator
+  与 AstJsonlSerializer 各删一份重复反射；via 格式统一为
+  `member[i]`/`member[i](Carrier.Field)`
+- **测试**：LexerFuzzTests 新增位置精确性用例 3 例 + 不变量扩展
+  （sourceName 非空、offset 不回退、范围不颠倒）；ASTIntegrityValidatorTests
+  新增 span 破坏/类型审计用例 5 例；AstJsonlSerializerTests 新增 span 键
+  结构断言 4 例；全量 556/556 + fuzz 6000 通过
 
 ### 2026-07-27 · M27 CLI 插件化重构（help/compile/test）+ 交互菜单删除
 

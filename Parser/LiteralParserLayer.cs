@@ -6,9 +6,11 @@ namespace LatteCompiler
     // 字面量解析器层 - 使用状态机处理多个 token 组成的字面量
     // 施工协议：构造函数接收 LiteralExpressionASTNode 目标，
     // 解析出的字面量节点直接 AttachLiteral 到该目标，不产生任何返回值
-    public class LiteralParserLayer : IParserLayer
+    public class LiteralParserLayer : IParserLayer, ISpanReceiver
     {
         private readonly LiteralExpressionASTNode targetNode;
+        // 已创建的字面量节点（ReceiveSpan 时与包装节点一并回填 span）
+        private LiteralASTNode? createdLiteral = null;
 
         // 状态机状态
         private enum ParserState
@@ -27,6 +29,16 @@ namespace LatteCompiler
         public LiteralParserLayer(LiteralExpressionASTNode target)
         {
             targetNode = target;
+        }
+
+        // 层弹出时回填施工目标与字面量节点的源码范围（M28）
+        public void ReceiveSpan(CharRange span)
+        {
+            targetNode.Span ??= span;
+            if (createdLiteral != null)
+            {
+                createdLiteral.Span ??= span;
+            }
         }
 
         public ParserLayerResult ParseToken(Token currentToken, ParserLayerContext context)
@@ -345,6 +357,7 @@ namespace LatteCompiler
         // 将字面量节点附加到施工目标（字面量节点的父节点即目标节点，一次性附加）
         private void AddLiteralToTarget(LiteralASTNode literalNode)
         {
+            createdLiteral = literalNode;
             targetNode.AttachLiteral(literalNode);
         }
     }

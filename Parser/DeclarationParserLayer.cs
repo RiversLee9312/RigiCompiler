@@ -17,13 +17,27 @@ namespace LatteCompiler
     ///
     /// 复用的既有 Layer：VariableDeclaration / ParameterList / GenericParameters / TypeReference / CodeBlock / ArgumentList。
     /// </summary>
-    public class DeclarationParserLayer : IParserLayer
+    public class DeclarationParserLayer : IParserLayer, ISpanReceiver
     {
         private readonly ASTNode parent;
 
         public DeclarationParserLayer(ASTNode parent)
         {
             this.parent = parent;
+        }
+
+        // 施工中的声明节点（var/callable/各类类型声明）：层弹出时回填 span（M28）。
+        // 直接赋值而非 ??=：本层 span 覆盖修饰符与注解，比子层
+        // （如 VariableDeclarationParserLayer 以 var 关键字为起点）更完整，故覆盖
+        private ASTNode? currentDeclaration;
+
+        // 层弹出时回填声明节点的源码范围（M28）
+        public void ReceiveSpan(CharRange span)
+        {
+            if (currentDeclaration != null)
+            {
+                currentDeclaration.Span = span;
+            }
         }
 
         private enum State
@@ -58,6 +72,8 @@ namespace LatteCompiler
         // @ 注解暂存（SYNTAX §14.5）：注解先于声明本体解析，构造时暂无父节点，
         // 声明节点创建时由 AttachAnnotations 一次性 AttachTo 挂接
         private readonly List<AnnotationASTNode> pendingAnnotations = new List<AnnotationASTNode>();
+        // 最后一个注解的 span 是否已封口（M28）：新注解创建时重置，封口时置位
+        private bool lastAnnotationSealed = true;
         private CallableDeclarationASTNode? callable;
         private ASTNode? typeNode;                 // 正在解析的类型声明节点
         private List<TypeReferenceASTNode>? interfaceList;
@@ -108,7 +124,13 @@ namespace LatteCompiler
             // 注解 / wrapper 应用（SYNTAX §14.5）：@Name[(args)]，可叠加多个
             if (t is NotationToken at && at.Content == "@")
             {
+                // 前一个注解到此结束（@ 不属于它）：封口
+                SealLastAnnotation(context);
                 var ann = new AnnotationASTNode(null);  // 暂无父节点：声明创建时一次性 AttachTo
+                // 注解 span 起点 = @ 处；名/实参完成后封口（M28）
+                var loc = context.GetLocation();
+                ann.Span = new CharRange { Start = loc.Start, End = loc.End, sourceName = loc.sourceName };
+                lastAnnotationSealed = false;
                 pendingAnnotations.Add(ann);
                 state = State.AnnotationName;
                 // 注解名（可为 a.b 路径）复用 PathParserLayer
@@ -130,8 +152,9 @@ namespace LatteCompiler
                 {
                     var v = new VariableDeclarationASTNode(parent);
                     v.Modifiers.AddRange(modifiers);
-                    AttachAnnotations(v);
+                    AttachAnnotations(v, context);
                     parent.Children.Add(v);
+                    currentDeclaration = v;
                     state = State.Finish;
                     // ext 允许限定名（pub ext var String.isEmpty: bool，§4.4）
                     return new ParserLayerResult.PushLayer(
@@ -139,11 +162,11 @@ namespace LatteCompiler
                             v, allowExtension: modifiers.Contains(Keywords.EXT)), TokenDisposition.Replay);
                 }
 
-                if (w.Content == Keywords.FUNC) return StartCallable(CallableKind.Func, State.CallableName);
-                if (w.Content == Keywords.OPERATOR) return StartCallable(CallableKind.Operator, State.CallableName);
+                if (w.Content == Keywords.FUNC) return StartCallable(CallableKind.Func, State.CallableName, context);
+                if (w.Content == Keywords.OPERATOR) return StartCallable(CallableKind.Operator, State.CallableName, context);
                 if (w.Content == Keywords.INIT)
                 {
-                    var r = StartCallable(CallableKind.Init, State.ParamsExpected);
+                    var r = StartCallable(CallableKind.Init, State.ParamsExpected, context);
                     callable!.Name = Keywords.INIT;
                     return r;
                 }
@@ -169,9 +192,11 @@ namespace LatteCompiler
         }
 
         // 注解挂接（大扫除 Validator 重写）：注解先于声明本体解析（构造时 parent 为 null），
-        // 声明节点创建后对每个暂存注解一次性 AttachTo，再挂到其 Annotations 列表
-        private void AttachAnnotations(ASTNode node)
+        // 声明节点创建后对每个暂存注解一次性 AttachTo，再挂到其 Annotations 列表。
+        // 同时给最后一个注解的 span 封口：声明关键字的前一 token 即注解末尾（M28）
+        private void AttachAnnotations(ASTNode node, ParserLayerContext context)
         {
+            SealLastAnnotation(context);
             foreach (var ann in pendingAnnotations)
             {
                 ann.AttachTo(node);
@@ -179,12 +204,27 @@ namespace LatteCompiler
             node.Annotations.AddRange(pendingAnnotations);
         }
 
-        private ParserLayerResult StartCallable(CallableKind kind, State next)
+        // 最后一个注解的 span 封口（M28）：当前 token 已不属于注解，
+        // End 取最近被消费的 token（注解名末尾或实参列表的 )）
+        private void SealLastAnnotation(ParserLayerContext context)
+        {
+            if (lastAnnotationSealed || pendingAnnotations.Count == 0) return;
+            var last = pendingAnnotations[pendingAnnotations.Count - 1];
+            if (last.Span is { } s)
+            {
+                s.End = context.GetPreviousLocation().End;
+                last.Span = s;
+            }
+            lastAnnotationSealed = true;
+        }
+
+        private ParserLayerResult StartCallable(CallableKind kind, State next, ParserLayerContext context)
         {
             callable = new CallableDeclarationASTNode(parent) { Kind = kind };
             callable.Modifiers.AddRange(modifiers);
-            AttachAnnotations(callable);
+            AttachAnnotations(callable, context);
             parent.Children.Add(callable);
+            currentDeclaration = callable;
             extSeen = modifiers.Contains(Keywords.EXT);
             state = next;
             return ParserLayerResult.Continue.Instance;
@@ -351,8 +391,9 @@ namespace LatteCompiler
                 _ => throw context.RaiseError($"Unsupported type keyword: {keyword}")
             };
             GetModifiers(node).AddRange(modifiers);
-            AttachAnnotations(node);
+            AttachAnnotations(node, context);
             parent.Children.Add(node);
+            currentDeclaration = node;
             return node;
         }
 
@@ -614,6 +655,9 @@ namespace LatteCompiler
             if (t is WordToken w)
             {
                 currentCase = new EnumCaseASTNode(typeNode) { CaseName = w.Content };
+                // case span 起点 = case 名（M28）；`,`/`]` 处封口
+                var loc = context.GetLocation();
+                currentCase.Span = new CharRange { Start = loc.Start, End = loc.End, sourceName = loc.sourceName };
                 ((EnumStructDeclarationASTNode)typeNode!).Cases.Add(currentCase);
                 state = State.EnumAfterName;
                 return ParserLayerResult.Continue.Instance;
@@ -645,6 +689,7 @@ namespace LatteCompiler
                 }
                 if (n.Content == ",")
                 {
+                    SealCurrentCase(context);
                     state = State.EnumCaseStart;
                     return ParserLayerResult.Continue.Instance;
                 }
@@ -668,6 +713,7 @@ namespace LatteCompiler
                 }
                 if (n.Content == ",")
                 {
+                    SealCurrentCase(context);
                     state = State.EnumCaseStart;
                     return ParserLayerResult.Continue.Instance;
                 }
@@ -701,6 +747,7 @@ namespace LatteCompiler
             {
                 if (n.Content == ",")
                 {
+                    SealCurrentCase(context);
                     state = State.EnumCaseStart;
                     return ParserLayerResult.Continue.Instance;
                 }
@@ -710,9 +757,20 @@ namespace LatteCompiler
             throw context.RaiseError($"Expected ',' or ']' after enum discriminant, got: {t}");
         }
 
+        // 当前 enum case 的 span 封口（M28）：`,`/`]` 不属于 case，End 取最近被消费的 token
+        private void SealCurrentCase(ParserLayerContext context)
+        {
+            if (currentCase?.Span is { } s)
+            {
+                s.End = context.GetPreviousLocation().End;
+                currentCase.Span = s;
+            }
+        }
+
         // case 列表收尾（] 已读）：case 名唯一；判别值唯一且「全显式或全分配」（§12/§12.4）
         private ParserLayerResult FinishEnumCases(ParserLayerContext context)
         {
+            SealCurrentCase(context);
             var cases = ((EnumStructDeclarationASTNode)typeNode!).Cases;
 
             if (cases.Select(c => c.CaseName).Distinct().Count() != cases.Count)

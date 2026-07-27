@@ -21,7 +21,7 @@ namespace LatteCompiler
     /// 施工协议（大扫除后）：初始化表达式由 ExpressionParserLayer 直接附加到
     /// declNode.Initializer（ExpressionRootASTNode），无任何结果回传。
     /// </summary>
-    public class VariableDeclarationParserLayer : IParserLayer
+    public class VariableDeclarationParserLayer : IParserLayer, ISpanReceiver
     {
         private readonly VariableDeclarationASTNode declNode;
         private readonly bool allowExtension;   // ext 允许限定名（String.isEmpty，§4.4）
@@ -47,6 +47,9 @@ namespace LatteCompiler
             declNode = node;
             this.allowExtension = allowExtension;
         }
+
+        // 层弹出时回填施工目标的源码范围（M28）
+        public void ReceiveSpan(CharRange span) => declNode.Span ??= span;
 
         public ParserLayerResult ParseToken(Token currentToken, ParserLayerContext context)
         {

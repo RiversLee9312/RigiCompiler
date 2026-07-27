@@ -25,7 +25,7 @@ namespace LatteCompiler
     /// 节点的各 ExpressionRootASTNode，无任何结果回传（大扫除后的施工协议）。
     /// 当前限制：分支体仅支持单表达式，多语句块待 P2 CodeBlockParserLayer。
     /// </summary>
-    public class SwitchStatementParserLayer : IParserLayer
+    public class SwitchStatementParserLayer : IParserLayer, ISpanReceiver
     {
         private readonly SwitchExpressionASTNode targetNode;
         private readonly bool isExpression;
@@ -53,6 +53,8 @@ namespace LatteCompiler
 
         // 读取中的分支（累积，} 时提交到 Cases）
         private SwitchCaseASTNode? pendingCase = null;
+        // 分支起点（( token 的范围），作分支 span 的 Start（M28）
+        private CharRange? pendingCaseStart = null;
 
         public SwitchStatementParserLayer(SwitchExpressionASTNode target, bool isExpression = true)
         {
@@ -65,6 +67,9 @@ namespace LatteCompiler
                 throw new NotImplementedException("switch 语句模式待 P2 实现，当前仅支持 switch 表达式");
             }
         }
+
+        // 层弹出时回填 switch 表达式节点的源码范围（M28）
+        public void ReceiveSpan(CharRange span) => targetNode.Span ??= span;
 
         public ParserLayerResult ParseToken(Token currentToken, ParserLayerContext context)
         {
@@ -99,6 +104,8 @@ namespace LatteCompiler
                     return HandleCaseStart(currentToken, context);
                 case State.PatternStart:
                     pendingCase = new SwitchCaseASTNode(targetNode);
+                    // 分支 span：起点为 (（见 HandleCaseStart），分支体解析完时封 End（M28）
+                    pendingCase.Span = pendingCaseStart;
                     return DelegateExpression(State.PatternCloseParenExpected, pendingCase.Pattern);
                 case State.PatternCloseParenExpected:
                     return ExpectNotation(currentToken, context, ")", State.CaseArrowExpected,
@@ -161,6 +168,7 @@ namespace LatteCompiler
             // 普通分支：( pattern ) -> { body }
             if (currentToken is NotationToken nt && nt.Content == "(")
             {
+                pendingCaseStart = context.GetLocation();   // 分支 span 起点：(（M28）
                 state = State.PatternStart;
                 return ParserLayerResult.Continue.Instance;
             }
@@ -195,8 +203,16 @@ namespace LatteCompiler
         {
             if (currentToken is NotationToken nt && nt.Content == "}")
             {
+                // 分支完成：span 的 End 封到分支体最后一个 token
+                // （当前 token 是 }，不属于分支内容）（M28）
+                if (pendingCase!.Span is { } s)
+                {
+                    s.End = context.GetPreviousLocation().End;
+                    pendingCase.Span = s;
+                }
                 targetNode.Cases.Add(pendingCase!);
                 pendingCase = null;
+                pendingCaseStart = null;
                 state = State.CaseStart;
                 return ParserLayerResult.Continue.Instance;
             }

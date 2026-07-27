@@ -13,7 +13,7 @@ namespace LatteCompiler
     /// 注意：rich 和 shared 是类型声明的修饰符，不在这里处理！
     /// 它们应该由 ClassDeclarationParserLayer 等处理。
     /// </summary>
-    public class TypeReferenceParserLayer : IParserLayer
+    public class TypeReferenceParserLayer : IParserLayer, ISpanReceiver
     {
         private readonly TypeReferenceASTNode targetNode;
 
@@ -30,6 +30,9 @@ namespace LatteCompiler
         {
             targetNode = target;
         }
+
+        // 层弹出时回填施工目标的源码范围（M28）
+        public void ReceiveSpan(CharRange span) => targetNode.Span ??= span;
 
         public ParserLayerResult ParseToken(Token currentToken, ParserLayerContext context)
         {

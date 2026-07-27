@@ -73,6 +73,11 @@ namespace LatteCompiler
         private bool pendingSafeAccess = false;
         private readonly List<TypeReferenceASTNode> pendingGenericArgs = new();
 
+        // Span 施工（M28）：前导 `.`（enum case 引用）的 token 起点；
+        // trailing lambda 的实参节点（lambda 弹栈后与当前表达式一并封口）
+        private CharPosition pendingSuffixStart;
+        private ArgumentASTNode? pendingTrailingArgument = null;
+
         public ExpressionParserLayer(
             ExpressionRootASTNode target,
             ExpressionASTNode? initialExpression = null)
@@ -85,6 +90,54 @@ namespace LatteCompiler
             {
                 currentExpression = initialExpression;
                 state = State.PrimaryParsed;
+            }
+        }
+
+        // ===== Span 施工（M28）=====
+        // 不变量：currentExpression 创建时即记 Start（End 先取当前 token），
+        // 表达式不再生长时（后缀包装/运算符/完成）把 End 封到最近被消费的 token
+
+        // 创建记 Start：以 start 为起点初始化节点 span
+        private static void StartSpan(ASTNode node, CharPosition start, ParserLayerContext context)
+        {
+            var current = context.GetLocation();
+            node.Span = new CharRange { Start = start, End = current.End, sourceName = current.sourceName };
+        }
+
+        // 包装记 Start：新包装节点的起点 = 被包内层表达式的起点（内层已封口，Span 必有值）
+        private static void WrapSpan(ExpressionASTNode wrapper, ExpressionASTNode inner, ParserLayerContext context)
+        {
+            var current = context.GetLocation();
+            wrapper.Span = new CharRange
+            {
+                Start = inner.Span!.Value.Start,
+                End = current.End,
+                sourceName = current.sourceName
+            };
+        }
+
+        // 封口：当前 token 已不属于本表达式，End 扩展到最近被消费的 token
+        private static void SealSpanEnd(ExpressionASTNode? node, ParserLayerContext context)
+        {
+            if (node?.Span is { } s)
+            {
+                s.End = context.GetPreviousLocation().End;
+                node.Span = s;
+            }
+        }
+
+        // 封口当前表达式（含 trailing lambda 的实参节点）
+        private void SealCurrentExpression(ParserLayerContext context)
+        {
+            SealSpanEnd(currentExpression, context);
+            if (pendingTrailingArgument != null)
+            {
+                if (pendingTrailingArgument.Span is { } s)
+                {
+                    s.End = context.GetPreviousLocation().End;
+                    pendingTrailingArgument.Span = s;
+                }
+                pendingTrailingArgument = null;
             }
         }
 
@@ -159,6 +212,8 @@ namespace LatteCompiler
             // 参数化 case 的调用（.Failed(404)）由后缀链自然脱糖为 Call
             if (currentToken is NotationToken caseDot && caseDot.Content == ".")
             {
+                // 记忆前导点位置：作为 EnumCaseExpression 的 span 起点
+                pendingSuffixStart = context.GetLocation().Start;
                 state = State.EnumCaseNameExpected;
                 return ParserLayerResult.Continue.Instance;
             }
@@ -238,6 +293,7 @@ namespace LatteCompiler
         private ParserLayerResult DelegateGroupParsing(ParserLayerContext context)
         {
             var groupExpr = new GroupExpressionASTNode();
+            StartSpan(groupExpr, context.GetLocation().Start, context);
             currentExpression = groupExpr;
 
             state = State.PrimaryParsed;
@@ -252,6 +308,7 @@ namespace LatteCompiler
         private ParserLayerResult DelegateNewParsing(ParserLayerContext context)
         {
             var newExpr = new NewExpressionASTNode();
+            StartSpan(newExpr, context.GetLocation().Start, context);
             currentExpression = newExpr;
 
             // 使用 TypeReferenceParserLayer 解析类型（原地填充 newExpr.Type）
@@ -329,6 +386,7 @@ namespace LatteCompiler
                 Operator = op,
                 IsPrefix = true
             };
+            StartSpan(unaryExpr, currentToken.CharRange.Start, context);
             currentExpression = unaryExpr;
             state = State.PrimaryParsed;
 
@@ -349,6 +407,7 @@ namespace LatteCompiler
         private ParserLayerResult DelegateSymbolParsing(ParserLayerContext context, Token currentToken)
         {
             var symbolExpr = new SymbolReferenceASTNode();
+            StartSpan(symbolExpr, currentToken.CharRange.Start, context);
             currentExpression = symbolExpr;
 
             // 使用 PathParserLayer 解析符号（原地填充 symbolExpr.Symbol）
@@ -396,8 +455,11 @@ namespace LatteCompiler
                             TokenDisposition.Consume);
                     }
 
+                    // 被调表达式到此为止（( 不属于它），封口后包入 Call
+                    SealCurrentExpression(context);
                     var callExpr = new CallExpressionASTNode();
                     callExpr.Callee.Attach(currentExpression!);
+                    WrapSpan(callExpr, currentExpression!, context);
                     currentExpression = callExpr;
                     return new ParserLayerResult.PushLayer(
                         new ArgumentListParserLayer(
@@ -408,8 +470,10 @@ namespace LatteCompiler
                 // 索引后缀 [
                 if (suffix.Content == "[")
                 {
+                    SealCurrentExpression(context);
                     var indexExpr = new IndexExpressionASTNode();
                     indexExpr.Object.Attach(currentExpression!);
+                    WrapSpan(indexExpr, currentExpression!, context);
                     currentExpression = indexExpr;
                     return new ParserLayerResult.PushLayer(
                         new ArgumentListParserLayer(
@@ -420,6 +484,7 @@ namespace LatteCompiler
                 // 成员访问 .
                 if (suffix.Content == ".")
                 {
+                    SealCurrentExpression(context);
                     pendingSafeAccess = false;
                     state = State.MemberNameExpected;
                     return ParserLayerResult.Continue.Instance;
@@ -428,6 +493,7 @@ namespace LatteCompiler
                 // 安全访问 ?.
                 if (suffix.Content == "?")
                 {
+                    SealCurrentExpression(context);
                     state = State.SafeDotExpected;
                     return ParserLayerResult.Continue.Instance;
                 }
@@ -435,12 +501,14 @@ namespace LatteCompiler
                 // wrapper 访问 :（SYNTAX §14.1，与成员访问同属路径后缀链；链式 obj:A:B 左结合）
                 if (suffix.Content == ":")
                 {
+                    SealCurrentExpression(context);
                     state = State.WrapperNameExpected;
                     return ParserLayerResult.Continue.Instance;
                 }
 
                 // 泛型实参 \<（挂在 MemberAccess 上，如 foo().bar\<i32>；
                 // 符号路径上的泛型已由 PathParserLayer 解析，不会到达这里）
+                // 注意：泛型实参列表是当前表达式的延续，此处不封口
                 if (suffix.Content == "\\")
                 {
                     state = State.GenericAngleExpected;
@@ -451,13 +519,18 @@ namespace LatteCompiler
                 // expr{...} 脱糖为以 lambda 为唯一实参的调用，如 list.map{...}
                 if (suffix.Content == "{")
                 {
+                    SealCurrentExpression(context);
                     var lambdaNode = new LambdaExpressionASTNode();
                     var trailingCall = new CallExpressionASTNode();
                     trailingCall.Callee.Attach(currentExpression!);
+                    WrapSpan(trailingCall, currentExpression!, context);
                     // lambda 作为唯一实参直接挂入实参的 Root（未挂载节点，可安全 Attach）；
                     // LambdaExpressionParserLayer 之后原地填充该 lambda 节点
                     var argument = new ArgumentASTNode(trailingCall);
                     argument.Value.Attach(lambdaNode);
+                    // 实参 span 起点 = { 处；lambda 弹栈后由 SealCurrentExpression 封口
+                    StartSpan(argument, context.GetLocation().Start, context);
+                    pendingTrailingArgument = argument;
                     trailingCall.Arguments.Add(argument);
                     currentExpression = trailingCall;
                     // { 交给 LambdaExpressionParserLayer 消费
@@ -470,12 +543,14 @@ namespace LatteCompiler
             // 右侧是类型引用而非表达式，生成专用节点，委托 TypeReferenceParserLayer
             if (currentToken is WordToken typeOp && IsTypeOperator(typeOp.Content))
             {
+                SealCurrentExpression(context);
                 pendingTypeOperator = typeOp.Content;
                 safeCastMarkConsumed = false;
                 if (typeOp.Content == Keywords.AS)
                 {
                     pendingCastNode = new CastExpressionASTNode();
                     pendingCastNode.Object.Attach(currentExpression!);
+                    WrapSpan(pendingCastNode, currentExpression!, context);
                     pendingCheckNode = null;
                     currentExpression = pendingCastNode;
                 }
@@ -486,6 +561,7 @@ namespace LatteCompiler
                         Operator = typeOp.Content
                     };
                     pendingCheckNode.Object.Attach(currentExpression!);
+                    WrapSpan(pendingCheckNode, currentExpression!, context);
                     pendingCastNode = null;
                     currentExpression = pendingCheckNode;
                 }
@@ -503,6 +579,8 @@ namespace LatteCompiler
                         "必须用括号明确运算顺序");
                 }
 
+                // 左操作数到此为止（运算符不属于它），封口
+                SealCurrentExpression(context);
                 pendingOperator = GetOperatorString(currentToken);
                 state = State.OperatorSeen;
                 return ParserLayerResult.Continue.Instance;
@@ -543,6 +621,7 @@ namespace LatteCompiler
                 Operator = pendingOperator
             };
             binaryExpr.Left.Attach(currentExpression!);
+            WrapSpan(binaryExpr, currentExpression!, context);
 
             // 递归解析右操作数：右操作数层禁止再消费二元运算符
             // （1 + 2 * 3 是编译错误，必须写成 1 + (2 * 3)）
@@ -581,6 +660,7 @@ namespace LatteCompiler
                     IsSafeAccess = pendingSafeAccess
                 };
                 accessExpr.Object.Attach(currentExpression!);
+                WrapSpan(accessExpr, currentExpression!, context);
                 currentExpression = accessExpr;
                 pendingSafeAccess = false;
                 state = State.PrimaryParsed;
@@ -596,10 +676,12 @@ namespace LatteCompiler
         {
             if (currentToken is WordToken name)
             {
-                currentExpression = new EnumCaseExpressionASTNode()
+                var enumCaseNode = new EnumCaseExpressionASTNode()
                 {
                     CaseName = name.Content
                 };
+                StartSpan(enumCaseNode, pendingSuffixStart, context);
+                currentExpression = enumCaseNode;
                 state = State.PrimaryParsed;
                 return ParserLayerResult.Continue.Instance;
             }
@@ -618,6 +700,7 @@ namespace LatteCompiler
                     WrapperName = name.Content
                 };
                 wrapperExpr.Object.Attach(currentExpression!);
+                WrapSpan(wrapperExpr, currentExpression!, context);
                 currentExpression = wrapperExpr;
                 state = State.PrimaryParsed;
                 return ParserLayerResult.Continue.Instance;
@@ -712,6 +795,12 @@ namespace LatteCompiler
                 return;
             }
             pendingGenericArgs.Clear();
+            // 泛型实参列表的 > 属于本表达式：以当前 token 封 End
+            if (currentExpression?.Span is { } s)
+            {
+                s.End = context.GetLocation().End;
+                currentExpression.Span = s;
+            }
         }
 
         // ===== 表达式完成与 EOF =====
@@ -719,6 +808,8 @@ namespace LatteCompiler
         // 表达式完成：把最终外层表达式挂载到 target（成功路径必须且只能执行一次），随后弹出
         private ParserLayerResult CompleteExpression(ParserLayerContext context, TokenDisposition disposition)
         {
+            // 最终封口：当前 token 已不属于本表达式
+            SealCurrentExpression(context);
             target.Attach(
                 currentExpression
                     ?? throw context.RaiseError("Expression is incomplete.")

@@ -23,7 +23,7 @@ namespace LatteCompiler
     ///   → * ：记录 importAll，WaitEnd 等换行弹栈
     ///   → { ：ListItem → AfterListItem（`,` 循环 / `}` → WaitEnd）
     /// </summary>
-    public class ImportParserLayer : IParserLayer
+    public class ImportParserLayer : IParserLayer, ISpanReceiver
     {
         private enum State
         {
@@ -44,6 +44,9 @@ namespace LatteCompiler
         {
             this.self = self;
         }
+
+        // 层弹出时回填 import 节点的源码范围（M28）
+        public void ReceiveSpan(CharRange span) => self.Span ??= span;
 
         public ParserLayerResult ParseToken(Token t, ParserLayerContext context)
         {
@@ -150,6 +153,9 @@ namespace LatteCompiler
                 foreach (var el in pathSymbol!.symbol.elements)
                     itemSymbol.symbol.elements.Add(el);
                 itemSymbol.symbol.elements.Add(new SymbolElement { name = w.Content });
+                // 列表项 span：标识符 token 自身的范围（M28）
+                var loc = context.GetLocation();
+                itemSymbol.Span = new CharRange { Start = loc.Start, End = loc.End, sourceName = loc.sourceName };
                 self.importedSymbols.Add(new ImportItem { symbolNode = itemSymbol });
                 state = State.AfterListItem;
                 return ParserLayerResult.Continue.Instance;

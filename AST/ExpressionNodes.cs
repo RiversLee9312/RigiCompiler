@@ -31,6 +31,14 @@ namespace LatteCompiler
         {
         }
 
+        // Root 是透明容器：Span 未显式设置时透明继承内容表达式的范围
+        // （覆盖 Attach 时表达式尚无 span 的情形，如 trailing lambda 的 Value Root）
+        public override CharRange? Span
+        {
+            get => base.Span ?? expression?.Span;
+            set => base.Span = value;
+        }
+
         public bool IsAttached => expression is not null;
 
         public ExpressionASTNode Expression =>

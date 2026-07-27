@@ -98,8 +98,9 @@ namespace LatteCompiler
                 return ParserLayerResult.Continue.Instance;
             }
 
-            // 其他 token：位置实参，委托表达式解析（先建实参节点并入列）
-            return DelegatePositionalArgument(context, null, TokenDisposition.Replay);
+            // 其他 token：位置实参，委托表达式解析（先建实参节点并入列）；
+            // span 起点即当前 token（表达式的首个 token，Replay 交给表达式层）
+            return DelegatePositionalArgument(context, null, context.GetLocation().Start, TokenDisposition.Replay);
         }
 
         // 判断 Word 内容是否为标识符起点（排除数字、字面量词与关键字）
@@ -119,8 +120,10 @@ namespace LatteCompiler
         {
             if (currentToken is NotationToken nt && nt.Content == "=")
             {
-                // 具名实参：创建实参节点（带上名字）并委托表达式解析值
+                // 具名实参：创建实参节点（带上名字）并委托表达式解析值；
+                // span 起点是名字 token（当前为 =，名字即最近被消费的 token）
                 var argument = new ArgumentASTNode(parentNode) { Name = pendingName };
+                StartArgumentSpan(argument, context.GetPreviousLocation().Start, context);
                 pendingName = null;
                 targetList.Add(argument);
                 state = State.ArgParsed;
@@ -130,23 +133,52 @@ namespace LatteCompiler
 
             // 位置实参：标识符作为符号引用起点，表达式继续（foo(name + 1)）。
             // 已消费的标识符包成未挂载的符号节点作为 seed 传给表达式层。
+            // seed 及其符号节点的 span 即标识符 token（最近被消费的 token）的范围
+            var seedRange = context.GetPreviousLocation();
             var symbolRef = new SymbolReferenceASTNode();
+            symbolRef.Span = new CharRange
+            {
+                Start = seedRange.Start,
+                End = seedRange.End,
+                sourceName = seedRange.sourceName
+            };
+            symbolRef.Symbol.Span = symbolRef.Span;
             symbolRef.Symbol.symbol.elements.Add(new SymbolElement { name = pendingName! });
             pendingName = null;
-            return DelegatePositionalArgument(context, symbolRef, TokenDisposition.Replay);
+            return DelegatePositionalArgument(context, symbolRef, seedRange.Start, TokenDisposition.Replay);
         }
 
         // 位置实参委托：先创建 ArgumentASTNode 并入列，再让表达式层填充其 Value Root
         private ParserLayerResult DelegatePositionalArgument(
             ParserLayerContext context,
             SymbolReferenceASTNode? seed,
+            CharPosition spanStart,
             TokenDisposition disposition)
         {
             var argument = new ArgumentASTNode(parentNode);
+            StartArgumentSpan(argument, spanStart, context);
             targetList.Add(argument);
             state = State.ArgParsed;
             return new ParserLayerResult.PushLayer(
                 new ExpressionParserLayer(argument.Value, seed), disposition);
+        }
+
+        // 实参 span：创建时记 Start（具名为名字 token，位置实参为表达式首 token），
+        // End 先取当前 token，待实参完成时封口
+        private static void StartArgumentSpan(ArgumentASTNode argument, CharPosition start, ParserLayerContext context)
+        {
+            var current = context.GetLocation();
+            argument.Span = new CharRange { Start = start, End = current.End, sourceName = current.sourceName };
+        }
+
+        // 实参 span 封口：`,` 或闭合括号出现时不属于实参，End 取最近被消费的 token
+        private void SealLastArgument(ParserLayerContext context)
+        {
+            if (targetList.Count > 0 && targetList[targetList.Count - 1].Span is { } s)
+            {
+                s.End = context.GetPreviousLocation().End;
+                targetList[targetList.Count - 1].Span = s;
+            }
         }
 
         // 实参已解析：等待 , 或闭合括号
@@ -154,12 +186,14 @@ namespace LatteCompiler
         {
             if (currentToken is NotationToken nt && nt.Content == ",")
             {
+                SealLastArgument(context);
                 state = State.ArgStart;
                 return ParserLayerResult.Continue.Instance;
             }
 
             if (IsClosingBracket(currentToken))
             {
+                SealLastArgument(context);
                 return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
             }
 

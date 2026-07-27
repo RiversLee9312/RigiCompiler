@@ -13,7 +13,7 @@ namespace LatteCompiler
     /// 施工协议（大扫除后）：操作数由 ExpressionParserLayer 直接附加到
     /// targetNode.Operand（ExpressionRootASTNode），无任何结果回传。
     /// </summary>
-    public class TypeOfExpressionParserLayer : IParserLayer
+    public class TypeOfExpressionParserLayer : IParserLayer, ISpanReceiver
     {
         private readonly TypeOfExpressionASTNode targetNode;
 
@@ -30,6 +30,9 @@ namespace LatteCompiler
         {
             targetNode = target;
         }
+
+        // 层弹出时回填施工目标的源码范围（M28）
+        public void ReceiveSpan(CharRange span) => targetNode.Span ??= span;
 
         public ParserLayerResult ParseToken(Token currentToken, ParserLayerContext context)
         {

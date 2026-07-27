@@ -13,7 +13,7 @@ namespace LatteCompiler
     ///
     /// 状态流转：NamespaceKeyword → PathStart →（PathParserLayer 弹出）→ AfterPath（换行弹栈）
     /// </summary>
-    public class NamespaceParserLayer : IParserLayer
+    public class NamespaceParserLayer : IParserLayer, ISpanReceiver
     {
         private enum State
         {
@@ -29,6 +29,9 @@ namespace LatteCompiler
         {
             this.self = self;
         }
+
+        // 层弹出时回填施工目标的源码范围（M28）
+        public void ReceiveSpan(CharRange span) => self.Span ??= span;
 
         public ParserLayerResult ParseToken(Token t, ParserLayerContext context)
         {
