@@ -67,7 +67,7 @@ namespace LatteCompiler
         public LoopParserLayer(CodeBlockASTNode parentBlock)
         {
             targetNode = new LoopStatementASTNode(parentBlock);
-            parentBlock.Children.Add(targetNode);
+            parentBlock.Statements.Add(targetNode);
         }
 
         // Span 回填（M28）：回填本层创建的循环节点

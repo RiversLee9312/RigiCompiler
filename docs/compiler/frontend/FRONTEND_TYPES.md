@@ -29,8 +29,9 @@
 
 ## 3. AST 节点类型（语法分析器输出）
 
-**ASTNode**: 抽象基类（`Parent` 指针、`Children`、`Span`），`Core/Utilities.cs`。
-`Children` 是统一的子节点容器（全局作用域、类型体、嵌套类型共用，M14 从 RootASTNode 上移到基类）。
+**ASTNode**: 抽象基类（`Parent` 指针、`Span`），`Core/Utilities.cs`。
+子节点容器不是基类共有字段（M29）：各节点以语义明确的 [ChildAstNode] 字段自持
+（`RootASTNode.Declarations`、`CodeBlockASTNode.Statements`、类型节点 `Members`）。
 `Span`（`CharRange?`，M28）是节点的源码范围：层目标由 Parser 主循环按 token 流经
 `ISpanReceiver.ReceiveSpan` 回填，层内自建节点由所在层显式设置，
 `ExpressionRootASTNode` 未显式设置时透明继承内容表达式的 span。
@@ -41,7 +42,7 @@
 并审计「装 ASTNode 却未标注」的成员（M24/M28）。
 
 ### 3.1 根与符号（`Core/Utilities.cs`，待逐步迁出）
-- **RootASTNode**: 根节点（成员即基类的 `Children`）
+- **RootASTNode**: 根节点（顶层条目挂 `Declarations`，M29）
 - **SymbolASTNode**: 符号节点（`symbol: Symbol`）
 - **ImportASTNode**: import 声明
 - **AcquisitionExpressionASTNode**: 老式获取表达式（待评估去留）
@@ -61,12 +62,13 @@
 ### 3.4 声明（`AST/DeclarationNodes.cs`）
 - **VariableDeclarationASTNode**: Modifiers、IsConst、Name、TypeAnnotation?、Initializer?（局部变量/字段/全局变量同一节点）
 - **CallableDeclarationASTNode**: Modifiers、Kind（CallableKind: Func/Operator/Init）、Name、GenericParameters?、Parameters、ReturnType?、Body?（全局函数/方法/静态方法/运算符/构造函数同一节点，M14）
-- **ClassDeclarationASTNode**: Modifiers、ClassName、GenericParameters?、BaseClass?、Interfaces（成员挂 `Children`）
+- **ClassDeclarationASTNode**: Modifiers、ClassName、GenericParameters?、BaseClass?、Interfaces（成员挂 `Members`，M29）
 - **InterfaceDeclarationASTNode**: Modifiers、InterfaceName、GenericParameters?、BaseInterfaces
 - **StructDeclarationASTNode**: Modifiers、StructName、GenericParameters?、BaseStruct?、Interfaces
 - **EnumStructDeclarationASTNode**: Modifiers、EnumName、GenericParameters?、Cases（case 列表解析待实现）
 - **EnumCaseASTNode**: CaseName、Arguments、DiscriminantValue?
 - **WrapperDeclarationASTNode**: Modifiers、WrapperName、GenericParameters?（entity/method/value 标识与 proxy 成员待实现）
+- **wrapper 挂载接口**（M29）：`IWrapperAttachable`（`Annotations` 属性）+ `IEntity/IMethod/IValueWrapperAttachable` 三个分类标记接口；Variable→Value、Callable→Method、5 个类型节点（含 enum struct）→Entity；5 个类型节点的成员容器均为 `Members`
 - **GenericParameterListASTNode**: Parameters、Constraints
 - **GenericParameterASTNode**: Name、Variance（GenericVariance: None/Out/In）、IsVariadic、IsNamedVariadic
 - **GenericConstraintASTNode**: Target、Kind（GenericConstraintKind: Extends/Supers/With）、Bound
@@ -101,7 +103,7 @@
 
 | 节点 | 关键字段 | 说明 |
 |------|----------|------|
-| **CodeBlockASTNode** | Children | `{ }` 代码块 |
+| **CodeBlockASTNode** | Statements | `{ }` 代码块 |
 | **IfStatementASTNode** | Condition、ThenBlock、ElseBranch? | if 语句（ElseBranch 为块或嵌套 if） |
 | **LoopStatementASTNode** | Kind（LoopKind）、VariableName?、Iterable?、RangeTo?、Condition?、Label?、Body | for-each/范围/while/do-while（范围 = Iterable 起点 + RangeTo 终点） |
 | **ReturnStatementASTNode** | Label?、Value? | return / return@label |

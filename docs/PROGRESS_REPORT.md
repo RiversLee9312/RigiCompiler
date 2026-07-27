@@ -6,7 +6,7 @@
 > 计划与分工见 `compiler/frontend/PARSER_ROADMAP.md`；本文档只记录「现状」。
 
 **报告日期**: 2026-07-27
-**当前阶段**: Parser/PDA 大扫除（架构重构）完成（M23）；AST 结构标注与 Validator 重写完成（M24）；Lexer 修复（除法/EOF/注释）与 fuzz 基建完成（M25）；日志系统与 AST JSONL 序列化完成（M26）；CLI 插件化重构（help/compile/test）完成（M27）；Lexer 位置修复 + AST Source Span + ASTVisitor 统一遍历完成（M28）；**下一步**：语义分析、BIL 输出
+**当前阶段**: Parser/PDA 大扫除（架构重构）完成（M23）；AST 结构标注与 Validator 重写完成（M24）；Lexer 修复（除法/EOF/注释）与 fuzz 基建完成（M25）；日志系统与 AST JSONL 序列化完成（M26）；CLI 插件化重构（help/compile/test）完成（M27）；Lexer 位置修复 + AST Source Span + ASTVisitor 统一遍历完成（M28）；AST 容器重构（基类共有 Children/Annotations 删除，语义字段 + wrapper 挂载接口）完成（M29）；**下一步**：语义分析、BIL 输出
 **测试总计**: 556/556 通过 (100%) + Lexer fuzz 6000/6000（27 个套件，`dotnet run -- test --all` 单命令全量）
 **版本控制**: Git `main` 分支（2026-07-17 首次提交）
 
@@ -44,6 +44,7 @@
 | M26 | 日志系统（Logger 分级 + verbose 默认关闭 + JSONL 落盘）+ AST JSONL 序列化诊断 | ✅ | 2026-07-26 | 498/498 + fuzz 6000（26 套件） |
 | M27 | CLI 插件化重构：`<COMMAND> [--sub-cmd...]`（help/compile/test）+ CommandLineMask + 帮助程序生成 + 交互菜单删除 | ✅ | 2026-07-27 | 544/544 + fuzz 6000（27 套件） |
 | M28 | Lexer 位置修复（offset/列号/EOF 冲刷/token 头/sourceName 单源化）+ AST Source Span（ISpanReceiver 层 span 回填）+ ASTVisitor 统一遍历 + Validator span 检查与类型审计 | ✅ | 2026-07-27 | 556/556 + fuzz 6000（27 套件） |
+| M29 | AST 容器重构：基类共有 `Children`/`Annotations` 删除；语义字段（`Declarations`/`Statements`/`Members`）+ wrapper 挂载接口（`IWrapperAttachable` + Entity/Method/Value 三分类） | ✅ | 2026-07-27 | 27 套件全绿（用例无增删）+ fuzz 6000 |
 
 ---
 
@@ -308,13 +309,14 @@ pub class Point {
 - **泛型语法 `\<...>`**：`<` 仅作小于号；Lexer 不合并 `>` 系列，`>=`/`>>`/`>>>` 由表达式层重组（详见 `SYNTAX.md` §3.6）
 - **表达式后缀链**：纯符号路径保持 PathParserLayer 的 Symbol 形态；`(`/`[`/`.`/`?.`/`\<`/`:` 后缀由 ExpressionParserLayer 链接，底座为表达式时才产生 MemberAccessASTNode
 - **独立 Layer 可测性**：`Parser.Parse(tokens, baseLayer, entryLayer)` + `TestRootParserLayer`（只接受 EOF）支持任意 Layer 独立驱动测试，且拒绝被测 Layer 漏消费 token
-- **统一声明层**（M14，依据 SYNTAX.md §14.8）：canonical symbol 的类名段可为空、`.static.` 只是标记位，因此全局函数与成员方法结构同构——`DeclarationParserLayer` 一套状态机覆盖全局/成员/嵌套任何声明；`CallableDeclarationASTNode` 单节点覆盖 func/operator/init；成员统一挂 `ASTNode.Children`（已从 RootASTNode 上移到基类）
+- **统一声明层**（M14，依据 SYNTAX.md §14.8）：canonical symbol 的类名段可为空、`.static.` 只是标记位，因此全局函数与成员方法结构同构——`DeclarationParserLayer` 一套状态机覆盖全局/成员/嵌套任何声明；`CallableDeclarationASTNode` 单节点覆盖 func/operator/init；成员挂各节点语义容器（M29 起：`RootASTNode.Declarations` / `CodeBlockASTNode.Statements` / 类型节点 `Members`；基类共有 `Children` 已删除）
 - **日志系统**（M26）：`Core/Logger` 是唯一日志出口（Verbose/Warning/Error）；Lexer/Parser 的 ContextImpl 经 Logger 输出，禁止直接 `Console.WriteLine`；控制台门槛默认 Warning+，`--verbose` 子命令放开 Verbose；`--log-to` 把全量日志（含 Verbose）以 JSONL 落盘，文件不过滤级别，便于 grep 诊断
 - **AST JSONL 序列化**（M26）：`AstJsonlSerializer` 复用 Validator 的 [ChildAstNode] 反射下钻，深度优先每节点一行（id/parent/via/type/fields），`compile --dump-ast` 输出，供结构诊断
 - **CLI 插件化**（M27）：用法 `<COMMAND> [--sub-cmd [args...]...]`，COMMAND 为 help/compile/test；每个 COMMAND 与 --sub-cmd 都是插件，暴露 `CommandLineMask`（名称/描述/参数个数/互斥）自描述元数据；解析器与 `help` 文本完全由 Mask 注册表数据驱动、程序生成；交互菜单已删除
 - **位置信息单源化**（M28）：`CharRange.sourceName` 是源名唯一来源（`CharPosition` 不再携带）；`CharPosition.offset` 为 0 起始字符索引（修复恒 0 bug）；换行算当前行最后一列（修复第二行起列号 +1）；token 头跳过空白（修复缩进行 token Start 落在前导空格）；EOF 冲刷帧占虚拟位置（修复 EOF 处 token End 少算/倒置）
 - **AST Source Span**（M28）：`ASTNode.Span`（`CharRange?`）记录节点源码范围；层目标由 Parser 主循环按 token 流计算、经 `ISpanReceiver.ReceiveSpan` 在层弹出时回填（`??=` 只填空），层内自建节点由所在层显式设置（创建记 Start、完成封 End，经 `ParserLayerContext.GetPreviousLocation()`）；`ExpressionRootASTNode` 透明继承内容表达式的 span；Validator 校验每节点 span 非空、sourceName 非空、End 不早于 Start
 - **ASTVisitor 统一遍历**（M28）：`AST/ASTVisitor.cs` 是 [ChildAstNode] 子节点枚举的唯一实现，ASTIntegrityValidator 与 AstJsonlSerializer 共用（via 统一为 `member[i]`/`member[i](Carrier.Field)` 格式）；Validator 新增类型审计——装 ASTNode 的成员（字段/自动属性）必须带 [ChildAstNode]/[ParentAstNode]，[ChildAstNode] 标在非 AST 成员上同样拒绝
+- **AST 容器语义化**（M29）：`ASTNode` 基类只保留 `Parent`/`Span`，共有 `Children`/`Annotations` 删除——顶层条目挂 `RootASTNode.Declarations`、块语句挂 `CodeBlockASTNode.Statements`、类型成员挂各类型节点 `Members`（均标 [ChildAstNode]，Validator/ASTVisitor/Serializer 零改动）；注解列表仅 7 种声明节点持有，经 `IWrapperAttachable` 访问，并按 SYNTAX §14 三类目标以 `IEntity/IMethod/IValueWrapperAttachable` 分类标记（挂载校验留待语义阶段）；`DeclarationParserLayer` 构造函数改收 `(parent, targetList)`
 
 ---
 
@@ -344,6 +346,12 @@ CharRange；每个 AST 节点携带源码范围 Span（层目标由主循环经 
 Validator 与 Serializer 遍历统一为 ASTVisitor，Validator 新增 span 校验与
 「未标注 AST 成员」类型审计。
 
+**AST 容器重构（M29）已完成**：`ASTNode` 基类共有的 `Children`/`Annotations`
+删除，只留 `Parent`/`Span`；子节点容器下放为语义字段——
+`RootASTNode.Declarations`、`CodeBlockASTNode.Statements`、5 个类型节点各自
+`Members`；注解列表仅 7 种声明节点持有，按 SYNTAX §14 三类 wrapper 目标
+抽象为 `IWrapperAttachable` + `IEntity/IMethod/IValueWrapperAttachable` 接口。
+
 **下一阶段**：语义分析、BIL 输出（见 `../BIL_STANDARD.md`）
 
 ---
@@ -363,6 +371,32 @@ Validator 与 Serializer 遍历统一为 ASTVisitor，Validator 新增 span 校�
 ---
 
 ## 7. 里程碑历史
+
+### 2026-07-27 · M29 AST 容器重构：语义字段 + wrapper 挂载接口
+
+> 不改 Latte 语法；纯 AST 结构重构。基类共有字段 `Children`/`Annotations`
+> 删除，子节点容器改为各节点上语义明确的 [ChildAstNode] 字段；注解挂载
+> 能力按 SYNTAX §14 三类 wrapper 目标抽象为接口。
+
+- **基类瘦身**（`Core/Utilities.cs`）：`ASTNode` 只保留 `Parent`
+  （[ParentAstNode]）与 `Span`；`Children`、`Annotations` 两个共有字段删除
+- **语义容器字段**（均标 [ChildAstNode]；Validator/ASTVisitor/AstJsonlSerializer
+  走 Attribute 反射，零改动）：
+  - `RootASTNode.Declarations`：顶层条目（全局声明/import/namespace/顶层字面量）
+  - `CodeBlockASTNode.Statements`：块内语句（局部声明同挂）
+  - 5 个类型声明节点（Class/Interface/Struct/EnumStruct/Wrapper）各自的 `Members`
+- **wrapper 挂载接口**（`AST/DeclarationNodes.cs`）：`IWrapperAttachable` 基接口
+  （`Annotations` 属性）+ 三个分类标记接口——`IEntityWrapperAttachable`
+  （5 个类型节点，§14.2）、`IMethodWrapperAttachable`（Callable，§14.4）、
+  `IValueWrapperAttachable`（Variable，§14.3）；挂载合法性校验留待语义阶段
+- **DeclarationParserLayer**：构造函数改收 `(ASTNode parent, List<ASTNode> target)`
+  （parent 供节点 Parent 指针、target 供挂接；与 ArgumentListParserLayer 收
+  目标列表的先例一致）；新增 `GetMembers` 集中 switch（仿 `GetModifiers`）；
+  `AttachAnnotations` 改经 `IWrapperAttachable` 访问
+- **测试**：19 个测试文件机械改名（`root.Declarations`/`block.Statements`/
+  类型节点 `.Members`），无用例增删、无期望变化；AstJsonlSerializerTests 的
+  via 期望串同步（`Children[0]` → `Declarations[0]`）；全部 27 套件 0 失败
+  + fuzz 6000/6000
 
 ### 2026-07-27 · M28 Lexer 位置修复 + AST Source Span + ASTVisitor 统一遍历
 

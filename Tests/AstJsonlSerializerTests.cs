@@ -31,8 +31,8 @@ namespace LatteCompiler.Tests
                 CheckStructure("var x = 42", lines);
 
                 var decl = OfType(lines, "VariableDeclarationASTNode").ToList();
-                Check("出现 VariableDeclarationASTNode（via=Children[0]）",
-                    decl.Count == 1 && decl[0].GetProperty("via").GetString() == "Children[0]");
+                Check("出现 VariableDeclarationASTNode（via=Declarations[0]）",
+                    decl.Count == 1 && decl[0].GetProperty("via").GetString() == "Declarations[0]");
                 Check("VariableDeclaration fields：Name=x, IsConst=false",
                     decl.Count == 1 &&
                     FieldString(decl[0], "Name") == "x" &&

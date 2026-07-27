@@ -74,7 +74,7 @@ namespace LatteCompiler
         private static IfStatementASTNode AttachStatement(CodeBlockASTNode parentBlock)
         {
             var node = new IfStatementASTNode(parentBlock);
-            parentBlock.Children.Add(node);
+            parentBlock.Statements.Add(node);
             return node;
         }
 

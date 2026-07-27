@@ -456,10 +456,10 @@ namespace LatteCompiler.Tests
 
         private static string FormatRoot(RootASTNode root)
         {
-            if (root.Children.Count == 0)
+            if (root.Declarations.Count == 0)
                 return "<empty>";
 
-            return string.Join("; ", root.Children.ConvertAll(FormatDeclaration));
+            return string.Join("; ", root.Declarations.ConvertAll(FormatDeclaration));
         }
 
         // 递归渲染：成员/嵌套类型走的是同一条路径（与 Parser 侧的复用结构对应）
@@ -488,13 +488,24 @@ namespace LatteCompiler.Tests
             };
 
             // @ 注解（SYNTAX §14.5）渲染在声明头之前（与源码书写位置一致）
-            head = FormatAnnotations(node) + head;
+            head = FormatAnnotations((IWrapperAttachable)node) + head;
 
-            if (node.Children.Count == 0 && node is not EnumStructDeclarationASTNode) return head;
+            // 类型节点的成员容器（var/func 等无成员列表，视为空）
+            var members = node switch
+            {
+                ClassDeclarationASTNode c => c.Members,
+                InterfaceDeclarationASTNode i => i.Members,
+                StructDeclarationASTNode s => s.Members,
+                EnumStructDeclarationASTNode e => e.Members,
+                WrapperDeclarationASTNode w => w.Members,
+                _ => new List<ASTNode>()
+            };
 
-            var body = node.Children.Count == 0
+            if (members.Count == 0 && node is not EnumStructDeclarationASTNode) return head;
+
+            var body = members.Count == 0
                 ? ""
-                : " {" + string.Join(", ", node.Children.ConvertAll(FormatDeclaration)) + "}";
+                : " {" + string.Join(", ", members.ConvertAll(FormatDeclaration)) + "}";
             // enum struct 的 [case 列表] 位于类型体 } 之后（SYNTAX §12）
             var cases = node is EnumStructDeclarationASTNode es ? FormatEnumCases(es) : "";
             return head + body + cases;
@@ -535,7 +546,7 @@ namespace LatteCompiler.Tests
         };
 
         // @ 注解渲染（SYNTAX §14.5）：@Name[(args)]，可叠加
-        private static string FormatAnnotations(ASTNode node)
+        private static string FormatAnnotations(IWrapperAttachable node)
         {
             if (node.Annotations.Count == 0) return "";
             return string.Join(" ", node.Annotations.ConvertAll(FormatAnnotation)) + " ";

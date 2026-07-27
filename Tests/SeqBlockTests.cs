@@ -234,7 +234,7 @@ namespace LatteCompiler.Tests
 
         private static string FormatBlock(CodeBlockASTNode block)
         {
-            var statements = block.Children.Select(FormatStatement).ToList();
+            var statements = block.Statements.Select(FormatStatement).ToList();
             return $"[{string.Join(", ", statements)}]";
         }
 

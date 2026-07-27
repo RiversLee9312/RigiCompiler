@@ -6,7 +6,7 @@ namespace LatteCompiler
     // 变量声明 AST 节点
     // 同一个节点覆盖：栈上局部变量、类/struct 字段、全局变量
     // （§14.8 canonical symbol 的类名段可为空 —— 全局与成员同构）
-    public class VariableDeclarationASTNode : ASTNode
+    public class VariableDeclarationASTNode : ASTNode, IValueWrapperAttachable
     {
         public List<string> Modifiers = new List<string>();  // pub/priv/static/... 局部变量为空
         public bool IsConst;                           // true = const, false = var
@@ -15,6 +15,7 @@ namespace LatteCompiler
         [ChildAstNode] public PropertyAccessorASTNode? Getter;        // 属性访问器块中的 get（§9.4，可选）
         [ChildAstNode] public PropertyAccessorASTNode? Setter;        // 属性访问器块中的 set（§9.4，可选）
         [ChildAstNode] public ExpressionRootASTNode? Initializer;     // 初始化表达式（可选；不存在时为 null）
+        [ChildAstNode] public List<AnnotationASTNode> Annotations { get; } = new List<AnnotationASTNode>();
 
         public VariableDeclarationASTNode(ASTNode? parent) : base(parent)
         {
@@ -167,7 +168,7 @@ namespace LatteCompiler
         Init        // init(...)
     }
 
-    public class CallableDeclarationASTNode : ASTNode
+    public class CallableDeclarationASTNode : ASTNode, IMethodWrapperAttachable
     {
         public List<string> Modifiers = new List<string>();
         public CallableKind Kind;
@@ -176,6 +177,7 @@ namespace LatteCompiler
         [ChildAstNode] public ParameterListASTNode Parameters;
         [ChildAstNode] public TypeReferenceASTNode? ReturnType;     // 省略即无返回值
         [ChildAstNode] public CodeBlockASTNode? Body;               // null = 抽象/接口无体声明
+        [ChildAstNode] public List<AnnotationASTNode> Annotations { get; } = new List<AnnotationASTNode>();
 
         public CallableDeclarationASTNode(ASTNode? parent) : base(parent)
         {
@@ -192,7 +194,7 @@ namespace LatteCompiler
 
     // 类声明（SYNTAX.md §9）
     // [modifiers] class Name [<generics>] [: BaseClass] [implements Interface1, Interface2] [like field] { ... }
-    public class ClassDeclarationASTNode : ASTNode
+    public class ClassDeclarationASTNode : ASTNode, IEntityWrapperAttachable
     {
         public List<string> Modifiers;                 // pub, open, abstract, singleton, shared, etc.
         public string ClassName;
@@ -200,7 +202,8 @@ namespace LatteCompiler
         [ChildAstNode] public TypeReferenceASTNode? BaseClass;        // 可选基类
         [ChildAstNode] public List<TypeReferenceASTNode> Interfaces;  // implements 接口列表
         public string? LikeTarget;                     // like 委托的目标字段（§9.6，可选）
-        // 成员（字段/方法/init/嵌套类型）直接挂在 ASTNode.Children 上，不另设容器
+        [ChildAstNode] public List<AnnotationASTNode> Annotations { get; } = new List<AnnotationASTNode>();
+        [ChildAstNode] public List<ASTNode> Members;   // 成员（字段/方法/init/嵌套类型）
 
         public ClassDeclarationASTNode(ASTNode? parent) : base(parent)
         {
@@ -210,16 +213,19 @@ namespace LatteCompiler
             BaseClass = null;
             Interfaces = new List<TypeReferenceASTNode>();
             LikeTarget = null;
+            Members = new List<ASTNode>();
         }
     }
 
     // 接口声明（SYNTAX.md §11）
-    public class InterfaceDeclarationASTNode : ASTNode
+    public class InterfaceDeclarationASTNode : ASTNode, IEntityWrapperAttachable
     {
         public List<string> Modifiers;
         public string InterfaceName;
         [ChildAstNode] public GenericParameterListASTNode? GenericParameters;
         [ChildAstNode] public List<TypeReferenceASTNode> BaseInterfaces;  // interface 可以继承多个 interface
+        [ChildAstNode] public List<AnnotationASTNode> Annotations { get; } = new List<AnnotationASTNode>();
+        [ChildAstNode] public List<ASTNode> Members;   // 成员（方法/嵌套类型）
 
         public InterfaceDeclarationASTNode(ASTNode? parent) : base(parent)
         {
@@ -227,17 +233,20 @@ namespace LatteCompiler
             InterfaceName = null!;
             GenericParameters = null;
             BaseInterfaces = new List<TypeReferenceASTNode>();
+            Members = new List<ASTNode>();
         }
     }
 
     // struct 声明（SYNTAX.md §10）
-    public class StructDeclarationASTNode : ASTNode
+    public class StructDeclarationASTNode : ASTNode, IEntityWrapperAttachable
     {
         public List<string> Modifiers;                 // pub, open, rich, shared, etc.
         public string StructName;
         [ChildAstNode] public GenericParameterListASTNode? GenericParameters;
         [ChildAstNode] public TypeReferenceASTNode? BaseStruct;       // struct 只能继承一个 struct
         [ChildAstNode] public List<TypeReferenceASTNode> Interfaces;
+        [ChildAstNode] public List<AnnotationASTNode> Annotations { get; } = new List<AnnotationASTNode>();
+        [ChildAstNode] public List<ASTNode> Members;   // 成员（字段/方法/init/嵌套类型）
 
         public StructDeclarationASTNode(ASTNode? parent) : base(parent)
         {
@@ -246,16 +255,19 @@ namespace LatteCompiler
             GenericParameters = null;
             BaseStruct = null;
             Interfaces = new List<TypeReferenceASTNode>();
+            Members = new List<ASTNode>();
         }
     }
 
     // enum struct 声明（SYNTAX.md §12）
-    public class EnumStructDeclarationASTNode : ASTNode
+    public class EnumStructDeclarationASTNode : ASTNode, IEntityWrapperAttachable
     {
         public List<string> Modifiers;
         public string EnumName;
         [ChildAstNode] public GenericParameterListASTNode? GenericParameters;
         [ChildAstNode] public List<EnumCaseASTNode> Cases;            // [] 中的 case 列表
+        [ChildAstNode] public List<AnnotationASTNode> Annotations { get; } = new List<AnnotationASTNode>();
+        [ChildAstNode] public List<ASTNode> Members;   // 成员（字段/方法/init/嵌套类型）
 
         public EnumStructDeclarationASTNode(ASTNode? parent) : base(parent)
         {
@@ -263,6 +275,7 @@ namespace LatteCompiler
             EnumName = null!;
             GenericParameters = null;
             Cases = new List<EnumCaseASTNode>();
+            Members = new List<ASTNode>();
         }
     }
 
@@ -282,24 +295,46 @@ namespace LatteCompiler
     }
 
     // wrapper 声明（SYNTAX.md §14）
-    public class WrapperDeclarationASTNode : ASTNode
+    public class WrapperDeclarationASTNode : ASTNode, IEntityWrapperAttachable
     {
         public List<string> Modifiers;
         public string WrapperName;
         [ChildAstNode] public GenericParameterListASTNode? GenericParameters;
+        [ChildAstNode] public List<AnnotationASTNode> Annotations { get; } = new List<AnnotationASTNode>();
+        [ChildAstNode] public List<ASTNode> Members;   // 成员（proxy 方法/嵌套类型等）
 
         public WrapperDeclarationASTNode(ASTNode? parent) : base(parent)
         {
             Modifiers = new List<string>();
             WrapperName = null!;
             GenericParameters = null;
+            Members = new List<ASTNode>();
         }
     }
+
+    // ===== Wrapper 注解挂载能力（SYNTAX §14：.Entity/.Method/.Value 三类目标互斥）=====
+
+    // 可挂载 wrapper 注解（@Name[(args)]，§14.5）的声明节点：Parser 统一经此接口
+    // 访问注解列表；三个分类接口标记节点接受的 wrapper 目标类别
+    //（挂载合法性的校验留待语义阶段）。
+    public interface IWrapperAttachable
+    {
+        List<AnnotationASTNode> Annotations { get; }
+    }
+
+    // Entity wrapper（§14.2）：修饰 class/interface/wrapper/struct（含 enum struct）
+    public interface IEntityWrapperAttachable : IWrapperAttachable { }
+
+    // Method wrapper（§14.4）：修饰方法（func/operator/init）
+    public interface IMethodWrapperAttachable : IWrapperAttachable { }
+
+    // Value wrapper（§14.3）：修饰字段或栈上变量（var/const）
+    public interface IValueWrapperAttachable : IWrapperAttachable { }
 
     // 注解 / wrapper 应用（SYNTAX.md §14.5）：@Name 或 @Name(args)，可叠加多个。
     // 编译器内建 wrapper（@WrapperTarget(.Entity) 等）与用户 wrapper 应用
     // （@Logged("DEBUG")、@Clamped(0, 100)、@Timed()）共用同一语法形态。
-    // 挂在声明节点的 ASTNode.Annotations 上：注解先于声明本体解析，
+    // 挂在声明节点的 Annotations 属性上（经 IWrapperAttachable 访问）：注解先于声明本体解析，
     // 构造时暂无父节点（parent 为 null），声明节点创建时一次性 AttachTo 挂接
     // （与表达式施工期暂无父节点的先例一致；AttachTo 保证只设置一次）。
     public class AnnotationASTNode : ASTNode

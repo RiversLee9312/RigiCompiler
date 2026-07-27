@@ -352,15 +352,12 @@ namespace LatteCompiler
 
             Parent = parent;
         }
-
-        // 子声明容器（全局作用域、类型体、嵌套类型共用同一个容器）
-        [ChildAstNode] public List<ASTNode> Children = new List<ASTNode>();
-
-        // 注解 / wrapper 应用列表（SYNTAX §14.5）；仅声明节点使用，其余节点保持空
-        [ChildAstNode] public List<AnnotationASTNode> Annotations = new List<AnnotationASTNode>();
     }
     public class RootASTNode : ASTNode
     {
+        // 顶层条目容器：全局声明、import、namespace（以及测试驱动的顶层字面量表达式）
+        [ChildAstNode] public List<ASTNode> Declarations = new List<ASTNode>();
+
         public RootASTNode() : base(null){ }
     }
     public class SymbolElement

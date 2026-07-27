@@ -75,9 +75,9 @@ namespace LatteCompiler.Tests
                 var parser = new Parser();
                 var ast = parser.Parse(tokens);
 
-                if (ast is RootASTNode root && root.Children.Count > 0)
+                if (ast is RootASTNode root && root.Declarations.Count > 0)
                 {
-                    var literalNode = root.Children[0];
+                    var literalNode = root.Declarations[0];
                     string result = DescribeLiteral(literalNode);
 
                     bool passed = result.Contains(expectedDesc.Split(':')[0]); // 简化检查

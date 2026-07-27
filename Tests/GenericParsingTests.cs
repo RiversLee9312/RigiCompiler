@@ -111,9 +111,9 @@ namespace LatteCompiler.Tests
             var parser = new Parser();
             var ast = parser.Parse(tokens);
 
-            if (ast is RootASTNode root && root.Children.Count > 0)
+            if (ast is RootASTNode root && root.Declarations.Count > 0)
             {
-                return root.Children[0] as VariableDeclarationASTNode;
+                return root.Declarations[0] as VariableDeclarationASTNode;
             }
             return null;
         }

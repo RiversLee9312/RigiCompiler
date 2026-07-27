@@ -121,10 +121,10 @@ namespace LatteCompiler.Tests
 
         private static string FormatRoot(RootASTNode root)
         {
-            if (root.Children.Count == 0)
+            if (root.Declarations.Count == 0)
                 return "<empty>";
 
-            return string.Join("; ", root.Children.ConvertAll(FormatNode));
+            return string.Join("; ", root.Declarations.ConvertAll(FormatNode));
         }
 
         private static string FormatNode(ASTNode node) => node switch

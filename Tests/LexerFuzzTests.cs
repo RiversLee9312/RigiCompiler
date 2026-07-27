@@ -329,14 +329,14 @@ namespace LatteCompiler.Tests
                 var tokens = new Lexer().Tokenize(code);
                 var block = new CodeBlockASTNode(null);
                 new Parser().Parse(tokens, new TestRootParserLayer(), new CodeBlockParserLayer(block));
-                if (block.Children.Count == expectedCount)
+                if (block.Statements.Count == expectedCount)
                 {
                     Console.WriteLine($"  [PASS] {name}");
                     passCount++;
                 }
                 else
                 {
-                    Fail(code, $"{name}: expected {expectedCount} statements, got {block.Children.Count}");
+                    Fail(code, $"{name}: expected {expectedCount} statements, got {block.Statements.Count}");
                 }
             }
             catch (Exception ex)

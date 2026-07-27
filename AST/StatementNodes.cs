@@ -6,13 +6,15 @@ namespace LatteCompiler
     // 语句 AST 节点（P2 语句系统）
     //
     // 约定：
-    // - 语句不产生结果，直接挂入 CodeBlockASTNode.Children
+    // - 语句不产生结果，直接挂入 CodeBlockASTNode.Statements
     // - 表达式开头的语句（表达式语句/赋值语句）以 ExpressionStatementASTNode 承载
 
     // 代码块 { ... }：一组有序语句
-    // 语句容器直接用 ASTNode.Children（M14 已上移到基类），不再另设字段
     public class CodeBlockASTNode : ASTNode
     {
+        // 块内语句容器（局部声明也是语句，同挂此处）
+        [ChildAstNode] public List<ASTNode> Statements = new List<ASTNode>();
+
         public CodeBlockASTNode(ASTNode? parent) : base(parent)
         {
         }

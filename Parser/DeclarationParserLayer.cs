@@ -5,7 +5,7 @@ using System.Linq;
 namespace LatteCompiler
 {
     /// <summary>
-    /// 通用声明层：解析**任何位置**的任何声明，把结果挂到 parent.Children。
+    /// 通用声明层：解析**任何位置**的任何声明，把结果挂到 target（父节点的声明容器）。
     ///
     /// 依据 SYNTAX.md §14.8：canonical symbol 的类名段可为空、`.static.` 只是标记位，
     /// 因此以下形态在结构上同构，全部由本层一套状态机处理，不各自造轮子：
@@ -20,10 +20,12 @@ namespace LatteCompiler
     public class DeclarationParserLayer : IParserLayer, ISpanReceiver
     {
         private readonly ASTNode parent;
+        private readonly List<ASTNode> target;   // 声明挂接目标（root.Declarations / block.Statements / 类型节点.Members）
 
-        public DeclarationParserLayer(ASTNode parent)
+        public DeclarationParserLayer(ASTNode parent, List<ASTNode> target)
         {
             this.parent = parent;
+            this.target = target;
         }
 
         // 施工中的声明节点（var/callable/各类类型声明）：层弹出时回填 span（M28）。
@@ -152,7 +154,7 @@ namespace LatteCompiler
                     var v = new VariableDeclarationASTNode(parent);
                     v.Modifiers.AddRange(modifiers);
                     AttachAnnotations(v, context);
-                    parent.Children.Add(v);
+                    target.Add(v);
                     currentDeclaration = v;
                     state = State.Finish;
                     // ext 允许限定名（pub ext var String.isEmpty: bool，§4.4）
@@ -200,7 +202,8 @@ namespace LatteCompiler
             {
                 ann.AttachTo(node);
             }
-            node.Annotations.AddRange(pendingAnnotations);
+            // node 必为实现 IWrapperAttachable 的声明节点（var/callable/类型声明）
+            ((IWrapperAttachable)node).Annotations.AddRange(pendingAnnotations);
         }
 
         // 最后一个注解的 span 封口（M28）：当前 token 已不属于注解，
@@ -222,7 +225,7 @@ namespace LatteCompiler
             callable = new CallableDeclarationASTNode(parent) { Kind = kind };
             callable.Modifiers.AddRange(modifiers);
             AttachAnnotations(callable, context);
-            parent.Children.Add(callable);
+            target.Add(callable);
             currentDeclaration = callable;
             extSeen = modifiers.Contains(Keywords.EXT);
             state = next;
@@ -391,7 +394,7 @@ namespace LatteCompiler
             };
             GetModifiers(node).AddRange(modifiers);
             AttachAnnotations(node, context);
-            parent.Children.Add(node);
+            target.Add(node);
             currentDeclaration = node;
             return node;
         }
@@ -405,6 +408,18 @@ namespace LatteCompiler
             EnumStructDeclarationASTNode e => e.Modifiers,
             WrapperDeclarationASTNode w => w.Modifiers,
             _ => new List<string>()
+        };
+
+        // 各类型节点的成员容器访问集中在此（与 GetModifiers 同款集中 switch）；
+        // 只在类型体递归时调用，default 分支永远不该走到
+        private static List<ASTNode> GetMembers(ASTNode n) => n switch
+        {
+            ClassDeclarationASTNode c => c.Members,
+            InterfaceDeclarationASTNode i => i.Members,
+            StructDeclarationASTNode s => s.Members,
+            EnumStructDeclarationASTNode e => e.Members,
+            WrapperDeclarationASTNode w => w.Members,
+            _ => throw new CompilerInternalException($"Unexpected type node: {n.GetType().Name}")
         };
 
         private void SetTypeName(string name)
@@ -609,14 +624,14 @@ namespace LatteCompiler
             }
 
             return new ParserLayerResult.PushLayer(
-                new DeclarationParserLayer(typeNode!), TokenDisposition.Replay);
+                new DeclarationParserLayer(typeNode!, GetMembers(typeNode!)), TokenDisposition.Replay);
         }
 
         // §14.6：同一 wrapper 中四类 wildcard proxy（.proxy.* / .proxy.get.* /
         // .proxy.set.* / .proxy.opr.*）各自最多一个；specific proxy 不受限
         private void ValidateWildcardUniqueness(ParserLayerContext context)
         {
-            var wildcards = typeNode!.Children
+            var wildcards = ((WrapperDeclarationASTNode)typeNode!).Members
                 .OfType<CallableDeclarationASTNode>()
                 .Where(c => c.Kind == CallableKind.Operator && c.Name.EndsWith(".*"))
                 .Select(c => c.Name)

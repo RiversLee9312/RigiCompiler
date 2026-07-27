@@ -18,7 +18,7 @@ namespace LatteCompiler
     ///   （参照 ExpressionParserLayer 内联处理一元/二元运算符的先例）
     ///
     /// 施工协议（大扫除后）：
-    /// - 语句节点直接挂入 targetBlock.Children；
+    /// - 语句节点直接挂入 targetBlock.Statements；
     /// - 表达式开头的语句先创建 ExpressionStatementASTNode（Parent = 本块），
     ///   表达式层直接向其 Expression Root 附加；遇 = 时再建 AssignValue Root
     ///   （Parent = 语句节点）解析右侧——两个 Root 槽创建时归属即定，
@@ -160,7 +160,7 @@ namespace LatteCompiler
             if (currentToken is NotationToken at && at.Content == "@")
             {
                 return new ParserLayerResult.PushLayer(
-                    new DeclarationParserLayer(targetNode), TokenDisposition.Replay);
+                    new DeclarationParserLayer(targetNode, targetNode.Statements), TokenDisposition.Replay);
             }
 
             if (currentToken is WordToken wt)
@@ -169,7 +169,7 @@ namespace LatteCompiler
                 if (wt.Content == Keywords.VAR || wt.Content == Keywords.CONST)
                 {
                     var declNode = new VariableDeclarationASTNode(targetNode);
-                    targetNode.Children.Add(declNode);
+                    targetNode.Statements.Add(declNode);
                     return new ParserLayerResult.PushLayer(
                         new VariableDeclarationParserLayer(declNode), TokenDisposition.Replay);
                 }
@@ -193,7 +193,7 @@ namespace LatteCompiler
                 if (wt.Content == Keywords.TRY)
                 {
                     var tryNode = new TryCatchFinallyStatementASTNode(targetNode);
-                    targetNode.Children.Add(tryNode);
+                    targetNode.Statements.Add(tryNode);
                     return new ParserLayerResult.PushLayer(
                         new TryCatchFinallyParserLayer(tryNode), TokenDisposition.Replay);
                 }
@@ -202,7 +202,7 @@ namespace LatteCompiler
                 if (wt.Content == Keywords.SEQ || wt.Content == Keywords.VOLATILE)
                 {
                     var seqNode = new SeqBlockExpressionASTNode(targetNode);
-                    targetNode.Children.Add(seqNode);
+                    targetNode.Statements.Add(seqNode);
                     return new ParserLayerResult.PushLayer(
                         new SeqBlockParserLayer(seqNode), TokenDisposition.Replay);
                 }
@@ -266,7 +266,7 @@ namespace LatteCompiler
             {
                 var stmt = pendingExpressionStatement!;
                 stmt.AssignValue = new ExpressionRootASTNode(stmt);
-                targetNode.Children.Add(stmt);
+                targetNode.Statements.Add(stmt);
                 pendingExpressionStatement = null;
 
                 // 赋值语句待值表达式完成后封口（HandleStatementEnd）
@@ -280,7 +280,7 @@ namespace LatteCompiler
             if (currentToken is LineBreakToken)
             {
                 SealStatementSpan(pendingExpressionStatement!, context);
-                targetNode.Children.Add(pendingExpressionStatement!);
+                targetNode.Statements.Add(pendingExpressionStatement!);
                 pendingExpressionStatement = null;
                 state = State.StatementDispatch;
                 return ParserLayerResult.Continue.Instance;
@@ -290,7 +290,7 @@ namespace LatteCompiler
             if (currentToken is NotationToken close && close.Content == "}")
             {
                 SealStatementSpan(pendingExpressionStatement!, context);
-                targetNode.Children.Add(pendingExpressionStatement!);
+                targetNode.Statements.Add(pendingExpressionStatement!);
                 pendingExpressionStatement = null;
                 return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
             }
@@ -383,7 +383,7 @@ namespace LatteCompiler
             // 带值 return：委托 ExpressionParserLayer
             // 注意：先把节点入列并置空 pendingReturn，Value Root 由表达式层直接填充
             var returnNode = pendingReturn!;
-            targetNode.Children.Add(returnNode);
+            targetNode.Statements.Add(returnNode);
             pendingReturn = null;
             returnNode.Value = new ExpressionRootASTNode(returnNode);
             pendingStatementEnd = returnNode;
@@ -395,7 +395,7 @@ namespace LatteCompiler
         private void CompleteReturn(ParserLayerContext context)
         {
             SealStatementSpan(pendingReturn!, context);
-            targetNode.Children.Add(pendingReturn!);
+            targetNode.Statements.Add(pendingReturn!);
             pendingReturn = null;
         }
 
@@ -477,7 +477,7 @@ namespace LatteCompiler
             // throw 必须跟一个表达式
             // 先把节点入列并置空 pendingThrow，Exception Root 由表达式层直接填充
             var throwNode = pendingThrow!;
-            targetNode.Children.Add(throwNode);
+            targetNode.Statements.Add(throwNode);
             pendingThrow = null;
             pendingStatementEnd = throwNode;
             state = State.StatementEnd;
@@ -492,7 +492,7 @@ namespace LatteCompiler
             if (currentToken is LineBreakToken)
             {
                 SealStatementSpan(pendingYield!, context);
-                targetNode.Children.Add(pendingYield!);
+                targetNode.Statements.Add(pendingYield!);
                 pendingYield = null;
                 state = State.StatementDispatch;
                 return ParserLayerResult.Continue.Instance;
@@ -502,7 +502,7 @@ namespace LatteCompiler
             if (currentToken is NotationToken nt && nt.Content == "}")
             {
                 SealStatementSpan(pendingYield!, context);
-                targetNode.Children.Add(pendingYield!);
+                targetNode.Statements.Add(pendingYield!);
                 pendingYield = null;
                 return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
             }
@@ -510,7 +510,7 @@ namespace LatteCompiler
             // 其他：带 alarm 表达式
             // 先把节点入列并置空 pendingYield，Alarm Root 由表达式层直接填充
             var yieldNode = pendingYield!;
-            targetNode.Children.Add(yieldNode);
+            targetNode.Statements.Add(yieldNode);
             pendingYield = null;
             yieldNode.Alarm = new ExpressionRootASTNode(yieldNode);
             pendingStatementEnd = yieldNode;
@@ -522,7 +522,7 @@ namespace LatteCompiler
         private void CompleteLoopControl(ParserLayerContext context)
         {
             SealStatementSpan(pendingLoopControl!, context);
-            targetNode.Children.Add(pendingLoopControl!);
+            targetNode.Statements.Add(pendingLoopControl!);
             pendingLoopControl = null;
         }
     }

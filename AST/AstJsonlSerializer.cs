@@ -13,7 +13,7 @@ namespace LatteCompiler
     /// {"id":1,"parent":null,"via":null,"type":"RootASTNode","span":{...},"fields":{...}}
     ///
     /// id 从 1 自增；parent 引用父节点 id（根为 null）；via 为挂载成员名
-    /// （如 "Left"、"Children[2]"、carrier 情形 "importedSymbols[0](ImportItem.symbolNode)"）。
+    /// （如 "Left"、"Statements[2]"、carrier 情形 "importedSymbols[0](ImportItem.symbolNode)"）。
     ///
     /// 子节点枚举走 ASTVisitor 的统一实现（[ChildAstNode] 反射下钻）。
     ///

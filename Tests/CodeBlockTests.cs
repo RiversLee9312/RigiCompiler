@@ -212,7 +212,7 @@ namespace LatteCompiler.Tests
         // 描述代码块：[stmt, stmt, ...]
         private static string DescribeBlock(CodeBlockASTNode block)
         {
-            return "[" + string.Join(", ", block.Children.Select(DescribeStatement)) + "]";
+            return "[" + string.Join(", ", block.Statements.Select(DescribeStatement)) + "]";
         }
 
         // 描述语句节点
@@ -247,7 +247,7 @@ namespace LatteCompiler.Tests
         }
 
         // 描述注解列表（@Name[(args)]，可叠加）
-        private static string DescribeAnnotations(ASTNode node)
+        private static string DescribeAnnotations(IWrapperAttachable node)
         {
             if (node.Annotations.Count == 0) return "";
             return string.Join(" ", node.Annotations.Select(DescribeAnnotation)) + " ";

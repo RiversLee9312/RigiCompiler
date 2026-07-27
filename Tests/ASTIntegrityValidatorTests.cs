@@ -30,13 +30,13 @@ namespace LatteCompiler.Tests
 
             // var x = 42
             var decl = new VariableDeclarationASTNode(root) { Name = "x" };
-            root.Children.Add(decl);
+            root.Declarations.Add(decl);
             decl.Initializer = new ExpressionRootASTNode(decl);
             decl.Initializer.Attach(MakeIntLiteral(42));
 
             // import core.collections.List（ImportItem carrier 场景）
             var import = new ImportASTNode(root);
-            root.Children.Add(import);
+            root.Declarations.Add(import);
             var pathSymbol = new SymbolASTNode(import);
             pathSymbol.symbol.elements.Add(new SymbolElement { name = "core" });
             pathSymbol.symbol.elements.Add(new SymbolElement { name = "collections" });
@@ -45,19 +45,19 @@ namespace LatteCompiler.Tests
 
             // @Logged var y（注解延迟一次性 AttachTo 挂接）
             var decl2 = new VariableDeclarationASTNode(root) { Name = "y" };
-            root.Children.Add(decl2);
+            root.Declarations.Add(decl2);
             var ann = new AnnotationASTNode(null);
             ann.AttachTo(decl2);
             decl2.Annotations.Add(ann);
 
             // func main() { foo()  for (i in 0 to 10) { } }
             var func = new CallableDeclarationASTNode(root) { Name = "main" };
-            root.Children.Add(func);
+            root.Declarations.Add(func);
             func.Body = new CodeBlockASTNode(func);
 
             // 表达式语句 foo()（ExpressionStatement 统一容器）
             var stmt = new ExpressionStatementASTNode(func.Body);
-            func.Body.Children.Add(stmt);
+            func.Body.Statements.Add(stmt);
             var call = new CallExpressionASTNode();
             stmt.Expression.Attach(call);
             var callee = new SymbolReferenceASTNode();
@@ -66,7 +66,7 @@ namespace LatteCompiler.Tests
 
             // 范围循环（Iterable 起点 + RangeTo 终点，无搬家）
             var loop = new LoopStatementASTNode(func.Body) { Kind = LoopKind.For, VariableName = "i" };
-            func.Body.Children.Add(loop);
+            func.Body.Statements.Add(loop);
             loop.Iterable = new ExpressionRootASTNode(loop);
             loop.Iterable.Attach(MakeIntLiteral(0));
             loop.RangeTo = new ExpressionRootASTNode(loop);
@@ -88,7 +88,7 @@ namespace LatteCompiler.Tests
             {
                 var root = new RootASTNode();
                 var decl = new VariableDeclarationASTNode(root) { Name = "x" };
-                root.Children.Add(decl);
+                root.Declarations.Add(decl);
                 decl.TypeAnnotation = new TypeReferenceASTNode(root);
                 StampSpans(root);
                 ASTIntegrityValidator.Validate(root);
@@ -99,7 +99,7 @@ namespace LatteCompiler.Tests
             {
                 var root = new RootASTNode();
                 var import = new ImportASTNode(root);
-                root.Children.Add(import);
+                root.Declarations.Add(import);
                 import.importedSymbols.Add(
                     new ImportItem { symbolNode = new SymbolASTNode(root) });
                 StampSpans(root);
@@ -111,7 +111,7 @@ namespace LatteCompiler.Tests
             {
                 var root = new RootASTNode();
                 var decl = new VariableDeclarationASTNode(root) { Name = "x" };
-                root.Children.Add(decl);
+                root.Declarations.Add(decl);
                 decl.Initializer = new ExpressionRootASTNode(decl);
                 StampSpans(root);
                 ASTIntegrityValidator.Validate(root);
@@ -122,8 +122,8 @@ namespace LatteCompiler.Tests
             {
                 var root = new RootASTNode();
                 var shared = new VariableDeclarationASTNode(root) { Name = "x" };
-                root.Children.Add(shared);
-                root.Children.Add(shared);
+                root.Declarations.Add(shared);
+                root.Declarations.Add(shared);
                 StampSpans(root);
                 ASTIntegrityValidator.Validate(root);
             });
@@ -143,7 +143,7 @@ namespace LatteCompiler.Tests
                 var root = new RootASTNode();
                 StampNode(root);
                 var decl = new VariableDeclarationASTNode(root) { Name = "x" };
-                root.Children.Add(decl);
+                root.Declarations.Add(decl);
                 ASTIntegrityValidator.Validate(root);
             });
 
@@ -152,7 +152,7 @@ namespace LatteCompiler.Tests
             {
                 var root = new RootASTNode();
                 var decl = new VariableDeclarationASTNode(root) { Name = "x" };
-                root.Children.Add(decl);
+                root.Declarations.Add(decl);
                 StampSpans(root);
                 decl.Span = new CharRange
                 {
@@ -168,7 +168,7 @@ namespace LatteCompiler.Tests
             {
                 var root = new RootASTNode();
                 var bad = new UnannotatedFieldNode(root);
-                root.Children.Add(bad);
+                root.Declarations.Add(bad);
                 StampSpans(root);
                 ASTIntegrityValidator.Validate(root);
             });
@@ -178,7 +178,7 @@ namespace LatteCompiler.Tests
             {
                 var root = new RootASTNode();
                 var bad = new UnannotatedPropertyNode(root);
-                root.Children.Add(bad);
+                root.Declarations.Add(bad);
                 StampSpans(root);
                 ASTIntegrityValidator.Validate(root);
             });
@@ -188,7 +188,7 @@ namespace LatteCompiler.Tests
             {
                 var root = new RootASTNode();
                 var bad = new MisannotatedNode(root);
-                root.Children.Add(bad);
+                root.Declarations.Add(bad);
                 StampSpans(root);
                 ASTIntegrityValidator.Validate(root);
             });

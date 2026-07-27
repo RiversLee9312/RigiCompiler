@@ -95,7 +95,7 @@ namespace LatteCompiler.Tests
             // 类字段（DeclarationParserLayer → VariableDeclarationParserLayer）
             TestNode(
                 "class Size { pub var width: i32 { get(value: _) { return value } priv set(value: _) { log(value) } } }",
-                root => root.Children[0].Children[0],
+                root => ((ClassDeclarationASTNode)root.Declarations[0]).Members[0],
                 "pub var width: i32 {get(value){}, priv set(value){}}");
 
             // 全局变量
@@ -106,7 +106,7 @@ namespace LatteCompiler.Tests
             // 栈上局部变量（函数体 CodeBlock → VariableDeclarationParserLayer）
             TestNode(
                 "func example() { var localCounter: i32 { get(value: _) { return value } set(value: _) { log(value) } } = 0 }",
-                root => ((CallableDeclarationASTNode)root.Children[0]).Body!.Children[0],
+                root => ((CallableDeclarationASTNode)root.Declarations[0]).Body!.Statements[0],
                 "var localCounter: i32 {get(value){}, set(value){}} = LiteralExpressionASTNode");
 
             Console.WriteLine();
@@ -144,7 +144,7 @@ namespace LatteCompiler.Tests
         // 解析完整源码并取根节点第一个子节点（顶层声明路径）
         private static void TestDeclaration(string source, string expected)
         {
-            TestNode(source, root => root.Children[0], expected);
+            TestNode(source, root => root.Declarations[0], expected);
         }
 
         private static void TestNode(string source, Func<RootASTNode, ASTNode> pick, string expected)

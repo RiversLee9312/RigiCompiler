@@ -43,7 +43,7 @@ namespace LatteCompiler
                         Keywords.DeclarationKeywords.Contains(token.Content))
                     {
                         return new ParserLayerResult.PushLayer(
-                                new DeclarationParserLayer(root),
+                                new DeclarationParserLayer(root, root.Declarations),
                                 TokenDisposition.Replay
                             );
                     }
@@ -51,7 +51,7 @@ namespace LatteCompiler
                     else if(token.Content == Keywords.IMPORT)
                     {
                         var importNode = new ImportASTNode(root);
-                        root.Children.Add(importNode);
+                        root.Declarations.Add(importNode);
                         return new ParserLayerResult.PushLayer(
                                 new ImportParserLayer(importNode),
                                 TokenDisposition.Replay
@@ -61,7 +61,7 @@ namespace LatteCompiler
                     else if(token.Content == Keywords.NAMESPACE)
                     {
                         var nsNode = new NamespaceDeclarationASTNode(root);
-                        root.Children.Add(nsNode);
+                        root.Declarations.Add(nsNode);
                         return new ParserLayerResult.PushLayer(
                                 new NamespaceParserLayer(nsNode),
                                 TokenDisposition.Replay
@@ -76,7 +76,7 @@ namespace LatteCompiler
                     if(token.Content == Notations.AT_SIGN.ToString())
                     {
                         return new ParserLayerResult.PushLayer(
-                                new DeclarationParserLayer(root),
+                                new DeclarationParserLayer(root, root.Declarations),
                                 TokenDisposition.Replay
                             );
                     }
@@ -97,7 +97,7 @@ namespace LatteCompiler
         private ParserLayerResult PushLiteral()
         {
             var literalExpr = new LiteralExpressionASTNode(root);
-            root.Children.Add(literalExpr);
+            root.Declarations.Add(literalExpr);
             return new ParserLayerResult.PushLayer(
                 new LiteralParserLayer(literalExpr),
                 TokenDisposition.Replay
