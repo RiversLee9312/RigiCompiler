@@ -143,137 +143,33 @@ namespace LatteCompiler
                 }
             }
         }
-        public enum PathType
-        {
-            ValuePath,
-            SymbolPath
-        }
-        private PathType pathType;
-        private readonly ASTNode self;  // 施工目标节点（保留构造函数的 self 引用，M28 用于回填 Span）
-        private SymbolASTNode? symbolNode;
-        private AcquisitionExpressionASTNode? acquisitionNode;
+        private readonly SymbolASTNode self;  // 施工目标节点（M28 用于回填 Span）
         private bool lineBreakSensitive;
-        public PathParserLayer(PathType pathType,ASTNode self,bool lineBreakSensitive)
+        private bool symbolParsed = false;
+
+        public PathParserLayer(SymbolASTNode self, bool lineBreakSensitive)
         {
             this.self = self;
-            this.pathType = pathType;
             this.lineBreakSensitive = lineBreakSensitive;
-            switch (pathType)
-            {
-                case PathType.ValuePath:
-                    if (self is not AcquisitionExpressionASTNode)
-                    {
-                        throw new ArgumentException(
-                            $"Wrong type of self node when creating {nameof(PathParserLayer)}:{self}");
-                    }
-                    acquisitionNode = self as AcquisitionExpressionASTNode;
-                    symbolNode = null;
-                    break;
-                case PathType.SymbolPath:
-                    if(self is not SymbolASTNode)
-                    {
-                        throw new ArgumentException(
-                            $"Wrong type of self node when creating {nameof(PathParserLayer)}:{self}");
-                    }
-                    symbolNode = self as SymbolASTNode;
-                    acquisitionNode = null;
-                    break;
-            }
         }
 
         // 层弹出时回填施工目标的源码范围（M28）
         public void ReceiveSpan(CharRange span) => self.Span ??= span;
 
-        private bool symbolParsed = false;
-        private enum AcqExprParseState
-        {
-            SourceNotStarted,
-            SourceNotFinished,
-            WrapperNotFinished
-        }
-        private AcqExprParseState acqExprState = AcqExprParseState.SourceNotStarted;
         public ParserLayerResult ParseToken(Token currentToken, ParserLayerContext context)
         {
-            if(pathType == PathType.SymbolPath)
+            // 符号路径整体委托 SymbolLayer 原地填充 self.symbol（Delegate, don't implement）；
+            // SymbolLayer 弹出后本层使命完成，随下一个 token 弹栈上交
+            if (symbolParsed)
             {
-                if (symbolNode == null) {
-                    throw context.RaiseError("Invalid parserLayer state,symbolNode is null");
-                }
-                if (symbolParsed)
-                {
-                    return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
-                }
-                else
-                {
-                    symbolParsed = true;
-                    return new ParserLayerResult.PushLayer(
-                            new SymbolLayer(symbolNode.symbol,lineBreakSensitive),
-                            TokenDisposition.Replay);
-                }
+                return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
             }
             else
             {
-                if (acquisitionNode == null)
-                {
-                    throw context.RaiseError("Invalid parserLayer state,symbolNode is null");
-                }
-                switch (acqExprState)
-                {
-                    case AcqExprParseState.SourceNotStarted:
-                        acquisitionNode.sourceSymbol = new(acquisitionNode);
-                        acqExprState = AcqExprParseState.SourceNotFinished;
-                        return new ParserLayerResult.PushLayer(
-                                new SymbolLayer(acquisitionNode.sourceSymbol.symbol, lineBreakSensitive),
-                                TokenDisposition.Replay);
-                    case AcqExprParseState.SourceNotFinished:
-                        switch (currentToken)
-                        {
-                            case NotationToken nt:
-                                if(nt.Content == Notations.COLON.ToString())
-                                {
-                                    acqExprState = AcqExprParseState.WrapperNotFinished;
-                                    var symbolNode = new SymbolASTNode(acquisitionNode);
-                                    acquisitionNode.wrapperSymbols.Add(symbolNode);
-                                    return new ParserLayerResult.PushLayer(
-                                            new SymbolLayer(symbolNode.symbol, lineBreakSensitive),
-                                            TokenDisposition.Consume
-                                        );
-                                }
-                                else
-                                {
-                                    return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
-                                }
-                            default:
-                                if (lineBreakSensitive)
-                                {
-                                    return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
-                                }
-                                else
-                                {
-                                    return ParserLayerResult.Continue.Instance;
-                                }
-                        }
-                    case AcqExprParseState.WrapperNotFinished:
-                        if((currentToken is NotationToken)&&(currentToken.Content == Notations.COLON.ToString()))
-                        {
-                            var symbolNode = new SymbolASTNode(acquisitionNode);
-                            acquisitionNode.wrapperSymbols.Add(symbolNode);
-                            return new ParserLayerResult.PushLayer(
-                                    new SymbolLayer(symbolNode.symbol, lineBreakSensitive),
-                                    TokenDisposition.Consume
-                                );
-                        }
-                        else if((!lineBreakSensitive)&&(currentToken is LineBreakToken))
-                        {
-                            return ParserLayerResult.Continue.Instance;
-                        }
-                        else
-                        {
-                            return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
-                        }
-                    default:
-                        throw context.RaiseError("Illegal acqExpr PathParserLayer state:"+acqExprState);
-                }
+                symbolParsed = true;
+                return new ParserLayerResult.PushLayer(
+                        new SymbolLayer(self.symbol, lineBreakSensitive),
+                        TokenDisposition.Replay);
             }
         }
     }

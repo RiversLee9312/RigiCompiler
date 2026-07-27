@@ -414,11 +414,7 @@ namespace LatteCompiler
             state = State.PrimaryParsed;
 
             return new ParserLayerResult.PushLayer(
-                new PathParserLayer(
-                    PathParserLayer.PathType.SymbolPath,
-                    symbolExpr.Symbol,
-                    lineBreakSensitive: true
-                ),
+                new PathParserLayer(symbolExpr.Symbol, lineBreakSensitive: true),
                 TokenDisposition.Replay  // 保留当前 token
             );
         }

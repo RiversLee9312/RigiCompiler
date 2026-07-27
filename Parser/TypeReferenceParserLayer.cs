@@ -59,11 +59,7 @@ namespace LatteCompiler
                 state = State.TypeNameSeen;
 
                 return new ParserLayerResult.PushLayer(
-                    new PathParserLayer(
-                        PathParserLayer.PathType.SymbolPath,
-                        targetNode.TypeSymbol,
-                        lineBreakSensitive: true
-                    ),
+                    new PathParserLayer(targetNode.TypeSymbol, lineBreakSensitive: true),
                     TokenDisposition.Replay
                 );
             }

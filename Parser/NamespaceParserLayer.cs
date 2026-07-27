@@ -51,8 +51,7 @@ namespace LatteCompiler
                             "Namespace declaration requires a namespace path (SYNTAX §15.1)");
                     state = State.AfterPath;
                     return new ParserLayerResult.PushLayer(
-                        new PathParserLayer(
-                            PathParserLayer.PathType.SymbolPath, self.Name, lineBreakSensitive: true), TokenDisposition.Replay);
+                        new PathParserLayer(self.Name, lineBreakSensitive: true), TokenDisposition.Replay);
 
                 case State.AfterPath:
                     if (t is LineBreakToken || t is EndOfFileToken)

@@ -18,8 +18,7 @@ namespace LatteCompiler
             Initial,            // 初始状态，等待第一个 token
             IntegerPart,        // 已读取整数部分
             DotSeen,            // 已看到小数点
-            FractionalPart,     // 已读取小数部分
-            Completed           // 解析完成
+            FractionalPart      // 已读取小数部分
         }
 
         private ParserState state = ParserState.Initial;

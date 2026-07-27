@@ -135,8 +135,7 @@ namespace LatteCompiler
                 state = State.AnnotationName;
                 // 注解名（可为 a.b 路径）复用 PathParserLayer
                 return new ParserLayerResult.PushLayer(
-                    new PathParserLayer(
-                        PathParserLayer.PathType.SymbolPath, ann.Name, lineBreakSensitive: true), TokenDisposition.Consume);
+                    new PathParserLayer(ann.Name, lineBreakSensitive: true), TokenDisposition.Consume);
             }
 
             if (t is WordToken w)

@@ -42,7 +42,6 @@ namespace LatteCompiler
 
         private State state = State.Initial;
         private PropertyAccessorASTNode? current;   // 正在解析的访问器
-        private string paramName = "";              // 当前访问器的参数名（value/_）
         // 带体访问器：CommitAccessor 时体尚未解析，暂存于此，待体子层弹栈后封 span 的 End（M28）
         private PropertyAccessorASTNode? pendingBodySeal = null;
 
@@ -156,7 +155,6 @@ namespace LatteCompiler
 
             if (currentToken is WordToken wt && (wt.Content == "value" || wt.Content == "_"))
             {
-                paramName = wt.Content;
                 current!.HasBackingField = wt.Content == "value";
                 state = State.ParamColon;
                 return ParserLayerResult.Continue.Instance;
@@ -267,7 +265,6 @@ namespace LatteCompiler
             }
 
             current = null;
-            paramName = "";
         }
 
         // 访问器 span 封 End（M28）：End = 最近被消费的 token

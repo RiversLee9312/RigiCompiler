@@ -82,8 +82,7 @@ namespace LatteCompiler
             pathSymbol = new SymbolASTNode(self);
             state = State.AfterPath;
             return new ParserLayerResult.PushLayer(
-                new PathParserLayer(
-                    PathParserLayer.PathType.SymbolPath, pathSymbol, lineBreakSensitive: true), TokenDisposition.Replay);
+                new PathParserLayer(pathSymbol, lineBreakSensitive: true), TokenDisposition.Replay);
         }
 
         // PathParserLayer 弹出后：清末尾空名元素（`.*` / `.{` 前的 . 残留，只清一次）

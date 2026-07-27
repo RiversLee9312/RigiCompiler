@@ -112,7 +112,7 @@ LatteCompiler/
 │   ├── Lexer.cs                 # Tokenize(TextReader/string) 入口
 │   └── LexerLayers.cs
 ├── Core/                     # 基础设施
-│   ├── Utilities.cs             # Token 定义（含 EndOfFileToken）、Keywords、Helper（打印工具）、
+│   ├── Utilities.cs             # Token 定义（含 EndOfFileToken）、Keywords、
 │   │                            #   以及部分未迁出的 AST 基类/节点（ASTNode、RootASTNode、
 │   │                            #   SymbolASTNode、ImportASTNode 等）
 │   ├── CommandLine.cs           # CLI 内核：CommandLineMask（选项自描述元数据）、数据驱动解析器、
@@ -319,8 +319,8 @@ dotnet run -- test --all    # 全量；或：dotnet run -- test --run 5（单个
 ## 7. 注意事项与已知限制
 
 - 项目已在 **Git 版本控制**下（`main` 分支）：执行 `git commit` 等变更操作前先获得用户确认；提交前确保 `dotnet build` 通过且 `dotnet run -- test --all` 无失败。
-- `Core/Utilities.cs` 里仍残留部分 AST 节点定义（`RootASTNode`、`SymbolASTNode`、`ImportASTNode`、`AcquisitionExpressionASTNode` 等），新增节点优先放到 `AST/` 目录对应文件。
-- 字符字面量（char literal）未实现，仅有占位。
+- `Core/Utilities.cs` 里仍残留部分 AST 节点定义（`RootASTNode`、`SymbolASTNode`、`ImportASTNode` 等），新增节点优先放到 `AST/` 目录对应文件。
+- 字符字面量（char literal）未实现。
 - Verbose 调试日志默认关闭，不再刷屏；需要时加 `--verbose` 子命令（控制台）或 `--log-to PATH`（全量 JSONL 落盘）。
 - 无安全敏感面：本项目是本地控制台工具，不处理网络、凭据或用户隐私数据。唯一文件操作是 `Program.cs` 读取用户指定路径的 `.latte` 文件。
 

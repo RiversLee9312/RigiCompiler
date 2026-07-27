@@ -350,7 +350,7 @@ Validator 与 Serializer 遍历统一为 ASTVisitor，Validator 新增 span 校�
 
 ## 6. 技术债务与已知限制
 
-1. 字符字面量未实现（占位符）
+1. 字符字面量未实现
 2. lambda 体与 if/switch 表达式分支体仍仅支持单表达式（CodeBlock 已落地，表达式分支的多语句接入留待后续）
 3. switch 仅表达式模式（SYNTAX 未定义语句形态）
 4. 复合赋值（`+=`/`-=` 等）未实现：Lexer 未合并这些 token，需重组机制
@@ -358,8 +358,7 @@ Validator 与 Serializer 遍历统一为 ASTVisitor，Validator 新增 span 校�
 6. method wrapper canonical 形态中的 `.name` 保留参数名（§14.4 示例 `operator .proxy.call(.name: String, ...)`）未支持
 7. import 的 `{}` 列表项仅支持单标识符（`import a.{b.c}` 未支持；规范无示例）
 8. namespace 的唯一性与位置约束（应在文件首部）未校验，留待语义阶段
-9. PathParserLayer 的 ValuePath / AcquisitionExpressionASTNode 为早期遗留模式（仅支持纯符号 base），与现有后缀链架构不兼容、未接入，待清理
-10. 编译 0 警告（大扫除消除了原 `Core/Utilities.cs` 的 nullable 警告）
+9. 编译 0 警告（大扫除消除了原 `Core/Utilities.cs` 的 nullable 警告）
 
 ---
 

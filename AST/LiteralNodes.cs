@@ -58,16 +58,6 @@ namespace LatteCompiler
         }
     }
 
-    // 字符字面量 AST 节点
-    public class CharLiteralASTNode : LiteralASTNode
-    {
-        public char Value;
-
-        public CharLiteralASTNode(ASTNode? parent) : base(parent)
-        {
-        }
-    }
-
     // 布尔字面量 AST 节点
     public class BoolLiteralASTNode : LiteralASTNode
     {

@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
-using System.Diagnostics.Metrics;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
@@ -36,10 +35,8 @@ namespace LatteCompiler
     public abstract class LexerLayerContext
     {
         public abstract void PushToken(Token token, bool includesCurrentChar);
-        public abstract CharPosition GetPosition();
         [DoesNotReturn]
         public abstract Exception RaiseError(string message);
-        public abstract void LogWarning(string message);
         public abstract List<Token> GetTokens();
         public abstract void Log(string message);
     }
@@ -78,10 +75,6 @@ namespace LatteCompiler
             public List<Token> tokens = new List<Token>();
             private CharPosition tokenHeadPosition = new CharPosition();
             private CharPosition lastPosition = new CharPosition();
-            public override CharPosition GetPosition()
-            {
-                return position;
-            }
 
             // 初始化位置（M28）：不走 position setter——tokenHeadPosition
             // 留给首个真实字符的位置，避免把 col 0 冻结成首个 token 的 Start
@@ -103,11 +96,6 @@ namespace LatteCompiler
                 Logger.Verbose("Lexer", $"[{sourceName}][Line {position.line} Col {position.column}]{message}");
             }
 
-            public override void LogWarning(string message)
-            {
-                Logger.Warning("Lexer", $"[{sourceName}][Line {position.line} Col {position.column}]{message}");
-            }
-
             public override void PushToken(Token token,bool includesCurrentChar)
             {
                 token.CharRange.Start = tokenHeadPosition;
@@ -127,7 +115,6 @@ namespace LatteCompiler
             string sourceName
             )
         {
-            //var result = new List<Token>();
             var content = await reader.ReadToEndAsync();
             content = content.ReplaceLineEndings("\n");
             var lexerLayers = new Stack<ILexerLayer>();
