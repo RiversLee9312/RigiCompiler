@@ -100,12 +100,39 @@ namespace LatteCompiler
         }
     }
     /// <summary>
+    /// 字符串转义表（单行/多行字符串共用，SYNTAX §3.3）：
+    /// \ 后的字符 → 实际字符；未知转义返回 false（由调用方带位置报错）。
+    /// </summary>
+    internal static class StringEscape
+    {
+        public static bool TryProcess(char currentChar, out char value)
+        {
+            switch (currentChar)
+            {
+                case Notations.DOLLAR_SYMBOL: value = Notations.DOLLAR_SYMBOL; return true;
+                case 'a': value = '\a'; return true;
+                case 'b': value = '\b'; return true;
+                case 't': value = '\t'; return true;
+                case 'n': value = '\n'; return true;
+                case 'v': value = '\v'; return true;
+                case 'f': value = '\f'; return true;
+                case 'r': value = '\r'; return true;
+                case Notations.SINGLE_QUOTATION_MARK: value = Notations.SINGLE_QUOTATION_MARK; return true;
+                case Notations.DOUBLE_QUOTATION_MARK: value = Notations.DOUBLE_QUOTATION_MARK; return true;
+                case Notations.BACK_SLASH: value = Notations.BACK_SLASH; return true;
+                default: value = '\0'; return false;
+            }
+        }
+    }
+    /// <summary>
     /// Tokenizes a string（双引号字符串；单引号字符字面量未实现，
     /// 由 BaseLexerLayer 直接报错）。
     /// </summary>
     public class StringLexerLayer : ILexerLayer
     {
         private bool backSlashAppeared = false;
+        // 前一个入内容的字符是未转义的 $（插值引导判定；\$ 转义产出的字面 $ 不算）
+        private bool dollarAppeared = false;
         private StringToken currentToken = new StringToken("");
         public LexerLayerResult ParseChar(char currentChar, LexerLayerContext context)
         {
@@ -113,44 +140,15 @@ namespace LatteCompiler
             if (backSlashAppeared)
             {
                 backSlashAppeared = false;
-                switch (currentChar)
+                // 转义产出的任何字符（含 $）都不参与插值引导
+                dollarAppeared = false;
+                if (StringEscape.TryProcess(currentChar, out char value))
                 {
-                    case Notations.DOLLAR_SYMBOL:
-                        currentToken.Content += Notations.DOLLAR_SYMBOL;
-                        break;
-                    case 'a':
-                        currentToken.Content += '\a';
-                        break;
-                    case 'b':
-                        currentToken.Content += '\b';
-                        break;
-                    case 't':
-                        currentToken.Content += '\t';
-                        break;
-                    case 'n':
-                        currentToken.Content += '\n';
-                        break;
-                    case 'v':
-                        currentToken.Content += '\v';
-                        break;
-                    case 'f':
-                        currentToken.Content += '\f';
-                        break;
-                    case 'r':
-                        currentToken.Content += '\r';
-                        break;
-                    case Notations.SINGLE_QUOTATION_MARK:
-                        currentToken.Content += Notations.SINGLE_QUOTATION_MARK;
-                        break;
-                    case Notations.DOUBLE_QUOTATION_MARK:
-                        currentToken.Content += Notations.DOUBLE_QUOTATION_MARK;
-                        break;
-                    case Notations.BACK_SLASH:
-                        currentToken.Content += Notations.BACK_SLASH;
-                        break;
-                    default:
-                        context.RaiseError($"Unknown escape sequence:\\{currentChar}");
-                        break;
+                    currentToken.Content += value;
+                }
+                else
+                {
+                    context.RaiseError($"Unknown escape sequence:\\{currentChar}");
                 }
                 return LexerLayerResult.Continue.Instance;
             }
@@ -160,6 +158,7 @@ namespace LatteCompiler
                 {
                     context.PushToken(currentToken, includesCurrentChar: true);
                     currentToken = new StringToken("");
+                    dollarAppeared = false;
                     return new LexerLayerResult.PopLayer(shouldKeepChar: false);
                 }
                 else if (currentChar == Notations.BACK_SLASH)
@@ -174,10 +173,185 @@ namespace LatteCompiler
                 }
                 else
                 {
+                    // 插值引导：未转义的 $ 后紧跟 {
+                    if (currentChar == '{' && dollarAppeared)
+                    {
+                        currentToken.HasInterpolation = true;
+                    }
+                    dollarAppeared = currentChar == Notations.DOLLAR_SYMBOL;
                     currentToken.Content += currentChar;
                     return LexerLayerResult.Continue.Instance;
                 }
             }
+        }
+    }
+    /// <summary>
+    /// 多行字符串层（""" 开界已由 QuoteLexerLayer 预消费，SYNTAX §3.3）：
+    /// 开界后必须紧跟换行（剥除）；闭界 """ 独占一行（其前仅空白，其缩进量 = 剥除基准）。
+    /// 两阶段施工：原文按行缓冲（反斜杠只用于让 \" 不参与引号计数，不展开转义），
+    /// 闭合时先剥缩进、再统一处理转义。
+    /// </summary>
+    public class MultilineStringLexerLayer : ILexerLayer
+    {
+        private enum State
+        {
+            OpeningNewline,  // 等待开界 """ 后的强制换行
+            Content          // 内容累积中
+        }
+
+        private State state = State.OpeningNewline;
+        // 已完成的内容行（原文，未剥缩进未转义）；行间换行在闭合拼装时补回
+        private readonly List<string> lines = new List<string>();
+        private readonly StringBuilder currentLine = new StringBuilder();
+        private int quoteRun = 0;     // 挂起的连续引号数（<3 时归属未定，暂不入行）
+        private bool escaped = false; // 前一字符是反斜杠（其后的 " 不参与终止判定）
+        // 插值判定（转义后处理期间进行）：未转义的 $ 后紧跟 {；\$ 转义产出的
+        // 字面 $ 不算。${ 必须同行相邻——行间有 \n 分隔，dollarSeen 按行重置
+        private bool hasInterpolation = false;
+        private bool dollarSeen = false;
+
+        public LexerLayerResult ParseChar(char currentChar, LexerLayerContext context)
+        {
+            // 开界后的强制换行：不属于内容（SYNTAX §3.3）
+            if (state == State.OpeningNewline)
+            {
+                if (currentChar != '\n')
+                {
+                    throw context.RaiseError(
+                        "Multi-line string literal must begin with a newline " +
+                        "(content on the opening \"\"\" line is not allowed)");
+                }
+                state = State.Content;
+                return LexerLayerResult.Continue.Instance;
+            }
+
+            if (escaped)
+            {
+                escaped = false;
+                // 反斜杠后紧跟真实换行：转义表不含此项，立即报错（不支持行接续）
+                if (currentChar == '\n')
+                {
+                    throw context.RaiseError("Unexpected line break after \\ in multi-line string literal");
+                }
+                currentLine.Append(currentChar);
+                return LexerLayerResult.Continue.Instance;
+            }
+            if (currentChar == Notations.BACK_SLASH)
+            {
+                currentLine.Append(currentChar);
+                escaped = true;
+                return LexerLayerResult.Continue.Instance;
+            }
+            if (currentChar == Notations.DOUBLE_QUOTATION_MARK)
+            {
+                quoteRun++;
+                if (quoteRun == 3)
+                {
+                    // """ 终止判定：闭界必须独占一行（行前缀全为空白）
+                    return Close(context);
+                }
+                return LexerLayerResult.Continue.Instance;
+            }
+            if (currentChar == '\n')
+            {
+                FlushQuoteRun();
+                lines.Add(currentLine.ToString());
+                currentLine.Clear();
+                return LexerLayerResult.Continue.Instance;
+            }
+            FlushQuoteRun();
+            currentLine.Append(currentChar);
+            return LexerLayerResult.Continue.Instance;
+        }
+
+        // 挂起的引号确认属于内容（遇到非引号字符 / 行尾）
+        private void FlushQuoteRun()
+        {
+            currentLine.Append(Notations.DOUBLE_QUOTATION_MARK, quoteRun);
+            quoteRun = 0;
+        }
+
+        // 闭合：校验闭界行前缀 → 逐行剥缩进 + 转义 → 拼装产出 StringToken
+        private LexerLayerResult Close(LexerLayerContext context)
+        {
+            string indent = currentLine.ToString();
+            if (indent.Any(c => !Char.IsWhiteSpace(c)))
+            {
+                throw context.RaiseError(
+                    "The closing \"\"\" of a multi-line string literal must be on its own line " +
+                    "(to include \"\"\" in content, escape it as \\\"\"\")");
+            }
+
+            var content = new StringBuilder();
+            for (int i = 0; i < lines.Count; i++)
+            {
+                if (i > 0)
+                {
+                    content.Append('\n');
+                }
+                content.Append(ProcessLine(lines[i], indent.Length, i, context));
+            }
+
+            var token = new StringToken(content.ToString()) { HasInterpolation = hasInterpolation };
+            context.PushToken(token, includesCurrentChar: true);
+            return new LexerLayerResult.PopLayer(shouldKeepChar: false);
+        }
+
+        // 单行加工：先按闭界缩进剥除（全空白行输出空行），再统一处理转义
+        private string ProcessLine(string rawLine, int indent, int lineIndex, LexerLayerContext context)
+        {
+            string stripped;
+            if (string.IsNullOrWhiteSpace(rawLine))
+            {
+                stripped = "";
+            }
+            else
+            {
+                if (rawLine.Length < indent || rawLine.Take(indent).Any(c => !Char.IsWhiteSpace(c)))
+                {
+                    throw context.RaiseError(
+                        $"Line {lineIndex + 1} of multi-line string literal is less indented " +
+                        "than the closing delimiter");
+                }
+                stripped = rawLine.Substring(indent);
+            }
+
+            // 转义后处理（剥除缩进先于转义，SYNTAX §3.3）；原文中的 \ 必有后继字符
+            // （\ 后紧跟真实换行在累积阶段已报错），此处无需处理行尾孤反斜杠
+            var sb = new StringBuilder(stripped.Length);
+            bool esc = false;
+            dollarSeen = false;
+            foreach (char c in stripped)
+            {
+                if (esc)
+                {
+                    esc = false;
+                    // 转义产出的任何字符（含 $）都不参与插值引导
+                    dollarSeen = false;
+                    if (StringEscape.TryProcess(c, out char value))
+                    {
+                        sb.Append(value);
+                    }
+                    else
+                    {
+                        context.RaiseError($"Unknown escape sequence:\\{c}");
+                    }
+                }
+                else if (c == Notations.BACK_SLASH)
+                {
+                    esc = true;
+                }
+                else
+                {
+                    if (c == '{' && dollarSeen)
+                    {
+                        hasInterpolation = true;
+                    }
+                    dollarSeen = c == Notations.DOLLAR_SYMBOL;
+                    sb.Append(c);
+                }
+            }
+            return sb.ToString();
         }
     }
     public class NotationLexerLayer : ILexerLayer
@@ -283,6 +457,71 @@ namespace LatteCompiler
         }
     }
 
+    /// <summary>
+    /// 引号分流层：单行字符串 "..."、空字符串 ""、多行字符串 """ 的统一入口。
+    /// Base 层看到 " 即推入本层（首个 " 已预消费），本层按随后字符决定形态；
+    /// 字符串形态转发给持有的字符串层实例（Delegate, don't implement，
+    /// 与 SlashLexerLayer 同模式），字符串层弹出时本层一并弹出。
+    /// </summary>
+    public class QuoteLexerLayer : ILexerLayer
+    {
+        private enum State
+        {
+            Decision,    // 等待第二字符：" → 可能是多行；其他 → 单行字符串
+            AwaitThird,  // 已见 ""：第三字符是 " → 多行字符串；否则 → 空字符串 ""
+            Forward      // 形态已定：转发给持有的字符串层
+        }
+
+        private State state = State.Decision;
+        private ILexerLayer? stringLayer = null;
+
+        // 未闭合错误的用户可读描述（Lexer 冲刷后的栈检查用）
+        public string UnterminatedDescription =>
+            stringLayer is MultilineStringLexerLayer ? "multi-line string literal" : "string literal";
+
+        public LexerLayerResult ParseChar(char currentChar, LexerLayerContext context)
+        {
+            switch (state)
+            {
+                case State.Decision:
+                    if (currentChar == Notations.DOUBLE_QUOTATION_MARK)
+                    {
+                        state = State.AwaitThird;
+                        return LexerLayerResult.Continue.Instance;
+                    }
+                    stringLayer = new StringLexerLayer();
+                    state = State.Forward;
+                    return Forward(currentChar, context);
+
+                case State.AwaitThird:
+                    if (currentChar == Notations.DOUBLE_QUOTATION_MARK)
+                    {
+                        // 多行开界 """：第三个引号消费掉，内容从下一字符开始
+                        stringLayer = new MultilineStringLexerLayer();
+                        state = State.Forward;
+                        return LexerLayerResult.Continue.Instance;
+                    }
+                    // 只是空字符串 ""：当前字符回流给下层重新分发
+                    context.PushToken(new StringToken(""), includesCurrentChar: false);
+                    return new LexerLayerResult.PopLayer(shouldKeepChar: true);
+
+                default:
+                    return Forward(currentChar, context);
+            }
+        }
+
+        // 转发给持有的字符串层；字符串层弹出时本层同步弹出
+        private LexerLayerResult Forward(char currentChar, LexerLayerContext context)
+        {
+            var result = stringLayer!.ParseChar(currentChar, context);
+            if (result is LexerLayerResult.PopLayer pop)
+            {
+                return new LexerLayerResult.PopLayer(pop.shouldKeepChar);
+            }
+            return result;
+        }
+    }
+
     public class BaseLexerLayer : ILexerLayer
     {
         public LexerLayerResult ParseChar(char currentChar, LexerLayerContext context)
@@ -302,8 +541,9 @@ namespace LatteCompiler
             }
             else if (currentChar == Notations.DOUBLE_QUOTATION_MARK)
             {
+                // 引号家族（"..."、""、"""）：委托 QuoteLexerLayer 分流（首个 " 预消费）
                 return new LexerLayerResult.PushLayer(
-                    layerToPush: new StringLexerLayer(),
+                    layerToPush: new QuoteLexerLayer(),
                     shouldKeepChar: false
                 );
             }

@@ -56,6 +56,10 @@ namespace LatteCompiler
         }
         public override string Content { get; set; }
 
+        // 是否包含未转义的 ${ 插值引导（词法期随转义处理判定；
+        // \$ 转义产出的字面 $ 不算——转义信息在 Content 拼装后已丢失，无法在 Parser 侧回补）
+        public bool HasInterpolation;
+
         public override TokenType Type { get; } = TokenType.String;
     }
 

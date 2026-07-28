@@ -104,6 +104,8 @@ namespace LatteCompiler.Tests
 
             TestLit("\"Hello\"", "Str(\"Hello\")");
             TestLit("\"World ${x}\"", "Str(\"World ${x}\",interp)");
+            // \$ 转义的字面 $ 不构成插值引导（词法期判定，M32）
+            TestLit("\"World \\${x}\"", "Str(\"World ${x}\")");
 
             TestHarness.Blank();
         }

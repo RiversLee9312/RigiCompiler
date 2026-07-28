@@ -41,6 +41,7 @@ namespace LatteCompiler.Tests
             ("CommandLineParser", CommandLineParserTests.RunAll),
             ("Path", PathParserLayerTests.RunAll),
             ("ArgumentList", ArgumentListParserLayerTests.RunAll),
+            ("MultilineString", MultilineStringTests.RunAll),
         };
 
         // 套件数量（对外编号 1..SuiteCount，即注册表顺序）

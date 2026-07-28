@@ -5,7 +5,7 @@
 
 **项目名**: LatteCompiler
 **语言**: C#（.NET 8.0，控制台程序，`Nullable` 与 `ImplicitUsings` 已启用）
-**开发阶段**: 早期 —— 编译器前端（Lexer + Parser）已完成（roadmap P0–P5 全部落地），Parser/PDA 大扫除（架构重构）、AST 结构标注（M24）、Lexer 修复（M25）、日志系统 + AST JSONL 序列化（M26）、CLI 插件化（M27）、Lexer 位置修复 + AST Source Span + ASTVisitor 统一遍历（M28）、AST 容器重构（M29）、Utilities.cs 拆分 + ASTVisitor 遍历可重载 + 文档幽灵清理（M30）与前端大修（M31：Span 左闭右开、Lexer 块注释重写、续行规则、位运算符、0b/0o/下划线字面量、Keywords 大扫除、JSONL v2 + 反序列化器、测试基建统一）已完成；下一阶段：语义分析、BIL 输出
+**开发阶段**: 早期 —— 编译器前端（Lexer + Parser）已完成（roadmap P0–P5 全部落地），Parser/PDA 大扫除（架构重构）、AST 结构标注（M24）、Lexer 修复（M25）、日志系统 + AST JSONL 序列化（M26）、CLI 插件化（M27）、Lexer 位置修复 + AST Source Span + ASTVisitor 统一遍历（M28）、AST 容器重构（M29）、Utilities.cs 拆分 + ASTVisitor 遍历可重载 + 文档幽灵清理（M30）、前端大修（M31：Span 左闭右开、Lexer 块注释重写、续行规则、位运算符、0b/0o/下划线字面量、Keywords 大扫除、JSONL v2 + 反序列化器、测试基建统一）与多行字符串（M32：SYNTAX §3.3 定稿 Swift 风格严格多行，QuoteLexerLayer 引号分流 + MultilineStringLexerLayer）已完成；下一阶段：语义分析、BIL 输出
 **版本控制**: Git（`main` 分支，2026-07-17 首次提交，工作树干净；CI 见 `.github/workflows/ci.yml`）
 
 ---
@@ -283,7 +283,9 @@ Lexer 只做简单字符识别，不理解语义。例如 `3.14` 会输出三个
 - 块注释不吞字符、不吞换行（M31：按行分段，换行以 LineBreakToken 入流）；
   行尾归一只把 `\r\n`/`\r` 归一为 `\n`；
 - 复合赋值（`+=`/`*=` 等）不合并 token（与 `>=` 同策略，Parser 将来重组）；
-  字符字面量 `'` 明确报错（未实现）；多行字符串 `"""` 未实现。
+  字符字面量 `'` 明确报错（未实现）；多行字符串 `"""` 已实现（M32，SYNTAX §3.3：
+  Swift 风格严格多行，QuoteLexerLayer 分流 `"`/`""`/`"""`，转义表 StringEscape 单源，
+  插值标记词法期判定——`\$` 转义的字面 `$` 不构成插值引导）。
 
 ---
 

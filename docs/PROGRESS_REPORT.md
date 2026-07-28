@@ -47,6 +47,7 @@
 | M29 | AST 容器重构：基类共有 `Children`/`Annotations` 删除；语义字段（`Declarations`/`Statements`/`Members`）+ wrapper 挂载接口（`IWrapperAttachable` + Entity/Method/Value 三分类） | ✅ | 2026-07-27 | 27 套件全绿（用例无增删）+ fuzz 6000 |
 | M30 | `Core/Utilities.cs` 拆分（Token/Keywords/异常/AST 基类归位 7 文件）+ ASTVisitor 遍历可重载（VisitNode/EnumerateChildren virtual）+ 文档幽灵清理（FRONTEND_TYPES 修订、FRONTEND_ARCHITECTURE 删除、ROADMAP 头注） | ✅ | 2026-07-27 | 27 套件全绿（用例无增删）+ fuzz 6000 |
 | M31 | 前端大修：全量 review 驱动的 40+ 项修复（Span 左闭右开、Lexer 块注释重写、续行规则、位运算符、0b/0o/下划线字面量、Keywords 大扫除、修饰符/标识符校验、JSONL v2 + 反序列化器、测试基建统一） | ✅ | 2026-07-28 | 746/746 + fuzz 6000（29 套件） |
+| M32 | 多行字符串 `"""`：SYNTAX §3.3 规范定稿（Swift 风格严格多行）+ QuoteLexerLayer 引号分流 + MultilineStringLexerLayer 两阶段施工 + 转义表单源化 + 插值标记词法期判定（`\${` 误报修复；Parser/AST 经 StringToken 复用近零改动） | ✅ | 2026-07-28 | 790/790 + fuzz 6000（30 套件） |
 
 ---
 
@@ -54,7 +55,7 @@
 
 ```latte
 // 字面量
-42, 0xFF, 100L, 3.14, 0.1f, "Hello ${x}", true, null
+42, 0xFF, 100L, 3.14, 0.1f, "Hello ${x}", """多行字符串""", true, null
 
 // 类型引用（含 \< 泛型、嵌套、可空）
 i32, String?, List\<T>, Map\<K,V>, List\<Map\<String, i32>>?
@@ -266,7 +267,8 @@ pub class Point {
 
 | 组件 | 状态 | 测试 | 说明 |
 |------|------|------|------|
-| LiteralParserLayer | ✅ | 34/34 | 全部字面量（M31：0b/0o/下划线补齐，`3.` 报错）；字符字面量 Lexer 明确报错、多行字符串未实现 |
+| LiteralParserLayer | ✅ | 34/34 | 全部字面量（M31：0b/0o/下划线补齐，`3.` 报错）；字符字面量 Lexer 明确报错；多行字符串经 StringToken 复用零改动接入（M32） |
+| MultilineStringLexerLayer（+ QuoteLexerLayer 分流） | ✅ | 43/43（M32 新套件） | SYNTAX §3.3 Swift 风格严格多行：开界换行剥除、闭界独占行定缩进基准、转义与单行一致（StringEscape 单源）、两阶段施工（按行缓冲 + 闭界时剥缩进/转义）、插值标记词法期判定（`\${` 不误报） |
 | TypeReferenceParserLayer | ✅ | 17/17 | M31 重写为真实套件（独立层驱动 + 集成 + 结构断言） |
 | VariableDeclarationParserLayer | ✅ | 17/17 | Initializer 经 ExpressionRootASTNode 直挂；访问器块委托 PropertyAccessorParserLayer（M16）；M31 保留字/标识符校验 |
 | ExpressionParserLayer | ✅ | 106/106 | roadmap #4 全部落地；前导点 enum case（M20）、wrapper 路径访问 `:`（M21）；M31：位运算符 `<<`/`&`/`\|`/`^`、`in` 移除、insideParens 续行、复合赋值明确报错、span 含关键字 |
@@ -375,6 +377,14 @@ Lexer 块注释重写（吞字符修复 + 换行不吞）、续行规则、位�
 完整反序列化器往返无损、Validator Required 子节点与基类链审计、
 Logger 改走 stderr。详见「里程碑历史」M31 段落。
 
+**多行字符串（M32）已完成**：SYNTAX §3.3 多行字符串规范定稿
+（Swift 风格严格多行：开界 `"""` 后换行剥除、闭界独占一行且其缩进为剥除基准、
+转义与单行一致），Lexer 新增 `QuoteLexerLayer` 引号分流（`"`/`""`/`"""` 统一入口，
+与 `SlashLexerLayer` 同模式）与 `MultilineStringLexerLayer` 两阶段施工
+（原文按行缓冲，闭合时先剥缩进再统一转义），转义表收编为 `StringEscape` 单源；
+插值标记改词法期判定（`StringToken.HasInterpolation`，修复 `\${` 误报）；
+Parser/AST 经 `StringToken` 复用近零改动。
+
 **下一阶段**：语义分析、BIL 输出（见 `../BIL_STANDARD.md`）
 
 ---
@@ -389,14 +399,45 @@ Logger 改走 stderr。详见「里程碑历史」M31 段落。
 6. method wrapper canonical 形态中的 `.name` 保留参数名（§14.4 示例 `operator .proxy.call(.name: String, ...)`）未支持
 7. import 的 `{}` 列表项仅支持单标识符（`import a.{b.c}` 未支持；规范无示例）
 8. namespace 的唯一性与位置约束（应在文件首部）未校验，留待语义阶段
-9. 多行字符串 `"""` 未实现（SYNTAX §3.3 仅列示例，缩进/转义/插值语义未定义——不猜测规范）
-10. 实参位置的 `a.b` 存在 MemberAccess/Symbol 双形态（具名判别 seed 路径与其他位置 AST 形状不同，语义分析需双路径处理；统一留待语义阶段）
-11. `3.`/`3.foo` 在 M31 起为编译错误（点后缺数字；`3.foo` 形态规范未定义，需要成员访问时请写 `(3).foo`）
-12. 编译 0 警告（大扫除消除了原 `Core/Utilities.cs` 的 nullable 警告）
+9. 实参位置的 `a.b` 存在 MemberAccess/Symbol 双形态（具名判别 seed 路径与其他位置 AST 形状不同，语义分析需双路径处理；统一留待语义阶段）
+10. `3.`/`3.foo` 在 M31 起为编译错误（点后缺数字；`3.foo` 形态规范未定义，需要成员访问时请写 `(3).foo`）
+11. 编译 0 警告（大扫除消除了原 `Core/Utilities.cs` 的 nullable 警告）
 
 ---
 
 ## 7. 里程碑历史
+
+### 2026-07-28 · M32 多行字符串 `"""`：规范定稿 + 全栈落地
+
+> 技术债清理：SYNTAX §3.3 的多行字符串从「仅列示例」到规范定稿 + 实现。
+> 规范语义经语言设计者确认（此前按「不猜测规范」原则挂起，见 M31 记录）。
+
+- **规范定稿（SYNTAX §3.3）**：Swift 风格严格多行——开界 `"""` 后必须紧跟换行
+  （剥除，同行写内容即编译错误）；闭界 `"""` 必须独占一行（其前仅空白，
+  闭界前换行不属于内容）；闭界行缩进量 = 剥除基准，内容行前导空白不足即
+  编译错误，全空白内容行输出空行；转义与单行同一套（剥除先于转义），
+  行内 `"`/`""` 免转义，内容中的 `"""` 须写 `\"""`（闭界出现在内容行中间
+  即编译错误）；内容换行恒为 `\n`（行尾归一在词法入口完成）；
+  `${}` 插值与单行一致
+- **Lexer 引号分流**：新增 `QuoteLexerLayer`——`"` 家族统一入口
+  （与 `SlashLexerLayer` 同模式：按第二/三字符分流单行串 / 空串 `""` /
+  多行 `"""`，字符串层以持有实例转发、同步弹出）；
+  `BaseLexerLayer` 不再直推 `StringLexerLayer`
+- **`MultilineStringLexerLayer` 两阶段施工**：原文按行缓冲（反斜杠只用于让
+  `\"` 不参与引号计数，不展开转义），闭合时先剥缩进、再统一处理转义；
+  反斜杠后紧跟真实换行立即报错（不支持行接续）；未闭合报
+  "Unterminated multi-line string literal"（冲刷帧栈检查，单行串行为不变）
+- **转义表单源化**：`StringEscape.TryProcess` 静态表供单行/多行共用，
+  `StringLexerLayer` 内联 switch 收编
+- **Parser/AST 近零改动**：多行字符串产出复用 `StringToken`，
+  `StringLiteralASTNode`/JSONL 序列化路径完全不动
+- **插值标记词法期判定（顺带修复）**：`StringToken.HasInterpolation` 由字符串层
+  在转义处理时判定（未转义的 `$` 后紧跟 `{` 才算；`\$` 转义的字面 `$` 不构成
+  插值引导，多行内 `${` 须同行相邻），`LiteralParserLayer` 不再用
+  `Content.Contains("${")` 猜测——修复 `\${` 误报插值（单行串既有 bug，
+  转义信息在 Content 拼装后已丢失，Parser 侧无法回补）
+- **测试**：790/790 + fuzz 6000（30 套件；新增 MultilineString 套件 43 例：
+  内容拼装 / 错误路径 / 引号分流回归 / token span / 插值标记 / AST 六组）
 
 ### 2026-07-28 · M31 前端大修：全量 review 驱动的 40+ 项修复
 

@@ -245,7 +245,7 @@ namespace LatteCompiler
                 // 错误信息面向用户：不暴露内部层类名
                 var what = lexerLayers.Peek() switch
                 {
-                    StringLexerLayer => "Unterminated string literal",
+                    QuoteLexerLayer q => $"Unterminated {q.UnterminatedDescription}",
                     SlashLexerLayer => "Unterminated block comment",
                     var top => $"Unterminated {top.GetType().Name}"
                 };

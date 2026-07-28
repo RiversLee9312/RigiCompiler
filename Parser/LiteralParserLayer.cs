@@ -237,13 +237,11 @@ namespace LatteCompiler
         // 解析字符串字面量
         private StringLiteralASTNode ParseStringLiteral(StringToken str)
         {
-            string content = str.Content;
-            bool hasInterpolation = content.Contains("${");
-
+            // 插值标记以词法期判定为准（\$ 转义产出的字面 $ 不构成插值引导）
             return new StringLiteralASTNode(targetNode)
             {
-                Value = content,
-                HasInterpolation = hasInterpolation
+                Value = str.Content,
+                HasInterpolation = str.HasInterpolation
             };
         }
 
