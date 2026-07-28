@@ -13,7 +13,9 @@ namespace LatteCompiler.Tests
     // 5. 混合与空列表
     // 6. 括号内续行（§1.1，M31）
     // 7. init 参数映射（§9.3，allowMapping，含跨行）
-    // 8. 错误用例：缺类型标注、缺类型、点数不足、缺默认值、named 无 ...（M31）
+    // 8. 保留参数名（§14.4，method wrapper canonical）：.name 前导点原样入 Name
+    // 9. 错误用例：缺类型标注、缺类型、点数不足、缺默认值、named 无 ...（M31）、
+    //    保留参数名非标识符/裸 .
     public class ParameterListTests
     {
         // ===== 1. 普通参数 =====
@@ -110,6 +112,30 @@ namespace LatteCompiler.Tests
             TestHarness.CheckParseError("func f(options: named String)",
                 () => TestHarness.ParseRoot("func f(options: named String)"),
                 "'named' variadic parameter requires '...'");
+            // 保留参数名（§14.4）：. 后必须是合法标识符
+            TestHarness.CheckParseError("(.123: i32)（保留参数名不是标识符）",
+                () => ParseParameterList("(.123: i32)"),
+                "Expected identifier after '.' in reserved parameter name");
+            TestHarness.CheckParseError("(.: i32)（裸 . 无标识符）",
+                () => ParseParameterList("(.: i32)"),
+                "Expected identifier after '.' in reserved parameter name");
+
+            TestHarness.Blank();
+        }
+
+        // ===== 8. 保留参数名（SYNTAX §14.4，method wrapper canonical 形态）=====
+        public static void TestReservedParameterNames()
+        {
+            TestHarness.Section("Testing Reserved Parameter Names (.name)");
+
+            // 正例：.name 前导点原样入 Name（描述串 + 结构断言双验证）
+            var node = ParseParameterList("(.name: String)");
+            TestHarness.Check("(.name: String)", AstDescribe.Params(node), "[.name: String]");
+            TestHarness.CheckTrue("(.name: String) => Name 保留前导点",
+                node.Parameters.Count == 1 && node.Parameters[0].Name == ".name",
+                $"Name = {(node.Parameters.Count == 1 ? node.Parameters[0].Name : "<无参数>")}");
+            // 与普通参数、具名可变参数混排（SYNTAX §14.4 的 canonical 示例形状）
+            TestParse("(.name: String, args: named Any...)", "[.name: String, args: named Any...]");
 
             TestHarness.Blank();
         }
@@ -151,6 +177,7 @@ namespace LatteCompiler.Tests
             TestLineContinuation();
             TestInitParameterMapping();
             TestErrorCases();
+            TestReservedParameterNames();
 
             return TestHarness.Summary("ParameterList");
         }

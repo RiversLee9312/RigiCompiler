@@ -203,7 +203,7 @@ var result = seq {
     var product = sum1 * diff
     var sum2 = e + f
     var denominator = sum2 - g
-    return@seq product / denominator
+    return@_ product / denominator
 }
 ```
 

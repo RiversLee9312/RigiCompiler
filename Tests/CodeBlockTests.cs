@@ -72,9 +72,9 @@ namespace LatteCompiler.Tests
             TestBlock("{ return }", "[Return]");
             TestBlock("{ return 42 }", "[Return(Int(42,I32))]");
             TestBlock("{\n    return x\n}", "[Return(Sym(x))]");
-            // @标签（SYNTAX §6.1 seq 默认标签）
-            TestBlock("{ return@seq (x * 2) }",
-                "[Return@seq(Group(Binary(Sym(x) * Int(2,I32))))]");
+            // @标签（SYNTAX §6.1：匿名值块的默认标签是 _）
+            TestBlock("{ return@_ (x * 2) }",
+                "[Return@_(Group(Binary(Sym(x) * Int(2,I32))))]");
 
             TestHarness.Blank();
         }

@@ -6,8 +6,8 @@
 > 计划与分工见 `compiler/frontend/PARSER_ROADMAP.md`；本文档只记录「现状」。
 
 **报告日期**: 2026-07-28
-**当前阶段**: Parser/PDA 大扫除（架构重构）完成（M23）；AST 结构标注与 Validator 重写完成（M24）；Lexer 修复（除法/EOF/注释）与 fuzz 基建完成（M25）；日志系统与 AST JSONL 序列化完成（M26）；CLI 插件化重构（help/compile/test）完成（M27）；Lexer 位置修复 + AST Source Span + ASTVisitor 统一遍历完成（M28）；AST 容器重构（基类共有 Children/Annotations 删除，语义字段 + wrapper 挂载接口）完成（M29）；Utilities.cs 拆分 + ASTVisitor 遍历可重载 + 文档幽灵清理完成（M30）；**前端大修（M31）完成：全量 review 驱动的 40+ 项修复——Span 左闭右开统一、Lexer 块注释重写、续行规则、位运算符、0b/0o/下划线字面量、Keywords 大扫除与修饰符/标识符校验、JSONL v2（carrier 记录化）+ 完整反序列化器往返无损、测试基建统一（AstDescribe/TestHarness）**；**下一步**：语义分析、BIL 输出
-**测试总计**: 746/746 通过 (100%) + Lexer fuzz 6000/6000（29 个套件，`dotnet run -- test --all` 单命令全量）
+**当前阶段**: Parser/PDA 大扫除（架构重构）完成（M23）；AST 结构标注与 Validator 重写完成（M24）；Lexer 修复（除法/EOF/注释）与 fuzz 基建完成（M25）；日志系统与 AST JSONL 序列化完成（M26）；CLI 插件化重构（help/compile/test）完成（M27）；Lexer 位置修复 + AST Source Span + ASTVisitor 统一遍历完成（M28）；AST 容器重构（基类共有 Children/Annotations 删除，语义字段 + wrapper 挂载接口）完成（M29）；Utilities.cs 拆分 + ASTVisitor 遍历可重载 + 文档幽灵清理完成（M30）；前端大修（M31）完成；多行字符串（M32）完成；值块统一（M33：if/switch 表达式分支体与 lambda 体统一为代码块、switch 语句形态、lambda 裸 return 编译错误、seq 默认标签迁移 `_`）完成；**技术债清扫（M34）完成：字符字面量（CharLexerLayer + CharToken + CharLiteralASTNode）、复合赋值 10 运算符（CompoundAssignmentExpressionASTNode）、`is` 右侧 enum case（TypeCheck 双字段互斥）、wrapper `.name` 保留参数名、import `{}` 单标识符禁令规则化报错**；**下一步**：语义分析、BIL 输出
+**测试总计**: 895/895 通过 (100%) + Lexer fuzz 6000/6000（30 个套件，`dotnet run -- test --all` 单命令全量）
 **版本控制**: Git `main` 分支（2026-07-17 首次提交）
 
 ---
@@ -48,6 +48,8 @@
 | M30 | `Core/Utilities.cs` 拆分（Token/Keywords/异常/AST 基类归位 7 文件）+ ASTVisitor 遍历可重载（VisitNode/EnumerateChildren virtual）+ 文档幽灵清理（FRONTEND_TYPES 修订、FRONTEND_ARCHITECTURE 删除、ROADMAP 头注） | ✅ | 2026-07-27 | 27 套件全绿（用例无增删）+ fuzz 6000 |
 | M31 | 前端大修：全量 review 驱动的 40+ 项修复（Span 左闭右开、Lexer 块注释重写、续行规则、位运算符、0b/0o/下划线字面量、Keywords 大扫除、修饰符/标识符校验、JSONL v2 + 反序列化器、测试基建统一） | ✅ | 2026-07-28 | 746/746 + fuzz 6000（29 套件） |
 | M32 | 多行字符串 `"""`：SYNTAX §3.3 规范定稿（Swift 风格严格多行）+ QuoteLexerLayer 引号分流 + MultilineStringLexerLayer 两阶段施工 + 转义表单源化 + 插值标记词法期判定（`\${` 误报修复；Parser/AST 经 StringToken 复用近零改动） | ✅ | 2026-07-28 | 790/790 + fuzz 6000（30 套件） |
+| M33 | 值块统一：if/switch 表达式分支体与 lambda 体统一为代码块（多语句 + `return@_`/named 取值）、switch 语句形态（新 SwitchStatementASTNode）、lambda 体内裸 return 编译错误（allowBareReturn 全链传染）、seq 匿名默认标签 `seq`→`_` | ✅ | 2026-07-28 | 838/838 + fuzz 6000（30 套件） |
+| M34 | 技术债清扫：字符字面量（CharLexerLayer + CharToken + CharLiteralASTNode）、复合赋值 10 运算符（CompoundAssignmentExpressionASTNode）、`is` 右侧 enum case（TypeCheck TargetType/TargetCase 双字段互斥）、wrapper `.name` 保留参数名、import `{}` 单标识符禁令规则化报错 | ✅ | 2026-07-28 | 895/895 + fuzz 6000（30 套件） |
 
 ---
 
@@ -55,7 +57,7 @@
 
 ```latte
 // 字面量
-42, 0xFF, 100L, 3.14, 0.1f, "Hello ${x}", """多行字符串""", true, null
+42, 0xFF, 100L, 3.14, 0.1f, "Hello ${x}", """多行字符串""", true, null, 'A', '\n'
 
 // 类型引用（含 \< 泛型、嵌套、可空）
 i32, String?, List\<T>, Map\<K,V>, List\<Map\<String, i32>>?
@@ -73,27 +75,54 @@ var r = 1 + (2 * 3)          // 无优先级规则已强制：1 + 2 * 3 报错
 obj is String, obj supers Animal, obj with Serializable
 obj as String, obj as? String
 var t = typeOf(box)
+result is .Failed          // is 右侧 enum case（§12.3，M34；as/supers/with 右侧仍只收类型）
 
-// if / switch 表达式（分支体当前为单表达式）
+// if / switch 表达式（分支体统一为代码块，M33：单表达式分支隐式取值是
+// 「块内恰好一条 ExpressionStatement」的语义规则；多语句分支 return@_ / named 取值）
 var r = if (x > 0) { x } else { opposite(x) }          // 必须有 else
+var r = if (x > 0) named check {
+    seq { return@check x }                             // named + return@标签 穿透内层块
+} else {
+    return@_ opposite(x)                               // 匿名分支体默认标签是 _
+}
 var r = switch(expr) {
     (1) -> { "one" }                                   // 值匹配
-    (_ > 10) -> { "big" }                              // 模式匹配（_ 引用 expr）
+    (_ > 10) -> {                                      // 模式匹配（_ 引用 expr）
+        logBig(expr)
+        return@_ "big"                                 // 多语句分支体显式取值
+    }
     default -> { "other" }                             // 必须有 default
 }
+var r = switch(expr) named match { (1) -> { return@match 1 } default -> { return@match 0 } }
 
-// Lambda（含泛型、async、trailing）
+// switch 语句（M33：语句形态，结果值被丢弃；分支体为完整代码块，必须有 default）
+switch(expr) {
+    (1) -> { handleOne() }
+    (_ > 10) -> {
+        logBig(expr)
+        handleBig()
+    }
+    default -> { handleOther() }
+}
+
+// Lambda（含泛型、async、trailing；体为单表达式或多语句块，M33）
 var f = func{(x: i32): i32 -> (x + 1)}
 var f = func{(width: TSize)\<TSize extends Size>: TSize -> width}
 var loader = async func{(id: i32): SharedUser -> loadUserNow(id)}
 list.map{(item: String): i32 -> item.length}           // 脱糖为调用实参
+var f = func{(x: i32): i32 -> {                        // 多语句块体
+    const doubled = (x * 2)
+    return@_ doubled                                   // 块体必须显式 return@；裸 return 是编译错误
+}}
+var f = func{(x: i32): i32 -> named calc { return@calc (x * 2) }}
 
 // 代码块与语句（语句以换行或 } 结束）
 {
     var x = 1
     x = (1 + 2)                                        // 赋值
+    x += 1                                             // 复合赋值（M34：+=/-=/*=//=/<<=/>>=/>>>=/&=/|=/^=）
     foo().field = v
-    return x                                           // return / return@seq value
+    return x                                           // return / return@_ value
     break@outer                                        // break/continue[@标签]
 }
 
@@ -140,11 +169,11 @@ named readFile {
     process(stream)
 }
 
-// seq 作为表达式（return@seq/return@label）
+// seq 作为表达式（return@_/return@标签，匿名默认标签为 _，M33）
 const result = seq {
     const ac = a * c
     const discriminant = (b * b) - (4.0 * ac)
-    return@seq sqrt(discriminant)  // 返回值
+    return@_ sqrt(discriminant)  // 返回值
 }
 
 var r = seq named calc {
@@ -222,6 +251,7 @@ operator .proxy.*\<named TNamedArgs..., TUnnamedArgs..., TReturn>(symbol: String
 operator .proxy.get.*\<TValue>(symbol: String, value: TValue): TValue { ... }
 operator .proxy.set.*\<TValue>(symbol: String, value: TValue) { ... }
 operator .proxy.opr.*\<named TNamedArgs..., ...>(...): TReturn { ... }
+operator .proxy.call(.name: String, args: named Any...): Any { ... }  // method canonical + .name 保留参数名（§14.4，M34）
 
 // 前导点 enum case 引用（§12：固定/参数化 case）
 const result: RequestResult = .Success
@@ -273,11 +303,11 @@ pub class Point {
 | VariableDeclarationParserLayer | ✅ | 17/17 | Initializer 经 ExpressionRootASTNode 直挂；访问器块委托 PropertyAccessorParserLayer（M16）；M31 保留字/标识符校验 |
 | ExpressionParserLayer | ✅ | 106/106 | roadmap #4 全部落地；前导点 enum case（M20）、wrapper 路径访问 `:`（M21）；M31：位运算符 `<<`/`&`/`\|`/`^`、`in` 移除、insideParens 续行、复合赋值明确报错、span 含关键字 |
 | ArgumentListParserLayer | ✅ | 12/12（M31 新套件） | 位置/具名/混合实参；M31：续行、空索引拒绝 |
-| LambdaExpressionParserLayer | ✅ | 15/15 | roadmap #21 提前落地；体为单表达式 |
-| SwitchStatementParserLayer | ✅ 表达式模式 | 6/6 | 语句模式待规范明确 |
+| LambdaExpressionParserLayer | ✅ | 37/37 | roadmap #21 提前落地；体双形态（M33）：单表达式 / 多语句块体（named 标签、裸 return 边界） |
+| SwitchStatementParserLayer | ✅ 两种形态 | 35/35（SwitchExpression 套件） | 表达式 + 语句形态（M33，新 SwitchStatementASTNode）；分支体统一代码块、named 标签、两形态强制 default |
 | TypeOfExpressionParserLayer | ✅ | 7/7 | typeOf(expr) |
-| CodeBlockParserLayer | ✅ | 29/29 | 语句识别与分发；return/break/continue 内联子状态；@ 注解声明分发（M20） |
-| IfStatementParserLayer | ✅ 两种模式 | 含于各套件 | 表达式模式强制 else；语句模式 else 可选 + else if 链 |
+| CodeBlockParserLayer | ✅ | 29/29 | 语句识别与分发；return/break/continue 内联子状态；@ 注解声明分发（M20）；switch 语句路由与 allowBareReturn 裸 return 检查（M33） |
+| IfStatementParserLayer | ✅ 两种模式 | 含于各套件 | 表达式模式强制 else；语句模式 else 可选 + else if 链；表达式分支体统一代码块 + named 标签（M33） |
 | LoopParserLayer | ✅ | 15/15 | for-each/范围/while/do-while/named 标签 |
 | TryCatchFinallyParserLayer | ✅ | 9/9 | roadmap #10；多 catch 子句、finally(e)、嵌套 try |
 | SeqBlockParserLayer | ✅ | 17/17 | roadmap #11；volatile/using/named；语句+表达式双形态 |
@@ -297,7 +327,7 @@ pub class Point {
 | LexerFuzzTests | ✅ | 32/32 + fuzz 6000 | Slash/EOF/注释固定用例 + 位置精确性用例（M28；M31 起左闭右开）+ 块注释吞字符/跨行分段/`\r\n` 归一/字符字面量报错用例（M31）+ 纯随机/结构化/变异 fuzz（固定种子，不变量含 sourceName/offset/范围不颠倒）+ Parser 注释跳过集成（M25） |
 | TokenDispositionTests | ✅ | 4/4 | Push/Pop × Consume/Replay 四组合协议测试（M23） |
 | Logger | ✅ | 7/7（LoggerTests） | 统一日志出口（Core/Logger.cs）：Verbose/Warning/Error 三级；控制台默认只显示 Warning+，`--verbose` 子命令放开 Verbose；`--log-to PATH` 全量（含 Verbose）JSONL 落盘（M26） |
-| AstJsonlSerializer | ✅ | 84/84 | AST 树 JSONL 序列化 v2（M31：carrier 记录化、Nullable 标量、先过滤再取值、循环保护）+ `AstJsonlDeserializer` 完整反序列化（字段名键控、产物过 Validator、往返逐行一致）；`compile --dump-ast PATH` 输出（M26） |
+| AstJsonlSerializer | ✅ | 86/86 | AST 树 JSONL 序列化 v2（M31：carrier 记录化、Nullable 标量、先过滤再取值、循环保护）+ `AstJsonlDeserializer` 完整反序列化（字段名键控、产物过 Validator、往返逐行一致）；`compile --dump-ast PATH` 输出（M26）；M33 新结构（值块/switch 语句/lambda 块体）经反射驱动零改动接入 |
 | CommandLine | ✅ | 46/46（CommandLineParserTests） | CLI 内核（Core/CommandLine.cs + Core/Commands.cs）：CommandLineMask 自描述元数据驱动解析与 help 生成；`<COMMAND> [--sub-cmd...]` 结构（compile/test/help），交互菜单已删（M27） |
 
 ---
@@ -326,6 +356,7 @@ pub class Point {
 - **数字字面量单源**（M31）：`Parser/NumericLiteral.cs` 是进制（0x/0b/0o）/下划线/后缀判定与解析的唯一实现，Literal/Root/Expression 三层共用
 - **JSONL v2 与往返**（M31）：AST JSONL 字段名键控不依赖顺序；carrier（ImportItem）记录化（独立产行、标量字段入 fields）；`AstJsonlDeserializer` 完整反序列化（三阶段：类型定位/实例挂接/回填，产物强制过 Validator），Parse→Serialize→Deserialize→Serialize 往返逐行一致
 - **测试基建单源**（M31）：`Tests/AstDescribe.cs`（统一 AST 描述器）与 `Tests/TestHarness.cs`（统一驱动+断言）是全部套件的唯一描述/驱动实现；断言对象约定：除查的就是命令行/日志/token 流/层协议行为的套件外，一律断言 AST 树产物（描述串 + 结构断言）
+- **值块统一与裸 return 边界**（M33）：if/switch 表达式分支体与 lambda 体统一为 CodeBlockASTNode——「单表达式分支隐式取值」是「块内恰好一条 ExpressionStatement」的语义规则，解析层无特判（取值留待语义阶段）；多语句值块经 `return@_`（匿名默认标签）/ `return@标签`（`named` 命名）取值；lambda 是裸 return 边界——`CodeBlockParserLayer.allowBareReturn` 标记沿施工链（if/循环/try/seq/switch 子块与表达式深处的分支体）全链传染，lambda 体一律下传 false，遇无 @标签 return 抛 ParserException；副作用：值块内的 if/switch 一律按语句分发，作值须写 `return@_ if ...`
 
 ---
 
@@ -385,27 +416,126 @@ Logger 改走 stderr。详见「里程碑历史」M31 段落。
 插值标记改词法期判定（`StringToken.HasInterpolation`，修复 `\${` 误报）；
 Parser/AST 经 `StringToken` 复用近零改动。
 
+**值块统一（M33）已完成**：if/switch 表达式分支体与 lambda 体统一为
+CodeBlockASTNode（多语句 + `return@_`/`named` 取值，单表达式分支隐式取值规则不变、
+下沉为语义规则）；switch 语句形态落地（新 `SwitchStatementASTNode`，两形态强制
+default）；lambda 体内裸 return 成为编译错误（`allowBareReturn` 标记全链传染）；
+seq 匿名默认标签从 `seq` 迁移为 `_`（纯注释与快照迁移，解析层无特判）。
+详见「里程碑历史」M33 段落。
+
+**技术债清扫（M34）已完成**：字符字面量落地（`CharLexerLayer` 三态状态机 +
+`CharToken` + `CharLiteralASTNode`，转义复用 `StringEscape` 单源）；复合赋值
+10 运算符（`CompoundAssignmentExpressionASTNode`，ExpressionParserLayer 遇
+op+`=` 在左操作数 Attach 前定形构造，红线合规）；`is` 右侧 enum case
+（`TypeCheckExpressionASTNode` 的 `TargetType`/`TargetCase` 双字段互斥，
+仅 `is` 允许 `.`，switch 模式匹配同路径通吃）；wrapper `.name` 保留参数名
+（ParameterListParserLayer `DotNameExpected` 状态，Name 原样存 `.name`）；
+import `{}` 列表项单标识符禁令规则化报错（SYNTAX §15.2）。详见「里程碑历史」
+M34 段落。
+
 **下一阶段**：语义分析、BIL 输出（见 `../BIL_STANDARD.md`）
 
 ---
 
 ## 6. 技术债务与已知限制
 
-1. 字符字面量未实现（M31 起由 Lexer 明确报错，不再静默当字符串收下）
-2. lambda 体与 if/switch 表达式分支体仍仅支持单表达式（CodeBlock 已落地，表达式分支的多语句接入留待后续）
-3. switch 仅表达式模式（SYNTAX 未定义语句形态）
-4. 复合赋值（`+=`/`-=` 等）未实现：M31 起 Lexer 一律拆成两个 token（与 `>=` 同策略），Parser 遇 op+`=` 报「复合赋值尚未支持，请展开为 a = a op b」；语义实现留待后续
-5. `is` 右侧的 enum case（`result is .Failed`，§12.3）未支持：`is` 右侧目前只走类型引用
-6. method wrapper canonical 形态中的 `.name` 保留参数名（§14.4 示例 `operator .proxy.call(.name: String, ...)`）未支持
-7. import 的 `{}` 列表项仅支持单标识符（`import a.{b.c}` 未支持；规范无示例）
-8. namespace 的唯一性与位置约束（应在文件首部）未校验，留待语义阶段
-9. 实参位置的 `a.b` 存在 MemberAccess/Symbol 双形态（具名判别 seed 路径与其他位置 AST 形状不同，语义分析需双路径处理；统一留待语义阶段）
-10. `3.`/`3.foo` 在 M31 起为编译错误（点后缺数字；`3.foo` 形态规范未定义，需要成员访问时请写 `(3).foo`）
-11. 编译 0 警告（大扫除消除了原 `Core/Utilities.cs` 的 nullable 警告）
+1. namespace 的唯一性与位置约束（应在文件首部）未校验，留待语义阶段
+2. 实参位置的 `a.b` 存在 MemberAccess/Symbol 双形态（具名判别 seed 路径与其他位置 AST 形状不同，语义分析需双路径处理；统一留待语义阶段）
+3. `3.`/`3.foo` 在 M31 起为编译错误（点后缺数字；`3.foo` 形态规范未定义，需要成员访问时请写 `(3).foo`）
+4. 值块取值规则（M33 起解析层无特判）：「多语句值块所有路径必须显式 return@、落到块尾即编译错误」「单 ExpressionStatement 块隐式取值」「if/switch 表达式分支体类型一致」均留待语义阶段校验
+5. 复合赋值的语义推导（`a op= b` 按 §13.2 从对应运算符自动展开/调用）留待语义/后端阶段；M34 起解析层已接受全部 10 个运算符
+6. `.name` 保留参数名（M34 起解析层接受，Name 原样存 `.name`）的上下文约束（仅 method wrapper canonical 形态可用）与语义规范化留待语义阶段
+7. 编译 0 警告（大扫除消除了原 `Core/Utilities.cs` 的 nullable 警告）
 
 ---
 
 ## 7. 里程碑历史
+
+### 2026-07-28 · M34 技术债清扫：字符字面量 / 复合赋值 / is enum case / `.name` 参数 / import 禁令
+
+> 集中清扫 §6 技术债清单中的 5 项解析层缺口（规范依据：§3.3 字符规则定稿、
+> §13.2 复合赋值既有、§12.3 is enum case 既有、§14.4 `.name` 既有、§15.2 禁令新增）。
+
+- **字符字面量**：Lexer 新增 `CharLexerLayer`（三态状态机
+  AwaitContent/EscapeSeen/ContentSeen，`BaseLexerLayer` 遇 `'` 分流，
+  与 StringLexerLayer 同文件同风格）；新增 `CharToken`（TokenType.Char，
+  char 无插值概念、不复用 StringToken）；AST 新增 `CharLiteralASTNode`；
+  转义复用 `StringEscape` 单源；`''`/`'ab'`/未知转义/未闭合（含 EOF 冲刷帧
+  虚拟换行）/反斜杠后换行均编译错误；JSONL 两端加 char ↔ 单字符字符串分支
+  （往返必炸点：Deserializer 的 IsPrimitive 原走 GetInt64）；LexerFuzz 固定
+  用例同步（原「'A' 未实现」错误断言反转）；RootParserLayer 顶层分派补
+  `case CharToken`（ParseFirstDecl 必经之路）
+- **复合赋值（§13.2，10 个全集）**：新增 `CompoundAssignmentExpressionASTNode`
+  （Target/Operator/Value，Operator 不含 `=`）；`ExpressionParserLayer.
+  HandleOperatorSeen` 在 pending 运算符后遇 `=` 且组合属全集时构造节点——
+  左操作数仍在层内未挂载（Attach 只在 CompleteExpression 执行），一次性
+  Attach 无替换、红线合规；`>>>=` 与 `>=`/`>>`/`>>>` 比较重组天然有序共存；
+  非全集组合（如 `== =`）不再特判、落正常二元流程报错；复合赋值整体是
+  表达式节点（普通赋值 `a = b` 维持 ExpressionStatement 双 Root 槽现状）；
+  M31 的两个「尚未支持」错误用例反转为正例
+- **`is` 右侧 enum case（§12.3）**：`TypeCheckExpressionASTNode` 改
+  `TargetType`（可空，填充时创建——预创建会留无 span 空壳过不了 Validator）
+  与 `TargetCase` 双字段互斥；`HandleTypeOperatorSeen` 仅 `is` 遇 `.` 分流
+  走既有前导点逻辑（`EnumCaseExpressionASTNode` 加 parent 构造参数，
+  归属即定）；`as`/`as?`/`supers`/`with` 右侧仍只收类型；switch 模式匹配
+  `(_ is .Success)` 同路径通吃
+- **wrapper `.name` 保留参数名（§14.4）**：`ParameterListParserLayer` 新增
+  `DotNameExpected` 状态，`.` 后必须是标识符（`.123`/裸 `.` 报错）；
+  `ParameterASTNode.Name` 原样存 `.name`（最小侵入，描述/JSONL 零改动）；
+  解析层不限制上下文（语义阶段约束）；`operator .proxy.call(.name: String,
+  args: named Any...): Any` canonical 全形解析通过
+- **import `{}` 禁令（§15.2）**：`ImportParserLayer.OnAfterListItem` 遇 `.`
+  报规则化错误（列表项只能是单标识符、不同子路径写多条 import）；
+  顺手修正类注释与实际行为不符处（SymbolLayer 空名元素不残留）
+- **测试**：895/895 + fuzz 6000（30 套件；Literal +23、Expression +28、
+  ParameterList +5、TypeDeclaration +1、Import +1）
+
+### 2026-07-28 · M33 值块统一：多语句分支体 + switch 语句形态 + lambda 裸 return 边界
+
+> 依据 SYNTAX §5.1/§6.1/§7.1/§7.2 三项规范变更（值块统一）落地：
+> 值块（seq 块、if/switch 表达式分支体、lambda 块体）形态与取值规则统一，
+> 匿名默认标签为 `_`；lambda 体内裸 return 成为编译错误。
+
+- **if/switch 表达式分支体统一为代码块**：`IfExpressionASTNode.ThenExpression/
+  ElseExpression` → `ThenBody/ElseBody`（CodeBlockASTNode，创建即定）；
+  `SwitchCaseASTNode.Body`、`SwitchExpressionASTNode.DefaultBody` 同样块化；
+  分支体改由 `CodeBlockParserLayer` 施工。「单表达式分支隐式取值」下沉为
+  「块内恰好一条 ExpressionStatement」的语义规则（解析层无特判，取值留待
+  语义阶段）；多语句分支体经 `return@_`（匿名默认标签）/`return@标签` 取值
+- **named 标签**：if/switch 头部 `)` 后、lambda `->` 后可写 `named 标识符`；
+  `IfExpressionASTNode`/`SwitchExpressionASTNode`/`LambdaExpressionASTNode`
+  新增 `Label string?`（写法参照 `SeqBlockParserLayer.HandleNamed`）
+- **switch 语句形态**：新增 `SwitchStatementASTNode`（与 IfStatementASTNode
+  对称，Selector/Cases/DefaultBody，分支体一律代码块）；
+  `SwitchStatementParserLayer` 实现双模式（语句模式从 switch 关键字进入，
+  表达式模式关键字已由 ExpressionParserLayer 消费）；
+  `CodeBlockParserLayer.HandleStatementDispatch` 新增 SWITCH 路由；
+  两形态统一强制 default（规范同步修订），Validator 的 default 规则
+  对称覆盖新节点。副作用：语句位置的 switch 不再落成表达式语句
+- **lambda 体双字段互斥**：`->` 后遇 `{` → 块形态（新 `BlockBody`
+  CodeBlockASTNode），否则维持单表达式（`Body` ExpressionRoot 改可空，
+  创建时定，参照 ExpressionStatementASTNode 双 Root 槽先例）；两字段互斥
+- **lambda 体内裸 return 编译错误**：`CodeBlockParserLayer` 新增
+  `allowBareReturn` 构造标记（默认 true），遇无 @标签 return 且标记为
+  false 时抛 ParserException；标记沿施工链全链传染（lambda 体内的
+  seq/if 语句块/循环体/try/switch/变量初始化/表达式深处的 if/switch
+  表达式分支体——ExpressionParserLayer 及 If/Switch/Loop/TryCatch/Seq/
+  VariableDeclaration/ArgumentList/TypeOf 各层逐一传递）；lambda 块体
+  与单表达式体一律下传 false（lambda 是边界，内嵌 lambda 仍是 false）；
+  if/switch 表达式分支体继承父上下文标记（不是 lambda 边界）
+- **return@_ 迁移**：seq 匿名默认标签 `seq` → `_`（SYNTAX §6.1）；
+  纯注释与测试快照迁移（标签只是字符串，解析层无特判）
+- **行为变化（规范使然）**：值块内的 if/switch 一律按语句分发——
+  `if (a) { if (b) {1} else {2} } else {3}` 的 then 分支是 IfStmt，
+  内层 if 作分支值须写 `return@_ if (b) {1} else {2}`
+- **同步面**：AstDescribe 描述器（If/Switch/Lambda/SwitchStmt 块化 + named）、
+  AstJsonlSerializer/Deserializer（反射驱动，新节点/新字段零改动接入，
+  往返套件补 switch 语句 + 多语句分支 + lambda 块体用例）
+- **测试**：838/838 + fuzz 6000（30 套件；IfExpression/SwitchExpression/
+  Lambda 套件迁移并扩充：多语句分支 return@_、named + return@标签、
+  switch 语句形态（含多语句分支与边界交还）、lambda 块体、裸 return
+  报错（直接/嵌套 seq/if/循环/switch/单表达式体分支/内嵌 lambda）；
+  无新增测试类，用例全部加进现有套件）
 
 ### 2026-07-28 · M32 多行字符串 `"""`：规范定稿 + 全栈落地
 

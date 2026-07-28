@@ -81,6 +81,24 @@ namespace LatteCompiler
         }
     }
 
+    // 复合赋值表达式（SYNTAX.md §13.2）：a += b 从对应运算符自动推导
+    // （a = a + b 的语义糖）；全集 10 个：+= -= *= /= <<= >>= >>>= &= |= ^=（无 %=）。
+    // 节点本身是表达式（可出现在表达式位置；语句位置由 ExpressionStatement 包装）。
+    // Operator 存推导出的基础运算符（+、<<、>>> 等，不含 =）。
+    public class CompoundAssignmentExpressionASTNode : ExpressionASTNode
+    {
+        [ChildAstNode] public ExpressionRootASTNode Target { get; }  // 被赋值的左操作数
+        public string Operator;   // 基础运算符：+ - * / << >> >>> & | ^
+        [ChildAstNode] public ExpressionRootASTNode Value { get; }   // 右操作数
+
+        public CompoundAssignmentExpressionASTNode()
+        {
+            Target = new ExpressionRootASTNode(this);
+            Value = new ExpressionRootASTNode(this);
+            Operator = "";
+        }
+    }
+
     // 一元运算表达式
     public class UnaryExpressionASTNode : ExpressionASTNode
     {
@@ -221,16 +239,21 @@ namespace LatteCompiler
         }
     }
 
-    // Lambda 表达式（SYNTAX.md §5）：
-    // [async] func{(params)\<T>: ReturnType -> body}
-    // body 当前仅支持单表达式，多语句块待 P2 CodeBlockParserLayer
+    // Lambda 表达式（SYNTAX.md §5.1）：
+    // [async] func{(params)\<T>: ReturnType -> [named 标签] body}
+    // 体两形态互斥（创建时定，参照 ExpressionStatementASTNode 双 Root 槽先例）：
+    // - Body：单表达式体，该表达式即返回值（隐式取值）
+    // - BlockBody：多语句代码块体，所有路径必须显式 return@_ / return@标签 产出值；
+    //   块内禁止裸 return（§5.1，由 CodeBlockParserLayer 的 allowBareReturn 标记强制）
     public class LambdaExpressionASTNode : ExpressionASTNode
     {
         public bool IsAsync;                              // async 修饰
         [ChildAstNode] public ParameterListASTNode Parameters;           // 形参列表 (...)
         [ChildAstNode] public GenericParameterListASTNode? GenericParameters;  // 泛型形参 \<...>（可选）
         [ChildAstNode] public TypeReferenceASTNode ReturnType;           // 返回类型
-        [ChildAstNode] public ExpressionRootASTNode Body { get; }        // lambda 体（单表达式）
+        public string? Label;                             // named 标签（可选，-> 之后、体之前）
+        [ChildAstNode] public ExpressionRootASTNode? Body;               // 单表达式体（与 BlockBody 互斥）
+        [ChildAstNode] public CodeBlockASTNode? BlockBody;               // 多语句块体（与 Body 互斥）
 
         public LambdaExpressionASTNode()
         {
@@ -238,54 +261,63 @@ namespace LatteCompiler
             Parameters = new ParameterListASTNode(this);
             GenericParameters = null;
             ReturnType = new TypeReferenceASTNode(this);
-            Body = new ExpressionRootASTNode(this);
+            Label = null;
+            Body = null;
+            BlockBody = null;
         }
     }
 
-    // if 表达式（SYNTAX.md §7.1）：if (cond) { then } else { else }
-    // 作为表达式时必须有 else 分支；分支当前仅支持单表达式
+    // if 表达式（SYNTAX.md §7.1）：if (cond) [named 标签] { then } else { else }
+    // 作为表达式时必须有 else 分支；分支体统一为代码块——「单表达式分支隐式取值」
+    // 是「块内恰好一条 ExpressionStatement」的语义规则（取值留待语义阶段，解析层无特判）；
+    // 多语句分支体必须显式 return@_（匿名默认标签）或 return@标签 产出分支值
     public class IfExpressionASTNode : ExpressionASTNode
     {
         [ChildAstNode] public ExpressionRootASTNode Condition { get; }
-        [ChildAstNode] public ExpressionRootASTNode ThenExpression { get; }
-        [ChildAstNode] public ExpressionRootASTNode ElseExpression { get; }
+        [ChildAstNode] public CodeBlockASTNode ThenBody { get; }
+        [ChildAstNode] public CodeBlockASTNode ElseBody { get; }
+        public string? Label;                             // named 标签（可选，) 之后）
 
         public IfExpressionASTNode()
         {
             Condition = new ExpressionRootASTNode(this);
-            ThenExpression = new ExpressionRootASTNode(this);
-            ElseExpression = new ExpressionRootASTNode(this);
+            ThenBody = new CodeBlockASTNode(this);
+            ElseBody = new CodeBlockASTNode(this);
+            Label = null;
         }
     }
 
-    // switch 表达式的一个分支：(pattern) -> { body }
-    // 不含 _ 的分支为值匹配（编译期常量）；含 _ 的为模式匹配（结果为 bool）
+    // switch 的一个分支：(pattern) -> { body }（表达式与语句两种形态共用）
+    // 不含 _ 的分支为值匹配（编译期常量）；含 _ 的为模式匹配（结果为 bool）；
+    // 分支体统一为代码块（取值规则同 if 表达式分支体，见 §7.1）
     public class SwitchCaseASTNode : ASTNode
     {
         [ChildAstNode] public ExpressionRootASTNode Pattern { get; }
-        [ChildAstNode] public ExpressionRootASTNode Body { get; }
+        [ChildAstNode] public CodeBlockASTNode Body { get; }
 
         public SwitchCaseASTNode(ASTNode? parent) : base(parent)
         {
             Pattern = new ExpressionRootASTNode(this);
-            Body = new ExpressionRootASTNode(this);
+            Body = new CodeBlockASTNode(this);
         }
     }
 
     // switch 表达式（SYNTAX.md §7.2）：
-    // switch(expr) { (pattern) -> { body } ... default -> { body } }
-    // 作为表达式时必须有 default 分支；分支体当前仅支持单表达式
+    // switch(expr) [named 标签] { (pattern) -> { body } ... default -> { body } }
+    // 必须有 default 分支；分支体为代码块，多语句分支必须显式 return@_ / return@标签
     public class SwitchExpressionASTNode : ExpressionASTNode
     {
         [ChildAstNode] public ExpressionRootASTNode Selector { get; }
         [ChildAstNode] public List<SwitchCaseASTNode> Cases;
-        [ChildAstNode] public ExpressionRootASTNode? DefaultBody;
+        [ChildAstNode] public CodeBlockASTNode? DefaultBody;
+        public string? Label;                             // named 标签（可选，) 之后）
 
         public SwitchExpressionASTNode()
         {
             Selector = new ExpressionRootASTNode(this);
             Cases = new List<SwitchCaseASTNode>();
             DefaultBody = null;
+            Label = null;
         }
     }
 
@@ -319,23 +351,28 @@ namespace LatteCompiler
     // 类型检查表达式（SYNTAX.md §3.5/§3.7）：
     // obj is String / obj supers Animal / obj with Serializable
     // 右侧也可以是 Type\<T> 值（词法上与类型名无歧义，统一按类型引用解析）
+    // 右侧两形态互斥（参照 ExpressionStatementASTNode 双 Root 槽先例，填充时定归属）：
+    // - TargetType：类型引用（is/supers/with 通用）
+    // - TargetCase：前导点 enum case（result is .Failed，仅 is 可用，SYNTAX §12.3）
     public class TypeCheckExpressionASTNode : ExpressionASTNode
     {
         [ChildAstNode] public ExpressionRootASTNode Object { get; }
         public string Operator;    // is / supers / with
-        [ChildAstNode] public TypeReferenceASTNode TargetType;
+        [ChildAstNode] public TypeReferenceASTNode? TargetType;
+        [ChildAstNode] public EnumCaseExpressionASTNode? TargetCase;
 
         public TypeCheckExpressionASTNode()
         {
             Object = new ExpressionRootASTNode(this);
             Operator = "";
-            TargetType = new TypeReferenceASTNode(this);
+            TargetType = null;
+            TargetCase = null;
         }
     }
 
     // seq 块表达式（SYNTAX.md §6）：
     // [volatile] seq [using(...)]* [named label] { ... }
-    // 可作为语句（不产生值）或表达式（通过 return@seq/return@label 产生值）
+    // 可作为语句（不产生值）或表达式（通过 return@_/return@标签 产生值，匿名默认标签为 _）
     // 注：继承自 ExpressionASTNode，因此可以在表达式位置使用；
     //     在代码块中单独成行时，作为表达式语句（构造时传入块父节点）
     public class SeqBlockExpressionASTNode : ExpressionASTNode
@@ -358,11 +395,12 @@ namespace LatteCompiler
     // 规范要求存在已确定 enum 类型的 receiver/期望类型上下文（语义阶段校验，
     // 解析期只识别形态）；参数化 case 的调用（.Failed(404)）由后缀链
     // 自然脱糖为 Call 节点，本节点不自带实参。
+    // parent 参数形态供 is 右侧 TargetCase 槽使用（创建时归属即定，§12.3）。
     public class EnumCaseExpressionASTNode : ExpressionASTNode
     {
         public string CaseName;
 
-        public EnumCaseExpressionASTNode()
+        public EnumCaseExpressionASTNode(ASTNode? parent = null) : base(parent)
         {
             CaseName = "";
         }

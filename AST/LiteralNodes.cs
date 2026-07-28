@@ -67,6 +67,16 @@ namespace LatteCompiler
         }
     }
 
+    // 字符字面量 AST 节点（SYNTAX §3.3：单引号内恰好一个字符或一个转义序列，类型 char）
+    public class CharLiteralASTNode : LiteralASTNode
+    {
+        public char Value;
+
+        public CharLiteralASTNode(ASTNode? parent) : base(parent)
+        {
+        }
+    }
+
     // 布尔字面量 AST 节点
     public class BoolLiteralASTNode : LiteralASTNode
     {

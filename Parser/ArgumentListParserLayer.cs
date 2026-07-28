@@ -33,6 +33,10 @@ namespace LatteCompiler
         private readonly BracketKind bracketKind;
         private readonly ASTNode parentNode;
 
+        // 父上下文是否允许裸 return（SYNTAX §5.1）：实参表达式深处的
+        // if/switch 表达式分支体继承该标记（由 ExpressionParserLayer 设置）
+        internal bool allowBareReturn = true;
+
         private enum State
         {
             ArgStart,     // 期待实参表达式、具名实参名或闭合括号
@@ -130,7 +134,11 @@ namespace LatteCompiler
                 targetList.Add(argument);
                 state = State.ArgParsed;
                 return new ParserLayerResult.PushLayer(
-                    new ExpressionParserLayer(argument.Value) { insideParens = true },
+                    new ExpressionParserLayer(argument.Value)
+                    {
+                        insideParens = true,
+                        allowBareReturn = allowBareReturn
+                    },
                     TokenDisposition.Consume);
             }
 
@@ -163,7 +171,11 @@ namespace LatteCompiler
             targetList.Add(argument);
             state = State.ArgParsed;
             return new ParserLayerResult.PushLayer(
-                new ExpressionParserLayer(argument.Value, seed) { insideParens = true },
+                new ExpressionParserLayer(argument.Value, seed)
+                {
+                    insideParens = true,
+                    allowBareReturn = allowBareReturn
+                },
                 disposition);
         }
 

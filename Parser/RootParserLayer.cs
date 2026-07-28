@@ -20,7 +20,8 @@ namespace LatteCompiler
                     return ParserLayerResult.Continue.Instance;
 
                 case StringToken:
-                    // 字符串字面量：父层创建 LiteralExpression 目标并挂接，子层原地填充
+                case CharToken:
+                    // 字符串/字符字面量：父层创建 LiteralExpression 目标并挂接，子层原地填充
                     return PushLiteral();
 
                 case WordToken token:

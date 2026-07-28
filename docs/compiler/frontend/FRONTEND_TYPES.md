@@ -84,6 +84,7 @@ ASTIntegrityValidator 校验父子指针一致性与 Span 合法性，
 | 节点 | 关键字段 | 说明 |
 |------|----------|------|
 | **BinaryExpressionASTNode** | Left、Operator、Right | 二元运算 |
+| **CompoundAssignmentExpressionASTNode** | Target、Operator（基础运算符）、Value | 复合赋值（§13.2，+= 等 10 个） |
 | **UnaryExpressionASTNode** | Operator、Operand、IsPrefix | 一元运算（含 await） |
 | **LiteralExpressionASTNode** | LiteralNode | 字面量包装（使字面量成为表达式） |
 | **SymbolReferenceASTNode** | Symbol（SymbolASTNode） | 符号引用/纯符号路径（含泛型实参） |
@@ -99,7 +100,7 @@ ASTIntegrityValidator 校验父子指针一致性与 Span 合法性，
 | **SwitchCaseASTNode** | Pattern、Body | case 分支；非 Expression 子类 |
 | **TypeOfExpressionASTNode** | Operand | typeOf(expr) |
 | **CastExpressionASTNode** | Object、TargetType、IsSafe | as / as? 转换 |
-| **TypeCheckExpressionASTNode** | Object、Operator、TargetType | is / supers / with 检查 |
+| **TypeCheckExpressionASTNode** | Object、Operator、TargetType? / TargetCase?（互斥） | is / supers / with 检查；is 右侧可为 enum case（§12.3） |
 | **SeqBlockExpressionASTNode** | IsVolatile、UsingBindings、Label?、Body | seq 块（语句 + 表达式双形态） |
 
 ### 3.6 语句（`AST/StatementNodes.cs`）

@@ -17,6 +17,10 @@ namespace LatteCompiler
     {
         private readonly TypeOfExpressionASTNode targetNode;
 
+        // 父上下文是否允许裸 return（SYNTAX §5.1）：操作数深处的
+        // if/switch 表达式分支体继承该标记（由 ExpressionParserLayer 设置）
+        internal bool allowBareReturn = true;
+
         private enum State
         {
             OpenParenExpected,   // 等待 (
@@ -82,7 +86,8 @@ namespace LatteCompiler
         {
             state = State.CloseParenExpected;
             return new ParserLayerResult.PushLayer(
-                new ExpressionParserLayer(targetNode.Operand), TokenDisposition.Replay);
+                new ExpressionParserLayer(targetNode.Operand) { allowBareReturn = allowBareReturn },
+                TokenDisposition.Replay);
         }
 
         // 等待 ) ：消费后完成解析，弹出本层

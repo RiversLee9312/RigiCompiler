@@ -480,6 +480,14 @@ namespace LatteCompiler.Tests
                 "}",
                 "@WrapperTarget(EnumCase(.Method)) pub wrapper Timed {pub init(), " +
                 "operator .proxy.call\\<TReturn extends Object>(): TReturn {}}");
+            // method wrapper canonical 保留参数名 .name（§14.4 示例形态）：前导点原样入参数名
+            TestDecl(
+                "wrapper W {\n" +
+                "    operator .proxy.call(.name: String, args: named Any...): Any {\n" +
+                "        return inner(args)\n" +
+                "    }\n" +
+                "}",
+                "wrapper W {operator .proxy.call(.name: String,args: named Any...): Any {}}");
 
             // 错误：proxy 名只能出现在 wrapper 体内
             TestError("pub class A { operator .proxy.f() {} }", "Expected declaration name");

@@ -5,7 +5,7 @@ namespace LatteCompiler.Tests
     // Seq 块解析测试（roadmap #11，SYNTAX.md §6）：代码块独立驱动
     // （TestHarness.ParseBlock），断言 AstDescribe 精确描述串。
     // 覆盖：简单 seq / volatile / using 资源绑定（单个/多个）/ named 标签 /
-    // 组合（volatile + using + named）/ seq 作为表达式（return@seq）/ 错误用例。
+    // 组合（volatile + using + named）/ seq 作为表达式（return@_，§6.1 默认标签）/ 错误用例。
     public class SeqBlockTests
     {
         // ===== 1. 简单 seq 块 =====
@@ -99,22 +99,22 @@ namespace LatteCompiler.Tests
             TestHarness.Blank();
         }
 
-        // ===== 6. seq 作为表达式（return@seq）=====
+        // ===== 6. seq 作为表达式（return@_，§6.1 匿名默认标签）=====
         public static void TestSeqAsExpression()
         {
             TestHarness.Section("Testing Seq as Expression");
 
-            // return@seq
-            TestBlock("{ var result = seq { return@seq compute() } }",
-                "[var result = Seq([Return@seq(Call(Sym(compute), []))])]");
+            // return@_（匿名 seq 的默认标签是 _）
+            TestBlock("{ var result = seq { return@_ compute() } }",
+                "[var result = Seq([Return@_(Call(Sym(compute), []))])]");
 
             // return@label
             TestBlock("{ var r = seq named calc { return@calc getValue() } }",
                 "[var r = Seq(named calc, [Return@calc(Call(Sym(getValue), []))])]");
 
             // 复杂示例：SYNTAX.md §6.1
-            TestBlock("{ const result = seq { const ac = a * c\nreturn@seq ac } }",
-                "[const result = Seq([const ac = Binary(Sym(a) * Sym(c)), Return@seq(Sym(ac))])]");
+            TestBlock("{ const result = seq { const ac = a * c\nreturn@_ ac } }",
+                "[const result = Seq([const ac = Binary(Sym(a) * Sym(c)), Return@_(Sym(ac))])]");
 
             TestHarness.Blank();
         }

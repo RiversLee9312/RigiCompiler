@@ -57,6 +57,9 @@ namespace LatteCompiler.Tests
             ExpectTokens("", "EOF");
             // 纯空白
             ExpectTokens("   \n  ", "LB EOF");
+            // 字符字面量（已实现）：普通字符与转义字符
+            ExpectTokens("'A'", "CH(A) EOF");
+            ExpectTokens("'\\'' x", "CH(') W(x) EOF");
 
             Console.WriteLine();
         }
@@ -70,8 +73,8 @@ namespace LatteCompiler.Tests
             ExpectLexerError("a /* unterminated");
             // 未闭合字符串
             ExpectLexerError("\"unterminated");
-            // 字符字面量未实现：明确报错（M31 起不再静默当字符串收下）
-            ExpectLexerError("'A'");
+            // 未闭合字符字面量（字符字面量已实现，合法 'A' 见固定用例）
+            ExpectLexerError("'A");
             // 非法字符
             ExpectLexerError("`");
 
@@ -364,6 +367,7 @@ namespace LatteCompiler.Tests
             {
                 WordToken w => $"W({w.Content})",
                 StringToken s => $"S({s.Content})",
+                CharToken c => $"CH({c.Value})",
                 CommentToken c => $"C({c.Content})",
                 LineBreakToken => "LB",
                 NotationToken n => $"N({n.Content})",

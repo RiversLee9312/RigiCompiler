@@ -10,6 +10,7 @@ namespace LatteCompiler
         Word,
         Comment,
         String,
+        Char,
         LineBreak,
         Notation,
         EndOfFile
@@ -61,6 +62,27 @@ namespace LatteCompiler
         public bool HasInterpolation;
 
         public override TokenType Type { get; } = TokenType.String;
+    }
+
+    // 字符字面量 token（'...'，SYNTAX §3.3）：Value 为转义展开后的字符；
+    // char 无插值概念，不复用 StringToken
+    public class CharToken : Token
+    {
+        public CharToken(char value)
+        {
+            Value = value;
+        }
+
+        public char Value { get; }
+
+        // Content 即 Value 的字符串形式（ToString/日志用；字符值以 Value 为准）
+        public override string Content
+        {
+            get => Value.ToString();
+            set { }
+        }
+
+        public override TokenType Type { get; } = TokenType.Char;
     }
 
     public class LineBreakToken : Token

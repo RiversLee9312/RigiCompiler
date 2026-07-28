@@ -10,10 +10,12 @@ namespace LatteCompiler
     /// - 默认参数：name: String = "World"
     /// - 位置可变参数：numbers: i32...
     /// - 具名可变参数：options: named String...
+    /// - 保留参数名（§14.4，method wrapper canonical 形态）：.name: String——
+    ///   前导点原样入 ParameterASTNode.Name，解析层不限制使用上下文（语义阶段再约束）
     /// - init 参数映射（§9.3，仅 allowMapping 时）：_ -> x、horizontal: i32 -> x、_ -> x = 0
     ///
     /// 状态流转：
-    /// Initial → ParamStart → NameSeen → TypeExpected → TypeParsed
+    /// Initial → ParamStart → [DotNameExpected] → NameSeen → TypeExpected → TypeParsed
     ///   → [DotsAwaitThird → VariadicDone] / [ValueParsed] → Completed
     ///   →（allowMapping）NameSeen/TypeParsed → MappedFieldExpected → AfterMappedField
     ///     → [ValueParsed] → Completed
@@ -32,6 +34,7 @@ namespace LatteCompiler
         {
             Initial,          // 等待 (
             ParamStart,       // 等待参数名或 )
+            DotNameExpected,  // 保留参数名的 . 已读（§14.4），等待标识符部分
             NameSeen,         // 已读参数名，等待 : 或 ->
             TypeExpected,     // : 已读，等待类型或 named
             TypeParsed,       // 类型已解析，等待 = . , ) 或 ->
@@ -50,6 +53,7 @@ namespace LatteCompiler
         private bool pendingVariadic = false;
         private bool pendingNamedVariadic = false;
         private string? pendingMappedField = null;
+        private CharRange pendingDotRange;    // 保留参数名前导 . 的 token 范围（span 起点）
 
         public ParameterListParserLayer(ParameterListASTNode target, bool allowMapping = false)
         {
@@ -82,6 +86,8 @@ namespace LatteCompiler
                     return HandleInitial(currentToken, context);
                 case State.ParamStart:
                     return HandleParamStart(currentToken, context);
+                case State.DotNameExpected:
+                    return HandleDotNameExpected(currentToken, context);
                 case State.NameSeen:
                     return HandleNameSeen(currentToken, context);
                 case State.TypeExpected:
@@ -138,7 +144,33 @@ namespace LatteCompiler
                 return ParserLayerResult.Continue.Instance;
             }
 
+            // 保留参数名（SYNTAX §14.4，method wrapper canonical 形态）：. + 标识符
+            if (currentToken is NotationToken dot && dot.Content == ".")
+            {
+                // 快照 . 的 token 范围（struct 拷贝），作为参数 span 起点
+                pendingDotRange = context.GetLocation();
+                state = State.DotNameExpected;
+                return ParserLayerResult.Continue.Instance;
+            }
+
             context.RaiseError($"Expected parameter name or ')', got: {currentToken}");
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
+        }
+
+        // 保留参数名的 . 已读：等待标识符部分，Name 直接存 ".name"（前导点原样入串——
+        // 最小侵入：AstDescribe/JSONL 零改动；解析层不限制使用上下文，语义阶段再规范化与约束）
+        private ParserLayerResult HandleDotNameExpected(Token currentToken, ParserLayerContext context)
+        {
+            if (currentToken is WordToken wt && Keywords.IsIdentifier(wt.Content))
+            {
+                currentParameter = new ParameterASTNode(targetNode) { Name = "." + wt.Content };
+                var loc = context.GetLocation();
+                currentParameter.Span = new CharRange { Start = pendingDotRange.Start, End = loc.End, sourceName = loc.sourceName };
+                state = State.NameSeen;
+                return ParserLayerResult.Continue.Instance;
+            }
+
+            context.RaiseError($"Expected identifier after '.' in reserved parameter name, got: {currentToken}");
             return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 

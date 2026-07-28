@@ -173,11 +173,14 @@ namespace LatteCompiler
                        typeof(Symbol).IsAssignableFrom(memberType);
             }
 
-            // 渲染已通过过滤的成员值：enum 为名字、Symbol 为点分字符串、其余原样
+            // 渲染已通过过滤的成员值：enum 为名字、Symbol 为点分字符串、
+            // char 为单字符字符串（与 Deserializer 的 char 分支配对——JSON 数字
+            // 无法区分 char 与整数），其余原样
             private static object? RenderMember(Type memberType, object? value)
             {
                 var effective = Nullable.GetUnderlyingType(memberType) ?? memberType;
                 if (effective.IsEnum) return value?.ToString();
+                if (effective == typeof(char)) return value?.ToString();
                 if (value is Symbol symbol) return RenderSymbol(symbol);
                 return value;
             }

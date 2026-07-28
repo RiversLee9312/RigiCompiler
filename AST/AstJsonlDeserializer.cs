@@ -525,6 +525,14 @@ namespace LatteCompiler
                     return Enum.Parse(effective, json.GetString()!);
                 }
                 if (effective == typeof(string)) return json.GetString();
+                // char 序列化为单字符字符串（与 Serializer 的 RenderMember 配对）
+                if (effective == typeof(char))
+                {
+                    var s = json.GetString()!;
+                    if (s.Length != 1)
+                        throw new FormatException($"expected single character, got '{s}'");
+                    return s[0];
+                }
                 if (effective == typeof(bool)) return json.GetBoolean();
                 if (effective == typeof(decimal)) return json.GetDecimal();
                 if (effective == typeof(double)) return json.GetDouble();

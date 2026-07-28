@@ -47,6 +47,10 @@ namespace LatteCompiler
         // 分组子层与实参/索引内的表达式层为 true；右操作数/一元操作数层继承。
         // internal：ArgumentListParserLayer 等外部层创建实参表达式层时设置
         internal bool insideParens = false;
+        // 父上下文是否允许裸 return（SYNTAX §5.1）：lambda 体内为 false，
+        // 沿委托链（分组/一元/二元/实参/if/switch 表达式分支体）传染；
+        // lambda 自身是边界（LambdaExpressionParserLayer 对其体一律下传 false）
+        internal bool allowBareReturn = true;
 
         private enum State
         {
@@ -72,6 +76,9 @@ namespace LatteCompiler
         private CastExpressionASTNode? pendingCastNode = null;
         private TypeCheckExpressionASTNode? pendingCheckNode = null;
         private bool safeCastMarkConsumed = false;   // as? 的 ? 是否已消费
+        // is 右侧前导点 enum case 分流标记（SYNTAX §12.3）：true 时
+        // HandleEnumCaseNameExpected 把 case 节点挂入 pendingCheckNode.TargetCase
+        private bool enumCaseForTypeCheck = false;
 
         // 后缀链状态
         private bool pendingSafeAccess = false;
@@ -254,22 +261,27 @@ namespace LatteCompiler
                         // span 含起始关键字（M31：子层 FirstRange 从 ( 起算，这里显式记 Start）
                         var ifNode = new IfExpressionASTNode();
                         StartSpan(ifNode, context.GetLocation().Start, context);
-                        return DelegateStructuredParsing(ifNode, new IfStatementParserLayer(ifNode));
+                        return DelegateStructuredParsing(ifNode,
+                            new IfStatementParserLayer(ifNode, allowBareReturn));
                     case Keywords.SWITCH:
                         var switchNode = new SwitchExpressionASTNode();
                         StartSpan(switchNode, context.GetLocation().Start, context);
-                        return DelegateStructuredParsing(switchNode, new SwitchStatementParserLayer(switchNode));
+                        return DelegateStructuredParsing(switchNode,
+                            new SwitchStatementParserLayer(switchNode, allowBareReturn));
                     case Keywords.TYPEOF:
                         var typeOfNode = new TypeOfExpressionASTNode();
                         StartSpan(typeOfNode, context.GetLocation().Start, context);
-                        return DelegateStructuredParsing(typeOfNode, new TypeOfExpressionParserLayer(typeOfNode));
+                        return DelegateStructuredParsing(typeOfNode,
+                            new TypeOfExpressionParserLayer(typeOfNode) { allowBareReturn = allowBareReturn });
                     case Keywords.SEQ:
                     case Keywords.VOLATILE:
-                        // seq 块可以作为表达式使用（通过 return@seq/return@label 返回值）
+                        // seq 块可以作为表达式使用（通过 return@_/return@标签 返回值，
+                        // 匿名默认标签为 _，SYNTAX §6.1）
                         // 保留当前 token，因为 SeqBlockParserLayer 需要重新读取它
                         var seqNode = new SeqBlockExpressionASTNode();
                         return DelegateStructuredParsing(
-                            seqNode, new SeqBlockParserLayer(seqNode), TokenDisposition.Replay);
+                            seqNode, new SeqBlockParserLayer(seqNode, allowBareReturn),
+                            TokenDisposition.Replay);
                 }
             }
 
@@ -320,7 +332,11 @@ namespace LatteCompiler
             // 递归解析括号内的表达式（消费掉 ( token）；
             // 括号语境：分组内换行按空白处理（SYNTAX §1.1）
             return new ParserLayerResult.PushLayer(
-                new ExpressionParserLayer(groupExpr.InnerExpression) { insideParens = true },
+                new ExpressionParserLayer(groupExpr.InnerExpression)
+                {
+                    insideParens = true,
+                    allowBareReturn = allowBareReturn
+                },
                 TokenDisposition.Consume);
         }
 
@@ -391,9 +407,33 @@ namespace LatteCompiler
                 return ParserLayerResult.Continue.Instance;
             }
 
+            // is 右侧的前导点 enum case（SYNTAX §12.3：result is .Failed）：
+            // 仅 is 允许；as/as?/supers/with 右侧必须是类型，
+            // . 维持走下方类型委托路径，由 TypeReferenceParserLayer 报「Expected type name」
+            if (currentToken is NotationToken dot && dot.Content == "." &&
+                pendingTypeOperator == Keywords.IS)
+            {
+                // 记忆前导点位置（TargetCase 的 span 起点），转前导点既有路径
+                pendingSuffixStart = context.GetLocation().Start;
+                enumCaseForTypeCheck = true;
+                state = State.EnumCaseNameExpected;
+                return ParserLayerResult.Continue.Instance;
+            }
+
             // 委托 TypeReferenceParserLayer 解析右侧类型（保留 token）。
             // 类型完成后本表达式即完成：后续再接运算符必须加括号（无优先级规则）
-            var targetType = pendingCastNode != null ? pendingCastNode.TargetType : pendingCheckNode!.TargetType;
+            TypeReferenceASTNode targetType;
+            if (pendingCastNode != null)
+            {
+                targetType = pendingCastNode.TargetType;
+            }
+            else
+            {
+                // TargetType 槽在此创建填充（与 TargetCase 互斥，双槽先例：
+                // 创建时归属即定，Parent 一次成型）
+                targetType = new TypeReferenceASTNode(pendingCheckNode!);
+                pendingCheckNode!.TargetType = targetType;
+            }
             state = State.Completed;
             return new ParserLayerResult.PushLayer(
                 new TypeReferenceParserLayer(targetType), TokenDisposition.Replay);
@@ -421,7 +461,8 @@ namespace LatteCompiler
             {
                 allowBinaryOperator = false,
                 allowPrefixUnary = false,
-                insideParens = insideParens
+                insideParens = insideParens,
+                allowBareReturn = allowBareReturn
             };
 
             return new ParserLayerResult.PushLayer(operandLayer, TokenDisposition.Consume);
@@ -471,7 +512,10 @@ namespace LatteCompiler
                     {
                         return new ParserLayerResult.PushLayer(
                             new ArgumentListParserLayer(
-                                newExpr.Arguments, ArgumentListParserLayer.BracketKind.Round, newExpr),
+                                newExpr.Arguments, ArgumentListParserLayer.BracketKind.Round, newExpr)
+                            {
+                                allowBareReturn = allowBareReturn
+                            },
                             TokenDisposition.Consume);
                     }
 
@@ -483,7 +527,10 @@ namespace LatteCompiler
                     currentExpression = callExpr;
                     return new ParserLayerResult.PushLayer(
                         new ArgumentListParserLayer(
-                            callExpr.Arguments, ArgumentListParserLayer.BracketKind.Round, callExpr),
+                            callExpr.Arguments, ArgumentListParserLayer.BracketKind.Round, callExpr)
+                        {
+                            allowBareReturn = allowBareReturn
+                        },
                         TokenDisposition.Consume);
                 }
 
@@ -497,7 +544,10 @@ namespace LatteCompiler
                     currentExpression = indexExpr;
                     return new ParserLayerResult.PushLayer(
                         new ArgumentListParserLayer(
-                            indexExpr.Indices, ArgumentListParserLayer.BracketKind.Square, indexExpr),
+                            indexExpr.Indices, ArgumentListParserLayer.BracketKind.Square, indexExpr)
+                        {
+                            allowBareReturn = allowBareReturn
+                        },
                         TokenDisposition.Consume);
                 }
 
@@ -635,13 +685,36 @@ namespace LatteCompiler
                 // 其他组合（如 >>>>）不合法，落入正常流程后会在右操作数解析时报错
             }
 
-            // 复合赋值（+=、*=、>>= 等）尚未支持：Lexer 一律拆成两个 token（M31），
-            // 在运算符状态下遇到 = 给出明确错误，而不是泛泛的"缺少右操作数"
-            if (currentToken is NotationToken assign && assign.Content == "=")
+            // 复合赋值（SYNTAX §13.2）：Lexer 一律拆 token（M31），在运算符状态下
+            // 遇 = 与 pending 运算符重组；全集 10 个（+= -= *= /= <<= >>= >>>= &= |= ^=，
+            // 无 %=）。>>= / >>>= 先经上方 > 系列重组把 pendingOperator 收拢为 >> / >>>
+            // （比较的 >= >> >>> 已被重组逻辑拦截，不会到达这里）；不属于全集的组合
+            // （如 == 后再遇 =）不拦截，落入正常二元流程，由右操作数层报意外 token
+            if (currentToken is NotationToken assign && assign.Content == "=" &&
+                IsCompoundAssignmentOperator(pendingOperator))
             {
-                context.RaiseError(
-                    $"Compound assignment (such as '{pendingOperator}=') is not yet supported; " +
-                    $"please expand it to a = a {pendingOperator} b");
+                // 左操作数到此为止：当前表达式仍是未挂载子树（Attach 前已确定
+                // 最终形态），挂入 Target Root——与二元 Left 同一路径，无 Root 替换
+                var compoundExpr = new CompoundAssignmentExpressionASTNode
+                {
+                    Operator = pendingOperator
+                };
+                compoundExpr.Target.Attach(currentExpression!);
+                WrapSpan(compoundExpr, currentExpression!, context);
+
+                // 右操作数照常经 ExpressionRoot 委托解析（禁止再消费二元运算符）
+                var valueLayer = new ExpressionParserLayer(compoundExpr.Value)
+                {
+                    allowBinaryOperator = false,
+                    insideParens = insideParens,
+                    allowBareReturn = allowBareReturn
+                };
+
+                currentExpression = compoundExpr;
+                state = State.Completed;
+
+                // = 是复合赋值符号的组成部分，由本层消费
+                return new ParserLayerResult.PushLayer(valueLayer, TokenDisposition.Consume);
             }
 
             // 创建二元表达式节点：左操作数挂入 Left Root（未挂载子树包装）
@@ -657,7 +730,8 @@ namespace LatteCompiler
             var rightLayer = new ExpressionParserLayer(binaryExpr.Right)
             {
                 allowBinaryOperator = false,
-                insideParens = insideParens
+                insideParens = insideParens,
+                allowBareReturn = allowBareReturn
             };
 
             currentExpression = binaryExpr;
@@ -707,6 +781,22 @@ namespace LatteCompiler
         {
             if (currentToken is WordToken name && Keywords.IsIdentifierStart(name.Content))
             {
+                // is 右侧的 enum case（SYNTAX §12.3）：挂入 TypeCheck 的 TargetCase 槽
+                // （与 TargetType 互斥）；类型检查表达式整体即完成——后续再接运算符
+                // 必须加括号（与类型右侧同规则，见 HandleTypeOperatorSeen）
+                if (enumCaseForTypeCheck)
+                {
+                    enumCaseForTypeCheck = false;
+                    var targetCase = new EnumCaseExpressionASTNode(pendingCheckNode!)
+                    {
+                        CaseName = name.Content
+                    };
+                    StartSpan(targetCase, pendingSuffixStart, context);
+                    pendingCheckNode!.TargetCase = targetCase;
+                    state = State.Completed;
+                    return ParserLayerResult.Continue.Instance;
+                }
+
                 var enumCaseNode = new EnumCaseExpressionASTNode()
                 {
                     CaseName = name.Content
@@ -870,6 +960,7 @@ namespace LatteCompiler
         private bool IsLiteralStart(Token token)
         {
             if (token is StringToken) return true;
+            if (token is CharToken) return true;
 
             if (token is WordToken wt)
             {
@@ -933,6 +1024,14 @@ namespace LatteCompiler
         {
             return word == Keywords.IS || word == Keywords.AS ||
                    word == Keywords.SUPERS || word == Keywords.WITH;
+        }
+
+        // 复合赋值基础运算符全集（SYNTAX §13.2，10 个，无 %=）：
+        // pending 运算符与随后的 = 组成复合赋值；>> 与 >>> 由 > 系列重组先行收拢
+        private static bool IsCompoundAssignmentOperator(string op)
+        {
+            return op is "+" or "-" or "*" or "/" or
+                   "<<" or ">>" or ">>>" or "&" or "|" or "^";
         }
 
         private string GetOperatorString(Token token)

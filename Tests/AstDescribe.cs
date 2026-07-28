@@ -11,11 +11,12 @@ namespace LatteCompiler.Tests
     ///
     /// 格式约定（表达式）：
     ///   Int(42,I32[,hex])  Float(3.14[f])  Str("..."[,interp])  Bool(True)  Null
-    ///   Sym(a.b&lt;T&gt;)  Unary(- x)  Binary(l + r)  Group(x)
+    ///   Sym(a.b&lt;T&gt;)  Unary(- x)  Binary(l + r)  CompoundAssign(t op= v)  Group(x)
     ///   Call(callee, [a, n:b])  Index(obj, [a])  Access(obj, [?].m[&lt;T&gt;])
-    ///   New(T, [args])  Cast(x as[?] T)  Check(x is T)  EnumCase(.N)  WrapperAccess(o, :W)
-    ///   If(c, t, e)  Switch(s, [p -> b], default -> d)  TypeOf(x)
-    ///   Lambda[ async]([ps])[\&lt;gs&gt;]: R -> body  Seq(...)
+    ///   New(T, [args])  Cast(x as[?] T)  Check(x is T | is .Case)  EnumCase(.N)  WrapperAccess(o, :W)
+    ///   If(c, [then块], [else块])  Switch(s, [p -> b块], default -> d块)（均可带 named 标签）
+    ///   SwitchStmt(s, [p -> b块], default -> d块)（语句形态）  TypeOf(x)
+    ///   Lambda[ async]([ps])[\&lt;gs&gt;]: R ->[ named L] body（单表达式或 [块]）  Seq(...)
     /// 格式约定（语句/声明）见各方法注释。
     /// </summary>
     public static class AstDescribe
@@ -31,12 +32,15 @@ namespace LatteCompiler.Tests
                 IntLiteralASTNode i => $"Int({i.Value},{i.IntType}{IntBase(i)})",
                 FloatLiteralASTNode f => $"Float({f.Value}{(f.IsFloat ? "f" : "")})",
                 StringLiteralASTNode s => $"Str(\"{s.Value}\"{(s.HasInterpolation ? ",interp" : "")})",
+                CharLiteralASTNode c => $"Char('{c.Value}')",
                 BoolLiteralASTNode b => $"Bool({b.Value})",
                 NullLiteralASTNode => "Null",
                 SymbolReferenceASTNode sref => $"Sym({Symbol(sref.Symbol.symbol)})",
                 UnaryExpressionASTNode u => $"Unary({u.Operator} {Expr(u.Operand.Expression)})",
                 BinaryExpressionASTNode b =>
                     $"Binary({Expr(b.Left.Expression)} {b.Operator} {Expr(b.Right.Expression)})",
+                CompoundAssignmentExpressionASTNode ca =>
+                    $"CompoundAssign({Expr(ca.Target.Expression)} {ca.Operator}= {Expr(ca.Value.Expression)})",
                 GroupExpressionASTNode g => $"Group({Expr(g.InnerExpression.Expression)})",
                 CallExpressionASTNode c =>
                     $"Call({Expr(c.Callee.Expression)}, [{string.Join(", ", c.Arguments.Select(Arg))}])",
@@ -48,13 +52,14 @@ namespace LatteCompiler.Tests
                     $"New({Type(n.Type)}, [{string.Join(", ", n.Arguments.Select(Arg))}])",
                 CastExpressionASTNode c =>
                     $"Cast({Expr(c.Object.Expression)} as{(c.IsSafe ? "?" : "")} {Type(c.TargetType)})",
-                TypeCheckExpressionASTNode t =>
-                    $"Check({Expr(t.Object.Expression)} {t.Operator} {Type(t.TargetType)})",
+                TypeCheckExpressionASTNode t => t.TargetCase != null
+                    ? $"Check({Expr(t.Object.Expression)} {t.Operator} {Expr(t.TargetCase)})"
+                    : $"Check({Expr(t.Object.Expression)} {t.Operator} {Type(t.TargetType!)})",
                 EnumCaseExpressionASTNode ec => $"EnumCase(.{ec.CaseName})",
                 WrapperAccessASTNode w =>
                     $"WrapperAccess({Expr(w.Object.Expression)}, :{w.WrapperName})",
                 IfExpressionASTNode e =>
-                    $"If({Expr(e.Condition.Expression)}, {Expr(e.ThenExpression.Expression)}, {Expr(e.ElseExpression.Expression)})",
+                    $"If({Expr(e.Condition.Expression)}{Named(e.Label)}, {Block(e.ThenBody)}, {Block(e.ElseBody)})",
                 SwitchExpressionASTNode s => Switch(s),
                 LambdaExpressionASTNode l => Lambda(l),
                 TypeOfExpressionASTNode t => $"TypeOf({Expr(t.Operand.Expression)})",
@@ -75,25 +80,31 @@ namespace LatteCompiler.Tests
             };
         }
 
-        // Switch(sel, [p -> b, ...], default -> d)
+        // Switch(sel[, named L], [p -> [块], ...], default -> [块])（分支体统一为代码块，§7.2）
         private static string Switch(SwitchExpressionASTNode s)
         {
             string cases = string.Join(", ", s.Cases.Select(
-                c => $"{Expr(c.Pattern.Expression)} -> {Expr(c.Body.Expression)}"));
-            string def = s.DefaultBody != null ? Expr(s.DefaultBody.Expression) : "<none>";
-            return $"Switch({Expr(s.Selector.Expression)}, [{cases}], default -> {def})";
+                c => $"{Expr(c.Pattern.Expression)} -> {Block(c.Body)}"));
+            string def = s.DefaultBody != null ? Block(s.DefaultBody) : "<none>";
+            return $"Switch({Expr(s.Selector.Expression)}{Named(s.Label)}, [{cases}], default -> {def})";
         }
 
-        // Lambda[ async]([params])[\<generics>]: Ret -> body
+        // Lambda[ async]([params])[\<generics>]: Ret ->[ named L] body
+        // （body 为单表达式或多语句 [块]，两形态互斥，§5.1）
         private static string Lambda(LambdaExpressionASTNode l)
         {
             string desc = "Lambda";
             if (l.IsAsync) desc += " async";
             desc += $"({Params(l.Parameters)})";
             if (l.GenericParameters != null) desc += Generics(l.GenericParameters);
-            desc += $": {Type(l.ReturnType)} -> {Expr(l.Body.Expression)}";
+            desc += $": {Type(l.ReturnType)} ->";
+            if (l.Label != null) desc += $" named {l.Label}";
+            desc += l.BlockBody != null ? $" {Block(l.BlockBody)}" : $" {Expr(l.Body!.Expression)}";
             return desc;
         }
+
+        // named 标签片段：, named L（无标签为空串）
+        private static string Named(string? label) => label != null ? $", named {label}" : "";
 
         // Seq([volatile, ][using(const f: T = init), ][named L, ][body])
         private static string Seq(SeqBlockExpressionASTNode seq)
@@ -127,6 +138,7 @@ namespace LatteCompiler.Tests
                 LoopControlStatementASTNode l =>
                     $"{(l.IsBreak ? "Break" : "Continue")}{(l.Label != null ? "@" + l.Label : "")}",
                 IfStatementASTNode i => IfStmt(i),
+                SwitchStatementASTNode s => SwitchStmt(s),
                 LoopStatementASTNode l => Loop(l),
                 ThrowStatementASTNode t => $"Throw({Expr(t.Exception.Expression)})",
                 YieldStatementASTNode y => y.Alarm != null ? $"Yield({Expr(y.Alarm.Expression)})" : "Yield",
@@ -154,6 +166,15 @@ namespace LatteCompiler.Tests
                 _ => $"<{i.ElseBranch.GetType().Name}>"
             };
             return $"IfStmt({Expr(i.Condition.Expression)}, {Block(i.ThenBlock)}, {elsePart})";
+        }
+
+        // SwitchStmt(sel, [p -> [块], ...], default -> [块])（语句形态，§7.2）
+        private static string SwitchStmt(SwitchStatementASTNode s)
+        {
+            string cases = string.Join(", ", s.Cases.Select(
+                c => $"{Expr(c.Pattern.Expression)} -> {Block(c.Body)}"));
+            string def = s.DefaultBody != null ? Block(s.DefaultBody) : "<none>";
+            return $"SwitchStmt({Expr(s.Selector.Expression)}, [{cases}], default -> {def})";
         }
 
         // For(v, [Range(a to b) | iterable][, named L], [body]) / While / DoWhile

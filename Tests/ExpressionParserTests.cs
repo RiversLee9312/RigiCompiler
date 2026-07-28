@@ -6,8 +6,9 @@ namespace LatteCompiler.Tests
     // （AstDescribe 精确描述串 + 结构事实），不断言控制台文本。
     // 覆盖：字面量/符号/一元/二元/括号分组与「无运算符优先级」错误、类型标注声明、
     // 调用/成员访问/索引/new/泛型调用与后缀错误、is/supers/with 与 as/as? 类型操作、
-    // 前导点 enum case 引用（SYNTAX §12）、wrapper 路径访问（SYNTAX §14.1）、
-    // 位运算符（§13.2）、括号内续行（§1.1）、复合赋值与 in 的 M31 错误、AST 结构断言。
+    // 前导点 enum case 引用（SYNTAX §12）、is 右侧 enum case（§12.3）、
+    // wrapper 路径访问（SYNTAX §14.1）、位运算符（§13.2）、复合赋值（§13.2）、
+    // 括号内续行（§1.1）、位运算优先级与 in 的 M31 错误、AST 结构断言。
     public class ExpressionParserTests
     {
         // ===== 1. 字面量初始化 =====
@@ -325,7 +326,7 @@ namespace LatteCompiler.Tests
             TestHarness.Blank();
         }
 
-        // ===== 20. M31 错误用例（位运算优先级 / 复合赋值 / in）=====
+        // ===== 20. M31 错误用例（位运算优先级 / in）=====
         public static void TestM31ErrorCases()
         {
             TestHarness.Section("M31 Error Cases (expect ParserException)");
@@ -333,11 +334,6 @@ namespace LatteCompiler.Tests
             // 位运算同样遵守「没有运算符优先级」：未括号化的连续位运算必须报错
             TestHarness.CheckParseError("var s = a & b & c",
                 () => TestHarness.ParseRoot("var s = a & b & c"), "没有运算符优先级");
-            // 复合赋值尚未支持：Lexer 拆成两个 token，运算符状态遇 = 给明确错误
-            TestHarness.CheckParseError("{ a += b }",
-                () => TestHarness.ParseBlock("{ a += b }"), "Compound assignment");
-            TestHarness.CheckParseError("{ a >>= b }",
-                () => TestHarness.ParseBlock("{ a >>= b }"), "Compound assignment");
             // in 只属于 for 循环头，不是二元运算符（M31 移除）
             TestHarness.CheckParseError("var x = a in b",
                 () => TestHarness.ParseRoot("var x = a in b"), "Unexpected token after initializer");
@@ -345,7 +341,90 @@ namespace LatteCompiler.Tests
             TestHarness.Blank();
         }
 
-        // ===== 21. AST 结构断言（字符串快照之外的结构性校验，AGENTS §5）=====
+        // ===== 21. 复合赋值（SYNTAX §13.2）=====
+        public static void TestCompoundAssignments()
+        {
+            TestHarness.Section("Compound Assignments (§13.2)");
+
+            // 全集 10 个运算符（语句位置：ExpressionStatement 包装，无 %=）
+            TestBlock("{ a += 1 }", "[CompoundAssign(Sym(a) += Int(1,I32))]");
+            TestBlock("{ a -= 1 }", "[CompoundAssign(Sym(a) -= Int(1,I32))]");
+            TestBlock("{ a *= 2 }", "[CompoundAssign(Sym(a) *= Int(2,I32))]");
+            TestBlock("{ a /= 2 }", "[CompoundAssign(Sym(a) /= Int(2,I32))]");
+            TestBlock("{ a <<= 1 }", "[CompoundAssign(Sym(a) <<= Int(1,I32))]");
+            TestBlock("{ a >>= 1 }", "[CompoundAssign(Sym(a) >>= Int(1,I32))]");
+            // >>>= 是复合赋值而非比较：token 流 > > > = 经重组收拢为 >>> 后遇 = 分流
+            TestBlock("{ a >>>= 1 }", "[CompoundAssign(Sym(a) >>>= Int(1,I32))]");
+            TestBlock("{ a &= b }", "[CompoundAssign(Sym(a) &= Sym(b))]");
+            TestBlock("{ a |= b }", "[CompoundAssign(Sym(a) |= Sym(b))]");
+            TestBlock("{ a ^= b }", "[CompoundAssign(Sym(a) ^= Sym(b))]");
+            // 右操作数照常经 ExpressionRoot 委托解析（可为任意表达式）
+            TestBlock("{ a += (b + 1) }",
+                "[CompoundAssign(Sym(a) += Group(Binary(Sym(b) + Int(1,I32))))]");
+            // 复合赋值整体是表达式节点：可出现在表达式位置
+            TestExpr("var v = (a += 1)", "Group(CompoundAssign(Sym(a) += Int(1,I32)))");
+            // 区分：>= 保持比较语义（>>> 比较回归见 TestBitwiseOperators）
+            TestExpr("var s = (a >= b)", "Group(Binary(Sym(a) >= Sym(b)))");
+
+            // 结构断言：节点类型、Operator 字符串、Target/Value 内容与 Parent 链
+            var block = TestHarness.ParseBlock("{ count += 42 }");
+            var stmt = (ExpressionStatementASTNode)block.Statements[0];
+            var compound = (CompoundAssignmentExpressionASTNode)stmt.Expression.Expression;
+            TestHarness.CheckTrue("{ count += 42 }: Operator 为 +", compound.Operator == "+");
+            TestHarness.CheckTrue("{ count += 42 }: Target 已填充且为符号",
+                compound.Target.IsAttached &&
+                compound.Target.Expression is SymbolReferenceASTNode);
+            TestHarness.CheckTrue("{ count += 42 }: Value 已填充且为字面量",
+                compound.Value.IsAttached &&
+                compound.Value.Expression is LiteralExpressionASTNode);
+            TestHarness.CheckTrue("{ count += 42 }: Target/Value Root 的 Parent 指向节点",
+                ReferenceEquals(compound.Target.Parent, compound) &&
+                ReferenceEquals(compound.Value.Parent, compound));
+            TestHarness.CheckTrue("{ count += 42 }: Target 表达式的 Parent 指向 Target Root",
+                ReferenceEquals(compound.Target.Expression.Parent, compound.Target));
+
+            // 负例：不属于全集的组合不误判——== 是既有比较，
+            // 再遇 = 落入正常二元流程，由右操作数层报意外 token
+            TestHarness.CheckParseError("{ a == = b }",
+                () => TestHarness.ParseBlock("{ a == = b }"), "Unexpected token at start of expression");
+
+            TestHarness.Blank();
+        }
+
+        // ===== 22. is 右侧 enum case（SYNTAX §12.3）=====
+        public static void TestIsEnumCase()
+        {
+            TestHarness.Section("is with Enum Case (§12.3)");
+
+            // 正例：is 右侧前导点 enum case（TargetCase 槽，与 TargetType 互斥）
+            TestExpr("var v = result is .Failed", "Check(Sym(result) is EnumCase(.Failed))");
+            // switch 模式匹配走同一条 is 路径（§12.3 规范示例形态）
+            TestExpr("var r = switch(n) { (_ is .Success) -> { \"ok\" } default -> { \"?\" } }",
+                "Switch(Sym(n), [Check(Sym(_) is EnumCase(.Success)) -> [Str(\"ok\")]], " +
+                "default -> [Str(\"?\")])");
+
+            // 结构断言：双字段互斥、CaseName、Parent 链
+            var decl = (VariableDeclarationASTNode)TestHarness.ParseFirstDecl("var v = result is .Failed");
+            var check = (TypeCheckExpressionASTNode)decl.Initializer!.Expression;
+            TestHarness.CheckTrue("result is .Failed: Operator 为 is", check.Operator == "is");
+            TestHarness.CheckTrue("result is .Failed: TargetCase 非空、TargetType 为空（互斥）",
+                check.TargetCase != null && check.TargetType == null);
+            TestHarness.CheckTrue("result is .Failed: CaseName",
+                check.TargetCase!.CaseName == "Failed");
+            TestHarness.CheckTrue("result is .Failed: TargetCase.Parent 指向 Check 节点",
+                ReferenceEquals(check.TargetCase.Parent, check));
+            TestHarness.CheckTrue("result is .Failed: Object Root 已填充", check.Object.IsAttached);
+
+            // 负例：as/supers 右侧必须是类型，遇 . 维持报错
+            TestHarness.CheckParseError("var e = obj as .Failed",
+                () => TestHarness.ParseRoot("var e = obj as .Failed"), "Expected type name");
+            TestHarness.CheckParseError("var e = obj supers .X",
+                () => TestHarness.ParseRoot("var e = obj supers .X"), "Expected type name");
+
+            TestHarness.Blank();
+        }
+
+        // ===== 23. AST 结构断言（字符串快照之外的结构性校验，AGENTS §5）=====
         public static void TestStructuralAssertions()
         {
             TestHarness.Section("Structural Assertions");
@@ -412,6 +491,20 @@ namespace LatteCompiler.Tests
             }
         }
 
+        // 辅助：解析代码块并比对块内容的 AST 描述串
+        private static void TestBlock(string code, string expectedDesc)
+        {
+            try
+            {
+                var block = TestHarness.ParseBlock(code);
+                TestHarness.Check(code, AstDescribe.Block(block), expectedDesc);
+            }
+            catch (Exception ex)
+            {
+                TestHarness.CheckTrue($"{code} => 意外异常", false, ex.Message);
+            }
+        }
+
         // 辅助：解析变量声明并比对初始化表达式的 AST 描述串（label 中 \n 转义显示）
         private static void TestExprEscaped(string code, string expectedDesc)
         {
@@ -465,6 +558,8 @@ namespace LatteCompiler.Tests
             TestBitwiseOperators();
             TestLineContinuation();
             TestM31ErrorCases();
+            TestCompoundAssignments();
+            TestIsEnumCase();
             TestStructuralAssertions();
 
             return TestHarness.Summary("Expression");

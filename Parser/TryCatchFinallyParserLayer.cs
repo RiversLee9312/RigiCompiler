@@ -27,6 +27,9 @@ namespace LatteCompiler
     public class TryCatchFinallyParserLayer : IParserLayer, ISpanReceiver
     {
         private readonly TryCatchFinallyStatementASTNode tryNode;
+        // 父上下文是否允许裸 return（SYNTAX §5.1）：try/catch/finally 块不是
+        // lambda 边界，标记向各子块传染
+        private readonly bool allowBareReturn;
 
         private enum State
         {
@@ -49,9 +52,10 @@ namespace LatteCompiler
         private State state = State.TryKeyword;
         private CatchClauseASTNode? currentCatch;
 
-        public TryCatchFinallyParserLayer(TryCatchFinallyStatementASTNode target)
+        public TryCatchFinallyParserLayer(TryCatchFinallyStatementASTNode target, bool allowBareReturn = true)
         {
             tryNode = target;
+            this.allowBareReturn = allowBareReturn;
         }
 
         // Span 回填（M28）：回填施工目标 try 节点
@@ -133,7 +137,7 @@ namespace LatteCompiler
             // 委托给 CodeBlockParserLayer 解析 try 块
             state = State.CatchOrFinally;
             return new ParserLayerResult.PushLayer(
-                new CodeBlockParserLayer(tryNode.TryBlock), TokenDisposition.Replay);
+                new CodeBlockParserLayer(tryNode.TryBlock, allowBareReturn), TokenDisposition.Replay);
         }
 
         private ParserLayerResult HandleCatchOrFinally(Token currentToken, ParserLayerContext context)
@@ -298,7 +302,7 @@ namespace LatteCompiler
             tryNode.CatchClauses.Add(currentCatch!);
             state = State.CatchOrFinally;
             return new ParserLayerResult.PushLayer(
-                new CodeBlockParserLayer(currentCatch!.Body), TokenDisposition.Replay);
+                new CodeBlockParserLayer(currentCatch!.Body, allowBareReturn), TokenDisposition.Replay);
         }
 
         private ParserLayerResult HandleFinallyOpenParen(Token currentToken, ParserLayerContext context)
@@ -368,7 +372,7 @@ namespace LatteCompiler
             // 委托给 CodeBlockParserLayer 解析 finally 块
             state = State.Completed;
             return new ParserLayerResult.PushLayer(
-                new CodeBlockParserLayer(tryNode.FinallyBlock!), TokenDisposition.Replay);
+                new CodeBlockParserLayer(tryNode.FinallyBlock!, allowBareReturn), TokenDisposition.Replay);
         }
 
         private ParserLayerResult HandleCompleted(Token currentToken, ParserLayerContext context)

@@ -28,7 +28,7 @@ namespace LatteCompiler
     /// 3. 所有 AST 节点最多被引用一次（无共享——同一表达式不可能属于两个 Root，
     ///    也不存在多父节点）；
     /// 4. AST 的 Parent 链不存在环；
-    /// 5. switch 表达式满足 default 规则（表达式模式必须有 default 分支）；
+    /// 5. switch 满足 default 规则（表达式与语句两种形态都必须有 default 分支）；
     /// 6. 每个节点都有合法源码范围 Span（M28）：非空（ExpressionRoot 可透明继承
     ///    内容表达式）、sourceName 非空、End 不早于 Start；
     ///    Span 统一为左闭右开 [Start, End)（M31 起）：Start 指向首个字符，
@@ -92,11 +92,16 @@ namespace LatteCompiler
                         $"ExpressionRootASTNode is not filled (owner: {exprRoot.Parent?.GetType().Name ?? "<null>"})");
                 }
 
-                // 5. switch 表达式必须有 default 分支（SYNTAX §7.2）
+                // 5. switch 必须有 default 分支（SYNTAX §7.2：表达式与语句两种形态同规则）
                 if (node is SwitchExpressionASTNode switchExpr && switchExpr.DefaultBody == null)
                 {
                     throw new CompilerInternalException(
                         "Switch expression has no default branch (SYNTAX §7.2)");
+                }
+                if (node is SwitchStatementASTNode switchStmt && switchStmt.DefaultBody == null)
+                {
+                    throw new CompilerInternalException(
+                        "Switch statement has no default branch (SYNTAX §7.2)");
                 }
 
                 // 6. Span 检查（M28）

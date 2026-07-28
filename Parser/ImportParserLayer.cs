@@ -13,8 +13,8 @@ namespace LatteCompiler
     ///   import core.collections.*                // 全部导入
     ///
     /// 前缀路径复用 PathParserLayer 解析：它遇 `*` / `{` / 换行会弹出并交还 token；
-    /// `.*` / `.{` 前被吞下的 `.` 会在符号末尾留下空名元素，弹出后统一清理
-    /// （与 GenericParameters 层对 `...` 残留空名元素的既有处理同款）。
+    /// `.*` / `.{` 前被吞下的 `.` 只留下一个未命名的 SymbolElement——
+    /// SymbolLayer 的元素只在读到名字时才入列，弹出时该空名元素自然丢弃，无需清理。
     /// 多导入列表中的每一项展开为独立的完整路径 ImportItem。
     ///
     /// 状态流转：
@@ -175,6 +175,13 @@ namespace LatteCompiler
                 {
                     state = State.WaitEnd;
                     return ParserLayerResult.Continue.Instance;
+                }
+                // {} 列表项只能是单标识符（SYNTAX §15.2）：a.{b.c} 是编译错误
+                if (n.Content == ".")
+                {
+                    throw context.RaiseError(
+                        "Import list item must be a single identifier, paths are not allowed (e.g. a.{b.c}); " +
+                        "write multiple import statements for symbols from different sub-paths (SYNTAX §15.2)");
                 }
             }
             throw context.RaiseError($"Expected ',' or '}}' in import list, got: {t}");

@@ -244,6 +244,16 @@ namespace LatteCompiler.Tests
             // switch 表达式
             CheckRoundTrip("switch 表达式",
                 "var r = switch(x) { (1) -> { 1 } default -> { 0 } }\n");
+            // switch 语句（语句形态，M33）+ if 表达式多语句分支体 + lambda 块体 named
+            CheckRoundTrip("switch 语句 + if 多语句分支 + lambda 块体",
+                "func main() {\n" +
+                "    switch(x) {\n" +
+                "        (1) -> { handleOne() }\n" +
+                "        default -> { handleOther() }\n" +
+                "    }\n" +
+                "    var r = if (x > 0) named check { return@check x } else { return@check 0 }\n" +
+                "    var f = func{(x: i32): i32 -> { return@_ x }}\n" +
+                "}\n");
             // class 声明（泛型 + 继承 + implements + 成员方法）
             CheckRoundTrip("class 声明（泛型 + 继承 + implements）",
                 "pub class MyList\\<TElement> : List implements Iterable {\n" +

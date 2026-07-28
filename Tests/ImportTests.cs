@@ -9,7 +9,7 @@ namespace LatteCompiler.Tests
     /// 1. 单个导入（单段/多段路径）
     /// 2. 全部导入（.*）
     /// 3. 多个导入（.{A, B} 共享前缀，展开为独立完整路径）
-    /// 4. 错误用例（空路径、空列表、尾随逗号、* 后多余 token、{} 无前缀）
+    /// 4. 错误用例（空路径、空列表、尾随逗号、* 后多余 token、{} 无前缀、列表项带路径）
     ///
     /// 驱动方式：TestHarness.ParseRoot 完整入口（import 是顶层语句）。
     /// </summary>
@@ -75,6 +75,9 @@ namespace LatteCompiler.Tests
             TestHarness.CheckParseError("import {List}（{} 缺少前缀路径）",
                 () => TestHarness.ParseRoot("import {List}"),
                 "requires an import path");
+            TestHarness.CheckParseError("import a.{b.c}（列表项带路径，§15.2 只允许单标识符）",
+                () => TestHarness.ParseRoot("import a.{b.c}"),
+                "Import list item must be a single identifier");
 
             TestHarness.Blank();
         }

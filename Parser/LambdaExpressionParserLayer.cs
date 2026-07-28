@@ -3,24 +3,35 @@ using System;
 namespace LatteCompiler
 {
     /// <summary>
-    /// Lambda 表达式解析器（roadmap #21，SYNTAX.md §5）
+    /// Lambda 表达式解析器（roadmap #21，SYNTAX.md §5.1）
     ///
-    /// 解析 [async] func{(params)\&lt;T&gt;: ReturnType -> body}
+    /// 解析 [async] func{(params)\&lt;T&gt;: ReturnType -> [named 标签] body}
     /// func/async 关键字由 ExpressionParserLayer 先行消费，本层从 { 开始；
     /// trailing lambda（list.map{...}）同样从 { 进入，因此入口统一。
+    ///
+    /// 体两形态（互斥，创建时定）：
+    /// - 单表达式体：-> expr（隐式取值），委托 ExpressionParserLayer
+    /// - 多语句块体：-> { ... }（SYNTAX §5.1），委托 CodeBlockParserLayer；
+    ///   所有路径必须显式 return@_ / return@标签 产出值
+    /// named 标签写在 -> 之后、体之前，配合 return@标签 穿透内层匿名块。
     ///
     /// 状态流转：
     /// OpenBraceExpected →（委托形参列表）→ AfterParameters
     ///   → [AfterGenerics] →（委托返回类型）→ ArrowExpected
-    ///   → BodyStart →（委托 body 表达式）→ CloseBraceExpected → 弹出
+    ///   → BodyStart → [BodyLabelExpected → BodyAfterLabel]
+    ///   →（单表达式：委托 ExpressionParserLayer / 块体：委托 CodeBlockParserLayer）
+    ///   → CloseBraceExpected → 弹出
     ///
     /// 委托说明（Delegate, don't implement）：
     /// - 形参列表委托 ParameterListParserLayer（原地写入 node.Parameters）
     /// - 泛型形参委托 GenericParametersParserLayer（原地写入 node.GenericParameters）
     /// - 返回类型委托 TypeReferenceParserLayer（原地写入 node.ReturnType）
-    /// - body 委托 ExpressionParserLayer（直接附加到 node.Body Root，无回传）
+    /// - 单表达式体委托 ExpressionParserLayer（直接附加到 node.Body Root，无回传）
+    /// - 块体委托 CodeBlockParserLayer（原地填充 node.BlockBody）
     ///
-    /// 当前限制：body 仅支持单表达式，多语句块待 P2 CodeBlockParserLayer。
+    /// lambda 是裸 return 边界（SYNTAX §5.1）：体内（含嵌套 seq/if/循环等代码块、
+    /// 以及单表达式体内 if/switch 表达式的分支块）一律禁止裸 return，
+    /// 两种体形态都以 allowBareReturn: false 下传。
     /// </summary>
     public class LambdaExpressionParserLayer : IParserLayer, ISpanReceiver
     {
@@ -32,7 +43,9 @@ namespace LatteCompiler
             AfterParameters,    // 形参列表已解析，等待 : 或 \<（泛型形参）
             AfterGenerics,      // 泛型形参已解析，等待 :
             ArrowExpected,      // 返回类型已解析，等待 ->
-            BodyStart,          // -> 已读，等待 body 表达式开始
+            BodyStart,          // -> 已读：named 标签、{ 块体或单表达式体
+            BodyLabelExpected,  // named 已读：等待标签名
+            BodyAfterLabel,     // 标签已读：{ 块体或单表达式体
             CloseBraceExpected  // body 已解析，等待 }
         }
 
@@ -55,7 +68,7 @@ namespace LatteCompiler
                 return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
             }
 
-            // 本层只处于结构性等待状态（括号/箭头/花括号），允许跨行；
+            // 本层只处于结构性等待状态（括号/箭头/花括号/named），允许跨行；
             // 表达式内部的换行终止仍由 ExpressionParserLayer 负责
             if (currentToken is LineBreakToken)
             {
@@ -74,6 +87,10 @@ namespace LatteCompiler
                     return HandleArrowExpected(currentToken, context);
                 case State.BodyStart:
                     return HandleBodyStart(currentToken, context);
+                case State.BodyLabelExpected:
+                    return HandleBodyLabelExpected(currentToken, context);
+                case State.BodyAfterLabel:
+                    return HandleBodyAfterLabel(currentToken, context);
                 case State.CloseBraceExpected:
                     return HandleCloseBraceExpected(currentToken, context);
                 default:
@@ -146,12 +163,61 @@ namespace LatteCompiler
             return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
-        // body 开始：压入 ExpressionParserLayer（保留 token 交给它），直接附加到 Body Root
+        // -> 已读：named 标签、{ 块体或单表达式体
         private ParserLayerResult HandleBodyStart(Token currentToken, ParserLayerContext context)
         {
+            // named 标签（SYNTAX §5.1）：写在 -> 之后、体之前
+            if (currentToken is WordToken wt && wt.Content == Keywords.NAMED)
+            {
+                state = State.BodyLabelExpected;
+                return ParserLayerResult.Continue.Instance;
+            }
+
+            return DelegateBody(currentToken, context);
+        }
+
+        // named 已读：等待标签名（只查首字符，与循环标签同规则）
+        private ParserLayerResult HandleBodyLabelExpected(Token currentToken, ParserLayerContext context)
+        {
+            if (currentToken is WordToken wt && Keywords.IsIdentifierStart(wt.Content))
+            {
+                targetNode.Label = wt.Content;
+                state = State.BodyAfterLabel;
+                return ParserLayerResult.Continue.Instance;
+            }
+
+            context.RaiseError($"Expected label name after 'named', got: {currentToken}");
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
+        }
+
+        // 标签已读：{ 块体或单表达式体（不允许第二个 named）
+        private ParserLayerResult HandleBodyAfterLabel(Token currentToken, ParserLayerContext context)
+        {
+            return DelegateBody(currentToken, context);
+        }
+
+        // 体分发：{ → 多语句块体（CodeBlockParserLayer）；其余 → 单表达式体
+        // （ExpressionParserLayer）。lambda 是裸 return 边界：两形态都以
+        // allowBareReturn: false 下传（块体内裸 return 由 CodeBlockParserLayer 拒绝；
+        // 单表达式体内 if/switch 表达式分支块同样禁止）
+        private ParserLayerResult DelegateBody(Token currentToken, ParserLayerContext context)
+        {
+            // 块体：创建 BlockBody 代码块（与 Body 互斥，创建时定）
+            if (currentToken is NotationToken nt && nt.Content == "{")
+            {
+                targetNode.BlockBody = new CodeBlockASTNode(targetNode);
+                state = State.CloseBraceExpected;
+                return new ParserLayerResult.PushLayer(
+                    new CodeBlockParserLayer(targetNode.BlockBody, allowBareReturn: false),
+                    TokenDisposition.Replay);
+            }
+
+            // 单表达式体：创建 Body Root（保留 token 交给表达式层）
+            targetNode.Body = new ExpressionRootASTNode(targetNode);
             state = State.CloseBraceExpected;
             return new ParserLayerResult.PushLayer(
-                new ExpressionParserLayer(targetNode.Body), TokenDisposition.Replay);
+                new ExpressionParserLayer(targetNode.Body) { allowBareReturn = false },
+                TokenDisposition.Replay);
         }
 
         // 等待 } ：消费后完成解析，弹出本层

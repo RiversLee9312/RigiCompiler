@@ -5,7 +5,7 @@
 
 **项目名**: LatteCompiler
 **语言**: C#（.NET 8.0，控制台程序，`Nullable` 与 `ImplicitUsings` 已启用）
-**开发阶段**: 早期 —— 编译器前端（Lexer + Parser）已完成（roadmap P0–P5 全部落地），Parser/PDA 大扫除（架构重构）、AST 结构标注（M24）、Lexer 修复（M25）、日志系统 + AST JSONL 序列化（M26）、CLI 插件化（M27）、Lexer 位置修复 + AST Source Span + ASTVisitor 统一遍历（M28）、AST 容器重构（M29）、Utilities.cs 拆分 + ASTVisitor 遍历可重载 + 文档幽灵清理（M30）、前端大修（M31：Span 左闭右开、Lexer 块注释重写、续行规则、位运算符、0b/0o/下划线字面量、Keywords 大扫除、JSONL v2 + 反序列化器、测试基建统一）与多行字符串（M32：SYNTAX §3.3 定稿 Swift 风格严格多行，QuoteLexerLayer 引号分流 + MultilineStringLexerLayer）已完成；下一阶段：语义分析、BIL 输出
+**开发阶段**: 早期 —— 编译器前端（Lexer + Parser）已完成（roadmap P0–P5 全部落地），Parser/PDA 大扫除（架构重构）、AST 结构标注（M24）、Lexer 修复（M25）、日志系统 + AST JSONL 序列化（M26）、CLI 插件化（M27）、Lexer 位置修复 + AST Source Span + ASTVisitor 统一遍历（M28）、AST 容器重构（M29）、Utilities.cs 拆分 + ASTVisitor 遍历可重载 + 文档幽灵清理（M30）、前端大修（M31：Span 左闭右开、Lexer 块注释重写、续行规则、位运算符、0b/0o/下划线字面量、Keywords 大扫除、JSONL v2 + 反序列化器、测试基建统一）、多行字符串（M32：SYNTAX §3.3 定稿 Swift 风格严格多行，QuoteLexerLayer 引号分流 + MultilineStringLexerLayer）、值块统一（M33：if/switch 表达式分支体与 lambda 体统一为代码块 + `return@_`/named 取值、switch 语句形态、lambda 体内裸 return 编译错误、seq 匿名默认标签 `seq`→`_`）与技术债清扫（M34：字符字面量、复合赋值 10 运算符、`is` 右侧 enum case、wrapper `.name` 保留参数名、import `{}` 单标识符禁令）已完成；下一阶段：语义分析、BIL 输出
 **版本控制**: Git（`main` 分支，2026-07-17 首次提交，工作树干净；CI 见 `.github/workflows/ci.yml`）
 
 ---
@@ -29,7 +29,7 @@ Latte 源码 (.latte) → Frontend (Lexer + Parser) ✅ 完成（含大扫除重
                     → LLVM 工具链 → 原生可执行文件
 ```
 
-**当前进度**：编译器前端（Lexer + Parser）已完成，且经过一次彻底的架构大扫除（见 §4.7）：控制流系统与 AST 施工系统严格分离，Layer 之间只传递控制权不传递 AST 数据。已可解析字面量、类型引用、变量声明（含 getter/setter 属性访问器）、完整表达式（含 Lambda、if/switch 表达式、typeOf/as/is、seq 表达式形态、await、前导点 enum case 引用、wrapper 路径访问 `:`）、完整语句系统（代码块、if、循环、try-catch-finally、seq、throw、yield、return/break/continue、赋值）、泛型参数列表、函数形参列表（含 init `_ -> field` 参数映射）、统一声明层（全局字段/函数、class/interface/struct/wrapper 声明、成员方法与 init/operator、继承与 implements、like 委托、ext 限定名、嵌套类型、声明上的泛型参数、enum struct 的 `[]` case 列表）、wrapper 主体（`@` 注解/wrapper 应用、`@WrapperTarget(.X)` 类型标识、`.proxy.*` 代理成员）、模块系统（import §15.2 三种形态、namespace 声明 §15.1）。尚无语义分析、无代码生成、无 BIL 输出。
+**当前进度**：编译器前端（Lexer + Parser）已完成，且经过一次彻底的架构大扫除（见 §4.7）：控制流系统与 AST 施工系统严格分离，Layer 之间只传递控制权不传递 AST 数据。已可解析字面量、类型引用、变量声明（含 getter/setter 属性访问器）、完整表达式（含 Lambda（单表达式/多语句块体 + named）、if/switch 表达式（分支体为代码块，`return@_`/named 取值）、typeOf/as/is、seq 表达式形态、await、前导点 enum case 引用、wrapper 路径访问 `:`）、完整语句系统（代码块、if、switch 语句、循环、try-catch-finally、seq、throw、yield、return/break/continue、赋值；lambda 体内裸 return 为编译错误）、泛型参数列表、函数形参列表（含 init `_ -> field` 参数映射）、统一声明层（全局字段/函数、class/interface/struct/wrapper 声明、成员方法与 init/operator、继承与 implements、like 委托、ext 限定名、嵌套类型、声明上的泛型参数、enum struct 的 `[]` case 列表）、wrapper 主体（`@` 注解/wrapper 应用、`@WrapperTarget(.X)` 类型标识、`.proxy.*` 代理成员）、模块系统（import §15.2 三种形态、namespace 声明 §15.1）。尚无语义分析、无代码生成、无 BIL 输出。
 
 ---
 
@@ -103,9 +103,9 @@ LatteCompiler/
 │   ├── GenericParametersParserLayer.cs  # 泛型形参列表
 │   ├── ParameterListParserLayer.cs      # 函数形参列表
 │   ├── ArgumentListParserLayer.cs       # 调用实参列表
-│   ├── LambdaExpressionParserLayer.cs   # Lambda 表达式（含 async、trailing）
-│   ├── IfStatementParserLayer.cs        # if 表达式 + if 语句（else if 链）
-│   ├── SwitchStatementParserLayer.cs    # switch 表达式（语句模式待规范明确）
+│   ├── LambdaExpressionParserLayer.cs   # Lambda 表达式（含 async、trailing；体双形态：单表达式/块，named）
+│   ├── IfStatementParserLayer.cs        # if 表达式（分支体为代码块 + named）+ if 语句（else if 链）
+│   ├── SwitchStatementParserLayer.cs    # switch 表达式 + switch 语句（分支体为代码块，强制 default）
 │   ├── TypeOfExpressionParserLayer.cs   # typeOf 表达式
 │   ├── LoopParserLayer.cs               # 循环（for/while/do-while/named 标签）
 │   ├── SeqBlockParserLayer.cs           # seq 块（volatile/using/named，语句+表达式双形态）
@@ -249,6 +249,14 @@ Validator 与 AstJsonlSerializer 的 [ChildAstNode] 反射统一走
 与 `AstJsonlDeserializer`（完整反序列化，产物强制过 Validator）构成往返；
 消费方按字段名取值，不依赖字段顺序。
 
+**allowBareReturn 传染（M33）**：lambda 是裸 return 边界（SYNTAX §5.1）——
+`CodeBlockParserLayer` 构造标记 `allowBareReturn`（默认 true）为 false 时，
+遇无 @标签 return 抛 ParserException。lambda 体一律下传 false；标记沿施工链
+向所有嵌套代码块与表达式深处传染（If/Switch/Loop/TryCatch/Seq/
+VariableDeclaration/ArgumentList/TypeOf/Expression 各层逐一传递）——
+**新 Layer 若创建 CodeBlockParserLayer 或 ExpressionParserLayer，必须同样
+接收并传递该标记**；if/switch 表达式分支体不是 lambda 边界，继承父上下文标记。
+
 ### 4.5 ⚠️ 简洁优先：新增代码前必须自问的三个问题
 
 新增任何 AST 节点、Layer、状态或辅助方法之前，逐条回答：
@@ -282,8 +290,10 @@ Lexer 只做简单字符识别，不理解语义。例如 `3.14` 会输出三个
 - **token 范围为左闭右开 [Start, End)**（M31 起）：End 是最后一个字符的下一位置；
 - 块注释不吞字符、不吞换行（M31：按行分段，换行以 LineBreakToken 入流）；
   行尾归一只把 `\r\n`/`\r` 归一为 `\n`；
-- 复合赋值（`+=`/`*=` 等）不合并 token（与 `>=` 同策略，Parser 将来重组）；
-  字符字面量 `'` 明确报错（未实现）；多行字符串 `"""` 已实现（M32，SYNTAX §3.3：
+- 复合赋值（`+=`/`*=` 等）不合并 token（与 `>=` 同策略，Parser 遇 op+`=` 重组为
+  CompoundAssignmentExpressionASTNode，M34）；字符字面量 `'` 已实现
+  （M34：CharLexerLayer + CharToken + CharLiteralASTNode，转义复用 StringEscape）；
+  多行字符串 `"""` 已实现（M32，SYNTAX §3.3：
   Swift 风格严格多行，QuoteLexerLayer 分流 `"`/`""`/`"""`，转义表 StringEscape 单源，
   插值标记词法期判定——`\$` 转义的字面 `$` 不构成插值引导）。
 
@@ -315,6 +325,8 @@ dotnet run -- test --all    # 全量；或：dotnet run -- test --run 5（单个
 - **缩进**：4 空格。
 - **注释语言**：中文。关键逻辑必须注释；状态机的状态含义与转换必须说明。
 - **文档语言**：中文。`docs/` 下的规范文档是权威来源——**先读 SYNTAX.md 再写代码，不要凭其他语言的经验猜语法**（项目已因此返工过）。
+- **思考语言**：为节省 token，思考一律使用中文；向子代理（subagent）下达任务时必须明确要求它也用中文思考。
+- **禁止使用 AskUserQuestion**（harness 为 Kimi Code 时）：该工具有显示 bug，用户看不到第一个问题之后的后续问题。需要用户决策时，把问题整理好在回复正文中一次问完，然后停下来等待回答。
 - 新代码应模仿相邻文件的风格；项目无 linter/格式化工具配置。
 - 命名空间：主代码 `LatteCompiler`，测试 `LatteCompiler.Tests`。
 - **日志**：Lexer/Parser 等编译器内部的日志一律走 `Core/Logger`（Verbose/Warning/Error），禁止直接 `Console.WriteLine`；verbose 默认关闭（`--verbose` 子命令打开控制台输出），`--log-to PATH` 把全量日志以 JSONL 落盘。控制台日志输出走 **stderr**（M31 起）——诊断不污染 stdout 的数据流（如 `compile --parse-only` 的 AST JSONL）。测试的报告输出（`[PASS]`/`[FAIL]` 等）不受此限。
@@ -341,7 +353,6 @@ dotnet run -- test --all    # 全量；或：dotnet run -- test --run 5（单个
 ## 7. 注意事项与已知限制
 
 - 项目已在 **Git 版本控制**下（`main` 分支）：执行 `git commit` 等变更操作前先获得用户确认；提交前确保 `dotnet build` 通过且 `dotnet run -- test --all` 无失败。
-- 字符字面量（char literal）未实现。
 - Verbose 调试日志默认关闭，不再刷屏；需要时加 `--verbose` 子命令（控制台）或 `--log-to PATH`（全量 JSONL 落盘）。
 - 无安全敏感面：本项目是本地控制台工具，不处理网络、凭据或用户隐私数据。唯一文件操作是 `Program.cs` 读取用户指定路径的 `.latte` 文件。
 

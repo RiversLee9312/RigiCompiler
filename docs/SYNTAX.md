@@ -220,7 +220,10 @@ false
 
 // 字符
 'A'
+'\n'        // 转义与字符串同一套（\' \\ \n \t 等），未知转义是编译错误
 ```
+
+字符字面量规则：单引号内必须恰好是一个字符或一个转义序列，类型为 `char`（§3.2）；空（`''`）或多于一个字符（`'ab'`）是编译错误。
 
 多行字符串（`"""`）是编译期处理的严格多行形式（Swift 风格）：
 
@@ -482,7 +485,25 @@ func{(width: TSize, height: TSize)\<TSize extends Size>: TSize -> ... }
 
 // 带修饰符
 pub func{(x: i32): i32 -> (x + 1)}
+
+// 多语句体：用 return@ 显式产出返回值（匿名体的默认标签是 _）
+func{(x: i32): i32 -> {
+    const doubled = (x * 2)
+    return@_ doubled
+}}
+
+// named 命名后可用 return@标签 穿透内层匿名块（named 写在 -> 之后、体之前）
+func{(x: i32): i32 -> named calc {
+    seq {
+        return@calc (x * 2)
+    }
+}}
 ```
+
+规则：
+- 体为单表达式时，该表达式即返回值（隐式取值，无需 `return@`）
+- 体为多语句代码块时，所有执行路径都必须显式 `return@_` 或 `return@标签` 产出值——规则同 §6.1；落到块尾而没有 `return@` 是编译错误
+- lambda 体内不允许裸 `return`：lambda 不是外层函数的值块，裸 `return` 的指向会含糊（返回 lambda 自身还是穿透外层函数），一律显式写 `return@`
 
 ### 5.2 Trailing Lambda
 
@@ -532,7 +553,7 @@ volatile seq {
 
 - **返回值**：`seq { ... }` 可以整体作为表达式使用，通过 `return@` 语法从块内部产生结果值。
 - **命名**：同 §7.4 的循环标签，用 `named` 给 `seq` 块起名，配合 `return@名字` 精确指定从哪一层 `seq` 返回。
-- **默认标签**：未显式 `named` 的 `seq` 块，其隐式默认标签就是 `seq` 本身——`return@seq value` 表示"从最内层这个匿名 `seq` 返回 `value`"。
+- **默认标签**：未显式 `named` 的值块（`seq` 块、if/switch 表达式分支体），其隐式默认标签就是 `_`——`return@_ value` 表示"从最内层这个匿名值块返回 `value`"。
 
 ```latte
 const result = seq {
@@ -542,13 +563,13 @@ const result = seq {
     const numerator = (-b) - delta
     const denominator = 2.0 * a
 
-    return@seq numerator / denominator  // 未命名时，默认标签就是 seq，指最内层这个 seq
+    return@_ numerator / denominator  // 未命名时，默认标签就是 _，指最内层这个匿名 seq
 }
 ```
 
 规则：
 
-- `return@名字` / `return@seq` 与裸 `return` 是两回事：前者结束对应的 `seq` 块并把值作为该块表达式的结果；后者始终穿透 `seq`、直接结束外层函数。
+- `return@名字` / `return@_` 与裸 `return` 是两回事：前者结束对应的值块并把值作为该块表达式的结果；后者始终穿透值块、直接结束外层函数。
 - 当 `seq` 被当作表达式使用时，块内所有执行路径都必须显式 `return@` 出一个值——同 §4.1 函数不支持隐式返回的规则，落到块尾而没有 `return@` 是编译错误。
 - 仅作语句使用（不取值）的 `seq` 不受此限制，可以像原来一样不写任何 `return@`。
 
@@ -585,7 +606,7 @@ seq using(const resource = openResource()) {
 
 - 各个 `using` 绑定按源码顺序从左到右初始化；后一个初始化器可以引用前面已经建立的绑定。
 - 离开该 `seq` 时，编译器按声明的逆序调用 `dispose()`；上例的顺序为 `reader` → `stream` → `file`。
-- 正常落到块尾、`return@seq`/`return@名字`、穿透外层函数的裸 `return`、异常传播以及其他离开该块的控制流都必须执行清理。
+- 正常落到块尾、`return@_`/`return@名字`、穿透外层函数的裸 `return`、异常传播以及其他离开该块的控制流都必须执行清理。
 - 若某个初始化器抛出异常，只清理此前已经成功初始化的资源。
 - `await` 或 `yield` 只挂起 Coroutine，并不离开 `seq`；资源继续保存在该 Coroutine 的执行状态中，直到最终退出作用域。
 - `dispose()` 是普通函数，因此可以执行 `await` 或 `yield`。若逆序清理中的某次 `dispose()` 挂起，清理栈、当前资源和尚未清理的资源继续保存在 Coroutine frame 中；恢复后从同一清理进度继续。
@@ -607,11 +628,36 @@ if (condition) {
 
 // if-else 表达式（作为表达式时必须有 else）
 var result = if (x > 0) { x } else { opposite(x) }
+
+// if 表达式：多语句分支体，用 return@ 显式产出分支值
+var result = if (x > 0) {
+    logPositive(x)
+    return@_ x                  // 匿名分支体的默认标签是 _
+} else {
+    return@_ opposite(x)
+}
+
+// 用 named 给 if 表达式起名后，return@标签 可穿透内层匿名块精确指定返回目标
+var result = if (x > 0) named check {
+    seq {
+        return@check x          // 从最内层 seq 直接跳出到 check
+    }
+} else {
+    return@check opposite(x)
+}
 ```
 
-### 7.2 switch 表达式
+if 表达式规则：
+- 必须有 `else` 分支
+- 分支体为单表达式时，该表达式即分支值（隐式取值，无需 `return@`）
+- 分支体含多条语句时，所有执行路径都必须显式 `return@_`（匿名）或 `return@标签`（`if (cond) named 标签` 命名后）产出值——规则同 §6.1；落到块尾而没有 `return@` 是编译错误
+
+### 7.2 switch
+
+switch 有两种形态：表达式形态与语句形态。两者共用同一套匹配规则，区别只在出现位置与分支体：
 
 ```latte
+// 表达式形态：switch 出现在表达式位置，产出值
 var result = switch(expr) {
     (1) -> { "one" }
     (2) -> { "two" }
@@ -619,12 +665,34 @@ var result = switch(expr) {
     (_ == (3 + 4)) -> { "seven" }   // pattern match
     default -> { "other" }
 }
+
+// 语句形态：switch 出现在语句位置，结果值被丢弃
+switch(expr) {
+    (1) -> { handleOne() }
+    (_ > 10) -> {
+        logBig(expr)
+        handleBig()
+    }
+    default -> { handleOther() }
+}
+
+// 表达式形态：多语句分支体用 return@ 显式产出分支值；named 命名后可用 return@标签
+var result = switch(expr) named match {
+    (1) -> { return@_ "one" }
+    (_ > 10) -> {
+        logBig(expr)
+        return@match "big"
+    }
+    default -> { return@match "other" }
+}
 ```
 
 规则：
 - 不含 `_` 的分支为值匹配（value match），要求为编译期常量
 - 含 `_` 的分支为模式匹配（pattern match），`_` 代表被检查的表达式的值，最终结果必须为 `bool`
-- 作为表达式时必须有 `default` 分支
+- 两种形态都必须有 `default` 分支
+- 语句形态的分支体是完整代码块，可写多条语句
+- 表达式形态的分支体取值规则同 if 表达式（§7.1）：单表达式分支隐式取值；多语句分支体必须显式 `return@_`（匿名）或 `return@标签`（`switch (expr) named 标签` 命名后）产出值，落到块尾而没有 `return@` 是编译错误
 
 ### 7.3 循环
 
@@ -1417,6 +1485,9 @@ import core.collections.List             // 单个导入
 import core.collections.{List, Map}      // 多个导入
 import core.collections.*                // 全部导入
 ```
+
+规则：
+- `{}` 列表项只能是单标识符，不允许带路径——`import core.collections.{a.List}` 是编译错误。需要导入不同子路径的符号时写多条 `import` 语句。
 
 ---
 

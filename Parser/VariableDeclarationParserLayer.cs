@@ -25,6 +25,9 @@ namespace LatteCompiler
     {
         private readonly VariableDeclarationASTNode declNode;
         private readonly bool allowExtension;   // ext 允许限定名（String.isEmpty，§4.4）
+        // 父上下文是否允许裸 return（SYNTAX §5.1）：初始化表达式深处的
+        // if/switch 表达式分支体继承该标记（lambda 体内为 false）
+        private readonly bool allowBareReturn;
 
         private enum State
         {
@@ -42,10 +45,12 @@ namespace LatteCompiler
 
         private State state = State.Initial;
 
-        public VariableDeclarationParserLayer(VariableDeclarationASTNode node, bool allowExtension = false)
+        public VariableDeclarationParserLayer(
+            VariableDeclarationASTNode node, bool allowExtension = false, bool allowBareReturn = true)
         {
             declNode = node;
             this.allowExtension = allowExtension;
+            this.allowBareReturn = allowBareReturn;
         }
 
         // 层弹出时回填施工目标的源码范围（M28）
@@ -302,7 +307,8 @@ namespace LatteCompiler
             state = State.ValueSeen;
 
             return new ParserLayerResult.PushLayer(
-                new ExpressionParserLayer(declNode.Initializer), TokenDisposition.Replay  // 保留当前 token，作为表达式的第一个 token
+                new ExpressionParserLayer(declNode.Initializer) { allowBareReturn = allowBareReturn },
+                TokenDisposition.Replay  // 保留当前 token，作为表达式的第一个 token
             );
         }
 

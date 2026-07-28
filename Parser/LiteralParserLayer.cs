@@ -126,7 +126,10 @@ namespace LatteCompiler
                     AddLiteralToTarget(ParseStringLiteral(str));
                     return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
 
-                // 注：单引号字符字面量由 Lexer 直接报错（未实现），不会到达这里
+                // 字符字面量（Lexer 已保证恰好一个字符或一个转义序列，SYNTAX §3.3）
+                case CharToken ch:
+                    AddLiteralToTarget(new CharLiteralASTNode(targetNode) { Value = ch.Value });
+                    return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
 
                 default:
                     context.RaiseError($"Unexpected token for literal: {currentToken}");

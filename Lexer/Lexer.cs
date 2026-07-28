@@ -247,6 +247,9 @@ namespace LatteCompiler
                 {
                     QuoteLexerLayer q => $"Unterminated {q.UnterminatedDescription}",
                     SlashLexerLayer => "Unterminated block comment",
+                    // 防御性 case：CharLexerLayer 对任何换行（含冲刷帧虚拟换行）
+                    // 自行报错，正常路径不会滞留到本检查
+                    CharLexerLayer => "Unterminated character literal",
                     var top => $"Unterminated {top.GetType().Name}"
                 };
                 context.RaiseError(what);

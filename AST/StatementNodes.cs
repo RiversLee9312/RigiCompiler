@@ -53,6 +53,23 @@ namespace LatteCompiler
         }
     }
 
+    // switch 语句（SYNTAX.md §7.2）：switch (expr) { (pattern) -> { ... } ... default -> { ... } }
+    // 语句形态（与 IfStatementASTNode 对称）：出现在语句位置，结果值被丢弃；
+    // 分支体为完整代码块，可写多条语句；必须有 default 分支（两形态同规则）
+    public class SwitchStatementASTNode : ASTNode
+    {
+        [ChildAstNode] public ExpressionRootASTNode Selector { get; }
+        [ChildAstNode] public List<SwitchCaseASTNode> Cases;
+        [ChildAstNode] public CodeBlockASTNode? DefaultBody;
+
+        public SwitchStatementASTNode(ASTNode? parent) : base(parent)
+        {
+            Selector = new ExpressionRootASTNode(this);
+            Cases = new List<SwitchCaseASTNode>();
+            DefaultBody = null;
+        }
+    }
+
     // 循环种类（SYNTAX.md §7.3）
     public enum LoopKind
     {
@@ -90,7 +107,7 @@ namespace LatteCompiler
     // return 语句：return / return expr / return@标签 expr（SYNTAX.md §4.1/§6.1）
     public class ReturnStatementASTNode : ASTNode
     {
-        public string? Label;                     // @标签（可选，如 return@seq value）
+        public string? Label;                     // @标签（可选，如 return@_ value）
         [ChildAstNode] public ExpressionRootASTNode? Value;      // 可选返回值（裸 return 为 null）
 
         public ReturnStatementASTNode(ASTNode? parent) : base(parent)

@@ -30,6 +30,8 @@ namespace LatteCompiler
     public class LoopParserLayer : IParserLayer, ISpanReceiver
     {
         private readonly LoopStatementASTNode targetNode;
+        // 父上下文是否允许裸 return（SYNTAX §5.1）：循环体不是 lambda 边界，标记向体传染
+        private readonly bool allowBareReturn;
 
         private enum State
         {
@@ -64,10 +66,11 @@ namespace LatteCompiler
 
         private State state = State.KeywordExpected;
 
-        public LoopParserLayer(CodeBlockASTNode parentBlock)
+        public LoopParserLayer(CodeBlockASTNode parentBlock, bool allowBareReturn = true)
         {
             targetNode = new LoopStatementASTNode(parentBlock);
             parentBlock.Statements.Add(targetNode);
+            this.allowBareReturn = allowBareReturn;
         }
 
         // Span 回填（M28）：回填本层创建的循环节点
@@ -265,7 +268,7 @@ namespace LatteCompiler
             {
                 state = State.BodyDone;
                 return new ParserLayerResult.PushLayer(
-                    new CodeBlockParserLayer(targetNode.Body), TokenDisposition.Replay);
+                    new CodeBlockParserLayer(targetNode.Body, allowBareReturn), TokenDisposition.Replay);
             }
 
             context.RaiseError($"Expected 'named' or '{{' after loop clause, got: {currentToken}");
@@ -293,7 +296,7 @@ namespace LatteCompiler
             {
                 state = State.BodyDone;
                 return new ParserLayerResult.PushLayer(
-                    new CodeBlockParserLayer(targetNode.Body), TokenDisposition.Replay);
+                    new CodeBlockParserLayer(targetNode.Body, allowBareReturn), TokenDisposition.Replay);
             }
 
             context.RaiseError($"Expected '{{' to start loop body, got: {currentToken}");
@@ -313,7 +316,7 @@ namespace LatteCompiler
             {
                 state = State.DoWhileKeywordExpected;
                 return new ParserLayerResult.PushLayer(
-                    new CodeBlockParserLayer(targetNode.Body), TokenDisposition.Replay);
+                    new CodeBlockParserLayer(targetNode.Body, allowBareReturn), TokenDisposition.Replay);
             }
 
             context.RaiseError($"Expected 'named' or '{{' after do, got: {currentToken}");
@@ -341,7 +344,7 @@ namespace LatteCompiler
             {
                 state = State.DoWhileKeywordExpected;
                 return new ParserLayerResult.PushLayer(
-                    new CodeBlockParserLayer(targetNode.Body), TokenDisposition.Replay);
+                    new CodeBlockParserLayer(targetNode.Body, allowBareReturn), TokenDisposition.Replay);
             }
 
             context.RaiseError($"Expected '{{' to start do body, got: {currentToken}");
@@ -377,13 +380,18 @@ namespace LatteCompiler
         }
 
         // 委托一个子表达式：压入 ExpressionParserLayer（保留 token），
-        // 表达式直接附加到目标 Root；insideParens 标记 () 内语境（换行按空白处理）
+        // 表达式直接附加到目标 Root；insideParens 标记 () 内语境（换行按空白处理）；
+        // allowBareReturn 随父上下文传染（迭代/条件里的 if/switch 表达式分支体同规则）
         private ParserLayerResult DelegateExpression(
             State nextState, ExpressionRootASTNode expressionTarget, bool insideParens = false)
         {
             state = nextState;
             return new ParserLayerResult.PushLayer(
-                new ExpressionParserLayer(expressionTarget) { insideParens = insideParens },
+                new ExpressionParserLayer(expressionTarget)
+                {
+                    insideParens = insideParens,
+                    allowBareReturn = allowBareReturn
+                },
                 TokenDisposition.Replay);
         }
     }

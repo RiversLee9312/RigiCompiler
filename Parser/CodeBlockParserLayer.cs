@@ -28,10 +28,16 @@ namespace LatteCompiler
     /// OpenBraceExpected → StatementDispatch
     ///   →（表达式/赋值）AfterExpression → [StatementEnd] → StatementDispatch
     ///   →（return）ReturnLabelOrValue → [ReturnLabel] → [StatementEnd] → StatementDispatch
+    ///
+    /// allowBareReturn（SYNTAX §5.1）：本块是否允许裸 return（无 @标签）。
+    /// lambda 体为 false 并向所有嵌套代码块传染（if/循环/try/seq/switch 的子块、
+    /// 以及块内表达式位置深处的 if/switch 表达式分支体）；函数体等为 true（默认）。
     /// </summary>
     public class CodeBlockParserLayer : IParserLayer, ISpanReceiver
     {
         private readonly CodeBlockASTNode targetNode;
+        // 本块是否允许裸 return（lambda 体为 false，见 HandleReturnLabelOrValue）
+        private readonly bool allowBareReturn;
 
         // 层弹出时回填代码块节点的源码范围（M28）
         public void ReceiveSpan(CharRange span) => targetNode.Span ??= span;
@@ -81,9 +87,10 @@ namespace LatteCompiler
         // 值表达式解析完成后在 HandleStatementEnd 封口 span（M28）
         private ASTNode? pendingStatementEnd = null;
 
-        public CodeBlockParserLayer(CodeBlockASTNode target)
+        public CodeBlockParserLayer(CodeBlockASTNode target, bool allowBareReturn = true)
         {
             targetNode = target;
+            this.allowBareReturn = allowBareReturn;
         }
 
         public ParserLayerResult ParseToken(Token currentToken, ParserLayerContext context)
@@ -171,14 +178,22 @@ namespace LatteCompiler
                     var declNode = new VariableDeclarationASTNode(targetNode);
                     targetNode.Statements.Add(declNode);
                     return new ParserLayerResult.PushLayer(
-                        new VariableDeclarationParserLayer(declNode), TokenDisposition.Replay);
+                        new VariableDeclarationParserLayer(declNode, allowBareReturn: allowBareReturn),
+                        TokenDisposition.Replay);
                 }
 
                 // if 语句（语句模式，else 可选）
                 if (wt.Content == Keywords.IF)
                 {
                     return new ParserLayerResult.PushLayer(
-                        new IfStatementParserLayer(targetNode), TokenDisposition.Replay);
+                        new IfStatementParserLayer(targetNode, allowBareReturn), TokenDisposition.Replay);
+                }
+
+                // switch 语句（语句模式，SYNTAX §7.2：分支体为完整代码块，必须有 default）
+                if (wt.Content == Keywords.SWITCH)
+                {
+                    return new ParserLayerResult.PushLayer(
+                        new SwitchStatementParserLayer(targetNode, allowBareReturn), TokenDisposition.Replay);
                 }
 
                 // 循环语句
@@ -186,7 +201,7 @@ namespace LatteCompiler
                     wt.Content == Keywords.DO)
                 {
                     return new ParserLayerResult.PushLayer(
-                        new LoopParserLayer(targetNode), TokenDisposition.Replay);
+                        new LoopParserLayer(targetNode, allowBareReturn), TokenDisposition.Replay);
                 }
 
                 // try-catch-finally 语句
@@ -195,7 +210,7 @@ namespace LatteCompiler
                     var tryNode = new TryCatchFinallyStatementASTNode(targetNode);
                     targetNode.Statements.Add(tryNode);
                     return new ParserLayerResult.PushLayer(
-                        new TryCatchFinallyParserLayer(tryNode), TokenDisposition.Replay);
+                        new TryCatchFinallyParserLayer(tryNode, allowBareReturn), TokenDisposition.Replay);
                 }
 
                 // seq 块语句（含 volatile/using/named）
@@ -204,7 +219,7 @@ namespace LatteCompiler
                     var seqNode = new SeqBlockExpressionASTNode(targetNode);
                     targetNode.Statements.Add(seqNode);
                     return new ParserLayerResult.PushLayer(
-                        new SeqBlockParserLayer(seqNode), TokenDisposition.Replay);
+                        new SeqBlockParserLayer(seqNode, allowBareReturn), TokenDisposition.Replay);
                 }
 
                 // return 语句（可选 @标签、可选值）
@@ -254,7 +269,11 @@ namespace LatteCompiler
             pendingExpressionStatement = expressionStatement;
             state = State.AfterExpression;
             return new ParserLayerResult.PushLayer(
-                new ExpressionParserLayer(expressionStatement.Expression), TokenDisposition.Replay);
+                new ExpressionParserLayer(expressionStatement.Expression)
+                {
+                    allowBareReturn = allowBareReturn
+                },
+                TokenDisposition.Replay);
         }
 
         // 表达式已解析：= 转赋值，换行/} 按表达式语句收尾
@@ -273,7 +292,8 @@ namespace LatteCompiler
                 pendingStatementEnd = stmt;
                 state = State.StatementEnd;
                 return new ParserLayerResult.PushLayer(
-                    new ExpressionParserLayer(stmt.AssignValue), TokenDisposition.Consume);
+                    new ExpressionParserLayer(stmt.AssignValue) { allowBareReturn = allowBareReturn },
+                    TokenDisposition.Consume);
             }
 
             // 表达式语句：换行结束
@@ -339,10 +359,19 @@ namespace LatteCompiler
                 return ParserLayerResult.Continue.Instance;
             }
 
+            // 无 @标签 = 裸 return：lambda 体内禁止（SYNTAX §5.1）——lambda 不是外层
+            // 函数的值块，裸 return 的指向含糊（返回 lambda 自身还是穿透外层函数），
+            // 一律显式写 return@_（匿名默认标签）或 return@标签
+            if (!allowBareReturn)
+            {
+                context.RaiseError(
+                    "lambda 体内不允许裸 return（指向含糊），请显式写 return@_ 或 return@标签（SYNTAX.md §5.1）");
+            }
+
             return DelegateReturnValue(currentToken, context);
         }
 
-        // return 的 @ 已读：等待标签名（只查首字符：return@seq 等保留字标签合法）
+        // return 的 @ 已读：等待标签名（只查首字符：保留字也可作标签，不查保留字）
         private ParserLayerResult HandleReturnLabel(Token currentToken, ParserLayerContext context)
         {
             if (currentToken is WordToken wt && Keywords.IsIdentifierStart(wt.Content))
@@ -389,7 +418,8 @@ namespace LatteCompiler
             pendingStatementEnd = returnNode;
             state = State.StatementEnd;
             return new ParserLayerResult.PushLayer(
-                new ExpressionParserLayer(returnNode.Value), TokenDisposition.Replay);
+                new ExpressionParserLayer(returnNode.Value) { allowBareReturn = allowBareReturn },
+                TokenDisposition.Replay);
         }
 
         private void CompleteReturn(ParserLayerContext context)
@@ -429,7 +459,7 @@ namespace LatteCompiler
         private ParserLayerResult HandleLoopControlLabelName(Token currentToken, ParserLayerContext context)
         {
             // 标签只查首字符（M31 统一走 Keywords.IsIdentifierStart）：
-            // return@seq 等保留字标签合法，不查保留字
+            // 保留字也可作标签，不查保留字
             if (currentToken is WordToken wt && Keywords.IsIdentifierStart(wt.Content))
             {
                 pendingLoopControl!.Label = wt.Content;
@@ -480,7 +510,8 @@ namespace LatteCompiler
             pendingStatementEnd = throwNode;
             state = State.StatementEnd;
             return new ParserLayerResult.PushLayer(
-                new ExpressionParserLayer(throwNode.Exception), TokenDisposition.Replay);
+                new ExpressionParserLayer(throwNode.Exception) { allowBareReturn = allowBareReturn },
+                TokenDisposition.Replay);
         }
 
         // yield 已读：可选 alarm 表达式或直接结束
@@ -514,7 +545,8 @@ namespace LatteCompiler
             pendingStatementEnd = yieldNode;
             state = State.StatementEnd;
             return new ParserLayerResult.PushLayer(
-                new ExpressionParserLayer(yieldNode.Alarm), TokenDisposition.Replay);
+                new ExpressionParserLayer(yieldNode.Alarm) { allowBareReturn = allowBareReturn },
+                TokenDisposition.Replay);
         }
 
         private void CompleteLoopControl(ParserLayerContext context)

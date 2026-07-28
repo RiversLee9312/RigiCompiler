@@ -14,7 +14,7 @@ namespace LatteCompiler
     /// - 代码块：标准代码块，委托 CodeBlockParserLayer
     ///
     /// seq 可作为语句或表达式使用：
-    /// - 作为表达式时，必须通过 return@seq 或 return@label 返回值
+    /// - 作为表达式时，必须通过 return@_ 或 return@标签 返回值（匿名默认标签为 _，§6.1）
     /// - 作为语句时，可以不返回值
     ///
     /// 施工协议（大扫除后）：构造函数接收父层创建好的 SeqBlockExpressionASTNode
@@ -30,6 +30,8 @@ namespace LatteCompiler
     public class SeqBlockParserLayer : IParserLayer, ISpanReceiver
     {
         private readonly SeqBlockExpressionASTNode seqNode;
+        // 父上下文是否允许裸 return（SYNTAX §5.1）：seq 块不是 lambda 边界，标记向体传染
+        private readonly bool allowBareReturn;
 
         private enum State
         {
@@ -54,9 +56,10 @@ namespace LatteCompiler
         private State state = State.Initial;
         private UsingBindingASTNode? currentUsing;
 
-        public SeqBlockParserLayer(SeqBlockExpressionASTNode target)
+        public SeqBlockParserLayer(SeqBlockExpressionASTNode target, bool allowBareReturn = true)
         {
             seqNode = target;
+            this.allowBareReturn = allowBareReturn;
         }
 
         // Span 回填（M28）：回填施工目标 seq 节点
@@ -203,7 +206,7 @@ namespace LatteCompiler
             {
                 state = State.Body;
                 return new ParserLayerResult.PushLayer(
-                    new CodeBlockParserLayer(seqNode.Body), TokenDisposition.Replay);
+                    new CodeBlockParserLayer(seqNode.Body, allowBareReturn), TokenDisposition.Replay);
             }
 
             context.RaiseError($"Expected 'using', 'named', or '{{' after 'seq', got: {currentToken}");
@@ -298,7 +301,7 @@ namespace LatteCompiler
             {
                 state = State.UsingInitializer;
                 return new ParserLayerResult.PushLayer(
-                    new ExpressionParserLayer(currentUsing!.Initializer), TokenDisposition.Consume);
+                    new ExpressionParserLayer(currentUsing!.Initializer) { allowBareReturn = allowBareReturn }, TokenDisposition.Consume);
             }
 
             context.RaiseError($"Expected ':' or '=' in using clause, got: {currentToken}");
@@ -324,7 +327,7 @@ namespace LatteCompiler
             {
                 state = State.UsingInitializer;
                 return new ParserLayerResult.PushLayer(
-                    new ExpressionParserLayer(currentUsing!.Initializer), TokenDisposition.Consume);
+                    new ExpressionParserLayer(currentUsing!.Initializer) { allowBareReturn = allowBareReturn }, TokenDisposition.Consume);
             }
 
             context.RaiseError($"Expected '=' in using clause, got: {currentToken}");
@@ -407,7 +410,7 @@ namespace LatteCompiler
             {
                 state = State.Body;
                 return new ParserLayerResult.PushLayer(
-                    new CodeBlockParserLayer(seqNode.Body), TokenDisposition.Replay);
+                    new CodeBlockParserLayer(seqNode.Body, allowBareReturn), TokenDisposition.Replay);
             }
 
             context.RaiseError($"Expected '{{' after named label, got: {currentToken}");

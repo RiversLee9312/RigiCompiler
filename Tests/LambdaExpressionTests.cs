@@ -2,7 +2,7 @@ using System;
 
 namespace LatteCompiler.Tests
 {
-    // Lambda 表达式解析测试（roadmap #21，SYNTAX.md §5）：全管线驱动，
+    // Lambda 表达式解析测试（roadmap #21，SYNTAX.md §5.1）：全管线驱动，
     // 断言初始化表达式的 AstDescribe 描述串。
     //
     // 覆盖：
@@ -12,7 +12,11 @@ namespace LatteCompiler.Tests
     // 4. async lambda
     // 5. trailing lambda（expr{...} 脱糖为调用）
     // 6. 跨行书写
-    // 7. 错误用例：缺 :、缺 ->、缺 body、async 后非 func
+    // 7. 多语句块体：return@_ / named + return@标签（§5.1）
+    // 8. 裸 return 编译错误：lambda 体（含嵌套 seq/if/嵌套 lambda/单表达式体的
+    //    if 表达式分支）一律禁止裸 return
+    // 9. 错误用例：缺 :、缺 ->、缺 body、async 后非 func
+    // 10. AST 结构断言（Body/BlockBody 互斥、Label、Parent 链）
     public class LambdaExpressionTests
     {
         // ===== 1. 基本形式 =====
@@ -85,7 +89,89 @@ namespace LatteCompiler.Tests
             TestHarness.Blank();
         }
 
-        // ===== 6. 错误用例 =====
+        // ===== 6. 多语句块体（return@_ / named，SYNTAX §5.1）=====
+        public static void TestBlockBodies()
+        {
+            TestHarness.Section("Testing Lambda Block Bodies");
+
+            // 多语句块体：return@_ 显式产出返回值（匿名体的默认标签是 _）
+            TestLambda("var f = func{(x: i32): i32 -> {\n" +
+                       "    const doubled = (x * 2)\n" +
+                       "    return@_ doubled\n" +
+                       "}}",
+                "Lambda([x: i32]): i32 -> " +
+                "[const doubled = Group(Binary(Sym(x) * Int(2,I32))), Return@_(Sym(doubled))]");
+
+            // named 命名后 return@标签 穿透内层匿名块（named 写在 -> 之后、体之前）
+            TestLambda("var f = func{(x: i32): i32 -> named calc {\n" +
+                       "    seq {\n" +
+                       "        return@calc (x * 2)\n" +
+                       "    }\n" +
+                       "}}",
+                "Lambda([x: i32]): i32 -> named calc " +
+                "[Seq([Return@calc(Group(Binary(Sym(x) * Int(2,I32))))])]");
+
+            // trailing lambda 也可用块体
+            TestLambda("var r = list.map{(item: String): i32 -> { return@_ item.length }}",
+                "Call(Sym(list.map), [Lambda([item: String]): i32 -> [Return@_(Sym(item.length))]])");
+
+            TestHarness.Blank();
+        }
+
+        // ===== 7. 裸 return 编译错误（SYNTAX §5.1：lambda 体内一律显式 return@）=====
+        public static void TestBareReturnErrors()
+        {
+            TestHarness.Section("Testing Lambda Bare Return Errors (expect ParserException)");
+
+            const string bareReturnMsg = "lambda 体内不允许裸 return";
+
+            // 块体内直接裸 return
+            TestHarness.CheckParseError("var f = func{(): i32 -> { return 1 }}",
+                () => TestHarness.ParseRoot("var f = func{(): i32 -> { return 1 }}"),
+                bareReturnMsg);
+            // 无值裸 return 同样禁止
+            TestHarness.CheckParseError("var f = func{(): i32 -> { return }}",
+                () => TestHarness.ParseRoot("var f = func{(): i32 -> { return }}"),
+                bareReturnMsg);
+            // 嵌套 seq 块内的裸 return（标记向嵌套块传染）
+            TestHarness.CheckParseError("var f = func{(): i32 -> { seq { return 1 } }}",
+                () => TestHarness.ParseRoot("var f = func{(): i32 -> { seq { return 1 } }}"),
+                bareReturnMsg);
+            // 嵌套 if 语句块内的裸 return
+            TestHarness.CheckParseError("var f = func{(): i32 -> { if (c) { return 1 } return@_ 0 }}",
+                () => TestHarness.ParseRoot("var f = func{(): i32 -> { if (c) { return 1 } return@_ 0 }}"),
+                bareReturnMsg);
+            // 嵌套循环体内的裸 return
+            TestHarness.CheckParseError("var f = func{(): i32 -> { while (c) { return 1 } return@_ 0 }}",
+                () => TestHarness.ParseRoot("var f = func{(): i32 -> { while (c) { return 1 } return@_ 0 }}"),
+                bareReturnMsg);
+            // 嵌套 switch 语句分支内的裸 return
+            TestHarness.CheckParseError(
+                "var f = func{(): i32 -> { switch (x) { (1) -> { return 1 } default -> { } } return@_ 0 }}",
+                () => TestHarness.ParseRoot(
+                    "var f = func{(): i32 -> { switch (x) { (1) -> { return 1 } default -> { } } return@_ 0 }}"),
+                bareReturnMsg);
+            // 单表达式体内的 if 表达式分支块裸 return（if 表达式不是 lambda 边界）
+            TestHarness.CheckParseError("var f = func{(): i32 -> if (c) { return 1 } else { return@_ 0 }}",
+                () => TestHarness.ParseRoot("var f = func{(): i32 -> if (c) { return 1 } else { return@_ 0 }}"),
+                bareReturnMsg);
+            // lambda 内嵌 lambda：内层仍是 false 边界
+            TestHarness.CheckParseError(
+                "var f = func{(): i32 -> { var g = func{(): i32 -> { return 1 }}\n return@_ 0 }}",
+                () => TestHarness.ParseRoot(
+                    "var f = func{(): i32 -> { var g = func{(): i32 -> { return 1 }}\n return@_ 0 }}"),
+                bareReturnMsg);
+
+            // 对照：return@_ / return@标签 合法（不报错，由块体用例覆盖快照）
+            // 对照：函数体内裸 return 不受影响（函数不是 lambda 边界）
+            var block = TestHarness.ParseBlock("{ return 1 }");
+            TestHarness.CheckTrue("普通代码块内裸 return 合法",
+                block.Statements.Count == 1 && block.Statements[0] is ReturnStatementASTNode);
+
+            TestHarness.Blank();
+        }
+
+        // ===== 8. 错误用例 =====
         public static void TestErrorCases()
         {
             TestHarness.Section("Testing Lambda Error Cases (expect ParserException)");
@@ -110,6 +196,45 @@ namespace LatteCompiler.Tests
             TestHarness.CheckParseError("var f = func(x: i32): i32 -> (x + 1)",
                 () => TestHarness.ParseRoot("var f = func(x: i32): i32 -> (x + 1)"),
                 "Expected '{' to start lambda body");
+            // named 后缺标签名
+            TestHarness.CheckParseError("var f = func{(x: i32): i32 -> named { return@_ 1 }}",
+                () => TestHarness.ParseRoot("var f = func{(x: i32): i32 -> named { return@_ 1 }}"),
+                "Expected label name after 'named'");
+
+            TestHarness.Blank();
+        }
+
+        // ===== 9. AST 结构断言（AGENTS §5：快照不作为唯一验证方式）=====
+        public static void TestStructuralAssertions()
+        {
+            TestHarness.Section("Structural Assertions");
+
+            // 单表达式体：Body 填充、BlockBody 为 null（互斥）
+            var exprDecl = (VariableDeclarationASTNode)TestHarness.ParseFirstDecl(
+                "var f = func{(x: i32): i32 -> (x + 1)}");
+            var exprLambda = (LambdaExpressionASTNode)exprDecl.Initializer!.Expression;
+            TestHarness.CheckTrue("单表达式体 Body Root 存在且已填充",
+                exprLambda.Body != null && exprLambda.Body.IsAttached);
+            TestHarness.CheckTrue("单表达式体 BlockBody 为 null（互斥）",
+                exprLambda.BlockBody == null);
+            TestHarness.CheckTrue("无 named 时 Label 为 null", exprLambda.Label == null);
+            TestHarness.CheckTrue("Body Root 的 Parent 是 lambda 节点",
+                ReferenceEquals(exprLambda.Body!.Parent, exprLambda));
+
+            // 块体：BlockBody 填充、Body 为 null（互斥）；named 写入 Label
+            var blockDecl = (VariableDeclarationASTNode)TestHarness.ParseFirstDecl(
+                "var f = func{(x: i32): i32 -> named calc { return@calc x }}");
+            var blockLambda = (LambdaExpressionASTNode)blockDecl.Initializer!.Expression;
+            TestHarness.CheckTrue("块体 BlockBody 存在",
+                blockLambda.BlockBody != null);
+            TestHarness.CheckTrue("块体 Body 为 null（互斥）", blockLambda.Body == null);
+            TestHarness.CheckTrue("named 标签写入 Label", blockLambda.Label == "calc");
+            TestHarness.CheckTrue("BlockBody 的 Parent 是 lambda 节点",
+                ReferenceEquals(blockLambda.BlockBody!.Parent, blockLambda));
+            TestHarness.CheckTrue("块体内 return@标签 的 Label",
+                blockLambda.BlockBody!.Statements.Count == 1 &&
+                blockLambda.BlockBody.Statements[0] is ReturnStatementASTNode ret &&
+                ret.Label == "calc");
 
             TestHarness.Blank();
         }
@@ -143,7 +268,10 @@ namespace LatteCompiler.Tests
             TestAsyncLambdas();
             TestTrailingLambdas();
             TestMultiLineLambdas();
+            TestBlockBodies();
+            TestBareReturnErrors();
             TestErrorCases();
+            TestStructuralAssertions();
 
             return TestHarness.Summary("Lambda");
         }

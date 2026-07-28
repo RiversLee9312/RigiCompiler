@@ -1,4 +1,6 @@
 using System;
+using System.IO;
+using System.Linq;
 
 namespace LatteCompiler.Tests
 {
@@ -126,6 +128,92 @@ namespace LatteCompiler.Tests
             TestHarness.Blank();
         }
 
+        // 字符字面量（SYNTAX §3.3）：单引号内恰好一个字符或一个转义序列，类型 char
+        public static void TestCharLiterals()
+        {
+            TestHarness.Section("Char Literals");
+
+            TestLit("'A'", "Char('A')");
+            TestLit("'\\n'", "Char('\n')");
+            TestLit("'\\''", "Char(''')");
+            TestLit("'\\\\'", "Char('\\')");
+
+            TestHarness.Blank();
+        }
+
+        // 字符字面量错误（LexerException：空 / 多字符 / 未知转义 / 未闭合，§3.3）
+        public static void TestCharErrorCases()
+        {
+            TestHarness.Section("Char Error Cases (expect LexerException)");
+
+            // 空字面量 ''
+            TestHarness.CheckParseError("''",
+                () => TestHarness.ParseFirstDecl("''"), "Empty character literal");
+            // 多字符 'ab'（收到第二个内容字符即报错）
+            TestHarness.CheckParseError("'ab'",
+                () => TestHarness.ParseFirstDecl("'ab'"), "exactly one character");
+            // 未知转义（与字符串同一套转义表）
+            TestHarness.CheckParseError("'\\q'",
+                () => TestHarness.ParseFirstDecl("'\\q'"), "Unknown escape sequence");
+            // 未闭合：开界后直接 EOF（冲刷帧虚拟换行触发）
+            TestHarness.CheckParseError("' (EOF)",
+                () => TestHarness.ParseFirstDecl("'"), "Unterminated character literal");
+            // 未闭合：内容字符后 EOF
+            TestHarness.CheckParseError("'a (EOF)",
+                () => TestHarness.ParseFirstDecl("'a"), "Unterminated character literal");
+            // 未闭合：内容字符后真实换行
+            TestHarness.CheckParseError("'a <换行>",
+                () => TestHarness.ParseFirstDecl("'a\n"), "Unterminated character literal");
+            // 反斜杠后紧跟真实换行（不支持行接续）
+            TestHarness.CheckParseError("'\\ <换行>",
+                () => TestHarness.ParseFirstDecl("'\\\n'"), "Unexpected line break after \\");
+
+            TestHarness.Blank();
+        }
+
+        // 字符字面量结构断言与 Lexer 级检查（快照不作为唯一验证方式，AGENTS §5）
+        public static void TestCharStructural()
+        {
+            TestHarness.Section("Char Structural & Lexer Level");
+
+            // AST 结构
+            var node = TestHarness.ParseFirstDecl("'A'");
+            TestHarness.CheckTrue("顶层字面量以 LiteralExpression 包装", node is LiteralExpressionASTNode);
+            var lit = (LiteralExpressionASTNode)node;
+            TestHarness.CheckTrue("Literal 是 CharLiteralASTNode", lit.Literal is CharLiteralASTNode);
+            var ch = (CharLiteralASTNode)lit.Literal;
+            TestHarness.CheckTrue("Value 为 'A'", ch.Value == 'A');
+            TestHarness.CheckTrue("字面量的 Parent 是包装节点", ReferenceEquals(ch.Parent, lit));
+            TestHarness.CheckTrue("span 非空", lit.Span != null);
+
+            // 转义值在词法期展开（'\n' → 换行符）
+            var esc = (CharLiteralASTNode)((LiteralExpressionASTNode)
+                TestHarness.ParseFirstDecl("'\\n'")).Literal;
+            TestHarness.CheckTrue("'\\n' 的 Value 是换行符", esc.Value == '\n');
+
+            // Lexer 级：token 类型、值与 span（左闭右开，'A' 占 1:1-1:4）
+            var tokens = new Lexer().Tokenize("'A'");
+            TestHarness.CheckTrue("token 流为 [Char, EOF]",
+                tokens.Count == 2 && tokens[0] is CharToken && tokens[1] is EndOfFileToken,
+                string.Join(" ", tokens.Select(t => t.ToString())));
+            TestHarness.CheckTrue("CharToken.Value 为 'A'", ((CharToken)tokens[0]).Value == 'A');
+            TestHarness.Check("char token span Start", Pos(tokens[0].CharRange.Start), "1:1");
+            TestHarness.Check("char token span End", Pos(tokens[0].CharRange.End), "1:4");
+
+            // JSONL 往返：char 标量字段经 Serializer/Deserializer 的 char 分支配对不丢失
+            // （Deserializer 产物强制过 ASTIntegrityValidator，往返成功即验证 Validator 兼容）
+            var root = TestHarness.ParseRoot("'A'");
+            var writer = new StringWriter();
+            AstJsonlSerializer.Serialize(root, writer);
+            var roundTripped = AstJsonlDeserializer.Deserialize(new StringReader(writer.ToString()));
+            var rtLit = (CharLiteralASTNode)((LiteralExpressionASTNode)roundTripped.Declarations[0]).Literal;
+            TestHarness.CheckTrue("JSONL 往返后 Value 不丢失", rtLit.Value == 'A');
+
+            TestHarness.Blank();
+        }
+
+        private static string Pos(CharPosition p) => $"{p.line}:{p.column}";
+
         // 辅助：解析单个字面量并比对 AST 描述串
         private static void TestLit(string code, string expectedDesc)
         {
@@ -150,8 +238,11 @@ namespace LatteCompiler.Tests
             TestFloatLiterals();
             TestBoolAndNull();
             TestStringLiterals();
+            TestCharLiterals();
             TestLiteralErrorCases();
+            TestCharErrorCases();
             TestStructuralAssertions();
+            TestCharStructural();
 
             return TestHarness.Summary("Literal");
         }
