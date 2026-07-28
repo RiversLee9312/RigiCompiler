@@ -69,6 +69,13 @@ namespace LatteCompiler
                 return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
             }
 
+            // 括号未闭合时换行按空白处理（M31，SYNTAX §1.1）：
+            // ( 已出现（Initial 之后）即允许自然续行
+            if (currentToken is LineBreakToken && state != State.Initial)
+            {
+                return ParserLayerResult.Continue.Instance;
+            }
+
             switch (state)
             {
                 case State.Initial:
@@ -119,9 +126,10 @@ namespace LatteCompiler
                 return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
             }
 
-            if (currentToken is WordToken wt)
+            if (currentToken is WordToken wt && Keywords.IsIdentifier(wt.Content))
             {
                 // 读到参数名即创建参数节点（后续类型/默认值原地填充）；
+                // 必须是合法标识符（M31：func f(123: i32) 此前被接受）；
                 // span 起点即参数名 token（named 修饰词在 : 之后才出现，见 HandleTypeExpected）（M28）
                 currentParameter = new ParameterASTNode(targetNode) { Name = wt.Content };
                 var loc = context.GetLocation();
@@ -339,7 +347,11 @@ namespace LatteCompiler
             currentParameter.IsVariadic = pendingVariadic;
             currentParameter.IsNamedVariadic = pendingNamedVariadic;
             currentParameter.MappedFieldName = pendingMappedField;
-            CleanTrailingEmptyElements(currentParameter.Type);
+            // named 仅用于具名可变参数（SYNTAX §4.3）：没有 ... 的 named 是错误（M31）
+            if (currentParameter.IsNamedVariadic && !currentParameter.IsVariadic)
+            {
+                context.RaiseError($"'named' variadic parameter requires '...'");
+            }
             // 映射参数省略类型的空 Type 节点未经解析层施工：连同其符号节点
             // 以参数 span 兜底（诊断时指向参数本身，M28）
             if (currentParameter.Type.Span == null)
@@ -350,13 +362,6 @@ namespace LatteCompiler
             targetNode.Parameters.Add(currentParameter);
             currentParameter = null;
             ClearPending();
-        }
-
-        // 可变参数（...）经符号解析时会在符号末尾留下空名元素，
-        // 提交前清理，保证 AST 干净
-        private static void CleanTrailingEmptyElements(TypeReferenceASTNode typeRef)
-        {
-            typeRef.TypeSymbol.symbol.elements.RemoveAll(e => string.IsNullOrEmpty(e.name));
         }
 
         private void ClearPending()

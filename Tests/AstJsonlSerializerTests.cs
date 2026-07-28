@@ -2,28 +2,32 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Text.Json;
 
 namespace LatteCompiler.Tests
 {
     /// <summary>
-    /// AST JSONL 序列化测试：解析小段 Latte 源码 → AstJsonlSerializer
-    /// 序列化到 StringWriter → 断言：
+    /// AST JSONL 序列化/反序列化测试（格式 v2，M32：carrier 记录化 + 往返无损）。
+    ///
+    /// 序列化：解析小段 Latte 源码 → AstJsonlSerializer 序列化到 StringWriter → 断言：
     /// - 每行是合法 JSON，id/parent/via/type/span/fields 六个键齐全；
-    /// - id 从 1 连续自增（行数 == 节点数），parent 引用已出现的 id（根为 null）；
+    /// - id 从 1 连续自增，parent 引用已出现的 id（根为 null）；
     /// - 非根行 via 非空，fields 不含 Parent；
-    /// - 每行 span 非空且首尾不颠倒（M28）；
+    /// - 节点行 span 非空且首尾不颠倒（M28）；carrier 行（ImportItem）span 恒为 null（v2）；
     /// - 关键节点类型与 via/fields 内容出现（含 private 字段下钻、
-    ///   carrier 下钻、Symbol 点分字符串渲染、enum 渲染为名字）。
+    ///   carrier 行及其标量字段、Symbol 点分字符串渲染、enum 渲染为名字）。
+    ///
+    /// 反序列化（AstJsonlDeserializer）：
+    /// - 往返无损：Parse → Serialize → Deserialize → 再 Serialize，两次 JSONL 逐行一致；
+    /// - {"file":...} 元记录行跳过；
+    /// - 非法输入（缺 id 键/未知 type/悬空 parent 引用）抛 CompilerInternalException。
     /// </summary>
     public static class AstJsonlSerializerTests
     {
-        private static int passCount = 0;
-        private static int failCount = 0;
-
         public static void TestVariableDeclaration()
         {
-            Console.WriteLine("=== Testing AST JSONL: var x = 42 ===");
+            TestHarness.Section("AST JSONL: var x = 42");
             var docs = new List<JsonDocument>();
             try
             {
@@ -31,40 +35,40 @@ namespace LatteCompiler.Tests
                 CheckStructure("var x = 42", lines);
 
                 var decl = OfType(lines, "VariableDeclarationASTNode").ToList();
-                Check("出现 VariableDeclarationASTNode（via=Declarations[0]）",
+                TestHarness.CheckTrue("出现 VariableDeclarationASTNode（via=Declarations[0]）",
                     decl.Count == 1 && decl[0].GetProperty("via").GetString() == "Declarations[0]");
-                Check("VariableDeclaration fields：Name=x, IsConst=false",
+                TestHarness.CheckTrue("VariableDeclaration fields：Name=x, IsConst=false",
                     decl.Count == 1 &&
                     FieldString(decl[0], "Name") == "x" &&
                     decl[0].GetProperty("fields").TryGetProperty("IsConst", out var constEl) &&
                     constEl.GetBoolean() == false);
 
                 var literal = OfType(lines, "IntLiteralASTNode").ToList();
-                Check("IntLiteralASTNode fields：Value=42, IntType=I32（enum 渲染为名字）",
+                TestHarness.CheckTrue("IntLiteralASTNode fields：Value=42, IntType=I32（enum 渲染为名字）",
                     literal.Count == 1 &&
                     literal[0].GetProperty("fields").TryGetProperty("Value", out var valueEl) &&
                     valueEl.GetInt64() == 42 &&
                     FieldString(literal[0], "IntType") == "I32");
 
-                Check("private 字段下钻：字面量经 via=literal 挂载",
+                TestHarness.CheckTrue("private 字段下钻：字面量经 via=literal 挂载",
                     lines.Any(l => l.GetProperty("via").GetString() == "literal"));
-                Check("ExpressionRoot 的 private expression 字段下钻（via=expression）",
+                TestHarness.CheckTrue("ExpressionRoot 的 private expression 字段下钻（via=expression）",
                     lines.Any(l => l.GetProperty("via").GetString() == "expression"));
             }
             catch (Exception ex)
             {
-                Fail("var x = 42", $"unexpected {ex.GetType().Name}: {ex.Message}");
+                TestHarness.CheckTrue("var x = 42", false, $"unexpected {ex.GetType().Name}: {ex.Message}");
             }
             finally
             {
                 foreach (var d in docs) d.Dispose();
             }
-            Console.WriteLine();
+            TestHarness.Blank();
         }
 
         public static void TestBinaryExpression()
         {
-            Console.WriteLine("=== Testing AST JSONL: var r = 1 + (2 * 3) ===");
+            TestHarness.Section("AST JSONL: var r = 1 + (2 * 3)");
             var docs = new List<JsonDocument>();
             try
             {
@@ -72,76 +76,232 @@ namespace LatteCompiler.Tests
                 CheckStructure("var r = 1 + (2 * 3)", lines);
 
                 var binaries = OfType(lines, "BinaryExpressionASTNode").ToList();
-                Check("两个 BinaryExpressionASTNode", binaries.Count == 2);
-                Check("Operator 字段 + 与 * 都出现",
+                TestHarness.CheckTrue("两个 BinaryExpressionASTNode", binaries.Count == 2);
+                TestHarness.CheckTrue("Operator 字段 + 与 * 都出现",
                     binaries.Any(b => FieldString(b, "Operator") == "+") &&
                     binaries.Any(b => FieldString(b, "Operator") == "*"));
-                Check("via=Left / via=Right 都出现",
+                TestHarness.CheckTrue("via=Left / via=Right 都出现",
                     lines.Any(l => l.GetProperty("via").GetString() == "Left") &&
                     lines.Any(l => l.GetProperty("via").GetString() == "Right"));
-                Check("括号分组 GroupExpressionASTNode 出现",
+                TestHarness.CheckTrue("括号分组 GroupExpressionASTNode 出现",
                     OfType(lines, "GroupExpressionASTNode").Any());
             }
             catch (Exception ex)
             {
-                Fail("var r = 1 + (2 * 3)", $"unexpected {ex.GetType().Name}: {ex.Message}");
+                TestHarness.CheckTrue("var r = 1 + (2 * 3)", false, $"unexpected {ex.GetType().Name}: {ex.Message}");
             }
             finally
             {
                 foreach (var d in docs) d.Dispose();
             }
-            Console.WriteLine();
+            TestHarness.Blank();
         }
 
         public static void TestImport()
         {
-            Console.WriteLine("=== Testing AST JSONL: import core.collections.List ===");
+            TestHarness.Section("AST JSONL v2: import core.collections.List");
             var docs = new List<JsonDocument>();
             try
             {
                 var lines = Dump("import core.collections.List\n", docs);
                 CheckStructure("import", lines);
 
-                Check("ImportASTNode 出现", OfType(lines, "ImportASTNode").Any());
-                Check("carrier 下钻：via 含 (ImportItem.symbolNode)",
-                    lines.Any(l => (l.GetProperty("via").GetString() ?? "").Contains("(ImportItem.symbolNode)")));
-                Check("Symbol 渲染为点分字符串 core.collections.List",
+                TestHarness.CheckTrue("ImportASTNode 出现", OfType(lines, "ImportASTNode").Any());
+                TestHarness.CheckTrue("carrier 行出现（type=ImportItem, via=importedSymbols[0]）",
+                    lines.Any(l => l.GetProperty("type").GetString() == "ImportItem" &&
+                                   l.GetProperty("via").GetString() == "importedSymbols[0]"));
+                TestHarness.CheckTrue("v2：via 不再出现 (ImportItem.symbolNode) 复合串",
+                    lines.All(l => !(l.GetProperty("via").GetString() ?? "").Contains("(")));
+                TestHarness.CheckTrue("carrier 内节点经 via=symbolNode 挂载（parent 为 carrier 行 id）",
+                    lines.Any(l => l.GetProperty("type").GetString() == "SymbolASTNode" &&
+                                   l.GetProperty("via").GetString() == "symbolNode" &&
+                                   l.GetProperty("parent").GetInt32() ==
+                                       OfType(lines, "ImportItem").First().GetProperty("id").GetInt32()));
+                TestHarness.CheckTrue("Symbol 渲染为点分字符串 core.collections.List",
                     OfType(lines, "SymbolASTNode").Any(l => FieldString(l, "symbol") == "core.collections.List"));
             }
             catch (Exception ex)
             {
-                Fail("import core.collections.List", $"unexpected {ex.GetType().Name}: {ex.Message}");
+                TestHarness.CheckTrue("import core.collections.List", false, $"unexpected {ex.GetType().Name}: {ex.Message}");
             }
             finally
             {
                 foreach (var d in docs) d.Dispose();
             }
-            Console.WriteLine();
+            TestHarness.Blank();
+        }
+
+        public static void TestImportAllForm()
+        {
+            TestHarness.Section("AST JSONL v2: import core.collections.*（carrier importAll 字段）");
+            var docs = new List<JsonDocument>();
+            try
+            {
+                var lines = Dump("import core.collections.*\n", docs);
+                CheckStructure("import core.collections.*", lines);
+
+                var carriers = OfType(lines, "ImportItem").ToList();
+                TestHarness.CheckTrue("carrier 行恰好一条（via=importedSymbols[0]）",
+                    carriers.Count == 1 &&
+                    carriers[0].GetProperty("via").GetString() == "importedSymbols[0]");
+                TestHarness.CheckTrue("carrier 行 span 恒为 null",
+                    carriers.Count == 1 &&
+                    carriers[0].GetProperty("span").ValueKind == JsonValueKind.Null);
+                TestHarness.CheckTrue("carrier fields 含 importAll=true（v1 中丢失的标量，v2 恢复）",
+                    carriers.Count == 1 &&
+                    carriers[0].GetProperty("fields").TryGetProperty("importAll", out var allEl) &&
+                    allEl.GetBoolean());
+                TestHarness.CheckTrue("carrier 行 parent 为宿主 ImportASTNode 的 id",
+                    carriers.Count == 1 &&
+                    carriers[0].GetProperty("parent").GetInt32() ==
+                        OfType(lines, "ImportASTNode").First().GetProperty("id").GetInt32());
+            }
+            catch (Exception ex)
+            {
+                TestHarness.CheckTrue("import core.collections.*", false, $"unexpected {ex.GetType().Name}: {ex.Message}");
+            }
+            finally
+            {
+                foreach (var d in docs) d.Dispose();
+            }
+            TestHarness.Blank();
         }
 
         public static void TestGenericTypeReference()
         {
-            Console.WriteLine("=== Testing AST JSONL: var list: List\\<i32> ===");
+            TestHarness.Section("AST JSONL: var list: List\\<i32>");
             var docs = new List<JsonDocument>();
             try
             {
                 var lines = Dump("var list: List\\<i32>\n", docs);
                 CheckStructure("var list: List\\<i32>", lines);
 
-                Check("TypeReferenceASTNode 出现（via=TypeAnnotation）",
+                TestHarness.CheckTrue("TypeReferenceASTNode 出现（via=TypeAnnotation）",
                     OfType(lines, "TypeReferenceASTNode").Any(l => l.GetProperty("via").GetString() == "TypeAnnotation"));
-                Check("泛型 Symbol 渲染为 List\\<i32>",
+                TestHarness.CheckTrue("泛型 Symbol 渲染为 List\\<i32>",
                     OfType(lines, "SymbolASTNode").Any(l => FieldString(l, "symbol") == "List\\<i32>"));
             }
             catch (Exception ex)
             {
-                Fail("var list: List\\<i32>", $"unexpected {ex.GetType().Name}: {ex.Message}");
+                TestHarness.CheckTrue("var list: List\\<i32>", false, $"unexpected {ex.GetType().Name}: {ex.Message}");
             }
             finally
             {
                 foreach (var d in docs) d.Dispose();
             }
-            Console.WriteLine();
+            TestHarness.Blank();
+        }
+
+        // ===== 往返无损（M32）=====
+
+        public static void TestRoundTrip()
+        {
+            TestHarness.Section("AST JSONL 往返无损（Parse → Serialize → Deserialize → Serialize）");
+
+            // 变量声明（含嵌套泛型类型 / 可空标注 / null 字面量初始化）
+            CheckRoundTrip("变量声明（泛型 + 可空）",
+                "var list: List\\<Map\\<String, i32>>? = null\n");
+            // enum struct（含显式判别值 long?）
+            CheckRoundTrip("enum struct（显式判别值）",
+                "pub enum struct SteadyABIEnum {}[\n" +
+                "    First -> 0,\n" +
+                "    Second -> 2,\n" +
+                "    Third -> 1\n" +
+                "]\n");
+            // import 三形态（carrier 路径是本次格式升级的动机）
+            CheckRoundTrip("import 单导入", "import core.collections.List\n");
+            CheckRoundTrip("import 多导入", "import core.collections.{List, Map}\n");
+            CheckRoundTrip("import 全量导入（importAll=true）", "import core.collections.*\n");
+            // 注解声明（带实参的 wrapper 应用）
+            CheckRoundTrip("注解声明（带实参）",
+                "@Clamped(0, 100)\nvar health: i32 = 50\n");
+            // lambda 表达式
+            CheckRoundTrip("lambda 表达式",
+                "var f = func{(x: i32): i32 -> (x + 1)}\n");
+            // seq 块（using 资源绑定）
+            CheckRoundTrip("seq 块（using 绑定）",
+                "func main() {\n" +
+                "    seq using(const file = open()) {\n" +
+                "        use(file)\n" +
+                "    }\n" +
+                "}\n");
+            // try-catch-finally
+            CheckRoundTrip("try-catch-finally",
+                "func main() {\n" +
+                "    try {\n" +
+                "        riskyOperation()\n" +
+                "    } catch (e: IOException) {\n" +
+                "        handleIO(e)\n" +
+                "    } finally(f) {\n" +
+                "        cleanup(f)\n" +
+                "    }\n" +
+                "}\n");
+            // wrapper proxy 声明
+            CheckRoundTrip("wrapper proxy 声明",
+                "pub wrapper Logged {\n" +
+                "    operator .proxy.doSomething(arg: i32): String {}\n" +
+                "}\n");
+            // switch 表达式
+            CheckRoundTrip("switch 表达式",
+                "var r = switch(x) { (1) -> { 1 } default -> { 0 } }\n");
+            // class 声明（泛型 + 继承 + implements + 成员方法）
+            CheckRoundTrip("class 声明（泛型 + 继承 + implements）",
+                "pub class MyList\\<TElement> : List implements Iterable {\n" +
+                "    pub func size(): i32 {\n" +
+                "        return 0\n" +
+                "    }\n" +
+                "}\n");
+
+            TestHarness.Blank();
+        }
+
+        // {"file":...} 元记录（多文件 dump 分隔行）应被跳过
+        public static void TestMetaRecordSkip()
+        {
+            TestHarness.Section("AST JSONL 反序列化：{\"file\":...} 元记录跳过");
+            try
+            {
+                var ast = TestHarness.ParseRoot("var x = 42\n");
+                var first = new StringWriter();
+                AstJsonlSerializer.Serialize(ast, first);
+
+                var withMeta = "{\"file\":\"a.latte\"}\n" + first;
+                var restored = AstJsonlDeserializer.Deserialize(new StringReader(withMeta));
+                var second = new StringWriter();
+                AstJsonlSerializer.Serialize(restored, second);
+
+                TestHarness.Check("带元记录前缀的 JSONL 往返一致",
+                    second.ToString(), first.ToString());
+            }
+            catch (Exception ex)
+            {
+                TestHarness.CheckTrue("{\"file\":...} 元记录跳过", false,
+                    $"unexpected {ex.GetType().Name}: {ex.Message}");
+            }
+            TestHarness.Blank();
+        }
+
+        // 反向用例：非法输入抛 CompilerInternalException（带行号/原因），不接受部分成功
+        public static void TestDeserializeErrors()
+        {
+            TestHarness.Section("AST JSONL 反序列化：非法输入拒绝");
+
+            CheckDeserializeError("缺 id 键的行",
+                "{\"parent\":null,\"via\":null,\"type\":\"RootASTNode\",\"span\":null,\"fields\":{}}",
+                "missing the 'id' key");
+            CheckDeserializeError("未知 type",
+                "{\"id\":1,\"parent\":null,\"via\":null,\"type\":\"NoSuchNode\",\"span\":null,\"fields\":{}}",
+                "unknown AST node/carrier type");
+            CheckDeserializeError("parent 引用悬空",
+                "{\"id\":1,\"parent\":null,\"via\":null,\"type\":\"RootASTNode\",\"span\":null,\"fields\":{}}\n" +
+                "{\"id\":2,\"parent\":99,\"via\":\"Declarations[0]\",\"type\":\"IntLiteralASTNode\",\"span\":null,\"fields\":{}}",
+                "dangling parent id");
+            CheckDeserializeError("via 无法定位成员",
+                "{\"id\":1,\"parent\":null,\"via\":null,\"type\":\"RootASTNode\",\"span\":null,\"fields\":{}}\n" +
+                "{\"id\":2,\"parent\":1,\"via\":\"NoSuchMember\",\"type\":\"IntLiteralASTNode\",\"span\":null,\"fields\":{}}",
+                "has no [ChildAstNode] member");
+
+            TestHarness.Blank();
         }
 
         // ===== 测试辅助 =====
@@ -165,11 +325,63 @@ namespace LatteCompiler.Tests
             return lines;
         }
 
+        // 往返无损断言：源码 → Parse → Serialize → Deserialize → 再 Serialize，
+        // 两次 JSONL 输出逐行一致（Deserialize 内部已跑 ASTIntegrityValidator）
+        private static void CheckRoundTrip(string label, string code)
+        {
+            try
+            {
+                var ast = TestHarness.ParseRoot(code);
+                var first = new StringWriter();
+                AstJsonlSerializer.Serialize(ast, first);
+
+                var restored = AstJsonlDeserializer.Deserialize(new StringReader(first.ToString()));
+                var second = new StringWriter();
+                AstJsonlSerializer.Serialize(restored, second);
+
+                TestHarness.Check(label + "：两次序列化逐行一致",
+                    second.ToString(), first.ToString());
+                TestHarness.CheckTrue(label + "：往返后顶层声明数一致",
+                    restored.Declarations.Count == ast.Declarations.Count);
+            }
+            catch (Exception ex)
+            {
+                TestHarness.CheckTrue(label, false, $"unexpected {ex.GetType().Name}: {ex.Message}");
+            }
+        }
+
+        // 非法输入断言：Deserialize 抛 CompilerInternalException 且消息含片段
+        private static void CheckDeserializeError(string label, string jsonl, string expectedMessagePart)
+        {
+            try
+            {
+                AstJsonlDeserializer.Deserialize(new StringReader(jsonl));
+                TestHarness.CheckTrue(label, false, "应失败但成功了");
+            }
+            catch (CompilerInternalException ex)
+            {
+                TestHarness.CheckTrue(label + "（正确失败）",
+                    ex.Message.Contains(expectedMessagePart), ex.Message);
+            }
+            catch (Exception ex)
+            {
+                TestHarness.CheckTrue(label, false, $"unexpected {ex.GetType().Name}: {ex.Message}");
+            }
+        }
+
+        // carrier 行判定：type 名映射到 [AstCarrier] 类型（carrier 行 span 恒为 null）
+        private static readonly HashSet<string> CarrierTypeNames = typeof(RootASTNode).Assembly
+            .GetTypes()
+            .Where(t => t.GetCustomAttribute<AstCarrierAttribute>() != null)
+            .Select(t => t.Name)
+            .ToHashSet();
+
         // 结构断言：六个键齐全、id 连续、parent 引用已出现 id、via 规则、
-        // fields 不含 Parent、span 非空且首尾不颠倒（M28）
+        // fields 不含 Parent、节点行 span 非空且首尾不颠倒（M28）、
+        // carrier 行 span 恒为 null（v2，M32）
         private static void CheckStructure(string label, List<JsonElement> lines)
         {
-            Check($"{label}：首行是 RootASTNode（id=1, parent/via 为 null）",
+            TestHarness.CheckTrue($"{label}：首行是 RootASTNode（id=1, parent/via 为 null）",
                 lines.Count > 0 &&
                 lines[0].GetProperty("id").GetInt32() == 1 &&
                 lines[0].GetProperty("parent").ValueKind == JsonValueKind.Null &&
@@ -211,23 +423,31 @@ namespace LatteCompiler.Tests
                     if (viaEl.ValueKind != JsonValueKind.String) viaValid = false;
                 }
                 if (fieldsEl.TryGetProperty("Parent", out _)) fieldsExcludeParent = false;
-                // span：解析产物必然非空；source 非空；End 不早于 Start
-                if (spanEl.ValueKind != JsonValueKind.Object ||
-                    string.IsNullOrEmpty(spanEl.GetProperty("source").GetString()) ||
-                    spanEl.GetProperty("endLine").GetInt64() < spanEl.GetProperty("startLine").GetInt64() ||
-                    (spanEl.GetProperty("endLine").GetInt64() == spanEl.GetProperty("startLine").GetInt64() &&
-                     spanEl.GetProperty("endCol").GetInt64() < spanEl.GetProperty("startCol").GetInt64()) ||
-                    spanEl.GetProperty("endOffset").GetInt64() < spanEl.GetProperty("startOffset").GetInt64())
+                if (CarrierTypeNames.Contains(line.GetProperty("type").GetString() ?? ""))
                 {
-                    spanValid = false;
+                    // carrier 行（v2）：span 恒为 null
+                    if (spanEl.ValueKind != JsonValueKind.Null) spanValid = false;
+                }
+                else
+                {
+                    // 节点行 span：解析产物必然非空；source 非空；End 不早于 Start
+                    if (spanEl.ValueKind != JsonValueKind.Object ||
+                        string.IsNullOrEmpty(spanEl.GetProperty("source").GetString()) ||
+                        spanEl.GetProperty("endLine").GetInt64() < spanEl.GetProperty("startLine").GetInt64() ||
+                        (spanEl.GetProperty("endLine").GetInt64() == spanEl.GetProperty("startLine").GetInt64() &&
+                         spanEl.GetProperty("endCol").GetInt64() < spanEl.GetProperty("startCol").GetInt64()) ||
+                        spanEl.GetProperty("endOffset").GetInt64() < spanEl.GetProperty("startOffset").GetInt64())
+                    {
+                        spanValid = false;
+                    }
                 }
             }
-            Check($"{label}：每行 id/parent/via/type/span/fields 六键齐全", keysComplete);
-            Check($"{label}：id 从 1 连续自增（行数 == 节点数）", idsSequential);
-            Check($"{label}：parent 均引用已出现的 id（根为 null）", parentsValid);
-            Check($"{label}：非根行 via 非空", viaValid);
-            Check($"{label}：fields 不含 Parent", fieldsExcludeParent);
-            Check($"{label}：span 非空且首尾不颠倒（source 非空）", spanValid);
+            TestHarness.CheckTrue($"{label}：每行 id/parent/via/type/span/fields 六键齐全", keysComplete);
+            TestHarness.CheckTrue($"{label}：id 从 1 连续自增（行数 == 记录数）", idsSequential);
+            TestHarness.CheckTrue($"{label}：parent 均引用已出现的 id（根为 null）", parentsValid);
+            TestHarness.CheckTrue($"{label}：非根行 via 非空", viaValid);
+            TestHarness.CheckTrue($"{label}：fields 不含 Parent", fieldsExcludeParent);
+            TestHarness.CheckTrue($"{label}：节点行 span 非空且首尾不颠倒；carrier 行 span 为 null", spanValid);
         }
 
         private static IEnumerable<JsonElement> OfType(List<JsonElement> lines, string type)
@@ -245,43 +465,21 @@ namespace LatteCompiler.Tests
             return value.GetString();
         }
 
-        private static void Check(string name, bool condition)
-        {
-            if (condition)
-            {
-                Console.WriteLine($"  [PASS] {name}");
-                passCount++;
-            }
-            else
-            {
-                Fail(name, "断言不成立");
-            }
-        }
-
-        private static void Fail(string name, string message)
-        {
-            Console.WriteLine($"  [FAIL] {name}");
-            Console.WriteLine($"      => {message}");
-            failCount++;
-        }
-
         // ===== 入口 =====
         public static int RunAll()
         {
-            Console.WriteLine("\n╔════════════════════════════════════╗");
-            Console.WriteLine("║  AST JSONL Serializer Tests        ║");
-            Console.WriteLine("╚════════════════════════════════════╝\n");
-
-            passCount = 0;
-            failCount = 0;
+            TestHarness.Reset();
 
             TestVariableDeclaration();
             TestBinaryExpression();
             TestImport();
+            TestImportAllForm();
             TestGenericTypeReference();
+            TestRoundTrip();
+            TestMetaRecordSkip();
+            TestDeserializeErrors();
 
-            Console.WriteLine($"=== AST JSONL Serializer Tests Complete: {passCount} passed, {failCount} failed ===");
-            return failCount;
+            return TestHarness.Summary("AstJsonlSerializer");
         }
     }
 }

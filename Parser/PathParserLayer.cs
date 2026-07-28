@@ -12,17 +12,38 @@ namespace LatteCompiler
         {
             private Symbol targetSymbol;
             private bool lineBreakSensitive;
-            public SymbolLayer(Symbol target, bool lineBreakSensitive)
+            // 是否允许把连续点的剩余部分交还上层（类型引用/参数列表语境的
+            // 可变参数标记 ...，M31）；表达式符号引用语境为 false（foo..bar 报错）
+            private bool allowVariadicDots;
+            public SymbolLayer(Symbol target, bool lineBreakSensitive, bool allowVariadicDots)
             {
                 targetSymbol = target;
                 this.lineBreakSensitive = lineBreakSensitive;
+                this.allowVariadicDots = allowVariadicDots;
             }
             private bool isParsingGeneric = false;
             // 已看到 \ ，正在期待 < （泛型列表开启符 \< ，见 SYNTAX.md §3.6）
             private bool backslashSeen = false;
             private SymbolElement currentElement = new();
+
+            // 点已消费、正在等新元素名（elements 非空但当前元素还没名字）：
+            // `foo.` 的悬空腹；用于换行/EOF 时识别不完整结构（M31）
+            private bool AwaitingElementName =>
+                targetSymbol.elements.Count > 0 && string.IsNullOrEmpty(currentElement.name);
+
             public ParserLayerResult ParseToken(Token currentToken, ParserLayerContext context)
             {
+                // EOF：结构完整则上交；尾点 / 泛型未闭合 / \ 悬空腹为不完整结构（M31 修复：
+                // 此前 `foo.`、`List\<i32` 遇 EOF 被静默吞并为 foo / List）
+                if (currentToken is EndOfFileToken)
+                {
+                    if (AwaitingElementName || isParsingGeneric || backslashSeen)
+                    {
+                        throw context.RaiseError("Unexpected end of file");
+                    }
+                    return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
+                }
+
                 // \ 之后必须紧跟 < ，否则不是合法的泛型开启
                 if (backslashSeen && !(currentToken is NotationToken bn && bn.Content == "<"))
                 {
@@ -37,7 +58,7 @@ namespace LatteCompiler
                                 var symbol = new Symbol();
                                 currentElement.generics.Add(symbol);
                                 return new ParserLayerResult.PushLayer(
-                                        new SymbolLayer(symbol, lineBreakSensitive),
+                                        new SymbolLayer(symbol, lineBreakSensitive, allowVariadicDots),
                                         TokenDisposition.Replay
                                     );
                             }
@@ -47,6 +68,12 @@ namespace LatteCompiler
                         }
                         else
                         {
+                            // 元素名不能是数字词（M31：List\<123>、a.123.b 此前被接受；只查首字符）
+                            if (!Keywords.IsIdentifierStart(wt.Content))
+                            {
+                                throw context.RaiseError(
+                                    $"Expected identifier in symbol path, got: {wt.Content}");
+                            }
                             currentElement.name = wt.Content;
                             targetSymbol.elements.Add(currentElement);
                             return ParserLayerResult.Continue.Instance;
@@ -64,8 +91,15 @@ namespace LatteCompiler
                             case Notations.DOT:
                                 if (string.IsNullOrEmpty(currentElement.name))
                                 {
-                                    // 连续第二个 . （如 TArgs... 的可变参数标记）：
-                                    // 本层无法判定其含义，交还给上层处理
+                                    // 连续第二个 .：类型引用/参数列表语境下是可变参数
+                                    // 标记 ... 的剩余部分，交还给上层处理；
+                                    // 其余语境（表达式符号引用等）是非法双点，报错
+                                    // （M31 修复：foo..bar 此前被静默解析为 foo.bar）
+                                    if (!allowVariadicDots)
+                                    {
+                                        throw context.RaiseError(
+                                            "Unexpected '.' in symbol path: expected element name");
+                                    }
                                     return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
                                 }else if (isParsingGeneric)
                                 {
@@ -114,7 +148,7 @@ namespace LatteCompiler
                                     var symbol = new Symbol();
                                     currentElement.generics.Add(symbol);
                                     return new ParserLayerResult.PushLayer(
-                                            new SymbolLayer(symbol, lineBreakSensitive),
+                                            new SymbolLayer(symbol, lineBreakSensitive, allowVariadicDots),
                                             TokenDisposition.Consume
                                         );
                                 }
@@ -136,6 +170,18 @@ namespace LatteCompiler
                         }
                         else
                         {
+                            // 换行结束符号路径：尾点空腹 / 泛型未闭合为不完整结构（M31 修复：
+                            // 此前 `foo.` + 换行被静默吞并为 foo）
+                            if (AwaitingElementName)
+                            {
+                                throw context.RaiseError(
+                                    "Unexpected line break in symbol path: expected element name after '.'");
+                            }
+                            if (isParsingGeneric)
+                            {
+                                throw context.RaiseError(
+                                    "Unexpected line break in symbol path: generic list not closed");
+                            }
                             return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
                         }
                             default:
@@ -145,12 +191,14 @@ namespace LatteCompiler
         }
         private readonly SymbolASTNode self;  // 施工目标节点（M28 用于回填 Span）
         private bool lineBreakSensitive;
+        private bool allowVariadicDots;
         private bool symbolParsed = false;
 
-        public PathParserLayer(SymbolASTNode self, bool lineBreakSensitive)
+        public PathParserLayer(SymbolASTNode self, bool lineBreakSensitive, bool allowVariadicDots = false)
         {
             this.self = self;
             this.lineBreakSensitive = lineBreakSensitive;
+            this.allowVariadicDots = allowVariadicDots;
         }
 
         // 层弹出时回填施工目标的源码范围（M28）
@@ -168,7 +216,7 @@ namespace LatteCompiler
             {
                 symbolParsed = true;
                 return new ParserLayerResult.PushLayer(
-                        new SymbolLayer(self.symbol, lineBreakSensitive),
+                        new SymbolLayer(self.symbol, lineBreakSensitive, allowVariadicDots),
                         TokenDisposition.Replay);
             }
         }

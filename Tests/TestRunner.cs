@@ -39,6 +39,8 @@ namespace LatteCompiler.Tests
             ("Logger", LoggerTests.RunAll),
             ("AstJsonlSerializer", AstJsonlSerializerTests.RunAll),
             ("CommandLineParser", CommandLineParserTests.RunAll),
+            ("Path", PathParserLayerTests.RunAll),
+            ("ArgumentList", ArgumentListParserLayerTests.RunAll),
         };
 
         // 套件数量（对外编号 1..SuiteCount，即注册表顺序）

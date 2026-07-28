@@ -1,136 +1,157 @@
 using System;
-using System.Collections.Generic;
 
 namespace LatteCompiler.Tests
 {
+    // 字面量解析测试：全管线驱动，断言 AST 树产物
+    // （AstDescribe 精确描述串 + 结构事实），不断言控制台文本。
     public class LiteralParserTests
     {
-        // 测试计数（PASS 计入 passCount，FAIL/ERROR 计入 failCount）
-        private static int passCount = 0;
-        private static int failCount = 0;
-
-        // 测试整数字面量
         public static void TestIntLiterals()
         {
-            Console.WriteLine("=== Testing Integer Literals ===");
+            TestHarness.Section("Integer Literals");
 
-            // 简单整数
-            TestParseLiteral("42", "IntLiteral: value=42, type=I32");
+            TestLit("42", "Int(42,I32)");
+            TestLit("0xFF", "Int(255,I32,hex)");
+            TestLit("100L", "Int(100,I64)");
+            TestLit("200S", "Int(200,I16)");
+            TestLit("50B", "Int(50,I8)");
+            TestLit("300U", "Int(300,U32)");
+            TestLit("400UL", "Int(400,U64)");
 
-            // 十六进制
-            TestParseLiteral("0xFF", "IntLiteral: value=255, type=I32, hex=true");
-
-            // 带后缀
-            TestParseLiteral("100L", "IntLiteral: value=100, type=I64");
-            TestParseLiteral("200S", "IntLiteral: value=200, type=I16");
-            TestParseLiteral("50B", "IntLiteral: value=50, type=I8");
-            TestParseLiteral("300U", "IntLiteral: value=300, type=U32");
-            TestParseLiteral("400UL", "IntLiteral: value=400, type=U64");
-
-            Console.WriteLine();
+            TestHarness.Blank();
         }
 
-        // 测试浮点数字面量
+        // 进制前缀（M31，SYNTAX §3.3）：0x 十六进制、0b 二进制、0o 八进制，
+        // 可与类型后缀组合（后缀字母不属于进制字符集时按后缀解析）
+        public static void TestIntBasePrefixes()
+        {
+            TestHarness.Section("Integer Base Prefixes");
+
+            TestLit("0b1010", "Int(10,I32,bin)");
+            TestLit("0o777", "Int(511,I32,oct)");
+            TestLit("0b1010B", "Int(10,I8,bin)");
+            TestLit("0o17U", "Int(15,U32,oct)");
+            TestLit("0xFFL", "Int(255,I64,hex)");
+
+            TestHarness.Blank();
+        }
+
+        // 下划线分隔（M31，SYNTAX §3.3）：只允许数字之间的单个 _
+        public static void TestUnderscoreSeparators()
+        {
+            TestHarness.Section("Underscore Separators");
+
+            TestLit("1_000_000", "Int(1000000,I32)");
+            TestLit("1_000L", "Int(1000,I64)");
+            // 浮点整数部分同样允许下划线
+            TestLit("1_000.5", "Float(1000.5)");
+
+            TestHarness.Blank();
+        }
+
+        // 字面量错误用例（M31：进制/下划线/浮点残缺一律报错，不再静默吞并）
+        public static void TestLiteralErrorCases()
+        {
+            TestHarness.Section("Literal Error Cases (expect ParserException)");
+
+            // 裸进制前缀：前缀后没有数字
+            TestHarness.CheckParseError("0x",
+                () => TestHarness.ParseFirstDecl("0x"), "missing digits");
+            // 连续下划线
+            TestHarness.CheckParseError("1__000",
+                () => TestHarness.ParseFirstDecl("1__000"), "underscore must appear singly between digits");
+            // 结尾下划线
+            TestHarness.CheckParseError("1_",
+                () => TestHarness.ParseFirstDecl("1_"), "underscore must appear singly between digits");
+            // 非法进制数字进入后缀位（2 不是二进制数字）
+            TestHarness.CheckParseError("0b102",
+                () => TestHarness.ParseFirstDecl("0b102"), "Invalid integer literal suffix");
+            // 点后缺数字（M31 起不再静默吞点按整数收尾）
+            TestHarness.CheckParseError("3.",
+                () => TestHarness.ParseFirstDecl("3."), "Expected digit after '.' in float literal");
+            // 点后非数字（成员访问请写 (3).foo）
+            TestHarness.CheckParseError("3.foo",
+                () => TestHarness.ParseFirstDecl("3.foo"), "Expected digit after '.' in float literal");
+
+            TestHarness.Blank();
+        }
+
         public static void TestFloatLiterals()
         {
-            Console.WriteLine("=== Testing Float Literals ===");
+            TestHarness.Section("Float Literals");
 
-            TestParseLiteral("3.14", "FloatLiteral: value=3.14, isFloat=false");
-            TestParseLiteral("0.1f", "FloatLiteral: value=0.1, isFloat=true");
-            TestParseLiteral("2.5", "FloatLiteral: value=2.5, isFloat=false");
+            TestLit("3.14", "Float(3.14)");
+            TestLit("0.1f", "Float(0.1f)");
+            TestLit("2.5", "Float(2.5)");
 
-            Console.WriteLine();
+            TestHarness.Blank();
         }
 
-        // 测试布尔和 null 字面量
         public static void TestBoolAndNull()
         {
-            Console.WriteLine("=== Testing Bool and Null Literals ===");
+            TestHarness.Section("Bool and Null Literals");
 
-            TestParseLiteral("true", "BoolLiteral: value=true");
-            TestParseLiteral("false", "BoolLiteral: value=false");
-            TestParseLiteral("null", "NullLiteral");
+            TestLit("true", "Bool(True)");
+            TestLit("false", "Bool(False)");
+            TestLit("null", "Null");
 
-            Console.WriteLine();
+            TestHarness.Blank();
         }
 
-        // 测试字符串字面量
         public static void TestStringLiterals()
         {
-            Console.WriteLine("=== Testing String Literals ===");
+            TestHarness.Section("String Literals");
 
-            TestParseLiteral("\"Hello\"", "StringLiteral: value=Hello");
-            TestParseLiteral("\"World ${x}\"", "StringLiteral: value=World ${x}, hasInterpolation=true");
+            TestLit("\"Hello\"", "Str(\"Hello\")");
+            TestLit("\"World ${x}\"", "Str(\"World ${x}\",interp)");
 
-            Console.WriteLine();
+            TestHarness.Blank();
         }
 
-        // 辅助方法：解析单个字面量并打印结果
-        private static void TestParseLiteral(string code, string expectedDesc)
+        // AST 结构断言（AGENTS §5：快照不作为唯一验证方式）
+        public static void TestStructuralAssertions()
+        {
+            TestHarness.Section("Structural Assertions");
+
+            var node = TestHarness.ParseFirstDecl("42");
+            TestHarness.CheckTrue("顶层字面量以 LiteralExpression 包装", node is LiteralExpressionASTNode);
+            var lit = (LiteralExpressionASTNode)node;
+            TestHarness.CheckTrue("Literal 是 IntLiteralASTNode", lit.Literal is IntLiteralASTNode);
+            TestHarness.CheckTrue("字面量的 Parent 是包装节点", ReferenceEquals(lit.Literal.Parent, lit));
+            TestHarness.CheckTrue("包装节点挂在 Root 下", lit.Parent is RootASTNode);
+            TestHarness.CheckTrue("span 非空", lit.Span != null);
+
+            TestHarness.Blank();
+        }
+
+        // 辅助：解析单个字面量并比对 AST 描述串
+        private static void TestLit(string code, string expectedDesc)
         {
             try
             {
-                var lexer = new Lexer();
-                var tokens = lexer.Tokenize(code);
-                var parser = new Parser();
-                var ast = parser.Parse(tokens);
-
-                if (ast is RootASTNode root && root.Declarations.Count > 0)
-                {
-                    var literalNode = root.Declarations[0];
-                    string result = DescribeLiteral(literalNode);
-
-                    bool passed = result.Contains(expectedDesc.Split(':')[0]); // 简化检查
-                    Console.WriteLine($"  [{(passed ? "PASS" : "FAIL")}] {code} => {result}");
-                    if (passed) passCount++; else failCount++;
-                }
-                else
-                {
-                    Console.WriteLine($"  [FAIL] {code} => No AST node produced");
-                    failCount++;
-                }
+                var node = TestHarness.ParseFirstDecl(code);
+                TestHarness.Check(code, AstDescribe.Expr(node), expectedDesc);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"  [ERROR] {code} => {ex.Message}");
-                failCount++;
+                TestHarness.CheckTrue($"{code} => 意外异常", false, ex.Message);
             }
         }
 
-        // 描述字面量节点（顶层字面量现为 LiteralExpression 包装，先解包）
-        private static string DescribeLiteral(ASTNode node)
-        {
-            return node switch
-            {
-                LiteralExpressionASTNode litExpr => DescribeLiteral(litExpr.Literal),
-                IntLiteralASTNode intNode => $"IntLiteral: value={intNode.Value}, type={intNode.IntType}" +
-                                             (intNode.IsHex ? ", hex=true" : ""),
-                FloatLiteralASTNode floatNode => $"FloatLiteral: value={floatNode.Value}, isFloat={floatNode.IsFloat}",
-                BoolLiteralASTNode boolNode => $"BoolLiteral: value={boolNode.Value}",
-                NullLiteralASTNode => "NullLiteral",
-                StringLiteralASTNode strNode => $"StringLiteral: value={strNode.Value}" +
-                                               (strNode.HasInterpolation ? ", hasInterpolation=true" : ""),
-                _ => $"Unknown: {node.GetType().Name}"
-            };
-        }
-
-        // 运行所有测试
         public static int RunAll()
         {
-            passCount = 0;
-            failCount = 0;
-
-            Console.WriteLine("\n╔════════════════════════════════════╗");
-            Console.WriteLine("║  Literal Parser Layer Tests       ║");
-            Console.WriteLine("╚════════════════════════════════════╝\n");
+            TestHarness.Reset();
 
             TestIntLiterals();
+            TestIntBasePrefixes();
+            TestUnderscoreSeparators();
             TestFloatLiterals();
             TestBoolAndNull();
             TestStringLiterals();
+            TestLiteralErrorCases();
+            TestStructuralAssertions();
 
-            Console.WriteLine($"=== Literal Tests Complete: {passCount} passed, {failCount} failed ===\n");
-            return failCount;
+            return TestHarness.Summary("Literal");
         }
     }
 }

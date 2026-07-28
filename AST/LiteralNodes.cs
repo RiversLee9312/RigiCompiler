@@ -24,12 +24,21 @@ namespace LatteCompiler
         U8      // UB 后缀
     }
 
+    // 整数字面量进制（M31：替代原 IsHex 布尔；SYNTAX §3.3 的 0x/0b/0o 前缀）
+    public enum LiteralIntBase
+    {
+        Decimal,
+        Hex,
+        Binary,
+        Octal
+    }
+
     // 整数字面量 AST 节点
     public class IntLiteralASTNode : LiteralASTNode
     {
         public long Value;
         public IntType IntType;
-        public bool IsHex;  // 是否为十六进制
+        public LiteralIntBase Base = LiteralIntBase.Decimal;  // 进制（0x/0b/0o 前缀）
 
         public IntLiteralASTNode(ASTNode? parent) : base(parent)
         {

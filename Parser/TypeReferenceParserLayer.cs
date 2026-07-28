@@ -59,7 +59,9 @@ namespace LatteCompiler
                 state = State.TypeNameSeen;
 
                 return new ParserLayerResult.PushLayer(
-                    new PathParserLayer(targetNode.TypeSymbol, lineBreakSensitive: true),
+                    new PathParserLayer(targetNode.TypeSymbol, lineBreakSensitive: true,
+                        // 类型引用语境：连续点可能是可变参数标记 ... 的剩余部分，交还上层
+                        allowVariadicDots: true),
                     TokenDisposition.Replay
                 );
             }

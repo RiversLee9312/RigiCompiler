@@ -73,11 +73,62 @@ namespace LatteCompiler
             }
         }
 
+        // 子单元枚举（M32，JSONL v2 序列化专用）：与 EnumerateChildren 相同的
+        // 成员路径与顺序，但 [AstCarrier] 对象作为独立单元产出（不再下钻其
+        // 内部节点），via 不做 (CarrierType.Field) 复合——单 carrier 成员为
+        // 成员名，集合元素为 member[i]。carrier 携带的节点由消费方对该单元
+        // 再调 EnumerateCarriedNodes 获得。
+        // EnumerateChildren（Validator/ASTVisitor 默认遍历）行为不受本方法影响。
+        public static IEnumerable<(object Unit, string Via)> EnumerateChildUnits(ASTNode node)
+        {
+            foreach (var member in GetChildMembers(node.GetType()))
+            {
+                object? value = member switch
+                {
+                    FieldInfo field => field.GetValue(node),
+                    PropertyInfo prop => prop.GetValue(node),
+                    _ => null
+                };
+                foreach (var found in EnumerateUnitValue(value, member.Name))
+                {
+                    yield return found;
+                }
+            }
+        }
+
+        // carrier 携带的节点：其公共实例字段中的 ASTNode（FieldName = carrier 内字段名）
+        public static IEnumerable<(ASTNode Node, string FieldName)> EnumerateCarriedNodes(object carrier)
+        {
+            foreach (var field in carrier.GetType().GetFields(BindingFlags.Public | BindingFlags.Instance))
+            {
+                if (field.GetValue(carrier) is ASTNode carried)
+                {
+                    yield return (carried, field.Name);
+                }
+            }
+        }
+
+        // 实例字段全集（沿基类链，DeclaredOnly 去重）：
+        // Type.GetFields 不返回基类的 private 字段（M31 修复的反射盲区），
+        // 需要完整字段视图的场景（类型审计、fields 收集）统一走这里
+        public static IEnumerable<FieldInfo> GetAllInstanceFields(Type type)
+        {
+            for (var t = type; t != null && t != typeof(object); t = t.BaseType)
+            {
+                foreach (var field in t.GetFields(
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly))
+                {
+                    yield return field;
+                }
+            }
+        }
+
         // [ChildAstNode] 标注的成员：字段（含 NonPublic，如 ExpressionRootASTNode.expression）、
-        // 公共可读无参属性（get-only 挂载点，如 BinaryExpressionASTNode.Left）
+        // 公共可读无参属性（get-only 挂载点，如 BinaryExpressionASTNode.Left）。
+        // 字段沿基类链取（GetAllInstanceFields：基类 private 字段不再漏枚举）
         public static IEnumerable<MemberInfo> GetChildMembers(Type type)
         {
-            foreach (var field in type.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
+            foreach (var field in GetAllInstanceFields(type))
             {
                 if (field.GetCustomAttribute<ChildAstNodeAttribute>() != null)
                 {
@@ -108,7 +159,7 @@ namespace LatteCompiler
         }
 
         // 集合元素类型（单类型参数的 IEnumerable<T> 的 T 或数组元素；string 不算集合）
-        private static Type? GetCollectionElementType(Type type)
+        internal static Type? GetCollectionElementType(Type type)
         {
             if (type == typeof(string)) return null;
             if (type.IsArray) return type.GetElementType();
@@ -175,6 +226,46 @@ namespace LatteCompiler
                     }
                 }
             }
+        }
+
+        // ===== EnumerateChildUnits 的私有实现（M32，JSONL v2）=====
+
+        // [ChildAstNode] 成员的值：单节点 / 集合元素 / carrier（carrier 不再下钻，
+        // 作为独立单元产出；标注成员装非节点值同样静默跳过，由 Validator 类型审计拒绝）
+        private static IEnumerable<(object, string)> EnumerateUnitValue(object? value, string memberName)
+        {
+            if (value == null || value is string) yield break;
+
+            if (value is ASTNode single)
+            {
+                yield return (single, memberName);
+                yield break;
+            }
+
+            if (value is IEnumerable enumerable)
+            {
+                int index = 0;
+                foreach (var item in enumerable)
+                {
+                    if (item is ASTNode || IsCarrierObject(item))
+                    {
+                        yield return (item, $"{memberName}[{index}]");
+                    }
+                    index++;
+                }
+                yield break;
+            }
+
+            // 单 carrier 成员（via 为成员名）
+            if (IsCarrierObject(value))
+            {
+                yield return (value, memberName);
+            }
+        }
+
+        private static bool IsCarrierObject(object? value)
+        {
+            return value != null && value.GetType().GetCustomAttribute<AstCarrierAttribute>() != null;
         }
     }
 }

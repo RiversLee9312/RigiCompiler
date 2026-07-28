@@ -38,7 +38,6 @@ namespace LatteCompiler
         private readonly ImportASTNode self;
         private State state = State.ImportKeyword;
         private SymbolASTNode? pathSymbol;      // 前缀路径（单导入时即完整路径）
-        private bool pathFinalized;             // 空名尾元素是否已清理
 
         public ImportParserLayer(ImportASTNode self)
         {
@@ -85,19 +84,8 @@ namespace LatteCompiler
                 new PathParserLayer(pathSymbol, lineBreakSensitive: true), TokenDisposition.Replay);
         }
 
-        // PathParserLayer 弹出后：清末尾空名元素（`.*` / `.{` 前的 . 残留，只清一次）
-        private void FinalizePath()
-        {
-            if (pathFinalized) return;
-            pathFinalized = true;
-            var elements = pathSymbol!.symbol.elements;
-            if (elements.Count > 0 && elements[elements.Count - 1].name.Length == 0)
-                elements.RemoveAt(elements.Count - 1);
-        }
-
         private ParserLayerResult OnAfterPath(Token t, ParserLayerContext context)
         {
-            FinalizePath();
             var elements = pathSymbol!.symbol.elements;
 
             // 换行：单个导入完成
@@ -146,11 +134,14 @@ namespace LatteCompiler
         // {} 列表内：等待标识符（每项展开为 前缀 + 名称 的完整路径）
         private ParserLayerResult OnListItem(Token t, ParserLayerContext context)
         {
-            if (t is WordToken w)
+            // 列表项必须是合法标识符（M31：import a.{123} 此前被接受）
+            if (t is WordToken w && Keywords.IsIdentifierStart(w.Content))
             {
                 var itemSymbol = new SymbolASTNode(self);
+                // 前缀元素深拷贝展开（M31：不再按引用共享可变的 SymbolElement，
+                // 防止语义阶段的原地规范化跨导入项交叉污染）
                 foreach (var el in pathSymbol!.symbol.elements)
-                    itemSymbol.symbol.elements.Add(el);
+                    itemSymbol.symbol.elements.Add(el.DeepClone());
                 itemSymbol.symbol.elements.Add(new SymbolElement { name = w.Content });
                 // 列表项 span：标识符 token 自身的范围（M28）
                 var loc = context.GetLocation();
@@ -160,7 +151,13 @@ namespace LatteCompiler
                 return ParserLayerResult.Continue.Instance;
             }
             if (t is NotationToken n && n.Content == "}")
+            {
+                // 区分真空列表与尾逗号（M31：消息不再误导）——
+                // 多导入形态下 importedSymbols 此时只含本列表已展开的项
+                if (self.importedSymbols.Count > 0)
+                    throw context.RaiseError("Trailing comma in import list (SYNTAX §15.2)");
                 throw context.RaiseError("Import list cannot be empty (SYNTAX §15.2)");
+            }
 
             throw context.RaiseError($"Expected identifier in import list, got: {t}");
         }

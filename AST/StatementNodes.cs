@@ -117,7 +117,7 @@ namespace LatteCompiler
     public class CatchClauseASTNode : ASTNode
     {
         public string? VariableName;           // 异常变量名（_ 时为 null，表示丢弃）
-        [ChildAstNode] public TypeReferenceASTNode ExceptionType;
+        [ChildAstNode(Required = true)] public TypeReferenceASTNode ExceptionType;
         [ChildAstNode] public CodeBlockASTNode Body;
 
         public CatchClauseASTNode(ASTNode? parent) : base(parent)

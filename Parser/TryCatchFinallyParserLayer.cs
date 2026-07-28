@@ -62,9 +62,14 @@ namespace LatteCompiler
 
         public ParserLayerResult ParseToken(Token currentToken, ParserLayerContext context)
         {
-            // EOF：try-catch-finally 结构未完整时收到 EOF 均为不完整结构
+            // EOF：CatchOrFinally（已集齐 catch/finally、结构完整）上交 EOF（规则 6）；
+            // 其余状态为不完整结构
             if (currentToken is EndOfFileToken)
             {
+                if (state == State.CatchOrFinally)
+                {
+                    return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
+                }
                 context.RaiseError("Unexpected end of file");
                 return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
             }
@@ -210,14 +215,20 @@ namespace LatteCompiler
 
             if (currentToken is WordToken wt)
             {
-                // _ 表示丢弃异常变量
+                // _ 表示丢弃异常变量；其余必须是合法标识符
+                // （M31：catch (123: E) 此前被接受）
                 if (wt.Content == "_")
                 {
                     currentCatch!.VariableName = null;
                 }
-                else
+                else if (Keywords.IsIdentifier(wt.Content))
                 {
                     currentCatch!.VariableName = wt.Content;
+                }
+                else
+                {
+                    context.RaiseError($"Expected variable name or '_' in catch clause, got: {currentToken}");
+                    return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
                 }
 
                 state = State.CatchColon;
@@ -287,7 +298,7 @@ namespace LatteCompiler
             tryNode.CatchClauses.Add(currentCatch!);
             state = State.CatchOrFinally;
             return new ParserLayerResult.PushLayer(
-                new CodeBlockParserLayer(tryNode.CatchClauses[tryNode.CatchClauses.Count - 1].Body), TokenDisposition.Replay);
+                new CodeBlockParserLayer(currentCatch!.Body), TokenDisposition.Replay);
         }
 
         private ParserLayerResult HandleFinallyOpenParen(Token currentToken, ParserLayerContext context)
@@ -316,7 +327,7 @@ namespace LatteCompiler
                 return ParserLayerResult.Continue.Instance;
             }
 
-            if (currentToken is WordToken wt)
+            if (currentToken is WordToken wt && Keywords.IsIdentifier(wt.Content))
             {
                 tryNode.FinallyParameter = wt.Content;
                 state = State.FinallyCloseParen;

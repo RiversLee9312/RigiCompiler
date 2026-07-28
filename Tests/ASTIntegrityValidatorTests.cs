@@ -16,15 +16,12 @@ namespace LatteCompiler.Tests
     /// </summary>
     public static class ASTIntegrityValidatorTests
     {
-        private static int passCount = 0;
-        private static int failCount = 0;
-
         // ===== 合法结构 =====
 
         // 合法小树：声明 + 初始化器 + import carrier + 注解 + 表达式语句 + 范围循环
         public static void TestValidTree()
         {
-            Console.WriteLine("=== Testing Valid AST (expect pass) ===");
+            TestHarness.Section("Valid AST (expect pass)");
 
             var root = new RootASTNode();
 
@@ -74,14 +71,14 @@ namespace LatteCompiler.Tests
 
             StampSpans(root);
             ExpectPass("合法小树（声明/import/注解/表达式语句/范围循环）", root);
-            Console.WriteLine();
+            TestHarness.Blank();
         }
 
         // ===== 结构破坏 =====
 
         public static void TestInvalidStructures()
         {
-            Console.WriteLine("=== Testing Invalid AST (expect CompilerInternalException) ===");
+            TestHarness.Section("Invalid AST (expect CompilerInternalException)");
 
             // 子节点 Parent 指错：TypeAnnotation 的 Parent 应为声明节点
             ExpectThrow("子节点 Parent 指错（TypeAnnotation → Root）", () =>
@@ -128,14 +125,14 @@ namespace LatteCompiler.Tests
                 ASTIntegrityValidator.Validate(root);
             });
 
-            Console.WriteLine();
+            TestHarness.Blank();
         }
 
         // ===== Span 破坏与类型审计（M28）=====
 
         public static void TestSpanAndAuditViolations()
         {
-            Console.WriteLine("=== Testing Span & Audit Violations (expect CompilerInternalException) ===");
+            TestHarness.Section("Span & Audit Violations (expect CompilerInternalException)");
 
             // 子节点缺 Span（root 已盖戳、子节点故意不盖）
             ExpectThrow("子节点缺 Span", () =>
@@ -193,7 +190,7 @@ namespace LatteCompiler.Tests
                 ASTIntegrityValidator.Validate(root);
             });
 
-            Console.WriteLine();
+            TestHarness.Blank();
         }
 
         // ===== 测试专用坏节点（类型审计用例）=====
@@ -254,61 +251,49 @@ namespace LatteCompiler.Tests
             }
         }
 
+        // 期望 Validate 通过（断言走 TestHarness.CheckTrue）
         private static void ExpectPass(string name, RootASTNode root)
         {
             try
             {
                 ASTIntegrityValidator.Validate(root);
-                Console.WriteLine($"  [PASS] {name}");
-                passCount++;
+                TestHarness.CheckTrue(name, true);
             }
             catch (Exception ex)
             {
-                Fail(name, $"expected pass, got {ex.GetType().Name}: {ex.Message}");
+                TestHarness.CheckTrue(name, false, $"expected pass, got {ex.GetType().Name}: {ex.Message}");
             }
         }
 
+        // 期望 Validate 抛 CompilerInternalException（内部编译器错误，非用户语法错误，
+        // 故不能用只捕 Parser/LexerException 的 CheckParseError）
         private static void ExpectThrow(string name, Action build)
         {
             try
             {
                 build();
-                Fail(name, "expected CompilerInternalException, but validation passed");
+                TestHarness.CheckTrue(name, false, "expected CompilerInternalException, but validation passed");
             }
             catch (CompilerInternalException ex)
             {
-                Console.WriteLine($"  [PASS] {name}  (rejected: {ex.Message})");
-                passCount++;
+                TestHarness.CheckTrue($"{name}  (rejected: {ex.Message})", true);
             }
             catch (Exception ex)
             {
-                Fail(name, $"expected CompilerInternalException, got {ex.GetType().Name}: {ex.Message}");
+                TestHarness.CheckTrue(name, false, $"expected CompilerInternalException, got {ex.GetType().Name}: {ex.Message}");
             }
-        }
-
-        private static void Fail(string name, string message)
-        {
-            Console.WriteLine($"  [FAIL] {name}");
-            Console.WriteLine($"      => {message}");
-            failCount++;
         }
 
         // ===== 入口 =====
         public static int RunAll()
         {
-            Console.WriteLine("\n╔════════════════════════════════════╗");
-            Console.WriteLine("║  AST Integrity Validator Tests     ║");
-            Console.WriteLine("╚════════════════════════════════════╝\n");
-
-            passCount = 0;
-            failCount = 0;
+            TestHarness.Reset();
 
             TestValidTree();
             TestInvalidStructures();
             TestSpanAndAuditViolations();
 
-            Console.WriteLine($"=== AST Integrity Validator Tests Complete: {passCount} passed, {failCount} failed ===");
-            return failCount;
+            return TestHarness.Summary("ASTIntegrityValidator");
         }
     }
 }

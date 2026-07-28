@@ -114,18 +114,18 @@ namespace LatteCompiler
         // 已看到关键字 - 等待变量名
         private ParserLayerResult HandleKeywordSeen(Token currentToken, ParserLayerContext context)
         {
-            if (currentToken is WordToken wt)
+            // 变量名必须是合法标识符：非数字词、非保留字（M31 统一走 Keywords.IsIdentifier）
+            if (currentToken is WordToken wt && Keywords.IsIdentifier(wt.Content))
             {
-                // 检查是否为保留关键字
-                if (IsReservedKeyword(wt.Content))
-                {
-                    context.RaiseError($"Cannot use reserved keyword '{wt.Content}' as variable name");
-                    return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
-                }
-
                 declNode.Name = wt.Content;
                 state = State.NameSeen;
                 return ParserLayerResult.Continue.Instance;
+            }
+
+            if (currentToken is WordToken wt2)
+            {
+                context.RaiseError($"Cannot use reserved keyword or invalid identifier '{wt2.Content}' as variable name");
+                return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
             }
 
             context.RaiseError($"Expected variable name, got: {currentToken}");
@@ -309,11 +309,12 @@ namespace LatteCompiler
         // 已看到初始化值 - 完成
         private ParserLayerResult HandleValueSeen(Token currentToken, ParserLayerContext context)
         {
-            // 表达式层弹出后，下一个 token 应当是换行
+            // 表达式层弹出后，下一个 token 应当是换行；
+            // 换行不属于声明（Replay 上交）——span 不拖尾换行符（M31，M28 约定）
             if (currentToken is LineBreakToken)
             {
                 state = State.Completed;
-                return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
+                return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
             }
 
             // EOF：声明就此收尾（结构完整），EOF 上交 Root
@@ -332,15 +333,6 @@ namespace LatteCompiler
 
             context.RaiseError($"Unexpected token after initializer: {currentToken}");
             return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
-        }
-
-        // 辅助方法：检查是否为保留关键字
-        private bool IsReservedKeyword(string word)
-        {
-            return Keywords.ControlStreamKeywords.Contains(word) ||
-                   Keywords.DeclarationKeywords.Contains(word) ||
-                   Keywords.StringOperators.Contains(word) ||
-                   Keywords.StringValues.Contains(word);
         }
     }
 }

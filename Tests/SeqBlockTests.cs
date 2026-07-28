@@ -1,58 +1,42 @@
 using System;
-using System.Collections.Generic;
-using System.Linq;
 
 namespace LatteCompiler.Tests
 {
-    /// <summary>
-    /// Seq 块解析测试（roadmap #11，SYNTAX.md §6）
-    ///
-    /// 覆盖：
-    /// 1. 简单 seq 块
-    /// 2. volatile seq
-    /// 3. using 资源绑定（单个/多个）
-    /// 4. named 标签
-    /// 5. 组合：volatile + using + named
-    /// 6. seq 作为表达式（return@seq）
-    /// 7. 错误用例
-    ///
-    /// 驱动方式：Parser.Parse(tokens, new CodeBlockParserLayer(block)) 独立入口，
-    /// 源码以 { ... } 包裹。
-    /// </summary>
+    // Seq 块解析测试（roadmap #11，SYNTAX.md §6）：代码块独立驱动
+    // （TestHarness.ParseBlock），断言 AstDescribe 精确描述串。
+    // 覆盖：简单 seq / volatile / using 资源绑定（单个/多个）/ named 标签 /
+    // 组合（volatile + using + named）/ seq 作为表达式（return@seq）/ 错误用例。
     public class SeqBlockTests
     {
-        private static int passCount = 0;
-        private static int failCount = 0;
-
         // ===== 1. 简单 seq 块 =====
         public static void TestSimpleSeq()
         {
-            Console.WriteLine("=== Testing Simple Seq Blocks ===");
+            TestHarness.Section("Testing Simple Seq Blocks");
 
             TestBlock("{ seq { var x = 1 } }",
-                "[Seq([Var(x = Int(1,I32))])]");
+                "[Seq([var x = Int(1,I32)])]");
 
             TestBlock("{ seq { var x = 1\nvar y = 2 } }",
-                "[Seq([Var(x = Int(1,I32)), Var(y = Int(2,I32))])]");
+                "[Seq([var x = Int(1,I32), var y = Int(2,I32)])]");
 
-            Console.WriteLine();
+            TestHarness.Blank();
         }
 
         // ===== 2. volatile seq =====
         public static void TestVolatileSeq()
         {
-            Console.WriteLine("=== Testing Volatile Seq ===");
+            TestHarness.Section("Testing Volatile Seq");
 
             TestBlock("{ volatile seq { operation() } }",
                 "[Seq(volatile, [Call(Sym(operation), [])])]");
 
-            Console.WriteLine();
+            TestHarness.Blank();
         }
 
         // ===== 3. using 资源绑定 =====
         public static void TestUsingBindings()
         {
-            Console.WriteLine("=== Testing Using Bindings ===");
+            TestHarness.Section("Testing Using Bindings");
 
             // 单个 using
             TestBlock("{ seq using(const file = open()) { use(file) } }",
@@ -73,13 +57,13 @@ namespace LatteCompiler.Tests
             TestBlock("{ seq using(const res: Resource = get()) { use(res) } }",
                 "[Seq(using(const res: Resource = Call(Sym(get), [])), [Call(Sym(use), [Sym(res)])])]");
 
-            Console.WriteLine();
+            TestHarness.Blank();
         }
 
         // ===== 4. named 标签 =====
         public static void TestNamedLabel()
         {
-            Console.WriteLine("=== Testing Named Labels ===");
+            TestHarness.Section("Testing Named Labels");
 
             TestBlock("{ seq named myBlock { compute() } }",
                 "[Seq(named myBlock, [Call(Sym(compute), [])])]");
@@ -87,13 +71,13 @@ namespace LatteCompiler.Tests
             TestBlock("{ seq named outer { seq named inner { work() } } }",
                 "[Seq(named outer, [Seq(named inner, [Call(Sym(work), [])])])]");
 
-            Console.WriteLine();
+            TestHarness.Blank();
         }
 
         // ===== 5. 组合 =====
         public static void TestCombinations()
         {
-            Console.WriteLine("=== Testing Combinations ===");
+            TestHarness.Section("Testing Combinations");
 
             // volatile + using + named
             TestBlock("{ volatile seq using(const x = init()) named block { process(x) } }",
@@ -112,33 +96,33 @@ namespace LatteCompiler.Tests
                 "named mySeq, " +
                 "[Call(Sym(work), [Sym(a), Sym(b)])])]");
 
-            Console.WriteLine();
+            TestHarness.Blank();
         }
 
         // ===== 6. seq 作为表达式（return@seq）=====
         public static void TestSeqAsExpression()
         {
-            Console.WriteLine("=== Testing Seq as Expression ===");
+            TestHarness.Section("Testing Seq as Expression");
 
             // return@seq
             TestBlock("{ var result = seq { return@seq compute() } }",
-                "[Var(result = Seq([Return@seq(Call(Sym(compute), []))]))]");
+                "[var result = Seq([Return@seq(Call(Sym(compute), []))])]");
 
             // return@label
             TestBlock("{ var r = seq named calc { return@calc getValue() } }",
-                "[Var(r = Seq(named calc, [Return@calc(Call(Sym(getValue), []))]))]");
+                "[var r = Seq(named calc, [Return@calc(Call(Sym(getValue), []))])]");
 
             // 复杂示例：SYNTAX.md §6.1
             TestBlock("{ const result = seq { const ac = a * c\nreturn@seq ac } }",
-                "[Var(result = Seq([Var(ac = Binary(Sym(a) * Sym(c))), Return@seq(Sym(ac))]))]");
+                "[const result = Seq([const ac = Binary(Sym(a) * Sym(c)), Return@seq(Sym(ac))])]");
 
-            Console.WriteLine();
+            TestHarness.Blank();
         }
 
         // ===== 7. 错误用例 =====
         public static void TestInvalidCases()
         {
-            Console.WriteLine("=== Testing Invalid Cases ===");
+            TestHarness.Section("Testing Invalid Cases");
 
             // volatile 后没有 seq
             TestInvalidBlock("{ volatile { operation() } }",
@@ -156,191 +140,34 @@ namespace LatteCompiler.Tests
             TestInvalidBlock("{ seq named 123block { } }",
                 "Label name cannot start with a digit");
 
-            Console.WriteLine();
+            TestHarness.Blank();
         }
 
-        // ===== 辅助方法 =====
+        // ===== 辅助 =====
 
-        private static void TestBlock(string source, string expected)
+        // 解析代码块并比对 AST 描述串（label：多行源码 \n 转义显示）
+        private static void TestBlock(string source, string expectedDesc)
         {
             try
             {
-                var lexer = new Lexer();
-                var tokens = lexer.Tokenize(source);
-                var block = new CodeBlockASTNode(null);
-                var parser = new Parser();
-                parser.Parse(tokens, new TestRootParserLayer(), new CodeBlockParserLayer(block));
-
-                var formatted = FormatBlock(block);
-                if (formatted == expected)
-                {
-                    Console.WriteLine($"PASS: {source.Replace("\n", "\\n")}");
-                    passCount++;
-                }
-                else
-                {
-                    Console.WriteLine($"FAIL: {source.Replace("\n", "\\n")}");
-                    Console.WriteLine($"  Expected: {expected}");
-                    Console.WriteLine($"  Got:      {formatted}");
-                    failCount++;
-                }
+                var block = TestHarness.ParseBlock(source);
+                TestHarness.Check(source.Replace("\n", "\\n"), AstDescribe.Block(block), expectedDesc);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"FAIL (Exception): {source.Replace("\n", "\\n")}");
-                Console.WriteLine($"  Expected: {expected}");
-                Console.WriteLine($"  Exception: {ex.Message}");
-                failCount++;
+                TestHarness.CheckTrue($"{source.Replace("\n", "\\n")} => 意外异常", false, ex.Message);
             }
         }
 
         private static void TestInvalidBlock(string source, string expectedError)
         {
-            try
-            {
-                var lexer = new Lexer();
-                var tokens = lexer.Tokenize(source);
-                var block = new CodeBlockASTNode(null);
-                var parser = new Parser();
-                parser.Parse(tokens, new TestRootParserLayer(), new CodeBlockParserLayer(block));
-
-                Console.WriteLine($"FAIL: {source.Replace("\n", "\\n")} (应该失败但成功了)");
-                Console.WriteLine($"  Expected error: {expectedError}");
-                failCount++;
-            }
-            catch (ParserException ex)
-            {
-                if (ex.Message.Contains(expectedError))
-                {
-                    Console.WriteLine($"PASS: {source.Replace("\n", "\\n")} (正确失败)");
-                    passCount++;
-                }
-                else
-                {
-                    Console.WriteLine($"FAIL: {source.Replace("\n", "\\n")} (错误信息不匹配)");
-                    Console.WriteLine($"  Expected error: {expectedError}");
-                    Console.WriteLine($"  Got error: {ex.Message}");
-                    failCount++;
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"FAIL: {source.Replace("\n", "\\n")} (意外异常类型)");
-                Console.WriteLine($"  Expected error: {expectedError}");
-                Console.WriteLine($"  Got exception: {ex.Message}");
-                failCount++;
-            }
+            TestHarness.CheckParseError(source.Replace("\n", "\\n"),
+                () => TestHarness.ParseBlock(source), expectedError);
         }
 
-        private static string FormatBlock(CodeBlockASTNode block)
-        {
-            var statements = block.Statements.Select(FormatStatement).ToList();
-            return $"[{string.Join(", ", statements)}]";
-        }
-
-        private static string FormatStatement(ASTNode node)
-        {
-            return node switch
-            {
-                SeqBlockExpressionASTNode seq => FormatSeq(seq),
-                VariableDeclarationASTNode v => FormatVarDecl(v),
-                ReturnStatementASTNode r => FormatReturn(r),
-                ExpressionStatementASTNode s => s.AssignValue != null
-                    ? $"Assign({DescribeExpression(s.Expression.Expression)} = {DescribeExpression(s.AssignValue.Expression)})"
-                    : DescribeExpression(s.Expression.Expression),
-                ExpressionASTNode e => DescribeExpression(e),
-                _ => $"<{node.GetType().Name}>"
-            };
-        }
-
-        private static string FormatSeq(SeqBlockExpressionASTNode seq)
-        {
-            var parts = new List<string>();
-
-            if (seq.IsVolatile)
-            {
-                parts.Add("volatile");
-            }
-
-            foreach (var binding in seq.UsingBindings)
-            {
-                var constVar = binding.IsConst ? "const" : "var";
-                var type = binding.Type != null
-                    ? $": {binding.Type.TypeSymbol.symbol.elements[0].name} "
-                    : " ";
-                var init = DescribeExpression(binding.Initializer.Expression);
-                parts.Add($"using({constVar} {binding.VariableName}{type}= {init})");
-            }
-
-            if (seq.Label != null)
-            {
-                parts.Add($"named {seq.Label}");
-            }
-
-            var body = FormatBlock(seq.Body);
-            parts.Add(body);
-
-            return $"Seq({string.Join(", ", parts)})";
-        }
-
-        private static string FormatVarDecl(VariableDeclarationASTNode v)
-        {
-            var init = v.Initializer != null ? $" = {DescribeExpression(v.Initializer!.Expression)}" : "";
-            return $"Var({v.Name}{init})";
-        }
-
-        private static string FormatReturn(ReturnStatementASTNode r)
-        {
-            var label = r.Label != null ? $"@{r.Label}" : "";
-            var value = r.Value != null ? $"({DescribeExpression(r.Value!.Expression)})" : "";
-            return $"Return{label}{value}";
-        }
-
-        // 把表达式节点描述为紧凑的结构串
-        private static string DescribeExpression(ASTNode? node)
-        {
-            return node switch
-            {
-                null => "<null>",
-                LiteralExpressionASTNode lit => DescribeExpression(lit.Literal),
-                IntLiteralASTNode i => $"Int({i.Value},{i.IntType})",
-                StringLiteralASTNode s => $"Str(\"{s.Value}\")",
-                BoolLiteralASTNode b => $"Bool({b.Value})",
-                SymbolReferenceASTNode sref => $"Sym({DescribeSymbol(sref.Symbol.symbol)})",
-                BinaryExpressionASTNode bin =>
-                    $"Binary({DescribeExpression(bin.Left.Expression)} {bin.Operator} {DescribeExpression(bin.Right.Expression)})",
-                CallExpressionASTNode c =>
-                    $"Call({DescribeExpression(c.Callee.Expression)}, [{string.Join(", ", c.Arguments.Select(a => DescribeExpression(a.Value.Expression)))}])",
-                SeqBlockExpressionASTNode seq => FormatSeq(seq),
-                _ => $"<{node.GetType().Name}>"
-            };
-        }
-
-        private static string DescribeSymbol(Symbol symbol)
-        {
-            var parts = new List<string>();
-            foreach (var element in symbol.elements)
-            {
-                string part = element.name;
-                if (element.generics.Count > 0)
-                {
-                    part += "<" + string.Join(",", element.generics.Select(g => DescribeSymbol(g))) + ">";
-                }
-                parts.Add(part);
-            }
-            return string.Join(".", parts);
-        }
-
-        // ===== 入口 =====
         public static int RunAll()
         {
-            passCount = 0;
-            failCount = 0;
-
-            Console.WriteLine("╔════════════════════════════════════════════════════════╗");
-            Console.WriteLine("║  Seq Block Parser Tests (roadmap #11, P2)            ║");
-            Console.WriteLine("╚════════════════════════════════════════════════════════╝");
-            Console.WriteLine();
+            TestHarness.Reset();
 
             TestSimpleSeq();
             TestVolatileSeq();
@@ -350,12 +177,7 @@ namespace LatteCompiler.Tests
             TestSeqAsExpression();
             TestInvalidCases();
 
-            Console.WriteLine("╔════════════════════════════════════════════════════════╗");
-            Console.WriteLine($"║  Total: {passCount + failCount,3} tests | Pass: {passCount,3} | Fail: {failCount,3}            ║");
-            Console.WriteLine("╚════════════════════════════════════════════════════════╝");
-            Console.WriteLine();
-
-            return failCount;
+            return TestHarness.Summary("SeqBlock");
         }
     }
 }

@@ -28,7 +28,6 @@ namespace LatteCompiler
     public class SwitchStatementParserLayer : IParserLayer, ISpanReceiver
     {
         private readonly SwitchExpressionASTNode targetNode;
-        private readonly bool isExpression;
 
         private enum State
         {
@@ -59,7 +58,6 @@ namespace LatteCompiler
         public SwitchStatementParserLayer(SwitchExpressionASTNode target, bool isExpression = true)
         {
             targetNode = target;
-            this.isExpression = isExpression;
 
             // 语句模式属于 P2，当前仅支持表达式模式
             if (!isExpression)
@@ -93,7 +91,9 @@ namespace LatteCompiler
                     return ExpectNotation(currentToken, context, "(", State.SelectorStart,
                         "Expected '(' after switch");
                 case State.SelectorStart:
-                    return DelegateExpression(State.SelectorCloseParenExpected, targetNode.Selector);
+                    // selector 在 () 内：换行按空白处理（M31，SYNTAX §1.1）
+                    return DelegateExpression(State.SelectorCloseParenExpected, targetNode.Selector,
+                        insideParens: true);
                 case State.SelectorCloseParenExpected:
                     return ExpectNotation(currentToken, context, ")", State.OpenBraceExpected,
                         "Expected ')' after switch selector");
@@ -104,9 +104,11 @@ namespace LatteCompiler
                     return HandleCaseStart(currentToken, context);
                 case State.PatternStart:
                     pendingCase = new SwitchCaseASTNode(targetNode);
-                    // 分支 span：起点为 (（见 HandleCaseStart），分支体解析完时封 End（M28）
+                    // 分支 span：起点为 (（见 HandleCaseStart），分支体解析完时封 End（M28）；
+                    // pattern 在 () 内：换行按空白处理（M31，SYNTAX §1.1）
                     pendingCase.Span = pendingCaseStart;
-                    return DelegateExpression(State.PatternCloseParenExpected, pendingCase.Pattern);
+                    return DelegateExpression(State.PatternCloseParenExpected, pendingCase.Pattern,
+                        insideParens: true);
                 case State.PatternCloseParenExpected:
                     return ExpectNotation(currentToken, context, ")", State.CaseArrowExpected,
                         "Expected ')' after switch case pattern");
@@ -154,12 +156,14 @@ namespace LatteCompiler
         }
 
         // 委托一个子表达式：压入 ExpressionParserLayer（保留 token），
-        // 表达式直接附加到目标 Root
-        private ParserLayerResult DelegateExpression(State nextState, ExpressionRootASTNode expressionTarget)
+        // 表达式直接附加到目标 Root；insideParens 标记 () 内语境（换行按空白处理）
+        private ParserLayerResult DelegateExpression(
+            State nextState, ExpressionRootASTNode expressionTarget, bool insideParens = false)
         {
             state = nextState;
             return new ParserLayerResult.PushLayer(
-                new ExpressionParserLayer(expressionTarget), TokenDisposition.Replay);
+                new ExpressionParserLayer(expressionTarget) { insideParens = insideParens },
+                TokenDisposition.Replay);
         }
 
         // 分支列表入口：普通分支 ( 、default 分支或结束 }

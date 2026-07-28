@@ -1,11 +1,11 @@
 # LatteCompiler 项目指南（AGENTS.md）
 
 > **用途**: 为 AI 编码代理提供 Latte 编译器项目的完整上下文。读者默认对本项目一无所知。
-> 本文件与 `CLAUDE.md` 并存，内容以实际代码为准（已验证日期：2026-07-27）。
+> 本文件与 `CLAUDE.md` 并存，内容以实际代码为准（已验证日期：2026-07-28）。
 
 **项目名**: LatteCompiler
 **语言**: C#（.NET 8.0，控制台程序，`Nullable` 与 `ImplicitUsings` 已启用）
-**开发阶段**: 早期 —— 编译器前端（Lexer + Parser）已完成（roadmap P0–P5 全部落地），Parser/PDA 大扫除（架构重构）、AST 结构标注（M24）、Lexer 修复（M25）、日志系统 + AST JSONL 序列化（M26）、CLI 插件化（M27）、Lexer 位置修复 + AST Source Span + ASTVisitor 统一遍历（M28）、AST 容器重构（M29）与 Utilities.cs 拆分 + ASTVisitor 遍历可重载 + 文档幽灵清理（M30）已完成；下一阶段：语义分析、BIL 输出
+**开发阶段**: 早期 —— 编译器前端（Lexer + Parser）已完成（roadmap P0–P5 全部落地），Parser/PDA 大扫除（架构重构）、AST 结构标注（M24）、Lexer 修复（M25）、日志系统 + AST JSONL 序列化（M26）、CLI 插件化（M27）、Lexer 位置修复 + AST Source Span + ASTVisitor 统一遍历（M28）、AST 容器重构（M29）、Utilities.cs 拆分 + ASTVisitor 遍历可重载 + 文档幽灵清理（M30）与前端大修（M31：Span 左闭右开、Lexer 块注释重写、续行规则、位运算符、0b/0o/下划线字面量、Keywords 大扫除、JSONL v2 + 反序列化器、测试基建统一）已完成；下一阶段：语义分析、BIL 输出
 **版本控制**: Git（`main` 分支，2026-07-17 首次提交，工作树干净；CI 见 `.github/workflows/ci.yml`）
 
 ---
@@ -51,7 +51,7 @@ CLI 结构为 `<COMMAND> [--sub-cmd [args...]...]`，顶层 COMMAND 三个：`co
 ```bash
 dotnet run -- test --all                 # 全量测试（CI 入口；任意失败非零退出码并列出失败套件名）
 dotnet run -- test                       # 打印测试套件菜单（编号 + 名称）
-dotnet run -- test --run 2 8             # 按编号运行指定套件（字面量 + 形参列表）
+dotnet run -- test --run 1 7             # 按编号运行指定套件（字面量 + 形参列表）
 dotnet run -- compile --file a.latte                    # 编译（当前无后端，执行词法+语法解析）
 dotnet run -- compile --file a.latte --parse-only       # 只解析，AST 以 JSONL 输出到 stdout
 dotnet run -- compile --file a.latte --parse-only --dump-ast ast.jsonl   # AST JSONL 写文件
@@ -87,7 +87,8 @@ LatteCompiler/
 │   ├── ASTIntegrityValidator.cs # AST 完整性验证器（Parse 成功后自动运行，[ChildAstNode]/[AstCarrier] 标注驱动；
 │   │                            #   含 Span 校验与「未标注 AST 成员」类型审计，M28）
 │   ├── ASTVisitor.cs            # 统一 AST 遍历基建（[ChildAstNode] 子节点枚举唯一实现，M28）
-│   └── AstJsonlSerializer.cs   # AST 树 JSONL 序列化（每节点一行 id/parent/via/type/span/fields，--dump-ast 输出）
+│   ├── AstJsonlSerializer.cs   # AST 树 JSONL 序列化 v2（carrier 记录化、字段名键控，--dump-ast 输出）
+│   └── AstJsonlDeserializer.cs # JSONL → AST 完整反序列化（M31，产物强制过 Validator）
 ├── Parser/                   # Parser 层实现（每层一个文件）
 │   ├── Parser.cs                # 核心协议：IParserLayer、ParserLayerResult、
 │   │                            #   TokenDisposition、ParserLayerContext、Parser 主循环
@@ -125,6 +126,8 @@ LatteCompiler/
 │   └── Logger.cs                # 唯一日志出口：Verbose/Warning/Error 分级；verbose 默认关闭，
 │                                #   --verbose 开控制台 verbose，--log-to 全量 JSONL 落盘
 ├── Tests/                    # 自研控制台测试（非 xUnit/NUnit，见 §5）
+│   ├── AstDescribe.cs           # 统一 AST 描述器（M31，全部套件共用）
+│   ├── TestHarness.cs           # 统一驱动与断言基建（M31）
 │   ├── TestRunner.cs            # test 命令驱动（套件注册表、菜单打印、按编号运行、退出码）
 │   ├── TestRootParserLayer.cs   # 独立 Layer 测试垫底层（只接受 EOF）
 │   ├── TokenDispositionTests.cs # Token 流转协议测试（四种组合）
@@ -236,8 +239,15 @@ End 不早于 Start）**、**类型审计（M28：装 ASTNode 的字段/自动�
 新 Layer 若有施工目标，应实现 `ISpanReceiver`；层内自建节点由所在层显式设置
 （创建记 Start，完成经 `ParserLayerContext.GetPreviousLocation()` 封 End）；
 `ExpressionRootASTNode` 未显式设置时透明继承内容表达式的 span。
-Validator 与 AstJsonlSerializer 遍历统一走 `AST/ASTVisitor.cs`（M28），
-禁止再写第三份 [ChildAstNode] 反射下钻。
+**Span 统一为左闭右开 `[Start, End)`（M31 起）**：Start 指向首个字符，
+End 指向最后一个字符的下一位置（token 与 AST 节点一致；EOF 为零宽范围）；
+语句/声明的 span 不拖尾换行符到下一行（终态层不消费换行）。
+Validator 与 AstJsonlSerializer 的 [ChildAstNode] 反射统一走
+`AST/ASTVisitor.cs` 的 `AstStructureReflection`（M28），禁止再写第三份反射下钻。
+
+**JSONL 往返（M31）**：`AstJsonlSerializer`（v2：carrier 记录化、字段名键控）
+与 `AstJsonlDeserializer`（完整反序列化，产物强制过 Validator）构成往返；
+消费方按字段名取值，不依赖字段顺序。
 
 ### 4.5 ⚠️ 简洁优先：新增代码前必须自问的三个问题
 
@@ -262,13 +272,18 @@ Validator 与 AstJsonlSerializer 遍历统一走 `AST/ASTVisitor.cs`（M28），
 
 Lexer 只做简单字符识别，不理解语义。例如 `3.14` 会输出三个 token：`Word "3"`、`Notation "."`、`Word "14"` —— 由 `LiteralParserLayer` 的状态机组合成浮点字面量。不要在 Lexer 里加语义判断。
 
-- 斜杠家族（`/`、`/=`、`//`、`/*`）由专门的 `SlashLexerLayer` 分流（M25）；
+- 斜杠家族（`/`、`//`、`/*`）由专门的 `SlashLexerLayer` 分流（M25）；
 - `EndOfFileToken` 由 `Lexer.Tokenize` 在输出末尾追加（M25）；输入结束时以
   虚拟换行冲刷帧（FlushLayers）弹栈，未闭合字符串/块注释即 LexerException；
 - 位置计量（M28 修复后）：`CharRange.sourceName` 是源名唯一来源
   （`CharPosition` 不携带）；`CharPosition.offset` 是 0 起始字符索引；
   行/列 1 起始，换行算当前行最后一列；token 头跳过空白字符；
-  EOF 冲刷帧占一个末尾虚拟位置，保证冲刷 token 的 End 正确。
+  EOF 冲刷帧占一个末尾虚拟位置，保证冲刷 token 的 End 正确；
+- **token 范围为左闭右开 [Start, End)**（M31 起）：End 是最后一个字符的下一位置；
+- 块注释不吞字符、不吞换行（M31：按行分段，换行以 LineBreakToken 入流）；
+  行尾归一只把 `\r\n`/`\r` 归一为 `\n`；
+- 复合赋值（`+=`/`*=` 等）不合并 token（与 `>=` 同策略，Parser 将来重组）；
+  字符字面量 `'` 明确报错（未实现）；多行字符串 `"""` 未实现。
 
 ---
 
@@ -276,9 +291,10 @@ Lexer 只做简单字符识别，不理解语义。例如 `3.14` 会输出三个
 
 - **不使用任何测试框架**。测试是 `Tests/` 下的静态类，每个类提供 `public static int RunAll()`（返回失败用例数），由 `Tests/TestRunner.cs` 统一驱动（`test` 命令入口）。
 - **全量入口**：`dotnet run -- test --all` 自动运行全部套件，任意失败返回非零退出码并列出失败套件名——这是 CI 与提交前验证的标准方式（CI 配置见 `.github/workflows/ci.yml`）。
-- 测试模式：每个用例把一小段 Latte 源码字符串依次过 `Lexer.Tokenize` → `Parser.Parse`，然后把得到的 AST 节点描述成字符串与期望比对，控制台打印 `[PASS]`/`[FAIL]`，结尾汇总 `N passed, M failed`。
-- **AST 结构断言**：表达式类测试除字符串快照外，还应断言结构性事实（Root 是否存在/已填充、Expression 的具体类型、Parent 链、子 Root 填充、无节点共享）——快照不能作为唯一验证方式。
-- **独立 Layer 测试**：经 `Parser.Parse(tokens, new TestRootParserLayer(), entryLayer)` 驱动。`TestRootParserLayer` 只接受 EOF——被测 Layer 提前结束或漏消费普通 token 会立即失败，能发现 Layer 边界问题。
+- **统一基建（M31）**：`Tests/AstDescribe.cs` 是唯一的 AST 描述器（Expr/Stmt/Block/Decl/Root/Type/Symbol 等），`Tests/TestHarness.cs` 是唯一的驱动与断言（ParseRoot/ParseBlock/ParseWithLayer/ParseFirstDecl + Check/CheckTrue/CheckParseError/Summary）。禁止在套件里再写私有 Describe*/Format* 副本与计数样板。
+- **断言对象约定（M31）**：除查的就是命令行/日志/token 流/层协议行为的套件（Logger、CommandLineParser、LexerFuzz、TokenDisposition）外，一律断言 AST 树产物（AstDescribe 描述串 + 结构断言），不断言控制台输出文本。
+- **AST 结构断言**：表达式类测试除描述串快照外，还应断言结构性事实（Root 是否存在/已填充、Expression 的具体类型、Parent 链、子 Root 填充、无节点共享）——快照不能作为唯一验证方式。
+- **独立 Layer 测试**：经 `Parser.Parse(tokens, new TestRootParserLayer(), entryLayer)` 驱动（`TestHarness.ParseWithLayer` 封装）。`TestRootParserLayer` 只接受 EOF——被测 Layer 提前结束或漏消费普通 token 会立即失败，能发现 Layer 边界问题。
 - **约定：每新增一个 ParserLayer，必须在 `Tests/` 添加对应测试类，并在 `TestRunner` 注册表注册（`test` 菜单与 `test --run N` 的编号即注册表顺序）。**
 - 测试数量与通过状态等易变数字只记录在 `docs/PROGRESS_REPORT.md`，本文件不保存。
 
@@ -299,7 +315,7 @@ dotnet run -- test --all    # 全量；或：dotnet run -- test --run 5（单个
 - **文档语言**：中文。`docs/` 下的规范文档是权威来源——**先读 SYNTAX.md 再写代码，不要凭其他语言的经验猜语法**（项目已因此返工过）。
 - 新代码应模仿相邻文件的风格；项目无 linter/格式化工具配置。
 - 命名空间：主代码 `LatteCompiler`，测试 `LatteCompiler.Tests`。
-- **日志**：Lexer/Parser 等编译器内部的日志一律走 `Core/Logger`（Verbose/Warning/Error），禁止直接 `Console.WriteLine`；verbose 默认关闭（`--verbose` 子命令打开控制台输出），`--log-to PATH` 把全量日志以 JSONL 落盘。测试的报告输出（`[PASS]`/`[FAIL]` 等）不受此限。
+- **日志**：Lexer/Parser 等编译器内部的日志一律走 `Core/Logger`（Verbose/Warning/Error），禁止直接 `Console.WriteLine`；verbose 默认关闭（`--verbose` 子命令打开控制台输出），`--log-to PATH` 把全量日志以 JSONL 落盘。控制台日志输出走 **stderr**（M31 起）——诊断不污染 stdout 的数据流（如 `compile --parse-only` 的 AST JSONL）。测试的报告输出（`[PASS]`/`[FAIL]` 等）不受此限。
 
 ### 添加新 Parser 功能的标准流程
 

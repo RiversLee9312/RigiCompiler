@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using System.Text.Json;
 
 namespace LatteCompiler
 {
@@ -158,6 +159,7 @@ namespace LatteCompiler
             string? dumpPath = result.Get("--dump-ast")?[0];
 
             int failed = 0;
+            int dumped = 0;
             StreamWriter? dumpWriter = null;
             try
             {
@@ -170,19 +172,40 @@ namespace LatteCompiler
                     try
                     {
                         var ast = ParseFile(file);
-                        // AST 输出：--dump-ast 写文件；否则 --parse-only 输出到 stdout
+                        // AST 输出：--dump-ast 写文件；否则 --parse-only 输出到 stdout。
+                        // 多文件时先输出一行 {"file":...} 元记录分隔（M31）：
+                        // 消费方靠它切分段落（id 每文件从 1 重排），字段名键控不依赖顺序
                         if (dumpWriter != null)
                         {
+                            if (files.Count > 1)
+                            {
+                                dumpWriter.WriteLine(JsonSerializer.Serialize(
+                                    new Dictionary<string, string> { ["file"] = file }));
+                            }
                             AstJsonlSerializer.Serialize(ast, dumpWriter);
+                            dumped++;
                         }
                         else if (parseOnly)
                         {
+                            if (files.Count > 1)
+                            {
+                                Console.Out.WriteLine(JsonSerializer.Serialize(
+                                    new Dictionary<string, string> { ["file"] = file }));
+                            }
                             AstJsonlSerializer.Serialize(ast, Console.Out);
+                            dumped++;
                         }
                         if (!parseOnly)
                         {
                             Console.WriteLine($"解析成功: {file}");
                         }
+                    }
+                    catch (CompilerInternalException ex)
+                    {
+                        // 内部编译器错误（AST 不变量被破坏 = 编译器自身 bug）：
+                        // 与用户语法错误严格区分（M31：此前 catch-all 把两类混为一谈）
+                        Console.Error.WriteLine($"内部编译器错误 {file}: {ex.Message}");
+                        failed++;
                     }
                     catch (Exception ex)
                     {
@@ -196,7 +219,8 @@ namespace LatteCompiler
             {
                 dumpWriter?.Dispose();
             }
-            if (dumpPath != null) Console.WriteLine($"AST dumped to {dumpPath}");
+            // 全部失败时不宣称 dumped（M31：此前无条件打印误导）
+            if (dumpPath != null && dumped > 0) Console.WriteLine($"AST dumped to {dumpPath}");
             return failed > 0 ? 1 : 0;
         }
 
@@ -240,7 +264,8 @@ namespace LatteCompiler
 
             if (result.Has("--all"))
             {
-                return Tests.TestRunner.RunAllSuites();
+                // 退出码即失败用例总数；clamp 防 Unix 8 位退出码回绕假绿
+                return Math.Min(Tests.TestRunner.RunAllSuites(), 255);
             }
 
             var runArgs = result.Get("--run");
@@ -257,7 +282,7 @@ namespace LatteCompiler
                     }
                     numbers.Add(n);
                 }
-                return Tests.TestRunner.RunSuites(numbers);
+                return Math.Min(Tests.TestRunner.RunSuites(numbers), 255);
             }
 
             // test 裸用 / --run 不带编号 → 打印套件菜单后退出

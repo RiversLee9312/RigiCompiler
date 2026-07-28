@@ -1,6 +1,4 @@
 using System;
-using System.Collections.Generic;
-using System.Linq;
 
 namespace LatteCompiler.Tests
 {
@@ -13,16 +11,14 @@ namespace LatteCompiler.Tests
     /// 3. default 分支
     /// 4. 单行书写
     /// 5. 错误用例：缺 default、缺 ->
+    /// 6. AST 结构断言（Root 填充 / 类型 / Parent 链）
     /// </summary>
     public class SwitchExpressionTests
     {
-        private static int passCount = 0;
-        private static int failCount = 0;
-
         // ===== 1. 值匹配 =====
         public static void TestValueMatch()
         {
-            Console.WriteLine("=== Testing switch Value Match ===");
+            TestHarness.Section("Testing switch Value Match");
 
             TestExpr("var r = switch(expr) {\n" +
                      "    (1) -> { \"one\" }\n" +
@@ -32,13 +28,13 @@ namespace LatteCompiler.Tests
                 "Switch(Sym(expr), [Int(1,I32) -> Str(\"one\"), Int(2,I32) -> Str(\"two\")], " +
                 "default -> Str(\"other\"))");
 
-            Console.WriteLine();
+            TestHarness.Blank();
         }
 
         // ===== 2. 模式匹配 =====
         public static void TestPatternMatch()
         {
-            Console.WriteLine("=== Testing switch Pattern Match ===");
+            TestHarness.Section("Testing switch Pattern Match");
 
             TestExpr("var r = switch(n) {\n" +
                      "    (_ > 10) -> { \"big\" }\n" +
@@ -50,179 +46,103 @@ namespace LatteCompiler.Tests
                 "Binary(Sym(_) == Group(Binary(Int(3,I32) + Int(4,I32)))) -> Str(\"seven\")], " +
                 "default -> Str(\"small\"))");
 
-            Console.WriteLine();
+            TestHarness.Blank();
         }
 
         // ===== 3. 单行书写 =====
         public static void TestSingleLine()
         {
-            Console.WriteLine("=== Testing switch Single-line ===");
+            TestHarness.Section("Testing switch Single-line");
 
             TestExpr("var r = switch(x) { (1) -> { 1 } default -> { 0 } }",
                 "Switch(Sym(x), [Int(1,I32) -> Int(1,I32)], default -> Int(0,I32))");
 
-            Console.WriteLine();
+            TestHarness.Blank();
         }
 
         // ===== 4. 错误用例 =====
         public static void TestErrorCases()
         {
-            Console.WriteLine("=== Testing switch Error Cases (expect ParserException) ===");
+            TestHarness.Section("Testing switch Error Cases (expect ParserException)");
 
             // 缺 default（switch 表达式必须包含 default 分支，SYNTAX §7.2）
-            TestError("var r = switch(x) { (1) -> { 1 } }", "缺 default");
+            TestHarness.CheckParseError("var r = switch(x) { (1) -> { 1 } }",
+                () => TestHarness.ParseRoot("var r = switch(x) { (1) -> { 1 } }"),
+                "switch 表达式必须包含 default 分支");
             // 分支缺 ->
-            TestError("var r = switch(x) { (1) { 1 } default -> { 0 } }", "分支缺 ->");
+            TestHarness.CheckParseError("var r = switch(x) { (1) { 1 } default -> { 0 } }",
+                () => TestHarness.ParseRoot("var r = switch(x) { (1) { 1 } default -> { 0 } }"),
+                "Expected '->' after switch case pattern");
             // 缺 selector 的 (
-            TestError("var r = switch x { (1) -> { 1 } default -> { 0 } }", "缺 (");
+            TestHarness.CheckParseError("var r = switch x { (1) -> { 1 } default -> { 0 } }",
+                () => TestHarness.ParseRoot("var r = switch x { (1) -> { 1 } default -> { 0 } }"),
+                "Expected '(' after switch");
 
-            Console.WriteLine();
+            TestHarness.Blank();
+        }
+
+        // ===== 5. AST 结构断言（AGENTS §5：快照不作为唯一验证方式）=====
+        public static void TestStructuralAssertions()
+        {
+            TestHarness.Section("Structural Assertions");
+
+            var decl = (VariableDeclarationASTNode)TestHarness.ParseFirstDecl(
+                "var r = switch(x) { (1) -> { 1 } default -> { 0 } }");
+            TestHarness.CheckTrue("Initializer Root 存在", decl.Initializer != null);
+            TestHarness.CheckTrue("Initializer 已填充", decl.Initializer!.IsAttached);
+            TestHarness.CheckTrue("内容表达式是 SwitchExpression",
+                decl.Initializer.Expression is SwitchExpressionASTNode);
+
+            var sw = (SwitchExpressionASTNode)decl.Initializer.Expression;
+            TestHarness.CheckTrue("Selector Root 已 Attach", sw.Selector.IsAttached);
+            TestHarness.CheckTrue("DefaultBody Root 存在且已 Attach",
+                sw.DefaultBody != null && sw.DefaultBody.IsAttached);
+            TestHarness.CheckTrue("分支数为 1", sw.Cases.Count == 1);
+            TestHarness.CheckTrue("分支 Pattern Root 已 Attach", sw.Cases[0].Pattern.IsAttached);
+            TestHarness.CheckTrue("分支 Body Root 已 Attach", sw.Cases[0].Body.IsAttached);
+            TestHarness.CheckTrue("Selector Root 的 Parent 是 switch 节点",
+                ReferenceEquals(sw.Selector.Parent, sw));
+            TestHarness.CheckTrue("分支的 Parent 是 switch 节点",
+                ReferenceEquals(sw.Cases[0].Parent, sw));
+            TestHarness.CheckTrue("DefaultBody 的 Parent 是 switch 节点",
+                ReferenceEquals(sw.DefaultBody!.Parent, sw));
+            TestHarness.CheckTrue("switch 节点挂在 Initializer Root 下",
+                ReferenceEquals(sw.Parent, decl.Initializer));
+
+            TestHarness.Blank();
         }
 
         // ===== 测试辅助 =====
 
-        // 解析一段变量声明代码，返回声明节点
-        private static VariableDeclarationASTNode? ParseVarDecl(string code)
-        {
-            var lexer = new Lexer();
-            var tokens = lexer.Tokenize(code);
-            var parser = new Parser();
-            var ast = parser.Parse(tokens);
-
-            if (ast is RootASTNode root && root.Declarations.Count > 0)
-            {
-                return root.Declarations[0] as VariableDeclarationASTNode;
-            }
-            return null;
-        }
-
-        // 结构校验：初始化表达式的描述串必须与期望完全一致
+        // 结构校验：初始化表达式的 AstDescribe 描述串必须与期望完全一致
         private static void TestExpr(string code, string expectedDesc)
         {
             try
             {
-                var decl = ParseVarDecl(code);
-                if (decl == null)
-                {
-                    Fail(code, "no variable declaration node produced");
-                    return;
-                }
-
-                string actual = DescribeExpression(decl.Initializer!.Expression);
-                if (actual == expectedDesc)
-                {
-                    Pass(code, actual);
-                }
-                else
-                {
-                    Fail(code, $"expected {expectedDesc}, got {actual}");
-                }
+                var decl = (VariableDeclarationASTNode)TestHarness.ParseFirstDecl(code);
+                TestHarness.Check(Label(code), AstDescribe.Expr(decl.Initializer!.Expression), expectedDesc);
             }
             catch (Exception ex)
             {
-                Fail(code, $"unexpected exception: {ex.Message}");
+                TestHarness.CheckTrue($"{Label(code)} => 意外异常", false, ex.Message);
             }
         }
 
-        // 错误校验：解析必须抛出 ParserException
-        private static void TestError(string code, string reason)
-        {
-            try
-            {
-                ParseVarDecl(code);
-                Fail(code, $"expected ParserException ({reason}), but parse succeeded");
-            }
-            catch (ParserException)
-            {
-                Console.WriteLine($"  [PASS] {code}  (rejected: {reason})");
-                passCount++;
-            }
-            catch (Exception ex)
-            {
-                Fail(code, $"expected ParserException ({reason}), got {ex.GetType().Name}: {ex.Message}");
-            }
-        }
-
-        private static void Pass(string code, string result)
-        {
-            Console.WriteLine($"  [PASS] {code}");
-            Console.WriteLine($"      => {result}");
-            passCount++;
-        }
-
-        private static void Fail(string code, string message)
-        {
-            Console.WriteLine($"  [FAIL] {code}");
-            Console.WriteLine($"      => {message}");
-            failCount++;
-        }
-
-        // ===== AST 描述 =====
-
-        // 把表达式节点描述为紧凑的结构串，用于精确比对
-        private static string DescribeExpression(ASTNode? node)
-        {
-            return node switch
-            {
-                null => "<null>",
-                LiteralExpressionASTNode lit => DescribeExpression(lit.Literal),
-                IntLiteralASTNode i => $"Int({i.Value},{i.IntType}{(i.IsHex ? ",hex" : "")})",
-                FloatLiteralASTNode f => $"Float({f.Value}{(f.IsFloat ? "f" : "")})",
-                StringLiteralASTNode s => $"Str(\"{s.Value}\")",
-                BoolLiteralASTNode b => $"Bool({b.Value})",
-                NullLiteralASTNode => "Null",
-                SymbolReferenceASTNode sref => $"Sym({DescribeSymbol(sref.Symbol.symbol)})",
-                UnaryExpressionASTNode u => $"Unary({u.Operator} {DescribeExpression(u.Operand.Expression)})",
-                BinaryExpressionASTNode b =>
-                    $"Binary({DescribeExpression(b.Left.Expression)} {b.Operator} {DescribeExpression(b.Right.Expression)})",
-                GroupExpressionASTNode g => $"Group({DescribeExpression(g.InnerExpression.Expression)})",
-                SwitchExpressionASTNode s => DescribeSwitch(s),
-                _ => $"<{node.GetType().Name}>"
-            };
-        }
-
-        // 描述 switch：Switch(selector, [pattern -> body, ...], default -> body)
-        private static string DescribeSwitch(SwitchExpressionASTNode s)
-        {
-            string cases = string.Join(", ", s.Cases.Select(
-                c => $"{DescribeExpression(c.Pattern.Expression)} -> {DescribeExpression(c.Body.Expression)}"));
-            string def = s.DefaultBody != null ? DescribeExpression(s.DefaultBody.Expression) : "<none>";
-            return $"Switch({DescribeExpression(s.Selector.Expression)}, [{cases}], default -> {def})";
-        }
-
-        private static string DescribeSymbol(Symbol symbol)
-        {
-            var parts = new List<string>();
-            foreach (var element in symbol.elements)
-            {
-                string part = element.name;
-                if (element.generics.Count > 0)
-                {
-                    part += "<" + string.Join(",", element.generics.Select(g => DescribeSymbol(g))) + ">";
-                }
-                parts.Add(part);
-            }
-            return string.Join(".", parts);
-        }
+        // 用例标签：被测源码串（多行时 \n 转义显示）
+        private static string Label(string code) => code.Replace("\n", "\\n");
 
         // ===== 入口 =====
         public static int RunAll()
         {
-            Console.WriteLine("\n╔════════════════════════════════════╗");
-            Console.WriteLine("║  switch Expression Tests           ║");
-            Console.WriteLine("╚════════════════════════════════════╝\n");
-
-            passCount = 0;
-            failCount = 0;
+            TestHarness.Reset();
 
             TestValueMatch();
             TestPatternMatch();
             TestSingleLine();
             TestErrorCases();
+            TestStructuralAssertions();
 
-            Console.WriteLine($"=== switch Expression Tests Complete: {passCount} passed, {failCount} failed ===\n");
-
-            return failCount;
+            return TestHarness.Summary("SwitchExpression");
         }
     }
 }

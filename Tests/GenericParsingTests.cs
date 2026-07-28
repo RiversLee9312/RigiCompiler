@@ -1,6 +1,4 @@
 using System;
-using System.Collections.Generic;
-using System.Linq;
 
 namespace LatteCompiler.Tests
 {
@@ -18,16 +16,14 @@ namespace LatteCompiler.Tests
     /// 2. > 系列运算符的重新组合（>=、>>、>>>）
     /// 3. 回归：单 >、<=、== 不受影响
     /// 4. 错误用例：移位与比较混用未加括号
+    /// 5. AST 结构断言（泛型嵌套结构 / 运算符重组 / Parent 链）
     /// </summary>
     public class GenericParsingTests
     {
-        private static int passCount = 0;
-        private static int failCount = 0;
-
         // ===== 1. 嵌套泛型类型引用 =====
         public static void TestNestedGenericTypes()
         {
-            Console.WriteLine("=== Testing Nested Generic Type References ===");
+            TestHarness.Section("Testing Nested Generic Type References");
 
             // 单层回归
             TestType("var a: List\\<String>", "List<String>");
@@ -40,13 +36,13 @@ namespace LatteCompiler.Tests
             // 嵌套泛型 + 初始化表达式
             TestDecl("var e: List\\<List\\<i32>> = null", "List<List<i32>>", "Null");
 
-            Console.WriteLine();
+            TestHarness.Blank();
         }
 
         // ===== 1.5 泛型与小于号的无歧义共存 =====
         public static void TestGenericVsLessThan()
         {
-            Console.WriteLine("=== Testing \\< Generics vs < Less-Than ===");
+            TestHarness.Section("Testing \\< Generics vs < Less-Than");
 
             // < 现在只是小于号（在 \\< 语法下不再歧义）
             TestExpr("var lt = a < b", "Binary(Sym(a) < Sym(b))");
@@ -55,13 +51,13 @@ namespace LatteCompiler.Tests
             // 同一行内泛型与小于号共存
             TestExpr("var cmp = x < y", "Binary(Sym(x) < Sym(y))");
 
-            Console.WriteLine();
+            TestHarness.Blank();
         }
 
         // ===== 2. > 系列运算符组合 =====
         public static void TestCombinedOperators()
         {
-            Console.WriteLine("=== Testing Combined > Operators ===");
+            TestHarness.Section("Testing Combined > Operators");
 
             // >= 由 > 和 = 组合
             TestExpr("var r = a >= b", "Binary(Sym(a) >= Sym(b))");
@@ -70,240 +66,151 @@ namespace LatteCompiler.Tests
             // >>> 由三个 > 组合
             TestExpr("var t = (a >>> 2)", "Group(Binary(Sym(a) >>> Int(2,I32)))");
 
-            Console.WriteLine();
+            TestHarness.Blank();
         }
 
         // ===== 3. 回归：其他比较运算符不受影响 =====
         public static void TestRegressionOperators()
         {
-            Console.WriteLine("=== Testing Operator Regression ===");
+            TestHarness.Section("Testing Operator Regression");
 
             TestExpr("var g = a > b", "Binary(Sym(a) > Sym(b))");
             TestExpr("var l = a <= b", "Binary(Sym(a) <= Sym(b))");
             TestExpr("var e = a == b", "Binary(Sym(a) == Sym(b))");
 
-            Console.WriteLine();
+            TestHarness.Blank();
         }
 
         // ===== 4. 错误用例 =====
         public static void TestErrorCases()
         {
-            Console.WriteLine("=== Testing Error Cases (expect ParserException) ===");
+            TestHarness.Section("Testing Error Cases (expect ParserException)");
 
             // 移位与比较混用，违反"无运算符优先级"
-            TestError("var x = (a >> b >= c)", "移位与比较混用未加括号");
+            TestHarness.CheckParseError("var x = (a >> b >= c)",
+                () => TestHarness.ParseRoot("var x = (a >> b >= c)"),
+                "没有运算符优先级");
             // 非法运算符组合
-            TestError("var y = (a >== b)", "非法运算符组合 >==");
+            TestHarness.CheckParseError("var y = (a >== b)",
+                () => TestHarness.ParseRoot("var y = (a >== b)"),
+                "Unexpected token at start of expression");
             // 旧语法：裸 < 不再是泛型开启符（\\< 才是）
-            TestError("var old: List<String>", "旧泛型语法 List<String> 已废弃");
+            TestHarness.CheckParseError("var old: List<String>",
+                () => TestHarness.ParseRoot("var old: List<String>"),
+                "Expected '=' or line break after type annotation");
             // \ 后必须紧跟 <
-            TestError("var w = a \\ b", "\\ 后缺少 <");
+            TestHarness.CheckParseError("var w = a \\ b",
+                () => TestHarness.ParseRoot("var w = a \\ b"),
+                "Expected '<' after '\\'");
 
-            Console.WriteLine();
+            TestHarness.Blank();
+        }
+
+        // ===== 5. AST 结构断言（AGENTS §5：快照不作为唯一验证方式）=====
+        public static void TestStructuralAssertions()
+        {
+            TestHarness.Section("Structural Assertions");
+
+            // 类型侧：嵌套泛型结构
+            var decl = (VariableDeclarationASTNode)TestHarness.ParseFirstDecl(
+                "var e: List\\<List\\<i32>> = null");
+            TestHarness.CheckTrue("TypeAnnotation 存在", decl.TypeAnnotation != null);
+            TestHarness.CheckTrue("TypeAnnotation 的 Parent 是声明节点",
+                ReferenceEquals(decl.TypeAnnotation!.Parent, decl));
+            var outerElem = decl.TypeAnnotation!.TypeSymbol.symbol.elements[0];
+            TestHarness.CheckTrue("外层类型名是 List", outerElem.name == "List");
+            TestHarness.CheckTrue("外层泛型实参数为 1", outerElem.generics.Count == 1);
+            var innerElem = outerElem.generics[0].elements[0];
+            TestHarness.CheckTrue("内层类型名是 List", innerElem.name == "List");
+            TestHarness.CheckTrue("内层泛型实参是 i32",
+                innerElem.generics.Count == 1 && innerElem.generics[0].elements[0].name == "i32");
+            TestHarness.CheckTrue("Initializer Root 存在且已填充",
+                decl.Initializer != null && decl.Initializer.IsAttached);
+
+            // 表达式侧：>= 重组为单个二元运算
+            var cmp = (VariableDeclarationASTNode)TestHarness.ParseFirstDecl("var r = a >= b");
+            TestHarness.CheckTrue("内容表达式是 BinaryExpression",
+                cmp.Initializer!.Expression is BinaryExpressionASTNode);
+            var bin = (BinaryExpressionASTNode)cmp.Initializer.Expression;
+            TestHarness.CheckTrue("运算符重组为 >=", bin.Operator == ">=");
+            TestHarness.CheckTrue("Left/Right Root 均已 Attach",
+                bin.Left.IsAttached && bin.Right.IsAttached);
+            TestHarness.CheckTrue("Left Root 的 Parent 是二元节点",
+                ReferenceEquals(bin.Left.Parent, bin));
+            TestHarness.CheckTrue("Right Root 的 Parent 是二元节点",
+                ReferenceEquals(bin.Right.Parent, bin));
+            TestHarness.CheckTrue("二元节点挂在 Initializer Root 下",
+                ReferenceEquals(bin.Parent, cmp.Initializer));
+
+            TestHarness.Blank();
         }
 
         // ===== 测试辅助 =====
 
-        private static VariableDeclarationASTNode? ParseVarDecl(string code)
-        {
-            var lexer = new Lexer();
-            var tokens = lexer.Tokenize(code);
-            var parser = new Parser();
-            var ast = parser.Parse(tokens);
-
-            if (ast is RootASTNode root && root.Declarations.Count > 0)
-            {
-                return root.Declarations[0] as VariableDeclarationASTNode;
-            }
-            return null;
-        }
-
-        // 校验类型标注描述串
+        // 校验类型标注的 AstDescribe 描述串
         private static void TestType(string code, string expectedType)
         {
             try
             {
-                var decl = ParseVarDecl(code);
-                if (decl == null)
-                {
-                    Fail(code, "no variable declaration node produced");
-                    return;
-                }
-
-                string? actual = decl.TypeAnnotation != null
-                    ? DescribeType(decl.TypeAnnotation) : null;
-                if (actual == expectedType)
-                {
-                    Pass(code, actual!);
-                }
-                else
-                {
-                    Fail(code, $"expected type {expectedType}, got {actual ?? "<null>"}");
-                }
+                var decl = (VariableDeclarationASTNode)TestHarness.ParseFirstDecl(code);
+                string actual = decl.TypeAnnotation != null
+                    ? AstDescribe.Type(decl.TypeAnnotation) : "<null>";
+                TestHarness.Check(Label(code), actual, expectedType);
             }
             catch (Exception ex)
             {
-                Fail(code, $"unexpected exception: {ex.Message}");
+                TestHarness.CheckTrue($"{Label(code)} => 意外异常", false, ex.Message);
             }
         }
 
-        // 校验初始化表达式描述串
+        // 校验初始化表达式的 AstDescribe 描述串
         private static void TestExpr(string code, string expectedDesc)
         {
             try
             {
-                var decl = ParseVarDecl(code);
-                if (decl == null)
-                {
-                    Fail(code, "no variable declaration node produced");
-                    return;
-                }
-
-                string actual = DescribeExpression(decl.Initializer!.Expression);
-                if (actual == expectedDesc)
-                {
-                    Pass(code, actual);
-                }
-                else
-                {
-                    Fail(code, $"expected {expectedDesc}, got {actual}");
-                }
+                var decl = (VariableDeclarationASTNode)TestHarness.ParseFirstDecl(code);
+                TestHarness.Check(Label(code), AstDescribe.Expr(decl.Initializer!.Expression), expectedDesc);
             }
             catch (Exception ex)
             {
-                Fail(code, $"unexpected exception: {ex.Message}");
+                TestHarness.CheckTrue($"{Label(code)} => 意外异常", false, ex.Message);
             }
         }
 
-        // 同时校验类型标注与初始化表达式
+        // 同时校验类型标注与初始化表达式（单个用例一次比对）
         private static void TestDecl(string code, string expectedType, string expectedInit)
         {
             try
             {
-                var decl = ParseVarDecl(code);
-                if (decl == null)
-                {
-                    Fail(code, "no variable declaration node produced");
-                    return;
-                }
-
-                string? type = decl.TypeAnnotation != null
-                    ? DescribeType(decl.TypeAnnotation) : null;
-                string? init = decl.Initializer != null
-                    ? DescribeExpression(decl.Initializer!.Expression) : null;
-
-                if (type == expectedType && init == expectedInit)
-                {
-                    Pass(code, $"{type} = {init}");
-                }
-                else
-                {
-                    Fail(code, $"expected [{expectedType} = {expectedInit}], " +
-                               $"got [{type ?? "<null>"} = {init ?? "<null>"}]");
-                }
+                var decl = (VariableDeclarationASTNode)TestHarness.ParseFirstDecl(code);
+                string type = decl.TypeAnnotation != null
+                    ? AstDescribe.Type(decl.TypeAnnotation) : "<null>";
+                string init = decl.Initializer != null
+                    ? AstDescribe.Expr(decl.Initializer.Expression) : "<null>";
+                TestHarness.Check(Label(code), $"{type} = {init}", $"{expectedType} = {expectedInit}");
             }
             catch (Exception ex)
             {
-                Fail(code, $"unexpected exception: {ex.Message}");
+                TestHarness.CheckTrue($"{Label(code)} => 意外异常", false, ex.Message);
             }
         }
 
-        // 错误校验：解析必须抛出 ParserException
-        private static void TestError(string code, string reason)
-        {
-            try
-            {
-                ParseVarDecl(code);
-                Fail(code, $"expected ParserException ({reason}), but parse succeeded");
-            }
-            catch (ParserException)
-            {
-                Console.WriteLine($"  [PASS] {code}  (rejected: {reason})");
-                passCount++;
-            }
-            catch (Exception ex)
-            {
-                Fail(code, $"expected ParserException ({reason}), got {ex.GetType().Name}: {ex.Message}");
-            }
-        }
-
-        private static void Pass(string code, string result)
-        {
-            Console.WriteLine($"  [PASS] {code}");
-            Console.WriteLine($"      => {result}");
-            passCount++;
-        }
-
-        private static void Fail(string code, string message)
-        {
-            Console.WriteLine($"  [FAIL] {code}");
-            Console.WriteLine($"      => {message}");
-            failCount++;
-        }
-
-        // ===== AST 描述 =====
-
-        private static string DescribeExpression(ASTNode? node)
-        {
-            return node switch
-            {
-                null => "<null>",
-                LiteralExpressionASTNode lit => DescribeExpression(lit.Literal),
-                IntLiteralASTNode i => $"Int({i.Value},{i.IntType}{(i.IsHex ? ",hex" : "")})",
-                FloatLiteralASTNode f => $"Float({f.Value}{(f.IsFloat ? "f" : "")})",
-                StringLiteralASTNode s => $"Str(\"{s.Value}\")",
-                BoolLiteralASTNode b => $"Bool({b.Value})",
-                NullLiteralASTNode => "Null",
-                SymbolReferenceASTNode sref => $"Sym({DescribeSymbol(sref.Symbol.symbol)})",
-                UnaryExpressionASTNode u => $"Unary({u.Operator} {DescribeExpression(u.Operand.Expression)})",
-                BinaryExpressionASTNode b =>
-                    $"Binary({DescribeExpression(b.Left.Expression)} {b.Operator} {DescribeExpression(b.Right.Expression)})",
-                GroupExpressionASTNode g => $"Group({DescribeExpression(g.InnerExpression.Expression)})",
-                _ => $"<{node.GetType().Name}>"
-            };
-        }
-
-        private static string DescribeType(TypeReferenceASTNode typeNode)
-        {
-            string typeName = DescribeSymbol(typeNode.TypeSymbol.symbol);
-            if (typeNode.IsNullable) typeName += "?";
-            return typeName;
-        }
-
-        private static string DescribeSymbol(Symbol symbol)
-        {
-            var parts = new List<string>();
-            foreach (var element in symbol.elements)
-            {
-                string part = element.name;
-                if (element.generics.Count > 0)
-                {
-                    part += "<" + string.Join(",", element.generics.Select(g => DescribeSymbol(g))) + ">";
-                }
-                parts.Add(part);
-            }
-            return string.Join(".", parts);
-        }
+        // 用例标签：被测源码串（多行时 \n 转义显示）
+        private static string Label(string code) => code.Replace("\n", "\\n");
 
         // ===== 入口 =====
         public static int RunAll()
         {
-            Console.WriteLine("\n╔════════════════════════════════════╗");
-            Console.WriteLine("║  Generic Parsing Tests             ║");
-            Console.WriteLine("╚════════════════════════════════════╝\n");
-
-            passCount = 0;
-            failCount = 0;
+            TestHarness.Reset();
 
             TestNestedGenericTypes();
             TestGenericVsLessThan();
             TestCombinedOperators();
             TestRegressionOperators();
             TestErrorCases();
+            TestStructuralAssertions();
 
-            Console.WriteLine($"=== Generic Parsing Tests Complete: {passCount} passed, {failCount} failed ===\n");
-
-            return failCount;
+            return TestHarness.Summary("GenericParsing");
         }
     }
 }

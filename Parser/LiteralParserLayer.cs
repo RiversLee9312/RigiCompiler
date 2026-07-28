@@ -65,14 +65,20 @@ namespace LatteCompiler
             }
         }
 
-        // EOF 处理：已读整数部分（含 `3.` 形态）按整数字面量收尾；Initial 为不完整结构
+        // EOF 处理：整数部分已读按整数字面量收尾；Initial/DotSeen 为不完整结构
         private ParserLayerResult HandleEndOfFile(ParserLayerContext context)
         {
-            if (state == ParserState.IntegerPart || state == ParserState.DotSeen)
+            if (state == ParserState.IntegerPart)
             {
                 var intNode = ParseIntegerLiteral(integerPart, context);
                 AddLiteralToTarget(intNode);
                 return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
+            }
+
+            // `3.` 后缺小数部分：报错（M31 起不再静默吞点按整数收尾）
+            if (state == ParserState.DotSeen)
+            {
+                context.RaiseError("Expected digit after '.' in float literal");
             }
 
             context.RaiseError("Unexpected end of file");
@@ -104,18 +110,10 @@ namespace LatteCompiler
                         return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
                     }
 
-                    // 数字字面量 - 检查是否包含小数点
-                    if (IsNumericToken(word.Content))
+                    // 数字字面量（Word 永不含 '.'——Lexer 把 3.14 切成三个 token，
+                    // 浮点由 IntegerPart/DotSeen 状态组合；判定统一走 NumericLiteral）
+                    if (NumericLiteral.IsNumericWord(word.Content))
                     {
-                        // 如果 token 本身就包含小数点，直接解析为浮点数
-                        if (word.Content.Contains('.'))
-                        {
-                            var floatNode = ParseFloatLiteral(word.Content, context);
-                            AddLiteralToTarget(floatNode);
-                            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
-                        }
-
-                        // 否则，可能是整数或浮点数的整数部分
                         integerPart = word.Content;
                         state = ParserState.IntegerPart;
                         return ParserLayerResult.Continue.Instance;
@@ -128,9 +126,7 @@ namespace LatteCompiler
                     AddLiteralToTarget(ParseStringLiteral(str));
                     return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
 
-                case NotationToken notation when notation.Content == "'":
-                    context.RaiseError("Character literal parsing not yet implemented");
-                    break;
+                // 注：单引号字符字面量由 Lexer 直接报错（未实现），不会到达这里
 
                 default:
                     context.RaiseError($"Unexpected token for literal: {currentToken}");
@@ -161,7 +157,7 @@ namespace LatteCompiler
         private ParserLayerResult HandleDotSeenState(Token currentToken, ParserLayerContext context)
         {
             // 小数点后必须是数字
-            if (currentToken is WordToken word && IsNumericToken(word.Content))
+            if (currentToken is WordToken word && NumericLiteral.IsNumericWord(word.Content))
             {
                 fractionalPart = word.Content;
                 state = ParserState.FractionalPart;
@@ -173,140 +169,26 @@ namespace LatteCompiler
                 return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
             }
 
-            // 小数点后不是数字，这可能是成员访问而不是浮点数
-            // 将整数部分作为整数字面量，保留 "." token
-            var intNode = ParseIntegerLiteral(integerPart, context);
-            AddLiteralToTarget(intNode);
-            context.LogWarning($"Parsed as integer followed by '.', not float. " +
-                             $"Use explicit notation if float intended.");
-            return new ParserLayerResult.PopLayer(TokenDisposition.Replay); // 保留当前 token（即 "." 后的 token）
+            // 小数点后不是数字：报错（M31 起不再吞掉 . 伪装成员访问；
+            // `3.foo` 形态规范未定义，需要成员访问时请写 (3).foo）
+            context.RaiseError("Expected digit after '.' in float literal");
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
-        // 判断是否为数字 token
-        private bool IsNumericToken(string content)
-        {
-            if (string.IsNullOrEmpty(content)) return false;
-
-            // 十六进制
-            if (content.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
-                return content.Length > 2;
-
-            // 去除可能的后缀
-            string withoutSuffix = content.TrimEnd('L', 'l', 'S', 's', 'B', 'b', 'U', 'u', 'F', 'f');
-            if (withoutSuffix.Length == 0) return false;
-
-            // 去除可能的两字符后缀（UL, US, UB）
-            if (withoutSuffix.Length >= 2)
-            {
-                string lastTwo = withoutSuffix.Substring(withoutSuffix.Length - 2).ToUpper();
-                if (lastTwo == "UL" || lastTwo == "US" || lastTwo == "UB")
-                {
-                    withoutSuffix = withoutSuffix.Substring(0, withoutSuffix.Length - 2);
-                }
-            }
-
-            // 检查是否包含小数点（浮点数格式）
-            if (withoutSuffix.Contains('.'))
-            {
-                var parts = withoutSuffix.Split('.');
-                if (parts.Length != 2) return false;
-                return parts[0].All(c => char.IsDigit(c)) && parts[1].All(c => char.IsDigit(c));
-            }
-
-            // 检查剩余部分是否全为数字（整数格式）
-            return withoutSuffix.All(c => char.IsDigit(c));
-        }
-
-        // 解析整数字面量
+        // 解析整数字面量（规则统一走 NumericLiteral：0x/0b/0o 前缀、下划线、后缀）
         private IntLiteralASTNode ParseIntegerLiteral(string content, ParserLayerContext context)
         {
-            // 检查后缀
-            string suffix = "";
-            string numberPart = content;
-
-            bool isHex = content.StartsWith("0x", StringComparison.OrdinalIgnoreCase);
-
-            if (isHex)
+            if (!NumericLiteral.TryParseInt(content, out var value, out var intType, out var numBase, out var error))
             {
-                // 十六进制：先扫描 hex 数字部分，剩余的才是后缀
-                // （否则 0xFF 末尾的 F 会被误判为后缀，得到错误的值 15）
-                int hexEnd = 2;
-                while (hexEnd < content.Length && IsHexDigit(content[hexEnd])) hexEnd++;
-                suffix = content.Substring(hexEnd).ToUpper();
-                numberPart = content.Substring(0, hexEnd);
+                context.RaiseError(error!);
             }
-            // 识别后缀（UL, US, UB, L, S, B, U, f）
-            else if (content.Length > 2 && content.EndsWith("UL", StringComparison.OrdinalIgnoreCase))
-            {
-                suffix = content.Substring(content.Length - 2).ToUpper();
-                numberPart = content.Substring(0, content.Length - 2);
-            }
-            else if (content.Length > 2 && content.EndsWith("US", StringComparison.OrdinalIgnoreCase))
-            {
-                suffix = content.Substring(content.Length - 2).ToUpper();
-                numberPart = content.Substring(0, content.Length - 2);
-            }
-            else if (content.Length > 2 && content.EndsWith("UB", StringComparison.OrdinalIgnoreCase))
-            {
-                suffix = content.Substring(content.Length - 2).ToUpper();
-                numberPart = content.Substring(0, content.Length - 2);
-            }
-            else if (content.Length > 1)
-            {
-                char lastChar = content[content.Length - 1];
-                if ("LlSsBbUuFf".Contains(lastChar))
-                {
-                    suffix = lastChar.ToString().ToUpper();
-                    numberPart = content.Substring(0, content.Length - 1);
-                }
-            }
-
-            long value;
-
-            try
-            {
-                if (isHex)
-                {
-                    value = Convert.ToInt64(numberPart.Substring(2), 16);
-                }
-                else
-                {
-                    value = long.Parse(numberPart);
-                }
-            }
-            catch (Exception ex)
-            {
-                context.RaiseError($"Invalid integer literal: {numberPart} - {ex.Message}");
-                throw;
-            }
-
-            IntType intType = suffix switch
-            {
-                "L" => IntType.I64,
-                "S" => IntType.I16,
-                "B" => IntType.I8,
-                "U" => IntType.U32,
-                "UL" => IntType.U64,
-                "US" => IntType.U16,
-                "UB" => IntType.U8,
-                "F" => IntType.I32, // F 后缀在整数上无意义，当作 i32
-                _ => IntType.I32
-            };
 
             return new IntLiteralASTNode(targetNode)
             {
                 Value = value,
                 IntType = intType,
-                IsHex = isHex
+                Base = numBase
             };
-        }
-
-        // 判断字符是否为十六进制数字
-        private static bool IsHexDigit(char c)
-        {
-            return (c >= '0' && c <= '9') ||
-                   (c >= 'a' && c <= 'f') ||
-                   (c >= 'A' && c <= 'F');
         }
 
         // 解析浮点数字面量
@@ -321,6 +203,18 @@ namespace LatteCompiler
                 isFloat = true;
                 numberPart = fullNumber.Substring(0, fullNumber.Length - 1);
             }
+
+            // 下划线分隔（M31，与整数同规则）：整数/小数部分分别校验后剥离
+            var dotIndex = numberPart.IndexOf('.');
+            var intDigits = dotIndex >= 0 ? numberPart.Substring(0, dotIndex) : numberPart;
+            var fracDigits = dotIndex >= 0 ? numberPart.Substring(dotIndex + 1) : "";
+            if (!NumericLiteral.ValidateUnderscores(intDigits) ||
+                !NumericLiteral.ValidateUnderscores(fracDigits))
+            {
+                context.RaiseError($"Invalid float literal: '{fullNumber}' " +
+                                   "(underscore must appear singly between digits)");
+            }
+            numberPart = intDigits.Replace("_", "") + "." + fracDigits.Replace("_", "");
 
             double value;
             try

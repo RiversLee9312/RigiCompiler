@@ -265,7 +265,7 @@ namespace LatteCompiler
                 return ParserLayerResult.Continue.Instance;
             }
 
-            if (currentToken is WordToken wt)
+            if (currentToken is WordToken wt && Keywords.IsIdentifier(wt.Content))
             {
                 currentUsing!.VariableName = wt.Content;
                 state = State.UsingColon;

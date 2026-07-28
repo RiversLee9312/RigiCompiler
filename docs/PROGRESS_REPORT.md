@@ -5,9 +5,9 @@
 > 更新时保持文档结构不变，并在「里程碑历史」追加一段。
 > 计划与分工见 `compiler/frontend/PARSER_ROADMAP.md`；本文档只记录「现状」。
 
-**报告日期**: 2026-07-27
-**当前阶段**: Parser/PDA 大扫除（架构重构）完成（M23）；AST 结构标注与 Validator 重写完成（M24）；Lexer 修复（除法/EOF/注释）与 fuzz 基建完成（M25）；日志系统与 AST JSONL 序列化完成（M26）；CLI 插件化重构（help/compile/test）完成（M27）；Lexer 位置修复 + AST Source Span + ASTVisitor 统一遍历完成（M28）；AST 容器重构（基类共有 Children/Annotations 删除，语义字段 + wrapper 挂载接口）完成（M29）；Utilities.cs 拆分 + ASTVisitor 遍历可重载 + 文档幽灵清理完成（M30）；**下一步**：语义分析、BIL 输出
-**测试总计**: 556/556 通过 (100%) + Lexer fuzz 6000/6000（27 个套件，`dotnet run -- test --all` 单命令全量）
+**报告日期**: 2026-07-28
+**当前阶段**: Parser/PDA 大扫除（架构重构）完成（M23）；AST 结构标注与 Validator 重写完成（M24）；Lexer 修复（除法/EOF/注释）与 fuzz 基建完成（M25）；日志系统与 AST JSONL 序列化完成（M26）；CLI 插件化重构（help/compile/test）完成（M27）；Lexer 位置修复 + AST Source Span + ASTVisitor 统一遍历完成（M28）；AST 容器重构（基类共有 Children/Annotations 删除，语义字段 + wrapper 挂载接口）完成（M29）；Utilities.cs 拆分 + ASTVisitor 遍历可重载 + 文档幽灵清理完成（M30）；**前端大修（M31）完成：全量 review 驱动的 40+ 项修复——Span 左闭右开统一、Lexer 块注释重写、续行规则、位运算符、0b/0o/下划线字面量、Keywords 大扫除与修饰符/标识符校验、JSONL v2（carrier 记录化）+ 完整反序列化器往返无损、测试基建统一（AstDescribe/TestHarness）**；**下一步**：语义分析、BIL 输出
+**测试总计**: 746/746 通过 (100%) + Lexer fuzz 6000/6000（29 个套件，`dotnet run -- test --all` 单命令全量）
 **版本控制**: Git `main` 分支（2026-07-17 首次提交）
 
 ---
@@ -46,6 +46,7 @@
 | M28 | Lexer 位置修复（offset/列号/EOF 冲刷/token 头/sourceName 单源化）+ AST Source Span（ISpanReceiver 层 span 回填）+ ASTVisitor 统一遍历 + Validator span 检查与类型审计 | ✅ | 2026-07-27 | 556/556 + fuzz 6000（27 套件） |
 | M29 | AST 容器重构：基类共有 `Children`/`Annotations` 删除；语义字段（`Declarations`/`Statements`/`Members`）+ wrapper 挂载接口（`IWrapperAttachable` + Entity/Method/Value 三分类） | ✅ | 2026-07-27 | 27 套件全绿（用例无增删）+ fuzz 6000 |
 | M30 | `Core/Utilities.cs` 拆分（Token/Keywords/异常/AST 基类归位 7 文件）+ ASTVisitor 遍历可重载（VisitNode/EnumerateChildren virtual）+ 文档幽灵清理（FRONTEND_TYPES 修订、FRONTEND_ARCHITECTURE 删除、ROADMAP 头注） | ✅ | 2026-07-27 | 27 套件全绿（用例无增删）+ fuzz 6000 |
+| M31 | 前端大修：全量 review 驱动的 40+ 项修复（Span 左闭右开、Lexer 块注释重写、续行规则、位运算符、0b/0o/下划线字面量、Keywords 大扫除、修饰符/标识符校验、JSONL v2 + 反序列化器、测试基建统一） | ✅ | 2026-07-28 | 746/746 + fuzz 6000（29 套件） |
 
 ---
 
@@ -265,11 +266,11 @@ pub class Point {
 
 | 组件 | 状态 | 测试 | 说明 |
 |------|------|------|------|
-| LiteralParserLayer | ✅ | 15/15 | 全部字面量；字符字面量占位未实现 |
-| TypeReferenceParserLayer | ✅ | 3/3 | 集成测试含于变量声明套件 |
-| VariableDeclarationParserLayer | ✅ | 10/10 | Initializer 经 ExpressionRootASTNode 直挂；访问器块委托 PropertyAccessorParserLayer（M16） |
-| ExpressionParserLayer | ✅ | 79/79 | roadmap #4 全部落地；前导点 enum case（M20）、wrapper 路径访问 `:`（M21）；含 AST 结构断言 4 例（M23） |
-| ArgumentListParserLayer | ✅ | 含于表达式套件 | 位置/具名/混合实参 |
+| LiteralParserLayer | ✅ | 34/34 | 全部字面量（M31：0b/0o/下划线补齐，`3.` 报错）；字符字面量 Lexer 明确报错、多行字符串未实现 |
+| TypeReferenceParserLayer | ✅ | 17/17 | M31 重写为真实套件（独立层驱动 + 集成 + 结构断言） |
+| VariableDeclarationParserLayer | ✅ | 17/17 | Initializer 经 ExpressionRootASTNode 直挂；访问器块委托 PropertyAccessorParserLayer（M16）；M31 保留字/标识符校验 |
+| ExpressionParserLayer | ✅ | 106/106 | roadmap #4 全部落地；前导点 enum case（M20）、wrapper 路径访问 `:`（M21）；M31：位运算符 `<<`/`&`/`\|`/`^`、`in` 移除、insideParens 续行、复合赋值明确报错、span 含关键字 |
+| ArgumentListParserLayer | ✅ | 12/12（M31 新套件） | 位置/具名/混合实参；M31：续行、空索引拒绝 |
 | LambdaExpressionParserLayer | ✅ | 15/15 | roadmap #21 提前落地；体为单表达式 |
 | SwitchStatementParserLayer | ✅ 表达式模式 | 6/6 | 语句模式待规范明确 |
 | TypeOfExpressionParserLayer | ✅ | 7/7 | typeOf(expr) |
@@ -282,19 +283,19 @@ pub class Point {
 | CoroutineOps（await/yield） | ✅ | 13/13 | roadmap #12；await 一元前缀运算符，yield 语句 |
 | GenericParametersParserLayer | ✅ | 21/21 | 声明/约束/型变/可变参数；已接入类型/函数/operator 声明（M15） |
 | ParameterListParserLayer | ✅ | 14/14 | 普通/默认/可变/具名可变；已接入 func/operator/init 声明；init 参数映射 `_ -> field`（M18，allowMapping 开关） |
-| PathParserLayer | ✅ | 含于各套件 | 符号路径 + `\<` 泛型实参 |
+| PathParserLayer | ✅ | 16/16（M31 新套件） | 符号路径 + `\<` 泛型实参；M31：尾点/双点/未闭合泛型报错（allowVariadicDots 保留 `...`） |
 | RootParserLayer | ✅ | 含于各套件 | 顶层分发（声明统一委托 DeclarationParserLayer） |
 | DeclarationParserLayer | ✅ 统一声明层 | 94/94（TypeDeclaration 套件） | 任何位置任何声明的唯一入口：全局/成员/嵌套共用一套状态机；声明泛型参数（M15）、enum `[]` case 列表（M17）、like 委托与 ext 限定名（M19）、@ 注解与 wrapper `.proxy.*` 代理成员（M20）已接入 |
 | PropertyAccessorParserLayer | ✅ | 17/17 | §9.4 访问器块 `{ get... set... }`；backing field 判定与 get/set 一致性校验；三类定义位置经 VariableDeclaration 汇聚 |
 | ImportParserLayer | ✅ | 14/14 | §15.2 三种形态（单个/`.{}` 多个/`.*` 全部）；前缀路径复用 PathParserLayer（M21 重建） |
 | NamespaceParserLayer | ✅ | 7/7 | §15.1 顶层单行声明；路径复用 PathParserLayer（M22） |
-| ASTIntegrityValidator | ✅ | 含于各套件 | Parse 成功后自动验证 AST 不变量（M23）；M24 重写为 Attribute 驱动遍历（[ChildAstNode]/[AstCarrier]），新增父子指针一致性校验；M28 基于 ASTVisitor 统一遍历重写，新增 Span 校验与「未标注 AST 成员」类型审计；失败抛 CompilerInternalException |
+| ASTIntegrityValidator | ✅ | 含于各套件 | Parse 成功后自动验证 AST 不变量（M23）；M24 重写为 Attribute 驱动遍历；M28 基于 ASTVisitor 统一遍历重写 + span 校验与类型审计；M31：Required 子节点校验、基类链字段审计、[AstCarrier] 递归审计；失败抛 CompilerInternalException |
 | ASTIntegrityValidatorTests | ✅ | 10/10 | 手工构造 AST 直调 Validate：合法树通过 + 结构破坏/span 破坏/类型审计违规拒绝（M24/M28） |
 | ASTVisitor | ✅ | 含于 Validator/Serializer 套件 | 统一 AST 遍历基建（AST/ASTVisitor.cs）：[ChildAstNode] 子节点枚举唯一实现，Validator 与 Serializer 共用（M28） |
-| LexerFuzzTests | ✅ | 26/26 + fuzz 6000 | Slash/EOF/注释固定用例 + 位置精确性用例（M28）+ 纯随机/结构化/变异 fuzz（固定种子，不变量含 sourceName/offset/范围不颠倒）+ Parser 注释跳过集成（M25） |
+| LexerFuzzTests | ✅ | 32/32 + fuzz 6000 | Slash/EOF/注释固定用例 + 位置精确性用例（M28；M31 起左闭右开）+ 块注释吞字符/跨行分段/`\r\n` 归一/字符字面量报错用例（M31）+ 纯随机/结构化/变异 fuzz（固定种子，不变量含 sourceName/offset/范围不颠倒）+ Parser 注释跳过集成（M25） |
 | TokenDispositionTests | ✅ | 4/4 | Push/Pop × Consume/Replay 四组合协议测试（M23） |
 | Logger | ✅ | 7/7（LoggerTests） | 统一日志出口（Core/Logger.cs）：Verbose/Warning/Error 三级；控制台默认只显示 Warning+，`--verbose` 子命令放开 Verbose；`--log-to PATH` 全量（含 Verbose）JSONL 落盘（M26） |
-| AstJsonlSerializer | ✅ | 42/42 | AST 树 JSONL 序列化（AST/AstJsonlSerializer.cs）：每节点一行 `{id,parent,via,type,span,fields}`（M28 起含 span），ASTVisitor 驱动遍历；`compile --dump-ast PATH` 输出（M26） |
+| AstJsonlSerializer | ✅ | 84/84 | AST 树 JSONL 序列化 v2（M31：carrier 记录化、Nullable 标量、先过滤再取值、循环保护）+ `AstJsonlDeserializer` 完整反序列化（字段名键控、产物过 Validator、往返逐行一致）；`compile --dump-ast PATH` 输出（M26） |
 | CommandLine | ✅ | 46/46（CommandLineParserTests） | CLI 内核（Core/CommandLine.cs + Core/Commands.cs）：CommandLineMask 自描述元数据驱动解析与 help 生成；`<COMMAND> [--sub-cmd...]` 结构（compile/test/help），交互菜单已删（M27） |
 
 ---
@@ -318,6 +319,11 @@ pub class Point {
 - **AST Source Span**（M28）：`ASTNode.Span`（`CharRange?`）记录节点源码范围；层目标由 Parser 主循环按 token 流计算、经 `ISpanReceiver.ReceiveSpan` 在层弹出时回填（`??=` 只填空），层内自建节点由所在层显式设置（创建记 Start、完成封 End，经 `ParserLayerContext.GetPreviousLocation()`）；`ExpressionRootASTNode` 透明继承内容表达式的 span；Validator 校验每节点 span 非空、sourceName 非空、End 不早于 Start
 - **ASTVisitor 统一遍历**（M28）：`AST/ASTVisitor.cs` 是 [ChildAstNode] 子节点枚举的唯一实现，ASTIntegrityValidator 与 AstJsonlSerializer 共用（via 统一为 `member[i]`/`member[i](Carrier.Field)` 格式）；Validator 新增类型审计——装 ASTNode 的成员（字段/自动属性）必须带 [ChildAstNode]/[ParentAstNode]，[ChildAstNode] 标在非 AST 成员上同样拒绝
 - **AST 容器语义化**（M29）：`ASTNode` 基类只保留 `Parent`/`Span`，共有 `Children`/`Annotations` 删除——顶层条目挂 `RootASTNode.Declarations`、块语句挂 `CodeBlockASTNode.Statements`、类型成员挂各类型节点 `Members`（均标 [ChildAstNode]，Validator/ASTVisitor/Serializer 零改动）；注解列表仅 7 种声明节点持有，经 `IWrapperAttachable` 访问，并按 SYNTAX §14 三类目标以 `IEntity/IMethod/IValueWrapperAttachable` 分类标记（挂载校验留待语义阶段）；`DeclarationParserLayer` 构造函数改收 `(parent, targetList)`
+- **Span 左闭右开**（M31）：所有 `CharRange`（token 与 AST 节点 span）统一为 `[Start, End)`——Start 指向首个字符，End 指向最后一个字符的下一位置；相邻 token 首尾相接，EOF 为零宽范围
+- **续行规则**（M31，SYNTAX §1.1）：`()`/`[]` 未闭合时换行按空白处理——实参/索引/形参列表层全状态跳过；`ExpressionParserLayer.insideParens` 括号语境（分组/实参/条件/迭代）在结构等待态透明化换行，右操作数与一元操作数继承
+- **数字字面量单源**（M31）：`Parser/NumericLiteral.cs` 是进制（0x/0b/0o）/下划线/后缀判定与解析的唯一实现，Literal/Root/Expression 三层共用
+- **JSONL v2 与往返**（M31）：AST JSONL 字段名键控不依赖顺序；carrier（ImportItem）记录化（独立产行、标量字段入 fields）；`AstJsonlDeserializer` 完整反序列化（三阶段：类型定位/实例挂接/回填，产物强制过 Validator），Parse→Serialize→Deserialize→Serialize 往返逐行一致
+- **测试基建单源**（M31）：`Tests/AstDescribe.cs`（统一 AST 描述器）与 `Tests/TestHarness.cs`（统一驱动+断言）是全部套件的唯一描述/驱动实现；断言对象约定：除查的就是命令行/日志/token 流/层协议行为的套件外，一律断言 AST 树产物（描述串 + 结构断言）
 
 ---
 
@@ -361,25 +367,138 @@ Validator 与 Serializer 遍历统一为 ASTVisitor，Validator 新增 span 校�
 文档中已删除代码的引用（FrontendTypesExtension 全系、AcquisitionExpressionASTNode、
 CharLiteralASTNode 等）与过时表述已清理，`FRONTEND_ARCHITECTURE.md` 删除。
 
+**前端大修（M31）已完成**：全量 review 驱动的 40+ 项修复——测试基建统一
+（AstDescribe/TestHarness，21 套件迁移 + 2 新套件）、Span 左闭右开、
+Lexer 块注释重写（吞字符修复 + 换行不吞）、续行规则、位运算符、
+0b/0o/下划线字面量（NumericLiteral 单源）、Keywords 大扫除（幽灵词清除 +
+保留字补齐）、修饰符组合与标识符合法性校验、JSONL v2（carrier 记录化）+
+完整反序列化器往返无损、Validator Required 子节点与基类链审计、
+Logger 改走 stderr。详见「里程碑历史」M31 段落。
+
 **下一阶段**：语义分析、BIL 输出（见 `../BIL_STANDARD.md`）
 
 ---
 
 ## 6. 技术债务与已知限制
 
-1. 字符字面量未实现
+1. 字符字面量未实现（M31 起由 Lexer 明确报错，不再静默当字符串收下）
 2. lambda 体与 if/switch 表达式分支体仍仅支持单表达式（CodeBlock 已落地，表达式分支的多语句接入留待后续）
 3. switch 仅表达式模式（SYNTAX 未定义语句形态）
-4. 复合赋值（`+=`/`-=` 等）未实现：Lexer 未合并这些 token，需重组机制
+4. 复合赋值（`+=`/`-=` 等）未实现：M31 起 Lexer 一律拆成两个 token（与 `>=` 同策略），Parser 遇 op+`=` 报「复合赋值尚未支持，请展开为 a = a op b」；语义实现留待后续
 5. `is` 右侧的 enum case（`result is .Failed`，§12.3）未支持：`is` 右侧目前只走类型引用
 6. method wrapper canonical 形态中的 `.name` 保留参数名（§14.4 示例 `operator .proxy.call(.name: String, ...)`）未支持
 7. import 的 `{}` 列表项仅支持单标识符（`import a.{b.c}` 未支持；规范无示例）
 8. namespace 的唯一性与位置约束（应在文件首部）未校验，留待语义阶段
-9. 编译 0 警告（大扫除消除了原 `Core/Utilities.cs` 的 nullable 警告）
+9. 多行字符串 `"""` 未实现（SYNTAX §3.3 仅列示例，缩进/转义/插值语义未定义——不猜测规范）
+10. 实参位置的 `a.b` 存在 MemberAccess/Symbol 双形态（具名判别 seed 路径与其他位置 AST 形状不同，语义分析需双路径处理；统一留待语义阶段）
+11. `3.`/`3.foo` 在 M31 起为编译错误（点后缺数字；`3.foo` 形态规范未定义，需要成员访问时请写 `(3).foo`）
+12. 编译 0 警告（大扫除消除了原 `Core/Utilities.cs` 的 nullable 警告）
 
 ---
 
 ## 7. 里程碑历史
+
+### 2026-07-28 · M31 前端大修：全量 review 驱动的 40+ 项修复
+
+> 不改 Latte 语法；对 Lexer/Parser/AST/Core/Tests 五层做了一次全量 review
+> （5 路并行 + 端到端复现验证），修复全部确认 bug 与改进建议，
+> 并落地三项硬性要求：Span 左闭右开统一、JSONL 字段名键控 + 完整反序列化器、
+> 测试基建统一。计划与执行的八个阶段：A 测试基建 → B Span → C Lexer →
+> D 表达式/字面量 → E 声明层/关键字 → F Core/AST 基建 → G 文档 → H 回归。
+
+- **测试基建统一（阶段 A，安全网先行）**：
+  - 新建 `Tests/AstDescribe.cs`（统一 AST 描述器，替代 13+ 份分叉方言：
+    `Access(obj, .m)`/`MemberAccess(obj.m)`、`var x = ...`/`Var(x = ...)` 等收敛为
+    单一信息无损格式）与 `Tests/TestHarness.cs`（统一 Parse 驱动 +
+    Check/CheckTrue/CheckParseError 断言与计数）
+  - 21 个套件全部迁移到统一基建；断言对象约定：除查的就是命令行/日志/
+    token 流/层协议行为的套件（Logger/CommandLineParser/LexerFuzz/TokenDisposition）
+    外，一律断言 AST 树产物（描述串 + 结构断言）
+  - 弱断言修复：`LiteralParserTests`（原只查节点类型名）与
+    `VariableDeclarationTests`（原第一条件恒假）改为全串精确比对 + 结构断言；
+    `TypeReferenceParserTests` 占位测试重写为 17 个真实用例；
+    新增 `PathParserLayerTests`（16 例）、`ArgumentListParserLayerTests`（12 例），
+    注册为套件 28/29；结构断言（Root 填充/Parent 链/无共享）普及到表达式类套件
+  - `test --all` 退出码 clamp 到 255（防 Unix 8 位退出码回绕假绿）
+- **Span 左闭右开统一（阶段 B）**：所有 `CharRange` 改为 `[Start, End)`——
+  Start 指向首个字符，End 指向最后一个字符的下一位置
+  （`Lexer.ContextImpl.PushToken` 经 `Advance` 计算；Parser 层 span 自然继承
+  token 开区间；EOF 保持零宽）。相邻 token 首尾相接；Validator/序列化器/
+  文档同步声明。位置断言全部更新（LexerFuzz.TestPositions）
+- **Lexer 修复（阶段 C）**：
+  - 块注释层重写：删除无规范依据的反斜杠转义机制（修复 `/* a*b */` 吞 `*`、
+    `/* a\b */` 吞 `\`）；换行不吞——注释按行分段、换行以 LineBreakToken 入流
+    （与行注释一致，两条语句间唯一的分隔换行在块注释内时语句分隔不丢失）
+  - 字符字面量 `'` 由 Base 层明确报错（此前被静默当字符串收下）；
+    多行字符串 `"""` 仍未实现（已知限制，规范语义未定义不猜测）
+  - 行尾归一手写化：只把 `\r\n`/`\r` 归一为 `\n`（ReplaceLineEndings 此前会
+    误伤字符串内的 `\f`/`\x85`/`\u2028`/`\u2029`）
+  - 复合赋值策略统一：Lexer 不再合并 `*=`/`/=`（与 `>=` 同策略拆 token，
+    将来 Parser 重组）；删除 `++`/`--`（规范不存在）与 `#` 命名误导常量
+  - 未闭合字符串/块注释错误信息友好化（不再暴露内部层类名）
+- **表达式与字面量修复（阶段 D）**：
+  - 续行规则落地（SYNTAX §1.1）：`()`/`[]` 未闭合时换行按空白处理——
+    调用/索引/形参列表全状态跳过换行；ExpressionParserLayer 新增
+    `insideParens` 括号语境（分组/实参/条件/迭代表达式，右操作数与一元操作数继承）
+  - 位运算符 `<<`/`&`/`|`/`^` 接入（`>>`/`>>>` 维持重组）；删除 `in` 二元运算符
+    （只属于 for 循环头）；复合赋值遇 `=` 报「尚未支持，请展开为 a = a op b」
+  - 数字字面量补全（SYNTAX §3.3）：`0b`/`0o` 前缀、下划线分隔
+    （不连续/不开头结尾）；判定收敛为 `Parser/NumericLiteral.cs` 共享 helper
+    （原三份规则不一致）；`IntLiteralASTNode.IsHex` 布尔改为
+    `LiteralIntBase` 枚举（Decimal/Hex/Binary/Octal）
+  - `3.`/`3.foo` 吞点修复：点后非数字明确报错（不再吞 `.` 伪装成员访问）；
+    `a[]` 空索引拒绝（`foo()` 空参保持合法）；`throw` 后换行报错（与
+    return/yield 行为一致）；`in` 从二元运算符移除后 `a in b` 在表达式位置报错
+  - PathParserLayer 吞尾修复：`foo.` + 换行/EOF、`List\<i32` + EOF 报错
+    （此前静默吞并）；`foo..bar` 双点报错（类型/参数语境经
+    `allowVariadicDots` 保留 `...` 交还）；import 尾点报错自然获得
+  - Span 一致性：表达式形态 if/switch/typeOf/lambda 的 span 含起始关键字；
+    Loop/If 终态不消费换行（span 不拖尾换行符，无 else 的 if 经
+    ElseCheckEntryEnd 封 End）；变量声明初始化后换行改 Replay（同语法
+    不再两种 span）；EOF 规则 6 字面合规（结构完整态 Pop(Replay)）
+- **声明层与关键字修复（阶段 E）**：
+  - Keywords 大扫除（对齐 SYNTAX §19）：删除
+    elif/foreach/when/case/private/public/final/extension/base 幽灵词
+    （`private class Foo {}` 等不再被静默接受）；保留字数组补齐
+    switch/return/break/continue/throw/yield/do/to/in/supers/with/typeOf/await/
+    self/seq/using/import/namespace；import/namespace 移出声明路由数组
+    （修复路由遮蔽）
+  - 修饰符组合校验：rich 仅 struct/enum struct；shared 仅 class 或 rich struct；
+    open 仅 class/struct（enum struct 明确禁止）；open+abstract 互斥；
+    重复修饰符报错；`enum` 后必须 `struct`
+  - 标识符合法性统一：`Keywords.IsIdentifierStart/IsIdentifier/IsReservedKeyword`
+    共享实现，铺到变量名/参数名/类型名/callable 名/循环变量/catch 参数/
+    using 绑定/enum case 名/成员名/符号路径元素/import 列表项
+    （`class 123 {}`、`func f(123: i32)`、`for (123 in c)`、`var return = 5`、
+    `foo(return = 5)` 全部报错；标签位置只查首字符——return@seq 合法）
+  - 注解名空校验（`@(1)`/`@`+换行报错）；`named` 必须带 `...`；
+    enum 判别值支持 0x 等进制与 long 范围（`DiscriminantValue` int?→long?）
+- **Core/AST 基建（阶段 F）**：
+  - Logger 控制台输出改走 stderr（诊断不污染 stdout——`compile --parse-only`
+    的 JSONL 输出流纯净）
+  - JSONL 序列化修复：int?/long? 等 Nullable 字段不再静默丢弃；
+    严格先按声明类型过滤再取值（未填充属性不再被提前求值）；循环保护；
+    字段枚举沿基类链（基类 private 字段反射盲区修复）
+  - **JSONL v2 + 完整反序列化器**：carrier（ImportItem）记录化
+    （独立产行、标量字段入 fields——修复 importAll 往返必丢）；
+    新建 `AST/AstJsonlDeserializer.cs`：三阶段重建（类型定位/实例挂接
+    （预创建子容器复用、carrier struct 回写）/fields 与 span 回填），
+    字段名键控不依赖顺序，产物强制过 ASTIntegrityValidator；
+    往返测试（Parse→Serialize→Deserialize→Serialize 逐行一致）12 例
+  - Validator 补强：`[ChildAstNode(Required = true)]` 必需子节点校验
+    （LiteralExpressionASTNode.literal、CatchClauseASTNode.ExceptionType）；
+    类型审计沿基类链；[AstCarrier] 类型递归审计（carrier 装 ASTNode 的
+    属性会逃出遍历，拒绝）
+  - CompileCommand：CompilerInternalException 单独报告（与用户语法错误区分）；
+    多文件 dump/parse-only 输出 `{"file":...}` 元记录分隔；全失败不再误报 dumped
+  - import 多导入形态 SymbolElement 按引用共享改深拷贝（防语义阶段交叉污染）
+- **记录在案的技术债务（本轮不改代码）**：实参位置 `a.b` 的
+  MemberAccess/Symbol 双形态；`is` 右侧 enum case（§12.3）；method wrapper
+  `.name` 保留参数（§14.4）；switch 语句形态（规范未定义）；多行字符串
+  `"""`（规范语义未定义）；复合赋值语义实现（token 策略已统一）；
+  三态合并与 ExpectNotation 提取经评估不更简洁，放弃
+- **测试**：746/746 + fuzz 6000（29 套件；新增 Path/ArgumentList 两套件，
+  AstJsonlSerializer 扩至 84 例含往返与格式 v2）
 
 ### 2026-07-27 · M30 Utilities.cs 拆分 + ASTVisitor 遍历可重载 + 文档幽灵清理
 

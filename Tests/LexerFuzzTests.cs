@@ -29,8 +29,8 @@ namespace LatteCompiler.Tests
             ExpectTokens("a / b", "W(a) N(/) W(b) EOF");
             ExpectTokens("a/b", "W(a) N(/) W(b) EOF");
             ExpectTokens("a / b / c", "W(a) N(/) W(b) N(/) W(c) EOF");
-            // 除法赋值
-            ExpectTokens("a /= b", "W(a) N(/=) W(b) EOF");
+            // 除法赋值（M31 起不再合并：复合赋值拆成两个 token，将来由 Parser 重组）
+            ExpectTokens("a /= b", "W(a) N(/) N(=) W(b) EOF");
             // 行注释（无尾换行也要正确收尾）
             ExpectTokens("// hello", "C( hello) EOF");
             ExpectTokens("a // c\nb", "W(a) C( c) LB W(b) EOF");
@@ -38,13 +38,21 @@ namespace LatteCompiler.Tests
             ExpectTokens("// c\na", "C( c) LB W(a) EOF");
             // 块注释
             ExpectTokens("/* block */a", "C( block ) W(a) EOF");
-            ExpectTokens("/* multi\nline */a", "C( multi\nline ) W(a) EOF");
+            // 块注释跨行：按行分段，换行以 LineBreakToken 入流（M31）
+            ExpectTokens("/* multi\nline */a", "C( multi) LB C(line ) W(a) EOF");
+            // 块注释不吞字符：孤 * 与反斜杠都保留在内容里（M31 修复）
+            ExpectTokens("/* a*b */", "C( a*b ) EOF");
+            ExpectTokens("/* 2 * 3 */", "C( 2 * 3 ) EOF");
+            ExpectTokens("/* a\\b */", "C( a\\b ) EOF");
             ExpectTokens("/**/a", "C() W(a) EOF");
+            // 行尾归一：\r\n 与 \r 都按 \n 处理（M31）
+            ExpectTokens("a\r\nb", "W(a) LB W(b) EOF");
+            ExpectTokens("a\rb", "W(a) LB W(b) EOF");
             // 表达式中间的块注释
             ExpectTokens("a /* c */ b", "W(a) C( c ) W(b) EOF");
             // 斜杠家族相邻形态
             ExpectTokens("a //", "W(a) C() EOF");
-            ExpectTokens("a /= b", "W(a) N(/=) W(b) EOF");
+            ExpectTokens("a /= b", "W(a) N(/) N(=) W(b) EOF");
             // 空输入：只有 EOF
             ExpectTokens("", "EOF");
             // 纯空白
@@ -62,6 +70,8 @@ namespace LatteCompiler.Tests
             ExpectLexerError("a /* unterminated");
             // 未闭合字符串
             ExpectLexerError("\"unterminated");
+            // 字符字面量未实现：明确报错（M31 起不再静默当字符串收下）
+            ExpectLexerError("'A'");
             // 非法字符
             ExpectLexerError("`");
 
@@ -76,25 +86,26 @@ namespace LatteCompiler.Tests
 
             // 单行 + 换行 + 第二行：列号/offset/换行归属/EOF 位置
             // 字符布局：a0 b1 ' '2 c3 d4 \n5 x6
+            // 范围为左闭右开 [Start, End)：End 是最后一个字符的下一位置（M31 起）
             ExpectRanges("ab cd\nx",
-                ("W(ab)", 1, 1, 0, 1, 2, 1),   // 首个 token：col 从 1 开始
-                ("W(cd)", 1, 4, 3, 1, 5, 4),   // 空白不进 token 头
-                ("LB", 1, 6, 5, 1, 6, 5),      // 换行算当前行最后一列（零宽）
-                ("W(x)", 2, 1, 6, 2, 1, 6),    // 第二行首字符 col 1
+                ("W(ab)", 1, 1, 0, 1, 3, 2),   // 首个 token：col 从 1 开始
+                ("W(cd)", 1, 4, 3, 1, 6, 5),   // 空白不进 token 头
+                ("LB", 1, 6, 5, 2, 1, 6),      // 换行算当前行最后一列，End 推进到下一行行首
+                ("W(x)", 2, 1, 6, 2, 2, 7),    // 第二行首字符 col 1
                 ("EOF", 2, 2, 7, 2, 2, 7));    // EOF：末尾零宽范围
 
             // 缩进行：前导空格不进 token 头
             // 字符布局：' '0 ' '1 a2 b3 \n4 ' '5 ' '6 c7 d8
             ExpectRanges("  ab\n  cd",
-                ("W(ab)", 1, 3, 2, 1, 4, 3),
-                ("LB", 1, 5, 4, 1, 5, 4),
-                ("W(cd)", 2, 3, 7, 2, 4, 8),
+                ("W(ab)", 1, 3, 2, 1, 5, 4),
+                ("LB", 1, 5, 4, 2, 1, 5),
+                ("W(cd)", 2, 3, 7, 2, 5, 9),
                 ("EOF", 2, 5, 9, 2, 5, 9));
 
-            // EOF 处冲刷的 token：End 不少算字符（M28 修复的既有 bug）
+            // EOF 处冲刷的 token：开区间 End 恰好是 EOF 的零宽位置（相邻 token 首尾相接）
             // 字符布局：/ 0
             ExpectRanges("/",
-                ("N(/)", 1, 1, 0, 1, 1, 0),
+                ("N(/)", 1, 1, 0, 1, 2, 1),
                 ("EOF", 1, 2, 1, 1, 2, 1));
 
             Console.WriteLine();

@@ -144,8 +144,26 @@ namespace LatteCompiler
             {
                 if (Keywords.IsDescriptor(w.Content))
                 {
+                    // 修饰符组合校验（M31）：重复修饰符与 open/abstract 互斥（SYNTAX §9.2）
+                    if (modifiers.Contains(w.Content))
+                    {
+                        throw context.RaiseError($"Duplicate modifier '{w.Content}'");
+                    }
+                    if ((w.Content == Keywords.OPEN && modifiers.Contains(Keywords.ABSTRACT)) ||
+                        (w.Content == Keywords.ABSTRACT && modifiers.Contains(Keywords.OPEN)))
+                    {
+                        throw context.RaiseError(
+                            $"Modifiers 'open' and 'abstract' are mutually exclusive (SYNTAX §9.2)");
+                    }
                     modifiers.Add(w.Content);
                     return ParserLayerResult.Continue.Instance;
+                }
+
+                // enum 后必须紧跟 struct（SYNTAX §12：enum struct 是唯一形态；
+                // M31 修复：enum class/func/var 此前被静默吞掉 enum）
+                if (enumSeen && w.Content != Keywords.STRUCT)
+                {
+                    throw context.RaiseError($"Expected 'struct' after 'enum', got: {w.Content}");
                 }
 
                 // 字段 / 全局变量：直接复用 VariableDeclarationParserLayer
@@ -238,9 +256,15 @@ namespace LatteCompiler
         // 与调用点既有约定一致）；否则注解结束，token 交给修饰符收集重新处理
         private ParserLayerResult OnAnnotationName(Token t, ParserLayerContext context)
         {
+            var ann = pendingAnnotations[pendingAnnotations.Count - 1];
+            // 注解名不得为空（M31：@(1) 或 @ 后换行此前被静默接受）
+            if (ann.Name.symbol.elements.Count == 0)
+            {
+                throw context.RaiseError($"Expected annotation name after '@', got: {t}");
+            }
+
             if (t is NotationToken n && n.Content == "(")
             {
-                var ann = pendingAnnotations[pendingAnnotations.Count - 1];
                 ann.HasArguments = true;
                 state = State.Modifiers;
                 return new ParserLayerResult.PushLayer(
@@ -257,7 +281,8 @@ namespace LatteCompiler
         private ParserLayerResult OnCallableName(Token t, ParserLayerContext context)
         {
             if (t is LineBreakToken) return ParserLayerResult.Continue.Instance;
-            if (t is WordToken w)
+            // 声明名必须是合法标识符（M31：数字词/保留字此前被静默接受）
+            if (t is WordToken w && Keywords.IsIdentifier(w.Content))
             {
                 callable!.Name = w.Content;
                 state = State.ParamsExpected;
@@ -392,6 +417,37 @@ namespace LatteCompiler
                 Keywords.WRAPPER => new WrapperDeclarationASTNode(parent),
                 _ => throw context.RaiseError($"Unsupported type keyword: {keyword}")
             };
+
+            // 修饰符与类型种类的组合校验（M31，SYNTAX §3.1.1/§9.2/§10/§12）：
+            // rich 仅 struct/enum struct；shared 仅 class 或 rich struct；
+            // open 仅 class/普通 struct（enum struct 明确禁止）
+            bool isStructLike = node is StructDeclarationASTNode or EnumStructDeclarationASTNode;
+            if (modifiers.Contains(Keywords.RICH) && !isStructLike)
+            {
+                throw context.RaiseError(
+                    $"Modifier 'rich' is only allowed on struct/enum struct declarations (SYNTAX §3.1.1)");
+            }
+            if (modifiers.Contains(Keywords.SHARED))
+            {
+                if (node is not ClassDeclarationASTNode && !isStructLike)
+                {
+                    throw context.RaiseError(
+                        $"Modifier 'shared' is only allowed on class or rich struct declarations (SYNTAX §3.1.1)");
+                }
+                if (isStructLike && !modifiers.Contains(Keywords.RICH))
+                {
+                    throw context.RaiseError(
+                        $"'shared' cannot modify a non-rich struct (SYNTAX §3.1.1: shared struct requires rich)");
+                }
+            }
+            if (modifiers.Contains(Keywords.OPEN) &&
+                node is not ClassDeclarationASTNode && node is not StructDeclarationASTNode)
+            {
+                throw context.RaiseError(
+                    $"Modifier 'open' is only allowed on class/struct declarations " +
+                    $"(SYNTAX §9.2: enum struct cannot be open)");
+            }
+
             GetModifiers(node).AddRange(modifiers);
             AttachAnnotations(node, context);
             target.Add(node);
@@ -450,7 +506,8 @@ namespace LatteCompiler
         private ParserLayerResult OnTypeName(Token t, ParserLayerContext context)
         {
             if (t is LineBreakToken) return ParserLayerResult.Continue.Instance;
-            if (t is WordToken w)
+            // 类型名必须是合法标识符（M31：数字词/保留字此前被静默接受）
+            if (t is WordToken w && Keywords.IsIdentifier(w.Content))
             {
                 SetTypeName(w.Content);
                 state = State.AfterTypeName;
@@ -666,7 +723,7 @@ namespace LatteCompiler
             if (t is NotationToken n && n.Content == "]")
                 return FinishEnumCases(context);
 
-            if (t is WordToken w)
+            if (t is WordToken w && Keywords.IsIdentifier(w.Content))
             {
                 currentCase = new EnumCaseASTNode(typeNode) { CaseName = w.Content };
                 // case span 起点 = case 名（M28）；`,`/`]` 处封口
@@ -737,12 +794,15 @@ namespace LatteCompiler
             throw context.RaiseError($"Expected '->', ',' or ']' after enum case arguments, got: {t}");
         }
 
-        // -> 已读：判别值只接受非负整数字面量（§12.4 编译期整数常量）
+        // -> 已读：判别值只接受非负整数字面量（§12.4 编译期整数常量；
+        // M31：支持 0x 等进制与更大范围，统一走 NumericLiteral）
         private ParserLayerResult OnEnumDiscriminant(Token t, ParserLayerContext context)
         {
             if (t is LineBreakToken) return ParserLayerResult.Continue.Instance;
 
-            if (t is WordToken w && int.TryParse(w.Content, out var value) && value >= 0)
+            if (t is WordToken w &&
+                NumericLiteral.TryParseInt(w.Content, out var value, out _, out _, out _) &&
+                value >= 0)
             {
                 currentCase!.DiscriminantValue = value;
                 state = State.EnumAfterCase;

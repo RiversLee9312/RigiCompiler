@@ -74,13 +74,14 @@ namespace LatteCompiler.Tests
             Console.WriteLine("=== Testing Logger console gating (VerboseEnabled) ===");
 
             Logger.Reset();
-            // 先捕获再断言：避免 [PASS] 报告被重定向吞掉
+            // 先捕获再断言：避免 [PASS] 报告被重定向吞掉。
+            // Logger 控制台输出走 stderr（M31）：诊断不污染 stdout 的数据流
             bool defaultOff, verboseHidden, warningShown, enabledOn, verboseShown;
-            var originalOut = Console.Out;
+            var originalError = Console.Error;
             var captured = new StringWriter();
             try
             {
-                Console.SetOut(captured);
+                Console.SetError(captured);
 
                 defaultOff = !Logger.VerboseEnabled;
                 Logger.Verbose("Test", "hidden");
@@ -96,7 +97,7 @@ namespace LatteCompiler.Tests
             }
             finally
             {
-                Console.SetOut(originalOut);
+                Console.SetError(originalError);
                 Logger.Reset();
             }
 

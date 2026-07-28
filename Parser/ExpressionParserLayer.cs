@@ -43,6 +43,10 @@ namespace LatteCompiler
         private bool allowBinaryOperator = true;
         // 一元操作数层禁止连续的一元运算符（not not x 必须写成 not (not x)）
         private bool allowPrefixUnary = true;
+        // 括号语境（M31，SYNTAX §1.1）：() / [] 未闭合时换行按空白处理。
+        // 分组子层与实参/索引内的表达式层为 true；右操作数/一元操作数层继承。
+        // internal：ArgumentListParserLayer 等外部层创建实参表达式层时设置
+        internal bool insideParens = false;
 
         private enum State
         {
@@ -77,6 +81,8 @@ namespace LatteCompiler
         // trailing lambda 的实参节点（lambda 弹栈后与当前表达式一并封口）
         private CharPosition pendingSuffixStart;
         private ArgumentASTNode? pendingTrailingArgument = null;
+        // async lambda 的 async 关键字起点（span 含 async，M31）
+        private CharPosition pendingAsyncStart;
 
         public ExpressionParserLayer(
             ExpressionRootASTNode target,
@@ -147,6 +153,13 @@ namespace LatteCompiler
             if (currentToken is EndOfFileToken)
             {
                 return HandleEndOfFile(context);
+            }
+
+            // 括号语境下的换行透明化（M31，SYNTAX §1.1：() / [] 未闭合时换行按空白处理）：
+            // 结构等待态遇换行直接跳过；后缀装配态（成员名/泛型/类型操作等）不在豁免内
+            if (insideParens && currentToken is LineBreakToken && IsLineBreakTransparentState(state))
+            {
+                return ParserLayerResult.Continue.Instance;
             }
 
             switch (state)
@@ -231,19 +244,24 @@ namespace LatteCompiler
                 switch (kw.Content)
                 {
                     case Keywords.FUNC:
-                        return DelegateLambdaParsing(false);
+                        return DelegateLambdaParsing(false, context.GetLocation().Start, context);
                     case Keywords.ASYNC:
-                        // 先消费 async，下一 token 必须是 func（AsyncSeen 状态处理）
+                        // 先消费 async（记起点：span 含 async），下一 token 必须是 func
+                        pendingAsyncStart = context.GetLocation().Start;
                         state = State.AsyncSeen;
                         return ParserLayerResult.Continue.Instance;
                     case Keywords.IF:
+                        // span 含起始关键字（M31：子层 FirstRange 从 ( 起算，这里显式记 Start）
                         var ifNode = new IfExpressionASTNode();
+                        StartSpan(ifNode, context.GetLocation().Start, context);
                         return DelegateStructuredParsing(ifNode, new IfStatementParserLayer(ifNode));
                     case Keywords.SWITCH:
                         var switchNode = new SwitchExpressionASTNode();
+                        StartSpan(switchNode, context.GetLocation().Start, context);
                         return DelegateStructuredParsing(switchNode, new SwitchStatementParserLayer(switchNode));
                     case Keywords.TYPEOF:
                         var typeOfNode = new TypeOfExpressionASTNode();
+                        StartSpan(typeOfNode, context.GetLocation().Start, context);
                         return DelegateStructuredParsing(typeOfNode, new TypeOfExpressionParserLayer(typeOfNode));
                     case Keywords.SEQ:
                     case Keywords.VOLATILE:
@@ -299,9 +317,11 @@ namespace LatteCompiler
             state = State.PrimaryParsed;
             expectClosingParen = true;
 
-            // 递归解析括号内的表达式（消费掉 ( token）
+            // 递归解析括号内的表达式（消费掉 ( token）；
+            // 括号语境：分组内换行按空白处理（SYNTAX §1.1）
             return new ParserLayerResult.PushLayer(
-                new ExpressionParserLayer(groupExpr.InnerExpression), TokenDisposition.Consume);
+                new ExpressionParserLayer(groupExpr.InnerExpression) { insideParens = true },
+                TokenDisposition.Consume);
         }
 
         // 委托 new 表达式解析
@@ -334,10 +354,13 @@ namespace LatteCompiler
             return new ParserLayerResult.PushLayer(layer, disposition);
         }
 
-        // 委托 lambda 表达式解析（func 已消费；isAsync 标记 async lambda）
-        private ParserLayerResult DelegateLambdaParsing(bool isAsync)
+        // 委托 lambda 表达式解析（func 已消费；isAsync 标记 async lambda）；
+        // keywordStart 为 func（或 async）关键字起点：span 含起始关键字（M31）
+        private ParserLayerResult DelegateLambdaParsing(
+            bool isAsync, CharPosition keywordStart, ParserLayerContext context)
         {
             var lambdaNode = new LambdaExpressionASTNode() { IsAsync = isAsync };
+            StartSpan(lambdaNode, keywordStart, context);
             return DelegateStructuredParsing(lambdaNode, new LambdaExpressionParserLayer(lambdaNode));
         }
 
@@ -346,7 +369,7 @@ namespace LatteCompiler
         {
             if (currentToken is WordToken wt && wt.Content == Keywords.FUNC)
             {
-                return DelegateLambdaParsing(true);
+                return DelegateLambdaParsing(true, pendingAsyncStart, context);
             }
 
             context.RaiseError($"Expected 'func' after 'async' (async lambda), got: {currentToken}");
@@ -397,7 +420,8 @@ namespace LatteCompiler
             var operandLayer = new ExpressionParserLayer(unaryExpr.Operand)
             {
                 allowBinaryOperator = false,
-                allowPrefixUnary = false
+                allowPrefixUnary = false,
+                insideParens = insideParens
             };
 
             return new ParserLayerResult.PushLayer(operandLayer, TokenDisposition.Consume);
@@ -611,6 +635,15 @@ namespace LatteCompiler
                 // 其他组合（如 >>>>）不合法，落入正常流程后会在右操作数解析时报错
             }
 
+            // 复合赋值（+=、*=、>>= 等）尚未支持：Lexer 一律拆成两个 token（M31），
+            // 在运算符状态下遇到 = 给出明确错误，而不是泛泛的"缺少右操作数"
+            if (currentToken is NotationToken assign && assign.Content == "=")
+            {
+                context.RaiseError(
+                    $"Compound assignment (such as '{pendingOperator}=') is not yet supported; " +
+                    $"please expand it to a = a {pendingOperator} b");
+            }
+
             // 创建二元表达式节点：左操作数挂入 Left Root（未挂载子树包装）
             var binaryExpr = new BinaryExpressionASTNode
             {
@@ -623,7 +656,8 @@ namespace LatteCompiler
             // （1 + 2 * 3 是编译错误，必须写成 1 + (2 * 3)）
             var rightLayer = new ExpressionParserLayer(binaryExpr.Right)
             {
-                allowBinaryOperator = false
+                allowBinaryOperator = false,
+                insideParens = insideParens
             };
 
             currentExpression = binaryExpr;
@@ -648,7 +682,8 @@ namespace LatteCompiler
         // . 或 ?. 之后：读取成员名，创建 MemberAccess 节点
         private ParserLayerResult HandleMemberNameExpected(Token currentToken, ParserLayerContext context)
         {
-            if (currentToken is WordToken name)
+            // 成员名不能是数字词（M31：3.14.15、foo.123 此前被接受；只查首字符）
+            if (currentToken is WordToken name && Keywords.IsIdentifierStart(name.Content))
             {
                 var accessExpr = new MemberAccessASTNode()
                 {
@@ -670,7 +705,7 @@ namespace LatteCompiler
         // 前导点 . 已读：读取 case 名，创建 EnumCaseExpression 节点（SYNTAX §12）
         private ParserLayerResult HandleEnumCaseNameExpected(Token currentToken, ParserLayerContext context)
         {
-            if (currentToken is WordToken name)
+            if (currentToken is WordToken name && Keywords.IsIdentifierStart(name.Content))
             {
                 var enumCaseNode = new EnumCaseExpressionASTNode()
                 {
@@ -689,7 +724,7 @@ namespace LatteCompiler
         // : 已读：读取 wrapper 名，创建 WrapperAccess 节点（SYNTAX §14.1）
         private ParserLayerResult HandleWrapperNameExpected(Token currentToken, ParserLayerContext context)
         {
-            if (currentToken is WordToken name)
+            if (currentToken is WordToken name && Keywords.IsIdentifierStart(name.Content))
             {
                 var wrapperExpr = new WrapperAccessASTNode()
                 {
@@ -844,9 +879,8 @@ namespace LatteCompiler
                     wt.Content == Keywords.NULL)
                     return true;
 
-                // 数字
-                if (char.IsDigit(wt.Content[0]) ||
-                    wt.Content.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                // 数字（判定统一走 NumericLiteral，M31）
+                if (NumericLiteral.IsNumericWord(wt.Content))
                     return true;
             }
 
@@ -876,15 +910,19 @@ namespace LatteCompiler
                        nt.Content == "*" || nt.Content == "/" ||
                        nt.Content == "==" || nt.Content == "!=" ||
                        nt.Content == "<" || nt.Content == ">" ||
-                       nt.Content == "<=" || nt.Content == ">=";
+                       nt.Content == "<=" || nt.Content == ">=" ||
+                       // 位运算符（SYNTAX §13.2）：<< 由 Lexer 合并；
+                       // >>、>>> 由 OperatorSeen 状态重组；& | ^ 为单字符
+                       nt.Content == "<<" || nt.Content == "&" ||
+                       nt.Content == "|" || nt.Content == "^";
             }
 
             if (token is WordToken wt)
             {
                 return wt.Content == Keywords.AND ||
-                       wt.Content == Keywords.OR ||
-                       wt.Content == Keywords.IN;
-                // is/as 不是二元运算符：右侧是类型引用，见 TypeOperatorSeen 状态
+                       wt.Content == Keywords.OR;
+                // is/as 不是二元运算符：右侧是类型引用，见 TypeOperatorSeen 状态；
+                // in 只属于 for 循环头（LoopParserLayer 自处理），不是二元运算符（M31 移除）
             }
 
             return false;
@@ -902,6 +940,16 @@ namespace LatteCompiler
             if (token is NotationToken nt) return nt.Content;
             if (token is WordToken wt) return wt.Content;
             return "";
+        }
+
+        // 括号语境下换行透明的状态：等待主表达式、主表达式已解析（可能接运算符或 )）、
+        // 等待右操作数、二元表达式已完成（可能接 ) 或犯错报优先级）
+        private static bool IsLineBreakTransparentState(State state)
+        {
+            return state == State.Initial ||
+                   state == State.PrimaryParsed ||
+                   state == State.OperatorSeen ||
+                   state == State.Completed;
         }
     }
 }

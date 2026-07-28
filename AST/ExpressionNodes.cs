@@ -99,7 +99,7 @@ namespace LatteCompiler
     // 字面量表达式（包装一个字面量节点）
     public class LiteralExpressionASTNode : ExpressionASTNode
     {
-        [ChildAstNode] private LiteralASTNode? literal;
+        [ChildAstNode(Required = true)] private LiteralASTNode? literal;
 
         public LiteralExpressionASTNode(ASTNode? parent = null) : base(parent)
         {

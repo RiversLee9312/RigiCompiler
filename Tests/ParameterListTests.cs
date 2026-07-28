@@ -1,32 +1,25 @@
 using System;
-using System.Collections.Generic;
-using System.Linq;
 
 namespace LatteCompiler.Tests
 {
-    /// <summary>
-    /// 函数形参列表解析测试（ParameterListParserLayer，roadmap #5）
-    ///
-    /// 覆盖 SYNTAX.md §4 的形参语法：
-    /// 1. 普通参数（含泛型类型）
-    /// 2. 默认参数（含表达式默认值）
-    /// 3. 位置可变参数 i32...
-    /// 4. 具名可变参数 named String...
-    /// 5. 混合与空列表
-    /// 6. 错误用例：缺类型标注、缺类型、点数不足、缺默认值
-    ///
-    /// 测试驱动方式：通过 Parser.Parse(tokens, entryLayer) 重载，
-    /// 以 ParameterListParserLayer 为起始层独立解析 (...) 片段。
-    /// </summary>
+    // 函数形参列表解析测试（ParameterListParserLayer，roadmap #5）：独立 Layer 驱动
+    // （TestHarness.ParseWithLayer），断言 AstDescribe.Params 描述串。
+    //
+    // 覆盖 SYNTAX.md §4 的形参语法：
+    // 1. 普通参数（含泛型类型）
+    // 2. 默认参数（含表达式默认值）
+    // 3. 位置可变参数 i32...
+    // 4. 具名可变参数 named String...
+    // 5. 混合与空列表
+    // 6. 括号内续行（§1.1，M31）
+    // 7. init 参数映射（§9.3，allowMapping，含跨行）
+    // 8. 错误用例：缺类型标注、缺类型、点数不足、缺默认值、named 无 ...（M31）
     public class ParameterListTests
     {
-        private static int passCount = 0;
-        private static int failCount = 0;
-
         // ===== 1. 普通参数 =====
         public static void TestPlainParameters()
         {
-            Console.WriteLine("=== Testing Plain Parameters ===");
+            TestHarness.Section("Testing Plain Parameters");
 
             TestParse("(a: i32)", "[a: i32]");
             TestParse("(a: i32, b: String)", "[a: i32, b: String]");
@@ -35,197 +28,131 @@ namespace LatteCompiler.Tests
             // 可空类型参数
             TestParse("(name: String?)", "[name: String?]");
 
-            Console.WriteLine();
+            TestHarness.Blank();
         }
 
         // ===== 2. 默认参数 =====
         public static void TestDefaultParameters()
         {
-            Console.WriteLine("=== Testing Default Parameters ===");
+            TestHarness.Section("Testing Default Parameters");
 
             TestParse("(name: String = \"World\")", "[name: String = Str(\"World\")]");
             // 表达式作为默认值
             TestParse("(a: i32 = 1 + 2)", "[a: i32 = Binary(Int(1,I32) + Int(2,I32))]");
 
-            Console.WriteLine();
+            TestHarness.Blank();
         }
 
         // ===== 3. 可变参数 =====
         public static void TestVariadicParameters()
         {
-            Console.WriteLine("=== Testing Variadic Parameters ===");
+            TestHarness.Section("Testing Variadic Parameters");
 
             TestParse("(numbers: i32...)", "[numbers: i32...]");
             TestParse("(options: named String...)", "[options: named String...]");
 
-            Console.WriteLine();
+            TestHarness.Blank();
         }
 
         // ===== 4. 混合与空列表 =====
         public static void TestMixedParameters()
         {
-            Console.WriteLine("=== Testing Mixed and Empty Parameters ===");
+            TestHarness.Section("Testing Mixed and Empty Parameters");
 
             TestParse("()", "[]");
             TestParse("(a: i32, b: String = \"x\", rest: named i32...)",
                 "[a: i32, b: String = Str(\"x\"), rest: named i32...]");
 
-            Console.WriteLine();
+            TestHarness.Blank();
         }
 
-        // ===== 5. 错误用例 =====
+        // ===== 5. 括号内续行（SYNTAX §1.1，M31）=====
+        public static void TestLineContinuation()
+        {
+            TestHarness.Section("Testing Line Continuation");
+
+            // ( 已出现即允许自然续行：逗号后换行按空白处理
+            TestParse("(a: i32,\nb: i32)", "[a: i32, b: i32]");
+            TestParse("(a: i32,\n b: String = \"x\")", "[a: i32, b: String = Str(\"x\")]");
+
+            TestHarness.Blank();
+        }
+
+        // ===== 6. init 参数映射（§9.3，allowMapping）=====
+        public static void TestInitParameterMapping()
+        {
+            TestHarness.Section("Testing Init Parameter Mapping");
+
+            // init(_ -> x, _ -> y) 的形参列表部分（跨行）
+            TestParse("(_ -> x,\n _ -> y)", "[_ -> x, _ -> y]", allowMapping: true);
+
+            TestHarness.Blank();
+        }
+
+        // ===== 7. 错误用例 =====
         public static void TestErrorCases()
         {
-            Console.WriteLine("=== Testing Error Cases (expect ParserException) ===");
+            TestHarness.Section("Testing Error Cases (expect ParserException)");
 
-            TestError("(a)", "缺少类型标注");
-            TestError("(a: )", "缺少类型");
-            TestError("(a: i32..)", "可变参数点数不足");
-            TestError("(a: i32 = )", "缺少默认值表达式");
+            TestHarness.CheckParseError("(a)",
+                () => ParseParameterList("(a)"),
+                "Expected ':' after parameter name");
+            TestHarness.CheckParseError("(a: )",
+                () => ParseParameterList("(a: )"),
+                "Expected parameter type");
+            TestHarness.CheckParseError("(a: i32..)",
+                () => ParseParameterList("(a: i32..)"),
+                "Expected '...' for variadic parameter");
+            TestHarness.CheckParseError("(a: i32 = )",
+                () => ParseParameterList("(a: i32 = )"),
+                "Unexpected token at start of expression");
+            // named 仅用于具名可变参数（§4.3）：没有 ... 的 named 是错误（M31，全管线驱动）
+            TestHarness.CheckParseError("func f(options: named String)",
+                () => TestHarness.ParseRoot("func f(options: named String)"),
+                "'named' variadic parameter requires '...'");
 
-            Console.WriteLine();
+            TestHarness.Blank();
         }
 
         // ===== 测试辅助 =====
 
-        private static ParameterListASTNode ParseParameterList(string code)
+        // 以 ParameterListParserLayer 为起始层独立解析 (...) 片段
+        // （allowMapping：init 形参列表允许 _ -> field 映射，§9.3）
+        private static ParameterListASTNode ParseParameterList(string code, bool allowMapping = false)
         {
-            var lexer = new Lexer();
-            var tokens = lexer.Tokenize(code);
             var node = new ParameterListASTNode(null);
-            var parser = new Parser();
-            parser.Parse(tokens, new TestRootParserLayer(), new ParameterListParserLayer(node));
+            TestHarness.ParseWithLayer(new ParameterListParserLayer(node, allowMapping), code);
             return node;
         }
 
-        private static void TestParse(string code, string expectedDesc)
+        // 辅助：独立解析形参列表并比对 AST 描述串（label 中 \n 转义显示）
+        private static void TestParse(string code, string expectedDesc, bool allowMapping = false)
         {
             try
             {
-                var node = ParseParameterList(code);
-                string actual = Describe(node);
-                if (actual == expectedDesc)
-                {
-                    Console.WriteLine($"  [PASS] {code}");
-                    Console.WriteLine($"      => {actual}");
-                    passCount++;
-                }
-                else
-                {
-                    Fail(code, $"expected {expectedDesc}, got {actual}");
-                }
+                var node = ParseParameterList(code, allowMapping);
+                TestHarness.Check(code.Replace("\n", "\\n"), AstDescribe.Params(node), expectedDesc);
             }
             catch (Exception ex)
             {
-                Fail(code, $"unexpected exception: {ex.Message}");
+                TestHarness.CheckTrue($"{code.Replace("\n", "\\n")} => 意外异常", false, ex.Message);
             }
-        }
-
-        private static void TestError(string code, string reason)
-        {
-            try
-            {
-                ParseParameterList(code);
-                Fail(code, $"expected ParserException ({reason}), but parse succeeded");
-            }
-            catch (ParserException)
-            {
-                Console.WriteLine($"  [PASS] {code}  (rejected: {reason})");
-                passCount++;
-            }
-            catch (Exception ex)
-            {
-                Fail(code, $"expected ParserException ({reason}), got {ex.GetType().Name}: {ex.Message}");
-            }
-        }
-
-        private static void Fail(string code, string message)
-        {
-            Console.WriteLine($"  [FAIL] {code}");
-            Console.WriteLine($"      => {message}");
-            failCount++;
-        }
-
-        // ===== AST 描述 =====
-
-        private static string Describe(ParameterListASTNode node)
-        {
-            return "[" + string.Join(", ", node.Parameters.Select(DescribeParameter)) + "]";
-        }
-
-        private static string DescribeParameter(ParameterASTNode param)
-        {
-            string prefix = param.IsNamedVariadic ? "named " : "";
-            string suffix = (param.IsVariadic || param.IsNamedVariadic) ? "..." : "";
-            string desc = $"{param.Name}: {prefix}{DescribeType(param.Type)}{suffix}";
-            if (param.DefaultValue != null)
-            {
-                desc += $" = {DescribeExpression(param.DefaultValue.Expression)}";
-            }
-            return desc;
-        }
-
-        private static string DescribeType(TypeReferenceASTNode typeNode)
-        {
-            string typeName = DescribeSymbol(typeNode.TypeSymbol.symbol);
-            if (typeNode.IsNullable) typeName += "?";
-            return typeName;
-        }
-
-        private static string DescribeSymbol(Symbol symbol)
-        {
-            var parts = new List<string>();
-            foreach (var element in symbol.elements)
-            {
-                string part = element.name;
-                if (element.generics.Count > 0)
-                {
-                    part += "<" + string.Join(",", element.generics.Select(g => DescribeSymbol(g))) + ">";
-                }
-                parts.Add(part);
-            }
-            return string.Join(".", parts);
-        }
-
-        private static string DescribeExpression(ASTNode? node)
-        {
-            return node switch
-            {
-                null => "<null>",
-                LiteralExpressionASTNode lit => DescribeExpression(lit.Literal),
-                IntLiteralASTNode i => $"Int({i.Value},{i.IntType}{(i.IsHex ? ",hex" : "")})",
-                FloatLiteralASTNode f => $"Float({f.Value}{(f.IsFloat ? "f" : "")})",
-                StringLiteralASTNode s => $"Str(\"{s.Value}\")",
-                BoolLiteralASTNode b => $"Bool({b.Value})",
-                NullLiteralASTNode => "Null",
-                SymbolReferenceASTNode sref => $"Sym({DescribeSymbol(sref.Symbol.symbol)})",
-                UnaryExpressionASTNode u => $"Unary({u.Operator} {DescribeExpression(u.Operand.Expression)})",
-                BinaryExpressionASTNode b =>
-                    $"Binary({DescribeExpression(b.Left.Expression)} {b.Operator} {DescribeExpression(b.Right.Expression)})",
-                GroupExpressionASTNode g => $"Group({DescribeExpression(g.InnerExpression.Expression)})",
-                _ => $"<{node.GetType().Name}>"
-            };
         }
 
         // ===== 入口 =====
         public static int RunAll()
         {
-            Console.WriteLine("\n╔════════════════════════════════════╗");
-            Console.WriteLine("║  Parameter List Tests              ║");
-            Console.WriteLine("╚════════════════════════════════════╝\n");
-
-            passCount = 0;
-            failCount = 0;
+            TestHarness.Reset();
 
             TestPlainParameters();
             TestDefaultParameters();
             TestVariadicParameters();
             TestMixedParameters();
+            TestLineContinuation();
+            TestInitParameterMapping();
             TestErrorCases();
 
-            Console.WriteLine($"=== Parameter List Tests Complete: {passCount} passed, {failCount} failed ===\n");
-
-            return failCount;
+            return TestHarness.Summary("ParameterList");
         }
     }
 }

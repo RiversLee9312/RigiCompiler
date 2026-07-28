@@ -52,12 +52,11 @@ namespace LatteCompiler
             private CharPosition _position = new();
             // 源名唯一来源：CharRange.sourceName（M28 起 CharPosition 不再携带）
             public string sourceName = "";
-            public CharPosition position { 
+            // 主循环正在处理的字符（读字符时设置；keepChar 重放时保持同一字符）
+            internal char currentChar;
+            public CharPosition position {
                 get { return _position; }
-                set {
-                    lastPosition = _position;
-                    _position = value;
-                }
+                set { _position = value; }
             }
 
             // 由主循环在每个字符处调用：上一个 token 推送后，首个非空白字符
@@ -74,14 +73,12 @@ namespace LatteCompiler
             }
             public List<Token> tokens = new List<Token>();
             private CharPosition tokenHeadPosition = new CharPosition();
-            private CharPosition lastPosition = new CharPosition();
 
             // 初始化位置（M28）：不走 position setter——tokenHeadPosition
             // 留给首个真实字符的位置，避免把 col 0 冻结成首个 token 的 Start
             public void InitPosition(CharPosition p)
             {
                 _position = p;
-                lastPosition = p;
             }
 
             public override List<Token> GetTokens()
@@ -96,14 +93,38 @@ namespace LatteCompiler
                 Logger.Verbose("Lexer", $"[{sourceName}][Line {position.line} Col {position.column}]{message}");
             }
 
+            // Token 的 CharRange 是左闭右开区间 [Start, End)（M31 起）：
+            // Start 指向首个字符，End 指向最后一个字符的下一位置
             public override void PushToken(Token token,bool includesCurrentChar)
             {
                 token.CharRange.Start = tokenHeadPosition;
-                token.CharRange.End = includesCurrentChar?position:lastPosition;
+                token.CharRange.End = includesCurrentChar ? Advance(position) : position;
                 // M28 修复：普通 token 的 sourceName 此前从未设置（仅 EOF 有）
                 token.CharRange.sourceName = sourceName;
+                // 预设下一个 token 的头为当前字符位置：同一字符连续 PushToken
+                // （如块注释按行分段后再推 LineBreakToken）时第二个 token 头正确；
+                // 之后 CaptureTokenHead 遇到非空白字符会再覆盖
+                tokenHeadPosition = position;
                 updatePosition = true;
                 tokens.Add(token);
+            }
+
+            // 当前字符位置的下一位置（开区间 End）：换行 → 下一行行首；
+            // 其余 → 同行下一列；offset 恒 +1（与主循环的位置推进一致）
+            private CharPosition Advance(CharPosition p)
+            {
+                var next = p;
+                if (currentChar == '\n')
+                {
+                    next.line++;
+                    next.column = 1;
+                }
+                else
+                {
+                    next.column++;
+                }
+                next.offset++;
+                return next;
             }
             [DoesNotReturn]
             public override Exception RaiseError(string message) => throw new LexerException($"ERROR [{sourceName}][Line {position.line} Col {position.column}]{message}");
@@ -116,7 +137,9 @@ namespace LatteCompiler
             )
         {
             var content = await reader.ReadToEndAsync();
-            content = content.ReplaceLineEndings("\n");
+            // 行尾归一（M31）：只把 \r\n / \r 归一为 \n；不用 ReplaceLineEndings——
+            // 它会把 \f/\x85/\u2028/\u2029 一并替换，误伤字符串字面量内的原始字符
+            content = content.Replace("\r\n", "\n").Replace("\r", "\n");
             var lexerLayers = new Stack<ILexerLayer>();
             lexerLayers.Push(new BaseLexerLayer());
             var offset = 0;
@@ -141,6 +164,7 @@ namespace LatteCompiler
                     if (!keepChar)
                     {
                         currentChar = content[offset];
+                        context.currentChar = currentChar;
                         context.Log($"Current char:{currentChar}");
                         if (newLinePending)
                         {
@@ -213,12 +237,19 @@ namespace LatteCompiler
             }
             flushPosition.offset = offset;
             context.position = flushPosition;
+            context.currentChar = '\n';  // 冲刷帧字符是虚拟换行（Advance 按换行推进）
             FlushLayers(lexerLayers, context);
             // 冲刷后栈必须收敛为 Base 层：未闭合的字符串/块注释即词法错误
             if (lexerLayers.Count != 1)
             {
-                context.RaiseError(
-                    $"Unterminated {lexerLayers.Peek().GetType().Name}");
+                // 错误信息面向用户：不暴露内部层类名
+                var what = lexerLayers.Peek() switch
+                {
+                    StringLexerLayer => "Unterminated string literal",
+                    SlashLexerLayer => "Unterminated block comment",
+                    var top => $"Unterminated {top.GetType().Name}"
+                };
+                context.RaiseError(what);
             }
             // EOF 正式 token：由 Lexer 在输出末尾追加（Parser 不再自行追加）；
             // CharRange 为零长度范围，位于源文件末尾

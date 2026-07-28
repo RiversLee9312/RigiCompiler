@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 
 namespace LatteCompiler.Tests
 {
@@ -12,40 +11,37 @@ namespace LatteCompiler.Tests
     /// 3. 多个导入（.{A, B} 共享前缀，展开为独立完整路径）
     /// 4. 错误用例（空路径、空列表、尾随逗号、* 后多余 token、{} 无前缀）
     ///
-    /// 驱动方式：parser.Parse(tokens) 完整入口（import 是顶层语句）。
+    /// 驱动方式：TestHarness.ParseRoot 完整入口（import 是顶层语句）。
     /// </summary>
     public class ImportTests
     {
-        private static int passCount = 0;
-        private static int failCount = 0;
-
         // ===== 1. 单个导入 =====
         public static void TestSingleImport()
         {
-            Console.WriteLine("=== Testing Single Import ===");
+            TestHarness.Section("Single Import");
 
             TestImport("import core.collections.List", "import core.collections.List");
             TestImport("import core.String", "import core.String");
             TestImport("import a.b.c.d.E", "import a.b.c.d.E");
 
-            Console.WriteLine();
+            TestHarness.Blank();
         }
 
         // ===== 2. 全部导入 =====
         public static void TestImportAll()
         {
-            Console.WriteLine("=== Testing Import All ===");
+            TestHarness.Section("Import All");
 
             TestImport("import core.collections.*", "import core.collections.*");
             TestImport("import core.*", "import core.*");
 
-            Console.WriteLine();
+            TestHarness.Blank();
         }
 
         // ===== 3. 多个导入（共享前缀，展开为独立完整路径）=====
         public static void TestMultiImport()
         {
-            Console.WriteLine("=== Testing Multi Import ===");
+            TestHarness.Section("Multi Import");
 
             TestImport("import core.collections.{List, Map}",
                 "import core.collections.List; import core.collections.Map");
@@ -53,126 +49,63 @@ namespace LatteCompiler.Tests
                 "import a.b.X; import a.b.Y; import a.b.Z");
             TestImport("import core.{List}", "import core.List");
 
-            Console.WriteLine();
+            TestHarness.Blank();
         }
 
         // ===== 4. 错误用例 =====
         public static void TestImportErrors()
         {
-            Console.WriteLine("=== Testing Import Errors ===");
+            TestHarness.Section("Import Errors");
 
-            TestError("import", "缺少导入路径");
-            TestError("import core.collections.{}", "空导入列表");
-            TestError("import core.collections.{List,}", "尾随逗号");
-            TestError("import core.*.Foo", "* 后多余 token");
-            TestError("import core.{A} extra", "导入列表后多余 token");
-            TestError("import {List}", "{} 缺少前缀路径");
+            TestHarness.CheckParseError("import（缺少导入路径）",
+                () => TestHarness.ParseRoot("import"),
+                "requires an import path");
+            TestHarness.CheckParseError("import core.collections.{}（空导入列表）",
+                () => TestHarness.ParseRoot("import core.collections.{}"),
+                "Import list cannot be empty");
+            TestHarness.CheckParseError("import core.collections.{List,}（尾随逗号）",
+                () => TestHarness.ParseRoot("import core.collections.{List,}"),
+                "Trailing comma in import list");
+            TestHarness.CheckParseError("import core.*.Foo（* 后多余 token）",
+                () => TestHarness.ParseRoot("import core.*.Foo"),
+                "Unexpected token after import statement");
+            TestHarness.CheckParseError("import core.{A} extra（导入列表后多余 token）",
+                () => TestHarness.ParseRoot("import core.{A} extra"),
+                "Unexpected token after import statement");
+            TestHarness.CheckParseError("import {List}（{} 缺少前缀路径）",
+                () => TestHarness.ParseRoot("import {List}"),
+                "requires an import path");
 
-            Console.WriteLine();
+            TestHarness.Blank();
         }
 
         // ===== 辅助方法 =====
 
+        // 全管线解析并比对顶层 AST 描述串
         private static void TestImport(string source, string expected)
         {
             try
             {
-                var lexer = new Lexer();
-                var tokens = lexer.Tokenize(source);
-                var parser = new Parser();
-                var root = (RootASTNode)parser.Parse(tokens);
-
-                var formatted = FormatRoot(root);
-                if (formatted == expected)
-                {
-                    Console.WriteLine($"PASS: {source}");
-                    passCount++;
-                }
-                else
-                {
-                    Console.WriteLine($"FAIL: {source}");
-                    Console.WriteLine($"  Expected: {expected}");
-                    Console.WriteLine($"  Got:      {formatted}");
-                    failCount++;
-                }
+                var root = TestHarness.ParseRoot(source);
+                TestHarness.Check(source, AstDescribe.Root(root), expected);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"FAIL (Exception): {source}");
-                Console.WriteLine($"  Expected: {expected}");
-                Console.WriteLine($"  Exception: {ex.Message}");
-                failCount++;
+                TestHarness.CheckTrue($"{source} => 意外异常", false, ex.Message);
             }
-        }
-
-        private static void TestError(string source, string reason)
-        {
-            try
-            {
-                var lexer = new Lexer();
-                var tokens = lexer.Tokenize(source);
-                var parser = new Parser();
-                parser.Parse(tokens);
-                Console.WriteLine($"FAIL: {source}");
-                Console.WriteLine($"  Expected ParserException ({reason}), but parse succeeded");
-                failCount++;
-            }
-            catch (ParserException)
-            {
-                Console.WriteLine($"PASS: {source}  (rejected: {reason})");
-                passCount++;
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"FAIL: {source}");
-                Console.WriteLine($"  Expected ParserException ({reason}), got {ex.GetType().Name}: {ex.Message}");
-                failCount++;
-            }
-        }
-
-        private static string FormatRoot(RootASTNode root)
-        {
-            if (root.Declarations.Count == 0)
-                return "<empty>";
-
-            return string.Join("; ", root.Declarations.ConvertAll(FormatNode));
-        }
-
-        private static string FormatNode(ASTNode node) => node switch
-        {
-            ImportASTNode i => string.Join("; ", i.importedSymbols.ConvertAll(FormatItem)),
-            _ => $"<{node.GetType().Name}>"
-        };
-
-        private static string FormatItem(ImportItem item)
-        {
-            var s = "import " + string.Join(".",
-                item.symbolNode.symbol.elements.ConvertAll(el => el.name));
-            return item.importAll ? s + ".*" : s;
         }
 
         // ===== 入口 =====
         public static int RunAll()
         {
-            passCount = 0;
-            failCount = 0;
-
-            Console.WriteLine("╔════════════════════════════════════════════════════════╗");
-            Console.WriteLine("║  Import Tests (SYNTAX §15.2, P5)                     ║");
-            Console.WriteLine("╚════════════════════════════════════════════════════════╝");
-            Console.WriteLine();
+            TestHarness.Reset();
 
             TestSingleImport();
             TestImportAll();
             TestMultiImport();
             TestImportErrors();
 
-            Console.WriteLine("╔════════════════════════════════════════════════════════╗");
-            Console.WriteLine($"║  Total: {passCount + failCount,3} tests | Pass: {passCount,3} | Fail: {failCount,3}            ║");
-            Console.WriteLine("╚════════════════════════════════════════════════════════╝");
-            Console.WriteLine();
-
-            return failCount;
+            return TestHarness.Summary("Import");
         }
     }
 }

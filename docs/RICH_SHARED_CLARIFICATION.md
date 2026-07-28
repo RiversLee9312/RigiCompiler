@@ -3,6 +3,14 @@
 **日期**: 2026-07-17  
 **重要性**: ⚠️ 关键架构澄清
 
+> **⚠️ 修订注记（2026-07-28，M31）**：本文 §3「shared 可以用于任何类型」
+> 与现行 `SYNTAX.md`（§3.1.1、§9.2 修饰符表、§10 规则）矛盾——
+> 现行规范为：**shared 仅可用于 class，或与 rich 一起用于 struct**
+> （`shared struct` 而没有 `rich` 是编译错误；interface/wrapper 不在
+> shared 作用域内）。Parser 已按现行规范实现校验（M31）。
+> 本文其余部分（rich 是类型声明修饰符、仅用于 struct/enum struct、
+> 使用类型时不写修饰符）仍然有效。**有歧义时以 `SYNTAX.md` 为准。**
+
 ## ❌ 错误理解（已修正）
 
 **错误 1**: 认为 `rich` 和 `shared` 是类型引用修饰符，可以在使用类型时添加。
@@ -53,25 +61,30 @@ rich enum struct Result {
 rich class MyClass { ... }  // 编译错误！
 ```
 
-### 3. shared 可以用于任何类型
+### 3. shared 仅可用于 class 或 rich struct（已按 SYNTAX.md 修订）
 
-**`shared` 可以用于所有类型**：
+**`shared` 的作用域（以 SYNTAX.md §3.1.1/§9.2 为准）**：
 - ✅ `class`
-- ✅ `struct`
-- ✅ `enum struct`
-- ✅ `interface`
+- ✅ `rich struct`（含 shared rich enum struct）
+- ❌ 非 rich 的 `struct` / `enum struct`（`shared struct` 而没有 `rich` 是编译错误）
+- ❌ `interface` / `wrapper`
 
 ```latte
-// ✅ 正确：shared 可以用于 class
+// ✅ 正确：shared 用于 class
 shared class Logger {
     buffer: String
 }
 
-// ✅ 正确：shared 也可以用于 struct
-shared struct Counter {
-    value: i32
+// ✅ 正确：shared 与 rich 一起用于 struct
+shared rich struct SharedEntry {
+    owner: SharedUser
 }
+
+// ❌ 错误：shared 不能单独修饰非 rich struct
+shared struct Counter { ... }  // 编译错误！
 ```
+
+（本节旧版「shared 可以用于任何类型」的表述已作废，见文首修订注记。）
 
 ### 4. 使用类型时不需要修饰符
 

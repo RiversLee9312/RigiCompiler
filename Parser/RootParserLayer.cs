@@ -31,8 +31,8 @@ namespace LatteCompiler
                     {
                         return PushLiteral();
                     }
-                    // 检查是否为数字字面量
-                    else if (IsNumericLiteral(token.Content))
+                    // 检查是否为数字字面量（判定统一走 NumericLiteral，M31）
+                    else if (NumericLiteral.IsNumericWord(token.Content))
                     {
                         return PushLiteral();
                     }
@@ -102,40 +102,6 @@ namespace LatteCompiler
                 new LiteralParserLayer(literalExpr),
                 TokenDisposition.Replay
             );
-        }
-
-        // 辅助方法：判断是否为数字字面量
-        private bool IsNumericLiteral(string content)
-        {
-            if (string.IsNullOrEmpty(content)) return false;
-
-            // 十六进制
-            if (content.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
-                return true;
-
-            // 检查第一个字符是否为数字
-            if (!char.IsDigit(content[0]))
-                return false;
-
-            // 去除可能的后缀
-            string withoutSuffix = content.TrimEnd('L', 'l', 'S', 's', 'B', 'b', 'U', 'u', 'F', 'f');
-
-            // 去除 UL, US, UB 这样的双字符后缀
-            if (withoutSuffix.Length >= 2)
-            {
-                string last2 = withoutSuffix.Substring(withoutSuffix.Length - 2).ToUpper();
-                if (last2 == "UL" || last2 == "US" || last2 == "UB")
-                {
-                    withoutSuffix = withoutSuffix.Substring(0, withoutSuffix.Length - 2);
-                }
-            }
-
-            // 检查是否包含小数点（浮点数）
-            if (withoutSuffix.Contains('.'))
-                return true;
-
-            // 检查是否全为数字
-            return withoutSuffix.All(c => char.IsDigit(c));
         }
     }
 }

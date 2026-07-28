@@ -87,22 +87,37 @@ namespace LatteCompiler
             }
             else
             {
+                // 无 else 时：ElseCheck 为前瞻 else 跳过的换行不属于本节点（M31），
+                // End 封回 then 块 }，span 不拖尾换行符到下一行
+                if (elseCheckEntryEnd is { } entryEnd && stmtNode!.ElseBranch == null)
+                {
+                    span.End = entryEnd.End;
+                }
                 stmtNode!.Span ??= span;
             }
         }
 
+        // ElseCheck 首次进入时 then 块 } 的范围（无 else 时用于封 End）
+        private CharRange? elseCheckEntryEnd = null;
+
         public ParserLayerResult ParseToken(Token currentToken, ParserLayerContext context)
         {
-            // EOF：if 结构（条件/分支/else）未完整时收到 EOF 均为不完整结构
+            // EOF：结构完整态（else 可选、块已闭合）上交 EOF（规则 6）；
+            // 其余（条件/分支/else 未完整）为不完整结构
             if (currentToken is EndOfFileToken)
             {
+                if (state == State.ElseCheck || state == State.Done)
+                {
+                    return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
+                }
                 context.RaiseError("Unexpected end of file");
                 return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
             }
 
             // 本层只处于结构性等待状态（括号/花括号/else），允许跨行；
-            // 表达式内部的换行终止仍由 ExpressionParserLayer 负责
-            if (currentToken is LineBreakToken)
+            // 表达式内部的换行终止仍由 ExpressionParserLayer 负责。
+            // 但 Done 终态不消费换行——节点 span 不拖尾换行符到下一行（M31，M28 约定）
+            if (currentToken is LineBreakToken && state != State.Done)
             {
                 return ParserLayerResult.Continue.Instance;
             }
@@ -115,8 +130,10 @@ namespace LatteCompiler
                     return ExpectNotation(currentToken, context, "(", State.ConditionStart,
                         "Expected '(' after if");
                 case State.ConditionStart:
+                    // 条件在 () 内：换行按空白处理（M31，SYNTAX §1.1）
                     return DelegateExpression(State.CloseParenExpected,
-                        isExpression ? exprNode!.Condition : stmtNode!.Condition);
+                        isExpression ? exprNode!.Condition : stmtNode!.Condition,
+                        insideParens: true);
                 case State.CloseParenExpected:
                     return HandleCloseParenExpected(currentToken, context);
                 case State.ThenOpenBraceExpected:
@@ -167,12 +184,14 @@ namespace LatteCompiler
         }
 
         // 委托一个子表达式：压入 ExpressionParserLayer（保留 token），
-        // 表达式直接附加到目标 Root
-        private ParserLayerResult DelegateExpression(State nextState, ExpressionRootASTNode expressionTarget)
+        // 表达式直接附加到目标 Root；insideParens 标记条件等 () 内语境（换行按空白处理）
+        private ParserLayerResult DelegateExpression(
+            State nextState, ExpressionRootASTNode expressionTarget, bool insideParens = false)
         {
             state = nextState;
             return new ParserLayerResult.PushLayer(
-                new ExpressionParserLayer(expressionTarget), TokenDisposition.Replay);
+                new ExpressionParserLayer(expressionTarget) { insideParens = insideParens },
+                TokenDisposition.Replay);
         }
 
         // ===== 共享部分 =====
@@ -249,6 +268,9 @@ namespace LatteCompiler
         // then 块已结束：语句模式的 else 可选
         private ParserLayerResult HandleElseCheck(Token currentToken, ParserLayerContext context)
         {
+            // 首次进入：记下 then 块 } 的范围（无 else 时 ReceiveSpan 用它封 End）
+            elseCheckEntryEnd ??= context.GetPreviousLocation();
+
             if (currentToken is WordToken wt && wt.Content == Keywords.ELSE)
             {
                 state = State.ElseBranchExpected;

@@ -125,6 +125,12 @@ namespace LatteCompiler
                     sourceName = tokens[0].CharRange.sourceName
                 };
             }
+            else
+            {
+                // 空 token 流（绕过 Lexer 的手工调用方）：零宽 span，
+                // 保证 Validator 的 span 校验通过（M31）
+                root.Span = new CharRange { sourceName = "<empty>" };
+            }
             // Parser 成功后、进入后续阶段前：AST 完整性验证（失败即内部编译器错误）
             ASTIntegrityValidator.Validate(root);
             return root;
@@ -221,6 +227,7 @@ namespace LatteCompiler
         }
 
         // 层 span（M28）：首个分发 token 的 Start → 最后一个属于该层的 token 的 End。
+        // 左闭右开 [Start, End)（M31 起）：继承 token 流的开区间语义，无需换算。
         // Consume 弹出且当前 token 非换行：当前 token 属于该层；
         // 其余（Replay 弹出、换行处 Consume 弹出）：span 终于最近被消费的 token——
         // 声明/语句的 span 不拖尾换行符到下一行。

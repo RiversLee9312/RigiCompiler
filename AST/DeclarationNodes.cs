@@ -284,7 +284,7 @@ namespace LatteCompiler
     {
         public string CaseName;
         [ChildAstNode] public List<ArgumentASTNode> Arguments;        // case 的参数（可能包含 _ 占位符）
-        public int? DiscriminantValue;                 // 可选的显式判别值（-> N）
+        public long? DiscriminantValue;                // 可选的显式判别值（-> N，M31 起 long：支持 u32 范围）
 
         public EnumCaseASTNode(ASTNode? parent) : base(parent)
         {

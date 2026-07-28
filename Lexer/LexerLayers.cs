@@ -6,77 +6,57 @@ using System.Threading.Tasks;
 
 namespace LatteCompiler
 {
+    // 块注释层（M31 重写）：只跟踪 * 状态（*/ 闭合），不做任何转义。
+    // 换行不吞（与行注释一致）：注释按行分段，换行本身以 LineBreakToken 入流——
+    // 两条语句间唯一的分隔换行在块注释内时，语句分隔不丢失（SYNTAX §1.1）。
     public class CommentBlockLexerLayer : ILexerLayer
     {
-        private bool backSlashAppeared = false;
-        private bool asterickAppeared = false;
+        private bool asteriskAppeared = false;
         private CommentToken currentToken = new CommentToken("");
         public LexerLayerResult ParseChar(char currentChar, LexerLayerContext context)
         {
-            bool shouldExit = false;
-            string stringToPadFront = "";
-            bool shouldSkipCurrentChar = false;
             switch (currentChar)
             {
                 case Notations.ASTERISK:
-                    if (backSlashAppeared)
+                    // 连续的 *：前一个 * 确定属于内容
+                    if (asteriskAppeared)
                     {
-                        backSlashAppeared = false;
+                        currentToken.Content += Notations.ASTERISK;
                     }
-                    else
-                    {
-                        if (asterickAppeared)
-                        {
-                            stringToPadFront += Notations.ASTERISK;
-                        }
-                        asterickAppeared = true;
-                        shouldSkipCurrentChar = true;
-                    }
-                    break;
+                    asteriskAppeared = true;
+                    return LexerLayerResult.Continue.Instance;
                 case Notations.FORWARD_SLASH:
-                    if (asterickAppeared)
+                    if (asteriskAppeared)
                     {
-                        shouldExit = true;
+                        // */ 闭合：注释 token 到此为止（内容不含 */）
+                        context.PushToken(currentToken, includesCurrentChar: true);
+                        currentToken = new CommentToken("");
+                        asteriskAppeared = false;
+                        return new LexerLayerResult.PopLayer(shouldKeepChar: false);
                     }
-                    else
-                    {
-                        backSlashAppeared = false;
-                    }
-                    break;
-                case Notations.BACK_SLASH:
-                    if (!backSlashAppeared)
-                    {
-                        asterickAppeared = false;
-                        backSlashAppeared = true;
-                        shouldSkipCurrentChar = true;
-                    }
-                    else
-                    {
-                        stringToPadFront += Notations.BACK_SLASH;
-                        backSlashAppeared = false;
-                        asterickAppeared = false;
-                    }
-                    break;
-                default:
-                    asterickAppeared = false;
-                    backSlashAppeared = false;
-                    break;
-            }
-            if (shouldExit)
-            {
-                context.PushToken(currentToken,includesCurrentChar:true);
-                currentToken = new CommentToken("");
-                asterickAppeared = backSlashAppeared = false;
-                return new LexerLayerResult.PopLayer(shouldKeepChar:false);
-            }
-            else
-            {
-                currentToken.Content += stringToPadFront;
-                if (!shouldSkipCurrentChar)
-                {
                     currentToken.Content += currentChar;
-                }
-                return LexerLayerResult.Continue.Instance;
+                    return LexerLayerResult.Continue.Instance;
+                case '\n':
+                    // 挂起的 * 归入内容；注释段推送（不含换行）；换行本身以
+                    // LineBreakToken 入流；新段继续收注释（层不弹出）
+                    if (asteriskAppeared)
+                    {
+                        currentToken.Content += Notations.ASTERISK;
+                        asteriskAppeared = false;
+                    }
+                    context.PushToken(currentToken, includesCurrentChar: false);
+                    context.PushToken(new LineBreakToken(), includesCurrentChar: true);
+                    currentToken = new CommentToken("");
+                    return LexerLayerResult.Continue.Instance;
+                default:
+                    // 普通字符：挂起的 * 归入内容（修复：此前孤 * 在此被静默丢弃）
+                    if (asteriskAppeared)
+                    {
+                        currentToken.Content += Notations.ASTERISK;
+                        asteriskAppeared = false;
+                    }
+                    currentToken.Content += currentChar;
+                    return LexerLayerResult.Continue.Instance;
             }
         }
     }
@@ -120,28 +100,11 @@ namespace LatteCompiler
         }
     }
     /// <summary>
-    /// Tokenizes a string.
+    /// Tokenizes a string（双引号字符串；单引号字符字面量未实现，
+    /// 由 BaseLexerLayer 直接报错）。
     /// </summary>
     public class StringLexerLayer : ILexerLayer
     {
-        public enum HeadType
-        {
-            DoubleQuotationMark,
-            SingleQuotationMark
-        }
-        public StringLexerLayer(HeadType headType)
-        {
-            switch (headType)
-            {
-                case HeadType.DoubleQuotationMark:
-                    head = Notations.DOUBLE_QUOTATION_MARK;
-                    break;
-                case HeadType.SingleQuotationMark:
-                    head = Notations.SINGLE_QUOTATION_MARK;
-                    break;
-            }
-        }
-        private readonly char head;
         private bool backSlashAppeared = false;
         private StringToken currentToken = new StringToken("");
         public LexerLayerResult ParseChar(char currentChar, LexerLayerContext context)
@@ -193,7 +156,7 @@ namespace LatteCompiler
             }
             else
             {
-                if (currentChar == head)
+                if (currentChar == Notations.DOUBLE_QUOTATION_MARK)
                 {
                     context.PushToken(currentToken, includesCurrentChar: true);
                     currentToken = new StringToken("");
@@ -208,7 +171,6 @@ namespace LatteCompiler
                 {
                     context.Log($"Line break symbol appears in string.Current token:{currentToken}");
                     throw context.RaiseError($"Line break symbol appears in string.");
-                    
                 }
                 else
                 {
@@ -220,45 +182,34 @@ namespace LatteCompiler
     }
     public class NotationLexerLayer : ILexerLayer
     {
+        // count 最大 2：两字符时要么合并产出、要么拆出单字符，必然 Pop，
+        // 不会再收到第三个字符（原 notationCharCount > 2 分支不可达，已删）
         private int notationCharCount = 0;
         private NotationToken notationToken = new NotationToken("");
         public LexerLayerResult ParseChar(char currentChar, LexerLayerContext context)
         {
             notationCharCount++;
             notationToken.Content += currentChar;
-            if (notationCharCount > 2)
+            var isValidNotation = Notations.CharNotations.Contains(currentChar);
+            if (notationCharCount == 1)
             {
-                throw context.RaiseError("Illegal notation:" + notationToken.Content);
-            }
-            else
-            {
-                var isValidNotation = Notations.CharNotations.Contains(currentChar);
-                if (notationCharCount == 1)
+                if (isValidNotation)
                 {
-                    if (isValidNotation)
-                    {
-                        return LexerLayerResult.Continue.Instance;
-                    }
-                    else
-                    {
-                        throw context.RaiseError("Invalid notation:" + notationToken.Content);
-                    }
+                    return LexerLayerResult.Continue.Instance;
                 }
                 else
                 {
-                    if (isValidNotation)
+                    throw context.RaiseError("Invalid notation:" + notationToken.Content);
+                }
+            }
+            else
+            {
+                if (isValidNotation)
+                {
+                    if (Notations.StringNotations.Contains(notationToken.Content))
                     {
-                        if (Notations.StringNotations.Contains(notationToken.Content))
-                        {
-                            context.PushToken(notationToken, includesCurrentChar: true);
-                            return new LexerLayerResult.PopLayer(shouldKeepChar: false);
-                        }
-                        else
-                        {
-                            notationToken.Content = notationToken.Content[0].ToString();
-                            context.PushToken(notationToken, includesCurrentChar: false);
-                            return new LexerLayerResult.PopLayer(shouldKeepChar: true);
-                        }
+                        context.PushToken(notationToken, includesCurrentChar: true);
+                        return new LexerLayerResult.PopLayer(shouldKeepChar: false);
                     }
                     else
                     {
@@ -267,8 +218,13 @@ namespace LatteCompiler
                         return new LexerLayerResult.PopLayer(shouldKeepChar: true);
                     }
                 }
+                else
+                {
+                    notationToken.Content = notationToken.Content[0].ToString();
+                    context.PushToken(notationToken, includesCurrentChar: false);
+                    return new LexerLayerResult.PopLayer(shouldKeepChar: true);
+                }
             }
-
         }
     }
 
@@ -309,13 +265,9 @@ namespace LatteCompiler
                         commentLayer = new CommentBlockLexerLayer();
                         return LexerLayerResult.Continue.Instance;
                     }
-                    // 除法赋值 /=
-                    if (currentChar == Notations.ASSIGN)
-                    {
-                        context.PushToken(new NotationToken("/="), includesCurrentChar: true);
-                        return new LexerLayerResult.PopLayer(shouldKeepChar: false);
-                    }
                     // 除号 /：产出单字符 token，当前字符回流给下层重新分发
+                    // （/= 不再合并——复合赋值一律拆成两个 token，与 >= 同策略，
+                    //   将来由 Parser 重组；M31）
                     context.PushToken(new NotationToken("/"), includesCurrentChar: false);
                     return new LexerLayerResult.PopLayer(shouldKeepChar: true);
 
@@ -343,13 +295,15 @@ namespace LatteCompiler
                     shouldKeepChar: true
                 );
             }
-            else if (
-                (currentChar == Notations.SINGLE_QUOTATION_MARK) || (currentChar == Notations.DOUBLE_QUOTATION_MARK)
-                )
+            else if (currentChar == Notations.SINGLE_QUOTATION_MARK)
             {
-                var headType = currentChar == Notations.SINGLE_QUOTATION_MARK ? StringLexerLayer.HeadType.SingleQuotationMark : StringLexerLayer.HeadType.DoubleQuotationMark;
+                // 字符字面量未实现：明确报错（M31 起不再静默当字符串收下）
+                throw context.RaiseError("Character literal is not yet implemented");
+            }
+            else if (currentChar == Notations.DOUBLE_QUOTATION_MARK)
+            {
                 return new LexerLayerResult.PushLayer(
-                    layerToPush: new StringLexerLayer(headType),
+                    layerToPush: new StringLexerLayer(),
                     shouldKeepChar: false
                 );
             }

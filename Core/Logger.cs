@@ -51,10 +51,12 @@ namespace LatteCompiler
 
         public static void Write(LogLevel level, string source, string message)
         {
-            // 控制台门槛：Verbose 需显式开启；保持既有 "VERBOSE [source]{message}" 前缀风格
+            // 控制台门槛：Verbose 需显式开启；保持既有 "VERBOSE [source]{message}" 前缀风格。
+            // 走 stderr（M31）：编译器诊断不污染 stdout——compile --parse-only 的
+            // AST JSONL 输出到 stdout，任何按行解析 JSONL 的下游都依赖其纯净
             if (level != LogLevel.Verbose || VerboseEnabled)
             {
-                Console.WriteLine($"{level.ToString().ToUpperInvariant()} [{source}]{message}");
+                Console.Error.WriteLine($"{level.ToString().ToUpperInvariant()} [{source}]{message}");
             }
             // 文件日志不过滤级别（用途就是从一大坨日志里 grep）
             logWriter?.WriteLine(JsonSerializer.Serialize(new Dictionary<string, string>

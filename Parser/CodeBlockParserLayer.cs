@@ -342,10 +342,10 @@ namespace LatteCompiler
             return DelegateReturnValue(currentToken, context);
         }
 
-        // return 的 @ 已读：等待标签名
+        // return 的 @ 已读：等待标签名（只查首字符：return@seq 等保留字标签合法）
         private ParserLayerResult HandleReturnLabel(Token currentToken, ParserLayerContext context)
         {
-            if (currentToken is WordToken wt && IsIdentifierStart(wt.Content))
+            if (currentToken is WordToken wt && Keywords.IsIdentifierStart(wt.Content))
             {
                 pendingReturn!.Label = wt.Content;
                 state = State.ReturnValue;
@@ -428,7 +428,9 @@ namespace LatteCompiler
         // break/continue 的 @ 已读：等待标签名
         private ParserLayerResult HandleLoopControlLabelName(Token currentToken, ParserLayerContext context)
         {
-            if (currentToken is WordToken wt && IsIdentifierStart(wt.Content))
+            // 标签只查首字符（M31 统一走 Keywords.IsIdentifierStart）：
+            // return@seq 等保留字标签合法，不查保留字
+            if (currentToken is WordToken wt && Keywords.IsIdentifierStart(wt.Content))
             {
                 pendingLoopControl!.Label = wt.Content;
                 state = State.LoopControlEnd;
@@ -437,12 +439,6 @@ namespace LatteCompiler
 
             context.RaiseError($"Expected label after 'break@'/'continue@', got: {currentToken}");
             return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
-        }
-
-        // 标识符首字符检查（标签不能是数字字面量；词法上数字也是 WordToken）
-        private static bool IsIdentifierStart(string word)
-        {
-            return word.Length > 0 && (char.IsLetter(word[0]) || word[0] == '_');
         }
 
         // break/continue 标签已读：等待换行或 }
@@ -468,10 +464,12 @@ namespace LatteCompiler
         // throw 已读：解析异常表达式
         private ParserLayerResult HandleThrowValue(Token currentToken, ParserLayerContext context)
         {
-            // 跳过换行
+            // throw 后换行是错误（M31，SYNTAX §1.1：续行只来自未闭合的符号结构，
+            // throw 不是括号结构；与裸 return/裸 yield 遇换行即收尾的行为一致）
             if (currentToken is LineBreakToken)
             {
-                return ParserLayerResult.Continue.Instance;
+                context.RaiseError("Expected exception expression after 'throw'");
+                return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
             }
 
             // throw 必须跟一个表达式

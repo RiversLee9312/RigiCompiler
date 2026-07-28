@@ -60,6 +60,13 @@ namespace LatteCompiler
                 return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
             }
 
+            // 括号未闭合时换行按空白处理（M31，SYNTAX §1.1）：
+            // 调用实参表与索引实参表内允许自然续行
+            if (currentToken is LineBreakToken)
+            {
+                return ParserLayerResult.Continue.Instance;
+            }
+
             switch (state)
             {
                 case State.ArgStart:
@@ -80,6 +87,12 @@ namespace LatteCompiler
             // 闭合括号：空列表或尾逗号结束
             if (IsClosingBracket(currentToken))
             {
+                // 空索引不合法（M31）：foo() 允许空参，a[] 不允许
+                if (bracketKind == BracketKind.Square && targetList.Count == 0)
+                {
+                    context.RaiseError("Index argument list cannot be empty");
+                    return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
+                }
                 return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
             }
 
@@ -90,8 +103,9 @@ namespace LatteCompiler
             }
 
             // 标识符：可能是具名实参（name = ...），先记录名字。
-            // 数字、true/false/null 等字面量词与关键字不算标识符
-            if (currentToken is WordToken wt && IsIdentifierStart(wt.Content))
+            // 必须是合法标识符（非数字词、非保留字，M31 统一走 Keywords.IsIdentifier）——
+            // foo(return = 5) 这类保留字具名实参会被拒绝
+            if (currentToken is WordToken wt && Keywords.IsIdentifier(wt.Content))
             {
                 pendingName = wt.Content;
                 state = State.MaybeNamed;
@@ -101,18 +115,6 @@ namespace LatteCompiler
             // 其他 token：位置实参，委托表达式解析（先建实参节点并入列）；
             // span 起点即当前 token（表达式的首个 token，Replay 交给表达式层）
             return DelegatePositionalArgument(context, null, context.GetLocation().Start, TokenDisposition.Replay);
-        }
-
-        // 判断 Word 内容是否为标识符起点（排除数字、字面量词与关键字）
-        private static bool IsIdentifierStart(string content)
-        {
-            if (string.IsNullOrEmpty(content)) return false;
-            if (!char.IsLetter(content[0]) && content[0] != '_') return false;
-            if (Keywords.ControlStreamKeywords.Contains(content) ||
-                Keywords.DeclarationKeywords.Contains(content) ||
-                Keywords.StringOperators.Contains(content) ||
-                Keywords.StringValues.Contains(content)) return false;
-            return true;
         }
 
         // 已读标识符：判断是否为具名实参
@@ -128,7 +130,8 @@ namespace LatteCompiler
                 targetList.Add(argument);
                 state = State.ArgParsed;
                 return new ParserLayerResult.PushLayer(
-                    new ExpressionParserLayer(argument.Value), TokenDisposition.Consume);
+                    new ExpressionParserLayer(argument.Value) { insideParens = true },
+                    TokenDisposition.Consume);
             }
 
             // 位置实参：标识符作为符号引用起点，表达式继续（foo(name + 1)）。
@@ -160,7 +163,8 @@ namespace LatteCompiler
             targetList.Add(argument);
             state = State.ArgParsed;
             return new ParserLayerResult.PushLayer(
-                new ExpressionParserLayer(argument.Value, seed), disposition);
+                new ExpressionParserLayer(argument.Value, seed) { insideParens = true },
+                disposition);
         }
 
         // 实参 span：创建时记 Start（具名为名字 token，位置实参为表达式首 token），

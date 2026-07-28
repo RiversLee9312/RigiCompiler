@@ -13,7 +13,6 @@ namespace LatteCompiler
         public const char SEMICOLON = ';';
         public const char COLON = ':';
         public const char DOT = '.';
-        public const char SINGLE_LINE_CMT_SIGN = '#';
         public const char ASSIGN = '=';
         public const char ASTERISK = '*';
         public const char PLUS = '+';
@@ -28,9 +27,6 @@ namespace LatteCompiler
         public const string EQUAL = "==";
         public const char EXCLAMATION = '!';
         public const string NOT_EQUAL = "!=";
-        public const string INCREMENT = "++";
-        public const string DECREMENT = "--";
-        public const string MULTIPLY_ASSIGN = "*=";
         public const char VERTICAL_BAR = '|';
         public const char TILDE = '~';
         public const char L_ANGLE = '<';
@@ -54,7 +50,7 @@ namespace LatteCompiler
     SEMICOLON,
     COLON,
     DOT,
-    SINGLE_LINE_CMT_SIGN,
+    '#',
     ASSIGN,
     ASTERISK,
     PLUS,
@@ -81,15 +77,14 @@ namespace LatteCompiler
     LESS_THAN_OR_EQUAL,
     EQUAL,
     NOT_EQUAL,
-    INCREMENT,
-    DECREMENT,
-    MULTIPLY_ASSIGN,
     LEFT_SHIFT,
     ARROW
     // 注意：> 系列（>=、>>、>>>）刻意不参与多字符合并。
     // 嵌套泛型的连续闭合符（如 List<Map<String, i32>>）需要独立的 > token；
     // >=、>>、>>> 运算符由 ExpressionParserLayer 在运算符状态下重新组合。
-    // 斜杠家族（/、/=、//、/*）一律由 SlashLexerLayer 分流，不在此合并。
+    // 斜杠家族（/、//、/*）一律由 SlashLexerLayer 分流，不在此合并。
+    // 复合赋值（*=、/=、+= 等）同样不合并：拆成两个 token，将来由 Parser 重组（M31）。
+    // ++、-- 不属于 Latte 语法（SYNTAX 全文无此运算符），不再合并。
 };
     }
 }
