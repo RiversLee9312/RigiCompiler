@@ -3,7 +3,7 @@
 > **进度对齐标准**：本文档是项目进度的**唯一权威来源**。
 > 每完成一个里程碑（新增 ParserLayer、落地一项机制、完成一次语法迁移）必须更新本文档；
 > 更新时保持文档结构不变，并在「里程碑历史」追加一段。
-> 计划与分工见 `compiler/frontend/PARSER_ROADMAP.md`；本文档只记录「现状」。
+> 计划与分工见 `compiler/syntax/PARSER_ROADMAP.md` 与 `compiler/semantic/SEMANTIC_ROADMAP.md`；本文档只记录「现状」。
 
 **报告日期**: 2026-07-28
 **当前阶段**: Parser/PDA 大扫除（架构重构）完成（M23）；AST 结构标注与 Validator 重写完成（M24）；Lexer 修复（除法/EOF/注释）与 fuzz 基建完成（M25）；日志系统与 AST JSONL 序列化完成（M26）；CLI 插件化重构（help/compile/test）完成（M27）；Lexer 位置修复 + AST Source Span + ASTVisitor 统一遍历完成（M28）；AST 容器重构（基类共有 Children/Annotations 删除，语义字段 + wrapper 挂载接口）完成（M29）；Utilities.cs 拆分 + ASTVisitor 遍历可重载 + 文档幽灵清理完成（M30）；前端大修（M31）完成；多行字符串（M32）完成；值块统一（M33：if/switch 表达式分支体与 lambda 体统一为代码块、switch 语句形态、lambda 裸 return 编译错误、seq 默认标签迁移 `_`）完成；**技术债清扫（M34）完成：字符字面量（CharLexerLayer + CharToken + CharLiteralASTNode）、复合赋值 10 运算符（CompoundAssignmentExpressionASTNode）、`is` 右侧 enum case（TypeCheck 双字段互斥）、wrapper `.name` 保留参数名、import `{}` 单标识符禁令规则化报错**；**下一步**：语义分析、BIL 输出
@@ -232,7 +232,7 @@ var area: i32 { get(_: _) { return (width * height) } }   // 计算属性（无 
 
 // @ 注解 / wrapper 应用（§14.5：可叠加，挂所有声明；含编译器内建 @WrapperTarget）
 @WrapperTarget(.Entity)
-pub wrapper Logged\<TTarget extends Object> { ... }
+pub wrapper Logged\<TTarget> { ... }
 @WrapperTarget(.Value)
 pub wrapper Clamped { ... }
 @Logged("DEBUG")

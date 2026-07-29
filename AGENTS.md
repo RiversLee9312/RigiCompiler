@@ -143,8 +143,10 @@ LatteCompiler/
 | `docs/SYNTAX.md` | **语言语法规范（最权威）** | ⭐⭐⭐ 有歧义时以此为准，不要猜语法 |
 | `docs/RUNTIME.md` | 运行时模型与类型系统 | ⭐⭐⭐ |
 | `docs/BIL_STANDARD.md` | BIL 中间语言规范 | ⭐⭐ |
-| `docs/compiler/frontend/PARSER_ROADMAP.md` / `docs/PROGRESS_REPORT.md` | Parser 路线图与进度 | ⭐⭐ |
-| `docs/compiler/frontend/EXPRESSION_ARCHITECTURE.md` | 表达式架构专项设计 | ⭐⭐ |
+| `docs/compiler/syntax/PARSER_ROADMAP.md` / `docs/PROGRESS_REPORT.md` | Parser 路线图与进度 | ⭐⭐ |
+| `docs/compiler/syntax/EXPRESSION_ARCHITECTURE.md` | 表达式架构专项设计 | ⭐⭐ |
+| `docs/compiler/semantic/SEMANTIC_ARCHITECTURE.md` | 语义分析与 BIL 生成架构（中端） | ⭐⭐⭐ |
+| `docs/compiler/semantic/SEMANTIC_ROADMAP.md` | 语义分析路线图 | ⭐⭐ |
 | `Parser/Parser.cs` | 层栈式 Parser 的核心协议 | ⭐⭐⭐ |
 | `Lexer/Tokens.cs` / `Parser/Keywords.cs` / `AST/ASTNode.cs` | Token/关键字/AST 基类等核心数据结构（M30 拆分自原 `Core/Utilities.cs`） | ⭐⭐⭐ |
 
@@ -163,9 +165,11 @@ var result = 1 + (2 * 3)     // ✅ 必须加括号
 
 ### 4.2 ⚠️ `rich` / `shared` 是类型**声明**修饰符，不是类型引用修饰符
 
-- `rich`：**仅用于 struct / enum struct**（class 不能用）。允许值类型持有引用，但仍是值语义、unique ownership（类似 `unique_ptr`，**不是** `shared_ptr`）。
-- `shared`：所有类型可用，表示允许跨协程共享。
+- `rich`：**仅用于 struct / enum struct / wrapper**（class 不能用）。允许值类型持有引用，但仍是值语义、unique ownership（类似 `unique_ptr`，**不是** `shared_ptr`）。wrapper 恒为 rich struct，`rich` 由声明形式隐含，显式书写是编译错误。
+- `shared`：class、rich struct、wrapper 可用，表示允许跨协程共享；`singleton` class 必须 shared。
+- 二者**单向传染**：基类 rich/shared ⇒ 子类必须同标，反向可收紧（详见 SYNTAX §3.1.1）。
 - 使用类型时（变量声明、函数参数）**永远不写** `rich`/`shared`。因此 `TypeReferenceParserLayer` 不处理它们；它们属于 class/struct 声明解析的职责。
+- 这些规则的**检查**全部属于语义期 P2（见 `docs/compiler/semantic/SEMANTIC_ROADMAP.md` S3），Parser 只负责收下修饰符。
 
 ### 4.3 ⚠️ 泛型列表必须以 `\<` 开启（2026-07-17 语法修订）
 
@@ -363,6 +367,6 @@ dotnet run -- test --all    # 全量；或：dotnet run -- test --run 5（单个
 1. **文档驱动** —— 先理解 SYNTAX.md，再写代码
 2. **测试驱动** —— 每个 ParserLayer 都有对应测试
 3. **模块化** —— 每个 Layer 职责单一，委托而非大包大揽
-4. **渐进式** —— 按 `docs/compiler/frontend/PARSER_ROADMAP.md` 逐步推进，不跳步
+4. **渐进式** —— 按各阶段 ROADMAP（`docs/compiler/syntax/PARSER_ROADMAP.md`、`docs/compiler/semantic/SEMANTIC_ROADMAP.md`）逐步推进，不跳步
 5. **不要猜测** —— 不确定时查文档
 6. **简洁优先** —— 写代码时始终自问：这个真的有必要存在吗？有没有更简洁更优雅的方法？可不可以复用已有的轮子（比如已有的 Layer）？不要自己造轮子（详见 §4.5）

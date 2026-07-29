@@ -101,8 +101,8 @@ var map: List\<Map\<String, i32>>        // 嵌套闭合写 >>
 
 | 修饰符 | 适用对象 | 用途 | 使用位置 |
 |--------|---------|------|----------|
-| `rich` | **仅 struct 和 enum struct**<br>❌ 不能用于 class | 允许值类型持有引用<br>**但仍是值语义**（类似 `unique_ptr`） | 类型**声明**时 |
-| `shared` | 所有类型 | 允许跨协程共享<br>提供线程安全基础 | 类型**声明**时 |
+| `rich` | **仅 struct / enum struct / wrapper**<br>❌ 不能用于 class<br>（wrapper 恒 rich，隐含不写） | 允许值类型持有引用<br>**但仍是值语义**（类似 `unique_ptr`） | 类型**声明**时 |
+| `shared` | class、rich struct、wrapper | 允许跨协程共享<br>提供线程安全基础 | 类型**声明**时 |
 
 ```latte
 // ✅ 正确：在类型声明时使用
@@ -119,6 +119,9 @@ shared class Logger {     // 可跨协程共享的引用类型
 // ❌ 错误：class 不能用 rich
 rich class MyClass { }    // 编译错误！
 
+// ❌ 错误：wrapper 恒为 rich struct，不得显式书写
+rich wrapper MyWrapper { }   // 编译错误（冗余修饰）
+
 // ✅ 正确：使用类型时不写修饰符
 var point: Point3D = Point3D(1.0, 2.0)   // 不写 rich
 var logger: Logger = new Logger()        // 不写 shared
@@ -129,22 +132,26 @@ var logger: Logger = new Logger()        // 不写 shared
 - `rich` = 值类型可以持有引用，但仍是 **unique ownership**（类似 `unique_ptr`）
 - `rich` 和 `shared` 是**类型声明修饰符**，不是类型引用修饰符
 - 使用类型时（变量声明、函数参数等）永远不写 `rich`/`shared`
+- 传染是**单向**的：基类 rich/shared ⇒ 子类必须同标，反向可收紧
+- 非 rich struct 不得 `open`/`abstract`，因此没有子类型
+- 逃逸闸门两处：全局/静态字段、async 边界（详见 SYNTAX §3.1.1 / §4.5）
 
 ### 2.2 类型系统层级
 
 ```
 Any
 ├── Object (引用类型)
-│   ├── String
-│   ├── Nullable\<T>
+│   ├── Nullable\<T>               // shared 属性由 T 推导
 │   ├── Box\<T extends ValueType>  // 系统特权，无独立 TypeSheet
 │   └── ... (所有 class)
 └── ValueType (值类型)
     ├── Enum
     ├── i8, i16, i32, i64, u8, u16, u32, u64
     ├── float, double, bool, char
+    ├── String                     // 非 rich 值类型，值语义深拷贝
     ├── Type\<T>
     ├── Span\<T extends ValueType>  // 连续无装箱缓冲区
+    ├── Wrapper                    // 所有 wrapper 的基类，恒 rich struct
     └── ... (所有 struct)
 ```
 
@@ -152,6 +159,9 @@ Any
 - ValueType：按值传递，栈分配（或 Box）
 - Object：按引用传递，堆分配
 - Box：系统特权，让 ValueType 进入 Object 多态而不失去值语义
+- `String` 与 `Wrapper` 都在 ValueType 分支（2026-07-29 规范修订）——
+  前者非 rich、可自由跨越 async 与全局存储边界，后者恒 rich、
+  生命周期绑定被修饰实体
 
 ---
 
@@ -221,15 +231,20 @@ struct Point {        // 普通 struct
     x: f64
     y: f64
     // ❌ 不能有 Object 字段
+    // 也不得标记 open/abstract，因此没有子类型
 }
 
 rich struct RichPoint {  // rich struct
     x: f64
     y: f64
-    label: String        // ✅ 可以持有 Object
-    // 复制时 label 是 unique 的，不是共享引用
+    owner: User          // ✅ 可以持有 Object
+    // 复制时 owner 是 unique 的，不是共享引用
 }
 ```
+
+> ⚠️ 注意：`String` 是**非 rich 值类型**（2026-07-29 修订），因此
+> `struct Label { text: String }` 不需要 `rich`。需要 `rich` 的是
+> 持有真正 Object（class 实例）的场景。
 
 **为什么容易错？**
 - "rich" 这个词暗示"更丰富"，容易联想到引用计数
@@ -332,8 +347,10 @@ shared rich struct SharedData { }
 2. [docs/SYNTAX.md](docs/SYNTAX.md) - **最权威的语法规范**
 3. [docs/PROGRESS_REPORT.md](docs/PROGRESS_REPORT.md) - **进度唯一权威来源**
 4. [docs/RUNTIME.md](docs/RUNTIME.md) - 运行时模型和类型系统
-5. [docs/compiler/frontend/PARSER_ROADMAP.md](docs/compiler/frontend/PARSER_ROADMAP.md) - Parser 实现计划
-6. [docs/compiler/frontend/EXPRESSION_ARCHITECTURE.md](docs/compiler/frontend/EXPRESSION_ARCHITECTURE.md) - 表达式架构设计
+5. [docs/compiler/syntax/PARSER_ROADMAP.md](docs/compiler/syntax/PARSER_ROADMAP.md) - Parser 实现计划
+6. [docs/compiler/syntax/EXPRESSION_ARCHITECTURE.md](docs/compiler/syntax/EXPRESSION_ARCHITECTURE.md) - 表达式架构设计
+7. [docs/compiler/semantic/SEMANTIC_ARCHITECTURE.md](docs/compiler/semantic/SEMANTIC_ARCHITECTURE.md) - 语义分析与 BIL 生成架构（中端）
+8. [docs/compiler/semantic/SEMANTIC_ROADMAP.md](docs/compiler/semantic/SEMANTIC_ROADMAP.md) - 语义分析路线图
 
 ### 6.2 外部资源
 

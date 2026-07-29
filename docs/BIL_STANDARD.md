@@ -367,7 +367,8 @@ invoke.noret fn(core::Console$.static.println(value:.string)@.void) [$value]
 
 - `.void` 只能用作无结果方法的返回类型，不得声明普通变量；
 - `.breakid` 是结构化控制 capability，不是普通整数和值类型；
-- `.any`、`.object`、`.valuetype` 是 Latte 根类型的标准 BIL 别名。
+- `.any`、`.object`、`.valuetype` 是 Latte 根类型的标准 BIL 别名；
+- `.string` 是**非 rich 值类型**（`SYNTAX.md` §3.1.2），赋值兼容与复制按值类型规则处理，不属于 `.object` 分支。它的物理表示是运行时特权裸缓冲区；BIL 与 BIL VM 一律按值语义（深拷贝）理解 `.string`，不得假设任何共享缓冲区、驻留或 copy-on-write 优化的存在——与「BIL 不得假设特定 GC 模型」同理。
 
 ### 6.3 标准类型构造
 
@@ -574,9 +575,12 @@ rich shared
 
 修饰符合法性必须与 `SYNTAX.md` 一致。例如：
 
-- `rich` 仅适用于 struct/enum struct；
-- `shared` class 与 `shared rich` struct 的闭包必须合法；
+- `rich` 仅适用于 struct/enum struct 和 wrapper；
+- `wrapper` 类型**必须**显式带 `rich`——源码中 `rich` 由 `wrapper` 声明形式隐含且禁止书写，但 BIL 是显式 IR，不做该隐含（`SYNTAX.md` §14.9）；
+- `shared` class、`shared rich` struct 与 `shared` wrapper 的闭包必须合法；
+- 非 rich struct 与非 rich `enum-struct` 不得带 `open` 或 `abstract`；
 - `enum-struct` 不得 `open`；
+- `singleton` 类型必须同时带 `shared`；
 - `abstract` 与 `singleton` 的组合必须合法。
 
 ### 8.3 字段声明

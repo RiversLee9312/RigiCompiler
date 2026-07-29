@@ -795,8 +795,12 @@ pub shared rich struct SharedEntry {
     pub var location: Vector2
 }
 
-// 带继承
-pub open struct Point3D : Point {
+// 带继承（open 仅 class 与 rich struct 可用；非 rich struct 不得 open/abstract。
+//         rich 单向传染：基类 rich ⇒ 子类必须 rich）
+pub open rich struct Point {
+    pub var owner: User
+}
+pub rich struct Point3D : Point {
     pub var z: float
 }
 ```

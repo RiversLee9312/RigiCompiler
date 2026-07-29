@@ -93,9 +93,7 @@ var x = 42                     // 类型推断为 i32
 ```
 Any
 ├── Object
-│   ├── String
 │   ├── Nullable\<T>
-│   ├── Wrapper
 │   ├── Box\<T extends ValueType>   // 语法上属于 Object、Native 层无独立 Box TypeSheet 的系统特权载体，见 RUNTIME.md
 │   └── ... (所有 class)
 └── ValueType
@@ -105,17 +103,23 @@ Any
     ├── u8, u16, u32, u64
     ├── float, double
     ├── bool, char
+    ├── String                      // 非 rich 值类型，见 §3.1.2
     ├── Type\<T>
     ├── Span\<T extends ValueType>
+    ├── Wrapper                     // 所有 wrapper 的基类；wrapper 恒为 rich struct，见 §14.9
+    │   └── ... (所有 wrapper)
     └── ... (所有 struct)
 ```
+
+`String` 与 `Wrapper` 都在 `ValueType` 分支下：前者是不含托管引用的非 rich 值类型，后者是 rich 值类型。二者的定位理由分别见 §3.1.2 与 §14.9。
 
 ### 3.1.1 `rich` 与 `shared` 类型修饰符
 
 Latte 将值类型按是否允许携带托管对象引用分为普通 ValueType 与 rich ValueType，并将对象按是否允许跨协程共享分为 local object 与 shared object。`rich` 和 `shared` 都是**类型声明修饰符**，不是变量或引用位置修饰符。
 
-- `rich` 仅用于 `struct`（包括 `enum struct`）。未标记 `rich` 的 struct 不得直接或间接持有任何 Object，也不得内嵌 rich struct。
-- `shared` 可用于 `class`，或与 `rich` 一起用于 struct。`shared struct` 而没有 `rich` 是编译错误。
+- `rich` 仅用于 `struct`（包括 `enum struct`）与 `wrapper`。未标记 `rich` 的 struct 不得直接或间接持有任何 Object，也不得内嵌 rich struct。
+- `wrapper` 恒为 rich struct，`rich` 由声明形式隐含，源码中不再显式书写（见 §14.9）。
+- `shared` 可用于 `class`，或与 `rich` 一起用于 struct，或用于 `wrapper`。`shared struct` 而没有 `rich` 是编译错误。
 - 未标记 `shared` 的 class 实例是 local object，只属于创建它的 Coroutine，不得在 Coroutine 之间共享。
 - 标记 `shared` 的 class 实例是 shared object，可以被多个 Coroutine 引用；`shared` 只表示共享资格和相应的生命周期管理，不自动使对象字段操作具备线程安全。
 - `shared rich struct` 仍然是值类型，复制与装箱继续采用值语义/unique ownership；`shared` 表示它的字段闭包可以安全地进入 shared object graph。
@@ -141,6 +145,8 @@ pub shared rich struct SharedEntry {
 }
 ```
 
+**非 rich struct 的封闭性**：非 rich struct（包括非 rich `enum struct`）不得标记 `open`，也不得标记 `abstract`，因而不可能拥有子类型。这既是它「不含托管引用」这一事实的自然结果，也封死了「声明一个 rich 或 shared 的子类型来放宽基类闭包」这条绕过路径。可被继承的 struct 必须自身是 rich struct 并显式标记 `open`。
+
 字段闭包规则：
 
 | 持有者类型 | 允许持有的 Object | 允许内嵌的 ValueType |
@@ -148,19 +154,40 @@ pub shared rich struct SharedEntry {
 | 非 rich struct | 不允许 | 仅非 rich ValueType |
 | rich struct | local object、shared object | 所有 ValueType |
 | shared rich struct | 仅 shared object | 非 rich ValueType、shared rich ValueType |
+| wrapper（非 shared） | local object、shared object | 所有 ValueType |
+| shared wrapper | 仅 shared object | 非 rich ValueType、shared rich ValueType |
 | local class | local object、shared object | 所有 ValueType |
 | shared class | 仅 shared object | 非 rich ValueType、shared rich ValueType |
 
-这些限制递归应用于字段、继承得到的字段、泛型实参所展开的字段和编译器生成的隐藏字段。由此保证：从任意 shared class 或 shared rich struct 出发，沿字段递归遍历，不可能到达 local object 或非 shared rich struct。
+这些限制递归应用于字段、继承得到的字段、泛型实参所展开的字段和编译器生成的隐藏字段（包括 §14.9 的 wrapper 隐藏字段）。由此保证：从任意 shared class、shared rich struct 或 shared wrapper 出发，沿字段递归遍历，不可能到达 local object 或非 shared rich 值。
 
-继承不得改变 class 的 shared 属性；shared class 只能继承 shared class，local class 只能继承 local class。struct 继承同样不得使 `rich`/`shared` 闭包失效。
+**`rich` 与 `shared` 的传染性（单向）**：
 
-跨 Coroutine 传递时：
+- 基类为 `shared` 时，子类必须为 `shared`；
+- 基类为 `rich` 时，子类必须为 `rich`。
+
+反向不成立：`shared` 子类可以继承非 `shared` 基类，`rich` 子类可以继承非 `rich` 基类。这类子类必须让**包括继承字段在内的完整字段闭包**满足上表——基类若持有 local object 字段，把子类声明为 `shared` 并不能使该继承合法，编译器直接拒绝。因此一个类型的 rich/shared 属性只能由它自己的声明决定，不能从基类推断；编译器按声明保守判定，安全性由闭包检查兜底。
+
+**共享安全类型（shared-safe type）**：满足以下任一条件的类型是共享安全类型——
+
+- shared class；
+- shared rich struct、shared wrapper；
+- 非 rich ValueType（全部基元类型、`String`、`Type\<T>`、`Span\<T>`、非 rich struct 与非 rich enum struct）；
+- `Nullable\<T>`，且 `T` 本身是共享安全类型（见 §3.1.2）。
+
+共享安全类型是「可以离开单个 Coroutine 的所有权域」的完整白名单。跨 Coroutine 传递时：
 
 - shared object 可以共享引用；
 - 非 rich ValueType 按值复制；
 - shared rich ValueType 按值复制，并对其内部 shared object 引用执行同步引用计数操作；
 - local object 与非 shared rich ValueType 不得跨 Coroutine 边界。
+
+**逃逸闸门**：非共享安全的值只能存在于单个 Coroutine 的栈与其 local object 图中。编译器在两处静态拦截它逃逸：
+
+1. **全局字段与静态字段**的类型必须是共享安全类型。全局变量、全局常量、静态字段与它们的 getter/setter 支持类型都适用本条——全局存储不属于任何 Coroutine，因此不得承载 local object 或非 shared rich 值。`singleton` class 的实例存储同样是全局存储，因此 **singleton class 必须标记 `shared`**；需要「每协程一个实例」时使用 `core.coroutine.CoroutineLocal\<TValue>`（见 `RUNTIME.md` §20.2），而不是非 shared singleton。
+2. **`async` 边界**（详见 §4.5）：async 函数与 async lambda 的 receiver、参数、返回值（即 Task 结果类型）、捕获变量与泛型实参都必须是共享安全类型。
+
+栈上的 `var`/`const`、非 static 的实例字段不受本闸门约束——它们的所有权随宿主，宿主自身已由字段闭包规则约束。
 
 ### 3.1.2 编译器特权类型与运行时表示
 
@@ -168,6 +195,10 @@ Latte 不要求每一个源码类型节点都一一对应一个普通 Native 对
 
 - `Box\<T extends ValueType>` 在语法类型层级中属于 `Object`，可以进入 `Object`/`Any` 多态位置并满足相应约束；但它不是普通 class，不生成 Box 对象头、Box identity 或独立的 `Box\<T>` TypeSheet。Box 槽中的 typeid 始终是底层实际 ValueType `T` 的 typeid，Native 表示与复制/销毁规则见 `RUNTIME.md` §4。
 - `Span\<T extends ValueType>` 是编译器与运行时共同实现的连续原生缓冲区后门，不按普通泛型容器的 16 字节元素槽布局；其索引、步长与 GC 扫描均使用内建 lowering。
+- `String` 是**非 rich ValueType**：它不持有托管引用，`refMap` 恒为空，因此可以自由出现在全局/静态字段与 async 边界上（见 §3.1.1），无需任何 shared 标注。它的字符数据位于编译器与运行时管理的特权裸缓冲区中，不是普通 Object 字段。
+  - **复制语义按值深拷贝**：`var b = a` 在语义上产生一份独立的字符数据。实现可以引入对用户完全透明的 copy-on-write 或不可变共享优化，但**源码语义、类型检查与用户代码一律不得假设这些优化存在**——正如 BIL 永远不得假设某种 GC 模型或 GC 行为。任何可观察到共享的行为都是实现缺陷，而不是可依赖的特性。
+  - `String` 不可被继承，也不可被 wrapper 修饰（非 rich struct 的通用规则，见 §14.9）。
+- `Nullable\<T>` 属于 `Object` 分支，但其 shared 属性由 `T` 推导而非由声明给出：`T` 是共享安全类型时，`Nullable\<T>` 也是共享安全类型。这个特权只属于 `Nullable\<T>`，因为它由 `T?` 隐式生成、用户无法声明它的 shared 变体。显式书写的库容器（`Array\<T>`、`Map\<K, V>` 等）不适用本规则——需要跨协程时应当选用相应的 shared 容器类型。
 - 其他由规范明确标记为内建、编译器生成或系统特权的机制，也可以拥有普通用户类型不能声明或复制的 lowering、布局或派发规则。
 
 这些特权只属于语言规范明确列出的内建机制。用户声明的 class、struct、interface 或 wrapper 不能通过源码复制其布局、身份、派发或生命周期规则。
@@ -181,7 +212,7 @@ Latte 不要求每一个源码类型节点都一一对应一个普通 Native 对
 | `float`/`double` | 浮点数 | ValueType |
 | `bool` | 布尔值 | ValueType |
 | `char` | 字符 | ValueType |
-| `String` | 字符串 | Object |
+| `String` | 字符串（非 rich 值类型，值语义深拷贝，见 §3.1.2） | ValueType |
 | `Type\<T>` | 运行时类型（typeid 的封装） | ValueType |
 | `Span\<T extends ValueType>` | 连续、无装箱的缓冲区视图（见 RUNTIME.md） | ValueType |
 
@@ -246,6 +277,8 @@ var text = """
 类型默认非空，`T?` 表示可空类型（底层为 `Nullable\<T>`，`Object` 子类）。
 
 由于 `Nullable\<T>` 是 `Object` 子类，可空的值类型会被装箱；已经可空的值不会被再次装箱，语法上也不允许对 `Nullable\<T>` 再次施加 `?`（不存在 `T??`）。
+
+`Nullable\<T>` 的 shared 属性由 `T` 推导：`T` 是共享安全类型时 `Nullable\<T>` 也是，因此 `String?`、`SharedUser?` 可以出现在全局字段与 async 边界上，而 `LocalUser?` 不可以（见 §3.1.1、§3.1.2）。
 
 ```latte
 var name: String? = null
@@ -468,7 +501,24 @@ const user = await loadUser(42)
 
 每个新协程在创建时永久绑定一个 `core.coroutine.Executor`。未显式指定时继承当前协程的 Executor；程序只能选择 Executor，不能选择其中的 Worker。Executor 的具体选择接口由 `core.coroutine` API 提供。
 
-async 调用的 receiver、实参、lambda capture 与 Task 结果会跨 Coroutine 边界，因此必须满足 §3.1.1 的共享闭包规则：shared object 可共享；非 rich ValueType 与 shared rich ValueType 按值复制；local object 与非 shared rich ValueType 不得跨越该边界。编译器在 async 调用点和 Task 结果类型处执行静态检查。
+async 调用会把一批值从当前协程送进新协程，因此以下**五处**的类型都必须是 §3.1.1 定义的共享安全类型（shared class、shared rich struct/wrapper、非 rich ValueType，以及 `T` 共享安全的 `Nullable\<T>`）：
+
+1. **receiver**：实例方法的 `this`，扩展方法的 `.this`；
+2. **参数**：全部形参，含默认参数、具名参数与可变参数展开后的每一个实参类型；
+3. **返回值**：即 Task 的结果类型 `TResult`；
+4. **捕获变量**：async lambda 从外层作用域捕获的每一个变量；
+5. **泛型实参**：async 函数/lambda 的每一个泛型实参——具化泛型下 typeid 与实际值一同跨越边界，因此同样受闸门约束。
+
+编译器在 async 声明处检查 2、3、5 的声明类型，在 async 调用点检查 1、2、5 的实际类型，在 async lambda 处检查 4。违反者为编译错误，不存在运行时补救。
+
+```latte
+pub shared class SharedUser { pub const id: i64 }
+pub class LocalUser { pub var name: String }
+
+pub async func ok(id: i32, name: String): SharedUser { ... }     // ✅ 全部共享安全
+pub async func bad(user: LocalUser) { ... }                       // ❌ 参数是 local object
+pub async func alsoBad(): LocalUser { ... }                       // ❌ Task 结果是 local object
+```
 
 ---
 
@@ -842,23 +892,23 @@ pub shared class SharedSession {
 }
 ```
 
-未标记 `shared` 的 class 实例是 local object；标记 `shared` 的 class 实例是 shared object。shared class 的全部继承字段和直接字段只能形成 §3.1.1 所定义的共享闭包。`shared` 不等同于锁、原子或 actor isolation；并发读写共享可变字段仍需要显式同步。
+未标记 `shared` 的 class 实例是 local object；标记 `shared` 的 class 实例是 shared object。shared class 的全部继承字段和直接字段只能形成 §3.1.1 所定义的共享闭包；`shared` 按 §3.1.1 单向传染——shared 基类的子类必须 shared，而 shared 子类可以继承非 shared 基类，前提是继承来的字段同样满足共享闭包。`shared` 不等同于锁、原子或 actor isolation；并发读写共享可变字段仍需要显式同步。
 
 ### 9.2 修饰符
 
 | 修饰符 | 作用 |
 |--------|------|
-| `open` | 允许 class 或普通 struct 被继承；`enum struct` 明确禁止使用 |
-| `abstract` | 抽象（天然 open，与 open 互斥） |
-| `singleton` | 单例（类似 Kotlin 的 `object`） |
+| `open` | 允许 class 或 rich struct 被继承；`enum struct` 与非 rich struct 明确禁止使用 |
+| `abstract` | 抽象（天然 open，与 open 互斥）；非 rich struct 禁止使用 |
+| `singleton` | 单例（类似 Kotlin 的 `object`）；实例存储为全局存储，因此必须同时标记 `shared`（§3.1.1） |
 | `pub` | 公开访问 |
 | `protected` | 子类与同包可见 |
 | `internal` | 模块内访问 |
 | `priv` | 私有访问（显式，与默认一致） |
 | （无） | private（默认） |
 | `static` | 静态方法/字段 |
-| `rich` | 允许 struct 直接或间接持有 Object；仅适用于 struct/enum struct |
-| `shared` | 将 class 声明为可跨协程共享的对象类型，或将 rich struct 声明为可进入共享图的值类型 |
+| `rich` | 允许 struct 直接或间接持有 Object；仅适用于 struct/enum struct（wrapper 恒为 rich，不显式书写） |
+| `shared` | 将 class 声明为可跨协程共享的对象类型，或将 rich struct / wrapper 声明为可进入共享图的值类型 |
 | `async` | 调用时创建新协程并返回 Task；仅适用于函数和 lambda |
 
 ### 9.3 构造函数（`init`）
@@ -946,7 +996,7 @@ pub class Apple : Fruit like pear {
 普通 struct 是不含托管对象引用的 ValueType：
 
 ```latte
-pub open struct Vector2 {
+pub struct Vector2 {
     pub var x: float
     pub var y: float
 
@@ -984,9 +1034,11 @@ pub shared rich struct SharedEntry {
 - shared rich struct 只能持有 shared object、shared rich ValueType 和非 rich ValueType。
 - `shared` 不能单独修饰非 rich struct。
 - rich/shared 属性属于类型及其布局闭包，泛型实例化和继承后仍必须满足 §3.1.1 的规则。
-- 普通 struct 只能继承声明为 `open` 的普通 struct，不能继承 class，不能实现接口。
+- **非 rich struct 不得标记 `open` 或 `abstract`**，因此不可能拥有子类型；可被继承的 struct 必须是标记 `open` 的 rich struct。struct 只能继承 struct，不能继承 class，不能实现接口。
+- 继承遵守 §3.1.1 的单向传染：rich 基类的子类必须 rich，shared 基类的子类必须 shared；反向可以收紧（非 shared 基类可以有 shared 子类），前提是包括继承字段在内的完整闭包合法。
 - `enum struct` 是 struct 的封闭特例：不能标记为 `open`，不能继承用户声明的 struct，也不能被其他类型继承；其固定继承链为 `具体 enum → Enum → ValueType`。
 - class 不能继承 struct，struct 不能继承 class。
+- 非 rich struct 不能被任何 wrapper 修饰，其字段与实例方法也不能挂载 wrapper（见 §14.9）。
 
 ---
 
@@ -1255,20 +1307,22 @@ pub operator plus\<TAnother extends Addable>(another: TAnother): MyType { ... }
 
 ### 14.1 概述
 
-Wrapper 是绑定到被修饰对象生命周期的对象，类似 Python 装饰器 + Java 注解的混合体。
+Wrapper 是绑定到被修饰实体生命周期的**值**，类似 Python 装饰器 + Java 注解的混合体。
 
-- 继承链：`MyWrapper` → `Wrapper` → `Object`
+- 继承链：`MyWrapper` → `Wrapper` → `ValueType`
+- wrapper 恒为 **rich struct**：值语义、unique ownership，因此生命周期可以直接绑定被修饰的实体、方法或值（类似 `unique_ptr`，而不是引用计数共享）；`rich` 由 `wrapper` 声明形式隐含，不显式书写
+- 可选标记 `shared`，这会同时放宽可修饰的目标、收紧自身字段闭包（见 §14.9）
 - 三种目标（互斥）：`.Entity`、`.Method`、`.Value`
 - 嵌套顺序：按声明顺序从外向里
-- 通过 `:` 运算符访问：`obj:MyWrapper`（链式 `obj:A:B` 表示"obj 的修饰器 A 的修饰器 B"）
+- 通过 `:` 运算符访问：`obj:MyWrapper`（链式 `obj:A:B` 表示"obj 的修饰器 A 的修饰器 B"），该表达式是**只读的存储位置**——只能作成员访问的接收者，不可整体赋值也不可整体取值（见 §14.5）
 
 ### 14.2 实体修饰器（Entity Wrapper）
 
-修饰 class、interface、wrapper、struct。
+修饰 class、interface、wrapper、rich struct（含 rich enum struct）。非 rich struct 不是合法目标，见 §14.9。
 
 ```latte
 @WrapperTarget(.Entity)
-pub wrapper Logged\<TTarget extends Object> {
+pub wrapper Logged\<TTarget> {
     pub init(level: String = "INFO")
 
     // specific 方法代理
@@ -1326,17 +1380,16 @@ pub wrapper Logged\<TTarget extends Object> {
 }
 ```
 
-- `TTarget` 泛型参数可访问被修饰对象的类型。
+- `TTarget` 泛型参数可访问被修饰对象的类型；不写约束时可以是任何合法的 wrapper 目标类型，可用 `extends`/`supers` 进一步缩窄。
 - `self` 关键字访问被修饰的对象实例（类型为 `TTarget`）。
 - `this` 仍为 wrapper 自身实例。
-- 可用 `extends`/`supers` 约束可修饰的类型。
 - `.proxy.*`、`.proxy.get.*`、`.proxy.set.*`、`.proxy.opr.*` 不再是可声明多个并按 pattern/优先级竞争的代理；它们分别是普通方法、getter、setter、operator 类别的唯一 universal fallback。
 - 同一个 Entity Wrapper 对每一类别只能实现零个或一个 wildcard proxy；重复声明同类别 wildcard 是编译错误。
 - 四类 wildcard 的泛型与参数形状是编译器规定的 canonical shape，不能通过额外约束或部分参数 pattern 把它缩窄为只吃某些签名。需要特殊处理某个已知成员时使用 specific proxy；需要在 universal fallback 内进一步分类时显式检查 `symbol`。
 
 ### 14.3 值修饰器（Value Wrapper）
 
-修饰字段或栈上变量（`var`/`const`）。
+修饰字段或栈上变量（`var`/`const`）。修饰实例字段时，wrapper 存放在宿主类型的隐藏字段中，因此宿主必须能够内嵌 rich struct（见 §14.9）；修饰栈上变量时 wrapper 存放在栈帧中，对变量类型没有额外要求。
 
 ```latte
 @WrapperTarget(.Value)
@@ -1373,7 +1426,7 @@ pub wrapper Timed {
     pub init()
 
     // 代理方法调用（参数名和类型都必须匹配）
-    operator .proxy.call\<TReturn extends Object>(): TReturn {
+    operator .proxy.call\<TReturn>(): TReturn {
         var start = now()
         var result = inner()
         log("took ${(now() - start)}ms")
@@ -1400,10 +1453,28 @@ pub class MyService {
     ...
 }
 
-// 访问 wrapper 对象
+// 访问 wrapper：obj:Logged 是宿主持有的那份 wrapper 的只读 place
 var service = MyService()
-var logger = service:Logged
+service:Logged.level = "TRACE"       // ✅ 成员访问：原地作用于宿主那份
+service:Logged.dump()                // ✅ 方法调用：receiver 是宿主那份
+
+service:Logged = otherLogged         // ❌ 编译错误：wrapper place 不可被赋值
+const snapshot = service:Logged      // ❌ 编译错误：wrapper 不能被整体取出
+takeWrapper(service:Logged)          // ❌ 同上：不能作实参、返回值或推断源
 ```
+
+**`obj:Wrapper` 是只读 place（readonly l-value）。** 它求值为绑定在 `obj` 上的那份 wrapper 存储位置本身，但只能出现在**成员访问的接收者位置**——读写其字段/属性、调用其方法，一律原地作用于宿主持有的那份，不产生副本。
+
+它**不是**一个可以整体流动的值：
+
+- 不可作为赋值目标（`obj:W = ...` 非法），wrapper 实例只能由 `@W(...)` 在宿主创建时安装；
+- 不可出现在任何取值位置（赋给变量、作实参、作返回值、作类型推断源），因此**无法把 wrapper 从宿主里复制出来**。
+
+理由与 §14.9 的「wrapper 恒为 rich struct」同源：wrapper 是 unique ownership 的值，生命周期与被修饰实体同生共死。允许整体取值就会造出一份脱离宿主而独立存活的 wrapper 实例，允许整体赋值就会在宿主生命周期内替换掉这份绑定——两者都直接破坏该不变量，所以在语法层封死，而不是靠约定。
+
+wrapper 自身的字段可变性仍按普通规则由字段声明（`var`/`const`）与可见性决定；"只读"约束的是 `obj:Wrapper` 这个 place 整体，不是其成员。
+
+proxy 方法体内的 `this` 同样是原地访问宿主持有的那份 wrapper，因此 `@Clamped(0, 100)` 这类可变 wrapper 状态在多次调用之间保持一致。
 
 ### 14.6 派发顺序与 wildcard 唯一性
 
@@ -1467,6 +1538,44 @@ setter：
 | 具名值可变参数 `named args...` | `.kwargs.args: Array\<Pair\<String, Any>>` |
 
 这些以 `.` 开头的名称由编译器保留，普通源码参数不能声明同名标识符。canonical symbol 连同 hidden arguments 完整描述本次调用的类别、声明位置、static 属性、参数类型、泛型实参和返回类型；具体 Native 路由见 `RUNTIME.md` §14。
+
+### 14.9 wrapper 的 `rich`/`shared` 规则与目标矩阵
+
+**wrapper 恒为 rich struct。** 这是 wrapper 语义的基础而非实现细节：wrapper 实例必须与被修饰的实体、方法或值同生共死，因此它必须是 unique ownership 的值，而不是可被任意别名的引用类型。作为 rich struct，它既保有值语义，又可以持有 Object 字段。
+
+- `rich` 由 `wrapper` 声明形式隐含，**源码中显式书写 `rich wrapper` 是编译错误**（冗余修饰）。BIL 作为显式 IR 不做此隐含，wrapper 类型声明的修饰符列表中必须显式含 `rich`（见 `BIL_STANDARD.md` §8.2）。
+- wrapper 可以标记 `shared`，成为 shared rich 值：它的字段闭包按 §3.1.1 收紧为只能持有 shared object 与共享安全 ValueType，换来可以修饰任意目标的资格。
+- wrapper 不能标记 `open`/`abstract`（rich struct 的继承规则另有约束时以 §10 为准），也不能标记 `singleton`。
+
+**宿主可内嵌性（对全部三类 wrapper 生效）**：wrapper 实例存放在宿主的编译器生成隐藏字段中（`BIL_STANDARD.md` §5.3），因此宿主类型必须允许内嵌 rich struct。由此：
+
+- 合法的 Entity wrapper 目标是 class、interface、wrapper、rich struct、rich enum struct；
+- **非 rich struct 与非 rich enum struct 不能被任何 wrapper 修饰**，它们的字段不能挂 Value wrapper，实例方法也不能挂 Method wrapper；
+- 因此全部基元类型、`String`、`Type\<T>`、`Span\<T>` 都不可被修饰；
+- 修饰栈上变量、全局/静态字段、全局/静态方法时不涉及宿主内嵌，本条不适用。
+
+**shared 目标矩阵**：
+
+| wrapper | 可修饰的目标 | 自身字段闭包 |
+|---|---|---|
+| `shared wrapper` | 全部合法目标（含 shared 类型、全局/静态成员） | 按 §3.1.1 的 shared 闭包收紧 |
+| 非 shared `wrapper` | 仅非 shared 目标（下表四类） | 按 §3.1.1 的 rich 闭包，可持有 local object |
+
+非 shared wrapper 可修饰的「非 shared 目标」是：
+
+- **A. 方法**：不是全局方法或静态方法，且所属类型不是 shared；
+- **B. 字段**：不是全局字段或静态字段，且所属类型不是 shared；
+- **C. 栈上变量**：全部 `var`/`const` 局部变量；
+- **D. 类型**：非 shared 的类型。
+
+其根据是 §3.1.1 的逃逸闸门：全局/静态存储与 shared 类型的字段闭包都不得触及 local object，而非 shared wrapper 的隐藏字段可能持有 local object。反过来，shared wrapper 修饰非 shared 目标始终合法——shared 闭包比 local 闭包更严，不会引入新的逃逸路径。
+
+**interface 目标的传染校验**：interface 本身不产生实例，被修饰 interface 的 wrapper 实例落在每个实现者上。因此：
+
+- 被修饰的 interface 的所有实现者必须自身是合法 wrapper 目标（class、rich struct、rich enum struct）；
+- 被**非 shared** wrapper 修饰的 interface **不得被 shared 类型实现**（否则 shared 实现者会获得一个可能持有 local object 的隐藏字段）。
+
+这两条在实现者声明处检查并报错，而不是在 interface 声明处。
 
 ---
 

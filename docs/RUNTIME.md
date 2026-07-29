@@ -13,7 +13,7 @@
 - 泛型在语义和运行时类型信息上完全 reified；机器码采用共享代码体并隐式传递 typeid，`is`/`supers`/`with`/`new a(...)` 从“typeid 恒在传”里直接获得。
 - 小值类型（≤ 8 字节）内联进 128-bit 胖引用，躲掉 Java 式的逐元素装箱，且仍带完整 typeid、仍可多态。
 - Box 是统一泛型值槽的系统级效率后门：它在类型系统中进入 `Object`/`Any` 多态世界，在 Native 表示中仍维持 ValueType 的复制语义、固定 16 字节外槽和 unique 裸数据块；其自身存活不需要 GC 可达性判定。只有 `rich` ValueType 才能在 Box/内嵌布局中携带托管引用字段，GC 借同一套 `TypeSheet`/`refMap` 机制扫描这些字段（见 §4、§8、§22）。
-- `shared` 是类型声明属性：shared class 构成可跨 Coroutine 引用的共享对象域，shared rich struct 则以值语义进入共享图；静态字段闭包禁止 shared 图反向指向 local object。
+- `shared` 是类型声明属性：shared class 构成可跨 Coroutine 引用的共享对象域，shared rich struct 与 shared wrapper 则以值语义进入共享图；静态字段闭包禁止 shared 图反向指向 local object。`String` 是非 rich ValueType，天然可跨越所有共享边界（见 §4）。
 - 生命周期管理分为 microGC、microSGC 与 macroGC：前两者分别以非同步/同步 ARC 处理绝大多数即时释放，macroGC 仅对 ARC 遗留的候选闭包做低门槛、小步快跑的循环检测。
 - 运行时不支持 finalizer。外部资源由 `core.IDisposable`/`using` 确定性释放；GC 只在对象销毁时检查遗漏并上报全局异常，绝不代替用户执行 `dispose()`（见 §25）。
 - wrapper 逻辑烘焙进方法体、骑静态 vtable、`call???` 固定 slot 兜底，实现 swizzling/forwarding 表达力而无动态派发框架。
@@ -71,13 +71,15 @@
 
 `rich` 与 `shared` 是 TypeSheet 可观察的类型属性，而不是引用槽上的限定符。运行时按以下域解释对象和值：
 
-- **非 rich ValueType**：不含托管引用，`refMap` 恒为空；复制、构造和栈上计算完全不进入 GC 引用图。
-- **rich ValueType**：可以含托管引用，仍遵守值语义和 Box 的 unique ownership；复制/销毁时按 `refMap` 对内部引用执行 acquire/release。
-- **shared rich ValueType**：rich ValueType 的共享安全子集；内部只能指向 shared Object，并只能内嵌非 rich 或 shared rich ValueType。
+- **非 rich ValueType**：不含托管引用，`refMap` 恒为空；复制、构造和栈上计算完全不进入 GC 引用图。`String` 属于本域（字符数据是特权裸缓冲区，不是托管引用，见 §4）。
+- **rich ValueType**：可以含托管引用，仍遵守值语义和 Box 的 unique ownership；复制/销毁时按 `refMap` 对内部引用执行 acquire/release。全部 wrapper 属于本域（wrapper 恒为 rich struct，见 §14）。
+- **shared rich ValueType**：rich ValueType 的共享安全子集；内部只能指向 shared Object，并只能内嵌非 rich 或 shared rich ValueType。`shared wrapper` 属于本域。
 - **local Object**：未标记 `shared` 的 class 实例，归创建它的 Coroutine 所有，引用计数由 microGC 以非同步 ARC 管理。
 - **shared Object**：标记 `shared` 的 class 实例，可由多个 Coroutine 持有，引用计数由 microSGC 以同步 ARC 管理。
 
 静态闭包保证 shared Object 和 shared rich ValueType 只能指向 shared Object，并只能内嵌非 rich/shared rich ValueType；local Object 可以指向 local/shared Object，并持有任意 ValueType。由此 shared 图不可能反向到达 local 对象域。shared 只决定共享资格与 GC 路径，不自动为用户字段提供线程安全。
+
+编译器保证进入全局/静态存储与 async 边界的值必然属于「shared Object ∪ shared rich ValueType ∪ 非 rich ValueType」这三个域（`SYNTAX.md` §3.1.1 的共享安全类型）。运行时可以依赖这一不变量，不为跨边界的 local 值提供任何动态检查或搬运机制。
 
 ---
 
@@ -130,6 +132,16 @@ Object:          [view typeid   | object pointer]
 **其他规则：**
 
 - `Nullable\<T>` 已是 `Object` 子类，不会被再次 Box（语法上也禁止 `T??`）。
+- `Nullable\<T>` 的共享域由 `T` 推导而非由声明给出（`SYNTAX.md` §3.1.2）：`T` 共享安全时 `Nullable\<T>` 按 shared Object 处理，否则按 local Object 处理。
+
+**`String` 的表示：**
+
+`String` 是非 rich ValueType，因此它的 `refMap` 恒为空，不参加 GC 引用图，也不需要任何 shared 标注即可跨越 Coroutine 边界。它的字符数据是一段由编译器与运行时管理的**特权裸缓冲区**——与 `Span\<T>` 同属 §1 所说的内建后门，不是托管引用，不是普通 Object 字段：
+
+- 短字符串可以完全内联进胖值 payload；超出内联预算时 payload 指向 unique 裸缓冲区，与 tag `1` 的大 ValueType 走同一条物化路径。
+- **可观察语义是按值深拷贝**：每次复制、传参、跨协程传递都产生一份独立的字符数据。
+- 实现**可以**引入用户完全不可观察的 copy-on-write、驻留（interning）或不可变共享缓冲区来消除实际拷贝，包括为共享缓冲区维护 native 侧引用计数——这类计数不进入 GC 引用图，不影响「非 rich ValueType 的 `refMap` 恒为空」这一不变量。
+- 但**源码语义、编译器分析与用户代码一律不得假设这些优化存在**，正如 BIL 不得假设任何特定 GC 模型或 GC 行为。任何能让用户观察到缓冲区共享的行为都是实现缺陷。
 
 **固定成本：**
 
@@ -292,6 +304,12 @@ Latte 泛型不擦除实际类型。实现采用**单份共享 Native 代码体 
 ## 14. Wrapper 派发管线
 
 **静态组合**：实体修饰器在编译期把 wrapper 逻辑内联进方法体（替换 `inner`，从内到外顺序调用），因此天然骑 vtable。运行时**不能**增删、重排或禁用 wrapper。
+
+**wrapper 值的表示**：wrapper 恒为 rich struct（`SYNTAX.md` §14.9），因此它是一个带 typeid 的胖值，而不是独立的堆对象——没有对象头、没有对象身份、不作为独立 GC 节点被追踪；其内部托管引用字段照常经 `refMap` 参加 acquire/release。wrapper 实例存放在宿主的编译器生成隐藏字段中（`BIL_STANDARD.md` §5.3），因此：
+
+- 宿主类型必须允许内嵌 rich struct；非 rich struct 不能被修饰，这是编译期不变量，运行时无需检查。
+- 非 shared wrapper 可能持有 local object，所以只能出现在非 shared 宿主与栈帧中；shared wrapper 走 microSGC 路径。
+- 路径表达式 `value:WrapperType` 与 proxy 体内的 `this` 都是对该隐藏字段的**原地访问**，从不复制。源码层 `value:WrapperType` 是只读 place（`SYNTAX.md` §14.5）：既不能被整体赋值，也不能被整体取出，因此运行时不存在脱离宿主独立存活的 wrapper 值，也不为 wrapper 提供任何别名或共享机制。
 
 ### 14.1 四类唯一 wildcard proxy
 
@@ -649,6 +667,8 @@ core.coroutine.CoroutineLocal\<TValue>
 CoroutineLocal 的绑定存储在 Coroutine 的上下文中，跟随 Coroutine 跨 Worker 迁移。其读取结果不得依赖当前 Worker 或 OS Thread，因此不能使用普通 ThreadLocal 来实现公共语义。
 
 Coroutine 挂起、重新发布以及换 Worker 恢复时，必须看到同一份 CoroutineLocal 上下文。Worker 私有缓存若存在，只能作为不可观察的实现优化。
+
+CoroutineLocal 是「每协程一个实例」的**唯一**机制。`singleton` class 的实例存储属于全局存储，因此按 `SYNTAX.md` §3.1.1 必须标记 `shared`，恒为进程内唯一的 shared object；singleton 不承担 per-coroutine 语义。
 
 ---
 
