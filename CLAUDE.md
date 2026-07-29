@@ -334,7 +334,6 @@ shared rich struct SharedData { }
 4. [docs/RUNTIME.md](docs/RUNTIME.md) - 运行时模型和类型系统
 5. [docs/compiler/frontend/PARSER_ROADMAP.md](docs/compiler/frontend/PARSER_ROADMAP.md) - Parser 实现计划
 6. [docs/compiler/frontend/EXPRESSION_ARCHITECTURE.md](docs/compiler/frontend/EXPRESSION_ARCHITECTURE.md) - 表达式架构设计
-7. [docs/RICH_SHARED_CLARIFICATION.md](docs/RICH_SHARED_CLARIFICATION.md) - rich/shared 澄清
 
 ### 6.2 外部资源
 

@@ -135,7 +135,7 @@ null            // null
 - 泛型类型 `Container\<T>`
 - 可空类型 `T?`
 - 数组类型 (通过 Span\<T> 或 Array\<T>)
-- rich/shared 修饰符
+- ~~rich/shared 修饰符~~（已作废：rich/shared 是类型声明修饰符，不是类型引用，由 DeclarationParserLayer 处理，见 SYNTAX §3.1.1）
 
 **实现要点**:
 ```csharp
@@ -167,10 +167,10 @@ public class TypeReferenceParserLayer : IParserLayer
 ```latte
 i32                    // 基本类型
 String                 // 对象类型
-Container<i32>         // 泛型类型
+Container\<i32>        // 泛型类型
 String?                // 可空类型
-shared User            // shared 类
-rich struct Point      // rich struct
+// 以下两条已作废：rich/shared 是类型声明修饰符（SYNTAX §3.1.1），
+// 不属于类型引用，由 DeclarationParserLayer 处理与校验
 ```
 
 
@@ -398,7 +398,7 @@ var result = if (x > 0) { x } else { opposite(x) }
 #### 8. Switch 语句解析器 (`SwitchStatementParserLayer.cs`)
 **优先级**: P2  
 **依赖**: ExpressionParserLayer, CodeBlockParserLayer  
-**状态**: ✅ 表达式模式已完成（2026-07-18 M8，6/6 测试通过；语句模式待 SYNTAX 规范明确）
+**状态**: ✅ 表达式模式已完成（2026-07-18 M8，6/6 测试通过）；语句模式已完成（M33，SYNTAX §7.2 语句形态，分支体为代码块）
 
 **功能描述**:
 解析 switch 表达式，支持值匹配和模式匹配。
@@ -606,7 +606,7 @@ seq named myBlock {
 // 作为表达式
 const result = seq {
     const x = compute()
-    return@seq (x * 2)
+    return@_ (x * 2)
 }
 
 // volatile
@@ -1366,6 +1366,11 @@ pub ext var String.isEmpty: bool {
 
 ## 测试策略
 
+> ⚠️ 本节示例代码为 MSTest 风格（[TestClass]/Assert）的原始计划草图，已作废：
+> 项目实际不使用任何测试框架，测试基建为自研控制台测试——`Tests/` 下静态类
+> （每类 `public static int RunAll()`）由 `Tests/TestRunner.cs` 统一驱动，
+> 断言走 `Tests/TestHarness.cs` 与 `Tests/AstDescribe.cs`。详见 `../../../AGENTS.md` §5。
+
 ### 单元测试
 
 每个 ParserLayer 都应该有对应的单元测试：
@@ -1500,7 +1505,7 @@ public class PerformanceTests
   - [x] 整数字面量
   - [x] 浮点数字面量
   - [x] 字符串字面量 (包括插值)
-  - [ ] 字符字面量（占位符，未实现）
+  - [x] 字符字面量（M34：CharLexerLayer + CharToken + CharLiteralASTNode）
   - [x] 布尔字面量
   - [x] null 字面量
   - [x] 单元测试（15/15）
@@ -1510,14 +1515,14 @@ public class PerformanceTests
   - [x] 用户定义类型
   - [x] 泛型类型（已迁移 `\<` 语法，含嵌套）
   - [x] 可空类型
-  - [x] rich/shared 修饰符
+  - [x] 不处理 rich/shared 修饰符（类型声明修饰符，由 DeclarationParserLayer 处理，见 SYNTAX §3.1.1）
   - [x] 单元测试（3/3 + 集成于变量声明测试）
   
 - [x] 3. VariableDeclarationParserLayer
   - [x] var/const 识别
   - [x] 类型标注
   - [x] 初始化表达式（经结果传递机制保存 Initializer）
-  - [ ] getter/setter（未实现，P6 23 号）
+  - [x] getter/setter（M16，PropertyAccessorParserLayer，见 P6 23 号）
   - [x] 单元测试（10/10）
 
 ### P1 - 表达式系统
@@ -1532,7 +1537,7 @@ public class PerformanceTests
   - [x] if 表达式（M8，强制 else）
   - [x] switch 表达式（M8，强制 default）
   - [x] 类型操作 (new/typeOf/as/is/as?/supers/with)（M8，is/as 系列为专用 AST 节点）
-  - [x] seq 表达式形态（M10，return@seq/return@label）
+  - [x] seq 表达式形态（M10，return@_/return@label；匿名默认标签 seq→_ 见 M33）
   - [x] 单元测试（67/67）
   
 - [x] 5. ParameterListParserLayer
@@ -1556,12 +1561,12 @@ public class PerformanceTests
   - [x] if 表达式（强制 else）
   - [x] 单元测试（8/8 if 套件）
   
-- [x] 8. SwitchStatementParserLayer（M8，表达式模式）
+- [x] 8. SwitchStatementParserLayer（M8 表达式模式 + M33 语句模式）
   - [x] 值匹配
   - [x] 模式匹配（`_` 引用选择器值）
   - [x] default 分支（强制）
   - [x] switch 表达式
-  - [ ] switch 语句模式（SYNTAX 未定义语句形态，暂缓）
+  - [x] switch 语句模式（M33，SYNTAX §7.2 语句形态，分支体为代码块）
   - [x] 单元测试（6/6）
   
 - [x] 9. LoopParserLayer（M7）
@@ -1583,7 +1588,7 @@ public class PerformanceTests
   - [x] 简单 seq 块
   - [x] using 子句（多资源绑定）
   - [x] named 标签
-  - [x] seq 表达式（return@seq/return@label，节点继承 ExpressionASTNode）
+  - [x] seq 表达式（return@_/return@label，节点继承 ExpressionASTNode；匿名默认标签 seq→_ 见 M33）
   - [x] volatile 修饰符
   - [x] 单元测试（17/17）
   

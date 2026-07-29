@@ -1,6 +1,6 @@
 # Frontend 数据类型说明
 
-本文档描述 LatteCompiler Frontend 阶段**实际使用**的数据类型（与当前代码一致，2026-07-27 修订）。
+本文档描述 LatteCompiler Frontend 阶段**实际使用**的数据类型（与当前代码一致，2026-07-29 修订）。
 
 ## 1. 位置信息
 
@@ -18,6 +18,7 @@
 |-----------|-----------|------|
 | **WordToken** | Word | 单词：标识符、关键字、数字字面量片段 |
 | **StringToken** | String | 字符串字面量（含插值原文） |
+| **CharToken** | Char | 字符字面量（`'a'`，M34）：`Value` 为转义展开后的字符，无插值概念 |
 | **NotationToken** | Notation | 符号：单字符（`(`、`.`、`<` 等）或多字符（`==`、`->`、`<=` 等） |
 | **CommentToken** | Comment | 注释（Parser 主循环统一跳过，不参与语法） |
 | **LineBreakToken** | LineBreak | 换行（Latte 的语句终止符） |
@@ -51,12 +52,12 @@ ASTIntegrityValidator 校验父子指针一致性与 Span 合法性，
 - 符号结构：**Symbol**（`elements: SymbolElementSet`）→ **SymbolElement**（`name` + `generics: SymbolSet`）
 
 ### 3.2 字面量（`AST/LiteralNodes.cs`）
-- **IntLiteralASTNode**（Value、IntType、IsHex；IntType 枚举：I32/I64/I16/I8/U32/U64/U16/U8）
+- **IntLiteralASTNode**（Value、IntType、Base；IntType 枚举：I32/I64/I16/I8/U32/U64/U16/U8；
+  Base 为 LiteralIntBase 枚举（M31 替代 IsHex 布尔）：Decimal/Hex/Binary/Octal，对应 0x/0b/0o 前缀）
 - **FloatLiteralASTNode**（Value、IsFloat）
 - **StringLiteralASTNode**（Value、HasInterpolation）
+- **CharLiteralASTNode**（Value，M34；SYNTAX §3.3：单引号内恰好一个字符或一个转义序列）
 - **BoolLiteralASTNode**、**NullLiteralASTNode**
-
-（字符字面量未实现，见 `../../PROGRESS_REPORT.md` §6。）
 
 ### 3.3 类型引用（`AST/TypeNodes.cs`）
 - **TypeReferenceASTNode**: TypeSymbol（SymbolASTNode）、IsNullable
@@ -86,7 +87,7 @@ ASTIntegrityValidator 校验父子指针一致性与 Span 合法性，
 | **BinaryExpressionASTNode** | Left、Operator、Right | 二元运算 |
 | **CompoundAssignmentExpressionASTNode** | Target、Operator（基础运算符）、Value | 复合赋值（§13.2，+= 等 10 个） |
 | **UnaryExpressionASTNode** | Operator、Operand、IsPrefix | 一元运算（含 await） |
-| **LiteralExpressionASTNode** | LiteralNode | 字面量包装（使字面量成为表达式） |
+| **LiteralExpressionASTNode** | Literal | 字面量包装（AttachLiteral 一次性附加，使字面量成为表达式） |
 | **SymbolReferenceASTNode** | Symbol（SymbolASTNode） | 符号引用/纯符号路径（含泛型实参） |
 | **GroupExpressionASTNode** | InnerExpression | 括号分组 |
 | **NewExpressionASTNode** | Type、Arguments | new 构造 |
@@ -94,14 +95,16 @@ ASTIntegrityValidator 校验父子指针一致性与 Span 合法性，
 | **IndexExpressionASTNode** | Object、Indices | 索引访问 |
 | **MemberAccessASTNode** | Object、MemberName、IsSafeAccess、GenericArguments | 成员访问（底座为表达式时） |
 | **ArgumentASTNode** | Name?、Value | 调用/索引/构造实参（可具名）；非 Expression 子类 |
-| **LambdaExpressionASTNode** | IsAsync、Parameters、GenericParameters?、ReturnType、Body | lambda（体为单表达式） |
-| **IfExpressionASTNode** | Condition、ThenExpression、ElseExpression | if 表达式（强制 else，分支为单表达式） |
-| **SwitchExpressionASTNode** | Selector、Cases、DefaultBody | switch 表达式（强制 default） |
-| **SwitchCaseASTNode** | Pattern、Body | case 分支；非 Expression 子类 |
+| **LambdaExpressionASTNode** | IsAsync、Parameters、GenericParameters?、ReturnType、Label?、Body? / BlockBody?（互斥） | lambda（体双形态：单表达式 Body / 多语句块 BlockBody，块内禁裸 return） |
+| **IfExpressionASTNode** | Condition、ThenBody、ElseBody、Label? | if 表达式（强制 else，分支体为代码块，取值 return@_ / return@标签） |
+| **SwitchExpressionASTNode** | Selector、Cases、DefaultBody、Label? | switch 表达式（强制 default，DefaultBody 为 CodeBlockASTNode?） |
+| **SwitchCaseASTNode** | Pattern、Body | case 分支（Body 为代码块）；非 Expression 子类 |
 | **TypeOfExpressionASTNode** | Operand | typeOf(expr) |
 | **CastExpressionASTNode** | Object、TargetType、IsSafe | as / as? 转换 |
 | **TypeCheckExpressionASTNode** | Object、Operator、TargetType? / TargetCase?（互斥） | is / supers / with 检查；is 右侧可为 enum case（§12.3） |
-| **SeqBlockExpressionASTNode** | IsVolatile、UsingBindings、Label?、Body | seq 块（语句 + 表达式双形态） |
+| **EnumCaseExpressionASTNode** | CaseName | 前导点 enum case 引用（`.Success`，M20） |
+| **WrapperAccessASTNode** | Object、WrapperName | wrapper 路径访问（`obj:MyWrapper`，链式左结合，M21） |
+| **SeqBlockExpressionASTNode** | IsVolatile、UsingBindings、Label?、Body | seq 块（语句 + 表达式双形态，匿名默认标签 `_`） |
 
 ### 3.6 语句（`AST/StatementNodes.cs`）
 
@@ -109,6 +112,7 @@ ASTIntegrityValidator 校验父子指针一致性与 Span 合法性，
 |------|----------|------|
 | **CodeBlockASTNode** | Statements | `{ }` 代码块 |
 | **IfStatementASTNode** | Condition、ThenBlock、ElseBranch? | if 语句（ElseBranch 为块或嵌套 if） |
+| **SwitchStatementASTNode** | Selector、Cases、DefaultBody | switch 语句（M33，分支体为代码块，强制 default；结果值被丢弃） |
 | **LoopStatementASTNode** | Kind（LoopKind）、VariableName?、Iterable?、RangeTo?、Condition?、Label?、Body | for-each/范围/while/do-while（范围 = Iterable 起点 + RangeTo 终点） |
 | **ReturnStatementASTNode** | Label?、Value? | return / return@label |
 | **LoopControlStatementASTNode** | IsBreak、Label? | break / continue[@label] |
@@ -132,7 +136,7 @@ Source Code
     ↓
 [Lexer] → List<Token>                           ✅ 已完成
     ↓
-[Parser] → AST (RootASTNode)                    ✅ 已完成（P0–P5，含 M23–M30 重构）
+[Parser] → AST (RootASTNode)                    ✅ 已完成（P0–P5，含 M23–M34 重构）
     ↓
 [Semantic Analyzer] → Validated AST             ← 下一阶段
     ↓

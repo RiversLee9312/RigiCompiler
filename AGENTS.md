@@ -144,7 +144,7 @@ LatteCompiler/
 | `docs/RUNTIME.md` | 运行时模型与类型系统 | ⭐⭐⭐ |
 | `docs/BIL_STANDARD.md` | BIL 中间语言规范 | ⭐⭐ |
 | `docs/compiler/frontend/PARSER_ROADMAP.md` / `docs/PROGRESS_REPORT.md` | Parser 路线图与进度 | ⭐⭐ |
-| `docs/compiler/frontend/EXPRESSION_ARCHITECTURE.md` / `docs/RICH_SHARED_CLARIFICATION.md` | 专项设计澄清 | ⭐⭐ |
+| `docs/compiler/frontend/EXPRESSION_ARCHITECTURE.md` | 表达式架构专项设计 | ⭐⭐ |
 | `Parser/Parser.cs` | 层栈式 Parser 的核心协议 | ⭐⭐⭐ |
 | `Lexer/Tokens.cs` / `Parser/Keywords.cs` / `AST/ASTNode.cs` | Token/关键字/AST 基类等核心数据结构（M30 拆分自原 `Core/Utilities.cs`） | ⭐⭐⭐ |
 

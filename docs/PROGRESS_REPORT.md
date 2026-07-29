@@ -297,11 +297,11 @@ pub class Point {
 
 | 组件 | 状态 | 测试 | 说明 |
 |------|------|------|------|
-| LiteralParserLayer | ✅ | 34/34 | 全部字面量（M31：0b/0o/下划线补齐，`3.` 报错）；字符字面量 Lexer 明确报错；多行字符串经 StringToken 复用零改动接入（M32） |
+| LiteralParserLayer | ✅ | 34/34 | 全部字面量（M31：0b/0o/下划线补齐，`3.` 报错）；字符字面量（M34：CharLexerLayer + CharToken + CharLiteralASTNode）；多行字符串经 StringToken 复用零改动接入（M32） |
 | MultilineStringLexerLayer（+ QuoteLexerLayer 分流） | ✅ | 43/43（M32 新套件） | SYNTAX §3.3 Swift 风格严格多行：开界换行剥除、闭界独占行定缩进基准、转义与单行一致（StringEscape 单源）、两阶段施工（按行缓冲 + 闭界时剥缩进/转义）、插值标记词法期判定（`\${` 不误报） |
 | TypeReferenceParserLayer | ✅ | 17/17 | M31 重写为真实套件（独立层驱动 + 集成 + 结构断言） |
 | VariableDeclarationParserLayer | ✅ | 17/17 | Initializer 经 ExpressionRootASTNode 直挂；访问器块委托 PropertyAccessorParserLayer（M16）；M31 保留字/标识符校验 |
-| ExpressionParserLayer | ✅ | 106/106 | roadmap #4 全部落地；前导点 enum case（M20）、wrapper 路径访问 `:`（M21）；M31：位运算符 `<<`/`&`/`\|`/`^`、`in` 移除、insideParens 续行、复合赋值明确报错、span 含关键字 |
+| ExpressionParserLayer | ✅ | 106/106 | roadmap #4 全部落地；前导点 enum case（M20）、wrapper 路径访问 `:`（M21）；M31：位运算符 `<<`/`&`/`\|`/`^`、`in` 移除、insideParens 续行、复合赋值 10 运算符（M34）、span 含关键字 |
 | ArgumentListParserLayer | ✅ | 12/12（M31 新套件） | 位置/具名/混合实参；M31：续行、空索引拒绝 |
 | LambdaExpressionParserLayer | ✅ | 37/37 | roadmap #21 提前落地；体双形态（M33）：单表达式 / 多语句块体（named 标签、裸 return 边界） |
 | SwitchStatementParserLayer | ✅ 两种形态 | 35/35（SwitchExpression 套件） | 表达式 + 语句形态（M33，新 SwitchStatementASTNode）；分支体统一代码块、named 标签、两形态强制 default |
