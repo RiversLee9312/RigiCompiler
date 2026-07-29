@@ -5,8 +5,9 @@
 > 更新时保持文档结构不变，并在「里程碑历史」追加一段。
 > 计划与分工见 `compiler/syntax/PARSER_ROADMAP.md` 与 `compiler/semantic/SEMANTIC_ROADMAP.md`；本文档只记录「现状」。
 
-**报告日期**: 2026-07-28
-**当前阶段**: Parser/PDA 大扫除（架构重构）完成（M23）；AST 结构标注与 Validator 重写完成（M24）；Lexer 修复（除法/EOF/注释）与 fuzz 基建完成（M25）；日志系统与 AST JSONL 序列化完成（M26）；CLI 插件化重构（help/compile/test）完成（M27）；Lexer 位置修复 + AST Source Span + ASTVisitor 统一遍历完成（M28）；AST 容器重构（基类共有 Children/Annotations 删除，语义字段 + wrapper 挂载接口）完成（M29）；Utilities.cs 拆分 + ASTVisitor 遍历可重载 + 文档幽灵清理完成（M30）；前端大修（M31）完成；多行字符串（M32）完成；值块统一（M33：if/switch 表达式分支体与 lambda 体统一为代码块、switch 语句形态、lambda 裸 return 编译错误、seq 默认标签迁移 `_`）完成；**技术债清扫（M34）完成：字符字面量（CharLexerLayer + CharToken + CharLiteralASTNode）、复合赋值 10 运算符（CompoundAssignmentExpressionASTNode）、`is` 右侧 enum case（TypeCheck 双字段互斥）、wrapper `.name` 保留参数名、import `{}` 单标识符禁令规则化报错**；**下一步**：语义分析、BIL 输出
+**报告日期**: 2026-07-29
+**当前阶段**: **前端（Lexer + Parser）阶段结束于 M34；M35 起进入中端（语义分析 + BIL 生成）阶段** —— M35 为中端的开篇里程碑：架构定稿（`compiler/semantic/SEMANTIC_ARCHITECTURE.md`）+ 路线图 S0–S14（`compiler/semantic/SEMANTIC_ROADMAP.md`）+ 语言规范修订（shared/rich/wrapper/String），代码尚未落地，下一步从 S0 诊断基建起步。
+前端里程碑回顾：Parser/PDA 大扫除（M23）、AST 结构标注与 Validator 重写（M24）、Lexer 修复与 fuzz 基建（M25）、日志与 AST JSONL（M26）、CLI 插件化（M27）、Lexer 位置与 AST Span（M28）、AST 容器重构（M29）、Utilities 拆分（M30）、前端大修（M31）、多行字符串（M32）、值块统一（M33）、技术债清扫（M34）。
 **测试总计**: 895/895 通过 (100%) + Lexer fuzz 6000/6000（30 个套件，`dotnet run -- test --all` 单命令全量）
 **版本控制**: Git `main` 分支（2026-07-17 首次提交）
 
@@ -49,7 +50,8 @@
 | M31 | 前端大修：全量 review 驱动的 40+ 项修复（Span 左闭右开、Lexer 块注释重写、续行规则、位运算符、0b/0o/下划线字面量、Keywords 大扫除、修饰符/标识符校验、JSONL v2 + 反序列化器、测试基建统一） | ✅ | 2026-07-28 | 746/746 + fuzz 6000（29 套件） |
 | M32 | 多行字符串 `"""`：SYNTAX §3.3 规范定稿（Swift 风格严格多行）+ QuoteLexerLayer 引号分流 + MultilineStringLexerLayer 两阶段施工 + 转义表单源化 + 插值标记词法期判定（`\${` 误报修复；Parser/AST 经 StringToken 复用近零改动） | ✅ | 2026-07-28 | 790/790 + fuzz 6000（30 套件） |
 | M33 | 值块统一：if/switch 表达式分支体与 lambda 体统一为代码块（多语句 + `return@_`/named 取值）、switch 语句形态（新 SwitchStatementASTNode）、lambda 体内裸 return 编译错误（allowBareReturn 全链传染）、seq 匿名默认标签 `seq`→`_` | ✅ | 2026-07-28 | 838/838 + fuzz 6000（30 套件） |
-| M34 | 技术债清扫：字符字面量（CharLexerLayer + CharToken + CharLiteralASTNode）、复合赋值 10 运算符（CompoundAssignmentExpressionASTNode）、`is` 右侧 enum case（TypeCheck TargetType/TargetCase 双字段互斥）、wrapper `.name` 保留参数名、import `{}` 单标识符禁令规则化报错 | ✅ | 2026-07-28 | 895/895 + fuzz 6000（30 套件） |
+| M34 | 技术债清扫：字符字面量（CharLexerLayer + CharToken + CharLiteralASTNode）、复合赋值 10 运算符（CompoundAssignmentExpressionASTNode）、`is` 右侧 enum case（TypeCheck TargetType/TargetCase 双字段互斥）、wrapper `.name` 保留参数名、import `{}` 单标识符禁令规则化报错 —— **前端阶段收官** | ✅ | 2026-07-28 | 895/895 + fuzz 6000（30 套件） |
+| M35 | **中端阶段开篇**：语义分析与 BIL 生成架构定稿（四 pass + 双 Bound Tree + 驻留符号图）+ 路线图 S0–S14 + 语言规范修订（String 归非 rich 值类型、wrapper 恒 rich struct 且 `obj:Wrapper` 为只读 place、共享安全类型与两条逃逸闸门、rich/shared 单向传染、非 rich struct 不得 open/abstract） | ✅ 文档 | 2026-07-29 | 895/895 + fuzz 6000（30 套件，纯文档无增删） |
 
 ---
 
@@ -433,7 +435,20 @@ op+`=` 在左操作数 Attach 前定形构造，红线合规）；`is` 右侧 en
 import `{}` 列表项单标识符禁令规则化报错（SYNTAX §15.2）。详见「里程碑历史」
 M34 段落。
 
-**下一阶段**：语义分析、BIL 输出（见 `../BIL_STANDARD.md`）
+**中端阶段开篇（M35）已完成——文档层**：M34 收官前端（Lexer + Parser），
+M35 起项目进入**中端（语义分析 + BIL 生成）阶段**。本里程碑只交付文档：
+架构定稿 `compiler/semantic/SEMANTIC_ARCHITECTURE.md`（P1 声明收集 /
+P2 声明解析 / P3 Binder→BoundTree / P4a Lowerer→LoweredTree /
+P4b BilEmitter→BilModule 四 pass 分工，Roslyn 风格双 Bound Tree、
+驻留符号对象图、bootstrap 与 core.latte 边界、诊断模型）与路线图
+`compiler/semantic/SEMANTIC_ROADMAP.md`（S0–S14，近细远粗）；
+同批修订语言规范（String 归非 rich 值类型、wrapper 恒 rich struct、
+共享安全类型与两条逃逸闸门、rich/shared 单向传染）。
+详见「里程碑历史」M35 段落。
+
+**下一步**：ROADMAP S0（诊断基建：`Semantic/Diagnostics.cs` +
+`TestHarness.CheckSemanticError`）→ S1（符号图内核 + bootstrap），
+中端首次写代码。前端进入维护状态，仅在中端暴露缺口时回补。
 
 ---
 
@@ -446,10 +461,86 @@ M34 段落。
 5. 复合赋值的语义推导（`a op= b` 按 §13.2 从对应运算符自动展开/调用）留待语义/后端阶段；M34 起解析层已接受全部 10 个运算符
 6. `.name` 保留参数名（M34 起解析层接受，Name 原样存 `.name`）的上下文约束（仅 method wrapper canonical 形态可用）与语义规范化留待语义阶段
 7. 编译 0 警告（大扫除消除了原 `Core/Utilities.cs` 的 nullable 警告）
+8. BIL 待补（M35 登记，不属前端）：wrapper 改为 rich struct 后，`BIL_STANDARD.md` §12.4 缺**只读 place 的接收者形态**；async 协程指令 §17 待 S13 专项修订。两项均记于 `compiler/semantic/SEMANTIC_ARCHITECTURE.md` §7/§7.1，落地分别在 ROADMAP S11 / S13
 
 ---
 
 ## 7. 里程碑历史
+
+### 2026-07-29 · M35 中端阶段开篇：语义分析架构定稿 + shared/rich/wrapper/String 规范修订
+
+> **阶段转折点**：M1–M34 是前端（Lexer + Parser）阶段，随 M34 技术债清扫收官；
+> M35 起项目进入**中端（语义分析 + BIL 生成）阶段**。本里程碑是中端的第一个
+> 里程碑，交付物**全部是文档**——架构、路线图与作为其前提的语言规范修订；
+> 中端代码从下一个里程碑（ROADMAP S0 诊断基建）开始写。
+> 因此测试数量与前端组件状态相对 M34 无任何变化。
+
+**一、中端架构定稿（新增 `docs/compiler/semantic/`）**
+
+- `SEMANTIC_ARCHITECTURE.md`：四 pass 分工确定为 **P1 声明收集 → P2 声明解析
+  → P3 Binder→BoundTree → P4a Lowerer→LoweredTree → P4b BilEmitter→BilModule**。
+  用户拍板的五项：① P3 与 P4 分开（不合并为单遍）；② Roslyn 风格**独立的
+  Bound Tree**（不在 AST 上挂语义字段）；③ 驻留符号对象图（同一符号同一引用，
+  含构造泛型类型驻留）；④ bootstrap 硬编码 + core.latte 混合供给根类型；
+  ⑤ 新错误模型（`Diagnostic` + `DiagnosticBag`，多错不互断）。
+  另含 Origin 调试链（Bil→Lowered→Bound→AST.Span）与 BIL 待修订清单。
+- `SEMANTIC_ROADMAP.md`：S0–S14 计划序号，近细远粗（S0–S6 已细化到验收标准）。
+  验收总原则：**BIL 模型/writer → lowering 最小闭环 → verifier → VM**。
+  **async 深度 lowering 归 S13**——async/await 物化为标准库 Task 调用，
+  Task 再调 stdlib 要求 Middleware 暴露的 Native 方法，因此 Middleware 完全
+  不关心上层异步模型（备选的浅 lowering 方案会让 P4 与 BIL/VM 捆绑，
+  违反关注点分离，已否决）。
+- 目录重命名：`docs/compiler/frontend/` → `docs/compiler/syntax/`
+  （与新增的 `semantic/` 并列，三份前端文档随迁）。
+
+**二、语言规范修订（用户拍板，作为中端检查项的前提）**
+
+- **String 改为非 rich 值类型基元**（原属 Object 分支）：可观察语义是
+  **严格深拷贝**；实现可引入用户透明的 CoW/驻留/native 计数优化，但源码语义、
+  编译器分析、用户代码一律**不得假设其存在**——类比「BIL 永远不应假设 GC
+  模型和 GC 行为」。因此 `struct Label { text: String }` 不需要 `rich`。
+- **wrapper 恒为 rich struct**，对象树上 `MyWrapper → Wrapper → ValueType`：
+  值语义、unique ownership，正是生命周期能绑定被修饰实体/方法/值的原因。
+  `rich` 由 `wrapper` 声明形式隐含，**源码显式书写是编译错误**；BIL 作为
+  显式 IR 反之**必须**显式带 `rich`。
+- **`obj:Wrapper` 是只读 place**：只能作成员访问的接收者（读写字段、调用方法，
+  一律原地作用于宿主持有的那份）；**不可整体赋值**（wrapper 只能由 `@W(...)`
+  在宿主创建时安装）、**不可整体取值**（作实参/返回值/推断源皆非法）。
+  两条禁令都直接来自「与宿主同生共死」的不变量，在语法层封死而非靠约定。
+  wrapper 字段自身的可写性仍由 `var`/`const` 与可见性决定。
+- 新增 SYNTAX §14.9「wrapper 的 rich/shared 规则与目标矩阵」：宿主可内嵌性
+  （宿主必须能内嵌 rich struct ⇒ 非 rich struct、基元类型、String、Span、
+  Type 不可被任何 wrapper 修饰）、shared wrapper 可修饰全部目标但字段受
+  shared 约束、非 shared wrapper 只能修饰 A–D 四类非 shared 目标、
+  interface 实现者传染校验。
+- 新增**「共享安全类型」**统一概念（shared class ∪ shared rich struct/wrapper
+  ∪ 非 rich ValueType ∪ T 共享安全的 `Nullable\<T>`），让两条逃逸闸门共用
+  同一张白名单：① 全局/静态字段类型必须共享安全（singleton 因此必须 shared）；
+  ② async 五项边界（receiver / 参数 / TResult / lambda 捕获 / 泛型实参）。
+- **rich/shared 单向传染**：基类 rich/shared ⇒ 子类必须同标；反向可收紧
+  （shared 子类可继承 local 基类），安全性由「含继承字段的完整闭包重校验」兜底。
+- **非 rich struct（含非 rich enum struct）不得标记 `open`/`abstract`** ⇒
+  不可能有子类型 ⇒ 封死「声明 rich/shared 子类型绕过闭包检查」的路径。
+  **不引入 `final` 关键字**。
+
+**三、同步与冲突处理**
+
+- `RUNTIME.md`：三个运行时域的归属重划（String 入非 rich ValueType 域、
+  全部 wrapper 入 rich ValueType 域、shared wrapper 入 shared rich 域）+
+  新增「String 的表示」与「wrapper 值的表示」两段 + `CoroutineLocal\<TValue>`
+  是 per-coroutine 语义的唯一机制。
+- `BIL_STANDARD.md` 只做**机械同步**两处：`.string` 归 ValueType 域（§6.2）、
+  §8.2 修饰符合法性 4 条 → 7 条。**指令集未动**：wrapper 从 Object 变 rich
+  struct 后，§12.4 只有值语义的 `get.wrapper`，缺**只读 place 的接收者形态**
+  （以宿主那份为 receiver、proxy 体内 `this`）——沿用 async 的既定做法定性为
+  **待补而非待改**，记入 SEMANTIC_ARCHITECTURE §7.1 + ROADMAP S11。
+- `CLAUDE.md` / `AGENTS.md` / `PARSER_ROADMAP.md` 示例与表格对齐；顺手修掉
+  两处因本次修订而自相矛盾的旧示例（`rich struct { label: String }`、
+  `pub open struct Point3D : Point`）。
+- **前端零改动**：`Parser/Keywords.cs` 的 `DeclarationDescriptors` 已含
+  RICH/SHARED/OPEN/ABSTRACT/SINGLETON，新规则全部是语义期 P2 的合法性检查
+  （落 ROADMAP S3），Parser 只负责收修饰符。
+- 测试：895/895 + fuzz 6000（30 套件，无增删——纯文档里程碑）。
 
 ### 2026-07-28 · M34 技术债清扫：字符字面量 / 复合赋值 / is enum case / `.name` 参数 / import 禁令
 
