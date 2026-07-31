@@ -19,7 +19,7 @@ namespace LatteCompiler.Tests
         {
             TestHarness.Section("Testing Basic typeOf");
 
-            TestExpr("var t = typeOf(box)", "TypeOf(Sym(box))");
+            TestExpr("var t = typeOf(box)", "TypeOf(Path(box, []))");
             TestExpr("var t = typeOf(12)", "TypeOf(Int(12,I32))");
 
             TestHarness.Blank();
@@ -30,8 +30,8 @@ namespace LatteCompiler.Tests
         {
             TestHarness.Section("Testing typeOf with Complex Operands");
 
-            TestExpr("var t = typeOf(foo(1))", "TypeOf(Call(Sym(foo), [Int(1,I32)]))");
-            TestExpr("var t = typeOf(obj.field)", "TypeOf(Sym(obj.field))");
+            TestExpr("var t = typeOf(foo(1))", "TypeOf(Path(foo(Int(1,I32)), []))");
+            TestExpr("var t = typeOf(obj.field)", "TypeOf(Path(obj, [.field]))");
 
             TestHarness.Blank();
         }
@@ -41,7 +41,7 @@ namespace LatteCompiler.Tests
         {
             TestHarness.Section("Testing Suffix after typeOf");
 
-            TestExpr("var t = typeOf(box).name", "Access(TypeOf(Sym(box)), .name)");
+            TestExpr("var t = typeOf(box).name", "Path((TypeOf(Path(box, []))), [.name])");
 
             TestHarness.Blank();
         }
@@ -76,8 +76,8 @@ namespace LatteCompiler.Tests
 
             var typeOf = (TypeOfExpressionASTNode)decl.Initializer.Expression;
             TestHarness.CheckTrue("Operand Root 已 Attach", typeOf.Operand.IsAttached);
-            TestHarness.CheckTrue("Operand 内容是符号引用",
-                typeOf.Operand.Expression is SymbolReferenceASTNode);
+            TestHarness.CheckTrue("Operand 内容是路径表达式",
+                typeOf.Operand.Expression is PathExpressionASTNode);
             TestHarness.CheckTrue("Operand Root 的 Parent 是 typeOf 节点",
                 ReferenceEquals(typeOf.Operand.Parent, typeOf));
             TestHarness.CheckTrue("typeOf 节点挂在 Initializer Root 下",

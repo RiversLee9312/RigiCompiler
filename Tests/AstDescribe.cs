@@ -11,9 +11,10 @@ namespace LatteCompiler.Tests
     ///
     /// 格式约定（表达式）：
     ///   Int(42,I32[,hex])  Float(3.14[f])  Str("..."[,interp])  Bool(True)  Null
-    ///   Sym(a.b&lt;T&gt;)  Unary(- x)  Binary(l + r)  CompoundAssign(t op= v)  Group(x)
-    ///   Call(callee, [a, n:b])  Index(obj, [a])  Access(obj, [?].m[&lt;T&gt;])
-    ///   New(T, [args])  Cast(x as[?] T)  Check(x is T | is .Case)  EnumCase(.N)  WrapperAccess(o, :W)
+    ///   Unary(- x)  Binary(l + r)  CompoundAssign(t op= v)  Group(x)
+    ///   Path(head, [.seg, ?.seg, :seg])（M42 统一路径：head 为符号 a / a&lt;T&gt; /
+    ///   a(args) / a[0] 或 (expr底座)；段带 &lt;T&gt; 与 (args)/[args] 后缀）
+    ///   New(T, [args])  Cast(x as[?] T)  Check(x is T | is .Case)  EnumCase(.N)
     ///   If(c, [then块], [else块])  Switch(s, [p -> b块], default -> d块)（均可带 named 标签）
     ///   SwitchStmt(s, [p -> b块], default -> d块)（语句形态）  TypeOf(x)
     ///   Lambda[ async]([ps])[\&lt;gs&gt;]: R ->[ named L] body（单表达式或 [块]）  Seq(...)
@@ -35,19 +36,13 @@ namespace LatteCompiler.Tests
                 CharLiteralASTNode c => $"Char('{c.Value}')",
                 BoolLiteralASTNode b => $"Bool({b.Value})",
                 NullLiteralASTNode => "Null",
-                SymbolReferenceASTNode sref => $"Sym({Symbol(sref.Symbol.symbol)})",
                 UnaryExpressionASTNode u => $"Unary({u.Operator} {Expr(u.Operand.Expression)})",
                 BinaryExpressionASTNode b =>
                     $"Binary({Expr(b.Left.Expression)} {b.Operator} {Expr(b.Right.Expression)})",
                 CompoundAssignmentExpressionASTNode ca =>
                     $"CompoundAssign({Expr(ca.Target.Expression)} {ca.Operator}= {Expr(ca.Value.Expression)})",
                 GroupExpressionASTNode g => $"Group({Expr(g.InnerExpression.Expression)})",
-                CallExpressionASTNode c =>
-                    $"Call({Expr(c.Callee.Expression)}, [{string.Join(", ", c.Arguments.Select(Arg))}])",
-                IndexExpressionASTNode ix =>
-                    $"Index({Expr(ix.Object.Expression)}, [{string.Join(", ", ix.Indices.Select(Arg))}])",
-                MemberAccessASTNode m =>
-                    $"Access({Expr(m.Object.Expression)}, {(m.IsSafeAccess ? "?" : "")}.{m.MemberName}{GenericArgs(m)})",
+                PathExpressionASTNode p => Path(p),
                 NewExpressionASTNode n =>
                     $"New({Type(n.Type)}, [{string.Join(", ", n.Arguments.Select(Arg))}])",
                 CastExpressionASTNode c =>
@@ -56,8 +51,6 @@ namespace LatteCompiler.Tests
                     ? $"Check({Expr(t.Object.Expression)} {t.Operator} {Expr(t.TargetCase)})"
                     : $"Check({Expr(t.Object.Expression)} {t.Operator} {Type(t.TargetType!)})",
                 EnumCaseExpressionASTNode ec => $"EnumCase(.{ec.CaseName})",
-                WrapperAccessASTNode w =>
-                    $"WrapperAccess({Expr(w.Object.Expression)}, :{w.WrapperName})",
                 IfExpressionASTNode e =>
                     $"If({Expr(e.Condition.Expression)}{Named(e.Label)}, {Block(e.ThenBody)}, {Block(e.ElseBody)})",
                 SwitchExpressionASTNode s => Switch(s),
@@ -426,11 +419,46 @@ namespace LatteCompiler.Tests
             return string.Join(".", parts);
         }
 
-        // 成员访问上的泛型实参：<T,...>（无实参为空串）
-        private static string GenericArgs(MemberAccessASTNode m)
+        // 成员/符号头上的泛型实参：<T,...>（无实参为空串）
+        private static string GenericArgs(List<TypeReferenceASTNode> args)
         {
-            if (m.GenericArguments.Count == 0) return "";
-            return "<" + string.Join(",", m.GenericArguments.Select(Type)) + ">";
+            if (args.Count == 0) return "";
+            return "<" + string.Join(",", args.Select(Type)) + ">";
+        }
+
+        // ===== 路径表达式（M42）=====
+        // Path(head, [段, ...])；head：a / a<T> / a(args) / a[0] / (expr底座)；
+        // 段：.name / ?.name / :name + <T> + (args)/[args] 后缀
+        private static string Path(PathExpressionASTNode path)
+        {
+            return $"Path({PathHead(path.Head)}, [{string.Join(", ", path.Segments.Select(PathSegment))}])";
+        }
+
+        private static string PathHead(PathHeadASTNode head)
+        {
+            var s = head.Name ?? $"({Expr(head.Expression!.Expression)})";
+            s += GenericArgs(head.GenericArguments);
+            s += string.Join("", head.Suffixes.Select(PathSuffix));
+            return s;
+        }
+
+        private static string PathSegment(PathSegmentASTNode segment)
+        {
+            var connector = segment.Connector switch
+            {
+                PathConnector.SafeDot => "?.",
+                PathConnector.Colon => ":",
+                _ => ".",
+            };
+            return connector + segment.Name + GenericArgs(segment.GenericArguments)
+                + string.Join("", segment.Suffixes.Select(PathSuffix));
+        }
+
+        private static string PathSuffix(PathSuffixASTNode suffix)
+        {
+            var open = suffix.Kind == PathSuffixKind.Call ? "(" : "[";
+            var close = suffix.Kind == PathSuffixKind.Call ? ")" : "]";
+            return open + string.Join(", ", suffix.Arguments.Select(Arg)) + close;
         }
 
         // @ 注解前缀：@Name[(args)] + 空格；无注解为空串

@@ -45,11 +45,11 @@ namespace LatteCompiler.Tests
             TestHarness.Section("Testing \\< Generics vs < Less-Than");
 
             // < 现在只是小于号（在 \\< 语法下不再歧义）
-            TestExpr("var lt = a < b", "Binary(Sym(a) < Sym(b))");
+            TestExpr("var lt = a < b", "Binary(Path(a, []) < Path(b, []))");
             // 泛型路径引用（不带调用）
-            TestExpr("var gp = Span.alloc\\<f32>", "Sym(Span.alloc<f32>)");
+            TestExpr("var gp = Span.alloc\\<f32>", "Path(Span, [.alloc<f32>])");
             // 同一行内泛型与小于号共存
-            TestExpr("var cmp = x < y", "Binary(Sym(x) < Sym(y))");
+            TestExpr("var cmp = x < y", "Binary(Path(x, []) < Path(y, []))");
 
             TestHarness.Blank();
         }
@@ -60,11 +60,11 @@ namespace LatteCompiler.Tests
             TestHarness.Section("Testing Combined > Operators");
 
             // >= 由 > 和 = 组合
-            TestExpr("var r = a >= b", "Binary(Sym(a) >= Sym(b))");
+            TestExpr("var r = a >= b", "Binary(Path(a, []) >= Path(b, []))");
             // >> 由两个 > 组合（括号内）
-            TestExpr("var s = (a >> 2)", "Group(Binary(Sym(a) >> Int(2,I32)))");
+            TestExpr("var s = (a >> 2)", "Group(Binary(Path(a, []) >> Int(2,I32)))");
             // >>> 由三个 > 组合
-            TestExpr("var t = (a >>> 2)", "Group(Binary(Sym(a) >>> Int(2,I32)))");
+            TestExpr("var t = (a >>> 2)", "Group(Binary(Path(a, []) >>> Int(2,I32)))");
 
             TestHarness.Blank();
         }
@@ -74,9 +74,9 @@ namespace LatteCompiler.Tests
         {
             TestHarness.Section("Testing Operator Regression");
 
-            TestExpr("var g = a > b", "Binary(Sym(a) > Sym(b))");
-            TestExpr("var l = a <= b", "Binary(Sym(a) <= Sym(b))");
-            TestExpr("var e = a == b", "Binary(Sym(a) == Sym(b))");
+            TestExpr("var g = a > b", "Binary(Path(a, []) > Path(b, []))");
+            TestExpr("var l = a <= b", "Binary(Path(a, []) <= Path(b, []))");
+            TestExpr("var e = a == b", "Binary(Path(a, []) == Path(b, []))");
 
             TestHarness.Blank();
         }

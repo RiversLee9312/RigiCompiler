@@ -41,9 +41,9 @@ namespace LatteCompiler.Tests
         {
             TestHarness.Section("Expression Statements");
 
-            TestBlock("{ foo(1) }", "[Call(Sym(foo), [Int(1,I32)])]");
+            TestBlock("{ foo(1) }", "[Path(foo(Int(1,I32)), [])]");
             TestBlock("{\n    foo(1)\n    obj.field\n}",
-                "[Call(Sym(foo), [Int(1,I32)]), Sym(obj.field)]");
+                "[Path(foo(Int(1,I32)), []), Path(obj, [.field])]");
 
             TestHarness.Blank();
         }
@@ -53,13 +53,13 @@ namespace LatteCompiler.Tests
         {
             TestHarness.Section("Assign Statements");
 
-            TestBlock("{ x = 5 }", "[Assign(Sym(x) = Int(5,I32))]");
+            TestBlock("{ x = 5 }", "[Assign(Path(x, []) = Int(5,I32))]");
             // 纯符号路径目标保持 Symbol 形态
-            TestBlock("{ obj.field = v }", "[Assign(Sym(obj.field) = Sym(v))]");
+            TestBlock("{ obj.field = v }", "[Assign(Path(obj, [.field]) = Path(v, []))]");
             // 表达式底座上的成员/索引目标
             TestBlock("{ foo().field = (1 + 2) }",
-                "[Assign(Access(Call(Sym(foo), []), .field) = Group(Binary(Int(1,I32) + Int(2,I32))))]");
-            TestBlock("{ a[0] = v }", "[Assign(Index(Sym(a), [Int(0,I32)]) = Sym(v))]");
+                "[Assign(Path(foo(), [.field]) = Group(Binary(Int(1,I32) + Int(2,I32))))]");
+            TestBlock("{ a[0] = v }", "[Assign(Path(a[Int(0,I32)], []) = Path(v, []))]");
 
             TestHarness.Blank();
         }
@@ -71,10 +71,10 @@ namespace LatteCompiler.Tests
 
             TestBlock("{ return }", "[Return]");
             TestBlock("{ return 42 }", "[Return(Int(42,I32))]");
-            TestBlock("{\n    return x\n}", "[Return(Sym(x))]");
+            TestBlock("{\n    return x\n}", "[Return(Path(x, []))]");
             // @标签（SYNTAX §6.1：匿名值块的默认标签是 _）
             TestBlock("{ return@_ (x * 2) }",
-                "[Return@_(Group(Binary(Sym(x) * Int(2,I32))))]");
+                "[Return@_(Group(Binary(Path(x, []) * Int(2,I32))))]");
 
             TestHarness.Blank();
         }
@@ -98,20 +98,20 @@ namespace LatteCompiler.Tests
 
             // 无 else
             TestBlock("{ if (x > 0) { foo() } }",
-                "[IfStmt(Binary(Sym(x) > Int(0,I32)), [Call(Sym(foo), [])], <none>)]");
+                "[IfStmt(Binary(Path(x, []) > Int(0,I32)), [Path(foo(), [])], <none>)]");
             // 有 else
             TestBlock("{\n    if (c) {\n        a()\n    } else {\n        b()\n    }\n}",
-                "[IfStmt(Sym(c), [Call(Sym(a), [])], [Call(Sym(b), [])])]");
+                "[IfStmt(Path(c, []), [Path(a(), [])], [Path(b(), [])])]");
             // else if 链
             TestBlock("{ if (a) { f() } else if (b) { g() } else { h() } }",
-                "[IfStmt(Sym(a), [Call(Sym(f), [])], " +
-                "IfStmt(Sym(b), [Call(Sym(g), [])], [Call(Sym(h), [])]))]");
+                "[IfStmt(Path(a, []), [Path(f(), [])], " +
+                "IfStmt(Path(b, []), [Path(g(), [])], [Path(h(), [])]))]");
             // if 语句后跟其他语句（无 else 时正确交还 token）
             TestBlock("{\n    if (c) { a() }\n    b()\n}",
-                "[IfStmt(Sym(c), [Call(Sym(a), [])], <none>), Call(Sym(b), [])]");
+                "[IfStmt(Path(c, []), [Path(a(), [])], <none>), Path(b(), [])]");
             // if 语句体内的变量声明与赋值
             TestBlock("{ if (c) { var x = 1\n x = 2 } }",
-                "[IfStmt(Sym(c), [var x = Int(1,I32), Assign(Sym(x) = Int(2,I32))], <none>)]");
+                "[IfStmt(Path(c, []), [var x = Int(1,I32), Assign(Path(x, []) = Int(2,I32))], <none>)]");
 
             TestHarness.Blank();
         }

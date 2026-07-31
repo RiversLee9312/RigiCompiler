@@ -14,10 +14,10 @@ namespace LatteCompiler.Tests
         {
             TestHarness.Section("Call Arguments");
 
-            TestExpr("var v = foo(1, x)", "Call(Sym(foo), [Int(1,I32), Sym(x)])");
-            TestExpr("var v = foo(name = 42)", "Call(Sym(foo), [name:Int(42,I32)])");
-            TestExpr("var v = foo(1, name = 2)", "Call(Sym(foo), [Int(1,I32), name:Int(2,I32)])");
-            TestExpr("var v = foo()", "Call(Sym(foo), [])");
+            TestExpr("var v = foo(1, x)", "Path(foo(Int(1,I32), Path(x, [])), [])");
+            TestExpr("var v = foo(name = 42)", "Path(foo(name:Int(42,I32)), [])");
+            TestExpr("var v = foo(1, name = 2)", "Path(foo(Int(1,I32), name:Int(2,I32)), [])");
+            TestExpr("var v = foo()", "Path(foo(), [])");
 
             TestHarness.Blank();
         }
@@ -37,8 +37,8 @@ namespace LatteCompiler.Tests
         {
             TestHarness.Section("Index Arguments");
 
-            TestExpr("var v = a[0]", "Index(Sym(a), [Int(0,I32)])");
-            TestExpr("var v = a[0, 1]", "Index(Sym(a), [Int(0,I32), Int(1,I32)])");
+            TestExpr("var v = a[0]", "Path(a[Int(0,I32)], [])");
+            TestExpr("var v = a[0, 1]", "Path(a[Int(0,I32), Int(1,I32)], [])");
 
             TestHarness.Blank();
         }
@@ -48,10 +48,10 @@ namespace LatteCompiler.Tests
         {
             TestHarness.Section("Line Continuation Inside Brackets");
 
-            TestExpr("var v = foo(1,\n2)", "Call(Sym(foo), [Int(1,I32), Int(2,I32)])");
-            TestExpr("var v = a[0,\n1]", "Index(Sym(a), [Int(0,I32), Int(1,I32)])");
+            TestExpr("var v = foo(1,\n2)", "Path(foo(Int(1,I32), Int(2,I32)), [])");
+            TestExpr("var v = a[0,\n1]", "Path(a[Int(0,I32), Int(1,I32)], [])");
             // 空实参列表也允许换行
-            TestExpr("var v = foo(\n)", "Call(Sym(foo), [])");
+            TestExpr("var v = foo(\n)", "Path(foo(), [])");
 
             TestHarness.Blank();
         }

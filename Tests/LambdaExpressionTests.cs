@@ -25,14 +25,14 @@ namespace LatteCompiler.Tests
             TestHarness.Section("Testing Basic Lambdas");
 
             TestLambda("var f = func{(x: i32): i32 -> (x + 1)}",
-                "Lambda([x: i32]): i32 -> Group(Binary(Sym(x) + Int(1,I32)))");
+                "Lambda([x: i32]): i32 -> Group(Binary(Path(x, []) + Int(1,I32)))");
             TestLambda("var f = func{(): i32 -> 42}",
                 "Lambda([]): i32 -> Int(42,I32)");
             TestLambda("var add = func{(x: i32, y: i32): i32 -> (x + y)}",
-                "Lambda([x: i32, y: i32]): i32 -> Group(Binary(Sym(x) + Sym(y)))");
+                "Lambda([x: i32, y: i32]): i32 -> Group(Binary(Path(x, []) + Path(y, [])))");
             // 默认参数（复用 ParameterListParserLayer）
             TestLambda("var f = func{(x: i32 = 5): i32 -> x}",
-                "Lambda([x: i32 = Int(5,I32)]): i32 -> Sym(x)");
+                "Lambda([x: i32 = Int(5,I32)]): i32 -> Path(x, [])");
             // 可变参数（复用 ParameterListParserLayer）
             TestLambda("var f = func{(numbers: i32...): i32 -> 0}",
                 "Lambda([numbers: i32...]): i32 -> Int(0,I32)");
@@ -47,7 +47,7 @@ namespace LatteCompiler.Tests
 
             // SYNTAX §5.1：泛型形参列表在形参列表之后
             TestLambda("var f = func{(width: TSize)\\<TSize extends Size>: TSize -> width}",
-                "Lambda([width: TSize])\\<TSize, TSize extends Size>: TSize -> Sym(width)");
+                "Lambda([width: TSize])\\<TSize, TSize extends Size>: TSize -> Path(width, [])");
 
             TestHarness.Blank();
         }
@@ -58,7 +58,7 @@ namespace LatteCompiler.Tests
             TestHarness.Section("Testing Async Lambdas");
 
             TestLambda("var loader = async func{(id: i32): SharedUser -> loadUserNow(id)}",
-                "Lambda async([id: i32]): SharedUser -> Call(Sym(loadUserNow), [Sym(id)])");
+                "Lambda async([id: i32]): SharedUser -> Path(loadUserNow(Path(id, [])), [])");
 
             TestHarness.Blank();
         }
@@ -70,10 +70,10 @@ namespace LatteCompiler.Tests
 
             // expr{...} 脱糖为以 lambda 为唯一实参的调用
             TestLambda("var r = list.map{(item: String): i32 -> item.length}",
-                "Call(Sym(list.map), [Lambda([item: String]): i32 -> Sym(item.length)])");
+                "Path(list, [.map(Lambda([item: String]): i32 -> Path(item, [.length]))])");
             // lambda 作为普通实参
             TestLambda("var r = foo(func{(x: i32): i32 -> x})",
-                "Call(Sym(foo), [Lambda([x: i32]): i32 -> Sym(x)])");
+                "Path(foo(Lambda([x: i32]): i32 -> Path(x, [])), [])");
 
             TestHarness.Blank();
         }
@@ -84,7 +84,7 @@ namespace LatteCompiler.Tests
             TestHarness.Section("Testing Multi-line Lambdas");
 
             TestLambda("var f = func{(x: i32): i32 ->\n    (x + 1)\n}",
-                "Lambda([x: i32]): i32 -> Group(Binary(Sym(x) + Int(1,I32)))");
+                "Lambda([x: i32]): i32 -> Group(Binary(Path(x, []) + Int(1,I32)))");
 
             TestHarness.Blank();
         }
@@ -100,7 +100,7 @@ namespace LatteCompiler.Tests
                        "    return@_ doubled\n" +
                        "}}",
                 "Lambda([x: i32]): i32 -> " +
-                "[const doubled = Group(Binary(Sym(x) * Int(2,I32))), Return@_(Sym(doubled))]");
+                "[const doubled = Group(Binary(Path(x, []) * Int(2,I32))), Return@_(Path(doubled, []))]");
 
             // named 命名后 return@标签 穿透内层匿名块（named 写在 -> 之后、体之前）
             TestLambda("var f = func{(x: i32): i32 -> named calc {\n" +
@@ -109,11 +109,11 @@ namespace LatteCompiler.Tests
                        "    }\n" +
                        "}}",
                 "Lambda([x: i32]): i32 -> named calc " +
-                "[Seq([Return@calc(Group(Binary(Sym(x) * Int(2,I32))))])]");
+                "[Seq([Return@calc(Group(Binary(Path(x, []) * Int(2,I32))))])]");
 
             // trailing lambda 也可用块体
             TestLambda("var r = list.map{(item: String): i32 -> { return@_ item.length }}",
-                "Call(Sym(list.map), [Lambda([item: String]): i32 -> [Return@_(Sym(item.length))]])");
+                "Path(list, [.map(Lambda([item: String]): i32 -> [Return@_(Path(item, [.length]))])])");
 
             TestHarness.Blank();
         }

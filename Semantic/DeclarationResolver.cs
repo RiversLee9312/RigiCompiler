@@ -50,6 +50,8 @@ namespace LatteCompiler
         {
             private readonly CompilationUnit unit;
             private readonly DeclarationCollection declarations;
+            // 名字解析共用设施（P3 Binder 以 DiagnosticPhase.P3 另建实例）
+            private readonly NameResolver names;
             private readonly List<DeclEntry> entries = new List<DeclEntry>();
             private readonly List<DeclEntry> typeEntries = new List<DeclEntry>();
             private readonly Dictionary<SemanticSymbol, DeclEntry> entryOfSymbol =
@@ -59,6 +61,7 @@ namespace LatteCompiler
             {
                 this.unit = unit;
                 this.declarations = declarations;
+                names = new NameResolver(unit, DiagnosticPhase.P2);
             }
 
             public void Run()
@@ -206,12 +209,12 @@ namespace LatteCompiler
                         var path = item.symbolNode.symbol;
                         // import 路径自身不带泛型实参；解析失败统一在此报一次
                         // （名字解析消费 import 时一律静默，避免二次噪音）
-                        var resolved = ResolveSymbolPath(path, ctx, declaringType: null,
+                        var resolved = names.ResolveSymbolPath(path, ctx, declaringType: null,
                             declaringMethod: null, allowImports: false, reportErrors: false, span: null);
                         if (resolved is ErrorTypeSymbol)
                         {
                             Error(item.symbolNode.Span ?? file.Span,
-                                $"Unresolved import: '{PathText(path)}'");
+                                $"Unresolved import: '{NameResolver.PathText(path)}'");
                         }
                     }
                 }
@@ -969,7 +972,7 @@ namespace LatteCompiler
                 // 成员位置的 ext（§4.4 只允许全局声明）：诊断已在 CheckMemberModifiers
                 // 报过（DeclaringType != null），此处不再注册
                 if (entry.DeclaringType != null) continue;
-                var target = ResolveDottedPath(extTargetPath!.Split('.'), entry.Context,
+                var target = names.ResolveDottedPath(extTargetPath!.Split('.'), entry.Context,
                     allowImports: true, reportErrors: true, span: entry.Node.Span);
                 if (target is ErrorTypeSymbol) continue;    // 毒化静默
                 if (target is not TypeSymbol targetType)
@@ -1009,7 +1012,7 @@ namespace LatteCompiler
                         }
                         continue;
                     }
-                    var resolved = ResolveSymbolPath(annotation.Name.symbol, entry.Context,
+                    var resolved = names.ResolveSymbolPath(annotation.Name.symbol, entry.Context,
                         entry.DeclaringType, declaringMethod: null,
                         allowImports: true, reportErrors: true,
                         span: annotation.Name.Span ?? annotation.Span ?? entry.Node.Span);
@@ -1017,7 +1020,7 @@ namespace LatteCompiler
                     if (resolved is not TypeSymbol { Kind: TypeKind.Wrapper } wrapperType)
                     {
                         Error(annotation.Span ?? entry.Node.Span,
-                            $"'{PathText(annotation.Name.symbol)}' is not a wrapper type");
+                            $"'{NameResolver.PathText(annotation.Name.symbol)}' is not a wrapper type");
                         continue;
                     }
                     // wrapper 自身的 @WrapperTarget 缺失/非法已在声明处报过，此处静默
@@ -1136,231 +1139,17 @@ namespace LatteCompiler
             }
         }
 
-        // ===== 名字解析核心（类型引用/注解名/import/ext 目标共用）=====
+        // ===== 名字解析（实现已提取到 NameResolver，此处为条目解包薄包装）=====
 
         private SemanticSymbol ResolveTypeReference(TypeReferenceASTNode typeRef, DeclEntry entry)
         {
-            var resolved = ResolveSymbolPath(typeRef.TypeSymbol.symbol, entry.Context,
-                entry.DeclaringType, DeclaringMethodOf(entry), allowImports: true,
-                reportErrors: true, span: typeRef.Span ?? entry.Node.Span);
-            // T? 即构造类型 Nullable\<T>（SYNTAX §3.4）
-            if (typeRef.IsNullable && resolved is not ErrorTypeSymbol)
-            {
-                return unit.Symbols.GetConstructedType(unit.Symbols.Bootstrap.NullableDefinition, resolved);
-            }
-            return resolved;
+            return names.ResolveTypeReference(typeRef, entry.Context,
+                entry.DeclaringType, DeclaringMethodOf(entry), typeRef.Span ?? entry.Node.Span);
         }
 
         private static MethodSymbol? DeclaringMethodOf(DeclEntry entry)
         {
             return entry.Symbol as MethodSymbol;
-        }
-
-        // 符号路径解析：首段按查找序定位，后续逐段下钻，末段应用泛型实参。
-        // 失败一律返回 ErrorTypeSymbol；reportErrors 控制是否产出诊断
-        // （import 消费路径静默，由 ValidateImports 统一报一次）。
-        private SemanticSymbol ResolveSymbolPath(Symbol path, FileContext ctx,
-            TypeSymbol? declaringType, MethodSymbol? declaringMethod,
-            bool allowImports, bool reportErrors, CharRange? span)
-        {
-            var elements = path.elements;
-            if (elements.Count == 0)
-            {
-                if (reportErrors) Error(span, "Empty type reference");
-                return unit.Symbols.ErrorType;
-            }
-            SemanticSymbol? current;
-            // 泛型参数仅接受单段裸名引用（方法 → 宿主类型链）
-            if (elements.Count == 1 && elements[0].generics.Count == 0)
-            {
-                current = FindGenericParameter(elements[0].name, declaringType, declaringMethod);
-                if (current != null) return current;
-            }
-            current = ResolveFirstSegment(elements[0].name, ctx, declaringType, allowImports,
-                out var importResolved);
-            if (current == null)
-            {
-                if (reportErrors && !importResolved)
-                {
-                    Error(span, $"Unresolved type or namespace: '{elements[0].name}'");
-                }
-                return unit.Symbols.ErrorType;
-            }
-            // 逐段下钻（命名空间 → 子命名空间/类型；类型 → 嵌套类型）
-            for (int i = 1; i < elements.Count; i++)
-            {
-                var next = Descend(current, elements[i].name);
-                if (next == null)
-                {
-                    if (reportErrors)
-                    {
-                        Error(span, $"Unresolved type or namespace: '{PathText(path)}'");
-                    }
-                    return unit.Symbols.ErrorType;
-                }
-                current = next;
-            }
-            // 末段泛型实参（递归解析后驻留构造）
-            var last = elements[^1];
-            if (last.generics.Count > 0)
-            {
-                return ApplyTypeArguments(current, last, ctx, declaringType, declaringMethod,
-                    allowImports, reportErrors, span);
-            }
-            return current;
-        }
-
-        // ext 目标路径（字符串段，SYNTAX §4.4 原文无泛型）走同一查找序
-        private SemanticSymbol ResolveDottedPath(string[] segments, FileContext ctx,
-            bool allowImports, bool reportErrors, CharRange? span)
-        {
-            var current = ResolveFirstSegment(segments[0], ctx, declaringType: null,
-                allowImports, out var importResolved);
-            if (current == null)
-            {
-                if (reportErrors && !importResolved)
-                {
-                    Error(span, $"Unresolved extension target: '{string.Join(".", segments)}'");
-                }
-                return unit.Symbols.ErrorType;
-            }
-            for (int i = 1; i < segments.Length; i++)
-            {
-                var next = Descend(current, segments[i]);
-                if (next == null)
-                {
-                    if (reportErrors)
-                    {
-                        Error(span, $"Unresolved extension target: '{string.Join(".", segments)}'");
-                    }
-                    return unit.Symbols.ErrorType;
-                }
-                current = next;
-            }
-            return current;
-        }
-
-        // 首段查找序：宿主类型链 NestedTypes → 文件命名空间及父链 → 全局命名空间
-        // → import 列表（具名末段同名 / 通配容器内查）→ core 命名空间（隐式）。
-        // importResolved：具名 import 命中但自身解析失败（已诊断过）时为 true——
-        // 调用方静默毒化，不再报「未解析」。
-        private SemanticSymbol? ResolveFirstSegment(string name, FileContext ctx,
-            TypeSymbol? declaringType, bool allowImports, out bool importResolved)
-        {
-            importResolved = false;
-            for (var t = declaringType; t != null; t = t.DeclaringType)
-            {
-                var nested = t.NestedTypes.FirstOrDefault(n => n.Name == name);
-                if (nested != null) return nested;
-            }
-            for (var ns = ctx.Namespace; ns != null; ns = ns.Parent)
-            {
-                var hit = FindInNamespace(ns, name);
-                if (hit != null) return hit;
-            }
-            var globalHit = FindInNamespace(unit.Symbols.GlobalNamespace, name);
-            if (globalHit != null) return globalHit;
-            if (allowImports)
-            {
-                foreach (var item in ctx.Imports)
-                {
-                    var importPath = item.symbolNode.symbol;
-                    if (item.importAll)
-                    {
-                        var container = ResolveSymbolPath(importPath, ctx, declaringType: null,
-                            declaringMethod: null, allowImports: false, reportErrors: false, span: null);
-                        SemanticSymbol? hit = container switch
-                        {
-                            NamespaceSymbol ns => ns.Types.FirstOrDefault(t => t.Name == name),
-                            TypeSymbol t => t.NestedTypes.FirstOrDefault(n => n.Name == name),
-                            _ => null,
-                        };
-                        if (hit != null) return hit;
-                    }
-                    else if (importPath.elements.Count > 0 && importPath.elements[^1].name == name)
-                    {
-                        var resolved = ResolveSymbolPath(importPath, ctx, declaringType: null,
-                            declaringMethod: null, allowImports: false, reportErrors: false, span: null);
-                        if (resolved is ErrorTypeSymbol)
-                        {
-                            importResolved = true;
-                            return null;
-                        }
-                        return resolved;
-                    }
-                }
-            }
-            return FindInNamespace(unit.Symbols.Bootstrap.Core, name);
-        }
-
-        private static SemanticSymbol? FindInNamespace(NamespaceSymbol ns, string name)
-        {
-            return (SemanticSymbol?)ns.Types.FirstOrDefault(t => t.Name == name)
-                ?? ns.ChildNamespaces.FirstOrDefault(n => n.Name == name);
-        }
-
-        private static SemanticSymbol? Descend(SemanticSymbol current, string name) => current switch
-        {
-            NamespaceSymbol ns => (SemanticSymbol?)ns.ChildNamespaces.FirstOrDefault(n => n.Name == name)
-                ?? ns.Types.FirstOrDefault(t => t.Name == name),
-            TypeSymbol t => t.NestedTypes.FirstOrDefault(n => n.Name == name),
-            _ => null,
-        };
-
-        private static GenericParameterSymbol? FindGenericParameter(
-            string name, TypeSymbol? declaringType, MethodSymbol? declaringMethod)
-        {
-            if (declaringMethod != null)
-            {
-                var hit = declaringMethod.GenericParameters.FirstOrDefault(p => p.Name == name);
-                if (hit != null) return hit;
-            }
-            for (var t = declaringType; t != null; t = t.DeclaringType)
-            {
-                var hit = t.GenericParameters.FirstOrDefault(p => p.Name == name);
-                if (hit != null) return hit;
-            }
-            return null;
-        }
-
-        private SemanticSymbol ApplyTypeArguments(SemanticSymbol current, SymbolElement last,
-            FileContext ctx, TypeSymbol? declaringType, MethodSymbol? declaringMethod,
-            bool allowImports, bool reportErrors, CharRange? span)
-        {
-            if (current is not TypeSymbol definition)
-            {
-                if (reportErrors) Error(span, $"'{last.name}' is not a generic type");
-                return unit.Symbols.ErrorType;
-            }
-            var required = definition.GenericParameters.Count(p => !p.IsVariadic && !p.IsNamedVariadic);
-            var variadic = definition.GenericParameters.Any(p => p.IsVariadic || p.IsNamedVariadic);
-            var countOk = variadic
-                ? last.generics.Count >= required
-                : last.generics.Count == definition.GenericParameters.Count;
-            if (definition.GenericParameters.Count == 0 || !countOk)
-            {
-                if (reportErrors)
-                {
-                    Error(span, $"'{definition.Name}' expects {definition.GenericParameters.Count} " +
-                        $"type argument(s), got {last.generics.Count}");
-                }
-                return unit.Symbols.ErrorType;
-            }
-            var args = new SemanticSymbol[last.generics.Count];
-            for (int i = 0; i < args.Length; i++)
-            {
-                args[i] = ResolveSymbolPath(last.generics[i], ctx, declaringType, declaringMethod,
-                    allowImports, reportErrors, span);
-            }
-            // 实参毒化传播（实参自身的诊断已报，此处静默）
-            if (args.Any(a => a is ErrorTypeSymbol)) return unit.Symbols.ErrorType;
-            return unit.Symbols.GetConstructedType(definition, args);
-        }
-
-        // 诊断消息中的路径原文（a.b.C）
-        private static string PathText(Symbol path)
-        {
-            return string.Join(".", path.elements.Select(e => e.name));
         }
     }
 }

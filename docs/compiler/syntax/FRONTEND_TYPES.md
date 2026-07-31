@@ -88,12 +88,12 @@ ASTIntegrityValidator 校验父子指针一致性与 Span 合法性，
 | **CompoundAssignmentExpressionASTNode** | Target、Operator（基础运算符）、Value | 复合赋值（§13.2，+= 等 10 个） |
 | **UnaryExpressionASTNode** | Operator、Operand、IsPrefix | 一元运算（含 await） |
 | **LiteralExpressionASTNode** | Literal | 字面量包装（AttachLiteral 一次性附加，使字面量成为表达式） |
-| **SymbolReferenceASTNode** | Symbol（SymbolASTNode） | 符号引用/纯符号路径（含泛型实参） |
+| **PathExpressionASTNode** | Head、Segments | 路径表达式（§1.4，M42 统一）：符号/调用/索引/成员（含 `?.`）/wrapper（`:`）后缀链统一为单一路径节点 |
+| **PathHeadASTNode** | Name? / Expression?（互斥）、GenericArguments、Suffixes | 路径首段：符号头或表达式底座；非 Expression 子类 |
+| **PathSegmentASTNode** | Connector（Dot/SafeDot/Colon）、Name、GenericArguments、Suffixes | 路径段；非 Expression 子类 |
+| **PathSuffixASTNode** | Kind（Call/Index）、Arguments | 调用 `()` / 索引 `[]` 后缀；非 Expression 子类 |
 | **GroupExpressionASTNode** | InnerExpression | 括号分组 |
 | **NewExpressionASTNode** | Type、Arguments | new 构造 |
-| **CallExpressionASTNode** | Callee、Arguments | 函数调用 |
-| **IndexExpressionASTNode** | Object、Indices | 索引访问 |
-| **MemberAccessASTNode** | Object、MemberName、IsSafeAccess、GenericArguments | 成员访问（底座为表达式时） |
 | **ArgumentASTNode** | Name?、Value | 调用/索引/构造实参（可具名）；非 Expression 子类 |
 | **LambdaExpressionASTNode** | IsAsync、Parameters、GenericParameters?、ReturnType、Label?、Body? / BlockBody?（互斥） | lambda（体双形态：单表达式 Body / 多语句块 BlockBody，块内禁裸 return） |
 | **IfExpressionASTNode** | Condition、ThenBody、ElseBody、Label? | if 表达式（强制 else，分支体为代码块，取值 return@_ / return@标签） |
@@ -103,7 +103,6 @@ ASTIntegrityValidator 校验父子指针一致性与 Span 合法性，
 | **CastExpressionASTNode** | Object、TargetType、IsSafe | as / as? 转换 |
 | **TypeCheckExpressionASTNode** | Object、Operator、TargetType? / TargetCase?（互斥） | is / supers / with 检查；is 右侧可为 enum case（§12.3） |
 | **EnumCaseExpressionASTNode** | CaseName | 前导点 enum case 引用（`.Success`，M20） |
-| **WrapperAccessASTNode** | Object、WrapperName | wrapper 路径访问（`obj:MyWrapper`，链式左结合，M21） |
 | **SeqBlockExpressionASTNode** | IsVolatile、UsingBindings、Label?、Body | seq 块（语句 + 表达式双形态，匿名默认标签 `_`） |
 
 ### 3.6 语句（`AST/StatementNodes.cs`）

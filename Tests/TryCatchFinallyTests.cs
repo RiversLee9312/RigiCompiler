@@ -14,7 +14,7 @@ namespace LatteCompiler.Tests
             TestHarness.Section("Testing Simple Try-Catch");
 
             TestBlock("{ try { riskyOperation() } catch (e: IOException) { handleIO(e) } }",
-                "[Try([Call(Sym(riskyOperation), [])], [Catch(e: IOException, [Call(Sym(handleIO), [Sym(e)])])])]");
+                "[Try([Path(riskyOperation(), [])], [Catch(e: IOException, [Path(handleIO(Path(e, [])), [])])])]");
 
             TestHarness.Blank();
         }
@@ -34,9 +34,9 @@ namespace LatteCompiler.Tests
                       "        handleRuntime(e)\n" +
                       "    }\n" +
                       "}",
-                "[Try([Call(Sym(riskyOperation), [])], " +
-                "[Catch(e: IOException, [Call(Sym(handleIO), [Sym(e)])]), " +
-                "Catch(e: RuntimeException, [Call(Sym(handleRuntime), [Sym(e)])])])]");
+                "[Try([Path(riskyOperation(), [])], " +
+                "[Catch(e: IOException, [Path(handleIO(Path(e, [])), [])]), " +
+                "Catch(e: RuntimeException, [Path(handleRuntime(Path(e, [])), [])])])]");
 
             TestHarness.Blank();
         }
@@ -47,7 +47,7 @@ namespace LatteCompiler.Tests
             TestHarness.Section("Testing Discarded Exception Variable");
 
             TestBlock("{ try { doSomething() } catch (_: RuntimeException) { log() } }",
-                "[Try([Call(Sym(doSomething), [])], [Catch(_: RuntimeException, [Call(Sym(log), [])])])]");
+                "[Try([Path(doSomething(), [])], [Catch(_: RuntimeException, [Path(log(), [])])])]");
 
             TestHarness.Blank();
         }
@@ -58,7 +58,7 @@ namespace LatteCompiler.Tests
             TestHarness.Section("Testing Try-Finally");
 
             TestBlock("{ try { openFile() } finally(e) { cleanup(e) } }",
-                "[Try([Call(Sym(openFile), [])], [], Finally(e, [Call(Sym(cleanup), [Sym(e)])]))]");
+                "[Try([Path(openFile(), [])], [], Finally(e, [Path(cleanup(Path(e, [])), [])]))]");
 
             TestHarness.Blank();
         }
@@ -80,10 +80,10 @@ namespace LatteCompiler.Tests
                       "        cleanup()\n" +
                       "    }\n" +
                       "}",
-                "[Try([Call(Sym(riskyOperation), [])], " +
-                "[Catch(e: IOException, [Call(Sym(handleIO), [Sym(e)])]), " +
-                "Catch(_: RuntimeException, [Call(Sym(doNothing), [])])], " +
-                "Finally(e, [Call(Sym(cleanup), [])]))]");
+                "[Try([Path(riskyOperation(), [])], " +
+                "[Catch(e: IOException, [Path(handleIO(Path(e, [])), [])]), " +
+                "Catch(_: RuntimeException, [Path(doNothing(), [])])], " +
+                "Finally(e, [Path(cleanup(), [])]))]");
 
             TestHarness.Blank();
         }
@@ -104,9 +104,9 @@ namespace LatteCompiler.Tests
                       "        handleOuter(e)\n" +
                       "    }\n" +
                       "}",
-                "[Try([Try([Call(Sym(inner), [])], " +
-                "[Catch(e: InnerException, [Call(Sym(handleInner), [Sym(e)])])])], " +
-                "[Catch(e: OuterException, [Call(Sym(handleOuter), [Sym(e)])])])]");
+                "[Try([Try([Path(inner(), [])], " +
+                "[Catch(e: InnerException, [Path(handleInner(Path(e, [])), [])])])], " +
+                "[Catch(e: OuterException, [Path(handleOuter(Path(e, [])), [])])])]");
 
             TestHarness.Blank();
         }

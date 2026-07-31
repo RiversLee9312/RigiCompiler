@@ -23,19 +23,19 @@ namespace LatteCompiler.Tests
 
             // 简单 await
             TestExpression("await task",
-                "Unary(await Sym(task))");
+                "Unary(await Path(task, []))");
 
             // await 函数调用
             TestExpression("await loadUser(42)",
-                "Unary(await Call(Sym(loadUser), [Int(42,I32)]))");
+                "Unary(await Path(loadUser(Int(42,I32)), []))");
 
             // await 表达式作为变量初始化
             TestBlock("{ const user = await loadUser(id) }",
-                "[const user = Unary(await Call(Sym(loadUser), [Sym(id)]))]");
+                "[const user = Unary(await Path(loadUser(Path(id, [])), []))]");
 
             // await 复杂表达式
             TestExpression("await getTask().execute()",
-                "Unary(await Call(Access(Call(Sym(getTask), []), .execute), []))");
+                "Unary(await Path(getTask(), [.execute()]))");
 
             TestHarness.Blank();
         }
@@ -51,14 +51,14 @@ namespace LatteCompiler.Tests
 
             // yield 带 alarm
             TestBlock("{ yield pollingAlarm }",
-                "[Yield(Sym(pollingAlarm))]");
+                "[Yield(Path(pollingAlarm, []))]");
 
             TestBlock("{ yield sleep(1000) }",
-                "[Yield(Call(Sym(sleep), [Int(1000,I32)]))]");
+                "[Yield(Path(sleep(Int(1000,I32)), []))]");
 
             // 多个 yield
             TestBlock("{\n    yield\n    yield alarm\n}",
-                "[Yield, Yield(Sym(alarm))]");
+                "[Yield, Yield(Path(alarm, []))]");
 
             TestHarness.Blank();
         }
@@ -74,7 +74,7 @@ namespace LatteCompiler.Tests
                       "    yield sleep(100)\n" +
                       "    process(result)\n" +
                       "}",
-                "[const result = Unary(await Call(Sym(fetchData), [])), Yield(Call(Sym(sleep), [Int(100,I32)])), Call(Sym(process), [Sym(result)])]");
+                "[const result = Unary(await Path(fetchData(), [])), Yield(Path(sleep(Int(100,I32)), [])), Path(process(Path(result, [])), [])]");
 
             // 循环中的 await 和 yield
             TestBlock("{\n" +
@@ -83,7 +83,7 @@ namespace LatteCompiler.Tests
                       "        yield\n" +
                       "    }\n" +
                       "}",
-                "[For(id, Sym(ids), [const user = Unary(await Call(Sym(loadUser), [Sym(id)])), Yield])]");
+                "[For(id, Path(ids, []), [const user = Unary(await Path(loadUser(Path(id, [])), [])), Yield])]");
 
             TestHarness.Blank();
         }
@@ -99,15 +99,15 @@ namespace LatteCompiler.Tests
                       "        doSomething()\n" +
                       "    }\n" +
                       "}",
-                "[IfStmt(Unary(await Call(Sym(checkPermission), [])), [Call(Sym(doSomething), [])], <none>)]");
+                "[IfStmt(Unary(await Path(checkPermission(), [])), [Path(doSomething(), [])], <none>)]");
 
             // await 在变量赋值中再传递
             TestBlock("{ const data = await getData()\nprocess(data) }",
-                "[const data = Unary(await Call(Sym(getData), [])), Call(Sym(process), [Sym(data)])]");
+                "[const data = Unary(await Path(getData(), [])), Path(process(Path(data, [])), [])]");
 
             // await 在 return 中
             TestBlock("{ return await compute() }",
-                "[Return(Unary(await Call(Sym(compute), [])))]");
+                "[Return(Unary(await Path(compute(), [])))]");
 
             TestHarness.Blank();
         }

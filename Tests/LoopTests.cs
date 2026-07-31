@@ -25,10 +25,10 @@ namespace LatteCompiler.Tests
             TestHarness.Section("for-each Loops");
 
             TestBlock("{ for (item in collection) { print(item) } }",
-                "[For(item, Sym(collection), [Call(Sym(print), [Sym(item)])])]");
+                "[For(item, Path(collection, []), [Path(print(Path(item, [])), [])])]");
             // 迭代表达式可以是调用
             TestBlock("{ for (x in getItems(1)) { print(x) } }",
-                "[For(x, Call(Sym(getItems), [Int(1,I32)]), [Call(Sym(print), [Sym(x)])])]");
+                "[For(x, Path(getItems(Int(1,I32)), []), [Path(print(Path(x, [])), [])])]");
 
             TestHarness.Blank();
         }
@@ -39,7 +39,7 @@ namespace LatteCompiler.Tests
             TestHarness.Section("for-range Loops");
 
             TestBlock("{ for (i in 0 to 10) { print(i) } }",
-                "[For(i, Range(Int(0,I32) to Int(10,I32)), [Call(Sym(print), [Sym(i)])])]");
+                "[For(i, Range(Int(0,I32) to Int(10,I32)), [Path(print(Path(i, [])), [])])]");
 
             TestHarness.Blank();
         }
@@ -50,7 +50,7 @@ namespace LatteCompiler.Tests
             TestHarness.Section("while Loops");
 
             TestBlock("{ while (condition) { doSomething() } }",
-                "[While(Sym(condition), [Call(Sym(doSomething), [])])]");
+                "[While(Path(condition, []), [Path(doSomething(), [])])]");
 
             TestHarness.Blank();
         }
@@ -61,7 +61,7 @@ namespace LatteCompiler.Tests
             TestHarness.Section("do-while Loops");
 
             TestBlock("{ do { doSomething() } while (condition) }",
-                "[DoWhile(Sym(condition), [Call(Sym(doSomething), [])])]");
+                "[DoWhile(Path(condition, []), [Path(doSomething(), [])])]");
 
             TestHarness.Blank();
         }
@@ -76,7 +76,7 @@ namespace LatteCompiler.Tests
             TestBlock("{ while (true) named loop { break@loop } }",
                 "[While(Bool(True), named loop, [Break@loop])]");
             TestBlock("{ do named loop { continue@loop } while (c) }",
-                "[DoWhile(Sym(c), named loop, [Continue@loop])]");
+                "[DoWhile(Path(c, []), named loop, [Continue@loop])]");
 
             TestHarness.Blank();
         }
@@ -98,7 +98,7 @@ namespace LatteCompiler.Tests
                       "}",
                 "[For(i, Range(Int(0,I32) to Int(10,I32)), named outer, " +
                 "[For(j, Range(Int(0,I32) to Int(10,I32)), named inner, " +
-                "[IfStmt(Sym(someCondition), [Break@outer], <none>)])])]");
+                "[IfStmt(Path(someCondition, []), [Break@outer], <none>)])])]");
 
             TestHarness.Blank();
         }

@@ -32,8 +32,8 @@ namespace LatteCompiler.Tests
         {
             TestHarness.Section("Symbol References");
 
-            TestExpr("var y = x", "Sym(x)");
-            TestExpr("var z = obj.field.sub", "Sym(obj.field.sub)");
+            TestExpr("var y = x", "Path(x, [])");
+            TestExpr("var z = obj.field.sub", "Path(obj, [.field, .sub])");
 
             TestHarness.Blank();
         }
@@ -43,8 +43,8 @@ namespace LatteCompiler.Tests
         {
             TestHarness.Section("Unary Expressions");
 
-            TestExpr("var a = -x", "Unary(- Sym(x))");
-            TestExpr("var b = not flag", "Unary(not Sym(flag))");
+            TestExpr("var a = -x", "Unary(- Path(x, []))");
+            TestExpr("var b = not flag", "Unary(not Path(flag, []))");
 
             TestHarness.Blank();
         }
@@ -55,8 +55,8 @@ namespace LatteCompiler.Tests
             TestHarness.Section("Binary Expressions");
 
             TestExpr("var r = 1 + 2", "Binary(Int(1,I32) + Int(2,I32))");
-            TestExpr("var c = a == b", "Binary(Sym(a) == Sym(b))");
-            TestExpr("var lg = x and y", "Binary(Sym(x) and Sym(y))");
+            TestExpr("var c = a == b", "Binary(Path(a, []) == Path(b, []))");
+            TestExpr("var lg = x and y", "Binary(Path(x, []) and Path(y, []))");
 
             TestHarness.Blank();
         }
@@ -72,7 +72,7 @@ namespace LatteCompiler.Tests
                 "Binary(Int(1,I32) + Group(Binary(Int(2,I32) * Int(3,I32))))");
             TestExpr("var n2 = ((1 + 2) * 3)",
                 "Group(Binary(Group(Binary(Int(1,I32) + Int(2,I32))) * Int(3,I32)))");
-            TestExpr("var u = -(x + y)", "Unary(- Group(Binary(Sym(x) + Sym(y))))");
+            TestExpr("var u = -(x + y)", "Unary(- Group(Binary(Path(x, []) + Path(y, []))))");
 
             TestHarness.Blank();
         }
@@ -121,18 +121,18 @@ namespace LatteCompiler.Tests
         {
             TestHarness.Section("Call Expressions");
 
-            TestExpr("var v = foo()", "Call(Sym(foo), [])");
-            TestExpr("var v = foo(1)", "Call(Sym(foo), [Int(1,I32)])");
-            TestExpr("var v = foo(1, x)", "Call(Sym(foo), [Int(1,I32), Sym(x)])");
+            TestExpr("var v = foo()", "Path(foo(), [])");
+            TestExpr("var v = foo(1)", "Path(foo(Int(1,I32)), [])");
+            TestExpr("var v = foo(1, x)", "Path(foo(Int(1,I32), Path(x, [])), [])");
             // 具名实参
-            TestExpr("var v = foo(name = 1)", "Call(Sym(foo), [name:Int(1,I32)])");
+            TestExpr("var v = foo(name = 1)", "Path(foo(name:Int(1,I32)), [])");
             // 具名判别：name 后不是 = 时是位置实参，且表达式继续
-            TestExpr("var v = foo(name + 1)", "Call(Sym(foo), [Binary(Sym(name) + Int(1,I32))])");
+            TestExpr("var v = foo(name + 1)", "Path(foo(Binary(Path(name, []) + Int(1,I32))), [])");
             // 位置与具名混合
-            TestExpr("var v = foo(1, name = 2)", "Call(Sym(foo), [Int(1,I32), name:Int(2,I32)])");
+            TestExpr("var v = foo(1, name = 2)", "Path(foo(Int(1,I32), name:Int(2,I32)), [])");
             // 括号表达式作实参
             TestExpr("var v = foo((1 + 2), 3)",
-                "Call(Sym(foo), [Group(Binary(Int(1,I32) + Int(2,I32))), Int(3,I32)])");
+                "Path(foo(Group(Binary(Int(1,I32) + Int(2,I32))), Int(3,I32)), [])");
 
             TestHarness.Blank();
         }
@@ -143,13 +143,13 @@ namespace LatteCompiler.Tests
             TestHarness.Section("Member Access Chains");
 
             // 调用结果上的成员访问
-            TestExpr("var v = foo().bar", "Access(Call(Sym(foo), []), .bar)");
+            TestExpr("var v = foo().bar", "Path(foo(), [.bar])");
             // 成员访问后再调用
-            TestExpr("var v = foo().bar()", "Call(Access(Call(Sym(foo), []), .bar), [])");
+            TestExpr("var v = foo().bar()", "Path(foo(), [.bar()])");
             // 纯符号路径保持 Symbol 形式（不产生 MemberAccess）
-            TestExpr("var v = a.b.c", "Sym(a.b.c)");
+            TestExpr("var v = a.b.c", "Path(a, [.b, .c])");
             // 安全访问
-            TestExpr("var v = obj?.field", "Access(Sym(obj), ?.field)");
+            TestExpr("var v = obj?.field", "Path(obj, [?.field])");
 
             TestHarness.Blank();
         }
@@ -159,12 +159,12 @@ namespace LatteCompiler.Tests
         {
             TestHarness.Section("Index Expressions");
 
-            TestExpr("var v = a[0]", "Index(Sym(a), [Int(0,I32)])");
-            TestExpr("var v = a[i + 1]", "Index(Sym(a), [Binary(Sym(i) + Int(1,I32))])");
+            TestExpr("var v = a[0]", "Path(a[Int(0,I32)], [])");
+            TestExpr("var v = a[i + 1]", "Path(a[Binary(Path(i, []) + Int(1,I32))], [])");
             // 索引结果再调用
-            TestExpr("var v = a[0](1)", "Call(Index(Sym(a), [Int(0,I32)]), [Int(1,I32)])");
+            TestExpr("var v = a[0](1)", "Path(a[Int(0,I32)](Int(1,I32)), [])");
             // 调用结果再索引
-            TestExpr("var v = foo()[0]", "Index(Call(Sym(foo), []), [Int(0,I32)])");
+            TestExpr("var v = foo()[0]", "Path(foo()[Int(0,I32)], [])");
 
             TestHarness.Blank();
         }
@@ -186,11 +186,11 @@ namespace LatteCompiler.Tests
         {
             TestHarness.Section("Generic Call Expressions");
 
-            TestExpr("var v = foo\\<i32>(1)", "Call(Sym(foo<i32>), [Int(1,I32)])");
-            TestExpr("var v = a.b\\<i32>(x)", "Call(Sym(a.b<i32>), [Sym(x)])");
+            TestExpr("var v = foo\\<i32>(1)", "Path(foo<i32>(Int(1,I32)), [])");
+            TestExpr("var v = a.b\\<i32>(x)", "Path(a, [.b<i32>(Path(x, []))])");
             // 底座是表达式的泛型成员调用
             TestExpr("var v = foo().bar\\<i32>(x)",
-                "Call(Access(Call(Sym(foo), []), .bar<i32>), [Sym(x)])");
+                "Path(foo(), [.bar<i32>(Path(x, []))])");
 
             TestHarness.Blank();
         }
@@ -221,21 +221,21 @@ namespace LatteCompiler.Tests
         {
             TestHarness.Section("Type Operators (is/supers/with, as/as?)");
 
-            TestExpr("var v = obj is String", "Check(Sym(obj) is String)");
-            TestExpr("var v = obj supers Animal", "Check(Sym(obj) supers Animal)");
-            TestExpr("var v = obj with Serializable", "Check(Sym(obj) with Serializable)");
+            TestExpr("var v = obj is String", "Check(Path(obj, []) is String)");
+            TestExpr("var v = obj supers Animal", "Check(Path(obj, []) supers Animal)");
+            TestExpr("var v = obj with Serializable", "Check(Path(obj, []) with Serializable)");
             // is 右侧也可以是 Type\<T> 值（词法上统一按类型引用解析，SYNTAX §3.7）
-            TestExpr("var v = obj is t", "Check(Sym(obj) is t)");
-            TestExpr("var v = obj as String", "Cast(Sym(obj) as String)");
-            TestExpr("var v = obj as? String", "Cast(Sym(obj) as? String)");
+            TestExpr("var v = obj is t", "Check(Path(obj, []) is t)");
+            TestExpr("var v = obj as String", "Cast(Path(obj, []) as String)");
+            TestExpr("var v = obj as? String", "Cast(Path(obj, []) as? String)");
             // 泛型与可空目标类型
-            TestExpr("var v = obj as List\\<i32>", "Cast(Sym(obj) as List<i32>)");
-            TestExpr("var v = obj as String?", "Cast(Sym(obj) as String?)");
+            TestExpr("var v = obj as List\\<i32>", "Cast(Path(obj, []) as List<i32>)");
+            TestExpr("var v = obj as String?", "Cast(Path(obj, []) as String?)");
             // 后缀链之后再做类型操作
-            TestExpr("var v = foo().bar as String", "Cast(Access(Call(Sym(foo), []), .bar) as String)");
+            TestExpr("var v = foo().bar as String", "Cast(Path(foo(), [.bar]) as String)");
             // 括号化之后可继续参与运算
             TestExpr("var v = (obj as String) + x",
-                "Binary(Group(Cast(Sym(obj) as String)) + Sym(x))");
+                "Binary(Group(Cast(Path(obj, []) as String)) + Path(x, []))");
 
             TestHarness.Blank();
         }
@@ -266,9 +266,9 @@ namespace LatteCompiler.Tests
             // 固定 case 引用（类型上下文由语义阶段校验，解析期只识别形态）
             TestExpr("var r = .Success", "EnumCase(.Success)");
             // 参数化 case 的调用：由后缀链自然脱糖为 Call
-            TestExpr("var f = .Failed(404)", "Call(EnumCase(.Failed), [Int(404,I32)])");
+            TestExpr("var f = .Failed(404)", "Path((EnumCase(.Failed))(Int(404,I32)), [])");
             TestExpr("var n = .Failed(errorCode = 404)",
-                "Call(EnumCase(.Failed), [errorCode:Int(404,I32)])");
+                "Path((EnumCase(.Failed))(errorCode:Int(404,I32)), [])");
             // 注解实参形态（@WrapperTarget(.Entity) 的同构表达式）
             TestExpr("var t = .Entity", "EnumCase(.Entity)");
 
@@ -281,15 +281,15 @@ namespace LatteCompiler.Tests
             TestHarness.Section("Wrapper Access");
 
             // 基本形态：obj:Wrapper
-            TestExpr("var w = service:Logged", "WrapperAccess(Sym(service), :Logged)");
+            TestExpr("var w = service:Logged", "Path(service, [:Logged])");
             // 链式：obj:A:B 左结合（"obj 的修饰器 A 的修饰器 B"）
-            TestExpr("var w = obj:A:B", "WrapperAccess(WrapperAccess(Sym(obj), :A), :B)");
+            TestExpr("var w = obj:A:B", "Path(obj, [:A, :B])");
             // 规范 §3 的完整路径示例：wrapper 访问在整条路径末尾
             TestExpr("var l = foo().bar[0]?.length:MyWrapper",
-                "WrapperAccess(Access(Index(Access(Call(Sym(foo), []), .bar), [Int(0,I32)]), ?.length), :MyWrapper)");
+                "Path(foo(), [.bar[Int(0,I32)], ?.length, :MyWrapper])");
             // wrapper 访问后仍可继续成员后缀
             TestExpr("var t = service:Logged.level",
-                "Access(WrapperAccess(Sym(service), :Logged), .level)");
+                "Path(service, [:Logged, .level])");
 
             TestHarness.Blank();
         }
@@ -300,12 +300,12 @@ namespace LatteCompiler.Tests
             TestHarness.Section("Bitwise Operators");
 
             // << 由 Lexer 合并；>>、>>> 由运算符状态重组（顺带回归）；& | ^ 为单字符
-            TestExpr("var s = (a << 2)", "Group(Binary(Sym(a) << Int(2,I32)))");
-            TestExpr("var s = (a >> 2)", "Group(Binary(Sym(a) >> Int(2,I32)))");
-            TestExpr("var s = (a >>> 2)", "Group(Binary(Sym(a) >>> Int(2,I32)))");
-            TestExpr("var s = (a & b)", "Group(Binary(Sym(a) & Sym(b)))");
-            TestExpr("var s = (a | b)", "Group(Binary(Sym(a) | Sym(b)))");
-            TestExpr("var s = (a ^ b)", "Group(Binary(Sym(a) ^ Sym(b)))");
+            TestExpr("var s = (a << 2)", "Group(Binary(Path(a, []) << Int(2,I32)))");
+            TestExpr("var s = (a >> 2)", "Group(Binary(Path(a, []) >> Int(2,I32)))");
+            TestExpr("var s = (a >>> 2)", "Group(Binary(Path(a, []) >>> Int(2,I32)))");
+            TestExpr("var s = (a & b)", "Group(Binary(Path(a, []) & Path(b, [])))");
+            TestExpr("var s = (a | b)", "Group(Binary(Path(a, []) | Path(b, [])))");
+            TestExpr("var s = (a ^ b)", "Group(Binary(Path(a, []) ^ Path(b, [])))");
 
             TestHarness.Blank();
         }
@@ -319,9 +319,9 @@ namespace LatteCompiler.Tests
             TestExprEscaped("var v = (1 +\n2)", "Group(Binary(Int(1,I32) + Int(2,I32)))");
             TestExprEscaped("var v = (\n1 + 2\n)", "Group(Binary(Int(1,I32) + Int(2,I32)))");
             // 调用实参表内逗号后续行
-            TestExprEscaped("var v = foo(1,\n2)", "Call(Sym(foo), [Int(1,I32), Int(2,I32)])");
+            TestExprEscaped("var v = foo(1,\n2)", "Path(foo(Int(1,I32), Int(2,I32)), [])");
             // 索引实参表内逗号后续行
-            TestExprEscaped("var a = arr[0,\n1]", "Index(Sym(arr), [Int(0,I32), Int(1,I32)])");
+            TestExprEscaped("var a = arr[0,\n1]", "Path(arr[Int(0,I32), Int(1,I32)], [])");
 
             TestHarness.Blank();
         }
@@ -347,33 +347,33 @@ namespace LatteCompiler.Tests
             TestHarness.Section("Compound Assignments (§13.2)");
 
             // 全集 10 个运算符（语句位置：ExpressionStatement 包装，无 %=）
-            TestBlock("{ a += 1 }", "[CompoundAssign(Sym(a) += Int(1,I32))]");
-            TestBlock("{ a -= 1 }", "[CompoundAssign(Sym(a) -= Int(1,I32))]");
-            TestBlock("{ a *= 2 }", "[CompoundAssign(Sym(a) *= Int(2,I32))]");
-            TestBlock("{ a /= 2 }", "[CompoundAssign(Sym(a) /= Int(2,I32))]");
-            TestBlock("{ a <<= 1 }", "[CompoundAssign(Sym(a) <<= Int(1,I32))]");
-            TestBlock("{ a >>= 1 }", "[CompoundAssign(Sym(a) >>= Int(1,I32))]");
+            TestBlock("{ a += 1 }", "[CompoundAssign(Path(a, []) += Int(1,I32))]");
+            TestBlock("{ a -= 1 }", "[CompoundAssign(Path(a, []) -= Int(1,I32))]");
+            TestBlock("{ a *= 2 }", "[CompoundAssign(Path(a, []) *= Int(2,I32))]");
+            TestBlock("{ a /= 2 }", "[CompoundAssign(Path(a, []) /= Int(2,I32))]");
+            TestBlock("{ a <<= 1 }", "[CompoundAssign(Path(a, []) <<= Int(1,I32))]");
+            TestBlock("{ a >>= 1 }", "[CompoundAssign(Path(a, []) >>= Int(1,I32))]");
             // >>>= 是复合赋值而非比较：token 流 > > > = 经重组收拢为 >>> 后遇 = 分流
-            TestBlock("{ a >>>= 1 }", "[CompoundAssign(Sym(a) >>>= Int(1,I32))]");
-            TestBlock("{ a &= b }", "[CompoundAssign(Sym(a) &= Sym(b))]");
-            TestBlock("{ a |= b }", "[CompoundAssign(Sym(a) |= Sym(b))]");
-            TestBlock("{ a ^= b }", "[CompoundAssign(Sym(a) ^= Sym(b))]");
+            TestBlock("{ a >>>= 1 }", "[CompoundAssign(Path(a, []) >>>= Int(1,I32))]");
+            TestBlock("{ a &= b }", "[CompoundAssign(Path(a, []) &= Path(b, []))]");
+            TestBlock("{ a |= b }", "[CompoundAssign(Path(a, []) |= Path(b, []))]");
+            TestBlock("{ a ^= b }", "[CompoundAssign(Path(a, []) ^= Path(b, []))]");
             // 右操作数照常经 ExpressionRoot 委托解析（可为任意表达式）
             TestBlock("{ a += (b + 1) }",
-                "[CompoundAssign(Sym(a) += Group(Binary(Sym(b) + Int(1,I32))))]");
+                "[CompoundAssign(Path(a, []) += Group(Binary(Path(b, []) + Int(1,I32))))]");
             // 复合赋值整体是表达式节点：可出现在表达式位置
-            TestExpr("var v = (a += 1)", "Group(CompoundAssign(Sym(a) += Int(1,I32)))");
+            TestExpr("var v = (a += 1)", "Group(CompoundAssign(Path(a, []) += Int(1,I32)))");
             // 区分：>= 保持比较语义（>>> 比较回归见 TestBitwiseOperators）
-            TestExpr("var s = (a >= b)", "Group(Binary(Sym(a) >= Sym(b)))");
+            TestExpr("var s = (a >= b)", "Group(Binary(Path(a, []) >= Path(b, [])))");
 
             // 结构断言：节点类型、Operator 字符串、Target/Value 内容与 Parent 链
             var block = TestHarness.ParseBlock("{ count += 42 }");
             var stmt = (ExpressionStatementASTNode)block.Statements[0];
             var compound = (CompoundAssignmentExpressionASTNode)stmt.Expression.Expression;
             TestHarness.CheckTrue("{ count += 42 }: Operator 为 +", compound.Operator == "+");
-            TestHarness.CheckTrue("{ count += 42 }: Target 已填充且为符号",
+            TestHarness.CheckTrue("{ count += 42 }: Target 已填充且为路径",
                 compound.Target.IsAttached &&
-                compound.Target.Expression is SymbolReferenceASTNode);
+                compound.Target.Expression is PathExpressionASTNode);
             TestHarness.CheckTrue("{ count += 42 }: Value 已填充且为字面量",
                 compound.Value.IsAttached &&
                 compound.Value.Expression is LiteralExpressionASTNode);
@@ -397,10 +397,10 @@ namespace LatteCompiler.Tests
             TestHarness.Section("is with Enum Case (§12.3)");
 
             // 正例：is 右侧前导点 enum case（TargetCase 槽，与 TargetType 互斥）
-            TestExpr("var v = result is .Failed", "Check(Sym(result) is EnumCase(.Failed))");
+            TestExpr("var v = result is .Failed", "Check(Path(result, []) is EnumCase(.Failed))");
             // switch 模式匹配走同一条 is 路径（§12.3 规范示例形态）
             TestExpr("var r = switch(n) { (_ is .Success) -> { \"ok\" } default -> { \"?\" } }",
-                "Switch(Sym(n), [Check(Sym(_) is EnumCase(.Success)) -> [Str(\"ok\")]], " +
+                "Switch(Path(n, []), [Check(Path(_, []) is EnumCase(.Success)) -> [Str(\"ok\")]], " +
                 "default -> [Str(\"?\")])");
 
             // 结构断言：双字段互斥、CaseName、Parent 链
@@ -457,17 +457,21 @@ namespace LatteCompiler.Tests
             TestHarness.CheckTrue("var m = 1 + (2 * 3): 分组内表达式的 Parent 指向内层 Root",
                 ReferenceEquals(group.InnerExpression.Expression.Parent, group.InnerExpression));
 
-            // 用例 3：调用链——Callee Root 与实参 Value Root 均填充、节点无共享
+            // 用例 3：调用链（M42 路径形态）——首段符号 + Call 后缀，
+            // 实参 Value Root 均填充、节点无共享
             var decl3 = (VariableDeclarationASTNode)TestHarness.ParseFirstDecl("var v = foo(1, name = 2)");
-            var call = (CallExpressionASTNode)decl3.Initializer!.Expression;
-            TestHarness.CheckTrue("var v = foo(1, name = 2): Callee Root 已填充", call.Callee.IsAttached);
-            TestHarness.CheckTrue("var v = foo(1, name = 2): 两个实参", call.Arguments.Count == 2);
+            var call = (PathExpressionASTNode)decl3.Initializer!.Expression;
+            TestHarness.CheckTrue("var v = foo(1, name = 2): 首段符号名 foo", call.Head.Name == "foo");
+            TestHarness.CheckTrue("var v = foo(1, name = 2): 一个 Call 后缀",
+                call.Head.Suffixes.Count == 1 && call.Head.Suffixes[0].Kind == PathSuffixKind.Call);
+            var args = call.Head.Suffixes[0].Arguments;
+            TestHarness.CheckTrue("var v = foo(1, name = 2): 两个实参", args.Count == 2);
             TestHarness.CheckTrue("var v = foo(1, name = 2): 实参 Value Root 均已填充",
-                call.Arguments[0].Value.IsAttached && call.Arguments[1].Value.IsAttached);
+                args[0].Value.IsAttached && args[1].Value.IsAttached);
             TestHarness.CheckTrue("var v = foo(1, name = 2): 实参表达式不共享节点",
-                !ReferenceEquals(call.Arguments[0].Value.Expression, call.Arguments[1].Value.Expression));
+                !ReferenceEquals(args[0].Value.Expression, args[1].Value.Expression));
             TestHarness.CheckTrue("var v = foo(1, name = 2): 具名实参名",
-                call.Arguments[1].Name == "name");
+                args[1].Name == "name");
 
             // 用例 4：无初始化——可选 Root 以 null 表示（禁止「非 null 但为空的 Root」）
             var decl4 = (VariableDeclarationASTNode)TestHarness.ParseFirstDecl("var count: i64");

@@ -28,7 +28,7 @@ ExpressionParserLayer (通用框架，构造时接收唯一挂载目标 Expressi
   ├─ 识别表达式起点
   │  ├─ 字面量？      → 创建 LiteralExpressionASTNode，委托 LiteralParserLayer（原地 AttachLiteral）
   │  ├─ new？         → 创建 NewExpressionASTNode，委托 TypeReferenceParserLayer（原地填充 Type）
-  │  ├─ 符号？        → 创建 SymbolReferenceASTNode，委托 PathParserLayer（原地填充 Symbol）
+  │  ├─ 符号？        → 创建 PathExpressionASTNode（首段符号名；后缀链就地生长，M42）
   │  ├─ 括号？        → 创建 GroupExpressionASTNode，递归 ExpressionParserLayer(group.InnerExpression)
   │  └─ 一元运算符？  → 创建 UnaryExpressionASTNode + 递归 ExpressionParserLayer(unary.Operand)
   │
@@ -37,20 +37,26 @@ ExpressionParserLayer (通用框架，构造时接收唯一挂载目标 Expressi
   │  ├─ 二元           → BinaryExpressionASTNode（每层最多消费一个，见「无优先级规则」）
   │  └─ > 系列重组     → >=、>>、>>>（Lexer 不合并 > 系列）
   │
-  └─ 处理后缀链（SYNTAX.md §1.4：在运算符之前整体形成）
-     ├─ (  → 创建 CallExpressionASTNode（Callee.Attach 旧子树），委托 ArgumentListParserLayer
-     ├─ [  → 创建 IndexExpressionASTNode（Object.Attach 旧子树），委托 ArgumentListParserLayer
-     ├─ .  → 创建 MemberAccessASTNode（底座为表达式时）
-     ├─ ?. → MemberAccessASTNode（IsSafeAccess = true）
-     ├─ :  → 创建 WrapperAccessASTNode（SYNTAX §14.1）
-     ├─ \< → 泛型实参（挂到 MemberAccess.GenericArguments；
-     │        符号路径上的泛型由 PathParserLayer 直接解析）
-     └─ new 的 ( → 填充 NewExpressionASTNode.Arguments（不生成 Call 节点）
+  └─ 处理后缀链（SYNTAX.md §1.4：路径表达式在运算符之前整体形成——M42 起
+     │                一条完整路径链恰一个 PathExpressionASTNode）
+     ├─ (  → 给当前段/首段追加 Call 后缀，实参委托 ArgumentListParserLayer
+     ├─ [  → 给当前段/首段追加 Index 后缀，实参委托 ArgumentListParserLayer
+     ├─ .  → 追加路径段（Connector = Dot）
+     ├─ ?. → 追加路径段（Connector = SafeDot）
+     ├─ :  → 追加路径段（Connector = Colon，SYNTAX §14.1）
+     ├─ \< → 泛型实参（挂到当前段/首段 GenericArguments，委托 TypeReferenceParserLayer）
+     ├─ {  → trailing lambda：追加 Call 后缀，lambda 为唯一实参
+     └─ new 的 ( → 填充 NewExpressionASTNode.Arguments（不生成路径后缀）
 ```
 
-**纯符号路径保持 Symbol 形态**：`a.b.c`、`a.b\<i32>` 由 PathParserLayer
-整体解析为 `SymbolReferenceASTNode`；只有路径的底座是表达式（如 `foo().bar`、
-`a[0].b`）时才产生 `MemberAccessASTNode`。
+**M42 统一路径形态**：表达式位置的符号引用、调用、索引、成员访问
+（含 `?.`）、wrapper 访问（`:`）统一施工为单个 `PathExpressionASTNode`
+（首段 + 段序列，段带泛型实参与调用/索引后缀）；非符号起点的表达式
+（分组、字面量、调用结果）遇路径后缀时包装为路径的表达式底座
+（`Head.Expression`）。「首段是局部变量/命名空间/类型」与各段语义
+（实例成员/静态成员/wrapper）是**语义上色**问题，全部归 P3 Binder；
+语法层只表达 §1.4 的形态事实。`PathParserLayer` 继续服务**类型引用**
+与 **import 路径**的符号解析（纯静态路径，不参与本统一）。
 
 ## 施工目标协议（大扫除后）
 
@@ -109,27 +115,24 @@ return new ParserLayerResult.PushLayer(
     new LiteralParserLayer(literalExpr), TokenDisposition.Replay);
 ```
 
-### 2. 符号/路径解析
+### 2. 路径起点与路径段施工（M42）
+
+符号起点不再委托子 Layer：本层直接创建 `PathExpressionASTNode` 并填入
+首段符号名，后续 `.`/`?.`/`:`/`\<`/`(`/`[` 全部由本层状态机就地追加
+路径段或后缀（一条完整路径链恰一个节点）：
 
 ```csharp
-var symbolExpr = new SymbolReferenceASTNode();
-currentExpression = symbolExpr;
+var path = new PathExpressionASTNode();
+path.Head.Name = word.Content;
+currentExpression = path;
 state = State.PrimaryParsed;
-
-return new ParserLayerResult.PushLayer(
-    new PathParserLayer(
-        PathParserLayer.PathType.SymbolPath,
-        symbolExpr.Symbol,
-        lineBreakSensitive: true
-    ),
-    TokenDisposition.Replay
-);
 ```
 
-**PathParserLayer 的职责边界**：
-- 符号路径（`a.b.c`）
-- 符号上的泛型实参（`a.b\<i32>`，`\` + `<` 进入泛型模式）
-- **不处理**调用 `()`、索引 `[]`、安全访问 `?.` —— 这些由后缀链处理
+**PathParserLayer 的职责边界**（M42 后收窄）：
+- **类型引用**的符号路径（`List\<Map\<String, i32>>`）与 **import 路径**
+  ——纯静态路径，继续由它解析（Symbol 形态）
+- 表达式位置的路径不再经过它；泛型实参统一走 TypeReferenceParserLayer
+  （能力取并集：中段泛型的可空实参 `a.b\<String?>.c` 合法化）
 
 ### 3. new 表达式解析
 
@@ -152,12 +155,11 @@ return new ParserLayerResult.PushLayer(
 调用、索引、new 构造共用 `ArgumentListParserLayer`：
 
 ```csharp
-var callExpr = new CallExpressionASTNode();
-callExpr.Callee.Attach(currentExpression!);   // 未挂载子树包装
-currentExpression = callExpr;
+var callSuffix = new PathSuffixASTNode(owner) { Kind = PathSuffixKind.Call };
+SuffixesOf(owner).Add(callSuffix);           // owner = 当前路径段/首段
 return new ParserLayerResult.PushLayer(
     new ArgumentListParserLayer(
-        callExpr.Arguments, ArgumentListParserLayer.BracketKind.Round, callExpr),
+        callSuffix.Arguments, ArgumentListParserLayer.BracketKind.Round, callSuffix),
     TokenDisposition.Consume);
 ```
 
@@ -199,12 +201,11 @@ foo(1, name = 2)
 流程：
 ```
 ExpressionParserLayer（target = 某 ExpressionRootASTNode）
-  → 创建 SymbolReferenceASTNode，委托 PathParserLayer 解析符号 foo
-  → 后缀 ( → 创建 CallExpressionASTNode（Callee.Attach 符号子树）
-  → 委托 ArgumentListParserLayer
+  → 符号 foo → 创建 PathExpressionASTNode（Head.Name = foo）
+  → 后缀 ( → 首段追加 Call 后缀，委托 ArgumentListParserLayer
     → 实参 1：ArgumentASTNode 入列，委托 ExpressionParserLayer(arg.Value) → IntLiteral
     → 实参 name = 2：具名判别（name 后是 =），同上
-  → 表达式完整：target.Attach(CallExpressionASTNode)
+  → 表达式完整：target.Attach(PathExpressionASTNode)
 ```
 
 ### 解析后缀链
@@ -215,11 +216,11 @@ foo().bar\<i32>(x)
 
 流程：
 ```
-foo → SymbolReference（PathParserLayer）
-( ) → Call(Callee.Attach foo)
-. → MemberAccess(Object.Attach Call, bar)
-\<i32> → 泛型实参挂到 MemberAccess.GenericArguments
-(x) → Call(Callee.Attach MemberAccess, [x])
+foo        → PathExpression（Head.Name = foo）
+( )        → 首段追加 Call 后缀
+.          → 追加路径段 .bar
+\<i32>     → 泛型实参挂到 .bar 段（TypeReferenceParserLayer 解析）
+(x)        → .bar 段追加 Call 后缀（实参 x）
 ```
 
 ### 解析二元表达式
@@ -247,7 +248,7 @@ ExpressionParserLayer
 | Layer | 职责 | 状态 |
 |-------|------|------|
 | LiteralParserLayer | 字面量解析（AttachLiteral 到 LiteralExpressionASTNode） | ✅ |
-| PathParserLayer | 符号路径 + `\<` 泛型实参 | ✅ |
+| PathParserLayer | 符号路径 + `\<` 泛型实参（M42 起收窄为类型引用与 import 路径专用；表达式路径由 ExpressionParserLayer 就地施工） | ✅ |
 | TypeReferenceParserLayer | 类型引用 | ✅ |
 | ArgumentListParserLayer | 调用/索引/构造实参列表 | ✅ |
 | GenericParametersParserLayer | 泛型参数列表 `\<...>`（声明侧） | ✅ |

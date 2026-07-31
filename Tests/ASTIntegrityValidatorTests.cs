@@ -52,14 +52,13 @@ namespace LatteCompiler.Tests
             root.Declarations.Add(func);
             func.Body = new CodeBlockASTNode(func);
 
-            // 表达式语句 foo()（ExpressionStatement 统一容器）
+            // 表达式语句 foo()（ExpressionStatement 统一容器；M42 路径形态）
             var stmt = new ExpressionStatementASTNode(func.Body);
             func.Body.Statements.Add(stmt);
-            var call = new CallExpressionASTNode();
+            var call = new PathExpressionASTNode();
+            call.Head.Name = "foo";
+            call.Head.Suffixes.Add(new PathSuffixASTNode(call.Head) { Kind = PathSuffixKind.Call });
             stmt.Expression.Attach(call);
-            var callee = new SymbolReferenceASTNode();
-            call.Callee.Attach(callee);
-            callee.Symbol.symbol.elements.Add(new SymbolElement { name = "foo" });
 
             // 范围循环（Iterable 起点 + RangeTo 终点，无搬家）
             var loop = new LoopStatementASTNode(func.Body) { Kind = LoopKind.For, VariableName = "i" };

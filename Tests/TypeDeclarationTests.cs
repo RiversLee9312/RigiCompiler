@@ -268,7 +268,7 @@ namespace LatteCompiler.Tests
                 "    Failed(errorCode = _)\n" +
                 "]",
                 "pub enum struct RequestResult {pub const errorCode: i32, pub init(code: i32)}" +
-                "[Success(Unary(- Int(1,I32))), Failed(errorCode:Sym(_))]");
+                "[Success(Unary(- Int(1,I32))), Failed(errorCode:Path(_, []))]");
 
             // 无实参的固定 case
             TestDecl("enum struct Color {}[Red, Green, Blue]",
@@ -293,7 +293,7 @@ namespace LatteCompiler.Tests
                 "    Failed(errorCode = _) -> 1\n" +
                 "]",
                 "pub enum struct StableRequestResult {pub const errorCode: i32, pub init(code: i32)}" +
-                "[Success(Unary(- Int(1,I32))) -> 0, Failed(errorCode:Sym(_)) -> 1]");
+                "[Success(Unary(- Int(1,I32))) -> 0, Failed(errorCode:Path(_, [])) -> 1]");
 
             // 无 case 列表（允许缺省，等价于空列表）
             TestDecl("pub enum struct Empty {}", "pub enum struct Empty");
@@ -375,7 +375,7 @@ namespace LatteCompiler.Tests
                 "pub class Apple : Fruit like pear {\n" +
                 "    pub var pear: Pear = Pear()\n" +
                 "}",
-                "pub class Apple : Fruit like pear {pub var pear: Pear = Call(Sym(Pear), [])}");
+                "pub class Apple : Fruit like pear {pub var pear: Pear = Path(Pear(), [])}");
 
             // like 跟在 implements 之后 / 无基类直接 like（解析层允许，语义待查）
             TestDecl("class A implements Drawable like d {}",

@@ -317,6 +317,21 @@ namespace LatteCompiler
         Method
     }
 
+    // 函数体局部变量（P3 Binder 产生；ARCHITECTURE §4.1：挂在函数分析结果
+    // BoundFunctionBody.Locals 上，不进符号图容器表，不受 Freeze 约束）。
+    // 参数不归此类——参数符号是 ParameterSymbol，随 MethodSymbol 声明侧存在。
+    public sealed class LocalSymbol : SemanticSymbol
+    {
+        public TypeSymbol Type { get; }
+        public bool IsConst { get; }
+
+        public LocalSymbol(string name, TypeSymbol type, bool isConst) : base(name)
+        {
+            Type = type;
+            IsConst = isConst;
+        }
+    }
+
     // 类型引用解析失败的毒化符号（SEMANTIC_ARCHITECTURE §8）：解析失败处
     // 绑定它，后续用到它的检查（闭包/闸门/约束等）一律静默跳过，抑制次生噪音。
     // 编译单元内单例（SymbolGraph.ErrorType）。

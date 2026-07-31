@@ -6,9 +6,9 @@
 > 计划与分工见 `compiler/syntax/PARSER_ROADMAP.md` 与 `compiler/semantic/SEMANTIC_ROADMAP.md`；本文档只记录「现状」。
 
 **报告日期**: 2026-07-31
-**当前阶段**: **中端（语义分析 + BIL 生成）阶段** —— M35 为中端的开篇里程碑：架构定稿（`compiler/semantic/SEMANTIC_ARCHITECTURE.md`）+ 路线图 S0–S14（`compiler/semantic/SEMANTIC_ROADMAP.md`）+ 语言规范修订（shared/rich/wrapper/String）；M36 落地 S0 诊断基建（`Semantic/Diagnostics.cs` + `CheckSemanticError`），同批完成 ROADMAP 文件级细化（S0–S6）；M37 落地 S1 符号图内核（`Semantic/Symbols/` 四文件 + bootstrap 硬编码 + `CanonicalSymbolPrinter`）；M38 落地 S4 BIL 对象模型 + BilWriter（`Bil/` 五文件，§19 黄金示例逐行一致）；M39 落地 S2 P1 声明收集（`Semantic/CompilationUnit.cs` + `Semantic/DeclarationCollector.cs`，符号图首个真实消费者）；M40 落地 S3 P2 声明解析（`Semantic/DeclarationResolver.cs`，七个子任务全部落地）。下一步 S5/S6 P3/P4 最小闭环（端到端 hello world 出 BIL）。
+**当前阶段**: **中端（语义分析 + BIL 生成）阶段** —— M35 为中端的开篇里程碑：架构定稿（`compiler/semantic/SEMANTIC_ARCHITECTURE.md`）+ 路线图 S0–S14（`compiler/semantic/SEMANTIC_ROADMAP.md`）+ 语言规范修订（shared/rich/wrapper/String）；M36 落地 S0 诊断基建（`Semantic/Diagnostics.cs` + `CheckSemanticError`），同批完成 ROADMAP 文件级细化（S0–S6）；M37 落地 S1 符号图内核（`Semantic/Symbols/` 四文件 + bootstrap 硬编码 + `CanonicalSymbolPrinter`）；M38 落地 S4 BIL 对象模型 + BilWriter（`Bil/` 五文件，§19 黄金示例逐行一致）；M39 落地 S2 P1 声明收集（`Semantic/CompilationUnit.cs` + `Semantic/DeclarationCollector.cs`，符号图首个真实消费者）；M40 落地 S3 P2 声明解析（`Semantic/DeclarationResolver.cs`，七个子任务全部落地）；M41 落地 S5 P3 最小闭环（`Semantic/Binder.cs` + `Semantic/Bound/` 节点集 + `Semantic/NameResolver.cs` 名字解析共享设施提取 + `Tests/BoundDescribe.cs`，AST → BoundTree）；M42 完成**路径表达式统一**重构（SYNTAX §1.4 忠实落地：表达式位置的符号/调用/索引/成员/wrapper 后缀链统一为单一 `PathExpressionASTNode`，原五节点删除，语义上色全部归 P3）。下一步 S6 P4 最小闭环（端到端 hello world 出 BIL）。
 前端里程碑回顾：Parser/PDA 大扫除（M23）、AST 结构标注与 Validator 重写（M24）、Lexer 修复与 fuzz 基建（M25）、日志与 AST JSONL（M26）、CLI 插件化（M27）、Lexer 位置与 AST Span（M28）、AST 容器重构（M29）、Utilities 拆分（M30）、前端大修（M31）、多行字符串（M32）、值块统一（M33）、技术债清扫（M34）。
-**测试总计**: 1204/1204 通过 (100%) + Lexer fuzz 6000/6000（36 个套件，`dotnet run -- test --all` 单命令全量）
+**测试总计**: 1295/1295 通过 (100%) + Lexer fuzz 6000/6000（37 个套件，`dotnet run -- test --all` 单命令全量）
 **版本控制**: Git `main` 分支（2026-07-17 首次提交）
 
 ---
@@ -57,6 +57,8 @@
 | M38 | S4 BIL 对象模型 + BilWriter：`Bil/` 五文件（Module/Resources/Symbols/Function/Instructions + Writer，对中端零依赖、字符串身份、§17 协程暂缓），§19 黄金示例逐行一致 | ✅ | 2026-07-31 | 983/983 + fuzz 6000（34 套件） |
 | M39 | S2 P1 声明收集：`Semantic/CompilationUnit.cs` + `Semantic/DeclarationCollector.cs`（符号壳 + namespace 驻留合并 + import 登记 + ext 待注册 + 重复声明诊断） | ✅ | 2026-07-31 | 1066/1066 + fuzz 6000（35 套件） |
 | M40 | S3 P2 声明解析：`Semantic/DeclarationResolver.cs`（类型引用解析 + ErrorType 毒化、继承/implements 图与双环检测、修饰符合法性、rich/shared 字段闭包与单向传染、共享安全闸门、泛型约束声明侧、ext 注册 + wrapper 适用性矩阵）+ Parser 两处越权拦截移交 P2 + 约束裸名参数 Parser 修复 + bootstrap 注册 Core.Types | ✅ | 2026-07-31 | 1204/1204 + fuzz 6000（36 套件） |
+| M41 | S5 P3 最小闭环：`Semantic/Binder.cs` + `Semantic/Bound/` 节点集（AST → BoundTree）+ `Semantic/NameResolver.cs`（P2/P3 名字解析共享设施提取）+ LocalSymbol + `Tests/BoundDescribe.cs` | ✅ | 2026-07-31 | 1294/1294 + fuzz 6000（37 套件） |
+| M42 | 路径表达式统一（SYNTAX §1.4）：表达式位置五节点（SymbolReference/Call/Index/MemberAccess/WrapperAccess）删除，统一为 `PathExpressionASTNode`（首段 + 段 + 后缀）；ExpressionParserLayer 后缀链重写、Binder BindPath 适配、171 用例快照迁移 | ✅ | 2026-07-31 | 1295/1295 + fuzz 6000（37 套件） |
 
 ---
 
@@ -308,7 +310,7 @@ pub class Point {
 | MultilineStringLexerLayer（+ QuoteLexerLayer 分流） | ✅ | 43/43（M32 新套件） | SYNTAX §3.3 Swift 风格严格多行：开界换行剥除、闭界独占行定缩进基准、转义与单行一致（StringEscape 单源）、两阶段施工（按行缓冲 + 闭界时剥缩进/转义）、插值标记词法期判定（`\${` 不误报） |
 | TypeReferenceParserLayer | ✅ | 17/17 | M31 重写为真实套件（独立层驱动 + 集成 + 结构断言） |
 | VariableDeclarationParserLayer | ✅ | 17/17 | Initializer 经 ExpressionRootASTNode 直挂；访问器块委托 PropertyAccessorParserLayer（M16）；M31 保留字/标识符校验 |
-| ExpressionParserLayer | ✅ | 106/106 | roadmap #4 全部落地；前导点 enum case（M20）、wrapper 路径访问 `:`（M21）；M31：位运算符 `<<`/`&`/`\|`/`^`、`in` 移除、insideParens 续行、复合赋值 10 运算符（M34）、span 含关键字 |
+| ExpressionParserLayer | ✅ | 106/106 | roadmap #4 全部落地；前导点 enum case（M20）、wrapper 路径访问 `:`（M21）；M31：位运算符 `<<`/`&`/`\|`/`^`、`in` 移除、insideParens 续行、复合赋值 10 运算符（M34）、span 含关键字；**M42 路径表达式统一**：后缀链就地施工单一 `PathExpressionASTNode`（首段 + 段 + 后缀，原 SymbolReference/Call/Index/MemberAccess/WrapperAccess 五节点删除） |
 | ArgumentListParserLayer | ✅ | 12/12（M31 新套件） | 位置/具名/混合实参；M31：续行、空索引拒绝 |
 | LambdaExpressionParserLayer | ✅ | 37/37 | roadmap #21 提前落地；体双形态（M33）：单表达式 / 多语句块体（named 标签、裸 return 边界） |
 | SwitchStatementParserLayer | ✅ 两种形态 | 35/35（SwitchExpression 套件） | 表达式 + 语句形态（M33，新 SwitchStatementASTNode）；分支体统一代码块、named 标签、两形态强制 default |
@@ -322,7 +324,7 @@ pub class Point {
 | CoroutineOps（await/yield） | ✅ | 13/13 | roadmap #12；await 一元前缀运算符，yield 语句 |
 | GenericParametersParserLayer | ✅ | 21/21 | 声明/约束/型变/可变参数；已接入类型/函数/operator 声明（M15） |
 | ParameterListParserLayer | ✅ | 14/14 | 普通/默认/可变/具名可变；已接入 func/operator/init 声明；init 参数映射 `_ -> field`（M18，allowMapping 开关） |
-| PathParserLayer | ✅ | 16/16（M31 新套件） | 符号路径 + `\<` 泛型实参；M31：尾点/双点/未闭合泛型报错（allowVariadicDots 保留 `...`） |
+| PathParserLayer | ✅ | 16/16（M31 新套件） | 符号路径 + `\<` 泛型实参；M31：尾点/双点/未闭合泛型报错（allowVariadicDots 保留 `...`）；M42 起收窄为**类型引用与 import 路径**专用（表达式路径由 ExpressionParserLayer 就地施工） |
 | RootParserLayer | ✅ | 含于各套件 | 顶层分发（声明统一委托 DeclarationParserLayer） |
 | DeclarationParserLayer | ✅ 统一声明层 | 94/94（TypeDeclaration 套件） | 任何位置任何声明的唯一入口：全局/成员/嵌套共用一套状态机；声明泛型参数（M15）、enum `[]` case 列表（M17）、like 委托与 ext 限定名（M19）、@ 注解与 wrapper `.proxy.*` 代理成员（M20）已接入 |
 | PropertyAccessorParserLayer | ✅ | 17/17 | §9.4 访问器块 `{ get... set... }`；backing field 判定与 get/set 一致性校验；三类定义位置经 VariableDeclaration 汇聚 |
@@ -342,6 +344,7 @@ pub class Point {
 | BilModel + BilWriter（中端，S4） | ✅ | 6/6（BilWriterTests） | BIL 对象模型与文本生成（M38，`Bil/` 五文件）：Module/Metadata/Resources（§18 全形态）/类型与成员声明（§8）/Function/.args/.vars/Block（§9）/指令与操作数（§10–§16，§17 协程暂缓）；对中端零依赖、字符串身份、Origin 以 object? 占位；writer 只输出标准 spelling、全段输出、§19 黄金示例逐行一致（含 wrapper 隐藏字段续行形态） |
 | DeclarationCollector（中端 P1，S2） | ✅ | 83/83（DeclarationCollectorTests） | 声明收集（M39）：`Semantic/CompilationUnit.cs`（多源文件 + DiagnosticBag + SymbolGraph）+ `Semantic/DeclarationCollector.cs`（DeclarationCollector + DeclarationCollection + FileContext）——类型/变量/可调用/参数/泛型参数符号壳（默认基类建壳即定、rich/shared/static 只读标记位）、namespace 逐段驻留与跨文件合并、import 上下文登记、ext 拆名待注册、重复声明诊断（类型/变量同名、方法 P1 文本级签名，重载不误报）；getter/setter 与 enum case 壳按需增补（S8/S11） |
 | DeclarationResolver（中端 P2，S3） | ✅ | 138/138（DeclarationResolverTests） | 声明解析（M40，`Semantic/DeclarationResolver.cs`）：类型引用解析（泛型参数 → NestedTypes → namespace 父链 → 全局 → imports → core 隐式查找序；T?→Nullable\<T\>；失败绑 ErrorTypeSymbol 毒化静默）；init 映射参数沿字段类型；继承/implements 图（种类匹配、open/abstract 可继承性、class/interface 双环检测）；修饰符合法性（Parser 的 rich/shared/open 即死拦截与重复/互斥校验移交于此，可恢复诊断）；rich/shared 单向传染 + 字段闭包七行表（直接分类违规即报、放行才展开泛型实参递归）；共享安全闸门（全局/静态/ext静态）；泛型约束声明侧（Target 必本声明泛型参数、with 边界必 wrapper）；ext 注册（Owner 改写挂目标类型）+ wrapper 适用性（@WrapperTarget、§14.9 矩阵 A/B/D、interface 实现者传染）；结束 Freeze 符号图 |
+| Binder（中端 P3，S5） | ✅ | 90/90（BinderTests） | 函数体分析（M41，`Semantic/Binder.cs` + `Semantic/Bound/` + `Semantic/NameResolver.cs`）：分析单位 BoundFunctionBody{Method, Locals, BoundBlock}；字面量定型（null 走可空上下文）、var 推断、LocalSymbol、二元/一元 bootstrap intrinsic 键查询（结果类型维度：比较 bool、余同操作数）、赋值与 definite assignment 最小版、无重载直接调用（具名实参归位规范参数序）、new/init 匹配、return 所有路径显式返回检查；值/调用查找序 块 → 参数 → 命名空间链字段/函数 → 通配 import；多段路径 = 容器 + 末段成员（首段命中局部/参数判实例路径暂拒）；IsAssignable（严格相等/可空提升/BaseType 链/直接 interface，显式 cast 归 P4a）；控制流/成员访问/重载/泛型等遇之报 P3 诊断（归 S7–S13） |
 
 ---
 
@@ -354,7 +357,7 @@ pub class Point {
 - **注释集中跳过**（M25）：CommentToken 由 Parser 主循环分发时统一跳过，各 Layer 不再自行处理；行注释不再吞掉结尾换行（回流由 Base 层产出 LineBreakToken）
 - **SlashLexerLayer**（M25）：`/`、`/=`、`//`、`/*` 统一分流入口；输入结束以虚拟换行冲刷帧（FlushLayers）弹栈，未闭合字符串/块注释即 LexerException
 - **泛型语法 `\<...>`**：`<` 仅作小于号；Lexer 不合并 `>` 系列，`>=`/`>>`/`>>>` 由表达式层重组（详见 `SYNTAX.md` §3.6）
-- **表达式后缀链**：纯符号路径保持 PathParserLayer 的 Symbol 形态；`(`/`[`/`.`/`?.`/`\<`/`:` 后缀由 ExpressionParserLayer 链接，底座为表达式时才产生 MemberAccessASTNode
+- **表达式路径统一**（M42，SYNTAX §1.4）：表达式位置的符号引用、调用、索引、成员访问（含 `?.`）、wrapper 访问（`:`）统一施工为单一 `PathExpressionASTNode`——首段（符号名或表达式底座）+ 段序列（连接符 + 成员名 + 泛型实参 + 调用/索引后缀）；原 SymbolReference/Call/Index/MemberAccess/WrapperAccess 五节点删除。「首段身份」与各段语义（实例成员/静态成员/wrapper）是语义上色问题，全部归 P3；`PathParserLayer` 收窄为类型引用与 import 路径专用
 - **独立 Layer 可测性**：`Parser.Parse(tokens, baseLayer, entryLayer)` + `TestRootParserLayer`（只接受 EOF）支持任意 Layer 独立驱动测试，且拒绝被测 Layer 漏消费 token
 - **统一声明层**（M14，依据 SYNTAX.md §14.8）：canonical symbol 的类名段可为空、`.static.` 只是标记位，因此全局函数与成员方法结构同构——`DeclarationParserLayer` 一套状态机覆盖全局/成员/嵌套任何声明；`CallableDeclarationASTNode` 单节点覆盖 func/operator/init；成员挂各节点语义容器（M29 起：`RootASTNode.Declarations` / `CodeBlockASTNode.Statements` / 类型节点 `Members`；基类共有 `Children` 已删除）
 - **日志系统**（M26）：`Core/Logger` 是唯一日志出口（Verbose/Warning/Error）；Lexer/Parser 的 ContextImpl 经 Logger 输出，禁止直接 `Console.WriteLine`；控制台门槛默认 Warning+，`--verbose` 子命令放开 Verbose；`--log-to` 把全量日志（含 Verbose）以 JSONL 落盘，文件不过滤级别，便于 grep 诊断
@@ -478,15 +481,38 @@ Constraints 不进 Parameters 的历史 bug（现双注册）；bootstrap 全部
 补登 `Core.Types`（裸名 `i32`/`String`/`Object` 可解析）。符号图结束
 Freeze。详见「里程碑历史」M40 段落。
 
-**下一步**：ROADMAP S5/S6（P3 Binder→BoundTree / P4 Lowering 最小闭环，
-端到端 hello world 出 BIL）。前端进入维护状态，
-仅在中端暴露缺口时回补。
+**S5 P3 最小闭环（M41）已完成**：`Semantic/Binder.cs` 以函数体为独立
+分析单位产出 BoundTree（`Semantic/Bound/`：BoundNode.Syntax 必填回指、
+BoundExpression.Type 定型、BoundFunctionBody{Method, Locals, BoundBlock}），
+落地 S5 全部约定范围——字面量定型、var 推断、作用域链、intrinsic 键查询、
+无重载直接调用（规范参数序）、new/init、return 与 definite assignment。
+同批完成两件基建：P2 名字解析核心提取为 `Semantic/NameResolver.cs`
+（P2/P3 按 Phase 各自实例化，P2 委托后 138 用例零回归）与
+`Tests/BoundDescribe.cs`（唯一 bound 树描述器，仿 AstDescribe）。
+发现两个前端事实并适配：括号产生 GroupExpressionASTNode（透明下钻）、
+`c.m()` 是路径形态而非 MemberAccess（首段命中局部/参数判实例路径暂拒）。
+详见「里程碑历史」M41 段落。
+
+**路径表达式统一（M42）已完成**：SYNTAX §1.4 的语言观忠实落地——
+表达式位置的符号/调用/索引/成员（含 `?.`）/wrapper（`:`）后缀链统一
+施工为单一 `PathExpressionASTNode`（首段 + 段序列 + 后缀，原五节点
+删除），语法层只表达形态事实，「首段身份/段语义」上色全部归 P3。
+ExpressionParserLayer 后缀链重写（段/后缀就地生长 + 表达式底座包装 +
+seed 改路径形态）、Binder 改为 BindPath 单点上色（消除 M41 的
+「双形态双路径」妥协）、泛型实参统一走 TypeReference（中段可空实参
+合法化，能力取并集）、171 用例快照迁移零行为回归（Binder 套件 90
+用例未动即绿，验证 bound 产物与源码语义一致）。详见「里程碑历史」
+M42 段落。
+
+**下一步**：ROADMAP S6（P4 最小闭环：Lowering/Lowered + Lowerer +
+BilEmitter + `--emit-bil`/`--sema-only`，端到端 hello world 出 BIL）。
+前端进入维护状态，仅在中端暴露缺口时回补。
 
 ---
 
 ## 6. 技术债务与已知限制
 
-1. 实参位置的 `a.b` 存在 MemberAccess/Symbol 双形态（具名判别 seed 路径与其他位置 AST 形状不同，语义分析需双路径处理；统一留待语义阶段）
+1. ~~实参位置的 `a.b` 存在 MemberAccess/Symbol 双形态~~（M42 已消除：表达式路径统一为 PathExpressionASTNode，语义上色归 P3 单点）
 2. `3.`/`3.foo` 在 M31 起为编译错误（点后缺数字；`3.foo` 形态规范未定义，需要成员访问时请写 `(3).foo`）
 3. 值块取值规则（M33 起解析层无特判）：「多语句值块所有路径必须显式 return@、落到块尾即编译错误」「单 ExpressionStatement 块隐式取值」「if/switch 表达式分支体类型一致」均留待语义阶段校验
 4. 复合赋值的语义推导（`a op= b` 按 §13.2 从对应运算符自动展开/调用）留待语义/后端阶段；M34 起解析层已接受全部 10 个运算符
@@ -495,10 +521,117 @@ Freeze。详见「里程碑历史」M40 段落。
 8. BIL 待补（M35 登记，不属前端）：wrapper 改为 rich struct 后，`BIL_STANDARD.md` §12.4 缺**只读 place 的接收者形态**；async 协程指令 §17 待 S13 专项修订。两项均记于 `compiler/semantic/SEMANTIC_ARCHITECTURE.md` §7/§7.1，落地分别在 ROADMAP S11 / S13
 9. P2 推断规则（M40 登记，规范未明写）：wrapper 缺 `@WrapperTarget` 即诊断（规范只定义了三类目标的标注形态）；init 映射 `_ -> field` 的目标字段无类型标注即诊断（沿字段类型无从谈起）。若后续规范给出默认行为，回到 DeclarationResolver 放宽
 10. P2 边界（M40 登记）：无类型标注字段（`var x = expr`）的类型推断归 P3，其闭包/闸门判定需在 P3 补一轮复核；§14.9 矩阵 C 行（栈上局部变量的 Value wrapper 检查）归 P3；P1 文本级方法签名重复判定的签名级精确化（类型解析后判定真正重载冲突）留待后续里程碑
+11. P3 边界（M41 登记，S5 最小闭环的已知留口）：无 init 零参 `new` 按「默认构造」放行（规范未明写默认构造规则）；全局字段作赋值目标的 const 判定缺「符号 → 声明 AST」反向映射（暂不拦截）；有默认值的形参在缺失时报 Missing argument（默认参数填充归 S8）；局部变量遮蔽参数/外层变量按放行处理（规范未明）；IsAssignable 的 interface 判定只看直接实现（接口继承链递归与数值提升规则待规范明确后收紧）
 
 ---
 
 ## 7. 里程碑历史
+
+### 2026-07-31 · M42 路径表达式统一（SYNTAX §1.4 忠实落地）
+
+> 用户拍板的架构重构：表达式位置的「符号引用/调用/索引/成员访问/
+> wrapper 访问」五种 AST 节点统一为单一路径表达式节点——语法层只表达
+> §1.4 的形态事实（一条完整路径链恰一个节点），「首段是什么」与各段
+> 语义的上色全部归 P3。消除 M41 暴露的双形态债（`c.m()` 与
+> `core.Console.println()` 同构导致 Binder 双路径处理，原技术债第 1 条）。
+
+- **AST**（`AST/ExpressionNodes.cs`）：删除 `SymbolReferenceASTNode` /
+  `CallExpressionASTNode` / `IndexExpressionASTNode` / `MemberAccessASTNode` /
+  `WrapperAccessASTNode`；新增 `PathExpressionASTNode`（`Head` +
+  `Segments`）/ `PathHeadASTNode`（符号名或表达式底座，互斥）/
+  `PathSegmentASTNode`（`PathConnector{Dot,SafeDot,Colon}` + 成员名 +
+  泛型实参 + 后缀）/ `PathSuffixASTNode`（`PathSuffixKind{Call,Index}` +
+  实参）。前导点 `.Failed`（EnumCaseExpression）保持独立——不是路径。
+- **Parser**：`ExpressionParserLayer` 后缀链重写——符号起点不再委托
+  PathParserLayer，直接创建 PathExpression；`.`/`?.`/`:` 追加段、
+  `(`/`[` 追加后缀、`\<` 挂当前段/首段、trailing lambda 脱糖为 Call
+  后缀；非符号起点（分组/字面量/new/enum case）遇路径后缀经
+  `EnsurePathExpression` 包装为表达式底座。WrapperNameExpected 状态
+  并入 MemberNameExpected（连接符区分，错误消息保持原样）。
+  `ArgumentListParserLayer` 具名判别 seed 改为路径形态（技术债第 1 条
+  的「seed 双形态」一并消除）。Span 施工：首段记名/底座范围、段记
+  连接符到名尾（泛型在 `>` 处扩）、后缀经 currentPathTail 生长封口。
+- **能力并集**：表达式路径的泛型实参统一走 TypeReferenceParserLayer
+  ——中段泛型的可空实参 `a.b\<String?>.c` 从语法错误变合法
+  （原 Symbol 形态不支持可空、MemberAccess 支持，统一取并集）。
+- **Binder 适配**：BindSymbolReference/BindCallee 双入口合并为
+  `BindPath` 单点上色——表达式底座/泛型段/索引后缀/安全访问/wrapper
+  段各自归口诊断（S7/S8/S9/S11）；纯调用形态经 `TryGetCallForm`
+  判定（全 Dot 段 + 唯一 Call 后缀）走直接调用；纯值路径（无后缀）
+  走单段/多段查找序。顺手修复 M41 遗留：一元 `+x` 前缀合法但
+  Binder 抛内部异常（正号按恒等处理）。
+- **测试**：`AstDescribe` 新 Path 格式（`Path(head, [.seg, ?.seg, :seg])`，
+  段带 `<T>` 与 `(args)/[args]`）；171 用例期望串迁移（14 套件，
+  全部为格式替换，零行为变化——结构断言/错误消息断言零修改）；
+  **Binder 套件 90 用例未动即绿**——bound 产物与源码语义在重构前后
+  完全一致，是对「纯形态重构」的最强验证。TypeOf/ASTIntegrity/
+  ExpressionParser 三处手工构造 AST 适配新节点。
+- **文档**：`EXPRESSION_ARCHITECTURE.md`（后缀链框架、统一路径段、
+  两个施工流程示例、PathParserLayer 职责收窄）与 `FRONTEND_TYPES.md`
+  （节点表）同步。
+
+### 2026-07-31 · M41 S5 P3 最小闭环（BoundTree 起步）
+
+> ROADMAP S5 落地：函数体分析（Binder）上线，AST → BoundTree。
+> 中端四 pass 已通其三（P1/P2/P3），下一步 S6 出 BIL。
+
+- **`Semantic/Binder.cs`**（`Binder.Bind(unit, decls) →
+  IReadOnlyList<BoundFunctionBody>` 静态入口 + 私有 BindSession，
+  全程可恢复诊断、函数体间互不阻断）：
+  - **分析单位**：遍历声明骨架（五类类型声明递归 + CallableDeclaration
+    有体者）逐函数绑定；每函数产物
+    `BoundFunctionBody{MethodSymbol, Locals, BoundBlock}`
+    （ARCHITECTURE §5.1）；全局字段初始化器/getter/setter 体 S5 不分析。
+  - **BoundTree 节点集**（`Semantic/Bound/` 三文件）：BoundNode
+    （Syntax 必填回指）/ BoundExpression（Type 定型）/ BoundStatement；
+    字面量、BoundValueReference（LocalSymbol/ParameterSymbol 合一）、
+    全局字段引用、二元/一元 intrinsic、BoundCallExpression（有值）/
+    BoundCallStatement（void 调用语句，两节点分开保住 Type 非空契约）、
+    BoundNewExpression、块/局部声明/表达式语句/赋值/return。
+  - **定型与推断**：字面量按种类映射 bootstrap（IntType 八值、
+    float/double、String/char/bool；null 走 expectedType 可空上下文）；
+    var 推断、标注与初始化兼容检查（IsAssignable：严格相等、
+    `T → Nullable\<T>` 可空提升、BaseType 链、直接 interface；
+    ErrorType 毒化静默；显式 cast 物化归 P4a，BIL §6.5）。
+  - **intrinsic 键查询**（BIL §11）：二元/一元运算符文本 →
+    BilIntrinsicOp 全表映射；两操作数严格同型 + 操作数类型键集命中
+    才合法；结果类型维度——比较 bool、余同操作数（bool and/or 在此
+    仅定型，短路展开归 P4a，§11.3）。
+  - **调用与构造**：无重载直接调用（候选按实参个数唯一匹配，
+    多候选报「重载归 S8」）；具名实参按形参归位，产物即规范参数序
+    （默认填充归 S8）；new 解析类型（class/struct 可构，interface/
+    enum struct/wrapper 各自诊断）+ init 个数匹配。
+  - **return 与 definite assignment**：返回类型兼容（void/非 void
+    互斥诊断）；「所有路径显式返回」按末语句递归判定（S5 无控制流，
+    if/loop 接入后扩展）；局部变量未赋值使用诊断、赋值即登记
+    （赋值目标绑定走 forAssignment 免查——目标不是「使用」）。
+  - **名字解析**：值/调用查找序为 块作用域链 → 参数 → 命名空间链
+    字段/函数 → 通配 import 容器；多段路径 = 前 N-1 段容器
+    （NameResolver）+ 末段成员；**首段命中局部/参数即实例成员路径，
+    报「归 S8」诊断**——`c.m()` 在前端是路径形态（§1.4），与
+    `core.Console.println()` 同构，只能靠绑定期首段解析区分。
+  - **明确不做**（遇之报 P3 诊断而非崩溃）：控制流全家（S7）、
+    成员访问/receiver（S8）、重载 ranking 与默认填充（S8）、泛型
+    使用侧（S9）、enum case（S11）、字符串插值（S7）、await（S13）。
+- **`Semantic/NameResolver.cs`（共享设施提取）**：P2 的名字解析核心
+  （ResolveSymbolPath/ResolveDottedPath/ResolveFirstSegment/
+  ApplyTypeArguments 等约 220 行）从 ResolveSession 私有方法提取为
+  internal 设施，诊断按构造传入的 Phase 落袋；P2 改为委托
+  （138 用例零回归），P3 以 DiagnosticPhase.P3 实例化复用——
+  函数体内的类型引用（局部标注、new）与声明骨架同一条解析路径。
+- **符号家族增补**：`LocalSymbol`（P3 产生，挂 BoundFunctionBody.
+  Locals，不进符号图容器表、不受 Freeze 约束；参数仍归 ParameterSymbol）。
+- **前端事实适配**（两件，测试暴露）：① 括号表达式产生
+  `GroupExpressionASTNode`（无优先级语言里组合运算必括号）——Binder
+  透明下钻不落节点；② 裸嵌套块 `{ ... }` 不是合法语句（前端只认
+  固定位置的代码块）——嵌套作用域测试改为单层规则断言，BindBlock
+  的嵌套能力留待 S7 控制流接入。
+- **`Tests/BoundDescribe.cs`**：唯一 bound 树描述器（仿 AstDescribe，
+  字面量值经 Syntax 回指取、定型类型短名 Nullable\<T\> → `T?`）；
+  `Tests/BinderTests.cs`（90 用例，37 号套件）：11 组——字面量、
+  局部声明、值引用、二元/一元运算、赋值、调用、new、return、
+  作用域、诊断累积；含结构性事实断言（符号引用相等、Syntax 回指、
+  Locals 独立）与三类诊断（类型不匹配/未定义名字/未赋值使用）用例。
 
 ### 2026-07-31 · M40 S3 P2 声明解析
 

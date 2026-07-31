@@ -142,27 +142,27 @@ namespace LatteCompiler
                     TokenDisposition.Consume);
             }
 
-            // 位置实参：标识符作为符号引用起点，表达式继续（foo(name + 1)）。
-            // 已消费的标识符包成未挂载的符号节点作为 seed 传给表达式层。
-            // seed 及其符号节点的 span 即标识符 token（最近被消费的 token）的范围
+            // 位置实参：标识符作为路径表达式起点，表达式继续（foo(name + 1)）。
+            // 已消费的标识符包成未挂载的路径节点作为 seed 传给表达式层。
+            // seed 及其首段节点的 span 即标识符 token（最近被消费的 token）的范围
             var seedRange = context.GetPreviousLocation();
-            var symbolRef = new SymbolReferenceASTNode();
-            symbolRef.Span = new CharRange
+            var seedPath = new PathExpressionASTNode();
+            seedPath.Span = new CharRange
             {
                 Start = seedRange.Start,
                 End = seedRange.End,
                 sourceName = seedRange.sourceName
             };
-            symbolRef.Symbol.Span = symbolRef.Span;
-            symbolRef.Symbol.symbol.elements.Add(new SymbolElement { name = pendingName! });
+            seedPath.Head.Name = pendingName!;
+            seedPath.Head.Span = seedPath.Span;
             pendingName = null;
-            return DelegatePositionalArgument(context, symbolRef, seedRange.Start, TokenDisposition.Replay);
+            return DelegatePositionalArgument(context, seedPath, seedRange.Start, TokenDisposition.Replay);
         }
 
         // 位置实参委托：先创建 ArgumentASTNode 并入列，再让表达式层填充其 Value Root
         private ParserLayerResult DelegatePositionalArgument(
             ParserLayerContext context,
-            SymbolReferenceASTNode? seed,
+            PathExpressionASTNode? seed,
             CharPosition spanStart,
             TokenDisposition disposition)
         {

@@ -30,7 +30,7 @@ namespace LatteCompiler.Tests
                      "    (2) -> { \"two\" }\n" +
                      "    default -> { \"other\" }\n" +
                      "}",
-                "Switch(Sym(expr), [Int(1,I32) -> [Str(\"one\")], Int(2,I32) -> [Str(\"two\")]], " +
+                "Switch(Path(expr, []), [Int(1,I32) -> [Str(\"one\")], Int(2,I32) -> [Str(\"two\")]], " +
                 "default -> [Str(\"other\")])");
 
             TestHarness.Blank();
@@ -46,9 +46,9 @@ namespace LatteCompiler.Tests
                      "    (_ == (3 + 4)) -> { \"seven\" }\n" +
                      "    default -> { \"small\" }\n" +
                      "}",
-                "Switch(Sym(n), " +
-                "[Binary(Sym(_) > Int(10,I32)) -> [Str(\"big\")], " +
-                "Binary(Sym(_) == Group(Binary(Int(3,I32) + Int(4,I32)))) -> [Str(\"seven\")]], " +
+                "Switch(Path(n, []), " +
+                "[Binary(Path(_, []) > Int(10,I32)) -> [Str(\"big\")], " +
+                "Binary(Path(_, []) == Group(Binary(Int(3,I32) + Int(4,I32)))) -> [Str(\"seven\")]], " +
                 "default -> [Str(\"small\")])");
 
             TestHarness.Blank();
@@ -60,7 +60,7 @@ namespace LatteCompiler.Tests
             TestHarness.Section("Testing switch Single-line");
 
             TestExpr("var r = switch(x) { (1) -> { 1 } default -> { 0 } }",
-                "Switch(Sym(x), [Int(1,I32) -> [Int(1,I32)]], default -> [Int(0,I32)])");
+                "Switch(Path(x, []), [Int(1,I32) -> [Int(1,I32)]], default -> [Int(0,I32)])");
 
             TestHarness.Blank();
         }
@@ -79,9 +79,9 @@ namespace LatteCompiler.Tests
                      "    }\n" +
                      "    default -> { return@_ \"other\" }\n" +
                      "}",
-                "Switch(Sym(x), " +
+                "Switch(Path(x, []), " +
                 "[Int(1,I32) -> [Return@_(Str(\"one\"))], " +
-                "Binary(Sym(_) > Int(10,I32)) -> [Call(Sym(logBig), [Sym(x)]), Return@_(Str(\"big\"))]], " +
+                "Binary(Path(_, []) > Int(10,I32)) -> [Path(logBig(Path(x, [])), []), Return@_(Str(\"big\"))]], " +
                 "default -> [Return@_(Str(\"other\"))])");
 
             // named 命名后 return@标签 穿透内层匿名块
@@ -92,9 +92,9 @@ namespace LatteCompiler.Tests
                      "    }\n" +
                      "    default -> { return@match \"other\" }\n" +
                      "}",
-                "Switch(Sym(x), named match, " +
+                "Switch(Path(x, []), named match, " +
                 "[Int(1,I32) -> [Return@_(Str(\"one\"))], " +
-                "Binary(Sym(_) > Int(10,I32)) -> [Seq([Return@match(Str(\"big\"))])]], " +
+                "Binary(Path(_, []) > Int(10,I32)) -> [Seq([Return@match(Str(\"big\"))])]], " +
                 "default -> [Return@match(Str(\"other\"))])");
 
             TestHarness.Blank();
@@ -107,8 +107,8 @@ namespace LatteCompiler.Tests
 
             // 基本语句形态
             TestBlock("{ switch(x) { (1) -> { handleOne() } default -> { handleOther() } } }",
-                "[SwitchStmt(Sym(x), [Int(1,I32) -> [Call(Sym(handleOne), [])]], " +
-                "default -> [Call(Sym(handleOther), [])])]");
+                "[SwitchStmt(Path(x, []), [Int(1,I32) -> [Path(handleOne(), [])]], " +
+                "default -> [Path(handleOther(), [])])]");
 
             // 多语句分支体 + 语句结束后正确交还 token
             TestBlock("{\n" +
@@ -121,10 +121,10 @@ namespace LatteCompiler.Tests
                       "    }\n" +
                       "    done()\n" +
                       "}",
-                "[SwitchStmt(Sym(expr), " +
-                "[Binary(Sym(_) > Int(10,I32)) -> [Call(Sym(logBig), [Sym(expr)]), Call(Sym(handleBig), [])]], " +
-                "default -> [Call(Sym(handleOther), [])]), " +
-                "Call(Sym(done), [])]");
+                "[SwitchStmt(Path(expr, []), " +
+                "[Binary(Path(_, []) > Int(10,I32)) -> [Path(logBig(Path(expr, [])), []), Path(handleBig(), [])]], " +
+                "default -> [Path(handleOther(), [])]), " +
+                "Path(done(), [])]");
 
             TestHarness.Blank();
         }

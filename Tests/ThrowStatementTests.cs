@@ -14,10 +14,10 @@ namespace LatteCompiler.Tests
             TestHarness.Section("Testing Simple Throw");
 
             TestBlock("{ throw error }",
-                "[Throw(Sym(error))]");
+                "[Throw(Path(error, []))]");
 
             TestBlock("{ throw e }",
-                "[Throw(Sym(e))]");
+                "[Throw(Path(e, []))]");
 
             TestHarness.Blank();
         }
@@ -34,7 +34,7 @@ namespace LatteCompiler.Tests
                 "[Throw(New(IOException, [Str(\"File not found\")]))]");
 
             TestBlock("{ throw getError() }",
-                "[Throw(Call(Sym(getError), []))]");
+                "[Throw(Path(getError(), []))]");
 
             TestHarness.Blank();
         }
@@ -51,7 +51,7 @@ namespace LatteCompiler.Tests
                       "        log(e)\n" +
                       "    }\n" +
                       "}",
-                "[Try([Throw(New(RuntimeException, []))], [Catch(e: RuntimeException, [Call(Sym(log), [Sym(e)])])])]");
+                "[Try([Throw(New(RuntimeException, []))], [Catch(e: RuntimeException, [Path(log(Path(e, [])), [])])])]");
 
             TestBlock("{\n" +
                       "    try {\n" +
@@ -60,7 +60,7 @@ namespace LatteCompiler.Tests
                       "        throw new ProcessingError(e)\n" +
                       "    }\n" +
                       "}",
-                "[Try([Call(Sym(validate), [Sym(data)])], [Catch(e: ValidationError, [Throw(New(ProcessingError, [Sym(e)]))])])]");
+                "[Try([Path(validate(Path(data, [])), [])], [Catch(e: ValidationError, [Throw(New(ProcessingError, [Path(e, [])]))])])]");
 
             TestHarness.Blank();
         }
@@ -76,7 +76,7 @@ namespace LatteCompiler.Tests
                       "        throw new Error()\n" +
                       "    }\n" +
                       "}",
-                "[IfStmt(Sym(error), [Throw(New(Error, []))], <none>)]");
+                "[IfStmt(Path(error, []), [Throw(New(Error, []))], <none>)]");
 
             // 循环中
             TestBlock("{\n" +
@@ -86,7 +86,7 @@ namespace LatteCompiler.Tests
                       "        }\n" +
                       "    }\n" +
                       "}",
-                "[For(item, Sym(items), [IfStmt(Call(Sym(invalid), [Sym(item)]), [Throw(New(InvalidItemError, [Sym(item)]))], <none>)])]");
+                "[For(item, Path(items, []), [IfStmt(Path(invalid(Path(item, [])), []), [Throw(New(InvalidItemError, [Path(item, [])]))], <none>)])]");
 
             TestHarness.Blank();
         }

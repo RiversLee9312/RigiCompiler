@@ -148,14 +148,86 @@ namespace LatteCompiler
                 "LiteralExpressionASTNode has no attached literal.");
     }
 
-    // 符号引用表达式（变量、函数调用等）
-    public class SymbolReferenceASTNode : ExpressionASTNode
-    {
-        [ChildAstNode] public SymbolASTNode Symbol;
+    // ===== 路径表达式（SYNTAX §1.4，M42 统一）=====
+    // 符号表达式经路径连接符（. / ?. / :）从左到右结合的整体——一条完整
+    // 路径链恰一个节点，统一替代原 SymbolReference/Call/Index/MemberAccess/
+    // WrapperAccess 五种碎裂形态。「首段是什么」（局部变量/参数/命名空间/
+    // 类型）与各段语义（实例成员/静态成员/wrapper 访问）是语义上色问题，
+    // 全部归 P3；语法层只表达 §1.4 的形态事实。
 
-        public SymbolReferenceASTNode(ASTNode? parent = null) : base(parent)
+    // 路径连接符：. 普通成员 / ?. 安全成员 / : wrapper 访问
+    public enum PathConnector
+    {
+        Dot,
+        SafeDot,
+        Colon
+    }
+
+    // 路径后缀种类：调用 () / 索引 []（参数表共用 ArgumentASTNode）
+    public enum PathSuffixKind
+    {
+        Call,
+        Index
+    }
+
+    // 路径表达式：首段 + 路径段序列（段序列可为空——纯符号 a、纯调用 a(1)
+    // 也是路径）
+    public class PathExpressionASTNode : ExpressionASTNode
+    {
+        [ChildAstNode] public PathHeadASTNode Head { get; }
+        [ChildAstNode] public List<PathSegmentASTNode> Segments;
+
+        public PathExpressionASTNode()
         {
-            Symbol = new SymbolASTNode(this);
+            Head = new PathHeadASTNode(this);
+            Segments = new List<PathSegmentASTNode>();
+        }
+    }
+
+    // 路径首段：符号头（Name + 可选泛型实参 + 后缀序列，如 a / a\<i32> / a(1)[2]）
+    // 或表达式底座（(a+b).c / foo()() / .Failed(404) 的底座，Expression 挂载点）。
+    // Name 与 Expression 互斥（创建时定归属）。
+    public class PathHeadASTNode : ASTNode
+    {
+        public string? Name;
+        [ChildAstNode] public ExpressionRootASTNode? Expression;
+        [ChildAstNode] public List<TypeReferenceASTNode> GenericArguments;
+        [ChildAstNode] public List<PathSuffixASTNode> Suffixes;
+
+        public PathHeadASTNode(ASTNode? parent) : base(parent)
+        {
+            Name = null;
+            Expression = null;
+            GenericArguments = new List<TypeReferenceASTNode>();
+            Suffixes = new List<PathSuffixASTNode>();
+        }
+    }
+
+    // 路径段：连接符 + 成员名 + 可选泛型实参 + 后缀序列（.bar / ?.length / :MyWrapper）
+    public class PathSegmentASTNode : ASTNode
+    {
+        public PathConnector Connector;
+        public string Name;
+        [ChildAstNode] public List<TypeReferenceASTNode> GenericArguments;
+        [ChildAstNode] public List<PathSuffixASTNode> Suffixes;
+
+        public PathSegmentASTNode(ASTNode? parent) : base(parent)
+        {
+            Name = "";
+            GenericArguments = new List<TypeReferenceASTNode>();
+            Suffixes = new List<PathSuffixASTNode>();
+        }
+    }
+
+    // 路径后缀：调用 () 或索引 []（trailing lambda 脱糖为 Call 后缀的唯一实参）
+    public class PathSuffixASTNode : ASTNode
+    {
+        public PathSuffixKind Kind;
+        [ChildAstNode] public List<ArgumentASTNode> Arguments;
+
+        public PathSuffixASTNode(ASTNode? parent) : base(parent)
+        {
+            Arguments = new List<ArgumentASTNode>();
         }
     }
 
@@ -183,7 +255,7 @@ namespace LatteCompiler
         }
     }
 
-    // 调用/索引/构造实参（可具名，如 foo(name = 42)）
+    // 调用/索引/构造实参（可具名，如 foo(name = 42)；调用与索引参数表共用）
     public class ArgumentASTNode : ASTNode
     {
         public string? Name;           // 具名实参名；位置实参为 null
@@ -193,49 +265,6 @@ namespace LatteCompiler
         {
             Name = null;
             Value = new ExpressionRootASTNode(this);
-        }
-    }
-
-    // 函数调用表达式
-    public class CallExpressionASTNode : ExpressionASTNode
-    {
-        [ChildAstNode] public ExpressionRootASTNode Callee { get; }  // 被调用的表达式
-        [ChildAstNode] public List<ArgumentASTNode> Arguments;
-
-        public CallExpressionASTNode()
-        {
-            Callee = new ExpressionRootASTNode(this);
-            Arguments = new List<ArgumentASTNode>();
-        }
-    }
-
-    // 索引访问表达式
-    public class IndexExpressionASTNode : ExpressionASTNode
-    {
-        [ChildAstNode] public ExpressionRootASTNode Object { get; }
-        [ChildAstNode] public List<ArgumentASTNode> Indices;
-
-        public IndexExpressionASTNode()
-        {
-            Object = new ExpressionRootASTNode(this);
-            Indices = new List<ArgumentASTNode>();
-        }
-    }
-
-    // 成员访问表达式
-    public class MemberAccessASTNode : ExpressionASTNode
-    {
-        [ChildAstNode] public ExpressionRootASTNode Object { get; }
-        public string MemberName;
-        public bool IsSafeAccess;  // ?. 安全访问
-        [ChildAstNode] public List<TypeReferenceASTNode> GenericArguments;  // 泛型实参（foo().bar\<i32>）
-
-        public MemberAccessASTNode()
-        {
-            Object = new ExpressionRootASTNode(this);
-            MemberName = "";
-            IsSafeAccess = false;
-            GenericArguments = new List<TypeReferenceASTNode>();
         }
     }
 
@@ -393,8 +422,8 @@ namespace LatteCompiler
 
     // 前导点 enum case 引用（SYNTAX.md §12）：.Success / .Entity
     // 规范要求存在已确定 enum 类型的 receiver/期望类型上下文（语义阶段校验，
-    // 解析期只识别形态）；参数化 case 的调用（.Failed(404)）由后缀链
-    // 自然脱糖为 Call 节点，本节点不自带实参。
+    // 解析期只识别形态）；参数化 case 的调用（.Failed(404)）由路径后缀链
+    // 脱糖为表达式底座的 Call 后缀（PathExpressionASTNode），本节点不自带实参。
     // parent 参数形态供 is 右侧 TargetCase 槽使用（创建时归属即定，§12.3）。
     public class EnumCaseExpressionASTNode : ExpressionASTNode
     {
@@ -403,21 +432,6 @@ namespace LatteCompiler
         public EnumCaseExpressionASTNode(ASTNode? parent = null) : base(parent)
         {
             CaseName = "";
-        }
-    }
-
-    // wrapper 访问表达式（SYNTAX.md §14.1）：obj:MyWrapper
-    // 链式 obj:A:B 左结合（"obj 的修饰器 A 的修饰器 B"，逐层后缀生成嵌套节点）；
-    // 与调用/索引/成员访问同属路径表达式后缀链（§3），在运算符之前整体形成
-    public class WrapperAccessASTNode : ExpressionASTNode
-    {
-        [ChildAstNode] public ExpressionRootASTNode Object { get; }
-        public string WrapperName;
-
-        public WrapperAccessASTNode()
-        {
-            Object = new ExpressionRootASTNode(this);
-            WrapperName = "";
         }
     }
 }

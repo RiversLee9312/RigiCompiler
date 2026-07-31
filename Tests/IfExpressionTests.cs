@@ -23,9 +23,9 @@ namespace LatteCompiler.Tests
             TestHarness.Section("Testing Basic if Expressions");
 
             TestExpr("var r = if (x > 0) { x } else { opposite(x) }",
-                "If(Binary(Sym(x) > Int(0,I32)), [Sym(x)], [Call(Sym(opposite), [Sym(x)])])");
+                "If(Binary(Path(x, []) > Int(0,I32)), [Path(x, [])], [Path(opposite(Path(x, [])), [])])");
             TestExpr("var r = if (flag) { 1 } else { 2 }",
-                "If(Sym(flag), [Int(1,I32)], [Int(2,I32)])");
+                "If(Path(flag, []), [Int(1,I32)], [Int(2,I32)])");
 
             TestHarness.Blank();
         }
@@ -38,11 +38,11 @@ namespace LatteCompiler.Tests
             // 分支体是完整代码块：内层 if 要作为分支值须显式 return@_（代码块内
             // 的 if 一律按语句分发，见下条）
             TestExpr("var r = if (a) { return@_ if (b) { 1 } else { 2 } } else { 3 }",
-                "If(Sym(a), [Return@_(If(Sym(b), [Int(1,I32)], [Int(2,I32)]))], [Int(3,I32)])");
+                "If(Path(a, []), [Return@_(If(Path(b, []), [Int(1,I32)], [Int(2,I32)]))], [Int(3,I32)])");
 
             // 分支体内的嵌套 if 按语句解析（代码块分发）——不隐式取值
             TestExpr("var r = if (a) { if (b) { 1 } else { 2 } } else { 3 }",
-                "If(Sym(a), [IfStmt(Sym(b), [Int(1,I32)], [Int(2,I32)])], [Int(3,I32)])");
+                "If(Path(a, []), [IfStmt(Path(b, []), [Int(1,I32)], [Int(2,I32)])], [Int(3,I32)])");
 
             TestHarness.Blank();
         }
@@ -53,7 +53,7 @@ namespace LatteCompiler.Tests
             TestHarness.Section("Testing Multi-line if Expressions");
 
             TestExpr("var r = if (x > 0) {\n    x\n} else {\n    opposite(x)\n}",
-                "If(Binary(Sym(x) > Int(0,I32)), [Sym(x)], [Call(Sym(opposite), [Sym(x)])])");
+                "If(Binary(Path(x, []) > Int(0,I32)), [Path(x, [])], [Path(opposite(Path(x, [])), [])])");
 
             TestHarness.Blank();
         }
@@ -64,7 +64,7 @@ namespace LatteCompiler.Tests
             TestHarness.Section("Testing if Expression as Argument");
 
             TestExpr("var v = foo(if (c) { 1 } else { 2 })",
-                "Call(Sym(foo), [If(Sym(c), [Int(1,I32)], [Int(2,I32)])])");
+                "Path(foo(If(Path(c, []), [Int(1,I32)], [Int(2,I32)])), [])");
 
             TestHarness.Blank();
         }
@@ -76,15 +76,15 @@ namespace LatteCompiler.Tests
 
             // 多语句分支体：return@_ 显式产出分支值（匿名分支体的默认标签是 _）
             TestExpr("var r = if (x > 0) {\n    logPositive(x)\n    return@_ x\n} else {\n    return@_ opposite(x)\n}",
-                "If(Binary(Sym(x) > Int(0,I32)), " +
-                "[Call(Sym(logPositive), [Sym(x)]), Return@_(Sym(x))], " +
-                "[Return@_(Call(Sym(opposite), [Sym(x)]))])");
+                "If(Binary(Path(x, []) > Int(0,I32)), " +
+                "[Path(logPositive(Path(x, [])), []), Return@_(Path(x, []))], " +
+                "[Return@_(Path(opposite(Path(x, [])), []))])");
 
             // named 命名后 return@标签 穿透内层匿名块
             TestExpr("var r = if (x > 0) named check {\n    seq {\n        return@check x\n    }\n} else {\n    return@check opposite(x)\n}",
-                "If(Binary(Sym(x) > Int(0,I32)), named check, " +
-                "[Seq([Return@check(Sym(x))])], " +
-                "[Return@check(Call(Sym(opposite), [Sym(x)]))])");
+                "If(Binary(Path(x, []) > Int(0,I32)), named check, " +
+                "[Seq([Return@check(Path(x, []))])], " +
+                "[Return@check(Path(opposite(Path(x, [])), []))])");
 
             TestHarness.Blank();
         }

@@ -28,7 +28,7 @@ namespace LatteCompiler.Tests
             TestHarness.Section("Testing Volatile Seq");
 
             TestBlock("{ volatile seq { operation() } }",
-                "[Seq(volatile, [Call(Sym(operation), [])])]");
+                "[Seq(volatile, [Path(operation(), [])])]");
 
             TestHarness.Blank();
         }
@@ -40,7 +40,7 @@ namespace LatteCompiler.Tests
 
             // 单个 using
             TestBlock("{ seq using(const file = open()) { use(file) } }",
-                "[Seq(using(const file = Call(Sym(open), [])), [Call(Sym(use), [Sym(file)])])]");
+                "[Seq(using(const file = Path(open(), [])), [Path(use(Path(file, [])), [])])]");
 
             // 多个 using
             TestBlock("{\n" +
@@ -49,13 +49,13 @@ namespace LatteCompiler.Tests
                       "        read(s)\n" +
                       "    }\n" +
                       "}",
-                "[Seq(using(const f = Call(Sym(openFile), [])), " +
-                "using(var s = Call(Sym(openStream), [Sym(f)])), " +
-                "[Call(Sym(read), [Sym(s)])])]");
+                "[Seq(using(const f = Path(openFile(), [])), " +
+                "using(var s = Path(openStream(Path(f, [])), [])), " +
+                "[Path(read(Path(s, [])), [])])]");
 
             // using 带类型标注
             TestBlock("{ seq using(const res: Resource = get()) { use(res) } }",
-                "[Seq(using(const res: Resource = Call(Sym(get), [])), [Call(Sym(use), [Sym(res)])])]");
+                "[Seq(using(const res: Resource = Path(get(), [])), [Path(use(Path(res, [])), [])])]");
 
             TestHarness.Blank();
         }
@@ -66,10 +66,10 @@ namespace LatteCompiler.Tests
             TestHarness.Section("Testing Named Labels");
 
             TestBlock("{ seq named myBlock { compute() } }",
-                "[Seq(named myBlock, [Call(Sym(compute), [])])]");
+                "[Seq(named myBlock, [Path(compute(), [])])]");
 
             TestBlock("{ seq named outer { seq named inner { work() } } }",
-                "[Seq(named outer, [Seq(named inner, [Call(Sym(work), [])])])]");
+                "[Seq(named outer, [Seq(named inner, [Path(work(), [])])])]");
 
             TestHarness.Blank();
         }
@@ -81,7 +81,7 @@ namespace LatteCompiler.Tests
 
             // volatile + using + named
             TestBlock("{ volatile seq using(const x = init()) named block { process(x) } }",
-                "[Seq(volatile, using(const x = Call(Sym(init), [])), named block, [Call(Sym(process), [Sym(x)])])]");
+                "[Seq(volatile, using(const x = Path(init(), [])), named block, [Path(process(Path(x, [])), [])])]");
 
             // 多个 using + named
             TestBlock("{\n" +
@@ -91,10 +91,10 @@ namespace LatteCompiler.Tests
                       "        work(a, b)\n" +
                       "    }\n" +
                       "}",
-                "[Seq(using(const a = Call(Sym(getA), [])), " +
-                "using(const b = Call(Sym(getB), [])), " +
+                "[Seq(using(const a = Path(getA(), [])), " +
+                "using(const b = Path(getB(), [])), " +
                 "named mySeq, " +
-                "[Call(Sym(work), [Sym(a), Sym(b)])])]");
+                "[Path(work(Path(a, []), Path(b, [])), [])])]");
 
             TestHarness.Blank();
         }
@@ -106,15 +106,15 @@ namespace LatteCompiler.Tests
 
             // return@_（匿名 seq 的默认标签是 _）
             TestBlock("{ var result = seq { return@_ compute() } }",
-                "[var result = Seq([Return@_(Call(Sym(compute), []))])]");
+                "[var result = Seq([Return@_(Path(compute(), []))])]");
 
             // return@label
             TestBlock("{ var r = seq named calc { return@calc getValue() } }",
-                "[var r = Seq(named calc, [Return@calc(Call(Sym(getValue), []))])]");
+                "[var r = Seq(named calc, [Return@calc(Path(getValue(), []))])]");
 
             // 复杂示例：SYNTAX.md §6.1
             TestBlock("{ const result = seq { const ac = a * c\nreturn@_ ac } }",
-                "[const result = Seq([const ac = Binary(Sym(a) * Sym(c)), Return@_(Sym(ac))])]");
+                "[const result = Seq([const ac = Binary(Path(a, []) * Path(c, [])), Return@_(Path(ac, []))])]");
 
             TestHarness.Blank();
         }
