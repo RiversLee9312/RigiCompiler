@@ -666,6 +666,9 @@ pub protected internal priv
 static ext override abstract
 async entrypoint
 init
+native
+symbol("NATIVE_SYMBOL_NAME")
+lib("NATIVE_LIBRARY_NAME")
 operator(OPERATOR_NAME)
 getter(FIELD_SYMBOL)
 setter(FIELD_SYMBOL)
@@ -674,6 +677,24 @@ wrapper-proxy(PROXY_KIND)
 ```
 
 运算符、getter、setter 和 enum case 的实现可以拥有 method body，但其调用点在 BIL 中仍使用对应的语义指令；只有普通显式方法调用或规范要求的动态 fallback 使用 `invoke`。
+
+`native` 方法声明由运行时原生方法面提供实现（`SYNTAX.md` §4.6、`RUNTIME.md` §26）：
+
+- `native` 声明**不得**拥有对应的方法 body（`fn` 定义）；
+- `symbol("...")` 与 `lib("...")` 必须与 `native` 同时出现且各恰好一次，参数为字符串字面量，分别给出原生符号名与原生库标识；
+- `native` 方法的调用点与普通方法相同（`invoke` / `invoke.noret`），实现侧经 §21.5 的内建 hook 或 Middleware 的原生链接解析。
+
+#### 8.4.1 全局函数与全局字段声明
+
+不属于任何类型的全局函数与全局字段，其声明以裸 `.method` / `.field` 形式直接出现在 `LocalSymbols` / `ExternalSymbols` 段内，不包裹在 `.type` 中：
+
+```bil
+LocalSymbols {
+    .method $main()@.i32 pub entrypoint
+}
+```
+
+段内条目顺序：类型声明与裸成员声明按生成器输出顺序排列；验证器不得要求裸成员必须位于类型声明之前或之后。
 
 ### 8.5 enum case 声明
 
@@ -1622,7 +1643,7 @@ LocalSymbols {
 - canonical 限定正确；
 - local symbol 不重复；
 - external symbol 签名完整；
-- 方法 body 与声明一一对应；
+- 方法 body 与声明一一对应（`native` 声明除外：`native` 方法不得存在方法 body，且必须恰好各带一个 `symbol("...")` 与 `lib("...")` 修饰符）；
 - entrypoint 唯一且签名符合 `SYNTAX.md`。
 
 ### 20.3 类型验证
@@ -1757,6 +1778,17 @@ opcode + exact operand type(s) + exact result type
 VM 必须把 `get.field`、`set.field`、`get.array`、`set.array` 视为独立语义操作，并根据精确类型与符号元数据执行 getter/setter/operator/wrapper 行为。
 
 不得为了实现方便而在 BIL 语义层把它们改写成与规范不同的普通调用顺序。
+
+### 21.5 native 函数的内建 hook
+
+VM 执行到对 `native` 方法声明的 `invoke` / `invoke.noret` 时，不寻找方法 body，而是按 `(lib, symbol)` 查询内建 hook 表并执行对应的内建行为。标准内建 hook 表：
+
+| lib | symbol | 参数 | 行为 |
+|---|---|---|---|
+| `latte_rt` | `print` | `text: .string` | 将字符串写入标准输出 |
+| `latte_rt` | `printErr` | `text: .string` | 将字符串写入标准错误 |
+
+命中表之外的 `(lib, symbol)` 组合 VM 无法解释，必须拒绝执行并报错。该表只随 BIL 标准修订扩充；Middleware 的原生链接不受此表约束。
 
 ---
 

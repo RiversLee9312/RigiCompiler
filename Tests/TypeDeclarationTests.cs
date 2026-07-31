@@ -427,6 +427,26 @@ namespace LatteCompiler.Tests
             TestHarness.Blank();
         }
 
+        // ===== 14b. native 函数（SYNTAX §4.6，M43）=====
+        public static void TestNativeFunction()
+        {
+            TestHarness.Section("Native Functions");
+
+            // 顶层 native 函数：无体声明（换行收尾）
+            TestDecl("pub native func fflush(): i32",
+                "pub native func fflush(): i32");
+
+            // 成员形态：priv static native（stdlib print 形态）
+            TestDecl("class C { priv static native func print(text: String) }",
+                "class C {priv static native func print(text: String)}");
+
+            // 内建注解 + native（@NativeLibrary/@NativeSymbol 字符串实参）
+            TestDecl("class C {\n@NativeLibrary(\"latte_rt\")\n@NativeSymbol(\"print\")\npriv static native func print(text: String)\n}",
+                "class C {@NativeLibrary(Str(\"latte_rt\")) @NativeSymbol(Str(\"print\")) priv static native func print(text: String)}");
+
+            TestHarness.Blank();
+        }
+
         // ===== 15. wrapper proxy 成员（.proxy.*，SYNTAX §14.2/§14.6，P5）=====
         public static void TestWrapperProxy()
         {
@@ -551,6 +571,7 @@ namespace LatteCompiler.Tests
             TestInitParameterMapping();
             TestLikeAndExtension();
             TestAnnotations();
+            TestNativeFunction();
             TestWrapperProxy();
 
             return TestHarness.Summary("TypeDeclaration");

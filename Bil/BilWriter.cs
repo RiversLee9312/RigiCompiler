@@ -103,13 +103,29 @@ namespace LatteCompiler.Bil
         // ===== 符号声明（§8）=====
 
         private static void WriteSymbolSection(StringBuilder sb, string sectionName,
-            System.Collections.Generic.List<BilTypeDeclaration> types)
+            System.Collections.Generic.List<BilSymbolSectionEntry> entries)
         {
             sb.Append('\n');
             sb.Append($"{sectionName} {{\n");
-            foreach (var type in types)
+            foreach (var entry in entries)
             {
-                WriteTypeDeclaration(type, sb);
+                switch (entry)
+                {
+                    case BilTypeDeclaration type:
+                        WriteTypeDeclaration(type, sb);
+                        break;
+                    // 段内裸成员一律单行形态输出；续行形态只存在于类型体内
+                    // （§19 wrapper 隐藏字段示例），生成器不产生该组合
+                    case BilSimpleMemberDeclaration { ModifiersOnNextLine: true }:
+                        throw new CompilerInternalException("段内裸成员声明不支持修饰符续行形态");
+                    // §8.4.1：全局函数/全局字段以裸 .method/.field 直接出现在
+                    // 段内（段内一级缩进，类型体内成员为两级）
+                    case BilMemberDeclaration member:
+                        WriteMember(member, sb, Indent);
+                        break;
+                    default:
+                        throw new CompilerInternalException($"未知的符号段条目类型: {entry.GetType().Name}");
+                }
             }
             sb.Append("}\n");
         }
@@ -142,12 +158,14 @@ namespace LatteCompiler.Bil
             }
             foreach (var member in type.Members)
             {
-                WriteMember(member, sb);
+                WriteMember(member, sb, Indent + Indent);
             }
             sb.Append($"{Indent}}}\n");
         }
 
-        private static void WriteMember(BilMemberDeclaration member, StringBuilder sb)
+        // 成员声明输出；indent 为成员行基础缩进（类型体内两级，§8.4.1 段内
+        // 裸成员一级）
+        private static void WriteMember(BilMemberDeclaration member, StringBuilder sb, string indent)
         {
             switch (member)
             {
@@ -155,12 +173,12 @@ namespace LatteCompiler.Bil
                     if (simple.ModifiersOnNextLine)
                     {
                         // §19 wrapper 隐藏字段示例形态：符号与修饰符分两行
-                        sb.Append($"{Indent}{Indent}{simple.Keyword} {simple.Symbol}\n");
-                        sb.Append($"{Indent}{Indent}{Indent}{string.Join(" ", simple.Modifiers)}\n");
+                        sb.Append($"{indent}{simple.Keyword} {simple.Symbol}\n");
+                        sb.Append($"{indent}{Indent}{string.Join(" ", simple.Modifiers)}\n");
                     }
                     else
                     {
-                        sb.Append($"{Indent}{Indent}{simple.Keyword} {simple.Symbol}");
+                        sb.Append($"{indent}{simple.Keyword} {simple.Symbol}");
                         if (simple.Modifiers.Count > 0)
                         {
                             sb.Append($" {string.Join(" ", simple.Modifiers)}");
@@ -179,7 +197,7 @@ namespace LatteCompiler.Bil
                     var discriminant = caseDecl.DiscriminantResource == null
                         ? "auto"
                         : $"res({caseDecl.DiscriminantResource})";
-                    sb.Append($"{Indent}{Indent}.case {caseDecl.QualifiedName}({parameters}) discriminant {discriminant}\n");
+                    sb.Append($"{indent}.case {caseDecl.QualifiedName}({parameters}) discriminant {discriminant}\n");
                     break;
                 default:
                     throw new CompilerInternalException($"未知的成员声明类型: {member.GetType().Name}");

@@ -49,6 +49,8 @@ namespace LatteCompiler.Tests
             ("DeclarationCollector", DeclarationCollectorTests.RunAll),
             ("DeclarationResolver", DeclarationResolverTests.RunAll),
             ("Binder", BinderTests.RunAll),
+            ("StdlibSources", StdlibSourcesTests.RunAll),
+            ("BilEmitter", BilEmitterTests.RunAll),
         };
 
         // 套件数量（对外编号 1..SuiteCount，即注册表顺序）

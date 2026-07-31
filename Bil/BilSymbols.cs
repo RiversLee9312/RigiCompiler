@@ -6,10 +6,18 @@ namespace LatteCompiler.Bil
     // 类型及成员；ExternalSymbols 声明使用但由他处定义的符号（§8.6：
     // 含验证调用与访问所需的完整语义签名，形态与本地声明相同）。
 
+    // 符号段条目（§8.4.1）：LocalSymbols/ExternalSymbols 段内的条目——
+    // 可以是类型声明（.type ... { ... }），也可以是不属于任何类型的
+    // 全局函数/全局字段的裸成员声明（裸 .method/.field 直接出现在段内，
+    // 不包裹在 .type 中）；两类条目按生成器输出顺序排列
+    public abstract class BilSymbolSectionEntry
+    {
+    }
+
     // 类型声明（§8.2）：
     // .type TYPE_SYMBOL = kind [extends BASE] [implements I, ...] [modifiers...] { ... }
     // （generic(...) 子句随 S9 泛型落地增补）
-    public sealed class BilTypeDeclaration
+    public sealed class BilTypeDeclaration : BilSymbolSectionEntry
     {
         public string Symbol { get; }
         // kind 拼写（§8.2）：class / struct / enum-struct / interface / wrapper
@@ -29,7 +37,9 @@ namespace LatteCompiler.Bil
         }
     }
 
-    public abstract class BilMemberDeclaration
+    // 成员声明基类：既可出现在类型体 Members 中（§8.3/§8.4），也可作为
+    // 段内裸条目（§8.4.1：全局函数/全局字段声明）
+    public abstract class BilMemberDeclaration : BilSymbolSectionEntry
     {
     }
 
@@ -42,8 +52,8 @@ namespace LatteCompiler.Bil
         public string Symbol { get; }
         // 修饰符（§8.3：pub.../const var/ext/backing computed/readable writable/
         // compiler-generated；§8.4：pub.../static ext override abstract/async
-        // entrypoint/init/operator(...)/getter(...)/setter(...)/enum-case(...)/
-        // wrapper-proxy(...)）
+        // entrypoint/init/native/symbol(...)/lib(...)/operator(...)/getter(...)/
+        // setter(...)/enum-case(...)/wrapper-proxy(...)）
         public IReadOnlyList<string> Modifiers { get; }
         // §19 wrapper 隐藏字段示例形态：符号与修饰符分两行（数据驱动，
         // writer 不猜列宽阈值）

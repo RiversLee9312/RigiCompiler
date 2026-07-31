@@ -12,8 +12,10 @@ namespace LatteCompiler
     // return（含「所有路径显式返回」检查，SYNTAX §4.1 无隐式返回）、
     // 赋值与 definite assignment 最小版。
     //
-    // 值/调用的名字解析查找序：块作用域链 → 参数 → 命名空间链（文件命名空间
-    // 及父链，顶端即全局命名空间）字段/函数 → 通配 import 容器成员；
+    // 值/调用的名字解析查找序：块作用域链 → 参数 → 宿主类型成员
+    // （声明类型沿 BaseType 链；当前仅调用查找落地，字段裸名归后续里程碑）
+    // → 命名空间链（文件命名空间及父链，顶端即全局命名空间）字段/函数
+    // → 通配 import 容器成员；
     // 多段路径 = 容器（命名空间/类型，经 NameResolver）+ 末段成员。
     // 类型引用解析与 P2 共用 NameResolver（本类以 DiagnosticPhase.P3 实例化）。
     //
@@ -905,9 +907,16 @@ namespace LatteCompiler
                 return null;
             }
 
+            // 方法查找序：宿主类型成员（声明类型沿 BaseType 链，先于命名空间
+            // 全局函数；实例方法命中后由 BindCallee 静态性检查拦截）
+            // → 命名空间链 → 通配 import 容器方法
             private List<MethodSymbol> FindMethods(string name)
             {
                 var result = new List<MethodSymbol>();
+                for (var host = declaringType; host != null; host = host.BaseType)
+                {
+                    result.AddRange(host.Methods.Where(m => m.Name == name));
+                }
                 for (var ns = ctx.Namespace; ns != null; ns = ns.Parent)
                 {
                     result.AddRange(ns.Methods.Where(m => m.Name == name));

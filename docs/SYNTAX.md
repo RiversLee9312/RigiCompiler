@@ -520,6 +520,32 @@ pub async func bad(user: LocalUser) { ... }                       // ❌ 参数�
 pub async func alsoBad(): LocalUser { ... }                       // ❌ Task 结果是 local object
 ```
 
+### 4.6 `native` 函数
+
+`native` 函数声明一个由运行时原生方法面提供的函数：它没有 Latte 函数体，调用经 BIL 中的 `native` 方法声明路由到原生实现（见 `BIL_STANDARD.md` §8.4 与 `RUNTIME.md` §26）。标准库用它封装 libc 风格的原生能力（如控制台输出），普通 Latte 代码调用 native 函数与调用普通函数语法完全相同。
+
+```latte
+namespace core.io
+
+pub class Console {
+    @NativeLibrary("latte_rt")
+    @NativeSymbol("print")
+    priv static native func print(text: String)
+
+    @NativeLibrary("latte_rt")        // @NativeSymbol 缺省时取函数名
+    priv static native func printErr(text: String)
+}
+```
+
+规则：
+
+- `native` 仅适用于函数；native 函数**不得**书写函数体；
+- 作为类型成员声明时必须同时是 `static`；不得用于 `init`、`operator`、getter/setter；
+- 不得与 `async` 组合，不得声明泛型参数列表，同一容器内不得与同名函数构成重载；
+- 参数与返回类型仅限 §3.2 基本类型中的整数、浮点、`bool`、`char` 与 `String`；不允许 Object、泛型参数、用户声明类型，也不允许可变参数；
+- `@NativeLibrary("...")` 必填，给出原生库标识；`@NativeSymbol("...")` 可省，缺省时取函数名；两个注解的实参必须各为一个字符串字面量；
+- `@NativeLibrary` / `@NativeSymbol` 是编译器内建注解，只允许出现在 native 函数声明上；它们不属于 wrapper 体系（§14），不产生 wrapper 组合链。
+
 ---
 
 ## 5. Lambda 表达式
@@ -910,6 +936,7 @@ pub shared class SharedSession {
 | `rich` | 允许 struct 直接或间接持有 Object；仅适用于 struct/enum struct（wrapper 恒为 rich，不显式书写） |
 | `shared` | 将 class 声明为可跨协程共享的对象类型，或将 rich struct / wrapper 声明为可进入共享图的值类型 |
 | `async` | 调用时创建新协程并返回 Task；仅适用于函数和 lambda |
+| `native` | 声明无函数体的原生函数，由运行时原生方法面提供实现；仅适用于函数，须配 `@NativeLibrary`（§4.6） |
 
 ### 9.3 构造函数（`init`）
 
@@ -1651,7 +1678,7 @@ var (key, value) = pair   // pair 必须为 core.Pair\<TKey, TValue> 的子类
 `func`, `var`, `const`, `class`, `struct`, `interface`, `enum`, `wrapper`, `operator`, `init`, `namespace`, `import`
 
 ### 修饰符关键字
-`pub`, `priv`, `protected`, `internal`, `open`, `abstract`, `singleton`, `static`, `ext`, `override`, `named`, `rich`, `shared`, `async`
+`pub`, `priv`, `protected`, `internal`, `open`, `abstract`, `singleton`, `static`, `ext`, `override`, `named`, `rich`, `shared`, `async`, `native`
 
 ### 控制流关键字
 `if`, `else`, `switch`, `default`, `for`, `in`, `to`, `while`, `do`, `break`, `continue`, `return`, `yield`, `try`, `catch`, `finally`, `throw`

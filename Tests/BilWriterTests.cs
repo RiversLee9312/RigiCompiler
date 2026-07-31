@@ -296,6 +296,46 @@ namespace LatteCompiler.Tests
                 "    }",
                 "}"));
 
+            // ===== §8.4.1 段内裸成员声明（全局函数，含 native 修饰符串）=====
+            var globalModule = new BilModule();
+            var consoleType = new BilTypeDeclaration("core.io::Console", "class", "pub");
+            consoleType.Members.Add(new BilSimpleMemberDeclaration(".static-method",
+                "core.io::Console$.static.print(value:.string)@.void",
+                new[] { "priv", "native", "symbol(\"print\")", "lib(\"latte_rt\")" }));
+            consoleType.Members.Add(new BilSimpleMemberDeclaration(".static-method",
+                "core.io::Console$.static.printErr(value:.string)@.void",
+                new[] { "priv", "native", "symbol(\"printErr\")", "lib(\"latte_rt\")" }));
+            consoleType.Members.Add(new BilSimpleMemberDeclaration(".static-method",
+                "core.io::Console$.static.println(value:.string)@.void",
+                new[] { "pub" }));
+            globalModule.LocalSymbols.Add(consoleType);
+            // 不属于任何类型的全局函数：裸 .method 直接出现在段内（一级缩进），
+            // 顺序在类型声明之后（§8.4.1：条目不强制先后）
+            globalModule.LocalSymbols.Add(new BilSimpleMemberDeclaration(".method",
+                "$main()@.i32",
+                new[] { "pub", "entrypoint" }));
+
+            TestHarness.Check("§8.4.1 段内裸成员声明", BilWriter.Write(globalModule), Lines(
+                "BIL \"1.1\"",
+                "",
+                "Metadata {",
+                "}",
+                "",
+                "Resources {",
+                "}",
+                "",
+                "LocalSymbols {",
+                "    .type core.io::Console = class pub {",
+                "        .static-method core.io::Console$.static.print(value:.string)@.void priv native symbol(\"print\") lib(\"latte_rt\")",
+                "        .static-method core.io::Console$.static.printErr(value:.string)@.void priv native symbol(\"printErr\") lib(\"latte_rt\")",
+                "        .static-method core.io::Console$.static.println(value:.string)@.void pub",
+                "    }",
+                "    .method $main()@.i32 pub entrypoint",
+                "}",
+                "",
+                "ExternalSymbols {",
+                "}"));
+
             // ===== Origin 调试链占位（ARCHITECTURE §6.3：反序列化/手工构造恒为 null）=====
             TestHarness.CheckTrue("Origin 默认 null", entry.Instructions[0].Origin == null);
 

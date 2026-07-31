@@ -18,7 +18,7 @@ namespace LatteCompiler
     // 明确不做（归 P2/P3）：类型引用解析（ReturnType/FieldType/参数类型留空）、
     // 显式继承/implements 解析、修饰符合法性、rich/shared 闭包与传染检查、
     // getter/setter 与 enum case 符号（按需增补，S8/S11）。
-    // 修饰符只读标记位建壳（rich/shared/static），合法性检查一律归 P2。
+    // 修饰符只读标记位建壳（rich/shared/static/native），合法性检查一律归 P2。
     //
     // 类型默认基类在建壳时即定（class→Object / struct→ValueType /
     // enum struct→Enum / wrapper→Wrapper，wrapper 恒 rich §14.9）：
@@ -219,6 +219,7 @@ namespace LatteCompiler
                 owner: declaringType,
                 ns: declaringType == null ? ns : null,
                 isStatic: node.Modifiers.Contains(Keywords.STATIC),
+                isNative: node.Modifiers.Contains(Keywords.NATIVE),
                 extTargetPath: extTarget);
             CollectGenericParameters(symbol.GenericParameters, node.GenericParameters, result);
             foreach (var p in node.Parameters.Parameters)

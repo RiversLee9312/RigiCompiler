@@ -14,11 +14,13 @@ namespace LatteCompiler.Bil
         public string BilVersion { get; set; } = "1.1";
 
         // 各段物理顺序固定（§4）：Metadata → Resources → LocalSymbols →
-        // ExternalSymbols → 函数定义；标准生成器输出全部段（空段也输出）
+        // ExternalSymbols → 函数定义；标准生成器输出全部段（空段也输出）。
+        // 段内条目（§8.4.1）：类型声明与裸成员声明（全局函数/全局字段）
+        // 按生成器输出顺序混合排列
         public List<BilMetadataEntry> Metadata { get; } = new List<BilMetadataEntry>();
         public List<BilResource> Resources { get; } = new List<BilResource>();
-        public List<BilTypeDeclaration> LocalSymbols { get; } = new List<BilTypeDeclaration>();
-        public List<BilTypeDeclaration> ExternalSymbols { get; } = new List<BilTypeDeclaration>();
+        public List<BilSymbolSectionEntry> LocalSymbols { get; } = new List<BilSymbolSectionEntry>();
+        public List<BilSymbolSectionEntry> ExternalSymbols { get; } = new List<BilSymbolSectionEntry>();
         public List<BilFunction> Functions { get; } = new List<BilFunction>();
     }
 

@@ -6,6 +6,7 @@ namespace LatteCompiler.Tests
     /// S3 P2 声明解析测试（M40）：七个子任务各自独立测试组——
     /// 类型引用解析（含泛型构造驻留、T?、泛型参数、import/namespace/core 名字解析、
     /// ErrorType 毒化）、init 参数映射、继承/implements 图与循环继承、修饰符合法性、
+    /// native 函数声明（§4.6 全规则与内建注解 @NativeLibrary/@NativeSymbol）、
     /// rich/shared 单向传染与字段闭包（§3.1.1 闭包表逐行合法+非法）、共享安全闸门、
     /// 泛型约束声明侧、ext 注册与 wrapper 目标矩阵（§14.9 A–D 逐行合法+非法 +
     /// interface 实现者传染）。符号比较一律引用相等（ReferenceEquals）。
@@ -27,6 +28,8 @@ namespace LatteCompiler.Tests
             TestGenericConstraints();
             TestExtRegistration();
             TestWrapperApplications();
+            TestNativeDeclarations();
+            TestAccessibility();
             TestFreeze();
             return TestHarness.Summary("DeclarationResolver");
         }
@@ -698,7 +701,161 @@ namespace LatteCompiler.Tests
             TestHarness.CheckSemanticError("注解名非 wrapper", u18.Diagnostics, "'NotWrapper' is not a wrapper type");
         }
 
+        // ===== 子任务 3b：native 函数声明（§4.6）=====
+        private static void TestNativeDeclarations()
+        {
+            TestHarness.Section("P2 Native Functions (§4.6)");
+
+            // 形态规则：无体 / 成员必 static / 仅函数（init/operator/类型/字段均拒绝）
+            var (u1, _) = ResolveUnit("@NativeLibrary(\"rt\")\nnative func f(): i32 { return 1 }\n");
+            TestHarness.CheckSemanticError("native 带函数体", u1.Diagnostics,
+                "Native function 'f' must not have a body");
+            var (u2, _) = ResolveUnit("class C { @NativeLibrary(\"rt\")\nnative func f(): i32 }\n");
+            TestHarness.CheckSemanticError("成员 native 非 static", u2.Diagnostics,
+                "Native member function 'f' must be 'static'");
+            var (u3a, _) = ResolveUnit("class C { native init() }\n");
+            TestHarness.CheckSemanticError("native init", u3a.Diagnostics,
+                "'native' can only be applied to functions");
+            var (u3b, _) = ResolveUnit("class C { native operator plus(other: C): C }\n");
+            TestHarness.CheckSemanticError("native operator", u3b.Diagnostics,
+                "'native' can only be applied to functions");
+            var (u3c, _) = ResolveUnit("native class C { }\n");
+            TestHarness.CheckSemanticError("native 类型", u3c.Diagnostics,
+                "'native' can only be applied to functions");
+            var (u3d, _) = ResolveUnit("native var x: i32\n");
+            TestHarness.CheckSemanticError("native 变量", u3d.Diagnostics,
+                "'native' can only be applied to functions");
+
+            // 组合禁忌：async / 泛型参数列表 / 同容器同名重载
+            var (u4, _) = ResolveUnit("@NativeLibrary(\"rt\")\nasync native func f(): i32\n");
+            TestHarness.CheckSemanticError("native × async", u4.Diagnostics,
+                "Native function 'f' cannot be 'async'");
+            var (u5, _) = ResolveUnit("@NativeLibrary(\"rt\")\nnative func f\\<T>(x: i32)\n");
+            TestHarness.CheckSemanticError("native × 泛型参数列表", u5.Diagnostics,
+                "Native function 'f' cannot declare generic parameters");
+            var (u6, _) = ResolveUnit(
+                "@NativeLibrary(\"rt\")\nnative func dup(x: i32)\n" +
+                "func dup(x: i32, y: i32) { }\n");
+            TestHarness.CheckSemanticError("native × 同容器重载", u6.Diagnostics,
+                "Native function 'dup' cannot be overloaded");
+
+            // 参数/返回类型白名单（用户类型 / Object / Nullable 构造均拒绝）
+            var (u7a, _) = ResolveUnit(
+                "class User { }\n" +
+                "@NativeLibrary(\"rt\")\nnative func f(u: User)\n");
+            TestHarness.CheckSemanticError("参数为用户类型", u7a.Diagnostics,
+                "Parameter 'u' of native function 'f' must be a primitive type");
+            var (u7b, _) = ResolveUnit("@NativeLibrary(\"rt\")\nnative func g(): Object\n");
+            TestHarness.CheckSemanticError("返回 Object", u7b.Diagnostics,
+                "Return type of native function 'g' must be a primitive type");
+            var (u7c, _) = ResolveUnit("@NativeLibrary(\"rt\")\nnative func h(x: i32?)\n");
+            TestHarness.CheckSemanticError("参数为 Nullable 构造", u7c.Diagnostics,
+                "Parameter 'x' of native function 'h' must be a primitive type");
+
+            // 内建注解：@NativeLibrary 必填；实参必须恰好一个字符串字面量
+            var (u8, _) = ResolveUnit("native func f(x: i32)\n");
+            TestHarness.CheckSemanticError("缺 @NativeLibrary", u8.Diagnostics,
+                "Native function 'f' requires @NativeLibrary");
+            var (u9a, _) = ResolveUnit("@NativeLibrary\nnative func f(x: i32)\n");
+            TestHarness.CheckSemanticError("@NativeLibrary 无实参", u9a.Diagnostics,
+                "@NativeLibrary expects exactly one string literal argument");
+            var (u9b, _) = ResolveUnit("@NativeLibrary(42)\nnative func f(x: i32)\n");
+            TestHarness.CheckSemanticError("@NativeLibrary 非字符串实参", u9b.Diagnostics,
+                "@NativeLibrary expects exactly one string literal argument");
+            var (u9c, _) = ResolveUnit(
+                "@NativeLibrary(\"rt\")\n@NativeSymbol()\nnative func f(x: i32)\n");
+            TestHarness.CheckSemanticError("@NativeSymbol 空实参", u9c.Diagnostics,
+                "@NativeSymbol expects exactly one string literal argument");
+
+            // 内建注解只允许出现在 native 函数声明上（且不得被 wrapper 检查误伤）
+            var (u10a, _) = ResolveUnit("@NativeLibrary(\"rt\")\nfunc f(): i32 { return 1 }\n");
+            TestHarness.CheckSemanticError("@NativeLibrary 挂普通函数", u10a.Diagnostics,
+                "@NativeLibrary can only be applied to native functions");
+            TestHarness.CheckTrue("内建注解豁免 wrapper 解析（仅此一条诊断）",
+                u10a.Diagnostics.Diagnostics.Count(d => d.Severity == DiagnosticSeverity.Error) == 1);
+            var (u10b, _) = ResolveUnit("@NativeSymbol(\"x\")\nclass C { }\n");
+            TestHarness.CheckSemanticError("@NativeSymbol 挂类型", u10b.Diagnostics,
+                "@NativeSymbol can only be applied to native functions");
+
+            // 正例：stdlib 形态（§4.6 示例，命名空间 + 类成员 + 双注解）
+            var (ok1, _) = ResolveUnit(
+                "namespace core.io\n" +
+                "pub class Console {\n" +
+                "@NativeLibrary(\"latte_rt\")\n" +
+                "@NativeSymbol(\"print\")\n" +
+                "priv static native func print(text: String)\n" +
+                "}\n");
+            CheckNoErrors("stdlib 形态无诊断", ok1);
+            var print = NsOf(ok1, "core", "io").Types.Single(t => t.Name == "Console")
+                .Methods.Single(m => m.Name == "print");
+            TestHarness.CheckTrue("IsNative/IsStatic 标记位", print.IsNative && print.IsStatic);
+            TestHarness.Check("NativeSymbol 取注解实参", print.NativeSymbol ?? "", "print");
+            TestHarness.Check("NativeLibrary 取注解实参", print.NativeLibrary ?? "", "latte_rt");
+
+            // 正例：@NativeSymbol 缺省取函数名
+            var (ok2, _) = ResolveUnit(
+                "class C {\n" +
+                "@NativeLibrary(\"latte_rt\")\n" +
+                "priv static native func printErr(text: String)\n" +
+                "}\n");
+            CheckNoErrors("缺省 @NativeSymbol 无诊断", ok2);
+            var printErr = GlobalType(ok2, "C").Methods.Single(m => m.Name == "printErr");
+            TestHarness.CheckTrue("IsNative 标记位", printErr.IsNative);
+            TestHarness.Check("NativeSymbol 缺省取函数名", printErr.NativeSymbol ?? "", "printErr");
+            TestHarness.Check("NativeLibrary 取注解实参", printErr.NativeLibrary ?? "", "latte_rt");
+
+            // 正例：全局 native 函数（无需 static）+ 白名单全形态 + void 返回 + 路径形态注解
+            var (ok3, _) = ResolveUnit(
+                "@NativeLibrary(\"rt\")\n" +
+                "native func conv(a: i8, b: u64, c: float, d: double, e: bool, f: char, g: String): i64\n" +
+                "@core.NativeLibrary(\"rt\")\n" +
+                "native func poke(x: i32)\n");
+            CheckNoErrors("全局 native + 白名单全形态无诊断", ok3);
+            var conv = ok3.Symbols.GlobalNamespace.Methods.Single(m => m.Name == "conv");
+            TestHarness.CheckTrue("全局函数 IsNative 且无 static 要求", conv.IsNative && !conv.IsStatic);
+            TestHarness.Check("全局函数 NativeSymbol 缺省", conv.NativeSymbol ?? "", "conv");
+            var poke = ok3.Symbols.GlobalNamespace.Methods.Single(m => m.Name == "poke");
+            TestHarness.Check("路径形态注解同样生效", poke.NativeLibrary ?? "", "rt");
+        }
+
         // ===== P2 收尾：符号图冻结 =====
+        // ===== 访问级别写符号（SYNTAX §16；BIL 发射与 S8 使用点访问控制消费）=====
+        private static void TestAccessibility()
+        {
+            TestHarness.Section("P2 Accessibility");
+
+            var (unit, _) = ResolveUnit(
+                "pub class A { pub var x: i32\n protected func f() {}\n internal var y: i32 }\n" +
+                "class B { var z: i32 }\n" +
+                "pub func g() {}\n" +
+                "func h() {}\n" +
+                "internal var v: i32\n");
+            CheckNoErrors("无诊断", unit);
+
+            var a = GlobalType(unit, "A");
+            TestHarness.CheckTrue("pub class => Public", a.Accessibility == Accessibility.Public);
+            TestHarness.CheckTrue("pub 字段 => Public",
+                a.Fields.Single(f => f.Name == "x").Accessibility == Accessibility.Public);
+            TestHarness.CheckTrue("protected 方法 => Protected",
+                a.Methods.Single(m => m.Name == "f").Accessibility == Accessibility.Protected);
+            TestHarness.CheckTrue("internal 字段 => Internal",
+                a.Fields.Single(f => f.Name == "y").Accessibility == Accessibility.Internal);
+            TestHarness.CheckTrue("无修饰符 class => Private（默认）",
+                GlobalType(unit, "B").Accessibility == Accessibility.Private);
+            TestHarness.CheckTrue("无修饰符字段 => Private（默认）",
+                GlobalType(unit, "B").Fields.Single(f => f.Name == "z").Accessibility == Accessibility.Private);
+
+            var global = unit.Symbols.GlobalNamespace;
+            TestHarness.CheckTrue("pub 全局函数 => Public",
+                global.Methods.Single(m => m.Name == "g").Accessibility == Accessibility.Public);
+            TestHarness.CheckTrue("无修饰符全局函数 => Private（默认）",
+                global.Methods.Single(m => m.Name == "h").Accessibility == Accessibility.Private);
+            TestHarness.CheckTrue("internal 全局变量 => Internal",
+                global.Fields.Single(f => f.Name == "v").Accessibility == Accessibility.Internal);
+
+            TestHarness.Blank();
+        }
+
         private static void TestFreeze()
         {
             TestHarness.Section("P2 Freeze");

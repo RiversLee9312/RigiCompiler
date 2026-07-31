@@ -55,6 +55,7 @@ namespace LatteCompiler
         public const string RICH = "rich";
         public const string SHARED = "shared";
         public const string ASYNC = "async";
+        public const string NATIVE = "native";
         // ===== 运算符关键字（§19）=====
         public const string AND = "and";
         public const string OR = "or";
@@ -121,7 +122,7 @@ namespace LatteCompiler
         public static readonly string[] DeclarationDescriptors =
         {
             PUB, PRIV, PROTECTED, INTERNAL, OPEN, ABSTRACT, SINGLETON,
-            STATIC, EXT, OVERRIDE, RICH, SHARED, ASYNC
+            STATIC, EXT, OVERRIDE, RICH, SHARED, ASYNC, NATIVE
         };
 
         // 类型关键字（class, struct, interface, wrapper, enum）

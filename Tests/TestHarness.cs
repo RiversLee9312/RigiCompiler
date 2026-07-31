@@ -39,7 +39,14 @@ namespace LatteCompiler.Tests
         // 全管线：Lexer → Parser（含 ASTIntegrityValidator）→ Root
         public static RootASTNode ParseRoot(string code)
         {
-            return (RootASTNode)new Parser().Parse(new Lexer().Tokenize(code));
+            return ParseRoot(code, "<inline>");
+        }
+
+        // 带源名变体（重载而非可选参数：方法组 Select(TestHarness.ParseRoot)
+        // 的类型推断依赖单签名）；sourceName 供中端套件的 Span/诊断链断言
+        public static RootASTNode ParseRoot(string code, string sourceName)
+        {
+            return (RootASTNode)new Parser().Parse(new Lexer().Tokenize(code, sourceName));
         }
 
         // 独立代码块驱动（TestRootParserLayer 垫底：被测层漏消费 token 会立即暴露）
@@ -63,6 +70,14 @@ namespace LatteCompiler.Tests
             if (root.Declarations.Count == 0)
                 throw new InvalidOperationException("No AST node produced");
             return root.Declarations[0];
+        }
+
+        // ===== 黄金文本拼装 =====
+
+        // 逐行精确比对的黄金文本：显式 \n，与源文件换行编码无关（autocrlf 免疫）
+        public static string Lines(params string[] lines)
+        {
+            return string.Join("\n", lines) + "\n";
         }
 
         // ===== 断言 =====

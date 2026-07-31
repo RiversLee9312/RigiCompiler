@@ -19,10 +19,25 @@ namespace LatteCompiler
     {
         public string Name { get; }
 
+        // 访问级别（SYNTAX §16；P2 由声明修饰符写入，默认 Private 与规范
+        // 默认一致；bootstrap 硬编码符号与 LocalSymbol 等不经声明修饰符，
+        // 恒为默认值）。供 BIL 发射（pub/priv 等修饰符投影）与后续
+        // 使用点访问控制（S8）消费。
+        public Accessibility Accessibility { get; internal set; } = Accessibility.Private;
+
         protected SemanticSymbol(string name)
         {
             Name = name;
         }
+    }
+
+    // 访问级别（SYNTAX §16）
+    public enum Accessibility
+    {
+        Private,
+        Protected,
+        Internal,
+        Public
     }
 
     // 命名空间（多段路径逐段嵌套："core.coroutine" = core → coroutine）。
@@ -195,6 +210,8 @@ namespace LatteCompiler
         public NamespaceSymbol? Namespace { get; private set; }
         public MethodKind Kind { get; }
         public bool IsStatic { get; }
+        // native 函数标记位（SYNTAX §4.6：无体原生函数；P1 建壳读修饰符即定）
+        public bool IsNative { get; }
         // ext 限定名的目标路径原文（SYNTAX §4.4，如 "String"/"a.b.C"；
         // P1 拆名登记，P2 解析并注册到目标类型；非 ext 声明为 null）
         public string? ExtTargetPath { get; }
@@ -203,6 +220,10 @@ namespace LatteCompiler
         // 返回类型；null = void（无结果方法）。P2 解析后填
         // （SemanticSymbol：TypeSymbol 或泛型声明内部的 GenericParameterSymbol）
         public SemanticSymbol? ReturnType { get; internal set; }
+        // native 路由元数据（§4.6 内建注解，P2 读注解后填；非 native 函数为 null）：
+        // NativeSymbol = @NativeSymbol 实参（缺省取函数名）；NativeLibrary = @NativeLibrary 实参
+        public string? NativeSymbol { get; internal set; }
+        public string? NativeLibrary { get; internal set; }
         // 挂载的 wrapper 应用（声明顺序，外层在前；P2 解析填充）
         public List<TypeSymbol> AppliedWrappers { get; } = new List<TypeSymbol>();
 
@@ -212,6 +233,7 @@ namespace LatteCompiler
             TypeSymbol? owner = null,
             NamespaceSymbol? ns = null,
             bool isStatic = false,
+            bool isNative = false,
             SemanticSymbol? returnType = null,
             string? extTargetPath = null)
             : base(name)
@@ -220,6 +242,7 @@ namespace LatteCompiler
             Owner = owner;
             Namespace = ns;
             IsStatic = isStatic;
+            IsNative = isNative;
             ReturnType = returnType;
             ExtTargetPath = extTargetPath;
         }

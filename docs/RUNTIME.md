@@ -888,3 +888,16 @@ pub interface IDisposable {
 外部资源：dispose() / using
 遗漏检测：destruction-time global exception
 ```
+
+---
+
+## 26. native 互操作与 `latte_rt`
+
+`native` 函数（`SYNTAX.md` §4.6）把 Latte 调用路由到运行时原生方法面。原生方法面由一个 C 编写的 shim 库提供，库标识为 `latte_rt`：它把 libc 风格的 C 函数包装为 Latte 调用约定下的可调用入口，并负责 Latte 值（如 `String` 的 native 表示）与 C 类型之间的转换。
+
+- **调用约定**：暂定 fastcall；精确的寄存器/栈分配、胖值槽传递与 `String` 布局规则在 Middleware 阶段定稿，本节不预先约束。
+- **第一版原生方法面**只有两个定参函数，不提供可变参数：
+  - `print(text: String)`：把字符串写入标准输出；
+  - `printErr(text: String)`：把字符串写入标准错误。
+- **BIL VM 不链接原生库**：VM 对 `(lib, symbol)` 命中 `BIL_STANDARD.md` §21.5 内建 hook 表的 native 调用直接执行内建行为，因此在没有 Middleware 与 `latte_rt` 实现的环境下也能完整执行程序。
+- 标准库在 Latte 层封装原生方法面（如 `core.io::Console.println` 调用 `print`），用户代码不直接依赖 `latte_rt`；格式化、插值等逻辑全部在 Latte 层演进，不进入原生方法面。

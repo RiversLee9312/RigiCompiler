@@ -11,6 +11,9 @@ namespace LatteCompiler
     //      后续用到它的检查一律静默跳过（抑制次生噪音，ARCHITECTURE §8）；
     //   2. 继承 / implements 图 + 循环继承诊断 + 种类与可继承性检查；
     //   3. 修饰符合法性（SYNTAX §3.1.1 / §9.2 / §10 / §14.9 / §16）；
+    //      随附 native 函数声明检查（§4.6：无体/成员必 static/禁 init/operator/
+    //      async/泛型/重载、参数与返回类型基元白名单、@NativeLibrary 必填、
+    //      @NativeSymbol 缺省取函数名、内建注解禁挂非 native 声明）；
     //   4. rich/shared 单向传染 + 字段闭包检查（§3.1.1 闭包表七行，递归）；
     //   5. 共享安全闸门：全局/静态字段类型必须共享安全（§3.1.1 闸门 1）；
     //   6. 泛型约束声明侧检查（Target 为泛型参数、with 边界为 wrapper）；
@@ -71,6 +74,7 @@ namespace LatteCompiler
                 ResolveTypeReferences();
                 ResolveInheritance();
                 CheckModifiers();
+                CheckNativeDeclarations();
                 CheckContagion();
                 CheckFieldClosures();
                 CheckSharedSafetyGates();
@@ -123,12 +127,14 @@ namespace LatteCompiler
                     case VariableDeclarationASTNode v:
                         if (declarations.SymbolOf(v) is FieldSymbol field)
                         {
+                            field.Accessibility = ParseAccessibility(v.Modifiers);
                             AddEntry(v, field, ctx, declaringType, InContainer(field, declaringType, ctx));
                         }
                         break;
                     case CallableDeclarationASTNode fn:
                         if (declarations.SymbolOf(fn) is MethodSymbol method)
                         {
+                            method.Accessibility = ParseAccessibility(fn.Modifiers);
                             AddEntry(fn, method, ctx, declaringType, InContainer(method, declaringType, ctx));
                         }
                         break;
@@ -143,6 +149,8 @@ namespace LatteCompiler
                 type.IsOpen = modifiers.Contains(Keywords.OPEN);
                 type.IsAbstract = modifiers.Contains(Keywords.ABSTRACT);
                 type.IsSingleton = modifiers.Contains(Keywords.SINGLETON);
+                // 访问级别写符号（SYNTAX §16；BIL 发射与 S8 使用点访问控制消费）
+                type.Accessibility = ParseAccessibility(modifiers);
                 var inGraph = (declaringType?.NestedTypes ?? ctx.Namespace.Types).Contains(type);
                 AddEntry(node, type, ctx, declaringType, inGraph);
                 typeEntries.Add(entries[^1]);
@@ -196,6 +204,16 @@ namespace LatteCompiler
                 CallableDeclarationASTNode fn => fn.Modifiers,
                 _ => new List<string>(),
             };
+
+            // 访问级别解析（SYNTAX §16；互斥由 CheckAccessModifierExclusivity 保证，
+            // 无访问修饰符 = 默认 Private）
+            private static Accessibility ParseAccessibility(List<string> modifiers)
+            {
+                if (modifiers.Contains(Keywords.PUB)) return Accessibility.Public;
+                if (modifiers.Contains(Keywords.PROTECTED)) return Accessibility.Protected;
+                if (modifiers.Contains(Keywords.INTERNAL)) return Accessibility.Internal;
+                return Accessibility.Private;
+            }
 
             // ===== import 可解析性校验（import/namespace 模块语义义务）=====
 
@@ -592,6 +610,139 @@ namespace LatteCompiler
                         Error(entry.Node.Span, "'ext' can only be applied to global declarations");
                     }
                 }
+            }
+
+            // ===== 子任务 3b：native 函数声明检查（SYNTAX §4.6）=====
+
+            private void CheckNativeDeclarations()
+            {
+                // 参数/返回类型白名单（§4.6：§3.2 基本类型中的整数/浮点/bool/char/String）
+                var b = unit.Symbols.Bootstrap;
+                var compatibleTypes = new HashSet<SemanticSymbol>
+                {
+                    b.Int8, b.Int16, b.Int32, b.Int64,
+                    b.UInt8, b.UInt16, b.UInt32, b.UInt64,
+                    b.Float, b.Double, b.Bool, b.Char, b.String,
+                };
+                foreach (var entry in entries)
+                {
+                    if (!entry.InGraph) continue;
+                    if (entry.Node is CallableDeclarationASTNode fn &&
+                        fn.Modifiers.Contains(Keywords.NATIVE))
+                    {
+                        CheckNativeFunction(entry, fn, (MethodSymbol)entry.Symbol, compatibleTypes);
+                        continue;
+                    }
+                    // native 仅适用于函数（§4.6；挂类型/字段直接拒绝）
+                    if (ModifiersOf(entry.Node).Contains(Keywords.NATIVE))
+                    {
+                        Error(entry.Node.Span, "'native' can only be applied to functions");
+                    }
+                    // 内建注解只允许出现在 native 函数声明上（§4.6；不属于 wrapper 体系，
+                    // wrapper 应用检查经 NativeAnnotationNameOf 豁免——见 CheckWrapperApplications）
+                    if (entry.Node is IWrapperAttachable attachable)
+                    {
+                        foreach (var annotation in attachable.Annotations)
+                        {
+                            if (NativeAnnotationNameOf(annotation) is { } annotationName)
+                            {
+                                Error(annotation.Span ?? entry.Node.Span,
+                                    $"@{annotationName} can only be applied to native functions");
+                            }
+                        }
+                    }
+                }
+            }
+
+            private void CheckNativeFunction(DeclEntry entry, CallableDeclarationASTNode fn,
+                MethodSymbol method, HashSet<SemanticSymbol> compatibleTypes)
+            {
+                // native 仅适用于函数；init/operator 直接拒绝（后续形态检查无意义）
+                if (fn.Kind != CallableKind.Func)
+                {
+                    Error(entry.Node.Span, "'native' can only be applied to functions");
+                    return;
+                }
+                if (fn.Body != null)
+                {
+                    Error(entry.Node.Span, $"Native function '{method.Name}' must not have a body");
+                }
+                // 类型成员必须同时是 static（全局函数无此要求）
+                if (entry.DeclaringType != null && !method.IsStatic)
+                {
+                    Error(entry.Node.Span, $"Native member function '{method.Name}' must be 'static'");
+                }
+                if (fn.Modifiers.Contains(Keywords.ASYNC))
+                {
+                    Error(entry.Node.Span, $"Native function '{method.Name}' cannot be 'async'");
+                }
+                if (fn.GenericParameters != null)
+                {
+                    Error(fn.GenericParameters.Span ?? entry.Node.Span,
+                        $"Native function '{method.Name}' cannot declare generic parameters");
+                }
+                // 同容器内不得与同名函数构成重载（容器表不含 P1 重复声明，此处比的是合法重载）
+                var siblings = method.Owner?.Methods ?? method.Namespace?.Methods;
+                if (siblings != null && siblings.Count(m => m.Name == method.Name) > 1)
+                {
+                    Error(entry.Node.Span, $"Native function '{method.Name}' cannot be overloaded");
+                }
+                // 参数与返回类型白名单（ErrorType 毒化静默；void 返回不受限）
+                foreach (var parameter in method.Parameters)
+                {
+                    if (parameter.Type is null or ErrorTypeSymbol) continue;    // 毒化静默
+                    if (!compatibleTypes.Contains(parameter.Type))
+                    {
+                        Error(entry.Node.Span,
+                            $"Parameter '{parameter.Name}' of native function '{method.Name}' must be a primitive type (integer, float, bool, char or String)");
+                    }
+                }
+                if (method.ReturnType is not null and not ErrorTypeSymbol &&
+                    !compatibleTypes.Contains(method.ReturnType))
+                {
+                    Error(entry.Node.Span,
+                        $"Return type of native function '{method.Name}' must be a primitive type (integer, float, bool, char or String)");
+                }
+                // 内建注解：@NativeLibrary 必填；@NativeSymbol 可省，缺省取函数名
+                var libraryAnnotation = fn.Annotations.FirstOrDefault(
+                    a => NativeAnnotationNameOf(a) == "NativeLibrary");
+                var symbolAnnotation = fn.Annotations.FirstOrDefault(
+                    a => NativeAnnotationNameOf(a) == "NativeSymbol");
+                if (libraryAnnotation == null)
+                {
+                    Error(entry.Node.Span, $"Native function '{method.Name}' requires @NativeLibrary(\"...\")");
+                }
+                else if (NativeAnnotationStringArgument(libraryAnnotation, entry) is { } library)
+                {
+                    method.NativeLibrary = library;
+                }
+                method.NativeSymbol = symbolAnnotation == null
+                    ? method.Name
+                    : NativeAnnotationStringArgument(symbolAnnotation, entry);
+            }
+
+            // 内建 native 注解（@NativeLibrary/@NativeSymbol）按末段名识别；非 native 注解返回 null
+            private static string? NativeAnnotationNameOf(AnnotationASTNode annotation)
+            {
+                var elements = annotation.Name.symbol.elements;
+                if (elements.Count == 0) return null;
+                var last = elements[^1].name;
+                return last == "NativeLibrary" || last == "NativeSymbol" ? last : null;
+            }
+
+            // 内建注解实参校验：必须恰好一个字符串字面量（§4.6）；非法报错并返回 null
+            private string? NativeAnnotationStringArgument(AnnotationASTNode annotation, DeclEntry entry)
+            {
+                if (annotation.Arguments.Count == 1 &&
+                    annotation.Arguments[0].Value.IsAttached &&
+                    annotation.Arguments[0].Value.Expression is
+                        LiteralExpressionASTNode { Literal: StringLiteralASTNode literal })
+                {
+                    return literal.Value;
+                }
+                Error(annotation.Span ?? entry.Node.Span,
+                    $"@{NativeAnnotationNameOf(annotation)} expects exactly one string literal argument");
+                return null;
             }
 
         // ===== 子任务 4：rich/shared 单向传染 + 字段闭包 =====
@@ -1012,6 +1163,9 @@ namespace LatteCompiler
                         }
                         continue;
                     }
+                    // @NativeLibrary/@NativeSymbol 是编译器内建注解（§4.6），不属于
+                    // wrapper 体系；合法性已在 CheckNativeDeclarations 处理
+                    if (NativeAnnotationNameOf(annotation) != null) continue;
                     var resolved = names.ResolveSymbolPath(annotation.Name.symbol, entry.Context,
                         entry.DeclaringType, declaringMethod: null,
                         allowImports: true, reportErrors: true,

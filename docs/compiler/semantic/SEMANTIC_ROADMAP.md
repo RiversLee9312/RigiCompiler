@@ -152,16 +152,33 @@ verifier → VM**。VM 落地后测试从形态断言升级为执行断言。
   必填）+ `Lowerer.cs`（此阶段近乎恒等重写）+ `BilEmitter.cs`
   （线性化、`.vars` 临时变量物化、Resources 提取、
   LocalSymbols/ExternalSymbols 生成）。
-- Bil 模型 `Origin` 由 `object?` 收窄为 `LoweredNode?`（若 S4 从
-  第一天即放 Lowering 侧扩展则无需改动）。
+- Bil 模型 `Origin` 保持 `object?` 不收窄（Bil 对中端零依赖优先，
+  发射时塞 `LoweredNode` 实例）；`LocalSymbols`/`ExternalSymbols` 段
+  允许裸成员条目（全局函数声明，BIL §8.4.1）。
 - CLI：`--emit-bil PATH` + `--sema-only`（仿 `DumpAstOption` 模板，
   注册进 `CompileCommand.SubCommands`；接入 `CompileCommand` 的
   `if (!parseOnly)` 分支）。
-- 临时措施：`core::Console.println` 以硬编码 external 符号提供
-  （S10 换正式 core.latte 机制）。
-- **验收**：`main + 字面量 + println + ret` 的 `.latte` 源码经
-  `compile --emit-bil` 产出与 BIL §19 示例同级的合法 BIL 文本
-  （黄金文件对照）；Origin 调试链（Bil→Lowered→Bound→AST.Span）通。
+- **stdlib 最小载入（S10 机制的最小子集提前，2026-07-31 定稿，
+  取代原「硬编码 `core::Console.println` external 符号」临时措施）**：
+  - `native` 函数语法（SYNTAX §4.6）：`native` 修饰符 +
+    `@NativeLibrary`/`@NativeSymbol` 内建注解；Parser 只加
+    `Keywords.NATIVE`（无体函数与注解路径前端已具备）；P1 建壳读
+    标记位（`MethodSymbol.IsNative`）、P2 新增 `CheckNativeDeclarations`
+    子任务（注解解析填 `NativeSymbol`/`NativeLibrary` + SYNTAX §4.6
+    全部规则校验，并在 wrapper 应用检查中为两个内建注解加豁免）；
+  - `stdlib/core/Console.latte`（`core.io::Console`：priv static
+    native `print`/`printErr`（lib `latte_rt`）+ pub static `println`
+    包装）以 EmbeddedResource 内嵌载入，加入编译单元走同一
+    P1/P2/P3 路径；
+  - Binder 查找序补「宿主类型成员」一环（println 体内裸名调用同类
+    静态方法，对齐 ARCH §2 既定查找序）；
+  - native 成员声明进 LocalSymbols 带 `native symbol("...") lib("...")`
+    修饰符（BIL §8.4），无 fn 定义；BIL VM 经 §21.5 内建 hook 执行
+    （S14 验收）。
+- **验收**：`main + 字面量 + core.io::Console.println + ret` 的
+  `.latte` 源码经 `compile --emit-bil` 产出与 BIL §19 示例同级的合法
+  BIL 文本（黄金文件对照）；Origin 调试链（Bil→Lowered→Bound→
+  AST.Span）通。
 
 ## S7 控制流全套（P3 + P4 同步推进）
 
@@ -188,8 +205,11 @@ reified 泛型全链：使用侧约束检查、构造类型驻留完善、
 ## S10 core.latte 载入机制
 
 core 声明文件随编译器载入（自举解析 → 同一条 P1/P2 路径）、
-bootstrap 与 core.latte 边界定稿、S6 的硬编码 Console 临时措施移除。
-兼作前端常驻回归测试。
+bootstrap 与 core.latte 边界定稿。**载入机制本身已提前至 S6 落地**
+（EmbeddedResource 内嵌 + 编译单元注入，含 `native` 函数语法与
+`core.io::Console` 最小文件）；本里程碑剩余工作为 stdlib 文件扩充
+（`core.coroutine::Task`/`Executor` 家族、异常类型、`IDisposable` 等）
+与 bootstrap/core.latte 边界定稿。兼作前端常驻回归测试。
 
 ## S11 wrapper / extension / enum struct
 
@@ -224,7 +244,9 @@ GC fence 的交互、stdlib 要求 Middleware 暴露的 Native 方法面），
 
 `Bil/BilVm.cs`：BIL §21 抽象值语义解释器。落地后新增执行断言
 测试形态（跑出结果/异常与预期比对），并持续验证 §20.9
-「VM 可执行性」。
+「VM 可执行性」。native 调用经 §21.5 内建 hook 表执行
+（`latte_rt` 的 `print`/`printErr` → stdout/stderr），hello world
+端到端执行断言须产生真实输出，无需任何原生库。
 
 ---
 

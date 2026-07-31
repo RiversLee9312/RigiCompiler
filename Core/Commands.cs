@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using System.Text.Json;
+using LatteCompiler.Bil;
 
 namespace LatteCompiler
 {
@@ -75,6 +76,7 @@ namespace LatteCompiler
         {
             Name = "--parse-only",
             Description = "只解析：AST 以 JSONL 输出到 stdout（同时给 --dump-ast 则写文件）",
+            MutuallyExclusive = { "--emit-bil", "--sema-only" },
         };
     }
 
@@ -88,6 +90,31 @@ namespace LatteCompiler
             ArgsHint = "<路径>",
             MinArgs = 1,
             MaxArgs = 1,
+        };
+    }
+
+    /// <summary>--emit-bil：语义分析通过后把 BIL 文本写入指定文件。与 --parse-only 互斥。</summary>
+    public class EmitBilOption : ICommandLineOption
+    {
+        public CommandLineMask Mask { get; } = new()
+        {
+            Name = "--emit-bil",
+            Description = "语义分析通过后把 BIL 文本写入指定文件（与 --parse-only 互斥）",
+            ArgsHint = "<路径>",
+            MinArgs = 1,
+            MaxArgs = 1,
+            MutuallyExclusive = { "--parse-only" },
+        };
+    }
+
+    /// <summary>--sema-only：只做语义分析（P1–P3），输出诊断后结束，不发射 BIL。与 --parse-only 互斥。</summary>
+    public class SemaOnlyOption : ICommandLineOption
+    {
+        public CommandLineMask Mask { get; } = new()
+        {
+            Name = "--sema-only",
+            Description = "只做语义分析（P1–P3）：输出诊断后结束，不发射 BIL（与 --parse-only 互斥）",
+            MutuallyExclusive = { "--parse-only" },
         };
     }
 
@@ -120,13 +147,13 @@ namespace LatteCompiler
 
     // ===== 顶层 COMMAND 插件 =====
 
-    /// <summary>compile：编译 Latte 源文件（当前无后端，执行词法+语法解析）。</summary>
+    /// <summary>compile：编译 Latte 源文件（词法+语法+语义分析，--emit-bil 发射 BIL）。</summary>
     public class CompileCommand : ICommandLineCommand
     {
         public CommandLineMask Mask { get; } = new()
         {
             Name = "compile",
-            Description = "编译 Latte 源文件（当前无后端，执行词法+语法解析）",
+            Description = "编译 Latte 源文件（词法+语法+语义分析，--emit-bil 发射 BIL）",
         };
 
         public IReadOnlyList<ICommandLineOption> SubCommands { get; } = new ICommandLineOption[]
@@ -134,6 +161,8 @@ namespace LatteCompiler
             new FileOption(),
             new ParseOnlyOption(),
             new DumpAstOption(),
+            new EmitBilOption(),
+            new SemaOnlyOption(),
             new VerboseOption(),
             new LogToOption(),
         };
@@ -156,10 +185,14 @@ namespace LatteCompiler
             }
 
             bool parseOnly = result.Has("--parse-only");
+            bool semaOnly = result.Has("--sema-only");
             string? dumpPath = result.Get("--dump-ast")?[0];
+            string? emitBilPath = result.Get("--emit-bil")?[0];
 
             int failed = 0;
             int dumped = 0;
+            // 语义管线的用户源集合（--parse-only 不走语义，不收集）
+            var userRoots = new List<RootASTNode>();
             StreamWriter? dumpWriter = null;
             try
             {
@@ -172,6 +205,7 @@ namespace LatteCompiler
                     try
                     {
                         var ast = ParseFile(file);
+                        if (!parseOnly) userRoots.Add(ast);
                         // AST 输出：--dump-ast 写文件；否则 --parse-only 输出到 stdout。
                         // 多文件时先输出一行 {"file":...} 元记录分隔（M31）：
                         // 消费方靠它切分段落（id 每文件从 1 重排），字段名键控不依赖顺序
@@ -221,11 +255,15 @@ namespace LatteCompiler
             }
             // 全部失败时不宣称 dumped（M31：此前无条件打印误导）
             if (dumpPath != null && dumped > 0) Console.WriteLine($"AST dumped to {dumpPath}");
-            return failed > 0 ? 1 : 0;
+            // 任一文件解析失败：语义管线不再推进（CompilationUnit 需要完整源集）
+            if (failed > 0) return 1;
+            if (parseOnly) return 0;
+            // 语义管线（S6）：stdlib + 用户源 → P1–P3（--emit-bil 时继续 P4 发射）
+            return RunSemanticPipeline(files[0], userRoots, semaOnly, emitBilPath);
         }
 
         // 词法 + 语法解析；词法/语法错误原样抛出，由 Execute 逐文件捕获
-        private static ASTNode ParseFile(string path)
+        private static RootASTNode ParseFile(string path)
         {
             using var stream = new FileStream(path, FileMode.Open, FileAccess.Read);
             using var reader = new StreamReader(stream);
@@ -233,7 +271,61 @@ namespace LatteCompiler
             // GetAwaiter().GetResult() 不包 AggregateException：词法错误原样抛出
             var tokens = lexer.Tokenize(reader, path).GetAwaiter().GetResult();
             var parser = new Parser();
-            return parser.Parse(tokens);
+            return (RootASTNode)parser.Parse(tokens);
+        }
+
+        // 语义管线（S6）：stdlib（在前）+ 用户源组 CompilationUnit → P1 → P2 → P3，
+        // 诊断统一经 Logger 输出后有 Error 即停（返回 1）；--sema-only 到此结束；
+        // --emit-bil 继续 P4（Lowerer → BilEmitter → BilWriter）把 BIL 文本写文件，
+        // moduleName 取第一个源文件的去扩展名文件名
+        private static int RunSemanticPipeline(string firstFile, List<RootASTNode> userRoots, bool semaOnly, string? emitBilPath)
+        {
+            var roots = new List<RootASTNode>();
+            roots.AddRange(StdlibSources.ParseAll());
+            roots.AddRange(userRoots);
+            var unit = new CompilationUnit(roots.ToArray());
+            // P1–P3 为累积式设计：pass 间尽量继续以最大化报错（ARCHITECTURE §8），
+            // 三段跑完后统一输出诊断再判 HasErrors（与 BilEmitterTests 的全管线同序）
+            var declarations = DeclarationCollector.Collect(unit);
+            DeclarationResolver.Resolve(unit, declarations);
+            var bodies = Binder.Bind(unit, declarations);
+            EmitDiagnostics(unit.Diagnostics, 0);
+            if (unit.Diagnostics.HasErrors) return 1;
+            if (semaOnly) return 0;
+            if (emitBilPath != null)
+            {
+                // P4 也会产生诊断（如未覆盖节点）：发射后只输出新增部分，有 Error 不落盘
+                int emitted = unit.Diagnostics.Diagnostics.Count;
+                var lowered = Lowerer.Lower(unit, bodies);
+                var module = BilEmitter.Emit(unit, lowered, Path.GetFileNameWithoutExtension(firstFile));
+                EmitDiagnostics(unit.Diagnostics, emitted);
+                if (unit.Diagnostics.HasErrors) return 1;
+                File.WriteAllText(emitBilPath, BilWriter.Write(module), new UTF8Encoding(false));
+                Console.WriteLine($"BIL emitted to {emitBilPath}");
+            }
+            return 0;
+        }
+
+        // 诊断经 Logger 输出（Severity Error→错误级、Warning→警告级，控制台走 stderr）。
+        // 格式 {sourceName}:{行}:{列} [{Phase}] {Message}（行/列 1 起始）；
+        // Span 为 null 的编译单元级诊断省略位置段。skip 跳过此前已输出的条数。
+        private static void EmitDiagnostics(DiagnosticBag diagnostics, int skip)
+        {
+            for (int i = skip; i < diagnostics.Diagnostics.Count; i++)
+            {
+                var d = diagnostics.Diagnostics[i];
+                var message = d.Span is { } span
+                    ? $"{span.sourceName}:{span.Start.line}:{span.Start.column} [{d.Phase}] {d.Message}"
+                    : $"[{d.Phase}] {d.Message}";
+                if (d.Severity == DiagnosticSeverity.Error)
+                {
+                    Logger.Error("Semantic", message);
+                }
+                else
+                {
+                    Logger.Warning("Semantic", message);
+                }
+            }
         }
     }
 

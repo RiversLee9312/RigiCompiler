@@ -7,7 +7,8 @@ namespace LatteCompiler.Tests
     /// S5 P3 最小闭环测试（M41）：Binder 的 bound 形态与定型类型断言 + 结构性事实。
     /// 覆盖：字面量定型、局部变量声明（var 推断/显式标注/const）、值引用（局部/参数/
     /// 全局字段）、二元与一元 intrinsic 运算（结果类型维度）、赋值与 definite
-    /// assignment 最小版、无重载直接调用（具名实参规范序重排）、new 构造、
+    /// assignment 最小版、无重载直接调用（具名实参规范序重排）、宿主类型成员调用
+    /// （类内裸名静态/实例拦截/多段路径类容器/遮蔽优先级）、new 构造、
     /// return 与「所有路径显式返回」、块作用域与遮蔽、诊断互不阻断。
     /// 诊断断言沿用消息子串惯例（CheckSemanticError）；符号比较一律引用相等。
     /// </summary>
@@ -23,6 +24,7 @@ namespace LatteCompiler.Tests
             TestUnaryOperators();
             TestAssignments();
             TestCalls();
+            TestHostTypeMembers();
             TestNew();
             TestReturn();
             TestScopes();
@@ -365,6 +367,65 @@ namespace LatteCompiler.Tests
                 "class C { pub func m() { } }\nfunc f(c: C) { c.m() }\n");
             TestHarness.CheckSemanticError("实例成员路径调用", unit9.Diagnostics,
                 "instance member access is not supported yet");
+        }
+
+        // ===== 宿主类型成员调用（FindMethods 查找序：宿主沿 BaseType 链 → 命名空间链 → import）=====
+        private static void TestHostTypeMembers()
+        {
+            TestHarness.Section("P3 Host Type Members");
+
+            // 类内裸名调用同类静态方法（stdlib println → print 场景）
+            var (unit, bodies) = BindUnit(
+                "class A {\n" +
+                "    static func helper(x: i32): i32 { return x }\n" +
+                "    static func run(): i32 { return helper(42) }\n" +
+                "}\n");
+            CheckNoErrors("类内裸名静态调用", unit);
+            TestHarness.Check("helper(42) 绑定到 A.helper",
+                BoundDescribe.Body(BodyOf(bodies, "run")),
+                "Body(run, [], [Return(Call(helper, [Int(42,i32)], i32))])");
+            // 结构性事实：选中符号是 A 的静态方法（引用相等）
+            var helperCall = ((BoundReturnStatement)BodyOf(bodies, "run").Body.Statements[0]).Value
+                as BoundCallExpression;
+            var typeA = unit.Symbols.GlobalNamespace.Types.Single(t => t.Name == "A");
+            TestHarness.CheckTrue("命中 A 的静态方法（引用相等）",
+                helperCall != null && helperCall.Method.IsStatic
+                && ReferenceEquals(helperCall.Method,
+                    typeA.Methods.Single(m => m.Name == "helper")));
+
+            // 类内裸名调用实例方法：命中宿主成员后被 BindCallee 静态性检查拦截
+            var (unit2, _) = BindUnit(
+                "class B {\n" +
+                "    func inst(): i32 { return 1 }\n" +
+                "    static func run(): i32 { return inst() }\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("实例方法裸名调用被拦", unit2.Diagnostics,
+                "instance method 'inst' requires a receiver");
+
+            // 多段路径类容器静态调用（容器解析 + 末段成员，代码路径已有补用例）
+            var (unit3, bodies3) = BindUnit(
+                "namespace a.b\n" +
+                "class C { pub static func f(v: i32): i32 { return v } }\n",
+                "func g(): i32 { return a.b.C.f(7) }\n");
+            CheckNoErrors("多段路径类容器调用", unit3);
+            TestHarness.Check("a.b.C.f(7)", BoundDescribe.Body(BodyOf(bodies3, "g")),
+                "Body(g, [], [Return(Call(f, [Int(7,i32)], i32))])");
+
+            // 遮蔽优先级：宿主成员先于命名空间全局函数进入候选
+            // （选择仍走实参个数唯一匹配：全局 dup 1 参、宿主 dup 0 参，dup() 选中宿主）
+            var (unit4, bodies4) = BindUnit(
+                "func dup(x: i32): i32 { return x }\n" +
+                "class D {\n" +
+                "    static func dup(): i32 { return 2 }\n" +
+                "    static func run(): i32 { return dup() }\n" +
+                "}\n");
+            CheckNoErrors("宿主成员与全局函数同名", unit4);
+            var dupCall = ((BoundReturnStatement)BodyOf(bodies4, "run").Body.Statements[0]).Value
+                as BoundCallExpression;
+            var typeD = unit4.Symbols.GlobalNamespace.Types.Single(t => t.Name == "D");
+            TestHarness.CheckTrue("选中宿主类型的方法（引用相等）",
+                dupCall != null && ReferenceEquals(dupCall.Method,
+                    typeD.Methods.Single(m => m.Name == "dup")));
         }
 
         // ===== new 构造 =====

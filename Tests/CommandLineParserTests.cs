@@ -49,8 +49,8 @@ namespace LatteCompiler.Tests
             var help = commands.First(c => c.Mask.Name == "help");
             var compileSubs = compile.SubCommands.Select(s => s.Mask.Name).ToList();
             var testSubs = test.SubCommands.Select(s => s.Mask.Name).ToList();
-            Check("compile 子命令齐全（--file/--parse-only/--dump-ast/--verbose/--log-to）",
-                new[] { "--file", "--parse-only", "--dump-ast", "--verbose", "--log-to" }.All(compileSubs.Contains));
+            Check("compile 子命令齐全（--file/--parse-only/--dump-ast/--emit-bil/--sema-only/--verbose/--log-to）",
+                new[] { "--file", "--parse-only", "--dump-ast", "--emit-bil", "--sema-only", "--verbose", "--log-to" }.All(compileSubs.Contains));
             Check("test 子命令齐全（--all/--run/--verbose/--log-to）",
                 new[] { "--all", "--run", "--verbose", "--log-to" }.All(testSubs.Contains));
             Check("help 无子命令", help.SubCommands.Count == 0);
@@ -115,6 +115,11 @@ namespace LatteCompiler.Tests
 
             CheckParseError("test --all --run 互斥", new[] { "test", "--all", "--run", "1" }, "互斥");
             CheckParseError("test --run --all 互斥（反向）", new[] { "test", "--run", "1", "--all" }, "互斥");
+            CheckParseError("compile --parse-only --emit-bil 互斥", new[] { "compile", "--file", "a", "--parse-only", "--emit-bil", "o" }, "互斥");
+            CheckParseError("compile --emit-bil --parse-only 互斥（反向）", new[] { "compile", "--file", "a", "--emit-bil", "o", "--parse-only" }, "互斥");
+            CheckParseError("compile --parse-only --sema-only 互斥", new[] { "compile", "--file", "a", "--parse-only", "--sema-only" }, "互斥");
+            CheckParseOk("compile --emit-bil --sema-only 不互斥", new[] { "compile", "--file", "a", "--emit-bil", "o", "--sema-only" },
+                r => r.Has("--emit-bil") && r.Has("--sema-only"));
             CheckParseOk("compile 子命令之间无互斥", new[] { "compile", "--file", "a", "--parse-only", "--dump-ast", "o" },
                 r => r.Has("--parse-only") && r.Has("--dump-ast"));
             Console.WriteLine();
