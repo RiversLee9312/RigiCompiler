@@ -5,10 +5,10 @@
 > 更新时保持文档结构不变，并在「里程碑历史」追加一段。
 > 计划与分工见 `compiler/syntax/PARSER_ROADMAP.md` 与 `compiler/semantic/SEMANTIC_ROADMAP.md`；本文档只记录「现状」。
 
-**报告日期**: 2026-07-29
-**当前阶段**: **前端（Lexer + Parser）阶段结束于 M34；M35 起进入中端（语义分析 + BIL 生成）阶段** —— M35 为中端的开篇里程碑：架构定稿（`compiler/semantic/SEMANTIC_ARCHITECTURE.md`）+ 路线图 S0–S14（`compiler/semantic/SEMANTIC_ROADMAP.md`）+ 语言规范修订（shared/rich/wrapper/String），代码尚未落地，下一步从 S0 诊断基建起步。
+**报告日期**: 2026-07-31
+**当前阶段**: **中端（语义分析 + BIL 生成）阶段** —— M35 为中端的开篇里程碑：架构定稿（`compiler/semantic/SEMANTIC_ARCHITECTURE.md`）+ 路线图 S0–S14（`compiler/semantic/SEMANTIC_ROADMAP.md`）+ 语言规范修订（shared/rich/wrapper/String）；M36 落地 S0 诊断基建（`Semantic/Diagnostics.cs` + `CheckSemanticError`），同批完成 ROADMAP 文件级细化（S0–S6）；M37 落地 S1 符号图内核（`Semantic/Symbols/` 四文件 + bootstrap 硬编码 + `CanonicalSymbolPrinter`）；M38 落地 S4 BIL 对象模型 + BilWriter（`Bil/` 五文件，§19 黄金示例逐行一致）。中端三条基建线（S0/S1/S4）全部就位，下一步 S2 P1 声明收集（符号图首个真实消费者）。
 前端里程碑回顾：Parser/PDA 大扫除（M23）、AST 结构标注与 Validator 重写（M24）、Lexer 修复与 fuzz 基建（M25）、日志与 AST JSONL（M26）、CLI 插件化（M27）、Lexer 位置与 AST Span（M28）、AST 容器重构（M29）、Utilities 拆分（M30）、前端大修（M31）、多行字符串（M32）、值块统一（M33）、技术债清扫（M34）。
-**测试总计**: 895/895 通过 (100%) + Lexer fuzz 6000/6000（30 个套件，`dotnet run -- test --all` 单命令全量）
+**测试总计**: 983/983 通过 (100%) + Lexer fuzz 6000/6000（34 个套件，`dotnet run -- test --all` 单命令全量）
 **版本控制**: Git `main` 分支（2026-07-17 首次提交）
 
 ---
@@ -52,6 +52,9 @@
 | M33 | 值块统一：if/switch 表达式分支体与 lambda 体统一为代码块（多语句 + `return@_`/named 取值）、switch 语句形态（新 SwitchStatementASTNode）、lambda 体内裸 return 编译错误（allowBareReturn 全链传染）、seq 匿名默认标签 `seq`→`_` | ✅ | 2026-07-28 | 838/838 + fuzz 6000（30 套件） |
 | M34 | 技术债清扫：字符字面量（CharLexerLayer + CharToken + CharLiteralASTNode）、复合赋值 10 运算符（CompoundAssignmentExpressionASTNode）、`is` 右侧 enum case（TypeCheck TargetType/TargetCase 双字段互斥）、wrapper `.name` 保留参数名、import `{}` 单标识符禁令规则化报错 —— **前端阶段收官** | ✅ | 2026-07-28 | 895/895 + fuzz 6000（30 套件） |
 | M35 | **中端阶段开篇**：语义分析与 BIL 生成架构定稿（四 pass + 双 Bound Tree + 驻留符号图）+ 路线图 S0–S14 + 语言规范修订（String 归非 rich 值类型、wrapper 恒 rich struct 且 `obj:Wrapper` 为只读 place、共享安全类型与两条逃逸闸门、rich/shared 单向传染、非 rich struct 不得 open/abstract） | ✅ 文档 | 2026-07-29 | 895/895 + fuzz 6000（30 套件，纯文档无增删） |
+| M36 | S0 诊断基建（中端第一段代码）：`Semantic/Diagnostics.cs`（Diagnostic + DiagnosticBag 可恢复诊断模型）+ `CheckSemanticError` 入 TestHarness + ROADMAP S0–S6 文件级细化 | ✅ | 2026-07-31 | 910/910 + fuzz 6000（31 套件） |
+| M37 | S1 符号图内核：`Semantic/Symbols/`（SemanticSymbol 家族 + SymbolGraph 驻留 + BootstrapSymbols 硬编码层级/基元/intrinsic 键空间 + CanonicalSymbolPrinter 五形态 + BIL 类型引用投影） | ✅ | 2026-07-31 | 977/977 + fuzz 6000（33 套件） |
+| M38 | S4 BIL 对象模型 + BilWriter：`Bil/` 五文件（Module/Resources/Symbols/Function/Instructions + Writer，对中端零依赖、字符串身份、§17 协程暂缓），§19 黄金示例逐行一致 | ✅ | 2026-07-31 | 983/983 + fuzz 6000（34 套件） |
 
 ---
 
@@ -331,6 +334,10 @@ pub class Point {
 | Logger | ✅ | 7/7（LoggerTests） | 统一日志出口（Core/Logger.cs）：Verbose/Warning/Error 三级；控制台默认只显示 Warning+，`--verbose` 子命令放开 Verbose；`--log-to PATH` 全量（含 Verbose）JSONL 落盘（M26） |
 | AstJsonlSerializer | ✅ | 86/86 | AST 树 JSONL 序列化 v2（M31：carrier 记录化、Nullable 标量、先过滤再取值、循环保护）+ `AstJsonlDeserializer` 完整反序列化（字段名键控、产物过 Validator、往返逐行一致）；`compile --dump-ast PATH` 输出（M26）；M33 新结构（值块/switch 语句/lambda 块体）经反射驱动零改动接入 |
 | CommandLine | ✅ | 46/46（CommandLineParserTests） | CLI 内核（Core/CommandLine.cs + Core/Commands.cs）：CommandLineMask 自描述元数据驱动解析与 help 生成；`<COMMAND> [--sub-cmd...]` 结构（compile/test/help），交互菜单已删（M27） |
+| DiagnosticBag（中端，S0） | ✅ | 15/15（DiagnosticsTests） | 中端可恢复诊断基建（M36，`Semantic/Diagnostics.cs`）：`Diagnostic{Severity/Phase/Span?/Message}` + `DiagnosticBag`（全编译单元单实例、只追加、HasErrors 阶段推进门槛）；`CheckSemanticError` 断言入 TestHarness |
+| SymbolGraph（中端，S1） | ✅ | 45/45（SymbolGraphTests） | 语义符号图内核（M37，`Semantic/Symbols/`）：SemanticSymbol 家族（Namespace/Type/Field/Method/Parameter/GenericParameter，引用相等即身份）、构造泛型驻留 cache（同 (定义, 实参) 必同实例、T? = Nullable\<T>）、Freeze 机制；BootstrapSymbols 硬编码 SYNTAX §3.1 层级 + §3.2 基本类型 + 特权关系（Box\<T\> <: Object、Nullable shared 按 T 推导）+ 基元 intrinsic 键空间（BIL §11） |
+| CanonicalSymbolPrinter（中端，S1） | ✅ | 22/22（CanonicalSymbolPrinterTests） | 符号图 → BIL §5.2 canonical 字符串（M37）：类型/方法/字段/运算符/getter/setter 五形态 + BIL 类型引用投影（固定别名 > 标准构造 > canonical/闭合泛型，null 返回 → .void）；打印串对照 §5.2/§8.1/§19 示例逐条断言 |
+| BilModel + BilWriter（中端，S4） | ✅ | 6/6（BilWriterTests） | BIL 对象模型与文本生成（M38，`Bil/` 五文件）：Module/Metadata/Resources（§18 全形态）/类型与成员声明（§8）/Function/.args/.vars/Block（§9）/指令与操作数（§10–§16，§17 协程暂缓）；对中端零依赖、字符串身份、Origin 以 object? 占位；writer 只输出标准 spelling、全段输出、§19 黄金示例逐行一致（含 wrapper 隐藏字段续行形态） |
 
 ---
 
@@ -446,9 +453,10 @@ P4b BilEmitter→BilModule 四 pass 分工，Roslyn 风格双 Bound Tree、
 共享安全类型与两条逃逸闸门、rich/shared 单向传染）。
 详见「里程碑历史」M35 段落。
 
-**下一步**：ROADMAP S0（诊断基建：`Semantic/Diagnostics.cs` +
-`TestHarness.CheckSemanticError`）→ S1（符号图内核 + bootstrap），
-中端首次写代码。前端进入维护状态，仅在中端暴露缺口时回补。
+**下一步**：ROADMAP S2（P1 声明收集：`Semantic/CompilationUnit.cs` +
+`Semantic/DeclarationCollector.cs`，符号图的首个真实消费者）→ S3
+（P2 声明解析，七个子任务）→ S5/S6（P3/P4 最小闭环，端到端
+hello world 出 BIL）。前端进入维护状态，仅在中端暴露缺口时回补。
 
 ---
 
@@ -466,6 +474,118 @@ P4b BilEmitter→BilModule 四 pass 分工，Roslyn 风格双 Bound Tree、
 ---
 
 ## 7. 里程碑历史
+
+### 2026-07-31 · M38 S4 BIL 对象模型 + BilWriter
+
+> ROADMAP S4 落地：BIL 生态基座（对中端零依赖）。中端三条基建线
+> （S0 诊断 / S1 符号图 / S4 BIL 模型）至此全部就位。
+
+- **`Bil/BilModule.cs`**：`BilModule`（`BIL "1.1"` 版本头 + Metadata +
+  Resources + LocalSymbols + ExternalSymbols + Functions，§4 段顺序与
+  全段输出）+ `BilMetadataEntry`（§4.1）+ 资源家族（§18 全形态：
+  `BilScalarResource` 标量/raw、`BilNullResource`、`BilCollectionResource`
+  array/pair/map/switch-table/catch-table 单行与多行排版）。
+- **`Bil/BilSymbols.cs`**：类型声明（§8.2：kind/extends/implements/
+  修饰符，多行续行形态；`generic(...)` 子句注记 S9 增补）+
+  `BilSimpleMemberDeclaration`（.field/.static-field/.method/
+  .static-method 共形态：keyword + canonical symbol + 修饰符，
+  `ModifiersOnNextLine` 复现 §19 wrapper 示例续行）+
+  `BilCaseDeclaration`（§8.5：参数段 + discriminant auto/res(R)）。
+- **`Bil/BilFunction.cs`**：`BilFunction`（§9.1）+ `.args` 条目
+  （名 = 类型，保序）+ `.vars` 条目（类型 名）+ `BilBlock`
+  （§9.4–§9.6：id + entrypoint/volatile 修饰符）。
+- **`Bil/BilInstructions.cs`**：`BilInstruction`（opcode + 操作数列表
+  通用形态承载 §10–§16 全部标准指令；结构化理解留给 S12 verifier）
+  + 操作数家族（§10.1 全集：`$var`/fn/field/type/case/blk/res/none/
+  `[列表]`，none 单例）+ `BilOp` 便捷构造。协程指令 §17 暂缓
+  （ARCHITECTURE §7 待修订清单，S13 专项）。`Origin` 以 `object?`
+  占位（S6 接通后收窄为 `LoweredNode?`）。
+- **`Bil/BilWriter.cs`**：模型 → 标准 BIL 文本（只输出标准 spelling，
+  §5.6；4 空格缩进、段间空行、条目尾逗号、switch/try 规范多行排版；
+  换行统一 `\n` 不随平台漂移）。
+- **架构纪律**：`Bil/` 不引用 Semantic/Lowering/AST 任何类型——
+  类型引用与符号一律以 canonical 字符串承载（字符串即 BIL 世界身份，
+  S1 CanonicalSymbolPrinter 的投影即其来源）；verifier/VM 未来只依赖
+  本目录。
+- **测试**：`Tests/BilWriterTests.cs`（6 用例：§19 完整黄金示例逐行
+  一致 + §19 wrapper 隐藏字段示例 + §18 资源全形态 + §8.2/§8.5 声明
+  形态 + §10–§16 指令形态抽样 + Origin 默认 null；黄金文本经
+  `Lines(...)` 显式拼 `\n`，autocrlf 免疫），注册为 TestRunner
+  第 34 号套件。
+- 全量：983/983 + fuzz 6000（34 套件）。
+
+### 2026-07-31 · M37 S1 符号图内核 + bootstrap + CanonicalSymbolPrinter
+
+> ROADMAP S1 落地：中端符号对象图的内核（SEMANTIC_ARCHITECTURE §4）。
+
+- **`Semantic/Symbols/SemanticSymbol.cs`**：符号家族——基类
+  `SemanticSymbol`（引用相等即身份，禁止按名字字符串比较）+
+  `NamespaceSymbol`（多段路径嵌套）/ `TypeSymbol`（Kind 五类 +
+  BaseType/IsRich/IsShared/IsBuiltin/IsValueTypeBranch +
+  GenericParameters/Fields/Methods + 构造类型双字段
+  ConstructedFrom/TypeArguments）/ `MethodSymbol`（MethodKind：
+  Regular/Init/Operator/Getter/Setter）/ `FieldSymbol` /
+  `ParameterSymbol` / `GenericParameterSymbol`（extends 约束）。
+  构造期两阶段：P2 填充字段（BaseType/ReturnType/FieldType/Type/
+  Constraint）internal set。
+- **`Semantic/Symbols/SymbolGraph.cs`**：符号图容器——构造泛型类型
+  驻留 cache（键 = (定义, 实参列表)，一律引用相等；同键必同实例；
+  实参数组复制防外部改写）+ `GetNullable`（T? = Nullable\<T>，SYNTAX
+  §3.4）+ `Freeze`（P2 结束冻结标记；驻留 cache 为幂等派生物不受限）。
+- **`Semantic/Symbols/BootstrapSymbols.cs`**：硬编码 bootstrap
+  （ARCHITECTURE §4.3）——SYNTAX §3.1 完整层级（Any/Object/ValueType/
+  Enum/Wrapper 根 + i8–u64/float/double/bool/char/String 基元 +
+  Type\<T\>/Span\<T\>/Nullable\<T\>/Box\<T\> 泛型内建，全部挂 `core`
+  命名空间）；三条易错层级事实落实（String/Wrapper 在 ValueType 分支
+  且 String 非 rich、Wrapper 恒 rich；Nullable/Box 在 Object 分支；
+  Box\<T\> <: Object 经 BaseType 链直接表达）；`BilIntrinsicOp` 枚举 +
+  每基元登记 intrinsic 集（BIL §11：整数=算术+位+比较、浮点=算术+比较、
+  无符号无 Opposite、bool=逻辑+相等、char=比较全集、String=仅相等；
+  char/String 边缘集注记 S5 按 §13.2 再核）；`IsSharedSafe()` 实现
+  SYNTAX §3.1.1 白名单（含 Nullable 按 T 推导，经
+  DerivesSharedSafetyFromTypeArgument 定义级特权标记，无字符串比较）。
+- **`Semantic/Symbols/CanonicalSymbolPrinter.cs`**：BIL §5.2 五形态
+  （类型 `ns::Outer.Inner` / 方法 `$[.static.]名(参:型,...)@返回` /
+  字段 `#[.static.]名@型` / 运算符 `$$名` / getter-setter `$.get.名`
+  `$.set.名`）+ BIL 类型引用投影（固定别名 `.i32`/`.f32`/`.any` 等 >
+  标准构造 `.nullable<T>`/`.typeid<T>`/`.array<T>` > canonical/闭合
+  泛型 `core::Box<.i32>`；null 返回类型 → `.void`；泛型参数实参 →
+  `.generic<$.generic.T>` §7.5）。投影提示经 TypeSymbol.BilAlias /
+  BilStandardConstructor 登记（core.latte 的 Array/Map/Pair 未来
+  经同机制接入）。
+- **测试**：`Tests/SymbolGraphTests.cs`（45 用例：驻留同一引用、
+  bootstrap 层级、分支/rich 标记、shared-safe 推导、泛型约束、
+  intrinsic 键空间、Freeze）+ `Tests/CanonicalSymbolPrinterTests.cs`
+  （22 用例：§5.2/§8.1/§19 示例逐条对照 + 嵌套/构造/全局/泛型实参
+  形态），注册为 TestRunner 第 32/33 号套件。
+- 全量：977/977 + fuzz 6000（33 套件）。
+
+### 2026-07-31 · M36 S0 诊断基建 + ROADMAP 文件级细化
+
+> 中端第一段代码（ROADMAP S0 落地）；同批完成 `SEMANTIC_ROADMAP.md`
+> 的 S0–S6 文件级施工清单细化。
+
+- **ROADMAP 细化（先于代码）**：S0/S1/S4 细化为文件级施工清单（每个
+  文件含哪些类型、对应哪个测试套件），S2/S3/S5/S6 细化到任务级，
+  S7+ 保持远粗。细化中钉死的对接决策：**Bil 模型的类型引用以字符串
+  承载**，即 S1 `CanonicalSymbolPrinter` 的 BIL 类型引用投影形式
+  （基元 → `.i32` 等固定别名、`Nullable\<T>` → `.nullable<T>`、用户
+  类型 → canonical）——S1 与 S4 因此无顺序依赖。
+- **`Semantic/Diagnostics.cs`**（新增顶层目录 `Semantic/`）：
+  `DiagnosticSeverity { Error, Warning }`、`DiagnosticPhase { P1–P4 }`、
+  `Diagnostic { Severity, Phase, Span: CharRange?, Message }`（暂不建
+  错误码编号体系，ARCHITECTURE §8）、`DiagnosticBag`（全编译单元单
+  实例贯穿 P1–P4、只追加；`HasErrors` 阶段推进门槛；可遍历供断言）。
+  与前端 LexerException/ParserException（单发即死）严格不同：中端
+  诊断累积、尽量继续，一次编译报出尽可能多的错误。
+- **`Tests/TestHarness.cs`**：新增 `CheckSemanticError(label, bag,
+  msgPart)`——断言存在 Error 级且消息含片段的诊断（沿用消息子串
+  惯例，与 CheckParseError 一致）。
+- **测试**：新增 `Tests/DiagnosticsTests.cs` 套件（15 用例：空袋、
+  Warning 不触发门槛 / Error 触发门槛、Severity/Phase/Span/Message
+  字段携带、多错累积顺序保持、CheckSemanticError 命中），注册为
+  TestRunner 第 31 号套件。
+- 全量：910/910 + fuzz 6000（31 套件）。
 
 ### 2026-07-29 · M35 中端阶段开篇：语义分析架构定稿 + shared/rich/wrapper/String 规范修订
 

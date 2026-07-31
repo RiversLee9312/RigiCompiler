@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace LatteCompiler.Tests
 {
@@ -122,6 +123,35 @@ namespace LatteCompiler.Tests
                     FailCount++;
                 }
             }
+        }
+
+        // 期望语义诊断（M36 起的中端套件）：bag 中存在 Error 级且消息含片段的诊断
+        public static void CheckSemanticError(string label, DiagnosticBag bag, string expectedMessagePart)
+        {
+            foreach (var d in bag.Diagnostics)
+            {
+                if (d.Severity == DiagnosticSeverity.Error && d.Message.Contains(expectedMessagePart))
+                {
+                    Console.WriteLine($"  [PASS] {label} (正确报错)");
+                    PassCount++;
+                    return;
+                }
+            }
+            Console.WriteLine($"  [FAIL] {label} (缺少预期诊断)");
+            Console.WriteLine($"      expected part: {expectedMessagePart}");
+            Console.WriteLine($"      actual:        [{DescribeBag(bag)}]");
+            FailCount++;
+        }
+
+        // 诊断袋内容简述（失败时对照用）
+        private static string DescribeBag(DiagnosticBag bag)
+        {
+            var parts = new List<string>();
+            foreach (var d in bag.Diagnostics)
+            {
+                parts.Add($"{d.Phase} {d.Severity}: {d.Message}");
+            }
+            return string.Join("; ", parts);
         }
 
         // 套件汇总（打印并返回失败数）

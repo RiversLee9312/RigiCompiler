@@ -4,8 +4,9 @@
 > `SEMANTIC_ARCHITECTURE.md`；本文档只管「计划」，进度现状一律记
 > `docs/PROGRESS_REPORT.md`（落地时在其里程碑历史领取全局 M 编号）。
 >
-> 编号 S0–S14 是**计划序号**，近细远粗：S0–S6 已细化到验收标准，
-> S7 以后随进展再细化。允许并行的地方已注明；未注明的按序推进，不跳步。
+> 编号 S0–S14 是**计划序号**，近细远粗：S0–S6 已细化到文件级施工
+> 清单（2026-07-31 细化），S7 以后随进展再细化。允许并行的地方已注明；
+> 未注明的按序推进，不跳步。
 
 ---
 
@@ -29,38 +30,61 @@ verifier → VM**。VM 落地后测试从形态断言升级为执行断言。
 
 ## S0 诊断基建
 
-- `Semantic/Diagnostics.cs`：`Diagnostic { Severity, Span?, Message, Phase }`
-  + `DiagnosticBag`（见 ARCHITECTURE §8）。
-- `TestHarness` 扩展：`CheckSemanticError(label, action/bag, msgPart)`
-  一类断言；诊断按消息子串 + Span 断言。
-- **验收**：独立测试套件（DiagnosticBag 累积、多错不互断、
-  Error 门槛判定）注册进 `TestRunner`。
+- `Semantic/Diagnostics.cs`：
+  - `enum DiagnosticSeverity { Error, Warning }`；
+  - `enum DiagnosticPhase { P1, P2, P3, P4 }`；
+  - `Diagnostic { Severity, Phase, Span: CharRange?, Message }`
+    （暂不建错误码编号体系，ARCHITECTURE §8）；
+  - `DiagnosticBag`：全编译单元单实例、只追加；`HasErrors` 门槛判定；
+    可遍历供断言。
+- `Tests/TestHarness.cs` 扩展：`CheckSemanticError(label, bag, msgPart)`
+  ——断言存在消息含 msgPart 的 Error 诊断（沿用消息子串惯例）。
+- **验收**：`Tests/DiagnosticsTests.cs` 套件（累积多条、多错不互断、
+  HasErrors 门槛、Span/Phase 携带）注册进 `TestRunner`。
 
 ## S1 符号图内核 + bootstrap
 
-- `Semantic/Symbols/`：`SemanticSymbol` 家族最小集
-  （Namespace/Type/Field/Method/Parameter/GenericParameter）、
-  驻留 cache（含构造泛型类型驻留）、`BootstrapSymbols`
-  （ARCHITECTURE §4.3 硬编码清单：根类型（含 `Wrapper`）+
-  SYNTAX §3.2 基本类型 + Nullable/Box/Span 特权关系 +
-  基元运算符键空间）。
-- `CanonicalSymbolPrinter`：符号图 → BIL §5.2 canonical 字符串。
-- **验收**：驻留断言（同一引用）、bootstrap 层级断言
-  （`i32 <: ValueType <: Any`、`String <: ValueType`、
-  `Wrapper <: ValueType`、`Box\<T> <: Object` 等）、
-  canonical 打印串对照 BIL §5.2/§8.1 的示例逐条比对。
+- `Semantic/Symbols/` 四个文件：
+  - `SemanticSymbol.cs`：基类（引用相等即身份）+ 最小派生集
+    `NamespaceSymbol / TypeSymbol / FieldSymbol / MethodSymbol /
+    ParameterSymbol / GenericParameterSymbol`（EnumCaseSymbol/LocalSymbol
+    等后续里程碑按需增补，过简洁三问）。`TypeSymbol` 携带：类型种类
+    （class/struct/enum-struct/interface/wrapper/内建）、BaseType、
+    IsRich/IsShared、GenericParameters、成员表；构造泛型类型 =
+    `(TypeDefinition, TypeArguments)`；`T?` 即构造类型 `Nullable\<T>`，
+    不设独立 nullable 表示（SYNTAX §3.4）。
+  - `SymbolGraph.cs`：符号图容器 = bootstrap 注册入口 + 构造类型
+    驻留 cache（同 `(定义, 实参列表)` 必同实例）+ P2 结束 Freeze。
+  - `BootstrapSymbols.cs`：SYNTAX §3.1 层级（注意 `Nullable\<T>` /
+    `Box\<T>` 在 Object 分支，`String`/`Wrapper` 在 ValueType 分支，
+    `Wrapper` 恒 rich）+ §3.2 基本类型 + `Type\<T>` /
+    `Span\<T extends ValueType>` / `Box\<T extends ValueType>` 的约束与
+    特权标记（`Box\<T> <: Object` 为内建事实、`Nullable\<T>` 的 shared
+    按 T 推导）+ 基元运算符 intrinsic 键空间（BIL §11）。
+  - `CanonicalSymbolPrinter.cs`：符号图 → BIL §5.2 五形态字符串；
+    签名中的类型部分走 BIL 类型引用投影（基元 → `.i32` 等固定别名、
+    `Nullable\<T>` → `.nullable<T>`、用户类型 → canonical）——
+    该投影即 Bil 模型的类型引用承载形式（字符串，S4 依此对接）。
+- **验收**：`Tests/SymbolGraphTests.cs`（驻留同一引用、bootstrap 层级
+  `i32 <: ValueType <: Any`、`String`/`Wrapper` 在 ValueType 分支、
+  `Box\<T> <: Object`、shared-safe 推导）+
+  `Tests/CanonicalSymbolPrinterTests.cs`（打印串对照 BIL §5.2/§8.1
+  示例逐条比对），注册进 `TestRunner`。
 
 ## S2 P1 声明收集
 
-- `DeclarationCollector`：遍历编译单元全部 `RootASTNode` 声明骨架
-  （不进函数体），建立命名空间/类型/成员/全局符号壳；重复声明诊断。
-- 编译单元模型落地（多文件一次收集，ARCHITECTURE §3）。
-- **验收**：跨文件前向引用可收集；同名冲突出诊断且不中断；
-  嵌套类型路径正确。
+- `Semantic/CompilationUnit.cs`：编译单元模型落地（多源文件
+  `RootASTNode` 集合 + 全局 `DiagnosticBag` + `SymbolGraph`，
+  ARCHITECTURE §3）。
+- `Semantic/DeclarationCollector.cs`：遍历编译单元全部声明骨架
+  （不进函数体）建命名空间/类型/成员/全局符号壳；namespace 嵌套与
+  import 上下文登记；重复声明诊断（累积不中断）。
+- **验收**：`Tests/DeclarationCollectorTests.cs`——跨文件前向引用
+  可收集；同名冲突出诊断且不中断；嵌套类型/namespace 路径正确。
 
 ## S3 P2 声明解析
 
-- `DeclarationResolver`，子任务按序：
+- `Semantic/DeclarationResolver.cs`，子任务按序：
   1. 类型引用解析（`TypeReferenceASTNode` → `TypeSymbol`，含泛型实参
      递归、`T?` → `Nullable\<T>`）；失败绑 `ErrorTypeSymbol` 毒化；
   2. 继承 / implements 图 + 循环继承诊断；
@@ -78,41 +102,61 @@ verifier → VM**。VM 落地后测试从形态断言升级为执行断言。
      （`@WrapperTarget` × `IWrapperAttachable` 三分类）与目标矩阵
      （SYNTAX §14.9：宿主可内嵌性、shared 矩阵 A–D、interface 实现者
      传染），以及静态组合链。
-- P2 结束冻结符号图。
-- **验收**：每个子任务独立测试组；SYNTAX §3.1.1 闭包表与 §14.9 目标
-  矩阵逐行有用例（合法 + 非法各一）。
+- P2 结束冻结符号图（`SymbolGraph.Freeze`）。
+- **验收**：`Tests/DeclarationResolverTests.cs`——每个子任务独立
+  测试组；SYNTAX §3.1.1 闭包表与 §14.9 目标矩阵逐行有用例
+  （合法 + 非法各一）。
 
 ## S4 BIL 对象模型 + BilWriter（可与 S1–S3 并行）
 
-- `Bil/BilModel.cs`：Module/Metadata/Resources/LocalSymbols/
-  ExternalSymbols/Function/`.args`/`.vars`/Block/指令集/资源类型，
-  覆盖 BIL_STANDARD §4–§18 的标准形式（协程指令 §17 暂缓——
-  见 S13 与 ARCHITECTURE §7 待修订清单）。
-- `Bil/BilWriter.cs`：模型 → 标准 BIL 文本（只输出标准 spelling，
-  不输出 legacy）。
-- 对中端**零依赖**（`Origin` 字段类型此时可先以 `object?` 占位，
-  S6 接通后改为 `LoweredNode?`——或从一开始就放 `Lowering` 侧扩展，
-  实现时按简洁三问定）。
-- **验收**：手工构造 BIL §19 完整示例的内存模型，`BilWriter` 输出与
-  规范文本逐行一致（黄金文件）。
+- `Bil/`（对中端零依赖；类型引用一律以 canonical/标准构造字符串承载，
+  即 S1 `CanonicalSymbolPrinter` 的投影形式）：
+  - `BilModule.cs`：BilModule（`BIL "1.1"` 版本头 + Metadata +
+    Resources + LocalSymbols + ExternalSymbols + Functions，§4）、
+    Metadata 条目（§4.1）、Resource（§4.2/§18 资源字面量形态）。
+  - `BilSymbols.cs`：类型声明（§8.2）与成员声明（字段 §8.3 /
+    方法 §8.4 / enum case §8.5）+ 修饰符（pub/priv/backing/
+    compiler-generated/entrypoint 等）。
+  - `BilFunction.cs`：函数定义（§9.1）/ `.args`（§9.2）/ `.vars`
+    （§9.3）/ Block（§9.4–§9.6）。
+  - `BilInstructions.cs`：指令模型——运算（§11）、转换与运行时类型
+    （§12）、值/变量/字段/索引（§13）、构造（§14）、调用（§15）、
+    结构化控制流（§16）；**协程指令 §17 暂缓**（S13 与
+    ARCHITECTURE §7 待修订清单）。
+  - `BilWriter.cs`：模型 → 标准 BIL 文本（只输出标准 spelling，
+    不输出 legacy，§5.6）。
+  - `Origin` 以 `object?` 占位（S6 接通后改 `LoweredNode?`——或从
+    第一天就放 Lowering 侧扩展，实现时按简洁三问定）。
+- **验收**：`Tests/BilWriterTests.cs`——手工构造 BIL §19 完整示例
+  （含 wrapper 隐藏字段示例）的内存模型，`BilWriter` 输出与规范文本
+  逐行一致（黄金文件断言），注册进 `TestRunner`。
 
 ## S5 P3 最小闭环（BoundTree 起步）
 
-- `Semantic/Bound/` 最小节点集 + `Binder`：字面量、局部变量声明与
-  引用、算术/比较二元运算（bootstrap intrinsic 键查询）、赋值、
-  块与作用域链、`var` 类型推断、无重载的直接函数调用、`new`、
-  `return` + 所有路径显式返回检查、definite assignment 最小版。
-- `BoundDescribe` + 测试套件。
-- **验收**：上述每类表达式/语句的 bound 形态与定型类型断言；
-  类型不匹配/未定义名字/未赋值使用三类诊断各有用例。
+- `Semantic/Bound/` 最小节点集（按类别分文件，仿 `AST/`）：
+  `BoundNode`（`Syntax: ASTNode` 必填）/ `BoundExpression`
+  （`Type: TypeSymbol`）+ 字面量、局部变量声明与引用、二元运算、
+  赋值、块、调用、`new`、`return` 等节点。
+- `Semantic/Binder.cs`：作用域链（块 → 参数 → 成员 → 全局 → import）、
+  `var` 类型推断、bootstrap intrinsic 键查询、无重载直接函数调用、
+  `new`、`return` + 所有路径显式返回检查、definite assignment 最小版；
+  分析单位 = `BoundFunctionBody { MethodSymbol, Locals, BoundBlock }`。
+- `Tests/BoundDescribe.cs`：唯一 bound 树描述器（仿 `AstDescribe`）。
+- **验收**：`Tests/BinderTests.cs`——上述每类表达式/语句的 bound
+  形态与定型类型断言 + 结构性事实；类型不匹配/未定义名字/未赋值
+  使用三类诊断各有用例。
 
 ## S6 P4 最小闭环（端到端 hello world）
 
-- `Lowering/`：`LoweredNode` 最小集 + `Lowerer`（此阶段近乎恒等重写）
-  + `BilEmitter`（线性化、临时变量物化、Resources 提取、
+- `Lowering/`：`Lowered/LoweredNode.cs` 最小集（`Origin: BoundNode`
+  必填）+ `Lowerer.cs`（此阶段近乎恒等重写）+ `BilEmitter.cs`
+  （线性化、`.vars` 临时变量物化、Resources 提取、
   LocalSymbols/ExternalSymbols 生成）。
+- Bil 模型 `Origin` 由 `object?` 收窄为 `LoweredNode?`（若 S4 从
+  第一天即放 Lowering 侧扩展则无需改动）。
 - CLI：`--emit-bil PATH` + `--sema-only`（仿 `DumpAstOption` 模板，
-  注册进 `CompileCommand.SubCommands`）。
+  注册进 `CompileCommand.SubCommands`；接入 `CompileCommand` 的
+  `if (!parseOnly)` 分支）。
 - 临时措施：`core::Console.println` 以硬编码 external 符号提供
   （S10 换正式 core.latte 机制）。
 - **验收**：`main + 字面量 + println + ret` 的 `.latte` 源码经

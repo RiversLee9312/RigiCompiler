@@ -5,7 +5,7 @@
 
 **项目名**: LatteCompiler
 **语言**: C#（.NET 8.0，控制台程序，`Nullable` 与 `ImplicitUsings` 已启用）
-**开发阶段**: 早期 —— 编译器前端（Lexer + Parser）已完成（roadmap P0–P5 全部落地），Parser/PDA 大扫除（架构重构）、AST 结构标注（M24）、Lexer 修复（M25）、日志系统 + AST JSONL 序列化（M26）、CLI 插件化（M27）、Lexer 位置修复 + AST Source Span + ASTVisitor 统一遍历（M28）、AST 容器重构（M29）、Utilities.cs 拆分 + ASTVisitor 遍历可重载 + 文档幽灵清理（M30）、前端大修（M31：Span 左闭右开、Lexer 块注释重写、续行规则、位运算符、0b/0o/下划线字面量、Keywords 大扫除、JSONL v2 + 反序列化器、测试基建统一）、多行字符串（M32：SYNTAX §3.3 定稿 Swift 风格严格多行，QuoteLexerLayer 引号分流 + MultilineStringLexerLayer）、值块统一（M33：if/switch 表达式分支体与 lambda 体统一为代码块 + `return@_`/named 取值、switch 语句形态、lambda 体内裸 return 编译错误、seq 匿名默认标签 `seq`→`_`）与技术债清扫（M34：字符字面量、复合赋值 10 运算符、`is` 右侧 enum case、wrapper `.name` 保留参数名、import `{}` 单标识符禁令）已完成；下一阶段：语义分析、BIL 输出
+**开发阶段**: 中端（语义分析 + BIL 生成）阶段 —— 编译器前端（Lexer + Parser）已完成（roadmap P0–P5 全部落地，M23–M34 大扫除与多轮修复）；中端 M35 完成架构定稿（`docs/compiler/semantic/SEMANTIC_ARCHITECTURE.md`）与路线图 S0–S14（`SEMANTIC_ROADMAP.md`，S0–S6 已细化到文件级施工清单）+ 语言规范修订（shared/rich/wrapper/String）；M36 落地 S0 诊断基建（`Semantic/Diagnostics.cs`）、M37 落地 S1 符号图内核（`Semantic/Symbols/` + bootstrap + `CanonicalSymbolPrinter`）、M38 落地 S4 BIL 对象模型 + BilWriter（`Bil/`，§19 黄金示例逐行一致）；下一步 S2 P1 声明收集 → S3 P2 声明解析 → S5/S6 P3/P4 最小闭环
 **版本控制**: Git（`main` 分支，2026-07-17 首次提交，工作树干净；CI 见 `.github/workflows/ci.yml`）
 
 ---
@@ -29,7 +29,7 @@ Latte 源码 (.latte) → Frontend (Lexer + Parser) ✅ 完成（含大扫除重
                     → LLVM 工具链 → 原生可执行文件
 ```
 
-**当前进度**：编译器前端（Lexer + Parser）已完成，且经过一次彻底的架构大扫除（见 §4.7）：控制流系统与 AST 施工系统严格分离，Layer 之间只传递控制权不传递 AST 数据。已可解析字面量、类型引用、变量声明（含 getter/setter 属性访问器）、完整表达式（含 Lambda（单表达式/多语句块体 + named）、if/switch 表达式（分支体为代码块，`return@_`/named 取值）、typeOf/as/is、seq 表达式形态、await、前导点 enum case 引用、wrapper 路径访问 `:`）、完整语句系统（代码块、if、switch 语句、循环、try-catch-finally、seq、throw、yield、return/break/continue、赋值；lambda 体内裸 return 为编译错误）、泛型参数列表、函数形参列表（含 init `_ -> field` 参数映射）、统一声明层（全局字段/函数、class/interface/struct/wrapper 声明、成员方法与 init/operator、继承与 implements、like 委托、ext 限定名、嵌套类型、声明上的泛型参数、enum struct 的 `[]` case 列表）、wrapper 主体（`@` 注解/wrapper 应用、`@WrapperTarget(.X)` 类型标识、`.proxy.*` 代理成员）、模块系统（import §15.2 三种形态、namespace 声明 §15.1）。尚无语义分析、无代码生成、无 BIL 输出。
+**当前进度**：编译器前端（Lexer + Parser）已完成，且经过一次彻底的架构大扫除（见 §4.7）：控制流系统与 AST 施工系统严格分离，Layer 之间只传递控制权不传递 AST 数据。已可解析字面量、类型引用、变量声明（含 getter/setter 属性访问器）、完整表达式（含 Lambda（单表达式/多语句块体 + named）、if/switch 表达式（分支体为代码块，`return@_`/named 取值）、typeOf/as/is、seq 表达式形态、await、前导点 enum case 引用、wrapper 路径访问 `:`）、完整语句系统（代码块、if、switch 语句、循环、try-catch-finally、seq、throw、yield、return/break/continue、赋值；lambda 体内裸 return 为编译错误）、泛型参数列表、函数形参列表（含 init `_ -> field` 参数映射）、统一声明层（全局字段/函数、class/interface/struct/wrapper 声明、成员方法与 init/operator、继承与 implements、like 委托、ext 限定名、嵌套类型、声明上的泛型参数、enum struct 的 `[]` case 列表）、wrapper 主体（`@` 注解/wrapper 应用、`@WrapperTarget(.X)` 类型标识、`.proxy.*` 代理成员）、模块系统（import §15.2 三种形态、namespace 声明 §15.1）。**中端三条基建线已就位（M36–M38）**：可恢复诊断模型（Diagnostic/DiagnosticBag）、符号图内核（驻留 + bootstrap + canonical 打印）、BIL 对象模型 + 文本生成；尚无 P1–P4 pass 实现（声明收集/解析、Binder、Lowering），无 BIL 发射。
 
 ---
 
@@ -125,9 +125,21 @@ LatteCompiler/
 │   ├── Commands.cs              # CLI 插件：compile/test/help 三个 COMMAND 及其 --sub-cmd（M27）
 │   └── Logger.cs                # 唯一日志出口：Verbose/Warning/Error 分级；verbose 默认关闭，
 │                                #   --verbose 开控制台 verbose，--log-to 全量 JSONL 落盘
+├── Semantic/                 # 中端 P1–P3 + 符号图 + 诊断（M36 起，ARCHITECTURE §9）
+│   ├── Diagnostics.cs           # 可恢复诊断模型（M36）：Diagnostic{Severity/Phase/Span?/Message}
+│   │                            #   + DiagnosticBag（全编译单元单实例、只追加、HasErrors 门槛）
+│   └── Symbols/                 # 符号图内核（M37）：SemanticSymbol 家族（引用相等即身份）、
+│                                #   SymbolGraph 构造泛型驻留 + Freeze、BootstrapSymbols（硬编码
+│                                #   SYNTAX §3.1/§3.2 + intrinsic 键空间）、CanonicalSymbolPrinter
+├── Bil/                      # BIL 生态（M38，对中端零依赖：字符串身份，不引用 Semantic/AST）
+│   ├── BilModule.cs             # Module/Metadata/Resources（§4/§18 全形态）
+│   ├── BilSymbols.cs            # 类型与成员声明（§8.2–§8.5）
+│   ├── BilFunction.cs           # Function/.args/.vars/Block（§9）
+│   ├── BilInstructions.cs       # 指令与操作数模型（§10–§16；§17 协程暂缓）+ Origin(object?) 占位
+│   └── BilWriter.cs             # 模型 → 标准 BIL 文本（§19 黄金示例逐行一致）
 ├── Tests/                    # 自研控制台测试（非 xUnit/NUnit，见 §5）
 │   ├── AstDescribe.cs           # 统一 AST 描述器（M31，全部套件共用）
-│   ├── TestHarness.cs           # 统一驱动与断言基建（M31）
+│   ├── TestHarness.cs           # 统一驱动与断言基建（M31；M36 增 CheckSemanticError）
 │   ├── TestRunner.cs            # test 命令驱动（套件注册表、菜单打印、按编号运行、退出码）
 │   ├── TestRootParserLayer.cs   # 独立 Layer 测试垫底层（只接受 EOF）
 │   ├── TokenDispositionTests.cs # Token 流转协议测试（四种组合）

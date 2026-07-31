@@ -42,6 +42,10 @@ namespace LatteCompiler.Tests
             ("Path", PathParserLayerTests.RunAll),
             ("ArgumentList", ArgumentListParserLayerTests.RunAll),
             ("MultilineString", MultilineStringTests.RunAll),
+            ("Diagnostics", DiagnosticsTests.RunAll),
+            ("SymbolGraph", SymbolGraphTests.RunAll),
+            ("CanonicalSymbolPrinter", CanonicalSymbolPrinterTests.RunAll),
+            ("BilWriter", BilWriterTests.RunAll),
         };
 
         // 套件数量（对外编号 1..SuiteCount，即注册表顺序）
