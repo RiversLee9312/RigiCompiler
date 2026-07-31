@@ -4,8 +4,9 @@
 > `SEMANTIC_ARCHITECTURE.md`；本文档只管「计划」，进度现状一律记
 > `docs/PROGRESS_REPORT.md`（落地时在其里程碑历史领取全局 M 编号）。
 >
-> 编号 S0–S14 是**计划序号**，近细远粗：S0–S6 已细化到文件级施工
-> 清单（2026-07-31 细化），S7 以后随进展再细化。允许并行的地方已注明；
+> 编号 S0–S14 是**计划序号**，近细远粗：S0–S7 已细化到文件级施工
+> 清单（S0–S6 于 2026-07-31 细化，S7 于 2026-07-31 细化为 S7a–S7f），
+> S8 以后随进展再细化。允许并行的地方已注明；
 > 未注明的按序推进，不跳步。
 
 ---
@@ -182,11 +183,85 @@ verifier → VM**。VM 落地后测试从形态断言升级为执行断言。
 
 ## S7 控制流全套（P3 + P4 同步推进）
 
-if 语句/表达式（含 M33 值块隐式取值）、循环四形态 + break/continue
+范围：if 语句/表达式（含 M33 值块隐式取值）、循环四形态 + break/continue
 标签（`.breakid` 发射）、switch 语句/表达式（常量表 + pattern 降级）、
 try/catch/finally（catch-table）、seq（含表达式形态 + `return@`）、
 throw、短路 and/or 展开、`?.` / `if?` / 复合赋值 / 解构 / 字符串插值
 脱糖。BIL §3.4 每条规范化规则至少一个 `LoweredDescribe` 用例。
+
+2026-07-31 细化为六步，按序推进；每步 P3 与 P4 同步落地（P3 绑得出来的
+形态，同一步内 P4 必须能发射，端到端 `--emit-bil` 可验证）：
+
+### S7a P4 基础发射补齐 + LoweredDescribe 基建
+
+S5 已能绑定的全部 Bound 节点在本步过 P4（控制流的前置：没有
+赋值/运算/带返回值调用/new 的发射，任何控制流端到端用例都写不出来）。
+
+- `Lowering/Lowered/`：补齐对应节点（局部声明/赋值/表达式语句/
+  二元/一元/带返回值调用/new），`Origin` 必填不变；
+- `Lowering/Lowerer.cs`：分发覆盖 S5 全部 Bound 节点（仍为恒等重写）；
+- `Lowering/BilEmitter.cs`：新发射 `set.var`（局部与全局静态字段赋值
+  `set.field.static`）、§11 运算指令（`BilIntrinsicOp` → opcode 映射表
+  单点）、`invoke`（带返回值）、`new`（§14.1，init 选择归 Middleware）；
+  字面量资源补齐 §18.1 标量全形态（bool/char/f32/f64/null `type(...)`）；
+- `Tests/LoweredDescribe.cs`：唯一 Lowered 树描述器（仿 BoundDescribe）；
+- **验收**：`Tests/LowererTests.cs`（每类节点 Lowered 形态 +
+  未覆盖诊断）+ `BilEmitterTests` 扩充（`var x = 1 + 2` 等含运算/赋值/
+  new/调用的端到端文本比对），两套件注册进 `TestRunner`。
+
+### S7b if 语句/表达式 + 短路 and/or + 复合赋值
+
+- P3：`BoundIfStatement` / `BoundIfExpression`（else 缺失诊断）；
+  **M33 值块隐式取值判定落地**（块内恰好一条 ExpressionStatement，
+  ARCH §5.2 遗留义务，判定结果显式记录在 bound 节点）；多语句分支
+  `return@_` / `return@标签` 绑定；definite assignment 升级为分支合并；
+  `GuaranteesReturn` 升级为全路径（if/else 双支均保证才算）；
+  复合赋值（`CompoundAssignmentExpressionASTNode`）绑定；
+- P4a：内建 `bool` 短路 `and`/`or` → 条件结构 + 临时变量（BIL §11.3）；
+  if 表达式 → 结果临时变量规范化；复合赋值 → 读 + 基础运算 + 写回；
+- P4b：`if` 指令发射（§16.2）+ 函数多 block 生成机制（block 平铺、
+  `blk(...)` 引用、`none` 空分支）；
+- **验收**：`LoweredDescribe` 短路/复合赋值脱糖用例（§3.4 规则各一）+
+  emitter 端到端（if 语句/表达式出合法多 block BIL）+ definite
+  assignment 分支诊断用例。
+
+### S7c 循环四形态 + break/continue
+
+- P3：`BoundLoop`（for/while/do-while/named 标签）+ break/continue
+  标签解析（循环外使用诊断）；for 的 RangeTo 语义按 SYNTAX 落地；
+- P4b：`loop` / `loop.rev`（§16.3/§16.4）+ `break` / `continue`
+  （§16.5）+ BREAK_ID 变量（`.vars` 内声明，capability 规则 §20.6
+  由 verifier 复核，本步只保证发射形态合法）；
+- **验收**：四形态循环 + 嵌套循环标签 break/continue 端到端用例。
+
+### S7d switch 语句/表达式 + throw
+
+- P3：`BoundSwitch`（值匹配 case 常量判定 vs 含 `_` 的 pattern 分支
+  分类，结果显式记录）；throw 绑定（异常根类型兼容性——异常类型
+  进 bootstrap 还是 stdlib 在本步定稿，S10 边界清单同步）；
+- P4a：pattern 分支降级为嵌套条件（§16.6 规则）；switch 表达式 →
+  结果临时变量；
+- P4b：`switch` 指令 + `switch-table` 资源（§18.4）+ `throw`（§16.9）；
+- **验收**：常量表 switch 端到端 + pattern 降级 `LoweredDescribe`
+  用例 + throw 用例。
+
+### S7e try/catch/finally + seq（含 `return@`）
+
+- P3：try/多 catch/finally(e) 绑定；seq 块（语句/表达式双形态）与
+  `return@标签` 全链解析（P3 标签作用域）；`GuaranteesReturn` 覆盖
+  try/catch 路径；
+- P4a：`seq` 与 `return@` → 结构化 block + 结果临时变量 + `call`
+  （§3.4）；
+- P4b：`try` 指令 + `catch-table` 资源（§18.5）+ `call blk(...)`
+  （§16.1）；
+- **验收**：try/catch/finally(e) 端到端 + seq 表达式取值脱糖
+  `LoweredDescribe` 用例。
+
+### S7f 剩余脱糖
+
+`?.` 安全调用、`if?` 空值回退、解构声明、字符串插值（§3.4 逐条，
+`LoweredDescribe` 每规则至少一用例）；using 物化不在本步（与 async
+lowering 在 S13 汇合，ARCH §7）。
 
 ## S8 P3 完整化
 

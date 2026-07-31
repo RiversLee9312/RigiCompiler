@@ -11,6 +11,10 @@ namespace LatteCompiler
     // 无重载直接函数调用（具名实参按形参归位为规范参数序）、new 构造、
     // return（含「所有路径显式返回」检查，SYNTAX §4.1 无隐式返回）、
     // 赋值与 definite assignment 最小版。
+    // S7b 落地范围：if 语句（else if 链包成单语句 BoundBlock）、if 表达式
+    // （值块：隐式取值/显式 return@标签，值块标签栈解析）、definite assignment
+    // 分支合并（before ∪ (setT ∩ setF)）、GuaranteesReturn 双分支 if 升级、
+    // 复合赋值（SYNTAX §13.2，10 个基础运算符，表达式值为写回后值）。
     //
     // 值/调用的名字解析查找序：块作用域链 → 参数 → 宿主类型成员
     // （声明类型沿 BaseType 链；当前仅调用查找落地，字段裸名归后续里程碑）
@@ -20,7 +24,7 @@ namespace LatteCompiler
     // 类型引用解析与 P2 共用 NameResolver（本类以 DiagnosticPhase.P3 实例化）。
     //
     // 明确不做（归后续里程碑，遇之一律 P3 诊断而非崩溃）：
-    // 控制流全家（if/loop/switch/try/seq/throw/yield，S7）、成员访问与实例
+    // 其余控制流（loop/switch/try/seq/throw/yield，S7 后续）、成员访问与实例
     // receiver（S8）、重载 ranking 与默认参数填充（S8）、getter/setter（S8）、
     // 泛型使用侧（S9）、enum case（S11）、字符串插值脱糖（S7）、await（S13）、
     // 全局字段初始化器与无标注字段类型推断（其闭包/闸门 P3 复核随之一并，
@@ -86,6 +90,9 @@ namespace LatteCompiler
             private readonly List<LocalSymbol> locals = new List<LocalSymbol>();
             // definite assignment 最小版：已赋值局部变量集合（参数恒已赋值）
             private readonly HashSet<LocalSymbol> assigned = new HashSet<LocalSymbol>();
+            // 值块标签栈（S7b）：绑定 if 表达式分支体时压入对应施工壳，
+            // return@标签 沿栈从内向外查找命中（引用相等即身份）
+            private readonly Stack<BoundValueBlock> valueBlocks = new Stack<BoundValueBlock>();
 
             public BindSession(CompilationUnit unit, DeclarationCollection declarations)
             {
@@ -158,9 +165,10 @@ namespace LatteCompiler
                 declaringType = owner;
                 locals.Clear();
                 assigned.Clear();
+                valueBlocks.Clear();    // 函数体互不嵌套，防御性清空
 
                 var body = BindBlock(fn.Body!, new Scope(null));
-                // 所有路径显式返回（SYNTAX §4.1 无隐式返回；S5 无控制流，末语句判定）
+                // 所有路径显式返回（SYNTAX §4.1 无隐式返回）
                 if (symbol.ReturnType != null && !GuaranteesReturn(body))
                 {
                     Error(fn.Span, $"Function '{symbol.Name}' must return a value on all code paths");
@@ -173,7 +181,12 @@ namespace LatteCompiler
                 return block.Statements.Count > 0 && block.Statements[^1] switch
                 {
                     BoundReturnStatement => true,
+                    // S7b：末语句 if 双分支都保证返回 → 保证返回
+                    BoundIfStatement ifStatement => ifStatement.FalseBlock != null
+                        && GuaranteesReturn(ifStatement.TrueBlock)
+                        && GuaranteesReturn(ifStatement.FalseBlock),
                     BoundBlock nested => GuaranteesReturn(nested),
+                    // BoundReturnValueStatement 终止的是值块路径，不算函数返回
                     _ => false,
                 };
             }
@@ -199,6 +212,7 @@ namespace LatteCompiler
                     VariableDeclarationASTNode decl => BindLocalDeclaration(decl, scope),
                     ExpressionStatementASTNode stmt => BindExpressionStatement(stmt, scope),
                     ReturnStatementASTNode ret => BindReturn(ret, scope),
+                    IfStatementASTNode ifStatement => BindIfStatement(ifStatement, scope),
                     CodeBlockASTNode block => BindBlock(block, scope),
                     _ => Unsupported(node, "statement"),
                 };
@@ -309,10 +323,32 @@ namespace LatteCompiler
 
             private BoundStatement? BindReturn(ReturnStatementASTNode node, Scope scope)
             {
+                // return@标签（SYNTAX §6.1）：终止标签对应值块的路径并把值作为该块
+                // 产值；沿值块标签栈从内向外查找，未命中即未定义标签
                 if (node.Label != null)
                 {
-                    Error(node.Span, "P3: return@label is not supported yet (S7)");
-                    return null;
+                    BoundValueBlock? target = null;
+                    foreach (var valueBlock in valueBlocks)
+                    {
+                        if (valueBlock.Label == node.Label)
+                        {
+                            target = valueBlock;
+                            break;
+                        }
+                    }
+                    if (target == null)
+                    {
+                        Error(node.Span, $"Undefined value block label: '{node.Label}'");
+                        return null;
+                    }
+                    if (node.Value == null)
+                    {
+                        Error(node.Span, $"return@{node.Label} requires a value");
+                        return null;
+                    }
+                    var labelValue = BindExpression(node.Value.Expression, scope);
+                    if (labelValue == null) return null;
+                    return new BoundReturnValueStatement(node, target, labelValue);
                 }
                 if (node.Value == null)
                 {
@@ -339,6 +375,235 @@ namespace LatteCompiler
                 return new BoundReturnStatement(node, value);
             }
 
+            // ===== if 语句 / if 表达式 / 值块（S7b，SYNTAX §7.1/§6.1）=====
+
+            // if 语句：else if 链包成单语句 BoundBlock（Bound 层双分支形态）。
+            // definite assignment 分支合并：before ∪ (setT ∩ setF)；无 else 合并为 before
+            private BoundStatement? BindIfStatement(IfStatementASTNode node, Scope scope)
+            {
+                var condition = BindExpression(node.Condition.Expression, scope);
+                CheckBoolCondition(node.Condition, node.Span, condition);
+                var before = new HashSet<LocalSymbol>(assigned);
+                var trueBlock = BindBlock(node.ThenBlock, scope);
+                var trueAssigned = new HashSet<LocalSymbol>(assigned);
+                BoundBlock? falseBlock = null;
+                HashSet<LocalSymbol>? falseAssigned = null;
+                RestoreAssigned(before);
+                switch (node.ElseBranch)
+                {
+                    case null:
+                        break;
+                    case CodeBlockASTNode elseBlock:
+                        falseBlock = BindBlock(elseBlock, scope);
+                        falseAssigned = new HashSet<LocalSymbol>(assigned);
+                        break;
+                    case IfStatementASTNode elseIf:
+                        // else if 链：递归绑定，包成单语句 BoundBlock
+                        var nested = BindIfStatement(elseIf, scope);
+                        var statements = new List<BoundStatement>();
+                        if (nested != null) statements.Add(nested);
+                        falseBlock = new BoundBlock(elseIf, statements);
+                        falseAssigned = new HashSet<LocalSymbol>(assigned);
+                        break;
+                    default:
+                        throw new CompilerInternalException(
+                            "未知 else 分支节点: " + node.ElseBranch.GetType().Name);
+                }
+                // 合并：双分支取交集并回 before；无 else 保守恢复 before
+                if (falseAssigned == null)
+                {
+                    RestoreAssigned(before);
+                }
+                else
+                {
+                    trueAssigned.IntersectWith(falseAssigned);
+                    trueAssigned.UnionWith(before);
+                    RestoreAssigned(trueAssigned);
+                }
+                if (condition == null) return null;
+                return new BoundIfStatement(node, condition, trueBlock, falseBlock);
+            }
+
+            // if 表达式：必须有 else（前端保证）；两分支各绑一个值块（标签同源——
+            // if 表达式的 named 标签或缺省 "_"），产值类型统一（符号 ==；ErrorType
+            // 毒化静默），纯穿透分支（ValueType null）不参与统一；definite
+            // assignment 合并规则同 if 语句
+            private BoundExpression? BindIfExpression(IfExpressionASTNode node, Scope scope)
+            {
+                var condition = BindExpression(node.Condition.Expression, scope);
+                CheckBoolCondition(node.Condition, node.Span, condition);
+                var label = node.Label ?? "_";
+                var before = new HashSet<LocalSymbol>(assigned);
+                var trueBranch = BindValueBlock(node.ThenBody, label, scope);
+                var trueAssigned = new HashSet<LocalSymbol>(assigned);
+                RestoreAssigned(before);
+                var falseBranch = BindValueBlock(node.ElseBody, label, scope);
+                var falseAssigned = new HashSet<LocalSymbol>(assigned);
+                trueAssigned.IntersectWith(falseAssigned);
+                trueAssigned.UnionWith(before);
+                RestoreAssigned(trueAssigned);
+                if (condition == null) return null;
+                // 产值类型统一：纯穿透分支（null）不参与；两分支都穿透即无产值
+                var type = trueBranch.ValueType ?? falseBranch.ValueType;
+                if (type == null)
+                {
+                    Error(node.Span, "if expression must produce a value " +
+                        "(at least one branch must return@ a value)");
+                    return null;
+                }
+                if (trueBranch.ValueType != null && falseBranch.ValueType != null
+                    && !ReferenceEquals(trueBranch.ValueType, falseBranch.ValueType)
+                    && trueBranch.ValueType is not ErrorTypeSymbol
+                    && falseBranch.ValueType is not ErrorTypeSymbol)
+                {
+                    Error(node.Span,
+                        $"if expression branches produce different types " +
+                        $"('{TypeDisplay(trueBranch.ValueType)}' and " +
+                        $"'{TypeDisplay(falseBranch.ValueType)}')");
+                    return null;
+                }
+                return new BoundIfExpression(node, condition, trueBranch, falseBranch, type);
+            }
+
+            // if 条件必须 bool（语句/表达式两形态同规则；ErrorType 毒化静默）
+            private void CheckBoolCondition(ExpressionRootASTNode conditionRoot,
+                CharRange? fallbackSpan, BoundExpression? condition)
+            {
+                if (condition != null && condition.Type is not ErrorTypeSymbol
+                    && !ReferenceEquals(condition.Type, B.Bool))
+                {
+                    Error(conditionRoot.Span ?? fallbackSpan,
+                        $"if condition must be bool (got '{TypeDisplay(condition.Type)}')");
+                }
+            }
+
+            // 值块绑定（if 表达式分支体，SYNTAX §6.1/§7.1）：
+            // - 施工壳先于分支体绑定创建并压入标签栈（分支体内的 return@标签 经栈命中），
+            //   分支体绑完后回填 Block/IsImplicitValue/ValueType；
+            // - 语法上恰好一条纯表达式语句（赋值语句不算）→ 隐式取值，
+            //   ValueType = 该表达式类型；
+            // - 否则所有执行路径必须显式 return@（GuaranteesValueReturn 检查，
+            //   穿透终止也算路径终止），ValueType = 命中本块的 return@ 值类型
+            //   统一结果；无本块产值（纯穿透）→ ValueType = null
+            private BoundValueBlock BindValueBlock(CodeBlockASTNode node, string label, Scope scope)
+            {
+                var shell = new BoundValueBlock(node, label);
+                valueBlocks.Push(shell);
+                BoundBlock block;
+                try
+                {
+                    block = BindBlock(node, scope);
+                }
+                finally
+                {
+                    valueBlocks.Pop();
+                }
+                shell.Block = block;
+                // M33 判定：语法上恰好一条纯表达式语句
+                if (node.Statements.Count == 1
+                    && node.Statements[0] is ExpressionStatementASTNode { AssignValue: null })
+                {
+                    shell.IsImplicitValue = true;
+                    // 绑定失败（产物缺失）时诊断已发，静默留 null ValueType；
+                    // void 调用落成 BoundCallStatement——无值可取
+                    if (block.Statements.Count == 1
+                        && block.Statements[0] is BoundExpressionStatement expressionStatement)
+                    {
+                        shell.ValueType = expressionStatement.Expression.Type;
+                    }
+                    else if (block.Statements.Count == 1
+                        && block.Statements[0] is BoundCallStatement)
+                    {
+                        Error(node.Span, "if expression branch must produce a value " +
+                            "(a void call has no result)");
+                    }
+                    return shell;
+                }
+                if (!GuaranteesValueReturn(block))
+                {
+                    Error(node.Span, "All code paths of an if expression branch must " +
+                        "explicitly return@ a value");
+                }
+                shell.ValueType = CollectBranchValueType(block, shell);
+                return shell;
+            }
+
+            // 「所有执行路径显式 return@」判定：末语句是 BoundReturnValueStatement
+            // （命中任意值块，穿透终止也算路径终止）→ true；末语句是 BoundIfStatement
+            // 且双分支 GuaranteesValueReturn → true；末语句是嵌套 BoundBlock → 递归；
+            // 其余 false（裸 return 终止函数路径但不作为值块产值收尾，规则从简）
+            private static bool GuaranteesValueReturn(BoundBlock block)
+            {
+                return block.Statements.Count > 0 && block.Statements[^1] switch
+                {
+                    BoundReturnValueStatement => true,
+                    BoundIfStatement ifStatement => ifStatement.FalseBlock != null
+                        && GuaranteesValueReturn(ifStatement.TrueBlock)
+                        && GuaranteesValueReturn(ifStatement.FalseBlock),
+                    BoundBlock nested => GuaranteesValueReturn(nested),
+                    _ => false,
+                };
+            }
+
+            // 收集分支块内命中本块的 return@ 值类型（递归嵌套块与 if 分支）；
+            // 全部须类型一致（符号 ==，驻留保证；ErrorType 毒化静默跳过），
+            // 不一致诊断并以首个为准；无命中（纯穿透终止）→ null
+            private TypeSymbol? CollectBranchValueType(BoundBlock block, BoundValueBlock shell)
+            {
+                TypeSymbol? collected = null;
+                foreach (var statement in EnumerateStatements(block))
+                {
+                    if (statement is BoundReturnValueStatement returnValue
+                        && ReferenceEquals(returnValue.Target, shell)
+                        && returnValue.Value.Type is not ErrorTypeSymbol)
+                    {
+                        if (collected == null)
+                        {
+                            collected = returnValue.Value.Type;
+                        }
+                        else if (!ReferenceEquals(collected, returnValue.Value.Type))
+                        {
+                            Error(statement.Syntax.Span,
+                                $"if expression branch produces different types " +
+                                $"('{TypeDisplay(collected)}' and " +
+                                $"'{TypeDisplay(returnValue.Value.Type)}')");
+                        }
+                    }
+                }
+                return collected;
+            }
+
+            // 块内语句的平铺枚举（递归嵌套 BoundBlock 与 BoundIfStatement 两分支）
+            private static IEnumerable<BoundStatement> EnumerateStatements(BoundBlock block)
+            {
+                foreach (var statement in block.Statements)
+                {
+                    yield return statement;
+                    switch (statement)
+                    {
+                        case BoundBlock nested:
+                            foreach (var s in EnumerateStatements(nested)) yield return s;
+                            break;
+                        case BoundIfStatement ifStatement:
+                            foreach (var s in EnumerateStatements(ifStatement.TrueBlock))
+                                yield return s;
+                            if (ifStatement.FalseBlock != null)
+                            {
+                                foreach (var s in EnumerateStatements(ifStatement.FalseBlock))
+                                    yield return s;
+                            }
+                            break;
+                    }
+                }
+            }
+
+            // definite assignment 快照恢复（分支合并用）
+            private void RestoreAssigned(HashSet<LocalSymbol> snapshot)
+            {
+                assigned.Clear();
+                assigned.UnionWith(snapshot);
+            }
+
             // ===== 表达式绑定（null 返回 = 已诊断失败，调用方跳过）=====
 
             private BoundExpression? BindExpression(ASTNode node, Scope scope, TypeSymbol? expectedType = null)
@@ -350,6 +615,9 @@ namespace LatteCompiler
                     BinaryExpressionASTNode binary => BindBinary(binary, scope),
                     UnaryExpressionASTNode unary => BindUnary(unary, scope),
                     NewExpressionASTNode newExpr => BindNew(newExpr, scope),
+                    IfExpressionASTNode ifExpression => BindIfExpression(ifExpression, scope),
+                    CompoundAssignmentExpressionASTNode compound =>
+                        BindCompoundAssignment(compound, scope),
                     // 括号是透明分组（Latte 无优先级，括号只定结构），不落 bound 节点
                     GroupExpressionASTNode group =>
                         BindExpression(group.InnerExpression.Expression, scope, expectedType),
@@ -628,6 +896,55 @@ namespace LatteCompiler
                     return null;
                 }
                 return new BoundUnaryExpression(node, op, operand, operand.Type);
+            }
+
+            // 复合赋值（SYNTAX §13.2）：a op= b 即 a = a op b 的语义糖，表达式值
+            // 为写回后值。Target 规则同赋值（局部/参数/字段 place），但读前须已赋值
+            // （读语义——普通路径绑定的 unassigned 检查，不做 forAssignment 特免）；
+            // Op 复用二元映射（10 个基础运算符，Parser 保证不含 and/or）；
+            // 类型一致与 intrinsic 存在检查同 BindBinary；Type = Target 类型；
+            // 赋值后 Target 标记 assigned
+            private BoundExpression? BindCompoundAssignment(
+                CompoundAssignmentExpressionASTNode node, Scope scope)
+            {
+                var op = MapBinaryOperator(node.Operator);
+                var target = BindExpression(node.Target.Expression, scope);
+                var value = BindExpression(node.Value.Expression, scope, target?.Type);
+                if (target == null || value == null) return null;
+                switch (target)
+                {
+                    case BoundValueReferenceExpression { Symbol: LocalSymbol local }:
+                        if (local.IsConst)
+                        {
+                            Error(node.Span, $"Cannot assign to const '{local.Name}'");
+                            return null;
+                        }
+                        assigned.Add(local);
+                        break;
+                    case BoundValueReferenceExpression { Symbol: ParameterSymbol }:
+                    case BoundFieldReferenceExpression:
+                        // 参数与全局字段：同赋值的放行规则
+                        break;
+                    default:
+                        Error(node.Target.Span ?? node.Span,
+                            "Assignment target must be a variable");
+                        return null;
+                }
+                // 毒化静默：任一侧已失败时不再报次生错误
+                if (target.Type is ErrorTypeSymbol || value.Type is ErrorTypeSymbol) return null;
+                if (!ReferenceEquals(target.Type, value.Type))
+                {
+                    Error(node.Span, $"Compound assignment requires operands of the same type " +
+                        $"(got '{TypeDisplay(target.Type)}' and '{TypeDisplay(value.Type)}')");
+                    return null;
+                }
+                if (!target.Type.IntrinsicOps.Contains(op))
+                {
+                    Error(node.Span, $"Operator '{node.Operator}=' is not defined for type " +
+                        $"'{TypeDisplay(target.Type)}'");
+                    return null;
+                }
+                return new BoundCompoundAssignmentExpression(node, target, op, value, target.Type);
             }
 
             // ===== 调用与构造 =====

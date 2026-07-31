@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Globalization;
 using System.Text;
 using LatteCompiler.Bil;
 
@@ -13,6 +14,17 @@ namespace LatteCompiler
     //   键 = (类型投影, 字面量原文) 去重，名 = R_0/R_1... 按首次出现编号
     // - Functions：每 LoweredFunctionBody 一个 fn 定义（.args/.vars/
     //   单 entry block；表达式物化为临时变量，BIL §10.1 操作数只能是变量）
+    // S7a 发射补齐：局部声明/赋值（set.var §13.2、set.field.static §13.4）、
+    // §11 运算指令（BilIntrinsicOp → opcode 单点映射表）、带返回值 invoke
+    // （§15.1）、new（§14.1，init 选择归 Middleware，发射不写 init 符号）、
+    // §18.1 标量资源全形态（bool/char/f32/f64/null type(...)）。
+    // S7b 发射补齐：LoweredIfStatement → 多 block（§16.2 结构化条件：
+    // 条件物化到临时变量 → if $c blk(then) blk(else)，无 else 用 none
+    // 操作数；分支 block 落尾自然返回 §9.4，不补 ret——entrypoint 块维持
+    // 既有「void 末尾补 ret / 不得落尾」逻辑）；P4a 合成常量（bool）与
+    // 字面量同路进 Resources（同键去重）；block id 函数内唯一递增
+    // （if0-then/if0-else，字符集限 A-Za-z0-9_- §5.1，无点号）。
+    // 统一风格：表达式求值结果一律先物化到 .t 临时变量，再经 set.var 写入目标。
     // 符号引用一律经 CanonicalSymbolPrinter 投影；BilInstruction.Origin 塞
     // LoweredNode（语句级；load 的 Origin 是字面量 LoweredNode），BIL 模型
     // 对中端零依赖（Origin 保持 object?，§6.3）。
@@ -40,6 +52,9 @@ namespace LatteCompiler
             // 不得以 . 开头，与用户变量零冲突）；指令生成中登记，.vars 收尾输出
             private readonly List<BilVarDeclaration> tempVars = new List<BilVarDeclaration>();
             private int tempCount;
+            // 当前函数（EmitFunction 设置）与 if 分支 block 编号（函数内唯一递增）
+            private BilFunction function = null!;
+            private int ifCount;
 
             public EmitSession(CompilationUnit unit, IReadOnlyList<LoweredFunctionBody> bodies,
                 string moduleName)
@@ -233,13 +248,18 @@ namespace LatteCompiler
                     function.Args.Add(new BilArgDeclaration(parameter.Name,
                         CanonicalSymbolPrinter.PrintTypeReference(parameter.Type)));
                 }
-                // 单 entry block：指令生成（临时变量在生成中登记）
+                // 指令生成（临时变量在生成中登记）：entry block 先行入列，
+                // if 分支 block 随 LoweredIfStatement 发射追加（§16.2）
+                this.function = function;
                 tempVars.Clear();
                 tempCount = 0;
+                ifCount = 0;
                 var entry = new BilBlock("entry", "entrypoint");
+                function.Blocks.Add(entry);
                 EmitBlock(body.Body, entry);
                 // §9.4：entrypoint block 不得正常落到末尾——void 函数体无显式
-                // return 时补 ret（如 stdlib println）
+                // return 时补 ret（如 stdlib println）；分支 block 落尾自然
+                // 返回引用它的结构化指令，不补 ret
                 if (method.ReturnType == null
                     && (entry.Instructions.Count == 0
                         || entry.Instructions[entry.Instructions.Count - 1].Opcode != "ret"))
@@ -253,7 +273,6 @@ namespace LatteCompiler
                         CanonicalSymbolPrinter.PrintType(local.Type), local.Name));
                 }
                 function.Vars.AddRange(tempVars);
-                function.Blocks.Add(entry);
                 return function;
             }
 
@@ -272,6 +291,44 @@ namespace LatteCompiler
                 {
                     case LoweredBlock nested:
                         EmitBlock(nested, target);
+                        break;
+                    case LoweredLocalDeclarationStatement decl:
+                        // 无初始化器 → 无指令（.vars 已声明）；有初始化器 →
+                        // 求值物化后经 set.var 写入（§13.2）
+                        if (decl.Initializer != null)
+                        {
+                            var initValue = EmitValue(decl.Initializer, target);
+                            target.Instructions.Add(new BilInstruction("set.var",
+                                BilOp.Var(initValue), BilOp.Var(decl.Local.Name))
+                            { Origin = decl });
+                        }
+                        break;
+                    case LoweredAssignmentStatement assignment:
+                        var assignedValue = EmitValue(assignment.Value, target);
+                        switch (assignment.Target)
+                        {
+                            case LoweredValueReferenceExpression localTarget:
+                                target.Instructions.Add(new BilInstruction("set.var",
+                                    BilOp.Var(assignedValue), BilOp.Var(localTarget.Symbol.Name))
+                                { Origin = assignment });
+                                break;
+                            case LoweredFieldReferenceExpression fieldTarget:
+                                var ownerRef = FieldOwnerRef(fieldTarget.Field);
+                                if (ownerRef == null) break;    // 已诊断
+                                target.Instructions.Add(new BilInstruction("set.field.static",
+                                    BilOp.Var(assignedValue), BilOp.Type(ownerRef),
+                                    BilOp.Field(CanonicalSymbolPrinter.PrintField(fieldTarget.Field)))
+                                { Origin = assignment });
+                                break;
+                            default:
+                                // P3 已强制赋值目标为 place（值引用/字段引用）
+                                throw new CompilerInternalException(
+                                    "非法赋值目标: " + assignment.Target.GetType().Name);
+                        }
+                        break;
+                    case LoweredExpressionStatement expressionStatement:
+                        // 求值结果物化到临时变量后丢弃（SYNTAX §4 无隐式返回值利用）
+                        EmitValue(expressionStatement.Expression, target);
                         break;
                     case LoweredCallStatement call:
                         // 实参从左到右物化（§10.2），再发 invoke.noret（§15.1）
@@ -297,6 +354,28 @@ namespace LatteCompiler
                             { Origin = ret });
                         }
                         break;
+                    case LoweredIfStatement ifStatement:
+                        // 结构化条件（§16.2）：条件物化到临时变量 →
+                        // if $c blk(then) blk(else)（无 else 用 none 操作数）；
+                        // 分支 block 加入函数并递归发射，落尾自然返回（§9.4）
+                        var conditionValue = EmitValue(ifStatement.Condition, target);
+                        var id = "if" + ifCount;
+                        ifCount++;
+                        var thenBlock = new BilBlock(id + "-then");
+                        var elseBlock = ifStatement.FalseBlock != null
+                            ? new BilBlock(id + "-else") : null;
+                        target.Instructions.Add(new BilInstruction("if",
+                            BilOp.Var(conditionValue), BilOp.Blk(thenBlock.Id),
+                            elseBlock != null ? BilOp.Blk(elseBlock.Id) : BilOp.None)
+                        { Origin = ifStatement });
+                        function.Blocks.Add(thenBlock);
+                        EmitBlock(ifStatement.TrueBlock, thenBlock);
+                        if (elseBlock != null)
+                        {
+                            function.Blocks.Add(elseBlock);
+                            EmitBlock(ifStatement.FalseBlock!, elseBlock);
+                        }
+                        break;
                     default:
                         Error(statement.Origin.Syntax.Span,
                             $"P4: lowered statement kind not supported by minimal emission: " +
@@ -318,14 +397,128 @@ namespace LatteCompiler
                             BilOp.Res(resource), BilOp.Var(temp))
                         { Origin = literal });
                         return temp;
+                    case LoweredConstantExpression constant:
+                        // P4a 合成常量（S7b 仅 bool）：与字面量同路进 Resources
+                        // （同键去重——短路展开的 false 与源码 false 字面量共享）
+                        var constantResource = constant.Value is bool boolValue
+                            ? RegisterScalarResource("bool", boolValue ? "true" : "false")
+                            : throw new CompilerInternalException(
+                                "P4a 合成常量类型未覆盖: " + constant.Value.GetType().Name);
+                        var constantTemp = NewTemp(constant.Type);
+                        target.Instructions.Add(new BilInstruction("load",
+                            BilOp.Res(constantResource), BilOp.Var(constantTemp))
+                        { Origin = constant });
+                        return constantTemp;
                     case LoweredValueReferenceExpression valueReference:
                         return valueReference.Symbol.Name;
+                    case LoweredFieldReferenceExpression fieldReference:
+                        // 全局/static 字段读取（§13.4）
+                        var ownerRef = FieldOwnerRef(fieldReference.Field);
+                        if (ownerRef == null) return "<error>";    // 已诊断
+                        var fieldValue = NewTemp(fieldReference.Type);
+                        target.Instructions.Add(new BilInstruction("get.field.static",
+                            BilOp.Var(fieldValue), BilOp.Type(ownerRef),
+                            BilOp.Field(CanonicalSymbolPrinter.PrintField(fieldReference.Field)))
+                        { Origin = fieldReference });
+                        return fieldValue;
+                    case LoweredBinaryExpression binary:
+                        var left = EmitValue(binary.Left, target);
+                        var right = EmitValue(binary.Right, target);
+                        var binaryResult = NewTemp(binary.Type);
+                        target.Instructions.Add(new BilInstruction(IntrinsicOpcode(binary.Op),
+                            BilOp.Var(left), BilOp.Var(right), BilOp.Var(binaryResult))
+                        { Origin = binary });
+                        return binaryResult;
+                    case LoweredUnaryExpression unary:
+                        var operand = EmitValue(unary.Operand, target);
+                        var unaryResult = NewTemp(unary.Type);
+                        target.Instructions.Add(new BilInstruction(IntrinsicOpcode(unary.Op),
+                            BilOp.Var(operand), BilOp.Var(unaryResult))
+                        { Origin = unary });
+                        return unaryResult;
+                    case LoweredCallExpression callExpression:
+                        var callArguments = new List<BilOperand>();
+                        foreach (var argument in callExpression.Arguments)
+                        {
+                            callArguments.Add(BilOp.Var(EmitValue(argument, target)));
+                        }
+                        var callResult = NewTemp(callExpression.Type);
+                        target.Instructions.Add(new BilInstruction("invoke",
+                            BilOp.Fn(CanonicalSymbolPrinter.PrintMethod(callExpression.Method)),
+                            BilOp.Var(callResult), BilOp.List(callArguments.ToArray()))
+                        { Origin = callExpression });
+                        return callResult;
+                    case LoweredNewExpression newExpression:
+                        var newArguments = new List<BilOperand>();
+                        foreach (var argument in newExpression.Arguments)
+                        {
+                            newArguments.Add(BilOp.Var(EmitValue(argument, target)));
+                        }
+                        // §14.1：init 选择归 Middleware（按精确参数类型），发射不写 init 符号
+                        var newResult = NewTemp(newExpression.Type);
+                        target.Instructions.Add(new BilInstruction("new",
+                            BilOp.Type(CanonicalSymbolPrinter.PrintType(newExpression.Type)),
+                            BilOp.Var(newResult), BilOp.List(newArguments.ToArray()))
+                        { Origin = newExpression });
+                        return newResult;
                     default:
                         Error(expression.Origin.Syntax.Span,
                             $"P4: lowered expression kind not supported by minimal emission: " +
                             expression.GetType().Name);
                         return "<error>";
                 }
+            }
+
+            // BIL §11 opcode 单点映射表（BilIntrinsicOp → 指令 opcode）。
+            // 注意：内建 bool 的短路 and/or 已在 P4a 展开为 if + 合成局部
+            // （§11.3，S7b），LoweredBinaryExpression 不再承载 And/Or——
+            // 表项为 and/or 被重载后的不短路场景（S8+）保留
+            private static string IntrinsicOpcode(BilIntrinsicOp op)
+            {
+                return op switch
+                {
+                    BilIntrinsicOp.Add => "add",
+                    BilIntrinsicOp.Sub => "sub",
+                    BilIntrinsicOp.Mul => "mul",
+                    BilIntrinsicOp.Div => "div",
+                    BilIntrinsicOp.Opposite => "opposite",
+                    BilIntrinsicOp.And => "and",
+                    BilIntrinsicOp.Or => "or",
+                    BilIntrinsicOp.Not => "not",
+                    BilIntrinsicOp.BinAnd => "bin.and",
+                    BilIntrinsicOp.BinOr => "bin.or",
+                    BilIntrinsicOp.BinXor => "bin.xor",
+                    BilIntrinsicOp.BinNot => "bin.not",
+                    BilIntrinsicOp.ShiftLeft => "shift.left",
+                    BilIntrinsicOp.ShiftRight => "shift.right",
+                    BilIntrinsicOp.ShiftRightUnsigned => "shift.right.unsigned",
+                    BilIntrinsicOp.CmpEq => "cmp.eq",
+                    BilIntrinsicOp.CmpNe => "cmp.ne",
+                    BilIntrinsicOp.CmpLt => "cmp.lt",
+                    BilIntrinsicOp.CmpLe => "cmp.le",
+                    BilIntrinsicOp.CmpGt => "cmp.gt",
+                    BilIntrinsicOp.CmpGe => "cmp.ge",
+                    _ => throw new CompilerInternalException("未知 BilIntrinsicOp: " + op),
+                };
+            }
+
+            // 字段宿主投影（§13.4 type(OWNER_TYPE)）：static 字段 = 宿主类型
+            // canonical；命名空间全局字段 = 命名空间全名（§13.4 未规定全局字段的
+            // 宿主形态，以命名空间全名投影，verifier（S12）阶段再核）；
+            // 根全局命名空间的字段无宿主可投影——规范空白，报 P4 Error 而不发明语法
+            private string? FieldOwnerRef(FieldSymbol field)
+            {
+                if (field.Owner != null)
+                {
+                    return CanonicalSymbolPrinter.PrintType(field.Owner);
+                }
+                if (field.Namespace is { FullName: { Length: > 0 } fullName })
+                {
+                    return fullName;
+                }
+                Error(null, $"P4: global field '{field.Name}' in the root namespace has no " +
+                    "owner to project for get/set.field.static (BIL §13.4)");
+                return null;
             }
 
             // ===== Resources（§4.2/§18）=====
@@ -339,9 +532,23 @@ namespace LatteCompiler
             }
 
             // 字面量 → 资源：同（类型, 原文）去重，名按首次出现 R_0/R_1... 编号
+            // （null 资源的键 = ("null", 元素类型投影)，走 BilNullResource 形态）
             private string RegisterResource(LoweredLiteralExpression literal)
             {
                 var (typeKeyword, literalText) = RenderLiteral(literal);
+                if (typeKeyword != "null") return RegisterScalarResource(typeKeyword, literalText);
+                if (!resourceKeys.TryGetValue((typeKeyword, literalText), out var name))
+                {
+                    name = "R_" + module.Resources.Count;
+                    module.Resources.Add(new BilNullResource(name, literalText));
+                    resourceKeys.Add((typeKeyword, literalText), name);
+                }
+                return name;
+            }
+
+            // 标量资源登记（字面量与 P4a 合成常量共用）：同（类型, 原文）去重
+            private string RegisterScalarResource(string typeKeyword, string literalText)
+            {
                 if (!resourceKeys.TryGetValue((typeKeyword, literalText), out var name))
                 {
                     name = "R_" + module.Resources.Count;
@@ -353,7 +560,8 @@ namespace LatteCompiler
 
             // 字面量 → (BIL 资源类型关键字, 字面量原文)（§18.1：类型关键字无
             // 前导点——R_X = string "..." / i32 0；值取 Syntax 的解码后内容，
-            // 重新转义为 BIL 字面量原文）
+            // 重新转义为 BIL 字面量原文）。null 字面量返回 ("null", 元素类型
+            // canonical)——P3 已把 null 定型为上下文可空类型 Nullable\<T>
             private (string TypeKeyword, string LiteralText) RenderLiteral(
                 LoweredLiteralExpression literal)
             {
@@ -364,6 +572,27 @@ namespace LatteCompiler
                         return ("string", "\"" + Escape(s.Value) + "\"");
                     case IntLiteralASTNode i:
                         return (IntResourceKeyword(i.IntType), i.Value.ToString());
+                    case BoolLiteralASTNode b:
+                        return ("bool", b.Value ? "true" : "false");
+                    case CharLiteralASTNode c:
+                        return ("char", "'" + EscapeChar(c.Value) + "'");
+                    case FloatLiteralASTNode f:
+                        // round-trip 格式保精度；f32 先收窄回 float 再打印
+                        // （AST 统一以 double 存值，直接打印会带出双精度尾巴）
+                        return (f.IsFloat ? "f32" : "f64",
+                            f.IsFloat
+                                ? ((float)f.Value).ToString("R", CultureInfo.InvariantCulture)
+                                : f.Value.ToString("R", CultureInfo.InvariantCulture));
+                    case NullLiteralASTNode:
+                        if (literal.Type.ConstructedFrom == unit.Symbols.Bootstrap.NullableDefinition
+                            && literal.Type.TypeArguments![0] is TypeSymbol element)
+                        {
+                            return ("null", CanonicalSymbolPrinter.PrintType(element));
+                        }
+                        Error(syntax.Span,
+                            "P4: null literal is not typed as Nullable<T> " +
+                            $"(got {CanonicalSymbolPrinter.PrintType(literal.Type)})");
+                        return ("<error>", "<error>");
                     default:
                         Error(syntax.Span,
                             $"P4: literal kind not supported by minimal emission: " +
@@ -410,6 +639,24 @@ namespace LatteCompiler
                     }
                 }
                 return sb.ToString();
+            }
+
+            // 解码字符 → BIL 字符字面量原文（转义表与字符串同集，外加单引号）
+            private static string EscapeChar(char c)
+            {
+                switch (c)
+                {
+                    case '\\': return "\\\\";
+                    case '\'': return "\\'";
+                    case '\a': return "\\a";
+                    case '\b': return "\\b";
+                    case '\t': return "\\t";
+                    case '\n': return "\\n";
+                    case '\v': return "\\v";
+                    case '\f': return "\\f";
+                    case '\r': return "\\r";
+                    default: return c.ToString();
+                }
             }
         }
     }

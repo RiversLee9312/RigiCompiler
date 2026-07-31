@@ -3,108 +3,95 @@ using System.Linq;
 namespace LatteCompiler.Tests
 {
     /// <summary>
-    /// 统一 BoundTree 描述器（S5，M41）：P3 测试共用的唯一描述器，仿 AstDescribe。
-    /// 字面量值经 Syntax 回指取（BoundNode.Syntax → LiteralExpressionASTNode.Literal），
-    /// 定型类型以短名显示（Nullable\<T\> 显示为 T?）。
+    /// 统一 LoweredTree 描述器（S7a）：P4a 测试共用的唯一描述器，仿 BoundDescribe。
+    /// 字面量值经 Origin 链回指取（LoweredNode.Origin → BoundNode.Syntax →
+    /// LiteralExpressionASTNode.Literal），定型类型透传 Origin（Type => Bound.Type），
+    /// 以短名显示（Nullable\<T\> 显示为 T?）。
     ///
     /// 格式约定（表达式）：
     ///   Int(42,i32)  Float(3.14,double)  Str("...",String)  Char('A',char)  Bool(True,bool)  Null(String?)
-    ///   Local(x,i32)  Param(a,i32)  Field(g,i32)
+    ///   Local(x,i32)  Param(a,i32)  Field(g,i32)  Const(True,bool)（P4a 合成常量）
     ///   Binary(Add, l, r, i32)  Unary(Opposite, x, i32)
     ///   Call(name, [args], ret)  New(T, [args])  New(T, init, [args])
-    ///   IfExpr(c, 真值块, 假值块, i32)  CompoundAssign(Add, t, v, i32)
     /// 格式约定（语句）：
     ///   Decl(x, i32, = init)  ExprStmt(e)  CallStmt(name, [args])  Assign(t, v)  Return(v)  Return
-    ///   If(c, [真], [假])  If(c, [真])  ReturnValue(_, v)（标签取 Target.Label）
-    ///   值块：ValueBlock(标签, 类型, [块])；隐式取值带 implicit 标记；纯穿透类型显式 -
+    ///   If(c, [真], [假])  If(c, [真])
     ///   块：[s1; s2]；函数体：Body(name, [x: i32, ...], [块])
     /// </summary>
-    public static class BoundDescribe
+    public static class LoweredDescribe
     {
-        public static string Body(BoundFunctionBody body)
+        public static string Body(LoweredFunctionBody body)
         {
             var locals = string.Join(", ", body.Locals.Select(l => $"{l.Name}: {TypeShort(l.Type)}"));
             return $"Body({body.Method.Name}, [{locals}], {Block(body.Body)})";
         }
 
-        public static string Block(BoundBlock block)
+        public static string Block(LoweredBlock block)
         {
             return $"[{string.Join("; ", block.Statements.Select(Stmt))}]";
         }
 
-        public static string Stmt(BoundStatement stmt)
+        public static string Stmt(LoweredStatement stmt)
         {
             return stmt switch
             {
-                BoundBlock block => Block(block),
-                BoundLocalDeclarationStatement decl =>
+                LoweredBlock block => Block(block),
+                LoweredLocalDeclarationStatement decl =>
                     $"Decl({decl.Local.Name}, {TypeShort(decl.Local.Type)}" +
                     $"{(decl.Initializer != null ? $", = {Expr(decl.Initializer)}" : "")})",
-                BoundExpressionStatement exprStmt => $"ExprStmt({Expr(exprStmt.Expression)})",
-                BoundCallStatement call =>
+                LoweredExpressionStatement exprStmt => $"ExprStmt({Expr(exprStmt.Expression)})",
+                LoweredCallStatement call =>
                     $"CallStmt({call.Method.Name}, [{string.Join(", ", call.Arguments.Select(Expr))}])",
-                BoundAssignmentStatement assign => $"Assign({Expr(assign.Target)}, {Expr(assign.Value)})",
-                BoundReturnStatement ret =>
+                LoweredAssignmentStatement assign => $"Assign({Expr(assign.Target)}, {Expr(assign.Value)})",
+                LoweredReturnStatement ret =>
                     ret.Value != null ? $"Return({Expr(ret.Value)})" : "Return",
-                BoundIfStatement ifStmt => ifStmt.FalseBlock != null
+                LoweredIfStatement ifStmt => ifStmt.FalseBlock != null
                     ? $"If({Expr(ifStmt.Condition)}, {Block(ifStmt.TrueBlock)}, " +
                         $"{Block(ifStmt.FalseBlock)})"
                     : $"If({Expr(ifStmt.Condition)}, {Block(ifStmt.TrueBlock)})",
-                BoundReturnValueStatement returnValue =>
-                    $"ReturnValue({returnValue.Target.Label}, {Expr(returnValue.Value)})",
                 _ => $"<{stmt.GetType().Name}>",
             };
         }
 
-        // 值块：ValueBlock(标签, 产值类型, [块])；隐式取值带 implicit 标记；
-        // 纯穿透（无本块产值）类型显式 -
-        public static string ValueBlock(BoundValueBlock valueBlock)
-        {
-            var type = valueBlock.ValueType != null ? TypeShort(valueBlock.ValueType) : "-";
-            var implicitMark = valueBlock.IsImplicitValue ? ", implicit" : "";
-            return $"ValueBlock({valueBlock.Label}, {type}{implicitMark}, " +
-                $"{Block(valueBlock.Block)})";
-        }
-
-        public static string Expr(BoundExpression? expr)
+        public static string Expr(LoweredExpression? expr)
         {
             return expr switch
             {
                 null => "<null>",
-                BoundLiteralExpression literal => Literal(literal),
-                BoundValueReferenceExpression valueRef => valueRef.Symbol switch
+                LoweredLiteralExpression literal => Literal(literal),
+                // P4a 合成常量（S7b 仅 bool）：值在节点上（无字面量语法来源）
+                LoweredConstantExpression constant => constant.Value switch
+                {
+                    bool b => $"Const({b},{TypeShort(constant.Type)})",
+                    var other => $"<Const {other}>",
+                },
+                LoweredValueReferenceExpression valueRef => valueRef.Symbol switch
                 {
                     LocalSymbol local => $"Local({local.Name},{TypeShort(valueRef.Type)})",
                     ParameterSymbol param => $"Param({param.Name},{TypeShort(valueRef.Type)})",
                     _ => $"<{valueRef.Symbol.GetType().Name}>",
                 },
-                BoundFieldReferenceExpression fieldRef =>
+                LoweredFieldReferenceExpression fieldRef =>
                     $"Field({fieldRef.Field.Name},{TypeShort(fieldRef.Type)})",
-                BoundBinaryExpression binary =>
+                LoweredBinaryExpression binary =>
                     $"Binary({binary.Op}, {Expr(binary.Left)}, {Expr(binary.Right)}, {TypeShort(binary.Type)})",
-                BoundUnaryExpression unary =>
+                LoweredUnaryExpression unary =>
                     $"Unary({unary.Op}, {Expr(unary.Operand)}, {TypeShort(unary.Type)})",
-                BoundCallExpression call =>
+                LoweredCallExpression call =>
                     $"Call({call.Method.Name}, [{string.Join(", ", call.Arguments.Select(Expr))}], " +
                     $"{TypeShort(call.Type)})",
-                BoundNewExpression newExpr =>
+                LoweredNewExpression newExpr =>
                     $"New({TypeShort(newExpr.Type)}{(newExpr.Init != null ? ", init" : "")}, " +
                     $"[{string.Join(", ", newExpr.Arguments.Select(Expr))}])",
-                BoundIfExpression ifExpr =>
-                    $"IfExpr({Expr(ifExpr.Condition)}, {ValueBlock(ifExpr.TrueBranch)}, " +
-                    $"{ValueBlock(ifExpr.FalseBranch)}, {TypeShort(ifExpr.Type)})",
-                BoundCompoundAssignmentExpression compound =>
-                    $"CompoundAssign({compound.Op}, {Expr(compound.Target)}, " +
-                    $"{Expr(compound.Value)}, {TypeShort(compound.Type)})",
                 _ => $"<{expr.GetType().Name}>",
             };
         }
 
-        // 字面量：值经 Syntax 回指取，类型取定型结果
-        private static string Literal(BoundLiteralExpression literal)
+        // 字面量：值经 Origin.Syntax 回指取，类型取透传的定型结果
+        private static string Literal(LoweredLiteralExpression literal)
         {
             var type = TypeShort(literal.Type);
-            return ((LiteralExpressionASTNode)literal.Syntax).Literal switch
+            return ((LiteralExpressionASTNode)literal.Origin.Syntax).Literal switch
             {
                 IntLiteralASTNode i => $"Int({i.Value},{type})",
                 FloatLiteralASTNode f => $"Float({f.Value},{type})",

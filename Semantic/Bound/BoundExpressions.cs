@@ -2,9 +2,9 @@ using System.Collections.Generic;
 
 namespace LatteCompiler
 {
-    // Bound 表达式节点（S5 最小集，SEMANTIC_ROADMAP S5）：
+    // Bound 表达式节点（S5 最小集 + S7b 首批，SEMANTIC_ROADMAP）：
     // 字面量 / 值引用（局部变量与参数）/ 全局字段引用 / 二元与一元 intrinsic 运算 /
-    // 直接调用（无重载）/ new 构造。
+    // 直接调用（无重载）/ new 构造 / if 表达式 / 复合赋值。
     // 字面量值不冗余存储——经 Syntax（LiteralExpressionASTNode.Literal）取。
 
     // 字面量（整/浮点/字符串/字符/bool/null；Type 由 P3 按字面量种类与上下文定型）
@@ -103,6 +103,43 @@ namespace LatteCompiler
         {
             Init = init;
             Arguments = arguments;
+        }
+    }
+
+    // if 表达式（SYNTAX §7.1）：必须有 else 分支；分支体是值块（取值规则在 P3
+    // 绑定值块时判定）。Type = 两分支共同产值类型（P3 统一检查）
+    public sealed class BoundIfExpression : BoundExpression
+    {
+        public BoundExpression Condition { get; }
+        public BoundValueBlock TrueBranch { get; }
+        public BoundValueBlock FalseBranch { get; }
+
+        public BoundIfExpression(ASTNode syntax, BoundExpression condition,
+            BoundValueBlock trueBranch, BoundValueBlock falseBranch, TypeSymbol type)
+            : base(syntax, type)
+        {
+            Condition = condition;
+            TrueBranch = trueBranch;
+            FalseBranch = falseBranch;
+        }
+    }
+
+    // 复合赋值（SYNTAX §13.2）：a += b 即 a = a + b 的语义糖；节点本身是表达式，
+    // 值为写回后的值。Op 是基础运算符对应的 intrinsic（10 个：+ - * / << >> >>> & | ^，
+    // 无 and/or）；Target 限定 place（局部/字段引用，P3 强制，读前须已赋值——读语义）
+    public sealed class BoundCompoundAssignmentExpression : BoundExpression
+    {
+        public BoundExpression Target { get; }
+        public BilIntrinsicOp Op { get; }
+        public BoundExpression Value { get; }
+
+        public BoundCompoundAssignmentExpression(ASTNode syntax, BoundExpression target,
+            BilIntrinsicOp op, BoundExpression value, TypeSymbol type)
+            : base(syntax, type)
+        {
+            Target = target;
+            Op = op;
+            Value = value;
         }
     }
 }

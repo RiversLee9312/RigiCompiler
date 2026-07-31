@@ -2,8 +2,9 @@ using System.Collections.Generic;
 
 namespace LatteCompiler
 {
-    // Bound 语句节点（S5 最小集，SEMANTIC_ROADMAP S5）：
-    // 块 / 局部变量声明 / 表达式语句 / void 调用语句 / 赋值 / return。
+    // Bound 语句节点（S5 最小集 + S7b 控制流首批，SEMANTIC_ROADMAP）：
+    // 块 / 局部变量声明 / 表达式语句 / void 调用语句 / 赋值 / return /
+    // if 语句 / 值块（if 表达式分支体）/ return@标签 取值。
 
     // 块（绑定期每块一个作用域；作用域本身是分析期结构，不落树）
     public sealed class BoundBlock : BoundStatement
@@ -78,6 +79,59 @@ namespace LatteCompiler
 
         public BoundReturnStatement(ASTNode syntax, BoundExpression? value) : base(syntax)
         {
+            Value = value;
+        }
+    }
+
+    // if 语句（SYNTAX §7.1）；else if 链在绑定时包成单语句 BoundBlock，
+    // Bound 层只有双分支形态（FalseBlock 为 null = 无 else）
+    public sealed class BoundIfStatement : BoundStatement
+    {
+        public BoundExpression Condition { get; }
+        public BoundBlock TrueBlock { get; }
+        public BoundBlock? FalseBlock { get; }
+
+        public BoundIfStatement(ASTNode syntax, BoundExpression condition,
+            BoundBlock trueBlock, BoundBlock? falseBlock) : base(syntax)
+        {
+            Condition = condition;
+            TrueBlock = trueBlock;
+            FalseBlock = falseBlock;
+        }
+    }
+
+    // 值块（SYNTAX §6.1/§7.1）：if 表达式分支体（后续 switch 分支体/seq 表达式
+    // 复用同一节点）。引用相等即身份——BoundReturnValueStatement 经引用命中目标块。
+    // IsImplicitValue = M33 判定结果（块内恰好一条 ExpressionStatement，P3 显式
+    // 记录，P4 不再看语法形态）。
+    // 绑定施工壳先于分支体绑定创建（标签栈需要），Block/IsImplicitValue/ValueType
+    // 在分支体绑完后回填（internal set）。
+    public sealed class BoundValueBlock : BoundNode
+    {
+        // named 标签，缺省 "_"
+        public string Label { get; }
+        public BoundBlock Block { get; internal set; } = null!;
+        public bool IsImplicitValue { get; internal set; }
+        // 产值类型；分支纯穿透终止（无本块产值）时为 null
+        public TypeSymbol? ValueType { get; internal set; }
+
+        public BoundValueBlock(ASTNode syntax, string label) : base(syntax)
+        {
+            Label = label;
+        }
+    }
+
+    // return@标签 取值（SYNTAX §6.1）：终止 Target 值块路径并把 Value 作为该块产值；
+    // Target 经值块标签栈解析，引用相等命中（穿透外层值块时 Target 是外层块）
+    public sealed class BoundReturnValueStatement : BoundStatement
+    {
+        public BoundValueBlock Target { get; }
+        public BoundExpression Value { get; }
+
+        public BoundReturnValueStatement(ASTNode syntax, BoundValueBlock target,
+            BoundExpression value) : base(syntax)
+        {
+            Target = target;
             Value = value;
         }
     }

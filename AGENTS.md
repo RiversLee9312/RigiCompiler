@@ -5,7 +5,7 @@
 
 **项目名**: LatteCompiler
 **语言**: C#（.NET 8.0，控制台程序，`Nullable` 与 `ImplicitUsings` 已启用）
-**开发阶段**: 中端（语义分析 + BIL 生成）阶段 —— 编译器前端（Lexer + Parser）已完成（roadmap P0–P5 全部落地，M23–M34 大扫除与多轮修复）；中端 M35 完成架构定稿（`docs/compiler/semantic/SEMANTIC_ARCHITECTURE.md`）与路线图 S0–S14（`SEMANTIC_ROADMAP.md`，S0–S6 已细化到文件级施工清单）+ 语言规范修订（shared/rich/wrapper/String）；M36 落地 S0 诊断基建（`Semantic/Diagnostics.cs`）、M37 落地 S1 符号图内核（`Semantic/Symbols/` + bootstrap + `CanonicalSymbolPrinter`）、M38 落地 S4 BIL 对象模型 + BilWriter（`Bil/`，§19 黄金示例逐行一致）、M39 落地 S2 P1 声明收集（`Semantic/CompilationUnit.cs` + `Semantic/DeclarationCollector.cs`）、M40 落地 S3 P2 声明解析（`Semantic/DeclarationResolver.cs`，七子任务 + Parser 即死拦截移交 P2）、M41 落地 S5 P3 最小闭环（`Semantic/Binder.cs` + `Semantic/Bound/` + `Semantic/NameResolver.cs` 提取 + `Tests/BoundDescribe.cs`，AST → BoundTree）、M42 完成路径表达式统一（表达式位置五节点删除，统一为 `PathExpressionASTNode`，语义上色归 P3）、M43 落地 native 函数机制（SYNTAX §4.6：`native` 修饰符 + `@NativeLibrary`/`@NativeSymbol` 内建注解，P1/P2 全规则校验；BIL §8.4/§8.4.1 声明形态与 §21.5 VM 内建 hook 表；RUNTIME §26 `latte_rt` shim 约定）与 stdlib 内嵌源载入（`Semantic/StdlibSources.cs` + `stdlib/core/Console.latte`），同批落地 Binder 宿主成员查找、符号 Accessibility 与 Bil 段裸条目模型、M44 落地 S6 P4 最小闭环（`Lowering/`：Lowered 节点集 + Lowerer P4a 恒等重写 + BilEmitter P4b 发射，中端四 pass 全通——hello world 端到端出合法 BIL 文本）并以 CLI `--emit-bil`/`--sema-only` 接线收官 S6；下一步 S7（控制流与脱糖起步）
+**开发阶段**: 中端（语义分析 + BIL 生成）阶段 —— 编译器前端（Lexer + Parser）已完成（roadmap P0–P5 全部落地，M23–M34 大扫除与多轮修复）；中端 M35 完成架构定稿（`docs/compiler/semantic/SEMANTIC_ARCHITECTURE.md`）与路线图 S0–S14（`SEMANTIC_ROADMAP.md`，S0–S7 已细化（S7 分为 S7a–S7f））+ 语言规范修订（shared/rich/wrapper/String）；M36 落地 S0 诊断基建（`Semantic/Diagnostics.cs`）、M37 落地 S1 符号图内核（`Semantic/Symbols/` + bootstrap + `CanonicalSymbolPrinter`）、M38 落地 S4 BIL 对象模型 + BilWriter（`Bil/`，§19 黄金示例逐行一致）、M39 落地 S2 P1 声明收集（`Semantic/CompilationUnit.cs` + `Semantic/DeclarationCollector.cs`）、M40 落地 S3 P2 声明解析（`Semantic/DeclarationResolver.cs`，七子任务 + Parser 即死拦截移交 P2）、M41 落地 S5 P3 最小闭环（`Semantic/Binder.cs` + `Semantic/Bound/` + `Semantic/NameResolver.cs` 提取 + `Tests/BoundDescribe.cs`，AST → BoundTree）、M42 完成路径表达式统一（表达式位置五节点删除，统一为 `PathExpressionASTNode`，语义上色归 P3）、M43 落地 native 函数机制（SYNTAX §4.6：`native` 修饰符 + `@NativeLibrary`/`@NativeSymbol` 内建注解，P1/P2 全规则校验；BIL §8.4/§8.4.1 声明形态与 §21.5 VM 内建 hook 表；RUNTIME §26 `latte_rt` shim 约定）与 stdlib 内嵌源载入（`Semantic/StdlibSources.cs` + `stdlib/core/Console.latte`），同批落地 Binder 宿主成员查找、符号 Accessibility 与 Bil 段裸条目模型、M44 落地 S6 P4 最小闭环（`Lowering/`：Lowered 节点集 + Lowerer P4a 恒等重写 + BilEmitter P4b 发射，中端四 pass 全通——hello world 端到端出合法 BIL 文本）并以 CLI `--emit-bil`/`--sema-only` 接线收官 S6、M45 落地 S7a P4 基础发射补齐（Lowered 节点补齐八类 + Lowerer 覆盖 S5 全部 Bound 节点 + BilEmitter 新发射 set.var/get/set.field.static/§11 运算/invoke/new + §18.1 标量资源全形态 + `Tests/LoweredDescribe.cs` 与 LowererTests）、M46 落地 S7b（if 语句/表达式 + 值块 + 短路 and/or + 复合赋值，P3/P4 同步——值块标签栈 return@ 绑定 + definite assignment 分支合并；Lowerer session 化短路展开/值块降级与 if 转换/复合赋值脱糖；BilEmitter 多 block §16.2 if 指令）；下一步 S7c（循环四形态 + break/continue）
 **版本控制**: Git（`main` 分支，2026-07-17 首次提交，工作树干净；CI 见 `.github/workflows/ci.yml`）
 
 ---
@@ -29,7 +29,7 @@ Latte 源码 (.latte) → Frontend (Lexer + Parser) ✅ 完成（含大扫除重
                     → LLVM 工具链 → 原生可执行文件
 ```
 
-**当前进度**：编译器前端（Lexer + Parser）已完成，且经过一次彻底的架构大扫除（见 §4.7）：控制流系统与 AST 施工系统严格分离，Layer 之间只传递控制权不传递 AST 数据。已可解析字面量、类型引用、变量声明（含 getter/setter 属性访问器）、完整表达式（含 Lambda（单表达式/多语句块体 + named）、if/switch 表达式（分支体为代码块，`return@_`/named 取值）、typeOf/as/is、seq 表达式形态、await、前导点 enum case 引用、wrapper 路径访问 `:`）、完整语句系统（代码块、if、switch 语句、循环、try-catch-finally、seq、throw、yield、return/break/continue、赋值；lambda 体内裸 return 为编译错误）、泛型参数列表、函数形参列表（含 init `_ -> field` 参数映射）、统一声明层（全局字段/函数、class/interface/struct/wrapper 声明、成员方法与 init/operator、继承与 implements、like 委托、ext 限定名、嵌套类型、声明上的泛型参数、enum struct 的 `[]` case 列表）、wrapper 主体（`@` 注解/wrapper 应用、`@WrapperTarget(.X)` 类型标识、`.proxy.*` 代理成员）、模块系统（import §15.2 三种形态、namespace 声明 §15.1）。**中端基建与 pass 进度**：三条基建线已就位（M36–M38）——可恢复诊断模型（Diagnostic/DiagnosticBag）、符号图内核（驻留 + bootstrap + canonical 打印）、BIL 对象模型 + 文本生成；P1 声明收集（M39）、P2 声明解析（M40）、P3 函数体分析最小闭环（M41：Binder → BoundTree，含 LocalSymbol、NameResolver 共享设施、BoundDescribe）与 P4 最小闭环（M44：Lowerer P4a 恒等重写 + BilEmitter P4b 发射，`Lowering/`，含 M43 stdlib 内嵌源同走 P1–P4）已落地——**四 pass 全通，hello world 端到端出合法 BIL 文本**（BilEmitterTests 套件黄金对照 + CLI `--emit-bil` 实测逐行一致）。
+**当前进度**：编译器前端（Lexer + Parser）已完成，且经过一次彻底的架构大扫除（见 §4.7）：控制流系统与 AST 施工系统严格分离，Layer 之间只传递控制权不传递 AST 数据。已可解析字面量、类型引用、变量声明（含 getter/setter 属性访问器）、完整表达式（含 Lambda（单表达式/多语句块体 + named）、if/switch 表达式（分支体为代码块，`return@_`/named 取值）、typeOf/as/is、seq 表达式形态、await、前导点 enum case 引用、wrapper 路径访问 `:`）、完整语句系统（代码块、if、switch 语句、循环、try-catch-finally、seq、throw、yield、return/break/continue、赋值；lambda 体内裸 return 为编译错误）、泛型参数列表、函数形参列表（含 init `_ -> field` 参数映射）、统一声明层（全局字段/函数、class/interface/struct/wrapper 声明、成员方法与 init/operator、继承与 implements、like 委托、ext 限定名、嵌套类型、声明上的泛型参数、enum struct 的 `[]` case 列表）、wrapper 主体（`@` 注解/wrapper 应用、`@WrapperTarget(.X)` 类型标识、`.proxy.*` 代理成员）、模块系统（import §15.2 三种形态、namespace 声明 §15.1）。**中端基建与 pass 进度**：三条基建线已就位（M36–M38）——可恢复诊断模型（Diagnostic/DiagnosticBag）、符号图内核（驻留 + bootstrap + canonical 打印）、BIL 对象模型 + 文本生成；P1 声明收集（M39）、P2 声明解析（M40）、P3 函数体分析最小闭环（M41：Binder → BoundTree，含 LocalSymbol、NameResolver 共享设施、BoundDescribe）与 P4 最小闭环（M44：Lowerer P4a 恒等重写 + BilEmitter P4b 发射，`Lowering/`，含 M43 stdlib 内嵌源同走 P1–P4）已落地——**四 pass 全通，hello world 端到端出合法 BIL 文本**（BilEmitterTests 套件黄金对照 + CLI `--emit-bil` 实测逐行一致）；M45（S7a）补齐 P4 基础发射——**P3 能绑定的全部 Bound 节点均已端到端过 P4**（赋值/运算/带返回值调用/new + §18.1 标量资源全形态 + LoweredDescribe/LowererTests 基建）；M46（S7b）落地 if 语句/表达式 + 值块 + 短路 and/or + 复合赋值（P3/P4 同步：Bound 五节点 + 值块标签栈 return@ 绑定 + DA 分支合并；Lowerer session 化脱糖；BilEmitter 出多 block BIL）。
 
 ---
 
@@ -144,22 +144,33 @@ LatteCompiler/
 │   │                            #   （M43，沿 BaseType 链）→ 命名空间链 → 通配 import）
 │   │                            #   + var 推断 + intrinsic 键查询 + 无重载直接调用
 │   │                            #   （规范参数序）+ new/init + return 全路径检查 + definite assignment
+│   │                            #   （S7b：分支合并 before∪(setT∩setF)）；S7b 增补 if 语句/表达式
+│   │                            #   （值块标签栈 return@ 绑定、产值类型统一）与复合赋值
 │   ├── Bound/                   # BoundTree 节点集（M41，按类别分文件仿 AST/）：
 │   │                            #   BoundNode（Syntax 必填）/BoundExpression（Type）/语句节点 +
-│   │                            #   BoundFunctionBody{Method, Locals, BoundBlock}
+│   │                            #   BoundFunctionBody{Method, Locals, BoundBlock}；S7b 增补
+│   │                            #   BoundIfStatement/BoundValueBlock 值块/BoundIfExpression/
+│   │                            #   BoundReturnValueStatement/BoundCompoundAssignmentExpression
 │   ├── StdlibSources.cs         # stdlib 内嵌源载入（M43）：stdlib/**/*.latte 以 EmbeddedResource
 │   │                            #   内嵌、编译时取出解析注入编译单元，与用户源同走 P1–P4
 │   └── Symbols/                 # 符号图内核（M37，M39 增补容器成员表/全局命名空间驻留）：
 │                                #   SemanticSymbol 家族（引用相等即身份）+ LocalSymbol（M41，P3 产生）、
 │                                #   SymbolGraph 构造泛型驻留 + Freeze、BootstrapSymbols、CanonicalSymbolPrinter
-├── Lowering/                 # 中端 P4（M44，ARCHITECTURE §6）：依赖方向 Lowering → Semantic/Bil 单向
-│   ├── Lowered/                 # LoweredTree 节点集（S6 最小集五类，仿 Bound/ 分文件）：
+├── Lowering/                 # 中端 P4（M44 S6 + M45 S7a + M46 S7b，ARCHITECTURE §6）：依赖方向 Lowering → Semantic/Bil 单向
+│   ├── Lowered/                 # LoweredTree 节点集（S7a 起覆盖 S5 全部 Bound 节点，仿 Bound/ 分文件）：
 │   │                            #   LoweredNode（Origin 必填回指 BoundNode）/LoweredExpression
-│   │                            #   （Type 透传）/块/void 调用/return/字面量/值引用 + LoweredFunctionBody
-│   ├── Lowerer.cs               # P4a 降级重写（恒等重写；未覆盖节点 P4 Error + 跳过函数体）
-│   └── BilEmitter.cs            # P4b 发射：LocalSymbols 平铺 + Resources 字面量提取 +
-│                                #   fn 定义（.args/.vars/单 entry block、临时变量 .t0 前缀、
-│                                #   void 末尾补 ret、Origin 塞 LoweredNode）
+│   │                            #   （Type 透传）/块/局部声明/表达式语句/void 调用/赋值/return/
+│   │                            #   字面量/值引用/字段引用/二元/一元/带返回值调用/new + LoweredFunctionBody；
+│   │                            #   S7b 增补 LoweredIfStatement/LoweredConstantExpression（脱糖合成节点，
+│   │                            #   Origin 指最近语法来源）
+│   ├── Lowerer.cs               # P4a 降级重写（S7b 起 session 化：前置语句机制 + 合成局部 .sN）——
+│   │                            #   恒等 + S7b 脱糖（bool 短路 and/or §11.3 展开/值块降级与 if 转换/
+│   │                            #   复合赋值）；未覆盖节点 P4 Error + 跳过函数体
+│   └── BilEmitter.cs            # P4b 发射：LocalSymbols 平铺 + Resources §18.1 标量全形态提取 +
+│                                #   fn 定义（.args/.vars/entry block 起、S7b 多 block、临时变量 .t0 前缀、
+│                                #   set.var/get/set.field.static/§11 运算单点映射/invoke/new、
+│                                #   §16.2 if 指令（无 else 用 none、block id if0-then 形态、
+│                                #   分支块落尾不补 ret）、void 末尾补 ret、Origin 塞 LoweredNode）
 ├── Bil/                      # BIL 生态（M38，对中端零依赖：字符串身份，不引用 Semantic/AST）
 │   ├── BilModule.cs             # Module/Metadata/Resources（§4/§18 全形态）
 │   ├── BilSymbols.cs            # 类型与成员声明（§8.2–§8.5）
@@ -171,6 +182,7 @@ LatteCompiler/
 ├── Tests/                    # 自研控制台测试（非 xUnit/NUnit，见 §5）
 │   ├── AstDescribe.cs           # 统一 AST 描述器（M31，全部套件共用）
 │   ├── BoundDescribe.cs         # 统一 BoundTree 描述器（M41，P3 套件共用，仿 AstDescribe）
+│   ├── LoweredDescribe.cs       # 统一 LoweredTree 描述器（M45，P4a 套件共用，仿 BoundDescribe）
 │   ├── TestHarness.cs           # 统一驱动与断言基建（M31；M36 增 CheckSemanticError）
 │   ├── TestRunner.cs            # test 命令驱动（套件注册表、菜单打印、按编号运行、退出码）
 │   ├── TestRootParserLayer.cs   # 独立 Layer 测试垫底层（只接受 EOF）
