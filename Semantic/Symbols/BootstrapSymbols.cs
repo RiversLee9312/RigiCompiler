@@ -59,9 +59,12 @@ namespace LatteCompiler
         public TypeSymbol NullableDefinition { get; }  // Nullable\<T>（Object 分支）
         public TypeSymbol BoxDefinition { get; }       // Box\<T extends ValueType>（Object 分支）
 
-        internal BootstrapSymbols()
+        internal BootstrapSymbols(NamespaceSymbol globalNamespace)
         {
-            Core = new NamespaceSymbol("core");
+            // core 挂进全局命名空间树：用户文件的 namespace core.* 声明与
+            // bootstrap 的 core 共享同一驻留路径（GetNamespace 逐段合并）
+            Core = new NamespaceSymbol("core", globalNamespace);
+            globalNamespace.ChildNamespaces.Add(Core);
 
             // 层级根。Any 是类型层级最顶端（RUNTIME：baseTypeId 仅 Any 为 NULL）——
             // 行为近似纯多态上限，Kind 记 Interface + IsBuiltin；

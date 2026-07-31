@@ -6,9 +6,9 @@
 > 计划与分工见 `compiler/syntax/PARSER_ROADMAP.md` 与 `compiler/semantic/SEMANTIC_ROADMAP.md`；本文档只记录「现状」。
 
 **报告日期**: 2026-07-31
-**当前阶段**: **中端（语义分析 + BIL 生成）阶段** —— M35 为中端的开篇里程碑：架构定稿（`compiler/semantic/SEMANTIC_ARCHITECTURE.md`）+ 路线图 S0–S14（`compiler/semantic/SEMANTIC_ROADMAP.md`）+ 语言规范修订（shared/rich/wrapper/String）；M36 落地 S0 诊断基建（`Semantic/Diagnostics.cs` + `CheckSemanticError`），同批完成 ROADMAP 文件级细化（S0–S6）；M37 落地 S1 符号图内核（`Semantic/Symbols/` 四文件 + bootstrap 硬编码 + `CanonicalSymbolPrinter`）；M38 落地 S4 BIL 对象模型 + BilWriter（`Bil/` 五文件，§19 黄金示例逐行一致）。中端三条基建线（S0/S1/S4）全部就位，下一步 S2 P1 声明收集（符号图首个真实消费者）。
+**当前阶段**: **中端（语义分析 + BIL 生成）阶段** —— M35 为中端的开篇里程碑：架构定稿（`compiler/semantic/SEMANTIC_ARCHITECTURE.md`）+ 路线图 S0–S14（`compiler/semantic/SEMANTIC_ROADMAP.md`）+ 语言规范修订（shared/rich/wrapper/String）；M36 落地 S0 诊断基建（`Semantic/Diagnostics.cs` + `CheckSemanticError`），同批完成 ROADMAP 文件级细化（S0–S6）；M37 落地 S1 符号图内核（`Semantic/Symbols/` 四文件 + bootstrap 硬编码 + `CanonicalSymbolPrinter`）；M38 落地 S4 BIL 对象模型 + BilWriter（`Bil/` 五文件，§19 黄金示例逐行一致）；M39 落地 S2 P1 声明收集（`Semantic/CompilationUnit.cs` + `Semantic/DeclarationCollector.cs`，符号图首个真实消费者）。下一步 S3 P2 声明解析（七个子任务）。
 前端里程碑回顾：Parser/PDA 大扫除（M23）、AST 结构标注与 Validator 重写（M24）、Lexer 修复与 fuzz 基建（M25）、日志与 AST JSONL（M26）、CLI 插件化（M27）、Lexer 位置与 AST Span（M28）、AST 容器重构（M29）、Utilities 拆分（M30）、前端大修（M31）、多行字符串（M32）、值块统一（M33）、技术债清扫（M34）。
-**测试总计**: 983/983 通过 (100%) + Lexer fuzz 6000/6000（34 个套件，`dotnet run -- test --all` 单命令全量）
+**测试总计**: 1066/1066 通过 (100%) + Lexer fuzz 6000/6000（35 个套件，`dotnet run -- test --all` 单命令全量）
 **版本控制**: Git `main` 分支（2026-07-17 首次提交）
 
 ---
@@ -55,6 +55,7 @@
 | M36 | S0 诊断基建（中端第一段代码）：`Semantic/Diagnostics.cs`（Diagnostic + DiagnosticBag 可恢复诊断模型）+ `CheckSemanticError` 入 TestHarness + ROADMAP S0–S6 文件级细化 | ✅ | 2026-07-31 | 910/910 + fuzz 6000（31 套件） |
 | M37 | S1 符号图内核：`Semantic/Symbols/`（SemanticSymbol 家族 + SymbolGraph 驻留 + BootstrapSymbols 硬编码层级/基元/intrinsic 键空间 + CanonicalSymbolPrinter 五形态 + BIL 类型引用投影） | ✅ | 2026-07-31 | 977/977 + fuzz 6000（33 套件） |
 | M38 | S4 BIL 对象模型 + BilWriter：`Bil/` 五文件（Module/Resources/Symbols/Function/Instructions + Writer，对中端零依赖、字符串身份、§17 协程暂缓），§19 黄金示例逐行一致 | ✅ | 2026-07-31 | 983/983 + fuzz 6000（34 套件） |
+| M39 | S2 P1 声明收集：`Semantic/CompilationUnit.cs` + `Semantic/DeclarationCollector.cs`（符号壳 + namespace 驻留合并 + import 登记 + ext 待注册 + 重复声明诊断） | ✅ | 2026-07-31 | 1066/1066 + fuzz 6000（35 套件） |
 
 ---
 
@@ -338,6 +339,7 @@ pub class Point {
 | SymbolGraph（中端，S1） | ✅ | 45/45（SymbolGraphTests） | 语义符号图内核（M37，`Semantic/Symbols/`）：SemanticSymbol 家族（Namespace/Type/Field/Method/Parameter/GenericParameter，引用相等即身份）、构造泛型驻留 cache（同 (定义, 实参) 必同实例、T? = Nullable\<T>）、Freeze 机制；BootstrapSymbols 硬编码 SYNTAX §3.1 层级 + §3.2 基本类型 + 特权关系（Box\<T\> <: Object、Nullable shared 按 T 推导）+ 基元 intrinsic 键空间（BIL §11） |
 | CanonicalSymbolPrinter（中端，S1） | ✅ | 22/22（CanonicalSymbolPrinterTests） | 符号图 → BIL §5.2 canonical 字符串（M37）：类型/方法/字段/运算符/getter/setter 五形态 + BIL 类型引用投影（固定别名 > 标准构造 > canonical/闭合泛型，null 返回 → .void）；打印串对照 §5.2/§8.1/§19 示例逐条断言 |
 | BilModel + BilWriter（中端，S4） | ✅ | 6/6（BilWriterTests） | BIL 对象模型与文本生成（M38，`Bil/` 五文件）：Module/Metadata/Resources（§18 全形态）/类型与成员声明（§8）/Function/.args/.vars/Block（§9）/指令与操作数（§10–§16，§17 协程暂缓）；对中端零依赖、字符串身份、Origin 以 object? 占位；writer 只输出标准 spelling、全段输出、§19 黄金示例逐行一致（含 wrapper 隐藏字段续行形态） |
+| DeclarationCollector（中端 P1，S2） | ✅ | 83/83（DeclarationCollectorTests） | 声明收集（M39）：`Semantic/CompilationUnit.cs`（多源文件 + DiagnosticBag + SymbolGraph）+ `Semantic/DeclarationCollector.cs`（DeclarationCollector + DeclarationCollection + FileContext）——类型/变量/可调用/参数/泛型参数符号壳（默认基类建壳即定、rich/shared/static 只读标记位）、namespace 逐段驻留与跨文件合并、import 上下文登记、ext 拆名待注册、重复声明诊断（类型/变量同名、方法 P1 文本级签名，重载不误报）；getter/setter 与 enum case 壳按需增补（S8/S11） |
 
 ---
 
@@ -453,27 +455,80 @@ P4b BilEmitter→BilModule 四 pass 分工，Roslyn 风格双 Bound Tree、
 共享安全类型与两条逃逸闸门、rich/shared 单向传染）。
 详见「里程碑历史」M35 段落。
 
-**下一步**：ROADMAP S2（P1 声明收集：`Semantic/CompilationUnit.cs` +
-`Semantic/DeclarationCollector.cs`，符号图的首个真实消费者）→ S3
-（P2 声明解析，七个子任务）→ S5/S6（P3/P4 最小闭环，端到端
-hello world 出 BIL）。前端进入维护状态，仅在中端暴露缺口时回补。
+**S2 P1 声明收集（M39）已完成**：`Semantic/CompilationUnit.cs`（编译单元 =
+多源文件 RootASTNode + 全局 DiagnosticBag + 唯一 SymbolGraph）+
+`Semantic/DeclarationCollector.cs`（遍历声明骨架建符号壳，不进函数体；
+namespace 逐段驻留跨文件合并、import 上下文登记、ext 拆名待注册、
+重复声明诊断累积不中断）。符号模型按需增补：NamespaceSymbol 容器成员表、
+TypeSymbol.NestedTypes、MethodSymbol/FieldSymbol.ExtTargetPath、
+MethodSymbol.GenericParameters、SymbolGraph.GlobalNamespace + GetNamespace
+驻留。详见「里程碑历史」M39 段落。
+
+**下一步**：ROADMAP S3（P2 声明解析：`Semantic/DeclarationResolver.cs`，
+七个子任务——类型引用解析、继承/implements 图、修饰符合法性、rich/shared
+闭包与传染、共享安全闸门、泛型约束声明侧、ext 注册与 wrapper 适用性）→
+S5/S6（P3/P4 最小闭环，端到端 hello world 出 BIL）。前端进入维护状态，
+仅在中端暴露缺口时回补。
 
 ---
 
 ## 6. 技术债务与已知限制
 
-1. namespace 的唯一性与位置约束（应在文件首部）未校验，留待语义阶段
-2. 实参位置的 `a.b` 存在 MemberAccess/Symbol 双形态（具名判别 seed 路径与其他位置 AST 形状不同，语义分析需双路径处理；统一留待语义阶段）
-3. `3.`/`3.foo` 在 M31 起为编译错误（点后缺数字；`3.foo` 形态规范未定义，需要成员访问时请写 `(3).foo`）
-4. 值块取值规则（M33 起解析层无特判）：「多语句值块所有路径必须显式 return@、落到块尾即编译错误」「单 ExpressionStatement 块隐式取值」「if/switch 表达式分支体类型一致」均留待语义阶段校验
-5. 复合赋值的语义推导（`a op= b` 按 §13.2 从对应运算符自动展开/调用）留待语义/后端阶段；M34 起解析层已接受全部 10 个运算符
-6. `.name` 保留参数名（M34 起解析层接受，Name 原样存 `.name`）的上下文约束（仅 method wrapper canonical 形态可用）与语义规范化留待语义阶段
+1. 实参位置的 `a.b` 存在 MemberAccess/Symbol 双形态（具名判别 seed 路径与其他位置 AST 形状不同，语义分析需双路径处理；统一留待语义阶段）
+2. `3.`/`3.foo` 在 M31 起为编译错误（点后缺数字；`3.foo` 形态规范未定义，需要成员访问时请写 `(3).foo`）
+3. 值块取值规则（M33 起解析层无特判）：「多语句值块所有路径必须显式 return@、落到块尾即编译错误」「单 ExpressionStatement 块隐式取值」「if/switch 表达式分支体类型一致」均留待语义阶段校验
+4. 复合赋值的语义推导（`a op= b` 按 §13.2 从对应运算符自动展开/调用）留待语义/后端阶段；M34 起解析层已接受全部 10 个运算符
+5. `.name` 保留参数名（M34 起解析层接受，Name 原样存 `.name`）的上下文约束（仅 method wrapper canonical 形态可用）与语义规范化留待语义阶段
 7. 编译 0 警告（大扫除消除了原 `Core/Utilities.cs` 的 nullable 警告）
 8. BIL 待补（M35 登记，不属前端）：wrapper 改为 rich struct 后，`BIL_STANDARD.md` §12.4 缺**只读 place 的接收者形态**；async 协程指令 §17 待 S13 专项修订。两项均记于 `compiler/semantic/SEMANTIC_ARCHITECTURE.md` §7/§7.1，落地分别在 ROADMAP S11 / S13
 
 ---
 
 ## 7. 里程碑历史
+
+### 2026-07-31 · M39 S2 P1 声明收集
+
+> ROADMAP S2 落地：符号图的首个真实消费者——编译单元全部声明骨架
+> （不进函数体）建壳入库，跨文件前向引用就此成立。
+
+- **`Semantic/CompilationUnit.cs`**：编译单元模型（ARCHITECTURE §3）——
+  多源文件 `RootASTNode` 集合 + 全局 `DiagnosticBag` + 唯一 `SymbolGraph`。
+- **`Semantic/DeclarationCollector.cs`**：`DeclarationCollector.Collect(unit)`
+  静态入口 + P1 产物 `DeclarationCollection`（声明 AST 节点 → 符号映射
+  `SymbolOf`、每文件 `FileContext`（命名空间 + import 列表）、
+  ext 待注册列表 `PendingExtMembers`）。
+- **建壳规则**：五种类型声明 → `TypeSymbol`（默认基类建壳即定——
+  class→Object / struct→ValueType / enum struct→Enum / wrapper→Wrapper，
+  保证 `IsValueTypeBranch` 构造期传播正确，显式基类留 P2 覆盖）；
+  变量声明 → `FieldSymbol`；可调用声明 → `MethodSymbol`（Kind 映射 +
+  参数/泛型参数壳）；rich/shared/static 只读标记位建壳，合法性检查
+  一律归 P2；wrapper 恒 rich（§14.9）。getter/setter 与 enum case
+  不建壳（符号家族按需增补，S8/S11）。
+- **namespace**：`SymbolGraph.GlobalNamespace`（空名单例）+
+  `GetNamespace` 逐段驻留——同路径必同实例，多文件同 namespace 声明
+  天然合并；bootstrap 的 core 挂入全局命名空间树（用户 `namespace core.*`
+  与 bootstrap 共享驻留路径）；`FullName` 拼段跳过空名父级。
+  §15.1 唯一性与位置约束落地（P1 诊断：每文件至多一个 namespace、
+  须先于任何类型/成员声明；§6 技术债务第 1 条勾销）。
+- **ext 拆名登记**（§4.4）：限定名最后一段为成员名、前缀为
+  `ExtTargetPath` 原文；ext 壳不进声明容器表，进 `PendingExtMembers`
+  待 P2 解析注册到目标类型（`MethodSymbol`/`FieldSymbol` 增
+  `ExtTargetPath` 属性）。
+- **重复声明诊断**（累积不中断）：同容器类型同名、变量同名、
+  方法 P1 文本级签名（同名 + 同参数名序列 + 同参数类型源码文本）
+  全同必为重复——重载不误报，签名级精确判定依赖类型解析归 P2；
+  重复符号不进容器表（保留第一个）但仍登记 `SymbolOf` 映射。
+  收集期容器视图 `Scope` 借用宿主符号三张成员表 + 方法签名 key 表，
+  生命周期 = 容器成员收集全程（修复：每声明新建临时 Scope 导致
+  MethodKeys 随建随丢、方法重复检测失效）。
+- **符号模型增补**（`Semantic/Symbols/`，S1 家族按需扩展）：
+  `NamespaceSymbol` 容器成员表（ChildNamespaces/Types/Fields/Methods）、
+  `TypeSymbol.NestedTypes`、`MethodSymbol.GenericParameters`。
+- **测试**：`Tests/DeclarationCollectorTests.cs`（83 用例：全局/类型/
+  嵌套/namespace/import/重复/ext/namespace 诊断/跨文件九组，
+  符号断言一律引用相等，canonical 路径经 CanonicalSymbolPrinter
+  验证），注册为 TestRunner 第 35 号套件。
+- 全量：1066/1066 + fuzz 6000（35 套件）。
 
 ### 2026-07-31 · M38 S4 BIL 对象模型 + BilWriter
 

@@ -11,6 +11,10 @@ namespace LatteCompiler
     {
         public BootstrapSymbols Bootstrap { get; }
 
+        // 全局命名空间（Name == ""）：无 namespace 声明的文件归属于此；
+        // 用户命名空间树与 bootstrap 的 core 都挂在它下面
+        public NamespaceSymbol GlobalNamespace { get; }
+
         // 构造泛型类型驻留 cache：同一 (泛型定义, 实参列表) 必得同一实例（§4.2）
         private readonly Dictionary<ConstructedTypeKey, TypeSymbol> constructedTypes =
             new Dictionary<ConstructedTypeKey, TypeSymbol>();
@@ -19,12 +23,31 @@ namespace LatteCompiler
 
         public SymbolGraph()
         {
-            Bootstrap = new BootstrapSymbols();
+            GlobalNamespace = new NamespaceSymbol("");
+            Bootstrap = new BootstrapSymbols(GlobalNamespace);
         }
 
         public void Freeze()
         {
             IsFrozen = true;
+        }
+
+        // 命名空间逐段驻留（§4.2 同一份实体恰一个实例）：同一路径必得同一
+        // 实例，多文件声明同一 namespace 因此天然合并（P1 DeclarationCollector 用）
+        public NamespaceSymbol GetNamespace(IReadOnlyList<string> segments)
+        {
+            var current = GlobalNamespace;
+            foreach (var segment in segments)
+            {
+                var next = current.ChildNamespaces.Find(ns => ns.Name == segment);
+                if (next == null)
+                {
+                    next = new NamespaceSymbol(segment, current);
+                    current.ChildNamespaces.Add(next);
+                }
+                current = next;
+            }
+            return current;
         }
 
         // T? 即构造类型 Nullable\<T>（SYNTAX §3.4：不设独立 nullable 表示）

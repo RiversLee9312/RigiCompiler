@@ -5,7 +5,7 @@
 
 **项目名**: LatteCompiler
 **语言**: C#（.NET 8.0，控制台程序，`Nullable` 与 `ImplicitUsings` 已启用）
-**开发阶段**: 中端（语义分析 + BIL 生成）阶段 —— 编译器前端（Lexer + Parser）已完成（roadmap P0–P5 全部落地，M23–M34 大扫除与多轮修复）；中端 M35 完成架构定稿（`docs/compiler/semantic/SEMANTIC_ARCHITECTURE.md`）与路线图 S0–S14（`SEMANTIC_ROADMAP.md`，S0–S6 已细化到文件级施工清单）+ 语言规范修订（shared/rich/wrapper/String）；M36 落地 S0 诊断基建（`Semantic/Diagnostics.cs`）、M37 落地 S1 符号图内核（`Semantic/Symbols/` + bootstrap + `CanonicalSymbolPrinter`）、M38 落地 S4 BIL 对象模型 + BilWriter（`Bil/`，§19 黄金示例逐行一致）；下一步 S2 P1 声明收集 → S3 P2 声明解析 → S5/S6 P3/P4 最小闭环
+**开发阶段**: 中端（语义分析 + BIL 生成）阶段 —— 编译器前端（Lexer + Parser）已完成（roadmap P0–P5 全部落地，M23–M34 大扫除与多轮修复）；中端 M35 完成架构定稿（`docs/compiler/semantic/SEMANTIC_ARCHITECTURE.md`）与路线图 S0–S14（`SEMANTIC_ROADMAP.md`，S0–S6 已细化到文件级施工清单）+ 语言规范修订（shared/rich/wrapper/String）；M36 落地 S0 诊断基建（`Semantic/Diagnostics.cs`）、M37 落地 S1 符号图内核（`Semantic/Symbols/` + bootstrap + `CanonicalSymbolPrinter`）、M38 落地 S4 BIL 对象模型 + BilWriter（`Bil/`，§19 黄金示例逐行一致）、M39 落地 S2 P1 声明收集（`Semantic/CompilationUnit.cs` + `Semantic/DeclarationCollector.cs`）；下一步 S3 P2 声明解析 → S5/S6 P3/P4 最小闭环
 **版本控制**: Git（`main` 分支，2026-07-17 首次提交，工作树干净；CI 见 `.github/workflows/ci.yml`）
 
 ---
@@ -128,9 +128,12 @@ LatteCompiler/
 ├── Semantic/                 # 中端 P1–P3 + 符号图 + 诊断（M36 起，ARCHITECTURE §9）
 │   ├── Diagnostics.cs           # 可恢复诊断模型（M36）：Diagnostic{Severity/Phase/Span?/Message}
 │   │                            #   + DiagnosticBag（全编译单元单实例、只追加、HasErrors 门槛）
-│   └── Symbols/                 # 符号图内核（M37）：SemanticSymbol 家族（引用相等即身份）、
-│                                #   SymbolGraph 构造泛型驻留 + Freeze、BootstrapSymbols（硬编码
-│                                #   SYNTAX §3.1/§3.2 + intrinsic 键空间）、CanonicalSymbolPrinter
+│   ├── CompilationUnit.cs       # 编译单元模型（M39）：多源文件 RootASTNode + DiagnosticBag + SymbolGraph
+│   ├── DeclarationCollector.cs  # P1 声明收集（M39）：符号壳 + DeclarationCollection/FileContext
+│   │                            #   + namespace 驻留合并 + import 登记 + ext 待注册 + 重复诊断
+│   └── Symbols/                 # 符号图内核（M37，M39 增补容器成员表/全局命名空间驻留）：
+│                                #   SemanticSymbol 家族（引用相等即身份）、SymbolGraph 构造泛型
+│                                #   驻留 + Freeze、BootstrapSymbols、CanonicalSymbolPrinter
 ├── Bil/                      # BIL 生态（M38，对中端零依赖：字符串身份，不引用 Semantic/AST）
 │   ├── BilModule.cs             # Module/Metadata/Resources（§4/§18 全形态）
 │   ├── BilSymbols.cs            # 类型与成员声明（§8.2–§8.5）

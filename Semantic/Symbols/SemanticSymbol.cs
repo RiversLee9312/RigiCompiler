@@ -25,17 +25,28 @@ namespace LatteCompiler
         }
     }
 
-    // 命名空间（多段路径逐段嵌套："core.coroutine" = core → coroutine）
+    // 命名空间（多段路径逐段嵌套："core.coroutine" = core → coroutine）。
+    // 全局命名空间为 Name == "" 的单例（SymbolGraph.GlobalNamespace），
+    // 无 namespace 声明的文件归属于此；FullName 拼段时跳过空名父级。
     public sealed class NamespaceSymbol : SemanticSymbol
     {
         public NamespaceSymbol? Parent { get; }
+
+        // 容器成员表（P1 DeclarationCollector 填充，P2 冻结后只读）：
+        // 本命名空间内直接声明的子命名空间 / 顶层类型 / 全局变量与常量 / 全局函数
+        public List<NamespaceSymbol> ChildNamespaces { get; } = new List<NamespaceSymbol>();
+        public List<TypeSymbol> Types { get; } = new List<TypeSymbol>();
+        public List<FieldSymbol> Fields { get; } = new List<FieldSymbol>();
+        public List<MethodSymbol> Methods { get; } = new List<MethodSymbol>();
 
         public NamespaceSymbol(string name, NamespaceSymbol? parent = null) : base(name)
         {
             Parent = parent;
         }
 
-        public string FullName => Parent == null ? Name : Parent.FullName + "." + Name;
+        public string FullName => Parent == null || Parent.FullName.Length == 0
+            ? Name
+            : Parent.FullName + "." + Name;
     }
 
     public enum TypeKind
@@ -80,6 +91,8 @@ namespace LatteCompiler
         public List<GenericParameterSymbol> GenericParameters { get; } = new List<GenericParameterSymbol>();
         public List<FieldSymbol> Fields { get; } = new List<FieldSymbol>();
         public List<MethodSymbol> Methods { get; } = new List<MethodSymbol>();
+        // 嵌套类型（P1 DeclarationCollector 填充；DeclaringType 反向指针构造即定）
+        public List<TypeSymbol> NestedTypes { get; } = new List<TypeSymbol>();
 
         // 构造泛型类型（编译单元级驻留产物，只经 SymbolGraph.GetConstructedType 创建）：
         // ConstructedFrom 非空时本符号是该定义的构造实例（如 Nullable\<i32>）。
@@ -169,6 +182,10 @@ namespace LatteCompiler
         public NamespaceSymbol? Namespace { get; }
         public MethodKind Kind { get; }
         public bool IsStatic { get; }
+        // ext 限定名的目标路径原文（SYNTAX §4.4，如 "String"/"a.b.C"；
+        // P1 拆名登记，P2 解析并注册到目标类型；非 ext 声明为 null）
+        public string? ExtTargetPath { get; }
+        public List<GenericParameterSymbol> GenericParameters { get; } = new List<GenericParameterSymbol>();
         public List<ParameterSymbol> Parameters { get; } = new List<ParameterSymbol>();
         // 返回类型；null = void（无结果方法）。P2 解析后填
         public TypeSymbol? ReturnType { get; internal set; }
@@ -179,7 +196,8 @@ namespace LatteCompiler
             TypeSymbol? owner = null,
             NamespaceSymbol? ns = null,
             bool isStatic = false,
-            TypeSymbol? returnType = null)
+            TypeSymbol? returnType = null,
+            string? extTargetPath = null)
             : base(name)
         {
             Kind = kind;
@@ -187,6 +205,7 @@ namespace LatteCompiler
             Namespace = ns;
             IsStatic = isStatic;
             ReturnType = returnType;
+            ExtTargetPath = extTargetPath;
         }
     }
 
@@ -197,17 +216,20 @@ namespace LatteCompiler
         public TypeSymbol? Owner { get; }
         public NamespaceSymbol? Namespace { get; }
         public bool IsStatic { get; }
+        // ext 限定名的目标路径原文（SYNTAX §4.4；P1 拆名登记，P2 解析注册；非 ext 为 null）
+        public string? ExtTargetPath { get; }
         // 声明类型（P2 解析后填）
         public TypeSymbol? FieldType { get; internal set; }
 
         public FieldSymbol(string name, TypeSymbol? owner = null, NamespaceSymbol? ns = null,
-            bool isStatic = false, TypeSymbol? fieldType = null)
+            bool isStatic = false, TypeSymbol? fieldType = null, string? extTargetPath = null)
             : base(name)
         {
             Owner = owner;
             Namespace = ns;
             IsStatic = isStatic;
             FieldType = fieldType;
+            ExtTargetPath = extTargetPath;
         }
     }
 
