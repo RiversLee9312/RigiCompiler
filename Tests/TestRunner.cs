@@ -47,6 +47,7 @@ namespace LatteCompiler.Tests
             ("CanonicalSymbolPrinter", CanonicalSymbolPrinterTests.RunAll),
             ("BilWriter", BilWriterTests.RunAll),
             ("DeclarationCollector", DeclarationCollectorTests.RunAll),
+            ("DeclarationResolver", DeclarationResolverTests.RunAll),
         };
 
         // 套件数量（对外编号 1..SuiteCount，即注册表顺序）

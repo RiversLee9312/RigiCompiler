@@ -144,17 +144,8 @@ namespace LatteCompiler
             {
                 if (Keywords.IsDescriptor(w.Content))
                 {
-                    // 修饰符组合校验（M31）：重复修饰符与 open/abstract 互斥（SYNTAX §9.2）
-                    if (modifiers.Contains(w.Content))
-                    {
-                        throw context.RaiseError($"Duplicate modifier '{w.Content}'");
-                    }
-                    if ((w.Content == Keywords.OPEN && modifiers.Contains(Keywords.ABSTRACT)) ||
-                        (w.Content == Keywords.ABSTRACT && modifiers.Contains(Keywords.OPEN)))
-                    {
-                        throw context.RaiseError(
-                            $"Modifiers 'open' and 'abstract' are mutually exclusive (SYNTAX §9.2)");
-                    }
+                    // 修饰符一律照收（M40 起）：重复、互斥与种类组合校验
+                    // 全部归 P2 DeclarationResolver（可恢复诊断，见 CreateTypeNode 注释）
                     modifiers.Add(w.Content);
                     return ParserLayerResult.Continue.Instance;
                 }
@@ -418,35 +409,11 @@ namespace LatteCompiler
                 _ => throw context.RaiseError($"Unsupported type keyword: {keyword}")
             };
 
-            // 修饰符与类型种类的组合校验（M31，SYNTAX §3.1.1/§9.2/§10/§12）：
-            // rich 仅 struct/enum struct；shared 仅 class 或 rich struct；
-            // open 仅 class/普通 struct（enum struct 明确禁止）
-            bool isStructLike = node is StructDeclarationASTNode or EnumStructDeclarationASTNode;
-            if (modifiers.Contains(Keywords.RICH) && !isStructLike)
-            {
-                throw context.RaiseError(
-                    $"Modifier 'rich' is only allowed on struct/enum struct declarations (SYNTAX §3.1.1)");
-            }
-            if (modifiers.Contains(Keywords.SHARED))
-            {
-                if (node is not ClassDeclarationASTNode && !isStructLike)
-                {
-                    throw context.RaiseError(
-                        $"Modifier 'shared' is only allowed on class or rich struct declarations (SYNTAX §3.1.1)");
-                }
-                if (isStructLike && !modifiers.Contains(Keywords.RICH))
-                {
-                    throw context.RaiseError(
-                        $"'shared' cannot modify a non-rich struct (SYNTAX §3.1.1: shared struct requires rich)");
-                }
-            }
-            if (modifiers.Contains(Keywords.OPEN) &&
-                node is not ClassDeclarationASTNode && node is not StructDeclarationASTNode)
-            {
-                throw context.RaiseError(
-                    $"Modifier 'open' is only allowed on class/struct declarations " +
-                    $"(SYNTAX §9.2: enum struct cannot be open)");
-            }
+            // 修饰符与类型种类的组合校验不归前端（M40 起）：SYNTAX §3.1.1/§9.2/
+            // §10/§14.9 的全部修饰符合法性由 P2 DeclarationResolver 以可恢复
+            // 诊断检查（ARCHITECTURE §2 分工表），Parser 只收下修饰符原文。
+            // （此前 M31 的三条即死拦截已删除：它们把合法的 shared wrapper
+            // 一并误杀，且单发即死违背中端可累积诊断模型。）
 
             GetModifiers(node).AddRange(modifiers);
             AttachAnnotations(node, context);

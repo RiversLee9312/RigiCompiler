@@ -322,11 +322,25 @@ namespace LatteCompiler
             var kind = TryGetConstraintKind(currentToken);
             if (kind != null)
             {
+                // 裸标识符 Target（如 TItem extends Comparable）：该标识符即泛型参数
+                // （SYNTAX §3.6 与 AST 注释），先提交进 Parameters 再开约束子句
+                // （M40 修复：此前约束形态裸名参数只进 Constraints、丢失 Parameters
+                // 声明，与 out/in 前缀路径的「参数+约束」双写形态不对称，
+                // P2 无法解析参数符号）；
+                // 非裸名 Target（路径/泛型实参/nullable）保留为纯约束目标，
+                // 「Target 必须是泛型参数」的合法性检查归 P2（可恢复诊断）
+                if (IsBareIdentifier(pendingTarget!, out var bareName))
+                {
+                    var nameRange = pendingTarget!.Span;
+                    CommitParameterFromTarget(context);
+                    return StartConstraint(kind.Value, MakeBareSymbol(bareName), false, nameRange, context);
+                }
+                var target = pendingTarget!;
+                pendingTarget = null;
                 // 约束子句：已解析类型的符号数据灌进 constraint 自带 Target 节点；
                 // Target 原文范围即已解析类型的 span（M28）
                 return StartConstraint(
-                    kind.Value, pendingTarget!.TypeSymbol.symbol, pendingTarget!.IsNullable,
-                    pendingTarget!.Span, context);
+                    kind.Value, target.TypeSymbol.symbol, target.IsNullable, target.Span, context);
             }
 
             if (currentToken is NotationToken nt)
@@ -477,6 +491,20 @@ namespace LatteCompiler
             }
 
             return nonEmpty[0].name;
+        }
+
+        // 裸标识符判定（不抛错版，供 HandleTargetParsed 分派）：同 TryConvertToParamName
+        // 的过滤规则；路径/泛型实参/nullable 形态返回 false（留给 P2 诊断）
+        private static bool IsBareIdentifier(TypeReferenceASTNode typeRef, out string name)
+        {
+            name = "";
+            if (typeRef.IsNullable) return false;
+            var nonEmpty = typeRef.TypeSymbol.symbol.elements
+                .Where(e => !string.IsNullOrEmpty(e.name))
+                .ToList();
+            if (nonEmpty.Count != 1 || nonEmpty[0].generics.Count > 0) return false;
+            name = nonEmpty[0].name;
+            return true;
         }
 
         // 由裸名构建单元素符号（作为约束 Target 的数据）

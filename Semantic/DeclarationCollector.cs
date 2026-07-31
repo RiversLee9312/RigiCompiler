@@ -223,7 +223,9 @@ namespace LatteCompiler
             CollectGenericParameters(symbol.GenericParameters, node.GenericParameters, result);
             foreach (var p in node.Parameters.Parameters)
             {
-                var param = new ParameterSymbol(p.Name);
+                // init 参数映射 `_ -> field`：参数名与字段名相同（SYNTAX §9.3，纯语法替换）
+                var param = new ParameterSymbol(
+                    p.Name == "_" && p.MappedFieldName != null ? p.MappedFieldName : p.Name);
                 symbol.Parameters.Add(param);
                 result.Map(p, param);
             }
@@ -257,7 +259,7 @@ namespace LatteCompiler
             if (generics == null) return;
             foreach (var p in generics.Parameters)
             {
-                var gp = new GenericParameterSymbol(p.Name);
+                var gp = new GenericParameterSymbol(p.Name, p.IsVariadic, p.IsNamedVariadic);
                 target.Add(gp);
                 result.Map(p, gp);
             }

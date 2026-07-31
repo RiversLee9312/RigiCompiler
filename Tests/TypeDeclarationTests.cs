@@ -218,13 +218,13 @@ namespace LatteCompiler.Tests
             TestDecl("class A { func map\\<T>(x: T): T {} }",
                 "class A {func map\\<T>(x: T): T {}}");
             TestDecl("struct V { pub operator plus\\<TAnother extends Addable>(another: TAnother): V {} }",
-                "struct V {pub operator plus\\<TAnother extends Addable>(another: TAnother): V {}}");
+                "struct V {pub operator plus\\<TAnother, TAnother extends Addable>(another: TAnother): V {}}");
 
-            // 约束子句（extends/supers/with；Target 裸标识符即隐含的泛型参数）
+            // 约束子句（extends/supers/with；Target 裸标识符即隐含的泛型参数，双注册进 Parameters）
             TestDecl("func process\\<TItem extends Comparable, Serializable supers BaseType>(item: TItem): TItem {}",
-                "func process\\<TItem extends Comparable, Serializable supers BaseType>(item: TItem): TItem {}");
+                "func process\\<TItem, Serializable, TItem extends Comparable, Serializable supers BaseType>(item: TItem): TItem {}");
             TestDecl("func dump\\<TItem with Serializable>(item: TItem) {}",
-                "func dump\\<TItem with Serializable>(item: TItem) {}");
+                "func dump\\<TItem, TItem with Serializable>(item: TItem) {}");
 
             // 可变 / 具名可变泛型参数
             TestDecl("func sum\\<TArgs...>(items: TArgs...) {}",
@@ -479,7 +479,7 @@ namespace LatteCompiler.Tests
                 "    operator .proxy.call\\<TReturn extends Object>(): TReturn {}\n" +
                 "}",
                 "@WrapperTarget(EnumCase(.Method)) pub wrapper Timed {pub init(), " +
-                "operator .proxy.call\\<TReturn extends Object>(): TReturn {}}");
+                "operator .proxy.call\\<TReturn, TReturn extends Object>(): TReturn {}}");
             // method wrapper canonical 保留参数名 .name（§14.4 示例形态）：前导点原样入参数名
             TestDecl(
                 "wrapper W {\n" +

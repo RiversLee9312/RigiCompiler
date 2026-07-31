@@ -33,13 +33,13 @@ namespace LatteCompiler.Tests
             TestHarness.Section("Testing Generic Constraint Clauses");
 
             TestParse("\\<TItem extends Comparable>",
-                "\\<TItem extends Comparable>");
+                "\\<TItem, TItem extends Comparable>");
             TestParse("\\<Serializable supers BaseType>",
-                "\\<Serializable supers BaseType>");
+                "\\<Serializable, Serializable supers BaseType>");
             TestParse("\\<TItem extends Comparable, Serializable supers BaseType>",
-                "\\<TItem extends Comparable, Serializable supers BaseType>");
+                "\\<TItem, Serializable, TItem extends Comparable, Serializable supers BaseType>");
             TestParse("\\<TItem with Serializable>",
-                "\\<TItem with Serializable>");
+                "\\<TItem, TItem with Serializable>");
             // 型变参数 + 约束
             TestParse("\\<out TElement extends Comparable>",
                 "\\<out TElement, TElement extends Comparable>");

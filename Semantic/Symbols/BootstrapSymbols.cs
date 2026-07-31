@@ -117,7 +117,9 @@ namespace LatteCompiler
 
             SpanDefinition = new TypeSymbol("Span", TypeKind.Struct, Core,
                 baseType: ValueType, isBuiltin: true);
-            SpanDefinition.GenericParameters.Add(new GenericParameterSymbol("T", ValueType));
+            SpanDefinition.GenericParameters.Add(new GenericParameterSymbol("T"));
+            SpanDefinition.GenericParameters[0].Constraints.Add(
+                new GenericConstraintInfo(GenericConstraintKind.Extends, ValueType));
 
             NullableDefinition = new TypeSymbol("Nullable", TypeKind.Class, Core,
                 baseType: Object, isBuiltin: true,
@@ -127,7 +129,23 @@ namespace LatteCompiler
 
             BoxDefinition = new TypeSymbol("Box", TypeKind.Class, Core,
                 baseType: Object, isBuiltin: true);
-            BoxDefinition.GenericParameters.Add(new GenericParameterSymbol("T", ValueType));
+            BoxDefinition.GenericParameters.Add(new GenericParameterSymbol("T"));
+            BoxDefinition.GenericParameters[0].Constraints.Add(
+                new GenericConstraintInfo(GenericConstraintKind.Extends, ValueType));
+
+            // 内建类型注册进 core 容器表（M40 补登：P2 名字解析经
+            // 「core 命名空间隐式可见」消费——bootstrap 类型此前只有直造属性、
+            // 未入容器表，裸名 i32/String/Object 无法经路径解析找到）
+            foreach (var builtin in new[]
+            {
+                Any, Object, ValueType, Enum, Wrapper,
+                Int8, Int16, Int32, Int64, UInt8, UInt16, UInt32, UInt64,
+                Float, Double, Bool, Char, String,
+                TypeDefinition, SpanDefinition, NullableDefinition, BoxDefinition,
+            })
+            {
+                Core.Types.Add(builtin);
+            }
         }
 
         // 内建基元直造（BaseType = ValueType 的 Struct + 固定别名 + intrinsic 集）

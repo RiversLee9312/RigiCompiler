@@ -47,7 +47,7 @@ namespace LatteCompiler.Tests
 
             // SYNTAX §5.1：泛型形参列表在形参列表之后
             TestLambda("var f = func{(width: TSize)\\<TSize extends Size>: TSize -> width}",
-                "Lambda([width: TSize])\\<TSize extends Size>: TSize -> Sym(width)");
+                "Lambda([width: TSize])\\<TSize, TSize extends Size>: TSize -> Sym(width)");
 
             TestHarness.Blank();
         }

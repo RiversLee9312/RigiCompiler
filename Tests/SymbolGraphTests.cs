@@ -74,13 +74,17 @@ namespace LatteCompiler.Tests
             // ===== 泛型约束（extends ValueType）=====
             TestHarness.CheckTrue("Span\\<T extends ValueType\\>",
                 b.SpanDefinition.GenericParameters.Count == 1
-                && ReferenceEquals(b.SpanDefinition.GenericParameters[0].Constraint, b.ValueType));
+                && b.SpanDefinition.GenericParameters[0].Constraints.Count == 1
+                && b.SpanDefinition.GenericParameters[0].Constraints[0].Kind == GenericConstraintKind.Extends
+                && ReferenceEquals(b.SpanDefinition.GenericParameters[0].Constraints[0].Bound, b.ValueType));
             TestHarness.CheckTrue("Box\\<T extends ValueType\\>",
                 b.BoxDefinition.GenericParameters.Count == 1
-                && ReferenceEquals(b.BoxDefinition.GenericParameters[0].Constraint, b.ValueType));
+                && b.BoxDefinition.GenericParameters[0].Constraints.Count == 1
+                && b.BoxDefinition.GenericParameters[0].Constraints[0].Kind == GenericConstraintKind.Extends
+                && ReferenceEquals(b.BoxDefinition.GenericParameters[0].Constraints[0].Bound, b.ValueType));
             TestHarness.CheckTrue("Nullable\\<T\\> 无约束",
                 b.NullableDefinition.GenericParameters.Count == 1
-                && b.NullableDefinition.GenericParameters[0].Constraint == null);
+                && b.NullableDefinition.GenericParameters[0].Constraints.Count == 0);
 
             // ===== 基元 intrinsic 键空间（BIL §11）=====
             TestHarness.CheckTrue("i32 含 Add/CmpLt/ShiftLeft/BinAnd",

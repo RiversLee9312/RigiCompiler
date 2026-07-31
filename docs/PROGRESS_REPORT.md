@@ -6,9 +6,9 @@
 > 计划与分工见 `compiler/syntax/PARSER_ROADMAP.md` 与 `compiler/semantic/SEMANTIC_ROADMAP.md`；本文档只记录「现状」。
 
 **报告日期**: 2026-07-31
-**当前阶段**: **中端（语义分析 + BIL 生成）阶段** —— M35 为中端的开篇里程碑：架构定稿（`compiler/semantic/SEMANTIC_ARCHITECTURE.md`）+ 路线图 S0–S14（`compiler/semantic/SEMANTIC_ROADMAP.md`）+ 语言规范修订（shared/rich/wrapper/String）；M36 落地 S0 诊断基建（`Semantic/Diagnostics.cs` + `CheckSemanticError`），同批完成 ROADMAP 文件级细化（S0–S6）；M37 落地 S1 符号图内核（`Semantic/Symbols/` 四文件 + bootstrap 硬编码 + `CanonicalSymbolPrinter`）；M38 落地 S4 BIL 对象模型 + BilWriter（`Bil/` 五文件，§19 黄金示例逐行一致）；M39 落地 S2 P1 声明收集（`Semantic/CompilationUnit.cs` + `Semantic/DeclarationCollector.cs`，符号图首个真实消费者）。下一步 S3 P2 声明解析（七个子任务）。
+**当前阶段**: **中端（语义分析 + BIL 生成）阶段** —— M35 为中端的开篇里程碑：架构定稿（`compiler/semantic/SEMANTIC_ARCHITECTURE.md`）+ 路线图 S0–S14（`compiler/semantic/SEMANTIC_ROADMAP.md`）+ 语言规范修订（shared/rich/wrapper/String）；M36 落地 S0 诊断基建（`Semantic/Diagnostics.cs` + `CheckSemanticError`），同批完成 ROADMAP 文件级细化（S0–S6）；M37 落地 S1 符号图内核（`Semantic/Symbols/` 四文件 + bootstrap 硬编码 + `CanonicalSymbolPrinter`）；M38 落地 S4 BIL 对象模型 + BilWriter（`Bil/` 五文件，§19 黄金示例逐行一致）；M39 落地 S2 P1 声明收集（`Semantic/CompilationUnit.cs` + `Semantic/DeclarationCollector.cs`，符号图首个真实消费者）；M40 落地 S3 P2 声明解析（`Semantic/DeclarationResolver.cs`，七个子任务全部落地）。下一步 S5/S6 P3/P4 最小闭环（端到端 hello world 出 BIL）。
 前端里程碑回顾：Parser/PDA 大扫除（M23）、AST 结构标注与 Validator 重写（M24）、Lexer 修复与 fuzz 基建（M25）、日志与 AST JSONL（M26）、CLI 插件化（M27）、Lexer 位置与 AST Span（M28）、AST 容器重构（M29）、Utilities 拆分（M30）、前端大修（M31）、多行字符串（M32）、值块统一（M33）、技术债清扫（M34）。
-**测试总计**: 1066/1066 通过 (100%) + Lexer fuzz 6000/6000（35 个套件，`dotnet run -- test --all` 单命令全量）
+**测试总计**: 1204/1204 通过 (100%) + Lexer fuzz 6000/6000（36 个套件，`dotnet run -- test --all` 单命令全量）
 **版本控制**: Git `main` 分支（2026-07-17 首次提交）
 
 ---
@@ -56,6 +56,7 @@
 | M37 | S1 符号图内核：`Semantic/Symbols/`（SemanticSymbol 家族 + SymbolGraph 驻留 + BootstrapSymbols 硬编码层级/基元/intrinsic 键空间 + CanonicalSymbolPrinter 五形态 + BIL 类型引用投影） | ✅ | 2026-07-31 | 977/977 + fuzz 6000（33 套件） |
 | M38 | S4 BIL 对象模型 + BilWriter：`Bil/` 五文件（Module/Resources/Symbols/Function/Instructions + Writer，对中端零依赖、字符串身份、§17 协程暂缓），§19 黄金示例逐行一致 | ✅ | 2026-07-31 | 983/983 + fuzz 6000（34 套件） |
 | M39 | S2 P1 声明收集：`Semantic/CompilationUnit.cs` + `Semantic/DeclarationCollector.cs`（符号壳 + namespace 驻留合并 + import 登记 + ext 待注册 + 重复声明诊断） | ✅ | 2026-07-31 | 1066/1066 + fuzz 6000（35 套件） |
+| M40 | S3 P2 声明解析：`Semantic/DeclarationResolver.cs`（类型引用解析 + ErrorType 毒化、继承/implements 图与双环检测、修饰符合法性、rich/shared 字段闭包与单向传染、共享安全闸门、泛型约束声明侧、ext 注册 + wrapper 适用性矩阵）+ Parser 两处越权拦截移交 P2 + 约束裸名参数 Parser 修复 + bootstrap 注册 Core.Types | ✅ | 2026-07-31 | 1204/1204 + fuzz 6000（36 套件） |
 
 ---
 
@@ -340,6 +341,7 @@ pub class Point {
 | CanonicalSymbolPrinter（中端，S1） | ✅ | 22/22（CanonicalSymbolPrinterTests） | 符号图 → BIL §5.2 canonical 字符串（M37）：类型/方法/字段/运算符/getter/setter 五形态 + BIL 类型引用投影（固定别名 > 标准构造 > canonical/闭合泛型，null 返回 → .void）；打印串对照 §5.2/§8.1/§19 示例逐条断言 |
 | BilModel + BilWriter（中端，S4） | ✅ | 6/6（BilWriterTests） | BIL 对象模型与文本生成（M38，`Bil/` 五文件）：Module/Metadata/Resources（§18 全形态）/类型与成员声明（§8）/Function/.args/.vars/Block（§9）/指令与操作数（§10–§16，§17 协程暂缓）；对中端零依赖、字符串身份、Origin 以 object? 占位；writer 只输出标准 spelling、全段输出、§19 黄金示例逐行一致（含 wrapper 隐藏字段续行形态） |
 | DeclarationCollector（中端 P1，S2） | ✅ | 83/83（DeclarationCollectorTests） | 声明收集（M39）：`Semantic/CompilationUnit.cs`（多源文件 + DiagnosticBag + SymbolGraph）+ `Semantic/DeclarationCollector.cs`（DeclarationCollector + DeclarationCollection + FileContext）——类型/变量/可调用/参数/泛型参数符号壳（默认基类建壳即定、rich/shared/static 只读标记位）、namespace 逐段驻留与跨文件合并、import 上下文登记、ext 拆名待注册、重复声明诊断（类型/变量同名、方法 P1 文本级签名，重载不误报）；getter/setter 与 enum case 壳按需增补（S8/S11） |
+| DeclarationResolver（中端 P2，S3） | ✅ | 138/138（DeclarationResolverTests） | 声明解析（M40，`Semantic/DeclarationResolver.cs`）：类型引用解析（泛型参数 → NestedTypes → namespace 父链 → 全局 → imports → core 隐式查找序；T?→Nullable\<T\>；失败绑 ErrorTypeSymbol 毒化静默）；init 映射参数沿字段类型；继承/implements 图（种类匹配、open/abstract 可继承性、class/interface 双环检测）；修饰符合法性（Parser 的 rich/shared/open 即死拦截与重复/互斥校验移交于此，可恢复诊断）；rich/shared 单向传染 + 字段闭包七行表（直接分类违规即报、放行才展开泛型实参递归）；共享安全闸门（全局/静态/ext静态）；泛型约束声明侧（Target 必本声明泛型参数、with 边界必 wrapper）；ext 注册（Owner 改写挂目标类型）+ wrapper 适用性（@WrapperTarget、§14.9 矩阵 A/B/D、interface 实现者传染）；结束 Freeze 符号图 |
 
 ---
 
@@ -464,10 +466,20 @@ TypeSymbol.NestedTypes、MethodSymbol/FieldSymbol.ExtTargetPath、
 MethodSymbol.GenericParameters、SymbolGraph.GlobalNamespace + GetNamespace
 驻留。详见「里程碑历史」M39 段落。
 
-**下一步**：ROADMAP S3（P2 声明解析：`Semantic/DeclarationResolver.cs`，
-七个子任务——类型引用解析、继承/implements 图、修饰符合法性、rich/shared
-闭包与传染、共享安全闸门、泛型约束声明侧、ext 注册与 wrapper 适用性）→
-S5/S6（P3/P4 最小闭环，端到端 hello world 出 BIL）。前端进入维护状态，
+**S3 P2 声明解析（M40）已完成**：`Semantic/DeclarationResolver.cs`
+（`DeclarationResolver.Resolve(unit, decls)` 入口 + 私有 ResolveSession）
+落地七个子任务——类型引用解析（含 ErrorTypeSymbol 毒化静默）、
+init 映射参数沿字段类型、继承/implements 图与双环检测、修饰符合法性、
+rich/shared 单向传染与字段闭包七行表、共享安全闸门、泛型约束声明侧、
+ext 注册与 wrapper 适用性（§14.9 矩阵 A/B/D）。Parser 两处越权即死拦截
+（CreateTypeNode 的 rich/shared/open 校验、OnModifiers 的重复/互斥校验）
+移交 P2 可恢复诊断；修复 Parser 约束裸名参数（`T extends Bound`）只进
+Constraints 不进 Parameters 的历史 bug（现双注册）；bootstrap 全部内建类型
+补登 `Core.Types`（裸名 `i32`/`String`/`Object` 可解析）。符号图结束
+Freeze。详见「里程碑历史」M40 段落。
+
+**下一步**：ROADMAP S5/S6（P3 Binder→BoundTree / P4 Lowering 最小闭环，
+端到端 hello world 出 BIL）。前端进入维护状态，
 仅在中端暴露缺口时回补。
 
 ---
@@ -481,10 +493,77 @@ S5/S6（P3/P4 最小闭环，端到端 hello world 出 BIL）。前端进入维�
 5. `.name` 保留参数名（M34 起解析层接受，Name 原样存 `.name`）的上下文约束（仅 method wrapper canonical 形态可用）与语义规范化留待语义阶段
 7. 编译 0 警告（大扫除消除了原 `Core/Utilities.cs` 的 nullable 警告）
 8. BIL 待补（M35 登记，不属前端）：wrapper 改为 rich struct 后，`BIL_STANDARD.md` §12.4 缺**只读 place 的接收者形态**；async 协程指令 §17 待 S13 专项修订。两项均记于 `compiler/semantic/SEMANTIC_ARCHITECTURE.md` §7/§7.1，落地分别在 ROADMAP S11 / S13
+9. P2 推断规则（M40 登记，规范未明写）：wrapper 缺 `@WrapperTarget` 即诊断（规范只定义了三类目标的标注形态）；init 映射 `_ -> field` 的目标字段无类型标注即诊断（沿字段类型无从谈起）。若后续规范给出默认行为，回到 DeclarationResolver 放宽
+10. P2 边界（M40 登记）：无类型标注字段（`var x = expr`）的类型推断归 P3，其闭包/闸门判定需在 P3 补一轮复核；§14.9 矩阵 C 行（栈上局部变量的 Value wrapper 检查）归 P3；P1 文本级方法签名重复判定的签名级精确化（类型解析后判定真正重载冲突）留待后续里程碑
 
 ---
 
 ## 7. 里程碑历史
+
+### 2026-07-31 · M40 S3 P2 声明解析
+
+> ROADMAP S3 落地：P1 的符号壳全部获得真实类型与合法身份。
+> Parser 的语义即死拦截正式移交中端可恢复诊断，P1→P2 链路闭环。
+
+- **`Semantic/DeclarationResolver.cs`**（约 1400 行）：
+  `DeclarationResolver.Resolve(unit, decls)` 静态入口 + 私有
+  `ResolveSession`（全程可恢复诊断，结束 `unit.Symbols.Freeze()`），
+  七个子任务全部落地：
+  1. **类型引用解析**：查找序为泛型参数（方法 → 宿主类型链）→ 宿主
+     NestedTypes → 文件命名空间父链 → 全局命名空间 → imports →
+     core 隐式；`T?` 脱糖 `Nullable\<T\>`；解析失败绑
+     `ErrorTypeSymbol`（毒化静默——后续检查遇 ErrorType 一律放行，
+     单点报错不级联）。
+  2. **init 映射**（§9.3）：`_ -> field` 参数类型节点为空时沿字段
+     解析后类型；字段无类型标注即诊断（推断规则，§6 第 9 条）。
+  3. **继承/implements 图**：种类匹配（class 承 class、interface 实现
+     interface、struct 承 struct）、open/abstract 可继承性、基 struct
+     必 open rich、struct 禁 implements；class/interface 双环检测
+     （沿基类链与接口集 DFS）。
+  4. **修饰符合法性**：rich 仅 struct 系（含 enum struct）、shared 仅
+     class/struct 系、open 仅 class/struct、open interface 合法、
+     重复修饰符、访问互斥、async 仅函数、ext 限定名与全局位置——
+     全部可恢复诊断。
+  5. **单向传染 + 字段闭包**（§3.1.1 七行表）：HolderCategory ×
+     FieldCategory 逐格判定；直接分类违规即报不展开，放行才展开泛型
+     实参代入递归（Substitute + visited 去重）；
+     `Nullable\<泛型参数\>` 分类 Unknown。
+  6. **共享安全闸门**：全局变量/静态字段/ext 静态成员持非共享安全
+     类型即诊断；ext 实例成员不闸门；含泛型参数实参跳过。
+  7. **泛型约束 + ext 注册 + wrapper 适用性**：约束 Target 必须本声明
+     泛型参数、with 边界必须 wrapper；ext 成员 Owner 改写挂目标类型；
+     wrapper 缺 @WrapperTarget 即诊断（推断规则，§6 第 9 条）、
+     类别匹配、宿主可内嵌性、§14.9 shared 矩阵 A/B/D、interface
+     实现者传染；栈上变量 C 行归 P3。
+- **Parser 两处越权拦截移交 P2**（ARCHITECTURE §2/§8 可恢复诊断分工）：
+  `DeclarationParserLayer.CreateTypeNode` 的 M31 三条即死校验
+  （rich 仅 struct 系 / shared 仅 class/struct 系 / open 仅 class/struct——
+  误杀合法的 shared wrapper）与 `OnModifiers` 的重复修饰符、
+  open×abstract 互斥校验全部删除，同规则在 P2 以诊断重现。
+- **Parser 修复：约束裸名参数双注册**（`GenericParametersParserLayer.
+  HandleTargetParsed`）：`T extends Bound` 形态的裸名 Target 此前只进
+  Constraints 不进 Parameters，P2 无法解析参数符号；现裸名 Target 先
+  `CommitParameterFromTarget` 再 `StartConstraint`（非裸名保留纯约束
+  目标归 P2 诊断），新增 `IsBareIdentifier` helper（不抛错版
+  TryConvertToParamName 同规则）。GenericParameters/Lambda/
+  TypeDeclaration 三套件期望串同步（参数在前约束在后）。
+- **bootstrap 补登 `Core.Types`**：19 个内建类型此前只有直造属性未入
+  容器成员表，裸名 `i32`/`String`/`Object` 路径解析全部失败——
+  `BootstrapSymbols` 末尾统一注册（Span/Box 约束写法同步适配新
+  Constraints 列表模型）。
+- **符号模型增补**（`Semantic/Symbols/`，S1 家族按需扩展）：
+  `ErrorTypeSymbol`（SymbolGraph.ErrorType 单例）、
+  `WrapperTargetKind{Entity,Value,Method}`、`GenericConstraintInfo`
+  （复用 AST 的 GenericConstraintKind）、TypeSymbol 增
+  Interfaces/WrapperTarget/AppliedWrappers/IsOpen/IsAbstract/IsSingleton、
+  Field/Method/Parameter 类型字段放宽 `SemanticSymbol?`（泛型参数可作
+  类型）、`GenericParameterSymbol.Constraint`→`Constraints` 列表 +
+  IsVariadic/IsNamedVariadic、Field/MethodSymbol 增 AppliedWrappers 与
+  `AttachToExtTarget`（Owner/Namespace 改 private set）。
+- **测试**：`Tests/DeclarationResolverTests.cs`（138 用例、13 组：
+  类型解析/init 映射/继承图/修饰符/传染/闭包七行逐行/闸门/约束/ext/
+  wrapper 矩阵 A/B/D 逐格/Freeze），注册为 TestRunner 第 36 号套件。
+- 全量：1204/1204 + fuzz 6000（36 套件）。
 
 ### 2026-07-31 · M39 S2 P1 声明收集
 

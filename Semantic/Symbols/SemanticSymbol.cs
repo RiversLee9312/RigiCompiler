@@ -68,6 +68,18 @@ namespace LatteCompiler
         public TypeSymbol? BaseType { get; internal set; }
         public bool IsRich { get; }
         public bool IsShared { get; }
+        // open/abstract/singleton 标记位（P2 由声明修饰符写入符号，供修饰符
+        // 合法性检查、可继承性判定与后续 pass 消费；均与声明一一对应）
+        public bool IsOpen { get; internal set; }
+        public bool IsAbstract { get; internal set; }
+        public bool IsSingleton { get; internal set; }
+        // implements 图（class）与 BaseInterfaces（interface；P2 解析填充）；
+        // struct 不得 implements（P2 诊断），enum struct/wrapper 恒为空
+        public List<TypeSymbol> Interfaces { get; } = new List<TypeSymbol>();
+        // wrapper 目标类别（@WrapperTarget(.X)，P2 解析；非 wrapper 声明为 null）
+        public WrapperTargetKind? WrapperTarget { get; internal set; }
+        // 挂载的 wrapper 应用（声明顺序，外层在前；P2 解析填充）
+        public List<TypeSymbol> AppliedWrappers { get; } = new List<TypeSymbol>();
         // 编译器硬编码内建（bootstrap 直造，无源码声明；core.latte 载入的不算）
         public bool IsBuiltin { get; }
         // 是否 ValueType 分支（构造即定：显式传入或沿基类链传播；
@@ -177,9 +189,10 @@ namespace LatteCompiler
     // setter 的字段类型取唯一参数（value）的类型（canonical 不列其参数段，BIL §5.2）。
     public sealed class MethodSymbol : SemanticSymbol
     {
-        // 宿主类型；null = 全局函数（此时 Namespace 承载命名空间）
-        public TypeSymbol? Owner { get; }
-        public NamespaceSymbol? Namespace { get; }
+        // 宿主类型；null = 全局函数（此时 Namespace 承载命名空间）。
+        // 构造即定；ext 成员由 P2 注册到目标类型时改写（AttachToExtTarget）
+        public TypeSymbol? Owner { get; private set; }
+        public NamespaceSymbol? Namespace { get; private set; }
         public MethodKind Kind { get; }
         public bool IsStatic { get; }
         // ext 限定名的目标路径原文（SYNTAX §4.4，如 "String"/"a.b.C"；
@@ -188,7 +201,10 @@ namespace LatteCompiler
         public List<GenericParameterSymbol> GenericParameters { get; } = new List<GenericParameterSymbol>();
         public List<ParameterSymbol> Parameters { get; } = new List<ParameterSymbol>();
         // 返回类型；null = void（无结果方法）。P2 解析后填
-        public TypeSymbol? ReturnType { get; internal set; }
+        // （SemanticSymbol：TypeSymbol 或泛型声明内部的 GenericParameterSymbol）
+        public SemanticSymbol? ReturnType { get; internal set; }
+        // 挂载的 wrapper 应用（声明顺序，外层在前；P2 解析填充）
+        public List<TypeSymbol> AppliedWrappers { get; } = new List<TypeSymbol>();
 
         public MethodSymbol(
             string name,
@@ -196,7 +212,7 @@ namespace LatteCompiler
             TypeSymbol? owner = null,
             NamespaceSymbol? ns = null,
             bool isStatic = false,
-            TypeSymbol? returnType = null,
+            SemanticSymbol? returnType = null,
             string? extTargetPath = null)
             : base(name)
         {
@@ -207,22 +223,33 @@ namespace LatteCompiler
             ReturnType = returnType;
             ExtTargetPath = extTargetPath;
         }
+
+        // P2 ext 注册：把符号挂靠到目标类型（Owner 改写、不再是全局函数）
+        public void AttachToExtTarget(TypeSymbol target)
+        {
+            Owner = target;
+            Namespace = null;
+        }
     }
 
     // 含全局变量/常量（Owner 为 null、Namespace 承载命名空间）；
     // backing/computed/ext 等区分属性随 P1/P2 需要增补
     public sealed class FieldSymbol : SemanticSymbol
     {
-        public TypeSymbol? Owner { get; }
-        public NamespaceSymbol? Namespace { get; }
+        // 宿主类型（构造即定；ext 成员由 P2 注册到目标类型时改写）
+        public TypeSymbol? Owner { get; private set; }
+        public NamespaceSymbol? Namespace { get; private set; }
         public bool IsStatic { get; }
         // ext 限定名的目标路径原文（SYNTAX §4.4；P1 拆名登记，P2 解析注册；非 ext 为 null）
         public string? ExtTargetPath { get; }
-        // 声明类型（P2 解析后填）
-        public TypeSymbol? FieldType { get; internal set; }
+        // 声明类型（P2 解析后填；SemanticSymbol：TypeSymbol 或
+        // 泛型声明内部的 GenericParameterSymbol；无类型标注时留 null 归 P3 推断）
+        public SemanticSymbol? FieldType { get; internal set; }
+        // 挂载的 wrapper 应用（声明顺序，外层在前；P2 解析填充）
+        public List<TypeSymbol> AppliedWrappers { get; } = new List<TypeSymbol>();
 
         public FieldSymbol(string name, TypeSymbol? owner = null, NamespaceSymbol? ns = null,
-            bool isStatic = false, TypeSymbol? fieldType = null, string? extTargetPath = null)
+            bool isStatic = false, SemanticSymbol? fieldType = null, string? extTargetPath = null)
             : base(name)
         {
             Owner = owner;
@@ -231,14 +258,21 @@ namespace LatteCompiler
             FieldType = fieldType;
             ExtTargetPath = extTargetPath;
         }
+
+        // P2 ext 注册：把符号挂靠到目标类型（Owner 改写、不再是全局变量）
+        public void AttachToExtTarget(TypeSymbol target)
+        {
+            Owner = target;
+            Namespace = null;
+        }
     }
 
     public sealed class ParameterSymbol : SemanticSymbol
     {
-        // 参数类型（P2 解析后填）
-        public TypeSymbol? Type { get; internal set; }
+        // 参数类型（P2 解析后填；SemanticSymbol：TypeSymbol 或 GenericParameterSymbol）
+        public SemanticSymbol? Type { get; internal set; }
 
-        public ParameterSymbol(string name, TypeSymbol? type = null) : base(name)
+        public ParameterSymbol(string name, SemanticSymbol? type = null) : base(name)
         {
             Type = type;
         }
@@ -246,12 +280,48 @@ namespace LatteCompiler
 
     public sealed class GenericParameterSymbol : SemanticSymbol
     {
-        // extends 约束（如 Span\<T extends ValueType> 的 ValueType；P2 解析填充）
-        public TypeSymbol? Constraint { get; internal set; }
+        // 位置可变（TArgs...）/ 具名可变（named TArgs...）泛型参数（P1 读标记位）
+        public bool IsVariadic { get; }
+        public bool IsNamedVariadic { get; }
+        // 约束子句（extends/supers/with；P2 解析填充；声明顺序）
+        public List<GenericConstraintInfo> Constraints { get; } = new List<GenericConstraintInfo>();
 
-        public GenericParameterSymbol(string name, TypeSymbol? constraint = null) : base(name)
+        public GenericParameterSymbol(string name, bool isVariadic = false, bool isNamedVariadic = false)
+            : base(name)
         {
-            Constraint = constraint;
+            IsVariadic = isVariadic;
+            IsNamedVariadic = isNamedVariadic;
         }
+    }
+
+    // 泛型约束（语义侧）：Kind 复用语法侧 GenericConstraintKind
+    // （Semantic → AST 依赖方向合法）；Bound 为 SemanticSymbol——
+    // 除 TypeSymbol 外不禁止泛型参数作边界（规范未明，不做额外收紧）
+    public sealed class GenericConstraintInfo
+    {
+        public GenericConstraintKind Kind { get; }
+        public SemanticSymbol Bound { get; }
+
+        public GenericConstraintInfo(GenericConstraintKind kind, SemanticSymbol bound)
+        {
+            Kind = kind;
+            Bound = bound;
+        }
+    }
+
+    // wrapper 目标类别（SYNTAX §14.1 三分类互斥）：@WrapperTarget(.X) 的实参
+    public enum WrapperTargetKind
+    {
+        Entity,
+        Value,
+        Method
+    }
+
+    // 类型引用解析失败的毒化符号（SEMANTIC_ARCHITECTURE §8）：解析失败处
+    // 绑定它，后续用到它的检查（闭包/闸门/约束等）一律静默跳过，抑制次生噪音。
+    // 编译单元内单例（SymbolGraph.ErrorType）。
+    public sealed class ErrorTypeSymbol : TypeSymbol
+    {
+        internal ErrorTypeSymbol() : base("<error>", TypeKind.Class) { }
     }
 }

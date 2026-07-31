@@ -21,10 +21,14 @@ namespace LatteCompiler
 
         public bool IsFrozen { get; private set; }
 
+        // 类型引用解析失败的毒化符号单例（P2 DeclarationResolver 使用）
+        public ErrorTypeSymbol ErrorType { get; }
+
         public SymbolGraph()
         {
             GlobalNamespace = new NamespaceSymbol("");
             Bootstrap = new BootstrapSymbols(GlobalNamespace);
+            ErrorType = new ErrorTypeSymbol();
         }
 
         public void Freeze()

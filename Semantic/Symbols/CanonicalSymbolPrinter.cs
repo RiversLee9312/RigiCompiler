@@ -39,10 +39,11 @@ namespace LatteCompiler
             return CanonicalTypeName(type);
         }
 
-        // 返回类型等可空位置：null 即 .void（§6.2：只能作无结果方法的返回类型）
-        public static string PrintTypeReference(TypeSymbol? type)
+        // 返回类型等可空位置：null 即 .void（§6.2：只能作无结果方法的返回类型）；
+        // SemanticSymbol：TypeSymbol 走 PrintType，泛型参数走 §7.5 的 .generic 形态
+        public static string PrintTypeReference(SemanticSymbol? type)
         {
-            return type == null ? ".void" : PrintType(type);
+            return type == null ? ".void" : Print(type);
         }
 
         // 字段 / 全局变量 / 全局常量（§5.2）：命名空间::[类名...]#[.static.]名称@字段类型
