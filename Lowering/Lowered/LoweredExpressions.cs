@@ -2,9 +2,10 @@ using System.Collections.Generic;
 
 namespace LatteCompiler
 {
-    // Lowered 表达式节点（S6 最小集 + S7a 补齐 + S7b 脱糖，SEMANTIC_ROADMAP）：
-    // 字面量 / 值引用 / 全局字段引用 / 二元与一元 intrinsic 运算 /
-    // 带返回值调用 / new 构造 / 编译期常量（短路脱糖产物）。
+    // Lowered 表达式节点（S6 最小集 + S7a 补齐 + S7b 脱糖 + S7c-2 实例成员，
+    // SEMANTIC_ROADMAP）：字面量 / 值引用 / 全局字段引用 / 二元与一元
+    // intrinsic 运算 / 带返回值调用 / new 构造 / 编译期常量（短路脱糖产物）/
+    // this / 实例方法调用 / 实例字段访问。
     // 字面量值不冗余存储——经 Origin.Syntax（LiteralExpressionASTNode.Literal）取。
     // S7b 起部分节点构造的 origin 参数放宽为 BoundNode：脱糖合成节点无逐一
     // 对应的 Bound 节点，Origin 按 ARCH §5.1 约定指向最近的语法来源。
@@ -44,7 +45,10 @@ namespace LatteCompiler
 
         public override TypeSymbol Type => Symbol switch
         {
-            LocalSymbol local => local.Type,
+            // .breakid 局部（Type null）不作值引用——capability 不可读
+            // （BIL §9.3），LoweredLoop/LoweredLoopControl 直接持有符号
+            LocalSymbol local => local.Type ?? throw new CompilerInternalException(
+                ".breakid 局部不能作值引用: " + local.Name),
             ParameterSymbol parameter => (TypeSymbol)parameter.Type!,
             _ => throw new CompilerInternalException("未知值引用符号: " + Symbol.GetType().Name),
         };
@@ -125,6 +129,53 @@ namespace LatteCompiler
         {
             Init = init;
             Arguments = arguments;
+        }
+    }
+
+    // this 引用（S7c-2；emitter 映射 $.this 变量操作数，零指令）
+    public sealed class LoweredThisExpression : LoweredExpression
+    {
+        public LoweredThisExpression(BoundThisExpression origin) : base(origin)
+        {
+        }
+    }
+
+    // 实例方法调用（S7c-2；BIL §7.3/§15.1：receiver 求值作首实参）。
+    // 接口方法符号引用时分派归 Middleware（注释约定）。
+    // Type 自带不走 Origin 透传：for 脱糖（S7c-2）合成节点的 Origin 是
+    // BoundLoop（语句而非表达式，无法透传）；恒等降级路径由调用方传入
+    // 与 Origin 相同的类型（同一来源两形态统一）
+    public sealed class LoweredInstanceCallExpression : LoweredExpression
+    {
+        public LoweredExpression Receiver { get; }
+        public MethodSymbol Method { get; }
+        public IReadOnlyList<LoweredExpression> Arguments { get; }
+        private readonly TypeSymbol type;
+
+        public override TypeSymbol Type => type;
+
+        public LoweredInstanceCallExpression(BoundNode origin, LoweredExpression receiver,
+            MethodSymbol method, IReadOnlyList<LoweredExpression> arguments, TypeSymbol type)
+            : base(origin)
+        {
+            Receiver = receiver;
+            Method = method;
+            Arguments = arguments;
+            this.type = type;
+        }
+    }
+
+    // 实例字段访问（S7c-2；BIL §13.3 get.field/set.field）
+    public sealed class LoweredFieldAccessExpression : LoweredExpression
+    {
+        public LoweredExpression Receiver { get; }
+        public FieldSymbol Field { get; }
+
+        public LoweredFieldAccessExpression(BoundFieldAccessExpression origin,
+            LoweredExpression receiver, FieldSymbol field) : base(origin)
+        {
+            Receiver = receiver;
+            Field = field;
         }
     }
 }

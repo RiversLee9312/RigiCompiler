@@ -5,16 +5,18 @@ namespace LatteCompiler.Tests
 {
     /// <summary>
     /// stdlib 内嵌源载入测试（M43，Semantic/StdlibSources.cs）：
-    /// 断言 stdlib/core/Console.latte 确实经 EmbeddedResource 进入程序集，
+    /// 断言 stdlib/**/*.latte 确实经 EmbeddedResource 进入程序集，
     /// 且被当前 Lexer+Parser 完整接受。
     ///
-    /// 覆盖：
-    /// 1. ParseAll() 返回恰好一棵 RootASTNode（当前 stdlib 仅此一源），
-    ///    Root 的 Span.sourceName 为逻辑名映射形 <stdlib>/core/Console.latte
-    /// 2. 结构断言：namespace core.io + pub class Console；Console 恰好 3 个
-    ///    callable 成员——print/printErr 带 native/static 修饰符、无 Body、
-    ///    各带两个注解；println 有 Body、无注解
-    /// 3. 整棵 Root 的 AstDescribe 描述串精确比对
+    /// 覆盖（S7c-2 起三源：.bootstrap.latte / core/Console.latte /
+    /// core/collections.latte，按逻辑名 Ordinal 排序）：
+    /// 1. ParseAll() 返回恰好三棵 RootASTNode，Span.sourceName 为逻辑名
+    ///    映射形（&lt;stdlib&gt;/ 前缀，含点开头文件名的反推）
+    /// 2. 结构断言：.bootstrap 顶层恰好 1 个 ext operator callable；
+    ///    Console（namespace core.io + pub class + 3 callable 成员，
+    ///    native 双注解）；collections（namespace core.collections +
+    ///    2 interface + 2 class）
+    /// 3. Console 整棵 Root 的 AstDescribe 描述串精确比对
     /// </summary>
     public static class StdlibSourcesTests
     {
@@ -23,8 +25,10 @@ namespace LatteCompiler.Tests
             TestHarness.Reset();
 
             TestCountAndSourceName();
-            TestStructure();
-            TestDescribe();
+            TestBootstrapStructure();
+            TestConsoleStructure();
+            TestCollectionsStructure();
+            TestConsoleDescribe();
 
             return TestHarness.Summary("StdlibSources");
         }
@@ -35,30 +39,66 @@ namespace LatteCompiler.Tests
             TestHarness.Section("ParseAll: Count & SourceName");
 
             var roots = StdlibSources.ParseAll();
-            TestHarness.CheckTrue("ParseAll 返回恰好 1 棵 RootASTNode",
-                roots.Count == 1, $"实际 {roots.Count} 棵");
-            if (roots.Count == 0) { TestHarness.Blank(); return; }
+            TestHarness.CheckTrue("ParseAll 返回恰好 3 棵 RootASTNode",
+                roots.Count == 3, $"实际 {roots.Count} 棵");
+            if (roots.Count < 3) { TestHarness.Blank(); return; }
 
-            TestHarness.Check("Root Span.sourceName",
-                roots[0].Span?.sourceName ?? "<null>", "<stdlib>/core/Console.latte");
+            // 逻辑名 Ordinal 排序：'.'(0x2E) < 'c'；'C'(0x43) < 'c'(0x63)
+            TestHarness.Check("sourceName[0]（点开头文件名反推）",
+                roots[0].Span?.sourceName ?? "<null>", "<stdlib>/.bootstrap.latte");
+            TestHarness.Check("sourceName[1]",
+                roots[1].Span?.sourceName ?? "<null>", "<stdlib>/core/Console.latte");
+            TestHarness.Check("sourceName[2]",
+                roots[2].Span?.sourceName ?? "<null>", "<stdlib>/core/collections.latte");
 
             TestHarness.Blank();
         }
 
-        // ===== 2. 结构断言 =====
-        private static void TestStructure()
+        // ===== 2a. .bootstrap 结构：恰好 1 个 ext operator callable =====
+        private static void TestBootstrapStructure()
         {
-            TestHarness.Section("Structure: namespace core.io + class Console");
+            TestHarness.Section("Structure: .bootstrap ext operator");
 
             var roots = StdlibSources.ParseAll();
-            if (roots.Count != 1)
+            if (roots.Count < 1)
             {
-                TestHarness.CheckTrue("ParseAll 返回恰好 1 棵 RootASTNode（结构断言前置）",
-                    false, $"实际 {roots.Count} 棵");
+                TestHarness.CheckTrue("ParseAll 至少 1 棵（结构断言前置）", false);
                 TestHarness.Blank();
                 return;
             }
             var root = roots[0];
+
+            TestHarness.CheckTrue("顶层恰好 1 个声明（ext operator）",
+                root.Declarations.Count == 1, $"实际 {root.Declarations.Count}");
+            var fn = root.Declarations.Count > 0
+                ? root.Declarations[0] as CallableDeclarationASTNode : null;
+            TestHarness.CheckTrue("首声明是 callable", fn != null,
+                root.Declarations.Count > 0 ? root.Declarations[0].GetType().Name : "<none>");
+            if (fn == null) { TestHarness.Blank(); return; }
+
+            TestHarness.Check("限定名（ext 目标.成员名）", fn.Name, "i32.EnumerateInRange");
+            TestHarness.CheckTrue("带 ext 修饰符", fn.Modifiers.Contains(Keywords.EXT));
+            TestHarness.CheckTrue("带 pub 修饰符", fn.Modifiers.Contains(Keywords.PUB));
+            TestHarness.CheckTrue("Kind 是 Operator", fn.Kind == CallableKind.Operator);
+            TestHarness.CheckTrue("有 Body（Latte 自举实现）", fn.Body != null);
+
+            TestHarness.Blank();
+        }
+
+        // ===== 2b. Console 结构（namespace core.io + class Console）=====
+        private static void TestConsoleStructure()
+        {
+            TestHarness.Section("Structure: namespace core.io + class Console");
+
+            var roots = StdlibSources.ParseAll();
+            if (roots.Count < 2)
+            {
+                TestHarness.CheckTrue("ParseAll 至少 2 棵（结构断言前置）", false,
+                    $"实际 {roots.Count} 棵");
+                TestHarness.Blank();
+                return;
+            }
+            var root = roots[1];
 
             TestHarness.CheckTrue("顶层恰好 2 个声明（namespace + class）",
                 root.Declarations.Count == 2, $"实际 {root.Declarations.Count}");
@@ -127,21 +167,77 @@ namespace LatteCompiler.Tests
             TestHarness.CheckTrue("println 无注解", f.Annotations.Count == 0);
         }
 
-        // ===== 3. 描述串精确比对 =====
-        private static void TestDescribe()
+        // ===== 2c. collections 结构（namespace + 2 interface + 2 class）=====
+        private static void TestCollectionsStructure()
         {
-            TestHarness.Section("AstDescribe Snapshot");
+            TestHarness.Section("Structure: namespace core.collections");
 
             var roots = StdlibSources.ParseAll();
-            if (roots.Count != 1)
+            if (roots.Count < 3)
             {
-                TestHarness.CheckTrue("ParseAll 返回恰好 1 棵 RootASTNode（快照前置）",
-                    false, $"实际 {roots.Count} 棵");
+                TestHarness.CheckTrue("ParseAll 至少 3 棵（结构断言前置）", false,
+                    $"实际 {roots.Count} 棵");
+                TestHarness.Blank();
+                return;
+            }
+            var root = roots[2];
+
+            // 顶层：namespace + IEnumerator/IEnumerable 接口 +
+            // RangeEnumeratorI32/RangeI32 类（共 5 个声明）
+            TestHarness.CheckTrue("顶层恰好 5 个声明（namespace + 2 interface + 2 class）",
+                root.Declarations.Count == 5, $"实际 {root.Declarations.Count}");
+            if (root.Declarations.Count < 5) { TestHarness.Blank(); return; }
+
+            var ns = root.Declarations[0] as NamespaceDeclarationASTNode;
+            TestHarness.CheckTrue("首声明是 namespace core.collections",
+                ns != null && AstDescribe.Symbol(ns.Name.symbol) == "core.collections");
+            TestHarness.CheckTrue("声明[1] 是 interface IEnumerator",
+                root.Declarations[1] is InterfaceDeclarationASTNode iface1
+                && iface1.InterfaceName == "IEnumerator");
+            TestHarness.CheckTrue("声明[2] 是 interface IEnumerable",
+                root.Declarations[2] is InterfaceDeclarationASTNode iface2
+                && iface2.InterfaceName == "IEnumerable");
+            TestHarness.CheckTrue("声明[3] 是 class RangeEnumeratorI32",
+                root.Declarations[3] is ClassDeclarationASTNode cls1
+                && cls1.ClassName == "RangeEnumeratorI32");
+            TestHarness.CheckTrue("声明[4] 是 class RangeI32",
+                root.Declarations[4] is ClassDeclarationASTNode cls2
+                && cls2.ClassName == "RangeI32");
+
+            // 接口方法无体（§11）；实现类成员带 override（RangeI32.iterate）
+            if (root.Declarations[1] is InterfaceDeclarationASTNode enumerator)
+            {
+                TestHarness.CheckTrue("IEnumerator 双成员均无 Body（接口无体方法）",
+                    enumerator.Members.Count == 2
+                    && enumerator.Members.All(m =>
+                        m is CallableDeclarationASTNode { Body: null }));
+            }
+            if (root.Declarations[4] is ClassDeclarationASTNode range)
+            {
+                var iterate = range.Members.OfType<CallableDeclarationASTNode>()
+                    .FirstOrDefault(m => m.Name == "iterate");
+                TestHarness.CheckTrue("RangeI32.iterate 带 override 修饰符",
+                    iterate != null && iterate.Modifiers.Contains(Keywords.OVERRIDE));
+            }
+
+            TestHarness.Blank();
+        }
+
+        // ===== 3. Console 描述串精确比对 =====
+        private static void TestConsoleDescribe()
+        {
+            TestHarness.Section("AstDescribe Snapshot (Console)");
+
+            var roots = StdlibSources.ParseAll();
+            if (roots.Count < 2)
+            {
+                TestHarness.CheckTrue("ParseAll 至少 2 棵（快照前置）", false,
+                    $"实际 {roots.Count} 棵");
                 TestHarness.Blank();
                 return;
             }
 
-            TestHarness.Check("Root 描述串", AstDescribe.Root(roots[0]),
+            TestHarness.Check("Console Root 描述串", AstDescribe.Root(roots[1]),
                 "namespace core.io; pub class Console {" +
                 @"@NativeLibrary(Str(""latte_rt"")) @NativeSymbol(Str(""print"")) priv static native func print(text: String), " +
                 @"@NativeLibrary(Str(""latte_rt"")) @NativeSymbol(Str(""printErr"")) priv static native func printErr(text: String), " +

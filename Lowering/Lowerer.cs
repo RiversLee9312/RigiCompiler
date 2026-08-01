@@ -10,6 +10,15 @@ namespace LatteCompiler
     // - if 表达式（合成结果局部 + LoweredIfStatement 前置 + 值块降级）；
     // - 复合赋值（前置「Target = Target op Value」赋值，表达式位 Target 引用）；
     // - if 语句恒等降级为 LoweredIfStatement。
+    // S7c-1 落地循环降级（while/do-while → LoweredLoop，BIL §16.3/§16.4）：
+    // 条件求值移入 Judge 块（末尾写合成 bool 条件局部 .sN）、合成
+    // .breakid 局部（.bN 命名）、BoundLoop → BreakId 映射栈供
+    // break/continue 引用命中（穿透值块/嵌套块直接发 BIL 跳转，不展开）。
+    // S7c-2 落地实例成员恒等降级（this/实例调用/实例字段）与 for 脱糖
+    // （for-each 协议，SYNTAX §7.3）：前置 iterate() 写合成枚举器局部、
+    // Judge = moveNext() 写条件局部、Body 头 = 循环变量 = current()——
+    // 产物复用 LoweredLoop，P4b 零新增；协议三方法符号取 P3 挂在
+    // BoundLoop 上的产物（P4 不做名字分析，ARCH §11.3 纪律）。
     //
     // 实例化 session（仿 BilEmitter.EmitSession）的机制：
     // - 当前块输出语句列表栈：LowerBlock 为每块建输出列表；表达式降级时向
@@ -41,10 +50,16 @@ namespace LatteCompiler
             // 当前函数上下文（函数体互不嵌套，无重入）
             private readonly List<LocalSymbol> synthLocals = new List<LocalSymbol>();
             private int synthCount;
+            private int breakIdCount;
             private readonly Stack<List<LoweredStatement>> outputStack =
                 new Stack<List<LoweredStatement>>();
             private readonly Stack<(BoundValueBlock Block, LocalSymbol Target)> valueBlocks =
                 new Stack<(BoundValueBlock, LocalSymbol)>();
+            // 循环映射栈（S7c-1）：BoundLoop → 合成 .breakid 局部（引用相等
+            // 查找），进循环压栈、出循环弹栈；BoundLoopControl 经 Target
+            // 引用查映射得 BreakId（仿值块映射栈模式）
+            private readonly Stack<(BoundLoop Loop, LocalSymbol BreakId)> loops =
+                new Stack<(BoundLoop, LocalSymbol)>();
 
             public LowerSession(CompilationUnit unit, IReadOnlyList<BoundFunctionBody> bodies)
             {
@@ -67,10 +82,12 @@ namespace LatteCompiler
             {
                 synthLocals.Clear();
                 synthCount = 0;
+                breakIdCount = 0;
                 valueBlocks.Clear();    // 函数体互不嵌套，防御性清空
+                loops.Clear();
                 var lowered = LowerBlock(body.Body);
                 if (lowered == null) return null;
-                // 合成局部（.s 前缀，脱糖产物）跟在源码局部之后
+                // 合成局部（.s/.b 前缀，脱糖产物）跟在源码局部之后
                 return new LoweredFunctionBody(body.Method,
                     body.Locals.Concat(synthLocals).ToList(), lowered);
             }
@@ -85,6 +102,17 @@ namespace LatteCompiler
             {
                 var local = new LocalSymbol(".s" + synthCount, type, isConst: false);
                 synthCount++;
+                synthLocals.Add(local);
+                return local;
+            }
+
+            // 合成 .breakid 局部（S7c-1，BIL §9.3 capability）：.bN 命名，
+            // 函数内唯一；Type 为 null（无对应 TypeSymbol，见 LocalSymbol
+            // 注释），emitter 侧 .vars 条目按 .breakid 投影
+            private LocalSymbol NewBreakIdLocal()
+            {
+                var local = new LocalSymbol(".b" + breakIdCount, null, isConst: false);
+                breakIdCount++;
                 synthLocals.Add(local);
                 return local;
             }
@@ -140,7 +168,16 @@ namespace LatteCompiler
                     case BoundCallStatement call:
                         var arguments = LowerArguments(call.Arguments);
                         if (arguments == null) return null;
-                        return new LoweredCallStatement(call, call.Method, arguments);
+                        // 实例 void 调用（S7c-2）：receiver 恒等降级
+                        LoweredExpression? callReceiver = null;
+                        if (call.Receiver != null)
+                        {
+                            callReceiver = LowerExpression(call.Receiver);
+                            if (callReceiver == null) return null;
+                        }
+                        return new LoweredCallStatement(call, call.Method, arguments, callReceiver);
+                    case BoundLoop loop:
+                        return loop.Kind == LoopKind.For ? LowerForLoop(loop) : LowerLoop(loop);
                     case BoundAssignmentStatement assignment:
                         var target = LowerExpression(assignment.Target);
                         var value = LowerExpression(assignment.Value);
@@ -176,6 +213,12 @@ namespace LatteCompiler
                         if (written == null) return null;
                         return new LoweredAssignmentStatement(returnValueStatement,
                             ReferenceTo(returnValueStatement, writeTarget), written);
+                    case BoundLoopControl loopControl:
+                        // break/continue 是 BIL 真跳转（§16.5），直接携带目标
+                        // 循环的 breakid——穿透值块/嵌套块无需任何展开；
+                        // 其后语句在 BIL 块内自然不可达（无需 if 转换介入）
+                        return new LoweredLoopControl(loopControl, loopControl.IsBreak,
+                            FindLoopBreakId(loopControl.Target));
                     default:
                         Unsupported(statement);
                         return null;
@@ -190,6 +233,104 @@ namespace LatteCompiler
                 }
                 throw new CompilerInternalException(
                     "return@ 目标值块不在降级上下文内（P3 已保证只在值块内）");
+            }
+
+            // 循环降级（S7c-1，BIL §16.3/§16.4）：合成 bool 条件局部（.sN）
+            // 与 .breakid 局部（.bN）；条件表达式在独立块上下文降级并写条件
+            // 局部，产物即 Judge 块（前置语句随块走——条件内短路/if 表达式
+            // 的展开自然落在 Judge 内）；映射压栈后降级 Body（体内
+            // break/continue 经引用命中本循环）；Enumerator 恒 null（for
+            // 的枚举器块随 S7c-2）。仅 While/DoWhile 路径——Condition 恒
+            // 非空（For 走 LowerForLoop 脱糖，不经此）
+            private LoweredStatement? LowerLoop(BoundLoop loop)
+            {
+                var condition = NewSynthLocal(loop.Condition!.Type);
+                var breakId = NewBreakIdLocal();
+                var judge = LowerAssignInNewBlock(loop, loop.Condition!, condition);
+                if (judge == null) return null;
+                loops.Push((loop, breakId));
+                LoweredBlock? body;
+                try
+                {
+                    body = LowerBlock(loop.Body);
+                }
+                finally
+                {
+                    loops.Pop();
+                }
+                if (body == null) return null;
+                return new LoweredLoop(loop, loop.Kind == LoopKind.DoWhile,
+                    judge, condition, body, enumerator: null, breakId);
+            }
+
+            // BoundLoopControl.Target 经引用查循环映射栈得 BreakId；未命中
+            // 即内部错误（P3 已保证目标循环包含该语句，降级上下文必在栈上）
+            private LocalSymbol FindLoopBreakId(BoundLoop target)
+            {
+                foreach (var (loop, breakId) in loops)
+                {
+                    if (ReferenceEquals(loop, target)) return breakId;
+                }
+                throw new CompilerInternalException(
+                    "break/continue 目标循环不在降级上下文内（P3 已保证目标包含语句）");
+            }
+
+            // for 脱糖（S7c-2，SYNTAX §7.3 for-each 协议）：
+            //   前置（当前块）：.e = <iterable 降级>.iterate()
+            //   LoweredLoop{ IsRev=false,
+            //     Judge = [ .c = .e.moveNext() ]（条件局部 .c 为合成 bool），
+            //     Body = [ LoopVariable = .e.current(); <体降级> ],
+            //     Enumerator = null, BreakId = .bN }
+            // 产物复用 LoweredLoop——P4b 零新增。协议三方法符号与元素类型
+            // 取 P3 挂在 BoundLoop 上的产物（P4 不做名字分析）；枚举器局部
+            // 类型 = GetConstructedType(IEnumerator 定义, TItem)——定义经
+            // MoveNextMethod.Owner 取（接口方法宿主编译期即定）
+            private LoweredStatement? LowerForLoop(BoundLoop loop)
+            {
+                // P3 已保证 For 路径字段齐备（BoundLoop 注释的形态互斥约定）
+                var loopVariable = loop.LoopVariable!;
+                var itemType = loopVariable.Type!;
+                var enumeratorDef = (TypeSymbol)loop.MoveNextMethod!.Owner!;
+                var enumeratorType = unit.Symbols.GetConstructedType(enumeratorDef, itemType);
+                var moveNextType = (TypeSymbol)loop.MoveNextMethod.ReturnType!;
+                var enumerator = NewSynthLocal(enumeratorType);
+                var condition = NewSynthLocal(moveNextType);
+                var breakId = NewBreakIdLocal();
+                // 前置：.e = <iterable>.iterate()（合成节点 Origin 指 for 语句）
+                var iterable = LowerExpression(loop.Iterable!);
+                if (iterable == null) return null;
+                outputStack.Peek().Add(new LoweredAssignmentStatement(loop,
+                    ReferenceTo(loop, enumerator),
+                    new LoweredInstanceCallExpression(loop, iterable, loop.IterateMethod!,
+                        new List<LoweredExpression>(), enumeratorType)));
+                // Judge：.c = .e.moveNext()
+                var judge = new LoweredBlock(loop, new List<LoweredStatement>
+                {
+                    new LoweredAssignmentStatement(loop, ReferenceTo(loop, condition),
+                        new LoweredInstanceCallExpression(loop, ReferenceTo(loop, enumerator),
+                            loop.MoveNextMethod, new List<LoweredExpression>(), moveNextType)),
+                });
+                // Body：头 = LoopVariable = .e.current()，其后体降级语句
+                loops.Push((loop, breakId));
+                LoweredBlock? body;
+                try
+                {
+                    body = LowerBlock(loop.Body);
+                }
+                finally
+                {
+                    loops.Pop();
+                }
+                if (body == null) return null;
+                var bodyStatements = new List<LoweredStatement>
+                {
+                    new LoweredAssignmentStatement(loop, ReferenceTo(loop, loopVariable),
+                        new LoweredInstanceCallExpression(loop, ReferenceTo(loop, enumerator),
+                            loop.CurrentMethod!, new List<LoweredExpression>(), itemType)),
+                };
+                bodyStatements.AddRange(body.Statements);
+                return new LoweredLoop(loop, isRev: false, judge, condition,
+                    new LoweredBlock(loop.Body, bodyStatements), enumerator: null, breakId);
             }
 
             private List<LoweredExpression>? LowerArguments(
@@ -417,6 +558,20 @@ namespace LatteCompiler
                         return LowerIfExpression(ifExpression);
                     case BoundCompoundAssignmentExpression compound:
                         return LowerCompoundAssignment(compound);
+                    case BoundThisExpression thisExpression:
+                        return new LoweredThisExpression(thisExpression);
+                    case BoundInstanceCallExpression instanceCall:
+                        var instanceReceiver = LowerExpression(instanceCall.Receiver);
+                        if (instanceReceiver == null) return null;
+                        var instanceArguments = LowerArguments(instanceCall.Arguments);
+                        if (instanceArguments == null) return null;
+                        return new LoweredInstanceCallExpression(instanceCall, instanceReceiver,
+                            instanceCall.Method, instanceArguments, instanceCall.Type);
+                    case BoundFieldAccessExpression fieldAccess:
+                        var accessReceiver = LowerExpression(fieldAccess.Receiver);
+                        if (accessReceiver == null) return null;
+                        return new LoweredFieldAccessExpression(fieldAccess, accessReceiver,
+                            fieldAccess.Field);
                     default:
                         Unsupported(expression);
                         return null;

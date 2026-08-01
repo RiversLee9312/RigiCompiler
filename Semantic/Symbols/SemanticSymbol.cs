@@ -343,12 +343,16 @@ namespace LatteCompiler
     // 函数体局部变量（P3 Binder 产生；ARCHITECTURE §4.1：挂在函数分析结果
     // BoundFunctionBody.Locals 上，不进符号图容器表，不受 Freeze 约束）。
     // 参数不归此类——参数符号是 ParameterSymbol，随 MethodSymbol 声明侧存在。
+    // Type 为 null 是 P4a 合成 .breakid 局部的唯一特例（BIL §9.3：.breakid
+    // 是结构化控制 capability，无对应 TypeSymbol；emitter 侧 .vars 条目按
+    // 「Type 为 null → typeRef 用 .breakid」投影）——源码局部与 .sN 合成
+    // 局部恒非空。
     public sealed class LocalSymbol : SemanticSymbol
     {
-        public TypeSymbol Type { get; }
+        public TypeSymbol? Type { get; }
         public bool IsConst { get; }
 
-        public LocalSymbol(string name, TypeSymbol type, bool isConst) : base(name)
+        public LocalSymbol(string name, TypeSymbol? type, bool isConst) : base(name)
         {
             Type = type;
             IsConst = isConst;

@@ -2,9 +2,10 @@ using System.Collections.Generic;
 
 namespace LatteCompiler
 {
-    // Bound 表达式节点（S5 最小集 + S7b 首批，SEMANTIC_ROADMAP）：
+    // Bound 表达式节点（S5 最小集 + S7b 首批 + S7c-2 实例成员，SEMANTIC_ROADMAP）：
     // 字面量 / 值引用（局部变量与参数）/ 全局字段引用 / 二元与一元 intrinsic 运算 /
-    // 直接调用（无重载）/ new 构造 / if 表达式 / 复合赋值。
+    // 直接调用（无重载）/ new 构造 / if 表达式 / 复合赋值 /
+    // this / 实例方法调用 / 实例字段访问。
     // 字面量值不冗余存储——经 Syntax（LiteralExpressionASTNode.Literal）取。
 
     // 字面量（整/浮点/字符串/字符/bool/null；Type 由 P3 按字面量种类与上下文定型）
@@ -140,6 +141,51 @@ namespace LatteCompiler
             Target = target;
             Op = op;
             Value = value;
+        }
+    }
+
+    // this 引用（S7c-2，SYNTAX §9）：Type = 宿主类型（普通成员为声明类型；
+    // ext 成员为目标类型——method.Owner 统一承载）。静态上下文（static
+    // 方法/全局函数）中的 this 在 P3 拒绝，不落树
+    public sealed class BoundThisExpression : BoundExpression
+    {
+        public BoundThisExpression(ASTNode syntax, TypeSymbol type) : base(syntax, type)
+        {
+        }
+    }
+
+    // 实例方法调用（S7c-2）：Receiver 静态类型上色查找（沿 BaseType 链，
+    // 接口 receiver 查接口自身成员；ext 注册成员同路径——P2 已挂目标类型
+    // 成员表）。接口方法的调用以接口方法符号引用（分派归 Middleware，
+    // BIL §15.1 注释约定）。Arguments 已是规范参数序
+    public sealed class BoundInstanceCallExpression : BoundExpression
+    {
+        public BoundExpression Receiver { get; }
+        public MethodSymbol Method { get; }
+        public IReadOnlyList<BoundExpression> Arguments { get; }
+
+        public BoundInstanceCallExpression(ASTNode syntax, BoundExpression receiver,
+            MethodSymbol method, IReadOnlyList<BoundExpression> arguments, TypeSymbol type)
+            : base(syntax, type)
+        {
+            Receiver = receiver;
+            Method = method;
+            Arguments = arguments;
+        }
+    }
+
+    // 实例字段访问（S7c-2）：Receiver 静态类型上色查找（沿 BaseType 链；
+    // ext 注册成员同路径）。裸名实例字段在实例方法体内解析为 this.field
+    public sealed class BoundFieldAccessExpression : BoundExpression
+    {
+        public BoundExpression Receiver { get; }
+        public FieldSymbol Field { get; }
+
+        public BoundFieldAccessExpression(ASTNode syntax, BoundExpression receiver,
+            FieldSymbol field, TypeSymbol type) : base(syntax, type)
+        {
+            Receiver = receiver;
+            Field = field;
         }
     }
 }

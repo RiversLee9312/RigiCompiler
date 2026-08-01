@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Globalization;
+using System.Reflection;
 using System.Text;
 using LatteCompiler.Bil;
 
@@ -24,6 +25,16 @@ namespace LatteCompiler
     // 既有「void 末尾补 ret / 不得落尾」逻辑）；P4a 合成常量（bool）与
     // 字面量同路进 Resources（同键去重）；block id 函数内唯一递增
     // （if0-then/if0-else，字符集限 A-Za-z0-9_- §5.1，无点号）。
+    // S7c-1 发射补齐：LoweredLoop → loop/loop.rev（§16.3/§16.4：条件即
+    // 合成局部引用，操作数序 cond/body/none/judge/breakid，块 id
+    // loop0-body/loop0-judge）+ LoweredLoopControl → break/continue
+    // （§16.5）+ .vars 的 .breakid 条目（§9.3：Type null 的合成局部
+    // 投影 .breakid 别名）。
+    // S7c-2 发射开闸：实例方法 fn 定义（.args 首条 .return 后插 .this =
+    // OwnerType 投影，§9.2/§7.3——ext 成员同形态）、实例 invoke（receiver
+    // 首实参；接口方法符号引用分派归 Middleware）、get.field/set.field
+    // （§13.3）、this → $.this 零指令、init/operator 的 §8.4 声明形态
+    // （init 修饰符 / operator(名) 修饰符 / ext 修饰符）。
     // 统一风格：表达式求值结果一律先物化到 .t 临时变量，再经 set.var 写入目标。
     // 符号引用一律经 CanonicalSymbolPrinter 投影；BilInstruction.Origin 塞
     // LoweredNode（语句级；load 的 Origin 是字面量 LoweredNode），BIL 模型
@@ -52,9 +63,10 @@ namespace LatteCompiler
             // 不得以 . 开头，与用户变量零冲突）；指令生成中登记，.vars 收尾输出
             private readonly List<BilVarDeclaration> tempVars = new List<BilVarDeclaration>();
             private int tempCount;
-            // 当前函数（EmitFunction 设置）与 if 分支 block 编号（函数内唯一递增）
+            // 当前函数（EmitFunction 设置）与 if/loop 分支 block 编号（函数内唯一递增）
             private BilFunction function = null!;
             private int ifCount;
+            private int loopCount;
 
             public EmitSession(CompilationUnit unit, IReadOnlyList<LoweredFunctionBody> bodies,
                 string moduleName)
@@ -75,6 +87,7 @@ namespace LatteCompiler
                 // §4.1：源模块名（LiteralText 含引号；moduleName 由编译器内部给定）
                 module.Metadata.Add(new BilMetadataEntry("module", "string", $"\"{moduleName}\""));
                 EmitNamespace(unit.Symbols.GlobalNamespace);
+                EmitBuiltinExtMembers();
                 // Resources 在函数发射中按（bodies 顺序 + 树内先序）登记
                 foreach (var body in bodies)
                 {
@@ -82,6 +95,37 @@ namespace LatteCompiler
                     if (function != null) module.Functions.Add(function);
                 }
                 return module;
+            }
+
+            // 内建类型的 ext 成员声明（S7c-2）：内建类型自身不声明
+            // （EmitTypeTree 跳过 IsBuiltin——基元经 BIL 别名投影而非符号
+            // 引用），但 P2 注册到其上的 ext 成员（如 .bootstrap 的
+            // EnumerateInRange）必须声明，否则其 fn 定义引用了未声明符号——
+            // 以 §8.4.1 裸条目形态输出（canonical 自带宿主前缀，段内位置
+            // 任意）。枚举经 BootstrapSymbols 公共 TypeSymbol 属性反射——
+            // 新内建类型自动覆盖，不维护手列清单
+            private void EmitBuiltinExtMembers()
+            {
+                foreach (var property in typeof(BootstrapSymbols).GetProperties(
+                    BindingFlags.Public | BindingFlags.Instance))
+                {
+                    if (property.GetValue(unit.Symbols.Bootstrap) is not TypeSymbol
+                        { IsBuiltin: true } builtinType) continue;
+                    foreach (var field in builtinType.Fields)
+                    {
+                        if (field.ExtTargetPath == null) continue;
+                        module.LocalSymbols.Add(new BilSimpleMemberDeclaration(
+                            field.IsStatic ? ".static-field" : ".field",
+                            CanonicalSymbolPrinter.PrintField(field),
+                            new[] { AccessibilityModifier(field.Accessibility) }));
+                    }
+                    foreach (var method in builtinType.Methods)
+                    {
+                        if (method.ExtTargetPath == null) continue;
+                        var declaration = EmitMethodDeclaration(method);
+                        if (declaration != null) module.LocalSymbols.Add(declaration);
+                    }
+                }
             }
 
             // ===== LocalSymbols（§8）=====
@@ -170,17 +214,23 @@ namespace LatteCompiler
                 return declaration;
             }
 
-            // 方法声明（§8.4）：类型成员与全局函数共形态；null 返回 = 已诊断跳过
+            // 方法声明（§8.4）：类型成员与全局函数共形态；null 返回 = 已诊断跳过。
+            // S7c-2 开闸 init/operator 与实例方法：init 走普通 canonical
+            // （$init...@.void）+ init 修饰符；operator 走 $$名 canonical +
+            // operator(名) 修饰符；ext 成员带 ext 修饰符（P2 注册后
+            // ExtTargetPath 保留为标记）；getter/setter 归 S8/S11 仍跳过
             private BilSimpleMemberDeclaration? EmitMethodDeclaration(MethodSymbol method)
             {
-                // init/operator/getter/setter 的声明形态随 S8/S11 落地
-                if (method.Kind != MethodKind.Regular)
+                if (method.Kind is MethodKind.Getter or MethodKind.Setter)
                 {
                     Error(null, $"P4: method kind not supported by minimal emission: " +
                         $"{method.Kind} ({CanonicalSymbolPrinter.PrintMethod(method)})");
                     return null;
                 }
                 var modifiers = new List<string> { AccessibilityModifier(method.Accessibility) };
+                if (method.ExtTargetPath != null) modifiers.Add("ext");
+                if (method.Kind == MethodKind.Init) modifiers.Add("init");
+                if (method.Kind == MethodKind.Operator) modifiers.Add($"operator({method.Name})");
                 // native 三件套（§8.4：symbol/lib 必须与 native 同时出现且各恰好一次）
                 if (method.IsNative)
                 {
@@ -229,31 +279,35 @@ namespace LatteCompiler
 
             // ===== Functions（§9）=====
 
-            // null 返回 = 已诊断跳过（实例方法第一版不支持 .this receiver，§7.3）
+            // null 返回 = 已诊断跳过。S7c-2 开闸实例方法（含 ext 成员）：
+            // .args 按 §9.2 顺序——.return 在前，实例方法 .this 次之
+            // （§7.3：ext 成员同以 .this 表示被扩展值的 receiver），
+            // 普通参数随后（隐藏参数随 S9 落地）
             private BilFunction? EmitFunction(LoweredFunctionBody body)
             {
                 var method = body.Method;
-                if (method.Owner != null && !method.IsStatic)
-                {
-                    Error(body.Body.Origin.Syntax.Span,
-                        $"P4: instance method '{method.Name}' requires .this receiver (S8)");
-                    return null;
-                }
                 var function = new BilFunction(CanonicalSymbolPrinter.PrintMethod(method));
-                // .args（§9.2）：.return 在前，其后普通参数（隐藏参数随 S9 落地）
+                // .args（§9.2）：.return →（实例）.this → 普通参数
                 function.Args.Add(new BilArgDeclaration(".return",
                     CanonicalSymbolPrinter.PrintTypeReference(method.ReturnType)));
+                if (method.Owner != null && !method.IsStatic)
+                {
+                    function.Args.Add(new BilArgDeclaration(".this",
+                        CanonicalSymbolPrinter.PrintType(method.Owner)));
+                }
                 foreach (var parameter in method.Parameters)
                 {
                     function.Args.Add(new BilArgDeclaration(parameter.Name,
                         CanonicalSymbolPrinter.PrintTypeReference(parameter.Type)));
                 }
                 // 指令生成（临时变量在生成中登记）：entry block 先行入列，
-                // if 分支 block 随 LoweredIfStatement 发射追加（§16.2）
+                // if 分支 block 随 LoweredIfStatement 发射追加（§16.2）、
+                // loop 的 body/judge block 随 LoweredLoop 发射追加（§16.3/§16.4）
                 this.function = function;
                 tempVars.Clear();
                 tempCount = 0;
                 ifCount = 0;
+                loopCount = 0;
                 var entry = new BilBlock("entry", "entrypoint");
                 function.Blocks.Add(entry);
                 EmitBlock(body.Body, entry);
@@ -266,11 +320,14 @@ namespace LatteCompiler
                 {
                     entry.Instructions.Add(new BilInstruction("ret"));
                 }
-                // .vars（§9.3）：Locals 在前、临时变量在后
+                // .vars（§9.3）：Locals 在前、临时变量在后；Type 为 null 的
+                // 合成局部是 .breakid capability（§9.3 别名，无 TypeSymbol）
                 foreach (var local in body.Locals)
                 {
                     function.Vars.Add(new BilVarDeclaration(
-                        CanonicalSymbolPrinter.PrintType(local.Type), local.Name));
+                        local.Type == null
+                            ? ".breakid"
+                            : CanonicalSymbolPrinter.PrintType(local.Type), local.Name));
                 }
                 function.Vars.AddRange(tempVars);
                 return function;
@@ -320,6 +377,16 @@ namespace LatteCompiler
                                     BilOp.Field(CanonicalSymbolPrinter.PrintField(fieldTarget.Field)))
                                 { Origin = assignment });
                                 break;
+                            case LoweredFieldAccessExpression accessTarget:
+                                // 实例字段写入（§13.3：set.field SOURCE OBJECT
+                                // field(F)——SOURCE 已物化，OBJECT 随后求值，
+                                // 与操作数序一致）
+                                var writeReceiver = EmitValue(accessTarget.Receiver, target);
+                                target.Instructions.Add(new BilInstruction("set.field",
+                                    BilOp.Var(assignedValue), BilOp.Var(writeReceiver),
+                                    BilOp.Field(CanonicalSymbolPrinter.PrintField(accessTarget.Field)))
+                                { Origin = assignment });
+                                break;
                             default:
                                 // P3 已强制赋值目标为 place（值引用/字段引用）
                                 throw new CompilerInternalException(
@@ -331,8 +398,13 @@ namespace LatteCompiler
                         EmitValue(expressionStatement.Expression, target);
                         break;
                     case LoweredCallStatement call:
-                        // 实参从左到右物化（§10.2），再发 invoke.noret（§15.1）
+                        // 实参从左到右物化（§10.2），再发 invoke.noret（§15.1）；
+                        // 实例调用（S7c-2）receiver 求值作首实参
                         var arguments = new List<BilOperand>();
+                        if (call.Receiver != null)
+                        {
+                            arguments.Add(BilOp.Var(EmitValue(call.Receiver, target)));
+                        }
                         foreach (var argument in call.Arguments)
                         {
                             arguments.Add(BilOp.Var(EmitValue(argument, target)));
@@ -375,6 +447,41 @@ namespace LatteCompiler
                             function.Blocks.Add(elseBlock);
                             EmitBlock(ifStatement.FalseBlock!, elseBlock);
                         }
+                        break;
+                    case LoweredLoop loop:
+                        // 结构化循环（§16.3/§16.4）：条件由 Judge 块写入合成
+                        // 局部，loop $c blk(body) ENUM blk(judge) $breakid
+                        // （IsRev → loop.rev；Enumerator 本步恒 none，for 的
+                        // 枚举器块随 S7c-2）；body/judge block 加入函数并
+                        // 递归发射，落尾自然返回（§9.4 同 if 分支块）
+                        var loopId = "loop" + loopCount;
+                        loopCount++;
+                        var loopBodyBlock = new BilBlock(loopId + "-body");
+                        var enumBlock = loop.Enumerator != null
+                            ? new BilBlock(loopId + "-enum") : null;
+                        var judgeBlock = new BilBlock(loopId + "-judge");
+                        target.Instructions.Add(new BilInstruction(
+                            loop.IsRev ? "loop.rev" : "loop",
+                            BilOp.Var(loop.Condition.Name), BilOp.Blk(loopBodyBlock.Id),
+                            enumBlock != null ? BilOp.Blk(enumBlock.Id) : BilOp.None,
+                            BilOp.Blk(judgeBlock.Id), BilOp.Var(loop.BreakId.Name))
+                        { Origin = loop });
+                        function.Blocks.Add(loopBodyBlock);
+                        EmitBlock(loop.Body, loopBodyBlock);
+                        if (enumBlock != null)
+                        {
+                            function.Blocks.Add(enumBlock);
+                            EmitBlock(loop.Enumerator!, enumBlock);
+                        }
+                        function.Blocks.Add(judgeBlock);
+                        EmitBlock(loop.Judge, judgeBlock);
+                        break;
+                    case LoweredLoopControl loopControl:
+                        // break/continue（§16.5）：直接引用目标循环的 breakid
+                        target.Instructions.Add(new BilInstruction(
+                            loopControl.IsBreak ? "break" : "continue",
+                            BilOp.Var(loopControl.BreakId.Name))
+                        { Origin = loopControl });
                         break;
                     default:
                         Error(statement.Origin.Syntax.Span,
@@ -461,6 +568,34 @@ namespace LatteCompiler
                             BilOp.Var(newResult), BilOp.List(newArguments.ToArray()))
                         { Origin = newExpression });
                         return newResult;
+                    case LoweredThisExpression:
+                        // this → $.this 变量操作数（§7.3，零指令——.this 在
+                        // .args 已声明，与参数同 $ 引用形式 §9.3）
+                        return ".this";
+                    case LoweredInstanceCallExpression instCall:
+                        // 实例调用（§7.3/§15.1）：receiver 求值作首实参；
+                        // 接口方法符号引用时分派归 Middleware（注释约定）
+                        var instReceiver = EmitValue(instCall.Receiver, target);
+                        var instArguments = new List<BilOperand> { BilOp.Var(instReceiver) };
+                        foreach (var argument in instCall.Arguments)
+                        {
+                            instArguments.Add(BilOp.Var(EmitValue(argument, target)));
+                        }
+                        var instResult = NewTemp(instCall.Type);
+                        target.Instructions.Add(new BilInstruction("invoke",
+                            BilOp.Fn(CanonicalSymbolPrinter.PrintMethod(instCall.Method)),
+                            BilOp.Var(instResult), BilOp.List(instArguments.ToArray()))
+                        { Origin = instCall });
+                        return instResult;
+                    case LoweredFieldAccessExpression fieldAccess:
+                        // 实例字段读取（§13.3：get.field OBJECT TARGET field(F)）
+                        var accessReceiver = EmitValue(fieldAccess.Receiver, target);
+                        var accessResult = NewTemp(fieldAccess.Type);
+                        target.Instructions.Add(new BilInstruction("get.field",
+                            BilOp.Var(accessReceiver), BilOp.Var(accessResult),
+                            BilOp.Field(CanonicalSymbolPrinter.PrintField(fieldAccess.Field)))
+                        { Origin = fieldAccess });
+                        return accessResult;
                     default:
                         Error(expression.Origin.Syntax.Span,
                             $"P4: lowered expression kind not supported by minimal emission: " +

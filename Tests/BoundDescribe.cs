@@ -13,10 +13,15 @@ namespace LatteCompiler.Tests
     ///   Binary(Add, l, r, i32)  Unary(Opposite, x, i32)
     ///   Call(name, [args], ret)  New(T, [args])  New(T, init, [args])
     ///   IfExpr(c, 真值块, 假值块, i32)  CompoundAssign(Add, t, v, i32)
+    ///   This(C)（S7c-2）  InstCall(name, receiver, [args], ret)  InstField(f, receiver, T)
     /// 格式约定（语句）：
     ///   Decl(x, i32, = init)  ExprStmt(e)  CallStmt(name, [args])  Assign(t, v)  Return(v)  Return
     ///   If(c, [真], [假])  If(c, [真])  ReturnValue(_, v)（标签取 Target.Label）
     ///   值块：ValueBlock(标签, 类型, [块])；隐式取值带 implicit 标记；纯穿透类型显式 -
+    ///   Loop(while, c, [体])  Loop(do-while, c, [体])（named 标签带 @ 后缀：Loop(while@outer, ...)）
+    ///   Break  Continue（标签取 Target.Label，非空时带 @：Break@outer）
+    ///   For(i, iterable, [体])（S7c-2，标签带 @：For(i@outer, ...)；变量名取 LoopVariable）
+    ///   InstCallStmt(name, receiver, [args])（void 实例调用语句，S7c-2）
     ///   块：[s1; s2]；函数体：Body(name, [x: i32, ...], [块])
     /// </summary>
     public static class BoundDescribe
@@ -41,8 +46,10 @@ namespace LatteCompiler.Tests
                     $"Decl({decl.Local.Name}, {TypeShort(decl.Local.Type)}" +
                     $"{(decl.Initializer != null ? $", = {Expr(decl.Initializer)}" : "")})",
                 BoundExpressionStatement exprStmt => $"ExprStmt({Expr(exprStmt.Expression)})",
-                BoundCallStatement call =>
-                    $"CallStmt({call.Method.Name}, [{string.Join(", ", call.Arguments.Select(Expr))}])",
+                BoundCallStatement call => call.Receiver == null
+                    ? $"CallStmt({call.Method.Name}, [{string.Join(", ", call.Arguments.Select(Expr))}])"
+                    : $"InstCallStmt({call.Method.Name}, {Expr(call.Receiver)}, " +
+                        $"[{string.Join(", ", call.Arguments.Select(Expr))}])",
                 BoundAssignmentStatement assign => $"Assign({Expr(assign.Target)}, {Expr(assign.Value)})",
                 BoundReturnStatement ret =>
                     ret.Value != null ? $"Return({Expr(ret.Value)})" : "Return",
@@ -52,6 +59,16 @@ namespace LatteCompiler.Tests
                     : $"If({Expr(ifStmt.Condition)}, {Block(ifStmt.TrueBlock)})",
                 BoundReturnValueStatement returnValue =>
                     $"ReturnValue({returnValue.Target.Label}, {Expr(returnValue.Value)})",
+                BoundLoop loop => loop.Kind == LoopKind.For
+                    ? $"For({loop.LoopVariable!.Name}" +
+                        $"{(loop.Label != null ? "@" + loop.Label : "")}, " +
+                        $"{Expr(loop.Iterable!)}, {Block(loop.Body)})"
+                    : $"Loop({(loop.Kind == LoopKind.While ? "while" : "do-while")}" +
+                        $"{(loop.Label != null ? "@" + loop.Label : "")}, " +
+                        $"{Expr(loop.Condition!)}, {Block(loop.Body)})",
+                BoundLoopControl loopControl =>
+                    $"{(loopControl.IsBreak ? "Break" : "Continue")}" +
+                    $"{(loopControl.Target.Label != null ? "@" + loopControl.Target.Label : "")}",
                 _ => $"<{stmt.GetType().Name}>",
             };
         }
@@ -96,6 +113,14 @@ namespace LatteCompiler.Tests
                 BoundCompoundAssignmentExpression compound =>
                     $"CompoundAssign({compound.Op}, {Expr(compound.Target)}, " +
                     $"{Expr(compound.Value)}, {TypeShort(compound.Type)})",
+                BoundThisExpression => $"This({TypeShort(expr.Type)})",
+                BoundInstanceCallExpression instCall =>
+                    $"InstCall({instCall.Method.Name}, {Expr(instCall.Receiver)}, " +
+                    $"[{string.Join(", ", instCall.Arguments.Select(Expr))}], " +
+                    $"{TypeShort(instCall.Type)})",
+                BoundFieldAccessExpression fieldAccess =>
+                    $"InstField({fieldAccess.Field.Name}, {Expr(fieldAccess.Receiver)}, " +
+                    $"{TypeShort(fieldAccess.Type)})",
                 _ => $"<{expr.GetType().Name}>",
             };
         }
@@ -116,9 +141,12 @@ namespace LatteCompiler.Tests
             };
         }
 
-        // 类型短名：Nullable\<T\> 显示为 T?，其余构造类型 Name<args> 递归
-        private static string TypeShort(TypeSymbol type)
+        // 类型短名：Nullable\<T\> 显示为 T?，其余构造类型 Name<args> 递归；
+        // null = .breakid 局部（P4a 合成物，Bound 层不出现，签名与
+        // LoweredDescribe 对齐）
+        private static string TypeShort(TypeSymbol? type)
         {
+            if (type == null) return ".breakid";
             if (type.ConstructedFrom == null) return type.Name;
             if (type.Name == "Nullable" && type.TypeArguments!.Count == 1
                 && type.TypeArguments[0] is TypeSymbol element)

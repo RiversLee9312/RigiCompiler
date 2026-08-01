@@ -15,6 +15,19 @@ namespace LatteCompiler
     // （值块：隐式取值/显式 return@标签，值块标签栈解析）、definite assignment
     // 分支合并（before ∪ (setT ∩ setF)）、GuaranteesReturn 双分支 if 升级、
     // 复合赋值（SYNTAX §13.2，10 个基础运算符，表达式值为写回后值）。
+    // S7c-1 落地范围：while/do-while 循环（循环标签栈解析 break/continue
+    // 标签，条件 bool 检查；for 报 not supported yet (S7c-2)）、值块内
+    // break/continue 穿透（GuaranteesValueReturn 视其为路径终止）、
+    // definite assignment 循环规则（while 后 = before，体可能零次执行；
+    // do-while 后 = 体尾集合，体至少一次）。
+    // S7c-2 落地范围：this（静态上下文诊断）、实例成员链上色（实例方法
+    // 调用/实例字段访问，receiver 静态类型沿 BaseType 链查找，接口
+    // receiver 查接口成员；ext 注册成员同路径）、裸名实例成员补 this
+    // （宿主查找统一从 method.Owner 出发——ext 方法 Owner = 目标类型）、
+    // for 双形态（范围循环 = EnumerateInRange 实例 operator 调用 + for-each
+    // 协议判定：实现 core.collections::IEnumerable\<TItem\>；协议三方法
+    // 符号 P3 挂好，P4 不做名字分析；循环变量 const——只读默认，规范未明）。
+    // 访问控制（priv/protected）检查不做（归 S8，命中即放行）。
     //
     // 值/调用的名字解析查找序：块作用域链 → 参数 → 宿主类型成员
     // （声明类型沿 BaseType 链；当前仅调用查找落地，字段裸名归后续里程碑）
@@ -68,12 +81,14 @@ namespace LatteCompiler
         }
 
         // 调用绑定的中间产物：值位置与语句位置分别落成
-        // BoundCallExpression / BoundCallStatement（void 调用）
+        // BoundCallExpression / BoundCallStatement（void 调用）；
+        // Receiver 为 null = 静态/全局调用，非 null = 实例调用（S7c-2）
         private sealed class CallBinding
         {
             public MethodSymbol Method = null!;
             public IReadOnlyList<BoundExpression> Arguments = null!;
             public bool IsVoid;
+            public BoundExpression? Receiver;
         }
 
         private sealed class BindSession
@@ -91,8 +106,16 @@ namespace LatteCompiler
             // definite assignment 最小版：已赋值局部变量集合（参数恒已赋值）
             private readonly HashSet<LocalSymbol> assigned = new HashSet<LocalSymbol>();
             // 值块标签栈（S7b）：绑定 if 表达式分支体时压入对应施工壳，
-            // return@标签 沿栈从内向外查找命中（引用相等即身份）
-            private readonly Stack<BoundValueBlock> valueBlocks = new Stack<BoundValueBlock>();
+            // return@标签 沿栈从内向外查找命中（引用相等即身份）。
+            // LoopDepth = 值块创建时的循环栈深度（S7c-1）：return@ 命中时
+            // 若当前循环更深，说明 return@ 隔着循环边界——P4a 脱糖（写局部）
+            // 无法表达「跳出中间循环」，P3 拦截为诊断（S7c 技术债）
+            private readonly Stack<(BoundValueBlock Block, int LoopDepth)> valueBlocks =
+                new Stack<(BoundValueBlock, int)>();
+            // 循环标签栈（S7c-1）：绑定循环体前压入施工壳（Label 可空），
+            // break/continue 沿栈从内向外查找命中（引用相等即身份）；
+            // 穿透值块命中外层循环合法（BIL §16.5 动态结构作用域）
+            private readonly Stack<BoundLoop> loops = new Stack<BoundLoop>();
 
             public BindSession(CompilationUnit unit, DeclarationCollection declarations)
             {
@@ -166,6 +189,7 @@ namespace LatteCompiler
                 locals.Clear();
                 assigned.Clear();
                 valueBlocks.Clear();    // 函数体互不嵌套，防御性清空
+                loops.Clear();
 
                 var body = BindBlock(fn.Body!, new Scope(null));
                 // 所有路径显式返回（SYNTAX §4.1 无隐式返回）
@@ -186,6 +210,9 @@ namespace LatteCompiler
                         && GuaranteesReturn(ifStatement.TrueBlock)
                         && GuaranteesReturn(ifStatement.FalseBlock),
                     BoundBlock nested => GuaranteesReturn(nested),
+                    // S7c-1：循环保守 false——`while (true)` 无 break 的恒循环
+                    // 特例留口（体可能零次执行的一般情形无法判定，S7c 技术债）；
+                    // BoundLoopControl/Break 终止的是循环路径，不算函数返回；
                     // BoundReturnValueStatement 终止的是值块路径，不算函数返回
                     _ => false,
                 };
@@ -213,6 +240,8 @@ namespace LatteCompiler
                     ExpressionStatementASTNode stmt => BindExpressionStatement(stmt, scope),
                     ReturnStatementASTNode ret => BindReturn(ret, scope),
                     IfStatementASTNode ifStatement => BindIfStatement(ifStatement, scope),
+                    LoopStatementASTNode loop => BindLoop(loop, scope),
+                    LoopControlStatementASTNode loopControl => BindLoopControl(loopControl),
                     CodeBlockASTNode block => BindBlock(block, scope),
                     _ => Unsupported(node, "statement"),
                 };
@@ -277,7 +306,15 @@ namespace LatteCompiler
                     if (binding == null) return null;
                     if (binding.IsVoid)
                     {
-                        return new BoundCallStatement(node, binding.Method, binding.Arguments);
+                        return new BoundCallStatement(node, binding.Method, binding.Arguments,
+                            binding.Receiver);
+                    }
+                    if (binding.Receiver != null)
+                    {
+                        return new BoundExpressionStatement(node,
+                            new BoundInstanceCallExpression(path, binding.Receiver,
+                                binding.Method, binding.Arguments,
+                                (TypeSymbol)binding.Method.ReturnType!));
                     }
                     return new BoundExpressionStatement(node, new BoundCallExpression(path,
                         binding.Method, binding.Arguments, (TypeSymbol)binding.Method.ReturnType!));
@@ -309,6 +346,9 @@ namespace LatteCompiler
                     case BoundFieldReferenceExpression:
                         // 全局字段 const 判定需声明 AST（P3 技术债：反向映射缺失）
                         break;
+                    case BoundFieldAccessExpression:
+                        // 实例字段（S7c-2）：const 判定同全局字段技术债
+                        break;
                     default:
                         Error(node.Expression.Span ?? node.Span, "Assignment target must be a variable");
                         return null;
@@ -328,17 +368,27 @@ namespace LatteCompiler
                 if (node.Label != null)
                 {
                     BoundValueBlock? target = null;
-                    foreach (var valueBlock in valueBlocks)
+                    var targetLoopDepth = 0;
+                    foreach (var (valueBlock, loopDepth) in valueBlocks)
                     {
                         if (valueBlock.Label == node.Label)
                         {
                             target = valueBlock;
+                            targetLoopDepth = loopDepth;
                             break;
                         }
                     }
                     if (target == null)
                     {
                         Error(node.Span, $"Undefined value block label: '{node.Label}'");
+                        return null;
+                    }
+                    // return@ 隔循环边界（S7c-1 拦截，S7c 技术债）：脱糖产物
+                    // 只是「写值块局部」，无法表达「跳出中间循环」，P3 拒绝
+                    if (loops.Count > targetLoopDepth)
+                    {
+                        Error(node.Span, $"P3: return@{node.Label} across a loop " +
+                            "boundary not supported yet (S7c)");
                         return null;
                     }
                     if (node.Value == null)
@@ -382,7 +432,7 @@ namespace LatteCompiler
             private BoundStatement? BindIfStatement(IfStatementASTNode node, Scope scope)
             {
                 var condition = BindExpression(node.Condition.Expression, scope);
-                CheckBoolCondition(node.Condition, node.Span, condition);
+                CheckBoolCondition(node.Condition, node.Span, condition, "if");
                 var before = new HashSet<LocalSymbol>(assigned);
                 var trueBlock = BindBlock(node.ThenBlock, scope);
                 var trueAssigned = new HashSet<LocalSymbol>(assigned);
@@ -431,7 +481,7 @@ namespace LatteCompiler
             private BoundExpression? BindIfExpression(IfExpressionASTNode node, Scope scope)
             {
                 var condition = BindExpression(node.Condition.Expression, scope);
-                CheckBoolCondition(node.Condition, node.Span, condition);
+                CheckBoolCondition(node.Condition, node.Span, condition, "if");
                 var label = node.Label ?? "_";
                 var before = new HashSet<LocalSymbol>(assigned);
                 var trueBranch = BindValueBlock(node.ThenBody, label, scope);
@@ -465,15 +515,16 @@ namespace LatteCompiler
                 return new BoundIfExpression(node, condition, trueBranch, falseBranch, type);
             }
 
-            // if 条件必须 bool（语句/表达式两形态同规则；ErrorType 毒化静默）
+            // 条件必须 bool（if 语句/表达式、循环同规则；ErrorType 毒化静默）
             private void CheckBoolCondition(ExpressionRootASTNode conditionRoot,
-                CharRange? fallbackSpan, BoundExpression? condition)
+                CharRange? fallbackSpan, BoundExpression? condition, string construct)
             {
                 if (condition != null && condition.Type is not ErrorTypeSymbol
                     && !ReferenceEquals(condition.Type, B.Bool))
                 {
                     Error(conditionRoot.Span ?? fallbackSpan,
-                        $"if condition must be bool (got '{TypeDisplay(condition.Type)}')");
+                        $"{construct} condition must be bool " +
+                        $"(got '{TypeDisplay(condition.Type)}')");
                 }
             }
 
@@ -488,7 +539,7 @@ namespace LatteCompiler
             private BoundValueBlock BindValueBlock(CodeBlockASTNode node, string label, Scope scope)
             {
                 var shell = new BoundValueBlock(node, label);
-                valueBlocks.Push(shell);
+                valueBlocks.Push((shell, loops.Count));
                 BoundBlock block;
                 try
                 {
@@ -531,12 +582,17 @@ namespace LatteCompiler
             // 「所有执行路径显式 return@」判定：末语句是 BoundReturnValueStatement
             // （命中任意值块，穿透终止也算路径终止）→ true；末语句是 BoundIfStatement
             // 且双分支 GuaranteesValueReturn → true；末语句是嵌套 BoundBlock → 递归；
+            // 末语句是 BoundLoopControl（S7c-1）→ true——break/continue 落在值块
+            // 语句层时目标必是值块外的循环（该语句不被值块内任何循环包含，且
+            // 循环外 break/continue 已被 P3 拒绝），穿透值块终止本路径合法
+            // （BIL §16.5 动态结构作用域：if/循环块内引用外层循环 breakid 合法）；
             // 其余 false（裸 return 终止函数路径但不作为值块产值收尾，规则从简）
             private static bool GuaranteesValueReturn(BoundBlock block)
             {
                 return block.Statements.Count > 0 && block.Statements[^1] switch
                 {
                     BoundReturnValueStatement => true,
+                    BoundLoopControl => true,
                     BoundIfStatement ifStatement => ifStatement.FalseBlock != null
                         && GuaranteesValueReturn(ifStatement.TrueBlock)
                         && GuaranteesValueReturn(ifStatement.FalseBlock),
@@ -602,6 +658,291 @@ namespace LatteCompiler
             {
                 assigned.Clear();
                 assigned.UnionWith(snapshot);
+            }
+
+            // ===== 循环（S7c-1，SYNTAX §7.3/§7.4）=====
+
+            // while/do-while 绑定：条件 bool 检查；循环体绑定前施工壳压入
+            // 循环标签栈（体内 break/continue 经引用命中），体绑完弹栈回填。
+            // definite assignment（保守规则，S7c-1 定稿）：
+            // - while 后 = before（体可能零次执行；条件的赋值效果同样保守
+            //   丢弃——条件求值在循环内，不纳入循环后状态）；
+            // - do-while 后 = 体尾集合（体至少执行一次；条件在体后求值，
+            //   其赋值效果保守丢弃）。
+            // break/continue 后同块语句不做特殊流处理（按顺序继续绑定，
+            // 不截断、不改 assigned；不精确处登记为 S7c 技术债）
+            private BoundStatement? BindLoop(LoopStatementASTNode node, Scope scope)
+            {
+                if (node.Kind == LoopKind.For)
+                {
+                    return BindForLoop(node, scope);
+                }
+                // While/DoWhile 必有条件（Parser 不变量；For 已提前返回）
+                if (node.Condition == null)
+                {
+                    throw new CompilerInternalException(
+                        "while/do-while 循环缺条件（Parser 不变量破坏）");
+                }
+                var shell = new BoundLoop(node, node.Kind, node.Label);
+                if (node.Kind == LoopKind.While)
+                {
+                    var before = new HashSet<LocalSymbol>(assigned);
+                    var condition = BindExpression(node.Condition.Expression, scope);
+                    CheckBoolCondition(node.Condition, node.Span, condition, "loop");
+                    loops.Push(shell);
+                    try
+                    {
+                        shell.Body = BindBlock(node.Body, scope);
+                    }
+                    finally
+                    {
+                        loops.Pop();
+                    }
+                    RestoreAssigned(before);
+                    if (condition == null) return null;
+                    shell.Condition = condition;
+                    return shell;
+                }
+                // DoWhile：体先行（至少一次），条件在体后
+                loops.Push(shell);
+                try
+                {
+                    shell.Body = BindBlock(node.Body, scope);
+                }
+                finally
+                {
+                    loops.Pop();
+                }
+                var bodyAssigned = new HashSet<LocalSymbol>(assigned);
+                var revCondition = BindExpression(node.Condition.Expression, scope);
+                CheckBoolCondition(node.Condition, node.Span, revCondition, "loop");
+                RestoreAssigned(bodyAssigned);
+                if (revCondition == null) return null;
+                shell.Condition = revCondition;
+                return shell;
+            }
+
+            // break/continue：无标签命中循环标签栈栈顶（最内层），栈空即
+            // 循环外使用（诊断）；有标签沿栈从内向外查 named 命中（穿透
+            // 值块/嵌套块命中外层循环合法，BIL §16.5），未命中即未定义标签
+            private BoundStatement? BindLoopControl(LoopControlStatementASTNode node)
+            {
+                BoundLoop? target = null;
+                if (node.Label == null)
+                {
+                    if (loops.Count > 0) target = loops.Peek();
+                }
+                else
+                {
+                    foreach (var loop in loops)
+                    {
+                        if (loop.Label == node.Label)
+                        {
+                            target = loop;
+                            break;
+                        }
+                    }
+                }
+                if (target == null)
+                {
+                    var keyword = node.IsBreak ? "break" : "continue";
+                    Error(node.Span, node.Label == null
+                        ? $"'{keyword}' outside of a loop"
+                        : $"Undefined loop label: '{node.Label}'");
+                    return null;
+                }
+                return new BoundLoopControl(node, node.IsBreak, target);
+            }
+
+            // ===== for 双形态（S7c-2，SYNTAX §7.3/§13.2）=====
+
+            // - 范围循环 `for (i in a to b)`（RangeTo 非 null）：a、b 类型
+            //   一致后在 a 的类型上解析实例 operator EnumerateInRange（含
+            //   ext 注册——P2 已挂目标类型成员表），Iterable =
+            //   BoundInstanceCallExpression{a, op, [b]}；
+            // - for-each `for (item in collection)`：Iterable = 集合表达式；
+            // 两形态汇合于 for-each 协议判定：Iterable 类型实现
+            // core.collections::IEnumerable\<TItem\>（沿接口表找该定义的
+            // 构造取实参），协议三方法符号挂到 BoundLoop（P4 不做名字分析，
+            // ARCH §11.3 纪律）；循环变量 const 局部（只读默认，规范未明，
+            // M48 登记）；DA：for 后 = before（体可能零次执行）
+            private BoundStatement? BindForLoop(LoopStatementASTNode node, Scope scope)
+            {
+                if (node.VariableName == null || node.Iterable == null)
+                {
+                    throw new CompilerInternalException(
+                        "for 循环缺循环变量或迭代源（Parser 不变量破坏）");
+                }
+                var before = new HashSet<LocalSymbol>(assigned);
+                BoundExpression? iterable;
+                if (node.RangeTo != null)
+                {
+                    var from = BindExpression(node.Iterable.Expression, scope);
+                    var to = BindExpression(node.RangeTo.Expression, scope);
+                    if (from == null || to == null) { RestoreAssigned(before); return null; }
+                    // 毒化静默：任一侧已失败时不再报次生错误
+                    if (from.Type is ErrorTypeSymbol || to.Type is ErrorTypeSymbol)
+                    {
+                        RestoreAssigned(before);
+                        return null;
+                    }
+                    if (!ReferenceEquals(from.Type, to.Type))
+                    {
+                        Error(node.RangeTo.Span ?? node.Span,
+                            $"Range bounds must have the same type " +
+                            $"(got '{TypeDisplay(from.Type)}' and '{TypeDisplay(to.Type)}')");
+                        RestoreAssigned(before);
+                        return null;
+                    }
+                    var op = FindInstanceOperator(from.Type, "EnumerateInRange");
+                    if (op == null)
+                    {
+                        Error(node.Span, $"Type '{TypeDisplay(from.Type)}' has no " +
+                            "EnumerateInRange operator (required by range for loop)");
+                        RestoreAssigned(before);
+                        return null;
+                    }
+                    if (op.ReturnType is not TypeSymbol enumerableType
+                        || ContainsGenericParameter(enumerableType))
+                    {
+                        Error(node.Span,
+                            "P3: generic type parameters are not supported yet (S9)");
+                        RestoreAssigned(before);
+                        return null;
+                    }
+                    iterable = new BoundInstanceCallExpression(node.Iterable, from, op,
+                        new List<BoundExpression> { to }, enumerableType);
+                }
+                else
+                {
+                    iterable = BindExpression(node.Iterable.Expression, scope);
+                    if (iterable == null) { RestoreAssigned(before); return null; }
+                }
+                if (iterable.Type is ErrorTypeSymbol) { RestoreAssigned(before); return null; }
+                // for-each 协议判定与三方法符号
+                var enumerableDef = FindCollectionType("IEnumerable", node.Span);
+                var enumeratorDef = FindCollectionType("IEnumerator", node.Span);
+                if (enumerableDef == null || enumeratorDef == null)
+                {
+                    RestoreAssigned(before);
+                    return null;
+                }
+                var itemType = ResolveEnumerableElement(iterable.Type, enumerableDef, node.Span);
+                if (itemType == null) { RestoreAssigned(before); return null; }
+                var iterate = enumerableDef.Methods.FirstOrDefault(m => m.Name == "iterate");
+                var moveNext = enumeratorDef.Methods.FirstOrDefault(m => m.Name == "moveNext");
+                var current = enumeratorDef.Methods.FirstOrDefault(m => m.Name == "current");
+                if (iterate == null || moveNext == null || current == null)
+                {
+                    throw new CompilerInternalException(
+                        "core.collections 迭代协议成员缺失（stdlib 不变量破坏）");
+                }
+                var loopVariable = new LocalSymbol(node.VariableName, itemType, isConst: true);
+                locals.Add(loopVariable);
+                assigned.Add(loopVariable);    // 体入口视为已赋值（每轮由枚举器赋）
+                var shell = new BoundLoop(node, LoopKind.For, node.Label)
+                {
+                    Iterable = iterable,
+                    LoopVariable = loopVariable,
+                    IterateMethod = iterate,
+                    MoveNextMethod = moveNext,
+                    CurrentMethod = current,
+                };
+                loops.Push(shell);
+                try
+                {
+                    shell.Body = BindForBody(node.Body, scope, loopVariable);
+                }
+                finally
+                {
+                    loops.Pop();
+                }
+                RestoreAssigned(before);
+                return shell;
+            }
+
+            // for 循环体绑定：体块作用域预声明循环变量（仿 BindBlock，
+            // 循环变量在体内的遮蔽检查经 DeclaresHere 自然生效）
+            private BoundBlock BindForBody(CodeBlockASTNode node, Scope parentScope,
+                LocalSymbol loopVariable)
+            {
+                var scope = new Scope(parentScope);
+                scope.Declare(loopVariable);
+                var statements = new List<BoundStatement>();
+                foreach (var statement in node.Statements)
+                {
+                    var bound = BindStatement(statement, scope);
+                    if (bound != null) statements.Add(bound);
+                }
+                return new BoundBlock(node, statements);
+            }
+
+            // 实例 operator 查找（for 头专用）：receiver 静态类型沿
+            // BaseType 链（ext 注册 operator 已在目标类型成员表）
+            private static MethodSymbol? FindInstanceOperator(TypeSymbol type, string name)
+            {
+                for (var t = type; t != null; t = t.BaseType)
+                {
+                    var hit = t.Methods.FirstOrDefault(m => m.Name == name
+                        && !m.IsStatic && m.Kind == MethodKind.Operator
+                        && m.Parameters.Count == 1);
+                    if (hit != null) return hit;
+                }
+                return null;
+            }
+
+            // core.collections 协议定义查找（stdlib 内嵌源提供；缺席即诊断
+            // ——BindUnit 类不带 stdlib 的驱动触不到 for 绑定）
+            private TypeSymbol? FindCollectionType(string name, CharRange? span)
+            {
+                var core = unit.Symbols.GlobalNamespace.ChildNamespaces
+                    .FirstOrDefault(n => n.Name == "core");
+                var collections = core?.ChildNamespaces
+                    .FirstOrDefault(n => n.Name == "collections");
+                var type = collections?.Types.FirstOrDefault(t => t.Name == name);
+                if (type == null)
+                {
+                    Error(span, $"P3: core.collections.{name} not found " +
+                        "(required by for loop; stdlib missing)");
+                }
+                return type;
+            }
+
+            // for-each 协议判定：type 实现 core.collections::IEnumerable\<TItem\>
+            // ——type 自身即该定义的构造（迭代源的静态类型就是接口，如
+            // EnumerateInRange 的返回类型），或沿自身与 BaseType 链的接口
+            // 表找该定义的构造；取实参 TItem（实参含未替换泛型参数归 S9）；
+            // 未实现即诊断
+            private TypeSymbol? ResolveEnumerableElement(TypeSymbol type,
+                TypeSymbol enumerableDef, CharRange? span)
+            {
+                if (ReferenceEquals(type.ConstructedFrom, enumerableDef))
+                {
+                    if (type.TypeArguments![0] is TypeSymbol selfElement
+                        && !ContainsGenericParameter(selfElement))
+                    {
+                        return selfElement;
+                    }
+                    Error(span, "P3: generic type parameters are not supported yet (S9)");
+                    return null;
+                }
+                for (var t = type; t != null; t = t.BaseType)
+                {
+                    foreach (var iface in t.Interfaces)
+                    {
+                        if (!ReferenceEquals(iface.ConstructedFrom, enumerableDef)) continue;
+                        if (iface.TypeArguments![0] is TypeSymbol element
+                            && !ContainsGenericParameter(element))
+                        {
+                            return element;
+                        }
+                        Error(span, "P3: generic type parameters are not supported yet (S9)");
+                        return null;
+                    }
+                }
+                Error(span, $"Type '{TypeDisplay(type)}' does not implement " +
+                    "core.collections.IEnumerable<T> (required by for loop)");
+                return null;
             }
 
             // ===== 表达式绑定（null 返回 = 已诊断失败，调用方跳过）=====
@@ -672,8 +1013,10 @@ namespace LatteCompiler
             }
 
             // 路径表达式（M42 统一形态）的值位置绑定。
-            // 形态分派：纯调用形态 → 直接调用；纯值路径（无后缀）→ 局部/参数/
-            // 字段/容器成员；其余（实例链/索引/安全访问/wrapper）报归口诊断。
+            // 形态分派：this 首段 → this 路径；纯调用形态 → 直接/实例调用；
+            // 纯值路径（无后缀）→ 局部/参数/宿主与命名空间字段/容器成员；
+            // 首段为值的多段 → 实例链上色（S7c-2）；其余（表达式底座/索引/
+            // 安全访问/wrapper）报归口诊断。
             // forAssignment：赋值目标绑定（定义而非使用），跳过 unassigned 检查
             private BoundExpression? BindPath(PathExpressionASTNode node, Scope scope,
                 bool forAssignment = false)
@@ -691,7 +1034,12 @@ namespace LatteCompiler
                     Error(node.Span, "P3: generic type arguments are not supported yet (S9)");
                     return null;
                 }
-                // 纯调用形态 → 直接调用
+                // this 首段（S7c-2）：值位置 this 或实例链起点
+                if (node.Head.Name == "this")
+                {
+                    return BindThisPath(node, scope);
+                }
+                // 纯调用形态 → 直接调用（静态/全局）或实例调用（首段为值）
                 if (TryGetCallForm(node, out var calleeSegments, out var callArguments))
                 {
                     var binding = BindCall(node, calleeSegments, callArguments!, scope);
@@ -701,6 +1049,12 @@ namespace LatteCompiler
                         Error(node.Span, $"Method '{binding.Method.Name}' has no result (void) " +
                             "and cannot be used as a value");
                         return null;
+                    }
+                    if (binding.Receiver != null)
+                    {
+                        return new BoundInstanceCallExpression(node, binding.Receiver,
+                            binding.Method, binding.Arguments,
+                            (TypeSymbol)binding.Method.ReturnType!);
                     }
                     return new BoundCallExpression(node, binding.Method, binding.Arguments,
                         (TypeSymbol)binding.Method.ReturnType!);
@@ -739,7 +1093,9 @@ namespace LatteCompiler
                         {
                             Error(node.Span, $"Use of unassigned local variable '{name}'");
                         }
-                        return new BoundValueReferenceExpression(node, local, local.Type);
+                        // 源码局部 Type 恒非空（null 是 P4a 合成 .breakid
+                        // 局部的特例，P3 不可能遇到）
+                        return new BoundValueReferenceExpression(node, local, local.Type!);
                     }
                     var parameter = method.Parameters.FirstOrDefault(p => p.Name == name);
                     if (parameter != null)
@@ -759,14 +1115,38 @@ namespace LatteCompiler
                     Error(node.Span, $"Undefined name: '{name}'");
                     return null;
                 }
-                // 多段：首段命中局部/参数 → 实例成员路径（receiver 归 S8）；
+                // 多段：首段命中局部/参数 → 实例链上色（S7c-2）；
                 // 否则前 N-1 段解析为容器，末段查成员
                 var segments = PathSegmentNames(node);
-                if (scope.Lookup(segments[0]) != null
-                    || method.Parameters.Any(p => p.Name == segments[0]))
+                var headLocal = scope.Lookup(segments[0]);
+                var headParameter = headLocal == null
+                    ? method.Parameters.FirstOrDefault(p => p.Name == segments[0]) : null;
+                if (headLocal != null || headParameter != null)
                 {
-                    Error(node.Span, "P3: instance member access is not supported yet (S8)");
-                    return null;
+                    BoundExpression headReceiver;
+                    if (headLocal != null)
+                    {
+                        if (!forAssignment && !assigned.Contains(headLocal))
+                        {
+                            Error(node.Span,
+                                $"Use of unassigned local variable '{segments[0]}'");
+                        }
+                        // 源码局部 Type 恒非空（同单段分支）
+                        headReceiver = new BoundValueReferenceExpression(node, headLocal,
+                            headLocal.Type!);
+                    }
+                    else
+                    {
+                        if (headParameter!.Type is not TypeSymbol headParamType)
+                        {
+                            Error(node.Span,
+                                "P3: generic type parameters are not supported yet (S9)");
+                            return null;
+                        }
+                        headReceiver = new BoundValueReferenceExpression(node, headParameter,
+                            headParamType);
+                    }
+                    return BindInstanceChain(node, headReceiver, node.Segments, scope);
                 }
                 var container = ResolveContainer(segments, node.Span);
                 if (container == null) return null;
@@ -838,7 +1218,16 @@ namespace LatteCompiler
                 }
                 if (field.Owner != null && !field.IsStatic)
                 {
-                    Error(node.Span, $"P3: instance field '{field.Name}' requires a receiver (S8)");
+                    // 实例字段（S7c-2）：当前上下文有 this（实例方法/ext 方法
+                    // 体内，method.Owner 统一承载宿主）→ this.field；静态
+                    // 上下文（static 方法/全局函数）→ 诊断
+                    if (method.Owner != null && !method.IsStatic)
+                    {
+                        return new BoundFieldAccessExpression(node,
+                            new BoundThisExpression(node, method.Owner), field, fieldType);
+                    }
+                    Error(node.Span, $"P3: instance field '{field.Name}' requires a receiver" +
+                        " ('this' is not available in a static context)");
                     return null;
                 }
                 return new BoundFieldReferenceExpression(node, field, fieldType);
@@ -923,7 +1312,8 @@ namespace LatteCompiler
                         break;
                     case BoundValueReferenceExpression { Symbol: ParameterSymbol }:
                     case BoundFieldReferenceExpression:
-                        // 参数与全局字段：同赋值的放行规则
+                    case BoundFieldAccessExpression:
+                        // 参数与全局/实例字段：同赋值的放行规则
                         break;
                     default:
                         Error(node.Target.Span ?? node.Span,
@@ -952,20 +1342,34 @@ namespace LatteCompiler
             private CallBinding? BindCall(ASTNode node, List<string> calleeSegments,
                 List<ArgumentASTNode> arguments, Scope scope)
             {
-                var method = BindCallee(node, calleeSegments, arguments.Count, scope);
-                if (method == null) return null;
-                var boundArguments = BindArguments(method, arguments, scope, node.Span);
+                // 多段首段为值（局部/参数）→ 实例调用形态（S7c-2）
+                if (calleeSegments.Count > 1
+                    && (scope.Lookup(calleeSegments[0]) != null
+                        || method.Parameters.Any(p => p.Name == calleeSegments[0])))
+                {
+                    return BindInstanceCallForm(node, calleeSegments, arguments, scope);
+                }
+                var callee = BindCallee(node, calleeSegments, arguments.Count, scope);
+                if (callee == null) return null;
+                var (calleeMethod, receiver) = callee.Value;
+                if (calleeMethod.ReturnType != null && ContainsGenericParameter(calleeMethod.ReturnType))
+                {
+                    Error(node.Span, "P3: generic type parameters are not supported yet (S9)");
+                    return null;
+                }
+                var boundArguments = BindArguments(calleeMethod, arguments, scope, node.Span);
                 if (boundArguments == null) return null;
                 return new CallBinding
                 {
-                    Method = method,
+                    Method = calleeMethod,
                     Arguments = boundArguments,
-                    IsVoid = method.ReturnType == null,
+                    IsVoid = calleeMethod.ReturnType == null,
+                    Receiver = receiver,
                 };
             }
 
-            private MethodSymbol? BindCallee(ASTNode node, List<string> calleeSegments,
-                int argumentCount, Scope scope)
+            private (MethodSymbol Method, BoundExpression? Receiver)? BindCallee(
+                ASTNode node, List<string> calleeSegments, int argumentCount, Scope scope)
             {
                 var pathText = string.Join(".", calleeSegments);
                 List<MethodSymbol> candidates;
@@ -975,13 +1379,8 @@ namespace LatteCompiler
                 }
                 else
                 {
-                    // 首段命中局部/参数 → 实例成员路径调用（receiver 归 S8）
-                    if (scope.Lookup(calleeSegments[0]) != null
-                        || method.Parameters.Any(p => p.Name == calleeSegments[0]))
-                    {
-                        Error(node.Span, "P3: instance member access is not supported yet (S8)");
-                        return null;
-                    }
+                    // 首段为值的多段已由 BindCall 分流（实例调用形态）；
+                    // 此处前 N-1 段必为容器
                     var container = ResolveContainer(calleeSegments, node.Span);
                     if (container == null) return null;
                     candidates = container switch
@@ -1001,14 +1400,35 @@ namespace LatteCompiler
                     Error(node.Span, $"Undefined function: '{pathText}'");
                     return null;
                 }
-                // 泛型方法调用（推断/显式实参）归 S9
+                var selected = MatchSingleCandidate(node, candidates, argumentCount);
+                if (selected == null) return null;
+                if (selected.Owner != null && !selected.IsStatic)
+                {
+                    // 实例方法（S7c-2）：当前上下文有 this（实例方法/ext 方法
+                    // 体内）→ 补 this receiver；静态上下文 → 诊断
+                    if (method.Owner != null && !method.IsStatic)
+                    {
+                        return (selected, new BoundThisExpression(node, method.Owner));
+                    }
+                    Error(node.Span, $"P3: instance method '{selected.Name}' requires a receiver" +
+                        " ('this' is not available in a static context)");
+                    return null;
+                }
+                return (selected, null);
+            }
+
+            // 候选方法的唯一匹配（无重载直接调用；S7c-2 提取共享——
+            // 静态/全局路径与实例链路径同一规则）：泛型方法归 S9；
+            // 按实参个数唯一匹配；多匹配归 S8 ranking
+            private MethodSymbol? MatchSingleCandidate(ASTNode node,
+                List<MethodSymbol> candidates, int argumentCount)
+            {
                 candidates = candidates.Where(m => m.GenericParameters.Count == 0).ToList();
                 if (candidates.Count == 0)
                 {
                     Error(node.Span, "P3: generic calls are not supported yet (S9)");
                     return null;
                 }
-                // 无重载直接调用：按实参个数唯一匹配
                 var matched = candidates.Where(m => m.Parameters.Count == argumentCount).ToList();
                 if (matched.Count == 0)
                 {
@@ -1023,13 +1443,209 @@ namespace LatteCompiler
                         "is not supported yet (S8)");
                     return null;
                 }
-                var selected = matched[0];
-                if (selected.Owner != null && !selected.IsStatic)
+                return matched[0];
+            }
+
+            // ===== 实例成员（S7c-2，SYNTAX §9）=====
+
+            // this 路径：值位置 this（Type = 宿主类型，method.Owner 统一
+            // 承载——普通成员为声明类型，ext 方法为目标类型）或实例链起点。
+            // 静态上下文（static 方法/全局函数）不可用
+            private BoundExpression? BindThisPath(PathExpressionASTNode node, Scope scope)
+            {
+                if (method.Owner == null || method.IsStatic)
                 {
-                    Error(node.Span, $"P3: instance method '{selected.Name}' requires a receiver (S8)");
+                    Error(node.Span, "P3: 'this' is not available in a static context");
                     return null;
                 }
-                return selected;
+                // this 自身的后缀（this(...) / this[...]）：无意义形态
+                if (node.Head.Suffixes.Count > 0)
+                {
+                    Error(node.Span, "P3: instance member access is not supported yet (S8)");
+                    return null;
+                }
+                BoundExpression receiver = new BoundThisExpression(node, method.Owner);
+                if (node.Segments.Count == 0)
+                {
+                    return receiver;
+                }
+                return BindInstanceChain(node, receiver, node.Segments, scope);
+            }
+
+            // 实例成员链上色：首段已绑出 receiver，段序列沿 receiver 静态
+            // 类型逐段上色——段带恰好一个 Call 后缀 → 实例方法调用；无后缀
+            // → 实例字段访问；其余（Index/多后缀）归口 S8。返回链末端表达式
+            private BoundExpression? BindInstanceChain(ASTNode node, BoundExpression receiver,
+                IReadOnlyList<PathSegmentASTNode> chainSegments, Scope scope)
+            {
+                foreach (var segment in chainSegments)
+                {
+                    // 毒化静默：receiver 已失败时不再报次生错误
+                    if (receiver.Type is ErrorTypeSymbol) return null;
+                    BoundExpression? next;
+                    if (segment.Suffixes.Count == 0)
+                    {
+                        next = BindInstanceFieldAccess(segment, receiver, segment.Name);
+                    }
+                    else if (segment.Suffixes.Count == 1
+                        && segment.Suffixes[0].Kind == PathSuffixKind.Call)
+                    {
+                        var call = BindInstanceMethodCall(segment, receiver, segment.Name,
+                            segment.Suffixes[0].Arguments!, scope);
+                        if (call == null) return null;
+                        if (call.IsVoid)
+                        {
+                            Error(segment.Span, $"Method '{call.Method.Name}' has no result " +
+                                "(void) and cannot be used as a value");
+                            return null;
+                        }
+                        next = new BoundInstanceCallExpression(segment, receiver,
+                            call.Method, call.Arguments, (TypeSymbol)call.Method.ReturnType!);
+                    }
+                    else
+                    {
+                        Error(segment.Span,
+                            "P3: instance member access is not supported yet (S8)");
+                        return null;
+                    }
+                    if (next == null) return null;
+                    receiver = next;
+                }
+                return receiver;
+            }
+
+            // 实例调用形态（首段为值的多段纯调用）：首段绑 receiver，中间段
+            // 沿 receiver 类型上色（TryGetCallForm 保证中间段无后缀，只能是
+            // 字段），末段实例方法查找匹配
+            private CallBinding? BindInstanceCallForm(ASTNode node, List<string> calleeSegments,
+                List<ArgumentASTNode> arguments, Scope scope)
+            {
+                BoundExpression receiver;
+                var headLocal = scope.Lookup(calleeSegments[0]);
+                if (headLocal != null)
+                {
+                    if (!assigned.Contains(headLocal))
+                    {
+                        Error(node.Span,
+                            $"Use of unassigned local variable '{calleeSegments[0]}'");
+                    }
+                    receiver = new BoundValueReferenceExpression(node, headLocal, headLocal.Type!);
+                }
+                else
+                {
+                    var headParameter = method.Parameters.First(p => p.Name == calleeSegments[0]);
+                    if (headParameter.Type is not TypeSymbol paramType)
+                    {
+                        Error(node.Span, "P3: generic type parameters are not supported yet (S9)");
+                        return null;
+                    }
+                    receiver = new BoundValueReferenceExpression(node, headParameter, paramType);
+                }
+                for (int i = 1; i < calleeSegments.Count - 1; i++)
+                {
+                    var next = BindInstanceFieldAccess(node, receiver, calleeSegments[i]);
+                    if (next == null) return null;
+                    receiver = next;
+                }
+                return BindInstanceMethodCall(node, receiver, calleeSegments[^1],
+                    arguments, scope);
+            }
+
+            // 实例方法调用：receiver 静态类型沿 BaseType 链查找（接口
+            // receiver 查接口自身成员；ext 注册成员同路径；访问控制检查
+            // 归 S8）。值位置 void 检查由调用方做
+            private CallBinding? BindInstanceMethodCall(ASTNode node, BoundExpression receiver,
+                string name, List<ArgumentASTNode> arguments, Scope scope)
+            {
+                var candidates = FindInstanceMethods(receiver.Type, name);
+                if (candidates.Count == 0)
+                {
+                    Error(node.Span, FindInstanceField(receiver.Type, name) != null
+                        ? $"'{name}' on type '{TypeDisplay(receiver.Type)}' is not a method"
+                        : $"Undefined member '{name}' on type '{TypeDisplay(receiver.Type)}'");
+                    return null;
+                }
+                var selected = MatchSingleCandidate(node, candidates, arguments.Count);
+                if (selected == null) return null;
+                // 返回类型含未替换泛型参数（泛型接口/泛型类型成员的使用归
+                // S9；for 协议内部路径不经此检查——P3 已备好具体类型）
+                if (selected.ReturnType != null && ContainsGenericParameter(selected.ReturnType))
+                {
+                    Error(node.Span, "P3: generic type parameters are not supported yet (S9)");
+                    return null;
+                }
+                var boundArguments = BindArguments(selected, arguments, scope, node.Span);
+                if (boundArguments == null) return null;
+                return new CallBinding
+                {
+                    Method = selected,
+                    Arguments = boundArguments,
+                    IsVoid = selected.ReturnType == null,
+                    Receiver = receiver,
+                };
+            }
+
+            // 实例字段访问：receiver 静态类型沿 BaseType 链查找（接口无
+            // 实例字段；ext 注册字段同路径；访问控制检查归 S8）
+            private BoundExpression? BindInstanceFieldAccess(ASTNode node,
+                BoundExpression receiver, string name)
+            {
+                var field = FindInstanceField(receiver.Type, name);
+                if (field == null)
+                {
+                    Error(node.Span, FindInstanceMethods(receiver.Type, name).Count > 0
+                        ? $"'{name}' on type '{TypeDisplay(receiver.Type)}' is not a field"
+                        : $"Undefined member '{name}' on type '{TypeDisplay(receiver.Type)}'");
+                    return null;
+                }
+                if (field.FieldType == null)
+                {
+                    Error(node.Span, $"P3: field '{field.Name}' has no type annotation " +
+                        "(field type inference is not supported yet)");
+                    return null;
+                }
+                if (field.FieldType is not TypeSymbol fieldType
+                    || ContainsGenericParameter(fieldType))
+                {
+                    Error(node.Span, "P3: generic type parameters are not supported yet (S9)");
+                    return null;
+                }
+                return new BoundFieldAccessExpression(node, receiver, field, fieldType);
+            }
+
+            // 实例方法查找：receiver 静态类型沿 BaseType 链（接口 receiver
+            // 即查接口自身，BaseType 为 null 自然终止；ext 注册成员已在目标
+            // 类型成员表）。仅 Regular 实例方法——operator 不经点号调用
+            // （for 头专用解析），init/getter/setter 归各自里程碑
+            private static List<MethodSymbol> FindInstanceMethods(TypeSymbol type, string name)
+            {
+                var result = new List<MethodSymbol>();
+                for (var t = type; t != null; t = t.BaseType)
+                {
+                    result.AddRange(t.Methods.Where(m => m.Name == name
+                        && !m.IsStatic && m.Kind == MethodKind.Regular));
+                }
+                return result;
+            }
+
+            // 实例字段查找：同链（仅实例字段）
+            private static FieldSymbol? FindInstanceField(TypeSymbol type, string name)
+            {
+                for (var t = type; t != null; t = t.BaseType)
+                {
+                    var hit = t.Fields.FirstOrDefault(f => f.Name == name && !f.IsStatic);
+                    if (hit != null) return hit;
+                }
+                return null;
+            }
+
+            // 类型含未替换泛型参数（自身是泛型参数，或构造类型的实参递归
+            // 含有）——泛型使用侧归 S9 的统一拦截点
+            private static bool ContainsGenericParameter(SemanticSymbol type)
+            {
+                if (type is GenericParameterSymbol) return true;
+                return type is TypeSymbol { TypeArguments: { } arguments }
+                    && arguments.Any(ContainsGenericParameter);
             }
 
             // 实参绑定：位置实参按序、具名实参按形参名归位——产物已是规范参数序
@@ -1204,10 +1820,18 @@ namespace LatteCompiler
                 };
             }
 
-            // 命名空间链字段查找（文件命名空间及父链，顶端即全局命名空间）
+            // 字段查找序：宿主类型成员（S7c-2 落地——method.Owner 沿
+            // BaseType 链，ext 方法 Owner = 目标类型；实例字段命中后由
+            // BindFieldReference 补 this，与 FindMethods 的宿主优先一致）
+            // → 命名空间链（文件命名空间及父链，顶端即全局命名空间）
             // → 通配 import 容器字段
             private FieldSymbol? FindField(string name)
             {
+                for (var host = method.Owner; host != null; host = host.BaseType)
+                {
+                    var hostHit = host.Fields.FirstOrDefault(f => f.Name == name);
+                    if (hostHit != null) return hostHit;
+                }
                 for (var ns = ctx.Namespace; ns != null; ns = ns.Parent)
                 {
                     var hit = ns.Fields.FirstOrDefault(f => f.Name == name);
@@ -1224,13 +1848,14 @@ namespace LatteCompiler
                 return null;
             }
 
-            // 方法查找序：宿主类型成员（声明类型沿 BaseType 链，先于命名空间
-            // 全局函数；实例方法命中后由 BindCallee 静态性检查拦截）
-            // → 命名空间链 → 通配 import 容器方法
+            // 方法查找序：宿主类型成员（method.Owner 沿 BaseType 链——ext
+            // 方法 Owner = 目标类型，先于命名空间全局函数；实例方法命中后
+            // 由 BindCallee 补 this 或静态性检查拦截）→ 命名空间链 →
+            // 通配 import 容器方法
             private List<MethodSymbol> FindMethods(string name)
             {
                 var result = new List<MethodSymbol>();
-                for (var host = declaringType; host != null; host = host.BaseType)
+                for (var host = method.Owner; host != null; host = host.BaseType)
                 {
                     result.AddRange(host.Methods.Where(m => m.Name == name));
                 }

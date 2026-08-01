@@ -15,6 +15,13 @@ namespace LatteCompiler.Tests
     /// （算术 + 比较）、一元运算、带返回值 invoke、表达式语句（结果丢弃）、
     /// new 构造、§18.1 标量资源全形态（bool/f64/f32/char/null）、static 字段
     /// 读写（get/set.field.static）；负例改为实例方法（P4 Error + 跳过 fn）。
+    /// S7b：if 语句/表达式与短路 and/or 的多 block 黄金文本（§16.2 if
+    /// 指令、none 操作数、if0-then 形态 block id、分支块落尾不补 ret、
+    /// 合成 bool 常量同键去重）。
+    /// S7c-1：while/do-while 的 loop/loop.rev 发射（§16.3/§16.4 三 block
+    /// 黄金文本与操作数序 cond/body/none/judge/breakid、loop0-body/
+    /// loop0-judge 块 id 递增）、break/continue（§16.5 嵌套标签命中外层
+    /// breakid）、.vars 的 .breakid 条目（§9.3）。
     /// </summary>
     public static class BilEmitterTests
     {
@@ -44,6 +51,9 @@ namespace LatteCompiler.Tests
             TestIfStatementEmission();
             TestIfExpressionEmission();
             TestShortCircuitEmission();
+            TestLoopEmission();
+            TestInstanceEmission();
+            TestForLoopEmission();
             TestUnsupportedNodes();
 
             return TestHarness.Summary("BilEmitter");
@@ -87,8 +97,11 @@ namespace LatteCompiler.Tests
                 "",
                 "Resources {",
                 "    R_0 = string \"\\n\",",
-                "    R_1 = string \"Hello, world!\",",
-                "    R_2 = i32 0",
+                "    R_1 = i32 0,",
+                "    R_2 = bool false,",
+                "    R_3 = i32 1,",
+                "    R_4 = bool true,",
+                "    R_5 = string \"Hello, world!\"",
                 "}",
                 "",
                 "LocalSymbols {",
@@ -97,10 +110,54 @@ namespace LatteCompiler.Tests
                 "        .static-method core.io::Console$.static.printErr(text:.string)@.void priv native symbol(\"printErr\") lib(\"latte_rt\")",
                 "        .static-method core.io::Console$.static.println(text:.string)@.void pub",
                 "    }",
+                "    .type core.collections::IEnumerator = interface pub {",
+                "        .method core.collections::IEnumerator$moveNext()@.bool priv",
+                "        .method core.collections::IEnumerator$current()@.generic<$.generic.T> priv",
+                "    }",
+                "    .type core.collections::IEnumerable = interface pub {",
+                "        .method core.collections::IEnumerable$iterate()@core.collections::IEnumerator<.generic<$.generic.T>> priv",
+                "    }",
+                "    .type core.collections::RangeEnumeratorI32 = class",
+                "        implements core.collections::IEnumerator<.i32>",
+                "        pub {",
+                "        .field core.collections::RangeEnumeratorI32#start_@.i32 priv",
+                "        .field core.collections::RangeEnumeratorI32#end_@.i32 priv",
+                "        .field core.collections::RangeEnumeratorI32#value_@.i32 priv",
+                "        .field core.collections::RangeEnumeratorI32#started_@.bool priv",
+                "        .method core.collections::RangeEnumeratorI32$init(start:.i32,end:.i32)@.void pub init",
+                "        .method core.collections::RangeEnumeratorI32$moveNext()@.bool pub",
+                "        .method core.collections::RangeEnumeratorI32$current()@.i32 pub",
+                "    }",
+                "    .type core.collections::RangeI32 = class",
+                "        implements core.collections::IEnumerable<.i32>",
+                "        pub {",
+                "        .field core.collections::RangeI32#start_@.i32 priv",
+                "        .field core.collections::RangeI32#end_@.i32 priv",
+                "        .method core.collections::RangeI32$init(start:.i32,end:.i32)@.void pub init",
+                "        .method core.collections::RangeI32$iterate()@core.collections::IEnumerator<.i32> pub",
+                "    }",
                 "    .method $main()@.i32 pub entrypoint",
+                "    .method core::i32$$EnumerateInRange(end:.i32)@core.collections::IEnumerable<.i32> pub ext operator(EnumerateInRange)",
                 "}",
                 "",
                 "ExternalSymbols {",
+                "}",
+                "",
+                "fn(core::i32$$EnumerateInRange(end:.i32)@core.collections::IEnumerable<.i32>) {",
+                "    .args {",
+                "        .return = core.collections::IEnumerable<.i32>,",
+                "        .this = .i32,",
+                "        end = .i32",
+                "    }",
+                "",
+                "    .vars {",
+                "        core.collections::RangeI32 .t0",
+                "    }",
+                "",
+                "    .block entry entrypoint {",
+                "        new type(core.collections::RangeI32) $.t0 [$.this, $end]",
+                "        ret $.t0",
+                "    }",
                 "}",
                 "",
                 "fn(core.io::Console$.static.println(text:.string)@.void) {",
@@ -121,6 +178,128 @@ namespace LatteCompiler.Tests
                 "    }",
                 "}",
                 "",
+                "fn(core.collections::RangeEnumeratorI32$init(start:.i32,end:.i32)@.void) {",
+                "    .args {",
+                "        .return = .void,",
+                "        .this = core.collections::RangeEnumeratorI32,",
+                "        start = .i32,",
+                "        end = .i32",
+                "    }",
+                "",
+                "    .vars {",
+                "        .i32 .t0,",
+                "        .bool .t1",
+                "    }",
+                "",
+                "    .block entry entrypoint {",
+                "        set.field $start $.this field(core.collections::RangeEnumeratorI32#start_@.i32)",
+                "        set.field $end $.this field(core.collections::RangeEnumeratorI32#end_@.i32)",
+                "        load res(R_1) $.t0",
+                "        set.field $.t0 $.this field(core.collections::RangeEnumeratorI32#value_@.i32)",
+                "        load res(R_2) $.t1",
+                "        set.field $.t1 $.this field(core.collections::RangeEnumeratorI32#started_@.bool)",
+                "        ret",
+                "    }",
+                "}",
+                "",
+                "fn(core.collections::RangeEnumeratorI32$moveNext()@.bool) {",
+                "    .args {",
+                "        .return = .bool,",
+                "        .this = core.collections::RangeEnumeratorI32",
+                "    }",
+                "",
+                "    .vars {",
+                "        .bool .t0,",
+                "        .i32 .t1,",
+                "        .i32 .t2,",
+                "        .i32 .t3,",
+                "        .i32 .t4,",
+                "        .i32 .t5,",
+                "        .bool .t6,",
+                "        .i32 .t7,",
+                "        .i32 .t8,",
+                "        .bool .t9",
+                "    }",
+                "",
+                "    .block entry entrypoint {",
+                "        get.field $.this $.t0 field(core.collections::RangeEnumeratorI32#started_@.bool)",
+                "        if $.t0 blk(if0-then) blk(if0-else)",
+                "        get.field $.this $.t7 field(core.collections::RangeEnumeratorI32#value_@.i32)",
+                "        get.field $.this $.t8 field(core.collections::RangeEnumeratorI32#end_@.i32)",
+                "        cmp.lt $.t7 $.t8 $.t9",
+                "        ret $.t9",
+                "    }",
+                "",
+                "    .block if0-then {",
+                "        get.field $.this $.t1 field(core.collections::RangeEnumeratorI32#value_@.i32)",
+                "        load res(R_3) $.t2",
+                "        add $.t1 $.t2 $.t3",
+                "        set.field $.t3 $.this field(core.collections::RangeEnumeratorI32#value_@.i32)",
+                "        get.field $.this $.t4 field(core.collections::RangeEnumeratorI32#value_@.i32)",
+                "    }",
+                "",
+                "    .block if0-else {",
+                "        get.field $.this $.t5 field(core.collections::RangeEnumeratorI32#start_@.i32)",
+                "        set.field $.t5 $.this field(core.collections::RangeEnumeratorI32#value_@.i32)",
+                "        load res(R_4) $.t6",
+                "        set.field $.t6 $.this field(core.collections::RangeEnumeratorI32#started_@.bool)",
+                "    }",
+                "}",
+                "",
+                "fn(core.collections::RangeEnumeratorI32$current()@.i32) {",
+                "    .args {",
+                "        .return = .i32,",
+                "        .this = core.collections::RangeEnumeratorI32",
+                "    }",
+                "",
+                "    .vars {",
+                "        .i32 .t0",
+                "    }",
+                "",
+                "    .block entry entrypoint {",
+                "        get.field $.this $.t0 field(core.collections::RangeEnumeratorI32#value_@.i32)",
+                "        ret $.t0",
+                "    }",
+                "}",
+                "",
+                "fn(core.collections::RangeI32$init(start:.i32,end:.i32)@.void) {",
+                "    .args {",
+                "        .return = .void,",
+                "        .this = core.collections::RangeI32,",
+                "        start = .i32,",
+                "        end = .i32",
+                "    }",
+                "",
+                "    .vars {",
+                "    }",
+                "",
+                "    .block entry entrypoint {",
+                "        set.field $start $.this field(core.collections::RangeI32#start_@.i32)",
+                "        set.field $end $.this field(core.collections::RangeI32#end_@.i32)",
+                "        ret",
+                "    }",
+                "}",
+                "",
+                "fn(core.collections::RangeI32$iterate()@core.collections::IEnumerator<.i32>) {",
+                "    .args {",
+                "        .return = core.collections::IEnumerator<.i32>,",
+                "        .this = core.collections::RangeI32",
+                "    }",
+                "",
+                "    .vars {",
+                "        .i32 .t0,",
+                "        .i32 .t1,",
+                "        core.collections::RangeEnumeratorI32 .t2",
+                "    }",
+                "",
+                "    .block entry entrypoint {",
+                "        get.field $.this $.t0 field(core.collections::RangeI32#start_@.i32)",
+                "        get.field $.this $.t1 field(core.collections::RangeI32#end_@.i32)",
+                "        new type(core.collections::RangeEnumeratorI32) $.t2 [$.t0, $.t1]",
+                "        ret $.t2",
+                "    }",
+                "}",
+                "",
                 "fn($main()@.i32) {",
                 "    .args {",
                 "        .return = .i32",
@@ -132,9 +311,9 @@ namespace LatteCompiler.Tests
                 "    }",
                 "",
                 "    .block entry entrypoint {",
-                "        load res(R_1) $.t0",
+                "        load res(R_5) $.t0",
                 "        invoke.noret fn(core.io::Console$.static.println(text:.string)@.void) [$.t0]",
-                "        load res(R_2) $.t1",
+                "        load res(R_1) $.t1",
                 "        ret $.t1",
                 "    }",
                 "}"));
@@ -178,18 +357,19 @@ namespace LatteCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckNoErrors("全管线无诊断（资源去重）", unit);
-            // R_0 = "\n"（stdlib println）、R_1 = "same"、R_2 = 0——"same" 不重复登记
+            // stdlib 基线 R_0..R_4（"\n"/0/false/1/true）+ R_5 = "same"——
+            // "same" 不重复登记；return 0 共享 R_1
             TestHarness.CheckTrue("相同字面量只登记一个资源",
-                module.Resources.Count == 3
+                module.Resources.Count == 6
                 && module.Resources.Count(r => r is BilScalarResource s
                     && s.LiteralText == "\"same\"") == 1,
                 string.Join(", ", module.Resources.Select(r => r.Name)));
             var main = module.Functions.Single(f => f.Symbol == "$main()@.i32");
             var loads = main.Blocks[0].Instructions.Where(i => i.Opcode == "load").ToList();
-            // main 共三条 load（两次 "same" + return 0），两条指向同一资源 R_1
-            TestHarness.CheckTrue("两处引用同一资源（R_1）",
+            // main 共三条 load（两次 "same" + return 0），两条指向同一资源 R_5
+            TestHarness.CheckTrue("两处引用同一资源（R_5）",
                 loads.Count == 3 && loads.Count(l => l.Operands[0] is BilResourceOperand ro
-                    && ro.ResourceId == "R_1") == 2);
+                    && ro.ResourceId == "R_5") == 2);
         }
 
         // ===== S7a 渲染辅助：fn 的 .vars + entry block 指令精确比对 =====
@@ -268,11 +448,11 @@ namespace LatteCompiler.Tests
             CheckNoErrors("全管线无诊断（声明与赋值）", unit);
             TestHarness.Check("main 指令与 .vars", RenderFn(FnOf(module, "$main()@.i32")),
                 ".vars { .i32 x, .i32 .t0, .i32 .t1, .i32 .t2, .i32 .t3, .i32 .t4 }\n" +
-                "load res(R_1) $.t0\n" +
-                "load res(R_2) $.t1\n" +
+                "load res(R_3) $.t0\n" +
+                "load res(R_5) $.t1\n" +
                 "add $.t0 $.t1 $.t2\n" +
                 "set.var $.t2 $x\n" +
-                "load res(R_3) $.t3\n" +
+                "load res(R_6) $.t3\n" +
                 "mul $x $.t3 $.t4\n" +
                 "set.var $.t4 $x\n" +
                 "ret $x\n");
@@ -289,16 +469,17 @@ namespace LatteCompiler.Tests
                 "    return n\n" +
                 "}\n");
             CheckNoErrors("全管线无诊断（一元与比较）", unit);
-            // 两处 5 共用同一资源 R_1
+            // 两处 5 共用同一资源 R_5（R_0..R_4 为 stdlib 基线）
             TestHarness.Check("资源（5 去重）", RenderResources(module),
-                "R_0 = string \"\\n\"\nR_1 = i32 5");
+                "R_0 = string \"\\n\"\nR_1 = i32 0\nR_2 = bool false\nR_3 = i32 1\n" +
+                "R_4 = bool true\nR_5 = i32 5");
             TestHarness.Check("main 指令与 .vars", RenderFn(FnOf(module, "$main()@.i32")),
                 ".vars { .i32 a, .i32 n, .bool b, .i32 .t0, .i32 .t1, .i32 .t2, .bool .t3 }\n" +
-                "load res(R_1) $.t0\n" +
+                "load res(R_5) $.t0\n" +
                 "set.var $.t0 $a\n" +
                 "opposite $a $.t1\n" +
                 "set.var $.t1 $n\n" +
-                "load res(R_1) $.t2\n" +
+                "load res(R_5) $.t2\n" +
                 "cmp.eq $n $.t2 $.t3\n" +
                 "set.var $.t3 $b\n" +
                 "ret $n\n");
@@ -317,15 +498,15 @@ namespace LatteCompiler.Tests
             TestHarness.Check("double 指令与 .vars",
                 RenderFn(FnOf(module, "$double(a:.i32)@.i32")),
                 ".vars { .i32 .t0, .i32 .t1 }\n" +
-                "load res(R_1) $.t0\n" +
+                "load res(R_5) $.t0\n" +
                 "mul $a $.t0 $.t1\n" +
                 "ret $.t1\n");
             TestHarness.Check("main 指令与 .vars（表达式语句结果丢弃）",
                 RenderFn(FnOf(module, "$main()@.i32")),
                 ".vars { .i32 .t0, .i32 .t1, .i32 .t2, .i32 .t3 }\n" +
-                "load res(R_2) $.t0\n" +
+                "load res(R_6) $.t0\n" +
                 "invoke fn($double(a:.i32)@.i32) $.t1 [$.t0]\n" +
-                "load res(R_3) $.t2\n" +
+                "load res(R_7) $.t2\n" +
                 "invoke fn($double(a:.i32)@.i32) $.t3 [$.t2]\n" +
                 "ret $.t3\n");
         }
@@ -363,26 +544,28 @@ namespace LatteCompiler.Tests
             CheckNoErrors("全管线无诊断（标量资源）", unit);
             TestHarness.Check("Resources 全形态", RenderResources(module),
                 "R_0 = string \"\\n\"\n" +
-                "R_1 = bool true\n" +
-                "R_2 = f64 0.5\n" +
-                "R_3 = f32 0.1\n" +
-                "R_4 = char 'A'\n" +
-                "R_5 = null type(.string)\n" +
-                "R_6 = i32 0");
+                "R_1 = i32 0\n" +
+                "R_2 = bool false\n" +
+                "R_3 = i32 1\n" +
+                "R_4 = bool true\n" +
+                "R_5 = f64 0.5\n" +
+                "R_6 = f32 0.1\n" +
+                "R_7 = char 'A'\n" +
+                "R_8 = null type(.string)");
             TestHarness.Check("main 指令与 .vars", RenderFn(FnOf(module, "$main()@.i32")),
                 ".vars { .bool b, .f64 d, .f32 f, .char c, .nullable<.string> s, " +
                 ".bool .t0, .f64 .t1, .f32 .t2, .char .t3, .nullable<.string> .t4, .i32 .t5 }\n" +
-                "load res(R_1) $.t0\n" +
+                "load res(R_4) $.t0\n" +
                 "set.var $.t0 $b\n" +
-                "load res(R_2) $.t1\n" +
+                "load res(R_5) $.t1\n" +
                 "set.var $.t1 $d\n" +
-                "load res(R_3) $.t2\n" +
+                "load res(R_6) $.t2\n" +
                 "set.var $.t2 $f\n" +
-                "load res(R_4) $.t3\n" +
+                "load res(R_7) $.t3\n" +
                 "set.var $.t3 $c\n" +
-                "load res(R_5) $.t4\n" +
+                "load res(R_8) $.t4\n" +
                 "set.var $.t4 $s\n" +
-                "load res(R_6) $.t5\n" +
+                "load res(R_1) $.t5\n" +
                 "ret $.t5\n");
         }
 
@@ -398,7 +581,7 @@ namespace LatteCompiler.Tests
             CheckNoErrors("全管线无诊断（static 字段）", unit);
             TestHarness.Check("main 指令与 .vars", RenderFn(FnOf(module, "$main()@.i32")),
                 ".vars { .i32 .t0, .i32 .t1 }\n" +
-                "load res(R_1) $.t0\n" +
+                "load res(R_5) $.t0\n" +
                 "set.field.static $.t0 type(Counter) field(Counter#.static.value@.i32)\n" +
                 "get.field.static $.t1 type(Counter) field(Counter#.static.value@.i32)\n" +
                 "ret $.t1\n");
@@ -418,9 +601,10 @@ namespace LatteCompiler.Tests
                 "    return x\n" +
                 "}\n");
             CheckNoErrors("全管线无诊断（if 语句发射）", unit);
-            // 两处 0 共用同一资源（去重键 = (i32, "0")）
+            // 两处 0 共用同一资源 R_1（R_0..R_4 为 stdlib 基线；2 新增 R_5）
             TestHarness.Check("资源（0 去重）", RenderResources(module),
-                "R_0 = string \"\\n\"\nR_1 = i32 0\nR_2 = i32 1\nR_3 = i32 2");
+                "R_0 = string \"\\n\"\nR_1 = i32 0\nR_2 = bool false\nR_3 = i32 1\n" +
+                "R_4 = bool true\nR_5 = i32 2");
             TestHarness.Check("if 语句多 block 文本",
                 RenderFnAllBlocks(FnOf(module, "$main()@.i32")),
                 ".vars { .i32 x, .i32 .t0, .i32 .t1, .bool .t2, .i32 .t3, .i32 .t4 }\n" +
@@ -433,11 +617,11 @@ namespace LatteCompiler.Tests
                 "ret $x\n" +
                 "}\n" +
                 ".block if0-then {\n" +
-                "load res(R_2) $.t3\n" +
+                "load res(R_3) $.t3\n" +
                 "set.var $.t3 $x\n" +
                 "}\n" +
                 ".block if0-else {\n" +
-                "load res(R_3) $.t4\n" +
+                "load res(R_5) $.t4\n" +
                 "set.var $.t4 $x\n" +
                 "}\n");
             // 结构性事实：block id 函数内唯一且恰一个 entrypoint（§9.4）
@@ -474,28 +658,30 @@ namespace LatteCompiler.Tests
                 "    return r\n" +
                 "}\n");
             CheckNoErrors("全管线无诊断（if 表达式发射）", unit);
-            // 分支里的 1 与 x 初始化器 1 同键去重
+            // 分支里的 1 与 x 初始化器 1 同键共享 R_3（stdlib 基线内）；
+            // 0 共享 R_1；2 新增 R_5
             TestHarness.Check("资源（1 去重）", RenderResources(module),
-                "R_0 = string \"\\n\"\nR_1 = i32 1\nR_2 = i32 0\nR_3 = i32 2");
+                "R_0 = string \"\\n\"\nR_1 = i32 0\nR_2 = bool false\nR_3 = i32 1\n" +
+                "R_4 = bool true\nR_5 = i32 2");
             TestHarness.Check("if 表达式多 block 文本",
                 RenderFnAllBlocks(FnOf(module, "$main()@.i32")),
                 ".vars { .i32 x, .i32 r, .i32 .s0, .i32 .t0, .i32 .t1, .bool .t2, " +
                 ".i32 .t3, .i32 .t4 }\n" +
                 ".block entry entrypoint {\n" +
-                "load res(R_1) $.t0\n" +
+                "load res(R_3) $.t0\n" +
                 "set.var $.t0 $x\n" +
-                "load res(R_2) $.t1\n" +
+                "load res(R_1) $.t1\n" +
                 "cmp.gt $x $.t1 $.t2\n" +
                 "if $.t2 blk(if0-then) blk(if0-else)\n" +
                 "set.var $.s0 $r\n" +
                 "ret $r\n" +
                 "}\n" +
                 ".block if0-then {\n" +
-                "load res(R_1) $.t3\n" +
+                "load res(R_3) $.t3\n" +
                 "set.var $.t3 $.s0\n" +
                 "}\n" +
                 ".block if0-else {\n" +
-                "load res(R_3) $.t4\n" +
+                "load res(R_5) $.t4\n" +
                 "set.var $.t4 $.s0\n" +
                 "}\n");
         }
@@ -517,15 +703,17 @@ namespace LatteCompiler.Tests
                     .All(i => i.Opcode != "and" && i.Opcode != "or"),
                 string.Join(", ", FnOf(module, "$main()@.i32").Blocks
                     .SelectMany(b => b.Instructions).Select(i => i.Opcode)));
-            // 合成常量与源码字面量同键去重：true/false 各一个资源
+            // 合成常量与源码字面量同键去重：true/false 分别共享 stdlib
+            // 基线的 R_4/R_2；return 0 共享 R_1——资源零新增
             TestHarness.Check("资源（true/false 去重）", RenderResources(module),
-                "R_0 = string \"\\n\"\nR_1 = bool true\nR_2 = bool false\nR_3 = i32 0");
+                "R_0 = string \"\\n\"\nR_1 = i32 0\nR_2 = bool false\nR_3 = i32 1\n" +
+                "R_4 = bool true");
             TestHarness.Check("短路 and/or 多 block 文本",
                 RenderFnAllBlocks(FnOf(module, "$main()@.i32")),
                 ".vars { .bool a, .bool b, .bool c, .bool d, .bool .s0, .bool .s1, " +
                 ".bool .t0, .bool .t1, .bool .t2, .bool .t3, .i32 .t4 }\n" +
                 ".block entry entrypoint {\n" +
-                "load res(R_1) $.t0\n" +
+                "load res(R_4) $.t0\n" +
                 "set.var $.t0 $a\n" +
                 "load res(R_2) $.t1\n" +
                 "set.var $.t1 $b\n" +
@@ -533,7 +721,7 @@ namespace LatteCompiler.Tests
                 "set.var $.s0 $c\n" +
                 "if $a blk(if1-then) blk(if1-else)\n" +
                 "set.var $.s1 $d\n" +
-                "load res(R_3) $.t4\n" +
+                "load res(R_1) $.t4\n" +
                 "ret $.t4\n" +
                 "}\n" +
                 ".block if0-then {\n" +
@@ -544,7 +732,7 @@ namespace LatteCompiler.Tests
                 "set.var $.t2 $.s0\n" +
                 "}\n" +
                 ".block if1-then {\n" +
-                "load res(R_1) $.t3\n" +
+                "load res(R_4) $.t3\n" +
                 "set.var $.t3 $.s1\n" +
                 "}\n" +
                 ".block if1-else {\n" +
@@ -552,25 +740,253 @@ namespace LatteCompiler.Tests
                 "}\n");
         }
 
-        // ===== 负例：实例方法 → P4 Error + 跳过该 fn 定义 =====
-        // （S7a 后 P3 能产出的节点已全部过 P4a/P4b，源码侧剩余的未覆盖发射
-        // 形态是实例方法的 .this receiver）
-        private static void TestUnsupportedNodes()
+        // ===== S7c-1：循环 → loop/loop.rev（§16.3/§16.4）+ break/continue（§16.5）=====
+        private static void TestLoopEmission()
+        {
+            // while 端到端三 block 黄金文本（操作数序：cond、body、none、
+            // judge、breakid）
+            var (unit, module, _) = EmitUnit(
+                "pub func main(): i32 {\n" +
+                "    var x: i32 = 0\n" +
+                "    while (x < 3) {\n" +
+                "        x = x + 1\n" +
+                "    }\n" +
+                "    return x\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（while 发射）", unit);
+            TestHarness.Check("资源（while）", RenderResources(module),
+                "R_0 = string \"\\n\"\nR_1 = i32 0\nR_2 = bool false\nR_3 = i32 1\n" +
+                "R_4 = bool true\nR_5 = i32 3");
+            TestHarness.Check("while 多 block 文本",
+                RenderFnAllBlocks(FnOf(module, "$main()@.i32")),
+                ".vars { .i32 x, .bool .s0, .breakid .b0, .i32 .t0, .i32 .t1, " +
+                ".i32 .t2, .i32 .t3, .bool .t4 }\n" +
+                ".block entry entrypoint {\n" +
+                "load res(R_1) $.t0\n" +
+                "set.var $.t0 $x\n" +
+                "loop $.s0 blk(loop0-body) none blk(loop0-judge) $.b0\n" +
+                "ret $x\n" +
+                "}\n" +
+                ".block loop0-body {\n" +
+                "load res(R_3) $.t1\n" +
+                "add $x $.t1 $.t2\n" +
+                "set.var $.t2 $x\n" +
+                "}\n" +
+                ".block loop0-judge {\n" +
+                "load res(R_5) $.t3\n" +
+                "cmp.lt $x $.t3 $.t4\n" +
+                "set.var $.t4 $.s0\n" +
+                "}\n");
+            // 结构性事实：.vars 的 .breakid 条目（§9.3 别名投影）
+            var mainFn = FnOf(module, "$main()@.i32");
+            TestHarness.CheckTrue(".vars 含 .breakid 条目",
+                mainFn.Vars.Any(v => v.TypeRef == ".breakid" && v.Name == ".b0"));
+
+            // do-while → loop.rev（结构断言）
+            var (unit2, module2, _) = EmitUnit(
+                "pub func main(): i32 {\n" +
+                "    var x: i32 = 0\n" +
+                "    do {\n" +
+                "        x = x + 1\n" +
+                "    } while (x < 3)\n" +
+                "    return x\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（do-while 发射）", unit2);
+            var revFn = FnOf(module2, "$main()@.i32");
+            var revInstruction = revFn.Blocks.SelectMany(b => b.Instructions)
+                .Single(i => i.Opcode == "loop.rev");
+            TestHarness.CheckTrue("loop.rev 五操作数（cond/body/none/judge/breakid）",
+                revInstruction.Operands.Count == 5
+                && revInstruction.Operands[0].Render() == "$.s0"
+                && revInstruction.Operands[1].Render() == "blk(loop0-body)"
+                && revInstruction.Operands[2] is BilNoneOperand
+                && revInstruction.Operands[3].Render() == "blk(loop0-judge)"
+                && revInstruction.Operands[4].Render() == "$.b0");
+            TestHarness.CheckTrue("loop.rev 产 body/judge block",
+                revFn.Blocks.Any(b => b.Id == "loop0-body")
+                && revFn.Blocks.Any(b => b.Id == "loop0-judge"));
+
+            // 嵌套标签循环：break@outer 引用外层 breakid、continue 引用内层
+            var (unit3, module3, _) = EmitUnit(
+                "pub func main(): i32 {\n" +
+                "    var x: i32 = 0\n" +
+                "    while (x < 10) named outer {\n" +
+                "        while (x < 5) {\n" +
+                "            x = x + 1\n" +
+                "            if (x == 3) { break@outer }\n" +
+                "            continue\n" +
+                "        }\n" +
+                "        x = x + 2\n" +
+                "    }\n" +
+                "    return x\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（嵌套标签循环发射）", unit3);
+            var nestedFn = FnOf(module3, "$main()@.i32");
+            var breakInstruction = nestedFn.Blocks.SelectMany(b => b.Instructions)
+                .Single(i => i.Opcode == "break");
+            var continueInstruction = nestedFn.Blocks.SelectMany(b => b.Instructions)
+                .Single(i => i.Opcode == "continue");
+            TestHarness.CheckTrue("break@outer → $.b0（外层 breakid）",
+                breakInstruction.Operands.Count == 1
+                && breakInstruction.Operands[0].Render() == "$.b0");
+            TestHarness.CheckTrue("continue → $.b1（内层 breakid）",
+                continueInstruction.Operands.Count == 1
+                && continueInstruction.Operands[0].Render() == "$.b1");
+            TestHarness.CheckTrue(".vars 含两个 .breakid 条目",
+                nestedFn.Vars.Count(v => v.TypeRef == ".breakid") == 2);
+            TestHarness.CheckTrue("嵌套循环 block id 递增（loop0/loop1）",
+                nestedFn.Blocks.Any(b => b.Id == "loop1-body")
+                && nestedFn.Blocks.Any(b => b.Id == "loop1-judge"));
+        }
+
+        // ===== S7c-2：实例成员发射（.this/实例 invoke/get.field/set.field/
+        // init/operator 声明形态）=====
+        private static void TestInstanceEmission()
         {
             var (unit, module, _) = EmitUnit(
-                "pub class Foo { pub func Bar() { } }\n" +
+                "pub class Counter {\n" +
+                "    pub var value: i32\n" +
+                "    pub init(v: i32) { value = v }\n" +
+                "    pub func add(n: i32): i32 { return value + n }\n" +
+                "}\n" +
                 "pub func main(): i32 {\n" +
-                "    return 0\n" +
+                "    var c = new Counter(1)\n" +
+                "    return c.add(2)\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("实例方法报 P4 Error（.this receiver）",
-                unit.Diagnostics, "requires .this receiver");
-            // Foo.Bar 被跳过（无 fn 定义）；main 与 stdlib println 不受影响
-            TestHarness.CheckTrue("跳过实例方法 fn 定义",
-                module.Functions.All(f => !f.Symbol.StartsWith("Foo$Bar")));
-            TestHarness.CheckTrue("main 仍正常发射",
-                module.Functions.Any(f => f.Symbol == "$main()@.i32"));
-            TestHarness.CheckTrue("stdlib println 仍正常发射",
-                module.Functions.Any(f => f.Symbol == "core.io::Console$.static.println(text:.string)@.void"));
+            CheckNoErrors("全管线无诊断（实例成员发射）", unit);
+
+            // init/operator/ext 声明形态（§8.4）——init 是 Counter .type
+            // 的成员（类型成员嵌在类型声明内）；ext operator 是顶层裸条目
+            TestHarness.CheckTrue("init 声明形态（普通 canonical + init 修饰符）",
+                module.LocalSymbols.OfType<BilTypeDeclaration>()
+                    .Where(t => t.Symbol == "Counter")
+                    .SelectMany(t => t.Members.OfType<BilSimpleMemberDeclaration>())
+                    .Any(d => d.Keyword == ".method"
+                        && d.Symbol == "Counter$init(v:.i32)@.void"
+                        && d.Modifiers.Contains("init") && d.Modifiers.Contains("pub")));
+            TestHarness.CheckTrue("ext operator 声明形态（$$名 + ext + operator(名)）",
+                module.LocalSymbols.OfType<BilSimpleMemberDeclaration>().Any(d =>
+                    d.Keyword == ".method"
+                    && d.Symbol == "core::i32$$EnumerateInRange(end:.i32)" +
+                        "@core.collections::IEnumerable<.i32>"
+                    && d.Modifiers.Contains("ext")
+                    && d.Modifiers.Contains("operator(EnumerateInRange)")));
+
+            // .this 进 .args（§9.2：.return 后、普通参数前；§7.3）
+            var addFn = FnOf(module, "Counter$add(n:.i32)@.i32");
+            TestHarness.CheckTrue("add 的 .args = [.return, .this, n]",
+                addFn.Args.Count == 3
+                && addFn.Args[0].Name == ".return"
+                && addFn.Args[1].Name == ".this" && addFn.Args[1].TypeRef == "Counter"
+                && addFn.Args[2].Name == "n");
+            var initFn = FnOf(module, "Counter$init(v:.i32)@.void");
+            TestHarness.CheckTrue("init 的 .args = [.return(.void), .this, v]",
+                initFn.Args.Count == 3
+                && initFn.Args[0].TypeRef == ".void"
+                && initFn.Args[1].Name == ".this");
+
+            // get.field/set.field（§13.3）与 void init 末尾补 ret
+            TestHarness.Check("init 指令（set.field $v $.this）",
+                RenderFn(initFn),
+                ".vars {  }\n" +
+                "set.field $v $.this field(Counter#value@.i32)\n" +
+                "ret\n");
+            TestHarness.Check("add 指令（get.field $.this + add）",
+                RenderFn(addFn),
+                ".vars { .i32 .t0, .i32 .t1 }\n" +
+                "get.field $.this $.t0 field(Counter#value@.i32)\n" +
+                "add $.t0 $n $.t1\n" +
+                "ret $.t1\n");
+
+            // 实例 invoke：receiver 求值作首实参（§7.3/§15.1）
+            TestHarness.Check("main 指令（new + 实例 invoke receiver 首参）",
+                RenderFn(FnOf(module, "$main()@.i32")),
+                ".vars { Counter c, .i32 .t0, Counter .t1, .i32 .t2, .i32 .t3 }\n" +
+                "load res(R_3) $.t0\n" +
+                "new type(Counter) $.t1 [$.t0]\n" +
+                "set.var $.t1 $c\n" +
+                "load res(R_5) $.t2\n" +
+                "invoke fn(Counter$add(n:.i32)@.i32) $.t3 [$c, $.t2]\n" +
+                "ret $.t3\n");
+        }
+
+        // ===== S7c-2：for 端到端（iterate 前置 + LoweredLoop 复用发射）=====
+        private static void TestForLoopEmission()
+        {
+            var (unit, module, _) = EmitUnit(
+                "pub func main(): i32 {\n" +
+                "    var sum = 0\n" +
+                "    for (i in 0 to 3) {\n" +
+                "        sum = sum + i\n" +
+                "    }\n" +
+                "    return sum\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（for 发射）", unit);
+            TestHarness.Check("资源（for）", RenderResources(module),
+                "R_0 = string \"\\n\"\nR_1 = i32 0\nR_2 = bool false\nR_3 = i32 1\n" +
+                "R_4 = bool true\nR_5 = i32 3");
+            TestHarness.Check("for 多 block 文本",
+                RenderFnAllBlocks(FnOf(module, "$main()@.i32")),
+                ".vars { .i32 sum, .i32 i, core.collections::IEnumerator<.i32> .s0, " +
+                ".bool .s1, .breakid .b0, .i32 .t0, .i32 .t1, .i32 .t2, " +
+                "core.collections::IEnumerable<.i32> .t3, " +
+                "core.collections::IEnumerator<.i32> .t4, .i32 .t5, .i32 .t6, .bool .t7 }\n" +
+                ".block entry entrypoint {\n" +
+                "load res(R_1) $.t0\n" +
+                "set.var $.t0 $sum\n" +
+                "load res(R_1) $.t1\n" +
+                "load res(R_5) $.t2\n" +
+                "invoke fn(core::i32$$EnumerateInRange(end:.i32)" +
+                "@core.collections::IEnumerable<.i32>) $.t3 [$.t1, $.t2]\n" +
+                "invoke fn(core.collections::IEnumerable$iterate()" +
+                "@core.collections::IEnumerator<.generic<$.generic.T>>) $.t4 [$.t3]\n" +
+                "set.var $.t4 $.s0\n" +
+                "loop $.s1 blk(loop0-body) none blk(loop0-judge) $.b0\n" +
+                "ret $sum\n" +
+                "}\n" +
+                ".block loop0-body {\n" +
+                "invoke fn(core.collections::IEnumerator$current()@.generic<$.generic.T>) " +
+                "$.t5 [$.s0]\n" +
+                "set.var $.t5 $i\n" +
+                "add $sum $i $.t6\n" +
+                "set.var $.t6 $sum\n" +
+                "}\n" +
+                ".block loop0-judge {\n" +
+                "invoke fn(core.collections::IEnumerator$moveNext()@.bool) $.t7 [$.s0]\n" +
+                "set.var $.t7 $.s1\n" +
+                "}\n");
+            // 结构性事实：ext operator fn 的 .args（§7.3 ext receiver 同形态）
+            var extFn = FnOf(module,
+                "core::i32$$EnumerateInRange(end:.i32)@core.collections::IEnumerable<.i32>");
+            TestHarness.CheckTrue("ext operator fn 的 .args = [.return, .this(.i32), end]",
+                extFn.Args.Count == 3
+                && extFn.Args[1].Name == ".this" && extFn.Args[1].TypeRef == ".i32"
+                && extFn.Args[2].Name == "end");
+        }
+
+        // ===== 负例：未覆盖节点 → P4 Error =====
+        // （S7c-2 后实例方法/init/operator 已开闸，源码侧 P4 发射全覆盖——
+        // 以测试私有 Lowered 子类模拟「未来新增但 BilEmitter 尚未覆盖」的
+        // 节点，仿 LowererTests.TestUnsupportedNode）
+        private sealed class FutureLoweredStatement : LoweredStatement
+        {
+            public FutureLoweredStatement(BoundNode origin) : base(origin)
+            {
+            }
+        }
+
+        private static void TestUnsupportedNodes()
+        {
+            var root = TestHarness.ParseRoot("func f() { }\n");
+            var unit = new CompilationUnit(root);
+            var method = new MethodSymbol("future", MethodKind.Regular);
+            var boundBody = new BoundBlock(root, new List<BoundStatement>());
+            var body = new LoweredFunctionBody(method, new List<LocalSymbol>(),
+                new LoweredBlock(boundBody,
+                    new List<LoweredStatement> { new FutureLoweredStatement(boundBody) }));
+            BilEmitter.Emit(unit, new[] { body }, "future");
+            TestHarness.CheckSemanticError("未覆盖节点报 P4 Error", unit.Diagnostics,
+                "not supported by minimal emission");
         }
     }
 }

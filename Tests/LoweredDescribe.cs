@@ -13,9 +13,13 @@ namespace LatteCompiler.Tests
     ///   Local(x,i32)  Param(a,i32)  Field(g,i32)  Const(True,bool)（P4a 合成常量）
     ///   Binary(Add, l, r, i32)  Unary(Opposite, x, i32)
     ///   Call(name, [args], ret)  New(T, [args])  New(T, init, [args])
+    ///   This(C)（S7c-2）  InstCall(name, receiver, [args], ret)  InstField(f, receiver, T)
     /// 格式约定（语句）：
     ///   Decl(x, i32, = init)  ExprStmt(e)  CallStmt(name, [args])  Assign(t, v)  Return(v)  Return
     ///   If(c, [真], [假])  If(c, [真])
+    ///   Loop([judge], .s0, [body], .b0)（do-while 带 rev 标记：Loop(rev, ...)）
+    ///   Break(.b0)  Continue(.b0)（breakid 取目标循环的合成 .breakid 局部名）
+    ///   InstCallStmt(name, receiver, [args])（void 实例调用语句，S7c-2）
     ///   块：[s1; s2]；函数体：Body(name, [x: i32, ...], [块])
     /// </summary>
     public static class LoweredDescribe
@@ -40,8 +44,10 @@ namespace LatteCompiler.Tests
                     $"Decl({decl.Local.Name}, {TypeShort(decl.Local.Type)}" +
                     $"{(decl.Initializer != null ? $", = {Expr(decl.Initializer)}" : "")})",
                 LoweredExpressionStatement exprStmt => $"ExprStmt({Expr(exprStmt.Expression)})",
-                LoweredCallStatement call =>
-                    $"CallStmt({call.Method.Name}, [{string.Join(", ", call.Arguments.Select(Expr))}])",
+                LoweredCallStatement call => call.Receiver == null
+                    ? $"CallStmt({call.Method.Name}, [{string.Join(", ", call.Arguments.Select(Expr))}])"
+                    : $"InstCallStmt({call.Method.Name}, {Expr(call.Receiver)}, " +
+                        $"[{string.Join(", ", call.Arguments.Select(Expr))}])",
                 LoweredAssignmentStatement assign => $"Assign({Expr(assign.Target)}, {Expr(assign.Value)})",
                 LoweredReturnStatement ret =>
                     ret.Value != null ? $"Return({Expr(ret.Value)})" : "Return",
@@ -49,6 +55,11 @@ namespace LatteCompiler.Tests
                     ? $"If({Expr(ifStmt.Condition)}, {Block(ifStmt.TrueBlock)}, " +
                         $"{Block(ifStmt.FalseBlock)})"
                     : $"If({Expr(ifStmt.Condition)}, {Block(ifStmt.TrueBlock)})",
+                LoweredLoop loop =>
+                    $"Loop({(loop.IsRev ? "rev, " : "")}{Block(loop.Judge)}, " +
+                    $"{loop.Condition.Name}, {Block(loop.Body)}, {loop.BreakId.Name})",
+                LoweredLoopControl loopControl =>
+                    $"{(loopControl.IsBreak ? "Break" : "Continue")}({loopControl.BreakId.Name})",
                 _ => $"<{stmt.GetType().Name}>",
             };
         }
@@ -83,6 +94,14 @@ namespace LatteCompiler.Tests
                 LoweredNewExpression newExpr =>
                     $"New({TypeShort(newExpr.Type)}{(newExpr.Init != null ? ", init" : "")}, " +
                     $"[{string.Join(", ", newExpr.Arguments.Select(Expr))}])",
+                LoweredThisExpression => $"This({TypeShort(expr.Type)})",
+                LoweredInstanceCallExpression instCall =>
+                    $"InstCall({instCall.Method.Name}, {Expr(instCall.Receiver)}, " +
+                    $"[{string.Join(", ", instCall.Arguments.Select(Expr))}], " +
+                    $"{TypeShort(instCall.Type)})",
+                LoweredFieldAccessExpression fieldAccess =>
+                    $"InstField({fieldAccess.Field.Name}, {Expr(fieldAccess.Receiver)}, " +
+                    $"{TypeShort(fieldAccess.Type)})",
                 _ => $"<{expr.GetType().Name}>",
             };
         }
@@ -103,9 +122,11 @@ namespace LatteCompiler.Tests
             };
         }
 
-        // 类型短名：Nullable\<T\> 显示为 T?，其余构造类型 Name<args> 递归
-        private static string TypeShort(TypeSymbol type)
+        // 类型短名：Nullable\<T\> 显示为 T?，其余构造类型 Name<args> 递归；
+        // null = P4a 合成 .breakid 局部（BIL §9.3 别名，无 TypeSymbol）
+        private static string TypeShort(TypeSymbol? type)
         {
+            if (type == null) return ".breakid";
             if (type.ConstructedFrom == null) return type.Name;
             if (type.Name == "Nullable" && type.TypeArguments!.Count == 1
                 && type.TypeArguments[0] is TypeSymbol element)

@@ -2,8 +2,9 @@ using System.Collections.Generic;
 
 namespace LatteCompiler
 {
-    // Lowered 语句节点（S6 最小集 + S7a 补齐 + S7b 脱糖，SEMANTIC_ROADMAP）：
-    // 块 / 局部变量声明 / 表达式语句 / void 调用语句 / 赋值 / return / if。
+    // Lowered 语句节点（S6 最小集 + S7a 补齐 + S7b 脱糖 + S7c-1 循环，
+    // SEMANTIC_ROADMAP）：块 / 局部变量声明 / 表达式语句 / void 调用语句 /
+    // 赋值 / return / if / 循环 / break/continue。
     // S7b 起部分节点构造的 origin 参数放宽为 BoundNode：脱糖合成节点
     // （值块写入赋值、if 转换新建块等）无逐一对应的 Bound 节点，
     // Origin 按 ARCH §5.1 约定指向最近的语法来源。
@@ -20,17 +21,22 @@ namespace LatteCompiler
         }
     }
 
-    // void 调用语句（无结果方法调用只能作语句，SYNTAX §4）
+    // void 调用语句（无结果方法调用只能作语句，SYNTAX §4）。
+    // Receiver 为 null = 静态/全局调用；非 null = 实例调用（S7c-2，
+    // receiver 求值作首实参，BIL §7.3/§15.1）
     public sealed class LoweredCallStatement : LoweredStatement
     {
         public MethodSymbol Method { get; }
         public IReadOnlyList<LoweredExpression> Arguments { get; }
+        public LoweredExpression? Receiver { get; }
 
         public LoweredCallStatement(BoundCallStatement origin, MethodSymbol method,
-            IReadOnlyList<LoweredExpression> arguments) : base(origin)
+            IReadOnlyList<LoweredExpression> arguments, LoweredExpression? receiver = null)
+            : base(origin)
         {
             Method = method;
             Arguments = arguments;
+            Receiver = receiver;
         }
     }
 
@@ -103,6 +109,52 @@ namespace LatteCompiler
             Condition = condition;
             TrueBlock = trueBlock;
             FalseBlock = falseBlock;
+        }
+    }
+
+    // 循环（S7c-1；BIL §16.3/§16.4 结构化循环的直接对应）：
+    // - Judge = 条件求值并写入 Condition 的语句序列（前置语句机制产物，
+    //   末尾一条写条件局部的赋值；§16.3 要求每次读取 CONDITION 前由
+    //   JUDGE_BLOCK 赋值）；
+    // - Condition 是合成 bool 局部（.sN 体系）；
+    // - Enumerator 恒 null（发射 none；for 的枚举器块随 S7c-2 落地）；
+    // - BreakId 是合成 .breakid 局部（.bN 命名，函数内唯一；Type 为
+    //   null 的特例见 LocalSymbol 注释，.vars 条目投影 .breakid §9.3）
+    public sealed class LoweredLoop : LoweredStatement
+    {
+        public bool IsRev { get; }              // do-while → loop.rev（§16.4）
+        public LoweredBlock Judge { get; }
+        public LocalSymbol Condition { get; }
+        public LoweredBlock Body { get; }
+        public LoweredBlock? Enumerator { get; }
+        public LocalSymbol BreakId { get; }
+
+        public LoweredLoop(BoundLoop origin, bool isRev, LoweredBlock judge,
+            LocalSymbol condition, LoweredBlock body, LoweredBlock? enumerator,
+            LocalSymbol breakId) : base(origin)
+        {
+            IsRev = isRev;
+            Judge = judge;
+            Condition = condition;
+            Body = body;
+            Enumerator = enumerator;
+            BreakId = breakId;
+        }
+    }
+
+    // break/continue（S7c-1；BIL §16.5）：BreakId 经 BoundLoop → 合成
+    // .breakid 局部的映射命中（穿透值块/嵌套块时属外层循环——BIL 动态
+    // 结构作用域合法，降级不做任何展开，直接发 break/continue 指令）
+    public sealed class LoweredLoopControl : LoweredStatement
+    {
+        public bool IsBreak { get; }
+        public LocalSymbol BreakId { get; }
+
+        public LoweredLoopControl(BoundLoopControl origin, bool isBreak,
+            LocalSymbol breakId) : base(origin)
+        {
+            IsBreak = isBreak;
+            BreakId = breakId;
         }
     }
 }

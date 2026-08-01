@@ -227,12 +227,46 @@ S5 已能绑定的全部 Bound 节点在本步过 P4（控制流的前置：没�
 
 ### S7c 循环四形态 + break/continue
 
-- P3：`BoundLoop`（for/while/do-while/named 标签）+ break/continue
-  标签解析（循环外使用诊断）；for 的 RangeTo 语义按 SYNTAX 落地；
-- P4b：`loop` / `loop.rev`（§16.3/§16.4）+ `break` / `continue`
-  （§16.5）+ BREAK_ID 变量（`.vars` 内声明，capability 规则 §20.6
-  由 verifier 复核，本步只保证发射形态合法）；
-- **验收**：四形态循环 + 嵌套循环标签 break/continue 端到端用例。
+2026-08-01 协议定稿（已落 SYNTAX §7.3/§13.2/§15.3）：范围循环半开
+`[a, b)`、步长 +1；`a to b` 即 `a.EnumerateInRange(b)`（T 上的实例
+运算符，`this` 即 start）；`IEnumerable\<T\>`/`IEnumerator\<T\>` 为
+core.collections 的 C# 风格双接口；基元实现落 `stdlib/.bootstrap.latte`
+（SDK 自举源，默认参与编译）。据此拆两步：
+
+**S7c-1（while / do-while / break / continue）**
+
+- P3：`BoundLoop`（While/DoWhile；引用相等即身份）+ `BoundLoopControl`
+  （break/continue，循环标签栈解析，循环外诊断）；**值块内 break/continue
+  允许穿透**（GuaranteesValueReturn 视命中外层循环者为路径终止，BIL
+  §16.5 动态结构作用域合法）；DA（while 后 = before、do-while 后 = body
+  尾集合）与 GuaranteesReturn（循环保守 false，`while (true)` 留口）。
+- P4a：`LoweredLoop{IsRev, Judge, Condition（合成 bool 局部）, Body,
+  Enumerator?, BreakId（合成 .breakid 局部 .bN）}` + `LoweredLoopControl`；
+  条件求值移入 Judge 块。
+- P4b：`loop`/`loop.rev`（§16.3/§16.4，块 id `loop0-body`/`loop0-judge`）
+  + `break`/`continue`（§16.5）+ `.vars` 的 `.breakid` 条目。
+- **验收**：while/do-while/嵌套标签循环端到端多 block BIL + 各诊断用例。
+
+**S7c-2（实例成员最小闭环 + IEnumerable + for 双形态）**
+
+- P3：`BoundThisExpression`（路径首段 `this` 特判，静态上下文诊断）+
+  `BoundInstanceCallExpression` + `BoundFieldAccessExpression`；BindPath
+  实例链上色（沿 BaseType 链 + 接口成员；ext 成员同路径——P2 已注册到
+  目标类型，BIL §7.3 同用 `.this`）；`for (i in a to b)` 绑定为
+  EnumerateInRange 实例调用、for-each 做 `IEnumerable\<TItem\>` 实现判定；
+  循环变量按 const 处理（只读默认，规范未明登记）。访问控制检查仍归 S8。
+- P4a：for 统一脱糖为 `iterate()` 前置 + `LoweredLoop`（Judge =
+  `moveNext()`、Body 头 = `item = current()`）——复用 S7c-1 发射零新增。
+- P4b 开闸：实例方法 fn 定义（`.args` 首条 `.this = OwnerType`）、
+  `invoke` receiver 首实参、`get.field`/`set.field`（§13.3）、
+  operator/init 的 §8.4 声明形态。
+- stdlib：`stdlib/core/collections.latte`（双接口 + `RangeEnumeratorI32`
+  **class**——SYNTAX §10 struct 不得实现接口；泛型 `RangeEnumerator\<T\>`
+  留 S9）+ `stdlib/.bootstrap.latte`（`pub ext operator
+  i32.EnumerateInRange`）。早验证：ext+operator 前端组合、点开头文件
+  内嵌匹配。
+- **验收**：this/实例调用/实例字段绑定与发射用例 + `for (i in 0 to 3)`
+  端到端合法 BIL（stdlib 两文件同走 P1–P4）。
 
 ### S7d switch 语句/表达式 + throw
 

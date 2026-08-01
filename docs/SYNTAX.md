@@ -796,6 +796,20 @@ do {
 
 大括号不可省略。
 
+循环语义（2026-08-01 定稿）：
+
+- **for-each**：`for (item in collection)` 要求 `collection` 的类型实现
+  `core.collections.IEnumerable\<T\>`；循环变量 `item` 的类型为 `T`。
+  循环等价于：先调用 `iterate()` 取得 `IEnumerator\<T\>`；每轮迭代先调用
+  `moveNext()`，返回 `false` 时结束循环，否则以 `current()` 的值作为本轮
+  的 `item` 执行循环体。`IEnumerable\<T\>` / `IEnumerator\<T\>` 是双接口
+  （可重入，每次 `iterate()` 产生独立枚举器），属标准库 `core.collections`。
+- **范围循环**：`for (i in a to b)` 为**半开区间 `[a, b)`**，步长恒 +1；
+  `a >= b` 时零次迭代。它就是对枚举运算符结果的 for-each：
+  等价于 `for (i in a.EnumerateInRange(b))`（见 §13.2 枚举运算符）。
+  `to` 是 for 头专用语法，不是通用表达式。
+- 基元数值类型的 `EnumerateInRange` 实现由 SDK 自举源提供（见 §15.3）。
+
 ### 7.4 带标签的循环
 
 使用 `named` 关键字声明标签：
@@ -1323,6 +1337,15 @@ pub operator plus\<TAnother extends Addable>(another: TAnother): MyType { ... }
 | `[]` 读取 | `getAtIndex` | `operator getAtIndex\<TElement, TIndex>(index: TIndex): TElement` |
 | `[]` 赋值 | `setAtIndex` | `operator setAtIndex\<TElement, TIndex>(index: TIndex, element: TElement)` |
 
+#### 枚举运算符
+
+| 运算符 | 名称 | 签名 |
+|--------|------|------|
+| `to`（仅 for 头，§7.3） | `EnumerateInRange` | `operator EnumerateInRange(end: T): core.collections.IEnumerable\<T\>` |
+
+- `a to b` 为半开区间 `[a, b)`；`this` 即区间起点（start），`end` 为终点（不含）。
+- 返回的 `IEnumerable\<T\>` 随即按 for-each 协议迭代（§7.3）。
+
 #### 通用规则
 
 - `+=`/`-=`/`*=`/`/=`/`<<=`/`>>=`/`>>>=`/`&=`/`|=`/`^=` 从对应运算符自动推导
@@ -1624,6 +1647,18 @@ import core.collections.*                // 全部导入
 
 规则：
 - `{}` 列表项只能是单标识符，不允许带路径——`import core.collections.{a.List}` 是编译错误。需要导入不同子路径的符号时写多条 `import` 语句。
+
+### 15.3 SDK 自举源
+
+编译器自带的标准库 Latte 源（`stdlib/`）随每次编译**默认参与编译**，无需
+import 即进入编译单元（与用户源同走语义全流程）：
+
+- `core.collections`：`IEnumerable\<T\>` / `IEnumerator\<T\>` 迭代协议
+  （§7.3）与容器接口、实现；
+- `core.io`：`Console` 等 I/O 表层；
+- `.bootstrap.latte`：**基元类型自举辅助成员**——内建数值类型
+  （`i32` 等）无法在自己的声明处携带这些实现，经 `ext` 以 Latte 自举
+  （如 `EnumerateInRange`，§13.2）。
 
 ---
 

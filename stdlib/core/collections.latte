@@ -1,0 +1,61 @@
+// Latte 标准库：core.collections 迭代协议（SYNTAX.md §7.3/§15.3）。
+// IEnumerable\<T\>/IEnumerator\<T\> 是 C# 风格双接口（可重入，每次
+// iterate() 产生独立枚举器）；RangeEnumeratorI32 是 i32 范围循环
+// （半开区间 [start, end)、步长恒 +1，SYNTAX.md §7.3）的枚举器实现——
+// class 形态（SYNTAX.md §10：struct 不得实现接口）；泛型
+// RangeEnumerator\<T\> 留 S9（泛型使用侧）。
+namespace core.collections
+
+pub interface IEnumerator\<T> {
+    func moveNext(): bool
+    func current(): T
+}
+
+pub interface IEnumerable\<T> {
+    func iterate(): IEnumerator\<T>
+}
+
+pub class RangeEnumeratorI32 implements IEnumerator\<i32> {
+    priv var start_: i32
+    priv var end_: i32
+    priv var value_: i32
+    priv var started_: bool
+
+    pub init(start: i32, end: i32) {
+        start_ = start
+        end_ = end
+        value_ = 0
+        started_ = false
+    }
+
+    pub override func moveNext(): bool {
+        if (started_) {
+            value_ += 1
+        } else {
+            value_ = start_
+            started_ = true
+        }
+        return (value_ < end_)
+    }
+
+    pub override func current(): i32 {
+        return value_
+    }
+}
+
+// i32 范围的可枚举包装（半开区间 [start, end)）：每次 iterate() 产生
+// 独立枚举器（双接口可重入语义，SYNTAX.md §7.3）。EnumerateInRange
+// 运算符的返回形态（§13.2）
+pub class RangeI32 implements IEnumerable\<i32> {
+    priv var start_: i32
+    priv var end_: i32
+
+    pub init(start: i32, end: i32) {
+        start_ = start
+        end_ = end
+    }
+
+    pub override func iterate(): IEnumerator\<i32> {
+        return new RangeEnumeratorI32(start_, end_)
+    }
+}

@@ -11,6 +11,10 @@ namespace LatteCompiler.Tests
     /// S7b 新增脱糖断言：bool 短路 and/or（BIL §11.3 if + 合成局部展开）、
     /// if 表达式（结果局部 + 值块降级）、复合赋值（前置赋值脱糖）、
     /// 值块 if 转换（后续语句移入 else / 双终止丢弃）。
+    /// S7c-1 新增循环降级断言：Judge 块（条件求值移入、条件内短路展开
+    /// 随块走）、合成 bool 条件局部 .sN 与 .breakid 局部 .bN（Type null）、
+    /// Enumerator 恒 null、do-while rev、BoundLoop → BreakId 映射命中
+    /// （嵌套标签/值块穿透）。
     /// 驱动仿 BinderTests.BindUnit：全管线 P1–P3 后直接进 Lowerer（不带 stdlib）。
     /// </summary>
     public static class LowererTests
@@ -30,6 +34,9 @@ namespace LatteCompiler.Tests
             TestIfExpressionLowering();
             TestCompoundAssignmentLowering();
             TestValueBlockIfTransform();
+            TestLoopLowering();
+            TestInstanceLowering();
+            TestForLoopLowering();
             TestUnsupportedNode();
 
             return TestHarness.Summary("Lowerer");
@@ -42,6 +49,22 @@ namespace LatteCompiler.Tests
         {
             var roots = sources.Select(TestHarness.ParseRoot).ToArray();
             var unit = new CompilationUnit(roots);
+            var decls = DeclarationCollector.Collect(unit);
+            DeclarationResolver.Resolve(unit, decls);
+            var bound = Binder.Bind(unit, decls);
+            return (unit, bound, Lowerer.Lower(unit, bound));
+        }
+
+        // 带 stdlib 的全管线驱动（S7c-2：for 脱糖用例需要 core.collections
+        // 协议与 .bootstrap 的 EnumerateInRange 注册）
+        private static (CompilationUnit Unit, IReadOnlyList<BoundFunctionBody> Bound,
+            IReadOnlyList<LoweredFunctionBody> Lowered) LowerUnitWithStdlib(
+            params string[] sources)
+        {
+            var roots = new List<RootASTNode>();
+            roots.AddRange(StdlibSources.ParseAll());
+            roots.AddRange(sources.Select(TestHarness.ParseRoot));
+            var unit = new CompilationUnit(roots.ToArray());
             var decls = DeclarationCollector.Collect(unit);
             DeclarationResolver.Resolve(unit, decls);
             var bound = Binder.Bind(unit, decls);
@@ -336,6 +359,208 @@ namespace LatteCompiler.Tests
                 "[Assign(Local(.s0,i32), Int(1,i32))], [Assign(Local(.s0,i32), Int(2,i32))])], " +
                 "[Assign(Local(.s0,i32), Int(0,i32))]); " +
                 "Decl(r, i32, = Local(.s0,i32)); Return(Local(r,i32))])");
+        }
+
+        // ===== S7c-1：循环降级（Judge 块/条件局部/Enumerator null/BreakId 映射）=====
+        private static void TestLoopLowering()
+        {
+            // while：条件求值移入 Judge 块（末尾写合成条件局部 .s0）
+            var (unit, _, lowered) = LowerUnit(
+                "func f(a: i32) {\n" +
+                "    var x = 0\n" +
+                "    while (x < a) {\n" +
+                "        x = x + 1\n" +
+                "    }\n" +
+                "}\n");
+            CheckNoErrors("无诊断（while 降级）", unit);
+            TestHarness.Check("while Lowered 形态", LoweredDescribe.Body(BodyOf(lowered, "f")),
+                "Body(f, [x: i32, .s0: bool, .b0: .breakid], " +
+                "[Decl(x, i32, = Int(0,i32)); " +
+                "Loop([Assign(Local(.s0,bool), " +
+                "Binary(CmpLt, Local(x,i32), Param(a,i32), bool))], .s0, " +
+                "[Assign(Local(x,i32), Binary(Add, Local(x,i32), Int(1,i32), i32))], .b0)])");
+
+            // 结构性事实：Condition/BreakId 是合成局部并进 Locals（引用相等）、
+            // BreakId.Type 为 null（.breakid 特例）、Enumerator 恒 null
+            var whileLoop = (LoweredLoop)BodyOf(lowered, "f").Body.Statements[1];
+            var fLocals = BodyOf(lowered, "f").Locals;
+            TestHarness.CheckTrue("条件局部 .s0（bool，引用相等）",
+                whileLoop.Condition.Name == ".s0" && whileLoop.Condition.Type?.Name == "bool"
+                && ReferenceEquals(whileLoop.Condition, fLocals[1]));
+            TestHarness.CheckTrue("BreakId 局部 .b0（Type null，引用相等）",
+                whileLoop.BreakId.Name == ".b0" && whileLoop.BreakId.Type == null
+                && ReferenceEquals(whileLoop.BreakId, fLocals[2]));
+            TestHarness.CheckTrue("Enumerator 恒 null（S7c-2 前）",
+                whileLoop.Enumerator == null && !whileLoop.IsRev);
+
+            // do-while → loop.rev（IsRev）
+            var (unit2, _, lowered2) = LowerUnit(
+                "func f(a: i32) {\n" +
+                "    do {\n" +
+                "        a = a - 1\n" +
+                "    } while (a > 0)\n" +
+                "}\n");
+            CheckNoErrors("无诊断（do-while 降级）", unit2);
+            TestHarness.Check("do-while Lowered 形态（rev）",
+                LoweredDescribe.Body(BodyOf(lowered2, "f")),
+                "Body(f, [.s0: bool, .b0: .breakid], " +
+                "[Loop(rev, [Assign(Local(.s0,bool), " +
+                "Binary(CmpGt, Param(a,i32), Int(0,i32), bool))], .s0, " +
+                "[Assign(Param(a,i32), Binary(Sub, Param(a,i32), Int(1,i32), i32))], .b0)])");
+
+            // 嵌套标签循环：break@outer 映射命中外层 .b0、continue 命中内层 .b1
+            var (unit3, _, lowered3) = LowerUnit(
+                "func f(a: i32) {\n" +
+                "    while (a > 0) named outer {\n" +
+                "        while (a > 1) {\n" +
+                "            break@outer\n" +
+                "            continue\n" +
+                "        }\n" +
+                "        a = a - 1\n" +
+                "    }\n" +
+                "}\n");
+            CheckNoErrors("无诊断（嵌套标签循环降级）", unit3);
+            TestHarness.Check("嵌套循环 Lowered 形态", LoweredDescribe.Body(BodyOf(lowered3, "f")),
+                "Body(f, [.s0: bool, .b0: .breakid, .s1: bool, .b1: .breakid], " +
+                "[Loop([Assign(Local(.s0,bool), Binary(CmpGt, Param(a,i32), Int(0,i32), bool))], .s0, " +
+                "[Loop([Assign(Local(.s1,bool), Binary(CmpGt, Param(a,i32), Int(1,i32), bool))], .s1, " +
+                "[Break(.b0); Continue(.b1)], .b1); " +
+                "Assign(Param(a,i32), Binary(Sub, Param(a,i32), Int(1,i32), i32))], .b0)])");
+            // 结构性事实：映射引用相等——Break 携外层 BreakId、Continue 携内层
+            var outer = (LoweredLoop)BodyOf(lowered3, "f").Body.Statements[0];
+            var inner = (LoweredLoop)outer.Body.Statements[0];
+            TestHarness.CheckTrue("break@outer 携外层 BreakId（引用相等）",
+                ReferenceEquals(((LoweredLoopControl)inner.Body.Statements[0]).BreakId,
+                    outer.BreakId));
+            TestHarness.CheckTrue("continue 携内层 BreakId（引用相等）",
+                ReferenceEquals(((LoweredLoopControl)inner.Body.Statements[1]).BreakId,
+                    inner.BreakId));
+
+            // 条件内短路展开：前置语句落在 Judge 块（不污染循环前块）
+            var (unit4, _, lowered4) = LowerUnit(
+                "func f(a: bool, b: bool) {\n" +
+                "    while ((a and b)) {\n" +
+                "    }\n" +
+                "}\n");
+            CheckNoErrors("无诊断（条件内短路）", unit4);
+            TestHarness.Check("短路展开进 Judge 块", LoweredDescribe.Body(BodyOf(lowered4, "f")),
+                "Body(f, [.s0: bool, .b0: .breakid, .s1: bool], " +
+                "[Loop([If(Param(a,bool), [Assign(Local(.s1,bool), Param(b,bool))], " +
+                "[Assign(Local(.s1,bool), Const(False,bool))]); " +
+                "Assign(Local(.s0,bool), Local(.s1,bool))], .s0, [], .b0)])");
+
+            // 值块内 break 穿透：直接发 BIL 跳转（无展开、无 if 转换介入）
+            var (unit5, _, lowered5) = LowerUnit(
+                "func f(x: i32): i32 {\n" +
+                "    var r = 0\n" +
+                "    while (x > 0) {\n" +
+                "        r = if ((x == 5)) { break } else { return@_ 1 }\n" +
+                "        x = x - 1\n" +
+                "    }\n" +
+                "    return r\n" +
+                "}\n");
+            CheckNoErrors("无诊断（值块内 break 穿透降级）", unit5);
+            TestHarness.Check("值块内 break 穿透 Lowered 形态",
+                LoweredDescribe.Body(BodyOf(lowered5, "f")),
+                "Body(f, [r: i32, .s0: bool, .b0: .breakid, .s1: i32], " +
+                "[Decl(r, i32, = Int(0,i32)); " +
+                "Loop([Assign(Local(.s0,bool), Binary(CmpGt, Param(x,i32), Int(0,i32), bool))], .s0, " +
+                "[If(Binary(CmpEq, Param(x,i32), Int(5,i32), bool), [Break(.b0)], " +
+                "[Assign(Local(.s1,i32), Int(1,i32))]); " +
+                "Assign(Local(r,i32), Local(.s1,i32)); " +
+                "Assign(Param(x,i32), Binary(Sub, Param(x,i32), Int(1,i32), i32))], .b0); " +
+                "Return(Local(r,i32))])");
+        }
+
+        // ===== S7c-2：实例成员恒等降级（this/实例调用/实例字段）=====
+        private static void TestInstanceLowering()
+        {
+            var (unit, _, lowered) = LowerUnit(
+                "class Counter {\n" +
+                "    pub var value: i32\n" +
+                "    pub func add(n: i32): i32 { return value + n }\n" +
+                "}\n" +
+                "func call(c: Counter): i32 { return c.add(2) }\n" +
+                "func read(c: Counter): i32 { return c.value }\n");
+            CheckNoErrors("无诊断（实例成员降级）", unit);
+            TestHarness.Check("裸名实例字段降级（this 隐式）",
+                LoweredDescribe.Body(BodyOf(lowered, "add")),
+                "Body(add, [], [Return(Binary(Add, " +
+                "InstField(value, This(Counter), i32), Param(n,i32), i32))])");
+            TestHarness.Check("实例调用降级",
+                LoweredDescribe.Body(BodyOf(lowered, "call")),
+                "Body(call, [], [Return(InstCall(add, Param(c,Counter), [Int(2,i32)], i32))])");
+            TestHarness.Check("实例字段访问降级",
+                LoweredDescribe.Body(BodyOf(lowered, "read")),
+                "Body(read, [], [Return(InstField(value, Param(c,Counter), i32))])");
+
+            // 结构性事实：InstCall 的 Method 符号引用相等、Type 自带（i32）
+            var counterType = unit.Symbols.GlobalNamespace.Types.Single(t => t.Name == "Counter");
+            var callReturn = (LoweredReturnStatement)BodyOf(lowered, "call").Body.Statements[0];
+            var instCall = (LoweredInstanceCallExpression)callReturn.Value!;
+            TestHarness.CheckTrue("实例调用方法符号引用相等 + Type 自带",
+                ReferenceEquals(instCall.Method,
+                    counterType.Methods.Single(m => m.Name == "add"))
+                && ReferenceEquals(instCall.Type, unit.Symbols.Bootstrap.Int32));
+        }
+
+        // ===== S7c-2：for 脱糖（前置 iterate + LoweredLoop 三件套）=====
+        private static void TestForLoopLowering()
+        {
+            var (unit, bound, lowered) = LowerUnitWithStdlib(
+                "pub func main(): i32 {\n" +
+                "    var sum = 0\n" +
+                "    for (i in 0 to 3) {\n" +
+                "        sum = sum + i\n" +
+                "    }\n" +
+                "    return sum\n" +
+                "}\n");
+            CheckNoErrors("无诊断（for 脱糖）", unit);
+            TestHarness.Check("for 脱糖 Lowered 形态",
+                LoweredDescribe.Body(BodyOf(lowered, "main")),
+                "Body(main, [sum: i32, i: i32, .s0: IEnumerator<i32>, .s1: bool, .b0: .breakid], " +
+                "[Decl(sum, i32, = Int(0,i32)); " +
+                "Assign(Local(.s0,IEnumerator<i32>), " +
+                "InstCall(iterate, " +
+                "InstCall(EnumerateInRange, Int(0,i32), [Int(3,i32)], IEnumerable<i32>), " +
+                "[], IEnumerator<i32>)); " +
+                "Loop([Assign(Local(.s1,bool), " +
+                "InstCall(moveNext, Local(.s0,IEnumerator<i32>), [], bool))], .s1, " +
+                "[Assign(Local(i,i32), " +
+                "InstCall(current, Local(.s0,IEnumerator<i32>), [], i32)); " +
+                "Assign(Local(sum,i32), Binary(Add, Local(sum,i32), Local(i,i32), i32))], .b0); " +
+                "Return(Local(sum,i32))])");
+
+            // 结构性事实（三件套引用相等）：前置 iterate 语句在 Loop 之前；
+            // Judge/Body 头的协议调用方法符号 = P3 挂在 BoundLoop 上的产物；
+            // 条件局部/枚举器局部/breakid 与 Locals 同一实例
+            var boundLoop = (BoundLoop)bound.Single(b => b.Method.Name == "main")
+                .Body.Statements[1];
+            var mainBody = BodyOf(lowered, "main");
+            var iterateAssign = (LoweredAssignmentStatement)mainBody.Body.Statements[1];
+            var forLoop = (LoweredLoop)mainBody.Body.Statements[2];
+            var judgeCall = (LoweredInstanceCallExpression)
+                ((LoweredAssignmentStatement)forLoop.Judge.Statements[0]).Value;
+            var currentCall = (LoweredInstanceCallExpression)
+                ((LoweredAssignmentStatement)forLoop.Body.Statements[0]).Value;
+            TestHarness.CheckTrue("前置 iterate 方法符号引用相等",
+                ReferenceEquals(((LoweredInstanceCallExpression)iterateAssign.Value).Method,
+                    boundLoop.IterateMethod));
+            TestHarness.CheckTrue("Judge moveNext / Body 头 current 方法符号引用相等",
+                ReferenceEquals(judgeCall.Method, boundLoop.MoveNextMethod)
+                && ReferenceEquals(currentCall.Method, boundLoop.CurrentMethod));
+            TestHarness.CheckTrue("条件局部/枚举器局部/breakid 引用相等",
+                ReferenceEquals(forLoop.Condition, mainBody.Locals[3])
+                && ReferenceEquals(
+                    ((LoweredValueReferenceExpression)iterateAssign.Target).Symbol,
+                    mainBody.Locals[2])
+                && ReferenceEquals(forLoop.BreakId, mainBody.Locals[4]));
+            var enumeratorLocalType = mainBody.Locals[2].Type!;
+            TestHarness.CheckTrue("枚举器局部类型 = IEnumerator<i32> 构造",
+                enumeratorLocalType.ConstructedFrom != null
+                && enumeratorLocalType.ConstructedFrom.Name == "IEnumerator"
+                && ReferenceEquals(enumeratorLocalType.TypeArguments![0],
+                    unit.Symbols.Bootstrap.Int32));
         }
 
         // ===== 负例：未覆盖节点 → P4 Error + 跳过该函数体 =====
