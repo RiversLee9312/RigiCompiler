@@ -188,4 +188,56 @@ namespace LatteCompiler
             Field = field;
         }
     }
+
+    // switch 表达式（S7d，SYNTAX §7.2）：分支体（含 default）是值块（取值
+    // 规则同 if 表达式，标签同源 Label ?? "_"）。Type = 全分支统一产值类型
+    // （纯穿透分支不参与统一，P3 已查）
+    public sealed class BoundSwitchExpression : BoundExpression
+    {
+        public BoundExpression Selector { get; }
+        public IReadOnlyList<BoundSwitchExpressionCase> Cases { get; }
+        public BoundValueBlock DefaultBody { get; }
+
+        public BoundSwitchExpression(ASTNode syntax, BoundExpression selector,
+            IReadOnlyList<BoundSwitchExpressionCase> cases, BoundValueBlock defaultBody,
+            TypeSymbol type)
+            : base(syntax, type)
+        {
+            Selector = selector;
+            Cases = cases;
+            DefaultBody = defaultBody;
+        }
+    }
+
+    // switch 分支（表达式形态）：Match/IsPattern 语义同 BoundSwitchCase，
+    // 分支体为值块（BoundValueBlock 复用，S7d 起 switch 分支体落地）
+    public sealed class BoundSwitchExpressionCase : BoundNode
+    {
+        public BoundExpression Match { get; }
+        public bool IsPattern { get; }
+        public BoundValueBlock Body { get; }
+
+        public BoundSwitchExpressionCase(ASTNode syntax, BoundExpression match, bool isPattern,
+            BoundValueBlock body) : base(syntax)
+        {
+            Match = match;
+            IsPattern = isPattern;
+            Body = body;
+        }
+    }
+
+    // switch pattern 占位（S7d，SYNTAX §7.2：pattern 中 _ 引用 selector 的值）：
+    // Selector 回指所属 switch 的 selector 表达式（嵌套 switch 经引用相等消歧），
+    // 仅出现在 case 匹配表达式内（分支体无 _ 语义）；Type = selector 类型。
+    // P4a 降级为 selector 临时局部读取（selector 只求值一次）
+    public sealed class BoundSwitchPlaceholderExpression : BoundExpression
+    {
+        public BoundExpression Selector { get; }
+
+        public BoundSwitchPlaceholderExpression(ASTNode syntax, BoundExpression selector,
+            TypeSymbol type) : base(syntax, type)
+        {
+            Selector = selector;
+        }
+    }
 }

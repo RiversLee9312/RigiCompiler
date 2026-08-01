@@ -19,6 +19,20 @@ namespace LatteCompiler
     // Judge = moveNext() 写条件局部、Body 头 = 循环变量 = current()——
     // 产物复用 LoweredLoop，P4b 零新增；协议三方法符号取 P3 挂在
     // BoundLoop 上的产物（P4 不做名字分析，ARCH §11.3 纪律）。
+    // S7d 落地 switch 与 throw（SYNTAX §7.2/§8）：
+    // - 全值匹配 switch → LoweredSwitch（BIL §16.6 直接对应，合成
+    //   .breakid 局部 .bN 满足指令形态；Latte 层 break 不指向 switch）；
+    // - 含 pattern（_）的 switch → selector 物化合成局部 .sN（前置语句，
+    //   全 switch 只求值一次；占位 _ 即读该局部，经 selector 引用查
+    //   映射栈）+ 嵌套 LoweredIfStatement 链（§16.6 规则：值分支条件 =
+    //   合成 cmp.eq(.sN, 常量)，pattern 分支条件直接降级，default 落
+    //   最内层 else）；
+    // - switch 表达式 → 合成结果局部 + 前置 switch/if 链语句（各分支
+    //   值块降级写结果局部，复用值块映射栈与 if 转换）；
+    // - throw 恒等降级。
+    // S7d 同批修复 M46 值块 if 转换缺陷（else-if 链混合终止时后续语句
+    // 被错误编织到已终止路径——TransformStatements 重写为 continuation
+    // 编织，见方法注释）。
     //
     // 实例化 session（仿 BilEmitter.EmitSession）的机制：
     // - 当前块输出语句列表栈：LowerBlock 为每块建输出列表；表达式降级时向
@@ -60,6 +74,12 @@ namespace LatteCompiler
             // 引用查映射得 BreakId（仿值块映射栈模式）
             private readonly Stack<(BoundLoop Loop, LocalSymbol BreakId)> loops =
                 new Stack<(BoundLoop, LocalSymbol)>();
+            // switch pattern 占位映射栈（S7d）：pattern 降级期间所属 switch 的
+            // selector 表达式 → selector 物化局部（引用相等查找，嵌套 switch
+            // 逐层向内命中）；BoundSwitchPlaceholderExpression 经 Selector
+            // 引用查栈得读取目标
+            private readonly Stack<(BoundExpression Selector, LocalSymbol Temp)> switchTemps =
+                new Stack<(BoundExpression, LocalSymbol)>();
 
             public LowerSession(CompilationUnit unit, IReadOnlyList<BoundFunctionBody> bodies)
             {
@@ -85,6 +105,7 @@ namespace LatteCompiler
                 breakIdCount = 0;
                 valueBlocks.Clear();    // 函数体互不嵌套，防御性清空
                 loops.Clear();
+                switchTemps.Clear();
                 var lowered = LowerBlock(body.Body);
                 if (lowered == null) return null;
                 // 合成局部（.s/.b 前缀，脱糖产物）跟在源码局部之后
@@ -178,6 +199,13 @@ namespace LatteCompiler
                         return new LoweredCallStatement(call, call.Method, arguments, callReceiver);
                     case BoundLoop loop:
                         return loop.Kind == LoopKind.For ? LowerForLoop(loop) : LowerLoop(loop);
+                    case BoundSwitchStatement switchStatement:
+                        return LowerSwitchStatement(switchStatement);
+                    case BoundThrowStatement throwStatement:
+                        // throw 恒等降级（BIL §16.9 直接对应）
+                        var thrown = LowerExpression(throwStatement.Exception);
+                        if (thrown == null) return null;
+                        return new LoweredThrowStatement(throwStatement, thrown);
                     case BoundAssignmentStatement assignment:
                         var target = LowerExpression(assignment.Target);
                         var value = LowerExpression(assignment.Value);
@@ -333,6 +361,162 @@ namespace LatteCompiler
                     new LoweredBlock(loop.Body, bodyStatements), enumerator: null, breakId);
             }
 
+            // ===== switch 降级（S7d，SYNTAX §7.2；BIL §16.6）=====
+
+            // switch 语句：分支体恒等降级（LowerBlock），汇合进共用核心
+            private LoweredStatement? LowerSwitchStatement(BoundSwitchStatement switchStatement)
+            {
+                var cases = new List<(BoundNode Origin, BoundExpression Match, bool IsPattern,
+                    LoweredBlock Body)>();
+                foreach (var boundCase in switchStatement.Cases)
+                {
+                    var body = LowerBlock(boundCase.Body);
+                    if (body == null) return null;
+                    cases.Add((boundCase, boundCase.Match, boundCase.IsPattern, body));
+                }
+                var defaultBody = LowerBlock(switchStatement.DefaultBody);
+                if (defaultBody == null) return null;
+                return LowerSwitchCore(switchStatement, switchStatement.Selector, cases, defaultBody);
+            }
+
+            // switch 表达式：合成结果局部；各分支值块降级写结果局部（复用
+            // 值块映射栈与 if 转换）；前置 switch/if 链语句，表达式位结果局部引用
+            private LoweredExpression? LowerSwitchExpression(BoundSwitchExpression switchExpression)
+            {
+                var result = NewSynthLocal(switchExpression.Type);
+                var cases = new List<(BoundNode Origin, BoundExpression Match, bool IsPattern,
+                    LoweredBlock Body)>();
+                foreach (var boundCase in switchExpression.Cases)
+                {
+                    var body = LowerValueBlock(boundCase.Body, result);
+                    if (body == null) return null;
+                    cases.Add((boundCase, boundCase.Match, boundCase.IsPattern, body));
+                }
+                var defaultBody = LowerValueBlock(switchExpression.DefaultBody, result);
+                if (defaultBody == null) return null;
+                var statement = LowerSwitchCore(switchExpression, switchExpression.Selector,
+                    cases, defaultBody);
+                if (statement == null) return null;
+                outputStack.Peek().Add(statement);
+                return ReferenceTo(switchExpression, result);
+            }
+
+            // switch 降级共用核心（两形态汇合）：分支体已按形态预先降级。
+            // 全值匹配 → LoweredSwitch（§16.6 指令 + 常量表；selector 只求值
+            // 一次——发射期经临时变量物化）；任一 case 为 pattern →
+            // LowerPatternSwitch 嵌套 if 链（§16.6：含 _ 的 pattern 分支
+            // 不能进常量表）
+            private LoweredStatement? LowerSwitchCore(BoundNode origin, BoundExpression selector,
+                IReadOnlyList<(BoundNode Origin, BoundExpression Match, bool IsPattern,
+                    LoweredBlock Body)> cases,
+                LoweredBlock defaultBody)
+            {
+                if (cases.Any(c => c.IsPattern))
+                {
+                    return LowerPatternSwitch(origin, selector, cases, defaultBody);
+                }
+                var loweredSelector = LowerExpression(selector);
+                if (loweredSelector == null) return null;
+                var breakId = NewBreakIdLocal();
+                var loweredCases = new List<LoweredSwitchCase>();
+                foreach (var (caseOrigin, match, _, body) in cases)
+                {
+                    // 值匹配分支：P3 已限定编译期常量（BoundLiteralExpression），
+                    // 恒等降级无前置语句
+                    var value = LowerExpression(match);
+                    if (value == null) return null;
+                    loweredCases.Add(new LoweredSwitchCase(caseOrigin, value, body));
+                }
+                return new LoweredSwitch(origin, loweredSelector, loweredCases, defaultBody, breakId);
+            }
+
+            // pattern 降级（§16.6 规则）：selector 先求值进合成局部 .sN
+            // （前置语句，全 switch 只求值一次——占位 _ 即读该局部）；随后按
+            // case 顺序构造嵌套 if 链（值匹配分支条件 = 合成 cmp.eq(.sN, 常量)，
+            // pattern 分支条件 = 占位映射开启下的表达式降级），default 落最内
+            // 层 else。首个命中胜出，与 §16.6 表序语义一致
+            private LoweredStatement? LowerPatternSwitch(BoundNode origin, BoundExpression selector,
+                IReadOnlyList<(BoundNode Origin, BoundExpression Match, bool IsPattern,
+                    LoweredBlock Body)> cases,
+                LoweredBlock defaultBody)
+            {
+                var selectorTemp = NewSynthLocal(selector.Type);
+                var loweredSelector = LowerExpression(selector);
+                if (loweredSelector == null) return null;
+                outputStack.Peek().Add(new LoweredAssignmentStatement(origin,
+                    ReferenceTo(origin, selectorTemp), loweredSelector));
+                switchTemps.Push((selector, selectorTemp));
+                try
+                {
+                    return BuildPatternChain(origin, cases, 0, selectorTemp, defaultBody);
+                }
+                finally
+                {
+                    switchTemps.Pop();
+                }
+            }
+
+            // 嵌套 if 链构造（就地递归；每层在独立块上下文降级条件——条件内
+            // 短路/if 表达式的前置语句自然落在该 if 所属块内，仿 else-if 链形态）
+            private LoweredBlock? BuildPatternChain(BoundNode origin,
+                IReadOnlyList<(BoundNode Origin, BoundExpression Match, bool IsPattern,
+                    LoweredBlock Body)> cases,
+                int index, LocalSymbol selectorTemp, LoweredBlock defaultBody)
+            {
+                var statements = new List<LoweredStatement>();
+                outputStack.Push(statements);
+                try
+                {
+                    var (caseOrigin, match, isPattern, body) = cases[index];
+                    LoweredExpression? condition;
+                    if (isPattern)
+                    {
+                        // 占位映射已由 LowerPatternSwitch 压栈，_ 读 selector 局部
+                        condition = LowerExpression(match);
+                    }
+                    else
+                    {
+                        var constant = LowerExpression(match);
+                        if (constant == null) return null;
+                        condition = new LoweredBinaryExpression(match, BilIntrinsicOp.CmpEq,
+                            ReferenceTo(match, selectorTemp), constant,
+                            unit.Symbols.Bootstrap.Bool);
+                    }
+                    if (condition == null) return null;
+                    LoweredBlock elseBlock;
+                    if (index + 1 < cases.Count)
+                    {
+                        var nested = BuildPatternChain(origin, cases, index + 1,
+                            selectorTemp, defaultBody);
+                        if (nested == null) return null;
+                        elseBlock = nested;
+                    }
+                    else
+                    {
+                        elseBlock = defaultBody;
+                    }
+                    statements.Add(new LoweredIfStatement(caseOrigin, condition, body, elseBlock));
+                    return new LoweredBlock(origin, statements);
+                }
+                finally
+                {
+                    outputStack.Pop();
+                }
+            }
+
+            // BoundSwitchPlaceholderExpression.Selector 经引用查占位映射栈得
+            // selector 物化局部；未命中即内部错误（P3 已保证 _ 只在 pattern
+            // 匹配表达式内，降级上下文必在栈上）
+            private LocalSymbol FindSwitchTemp(BoundExpression selector)
+            {
+                foreach (var (boundSelector, temp) in switchTemps)
+                {
+                    if (ReferenceEquals(boundSelector, selector)) return temp;
+                }
+                throw new CompilerInternalException(
+                    "switch 占位 _ 不在 pattern 降级上下文内（P3 已保证只在 case 匹配表达式内）");
+            }
+
             private List<LoweredExpression>? LowerArguments(
                 IReadOnlyList<BoundExpression> arguments)
             {
@@ -398,109 +582,197 @@ namespace LatteCompiler
                 }
             }
 
-            // 值块语句序列的 if 转换（就地；分支块不可变，故新建
-            // LoweredIfStatement/LoweredBlock 替换原位置）。规则：
-            // BIL 的 if 分支块执行完必回到 if 的下一条指令（§16.2），而值块
-            // return@ 语义是「写目标局部 + 本路径不再执行后续」——故遇
-            // LoweredIfStatement：
-            // - 某分支以「值块写入」终止而另一分支不终止：把 if 之后的语句
-            //   序列移动追加到不终止分支末尾（无 else 则新建 else 块，Origin
-            //   指 if 的 Bound 节点），if 成为块内最后一条；
-            // - 双分支都终止：其后语句全丢弃（不可达）；
-            // - 嵌套块/分支块内部递归同规则处理；嵌套块整体终止时其后语句
-            //   同样丢弃。
+            // 值块语句序列的 if/switch 转换（就地；分支块不可变，故新建节点
+            // 替换原位置）。本质是 continuation 编织（S7d 重写，修复 M46
+            // else-if 链缺陷）：BIL 的 if/switch 分支块执行完必回到结构指令的
+            // 下一条指令（§16.2/§16.6），而值块 return@ 语义是「写目标局部 +
+            // 本路径不再执行后续」——故把「其后语句」（continuation）编织进
+            // 每个会落到块尾的路径末端；终止于值块写入/throw 的路径丢弃
+            // continuation。规则（对每条结构语句）：
+            // - LoweredIfStatement/LoweredSwitch：其后语句序列 + 块外
+            //   continuation 织入每个不终止分支末端（无 else 且需要时新建
+            //   else 块），结构语句成为块内最后一条；全部分支终止时其后
+            //   语句全丢弃（不可达）；
+            // - 嵌套 LoweredBlock：同规则（continuation 织入块内）；
+            // - 顶层值块写入：同块其后语句不可达（死代码，P3 已保证路径
+            //   必终止），截断且不接收 continuation；
+            // - 全无终止路径的结构语句不编织（continuation 留原位，保形）。
             // 「值块写入」判定：赋值目标引用值块映射栈中的目标局部（合成
-            // 局部 .sN 只被值块写入与短路/if 表达式结果使用——后两者不在
-            // 映射栈上，互不混淆）。
+            // 局部 .sN 只被值块写入与短路/if/switch 表达式结果使用——后
+            // 两者不在映射栈上，互不混淆）。continuation 织入多个分支时
+            // 语句节点对象共享（Lowered 节点无父链、不可变，发射期各分支
+            // 块独立展开为指令文本）。
             // 例：{ if (c) { return@_ 1 }  x = 2  return@_ x }
             //   ⇒ { if (c) { v = 1 } else { x = 2; v = x } }
             private void TransformStatements(List<LoweredStatement> statements)
+            {
+                TransformWithContinuation(statements, new List<LoweredStatement>());
+            }
+
+            // continuation = 本块结束后要执行的语句序列（块外 continuation；
+            // 就地编织，见 TransformStatements 注释）
+            private void TransformWithContinuation(List<LoweredStatement> statements,
+                List<LoweredStatement> continuation)
             {
                 for (int i = 0; i < statements.Count; i++)
                 {
                     switch (statements[i])
                     {
+                        case LoweredAssignmentStatement write when IsValueBlockWrite(write):
+                            // 值块写入终止本路径：同块其后语句不可达，截断；
+                            // continuation 同样不可达，不接收
+                            statements.RemoveRange(i + 1, statements.Count - i - 1);
+                            return;
+                        case LoweredThrowStatement:
+                            // throw 终止本路径（BIL §16.9 真终止）：同截断
+                            statements.RemoveRange(i + 1, statements.Count - i - 1);
+                            return;
                         case LoweredIfStatement ifStatement:
                         {
-                            var trueBlock = TransformBlock(ifStatement.TrueBlock);
-                            var falseBlock = ifStatement.FalseBlock == null
-                                ? null : TransformBlock(ifStatement.FalseBlock);
-                            var trueTerminates = BlockTerminates(trueBlock);
-                            var falseTerminates =
-                                falseBlock != null && BlockTerminates(falseBlock);
-                            if (trueTerminates || falseTerminates)
+                            if (!HasTerminatingPath(ifStatement.TrueBlock)
+                                && (ifStatement.FalseBlock == null
+                                    || !HasTerminatingPath(ifStatement.FalseBlock)))
                             {
-                                var rest = statements.GetRange(i + 1, statements.Count - i - 1);
-                                statements.RemoveRange(i + 1, statements.Count - i - 1);
-                                if (trueTerminates && falseTerminates)
-                                {
-                                    // 其后语句全丢弃（不可达）
-                                    statements[i] = new LoweredIfStatement(ifStatement.Origin,
-                                        ifStatement.Condition, trueBlock, falseBlock);
-                                    return;
-                                }
-                                // 后续语句先按同规则转换，再移入不终止分支末尾
-                                TransformStatements(rest);
-                                if (trueTerminates)
-                                {
-                                    var merged = new List<LoweredStatement>();
-                                    if (falseBlock != null) merged.AddRange(falseBlock.Statements);
-                                    merged.AddRange(rest);
-                                    falseBlock = new LoweredBlock(
-                                        falseBlock?.Origin ?? ifStatement.Origin, merged);
-                                }
-                                else
-                                {
-                                    var merged = new List<LoweredStatement>(trueBlock.Statements);
-                                    merged.AddRange(rest);
-                                    trueBlock = new LoweredBlock(trueBlock.Origin, merged);
-                                }
-                                statements[i] = new LoweredIfStatement(ifStatement.Origin,
-                                    ifStatement.Condition, trueBlock, falseBlock);
-                                return;    // if 成为块内最后一条
+                                break;    // 无终止路径：continuation 留原位（保形）
+                            }
+                            var rest = statements.GetRange(i + 1, statements.Count - i - 1);
+                            statements.RemoveRange(i + 1, statements.Count - i - 1);
+                            rest.AddRange(continuation);
+                            var trueBlock = BlockTerminates(ifStatement.TrueBlock)
+                                ? WeaveContinuation(ifStatement.TrueBlock, new List<LoweredStatement>())
+                                : WeaveContinuation(ifStatement.TrueBlock, rest);
+                            LoweredBlock? falseBlock;
+                            if (ifStatement.FalseBlock != null)
+                            {
+                                falseBlock = BlockTerminates(ifStatement.FalseBlock)
+                                    ? WeaveContinuation(ifStatement.FalseBlock,
+                                        new List<LoweredStatement>())
+                                    : WeaveContinuation(ifStatement.FalseBlock, rest);
+                            }
+                            else
+                            {
+                                // 无 else：不终止的 false 路径需要 continuation 时新建 else 块
+                                falseBlock = rest.Count > 0
+                                    ? WeaveContinuation(
+                                        new LoweredBlock(ifStatement.Origin,
+                                            new List<LoweredStatement>()), rest)
+                                    : null;
                             }
                             statements[i] = new LoweredIfStatement(ifStatement.Origin,
                                 ifStatement.Condition, trueBlock, falseBlock);
-                            break;
+                            return;    // 结构语句成为块内最后一条
+                        }
+                        case LoweredSwitch switchStatement:
+                        {
+                            if (!switchStatement.Cases.Any(c => HasTerminatingPath(c.Body))
+                                && !HasTerminatingPath(switchStatement.DefaultBody))
+                            {
+                                break;    // 无终止路径：continuation 留原位（保形）
+                            }
+                            var rest = statements.GetRange(i + 1, statements.Count - i - 1);
+                            statements.RemoveRange(i + 1, statements.Count - i - 1);
+                            rest.AddRange(continuation);
+                            var cases = switchStatement.Cases
+                                .Select(c => new LoweredSwitchCase(c.Origin, c.Value,
+                                    BlockTerminates(c.Body)
+                                        ? WeaveContinuation(c.Body, new List<LoweredStatement>())
+                                        : WeaveContinuation(c.Body, rest)))
+                                .ToList();
+                            var defaultBody = BlockTerminates(switchStatement.DefaultBody)
+                                ? WeaveContinuation(switchStatement.DefaultBody,
+                                    new List<LoweredStatement>())
+                                : WeaveContinuation(switchStatement.DefaultBody, rest);
+                            statements[i] = new LoweredSwitch(switchStatement.Origin,
+                                switchStatement.Selector, cases, defaultBody,
+                                switchStatement.BreakId);
+                            return;
                         }
                         case LoweredBlock nested:
                         {
-                            var transformed = TransformBlock(nested);
-                            statements[i] = transformed;
-                            if (BlockTerminates(transformed))
+                            if (!HasTerminatingPath(nested))
                             {
-                                statements.RemoveRange(i + 1, statements.Count - i - 1);
-                                return;
+                                break;    // 无终止路径：continuation 留原位（保形）
                             }
-                            break;
+                            var rest = statements.GetRange(i + 1, statements.Count - i - 1);
+                            statements.RemoveRange(i + 1, statements.Count - i - 1);
+                            rest.AddRange(continuation);
+                            statements[i] = WeaveContinuation(nested, rest);
+                            return;
                         }
                     }
                 }
+                // 块内无待编织结构：continuation 原样接到块尾
+                statements.AddRange(continuation);
             }
 
-            private LoweredBlock TransformBlock(LoweredBlock block)
+            // 把 continuation 织入块内（递归转换，产物为新建块）
+            private LoweredBlock WeaveContinuation(LoweredBlock block,
+                List<LoweredStatement> continuation)
             {
                 var statements = new List<LoweredStatement>(block.Statements);
-                TransformStatements(statements);
+                TransformWithContinuation(statements, continuation);
                 return new LoweredBlock(block.Origin, statements);
             }
 
-            // 「块内所有路径终止于值块写入」判定：末语句是值块写入赋值 → true；
-            // 末语句是双分支都终止的 LoweredIfStatement → true；末语句是嵌套
-            // LoweredBlock → 递归；其余 false（LoweredReturnStatement 函数返回
-            // 是 BIL 真跳转，不参与值块终止判定）
+            // 「块内所有路径都不会落到块尾」判定：末语句是值块写入/throw →
+            // true；末语句是双分支都终止的 LoweredIfStatement / 全部分支体
+            // （含 default）都终止的 LoweredSwitch → true；末语句是嵌套
+            // LoweredBlock → 递归；其余 false（LoweredReturnStatement 函数
+            // 返回与 LoweredLoopControl 真跳转不参与——其后语句在 BIL 块内
+            // 本就不可达，无需编织介入）
             private bool BlockTerminates(LoweredBlock block)
             {
                 if (block.Statements.Count == 0) return false;
                 return block.Statements[^1] switch
                 {
                     LoweredAssignmentStatement assignment => IsValueBlockWrite(assignment),
+                    LoweredThrowStatement => true,
                     LoweredIfStatement ifStatement => ifStatement.FalseBlock != null
                         && BlockTerminates(ifStatement.TrueBlock)
                         && BlockTerminates(ifStatement.FalseBlock),
+                    LoweredSwitch switchStatement =>
+                        switchStatement.Cases.All(c => BlockTerminates(c.Body))
+                        && BlockTerminates(switchStatement.DefaultBody),
                     LoweredBlock nested => BlockTerminates(nested),
                     _ => false,
                 };
+            }
+
+            // 「块内含不落到块尾的路径」判定（编织必要性闸门）：值块写入或
+            // throw 出现即 true（递归 if/switch/嵌套块）；全无终止路径的
+            // 结构语句无需编织，保持旧形态
+            private bool HasTerminatingPath(LoweredBlock block)
+            {
+                foreach (var statement in block.Statements)
+                {
+                    switch (statement)
+                    {
+                        case LoweredAssignmentStatement assignment:
+                            if (IsValueBlockWrite(assignment)) return true;
+                            break;
+                        case LoweredThrowStatement:
+                            return true;
+                        case LoweredIfStatement ifStatement:
+                            if (HasTerminatingPath(ifStatement.TrueBlock)
+                                || (ifStatement.FalseBlock != null
+                                    && HasTerminatingPath(ifStatement.FalseBlock)))
+                            {
+                                return true;
+                            }
+                            break;
+                        case LoweredSwitch switchStatement:
+                            if (switchStatement.Cases.Any(c => HasTerminatingPath(c.Body))
+                                || HasTerminatingPath(switchStatement.DefaultBody))
+                            {
+                                return true;
+                            }
+                            break;
+                        case LoweredBlock nested:
+                            if (HasTerminatingPath(nested)) return true;
+                            break;
+                    }
+                }
+                return false;
             }
 
             private bool IsValueBlockWrite(LoweredAssignmentStatement assignment)
@@ -556,6 +828,13 @@ namespace LatteCompiler
                             newArguments);
                     case BoundIfExpression ifExpression:
                         return LowerIfExpression(ifExpression);
+                    case BoundSwitchExpression switchExpression:
+                        return LowerSwitchExpression(switchExpression);
+                    case BoundSwitchPlaceholderExpression placeholder:
+                        // pattern 降级已把 selector 物化为合成局部（selector 全
+                        // switch 只求值一次），占位即读该局部；目标经 Selector
+                        // 引用查映射栈（嵌套 switch 消歧）
+                        return ReferenceTo(placeholder, FindSwitchTemp(placeholder.Selector));
                     case BoundCompoundAssignmentExpression compound:
                         return LowerCompoundAssignment(compound);
                     case BoundThisExpression thisExpression:

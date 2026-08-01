@@ -14,6 +14,8 @@ namespace LatteCompiler.Tests
     ///   Call(name, [args], ret)  New(T, [args])  New(T, init, [args])
     ///   IfExpr(c, 真值块, 假值块, i32)  CompoundAssign(Add, t, v, i32)
     ///   This(C)（S7c-2）  InstCall(name, receiver, [args], ret)  InstField(f, receiver, T)
+    ///   SwitchExpr(sel, [Case(m, 值块); CaseP(m, 值块)], 默认值块, T)（S7d；CaseP = pattern 分支）
+    ///   Placeholder(T)（S7d，switch pattern 的 _）
     /// 格式约定（语句）：
     ///   Decl(x, i32, = init)  ExprStmt(e)  CallStmt(name, [args])  Assign(t, v)  Return(v)  Return
     ///   If(c, [真], [假])  If(c, [真])  ReturnValue(_, v)（标签取 Target.Label）
@@ -22,6 +24,8 @@ namespace LatteCompiler.Tests
     ///   Break  Continue（标签取 Target.Label，非空时带 @：Break@outer）
     ///   For(i, iterable, [体])（S7c-2，标签带 @：For(i@outer, ...)；变量名取 LoopVariable）
     ///   InstCallStmt(name, receiver, [args])（void 实例调用语句，S7c-2）
+    ///   Switch(sel, [Case(m, [体]); CaseP(m, [体])], [default])（S7d；CaseP = pattern 分支）
+    ///   Throw(e)（S7d）
     ///   块：[s1; s2]；函数体：Body(name, [x: i32, ...], [块])
     /// </summary>
     public static class BoundDescribe
@@ -69,6 +73,9 @@ namespace LatteCompiler.Tests
                 BoundLoopControl loopControl =>
                     $"{(loopControl.IsBreak ? "Break" : "Continue")}" +
                     $"{(loopControl.Target.Label != null ? "@" + loopControl.Target.Label : "")}",
+                BoundSwitchStatement switchStmt =>
+                    $"Switch({Expr(switchStmt.Selector)}, [{string.Join("; ", switchStmt.Cases.Select(c => $"{(c.IsPattern ? "CaseP" : "Case")}({Expr(c.Match)}, {Block(c.Body)})"))}], {Block(switchStmt.DefaultBody)})",
+                BoundThrowStatement throwStmt => $"Throw({Expr(throwStmt.Exception)})",
                 _ => $"<{stmt.GetType().Name}>",
             };
         }
@@ -121,6 +128,10 @@ namespace LatteCompiler.Tests
                 BoundFieldAccessExpression fieldAccess =>
                     $"InstField({fieldAccess.Field.Name}, {Expr(fieldAccess.Receiver)}, " +
                     $"{TypeShort(fieldAccess.Type)})",
+                BoundSwitchExpression switchExpr =>
+                    $"SwitchExpr({Expr(switchExpr.Selector)}, [{string.Join("; ", switchExpr.Cases.Select(c => $"{(c.IsPattern ? "CaseP" : "Case")}({Expr(c.Match)}, {ValueBlock(c.Body)})"))}], {ValueBlock(switchExpr.DefaultBody)}, {TypeShort(switchExpr.Type)})",
+                BoundSwitchPlaceholderExpression placeholder =>
+                    $"Placeholder({TypeShort(placeholder.Type)})",
                 _ => $"<{expr.GetType().Name}>",
             };
         }

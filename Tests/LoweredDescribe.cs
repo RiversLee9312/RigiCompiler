@@ -20,6 +20,8 @@ namespace LatteCompiler.Tests
     ///   Loop([judge], .s0, [body], .b0)（do-while 带 rev 标记：Loop(rev, ...)）
     ///   Break(.b0)  Continue(.b0)（breakid 取目标循环的合成 .breakid 局部名）
     ///   InstCallStmt(name, receiver, [args])（void 实例调用语句，S7c-2）
+    ///   Switch(sel, [Case(v, [体]); ...], [default], .b0)（S7d，全值匹配形态）
+    ///   Throw(e)（S7d）
     ///   块：[s1; s2]；函数体：Body(name, [x: i32, ...], [块])
     /// </summary>
     public static class LoweredDescribe
@@ -60,6 +62,9 @@ namespace LatteCompiler.Tests
                     $"{loop.Condition.Name}, {Block(loop.Body)}, {loop.BreakId.Name})",
                 LoweredLoopControl loopControl =>
                     $"{(loopControl.IsBreak ? "Break" : "Continue")}({loopControl.BreakId.Name})",
+                LoweredSwitch switchStmt =>
+                    $"Switch({Expr(switchStmt.Selector)}, [{string.Join("; ", switchStmt.Cases.Select(c => $"Case({Expr(c.Value)}, {Block(c.Body)})"))}], {Block(switchStmt.DefaultBody)}, {switchStmt.BreakId.Name})",
+                LoweredThrowStatement throwStmt => $"Throw({Expr(throwStmt.Exception)})",
                 _ => $"<{stmt.GetType().Name}>",
             };
         }

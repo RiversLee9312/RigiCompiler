@@ -73,19 +73,27 @@ namespace LatteCompiler
     }
 
     // 二元 intrinsic 运算（BIL §11；bool 短路 and/or 在 S7b 已脱糖为
-    // LoweredIfStatement 展开，此节点不再承载 And/Or）
+    // LoweredIfStatement 展开，此节点不再承载 And/Or）。
+    // S7d 增补显式 Type：脱糖合成节点（pattern switch 值分支的 cmp.eq 条件）
+    // 无类型相符的 Bound 节点可透传——Origin 指 case 匹配表达式（常量，
+    // 类型与结果 bool 不同），显式 Type 优先于透传（先例：
+    // LoweredConstantExpression/LoweredInstanceCallExpression）
     public sealed class LoweredBinaryExpression : LoweredExpression
     {
         public BilIntrinsicOp Op { get; }
         public LoweredExpression Left { get; }
         public LoweredExpression Right { get; }
+        private readonly TypeSymbol? type;
+
+        public override TypeSymbol Type => type ?? base.Type;
 
         public LoweredBinaryExpression(BoundNode origin, BilIntrinsicOp op,
-            LoweredExpression left, LoweredExpression right) : base(origin)
+            LoweredExpression left, LoweredExpression right, TypeSymbol? type = null) : base(origin)
         {
             Op = op;
             Left = left;
             Right = right;
+            this.type = type;
         }
     }
 

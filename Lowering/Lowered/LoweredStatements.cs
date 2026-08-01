@@ -2,9 +2,10 @@ using System.Collections.Generic;
 
 namespace LatteCompiler
 {
-    // Lowered 语句节点（S6 最小集 + S7a 补齐 + S7b 脱糖 + S7c-1 循环，
-    // SEMANTIC_ROADMAP）：块 / 局部变量声明 / 表达式语句 / void 调用语句 /
-    // 赋值 / return / if / 循环 / break/continue。
+    // Lowered 语句节点（S6 最小集 + S7a 补齐 + S7b 脱糖 + S7c-1 循环 + S7d
+    // switch/throw，SEMANTIC_ROADMAP）：块 / 局部变量声明 / 表达式语句 /
+    // void 调用语句 / 赋值 / return / if / 循环 / break/continue /
+    // switch / throw。
     // S7b 起部分节点构造的 origin 参数放宽为 BoundNode：脱糖合成节点
     // （值块写入赋值、if 转换新建块等）无逐一对应的 Bound 节点，
     // Origin 按 ARCH §5.1 约定指向最近的语法来源。
@@ -155,6 +156,57 @@ namespace LatteCompiler
         {
             IsBreak = isBreak;
             BreakId = breakId;
+        }
+    }
+
+    // switch（S7d；BIL §16.6 结构化 switch 的直接对应）：仅全值匹配形态
+    // 到达本节点——含 pattern 的 switch 已在 P4a 降级为嵌套
+    // LoweredIfStatement（§16.6：含 _ 的 pattern 分支不能进常量表）。
+    // Cases 保序（表序 = 匹配序）；DefaultBody 恒存在（P3/Parser 强制）。
+    // BreakId 是合成 .breakid 局部（.bN 命名，约定同 LoweredLoop；Latte 层
+    // break 不指向 switch——规范未登记，该 id 仅满足指令形态要求，无人引用）
+    public sealed class LoweredSwitch : LoweredStatement
+    {
+        public LoweredExpression Selector { get; }
+        public IReadOnlyList<LoweredSwitchCase> Cases { get; }
+        public LoweredBlock DefaultBody { get; }
+        public LocalSymbol BreakId { get; }
+
+        public LoweredSwitch(BoundNode origin, LoweredExpression selector,
+            IReadOnlyList<LoweredSwitchCase> cases, LoweredBlock defaultBody,
+            LocalSymbol breakId) : base(origin)
+        {
+            Selector = selector;
+            Cases = cases;
+            DefaultBody = defaultBody;
+            BreakId = breakId;
+        }
+    }
+
+    // switch 分支（全值匹配形态）：Value 为常量字面量表达式（类型与 selector
+    // 严格相同，P3 已查），Origin 指 BoundSwitchCase
+    public sealed class LoweredSwitchCase : LoweredNode
+    {
+        public LoweredExpression Value { get; }
+        public LoweredBlock Body { get; }
+
+        public LoweredSwitchCase(BoundNode origin, LoweredExpression value, LoweredBlock body)
+            : base(origin)
+        {
+            Value = value;
+            Body = body;
+        }
+    }
+
+    // throw（S7d；BIL §16.9 的直接对应，恒等降级）
+    public sealed class LoweredThrowStatement : LoweredStatement
+    {
+        public LoweredExpression Exception { get; }
+
+        public LoweredThrowStatement(BoundThrowStatement origin, LoweredExpression exception)
+            : base(origin)
+        {
+            Exception = exception;
         }
     }
 }

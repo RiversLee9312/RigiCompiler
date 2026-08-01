@@ -37,6 +37,9 @@ namespace LatteCompiler
         public TypeSymbol Enum { get; }
         // 全部 wrapper 声明的隐式基类；wrapper 恒 rich struct（SYNTAX §14.9）
         public TypeSymbol Wrapper { get; }
+        // 异常根类型（S7d 定稿：根进 bootstrap——throw/catch 是语言级控制流，
+        // 兼容性检查需要常驻参照点；CastException 等具体子类归 S10 stdlib 源）
+        public TypeSymbol Exception { get; }
 
         // SYNTAX §3.2 基本类型（float/double 的 BIL 别名为 .f32/.f64，§6.2）
         public TypeSymbol Int8 { get; }
@@ -79,6 +82,9 @@ namespace LatteCompiler
                 baseType: ValueType, isBuiltin: true);
             Wrapper = new TypeSymbol("Wrapper", TypeKind.Wrapper, Core,
                 baseType: ValueType, isRich: true, isBuiltin: true);
+            // 异常根：Object 分支普通 class，open 供用户异常类型继承
+            Exception = new TypeSymbol("Exception", TypeKind.Class, Core,
+                baseType: Object, isBuiltin: true) { IsOpen = true };
 
             // 数值类型：整数 = 算术 + 位运算 + 比较；浮点 = 算术 + 比较
             // （无符号不含 Opposite——一元负号对无符号无意义）
@@ -138,7 +144,7 @@ namespace LatteCompiler
             // 未入容器表，裸名 i32/String/Object 无法经路径解析找到）
             foreach (var builtin in new[]
             {
-                Any, Object, ValueType, Enum, Wrapper,
+                Any, Object, ValueType, Enum, Wrapper, Exception,
                 Int8, Int16, Int32, Int64, UInt8, UInt16, UInt32, UInt64,
                 Float, Double, Bool, Char, String,
                 TypeDefinition, SpanDefinition, NullableDefinition, BoxDefinition,

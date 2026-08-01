@@ -35,6 +35,12 @@ namespace LatteCompiler
     // 首实参；接口方法符号引用分派归 Middleware）、get.field/set.field
     // （§13.3）、this → $.this 零指令、init/operator 的 §8.4 声明形态
     // （init 修饰符 / operator(名) 修饰符 / ext 修饰符）。
+    // S7d 发射补齐：LoweredSwitch → switch 指令（§16.6：操作数序
+    // selector/res(常量表)/[blk(item) 表]/blk(default)/breakid，块 id
+    // switch0-item0/switch0-default；§18.4 switch-table<T> 单行资源，
+    // 同（header, 元素序列）去重——case 集相同的 switch 共享一张表；
+    // pattern switch 已在 P4a 降为 if 链，不到这里）+
+    // LoweredThrowStatement → throw（§16.9 单操作数）。
     // 统一风格：表达式求值结果一律先物化到 .t 临时变量，再经 set.var 写入目标。
     // 符号引用一律经 CanonicalSymbolPrinter 投影；BilInstruction.Origin 塞
     // LoweredNode（语句级；load 的 Origin 是字面量 LoweredNode），BIL 模型
@@ -63,10 +69,11 @@ namespace LatteCompiler
             // 不得以 . 开头，与用户变量零冲突）；指令生成中登记，.vars 收尾输出
             private readonly List<BilVarDeclaration> tempVars = new List<BilVarDeclaration>();
             private int tempCount;
-            // 当前函数（EmitFunction 设置）与 if/loop 分支 block 编号（函数内唯一递增）
+            // 当前函数（EmitFunction 设置）与 if/loop/switch 分支 block 编号（函数内唯一递增）
             private BilFunction function = null!;
             private int ifCount;
             private int loopCount;
+            private int switchCount;
 
             public EmitSession(CompilationUnit unit, IReadOnlyList<LoweredFunctionBody> bodies,
                 string moduleName)
@@ -302,12 +309,14 @@ namespace LatteCompiler
                 }
                 // 指令生成（临时变量在生成中登记）：entry block 先行入列，
                 // if 分支 block 随 LoweredIfStatement 发射追加（§16.2）、
-                // loop 的 body/judge block 随 LoweredLoop 发射追加（§16.3/§16.4）
+                // loop 的 body/judge block 随 LoweredLoop 发射追加（§16.3/§16.4）、
+                // switch 的 item/default block 随 LoweredSwitch 发射追加（§16.6）
                 this.function = function;
                 tempVars.Clear();
                 tempCount = 0;
                 ifCount = 0;
                 loopCount = 0;
+                switchCount = 0;
                 var entry = new BilBlock("entry", "entrypoint");
                 function.Blocks.Add(entry);
                 EmitBlock(body.Body, entry);
@@ -482,6 +491,44 @@ namespace LatteCompiler
                             loopControl.IsBreak ? "break" : "continue",
                             BilOp.Var(loopControl.BreakId.Name))
                         { Origin = loopControl });
+                        break;
+                    case LoweredSwitch sw:
+                        // 常量 switch（§16.6）：selector 物化 + §18.4 常量表资源，
+                        // switch $s res(T) [blk(item)...] blk(default) $breakid
+                        // （操作数序即规范排版序）；item/default block 加入函数
+                        // 并递归发射，落尾自然返回（§9.4 同 if 分支块）
+                        var selectorValue = EmitValue(sw.Selector, target);
+                        var tableResource = RegisterSwitchTable(sw);
+                        var switchId = "switch" + switchCount;
+                        switchCount++;
+                        var itemBlocks = new List<BilBlock>();
+                        var itemOperands = new List<BilOperand>();
+                        for (var i = 0; i < sw.Cases.Count; i++)
+                        {
+                            var itemBlock = new BilBlock(switchId + "-item" + i);
+                            itemBlocks.Add(itemBlock);
+                            itemOperands.Add(BilOp.Blk(itemBlock.Id));
+                        }
+                        var defaultBlock = new BilBlock(switchId + "-default");
+                        target.Instructions.Add(new BilInstruction("switch",
+                            BilOp.Var(selectorValue), BilOp.Res(tableResource),
+                            BilOp.List(itemOperands.ToArray()), BilOp.Blk(defaultBlock.Id),
+                            BilOp.Var(sw.BreakId.Name))
+                        { Origin = sw });
+                        for (var i = 0; i < sw.Cases.Count; i++)
+                        {
+                            function.Blocks.Add(itemBlocks[i]);
+                            EmitBlock(sw.Cases[i].Body, itemBlocks[i]);
+                        }
+                        function.Blocks.Add(defaultBlock);
+                        EmitBlock(sw.DefaultBody, defaultBlock);
+                        break;
+                    case LoweredThrowStatement throwStatement:
+                        // throw（§16.9）：异常值物化后单操作数抛出
+                        var exceptionValue = EmitValue(throwStatement.Exception, target);
+                        target.Instructions.Add(new BilInstruction("throw",
+                            BilOp.Var(exceptionValue))
+                        { Origin = throwStatement });
                         break;
                     default:
                         Error(statement.Origin.Syntax.Span,
@@ -689,6 +736,32 @@ namespace LatteCompiler
                     name = "R_" + module.Resources.Count;
                     module.Resources.Add(new BilScalarResource(name, typeKeyword, literalText));
                     resourceKeys.Add((typeKeyword, literalText), name);
+                }
+                return name;
+            }
+
+            // switch 常量表资源（§18.4）：header = switch-table<SELECTOR 类型
+            // 投影>（带前导点的类型引用，与 §18.1 标量关键字不同族），元素 =
+            // 各 case 常量字面量原文（经 RenderLiteral 复用 §18.1 渲染；类型与
+            // selector 严格相同，P3 已查）。单行形态（Multiline: false）；
+            // 同（header, 元素序列）去重——case 集完全相同的多个 switch 共享一张表
+            private string RegisterSwitchTable(LoweredSwitch sw)
+            {
+                var header = "switch-table<" +
+                    CanonicalSymbolPrinter.PrintType(sw.Selector.Type) + ">";
+                var elements = new List<string>();
+                foreach (var switchCase in sw.Cases)
+                {
+                    // P3 已限定值匹配 case 的 Match 只绑定为字面量表达式
+                    var (_, literalText) = RenderLiteral((LoweredLiteralExpression)switchCase.Value);
+                    elements.Add(literalText);
+                }
+                var key = ("switch-table", header + "|" + string.Join(",", elements));
+                if (!resourceKeys.TryGetValue(key, out var name))
+                {
+                    name = "R_" + module.Resources.Count;
+                    module.Resources.Add(new BilCollectionResource(name, header, elements));
+                    resourceKeys.Add(key, name);
                 }
                 return name;
             }

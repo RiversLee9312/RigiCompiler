@@ -271,8 +271,10 @@ core.collections 的 C# 风格双接口；基元实现落 `stdlib/.bootstrap.lat
 ### S7d switch 语句/表达式 + throw
 
 - P3：`BoundSwitch`（值匹配 case 常量判定 vs 含 `_` 的 pattern 分支
-  分类，结果显式记录）；throw 绑定（异常根类型兼容性——异常类型
-  进 bootstrap 还是 stdlib 在本步定稿，S10 边界清单同步）；
+  分类，结果显式记录）；throw 绑定（异常根类型兼容性——异常根
+  **已定稿进 bootstrap**（M49，2026-08-01：`core.Exception`，
+  IsOpen 可继承，与 Object/ValueType 层级根同列；具体异常子类归
+  S10 stdlib，边界清单已同步））；
 - P4a：pattern 分支降级为嵌套条件（§16.6 规则）；switch 表达式 →
   结果临时变量；
 - P4b：`switch` 指令 + `switch-table` 资源（§18.4）+ `throw`（§16.9）；
@@ -317,7 +319,8 @@ core 声明文件随编译器载入（自举解析 → 同一条 P1/P2 路径）
 bootstrap 与 core.latte 边界定稿。**载入机制本身已提前至 S6 落地**
 （EmbeddedResource 内嵌 + 编译单元注入，含 `native` 函数语法与
 `core.io::Console` 最小文件）；本里程碑剩余工作为 stdlib 文件扩充
-（`core.coroutine::Task`/`Executor` 家族、异常类型、`IDisposable` 等）
+（`core.coroutine::Task`/`Executor` 家族、异常具体子类（异常根
+`core.Exception` 已于 S7d/M49 定稿进 bootstrap）、`IDisposable` 等）
 与 bootstrap/core.latte 边界定稿。兼作前端常驻回归测试。
 
 ## S11 wrapper / extension / enum struct

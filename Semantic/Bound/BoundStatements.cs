@@ -193,4 +193,55 @@ namespace LatteCompiler
             Target = target;
         }
     }
+
+    // switch 语句（S7d，SYNTAX §7.2）：Selector 已定型；Cases 保序（首个命中
+    // 胜出，BIL §16.6 表序语义）；DefaultBody 恒存在（Parser 强制）。
+    // Latte 层 break 不指向 switch（规范未登记），故引用相等身份不需要
+    public sealed class BoundSwitchStatement : BoundStatement
+    {
+        public BoundExpression Selector { get; }
+        public IReadOnlyList<BoundSwitchCase> Cases { get; }
+        public BoundBlock DefaultBody { get; }
+
+        public BoundSwitchStatement(ASTNode syntax, BoundExpression selector,
+            IReadOnlyList<BoundSwitchCase> cases, BoundBlock defaultBody) : base(syntax)
+        {
+            Selector = selector;
+            Cases = cases;
+            DefaultBody = defaultBody;
+        }
+    }
+
+    // switch 分支（语句形态）：Match 为匹配表达式——IsPattern=false 时是
+    // BoundLiteralExpression（编译期常量最小口径，类型与 selector 严格相同，
+    // P3 已查）；IsPattern=true 时是 bool 表达式（_ 已绑为
+    // BoundSwitchPlaceholderExpression，P3 已查 bool）。
+    // 分类结果 P3 显式记录，P4a 不再回看语法（§16.6：含 _ 的 pattern
+    // 分支不能进常量表，必须降级为嵌套条件）
+    public sealed class BoundSwitchCase : BoundNode
+    {
+        public BoundExpression Match { get; }
+        public bool IsPattern { get; }
+        public BoundBlock Body { get; }
+
+        public BoundSwitchCase(ASTNode syntax, BoundExpression match, bool isPattern,
+            BoundBlock body) : base(syntax)
+        {
+            Match = match;
+            IsPattern = isPattern;
+            Body = body;
+        }
+    }
+
+    // throw（S7d，SYNTAX §8）：Exception 已查与异常根 core.Exception 兼容
+    // （BIL §16.9 要求根类型兼容值；视图转换 cast 归后续里程碑）
+    public sealed class BoundThrowStatement : BoundStatement
+    {
+        public BoundExpression Exception { get; }
+
+        public BoundThrowStatement(ASTNode syntax, BoundExpression exception) : base(syntax)
+        {
+            Exception = exception;
+        }
+    }
 }

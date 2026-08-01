@@ -22,6 +22,11 @@ namespace LatteCompiler.Tests
     /// 黄金文本与操作数序 cond/body/none/judge/breakid、loop0-body/
     /// loop0-judge 块 id 递增）、break/continue（§16.5 嵌套标签命中外层
     /// breakid）、.vars 的 .breakid 条目（§9.3）。
+    /// S7d：常量 switch 的 switch 指令发射（§16.6 操作数序 selector/
+    /// res(表)/[blk item 表]/blk(default)/breakid、switch0-item0/
+    /// switch0-default 块 id、§18.4 switch-table 单行资源与跨 fn 同表
+    /// 去重）、pattern switch 不到 P4b（P4a 已降为 if 链——无 switch
+    /// 指令与表资源）、throw（§16.9 单操作数、entry 块 throw 终止不补 ret）。
     /// </summary>
     public static class BilEmitterTests
     {
@@ -54,6 +59,9 @@ namespace LatteCompiler.Tests
             TestLoopEmission();
             TestInstanceEmission();
             TestForLoopEmission();
+            TestSwitchEmission();
+            TestPatternSwitchEmission();
+            TestThrowEmission();
             TestUnsupportedNodes();
 
             return TestHarness.Summary("BilEmitter");
@@ -403,6 +411,10 @@ namespace LatteCompiler.Tests
             {
                 BilScalarResource s => $"{s.Name} = {s.TypeKeyword} {s.LiteralText}",
                 BilNullResource n => $"{n.Name} = null type({n.TypeRef})",
+                // 复合资源单行形态（§18.4 switch-table；map/catch-table 多行
+                // 形态随 S7e/S7f 发射端到位再扩）
+                BilCollectionResource c =>
+                    $"{c.Name} = {c.Header} {{ {string.Join(", ", c.Elements)} }}",
                 _ => $"<{r.GetType().Name}>",
             }));
         }
@@ -962,6 +974,156 @@ namespace LatteCompiler.Tests
                 extFn.Args.Count == 3
                 && extFn.Args[1].Name == ".this" && extFn.Args[1].TypeRef == ".i32"
                 && extFn.Args[2].Name == "end");
+        }
+
+        // ===== S7d：常量 switch → switch 指令（§16.6）+ switch-table 资源（§18.4）=====
+        private static void TestSwitchEmission()
+        {
+            var (unit, module, _) = EmitUnit(
+                "pub func classify(x: i32): i32 {\n" +
+                "    switch (x) {\n" +
+                "        (1) -> { return 1 }\n" +
+                "        (2) -> { return 2 }\n" +
+                "        default -> { return 0 }\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    return classify(1)\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（switch 发射）", unit);
+            // 表元素只进表不产标量资源；R_6 是 item1 分支体 return 2 的字面量
+            TestHarness.Check("资源（switch-table 单行形态）", RenderResources(module),
+                "R_0 = string \"\\n\"\nR_1 = i32 0\nR_2 = bool false\nR_3 = i32 1\n" +
+                "R_4 = bool true\nR_5 = switch-table<.i32> { 1, 2 }\nR_6 = i32 2");
+            TestHarness.Check("switch 多 block 文本",
+                RenderFnAllBlocks(FnOf(module, "$classify(x:.i32)@.i32")),
+                ".vars { .breakid .b0, .i32 .t0, .i32 .t1, .i32 .t2 }\n" +
+                ".block entry entrypoint {\n" +
+                "switch $x res(R_5) [blk(switch0-item0), blk(switch0-item1)] " +
+                "blk(switch0-default) $.b0\n" +
+                "}\n" +
+                ".block switch0-item0 {\n" +
+                "load res(R_3) $.t0\n" +
+                "ret $.t0\n" +
+                "}\n" +
+                ".block switch0-item1 {\n" +
+                "load res(R_6) $.t1\n" +
+                "ret $.t1\n" +
+                "}\n" +
+                ".block switch0-default {\n" +
+                "load res(R_1) $.t2\n" +
+                "ret $.t2\n" +
+                "}\n");
+            // 结构性事实：§16.6 操作数形状与 .vars 的 .breakid 条目（§9.3）
+            var classifyFn = FnOf(module, "$classify(x:.i32)@.i32");
+            var switchInstruction = classifyFn.Blocks[0].Instructions
+                .Single(i => i.Opcode == "switch");
+            TestHarness.CheckTrue("switch 五操作数（selector/res/item表/default/breakid）",
+                switchInstruction.Operands.Count == 5
+                && switchInstruction.Operands[0] is BilVariableOperand
+                && switchInstruction.Operands[1] is BilResourceOperand
+                && switchInstruction.Operands[2] is BilOperandList itemList
+                && itemList.Items.Count == 2
+                && switchInstruction.Operands[3] is BilBlockOperand
+                && switchInstruction.Operands[4].Render() == "$.b0");
+            TestHarness.CheckTrue(".vars 含 .breakid 条目",
+                classifyFn.Vars.Any(v => v.TypeRef == ".breakid" && v.Name == ".b0"));
+            TestHarness.CheckTrue("item/default 块 id 函数内唯一",
+                classifyFn.Blocks.Select(b => b.Id).Distinct().Count()
+                == classifyFn.Blocks.Count);
+
+            // 跨 fn 同表去重：case 集完全相同的两个 switch 共享一张 §18.4 表
+            var (unit2, module2, _) = EmitUnit(
+                "pub func a(x: i32): i32 {\n" +
+                "    switch (x) {\n" +
+                "        (1) -> { return 1 }\n" +
+                "        (2) -> { return 2 }\n" +
+                "        default -> { return 0 }\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func b(y: i32): i32 {\n" +
+                "    switch (y) {\n" +
+                "        (1) -> { return 1 }\n" +
+                "        (2) -> { return 2 }\n" +
+                "        default -> { return 0 }\n" +
+                "    }\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（switch 表去重）", unit2);
+            TestHarness.CheckTrue("case 集相同的两个 switch 共享一张表",
+                module2.Resources.Count(r => r is BilCollectionResource) == 1
+                && module2.Functions.SelectMany(f => f.Blocks[0].Instructions)
+                    .Where(i => i.Opcode == "switch")
+                    .Select(i => ((BilResourceOperand)i.Operands[1]).ResourceId)
+                    .Distinct().Count() == 1,
+                string.Join(", ", module2.Resources.Select(r => r.Name)));
+        }
+
+        // ===== S7d：pattern switch 不到 P4b（P4a 已降为 if 链）=====
+        private static void TestPatternSwitchEmission()
+        {
+            var (unit, module, _) = EmitUnit(
+                "pub func main(): i32 {\n" +
+                "    var x: i32 = 5\n" +
+                "    var label = switch (x) {\n" +
+                "        (_ > 10) -> { return@_ 1 }\n" +
+                "        default -> { return@_ 0 }\n" +
+                "    }\n" +
+                "    return label\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（pattern switch 发射）", unit);
+            var main = FnOf(module, "$main()@.i32");
+            TestHarness.CheckTrue("pattern switch 降为 if 链（无 switch 指令）",
+                main.Blocks.SelectMany(b => b.Instructions).All(i => i.Opcode != "switch")
+                && main.Blocks.SelectMany(b => b.Instructions).Any(i => i.Opcode == "if"));
+            TestHarness.CheckTrue("无 switch-table 资源",
+                module.Resources.All(r => r is not BilCollectionResource));
+            // selector 物化一次（.s1），pattern 条件引用它而非重复求值
+            TestHarness.Check("pattern 链多 block 文本", RenderFnAllBlocks(main),
+                ".vars { .i32 x, .i32 label, .i32 .s0, .i32 .s1, .i32 .t0, .i32 .t1, " +
+                ".bool .t2, .i32 .t3, .i32 .t4 }\n" +
+                ".block entry entrypoint {\n" +
+                "load res(R_5) $.t0\n" +
+                "set.var $.t0 $x\n" +
+                "set.var $x $.s1\n" +
+                "load res(R_6) $.t1\n" +
+                "cmp.gt $.s1 $.t1 $.t2\n" +
+                "if $.t2 blk(if0-then) blk(if0-else)\n" +
+                "set.var $.s0 $label\n" +
+                "ret $label\n" +
+                "}\n" +
+                ".block if0-then {\n" +
+                "load res(R_3) $.t3\n" +
+                "set.var $.t3 $.s0\n" +
+                "}\n" +
+                ".block if0-else {\n" +
+                "load res(R_1) $.t4\n" +
+                "set.var $.t4 $.s0\n" +
+                "}\n");
+        }
+
+        // ===== S7d：throw → §16.9 单操作数指令 =====
+        private static void TestThrowEmission()
+        {
+            var (unit, module, _) = EmitUnit(
+                "pub func fail(): i32 {\n" +
+                "    throw new core.Exception()\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（throw 发射）", unit);
+            var fail = FnOf(module, "$fail()@.i32");
+            TestHarness.Check("fail 指令与 .vars", RenderFn(fail),
+                ".vars { core::Exception .t0 }\n" +
+                "new type(core::Exception) $.t0 []\n" +
+                "throw $.t0\n");
+            var throwInstruction = fail.Blocks[0].Instructions.Single(i => i.Opcode == "throw");
+            TestHarness.CheckTrue("throw 单操作数（§16.9）",
+                throwInstruction.Operands.Count == 1
+                && throwInstruction.Operands[0] is BilVariableOperand);
+            // throw 是终止指令：entry 块落尾不补 ret（§9.4 补 ret 逻辑只看 ret）
+            TestHarness.CheckTrue("throw 终止后无赘余 ret",
+                fail.Blocks[0].Instructions.Last().Opcode == "throw");
         }
 
         // ===== 负例：未覆盖节点 → P4 Error =====

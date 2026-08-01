@@ -37,6 +37,9 @@ namespace LatteCompiler.Tests
             TestLoopLowering();
             TestInstanceLowering();
             TestForLoopLowering();
+            TestSwitchLowering();
+            TestThrowLowering();
+            TestElseIfChainTransform();
             TestUnsupportedNode();
 
             return TestHarness.Summary("Lowerer");
@@ -561,6 +564,124 @@ namespace LatteCompiler.Tests
                 && enumeratorLocalType.ConstructedFrom.Name == "IEnumerator"
                 && ReferenceEquals(enumeratorLocalType.TypeArguments![0],
                     unit.Symbols.Bootstrap.Int32));
+        }
+
+        // ===== switch 降级（S7d：全值匹配 → LoweredSwitch；含 pattern → if 链）=====
+        private static void TestSwitchLowering()
+        {
+            // 全值匹配语句形态：LoweredSwitch + 合成 .breakid（无人引用，仅满足形态）
+            var (unit, bound, lowered) = LowerUnit(
+                "func f(x: i32): i32 {\n" +
+                "    switch (x) {\n" +
+                "        (1) -> { return 1 }\n" +
+                "        (2) -> { return 2 }\n" +
+                "        default -> { return 0 }\n" +
+                "    }\n" +
+                "}\n");
+            CheckNoErrors("无诊断（常量 switch）", unit);
+            TestHarness.Check("常量 switch Lowered 形态", LoweredDescribe.Body(BodyOf(lowered, "f")),
+                "Body(f, [.b0: .breakid], [Switch(Param(x,i32), " +
+                "[Case(Int(1,i32), [Return(Int(1,i32))]); Case(Int(2,i32), [Return(Int(2,i32))])], " +
+                "[Return(Int(0,i32))], .b0)])");
+            var fBody = BodyOf(lowered, "f");
+            var switchStmt = (LoweredSwitch)fBody.Body.Statements[0];
+            TestHarness.CheckTrue("Origin 回指引用相等 + BreakId 进 Locals",
+                ReferenceEquals(switchStmt.Origin,
+                    ((BoundBlock)bound.Single(b => b.Method.Name == "f").Body).Statements[0])
+                && ReferenceEquals(switchStmt.BreakId, fBody.Locals[0]));
+
+            // 混合形态：任一 pattern → selector 物化 .sN + 嵌套 if 链（保序）
+            var (unit2, _, lowered2) = LowerUnit(
+                "func f(x: i32): i32 {\n" +
+                "    switch (x) {\n" +
+                "        (1) -> { return 1 }\n" +
+                "        (_ > 10) -> { return 2 }\n" +
+                "        default -> { return 0 }\n" +
+                "    }\n" +
+                "}\n");
+            CheckNoErrors("无诊断（pattern switch）", unit2);
+            var described2 = LoweredDescribe.Body(BodyOf(lowered2, "f"));
+            TestHarness.Check("pattern switch if 链降级", described2,
+                "Body(f, [.s0: i32], [Assign(Local(.s0,i32), Param(x,i32)); " +
+                "[If(Binary(CmpEq, Local(.s0,i32), Int(1,i32), bool), [Return(Int(1,i32))], " +
+                "[If(Binary(CmpGt, Local(.s0,i32), Int(10,i32), bool), [Return(Int(2,i32))], " +
+                "[Return(Int(0,i32))])])]])");
+            TestHarness.CheckTrue("selector 全 switch 只求值一次",
+                described2.Split("Param(x").Length - 1 == 1);
+            var chainAssign = (LoweredAssignmentStatement)BodyOf(lowered2, "f").Body.Statements[0];
+            var selectorTemp = ((LoweredValueReferenceExpression)chainAssign.Target).Symbol;
+            var outerIf = (LoweredIfStatement)
+                ((LoweredBlock)BodyOf(lowered2, "f").Body.Statements[1]).Statements[0];
+            TestHarness.CheckTrue("占位读取与 selector 物化局部引用相等",
+                ReferenceEquals(((LoweredValueReferenceExpression)
+                    ((LoweredBinaryExpression)outerIf.Condition).Left).Symbol, selectorTemp));
+
+            // 表达式形态：结果局部 + 前置 switch（分支体写结果局部）
+            var (unit3, _, lowered3) = LowerUnit(
+                "func f(x: i32): i32 {\n" +
+                "    return switch (x) {\n" +
+                "        (1) -> { 10 }\n" +
+                "        default -> { 0 }\n" +
+                "    }\n" +
+                "}\n");
+            CheckNoErrors("无诊断（switch 表达式）", unit3);
+            TestHarness.Check("switch 表达式结果局部", LoweredDescribe.Body(BodyOf(lowered3, "f")),
+                "Body(f, [.s0: i32, .b0: .breakid], " +
+                "[Switch(Param(x,i32), [Case(Int(1,i32), [Assign(Local(.s0,i32), Int(10,i32))])], " +
+                "[Assign(Local(.s0,i32), Int(0,i32))], .b0); Return(Local(.s0,i32))])");
+        }
+
+        // ===== throw 降级（S7d：恒等 + 值块终止口径）=====
+        private static void TestThrowLowering()
+        {
+            var (unit, _, lowered) = LowerUnit(
+                "class MyException : core.Exception {\n" +
+                "}\n" +
+                "func f(): i32 {\n" +
+                "    throw new MyException()\n" +
+                "}\n");
+            CheckNoErrors("无诊断（throw）", unit);
+            TestHarness.Check("throw 恒等降级", LoweredDescribe.Body(BodyOf(lowered, "f")),
+                "Body(f, [], [Throw(New(MyException, []))])");
+
+            // 值块内 throw：路径终止（其后语句截断，if 转换不编织 continuation）
+            var (unit2, _, lowered2) = LowerUnit(
+                "func f(x: i32): i32 {\n" +
+                "    return if (x > 0) {\n" +
+                "        throw new core.Exception()\n" +
+                "    } else { 0 }\n" +
+                "}\n");
+            CheckNoErrors("无诊断（值块内 throw）", unit2);
+            TestHarness.Check("值块内 throw 终止", LoweredDescribe.Body(BodyOf(lowered2, "f")),
+                "Body(f, [.s0: i32], [If(Binary(CmpGt, Param(x,i32), Int(0,i32), bool), " +
+                "[Throw(New(Exception, []))], [Assign(Local(.s0,i32), Int(0,i32))]); " +
+                "Return(Local(.s0,i32))])");
+        }
+
+        // ===== M46 修复回归：else-if 链混合终止的 continuation 编织 =====
+        private static void TestElseIfChainTransform()
+        {
+            // c2 命中路径产值必须留在结果局部（修复前被后续语句覆盖为 3）
+            var (unit, _, lowered) = LowerUnit(
+                "func f(c0: bool, c1: bool, c2: bool): i32 {\n" +
+                "    var x = 0\n" +
+                "    var r = if (c0) {\n" +
+                "        if (c1) { return@_ 1 } else if (c2) { return@_ 2 } else { x = 2 }\n" +
+                "        x = 3\n" +
+                "        return@_ x\n" +
+                "    } else { 0 }\n" +
+                "    return r\n" +
+                "}\n");
+            CheckNoErrors("无诊断（else-if 链编织）", unit);
+            TestHarness.Check("else-if 链混合终止编织", LoweredDescribe.Body(BodyOf(lowered, "f")),
+                "Body(f, [x: i32, r: i32, .s0: i32], [Decl(x, i32, = Int(0,i32)); " +
+                "If(Param(c0,bool), " +
+                "[If(Param(c1,bool), [Assign(Local(.s0,i32), Int(1,i32))], " +
+                "[If(Param(c2,bool), [Assign(Local(.s0,i32), Int(2,i32))], " +
+                "[Assign(Local(x,i32), Int(2,i32)); Assign(Local(x,i32), Int(3,i32)); " +
+                "Assign(Local(.s0,i32), Local(x,i32))])])], " +
+                "[Assign(Local(.s0,i32), Int(0,i32))]); " +
+                "Decl(r, i32, = Local(.s0,i32)); Return(Local(r,i32))])");
         }
 
         // ===== 负例：未覆盖节点 → P4 Error + 跳过该函数体 =====

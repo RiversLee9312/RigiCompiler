@@ -27,6 +27,12 @@ namespace LatteCompiler
     // for 双形态（范围循环 = EnumerateInRange 实例 operator 调用 + for-each
     // 协议判定：实现 core.collections::IEnumerable\<TItem\>；协议三方法
     // 符号 P3 挂好，P4 不做名字分析；循环变量 const——只读默认，规范未明）。
+    // S7d 落地范围：switch 语句/表达式（case 分类显式记录——值匹配 =
+    // 编译期常量且类型与 selector 严格相同，含 _ pattern = bool 表达式，
+    // _ 经占位栈绑为 BoundSwitchPlaceholderExpression；表达式形态分支体
+    // 复用值块机制，产值类型全分支统一；DA 合并 before ∪ (∩ 全部体)）、
+    // throw（异常表达式与异常根 core.Exception 兼容检查；throw/switch
+    // 计入 GuaranteesReturn/GuaranteesValueReturn 终止口径）。
     // 访问控制（priv/protected）检查不做（归 S8，命中即放行）。
     //
     // 值/调用的名字解析查找序：块作用域链 → 参数 → 宿主类型成员
@@ -37,7 +43,7 @@ namespace LatteCompiler
     // 类型引用解析与 P2 共用 NameResolver（本类以 DiagnosticPhase.P3 实例化）。
     //
     // 明确不做（归后续里程碑，遇之一律 P3 诊断而非崩溃）：
-    // 其余控制流（loop/switch/try/seq/throw/yield，S7 后续）、成员访问与实例
+    // 其余控制流（try/seq/yield，S7 后续）、成员访问与实例
     // receiver（S8）、重载 ranking 与默认参数填充（S8）、getter/setter（S8）、
     // 泛型使用侧（S9）、enum case（S11）、字符串插值脱糖（S7）、await（S13）、
     // 全局字段初始化器与无标注字段类型推断（其闭包/闸门 P3 复核随之一并，
@@ -116,6 +122,11 @@ namespace LatteCompiler
             // break/continue 沿栈从内向外查找命中（引用相等即身份）；
             // 穿透值块命中外层循环合法（BIL §16.5 动态结构作用域）
             private readonly Stack<BoundLoop> loops = new Stack<BoundLoop>();
+            // switch pattern 占位栈（S7d）：绑定含 _ 的 case 匹配表达式期间
+            // 压入所属 switch 的 selector 表达式，BindPath 单段名 _ 命中栈顶
+            // （嵌套 switch 逐层向内命中）；仅匹配表达式绑定期间存活，
+            // 分支体无 _ 语义（SYNTAX §7.2）
+            private readonly Stack<BoundExpression> switchSelectors = new Stack<BoundExpression>();
 
             public BindSession(CompilationUnit unit, DeclarationCollection declarations)
             {
@@ -190,6 +201,7 @@ namespace LatteCompiler
                 assigned.Clear();
                 valueBlocks.Clear();    // 函数体互不嵌套，防御性清空
                 loops.Clear();
+                switchSelectors.Clear();
 
                 var body = BindBlock(fn.Body!, new Scope(null));
                 // 所有路径显式返回（SYNTAX §4.1 无隐式返回）
@@ -209,6 +221,13 @@ namespace LatteCompiler
                     BoundIfStatement ifStatement => ifStatement.FalseBlock != null
                         && GuaranteesReturn(ifStatement.TrueBlock)
                         && GuaranteesReturn(ifStatement.FalseBlock),
+                    // S7d：throw 终止本路径（不落到块尾）→ 与 return 同口径
+                    BoundThrowStatement => true,
+                    // S7d：switch 全部分支体（含 default，Parser 强制存在）
+                    // 都保证返回 → 保证返回
+                    BoundSwitchStatement switchStatement =>
+                        switchStatement.Cases.All(c => GuaranteesReturn(c.Body))
+                        && GuaranteesReturn(switchStatement.DefaultBody),
                     BoundBlock nested => GuaranteesReturn(nested),
                     // S7c-1：循环保守 false——`while (true)` 无 break 的恒循环
                     // 特例留口（体可能零次执行的一般情形无法判定，S7c 技术债）；
@@ -240,8 +259,10 @@ namespace LatteCompiler
                     ExpressionStatementASTNode stmt => BindExpressionStatement(stmt, scope),
                     ReturnStatementASTNode ret => BindReturn(ret, scope),
                     IfStatementASTNode ifStatement => BindIfStatement(ifStatement, scope),
+                    SwitchStatementASTNode switchStatement => BindSwitchStatement(switchStatement, scope),
                     LoopStatementASTNode loop => BindLoop(loop, scope),
                     LoopControlStatementASTNode loopControl => BindLoopControl(loopControl),
+                    ThrowStatementASTNode throwStatement => BindThrow(throwStatement, scope),
                     CodeBlockASTNode block => BindBlock(block, scope),
                     _ => Unsupported(node, "statement"),
                 };
@@ -484,10 +505,10 @@ namespace LatteCompiler
                 CheckBoolCondition(node.Condition, node.Span, condition, "if");
                 var label = node.Label ?? "_";
                 var before = new HashSet<LocalSymbol>(assigned);
-                var trueBranch = BindValueBlock(node.ThenBody, label, scope);
+                var trueBranch = BindValueBlock(node.ThenBody, label, scope, "if expression");
                 var trueAssigned = new HashSet<LocalSymbol>(assigned);
                 RestoreAssigned(before);
-                var falseBranch = BindValueBlock(node.ElseBody, label, scope);
+                var falseBranch = BindValueBlock(node.ElseBody, label, scope, "if expression");
                 var falseAssigned = new HashSet<LocalSymbol>(assigned);
                 trueAssigned.IntersectWith(falseAssigned);
                 trueAssigned.UnionWith(before);
@@ -528,15 +549,17 @@ namespace LatteCompiler
                 }
             }
 
-            // 值块绑定（if 表达式分支体，SYNTAX §6.1/§7.1）：
+            // 值块绑定（if/switch 表达式分支体，SYNTAX §6.1/§7.1/§7.2）：
             // - 施工壳先于分支体绑定创建并压入标签栈（分支体内的 return@标签 经栈命中），
             //   分支体绑完后回填 Block/IsImplicitValue/ValueType；
             // - 语法上恰好一条纯表达式语句（赋值语句不算）→ 隐式取值，
             //   ValueType = 该表达式类型；
             // - 否则所有执行路径必须显式 return@（GuaranteesValueReturn 检查，
             //   穿透终止也算路径终止），ValueType = 命中本块的 return@ 值类型
-            //   统一结果；无本块产值（纯穿透）→ ValueType = null
-            private BoundValueBlock BindValueBlock(CodeBlockASTNode node, string label, Scope scope)
+            //   统一结果；无本块产值（纯穿透）→ ValueType = null。
+            // construct 为诊断消息中的构造名（"if expression"/"switch expression"）
+            private BoundValueBlock BindValueBlock(CodeBlockASTNode node, string label, Scope scope,
+                string construct)
             {
                 var shell = new BoundValueBlock(node, label);
                 valueBlocks.Push((shell, loops.Count));
@@ -565,17 +588,18 @@ namespace LatteCompiler
                     else if (block.Statements.Count == 1
                         && block.Statements[0] is BoundCallStatement)
                     {
-                        Error(node.Span, "if expression branch must produce a value " +
+                        Error(node.Span, $"{construct} branch must produce a value " +
                             "(a void call has no result)");
                     }
                     return shell;
                 }
                 if (!GuaranteesValueReturn(block))
                 {
-                    Error(node.Span, "All code paths of an if expression branch must " +
+                    var article = "aeiou".Contains(construct[0]) ? "an" : "a";
+                    Error(node.Span, $"All code paths of {article} {construct} branch must " +
                         "explicitly return@ a value");
                 }
-                shell.ValueType = CollectBranchValueType(block, shell);
+                shell.ValueType = CollectBranchValueType(block, shell, construct);
                 return shell;
             }
 
@@ -586,25 +610,34 @@ namespace LatteCompiler
             // 语句层时目标必是值块外的循环（该语句不被值块内任何循环包含，且
             // 循环外 break/continue 已被 P3 拒绝），穿透值块终止本路径合法
             // （BIL §16.5 动态结构作用域：if/循环块内引用外层循环 breakid 合法）；
-            // 其余 false（裸 return 终止函数路径但不作为值块产值收尾，规则从简）
+            // 末语句是 BoundThrowStatement（S7d）→ true——throw 终止本路径；
+            // 末语句是 BoundSwitchStatement（S7d）且全部分支体（含 default）
+            // GuaranteesValueReturn → true；其余 false（裸 return 终止函数路径
+            // 但不作为值块产值收尾，规则从简）
             private static bool GuaranteesValueReturn(BoundBlock block)
             {
                 return block.Statements.Count > 0 && block.Statements[^1] switch
                 {
                     BoundReturnValueStatement => true,
                     BoundLoopControl => true,
+                    BoundThrowStatement => true,
                     BoundIfStatement ifStatement => ifStatement.FalseBlock != null
                         && GuaranteesValueReturn(ifStatement.TrueBlock)
                         && GuaranteesValueReturn(ifStatement.FalseBlock),
+                    BoundSwitchStatement switchStatement =>
+                        switchStatement.Cases.All(c => GuaranteesValueReturn(c.Body))
+                        && GuaranteesValueReturn(switchStatement.DefaultBody),
                     BoundBlock nested => GuaranteesValueReturn(nested),
                     _ => false,
                 };
             }
 
-            // 收集分支块内命中本块的 return@ 值类型（递归嵌套块与 if 分支）；
-            // 全部须类型一致（符号 ==，驻留保证；ErrorType 毒化静默跳过），
-            // 不一致诊断并以首个为准；无命中（纯穿透终止）→ null
-            private TypeSymbol? CollectBranchValueType(BoundBlock block, BoundValueBlock shell)
+            // 收集分支块内命中本块的 return@ 值类型（递归嵌套块、if 分支与
+            // switch 分支体）；全部须类型一致（符号 ==，驻留保证；ErrorType
+            // 毒化静默跳过），不一致诊断并以首个为准；无命中（纯穿透终止）→ null。
+            // construct 为诊断消息中的构造名（同 BindValueBlock）
+            private TypeSymbol? CollectBranchValueType(BoundBlock block, BoundValueBlock shell,
+                string construct)
             {
                 TypeSymbol? collected = null;
                 foreach (var statement in EnumerateStatements(block))
@@ -620,7 +653,7 @@ namespace LatteCompiler
                         else if (!ReferenceEquals(collected, returnValue.Value.Type))
                         {
                             Error(statement.Syntax.Span,
-                                $"if expression branch produces different types " +
+                                $"{construct} branch produces different types " +
                                 $"('{TypeDisplay(collected)}' and " +
                                 $"'{TypeDisplay(returnValue.Value.Type)}')");
                         }
@@ -629,7 +662,9 @@ namespace LatteCompiler
                 return collected;
             }
 
-            // 块内语句的平铺枚举（递归嵌套 BoundBlock 与 BoundIfStatement 两分支）
+            // 块内语句的平铺枚举（递归嵌套 BoundBlock、BoundIfStatement 两分支与
+            // BoundSwitchStatement 全部分支体（S7d：switch 体内 return@ 可穿透
+            // 命中外层值块，收集/终止判定须看得到））
             private static IEnumerable<BoundStatement> EnumerateStatements(BoundBlock block)
             {
                 foreach (var statement in block.Statements)
@@ -649,6 +684,15 @@ namespace LatteCompiler
                                     yield return s;
                             }
                             break;
+                        case BoundSwitchStatement switchStatement:
+                            foreach (var switchCase in switchStatement.Cases)
+                            {
+                                foreach (var s in EnumerateStatements(switchCase.Body))
+                                    yield return s;
+                            }
+                            foreach (var s in EnumerateStatements(switchStatement.DefaultBody))
+                                yield return s;
+                            break;
                     }
                 }
             }
@@ -658,6 +702,206 @@ namespace LatteCompiler
             {
                 assigned.Clear();
                 assigned.UnionWith(snapshot);
+            }
+
+            // ===== switch 语句/表达式 + throw（S7d，SYNTAX §7.2/§8）=====
+
+            // switch 语句：selector 先绑（DA 效果保留——selector 必求值一次）；
+            // 每 case（匹配表达式 + 分支体）与 default 体各自从 before 快照
+            // 出发绑定（前一分支的赋值效果不泄入后一分支），DA 合并
+            // before ∪ (∩ 全部分支尾集合)——default 恒存在（Parser 强制），
+            // 规则即 if 双分支合并的推广
+            private BoundStatement? BindSwitchStatement(SwitchStatementASTNode node, Scope scope)
+            {
+                var selector = BindExpression(node.Selector.Expression, scope);
+                var before = new HashSet<LocalSymbol>(assigned);
+                var cases = new List<BoundSwitchCase>();
+                var branchAssigned = new List<HashSet<LocalSymbol>>();
+                foreach (var caseNode in node.Cases)
+                {
+                    RestoreAssigned(before);
+                    var match = BindSwitchMatch(caseNode, selector, scope, out var isPattern);
+                    var body = BindBlock(caseNode.Body, scope);
+                    branchAssigned.Add(new HashSet<LocalSymbol>(assigned));
+                    if (match != null)
+                    {
+                        cases.Add(new BoundSwitchCase(caseNode, match, isPattern, body));
+                    }
+                }
+                RestoreAssigned(before);
+                var defaultBody = BindBlock(RequireSwitchDefault(node.DefaultBody), scope);
+                branchAssigned.Add(new HashSet<LocalSymbol>(assigned));
+                MergeBranches(before, branchAssigned);
+                if (selector == null) return null;
+                return new BoundSwitchStatement(node, selector, cases, defaultBody);
+            }
+
+            // switch 表达式：分支体（含 default）各绑一个值块（标签同源
+            // Label ?? "_"——return@ 命中规则同 if 表达式），产值类型全分支
+            // 统一（纯穿透分支不参与；全穿透即无产值；引用不等且非 ErrorType
+            // 报不一致）；DA 合并同语句形态
+            private BoundExpression? BindSwitchExpression(SwitchExpressionASTNode node, Scope scope)
+            {
+                var selector = BindExpression(node.Selector.Expression, scope);
+                var label = node.Label ?? "_";
+                var before = new HashSet<LocalSymbol>(assigned);
+                var cases = new List<BoundSwitchExpressionCase>();
+                var branchAssigned = new List<HashSet<LocalSymbol>>();
+                foreach (var caseNode in node.Cases)
+                {
+                    RestoreAssigned(before);
+                    var match = BindSwitchMatch(caseNode, selector, scope, out var isPattern);
+                    var body = BindValueBlock(caseNode.Body, label, scope, "switch expression");
+                    branchAssigned.Add(new HashSet<LocalSymbol>(assigned));
+                    if (match != null)
+                    {
+                        cases.Add(new BoundSwitchExpressionCase(caseNode, match, isPattern, body));
+                    }
+                }
+                RestoreAssigned(before);
+                var defaultBody = BindValueBlock(RequireSwitchDefault(node.DefaultBody), label,
+                    scope, "switch expression");
+                branchAssigned.Add(new HashSet<LocalSymbol>(assigned));
+                MergeBranches(before, branchAssigned);
+                if (selector == null) return null;
+                // 产值类型统一（规则同 if 表达式）：纯穿透分支（ValueType null）
+                // 不参与；有产值分支符号须引用相等（ErrorType 毒化静默）
+                TypeSymbol? type = null;
+                foreach (var branch in cases.Select(c => c.Body).Append(defaultBody))
+                {
+                    if (branch.ValueType == null) continue;
+                    if (type == null)
+                    {
+                        type = branch.ValueType;
+                        continue;
+                    }
+                    if (!ReferenceEquals(type, branch.ValueType)
+                        && type is not ErrorTypeSymbol && branch.ValueType is not ErrorTypeSymbol)
+                    {
+                        Error(node.Span,
+                            $"switch expression branches produce different types " +
+                            $"('{TypeDisplay(type)}' and '{TypeDisplay(branch.ValueType)}')");
+                        return null;
+                    }
+                }
+                if (type == null)
+                {
+                    Error(node.Span, "switch expression must produce a value " +
+                        "(at least one branch must return@ a value)");
+                    return null;
+                }
+                return new BoundSwitchExpression(node, selector, cases, defaultBody, type);
+            }
+
+            // case 匹配表达式绑定（两形态共用）：先分类——AST 子树含单段路径 _
+            // 即 pattern（SYNTAX §7.2：_ 引用 selector 的值），否则值匹配。
+            // 值匹配：编译期常量最小口径（BoundLiteralExpression；enum case
+            // 归 S11），类型与 selector 严格相同；pattern：占位栈开启下绑定，
+            // 结果须 bool。selector 已失败（null）时值匹配照常绑定（独立诊断），
+            // pattern 静默跳过（_ 无所指，避免次生错误）；分类经 out 显式记录
+            // （IsPattern——P4a 按 §16.6 把 pattern 分支降级为嵌套条件）
+            private BoundExpression? BindSwitchMatch(SwitchCaseASTNode node,
+                BoundExpression? selector, Scope scope, out bool isPattern)
+            {
+                isPattern = ContainsSwitchPlaceholder(node.Pattern.Expression);
+                if (isPattern)
+                {
+                    if (selector == null) return null;
+                    switchSelectors.Push(selector);
+                    BoundExpression? match;
+                    try
+                    {
+                        match = BindExpression(node.Pattern.Expression, scope, selector.Type);
+                    }
+                    finally
+                    {
+                        switchSelectors.Pop();
+                    }
+                    if (match != null && match.Type is not ErrorTypeSymbol
+                        && !ReferenceEquals(match.Type, B.Bool))
+                    {
+                        Error(node.Pattern.Span ?? node.Span,
+                            $"switch pattern case must be bool (got '{TypeDisplay(match.Type)}')");
+                    }
+                    return match;
+                }
+                var value = BindExpression(node.Pattern.Expression, scope, selector?.Type);
+                if (value != null && selector != null
+                    && value.Type is not ErrorTypeSymbol && selector.Type is not ErrorTypeSymbol)
+                {
+                    if (value is not BoundLiteralExpression)
+                    {
+                        Error(node.Pattern.Span ?? node.Span,
+                            "switch value-match case requires a compile-time constant");
+                    }
+                    else if (!ReferenceEquals(value.Type, selector.Type))
+                    {
+                        Error(node.Pattern.Span ?? node.Span,
+                            $"switch case constant type must equal the selector type " +
+                            $"(got '{TypeDisplay(value.Type)}' and '{TypeDisplay(selector.Type)}')");
+                    }
+                }
+                return value;
+            }
+
+            // pattern 分类判定：匹配表达式 AST 子树含单段路径 _（符号头名为 _
+            // 且无后缀无段）即 pattern match。子树遍历统一走
+            // AstStructureReflection（M28 唯一反射下钻）
+            private static bool ContainsSwitchPlaceholder(ASTNode node)
+            {
+                if (node is PathExpressionASTNode path
+                    && path.Head.Expression == null && path.Head.Name == "_"
+                    && path.Head.Suffixes.Count == 0 && path.Segments.Count == 0)
+                {
+                    return true;
+                }
+                foreach (var (child, _) in AstStructureReflection.EnumerateChildren(node))
+                {
+                    if (ContainsSwitchPlaceholder(child)) return true;
+                }
+                return false;
+            }
+
+            // switch default 分支体（两形态 Parser 强制存在；缺失即 Parser 不变量破坏）
+            private static CodeBlockASTNode RequireSwitchDefault(CodeBlockASTNode? defaultBody)
+            {
+                return defaultBody ?? throw new CompilerInternalException(
+                    "switch 缺 default 分支（Parser 不变量破坏）");
+            }
+
+            // DA 分支合并（switch 专用，if 双分支规则的推广）：
+            // 合并结果 = before ∪ (∩ 各分支尾集合)；无分支时保守恢复 before
+            private void MergeBranches(HashSet<LocalSymbol> before,
+                List<HashSet<LocalSymbol>> branchAssigned)
+            {
+                if (branchAssigned.Count == 0)
+                {
+                    RestoreAssigned(before);
+                    return;
+                }
+                var merged = new HashSet<LocalSymbol>(branchAssigned[0]);
+                for (int i = 1; i < branchAssigned.Count; i++)
+                {
+                    merged.IntersectWith(branchAssigned[i]);
+                }
+                merged.UnionWith(before);
+                RestoreAssigned(merged);
+            }
+
+            // throw（SYNTAX §8）：异常表达式必须与异常根 core.Exception 兼容
+            // （IsAssignable 沿 BaseType 链命中；ErrorType 毒化静默）
+            private BoundStatement? BindThrow(ThrowStatementASTNode node, Scope scope)
+            {
+                var exception = BindExpression(node.Exception.Expression, scope, B.Exception);
+                if (exception == null) return null;
+                if (!IsAssignable(exception.Type, B.Exception))
+                {
+                    Error(node.Exception.Span ?? node.Span,
+                        $"Cannot throw '{TypeDisplay(exception.Type)}' " +
+                        "(not compatible with 'Exception')");
+                    return null;
+                }
+                return new BoundThrowStatement(node, exception);
             }
 
             // ===== 循环（S7c-1，SYNTAX §7.3/§7.4）=====
@@ -957,6 +1201,8 @@ namespace LatteCompiler
                     UnaryExpressionASTNode unary => BindUnary(unary, scope),
                     NewExpressionASTNode newExpr => BindNew(newExpr, scope),
                     IfExpressionASTNode ifExpression => BindIfExpression(ifExpression, scope),
+                    SwitchExpressionASTNode switchExpression =>
+                        BindSwitchExpression(switchExpression, scope),
                     CompoundAssignmentExpressionASTNode compound =>
                         BindCompoundAssignment(compound, scope),
                     // 括号是透明分组（Latte 无优先级，括号只定结构），不落 bound 节点
@@ -1086,6 +1332,15 @@ namespace LatteCompiler
                 if (node.Segments.Count == 0)
                 {
                     var name = node.Head.Name!;
+                    // switch pattern 占位（S7d）：占位栈非空时 _ 命中栈顶
+                    // selector（嵌套 switch 逐层向内；栈空 = _ 不在 pattern
+                    // 上下文，落普通查找报未定义名）
+                    if (name == "_" && switchSelectors.Count > 0)
+                    {
+                        var placeholderSelector = switchSelectors.Peek();
+                        return new BoundSwitchPlaceholderExpression(node,
+                            placeholderSelector, placeholderSelector.Type);
+                    }
                     var local = scope.Lookup(name);
                     if (local != null)
                     {
