@@ -292,6 +292,12 @@ core.collections 的 C# 风格双接口；基元实现落 `stdlib/.bootstrap.lat
   （§16.1）；
 - **验收**：try/catch/finally(e) 端到端 + seq 表达式取值脱糖
   `LoweredDescribe` 用例。
+- **完成注记（M50，2026-08-01）**：已落地。同批按用户决策把 cast
+  （as/as?）最小闭环提前自 S8（「没法脱离 cast 实现其他功能」）——
+  P3 定型（as 结果即目标类型、as? 结果 `Nullable\<T\>`，可转性不做
+  静态拒绝：as 失败是运行时 core.CastException）+ P4b `cast`/
+  `cast.safe` 发射（§12.1/§12.2）；S8 的 `is`/`typeOf`/`supers`/
+  `with`/smart cast 仍归 S8 不动。
 
 ### S7f 剩余脱糖
 
@@ -306,6 +312,10 @@ lowering 在 S13 汇合，ARCH §7）。
 （P4a 物化 cast）、`is`/`as`/`as?`/`typeOf`/`supers`/`with`、
 async 边界五项闸门（SYNTAX §4.5：receiver / 参数 / TResult / 捕获 /
 泛型实参，分析侧；lowering 在 S13）。
+
+> 边界注记（M50）：`as`/`as?` 最小闭环已提前至 S7e 落地（P3 定型 +
+> cast/cast.safe 发射）；本里程碑剩余的 cast 相关工作为 smart cast
+> 分析与 castTo/castFrom 名字分析。
 
 ## S9 泛型
 

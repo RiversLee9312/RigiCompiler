@@ -3,9 +3,9 @@ using System.Collections.Generic;
 namespace LatteCompiler
 {
     // Lowered 语句节点（S6 最小集 + S7a 补齐 + S7b 脱糖 + S7c-1 循环 + S7d
-    // switch/throw，SEMANTIC_ROADMAP）：块 / 局部变量声明 / 表达式语句 /
-    // void 调用语句 / 赋值 / return / if / 循环 / break/continue /
-    // switch / throw。
+    // switch/throw + S7e try/seq，SEMANTIC_ROADMAP）：块 / 局部变量声明 /
+    // 表达式语句 / void 调用语句 / 赋值 / return / if / 循环 / break/continue /
+    // switch / throw / try-catch-finally / seq 块。
     // S7b 起部分节点构造的 origin 参数放宽为 BoundNode：脱糖合成节点
     // （值块写入赋值、if 转换新建块等）无逐一对应的 Bound 节点，
     // Origin 按 ARCH §5.1 约定指向最近的语法来源。
@@ -207,6 +207,65 @@ namespace LatteCompiler
             : base(origin)
         {
             Exception = exception;
+        }
+    }
+
+    // try-catch-finally（S7e；BIL §16.7 的直接对应）：Catches 保序（表序 =
+    // 匹配序，首个类型兼容命中胜出）；FinallyBlock 可空（发射 none 操作数）。
+    // ExceptionSlot = try 指令 $slot 操作数的承载局部（Nullable<core.Exception>）：
+    // finally(e) 的 e 非空时即该局部（指令直写），否则为合成 .sN——有名
+    // catch 的变量由 P4a 在体头合成「变量 = cast slot」赋值填充（BIL §12.1
+    // 显式收窄，P3 已查兼容）
+    public sealed class LoweredTryStatement : LoweredStatement
+    {
+        public LoweredBlock TryBlock { get; }
+        public IReadOnlyList<LoweredTryCatch> Catches { get; }
+        public LoweredBlock? FinallyBlock { get; }
+        public LocalSymbol ExceptionSlot { get; }
+
+        public LoweredTryStatement(BoundNode origin, LoweredBlock tryBlock,
+            IReadOnlyList<LoweredTryCatch> catches, LoweredBlock? finallyBlock,
+            LocalSymbol exceptionSlot) : base(origin)
+        {
+            TryBlock = tryBlock;
+            Catches = catches;
+            FinallyBlock = finallyBlock;
+            ExceptionSlot = exceptionSlot;
+        }
+    }
+
+    // catch 分支（S7e）：Variable 为 null = `_:` 无变量形态（有名变量的
+    // 赋值已在 P4a 合成进 Body 头，此字段仅描述器展示用）；ExceptionType
+    // 进 §18.5 catch-table 资源（P4b 登记）；Origin 指 BoundCatchClause
+    public sealed class LoweredTryCatch : LoweredNode
+    {
+        public LocalSymbol? Variable { get; }
+        public TypeSymbol ExceptionType { get; }
+        public LoweredBlock Body { get; }
+
+        public LoweredTryCatch(BoundNode origin, LocalSymbol? variable,
+            TypeSymbol exceptionType, LoweredBlock body) : base(origin)
+        {
+            Variable = variable;
+            ExceptionType = exceptionType;
+            Body = body;
+        }
+    }
+
+    // seq 块（S7e，SYNTAX §10；BIL §3.4 独立 block + call 化的直接对应）：
+    // 两形态汇合——语句形态为恒等降级（Body = 体降级）；表达式形态为
+    // P4a 脱糖产物（Body = 值块降级写结果局部，Origin 指 BoundSeqExpression）。
+    // IsVolatile → §9.6 block 修饰符
+    public sealed class LoweredSeqBlock : LoweredStatement
+    {
+        public LoweredBlock Body { get; }
+        public bool IsVolatile { get; }
+
+        public LoweredSeqBlock(BoundNode origin, LoweredBlock body, bool isVolatile)
+            : base(origin)
+        {
+            Body = body;
+            IsVolatile = isVolatile;
         }
     }
 }

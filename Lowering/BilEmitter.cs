@@ -41,6 +41,14 @@ namespace LatteCompiler
     // 同（header, 元素序列）去重——case 集相同的 switch 共享一张表；
     // pattern switch 已在 P4a 降为 if 链，不到这里）+
     // LoweredThrowStatement → throw（§16.9 单操作数）。
+    // S7e 发射补齐：LoweredCastExpression → cast/cast.safe（§12.1/§12.2：
+    // SOURCE RESULT type(TARGET_TYPE)，结果先物化 .t 临时变量）+
+    // LoweredSeqBlock → 独立 block + call blk(seqN)（§16.1/§3.4：
+    // volatile → §9.6 block 修饰符）+ LoweredTryStatement → try 指令
+    // （§16.7 四操作数：blk(tryN-body)/$slot/res(catch-table)/
+    // blk(tryN-finally)|none；§18.5 catch-table 多行资源，元素
+    // type(T) -> blk(tryN-catchI)，空 catch 列表出空表——资源经
+    // resourceKeys 同元素序列去重）。
     // 统一风格：表达式求值结果一律先物化到 .t 临时变量，再经 set.var 写入目标。
     // 符号引用一律经 CanonicalSymbolPrinter 投影；BilInstruction.Origin 塞
     // LoweredNode（语句级；load 的 Origin 是字面量 LoweredNode），BIL 模型
@@ -69,11 +77,14 @@ namespace LatteCompiler
             // 不得以 . 开头，与用户变量零冲突）；指令生成中登记，.vars 收尾输出
             private readonly List<BilVarDeclaration> tempVars = new List<BilVarDeclaration>();
             private int tempCount;
-            // 当前函数（EmitFunction 设置）与 if/loop/switch 分支 block 编号（函数内唯一递增）
+            // 当前函数（EmitFunction 设置）与 if/loop/switch/seq/try 分支
+            // block 编号（函数内唯一递增）
             private BilFunction function = null!;
             private int ifCount;
             private int loopCount;
             private int switchCount;
+            private int seqCount;
+            private int tryCount;
 
             public EmitSession(CompilationUnit unit, IReadOnlyList<LoweredFunctionBody> bodies,
                 string moduleName)
@@ -310,13 +321,17 @@ namespace LatteCompiler
                 // 指令生成（临时变量在生成中登记）：entry block 先行入列，
                 // if 分支 block 随 LoweredIfStatement 发射追加（§16.2）、
                 // loop 的 body/judge block 随 LoweredLoop 发射追加（§16.3/§16.4）、
-                // switch 的 item/default block 随 LoweredSwitch 发射追加（§16.6）
+                // switch 的 item/default block 随 LoweredSwitch 发射追加（§16.6）、
+                // seq 块随 LoweredSeqBlock 发射追加（§16.1）、try 的
+                // body/catch/finally block 随 LoweredTryStatement 发射追加（§16.7）
                 this.function = function;
                 tempVars.Clear();
                 tempCount = 0;
                 ifCount = 0;
                 loopCount = 0;
                 switchCount = 0;
+                seqCount = 0;
+                tryCount = 0;
                 var entry = new BilBlock("entry", "entrypoint");
                 function.Blocks.Add(entry);
                 EmitBlock(body.Body, entry);
@@ -530,6 +545,60 @@ namespace LatteCompiler
                             BilOp.Var(exceptionValue))
                         { Origin = throwStatement });
                         break;
+                    case LoweredSeqBlock seqBlock:
+                        // seq 块（S7e，§3.4/§16.1）：独立 block + call blk(seqN)
+                        // （call 不建栈帧，block 落尾自然返回续call 的下一条）；
+                        // volatile → §9.6 block 修饰符
+                        var seqId = "seq" + seqCount;
+                        seqCount++;
+                        var seqBilBlock = seqBlock.IsVolatile
+                            ? new BilBlock(seqId, "volatile")
+                            : new BilBlock(seqId);
+                        target.Instructions.Add(new BilInstruction("call",
+                            BilOp.Blk(seqBilBlock.Id))
+                        { Origin = seqBlock });
+                        function.Blocks.Add(seqBilBlock);
+                        EmitBlock(seqBlock.Body, seqBilBlock);
+                        break;
+                    case LoweredTryStatement tryStatement:
+                        // try（S7e，§16.7 四操作数）：blk(tryN-body) $slot
+                        // res(catch-table) blk(tryN-finally)|none；catch 表 =
+                        // §18.5 多行资源（元素 type(T) -> blk(tryN-catchI)，
+                        // 保序——表序即匹配序）；body/catch/finally block 加入
+                        // 函数并递归发射，落尾自然返回（§9.4 同 if 分支块）
+                        var tryId = "try" + tryCount;
+                        tryCount++;
+                        var tryBodyBlock = new BilBlock(tryId + "-body");
+                        var catchBlocks = new List<BilBlock>();
+                        var catchBlockIds = new List<string>();
+                        for (var i = 0; i < tryStatement.Catches.Count; i++)
+                        {
+                            var catchBlock = new BilBlock(tryId + "-catch" + i);
+                            catchBlocks.Add(catchBlock);
+                            catchBlockIds.Add(catchBlock.Id);
+                        }
+                        var catchTable = RegisterCatchTable(tryStatement, catchBlockIds);
+                        var finallyBilBlock = tryStatement.FinallyBlock != null
+                            ? new BilBlock(tryId + "-finally") : null;
+                        target.Instructions.Add(new BilInstruction("try",
+                            BilOp.Blk(tryBodyBlock.Id),
+                            BilOp.Var(tryStatement.ExceptionSlot.Name),
+                            BilOp.Res(catchTable),
+                            finallyBilBlock != null ? BilOp.Blk(finallyBilBlock.Id) : BilOp.None)
+                        { Origin = tryStatement });
+                        function.Blocks.Add(tryBodyBlock);
+                        EmitBlock(tryStatement.TryBlock, tryBodyBlock);
+                        for (var i = 0; i < tryStatement.Catches.Count; i++)
+                        {
+                            function.Blocks.Add(catchBlocks[i]);
+                            EmitBlock(tryStatement.Catches[i].Body, catchBlocks[i]);
+                        }
+                        if (finallyBilBlock != null)
+                        {
+                            function.Blocks.Add(finallyBilBlock);
+                            EmitBlock(tryStatement.FinallyBlock!, finallyBilBlock);
+                        }
+                        break;
                     default:
                         Error(statement.Origin.Syntax.Span,
                             $"P4: lowered statement kind not supported by minimal emission: " +
@@ -643,6 +712,16 @@ namespace LatteCompiler
                             BilOp.Field(CanonicalSymbolPrinter.PrintField(fieldAccess.Field)))
                         { Origin = fieldAccess });
                         return accessResult;
+                    case LoweredCastExpression cast:
+                        // cast（S7e，§12.1/§12.2）：SOURCE RESULT type(TARGET_TYPE)，结果物化 .t 临时变量
+                        var castSourceValue = EmitValue(cast.Source, target);
+                        var castResult = NewTemp(cast.Type);
+                        target.Instructions.Add(new BilInstruction(
+                            cast.IsSafe ? "cast.safe" : "cast",
+                            BilOp.Var(castSourceValue), BilOp.Var(castResult),
+                            BilOp.Type(CanonicalSymbolPrinter.PrintType(cast.TargetType)))
+                        { Origin = cast });
+                        return castResult;
                     default:
                         Error(expression.Origin.Syntax.Span,
                             $"P4: lowered expression kind not supported by minimal emission: " +
@@ -761,6 +840,32 @@ namespace LatteCompiler
                 {
                     name = "R_" + module.Resources.Count;
                     module.Resources.Add(new BilCollectionResource(name, header, elements));
+                    resourceKeys.Add(key, name);
+                }
+                return name;
+            }
+
+            // catch 表资源（S7e，§18.5）：header = catch-table（无类型参数），
+            // 元素 = type(EXCEPTION_TYPE) -> blk(CATCH_BLOCK_ID)，保序（表序
+            // 即匹配序，不能重排）。多行形态（Multiline: true，§18.5 规范
+            // 排版）；空 catch 列表出空表。同元素序列去重（元素含 block id，
+            // 实际去重仅在同序列重复登记时命中——与 switch-table 同机制）
+            private string RegisterCatchTable(LoweredTryStatement tryStatement,
+                IReadOnlyList<string> catchBlockIds)
+            {
+                var elements = new List<string>();
+                for (var i = 0; i < tryStatement.Catches.Count; i++)
+                {
+                    elements.Add("type(" +
+                        CanonicalSymbolPrinter.PrintType(tryStatement.Catches[i].ExceptionType) +
+                        ") -> blk(" + catchBlockIds[i] + ")");
+                }
+                var key = ("catch-table", string.Join(",", elements));
+                if (!resourceKeys.TryGetValue(key, out var name))
+                {
+                    name = "R_" + module.Resources.Count;
+                    module.Resources.Add(new BilCollectionResource(name, "catch-table",
+                        elements, multiline: true));
                     resourceKeys.Add(key, name);
                 }
                 return name;

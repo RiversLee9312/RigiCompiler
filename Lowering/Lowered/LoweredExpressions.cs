@@ -2,10 +2,10 @@ using System.Collections.Generic;
 
 namespace LatteCompiler
 {
-    // Lowered 表达式节点（S6 最小集 + S7a 补齐 + S7b 脱糖 + S7c-2 实例成员，
-    // SEMANTIC_ROADMAP）：字面量 / 值引用 / 全局字段引用 / 二元与一元
-    // intrinsic 运算 / 带返回值调用 / new 构造 / 编译期常量（短路脱糖产物）/
-    // this / 实例方法调用 / 实例字段访问。
+    // Lowered 表达式节点（S6 最小集 + S7a 补齐 + S7b 脱糖 + S7c-2 实例成员
+    // + S7e cast，SEMANTIC_ROADMAP）：字面量 / 值引用 / 全局字段引用 /
+    // 二元与一元 intrinsic 运算 / 带返回值调用 / new 构造 / 编译期常量
+    // （短路脱糖产物）/ this / 实例方法调用 / 实例字段访问 / cast。
     // 字面量值不冗余存储——经 Origin.Syntax（LiteralExpressionASTNode.Literal）取。
     // S7b 起部分节点构造的 origin 参数放宽为 BoundNode：脱糖合成节点无逐一
     // 对应的 Bound 节点，Origin 按 ARCH §5.1 约定指向最近的语法来源。
@@ -184,6 +184,33 @@ namespace LatteCompiler
         {
             Receiver = receiver;
             Field = field;
+        }
+    }
+
+    // cast（S7e；BIL §12.1/§12.2 直接对应）：as → cast、as? → cast.safe。
+    // TargetType 是转换目标类型（指令的 type 操作数）；Type 是表达式结果
+    // 类型（as 即 TargetType，as? 为 Nullable<TargetType>——P3 已定型）。
+    // Type 自带不走 Origin 透传：命名 catch 体头的合成节点 Origin 是
+    // BoundCatchClause（语句节点无法透传）；恒等降级路径传入
+    // BoundCastExpression.Type（同一来源两形态统一，先例：
+    // LoweredInstanceCallExpression）
+    public sealed class LoweredCastExpression : LoweredExpression
+    {
+        public LoweredExpression Source { get; }
+        public TypeSymbol TargetType { get; }
+        // true = as?（cast.safe，失败产 null）；false = as（cast，失败抛异常）
+        public bool IsSafe { get; }
+        private readonly TypeSymbol type;
+
+        public override TypeSymbol Type => type;
+
+        public LoweredCastExpression(BoundNode origin, LoweredExpression source,
+            TypeSymbol targetType, bool isSafe, TypeSymbol type) : base(origin)
+        {
+            Source = source;
+            TargetType = targetType;
+            IsSafe = isSafe;
+            this.type = type;
         }
     }
 }

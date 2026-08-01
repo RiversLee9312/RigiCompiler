@@ -2,10 +2,10 @@ using System.Collections.Generic;
 
 namespace LatteCompiler
 {
-    // Bound 表达式节点（S5 最小集 + S7b 首批 + S7c-2 实例成员，SEMANTIC_ROADMAP）：
+    // Bound 表达式节点（S5 最小集 + S7b 首批 + S7c-2 实例成员 + S7d switch + S7e cast/seq，SEMANTIC_ROADMAP）：
     // 字面量 / 值引用（局部变量与参数）/ 全局字段引用 / 二元与一元 intrinsic 运算 /
     // 直接调用（无重载）/ new 构造 / if 表达式 / 复合赋值 /
-    // this / 实例方法调用 / 实例字段访问。
+    // this / 实例方法调用 / 实例字段访问 / switch 表达式 / cast / seq 表达式。
     // 字面量值不冗余存储——经 Syntax（LiteralExpressionASTNode.Literal）取。
 
     // 字面量（整/浮点/字符串/字符/bool/null；Type 由 P3 按字面量种类与上下文定型）
@@ -238,6 +238,42 @@ namespace LatteCompiler
             TypeSymbol type) : base(syntax, type)
         {
             Selector = selector;
+        }
+    }
+
+    // cast（S7e，SYNTAX §11：as / as?；BIL §12.1/§12.2）：TargetType 是转换
+    // 目标类型（as 与 as? 同形）；节点 Type 是表达式结果类型——as 时即
+    // TargetType，as? 时为 Nullable<TargetType>（P3 定型，P4 不再区分包装）。
+    // 可转性不做静态拒绝（as 失败是运行时 core.CastException；castTo/castFrom
+    // 名字分析归后续里程碑）
+    public sealed class BoundCastExpression : BoundExpression
+    {
+        public BoundExpression Source { get; }
+        public TypeSymbol TargetType { get; }
+        // true = as?（失败产 null）；false = as（失败抛 core.CastException）
+        public bool IsSafe { get; }
+
+        public BoundCastExpression(ASTNode syntax, BoundExpression source,
+            TypeSymbol targetType, bool isSafe, TypeSymbol type) : base(syntax, type)
+        {
+            Source = source;
+            TargetType = targetType;
+            IsSafe = isSafe;
+        }
+    }
+
+    // seq 表达式（S7e，SYNTAX §10.2）：体即值块（复用 BoundValueBlock，
+    // 取值规则同 if 表达式分支体；using 绑定列表属 S13，P3 已拦截）。
+    // 壳存在的理由：BoundValueBlock 是 BoundNode 非表达式，BindExpression
+    // 必须返回表达式节点；Type = Body.ValueType
+    public sealed class BoundSeqExpression : BoundExpression
+    {
+        public BoundValueBlock Body { get; }
+
+        public BoundSeqExpression(ASTNode syntax, BoundValueBlock body, TypeSymbol type)
+            : base(syntax, type)
+        {
+            Body = body;
         }
     }
 }

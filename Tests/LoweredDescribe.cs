@@ -14,6 +14,7 @@ namespace LatteCompiler.Tests
     ///   Binary(Add, l, r, i32)  Unary(Opposite, x, i32)
     ///   Call(name, [args], ret)  New(T, [args])  New(T, init, [args])
     ///   This(C)（S7c-2）  InstCall(name, receiver, [args], ret)  InstField(f, receiver, T)
+    ///   Cast(e, T, RT)  SafeCast(e, T, RT)（S7e，as / as?；T = 目标类型，RT = 结果类型）
     /// 格式约定（语句）：
     ///   Decl(x, i32, = init)  ExprStmt(e)  CallStmt(name, [args])  Assign(t, v)  Return(v)  Return
     ///   If(c, [真], [假])  If(c, [真])
@@ -22,6 +23,10 @@ namespace LatteCompiler.Tests
     ///   InstCallStmt(name, receiver, [args])（void 实例调用语句，S7c-2）
     ///   Switch(sel, [Case(v, [体]); ...], [default], .b0)（S7d，全值匹配形态）
     ///   Throw(e)（S7d）
+    ///   Try([try], [Catch(e, T, [体]); Catch(T, [体])], Finally([体]), slot)（S7e；
+    ///   无变量 catch 省变量名，无 finally 省第三参；slot 恒显式——合成 .sN 或
+    ///   finally 变量名）
+    ///   Seq([体])  SeqVolatile([体])（S7e 两形态汇合）
     ///   块：[s1; s2]；函数体：Body(name, [x: i32, ...], [块])
     /// </summary>
     public static class LoweredDescribe
@@ -65,8 +70,26 @@ namespace LatteCompiler.Tests
                 LoweredSwitch switchStmt =>
                     $"Switch({Expr(switchStmt.Selector)}, [{string.Join("; ", switchStmt.Cases.Select(c => $"Case({Expr(c.Value)}, {Block(c.Body)})"))}], {Block(switchStmt.DefaultBody)}, {switchStmt.BreakId.Name})",
                 LoweredThrowStatement throwStmt => $"Throw({Expr(throwStmt.Exception)})",
+                LoweredTryStatement tryStmt => Try(tryStmt),
+                LoweredSeqBlock seqBlock =>
+                    $"{(seqBlock.IsVolatile ? "SeqVolatile" : "Seq")}({Block(seqBlock.Body)})",
                 _ => $"<{stmt.GetType().Name}>",
             };
+        }
+
+        // try：Try([try], [Catch(e, T, [体]); Catch(T, [体])], Finally([体]), slot)；
+        // 无变量 catch 省变量名，无 finally 省第三参，slot 恒显式（S7e）
+        private static string Try(LoweredTryStatement tryStmt)
+        {
+            var catches = string.Join("; ", tryStmt.Catches.Select(c =>
+                c.Variable != null
+                    ? $"Catch({c.Variable.Name}, {TypeShort(c.ExceptionType)}, {Block(c.Body)})"
+                    : $"Catch({TypeShort(c.ExceptionType)}, {Block(c.Body)})"));
+            var finallyPart = tryStmt.FinallyBlock != null
+                ? $", Finally({Block(tryStmt.FinallyBlock)})"
+                : "";
+            return $"Try({Block(tryStmt.TryBlock)}, [{catches}]{finallyPart}, " +
+                $"{tryStmt.ExceptionSlot.Name})";
         }
 
         public static string Expr(LoweredExpression? expr)
@@ -107,6 +130,9 @@ namespace LatteCompiler.Tests
                 LoweredFieldAccessExpression fieldAccess =>
                     $"InstField({fieldAccess.Field.Name}, {Expr(fieldAccess.Receiver)}, " +
                     $"{TypeShort(fieldAccess.Type)})",
+                LoweredCastExpression cast =>
+                    $"{(cast.IsSafe ? "SafeCast" : "Cast")}({Expr(cast.Source)}, " +
+                    $"{TypeShort(cast.TargetType)}, {TypeShort(cast.Type)})",
                 _ => $"<{expr.GetType().Name}>",
             };
         }

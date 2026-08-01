@@ -16,16 +16,22 @@ namespace LatteCompiler.Tests
     ///   This(C)（S7c-2）  InstCall(name, receiver, [args], ret)  InstField(f, receiver, T)
     ///   SwitchExpr(sel, [Case(m, 值块); CaseP(m, 值块)], 默认值块, T)（S7d；CaseP = pattern 分支）
     ///   Placeholder(T)（S7d，switch pattern 的 _）
+    ///   Cast(e, T)  SafeCast(e, T)（S7e，as / as?；T = 目标类型）
+    ///   SeqExpr(值块)（S7e；volatile 时值块带 volatile 标记）
     /// 格式约定（语句）：
     ///   Decl(x, i32, = init)  ExprStmt(e)  CallStmt(name, [args])  Assign(t, v)  Return(v)  Return
     ///   If(c, [真], [假])  If(c, [真])  ReturnValue(_, v)（标签取 Target.Label）
-    ///   值块：ValueBlock(标签, 类型, [块])；隐式取值带 implicit 标记；纯穿透类型显式 -
+    ///   值块：ValueBlock(标签, 类型, [块])；隐式取值带 implicit 标记；纯穿透类型显式 -；
+    ///   volatile（S7e seq）带 volatile 标记
     ///   Loop(while, c, [体])  Loop(do-while, c, [体])（named 标签带 @ 后缀：Loop(while@outer, ...)）
     ///   Break  Continue（标签取 Target.Label，非空时带 @：Break@outer）
     ///   For(i, iterable, [体])（S7c-2，标签带 @：For(i@outer, ...)；变量名取 LoopVariable）
     ///   InstCallStmt(name, receiver, [args])（void 实例调用语句，S7c-2）
     ///   Switch(sel, [Case(m, [体]); CaseP(m, [体])], [default])（S7d；CaseP = pattern 分支）
     ///   Throw(e)（S7d）
+    ///   Try([try], [Catch(e, T, [体]); Catch(T, [体])], Finally(e, [体]))（S7e；
+    ///   无变量 catch 省变量名，无参 finally 省参数，无 finally 省第三参）
+    ///   Seq([体])  SeqVolatile([体])（S7e 语句形态）
     ///   块：[s1; s2]；函数体：Body(name, [x: i32, ...], [块])
     /// </summary>
     public static class BoundDescribe
@@ -76,17 +82,39 @@ namespace LatteCompiler.Tests
                 BoundSwitchStatement switchStmt =>
                     $"Switch({Expr(switchStmt.Selector)}, [{string.Join("; ", switchStmt.Cases.Select(c => $"{(c.IsPattern ? "CaseP" : "Case")}({Expr(c.Match)}, {Block(c.Body)})"))}], {Block(switchStmt.DefaultBody)})",
                 BoundThrowStatement throwStmt => $"Throw({Expr(throwStmt.Exception)})",
+                BoundTryStatement tryStmt => Try(tryStmt),
+                BoundSeqStatement seqStmt =>
+                    $"{(seqStmt.IsVolatile ? "SeqVolatile" : "Seq")}({Block(seqStmt.Body)})",
                 _ => $"<{stmt.GetType().Name}>",
             };
         }
 
+        // try：Try([try], [Catch(e, T, [体]); Catch(T, [体])], Finally(e, [体])；
+        // 无变量 catch 省变量名，无参 finally 省参数，无 finally 省第三参（S7e）
+        private static string Try(BoundTryStatement tryStmt)
+        {
+            var catches = string.Join("; ", tryStmt.Catches.Select(c =>
+                c.Variable != null
+                    ? $"Catch({c.Variable.Name}, {TypeShort(c.ExceptionType)}, {Block(c.Body)})"
+                    : $"Catch({TypeShort(c.ExceptionType)}, {Block(c.Body)})"));
+            if (tryStmt.FinallyBlock == null)
+            {
+                return $"Try({Block(tryStmt.TryBlock)}, [{catches}])";
+            }
+            var finallyPart = tryStmt.FinallyVariable != null
+                ? $"Finally({tryStmt.FinallyVariable.Name}, {Block(tryStmt.FinallyBlock)})"
+                : $"Finally({Block(tryStmt.FinallyBlock)})";
+            return $"Try({Block(tryStmt.TryBlock)}, [{catches}], {finallyPart})";
+        }
+
         // 值块：ValueBlock(标签, 产值类型, [块])；隐式取值带 implicit 标记；
-        // 纯穿透（无本块产值）类型显式 -
+        // 纯穿透（无本块产值）类型显式 -；volatile（S7e seq）带 volatile 标记
         public static string ValueBlock(BoundValueBlock valueBlock)
         {
             var type = valueBlock.ValueType != null ? TypeShort(valueBlock.ValueType) : "-";
             var implicitMark = valueBlock.IsImplicitValue ? ", implicit" : "";
-            return $"ValueBlock({valueBlock.Label}, {type}{implicitMark}, " +
+            var volatileMark = valueBlock.IsVolatile ? ", volatile" : "";
+            return $"ValueBlock({valueBlock.Label}, {type}{implicitMark}{volatileMark}, " +
                 $"{Block(valueBlock.Block)})";
         }
 
@@ -132,6 +160,10 @@ namespace LatteCompiler.Tests
                     $"SwitchExpr({Expr(switchExpr.Selector)}, [{string.Join("; ", switchExpr.Cases.Select(c => $"{(c.IsPattern ? "CaseP" : "Case")}({Expr(c.Match)}, {ValueBlock(c.Body)})"))}], {ValueBlock(switchExpr.DefaultBody)}, {TypeShort(switchExpr.Type)})",
                 BoundSwitchPlaceholderExpression placeholder =>
                     $"Placeholder({TypeShort(placeholder.Type)})",
+                BoundCastExpression cast =>
+                    $"{(cast.IsSafe ? "SafeCast" : "Cast")}({Expr(cast.Source)}, " +
+                    $"{TypeShort(cast.TargetType)})",
+                BoundSeqExpression seqExpr => $"SeqExpr({ValueBlock(seqExpr.Body)})",
                 _ => $"<{expr.GetType().Name}>",
             };
         }

@@ -33,6 +33,15 @@ namespace LatteCompiler
     // 复用值块机制，产值类型全分支统一；DA 合并 before ∪ (∩ 全部体)）、
     // throw（异常表达式与异常根 core.Exception 兼容检查；throw/switch
     // 计入 GuaranteesReturn/GuaranteesValueReturn 终止口径）。
+    // S7e 落地范围：cast（as/as?——可转性不做静态拒绝，as 失败是运行时
+    // core.CastException，as? 结果类型 Nullable<T>）、try-catch-finally
+    // （catch 类型兼容 core.Exception 检查；catch/finally 变量 const——
+    // 只读默认，规范未明，M50 登记；finally(e) 的 e 类型
+    // Nullable<core.Exception>；DA 合并：有 catch 时 before ∪ (try ∩ 各
+    // catch)，无 catch 时 try 直通——异常必穿透，finally 恒执行并集）、
+    // seq 双形态（语句 = 块级直通不压值块栈——return@ 指向它报未定义
+    // 标签，M50 登记；表达式 = 值块机制复用 + volatile 置位；using 绑定
+    // 列表归 S13，P3 拦截）。
     // 访问控制（priv/protected）检查不做（归 S8，命中即放行）。
     //
     // 值/调用的名字解析查找序：块作用域链 → 参数 → 宿主类型成员
@@ -43,7 +52,7 @@ namespace LatteCompiler
     // 类型引用解析与 P2 共用 NameResolver（本类以 DiagnosticPhase.P3 实例化）。
     //
     // 明确不做（归后续里程碑，遇之一律 P3 诊断而非崩溃）：
-    // 其余控制流（try/seq/yield，S7 后续）、成员访问与实例
+    // 其余控制流（yield，S7 后续）、成员访问与实例
     // receiver（S8）、重载 ranking 与默认参数填充（S8）、getter/setter（S8）、
     // 泛型使用侧（S9）、enum case（S11）、字符串插值脱糖（S7）、await（S13）、
     // 全局字段初始化器与无标注字段类型推断（其闭包/闸门 P3 复核随之一并，
@@ -228,6 +237,14 @@ namespace LatteCompiler
                     BoundSwitchStatement switchStatement =>
                         switchStatement.Cases.All(c => GuaranteesReturn(c.Body))
                         && GuaranteesReturn(switchStatement.DefaultBody),
+                    // S7e：try——finally 终止即整体终止（finally 恒执行，其终止
+                    // 覆盖所有路径）；否则 try 与全部 catch 体都保证返回才成立
+                    // （无 catch 时异常必穿透，只剩 try 正常完成路径——单块判定）
+                    BoundTryStatement tryStatement =>
+                        (tryStatement.FinallyBlock != null
+                            && GuaranteesReturn(tryStatement.FinallyBlock))
+                        || (GuaranteesReturn(tryStatement.TryBlock)
+                            && tryStatement.Catches.All(c => GuaranteesReturn(c.Body))),
                     BoundBlock nested => GuaranteesReturn(nested),
                     // S7c-1：循环保守 false——`while (true)` 无 break 的恒循环
                     // 特例留口（体可能零次执行的一般情形无法判定，S7c 技术债）；
@@ -263,6 +280,10 @@ namespace LatteCompiler
                     LoopStatementASTNode loop => BindLoop(loop, scope),
                     LoopControlStatementASTNode loopControl => BindLoopControl(loopControl),
                     ThrowStatementASTNode throwStatement => BindThrow(throwStatement, scope),
+                    TryCatchFinallyStatementASTNode tryStatement => BindTry(tryStatement, scope),
+                    // seq 语句（S7e）：语句位置的 seq 是裸 SeqBlockExpressionASTNode
+                    // 直接进块（CodeBlockParserLayer 施工形态，非表达式语句包装）
+                    SeqBlockExpressionASTNode seqStatement => BindSeqStatement(seqStatement, scope),
                     CodeBlockASTNode block => BindBlock(block, scope),
                     _ => Unsupported(node, "statement"),
                 };
@@ -612,7 +633,10 @@ namespace LatteCompiler
             // （BIL §16.5 动态结构作用域：if/循环块内引用外层循环 breakid 合法）；
             // 末语句是 BoundThrowStatement（S7d）→ true——throw 终止本路径；
             // 末语句是 BoundSwitchStatement（S7d）且全部分支体（含 default）
-            // GuaranteesValueReturn → true；其余 false（裸 return 终止函数路径
+            // GuaranteesValueReturn → true；末语句是 BoundTryStatement（S7e）→
+            // finally 终止覆盖，否则 try 与全部 catch 体都终止；末语句是
+            // BoundSeqStatement（S7e）→ 体穿透（return@ 穿透语句 seq 命中外层
+            // 值块合法）；其余 false（裸 return 终止函数路径
             // 但不作为值块产值收尾，规则从简）
             private static bool GuaranteesValueReturn(BoundBlock block)
             {
@@ -627,6 +651,12 @@ namespace LatteCompiler
                     BoundSwitchStatement switchStatement =>
                         switchStatement.Cases.All(c => GuaranteesValueReturn(c.Body))
                         && GuaranteesValueReturn(switchStatement.DefaultBody),
+                    BoundTryStatement tryStatement =>
+                        (tryStatement.FinallyBlock != null
+                            && GuaranteesValueReturn(tryStatement.FinallyBlock))
+                        || (GuaranteesValueReturn(tryStatement.TryBlock)
+                            && tryStatement.Catches.All(c => GuaranteesValueReturn(c.Body))),
+                    BoundSeqStatement seqStatement => GuaranteesValueReturn(seqStatement.Body),
                     BoundBlock nested => GuaranteesValueReturn(nested),
                     _ => false,
                 };
@@ -662,9 +692,10 @@ namespace LatteCompiler
                 return collected;
             }
 
-            // 块内语句的平铺枚举（递归嵌套 BoundBlock、BoundIfStatement 两分支与
+            // 块内语句的平铺枚举（递归嵌套 BoundBlock、BoundIfStatement 两分支、
             // BoundSwitchStatement 全部分支体（S7d：switch 体内 return@ 可穿透
-            // 命中外层值块，收集/终止判定须看得到））
+            // 命中外层值块，收集/终止判定须看得到）、BoundTryStatement 三个块与
+            // BoundSeqStatement 体（S7e：同理穿透可见））
             private static IEnumerable<BoundStatement> EnumerateStatements(BoundBlock block)
             {
                 foreach (var statement in block.Statements)
@@ -691,6 +722,24 @@ namespace LatteCompiler
                                     yield return s;
                             }
                             foreach (var s in EnumerateStatements(switchStatement.DefaultBody))
+                                yield return s;
+                            break;
+                        case BoundTryStatement tryStatement:
+                            foreach (var s in EnumerateStatements(tryStatement.TryBlock))
+                                yield return s;
+                            foreach (var catchClause in tryStatement.Catches)
+                            {
+                                foreach (var s in EnumerateStatements(catchClause.Body))
+                                    yield return s;
+                            }
+                            if (tryStatement.FinallyBlock != null)
+                            {
+                                foreach (var s in EnumerateStatements(tryStatement.FinallyBlock))
+                                    yield return s;
+                            }
+                            break;
+                        case BoundSeqStatement seqStatement:
+                            foreach (var s in EnumerateStatements(seqStatement.Body))
                                 yield return s;
                             break;
                     }
@@ -902,6 +951,150 @@ namespace LatteCompiler
                     return null;
                 }
                 return new BoundThrowStatement(node, exception);
+            }
+
+            // ===== try-catch-finally / seq / cast（S7e，SYNTAX §8/§10/§3.5）=====
+
+            // try：try 体、各 catch 体、finally 体各自从 before 快照出发绑定
+            // （异常可在任意点穿透，异常路径的赋值效果不泄入正常继续路径）。
+            // catch 类型必须兼容 core.Exception；catch 变量（_ 丢弃时无变量）
+            // 建 const 局部（只读默认，规范未明，M50 登记），命中即视为已赋值。
+            // finally(e) 的 e 类型 = Nullable<core.Exception>（无异常时为 null，
+            // SYNTAX §8），const。
+            // definite assignment 合并（保守规则，S7e 定稿）：
+            // - 有 catch：merged = before ∪ (tryAssigned ∩ (∩ 各 catchAssigned))
+            //   ——继续路径是 try 正常完成或任一 catch 命中完成的并集；
+            //   catch 变量经交集自动剪除（不在 tryAssigned/before 中）；
+            // - 无 catch：merged = tryAssigned——异常必穿透，继续路径只有
+            //   try 正常完成；
+            // - 有 finally：merged ∪= finallyAssigned（finally 恒执行），
+            //   并移除 finallyVariable（作用域限 finally 体，不外泄）
+            private BoundStatement? BindTry(TryCatchFinallyStatementASTNode node, Scope scope)
+            {
+                var before = new HashSet<LocalSymbol>(assigned);
+                var tryBlock = BindBlock(node.TryBlock, scope);
+                var tryAssigned = new HashSet<LocalSymbol>(assigned);
+
+                var catches = new List<BoundCatchClause>();
+                var catchAssigned = new List<HashSet<LocalSymbol>>();
+                foreach (var catchNode in node.CatchClauses)
+                {
+                    RestoreAssigned(before);
+                    var exceptionType = ResolveBodyTypeReference(catchNode.ExceptionType,
+                        catchNode.Span);
+                    if (exceptionType != null && !IsAssignable(exceptionType, B.Exception))
+                    {
+                        Error(catchNode.Span, $"catch type must be compatible with 'Exception' " +
+                            $"(got '{TypeDisplay(exceptionType)}')");
+                    }
+                    // catch 变量：_ 即丢弃（VariableName 为 null）；const 局部，
+                    // 命中即已赋值（作用域限 catch 体）
+                    LocalSymbol? variable = null;
+                    var catchScope = new Scope(scope);
+                    if (catchNode.VariableName != null && exceptionType != null)
+                    {
+                        variable = new LocalSymbol(catchNode.VariableName, exceptionType,
+                            isConst: true);
+                        catchScope.Declare(variable);
+                        locals.Add(variable);
+                        assigned.Add(variable);
+                    }
+                    var body = BindBlock(catchNode.Body, catchScope);
+                    catchAssigned.Add(new HashSet<LocalSymbol>(assigned));
+                    if (exceptionType != null)
+                    {
+                        catches.Add(new BoundCatchClause(catchNode, variable, exceptionType, body));
+                    }
+                }
+
+                BoundBlock? finallyBlock = null;
+                LocalSymbol? finallyVariable = null;
+                HashSet<LocalSymbol>? finallyAssigned = null;
+                if (node.FinallyBlock != null)
+                {
+                    RestoreAssigned(before);
+                    var finallyScope = new Scope(scope);
+                    if (node.FinallyParameter != null)
+                    {
+                        finallyVariable = new LocalSymbol(node.FinallyParameter,
+                            unit.Symbols.GetNullable(B.Exception), isConst: true);
+                        finallyScope.Declare(finallyVariable);
+                        locals.Add(finallyVariable);
+                        assigned.Add(finallyVariable);
+                    }
+                    finallyBlock = BindBlock(node.FinallyBlock, finallyScope);
+                    finallyAssigned = new HashSet<LocalSymbol>(assigned);
+                }
+
+                HashSet<LocalSymbol> merged;
+                if (catchAssigned.Count > 0)
+                {
+                    merged = new HashSet<LocalSymbol>(tryAssigned);
+                    foreach (var set in catchAssigned) merged.IntersectWith(set);
+                    merged.UnionWith(before);
+                }
+                else
+                {
+                    merged = tryAssigned;
+                }
+                if (finallyAssigned != null)
+                {
+                    merged.UnionWith(finallyAssigned);
+                    if (finallyVariable != null) merged.Remove(finallyVariable);
+                }
+                RestoreAssigned(merged);
+                return new BoundTryStatement(node, tryBlock, catches, finallyBlock,
+                    finallyVariable);
+            }
+
+            // seq 语句（SYNTAX §10.1）：块级顺序执行区——绑定直通 BindBlock
+            // （作用域/assigned 语义与裸块相同）；不压值块标签栈（return@ 指向
+            // 语句 seq 报未定义标签，规范未明，M50 登记）；using 归 S13（拦截）
+            private BoundStatement? BindSeqStatement(SeqBlockExpressionASTNode node, Scope scope)
+            {
+                if (node.UsingBindings.Count > 0)
+                {
+                    Error(node.Span, "P3: using bindings are not supported yet (S13)");
+                    return null;
+                }
+                return new BoundSeqStatement(node, BindBlock(node.Body, scope), node.IsVolatile);
+            }
+
+            // seq 表达式（SYNTAX §10.2）：体即值块（标签同源 Label ?? "_"，
+            // 取值规则同 if 表达式分支体）；volatile 置位到值块（BIL §9.6
+            // block 修饰符）；using 归 S13（拦截）；必须产值（至少一条路径
+            // return@——无产值的 seq 块应写语句形态）
+            private BoundExpression? BindSeqExpression(SeqBlockExpressionASTNode node, Scope scope)
+            {
+                if (node.UsingBindings.Count > 0)
+                {
+                    Error(node.Span, "P3: using bindings are not supported yet (S13)");
+                    return null;
+                }
+                var body = BindValueBlock(node.Body, node.Label ?? "_", scope, "seq expression");
+                body.IsVolatile = node.IsVolatile;
+                if (body.ValueType == null)
+                {
+                    Error(node.Span, "seq expression must produce a value " +
+                        "(at least one path must return@ a value)");
+                    return null;
+                }
+                return new BoundSeqExpression(node, body, body.ValueType);
+            }
+
+            // cast（SYNTAX §3.5）：as / as?。as 结果类型即目标类型，as? 结果
+            // 类型 = Nullable<目标类型>（P3 定型，P4 不再区分包装）。可转性
+            // 不做静态拒绝（as 失败是运行时 core.CastException；castTo/castFrom
+            // 名字分析归后续里程碑）；ErrorType 毒化静默（结果沿用 ErrorType）
+            private BoundExpression? BindCast(CastExpressionASTNode node, Scope scope)
+            {
+                var source = BindExpression(node.Object.Expression, scope);
+                var targetType = ResolveBodyTypeReference(node.TargetType, node.Span);
+                if (source == null || targetType == null) return null;
+                var resultType = targetType is ErrorTypeSymbol
+                    ? targetType
+                    : node.IsSafe ? unit.Symbols.GetNullable(targetType) : targetType;
+                return new BoundCastExpression(node, source, targetType, node.IsSafe, resultType);
             }
 
             // ===== 循环（S7c-1，SYNTAX §7.3/§7.4）=====
@@ -1203,6 +1396,8 @@ namespace LatteCompiler
                     IfExpressionASTNode ifExpression => BindIfExpression(ifExpression, scope),
                     SwitchExpressionASTNode switchExpression =>
                         BindSwitchExpression(switchExpression, scope),
+                    CastExpressionASTNode cast => BindCast(cast, scope),
+                    SeqBlockExpressionASTNode seqExpression => BindSeqExpression(seqExpression, scope),
                     CompoundAssignmentExpressionASTNode compound =>
                         BindCompoundAssignment(compound, scope),
                     // 括号是透明分组（Latte 无优先级，括号只定结构），不落 bound 节点

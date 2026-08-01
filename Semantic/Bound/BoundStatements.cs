@@ -2,9 +2,11 @@ using System.Collections.Generic;
 
 namespace LatteCompiler
 {
-    // Bound 语句节点（S5 最小集 + S7b 控制流首批 + S7c-1 循环，SEMANTIC_ROADMAP）：
+    // Bound 语句节点（S5 最小集 + S7b 控制流首批 + S7c-1 循环 + S7d switch/throw
+    // + S7e try/seq，SEMANTIC_ROADMAP）：
     // 块 / 局部变量声明 / 表达式语句 / void 调用语句 / 赋值 / return /
-    // if 语句 / 值块（if 表达式分支体）/ return@标签 取值 / 循环 / break/continue。
+    // if 语句 / 值块 / return@标签 取值 / 循环 / break/continue /
+    // switch 语句 / throw / try-catch-finally / seq 语句。
 
     // 块（绑定期每块一个作用域；作用域本身是分析期结构，不落树）
     public sealed class BoundBlock : BoundStatement
@@ -105,7 +107,7 @@ namespace LatteCompiler
         }
     }
 
-    // 值块（SYNTAX §6.1/§7.1）：if 表达式分支体（后续 switch 分支体/seq 表达式
+    // 值块（SYNTAX §6.1/§7.1）：if 表达式分支体（switch 分支体/seq 表达式
     // 复用同一节点）。引用相等即身份——BoundReturnValueStatement 经引用命中目标块。
     // IsImplicitValue = M33 判定结果（块内恰好一条 ExpressionStatement，P3 显式
     // 记录，P4 不再看语法形态）。
@@ -119,6 +121,8 @@ namespace LatteCompiler
         public bool IsImplicitValue { get; internal set; }
         // 产值类型；分支纯穿透终止（无本块产值）时为 null
         public TypeSymbol? ValueType { get; internal set; }
+        // volatile 修饰（仅 seq 表达式置位，S7e；BIL §9.6 block 修饰符）
+        public bool IsVolatile { get; internal set; }
 
         public BoundValueBlock(ASTNode syntax, string label) : base(syntax)
         {
@@ -242,6 +246,63 @@ namespace LatteCompiler
         public BoundThrowStatement(ASTNode syntax, BoundExpression exception) : base(syntax)
         {
             Exception = exception;
+        }
+    }
+
+    // try-catch-finally（S7e，SYNTAX §8）：CatchClauses 保序（首个类型兼容
+    // 命中胜出，BIL §16.7 catch-table 表序语义）；FinallyBlock 可空。
+    // FinallyVariable = finally(e) 的 e（Nullable<core.Exception>，const，
+    // 只读默认——规范未明，M50 登记）；FinallyBlock 非空且 FinallyVariable
+    // 为 null = 无参 finally
+    public sealed class BoundTryStatement : BoundStatement
+    {
+        public BoundBlock TryBlock { get; }
+        public IReadOnlyList<BoundCatchClause> Catches { get; }
+        public BoundBlock? FinallyBlock { get; }
+        public LocalSymbol? FinallyVariable { get; }
+
+        public BoundTryStatement(ASTNode syntax, BoundBlock tryBlock,
+            IReadOnlyList<BoundCatchClause> catches, BoundBlock? finallyBlock,
+            LocalSymbol? finallyVariable) : base(syntax)
+        {
+            TryBlock = tryBlock;
+            Catches = catches;
+            FinallyBlock = finallyBlock;
+            FinallyVariable = finallyVariable;
+        }
+    }
+
+    // catch 分支（S7e）：ExceptionType 已查与 core.Exception 兼容；
+    // Variable 为 null = `_:` 无变量形态（SYNTAX §8）；变量 const（只读默认，
+    // 规范未明，M50 登记），命中即视为已赋值
+    public sealed class BoundCatchClause : BoundNode
+    {
+        public LocalSymbol? Variable { get; }
+        public TypeSymbol ExceptionType { get; }
+        public BoundBlock Body { get; }
+
+        public BoundCatchClause(ASTNode syntax, LocalSymbol? variable,
+            TypeSymbol exceptionType, BoundBlock body) : base(syntax)
+        {
+            Variable = variable;
+            ExceptionType = exceptionType;
+            Body = body;
+        }
+    }
+
+    // seq 语句（S7e，SYNTAX §10.1）：块级顺序执行区（BIL §3.4 独立 block +
+    // call 化）。不压值块标签栈——体内 return@ 指向它报未定义标签（规范
+    // 未明，M50 登记）；using 绑定列表属 S13，P3 已拦截
+    public sealed class BoundSeqStatement : BoundStatement
+    {
+        public BoundBlock Body { get; }
+        public bool IsVolatile { get; }
+
+        public BoundSeqStatement(ASTNode syntax, BoundBlock body, bool isVolatile)
+            : base(syntax)
+        {
+            Body = body;
+            IsVolatile = isVolatile;
         }
     }
 }

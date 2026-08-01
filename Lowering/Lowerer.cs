@@ -33,6 +33,20 @@ namespace LatteCompiler
     // S7d 同批修复 M46 值块 if 转换缺陷（else-if 链混合终止时后续语句
     // 被错误编织到已终止路径——TransformStatements 重写为 continuation
     // 编织，见方法注释）。
+    // S7e 落地 cast / try / seq（SYNTAX §3.5/§8/§10）：
+    // - cast 恒等降级（as → cast、as? → cast.safe，BIL §12.1/§12.2）；
+    // - try → LoweredTryStatement（BIL §16.7 直接对应）：ExceptionSlot =
+    //   finally(e) 的 e（非空时）或合成 .sN（Nullable<core.Exception>），
+    //   有名 catch 体头合成「变量 = cast slot」赋值；
+    // - seq 双形态汇合 LoweredSeqBlock（BIL §3.4 独立 block + call 化）：
+    //   语句形态恒等降级；表达式形态脱糖（合成结果局部 + 前置 seq 块
+    //   包值块降级产物，同 if 表达式模式）；
+    // - 值块编织扩展：LoweredSeqBlock 与 LoweredBlock 同构透明；
+    //   LoweredTryStatement 无 finally 时同 if 规则编织，有 finally 且
+    //   部分分支含值块写入/终止且 continuation 非空时拦截（P4 Error，
+    //   S7e 技术债——BIL 的 finally 全路径执行后必落到 continuation，
+    //   无法表达「终止路径跳过 continuation」），finally 自身终止时
+    //   continuation 全丢弃。
     //
     // 实例化 session（仿 BilEmitter.EmitSession）的机制：
     // - 当前块输出语句列表栈：LowerBlock 为每块建输出列表；表达式降级时向
@@ -80,6 +94,10 @@ namespace LatteCompiler
             // 引用查栈得读取目标
             private readonly Stack<(BoundExpression Selector, LocalSymbol Temp)> switchTemps =
                 new Stack<(BoundExpression, LocalSymbol)>();
+            // 编织拦截失败标记（S7e）：try+finally 部分终止编织拦截在
+            // TransformWithContinuation 深处触发（void 链路无法返回值传播），
+            // 置位后 LowerValueBlock 放弃产物——诊断已落袋，函数体跳过
+            private bool transformFailed;
 
             public LowerSession(CompilationUnit unit, IReadOnlyList<BoundFunctionBody> bodies)
             {
@@ -106,6 +124,7 @@ namespace LatteCompiler
                 valueBlocks.Clear();    // 函数体互不嵌套，防御性清空
                 loops.Clear();
                 switchTemps.Clear();
+                transformFailed = false;
                 var lowered = LowerBlock(body.Body);
                 if (lowered == null) return null;
                 // 合成局部（.s/.b 前缀，脱糖产物）跟在源码局部之后
@@ -201,6 +220,13 @@ namespace LatteCompiler
                         return loop.Kind == LoopKind.For ? LowerForLoop(loop) : LowerLoop(loop);
                     case BoundSwitchStatement switchStatement:
                         return LowerSwitchStatement(switchStatement);
+                    case BoundTryStatement tryStatement:
+                        return LowerTry(tryStatement);
+                    case BoundSeqStatement seqStatement:
+                        // seq 语句恒等降级（BIL §3.4 独立 block + call 化）
+                        var seqBody = LowerBlock(seqStatement.Body);
+                        if (seqBody == null) return null;
+                        return new LoweredSeqBlock(seqStatement, seqBody, seqStatement.IsVolatile);
                     case BoundThrowStatement throwStatement:
                         // throw 恒等降级（BIL §16.9 直接对应）
                         var thrown = LowerExpression(throwStatement.Exception);
@@ -530,6 +556,52 @@ namespace LatteCompiler
                 return result;
             }
 
+            // ===== try 降级（S7e，SYNTAX §8；BIL §16.7）=====
+
+            // try → LoweredTryStatement（指令直接对应）：
+            // - ExceptionSlot（$slot 操作数承载局部）：finally(e) 的 e 非空时
+            //   即该局部（指令直写——e 的「无异常为 null」语义即指令写 slot
+            //   语义），否则合成 .sN（类型 Nullable<core.Exception>）；
+            // - 有名 catch：体头合成「变量 = cast slot」（Origin 指
+            //   BoundCatchClause）——slot 的 Nullable<core.Exception> 到
+            //   catch 类型的收窄走显式 cast（BIL §12.1），P3 已查兼容；
+            // - 三分支体各自恒等降级（前置语句随块走）
+            private LoweredStatement? LowerTry(BoundTryStatement tryStatement)
+            {
+                var exceptionSlot = tryStatement.FinallyVariable
+                    ?? NewSynthLocal(unit.Symbols.GetNullable(unit.Symbols.Bootstrap.Exception));
+                var tryBlock = LowerBlock(tryStatement.TryBlock);
+                if (tryBlock == null) return null;
+                var catches = new List<LoweredTryCatch>();
+                foreach (var boundCatch in tryStatement.Catches)
+                {
+                    var body = LowerBlock(boundCatch.Body);
+                    if (body == null) return null;
+                    if (boundCatch.Variable != null)
+                    {
+                        var castAssign = new LoweredAssignmentStatement(boundCatch,
+                            ReferenceTo(boundCatch, boundCatch.Variable),
+                            new LoweredCastExpression(boundCatch,
+                                ReferenceTo(boundCatch, exceptionSlot),
+                                boundCatch.ExceptionType, isSafe: false,
+                                boundCatch.ExceptionType));
+                        body = new LoweredBlock(body.Origin,
+                            new List<LoweredStatement> { castAssign }
+                                .Concat(body.Statements).ToList());
+                    }
+                    catches.Add(new LoweredTryCatch(boundCatch, boundCatch.Variable,
+                        boundCatch.ExceptionType, body));
+                }
+                LoweredBlock? finallyBlock = null;
+                if (tryStatement.FinallyBlock != null)
+                {
+                    finallyBlock = LowerBlock(tryStatement.FinallyBlock);
+                    if (finallyBlock == null) return null;
+                }
+                return new LoweredTryStatement(tryStatement, tryBlock, catches, finallyBlock,
+                    exceptionSlot);
+            }
+
             // ===== 值块降级与 if 转换 =====
 
             // 值块降级（BoundValueBlock → LoweredBlock）：写目标局部由调用方
@@ -572,6 +644,8 @@ namespace LatteCompiler
                             if (statement is BoundReturnValueStatement) break;
                         }
                         TransformStatements(statements);
+                        // 编织拦截（S7e try+finally 部分终止）：诊断已落袋，放弃产物
+                        if (transformFailed) return null;
                     }
                     return new LoweredBlock(valueBlock.Block, statements);
                 }
@@ -699,6 +773,76 @@ namespace LatteCompiler
                             statements[i] = WeaveContinuation(nested, rest);
                             return;
                         }
+                        case LoweredSeqBlock seqBlock:
+                        {
+                            // seq 块与 LoweredBlock 同构透明（S7e）：体编织后重建
+                            if (!HasTerminatingPath(seqBlock.Body))
+                            {
+                                break;    // 无终止路径：continuation 留原位（保形）
+                            }
+                            var rest = statements.GetRange(i + 1, statements.Count - i - 1);
+                            statements.RemoveRange(i + 1, statements.Count - i - 1);
+                            rest.AddRange(continuation);
+                            statements[i] = new LoweredSeqBlock(seqBlock.Origin,
+                                WeaveContinuation(seqBlock.Body, rest), seqBlock.IsVolatile);
+                            return;
+                        }
+                        case LoweredTryStatement tryStatement:
+                        {
+                            // try 编织（S7e 定稿规则）：
+                            // - finally 自身终止（含值块写入/throw，或末语句
+                            //   ret——BIL 的 finally 全路径执行，其终止覆盖
+                            //   所有路径）→ continuation 全丢弃；
+                            // - 有 finally 且 try/catch 分支含终止路径且
+                            //   continuation 非空 → 拦截（P4 Error，S7e
+                            //   技术债）：BIL 的 finally 执行后必落到
+                            //   continuation，无法表达「终止路径跳过
+                            //   continuation」；
+                            // - 其余（无 finally 或 continuation 为空）→
+                            //   同 if 规则编织进每个不终止分支末端
+                            var branchTerminates = HasTerminatingPath(tryStatement.TryBlock)
+                                || tryStatement.Catches.Any(c => HasTerminatingPath(c.Body));
+                            var finallyTerminates = tryStatement.FinallyBlock != null
+                                && (HasTerminatingPath(tryStatement.FinallyBlock)
+                                    || tryStatement.FinallyBlock.Statements.Count > 0
+                                    && tryStatement.FinallyBlock.Statements[^1]
+                                        is LoweredReturnStatement);
+                            if (!branchTerminates && !finallyTerminates)
+                            {
+                                break;    // 无终止路径：continuation 留原位（保形）
+                            }
+                            var rest = statements.GetRange(i + 1, statements.Count - i - 1);
+                            statements.RemoveRange(i + 1, statements.Count - i - 1);
+                            rest.AddRange(continuation);
+                            if (finallyTerminates)
+                            {
+                                // finally 终止覆盖：continuation 全丢弃，节点原样保留
+                                return;
+                            }
+                            if (tryStatement.FinallyBlock != null && rest.Count > 0)
+                            {
+                                Error(tryStatement.Origin.Syntax.Span,
+                                    "P4: value block weaving across try-finally with " +
+                                    "partial termination is not supported yet (S7e)");
+                                transformFailed = true;
+                                return;
+                            }
+                            var newTryBlock = BlockTerminates(tryStatement.TryBlock)
+                                ? WeaveContinuation(tryStatement.TryBlock,
+                                    new List<LoweredStatement>())
+                                : WeaveContinuation(tryStatement.TryBlock, rest);
+                            var newCatches = tryStatement.Catches
+                                .Select(c => new LoweredTryCatch(c.Origin, c.Variable,
+                                    c.ExceptionType,
+                                    BlockTerminates(c.Body)
+                                        ? WeaveContinuation(c.Body, new List<LoweredStatement>())
+                                        : WeaveContinuation(c.Body, rest)))
+                                .ToList();
+                            statements[i] = new LoweredTryStatement(tryStatement.Origin,
+                                newTryBlock, newCatches, tryStatement.FinallyBlock,
+                                tryStatement.ExceptionSlot);
+                            return;
+                        }
                     }
                 }
                 // 块内无待编织结构：continuation 原样接到块尾
@@ -733,14 +877,23 @@ namespace LatteCompiler
                     LoweredSwitch switchStatement =>
                         switchStatement.Cases.All(c => BlockTerminates(c.Body))
                         && BlockTerminates(switchStatement.DefaultBody),
+                    // S7e：seq 透明递归；try——finally 终止覆盖所有路径，
+                    // 否则 try 与全部 catch 都终止（未捕获异常穿透即终止，
+                    // 无 catch 时只剩 try 正常完成路径——单块判定）
+                    LoweredSeqBlock seqBlock => BlockTerminates(seqBlock.Body),
+                    LoweredTryStatement tryStatement =>
+                        (tryStatement.FinallyBlock != null
+                            && BlockTerminates(tryStatement.FinallyBlock))
+                        || (BlockTerminates(tryStatement.TryBlock)
+                            && tryStatement.Catches.All(c => BlockTerminates(c.Body))),
                     LoweredBlock nested => BlockTerminates(nested),
                     _ => false,
                 };
             }
 
             // 「块内含不落到块尾的路径」判定（编织必要性闸门）：值块写入或
-            // throw 出现即 true（递归 if/switch/嵌套块）；全无终止路径的
-            // 结构语句无需编织，保持旧形态
+            // throw 出现即 true（递归 if/switch/嵌套块/seq/try 三分支——
+            // S7e）；全无终止路径的结构语句无需编织，保持旧形态
             private bool HasTerminatingPath(LoweredBlock block)
             {
                 foreach (var statement in block.Statements)
@@ -769,6 +922,18 @@ namespace LatteCompiler
                             break;
                         case LoweredBlock nested:
                             if (HasTerminatingPath(nested)) return true;
+                            break;
+                        case LoweredSeqBlock seqBlock:
+                            if (HasTerminatingPath(seqBlock.Body)) return true;
+                            break;
+                        case LoweredTryStatement tryStatement:
+                            if (HasTerminatingPath(tryStatement.TryBlock)
+                                || tryStatement.Catches.Any(c => HasTerminatingPath(c.Body))
+                                || (tryStatement.FinallyBlock != null
+                                    && HasTerminatingPath(tryStatement.FinallyBlock)))
+                            {
+                                return true;
+                            }
                             break;
                     }
                 }
@@ -851,10 +1016,33 @@ namespace LatteCompiler
                         if (accessReceiver == null) return null;
                         return new LoweredFieldAccessExpression(fieldAccess, accessReceiver,
                             fieldAccess.Field);
+                    case BoundCastExpression cast:
+                        // cast 恒等降级（BIL §12.1/§12.2 直接对应；as? 的
+                        // Nullable 包装已在 P3 定型进 Type）
+                        var castSource = LowerExpression(cast.Source);
+                        if (castSource == null) return null;
+                        return new LoweredCastExpression(cast, castSource, cast.TargetType,
+                            cast.IsSafe, cast.Type);
+                    case BoundSeqExpression seqExpression:
+                        return LowerSeqExpression(seqExpression);
                     default:
                         Unsupported(expression);
                         return null;
                 }
+            }
+
+            // seq 表达式脱糖（S7e，BIL §3.4 call 化）：合成结果局部 v；
+            // 前置 LoweredSeqBlock（值块降级产物写 v，volatile 随值块置位）；
+            // 表达式位 v 引用——与 if 表达式同构，差异仅在 seq 块发射形态
+            // （独立 block + call 指令）
+            private LoweredExpression? LowerSeqExpression(BoundSeqExpression seqExpression)
+            {
+                var result = NewSynthLocal(seqExpression.Type);
+                var body = LowerValueBlock(seqExpression.Body, result);
+                if (body == null) return null;
+                outputStack.Peek().Add(new LoweredSeqBlock(seqExpression, body,
+                    seqExpression.Body.IsVolatile));
+                return ReferenceTo(seqExpression, result);
             }
 
             // bool 短路 and/or（BIL §11.3）脱糖：
