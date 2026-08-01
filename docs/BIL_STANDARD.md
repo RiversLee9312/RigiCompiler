@@ -151,8 +151,8 @@ Middleware 不重新执行 source-level overload ranking。对于运算、getter
 
 以下源码结构通常不拥有同名 BIL 指令，而由 frontend 规范化为本标准已有操作：
 
-- 安全调用 `?.`：`type.is` / nullable 检查 + `if`；
-- `if?` 空值回退：nullable 检查 + `if`；
+- 安全调用 `?.`：`type.is` / nullable 检查 + `if`（nullable 检查 = `cmp.eq`/`cmp.ne` 与 `null type(T)` 资源，§18.1/§11.5）；
+- `if?` 空值回退：nullable 检查 + `if`（同上；非空分支的取值是 `.nullable<T>` → `T` 的显式 `cast`，§12.1）；
 - smart cast：条件检查 + 显式 `cast`；
 - `seq` 与 `return@`：结构化 block、结果临时变量与 `call`；
 - pattern switch：多个 `if` 或嵌套结构化判断；
@@ -909,6 +909,8 @@ opposite OPR RESULT
 
 对于内建整数/浮点类型，Middleware 可以直接生成 LLVM 算术指令。对于用户类型，Middleware 按精确类型选择唯一运算实现。
 
+`add` 作用于两个 `.string` 操作数时是**内建字符串拼接**（Latte `String` 的 `+`）：按值语义产出一个新字符串，VM 内建执行，不属于 `latte_rt` 原生方法面（RUNTIME §26）。
+
 ### 11.3 逻辑运算
 
 ```bil
@@ -992,6 +994,12 @@ cast.indirect SOURCE RESULT TYPEID_VAR
 1. 源类型的 `castTo`；
 2. 目标类型的 `castFrom`；
 3. 内建引用视图转换和数值转换。
+
+内建引用视图转换涵盖：
+
+- 值类型到 `Object`/`Any` 分支的装箱视图（`RUNTIME.md` §4）；
+- 派生类到基类/接口的视图改写（无数据移动）；
+- `T` 到 `.nullable<T>` 的装箱视图，以及 `.nullable<T>` 到 `T` 的展开——后者在源为 `null` 时抛 `core.CastException`（Latte 层 `nullableVar as T` 即此语义）。
 
 优先级与失败行为必须与 `SYNTAX.md` 一致。失败抛出 `core.CastException`。
 
@@ -1096,9 +1104,9 @@ set.field SOURCE OBJECT field(FIELD_SYMBOL)
 验证规则：
 
 - FIELD_SYMBOL 必须表示实例字段；
-- OBJECT 的严格静态类型必须能访问该字段；
-- `get.field` 的 TARGET 类型必须严格等于字段声明类型；
-- `set.field` 的 SOURCE 类型必须严格等于字段声明类型；
+- OBJECT 的严格静态类型必须能访问该字段（含沿继承链访问基类声明的字段）；
+- `get.field` 的 TARGET 类型必须严格等于字段声明类型；字段声明类型是宿主编泛型参数（或含宿主编泛型参数）时，按「OBJECT 严格静态类型到字段宿主的构造实参」替换后判定严格相等；
+- `set.field` 的 SOURCE 类型必须严格等于字段声明类型（泛型情形同上前款）；
 - `set.field` 要求字段可写；
 - 访问权限必须合法。
 
@@ -1518,6 +1526,8 @@ Resources {
 
 整数与浮点资源必须显式写类型，避免解析器依赖源码默认字面量规则。
 
+`null type(T)` 标注**元素类型** `T`，资源本身的类型为对应的 `.nullable<T>`——因此它可以直接与 `.nullable<T>` 变量做 `cmp.eq` / `cmp.ne` 比较而满足 §11.5 的类型严格相同规则，这就是 §3.4 所称「nullable 检查」的标准形态。
+
 ### 18.2 数组、Pair 与 Map
 
 ```bil
@@ -1787,8 +1797,9 @@ VM 执行到对 `native` 方法声明的 `invoke` / `invoke.noret` 时，不寻�
 |---|---|---|---|
 | `latte_rt` | `print` | `text: .string` | 将字符串写入标准输出 |
 | `latte_rt` | `printErr` | `text: .string` | 将字符串写入标准错误 |
+| `latte_rt` | `toString` | `value: .any` | 返回值的字符串表示（`SYNTAX.md` §3.8）：内建数值/`bool`/`char` 为标准文本；未覆写 `toString` 的对象为其类型 canonical 名 |
 
-命中表之外的 `(lib, symbol)` 组合 VM 无法解释，必须拒绝执行并报错。该表只随 BIL 标准修订扩充；Middleware 的原生链接不受此表约束。
+`String` 的 `toString` 即值自身，不产生 native 调用；覆写了 `toString` 的类型经虚派发执行自身实现，不命中本表。命中表之外的 `(lib, symbol)` 组合 VM 无法解释，必须拒绝执行并报错。该表只随 BIL 标准修订扩充；Middleware 的原生链接不受此表约束。
 
 ---
 

@@ -18,6 +18,8 @@ namespace LatteCompiler.Tests
     ///   Placeholder(T)（S7d，switch pattern 的 _）
     ///   Cast(e, T)  SafeCast(e, T)（S7e，as / as?；T = 目标类型）
     ///   SeqExpr(值块)（S7e；volatile 时值块带 volatile 标记）
+    ///   SafeAccess(recv, access, T?)  SafeReceiver(T)（S7f，`?.` 与占位叶子）
+    ///   NullFallback(l, r, T)（S7f，if? 空值回退）
     /// 格式约定（语句）：
     ///   Decl(x, i32, = init)  ExprStmt(e)  CallStmt(name, [args])  Assign(t, v)  Return(v)  Return
     ///   If(c, [真], [假])  If(c, [真])  ReturnValue(_, v)（标签取 Target.Label）
@@ -32,6 +34,7 @@ namespace LatteCompiler.Tests
     ///   Try([try], [Catch(e, T, [体]); Catch(T, [体])], Finally(e, [体]))（S7e；
     ///   无变量 catch 省变量名，无参 finally 省参数，无 finally 省第三参）
     ///   Seq([体])  SeqVolatile([体])（S7e 语句形态）
+    ///   Destructuring([a: T ← key; b: T ← value], init)（S7f，SYNTAX §18）
     ///   块：[s1; s2]；函数体：Body(name, [x: i32, ...], [块])
     /// </summary>
     public static class BoundDescribe
@@ -85,6 +88,9 @@ namespace LatteCompiler.Tests
                 BoundTryStatement tryStmt => Try(tryStmt),
                 BoundSeqStatement seqStmt =>
                     $"{(seqStmt.IsVolatile ? "SeqVolatile" : "Seq")}({Block(seqStmt.Body)})",
+                // S7f 解构声明：Destructuring([a: String ← key; b: i32 ← value], init)
+                BoundDestructuringDeclarationStatement destructuring =>
+                    $"Destructuring([{string.Join("; ", destructuring.Entries.Select(e => $"{e.Local.Name}: {TypeShort(e.Local.Type)} ← {e.Field.Name}"))}], {Expr(destructuring.Initializer)})",
                 _ => $"<{stmt.GetType().Name}>",
             };
         }
@@ -164,6 +170,15 @@ namespace LatteCompiler.Tests
                     $"{(cast.IsSafe ? "SafeCast" : "Cast")}({Expr(cast.Source)}, " +
                     $"{TypeShort(cast.TargetType)})",
                 BoundSeqExpression seqExpr => $"SeqExpr({ValueBlock(seqExpr.Body)})",
+                // S7f：安全访问（占位叶子打 SafeReceiver；结果类型 P3 定型）
+                BoundSafeAccessExpression safeAccess =>
+                    $"SafeAccess({Expr(safeAccess.Receiver)}, {Expr(safeAccess.Access)}, " +
+                    $"{TypeShort(safeAccess.Type)})",
+                BoundSafeAccessReceiverExpression safeReceiver =>
+                    $"SafeReceiver({TypeShort(safeReceiver.Type)})",
+                BoundNullFallbackExpression nullFallback =>
+                    $"NullFallback({Expr(nullFallback.Left)}, {Expr(nullFallback.Right)}, " +
+                    $"{TypeShort(nullFallback.Type)})",
                 _ => $"<{expr.GetType().Name}>",
             };
         }

@@ -10,7 +10,7 @@ namespace LatteCompiler.Tests
     ///
     /// 格式约定（表达式）：
     ///   Int(42,i32)  Float(3.14,double)  Str("...",String)  Char('A',char)  Bool(True,bool)  Null(String?)
-    ///   Local(x,i32)  Param(a,i32)  Field(g,i32)  Const(True,bool)（P4a 合成常量）
+    ///   Local(x,i32)  Param(a,i32)  Field(g,i32)  Const(True,bool)  Const(null,T?)（P4a 合成常量）
     ///   Binary(Add, l, r, i32)  Unary(Opposite, x, i32)
     ///   Call(name, [args], ret)  New(T, [args])  New(T, init, [args])
     ///   This(C)（S7c-2）  InstCall(name, receiver, [args], ret)  InstField(f, receiver, T)
@@ -98,10 +98,11 @@ namespace LatteCompiler.Tests
             {
                 null => "<null>",
                 LoweredLiteralExpression literal => Literal(literal),
-                // P4a 合成常量（S7b 仅 bool）：值在节点上（无字面量语法来源）
+                // P4a 合成常量（S7b bool；S7f null——安全访问/空值回退脱糖产物）
                 LoweredConstantExpression constant => constant.Value switch
                 {
                     bool b => $"Const({b},{TypeShort(constant.Type)})",
+                    null => $"Const(null,{TypeShort(constant.Type)})",
                     var other => $"<Const {other}>",
                 },
                 LoweredValueReferenceExpression valueRef => valueRef.Symbol switch

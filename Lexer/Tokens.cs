@@ -13,6 +13,8 @@ namespace LatteCompiler
         Char,
         LineBreak,
         Notation,
+        InterpolationStart,
+        InterpolationEnd,
         EndOfFile
     }
 
@@ -57,11 +59,34 @@ namespace LatteCompiler
         }
         public override string Content { get; set; }
 
-        // 是否包含未转义的 ${ 插值引导（词法期随转义处理判定；
-        // \$ 转义产出的字面 $ 不算——转义信息在 Content 拼装后已丢失，无法在 Parser 侧回补）
-        public bool HasInterpolation;
-
         public override TokenType Type { get; } = TokenType.String;
+    }
+
+    // 插值开始标记（${，M53 词法帧机制）：字符串层遇未转义的 ${ 时产出
+    // （span 覆盖 ${ 两字符），同时压基础层嵌套解析插值表达式；
+    // Parser 由它驱动插值表达式段的委托解析（SYNTAX §3.8）
+    public class InterpolationStartToken : Token
+    {
+        public override string Content
+        {
+            get => "${";
+            set { }
+        }
+
+        public override TokenType Type { get; } = TokenType.InterpolationStart;
+    }
+
+    // 插值结束标记（配平 }，M53）：插值帧内大括号计数归零时由驱动把
+    // 该 } 记号改发为本类型（原 } NotationToken 不入流），span 沿用该记号
+    public class InterpolationEndToken : Token
+    {
+        public override string Content
+        {
+            get => "}";
+            set { }
+        }
+
+        public override TokenType Type { get; } = TokenType.InterpolationEnd;
     }
 
     // 字符字面量 token（'...'，SYNTAX §3.3）：Value 为转义展开后的字符；

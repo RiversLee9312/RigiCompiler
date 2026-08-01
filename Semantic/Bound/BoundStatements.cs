@@ -34,6 +34,24 @@ namespace LatteCompiler
         }
     }
 
+    // 解构声明（S7f，SYNTAX §18）：var (a, b) = pair——pair 类型已查为
+    // core.Pair\<TKey, TValue\> 子类；Entries 按声明序携带（分量局部,
+    // 对应 Pair 字段符号），分量类型已按构造实参定型在 LocalSymbol.Type
+    // （P4a 脱糖为 pair 物化 + 逐字段读取，BIL §3.4「精确字段读取」）
+    public sealed class BoundDestructuringDeclarationStatement : BoundStatement
+    {
+        public BoundExpression Initializer { get; }
+        public IReadOnlyList<(LocalSymbol Local, FieldSymbol Field)> Entries { get; }
+
+        public BoundDestructuringDeclarationStatement(ASTNode syntax,
+            BoundExpression initializer,
+            IReadOnlyList<(LocalSymbol, FieldSymbol)> entries) : base(syntax)
+        {
+            Initializer = initializer;
+            Entries = entries;
+        }
+    }
+
     // 表达式语句（表达式求值后结果被丢弃）
     public sealed class BoundExpressionStatement : BoundStatement
     {

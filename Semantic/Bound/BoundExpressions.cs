@@ -2,10 +2,12 @@ using System.Collections.Generic;
 
 namespace LatteCompiler
 {
-    // Bound 表达式节点（S5 最小集 + S7b 首批 + S7c-2 实例成员 + S7d switch + S7e cast/seq，SEMANTIC_ROADMAP）：
+    // Bound 表达式节点（S5 最小集 + S7b 首批 + S7c-2 实例成员 + S7d switch + S7e cast/seq
+    // + S7f 安全访问/空值回退，SEMANTIC_ROADMAP）：
     // 字面量 / 值引用（局部变量与参数）/ 全局字段引用 / 二元与一元 intrinsic 运算 /
     // 直接调用（无重载）/ new 构造 / if 表达式 / 复合赋值 /
-    // this / 实例方法调用 / 实例字段访问 / switch 表达式 / cast / seq 表达式。
+    // this / 实例方法调用 / 实例字段访问 / switch 表达式 / cast / seq 表达式 /
+    // 安全访问 `?.`（含占位叶子）/ if? 空值回退。
     // 字面量值不冗余存储——经 Syntax（LiteralExpressionASTNode.Literal）取。
 
     // 字面量（整/浮点/字符串/字符/bool/null；Type 由 P3 按字面量种类与上下文定型）
@@ -274,6 +276,54 @@ namespace LatteCompiler
             : base(syntax, type)
         {
             Body = body;
+        }
+    }
+
+    // 安全访问 `?.`（S7f，SYNTAX §3.4）：Receiver 为空则整体为 null，否则为
+    // 非空 receiver 上的成员访问结果。Access 内含且仅含一个
+    // BoundSafeAccessReceiverExpression 占位叶子（段绑定时的非空 receiver
+    // 替身，Placeholder 持有它供 P4a 映射物化局部）；结果类型 P3 定型：
+    // 成员类型已可空则原样（不二次包装），否则 Nullable<成员类型>
+    public sealed class BoundSafeAccessExpression : BoundExpression
+    {
+        public BoundExpression Receiver { get; }
+        public BoundSafeAccessReceiverExpression Placeholder { get; }
+        public BoundExpression Access { get; }
+
+        public BoundSafeAccessExpression(ASTNode syntax, BoundExpression receiver,
+            BoundSafeAccessReceiverExpression placeholder, BoundExpression access,
+            TypeSymbol type) : base(syntax, type)
+        {
+            Receiver = receiver;
+            Placeholder = placeholder;
+            Access = access;
+        }
+    }
+
+    // 安全访问的非空 receiver 占位叶子（引用相等即身份）：P3 绑定 `?.` 段时
+    // 作为段内成员访问的 receiver 替身；P4a 降级时替换为物化 receiver 局部
+    // 的 unwrap cast（§12.1 .nullable<T> → T）
+    public sealed class BoundSafeAccessReceiverExpression : BoundExpression
+    {
+        public BoundSafeAccessReceiverExpression(ASTNode syntax, TypeSymbol type)
+            : base(syntax, type)
+        {
+        }
+    }
+
+    // if? 空值回退（S7f，SYNTAX §3.4）：Left 非空时取其值（.nullable<T> → T
+    // 展开），为空时取 Right（回退值，延迟求值）。Type = T（Left 的元素类型，
+    // P3 已查 Right 可赋值到 T）
+    public sealed class BoundNullFallbackExpression : BoundExpression
+    {
+        public BoundExpression Left { get; }
+        public BoundExpression Right { get; }
+
+        public BoundNullFallbackExpression(ASTNode syntax, BoundExpression left,
+            BoundExpression right, TypeSymbol type) : base(syntax, type)
+        {
+            Left = left;
+            Right = right;
         }
     }
 }

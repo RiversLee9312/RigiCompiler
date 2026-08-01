@@ -94,10 +94,18 @@ namespace LatteCompiler
             // 引用查栈得读取目标
             private readonly Stack<(BoundExpression Selector, LocalSymbol Temp)> switchTemps =
                 new Stack<(BoundExpression, LocalSymbol)>();
+            // 安全访问占位映射栈（S7f）：BoundSafeAccessReceiverExpression 实例 →
+            // （物化 receiver 局部, unwrap 目标类型）——引用相等查找，嵌套安全
+            // 访问（a?.b?.c）逐层向内命中；占位降级为 unwrap cast（§12.1）
+            private readonly Stack<(BoundSafeAccessReceiverExpression Placeholder,
+                LocalSymbol Receiver, TypeSymbol UnwrapType)> safeReceivers =
+                new Stack<(BoundSafeAccessReceiverExpression, LocalSymbol, TypeSymbol)>();
             // 编织拦截失败标记（S7e）：try+finally 部分终止编织拦截在
             // TransformWithContinuation 深处触发（void 链路无法返回值传播），
             // 置位后 LowerValueBlock 放弃产物——诊断已落袋，函数体跳过
             private bool transformFailed;
+            // 当前函数的方法符号（return 语句 cast 物化取声明返回类型用）
+            private MethodSymbol currentMethod = null!;
 
             public LowerSession(CompilationUnit unit, IReadOnlyList<BoundFunctionBody> bodies)
             {
@@ -125,6 +133,7 @@ namespace LatteCompiler
                 loops.Clear();
                 switchTemps.Clear();
                 transformFailed = false;
+                currentMethod = body.Method;
                 var lowered = LowerBlock(body.Body);
                 if (lowered == null) return null;
                 // 合成局部（.s/.b 前缀，脱糖产物）跟在源码局部之后
@@ -199,21 +208,27 @@ namespace LatteCompiler
                         {
                             initializer = LowerExpression(decl.Initializer);
                             if (initializer == null) return null;
+                            // 初始化 cast 物化（BIL §6.5）：值类型 ≠ 局部声明类型
+                            initializer = EnsureDeclaredType(decl, initializer, decl.Local.Type);
                         }
                         return new LoweredLocalDeclarationStatement(decl, decl.Local, initializer);
+                    case BoundDestructuringDeclarationStatement destructuring:
+                        return LowerDestructuring(destructuring);
                     case BoundExpressionStatement expressionStatement:
                         var expression = LowerExpression(expressionStatement.Expression);
                         if (expression == null) return null;
                         return new LoweredExpressionStatement(expressionStatement, expression);
                     case BoundCallStatement call:
-                        var arguments = LowerArguments(call.Arguments);
+                        var arguments = LowerArguments(call.Arguments, call.Method.Parameters);
                         if (arguments == null) return null;
-                        // 实例 void 调用（S7c-2）：receiver 恒等降级
+                        // 实例 void 调用（S7c-2）：receiver 降级 + 调用点 cast 物化
+                        // （receiver 静态类型 ≠ 方法宿主时包显式 cast，BIL §6.5）
                         LoweredExpression? callReceiver = null;
                         if (call.Receiver != null)
                         {
                             callReceiver = LowerExpression(call.Receiver);
                             if (callReceiver == null) return null;
+                            callReceiver = EnsureDeclaredType(call, callReceiver, call.Method.Owner);
                         }
                         return new LoweredCallStatement(call, call.Method, arguments, callReceiver);
                     case BoundLoop loop:
@@ -236,6 +251,8 @@ namespace LatteCompiler
                         var target = LowerExpression(assignment.Target);
                         var value = LowerExpression(assignment.Value);
                         if (target == null || value == null) return null;
+                        // 赋值 cast 物化（BIL §6.5）：值类型 ≠ 目标类型时包显式 cast
+                        value = EnsureDeclaredType(assignment, value, assignment.Target.Type);
                         return new LoweredAssignmentStatement(assignment, target, value);
                     case BoundReturnStatement ret:
                         LoweredExpression? returnValue = null;
@@ -243,6 +260,9 @@ namespace LatteCompiler
                         {
                             returnValue = LowerExpression(ret.Value);
                             if (returnValue == null) return null;
+                            // return cast 物化（BIL §6.5）：值类型 ≠ 声明返回类型
+                            returnValue = EnsureDeclaredType(ret, returnValue,
+                                currentMethod.ReturnType);
                         }
                         return new LoweredReturnStatement(ret, returnValue);
                     case BoundIfStatement ifStatement:
@@ -544,16 +564,56 @@ namespace LatteCompiler
             }
 
             private List<LoweredExpression>? LowerArguments(
-                IReadOnlyList<BoundExpression> arguments)
+                IReadOnlyList<BoundExpression> arguments, IReadOnlyList<ParameterSymbol>? parameters)
             {
                 var result = new List<LoweredExpression>();
-                foreach (var argument in arguments)
+                for (int i = 0; i < arguments.Count; i++)
                 {
-                    var lowered = LowerExpression(argument);
+                    var lowered = LowerExpression(arguments[i]);
                     if (lowered == null) return null;
-                    result.Add(lowered);
+                    // 传参 cast 物化（BIL §6.5）：实参类型 ≠ 形参类型时包显式 cast
+                    // （parameters 为 null = 无显式 init 的零参构造等无形参场景）
+                    result.Add(EnsureDeclaredType(arguments[i], lowered, parameters?[i].Type));
                 }
                 return result;
+            }
+
+            // 子类型 cast 物化（ARCH §6.1，BIL §6.5）：值的静态类型 ≠ 声明
+            // 类型时包显式 cast——P3 已保证方向为子类型（装箱/基类视图均属
+            // §12.1 内建引用视图转换）；类型相同、目标非 TypeSymbol（泛型
+            // 参数归 S9）或任一侧 ErrorType（毒化静默）时直通
+            private static LoweredExpression EnsureDeclaredType(BoundNode origin,
+                LoweredExpression value, SemanticSymbol? declaredType)
+            {
+                if (declaredType is not TypeSymbol target) return value;
+                if (ReferenceEquals(value.Type, target)) return value;
+                if (value.Type is ErrorTypeSymbol || target is ErrorTypeSymbol) return value;
+                return new LoweredCastExpression(origin, value, target, isSafe: false, target);
+            }
+
+            // 解构声明脱糖（S7f，SYNTAX §18；BIL §3.4「精确字段读取」）：
+            //   var (a, b) = pair ⇒ Block[ s_pair = pair'（只求值一次）；
+            //                               Decl(a, s_pair.key)；Decl(b, s_pair.value) ]
+            // 物化赋值与分量声明同块保序；字段类型取分量局部类型
+            // （声明处是泛型参数，P3 已按构造实参替换定型）
+            private LoweredStatement? LowerDestructuring(
+                BoundDestructuringDeclarationStatement destructuring)
+            {
+                var pair = LowerExpression(destructuring.Initializer);
+                if (pair == null) return null;
+                var pairLocal = NewSynthLocal(pair.Type);
+                var statements = new List<LoweredStatement>
+                {
+                    new LoweredAssignmentStatement(destructuring,
+                        ReferenceTo(destructuring, pairLocal), pair),
+                };
+                foreach (var (local, field) in destructuring.Entries)
+                {
+                    statements.Add(new LoweredLocalDeclarationStatement(destructuring, local,
+                        new LoweredFieldAccessExpression(destructuring,
+                            ReferenceTo(destructuring, pairLocal), field, local.Type!)));
+                }
+                return new LoweredBlock(destructuring, statements);
             }
 
             // ===== try 降级（S7e，SYNTAX §8；BIL §16.7）=====
@@ -983,11 +1043,12 @@ namespace LatteCompiler
                         if (operand == null) return null;
                         return new LoweredUnaryExpression(unary, unary.Op, operand);
                     case BoundCallExpression call:
-                        var callArguments = LowerArguments(call.Arguments);
+                        var callArguments = LowerArguments(call.Arguments, call.Method.Parameters);
                         if (callArguments == null) return null;
                         return new LoweredCallExpression(call, call.Method, callArguments);
                     case BoundNewExpression newExpression:
-                        var newArguments = LowerArguments(newExpression.Arguments);
+                        var newArguments = LowerArguments(newExpression.Arguments,
+                            newExpression.Init?.Parameters);
                         if (newArguments == null) return null;
                         return new LoweredNewExpression(newExpression, newExpression.Init,
                             newArguments);
@@ -1007,7 +1068,14 @@ namespace LatteCompiler
                     case BoundInstanceCallExpression instanceCall:
                         var instanceReceiver = LowerExpression(instanceCall.Receiver);
                         if (instanceReceiver == null) return null;
-                        var instanceArguments = LowerArguments(instanceCall.Arguments);
+                        // 调用点 cast 物化（BIL §6.5）：receiver 静态类型 ≠ 方法
+                        // 宿主时包显式 cast——沿 BaseType 链找到的成员（如 Any
+                        // 承诺的 toString）在子类 receiver 上调用时的装箱/基类
+                        // 视图转换（§12.1 内建引用视图转换）
+                        instanceReceiver = EnsureDeclaredType(instanceCall, instanceReceiver,
+                            instanceCall.Method.Owner);
+                        var instanceArguments = LowerArguments(instanceCall.Arguments,
+                            instanceCall.Method.Parameters);
                         if (instanceArguments == null) return null;
                         return new LoweredInstanceCallExpression(instanceCall, instanceReceiver,
                             instanceCall.Method, instanceArguments, instanceCall.Type);
@@ -1023,6 +1091,12 @@ namespace LatteCompiler
                         if (castSource == null) return null;
                         return new LoweredCastExpression(cast, castSource, cast.TargetType,
                             cast.IsSafe, cast.Type);
+                    case BoundSafeAccessExpression safeAccess:
+                        return LowerSafeAccess(safeAccess);
+                    case BoundSafeAccessReceiverExpression safeReceiver:
+                        return LowerSafeReceiver(safeReceiver);
+                    case BoundNullFallbackExpression nullFallback:
+                        return LowerNullFallback(nullFallback);
                     case BoundSeqExpression seqExpression:
                         return LowerSeqExpression(seqExpression);
                     default:
@@ -1124,6 +1198,101 @@ namespace LatteCompiler
                 outputStack.Peek().Add(new LoweredAssignmentStatement(compound, target,
                     new LoweredBinaryExpression(compound, compound.Op, targetRead, value)));
                 return LowerExpression(compound.Target);
+            }
+
+            // ===== S7f：安全访问与空值回退脱糖（SYNTAX §3.4；BIL §3.4）=====
+
+            // `?.` 脱糖：
+            //   a?.b ⇒ 前置 s_recv = a'；前置 s_result = null；
+            //           前置 if (s_recv != null) { s_result = cast(access', R?) }；
+            //           表达式位 s_result 引用
+            // receiver 物化保证只求值一次；Access 内的占位叶子经 safeReceivers
+            // 栈映射为 cast(s_recv, T)（unwrap，§12.1）；null 检查 =
+            // cmp.ne(s_recv, null 资源)（§18.1：null 资源类型即 .nullable<T>，
+            // 满足 §11.5 严格相同）；结果局部的 R → Nullable\<R\> 包装经
+            // EnsureDeclaredType 物化（已可空时直通）
+            private LoweredExpression? LowerSafeAccess(BoundSafeAccessExpression safeAccess)
+            {
+                var receiver = LowerExpression(safeAccess.Receiver);
+                if (receiver == null) return null;
+                var receiverLocal = NewSynthLocal(receiver.Type);
+                outputStack.Peek().Add(new LoweredAssignmentStatement(safeAccess,
+                    ReferenceTo(safeAccess, receiverLocal), receiver));
+                var result = NewSynthLocal(safeAccess.Type);
+                outputStack.Peek().Add(new LoweredAssignmentStatement(safeAccess,
+                    ReferenceTo(safeAccess, result),
+                    new LoweredConstantExpression(safeAccess, null!, safeAccess.Type)));
+                var condition = NullCheckCondition(safeAccess, receiverLocal);
+                safeReceivers.Push((safeAccess.Placeholder, receiverLocal,
+                    safeAccess.Placeholder.Type));
+                var access = LowerExpression(safeAccess.Access);
+                safeReceivers.Pop();
+                if (access == null) return null;
+                var wrapped = EnsureDeclaredType(safeAccess, access, safeAccess.Type);
+                var thenBlock = new LoweredBlock(safeAccess, new List<LoweredStatement>
+                {
+                    new LoweredAssignmentStatement(safeAccess, ReferenceTo(safeAccess, result),
+                        wrapped),
+                });
+                outputStack.Peek().Add(new LoweredIfStatement(safeAccess, condition,
+                    thenBlock, null));
+                return ReferenceTo(safeAccess, result);
+            }
+
+            // 占位叶子 → 物化 receiver 局部的 unwrap cast（引用相等查栈，
+            // 逐层向内命中；栈空/未命中 = 内部一致性破坏）
+            private LoweredExpression? LowerSafeReceiver(BoundSafeAccessReceiverExpression placeholder)
+            {
+                foreach (var (ph, receiverLocal, unwrapType) in safeReceivers)
+                {
+                    if (ReferenceEquals(ph, placeholder))
+                    {
+                        return new LoweredCastExpression(placeholder,
+                            ReferenceTo(placeholder, receiverLocal), unwrapType,
+                            isSafe: false, unwrapType);
+                    }
+                }
+                Error(placeholder.Syntax.Span,
+                    "P4: safe access receiver placeholder without enclosing safe access");
+                return null;
+            }
+
+            // `if?` 脱糖：
+            //   l if? r ⇒ 前置 s_left = l'；
+            //             前置 if (s_left != null) { s_result = cast(s_left, T) }
+            //                     else { s_result = r' }；
+            //             表达式位 s_result 引用（r 延迟求值由 if 结构保证）
+            private LoweredExpression? LowerNullFallback(BoundNullFallbackExpression nullFallback)
+            {
+                var left = LowerExpression(nullFallback.Left);
+                if (left == null) return null;
+                var leftLocal = NewSynthLocal(left.Type);
+                outputStack.Peek().Add(new LoweredAssignmentStatement(nullFallback,
+                    ReferenceTo(nullFallback, leftLocal), left));
+                var result = NewSynthLocal(nullFallback.Type);
+                var condition = NullCheckCondition(nullFallback, leftLocal);
+                var thenBlock = new LoweredBlock(nullFallback, new List<LoweredStatement>
+                {
+                    new LoweredAssignmentStatement(nullFallback,
+                        ReferenceTo(nullFallback, result),
+                        new LoweredCastExpression(nullFallback,
+                            ReferenceTo(nullFallback, leftLocal), nullFallback.Type,
+                            isSafe: false, nullFallback.Type)),
+                });
+                var elseBlock = LowerAssignInNewBlock(nullFallback, nullFallback.Right, result);
+                if (elseBlock == null) return null;
+                outputStack.Peek().Add(new LoweredIfStatement(nullFallback, condition,
+                    thenBlock, elseBlock));
+                return ReferenceTo(nullFallback, result);
+            }
+
+            // null 检查条件（§18.1/§11.5）：cmp.ne(local, null 资源) → bool
+            private LoweredBinaryExpression NullCheckCondition(BoundNode origin, LocalSymbol local)
+            {
+                return new LoweredBinaryExpression(origin, BilIntrinsicOp.CmpNe,
+                    ReferenceTo(origin, local),
+                    new LoweredConstantExpression(origin, null!, local.Type!),
+                    unit.Symbols.Bootstrap.Bool);
             }
 
             private void Unsupported(BoundNode node)

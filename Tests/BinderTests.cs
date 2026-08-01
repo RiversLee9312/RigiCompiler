@@ -45,6 +45,10 @@ namespace LatteCompiler.Tests
             TestCast();
             TestTry();
             TestSeq();
+            TestStringInterpolation();
+            TestSafeAccess();
+            TestNullFallback();
+            TestDestructuring();
             TestDiagnosticsAccumulation();
             return TestHarness.Summary("Binder");
         }
@@ -132,9 +136,11 @@ namespace LatteCompiler.Tests
             TestHarness.CheckSemanticError("null 无上下文诊断", unit3.Diagnostics,
                 "null requires a nullable type context");
 
+            // S7f 起插值落地（SYNTAX §3.8）：段表达式参与正常绑定，
+            // 未定义名照常诊断
             var (unit4, _) = BindUnit("func f(): String { return \"${x}\" }\n");
-            TestHarness.CheckSemanticError("字符串插值暂不支持", unit4.Diagnostics,
-                "string interpolation is not supported yet");
+            TestHarness.CheckSemanticError("插值段未定义名照常诊断", unit4.Diagnostics,
+                "Undefined name: 'x'");
         }
 
         // ===== 局部变量声明（var 推断 / 显式标注 / const / 重复）=====
@@ -878,9 +884,12 @@ namespace LatteCompiler.Tests
             TestHarness.CheckSemanticError("const 复合赋值拒绝", unit4.Diagnostics,
                 "Cannot assign to const 'c'");
 
-            var (unit5, _) = BindUnit("func f() { var s = \"a\"\ns += \"b\" }\n");
-            TestHarness.CheckSemanticError("String 无 Add intrinsic", unit5.Diagnostics,
-                "Operator '+=' is not defined for type 'String'");
+            // S7f 起 String 有 Add intrinsic（§3.8 内建拼接）：s += "b" 合法
+            var (unit5, bodies5) = BindUnit("func f() { var s = \"a\"\ns += \"b\" }\n");
+            CheckNoErrors("String 复合赋值（内建拼接）", unit5);
+            TestHarness.Check("String 复合赋值绑定形态", BoundDescribe.Body(BodyOf(bodies5, "f")),
+                "Body(f, [s: String], [Decl(s, String, = Str(\"a\",String)); " +
+                "ExprStmt(CompoundAssign(Add, Local(s,String), Str(\"b\",String), String))])");
 
             // 复合赋值即赋值：标记 assigned（此前未赋值的 x 经 += 后可用？——
             // += 是读+写，读时已要求已赋值，故此处验证写入后状态：x += 1 后再读合法）
@@ -1911,6 +1920,207 @@ namespace LatteCompiler.Tests
                 "    }\n" +
                 "}\n");
             CheckNoErrors("finally 覆盖穿透无诊断", unit14);
+        }
+
+        // ===== 字符串插值（S7f，SYNTAX §3.8）=====
+        private static void TestStringInterpolation()
+        {
+            TestHarness.Section("P3 String Interpolation");
+
+            // 段序列绑定为左结合 + 链（String.Add intrinsic）
+            var (unit, bodies) = BindUnit(
+                "func f() {\n" +
+                "    var x = \"a\"\n" +
+                "    var y = \"b${x}c\"\n" +
+                "}\n");
+            CheckNoErrors("无诊断（插值拼接）", unit);
+            TestHarness.Check("插值绑定为左结合 + 链", BoundDescribe.Body(BodyOf(bodies, "f")),
+                "Body(f, [x: String, y: String], [Decl(x, String, = Str(\"a\",String)); " +
+                "Decl(y, String, = Binary(Add, Binary(Add, Str(\"b\",String), Local(x,String), String), " +
+                "Str(\"c\",String), String))])");
+
+            // 非 String 段 → toString() 实例调用（Any 承诺）；单段无拼接
+            var (unit2, bodies2) = BindUnit(
+                "func f() {\n" +
+                "    var n = 42\n" +
+                "    var s = \"n=${n}\"\n" +
+                "}\n");
+            CheckNoErrors("无诊断（非 String 段）", unit2);
+            TestHarness.Check("非 String 段包 toString 调用", BoundDescribe.Body(BodyOf(bodies2, "f")),
+                "Body(f, [n: i32, s: String], [Decl(n, i32, = Int(42,i32)); " +
+                "Decl(s, String, = Binary(Add, Str(\"n=\",String), " +
+                "InstCall(toString, Local(n,i32), [], String), String))])");
+
+            // String 段直拼（不再包 toString）
+            var (unit3, bodies3) = BindUnit(
+                "func f(x: String): String { return \"${x}!\" }\n");
+            CheckNoErrors("无诊断（String 段直拼）", unit3);
+            TestHarness.Check("String 段直拼无 toString", BoundDescribe.Body(BodyOf(bodies3, "f")),
+                "Body(f, [], [Return(Binary(Add, Param(x,String), Str(\"!\",String), String))])");
+
+            // String 的 + 运算符随 S7f 开放（内建拼接，BIL §11.2）
+            var (unit4, bodies4) = BindUnit(
+                "func f(): String { return \"a\" + \"b\" }\n");
+            CheckNoErrors("无诊断（String + 开放）", unit4);
+            TestHarness.Check("String + 绑定形态", BoundDescribe.Body(BodyOf(bodies4, "f")),
+                "Body(f, [], [Return(Binary(Add, Str(\"a\",String), Str(\"b\",String), String))])");
+
+            // 显式 toString 调用（全类型承诺，含值类型）
+            var (unit5, bodies5) = BindUnit(
+                "func f() {\n" +
+                "    var n = 1\n" +
+                "    var s = n.toString()\n" +
+                "}\n");
+            CheckNoErrors("无诊断（显式 toString）", unit5);
+            TestHarness.Check("值类型显式 toString 调用", BoundDescribe.Body(BodyOf(bodies5, "f")),
+                "Body(f, [n: i32, s: String], [Decl(n, i32, = Int(1,i32)); " +
+                "Decl(s, String, = InstCall(toString, Local(n,i32), [], String))])");
+
+            // void 段：插值段必须产值
+            var (unit6, _) = BindUnit(
+                "func g() { }\n" +
+                "func f(): String { return \"${g()}\" }\n");
+            TestHarness.CheckSemanticError("void 插值段诊断", unit6.Diagnostics,
+                "has no result (void) and cannot be used as a value");
+        }
+
+        // ===== 安全访问 `?.`（S7f，SYNTAX §3.4）=====
+        private static void TestSafeAccess()
+        {
+            TestHarness.Section("P3 Safe Access (?.)");
+
+            // 字段安全访问：结果包装 Nullable（成员 String → String?）
+            var (unit, bodies) = BindUnit(
+                "class User { pub var name: String\n    pub init(_ -> name) { } }\n" +
+                "func f(u: User?): String? { return u?.name }\n");
+            CheckNoErrors("无诊断（字段安全访问）", unit);
+            TestHarness.Check("字段安全访问绑定形态", BoundDescribe.Body(BodyOf(bodies, "f")),
+                "Body(f, [], [Return(SafeAccess(Param(u,User?), " +
+                "InstField(name, SafeReceiver(User), String), String?))])");
+
+            // 方法安全访问 + 已可空成员不二次包装
+            var (unit2, bodies2) = BindUnit(
+                "class Box { pub var content: String?\n    pub init(_ -> content) { } }\n" +
+                "func f(b: Box?): String? { return b?.content }\n" +
+                "func g(b: Box?): i32 { return 1 }\n");
+            CheckNoErrors("无诊断（可空成员安全访问）", unit2);
+            TestHarness.Check("已可空成员结果不二次包装", BoundDescribe.Body(BodyOf(bodies2, "f")),
+                "Body(f, [], [Return(SafeAccess(Param(b,Box?), " +
+                "InstField(content, SafeReceiver(Box), String?), String?))])");
+
+            // 链式：a?.b?.c（a: A?，A.b: B，B.c: String）
+            var (unit3, bodies3) = BindUnit(
+                "class B { pub var c: String\n    pub init(_ -> c) { } }\n" +
+                "class A { pub var b: B\n    pub init(_ -> b) { } }\n" +
+                "func f(a: A?): String? { return a?.b?.c }\n");
+            CheckNoErrors("无诊断（链式安全访问）", unit3);
+            TestHarness.Check("链式安全访问绑定形态", BoundDescribe.Body(BodyOf(bodies3, "f")),
+                "Body(f, [], [Return(SafeAccess(SafeAccess(Param(a,A?), " +
+                "InstField(b, SafeReceiver(A), B), B?), " +
+                "InstField(c, SafeReceiver(B), String), String?))])");
+
+            // 诊断：非空 receiver
+            var (unit4, _) = BindUnit(
+                "class User { pub var name: String\n    pub init(_ -> name) { } }\n" +
+                "func f(u: User) { var x = u?.name }\n");
+            TestHarness.CheckSemanticError("非空 receiver 拒绝", unit4.Diagnostics,
+                "Safe access '?.' requires a nullable receiver");
+
+            // 诊断：可空结果上的普通段（须逐段标注 ?.）
+            var (unit5, _) = BindUnit(
+                "class B { pub var c: String\n    pub init(_ -> c) { } }\n" +
+                "class A { pub var b: B?\n    pub init(_ -> b) { } }\n" +
+                "func f(a: A?) { var x = a?.b.c }\n");
+            TestHarness.CheckSemanticError("可空结果普通段拒绝", unit5.Diagnostics,
+                "cannot be accessed on nullable type");
+        }
+
+        // ===== if? 空值回退（S7f，SYNTAX §3.4）=====
+        private static void TestNullFallback()
+        {
+            TestHarness.Section("P3 Null Fallback (if?)");
+
+            var (unit, bodies) = BindUnit(
+                "class User { pub var name: String\n    pub init(_ -> name) { } }\n" +
+                "func f(u: User?): User { return u if? new User(\"anon\") }\n");
+            CheckNoErrors("无诊断（if? 回退）", unit);
+            TestHarness.Check("if? 绑定形态", BoundDescribe.Body(BodyOf(bodies, "f")),
+                "Body(f, [], [Return(NullFallback(Param(u,User?), " +
+                "New(User, init, [Str(\"anon\",String)]), User))])");
+
+            // 组合：`?.` 与 if?（name?.x if? fallback 形态）
+            var (unit2, bodies2) = BindUnit(
+                "class User { pub var name: String\n    pub init(_ -> name) { } }\n" +
+                "func f(u: User?): String { return u?.name if? \"anon\" }\n");
+            CheckNoErrors("无诊断（?. + if? 组合）", unit2);
+            TestHarness.Check("组合绑定形态", BoundDescribe.Body(BodyOf(bodies2, "f")),
+                "Body(f, [], [Return(NullFallback(SafeAccess(Param(u,User?), " +
+                "InstField(name, SafeReceiver(User), String), String?), " +
+                "Str(\"anon\",String), String))])");
+
+            // 诊断：左操作数非可空
+            var (unit3, _) = BindUnit(
+                "func f(s: String): String { return s if? \"x\" }\n");
+            TestHarness.CheckSemanticError("左操作数非可空拒绝", unit3.Diagnostics,
+                "Operator 'if?' requires a nullable left operand");
+
+            // 诊断：回退值类型不兼容
+            var (unit4, _) = BindUnit(
+                "class User { pub var name: String\n    pub init(_ -> name) { } }\n" +
+                "func f(u: User?): User { return u if? 42 }\n");
+            TestHarness.CheckSemanticError("回退值类型不兼容", unit4.Diagnostics,
+                "Null fallback must be assignable to 'User'");
+        }
+
+        // ===== 解构声明（S7f，SYNTAX §18）=====
+        private static void TestDestructuring()
+        {
+            TestHarness.Section("P3 Destructuring");
+
+            // 闭环：Pair 子类构造 + 解构（基类泛型字段初始化走替换）
+            var (unit, bodies) = BindUnitWithStdlib(
+                "class Entry : core.Pair\\<String, i32> {\n" +
+                "    pub init(k: String, v: i32) {\n" +
+                "        key = k\n" +
+                "        value = v\n" +
+                "    }\n" +
+                "}\n" +
+                "func f() {\n" +
+                "    var (k, v) = new Entry(\"a\", 1)\n" +
+                "}\n");
+            CheckNoErrors("无诊断（解构闭环）", unit);
+            TestHarness.Check("解构绑定形态", BoundDescribe.Body(BodyOf(bodies, "f")),
+                "Body(f, [k: String, v: i32], [Destructuring([k: String ← key; v: i32 ← value], " +
+                "New(Entry, init, [Str(\"a\",String), Int(1,i32)]))])");
+            // 基类泛型字段（TKey/TValue）在子类 init 里按构造实参替换
+            var entryInit = bodies.Single(b => b.Method.Name == "init"
+                && b.Method.Owner?.Name == "Entry");
+            TestHarness.Check("init 内基类字段替换赋值", BoundDescribe.Body(entryInit),
+                "Body(init, [], [Assign(InstField(key, This(Entry), String), Param(k,String)); " +
+                "Assign(InstField(value, This(Entry), i32), Param(v,i32))])");
+
+            // 诊断：初始化器非 Pair 子类
+            var (unit2, _) = BindUnitWithStdlib("func f() {\n    var (a, b) = 42\n}\n");
+            TestHarness.CheckSemanticError("非 Pair 子类拒绝", unit2.Diagnostics,
+                "Destructuring requires a subtype of core.Pair");
+
+            // 诊断：名字数不等于 2
+            var (unit3, _) = BindUnitWithStdlib(
+                "class Entry : core.Pair\\<String, i32> {\n" +
+                "    pub init(k: String, v: i32) {\n        key = k\n        value = v\n    }\n" +
+                "}\n" +
+                "func f() {\n    var (a, b, c) = new Entry(\"a\", 1)\n}\n");
+            TestHarness.CheckSemanticError("名字数拒绝", unit3.Diagnostics,
+                "requires exactly 2 names");
+
+            // 诊断：名字重复
+            var (unit4, _) = BindUnitWithStdlib(
+                "class Entry : core.Pair\\<String, i32> {\n" +
+                "    pub init(k: String, v: i32) {\n        key = k\n        value = v\n    }\n" +
+                "}\n" +
+                "func f() {\n    var (k, k) = new Entry(\"a\", 1)\n}\n");
+            TestHarness.CheckSemanticError("名字重复拒绝", unit4.Diagnostics,
+                "Duplicate local variable 'k'");
         }
 
         // ===== 诊断累积：函数间互不阻断，函数内多错累积 =====

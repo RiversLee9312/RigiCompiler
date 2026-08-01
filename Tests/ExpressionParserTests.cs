@@ -150,6 +150,27 @@ namespace LatteCompiler.Tests
             TestExpr("var v = a.b.c", "Path(a, [.b, .c])");
             // 安全访问
             TestExpr("var v = obj?.field", "Path(obj, [?.field])");
+            // if? 空值回退（S7f，SYNTAX §3.4：中缀 if + ? 重组为二元运算符）
+            TestExpr("var v = a if? b", "Binary(Path(a, []) if? Path(b, []))");
+            TestExpr("var v = obj?.field if? 0",
+                "Binary(Path(obj, [?.field]) if? Int(0,I32))");
+
+            TestHarness.Blank();
+        }
+
+        // ===== 9b. if? 重组与优先级错误（S7f）=====
+        public static void TestNullFallbackParsing()
+        {
+            TestHarness.Section("Null Fallback Parsing (if?)");
+
+            // 无优先级：a if? b if? c 必须加括号（右操作数层禁二元）
+            TestHarness.CheckParseError("a if? b if? c",
+                () => TestHarness.ParseFirstDecl("var v = a if? b if? c"),
+                "必须用括号明确运算顺序");
+            // 中缀 if 后必须是 ?
+            TestHarness.CheckParseError("a if b",
+                () => TestHarness.ParseFirstDecl("var v = a if b"),
+                "Expected '?' after 'if'");
 
             TestHarness.Blank();
         }
@@ -551,6 +572,7 @@ namespace LatteCompiler.Tests
             TestTypedDeclarationsWithInit();
             TestCallExpressions();
             TestMemberAccessChains();
+            TestNullFallbackParsing();
             TestIndexExpressions();
             TestNewExpressions();
             TestGenericCallExpressions();

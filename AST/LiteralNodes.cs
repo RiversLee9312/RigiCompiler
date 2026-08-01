@@ -56,11 +56,28 @@ namespace LatteCompiler
         }
     }
 
+    // 字符串插值段（S7f，[AstCarrier]；SYNTAX §3.8）：两字段互斥——
+    // Text 非 null = 字面量段（LiteralExpression 包装 StringLiteral 的段级
+    // 子结构，Value 为解码后文本、span 为段范围——与普通字符串字面量同构，
+    // P3/P4 全程复用字面量机器）；Expression 非 null = 插值表达式段
+    // （子解析产物，经 ExpressionRootASTNode 稳定挂载点一次性 Attach，
+    // 段内表达式的 span 精确映射回源文件）
+    [AstCarrier]
+    public class StringInterpolationPart
+    {
+        public LiteralExpressionASTNode? Text;
+        public ExpressionRootASTNode? Expression;
+    }
+
     // 字符串字面量 AST 节点
     public class StringLiteralASTNode : LiteralASTNode
     {
         public string Value = "";
         public bool HasInterpolation;  // 是否包含字符串插值
+
+        // 插值段序列（S7f；null = 无插值或未拆分，Value/HasInterpolation
+        // 维持原义）：段按源码顺序；有插值时 Parser 拆分 RawContent 填充
+        [ChildAstNode] public List<StringInterpolationPart>? InterpolationParts;
 
         public StringLiteralASTNode(ASTNode? parent) : base(parent)
         {

@@ -621,12 +621,14 @@ namespace LatteCompiler
                         { Origin = literal });
                         return temp;
                     case LoweredConstantExpression constant:
-                        // P4a 合成常量（S7b 仅 bool）：与字面量同路进 Resources
-                        // （同键去重——短路展开的 false 与源码 false 字面量共享）
+                        // P4a 合成常量（S7b bool；S7f null——安全访问/空值
+                        // 回退脱糖产物）：与字面量同路进 Resources（同键去重）
                         var constantResource = constant.Value is bool boolValue
                             ? RegisterScalarResource("bool", boolValue ? "true" : "false")
-                            : throw new CompilerInternalException(
-                                "P4a 合成常量类型未覆盖: " + constant.Value.GetType().Name);
+                            : constant.Value is null
+                                ? RegisterNullResource(constant.Type, constant.Origin.Syntax.Span)
+                                : throw new CompilerInternalException(
+                                    "P4a 合成常量类型未覆盖: " + constant.Value.GetType().Name);
                         var constantTemp = NewTemp(constant.Type);
                         target.Instructions.Add(new BilInstruction("load",
                             BilOp.Res(constantResource), BilOp.Var(constantTemp))
@@ -793,18 +795,35 @@ namespace LatteCompiler
             }
 
             // 字面量 → 资源：同（类型, 原文）去重，名按首次出现 R_0/R_1... 编号
-            // （null 资源的键 = ("null", 元素类型投影)，走 BilNullResource 形态）
+            // （null 资源走 RegisterNullResource——与 P4a 合成 null 常量同路径）
             private string RegisterResource(LoweredLiteralExpression literal)
             {
                 var (typeKeyword, literalText) = RenderLiteral(literal);
                 if (typeKeyword != "null") return RegisterScalarResource(typeKeyword, literalText);
-                if (!resourceKeys.TryGetValue((typeKeyword, literalText), out var name))
+                return RegisterNullResource(literal.Type, literal.Origin.Syntax.Span);
+            }
+
+            // null 资源登记（§18.1；S7f 起与合成 null 常量共用）：键 =
+            // ("null", 元素类型投影)；类型语义 = .nullable<元素类型>——
+            // 可直接与 .nullable<T> 变量做 cmp.eq/cmp.ne（§11.5 严格相同）
+            private string RegisterNullResource(TypeSymbol nullableType, CharRange? span)
+            {
+                if (nullableType.ConstructedFrom == unit.Symbols.Bootstrap.NullableDefinition
+                    && nullableType.TypeArguments![0] is TypeSymbol element)
                 {
-                    name = "R_" + module.Resources.Count;
-                    module.Resources.Add(new BilNullResource(name, literalText));
-                    resourceKeys.Add((typeKeyword, literalText), name);
+                    var key = ("null", CanonicalSymbolPrinter.PrintType(element));
+                    if (!resourceKeys.TryGetValue(key, out var name))
+                    {
+                        name = "R_" + module.Resources.Count;
+                        module.Resources.Add(new BilNullResource(name, key.Item2));
+                        resourceKeys.Add(key, name);
+                    }
+                    return name;
                 }
-                return name;
+                Error(span,
+                    "P4: null literal is not typed as Nullable<T> " +
+                    $"(got {CanonicalSymbolPrinter.PrintType(nullableType)})");
+                return "<error>";
             }
 
             // 标量资源登记（字面量与 P4a 合成常量共用）：同（类型, 原文）去重

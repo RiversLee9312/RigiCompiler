@@ -71,6 +71,36 @@ namespace LatteCompiler.Tests
             TestHarness.Blank();
         }
 
+        // 解构声明（S7f，SYNTAX §18：var (a, b) = pair；与单名形态互斥）
+        public static void TestDestructuringDeclarations()
+        {
+            TestHarness.Section("Destructuring Declarations");
+
+            TestDecl("var (a, b) = pair", "var (a, b) = Path(pair, [])");
+            TestDecl("const (k, v) = getPair()", "const (k, v) = Path(getPair(), [])");
+
+            // 结构断言（快照不作为唯一验证方式，AGENTS §5）
+            var decl = (VariableDeclarationASTNode)TestHarness.ParseFirstDecl("var (a, b) = pair");
+            TestHarness.CheckTrue("DestructureNames 非空且保序",
+                decl.DestructureNames is { Count: 2 } && decl.DestructureNames[0] == "a"
+                && decl.DestructureNames[1] == "b");
+            TestHarness.CheckTrue("单名 Name 保持空串（互斥）", decl.Name == "");
+            TestHarness.CheckTrue("解构的 Initializer 已填充", decl.Initializer is { IsAttached: true });
+
+            // 错误路径
+            TestHarness.CheckParseError("var () = pair（空名字列表）",
+                () => TestHarness.ParseFirstDecl("var () = pair"),
+                "Expected a name in destructuring declaration");
+            TestHarness.CheckParseError("var (a, b); （无初始化器）",
+                () => TestHarness.ParseFirstDecl("var (a, b);"),
+                "requires '=' with an initializer");
+            TestHarness.CheckParseError("var (a b) = pair（缺逗号）",
+                () => TestHarness.ParseFirstDecl("var (a b) = pair"),
+                "Expected ',' or ')' in destructuring declaration");
+
+            TestHarness.Blank();
+        }
+
         // 辅助：解析声明并比对 AST 描述串
         private static void TestDecl(string code, string expectedDesc)
         {
@@ -93,6 +123,7 @@ namespace LatteCompiler.Tests
             TestTypedDeclarations();
             TestNullableDeclarations();
             TestGenericDeclarations();
+            TestDestructuringDeclarations();
             TestStructuralAssertions();
 
             return TestHarness.Summary("VariableDeclaration");

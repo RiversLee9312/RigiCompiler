@@ -11,6 +11,7 @@ namespace LatteCompiler.Tests
     ///
     /// 格式约定（表达式）：
     ///   Int(42,I32[,hex])  Float(3.14[f])  Str("..."[,interp])  Bool(True)  Null
+    ///   StrInterp("lit", expr, ...)（S7f 插值拆分后的段序列，保源码顺序）
     ///   Unary(- x)  Binary(l + r)  CompoundAssign(t op= v)  Group(x)
     ///   Path(head, [.seg, ?.seg, :seg])（M42 统一路径：head 为符号 a / a&lt;T&gt; /
     ///   a(args) / a[0] 或 (expr底座)；段带 &lt;T&gt; 与 (args)/[args] 后缀）
@@ -32,7 +33,9 @@ namespace LatteCompiler.Tests
                 LiteralExpressionASTNode lit => Expr(lit.Literal),
                 IntLiteralASTNode i => $"Int({i.Value},{i.IntType}{IntBase(i)})",
                 FloatLiteralASTNode f => $"Float({f.Value}{(f.IsFloat ? "f" : "")})",
-                StringLiteralASTNode s => $"Str(\"{s.Value}\"{(s.HasInterpolation ? ",interp" : "")})",
+                StringLiteralASTNode s => s.InterpolationParts != null
+                    ? $"StrInterp({string.Join(", ", s.InterpolationParts.Select(InterpPart))})"
+                    : $"Str(\"{s.Value}\"{(s.HasInterpolation ? ",interp" : "")})",
                 CharLiteralASTNode c => $"Char('{c.Value}')",
                 BoolLiteralASTNode b => $"Bool({b.Value})",
                 NullLiteralASTNode => "Null",
@@ -61,12 +64,17 @@ namespace LatteCompiler.Tests
             };
         }
 
+        // 字符串插值段（S7f）：字面量段为段级字面量结构（Str 描述），表达式段递归描述
+        private static string InterpPart(StringInterpolationPart part)
+        {
+            return part.Text != null ? Expr(part.Text) : Expr(part.Expression!.Expression);
+        }
+
         // 整数进制后缀：,hex / ,bin / ,oct（十进制无后缀）
         private static string IntBase(IntLiteralASTNode i)
         {
             return i.Base switch
-            {
-                LiteralIntBase.Hex => ",hex",
+            {                LiteralIntBase.Hex => ",hex",
                 LiteralIntBase.Binary => ",bin",
                 LiteralIntBase.Octal => ",oct",
                 _ => ""
@@ -275,7 +283,11 @@ namespace LatteCompiler.Tests
         // Stmt 与 Decl 两条路径都能渲染注解）
         public static string VarDecl(VariableDeclarationASTNode v)
         {
-            var desc = Annotations(v) + Mods(v.Modifiers) + (v.IsConst ? "const " : "var ") + v.Name;
+            // 解构形态（S7f，SYNTAX §18）：var (a, b) = pair——与单名互斥
+            var name = v.DestructureNames != null
+                ? "(" + string.Join(", ", v.DestructureNames) + ")"
+                : v.Name;
+            var desc = Annotations(v) + Mods(v.Modifiers) + (v.IsConst ? "const " : "var ") + name;
             if (v.TypeAnnotation != null) desc += $": {Type(v.TypeAnnotation)}";
 
             var accessors = new List<string>();

@@ -64,6 +64,7 @@ namespace LatteCompiler
             GenericArgParsed,     // 一个泛型实参已解析，等待 , 或 >
             AsyncSeen,            // async 已读，等待 func（async lambda）
             TypeOperatorSeen,     // 类型操作符 is/as/supers/with 已读，等待右侧类型
+            IfNullFallbackSeen,   // 中缀 if 已读，等待 ? 组成 if?（S7f 空值回退）
             Completed             // 完成
         }
 
@@ -208,6 +209,9 @@ namespace LatteCompiler
                 case State.TypeOperatorSeen:
                     return HandleTypeOperatorSeen(currentToken, context);
 
+                case State.IfNullFallbackSeen:
+                    return HandleIfNullFallbackSeen(currentToken, context);
+
                 case State.Completed:
                     return HandleCompleted(currentToken, context);
 
@@ -328,7 +332,8 @@ namespace LatteCompiler
             state = State.PrimaryParsed;
 
             return new ParserLayerResult.PushLayer(
-                new LiteralParserLayer(literalExpr), TokenDisposition.Replay);
+                new LiteralParserLayer(literalExpr) { allowBareReturn = allowBareReturn },
+                TokenDisposition.Replay);
         }
 
         // 委托括号分组解析：内层表达式直接附加到 group.InnerExpression
@@ -692,6 +697,22 @@ namespace LatteCompiler
                 return ParserLayerResult.Continue.Instance;
             }
 
+            // if? 空值回退（S7f，SYNTAX §3.4）：中缀位置的 if 只可能是 if?
+            // 运算符（if 表达式在 Initial 态分支识别，不冲突）；两 token 重组
+            // （if + ?），参照 as? 的重组模式
+            if (currentToken is WordToken ifWord && ifWord.Content == Keywords.IF)
+            {
+                if (!allowBinaryOperator)
+                {
+                    context.RaiseError(
+                        "Latte 没有运算符优先级：运算符 'if?' 必须用括号明确运算顺序");
+                }
+                SealCurrentExpression(context);
+                pendingOperator = "if?";
+                state = State.IfNullFallbackSeen;
+                return ParserLayerResult.Continue.Instance;
+            }
+
             // 检查二元运算符
             if (IsBinaryOperator(currentToken))
             {
@@ -793,10 +814,25 @@ namespace LatteCompiler
             return new ParserLayerResult.PushLayer(rightLayer, TokenDisposition.Replay);
         }
 
+        // 中缀 if 已读：期待 ? 组成 if?（S7f 空值回退；中缀 if 的唯一合法形态）
+        private ParserLayerResult HandleIfNullFallbackSeen(Token currentToken, ParserLayerContext context)
+        {
+            if (currentToken is NotationToken q && q.Content == "?")
+            {
+                state = State.OperatorSeen;
+                return ParserLayerResult.Continue.Instance;
+            }
+
+            context.RaiseError(
+                $"Expected '?' after 'if' (if? null fallback operator), got: {currentToken}");
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
+        }
+
         // 二元表达式已完成：再来运算符就违反"无运算符优先级"规则
         private ParserLayerResult HandleCompleted(Token currentToken, ParserLayerContext context)
         {
-            if (IsBinaryOperator(currentToken))
+            if (IsBinaryOperator(currentToken)
+                || (currentToken is WordToken ifWord && ifWord.Content == Keywords.IF))
             {
                 context.RaiseError(
                     $"Latte 没有运算符优先级：运算符 '{GetOperatorString(currentToken)}' " +

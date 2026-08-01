@@ -10,7 +10,11 @@ namespace LatteCompiler
     {
         public List<string> Modifiers = new List<string>();  // pub/priv/static/... 局部变量为空
         public bool IsConst;                           // true = const, false = var
-        public string Name;                            // 变量名
+        public string Name;                            // 变量名（解构声明时为空串，见 DestructureNames）
+        // 解构声明的名字列表（S7f，SYNTAX §18：var (a, b) = pair）；
+        // 与单名形态互斥（null = 普通单名声明）——同节点双形态，
+        // 参照 TypeCheckExpressionASTNode 的 TargetType/TargetCase 互斥先例
+        public List<string>? DestructureNames;
         [ChildAstNode] public TypeReferenceASTNode? TypeAnnotation;   // 类型标注（可选）
         [ChildAstNode] public PropertyAccessorASTNode? Getter;        // 属性访问器块中的 get（§9.4，可选）
         [ChildAstNode] public PropertyAccessorASTNode? Setter;        // 属性访问器块中的 set（§9.4，可选）

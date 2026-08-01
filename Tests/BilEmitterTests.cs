@@ -63,6 +63,10 @@ namespace LatteCompiler.Tests
             TestPatternSwitchEmission();
             TestThrowEmission();
             TestCastEmission();
+            TestStringInterpolationEmission();
+            TestSafeAccessEmission();
+            TestNullFallbackEmission();
+            TestDestructuringEmission();
             TestTryEmission();
             TestSeqEmission();
             TestUnsupportedNodes();
@@ -116,6 +120,10 @@ namespace LatteCompiler.Tests
                 "}",
                 "",
                 "LocalSymbols {",
+                "    .type core::Pair = class pub open {",
+                "        .field core::Pair#key@.generic<$.generic.TKey> pub",
+                "        .field core::Pair#value@.generic<$.generic.TValue> pub",
+                "    }",
                 "    .type core.io::Console = class pub {",
                 "        .static-method core.io::Console$.static.print(text:.string)@.void priv native symbol(\"print\") lib(\"latte_rt\")",
                 "        .static-method core.io::Console$.static.printErr(text:.string)@.void priv native symbol(\"printErr\") lib(\"latte_rt\")",
@@ -162,12 +170,14 @@ namespace LatteCompiler.Tests
                 "    }",
                 "",
                 "    .vars {",
-                "        core.collections::RangeI32 .t0",
+                "        core.collections::RangeI32 .t0,",
+                "        core.collections::IEnumerable<.i32> .t1",
                 "    }",
                 "",
                 "    .block entry entrypoint {",
                 "        new type(core.collections::RangeI32) $.t0 [$.this, $end]",
-                "        ret $.t0",
+                "        cast $.t0 $.t1 type(core.collections::IEnumerable<.i32>)",
+                "        ret $.t1",
                 "    }",
                 "}",
                 "",
@@ -300,14 +310,16 @@ namespace LatteCompiler.Tests
                 "    .vars {",
                 "        .i32 .t0,",
                 "        .i32 .t1,",
-                "        core.collections::RangeEnumeratorI32 .t2",
+                "        core.collections::RangeEnumeratorI32 .t2,",
+                "        core.collections::IEnumerator<.i32> .t3",
                 "    }",
                 "",
                 "    .block entry entrypoint {",
                 "        get.field $.this $.t0 field(core.collections::RangeI32#start_@.i32)",
                 "        get.field $.this $.t1 field(core.collections::RangeI32#end_@.i32)",
                 "        new type(core.collections::RangeEnumeratorI32) $.t2 [$.t0, $.t1]",
-                "        ret $.t2",
+                "        cast $.t2 $.t3 type(core.collections::IEnumerator<.i32>)",
+                "        ret $.t3",
                 "    }",
                 "}",
                 "",
@@ -1156,6 +1168,138 @@ namespace LatteCompiler.Tests
                 && castInstruction.Operands[0] is BilVariableOperand
                 && castInstruction.Operands[1] is BilVariableOperand
                 && castInstruction.Operands[2] is BilTypeOperand);
+        }
+
+        // ===== S7f：字符串插值端到端（§3.8：toString/add 链 + 装箱 cast + §11.2 拼接）=====
+        private static void TestStringInterpolationEmission()
+        {
+            var (unit, module, _) = EmitUnit(
+                "pub func main() {\n" +
+                "    var name = \"world\"\n" +
+                "    var count = 3\n" +
+                "    core.io.Console.println(\"Hello ${name}, count=${count + 1}\")\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（插值）", unit);
+            TestHarness.Check("main 指令与 .vars（插值端到端）",
+                RenderFn(FnOf(module, "$main()@.void")),
+                ".vars { .string name, .i32 count, .string .t0, .i32 .t1, .string .t2, " +
+                ".string .t3, .string .t4, .string .t5, .i32 .t6, .i32 .t7, .any .t8, " +
+                ".string .t9, .string .t10 }\n" +
+                "load res(R_5) $.t0\n" +
+                "set.var $.t0 $name\n" +
+                "load res(R_6) $.t1\n" +
+                "set.var $.t1 $count\n" +
+                "load res(R_7) $.t2\n" +
+                "add $.t2 $name $.t3\n" +
+                "load res(R_8) $.t4\n" +
+                "add $.t3 $.t4 $.t5\n" +
+                "load res(R_3) $.t6\n" +
+                "add $count $.t6 $.t7\n" +
+                "cast $.t7 $.t8 type(.any)\n" +
+                "invoke fn(core::Any$toString()@.string) $.t9 [$.t8]\n" +
+                "add $.t5 $.t9 $.t10\n" +
+                "invoke.noret fn(core.io::Console$.static.println(text:.string)@.void) [$.t10]\n" +
+                "ret\n");
+            // 结构性事实：String 段直拼无 toString；非 String 段一经 cast 一 invoke
+            var mainInstructions = FnOf(module, "$main()@.void").Blocks[0].Instructions;
+            TestHarness.CheckTrue("toString 调用恰一次（仅非 String 段）",
+                mainInstructions.Count(i => i.Opcode == "invoke") == 1);
+        }
+
+        // ===== S7f：`?.` 发射（§3.4 脱糖：null 检查 + if + unwrap/wrap cast）=====
+        private static void TestSafeAccessEmission()
+        {
+            var (unit, module, _) = EmitUnit(
+                "class User { pub var name: String\n    pub init(_ -> name) { } }\n" +
+                "pub func f(u: User?): String? { return u?.name }\n");
+            CheckNoErrors("全管线无诊断（?.）", unit);
+            TestHarness.Check("f 指令与 .vars（?. 发射）",
+                RenderFnAllBlocks(FnOf(module, "$f(u:.nullable<User>)@.nullable<.string>")),
+                ".vars { .nullable<User> .s0, .nullable<.string> .s1, .nullable<.string> .t0, " +
+                ".nullable<User> .t1, .bool .t2, User .t3, .string .t4, .nullable<.string> .t5 }\n" +
+                ".block entry entrypoint {\n" +
+                "set.var $u $.s0\n" +
+                "load res(R_5) $.t0\n" +
+                "set.var $.t0 $.s1\n" +
+                "load res(R_6) $.t1\n" +
+                "cmp.ne $.s0 $.t1 $.t2\n" +
+                "if $.t2 blk(if0-then) none\n" +
+                "ret $.s1\n" +
+                "}\n" +
+                ".block if0-then {\n" +
+                "cast $.s0 $.t3 type(User)\n" +
+                "get.field $.t3 $.t4 field(User#name@.string)\n" +
+                "cast $.t4 $.t5 type(.nullable<.string>)\n" +
+                "set.var $.t5 $.s1\n" +
+                "}\n");
+            // 结构性事实：null 资源形态（§18.1：null type(元素类型)）
+            TestHarness.CheckTrue("null 资源按元素类型登记（R_5/R_6）",
+                module.Resources.Any(r => r is BilNullResource n
+                    && n.TypeRef == ".string")
+                && module.Resources.Any(r => r is BilNullResource n
+                    && n.TypeRef == "User"));
+        }
+
+        // ===== S7f：`if?` 发射（非空分支 unwrap / 空分支回退，延迟求值）=====
+        private static void TestNullFallbackEmission()
+        {
+            var (unit, module, _) = EmitUnit(
+                "class User { pub var name: String\n    pub init(_ -> name) { } }\n" +
+                "pub func g(u: User?): User { return u if? new User(\"anon\") }\n");
+            CheckNoErrors("全管线无诊断（if?）", unit);
+            TestHarness.Check("g 指令与 .vars（if? 发射）",
+                RenderFnAllBlocks(FnOf(module, "$g(u:.nullable<User>)@User")),
+                ".vars { .nullable<User> .s0, User .s1, .nullable<User> .t0, .bool .t1, " +
+                "User .t2, .string .t3, User .t4 }\n" +
+                ".block entry entrypoint {\n" +
+                "set.var $u $.s0\n" +
+                "load res(R_5) $.t0\n" +
+                "cmp.ne $.s0 $.t0 $.t1\n" +
+                "if $.t1 blk(if0-then) blk(if0-else)\n" +
+                "ret $.s1\n" +
+                "}\n" +
+                ".block if0-then {\n" +
+                "cast $.s0 $.t2 type(User)\n" +
+                "set.var $.t2 $.s1\n" +
+                "}\n" +
+                ".block if0-else {\n" +
+                "load res(R_6) $.t3\n" +
+                "new type(User) $.t4 [$.t3]\n" +
+                "set.var $.t4 $.s1\n" +
+                "}\n");
+        }
+
+        // ===== S7f：解构发射（§3.4 精确字段读取；基类泛型字段访问）=====
+        private static void TestDestructuringEmission()
+        {
+            var (unit, module, _) = EmitUnit(
+                "class Entry : core.Pair\\<String, i32> {\n" +
+                "    pub init(k: String, v: i32) {\n        key = k\n        value = v\n    }\n" +
+                "}\n" +
+                "pub func h(): String {\n" +
+                "    var (k, v) = new Entry(\"a\", 1)\n" +
+                "    return k\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（解构）", unit);
+            TestHarness.Check("h 指令与 .vars（解构发射）",
+                RenderFn(FnOf(module, "$h()@.string")),
+                ".vars { .string k, .i32 v, Entry .s0, .string .t0, .i32 .t1, Entry .t2, " +
+                ".string .t3, .i32 .t4 }\n" +
+                "load res(R_5) $.t0\n" +
+                "load res(R_3) $.t1\n" +
+                "new type(Entry) $.t2 [$.t0, $.t1]\n" +
+                "set.var $.t2 $.s0\n" +
+                "get.field $.s0 $.t3 field(core::Pair#key@.generic<$.generic.TKey>)\n" +
+                "set.var $.t3 $k\n" +
+                "get.field $.s0 $.t4 field(core::Pair#value@.generic<$.generic.TValue>)\n" +
+                "set.var $.t4 $v\n" +
+                "ret $k\n");
+            TestHarness.Check("init 内基类字段写入（替换后类型）",
+                RenderFn(FnOf(module, "Entry$init(k:.string,v:.i32)@.void")),
+                ".vars {  }\n" +
+                "set.field $k $.this field(core::Pair#key@.generic<$.generic.TKey>)\n" +
+                "set.field $v $.this field(core::Pair#value@.generic<$.generic.TValue>)\n" +
+                "ret\n");
         }
 
         // ===== S7e：try/catch/finally 发射（§16.7 + §18.5 catch-table）=====

@@ -53,13 +53,15 @@ namespace LatteCompiler
         }
     }
 
-    // 局部变量声明（var/const；类型已定型在 LocalSymbol.Type 上）
+    // 局部变量声明（var/const；类型已定型在 LocalSymbol.Type 上）。
+    // origin 放宽为 BoundNode：解构脱糖等合成路径的 Origin 按 ARCH §5.1
+    // 约定指最近语法来源（先例：LoweredCastExpression/LoweredFieldAccessExpression）
     public sealed class LoweredLocalDeclarationStatement : LoweredStatement
     {
         public LocalSymbol Local { get; }
         public LoweredExpression? Initializer { get; }
 
-        public LoweredLocalDeclarationStatement(BoundLocalDeclarationStatement origin,
+        public LoweredLocalDeclarationStatement(BoundNode origin,
             LocalSymbol local, LoweredExpression? initializer) : base(origin)
         {
             Local = local;

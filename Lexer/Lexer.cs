@@ -74,6 +74,14 @@ namespace LatteCompiler
             public List<Token> tokens = new List<Token>();
             private CharPosition tokenHeadPosition = new CharPosition();
 
+            // 插值帧深度栈（M53 词法帧机制）：${ 开始标记入流时压帧（深度 1）；
+            // 帧内 { / } 记号入流时计数——字符串/字符/注释内容不产生 { } 记号
+            // （已被各自层分流成完整 token），故 token 层计数天然豁免；
+            // 嵌套插值（${ 套 ${）经开始标记递归压帧
+            internal readonly Stack<int> interpolationDepths = new Stack<int>();
+            // 配平 } 已改发结束标记：请求主循环弹出帧根 Base 层（层栈在主循环）
+            internal bool popBaseLayerPending;
+
             // 初始化位置（M28）：不走 position setter——tokenHeadPosition
             // 留给首个真实字符的位置，避免把 col 0 冻结成首个 token 的 Start
             public void InitPosition(CharPosition p)
@@ -106,6 +114,34 @@ namespace LatteCompiler
                 // 之后 CaptureTokenHead 遇到非空白字符会再覆盖
                 tokenHeadPosition = position;
                 updatePosition = true;
+                // 插值帧深度维护（M53）：开始标记压帧；帧内 { / } 记号计数，
+                // 配平归零时该 } 改发 InterpolationEndToken（span 沿用）并请求
+                // 弹出帧根 Base 层（主循环执行）
+                if (token is InterpolationStartToken)
+                {
+                    interpolationDepths.Push(1);
+                }
+                else if (interpolationDepths.Count > 0 && token is NotationToken notation)
+                {
+                    if (notation.Content == "{")
+                    {
+                        interpolationDepths.Push(interpolationDepths.Pop() + 1);
+                    }
+                    else if (notation.Content == "}")
+                    {
+                        var depth = interpolationDepths.Pop() - 1;
+                        if (depth == 0)
+                        {
+                            tokens.Add(new InterpolationEndToken
+                            {
+                                CharRange = notation.CharRange
+                            });
+                            popBaseLayerPending = true;
+                            return;
+                        }
+                        interpolationDepths.Push(depth);
+                    }
+                }
                 tokens.Add(token);
             }
 
@@ -203,6 +239,17 @@ namespace LatteCompiler
                             var popped = lexerLayers.Pop();
                             keepChar = r.shouldKeepChar;
                             context.Log("Popped layer:"+popped.GetType().Name);
+                            // 插值配平后的帧根弹出（M53）：} 已改发结束标记——
+                            // 记号层自弹后栈顶即插值帧压入的 Base 层，
+                            // 弹之回到字符串层恢复扫描
+                            if (context.popBaseLayerPending
+                                && lexerLayers.TryPeek(out var frameTop)
+                                && frameTop is BaseLexerLayer)
+                            {
+                                lexerLayers.Pop();
+                                context.popBaseLayerPending = false;
+                                context.Log("Popped interpolation frame base layer");
+                            }
                             break;
                         case LexerLayerResult.PushLayer r:
                             lexerLayers.Push(r.layerToPush);
@@ -238,6 +285,12 @@ namespace LatteCompiler
             flushPosition.offset = offset;
             context.position = flushPosition;
             context.currentChar = '\n';  // 冲刷帧字符是虚拟换行（Advance 按换行推进）
+            // 插值帧未闭合优先报（M53）：${ 配平失败给出最直接的用户信息——
+            // 先予冲刷（否则字符串层的换行错误会掩盖真正原因）
+            if (context.interpolationDepths.Count > 0)
+            {
+                context.RaiseError("Unclosed interpolation ${...}: missing '}'");
+            }
             FlushLayers(lexerLayers, context);
             // 冲刷后栈必须收敛为 Base 层：未闭合的字符串/块注释即词法错误
             if (lexerLayers.Count != 1)

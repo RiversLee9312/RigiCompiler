@@ -35,6 +35,9 @@ namespace LatteCompiler
             KeywordSeen,       // 已看到 var/const
             NameSeen,          // 已看到变量名
             NameDotSeen,       // ext 限定名的段间点已读：等待下一段名称
+            DestructureNameExpected,          // 解构（S7f）：( 或 , 之后等待名字
+            DestructureCommaOrCloseExpected,  // 解构：名字之后等待 , 或 )
+            DestructureCloseSeen,             // 解构：) 已读，等待 =
             TypeColonSeen,     // 已看到 :
             TypeSeen,          // 已看到类型
             AccessorsSeen,     // 已看到属性访问器块 { get... set... }
@@ -71,6 +74,15 @@ namespace LatteCompiler
 
                 case State.NameDotSeen:
                     return HandleNameDotSeen(currentToken, context);
+
+                case State.DestructureNameExpected:
+                    return HandleDestructureNameExpected(currentToken, context);
+
+                case State.DestructureCommaOrCloseExpected:
+                    return HandleDestructureCommaOrCloseExpected(currentToken, context);
+
+                case State.DestructureCloseSeen:
+                    return HandleDestructureCloseSeen(currentToken, context);
 
                 case State.TypeColonSeen:
                     return HandleTypeColonSeen(currentToken, context);
@@ -116,9 +128,18 @@ namespace LatteCompiler
             return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
-        // 已看到关键字 - 等待变量名
+        // 已看到关键字 - 等待变量名或解构开界（S7f）
         private ParserLayerResult HandleKeywordSeen(Token currentToken, ParserLayerContext context)
         {
+            // 解构声明（S7f，SYNTAX §18）：var (a, b) = pair——
+            // 与单名形态互斥（节点双字段，同 TypeCheck 互斥先例）
+            if (currentToken is NotationToken openParen && openParen.Content == "(")
+            {
+                declNode.DestructureNames = new List<string>();
+                state = State.DestructureNameExpected;
+                return ParserLayerResult.Continue.Instance;
+            }
+
             // 变量名必须是合法标识符：非数字词、非保留字（M31 统一走 Keywords.IsIdentifier）
             if (currentToken is WordToken wt && Keywords.IsIdentifier(wt.Content))
             {
@@ -134,6 +155,57 @@ namespace LatteCompiler
             }
 
             context.RaiseError($"Expected variable name, got: {currentToken}");
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
+        }
+
+        // 解构：等待一个名字（( 或 , 之后；至少一个名字）
+        private ParserLayerResult HandleDestructureNameExpected(Token currentToken, ParserLayerContext context)
+        {
+            if (currentToken is WordToken wt && Keywords.IsIdentifier(wt.Content))
+            {
+                declNode.DestructureNames!.Add(wt.Content);
+                state = State.DestructureCommaOrCloseExpected;
+                return ParserLayerResult.Continue.Instance;
+            }
+
+            context.RaiseError(
+                $"Expected a name in destructuring declaration, got: {currentToken}");
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
+        }
+
+        // 解构：一个名字之后——等待 , 继续或 ) 收尾
+        private ParserLayerResult HandleDestructureCommaOrCloseExpected(Token currentToken, ParserLayerContext context)
+        {
+            if (currentToken is NotationToken nt)
+            {
+                if (nt.Content == ",")
+                {
+                    state = State.DestructureNameExpected;
+                    return ParserLayerResult.Continue.Instance;
+                }
+                if (nt.Content == ")")
+                {
+                    state = State.DestructureCloseSeen;
+                    return ParserLayerResult.Continue.Instance;
+                }
+            }
+
+            context.RaiseError(
+                $"Expected ',' or ')' in destructuring declaration, got: {currentToken}");
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
+        }
+
+        // 解构 ) 已读：等待 =（解构必须有初始化器，无类型标注形态）
+        private ParserLayerResult HandleDestructureCloseSeen(Token currentToken, ParserLayerContext context)
+        {
+            if (currentToken is NotationToken nt && nt.Content == "=")
+            {
+                state = State.AssignSeen;
+                return ParserLayerResult.Continue.Instance;
+            }
+
+            context.RaiseError(
+                $"Destructuring declaration requires '=' with an initializer, got: {currentToken}");
             return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 

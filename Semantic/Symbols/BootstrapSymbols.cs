@@ -98,8 +98,9 @@ namespace LatteCompiler
             UInt64 = Primitive("u64", ".u64", unsignedInteger: true);
             Float = Primitive("float", ".f32", floating: true);
             Double = Primitive("double", ".f64", floating: true);
-            // bool：逻辑 + 相等；char：比较全集（按码点序）；String：仅相等。
-            // 注：char/String 的比较边缘集在 S5 接入消费时按 SYNTAX §13.2 再核
+            // bool：逻辑 + 相等；char：比较全集（按码点序）；
+            // String：相等 + 拼接（S7f，SYNTAX §3.8：add 为内建字符串拼接，
+            // BIL §11.2——字符串插值与用户书写的 "a" + "b" 共用此键）
             Bool = new TypeSymbol("bool", TypeKind.Struct, Core,
                 baseType: ValueType, isBuiltin: true, bilAlias: ".bool",
                 intrinsicOps: Ops(BilIntrinsicOp.And, BilIntrinsicOp.Or, BilIntrinsicOp.Not,
@@ -110,7 +111,22 @@ namespace LatteCompiler
                     BilIntrinsicOp.CmpLt, BilIntrinsicOp.CmpLe, BilIntrinsicOp.CmpGt, BilIntrinsicOp.CmpGe));
             String = new TypeSymbol("String", TypeKind.Struct, Core,
                 baseType: ValueType, isBuiltin: true, bilAlias: ".string",
-                intrinsicOps: Ops(BilIntrinsicOp.CmpEq, BilIntrinsicOp.CmpNe));
+                intrinsicOps: Ops(BilIntrinsicOp.CmpEq, BilIntrinsicOp.CmpNe,
+                    BilIntrinsicOp.Add));
+
+            // toString 机制（S7f，SYNTAX §3.8）：Any 承载全类型承诺（接口
+            // 形态无体）；Object 提供 open 默认实现，body 路由 latte_rt.toString
+            // （native 声明形态，BIL §21.5 内建 hook——基元标准文本、未覆写
+            // 对象返回类型 canonical 名）；用户类型 override 后经虚派发执行
+            // 自身实现，不再命中原生面
+            Any.Methods.Add(new MethodSymbol("toString", MethodKind.Regular,
+                owner: Any, returnType: String));
+            Object.Methods.Add(new MethodSymbol("toString", MethodKind.Regular,
+                owner: Object, isNative: true, returnType: String)
+            {
+                NativeLibrary = "latte_rt",
+                NativeSymbol = "toString",
+            });
 
             // 泛型内建（§3.1.2）：
             // Box\<T> <: Object 为内建事实（BaseType 链直接表达，不经 baseTypeId 证明）；

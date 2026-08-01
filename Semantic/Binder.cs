@@ -297,6 +297,11 @@ namespace LatteCompiler
 
             private BoundStatement? BindLocalDeclaration(VariableDeclarationASTNode node, Scope scope)
             {
+                // 解构声明（S7f，SYNTAX §18）：与单名形态互斥
+                if (node.DestructureNames != null)
+                {
+                    return BindDestructuring(node, scope);
+                }
                 TypeSymbol? declaredType = null;
                 if (node.TypeAnnotation != null)
                 {
@@ -332,6 +337,91 @@ namespace LatteCompiler
                 locals.Add(local);
                 if (init != null) assigned.Add(local);
                 return new BoundLocalDeclarationStatement(node, local, init);
+            }
+
+            // 解构声明（S7f，SYNTAX §18）：var (a, b) = pair——初始化器类型
+            // 必须沿 BaseType 链达到 core.Pair\<TKey, TValue\> 构造；每个名字
+            // 绑定为对应分量类型的局部（字段读取由 P4a 脱糖）。core.Pair 是
+            // .bootstrap.latte 自举声明，编译器按 canonical 名硬编码参照
+            // （同 M48 core.collections 协议先例）
+            private BoundStatement? BindDestructuring(VariableDeclarationASTNode node, Scope scope)
+            {
+                // Parser 已强制 =；此处为防御性检查
+                if (node.Initializer == null)
+                {
+                    Error(node.Span, "Destructuring declaration requires an initializer");
+                    return null;
+                }
+                var init = BindExpression(node.Initializer.Expression, scope);
+                if (init == null) return null;
+                if (init.Type is ErrorTypeSymbol) return null;
+                var pairDef = FindCorePairDefinition(node.Span);
+                if (pairDef == null) return null;
+                TypeSymbol? constructed = null;
+                for (var t = init.Type; t != null; t = t.BaseType)
+                {
+                    if (ReferenceEquals(t.ConstructedFrom, pairDef))
+                    {
+                        constructed = t;
+                        break;
+                    }
+                }
+                if (constructed == null)
+                {
+                    Error(node.Span,
+                        $"Destructuring requires a subtype of core.Pair\\<TKey, TValue\\> " +
+                        $"(got '{TypeDisplay(init.Type)}')");
+                    return null;
+                }
+                if (node.DestructureNames!.Count != 2)
+                {
+                    Error(node.Span,
+                        $"Destructuring of core.Pair requires exactly 2 names " +
+                        $"(got {node.DestructureNames.Count})");
+                    return null;
+                }
+                var entries = new List<(LocalSymbol, FieldSymbol)>();
+                var componentNames = new[] { "key", "value" };
+                for (int i = 0; i < 2; i++)
+                {
+                    // 分量类型 = 构造实参（实参含未替换泛型参数归 S9）
+                    if (constructed.TypeArguments![i] is not TypeSymbol componentType
+                        || ContainsGenericParameter(componentType))
+                    {
+                        Error(node.Span,
+                            "P3: generic type parameters are not supported yet (S9)");
+                        return null;
+                    }
+                    var name = node.DestructureNames[i];
+                    if (scope.DeclaresHere(name))
+                    {
+                        Error(node.Span, $"Duplicate local variable '{name}'");
+                        return null;
+                    }
+                    var field = pairDef.Fields.First(f => f.Name == componentNames[i]);
+                    var local = new LocalSymbol(name, componentType, node.IsConst);
+                    scope.Declare(local);
+                    locals.Add(local);
+                    assigned.Add(local);
+                    entries.Add((local, field));
+                }
+                return new BoundDestructuringDeclarationStatement(node, init, entries);
+            }
+
+            // core.Pair 定义查找（.bootstrap.latte 自举提供；缺席即诊断——
+            // BindUnit 类不带 stdlib 的驱动触不到解构绑定）
+            private TypeSymbol? FindCorePairDefinition(CharRange? span)
+            {
+                var core = unit.Symbols.GlobalNamespace.ChildNamespaces
+                    .FirstOrDefault(n => n.Name == "core");
+                var pair = core?.Types.FirstOrDefault(t => t.Name == "Pair"
+                    && t.GenericParameters.Count == 2);
+                if (pair == null)
+                {
+                    Error(span, "P3: core.Pair not found " +
+                        "(required by destructuring declaration; stdlib missing)");
+                }
+                return pair;
             }
 
             private BoundStatement? BindExpressionStatement(ExpressionStatementASTNode node, Scope scope)
@@ -1388,7 +1478,7 @@ namespace LatteCompiler
             {
                 return node switch
                 {
-                    LiteralExpressionASTNode literal => BindLiteral(literal, expectedType),
+                    LiteralExpressionASTNode literal => BindLiteral(literal, scope, expectedType),
                     PathExpressionASTNode path => BindPath(path, scope),
                     BinaryExpressionASTNode binary => BindBinary(binary, scope),
                     UnaryExpressionASTNode unary => BindUnary(unary, scope),
@@ -1415,9 +1505,16 @@ namespace LatteCompiler
                 return null;
             }
 
-            private BoundExpression BindLiteral(LiteralExpressionASTNode node, TypeSymbol? expectedType)
+            private BoundExpression? BindLiteral(LiteralExpressionASTNode node, Scope scope,
+                TypeSymbol? expectedType)
             {
                 var literal = node.Literal;
+                // 字符串插值（S7f，SYNTAX §3.8）：Parser 已拆分插值段，
+                // 绑定即规范化为 toString/拼接调用链
+                if (literal is StringLiteralASTNode { InterpolationParts: not null } interpolated)
+                {
+                    return BindStringInterpolation(node, interpolated, scope);
+                }
                 TypeSymbol type = literal switch
                 {
                     IntLiteralASTNode i => i.IntType switch
@@ -1440,11 +1537,59 @@ namespace LatteCompiler
                     NullLiteralASTNode => expectedType ?? NullLiteralError(node),
                     _ => throw new CompilerInternalException("未知字面量节点: " + literal.GetType().Name),
                 };
-                if (literal is StringLiteralASTNode { HasInterpolation: true })
-                {
-                    Error(node.Span, "P3: string interpolation is not supported yet (S7)");
-                }
                 return new BoundLiteralExpression(node, type);
+            }
+
+            // 字符串插值（S7f，SYNTAX §3.8）：段序列绑定为 toString/拼接链——
+            // 字面量段按普通 String 字面量绑定（段级子结构，复用字面量机器）；
+            // 表达式段非 String 时包 toString() 实例调用（Any 承诺，沿 BaseType
+            // 链静态绑定最近声明，运行期虚派发——override 自然生效）；全 String
+            // 段按源码顺序左结合折叠为 + 链（String.Add intrinsic，BIL §11.2）。
+            // 每个插值段在 bound 树中恰出现一次（求值一次，§3.8）
+            private BoundExpression? BindStringInterpolation(LiteralExpressionASTNode node,
+                StringLiteralASTNode literal, Scope scope)
+            {
+                BoundExpression? chain = null;
+                foreach (var part in literal.InterpolationParts!)
+                {
+                    BoundExpression? segment;
+                    if (part.Text != null)
+                    {
+                        segment = BindLiteral(part.Text, scope, expectedType: null);
+                        if (segment == null) return null;
+                    }
+                    else
+                    {
+                        var value = BindExpression(part.Expression!.Expression, scope);
+                        if (value == null) return null;
+                        // 毒化静默：段已失败时不再报次生错误
+                        if (value.Type is ErrorTypeSymbol) return null;
+                        segment = value;
+                        if (!ReferenceEquals(value.Type, B.String))
+                        {
+                            // 非 String 段 → toString()（SYNTAX §3.8 全类型承诺；
+                            // Any 恒在 BaseType 链顶，查找不可能落空）
+                            var toString = FindInstanceMethods(value.Type, "toString")
+                                .FirstOrDefault(m => m.Parameters.Count == 0);
+                            if (toString == null)
+                            {
+                                throw new CompilerInternalException(
+                                    $"类型 '{TypeDisplay(value.Type)}' 的 BaseType 链上未找到 toString");
+                            }
+                            segment = new BoundInstanceCallExpression(node, value, toString,
+                                new List<BoundExpression>(), B.String);
+                        }
+                    }
+                    if (chain == null)
+                    {
+                        chain = segment;
+                        continue;
+                    }
+                    chain = new BoundBinaryExpression(node, BilIntrinsicOp.Add, chain, segment,
+                        B.String);
+                }
+                // HasInterpolation ⇒ 至少一个表达式段，chain 恒非空
+                return chain;
             }
 
             private TypeSymbol NullLiteralError(ASTNode node)
@@ -1507,17 +1652,21 @@ namespace LatteCompiler
                     Error(node.Span, "P3: index access is not supported yet (S8)");
                     return null;
                 }
-                if (node.Segments.Any(s => s.Connector == PathConnector.SafeDot))
-                {
-                    Error(node.Span, "P3: safe member access is not supported yet (S7)");
-                    return null;
-                }
                 if (node.Segments.Any(s => s.Connector == PathConnector.Colon))
                 {
                     Error(node.Span, "P3: wrapper access is not supported yet (S11)");
                     return null;
                 }
-                if (node.Head.Suffixes.Count > 0 || node.Segments.Any(s => s.Suffixes.Count > 0))
+                // S7f：含 SafeDot 段的路径走实例链（BindInstanceChain 的 SafeDot
+                // 分派）；首段带后缀（foo()?.bar 等表达式结果底座）仍归 S8
+                bool hasSafeDot = node.Segments.Any(s => s.Connector == PathConnector.SafeDot);
+                if (hasSafeDot && node.Head.Suffixes.Count > 0)
+                {
+                    Error(node.Span, "P3: instance member access is not supported yet (S8)");
+                    return null;
+                }
+                if (!hasSafeDot
+                    && (node.Head.Suffixes.Count > 0 || node.Segments.Any(s => s.Suffixes.Count > 0)))
                 {
                     Error(node.Span, "P3: instance member access is not supported yet (S8)");
                     return null;
@@ -1661,7 +1810,11 @@ namespace LatteCompiler
                         "(field type inference is not supported yet)");
                     return null;
                 }
-                if (field.FieldType is not TypeSymbol fieldType)
+                // 泛型字段类型最小替换（S7f）：实例字段以宿主（method.Owner）
+                // 为 receiver 链取构造实参；全局/static 字段声明类型不含泛型
+                // 参数（宿主非泛型或已具体），原样直通
+                var fieldType = SubstituteFieldType(field, method.Owner);
+                if (fieldType == null || ContainsGenericParameter(fieldType))
                 {
                     Error(node.Span, "P3: generic type parameters are not supported yet (S9)");
                     return null;
@@ -1685,6 +1838,11 @@ namespace LatteCompiler
 
             private BoundExpression? BindBinary(BinaryExpressionASTNode node, Scope scope)
             {
+                // if? 空值回退（S7f，SYNTAX §3.4）：不走 intrinsic 键查询
+                if (node.Operator == "if?")
+                {
+                    return BindNullFallback(node, scope);
+                }
                 var op = MapBinaryOperator(node.Operator);
                 var left = BindExpression(node.Left.Expression, scope);
                 var right = BindExpression(node.Right.Expression, scope);
@@ -1706,6 +1864,36 @@ namespace LatteCompiler
                 // BIL §11：比较结果 bool；算术/位/逻辑结果同操作数类型
                 var resultType = IsComparison(op) ? B.Bool : left.Type;
                 return new BoundBinaryExpression(node, op, left, right, resultType);
+            }
+
+            // if? 空值回退（S7f，SYNTAX §3.4）：左操作数必须 Nullable<T>，
+            // 右操作数（回退值）必须可赋值到 T，结果类型 T；右操作数延迟求值
+            // （P4a 以 if 结构保证）
+            private BoundExpression? BindNullFallback(BinaryExpressionASTNode node, Scope scope)
+            {
+                var left = BindExpression(node.Left.Expression, scope);
+                if (left == null) return null;
+                if (left.Type is ErrorTypeSymbol) return null;
+                if (left.Type.ConstructedFrom != B.NullableDefinition
+                    || left.Type.TypeArguments![0] is not TypeSymbol element)
+                {
+                    Error(node.Left.Span ?? node.Span,
+                        $"Operator 'if?' requires a nullable left operand " +
+                        $"(got '{TypeDisplay(left.Type)}')");
+                    return null;
+                }
+                var right = BindExpression(node.Right.Expression, scope, element);
+                if (right == null) return null;
+                // 毒化静默：任一侧已失败时不再报次生错误
+                if (right.Type is ErrorTypeSymbol) return null;
+                if (!IsAssignable(right.Type, element))
+                {
+                    Error(node.Right.Span ?? node.Span,
+                        $"Null fallback must be assignable to '{TypeDisplay(element)}' " +
+                        $"(got '{TypeDisplay(right.Type)}')");
+                    return null;
+                }
+                return new BoundNullFallbackExpression(node, left, right, element);
             }
 
             private BoundExpression? BindUnary(UnaryExpressionASTNode node, Scope scope)
@@ -1933,35 +2121,84 @@ namespace LatteCompiler
                     // 毒化静默：receiver 已失败时不再报次生错误
                     if (receiver.Type is ErrorTypeSymbol) return null;
                     BoundExpression? next;
-                    if (segment.Suffixes.Count == 0)
+                    if (segment.Connector == PathConnector.SafeDot)
                     {
-                        next = BindInstanceFieldAccess(segment, receiver, segment.Name);
+                        // 安全访问段（S7f，SYNTAX §3.4）
+                        next = BindSafeSegment(segment, receiver, scope);
                     }
-                    else if (segment.Suffixes.Count == 1
-                        && segment.Suffixes[0].Kind == PathSuffixKind.Call)
+                    else if (segment.Connector == PathConnector.Colon)
                     {
-                        var call = BindInstanceMethodCall(segment, receiver, segment.Name,
-                            segment.Suffixes[0].Arguments!, scope);
-                        if (call == null) return null;
-                        if (call.IsVoid)
-                        {
-                            Error(segment.Span, $"Method '{call.Method.Name}' has no result " +
-                                "(void) and cannot be used as a value");
-                            return null;
-                        }
-                        next = new BoundInstanceCallExpression(segment, receiver,
-                            call.Method, call.Arguments, (TypeSymbol)call.Method.ReturnType!);
+                        Error(segment.Span, "P3: wrapper access is not supported yet (S11)");
+                        return null;
                     }
                     else
                     {
-                        Error(segment.Span,
-                            "P3: instance member access is not supported yet (S8)");
-                        return null;
+                        // 普通段：可空值不提供隐式成员访问（须逐段标注 ?.，§3.4）
+                        if (receiver.Type.ConstructedFrom == B.NullableDefinition)
+                        {
+                            Error(segment.Span,
+                                $"Member '{segment.Name}' cannot be accessed on nullable type " +
+                                $"'{TypeDisplay(receiver.Type)}'; use '?.' for safe access");
+                            return null;
+                        }
+                        next = BindInstanceSegment(segment, receiver, scope);
+                        if (next == null) return null;
                     }
                     if (next == null) return null;
                     receiver = next;
                 }
                 return receiver;
+            }
+
+            // 普通实例段（无后缀 → 字段；恰一个 Call 后缀 → 实例方法调用）
+            private BoundExpression? BindInstanceSegment(PathSegmentASTNode segment,
+                BoundExpression receiver, Scope scope)
+            {
+                if (segment.Suffixes.Count == 0)
+                {
+                    return BindInstanceFieldAccess(segment, receiver, segment.Name);
+                }
+                if (segment.Suffixes.Count == 1
+                    && segment.Suffixes[0].Kind == PathSuffixKind.Call)
+                {
+                    var call = BindInstanceMethodCall(segment, receiver, segment.Name,
+                        segment.Suffixes[0].Arguments!, scope);
+                    if (call == null) return null;
+                    if (call.IsVoid)
+                    {
+                        Error(segment.Span, $"Method '{call.Method.Name}' has no result " +
+                            "(void) and cannot be used as a value");
+                        return null;
+                    }
+                    return new BoundInstanceCallExpression(segment, receiver,
+                        call.Method, call.Arguments, (TypeSymbol)call.Method.ReturnType!);
+                }
+                Error(segment.Span,
+                    "P3: instance member access is not supported yet (S8)");
+                return null;
+            }
+
+            // 安全访问段（S7f，SYNTAX §3.4）：receiver 必须 Nullable<T>；段在
+            // 非空 T 上绑定（占位叶子承载 unwrap 后的 receiver，P4a 物化替换）；
+            // 结果类型：成员类型已可空则原样（不二次包装），否则包 Nullable
+            private BoundExpression? BindSafeSegment(PathSegmentASTNode segment,
+                BoundExpression receiver, Scope scope)
+            {
+                if (receiver.Type.ConstructedFrom != B.NullableDefinition
+                    || receiver.Type.TypeArguments![0] is not TypeSymbol element)
+                {
+                    Error(segment.Span, $"Safe access '?.' requires a nullable receiver " +
+                        $"(got '{TypeDisplay(receiver.Type)}')");
+                    return null;
+                }
+                var placeholder = new BoundSafeAccessReceiverExpression(segment, element);
+                var access = BindInstanceSegment(segment, placeholder, scope);
+                if (access == null) return null;
+                var resultType = access.Type.ConstructedFrom == B.NullableDefinition
+                    ? access.Type
+                    : unit.Symbols.GetNullable(access.Type);
+                return new BoundSafeAccessExpression(segment, receiver, placeholder, access,
+                    resultType);
             }
 
             // 实例调用形态（首段为值的多段纯调用）：首段绑 receiver，中间段
@@ -2054,8 +2291,10 @@ namespace LatteCompiler
                         "(field type inference is not supported yet)");
                     return null;
                 }
-                if (field.FieldType is not TypeSymbol fieldType
-                    || ContainsGenericParameter(fieldType))
+                // 泛型字段类型的最小替换（S7f 解构场景）：声明类型是宿主泛型
+                // 参数时按 receiver 链上的构造类型取实参；取不到具体类型归 S9
+                var fieldType = SubstituteFieldType(field, receiver.Type);
+                if (fieldType == null || ContainsGenericParameter(fieldType))
                 {
                     Error(node.Span, "P3: generic type parameters are not supported yet (S9)");
                     return null;
@@ -2063,27 +2302,56 @@ namespace LatteCompiler
                 return new BoundFieldAccessExpression(node, receiver, field, fieldType);
             }
 
+            // 泛型字段类型最小替换（S7f；通用泛型使用侧归 S9）：
+            // 字段声明类型是泛型参数时，沿 receiver 静态类型的 BaseType 链找
+            // 字段宿主的构造类型，取同位实参；实参是具体 TypeSymbol 才返回，
+            // 否则 null（调用方报 S9）。非泛型参数声明类型原样返回
+            private static TypeSymbol? SubstituteFieldType(FieldSymbol field, TypeSymbol? receiverType)
+            {
+                if (field.FieldType is not GenericParameterSymbol param)
+                {
+                    return field.FieldType as TypeSymbol;
+                }
+                for (var t = receiverType; t != null; t = t.BaseType)
+                {
+                    if (t.ConstructedFrom == null || field.Owner == null
+                        || !ReferenceEquals(t.ConstructedFrom, field.Owner))
+                    {
+                        continue;
+                    }
+                    var index = t.ConstructedFrom.GenericParameters.IndexOf(param);
+                    return index >= 0 && t.TypeArguments![index] is TypeSymbol concrete
+                        ? concrete
+                        : null;
+                }
+                return null;
+            }
+
             // 实例方法查找：receiver 静态类型沿 BaseType 链（接口 receiver
             // 即查接口自身，BaseType 为 null 自然终止；ext 注册成员已在目标
             // 类型成员表）。仅 Regular 实例方法——operator 不经点号调用
-            // （for 头专用解析），init/getter/setter 归各自里程碑
+            // （for 头专用解析），init/getter/setter 归各自里程碑。
+            // 构造类型的成员表在其泛型定义上（构造器不复制成员列表，
+            // S7f 起经 ConstructedFrom 回退——实参替换在使用侧特判）
             private static List<MethodSymbol> FindInstanceMethods(TypeSymbol type, string name)
             {
                 var result = new List<MethodSymbol>();
                 for (var t = type; t != null; t = t.BaseType)
                 {
-                    result.AddRange(t.Methods.Where(m => m.Name == name
+                    var owner = t.ConstructedFrom ?? t;
+                    result.AddRange(owner.Methods.Where(m => m.Name == name
                         && !m.IsStatic && m.Kind == MethodKind.Regular));
                 }
                 return result;
             }
 
-            // 实例字段查找：同链（仅实例字段）
+            // 实例字段查找：同链（仅实例字段；构造类型回退泛型定义，同 FindInstanceMethods）
             private static FieldSymbol? FindInstanceField(TypeSymbol type, string name)
             {
                 for (var t = type; t != null; t = t.BaseType)
                 {
-                    var hit = t.Fields.FirstOrDefault(f => f.Name == name && !f.IsStatic);
+                    var owner = t.ConstructedFrom ?? t;
+                    var hit = owner.Fields.FirstOrDefault(f => f.Name == name && !f.IsStatic);
                     if (hit != null) return hit;
                 }
                 return null;
@@ -2279,7 +2547,9 @@ namespace LatteCompiler
             {
                 for (var host = method.Owner; host != null; host = host.BaseType)
                 {
-                    var hostHit = host.Fields.FirstOrDefault(f => f.Name == name);
+                    // 构造类型的成员表在其泛型定义上（S7f ConstructedFrom 回退）
+                    var owner = host.ConstructedFrom ?? host;
+                    var hostHit = owner.Fields.FirstOrDefault(f => f.Name == name);
                     if (hostHit != null) return hostHit;
                 }
                 for (var ns = ctx.Namespace; ns != null; ns = ns.Parent)
@@ -2307,7 +2577,8 @@ namespace LatteCompiler
                 var result = new List<MethodSymbol>();
                 for (var host = method.Owner; host != null; host = host.BaseType)
                 {
-                    result.AddRange(host.Methods.Where(m => m.Name == name));
+                    var owner = host.ConstructedFrom ?? host;
+                    result.AddRange(owner.Methods.Where(m => m.Name == name));
                 }
                 for (var ns = ctx.Namespace; ns != null; ns = ns.Parent)
                 {

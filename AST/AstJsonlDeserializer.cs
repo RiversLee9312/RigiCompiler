@@ -323,10 +323,7 @@ namespace LatteCompiler
                 // carrier 行：new carrier 加入宿主集合 / 赋给单 carrier 成员
                 if (index != null)
                 {
-                    if (memberValue is not IList list)
-                    {
-                        throw Error(rec.LineNo, $"member '{memberName}' is not a list");
-                    }
+                    var list = GetOrCreateList(host, member, memberValue, rec.LineNo);
                     var carrier = Activator.CreateInstance(rec.Type)!;
                     list.Add(carrier);
                     if (list.Count - 1 != index.Value)
@@ -348,10 +345,7 @@ namespace LatteCompiler
             if (index != null)
             {
                 // 集合元素：新建实例 Add（下标必须连续——成员列表构造时为空）
-                if (memberValue is not IList nodeList)
-                {
-                    throw Error(rec.LineNo, $"member '{memberName}' is not a list");
-                }
+                var nodeList = GetOrCreateList(host, member, memberValue, rec.LineNo);
                 var element = CreateNode(rec.Type, host, rec.LineNo);
                 nodeList.Add(element);
                 if (nodeList.Count - 1 != index.Value)
@@ -421,6 +415,32 @@ namespace LatteCompiler
                 PropertyInfo prop => prop.GetValue(target),
                 _ => null
             };
+        }
+
+        // null 列表成员按需创建并写回（如 StringLiteralASTNode.InterpolationParts：
+        // null 是「无插值」语义、构造时不预初始化——反序列化遇元素/carrier 行时
+        // 才物化列表）；非 null 非 IList 与不可创建类型维持原报错
+        private static IList GetOrCreateList(ASTNode host, MemberInfo member,
+            object? memberValue, int lineNo)
+        {
+            if (memberValue is IList list) return list;
+            if (memberValue != null)
+            {
+                throw Error(lineNo, $"member '{member.Name}' is not a list");
+            }
+            var memberType = member switch
+            {
+                FieldInfo field => field.FieldType,
+                PropertyInfo prop => prop.PropertyType,
+                _ => null
+            };
+            if (memberType == null || !typeof(IList).IsAssignableFrom(memberType)
+                || Activator.CreateInstance(memberType) is not IList created)
+            {
+                throw Error(lineNo, $"member '{member.Name}' is not a list");
+            }
+            WriteMember(host, member, created, lineNo);
+            return created;
         }
 
         private static void WriteMember(object target, MemberInfo member, object? value, int lineNo)

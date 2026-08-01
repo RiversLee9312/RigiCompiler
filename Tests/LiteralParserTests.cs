@@ -105,9 +105,101 @@ namespace LatteCompiler.Tests
             TestHarness.Section("String Literals");
 
             TestLit("\"Hello\"", "Str(\"Hello\")");
-            TestLit("\"World ${x}\"", "Str(\"World ${x}\",interp)");
+            // S7f 插值拆分：段序列挂载（StrInterp），文本段为段级字面量结构
+            TestLit("\"World ${x}\"", "StrInterp(Str(\"World \"), Path(x, []))");
             // \$ 转义的字面 $ 不构成插值引导（词法期判定，M32）
             TestLit("\"World \\${x}\"", "Str(\"World ${x}\")");
+
+            TestHarness.Blank();
+        }
+
+        // 字符串插值（S7f，SYNTAX §3.8）：拆分快照 + 结构/span 断言 + 错误路径
+        public static void TestStringInterpolation()
+        {
+            TestHarness.Section("String Interpolation");
+
+            // 多段拆分（含运算符段；段表达式经子解析为完整 AST）
+            TestLit("\"a${x}b${y + 1}c\"",
+                "StrInterp(Str(\"a\"), Path(x, []), Str(\"b\"), " +
+                "Binary(Path(y, []) + Int(1,I32)), Str(\"c\"))");
+            // 单段纯表达式（无字面量段不产空段）
+            TestLit("\"${x}\"", "StrInterp(Path(x, []))");
+            // 调用段
+            TestLit("\"${f(1, 2)}\"", "StrInterp(Path(f(Int(1,I32), Int(2,I32)), []))");
+            // M53 帧机制：单行宿主内嵌套字符串字面量（引号在帧内分流，不闭合宿主）
+            TestLit("\"a${\"b\"}c\"", "StrInterp(Str(\"a\"), Str(\"b\"), Str(\"c\"))");
+            // 嵌套插值（帧栈递归）
+            TestLit("\"${\"${x}\"}\"", "StrInterp(StrInterp(Path(x, [])))");
+            // 插值含 lambda（{} 计数正确：lambda 体不吞宿主配平）
+            TestLit("\"${items.map(func{(i: i32): i32 -> (i + 1)})}\"",
+                "StrInterp(Path(items, [.map(Lambda([i: i32]): i32 -> Group(Binary(Path(i, []) + Int(1,I32))))]))");
+            // 多段连续插值
+            TestLit("\"a${x}b${y}c\"",
+                "StrInterp(Str(\"a\"), Path(x, []), Str(\"b\"), Path(y, []), Str(\"c\"))");
+
+            // 结构断言（快照不作为唯一验证方式，AGENTS §5）
+            var lit = (LiteralExpressionASTNode)TestHarness.ParseFirstDecl("\"a${x}b\"");
+            var str = (StringLiteralASTNode)lit.Literal;
+            TestHarness.CheckTrue("插值段序列非空", str.InterpolationParts?.Count == 3);
+            var textPart = str.InterpolationParts![0];
+            TestHarness.CheckTrue("文本段是段级 LiteralExpression 结构",
+                textPart.Text is LiteralExpressionASTNode
+                && ((LiteralExpressionASTNode)textPart.Text!).Literal is StringLiteralASTNode
+                && ((StringLiteralASTNode)((LiteralExpressionASTNode)textPart.Text!).Literal).Value == "a");
+            TestHarness.CheckTrue("文本段 Parent 链（wrapper → 宿主字面量）",
+                ReferenceEquals(textPart.Text!.Parent, str)
+                && ReferenceEquals(
+                    ((LiteralExpressionASTNode)textPart.Text!).Literal.Parent, textPart.Text));
+            var exprPart = str.InterpolationParts[1];
+            TestHarness.CheckTrue("表达式段 Root 已填充且 Parent 是宿主字面量",
+                exprPart.Expression is { IsAttached: true }
+                && ReferenceEquals(exprPart.Expression!.Parent, str));
+            // 段 span（左闭右开）：源 "a${x}b" 中 a=1:2-1:3、x=1:5-1:6、b=1:7-1:8
+            TestHarness.Check("文本段 a 的 span Start", Pos(textPart.Text!.Span!.Value.Start), "1:2");
+            TestHarness.Check("文本段 a 的 span End", Pos(textPart.Text!.Span!.Value.End), "1:3");
+            TestHarness.Check("表达式段 x 的 span Start",
+                Pos(exprPart.Expression!.Span!.Value.Start), "1:5");
+            TestHarness.Check("表达式段 x 的 span End",
+                Pos(exprPart.Expression!.Span!.Value.End), "1:6");
+            TestHarness.Check("文本段 b 的 span Start",
+                Pos(str.InterpolationParts[2].Text!.Span!.Value.Start), "1:7");
+
+            // JSONL 往返：插值段（carrier + 段级字面量 + 表达式子树）不丢失
+            var root = TestHarness.ParseRoot("\"a${x}b\"");
+            var writer = new StringWriter();
+            AstJsonlSerializer.Serialize(root, writer);
+            var roundTripped = AstJsonlDeserializer.Deserialize(new StringReader(writer.ToString()));
+            var rtStr = (StringLiteralASTNode)((LiteralExpressionASTNode)
+                roundTripped.Declarations[0]).Literal;
+            TestHarness.CheckTrue("JSONL 往返后段序列完整",
+                rtStr.InterpolationParts?.Count == 3
+                && ((StringLiteralASTNode)((LiteralExpressionASTNode)
+                    rtStr.InterpolationParts[0].Text!).Literal).Value == "a"
+                && rtStr.InterpolationParts[1].Expression is { IsAttached: true }
+                && ((StringLiteralASTNode)((LiteralExpressionASTNode)
+                    rtStr.InterpolationParts[2].Text!).Literal).Value == "b");
+
+            TestHarness.Blank();
+        }
+
+        // 插值错误路径（M53 帧机制）：未闭合引导（Lexer EOF 帧检查）、空插值
+        // （表达式位置收到结束标记）、插值内多余 token、嵌套字符串未闭合
+        public static void TestInterpolationErrorCases()
+        {
+            TestHarness.Section("Interpolation Error Cases (expect Lexer/ParserException)");
+
+            TestHarness.CheckParseError("\"${",
+                () => TestHarness.ParseFirstDecl("\"${\""), "Unclosed interpolation");
+            TestHarness.CheckParseError("\"${}\"",
+                () => TestHarness.ParseFirstDecl("\"${}\""),
+                "Unexpected token at start of expression");
+            TestHarness.CheckParseError("\"${a b}\"",
+                () => TestHarness.ParseFirstDecl("\"${a b}\""),
+                "Expected '}' to close interpolation");
+            // 嵌套单行字符串未闭合：就近按单行字符串词法规则报
+            TestHarness.CheckParseError("多行内 \"${\"a}\"",
+                () => TestHarness.ParseFirstDecl("\"\"\"\n${\"a}\n\"\"\""),
+                "Line break symbol appears in string");
 
             TestHarness.Blank();
         }
@@ -238,6 +330,8 @@ namespace LatteCompiler.Tests
             TestFloatLiterals();
             TestBoolAndNull();
             TestStringLiterals();
+            TestStringInterpolation();
+            TestInterpolationErrorCases();
             TestCharLiterals();
             TestLiteralErrorCases();
             TestCharErrorCases();

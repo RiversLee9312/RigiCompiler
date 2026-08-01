@@ -11,6 +11,9 @@ namespace LatteCompiler
         private readonly LiteralExpressionASTNode targetNode;
         // 已创建的字面量节点（ReceiveSpan 时与包装节点一并回填 span）
         private LiteralASTNode? createdLiteral = null;
+        // 裸 return 边界标记（M33 传染链）：插值表达式里的 lambda 体沿用
+        // 宿主函数/lambda 的边界（S7f 起本层经子解析创建 ExpressionParserLayer）
+        internal bool allowBareReturn = true;
 
         // 状态机状态
         private enum ParserState
@@ -18,12 +21,19 @@ namespace LatteCompiler
             Initial,            // 初始状态，等待第一个 token
             IntegerPart,        // 已读取整数部分
             DotSeen,            // 已看到小数点
-            FractionalPart      // 已读取小数部分
+            FractionalPart,     // 已读取小数部分
+            AwaitInterpolationStartOrDone,  // 已收文本段：等待 InterpolationStart
+                                            // （插值模式）或其他（收尾）
+            InterpolationEndExpected,       // 插值表达式已委托：等待 InterpolationEnd
+            AwaitSegmentOrStartOrDone       // 插值段之间：文本段/又一 InterpolationStart/收尾
         }
 
         private ParserState state = ParserState.Initial;
         private string integerPart = "";
         private string fractionalPart = "";
+        // 当前暂存的文本段 token（M53 插值段序列模式）：等待后续
+        // InterpolationStartToken 判别插值模式，或按普通单段字符串收尾
+        private StringToken? pendingSegment = null;
 
         public LiteralParserLayer(LiteralExpressionASTNode target)
         {
@@ -59,10 +69,127 @@ namespace LatteCompiler
                 case ParserState.DotSeen:
                     return HandleDotSeenState(currentToken, context);
 
+                case ParserState.AwaitInterpolationStartOrDone:
+                    return HandleAwaitInterpolationStartOrDone(currentToken, context);
+
+                case ParserState.InterpolationEndExpected:
+                    return HandleInterpolationEndExpected(currentToken, context);
+
+                case ParserState.AwaitSegmentOrStartOrDone:
+                    return HandleAwaitSegmentOrStartOrDone(currentToken, context);
+
                 default:
                     context.RaiseError($"Invalid parser state: {state}");
                     return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
             }
+        }
+
+        // ===== 字符串插值段序列（M53，SYNTAX §3.8）=====
+        // token 流形态：StringToken? (InterpolationStart 表达式 InterpolationEnd
+        // StringToken?)*——Lexer 帧机制已保证配平；文本段解码后为空的跳过
+
+        // 暂存当前文本段，等待 InterpolationStart 判别（或直接收尾）
+        private ParserLayerResult HandleStringToken(StringToken str)
+        {
+            pendingSegment = str;
+            state = ParserState.AwaitInterpolationStartOrDone;
+            return ParserLayerResult.Continue.Instance;
+        }
+
+        private ParserLayerResult HandleAwaitInterpolationStartOrDone(Token currentToken,
+            ParserLayerContext context)
+        {
+            if (currentToken is InterpolationStartToken)
+            {
+                // 插值模式：建插值字符串节点，暂存段入 parts，委托表达式段
+                EnsureInterpolationMode();
+                AddTextPart(pendingSegment!);
+                pendingSegment = null;
+                return DelegateInterpolationExpression();
+            }
+            // 无后续插值：插值模式内的字符串结束（暂存段入 parts 后收尾），
+            // 或普通单段字符串收尾
+            if (createdLiteral != null)
+            {
+                AddTextPart(pendingSegment!);
+                pendingSegment = null;
+                return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
+            }
+            var node = new StringLiteralASTNode(targetNode) { Value = pendingSegment!.Content };
+            pendingSegment = null;
+            AddLiteralToTarget(node);
+            return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
+        }
+
+        private ParserLayerResult HandleInterpolationEndExpected(Token currentToken,
+            ParserLayerContext context)
+        {
+            if (currentToken is InterpolationEndToken)
+            {
+                state = ParserState.AwaitSegmentOrStartOrDone;
+                return ParserLayerResult.Continue.Instance;
+            }
+
+            context.RaiseError($"Expected '}}' to close interpolation, got: {currentToken}");
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
+        }
+
+        private ParserLayerResult HandleAwaitSegmentOrStartOrDone(Token currentToken,
+            ParserLayerContext context)
+        {
+            if (currentToken is StringToken str)
+            {
+                // 与首段同路径：暂存待判（后续可能是又一插值或字符串结束）
+                return HandleStringToken(str);
+            }
+            if (currentToken is InterpolationStartToken)
+            {
+                return DelegateInterpolationExpression();
+            }
+            // 字符串结束（换行/EOF/} 等）：Replay 上交，由父层收尾
+            return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
+        }
+
+        // 插值模式入口（首个 InterpolationStart 到来时）：建插值字符串节点
+        private void EnsureInterpolationMode()
+        {
+            if (createdLiteral != null) return;
+            AddLiteralToTarget(new StringLiteralASTNode(targetNode)
+            {
+                Value = "",
+                HasInterpolation = true,
+                InterpolationParts = new List<StringInterpolationPart>()
+            });
+        }
+
+        // 文本段入 parts：段级 LiteralExpression 子结构（与普通字符串字面量
+        // 同构，P3/P4 复用字面量机器；span = 段 token span）；解码后为空的段跳过
+        private void AddTextPart(StringToken segment)
+        {
+            if (segment.Content.Length == 0) return;
+            var owner = (StringLiteralASTNode)createdLiteral!;
+            var wrapper = new LiteralExpressionASTNode(owner);
+            var literal = new StringLiteralASTNode(wrapper) { Value = segment.Content };
+            wrapper.AttachLiteral(literal);
+            wrapper.Span = segment.CharRange;
+            literal.Span = segment.CharRange;
+            owner.InterpolationParts!.Add(new StringInterpolationPart { Text = wrapper });
+        }
+
+        // 委托插值表达式段：ExpressionParserLayer 就地填充段 Root
+        // （InterpolationStart 已消费；allowBareReturn 沿宿主上下文传染，M33）
+        private ParserLayerResult DelegateInterpolationExpression()
+        {
+            var owner = (StringLiteralASTNode)createdLiteral!;
+            var part = new StringInterpolationPart
+            {
+                Expression = new ExpressionRootASTNode(owner)
+            };
+            owner.InterpolationParts!.Add(part);
+            state = ParserState.InterpolationEndExpected;
+            return new ParserLayerResult.PushLayer(
+                new ExpressionParserLayer(part.Expression) { allowBareReturn = allowBareReturn },
+                TokenDisposition.Consume);
         }
 
         // EOF 处理：整数部分已读按整数字面量收尾；Initial/DotSeen 为不完整结构
@@ -72,6 +199,23 @@ namespace LatteCompiler
             {
                 var intNode = ParseIntegerLiteral(integerPart, context);
                 AddLiteralToTarget(intNode);
+                return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
+            }
+
+            // 字符串在 AwaitInterpolationStartOrDone 遇 EOF：结构完整（插值
+            // 配平由 Lexer 帧机制保证），按普通完成收尾（Replay 上交 EOF）
+            if (state == ParserState.AwaitInterpolationStartOrDone
+                && createdLiteral != null)
+            {
+                AddTextPart(pendingSegment!);
+                pendingSegment = null;
+                return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
+            }
+            if (state == ParserState.AwaitInterpolationStartOrDone)
+            {
+                var node = new StringLiteralASTNode(targetNode) { Value = pendingSegment!.Content };
+                pendingSegment = null;
+                AddLiteralToTarget(node);
                 return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
             }
 
@@ -123,8 +267,12 @@ namespace LatteCompiler
                     break;
 
                 case StringToken str:
-                    AddLiteralToTarget(ParseStringLiteral(str));
-                    return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
+                    return HandleStringToken(str);
+
+                // 插值开始标记（M53）："${x}" 等无首段文本的插值字符串
+                case InterpolationStartToken:
+                    EnsureInterpolationMode();
+                    return DelegateInterpolationExpression();
 
                 // 字符字面量（Lexer 已保证恰好一个字符或一个转义序列，SYNTAX §3.3）
                 case CharToken ch:
@@ -234,17 +382,6 @@ namespace LatteCompiler
             {
                 Value = value,
                 IsFloat = isFloat
-            };
-        }
-
-        // 解析字符串字面量
-        private StringLiteralASTNode ParseStringLiteral(StringToken str)
-        {
-            // 插值标记以词法期判定为准（\$ 转义产出的字面 $ 不构成插值引导）
-            return new StringLiteralASTNode(targetNode)
-            {
-                Value = str.Content,
-                HasInterpolation = str.HasInterpolation
             };
         }
 

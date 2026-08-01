@@ -240,7 +240,7 @@ Latte 不要求每一个源码类型节点都一一对应一个普通 Native 对
 0.1f             // float
 
 // 字符串
-"Hello ${expr}"          // 字符串插值
+"Hello ${expr}"          // 字符串插值（非 String 段按 toString 转换后拼接，§3.8）
 """
 多行字符串
 """
@@ -295,6 +295,11 @@ name?.let{(it: String) -> doSomething(it)}
 // 安全类型转换
 obj as? String
 ```
+
+`?.` 与 `if?` 的定型规则：
+
+- `?.` 的接收者必须是可空类型 `T?`；其后的成员段在非空类型 `T` 上解析。结果的类型：成员类型本身可空时原样保留，否则包装为对应的可空类型（不二次包装）。可空值不提供隐式成员访问——`a?.b.c` 中 `.c` 作用在可空结果上是编译错误，须逐段标注（`a?.b?.c`）。
+- `if?` 的左操作数必须是可空类型 `T?`；右操作数（空值回退值）必须可赋值到 `T`，整个表达式的类型为 `T`。右操作数延迟求值：左操作数非空时不对其求值。
 
 ### 3.5 类型转换与类型检查
 
@@ -413,6 +418,27 @@ if (obj supers t) { ... }
 ```latte
 if (obj with Serializable) { ... }
 ```
+
+---
+
+### 3.8 字符串转换（`toString`）与字符串插值
+
+每个类型都拥有 `toString(): String`（承诺挂在类型层级根 `Any` 上），可直接调用，也可经 `override` 覆写以定制文本表示：
+
+- **内建基本类型**（数值 / `bool` / `char` / `String`）的 `toString` 由内建实现提供：`String` 即自身；数值为标准十进制文本；`bool` 为 `"true"` / `"false"`；`char` 为单字符字符串。
+- **未覆写的类型**由默认实现提供（`Object` 上的 open 方法，内建提供），返回该类型的 canonical 名（如 `"com.example::User"`）。
+- 值类型调用 `toString` 时按 `RUNTIME.md` §4 装箱后进行虚派发；装箱与派发是 `BIL_STANDARD.md` §21 划给 VM/Middleware 的实现细节，源码层只需知道调用承诺成立。
+
+字符串插值（§3.3）以 `toString` 定义：`${}` 内表达式的静态类型不是 `String` 时，先调用其 `toString()` 再参与拼接；拼接即 `String` 的内建 `+` 运算，按源码顺序从左到右结合。每个插值段只求值一次。
+
+```latte
+var count = 3
+var text = "count: ${count}, ok: ${(count > 0)}"   // "count: 3, ok: true"
+```
+
+插值表达式的词法规则（M53 词法帧机制）：`${` 后表达式按普通 Latte 词法解析，可以包含任意字面量（字符串/字符）、嵌套 `{}`（lambda 体、seq 块）与注释，括号配平由词法层完成；表达式跨行遵循与源文件一致的续行规则（括号未闭合时换行透明，§1.1）。嵌套字符串字面量在两态宿主中均可直接使用（`"a${"b"}c"` 合法）；未闭合的嵌套字面量按词法错误就近报告。
+
+基元与默认实现均为内建行为：BIL VM 经 `BIL_STANDARD.md` §21.5 内建 hook 执行，原生环境经 `RUNTIME.md` §26 的 `latte_rt.toString` 路由。
 
 ---
 
@@ -1704,6 +1730,8 @@ pub func main() {
 ```latte
 var (key, value) = pair   // pair 必须为 core.Pair\<TKey, TValue> 的子类
 ```
+
+规则：解构名字必须恰好两个，按声明序绑定到 `key`/`value` 分量（类型取 `core.Pair` 构造的实参）；解构必须带初始化器，不支持类型标注；`const (k, v) = pair` 同样适用（分量局部只读）。`core.Pair` 是 `stdlib/.bootstrap.latte` 的自举 open class（§15.3），可继承——用户类型经继承它获得解构能力。
 
 ---
 

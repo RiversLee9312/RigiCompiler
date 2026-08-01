@@ -134,10 +134,25 @@ namespace LatteCompiler.Tests
 
             TestLit("\"\"\"\nhello\n\"\"\"", "Str(\"hello\")");
             TestLit("\"\"\"\n    a\n\n    b\n    \"\"\"", "Str(\"a\n\nb\")");
-            // 插值标记与单行一致（求值留待语义阶段）
-            TestLit("\"\"\"\n${x}\n\"\"\"", "Str(\"${x}\",interp)");
+            // 插值拆分与单行一致（S7f：段序列挂载，StrInterp）
+            TestLit("\"\"\"\n${x}\n\"\"\"", "StrInterp(Path(x, []))");
             // \$ 转义的字面 $ 不构成插值引导
             TestLit("\"\"\"\n\\${x}\n\"\"\"", "Str(\"${x}\")");
+            // S7f 多行插值拆分：字面量段随行首剥缩进，行间换行属于内容
+            TestLit("\"\"\"\n    a ${x}\n    b\n    \"\"\"",
+                "StrInterp(Str(\"a \"), Path(x, []), Str(\"\nb\"))");
+            // 表达式可跨行（与主文件同规则：括号未闭合时换行透明，SYNTAX §1.1）
+            TestLit("\"\"\"\n    ${(a +\n        1)}\n    \"\"\"",
+                "StrInterp(Group(Binary(Path(a, []) + Int(1,I32))))");
+            // 插值表达式内可含单行字符串字面量（多行内 " 免转义；含 {} 不计配平）
+            TestLit("\"\"\"\n    ${f(\"a}b\")}\n    \"\"\"",
+                "StrInterp(Path(f(Str(\"a}b\")), []))");
+            // M53 帧机制：嵌套插值（多行宿主内再插值，帧栈递归）
+            TestLit("\"\"\"\n    ${\"inner ${x}\"}\n    \"\"\"",
+                "StrInterp(StrInterp(Str(\"inner \"), Path(x, [])))");
+            // M53 帧机制：插值含 lambda（{} 计数正确）
+            TestLit("\"\"\"\n    ${items.map(func{(i: i32): i32 -> (i + 1)})}\n    \"\"\"",
+                "StrInterp(Path(items, [.map(Lambda([i: i32]): i32 -> Group(Binary(Path(i, []) + Int(1,I32))))]))");
 
             // 结构断言（快照不作为唯一验证方式，AGENTS §5）
             var node = TestHarness.ParseFirstDecl("\"\"\"\nhi\n\"\"\"");
@@ -192,22 +207,16 @@ namespace LatteCompiler.Tests
             }
         }
 
-        // 插值标记词法断言：源码首个 token 应为 StringToken，标记精确比对
+        // 插值帧词法断言（M53）：源码 token 流是否含 InterpolationStartToken
+        // （\$ 转义的字面 $ 不触发帧机制，与 M32 的标记判定同语义）
         private static void ExpectInterp(string code, bool expected)
         {
             try
             {
                 var tokens = new Lexer().Tokenize(code);
-                if (tokens[0] is StringToken str)
-                {
-                    TestHarness.CheckTrue($"interp {Describe(code)}", str.HasInterpolation == expected,
-                        $"HasInterpolation={str.HasInterpolation}");
-                }
-                else
-                {
-                    TestHarness.CheckTrue($"interp {Describe(code)} => 首 token 不是字符串", false,
-                        tokens[0].ToString());
-                }
+                var hasFrame = tokens.Any(t => t is InterpolationStartToken);
+                TestHarness.CheckTrue($"interp {Describe(code)}", hasFrame == expected,
+                    $"InterpolationStart={(hasFrame ? "有" : "无")}；流={string.Join(" ", tokens.Select(t => t.ToString()))}");
             }
             catch (Exception ex)
             {

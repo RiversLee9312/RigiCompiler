@@ -68,12 +68,16 @@ namespace LatteCompiler.Tests
             }
             var root = roots[0];
 
-            TestHarness.CheckTrue("顶层恰好 1 个声明（ext operator）",
-                root.Declarations.Count == 1, $"实际 {root.Declarations.Count}");
-            var fn = root.Declarations.Count > 0
-                ? root.Declarations[0] as CallableDeclarationASTNode : null;
-            TestHarness.CheckTrue("首声明是 callable", fn != null,
+            TestHarness.CheckTrue("顶层恰好 3 个声明（namespace + ext operator + Pair）",
+                root.Declarations.Count == 3, $"实际 {root.Declarations.Count}");
+            TestHarness.CheckTrue("首声明是 namespace core",
+                root.Declarations.Count > 0
+                && root.Declarations[0] is NamespaceDeclarationASTNode,
                 root.Declarations.Count > 0 ? root.Declarations[0].GetType().Name : "<none>");
+            var fn = root.Declarations.Count > 1
+                ? root.Declarations[1] as CallableDeclarationASTNode : null;
+            TestHarness.CheckTrue("次声明是 callable（ext operator）", fn != null,
+                root.Declarations.Count > 1 ? root.Declarations[1].GetType().Name : "<none>");
             if (fn == null) { TestHarness.Blank(); return; }
 
             TestHarness.Check("限定名（ext 目标.成员名）", fn.Name, "i32.EnumerateInRange");
@@ -81,6 +85,18 @@ namespace LatteCompiler.Tests
             TestHarness.CheckTrue("带 pub 修饰符", fn.Modifiers.Contains(Keywords.PUB));
             TestHarness.CheckTrue("Kind 是 Operator", fn.Kind == CallableKind.Operator);
             TestHarness.CheckTrue("有 Body（Latte 自举实现）", fn.Body != null);
+
+            // M52：core.Pair\<TKey, TValue\> 自举声明（SYNTAX §18 解构协议根）
+            var pair = root.Declarations.Count > 2
+                ? root.Declarations[2] as ClassDeclarationASTNode : null;
+            TestHarness.CheckTrue("第三声明是 class（core.Pair）", pair != null,
+                root.Declarations.Count > 2 ? root.Declarations[2].GetType().Name : "<none>");
+            if (pair != null)
+            {
+                TestHarness.CheckTrue("Pair 是 open 泛型类",
+                    pair.Modifiers.Contains(Keywords.OPEN)
+                    && pair.GenericParameters.Parameters.Count == 2);
+            }
 
             TestHarness.Blank();
         }

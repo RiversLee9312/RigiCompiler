@@ -178,12 +178,19 @@ namespace LatteCompiler
     {
         public LoweredExpression Receiver { get; }
         public FieldSymbol Field { get; }
+        // Type 默认走 Origin 透传（恒等降级路径，P3 已含替换后类型）；
+        // 显式传入 = 合成路径（S7f 解构脱糖等 Origin 非表达式节点的场景，
+        // 先例：LoweredCastExpression 的 Type 自带）
+        private readonly TypeSymbol? type;
 
-        public LoweredFieldAccessExpression(BoundFieldAccessExpression origin,
-            LoweredExpression receiver, FieldSymbol field) : base(origin)
+        public override TypeSymbol Type => type ?? base.Type;
+
+        public LoweredFieldAccessExpression(BoundNode origin,
+            LoweredExpression receiver, FieldSymbol field, TypeSymbol? type = null) : base(origin)
         {
             Receiver = receiver;
             Field = field;
+            this.type = type;
         }
     }
 
