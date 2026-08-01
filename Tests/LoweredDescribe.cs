@@ -15,6 +15,9 @@ namespace LatteCompiler.Tests
     ///   Call(name, [args], ret)  New(T, [args])  New(T, init, [args])
     ///   This(C)（S7c-2）  InstCall(name, receiver, [args], ret)  InstField(f, receiver, T)
     ///   Cast(e, T, RT)  SafeCast(e, T, RT)（S7e，as / as?；T = 目标类型，RT = 结果类型）
+    ///   Is(e, T)  Supers(e, T)  With(e, T)（S8a；动态形态目标带 dyn 前缀：
+    ///   Is(e, dyn t)；结果恒 bool 不打印）
+    ///   TypeOf(e, RT)（值形态）  TypeOf(type T, RT)（类型形态）（S8a；RT = Type\<T\>）
     /// 格式约定（语句）：
     ///   Decl(x, i32, = init)  ExprStmt(e)  CallStmt(name, [args])  Assign(t, v)  Return(v)  Return
     ///   If(c, [真], [假])  If(c, [真])
@@ -134,6 +137,15 @@ namespace LatteCompiler.Tests
                 LoweredCastExpression cast =>
                     $"{(cast.IsSafe ? "SafeCast" : "Cast")}({Expr(cast.Source)}, " +
                     $"{TypeShort(cast.TargetType)}, {TypeShort(cast.Type)})",
+                // S8a：is/supers/with（Kind 枚举名即显示名；动态形态目标带
+                // dyn 前缀）与 typeOf（类型形态目标带 type 前缀，RT 恒打印）
+                LoweredTypeCheckExpression typeCheck =>
+                    $"{typeCheck.Kind}({Expr(typeCheck.Operand)}, " +
+                    $"{(typeCheck.TargetType != null ? TypeShort(typeCheck.TargetType) : "dyn " + Expr(typeCheck.TargetValue))})",
+                LoweredTypeOfExpression typeOf =>
+                    typeOf.TargetType != null
+                        ? $"TypeOf(type {TypeShort(typeOf.TargetType)}, {TypeShort(typeOf.Type)})"
+                        : $"TypeOf({Expr(typeOf.Operand)}, {TypeShort(typeOf.Type)})",
                 _ => $"<{expr.GetType().Name}>",
             };
         }

@@ -20,6 +20,9 @@ namespace LatteCompiler.Tests
     ///   SeqExpr(值块)（S7e；volatile 时值块带 volatile 标记）
     ///   SafeAccess(recv, access, T?)  SafeReceiver(T)（S7f，`?.` 与占位叶子）
     ///   NullFallback(l, r, T)（S7f，if? 空值回退）
+    ///   Is(e, T)  Supers(e, T)  With(e, T)（S8a；动态形态目标带 dyn 前缀：
+    ///   Is(e, dyn t)；结果恒 bool 不打印）
+    ///   TypeOf(e, RT)（值形态）  TypeOf(type T, RT)（类型形态）（S8a；RT = Type\<T\>）
     /// 格式约定（语句）：
     ///   Decl(x, i32, = init)  ExprStmt(e)  CallStmt(name, [args])  Assign(t, v)  Return(v)  Return
     ///   If(c, [真], [假])  If(c, [真])  ReturnValue(_, v)（标签取 Target.Label）
@@ -179,6 +182,15 @@ namespace LatteCompiler.Tests
                 BoundNullFallbackExpression nullFallback =>
                     $"NullFallback({Expr(nullFallback.Left)}, {Expr(nullFallback.Right)}, " +
                     $"{TypeShort(nullFallback.Type)})",
+                // S8a：is/supers/with（Kind 枚举名即显示名；动态形态目标带
+                // dyn 前缀）与 typeOf（类型形态目标带 type 前缀，RT 恒打印）
+                BoundTypeCheckExpression typeCheck =>
+                    $"{typeCheck.Kind}({Expr(typeCheck.Operand)}, " +
+                    $"{(typeCheck.TargetType != null ? TypeShort(typeCheck.TargetType) : "dyn " + Expr(typeCheck.TargetValue))})",
+                BoundTypeOfExpression typeOf =>
+                    typeOf.TargetType != null
+                        ? $"TypeOf(type {TypeShort(typeOf.TargetType)}, {TypeShort(typeOf.Type)})"
+                        : $"TypeOf({Expr(typeOf.Operand)}, {TypeShort(typeOf.Type)})",
                 _ => $"<{expr.GetType().Name}>",
             };
         }

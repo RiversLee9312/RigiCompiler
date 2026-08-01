@@ -69,6 +69,8 @@ namespace LatteCompiler.Tests
             TestDestructuringEmission();
             TestTryEmission();
             TestSeqEmission();
+            TestTypeCheckEmission();
+            TestTypeOfEmission();
             TestUnsupportedNodes();
 
             return TestHarness.Summary("BilEmitter");
@@ -1435,6 +1437,89 @@ namespace LatteCompiler.Tests
             TestHarness.CheckTrue("call 单操作数 blk（§16.1）",
                 callInstruction.Operands.Count == 1
                 && callInstruction.Operands[0] is BilBlockOperand);
+        }
+
+        // ===== S8a：is/supers/with 发射（§12.3；黄金文本经 --emit-bil 冒烟核定）=====
+        private static void TestTypeCheckEmission()
+        {
+            var (unit, module, _) = EmitUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "wrapper Serializable { }\n" +
+                "open class Animal { }\n" +
+                "class Dog : Animal { }\n" +
+                "pub func f(d: Dog): bool {\n    return d is Animal\n}\n" +
+                "pub func g(d: Dog): bool {\n    return d supers Animal\n}\n" +
+                "pub func h(d: Dog): bool {\n    return d with Serializable\n}\n" +
+                "pub func k(d: Dog): bool {\n    var t = typeOf(d)\n    return d is t\n}\n");
+            CheckNoErrors("全管线无诊断（类型谓词发射）", unit);
+            TestHarness.Check("type.is 指令与 .vars", RenderFn(FnOf(module, "$f(d:Dog)@.bool")),
+                ".vars { .bool .t0 }\n" +
+                "type.is $d type(Animal) $.t0\n" +
+                "ret $.t0\n");
+            TestHarness.Check("type.supers 指令与 .vars", RenderFn(FnOf(module, "$g(d:Dog)@.bool")),
+                ".vars { .bool .t0 }\n" +
+                "type.supers $d type(Animal) $.t0\n" +
+                "ret $.t0\n");
+            TestHarness.Check("type.with 指令与 .vars", RenderFn(FnOf(module, "$h(d:Dog)@.bool")),
+                ".vars { .bool .t0 }\n" +
+                "type.with $d type(Serializable) $.t0\n" +
+                "ret $.t0\n");
+            // 动态形态：getid.var 前置（typeOf 值形态）+ type.is.indirect 三变量操作数
+            TestHarness.Check("type.is.indirect 指令与 .vars（getid.var 前置）",
+                RenderFn(FnOf(module, "$k(d:Dog)@.bool")),
+                ".vars { .typeid<Dog> t, .typeid<Dog> .t0, .bool .t1 }\n" +
+                "getid.var $d $.t0\n" +
+                "set.var $.t0 $t\n" +
+                "type.is.indirect $d $t $.t1\n" +
+                "ret $.t1\n");
+            // 结构性事实：§12.3 静态三操作数形状（VALUE type(TARGET_TYPE) RESULT_BOOL）
+            var isInstruction = FnOf(module, "$f(d:Dog)@.bool").Blocks[0].Instructions
+                .Single(i => i.Opcode == "type.is");
+            TestHarness.CheckTrue("type.is 三操作数（§12.3）",
+                isInstruction.Operands.Count == 3
+                && isInstruction.Operands[0] is BilVariableOperand
+                && isInstruction.Operands[1] is BilTypeOperand
+                && isInstruction.Operands[2] is BilVariableOperand);
+            // 结构性事实：§12.3 动态三操作数全变量（VALUE TYPEID_VAR RESULT_BOOL）
+            var indirectInstruction = FnOf(module, "$k(d:Dog)@.bool").Blocks[0].Instructions
+                .Single(i => i.Opcode == "type.is.indirect");
+            TestHarness.CheckTrue("type.is.indirect 三操作数全变量（§12.3）",
+                indirectInstruction.Operands.Count == 3
+                && indirectInstruction.Operands.All(o => o is BilVariableOperand));
+        }
+
+        // ===== S8a：typeOf 发射（§12.5；黄金文本经 --emit-bil 冒烟核定）=====
+        private static void TestTypeOfEmission()
+        {
+            var (unit, module, _) = EmitUnit(
+                "open class Animal { }\n" +
+                "class Dog : Animal { }\n" +
+                "pub func m(): Type\\<Animal> {\n    return typeOf(Animal)\n}\n" +
+                "pub func n(d: Dog): Type\\<Dog> {\n    return typeOf(d)\n}\n");
+            CheckNoErrors("全管线无诊断（typeOf 发射）", unit);
+            TestHarness.Check("getid.type 指令与 .vars（类型形态）",
+                RenderFn(FnOf(module, "$m()@.typeid<Animal>")),
+                ".vars { .typeid<Animal> .t0 }\n" +
+                "getid.type type(Animal) $.t0\n" +
+                "ret $.t0\n");
+            TestHarness.Check("getid.var 指令与 .vars（值形态）",
+                RenderFn(FnOf(module, "$n(d:Dog)@.typeid<Dog>")),
+                ".vars { .typeid<Dog> .t0 }\n" +
+                "getid.var $d $.t0\n" +
+                "ret $.t0\n");
+            // 结构性事实：§12.5 getid.type 双操作数（type(TYPE_SYMBOL) TARGET_TYPEID）
+            var getIdType = FnOf(module, "$m()@.typeid<Animal>").Blocks[0].Instructions
+                .Single(i => i.Opcode == "getid.type");
+            TestHarness.CheckTrue("getid.type 双操作数（§12.5）",
+                getIdType.Operands.Count == 2
+                && getIdType.Operands[0] is BilTypeOperand
+                && getIdType.Operands[1] is BilVariableOperand);
+            // 结构性事实：§12.5 getid.var 双操作数（VALUE TARGET_TYPEID）
+            var getIdVar = FnOf(module, "$n(d:Dog)@.typeid<Dog>").Blocks[0].Instructions
+                .Single(i => i.Opcode == "getid.var");
+            TestHarness.CheckTrue("getid.var 双操作数全变量（§12.5）",
+                getIdVar.Operands.Count == 2
+                && getIdVar.Operands.All(o => o is BilVariableOperand));
         }
 
         // ===== 负例：未覆盖节点 → P4 Error =====

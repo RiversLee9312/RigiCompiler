@@ -49,6 +49,8 @@ namespace LatteCompiler.Tests
             TestSafeAccess();
             TestNullFallback();
             TestDestructuring();
+            TestTypeCheck();
+            TestTypeOf();
             TestDiagnosticsAccumulation();
             return TestHarness.Summary("Binder");
         }
@@ -2121,6 +2123,162 @@ namespace LatteCompiler.Tests
                 "func f() {\n    var (k, k) = new Entry(\"a\", 1)\n}\n");
             TestHarness.CheckSemanticError("名字重复拒绝", unit4.Diagnostics,
                 "Duplicate local variable 'k'");
+        }
+
+        // ===== 类型谓词 is/supers/with（S8a，SYNTAX §3.5/§3.7）=====
+        private static void TestTypeCheck()
+        {
+            TestHarness.Section("P3 Type Check (is/supers/with)");
+
+            // is 静态形态：TargetType 即声明符号（引用相等），TargetValue null，Type 恒 bool
+            var (unit, bodies) = BindUnit(
+                "open class Animal { }\n" +
+                "class Dog : Animal { }\n" +
+                "func f(d: Dog): bool { return d is Animal }\n");
+            CheckNoErrors("无诊断（is 静态）", unit);
+            TestHarness.Check("is 静态绑定形态", BoundDescribe.Body(BodyOf(bodies, "f")),
+                "Body(f, [], [Return(Is(Param(d,Dog), Animal))])");
+            var animalType = unit.Symbols.GlobalNamespace.Types.Single(t => t.Name == "Animal");
+            var isExpr = (BoundTypeCheckExpression)((BoundReturnStatement)
+                BodyOf(bodies, "f").Body.Statements[0]).Value!;
+            TestHarness.CheckTrue("is 静态结构事实",
+                isExpr.Kind == BoundTypeCheckKind.Is
+                && ReferenceEquals(isExpr.TargetType, animalType)
+                && isExpr.TargetValue == null
+                && ReferenceEquals(isExpr.Type, unit.Symbols.Bootstrap.Bool));
+
+            // supers 静态形态（同形态，Kind 不同）
+            var (unit2, bodies2) = BindUnit(
+                "open class Animal { }\n" +
+                "class Dog : Animal { }\n" +
+                "func g(d: Dog): bool { return d supers Animal }\n");
+            CheckNoErrors("无诊断（supers 静态）", unit2);
+            TestHarness.Check("supers 静态绑定形态", BoundDescribe.Body(BodyOf(bodies2, "g")),
+                "Body(g, [], [Return(Supers(Param(d,Dog), Animal))])");
+            var supersExpr = (BoundTypeCheckExpression)((BoundReturnStatement)
+                BodyOf(bodies2, "g").Body.Statements[0]).Value!;
+            TestHarness.CheckTrue("supers 静态结构事实",
+                supersExpr.Kind == BoundTypeCheckKind.Supers
+                && ReferenceEquals(supersExpr.TargetType,
+                    unit2.Symbols.GlobalNamespace.Types.Single(t => t.Name == "Animal"))
+                && supersExpr.TargetValue == null
+                && ReferenceEquals(supersExpr.Type, unit2.Symbols.Bootstrap.Bool));
+
+            // with 静态形态：目标为 wrapper 声明
+            var (unit3, bodies3) = BindUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "wrapper Serializable { }\n" +
+                "open class Animal { }\n" +
+                "class Dog : Animal { }\n" +
+                "func h(d: Dog): bool { return d with Serializable }\n");
+            CheckNoErrors("无诊断（with 静态）", unit3);
+            TestHarness.Check("with 静态绑定形态", BoundDescribe.Body(BodyOf(bodies3, "h")),
+                "Body(h, [], [Return(With(Param(d,Dog), Serializable))])");
+            var withExpr = (BoundTypeCheckExpression)((BoundReturnStatement)
+                BodyOf(bodies3, "h").Body.Statements[0]).Value!;
+            TestHarness.CheckTrue("with 静态结构事实",
+                withExpr.Kind == BoundTypeCheckKind.With
+                && ReferenceEquals(withExpr.TargetType,
+                    unit3.Symbols.GlobalNamespace.Types.Single(t => t.Name == "Serializable"))
+                && withExpr.TargetValue == null);
+
+            // is 动态形态 + typeOf 值形态（Type\<T\> 值作右侧）
+            var (unit4, bodies4) = BindUnit(
+                "open class Animal { }\n" +
+                "class Dog : Animal { }\n" +
+                "func k(d: Dog): bool {\n" +
+                "    var t = typeOf(d)\n" +
+                "    return d is t\n" +
+                "}\n");
+            CheckNoErrors("无诊断（is 动态）", unit4);
+            TestHarness.Check("is 动态 + typeOf 值形态绑定形态",
+                BoundDescribe.Body(BodyOf(bodies4, "k")),
+                "Body(k, [t: Type<Dog>], " +
+                "[Decl(t, Type<Dog>, = TypeOf(Param(d,Dog), Type<Dog>)); " +
+                "Return(Is(Param(d,Dog), dyn Local(t,Type<Dog>)))])");
+            var dogType = unit4.Symbols.GlobalNamespace.Types.Single(t => t.Name == "Dog");
+            var typeOfExpr = (BoundTypeOfExpression)((BoundLocalDeclarationStatement)
+                BodyOf(bodies4, "k").Body.Statements[0]).Initializer!;
+            // typeOf 值形态：Operand 非 null / TargetType null，Type 为 Type\<Dog\> 构造
+            TestHarness.CheckTrue("typeOf 值形态结构事实",
+                typeOfExpr.Operand != null && typeOfExpr.TargetType == null
+                && ReferenceEquals(typeOfExpr.Type.ConstructedFrom,
+                    unit4.Symbols.Bootstrap.TypeDefinition)
+                && ReferenceEquals(typeOfExpr.Type.TypeArguments![0], dogType));
+            var dynIsExpr = (BoundTypeCheckExpression)((BoundReturnStatement)
+                BodyOf(bodies4, "k").Body.Statements[1]).Value!;
+            // is 动态形态：TargetValue 非 null 且其 Type 与 typeOf 结果同一构造实例
+            TestHarness.CheckTrue("is 动态结构事实",
+                dynIsExpr.Kind == BoundTypeCheckKind.Is
+                && dynIsExpr.TargetType == null && dynIsExpr.TargetValue != null
+                && ReferenceEquals(dynIsExpr.TargetValue!.Type, typeOfExpr.Type));
+
+            // 诊断：with 右侧非 wrapper 类型
+            var (unit5, _) = BindUnit(
+                "open class Animal { }\n" +
+                "class Dog : Animal { }\n" +
+                "func f(d: Dog): bool { return d with Animal }\n");
+            TestHarness.CheckSemanticError("with 非 wrapper 目标拒绝", unit5.Diagnostics,
+                "'with' target must be a wrapper type: 'Animal'");
+
+            // 诊断：动态右侧值非 Type\<T\>（i32 局部）
+            var (unit6, _) = BindUnit(
+                "open class Animal { }\n" +
+                "class Dog : Animal { }\n" +
+                "func f(d: Dog): bool {\n" +
+                "    var x = 1\n" +
+                "    return d is x\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("右侧值非 Type\\<T\\> 拒绝", unit6.Diagnostics,
+                "right side of 'is' must be a type");
+
+            // 诊断：右侧类型/值两不沾
+            var (unit7, _) = BindUnit(
+                "open class Animal { }\n" +
+                "class Dog : Animal { }\n" +
+                "func f(d: Dog): bool { return d is noSuchThing }\n");
+            TestHarness.CheckSemanticError("右侧两不沾拒绝", unit7.Diagnostics,
+                "right side of 'is' must be a type");
+
+            // 诊断：is .Case（前导点 enum case 匹配）归 S11
+            var (unit8, _) = BindUnit(
+                "open class Animal { }\n" +
+                "class Dog : Animal { }\n" +
+                "func f(d: Dog): bool { return d is .Failed }\n");
+            TestHarness.CheckSemanticError("enum case is 归口 S11", unit8.Diagnostics,
+                "enum case is pattern is not supported yet (S11)");
+        }
+
+        // ===== typeOf（S8a，SYNTAX §3.7；BIL §12.5）=====
+        private static void TestTypeOf()
+        {
+            TestHarness.Section("P3 typeOf");
+
+            // 类型形态：单段裸名未命中值，命中类型
+            var (unit, bodies) = BindUnit(
+                "open class Animal { }\n" +
+                "class Dog : Animal { }\n" +
+                "func m(): Type\\<Animal> { return typeOf(Animal) }\n");
+            CheckNoErrors("无诊断（typeOf 类型形态）", unit);
+            TestHarness.Check("typeOf 类型形态绑定形态",
+                BoundDescribe.Body(BodyOf(bodies, "m")),
+                "Body(m, [], [Return(TypeOf(type Animal, Type<Animal>))])");
+            var animalType = unit.Symbols.GlobalNamespace.Types.Single(t => t.Name == "Animal");
+            var typeOfTypeForm = (BoundTypeOfExpression)((BoundReturnStatement)
+                BodyOf(bodies, "m").Body.Statements[0]).Value!;
+            TestHarness.CheckTrue("typeOf 类型形态结构事实",
+                typeOfTypeForm.TargetType != null
+                && ReferenceEquals(typeOfTypeForm.TargetType, animalType)
+                && typeOfTypeForm.Operand == null
+                && ReferenceEquals(typeOfTypeForm.Type.ConstructedFrom,
+                    unit.Symbols.Bootstrap.TypeDefinition)
+                && ReferenceEquals(typeOfTypeForm.Type.TypeArguments![0], animalType));
+
+            // 诊断：值/类型都未命中 → BindPath 的未定义名诊断
+            var (unit2, _) = BindUnit(
+                "func m() { var t = typeOf(noSuchThing) }\n");
+            TestHarness.CheckSemanticError("typeOf 两不沾拒绝", unit2.Diagnostics,
+                "Undefined name: 'noSuchThing'");
         }
 
         // ===== 诊断累积：函数间互不阻断，函数内多错累积 =====

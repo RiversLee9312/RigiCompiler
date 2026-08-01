@@ -2,12 +2,13 @@ using System.Collections.Generic;
 
 namespace LatteCompiler
 {
-    // Bound 表达式节点（S5 最小集 + S7b 首批 + S7c-2 实例成员 + S7d switch + S7e cast/seq
-    // + S7f 安全访问/空值回退，SEMANTIC_ROADMAP）：
+    // Bound 表达式节点（S5 最小集 + S7b 首批 + S7c-2 实例成员 + S7d switch
+    // + S7e cast/seq + S7f 安全访问/空值回退 + S8a 类型谓词/typeOf，
+    // SEMANTIC_ROADMAP）：
     // 字面量 / 值引用（局部变量与参数）/ 全局字段引用 / 二元与一元 intrinsic 运算 /
     // 直接调用（无重载）/ new 构造 / if 表达式 / 复合赋值 /
     // this / 实例方法调用 / 实例字段访问 / switch 表达式 / cast / seq 表达式 /
-    // 安全访问 `?.`（含占位叶子）/ if? 空值回退。
+    // 安全访问 `?.`（含占位叶子）/ if? 空值回退 / is·supers·with / typeOf。
     // 字面量值不冗余存储——经 Syntax（LiteralExpressionASTNode.Literal）取。
 
     // 字面量（整/浮点/字符串/字符/bool/null；Type 由 P3 按字面量种类与上下文定型）
@@ -324,6 +325,66 @@ namespace LatteCompiler
         {
             Left = left;
             Right = right;
+        }
+    }
+
+    // 类型检查种类（S8a，SYNTAX §3.5/§3.7 的三个类型谓词）
+    public enum BoundTypeCheckKind
+    {
+        Is,      // obj is T：obj 运行时类型为 T 或其子类
+        Supers,  // obj supers T：obj 运行时类型为 T 的基类
+        With,    // obj with W：obj 运行时类型被 wrapper W 修饰
+    }
+
+    // is / supers / with（S8a，SYNTAX §3.5/§3.7；BIL §12.3 直接对应）：
+    // 右侧双形态互斥（构造时恰一个非 null）——TargetType = 类型引用静态形态，
+    // TargetValue = Type\<T\> 值动态形态（其 Type 为 Type\<T\> 构造类型）。
+    // 结果恒 bool（Type 由 P3 定型传入）；不做静态不可能性拒绝
+    // （12 is String 不报错，运行时判定）
+    public sealed class BoundTypeCheckExpression : BoundExpression
+    {
+        public BoundTypeCheckKind Kind { get; }
+        public BoundExpression Operand { get; }
+        public TypeSymbol? TargetType { get; }
+        public BoundExpression? TargetValue { get; }
+
+        public BoundTypeCheckExpression(ASTNode syntax, BoundTypeCheckKind kind,
+            BoundExpression operand, TypeSymbol? targetType, BoundExpression? targetValue,
+            TypeSymbol type) : base(syntax, type)
+        {
+            // 双形态互斥不变量：静态/动态恰居其一
+            if ((targetType == null) == (targetValue == null))
+            {
+                throw new CompilerInternalException(
+                    "BoundTypeCheckExpression 的 TargetType/TargetValue 必须恰一个非 null");
+            }
+            Kind = kind;
+            Operand = operand;
+            TargetType = targetType;
+            TargetValue = targetValue;
+        }
+    }
+
+    // typeOf（S8a，SYNTAX §3.7；BIL §12.5 直接对应）：Operand（值形态，
+    // 取运行时实际类型）/ TargetType（类型形态）互斥（构造时恰一个非 null）。
+    // Type = Type\<T\> 构造类型（P3 定型：值形态 T = 操作数静态类型，
+    // 类型形态 T = 目标类型）
+    public sealed class BoundTypeOfExpression : BoundExpression
+    {
+        public BoundExpression? Operand { get; }
+        public TypeSymbol? TargetType { get; }
+
+        public BoundTypeOfExpression(ASTNode syntax, BoundExpression? operand,
+            TypeSymbol? targetType, TypeSymbol type) : base(syntax, type)
+        {
+            // 双形态互斥不变量：值/类型恰居其一
+            if ((operand == null) == (targetType == null))
+            {
+                throw new CompilerInternalException(
+                    "BoundTypeOfExpression 的 Operand/TargetType 必须恰一个非 null");
+            }
+            Operand = operand;
+            TargetType = targetType;
         }
     }
 }

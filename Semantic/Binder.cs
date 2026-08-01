@@ -42,6 +42,11 @@ namespace LatteCompiler
     // seq 双形态（语句 = 块级直通不压值块栈——return@ 指向它报未定义
     // 标签，M50 登记；表达式 = 值块机制复用 + volatile 置位；using 绑定
     // 列表归 S13，P3 拦截）。
+    // S8a 落地范围：is/supers/with 类型谓词（右侧双形态——类型引用静态形态
+    // 不落袋试探优先，失败按值绑定且必须承载 Type\<T\>；with 静态目标
+    // 必须 Kind == Wrapper；结果恒 bool；enum case 形态归 S11）与
+    // typeOf（值形态定型 Type\<操作数静态类型\>，类型形态定型 Type\<T\>；
+    // 单段裸名操作数先值后类型不落袋分类）。
     // 访问控制（priv/protected）检查不做（归 S8，命中即放行）。
     //
     // 值/调用的名字解析查找序：块作用域链 → 参数 → 宿主类型成员
@@ -1187,6 +1192,209 @@ namespace LatteCompiler
                 return new BoundCastExpression(node, source, targetType, node.IsSafe, resultType);
             }
 
+            // ===== 类型谓词与 typeOf（S8a，SYNTAX §3.5/§3.7）=====
+
+            // is / supers / with（BIL §12.3）：右侧双形态——类型引用（静态）
+            // 或 Type\<T\> 值（动态）。解析顺序：先按类型引用解析（reportErrors:
+            // false 不落袋试探），失败再按值绑定；结果恒 bool。不做静态不可能性
+            // 拒绝（12 is String 不报错，运行时判定）
+            private BoundExpression? BindTypeCheck(TypeCheckExpressionASTNode node, Scope scope)
+            {
+                var operand = BindExpression(node.Object.Expression, scope);
+                // is .Case（前导点 enum case 匹配）归 S11
+                if (node.TargetCase != null)
+                {
+                    Error(node.Span, "P3: enum case is pattern is not supported yet (S11)");
+                    return null;
+                }
+                var kind = node.Operator switch
+                {
+                    "is" => BoundTypeCheckKind.Is,
+                    "supers" => BoundTypeCheckKind.Supers,
+                    "with" => BoundTypeCheckKind.With,
+                    _ => throw new CompilerInternalException("未知类型检查运算符: " + node.Operator),
+                };
+                var typeRef = node.TargetType!;
+                var span = typeRef.Span ?? node.Span;
+                // 静态形态试探：按类型引用解析（不落袋；失败返回 ErrorType
+                // 毒化符号——TypeSymbol 子类，必须显式排除才落入动态形态）。
+                // T? 目标包装 Nullable\<T\>（与 NameResolver.ResolveTypeReference
+                // 同规则）
+                var probed = names.ResolveSymbolPath(typeRef.TypeSymbol.symbol, ctx,
+                    declaringType, method, allowImports: true, reportErrors: false, span: null);
+                if (probed is GenericParameterSymbol)
+                {
+                    Error(span, "P3: generic type parameters are not supported yet (S9)");
+                    return null;
+                }
+                if (probed is TypeSymbol targetType && probed is not ErrorTypeSymbol)
+                {
+                    if (typeRef.IsNullable)
+                    {
+                        targetType = unit.Symbols.GetNullable(targetType);
+                    }
+                    // with 的静态目标必须声明为 wrapper（is/supers 任意类型）
+                    if (kind == BoundTypeCheckKind.With && targetType.Kind != TypeKind.Wrapper)
+                    {
+                        Error(span, $"'with' target must be a wrapper type: " +
+                            $"'{TypeDisplay(targetType)}'");
+                        return null;
+                    }
+                    if (operand == null) return null;
+                    return new BoundTypeCheckExpression(node, kind, operand, targetType,
+                        null, B.Bool);
+                }
+                // 动态形态：右侧按值绑定，值必须承载 Type\<T\>（BIL §12.3
+                // .indirect 指令的 TYPEID_VAR 操作数）；ErrorType 毒化静默放行
+                var targetValue = BindTypeCheckTargetValue(node, typeRef, scope,
+                    out var valueFound);
+                if (targetValue == null)
+                {
+                    // 值符号命中但绑定失败时诊断已落袋，不重复报
+                    if (!valueFound)
+                    {
+                        Error(span, TypeCheckTargetMessage(node));
+                    }
+                    return null;
+                }
+                if (targetValue.Type is not ErrorTypeSymbol
+                    && !ReferenceEquals(targetValue.Type.ConstructedFrom, B.TypeDefinition))
+                {
+                    Error(span, TypeCheckTargetMessage(node));
+                    return null;
+                }
+                if (operand == null) return null;
+                return new BoundTypeCheckExpression(node, kind, operand, null, targetValue,
+                    B.Bool);
+            }
+
+            // 动态形态右侧的值绑定（不落袋纯查找，命中后正常构造值引用 bound
+            // 节点）：单段名 = 局部 → 参数 → 字段（FindField 全链）；多段路径 =
+            // 容器（前 N-1 段静默解析）+ 末段字段。路径带泛型实参按未命中处理
+            // （使用侧泛型归 S9）。valueFound = 是否有值符号命中（命中但绑定
+            // 失败时诊断已落袋，调用方不再重复报）
+            private BoundExpression? BindTypeCheckTargetValue(TypeCheckExpressionASTNode node,
+                TypeReferenceASTNode typeRef, Scope scope, out bool valueFound)
+            {
+                valueFound = false;
+                var elements = typeRef.TypeSymbol.symbol.elements;
+                if (elements.Any(e => e.generics.Count > 0)) return null;
+                var span = typeRef.Span ?? node.Span;
+                if (elements.Count == 1)
+                {
+                    var name = elements[0].name;
+                    var local = scope.Lookup(name);
+                    if (local != null)
+                    {
+                        valueFound = true;
+                        if (!assigned.Contains(local))
+                        {
+                            Error(span, $"Use of unassigned local variable '{name}'");
+                        }
+                        // 源码局部 Type 恒非空（同 BindPath 单段分支）
+                        return new BoundValueReferenceExpression(typeRef, local, local.Type!);
+                    }
+                    var parameter = method.Parameters.FirstOrDefault(p => p.Name == name);
+                    if (parameter != null)
+                    {
+                        valueFound = true;
+                        if (parameter.Type is not TypeSymbol paramType)
+                        {
+                            Error(span, "P3: generic type parameters are not supported yet (S9)");
+                            return null;
+                        }
+                        return new BoundValueReferenceExpression(typeRef, parameter, paramType);
+                    }
+                    var field = FindField(name);
+                    if (field == null) return null;
+                    valueFound = true;
+                    return BindFieldReference(typeRef, field);
+                }
+                // 多段：前 N-1 段解析为容器（静默——失败由调用方统一诊断），
+                // 末段查字段成员（实例字段命中由 BindFieldReference 补 this）
+                var head = new Symbol();
+                for (int i = 0; i < elements.Count - 1; i++)
+                {
+                    head.elements.Add(new SymbolElement { name = elements[i].name });
+                }
+                var container = names.ResolveSymbolPath(head, ctx, declaringType, method,
+                    allowImports: true, reportErrors: false, span: null);
+                if (container is ErrorTypeSymbol) return null;
+                if (FindMember(container, elements[^1].name) is not FieldSymbol memberField)
+                {
+                    return null;
+                }
+                valueFound = true;
+                return BindFieldReference(typeRef, memberField);
+            }
+
+            // 动态形态失败（非类型也非 Type\<T\> 值）的统一诊断消息（附路径原文）
+            private static string TypeCheckTargetMessage(TypeCheckExpressionASTNode node)
+            {
+                return $"right side of '{node.Operator}' must be a type or " +
+                    $"a Type\\<T\\> value: " +
+                    $"'{NameResolver.PathText(node.TargetType!.TypeSymbol.symbol)}'";
+            }
+
+            // typeOf（BIL §12.5）：双形态——值形态取操作数的运行时实际类型，
+            // 静态定型 Type\<操作数静态类型\>；类型形态取类型本身的 Type 值，
+            // 静态定型 Type\<T\>。操作数解析顺序：先值后类型（单段裸名两可时
+            // 值优先——局部/参数/字段遮蔽同名类型）
+            private BoundExpression? BindTypeOf(TypeOfExpressionASTNode node, Scope scope)
+            {
+                // 单段裸名路径（无泛型/无后缀/无段，this 除外）做不落袋分类；
+                // 其余形态一律值形态直通
+                if (node.Operand.Expression is PathExpressionASTNode path
+                    && path.Head.Name != null && path.Head.Name != "this"
+                    && path.Head.GenericArguments.Count == 0 && path.Head.Suffixes.Count == 0
+                    && path.Segments.Count == 0)
+                {
+                    var name = path.Head.Name;
+                    bool isValue = scope.Lookup(name) != null
+                        || method.Parameters.Any(p => p.Name == name)
+                        || FindField(name) != null;
+                    if (!isValue)
+                    {
+                        // 值未命中 → 试探类型解析（不落袋），命中即类型形态
+                        var head = new Symbol();
+                        head.elements.Add(new SymbolElement { name = name });
+                        var probed = names.ResolveSymbolPath(head, ctx, declaringType,
+                            method, allowImports: true, reportErrors: false, span: null);
+                        if (probed is GenericParameterSymbol)
+                        {
+                            Error(path.Span ?? node.Span,
+                                "P3: generic type parameters are not supported yet (S9)");
+                            return null;
+                        }
+                        // 失败返回 ErrorType 毒化符号（TypeSymbol 子类，必须
+                        // 显式排除才会落入下方 BindPath 的「未解析」诊断）
+                        if (probed is TypeSymbol targetType && probed is not ErrorTypeSymbol)
+                        {
+                            return new BoundTypeOfExpression(node, null, targetType,
+                                TypeOfResultType(targetType));
+                        }
+                        // 值/类型都未命中：落入下方 BindPath 自然报「未解析」
+                    }
+                    var bound = BindPath(path, scope);
+                    if (bound == null) return null;
+                    return new BoundTypeOfExpression(node, bound, null,
+                        TypeOfResultType(bound.Type));
+                }
+                var value = BindExpression(node.Operand.Expression, scope);
+                if (value == null) return null;
+                return new BoundTypeOfExpression(node, value, null,
+                    TypeOfResultType(value.Type));
+            }
+
+            // typeOf 结果类型：Type\<T\> 构造类型；ErrorType 毒化静默
+            // （结果沿用 ErrorType，同 BindCast）
+            private TypeSymbol TypeOfResultType(TypeSymbol element)
+            {
+                return element is ErrorTypeSymbol
+                    ? element
+                    : unit.Symbols.GetConstructedType(B.TypeDefinition, element);
+            }
+
             // ===== 循环（S7c-1，SYNTAX §7.3/§7.4）=====
 
             // while/do-while 绑定：条件 bool 检查；循环体绑定前施工壳压入
@@ -1487,6 +1695,8 @@ namespace LatteCompiler
                     SwitchExpressionASTNode switchExpression =>
                         BindSwitchExpression(switchExpression, scope),
                     CastExpressionASTNode cast => BindCast(cast, scope),
+                    TypeCheckExpressionASTNode typeCheck => BindTypeCheck(typeCheck, scope),
+                    TypeOfExpressionASTNode typeOf => BindTypeOf(typeOf, scope),
                     SeqBlockExpressionASTNode seqExpression => BindSeqExpression(seqExpression, scope),
                     CompoundAssignmentExpressionASTNode compound =>
                         BindCompoundAssignment(compound, scope),

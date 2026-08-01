@@ -4,9 +4,10 @@
 > `SEMANTIC_ARCHITECTURE.md`；本文档只管「计划」，进度现状一律记
 > `docs/PROGRESS_REPORT.md`（落地时在其里程碑历史领取全局 M 编号）。
 >
-> 编号 S0–S14 是**计划序号**，近细远粗：S0–S7 已细化到文件级施工
-> 清单（S0–S6 于 2026-07-31 细化，S7 于 2026-07-31 细化为 S7a–S7f），
-> S8 以后随进展再细化。允许并行的地方已注明；
+> 编号 S0–S14 是**计划序号**，近细远粗：S0–S8 已细化到文件级施工
+> 清单（S0–S6 于 2026-07-31 细化，S7 于 2026-07-31 细化为 S7a–S7f，
+> S8 于 2026-08-01 细化为 S8a–S8f），S9 以后随进展再细化。
+> 允许并行的地方已注明；
 > 未注明的按序推进，不跳步。
 
 ---
@@ -307,11 +308,86 @@ lowering 在 S13 汇合，ARCH §7）。
 
 ## S8 P3 完整化
 
-重载解析（source-level ranking 唯一落点）、默认参数填充、具名参数
-重排、访问控制检查、getter/setter 绑定（三类位置）、smart cast 分析
-（P4a 物化 cast）、`is`/`as`/`as?`/`typeOf`/`supers`/`with`、
-async 边界五项闸门（SYNTAX §4.5：receiver / 参数 / TResult / 捕获 /
-泛型实参，分析侧；lowering 在 S13）。
+范围：`is`/`supers`/`with` 与 `typeOf` 三 pass、smart cast 分析、
+索引访问与实例成员完整化、重载解析（source-level ranking 唯一
+落点）、默认参数填充、具名参数重排、访问控制检查、getter/setter
+绑定（三类位置）、castTo/castFrom 名字分析、async 边界五项闸门
+（SYNTAX §4.5：receiver / 参数 / TResult / 捕获 / 泛型实参，
+分析侧；lowering 在 S13）。
+
+2026-08-01 细化为六步，按序推进。沿用 S7 确立的推进原则：P3 与
+P4 同步落地——P3 绑得出来的形态，同一步内 P4 必须能发射，端到端
+`--emit-bil` 可验证（S8d/S8e/S8f 为纯 P3 步，无 P4 面，逐步注明）：
+
+### S8a is / supers / with + typeOf 三 pass
+
+- P3：`is`/`supers`/`with` 右侧双形态绑定——名字先按类型引用
+  解析，失败再按值绑定（值必须是 `Type\<T>`，同名时类型优先）；
+  `with` 类型引用必须 wrapper；`is`/`supers` 不做静态不可能性
+  拒绝（SYNTAX §3.5 右侧解析规则随本步定稿落地）+ `typeOf`
+  双形态——操作数先按值绑定（取运行时实际类型，返回
+  `Type\<T静态\>`），无法绑为值且可解析为类型引用时取类型形态
+  （SYNTAX §3.7 随本步定稿落地）；`is .Case`（enum 判别比较）
+  归 S11，本步落 P3 归口诊断；
+- P4a：恒等重写（无脱糖）；
+- P4b 首次发射：BIL §12.3（`type.is`/`type.supers`/`type.with` +
+  三 `.indirect` 形态）与 §12.5（`getid.var`/`getid.type`）；
+- **验收**：is/supers/with 双形态与 typeOf 双形态端到端合法 BIL
+  （含 `.indirect` 与 `getid` 发射用例）+ `is .Case` 归口诊断用例。
+
+### S8b smart cast 分析
+
+- 规范前置：SYNTAX §3.5 现仅一句话（「`is` 检查后在对应分支中
+  自动转换类型」），动工前必须先专项定稿——分支语义、失效规则、
+  null 收窄、与 `?.` / `if?` 的交互；enum case `is` 明确不触发
+  smart cast；
+- P3：只做分析与标记（ARCH §5.2），结果记录在 BoundTree；另含
+  `if?` / `?.` 已落地形态与 smart cast 的统一性核查；
+- P4a：显式 `cast` 物化（ARCH §6.1，复用 M51 EnsureDeclaredType
+  模式）；P4b 复用 S7e `cast` 发射，零新增；
+- **验收**：定稿规则逐条的 BoundTree 标记断言 + 物化 cast 的
+  `LoweredDescribe` 用例 + 统一性核查结论落 PROGRESS_REPORT。
+
+### S8c 索引访问 + 实例成员完整化
+
+- P3 索引：`getAtIndex`/`setAtIndex` 运算符绑定（SYNTAX §13.2；
+  `Binder.FindInstanceOperator`（:1409）模式可复用）+ 赋值 place
+  扩展（`a[i] = x`）；多参数索引 `a[i, j]` 是否合法需本步定稿；
+- P3 实例成员完整化：表达式底座路径绑定（`(a+b).c` / `foo().c` /
+  `foo()?.bar` 等），解开 Binder.cs 现行全部 S8 归口诊断
+  （:1610/:1652/:1665/:2102/:2177）；
+- P4b：`get.array`/`set.array` 发射（BIL §13.6，验证器严格三元组
+  查询——collection/index/result 精确匹配，无隐式转换）；
+- **验收**：索引读写（含赋值 place）与表达式底座链端到端合法
+  BIL + 多参数索引定稿结论同步 SYNTAX §13.2。
+
+### S8d 重载解析 + 默认参数 + 具名参数（纯 P3，无 P4 面）
+
+- 规范前置：重载规则目前欠定，动工前先补 SYNTAX；
+- P3：source-level ranking 唯一落点（BIL §3.3——之后各层不再
+  ranking）+ 默认参数填充 + 具名参数重排；`BoundCall` 必须已是
+  规范参数序（ARCH §2），P4 不再重排；
+- **验收**：ranking 规则逐条用例 + 默认/具名参数绑定的
+  `BoundDescribe` 断言（规范参数序形态）。
+
+### S8e 访问控制 + getter/setter + override 检查（纯 P3，无 P4 面）
+
+- P3 访问控制检查（使用点，SYNTAX §16；符号 Accessibility 已于
+  M43 写入，Binder.cs:2242/:2276 注释明示归本步）；
+- P3 getter/setter 绑定（三类位置，SYNTAX §9.4；
+  `MethodSymbol.Kind` Getter/Setter 已备）；
+- 顺带落地 §9.2 修饰符表 `override` 行的配套检查规则；
+- **验收**：各级可见性越界诊断用例 + 三类位置 getter/setter
+  绑定用例 + `override` 配套检查用例。
+
+### S8f castTo/castFrom 名字分析 + async 边界五项闸门（纯 P3，无 P4 面）
+
+- P3 castTo/castFrom 名字分析（SYNTAX §3.5 转换优先级：源类型
+  `castTo` → 目标类型 `castFrom`；BIL §12.1 语义第 1、2 条）；
+- P3 async 边界五项闸门（SYNTAX §4.5：receiver / 参数 / TResult /
+  捕获 / 泛型实参，仅分析侧；lowering 归 S13）；
+- **验收**：castTo/castFrom 优先级与失败诊断用例 + 五项闸门
+  逐项违反诊断用例。
 
 > 边界注记（M50）：`as`/`as?` 最小闭环已提前至 S7e 落地（P3 定型 +
 > cast/cast.safe 发射）；本里程碑剩余的 cast 相关工作为 smart cast

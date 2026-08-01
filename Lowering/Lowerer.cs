@@ -1091,6 +1091,31 @@ namespace LatteCompiler
                         if (castSource == null) return null;
                         return new LoweredCastExpression(cast, castSource, cast.TargetType,
                             cast.IsSafe, cast.Type);
+                    case BoundTypeCheckExpression typeCheck:
+                        // is/supers/with 恒等降级（S8a，BIL §12.3 直接对应，
+                        // 无脱糖）；动态形态的 TargetValue 递归降级
+                        var checkOperand = LowerExpression(typeCheck.Operand);
+                        if (checkOperand == null) return null;
+                        LoweredExpression? checkTargetValue = null;
+                        if (typeCheck.TargetValue != null)
+                        {
+                            checkTargetValue = LowerExpression(typeCheck.TargetValue);
+                            if (checkTargetValue == null) return null;
+                        }
+                        return new LoweredTypeCheckExpression(typeCheck, typeCheck.Kind,
+                            checkOperand, typeCheck.TargetType, checkTargetValue,
+                            typeCheck.Type);
+                    case BoundTypeOfExpression typeOf:
+                        // typeOf 恒等降级（S8a，BIL §12.5 直接对应，无脱糖）；
+                        // 值形态的 Operand 递归降级
+                        LoweredExpression? typeOfOperand = null;
+                        if (typeOf.Operand != null)
+                        {
+                            typeOfOperand = LowerExpression(typeOf.Operand);
+                            if (typeOfOperand == null) return null;
+                        }
+                        return new LoweredTypeOfExpression(typeOf, typeOfOperand,
+                            typeOf.TargetType, typeOf.Type);
                     case BoundSafeAccessExpression safeAccess:
                         return LowerSafeAccess(safeAccess);
                     case BoundSafeAccessReceiverExpression safeReceiver:

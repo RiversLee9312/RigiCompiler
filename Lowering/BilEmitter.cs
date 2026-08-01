@@ -724,6 +724,56 @@ namespace LatteCompiler
                             BilOp.Type(CanonicalSymbolPrinter.PrintType(cast.TargetType)))
                         { Origin = cast });
                         return castResult;
+                    case LoweredTypeCheckExpression typeCheck:
+                        // is/supers/with（S8a，§12.3）：
+                        // 静态 type.X VALUE type(TARGET_TYPE) RESULT；
+                        // 动态 type.X.indirect VALUE TYPEID_VAR RESULT
+                        var checkValue = EmitValue(typeCheck.Operand, target);
+                        var checkResult = NewTemp(typeCheck.Type);
+                        var checkOpcode = typeCheck.Kind switch
+                        {
+                            BoundTypeCheckKind.Is => "type.is",
+                            BoundTypeCheckKind.Supers => "type.supers",
+                            BoundTypeCheckKind.With => "type.with",
+                            _ => throw new CompilerInternalException(
+                                "未知类型检查种类: " + typeCheck.Kind),
+                        };
+                        if (typeCheck.TargetValue != null)
+                        {
+                            var typeIdVar = EmitValue(typeCheck.TargetValue, target);
+                            target.Instructions.Add(new BilInstruction(checkOpcode + ".indirect",
+                                BilOp.Var(checkValue), BilOp.Var(typeIdVar),
+                                BilOp.Var(checkResult))
+                            { Origin = typeCheck });
+                        }
+                        else
+                        {
+                            target.Instructions.Add(new BilInstruction(checkOpcode,
+                                BilOp.Var(checkValue),
+                                BilOp.Type(CanonicalSymbolPrinter.PrintType(typeCheck.TargetType!)),
+                                BilOp.Var(checkResult))
+                            { Origin = typeCheck });
+                        }
+                        return checkResult;
+                    case LoweredTypeOfExpression typeOf:
+                        // typeOf（S8a，§12.5）：值形态 getid.var VALUE RESULT；
+                        // 类型形态 getid.type type(TYPE_SYMBOL) RESULT
+                        var typeOfResult = NewTemp(typeOf.Type);
+                        if (typeOf.Operand != null)
+                        {
+                            var typeOfValue = EmitValue(typeOf.Operand, target);
+                            target.Instructions.Add(new BilInstruction("getid.var",
+                                BilOp.Var(typeOfValue), BilOp.Var(typeOfResult))
+                            { Origin = typeOf });
+                        }
+                        else
+                        {
+                            target.Instructions.Add(new BilInstruction("getid.type",
+                                BilOp.Type(CanonicalSymbolPrinter.PrintType(typeOf.TargetType!)),
+                                BilOp.Var(typeOfResult))
+                            { Origin = typeOf });
+                        }
+                        return typeOfResult;
                     default:
                         Error(expression.Origin.Syntax.Span,
                             $"P4: lowered expression kind not supported by minimal emission: " +

@@ -3,9 +3,10 @@ using System.Collections.Generic;
 namespace LatteCompiler
 {
     // Lowered 表达式节点（S6 最小集 + S7a 补齐 + S7b 脱糖 + S7c-2 实例成员
-    // + S7e cast，SEMANTIC_ROADMAP）：字面量 / 值引用 / 全局字段引用 /
-    // 二元与一元 intrinsic 运算 / 带返回值调用 / new 构造 / 编译期常量
-    // （短路脱糖产物）/ this / 实例方法调用 / 实例字段访问 / cast。
+    // + S7e cast + S8a 类型谓词/typeOf，SEMANTIC_ROADMAP）：字面量 / 值引用 /
+    // 全局字段引用 / 二元与一元 intrinsic 运算 / 带返回值调用 / new 构造 /
+    // 编译期常量（短路脱糖产物）/ this / 实例方法调用 / 实例字段访问 / cast /
+    // is·supers·with / typeOf。
     // 字面量值不冗余存储——经 Origin.Syntax（LiteralExpressionASTNode.Literal）取。
     // S7b 起部分节点构造的 origin 参数放宽为 BoundNode：脱糖合成节点无逐一
     // 对应的 Bound 节点，Origin 按 ARCH §5.1 约定指向最近的语法来源。
@@ -217,6 +218,67 @@ namespace LatteCompiler
             Source = source;
             TargetType = targetType;
             IsSafe = isSafe;
+            this.type = type;
+        }
+    }
+
+    // is / supers / with（S8a；BIL §12.3 直接对应）：静态形态
+    // type.is/type.supers/type.with，动态形态（TargetValue）加 .indirect。
+    // 双形态互斥同 Bound 侧（构造时恰一个非 null）；Kind 复用 Bound 侧
+    // 枚举（Lowering → Semantic 单向依赖，与构造参数回指 Bound 节点同理）。
+    // Type 自带不走 Origin 透传（恒等降级路径传入 Bound.Type，先例：
+    // LoweredCastExpression）
+    public sealed class LoweredTypeCheckExpression : LoweredExpression
+    {
+        public BoundTypeCheckKind Kind { get; }
+        public LoweredExpression Operand { get; }
+        public TypeSymbol? TargetType { get; }
+        public LoweredExpression? TargetValue { get; }
+        private readonly TypeSymbol type;
+
+        public override TypeSymbol Type => type;
+
+        public LoweredTypeCheckExpression(BoundNode origin, BoundTypeCheckKind kind,
+            LoweredExpression operand, TypeSymbol? targetType,
+            LoweredExpression? targetValue, TypeSymbol type) : base(origin)
+        {
+            // 双形态互斥不变量：静态/动态恰居其一
+            if ((targetType == null) == (targetValue == null))
+            {
+                throw new CompilerInternalException(
+                    "LoweredTypeCheckExpression 的 TargetType/TargetValue 必须恰一个非 null");
+            }
+            Kind = kind;
+            Operand = operand;
+            TargetType = targetType;
+            TargetValue = targetValue;
+            this.type = type;
+        }
+    }
+
+    // typeOf（S8a；BIL §12.5 直接对应）：Operand（值形态 → getid.var）/
+    // TargetType（类型形态 → getid.type）互斥（构造时恰一个非 null）。
+    // Type 自带不走 Origin 透传（Type\<T\> 构造类型，恒等降级路径传入
+    // Bound.Type）
+    public sealed class LoweredTypeOfExpression : LoweredExpression
+    {
+        public LoweredExpression? Operand { get; }
+        public TypeSymbol? TargetType { get; }
+        private readonly TypeSymbol type;
+
+        public override TypeSymbol Type => type;
+
+        public LoweredTypeOfExpression(BoundNode origin, LoweredExpression? operand,
+            TypeSymbol? targetType, TypeSymbol type) : base(origin)
+        {
+            // 双形态互斥不变量：值/类型恰居其一
+            if ((operand == null) == (targetType == null))
+            {
+                throw new CompilerInternalException(
+                    "LoweredTypeOfExpression 的 Operand/TargetType 必须恰一个非 null");
+            }
+            Operand = operand;
+            TargetType = targetType;
             this.type = type;
         }
     }

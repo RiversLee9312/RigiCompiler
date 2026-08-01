@@ -315,7 +315,15 @@ obj as String
 obj as? String
 ```
 
+`is` / `supers` / `with` 的右侧解析规则：
+
+- 右侧可以是类型引用，也可以是 `Type\<T>` 值（动态类型测试）。名字先按类型引用解析；解析失败再按值绑定，值必须是 `Type\<T>` 类型，否则编译错误。值与类型同名时类型优先。
+- `with` 右侧为类型引用时必须是 wrapper 类型，否则编译错误。
+- `is` / `supers` 不做静态不可能性拒绝：静态可判定恒为 `false` 的写法不报错也不警告，结果在运行期得出（与 `as` / `as?` 的口径一致——可转性不做静态拒绝，失败抛出 `core.CastException`）。
+
 支持智能转换（smart cast）：`is` 检查后，在对应分支中自动转换类型。
+
+> 注记：`is .Case`（enum case 判别，§12.3）编译为隐藏判别字段的整数比较（`RUNTIME.md` §16.3），不是类型检查；它不触发 smart cast——判别匹配不会改变值的静态类型（§12.3）。
 
 转换优先级：源类型的 `castTo` → 目标类型的 `castFrom`（前者不存在或抛异常时才尝试后者）。
 
@@ -324,7 +332,9 @@ obj as? String
 operator castTo\<TTarget>(): TTarget { ... }
 
 // 自定义类型转换（定义在目标类型上）
-operator castFrom\<TSource>(obj: TSource): TSource { ... }
+class Celsius {
+    operator castFrom\<TSource>(obj: TSource): Celsius { ... }
+}
 ```
 
 ### 3.6 泛型
@@ -384,7 +394,10 @@ func create\<TResult>(): TResult {
 
 **`Type\<T>`**：基本类型之一（`struct`），承载一个运行时类型（本质是对 typeid 的封装）。
 
-**`typeOf`**：取得某个值或类型的运行时类型，返回 `Type\<T>`。
+**`typeOf`**：取得某个值或类型的运行时类型，返回 `Type\<T>`。操作数按两种形态解析：
+
+- **值形态（常态）**：操作数先按值绑定，取值的运行时实际类型，返回 `Type\<T静态\>`——`T` 是类型边界（`BIL_STANDARD.md` §6.3 `.typeid<TBound>` 语义），实际类型为其子类型亦属该边界。
+- **类型形态**：操作数无法绑定为值、且可解析为类型引用时，返回该类型的 `Type\<T>`。
 
 ```latte
 var box = Box(12, 12, 24)
@@ -966,6 +979,7 @@ pub shared class SharedSession {
 |--------|------|
 | `open` | 允许 class 或 rich struct 被继承；`enum struct` 与非 rich struct 明确禁止使用 |
 | `abstract` | 抽象（天然 open，与 open 互斥）；非 rich struct 禁止使用 |
+| `override` | 声明对继承链上 `open` 成员的覆写 |
 | `singleton` | 单例（类似 Kotlin 的 `object`）；实例存储为全局存储，因此必须同时标记 `shared`（§3.1.1） |
 | `pub` | 公开访问 |
 | `protected` | 子类与同包可见 |

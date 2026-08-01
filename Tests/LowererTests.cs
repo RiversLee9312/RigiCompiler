@@ -52,6 +52,8 @@ namespace LatteCompiler.Tests
             TestSafeAccessLowering();
             TestNullFallbackLowering();
             TestDestructuringLowering();
+            TestTypeCheckLowering();
+            TestTypeOfLowering();
             TestUnsupportedNode();
 
             return TestHarness.Summary("Lowerer");
@@ -1031,6 +1033,92 @@ namespace LatteCompiler.Tests
                 "[Assign(Local(.s0,Entry), New(Entry, init, [Str(\"a\",String), Int(1,i32)])); " +
                 "Decl(k, String, = InstField(key, Local(.s0,Entry), String)); " +
                 "Decl(v, i32, = InstField(value, Local(.s0,Entry), i32))]])");
+        }
+
+        // ===== 类型谓词 is 降级（S8a，恒等降级无脱糖；BIL §12.3 直接对应）=====
+        private static void TestTypeCheckLowering()
+        {
+            // is 静态：恒等降级 + Origin 回指 + 目标类型符号透传
+            var (unit, bound, lowered) = LowerUnit(
+                "open class Animal { }\n" +
+                "class Dog : Animal { }\n" +
+                "func f(d: Dog): bool { return d is Animal }\n");
+            CheckNoErrors("无诊断（is 静态降级）", unit);
+            TestHarness.Check("is 静态降级形态", LoweredDescribe.Body(BodyOf(lowered, "f")),
+                "Body(f, [], [Return(Is(Param(d,Dog), Animal))])");
+            var boundIs = (BoundTypeCheckExpression)((BoundReturnStatement)
+                bound.Single(b => b.Method.Name == "f").Body.Statements[0]).Value!;
+            var loweredIs = (LoweredTypeCheckExpression)((LoweredReturnStatement)
+                BodyOf(lowered, "f").Body.Statements[0]).Value!;
+            TestHarness.CheckTrue("is Origin 回指 Bound 节点",
+                ReferenceEquals(loweredIs.Origin, boundIs));
+            TestHarness.CheckTrue("is 目标类型符号透传（静态无 TargetValue）",
+                ReferenceEquals(loweredIs.TargetType, boundIs.TargetType)
+                && loweredIs.TargetValue == null);
+
+            // is 动态：TargetValue 递归降级（Lowered 新节点，Origin 回指 Bound 值节点）
+            var (unit2, bound2, lowered2) = LowerUnit(
+                "open class Animal { }\n" +
+                "class Dog : Animal { }\n" +
+                "func k(d: Dog): bool {\n" +
+                "    var t = typeOf(d)\n" +
+                "    return d is t\n" +
+                "}\n");
+            CheckNoErrors("无诊断（is 动态降级）", unit2);
+            TestHarness.Check("is 动态降级形态", LoweredDescribe.Body(BodyOf(lowered2, "k")),
+                "Body(k, [t: Type<Dog>], " +
+                "[Decl(t, Type<Dog>, = TypeOf(Param(d,Dog), Type<Dog>)); " +
+                "Return(Is(Param(d,Dog), dyn Local(t,Type<Dog>)))])");
+            var boundDynIs = (BoundTypeCheckExpression)((BoundReturnStatement)
+                bound2.Single(b => b.Method.Name == "k").Body.Statements[1]).Value!;
+            var loweredDynIs = (LoweredTypeCheckExpression)((LoweredReturnStatement)
+                BodyOf(lowered2, "k").Body.Statements[1]).Value!;
+            TestHarness.CheckTrue("动态 is Origin 回指 + TargetValue 递归降级",
+                ReferenceEquals(loweredDynIs.Origin, boundDynIs)
+                && loweredDynIs.TargetValue != null
+                && !ReferenceEquals(loweredDynIs.TargetValue, boundDynIs.TargetValue)
+                && ReferenceEquals(loweredDynIs.TargetValue!.Origin, boundDynIs.TargetValue!));
+        }
+
+        // ===== typeOf 降级（S8a，恒等降级无脱糖；BIL §12.5 直接对应）=====
+        private static void TestTypeOfLowering()
+        {
+            // 值形态：Operand 递归降级 + Origin 回指
+            var (unit, bound, lowered) = LowerUnit(
+                "open class Animal { }\n" +
+                "class Dog : Animal { }\n" +
+                "func f(d: Dog): Type\\<Dog> { return typeOf(d) }\n");
+            CheckNoErrors("无诊断（typeOf 值形态降级）", unit);
+            TestHarness.Check("typeOf 值形态降级形态",
+                LoweredDescribe.Body(BodyOf(lowered, "f")),
+                "Body(f, [], [Return(TypeOf(Param(d,Dog), Type<Dog>))])");
+            var boundTypeOf = (BoundTypeOfExpression)((BoundReturnStatement)
+                bound.Single(b => b.Method.Name == "f").Body.Statements[0]).Value!;
+            var loweredTypeOf = (LoweredTypeOfExpression)((LoweredReturnStatement)
+                BodyOf(lowered, "f").Body.Statements[0]).Value!;
+            TestHarness.CheckTrue("typeOf 值形态 Origin 回指 + Operand 递归降级",
+                ReferenceEquals(loweredTypeOf.Origin, boundTypeOf)
+                && loweredTypeOf.Operand != null
+                && ReferenceEquals(loweredTypeOf.Operand!.Origin, boundTypeOf.Operand!)
+                && loweredTypeOf.TargetType == null);
+
+            // 类型形态：TargetType 符号透传
+            var (unit2, bound2, lowered2) = LowerUnit(
+                "open class Animal { }\n" +
+                "class Dog : Animal { }\n" +
+                "func m(): Type\\<Animal> { return typeOf(Animal) }\n");
+            CheckNoErrors("无诊断（typeOf 类型形态降级）", unit2);
+            TestHarness.Check("typeOf 类型形态降级形态",
+                LoweredDescribe.Body(BodyOf(lowered2, "m")),
+                "Body(m, [], [Return(TypeOf(type Animal, Type<Animal>))])");
+            var boundTypeForm = (BoundTypeOfExpression)((BoundReturnStatement)
+                bound2.Single(b => b.Method.Name == "m").Body.Statements[0]).Value!;
+            var loweredTypeForm = (LoweredTypeOfExpression)((LoweredReturnStatement)
+                BodyOf(lowered2, "m").Body.Statements[0]).Value!;
+            TestHarness.CheckTrue("typeOf 类型形态 Origin 回指 + 目标类型符号透传",
+                ReferenceEquals(loweredTypeForm.Origin, boundTypeForm)
+                && ReferenceEquals(loweredTypeForm.TargetType, boundTypeForm.TargetType)
+                && loweredTypeForm.Operand == null);
         }
 
         // ===== 负例：未覆盖节点 → P4 Error + 跳过该函数体 =====
