@@ -276,7 +276,8 @@ namespace LatteCompiler
 
         // 语义管线（S6）：stdlib（在前）+ 用户源组 CompilationUnit → P1 → P2 → P3，
         // 诊断统一经 Logger 输出后有 Error 即停（返回 1）；--sema-only 到此结束；
-        // --emit-bil 继续 P4（Lowerer → BilEmitter → BilWriter）把 BIL 文本写文件，
+        // --emit-bil 继续 P4（Lowerer → BilEmitter）→ BilVerifier 验证（M58，
+        // 非法即报错不落盘）→ BilWriter 把 BIL 文本写文件，
         // moduleName 取第一个源文件的去扩展名文件名
         private static int RunSemanticPipeline(string firstFile, List<RootASTNode> userRoots, bool semaOnly, string? emitBilPath)
         {
@@ -300,6 +301,17 @@ namespace LatteCompiler
                 var module = BilEmitter.Emit(unit, lowered, Path.GetFileNameWithoutExtension(firstFile));
                 EmitDiagnostics(unit.Diagnostics, emitted);
                 if (unit.Diagnostics.HasErrors) return 1;
+                // BIL 验证器（M58，§20）：产出非法即编译器 bug——响亮失败，
+                // 逐条输出验证错误，不落盘
+                var verificationErrors = BilVerifier.Verify(module);
+                if (verificationErrors.Count > 0)
+                {
+                    foreach (var error in verificationErrors)
+                    {
+                        Logger.Error("BilVerifier", error.ToString());
+                    }
+                    return 1;
+                }
                 File.WriteAllText(emitBilPath, BilWriter.Write(module), new UTF8Encoding(false));
                 Console.WriteLine($"BIL emitted to {emitBilPath}");
             }

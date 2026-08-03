@@ -46,6 +46,7 @@ namespace LatteCompiler.Tests
             ("SymbolGraph", SymbolGraphTests.RunAll),
             ("CanonicalSymbolPrinter", CanonicalSymbolPrinterTests.RunAll),
             ("BilWriter", BilWriterTests.RunAll),
+            ("BilVerifier", BilVerifierTests.RunAll),
             ("DeclarationCollector", DeclarationCollectorTests.RunAll),
             ("DeclarationResolver", DeclarationResolverTests.RunAll),
             ("Binder", BinderTests.RunAll),

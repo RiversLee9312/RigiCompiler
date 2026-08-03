@@ -9,6 +9,9 @@ namespace LatteCompiler.Tests
     /// M57 起构造走强类型模型（指令子类/枚举种类与修饰符/类型化资源），
     /// 黄金文本与迁移前逐字节一致（行为零变化判据）。
     /// 黄金文本经 Lines(...) 显式拼 \n，与源文件换行编码无关。
+    /// M58：本套件黄金锁排版；自足合法模块（§19 两个示例）同时过
+    /// BilVerifier（CheckBilValid），纯排版抽样用例（§18/§8.2+§8.5/
+    /// §10–§16/§8.4.1）操作数与类型引用未声明进模块，不过验证器。
     /// </summary>
     public static class BilWriterTests
     {
@@ -100,6 +103,8 @@ namespace LatteCompiler.Tests
                 "        ret $result",
                 "    }",
                 "}"));
+            // §19 完整示例是自足合法模块：验证器零错误（M58）
+            BilTestHarness.CheckBilValid("§19 完整示例验证器零错误", module);
 
             // ===== §19 wrapper 隐藏字段示例（修饰符续行形态）=====
             var wrapperModule = new BilModule();
@@ -134,8 +139,12 @@ namespace LatteCompiler.Tests
                 "",
                 "ExternalSymbols {",
                 "}"));
+            // wrapper 隐藏字段示例同为自足声明模块：验证器零错误（M58）
+            BilTestHarness.CheckBilValid("§19 wrapper 示例验证器零错误", wrapperModule);
 
             // ===== §18 资源全形态 =====
+            // （排版抽样：资源引用的类型（com.example::User/core::IO*Exception）
+            // 未声明进模块，不过验证器——合法性归 BilEmitter/BilVerifier 套件）
             var resModule = new BilModule();
             resModule.Resources.Add(new BilScalarResource("R_Message", BilScalarType.String, "\"hello, world\""));
             resModule.Resources.Add(new BilScalarResource("R_Enabled", BilScalarType.Bool, "true"));
@@ -193,6 +202,8 @@ namespace LatteCompiler.Tests
                 "}"));
 
             // ===== §8.2 extends/implements 多行形态 + §8.5 enum case =====
+            // （排版抽样：extends/implements 类型与 discriminant 资源未登记进
+            // 模块，不过验证器）
             var declModule = new BilModule();
             var dog = new BilTypeDeclaration("com.example::Dog", BilTypeKind.Class,
                 new BilAccessibilityModifier(BilAccessibility.Public));
@@ -233,7 +244,8 @@ namespace LatteCompiler.Tests
 
             // ===== §10–§16 指令形态抽样 =====
             // （抽样指令引用的 block/资源仅作操作数占位，不进模块——
-            // 强类型模型下悬空引用不可构造，须先建对象）
+            // 强类型模型下悬空引用不可构造，须先建对象；变量/符号均未声明，
+            // 不过验证器）
             var instModule = new BilModule();
             var fn = new BilFunction("com.example::App$.static.test()@.void");
             fn.Args.Add(new BilArgDeclaration(".return", ".void"));
@@ -338,6 +350,7 @@ namespace LatteCompiler.Tests
                 "}"));
 
             // ===== §8.4.1 段内裸成员声明（全局函数，含 native 修饰符串）=====
+            // （排版抽样：println 声明无 fn 体、无 fn 段产出，不过验证器）
             var globalModule = new BilModule();
             var consoleType = new BilTypeDeclaration("core.io::Console", BilTypeKind.Class,
                 new BilAccessibilityModifier(BilAccessibility.Public));

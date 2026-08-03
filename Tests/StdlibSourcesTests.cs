@@ -95,7 +95,7 @@ namespace LatteCompiler.Tests
             {
                 TestHarness.CheckTrue("Pair 是 open 泛型类",
                     pair.Modifiers.Contains(Keywords.OPEN)
-                    && pair.GenericParameters.Parameters.Count == 2);
+                    && pair.GenericParameters?.Parameters.Count == 2);
             }
 
             TestHarness.Blank();

@@ -10,8 +10,9 @@ namespace LatteCompiler.Bil
     // BilControlFlowInstructions，按规范章节分文件）：每种指令的 opcode
     // 拼写、操作数个数/类型/顺序由子类构造签名与属性固定——生成方不再
     // 接触 opcode 字面量与位置式操作数列表。结构化理解（类型检查、
-    // capability 校验）是 BilVerifier（S12）的职责，模型层保证自足与
-    // 无损打印。
+    // capability 校验）是 BilVerifier 的职责（M58 提前自 S12 落地：
+    // BilVerifier*.cs 五文件，§20 九类检查的静态可判子集），模型层保证
+    // 自足与无损打印。
 
     // 指令基类：Origin 调试链 + 自渲染协议（WriteTo 统一单行/多行排版，
     // 与 BilOperand.Render 同模式——BIL 文本结构由模型持有，BilWriter

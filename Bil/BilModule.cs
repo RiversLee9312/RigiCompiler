@@ -6,7 +6,8 @@ namespace LatteCompiler.Bil
     // BIL 对象模型是自足的：不引用 Semantic/Lowering/AST 的任何类型
     // （ARCHITECTURE §6.3）——类型引用、符号一律以 canonical 字符串承载
     // （BIL 世界以字符串为身份；CanonicalSymbolPrinter 的投影即其来源）。
-    // 依赖方向单向：Lowering → Bil；verifier/VM（后续里程碑）只依赖本目录。
+    // 依赖方向单向：Lowering → Bil；BilVerifier（M58）与 VM（后续里程碑）
+    // 只依赖本目录。
     // M57 起资源形态强类型化（标量类型枚举 + switch-table/catch-table
     // 专用资源类），header/元素文本拼写由模型自渲染。
 
