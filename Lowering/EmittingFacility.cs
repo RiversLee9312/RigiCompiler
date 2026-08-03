@@ -11,41 +11,63 @@ namespace LatteCompiler
         public static readonly Unit Value = new Unit();
     }
 
-    // 发射共享设施（P4b）：opcode 映射/字段宿主投影/临时变量/资源登记/
-    // 字面量渲染/转义。自旧 EmitSession 同名方法迁移，行为不变——
-    // 静态设施，env/ctx 参数显式传。
+    // 发射共享设施（P4b）：intrinsic/类型检查映射/字段宿主投影/临时变量/
+    // 资源登记/字面量渲染/转义。自旧 EmitSession 同名方法迁移，行为不变——
+    // 静态设施，env/ctx 参数显式传。M57 起映射产物为 Bil/ 强类型枚举
+    // （拼写唯一定义在 BilSpellings）。
     internal static class EmittingFacility
     {
-        // BIL §11 opcode 单点映射表（BilIntrinsicOp → 指令 opcode）。
+        // BIL §11 二元 intrinsic 映射（BilIntrinsicOp → BilBinaryOp）。
         // 注意：内建 bool 的短路 and/or 已在 P4a 展开为 if + 合成局部
         // （§11.3，S7b），LoweredBinaryExpression 不再承载 And/Or——
         // 表项为 and/or 被重载后的不短路场景（S8+）保留
-        public static string IntrinsicOpcode(BilIntrinsicOp op)
+        public static BilBinaryOp MapBinaryOp(BilIntrinsicOp op)
         {
             return op switch
             {
-                BilIntrinsicOp.Add => "add",
-                BilIntrinsicOp.Sub => "sub",
-                BilIntrinsicOp.Mul => "mul",
-                BilIntrinsicOp.Div => "div",
-                BilIntrinsicOp.Opposite => "opposite",
-                BilIntrinsicOp.And => "and",
-                BilIntrinsicOp.Or => "or",
-                BilIntrinsicOp.Not => "not",
-                BilIntrinsicOp.BinAnd => "bin.and",
-                BilIntrinsicOp.BinOr => "bin.or",
-                BilIntrinsicOp.BinXor => "bin.xor",
-                BilIntrinsicOp.BinNot => "bin.not",
-                BilIntrinsicOp.ShiftLeft => "shift.left",
-                BilIntrinsicOp.ShiftRight => "shift.right",
-                BilIntrinsicOp.ShiftRightUnsigned => "shift.right.unsigned",
-                BilIntrinsicOp.CmpEq => "cmp.eq",
-                BilIntrinsicOp.CmpNe => "cmp.ne",
-                BilIntrinsicOp.CmpLt => "cmp.lt",
-                BilIntrinsicOp.CmpLe => "cmp.le",
-                BilIntrinsicOp.CmpGt => "cmp.gt",
-                BilIntrinsicOp.CmpGe => "cmp.ge",
-                _ => throw new CompilerInternalException("未知 BilIntrinsicOp: " + op),
+                BilIntrinsicOp.Add => BilBinaryOp.Add,
+                BilIntrinsicOp.Sub => BilBinaryOp.Sub,
+                BilIntrinsicOp.Mul => BilBinaryOp.Mul,
+                BilIntrinsicOp.Div => BilBinaryOp.Div,
+                BilIntrinsicOp.And => BilBinaryOp.And,
+                BilIntrinsicOp.Or => BilBinaryOp.Or,
+                BilIntrinsicOp.BinAnd => BilBinaryOp.BinAnd,
+                BilIntrinsicOp.BinOr => BilBinaryOp.BinOr,
+                BilIntrinsicOp.BinXor => BilBinaryOp.BinXor,
+                BilIntrinsicOp.ShiftLeft => BilBinaryOp.ShiftLeft,
+                BilIntrinsicOp.ShiftRight => BilBinaryOp.ShiftRight,
+                BilIntrinsicOp.ShiftRightUnsigned => BilBinaryOp.ShiftRightUnsigned,
+                BilIntrinsicOp.CmpEq => BilBinaryOp.CmpEq,
+                BilIntrinsicOp.CmpNe => BilBinaryOp.CmpNe,
+                BilIntrinsicOp.CmpLt => BilBinaryOp.CmpLt,
+                BilIntrinsicOp.CmpLe => BilBinaryOp.CmpLe,
+                BilIntrinsicOp.CmpGt => BilBinaryOp.CmpGt,
+                BilIntrinsicOp.CmpGe => BilBinaryOp.CmpGe,
+                _ => throw new CompilerInternalException("非二元 BilIntrinsicOp: " + op),
+            };
+        }
+
+        // BIL §11 一元 intrinsic 映射（BilIntrinsicOp → BilUnaryOp）
+        public static BilUnaryOp MapUnaryOp(BilIntrinsicOp op)
+        {
+            return op switch
+            {
+                BilIntrinsicOp.Opposite => BilUnaryOp.Opposite,
+                BilIntrinsicOp.Not => BilUnaryOp.Not,
+                BilIntrinsicOp.BinNot => BilUnaryOp.BinNot,
+                _ => throw new CompilerInternalException("非一元 BilIntrinsicOp: " + op),
+            };
+        }
+
+        // §12.3 类型检查种类映射（Bound → Bil）
+        public static BilTypeCheckKind MapTypeCheckKind(BoundTypeCheckKind kind)
+        {
+            return kind switch
+            {
+                BoundTypeCheckKind.Is => BilTypeCheckKind.Is,
+                BoundTypeCheckKind.Supers => BilTypeCheckKind.Supers,
+                BoundTypeCheckKind.With => BilTypeCheckKind.With,
+                _ => throw new CompilerInternalException("未知类型检查种类: " + kind),
             };
         }
 
@@ -68,69 +90,76 @@ namespace LatteCompiler
             return null;
         }
 
-        public static string NewTemp(TypeSymbol type, EmitContext ctx)
+        // 临时变量物化（§10.1/§10.3）：登记 .vars 条目并返回变量操作数
+        public static BilVariableOperand NewTemp(TypeSymbol type, EmitContext ctx)
         {
             var name = ".t" + ctx.TempCount;
             ctx.TempCount++;
             ctx.TempVars.Add(new BilVarDeclaration(CanonicalSymbolPrinter.PrintType(type), name));
-            return name;
+            return BilOp.Var(name);
         }
 
         // 字面量 → 资源：同（类型, 原文）去重，名按首次出现 R_0/R_1... 编号
         // （null 资源走 RegisterNullResource——与 P4a 合成 null 常量同路径）
-        public static string RegisterResource(LoweredLiteralExpression literal, EmitEnvironment env)
+        public static BilResource RegisterResource(LoweredLiteralExpression literal,
+            EmitEnvironment env)
         {
-            var (typeKeyword, literalText) = RenderLiteral(literal, env);
-            if (typeKeyword != "null") return RegisterScalarResource(typeKeyword, literalText, env);
-            return RegisterNullResource(literal.Type, literal.Origin.Syntax.Span, env);
+            // null 字面量直接路由（错误情形由 RegisterNullResource 单点诊断）
+            if (((LiteralExpressionASTNode)literal.Origin.Syntax).Literal is NullLiteralASTNode)
+            {
+                return RegisterNullResource(literal.Type, literal.Origin.Syntax.Span, env);
+            }
+            var (type, literalText) = RenderLiteral(literal, env);
+            return RegisterScalarResource(type!.Value, literalText, env);
         }
 
         // null 资源登记（§18.1；S7f 起与合成 null 常量共用）：键 =
-        // ("null", 元素类型投影)；类型语义 = .nullable<元素类型>——
-        // 可直接与 .nullable<T> 变量做 cmp.eq/cmp.ne（§11.5 严格相同）
-        public static string RegisterNullResource(TypeSymbol nullableType, CharRange? span,
+        // 元素类型投影；类型语义 = .nullable<元素类型>——
+        // 可直接与 .nullable<T> 变量做 cmp.eq/cmp.ne（§11.5 严格相同）。
+        // 错误路径返回未登记的占位资源（诊断已落袋，输出按 §8 门槛不写盘）
+        public static BilResource RegisterNullResource(TypeSymbol nullableType, CharRange? span,
             EmitEnvironment env)
         {
             if (nullableType.ConstructedFrom == env.Unit.Symbols.Bootstrap.NullableDefinition
                 && nullableType.TypeArguments![0] is TypeSymbol element)
             {
-                var key = ("null", CanonicalSymbolPrinter.PrintType(element));
-                if (!env.ResourceKeys.TryGetValue(key, out var name))
+                var key = CanonicalSymbolPrinter.PrintType(element);
+                if (!env.NullKeys.TryGetValue(key, out var resource))
                 {
-                    name = "R_" + env.Module.Resources.Count;
-                    env.Module.Resources.Add(new BilNullResource(name, key.Item2));
-                    env.ResourceKeys.Add(key, name);
+                    resource = new BilNullResource("R_" + env.Module.Resources.Count, key);
+                    env.Module.Resources.Add(resource);
+                    env.NullKeys.Add(key, resource);
                 }
-                return name;
+                return resource;
             }
             env.Error(span,
                 "P4: null literal is not typed as Nullable<T> " +
                 $"(got {CanonicalSymbolPrinter.PrintType(nullableType)})");
-            return "<error>";
+            return new BilNullResource("<error>", "<error>");
         }
 
         // 标量资源登记（字面量与 P4a 合成常量共用）：同（类型, 原文）去重
-        public static string RegisterScalarResource(string typeKeyword, string literalText,
+        public static BilResource RegisterScalarResource(BilScalarType type, string literalText,
             EmitEnvironment env)
         {
-            if (!env.ResourceKeys.TryGetValue((typeKeyword, literalText), out var name))
+            if (!env.ScalarKeys.TryGetValue((type, literalText), out var resource))
             {
-                name = "R_" + env.Module.Resources.Count;
-                env.Module.Resources.Add(new BilScalarResource(name, typeKeyword, literalText));
-                env.ResourceKeys.Add((typeKeyword, literalText), name);
+                resource = new BilScalarResource("R_" + env.Module.Resources.Count,
+                    type, literalText);
+                env.Module.Resources.Add(resource);
+                env.ScalarKeys.Add((type, literalText), resource);
             }
-            return name;
+            return resource;
         }
 
-        // switch 常量表资源（§18.4）：header = switch-table<SELECTOR 类型
-        // 投影>（带前导点的类型引用，与 §18.1 标量关键字不同族），元素 =
+        // switch 常量表资源（§18.4）：selector 类型引用 = SELECTOR 类型
+        // 投影（带前导点的类型引用，与 §18.1 标量关键字不同族），元素 =
         // 各 case 常量字面量原文（经 RenderLiteral 复用 §18.1 渲染；类型与
-        // selector 严格相同，P3 已查）。单行形态（Multiline: false）；
-        // 同（header, 元素序列）去重——case 集完全相同的多个 switch 共享一张表
-        public static string RegisterSwitchTable(LoweredSwitch sw, EmitEnvironment env)
+        // selector 严格相同，P3 已查）。单行形态；
+        // 同（selector, 元素序列）去重——case 集完全相同的多个 switch 共享一张表
+        public static BilResource RegisterSwitchTable(LoweredSwitch sw, EmitEnvironment env)
         {
-            var header = "switch-table<" +
-                CanonicalSymbolPrinter.PrintType(sw.Selector.Type) + ">";
+            var selectorTypeRef = CanonicalSymbolPrinter.PrintType(sw.Selector.Type);
             var elements = new List<string>();
             foreach (var switchCase in sw.Cases)
             {
@@ -138,64 +167,70 @@ namespace LatteCompiler
                 var (_, literalText) = RenderLiteral((LoweredLiteralExpression)switchCase.Value, env);
                 elements.Add(literalText);
             }
-            var key = ("switch-table", header + "|" + string.Join(",", elements));
-            if (!env.ResourceKeys.TryGetValue(key, out var name))
+            var key = selectorTypeRef + "|" + string.Join(",", elements);
+            if (!env.SwitchTableKeys.TryGetValue(key, out var resource))
             {
-                name = "R_" + env.Module.Resources.Count;
-                env.Module.Resources.Add(new BilCollectionResource(name, header, elements));
-                env.ResourceKeys.Add(key, name);
+                resource = new BilSwitchTableResource("R_" + env.Module.Resources.Count,
+                    selectorTypeRef, elements);
+                env.Module.Resources.Add(resource);
+                env.SwitchTableKeys.Add(key, resource);
             }
-            return name;
+            return resource;
         }
 
-        // catch 表资源（S7e，§18.5）：header = catch-table（无类型参数），
-        // 元素 = type(EXCEPTION_TYPE) -> blk(CATCH_BLOCK_ID)，保序（表序
-        // 即匹配序，不能重排）。多行形态（Multiline: true，§18.5 规范
-        // 排版）；空 catch 列表出空表。同元素序列去重（元素含 block id，
+        // catch 表资源（S7e，§18.5）：元素 = type(EXCEPTION_TYPE) ->
+        // blk(CATCH_BLOCK)，保序（表序即匹配序，不能重排）。多行形态；
+        // 空 catch 列表出空表。同元素序列去重（元素含 block id，
         // 实际去重仅在同序列重复登记时命中——与 switch-table 同机制）
-        public static string RegisterCatchTable(LoweredTryStatement tryStatement,
-            IReadOnlyList<string> catchBlockIds, EmitEnvironment env)
+        public static BilResource RegisterCatchTable(LoweredTryStatement tryStatement,
+            IReadOnlyList<BilBlock> catchBlocks, EmitEnvironment env)
         {
-            var elements = new List<string>();
+            var entries = new List<BilCatchEntry>();
             for (var i = 0; i < tryStatement.Catches.Count; i++)
             {
-                elements.Add("type(" +
-                    CanonicalSymbolPrinter.PrintType(tryStatement.Catches[i].ExceptionType) +
-                    ") -> blk(" + catchBlockIds[i] + ")");
+                entries.Add(new BilCatchEntry(
+                    BilOp.Type(CanonicalSymbolPrinter.PrintType(
+                        tryStatement.Catches[i].ExceptionType)),
+                    catchBlocks[i]));
             }
-            var key = ("catch-table", string.Join(",", elements));
-            if (!env.ResourceKeys.TryGetValue(key, out var name))
+            var keyParts = new List<string>();
+            foreach (var entry in entries)
             {
-                name = "R_" + env.Module.Resources.Count;
-                env.Module.Resources.Add(new BilCollectionResource(name, "catch-table",
-                    elements, multiline: true));
-                env.ResourceKeys.Add(key, name);
+                keyParts.Add(entry.ExceptionType.TypeRef + "->" + entry.Handler.Id);
             }
-            return name;
+            var key = string.Join(",", keyParts);
+            if (!env.CatchTableKeys.TryGetValue(key, out var resource))
+            {
+                resource = new BilCatchTableResource("R_" + env.Module.Resources.Count, entries);
+                env.Module.Resources.Add(resource);
+                env.CatchTableKeys.Add(key, resource);
+            }
+            return resource;
         }
 
-        // 字面量 → (BIL 资源类型关键字, 字面量原文)（§18.1：类型关键字无
-        // 前导点——R_X = string "..." / i32 0；值取 Syntax 的解码后内容，
-        // 重新转义为 BIL 字面量原文）。null 字面量返回 ("null", 元素类型
-        // canonical)——P3 已把 null 定型为上下文可空类型 Nullable\<T>
-        public static (string TypeKeyword, string LiteralText) RenderLiteral(
+        // 字面量 → (BIL 标量类型, 字面量原文)（§18.1；值取 Syntax 的解码后
+        // 内容，重新转义为 BIL 字面量原文）。null 字面量返回 (null, 元素类型
+        // canonical)——P3 已把 null 定型为上下文可空类型 Nullable\<T>；
+        // Type 为 null 仅此情形（§18.4 表元素取原文时同此约定）。
+        // 已诊断的错误路径返回 (String, "<error>") 占位（输出不写盘）
+        public static (BilScalarType? Type, string LiteralText) RenderLiteral(
             LoweredLiteralExpression literal, EmitEnvironment env)
         {
             var syntax = (LiteralExpressionASTNode)literal.Origin.Syntax;
             switch (syntax.Literal)
             {
                 case StringLiteralASTNode s:
-                    return ("string", "\"" + Escape(s.Value) + "\"");
+                    return (BilScalarType.String, "\"" + Escape(s.Value) + "\"");
                 case IntLiteralASTNode i:
-                    return (IntResourceKeyword(i.IntType), i.Value.ToString());
+                    return (IntScalarType(i.IntType), i.Value.ToString());
                 case BoolLiteralASTNode b:
-                    return ("bool", b.Value ? "true" : "false");
+                    return (BilScalarType.Bool, b.Value ? "true" : "false");
                 case CharLiteralASTNode c:
-                    return ("char", "'" + EscapeChar(c.Value) + "'");
+                    return (BilScalarType.Char, "'" + EscapeChar(c.Value) + "'");
                 case FloatLiteralASTNode f:
                     // round-trip 格式保精度；f32 先收窄回 float 再打印
                     // （AST 统一以 double 存值，直接打印会带出双精度尾巴）
-                    return (f.IsFloat ? "f32" : "f64",
+                    return (f.IsFloat ? BilScalarType.F32 : BilScalarType.F64,
                         f.IsFloat
                             ? ((float)f.Value).ToString("R", CultureInfo.InvariantCulture)
                             : f.Value.ToString("R", CultureInfo.InvariantCulture));
@@ -203,32 +238,33 @@ namespace LatteCompiler
                     if (literal.Type.ConstructedFrom == env.Unit.Symbols.Bootstrap.NullableDefinition
                         && literal.Type.TypeArguments![0] is TypeSymbol element)
                     {
-                        return ("null", CanonicalSymbolPrinter.PrintType(element));
+                        return (null, CanonicalSymbolPrinter.PrintType(element));
                     }
                     env.Error(syntax.Span,
                         "P4: null literal is not typed as Nullable<T> " +
                         $"(got {CanonicalSymbolPrinter.PrintType(literal.Type)})");
-                    return ("<error>", "<error>");
+                    return (BilScalarType.String, "<error>");
                 default:
                     env.Error(syntax.Span,
                         $"P4: literal kind not supported by minimal emission: " +
                         syntax.Literal.GetType().Name);
-                    return ("<error>", "<error>");
+                    return (BilScalarType.String, "<error>");
             }
         }
 
-        public static string IntResourceKeyword(IntType intType)
+        // AST 整数类型 → BIL 标量类型（§18.1）
+        public static BilScalarType IntScalarType(IntType intType)
         {
             return intType switch
             {
-                IntType.I32 => "i32",
-                IntType.I64 => "i64",
-                IntType.I16 => "i16",
-                IntType.I8 => "i8",
-                IntType.U32 => "u32",
-                IntType.U64 => "u64",
-                IntType.U16 => "u16",
-                IntType.U8 => "u8",
+                IntType.I32 => BilScalarType.I32,
+                IntType.I64 => BilScalarType.I64,
+                IntType.I16 => BilScalarType.I16,
+                IntType.I8 => BilScalarType.I8,
+                IntType.U32 => BilScalarType.U32,
+                IntType.U64 => BilScalarType.U64,
+                IntType.U16 => BilScalarType.U16,
+                IntType.U8 => BilScalarType.U8,
                 _ => throw new CompilerInternalException("未知 IntType: " + intType),
             };
         }

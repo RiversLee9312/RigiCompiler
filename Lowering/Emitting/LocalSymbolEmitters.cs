@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Reflection;
 using LatteCompiler.Bil;
 
@@ -7,6 +8,8 @@ namespace LatteCompiler
     // 符号图遍历发射（命名空间平铺/类型树/成员声明/内建 ext 成员），
     // 不依赖 EmitContext——模块级静态方法，env 显式传。
     // 自旧 EmitSession 同名方法迁移，行为不变。
+    // M57 起声明种类/修饰符为 Bil/ 强类型（拼写唯一定义在 BilSpellings
+    // 与各 BilModifier.Render）；本文件只做 Semantic 枚举 → Bil 枚举映射。
     internal static class LocalSymbolEmitters
     {
         // 命名空间平铺：本空间类型（含 NestedTypes 递归）→ 子命名空间递归 →
@@ -24,9 +27,9 @@ namespace LatteCompiler
             foreach (var field in ns.Fields)
             {
                 env.Module.LocalSymbols.Add(new BilSimpleMemberDeclaration(
-                    field.IsStatic ? ".static-field" : ".field",
+                    field.IsStatic ? BilMemberKind.StaticField : BilMemberKind.Field,
                     CanonicalSymbolPrinter.PrintField(field),
-                    new[] { AccessibilityModifier(field.Accessibility) }));
+                    new BilModifier[] { new BilAccessibilityModifier(MapAccessibility(field.Accessibility)) }));
             }
             foreach (var method in ns.Methods)
             {
@@ -53,9 +56,9 @@ namespace LatteCompiler
                 {
                     if (field.ExtTargetPath == null) continue;
                     env.Module.LocalSymbols.Add(new BilSimpleMemberDeclaration(
-                        field.IsStatic ? ".static-field" : ".field",
+                        field.IsStatic ? BilMemberKind.StaticField : BilMemberKind.Field,
                         CanonicalSymbolPrinter.PrintField(field),
-                        new[] { AccessibilityModifier(field.Accessibility) }));
+                        new BilModifier[] { new BilAccessibilityModifier(MapAccessibility(field.Accessibility)) }));
                 }
                 foreach (var method in builtinType.Methods)
                 {
@@ -80,24 +83,16 @@ namespace LatteCompiler
 
         private static BilTypeDeclaration EmitTypeDeclaration(TypeSymbol type, EmitEnvironment env)
         {
-            var kind = type.Kind switch
-            {
-                TypeKind.Class => "class",
-                TypeKind.Struct => "struct",
-                TypeKind.EnumStruct => "enum-struct",
-                TypeKind.Interface => "interface",
-                TypeKind.Wrapper => "wrapper",
-                _ => throw new CompilerInternalException("未知 TypeKind: " + type.Kind),
-            };
-            var declaration = new BilTypeDeclaration(CanonicalSymbolPrinter.PrintType(type), kind);
+            var declaration = new BilTypeDeclaration(CanonicalSymbolPrinter.PrintType(type),
+                MapTypeKind(type.Kind));
             // 修饰符（§8.2）：访问（全显式）→ open/abstract/singleton → rich/shared
             // （wrapper 恒 rich 也显式输出——BIL 是显式 IR，不做源码的隐含）
-            declaration.Modifiers.Add(AccessibilityModifier(type.Accessibility));
-            if (type.IsOpen) declaration.Modifiers.Add("open");
-            if (type.IsAbstract) declaration.Modifiers.Add("abstract");
-            if (type.IsSingleton) declaration.Modifiers.Add("singleton");
-            if (type.IsRich) declaration.Modifiers.Add("rich");
-            if (type.IsShared) declaration.Modifiers.Add("shared");
+            declaration.Modifiers.Add(new BilAccessibilityModifier(MapAccessibility(type.Accessibility)));
+            if (type.IsOpen) declaration.Modifiers.Add(new BilKeywordModifier(BilKeyword.Open));
+            if (type.IsAbstract) declaration.Modifiers.Add(new BilKeywordModifier(BilKeyword.Abstract));
+            if (type.IsSingleton) declaration.Modifiers.Add(new BilKeywordModifier(BilKeyword.Singleton));
+            if (type.IsRich) declaration.Modifiers.Add(new BilKeywordModifier(BilKeyword.Rich));
+            if (type.IsShared) declaration.Modifiers.Add(new BilKeywordModifier(BilKeyword.Shared));
             // extends：与种类默认基类相同则省略（P1 建壳即填默认基类——
             // class→Object / struct→ValueType / enum struct→Enum /
             // wrapper→Wrapper；P2 仅在源码显式继承时覆盖），不同才输出
@@ -112,9 +107,9 @@ namespace LatteCompiler
             foreach (var field in type.Fields)
             {
                 declaration.Members.Add(new BilSimpleMemberDeclaration(
-                    field.IsStatic ? ".static-field" : ".field",
+                    field.IsStatic ? BilMemberKind.StaticField : BilMemberKind.Field,
                     CanonicalSymbolPrinter.PrintField(field),
-                    new[] { AccessibilityModifier(field.Accessibility) }));
+                    new BilModifier[] { new BilAccessibilityModifier(MapAccessibility(field.Accessibility)) }));
             }
             foreach (var method in type.Methods)
             {
@@ -138,25 +133,26 @@ namespace LatteCompiler
                     $"{method.Kind} ({CanonicalSymbolPrinter.PrintMethod(method)})");
                 return null;
             }
-            var modifiers = new List<string> { AccessibilityModifier(method.Accessibility) };
-            if (method.ExtTargetPath != null) modifiers.Add("ext");
-            if (method.Kind == MethodKind.Init) modifiers.Add("init");
-            if (method.Kind == MethodKind.Operator) modifiers.Add($"operator({method.Name})");
+            var modifiers = new List<BilModifier>
+                { new BilAccessibilityModifier(MapAccessibility(method.Accessibility)) };
+            if (method.ExtTargetPath != null) modifiers.Add(new BilKeywordModifier(BilKeyword.Ext));
+            if (method.Kind == MethodKind.Init) modifiers.Add(new BilKeywordModifier(BilKeyword.Init));
+            if (method.Kind == MethodKind.Operator) modifiers.Add(new BilOperatorModifier(method.Name));
             // native 三件套（§8.4：symbol/lib 必须与 native 同时出现且各恰好一次）
             if (method.IsNative)
             {
-                modifiers.Add("native");
-                modifiers.Add($"symbol(\"{method.NativeSymbol}\")");
-                modifiers.Add($"lib(\"{method.NativeLibrary}\")");
+                modifiers.Add(new BilKeywordModifier(BilKeyword.Native));
+                modifiers.Add(new BilNativeSymbolModifier(method.NativeSymbol!));
+                modifiers.Add(new BilNativeLibraryModifier(method.NativeLibrary!));
             }
             // entrypoint：全局命名空间的裸 main（SYNTAX 程序入口）
             if (method.Owner == null && method.Namespace is { FullName: "" }
                 && method.Name == "main")
             {
-                modifiers.Add("entrypoint");
+                modifiers.Add(new BilKeywordModifier(BilKeyword.Entrypoint));
             }
             return new BilSimpleMemberDeclaration(
-                method.IsStatic ? ".static-method" : ".method",
+                method.IsStatic ? BilMemberKind.StaticMethod : BilMemberKind.Method,
                 CanonicalSymbolPrinter.PrintMethod(method),
                 modifiers);
         }
@@ -176,14 +172,29 @@ namespace LatteCompiler
             };
         }
 
-        private static string AccessibilityModifier(Accessibility accessibility)
+        // Semantic TypeKind → Bil 类型种类（§8.2）
+        private static BilTypeKind MapTypeKind(TypeKind kind)
+        {
+            return kind switch
+            {
+                TypeKind.Class => BilTypeKind.Class,
+                TypeKind.Struct => BilTypeKind.Struct,
+                TypeKind.EnumStruct => BilTypeKind.EnumStruct,
+                TypeKind.Interface => BilTypeKind.Interface,
+                TypeKind.Wrapper => BilTypeKind.Wrapper,
+                _ => throw new CompilerInternalException("未知 TypeKind: " + kind),
+            };
+        }
+
+        // Semantic Accessibility → Bil 访问修饰符（§8.2/§8.3/§8.4）
+        private static BilAccessibility MapAccessibility(Accessibility accessibility)
         {
             return accessibility switch
             {
-                Accessibility.Public => "pub",
-                Accessibility.Protected => "protected",
-                Accessibility.Internal => "internal",
-                Accessibility.Private => "priv",
+                Accessibility.Public => BilAccessibility.Public,
+                Accessibility.Protected => BilAccessibility.Protected,
+                Accessibility.Internal => BilAccessibility.Internal,
+                Accessibility.Private => BilAccessibility.Private,
                 _ => throw new CompilerInternalException("未知 Accessibility: " + accessibility),
             };
         }

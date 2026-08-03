@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using LatteCompiler.Bil;
 
 namespace LatteCompiler
@@ -5,6 +6,8 @@ namespace LatteCompiler
     // 语句发射（S6–S7e；BIL §13/§15/§16）。自旧 EmitSession.EmitStatement
     // 各分支迁移，行为不变——无产物（Unit），副作用填充 target 指令流；
     // 分支/循环/switch/seq/try 的子块追加进 ctx.Function.Blocks。
+    // M57 起指令为强类型构造（操作数序由构造签名固定）；值发射产物为
+    // BilVariableOperand（§10.1 物化契约）。
 
     // 局部声明：无初始化器 → 无指令（.vars 已声明）；有初始化器 →
     // 求值物化后经 set.var 写入（§13.2）
@@ -17,8 +20,8 @@ namespace LatteCompiler
             if (decl.Initializer != null)
             {
                 var initValue = EmitValueDispatcher.Visit(decl.Initializer, target, ctx, env);
-                target.Instructions.Add(new BilInstruction("set.var",
-                    BilOp.Var(initValue), BilOp.Var(decl.Local.Name))
+                target.Instructions.Add(new SetVarInstruction(
+                    initValue, BilOp.Var(decl.Local.Name))
                 { Origin = decl });
             }
             return Unit.Value;
@@ -37,15 +40,15 @@ namespace LatteCompiler
             switch (assignment.Target)
             {
                 case LoweredValueReferenceExpression localTarget:
-                    target.Instructions.Add(new BilInstruction("set.var",
-                        BilOp.Var(assignedValue), BilOp.Var(localTarget.Symbol.Name))
+                    target.Instructions.Add(new SetVarInstruction(
+                        assignedValue, BilOp.Var(localTarget.Symbol.Name))
                     { Origin = assignment });
                     break;
                 case LoweredFieldReferenceExpression fieldTarget:
                     var ownerRef = EmittingFacility.FieldOwnerRef(fieldTarget.Field, env);
                     if (ownerRef == null) break;    // 已诊断
-                    target.Instructions.Add(new BilInstruction("set.field.static",
-                        BilOp.Var(assignedValue), BilOp.Type(ownerRef),
+                    target.Instructions.Add(new SetFieldStaticInstruction(
+                        assignedValue, BilOp.Type(ownerRef),
                         BilOp.Field(CanonicalSymbolPrinter.PrintField(fieldTarget.Field)))
                     { Origin = assignment });
                     break;
@@ -55,8 +58,8 @@ namespace LatteCompiler
                     // 与操作数序一致）
                     var writeReceiver = EmitValueDispatcher.Visit(accessTarget.Receiver, target,
                         ctx, env);
-                    target.Instructions.Add(new BilInstruction("set.field",
-                        BilOp.Var(assignedValue), BilOp.Var(writeReceiver),
+                    target.Instructions.Add(new SetFieldInstruction(
+                        assignedValue, writeReceiver,
                         BilOp.Field(CanonicalSymbolPrinter.PrintField(accessTarget.Field)))
                     { Origin = assignment });
                     break;
@@ -90,18 +93,17 @@ namespace LatteCompiler
             EmitEnvironment env)
         {
             var call = (LoweredCallStatement)node;
-            var arguments = new List<BilOperand>();
+            var arguments = new List<BilVariableOperand>();
             if (call.Receiver != null)
             {
-                arguments.Add(BilOp.Var(EmitValueDispatcher.Visit(call.Receiver, target, ctx, env)));
+                arguments.Add(EmitValueDispatcher.Visit(call.Receiver, target, ctx, env));
             }
             foreach (var argument in call.Arguments)
             {
-                arguments.Add(BilOp.Var(EmitValueDispatcher.Visit(argument, target, ctx, env)));
+                arguments.Add(EmitValueDispatcher.Visit(argument, target, ctx, env));
             }
-            target.Instructions.Add(new BilInstruction("invoke.noret",
-                BilOp.Fn(CanonicalSymbolPrinter.PrintMethod(call.Method)),
-                BilOp.List(arguments.ToArray()))
+            target.Instructions.Add(new InvokeNoResultInstruction(
+                BilOp.Fn(CanonicalSymbolPrinter.PrintMethod(call.Method)), arguments)
             { Origin = call });
             return Unit.Value;
         }
@@ -116,20 +118,20 @@ namespace LatteCompiler
             var ret = (LoweredReturnStatement)node;
             if (ret.Value == null)
             {
-                target.Instructions.Add(new BilInstruction("ret") { Origin = ret });
+                target.Instructions.Add(new RetInstruction() { Origin = ret });
             }
             else
             {
                 var value = EmitValueDispatcher.Visit(ret.Value, target, ctx, env);
-                target.Instructions.Add(new BilInstruction("ret", BilOp.Var(value))
-                { Origin = ret });
+                target.Instructions.Add(new RetInstruction(value) { Origin = ret });
             }
             return Unit.Value;
         }
     }
 
     // 结构化条件（§16.2）：条件物化到临时变量 →
-    // if $c blk(then) blk(else)（无 else 用 none 操作数）；
+    // if $c blk(then) blk(else)（无 else 用 none 操作数——模型为可空
+    // ElseBlock）；
     // 分支 block 加入函数并递归发射，落尾自然返回（§9.4）
     internal sealed class IfEmitter : EmitVisitor<IfEmitter, Unit>
     {
@@ -143,9 +145,7 @@ namespace LatteCompiler
             var thenBlock = new BilBlock(id + "-then");
             var elseBlock = ifStatement.FalseBlock != null
                 ? new BilBlock(id + "-else") : null;
-            target.Instructions.Add(new BilInstruction("if",
-                BilOp.Var(conditionValue), BilOp.Blk(thenBlock.Id),
-                elseBlock != null ? BilOp.Blk(elseBlock.Id) : BilOp.None)
+            target.Instructions.Add(new IfInstruction(conditionValue, thenBlock, elseBlock)
             { Origin = ifStatement });
             ctx.Function.Blocks.Add(thenBlock);
             EmitBlockVisitor.Visit(ifStatement.TrueBlock, thenBlock, ctx, env);
@@ -174,11 +174,9 @@ namespace LatteCompiler
             var enumBlock = loop.Enumerator != null
                 ? new BilBlock(loopId + "-enum") : null;
             var judgeBlock = new BilBlock(loopId + "-judge");
-            target.Instructions.Add(new BilInstruction(
-                loop.IsRev ? "loop.rev" : "loop",
-                BilOp.Var(loop.Condition.Name), BilOp.Blk(loopBodyBlock.Id),
-                enumBlock != null ? BilOp.Blk(enumBlock.Id) : BilOp.None,
-                BilOp.Blk(judgeBlock.Id), BilOp.Var(loop.BreakId.Name))
+            target.Instructions.Add(new LoopInstruction(
+                BilOp.Var(loop.Condition.Name), loopBodyBlock, enumBlock, judgeBlock,
+                BilOp.Var(loop.BreakId.Name), loop.IsRev)
             { Origin = loop });
             ctx.Function.Blocks.Add(loopBodyBlock);
             EmitBlockVisitor.Visit(loop.Body, loopBodyBlock, ctx, env);
@@ -200,9 +198,9 @@ namespace LatteCompiler
             EmitEnvironment env)
         {
             var loopControl = (LoweredLoopControl)node;
-            target.Instructions.Add(new BilInstruction(
-                loopControl.IsBreak ? "break" : "continue",
-                BilOp.Var(loopControl.BreakId.Name))
+            target.Instructions.Add(loopControl.IsBreak
+                ? (BilInstruction)new BreakInstruction(BilOp.Var(loopControl.BreakId.Name))
+                : new ContinueInstruction(BilOp.Var(loopControl.BreakId.Name))
             { Origin = loopControl });
             return Unit.Value;
         }
@@ -223,17 +221,13 @@ namespace LatteCompiler
             var switchId = "switch" + ctx.SwitchCount;
             ctx.SwitchCount++;
             var itemBlocks = new List<BilBlock>();
-            var itemOperands = new List<BilOperand>();
             for (var i = 0; i < sw.Cases.Count; i++)
             {
-                var itemBlock = new BilBlock(switchId + "-item" + i);
-                itemBlocks.Add(itemBlock);
-                itemOperands.Add(BilOp.Blk(itemBlock.Id));
+                itemBlocks.Add(new BilBlock(switchId + "-item" + i));
             }
             var defaultBlock = new BilBlock(switchId + "-default");
-            target.Instructions.Add(new BilInstruction("switch",
-                BilOp.Var(selectorValue), BilOp.Res(tableResource),
-                BilOp.List(itemOperands.ToArray()), BilOp.Blk(defaultBlock.Id),
+            target.Instructions.Add(new SwitchInstruction(
+                selectorValue, tableResource, itemBlocks, defaultBlock,
                 BilOp.Var(sw.BreakId.Name))
             { Origin = sw });
             for (var i = 0; i < sw.Cases.Count; i++)
@@ -256,8 +250,7 @@ namespace LatteCompiler
             var throwStatement = (LoweredThrowStatement)node;
             var exceptionValue = EmitValueDispatcher.Visit(throwStatement.Exception, target,
                 ctx, env);
-            target.Instructions.Add(new BilInstruction("throw",
-                BilOp.Var(exceptionValue))
+            target.Instructions.Add(new ThrowInstruction(exceptionValue)
             { Origin = throwStatement });
             return Unit.Value;
         }
@@ -275,10 +268,9 @@ namespace LatteCompiler
             var seqId = "seq" + ctx.SeqCount;
             ctx.SeqCount++;
             var seqBilBlock = seqBlock.IsVolatile
-                ? new BilBlock(seqId, "volatile")
+                ? new BilBlock(seqId, BilBlockModifier.Volatile)
                 : new BilBlock(seqId);
-            target.Instructions.Add(new BilInstruction("call",
-                BilOp.Blk(seqBilBlock.Id))
+            target.Instructions.Add(new CallBlockInstruction(seqBilBlock)
             { Origin = seqBlock });
             ctx.Function.Blocks.Add(seqBilBlock);
             EmitBlockVisitor.Visit(seqBlock.Body, seqBilBlock, ctx, env);
@@ -301,21 +293,16 @@ namespace LatteCompiler
             ctx.TryCount++;
             var tryBodyBlock = new BilBlock(tryId + "-body");
             var catchBlocks = new List<BilBlock>();
-            var catchBlockIds = new List<string>();
             for (var i = 0; i < tryStatement.Catches.Count; i++)
             {
-                var catchBlock = new BilBlock(tryId + "-catch" + i);
-                catchBlocks.Add(catchBlock);
-                catchBlockIds.Add(catchBlock.Id);
+                catchBlocks.Add(new BilBlock(tryId + "-catch" + i));
             }
-            var catchTable = EmittingFacility.RegisterCatchTable(tryStatement, catchBlockIds, env);
+            var catchTable = EmittingFacility.RegisterCatchTable(tryStatement, catchBlocks, env);
             var finallyBilBlock = tryStatement.FinallyBlock != null
                 ? new BilBlock(tryId + "-finally") : null;
-            target.Instructions.Add(new BilInstruction("try",
-                BilOp.Blk(tryBodyBlock.Id),
-                BilOp.Var(tryStatement.ExceptionSlot.Name),
-                BilOp.Res(catchTable),
-                finallyBilBlock != null ? BilOp.Blk(finallyBilBlock.Id) : BilOp.None)
+            target.Instructions.Add(new TryInstruction(
+                tryBodyBlock, BilOp.Var(tryStatement.ExceptionSlot.Name),
+                catchTable, finallyBilBlock)
             { Origin = tryStatement });
             ctx.Function.Blocks.Add(tryBodyBlock);
             EmitBlockVisitor.Visit(tryStatement.TryBlock, tryBodyBlock, ctx, env);

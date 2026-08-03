@@ -50,9 +50,9 @@ namespace LatteCompiler
 
     internal static class EmitValueDispatcher
     {
-        // 表达式物化为变量操作数（§10.1），返回变量名
-        public static string Visit(LoweredExpression expression, BilBlock target, EmitContext ctx,
-            EmitEnvironment env)
+        // 表达式物化为变量操作数（§10.1），M57 起返回 BilVariableOperand
+        public static BilVariableOperand Visit(LoweredExpression expression, BilBlock target,
+            EmitContext ctx, EmitEnvironment env)
         {
             switch (expression)
             {
@@ -88,7 +88,7 @@ namespace LatteCompiler
                     env.Error(expression.Origin.Syntax.Span,
                         $"P4: lowered expression kind not supported by minimal emission: " +
                         expression.GetType().Name);
-                    return "<error>";
+                    return BilOp.Var("<error>");
             }
         }
     }

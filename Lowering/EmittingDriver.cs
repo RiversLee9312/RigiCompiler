@@ -20,7 +20,7 @@ namespace LatteCompiler
         public BilModule Run()
         {
             // §4.1：源模块名（LiteralText 含引号；moduleName 由编译器内部给定）
-            env.Module.Metadata.Add(new BilMetadataEntry("module", "string",
+            env.Module.Metadata.Add(new BilMetadataEntry("module", BilScalarType.String,
                 $"\"{env.ModuleName}\""));
             LocalSymbolEmitters.EmitNamespace(env.Unit.Symbols.GlobalNamespace, env);
             LocalSymbolEmitters.EmitBuiltinExtMembers(env);
@@ -63,7 +63,7 @@ namespace LatteCompiler
             // seq 块随 LoweredSeqBlock 发射追加（§16.1）、try 的
             // body/catch/finally block 随 LoweredTryStatement 发射追加（§16.7）
             var ctx = new EmitContext(function);
-            var entry = new BilBlock("entry", "entrypoint");
+            var entry = new BilBlock("entry", BilBlockModifier.Entrypoint);
             function.Blocks.Add(entry);
             EmitBlockVisitor.Visit(body.Body, entry, ctx, env);
             // §9.4：entrypoint block 不得正常落到末尾——void 函数体无显式
@@ -71,9 +71,9 @@ namespace LatteCompiler
             // 返回引用它的结构化指令，不补 ret
             if (method.ReturnType == null
                 && (entry.Instructions.Count == 0
-                    || entry.Instructions[entry.Instructions.Count - 1].Opcode != "ret"))
+                    || entry.Instructions[entry.Instructions.Count - 1] is not RetInstruction))
             {
-                entry.Instructions.Add(new BilInstruction("ret"));
+                entry.Instructions.Add(new RetInstruction());
             }
             // .vars（§9.3）：Locals 在前、临时变量在后；Type 为 null 的
             // 合成局部是 .breakid capability（§9.3 别名，无 TypeSymbol）

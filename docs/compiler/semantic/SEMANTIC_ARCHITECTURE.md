@@ -387,15 +387,23 @@ Lowering/                  # P4
 │                             #   ValueBlock/Expression/NullSafety/Destructuring）
 ├── BilEmitter.cs             # P4b 瘦入口（M55 起）
 ├── EmitVisitor.cs            # P4b CRTP 基类（签名带 BilBlock target 施工目标）
-├── EmitEnvironment.cs        # 模块级（Module/ResourceKeys 跨 fn 去重）
+├── EmitEnvironment.cs        # 模块级（Module/四类资源去重表跨 fn 共享，M57）
 ├── EmitContext.cs            # 函数级（TempVars/各 block 计数）
-├── EmitDispatchers.cs        # 类别分派（语句 Unit/值 string 操作数文本）
+├── EmitDispatchers.cs        # 类别分派（语句 Unit/值 BilVariableOperand，M57）
 ├── EmittingDriver.cs         # 模块组装 + fn 定义发射
-├── EmittingFacility.cs       # 资源登记/opcode 映射/转义 共享辅助
+├── EmittingFacility.cs       # 资源登记/intrinsic 枚举映射/转义 共享辅助（M57）
 └── Emitting/                 # 结构 visitor 簇（LocalSymbols/Statement/Value）
 Bil/                       # BIL 生态（对中端零依赖）
-├── BilModel.cs               # Module/Function/Block/指令/Resource（按需拆分）
-├── BilWriter.cs
+├── BilModule.cs              # Module/Metadata/Resources（含 switch-table/
+│                             #   catch-table 专用资源类）+ BilScalarType（M57）
+├── BilSymbols.cs             # 类型与成员声明 + 种类枚举 + BilModifier 子类族（M57）
+├── BilFunction.cs            # Function/.args/.vars/Block + BilBlockModifier（M57）
+├── BilInstructions.cs        # 指令基类 + 操作数模型（blk/res 持对象引用，M57）
+├── BilComputeInstructions.cs # §11–§12 指令 + 运算/类型检查枚举（M57）
+├── BilDataInstructions.cs    # §13–§15 指令（M57）
+├── BilControlFlowInstructions.cs # §16 指令（M57）
+├── BilSpellings.cs           # 枚举 → 标准拼写唯一定义点（M57）
+├── BilWriter.cs              # 模型 → 标准 BIL 文本（指令自渲染，无 opcode switch）
 ├── BilVerifier.cs            # 后续里程碑
 └── BilVm.cs                  # 后续里程碑
 ```

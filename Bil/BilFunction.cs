@@ -4,6 +4,12 @@ namespace LatteCompiler.Bil
 {
     // BIL 函数、参数、局部变量与 block（BIL_STANDARD §9）。
 
+    // §9.6 block 修饰符标准集
+    public enum BilBlockModifier
+    {
+        Entrypoint, Volatile,
+    }
+
     // 函数定义（§9.1）：fn(METHOD_SYMBOL) { .args/.vars/.block... }
     // 必须对应一个 LocalSymbols 方法声明（生成方责任，verifier 复核）
     public sealed class BilFunction
@@ -55,10 +61,10 @@ namespace LatteCompiler.Bil
     {
         public string Id { get; }
         // block 修饰符（§9.6 标准集：entrypoint / volatile）
-        public IReadOnlyList<string> Modifiers { get; }
+        public IReadOnlyList<BilBlockModifier> Modifiers { get; }
         public List<BilInstruction> Instructions { get; } = new List<BilInstruction>();
 
-        public BilBlock(string id, params string[] modifiers)
+        public BilBlock(string id, params BilBlockModifier[] modifiers)
         {
             Id = id;
             Modifiers = modifiers;

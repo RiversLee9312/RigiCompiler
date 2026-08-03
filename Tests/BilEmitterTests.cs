@@ -351,7 +351,7 @@ namespace LatteCompiler.Tests
             CheckNoErrors("全管线无诊断（Origin 链）", unit);
 
             var main = module.Functions.Single(f => f.Symbol == "$main()@.i32");
-            var invoke = main.Blocks[0].Instructions.First(i => i.Opcode == "invoke.noret");
+            var invoke = main.Blocks[0].Instructions.First(i => i is InvokeNoResultInstruction);
             TestHarness.CheckTrue("invoke.noret 的 Origin 是 LoweredCallStatement",
                 invoke.Origin is LoweredCallStatement,
                 invoke.Origin?.GetType().Name ?? "<null>");
@@ -366,7 +366,7 @@ namespace LatteCompiler.Tests
                 bound?.Syntax.Span?.sourceName ?? "<null>", UserSourceName);
 
             // load 的 Origin 是字面量 LoweredNode（值经 Origin.Syntax 回取）
-            var load = main.Blocks[0].Instructions.First(i => i.Opcode == "load");
+            var load = main.Blocks[0].Instructions.First(i => i is LoadInstruction);
             TestHarness.CheckTrue("load 的 Origin 是 LoweredLiteralExpression",
                 load.Origin is LoweredLiteralExpression,
                 load.Origin?.GetType().Name ?? "<null>");
@@ -390,11 +390,11 @@ namespace LatteCompiler.Tests
                     && s.LiteralText == "\"same\"") == 1,
                 string.Join(", ", module.Resources.Select(r => r.Name)));
             var main = module.Functions.Single(f => f.Symbol == "$main()@.i32");
-            var loads = main.Blocks[0].Instructions.Where(i => i.Opcode == "load").ToList();
+            var loads = main.Blocks[0].Instructions.Where(i => i is LoadInstruction).ToList();
             // main 共三条 load（两次 "same" + return 0），两条指向同一资源 R_5
             TestHarness.CheckTrue("两处引用同一资源（R_5）",
                 loads.Count == 3 && loads.Count(l => l.Operands[0] is BilResourceOperand ro
-                    && ro.ResourceId == "R_5") == 2);
+                    && ro.Resource.Name == "R_5") == 2);
         }
 
         // ===== S7a 渲染辅助：fn 的 .vars + entry block 指令精确比对 =====
@@ -426,12 +426,16 @@ namespace LatteCompiler.Tests
         {
             return string.Join("\n", module.Resources.Select(r => r switch
             {
-                BilScalarResource s => $"{s.Name} = {s.TypeKeyword} {s.LiteralText}",
+                BilScalarResource s => $"{s.Name} = {BilSpellings.Of(s.Type)} {s.LiteralText}",
                 BilNullResource n => $"{n.Name} = null type({n.TypeRef})",
-                // 复合资源单行形态（§18.4 switch-table；map/catch-table 多行
-                // 形态随 S7e/S7f 发射端到位再扩）
+                // 复合资源单行形态（§18.2/§18.4；catch-table 多行形态此处
+                // 单行渲染——多行排版只由 BilWriter 保证）
                 BilCollectionResource c =>
                     $"{c.Name} = {c.Header} {{ {string.Join(", ", c.Elements)} }}",
+                BilSwitchTableResource t =>
+                    $"{t.Name} = {t.HeaderText} {{ {string.Join(", ", t.Elements)} }}",
+                BilCatchTableResource ct =>
+                    $"{ct.Name} = catch-table {{ {string.Join(", ", ct.Entries.Select(e => e.Render()))} }}",
                 _ => $"<{r.GetType().Name}>",
             }));
         }
@@ -448,7 +452,7 @@ namespace LatteCompiler.Tests
                 sb.Append($".block {block.Id}");
                 if (block.Modifiers.Count > 0)
                 {
-                    sb.Append(" " + string.Join(" ", block.Modifiers));
+                    sb.Append(" " + string.Join(" ", block.Modifiers.Select(BilSpellings.Of)));
                 }
                 sb.Append(" {\n");
                 foreach (var instruction in block.Instructions)
@@ -656,7 +660,7 @@ namespace LatteCompiler.Tests
             // 结构性事实：block id 函数内唯一且恰一个 entrypoint（§9.4）
             var main = FnOf(module, "$main()@.i32");
             TestHarness.CheckTrue("恰一个 entrypoint block 且 id 唯一",
-                main.Blocks.Count(b => b.Modifiers.Contains("entrypoint")) == 1
+                main.Blocks.Count(b => b.Modifiers.Contains(BilBlockModifier.Entrypoint)) == 1
                 && main.Blocks.Select(b => b.Id).Distinct().Count() == main.Blocks.Count);
 
             // 无 else → none 操作数
@@ -668,7 +672,7 @@ namespace LatteCompiler.Tests
                 "}\n");
             CheckNoErrors("全管线无诊断（无 else if）", unit2);
             var ifInstruction = FnOf(module2, "$main()@.i32").Blocks
-                .SelectMany(b => b.Instructions).Single(i => i.Opcode == "if");
+                .SelectMany(b => b.Instructions).Single(i => i is IfInstruction);
             TestHarness.CheckTrue("无 else 用 none 操作数",
                 ifInstruction.Operands.Count == 3
                 && ifInstruction.Operands[2] is BilNoneOperand
@@ -729,7 +733,7 @@ namespace LatteCompiler.Tests
             CheckNoErrors("全管线无诊断（短路发射）", unit);
             TestHarness.CheckTrue("无裸 and/or 指令（§11.3 已展开）",
                 FnOf(module, "$main()@.i32").Blocks.SelectMany(b => b.Instructions)
-                    .All(i => i.Opcode != "and" && i.Opcode != "or"),
+                    .All(i => i is not BinaryIntrinsicInstruction bin || (bin.Op != BilBinaryOp.And && bin.Op != BilBinaryOp.Or)),
                 string.Join(", ", FnOf(module, "$main()@.i32").Blocks
                     .SelectMany(b => b.Instructions).Select(i => i.Opcode)));
             // 合成常量与源码字面量同键去重：true/false 分别共享 stdlib
@@ -823,7 +827,7 @@ namespace LatteCompiler.Tests
             CheckNoErrors("全管线无诊断（do-while 发射）", unit2);
             var revFn = FnOf(module2, "$main()@.i32");
             var revInstruction = revFn.Blocks.SelectMany(b => b.Instructions)
-                .Single(i => i.Opcode == "loop.rev");
+                .Single(i => i is LoopInstruction { IsRev: true });
             TestHarness.CheckTrue("loop.rev 五操作数（cond/body/none/judge/breakid）",
                 revInstruction.Operands.Count == 5
                 && revInstruction.Operands[0].Render() == "$.s0"
@@ -852,9 +856,9 @@ namespace LatteCompiler.Tests
             CheckNoErrors("全管线无诊断（嵌套标签循环发射）", unit3);
             var nestedFn = FnOf(module3, "$main()@.i32");
             var breakInstruction = nestedFn.Blocks.SelectMany(b => b.Instructions)
-                .Single(i => i.Opcode == "break");
+                .Single(i => i is BreakInstruction);
             var continueInstruction = nestedFn.Blocks.SelectMany(b => b.Instructions)
-                .Single(i => i.Opcode == "continue");
+                .Single(i => i is ContinueInstruction);
             TestHarness.CheckTrue("break@outer → $.b0（外层 breakid）",
                 breakInstruction.Operands.Count == 1
                 && breakInstruction.Operands[0].Render() == "$.b0");
@@ -890,16 +894,19 @@ namespace LatteCompiler.Tests
                 module.LocalSymbols.OfType<BilTypeDeclaration>()
                     .Where(t => t.Symbol == "Counter")
                     .SelectMany(t => t.Members.OfType<BilSimpleMemberDeclaration>())
-                    .Any(d => d.Keyword == ".method"
+                    .Any(d => d.Kind == BilMemberKind.Method
                         && d.Symbol == "Counter$init(v:.i32)@.void"
-                        && d.Modifiers.Contains("init") && d.Modifiers.Contains("pub")));
+                        && d.Modifiers.Any(m => m is BilKeywordModifier { Keyword: BilKeyword.Init })
+                        && d.Modifiers.Any(m => m is BilAccessibilityModifier
+                            { Accessibility: BilAccessibility.Public })));
             TestHarness.CheckTrue("ext operator 声明形态（$$名 + ext + operator(名)）",
                 module.LocalSymbols.OfType<BilSimpleMemberDeclaration>().Any(d =>
-                    d.Keyword == ".method"
+                    d.Kind == BilMemberKind.Method
                     && d.Symbol == "core::i32$$EnumerateInRange(end:.i32)" +
                         "@core.collections::IEnumerable<.i32>"
-                    && d.Modifiers.Contains("ext")
-                    && d.Modifiers.Contains("operator(EnumerateInRange)")));
+                    && d.Modifiers.Any(m => m is BilKeywordModifier { Keyword: BilKeyword.Ext })
+                    && d.Modifiers.Any(m => m is BilOperatorModifier op
+                        && op.Name == "EnumerateInRange")));
 
             // .this 进 .args（§9.2：.return 后、普通参数前；§7.3）
             var addFn = FnOf(module, "Counter$add(n:.i32)@.i32");
@@ -1034,7 +1041,7 @@ namespace LatteCompiler.Tests
             // 结构性事实：§16.6 操作数形状与 .vars 的 .breakid 条目（§9.3）
             var classifyFn = FnOf(module, "$classify(x:.i32)@.i32");
             var switchInstruction = classifyFn.Blocks[0].Instructions
-                .Single(i => i.Opcode == "switch");
+                .Single(i => i is SwitchInstruction);
             TestHarness.CheckTrue("switch 五操作数（selector/res/item表/default/breakid）",
                 switchInstruction.Operands.Count == 5
                 && switchInstruction.Operands[0] is BilVariableOperand
@@ -1067,10 +1074,10 @@ namespace LatteCompiler.Tests
                 "}\n");
             CheckNoErrors("全管线无诊断（switch 表去重）", unit2);
             TestHarness.CheckTrue("case 集相同的两个 switch 共享一张表",
-                module2.Resources.Count(r => r is BilCollectionResource) == 1
+                module2.Resources.Count(r => r is BilSwitchTableResource) == 1
                 && module2.Functions.SelectMany(f => f.Blocks[0].Instructions)
-                    .Where(i => i.Opcode == "switch")
-                    .Select(i => ((BilResourceOperand)i.Operands[1]).ResourceId)
+                    .Where(i => i is SwitchInstruction)
+                    .Select(i => ((BilResourceOperand)i.Operands[1]).Resource.Name)
                     .Distinct().Count() == 1,
                 string.Join(", ", module2.Resources.Select(r => r.Name)));
         }
@@ -1090,10 +1097,10 @@ namespace LatteCompiler.Tests
             CheckNoErrors("全管线无诊断（pattern switch 发射）", unit);
             var main = FnOf(module, "$main()@.i32");
             TestHarness.CheckTrue("pattern switch 降为 if 链（无 switch 指令）",
-                main.Blocks.SelectMany(b => b.Instructions).All(i => i.Opcode != "switch")
-                && main.Blocks.SelectMany(b => b.Instructions).Any(i => i.Opcode == "if"));
+                main.Blocks.SelectMany(b => b.Instructions).All(i => i is not SwitchInstruction)
+                && main.Blocks.SelectMany(b => b.Instructions).Any(i => i is IfInstruction));
             TestHarness.CheckTrue("无 switch-table 资源",
-                module.Resources.All(r => r is not BilCollectionResource));
+                module.Resources.All(r => r is not BilSwitchTableResource));
             // selector 物化一次（.s1），pattern 条件引用它而非重复求值
             TestHarness.Check("pattern 链多 block 文本", RenderFnAllBlocks(main),
                 ".vars { .i32 x, .i32 label, .i32 .s0, .i32 .s1, .i32 .t0, .i32 .t1, " +
@@ -1134,13 +1141,13 @@ namespace LatteCompiler.Tests
                 ".vars { core::Exception .t0 }\n" +
                 "new type(core::Exception) $.t0 []\n" +
                 "throw $.t0\n");
-            var throwInstruction = fail.Blocks[0].Instructions.Single(i => i.Opcode == "throw");
+            var throwInstruction = fail.Blocks[0].Instructions.Single(i => i is ThrowInstruction);
             TestHarness.CheckTrue("throw 单操作数（§16.9）",
                 throwInstruction.Operands.Count == 1
                 && throwInstruction.Operands[0] is BilVariableOperand);
             // throw 是终止指令：entry 块落尾不补 ret（§9.4 补 ret 逻辑只看 ret）
             TestHarness.CheckTrue("throw 终止后无赘余 ret",
-                fail.Blocks[0].Instructions.Last().Opcode == "throw");
+                fail.Blocks[0].Instructions.Last() is ThrowInstruction);
         }
 
         // ===== S7e：cast 发射（§12.1/§12.2）=====
@@ -1164,7 +1171,7 @@ namespace LatteCompiler.Tests
                 "ret $.t0\n");
             // 结构性事实：§12.1 三操作数形状（SOURCE RESULT type(TARGET_TYPE)）
             var castInstruction = FnOf(module, "$f(s:.string)@.string").Blocks[0].Instructions
-                .Single(i => i.Opcode == "cast");
+                .Single(i => i is CastInstruction);
             TestHarness.CheckTrue("cast 三操作数（§12.1）",
                 castInstruction.Operands.Count == 3
                 && castInstruction.Operands[0] is BilVariableOperand
@@ -1205,7 +1212,7 @@ namespace LatteCompiler.Tests
             // 结构性事实：String 段直拼无 toString；非 String 段一经 cast 一 invoke
             var mainInstructions = FnOf(module, "$main()@.void").Blocks[0].Instructions;
             TestHarness.CheckTrue("toString 调用恰一次（仅非 String 段）",
-                mainInstructions.Count(i => i.Opcode == "invoke") == 1);
+                mainInstructions.Count(i => i is InvokeInstruction) == 1);
         }
 
         // ===== S7f：`?.` 发射（§3.4 脱糖：null 检查 + if + unwrap/wrap cast）=====
@@ -1352,7 +1359,7 @@ namespace LatteCompiler.Tests
                 "invoke.noret fn($log()@.void) []\n" +
                 "}\n");
             // 结构性事实：§16.7 四操作数形状
-            var tryInstruction = f.Blocks[0].Instructions.Single(i => i.Opcode == "try");
+            var tryInstruction = f.Blocks[0].Instructions.Single(i => i is TryInstruction);
             TestHarness.CheckTrue("try 四操作数（body/slot/表/finally）",
                 tryInstruction.Operands.Count == 4
                 && tryInstruction.Operands[0] is BilBlockOperand
@@ -1360,12 +1367,13 @@ namespace LatteCompiler.Tests
                 && tryInstruction.Operands[2] is BilResourceOperand
                 && tryInstruction.Operands[3] is BilBlockOperand);
             // §18.5 catch-table：多行形态、元素保序（表序即匹配序）
-            var catchTable = (BilCollectionResource)module.Resources.Single(
-                r => r is BilCollectionResource c && c.Header == "catch-table");
-            TestHarness.Check("catch-table 元素（保序）", string.Join("\n", catchTable.Elements),
+            var catchTable = module.Resources.OfType<BilCatchTableResource>().Single();
+            TestHarness.Check("catch-table 元素（保序）",
+                string.Join("\n", catchTable.Entries.Select(e => e.Render())),
                 "type(DerivedError) -> blk(try0-catch0)\n" +
                 "type(MyError) -> blk(try0-catch1)");
-            TestHarness.CheckTrue("catch-table 多行形态（§18.5）", catchTable.Multiline);
+            TestHarness.CheckTrue("catch-table 多行形态（§18.5）",
+                BilWriter.Write(module).Contains("catch-table {\n"));
         }
 
         // ===== S7e：seq 发射（§16.1 call 化 + §9.6 volatile 修饰符）=====
@@ -1433,7 +1441,7 @@ namespace LatteCompiler.Tests
                 "}\n");
             // 结构性事实：§16.1 call 单操作数 blk(...)（不建栈帧）
             var callInstruction = FnOf(module2, "$se()@.i32").Blocks[0].Instructions
-                .Single(i => i.Opcode == "call");
+                .Single(i => i is CallBlockInstruction);
             TestHarness.CheckTrue("call 单操作数 blk（§16.1）",
                 callInstruction.Operands.Count == 1
                 && callInstruction.Operands[0] is BilBlockOperand);
@@ -1474,7 +1482,7 @@ namespace LatteCompiler.Tests
                 "ret $.t1\n");
             // 结构性事实：§12.3 静态三操作数形状（VALUE type(TARGET_TYPE) RESULT_BOOL）
             var isInstruction = FnOf(module, "$f(d:Dog)@.bool").Blocks[0].Instructions
-                .Single(i => i.Opcode == "type.is");
+                .Single(i => i is DirectTypeCheckInstruction { Kind: BilTypeCheckKind.Is });
             TestHarness.CheckTrue("type.is 三操作数（§12.3）",
                 isInstruction.Operands.Count == 3
                 && isInstruction.Operands[0] is BilVariableOperand
@@ -1482,7 +1490,7 @@ namespace LatteCompiler.Tests
                 && isInstruction.Operands[2] is BilVariableOperand);
             // 结构性事实：§12.3 动态三操作数全变量（VALUE TYPEID_VAR RESULT_BOOL）
             var indirectInstruction = FnOf(module, "$k(d:Dog)@.bool").Blocks[0].Instructions
-                .Single(i => i.Opcode == "type.is.indirect");
+                .Single(i => i is IndirectTypeCheckInstruction { Kind: BilTypeCheckKind.Is });
             TestHarness.CheckTrue("type.is.indirect 三操作数全变量（§12.3）",
                 indirectInstruction.Operands.Count == 3
                 && indirectInstruction.Operands.All(o => o is BilVariableOperand));
@@ -1509,14 +1517,14 @@ namespace LatteCompiler.Tests
                 "ret $.t0\n");
             // 结构性事实：§12.5 getid.type 双操作数（type(TYPE_SYMBOL) TARGET_TYPEID）
             var getIdType = FnOf(module, "$m()@.typeid<Animal>").Blocks[0].Instructions
-                .Single(i => i.Opcode == "getid.type");
+                .Single(i => i is GetIdTypeInstruction);
             TestHarness.CheckTrue("getid.type 双操作数（§12.5）",
                 getIdType.Operands.Count == 2
                 && getIdType.Operands[0] is BilTypeOperand
                 && getIdType.Operands[1] is BilVariableOperand);
             // 结构性事实：§12.5 getid.var 双操作数（VALUE TARGET_TYPEID）
             var getIdVar = FnOf(module, "$n(d:Dog)@.typeid<Dog>").Blocks[0].Instructions
-                .Single(i => i.Opcode == "getid.var");
+                .Single(i => i is GetIdVarInstruction);
             TestHarness.CheckTrue("getid.var 双操作数全变量（§12.5）",
                 getIdVar.Operands.Count == 2
                 && getIdVar.Operands.All(o => o is BilVariableOperand));

@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
 
@@ -7,6 +8,9 @@ namespace LatteCompiler.Bil
     // 只输出标准 spelling（不输出 legacy）；段物理顺序与 §4 一致且全部
     // 输出（空段也输出，§4）；排版严格对齐 §19 黄金示例（4 空格缩进、
     // 段间空行）；换行统一 \n，不随平台漂移。
+    // M57 起指令/修饰符/种类拼写全部来自模型自渲染（BilInstruction.
+    // WriteTo / BilModifier.Render / BilSpellings），本类只提供段落框架
+    // 与缩进——不再有 opcode/种类/修饰符的字符串 switch。
     public static class BilWriter
     {
         private const string Indent = "    ";
@@ -49,7 +53,7 @@ namespace LatteCompiler.Bil
             sb.Append("Metadata {\n");
             foreach (var entry in module.Metadata)
             {
-                sb.Append($"{Indent}{entry.Key} = {entry.TypeKeyword} {entry.LiteralText}\n");
+                sb.Append($"{Indent}{entry.Key} = {BilSpellings.Of(entry.Type)} {entry.LiteralText}\n");
             }
             sb.Append("}\n");
         }
@@ -73,7 +77,7 @@ namespace LatteCompiler.Bil
             switch (resource)
             {
                 case BilScalarResource scalar:
-                    sb.Append($"{indent}{scalar.Name} = {scalar.TypeKeyword} {scalar.LiteralText}{trailing}\n");
+                    sb.Append($"{indent}{scalar.Name} = {BilSpellings.Of(scalar.Type)} {scalar.LiteralText}{trailing}\n");
                     break;
                 case BilNullResource nullResource:
                     sb.Append($"{indent}{nullResource.Name} = null type({nullResource.TypeRef}){trailing}\n");
@@ -85,7 +89,7 @@ namespace LatteCompiler.Bil
                     }
                     else
                     {
-                        // §18.2/§18.5 规范排版：map/catch-table 元素各占一行
+                        // §18.2 规范排版：map 元素各占一行
                         sb.Append($"{indent}{collection.Name} = {collection.Header} {{\n");
                         for (int i = 0; i < collection.Elements.Count; i++)
                         {
@@ -95,6 +99,20 @@ namespace LatteCompiler.Bil
                         sb.Append($"{indent}}}{trailing}\n");
                     }
                     break;
+                // §18.4 switch-table：单行形态
+                case BilSwitchTableResource switchTable:
+                    sb.Append($"{indent}{switchTable.Name} = {switchTable.HeaderText} {{ {string.Join(", ", switchTable.Elements)} }}{trailing}\n");
+                    break;
+                // §18.5 catch-table：元素各占一行
+                case BilCatchTableResource catchTable:
+                    sb.Append($"{indent}{catchTable.Name} = catch-table {{\n");
+                    for (int i = 0; i < catchTable.Entries.Count; i++)
+                    {
+                        var comma = i < catchTable.Entries.Count - 1 ? "," : "";
+                        sb.Append($"{indent}{Indent}{catchTable.Entries[i].Render()}{comma}\n");
+                    }
+                    sb.Append($"{indent}}}{trailing}\n");
+                    break;
                 default:
                     throw new CompilerInternalException($"未知的资源类型: {resource.GetType().Name}");
             }
@@ -103,7 +121,7 @@ namespace LatteCompiler.Bil
         // ===== 符号声明（§8）=====
 
         private static void WriteSymbolSection(StringBuilder sb, string sectionName,
-            System.Collections.Generic.List<BilSymbolSectionEntry> entries)
+            List<BilSymbolSectionEntry> entries)
         {
             sb.Append('\n');
             sb.Append($"{sectionName} {{\n");
@@ -134,16 +152,17 @@ namespace LatteCompiler.Bil
         {
             // §8.2：无 extends/implements 时单行；否则它们各占续行，
             // 修饰符与 { 收尾行
-            var modifiers = string.Join(" ", type.Modifiers);
+            var modifiers = RenderModifiers(type.Modifiers);
+            var kind = BilSpellings.Of(type.Kind);
             if (type.ExtendsType == null && type.ImplementsTypes.Count == 0)
             {
-                sb.Append($"{Indent}.type {type.Symbol} = {type.Kind}");
+                sb.Append($"{Indent}.type {type.Symbol} = {kind}");
                 if (modifiers.Length > 0) sb.Append($" {modifiers}");
                 sb.Append(" {\n");
             }
             else
             {
-                sb.Append($"{Indent}.type {type.Symbol} = {type.Kind}\n");
+                sb.Append($"{Indent}.type {type.Symbol} = {kind}\n");
                 if (type.ExtendsType != null)
                 {
                     sb.Append($"{Indent}{Indent}extends {type.ExtendsType}\n");
@@ -170,18 +189,19 @@ namespace LatteCompiler.Bil
             switch (member)
             {
                 case BilSimpleMemberDeclaration simple:
+                    var modifiers = RenderModifiers(simple.Modifiers);
                     if (simple.ModifiersOnNextLine)
                     {
                         // §19 wrapper 隐藏字段示例形态：符号与修饰符分两行
-                        sb.Append($"{indent}{simple.Keyword} {simple.Symbol}\n");
-                        sb.Append($"{indent}{Indent}{string.Join(" ", simple.Modifiers)}\n");
+                        sb.Append($"{indent}{BilSpellings.Of(simple.Kind)} {simple.Symbol}\n");
+                        sb.Append($"{indent}{Indent}{modifiers}\n");
                     }
                     else
                     {
-                        sb.Append($"{indent}{simple.Keyword} {simple.Symbol}");
-                        if (simple.Modifiers.Count > 0)
+                        sb.Append($"{indent}{BilSpellings.Of(simple.Kind)} {simple.Symbol}");
+                        if (modifiers.Length > 0)
                         {
-                            sb.Append($" {string.Join(" ", simple.Modifiers)}");
+                            sb.Append($" {modifiers}");
                         }
                         sb.Append('\n');
                     }
@@ -202,6 +222,16 @@ namespace LatteCompiler.Bil
                 default:
                     throw new CompilerInternalException($"未知的成员声明类型: {member.GetType().Name}");
             }
+        }
+
+        private static string RenderModifiers(IReadOnlyList<BilModifier> modifiers)
+        {
+            var parts = new List<string>();
+            foreach (var modifier in modifiers)
+            {
+                parts.Add(modifier.Render());
+            }
+            return string.Join(" ", parts);
         }
 
         // ===== 函数（§9）=====
@@ -240,49 +270,21 @@ namespace LatteCompiler.Bil
             sb.Append($"{Indent}.block {block.Id}");
             if (block.Modifiers.Count > 0)
             {
-                sb.Append($" {string.Join(" ", block.Modifiers)}");
+                var modifierParts = new List<string>();
+                foreach (var modifier in block.Modifiers)
+                {
+                    modifierParts.Add(BilSpellings.Of(modifier));
+                }
+                sb.Append($" {string.Join(" ", modifierParts)}");
             }
             sb.Append(" {\n");
             foreach (var instruction in block.Instructions)
             {
-                WriteInstruction(instruction, sb);
+                // 指令自渲染（§10–§16；多行形态由指令的
+                // FirstLineOperandCount 声明）
+                instruction.WriteTo(sb, Indent + Indent);
             }
             sb.Append($"{Indent}}}\n");
-        }
-
-        // ===== 指令（§10–§16）=====
-
-        private static void WriteInstruction(BilInstruction instruction, StringBuilder sb)
-        {
-            switch (instruction.Opcode)
-            {
-                // §16.6 switch 规范排版：首行 selector + 常量表，其后 block 表 /
-                // default / breakid 各占一行
-                case "switch":
-                    sb.Append($"{Indent}{Indent}switch {instruction.Operands[0].Render()} {instruction.Operands[1].Render()}\n");
-                    for (int i = 2; i < instruction.Operands.Count; i++)
-                    {
-                        sb.Append($"{Indent}{Indent}{Indent}{instruction.Operands[i].Render()}\n");
-                    }
-                    break;
-                // §16.7 try 规范排版：首行 try block，其后异常变量 / catch 表 /
-                // finally 各占一行
-                case "try":
-                    sb.Append($"{Indent}{Indent}try {instruction.Operands[0].Render()}\n");
-                    for (int i = 1; i < instruction.Operands.Count; i++)
-                    {
-                        sb.Append($"{Indent}{Indent}{Indent}{instruction.Operands[i].Render()}\n");
-                    }
-                    break;
-                default:
-                    sb.Append($"{Indent}{Indent}{instruction.Opcode}");
-                    foreach (var operand in instruction.Operands)
-                    {
-                        sb.Append($" {operand.Render()}");
-                    }
-                    sb.Append('\n');
-                    break;
-            }
         }
     }
 }
