@@ -172,6 +172,9 @@ namespace LatteCompiler.Tests
                 BoundCastExpression cast =>
                     $"{(cast.IsSafe ? "SafeCast" : "Cast")}({Expr(cast.Source)}, " +
                     $"{TypeShort(cast.TargetType)})",
+                // S8b：smart cast 标记（Type = NarrowedType）
+                BoundSmartCastExpression smartCast =>
+                    $"SmartCast({Expr(smartCast.Operand)}, {TypeShort(smartCast.NarrowedType)})",
                 BoundSeqExpression seqExpr => $"SeqExpr({ValueBlock(seqExpr.Body)})",
                 // S7f：安全访问（占位叶子打 SafeReceiver；结果类型 P3 定型）
                 BoundSafeAccessExpression safeAccess =>

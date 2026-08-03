@@ -263,6 +263,10 @@ namespace LatteCompiler
         public TypeSymbol? Owner { get; private set; }
         public NamespaceSymbol? Namespace { get; private set; }
         public bool IsStatic { get; }
+        // const 字段（S8b 前置，P1 收集修饰符写入；M55 前是「符号 → 声明 AST
+        // 反向映射缺失」技术债）：smart cast 字段收窄的安全前提（仅 const
+        // 字段可收窄——引用不变 ⇒ 运行类型不变）与 const 赋值检查的依据
+        public bool IsConst { get; }
         // ext 限定名的目标路径原文（SYNTAX §4.4；P1 拆名登记，P2 解析注册；非 ext 为 null）
         public string? ExtTargetPath { get; }
         // 声明类型（P2 解析后填；SemanticSymbol：TypeSymbol 或
@@ -272,7 +276,8 @@ namespace LatteCompiler
         public List<TypeSymbol> AppliedWrappers { get; } = new List<TypeSymbol>();
 
         public FieldSymbol(string name, TypeSymbol? owner = null, NamespaceSymbol? ns = null,
-            bool isStatic = false, SemanticSymbol? fieldType = null, string? extTargetPath = null)
+            bool isStatic = false, SemanticSymbol? fieldType = null, string? extTargetPath = null,
+            bool isConst = false)
             : base(name)
         {
             Owner = owner;
@@ -280,6 +285,7 @@ namespace LatteCompiler
             IsStatic = isStatic;
             FieldType = fieldType;
             ExtTargetPath = extTargetPath;
+            IsConst = isConst;
         }
 
         // P2 ext 注册：把符号挂靠到目标类型（Owner 改写、不再是全局变量）

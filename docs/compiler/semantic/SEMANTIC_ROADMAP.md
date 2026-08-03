@@ -335,12 +335,21 @@ P4 同步落地——P3 绑得出来的形态，同一步内 P4 必须能发射�
 - **验收**：is/supers/with 双形态与 typeOf 双形态端到端合法 BIL
   （含 `.indirect` 与 `getid` 发射用例）+ `is .Case` 归口诊断用例。
 
-### S8b smart cast 分析
+### S8b smart cast 分析 ✅（M56，2026-08-03）
 
-- 规范前置：SYNTAX §3.5 现仅一句话（「`is` 检查后在对应分支中
+> **已完成**：定稿（M55 `SMART_CAST_DESIGN.md`）→ SYNTAX §3.5 完整
+> 规则 + §3.4 null 判等段落地；P3 收窄分析（FlowState 收窄表 +
+> ConditionFactsExtractor + BoundSmartCastExpression 标记）与 P4a 物化
+> （LoweredCastExpression）三 pass 全通；SmartCastTests 55 用例
+> （注册表 #41）+ CLI 端到端三样例 BIL 核对。详见 PROGRESS_REPORT
+> M56 段落。落地偏差（Q4 澄清：分支体内 `_` 不可用是 §7.2 既有语义，
+> 覆盖 selector 可收窄场景；var 根允许——赋值失效覆盖；访问器判定
+> 归 S8e 细化）已记录于 SMART_CAST_DESIGN.md。
+
+- ~~规范前置：SYNTAX §3.5 现仅一句话（「`is` 检查后在对应分支中
   自动转换类型」），动工前必须先专项定稿——分支语义、失效规则、
   null 收窄、与 `?.` / `if?` 的交互；enum case `is` 明确不触发
-  smart cast；
+  smart cast；~~
 - P3：只做分析与标记（ARCH §5.2），结果记录在 BoundTree；另含
   `if?` / `?.` 已落地形态与 smart cast 的统一性核查；
 - P4a：显式 `cast` 物化（ARCH §6.1，复用 M51 EnsureDeclaredType

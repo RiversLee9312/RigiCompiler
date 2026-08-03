@@ -5,7 +5,7 @@
 
 **项目名**: LatteCompiler
 **语言**: C#（.NET 8.0，控制台程序，`Nullable` 与 `ImplicitUsings` 已启用）
-**开发阶段**: 中端（语义分析 + BIL 生成）阶段 —— 编译器前端（Lexer + Parser）已完成（roadmap P0–P5 全部落地，M23–M34 大扫除与多轮修复）；中端 M35 完成架构定稿（`docs/compiler/semantic/SEMANTIC_ARCHITECTURE.md`）与路线图 S0–S14（`SEMANTIC_ROADMAP.md`，S0–S8 已细化（S7 分为 S7a–S7f，S8 分为 S8a–S8f））+ 语言规范修订（shared/rich/wrapper/String）；M36 落地 S0 诊断基建（`Semantic/Diagnostics.cs`）、M37 落地 S1 符号图内核（`Semantic/Symbols/` + bootstrap + `CanonicalSymbolPrinter`）、M38 落地 S4 BIL 对象模型 + BilWriter（`Bil/`，§19 黄金示例逐行一致）、M39 落地 S2 P1 声明收集（`Semantic/CompilationUnit.cs` + `Semantic/DeclarationCollector.cs`）、M40 落地 S3 P2 声明解析（`Semantic/DeclarationResolver.cs`，七子任务 + Parser 即死拦截移交 P2）、M41 落地 S5 P3 最小闭环（`Semantic/Binder.cs` + `Semantic/Bound/` + `Semantic/NameResolver.cs` 提取 + `Tests/BoundDescribe.cs`，AST → BoundTree）、M42 完成路径表达式统一（表达式位置五节点删除，统一为 `PathExpressionASTNode`，语义上色归 P3）、M43 落地 native 函数机制（SYNTAX §4.6：`native` 修饰符 + `@NativeLibrary`/`@NativeSymbol` 内建注解，P1/P2 全规则校验；BIL §8.4/§8.4.1 声明形态与 §21.5 VM 内建 hook 表；RUNTIME §26 `latte_rt` shim 约定）与 stdlib 内嵌源载入（`Semantic/StdlibSources.cs` + `stdlib/core/Console.latte`），同批落地 Binder 宿主成员查找、符号 Accessibility 与 Bil 段裸条目模型、M44 落地 S6 P4 最小闭环（`Lowering/`：Lowered 节点集 + Lowerer P4a 恒等重写 + BilEmitter P4b 发射，中端四 pass 全通——hello world 端到端出合法 BIL 文本）并以 CLI `--emit-bil`/`--sema-only` 接线收官 S6、M45 落地 S7a P4 基础发射补齐（Lowered 节点补齐八类 + Lowerer 覆盖 S5 全部 Bound 节点 + BilEmitter 新发射 set.var/get/set.field.static/§11 运算/invoke/new + §18.1 标量资源全形态 + `Tests/LoweredDescribe.cs` 与 LowererTests）、M46 落地 S7b（if 语句/表达式 + 值块 + 短路 and/or + 复合赋值，P3/P4 同步——值块标签栈 return@ 绑定 + definite assignment 分支合并；Lowerer session 化短路展开/值块降级与 if 转换/复合赋值脱糖；BilEmitter 多 block §16.2 if 指令）、M47 落地 S7c-1（while/do-while/break/continue 三 pass + 循环协议定稿——循环标签栈 + DA 循环两规则 + 值块穿透 + return@ 隔循环拦截；Lowerer 循环降级 Judge 块 + .breakid 合成局部 .bN（LocalSymbol.Type 可空）；BilEmitter 发射 loop/loop.rev/break/continue + .vars .breakid 条目）、M48 落地 S7c-2（实例成员最小闭环 + core.collections 迭代协议 + for 双形态——this/实例链上色/裸名实例成员补 this（宿主统一 method.Owner）；for 脱糖复用 LoweredLoop（前置 iterate + Judge=moveNext + Body 头=current）；BilEmitter 开闸 .this/实例 invoke/get.field/set.field/init/operator §8.4 声明 + EmitBuiltinExtMembers；stdlib 三源全量过 P1–P4）、M49 落地 S7d（switch 语句/表达式 + throw 三 pass——异常根 core.Exception 定稿进 bootstrap（IsOpen，具体子类归 S10）；P3 switch 占位 `_` 栈 + 值匹配/pattern 显式分类（常量限定 + 类型严格相等 / pattern 必须 bool）+ throw IsAssignable 到 Exception + GuaranteesReturn 终止口径扩展；P4a 常量 switch 恒等 + pattern 链降级嵌套 if（selector 物化 .sN + 合成 cmp.eq），同批修复 M46 else-if 链值块编织 miscompile（TransformStatements → continuation 编织）；P4b §16.6 switch 指令（switch0-itemN/switch0-default 块 id + .breakid 条目）+ §18.4 switch-table 单行资源跨 fn 去重 + §16.9 throw）、M50 落地 S7e（cast 最小闭环提前自 S8 + try/catch/finally + seq 三 pass——P3 BoundCast/BoundTry/BoundSeq 双形态节点 + catch 类型 IsAssignable 到 Exception + seq 表达式必须产值；P4a ExceptionSlot 合成 + catch 头 cast 编织 + seq 表达式脱糖 + try-finally 部分终止编织拦截；P4b §12.1/§12.2 cast/cast.safe + §16.1 call blk(seqN)（volatile → §9.6 block 修饰符）+ §16.7 try 四操作数 + §18.5 catch-table 多行资源——SYNTAX §7 控制流全部贯通）；M51 落地 S7f-1 字符串插值（spec 定稿：SYNTAX §3.8 toString 机制/插值语义 + RUNTIME §26 原生方法面 toString + BIL §21.5 hook/§11.2 string add 内建拼接；Lexer StringToken.RawContent 定位底稿 + Parser StringInterpolationSplitter 配平截取/子词法/子解析/span rebase 精确回源 + AST 插值段节点；bootstrap String.Add 开放 + Any.toString 承诺/Object open native 默认实现；P3 绑定即规范化（非 String 段包 toString 调用 + 左结合 + 链，P4 零新增节点）；P4a 子类型 cast 物化五位置——ARCH §6.1 首个落地）；M52 收官 S7f（`?.` 安全调用 + `if?` 空值回退 + 解构声明——nullable BIL 语义定稿（§18.1 null 资源类型即 .nullable\<T\>、§12.1 装箱/展开、§13.3 泛型宿主字段替换判定）；BoundSafeAccess/占位叶子 + P4a 物化/unwrap/wrap 脱糖；`if?` Parser 中缀重组 + P3 严格定型；core.Pair 进 .bootstrap.latte + 构造类型成员查找 ConstructedFrom 回退与泛型字段最小替换（S9 前置）——**S7f 四项全部端到端出合法 BIL**）、M53 插值词法帧机制（前端回补，用户决策的架构重构：插值解析从「Parser 侧拆分」改为「Lexer 层栈嵌套」——字符串层遇 `${` 压基础层正常词法，驱动按 token 层大括号计数配平弹回；InterpolationStart/End 标记 token + 驱动插值帧栈 + LiteralParserLayer 段序列状态机；StringInterpolationSplitter 与 RawContent 全部删除；SYNTAX §3.8 单行宿主引号限制解除）、M54 细化 S8 为 S8a–S8f 并落地 S8a（is/supers/with + typeOf 三 pass——SYNTAX §3.5/§3.7 右侧双形态定稿 + castFrom 笔误修正 + §9.2 补 override 行；BoundTypeCheck/BoundTypeOf 两节点 + Binder 不落袋试探双形态解析；P4a 恒等；BilEmitter 首次发射 §12.3 type.is/type.supers/type.with（含三 .indirect）与 §12.5 getid.var/getid.type——六种形态全部端到端出合法 BIL；is .Case 归 S11）；下一步 S8b（smart cast 分析，spec 专项定稿先行）
+**开发阶段**: 中端（语义分析 + BIL 生成）阶段 —— 编译器前端（Lexer + Parser）已完成（roadmap P0–P5 全部落地，M23–M34 大扫除与多轮修复）；中端 M35 完成架构定稿（`docs/compiler/semantic/SEMANTIC_ARCHITECTURE.md`）与路线图 S0–S14（`SEMANTIC_ROADMAP.md`，S0–S8 已细化（S7 分为 S7a–S7f，S8 分为 S8a–S8f））+ 语言规范修订（shared/rich/wrapper/String）；M36 落地 S0 诊断基建（`Semantic/Diagnostics.cs`）、M37 落地 S1 符号图内核（`Semantic/Symbols/` + bootstrap + `CanonicalSymbolPrinter`）、M38 落地 S4 BIL 对象模型 + BilWriter（`Bil/`，§19 黄金示例逐行一致）、M39 落地 S2 P1 声明收集（`Semantic/CompilationUnit.cs` + `Semantic/DeclarationCollector.cs`）、M40 落地 S3 P2 声明解析（`Semantic/DeclarationResolver.cs`，七子任务 + Parser 即死拦截移交 P2）、M41 落地 S5 P3 最小闭环（`Semantic/Binder.cs` + `Semantic/Bound/` + `Semantic/NameResolver.cs` 提取 + `Tests/BoundDescribe.cs`，AST → BoundTree）、M42 完成路径表达式统一（表达式位置五节点删除，统一为 `PathExpressionASTNode`，语义上色归 P3）、M43 落地 native 函数机制（SYNTAX §4.6：`native` 修饰符 + `@NativeLibrary`/`@NativeSymbol` 内建注解，P1/P2 全规则校验；BIL §8.4/§8.4.1 声明形态与 §21.5 VM 内建 hook 表；RUNTIME §26 `latte_rt` shim 约定）与 stdlib 内嵌源载入（`Semantic/StdlibSources.cs` + `stdlib/core/Console.latte`），同批落地 Binder 宿主成员查找、符号 Accessibility 与 Bil 段裸条目模型、M44 落地 S6 P4 最小闭环（`Lowering/`：Lowered 节点集 + Lowerer P4a 恒等重写 + BilEmitter P4b 发射，中端四 pass 全通——hello world 端到端出合法 BIL 文本）并以 CLI `--emit-bil`/`--sema-only` 接线收官 S6、M45 落地 S7a P4 基础发射补齐（Lowered 节点补齐八类 + Lowerer 覆盖 S5 全部 Bound 节点 + BilEmitter 新发射 set.var/get/set.field.static/§11 运算/invoke/new + §18.1 标量资源全形态 + `Tests/LoweredDescribe.cs` 与 LowererTests）、M46 落地 S7b（if 语句/表达式 + 值块 + 短路 and/or + 复合赋值，P3/P4 同步——值块标签栈 return@ 绑定 + definite assignment 分支合并；Lowerer session 化短路展开/值块降级与 if 转换/复合赋值脱糖；BilEmitter 多 block §16.2 if 指令）、M47 落地 S7c-1（while/do-while/break/continue 三 pass + 循环协议定稿——循环标签栈 + DA 循环两规则 + 值块穿透 + return@ 隔循环拦截；Lowerer 循环降级 Judge 块 + .breakid 合成局部 .bN（LocalSymbol.Type 可空）；BilEmitter 发射 loop/loop.rev/break/continue + .vars .breakid 条目）、M48 落地 S7c-2（实例成员最小闭环 + core.collections 迭代协议 + for 双形态——this/实例链上色/裸名实例成员补 this（宿主统一 method.Owner）；for 脱糖复用 LoweredLoop（前置 iterate + Judge=moveNext + Body 头=current）；BilEmitter 开闸 .this/实例 invoke/get.field/set.field/init/operator §8.4 声明 + EmitBuiltinExtMembers；stdlib 三源全量过 P1–P4）、M49 落地 S7d（switch 语句/表达式 + throw 三 pass——异常根 core.Exception 定稿进 bootstrap（IsOpen，具体子类归 S10）；P3 switch 占位 `_` 栈 + 值匹配/pattern 显式分类（常量限定 + 类型严格相等 / pattern 必须 bool）+ throw IsAssignable 到 Exception + GuaranteesReturn 终止口径扩展；P4a 常量 switch 恒等 + pattern 链降级嵌套 if（selector 物化 .sN + 合成 cmp.eq），同批修复 M46 else-if 链值块编织 miscompile（TransformStatements → continuation 编织）；P4b §16.6 switch 指令（switch0-itemN/switch0-default 块 id + .breakid 条目）+ §18.4 switch-table 单行资源跨 fn 去重 + §16.9 throw）、M50 落地 S7e（cast 最小闭环提前自 S8 + try/catch/finally + seq 三 pass——P3 BoundCast/BoundTry/BoundSeq 双形态节点 + catch 类型 IsAssignable 到 Exception + seq 表达式必须产值；P4a ExceptionSlot 合成 + catch 头 cast 编织 + seq 表达式脱糖 + try-finally 部分终止编织拦截；P4b §12.1/§12.2 cast/cast.safe + §16.1 call blk(seqN)（volatile → §9.6 block 修饰符）+ §16.7 try 四操作数 + §18.5 catch-table 多行资源——SYNTAX §7 控制流全部贯通）；M51 落地 S7f-1 字符串插值（spec 定稿：SYNTAX §3.8 toString 机制/插值语义 + RUNTIME §26 原生方法面 toString + BIL §21.5 hook/§11.2 string add 内建拼接；Lexer StringToken.RawContent 定位底稿 + Parser StringInterpolationSplitter 配平截取/子词法/子解析/span rebase 精确回源 + AST 插值段节点；bootstrap String.Add 开放 + Any.toString 承诺/Object open native 默认实现；P3 绑定即规范化（非 String 段包 toString 调用 + 左结合 + 链，P4 零新增节点）；P4a 子类型 cast 物化五位置——ARCH §6.1 首个落地）；M52 收官 S7f（`?.` 安全调用 + `if?` 空值回退 + 解构声明——nullable BIL 语义定稿（§18.1 null 资源类型即 .nullable\<T\>、§12.1 装箱/展开、§13.3 泛型宿主字段替换判定）；BoundSafeAccess/占位叶子 + P4a 物化/unwrap/wrap 脱糖；`if?` Parser 中缀重组 + P3 严格定型；core.Pair 进 .bootstrap.latte + 构造类型成员查找 ConstructedFrom 回退与泛型字段最小替换（S9 前置）——**S7f 四项全部端到端出合法 BIL**）、M53 插值词法帧机制（前端回补，用户决策的架构重构：插值解析从「Parser 侧拆分」改为「Lexer 层栈嵌套」——字符串层遇 `${` 压基础层正常词法，驱动按 token 层大括号计数配平弹回；InterpolationStart/End 标记 token + 驱动插值帧栈 + LiteralParserLayer 段序列状态机；StringInterpolationSplitter 与 RawContent 全部删除；SYNTAX §3.8 单行宿主引号限制解除）、M54 细化 S8 为 S8a–S8f 并落地 S8a（is/supers/with + typeOf 三 pass——SYNTAX §3.5/§3.7 右侧双形态定稿 + castFrom 笔误修正 + §9.2 补 override 行；BoundTypeCheck/BoundTypeOf 两节点 + Binder 不落袋试探双形态解析；P4a 恒等；BilEmitter 首次发射 §12.3 type.is/type.supers/type.with（含三 .indirect）与 §12.5 getid.var/getid.type——六种形态全部端到端出合法 BIL；is .Case 归 S11）；M55 完成中端三树 visitor 化重构（S8b 前置架构重构，用户决策：Binder/Lowerer/BilEmitter 三个 session 巨石（2890/1331/1045 行）按 CRTP visitor 协议全部重写——静态 Visit 统一入口 + Enter/Exit 生命周期模板（栈压弹 finally 固化）+ 双协议（Visit→TResult? 上行合成 / VisitInto 壳填充）+ context 方言（同一函数级状态对象的接口视图，Environment 只读共享）+ 类别分派器唯一 switch + 结构 visitor 簇级分文件（`Semantic/Binding/` + `Lowering/Rewriters/` + `Lowering/Emitting/` 新组织）+ FlowState 提取（DA 的家，S8b 收窄表预留）；行为零变化（40 套件 1924 全绿、BIL 黄金文本逐字节一致、测试零改动、0 新警告）；同批完成 S8b smart cast 语言规则专项定稿 `docs/compiler/semantic/SMART_CAST_DESIGN.md`（Q1=B 含 const 字段收窄/Q2=A guard/Q3=A and-or-not/Q4=A switch 占位）；架构定稿与进度 `docs/compiler/semantic/VISITOR_REWRITE.md`）、M56 落地 S8b smart cast 三 pass 全通（SYNTAX §3.5 完整规则 + §3.4 null 判等段；FieldSymbol.IsConst + const 赋值检查（init 豁免）；FlowState 收窄事实表（NarrowKey 根+const 字段链，纯交集合并）+ ConditionFactsExtractor 真/假边提取 + BoundSmartCastExpression 标记；guard 反向传播/and-or 右侧上下文/while 体真边+体赋值根剔除/switch `(_ is T)` selector 收窄/赋值失效/字段链稳定判定；P4a 物化 LoweredCastExpression，P4b 零新增；SmartCastTests 新套件 55 用例）；下一步 S8c（索引访问 + 实例成员完整化）
 **版本控制**: Git（`main` 分支，2026-07-17 首次提交，工作树干净；CI 见 `.github/workflows/ci.yml`）
 
 ---
@@ -29,7 +29,7 @@ Latte 源码 (.latte) → Frontend (Lexer + Parser) ✅ 完成（含大扫除重
                     → LLVM 工具链 → 原生可执行文件
 ```
 
-**当前进度**：编译器前端（Lexer + Parser）已完成，且经过一次彻底的架构大扫除（见 §4.7）：控制流系统与 AST 施工系统严格分离，Layer 之间只传递控制权不传递 AST 数据。已可解析字面量、类型引用、变量声明（含 getter/setter 属性访问器）、完整表达式（含 Lambda（单表达式/多语句块体 + named）、if/switch 表达式（分支体为代码块，`return@_`/named 取值）、typeOf/as/is、seq 表达式形态、await、前导点 enum case 引用、wrapper 路径访问 `:`）、完整语句系统（代码块、if、switch 语句、循环、try-catch-finally、seq、throw、yield、return/break/continue、赋值；lambda 体内裸 return 为编译错误）、泛型参数列表、函数形参列表（含 init `_ -> field` 参数映射）、统一声明层（全局字段/函数、class/interface/struct/wrapper 声明、成员方法与 init/operator、继承与 implements、like 委托、ext 限定名、嵌套类型、声明上的泛型参数、enum struct 的 `[]` case 列表）、wrapper 主体（`@` 注解/wrapper 应用、`@WrapperTarget(.X)` 类型标识、`.proxy.*` 代理成员）、模块系统（import §15.2 三种形态、namespace 声明 §15.1）。**中端基建与 pass 进度**：三条基建线已就位（M36–M38）——可恢复诊断模型（Diagnostic/DiagnosticBag）、符号图内核（驻留 + bootstrap + canonical 打印）、BIL 对象模型 + 文本生成；P1 声明收集（M39）、P2 声明解析（M40）、P3 函数体分析最小闭环（M41：Binder → BoundTree，含 LocalSymbol、NameResolver 共享设施、BoundDescribe）与 P4 最小闭环（M44：Lowerer P4a 恒等重写 + BilEmitter P4b 发射，`Lowering/`，含 M43 stdlib 内嵌源同走 P1–P4）已落地——**四 pass 全通，hello world 端到端出合法 BIL 文本**（BilEmitterTests 套件黄金对照 + CLI `--emit-bil` 实测逐行一致）；M45（S7a）补齐 P4 基础发射——**P3 能绑定的全部 Bound 节点均已端到端过 P4**（赋值/运算/带返回值调用/new + §18.1 标量资源全形态 + LoweredDescribe/LowererTests 基建）；M46（S7b）落地 if 语句/表达式 + 值块 + 短路 and/or + 复合赋值（P3/P4 同步：Bound 五节点 + 值块标签栈 return@ 绑定 + DA 分支合并；Lowerer session 化脱糖；BilEmitter 出多 block BIL）；M47（S7c-1）落地 while/do-while/break/continue（循环标签栈 + DA 循环两规则 + 值块穿透；P4a Judge 块机制 + .breakid 合成局部；P4b loop/loop.rev/break/continue 发射）；M48（S7c-2）落地实例成员最小闭环 + core.collections 迭代协议 + for 双形态统一脱糖（this/实例链/裸名实例成员/for 绑定；P4b 实例发射开闸；stdlib 三源全量过 P1–P4）；M49（S7d）落地 switch 语句/表达式 + throw（P3/P4 同步：异常根 core.Exception 定稿进 bootstrap；P3 占位 `_` 栈 + 值匹配/pattern 分类 + throw 兼容性；P4a pattern 链降级 + M46 值块编织 miscompile 修复；P4b §16.6 switch + §18.4 switch-table + §16.9 throw）；M50（S7e）落地 cast 最小闭环（提前自 S8）+ try/catch/finally + seq 双形态（P3/P4 同步：BoundCast/BoundTry/BoundSeq 节点 + catch 兼容性 + seq 必须产值；P4a ExceptionSlot + catch 头 cast + seq 脱糖 + try-finally 编织拦截；P4b cast/cast.safe + call blk(seqN) + try 四操作数 + catch-table——SYNTAX §7 控制流全部贯通）；M51（S7f-1）落地字符串插值（toString 机制 spec 定稿（SYNTAX §3.8 + RUNTIME §26 原生方法面 + BIL §21.5 hook） + String 内建拼接开放 + Lexer RawContent/Parser 插值拆分（span 精确回源）/AST 插值段 + P3 绑定即规范化（非 String 段包 toString 调用 + 左结合 + 链，P4 零新增节点）+ P4a 子类型 cast 物化五位置——插值端到端出合法 BIL）；M52（S7f 收官）落地 `?.` 安全调用（BoundSafeAccess/占位叶子 + P4a 物化/unwrap/wrap 脱糖）、`if?` 空值回退（Parser 中缀 if 重组 + P3 严格定型 + if 双分支延迟求值脱糖）与解构声明（core.Pair 进 .bootstrap.latte 自举 + Parser 解构分支 + 构造类型成员查找 ConstructedFrom 回退与泛型字段最小替换（S9 前置）+ P4a 物化/逐字段读取），同批定稿 nullable BIL 语义（§18.1/§12.1/§13.3）——**S7f 四项全部端到端出合法 BIL**；M53 插值词法帧机制（前端回补：Lexer 层栈嵌套解析插值——字符串层遇 `${` 压基础层正常词法，驱动按 token 层大括号计数配平弹回；M51 的 Parser 侧拆分器与 RawContent 全部删除，SYNTAX §3.8 单行宿主引号限制解除，AST 与 P3/P4 零改动）；M54（S8a）落地 is/supers/with + typeOf 三 pass（S8 已细化为 S8a–S8f：smart cast/索引与实例成员完整化/重载与默认参数/访问控制与 getter-setter/castTo-castFrom 与 async 闸门——规范定稿随步落地：SYNTAX §3.5/§3.7 右侧双形态解析规则；P3 BoundTypeCheck/BoundTypeOf 两节点 + 不落袋试探双形态绑定；P4a 恒等；P4b 首次发射 §12.3 六形态与 §12.5 getid——端到端出合法 BIL）。
+**当前进度**：编译器前端（Lexer + Parser）已完成，且经过一次彻底的架构大扫除（见 §4.7）：控制流系统与 AST 施工系统严格分离，Layer 之间只传递控制权不传递 AST 数据。已可解析字面量、类型引用、变量声明（含 getter/setter 属性访问器）、完整表达式（含 Lambda（单表达式/多语句块体 + named）、if/switch 表达式（分支体为代码块，`return@_`/named 取值）、typeOf/as/is、seq 表达式形态、await、前导点 enum case 引用、wrapper 路径访问 `:`）、完整语句系统（代码块、if、switch 语句、循环、try-catch-finally、seq、throw、yield、return/break/continue、赋值；lambda 体内裸 return 为编译错误）、泛型参数列表、函数形参列表（含 init `_ -> field` 参数映射）、统一声明层（全局字段/函数、class/interface/struct/wrapper 声明、成员方法与 init/operator、继承与 implements、like 委托、ext 限定名、嵌套类型、声明上的泛型参数、enum struct 的 `[]` case 列表）、wrapper 主体（`@` 注解/wrapper 应用、`@WrapperTarget(.X)` 类型标识、`.proxy.*` 代理成员）、模块系统（import §15.2 三种形态、namespace 声明 §15.1）。**中端基建与 pass 进度**：三条基建线已就位（M36–M38）——可恢复诊断模型（Diagnostic/DiagnosticBag）、符号图内核（驻留 + bootstrap + canonical 打印）、BIL 对象模型 + 文本生成；P1 声明收集（M39）、P2 声明解析（M40）、P3 函数体分析最小闭环（M41：Binder → BoundTree，含 LocalSymbol、NameResolver 共享设施、BoundDescribe）与 P4 最小闭环（M44：Lowerer P4a 恒等重写 + BilEmitter P4b 发射，`Lowering/`，含 M43 stdlib 内嵌源同走 P1–P4）已落地——**四 pass 全通，hello world 端到端出合法 BIL 文本**（BilEmitterTests 套件黄金对照 + CLI `--emit-bil` 实测逐行一致）；M45（S7a）补齐 P4 基础发射——**P3 能绑定的全部 Bound 节点均已端到端过 P4**（赋值/运算/带返回值调用/new + §18.1 标量资源全形态 + LoweredDescribe/LowererTests 基建）；M46（S7b）落地 if 语句/表达式 + 值块 + 短路 and/or + 复合赋值（P3/P4 同步：Bound 五节点 + 值块标签栈 return@ 绑定 + DA 分支合并；Lowerer session 化脱糖；BilEmitter 出多 block BIL）；M47（S7c-1）落地 while/do-while/break/continue（循环标签栈 + DA 循环两规则 + 值块穿透；P4a Judge 块机制 + .breakid 合成局部；P4b loop/loop.rev/break/continue 发射）；M48（S7c-2）落地实例成员最小闭环 + core.collections 迭代协议 + for 双形态统一脱糖（this/实例链/裸名实例成员/for 绑定；P4b 实例发射开闸；stdlib 三源全量过 P1–P4）；M49（S7d）落地 switch 语句/表达式 + throw（P3/P4 同步：异常根 core.Exception 定稿进 bootstrap；P3 占位 `_` 栈 + 值匹配/pattern 分类 + throw 兼容性；P4a pattern 链降级 + M46 值块编织 miscompile 修复；P4b §16.6 switch + §18.4 switch-table + §16.9 throw）；M50（S7e）落地 cast 最小闭环（提前自 S8）+ try/catch/finally + seq 双形态（P3/P4 同步：BoundCast/BoundTry/BoundSeq 节点 + catch 兼容性 + seq 必须产值；P4a ExceptionSlot + catch 头 cast + seq 脱糖 + try-finally 编织拦截；P4b cast/cast.safe + call blk(seqN) + try 四操作数 + catch-table——SYNTAX §7 控制流全部贯通）；M51（S7f-1）落地字符串插值（toString 机制 spec 定稿（SYNTAX §3.8 + RUNTIME §26 原生方法面 + BIL §21.5 hook） + String 内建拼接开放 + Lexer RawContent/Parser 插值拆分（span 精确回源）/AST 插值段 + P3 绑定即规范化（非 String 段包 toString 调用 + 左结合 + 链，P4 零新增节点）+ P4a 子类型 cast 物化五位置——插值端到端出合法 BIL）；M52（S7f 收官）落地 `?.` 安全调用（BoundSafeAccess/占位叶子 + P4a 物化/unwrap/wrap 脱糖）、`if?` 空值回退（Parser 中缀 if 重组 + P3 严格定型 + if 双分支延迟求值脱糖）与解构声明（core.Pair 进 .bootstrap.latte 自举 + Parser 解构分支 + 构造类型成员查找 ConstructedFrom 回退与泛型字段最小替换（S9 前置）+ P4a 物化/逐字段读取），同批定稿 nullable BIL 语义（§18.1/§12.1/§13.3）——**S7f 四项全部端到端出合法 BIL**；M53 插值词法帧机制（前端回补：Lexer 层栈嵌套解析插值——字符串层遇 `${` 压基础层正常词法，驱动按 token 层大括号计数配平弹回；M51 的 Parser 侧拆分器与 RawContent 全部删除，SYNTAX §3.8 单行宿主引号限制解除，AST 与 P3/P4 零改动）；M54（S8a）落地 is/supers/with + typeOf 三 pass（S8 已细化为 S8a–S8f：smart cast/索引与实例成员完整化/重载与默认参数/访问控制与 getter-setter/castTo-castFrom 与 async 闸门——规范定稿随步落地：SYNTAX §3.5/§3.7 右侧双形态解析规则；P3 BoundTypeCheck/BoundTypeOf 两节点 + 不落袋试探双形态绑定；P4a 恒等；P4b 首次发射 §12.3 六形态与 §12.5 getid——端到端出合法 BIL）；M55 完成中端三树 visitor 化重构（S8b 前置：三个 session 巨石按 CRTP visitor 协议全部重写——静态 Visit 统一入口 + Enter/Exit 生命周期模板 + 双协议 + context 方言接口视图 + 类别分派器 + 结构 visitor 簇级分文件，`Semantic/Binding/`、`Lowering/Rewriters/`、`Lowering/Emitting/` 新组织；FlowState 提取为独立组件（S8b 收窄表的家）；行为零变化、测试零改动；架构定稿见 `docs/compiler/semantic/VISITOR_REWRITE.md`，smart cast 专项定稿见 `docs/compiler/semantic/SMART_CAST_DESIGN.md`）；M56 落地 S8b smart cast 三 pass 全通（定稿落地：SYNTAX §3.5 完整规则 + §3.4 null 判等；FieldSymbol.IsConst 前置；FlowState 收窄表 + ConditionFactsExtractor + BoundSmartCastExpression 标记 + P4a 物化；guard/and-or 上下文/循环/switch 占位/失效/字段链全规则落地；SmartCastTests 55 用例 + CLI 端到端三样例 BIL 核对）。
 
 ---
 
@@ -141,37 +141,38 @@ LatteCompiler/
 │   │                            #   M43 增补 native 声明校验（SYNTAX §4.6）与 Accessibility 写符号（§16）
 │   ├── NameResolver.cs          # 名字解析共享设施（M41 提取自 P2）：符号路径/类型引用/泛型实参
 │   │                            #   解析，诊断按构造传入的 Phase 落袋（P2/P3 各自实例化）
-│   ├── Binder.cs                # P3 函数体分析（M41）：作用域链（块 → 参数 → 宿主类型成员
-│   │                            #   （M43，沿 BaseType 链）→ 命名空间链 → 通配 import）
-│   │                            #   + var 推断 + intrinsic 键查询 + 无重载直接调用
-│   │                            #   （规范参数序）+ new/init + return 全路径检查 + definite assignment
-│   │                            #   （S7b：分支合并 before∪(setT∩setF)）；S7b 增补 if 语句/表达式
-│   │                            #   （值块标签栈 return@ 绑定、产值类型统一）与复合赋值；
-│   │                            #   S7c-1 增补 while/do-while（循环标签栈 break/continue 解析、
-│   │                            #   DA 循环两规则、值块穿透、return@ 隔循环拦截）；
-│   │                            #   S7c-2 增补 this/实例成员链上色/裸名实例成员补 this
-│   │                            #   （宿主统一 method.Owner，含 ext 目标类型）/for 双形态
-│   │                            #   （范围 = EnumerateInRange ext operator 调用 + for-each
-│   │                            #   协议判定，协议三方法挂 BoundLoop，循环变量 const）；
-│   │                            #   S7d 增补 switch 语句/表达式（占位 `_` 栈 + 值匹配/
-│   │                            #   pattern 显式分类 + 产值统一 + DA 合并复用）与 throw
-│   │                            #   （IsAssignable 到 bootstrap core.Exception）；
-│   │                            #   S7e 增补 cast（as/as? 定型，可转性不做静态拒绝）/
-│   │                            #   try-catch-finally（catch 类型 IsAssignable 到 Exception、
-│   │                            #   catch/finally(e) 变量 const、DA 合并）/seq 双形态
-│   │                            #   （语句直通不压值块栈 / 表达式值块复用 + 必须产值）；
-│   │                            #   S7f-1 增补字符串插值（§3.8：字面量段复用、非 String 段
-│   │                            #   包 toString() 实例调用（Any 承诺沿链查最近声明）、
-│   │                            #   左结合 + 链——绑定即规范化，P4 零新增节点）；
-│   │                            #   S7f 收官增补 `?.`（SafeDot 段占位叶子绑定 + 可空
-│   │                            #   receiver 专门诊断）/ `if?`（严格定型）/ 解构
-│   │                            #   （core.Pair 硬编码参照 + 构造类型成员查找
-│   │                            #   ConstructedFrom 回退 + 泛型字段最小替换，S9 前置）；
-│   │                            #   S8a 增补 is/supers/with（右侧双形态——类型引用
-│   │                            #   不落袋试探（reportErrors: false）优先，失败按值
-│   │                            #   绑定且必须 Type\<T\>；with 静态目标必须 wrapper）
-│   │                            #   与 typeOf（值/类型双形态，单段裸名先值后类型）；
-│   │                            #   is .Case 归 S11 归口诊断
+│   ├── Binder.cs                # P3 瘦入口（M55 起 visitor 化；语义规则编年史见
+│   │                            #   PROGRESS_REPORT M41–M54 各段与各 visitor 文件头）
+│   ├── Binding/                 # P3 visitor 化基建（M55，VISITOR_REWRITE §3）：
+│   │   ├── BinderVisitor.cs        # CRTP 三基类（通用/ExpressionVisitor 追加
+│   │   │                           #   expectedType 下传/BinderShellVisitor 壳填充）——
+│   │   │                           #   静态 Visit 唯一入口 + Enter/Exit 生命周期模板
+│   │   ├── BindEnvironment.cs      # 只读环境（unit/declarations/NameResolver/诊断落袋）
+│   │   ├── BindContext.cs          # 函数级状态（每函数体一个实例：Flow/值块/循环/
+│   │   │                           #   switch 占位栈/Locals/Method/FileCtx）
+│   │   ├── FlowState.cs            # DA 流分析（分叉/合并/快照恢复原语；S8b
+│   │   │                           #   smart cast 收窄表的家——同生命周期）
+│   │   ├── Scope.cs                # 词法作用域链
+│   │   ├── Dispatchers.cs          # 类别分派唯一 switch（Expression/Statement/Block）
+│   │   ├── BoundAnalysis.cs        # GuaranteesReturn/值块终止/语句平铺枚举/TypeDisplay
+│   │   ├── BindingDriver.cs        # 声明骨架遍历 + 逐函数体启动（return 全路径检查）
+│   │   ├── SymbolLookup.cs         # 实例成员查找/泛型字段最小替换/IsAssignable
+│   │   ├── MemberLookup.cs         # 名字解析查找序（宿主 BaseType 链 → 命名空间链
+│   │   │                           #   → 通配 import；容器解析）
+│   │   ├── TypeReferences.cs       # 函数体内类型引用解析（NameResolver 委托）
+│   │   ├── NarrowKey.cs            # S8b 收窄键（根（局部/参数/this/静态字段符号）
+│   │   │                           #   + const 字段链，稳定链判定含 init 排除）
+│   │   ├── ConditionFacts.cs       # S8b 条件事实提取器（is/null 判等/and-or-not
+│   │   │                           #   → 真/假边收窄事实对，纯函数式）
+│   │   ├── ConstFieldRules.cs      # S8b const 字段规则（赋值检查 init 豁免 +
+│   │   │                           #   收窄资格 IsNarrowable）
+│   │   └── Visitors/               # 结构 visitor 簇（Literal/Declaration/Conditional
+│   │                               #   含值块壳/Loop/Switch/TrySeq/Binary/Path/Call/
+│   │                               #   TypeCheck——语义落地范围同 M41–M54 编年史：
+│   │                               #   作用域链查找序/var 推断/intrinsic/无重载直接
+│   │                               #   调用规范参数序/DA/if 值块/循环/switch 占位/
+│   │                               #   try/seq/实例链上色/?. if?/插值规范化/
+│   │                               #   is-supers-with 双形态/typeOf）
 │   ├── Bound/                   # BoundTree 节点集（M41，按类别分文件仿 AST/）：
 │   │                            #   BoundNode（Syntax 必填）/BoundExpression（Type）/语句节点 +
 │   │                            #   BoundFunctionBody{Method, Locals, BoundBlock}；S7b 增补
@@ -188,7 +189,10 @@ LatteCompiler/
 │   │                            #   （含 BoundValueBlock.IsVolatile）；S8a 增补
 │   │                            #   BoundTypeCheckExpression（Kind 三态 + TargetType/
 │   │                            #   TargetValue 互斥双槽）/BoundTypeOfExpression
-│   │                            #   （Operand/TargetType 互斥，Type = Type\<T\> 构造）
+│   │                            #   （Operand/TargetType 互斥，Type = Type\<T\> 构造）；
+│   │                            #   S8b 增补 BoundSmartCastExpression（smart cast
+│   │                            #   标记：Operand + NarrowedType，Type = 收窄类型，
+│   │                            #   P4a 物化为显式 cast）
 │   ├── StdlibSources.cs         # stdlib 内嵌源载入（M43）：stdlib/**/*.latte 以 EmbeddedResource
 │   │                            #   内嵌、编译时取出解析注入编译单元，与用户源同走 P1–P4
 │   └── Symbols/                 # 符号图内核（M37，M39 增补容器成员表/全局命名空间驻留）：
@@ -213,43 +217,35 @@ LatteCompiler/
 │   │                            #   LoweredSeqBlock（volatile → §9.6 block 修饰符）；
 │   │                            #   S8a 增补 LoweredTypeCheckExpression/
 │   │                            #   LoweredTypeOfExpression（Type 自带，恒等重写）
-│   ├── Lowerer.cs               # P4a 降级重写（S7b 起 session 化：前置语句机制 + 合成局部 .sN）——
-│   │                            #   恒等 + S7b 脱糖（bool 短路 and/or §11.3 展开/值块降级与 if 转换/
-│   │                            #   复合赋值）+ S7c-1 循环降级（条件求值移入 Judge 块、
-│   │                            #   BoundLoop → BreakId 映射栈、break/continue 真跳转零展开）
-│   │                            #   + S7c-2 for 脱糖（前置 iterate + Judge=moveNext +
-│   │                            #   Body 头=current，复用 LoweredLoop）+ S7d switch 降级
-│   │                            #   （常量恒等携 .breakid/pattern 链降级嵌套 if——selector
-│   │                            #   物化 .sN + 合成 cmp.eq；TransformStatements 重写为
-│   │                            #   continuation 编织，修复 M46 值块编织 miscompile）+
-│   │                            #   S7e try/seq 降级（ExceptionSlot 合成——finally(e) 即
-│   │                            #   slot、否则 .sN；catch 头 cast 编织；seq 表达式脱糖；
-│   │                            #   try-finally 部分终止编织拦截 transformFailed）+
-│   │                            #   S7f-1 子类型 cast 物化（ARCH §6.1 首个落地：
-│   │                            #   EnsureDeclaredType 五位置——receiver/实参/初始化/
-│   │                            #   赋值/return，BIL §6.5 合规）+ S7f 收官脱糖
-│   │                            #   （`?.` 物化 + null 检查 + unwrap/wrap cast、
-│   │                            #   if? 双分支延迟求值、解构物化 + 逐字段读取）+
-│   │                            #   S8a 恒等（类型谓词/typeOf 两节点，无脱糖）；
-│   │                            #   未覆盖节点 P4 Error + 跳过函数体
-│   └── BilEmitter.cs            # P4b 发射：LocalSymbols 平铺 + Resources §18.1 标量全形态提取 +
-│                                #   fn 定义（.args/.vars/entry block 起、S7b 多 block、临时变量 .t0 前缀、
-│                                #   set.var/get/set.field.static/§11 运算单点映射/invoke/new、
-│                                #   §16.2 if 指令（无 else 用 none、block id if0-then 形态、
-│                                #   分支块落尾不补 ret）、§16.3/§16.4 loop/loop.rev 与 §16.5
-│                                #   break/continue（S7c-1，.vars 的 .breakid 条目）、
-│                                #   S7c-2 实例发射开闸（.args 插 .this、实例 invoke receiver
-│                                #   首参、get.field/set.field §13.3、init/operator §8.4
-│                                #   声明形态、EmitBuiltinExtMembers 内建类型 ext 裸条目）、
-│                                #   S7d §16.6 switch 指令（switch0-itemN/switch0-default
-│                                #   块 id）+ §18.4 switch-table 单行资源跨 fn 去重 +
-│                                #   §16.9 throw、S7e §12.1/§12.2 cast/cast.safe +
-│                                #   §16.1 call blk(seqN)（volatile → §9.6 block 修饰符）+
-│                                #   §16.7 try 四操作数（try0-body/catchN/finally 块 id）+
-│                                #   §18.5 catch-table 多行资源保序、
-│                                #   S8a §12.3 type.is/type.supers/type.with（含三
-│                                #   .indirect 动态形态）+ §12.5 getid.var/getid.type、
-│                                #   void 末尾补 ret、Origin 塞 LoweredNode）
+│   ├── Lowerer.cs               # P4a 瘦入口（M55 起 visitor 化）
+│   ├── LoweredVisitor.cs        # P4a CRTP 基类（同 Binder 协议，无 scope/expectedType）
+│   ├── LowerEnvironment.cs      # 只读环境（unit/诊断）
+│   ├── LowerContext.cs          # 函数级状态（outputStack 前置语句机制/值块/循环/
+│   │                            #   switchTemps/safeReceivers 四映射栈/transformFailed/
+│   │                            #   合成局部 .sN 与 .breakid .bN 计数）
+│   ├── LowerDispatchers.cs      # 类别分派唯一 switch + LowerBlockVisitor（输出列表压弹）
+│   ├── LoweringDriver.cs        # 逐函数体启动（合成局部收尾进 Locals）
+│   ├── LoweringFacility.cs      # LowerArguments/EnsureDeclaredType（BIL §6.5 cast 物化）
+│   ├── Rewriters/               # 结构 visitor 簇（Statement/Loop（Judge 块）/Switch
+│   │                            #   （常量表恒等 + pattern 链降级）/TrySeq/ValueBlock
+│   │                            #   （continuation 编织——ValueBlockFacility 静态设施）/
+│   │                            #   Expression（短路/if 表达式/复合赋值脱糖）/NullSafety
+│   │                            #   （?. if? unwrap/wrap）/Destructuring）——脱糖落地
+│   │                            #   范围同 M44–M54 编年史；未覆盖节点 P4 Error + 跳过函数体
+│   ├── BilEmitter.cs            # P4b 瘦入口（M55 起 visitor 化）
+│   ├── EmitVisitor.cs           # P4b CRTP 基类（签名带 BilBlock target 施工目标——
+│   │                            #   下行填充，三树中与协议贴合度最高）
+│   ├── EmitEnvironment.cs       # 模块级（Module/ResourceKeys 资源跨 fn 去重）
+│   ├── EmitContext.cs           # 函数级（TempVars .tN/各 block id 计数）
+│   ├── EmitDispatchers.cs       # 类别分派（语句 Unit/值 string 操作数文本）+ EmitBlockVisitor
+│   ├── EmittingDriver.cs        # 模块组装 + fn 定义（.args/.vars/entry block/void 补 ret）
+│   ├── EmittingFacility.cs      # 资源登记/opcode 映射/转义（§18.1 标量全形态/
+│   │                            #   §18.4 switch-table/§18.5 catch-table）
+│   └── Emitting/                # 结构 visitor 簇（LocalSymbols（§8 平铺 + ext 裸条目）/
+│                                #   Statement（§16 结构化指令发射：if/loop/switch/seq/try/
+│                                #   break-continue/throw + set.var/get/set.field §13）/
+│                                #   Value（§11 运算/invoke/new/cast §12.1–12.2/type.is
+│                                #   §12.3/getid §12.5））——发射范围同 M44–M54 编年史
 ├── Bil/                      # BIL 生态（M38，对中端零依赖：字符串身份，不引用 Semantic/AST）
 │   ├── BilModule.cs             # Module/Metadata/Resources（§4/§18 全形态）
 │   ├── BilSymbols.cs            # 类型与成员声明（§8.2–§8.5）
@@ -284,6 +280,8 @@ LatteCompiler/
 | `docs/compiler/syntax/PARSER_ROADMAP.md` / `docs/PROGRESS_REPORT.md` | Parser 路线图与进度 | ⭐⭐ |
 | `docs/compiler/syntax/EXPRESSION_ARCHITECTURE.md` | 表达式架构专项设计 | ⭐⭐ |
 | `docs/compiler/semantic/SEMANTIC_ARCHITECTURE.md` | 语义分析与 BIL 生成架构（中端） | ⭐⭐⭐ |
+| `docs/compiler/semantic/VISITOR_REWRITE.md` | 中端三树 visitor 化协议定稿与迁移记录（M55） | ⭐⭐⭐ |
+| `docs/compiler/semantic/SMART_CAST_DESIGN.md` | smart cast 语言规则专项定稿（S8b 施工底稿） | ⭐⭐ |
 | `docs/compiler/semantic/SEMANTIC_ROADMAP.md` | 语义分析路线图 | ⭐⭐ |
 | `Parser/Parser.cs` | 层栈式 Parser 的核心协议 | ⭐⭐⭐ |
 | `Lexer/Tokens.cs` / `Parser/Keywords.cs` / `AST/ASTNode.cs` | Token/关键字/AST 基类等核心数据结构（M30 拆分自原 `Core/Utilities.cs`） | ⭐⭐⭐ |
@@ -488,6 +486,17 @@ dotnet run -- test --all    # 全量；或：dotnet run -- test --run 5（单个
 5. 在 `Tests/` 添加测试类，在 `TestRunner` 注册表注册
 6. 在 `RootParserLayer`（或相应父层）接入委托入口
 7. `dotnet build` + `dotnet run -- test --run N`（对应套件）验证
+
+### 中端（P3/P4）新增语法结构的标准流程（M55 起）
+
+三树遍历统一为 CRTP visitor 协议（定稿见 `docs/compiler/semantic/VISITOR_REWRITE.md`）：
+
+1. 阅读规范章节与 `SEMANTIC_ARCHITECTURE.md` 对应 pass 职责（P3/P4 边界是纪律）
+2. P3：`Semantic/Bound/` 加 Bound 节点 → `Semantic/Binding/Visitors/` 对应簇文件加结构 visitor（继承 `BinderVisitor`/`ExpressionVisitor`/`BinderShellVisitor` 三基类之一；栈类上下文压弹只写 Enter/Exit）→ `Dispatchers.cs` 注册一行
+3. P4a：`Lowering/Lowered/` 加 Lowered 节点 → `Lowering/Rewriters/` 簇加 rewriter → `LowerDispatchers.cs` 注册一行
+4. P4b：`Lowering/Emitting/` 簇加 emitter → `EmitDispatchers.cs` 注册一行
+5. 测试：BoundDescribe/LoweredDescribe 加节点支持 + Binder/Lowerer/BilEmitter 三套件加用例
+6. 迁移铁律：先完整读旧实现再写（诊断消息文本/毒化静默位置逐字保真）；合成局部顺序敏感（`.sN` 先于 `.bN`——SynthLocals 顺序即 `.vars` 发射顺序）
 
 ### 进度对齐标准（必须遵守）
 

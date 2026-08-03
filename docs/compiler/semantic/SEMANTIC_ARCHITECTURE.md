@@ -356,12 +356,43 @@ Semantic/                  # P1–P3 + 符号图 + 诊断
 │                             #   BootstrapSymbols、CanonicalSymbolPrinter
 ├── DeclarationCollector.cs   # P1
 ├── DeclarationResolver.cs    # P2
-├── Binder.cs                 # P3（按需再拆：表达式/语句/成员）
+├── Binder.cs                 # P3 瘦入口（M55 起）
+├── Binding/                  # P3 visitor 化基建（M55，VISITOR_REWRITE §3）：
+│   ├── BinderVisitor.cs         # CRTP 三基类（通用/ExpressionVisitor
+│   │                            #   追加 expectedType/BinderShellVisitor 壳填充）
+│   ├── BindEnvironment.cs       # 只读环境（unit/declarations/NameResolver/诊断）
+│   ├── BindContext.cs           # 函数级状态（FlowState/标签栈/作用域外全部）
+│   ├── FlowState.cs             # DA 流分析（S8b 收窄表的家——同生命周期分叉合并）
+│   ├── Scope.cs                 # 词法作用域链
+│   ├── Dispatchers.cs           # 类别分派（Expression/Statement/Block 唯一 switch）
+│   ├── BoundAnalysis.cs         # BoundTree 静态分析（GuaranteesReturn 等）
+│   ├── BindingDriver.cs         # 声明骨架遍历 + 逐函数体启动
+│   ├── SymbolLookup.cs          # 实例成员/泛型字段替换/IsAssignable 查询
+│   ├── MemberLookup.cs          # 名字解析查找序（宿主→命名空间链→通配 import）
+│   ├── TypeReferences.cs        # 函数体内类型引用解析
+│   └── Visitors/                # 结构 visitor 簇（Literal/Declaration/Conditional/
+│                                #   Loop/Switch/TrySeq/Binary/Path/Call/TypeCheck）
 └── Bound/                    # BoundNode 家族（按类别分文件，仿 AST/）
 Lowering/                  # P4
 ├── Lowered/                  # LoweredNode 家族
-├── Lowerer.cs                # P4a（rewriter 按需拆分）
-└── BilEmitter.cs             # P4b
+├── Lowerer.cs                # P4a 瘦入口（M55 起）
+├── LoweredVisitor.cs         # P4a CRTP 基类
+├── LowerEnvironment.cs       # 只读环境
+├── LowerContext.cs           # 函数级状态（outputStack 前置语句机制/四映射栈/
+│                             #   transformFailed/合成局部计数）
+├── LowerDispatchers.cs       # 类别分派 + LowerBlockVisitor（输出列表压弹）
+├── LoweringDriver.cs         # 逐函数体启动
+├── LoweringFacility.cs       # LowerArguments/EnsureDeclaredType（cast 物化）
+├── Rewriters/                # 结构 visitor 簇（Statement/Loop/Switch/TrySeq/
+│                             #   ValueBlock/Expression/NullSafety/Destructuring）
+├── BilEmitter.cs             # P4b 瘦入口（M55 起）
+├── EmitVisitor.cs            # P4b CRTP 基类（签名带 BilBlock target 施工目标）
+├── EmitEnvironment.cs        # 模块级（Module/ResourceKeys 跨 fn 去重）
+├── EmitContext.cs            # 函数级（TempVars/各 block 计数）
+├── EmitDispatchers.cs        # 类别分派（语句 Unit/值 string 操作数文本）
+├── EmittingDriver.cs         # 模块组装 + fn 定义发射
+├── EmittingFacility.cs       # 资源登记/opcode 映射/转义 共享辅助
+└── Emitting/                 # 结构 visitor 簇（LocalSymbols/Statement/Value）
 Bil/                       # BIL 生态（对中端零依赖）
 ├── BilModel.cs               # Module/Function/Block/指令/Resource（按需拆分）
 ├── BilWriter.cs
@@ -372,6 +403,14 @@ Bil/                       # BIL 生态（对中端零依赖）
 文件粒度按实现时实际情况拆分；上表只钉死**目录边界与依赖方向**：
 `Semantic → AST`；`Lowering → Semantic`；`Lowering → Bil`；
 `Bil` 不依赖任何编译器内部目录。
+
+**M55 visitor 化定稿**（`compiler/semantic/VISITOR_REWRITE.md`）：
+三树的遍历统一为 CRTP visitor 协议——静态 `Visit` 唯一入口（创建子类
+实例 + Enter/Exit 生命周期模板，栈压/弹 finally 固化）、双协议
+（`Visit → TResult?` 上行合成 / `VisitInto(shell)` 施工壳填充）、
+context 方言（同一函数级状态对象的接口视图，Environment 只读共享）、
+类别分派器唯一 switch + 结构 visitor 簇级分文件。新增语法结构的
+落点：对应簇文件新增 visitor 类 + 分派器注册一行。
 
 CLI 接入：`CompileCommand` 的 `if (!parseOnly)` 分支；新增子命令仿
 `DumpAstOption` 模板——预期为 `--emit-bil PATH`（发射 BIL 文本）与

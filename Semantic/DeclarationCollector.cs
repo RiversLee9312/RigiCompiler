@@ -177,7 +177,8 @@ namespace LatteCompiler
                 owner: declaringType,
                 ns: declaringType == null ? ns : null,
                 isStatic: node.Modifiers.Contains(Keywords.STATIC),
-                extTargetPath: extTarget);
+                extTargetPath: extTarget,
+                isConst: node.IsConst);
             result.Map(node, symbol);
             if (extTarget != null)
             {

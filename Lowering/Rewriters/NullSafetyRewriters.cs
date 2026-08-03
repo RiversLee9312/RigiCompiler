@@ -1,0 +1,132 @@
+namespace LatteCompiler
+{
+    // 安全访问与空值回退脱糖（S7f，SYNTAX §3.4；BIL §3.4）。
+    // 自旧 LowerSession.LowerSafeAccess/LowerSafeReceiver/
+    // LowerNullFallback/NullCheckCondition 迁移，行为不变。
+
+    // `?.` 脱糖：
+    //   a?.b ⇒ 前置 s_recv = a'；前置 s_result = null；
+    //           前置 if (s_recv != null) { s_result = cast(access', R?) }；
+    //           表达式位 s_result 引用
+    // receiver 物化保证只求值一次；Access 内的占位叶子经 safeReceivers
+    // 栈映射为 cast(s_recv, T)（unwrap，§12.1——Enter 压栈/Exit 弹栈，
+    // 替代旧代码无 finally 保护的手工配对）；null 检查 =
+    // cmp.ne(s_recv, null 资源)（§18.1：null 资源类型即 .nullable<T>，
+    // 满足 §11.5 严格相同）；结果局部的 R → Nullable\<R\> 包装经
+    // EnsureDeclaredType 物化（已可空时直通）
+    internal sealed class SafeAccessRewriter
+        : LoweredVisitor<SafeAccessRewriter, LoweredExpression, LowerContext>
+    {
+        protected override LoweredExpression? VisitCore(BoundNode node, LowerContext ctx,
+            LowerEnvironment env)
+        {
+            var safeAccess = (BoundSafeAccessExpression)node;
+            var receiver = LowerExpressionDispatcher.Visit(safeAccess.Receiver, ctx, env);
+            if (receiver == null) return null;
+            var receiverLocal = ctx.NewSynthLocal(receiver.Type);
+            ctx.OutputStack.Peek().Add(new LoweredAssignmentStatement(safeAccess,
+                LowerContext.ReferenceTo(safeAccess, receiverLocal), receiver));
+            var result = ctx.NewSynthLocal(safeAccess.Type);
+            ctx.OutputStack.Peek().Add(new LoweredAssignmentStatement(safeAccess,
+                LowerContext.ReferenceTo(safeAccess, result),
+                new LoweredConstantExpression(safeAccess, null!, safeAccess.Type)));
+            var condition = NullSafetyFacility.NullCheckCondition(safeAccess, receiverLocal, env);
+            // 占位映射仅 Access 降级期间存活（try/finally 配对——修固旧代码
+            // 无 finally 保护的手工压弹）
+            ctx.SafeReceivers.Push((safeAccess.Placeholder, receiverLocal,
+                safeAccess.Placeholder.Type));
+            LoweredExpression? access;
+            try
+            {
+                access = LowerExpressionDispatcher.Visit(safeAccess.Access, ctx, env);
+            }
+            finally
+            {
+                ctx.SafeReceivers.Pop();
+            }
+            if (access == null) return null;
+            var wrapped = LoweringFacility.EnsureDeclaredType(safeAccess, access, safeAccess.Type);
+            var thenBlock = new LoweredBlock(safeAccess, new List<LoweredStatement>
+            {
+                new LoweredAssignmentStatement(safeAccess,
+                    LowerContext.ReferenceTo(safeAccess, result), wrapped),
+            });
+            ctx.OutputStack.Peek().Add(new LoweredIfStatement(safeAccess, condition,
+                thenBlock, null));
+            return LowerContext.ReferenceTo(safeAccess, result);
+        }
+    }
+
+    // 占位叶子 → 物化 receiver 局部的 unwrap cast（引用相等查栈，
+    // 逐层向内命中；栈空/未命中 = 内部一致性破坏）
+    internal sealed class SafeReceiverRewriter
+        : LoweredVisitor<SafeReceiverRewriter, LoweredExpression, LowerContext>
+    {
+        protected override LoweredExpression? VisitCore(BoundNode node, LowerContext ctx,
+            LowerEnvironment env)
+        {
+            var placeholder = (BoundSafeAccessReceiverExpression)node;
+            foreach (var (ph, receiver, unwrapType) in ctx.SafeReceivers)
+            {
+                if (ReferenceEquals(ph, placeholder))
+                {
+                    return new LoweredCastExpression(placeholder,
+                        LowerContext.ReferenceTo(placeholder, receiver), unwrapType,
+                        isSafe: false, unwrapType);
+                }
+            }
+            env.Error(placeholder.Syntax.Span,
+                "P4: safe access receiver placeholder without enclosing safe access");
+            return null;
+        }
+    }
+
+    // `if?` 脱糖：
+    //   l if? r ⇒ 前置 s_left = l'；
+    //             前置 if (s_left != null) { s_result = cast(s_left, T) }
+    //                     else { s_result = r' }；
+    //             表达式位 s_result 引用（r 延迟求值由 if 结构保证）
+    internal sealed class NullFallbackRewriter
+        : LoweredVisitor<NullFallbackRewriter, LoweredExpression, LowerContext>
+    {
+        protected override LoweredExpression? VisitCore(BoundNode node, LowerContext ctx,
+            LowerEnvironment env)
+        {
+            var nullFallback = (BoundNullFallbackExpression)node;
+            var left = LowerExpressionDispatcher.Visit(nullFallback.Left, ctx, env);
+            if (left == null) return null;
+            var leftLocal = ctx.NewSynthLocal(left.Type);
+            ctx.OutputStack.Peek().Add(new LoweredAssignmentStatement(nullFallback,
+                LowerContext.ReferenceTo(nullFallback, leftLocal), left));
+            var result = ctx.NewSynthLocal(nullFallback.Type);
+            var condition = NullSafetyFacility.NullCheckCondition(nullFallback, leftLocal, env);
+            var thenBlock = new LoweredBlock(nullFallback, new List<LoweredStatement>
+            {
+                new LoweredAssignmentStatement(nullFallback,
+                    LowerContext.ReferenceTo(nullFallback, result),
+                    new LoweredCastExpression(nullFallback,
+                        LowerContext.ReferenceTo(nullFallback, leftLocal), nullFallback.Type,
+                        isSafe: false, nullFallback.Type)),
+            });
+            var elseBlock = ExpressionFacility.LowerAssignInNewBlock(nullFallback,
+                nullFallback.Right, result, ctx, env);
+            if (elseBlock == null) return null;
+            ctx.OutputStack.Peek().Add(new LoweredIfStatement(nullFallback, condition,
+                thenBlock, elseBlock));
+            return LowerContext.ReferenceTo(nullFallback, result);
+        }
+    }
+
+    internal static class NullSafetyFacility
+    {
+        // null 检查条件（§18.1/§11.5）：cmp.ne(local, null 资源) → bool
+        public static LoweredBinaryExpression NullCheckCondition(BoundNode origin,
+            LocalSymbol local, LowerEnvironment env)
+        {
+            return new LoweredBinaryExpression(origin, BilIntrinsicOp.CmpNe,
+                LowerContext.ReferenceTo(origin, local),
+                new LoweredConstantExpression(origin, null!, local.Type!),
+                env.Unit.Symbols.Bootstrap.Bool);
+        }
+    }
+}

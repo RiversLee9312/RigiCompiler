@@ -265,6 +265,26 @@ namespace LatteCompiler
         }
     }
 
+    // smart cast 标记（S8b，SYNTAX §3.5；ARCH §5.2「P3 只做分析与标记」）：
+    // 收窄区域内对被收窄引用（局部/参数/const 字段链/switch 占位）的包装——
+    // Type = NarrowedType（成员解析自然按收窄类型）；P4a 物化为显式 cast
+    // （ARCH §6.1「smart cast 标记 → 显式 cast」，T? → T 的 unwrap 与子类型
+    // 收窄同属 §12.1 形态）
+    public sealed class BoundSmartCastExpression : BoundExpression
+    {
+        public BoundExpression Operand { get; }
+
+        // 收窄后类型（= 节点 Type；显式字段供描述器与 P4a 物化目标）
+        public TypeSymbol NarrowedType { get; }
+
+        public BoundSmartCastExpression(ASTNode syntax, BoundExpression operand,
+            TypeSymbol narrowedType) : base(syntax, narrowedType)
+        {
+            Operand = operand;
+            NarrowedType = narrowedType;
+        }
+    }
+
     // seq 表达式（S7e，SYNTAX §10.2）：体即值块（复用 BoundValueBlock，
     // 取值规则同 if 表达式分支体；using 绑定列表属 S13，P3 已拦截）。
     // 壳存在的理由：BoundValueBlock 是 BoundNode 非表达式，BindExpression
