@@ -143,8 +143,8 @@ namespace LatteCompiler
         }
     }
 
-    // 表达式语句与赋值（S5）。自旧 BindSession.BindExpressionStatement/
-    // BindAssignment 迁移，行为不变。
+    // 表达式语句与赋值（S5；S8c 增补索引写入 place）。自旧
+    // BindSession.BindExpressionStatement/BindAssignment 迁移，行为不变。
     internal sealed class ExpressionStatementVisitor
         : BinderVisitor<ExpressionStatementVisitor, BoundStatement, BindContext>
     {
@@ -219,6 +219,11 @@ namespace LatteCompiler
                     {
                         return null;
                     }
+                    break;
+                case BoundIndexExpression:
+                    // S8c 索引写入：setAtIndex 已在目标绑定时解析（写模式）
+                    // ——索引写入不改变量本身：无 const 检查、无
+                    // MarkAssigned、无收窄失效
                     break;
                 default:
                     env.Error(node.Expression.Span ?? node.Span,

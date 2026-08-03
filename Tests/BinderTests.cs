@@ -14,6 +14,10 @@ namespace LatteCompiler.Tests
     /// （S7c-2）、break/continue 标签栈解析（无标签栈顶/named 穿透/循环外与
     /// 未定义标签诊断）、值块内穿透、definite assignment 循环规则、
     /// GuaranteesReturn 循环保守。
+    /// S8c 增补：索引访问（getAtIndex/setAtIndex 读写/复合赋值/段索引/
+    /// 双重索引/this 索引）、表达式底座路径（分组/调用/new 构造/SafeDot
+    /// 调用底座）与负例矩阵（无运算符/多参数/具名不匹配/nullable/类型
+    /// 不匹配/void/重载归口/索引非值）。
     /// 诊断断言沿用消息子串惯例（CheckSemanticError）；符号比较一律引用相等。
     /// </summary>
     public static class BinderTests
@@ -39,6 +43,7 @@ namespace LatteCompiler.Tests
             TestLoops();
             TestLoopControl();
             TestInstanceMembers();
+            TestIndexAccess();
             TestForLoops();
             TestSwitch();
             TestThrow();
@@ -1200,6 +1205,205 @@ namespace LatteCompiler.Tests
             TestHarness.CheckTrue("接口方法符号引用（接口自身成员）",
                 ReferenceEquals(((BoundInstanceCallExpression)fReturn.Value!).Method,
                     sizedType.Methods.Single(m => m.Name == "size")));
+        }
+
+        // ===== 索引访问（S8c，SYNTAX §13.2：getAtIndex/setAtIndex 绑定、
+        // 表达式底座路径、赋值 place 扩展）=====
+        private static void TestIndexAccess()
+        {
+            TestHarness.Section("P3 Index Access");
+
+            // 测试类型与正例用例（自声明运算符，仿 TestInstanceMembers 模式）
+            var (unit, bodies) = BindUnit(
+                "class Counter {\n" +
+                "    pub var value: i32\n" +
+                "}\n" +
+                "class Bag {\n" +
+                "    pub var item: i32\n" +
+                "    pub operator getAtIndex(index: i32): i32 { return item }\n" +
+                "    pub operator setAtIndex(index: i32, element: i32) { item = element }\n" +
+                "}\n" +
+                "class CounterBag {\n" +
+                "    pub var first: Counter\n" +
+                "    pub operator getAtIndex(index: i32): Counter { return first }\n" +
+                "}\n" +
+                "class Matrix {\n" +
+                "    pub var row: Bag\n" +
+                "    pub operator getAtIndex(index: i32): Bag { return row }\n" +
+                "}\n" +
+                "class Holder {\n" +
+                "    pub var bag: Bag\n" +
+                "}\n" +
+                "func make(): Bag { return new Bag() }\n" +
+                "func read(b: Bag, i: i32): i32 { return b[i] }\n" +
+                "func write(b: Bag, i: i32, x: i32) { b[i] = x }\n" +
+                "func bump(b: Bag, i: i32, x: i32) { b[i] += x }\n" +
+                "func segment(h: Holder, i: i32): i32 { return h.bag[i] }\n" +
+                "func fieldAfter(cb: CounterBag): i32 { return cb[0].value }\n" +
+                "func callIndex(i: i32): i32 { return make()[i] }\n" +
+                "func twice(m: Matrix, i: i32, j: i32): i32 { return m[i][j] }\n");
+            CheckNoErrors("无诊断（索引访问正例）", unit);
+            TestHarness.Check("a[i] 读形态", BoundDescribe.Body(BodyOf(bodies, "read")),
+                "Body(read, [], [Return(Index(Param(b,Bag), Param(i,i32), i32))])");
+            TestHarness.Check("a[i] = x 写形态", BoundDescribe.Body(BodyOf(bodies, "write")),
+                "Body(write, [], [Assign(Index(Param(b,Bag), Param(i,i32), i32), " +
+                "Param(x,i32))])");
+            TestHarness.Check("a[i] += x 复合形态", BoundDescribe.Body(BodyOf(bodies, "bump")),
+                "Body(bump, [], [ExprStmt(CompoundAssign(Add, " +
+                "Index(Param(b,Bag), Param(i,i32), i32), Param(x,i32), i32))])");
+            TestHarness.Check("a.b[i] 段索引", BoundDescribe.Body(BodyOf(bodies, "segment")),
+                "Body(segment, [], [Return(Index(InstField(bag, Param(h,Holder), Bag), " +
+                "Param(i,i32), i32))])");
+            TestHarness.Check("a[i].b 索引后字段", BoundDescribe.Body(BodyOf(bodies, "fieldAfter")),
+                "Body(fieldAfter, [], [Return(InstField(value, " +
+                "Index(Param(cb,CounterBag), Int(0,i32), Counter), i32))])");
+            TestHarness.Check("foo()[i] 调用后索引", BoundDescribe.Body(BodyOf(bodies, "callIndex")),
+                "Body(callIndex, [], [Return(Index(Call(make, [], Bag), Param(i,i32), i32))])");
+            TestHarness.Check("a[i][j] 双重索引", BoundDescribe.Body(BodyOf(bodies, "twice")),
+                "Body(twice, [], [Return(Index(Index(Param(m,Matrix), Param(i,i32), Bag), " +
+                "Param(j,i32), i32))])");
+            // 结构性事实：读/写索引的 Operator 符号引用相等（符号图唯一实例）
+            var bagType = unit.Symbols.GlobalNamespace.Types.Single(t => t.Name == "Bag");
+            var readIndex = (BoundIndexExpression)((BoundReturnStatement)
+                BodyOf(bodies, "read").Body.Statements[0]).Value!;
+            TestHarness.CheckTrue("读索引 Operator = getAtIndex 符号",
+                ReferenceEquals(readIndex.Operator,
+                    bagType.Methods.Single(m => m.Name == "getAtIndex")));
+            var writeIndex = (BoundIndexExpression)((BoundAssignmentStatement)
+                BodyOf(bodies, "write").Body.Statements[0]).Target;
+            TestHarness.CheckTrue("写索引 Operator = setAtIndex 符号",
+                ReferenceEquals(writeIndex.Operator,
+                    bagType.Methods.Single(m => m.Name == "setAtIndex")));
+
+            // 表达式底座与调用结果底座
+            var (unit2, bodies2) = BindUnit(
+                "class Bag {\n" +
+                "    pub var item: i32\n" +
+                "    pub operator getAtIndex(index: i32): i32 { return item }\n" +
+                "    pub operator setAtIndex(index: i32, element: i32) { item = element }\n" +
+                "}\n" +
+                "class Wrap {\n" +
+                "    pub var bag: Bag\n" +
+                "}\n" +
+                "func makeWrap(): Wrap { return new Wrap() }\n" +
+                "func grouped(a: i32, b: i32): String { return (a + b).toString() }\n" +
+                "func callBase(): Bag { return makeWrap().bag }\n" +
+                "func newBase(): i32 { return new Wrap().bag.item }\n" +
+                "func maybeBag(): Bag? { return null }\n" +
+                "func safeBase(): i32? { return maybeBag()?.item }\n");
+            CheckNoErrors("无诊断（底座路径）", unit2);
+            TestHarness.Check("(a+b).c 分组底座", BoundDescribe.Body(BodyOf(bodies2, "grouped")),
+                "Body(grouped, [], [Return(InstCall(toString, " +
+                "Binary(Add, Param(a,i32), Param(b,i32), i32), [], String))])");
+            TestHarness.Check("foo().c 调用底座", BoundDescribe.Body(BodyOf(bodies2, "callBase")),
+                "Body(callBase, [], [Return(InstField(bag, Call(makeWrap, [], Wrap), Bag))])");
+            TestHarness.Check("new X().c 构造底座", BoundDescribe.Body(BodyOf(bodies2, "newBase")),
+                "Body(newBase, [], [Return(InstField(item, " +
+                "InstField(bag, New(Wrap, []), Bag), i32))])");
+            TestHarness.Check("foo()?.bar 调用后 SafeDot",
+                BoundDescribe.Body(BodyOf(bodies2, "safeBase")),
+                "Body(safeBase, [], [Return(SafeAccess(Call(maybeBag, [], Bag?), " +
+                "InstField(item, SafeReceiver(Bag), i32), i32?))])");
+
+            // this[i] 读写（声明了运算符的类的方法体内）
+            var (unit3, bodies3) = BindUnit(
+                "class SelfIdx {\n" +
+                "    pub var v: i32\n" +
+                "    pub operator getAtIndex(index: i32): i32 { return v }\n" +
+                "    pub operator setAtIndex(index: i32, element: i32) { v = element }\n" +
+                "    pub func readThis(i: i32): i32 { return this[i] }\n" +
+                "    pub func writeThis(i: i32, x: i32) { this[i] = x }\n" +
+                "}\n");
+            CheckNoErrors("无诊断（this 索引）", unit3);
+            TestHarness.Check("this[i] 读", BoundDescribe.Body(BodyOf(bodies3, "readThis")),
+                "Body(readThis, [], [Return(Index(This(SelfIdx), Param(i,i32), i32))])");
+            TestHarness.Check("this[i] = x 写", BoundDescribe.Body(BodyOf(bodies3, "writeThis")),
+                "Body(writeThis, [], [Assign(Index(This(SelfIdx), Param(i,i32), i32), " +
+                "Param(x,i32))])");
+
+            // ===== 负例 =====
+            // 无 getAtIndex 的类型读索引
+            var (unit4, _) = BindUnit(
+                "class Plain { pub var x: i32 }\n" +
+                "func f(p: Plain): i32 { return p[0] }\n");
+            TestHarness.CheckSemanticError("无 getAtIndex 读索引", unit4.Diagnostics,
+                "Type 'Plain' does not define an index operator ('getAtIndex')");
+
+            // 无 setAtIndex 写索引
+            var (unit5, _) = BindUnit(
+                "class ReadOnly {\n" +
+                "    pub operator getAtIndex(index: i32): i32 { return 0 }\n" +
+                "}\n" +
+                "func g(r: ReadOnly) { r[0] = 1 }\n");
+            TestHarness.CheckSemanticError("无 setAtIndex 写索引", unit5.Diagnostics,
+                "Type 'ReadOnly' does not define an index operator ('setAtIndex')");
+
+            // 多参数索引（§13.2 签名固定单 TIndex）：读形态经实参个数检查
+            var (unit6, _) = BindUnit(
+                "class Bag {\n" +
+                "    pub operator getAtIndex(index: i32): i32 { return 0 }\n" +
+                "    pub operator setAtIndex(index: i32, element: i32) { }\n" +
+                "}\n" +
+                "func h(b: Bag, i: i32, j: i32): i32 { return b[i, j] }\n" +
+                "func h2(b: Bag, i: i32, j: i32) { b[i, j] = 0 }\n");
+            TestHarness.CheckSemanticError("多参数索引读形态", unit6.Diagnostics,
+                "Too many arguments for 'getAtIndex'");
+            TestHarness.CheckSemanticError("多参数索引写形态", unit6.Diagnostics,
+                "Index access on 'Bag' expects exactly one index argument, got 2");
+
+            // 具名索引实参名字不匹配
+            var (unit7, _) = BindUnit(
+                "class Bag {\n" +
+                "    pub operator getAtIndex(index: i32): i32 { return 0 }\n" +
+                "}\n" +
+                "func k(b: Bag): i32 { return b[wrong = 1] }\n");
+            TestHarness.CheckSemanticError("具名索引实参不匹配", unit7.Diagnostics,
+                "'getAtIndex' has no parameter named 'wrong'");
+
+            // nullable receiver 索引
+            var (unit8, _) = BindUnit(
+                "class Bag {\n" +
+                "    pub operator getAtIndex(index: i32): i32 { return 0 }\n" +
+                "}\n" +
+                "func n(b: Bag?): i32 { return b[0] }\n");
+            TestHarness.CheckSemanticError("nullable receiver 索引", unit8.Diagnostics,
+                "Cannot index nullable type");
+
+            // 索引实参类型不匹配
+            var (unit9, _) = BindUnit(
+                "class Bag {\n" +
+                "    pub operator getAtIndex(index: i32): i32 { return 0 }\n" +
+                "}\n" +
+                "func t(b: Bag, s: String): i32 { return b[s] }\n");
+            TestHarness.CheckSemanticError("索引实参类型不匹配", unit9.Diagnostics,
+                "Cannot pass 'String' as 'i32'");
+
+            // void getAtIndex 读索引
+            var (unit10, _) = BindUnit(
+                "class VoidIdx {\n" +
+                "    pub operator getAtIndex(index: i32) { }\n" +
+                "}\n" +
+                "func v(vd: VoidIdx): i32 { return vd[0] }\n");
+            TestHarness.CheckSemanticError("void getAtIndex", unit10.Diagnostics,
+                "Method 'getAtIndex' has no result (void) and cannot be used as a value");
+
+            // 同参数个数 getAtIndex 重载 → S8d ranking 归口
+            var (unit11, _) = BindUnit(
+                "class Multi {\n" +
+                "    pub operator getAtIndex(index: i32): i32 { return 0 }\n" +
+                "    pub operator getAtIndex(index: String): i32 { return 0 }\n" +
+                "}\n" +
+                "func o(m: Multi): i32 { return m[0] }\n");
+            TestHarness.CheckSemanticError("getAtIndex 重载归口 S8d", unit11.Diagnostics,
+                "P3: overload resolution for 'getAtIndex' is not supported yet (S8)");
+
+            // 索引非值（命名空间）
+            var (unit12, _) = BindUnit(
+                "namespace stuff\n" +
+                "\n" +
+                "pub func q(): i32 { return stuff[0] }\n");
+            TestHarness.CheckSemanticError("ns[0] 索引非值", unit12.Diagnostics,
+                "Undefined name: 'stuff'");
         }
 
         // ===== for 双形态（S7c-2：范围循环/for-each 协议，带 stdlib）=====

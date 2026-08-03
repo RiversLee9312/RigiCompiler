@@ -5,6 +5,8 @@ namespace LatteCompiler.Bil
     // BilVerifier 类型检查（§20.3）：变量类型环境 + 逐指令 switch。
     // 严格相等按 §6.4；含 .generic< 的 typeid 位置表达式与查不到声明的
     // 派生规则一律降级通过（防误报原则，见 BilVerifier.cs 文件头）。
+    // S8c 增补：§13.6 get.array/set.array 非数组形态的严格三元组查询
+    // （用户 getAtIndex/setAtIndex 索引运算符实现重查）。
     //
     // ClassifyVariables 是指令读/写变量位置的唯一分类表（DA 与 breakid
     // 检查共用）；绑定/特殊位（loop/switch 的 breakid、break/continue 的
@@ -94,6 +96,11 @@ namespace LatteCompiler.Bil
                     reads.Add(getArray.Array);
                     reads.Add(getArray.Index);
                     writes.Add(getArray.Target);
+                    return true;
+                case SetArrayInstruction setArray:
+                    reads.Add(setArray.Collection);
+                    reads.Add(setArray.Index);
+                    reads.Add(setArray.Element);
                     return true;
                 case NewInstruction newInstruction:
                     reads.AddRange(newInstruction.Arguments);
@@ -301,19 +308,40 @@ namespace LatteCompiler.Bil
                     break;
 
                 case GetArrayInstruction getArray:
-                    // §13.6：ARRAY 必须是 .array<T>，TARGET ≡ T
+                    // §13.6：.array<T> 内建形态 TARGET ≡ 元素类型 T；
+                    // 非数组（用户索引运算符）走严格三元组查询
                     var arrayType = VarType(context, getArray.Array);
-                    if (arrayType != null && !arrayType.StartsWith(".array<"))
-                    {
-                        errors.Add(new BilVerificationError("20.3", location,
-                            $"get.array 的数组变量类型 \"{arrayType}\" 不是 .array<T> 形态"));
-                    }
-                    else if (arrayType != null)
+                    if (arrayType != null && arrayType.StartsWith(".array<"))
                     {
                         var elementType = arrayType.Substring(".array<".Length,
                             arrayType.Length - ".array<".Length - 1);
                         CheckType(context, VarType(context, getArray.Target), elementType, location,
                             "get.array 目标变量", errors);
+                    }
+                    else if (arrayType != null)
+                    {
+                        VerifyIndexOperator(context, arrayType, VarType(context, getArray.Index),
+                            VarType(context, getArray.Target), isGet: true, location, errors);
+                    }
+                    break;
+
+                case SetArrayInstruction setArray:
+                    // §13.6：.array<T> 内建形态 ELEMENT ≡ 元素类型 T
+                    // （INDEX 规则同 get——内建形态不查索引类型）；
+                    // 非数组（用户索引运算符）走严格三元组查询
+                    var collectionType = VarType(context, setArray.Collection);
+                    if (collectionType != null && collectionType.StartsWith(".array<"))
+                    {
+                        var setElementType = collectionType.Substring(".array<".Length,
+                            collectionType.Length - ".array<".Length - 1);
+                        CheckType(context, VarType(context, setArray.Element), setElementType,
+                            location, "set.array 元素变量", errors);
+                    }
+                    else if (collectionType != null)
+                    {
+                        VerifyIndexOperator(context, collectionType,
+                            VarType(context, setArray.Index), VarType(context, setArray.Element),
+                            isGet: false, location, errors);
                     }
                     break;
 
@@ -561,10 +589,137 @@ namespace LatteCompiler.Bil
                 $"new \"{typeRef}\" 的实参不匹配任何 init 签名"));
         }
 
+        // §13.6 非数组索引：严格三元组查询（collection + index + result/
+        // element）——在 collection 类型上（含 extends 链宿主回退，与
+        // invoke 的宿主判定同机制；§8.4.1 ext 裸条目经 canonical 符号
+        // 解析归位宿主）查 $$getAtIndex（恰 1 参数）/ $$setAtIndex
+        // （恰 2 参数）实现：无候选 → 报错（§13.6 必须存在唯一精确
+        // 实现）；有候选但索引（与元素）类型无 §6.4 严格相等匹配 →
+        // 报错（禁止隐式转换）；多个精确命中 → 报不唯一；get 唯一命中
+        // 后再验 RESULT ≡ 返回类型。
+        // collection 类型查不到声明或 extends 链断（内建别名投影、
+        // external 不完整）→ 降级通过（防误报原则）
+        private static void VerifyIndexOperator(BilFunctionContext context, string collectionType,
+            string? indexType, string? valueType, bool isGet, string location,
+            List<BilVerificationError> errors)
+        {
+            if (indexType == null || valueType == null)
+            {
+                return;   // 变量未声明等上游已报错，跳过
+            }
+            var opcode = isGet ? "get.array" : "set.array";
+            var operatorName = isGet ? "getAtIndex" : "setAtIndex";
+            var arity = isGet ? 1 : 2;
+            if (!context.Module.TypeDeclarations.TryGetValue(
+                    BilVerificationContext.StripTypeArguments(collectionType), out var declaration))
+            {
+                return;   // 查不到声明（内建别名投影/external 不完整）降级
+            }
+            // extends 链（含自身）：链断则宿主回退不可信，降级；继承环防
+            // 死循环（环本身由声明侧检查另报）
+            var chain = new HashSet<string>();
+            var current = declaration;
+            while (true)
+            {
+                chain.Add(current.Symbol);
+                if (current.ExtendsType == null)
+                {
+                    break;
+                }
+                if (!context.Module.TypeDeclarations.TryGetValue(
+                        BilVerificationContext.StripTypeArguments(current.ExtendsType),
+                        out var baseDeclaration))
+                {
+                    return;   // 链断（external 不完整）降级
+                }
+                if (chain.Contains(baseDeclaration.Symbol))
+                {
+                    break;
+                }
+                current = baseDeclaration;
+            }
+            // 候选：宿主 ∈ extends 链、名匹配（$$名 运算符 canonical）、
+            // 参数个数恰为 arity（§13.2 签名固定单 TIndex）
+            var candidates = new List<(List<(string Name, string TypeRef)> Parameters,
+                string ReturnType)>();
+            foreach (var (ownerType, member, _) in context.Module.MemberEntries)
+            {
+                if (member.Kind is not (BilMemberKind.Method or BilMemberKind.StaticMethod)
+                    || !member.Symbol.Contains("$$" + operatorName + "("))
+                {
+                    continue;
+                }
+                if (!BilVerificationContext.TryParseMethodSymbol(member.Symbol,
+                        out var parsedOwner, out _, out var parameters, out var returnType))
+                {
+                    continue;   // malformed 由符号检查另报，此处跳过
+                }
+                var host = ownerType ?? BilVerificationContext.StripTypeArguments(parsedOwner);
+                var hostInChain = false;
+                foreach (var chainType in chain)
+                {
+                    if (BilVerificationContext.TypesCompatible(chainType, host))
+                    {
+                        hostInChain = true;
+                        break;
+                    }
+                }
+                if (hostInChain && parameters.Count == arity)
+                {
+                    candidates.Add((parameters, returnType));
+                }
+            }
+            if (candidates.Count == 0)
+            {
+                errors.Add(new BilVerificationError("20.3", location,
+                    $"类型 \"{collectionType}\" 没有 {operatorName} 索引运算符实现" +
+                    $"（{opcode} 要求唯一精确实现）"));
+                return;
+            }
+            // 精确匹配（§6.4 严格相等经 TypesCompatible 判定——内建别名
+            // 投影与 .generic< 位置的降级已含其中）：索引 ≡ param[0]，
+            // set 再要求元素 ≡ param[1]
+            var exact = new List<(List<(string Name, string TypeRef)> Parameters,
+                string ReturnType)>();
+            foreach (var candidate in candidates)
+            {
+                if (!BilVerificationContext.TypesCompatible(indexType,
+                        candidate.Parameters[0].TypeRef))
+                {
+                    continue;
+                }
+                if (!isGet && !BilVerificationContext.TypesCompatible(valueType,
+                        candidate.Parameters[1].TypeRef))
+                {
+                    continue;
+                }
+                exact.Add(candidate);
+            }
+            if (exact.Count == 0)
+            {
+                errors.Add(new BilVerificationError("20.3", location,
+                    $"{opcode} 的操作数在 \"{collectionType}\" 的 {operatorName} 实现中无精确匹配" +
+                    $"（禁止隐式转换）：索引 \"{indexType}\"" +
+                    (isGet ? "" : $"，元素 \"{valueType}\"")));
+                return;
+            }
+            if (exact.Count > 1)
+            {
+                errors.Add(new BilVerificationError("20.3", location,
+                    $"{opcode} 在 \"{collectionType}\" 上命中多个精确 {operatorName} 实现" +
+                    "（必须唯一）"));
+                return;
+            }
+            if (isGet)
+            {
+                CheckType(context, valueType, exact[0].ReturnType, location,
+                    "get.array 目标变量", errors);
+            }
+        }
+
         private static void VerifyNewCase(BilFunctionContext context, NewCaseInstruction newCase,
             string location, List<BilVerificationError> errors)
-        {
-            var typeRef = newCase.Type.TypeRef;
+        {var typeRef = newCase.Type.TypeRef;
             VerifyResolvableType(context, typeRef, location, errors);
             CheckType(context, VarType(context, newCase.Target), typeRef, location,
                 "new.case 结果", errors);

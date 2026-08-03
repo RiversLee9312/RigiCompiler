@@ -14,6 +14,7 @@ namespace LatteCompiler.Tests
     ///   Binary(Add, l, r, i32)  Unary(Opposite, x, i32)
     ///   Call(name, [args], ret)  New(T, [args])  New(T, init, [args])
     ///   This(C)（S7c-2）  InstCall(name, receiver, [args], ret)  InstField(f, receiver, T)
+    ///   Index(recv, idx, T)（S8c，读/写共用——写形态只作 Assign 目标）
     ///   Cast(e, T, RT)  SafeCast(e, T, RT)（S7e，as / as?；T = 目标类型，RT = 结果类型）
     ///   Is(e, T)  Supers(e, T)  With(e, T)（S8a；动态形态目标带 dyn 前缀：
     ///   Is(e, dyn t)；结果恒 bool 不打印）
@@ -134,6 +135,9 @@ namespace LatteCompiler.Tests
                 LoweredFieldAccessExpression fieldAccess =>
                     $"InstField({fieldAccess.Field.Name}, {Expr(fieldAccess.Receiver)}, " +
                     $"{TypeShort(fieldAccess.Type)})",
+                LoweredIndexExpression indexAccess =>
+                    $"Index({Expr(indexAccess.Receiver)}, {Expr(indexAccess.Index)}, " +
+                    $"{TypeShort(indexAccess.Type)})",
                 LoweredCastExpression cast =>
                     $"{(cast.IsSafe ? "SafeCast" : "Cast")}({Expr(cast.Source)}, " +
                     $"{TypeShort(cast.TargetType)}, {TypeShort(cast.Type)})",

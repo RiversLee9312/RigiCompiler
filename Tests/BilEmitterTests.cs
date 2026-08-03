@@ -32,6 +32,8 @@ namespace LatteCompiler.Tests
     /// switch0-default 块 id、§18.4 switch-table 单行资源与跨 fn 同表
     /// 去重）、pattern switch 不到 P4b（P4a 已降为 if 链——无 switch
     /// 指令与表资源）、throw（§16.9 单操作数、entry 块 throw 终止不补 ret）。
+    /// S8c：索引访问（§13.6 get.array/set.array 发射——读写/复合/链式形态，
+    /// 用户 operator 的 §8.4 声明形态断言）。
     /// </summary>
     public static class BilEmitterTests
     {
@@ -73,6 +75,7 @@ namespace LatteCompiler.Tests
             TestSeqEmission();
             TestTypeCheckEmission();
             TestTypeOfEmission();
+            TestIndexEmission();
             TestUnsupportedNodes();
 
             return TestHarness.Summary("BilEmitter");
@@ -1254,6 +1257,103 @@ namespace LatteCompiler.Tests
             TestHarness.CheckTrue("getid.var 双操作数全变量（§12.5）",
                 getIdVar.Operands.Count == 2
                 && getIdVar.Operands.All(o => o is BilVariableOperand));
+        }
+
+        // ===== S8c：索引访问发射（§13.6 get.array/set.array + operator
+        // §8.4 声明）=====
+        private static void TestIndexEmission()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "pub class Counter {\n" +
+                "    pub var value: i32\n" +
+                "    pub init(v: i32) { value = v }\n" +
+                "}\n" +
+                "pub class Bag {\n" +
+                "    pub var item: i32\n" +
+                "    pub init() { item = 0 }\n" +
+                "    pub operator getAtIndex(index: i32): i32 { return item }\n" +
+                "    pub operator setAtIndex(index: i32, element: i32) { item = element }\n" +
+                "}\n" +
+                "pub class CounterBag {\n" +
+                "    pub var first: Counter\n" +
+                "    pub init(c: Counter) { first = c }\n" +
+                "    pub operator getAtIndex(index: i32): Counter { return first }\n" +
+                "}\n" +
+                "pub func makeBag(): Bag { return new Bag() }\n" +
+                "pub func main(): i32 {\n" +
+                "    var b = new Bag()\n" +
+                "    b[0] = 7\n" +
+                "    var x = b[1]\n" +
+                "    b[2] += 3\n" +
+                "    var cb = new CounterBag(new Counter(5))\n" +
+                "    var y = cb[0].value\n" +
+                "    var z = makeBag()[9]\n" +
+                "    return ((x + y) + z) + b[0]\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（索引发射）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（索引发射）", module);
+
+            // 用户类型 operator 声明形态（§8.4：$$名 canonical + operator(名)
+            // 修饰符，类型成员嵌在 .type 声明内）
+            TestHarness.CheckTrue("getAtIndex/setAtIndex 声明形态（$$名 + operator(名)）",
+                module.LocalSymbols.OfType<BilTypeDeclaration>()
+                    .Where(t => t.Symbol == "Bag")
+                    .SelectMany(t => t.Members.OfType<BilSimpleMemberDeclaration>())
+                    .Any(d => d.Symbol == "Bag$$getAtIndex(index:.i32)@.i32"
+                        && d.Modifiers.Any(m => m is BilOperatorModifier op
+                            && op.Name == "getAtIndex"))
+                    && module.LocalSymbols.OfType<BilTypeDeclaration>()
+                    .Where(t => t.Symbol == "Bag")
+                    .SelectMany(t => t.Members.OfType<BilSimpleMemberDeclaration>())
+                    .Any(d => d.Symbol == "Bag$$setAtIndex(index:.i32,element:.i32)@.void"
+                        && d.Modifiers.Any(m => m is BilOperatorModifier op
+                            && op.Name == "setAtIndex")));
+
+            // §13.6：写（set.array COLLECTION INDEX ELEMENT——ELEMENT 先物化，
+            // 再 INDEX；操作数序仍按规范）、读（get.array）、复合（读+写+
+            // 表达式位丢弃读）、链式（cb[0].value = get.array → get.field；
+            // makeBag()[9] = invoke → get.array）
+            BilTestHarness.CheckFnShape("main 指令（索引读写/复合/链式）",
+                module, "$main()@.i32",
+                ".vars { Bag b, .i32 x, CounterBag cb, .i32 y, .i32 z, Bag .t0, .i32 .t1, " +
+                ".i32 .t2, .i32 .t3, .i32 .t4, .i32 .t5, .i32 .t6, .i32 .t7, .i32 .t8, " +
+                ".i32 .t9, .i32 .t10, .i32 .t11, .i32 .t12, Counter .t13, CounterBag .t14, " +
+                ".i32 .t15, Counter .t16, .i32 .t17, Bag .t18, .i32 .t19, .i32 .t20, " +
+                ".i32 .t21, .i32 .t22, .i32 .t23, .i32 .t24, .i32 .t25 }\n" +
+                "new type(Bag) $.t0 []\n" +
+                "set.var $.t0 $b\n" +
+                "load res(#0) $.t1\n" +
+                "load res(#1) $.t2\n" +
+                "set.array $b $.t2 $.t1\n" +
+                "load res(#2) $.t3\n" +
+                "get.array $b $.t3 $.t4\n" +
+                "set.var $.t4 $x\n" +
+                "load res(#3) $.t5\n" +
+                "get.array $b $.t5 $.t6\n" +
+                "load res(#4) $.t7\n" +
+                "add $.t6 $.t7 $.t8\n" +
+                "load res(#3) $.t9\n" +
+                "set.array $b $.t9 $.t8\n" +
+                "load res(#3) $.t10\n" +
+                "get.array $b $.t10 $.t11\n" +
+                "load res(#5) $.t12\n" +
+                "new type(Counter) $.t13 [$.t12]\n" +
+                "new type(CounterBag) $.t14 [$.t13]\n" +
+                "set.var $.t14 $cb\n" +
+                "load res(#1) $.t15\n" +
+                "get.array $cb $.t15 $.t16\n" +
+                "get.field $.t16 $.t17 field(Counter#value@.i32)\n" +
+                "set.var $.t17 $y\n" +
+                "invoke fn($makeBag()@Bag) $.t18 []\n" +
+                "load res(#6) $.t19\n" +
+                "get.array $.t18 $.t19 $.t20\n" +
+                "set.var $.t20 $z\n" +
+                "add $x $y $.t21\n" +
+                "add $.t21 $z $.t22\n" +
+                "load res(#1) $.t23\n" +
+                "get.array $b $.t23 $.t24\n" +
+                "add $.t22 $.t24 $.t25\n" +
+                "ret $.t25\n");
         }
 
         // ===== 负例：未覆盖节点 → P4 Error =====

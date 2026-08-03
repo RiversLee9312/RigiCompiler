@@ -14,6 +14,7 @@ namespace LatteCompiler.Tests
     ///   Call(name, [args], ret)  New(T, [args])  New(T, init, [args])
     ///   IfExpr(c, 真值块, 假值块, i32)  CompoundAssign(Add, t, v, i32)
     ///   This(C)（S7c-2）  InstCall(name, receiver, [args], ret)  InstField(f, receiver, T)
+    ///   Index(receiver, index, T)（S8c，SYNTAX §13.2；T = 读模式返回类型/写模式元素形参类型）
     ///   SwitchExpr(sel, [Case(m, 值块); CaseP(m, 值块)], 默认值块, T)（S7d；CaseP = pattern 分支）
     ///   Placeholder(T)（S7d，switch pattern 的 _）
     ///   Cast(e, T)  SafeCast(e, T)（S7e，as / as?；T = 目标类型）
@@ -165,6 +166,9 @@ namespace LatteCompiler.Tests
                 BoundFieldAccessExpression fieldAccess =>
                     $"InstField({fieldAccess.Field.Name}, {Expr(fieldAccess.Receiver)}, " +
                     $"{TypeShort(fieldAccess.Type)})",
+                // S8c：索引访问（Operator 符号不打印——黄金描述聚焦形态与定型）
+                BoundIndexExpression index =>
+                    $"Index({Expr(index.Receiver)}, {Expr(index.Index)}, {TypeShort(index.Type)})",
                 BoundSwitchExpression switchExpr =>
                     $"SwitchExpr({Expr(switchExpr.Selector)}, [{string.Join("; ", switchExpr.Cases.Select(c => $"{(c.IsPattern ? "CaseP" : "Case")}({Expr(c.Match)}, {ValueBlock(c.Body)})"))}], {ValueBlock(switchExpr.DefaultBody)}, {TypeShort(switchExpr.Type)})",
                 BoundSwitchPlaceholderExpression placeholder =>

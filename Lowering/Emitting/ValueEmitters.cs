@@ -3,7 +3,7 @@ using LatteCompiler.Bil;
 
 namespace LatteCompiler
 {
-    // 值发射（S6–S8a；BIL §10–§15）。自旧 EmitSession.EmitValue 各分支
+    // 值发射（S6–S8c；BIL §10–§15）。自旧 EmitSession.EmitValue 各分支
     // 迁移，行为不变——表达式物化为变量操作数（§10.1）。
     // M57 起产物为 BilVariableOperand（物化契约类型化，不再传递变量名字符串）。
 
@@ -196,6 +196,24 @@ namespace LatteCompiler
                 accessReceiver, accessResult,
                 BilOp.Field(CanonicalSymbolPrinter.PrintField(fieldAccess.Field)))
             { Origin = fieldAccess });
+            return accessResult;
+        }
+    }
+
+    // 索引读取（S8c，§13.6：get.array COLLECTION INDEX RESULT）——
+    // collection/index 物化，结果物化 .t 临时变量；写入形态（赋值目标）
+    // 见 AssignmentEmitter 的 set.array 分支
+    internal sealed class IndexAccessEmitter : EmitVisitor<IndexAccessEmitter, BilVariableOperand>
+    {
+        protected override BilVariableOperand VisitCore(LoweredNode node, BilBlock target,
+            EmitContext ctx, EmitEnvironment env)
+        {
+            var indexAccess = (LoweredIndexExpression)node;
+            var collection = EmitValueDispatcher.Visit(indexAccess.Receiver, target, ctx, env);
+            var index = EmitValueDispatcher.Visit(indexAccess.Index, target, ctx, env);
+            var accessResult = EmittingFacility.NewTemp(indexAccess.Type, ctx);
+            target.Instructions.Add(new GetArrayInstruction(collection, index, accessResult)
+            { Origin = indexAccess });
             return accessResult;
         }
     }

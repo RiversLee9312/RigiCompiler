@@ -1,6 +1,6 @@
 namespace LatteCompiler
 {
-    // 表达式降级（S5–S8a；前置语句追加到当前块输出列表）。
+    // 表达式降级（S5–S8c；前置语句追加到当前块输出列表）。
     // 自旧 LowerSession.LowerExpression 各分支迁移，行为不变。
 
     // 表达式设施：独立块上下文降级（judge/分支块合成用）
@@ -222,9 +222,10 @@ namespace LatteCompiler
     }
 
     // 复合赋值脱糖（SYNTAX §13.2）：前置「Target = Target op Value」
-    // 赋值，表达式位 Target 引用（写回后值）。Target 是局部/字段引用
-    // （P3 强制 place），降级为纯引用构造无副作用，三处引用（赋值左/
-    // 运算左/表达式位）各自独立构造
+    // 赋值，表达式位 Target 引用（写回后值）。Target 是局部/字段引用或
+    // 索引访问（P3 强制 place），三处引用（赋值左/运算左/表达式位）
+    // 各自独立降级构造——索引目标（S8c）的 receiver/index 随之重复
+    // 求值，与字段复合的既有行为差异已在 P3 注释记入
     internal sealed class CompoundAssignmentRewriter
         : LoweredVisitor<CompoundAssignmentRewriter, LoweredExpression, LowerContext>
     {
@@ -283,6 +284,23 @@ namespace LatteCompiler
             var receiver = LowerExpressionDispatcher.Visit(fieldAccess.Receiver, ctx, env);
             if (receiver == null) return null;
             return new LoweredFieldAccessExpression(fieldAccess, receiver, fieldAccess.Field);
+        }
+    }
+
+    // 索引访问恒等降级（S8c，BIL §13.6 直接对应，无脱糖）：receiver/index
+    // 递归降级；读/写共用节点，指令选择归 P4b 按所在位置
+    internal sealed class IndexRewriter
+        : LoweredVisitor<IndexRewriter, LoweredExpression, LowerContext>
+    {
+        protected override LoweredExpression? VisitCore(BoundNode node, LowerContext ctx,
+            LowerEnvironment env)
+        {
+            var indexAccess = (BoundIndexExpression)node;
+            var receiver = LowerExpressionDispatcher.Visit(indexAccess.Receiver, ctx, env);
+            if (receiver == null) return null;
+            var index = LowerExpressionDispatcher.Visit(indexAccess.Index, ctx, env);
+            if (index == null) return null;
+            return new LoweredIndexExpression(indexAccess, receiver, index);
         }
     }
 

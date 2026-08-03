@@ -3,10 +3,10 @@ using System.Collections.Generic;
 namespace LatteCompiler
 {
     // Lowered 表达式节点（S6 最小集 + S7a 补齐 + S7b 脱糖 + S7c-2 实例成员
-    // + S7e cast + S8a 类型谓词/typeOf，SEMANTIC_ROADMAP）：字面量 / 值引用 /
-    // 全局字段引用 / 二元与一元 intrinsic 运算 / 带返回值调用 / new 构造 /
-    // 编译期常量（短路脱糖产物）/ this / 实例方法调用 / 实例字段访问 / cast /
-    // is·supers·with / typeOf。
+    // + S7e cast + S8a 类型谓词/typeOf + S8c 索引访问，SEMANTIC_ROADMAP）：
+    // 字面量 / 值引用 / 全局字段引用 / 二元与一元 intrinsic 运算 / 带返回值调用 /
+    // new 构造 / 编译期常量（短路脱糖产物）/ this / 实例方法调用 / 实例字段访问 /
+    // cast / is·supers·with / typeOf / 索引访问。
     // 字面量值不冗余存储——经 Origin.Syntax（LiteralExpressionASTNode.Literal）取。
     // S7b 起部分节点构造的 origin 参数放宽为 BoundNode：脱糖合成节点无逐一
     // 对应的 Bound 节点，Origin 按 ARCH §5.1 约定指向最近的语法来源。
@@ -192,6 +192,25 @@ namespace LatteCompiler
             Receiver = receiver;
             Field = field;
             this.type = type;
+        }
+    }
+
+    // 索引访问（S8c；BIL §13.6 get.array/set.array）：读形态与赋值 place
+    // 形态共用（指令选择归 P4b 按所在位置——值位置 get.array /
+    // 赋值目标 set.array）。不携带 Operator 符号——§13.6 指令无符号
+    // 操作数，验证器按「collection + index + result/element」严格
+    // 三元组重查实现。Type 走 Origin 透传（读 = getAtIndex 返回类型，
+    // 写 = setAtIndex 元素形参类型，P3 已定型）
+    public sealed class LoweredIndexExpression : LoweredExpression
+    {
+        public LoweredExpression Receiver { get; }
+        public LoweredExpression Index { get; }
+
+        public LoweredIndexExpression(BoundIndexExpression origin,
+            LoweredExpression receiver, LoweredExpression index) : base(origin)
+        {
+            Receiver = receiver;
+            Index = index;
         }
     }
 

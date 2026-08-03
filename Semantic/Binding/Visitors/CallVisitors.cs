@@ -17,8 +17,9 @@ namespace LatteCompiler
     }
 
     // 调用形态判定：符号头 + 全 Dot 段（无中间后缀）+ 整条链恰好一个
-    // Call 后缀（在首段或某段之后）。泛型/表达式底座已由路径绑定此前
-    // 各自归口，不在此判定内
+    // Call 后缀且位于链尾（首段 Call 后缀要求无段——S8c 起 foo().c 形态
+    // 归路径绑定的调用结果底座；段 Call 后缀同理须在末段）。
+    // 泛型/表达式底座已由路径绑定此前各自归口，不在此判定内
     internal static class CallForm
     {
         public static bool TryGet(PathExpressionASTNode node,
@@ -32,16 +33,19 @@ namespace LatteCompiler
             if (node.Head.Suffixes.Count == 1)
             {
                 if (node.Head.Suffixes[0].Kind != PathSuffixKind.Call) return false;
+                if (node.Segments.Count > 0) return false;
                 callArguments = node.Head.Suffixes[0].Arguments;
             }
-            foreach (var segment in node.Segments)
+            for (int i = 0; i < node.Segments.Count; i++)
             {
+                var segment = node.Segments[i];
                 if (segment.Connector != PathConnector.Dot) return false;
                 if (segment.Suffixes.Count > 1) return false;
                 calleeSegments.Add(segment.Name);
                 if (segment.Suffixes.Count == 1)
                 {
-                    if (segment.Suffixes[0].Kind != PathSuffixKind.Call || callArguments != null)
+                    if (segment.Suffixes[0].Kind != PathSuffixKind.Call || callArguments != null
+                        || i < node.Segments.Count - 1)
                     {
                         return false;
                     }

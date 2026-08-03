@@ -19,6 +19,8 @@ namespace LatteCompiler.Tests
     /// 复用 finally 变量或合成 .sN、有名 catch 体头合成 cast）、seq 双形态
     /// （语句恒等 / 表达式脱糖结果局部）、值块编织扩展（seq 透明、try 无
     /// finally 同 if 规则、finally 终止覆盖、try-finally 部分终止拦截）。
+    /// S8c 新增：索引访问恒等降级（读/写/复合三形态共用 LoweredIndexExpression，
+    /// 读写指令选择归 P4b）。
     /// 驱动仿 BinderTests.BindUnit：全管线 P1–P3 后直接进 Lowerer（不带 stdlib）。
     /// </summary>
     public static class LowererTests
@@ -54,6 +56,7 @@ namespace LatteCompiler.Tests
             TestDestructuringLowering();
             TestTypeCheckLowering();
             TestTypeOfLowering();
+            TestIndexLowering();
             TestUnsupportedNode();
 
             return TestHarness.Summary("Lowerer");
@@ -1129,6 +1132,51 @@ namespace LatteCompiler.Tests
             public FutureBoundStatement(ASTNode syntax) : base(syntax)
             {
             }
+        }
+
+        // ===== S8c：索引访问恒等降级（读/写共用 LoweredIndexExpression）=====
+        private static void TestIndexLowering()
+        {
+            var (unit, bound, lowered) = LowerUnit(
+                "class Bag {\n" +
+                "    pub var item: i32\n" +
+                "    pub operator getAtIndex(index: i32): i32 { return item }\n" +
+                "    pub operator setAtIndex(index: i32, element: i32) { item = element }\n" +
+                "}\n" +
+                "func read(b: Bag, i: i32): i32 { return b[i] }\n" +
+                "func write(b: Bag) { b[0] = 42 }\n" +
+                "func bump(b: Bag) { b[1] += 2 }\n");
+            CheckNoErrors("无诊断（索引降级）", unit);
+            TestHarness.Check("索引读降级",
+                LoweredDescribe.Body(BodyOf(lowered, "read")),
+                "Body(read, [], [Return(Index(Param(b,Bag), Param(i,i32), i32))])");
+            TestHarness.Check("索引写降级",
+                LoweredDescribe.Body(BodyOf(lowered, "write")),
+                "Body(write, [], [Assign(Index(Param(b,Bag), Int(0,i32), i32), Int(42,i32))])");
+            // 索引复合：读/写/表达式位三处各自降级（receiver/index 重复求值，
+            // 与字段复合既有行为一致）
+            TestHarness.Check("索引复合赋值降级",
+                LoweredDescribe.Body(BodyOf(lowered, "bump")),
+                "Body(bump, [], [Assign(Index(Param(b,Bag), Int(1,i32), i32), " +
+                "Binary(Add, Index(Param(b,Bag), Int(1,i32), i32), Int(2,i32), i32)); " +
+                "ExprStmt(Index(Param(b,Bag), Int(1,i32), i32))])");
+
+            // 结构性事实：Origin 回指引用相等 + Type 透传（读 = getAtIndex
+            // 返回类型；写 = setAtIndex 元素形参类型——同型同源此处皆 i32）
+            var boundRead = (BoundIndexExpression)((BoundReturnStatement)
+                bound.Single(b => b.Method.Name == "read").Body.Statements[0]).Value!;
+            var loweredRead = (LoweredIndexExpression)((LoweredReturnStatement)
+                BodyOf(lowered, "read").Body.Statements[0]).Value!;
+            TestHarness.CheckTrue("索引读 Origin 回指 + Type 透传",
+                ReferenceEquals(loweredRead.Origin, boundRead)
+                && ReferenceEquals(loweredRead.Type, boundRead.Type));
+            var boundWrite = (BoundIndexExpression)((BoundAssignmentStatement)
+                bound.Single(b => b.Method.Name == "write").Body.Statements[0]).Target;
+            var loweredWrite = (LoweredIndexExpression)((LoweredAssignmentStatement)
+                BodyOf(lowered, "write").Body.Statements[0]).Target;
+            TestHarness.CheckTrue("索引写 Origin 回指 + 目标形态共用",
+                ReferenceEquals(loweredWrite.Origin, boundWrite)
+                && ReferenceEquals(loweredWrite.Type, boundWrite.Type));
         }
 
         private static void TestUnsupportedNode()

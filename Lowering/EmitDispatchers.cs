@@ -78,6 +78,8 @@ namespace LatteCompiler
                     return InstanceCallEmitter.Visit(expression, target, ctx, env);
                 case LoweredFieldAccessExpression:
                     return FieldAccessEmitter.Visit(expression, target, ctx, env);
+                case LoweredIndexExpression:
+                    return IndexAccessEmitter.Visit(expression, target, ctx, env);
                 case LoweredCastExpression:
                     return CastEmitter.Visit(expression, target, ctx, env);
                 case LoweredTypeCheckExpression:

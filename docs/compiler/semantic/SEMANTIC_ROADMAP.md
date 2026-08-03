@@ -357,7 +357,17 @@ P4 同步落地——P3 绑得出来的形态，同一步内 P4 必须能发射�
 - **验收**：定稿规则逐条的 BoundTree 标记断言 + 物化 cast 的
   `LoweredDescribe` 用例 + 统一性核查结论落 PROGRESS_REPORT。
 
-### S8c 索引访问 + 实例成员完整化
+### S8c 索引访问 + 实例成员完整化 ✅（M59，2026-08-03）
+
+> **已完成**（M59）：getAtIndex/setAtIndex 运算符绑定（读形态 Type =
+> 返回类型、写形态 Type = 元素形参类型）+ 赋值/复合赋值 place 扩展 +
+> 表达式底座链泛化（PathVisitors 重构，解开全部 S8 归口诊断——
+> `(a+b).c`/`foo().c`/`new X().c`/`foo()?.bar`/段后缀折叠/`this[i]`/
+> 容器末段成员后缀）；多参数索引 `a[i, j]` 定稿为编译错误（签名固定
+> 单 TIndex 参数），具名索引实参与普通调用同规则（均已同步
+> SYNTAX §13.2）；P4a LoweredIndexExpression 恒等降级；P4b §13.6
+> get.array/set.array 发射 + BilVerifier 严格三元组查询（§6.4
+> 精确匹配，禁止隐式转换）。详见 PROGRESS_REPORT M59 段落。
 
 - P3 索引：`getAtIndex`/`setAtIndex` 运算符绑定（SYNTAX §13.2；
   `Binder.FindInstanceOperator`（:1409）模式可复用）+ 赋值 place

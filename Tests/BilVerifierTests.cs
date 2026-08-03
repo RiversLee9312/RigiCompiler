@@ -8,6 +8,8 @@ namespace LatteCompiler.Tests
     /// BIL 验证器（BilVerifier，M58）测试：
     /// 正例——中端全管线产出（覆盖 M44–M54 各发射特性）必须验证器零错误；
     /// 负例——手工构造/改造非法模块，按 §20 规则逐类断言命中。
+    /// S8c 增补：§13.6 索引严格三元组查询（get.array/set.array 手工模块
+    /// 基线正例 + 索引/元素/结果类型不符与无索引运算符负例）。
     /// </summary>
     public static class BilVerifierTests
     {
@@ -121,6 +123,19 @@ namespace LatteCompiler.Tests
                 "    var (k, v) = new Entry(\"a\", 1)\n" +
                 "    return v\n" +
                 "}\n");
+            Positive("索引访问（get.array/set.array，S8c）",
+                "pub class Bag {\n" +
+                "    pub var item: i32\n" +
+                "    pub init() { item = 0 }\n" +
+                "    pub operator getAtIndex(index: i32): i32 { return item }\n" +
+                "    pub operator setAtIndex(index: i32, element: i32) { item = element }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var b = new Bag()\n" +
+                "    b[0] = 7\n" +
+                "    b[1] += 2\n" +
+                "    return b[2]\n" +
+                "}\n");
 
             // ===== 负例：非法模块按规则命中 =====
             NegativeCases();
@@ -156,6 +171,63 @@ namespace LatteCompiler.Tests
             main.Blocks.Add(entry);
             module.Functions.Add(main);
             return module;
+        }
+
+        // 索引验证手工模块（S8c §13.6）：Vec 声明指定 operator 成员 + main
+        // （v/i/s/flag 赋值后执行给定的索引指令，ret $x 收尾）——Vec 置于
+        // ExternalSymbols（本地非 native 方法必须带 fn 定义，§20.2；手工
+        // 模块不构造 operator 函数体，以外部声明形态聚焦指令侧检查）。
+        // 负例均在其上改造（替换 operator 声明或索引指令）
+        private static BilModule IndexModule(BilSimpleMemberDeclaration[] vecOperators,
+            params BilInstruction[] indexInstructions)
+        {
+            var module = new BilModule();
+            var i32Resource = new BilScalarResource("R_0", BilScalarType.I32, "0");
+            var stringResource = new BilScalarResource("R_1", BilScalarType.String, "\"a\"");
+            var boolResource = new BilScalarResource("R_2", BilScalarType.Bool, "true");
+            module.Resources.Add(i32Resource);
+            module.Resources.Add(stringResource);
+            module.Resources.Add(boolResource);
+            var vecDeclaration = new BilTypeDeclaration("Vec", BilTypeKind.Class,
+                new BilAccessibilityModifier(BilAccessibility.Public));
+            foreach (var op in vecOperators)
+            {
+                vecDeclaration.Members.Add(op);
+            }
+            module.ExternalSymbols.Add(vecDeclaration);
+            module.LocalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "$main()@.i32",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            var main = new BilFunction("$main()@.i32");
+            main.Args.Add(new BilArgDeclaration(".return", ".i32"));
+            main.Vars.Add(new BilVarDeclaration(".i32", "x"));
+            main.Vars.Add(new BilVarDeclaration("Vec", "v"));
+            main.Vars.Add(new BilVarDeclaration(".i32", "i"));
+            main.Vars.Add(new BilVarDeclaration(".string", "s"));
+            main.Vars.Add(new BilVarDeclaration(".bool", "flag"));
+            var entry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            entry.Instructions.Add(new LoadInstruction(i32Resource, BilOp.Var("x")));
+            entry.Instructions.Add(new NewInstruction(BilOp.Type("Vec"), BilOp.Var("v"),
+                new List<BilVariableOperand>()));
+            entry.Instructions.Add(new LoadInstruction(i32Resource, BilOp.Var("i")));
+            entry.Instructions.Add(new LoadInstruction(stringResource, BilOp.Var("s")));
+            entry.Instructions.Add(new LoadInstruction(boolResource, BilOp.Var("flag")));
+            entry.Instructions.AddRange(indexInstructions);
+            entry.Instructions.Add(new RetInstruction(BilOp.Var("x")));
+            main.Blocks.Add(entry);
+            module.Functions.Add(main);
+            return module;
+        }
+
+        // Vec 的索引运算符声明（$$名 canonical + pub + operator(名)，§8.4）
+        private static BilSimpleMemberDeclaration IndexOperator(string symbol, string name)
+        {
+            return new BilSimpleMemberDeclaration(BilMemberKind.Method, symbol,
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilOperatorModifier(name),
+                });
         }
 
         private static void NegativeCases()
@@ -379,6 +451,47 @@ namespace LatteCompiler.Tests
             entryBlock.Instructions.Insert(2, new LoopInstruction(
                 BilOp.Var("cond2"), body2, null, judge2, BilOp.Var("lp2"), false));
             BilTestHarness.CheckBilInvalid("judge 未写 condition", m, "未对条件变量");
+
+            // ===== S8c：§13.6 索引严格三元组查询 =====
+            // 基线：手工索引模块本身必须合法（get.array/set.array 正例）
+            BilTestHarness.CheckBilValid("索引手工模块（基线，get/set 正例）",
+                IndexModule(BothIndexOperators(),
+                    new GetArrayInstruction(BilOp.Var("v"), BilOp.Var("i"), BilOp.Var("s")),
+                    new SetArrayInstruction(BilOp.Var("v"), BilOp.Var("i"), BilOp.Var("s"))));
+
+            // §13.6：set.array 索引类型与 setAtIndex param[0] 不符
+            BilTestHarness.CheckBilInvalid("set.array 索引类型不符（无精确匹配）",
+                IndexModule(BothIndexOperators(),
+                    new SetArrayInstruction(BilOp.Var("v"), BilOp.Var("flag"), BilOp.Var("s"))),
+                "无精确匹配");
+
+            // §13.6：set.array 元素类型与 setAtIndex param[1] 不符
+            BilTestHarness.CheckBilInvalid("set.array 元素类型不符（无精确匹配）",
+                IndexModule(BothIndexOperators(),
+                    new SetArrayInstruction(BilOp.Var("v"), BilOp.Var("i"), BilOp.Var("i"))),
+                "无精确匹配");
+
+            // §13.6：get.array 结果类型与 getAtIndex 返回类型不符
+            BilTestHarness.CheckBilInvalid("get.array 结果类型不符",
+                IndexModule(BothIndexOperators(),
+                    new GetArrayInstruction(BilOp.Var("v"), BilOp.Var("i"), BilOp.Var("x"))),
+                "get.array 目标变量");
+
+            // §13.6：可解析类型无索引运算符实现
+            BilTestHarness.CheckBilInvalid("可解析类型无索引运算符",
+                IndexModule(new BilSimpleMemberDeclaration[0],
+                    new GetArrayInstruction(BilOp.Var("v"), BilOp.Var("i"), BilOp.Var("s"))),
+                "没有 getAtIndex 索引运算符实现");
+        }
+
+        // Vec 的索引运算符对（get 返回 .string / set 元素 .string，索引皆 .i32）
+        private static BilSimpleMemberDeclaration[] BothIndexOperators()
+        {
+            return new[]
+            {
+                IndexOperator("Vec$$getAtIndex(index:.i32)@.string", "getAtIndex"),
+                IndexOperator("Vec$$setAtIndex(index:.i32,element:.string)@.void", "setAtIndex"),
+            };
         }
     }
 }

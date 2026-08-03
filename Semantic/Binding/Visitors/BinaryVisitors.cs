@@ -181,8 +181,9 @@ namespace LatteCompiler
         }
     }
 
-    // 复合赋值（S7b，SYNTAX §13.2）：a op= b 即 a = a op b 的语义糖，表达式值
-    // 为写回后值。Target 规则同赋值（局部/参数/字段 place），但读前须已赋值
+    // 复合赋值（S7b，SYNTAX §13.2；S8c 增补索引 place）：a op= b 即 a = a op b
+    // 的语义糖，表达式值为写回后值。Target 规则同赋值（局部/参数/字段/索引
+    // place），但读前须已赋值
     // （读语义——普通路径绑定的 unassigned 检查，不做 forAssignment 特免）；
     // Op 复用二元映射（10 个基础运算符，Parser 保证不含 and/or）；
     // 类型一致与 intrinsic 存在检查同 BindBinary；Type = Target 类型；
@@ -222,6 +223,29 @@ namespace LatteCompiler
                             ? fr.Field : ((BoundFieldAccessExpression)target).Field;
                         if (!ConstFieldRules.CheckAssignable(field, node.Span, ctx, env))
                         {
+                            return null;
+                        }
+                        break;
+                    }
+                case BoundIndexExpression indexTarget:
+                    // S8c 索引复合赋值：读语义已含 getAtIndex 检查（目标按
+                    // 读模式绑定）；此处要求 2 参数 setAtIndex 存在（写回
+                    // 能力）。receiver/index 的读-写双重求值与字段复合
+                    // 既有行为一致（P4a 展开时处理）
+                    {
+                        var setters = SymbolLookup.FindInstanceOperators(
+                            indexTarget.Receiver.Type, "setAtIndex", 2);
+                        if (setters.Count == 0)
+                        {
+                            env.Error(node.Span, $"Type " +
+                                $"'{BoundAnalysis.TypeDisplay(indexTarget.Receiver.Type)}' " +
+                                "does not define an index operator ('setAtIndex')");
+                            return null;
+                        }
+                        if (setters.Count > 1)
+                        {
+                            env.Error(node.Span, "P3: overload resolution for 'setAtIndex' " +
+                                "is not supported yet (S8)");
                             return null;
                         }
                         break;

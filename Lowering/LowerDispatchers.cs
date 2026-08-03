@@ -64,6 +64,7 @@ namespace LatteCompiler
                 BoundThisExpression => ThisRewriter.Visit(expression, ctx, env),
                 BoundInstanceCallExpression => InstanceCallRewriter.Visit(expression, ctx, env),
                 BoundFieldAccessExpression => FieldAccessRewriter.Visit(expression, ctx, env),
+                BoundIndexExpression => IndexRewriter.Visit(expression, ctx, env),
                 BoundCastExpression => CastRewriter.Visit(expression, ctx, env),
                 BoundSmartCastExpression => SmartCastRewriter.Visit(expression, ctx, env),
                 BoundTypeCheckExpression => TypeCheckRewriter.Visit(expression, ctx, env),

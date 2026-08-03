@@ -1,10 +1,15 @@
 namespace LatteCompiler
 {
-    // 路径表达式（M42 统一形态）的值位置绑定（S5/S7c-2/S7f，SYNTAX §1.4/§3.4/§9）。
-    // 形态分派：this 首段 → this 路径；纯调用形态 → 直接/实例调用；
-    // 纯值路径（无后缀）→ 局部/参数/宿主与命名空间字段/容器成员；
-    // 首段为值的多段 → 实例链上色；其余（表达式底座/索引/wrapper）
-    // 报归口诊断。自旧 BindSession.BindPath 等迁移，行为不变。
+    // 路径表达式（M42 统一形态）的值位置绑定（S5/S7c-2/S7f/S8c，
+    // SYNTAX §1.4/§3.4/§9/§13.2）。
+    // 形态分派：泛型实参检查（S9）→ 表达式底座（(a+b).c / new X().c）→
+    // this 首段 → 纯调用形态（直接/静态/裸名实例调用）→ Colon 归口（S11）→
+    // 泛化链折叠：首段按值解析（占位/局部/参数/裸名字段）→ 首段后缀折叠
+    // （索引访问 getAtIndex/setAtIndex；值调用归口）→ 实例链上色；
+    // 首段非值且首个后缀是 Call → 调用结果底座（foo().c / foo()[0] /
+    // foo()?.bar）；否则容器路径（末段成员后缀折叠，Type.staticField[0] /
+    // ns.field[i]；中间段带后缀保持归口）。自旧 BindSession.BindPath 等
+    // 迁移；S8c 解开原表达式底座/索引/后缀链的 S8 归口拦截。
 
     // 路径表达式值绑定（分派器入口；forAssignment = false）
     internal sealed class PathVisitor : ExpressionVisitor<PathVisitor, BindContext>
@@ -49,12 +54,6 @@ namespace LatteCompiler
         public static BoundExpression? BindPath(PathExpressionASTNode node, Scope scope,
             BindContext ctx, BindEnvironment env, bool forAssignment)
         {
-            // 表达式底座（(a).b / foo().b / 字面量.foo）：实例成员链归 S8
-            if (node.Head.Expression != null)
-            {
-                env.Error(node.Span, "P3: instance member access is not supported yet (S8)");
-                return null;
-            }
             // 泛型实参（首段/段）：使用侧归 S9
             if (node.Head.GenericArguments.Count > 0
                 || node.Segments.Any(s => s.GenericArguments.Count > 0))
@@ -62,10 +61,15 @@ namespace LatteCompiler
                 env.Error(node.Span, "P3: generic type arguments are not supported yet (S9)");
                 return null;
             }
+            // 表达式底座（S8c：(a+b).c / new X().c / 字面量.foo）
+            if (node.Head.Expression != null)
+            {
+                return BindExpressionBasePath(node, scope, ctx, env, forAssignment);
+            }
             // this 首段（S7c-2）：值位置 this 或实例链起点
             if (node.Head.Name == "this")
             {
-                return BindThisPath(node, scope, ctx, env);
+                return BindThisPath(node, scope, ctx, env, forAssignment);
             }
             // 纯调用形态 → 直接调用（静态/全局）或实例调用（首段为值）
             if (CallForm.TryGet(node, out var calleeSegments, out var callArguments))
@@ -88,145 +92,156 @@ namespace LatteCompiler
                 return new BoundCallExpression(node, binding.Method, binding.Arguments,
                     (TypeSymbol)binding.Method.ReturnType!);
             }
-            // 非调用形态的后缀与特殊连接符：逐一归口诊断
-            if (node.Head.Suffixes.Any(s => s.Kind == PathSuffixKind.Index)
-                || node.Segments.Any(s => s.Suffixes.Any(x => x.Kind == PathSuffixKind.Index)))
-            {
-                env.Error(node.Span, "P3: index access is not supported yet (S8)");
-                return null;
-            }
+            // wrapper 段（:连接符）归口 S11
             if (node.Segments.Any(s => s.Connector == PathConnector.Colon))
             {
                 env.Error(node.Span, "P3: wrapper access is not supported yet (S11)");
                 return null;
             }
-            // S7f：含 SafeDot 段的路径走实例链（BindInstanceChain 的 SafeDot
-            // 分派）；首段带后缀（foo()?.bar 等表达式结果底座）仍归 S8
-            bool hasSafeDot = node.Segments.Any(s => s.Connector == PathConnector.SafeDot);
-            if (hasSafeDot && node.Head.Suffixes.Count > 0)
+            // ===== S8c 泛化链折叠：首段按值解析 → 首段后缀折叠 → 实例链 =====
+            // 首段按值解析（switch 占位/局部/参数/裸名字段——单段与多段共用；
+            // 局部/参数的 unassigned 检查与收窄包装仅在读语义（!forAssignment）
+            // ——赋值目标位置是定义而非读取）
+            var headName = node.Head.Name!;
+            BoundExpression? headValue = null;
+            if (headName == "_" && ctx.SwitchSelectors.Count > 0)
             {
-                env.Error(node.Span, "P3: instance member access is not supported yet (S8)");
-                return null;
-            }
-            if (!hasSafeDot
-                && (node.Head.Suffixes.Count > 0 || node.Segments.Any(s => s.Suffixes.Count > 0)))
-            {
-                env.Error(node.Span, "P3: instance member access is not supported yet (S8)");
-                return null;
-            }
-            // 纯值路径：单段查找序 局部 → 参数 → 命名空间链字段 → 通配 import；
-            // 多段 = 容器 + 末段成员
-            if (node.Segments.Count == 0)
-            {
-                var name = node.Head.Name!;
                 // switch pattern 占位（S7d）：占位栈非空时 _ 命中栈顶
                 // selector（嵌套 switch 逐层向内；栈空 = _ 不在 pattern
                 // 上下文，落普通查找报未定义名）
-                if (name == "_" && ctx.SwitchSelectors.Count > 0)
-                {
-                    var placeholderSelector = ctx.SwitchSelectors.Peek();
-                    var placeholder = new BoundSwitchPlaceholderExpression(node,
-                        placeholderSelector, placeholderSelector.Type);
-                    // S8b（Q4）：分支体入口已把 selector 键收窄（`(_ is T)`
-                    // 分支）——占位引用同收窄
-                    return ApplyNarrowing(node, placeholder,
-                        ConditionFactsExtractor.TryKeyOf(placeholderSelector, ctx), ctx);
-                }
-                var local = scope.Lookup(name);
-                if (local != null)
-                {
-                    if (!forAssignment && !ctx.Flow.IsAssigned(local))
-                    {
-                        env.Error(node.Span, $"Use of unassigned local variable '{name}'");
-                    }
-                    // 源码局部 Type 恒非空（null 是 P4a 合成 .breakid
-                    // 局部的特例，P3 不可能遇到）
-                    var localReference = new BoundValueReferenceExpression(node, local,
-                        local.Type!);
-                    // S8b：收窄区域内包 SmartCast（赋值目标位置不收窄——
-                    // forAssignment 是定义而非读取）
-                    return forAssignment
-                        ? (BoundExpression)localReference
-                        : ApplyNarrowing(node, localReference, NarrowKey.ForSymbol(local), ctx);
-                }
-                var parameter = ctx.Method.Parameters.FirstOrDefault(p => p.Name == name);
-                if (parameter != null)
-                {
-                    if (parameter.Type is not TypeSymbol paramType)
-                    {
-                        env.Error(node.Span, "P3: generic type parameters are not supported yet (S9)");
-                        return null;
-                    }
-                    var paramReference = new BoundValueReferenceExpression(node, parameter,
-                        paramType);
-                    return forAssignment
-                        ? (BoundExpression)paramReference
-                        : ApplyNarrowing(node, paramReference, NarrowKey.ForSymbol(parameter), ctx);
-                }
-                var field = MemberLookup.FindField(name, ctx, env);
-                if (field != null)
-                {
-                    return BindFieldReference(node, field, ctx, env);
-                }
-                env.Error(node.Span, $"Undefined name: '{name}'");
-                return null;
+                var placeholderSelector = ctx.SwitchSelectors.Peek();
+                var placeholder = new BoundSwitchPlaceholderExpression(node,
+                    placeholderSelector, placeholderSelector.Type);
+                // S8b（Q4）：分支体入口已把 selector 键收窄（`(_ is T)`
+                // 分支）——占位引用同收窄
+                headValue = ApplyNarrowing(node, placeholder,
+                    ConditionFactsExtractor.TryKeyOf(placeholderSelector, ctx), ctx);
             }
-            // 多段：首段命中局部/参数 → 实例链上色（S7c-2）；
-            // 否则前 N-1 段解析为容器，末段查成员
-            var segments = PathSegmentNames(node);
-            var headLocal = scope.Lookup(segments[0]);
-            var headParameter = headLocal == null
-                ? ctx.Method.Parameters.FirstOrDefault(p => p.Name == segments[0]) : null;
-            if (headLocal != null || headParameter != null)
+            else
             {
-                BoundExpression headReceiver;
+                var headLocal = scope.Lookup(headName);
                 if (headLocal != null)
                 {
                     if (!forAssignment && !ctx.Flow.IsAssigned(headLocal))
                     {
-                        env.Error(node.Span,
-                            $"Use of unassigned local variable '{segments[0]}'");
+                        env.Error(node.Span, $"Use of unassigned local variable '{headName}'");
                     }
-                    // 源码局部 Type 恒非空（同单段分支）
-                    headReceiver = new BoundValueReferenceExpression(node, headLocal,
+                    // 源码局部 Type 恒非空（null 是 P4a 合成 .breakid
+                    // 局部的特例，P3 不可能遇到）
+                    headValue = new BoundValueReferenceExpression(node, headLocal,
                         headLocal.Type!);
+                    // S8b：收窄区域内包 SmartCast
                     if (!forAssignment)
                     {
-                        // S8b：实例链头收窄（a.b.c 的 a 在收窄区域内）
-                        headReceiver = ApplyNarrowing(node, headReceiver,
+                        headValue = ApplyNarrowing(node, headValue,
                             NarrowKey.ForSymbol(headLocal), ctx);
                     }
                 }
                 else
                 {
-                    if (headParameter!.Type is not TypeSymbol headParamType)
+                    var headParameter = ctx.Method.Parameters.FirstOrDefault(
+                        p => p.Name == headName);
+                    if (headParameter != null)
                     {
-                        env.Error(node.Span,
-                            "P3: generic type parameters are not supported yet (S9)");
-                        return null;
+                        if (headParameter.Type is not TypeSymbol headParamType)
+                        {
+                            env.Error(node.Span,
+                                "P3: generic type parameters are not supported yet (S9)");
+                            return null;
+                        }
+                        headValue = new BoundValueReferenceExpression(node, headParameter,
+                            headParamType);
+                        if (!forAssignment)
+                        {
+                            headValue = ApplyNarrowing(node, headValue,
+                                NarrowKey.ForSymbol(headParameter), ctx);
+                        }
                     }
-                    headReceiver = new BoundValueReferenceExpression(node, headParameter,
-                        headParamType);
-                    if (!forAssignment)
+                    else
                     {
-                        headReceiver = ApplyNarrowing(node, headReceiver,
-                            NarrowKey.ForSymbol(headParameter), ctx);
+                        // 裸名字段（宿主成员/命名空间链/通配 import；实例字段
+                        // 在实例上下文补 this 由 BindFieldReference 承担）
+                        var headField = MemberLookup.FindField(headName, ctx, env);
+                        if (headField != null)
+                        {
+                            headValue = BindFieldReference(node, headField, ctx, env);
+                            if (headValue == null) return null;
+                        }
                     }
                 }
-                return BindInstanceChain(node, headReceiver, node.Segments, scope, ctx, env);
             }
+            if (headValue != null)
+            {
+                // 首段为值：折叠首段后缀（索引写模式仅限全路径最后一步），
+                // 再交实例链上色
+                var folded = FoldSuffixes(node, headValue, node.Head.Suffixes, 0,
+                    forAssignment && node.Segments.Count == 0, scope, ctx, env);
+                if (folded == null) return null;
+                return BindInstanceChain(node, folded, node.Segments, scope, ctx, env,
+                    forAssignment);
+            }
+            // 首段非值且首个后缀是 Call → 调用结果底座（S8c：foo().c /
+            // foo()[0] / foo()?.bar）——先按单段直接调用绑定，再折叠其余
+            // 后缀、交实例链
+            if (node.Head.Suffixes.Count > 0
+                && node.Head.Suffixes[0].Kind == PathSuffixKind.Call)
+            {
+                var callBase = CallFacility.BindCall(node, new List<string> { headName },
+                    node.Head.Suffixes[0].Arguments!, scope, ctx, env);
+                if (callBase == null) return null;
+                if (callBase.IsVoid)
+                {
+                    env.Error(node.Span, $"Method '{callBase.Method.Name}' has no result (void) " +
+                        "and cannot be used as a value");
+                    return null;
+                }
+                BoundExpression callValue = callBase.Receiver != null
+                    ? new BoundInstanceCallExpression(node, callBase.Receiver, callBase.Method,
+                        callBase.Arguments, (TypeSymbol)callBase.Method.ReturnType!)
+                    : new BoundCallExpression(node, callBase.Method, callBase.Arguments,
+                        (TypeSymbol)callBase.Method.ReturnType!);
+                var foldedCall = FoldSuffixes(node, callValue, node.Head.Suffixes, 1,
+                    forAssignment && node.Segments.Count == 0, scope, ctx, env);
+                if (foldedCall == null) return null;
+                return BindInstanceChain(node, foldedCall, node.Segments, scope, ctx, env,
+                    forAssignment);
+            }
+            // 单段未命中：纯名字或索引非值（ns[0] 形态——命名空间/类型
+            // 不作为值参与索引），同归未定义名
+            if (node.Segments.Count == 0)
+            {
+                env.Error(node.Span, $"Undefined name: '{headName}'");
+                return null;
+            }
+            // 容器路径（多段）：首段或中间段带后缀保持归口（容器成员链上
+            // 的后缀折叠未支持）；末段成员字段解析后折叠末段后缀
+            // （S8c：Type.staticField[0] / ns.field[i]）
+            if (node.Head.Suffixes.Count > 0
+                || node.Segments.Take(node.Segments.Count - 1).Any(s => s.Suffixes.Count > 0))
+            {
+                env.Error(node.Span, "P3: instance member access is not supported yet (S8)");
+                return null;
+            }
+            var segments = PathSegmentNames(node);
             var container = MemberLookup.ResolveContainer(segments, node.Span, ctx, env);
             if (container == null) return null;
             var member = MemberLookup.FindMember(container, segments[^1]);
             var pathText = string.Join(".", segments);
-            return member switch
+            switch (member)
             {
-                FieldSymbol memberField => BindFieldReference(node, memberField, ctx, env),
-                MethodSymbol => ErrorAndNull(env, node.Span,
-                    $"Method '{pathText}' cannot be used as a value"),
-                null => ErrorAndNull(env, node.Span, $"Undefined name: '{pathText}'"),
-                _ => ErrorAndNull(env, node.Span, $"'{pathText}' cannot be used as a value"),
-            };
+                case FieldSymbol memberField:
+                    var fieldValue = BindFieldReference(node, memberField, ctx, env);
+                    if (fieldValue == null) return null;
+                    return FoldSuffixes(node, fieldValue, node.Segments[^1].Suffixes, 0,
+                        forAssignment, scope, ctx, env);
+                case MethodSymbol:
+                    return ErrorAndNull(env, node.Span,
+                        $"Method '{pathText}' cannot be used as a value");
+                case null:
+                    return ErrorAndNull(env, node.Span, $"Undefined name: '{pathText}'");
+                default:
+                    return ErrorAndNull(env, node.Span, $"'{pathText}' cannot be used as a value");
+            }
         }
 
         // 路径的段名序列（首段名 + 各段名）；调用方保证无表达式底座
@@ -283,38 +298,55 @@ namespace LatteCompiler
 
         // this 路径（S7c-2，SYNTAX §9）：值位置 this（Type = 宿主类型，
         // method.Owner 统一承载——普通成员为声明类型，ext 方法为目标类型）
-        // 或实例链起点。静态上下文（static 方法/全局函数）不可用
+        // 或实例链起点；S8c 起首段后缀折叠（this[i] / this[i] = x 索引
+        // 访问；this(...) 值调用未支持，由 FoldSuffixes 归口）。静态上下文
+        // （static 方法/全局函数）不可用
         private static BoundExpression? BindThisPath(PathExpressionASTNode node, Scope scope,
-            BindContext ctx, BindEnvironment env)
+            BindContext ctx, BindEnvironment env, bool forAssignment)
         {
             if (ctx.Method.Owner == null || ctx.Method.IsStatic)
             {
                 env.Error(node.Span, "P3: 'this' is not available in a static context");
                 return null;
             }
-            // this 自身的后缀（this(...) / this[...]）：无意义形态
-            if (node.Head.Suffixes.Count > 0)
-            {
-                env.Error(node.Span, "P3: instance member access is not supported yet (S8)");
-                return null;
-            }
             BoundExpression receiver = new BoundThisExpression(node, ctx.Method.Owner);
+            var folded = FoldSuffixes(node, receiver, node.Head.Suffixes, 0,
+                forAssignment && node.Segments.Count == 0, scope, ctx, env);
+            if (folded == null) return null;
             if (node.Segments.Count == 0)
             {
-                return receiver;
+                return folded;
             }
-            return BindInstanceChain(node, receiver, node.Segments, scope, ctx, env);
+            return BindInstanceChain(node, folded, node.Segments, scope, ctx, env, forAssignment);
+        }
+
+        // 表达式底座路径（S8c）：(a+b).c / new X().c / 字面量.foo——底座
+        // 表达式先绑定（内部路径经 PathVisitor 递归上色），再折叠首段
+        // 后缀、交实例链
+        private static BoundExpression? BindExpressionBasePath(PathExpressionASTNode node,
+            Scope scope, BindContext ctx, BindEnvironment env, bool forAssignment)
+        {
+            var receiver = ExpressionDispatcher.Visit(node.Head.Expression!.Expression, scope,
+                ctx, env);
+            if (receiver == null) return null;
+            var folded = FoldSuffixes(node, receiver, node.Head.Suffixes, 0,
+                forAssignment && node.Segments.Count == 0, scope, ctx, env);
+            if (folded == null) return null;
+            return BindInstanceChain(node, folded, node.Segments, scope, ctx, env, forAssignment);
         }
 
         // 实例成员链上色：首段已绑出 receiver，段序列沿 receiver 静态
-        // 类型逐段上色——段带恰好一个 Call 后缀 → 实例方法调用；无后缀
-        // → 实例字段访问；其余（Index/多后缀）归口 S8。返回链末端表达式
+        // 类型逐段上色（BindInstanceSegment 承担段后缀折叠：Call → 实例
+        // 方法调用、Index → 字段后索引、无后缀 → 字段；S8c）。
+        // forAssignment 仅传给最末段的最末后缀作索引写模式判定。
+        // 返回链末端表达式
         private static BoundExpression? BindInstanceChain(ASTNode node, BoundExpression receiver,
             IReadOnlyList<PathSegmentASTNode> chainSegments, Scope scope, BindContext ctx,
-            BindEnvironment env)
+            BindEnvironment env, bool forAssignment)
         {
-            foreach (var segment in chainSegments)
+            for (int i = 0; i < chainSegments.Count; i++)
             {
+                var segment = chainSegments[i];
                 // 毒化静默：receiver 已失败时不再报次生错误
                 if (receiver.Type is ErrorTypeSymbol) return null;
                 BoundExpression? next;
@@ -338,7 +370,8 @@ namespace LatteCompiler
                             $"'{BoundAnalysis.TypeDisplay(receiver.Type)}'; use '?.' for safe access");
                         return null;
                     }
-                    next = BindInstanceSegment(segment, receiver, scope, ctx, env);
+                    next = BindInstanceSegment(segment, receiver, scope, ctx, env,
+                        forAssignment && i == chainSegments.Count - 1);
                     if (next == null) return null;
                 }
                 if (next == null) return null;
@@ -347,16 +380,20 @@ namespace LatteCompiler
             return receiver;
         }
 
-        // 普通实例段（无后缀 → 字段；恰一个 Call 后缀 → 实例方法调用）
+        // 普通实例段（S8c 段后缀折叠）：无后缀 → 字段；首个后缀 Call →
+        // 实例方法调用（消费该后缀）、Index → 字段访问（段名上色，后缀
+        // 全部待折叠）；其余后缀按序折叠（.foo()[0] / .foo[0]）
         private static BoundExpression? BindInstanceSegment(PathSegmentASTNode segment,
-            BoundExpression receiver, Scope scope, BindContext ctx, BindEnvironment env)
+            BoundExpression receiver, Scope scope, BindContext ctx, BindEnvironment env,
+            bool forAssignment)
         {
             if (segment.Suffixes.Count == 0)
             {
                 return BindInstanceFieldAccess(segment, receiver, segment.Name, env, ctx);
             }
-            if (segment.Suffixes.Count == 1
-                && segment.Suffixes[0].Kind == PathSuffixKind.Call)
+            BoundExpression value;
+            int consumed;
+            if (segment.Suffixes[0].Kind == PathSuffixKind.Call)
             {
                 var call = CallFacility.BindInstanceMethodCall(segment, receiver, segment.Name,
                     segment.Suffixes[0].Arguments!, scope, ctx, env);
@@ -367,12 +404,135 @@ namespace LatteCompiler
                         "(void) and cannot be used as a value");
                     return null;
                 }
-                return new BoundInstanceCallExpression(segment, receiver,
+                value = new BoundInstanceCallExpression(segment, receiver,
                     call.Method, call.Arguments, (TypeSymbol)call.Method.ReturnType!);
+                consumed = 1;
             }
-            env.Error(segment.Span,
-                "P3: instance member access is not supported yet (S8)");
-            return null;
+            else
+            {
+                var field = BindInstanceFieldAccess(segment, receiver, segment.Name, env, ctx);
+                if (field == null) return null;
+                value = field;
+                consumed = 0;
+            }
+            return FoldSuffixes(segment, value, segment.Suffixes, consumed, forAssignment, scope,
+                ctx, env);
+        }
+
+        // 值上的后缀折叠（S8c）：按序折叠——Index 后缀绑索引访问（forWrite
+        // 且是全路径最后一个后缀时为写模式 setAtIndex，否则读模式
+        // getAtIndex）；Call 后缀是值调用/函数值形态（未支持）
+        private static BoundExpression? FoldSuffixes(ASTNode node, BoundExpression receiver,
+            IReadOnlyList<PathSuffixASTNode> suffixes, int startIndex, bool forWrite,
+            Scope scope, BindContext ctx, BindEnvironment env)
+        {
+            for (int i = startIndex; i < suffixes.Count; i++)
+            {
+                var suffix = suffixes[i];
+                if (suffix.Kind == PathSuffixKind.Call)
+                {
+                    env.Error(suffix.Span, "P3: calling a value is not supported yet (S8)");
+                    return null;
+                }
+                var next = BindIndexAccess(suffix, receiver, suffix,
+                    forWrite && i == suffixes.Count - 1, scope, ctx, env);
+                if (next == null) return null;
+                receiver = next;
+            }
+            return receiver;
+        }
+
+        // 索引访问绑定（S8c，SYNTAX §13.2）：读模式绑 getAtIndex(index)
+        // （恰 1 参数，Type = 返回类型）；写模式（赋值 place 全路径最后一
+        // 步）绑 setAtIndex(index, element)（恰 2 参数，Type = 元素形参
+        // 类型）。§13.2 签名固定单 TIndex——多参数索引非法；具名实参与
+        // 普通调用同规则（读模式经 BindArguments 归位，诊断自然产生）
+        private static BoundExpression? BindIndexAccess(ASTNode node, BoundExpression receiver,
+            PathSuffixASTNode suffix, bool forWrite, Scope scope, BindContext ctx,
+            BindEnvironment env)
+        {
+            // 毒化静默：receiver 已失败时不再报次生错误
+            if (receiver.Type is ErrorTypeSymbol) return null;
+            var display = BoundAnalysis.TypeDisplay(receiver.Type);
+            if (receiver.Type.ConstructedFrom == env.B.NullableDefinition)
+            {
+                env.Error(node.Span, $"Cannot index nullable type '{display}'");
+                return null;
+            }
+            var name = forWrite ? "setAtIndex" : "getAtIndex";
+            var candidates = SymbolLookup.FindInstanceOperators(receiver.Type, name,
+                forWrite ? 2 : 1);
+            if (candidates.Count == 0)
+            {
+                env.Error(node.Span,
+                    $"Type '{display}' does not define an index operator ('{name}')");
+                return null;
+            }
+            if (candidates.Count > 1)
+            {
+                env.Error(node.Span,
+                    $"P3: overload resolution for '{name}' is not supported yet (S8)");
+                return null;
+            }
+            var op = candidates[0];
+            if (!forWrite)
+            {
+                // 读模式：实参绑定复用调用设施（多参数/具名/缺失诊断自然产生）
+                if (op.ReturnType == null)
+                {
+                    env.Error(node.Span, $"Method '{op.Name}' has no result (void) " +
+                        "and cannot be used as a value");
+                    return null;
+                }
+                if (SymbolLookup.ContainsGenericParameter(op.ReturnType))
+                {
+                    env.Error(node.Span, "P3: generic type parameters are not supported yet (S9)");
+                    return null;
+                }
+                var boundArguments = CallFacility.BindArguments(op, suffix.Arguments, scope,
+                    node.Span, ctx, env);
+                if (boundArguments == null) return null;
+                return new BoundIndexExpression(node, receiver, boundArguments[0], op,
+                    (TypeSymbol)op.ReturnType);
+            }
+            // 写模式：恰一个索引实参（多参数索引非法的定稿诊断）
+            if (suffix.Arguments.Count != 1)
+            {
+                env.Error(node.Span, $"Index access on '{display}' expects exactly one " +
+                    $"index argument, got {suffix.Arguments.Count}");
+                return null;
+            }
+            var argument = suffix.Arguments[0];
+            var indexParameter = op.Parameters[0];
+            if (argument.Name != null && argument.Name != indexParameter.Name)
+            {
+                env.Error(argument.Span,
+                    $"'setAtIndex' has no parameter named '{argument.Name}'");
+                return null;
+            }
+            if (indexParameter.Type is not TypeSymbol indexType
+                || SymbolLookup.ContainsGenericParameter(indexType))
+            {
+                env.Error(node.Span, "P3: generic type parameters are not supported yet (S9)");
+                return null;
+            }
+            var index = ExpressionDispatcher.Visit(argument.Value.Expression, scope, ctx, env,
+                indexType);
+            if (index == null) return null;
+            if (!SymbolLookup.IsAssignable(index.Type, indexType, env))
+            {
+                env.Error(argument.Value.Span ?? argument.Span,
+                    $"Cannot pass '{BoundAnalysis.TypeDisplay(index.Type)}' as " +
+                    $"'{BoundAnalysis.TypeDisplay(indexType)}'");
+                return null;
+            }
+            if (op.Parameters[1].Type is not TypeSymbol elementType
+                || SymbolLookup.ContainsGenericParameter(elementType))
+            {
+                env.Error(node.Span, "P3: generic type parameters are not supported yet (S9)");
+                return null;
+            }
+            return new BoundIndexExpression(node, receiver, index, op, elementType);
         }
 
         // 安全访问段（S7f，SYNTAX §3.4）：receiver 必须 Nullable<T>；段在
@@ -389,7 +549,9 @@ namespace LatteCompiler
                 return null;
             }
             var placeholder = new BoundSafeAccessReceiverExpression(segment, element);
-            var access = BindInstanceSegment(segment, placeholder, scope, ctx, env);
+            // `?.` 结果是值不是赋值 place——段内折叠恒为读语义
+            var access = BindInstanceSegment(segment, placeholder, scope, ctx, env,
+                forAssignment: false);
             if (access == null) return null;
             var resultType = access.Type.ConstructedFrom == env.B.NullableDefinition
                 ? access.Type

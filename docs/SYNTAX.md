@@ -1388,6 +1388,10 @@ pub operator plus\<TAnother extends Addable>(another: TAnother): MyType { ... }
 | `[]` 读取 | `getAtIndex` | `operator getAtIndex\<TElement, TIndex>(index: TIndex): TElement` |
 | `[]` 赋值 | `setAtIndex` | `operator setAtIndex\<TElement, TIndex>(index: TIndex, element: TElement)` |
 
+- 索引恰好接收一个实参——多参数索引 `a[i, j]` 是编译错误（M59 定稿：签名固定单 `TIndex` 参数）。
+- 具名索引实参与普通调用同规则（按形参名归位）。
+- `a[i] = x` 映射 `setAtIndex`；复合赋值（`a[i] += x`）按 §13.2 通用规则自动推导。
+
 #### 枚举运算符
 
 | 运算符 | 名称 | 签名 |

@@ -2,7 +2,8 @@ using System.Collections.Generic;
 
 namespace LatteCompiler.Bil
 {
-    // §13 值/变量/字段/索引指令与 §14 构造、§15 调用指令（M57 强类型化）。
+    // §13 值/变量/字段/索引指令与 §14 构造、§15 调用指令（M57 强类型化；
+    // S8c 增补 §13.6 set.array——get.array 模型自 M57 已存在）。
     // 规范的 asymmetric 操作数序由构造签名固定（如 §13.3 读取是
     // OBJECT TARGET 序、写入是 SOURCE OBJECT 序）。
 
@@ -155,6 +156,26 @@ namespace LatteCompiler.Bil
         internal override string Opcode => "get.array";
         internal override IReadOnlyList<BilOperand> Operands =>
             new BilOperand[] { Array, Index, Target };
+    }
+
+    // §13.6 索引写入：set.array COLLECTION INDEX ELEMENT
+    public sealed class SetArrayInstruction : BilInstruction
+    {
+        public BilVariableOperand Collection { get; }
+        public BilVariableOperand Index { get; }
+        public BilVariableOperand Element { get; }
+
+        public SetArrayInstruction(BilVariableOperand collection, BilVariableOperand index,
+            BilVariableOperand element)
+        {
+            Collection = collection;
+            Index = index;
+            Element = element;
+        }
+
+        internal override string Opcode => "set.array";
+        internal override IReadOnlyList<BilOperand> Operands =>
+            new BilOperand[] { Collection, Index, Element };
     }
 
     // §14.1 静态普通构造：new type(TYPE) TARGET [ARGS]

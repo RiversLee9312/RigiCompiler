@@ -3,12 +3,13 @@ using System.Collections.Generic;
 namespace LatteCompiler
 {
     // Bound 表达式节点（S5 最小集 + S7b 首批 + S7c-2 实例成员 + S7d switch
-    // + S7e cast/seq + S7f 安全访问/空值回退 + S8a 类型谓词/typeOf，
-    // SEMANTIC_ROADMAP）：
+    // + S7e cast/seq + S7f 安全访问/空值回退 + S8a 类型谓词/typeOf
+    // + S8c 索引访问，SEMANTIC_ROADMAP）：
     // 字面量 / 值引用（局部变量与参数）/ 全局字段引用 / 二元与一元 intrinsic 运算 /
     // 直接调用（无重载）/ new 构造 / if 表达式 / 复合赋值 /
     // this / 实例方法调用 / 实例字段访问 / switch 表达式 / cast / seq 表达式 /
-    // 安全访问 `?.`（含占位叶子）/ if? 空值回退 / is·supers·with / typeOf。
+    // 安全访问 `?.`（含占位叶子）/ if? 空值回退 / is·supers·with / typeOf /
+    // 索引访问（getAtIndex·setAtIndex）。
     // 字面量值不冗余存储——经 Syntax（LiteralExpressionASTNode.Literal）取。
 
     // 字面量（整/浮点/字符串/字符/bool/null；Type 由 P3 按字面量种类与上下文定型）
@@ -189,6 +190,25 @@ namespace LatteCompiler
         {
             Receiver = receiver;
             Field = field;
+        }
+    }
+
+    // 索引访问（S8c，SYNTAX §13.2）：读形态由 getAtIndex 绑定（Type = 返回
+    // 类型）；赋值 place 形态由 setAtIndex 绑定（Type = 元素形参类型）。
+    // Operator 符号供测试断言与调试——P4 发射不需要它（BIL §13.6
+    // get.array/set.array 不带符号操作数）
+    public sealed class BoundIndexExpression : BoundExpression
+    {
+        public BoundExpression Receiver { get; }
+        public BoundExpression Index { get; }
+        public MethodSymbol Operator { get; }
+
+        public BoundIndexExpression(ASTNode syntax, BoundExpression receiver,
+            BoundExpression index, MethodSymbol op, TypeSymbol type) : base(syntax, type)
+        {
+            Receiver = receiver;
+            Index = index;
+            Operator = op;
         }
     }
 

@@ -2,7 +2,8 @@ namespace LatteCompiler
 {
     // 共享符号查询设施（自旧 BindSession 静态/实例辅助原样迁移，行为不变）：
     // 实例成员沿 BaseType 链查找、泛型字段最小替换（S7f/M52，S9 前置）、
-    // 可赋值性判定。全部为无副作用纯查询，各簇 visitor 共用。
+    // 实例 operator 按名与参数个数查找（S8c 索引访问）、可赋值性判定。
+    // 全部为无副作用纯查询，各簇 visitor 共用。
     internal static class SymbolLookup
     {
         // 构造类型的泛型字段最小替换（M52，S9 前置）：字段声明类型是泛型
@@ -59,18 +60,28 @@ namespace LatteCompiler
             return null;
         }
 
-        // 实例 operator 查找（for 头专用）：receiver 静态类型沿
-        // BaseType 链（ext 注册 operator 已在目标类型成员表）
-        public static MethodSymbol? FindInstanceOperator(TypeSymbol type, string name)
+        // 实例 operator 查找（S8c 索引访问 getAtIndex/setAtIndex）：receiver
+        // 静态类型沿 BaseType 链按名字与参数个数过滤（ext 注册 operator 已在
+        // 目标类型成员表；构造类型回退泛型定义，同 FindInstanceMethods）
+        public static List<MethodSymbol> FindInstanceOperators(TypeSymbol type, string name,
+            int parameterCount)
         {
+            var result = new List<MethodSymbol>();
             for (var t = type; t != null; t = t.BaseType)
             {
-                var hit = t.Methods.FirstOrDefault(m => m.Name == name
+                var owner = t.ConstructedFrom ?? t;
+                result.AddRange(owner.Methods.Where(m => m.Name == name
                     && !m.IsStatic && m.Kind == MethodKind.Operator
-                    && m.Parameters.Count == 1);
-                if (hit != null) return hit;
+                    && m.Parameters.Count == parameterCount));
             }
-            return null;
+            return result;
+        }
+
+        // 实例 operator 查找（for 头专用）：首个 1 参数命中
+        // （经 FindInstanceOperators 实现，行为不变）
+        public static MethodSymbol? FindInstanceOperator(TypeSymbol type, string name)
+        {
+            return FindInstanceOperators(type, name, 1).FirstOrDefault();
         }
 
         // 类型含未替换泛型参数（自身是泛型参数，或构造类型的实参递归

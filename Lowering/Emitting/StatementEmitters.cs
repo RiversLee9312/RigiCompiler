@@ -3,7 +3,7 @@ using LatteCompiler.Bil;
 
 namespace LatteCompiler
 {
-    // 语句发射（S6–S7e；BIL §13/§15/§16）。自旧 EmitSession.EmitStatement
+    // 语句发射（S6–S8c；BIL §13/§15/§16）。自旧 EmitSession.EmitStatement
     // 各分支迁移，行为不变——无产物（Unit），副作用填充 target 指令流；
     // 分支/循环/switch/seq/try 的子块追加进 ctx.Function.Blocks。
     // M57 起指令为强类型构造（操作数序由构造签名固定）；值发射产物为
@@ -29,7 +29,8 @@ namespace LatteCompiler
     }
 
     // 赋值：值物化后按目标形态发射——局部 set.var（§13.2）/全局·static
-    // 字段 set.field.static（§13.4）/实例字段 set.field（§13.3）
+    // 字段 set.field.static（§13.4）/实例字段 set.field（§13.3）/
+    // 索引 set.array（§13.6，S8c）
     internal sealed class AssignmentEmitter : EmitVisitor<AssignmentEmitter, Unit>
     {
         protected override Unit VisitCore(LoweredNode node, BilBlock target, EmitContext ctx,
@@ -63,8 +64,20 @@ namespace LatteCompiler
                         BilOp.Field(CanonicalSymbolPrinter.PrintField(accessTarget.Field)))
                     { Origin = assignment });
                     break;
+                case LoweredIndexExpression indexTarget:
+                    // 索引写入（S8c，§13.6：set.array COLLECTION INDEX
+                    // ELEMENT——ELEMENT 已物化，COLLECTION/INDEX 随后
+                    // 求值，求值序仿 set.field）
+                    var indexReceiver = EmitValueDispatcher.Visit(indexTarget.Receiver, target,
+                        ctx, env);
+                    var indexOperand = EmitValueDispatcher.Visit(indexTarget.Index, target,
+                        ctx, env);
+                    target.Instructions.Add(new SetArrayInstruction(
+                        indexReceiver, indexOperand, assignedValue)
+                    { Origin = assignment });
+                    break;
                 default:
-                    // P3 已强制赋值目标为 place（值引用/字段引用）
+                    // P3 已强制赋值目标为 place（值引用/字段引用/索引访问）
                     throw new CompilerInternalException(
                         "非法赋值目标: " + assignment.Target.GetType().Name);
             }
