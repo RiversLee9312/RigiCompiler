@@ -35,17 +35,47 @@ namespace LatteCompiler
         // 类型成员表）。仅 Regular 实例方法——operator 不经点号调用
         // （for 头专用解析），init/getter/setter 归各自里程碑。
         // 构造类型的成员表在其泛型定义上（构造器不复制成员列表，
-        // S7f 起经 ConstructedFrom 回退——实参替换在使用侧特判）
+        // S7f 起经 ConstructedFrom 回退——实参替换在使用侧特判）。
+        // override 遮蔽（S8e，§9.2.1）：override 在分派语义上替换继承
+        // 成员——派生层已收集的 override 与基类层候选签名严格相等时
+        // 基类候选不进重载候选池（否则同签名候选歧义）
         public static List<MethodSymbol> FindInstanceMethods(TypeSymbol type, string name)
         {
             var result = new List<MethodSymbol>();
             for (var t = type; t != null; t = t.BaseType)
             {
                 var owner = t.ConstructedFrom ?? t;
-                result.AddRange(owner.Methods.Where(m => m.Name == name
-                    && !m.IsStatic && m.Kind == MethodKind.Regular));
+                foreach (var method in owner.Methods.Where(m => m.Name == name
+                    && !m.IsStatic && m.Kind == MethodKind.Regular))
+                {
+                    if (result.Any(derived => derived.IsOverride
+                        && SignaturesEqual(derived, method)))
+                    {
+                        continue;
+                    }
+                    result.Add(method);
+                }
             }
             return result;
+        }
+
+        // 签名严格相等（参数类型序列 + 返回类型，引用相等——OverrideChecker
+        // 同口径；构造宿主代入实参后的精确比较归 S9，比较失败退回不去重，
+        // 行为与遮蔽规则引入前一致）
+        private static bool SignaturesEqual(MethodSymbol a, MethodSymbol b)
+        {
+            if (a.Parameters.Count != b.Parameters.Count)
+            {
+                return false;
+            }
+            for (int i = 0; i < a.Parameters.Count; i++)
+            {
+                if (!ReferenceEquals(a.Parameters[i].Type, b.Parameters[i].Type))
+                {
+                    return false;
+                }
+            }
+            return ReferenceEquals(a.ReturnType, b.ReturnType);
         }
 
         // 实例字段查找：同链（仅实例字段；构造类型回退泛型定义，同 FindInstanceMethods）

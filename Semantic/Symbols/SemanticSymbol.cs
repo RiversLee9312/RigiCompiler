@@ -20,10 +20,15 @@ namespace LatteCompiler
         public string Name { get; }
 
         // 访问级别（SYNTAX §16；P2 由声明修饰符写入，默认 Private 与规范
-        // 默认一致；bootstrap 硬编码符号与 LocalSymbol 等不经声明修饰符，
-        // 恒为默认值）。供 BIL 发射（pub/priv 等修饰符投影）与后续
-        // 使用点访问控制（S8）消费。
+        // 默认一致；bootstrap 硬编码符号统一置 Public（BootstrapSymbols），
+        // LocalSymbol 等不经声明修饰符的恒为默认值）。供 BIL 发射（pub/priv
+        // 等修饰符投影）与使用点访问控制（S8e，AccessChecker）消费。
         public Accessibility Accessibility { get; internal set; } = Accessibility.Private;
+
+        // 声明所在源文件（S8e 访问控制「同文件可见」判定的文件身份；P2
+        // EntryCollector 由条目上下文写入，bootstrap/合成符号为 null——
+        // 访问判定对 null 保守放行）
+        public RootASTNode? SourceFile { get; internal set; }
 
         protected SemanticSymbol(string name)
         {
@@ -174,6 +179,9 @@ namespace LatteCompiler
             IntrinsicOps = new HashSet<BilIntrinsicOp>();
             ConstructedFrom = definition;
             TypeArguments = typeArguments;
+            // 访问控制两属性随定义传播（S8e：构造类型与定义同可见性/同声明文件）
+            Accessibility = definition.Accessibility;
+            SourceFile = definition.SourceFile;
         }
 
         // SYNTAX §3.1.1 共享安全类型白名单（「可离开单 Coroutine 所有权域」的完整集合）
@@ -212,6 +220,14 @@ namespace LatteCompiler
         public bool IsStatic { get; }
         // native 函数标记位（SYNTAX §4.6：无体原生函数；P1 建壳读修饰符即定）
         public bool IsNative { get; }
+        // 有无函数体（P1 建壳即定；OverrideChecker 判定接口默认实现与无体方法，
+        // 访问器符号恒 false——自动访问器体由 P3 合成，不经本标记）
+        public bool HasBody { get; internal set; }
+        // 继承多态三标记（SYNTAX §9.2/§9.2.1；P2 EntryCollector 读声明修饰符写入，
+        // OverrideChecker 消费；仅 Regular 成员方法可置位，其余 Kind 恒 false）
+        public bool IsOpen { get; internal set; }
+        public bool IsAbstract { get; internal set; }
+        public bool IsOverride { get; internal set; }
         // ext 限定名的目标路径原文（SYNTAX §4.4，如 "String"/"a.b.C"；
         // P1 拆名登记，P2 解析并注册到目标类型；非 ext 声明为 null）
         public string? ExtTargetPath { get; }
@@ -256,7 +272,8 @@ namespace LatteCompiler
     }
 
     // 含全局变量/常量（Owner 为 null、Namespace 承载命名空间）；
-    // backing/computed/ext 等区分属性随 P1/P2 需要增补
+    // backing/computed 由访问器三槽（Getter/Setter/HasBackingStorage，S8e）表达、
+    // ext 以 ExtTargetPath 区分
     public sealed class FieldSymbol : SemanticSymbol
     {
         // 宿主类型（构造即定；ext 成员由 P2 注册到目标类型时改写）
@@ -272,6 +289,15 @@ namespace LatteCompiler
         // 声明类型（P2 解析后填；SemanticSymbol：TypeSymbol 或
         // 泛型声明内部的 GenericParameterSymbol；无类型标注时留 null 归 P3 推断）
         public SemanticSymbol? FieldType { get; internal set; }
+        // 属性访问器（SYNTAX §9.4/§9.4.1，S8e；P1 收集创建，null = 无该访问器）。
+        // 读写使用点存在性与访问控制检查、访问器体绑定（value 别名）消费；
+        // 带访问器字段不收窄（smart cast）且不参与 BIL get.field/set.field 之外的形态
+        public MethodSymbol? Getter { get; internal set; }
+        public MethodSymbol? Setter { get; internal set; }
+        // 访问器 backing 形态标记（§9.4：仅在 Getter/Setter 任一非空时有意义）——
+        // true = 编译器生成 backing 存储（体内 value 别名；P4 发 backing 修饰），
+        // false = 计算属性（无存储，P4 发 computed 修饰）
+        public bool HasBackingStorage { get; internal set; }
         // 挂载的 wrapper 应用（声明顺序，外层在前；P2 解析填充）
         public List<TypeSymbol> AppliedWrappers { get; } = new List<TypeSymbol>();
 

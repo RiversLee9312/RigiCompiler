@@ -26,15 +26,15 @@ namespace LatteCompiler
             }
             foreach (var field in ns.Fields)
             {
-                env.Module.LocalSymbols.Add(new BilSimpleMemberDeclaration(
-                    field.IsStatic ? BilMemberKind.StaticField : BilMemberKind.Field,
-                    CanonicalSymbolPrinter.PrintField(field),
-                    new BilModifier[] { new BilAccessibilityModifier(MapAccessibility(field.Accessibility)) }));
+                env.Module.LocalSymbols.Add(EmitFieldDeclaration(field));
+                foreach (var accessor in EmitFieldAccessorDeclarations(field))
+                {
+                    env.Module.LocalSymbols.Add(accessor);
+                }
             }
             foreach (var method in ns.Methods)
             {
-                var declaration = EmitMethodDeclaration(method, env);
-                if (declaration != null) env.Module.LocalSymbols.Add(declaration);
+                env.Module.LocalSymbols.Add(EmitMethodDeclaration(method));
             }
         }
 
@@ -55,16 +55,12 @@ namespace LatteCompiler
                 foreach (var field in builtinType.Fields)
                 {
                     if (field.ExtTargetPath == null) continue;
-                    env.Module.LocalSymbols.Add(new BilSimpleMemberDeclaration(
-                        field.IsStatic ? BilMemberKind.StaticField : BilMemberKind.Field,
-                        CanonicalSymbolPrinter.PrintField(field),
-                        new BilModifier[] { new BilAccessibilityModifier(MapAccessibility(field.Accessibility)) }));
+                    env.Module.LocalSymbols.Add(EmitFieldDeclaration(field));
                 }
                 foreach (var method in builtinType.Methods)
                 {
                     if (method.ExtTargetPath == null) continue;
-                    var declaration = EmitMethodDeclaration(method, env);
-                    if (declaration != null) env.Module.LocalSymbols.Add(declaration);
+                    env.Module.LocalSymbols.Add(EmitMethodDeclaration(method));
                 }
             }
         }
@@ -106,36 +102,95 @@ namespace LatteCompiler
             }
             foreach (var field in type.Fields)
             {
-                declaration.Members.Add(new BilSimpleMemberDeclaration(
-                    field.IsStatic ? BilMemberKind.StaticField : BilMemberKind.Field,
-                    CanonicalSymbolPrinter.PrintField(field),
-                    new BilModifier[] { new BilAccessibilityModifier(MapAccessibility(field.Accessibility)) }));
+                declaration.Members.Add(EmitFieldDeclaration(field));
+                foreach (var accessor in EmitFieldAccessorDeclarations(field))
+                {
+                    declaration.Members.Add(accessor);
+                }
             }
             foreach (var method in type.Methods)
             {
-                var member = EmitMethodDeclaration(method, env);
-                if (member != null) declaration.Members.Add(member);
+                declaration.Members.Add(EmitMethodDeclaration(method));
             }
             return declaration;
         }
 
-        // 方法声明（§8.4）：类型成员与全局函数共形态；null 返回 = 已诊断跳过。
+        // 字段声明（§8.3）：类型成员/全局字段/内建 ext 字段共形态——访问级
+        // 全显式；带访问器字段追加 §8.3 表序的形态标记（backing/computed →
+        // readable → writable → compiler-generated）；无访问器字段输出与
+        // 此前逐字节一致（仅访问级一个修饰符）
+        private static BilSimpleMemberDeclaration EmitFieldDeclaration(FieldSymbol field)
+        {
+            var modifiers = new List<BilModifier>
+                { new BilAccessibilityModifier(MapAccessibility(field.Accessibility)) };
+            if (field.Getter != null || field.Setter != null)
+            {
+                // §9.4：backing 形态 = 编译器生成存储（backing + compiler-generated），
+                // 否则为计算属性（computed）；有 getter 则 readable、有 setter 则 writable
+                modifiers.Add(new BilKeywordModifier(
+                    field.HasBackingStorage ? BilKeyword.Backing : BilKeyword.Computed));
+                if (field.Getter != null) modifiers.Add(new BilKeywordModifier(BilKeyword.Readable));
+                if (field.Setter != null) modifiers.Add(new BilKeywordModifier(BilKeyword.Writable));
+                if (field.HasBackingStorage)
+                {
+                    modifiers.Add(new BilKeywordModifier(BilKeyword.CompilerGenerated));
+                }
+            }
+            return new BilSimpleMemberDeclaration(
+                field.IsStatic ? BilMemberKind.StaticField : BilMemberKind.Field,
+                CanonicalSymbolPrinter.PrintField(field),
+                modifiers);
+        }
+
+        // 字段访问器声明（§8.4，S8e）：由字段槽驱动（访问器符号不在容器
+        // Methods 表——P2 WrapperCheckers 注释同此约定），getter/setter 声明
+        // 按 get→set 顺序紧跟字段声明之后；canonical 走 PrintMethod
+        // （$[.static].get.名/$.set.名，无参数段），getter(FIELD)/
+        // setter(FIELD) 修饰符引用逻辑字段 canonical（§8.3：get.field/
+        // set.field 始终引用逻辑字段，故表达式/语句发射零改动）
+        private static IEnumerable<BilSimpleMemberDeclaration> EmitFieldAccessorDeclarations(
+            FieldSymbol field)
+        {
+            if (field.Getter != null) yield return EmitAccessorDeclaration(field.Getter, field);
+            if (field.Setter != null) yield return EmitAccessorDeclaration(field.Setter, field);
+        }
+
+        private static BilSimpleMemberDeclaration EmitAccessorDeclaration(MethodSymbol accessor,
+            FieldSymbol field)
+        {
+            var modifiers = new List<BilModifier>
+                { new BilAccessibilityModifier(MapAccessibility(accessor.Accessibility)) };
+            if (accessor.ExtTargetPath != null) modifiers.Add(new BilKeywordModifier(BilKeyword.Ext));
+            modifiers.Add(new BilAccessorModifier(
+                accessor.Kind == MethodKind.Getter ? BilAccessorKind.Getter : BilAccessorKind.Setter,
+                CanonicalSymbolPrinter.PrintField(field)));
+            return new BilSimpleMemberDeclaration(
+                accessor.IsStatic ? BilMemberKind.StaticMethod : BilMemberKind.Method,
+                CanonicalSymbolPrinter.PrintMethod(accessor),
+                modifiers);
+        }
+
+        // 方法声明（§8.4）：类型成员与全局函数共形态。
         // S7c-2 开闸 init/operator 与实例方法：init 走普通 canonical
         // （$init...@.void）+ init 修饰符；operator 走 $$名 canonical +
         // operator(名) 修饰符；ext 成员带 ext 修饰符（P2 注册后
-        // ExtTargetPath 保留为标记）；getter/setter 归 S8/S11 仍跳过
-        private static BilSimpleMemberDeclaration? EmitMethodDeclaration(MethodSymbol method,
-            EmitEnvironment env)
+        // ExtTargetPath 保留为标记）；S8e 补 override/abstract 关键字投影；
+        // getter/setter 不入容器 Methods 表，声明由字段槽驱动
+        // （EmitFieldAccessorDeclarations）
+        private static BilSimpleMemberDeclaration EmitMethodDeclaration(MethodSymbol method)
         {
             if (method.Kind is MethodKind.Getter or MethodKind.Setter)
             {
-                env.Error(null, $"P4: method kind not supported by minimal emission: " +
-                    $"{method.Kind} ({CanonicalSymbolPrinter.PrintMethod(method)})");
-                return null;
+                // 内部不变量：访问器符号只挂在 FieldSymbol.Getter/Setter 槽，
+                // 声明发射由字段槽驱动；径方法表到达此处即上游结构错误
+                throw new CompilerInternalException("访问器声明不应经方法表发射: " +
+                    CanonicalSymbolPrinter.PrintMethod(method));
             }
             var modifiers = new List<BilModifier>
                 { new BilAccessibilityModifier(MapAccessibility(method.Accessibility)) };
             if (method.ExtTargetPath != null) modifiers.Add(new BilKeywordModifier(BilKeyword.Ext));
+            if (method.IsOverride) modifiers.Add(new BilKeywordModifier(BilKeyword.Override));
+            if (method.IsAbstract) modifiers.Add(new BilKeywordModifier(BilKeyword.Abstract));
             if (method.Kind == MethodKind.Init) modifiers.Add(new BilKeywordModifier(BilKeyword.Init));
             if (method.Kind == MethodKind.Operator) modifiers.Add(new BilOperatorModifier(method.Name));
             // native 三件套（§8.4：symbol/lib 必须与 native 同时出现且各恰好一次）

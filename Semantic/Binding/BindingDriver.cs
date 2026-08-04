@@ -6,7 +6,7 @@ namespace LatteCompiler
     //
     // S8d 起分两阶段：①参数默认值预绑定（声明点作用域，先于一切函数体
     // 绑定——调用点填充时 callee 的默认值必已就绪，前向引用安全）；
-    // ②逐函数体绑定。
+    // ②逐函数体绑定（S8e 起含字段 getter/setter 访问器体）。
     internal sealed class BindingDriver
     {
         private readonly BindEnvironment env;
@@ -30,32 +30,36 @@ namespace LatteCompiler
                     if (parameter.DefaultValue != null) env.GetParameterDefault(parameter);
                 }
             });
-            // 阶段 2：逐函数体绑定
+            // 阶段 2：逐函数体绑定（含字段访问器体，S8e）
             WalkSkeleton((fn, symbol, fileCtx, owner) =>
             {
                 if (fn.Body == null) return;    // 抽象/接口方法无体
                 BindBody(fn, symbol, fileCtx, owner);
-            });
+            }, BindAccessorBodies);
             return bodies;
         }
 
-        // 声明骨架遍历（两阶段共用）：对每个可调用声明回调（符号/FileCtx/宿主齐备）
+        // 声明骨架遍历（两阶段共用）：对每个可调用声明回调（符号/FileCtx/宿主齐备）；
+        // visitAccessors 非空时对带访问器的变量声明回调（S8e——仅阶段 2 传入：
+        // 访问器符号的参数无默认值，阶段 1 无需触及）
         private void WalkSkeleton(
-            Action<CallableDeclarationASTNode, MethodSymbol, FileContext, TypeSymbol?> visit)
+            Action<CallableDeclarationASTNode, MethodSymbol, FileContext, TypeSymbol?> visit,
+            Action<VariableDeclarationASTNode, FileContext, TypeSymbol?>? visitAccessors = null)
         {
             foreach (var file in env.Unit.SourceFiles)
             {
                 var fileCtx = env.Declarations.FileContextOf(file);
                 foreach (var decl in file.Declarations)
                 {
-                    WalkDeclaration(decl, fileCtx, declaringType: null, visit);
+                    WalkDeclaration(decl, fileCtx, declaringType: null, visit, visitAccessors);
                 }
             }
         }
 
         // 遍历声明骨架找可调用声明（不进函数体内部；全局字段初始化器 S5 跳过）
         private void WalkDeclaration(ASTNode node, FileContext fileCtx, TypeSymbol? declaringType,
-            Action<CallableDeclarationASTNode, MethodSymbol, FileContext, TypeSymbol?> visit)
+            Action<CallableDeclarationASTNode, MethodSymbol, FileContext, TypeSymbol?> visit,
+            Action<VariableDeclarationASTNode, FileContext, TypeSymbol?>? visitAccessors = null)
         {
             switch (node)
             {
@@ -64,13 +68,19 @@ namespace LatteCompiler
                         ?? throw new CompilerInternalException("P1 未登记函数符号: " + fn.Name);
                     visit(fn, symbol, fileCtx, declaringType);
                     return;
+                case VariableDeclarationASTNode variable
+                    when visitAccessors != null && (variable.Getter != null
+                        || variable.Setter != null):
+                    // 带访问器的字段/全局变量（S8e）：访问器体交阶段 2 回调
+                    visitAccessors(variable, fileCtx, declaringType);
+                    return;
                 case ClassDeclarationASTNode or StructDeclarationASTNode or InterfaceDeclarationASTNode
                     or EnumStructDeclarationASTNode or WrapperDeclarationASTNode:
                     var nested = env.Declarations.SymbolOf(node) as TypeSymbol
                         ?? throw new CompilerInternalException("P1 未登记类型符号");
                     foreach (var member in MembersOf(node))
                     {
-                        WalkDeclaration(member, fileCtx, nested, visit);
+                        WalkDeclaration(member, fileCtx, nested, visit, visitAccessors);
                     }
                     return;
                 default:
@@ -155,6 +165,80 @@ namespace LatteCompiler
             if (symbol.ReturnType is TypeSymbol && !BoundAnalysis.GuaranteesReturn(body))
             {
                 env.Error(fn.Span, $"Function '{symbol.Name}' must return a value on all code paths");
+            }
+            bodies.Add(new BoundFunctionBody(symbol, ctx.Locals.ToList(), body));
+        }
+
+        // 访问器体绑定（S8e，SYNTAX §9.4/§9.4.1）：访问器符号挂字段三槽
+        // （P1 建壳、P2 回填签名），节点是 PropertyAccessorASTNode 而非
+        // CallableDeclaration——薄适配：逐访问器走与普通函数体同一通道
+        // （独立 BindContext + 块分派 + return 全路径检查），产物进
+        // bodies（P4 LoweringDriver 数据驱动自动捡起）
+        private void BindAccessorBodies(VariableDeclarationASTNode node, FileContext fileCtx,
+            TypeSymbol? owner)
+        {
+            var field = env.Declarations.SymbolOf(node) as FieldSymbol
+                ?? throw new CompilerInternalException("P1 未登记字段符号: " + node.Name);
+            if (node.Getter != null && field.Getter != null)
+            {
+                BindAccessorBody(node.Getter, field.Getter, field, isSetter: false, fileCtx, owner);
+            }
+            if (node.Setter != null && field.Setter != null)
+            {
+                BindAccessorBody(node.Setter, field.Setter, field, isSetter: true, fileCtx, owner);
+            }
+        }
+
+        // 单访问器体绑定：backing 形态置上下文 value 别名标记（裸名
+        // value 由 PathVisitors 拦截为 backing 直达）；backing setter
+        // （显式/自动同）体首合成隐含赋值 backing = value（§9.4.1，
+        // 直接构造 bound 节点，不接名称解析）；自动访问器（无体，
+        // 仅 backing 形态——P2 已拒无体 computed）合成体——getter
+        // 为 return value、setter 为空块（隐含赋值已足）。合成节点
+        // Syntax 一律指访问器 AST 节点；字段类型毒化时合成部分跳过
+        // （P2 诊断已报）
+        private void BindAccessorBody(PropertyAccessorASTNode accessorNode, MethodSymbol symbol,
+            FieldSymbol field, bool isSetter, FileContext fileCtx, TypeSymbol? owner)
+        {
+            var ctx = new BindContext(symbol, fileCtx, owner);
+            if (field.HasBackingStorage) ctx.SetAccessor(field, isSetter);
+            BoundBlock body;
+            if (accessorNode.Body != null)
+            {
+                body = BlockDispatcher.Visit(accessorNode.Body, null, ctx, env);
+            }
+            else if (isSetter)
+            {
+                body = new BoundBlock(accessorNode, new List<BoundStatement>());
+            }
+            else
+            {
+                // 自动 getter：return value（backing 读）
+                var statements = new List<BoundStatement>();
+                if (field.FieldType is TypeSymbol getterType && getterType is not ErrorTypeSymbol)
+                {
+                    statements.Add(new BoundReturnStatement(accessorNode,
+                        PathFacility.MakeBackingFieldReference(accessorNode, field, getterType,
+                            ctx)));
+                }
+                body = new BoundBlock(accessorNode, statements);
+            }
+            // backing 形态 setter：体首隐含 backing = value（value 即新值参数）
+            if (isSetter && field.HasBackingStorage
+                && field.FieldType is TypeSymbol backingType && backingType is not ErrorTypeSymbol)
+            {
+                var implicitAssign = new BoundAssignmentStatement(accessorNode,
+                    PathFacility.MakeBackingFieldReference(accessorNode, field, backingType, ctx),
+                    new BoundValueReferenceExpression(accessorNode, symbol.Parameters[0],
+                        backingType));
+                body = new BoundBlock(body.Syntax,
+                    new List<BoundStatement> { implicitAssign }.Concat(body.Statements).ToList());
+            }
+            // getter 同普通函数：return 全路径检查（符号名即字段名）
+            if (symbol.ReturnType is TypeSymbol && !BoundAnalysis.GuaranteesReturn(body))
+            {
+                env.Error(accessorNode.Span,
+                    $"Function '{symbol.Name}' must return a value on all code paths");
             }
             bodies.Add(new BoundFunctionBody(symbol, ctx.Locals.ToList(), body));
         }

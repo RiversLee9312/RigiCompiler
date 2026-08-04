@@ -43,9 +43,15 @@ namespace LatteCompiler.Bil
         CompilerGenerated, Override, Async,
     }
 
+    // §8.4 访问器类别（getter(FIELD)/setter(FIELD) 修饰符的二态）
+    public enum BilAccessorKind
+    {
+        Getter, Setter,
+    }
+
     // 声明修饰符基类（§8.2 类型修饰符 / §8.3 字段修饰符 / §8.4 方法
-    // 修饰符）；带参形态（getter(...)/setter(...)/enum-case(...)/
-    // wrapper-proxy(...)）随 S8e/S11/S14 落地增补
+    // 修饰符）；带参形态 getter(...)/setter(...) 随 S8e 落地，
+    // enum-case(...)/wrapper-proxy(...) 随 S11/S14 落地增补
     public abstract class BilModifier
     {
         internal abstract string Render();
@@ -88,6 +94,22 @@ namespace LatteCompiler.Bil
         }
 
         internal override string Render() => $"operator({Name})";
+    }
+
+    // getter(字段)/setter(字段) 修饰符（§8.4：访问器标记，参数为关联的
+    // 逻辑字段 canonical 符号——Bil/ 对 Semantic 零依赖，字符串身份）
+    public sealed class BilAccessorModifier : BilModifier
+    {
+        public BilAccessorKind Kind { get; }
+        public string FieldSymbol { get; }
+
+        public BilAccessorModifier(BilAccessorKind kind, string fieldSymbol)
+        {
+            Kind = kind;
+            FieldSymbol = fieldSymbol;
+        }
+
+        internal override string Render() => $"{BilSpellings.Of(Kind)}({FieldSymbol})";
     }
 
     // symbol("...") 修饰符（§8.4：native 符号名，必须与 native 同现）

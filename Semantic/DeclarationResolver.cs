@@ -8,6 +8,11 @@ namespace LatteCompiler
     //      后续用到它的检查一律静默跳过（抑制次生噪音，ARCHITECTURE §8）；
     //   2. 继承 / implements 图 + 循环继承诊断 + 种类与可继承性检查；
     //   3. 修饰符合法性（SYNTAX §3.1.1 / §9.2 / §10 / §14.9 / §16）；
+    //      随附访问器声明侧检查与签名回填（§9.4/§9.4.1：修饰符白名单、
+    //      可见性落定、const+set、无体 computed 拒绝）、override 配套检查
+    //      （§9.2.1：覆写目标存在且 open/abstract、禁止静默隐藏、abstract
+    //      位置与体、具体类待实现成员）、声明侧访问控制（§16：类型引用/
+    //      继承/约束命中处的使用点检查，AccessChecker 与 P3 共用）；
     //      随附 native 函数声明检查（§4.6：无体/成员必 static/禁 init/operator/
     //      async/泛型/重载、参数与返回类型基元白名单、@NativeLibrary 必填、
     //      @NativeSymbol 缺省取函数名、内建注解禁挂非 native 声明）；
@@ -22,8 +27,8 @@ namespace LatteCompiler
     //   文件命名空间及父链 → 全局命名空间 → import 列表（具名/通配）→
     //   core 命名空间（隐式可见：i32/String/Object 等裸名由此解析）。
     //
-    // 明确不做（归后续里程碑）：访问控制使用点检查、重载签名级重复判定、
-    // getter/setter 符号与 enum case（S8/S11）、无标注字段类型推断（P3，
+    // 明确不做（归后续里程碑）：重载签名级重复判定、enum case 符号（S11）、
+    // 无标注字段类型推断（P3，
     // 其闭包/闸门检查随推断结果在 P3 复核——见 PROGRESS_REPORT 技术债）。
     // P2 结束冻结符号图（SymbolGraph.Freeze）。
     //
@@ -40,6 +45,8 @@ namespace LatteCompiler
             TypeReferenceResolver.Visit(env);
             InheritanceResolver.Visit(env);
             ModifierChecker.Visit(env);
+            AccessorChecker.Visit(env);
+            OverrideChecker.Visit(env);
             NativeDeclarationChecker.Visit(env);
             ContagionChecker.Visit(env);
             FieldClosureChecker.Visit(env);

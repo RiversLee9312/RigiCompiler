@@ -217,11 +217,12 @@ namespace LatteCompiler
                     break;
                 case BoundFieldReferenceExpression fieldReference:
                 case BoundFieldAccessExpression:
-                    // 参数与全局/实例字段：同赋值的放行规则
+                    // 参数与全局/实例字段：同赋值的放行规则（S8e：带访问器
+                    // 字段查 setter 存在性与可见性，无访问器字段走 const 规则）
                     {
                         var field = target is BoundFieldReferenceExpression fr
                             ? fr.Field : ((BoundFieldAccessExpression)target).Field;
-                        if (!ConstFieldRules.CheckAssignable(field, node.Span, ctx, env))
+                        if (!ConstFieldRules.CheckWritable(field, node.Span, ctx, env))
                         {
                             return null;
                         }

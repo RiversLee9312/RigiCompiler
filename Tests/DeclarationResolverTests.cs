@@ -30,6 +30,9 @@ namespace LatteCompiler.Tests
             TestWrapperApplications();
             TestNativeDeclarations();
             TestAccessibility();
+            TestAccessorDeclarations();
+            TestOverrideModifiers();
+            TestDeclarationSiteAccess();
             TestFreeze();
             return TestHarness.Summary("DeclarationResolver");
         }
@@ -169,7 +172,7 @@ namespace LatteCompiler.Tests
 
             var (unit, _) = ResolveUnit(
                 "namespace app.models\n" +
-                "class User { }\n" +
+                "pub class User { }\n" +
                 "class Order { var buyer: User }\n",
                 "namespace app.services\n" +
                 "import app.models.User\n" +
@@ -861,6 +864,197 @@ namespace LatteCompiler.Tests
             TestHarness.Section("P2 Freeze");
             var (unit, _) = ResolveUnit("var x: i32\n");
             TestHarness.CheckTrue("P2 结束 Freeze", unit.Symbols.IsFrozen);
+        }
+
+        // P2 阶段断言（S8e 声明侧用例）：消息命中且诊断确为 P2 落袋
+        private static void CheckP2Error(string label, CompilationUnit unit,
+            string expectedMessagePart)
+        {
+            TestHarness.CheckSemanticError(label, unit.Diagnostics, expectedMessagePart);
+            TestHarness.CheckTrue(label + "（确为 P2 阶段）",
+                unit.Diagnostics.Diagnostics.Any(d => d.Severity == DiagnosticSeverity.Error
+                    && d.Phase == DiagnosticPhase.P2 && d.Message.Contains(expectedMessagePart)));
+        }
+
+        // 解析合法源后手工变异 AST 再进 P1+P2（S8e：parser 层不可达形态的
+        // P2 防御检查直达——ASTIntegrityValidator 只在 Parse 内运行，变异安全）
+        private static (CompilationUnit Unit, DeclarationCollection Decls) ResolveMutated(
+            string source, Action<RootASTNode> mutate)
+        {
+            var root = TestHarness.ParseRoot(source);
+            mutate(root);
+            var unit = new CompilationUnit(new[] { root });
+            var decls = DeclarationCollector.Collect(unit);
+            DeclarationResolver.Resolve(unit, decls);
+            return (unit, decls);
+        }
+
+        // 取单类单成员源的唯一字段声明节点（ResolveMutated 改造目标定位）
+        private static VariableDeclarationASTNode FirstMemberVariable(RootASTNode root)
+        {
+            return (VariableDeclarationASTNode)
+                ((ClassDeclarationASTNode)root.Declarations[0]).Members[0];
+        }
+
+        // ===== S8e：访问器声明侧（SYNTAX §9.4/§9.4.1——修饰符白名单/
+        // const+set/无体 computed/类型标注/可见性落定）=====
+        private static void TestAccessorDeclarations()
+        {
+            TestHarness.Section("P2 Accessor Declarations");
+
+            // 访问器修饰符白名单：仅访问级别（static 上访问器即错误）
+            var (unit, _) = ResolveUnit(
+                "pub class C {\n" +
+                "    pub var v: i32 {\n" +
+                "        static get(value: _) { return value }\n" +
+                "    }\n" +
+                "}\n");
+            CheckP2Error("访问器修饰符白名单（static get）", unit,
+                "'static' is not allowed here (access modifiers only");
+
+            // const 字段不得声明 setter
+            var (unit2, _) = ResolveUnit(
+                "pub class C {\n" +
+                "    const v: i32 {\n" +
+                "        get(value: _) { return value }\n" +
+                "        set(value: _) { }\n" +
+                "    }\n" +
+                "}\n");
+            CheckP2Error("const 字段声明 setter", unit2,
+                "Const field 'v' cannot declare a setter");
+
+            // 无体 + 计算形态：编译器无法生成计算实现（getter/setter 同形各一）。
+            // 注：parser 层要求 (_: _) 必带体，该形态从源码不可达——解析合法的
+            // 自动访问器后手工改造 HasBackingField=false 直达 P2 防御检查
+            var (unit3, _) = ResolveMutated(
+                "pub class C {\n" +
+                "    pub var v: i32 {\n" +
+                "        get\n" +
+                "    }\n" +
+                "}\n",
+                root => FirstMemberVariable(root).Getter!.HasBackingField = false);
+            CheckP2Error("无体 computed getter", unit3,
+                "Computed getter of 'v' must have a body");
+            var (unit4, _) = ResolveMutated(
+                "pub class C {\n" +
+                "    pub var w: i32 {\n" +
+                "        set\n" +
+                "    }\n" +
+                "}\n",
+                root => FirstMemberVariable(root).Setter!.HasBackingField = false);
+            CheckP2Error("无体 computed setter", unit4,
+                "Computed setter of 'w' must have a body");
+
+            // 带访问器字段必须有类型标注（无标注字段的类型推断归 P3，不共存）
+            var (unit5, _) = ResolveUnit(
+                "pub class C {\n" +
+                "    var v {\n" +
+                "        get(value: _) { return 1 }\n" +
+                "    }\n" +
+                "}\n");
+            CheckP2Error("无类型标注带访问器", unit5,
+                "Field 'v' with accessors requires a type annotation");
+
+            // 正例：可见性落定 = 访问器显式修饰 ?? 字段声明级别（§9.4.1）
+            var (unit6, _) = ResolveUnit(
+                "namespace app\n" +
+                "pub var a: i32 {\n" +
+                "    get(value: _) { return value }\n" +
+                "    set(value: _) { }\n" +
+                "}\n" +
+                "internal var b: i32 {\n" +
+                "    pub get(value: _) { return value }\n" +
+                "    priv set(value: _) { }\n" +
+                "}\n");
+            CheckNoErrors("无诊断（访问器可见性落定）", unit6);
+            var appFields = NsOf(unit6, "app").Fields;
+            var a = appFields.Single(f => f.Name == "a");
+            TestHarness.CheckTrue("无显式修饰 getter 取字段级别（pub）",
+                a.Getter!.Accessibility == Accessibility.Public);
+            TestHarness.CheckTrue("无显式修饰 setter 取字段级别（pub）",
+                a.Setter!.Accessibility == Accessibility.Public);
+            var b = appFields.Single(f => f.Name == "b");
+            TestHarness.CheckTrue("显式 pub getter（字段 internal 不传染）",
+                b.Getter!.Accessibility == Accessibility.Public);
+            TestHarness.CheckTrue("显式 priv setter",
+                b.Setter!.Accessibility == Accessibility.Private);
+        }
+
+        // ===== S8e：override/open/abstract 修饰符位置（SYNTAX §9.2.1，
+        // ModifierChecker 成员侧负例补充）=====
+        private static void TestOverrideModifiers()
+        {
+            TestHarness.Section("P2 Override Modifiers");
+
+            // 字段写 override：open/abstract/override 仅普通成员方法
+            var (unit, _) = ResolveUnit(
+                "pub class C {\n" +
+                "    override var v: i32\n" +
+                "}\n");
+            CheckP2Error("字段写 override", unit,
+                "'open'/'abstract'/'override' can only be applied to member methods");
+
+            // static 方法写 override（静态无多态）
+            var (unit2, _) = ResolveUnit(
+                "pub class C {\n" +
+                "    static override func m(): i32 { return 1 }\n" +
+                "}\n");
+            CheckP2Error("static + override", unit2,
+                "'open'/'abstract'/'override' cannot be applied to static methods");
+
+            // 接口成员天然可覆写：接口内写 open 为冗余错误
+            var (unit3, _) = ResolveUnit(
+                "pub interface I {\n" +
+                "    open func m(): i32\n" +
+                "}\n");
+            CheckP2Error("接口内 open 冗余", unit3,
+                "'open'/'abstract' is redundant on interface members");
+
+            // open × abstract 互斥（成员级，同类型级规则）
+            var (unit4, _) = ResolveUnit(
+                "pub abstract class C {\n" +
+                "    open abstract func m(): i32\n" +
+                "}\n");
+            CheckP2Error("open × abstract 互斥（成员）", unit4,
+                "'open' and 'abstract' are mutually exclusive");
+
+            // abstract 方法不得带体
+            var (unit5, _) = ResolveUnit(
+                "pub abstract class C {\n" +
+                "    abstract func m(): i32 { return 1 }\n" +
+                "}\n");
+            CheckP2Error("abstract 带体", unit5,
+                "'m': abstract method cannot have a body");
+        }
+
+        // ===== S8e：声明侧访问控制（SYNTAX §16.1——类型引用/继承/接口
+        // 均为使用点，跨文件 priv 类型即拒绝；诊断确为 P2 阶段落袋）=====
+        private static void TestDeclarationSiteAccess()
+        {
+            TestHarness.Section("P2 Declaration-Site Access");
+
+            // 跨文件 priv 类型作字段类型
+            var (unit, _) = ResolveUnit(
+                "class Hidden { }\n",
+                "pub class C {\n" +
+                "    var h: Hidden\n" +
+                "}\n");
+            CheckP2Error("priv 类型作字段类型（跨文件）", unit,
+                "'Hidden' is inaccessible due to its accessibility level");
+
+            // 跨文件 priv 类型作基类
+            var (unit2, _) = ResolveUnit(
+                "class Hidden { }\n",
+                "pub class C : Hidden { }\n");
+            CheckP2Error("priv 类型作基类（跨文件）", unit2,
+                "'Hidden' is inaccessible due to its accessibility level");
+
+            // 跨文件 priv 接口作 implements
+            var (unit3, _) = ResolveUnit(
+                "interface IHidden { }\n",
+                "pub class C implements IHidden { }\n");
+            CheckP2Error("priv 接口作 implements（跨文件）", unit3,
+                "'IHidden' is inaccessible due to its accessibility level");
         }
     }
 }

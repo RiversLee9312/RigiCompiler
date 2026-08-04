@@ -144,7 +144,15 @@ namespace LatteCompiler
                 env.Error(node.Span, $"Undefined function: '{pathText}'");
                 return null;
             }
-            return candidates;
+            // 使用点访问控制（S8e，SYNTAX §16.1）：不可见候选不参与重载
+            // 解析；全部不可见时报首个候选的不可见诊断
+            var accessible = candidates.Where(ctx.CanAccess).ToList();
+            if (accessible.Count == 0)
+            {
+                env.Error(node.Span, AccessChecker.InaccessibleMessage(candidates[0]));
+                return null;
+            }
+            return accessible;
         }
 
         // 实例调用形态（首段为值的多段纯调用）：首段绑 receiver，中间段
@@ -191,8 +199,8 @@ namespace LatteCompiler
         }
 
         // 实例方法调用：receiver 静态类型沿 BaseType 链查找（接口
-        // receiver 查接口自身成员；ext 注册成员同路径；访问控制检查
-        // 归 S8e）。值位置 void 检查由调用方做
+        // receiver 查接口自身成员；ext 注册成员同路径；S8e 起不可见
+        // 候选经访问控制过滤）。值位置 void 检查由调用方做
         public static CallBinding? BindInstanceMethodCall(ASTNode node, BoundExpression receiver,
             string name, List<ArgumentASTNode> arguments, Scope scope, BindContext ctx,
             BindEnvironment env)
@@ -206,7 +214,14 @@ namespace LatteCompiler
                         $"'{BoundAnalysis.TypeDisplay(receiver.Type)}'");
                 return null;
             }
-            var resolved = OverloadResolution.Resolve(node, candidates, arguments, scope, ctx, env);
+            // 使用点访问控制（S8e，SYNTAX §16.1）：同 ResolveCallee 口径
+            var accessible = candidates.Where(ctx.CanAccess).ToList();
+            if (accessible.Count == 0)
+            {
+                env.Error(node.Span, AccessChecker.InaccessibleMessage(candidates[0]));
+                return null;
+            }
+            var resolved = OverloadResolution.Resolve(node, accessible, arguments, scope, ctx, env);
             if (resolved == null) return null;
             var (selected, boundArguments) = resolved.Value;
             // 返回类型含未替换泛型参数（泛型接口/泛型类型成员的使用归
@@ -348,6 +363,13 @@ namespace LatteCompiler
                         $"Cannot construct wrapper '{type.Name}' (created by the compiler)");
                     return null;
             }
+            // abstract 类不可构造（SYNTAX §9.2.1）
+            if (type.IsAbstract)
+            {
+                env.Error(newNode.Type.Span ?? newNode.Span,
+                    $"Cannot construct an instance of abstract type '{type.Name}'");
+                return null;
+            }
             var inits = type.Methods.Where(m => m.Kind == MethodKind.Init).ToList();
             if (inits.Count == 0)
             {
@@ -359,9 +381,17 @@ namespace LatteCompiler
                 env.Error(newNode.Span, $"Type '{type.Name}' has no constructor");
                 return null;
             }
+            // 构造调用是使用点（S8e，SYNTAX §16.1，含 init 可见性 §12.2）：
+            // 不可见 init 不参与重载解析；全部不可见时报不可见诊断
+            var accessibleInits = inits.Where(ctx.CanAccess).ToList();
+            if (accessibleInits.Count == 0)
+            {
+                env.Error(newNode.Span, AccessChecker.InaccessibleMessage(inits[0]));
+                return null;
+            }
             // init 重载解析与函数调用同一设施（S8d，SYNTAX §4.2）
-            var resolved = OverloadResolution.Resolve(newNode, inits, newNode.Arguments, scope,
-                ctx, env);
+            var resolved = OverloadResolution.Resolve(newNode, accessibleInits, newNode.Arguments,
+                scope, ctx, env);
             if (resolved == null) return null;
             return new BoundNewExpression(node, type, resolved.Value.Method,
                 resolved.Value.Arguments);

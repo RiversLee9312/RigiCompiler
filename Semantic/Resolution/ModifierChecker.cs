@@ -138,6 +138,38 @@ namespace LatteCompiler
             {
                 env.Error(entry.Node.Span, "'async' can only be applied to functions");
             }
+            // open/abstract/override 仅普通成员方法（§9.2.1）：字段/init/operator/
+            // 全局函数/static 方法上使用即错误；静态无多态
+            var open = modifiers.Contains(Keywords.OPEN);
+            var abstractM = modifiers.Contains(Keywords.ABSTRACT);
+            var overrideM = modifiers.Contains(Keywords.OVERRIDE);
+            if (open || abstractM || overrideM)
+            {
+                if (entry.Symbol is not MethodSymbol inheritMethod ||
+                    inheritMethod.Kind != MethodKind.Regular || entry.DeclaringType == null)
+                {
+                    env.Error(entry.Node.Span,
+                        "'open'/'abstract'/'override' can only be applied to member methods");
+                }
+                else
+                {
+                    if (inheritMethod.IsStatic)
+                    {
+                        env.Error(entry.Node.Span,
+                            "'open'/'abstract'/'override' cannot be applied to static methods");
+                    }
+                    // abstract 天然 open（§9.2，同类型级互斥）
+                    if (open && abstractM)
+                    {
+                        env.Error(entry.Node.Span, "'open' and 'abstract' are mutually exclusive");
+                    }
+                    // 接口成员天然可覆写（§9.2.1）
+                    if (entry.DeclaringType.Kind == TypeKind.Interface && (open || abstractM))
+                    {
+                        env.Error(entry.Node.Span, "'open'/'abstract' is redundant on interface members");
+                    }
+                }
+            }
             // ext 必须是限定名（§4.4：TargetType.memberName）且只能用于全局声明
             if (modifiers.Contains(Keywords.EXT))
             {

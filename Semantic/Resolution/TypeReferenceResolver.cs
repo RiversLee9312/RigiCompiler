@@ -14,6 +14,8 @@ namespace LatteCompiler
                 if (entry.Node is VariableDeclarationASTNode { TypeAnnotation: not null } v)
                 {
                     ((FieldSymbol)entry.Symbol).FieldType = env.ResolveTypeReference(v.TypeAnnotation, entry);
+                    CheckAccessible(((FieldSymbol)entry.Symbol).FieldType!,
+                        v.TypeAnnotation.Span ?? entry.Node.Span, entry, env);
                 }
             }
             foreach (var entry in env.Entries)
@@ -23,10 +25,14 @@ namespace LatteCompiler
                 if (fn.ReturnType != null)
                 {
                     method.ReturnType = env.ResolveTypeReference(fn.ReturnType, entry);
+                    CheckAccessible(method.ReturnType!, fn.ReturnType.Span ?? entry.Node.Span,
+                        entry, env);
                 }
                 for (int i = 0; i < fn.Parameters.Parameters.Count; i++)
                 {
                     method.Parameters[i].Type = ResolveParameterType(fn.Parameters.Parameters[i], entry, env);
+                    CheckAccessible(method.Parameters[i].Type!,
+                        fn.Parameters.Parameters[i].Span ?? entry.Node.Span, entry, env);
                 }
                 // 默认参数顺序（SYNTAX §4.2）：首个默认值之后的形参必须全部携带默认值
                 var seenDefault = false;
@@ -74,6 +80,18 @@ namespace LatteCompiler
                 return env.Unit.Symbols.ErrorType;
             }
             return fieldType;
+        }
+
+        // 声明侧访问控制（SYNTAX §16，S8e）：类型引用命中处即使用点——
+        // 与 P3 函数体内检查共用 AccessChecker；毒化/泛型参数由设施内跳过
+        private static void CheckAccessible(SemanticSymbol resolved, CharRange? span,
+            DeclEntry entry, ResolveEnvironment env)
+        {
+            if (!AccessChecker.IsTypeAccessible(resolved, entry.Context.File,
+                entry.Context.Namespace, entry.DeclaringType))
+            {
+                env.Error(span, AccessChecker.InaccessibleMessage(resolved));
+            }
         }
     }
 }

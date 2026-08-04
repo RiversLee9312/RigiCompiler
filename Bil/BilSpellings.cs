@@ -134,6 +134,17 @@ namespace LatteCompiler.Bil
             };
         }
 
+        // §8.4 访问器类别（getter(...)/setter(...) 修饰符拼写）
+        public static string Of(BilAccessorKind kind)
+        {
+            return kind switch
+            {
+                BilAccessorKind.Getter => "getter",
+                BilAccessorKind.Setter => "setter",
+                _ => throw new CompilerInternalException("未知 BilAccessorKind: " + kind),
+            };
+        }
+
         // §4.1/§18.1/§18.3 标量类型关键字（无前导点）
         public static string Of(BilScalarType type)
         {

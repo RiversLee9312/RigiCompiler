@@ -18,6 +18,11 @@ namespace LatteCompiler.Tests
     /// 双重索引/this 索引）、表达式底座路径（分组/调用/new 构造/SafeDot
     /// 调用底座）与负例矩阵（无运算符/多参数/具名不匹配/nullable/类型
     /// 不匹配/void/重载归口/索引非值）。
+    /// S8e 增补（BinderTests.Access.cs）：使用点访问控制（§16.1 多文件
+    /// pub/priv/protected/internal 矩阵 + priv init 构造拦截 + priv 字段
+    /// 读写）、访问器绑定（§9.4.1——读写节点形态不变/访问器体绑定与合成/
+    /// 读写存在性与可见性/value 别名/smart cast 不收窄/局部归口 S11）、
+    /// override 配套（§9.2.1 正例与逐条负例 + new abstract）。
     /// 诊断断言沿用消息子串惯例（CheckSemanticError）；符号比较一律引用相等。
     /// </summary>
     public static partial class BinderTests
@@ -59,6 +64,9 @@ namespace LatteCompiler.Tests
             TestTypeOf();
             TestDefaultParameters();
             TestOverloadResolution();
+            TestAccessControl();
+            TestAccessors();
+            TestOverride();
             TestDiagnosticsAccumulation();
             return TestHarness.Summary("Binder");
         }

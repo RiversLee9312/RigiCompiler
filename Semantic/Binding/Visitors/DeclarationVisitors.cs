@@ -15,6 +15,13 @@ namespace LatteCompiler
             {
                 return BindDestructuring(decl, scope, ctx, env);
             }
+            // 局部变量访问器（S8e 归口，§9.4.1：栈上访问器暂未实现）——
+            // 降级不中断，继续按普通局部绑定
+            if (decl.Getter != null || decl.Setter != null)
+            {
+                env.Error(decl.Span,
+                    "P3: local variable accessors are not supported yet (S11)");
+            }
             TypeSymbol? declaredType = null;
             if (decl.TypeAnnotation != null)
             {
@@ -209,13 +216,15 @@ namespace LatteCompiler
                     ctx.Flow.ClearRoot(parameter);
                     break;
                 case BoundFieldReferenceExpression fieldReference:
-                    if (!ConstFieldRules.CheckAssignable(fieldReference.Field, node.Span, ctx, env))
+                    // 字段写入统一检查（S8e）：带访问器字段查 setter，
+                    // 无访问器字段走 const 规则
+                    if (!ConstFieldRules.CheckWritable(fieldReference.Field, node.Span, ctx, env))
                     {
                         return null;
                     }
                     break;
                 case BoundFieldAccessExpression fieldAccess:
-                    if (!ConstFieldRules.CheckAssignable(fieldAccess.Field, node.Span, ctx, env))
+                    if (!ConstFieldRules.CheckWritable(fieldAccess.Field, node.Span, ctx, env))
                     {
                         return null;
                     }

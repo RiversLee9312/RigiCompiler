@@ -44,14 +44,21 @@ namespace LatteCompiler
                 case VariableDeclarationASTNode v:
                     if (env.Declarations.SymbolOf(v) is FieldSymbol field)
                     {
-                        field.Accessibility = ResolveEnvironment.ParseAccessibility(v.Modifiers);
+                        field.Accessibility = ResolveEnvironment.ParseAccessibility(
+                            v.Modifiers, declaringType);
                         AddEntry(v, field, ctx, declaringType, InContainer(field, declaringType, ctx), env);
                     }
                     break;
                 case CallableDeclarationASTNode fn:
                     if (env.Declarations.SymbolOf(fn) is MethodSymbol method)
                     {
-                        method.Accessibility = ResolveEnvironment.ParseAccessibility(fn.Modifiers);
+                        method.Accessibility = ResolveEnvironment.ParseAccessibility(
+                            fn.Modifiers, declaringType);
+                        // 继承多态三标记写符号（§9.2.1；位置合法性归 ModifierChecker，
+                        // 覆写关系归 OverrideChecker）
+                        method.IsOpen = fn.Modifiers.Contains(Keywords.OPEN);
+                        method.IsAbstract = fn.Modifiers.Contains(Keywords.ABSTRACT);
+                        method.IsOverride = fn.Modifiers.Contains(Keywords.OVERRIDE);
                         AddEntry(fn, method, ctx, declaringType, InContainer(method, declaringType, ctx), env);
                     }
                     break;
@@ -95,6 +102,9 @@ namespace LatteCompiler
                 DeclaringType = declaringType,
                 InGraph = inGraph,
             };
+            // 文件身份写符号（S8e 访问控制「同文件可见」判定；首条目为准，
+            // 重复声明的后续条目同文件同值）
+            symbol.SourceFile ??= ctx.File;
             env.RegisterEntry(entry);
             return entry;
         }

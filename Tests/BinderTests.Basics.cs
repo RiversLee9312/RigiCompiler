@@ -365,9 +365,9 @@ namespace LatteCompiler.Tests
             TestHarness.CheckSemanticError("缺失形参", unit7.Diagnostics,
                 "Missing argument for parameter 'b'");
 
-            // 命名空间路径调用（跨文件前向引用）
+            // 命名空间路径调用（跨文件前向引用；§16.1 起跨文件引用需 pub）
             var (unit8, bodies8) = BindUnit(
-                "namespace a.b\nfunc g(): i32 { return 1 }\n",
+                "namespace a.b\npub func g(): i32 { return 1 }\n",
                 "func f(): i32 { return a.b.g() }\n");
             CheckNoErrors("命名空间路径调用", unit8);
             TestHarness.Check("a.b.g()", BoundDescribe.Body(BodyOf(bodies8, "f")),

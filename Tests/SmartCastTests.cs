@@ -104,7 +104,7 @@ namespace LatteCompiler.Tests
             var (unit, bodies) = BindUnit(
                 "open class Animal { }\n" +
                 "class Dog : Animal {\n" +
-                "    func bark(): i32 { return 1 }\n" +
+                "    pub func bark(): i32 { return 1 }\n" +
                 "}\n" +
                 "func f(a: Animal): i32 {\n" +
                 "    if (a is Dog) { return a.bark() }\n" +
@@ -123,7 +123,7 @@ namespace LatteCompiler.Tests
             var (unit2, bodies2) = BindUnit(
                 "open class Animal { }\n" +
                 "class Dog : Animal {\n" +
-                "    func bark(): i32 { return 1 }\n" +
+                "    pub func bark(): i32 { return 1 }\n" +
                 "}\n" +
                 "func g(a: Animal): i32 {\n" +
                 "    return if (a is Dog) { a.bark() } else { 0 }\n" +
@@ -155,7 +155,7 @@ namespace LatteCompiler.Tests
 
             var (unit, bodies) = BindUnit(
                 "class Dog {\n" +
-                "    func bark(): i32 { return 1 }\n" +
+                "    pub func bark(): i32 { return 1 }\n" +
                 "}\n" +
                 "func f(x: Dog?): i32 {\n" +
                 "    if (x is Dog) { return x.bark() }\n" +
@@ -245,7 +245,7 @@ namespace LatteCompiler.Tests
             var (unit, bodies) = BindUnit(
                 "open class Animal { }\n" +
                 "class Dog : Animal {\n" +
-                "    func bark(): i32 { return 1 }\n" +
+                "    pub func bark(): i32 { return 1 }\n" +
                 "}\n" +
                 "func f(a: Animal): i32 {\n" +
                 "    if ((a is Dog) and (a.bark() == 1)) { return 1 }\n" +
@@ -279,7 +279,7 @@ namespace LatteCompiler.Tests
             var (unit4, bodies4) = BindUnit(
                 "open class Animal { }\n" +
                 "class Dog : Animal {\n" +
-                "    func bark(): i32 { return 1 }\n" +
+                "    pub func bark(): i32 { return 1 }\n" +
                 "}\n" +
                 "func k(a: Animal): i32 {\n" +
                 "    if (not (a is Dog)) { return 0 }\n" +
@@ -389,7 +389,7 @@ namespace LatteCompiler.Tests
             var (unit, bodies) = BindUnit(
                 "open class Animal { }\n" +
                 "class Dog : Animal {\n" +
-                "    func bark(): i32 { return 1 }\n" +
+                "    pub func bark(): i32 { return 1 }\n" +
                 "}\n" +
                 "func f(a: Animal): i32 {\n" +
                 "    return switch (a) {\n" +

@@ -62,7 +62,7 @@ namespace LatteCompiler.Tests
             // 局部声明初始化位置的子类型 cast 物化（值类型 → 接口装箱）
             var (unit3, _, lowered3) = LowerUnit(
                 "interface Greeter { func greet(): String }\n" +
-                "class Bot implements Greeter { pub func greet(): String { return \"hi\" } }\n" +
+                "class Bot implements Greeter { pub override func greet(): String { return \"hi\" } }\n" +
                 "func f() {\n" +
                 "    var g: Greeter = new Bot()\n" +
                 "}\n");

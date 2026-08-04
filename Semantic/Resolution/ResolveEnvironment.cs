@@ -115,14 +115,18 @@ namespace LatteCompiler
             _ => new List<string>(),
         };
 
-        // 访问级别解析（SYNTAX §16；互斥由 CheckAccessModifierExclusivity 保证，
-        // 无访问修饰符 = 默认 Private）
-        public static Accessibility ParseAccessibility(List<string> modifiers)
+        // 访问级别解析（SYNTAX §16/§16.1；互斥由 CheckAccessModifierExclusivity 保证，
+        // 无访问修饰符 = 默认 Private；接口成员默认 Public——接口即契约）
+        public static Accessibility ParseAccessibility(List<string> modifiers,
+            TypeSymbol? declaringType = null)
         {
             if (modifiers.Contains(Keywords.PUB)) return Accessibility.Public;
             if (modifiers.Contains(Keywords.PROTECTED)) return Accessibility.Protected;
             if (modifiers.Contains(Keywords.INTERNAL)) return Accessibility.Internal;
-            return Accessibility.Private;
+            if (modifiers.Contains(Keywords.PRIV)) return Accessibility.Private;
+            return declaringType?.Kind == TypeKind.Interface
+                ? Accessibility.Public
+                : Accessibility.Private;
         }
 
         // 内建 native 注解（@NativeLibrary/@NativeSymbol）按末段名识别；非 native 注解返回 null

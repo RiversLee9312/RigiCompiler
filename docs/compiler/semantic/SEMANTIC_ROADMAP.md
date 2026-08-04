@@ -405,15 +405,41 @@ P4 同步落地——P3 绑得出来的形态，同一步内 P4 必须能发射�
   `BoundDescribe` 断言（规范参数序形态）——BinderTests 新
   TestDefaultParameters + TestOverloadResolution 两组达成。
 
-### S8e 访问控制 + getter/setter + override 检查（纯 P3，无 P4 面）
+### S8e 访问控制 + getter/setter + override 检查（纯 P3，无 P4 面）✅（M63，2026-08-04）
 
-- P3 访问控制检查（使用点，SYNTAX §16；符号 Accessibility 已于
-  M43 写入，Binder.cs:2242/:2276 注释明示归本步）；
-- P3 getter/setter 绑定（三类位置，SYNTAX §9.4；
-  `MethodSymbol.Kind` Getter/Setter 已备）；
-- 顺带落地 §9.2 修饰符表 `override` 行的配套检查规则；
+> **已完成**（M63，方案 A）：SYNTAX §16.1 可见性判定规则定稿
+> （private 顶层=同文件/成员=声明类型及嵌套递归、protected=子类或
+> 同包（同命名空间驻留实例）、internal 单编译单元恒可见、接口成员
+> 默认 pub、bootstrap 硬编码符号统一 Public）+ §9.4.1 访问器绑定语义
+> （修饰符白名单仅访问级别、可见性=显式 ?? 字段级别、backing 形态
+> value 别名（getter 只读/setter 隐含 `backing = value`）、自动访问器
+> 体合成、const+set 拒绝、带访问器字段不收窄）+ §9.2.1 override 配套
+> （三标记仅普通成员方法、覆写目标存在且 open/abstract（接口成员天然
+> 可覆写）、禁止静默隐藏、abstract 位置与体、具体类待实现成员、
+> new abstract 拒绝）。符号六槽（MethodSymbol.IsOpen/IsAbstract/
+> IsOverride/HasBody + FieldSymbol.Getter/Setter/HasBackingStorage）+
+> SourceFile 文件身份；P1 访问器壳（不进容器 Methods 表——声明发射
+> 由字段槽驱动）；P2 AccessChecker 共享设施 + 声明侧接入 +
+> AccessorChecker/OverrideChecker 两新阶段（构造宿主签名 Substitute
+> 代入——stdlib 双接口协议依赖）；P3 使用点检查（候选过滤先于
+> ranking）+ 访问器读写检查与体绑定（Bound 节点形态不变——BIL
+> get.field/set.field 承载）+ 局部访问器归口 S11；P4 声明段小开闸
+> （BIL §8.3/§8.4 已定稿形态：getter(FIELD)/setter(FIELD)/backing/
+> computed/override/abstract 投影）+ BilVerifier §20.8 增补。
+> 落地偏差：① 局部 var/const 访问器归 S11（需闭包抬升，超体量）；
+> ② 接口默认实现隐式继承（§11 显式委托语法归后续）；③ 带访问器
+> 字段必须显式类型标注（与无标注字段类型推断不共存）；④ ext 字段 +
+> 访问器路径已通无端到端样例。详见 PROGRESS_REPORT M63 段落。
+
+- ~~P3 访问控制检查（使用点，SYNTAX §16；符号 Accessibility 已于
+  M43 写入，Binder.cs:2242/:2276 注释明示归本步）~~；
+- ~~P3 getter/setter 绑定（三类位置，SYNTAX §9.4；
+  `MethodSymbol.Kind` Getter/Setter 已备）~~；
+- ~~顺带落地 §9.2 修饰符表 `override` 行的配套检查规则~~；
 - **验收**：各级可见性越界诊断用例 + 三类位置 getter/setter
-  绑定用例 + `override` 配套检查用例。
+  绑定用例 + `override` 配套检查用例——BinderTests.Access 新
+  TestAccessControl/TestAccessors/TestOverride 三组达成（局部位置
+  归口 S11，见上偏差①）。
 
 ### S8f castTo/castFrom 名字分析 + async 边界五项闸门（纯 P3，无 P4 面）
 

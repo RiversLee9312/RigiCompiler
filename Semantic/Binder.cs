@@ -23,10 +23,13 @@ namespace LatteCompiler
     // S8d：重载解析（OverloadResolution——结构过滤/类型适用性/最具体胜出 +
     //   平局打破）+ 默认参数（声明点绑定 + 调用点规范序填充）+ 具名参数
     //   重排纳入 ranking；init 与索引读同一设施。
+    // S8e：使用点访问控制（SYNTAX §16.1——调用/构造/字段/索引/函数体内
+    //   类型引用统一经 AccessChecker）+ getter/setter（§9.4.1——读写存在性
+    //   与访问器可见性、访问器体绑定、backing value 别名与体合成）。
     //
     // 明确不做（归后续里程碑，遇之一律 P3 诊断而非崩溃）：
     // yield、可变参数调用绑定、写模式索引重载（RHS 类型赋值侧才可知）、
-    // getter/setter（S8e）、访问控制（S8e）、泛型使用侧（S9）、
+    // 局部变量访问器（S11）、泛型使用侧（S9）、
     // enum case（S11）、await/lambda（S13）、
     // 全局字段初始化器与无标注字段类型推断。
     public static class Binder

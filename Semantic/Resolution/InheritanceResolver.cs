@@ -58,6 +58,13 @@ namespace LatteCompiler
                     $"'{type.Name}': a class can only inherit from a class (use 'implements' for interfaces)");
                 return;
             }
+            // 声明侧访问控制（§16，S8e）：基类引用即使用点
+            if (!AccessChecker.IsAccessible(def, entry.Context.File, entry.Context.Namespace,
+                entry.DeclaringType))
+            {
+                env.Error(baseRef.Span ?? entry.Node.Span, AccessChecker.InaccessibleMessage(def));
+                return;
+            }
             // 可继承性：基类必须 open/abstract；内建 Object 天然可继承
             if (!def.IsBuiltin && !def.IsOpen && !def.IsAbstract)
             {
@@ -92,6 +99,13 @@ namespace LatteCompiler
                     $"'{type.Name}': a struct can only inherit from a struct");
                 return;
             }
+            // 声明侧访问控制（§16，S8e）：基 struct 引用即使用点
+            if (!AccessChecker.IsAccessible(def, entry.Context.File, entry.Context.Namespace,
+                entry.DeclaringType))
+            {
+                env.Error(baseRef.Span ?? entry.Node.Span, AccessChecker.InaccessibleMessage(def));
+                return;
+            }
             if (!def.IsBuiltin && !(def.IsRich && def.IsOpen))
             {
                 env.Error(baseRef.Span ?? entry.Node.Span,
@@ -119,6 +133,15 @@ namespace LatteCompiler
                 {
                     env.Error(ifaceRef.Span ?? entry.Node.Span,
                         $"'{type.Name}': '{keyword}' target must be an interface");
+                    continue;
+                }
+                // 声明侧访问控制（§16，S8e）：接口引用即使用点
+                var ifaceDef = iface.ConstructedFrom ?? iface;
+                if (!AccessChecker.IsAccessible(ifaceDef, entry.Context.File,
+                    entry.Context.Namespace, entry.DeclaringType))
+                {
+                    env.Error(ifaceRef.Span ?? entry.Node.Span,
+                        AccessChecker.InaccessibleMessage(ifaceDef));
                     continue;
                 }
                 type.Interfaces.Add(iface);

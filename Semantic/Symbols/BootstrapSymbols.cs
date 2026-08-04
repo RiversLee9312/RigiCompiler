@@ -120,12 +120,17 @@ namespace LatteCompiler
             // 对象返回类型 canonical 名）；用户类型 override 后经虚派发执行
             // 自身实现，不再命中原生面
             Any.Methods.Add(new MethodSymbol("toString", MethodKind.Regular,
-                owner: Any, returnType: String));
+                owner: Any, returnType: String)
+            {
+                Accessibility = Accessibility.Public,
+            });
             Object.Methods.Add(new MethodSymbol("toString", MethodKind.Regular,
                 owner: Object, isNative: true, returnType: String)
             {
                 NativeLibrary = "latte_rt",
                 NativeSymbol = "toString",
+                Accessibility = Accessibility.Public,
+                IsOpen = true,
             });
 
             // 泛型内建（§3.1.2）：
@@ -166,6 +171,9 @@ namespace LatteCompiler
                 TypeDefinition, SpanDefinition, NullableDefinition, BoxDefinition,
             })
             {
+                // 内建符号不经声明修饰符（SemanticSymbol 默认 Private）——
+                // 统一置 Public（S8e 使用点访问控制以符号级别判定；内建即公开契约）
+                builtin.Accessibility = Accessibility.Public;
                 Core.Types.Add(builtin);
             }
         }

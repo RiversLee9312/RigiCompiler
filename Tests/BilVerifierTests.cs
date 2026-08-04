@@ -10,6 +10,9 @@ namespace LatteCompiler.Tests
     /// 负例——手工构造/改造非法模块，按 §20 规则逐类断言命中。
     /// S8c 增补：§13.6 索引严格三元组查询（get.array/set.array 手工模块
     /// 基线正例 + 索引/元素/结果类型不符与无索引运算符负例）。
+    /// S8e 增补：访问器与 override 全管线正例 + §20.8 访问器声明负例
+    /// （getter(FIELD) 引用未声明字段 / getter 修饰配非 $.get. 形态方法
+    /// 符号 / backing 与 computed 共存，手工模块基例）。
     /// </summary>
     public static class BilVerifierTests
     {
@@ -135,6 +138,41 @@ namespace LatteCompiler.Tests
                 "    b[0] = 7\n" +
                 "    b[1] += 2\n" +
                 "    return b[2]\n" +
+                "}\n");
+            Positive("访问器（backing/computed/全局自动，S8e）",
+                "namespace app\n" +
+                "pub var height: i32 {\n" +
+                "    pub get\n" +
+                "    pub set\n" +
+                "} = 200\n" +
+                "pub class Counter {\n" +
+                "    pub var value: i32 {\n" +
+                "        pub get(value: _) { return value }\n" +
+                "        pub set(value: _) { }\n" +
+                "    }\n" +
+                "    pub var doubled: i32 {\n" +
+                "        pub get(_: _) { return value + value }\n" +
+                "    }\n" +
+                "    pub init() { value = 0 }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var c = new Counter()\n" +
+                "    c.value = 1\n" +
+                "    return (c.value + height) + c.doubled\n" +
+                "}\n");
+            Positive("override/abstract 投影（S8e）",
+                "pub open class Base {\n" +
+                "    pub open func area(): i32 { return 0 }\n" +
+                "}\n" +
+                "pub class Square : Base {\n" +
+                "    pub override func area(): i32 { return 1 }\n" +
+                "}\n" +
+                "pub abstract class Concept {\n" +
+                "    pub abstract func id(): i32\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Square()\n" +
+                "    return s.area()\n" +
                 "}\n");
 
             // ===== 负例：非法模块按规则命中 =====
@@ -482,6 +520,71 @@ namespace LatteCompiler.Tests
                 IndexModule(new BilSimpleMemberDeclaration[0],
                     new GetArrayInstruction(BilOp.Var("v"), BilOp.Var("i"), BilOp.Var("s"))),
                 "没有 getAtIndex 索引运算符实现");
+
+            // ===== S8e：§20.8 访问器声明 =====
+            // 基线：手工访问器模块本身必须合法（字段 local 裸条目 + 访问器
+            // 方法声明 external——外部声明无需 fn 定义，聚焦声明侧修饰规则）
+            m = MinimalModule(out _, out _);
+            m.LocalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field,
+                "#v@.i32",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilKeywordModifier(BilKeyword.Backing),
+                    new BilKeywordModifier(BilKeyword.Readable),
+                }));
+            m.ExternalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "$.get.v@.i32",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilAccessorModifier(BilAccessorKind.Getter, "#v@.i32"),
+                }));
+            BilTestHarness.CheckBilValid("访问器手工模块（基线，getter 正例）", m);
+
+            // §20.8：getter(FIELD) 的 FIELD 必须可解析为已声明字段符号
+            m.ExternalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "$.get.w@.i32",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilAccessorModifier(BilAccessorKind.Getter, "#w@.i32"),
+                }));
+            BilTestHarness.CheckBilInvalid("getter(FIELD) 引用未声明字段", m,
+                "访问器修饰引用的字段符号不可解析");
+
+            // §20.8：getter 修饰与方法符号形态必须一致（非 $.get. 形态即拒）
+            m = MinimalModule(out _, out _);
+            m.LocalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field,
+                "#v@.i32",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilKeywordModifier(BilKeyword.Backing),
+                    new BilKeywordModifier(BilKeyword.Readable),
+                }));
+            m.ExternalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "$v()@.i32",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilAccessorModifier(BilAccessorKind.Getter, "#v@.i32"),
+                }));
+            BilTestHarness.CheckBilInvalid("getter 修饰配非 $.get. 形态方法符号", m,
+                "修饰与方法符号形态不符");
+
+            // §20.8：backing 与 computed 是互斥的存储形态标记
+            m = MinimalModule(out _, out _);
+            m.LocalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field,
+                "#v@.i32",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilKeywordModifier(BilKeyword.Backing),
+                    new BilKeywordModifier(BilKeyword.Computed),
+                }));
+            BilTestHarness.CheckBilInvalid("backing 与 computed 共存", m,
+                "backing 与 computed 不得共存");
         }
 
         // Vec 的索引运算符对（get 返回 .string / set 元素 .string，索引皆 .i32）

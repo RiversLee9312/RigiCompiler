@@ -344,8 +344,11 @@ namespace LatteCompiler.Bil
         }
 
         // 方法符号解析：`[ns::][Owner]$[.static.]name(p:T,...)@Ret` 与
-        // 运算符形态 `$$name(...)`（§5.2）。失败返回 false（ malformed
-        // 由符号检查另报，解析器保持全兜底）。
+        // 运算符形态 `$$name(...)`、访问器形态 `$[.static].get.名@T` /
+        // `$[.static].set.名@T`（无参数段，§5.2——访问器的 @T 对 getter
+        // 是返回类型、对 setter 是 value 参数类型，形态语义由调用方经
+        // TryParseAccessorForm 区分）。失败返回 false（malformed 由符号
+        // 检查另报，解析器保持全兜底）。
         public static bool TryParseMethodSymbol(string symbol,
             out string owner, out bool isStatic,
             out List<(string Name, string TypeRef)> parameters, out string returnType)
@@ -373,7 +376,18 @@ namespace LatteCompiler.Bil
             var openParen = rest.IndexOf('(');
             if (openParen < 0)
             {
-                return false;
+                // 无参数段：仅访问器形态合法（.get.名@T / .set.名@T）
+                if (!rest.StartsWith(".get.") && !rest.StartsWith(".set."))
+                {
+                    return false;
+                }
+                var at = rest.LastIndexOf('@');
+                if (at < 0)
+                {
+                    return false;
+                }
+                returnType = rest.Substring(at + 1);
+                return returnType.Length > 0;
             }
             var depth = 0;
             var closeParen = -1;
@@ -427,6 +441,30 @@ namespace LatteCompiler.Bil
             isStatic = name.StartsWith(".static.");
             fieldType = symbol.Substring(at + 1);
             return true;
+        }
+
+        // 访问器符号形态判定（§5.2：完整 canonical 方法符号中
+        // `$[.static].get.名` / `$[.static].set.名` 形态）；命中时
+        // isSetter 给出 getter/setter 二态
+        public static bool TryParseAccessorForm(string symbol, out bool isSetter)
+        {
+            isSetter = false;
+            var dollar = symbol.IndexOf('$');
+            if (dollar < 0)
+            {
+                return false;
+            }
+            var rest = symbol.Substring(dollar + 1);
+            if (rest.StartsWith(".static."))
+            {
+                rest = rest.Substring(".static.".Length);
+            }
+            if (rest.StartsWith(".set."))
+            {
+                isSetter = true;
+                return true;
+            }
+            return rest.StartsWith(".get.");
         }
     }
 

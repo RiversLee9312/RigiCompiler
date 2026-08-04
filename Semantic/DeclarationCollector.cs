@@ -17,8 +17,13 @@ namespace LatteCompiler
     //
     // 明确不做（归 P2/P3）：类型引用解析（ReturnType/FieldType/参数类型留空）、
     // 显式继承/implements 解析、修饰符合法性、rich/shared 闭包与传染检查、
-    // getter/setter 与 enum case 符号（按需增补，S8/S11）。
+    // enum case 符号（按需增补，S11）。
     // 修饰符只读标记位建壳（rich/shared/static/native），合法性检查一律归 P2。
+    //
+    // 访问器壳（SYNTAX §9.4，S8e）：字段带 get/set 块时建 Kind=Getter/Setter 的
+    // MethodSymbol 挂字段三槽（Name=字段名，宿主/静态同字段；setter 含唯一 value
+    // 参数壳）。访问器符号不进容器 Methods 表（避免污染按名查找）——P3 体枚举经
+    // 字段反查，P4b 声明发射由字段槽驱动；返回/参数类型回填与修饰符合法性归 P2。
     //
     // 类型默认基类在建壳时即定（class→Object / struct→ValueType /
     // enum struct→Enum / wrapper→Wrapper，wrapper 恒 rich §14.9）：
@@ -80,7 +85,7 @@ namespace LatteCompiler
                     // 其余顶层条目（如测试驱动的表达式 Root）不是声明骨架，跳过
                 }
             }
-            result.RegisterFile(file, new FileContext(fileNamespace, imports));
+            result.RegisterFile(file, new FileContext(file, fileNamespace, imports));
         }
 
         // ===== 声明分派（类型成员递归复用；declaringType 非空即成员/嵌套）=====
@@ -180,6 +185,26 @@ namespace LatteCompiler
                 extTargetPath: extTarget,
                 isConst: node.IsConst);
             result.Map(node, symbol);
+            // 访问器壳（SYNTAX §9.4）：backing 一致性 Parser 已校验，取任一方即可
+            if (node.Getter != null || node.Setter != null)
+            {
+                symbol.HasBackingStorage = (node.Getter ?? node.Setter)!.HasBackingField;
+                if (node.Getter != null)
+                {
+                    symbol.Getter = new MethodSymbol(name, MethodKind.Getter,
+                        owner: declaringType, ns: declaringType == null ? ns : null,
+                        isStatic: symbol.IsStatic, extTargetPath: extTarget);
+                    result.Map(node.Getter, symbol.Getter);
+                }
+                if (node.Setter != null)
+                {
+                    symbol.Setter = new MethodSymbol(name, MethodKind.Setter,
+                        owner: declaringType, ns: declaringType == null ? ns : null,
+                        isStatic: symbol.IsStatic, extTargetPath: extTarget);
+                    symbol.Setter.Parameters.Add(new ParameterSymbol("value"));
+                    result.Map(node.Setter, symbol.Setter);
+                }
+            }
             if (extTarget != null)
             {
                 // ext 成员不属于声明所在容器：登记待注册列表（P2 解析目标路径后挂到目标类型）
@@ -222,6 +247,7 @@ namespace LatteCompiler
                 isStatic: node.Modifiers.Contains(Keywords.STATIC),
                 isNative: node.Modifiers.Contains(Keywords.NATIVE),
                 extTargetPath: extTarget);
+            symbol.HasBody = node.Body != null;
             CollectGenericParameters(symbol.GenericParameters, node.GenericParameters, result);
             foreach (var p in node.Parameters.Parameters)
             {
@@ -376,14 +402,17 @@ namespace LatteCompiler
     }
 
     // 单文件的名字解析上下文（P2/P3 消费）：文件命名空间 + import 列表
-    // （ImportItem 为 AST 引用，中端只读）
+    // （ImportItem 为 AST 引用，中端只读）+ 文件身份（S8e 访问控制
+    // 「同文件可见」判定，RootASTNode 引用相等即同文件）
     public sealed class FileContext
     {
+        public RootASTNode File { get; }
         public NamespaceSymbol Namespace { get; }
         public IReadOnlyList<ImportItem> Imports { get; }
 
-        public FileContext(NamespaceSymbol ns, IReadOnlyList<ImportItem> imports)
+        public FileContext(RootASTNode file, NamespaceSymbol ns, IReadOnlyList<ImportItem> imports)
         {
+            File = file;
             Namespace = ns;
             Imports = imports;
         }

@@ -200,7 +200,35 @@ namespace LatteCompiler.Bil
 
             if (!isMethod)
             {
+                // §8.3：backing 与 computed 是互斥的存储形态标记
+                if (HasKeyword(declaration, BilKeyword.Backing)
+                    && HasKeyword(declaration, BilKeyword.Computed))
+                {
+                    errors.Add(new BilVerificationError("20.8", symbol,
+                        "backing 与 computed 不得共存"));
+                }
                 return;
+            }
+
+            // §8.4/§20.8 访问器修饰合法性：getter(FIELD)/setter(FIELD) 的
+            // FIELD 必须可解析为已声明字段符号（local + external 声明集合）；
+            // 修饰与方法符号形态必须一致（getter ↔ $.get. 形态、
+            // setter ↔ $.set. 形态，§5.2）
+            foreach (var modifier in declaration.Modifiers)
+            {
+                if (modifier is not BilAccessorModifier accessor) continue;
+                if (!context.FieldSymbols.Contains(accessor.FieldSymbol))
+                {
+                    errors.Add(new BilVerificationError("20.8", symbol,
+                        $"访问器修饰引用的字段符号不可解析 \"{accessor.FieldSymbol}\""));
+                }
+                if (!BilVerificationContext.TryParseAccessorForm(symbol, out var setterForm)
+                    || setterForm != (accessor.Kind == BilAccessorKind.Setter))
+                {
+                    errors.Add(new BilVerificationError("20.8", symbol,
+                        $"{BilSpellings.Of(accessor.Kind)}(...) 修饰与方法符号形态不符" +
+                        "（应为 $[.static].get.名 / $[.static].set.名，§5.2）"));
+                }
             }
 
             // §20.2：native 方法不得有 fn 定义，且必须恰好各带一个
@@ -312,6 +340,7 @@ namespace LatteCompiler.Bil
             var operatorSeen = false;
             var nativeSymbolSeen = false;
             var nativeLibrarySeen = false;
+            var accessorKindsSeen = new HashSet<BilAccessorKind>();
             foreach (var modifier in modifiers)
             {
                 switch (modifier)
@@ -351,6 +380,13 @@ namespace LatteCompiler.Bil
                         }
                         nativeLibrarySeen = true;
                         break;
+                    case BilAccessorModifier accessor:
+                        if (!accessorKindsSeen.Add(accessor.Kind))
+                        {
+                            errors.Add(new BilVerificationError("20.8", context,
+                                $"{BilSpellings.Of(accessor.Kind)} 修饰符重复"));
+                        }
+                        break;
                 }
             }
         }
@@ -384,7 +420,21 @@ namespace LatteCompiler.Bil
             {
                 return;   // malformed 已由声明侧 §20.1 报
             }
-            if (context.ReturnType != null
+            // 访问器形态（§5.2 无参数段）：setter 的 @T 是 value 参数类型——
+            // .return 恒 .void、恰好一个普通参数且类型与 @T 一致（比对在
+            // 下方参数段）；getter 的 @T 即返回类型，走普通比对
+            // （零普通参数与符号天然一致）
+            var isSetterAccessor = BilVerificationContext.TryParseAccessorForm(function.Symbol,
+                out var setterForm) && setterForm;
+            if (isSetterAccessor)
+            {
+                if (context.ReturnType != ".void")
+                {
+                    errors.Add(new BilVerificationError("20.2", function.Symbol,
+                        $"setter fn 的 .return 必须为 .void（实际 \"{context.ReturnType}\"）"));
+                }
+            }
+            else if (context.ReturnType != null
                 && !BilVerificationContext.TypesCompatible(context.ReturnType, returnType))
             {
                 errors.Add(new BilVerificationError("20.2", function.Symbol,
@@ -395,8 +445,9 @@ namespace LatteCompiler.Bil
             var index = args.Count > 0 && args[0].Name == ".return" ? 1 : 0;
 
             // receiver（§7.3）：有 owner 的非 static 方法（含全局函数除外的
-            // 成员方法）必须带 .this；static 与全局函数不得带
-            var expectThis = !isStatic && owner.Length > 0;
+            // 成员方法）必须带 .this；static 与全局函数不得带。owner 段以
+            // "::" 结尾的是命名空间前缀（全局函数/全局字段访问器），无 receiver
+            var expectThis = !isStatic && owner.Length > 0 && !owner.EndsWith("::");
             if (expectThis)
             {
                 if (index >= args.Count || args[index].Name != ".this")
@@ -453,6 +504,24 @@ namespace LatteCompiler.Bil
                     continue;
                 }
                 expected.Add(parameter);
+            }
+            if (isSetterAccessor)
+            {
+                // setter：符号无参数段——fn 恰好一个普通参数（value），
+                // 类型 ≡ 符号 @T（参数名不在符号中，不参与比对）
+                if (plainArgs.Count != 1)
+                {
+                    errors.Add(new BilVerificationError("20.7", function.Symbol,
+                        $"setter fn 普通参数个数 {plainArgs.Count} 不符（应恰好一个 value 参数）"));
+                    return;
+                }
+                if (!BilVerificationContext.TypesCompatible(plainArgs[0].TypeRef, returnType))
+                {
+                    errors.Add(new BilVerificationError("20.7", function.Symbol,
+                        $"setter value 参数类型 \"{plainArgs[0].TypeRef}\" 与方法符号 " +
+                        $"\"{returnType}\" 不一致"));
+                }
+                return;
             }
             if (plainArgs.Count != expected.Count)
             {

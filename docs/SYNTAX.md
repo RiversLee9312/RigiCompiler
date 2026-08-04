@@ -1035,6 +1035,14 @@ pub shared class SharedSession {
 | `async` | 调用时创建新协程并返回 Task；仅适用于函数和 lambda |
 | `native` | 声明无函数体的原生函数，由运行时原生方法面提供实现；仅适用于函数，须配 `@NativeLibrary`（§4.6） |
 
+#### 9.2.1 `override` 配套规则
+
+- `open`/`abstract`/`override` 仅适用于普通成员方法；字段、`init`、operator、getter/setter 与 `static` 方法上使用即编译错误（静态无多态）。接口成员天然可覆写，接口内写 `open`/`abstract` 为冗余错误。
+- `override` 必须在基类链或接口表中找到签名匹配（名称 + 参数类型序列 + 返回类型均严格相等）的 `open`/`abstract` 方法或接口成员；找不到、或目标非 `open`/`abstract`，均为编译错误。
+- 与继承成员同名同签名的成员必须显式 `override`（禁止静默隐藏）。
+- `abstract` 方法必须位于 `abstract` 类内；接口之外的无体方法必须标 `abstract` 或 `native`。
+- 非 `abstract` 类必须实现继承链上全部 `abstract` 成员与无体接口成员（有默认实现的接口成员隐式继承；§11 的显式委托语法 `override func m() -> InterfaceName` 暂未实现）；`new` 一个 `abstract` 类是编译错误。
+
 ### 9.3 构造函数（`init`）
 
 ```latte
@@ -1096,6 +1104,15 @@ pub func example() {
 - `value` 参数：表示需要编译器生成 backing field
 - `_` 参数：表示不需要 backing field（计算属性）
 - get 和 set 在是否需要 backing field 上必须保持一致
+
+#### 9.4.1 绑定语义
+
+- 访问器上的修饰符仅允许访问级别（`pub`/`protected`/`internal`/`priv`）；访问器的可见性 = 访问器显式修饰 ?? 字段声明的访问级别 ?? private。
+- **backing 形态**（`value: _`）：编译器生成隐藏 backing 存储（永为私有，用户不可直接访问）；访问器体内 `value` 是 backing 的别名——getter 体内只读、setter 体内可读写。setter 语义 = 进入时隐含 `backing = value`（`value` 即新值），随后执行体；体可改写 `value`（即改写 backing），用于钳制、通知等场景。
+- **自动访问器**（无体，如 `pub get` / `priv set`）：编译器合成实现——getter 为 `return value`，setter 为空体（隐式 `backing = value` 已足）。无体 + 计算形态（无 backing）是编译错误（编译器无法生成计算实现）。
+- `const` 字段不得声明 setter。仅声明 get 的字段不可写、仅声明 set 的字段不可读；访问器自身的可见性在读写使用点分别检查。
+- 带访问器的字段，外部读写一律经访问器；其读取结果不参与 smart cast 收窄（§3.5）。
+- 当前落地位置为类/struct 字段与全局变量两类；栈上局部变量/常量的访问器暂未实现（编译错误，归后续里程碑）。
 
 ### 9.5 内部类
 
@@ -1192,6 +1209,8 @@ pub class Circle : Shape implements Drawable {
 子类必须：
 - 显式实现自己的版本，或
 - 显式指定使用哪个接口的默认实现：`override func method() -> InterfaceName`
+
+（显式委托语法 `-> InterfaceName` 暂未实现；当前带默认实现的接口成员由实现类隐式继承，无体接口成员必须显式实现。）
 
 ---
 
@@ -1764,6 +1783,15 @@ import 即进入编译单元（与用户源同走语义全流程）：
 | （无） | private（默认，当前类/文件内可见） |
 
 默认访问级别为 private。构造函数、对外可见的字段和方法都需要显式标注 `pub`。
+
+### 16.1 可见性判定规则
+
+- **private（`priv` 或默认）**：顶层声明（类型/全局函数/全局变量）仅在**当前文件**内可见；类型成员仅在**声明类型及其嵌套类型**（递归）内可见。
+- **`protected`**：两种位置可见——使用点所在宿主类型沿基类链可达成员的宿主类型（子类体内）；或与成员宿主同属一个**包**。「包」即同一命名空间（限定名全等，不含子命名空间）。
+- **`internal`**：模块（项目）内可见。当前编译模型以一次编译的编译单元为模块，internal 在单元内恒可见。
+- **`pub`**：无限制。
+
+接口成员默认 `pub`（接口即契约）；其余声明默认 private 不变。访问控制在使用点检查：类型引用（声明侧与函数体内）、继承、成员访问（字段/方法/索引运算符）与构造调用（含 `init` 可见性，§12.2）均为使用点。
 
 ---
 

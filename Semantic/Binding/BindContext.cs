@@ -27,8 +27,34 @@ namespace LatteCompiler
         public bool IsDefaultValueContext { get; }
 
         // 当前上下文是否有 this receiver（实例方法/ext 方法体内；
-        // 默认值表达式上下文视同静态——三处实例上色判定统一走此属性）
+        // 默认值表达式上下文视同静态——三处实例上色判定统一走此属性）。
+        // 实例访问器（S8e）同样经此判定：访问器符号 Owner/IsStatic 随字段
+        // （P1），实例访问器天然满足条件，无需特判
         public bool HasThis => Method.Owner != null && !Method.IsStatic && !IsDefaultValueContext;
+
+        // 使用点访问控制便捷入口（S8e，SYNTAX §16.1）：以本上下文的文件/
+        // 命名空间/宿主类型（DeclaringType = 词法宿主）判定目标符号可见性
+        public bool CanAccess(SemanticSymbol target)
+        {
+            return AccessChecker.IsAccessible(target, FileCtx.File, FileCtx.Namespace,
+                DeclaringType);
+        }
+
+        // 访问器体绑定标记（S8e，SYNTAX §9.4.1）：backing 形态访问器体内
+        // 裸名 value 是 backing 字段的别名（PathVisitors 裸名解析拦截；
+        // getter 体内只读、setter 体内可读写）。null = 非访问器体上下文；
+        // 仅 backing 形态置位（computed 访问器的 value 走普通参数解析）
+        public FieldSymbol? AccessorField { get; private set; }
+
+        // AccessorField 非空时有效：true = setter 体（value 可读写），
+        // false = getter 体（value 只读）
+        public bool AccessorIsSetter { get; private set; }
+
+        public void SetAccessor(FieldSymbol field, bool isSetter)
+        {
+            AccessorField = field;
+            AccessorIsSetter = isSetter;
+        }
 
         // 函数内全部局部符号（含值块/合成之外的源级声明），BoundFunctionBody.Locals 来源
         public List<LocalSymbol> Locals { get; } = new List<LocalSymbol>();

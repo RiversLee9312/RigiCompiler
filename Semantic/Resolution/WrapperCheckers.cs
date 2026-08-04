@@ -65,6 +65,10 @@ namespace LatteCompiler
                 {
                     field.AttachToExtTarget(targetType);
                     targetType.Fields.Add(field);
+                    // ext 字段的访问器随字段随迁宿主（S8e；仍不入容器方法表——
+                    // P4b 声明发射由字段槽驱动）
+                    field.Getter?.AttachToExtTarget(targetType);
+                    field.Setter?.AttachToExtTarget(targetType);
                 }
                 else if (symbol is MethodSymbol method)
                 {

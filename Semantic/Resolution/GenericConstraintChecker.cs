@@ -34,6 +34,14 @@ namespace LatteCompiler
                     }
                     var bound = env.ResolveTypeReference(constraint.Bound, entry);
                     if (bound is ErrorTypeSymbol) continue;    // 毒化静默
+                    // 声明侧访问控制（§16，S8e）：约束边界引用即使用点
+                    if (!AccessChecker.IsTypeAccessible(bound, entry.Context.File,
+                        entry.Context.Namespace, entry.DeclaringType))
+                    {
+                        env.Error(constraint.Bound.Span ?? constraint.Span ?? entry.Node.Span,
+                            AccessChecker.InaccessibleMessage(bound));
+                        continue;
+                    }
                     // with 约束的边界必须是 wrapper 类型（§3.6）
                     if (constraint.Kind == GenericConstraintKind.With &&
                         bound is not TypeSymbol { Kind: TypeKind.Wrapper })

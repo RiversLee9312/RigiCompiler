@@ -34,6 +34,10 @@ namespace LatteCompiler.Tests
     /// 指令与表资源）、throw（§16.9 单操作数、entry 块 throw 终止不补 ret）。
     /// S8c：索引访问（§13.6 get.array/set.array 发射——读写/复合/链式形态，
     /// 用户 operator 的 §8.4 声明形态断言）。
+    /// S8e：访问器声明发射（§8.3 字段形态标记 backing/computed/readable/
+    /// writable/compiler-generated + §8.4 getter(FIELD)/setter(FIELD) 字段槽
+    /// 驱动声明，类 backing 与全局自动访问器 fn 形状黄金）与
+    /// override/abstract 投影（§8.2/§8.4 关键字修饰，abstract 无 fn 定义）。
     /// </summary>
     public static partial class BilEmitterTests
     {
@@ -76,6 +80,8 @@ namespace LatteCompiler.Tests
             TestTypeCheckEmission();
             TestTypeOfEmission();
             TestIndexEmission();
+            TestAccessorEmission();
+            TestOverrideProjection();
             TestUnsupportedNodes();
 
             return TestHarness.Summary("BilEmitter");

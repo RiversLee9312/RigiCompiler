@@ -820,6 +820,13 @@ namespace LatteCompiler.Bil
             if (BilVerificationContext.TryParseFieldSymbol(fieldSymbol,
                     out var owner, out _, out _))
             {
+                // 命名空间全局字段（§13.4 未规定宿主形态）：符号 owner 段是
+                // 带 "::" 的命名空间前缀，指令宿主操作数投影命名空间全名
+                // （EmittingFacility.FieldOwnerRef 约定）——归一后比对
+                if (owner.EndsWith("::"))
+                {
+                    owner = owner.Substring(0, owner.Length - 2);
+                }
                 CheckType(context, ownerTypeRef, owner, location, "静态字段的宿主类型", errors);
             }
         }
