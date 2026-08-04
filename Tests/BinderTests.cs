@@ -50,6 +50,7 @@ namespace LatteCompiler.Tests
             TestCast();
             TestTry();
             TestSeq();
+            TestSeqExit();
             TestStringInterpolation();
             TestSafeAccess();
             TestNullFallback();
@@ -2135,6 +2136,58 @@ namespace LatteCompiler.Tests
                 "    }\n" +
                 "}\n");
             CheckNoErrors("finally 覆盖穿透无诊断", unit14);
+        }
+
+        // ===== return@语句seq（M61，SYNTAX §6.1：提前结束该块，不携带值）=====
+        private static void TestSeqExit()
+        {
+            TestHarness.Section("P3 return@statement-seq (M61)");
+
+            // 正例：命中即 BoundSeqExitStatement；嵌套块内穿透
+            var (unit, bodies) = BindUnit(
+                "func f(x: i32): i32 {\n" +
+                "    seq named outer {\n" +
+                "        if (x > 0) { return@outer }\n" +
+                "    }\n" +
+                "    return x\n" +
+                "}\n");
+            CheckNoErrors("无诊断（return@语句seq）", unit);
+            TestHarness.Check("SeqExit 绑定形态", BoundDescribe.Body(BodyOf(bodies, "f")),
+                "Body(f, [], [Seq@outer([If(Binary(CmpGt, Param(x,i32), Int(0,i32), bool), " +
+                "[SeqExit(@outer)])]); Return(Param(x,i32))])");
+
+            // 负例：语句 seq 目标必须不携带值
+            var (unit2, _) = BindUnit(
+                "func f() {\n    seq named s {\n        return@s 1\n    }\n}\n");
+            TestHarness.CheckSemanticError("语句 seq 不带值", unit2.Diagnostics,
+                "return@s cannot carry a value (target is a statement seq)");
+
+            // 负例：隔循环拦截（seq 在循环外，return@ 在循环内）
+            var (unit3, _) = BindUnit(
+                "func f(x: i32) {\n" +
+                "    seq named s {\n" +
+                "        while (x > 0) { return@s }\n" +
+                "    }\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("隔循环拒绝", unit3.Diagnostics,
+                "return@s across a loop boundary not supported yet (S7c)");
+
+            // 负例：隔值块拦截（return@seq 在值块内——continuation 无法表达）
+            var (unit4, _) = BindUnit(
+                "func f(c: bool): i32 {\n" +
+                "    seq named s {\n" +
+                "        var v = if (c) { return@s } else { return@_ 1 }\n" +
+                "    }\n" +
+                "    return 0\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("隔值块拒绝", unit4.Diagnostics,
+                "return@s across a value block boundary not supported yet");
+
+            // 未 named 的语句 seq 不作目标（`_` 默认标签值块专属）
+            var (unit5, _) = BindUnit(
+                "func f() {\n    seq {\n        return@_\n    }\n}\n");
+            TestHarness.CheckSemanticError("匿名语句 seq 非目标", unit5.Diagnostics,
+                "Undefined value block label: '_'");
         }
 
         // ===== 字符串插值（S7f，SYNTAX §3.8）=====

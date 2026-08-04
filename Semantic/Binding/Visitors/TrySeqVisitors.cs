@@ -111,8 +111,9 @@ namespace LatteCompiler
     }
 
     // seq 语句（S7e，SYNTAX §10.1）：块级顺序执行区——绑定直通块分派
-    // （作用域/DA 语义与裸块相同）；不压值块标签栈（return@ 指向
-    // 语句 seq 报未定义标签，规范未明，M50 登记）；using 归 S13（拦截）
+    // （作用域/DA 语义与裸块相同）；M61 起 named 语句 seq 可作 return@
+    // 目标（§6.1：压标签栈绑体，try/finally 配对；仅显式 named 压栈——
+    // `_` 默认标签值块专属）；using 归 S13（拦截）
     internal sealed class SeqStatementVisitor
         : BinderVisitor<SeqStatementVisitor, BoundStatement, BindContext>
     {
@@ -125,8 +126,20 @@ namespace LatteCompiler
                 env.Error(seq.Span, "P3: using bindings are not supported yet (S13)");
                 return null;
             }
-            return new BoundSeqStatement(node, BlockDispatcher.Visit(seq.Body, scope, ctx, env),
-                seq.IsVolatile);
+            var shell = new BoundSeqStatement(node, seq.IsVolatile, seq.Label);
+            if (seq.Label != null)
+            {
+                ctx.SeqLabels.Push((shell, ctx.Loops.Count, ctx.ValueBlocks.Count));
+            }
+            try
+            {
+                shell.Body = BlockDispatcher.Visit(seq.Body, scope, ctx, env);
+            }
+            finally
+            {
+                if (seq.Label != null) ctx.SeqLabels.Pop();
+            }
+            return shell;
         }
     }
 

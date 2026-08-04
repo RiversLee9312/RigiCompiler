@@ -91,7 +91,10 @@ namespace LatteCompiler.Tests
                 BoundThrowStatement throwStmt => $"Throw({Expr(throwStmt.Exception)})",
                 BoundTryStatement tryStmt => Try(tryStmt),
                 BoundSeqStatement seqStmt =>
-                    $"{(seqStmt.IsVolatile ? "SeqVolatile" : "Seq")}({Block(seqStmt.Body)})",
+                    $"{(seqStmt.IsVolatile ? "SeqVolatile" : "Seq")}" +
+                    $"{(seqStmt.Label != null ? "@" + seqStmt.Label : "")}({Block(seqStmt.Body)})",
+                // M61：return@语句seq（不携带值，Target.Label 必非 null）
+                BoundSeqExitStatement seqExit => $"SeqExit(@{seqExit.Target.Label})",
                 // S7f 解构声明：Destructuring([a: String ← key; b: i32 ← value], init)
                 BoundDestructuringDeclarationStatement destructuring =>
                     $"Destructuring([{string.Join("; ", destructuring.Entries.Select(e => $"{e.Local.Name}: {TypeShort(e.Local.Type)} ← {e.Field.Name}"))}], {Expr(destructuring.Initializer)})",

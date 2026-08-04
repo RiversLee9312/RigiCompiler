@@ -22,6 +22,7 @@ namespace LatteCompiler
                 BoundSwitchStatement => SwitchStatementRewriter.Visit(statement, ctx, env),
                 BoundTryStatement => TryRewriter.Visit(statement, ctx, env),
                 BoundSeqStatement => SeqStatementRewriter.Visit(statement, ctx, env),
+                BoundSeqExitStatement => SeqExitRewriter.Visit(statement, ctx, env),
                 BoundThrowStatement => ThrowRewriter.Visit(statement, ctx, env),
                 BoundAssignmentStatement => AssignmentRewriter.Visit(statement, ctx, env),
                 BoundReturnStatement => ReturnRewriter.Visit(statement, ctx, env),

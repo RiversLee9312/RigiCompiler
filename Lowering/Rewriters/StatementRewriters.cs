@@ -112,7 +112,11 @@ namespace LatteCompiler
         }
     }
 
-    // seq 语句恒等降级（S7e，BIL §3.4 独立 block + call 化）
+    // seq 语句降级（S7e，BIL §3.4 独立 block + call 化）；M61 起 named
+    // seq 降级体期间压 SeqTargets 栈（return@语句seq 的归属比对），
+    // 体含 exit 标记时跑 continuation 编织（消费命中本层者、截断传播
+    // 外层者；无 exit 直通——零行为变化）。手动压栈收集（OutputStack
+    // 元素即可变 List——编织就地变换需要，仿 SwitchRewriters 先例）
     internal sealed class SeqStatementRewriter
         : LoweredVisitor<SeqStatementRewriter, LoweredStatement, LowerContext>
     {
@@ -120,9 +124,46 @@ namespace LatteCompiler
             LowerEnvironment env)
         {
             var seqStatement = (BoundSeqStatement)node;
-            var seqBody = LowerBlockVisitor.Visit(seqStatement.Body, ctx, env);
-            if (seqBody == null) return null;
-            return new LoweredSeqBlock(seqStatement, seqBody, seqStatement.IsVolatile);
+            // 所有 seq 降级都压栈（含无名）——exit 归属比对按引用命中
+            // 「本层」；无名 seq 不压栈会让栈顶指向外层 seq，导致外层
+            // 目标被内层误消费（其后语句漏截断）
+            ctx.SeqTargets.Push(seqStatement);
+            var statements = new List<LoweredStatement>();
+            ctx.OutputStack.Push(statements);
+            try
+            {
+                foreach (var statement in seqStatement.Body.Statements)
+                {
+                    var lowered = LowerStatementDispatcher.Visit(statement, ctx, env);
+                    if (lowered == null) return null;
+                    statements.Add(lowered);
+                }
+                if (ValueBlockFacility.ContainsSeqExit(statements))
+                {
+                    ValueBlockFacility.TransformStatements(statements, ctx, env);
+                    if (ctx.TransformFailed) return null;
+                }
+            }
+            finally
+            {
+                ctx.OutputStack.Pop();
+                ctx.SeqTargets.Pop();
+            }
+            return new LoweredSeqBlock(seqStatement,
+                new LoweredBlock(seqStatement.Body, statements), seqStatement.IsVolatile);
+        }
+    }
+
+    // return@语句seq 降级（M61，SYNTAX §6.1）：纯控制流标记节点——
+    // 不产指令；目标 seq 降级层经 continuation 编织消费
+    internal sealed class SeqExitRewriter
+        : LoweredVisitor<SeqExitRewriter, LoweredStatement, LowerContext>
+    {
+        protected override LoweredStatement? VisitCore(BoundNode node, LowerContext ctx,
+            LowerEnvironment env)
+        {
+            var exit = (BoundSeqExitStatement)node;
+            return new LoweredSeqExitStatement(exit, exit.Target);
         }
     }
 

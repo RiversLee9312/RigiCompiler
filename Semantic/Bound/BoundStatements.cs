@@ -313,14 +313,32 @@ namespace LatteCompiler
     // 未明，M50 登记）；using 绑定列表属 S13，P3 已拦截
     public sealed class BoundSeqStatement : BoundStatement
     {
-        public BoundBlock Body { get; }
+        // 施工壳模式（同 BoundValueBlock.Block）：语句 seq 作 return@ 目标
+        // 时须在绑体前压标签栈（M61），体绑完回填
+        public BoundBlock Body { get; internal set; } = null!;
         public bool IsVolatile { get; }
+        // named 标签（仅显式 named 时非 null——语句 seq 不享有值块的 `_`
+        // 默认标签，避免与值块默认值冲突；非 null 即可作 return@ 目标，
+        // SYNTAX §6.1，M61）
+        public string? Label { get; }
 
-        public BoundSeqStatement(ASTNode syntax, BoundBlock body, bool isVolatile)
+        public BoundSeqStatement(ASTNode syntax, bool isVolatile, string? label = null)
             : base(syntax)
         {
-            Body = body;
             IsVolatile = isVolatile;
+            Label = label;
+        }
+    }
+
+    // return@语句seq（M61，SYNTAX §6.1）：提前结束目标 seq 块（不携带值），
+    // 继续执行块后语句。引用相等即身份（Target 为绑定时的 seq 施工节点）
+    public sealed class BoundSeqExitStatement : BoundStatement
+    {
+        public BoundSeqStatement Target { get; }
+
+        public BoundSeqExitStatement(ASTNode syntax, BoundSeqStatement target) : base(syntax)
+        {
+            Target = target;
         }
     }
 }

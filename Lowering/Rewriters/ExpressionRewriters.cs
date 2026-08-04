@@ -221,11 +221,12 @@ namespace LatteCompiler
         }
     }
 
-    // 复合赋值脱糖（SYNTAX §13.2）：前置「Target = Target op Value」
-    // 赋值，表达式位 Target 引用（写回后值）。Target 是局部/字段引用或
-    // 索引访问（P3 强制 place），三处引用（赋值左/运算左/表达式位）
-    // 各自独立降级构造——索引目标（S8c）的 receiver/index 随之重复
-    // 求值，与字段复合的既有行为差异已在 P3 注释记入
+    // 复合赋值脱糖（SYNTAX §13.2 通用规则——M60 定稿单次求值）：前置
+    // 「Target = Target op Value」赋值，表达式位 Target 引用（写回后值）。
+    // 含副作用的目标子表达式（实例字段 receiver / 索引 receiver+index）
+    // 先物化合成局部（前置赋值，求值序先于右值），赋值左/运算左/表达式
+    // 位三处共用同一物化目标——节点复用安全（Lowered 节点无父链不可变，
+    // continuation 编织先例）；局部/参数/静态字段无副作用，零物化直通
     internal sealed class CompoundAssignmentRewriter
         : LoweredVisitor<CompoundAssignmentRewriter, LoweredExpression, LowerContext>
     {
@@ -234,13 +235,62 @@ namespace LatteCompiler
         {
             var compound = (BoundCompoundAssignmentExpression)node;
             var target = LowerExpressionDispatcher.Visit(compound.Target, ctx, env);
-            var targetRead = LowerExpressionDispatcher.Visit(compound.Target, ctx, env);
+            if (target == null) return null;
+            target = MaterializeTarget(target, ctx);
             var value = LowerExpressionDispatcher.Visit(compound.Value, ctx, env);
-            if (target == null || targetRead == null || value == null) return null;
+            if (value == null) return null;
             ctx.OutputStack.Peek().Add(new LoweredAssignmentStatement(compound, target,
-                new LoweredBinaryExpression(compound, compound.Op, targetRead, value)));
-            return LowerExpressionDispatcher.Visit(compound.Target, ctx, env);
+                new LoweredBinaryExpression(compound, compound.Op, target, value)));
+            return target;
         }
+
+        // 目标单次求值物化（M60）：实例字段 receiver 与索引 receiver/index
+        // 降级产物换为合成局部引用（前置「.sN = expr」赋值语句）；
+        // 纯读取形态（局部/参数/静态字段/字面量/常量/this 及其链式组合）
+        // 无副作用，直通不物化
+        private static LoweredExpression MaterializeTarget(LoweredExpression target,
+            LowerContext ctx)
+        {
+            if (IsSideEffectFree(target)) return target;
+            switch (target)
+            {
+                case LoweredFieldAccessExpression fieldAccess:
+                    return new LoweredFieldAccessExpression(fieldAccess.Origin,
+                        MaterializeInto(fieldAccess.Origin, fieldAccess.Receiver, ctx),
+                        fieldAccess.Field);
+                case LoweredIndexExpression indexAccess:
+                    return new LoweredIndexExpression((BoundIndexExpression)indexAccess.Origin,
+                        MaterializeInto(indexAccess.Origin, indexAccess.Receiver, ctx),
+                        MaterializeInto(indexAccess.Origin, indexAccess.Index, ctx));
+                default:
+                    return target;
+            }
+        }
+
+        // 物化一条「.sN = expr」前置赋值（求值一次），返回合成局部引用；
+        // 纯读取子表达式直通（不产多余局部）
+        private static LoweredExpression MaterializeInto(BoundNode origin,
+            LoweredExpression expr, LowerContext ctx)
+        {
+            if (IsSideEffectFree(expr)) return expr;
+            var local = ctx.NewSynthLocal(expr.Type);
+            ctx.OutputStack.Peek().Add(new LoweredAssignmentStatement(origin,
+                LowerContext.ReferenceTo(origin, local), expr));
+            return LowerContext.ReferenceTo(origin, local);
+        }
+
+        // 纯读取判定（无副作用，重复求值安全）：局部/参数/静态字段/字面量/
+        // 常量/this，及全由它们构成的字段/索引链
+        private static bool IsSideEffectFree(LoweredExpression expr) => expr switch
+        {
+            LoweredValueReferenceExpression or LoweredFieldReferenceExpression
+                or LoweredLiteralExpression or LoweredConstantExpression
+                or LoweredThisExpression => true,
+            LoweredFieldAccessExpression fieldAccess => IsSideEffectFree(fieldAccess.Receiver),
+            LoweredIndexExpression indexAccess => IsSideEffectFree(indexAccess.Receiver)
+                && IsSideEffectFree(indexAccess.Index),
+            _ => false,
+        };
     }
 
     internal sealed class ThisRewriter : LoweredVisitor<ThisRewriter, LoweredExpression, LowerContext>

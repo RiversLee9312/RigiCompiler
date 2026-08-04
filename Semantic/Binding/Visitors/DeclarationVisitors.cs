@@ -249,7 +249,8 @@ namespace LatteCompiler
         {
             var ret = (ReturnStatementASTNode)node;
             // return@标签（SYNTAX §6.1）：终止标签对应值块的路径并把值作为该块
-            // 产值；沿值块标签栈从内向外查找，未命中即未定义标签
+            // 产值；沿值块标签栈从内向外查找，未命中再查语句 seq 标签栈
+            // （M61：return@语句seq 提前结束该块，必须不携带值）
             if (ret.Label != null)
             {
                 BoundValueBlock? target = null;
@@ -265,6 +266,33 @@ namespace LatteCompiler
                 }
                 if (target == null)
                 {
+                    // 语句 seq 目标（M61）：隔循环拦截（同值块——P4a 编织无法
+                    // 表达跳出中间循环）；隔值块拦截（值块 continuation 无法
+                    // 表达「跳到外层 seq」）；不携带值（语句 seq 无产值消费者）
+                    foreach (var (seq, loopDepth, valueBlockDepth) in ctx.SeqLabels)
+                    {
+                        if (seq.Label != ret.Label) continue;
+                        if (ctx.Loops.Count > loopDepth)
+                        {
+                            env.Error(ret.Span, $"P3: return@{ret.Label} across a loop " +
+                                "boundary not supported yet (S7c)");
+                            return null;
+                        }
+                        if (ctx.ValueBlocks.Count > valueBlockDepth)
+                        {
+                            env.Error(ret.Span, $"P3: return@{ret.Label} across a value " +
+                                "block boundary not supported yet");
+                            return null;
+                        }
+                        if (ret.Value != null)
+                        {
+                            env.Error(ret.Value.Span ?? ret.Span,
+                                $"return@{ret.Label} cannot carry a value " +
+                                "(target is a statement seq)");
+                            return null;
+                        }
+                        return new BoundSeqExitStatement(node, seq);
+                    }
                     env.Error(ret.Span, $"Undefined value block label: '{ret.Label}'");
                     return null;
                 }

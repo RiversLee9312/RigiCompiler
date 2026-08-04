@@ -42,6 +42,11 @@ namespace LatteCompiler
         public Stack<(BoundExpression Selector, LocalSymbol Temp)> SwitchTemps { get; } =
             new Stack<(BoundExpression, LocalSymbol)>();
 
+        // 语句 seq 降级目标栈（M61）：named 语句 seq 降级体期间压入
+        // （BoundSeqStatement 施工节点，引用相等即身份）；LoweredSeqExit
+        // 标记经栈顶比对归属——命中本层消费、命中外层保留向上传播
+        public Stack<BoundSeqStatement> SeqTargets { get; } = new Stack<BoundSeqStatement>();
+
         // 安全访问占位映射栈（S7f）：BoundSafeAccessReceiverExpression 实例 →
         // （物化 receiver 局部, unwrap 目标类型）——引用相等查找，嵌套安全
         // 访问（a?.b?.c）逐层向内命中；占位降级为 unwrap cast（§12.1）

@@ -331,6 +331,40 @@ namespace LatteCompiler.Tests
                 ReferenceEquals(
                     ((LoweredLocalDeclarationStatement)loweredBody.Body.Statements[2])
                         .Initializer!.Origin, boundCompound.Target));
+
+            // M60 单次求值（SYNTAX §13.2 通用规则定稿）：副作用 receiver/index
+            // 物化合成局部——getBag()/getI()/getBox() 各求值一次；纯读取
+            // 目标（局部/参数/静态字段/字面量索引）直通零物化（上例锁定）
+            var (unit2, _, lowered2) = LowerUnit(
+                "class Bag {\n" +
+                "    pub var item: i32\n" +
+                "    pub operator getAtIndex(index: i32): i32 { return item }\n" +
+                "    pub operator setAtIndex(index: i32, element: i32) { item = element }\n" +
+                "}\n" +
+                "class Box { pub var f: i32 }\n" +
+                "func getBag(): Bag { return new Bag() }\n" +
+                "func getBox(): Box { return new Box() }\n" +
+                "func getI(): i32 { return 1 }\n" +
+                "func bump(): i32 { var y = (getBag()[getI()] += 2)\nreturn y }\n" +
+                "func bumpField(): i32 { var z = (getBox().f += 3)\nreturn z }\n");
+            CheckNoErrors("无诊断（复合赋值单次求值）", unit2);
+            TestHarness.Check("索引复合物化（receiver/index 各一次）",
+                LoweredDescribe.Body(BodyOf(lowered2, "bump")),
+                "Body(bump, [y: i32, .s0: Bag, .s1: i32], " +
+                "[Assign(Local(.s0,Bag), Call(getBag, [], Bag)); " +
+                "Assign(Local(.s1,i32), Call(getI, [], i32)); " +
+                "Assign(Index(Local(.s0,Bag), Local(.s1,i32), i32), " +
+                "Binary(Add, Index(Local(.s0,Bag), Local(.s1,i32), i32), Int(2,i32), i32)); " +
+                "Decl(y, i32, = Index(Local(.s0,Bag), Local(.s1,i32), i32)); " +
+                "Return(Local(y,i32))])");
+            TestHarness.Check("字段复合物化（receiver 一次）",
+                LoweredDescribe.Body(BodyOf(lowered2, "bumpField")),
+                "Body(bumpField, [z: i32, .s0: Box], " +
+                "[Assign(Local(.s0,Box), Call(getBox, [], Box)); " +
+                "Assign(InstField(f, Local(.s0,Box), i32), " +
+                "Binary(Add, InstField(f, Local(.s0,Box), i32), Int(3,i32), i32)); " +
+                "Decl(z, i32, = InstField(f, Local(.s0,Box), i32)); " +
+                "Return(Local(z,i32))])");
         }
 
         // ===== S7b：值块 if 转换（后续语句移入 else / 双终止丢弃）=====
@@ -840,6 +874,44 @@ namespace LatteCompiler.Tests
                 LoweredDescribe.Body(BodyOf(lowered4, "sv")),
                 "Body(sv, [.s0: i32], [SeqVolatile([Assign(Local(.s0,i32), Int(1,i32))]); " +
                 "Return(Local(.s0,i32))])");
+
+            // return@语句seq（M61）：命中本层消费——then 分支 exit 删除，
+            // 其后语句 x = 99 织入 else
+            var (unit5, _, lowered5) = LowerUnit(
+                "func f(x: i32): i32 {\n" +
+                "    seq named outer {\n" +
+                "        x = 1\n" +
+                "        if (x > 0) { return@outer }\n" +
+                "        x = 99\n" +
+                "    }\n" +
+                "    return x\n" +
+                "}\n");
+            CheckNoErrors("无诊断（return@语句seq 降级）", unit5);
+            TestHarness.Check("return@outer 编织（x=99 织入 else）",
+                LoweredDescribe.Body(BodyOf(lowered5, "f")),
+                "Body(f, [], [Seq([Assign(Param(x,i32), Int(1,i32)); " +
+                "If(Binary(CmpGt, Param(x,i32), Int(0,i32), bool), [], " +
+                "[Assign(Param(x,i32), Int(99,i32))])]); Return(Param(x,i32))])");
+
+            // 嵌套无名 seq 传播（M61）：内层 exit 目标外层——内层截断
+            // x = 5 并传播，外层消费并截断 x = 9
+            var (unit6, _, lowered6) = LowerUnit(
+                "func g(x: i32): i32 {\n" +
+                "    seq named outer {\n" +
+                "        seq {\n" +
+                "            if (x > 0) { return@outer }\n" +
+                "            x = 5\n" +
+                "        }\n" +
+                "        x = 9\n" +
+                "    }\n" +
+                "    return x\n" +
+                "}\n");
+            CheckNoErrors("无诊断（嵌套 seq exit 传播）", unit6);
+            TestHarness.Check("exit 穿透无名内层 seq（两级截断）",
+                LoweredDescribe.Body(BodyOf(lowered6, "g")),
+                "Body(g, [], [Seq([Seq([If(Binary(CmpGt, Param(x,i32), Int(0,i32), bool), [], " +
+                "[Assign(Param(x,i32), Int(5,i32)); Assign(Param(x,i32), Int(9,i32))])])]); " +
+                "Return(Param(x,i32))])");
         }
 
         // ===== 值块编织扩展（S7e：seq 透明 / try 规则 / finally 拦截）=====

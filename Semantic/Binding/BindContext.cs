@@ -53,5 +53,12 @@ namespace LatteCompiler
         // （嵌套 switch 逐层向内命中）；仅匹配表达式绑定期间存活，分支体无
         // _ 语义（SYNTAX §7.2）
         public Stack<BoundExpression> SwitchSelectors { get; } = new Stack<BoundExpression>();
+
+        // 语句 seq 标签栈（M61，SYNTAX §6.1）：绑定 named 语句 seq 体期间
+        // 压入（仅显式 named 的语句 seq 可作 return@ 目标——`_` 默认标签
+        // 值块专属）；LoopDepth/ValueBlockDepth 为压栈时刻的循环/值块
+        // 深度——return@ 命中时隔循环/隔值块拦截用（引用相等即身份）
+        public Stack<(BoundSeqStatement Seq, int LoopDepth, int ValueBlockDepth)> SeqLabels
+        { get; } = new Stack<(BoundSeqStatement, int, int)>();
     }
 }

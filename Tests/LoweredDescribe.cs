@@ -77,6 +77,9 @@ namespace LatteCompiler.Tests
                 LoweredTryStatement tryStmt => Try(tryStmt),
                 LoweredSeqBlock seqBlock =>
                     $"{(seqBlock.IsVolatile ? "SeqVolatile" : "Seq")}({Block(seqBlock.Body)})",
+                // M61：return@语句seq 标记（编织后命中本层者被消费删除——
+                // 仅传播中的外层目标可见）
+                LoweredSeqExitStatement seqExit => $"SeqExit(@{seqExit.Target.Label})",
                 _ => $"<{stmt.GetType().Name}>",
             };
         }

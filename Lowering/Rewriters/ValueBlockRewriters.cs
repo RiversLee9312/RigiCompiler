@@ -147,6 +147,15 @@ namespace LatteCompiler
                         // throw 终止本路径（BIL §16.9 真终止）：同截断
                         statements.RemoveRange(i + 1, statements.Count - i - 1);
                         return;
+                    case LoweredSeqExitStatement exit:
+                        // return@语句seq（M61）：命中本层（SeqTargets 栈顶）
+                        // 即消费（自身一并删除）；命中外层保留标记向上传播；
+                        // 两种情形其后语句均不可达（终止本路径）
+                        var consumeHere = ctx.SeqTargets.Count > 0
+                            && ReferenceEquals(ctx.SeqTargets.Peek(), exit.Target);
+                        statements.RemoveRange(consumeHere ? i : i + 1,
+                            statements.Count - (consumeHere ? i : i + 1));
+                        return;
                     case LoweredIfStatement ifStatement:
                     {
                         if (!HasTerminatingPath(ifStatement.TrueBlock, ctx)
@@ -320,6 +329,7 @@ namespace LatteCompiler
             {
                 LoweredAssignmentStatement assignment => IsValueBlockWrite(assignment, ctx),
                 LoweredThrowStatement => true,
+                LoweredSeqExitStatement => true,    // return@语句seq（M61）终止本路径
                 LoweredIfStatement ifStatement => ifStatement.FalseBlock != null
                     && BlockTerminates(ifStatement.TrueBlock, ctx)
                     && BlockTerminates(ifStatement.FalseBlock, ctx),
@@ -353,6 +363,9 @@ namespace LatteCompiler
                         if (IsValueBlockWrite(assignment, ctx)) return true;
                         break;
                     case LoweredThrowStatement:
+                        return true;
+                    case LoweredSeqExitStatement:
+                        // return@语句seq（M61）终止本路径
                         return true;
                     case LoweredIfStatement ifStatement:
                         if (HasTerminatingPath(ifStatement.TrueBlock, ctx)
@@ -399,6 +412,53 @@ namespace LatteCompiler
             foreach (var (_, target) in ctx.ValueBlocks)
             {
                 if (ReferenceEquals(reference.Symbol, target)) return true;
+            }
+            return false;
+        }
+
+        // 「语句序列含 LoweredSeqExit 标记」判定（M61，seq 语句降级的
+        // 编织闸门）：递归 if/switch/嵌套块/seq/try 三分支；LoweredLoop
+        // 不递归——隔循环 return@seq 已由 P3 拦截，循环体内 exit 的目标
+        // 必在循环内（随循环体降级消费）
+        public static bool ContainsSeqExit(IReadOnlyList<LoweredStatement> statements)
+        {
+            foreach (var statement in statements)
+            {
+                switch (statement)
+                {
+                    case LoweredSeqExitStatement:
+                        return true;
+                    case LoweredIfStatement ifStatement:
+                        if (ContainsSeqExit(ifStatement.TrueBlock.Statements)
+                            || (ifStatement.FalseBlock != null
+                                && ContainsSeqExit(ifStatement.FalseBlock.Statements)))
+                        {
+                            return true;
+                        }
+                        break;
+                    case LoweredSwitch switchStatement:
+                        if (switchStatement.Cases.Any(c => ContainsSeqExit(c.Body.Statements))
+                            || ContainsSeqExit(switchStatement.DefaultBody.Statements))
+                        {
+                            return true;
+                        }
+                        break;
+                    case LoweredBlock nested:
+                        if (ContainsSeqExit(nested.Statements)) return true;
+                        break;
+                    case LoweredSeqBlock seqBlock:
+                        if (ContainsSeqExit(seqBlock.Body.Statements)) return true;
+                        break;
+                    case LoweredTryStatement tryStatement:
+                        if (ContainsSeqExit(tryStatement.TryBlock.Statements)
+                            || tryStatement.Catches.Any(c => ContainsSeqExit(c.Body.Statements))
+                            || (tryStatement.FinallyBlock != null
+                                && ContainsSeqExit(tryStatement.FinallyBlock.Statements)))
+                        {
+                            return true;
+                        }
+                        break;
+                }
             }
             return false;
         }
