@@ -227,7 +227,10 @@ namespace LatteCompiler
             {
                 // init 参数映射 `_ -> field`：参数名与字段名相同（SYNTAX §9.3，纯语法替换）
                 var param = new ParameterSymbol(
-                    p.Name == "_" && p.MappedFieldName != null ? p.MappedFieldName : p.Name);
+                    p.Name == "_" && p.MappedFieldName != null ? p.MappedFieldName : p.Name,
+                    defaultValue: p.DefaultValue,
+                    isVariadic: p.IsVariadic,
+                    isNamedVariadic: p.IsNamedVariadic);
                 symbol.Parameters.Add(param);
                 result.Map(p, param);
             }

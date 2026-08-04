@@ -1,9 +1,10 @@
 namespace LatteCompiler
 {
-    // 调用绑定（S5/S7c-2）与 new 构造（S5）。
-    // 自旧 BindSession.BindCall/BindCallee/MatchSingleCandidate/
-    // BindInstanceCallForm/BindInstanceMethodCall/BindArguments/BindNew
-    // 迁移，行为不变。
+    // 调用绑定（S5/S7c-2/S8d）与 new 构造（S5）。
+    // 自旧 BindSession.BindCall/BindCallee/BindInstanceCallForm/
+    // BindInstanceMethodCall/BindArguments/BindNew 迁移；S8d 起候选解析
+    // 统一经 OverloadResolution（重载 ranking/默认参数/具名重排，
+    // SYNTAX §4.2），receiver 补 this 判定在落定胜者后进行。
 
     // 调用绑定的中间产物：值位置与语句位置分别落成
     // BoundCallExpression / BoundCallStatement（void 调用）；
@@ -59,7 +60,8 @@ namespace LatteCompiler
     internal static class CallFacility
     {
         // 直接调用绑定（纯调用形态路径）：多段首段为值 → 实例调用形态；
-        // 否则经被调用方解析（静态/全局或裸名实例方法补 this）
+        // 否则经被调用方候选集解析（静态/全局或裸名实例方法补 this——
+        // receiver 判定在重载解析落定胜者后进行，S8d）
         public static CallBinding? BindCall(ASTNode node, List<string> calleeSegments,
             List<ArgumentASTNode> arguments, Scope scope, BindContext ctx, BindEnvironment env)
         {
@@ -70,17 +72,33 @@ namespace LatteCompiler
             {
                 return BindInstanceCallForm(node, calleeSegments, arguments, scope, ctx, env);
             }
-            var callee = BindCallee(node, calleeSegments, arguments.Count, scope, ctx, env);
-            if (callee == null) return null;
-            var (calleeMethod, receiver) = callee.Value;
+            var candidates = ResolveCallee(node, calleeSegments, scope, ctx, env);
+            if (candidates == null) return null;
+            var resolved = OverloadResolution.Resolve(node, candidates, arguments, scope, ctx, env);
+            if (resolved == null) return null;
+            var (calleeMethod, boundArguments) = resolved.Value;
             if (calleeMethod.ReturnType != null
                 && SymbolLookup.ContainsGenericParameter(calleeMethod.ReturnType))
             {
                 env.Error(node.Span, "P3: generic type parameters are not supported yet (S9)");
                 return null;
             }
-            var boundArguments = BindArguments(calleeMethod, arguments, scope, node.Span, ctx, env);
-            if (boundArguments == null) return null;
+            BoundExpression? receiver = null;
+            if (calleeMethod.Owner != null && !calleeMethod.IsStatic)
+            {
+                // 实例方法（S7c-2）：当前上下文有 this（实例方法/ext 方法
+                // 体内）→ 补 this receiver；静态上下文（含默认值表达式）→ 诊断
+                if (ctx.HasThis)
+                {
+                    receiver = new BoundThisExpression(node, ctx.Method.Owner!);
+                }
+                else
+                {
+                    env.Error(node.Span, $"P3: instance method '{calleeMethod.Name}' requires " +
+                        "a receiver ('this' is not available in a static context)");
+                    return null;
+                }
+            }
             return new CallBinding
             {
                 Method = calleeMethod,
@@ -90,12 +108,11 @@ namespace LatteCompiler
             };
         }
 
-        // 被调用方解析：单段经 FindMethods 全查找序；多段经容器 + 末段
-        // 方法（首段为值的多段已由 BindCall 分流）。实例方法命中且当前
-        // 上下文有 this → 补 this receiver；静态上下文 → 诊断
-        private static (MethodSymbol Method, BoundExpression? Receiver)? BindCallee(
-            ASTNode node, List<string> calleeSegments, int argumentCount, Scope scope,
-            BindContext ctx, BindEnvironment env)
+        // 被调用方候选集解析：单段经 FindMethods 全查找序；多段经容器 + 末段
+        // 方法（首段为值的多段已由 BindCall 分流）。重载解析与实例 receiver
+        // 判定均在落定胜者后进行（S8d）
+        private static List<MethodSymbol>? ResolveCallee(ASTNode node, List<string> calleeSegments,
+            Scope scope, BindContext ctx, BindEnvironment env)
         {
             var pathText = string.Join(".", calleeSegments);
             List<MethodSymbol> candidates;
@@ -127,50 +144,7 @@ namespace LatteCompiler
                 env.Error(node.Span, $"Undefined function: '{pathText}'");
                 return null;
             }
-            var selected = MatchSingleCandidate(node, candidates, argumentCount, env);
-            if (selected == null) return null;
-            if (selected.Owner != null && !selected.IsStatic)
-            {
-                // 实例方法（S7c-2）：当前上下文有 this（实例方法/ext 方法
-                // 体内）→ 补 this receiver；静态上下文 → 诊断
-                if (ctx.Method.Owner != null && !ctx.Method.IsStatic)
-                {
-                    return (selected, new BoundThisExpression(node, ctx.Method.Owner));
-                }
-                env.Error(node.Span, $"P3: instance method '{selected.Name}' requires a receiver" +
-                    " ('this' is not available in a static context)");
-                return null;
-            }
-            return (selected, null);
-        }
-
-        // 候选方法的唯一匹配（无重载直接调用；S7c-2 提取共享——
-        // 静态/全局路径与实例链路径同一规则）：泛型方法归 S9；
-        // 按实参个数唯一匹配；多匹配归 S8d ranking
-        private static MethodSymbol? MatchSingleCandidate(ASTNode node,
-            List<MethodSymbol> candidates, int argumentCount, BindEnvironment env)
-        {
-            candidates = candidates.Where(m => m.GenericParameters.Count == 0).ToList();
-            if (candidates.Count == 0)
-            {
-                env.Error(node.Span, "P3: generic calls are not supported yet (S9)");
-                return null;
-            }
-            var matched = candidates.Where(m => m.Parameters.Count == argumentCount).ToList();
-            if (matched.Count == 0)
-            {
-                var counts = string.Join("/", candidates.Select(m => m.Parameters.Count).Distinct());
-                env.Error(node.Span, $"Function '{candidates[0].Name}' expects {counts} argument(s), " +
-                    $"got {argumentCount}");
-                return null;
-            }
-            if (matched.Count > 1)
-            {
-                env.Error(node.Span, $"P3: overload resolution for '{candidates[0].Name}' " +
-                    "is not supported yet (S8)");
-                return null;
-            }
-            return matched[0];
+            return candidates;
         }
 
         // 实例调用形态（首段为值的多段纯调用）：首段绑 receiver，中间段
@@ -232,8 +206,9 @@ namespace LatteCompiler
                         $"'{BoundAnalysis.TypeDisplay(receiver.Type)}'");
                 return null;
             }
-            var selected = MatchSingleCandidate(node, candidates, arguments.Count, env);
-            if (selected == null) return null;
+            var resolved = OverloadResolution.Resolve(node, candidates, arguments, scope, ctx, env);
+            if (resolved == null) return null;
+            var (selected, boundArguments) = resolved.Value;
             // 返回类型含未替换泛型参数（泛型接口/泛型类型成员的使用归
             // S9；for 协议内部路径不经此检查——P3 已备好具体类型）
             if (selected.ReturnType != null
@@ -242,8 +217,6 @@ namespace LatteCompiler
                 env.Error(node.Span, "P3: generic type parameters are not supported yet (S9)");
                 return null;
             }
-            var boundArguments = BindArguments(selected, arguments, scope, node.Span, ctx, env);
-            if (boundArguments == null) return null;
             return new CallBinding
             {
                 Method = selected,
@@ -253,8 +226,10 @@ namespace LatteCompiler
             };
         }
 
-        // 实参绑定：位置实参按序、具名实参按形参名归位——产物已是规范参数序
-        // （ARCHITECTURE §2「BoundCall 已是规范参数序」；默认参数填充归 S8d）
+        // 实参绑定（单候选落定）：位置实参按序、具名实参按形参名归位——
+        // 产物已是规范参数序（ARCHITECTURE §2「BoundCall 已是规范参数序」）；
+        // S8d：位置/具名冲突统一 Duplicate 诊断（此前位置实参会静默覆盖
+        // 具名占位）+ 缺省形参以预绑定默认值填充
         public static List<BoundExpression>? BindArguments(MethodSymbol target,
             List<ArgumentASTNode> arguments, Scope scope, CharRange? callSpan, BindContext ctx,
             BindEnvironment env)
@@ -290,13 +265,13 @@ namespace LatteCompiler
                         failed = true;
                         continue;
                     }
-                    if (bound[index] != null)
-                    {
-                        env.Error(argument.Span,
-                            $"Duplicate argument for parameter '{argument.Name}'");
-                        failed = true;
-                        continue;
-                    }
+                }
+                if (bound[index] != null)
+                {
+                    env.Error(argument.Span,
+                        $"Duplicate argument for parameter '{parameters[index].Name}'");
+                    failed = true;
+                    continue;
                 }
                 var expected = parameters[index].Type as TypeSymbol;
                 var value = ExpressionDispatcher.Visit(argument.Value.Expression, scope, ctx, env,
@@ -319,11 +294,17 @@ namespace LatteCompiler
             }
             for (int i = 0; i < parameters.Count; i++)
             {
-                if (bound[i] == null)
+                if (bound[i] != null) continue;
+                // 缺省形参：预绑定默认值填充（S8d）；预绑定失败的按缺失处理
+                // （声明点诊断已报，此处级联 Missing）
+                var defaultValue = env.GetParameterDefault(parameters[i]);
+                if (defaultValue != null)
                 {
-                    env.Error(callSpan, $"Missing argument for parameter '{parameters[i].Name}'");
-                    failed = true;
+                    bound[i] = defaultValue;
+                    continue;
                 }
+                env.Error(callSpan, $"Missing argument for parameter '{parameters[i].Name}'");
+                failed = true;
             }
             return failed ? null : bound.Select(b => b!).ToList();
         }
@@ -367,8 +348,7 @@ namespace LatteCompiler
                         $"Cannot construct wrapper '{type.Name}' (created by the compiler)");
                     return null;
             }
-            var inits = type.Methods.Where(m => m.Kind == MethodKind.Init
-                && m.GenericParameters.Count == 0).ToList();
+            var inits = type.Methods.Where(m => m.Kind == MethodKind.Init).ToList();
             if (inits.Count == 0)
             {
                 // 无显式 init 的零参构造（默认构造规则待规范明确，见技术债）
@@ -379,24 +359,12 @@ namespace LatteCompiler
                 env.Error(newNode.Span, $"Type '{type.Name}' has no constructor");
                 return null;
             }
-            var matched = inits.Where(m => m.Parameters.Count == newNode.Arguments.Count).ToList();
-            if (matched.Count == 0)
-            {
-                var counts = string.Join("/", inits.Select(m => m.Parameters.Count).Distinct());
-                env.Error(newNode.Span, $"Constructor of '{type.Name}' expects {counts} argument(s), " +
-                    $"got {newNode.Arguments.Count}");
-                return null;
-            }
-            if (matched.Count > 1)
-            {
-                env.Error(newNode.Span, $"P3: overload resolution for constructor of '{type.Name}' " +
-                    "is not supported yet (S8)");
-                return null;
-            }
-            var arguments = CallFacility.BindArguments(matched[0], newNode.Arguments, scope,
-                newNode.Span, ctx, env);
-            if (arguments == null) return null;
-            return new BoundNewExpression(node, type, matched[0], arguments);
+            // init 重载解析与函数调用同一设施（S8d，SYNTAX §4.2）
+            var resolved = OverloadResolution.Resolve(newNode, inits, newNode.Arguments, scope,
+                ctx, env);
+            if (resolved == null) return null;
+            return new BoundNewExpression(node, type, resolved.Value.Method,
+                resolved.Value.Arguments);
         }
     }
 }

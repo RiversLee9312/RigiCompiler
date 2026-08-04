@@ -20,10 +20,14 @@ namespace LatteCompiler
     // S7e：cast（as/as?）、try-catch-finally、seq 双形态。
     // S7f：字符串插值（绑定即规范化）、?. 安全调用、if? 空值回退、解构声明。
     // S8a：is/supers/with（右侧双形态）与 typeOf（值/类型双形态）。
+    // S8d：重载解析（OverloadResolution——结构过滤/类型适用性/最具体胜出 +
+    //   平局打破）+ 默认参数（声明点绑定 + 调用点规范序填充）+ 具名参数
+    //   重排纳入 ranking；init 与索引读同一设施。
     //
     // 明确不做（归后续里程碑，遇之一律 P3 诊断而非崩溃）：
-    // yield、重载 ranking 与默认参数（S8d）、getter/setter（S8e）、访问控制
-    // （S8e）、泛型使用侧（S9）、enum case（S11）、await/lambda（S13）、
+    // yield、可变参数调用绑定、写模式索引重载（RHS 类型赋值侧才可知）、
+    // getter/setter（S8e）、访问控制（S8e）、泛型使用侧（S9）、
+    // enum case（S11）、await/lambda（S13）、
     // 全局字段初始化器与无标注字段类型推断。
     public static class Binder
     {

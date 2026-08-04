@@ -262,6 +262,22 @@ namespace LatteCompiler
                     {
                         method.Parameters[i].Type = ResolveParameterType(fn.Parameters.Parameters[i], entry);
                     }
+                    // 默认参数顺序（SYNTAX §4.2）：首个默认值之后的形参必须全部携带默认值
+                    var seenDefault = false;
+                    for (int i = 0; i < method.Parameters.Count; i++)
+                    {
+                        if (method.Parameters[i].DefaultValue != null)
+                        {
+                            seenDefault = true;
+                            continue;
+                        }
+                        if (seenDefault)
+                        {
+                            Error(fn.Parameters.Parameters[i].Span ?? fn.Span,
+                                $"Parameter '{method.Parameters[i].Name}' must declare a default value " +
+                                "(a preceding parameter has one)");
+                        }
+                    }
                 }
             }
 

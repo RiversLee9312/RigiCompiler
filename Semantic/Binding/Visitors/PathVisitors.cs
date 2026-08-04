@@ -139,8 +139,9 @@ namespace LatteCompiler
                 }
                 else
                 {
-                    var headParameter = ctx.Method.Parameters.FirstOrDefault(
-                        p => p.Name == headName);
+                    // 默认值表达式上下文看不到函数形参（SYNTAX §4.2 声明点作用域）
+                    var headParameter = ctx.IsDefaultValueContext ? null : ctx.Method.Parameters
+                        .FirstOrDefault(p => p.Name == headName);
                     if (headParameter != null)
                     {
                         if (headParameter.Type is not TypeSymbol headParamType)
@@ -276,11 +277,11 @@ namespace LatteCompiler
             {
                 // 实例字段（S7c-2）：当前上下文有 this（实例方法/ext 方法
                 // 体内，method.Owner 统一承载宿主）→ this.field；静态
-                // 上下文（static 方法/全局函数）→ 诊断
-                if (ctx.Method.Owner != null && !ctx.Method.IsStatic)
+                // 上下文（static 方法/全局函数/默认值表达式）→ 诊断
+                if (ctx.HasThis)
                 {
                     var access = new BoundFieldAccessExpression(node,
-                        new BoundThisExpression(node, ctx.Method.Owner), field, fieldType);
+                        new BoundThisExpression(node, ctx.Method.Owner!), field, fieldType);
                     // S8b：this.f 收窄（const 字段 + 非 init 体内，经
                     // ConstFieldRules.IsNarrowable 判定）
                     return ApplyNarrowing(node, access,
@@ -304,12 +305,12 @@ namespace LatteCompiler
         private static BoundExpression? BindThisPath(PathExpressionASTNode node, Scope scope,
             BindContext ctx, BindEnvironment env, bool forAssignment)
         {
-            if (ctx.Method.Owner == null || ctx.Method.IsStatic)
+            if (!ctx.HasThis)
             {
                 env.Error(node.Span, "P3: 'this' is not available in a static context");
                 return null;
             }
-            BoundExpression receiver = new BoundThisExpression(node, ctx.Method.Owner);
+            BoundExpression receiver = new BoundThisExpression(node, ctx.Method.Owner!);
             var folded = FoldSuffixes(node, receiver, node.Head.Suffixes, 0,
                 forAssignment && node.Segments.Count == 0, scope, ctx, env);
             if (folded == null) return null;
@@ -468,16 +469,14 @@ namespace LatteCompiler
                     $"Type '{display}' does not define an index operator ('{name}')");
                 return null;
             }
-            if (candidates.Count > 1)
-            {
-                env.Error(node.Span,
-                    $"P3: overload resolution for '{name}' is not supported yet (S8)");
-                return null;
-            }
-            var op = candidates[0];
             if (!forWrite)
             {
-                // 读模式：实参绑定复用调用设施（多参数/具名/缺失诊断自然产生）
+                // 读模式：重载解析复用调用设施（S8d；多候选按索引实参类型
+                // ranking）——实参绑定、多参数/具名/缺失诊断自然产生
+                var resolved = OverloadResolution.Resolve(node, candidates, suffix.Arguments,
+                    scope, ctx, env);
+                if (resolved == null) return null;
+                var (op, boundArguments) = resolved.Value;
                 if (op.ReturnType == null)
                 {
                     env.Error(node.Span, $"Method '{op.Name}' has no result (void) " +
@@ -489,12 +488,17 @@ namespace LatteCompiler
                     env.Error(node.Span, "P3: generic type parameters are not supported yet (S9)");
                     return null;
                 }
-                var boundArguments = CallFacility.BindArguments(op, suffix.Arguments, scope,
-                    node.Span, ctx, env);
-                if (boundArguments == null) return null;
                 return new BoundIndexExpression(node, receiver, boundArguments[0], op,
                     (TypeSymbol)op.ReturnType);
             }
+            // 写模式多候选仍归口（RHS 类型在赋值侧才可知，ranking 无法在此进行）
+            if (candidates.Count > 1)
+            {
+                env.Error(node.Span, $"P3: overload resolution for write-mode '{name}' " +
+                    "is not supported yet");
+                return null;
+            }
+            var writeOp = candidates[0];
             // 写模式：恰一个索引实参（多参数索引非法的定稿诊断）
             if (suffix.Arguments.Count != 1)
             {
@@ -503,7 +507,7 @@ namespace LatteCompiler
                 return null;
             }
             var argument = suffix.Arguments[0];
-            var indexParameter = op.Parameters[0];
+            var indexParameter = writeOp.Parameters[0];
             if (argument.Name != null && argument.Name != indexParameter.Name)
             {
                 env.Error(argument.Span,
@@ -526,13 +530,13 @@ namespace LatteCompiler
                     $"'{BoundAnalysis.TypeDisplay(indexType)}'");
                 return null;
             }
-            if (op.Parameters[1].Type is not TypeSymbol elementType
+            if (writeOp.Parameters[1].Type is not TypeSymbol elementType
                 || SymbolLookup.ContainsGenericParameter(elementType))
             {
                 env.Error(node.Span, "P3: generic type parameters are not supported yet (S9)");
                 return null;
             }
-            return new BoundIndexExpression(node, receiver, index, op, elementType);
+            return new BoundIndexExpression(node, receiver, index, writeOp, elementType);
         }
 
         // 安全访问段（S7f，SYNTAX §3.4）：receiver 必须 Nullable<T>；段在

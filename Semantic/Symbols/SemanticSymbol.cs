@@ -301,9 +301,25 @@ namespace LatteCompiler
         // 参数类型（P2 解析后填；SemanticSymbol：TypeSymbol 或 GenericParameterSymbol）
         public SemanticSymbol? Type { get; internal set; }
 
-        public ParameterSymbol(string name, SemanticSymbol? type = null) : base(name)
+        // 默认值表达式根（SYNTAX §4.2；无默认值时为 null）。挂 AST 引用——
+        // P3 预绑定阶段（BindingDriver）在声明点作用域绑定，产物缓存于
+        // BindEnvironment.ParameterDefaults，调用点缺省时填充（每次调用
+        // 重新求值语义由 P4a 每次降级自然保证）
+        public ExpressionRootASTNode? DefaultValue { get; }
+
+        // 位置可变（Type...）/ 具名可变（named Type...）参数标记（SYNTAX §4.3）。
+        // S8d 起 P3 调用绑定遇之归口诊断（可变参数调用归后续里程碑）
+        public bool IsVariadic { get; }
+        public bool IsNamedVariadic { get; }
+
+        public ParameterSymbol(string name, SemanticSymbol? type = null,
+            ExpressionRootASTNode? defaultValue = null, bool isVariadic = false,
+            bool isNamedVariadic = false) : base(name)
         {
             Type = type;
+            DefaultValue = defaultValue;
+            IsVariadic = isVariadic;
+            IsNamedVariadic = isNamedVariadic;
         }
     }
 

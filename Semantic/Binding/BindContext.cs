@@ -5,11 +5,13 @@ namespace LatteCompiler
     // 正是状态污染证据——对象化后新建即清空，无需 Clear）。
     internal sealed class BindContext : IFlowContext
     {
-        public BindContext(MethodSymbol method, FileContext fileCtx, TypeSymbol? declaringType)
+        public BindContext(MethodSymbol method, FileContext fileCtx, TypeSymbol? declaringType,
+            bool isDefaultValueContext = false)
         {
             Method = method;
             FileCtx = fileCtx;
             DeclaringType = declaringType;
+            IsDefaultValueContext = isDefaultValueContext;
         }
 
         // 当前函数上下文
@@ -18,6 +20,15 @@ namespace LatteCompiler
         public FileContext FileCtx { get; }
 
         public TypeSymbol? DeclaringType { get; }
+
+        // 默认值表达式绑定上下文（S8d，SYNTAX §4.2）：声明点作用域——
+        // 看不到函数形参、视同静态上下文（无 this）；仅默认值绑定
+        // （BindingDriver.BindOneParameterDefault 统一入口，含调用点懒触发）置位
+        public bool IsDefaultValueContext { get; }
+
+        // 当前上下文是否有 this receiver（实例方法/ext 方法体内；
+        // 默认值表达式上下文视同静态——三处实例上色判定统一走此属性）
+        public bool HasThis => Method.Owner != null && !Method.IsStatic && !IsDefaultValueContext;
 
         // 函数内全部局部符号（含值块/合成之外的源级声明），BoundFunctionBody.Locals 来源
         public List<LocalSymbol> Locals { get; } = new List<LocalSymbol>();

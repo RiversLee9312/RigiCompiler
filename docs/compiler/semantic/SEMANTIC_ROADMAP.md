@@ -380,14 +380,30 @@ P4 同步落地——P3 绑得出来的形态，同一步内 P4 必须能发射�
 - **验收**：索引读写（含赋值 place）与表达式底座链端到端合法
   BIL + 多参数索引定稿结论同步 SYNTAX §13.2。
 
-### S8d 重载解析 + 默认参数 + 具名参数（纯 P3，无 P4 面）
+### S8d 重载解析 + 默认参数 + 具名参数（纯 P3，无 P4 面）✅（M60，2026-08-04）
 
-- 规范前置：重载规则目前欠定，动工前先补 SYNTAX；
-- P3：source-level ranking 唯一落点（BIL §3.3——之后各层不再
+> **已完成**（M60）：SYNTAX §4.2 重载解析规则定稿（三步：结构过滤 →
+> 类型适用性 → 最具体胜出 + 默认值填充数平局打破；实例/ext 同池；
+> 泛型/可变参数归口）；P3 新设施 `OverloadResolution`（静默结构映射
+> TryMapArguments + 无目标类型实参预绑（null 字面量占位，落定以胜者
+> 形参类型定型）+ IsApplicable/IsBetter + Materialize 规范序落定）；
+> 默认参数三件套（ParameterSymbol.DefaultValue/IsVariadic/
+> IsNamedVariadic + P1 填充 + P2 顺序检查）与声明点绑定（BindingDriver
+> 阶段 1 + BindContext.IsDefaultValueContext 隔离形参与 this +
+> BindEnvironment.ParameterDefaults 记忆化按需绑定——前向依赖
+> `f(a = h())` 先于 h 声明经调用点查表递归触发，声明顺序不影响语义，
+> in-flight 集合拦截依赖环）；调用/init/索引读三处接 Resolve（
+> MatchSingleCandidate 删除）；同批修复位置实参静默覆盖具名占位
+> （统一 Duplicate 诊断）。写模式索引 operator 重载仍归口（RHS 类型
+> 在赋值侧才可知）。详见 PROGRESS_REPORT M60 段落。
+
+- ~~规范前置：重载规则目前欠定，动工前先补 SYNTAX~~；
+- ~~P3：source-level ranking 唯一落点（BIL §3.3——之后各层不再
   ranking）+ 默认参数填充 + 具名参数重排；`BoundCall` 必须已是
-  规范参数序（ARCH §2），P4 不再重排；
+  规范参数序（ARCH §2），P4 不再重排~~；
 - **验收**：ranking 规则逐条用例 + 默认/具名参数绑定的
-  `BoundDescribe` 断言（规范参数序形态）。
+  `BoundDescribe` 断言（规范参数序形态）——BinderTests 新
+  TestDefaultParameters + TestOverloadResolution 两组达成。
 
 ### S8e 访问控制 + getter/setter + override 检查（纯 P3，无 P4 面）
 
