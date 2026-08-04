@@ -1,0 +1,286 @@
+using System.Collections.Generic;
+using System.Linq;
+using LatteCompiler.Bil;
+
+namespace LatteCompiler.Tests
+{
+    // BilEmitter 基础发射测试（hello world 结构/Origin 链/资源去重/局部声明与赋值/一元与比较/invoke/new/标量资源/static 字段/未覆盖节点负例）
+
+    public static partial class BilEmitterTests
+    {
+        // ===== hello world 模块结构断言（M58 起：原全模块黄金文本改为
+        // CheckBilValid + 结构断言；fn 形状回归由后续用例 CheckFnShape 承担）=====
+        private static void TestGoldenOutput()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(HelloWorldSource);
+            CheckNoErrors("全管线无诊断", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（hello world）", module);
+            TestHarness.CheckTrue("Metadata 恰一条 module = \"hello\"",
+                module.Metadata.Count == 1
+                && module.Metadata[0].Key == "module"
+                && module.Metadata[0].Type == BilScalarType.String
+                && module.Metadata[0].LiteralText == "\"hello\"");
+            TestHarness.CheckTrue("Resources 恰 6 条且含 \"Hello, world!\" 标量资源",
+                module.Resources.Count == 6
+                && module.Resources.Any(r => r is BilScalarResource s
+                    && s.Type == BilScalarType.String
+                    && s.LiteralText == "\"Hello, world!\""));
+            TestHarness.CheckTrue("LocalSymbols 含 core.io::Console 类型与 println 静态方法声明",
+                module.LocalSymbols.OfType<BilTypeDeclaration>()
+                    .Where(t => t.Symbol == "core.io::Console")
+                    .SelectMany(t => t.Members.OfType<BilSimpleMemberDeclaration>())
+                    .Any(d => d.Kind == BilMemberKind.StaticMethod
+                        && d.Symbol == "core.io::Console$.static.println(text:.string)@.void"));
+            TestHarness.CheckTrue("module.Functions 含 main 与 println 两个 fn",
+                module.Functions.Any(f => f.Symbol == "$main()@.i32")
+                && module.Functions.Any(f => f.Symbol
+                    == "core.io::Console$.static.println(text:.string)@.void"));
+            var main = module.Functions.Single(f => f.Symbol == "$main()@.i32");
+            TestHarness.CheckTrue("main 恰一个 entrypoint block",
+                main.Blocks.Count(b => b.Modifiers.Contains(BilBlockModifier.Entrypoint)) == 1);
+        }
+
+        // ===== Origin 调试链（ARCHITECTURE §6.3）=====
+        private static void TestOriginChain()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(HelloWorldSource);
+            CheckNoErrors("全管线无诊断（Origin 链）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（Origin 链）", module);
+
+            var main = module.Functions.Single(f => f.Symbol == "$main()@.i32");
+            var invoke = main.Blocks[0].Instructions.First(i => i is InvokeNoResultInstruction);
+            TestHarness.CheckTrue("invoke.noret 的 Origin 是 LoweredCallStatement",
+                invoke.Origin is LoweredCallStatement,
+                invoke.Origin?.GetType().Name ?? "<null>");
+            var lowered = invoke.Origin as LoweredCallStatement;
+            TestHarness.CheckTrue("LoweredCallStatement.Origin 是 BoundCallStatement",
+                lowered?.Origin is BoundCallStatement,
+                lowered?.Origin.GetType().Name ?? "<null>");
+            var bound = lowered?.Origin as BoundCallStatement;
+            TestHarness.CheckTrue("BoundCallStatement.Syntax 非空", bound?.Syntax != null);
+            TestHarness.CheckTrue("Syntax.Span 非空", bound?.Syntax.Span != null);
+            TestHarness.Check("Syntax.Span.sourceName 是用户文件名",
+                bound?.Syntax.Span?.sourceName ?? "<null>", BilTestHarness.UserSourceName);
+
+            // load 的 Origin 是字面量 LoweredNode（值经 Origin.Syntax 回取）
+            var load = main.Blocks[0].Instructions.First(i => i is LoadInstruction);
+            TestHarness.CheckTrue("load 的 Origin 是 LoweredLiteralExpression",
+                load.Origin is LoweredLiteralExpression,
+                load.Origin?.GetType().Name ?? "<null>");
+        }
+
+        // ===== 资源去重：同（类型, 原文）字面量只登记一次 =====
+        private static void TestResourceDeduplication()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "pub func main(): i32 {\n" +
+                "    core.io.Console.println(\"same\")\n" +
+                "    core.io.Console.println(\"same\")\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（资源去重）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（资源去重）", module);
+            // stdlib 基线 R_0..R_4（"\n"/0/false/1/true）+ R_5 = "same"——
+            // "same" 不重复登记；return 0 共享 R_1
+            TestHarness.CheckTrue("相同字面量只登记一个资源",
+                module.Resources.Count == 6
+                && module.Resources.Count(r => r is BilScalarResource s
+                    && s.LiteralText == "\"same\"") == 1,
+                string.Join(", ", module.Resources.Select(r => r.Name)));
+            var main = module.Functions.Single(f => f.Symbol == "$main()@.i32");
+            var loads = main.Blocks[0].Instructions.Where(i => i is LoadInstruction).ToList();
+            // main 共三条 load（两次 "same" + return 0），两条指向同一资源 R_5
+            TestHarness.CheckTrue("两处引用同一资源（R_5）",
+                loads.Count == 3 && loads.Count(l => l.Operands[0] is BilResourceOperand ro
+                    && ro.Resource.Name == "R_5") == 2);
+        }
+
+        // ===== 局部声明 + 初始化器（set.var）与赋值 =====
+        private static void TestLocalDeclarationAndAssignment()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "pub func main(): i32 {\n" +
+                "    var x: i32 = 1 + 2\n" +
+                "    x = x * 3\n" +
+                "    return x\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（声明与赋值）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（声明与赋值）", module);
+            BilTestHarness.CheckFnShape("main 指令与 .vars", module, "$main()@.i32",
+                ".vars { .i32 x, .i32 .t0, .i32 .t1, .i32 .t2, .i32 .t3, .i32 .t4 }\n" +
+                "load res(#0) $.t0\n" +
+                "load res(#1) $.t1\n" +
+                "add $.t0 $.t1 $.t2\n" +
+                "set.var $.t2 $x\n" +
+                "load res(#2) $.t3\n" +
+                "mul $x $.t3 $.t4\n" +
+                "set.var $.t4 $x\n" +
+                "ret $x\n");
+        }
+
+        // ===== 一元运算与比较运算（同字面量资源去重）=====
+        private static void TestUnaryAndComparison()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "pub func main(): i32 {\n" +
+                "    var a: i32 = 5\n" +
+                "    var n: i32 = -a\n" +
+                "    var b: bool = n == 5\n" +
+                "    return n\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（一元与比较）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（一元与比较）", module);
+            // 两处 5 共用同一资源（stdlib 基线 5 条资源在前）
+            BilTestHarness.CheckResShape("资源（5 去重）", module,
+                "#0 = string \"\\n\"\n#1 = i32 0\n#2 = bool false\n#3 = i32 1\n" +
+                "#4 = bool true\n#5 = i32 5");
+            BilTestHarness.CheckFnShape("main 指令与 .vars", module, "$main()@.i32",
+                ".vars { .i32 a, .i32 n, .bool b, .i32 .t0, .i32 .t1, .i32 .t2, .bool .t3 }\n" +
+                "load res(#0) $.t0\n" +
+                "set.var $.t0 $a\n" +
+                "opposite $a $.t1\n" +
+                "set.var $.t1 $n\n" +
+                "load res(#0) $.t2\n" +
+                "cmp.eq $n $.t2 $.t3\n" +
+                "set.var $.t3 $b\n" +
+                "ret $n\n");
+        }
+
+        // ===== 带返回值 invoke（§15.1）与表达式语句（结果物化后丢弃）=====
+        private static void TestInvokeWithResult()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "pub func double(a: i32): i32 { return a * 2 }\n" +
+                "pub func main(): i32 {\n" +
+                "    double(5)\n" +
+                "    return double(21)\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（invoke）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（invoke）", module);
+            BilTestHarness.CheckFnShape("double 指令与 .vars", module, "$double(a:.i32)@.i32",
+                ".vars { .i32 .t0, .i32 .t1 }\n" +
+                "load res(#0) $.t0\n" +
+                "mul $a $.t0 $.t1\n" +
+                "ret $.t1\n");
+            BilTestHarness.CheckFnShape("main 指令与 .vars（表达式语句结果丢弃）",
+                module, "$main()@.i32",
+                ".vars { .i32 .t0, .i32 .t1, .i32 .t2, .i32 .t3 }\n" +
+                "load res(#0) $.t0\n" +
+                "invoke fn($double(a:.i32)@.i32) $.t1 [$.t0]\n" +
+                "load res(#1) $.t2\n" +
+                "invoke fn($double(a:.i32)@.i32) $.t3 [$.t2]\n" +
+                "ret $.t3\n");
+        }
+
+        // ===== new 构造（§14.1；零参无显式 init）=====
+        private static void TestNew()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "pub class Empty { }\n" +
+                "pub func main(): i32 {\n" +
+                "    var e: Empty = new Empty()\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（new）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（new）", module);
+            BilTestHarness.CheckFnShape("main 指令与 .vars", module, "$main()@.i32",
+                ".vars { Empty e, Empty .t0, .i32 .t1 }\n" +
+                "new type(Empty) $.t0 []\n" +
+                "set.var $.t0 $e\n" +
+                "load res(#0) $.t1\n" +
+                "ret $.t1\n");
+        }
+
+        // ===== §18.1 标量资源全形态（bool/f64/f32/char/null）=====
+        private static void TestLiteralResources()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "pub func main(): i32 {\n" +
+                "    var b: bool = true\n" +
+                "    var d: double = 0.5\n" +
+                "    var f: float = 0.1f\n" +
+                "    var c: char = 'A'\n" +
+                "    var s: String? = null\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（标量资源）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（标量资源）", module);
+            BilTestHarness.CheckResShape("Resources 全形态", module,
+                "#0 = string \"\\n\"\n" +
+                "#1 = i32 0\n" +
+                "#2 = bool false\n" +
+                "#3 = i32 1\n" +
+                "#4 = bool true\n" +
+                "#5 = f64 0.5\n" +
+                "#6 = f32 0.1\n" +
+                "#7 = char 'A'\n" +
+                "#8 = null type(.string)");
+            BilTestHarness.CheckFnShape("main 指令与 .vars", module, "$main()@.i32",
+                ".vars { .bool b, .f64 d, .f32 f, .char c, .nullable<.string> s, " +
+                ".bool .t0, .f64 .t1, .f32 .t2, .char .t3, .nullable<.string> .t4, .i32 .t5 }\n" +
+                "load res(#0) $.t0\n" +
+                "set.var $.t0 $b\n" +
+                "load res(#1) $.t1\n" +
+                "set.var $.t1 $d\n" +
+                "load res(#2) $.t2\n" +
+                "set.var $.t2 $f\n" +
+                "load res(#3) $.t3\n" +
+                "set.var $.t3 $c\n" +
+                "load res(#4) $.t4\n" +
+                "set.var $.t4 $s\n" +
+                "load res(#5) $.t5\n" +
+                "ret $.t5\n");
+        }
+
+        // ===== static 字段读写（§13.4 get/set.field.static）=====
+        private static void TestStaticFieldReadWrite()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "pub class Counter { pub static var value: i32 }\n" +
+                "pub func main(): i32 {\n" +
+                "    Counter.value = 42\n" +
+                "    return Counter.value\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（static 字段）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（static 字段）", module);
+            BilTestHarness.CheckFnShape("main 指令与 .vars", module, "$main()@.i32",
+                ".vars { .i32 .t0, .i32 .t1 }\n" +
+                "load res(#0) $.t0\n" +
+                "set.field.static $.t0 type(Counter) field(Counter#.static.value@.i32)\n" +
+                "get.field.static $.t1 type(Counter) field(Counter#.static.value@.i32)\n" +
+                "ret $.t1\n");
+        }
+
+        // ===== 负例：未覆盖节点 → P4 Error =====
+        // （S7c-2 后实例方法/init/operator 已开闸，源码侧 P4 发射全覆盖——
+        // 以测试私有 Lowered 子类模拟「未来新增但 BilEmitter 尚未覆盖」的
+        // 节点，仿 LowererTests.TestUnsupportedNode）
+        private sealed class FutureLoweredStatement : LoweredStatement
+        {
+            public FutureLoweredStatement(BoundNode origin) : base(origin)
+            {
+            }
+        }
+
+        private static void TestUnsupportedNodes()
+        {
+            var root = TestHarness.ParseRoot("func f() { }\n");
+            var unit = new CompilationUnit(root);
+            var method = new MethodSymbol("future", MethodKind.Regular);
+            var boundBody = new BoundBlock(root, new List<BoundStatement>());
+            var body = new LoweredFunctionBody(method, new List<LocalSymbol>(),
+                new LoweredBlock(boundBody,
+                    new List<LoweredStatement> { new FutureLoweredStatement(boundBody) }));
+            var module = BilEmitter.Emit(unit, new[] { body }, "future");
+            TestHarness.CheckSemanticError("未覆盖节点报 P4 Error", unit.Diagnostics,
+                "not supported by minimal emission");
+            // 夹具修补：手工 MethodSymbol 未经 P1 收集，模块缺其声明——补上
+            // 以聚焦「坏函数体跳过」本身的结构健康
+            module.LocalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "$future()@.void",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            // 坏函数体跳过后产出的模块仍应过验证器
+            BilTestHarness.CheckBilValid("验证器零错误（未覆盖节点跳过坏函数体）", module);
+        }
+    }
+}
