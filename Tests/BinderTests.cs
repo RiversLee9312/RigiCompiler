@@ -39,6 +39,7 @@ namespace LatteCompiler.Tests
             TestCalls();
             TestHostTypeMembers();
             TestNew();
+            TestInitMappingSynthesis();
             TestReturn();
             TestScopes();
             TestIfStatements();
@@ -74,7 +75,13 @@ namespace LatteCompiler.Tests
             TestGenericVarArgs();
             TestOperatorNameCalls();
             TestGenericFunctionBody();
+            TestGenericBaseClassMemberLookup();
+            TestCallFixes();
+            TestGateFixes();
+            TestFlowFixes();
+            TestEnumCases();
             TestDiagnosticsAccumulation();
+            TestKwArgsBodyView();
             return TestHarness.Summary("Binder");
         }
 

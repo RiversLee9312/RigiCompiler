@@ -61,14 +61,16 @@ namespace LatteCompiler
             return entry.Symbol as MethodSymbol;
         }
 
-        // 沿基类链查字段（含继承）；fieldType 按命中处的构造基类代入实参
+        // 沿基类链查字段（含继承）；fieldType 按命中处的构造基类代入实参。
+        // 内建类型同样查表：bootstrap Exception 程序化携带 message 字段
+        // （S10，SYNTAX §8.1——子类 init 直接赋值继承字段）；直造基元的
+        // Fields 表本为空，查找自然不中，无需短路
         public FieldSymbol? FindField(TypeSymbol? type, string name, out SemanticSymbol? fieldType)
         {
             fieldType = null;
             for (var t = type; t != null; t = t.BaseType)
             {
                 var def = t.ConstructedFrom ?? t;
-                if (def.IsBuiltin) return null;
                 var field = def.Fields.FirstOrDefault(f => f.Name == name);
                 if (field != null)
                 {
@@ -79,26 +81,11 @@ namespace LatteCompiler
             return null;
         }
 
-        // 泛型实参代入：字段类型中的泛型参数按构造类型的实参列表替换（递归）
+        // 泛型实参代入：字段类型中的泛型参数按构造类型的实参列表替换（递归）。
+        // 实现单源在 SymbolGraph（构造类型 BaseType 代入同用），此处为薄包装
         public SemanticSymbol? Substitute(SemanticSymbol? fieldType, TypeSymbol definition, TypeSymbol constructed)
         {
-            if (fieldType == null || ReferenceEquals(definition, constructed)) return fieldType;
-            if (fieldType is GenericParameterSymbol gp)
-            {
-                var index = definition.GenericParameters.IndexOf(gp);
-                return index >= 0 ? constructed.TypeArguments![index] : fieldType;
-            }
-            if (fieldType is TypeSymbol { ConstructedFrom: not null } inner)
-            {
-                var innerDef = inner.ConstructedFrom!;
-                var args = new SemanticSymbol[inner.TypeArguments!.Count];
-                for (int i = 0; i < args.Length; i++)
-                {
-                    args[i] = Substitute(inner.TypeArguments[i], definition, constructed)!;
-                }
-                return Unit.Symbols.GetConstructedType(innerDef, args);
-            }
-            return fieldType;
+            return Unit.Symbols.Substitute(fieldType, definition, constructed);
         }
 
         // ===== 声明侧静态设施（修饰符/注解/分类查询，各阶段共用）=====

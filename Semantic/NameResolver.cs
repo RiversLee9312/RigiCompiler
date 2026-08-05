@@ -26,14 +26,23 @@ namespace LatteCompiler
             unit.Diagnostics.Error(phase, span, message);
         }
 
-        // 类型引用解析：T? 即构造类型 Nullable\<T>（SYNTAX §3.4）
+        // 类型引用解析：T? 即构造类型 Nullable\<T>（SYNTAX §3.4）。
+        // 落袋前拦截非类型符号：路径解析可命中命名空间（如 `func m(): collections`），
+        // 命名空间不是类型——诊断并毒化（统一在此拦截，各调用方静默消化 ErrorType）
         public SemanticSymbol ResolveTypeReference(TypeReferenceASTNode typeRef, FileContext ctx,
             TypeSymbol? declaringType, MethodSymbol? declaringMethod, CharRange? span)
         {
             var resolved = ResolveSymbolPath(typeRef.TypeSymbol.symbol, ctx,
                 declaringType, declaringMethod, allowImports: true,
                 reportErrors: true, span: span ?? typeRef.Span);
-            if (typeRef.IsNullable && resolved is not ErrorTypeSymbol)
+            if (resolved is ErrorTypeSymbol) return resolved;
+            if (resolved is not (TypeSymbol or GenericParameterSymbol))
+            {
+                Error(span ?? typeRef.Span,
+                    $"'{PathText(typeRef.TypeSymbol.symbol)}' is not a type");
+                return unit.Symbols.ErrorType;
+            }
+            if (typeRef.IsNullable)
             {
                 return unit.Symbols.GetConstructedType(unit.Symbols.Bootstrap.NullableDefinition, resolved);
             }
@@ -59,7 +68,7 @@ namespace LatteCompiler
                 if (current != null) return current;
             }
             current = ResolveFirstSegment(elements[0].name, ctx, declaringType, allowImports,
-                elements.Count == 1 ? elements[0].generics.Count : -1, out var importResolved);
+                elements.Count == 1 ? elements[0].generics.Count : -1, span, out var importResolved);
             if (current == null)
             {
                 if (reportErrors && !importResolved)
@@ -93,6 +102,18 @@ namespace LatteCompiler
                 return ApplyTypeArguments(current, last, ctx, declaringType, declaringMethod,
                     allowImports, reportErrors, span);
             }
+            // 裸名（arity 0）回退命中带泛型参数的定义：未构造的泛型定义不能
+            // 直接作类型——按 ApplyTypeArguments 同口径报元数错误并毒化
+            if (current is TypeSymbol { ConstructedFrom: null } genericDef
+                && genericDef.GenericParameters.Count > 0)
+            {
+                if (reportErrors)
+                {
+                    Error(span, $"'{genericDef.Name}' expects {genericDef.GenericParameters.Count} " +
+                        "type argument(s), got 0");
+                }
+                return unit.Symbols.ErrorType;
+            }
             return current;
         }
 
@@ -101,7 +122,7 @@ namespace LatteCompiler
             bool allowImports, bool reportErrors, CharRange? span)
         {
             var current = ResolveFirstSegment(segments[0], ctx, declaringType: null,
-                allowImports, arity: -1, out var importResolved);
+                allowImports, arity: -1, span, out var importResolved);
             if (current == null)
             {
                 if (reportErrors && !importResolved)
@@ -128,11 +149,12 @@ namespace LatteCompiler
 
         // 首段查找序：宿主类型链 NestedTypes → 文件命名空间及父链 → 全局命名空间
         // → import 列表（具名末段同名 / 通配容器内查）→ core 命名空间（隐式）。
-        // importResolved：具名 import 命中但自身解析失败（已诊断过）时为 true——
-        // 调用方静默毒化，不再报「未解析」。
+        // importResolved：具名 import 同名条目全部失效（ImportValidator 已诊断），
+        // 或双有效歧义（此处已诊断）时为 true——调用方静默毒化，不再报「未解析」。
         // arity：该段（单段路径即末段）的泛型实参个数；-1 = 容器下钻不筛元数。
         private SemanticSymbol? ResolveFirstSegment(string name, FileContext ctx,
-            TypeSymbol? declaringType, bool allowImports, int arity, out bool importResolved)
+            TypeSymbol? declaringType, bool allowImports, int arity, CharRange? span,
+            out bool importResolved)
         {
             importResolved = false;
             for (var t = declaringType; t != null; t = t.DeclaringType)
@@ -140,20 +162,26 @@ namespace LatteCompiler
                 var nested = FindTypeIn(t.NestedTypes, name, arity);
                 if (nested != null) return nested;
             }
+            // 文件命名空间及父链（链尾即全局命名空间，无需再显式查一次）
             for (var ns = ctx.Namespace; ns != null; ns = ns.Parent)
             {
                 var hit = FindInNamespace(ns, name, arity);
                 if (hit != null) return hit;
             }
-            var globalHit = FindInNamespace(unit.Symbols.GlobalNamespace, name, arity);
-            if (globalHit != null) return globalHit;
             if (allowImports)
             {
+                // 具名 import 同名多条目（`import a.Foo` + `import b.Foo`）：
+                // 失效条目（自身解析失败，ImportValidator 已统一诊断）跳过继续
+                // 查找——不再「先者胜」毒化有效者；两条都有效时无优先级可依，
+                // 报歧义诊断（同一路径重复 import 解析结果引用相等，豁免）。
+                // 具名命中已记录时通配条目不再覆盖（先者胜）
+                SemanticSymbol? namedHit = null;
                 foreach (var item in ctx.Imports)
                 {
                     var importPath = item.symbolNode.symbol;
                     if (item.importAll)
                     {
+                        if (namedHit != null) continue;
                         var container = ResolveSymbolPath(importPath, ctx, declaringType: null,
                             declaringMethod: null, allowImports: false, reportErrors: false, span: null);
                         SemanticSymbol? hit = container switch
@@ -170,20 +198,30 @@ namespace LatteCompiler
                             declaringMethod: null, allowImports: false, reportErrors: false, span: null);
                         if (resolved is ErrorTypeSymbol)
                         {
+                            // 失效条目跳过；全部同名条目均失效时保持 true，
+                            // 调用方静默毒化（ImportValidator 已报 Unresolved import）
+                            importResolved = true;
+                            continue;
+                        }
+                        if (namedHit != null && !ReferenceEquals(namedHit, resolved))
+                        {
+                            Error(span, $"Ambiguous import: '{name}'");
                             importResolved = true;
                             return null;
                         }
-                        return resolved;
+                        namedHit = resolved;
                     }
                 }
+                if (namedHit != null) return namedHit;
             }
             return FindInNamespace(unit.Symbols.Bootstrap.Core, name, arity);
         }
 
         // 按「名 + 期望元数」在类型表中查找（S10，SYNTAX §15.3：同名不同
         // 元数合法共存）：arity >= 0 时优先精确元数匹配，回退同名任意声明
-        // （带实参但元数不匹配者落入 ApplyTypeArguments 的元数诊断；裸名但
-        // 只有泛型定义者回退定义本身——保持既有行为）；arity < 0 不筛。
+        // （带实参但元数不匹配者落入 ApplyTypeArguments 的元数诊断；裸名
+        // 回退命中泛型定义者由 ResolveSymbolPath 末段统一报元数错误）；
+        // arity < 0 不筛。
         private static TypeSymbol? FindTypeIn(IReadOnlyList<TypeSymbol> types, string name, int arity)
         {
             if (arity >= 0)
@@ -200,10 +238,11 @@ namespace LatteCompiler
                 ?? ns.ChildNamespaces.FirstOrDefault(n => n.Name == name);
         }
 
+        // 中间段下钻优先级与首段 FindInNamespace 一致：Types 优先于 ChildNamespaces
         private static SemanticSymbol? Descend(SemanticSymbol current, string name, int arity) => current switch
         {
-            NamespaceSymbol ns => (SemanticSymbol?)ns.ChildNamespaces.FirstOrDefault(n => n.Name == name)
-                ?? FindTypeIn(ns.Types, name, arity),
+            NamespaceSymbol ns => (SemanticSymbol?)FindTypeIn(ns.Types, name, arity)
+                ?? ns.ChildNamespaces.FirstOrDefault(n => n.Name == name),
             TypeSymbol t => FindTypeIn(t.NestedTypes, name, arity),
             _ => null,
         };

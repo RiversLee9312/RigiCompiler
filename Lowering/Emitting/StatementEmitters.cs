@@ -28,21 +28,52 @@ namespace LatteCompiler
         }
     }
 
-    // 赋值：值物化后按目标形态发射——局部 set.var（§13.2）/全局·static
+    // 赋值：按目标形态发射——局部 set.var（§13.2）/全局·static
     // 字段 set.field.static（§13.4）/实例字段 set.field（§13.3）/
-    // 索引 set.array（§13.6，S8c）
+    // 索引 set.array（§13.6，S8c）。求值序（与复合赋值 P4a 脱糖同
+    // 规则）：接收者（含容器/索引）先求值、右值后求值——set.field/
+    // set.array 的 receiver/index 物化先于 Value 物化；指令操作数序
+    // 不变（BIL 文本形态不变，变的只是求值先后）
     internal sealed class AssignmentEmitter : EmitVisitor<AssignmentEmitter, Unit>
     {
         protected override Unit VisitCore(LoweredNode node, BilBlock target, EmitContext ctx,
             EmitEnvironment env)
         {
             var assignment = (LoweredAssignmentStatement)node;
+            // 复合赋值的目标在 P3 保留 SmartCast 包装（收窄类型参与运算
+            // 定型），P4a 物化产物为 LoweredCastExpression 包 place——
+            // place 判定时剥壳（Operand 本是 place：值引用/字段引用，
+            // NarrowKey 稳定链保证其无副作用，剥壳写入即写原 place）
+            var place = assignment.Target;
+            while (place is LoweredCastExpression castShell) place = castShell.Source;
+            // 接收者先行物化（set.field/set.array 两形态；set.var/
+            // set.field.static 无 receiver 不动）
+            BilVariableOperand? writeReceiver = null;
+            BilVariableOperand? indexReceiver = null;
+            BilVariableOperand? indexOperand = null;
+            switch (place)
+            {
+                case LoweredFieldAccessExpression accessTarget:
+                    writeReceiver = EmitValueDispatcher.Visit(accessTarget.Receiver, target,
+                        ctx, env);
+                    break;
+                case LoweredIndexExpression indexTarget:
+                    indexReceiver = EmitValueDispatcher.Visit(indexTarget.Receiver, target,
+                        ctx, env);
+                    indexOperand = EmitValueDispatcher.Visit(indexTarget.Index, target,
+                        ctx, env);
+                    break;
+            }
             var assignedValue = EmitValueDispatcher.Visit(assignment.Value, target, ctx, env);
-            switch (assignment.Target)
+            switch (place)
             {
                 case LoweredValueReferenceExpression localTarget:
+                    // S9d：可变参数写入同样映射隐藏包变量（与读侧共用
+                    // EmittingFacility.ValueVariableName——.args 只声明
+                    // .vargs./.kwargs. 保留名，写原名即引用未声明变量）
                     target.Instructions.Add(new SetVarInstruction(
-                        assignedValue, BilOp.Var(localTarget.Symbol.Name))
+                        assignedValue, BilOp.Var(
+                            EmittingFacility.ValueVariableName(localTarget.Symbol)))
                     { Origin = assignment });
                     break;
                 case LoweredFieldReferenceExpression fieldTarget:
@@ -55,31 +86,24 @@ namespace LatteCompiler
                     break;
                 case LoweredFieldAccessExpression accessTarget:
                     // 实例字段写入（§13.3：set.field SOURCE OBJECT
-                    // field(F)——SOURCE 已物化，OBJECT 随后求值，
-                    // 与操作数序一致）
-                    var writeReceiver = EmitValueDispatcher.Visit(accessTarget.Receiver, target,
-                        ctx, env);
+                    // field(F)——OBJECT 先于 SOURCE 求值，操作数序不变）
                     target.Instructions.Add(new SetFieldInstruction(
-                        assignedValue, writeReceiver,
+                        assignedValue, writeReceiver!,
                         BilOp.Field(CanonicalSymbolPrinter.PrintField(accessTarget.Field)))
                     { Origin = assignment });
                     break;
-                case LoweredIndexExpression indexTarget:
+                case LoweredIndexExpression:
                     // 索引写入（S8c，§13.6：set.array COLLECTION INDEX
-                    // ELEMENT——ELEMENT 已物化，COLLECTION/INDEX 随后
-                    // 求值，求值序仿 set.field）
-                    var indexReceiver = EmitValueDispatcher.Visit(indexTarget.Receiver, target,
-                        ctx, env);
-                    var indexOperand = EmitValueDispatcher.Visit(indexTarget.Index, target,
-                        ctx, env);
+                    // ELEMENT——COLLECTION/INDEX 先于 ELEMENT 求值，
+                    // 操作数序不变）
                     target.Instructions.Add(new SetArrayInstruction(
-                        indexReceiver, indexOperand, assignedValue)
+                        indexReceiver!, indexOperand!, assignedValue)
                     { Origin = assignment });
                     break;
                 default:
                     // P3 已强制赋值目标为 place（值引用/字段引用/索引访问）
                     throw new CompilerInternalException(
-                        "非法赋值目标: " + assignment.Target.GetType().Name);
+                        "非法赋值目标: " + place.GetType().Name);
             }
             return Unit.Value;
         }
@@ -203,8 +227,9 @@ namespace LatteCompiler
     }
 
     // 结构化循环（§16.3/§16.4）：条件由 Judge 块写入合成局部，
-    // loop $c blk(body) ENUM blk(judge) $breakid（IsRev → loop.rev；
-    // Enumerator 本步恒 none，for 的枚举器块随 S7c-2）；body/judge
+    // loop $c blk(body) none blk(judge) $breakid（IsRev → loop.rev；
+    // 枚举器块恒 none——for 的枚举器在 S7c-2 已脱糖为前置 iterate +
+    // Judge/Body 协议调用，不走枚举器块形态）；body/judge
     // block 加入函数并递归发射，落尾自然返回（§9.4 同 if 分支块）
     internal sealed class LoopEmitter : EmitVisitor<LoopEmitter, Unit>
     {
@@ -214,20 +239,13 @@ namespace LatteCompiler
             var loop = (LoweredLoop)node;
             var loopId = "loop" + ctx.BlockIds.NextLoop();
             var loopBodyBlock = new BilBlock(loopId + "-body");
-            var enumBlock = loop.Enumerator != null
-                ? new BilBlock(loopId + "-enum") : null;
             var judgeBlock = new BilBlock(loopId + "-judge");
             target.Instructions.Add(new LoopInstruction(
-                BilOp.Var(loop.Condition.Name), loopBodyBlock, enumBlock, judgeBlock,
+                BilOp.Var(loop.Condition.Name), loopBodyBlock, enumBlock: null, judgeBlock,
                 BilOp.Var(loop.BreakId.Name), loop.IsRev)
             { Origin = loop });
             ctx.Function.Blocks.Add(loopBodyBlock);
             EmitBlockVisitor.Visit(loop.Body, loopBodyBlock, ctx, env);
-            if (enumBlock != null)
-            {
-                ctx.Function.Blocks.Add(enumBlock);
-                EmitBlockVisitor.Visit(loop.Enumerator!, enumBlock, ctx, env);
-            }
             ctx.Function.Blocks.Add(judgeBlock);
             EmitBlockVisitor.Visit(loop.Judge, judgeBlock, ctx, env);
             return Unit.Value;

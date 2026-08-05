@@ -306,7 +306,8 @@ namespace LatteCompiler
                 state = State.ParamsExpected;
                 return ParserLayerResult.Continue.Instance;
             }
-            if (t is WordToken w)
+            // 段名必须是合法标识符（非数字词、非保留字，与 OnCallableName 首段一致）
+            if (t is WordToken w && Keywords.IsIdentifier(w.Content))
             {
                 // proxy 名首段固定为 proxy（§14 规定的代理入口前缀）
                 if (proxyNameSeen && callable!.Name.Length == 0 && w.Content != Keywords.PROXY)

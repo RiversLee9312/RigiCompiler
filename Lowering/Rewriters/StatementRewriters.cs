@@ -67,7 +67,11 @@ namespace LatteCompiler
         }
     }
 
-    // 赋值：目标与值递归降级 + 值 cast 物化（BIL §6.5）
+    // 赋值：目标与值递归降级 + 值 cast 物化（BIL §6.5）。
+    // variadic 参数索引写入（BIL §7.1）：place 剥壳（读形态产物外包的
+    // 拆箱 cast）后命中 variadic 索引时，声明类型 = 容器 ABI 元素类型
+    // （.any / Pair\<String, Any\>）——元素装箱与 .vargs./.kwargs.
+    // 隐藏条目声明对齐
     internal sealed class AssignmentRewriter
         : LoweredVisitor<AssignmentRewriter, LoweredStatement, LowerContext>
     {
@@ -78,7 +82,9 @@ namespace LatteCompiler
             var target = LowerExpressionDispatcher.Visit(assignment.Target, ctx, env);
             var value = LowerExpressionDispatcher.Visit(assignment.Value, ctx, env);
             if (target == null || value == null) return null;
-            value = LoweringFacility.EnsureDeclaredType(assignment, value, assignment.Target.Type);
+            var declaredType = (SemanticSymbol?)LoweringFacility.VariadicIndexAbiTypeOfPlace(
+                target, env) ?? assignment.Target.Type;
+            value = LoweringFacility.EnsureDeclaredType(assignment, value, declaredType);
             return new LoweredAssignmentStatement(assignment, target, value);
         }
     }

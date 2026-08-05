@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Globalization;
 using System.Reflection;
 using LatteCompiler.Bil;
 
@@ -115,19 +116,48 @@ namespace LatteCompiler
             }
             foreach (var method in type.Methods)
             {
+                // enum struct 的无体 init（case 模板，SYNTAX §12.1）同样
+                // 发射声明——P3 起映射赋值体合成（§9.3）为其产出 fn 定义，
+                // §21.2 门槛满足；`_ -> field` 映射借此保留在 BIL 中，
+                // 供 VM case 入口消费（S14）
                 declaration.Members.Add(EmitMethodDeclaration(method));
+            }
+            // enum case 声明（§8.5，S11；非 enum struct 的 Cases 恒空）：
+            // 模板绑定失败的 case（HoleParameters null——P3 已诊断/泛型
+            // 归口）跳过；洞签名（名 + 类型投影）按洞签名序。显式判别值
+            // （-> N）登记 i32 标量资源（§19.1 判别值注记）发
+            // discriminant res(R)，auto（符号上 Discriminant null）发
+            // discriminant auto——auto 编号归 VM/Middleware 按声明序推导
+            foreach (var enumCase in type.Cases)
+            {
+                if (enumCase.HoleParameters == null) continue;
+                var caseParameters = enumCase.HoleParameters
+                    .Select(hole => new BilCaseParameter(hole.Name,
+                        CanonicalSymbolPrinter.PrintType(hole.Type)))
+                    .ToArray();
+                var discriminantResource = enumCase.Discriminant is long discriminant
+                    ? EmittingFacility.RegisterScalarResource(BilScalarType.I32,
+                        discriminant.ToString(CultureInfo.InvariantCulture), env).Name
+                    : null;
+                declaration.Members.Add(new BilCaseDeclaration(
+                    CanonicalSymbolPrinter.PrintCase(enumCase), caseParameters,
+                    discriminantResource));
             }
             return declaration;
         }
 
         // 字段声明（§8.3）：类型成员/全局字段/内建 ext 字段共形态——访问级
-        // 全显式；带访问器字段追加 §8.3 表序的形态标记（backing/computed →
-        // readable → writable → compiler-generated）；无访问器字段输出与
-        // 此前逐字节一致（仅访问级一个修饰符）
+        // 全显式；const/var 可变性标记必发（BilVerifier §21.8 已补 init
+        // 豁免——init 方法体内写实例 const 字段合法，M56 P3 同规则，
+        // ConstFieldRules）；ext 字段带 ext 修饰符；带访问器字段追加形态
+        // 标记（backing/computed → readable → writable → compiler-generated）。
+        // 修饰符按 §8.3 表序：访问 → const/var → ext → 访问器形态标记
         private static BilSimpleMemberDeclaration EmitFieldDeclaration(FieldSymbol field)
         {
             var modifiers = new List<BilModifier>
                 { new BilAccessibilityModifier(MapAccessibility(field.Accessibility)) };
+            modifiers.Add(new BilKeywordModifier(field.IsConst ? BilKeyword.Const : BilKeyword.Var));
+            if (field.ExtTargetPath != null) modifiers.Add(new BilKeywordModifier(BilKeyword.Ext));
             if (field.Getter != null || field.Setter != null)
             {
                 // §9.4：backing 形态 = 编译器生成存储（backing + compiler-generated），

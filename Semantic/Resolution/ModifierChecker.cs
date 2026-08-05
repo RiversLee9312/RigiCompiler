@@ -76,8 +76,9 @@ namespace LatteCompiler
             {
                 env.Error(span, $"'{type.Name}': 'shared' struct must also be 'rich'");
             }
-            // 非 rich struct 不得 open/abstract（§3.1.1 封闭性）
-            if ((type.Kind == TypeKind.Struct || type.Kind == TypeKind.EnumStruct) && !type.IsRich)
+            // 非 rich struct 不得 open/abstract（§3.1.1 封闭性）；
+            // enum struct 由下方特例统一报（同因一报，不重复落诊断）
+            if (type.Kind == TypeKind.Struct && !type.IsRich)
             {
                 if (type.IsOpen)
                 {
@@ -137,6 +138,21 @@ namespace LatteCompiler
             if (entry.Symbol is FieldSymbol && modifiers.Contains(Keywords.ASYNC))
             {
                 env.Error(entry.Node.Span, "'async' can only be applied to functions");
+            }
+            // interface 不得声明字段（SYNTAX §11 接口成员只有函数——字段不参与
+            // 闭包检查、不产生实现要求、实现类不继承，纯死声明，声明侧拒绝）
+            if (entry.Symbol is FieldSymbol interfaceField
+                && entry.DeclaringType?.Kind == TypeKind.Interface)
+            {
+                env.Error(entry.Node.Span,
+                    $"'{interfaceField.Name}': interfaces cannot declare fields");
+            }
+            // operator 必须实例（静态无多态：使用侧 FindInstanceOperators/
+            // FindConversionOperator 只查实例方法，static operator 在任何使用点
+            // 都不可达，纯死声明，声明侧拒绝）
+            if (entry.Symbol is MethodSymbol { Kind: MethodKind.Operator } op && op.IsStatic)
+            {
+                env.Error(entry.Node.Span, $"'{op.Name}': operators cannot be 'static'");
             }
             // open/abstract/override 仅普通成员方法（§9.2.1）：字段/init/operator/
             // 全局函数/static 方法上使用即错误；静态无多态

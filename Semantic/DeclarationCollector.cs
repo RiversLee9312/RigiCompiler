@@ -17,7 +17,7 @@ namespace LatteCompiler
     //
     // 明确不做（归 P2/P3）：类型引用解析（ReturnType/FieldType/参数类型留空）、
     // 显式继承/implements 解析、修饰符合法性、rich/shared 闭包与传染检查、
-    // enum case 符号（按需增补，S11）。
+    // enum case 的 init 模板绑定（S11，P3 声明点）。
     // 修饰符只读标记位建壳（rich/shared/static/native），合法性检查一律归 P2。
     //
     // 访问器壳（SYNTAX §9.4，S8e）：字段带 get/set 块时建 Kind=Getter/Setter 的
@@ -110,9 +110,11 @@ namespace LatteCompiler
                         s.Modifiers, s.GenericParameters, s.Members, node, ns, declaringType, scope, result);
                     break;
                 case EnumStructDeclarationASTNode e:
-                    // enum case 不建壳（EnumCaseSymbol 家族未建，S11 按需增补）
                     CollectType(unit, e.EnumName, TypeKind.EnumStruct, unit.Symbols.Bootstrap.Enum,
                         e.Modifiers, e.GenericParameters, e.Members, node, ns, declaringType, scope, result);
+                    // enum case 建壳（SYNTAX §12）：挂宿主 Cases 表，判别值落定归 P2、
+                    // init 模板绑定归 P3 声明点
+                    CollectEnumCases(unit, e, (TypeSymbol)result.SymbolOf(node)!, result);
                     break;
                 case WrapperDeclarationASTNode w:
                     // wrapper 恒 rich（§14.9），隐式基类 Wrapper；显式写 rich 的报错归 P2
@@ -270,9 +272,10 @@ namespace LatteCompiler
                 result.AddPendingExt(symbol);
                 return;
             }
-            // 方法重复检测（P1 文本级粒度：同名 + 同参数名序列 + 同参数类型文本
-            // 全同必为重复；重载合法——签名级精确判定依赖类型解析，归 P2）
-            var key = MethodKey(symbol.Name, node.Parameters);
+            // 方法重复检测（P1 文本级粒度：同名 + 同泛型元数 + 同参数名序列 +
+            // 同参数类型文本全同必为重复；重载合法——签名级精确判定依赖类型
+            // 解析，归 P2）
+            var key = MethodKey(symbol.Name, symbol.GenericParameters.Count, node.Parameters);
             if (scope.MethodKeys.Contains(key))
             {
                 unit.Diagnostics.Error(DiagnosticPhase.P1, node.Span,
@@ -282,6 +285,30 @@ namespace LatteCompiler
             {
                 scope.MethodKeys.Add(key);
                 scope.Methods.Add(symbol);
+            }
+        }
+
+        // ===== enum case 壳（SYNTAX §12；P2 落定判别值，P3 声明点绑定 init 模板）=====
+
+        private static void CollectEnumCases(
+            CompilationUnit unit, EnumStructDeclarationASTNode node, TypeSymbol owner,
+            DeclarationCollection result)
+        {
+            foreach (var caseNode in node.Cases)
+            {
+                var symbol = new EnumCaseSymbol(caseNode.CaseName, owner);
+                result.Map(caseNode, symbol);
+                // case 名唯一（§12；Parser FinishEnumCases 已拦，此处防御性复核）。
+                // 与重复声明惯例一致：重复符号不进容器表，但仍登记 AST→符号映射
+                if (owner.Cases.Any(c => c.Name == symbol.Name))
+                {
+                    unit.Diagnostics.Error(DiagnosticPhase.P1, caseNode.Span,
+                        $"Duplicate enum case declaration: '{symbol.Name}'");
+                }
+                else
+                {
+                    owner.Cases.Add(symbol);
+                }
             }
         }
 
@@ -335,12 +362,15 @@ namespace LatteCompiler
             return segments;
         }
 
-        // P1 文本级方法签名键：名(参数名:参数类型键,...)。
-        // 参数名在内——具名调用使参数名成为签名的一部分；类型键是源码文本
-        // （未解析），同名同参数名同类型文本的声明必为重复。
-        private static string MethodKey(string name, ParameterListASTNode parameters)
+        // P1 文本级方法签名键：名\<泛型元数>(参数名:参数类型键,...)。
+        // 泛型元数在内（对齐 S10 类型判重口径「名 + 泛型元数」——foo(x: i32) 与
+        // foo\<T\>(x: i32) 元数不同即不同派发契约，合法共存）；参数名在内——
+        // 具名调用使参数名成为签名的一部分；类型键是源码文本（未解析），
+        // 同名同元数同参数名同类型文本的声明必为重复。
+        private static string MethodKey(string name, int genericArity,
+            ParameterListASTNode parameters)
         {
-            var sb = new StringBuilder(name).Append('(');
+            var sb = new StringBuilder(name).Append("\\<").Append(genericArity).Append('>').Append('(');
             for (int i = 0; i < parameters.Parameters.Count; i++)
             {
                 if (i > 0) sb.Append(',');

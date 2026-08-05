@@ -66,8 +66,10 @@ namespace LatteCompiler
             {
                 env.Error(entry.Node.Span, $"Native function '{method.Name}' must not have a body");
             }
-            // 类型成员必须同时是 static（全局函数无此要求）
-            if (entry.DeclaringType != null && !method.IsStatic)
+            // 类型成员必须同时是 static（全局函数无此要求）。ext 成员视同类型
+            // 成员：注册在更后的 ExtensionRegistrar（本阶段 DeclaringType 恒 null、
+            // Owner 未改写），按 ExtTargetPath 非空判定
+            if ((entry.DeclaringType != null || method.ExtTargetPath != null) && !method.IsStatic)
             {
                 env.Error(entry.Node.Span, $"Native member function '{method.Name}' must be 'static'");
             }
@@ -80,11 +82,33 @@ namespace LatteCompiler
                 env.Error(fn.GenericParameters.Span ?? entry.Node.Span,
                     $"Native function '{method.Name}' cannot declare generic parameters");
             }
-            // 同容器内不得与同名函数构成重载（容器表不含 P1 重复声明，此处比的是合法重载）
-            var siblings = method.Owner?.Methods ?? method.Namespace?.Methods;
-            if (siblings != null && siblings.Count(m => m.Name == method.Name) > 1)
+            // 同容器内不得与同名函数构成重载（容器表不含 P1 重复声明，此处比的是合法重载）；
+            // ext 成员尚未注册进目标容器（ExtensionRegistrar 在本阶段之后）——按目标
+            // 类型既有成员表 + 同目标其余 pending ext 比对（自身计入一次，> 1 即重载）；
+            // 目标解析失败毒化静默（注册阶段统一报）
+            if (method.ExtTargetPath != null)
             {
-                env.Error(entry.Node.Span, $"Native function '{method.Name}' cannot be overloaded");
+                var target = env.Names.ResolveDottedPath(method.ExtTargetPath.Split('.'),
+                    entry.Context, allowImports: true, reportErrors: false, span: null);
+                if (target is TypeSymbol targetType)
+                {
+                    var sameName = targetType.Methods.Count(m => m.Name == method.Name)
+                        + env.Declarations.PendingExtMembers.OfType<MethodSymbol>().Count(m =>
+                            m.ExtTargetPath == method.ExtTargetPath && m.Name == method.Name);
+                    if (sameName > 1)
+                    {
+                        env.Error(entry.Node.Span,
+                            $"Native function '{method.Name}' cannot be overloaded");
+                    }
+                }
+            }
+            else
+            {
+                var siblings = method.Owner?.Methods ?? method.Namespace?.Methods;
+                if (siblings != null && siblings.Count(m => m.Name == method.Name) > 1)
+                {
+                    env.Error(entry.Node.Span, $"Native function '{method.Name}' cannot be overloaded");
+                }
             }
             // 参数类型白名单（ErrorType 毒化静默）——参数仍限基本类型（§4.6）
             foreach (var parameter in method.Parameters)

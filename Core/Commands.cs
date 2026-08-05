@@ -93,28 +93,28 @@ namespace LatteCompiler
         };
     }
 
-    /// <summary>--emit-bil：语义分析通过后把 BIL 文本写入指定文件。与 --parse-only 互斥。</summary>
+    /// <summary>--emit-bil：语义分析通过后把 BIL 文本写入指定文件。与 --parse-only/--sema-only 互斥。</summary>
     public class EmitBilOption : ICommandLineOption
     {
         public CommandLineMask Mask { get; } = new()
         {
             Name = "--emit-bil",
-            Description = "语义分析通过后把 BIL 文本写入指定文件（与 --parse-only 互斥）",
+            Description = "语义分析通过后把 BIL 文本写入指定文件（与 --parse-only/--sema-only 互斥）",
             ArgsHint = "<路径>",
             MinArgs = 1,
             MaxArgs = 1,
-            MutuallyExclusive = { "--parse-only" },
+            MutuallyExclusive = { "--parse-only", "--sema-only" },
         };
     }
 
-    /// <summary>--sema-only：只做语义分析（P1–P3），输出诊断后结束，不发射 BIL。与 --parse-only 互斥。</summary>
+    /// <summary>--sema-only：只做语义分析（P1–P3），输出诊断后结束，不发射 BIL。与 --parse-only/--emit-bil 互斥。</summary>
     public class SemaOnlyOption : ICommandLineOption
     {
         public CommandLineMask Mask { get; } = new()
         {
             Name = "--sema-only",
-            Description = "只做语义分析（P1–P3）：输出诊断后结束，不发射 BIL（与 --parse-only 互斥）",
-            MutuallyExclusive = { "--parse-only" },
+            Description = "只做语义分析（P1–P3）：输出诊断后结束，不发射 BIL（与 --parse-only/--emit-bil 互斥）",
+            MutuallyExclusive = { "--parse-only", "--emit-bil" },
         };
     }
 
@@ -194,12 +194,22 @@ namespace LatteCompiler
             // 语义管线的用户源集合（--parse-only 不走语义，不收集）
             var userRoots = new List<RootASTNode>();
             StreamWriter? dumpWriter = null;
-            try
+            // --dump-ast 输出路径不可写（目录不存在/权限不足等）属环境错误：
+            // 对齐 --log-to 的措辞风格友好报错，退出码 2（此前无 catch 直接崩溃）
+            if (dumpPath != null)
             {
-                if (dumpPath != null)
+                try
                 {
                     dumpWriter = new StreamWriter(dumpPath, append: false, encoding: new UTF8Encoding(false));
                 }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    Logger.Error("Compile", $"无法打开 AST 输出文件 {dumpPath}: {ex.Message}");
+                    return 2;
+                }
+            }
+            try
+            {
                 foreach (var file in files)
                 {
                     try
@@ -312,7 +322,17 @@ namespace LatteCompiler
                     }
                     return 1;
                 }
-                File.WriteAllText(emitBilPath, BilWriter.Write(module), new UTF8Encoding(false));
+                // BIL 输出路径不可写（目录不存在/权限不足等）属环境错误：
+                // 对齐 --log-to 的措辞风格友好报错，退出码 2（此前无保护直接崩溃）
+                try
+                {
+                    File.WriteAllText(emitBilPath, BilWriter.Write(module), new UTF8Encoding(false));
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    Logger.Error("Compile", $"无法写入 BIL 输出文件 {emitBilPath}: {ex.Message}");
+                    return 2;
+                }
                 Console.WriteLine($"BIL emitted to {emitBilPath}");
             }
             return 0;

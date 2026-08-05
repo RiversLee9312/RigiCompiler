@@ -314,7 +314,8 @@ namespace LatteCompiler.Bil
                     CheckType(context, VarType(context, setEmbedded.Source),
                         FieldTypeOf(context, setEmbedded.InnerField.Symbol), location,
                         "set.field.embedded 源变量", errors);
-                    VerifyFieldWritable(context, setEmbedded.InnerField.Symbol, location, errors);
+                    VerifyFieldWritable(context, setEmbedded.InnerField.Symbol,
+                        isInstanceWrite: true, location, errors);
                     break;
 
                 case GetIdVarInstruction getIdVar:
@@ -342,7 +343,8 @@ namespace LatteCompiler.Bil
                     CheckType(context, VarType(context, setField.Source),
                         FieldTypeOf(context, setField.Field.Symbol), location,
                         "set.field 源变量", errors);
-                    VerifyFieldWritable(context, setField.Field.Symbol, location, errors);
+                    VerifyFieldWritable(context, setField.Field.Symbol,
+                        isInstanceWrite: true, location, errors);
                     break;
 
                 case GetFieldStaticInstruction getFieldStatic:
@@ -359,7 +361,8 @@ namespace LatteCompiler.Bil
                     CheckType(context, VarType(context, setFieldStatic.Source),
                         FieldTypeOf(context, setFieldStatic.Field.Symbol), location,
                         "set.field.static 源变量", errors);
-                    VerifyFieldWritable(context, setFieldStatic.Field.Symbol, location, errors);
+                    VerifyFieldWritable(context, setFieldStatic.Field.Symbol,
+                        isInstanceWrite: false, location, errors);
                     break;
 
                 case GetArrayInstruction getArray:
@@ -563,12 +566,13 @@ namespace LatteCompiler.Bil
                     "invoke 结果", errors);
             }
 
-            // §15.1：实参 ≡ 规范签名（.this 首参 + 普通参数逐项；符号中
+            // §15.1：实参 ≡ 规范签名（§7.2 调用序：.this → .generic.*（固定
+            // 泛型 + 泛型包）→ 普通参数逐项 → .vargs 包 → .kwargs 包；符号中
             // hidden 形态的参数跳过比对）。
-            // S9e：泛型隐藏参数（.generic.*）已产出——hiddenCount 取被调
-            // fn 定义的 .args 隐藏条目数（§7.2 调用序 .this → .generic.* →
-            // 普通参数，实参侧跳过相同个数后与签名比对；无 fn 定义的
-            // native/external 无隐藏参数，降级 0）
+            // S9e：泛型隐藏参数（.generic.*）已产出——取被调 fn 定义的 .args
+            // 隐藏条目数，receiver 后前导跳过相同个数；S9d：值包（.vargs/
+            // .kwargs）在普通参数之后逐条比对（无 fn 定义的 native/external
+            // 无隐藏参数，降级 0）
             var expected = new List<(string Name, string TypeRef)>();
             foreach (var parameter in parameters)
             {
@@ -579,16 +583,25 @@ namespace LatteCompiler.Bil
                 }
                 expected.Add(parameter);
             }
-            var hiddenCount = 0;
+            var genericHiddenCount = 0;
+            var packArguments = new List<BilArgDeclaration>();
             var calleeDefinition = context.Module.Module.Functions
                 .FirstOrDefault(f => f.Symbol == methodSymbol);
             if (calleeDefinition != null)
             {
-                hiddenCount = calleeDefinition.Args.Count(a => a.Name.StartsWith(".generic.")
-                    || a.Name.StartsWith(".vargs.") || a.Name.StartsWith(".kwargs."));
+                genericHiddenCount = calleeDefinition.Args.Count(a => a.Name.StartsWith(".generic."));
+                foreach (var arg in calleeDefinition.Args)
+                {
+                    if (arg.Name.StartsWith(".vargs.") || arg.Name.StartsWith(".kwargs."))
+                    {
+                        packArguments.Add(arg);
+                    }
+                }
             }
             var argumentIndex = 0;
-            if (!isStatic && owner.Length > 0)
+            // owner 段以 "::" 结尾的是命名空间前缀（全局函数），无 receiver
+            // （与 §21.7 fn 定义侧判定一致）
+            if (!isStatic && owner.Length > 0 && !owner.EndsWith("::"))
             {
                 if (arguments.Count == 0)
                 {
@@ -600,18 +613,29 @@ namespace LatteCompiler.Bil
                     "invoke receiver(.this)", errors);
                 argumentIndex = 1;
             }
-            if (arguments.Count - argumentIndex - hiddenCount != expected.Count
-                || arguments.Count - argumentIndex < hiddenCount)
+            if (arguments.Count - argumentIndex - genericHiddenCount
+                != expected.Count + packArguments.Count)
             {
                 errors.Add(new BilVerificationError("21.3", location,
                     $"invoke 实参个数 {arguments.Count - argumentIndex} 与方法 \"{methodSymbol}\" " +
-                    $"签名参数个数 {expected.Count}（含 {hiddenCount} 个泛型/可变隐藏参数）不一致"));
+                    $"签名参数个数 {expected.Count}（含 {genericHiddenCount} 个泛型隐藏参数与 " +
+                    $"{packArguments.Count} 个值包）不一致"));
                 return;
             }
             for (var i = 0; i < expected.Count; i++)
             {
-                CheckType(context, VarType(context, arguments[argumentIndex + hiddenCount + i]),
+                CheckType(context, VarType(context, arguments[argumentIndex + genericHiddenCount + i]),
                     expected[i].TypeRef, location, $"invoke 实参 {i}", errors);
+            }
+            // 末尾值包逐条比对（§7.1 类型形态以 fn 定义声明为准：
+            // .vargs = .array<.any>、.kwargs = .array<.pair<.string, .any>>）
+            for (var i = 0; i < packArguments.Count; i++)
+            {
+                CheckType(context,
+                    VarType(context,
+                        arguments[argumentIndex + genericHiddenCount + expected.Count + i]),
+                    packArguments[i].TypeRef, location,
+                    $"invoke 值包 \"{packArguments[i].Name}\"", errors);
             }
         }
 
@@ -622,8 +646,7 @@ namespace LatteCompiler.Bil
             VerifyResolvableType(context, typeRef, location, errors);
             CheckType(context, VarType(context, newInstruction.Target), typeRef, location,
                 "new 结果", errors);
-            if (!context.Module.TypeDeclarations.TryGetValue(
-                    BilVerificationContext.StripTypeArguments(typeRef), out var declaration))
+            if (!context.Module.TryGetTypeDeclaration(typeRef, out var declaration))
             {
                 return;   // 查不到声明（external 不完整）降级
             }
@@ -693,8 +716,7 @@ namespace LatteCompiler.Bil
             var opcode = isGet ? "get.array" : "set.array";
             var operatorName = isGet ? "getAtIndex" : "setAtIndex";
             var arity = isGet ? 1 : 2;
-            if (!context.Module.TypeDeclarations.TryGetValue(
-                    BilVerificationContext.StripTypeArguments(collectionType), out var declaration))
+            if (!context.Module.TryGetTypeDeclaration(collectionType, out var declaration))
             {
                 return;   // 查不到声明（内建别名投影/external 不完整）降级
             }
@@ -709,8 +731,7 @@ namespace LatteCompiler.Bil
                 {
                     break;
                 }
-                if (!context.Module.TypeDeclarations.TryGetValue(
-                        BilVerificationContext.StripTypeArguments(current.ExtendsType),
+                if (!context.Module.TryGetTypeDeclaration(current.ExtendsType,
                         out var baseDeclaration))
                 {
                     return;   // 链断（external 不完整）降级
@@ -807,8 +828,7 @@ namespace LatteCompiler.Bil
             CheckType(context, VarType(context, newCase.Target), typeRef, location,
                 "new.case 结果", errors);
             // §14.3：ENUM_TYPE 必须是 enum-struct 且 case owner 一致
-            if (context.Module.TypeDeclarations.TryGetValue(
-                    BilVerificationContext.StripTypeArguments(typeRef), out var declaration)
+            if (context.Module.TryGetTypeDeclaration(typeRef, out var declaration)
                 && declaration.Kind != BilTypeKind.EnumStruct)
             {
                 errors.Add(new BilVerificationError("21.3", location,
@@ -863,8 +883,7 @@ namespace LatteCompiler.Bil
             }
             var enumType = instruction.Case.QualifiedName.Substring(0, lastDot);
             VerifyResolvableType(context, enumType, location, errors);
-            if (context.Module.TypeDeclarations.TryGetValue(
-                    BilVerificationContext.StripTypeArguments(enumType), out var declaration)
+            if (context.Module.TryGetTypeDeclaration(enumType, out var declaration)
                 && declaration.Kind != BilTypeKind.EnumStruct)
             {
                 errors.Add(new BilVerificationError("21.3", location,
@@ -907,9 +926,12 @@ namespace LatteCompiler.Bil
                     $"嵌套字段访问的宿主字段 \"{hostFieldSymbol}\" 不是 wrapper 隐藏字段（§5.3）"));
                 return;
             }
-            if (!context.Module.TypeDeclarations.TryGetValue(
-                    BilVerificationContext.StripTypeArguments(hostType), out var hostDeclaration)
-                || hostDeclaration.Kind != BilTypeKind.Wrapper)
+            if (!context.Module.TryGetTypeDeclaration(hostType, out var hostDeclaration))
+            {
+                return;   // 查不到声明（内建别名投影/external 不完整）降级——
+                          // 与 VerifyWrapperType 的降级原则一致
+            }
+            if (hostDeclaration.Kind != BilTypeKind.Wrapper)
             {
                 errors.Add(new BilVerificationError("21.3", location,
                     $"嵌套字段访问的宿主字段类型 \"{hostType}\" 不是 wrapper 类型"));
@@ -1021,24 +1043,44 @@ namespace LatteCompiler.Bil
                 : null;
         }
 
-        // §21.8：const 字段不被写入
+        // §21.8：const 字段不被写入——init 豁免（对齐 P3 ConstFieldRules，
+        // SYNTAX §9.3 构造期一次性赋值）：init 方法（§8.4 以 init 修饰符
+        // 标识）体内写实例 const 字段放行；P3 豁免不限字段宿主与函数宿主
+        // 一致（init 体内写任意实例 const 字段均放行，含继承的基类字段），
+        // BIL 侧对齐；静态写入（set.field.static）不在豁免内——isInstanceWrite
+        // 由指令形态给出（embedded 内层字段必为实例，§21.3 已拦截静态）。
+        // fn 声明查不到时模块已有 §21.2 错误（fn 无对应本地声明），不豁免
         private static void VerifyFieldWritable(BilFunctionContext context, string fieldSymbol,
-            string location, List<BilVerificationError> errors)
+            bool isInstanceWrite, string location, List<BilVerificationError> errors)
         {
-            if (context.Module.FieldDeclarations.TryGetValue(fieldSymbol, out var declaration)
-                && HasKeyword(declaration, BilKeyword.Const))
+            if (!context.Module.FieldDeclarations.TryGetValue(fieldSymbol, out var declaration)
+                || !HasKeyword(declaration, BilKeyword.Const))
             {
-                errors.Add(new BilVerificationError("21.8", location,
-                    $"const 字段 \"{fieldSymbol}\" 不得被写入"));
+                return;
             }
+            if (isInstanceWrite && IsInitFunction(context))
+            {
+                return;
+            }
+            errors.Add(new BilVerificationError("21.8", location,
+                $"const 字段 \"{fieldSymbol}\" 不得被写入"));
+        }
+
+        // 当前 fn 是否 init 方法：§8.4 以声明的 init 修饰符标识（init 的
+        // canonical 是普通 $init(...)@.void 形态，不作判定依据）；fn 定义
+        // 必对应 LocalSymbols 声明（§21.2），查不到声明即非 init
+        private static bool IsInitFunction(BilFunctionContext context)
+        {
+            return context.Module.MethodDeclarations.TryGetValue(context.Function.Symbol,
+                    out var fnDeclaration)
+                && HasKeyword(fnDeclaration, BilKeyword.Init);
         }
 
         private static void VerifyWrapperType(BilFunctionContext context, string typeRef,
             string location, List<BilVerificationError> errors)
         {
             VerifyResolvableType(context, typeRef, location, errors);
-            if (context.Module.TypeDeclarations.TryGetValue(
-                    BilVerificationContext.StripTypeArguments(typeRef), out var declaration)
+            if (context.Module.TryGetTypeDeclaration(typeRef, out var declaration)
                 && declaration.Kind != BilTypeKind.Wrapper)
             {
                 errors.Add(new BilVerificationError("21.3", location,
@@ -1062,21 +1104,21 @@ namespace LatteCompiler.Bil
         private static bool IsExceptionCompatible(BilFunctionContext context, string typeRef)
         {
             const string exceptionRoot = "core::Exception";
-            var current = BilVerificationContext.StripTypeArguments(typeRef);
+            var current = typeRef;
             var visited = new HashSet<string>();
             while (true)
             {
-                if (current == exceptionRoot)
+                if (BilVerificationContext.StripTypeArguments(current) == exceptionRoot)
                 {
                     return true;
                 }
-                if (!visited.Add(current)
-                    || !context.Module.TypeDeclarations.TryGetValue(current, out var declaration)
+                if (!visited.Add(BilVerificationContext.DeclarationKeyOf(current))
+                    || !context.Module.TryGetTypeDeclaration(current, out var declaration)
                     || declaration.ExtendsType == null)
                 {
                     return true;   // 链断：降级
                 }
-                current = BilVerificationContext.StripTypeArguments(declaration.ExtendsType);
+                current = declaration.ExtendsType;
             }
         }
 

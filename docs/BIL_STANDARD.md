@@ -1807,7 +1807,8 @@ LocalSymbols {
 
 - `pub`、`protected`、`internal`、`priv` 访问合法；
 - static/instance 指令形式正确；
-- const 不被写入；
+- const 不被写入（init 方法体内写实例 const 字段除外——构造期一次性赋值，
+  对齐 SYNTAX §9.3；静态字段写入不豁免）；
 - abstract 不被构造；
 - enum struct 不走普通 new；
 - rich/shared 闭包与跨 Coroutine 规则合法；

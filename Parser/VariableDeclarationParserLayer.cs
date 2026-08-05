@@ -273,7 +273,8 @@ namespace LatteCompiler
         // ext 限定名的段间点已读：拼接下一段（Type.member，可多段路径）
         private ParserLayerResult HandleNameDotSeen(Token currentToken, ParserLayerContext context)
         {
-            if (currentToken is WordToken wt)
+            // 段名必须是合法标识符（非数字词、非保留字，与变量名首段一致）
+            if (currentToken is WordToken wt && Keywords.IsIdentifier(wt.Content))
             {
                 declNode.Name += "." + wt.Content;
                 state = State.NameSeen;

@@ -33,13 +33,16 @@ namespace LatteCompiler
         }
 
         // 值块视角的路径终止（S7b）：return@ 命中、break/continue 穿透
-        // （GuaranteesValueReturn 视其为路径终止）、throw；复合结构递归同
-        // GuaranteesReturn，另含 seq 语句体（S7e）
+        // （GuaranteesValueReturn 视其为路径终止）、throw、裸 return
+        // （SYNTAX §6.1：裸 return 始终穿透值块、直接结束外层函数——
+        // 以 return 终止的路径不落到块尾，不要求 return@）；复合结构
+        // 递归同 GuaranteesReturn，另含 seq 语句体（S7e）
         public static bool GuaranteesValueReturn(BoundBlock block)
         {
             return block.Statements.Count > 0 && block.Statements[^1] switch
             {
                 BoundReturnValueStatement => true,
+                BoundReturnStatement => true,
                 BoundLoopControl => true,
                 BoundThrowStatement => true,
                 BoundIfStatement ifStatement => ifStatement.FalseBlock != null
@@ -93,12 +96,21 @@ namespace LatteCompiler
         // 块内语句的平铺枚举（递归嵌套 BoundBlock、BoundIfStatement 两分支、
         // BoundSwitchStatement 全部分支体（S7d：switch 体内 return@ 可穿透
         // 命中外层值块，收集/终止判定须看得到）、BoundTryStatement 三个块与
-        // BoundSeqStatement 体（S7e：同理穿透可见））
+        // BoundSeqStatement 体（S7e：同理穿透可见））；并下钻语句携带表达式
+        // 内部的嵌套值块——return@ 可藏在表达式位置的 if/switch/seq 表达式
+        // 分支体里（如 `return@outer if (c) { return@outer v } else { ... }`、
+        // `var x = if (c) { return@outer v } else { ... }`），其值类型同样
+        // 参与外层统一
         public static IEnumerable<BoundStatement> EnumerateStatements(BoundBlock block)
         {
             foreach (var statement in block.Statements)
             {
                 yield return statement;
+                // 语句携带表达式内的嵌套值块（先于语句级复合下钻——源码序）
+                foreach (var expression in StatementCarriedExpressions(statement))
+                {
+                    foreach (var s in EnumerateExpressionValueBlocks(expression)) yield return s;
+                }
                 switch (statement)
                 {
                     case BoundBlock nested:
@@ -141,6 +153,160 @@ namespace LatteCompiler
                             yield return s;
                         break;
                 }
+            }
+        }
+
+        // 语句直接携带的表达式（嵌套值块的下钻入口；复合语句的块由
+        // 语句级递归覆盖，不在此列出）
+        private static IEnumerable<BoundExpression> StatementCarriedExpressions(
+            BoundStatement statement)
+        {
+            switch (statement)
+            {
+                case BoundLocalDeclarationStatement declaration:
+                    if (declaration.Initializer != null) yield return declaration.Initializer;
+                    break;
+                case BoundDestructuringDeclarationStatement destructuring:
+                    yield return destructuring.Initializer;
+                    break;
+                case BoundExpressionStatement expressionStatement:
+                    yield return expressionStatement.Expression;
+                    break;
+                case BoundCallStatement call:
+                    if (call.Receiver != null) yield return call.Receiver;
+                    foreach (var argument in call.Arguments) yield return argument;
+                    break;
+                case BoundAssignmentStatement assignment:
+                    yield return assignment.Target;
+                    yield return assignment.Value;
+                    break;
+                case BoundReturnStatement returnStatement:
+                    if (returnStatement.Value != null) yield return returnStatement.Value;
+                    break;
+                case BoundReturnValueStatement returnValue:
+                    yield return returnValue.Value;
+                    break;
+                case BoundThrowStatement throwStatement:
+                    yield return throwStatement.Exception;
+                    break;
+                case BoundIfStatement ifStatement:
+                    yield return ifStatement.Condition;
+                    break;
+                case BoundLoop loop:
+                    if (loop.Condition != null) yield return loop.Condition;
+                    if (loop.Iterable != null) yield return loop.Iterable;
+                    break;
+                case BoundSwitchStatement switchStatement:
+                    yield return switchStatement.Selector;
+                    foreach (var switchCase in switchStatement.Cases)
+                        yield return switchCase.Match;
+                    break;
+            }
+        }
+
+        // 表达式内部的嵌套值块枚举：命中 if/switch/seq 表达式即下钻其值块
+        // （块内语句回到语句级枚举）；其余表达式透明穿透子表达式
+        private static IEnumerable<BoundStatement> EnumerateExpressionValueBlocks(
+            BoundExpression expression)
+        {
+            switch (expression)
+            {
+                case BoundIfExpression ifExpression:
+                    foreach (var s in EnumerateExpressionValueBlocks(ifExpression.Condition))
+                        yield return s;
+                    foreach (var s in EnumerateStatements(ifExpression.TrueBranch.Block))
+                        yield return s;
+                    foreach (var s in EnumerateStatements(ifExpression.FalseBranch.Block))
+                        yield return s;
+                    break;
+                case BoundSwitchExpression switchExpression:
+                    foreach (var s in EnumerateExpressionValueBlocks(switchExpression.Selector))
+                        yield return s;
+                    foreach (var switchCase in switchExpression.Cases)
+                    {
+                        foreach (var s in EnumerateExpressionValueBlocks(switchCase.Match))
+                            yield return s;
+                        foreach (var s in EnumerateStatements(switchCase.Body.Block))
+                            yield return s;
+                    }
+                    foreach (var s in EnumerateStatements(switchExpression.DefaultBody.Block))
+                        yield return s;
+                    break;
+                case BoundSeqExpression seqExpression:
+                    foreach (var s in EnumerateStatements(seqExpression.Body.Block))
+                        yield return s;
+                    break;
+                default:
+                    foreach (var child in ChildExpressions(expression))
+                    {
+                        foreach (var s in EnumerateExpressionValueBlocks(child)) yield return s;
+                    }
+                    break;
+            }
+        }
+
+        // 表达式的直接子表达式（透明穿透用）。注意
+        // BoundSwitchPlaceholderExpression.Selector 是回指边（selector 已由
+        // 所属 switch 枚举），不跟随——避免重复枚举
+        private static IEnumerable<BoundExpression> ChildExpressions(BoundExpression expression)
+        {
+            switch (expression)
+            {
+                case BoundBinaryExpression binary:
+                    yield return binary.Left;
+                    yield return binary.Right;
+                    break;
+                case BoundUnaryExpression unary:
+                    yield return unary.Operand;
+                    break;
+                case BoundCallExpression call:
+                    foreach (var argument in call.Arguments) yield return argument;
+                    break;
+                case BoundNewExpression newExpression:
+                    foreach (var argument in newExpression.Arguments) yield return argument;
+                    break;
+                case BoundCompoundAssignmentExpression compound:
+                    yield return compound.Target;
+                    yield return compound.Value;
+                    break;
+                case BoundInstanceCallExpression instanceCall:
+                    yield return instanceCall.Receiver;
+                    foreach (var argument in instanceCall.Arguments) yield return argument;
+                    break;
+                case BoundFieldAccessExpression fieldAccess:
+                    yield return fieldAccess.Receiver;
+                    break;
+                case BoundIndexExpression index:
+                    yield return index.Receiver;
+                    yield return index.Index;
+                    break;
+                case BoundCastExpression cast:
+                    yield return cast.Source;
+                    break;
+                case BoundSmartCastExpression smartCast:
+                    yield return smartCast.Operand;
+                    break;
+                case BoundSafeAccessExpression safeAccess:
+                    yield return safeAccess.Receiver;
+                    yield return safeAccess.Access;
+                    break;
+                case BoundNullFallbackExpression nullFallback:
+                    yield return nullFallback.Left;
+                    yield return nullFallback.Right;
+                    break;
+                case BoundTypeCheckExpression typeCheck:
+                    yield return typeCheck.Operand;
+                    if (typeCheck.TargetValue != null) yield return typeCheck.TargetValue;
+                    break;
+                case BoundTypeOfExpression typeOf:
+                    if (typeOf.Operand != null) yield return typeOf.Operand;
+                    break;
+                case BoundVarArgsArgument varArgs:
+                    foreach (var value in varArgs.Values) yield return value;
+                    foreach (var (_, value) in varArgs.NamedValues) yield return value;
+                    break;
+                // 叶子（字面量/值引用/字段引用/this/安全访问占位）与
+                // BoundSwitchPlaceholderExpression（回指跳过）：无子表达式
             }
         }
 

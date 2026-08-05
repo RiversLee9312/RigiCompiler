@@ -28,10 +28,13 @@ namespace LatteCompiler
                 Conditions.CheckBool(loop.Condition, loop.Span, condition, "loop", env);
                 // while 体入口收窄（S8b，SYNTAX §3.5）：条件真边事实
                 // + before 中「体内不赋值」的键——先剔除体赋值根再覆盖真边；
-                // 循环后 = before（出口不收窄）；do-while 体不带（v1 简化）
+                // 循环后 = before（出口不收窄），且 before 中体赋值根的键
+                // 不得复活（回边保守——体可能执行，出口对恢复表同样剔除）；
+                // do-while 体不带（v1 简化）
                 var facts = ConditionFactsExtractor.Extract(condition, ctx.Frame);
                 var beforeNarrowed = ctx.Flow.SnapshotNarrowed();
-                foreach (var root in CollectAssignedRoots(loop.Body, scope, ctx.Frame))
+                var assignedRoots = CollectAssignedRoots(loop.Body, scope, ctx.Frame).ToList();
+                foreach (var root in assignedRoots)
                 {
                     ctx.Flow.ClearRoot(root);
                 }
@@ -39,19 +42,30 @@ namespace LatteCompiler
                 LoopBodyVisitor.VisitInto(loop.Body, scope, shell, ctx, env);
                 ctx.Flow.Restore(before);
                 ctx.Flow.RestoreNarrowed(beforeNarrowed);
+                foreach (var root in assignedRoots)
+                {
+                    ctx.Flow.ClearRoot(root);
+                }
                 if (condition == null) return null;
                 shell.Condition = condition;
                 return shell;
             }
             // DoWhile：体先行（至少一次），条件在体后。体入口收窄不带条件
-            // 真边（v1 简化），但剔除体赋值根（回边保守，同 while）
+            // 真边（v1 简化），但剔除体赋值根（回边保守，同 while）；
+            // 出口对恢复表同样剔除（体至少执行一次——体赋值根的收窄必失效，
+            // 不得随 before 快照复活）
             var doBeforeNarrowed = ctx.Flow.SnapshotNarrowed();
-            foreach (var root in CollectAssignedRoots(loop.Body, scope, ctx.Frame))
+            var doAssignedRoots = CollectAssignedRoots(loop.Body, scope, ctx.Frame).ToList();
+            foreach (var root in doAssignedRoots)
             {
                 ctx.Flow.ClearRoot(root);
             }
             LoopBodyVisitor.VisitInto(loop.Body, scope, shell, ctx, env);
             ctx.Flow.RestoreNarrowed(doBeforeNarrowed);
+            foreach (var root in doAssignedRoots)
+            {
+                ctx.Flow.ClearRoot(root);
+            }
             var bodyAssigned = ctx.Flow.Snapshot();
             var revCondition = ExpressionDispatcher.Visit(loop.Condition.Expression, scope, ctx, env);
             Conditions.CheckBool(loop.Condition, loop.Span, revCondition, "loop", env);
@@ -63,9 +77,10 @@ namespace LatteCompiler
 
         // while 体收窄的保守剔除（S8b）：收集循环体 AST 全子树的赋值目标
         // 根符号（局部/参数——含嵌套块/if/内层循环/值块内的赋值）；
-        // 字段/全局目标不产生根（var 字段不可收窄；const 字段不可赋值已拦截）
-        private static IEnumerable<SemanticSymbol> CollectAssignedRoots(ASTNode node, Scope scope,
-            BindFunctionFrame frame)
+        // 字段/全局目标不产生根（var 字段不可收窄；const 字段不可赋值已拦截）。
+        // internal：TryVisitor 的 finally 体赋值失效（恒执行块同规则）复用
+        internal static IEnumerable<SemanticSymbol> CollectAssignedRoots(ASTNode node,
+            Scope scope, BindFunctionFrame frame)
         {
             var names = new List<string>();
             CollectAssignmentTargetNames(node, names);
@@ -208,15 +223,20 @@ namespace LatteCompiler
                 CurrentMethod = current,
             };
             // for 体入口收窄：无条件真边（条件由脱糖承载），但剔除体赋值根
-            // （回边保守，同 while）
+            // （回边保守，同 while）；出口对恢复表同样剔除（不得复活）
             var forBeforeNarrowed = ctx.Flow.SnapshotNarrowed();
-            foreach (var root in CollectAssignedRoots(node.Body, scope, ctx.Frame))
+            var forAssignedRoots = CollectAssignedRoots(node.Body, scope, ctx.Frame).ToList();
+            foreach (var root in forAssignedRoots)
             {
                 ctx.Flow.ClearRoot(root);
             }
             LoopBodyVisitor.VisitInto(node.Body, scope, shell, ctx, env);
             ctx.Flow.Restore(before);
             ctx.Flow.RestoreNarrowed(forBeforeNarrowed);
+            foreach (var root in forAssignedRoots)
+            {
+                ctx.Flow.ClearRoot(root);
+            }
             return shell;
         }
 

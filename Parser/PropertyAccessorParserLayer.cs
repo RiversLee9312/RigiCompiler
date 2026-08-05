@@ -281,6 +281,11 @@ namespace LatteCompiler
         // } 收尾：空块无意义；get/set 在是否需要 backing field 上必须一致（§9.4）
         private ParserLayerResult CloseBlock(ParserLayerContext context)
         {
+            // 已吃修饰符但无 get/set 归属的游离访问器（如 { pub get \n priv } 的
+            // 尾随 priv）：不得随未提交的 current 被静默吞掉
+            if (current != null)
+                throw context.RaiseError("Expected 'get' or 'set' after accessor modifier, got: '}'");
+
             if (declNode.Getter == null && declNode.Setter == null)
                 throw context.RaiseError("Accessor block must contain at least one 'get' or 'set'");
 

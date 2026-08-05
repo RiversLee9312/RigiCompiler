@@ -46,6 +46,13 @@ namespace LatteCompiler
                 }
                 roots.Add((RootASTNode)new Parser().Parse(new Lexer().Tokenize(text, sourceName)));
             }
+            // 零匹配 = EmbeddedResource 配置失效（stdlib 整体缺失）：静默返回空
+            // 列表会让 stdlib 符号全部找不到、诊断全指向用户代码，必须响亮失败
+            if (roots.Count == 0)
+            {
+                throw new CompilerInternalException(
+                    "stdlib 内嵌源缺失：程序集中未找到任何 stdlib/**/*.latte 资源（EmbeddedResource 配置失效）");
+            }
             return roots;
         }
     }

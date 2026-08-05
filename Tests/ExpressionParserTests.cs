@@ -97,6 +97,18 @@ namespace LatteCompiler.Tests
             // 运算符后缺少右操作数
             TestHarness.CheckParseError("var e5 = 1 +",
                 () => TestHarness.ParseRoot("var e5 = 1 +"), "Unexpected end of file");
+            // 一元 + 不接受（SYNTAX §13.2 固定运算符表只定义一元 - opposite）
+            TestHarness.CheckParseError("var e6 = +x",
+                () => TestHarness.ParseRoot("var e6 = +x"), "Unexpected token at start of expression");
+            // > 系列重组要求 token span 相邻：`a > = b` 夹空白不重组为 >=，
+            // = 落入右操作数层按意外 token 报错（>> 同理）
+            TestHarness.CheckParseError("var e7 = a > = b",
+                () => TestHarness.ParseRoot("var e7 = a > = b"), "Unexpected token at start of expression");
+            TestHarness.CheckParseError("var e8 = a > > b",
+                () => TestHarness.ParseRoot("var e8 = a > > b"), "Unexpected token at start of expression");
+            // 复合赋值 op+= 重组同样要求相邻：`a + = 1` 不重组为 +=
+            TestHarness.CheckParseError("{ a + = 1 }",
+                () => TestHarness.ParseBlock("{ a + = 1 }"), "Unexpected token at start of expression");
 
             TestHarness.Blank();
         }

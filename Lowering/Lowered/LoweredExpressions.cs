@@ -3,10 +3,11 @@ using System.Collections.Generic;
 namespace LatteCompiler
 {
     // Lowered 表达式节点（S6 最小集 + S7a 补齐 + S7b 脱糖 + S7c-2 实例成员
-    // + S7e cast + S8a 类型谓词/typeOf + S8c 索引访问，SEMANTIC_ROADMAP）：
+    // + S7e cast + S8a 类型谓词/typeOf + S8c 索引访问 + S11 enum case，
+    // SEMANTIC_ROADMAP）：
     // 字面量 / 值引用 / 全局字段引用 / 二元与一元 intrinsic 运算 / 带返回值调用 /
     // new 构造 / 编译期常量（短路脱糖产物）/ this / 实例方法调用 / 实例字段访问 /
-    // cast / is·supers·with / typeOf / 索引访问。
+    // cast / is·supers·with / typeOf / 索引访问 / enum case 构造与判别匹配。
     // 字面量值不冗余存储——经 Origin.Syntax（LiteralExpressionASTNode.Literal）取。
     // S7b 起部分节点构造的 origin 参数放宽为 BoundNode：脱糖合成节点无逐一
     // 对应的 Bound 节点，Origin 按 ARCH §5.1 约定指向最近的语法来源。
@@ -38,8 +39,11 @@ namespace LatteCompiler
     }
 
     // 值引用：局部变量（LocalSymbol）或参数（ParameterSymbol）。
-    // Type 取符号自身类型（P3 构造 Bound 值引用时 Type 恒等于符号类型，
-    // 恒等与合成两途一致——合成引用的 Origin 可能是语句节点，不能透传）
+    // 局部取符号自身类型（P3 构造 Bound 值引用时 Type 恒等于局部符号类型）。
+    // 参数透传 Origin 的 Bound 表达式定型（P3 对可变参数引用定型为
+    // Array\<元素类型\>——体内视角是包数组（S9d），与声明的元素类型不同；
+    // ValueReferenceRewriter 路径 Origin 恒为表达式）；合成路径（Origin
+    // 非表达式节点）回退符号声明类型
     public sealed class LoweredValueReferenceExpression : LoweredExpression
     {
         public SemanticSymbol Symbol { get; }
@@ -50,7 +54,9 @@ namespace LatteCompiler
             // （BIL §9.3），LoweredLoop/LoweredLoopControl 直接持有符号
             LocalSymbol local => local.Type ?? throw new CompilerInternalException(
                 ".breakid 局部不能作值引用: " + local.Name),
-            ParameterSymbol parameter => parameter.Type!,
+            ParameterSymbol parameter => Origin is BoundExpression boundExpression
+                ? boundExpression.Type
+                : parameter.Type!,
             _ => throw new CompilerInternalException("未知值引用符号: " + Symbol.GetType().Name),
         };
 
@@ -223,12 +229,21 @@ namespace LatteCompiler
     {
         public LoweredExpression Receiver { get; }
         public LoweredExpression Index { get; }
+        // variadic 参数索引（BIL §7.1）：Type 覆盖为容器 ABI 元素类型
+        // （位置包 .any / 具名包 Pair<String, Any>——与 .vargs./.kwargs.
+        // 隐藏条目声明对齐，get.array/set.array 按容器声明推元素期望）；
+        // null = 透传 Origin 的 P3 定型（常规路径）
+        private readonly SemanticSymbol? type;
+
+        public override SemanticSymbol Type => type ?? base.Type;
 
         public LoweredIndexExpression(BoundIndexExpression origin,
-            LoweredExpression receiver, LoweredExpression index) : base(origin)
+            LoweredExpression receiver, LoweredExpression index,
+            SemanticSymbol? type = null) : base(origin)
         {
             Receiver = receiver;
             Index = index;
+            this.type = type;
         }
     }
 
@@ -263,6 +278,9 @@ namespace LatteCompiler
     // type.is/type.supers/type.with，动态形态（TargetValue）加 .indirect。
     // 双形态互斥同 Bound 侧（构造时恰一个非 null）；Kind 复用 Bound 侧
     // 枚举（Lowering → Semantic 单向依赖，与构造参数回指 Bound 节点同理）。
+    // S11 增补第三形态（SYNTAX §12.3）：Kind == IsCase 时 Case 承载匹配
+    // 的 case 符号（TargetType/TargetValue 均 null）——P4b 发射独立的
+    // type.is.case 指令，不走 type.is/supers/with 家族。
     // Type 自带不走 Origin 透传（恒等降级路径传入 Bound.Type，先例：
     // LoweredCastExpression）
     public sealed class LoweredTypeCheckExpression : LoweredExpression
@@ -271,24 +289,32 @@ namespace LatteCompiler
         public LoweredExpression Operand { get; }
         public SemanticSymbol? TargetType { get; }
         public LoweredExpression? TargetValue { get; }
+        // enum case 判别匹配的 case 符号（S11；仅 Kind == IsCase 时非 null）
+        public EnumCaseSymbol? Case { get; }
         private readonly SemanticSymbol type;
 
         public override SemanticSymbol Type => type;
 
         public LoweredTypeCheckExpression(BoundNode origin, BoundTypeCheckKind kind,
             LoweredExpression operand, SemanticSymbol? targetType,
-            LoweredExpression? targetValue, SemanticSymbol type) : base(origin)
+            LoweredExpression? targetValue, SemanticSymbol type,
+            EnumCaseSymbol? caseSymbol = null) : base(origin)
         {
-            // 双形态互斥不变量：静态/动态恰居其一
-            if ((targetType == null) == (targetValue == null))
+            // 目标形态互斥不变量同 Bound 侧：IsCase 恰带 Case（双槽均
+            // null）；其余 Kind 静态/动态恰居其一
+            if (kind == BoundTypeCheckKind.IsCase
+                ? caseSymbol == null || targetType != null || targetValue != null
+                : (targetType == null) == (targetValue == null))
             {
                 throw new CompilerInternalException(
-                    "LoweredTypeCheckExpression 的 TargetType/TargetValue 必须恰一个非 null");
+                    "LoweredTypeCheckExpression 目标形态不合法（IsCase 须恰带 Case；" +
+                    "其余 Kind 的 TargetType/TargetValue 必须恰一个非 null）");
             }
             Kind = kind;
             Operand = operand;
             TargetType = targetType;
             TargetValue = targetValue;
+            Case = caseSymbol;
             this.type = type;
         }
     }
@@ -317,6 +343,26 @@ namespace LatteCompiler
             Operand = operand;
             TargetType = targetType;
             this.type = type;
+        }
+    }
+
+    // enum case 构造（S11，SYNTAX §12.1；BIL §14.3 new.case 直接对应，
+    // 无脱糖）：Case 为 case 符号（宿主 enum 为定义级符号——泛型 enum
+    // 的 case 已归口，P4 不会遇到）；Arguments = 洞实参（规范序 = 洞
+    // 签名序，固定 case 为空）。Type 走 Origin 透传（Bound 侧 Type =
+    // Case.Owner）。固定实参不进 BIL（§8.5/§14.3 不携带——case 入口的
+    // init 调用语义归 VM/Middleware），本节点只携带调用点洞实参
+    public sealed class LoweredEnumCaseExpression : LoweredExpression
+    {
+        public EnumCaseSymbol Case { get; }
+        // 洞实参（规范序；固定 case 为空列表）
+        public IReadOnlyList<LoweredExpression> Arguments { get; }
+
+        public LoweredEnumCaseExpression(BoundEnumCaseExpression origin,
+            EnumCaseSymbol caseSymbol, IReadOnlyList<LoweredExpression> arguments) : base(origin)
+        {
+            Case = caseSymbol;
+            Arguments = arguments;
         }
     }
 

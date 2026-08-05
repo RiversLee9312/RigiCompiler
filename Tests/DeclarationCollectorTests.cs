@@ -20,6 +20,7 @@ namespace LatteCompiler.Tests
             TestImports();
             TestDuplicates();
             TestArityDistinction();
+            TestMethodArityDistinction();
             TestExtMembers();
             TestNamespaceDiagnostics();
             TestCrossFile();
@@ -120,8 +121,31 @@ namespace LatteCompiler.Tests
 
             TestHarness.CheckTrue("成员字段注册且 Owner 反指",
                 point.Fields.Count == 2 && point.Fields[0].Name == "x" && ReferenceEquals(point.Fields[0].Owner, point));
-            TestHarness.CheckTrue("enum case 不建壳（S11 增补）",
-                color.Fields.Count == 0 && color.Methods.Count == 0);
+            TestHarness.CheckTrue("enum case 建壳（Cases 表：名与声明序）",
+                color.Cases.Count == 2 && color.Cases[0].Name == "Red" && color.Cases[1].Name == "Green");
+            TestHarness.CheckTrue("enum case Owner 反指宿主（引用相等）",
+                ReferenceEquals(color.Cases[0].Owner, color) && ReferenceEquals(color.Cases[1].Owner, color));
+            TestHarness.CheckTrue("enum case 判别值与模板槽留空（归 P2/P3 落定）",
+                color.Cases.All(c => c.Discriminant == null && c.ResolvedInit == null && c.HoleParameters == null));
+            // case AST → 符号映射
+            var colorDecl = (EnumStructDeclarationASTNode)unit.SourceFiles[0].Declarations[3];
+            TestHarness.CheckTrue("SymbolOf(case 节点) 同一实例",
+                ReferenceEquals(decls.SymbolOf(colorDecl.Cases[0]), color.Cases[0]));
+            TestHarness.CheckTrue("enum case canonical（BIL §8.5 宿主.case 形态）",
+                CanonicalSymbolPrinter.PrintCase(color.Cases[0]) == "Color.Red"
+                && CanonicalSymbolPrinter.Print(color.Cases[1]) == "Color.Green");
+            // 命名空间下 enum case 的 canonical（§8.5：命名空间::宿主.case）
+            var (unit3, _) = CollectUnit(
+                "namespace com.example\n" +
+                "enum struct RequestResult {}[\n" +
+                "    Success,\n" +
+                "    Failed(code = _)\n" +
+                "]\n");
+            var requestResult = unit3.Symbols.GlobalNamespace.ChildNamespaces
+                .Single(n => n.Name == "com").ChildNamespaces.Single(n => n.Name == "example")
+                .Types.Single(t => t.Name == "RequestResult");
+            TestHarness.CheckTrue("§8.5 命名空间形态（com.example::RequestResult.Failed）",
+                CanonicalSymbolPrinter.PrintCase(requestResult.Cases[1]) == "com.example::RequestResult.Failed");
             TestHarness.CheckTrue("接口方法壳", iFly.Methods.Count == 1 && iFly.Methods[0].Name == "fly");
 
             // init / operator / static / 泛型参数
@@ -332,6 +356,49 @@ namespace LatteCompiler.Tests
             var outer = unit3.Symbols.GlobalNamespace.Types.Single(t => t.Name == "Outer");
             TestHarness.CheckTrue("嵌套 Task 两形态都注册",
                 outer.NestedTypes.Count(t => t.Name == "Inner") == 2);
+
+            TestHarness.Blank();
+        }
+
+        // ===== 同名不同元数方法合法共存（对齐 S10 类型判重口径「名 + 泛型
+        // 元数」：foo(x: i32) 与 foo\<T\>(x: i32) 元数不同即不同派发契约；
+        // 同元数同签名仍判重复）=====
+        private static void TestMethodArityDistinction()
+        {
+            TestHarness.Section("P1 Method Arity Distinction (foo vs foo<T>)");
+
+            // 正例：全局位置非泛型与泛型同名方法共存（三个元数各一）
+            var (unit, _) = CollectUnit(
+                "func foo(x: i32) { }\n" +
+                "func foo\\<T>(x: i32) { }\n" +
+                "func foo\\<T, U>(x: i32) { }\n");
+            TestHarness.CheckTrue("同名不同元数方法共存无重复诊断",
+                !unit.Diagnostics.Diagnostics.Any(d =>
+                    d.Message.Contains("Duplicate method declaration")));
+            TestHarness.CheckTrue("三个声明都注册",
+                unit.Symbols.GlobalNamespace.Methods.Count(m => m.Name == "foo") == 3);
+
+            // 正例：成员位置同规则
+            var (unit2, _) = CollectUnit(
+                "class C {\n" +
+                "    func bar(x: i32) { }\n" +
+                "    func bar\\<T>(x: i32) { }\n" +
+                "}\n");
+            TestHarness.CheckTrue("成员方法同名不同元数共存无重复诊断",
+                !unit2.Diagnostics.Diagnostics.Any(d =>
+                    d.Message.Contains("Duplicate method declaration")));
+            TestHarness.CheckTrue("成员两声明都注册",
+                unit2.Symbols.GlobalNamespace.Types.Single(t => t.Name == "C")
+                    .Methods.Count(m => m.Name == "bar") == 2);
+
+            // 反例：同元数同签名仍判重复（泛型参数名不同不改变判重口径）
+            var (unit3, _) = CollectUnit(
+                "func dup\\<T>(x: i32) { }\n" +
+                "func dup\\<U>(x: i32) { }\n");
+            TestHarness.CheckSemanticError("同名同元数同签名仍判重复", unit3.Diagnostics,
+                "Duplicate method declaration: 'dup'");
+            TestHarness.CheckTrue("重复只注册第一个",
+                unit3.Symbols.GlobalNamespace.Methods.Count(m => m.Name == "dup") == 1);
 
             TestHarness.Blank();
         }

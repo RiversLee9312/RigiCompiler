@@ -62,9 +62,11 @@ namespace LatteCompiler
         public override TokenType Type { get; } = TokenType.String;
     }
 
-    // 插值开始标记（${，M53 词法帧机制）：字符串层遇未转义的 ${ 时产出
-    // （span 覆盖 ${ 两字符），同时压基础层嵌套解析插值表达式；
-    // Parser 由它驱动插值表达式段的委托解析（SYNTAX §3.8）
+    // 插值开始标记（${，M53 词法帧机制）：字符串层遇未转义的 ${ 时产出，
+    // 同时压基础层嵌套解析插值表达式；Parser 由它驱动插值表达式段的委托
+    // 解析（SYNTAX §3.8）。span 只覆盖 { 一个字符：本 token 在段 token 之后
+    // 推送，token 头已重置到 {；引导的 $ 不被任何 token span 覆盖
+    // （段 token 的 End 已回收它）
     public class InterpolationStartToken : Token
     {
         public override string Content

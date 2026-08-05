@@ -356,6 +356,22 @@ namespace LatteCompiler
                 return element;
             }
 
+            // 单节点成员落位前的类型校验：成员类型必须装得下记录类型——
+            // 集合成员（via 缺 [i] 下标）或类型漂移在此以带行号的错误拒绝，
+            // 而不是让 WriteMember 的 field.SetValue 抛裸 ArgumentException
+            var memberType = member switch
+            {
+                FieldInfo field => field.FieldType,
+                PropertyInfo prop => prop.PropertyType,
+                _ => null
+            };
+            if (memberType == null || !memberType.IsAssignableFrom(rec.Type))
+            {
+                throw Error(rec.LineNo,
+                    $"member '{memberName}' of {host.GetType().Name} cannot hold {rec.Type.Name} " +
+                    $"(member type: {memberType?.Name ?? "unknown"}; collections require an [i] index)");
+            }
+
             // 单节点成员：现值非 null 且类型匹配 → 复用（构造时预创建的子容器，
             // 如 BinaryExpressionASTNode.Left、TypeReferenceASTNode.TypeSymbol；
             // get-only 属性天然走这条路）；为 null 才新建实例赋给成员

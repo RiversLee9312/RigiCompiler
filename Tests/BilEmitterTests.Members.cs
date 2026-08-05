@@ -8,6 +8,49 @@ namespace LatteCompiler.Tests
 
     public static partial class BilEmitterTests
     {
+        // ===== §9.3：init 参数映射赋值合成发射（无体 init 的 fn 定义 +
+        // stdlib core::Pair 有体空体前插基线）=====
+        private static void TestInitMappingEmission()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "class Point {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(_ -> x)\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const p = new Point(1)\n" +
+                "    return p.x\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（无体 init 映射发射）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（无体 init 映射发射）", module);
+            // fn 形状黄金：无体 init 的合成映射赋值体（§21.2 fn 定义门槛
+            // 落地——此前该形态「跳过 fn 定义」被验证器拒绝落盘）
+            BilTestHarness.CheckFnShape("无体 init 合成体（set.field + ret）",
+                module, "Point$init(x:.i32)@.void",
+                ".vars {  }\n" +
+                "set.field $x $.this field(Point#x@.i32)\n" +
+                "ret\n");
+            // 端到端语义闭环：new 传参 + get.field 读回映射字段
+            BilTestHarness.CheckFnShape("main 形状（new + 读映射字段）",
+                module, "$main()@.i32",
+                ".vars { Point p, .i32 .t0, Point .t1, .i32 .t2 }\n" +
+                "load res(#0) $.t0\n" +
+                "new type(Point) $.t1 [$.t0]\n" +
+                "set.var $.t1 $p\n" +
+                "get.field $p $.t2 field(Point#x@.i32)\n" +
+                "ret $.t2\n");
+            // stdlib 基线：core::Pair 的 init（有体空体 + 双映射）映射赋值
+            // 前插——fn 定义体由空（仅 ret）变两条 set.field（泛型字段
+            // canonical；const 字段写入走 §21.8 init 豁免）
+            BilTestHarness.CheckFnShape("core::Pair init 映射前插基线",
+                module, "core::Pair$init(key:.generic<$.generic.TKey>," +
+                    "value:.generic<$.generic.TValue>)@.void",
+                ".vars {  }\n" +
+                "set.field $key $.this field(core::Pair#key@.generic<$.generic.TKey>)\n" +
+                "set.field $value $.this field(core::Pair#value@.generic<$.generic.TValue>)\n" +
+                "ret\n");
+        }
+
         // ===== S7c-2：实例成员发射（.this/实例 invoke/get.field/set.field/
         // init/operator 声明形态）=====
         private static void TestInstanceEmission()
@@ -133,10 +176,11 @@ namespace LatteCompiler.Tests
                         && d.Modifiers.Any(m => m is BilOperatorModifier op
                             && op.Name == "setAtIndex")));
 
-            // §13.6：写（set.array COLLECTION INDEX ELEMENT——ELEMENT 先物化，
-            // 再 INDEX；操作数序仍按规范）、读（get.array）、复合（读+写+
-            // 表达式位丢弃读）、链式（cb[0].value = get.array → get.field；
-            // makeBag()[9] = invoke → get.array）
+            // §13.6：写（set.array COLLECTION INDEX ELEMENT——COLLECTION/INDEX
+            // 先物化，再 ELEMENT（与复合赋值同求值序）；操作数序仍按规范）、
+            // 读（get.array）、复合（读+写+表达式位丢弃读）、链式
+            // （cb[0].value = get.array → get.field；makeBag()[9] = invoke →
+            // get.array）
             BilTestHarness.CheckFnShape("main 指令（索引读写/复合/链式）",
                 module, "$main()@.i32",
                 ".vars { Bag b, .i32 x, CounterBag cb, .i32 y, .i32 z, Bag .t0, .i32 .t1, " +
@@ -148,23 +192,23 @@ namespace LatteCompiler.Tests
                 "set.var $.t0 $b\n" +
                 "load res(#0) $.t1\n" +
                 "load res(#1) $.t2\n" +
-                "set.array $b $.t2 $.t1\n" +
+                "set.array $b $.t1 $.t2\n" +
                 "load res(#2) $.t3\n" +
                 "get.array $b $.t3 $.t4\n" +
                 "set.var $.t4 $x\n" +
                 "load res(#3) $.t5\n" +
-                "get.array $b $.t5 $.t6\n" +
-                "load res(#4) $.t7\n" +
-                "add $.t6 $.t7 $.t8\n" +
-                "load res(#3) $.t9\n" +
-                "set.array $b $.t9 $.t8\n" +
+                "load res(#3) $.t6\n" +
+                "get.array $b $.t6 $.t7\n" +
+                "load res(#4) $.t8\n" +
+                "add $.t7 $.t8 $.t9\n" +
+                "set.array $b $.t5 $.t9\n" +
                 "load res(#3) $.t10\n" +
                 "get.array $b $.t10 $.t11\n" +
                 "load res(#5) $.t12\n" +
                 "new type(Counter) $.t13 [$.t12]\n" +
                 "new type(CounterBag) $.t14 [$.t13]\n" +
                 "set.var $.t14 $cb\n" +
-                "load res(#1) $.t15\n" +
+                "load res(#0) $.t15\n" +
                 "get.array $cb $.t15 $.t16\n" +
                 "get.field $.t16 $.t17 field(Counter#value@.i32)\n" +
                 "set.var $.t17 $y\n" +
@@ -174,7 +218,7 @@ namespace LatteCompiler.Tests
                 "set.var $.t20 $z\n" +
                 "add $x $y $.t21\n" +
                 "add $.t21 $z $.t22\n" +
-                "load res(#1) $.t23\n" +
+                "load res(#0) $.t23\n" +
                 "get.array $b $.t23 $.t24\n" +
                 "add $.t22 $.t24 $.t25\n" +
                 "ret $.t25\n");

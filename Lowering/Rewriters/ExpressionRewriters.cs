@@ -270,8 +270,20 @@ namespace LatteCompiler
             target = MaterializeTarget(target, ctx);
             var value = LowerExpressionDispatcher.Visit(compound.Value, ctx, env);
             if (value == null) return null;
-            ctx.Output.Add(new LoweredAssignmentStatement(compound, target,
-                new LoweredBinaryExpression(compound, compound.Op, target, value)));
+            LoweredExpression binary = new LoweredBinaryExpression(compound, compound.Op,
+                target, value);
+            // 写回值按 place 声明类型物化 cast（BIL §6.5，与普通赋值
+            // 同规则）：SmartCast 包装时声明类型 = Operand 类型（收窄类型
+            // 只参与运算定型，变量声明类型不变——s: String? 收窄区域内
+            // s += "b" 的运算结果 String 写回须物化装箱 cast）；
+            // variadic 参数索引（BIL §7.1）place 剥壳后声明类型 = 容器
+            // ABI 元素类型（运算按拆箱后 P3 元素类型进行，写回装箱）
+            var declaredTargetType = LoweringFacility.VariadicIndexAbiTypeOfPlace(target, env)
+                ?? (compound.Target is BoundSmartCastExpression smartCast
+                    ? smartCast.Operand.Type
+                    : compound.Target.Type);
+            binary = LoweringFacility.EnsureDeclaredType(compound, binary, declaredTargetType);
+            ctx.Output.Add(new LoweredAssignmentStatement(compound, target, binary));
             return target;
         }
 
@@ -285,14 +297,26 @@ namespace LatteCompiler
             if (IsSideEffectFree(target)) return target;
             switch (target)
             {
+                // variadic 参数索引（BIL §7.1）：读形态产物为拆箱 cast
+                // 包索引 place——剥壳物化内层（索引恒物化语义不变）后
+                // 包回壳；壳的目标/类型不变（拆箱回 P3 静态元素类型）
+                case LoweredCastExpression castShell
+                    when castShell.Source is LoweredIndexExpression innerIndex
+                        && LoweringFacility.IsVariadicParameterIndex(innerIndex):
+                    return new LoweredCastExpression(castShell.Origin,
+                        MaterializeTarget(innerIndex, ctx), castShell.TargetType,
+                        castShell.IsSafe, castShell.Type);
                 case LoweredFieldAccessExpression fieldAccess:
                     return new LoweredFieldAccessExpression(fieldAccess.Origin,
                         MaterializeInto(fieldAccess.Origin, fieldAccess.Receiver, ctx),
                         fieldAccess.Field);
                 case LoweredIndexExpression indexAccess:
+                    // Type 覆盖透传（variadic 场景的 ABI 元素类型——
+                    // 经上方剥壳分支到达；常规场景覆盖为 null 等价透传）
                     return new LoweredIndexExpression((BoundIndexExpression)indexAccess.Origin,
                         MaterializeInto(indexAccess.Origin, indexAccess.Receiver, ctx),
-                        MaterializeInto(indexAccess.Origin, indexAccess.Index, ctx));
+                        MaterializeInto(indexAccess.Origin, indexAccess.Index, ctx),
+                        indexAccess.Type);
                 default:
                     return target;
             }
@@ -311,15 +335,20 @@ namespace LatteCompiler
         }
 
         // 纯读取判定（无副作用，重复求值安全）：局部/参数/静态字段/字面量/
-        // 常量/this，及全由它们构成的字段/索引链
+        // 常量/this，及全由它们构成的字段链。
+        // 索引读取恒非纯读取（§13.2 单次求值）：索引访问本身是 getAtIndex
+        // 调用（S8c），即使 receiver/index 无副作用也必须物化一次
+        // （a[i].c += 1 / a[i][j] += 1 的内层索引不许重复求值）；
+        // 字段读取同理按 Field.Getter 判定——无 getter（backing 存储直读）
+        // 才纯读取，computed/用户 getter 的读取是 getter 调用（§9.4.1），
+        // 重复求值即重复调用
         private static bool IsSideEffectFree(LoweredExpression expr) => expr switch
         {
             LoweredValueReferenceExpression or LoweredFieldReferenceExpression
                 or LoweredLiteralExpression or LoweredConstantExpression
                 or LoweredThisExpression => true,
-            LoweredFieldAccessExpression fieldAccess => IsSideEffectFree(fieldAccess.Receiver),
-            LoweredIndexExpression indexAccess => IsSideEffectFree(indexAccess.Receiver)
-                && IsSideEffectFree(indexAccess.Index),
+            LoweredFieldAccessExpression fieldAccess => fieldAccess.Field.Getter == null
+                && IsSideEffectFree(fieldAccess.Receiver),
             _ => false,
         };
     }
@@ -373,8 +402,13 @@ namespace LatteCompiler
         }
     }
 
-    // 索引访问恒等降级（S8c，BIL §13.6 直接对应，无脱糖）：receiver/index
-    // 递归降级；读/写共用节点，指令选择归 P4b 按所在位置
+    // 索引访问降级（S8c，BIL §13.6 直接对应，无脱糖）：receiver/index
+    // 递归降级；读/写共用节点，指令选择归 P4b 按所在位置。
+    // variadic 参数索引（BIL §7.1 ABI ↔ P3 体内视角桥接）：节点 Type
+    // 改为容器 ABI 元素类型（与 .vargs./.kwargs. 声明对齐），并外包
+    // 拆箱 cast 回 P3 静态元素类型——读位置下游按 P3 类型消费零适配；
+    // 写位置由 AssignmentRewriter/CompoundAssignmentRewriter 剥壳后按
+    // ABI 元素类型装箱（§6.5）
     internal sealed class IndexRewriter
         : LoweredVisitor<IndexRewriter, LoweredExpression, LowerContext>
     {
@@ -386,7 +420,12 @@ namespace LatteCompiler
             if (receiver == null) return null;
             var index = LowerExpressionDispatcher.Visit(indexAccess.Index, ctx, env);
             if (index == null) return null;
-            return new LoweredIndexExpression(indexAccess, receiver, index);
+            var result = new LoweredIndexExpression(indexAccess, receiver, index);
+            if (!LoweringFacility.IsVariadicParameterIndex(result)) return result;
+            var abiElementType = LoweringFacility.VariadicIndexElementType(result, env);
+            result = new LoweredIndexExpression(indexAccess, receiver, index, abiElementType);
+            return new LoweredCastExpression(indexAccess, result,
+                indexAccess.Type, isSafe: false, indexAccess.Type);
         }
     }
 
@@ -422,7 +461,7 @@ namespace LatteCompiler
     }
 
     // is/supers/with 恒等降级（S8a，BIL §12.3 直接对应，无脱糖）；
-    // 动态形态的 TargetValue 递归降级
+    // 动态形态的 TargetValue 递归降级；S11：IsCase 形态的 Case 槽透传
     internal sealed class TypeCheckRewriter
         : LoweredVisitor<TypeCheckRewriter, LoweredExpression, LowerContext>
     {
@@ -439,7 +478,7 @@ namespace LatteCompiler
                 if (targetValue == null) return null;
             }
             return new LoweredTypeCheckExpression(typeCheck, typeCheck.Kind,
-                operand, typeCheck.TargetType, targetValue, typeCheck.Type);
+                operand, typeCheck.TargetType, targetValue, typeCheck.Type, typeCheck.Case);
         }
     }
 
@@ -459,6 +498,31 @@ namespace LatteCompiler
                 if (operand == null) return null;
             }
             return new LoweredTypeOfExpression(typeOf, operand, typeOf.TargetType, typeOf.Type);
+        }
+    }
+
+    // enum case 构造恒等降级（S11，BIL §14.3 new.case 直接对应）：洞实参
+    // 逐条递归降级 + 按洞签名类型物化 cast（§14.3 ARG 类型严格匹配 case
+    // 入口——P3 已 IsAssignable 兼容，BIL 侧严格相等；与 LowerArguments
+    // 按形参类型物化同先例）。HoleParameters null（模板绑定失败，P3 已
+    // 诊断静默）时跳过 cast 物化直通
+    internal sealed class EnumCaseRewriter
+        : LoweredVisitor<EnumCaseRewriter, LoweredExpression, LowerContext>
+    {
+        protected override LoweredExpression? VisitCore(BoundNode node, LowerContext ctx,
+            LowerEnvironment env)
+        {
+            var enumCase = (BoundEnumCaseExpression)node;
+            var holes = enumCase.Case.HoleParameters;
+            var arguments = new List<LoweredExpression>();
+            for (var i = 0; i < enumCase.Arguments.Count; i++)
+            {
+                var lowered = LowerExpressionDispatcher.Visit(enumCase.Arguments[i], ctx, env);
+                if (lowered == null) return null;
+                arguments.Add(LoweringFacility.EnsureDeclaredType(enumCase.Arguments[i],
+                    lowered, holes?[i].Type));
+            }
+            return new LoweredEnumCaseExpression(enumCase, enumCase.Case, arguments);
         }
     }
 }

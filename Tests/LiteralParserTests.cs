@@ -89,6 +89,54 @@ namespace LatteCompiler.Tests
             TestHarness.Blank();
         }
 
+        // 科学计数法浮点字面量（SYNTAX §3.3）：e/E + 可选 +/- 符号 + 十进制
+        // 指数数字；Lexer 不做语义（3.14e-5 拆 3/. /14e/-/5 五个 token），
+        // 指数由本层组合状态机吸收
+        public static void TestScientificNotationLiterals()
+        {
+            TestHarness.Section("Scientific Notation Literals");
+
+            TestLit("3.14e5", "Float(314000)");
+            TestLit("3.14E+5", "Float(314000)");
+            TestLit("2e3", "Float(2000)");
+            TestLit("2e+3", "Float(2000)");
+            // 与 f/F 浮点后缀组合
+            TestLit("1.5e3f", "Float(1500f)");
+
+            // 结构/span 断言（快照不作为唯一验证方式，AGENTS §5）：
+            // 吸收形态 3.14e-5 整个字面量单节点 span 覆盖全部组成 token
+            var lit = (LiteralExpressionASTNode)TestHarness.ParseFirstDecl("3.14e-5");
+            var fl = (FloatLiteralASTNode)lit.Literal;
+            TestHarness.CheckTrue("3.14e-5 的 Value", fl.Value == 3.14e-5);
+            TestHarness.CheckTrue("3.14e-5 非 f 后缀", !fl.IsFloat);
+            TestHarness.Check("3.14e-5 包装节点 span Start", Pos(lit.Span!.Value.Start), "1:1");
+            TestHarness.Check("3.14e-5 包装节点 span End", Pos(lit.Span!.Value.End), "1:8");
+            TestHarness.CheckTrue("字面量节点与包装节点 span 一致",
+                fl.Span!.Value.Start.offset == lit.Span!.Value.Start.offset &&
+                fl.Span!.Value.End.offset == lit.Span!.Value.End.offset);
+
+            TestHarness.Blank();
+        }
+
+        // 科学计数法错误形态（SYNTAX §3.3）：e/E 后无合法指数数字是编译错误，
+        // 消息带完整已拼内容
+        public static void TestScientificNotationErrorCases()
+        {
+            TestHarness.Section("Scientific Notation Error Cases (expect ParserException)");
+
+            // 指数标记后 EOF
+            TestHarness.CheckParseError("3.14e (EOF)",
+                () => TestHarness.ParseFirstDecl("3.14e"), "Invalid float literal: '3.14e'");
+            // 指数符号后 EOF
+            TestHarness.CheckParseError("3.14e- (EOF)",
+                () => TestHarness.ParseFirstDecl("3.14e-"), "Invalid float literal: '3.14e-'");
+            // 指数符号后非数字 word
+            TestHarness.CheckParseError("3.14e+x",
+                () => TestHarness.ParseFirstDecl("3.14e+x"), "Invalid float literal: '3.14e+'");
+
+            TestHarness.Blank();
+        }
+
         public static void TestBoolAndNull()
         {
             TestHarness.Section("Bool and Null Literals");
@@ -328,6 +376,8 @@ namespace LatteCompiler.Tests
             TestIntBasePrefixes();
             TestUnderscoreSeparators();
             TestFloatLiterals();
+            TestScientificNotationLiterals();
+            TestScientificNotationErrorCases();
             TestBoolAndNull();
             TestStringLiterals();
             TestStringInterpolation();

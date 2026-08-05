@@ -21,7 +21,7 @@ namespace LatteCompiler
     // （.bN）；条件表达式在独立块上下文降级并写条件局部，产物即 Judge 块
     // （前置语句随块走——条件内短路/if 表达式的展开自然落在 Judge 内）；
     // 映射压栈（Enter）后降级 Body（体内 break/continue 经引用命中本
-    // 循环），Exit 弹栈；Enumerator 恒 null。仅 While/DoWhile 路径——
+    // 循环），Exit 弹栈。仅 While/DoWhile 路径——
     // Condition 恒非空（For 走 ForLoopRewriter 脱糖，不经此）
     internal sealed class LoopRewriter : LoweredVisitor<LoopRewriter, LoweredStatement, LowerContext>
     {
@@ -53,7 +53,7 @@ namespace LatteCompiler
             var body = LowerBlockVisitor.Visit(loop.Body, ctx, env);
             if (body == null) return null;
             return new LoweredLoop(loop, loop.Kind == LoopKind.DoWhile,
-                judge, condition, body, enumerator: null, breakId);
+                judge, condition, body, breakId);
         }
     }
 
@@ -62,7 +62,7 @@ namespace LatteCompiler
     //   LoweredLoop{ IsRev=false,
     //     Judge = [ .c = .e.moveNext() ]（条件局部 .c 为合成 bool），
     //     Body = [ LoopVariable = .e.current(); <体降级> ],
-    //     Enumerator = null, BreakId = .bN }
+    //     BreakId = .bN }
     // 产物复用 LoweredLoop——P4b 零新增。协议三方法符号与元素类型
     // 取 P3 挂在 BoundLoop 上的产物（P4 不做名字分析）；枚举器局部
     // 类型 = GetConstructedType(IEnumerator 定义, TItem)——定义经
@@ -131,7 +131,7 @@ namespace LatteCompiler
             };
             bodyStatements.AddRange(body.Statements);
             return new LoweredLoop(loop, isRev: false, judge, condition,
-                new LoweredBlock(loop.Body, bodyStatements), enumerator: null, breakId);
+                new LoweredBlock(loop.Body, bodyStatements), breakId);
         }
     }
 }

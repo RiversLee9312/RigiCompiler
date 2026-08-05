@@ -105,7 +105,7 @@ namespace LatteCompiler.Bil
             {
                 var dot = qualifiedName.LastIndexOf('.');
                 if (dot > 0
-                    && context.TypeDeclarations.TryGetValue(qualifiedName.Substring(0, dot), out var owner)
+                    && context.TryGetTypeDeclaration(qualifiedName.Substring(0, dot), out var owner)
                     && owner.Kind != BilTypeKind.EnumStruct)
                 {
                     errors.Add(new BilVerificationError("21.2", qualifiedName,

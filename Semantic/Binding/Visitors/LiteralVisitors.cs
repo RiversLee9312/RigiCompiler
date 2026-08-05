@@ -32,11 +32,33 @@ namespace LatteCompiler
                 StringLiteralASTNode => env.B.String,
                 CharLiteralASTNode => env.B.Char,
                 BoolLiteralASTNode => env.B.Bool,
-                // null 的类型由上下文给出（var x: T? = null；实参/return/赋值同）
-                NullLiteralASTNode => expectedType ?? NullLiteralError(node, env),
+                // null 的类型由上下文给出（var x: T? = null；实参/return/赋值同），
+                // 且上下文必须可空（SYNTAX §3.4 类型默认非空）
+                NullLiteralASTNode => NullLiteralType(node, expectedType, env),
                 _ => throw new CompilerInternalException("未知字面量节点: " + literal.GetType().Name),
             };
             return new BoundLiteralExpression(node, type);
+        }
+
+        // null 字面量定型（SYNTAX §3.4）：上下文为 Nullable\<T\> 构造时定型为
+        // 该类型；ErrorType 上下文毒化静默（原样透传，诊断已在上游报过）；
+        // 无上下文或非可空上下文（如 var s: String = null / 非空形参实参）
+        // 落诊断并定型 ErrorType（后续 IsAssignable 对 ErrorType 放行，不级联
+        // 次生诊断）。
+        // 契约注记：expectedType 静态类型为 TypeSymbol，泛型参数 T 作上下文
+        // 时调用点只能传 null（无法以 TypeSymbol 表达「T 运行时可空」）——
+        // T 的 null 放行由调用点层面保证（如 null 判等的泛型侧定型），本
+        // 判定不拦截泛型场景。
+        private static TypeSymbol NullLiteralType(ASTNode node, TypeSymbol? expectedType,
+            BindEnvironment env)
+        {
+            if (expectedType != null
+                && (expectedType is ErrorTypeSymbol
+                    || expectedType.ConstructedFrom == env.B.NullableDefinition))
+            {
+                return expectedType;
+            }
+            return NullLiteralError(node, env);
         }
 
         // 字符串插值（S7f，SYNTAX §3.8）：段序列绑定为 toString/拼接链——

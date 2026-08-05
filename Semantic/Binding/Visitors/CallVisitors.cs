@@ -83,7 +83,9 @@ namespace LatteCompiler
     {
         // 显式泛型实参解析（S9b）：TypeReferenceASTNode 列表 → 已解析的
         // SemanticSymbol 列表（复用 NameResolver 类型引用解析，诊断按 P3
-        // 落袋；任一项失败返回 null）
+        // 落袋；任一项失败返回 null）。S8e 修复：实参类型引用是使用点
+        // （SYNTAX §16.1）——与 TypeReferences.Resolve 同口径经
+        // AccessChecker 判定可见性
         public static IReadOnlyList<SemanticSymbol>? ResolveGenericArguments(
             List<TypeReferenceASTNode> typeArguments, ASTNode node, BindContext ctx,
             BindEnvironment env)
@@ -94,6 +96,15 @@ namespace LatteCompiler
                 var resolved = env.Names.ResolveTypeReference(argument, ctx.Frame.FileCtx,
                     ctx.Frame.DeclaringType, ctx.Frame.Method, argument.Span ?? node.Span);
                 if (resolved == null) return null;
+                // 使用点访问控制（f\<PrivateType\>() 跨文件拒绝；泛型参数与
+                // ErrorType 毒化由 IsTypeAccessible 直通）
+                if (!AccessChecker.IsTypeAccessible(resolved, ctx.Frame.FileCtx.File,
+                    ctx.Frame.FileCtx.Namespace, ctx.Frame.DeclaringType))
+                {
+                    env.Error(argument.Span ?? node.Span,
+                        AccessChecker.InaccessibleMessage(resolved));
+                    return null;
+                }
                 result.Add(resolved);
             }
             return result;
@@ -121,23 +132,39 @@ namespace LatteCompiler
                 ? null
                 : ResolveGenericArguments(genericArguments, node, ctx, env);
             if (genericArguments != null && typeArgs == null) return null;
+            // receiverType（S9b 修复）：裸名调用以当前宿主（method.Owner，
+            // 泛型函数体内为定义级）为 receiver 链做宿主代入——沿
+            // BaseType 链找候选 method.Owner 的构造取实参（与
+            // BindInstanceMethodCall 同口径）；静态/全局候选不受影响
+            // （ViewOf 仅对有主泛型候选生效）
             var resolved = OverloadResolution.Resolve(node, candidates, arguments, scope, ctx, env,
-                typeArgs);
+                typeArgs, receiverType: ctx.Frame.Method.Owner);
             if (resolved == null) return null;
             var (calleeMethod, boundArguments, calleeResultType, genericPack) = resolved.Value;
             BoundExpression? receiver = null;
             if (calleeMethod.Owner != null && !calleeMethod.IsStatic)
             {
-                // 实例方法（S7c-2）：当前上下文有 this（实例方法/ext 方法
-                // 体内）→ 补 this receiver；静态上下文（含默认值表达式）→ 诊断
-                if (ctx.Frame.HasThis)
+                // 实例方法（S7c-2）：补 this 仅限 callee 宿主在当前 this
+                // 类型的 BaseType 链（含接口闭包）上——`A.m()` 命中他类
+                // 实例方法时 this 类型不符，不能盲补（B 的 this 不是 A 的
+                // receiver）；静态上下文（含默认值表达式）→ 诊断
+                var thisOwner = ctx.Frame.Method.Owner;
+                if (ctx.Frame.HasThis && thisOwner != null
+                    && IsOnThisChain(thisOwner, calleeMethod.Owner))
                 {
-                    receiver = new BoundThisExpression(node, ctx.Frame.Method.Owner!);
+                    receiver = new BoundThisExpression(node, thisOwner);
+                }
+                else if (!ctx.Frame.HasThis)
+                {
+                    env.Error(node.Span, $"P3: instance method '{calleeMethod.Name}' requires " +
+                        "a receiver ('this' is not available in a static context)");
+                    return null;
                 }
                 else
                 {
                     env.Error(node.Span, $"P3: instance method '{calleeMethod.Name}' requires " +
-                        "a receiver ('this' is not available in a static context)");
+                        "a receiver ('this' is not an instance of " +
+                        $"'{BoundAnalysis.TypeDisplay(calleeMethod.Owner)}')");
                     return null;
                 }
             }
@@ -152,6 +179,23 @@ namespace LatteCompiler
                 // S10：async 调用表达式类型改写为 Task\<T\>/Task（SYNTAX §4.5）
                 ResultType = AsyncResultType(calleeMethod, calleeResultType, env),
             };
+        }
+
+        // this 类型链命中判定（S7c-2 补 this 前置检查）：method 宿主
+        // （定义级引用）在 host 的 BaseType 链或接口闭包上（构造类型回退
+        // 定义比较）——`A.m()` 命中他类实例方法时 this 类型不符，不得盲补
+        private static bool IsOnThisChain(TypeSymbol host, TypeSymbol owner)
+        {
+            for (var t = host; t != null; t = t.BaseType)
+            {
+                var definition = t.ConstructedFrom ?? t;
+                if (ReferenceEquals(definition, owner)) return true;
+                foreach (var iface in definition.Interfaces)
+                {
+                    if (ReferenceEquals(iface.ConstructedFrom ?? iface, owner)) return true;
+                }
+            }
+            return false;
         }
 
         // S10（SYNTAX §4.5 表）：async 调用表达式类型改写——
@@ -247,9 +291,14 @@ namespace LatteCompiler
             else
             {
                 var headParameter = ctx.Frame.Method.Parameters.First(p => p.Name == calleeSegments[0]);
-                // S9a 放行：参数类型可为泛型参数（引用相等身份）
+                // S9a 放行：参数类型可为泛型参数（引用相等身份）；
+                // S9d 修复：可变参数体内视角（与 PathVisitors 首段参数
+                // 同一包装——位置包 Array\<元素类型\>、具名包
+                // Array\<Pair\<String, 元素类型\>\>，numbers.iterate()
+                // 不再到元素类型上找成员）
+                var headParameterType = PathFacility.VariadicParameterViewType(headParameter, env);
                 receiver = new BoundValueReferenceExpression(node, headParameter,
-                    headParameter.Type!);
+                    headParameterType);
                 receiver = PathFacility.ApplyNarrowingPublic(node, receiver,
                     NarrowKey.ForSymbol(headParameter), ctx.Flow);
             }
@@ -424,13 +473,16 @@ namespace LatteCompiler
                 bound[index] = value;
             }
             // S9d：包槽填打包节点（空包 = 空数组构造；syntax 取首个实参的
-            // 表达式根——空包无实参可挂时以 null 占位，P4 打包仅作 Origin）
+            // 表达式根——空包（`g()` 调全可变方法）无实参可挂，以当前源
+            // 文件根占位（BoundNode.Syntax 非空契约；P4 打包仅作 Origin，
+            // 文件级定位足够——调用节点顺传需 OverloadResolution 调用点
+            // 配合，归后续）
             if (hasPack)
             {
                 var packType = env.Unit.Symbols.GetConstructedType(env.B.ArrayDefinition,
                     env.B.Any);
                 bound[fixedCount] = new BoundVarArgsArgument(
-                    arguments.Count > 0 ? (ASTNode)arguments[0].Value : null!,
+                    arguments.Count > 0 ? (ASTNode)arguments[0].Value : ctx.Frame.FileCtx.File,
                     isNamed: parameters[^1].IsNamedVariadic, vargsValues,
                     parameters[^1].IsNamedVariadic ? kwargsValues : null, packType);
             }
@@ -453,9 +505,9 @@ namespace LatteCompiler
     }
 
     // new 构造（S5）：类型引用解析（ErrorType 毒化直通；泛型参数已诊断）；
-    // 泛型定义不可构造；Class/Struct 可构造，Interface/EnumStruct/Wrapper
-    // 各自归口诊断；init 匹配（无显式 init 时零参默认构造；
-    // 多匹配归 S8d ranking）
+    // 泛型定义不可构造；Class/Struct 可构造，Interface/Wrapper 各自归口
+    // 诊断，EnumStruct 永久拒绝（§12.2：enum 值只能经具名 case 入口产生）；
+    // init 匹配（无显式 init 时零参默认构造；多匹配归 S8d ranking）
     internal sealed class NewVisitor : ExpressionVisitor<NewVisitor, BindContext>
     {
         protected override BoundExpression? VisitCore(ASTNode node, Scope scope, BindContext ctx,
@@ -490,8 +542,13 @@ namespace LatteCompiler
                         $"Cannot construct interface '{type.Name}'");
                     return null;
                 case TypeKind.EnumStruct:
+                    // §12.2 永久规则：enum 值只能经具名 case 入口产生——
+                    // 无论 init 是否 pub，直接构造一律非法（对
+                    // Type\<Enum\> 值 new / 泛型 T() 运行时解析到 enum
+                    // 同为非法构造，两路径尚未落地，落地时同措辞）
                     env.Error(newNode.Type.Span ?? newNode.Span,
-                        "P3: enum case construction is not supported yet (S11)");
+                        $"Cannot construct enum struct '{type.Name}' directly; " +
+                        "use its named cases");
                     return null;
                 default:
                     env.Error(newNode.Type.Span ?? newNode.Span,

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 
 namespace LatteCompiler.Tests
@@ -10,8 +11,10 @@ namespace LatteCompiler.Tests
     /// - COMMAND 匹配与未知 COMMAND；
     /// - 子命令匹配（--x v 与 --x=v 两形态）、参数个数校验（含任意个数）、
     ///   互斥检测、游离参数、重复子命令、未知子命令、--run 零参数合法、
-    ///   compile --file 多路径。
-    /// CLI 端到端行为（菜单打印、文件编译）不在本套件内，手动验证。
+    ///   compile --file 多路径；
+    /// - 少量 compile 端到端：--dump-ast/--emit-bil 输出路径不可写时友好
+    ///   报错且返回非零退出码（此前无 catch 直接崩溃）。
+    /// 其余 CLI 端到端行为（菜单打印、正常文件编译）不在本套件内，手动验证。
     /// </summary>
     public static class CommandLineParserTests
     {
@@ -118,8 +121,10 @@ namespace LatteCompiler.Tests
             CheckParseError("compile --parse-only --emit-bil 互斥", new[] { "compile", "--file", "a", "--parse-only", "--emit-bil", "o" }, "互斥");
             CheckParseError("compile --emit-bil --parse-only 互斥（反向）", new[] { "compile", "--file", "a", "--emit-bil", "o", "--parse-only" }, "互斥");
             CheckParseError("compile --parse-only --sema-only 互斥", new[] { "compile", "--file", "a", "--parse-only", "--sema-only" }, "互斥");
-            CheckParseOk("compile --emit-bil --sema-only 不互斥", new[] { "compile", "--file", "a", "--emit-bil", "o", "--sema-only" },
-                r => r.Has("--emit-bil") && r.Has("--sema-only"));
+            CheckParseError("compile --emit-bil --sema-only 互斥（语义矛盾：只分析不发射 vs 发射）",
+                new[] { "compile", "--file", "a", "--emit-bil", "o", "--sema-only" }, "互斥");
+            CheckParseError("compile --sema-only --emit-bil 互斥（反向）",
+                new[] { "compile", "--file", "a", "--sema-only", "--emit-bil", "o" }, "互斥");
             CheckParseOk("compile 子命令之间无互斥", new[] { "compile", "--file", "a", "--parse-only", "--dump-ast", "o" },
                 r => r.Has("--parse-only") && r.Has("--dump-ast"));
             Console.WriteLine();
@@ -179,6 +184,47 @@ namespace LatteCompiler.Tests
             failCount++;
         }
 
+        // ===== CLI 端到端：输出路径不可写 =====
+        public static void TestOutputPathErrors()
+        {
+            Console.WriteLine("=== Testing output path errors (compile 端到端) ===");
+
+            var dir = Path.Combine(Path.GetTempPath(), $"latte_cli_test_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(dir);
+            try
+            {
+                var src = Path.Combine(dir, "hello.latte");
+                File.WriteAllText(src, "pub func main(): i32 { return 0 }\n");
+                // 不存在目录下的输出路径：StreamWriter/File.WriteAllText 抛
+                // DirectoryNotFoundException（IOException 子类）——此前无 catch 直接崩溃
+                var missing = Path.Combine(dir, "no_such_dir");
+
+                int dumpCode = RunCompile("compile", "--file", src,
+                    "--dump-ast", Path.Combine(missing, "x.jsonl"));
+                Check("--dump-ast 不可写路径返回非零", dumpCode != 0);
+
+                var bilPath = Path.Combine(missing, "x.bil");
+                int emitCode = RunCompile("compile", "--file", src, "--emit-bil", bilPath);
+                Check("--emit-bil 不可写路径返回非零", emitCode != 0);
+                Check("--emit-bil 失败后不落盘", !File.Exists(bilPath));
+            }
+            finally
+            {
+                Directory.Delete(dir, recursive: true);
+            }
+            Console.WriteLine();
+        }
+
+        // 驱动 compile COMMAND 端到端（测试构造的命令行应解析成功）
+        private static int RunCompile(params string[] args)
+        {
+            if (!CommandLineParser.TryParse(args, out var result, out var error))
+            {
+                throw new InvalidOperationException($"测试构造的命令行应解析成功: {error}");
+            }
+            return new CompileCommand().Execute(result!);
+        }
+
         // ===== 入口 =====
         public static int RunAll()
         {
@@ -195,6 +241,7 @@ namespace LatteCompiler.Tests
             TestArgCountValidation();
             TestMutualExclusion();
             TestStrayArgs();
+            TestOutputPathErrors();
 
             Console.WriteLine($"=== CommandLineParser Tests Complete: {passCount} passed, {failCount} failed ===");
             return failCount;

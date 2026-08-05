@@ -187,7 +187,7 @@ namespace LatteCompiler.Tests
                 "Decl(r, i32, = Local(.s0,i32)); Return(Local(r,i32))])");
         }
 
-        // ===== S7c-1：循环降级（Judge 块/条件局部/Enumerator null/BreakId 映射）=====
+        // ===== S7c-1：循环降级（Judge 块/条件局部/BreakId 映射）=====
         private static void TestLoopLowering()
         {
             // while：条件求值移入 Judge 块（末尾写合成条件局部 .s0）
@@ -207,7 +207,7 @@ namespace LatteCompiler.Tests
                 "[Assign(Local(x,i32), Binary(Add, Local(x,i32), Int(1,i32), i32))], .b0)])");
 
             // 结构性事实：Condition/BreakId 是合成局部并进 Locals（引用相等）、
-            // BreakId.Type 为 null（.breakid 特例）、Enumerator 恒 null
+            // BreakId.Type 为 null（.breakid 特例）
             var whileLoop = (LoweredLoop)BodyOf(lowered, "f").Body.Statements[1];
             var fLocals = BodyOf(lowered, "f").Locals;
             TestHarness.CheckTrue("条件局部 .s0（bool，引用相等）",
@@ -216,8 +216,7 @@ namespace LatteCompiler.Tests
             TestHarness.CheckTrue("BreakId 局部 .b0（Type null，引用相等）",
                 whileLoop.BreakId.Name == ".b0" && whileLoop.BreakId.Type == null
                 && ReferenceEquals(whileLoop.BreakId, fLocals[2]));
-            TestHarness.CheckTrue("Enumerator 恒 null（S7c-2 前）",
-                whileLoop.Enumerator == null && !whileLoop.IsRev);
+            TestHarness.CheckTrue("while 非 rev", !whileLoop.IsRev);
 
             // do-while → loop.rev（IsRev）
             var (unit2, _, lowered2) = LowerUnit(

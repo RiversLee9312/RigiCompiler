@@ -10,14 +10,21 @@ namespace LatteCompiler
         {
             var tryNode = (TryCatchFinallyStatementASTNode)node;
             var before = ctx.Flow.Snapshot();
+            // S8b 收窄维度（SYNTAX §3.5，与 if/switch 同构）：try/catch/finally
+            // 各从 before 快照出发绑定——try 体内收窄（如 guard）不泄入 catch/
+            // finally（异常路径上该收窄恰恰不成立），各 catch 依次不继承前一体
+            var beforeNarrowed = ctx.Flow.SnapshotNarrowed();
             var tryBlock = BlockDispatcher.Visit(tryNode.TryBlock, scope, ctx, env);
             var tryAssigned = ctx.Flow.Snapshot();
+            var tryNarrowed = ctx.Flow.SnapshotNarrowed();
 
             var catches = new List<BoundCatchClause>();
             var catchTails = new List<HashSet<LocalSymbol>>();
+            var catchNarrowedTails = new List<Dictionary<NarrowKey, TypeSymbol>>();
             foreach (var catchNode in tryNode.CatchClauses)
             {
                 ctx.Flow.Restore(before);
+                ctx.Flow.RestoreNarrowed(beforeNarrowed);
                 var exceptionType = TypeReferences.Resolve(catchNode.ExceptionType, catchNode.Span,
                     ctx.Frame, env);
                 if (exceptionType != null
@@ -40,6 +47,7 @@ namespace LatteCompiler
                 }
                 var body = BlockDispatcher.Visit(catchNode.Body, catchScope, ctx, env);
                 catchTails.Add(ctx.Flow.Snapshot());
+                catchNarrowedTails.Add(ctx.Flow.SnapshotNarrowed());
                 if (exceptionType != null)
                 {
                     catches.Add(new BoundCatchClause(catchNode, variable, exceptionType, body));
@@ -52,6 +60,7 @@ namespace LatteCompiler
             if (tryNode.FinallyBlock != null)
             {
                 ctx.Flow.Restore(before);
+                ctx.Flow.RestoreNarrowed(beforeNarrowed);
                 var finallyScope = new Scope(scope);
                 if (tryNode.FinallyParameter != null)
                 {
@@ -84,6 +93,32 @@ namespace LatteCompiler
                 if (finallyVariable != null) merged.Remove(finallyVariable);
             }
             ctx.Flow.Restore(merged);
+            // 收窄合并（对齐 DA 口径——收窄表非单调，无 before∪ 规则）：
+            // 有 catch 时出口路径 = try 正常尾 ∪ 各 catch 尾 → 纯交集
+            // （try 体内的 guard 收窄不活到出口——catch 路径上它不成立）；
+            // 无 catch 时异常穿透，出口路径唯一 = try 正常尾 → try 尾直通。
+            // finally 不参与交集（其入口按异常路径保守从 before 绑定，
+            // 正常路径上 try 的收窄效果不应被 finally 尾态误杀）；但 finally
+            // 恒执行于所有到达 try 之后的路径——其体内赋值根的收窄必失效
+            // （同循环出口规则）
+            if (catchNarrowedTails.Count > 0)
+            {
+                var narrowedTails = new List<Dictionary<NarrowKey, TypeSymbol>> { tryNarrowed };
+                narrowedTails.AddRange(catchNarrowedTails);
+                ctx.Flow.MergeNarrowedBranches(narrowedTails);
+            }
+            else
+            {
+                ctx.Flow.RestoreNarrowed(tryNarrowed);
+            }
+            if (tryNode.FinallyBlock != null)
+            {
+                foreach (var root in LoopVisitor.CollectAssignedRoots(tryNode.FinallyBlock, scope,
+                    ctx.Frame))
+                {
+                    ctx.Flow.ClearRoot(root);
+                }
+            }
             return new BoundTryStatement(node, tryBlock, catches, finallyBlock, finallyVariable);
         }
     }

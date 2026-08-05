@@ -123,6 +123,9 @@ namespace LatteCompiler
         public List<GenericParameterSymbol> GenericParameters { get; } = new List<GenericParameterSymbol>();
         public List<FieldSymbol> Fields { get; } = new List<FieldSymbol>();
         public List<MethodSymbol> Methods { get; } = new List<MethodSymbol>();
+        // enum case 表（SYNTAX §12；P1 DeclarationCollector 填充，P2 冻结后
+        // 只读；非 enum struct 恒为空）
+        public List<EnumCaseSymbol> Cases { get; } = new List<EnumCaseSymbol>();
         // 嵌套类型（P1 DeclarationCollector 填充；DeclaringType 反向指针构造即定）
         public List<TypeSymbol> NestedTypes { get; } = new List<TypeSymbol>();
 
@@ -170,6 +173,8 @@ namespace LatteCompiler
             Kind = definition.Kind;
             Namespace = definition.Namespace;
             DeclaringType = definition.DeclaringType;
+            // 兜底快照：GetConstructedType 入表后立即以 Substitute 代入结果覆写
+            // （含 P2 继承解析完成后的 BackfillConstructedBaseTypes 统一重算）
             BaseType = definition.BaseType;
             IsRich = definition.IsRich;
             IsShared = definition.IsShared;
@@ -328,10 +333,60 @@ namespace LatteCompiler
         }
     }
 
+    // enum case 符号（SYNTAX §12，S11）：宿主 enum struct 的 case 声明。
+    // 构造期三阶段：P1 建壳（名 + 宿主，DeclarationCollector）、P2 落定显式
+    // 判别值（EnumCaseResolver）、P3 声明点绑定 init 调用模板（两槽后填，
+    // 仿 S8d 参数默认值声明点绑定先例）。
+    public sealed class EnumCaseSymbol : SemanticSymbol
+    {
+        // 宿主 enum 类型（构造即定；canonical 投影见 PrintCase：{Owner}.{Name}，BIL §8.5）
+        public TypeSymbol Owner { get; }
+        // 显式判别值（-> N；P2 落定，null = auto）。auto 编号按声明序从 0
+        // （§12.4），发射侧按宿主 Cases 表序推导，符号上不另存
+        public long? Discriminant { get; internal set; }
+        // init 调用模板绑定产物（§12.1，P3 声明点落定，本阶段只开槽）：
+        // ResolvedInit = 选中的 init；HoleParameters = 参数洞签名列表
+        // （null = 未绑定；空列表 = 固定 case）。固定实参表达式的绑定产物
+        // （BoundExpression）归 P3 侧环境缓存（仿 ParameterSymbol.DefaultValue
+        // 产物的 BindEnvironment.ParameterDefaults 先例）——符号层只持结构
+        // 信息，不依赖 Bound 节点
+        public MethodSymbol? ResolvedInit { get; internal set; }
+        public List<EnumCaseHoleParameter>? HoleParameters { get; internal set; }
+
+        public EnumCaseSymbol(string name, TypeSymbol owner) : base(name)
+        {
+            Owner = owner;
+        }
+    }
+
+    // 参数洞签名（SYNTAX §12.1：洞的名/类型/位置取自它对应的 init 参数）：
+    // P3 声明点模板绑定时从命中的 init 参数抄录，供 BIL §8.5 声明发射与
+    // 调用点实参匹配消费
+    public sealed class EnumCaseHoleParameter
+    {
+        public string Name { get; }
+        // 洞类型 = 对应 init 参数类型（SemanticSymbol：TypeSymbol 或泛型参数）
+        public SemanticSymbol Type { get; }
+        // 对应 init 参数在 MethodSymbol.Parameters 中的下标
+        public int InitParameterIndex { get; }
+
+        public EnumCaseHoleParameter(string name, SemanticSymbol type, int initParameterIndex)
+        {
+            Name = name;
+            Type = type;
+            InitParameterIndex = initParameterIndex;
+        }
+    }
+
     public sealed class ParameterSymbol : SemanticSymbol
     {
         // 参数类型（P2 解析后填；SemanticSymbol：TypeSymbol 或 GenericParameterSymbol）
         public SemanticSymbol? Type { get; internal set; }
+
+        // init 参数映射的目标字段（SYNTAX §9.3：`name[:type] -> field`；
+        // P2 TypeReferenceResolver 字段存在性检查命中时落定，无映射为 null）。
+        // P3 BindingDriver 据此合成构造时映射赋值（this.field = param）
+        public FieldSymbol? MappedField { get; internal set; }
 
         // 默认值表达式根（SYNTAX §4.2；无默认值时为 null）。挂 AST 引用——
         // P3 预绑定阶段（BindingDriver）在声明点作用域绑定，产物缓存于

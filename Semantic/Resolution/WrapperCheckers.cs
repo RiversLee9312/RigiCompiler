@@ -63,6 +63,14 @@ namespace LatteCompiler
                 }
                 if (symbol is FieldSymbol field)
                 {
+                    // 重复/遮蔽检测：与目标类型既有字段同名即诊断（P1 同名字段口径），
+                    // 不注册——防止 P3 查找双候选静默遮蔽
+                    if (targetType.Fields.Any(f => f.Name == field.Name))
+                    {
+                        env.Error(entry.Node.Span,
+                            $"Extension field '{field.Name}' duplicates an existing member of type '{targetType.Name}'");
+                        continue;
+                    }
                     field.AttachToExtTarget(targetType);
                     targetType.Fields.Add(field);
                     // ext 字段的访问器随字段随迁宿主（S8e；仍不入容器方法表——
@@ -72,10 +80,40 @@ namespace LatteCompiler
                 }
                 else if (symbol is MethodSymbol method)
                 {
+                    // 重复/遮蔽检测：与目标类型既有方法同签名即诊断
+                    // （P1 MethodKey 口径的符号级版本：名 + 泛型元数 + 参数名序列
+                    // + 参数类型引用相等序列），不注册
+                    if (targetType.Methods.Any(m => SameSignature(m, method)))
+                    {
+                        env.Error(entry.Node.Span,
+                            $"Extension method '{method.Name}' duplicates an existing member of type '{targetType.Name}'");
+                        continue;
+                    }
                     method.AttachToExtTarget(targetType);
                     targetType.Methods.Add(method);
                 }
             }
+        }
+
+        // 符号级同签名判定（对应 P1 DeclarationCollector.MethodKey 文本口径）：
+        // 名 + 泛型元数 + 参数个数 + 参数名序列 + 参数类型引用相等序列。
+        // 参数类型未解析（null）时只比名字结构，保守不判重
+        private static bool SameSignature(MethodSymbol a, MethodSymbol b)
+        {
+            if (a.Name != b.Name
+                || a.GenericParameters.Count != b.GenericParameters.Count
+                || a.Parameters.Count != b.Parameters.Count)
+            {
+                return false;
+            }
+            for (int i = 0; i < a.Parameters.Count; i++)
+            {
+                if (a.Parameters[i].Name != b.Parameters[i].Name) return false;
+                var ta = a.Parameters[i].Type;
+                var tb = b.Parameters[i].Type;
+                if (ta != null && tb != null && !ReferenceEquals(ta, tb)) return false;
+            }
+            return true;
         }
     }
 

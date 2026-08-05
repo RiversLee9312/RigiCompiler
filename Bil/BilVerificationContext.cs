@@ -37,8 +37,9 @@ namespace LatteCompiler.Bil
         // LocalSymbols 侧方法声明单独留一份（§9.1：fn 定义必须对应本地声明）
         public HashSet<string> LocalMethodSymbols { get; } = new HashSet<string>();
 
-        // 全部简单成员声明的平铺（带宿主类型符号，null = 段内裸条目）——
-        // 供声明侧规则（native/static 一致性/修饰符矩阵）遍历
+        // 全部简单成员声明的平铺（带宿主类型反查键——符号 + 泛型元数，
+        // null = 段内裸条目）——供声明侧规则（native/static 一致性/修饰符
+        // 矩阵）遍历与宿主声明反查
         public List<(string? OwnerType, BilSimpleMemberDeclaration Declaration, bool IsLocal)>
             MemberEntries { get; } =
                 new List<(string?, BilSimpleMemberDeclaration, bool)>();
@@ -118,13 +119,15 @@ namespace LatteCompiler.Bil
                 {
                     case BilTypeDeclaration type:
                         TypeSymbols.Add(type.Symbol);
-                        if (!TypeDeclarations.ContainsKey(type.Symbol))
+                        // S10：反查键 = 符号 + 泛型元数（与 §21.2 判重键同式）
+                        var declarationKey = DeclarationKey(type.Symbol, type.GenericParameters.Count);
+                        if (!TypeDeclarations.ContainsKey(declarationKey))
                         {
-                            TypeDeclarations.Add(type.Symbol, type);
+                            TypeDeclarations.Add(declarationKey, type);
                         }
                         foreach (var member in type.Members)
                         {
-                            IndexMember(type.Symbol, member, isLocal);
+                            IndexMember(declarationKey, member, isLocal);
                         }
                         break;
                     case BilMemberDeclaration member:
@@ -233,39 +236,111 @@ namespace LatteCompiler.Bil
             return angle >= 0 ? typeRef.Substring(0, angle) : typeRef;
         }
 
-        // 类型引用基名：剥泛型实参与命名空间限定与前导点
-        // （"core.collections::IEnumerator<.i32>" → "IEnumerator"）
-        public static string TypeBaseName(string typeRef)
+        // 类型声明反查键 = canonical 符号 + 泛型元数（与 §21.2 判重键同式——
+        // S10 起 Task 与 Task\<TResult\> 同名不同元数合法共存，裸符号不再唯一）
+        private static string DeclarationKey(string symbol, int arity)
         {
-            var name = typeRef;
-            var angle = name.IndexOf('<');
-            if (angle >= 0)
-            {
-                name = name.Substring(0, angle);
-            }
-            var ns = name.LastIndexOf("::");
-            if (ns >= 0)
-            {
-                name = name.Substring(ns + 2);
-            }
-            return name.TrimStart('.');
+            return arity == 0 ? symbol : symbol + "<" + arity + ">";
         }
 
-        // 类型兼容判定（防误报降级）：文本相等；任一侧含 .generic<（typeid
-        // 位置表达式，无法静态判定）；剥基名大小写不敏感相等（内建别名 ↔
-        // canonical：".i32" ↔ "core::i32"、".any" ↔ "core::Any"）
+        // 类型引用 → 反查键：剥实参后缀取基名 + 顶层实参个数
+        // （"com.example::Box<.i32>" → "com.example::Box<1>"）
+        public static string DeclarationKeyOf(string typeRef)
+        {
+            var angle = typeRef.IndexOf('<');
+            if (angle < 0 || !typeRef.EndsWith(">"))
+            {
+                return typeRef;
+            }
+            var inner = typeRef.Substring(angle + 1, typeRef.Length - angle - 2);
+            return DeclarationKey(typeRef.Substring(0, angle), SplitTopLevel(inner).Count);
+        }
+
+        // 声明反查：按 StripTypeArguments + 实参元数取声明
+        // （查不到 = 声明缺失降级场景，调用方按防误报原则跳过）
+        public bool TryGetTypeDeclaration(string typeRef, out BilTypeDeclaration declaration)
+        {
+            return TypeDeclarations.TryGetValue(DeclarationKeyOf(typeRef), out declaration!);
+        }
+
+        // ===== §6.4 类型严格相等判定 =====
+
+        // 内建标量别名 → canonical 内建类型名（SYNTAX §3.2/BIL §6.2：同一
+        // 类型的两种拼写，属全等）。CanonicalSymbolPrinter 的类型引用位置
+        // 恒投影别名（.i32/.string），符号 owner 段与宿主引用恒 canonical
+        // （core::i32/core::String）——验证器跨位置比对须经此表归一
+        private static readonly Dictionary<string, string> BuiltinScalarAliases =
+            new Dictionary<string, string>
+            {
+                [".i8"] = "core::i8", [".i16"] = "core::i16",
+                [".i32"] = "core::i32", [".i64"] = "core::i64",
+                [".u8"] = "core::u8", [".u16"] = "core::u16",
+                [".u32"] = "core::u32", [".u64"] = "core::u64",
+                [".f32"] = "core::float", [".f64"] = "core::double",
+                [".bool"] = "core::bool", [".char"] = "core::char",
+                [".string"] = "core::String",
+                [".any"] = "core::Any", [".object"] = "core::Object",
+                [".valuetype"] = "core::ValueType",
+            };
+
+        // 标准构造头 → canonical 泛型宿主（BIL §6.3：构造头是源码特权
+        // 类型的 BIL 拼写——.array<T> ≡ core::Array<T> 等，同一类型的
+        // 两种拼写，属全等）。.fieldid/.methodid 无源码对应类型、
+        // .generic< 是 typeid 位置表达式，均不在此表（形态原样比对）
+        private static readonly Dictionary<string, string> ConstructorAliases =
+            new Dictionary<string, string>
+            {
+                [".array"] = "core::Array", [".map"] = "core::Map",
+                [".pair"] = "core::Pair", [".nullable"] = "core::Nullable",
+                [".typeid"] = "core::Type",
+            };
+
+        // 类型引用归一化（TypesCompatible 的唯一比较基）：
+        // 1. 内建标量别名 → canonical（.i32 → core::i32、.f32 → core::float 等）；
+        // 2. 标准构造头 → canonical 泛型宿主，实参递归归一化（构造类型
+        //    全等 = 头 canonical 全等 + 实参个数相同 + 逐实参递归全等）；
+        // 3. 无边界 .typeid ≡ .typeid<.any>（§6.3）；
+        // 4. 其余形态（用户 canonical 类型/闭合泛型/.fieldid/.methodid 等）
+        //    头原样，构造实参仍递归归一化。畸形形态（'<' 不配平）原样
+        //    返回——malformed 由符号检查另报，归一化保持全兜底不抛
+        public static string NormalizeTypeRef(string typeRef)
+        {
+            var angle = typeRef.IndexOf('<');
+            if (angle < 0 || !typeRef.EndsWith(">"))
+            {
+                if (typeRef == ".typeid")
+                {
+                    return ConstructorAliases[".typeid"] + "<" + NormalizeTypeRef(".any") + ">";
+                }
+                return BuiltinScalarAliases.TryGetValue(typeRef, out var scalar) ? scalar : typeRef;
+            }
+            var head = typeRef.Substring(0, angle);
+            var inner = typeRef.Substring(angle + 1, typeRef.Length - angle - 2);
+            var normalizedHead = ConstructorAliases.TryGetValue(head, out var canonical)
+                ? canonical : head;
+            var arguments = SplitTopLevel(inner);
+            var normalized = new List<string>(arguments.Count);
+            foreach (var argument in arguments)
+            {
+                normalized.Add(NormalizeTypeRef(argument));
+            }
+            return normalizedHead + "<" + string.Join(", ", normalized) + ">";
+        }
+
+        // 类型兼容判定（§6.4 严格相等的验证器投影——canonical 全等）：
+        // 任一侧含 .generic<（typeid 位置表达式，无法静态判定）降级通过；
+        // 其余两侧经 NormalizeTypeRef 归一化后字符串全等——内建标量别名 ↔
+        // core:: canonical、标准构造头 ↔ canonical 泛型宿主是同一类型的
+        // 两种拼写（属全等），其余一概严格：构造类型实参不同不兼容、不同
+        // 命名空间的同名类型不兼容、Wrap ≠ Wrap\<T\>。
+        // 协变（in/out 类型参数）归后续里程碑，届时在此放宽
         public static bool TypesCompatible(string actual, string expected)
         {
-            if (actual == expected)
-            {
-                return true;
-            }
             if (actual.Contains(".generic<") || expected.Contains(".generic<"))
             {
                 return true;
             }
-            return string.Equals(TypeBaseName(actual), TypeBaseName(expected),
-                System.StringComparison.OrdinalIgnoreCase);
+            return NormalizeTypeRef(actual) == NormalizeTypeRef(expected);
         }
 
         // 资源的值类型（§19；无法判定的形态返回 null——调用方跳过严格匹配）：
@@ -288,45 +363,57 @@ namespace LatteCompiler.Bil
             }
         }
 
+        // 宿主归属判定（IsAssignableTo 专用）：链节点与 owner 按「定义级」
+        // 比较——剥泛型实参后归一化全等。§5.2 符号的宿主段恒为定义级
+        // canonical（不带实参），声明侧 ExtendsType 与类型引用恒带实参，
+        // 构造类型的成员符号仍是定义级——归属不是类型相等（§6.4 的
+        // Wrap ≠ Wrap\<T\> 不适用：Box\<.i32\> 的实例成员符号宿主即 Box）
+        private static bool HostMatches(string chainNodeType, string ownerRef)
+        {
+            return NormalizeTypeRef(StripTypeArguments(chainNodeType))
+                == NormalizeTypeRef(StripTypeArguments(ownerRef));
+        }
+
         // 赋值兼容的宿主判定（§13.3/§15.1：字段/方法的宿主对象可以是
         // owner 的派生类或接口实现——BIL 的视图一致性靠 §6.5 cast 表达，
         // 但继承字段访问与继承方法调用直接以前端上色后的符号发射）。
         // 沿 extends/implements 链判定；查不到声明或链断降级通过
         public bool IsAssignableTo(string typeRef, string ownerRef)
         {
-            if (TypesCompatible(typeRef, ownerRef))
+            if (HostMatches(typeRef, ownerRef))
             {
                 return true;
             }
             var visited = new HashSet<string>();
             var pending = new Stack<string>();
-            pending.Push(StripTypeArguments(typeRef));
+            pending.Push(typeRef);
             while (pending.Count > 0)
             {
                 var current = pending.Pop();
-                if (!visited.Add(current) || !TypeDeclarations.TryGetValue(current, out var declaration))
+                if (!visited.Add(DeclarationKeyOf(current))
+                    || !TryGetTypeDeclaration(current, out var declaration))
                 {
                     continue;   // 链断：该支降级（不继续追溯）
                 }
                 if (declaration.ExtendsType != null)
                 {
-                    if (TypesCompatible(declaration.ExtendsType, ownerRef))
+                    if (HostMatches(declaration.ExtendsType, ownerRef))
                     {
                         return true;
                     }
-                    pending.Push(StripTypeArguments(declaration.ExtendsType));
+                    pending.Push(declaration.ExtendsType);
                 }
                 foreach (var interfaceType in declaration.ImplementsTypes)
                 {
-                    if (TypesCompatible(interfaceType, ownerRef))
+                    if (HostMatches(interfaceType, ownerRef))
                     {
                         return true;
                     }
-                    pending.Push(StripTypeArguments(interfaceType));
+                    pending.Push(interfaceType);
                 }
             }
             // 全程未命中：若起点本身查不到声明则属降级场景，否则确实不可赋值
-            return !TypeDeclarations.ContainsKey(StripTypeArguments(typeRef));
+            return !TypeDeclarations.ContainsKey(DeclarationKeyOf(typeRef));
         }
 
         // ===== §5.2 canonical 符号解析 =====
@@ -537,7 +624,9 @@ namespace LatteCompiler.Bil
         }
 
         // fn 内全部指令枚举：fn.Blocks 各块出发沿块引用下钻（块不嵌套定义，
-        // 指令嵌套引用顶层块）；visited 以引用相等判重，结构环只展开一次
+        // 指令嵌套引用顶层块）；visited 以引用相等判重，结构环只展开一次；
+        // 下钻过滤块成员资格（与 Flow 的 InstructionsInFunction 一致——跨 fn
+        // 越权块不展开，其内部错误不级联）
         public IEnumerable<(BilBlock Block, BilInstruction Instruction)> AllInstructions()
         {
             var visited = new HashSet<BilBlock>(ReferenceEqualityComparer.Instance);
@@ -550,7 +639,7 @@ namespace LatteCompiler.Bil
             }
         }
 
-        private static IEnumerable<(BilBlock, BilInstruction)> EnumerateBlock(
+        private IEnumerable<(BilBlock, BilInstruction)> EnumerateBlock(
             BilBlock block, HashSet<BilBlock> visited)
         {
             if (!visited.Add(block))
@@ -562,9 +651,12 @@ namespace LatteCompiler.Bil
                 yield return (block, instruction);
                 foreach (var referenced in BilVerifier.ReferencedBlocks(instruction))
                 {
-                    foreach (var item in EnumerateBlock(referenced, visited))
+                    if (BlockSet.Contains(referenced))
                     {
-                        yield return item;
+                        foreach (var item in EnumerateBlock(referenced, visited))
+                        {
+                            yield return item;
+                        }
                     }
                 }
             }

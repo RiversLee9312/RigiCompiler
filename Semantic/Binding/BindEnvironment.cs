@@ -51,6 +51,28 @@ namespace LatteCompiler
             return value;
         }
 
+        // enum case 模板固定实参绑定产物（S11，SYNTAX §12.1）：BindingDriver
+        // 声明点模板绑定时写入（驱动单趟遍历、每 case 至多一次——模板表达式
+        // 不能引用 case，无依赖环，无需 in-flight 拦截）；键 = case 符号，
+        // 值 = 按 init 参数序的固定实参（洞位置 null 占位——无显式 init 的
+        // 零参 case 为空列表）。备 P4 case 构造入口 lowering 消费，本阶段
+        // 只承担声明点类型检查
+        private readonly Dictionary<EnumCaseSymbol, IReadOnlyList<BoundExpression?>>
+            enumCaseFixedArguments = new Dictionary<EnumCaseSymbol, IReadOnlyList<BoundExpression?>>();
+
+        internal void SetEnumCaseFixedArguments(EnumCaseSymbol caseSymbol,
+            IReadOnlyList<BoundExpression?> fixedArguments)
+        {
+            enumCaseFixedArguments[caseSymbol] = fixedArguments;
+        }
+
+        public IReadOnlyList<BoundExpression?>? GetEnumCaseFixedArguments(EnumCaseSymbol caseSymbol)
+        {
+            return enumCaseFixedArguments.TryGetValue(caseSymbol, out var fixedArguments)
+                ? fixedArguments
+                : null;
+        }
+
         public void Error(CharRange? span, string message)
         {
             Unit.Diagnostics.Error(DiagnosticPhase.P3, span, message);

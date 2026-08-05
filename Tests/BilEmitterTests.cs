@@ -38,6 +38,12 @@ namespace LatteCompiler.Tests
     /// writable/compiler-generated + §8.4 getter(FIELD)/setter(FIELD) 字段槽
     /// 驱动声明，类 backing 与全局自动访问器 fn 形状黄金）与
     /// override/abstract 投影（§8.2/§8.4 关键字修饰，abstract 无 fn 定义）。
+    /// S11：enum case（§8.5 .case 声明挂类型 Members——洞签名形态 +
+    /// discriminant auto/res(R) 显式判别值资源登记；§14.3 new.case 与
+    /// §12.3 type.is.case 值发射，含 switch pattern 降级路径；enum 无体
+    /// init 经 §9.3 映射赋值体合成照常发射声明 + fn 定义）。
+    /// §9.3 增补（BilEmitterTests.Members.cs）：init 参数映射赋值合成
+    /// 端到端——无体 init 的 fn 定义（set.field + ret，§21.2 门槛）。
     /// </summary>
     public static partial class BilEmitterTests
     {
@@ -66,6 +72,7 @@ namespace LatteCompiler.Tests
             TestShortCircuitEmission();
             TestLoopEmission();
             TestInstanceEmission();
+            TestInitMappingEmission();
             TestForLoopEmission();
             TestSwitchEmission();
             TestPatternSwitchEmission();
@@ -88,6 +95,14 @@ namespace LatteCompiler.Tests
             TestExceptionEmission();
             TestDisposableEmission();
             TestAsyncTaskEmission();
+            TestGenericNullableNullResource();
+            TestVarArgsParameterAssignment();
+            TestNamedPackResultType();
+            TestVarArgsIndexBoxingEmission();
+            TestExtFieldDeclarationModifier();
+            TestConstFieldModifierEmission();
+            TestSmartCastCompoundAssignmentEmission();
+            TestEnumCaseEmission();
             TestUnsupportedNodes();
 
             return TestHarness.Summary("BilEmitter");

@@ -113,15 +113,26 @@ namespace LatteCompiler.Bil
         // （.return/.this/.tN/.sN/.bN……）带前导点——验证器无法区分用户名与
         // 合成名，统一允许至多一个前导点。
         // S9e：§7.1 泛型/可变参数保留名家族（.generic.T / .vargs.args /
-        // .kwargs.args——§5.1 保留名，含内部点）额外放行
+        // .kwargs.args——§5.1 保留名，含内部点）放行前缀，余部仍按字符集校验
         internal static bool IsLocalIdentifier(string name)
         {
-            if (name.StartsWith(".generic.") || name.StartsWith(".vargs.")
-                || name.StartsWith(".kwargs."))
+            string body;
+            if (name.StartsWith(".generic."))
             {
-                return true;
+                body = name.Substring(".generic.".Length);
             }
-            var body = name.StartsWith(".") ? name.Substring(1) : name;
+            else if (name.StartsWith(".vargs."))
+            {
+                body = name.Substring(".vargs.".Length);
+            }
+            else if (name.StartsWith(".kwargs."))
+            {
+                body = name.Substring(".kwargs.".Length);
+            }
+            else
+            {
+                body = name.StartsWith(".") ? name.Substring(1) : name;
+            }
             if (body.Length == 0)
             {
                 return false;

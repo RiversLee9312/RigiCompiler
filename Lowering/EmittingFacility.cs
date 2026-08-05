@@ -72,6 +72,21 @@ namespace LatteCompiler
             };
         }
 
+        // 值引用的 BIL 变量名映射（S9d，§7.1）：可变参数（值包）引用映射到
+        // 隐藏包变量——源码参数名是包变量，BIL 以保留名承载
+        // （.vargs.<名>/.kwargs.<名>）；读（值引用操作数）写（set.var
+        // 目标）两侧共用同一份映射，否则写入侧引用未声明变量
+        public static string ValueVariableName(SemanticSymbol symbol)
+        {
+            // named 参数 IsVariadic 与 IsNamedVariadic 同时为 true——具名先判
+            return symbol switch
+            {
+                ParameterSymbol { IsNamedVariadic: true } parameter => ".kwargs." + parameter.Name,
+                ParameterSymbol { IsVariadic: true } parameter => ".vargs." + parameter.Name,
+                _ => symbol.Name,
+            };
+        }
+
         // 字段宿主投影（§13.4 type(OWNER_TYPE)）：static 字段 = 宿主类型
         // canonical；命名空间全局字段 = 命名空间全名（§13.4 未规定全局字段的
         // 宿主形态，以命名空间全名投影，verifier（S12）阶段再核）；
@@ -108,8 +123,9 @@ namespace LatteCompiler
         // null 资源登记（§19.1；S7f 起与合成 null 常量共用）：键 =
         // 元素类型投影；类型语义 = .nullable<元素类型>——
         // 可直接与 .nullable<T> 变量做 cmp.eq/cmp.ne（§11.5 严格相同）。
-        // S9 放宽为 SemanticSymbol：泛型参数（Nullable<T> 内的 T）不可静态
-        // 展开，直通不落键（.vars 的 .nullable<.generic<...>> 已能打印）；
+        // S9 放宽为 SemanticSymbol：元素可为泛型参数（T? 内的 T）——
+        // 不可静态展开，按 §7.5 canonical（.generic<$.generic.T> 形态）
+        // 投影作键与元素类型（CanonicalSymbolPrinter.PrintType 统一投影）；
         // 错误路径返回未登记的占位资源（诊断已落袋，输出按 §8 门槛不写盘）
         public static BilResource RegisterNullResource(SemanticSymbol nullableType, CharRange? span,
             EmitEnvironment env)
@@ -117,10 +133,9 @@ namespace LatteCompiler
             if (nullableType is TypeSymbol type
                 && type.ConstructedFrom != null
                 && ReferenceEquals(type.ConstructedFrom,
-                    env.Unit.Symbols.Bootstrap.NullableDefinition)
-                && type.TypeArguments![0] is TypeSymbol element)
+                    env.Unit.Symbols.Bootstrap.NullableDefinition))
             {
-                var key = CanonicalSymbolPrinter.PrintType(element);
+                var key = CanonicalSymbolPrinter.PrintType(type.TypeArguments![0]);
                 if (!env.NullKeys.TryGetValue(key, out var resource))
                 {
                     resource = new BilNullResource("R_" + env.Module.Resources.Count, key);
@@ -232,15 +247,16 @@ namespace LatteCompiler
                             ? ((float)f.Value).ToString("R", CultureInfo.InvariantCulture)
                             : f.Value.ToString("R", CultureInfo.InvariantCulture));
                 case NullLiteralASTNode:
-                    // S9：literal.Type 可为泛型参数（Nullable<T> 内层）——
-                    // 泛型参数不可静态展开，判型后走元素类型打印
+                    // S9：literal.Type 的元素可为泛型参数（T? 内层）——
+                    // 泛型参数不可静态展开，按 §7.5 canonical 投影
+                    // （.generic<$.generic.T> 形态）
                     if (literal.Type is TypeSymbol nullType
                         && nullType.ConstructedFrom != null
                         && ReferenceEquals(nullType.ConstructedFrom,
-                            env.Unit.Symbols.Bootstrap.NullableDefinition)
-                        && nullType.TypeArguments![0] is TypeSymbol element)
+                            env.Unit.Symbols.Bootstrap.NullableDefinition))
                     {
-                        return (null, CanonicalSymbolPrinter.PrintType(element));
+                        return (null, CanonicalSymbolPrinter.PrintType(
+                            nullType.TypeArguments![0]));
                     }
                     env.Error(syntax.Span,
                         "P4: null literal is not typed as Nullable<T> " +

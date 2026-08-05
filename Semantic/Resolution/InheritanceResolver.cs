@@ -153,6 +153,16 @@ namespace LatteCompiler
                         AccessChecker.InaccessibleMessage(ifaceDef));
                     continue;
                 }
+                // 重复 implements 诊断（定义级判定：`I, I` 与 `I\<i32\>, I\<String\>`
+                // 同定义即重复——接口契约按定义派发，构造实参不产生新的实现
+                // 要求）；重复者不进 Interfaces 表（与重复声明惯例一致）
+                if (type.Interfaces.Any(existing =>
+                        ReferenceEquals(existing.ConstructedFrom ?? existing, ifaceDef)))
+                {
+                    env.Error(ifaceRef.Span ?? entry.Node.Span,
+                        $"'{type.Name}': duplicate interface '{ifaceDef.Name}'");
+                    continue;
+                }
                 type.Interfaces.Add(iface);
             }
             // interface 继承图的环：DFS 能回到自身即环（报错但保留图，
@@ -163,11 +173,13 @@ namespace LatteCompiler
             }
         }
 
+        // 环判定按定义级比较：链上的 BaseType 可为构造实例（如 B\<T\> 的
+        // 定义基类解析后链上是 A\<T-b\>），统一归一到 ConstructedFrom 再比
         private static bool CreatesCycle(TypeSymbol type, TypeSymbol baseType)
         {
             for (var t = baseType; t != null; t = t.BaseType)
             {
-                if (ReferenceEquals(t, type)) return true;
+                if (ReferenceEquals(t.ConstructedFrom ?? t, type)) return true;
             }
             return false;
         }

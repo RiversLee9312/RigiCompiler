@@ -19,8 +19,9 @@ namespace LatteCompiler
     // 双分支形态）。definite assignment 分支合并：before ∪ (setT ∩ setF)；
     // 无 else 合并为 before。S8b 收窄维度（SYNTAX §3.5）：分支入口
     // = before ∪ 条件真/假边事实；guard——一分支终止（GuaranteesReturn）时
-    // 后续收窄 = 对边流；都不终止时有 else 取纯交集、无 else 恢复 before；
-    // DA 规则不因 guard 改变（行为零变化）。
+    // 后续收窄 = 对边流；都不终止时取纯交集（无 else 时假边流即 before
+    // 自身——then 尾 ∩ before：before 中被 then 体内赋值失效的键不得
+    // 复活，与双分支合并同规则）；DA 规则不因 guard 改变（行为零变化）。
     // 自旧 BindSession.BindIfStatement 迁移，行为不变。
     internal sealed class IfStatementVisitor : BinderVisitor<IfStatementVisitor, BoundStatement, BindContext>
     {
@@ -81,7 +82,10 @@ namespace LatteCompiler
                 }
                 else
                 {
-                    ctx.Flow.RestoreNarrowed(beforeNarrowed);
+                    // 无 else 非 guard：后续 = then 尾 ∩ before（纯交集）——
+                    // before 中被 then 体内赋值失效的键不得复活（直接恢复
+                    // before 会把已失效的收窄带回来，是不 sound 的）
+                    ctx.Flow.MergeNarrowed(trueNarrowed, beforeNarrowed);
                 }
             }
             else

@@ -74,7 +74,15 @@ namespace LatteCompiler.Tests
         public static void CheckFnShape(string label, BilModule module, string fnSymbol,
             string expected)
         {
-            var function = module.Functions.Single(f => f.Symbol == fnSymbol);
+            // FirstOrDefault + 断言存在性：Single 在符号不匹配时抛
+            // InvalidOperationException 中断整个套件，而非记 FAIL
+            var function = module.Functions.FirstOrDefault(f => f.Symbol == fnSymbol);
+            if (function == null)
+            {
+                TestHarness.CheckTrue(label, false,
+                    $"模块中找不到 fn {fnSymbol}（实际: {string.Join(", ", module.Functions.Select(f => f.Symbol))}）");
+                return;
+            }
             TestHarness.Check(label, RenderFnShape(function), expected);
         }
 

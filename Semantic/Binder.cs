@@ -26,11 +26,14 @@ namespace LatteCompiler
     // S8e：使用点访问控制（SYNTAX §16.1——调用/构造/字段/索引/函数体内
     //   类型引用统一经 AccessChecker）+ getter/setter（§9.4.1——读写存在性
     //   与访问器可见性、访问器体绑定、backing value 别名与体合成）。
+    // S11：enum case（SYNTAX §12）——声明点 init 模板绑定（BindingDriver
+    //   阶段 1.5：结构过滤/固定实参类型适用性决胜/洞 pub 规则）+ 使用侧
+    //   三形态（裸 `.Success` / `.Failed(404)` 底座调用 / `is .Case`
+    //   判别匹配）；泛型 enum 的 case 归口。
     //
     // 明确不做（归后续里程碑，遇之一律 P3 诊断而非崩溃）：
-    // yield、可变参数调用绑定、写模式索引重载（RHS 类型赋值侧才可知）、
-    // 局部变量访问器（S11）、泛型使用侧（S9）、
-    // enum case（S11）、await/lambda（S13）、
+    // yield、写模式索引重载（RHS 类型赋值侧才可知）、
+    // 局部变量访问器（S11）、泛型 enum case（S11）、await/lambda（S13）、
     // 全局字段初始化器与无标注字段类型推断。
     public static class Binder
     {

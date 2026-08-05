@@ -22,6 +22,9 @@ namespace LatteCompiler
             IntegerPart,        // 已读取整数部分
             DotSeen,            // 已看到小数点
             FractionalPart,     // 已读取小数部分
+            ExponentSignOrDigits,   // 科学计数法（SYNTAX §3.3）：指数标记 e/E 已读，
+                                    // 等待 +/- 符号或直接的指数数字
+            ExponentDigits,     // 指数符号已读，等待指数数字
             AwaitInterpolationStartOrDone,  // 已收文本段：等待 InterpolationStart
                                             // （插值模式）或其他（收尾）
             InterpolationEndExpected,       // 插值表达式已委托：等待 InterpolationEnd
@@ -31,6 +34,10 @@ namespace LatteCompiler
         private ParserState state = ParserState.Initial;
         private string integerPart = "";
         private string fractionalPart = "";
+        // 科学计数法组合暂存（SYNTAX §3.3）：e/E 已读、指数待后续 token 吸收时，
+        // 底数部分含结尾的 e/E（如 "3.14e" / "2e"），符号为已吸收的 +/-
+        private string exponentBase = "";
+        private string exponentSign = "";
         // 当前暂存的文本段 token（M53 插值段序列模式）：等待后续
         // InterpolationStartToken 判别插值模式，或按普通单段字符串收尾
         private StringToken? pendingSegment = null;
@@ -68,6 +75,12 @@ namespace LatteCompiler
 
                 case ParserState.DotSeen:
                     return HandleDotSeenState(currentToken, context);
+
+                case ParserState.ExponentSignOrDigits:
+                    return HandleExponentSignOrDigits(currentToken, context);
+
+                case ParserState.ExponentDigits:
+                    return HandleExponentDigits(currentToken, context);
 
                 case ParserState.AwaitInterpolationStartOrDone:
                     return HandleAwaitInterpolationStartOrDone(currentToken, context);
@@ -225,6 +238,14 @@ namespace LatteCompiler
                 context.RaiseError("Expected digit after '.' in float literal");
             }
 
+            // 科学计数法半途（e/E 或符号后缺指数数字，如 `3.14e-` 遇 EOF）：
+            // 报错并带完整已拼内容
+            if (state == ParserState.ExponentSignOrDigits || state == ParserState.ExponentDigits)
+            {
+                context.RaiseError($"Invalid float literal: '{exponentBase}{exponentSign}' " +
+                                   "(expected exponent digits)");
+            }
+
             context.RaiseError("Unexpected end of file");
             return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
         }
@@ -258,6 +279,18 @@ namespace LatteCompiler
                     // 浮点由 IntegerPart/DotSeen 状态组合；判定统一走 NumericLiteral）
                     if (NumericLiteral.IsNumericWord(word.Content))
                     {
+                        // 科学计数法无小数点形态（SYNTAX §3.3）：2e3 / 1E10 指数数字
+                        // 已在 word 内直接收尾；2e（e/E 为结尾）进入指数吸收状态
+                        switch (AnalyzeScientific(word.Content))
+                        {
+                            case ScientificKind.Complete:
+                                AddLiteralToTarget(ParseFloatLiteral(word.Content, context));
+                                return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
+                            case ScientificKind.Pending:
+                                exponentBase = word.Content;
+                                state = ParserState.ExponentSignOrDigits;
+                                return ParserLayerResult.Continue.Instance;
+                        }
                         integerPart = word.Content;
                         state = ParserState.IntegerPart;
                         return ParserLayerResult.Continue.Instance;
@@ -313,6 +346,20 @@ namespace LatteCompiler
                 fractionalPart = word.Content;
                 state = ParserState.FractionalPart;
 
+                // 科学计数法（SYNTAX §3.3）：14e5 指数数字已在 word 内直接收尾；
+                // 14e（e/E 为结尾）进入指数吸收状态（符号与数字来自后续 token）
+                switch (AnalyzeScientific(word.Content))
+                {
+                    case ScientificKind.Complete:
+                        AddLiteralToTarget(
+                            ParseFloatLiteral(integerPart + "." + fractionalPart, context));
+                        return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
+                    case ScientificKind.Pending:
+                        exponentBase = integerPart + "." + word.Content;
+                        state = ParserState.ExponentSignOrDigits;
+                        return ParserLayerResult.Continue.Instance;
+                }
+
                 // 组合成完整的浮点数
                 string fullNumber = integerPart + "." + fractionalPart;
                 var floatNode = ParseFloatLiteral(fullNumber, context);
@@ -324,6 +371,91 @@ namespace LatteCompiler
             // `3.foo` 形态规范未定义，需要成员访问时请写 (3).foo）
             context.RaiseError("Expected digit after '.' in float literal");
             return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
+        }
+
+        // 指数标记 e/E 已读：等待 +/- 符号或直接的指数数字。
+        // 完整指数必在 word 内（Lexer 不拆字母数字串），走到本状态说明
+        // e/E 恰为 word 结尾——后续合法 token 只有符号与数字
+        private ParserLayerResult HandleExponentSignOrDigits(Token currentToken, ParserLayerContext context)
+        {
+            if (currentToken is NotationToken notation &&
+                (notation.Content == "+" || notation.Content == "-"))
+            {
+                exponentSign = notation.Content;
+                state = ParserState.ExponentDigits;
+                return ParserLayerResult.Continue.Instance;
+            }
+
+            if (currentToken is WordToken word && IsExponentDigits(word.Content))
+            {
+                return FinishScientificFloat(exponentBase + word.Content, context);
+            }
+
+            context.RaiseError($"Invalid float literal: '{exponentBase}' (expected exponent digits)");
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
+        }
+
+        // 指数符号已读：等待指数数字（3.14e-5 的 5；可带 f/F 浮点后缀）
+        private ParserLayerResult HandleExponentDigits(Token currentToken, ParserLayerContext context)
+        {
+            if (currentToken is WordToken word && IsExponentDigits(word.Content))
+            {
+                return FinishScientificFloat(exponentBase + exponentSign + word.Content, context);
+            }
+
+            context.RaiseError($"Invalid float literal: '{exponentBase}{exponentSign}' " +
+                               "(expected exponent digits)");
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
+        }
+
+        // 科学计数法收尾：完整文本解析为浮点字面量，Consume 最后一个指数 token
+        private ParserLayerResult FinishScientificFloat(string fullNumber, ParserLayerContext context)
+        {
+            AddLiteralToTarget(ParseFloatLiteral(fullNumber, context));
+            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
+        }
+
+        // 科学计数法分析结果（AnalyzeScientific 返回）
+        private enum ScientificKind
+        {
+            None,       // 无 e/E 指数标记（或指数含非数字——回落既有路径报错）
+            Pending,    // e/E 恰为结尾，指数待后续 token 吸收
+            Complete    // 指数数字已在 word 内
+        }
+
+        // 科学计数法分析（SYNTAX §3.3）：进制前缀（0x/0b/0o）的 E 是数字字符
+        // 而非指数标记，直接排除；f/F 后缀不影响判定（1.5e3f 的 3 是指数）
+        private static ScientificKind AnalyzeScientific(string word)
+        {
+            if (NumericLiteral.HasBasePrefix(word)) return ScientificKind.None;
+
+            string stripped = word.EndsWith("f", StringComparison.OrdinalIgnoreCase)
+                ? word.Substring(0, word.Length - 1) : word;
+            int eIndex = stripped.IndexOf('e');
+            if (eIndex < 0) eIndex = stripped.IndexOf('E');
+            if (eIndex < 0) return ScientificKind.None;
+            if (eIndex == stripped.Length - 1) return ScientificKind.Pending;
+
+            // e/E 后必须全为数字才算完整指数（2e5x 之类回落既有路径报错）
+            for (int i = eIndex + 1; i < stripped.Length; i++)
+            {
+                if (!char.IsDigit(stripped[i])) return ScientificKind.None;
+            }
+            return ScientificKind.Complete;
+        }
+
+        // 指数数字 word 判定（SYNTAX §3.3：指数必须是十进制数字）：
+        // 剥尾部 f/F 后缀后必须全为数字（3.14e-5f 的 f 是浮点后缀）
+        private static bool IsExponentDigits(string content)
+        {
+            string stripped = content.EndsWith("f", StringComparison.OrdinalIgnoreCase)
+                ? content.Substring(0, content.Length - 1) : content;
+            if (stripped.Length == 0) return false;
+            for (int i = 0; i < stripped.Length; i++)
+            {
+                if (!char.IsDigit(stripped[i])) return false;
+            }
+            return true;
         }
 
         // 解析整数字面量（规则统一走 NumericLiteral：0x/0b/0o 前缀、下划线、后缀）
@@ -355,17 +487,32 @@ namespace LatteCompiler
                 numberPart = fullNumber.Substring(0, fullNumber.Length - 1);
             }
 
+            // 科学计数法（SYNTAX §3.3）：拆 e/E 指数标记——指数（可选符号 +
+            // 数字）的合法性由组合状态机保证，这里剥离后独立于底数参与解析
+            string mantissa = numberPart;
+            string exponent = "";
+            int eIndex = numberPart.IndexOf('e');
+            if (eIndex < 0) eIndex = numberPart.IndexOf('E');
+            if (eIndex >= 0)
+            {
+                mantissa = numberPart.Substring(0, eIndex);
+                exponent = numberPart.Substring(eIndex + 1);
+            }
+
             // 下划线分隔（M31，与整数同规则）：整数/小数部分分别校验后剥离
-            var dotIndex = numberPart.IndexOf('.');
-            var intDigits = dotIndex >= 0 ? numberPart.Substring(0, dotIndex) : numberPart;
-            var fracDigits = dotIndex >= 0 ? numberPart.Substring(dotIndex + 1) : "";
+            var dotIndex = mantissa.IndexOf('.');
+            var intDigits = dotIndex >= 0 ? mantissa.Substring(0, dotIndex) : mantissa;
+            var fracDigits = dotIndex >= 0 ? mantissa.Substring(dotIndex + 1) : "";
             if (!NumericLiteral.ValidateUnderscores(intDigits) ||
                 !NumericLiteral.ValidateUnderscores(fracDigits))
             {
                 context.RaiseError($"Invalid float literal: '{fullNumber}' " +
                                    "(underscore must appear singly between digits)");
             }
-            numberPart = intDigits.Replace("_", "") + "." + fracDigits.Replace("_", "");
+            // 重组解析文本：底数（无小数点形态不补点）+ 指数（统一小写 e）
+            numberPart = intDigits.Replace("_", "") +
+                         (dotIndex >= 0 ? "." + fracDigits.Replace("_", "") : "") +
+                         (eIndex >= 0 ? "e" + exponent : "");
 
             double value;
             try

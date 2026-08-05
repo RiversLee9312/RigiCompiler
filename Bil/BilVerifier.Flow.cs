@@ -149,8 +149,9 @@ namespace LatteCompiler.Bil
                         && BlockTerminates(context, ifInstruction.ThenBlock, visited)
                         && BlockTerminates(context, ifInstruction.ElseBlock, visited);
                 case TryInstruction tryInstruction:
+                    // try-finally 无 catch 时 catch-table 为空——无 handler
+                    // 要查，body 终止即判终止（finally 是通道，不改变终止性）
                     if (tryInstruction.CatchTable is not BilCatchTableResource catchTable
-                        || catchTable.Entries.Count == 0
                         || !BlockTerminates(context, tryInstruction.Body, visited))
                     {
                         return false;
@@ -329,6 +330,28 @@ namespace LatteCompiler.Bil
             }
 
             var loopTokens = new List<(string, bool)>(tokens) { (loop.BreakId.Name, true) };
+            if (loop.IsRev)
+            {
+                // §16.4 loop.rev：执行序 body → enum → judge → condition，
+                // body 保证至少执行一次——后续块以前块出口态分析（judge 读取
+                // body/enum 内赋值不算未赋值）；循环出口取 body 出口态
+                // （body 至少一次，其落尾赋值对循环后可见）
+                var bodyExit = AnalyzeBlock(context, loop.Body, new HashSet<string>(assigned),
+                    loopTokens, stack, errors, reported);
+                var judgeEntry = bodyExit;
+                if (loop.EnumBlock != null)
+                {
+                    judgeEntry = AnalyzeBlock(context, loop.EnumBlock,
+                        new HashSet<string>(bodyExit), loopTokens, stack, errors, reported);
+                }
+                AnalyzeBlock(context, loop.Judge, new HashSet<string>(judgeEntry),
+                    loopTokens, stack, errors, reported);
+                assigned.Clear();
+                assigned.UnionWith(bodyExit);
+                return;
+            }
+            // §16.3 正向 loop：body 可能零次执行——三块都用进入态副本分析，
+            // 出口保守保持进入态
             if (loop.EnumBlock != null)
             {
                 AnalyzeBlock(context, loop.EnumBlock, new HashSet<string>(assigned),

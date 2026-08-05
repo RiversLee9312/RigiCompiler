@@ -397,6 +397,10 @@ namespace LatteCompiler.Tests
             TestError("func String.reversed(): String {}", "Expected '(' in declaration");
             TestError("var a.b: i32", "Expected ':', '=' or line break after variable name");
 
+            // 错误：ext 限定名的后续段必须是合法标识符（数字词拒绝）
+            TestError("ext func String.123(): String {}", "Expected member name after '.'");
+            TestError("pub ext var String.123: bool", "Expected member name after '.'");
+
             TestHarness.Blank();
         }
 

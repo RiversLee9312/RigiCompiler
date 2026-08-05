@@ -27,8 +27,14 @@ namespace LatteCompiler
     {
         private static StreamWriter? logWriter;
 
+        // 当前日志文件路径（供 CaptureState 快照；Reset 时清空）
+        private static string? logPath;
+
         // 控制台 Verbose 门槛（不影响文件日志）
         public static bool VerboseEnabled { get; private set; }
+
+        // 当前日志文件路径（null = 未打开日志文件；测试断言用）
+        internal static string? CurrentLogPath => logPath;
 
         public static void EnableVerbose()
         {
@@ -43,6 +49,7 @@ namespace LatteCompiler
             {
                 AutoFlush = true
             };
+            logPath = path;
         }
 
         public static void Verbose(string source, string message) => Write(LogLevel.Verbose, source, message);
@@ -73,7 +80,32 @@ namespace LatteCompiler
         {
             logWriter?.Dispose();
             logWriter = null;
+            logPath = null;
             VerboseEnabled = false;
+        }
+
+        // CLI 日志状态快照/还原：测试套件自洁（Reset）会关掉 CLI 经 --log-to
+        // 已打开的日志文件并复位 VerboseEnabled，导致后续套件的日志静默不落盘。
+        // 套件进入时 CaptureState、退出时 RestoreState 即可把 CLI 状态还原。
+        internal static (string? LogPath, bool Verbose) CaptureState()
+        {
+            return (logPath, VerboseEnabled);
+        }
+
+        // 还原 CaptureState 快照：先归位（关闭套件自己打开的文件），再按需以
+        // 追加模式重开 CLI 日志文件（追加而非覆盖：套件运行前已写入的日志必须保留）
+        internal static void RestoreState((string? LogPath, bool Verbose) state)
+        {
+            Reset();
+            if (state.LogPath != null)
+            {
+                logWriter = new StreamWriter(state.LogPath, append: true, encoding: new UTF8Encoding(false))
+                {
+                    AutoFlush = true
+                };
+                logPath = state.LogPath;
+            }
+            VerboseEnabled = state.Verbose;
         }
     }
 }

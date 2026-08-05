@@ -253,12 +253,14 @@ namespace LatteCompiler
                 _returnType is ErrorTypeSymbol ||
                 _paramTypes.Any(t => t is ErrorTypeSymbol or null);
 
-            // 签名匹配：名 + 参数个数 + 参数类型同构 + 返回类型同构
+            // 签名匹配：名 + 泛型元数 + 参数个数 + 参数类型同构 + 返回类型同构
             // （S9f 解开 #22⑥：泛型方法覆写——两侧各自的泛型参数是不同
-            // 符号，按声明序对应比较而非引用相等；嵌套构造递归逐实参）
+            // 符号，按声明序对应比较而非引用相等；嵌套构造递归逐实参。
+            // 元数不同即不同派发契约，直接不匹配）
             public bool Matches(SignatureView other)
             {
                 if (Symbol.Name != other.Symbol.Name
+                    || Symbol.GenericParameters.Count != other.Symbol.GenericParameters.Count
                     || _paramTypes.Length != other._paramTypes.Length)
                 {
                     return false;

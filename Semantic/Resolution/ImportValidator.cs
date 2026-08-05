@@ -22,6 +22,14 @@ namespace LatteCompiler
                         env.Error(item.symbolNode.Span ?? file.Span,
                             $"Unresolved import: '{NameResolver.PathText(path)}'");
                     }
+                    // §15.2 三种形态之外的裸命名空间导入（`import core.collections`）：
+                    // 具名导入（{} 已由 Parser 展开为多条）的目标必须是类型；
+                    // 通配导入的容器保留命名空间/类型双合法
+                    else if (!item.importAll && resolved is not TypeSymbol)
+                    {
+                        env.Error(item.symbolNode.Span ?? file.Span,
+                            $"Import target '{NameResolver.PathText(path)}' is not a type (§15.2)");
+                    }
                 }
             }
         }

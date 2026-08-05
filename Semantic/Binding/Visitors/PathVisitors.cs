@@ -11,14 +11,16 @@ namespace LatteCompiler
     // ns.field[i]；中间段带后缀保持归口）。自旧 BindSession.BindPath 等
     // 迁移；S8c 解开原表达式底座/索引/后缀链的 S8 归口拦截。
 
-    // 路径表达式值绑定（分派器入口；forAssignment = false）
+    // 路径表达式值绑定（分派器入口；forAssignment = false）。
+    // expectedType 仅向「前导点 enum case 底座 + Call 后缀」的参数化
+    // case 调用特判下传（S11——其余路径形态不消费期望类型）
     internal sealed class PathVisitor : ExpressionVisitor<PathVisitor, BindContext>
     {
         protected override BoundExpression? VisitCore(ASTNode node, Scope scope, BindContext ctx,
             BindEnvironment env, TypeSymbol? expectedType)
         {
             return PathFacility.BindPath((PathExpressionASTNode)node, scope, ctx, env,
-                forAssignment: false);
+                forAssignment: false, expectedType);
         }
     }
 
@@ -42,6 +44,43 @@ namespace LatteCompiler
             return ApplyNarrowing(node, bound, key, flow);
         }
 
+        // 可变参数体内视角类型（S9d 修正，BIL §7.1；PathVisitors 首段参数
+        // 与 CallVisitors 调用链头共用同一包装）：位置包 = Array\<元素类型\>
+        // （与 .array<.any> 装箱往返自洽）；具名包 =
+        // Array\<Pair\<String, 元素类型\>\>——§7.1 ABI 是
+        // .array<.pair<.string, .any>>（名+值对序列），体内元素访问必须
+        // 看到 Pair（元素 = core::Pair 构造，名 String + 值 T，名字信息
+        // 不丢失）。core::Pair 缺席（无 stdlib 的测试驱动）时具名包降级
+        // Array\<元素类型\>（P4 发射不依赖本视角，不阻断编译）
+        public static SemanticSymbol VariadicParameterViewType(ParameterSymbol parameter,
+            BindEnvironment env)
+        {
+            if (parameter.IsNamedVariadic)
+            {
+                var pairDefinition = FindCorePairDefinition(env);
+                if (pairDefinition != null)
+                {
+                    var pairType = env.Unit.Symbols.GetConstructedType(pairDefinition,
+                        env.B.String, parameter.Type!);
+                    return env.Unit.Symbols.GetConstructedType(env.B.ArrayDefinition, pairType);
+                }
+            }
+            return parameter.IsVariadic || parameter.IsNamedVariadic
+                ? env.Unit.Symbols.GetConstructedType(env.B.ArrayDefinition, parameter.Type!)
+                : parameter.Type!;
+        }
+
+        // core::Pair 定义查找（.bootstrap.latte 自举提供，按「名 + 泛型
+        // 元数」查询；与 DeclarationVisitors.FindCorePairDefinition 同一
+        // 查询——具名包体内视角缺失时降级而非诊断，故不共享带诊断版本）
+        private static TypeSymbol? FindCorePairDefinition(BindEnvironment env)
+        {
+            var core = env.Unit.Symbols.GlobalNamespace.ChildNamespaces
+                .FirstOrDefault(n => n.Name == "core");
+            return core?.Types.FirstOrDefault(t => t.Name == "Pair"
+                && t.GenericParameters.Count == 2);
+        }
+
         // 赋值目标绑定入口（ExpressionStatementVisitor 专用）：
         // 定义而非「使用」——符号引用不经 unassigned 检查
         public static BoundExpression? VisitForAssignment(PathExpressionASTNode node, Scope scope,
@@ -50,14 +89,16 @@ namespace LatteCompiler
             return BindPath(node, scope, ctx, env, forAssignment: true);
         }
 
-        // 路径绑定核心（PathVisitor 与 VisitForAssignment 共用）
+        // 路径绑定核心（PathVisitor 与 VisitForAssignment 共用）；
+        // expectedType 只下传到表达式底座的参数化 enum case 特判（S11）
         public static BoundExpression? BindPath(PathExpressionASTNode node, Scope scope,
-            BindContext ctx, BindEnvironment env, bool forAssignment)
+            BindContext ctx, BindEnvironment env, bool forAssignment,
+            TypeSymbol? expectedType = null)
         {
             // 表达式底座（S8c：(a+b).c / new X().c / 字面量.foo）
             if (node.Head.Expression != null)
             {
-                return BindExpressionBasePath(node, scope, ctx, env, forAssignment);
+                return BindExpressionBasePath(node, scope, ctx, env, forAssignment, expectedType);
             }
             // this 首段（S7c-2）：值位置 this 或实例链起点
             if (node.Head.Name == "this")
@@ -124,10 +165,16 @@ namespace LatteCompiler
             else
             {
                 // value 别名（S8e，SYNTAX §9.4.1）：backing 形态访问器体内
-                // 裸名 value 即 backing 字段——拦截在作用域链查找之前
+                // 裸名 value 即 backing 字段——拦截在作用域链查找之前。
+                // S9a 修复：backing 类型为泛型参数（`var item: T { get {
+                // return value } }` 的 T）同样放行——FieldType 契约已是
+                // SemanticSymbol；ErrorType 经 is TypeSymbol 判定照旧放行
+                // （毒化静默，解析失败 P2 已诊断）
                 if (headName == "value" && ctx.Accessor.Field != null
-                    && ctx.Accessor.Field.FieldType is TypeSymbol backingType
-                    && !SymbolLookup.ContainsGenericParameter(backingType))
+                    && ctx.Accessor.Field.FieldType is { } backingType
+                    && (backingType is GenericParameterSymbol
+                        || backingType is TypeSymbol
+                        && !SymbolLookup.ContainsGenericParameter(backingType)))
                 {
                     // getter 体内 value 只读：整体作赋值 place 时拦截
                     // （value.x = 1 这类深写仍按 backing 读取后字段写处理）
@@ -169,13 +216,10 @@ namespace LatteCompiler
                         if (headParameter != null)
                         {
                             // S9a 放行：参数类型可为泛型参数（引用相等身份）；
-                            // S9d：可变参数引用定型为 Array\<元素类型\>
-                            // （体内视角是包数组；P4 发射映射 .vargs.<名>）
-                            var paramType = headParameter.IsVariadic
-                                || headParameter.IsNamedVariadic
-                                ? (SemanticSymbol)env.Unit.Symbols.GetConstructedType(
-                                    env.B.ArrayDefinition, headParameter.Type!)
-                                : headParameter.Type!;
+                            // S9d：可变参数体内视角（位置包/具名包分型，见
+                            // VariadicParameterViewType；P4 发射映射
+                            // .vargs.<名>/.kwargs.<名>）
+                            var paramType = VariadicParameterViewType(headParameter, env);
                             headValue = new BoundValueReferenceExpression(node, headParameter,
                                 paramType);
                             if (!forAssignment)
@@ -316,14 +360,9 @@ namespace LatteCompiler
                     "(field type inference is not supported yet)");
                 return null;
             }
+            // S9a 放行：替换失败的泛型参数类型原样保留（定义级宿主场景）；
+            // 返回值恒非空（FieldType 非 null 上面已查，SymbolLookup 契约）
             var fieldType = SymbolLookup.SubstituteFieldType(field, ctx.Frame.Method.Owner);
-            // S9a 放行：替换失败的泛型参数类型原样保留（定义级宿主场景）
-            if (fieldType == null)
-            {
-                env.Error(node.Span, $"P3: field '{field.Name}' has no type annotation " +
-                    "(field type inference is not supported yet)");
-                return null;
-            }
             if (field.Owner != null && !field.IsStatic)
             {
                 // 实例字段（S7c-2）：当前上下文有 this（实例方法/ext 方法
@@ -334,7 +373,11 @@ namespace LatteCompiler
                     var access = new BoundFieldAccessExpression(node,
                         new BoundThisExpression(node, ctx.Frame.Method.Owner!), field, fieldType);
                     // S8b：this.f 收窄（const 字段 + 非 init 体内，经
-                    // ConstFieldRules.IsNarrowable 判定）
+                    // ConstFieldRules.IsNarrowable 判定）；赋值 place
+                    // （forAssignment）不包——目标被 SmartCast 包装会落赋值
+                    // switch 的 default，顶替应有的 const/可写诊断（与变量
+                    // 引用路径 !forAssignment 口径对齐）
+                    if (forAssignment) return access;
                     return ApplyNarrowing(node, access,
                         NarrowKey.TryFromFieldAccess(access.Receiver, field, ctx.Frame),
                         ctx.Flow);
@@ -343,8 +386,10 @@ namespace LatteCompiler
                     " ('this' is not available in a static context)");
                 return null;
             }
-            // 全局/静态字段：键 = 字段符号本身（const 全局字段收窄永不失效）
+            // 全局/静态字段：键 = 字段符号本身（const 全局字段收窄永不失效）；
+            // 赋值 place 不包收窄（同上口径）
             var reference = new BoundFieldReferenceExpression(node, field, fieldType);
+            if (forAssignment) return reference;
             return ApplyNarrowing(node, reference,
                 ConstFieldRules.IsNarrowable(field, ctx.Frame) ? NarrowKey.ForSymbol(field) : null,
                 ctx.Flow);
@@ -410,10 +455,26 @@ namespace LatteCompiler
 
         // 表达式底座路径（S8c）：(a+b).c / new X().c / 字面量.foo——底座
         // 表达式先绑定（内部路径经 PathVisitor 递归上色），再折叠首段
-        // 后缀、交实例链
+        // 后缀、交实例链。S11 特判：前导点 enum case 底座 + Call 后缀
+        //（`.Failed(404)`，SYNTAX §12.1）——参数化 case 调用，expectedType
+        // 提供 enum 上下文（与裸 `.Success` 同一通道）
         private static BoundExpression? BindExpressionBasePath(PathExpressionASTNode node,
-            Scope scope, BindContext ctx, BindEnvironment env, bool forAssignment)
+            Scope scope, BindContext ctx, BindEnvironment env, bool forAssignment,
+            TypeSymbol? expectedType = null)
         {
+            if (node.Head.Expression!.Expression is EnumCaseExpressionASTNode enumCaseBase
+                && node.Head.Suffixes.Count > 0
+                && node.Head.Suffixes[0].Kind == PathSuffixKind.Call)
+            {
+                var caseValue = EnumCaseFacility.BindParameterizedCall(node, enumCaseBase,
+                    node.Head.Suffixes[0].Arguments!, expectedType, scope, ctx, env);
+                if (caseValue == null) return null;
+                var foldedCase = FoldSuffixes(node, caseValue, node.Head.Suffixes, 1,
+                    forAssignment && node.Segments.Count == 0, scope, ctx, env);
+                if (foldedCase == null) return null;
+                return BindInstanceChain(node, foldedCase, node.Segments, scope, ctx, env,
+                    forAssignment);
+            }
             var receiver = ExpressionDispatcher.Visit(node.Head.Expression!.Expression, scope,
                 ctx, env);
             if (receiver == null) return null;
@@ -462,8 +523,8 @@ namespace LatteCompiler
                     }
                     next = BindInstanceSegment(segment, receiver, scope, ctx, env,
                         forAssignment && i == chainSegments.Count - 1);
-                    if (next == null) return null;
                 }
+                // SafeDot 段失败（BindSafeSegment 返回 null）在循环尾统一拦截
                 if (next == null) return null;
                 receiver = next;
             }
@@ -600,6 +661,13 @@ namespace LatteCompiler
                 return null;
             }
             var writeOp = candidates[0];
+            // 写模式形参宿主代入（S8c 修复）：定义级 setAtIndex 的形参类型
+            // 含宿主泛型参数时按 receiver 构造链代入（读模式经
+            // OverloadResolution 的 receiverType 同口径——
+            // Box\<T\>.setAtIndex(index, element: T) 在 Box\<i32\> 上
+            // element → i32）；candidates 非空 ⇒ receiver.Type 必为
+            // TypeSymbol（上方 FindInstanceOperators 判型查询）
+            var writeReceiver = (TypeSymbol)receiver.Type;
             // 写模式：恰一个索引实参（多参数索引非法的定稿诊断）
             if (suffix.Arguments.Count != 1)
             {
@@ -615,8 +683,11 @@ namespace LatteCompiler
                     $"'setAtIndex' has no parameter named '{argument.Name}'");
                 return null;
             }
-            // S9a 放行：索引形参类型可为泛型参数（引用相等身份）
-            var indexType = indexParameter.Type;
+            // S9a 放行：索引形参类型可为泛型参数（引用相等身份——代入后
+            // 仍可能是外层泛型参数）
+            var indexType = indexParameter.Type == null ? null
+                : SymbolLookup.SubstituteForReceiver(indexParameter.Type, writeOp,
+                    writeReceiver, env.Unit.Symbols);
             var index = ExpressionDispatcher.Visit(argument.Value.Expression, scope, ctx, env,
                 indexType as TypeSymbol);
             if (index == null) return null;
@@ -628,8 +699,9 @@ namespace LatteCompiler
                 return null;
             }
             // S9a 放行：元素形参类型可为泛型参数（引用相等身份）；形参类型
-            // 必非空（P2 已定型）
-            var elementType = writeOp.Parameters[1].Type!;
+            // 必非空（P2 已定型）；宿主代入同索引形参
+            var elementType = SymbolLookup.SubstituteForReceiver(writeOp.Parameters[1].Type!,
+                writeOp, writeReceiver, env.Unit.Symbols);
             return new BoundIndexExpression(node, receiver, index, writeOp, elementType);
         }
 
@@ -710,17 +782,15 @@ namespace LatteCompiler
             }
             // 泛型字段类型的最小替换（S7f 解构场景）：声明类型是宿主泛型
             // 参数时按 receiver 链上的构造类型取实参；receiver 定义级时
-            // 原样保留（S9a 放行——引用相等身份）
+            // 原样保留（S9a 放行——引用相等身份）；返回值恒非空
+            // （FieldType 非 null 上面已查，SymbolLookup 契约）
             var fieldType = SymbolLookup.SubstituteFieldType(field, receiverType);
-            if (fieldType == null)
-            {
-                env.Error(node.Span, $"P3: field '{field.Name}' has no type annotation " +
-                    "(field type inference is not supported yet)");
-                return null;
-            }
             var access = new BoundFieldAccessExpression(node, receiver, field, fieldType);
             // S8b：const 字段稳定链收窄（TryFromFieldAccess 含 IsNarrowable
-            // 判定；不稳定链返回 null 直通）
+            // 判定；不稳定链返回 null 直通）；赋值 place（forAssignment）
+            // 不包——目标被 SmartCast 包装会落赋值 switch 的 default，
+            // 顶替应有的 const/可写诊断（同 BindFieldReference 口径）
+            if (forAssignment) return access;
             return ApplyNarrowing(node, access,
                 NarrowKey.TryFromFieldAccess(receiver, field, ctx.Frame), ctx.Flow);
         }

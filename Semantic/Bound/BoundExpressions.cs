@@ -4,12 +4,12 @@ namespace LatteCompiler
 {
     // Bound 表达式节点（S5 最小集 + S7b 首批 + S7c-2 实例成员 + S7d switch
     // + S7e cast/seq + S7f 安全访问/空值回退 + S8a 类型谓词/typeOf
-    // + S8c 索引访问，SEMANTIC_ROADMAP）：
+    // + S8c 索引访问 + S11 enum case，SEMANTIC_ROADMAP）：
     // 字面量 / 值引用（局部变量与参数）/ 全局字段引用 / 二元与一元 intrinsic 运算 /
     // 直接调用（无重载）/ new 构造 / if 表达式 / 复合赋值 /
-    // this / 实例方法调用 / 实例字段访问 / switch 表达式 / cast / seq 表达式 /
-    // 安全访问 `?.`（含占位叶子）/ if? 空值回退 / is·supers·with / typeOf /
-    // 索引访问（getAtIndex·setAtIndex）。
+    // this / 实例方法调用 / 实例字段访问 / enum case 构造 / switch 表达式 / cast /
+    // seq 表达式 / 安全访问 `?.`（含占位叶子）/ if? 空值回退 / is·supers·with·is .Case /
+    // typeOf / 索引访问（getAtIndex·setAtIndex）。
     // 字面量值不冗余存储——经 Syntax（LiteralExpressionASTNode.Literal）取。
 
     // 字面量（整/浮点/字符串/字符/bool/null；Type 由 P3 按字面量种类与上下文定型）
@@ -230,6 +230,26 @@ namespace LatteCompiler
         }
     }
 
+    // enum case 构造（S11，SYNTAX §12.1）：固定 case（Arguments 空）与参数化
+    // case（Arguments = 洞实参，规范序 = 洞签名序 = init 参数序——调用点乱序
+    // 具名实参已按洞名归位）。Type = 宿主 enum（定义级符号——泛型 enum 的
+    // case 本阶段归口，无构造形态）。固定实参在声明点模板绑定时已定
+    //（BindEnvironment 缓存），本节点只携带调用点洞实参；P4b 发射
+    // §8.5 case 构造与判别比较（§12.3 type.is.case）消费
+    public sealed class BoundEnumCaseExpression : BoundExpression
+    {
+        public EnumCaseSymbol Case { get; }
+        // 洞实参（规范序；固定 case 为空列表）
+        public IReadOnlyList<BoundExpression> Arguments { get; }
+
+        public BoundEnumCaseExpression(ASTNode syntax, EnumCaseSymbol caseSymbol,
+            IReadOnlyList<BoundExpression> arguments) : base(syntax, caseSymbol.Owner)
+        {
+            Case = caseSymbol;
+            Arguments = arguments;
+        }
+    }
+
     // switch 表达式（S7d，SYNTAX §7.2）：分支体（含 default）是值块（取值
     // 规则同 if 表达式，标签同源 Label ?? "_"）。Type = 全分支统一产值类型
     // （纯穿透分支不参与统一，P3 已查）
@@ -395,40 +415,53 @@ namespace LatteCompiler
         }
     }
 
-    // 类型检查种类（S8a，SYNTAX §3.5/§3.7 的三个类型谓词）
+    // 类型检查种类（S8a，SYNTAX §3.5/§3.7 的三个类型谓词；S11 增补 §12.3）
     public enum BoundTypeCheckKind
     {
         Is,      // obj is T：obj 运行时类型为 T 或其子类
         Supers,  // obj supers T：obj 运行时类型为 T 的基类
         With,    // obj with W：obj 运行时类型被 wrapper W 修饰
+        IsCase,  // obj is .Case（S11，SYNTAX §12.3）：enum 隐藏判别字段比较
     }
 
     // is / supers / with（S8a，SYNTAX §3.5/§3.7；BIL §12.3 直接对应）：
     // 右侧双形态互斥（构造时恰一个非 null）——TargetType = 类型引用静态形态，
     // TargetValue = Type\<T\> 值动态形态（其 Type 为 Type\<T\> 构造类型）。
     // 结果恒 bool（Type 由 P3 定型传入）；不做静态不可能性拒绝
-    // （12 is String 不报错，运行时判定）
+    // （12 is String 不报错，运行时判定）。
+    // S11 增补第三形态（SYNTAX §12.3）：Kind == IsCase 时 Case 承载匹配
+    // 的 case 符号（TargetType/TargetValue 均 null）——只查隐藏判别字段，
+    // 不比较 payload，也不改变静态类型；smart cast 收窄事实只匹配
+    // 「Kind: Is, TargetType: { }」（ConditionFactsExtractor），IsCase
+    // 天然不触发收窄（§12.3 定稿口径，BIL §12.3 type.is.case 对应）
     public sealed class BoundTypeCheckExpression : BoundExpression
     {
         public BoundTypeCheckKind Kind { get; }
         public BoundExpression Operand { get; }
         public SemanticSymbol? TargetType { get; }
         public BoundExpression? TargetValue { get; }
+        // enum case 判别匹配的 case 符号（S11；仅 Kind == IsCase 时非 null）
+        public EnumCaseSymbol? Case { get; }
 
         public BoundTypeCheckExpression(ASTNode syntax, BoundTypeCheckKind kind,
             BoundExpression operand, SemanticSymbol? targetType, BoundExpression? targetValue,
-            SemanticSymbol type) : base(syntax, type)
+            SemanticSymbol type, EnumCaseSymbol? caseSymbol = null) : base(syntax, type)
         {
-            // 双形态互斥不变量：静态/动态恰居其一
-            if ((targetType == null) == (targetValue == null))
+            // 目标形态互斥不变量：IsCase 恰带 Case（双槽均 null）；
+            // 其余 Kind 静态/动态双形态恰居其一
+            if (kind == BoundTypeCheckKind.IsCase
+                ? caseSymbol == null || targetType != null || targetValue != null
+                : (targetType == null) == (targetValue == null))
             {
                 throw new CompilerInternalException(
-                    "BoundTypeCheckExpression 的 TargetType/TargetValue 必须恰一个非 null");
+                    "BoundTypeCheckExpression 目标形态不合法（IsCase 须恰带 Case；" +
+                    "其余 Kind 的 TargetType/TargetValue 必须恰一个非 null）");
             }
             Kind = kind;
             Operand = operand;
             TargetType = targetType;
             TargetValue = targetValue;
+            Case = caseSymbol;
         }
     }
 

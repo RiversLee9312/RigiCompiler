@@ -139,6 +139,18 @@ namespace LatteCompiler.Tests
                 () => TestHarness.ParseRoot("var x: i32 { get(v: _) { return v } }"),
                 "Expected 'value' or '_' as accessor parameter");
 
+            // 已提交访问器之后的游离修饰符：priv 无 get/set 归属，不得静默吞掉
+            TestHarness.CheckParseError(
+                "var x: i32 { pub get\\n priv\\n }（尾随游离修饰符）",
+                () => TestHarness.ParseRoot("var x: i32 {\n    pub get\n    priv\n}"),
+                "Expected 'get' or 'set' after accessor modifier");
+
+            // 块内只有修饰符、没有任何 get/set
+            TestHarness.CheckParseError(
+                "var x: i32 { priv }（只有修饰符）",
+                () => TestHarness.ParseRoot("var x: i32 { priv }"),
+                "Expected 'get' or 'set' after accessor modifier");
+
             TestHarness.Blank();
         }
 

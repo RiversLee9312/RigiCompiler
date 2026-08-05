@@ -56,6 +56,7 @@ namespace LatteCompiler
     // （reportErrors: false 不落袋试探），失败再按值绑定；结果恒 bool。
     // 不做静态不可能性拒绝（12 is String 不报错，运行时判定）。
     // 自旧 BindSession.BindTypeCheck 迁移，行为不变。
+    // S11 增补第三右侧形态：is .Case 前导点 enum case 判别匹配（§12.3）。
     internal sealed class TypeCheckVisitor : ExpressionVisitor<TypeCheckVisitor, BindContext>
     {
         protected override BoundExpression? VisitCore(ASTNode node, Scope scope, BindContext ctx,
@@ -63,11 +64,35 @@ namespace LatteCompiler
         {
             var check = (TypeCheckExpressionASTNode)node;
             var operand = ExpressionDispatcher.Visit(check.Object.Expression, scope, ctx, env);
-            // is .Case（前导点 enum case 匹配）归 S11
+            // is .Case（S11，SYNTAX §12.3）：前导点 enum case 判别匹配——
+            // 只查隐藏判别字段，不比较 payload，也不改变值的静态类型
+            // （Kind = IsCase + Case 第三槽；不触发 smart cast——收窄事实
+            // 只匹配静态 Is 形态，ConditionFactsExtractor）
             if (check.TargetCase != null)
             {
-                env.Error(check.Span, "P3: enum case is pattern is not supported yet (S11)");
-                return null;
+                if (operand == null || operand.Type is ErrorTypeSymbol) return null;
+                // 操作数静态类型（定义级）必须是 enum struct；泛型构造归口
+                //（S11 范围决策——声明侧模板绑定同步跳过）
+                if (operand.Type is TypeSymbol { ConstructedFrom: not null } constructedOperand
+                    && constructedOperand.ConstructedFrom.Kind == TypeKind.EnumStruct)
+                {
+                    env.Error(check.Span, "P3: generic enum cases are not supported yet (S11)");
+                    return null;
+                }
+                if (operand.Type is not TypeSymbol operandType
+                    || operandType.Kind != TypeKind.EnumStruct)
+                {
+                    env.Error(check.Span, $"Left operand of 'is .Case' must be an enum struct " +
+                        $"type (got '{BoundAnalysis.TypeDisplay(operand.Type)}')");
+                    return null;
+                }
+                // case 名解析（模板绑定未落定不拦截——判别比较不消费模板
+                // 产物；声明点诊断已报，不二次报）
+                var targetCase = EnumCaseFacility.FindCase(operandType, check.TargetCase.CaseName,
+                    check.TargetCase.Span ?? check.Span, env);
+                if (targetCase == null) return null;
+                return new BoundTypeCheckExpression(node, BoundTypeCheckKind.IsCase, operand,
+                    null, null, env.B.Bool, targetCase);
             }
             var kind = check.Operator switch
             {

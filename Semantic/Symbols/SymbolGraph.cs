@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Runtime.CompilerServices;
 
 namespace LatteCompiler
@@ -77,9 +78,58 @@ namespace LatteCompiler
             if (!constructedTypes.TryGetValue(key, out var constructed))
             {
                 constructed = new TypeSymbol(definition, args);
+                // 先入表再回填 BaseType：Substitute 递归驻留回到本键时（如
+                // `class A\<T\> : B\<A\<T\>>`）命中半成品实例，避免无限重入
                 constructedTypes.Add(key, constructed);
+                // 基类按定义 → 构造代入（Substitute 对非泛型基类原样返回）。
+                // 注意：InheritanceResolver 完成前驻留的构造类型拿到的是定义的
+                // 默认基类快照（定义显式基类尚未解析）——由 P2 继承解析完成后的
+                // BackfillConstructedBaseTypes 统一重算；此后（含 P3/P4）新驻留
+                // 的构造类型创建即正确。定义基类恒为 TypeSymbol（继承解析已校验），
+                // 代入结果强转安全
+                constructed.BaseType = (TypeSymbol?)Substitute(definition.BaseType, definition, constructed);
             }
             return constructed;
+        }
+
+        // P2 继承解析完成后的统一回填（DeclarationResolver 在 InheritanceResolver
+        // 之后调用一次）：重算全部已驻留构造类型的 BaseType 为
+        // Substitute(定义基类, 定义, 构造实例)——同时修复「定义基类未解析时的
+        // 陈旧快照」与「引用定义泛型参数的未代入快照」（如 Sub\<i32\>.BaseType
+        // 应为 Base\<i32\> 而非 Base\<T-sub\>）。
+        internal void BackfillConstructedBaseTypes()
+        {
+            // 快照遍历：Substitute 可能驻留新构造类型（新实例创建即代入正确，
+            // 无需二次回填），先复制避免遍历时改表
+            foreach (var constructed in constructedTypes.Values.ToArray())
+            {
+                var definition = constructed.ConstructedFrom!;
+                constructed.BaseType = (TypeSymbol?)Substitute(definition.BaseType, definition, constructed);
+            }
+        }
+
+        // 泛型实参代入：类型中的泛型参数按构造类型的实参列表替换（递归；
+        // 嵌套构造逐实参代入后经驻留入口重建）。非泛型参数/非构造类型原样返回。
+        internal SemanticSymbol? Substitute(SemanticSymbol? type, TypeSymbol definition,
+            TypeSymbol constructed)
+        {
+            if (type == null || ReferenceEquals(definition, constructed)) return type;
+            if (type is GenericParameterSymbol gp)
+            {
+                var index = definition.GenericParameters.IndexOf(gp);
+                return index >= 0 ? constructed.TypeArguments![index] : type;
+            }
+            if (type is TypeSymbol { ConstructedFrom: not null } inner)
+            {
+                var innerDef = inner.ConstructedFrom!;
+                var args = new SemanticSymbol[inner.TypeArguments!.Count];
+                for (int i = 0; i < args.Length; i++)
+                {
+                    args[i] = Substitute(inner.TypeArguments[i], definition, constructed)!;
+                }
+                return GetConstructedType(innerDef, args);
+            }
+            return type;
         }
 
         // 驻留键：定义与实参一律引用相等（引用相等即身份相等，§4.2）

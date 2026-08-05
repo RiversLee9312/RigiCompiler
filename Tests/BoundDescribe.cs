@@ -23,6 +23,8 @@ namespace LatteCompiler.Tests
     ///   NullFallback(l, r, T)（S7f，if? 空值回退）
     ///   Is(e, T)  Supers(e, T)  With(e, T)（S8a；动态形态目标带 dyn 前缀：
     ///   Is(e, dyn t)；结果恒 bool 不打印）
+    ///   IsCase(e, RequestResult.Failed)（S11；§12.3 判别匹配）
+    ///   EnumCase(RequestResult.Success, [])  EnumCase(RequestResult.Failed, [args])（S11）
     ///   TypeOf(e, RT)（值形态）  TypeOf(type T, RT)（类型形态）（S8a；RT = Type\<T\>）
     /// 格式约定（语句）：
     ///   Decl(x, i32, = init)  ExprStmt(e)  CallStmt(name, [args])  Assign(t, v)  Return(v)  Return
@@ -45,7 +47,7 @@ namespace LatteCompiler.Tests
     {
         public static string Body(BoundFunctionBody body)
         {
-            var locals = string.Join(", ", body.Locals.Select(l => $"{l.Name}: {TypeShort(l.Type)}"));
+            var locals = string.Join(", ", body.Locals.Select(l => $"{l.Name}: {TypeShort.Of(l.Type)}"));
             return $"Body({body.Method.Name}, [{locals}], {Block(body.Body)})";
         }
 
@@ -60,7 +62,7 @@ namespace LatteCompiler.Tests
             {
                 BoundBlock block => Block(block),
                 BoundLocalDeclarationStatement decl =>
-                    $"Decl({decl.Local.Name}, {TypeShort(decl.Local.Type)}" +
+                    $"Decl({decl.Local.Name}, {TypeShort.Of(decl.Local.Type)}" +
                     $"{(decl.Initializer != null ? $", = {Expr(decl.Initializer)}" : "")})",
                 BoundExpressionStatement exprStmt => $"ExprStmt({Expr(exprStmt.Expression)})",
                 BoundCallStatement call => call.Receiver == null
@@ -97,7 +99,7 @@ namespace LatteCompiler.Tests
                 BoundSeqExitStatement seqExit => $"SeqExit(@{seqExit.Target.Label})",
                 // S7f 解构声明：Destructuring([a: String ← key; b: i32 ← value], init)
                 BoundDestructuringDeclarationStatement destructuring =>
-                    $"Destructuring([{string.Join("; ", destructuring.Entries.Select(e => $"{e.Local.Name}: {TypeShort(e.Local.Type)} ← {e.Field.Name}"))}], {Expr(destructuring.Initializer)})",
+                    $"Destructuring([{string.Join("; ", destructuring.Entries.Select(e => $"{e.Local.Name}: {TypeShort.Of(e.Local.Type)} ← {e.Field.Name}"))}], {Expr(destructuring.Initializer)})",
                 _ => $"<{stmt.GetType().Name}>",
             };
         }
@@ -108,8 +110,8 @@ namespace LatteCompiler.Tests
         {
             var catches = string.Join("; ", tryStmt.Catches.Select(c =>
                 c.Variable != null
-                    ? $"Catch({c.Variable.Name}, {TypeShort(c.ExceptionType)}, {Block(c.Body)})"
-                    : $"Catch({TypeShort(c.ExceptionType)}, {Block(c.Body)})"));
+                    ? $"Catch({c.Variable.Name}, {TypeShort.Of(c.ExceptionType)}, {Block(c.Body)})"
+                    : $"Catch({TypeShort.Of(c.ExceptionType)}, {Block(c.Body)})"));
             if (tryStmt.FinallyBlock == null)
             {
                 return $"Try({Block(tryStmt.TryBlock)}, [{catches}])";
@@ -124,7 +126,7 @@ namespace LatteCompiler.Tests
         // 纯穿透（无本块产值）类型显式 -；volatile（S7e seq）带 volatile 标记
         public static string ValueBlock(BoundValueBlock valueBlock)
         {
-            var type = valueBlock.ValueType != null ? TypeShort(valueBlock.ValueType) : "-";
+            var type = valueBlock.ValueType != null ? TypeShort.Of(valueBlock.ValueType) : "-";
             var implicitMark = valueBlock.IsImplicitValue ? ", implicit" : "";
             var volatileMark = valueBlock.IsVolatile ? ", volatile" : "";
             return $"ValueBlock({valueBlock.Label}, {type}{implicitMark}{volatileMark}, " +
@@ -139,68 +141,76 @@ namespace LatteCompiler.Tests
                 BoundLiteralExpression literal => Literal(literal),
                 BoundValueReferenceExpression valueRef => valueRef.Symbol switch
                 {
-                    LocalSymbol local => $"Local({local.Name},{TypeShort(valueRef.Type)})",
-                    ParameterSymbol param => $"Param({param.Name},{TypeShort(valueRef.Type)})",
+                    LocalSymbol local => $"Local({local.Name},{TypeShort.Of(valueRef.Type)})",
+                    ParameterSymbol param => $"Param({param.Name},{TypeShort.Of(valueRef.Type)})",
                     _ => $"<{valueRef.Symbol.GetType().Name}>",
                 },
                 BoundFieldReferenceExpression fieldRef =>
-                    $"Field({fieldRef.Field.Name},{TypeShort(fieldRef.Type)})",
+                    $"Field({fieldRef.Field.Name},{TypeShort.Of(fieldRef.Type)})",
                 BoundBinaryExpression binary =>
-                    $"Binary({binary.Op}, {Expr(binary.Left)}, {Expr(binary.Right)}, {TypeShort(binary.Type)})",
+                    $"Binary({binary.Op}, {Expr(binary.Left)}, {Expr(binary.Right)}, {TypeShort.Of(binary.Type)})",
                 BoundUnaryExpression unary =>
-                    $"Unary({unary.Op}, {Expr(unary.Operand)}, {TypeShort(unary.Type)})",
+                    $"Unary({unary.Op}, {Expr(unary.Operand)}, {TypeShort.Of(unary.Type)})",
                 BoundCallExpression call =>
                     $"Call({call.Method.Name}, [{string.Join(", ", call.Arguments.Select(Expr))}], " +
-                    $"{TypeShort(call.Type)})",
+                    $"{TypeShort.Of(call.Type)})",
                 BoundNewExpression newExpr =>
-                    $"New({TypeShort(newExpr.Type)}{(newExpr.Init != null ? ", init" : "")}, " +
+                    $"New({TypeShort.Of(newExpr.Type)}{(newExpr.Init != null ? ", init" : "")}, " +
                     $"[{string.Join(", ", newExpr.Arguments.Select(Expr))}])",
                 BoundIfExpression ifExpr =>
                     $"IfExpr({Expr(ifExpr.Condition)}, {ValueBlock(ifExpr.TrueBranch)}, " +
-                    $"{ValueBlock(ifExpr.FalseBranch)}, {TypeShort(ifExpr.Type)})",
+                    $"{ValueBlock(ifExpr.FalseBranch)}, {TypeShort.Of(ifExpr.Type)})",
                 BoundCompoundAssignmentExpression compound =>
                     $"CompoundAssign({compound.Op}, {Expr(compound.Target)}, " +
-                    $"{Expr(compound.Value)}, {TypeShort(compound.Type)})",
-                BoundThisExpression => $"This({TypeShort(expr.Type)})",
+                    $"{Expr(compound.Value)}, {TypeShort.Of(compound.Type)})",
+                BoundThisExpression => $"This({TypeShort.Of(expr.Type)})",
                 BoundInstanceCallExpression instCall =>
                     $"InstCall({instCall.Method.Name}, {Expr(instCall.Receiver)}, " +
                     $"[{string.Join(", ", instCall.Arguments.Select(Expr))}], " +
-                    $"{TypeShort(instCall.Type)})",
+                    $"{TypeShort.Of(instCall.Type)})",
                 BoundFieldAccessExpression fieldAccess =>
                     $"InstField({fieldAccess.Field.Name}, {Expr(fieldAccess.Receiver)}, " +
-                    $"{TypeShort(fieldAccess.Type)})",
+                    $"{TypeShort.Of(fieldAccess.Type)})",
                 // S8c：索引访问（Operator 符号不打印——黄金描述聚焦形态与定型）
                 BoundIndexExpression index =>
-                    $"Index({Expr(index.Receiver)}, {Expr(index.Index)}, {TypeShort(index.Type)})",
+                    $"Index({Expr(index.Receiver)}, {Expr(index.Index)}, {TypeShort.Of(index.Type)})",
+                // S11：enum case 构造（类型恒为宿主 enum，不重复打印）
+                BoundEnumCaseExpression enumCase =>
+                    $"EnumCase({TypeShort.Of(enumCase.Case.Owner)}.{enumCase.Case.Name}, " +
+                    $"[{string.Join(", ", enumCase.Arguments.Select(Expr))}])",
                 BoundSwitchExpression switchExpr =>
-                    $"SwitchExpr({Expr(switchExpr.Selector)}, [{string.Join("; ", switchExpr.Cases.Select(c => $"{(c.IsPattern ? "CaseP" : "Case")}({Expr(c.Match)}, {ValueBlock(c.Body)})"))}], {ValueBlock(switchExpr.DefaultBody)}, {TypeShort(switchExpr.Type)})",
+                    $"SwitchExpr({Expr(switchExpr.Selector)}, [{string.Join("; ", switchExpr.Cases.Select(c => $"{(c.IsPattern ? "CaseP" : "Case")}({Expr(c.Match)}, {ValueBlock(c.Body)})"))}], {ValueBlock(switchExpr.DefaultBody)}, {TypeShort.Of(switchExpr.Type)})",
                 BoundSwitchPlaceholderExpression placeholder =>
-                    $"Placeholder({TypeShort(placeholder.Type)})",
+                    $"Placeholder({TypeShort.Of(placeholder.Type)})",
                 BoundCastExpression cast =>
                     $"{(cast.IsSafe ? "SafeCast" : "Cast")}({Expr(cast.Source)}, " +
-                    $"{TypeShort(cast.TargetType)})",
+                    $"{TypeShort.Of(cast.TargetType)})",
                 // S8b：smart cast 标记（Type = NarrowedType）
                 BoundSmartCastExpression smartCast =>
-                    $"SmartCast({Expr(smartCast.Operand)}, {TypeShort(smartCast.NarrowedType)})",
+                    $"SmartCast({Expr(smartCast.Operand)}, {TypeShort.Of(smartCast.NarrowedType)})",
                 BoundSeqExpression seqExpr => $"SeqExpr({ValueBlock(seqExpr.Body)})",
                 // S7f：安全访问（占位叶子打 SafeReceiver；结果类型 P3 定型）
                 BoundSafeAccessExpression safeAccess =>
                     $"SafeAccess({Expr(safeAccess.Receiver)}, {Expr(safeAccess.Access)}, " +
-                    $"{TypeShort(safeAccess.Type)})",
+                    $"{TypeShort.Of(safeAccess.Type)})",
                 BoundSafeAccessReceiverExpression safeReceiver =>
-                    $"SafeReceiver({TypeShort(safeReceiver.Type)})",
+                    $"SafeReceiver({TypeShort.Of(safeReceiver.Type)})",
                 BoundNullFallbackExpression nullFallback =>
                     $"NullFallback({Expr(nullFallback.Left)}, {Expr(nullFallback.Right)}, " +
-                    $"{TypeShort(nullFallback.Type)})",
+                    $"{TypeShort.Of(nullFallback.Type)})",
                 // S8a：is/supers/with（Kind 枚举名即显示名；动态形态目标带
-                // dyn 前缀）与 typeOf（类型形态目标带 type 前缀，RT 恒打印）
+                // dyn 前缀）与 typeOf（类型形态目标带 type 前缀，RT 恒打印）；
+                // S11：IsCase 打印 case 符号（§12.3 判别匹配）
                 BoundTypeCheckExpression typeCheck =>
-                    $"{typeCheck.Kind}({Expr(typeCheck.Operand)}, " +
-                    $"{(typeCheck.TargetType != null ? TypeShort(typeCheck.TargetType) : "dyn " + Expr(typeCheck.TargetValue))})",
+                    typeCheck.Kind == BoundTypeCheckKind.IsCase
+                        ? $"IsCase({Expr(typeCheck.Operand)}, " +
+                            $"{TypeShort.Of(typeCheck.Case!.Owner)}.{typeCheck.Case.Name})"
+                        : $"{typeCheck.Kind}({Expr(typeCheck.Operand)}, " +
+                            $"{(typeCheck.TargetType != null ? TypeShort.Of(typeCheck.TargetType) : "dyn " + Expr(typeCheck.TargetValue))})",
                 BoundTypeOfExpression typeOf =>
                     typeOf.TargetType != null
-                        ? $"TypeOf(type {TypeShort(typeOf.TargetType)}, {TypeShort(typeOf.Type)})"
-                        : $"TypeOf({Expr(typeOf.Operand)}, {TypeShort(typeOf.Type)})",
+                        ? $"TypeOf(type {TypeShort.Of(typeOf.TargetType)}, {TypeShort.Of(typeOf.Type)})"
+                        : $"TypeOf({Expr(typeOf.Operand)}, {TypeShort.Of(typeOf.Type)})",
                 _ => $"<{expr.GetType().Name}>",
             };
         }
@@ -208,7 +218,7 @@ namespace LatteCompiler.Tests
         // 字面量：值经 Syntax 回指取，类型取定型结果
         private static string Literal(BoundLiteralExpression literal)
         {
-            var type = TypeShort(literal.Type);
+            var type = TypeShort.Of(literal.Type);
             return ((LiteralExpressionASTNode)literal.Syntax).Literal switch
             {
                 IntLiteralASTNode i => $"Int({i.Value},{type})",
@@ -219,23 +229,6 @@ namespace LatteCompiler.Tests
                 NullLiteralASTNode => $"Null({type})",
                 var other => $"<{other.GetType().Name}>",
             };
-        }
-
-        // 类型短名：Nullable\<T\> 显示为 T?，其余构造类型 Name<args> 递归；
-        // null = .breakid 局部（P4a 合成物，Bound 层不出现，签名与
-        // LoweredDescribe 对齐）；S9 放宽为 SemanticSymbol：泛型参数显示其名
-        private static string TypeShort(SemanticSymbol? type)
-        {
-            if (type == null) return ".breakid";
-            if (type is not TypeSymbol symbol) return type.Name;
-            if (symbol.ConstructedFrom == null) return symbol.Name;
-            if (symbol.Name == "Nullable" && symbol.TypeArguments!.Count == 1
-                && symbol.TypeArguments[0] is TypeSymbol element)
-            {
-                return TypeShort(element) + "?";
-            }
-            return symbol.Name + "<" + string.Join(", ",
-                symbol.TypeArguments!.Select(a => a is TypeSymbol t ? TypeShort(t) : a.Name)) + ">";
         }
     }
 }

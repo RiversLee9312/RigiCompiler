@@ -8,16 +8,18 @@ namespace LatteCompiler
     // （shared class / shared rich struct / wrapper、非 rich ValueType、
     // T 共享安全的 Nullable\<T>，TypeSymbol.IsSharedSafe）。
     //
-    //   - CheckFunctionBody：调用点闸门 1（receiver）/ 2（参数实际类型）——
-    //     函数体绑完后对 BoundTree 后置遍历（单一落点覆盖全部调用形态：
-    //     全局/静态调用、实例调用、语句 void 调用；BoundCallStatement 是
-    //     void 调用的语句形态，同查）。闸门 5（泛型实参实际类型）归 S9——
-    //     泛型调用使用侧尚未落地，无实参可查。
+    //   - CheckFunctionBody：调用点闸门 1（receiver）/ 2（参数实际类型）/
+    //     5（泛型实参实际类型，S9f 落地——S9d-2 泛型可变包的推导类型经
+    //     GenericPack 槽同查）——函数体绑完后对 BoundTree 后置遍历（单一
+    //     落点覆盖全部调用形态：全局/静态调用、实例调用、语句 void 调用；
+    //     BoundCallStatement 是 void 调用的语句形态，同查）。闸门 2 对
+    //     可变参数包按 §4.5 判定「展开后的每一个实参类型」——包自身
+    //     的 Array\<Any\> 打包形态不参与判定。
     //   - CheckLambdaCaptures：闸门 4（async lambda 捕获变量）——lambda
     //     绑定归 S13，此处做 AST 级捕获扫描（详见方法注释）。
     // 声明侧闸门 2/3/5 在 P2 AsyncGateChecker（"在 async 声明处检查
     // 2、3、5 的声明类型"）；"在 async 调用点检查 1、2、5 的实际类型"
-    // 中 1、2 落本文件。
+    // 中 1、2、5 落本文件。
     internal static class AsyncGates
     {
         public static void CheckFunctionBody(BoundBlock body, BindEnvironment env)
@@ -48,7 +50,7 @@ namespace LatteCompiler
                     break;
                 case BoundCallStatement call:
                     CheckAsyncCall(call.Method, call.Receiver, call.Arguments, call.TypeArguments,
-                        statement.Syntax, env);
+                        call.GenericPack, statement.Syntax, env);
                     foreach (var argument in call.Arguments) WalkExpression(argument, env);
                     if (call.Receiver != null) WalkExpression(call.Receiver, env);
                     break;
@@ -121,12 +123,13 @@ namespace LatteCompiler
             {
                 case BoundCallExpression call:
                     CheckAsyncCall(call.Method, null, call.Arguments, call.TypeArguments,
-                        expression.Syntax, env);
+                        call.GenericPack, expression.Syntax, env);
                     foreach (var argument in call.Arguments) WalkExpression(argument, env);
                     break;
                 case BoundInstanceCallExpression instanceCall:
                     CheckAsyncCall(instanceCall.Method, instanceCall.Receiver,
-                        instanceCall.Arguments, instanceCall.TypeArguments, expression.Syntax, env);
+                        instanceCall.Arguments, instanceCall.TypeArguments,
+                        instanceCall.GenericPack, expression.Syntax, env);
                     WalkExpression(instanceCall.Receiver, env);
                     foreach (var argument in instanceCall.Arguments) WalkExpression(argument, env);
                     break;
@@ -158,6 +161,11 @@ namespace LatteCompiler
                 case BoundIndexExpression index:
                     WalkExpression(index.Receiver, env);
                     WalkExpression(index.Index, env);
+                    break;
+                // S11：enum case 构造（洞实参递归；case 符号无调用语义，
+                // 闸门无涉）
+                case BoundEnumCaseExpression enumCase:
+                    foreach (var argument in enumCase.Arguments) WalkExpression(argument, env);
                     break;
                 case BoundSwitchExpression switchExpression:
                     WalkExpression(switchExpression.Selector, env);
@@ -216,10 +224,12 @@ namespace LatteCompiler
 
         // 闸门 1 + 2 + 5：async 方法调用点的 receiver、全部实际实参类型与
         // 泛型实参（S9f 解开 #23④：M69 后 BoundCall 携带 TypeArguments，
-        // 闸门 5 调用点检查落地——泛型实参的 typeid 与实际值一同跨边界）
+        // 闸门 5 调用点检查落地——泛型实参的 typeid 与实际值一同跨边界；
+        // S9d-2 泛型可变包的推导类型不进 TypeArguments，由 GenericPack 槽
+        // 承载，本方法一并判定）
         private static void CheckAsyncCall(MethodSymbol method, BoundExpression? receiver,
             IReadOnlyList<BoundExpression> arguments, IReadOnlyList<SemanticSymbol> typeArguments,
-            ASTNode syntax, BindEnvironment env)
+            BoundGenericVarArgsArgument? genericPack, ASTNode syntax, BindEnvironment env)
         {
             if (!method.IsAsync) return;
             // S9a：泛型参数类型判型后跳过（实参实际类型检查归 S9f 闸门 5）
@@ -232,27 +242,69 @@ namespace LatteCompiler
             }
             foreach (var argument in arguments)
             {
-                if (argument.Type is ErrorTypeSymbol) continue;
-                if (argument.Type is not TypeSymbol argumentType
-                    || !argumentType.IsSharedSafe())
+                // 可变参数包（S9d，规范参数序末元素）：闸门 2 按 SYNTAX §4.5
+                // 判定「可变参数展开后的每一个实参类型」——包自身定型为
+                // Array\<Any\>（BIL 传参打包形态，非跨界值形态），整体判定
+                // 会对一切带包调用（含空包）误报
+                if (argument is BoundVarArgsArgument pack)
                 {
-                    env.Error(syntax.Span,
-                        $"argument of async function '{method.Name}' must be a " +
-                        $"shared-safe type: '{BoundAnalysis.TypeDisplay(argument.Type)}'");
+                    IEnumerable<BoundExpression> elements = pack.IsNamed
+                        ? pack.NamedValues.Select(v => v.Value)
+                        : pack.Values;
+                    foreach (var element in elements)
+                    {
+                        CheckArgumentSharedSafe(element, method, syntax, env);
+                    }
+                    continue;
                 }
+                CheckArgumentSharedSafe(argument, method, syntax, env);
             }
             // 闸门 5：泛型实参实际类型共享安全（泛型参数自身/ErrorType
             // 毒化跳过——泛型参数的实际类型由调用点实参约束）
             foreach (var typeArgument in typeArguments)
             {
-                if (typeArgument is not TypeSymbol typeArgumentType
-                    || typeArgumentType is ErrorTypeSymbol) continue;
-                if (!typeArgumentType.IsSharedSafe())
+                CheckTypeArgumentSharedSafe(typeArgument, method, syntax, env);
+            }
+            // 闸门 5 续：泛型可变包的推导类型实参（S9d-2——由值实参静态
+            // 类型推导，永不显式书写，不进 TypeArguments）
+            if (genericPack != null)
+            {
+                IEnumerable<SemanticSymbol> derivedTypes = genericPack.IsNamed
+                    ? genericPack.NamedTypes.Select(t => t.Type)
+                    : genericPack.TypeArguments;
+                foreach (var derivedType in derivedTypes)
                 {
-                    env.Error(syntax.Span,
-                        $"type argument of async function '{method.Name}' must be a " +
-                        $"shared-safe type: '{BoundAnalysis.TypeDisplay(typeArgument)}'");
+                    CheckTypeArgumentSharedSafe(derivedType, method, syntax, env);
                 }
+            }
+        }
+
+        // 单实参闸门 2 判定：实际类型须共享安全（泛型参数类型判型后不
+        // 可判，按非共享安全拒绝；ErrorType 毒化静默）
+        private static void CheckArgumentSharedSafe(BoundExpression argument, MethodSymbol method,
+            ASTNode syntax, BindEnvironment env)
+        {
+            if (argument.Type is ErrorTypeSymbol) return;
+            if (argument.Type is not TypeSymbol argumentType
+                || !argumentType.IsSharedSafe())
+            {
+                env.Error(syntax.Span,
+                    $"argument of async function '{method.Name}' must be a " +
+                    $"shared-safe type: '{BoundAnalysis.TypeDisplay(argument.Type)}'");
+            }
+        }
+
+        // 单泛型实参闸门 5 判定：实际类型须共享安全
+        private static void CheckTypeArgumentSharedSafe(SemanticSymbol typeArgument,
+            MethodSymbol method, ASTNode syntax, BindEnvironment env)
+        {
+            if (typeArgument is not TypeSymbol typeArgumentType
+                || typeArgumentType is ErrorTypeSymbol) return;
+            if (!typeArgumentType.IsSharedSafe())
+            {
+                env.Error(syntax.Span,
+                    $"type argument of async function '{method.Name}' must be a " +
+                    $"shared-safe type: '{BoundAnalysis.TypeDisplay(typeArgument)}'");
             }
         }
 

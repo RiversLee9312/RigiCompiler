@@ -78,7 +78,10 @@ namespace LatteCompiler
             if (t is LineBreakToken)
                 throw context.RaiseError("Import statement requires an import path (SYNTAX §15.2)");
 
-            pathSymbol = new SymbolASTNode(self);
+            // 先不挂父：多导入形态（{X, Y}）下 pathSymbol 只是展开前缀的模板，
+            // 挂父会产生不挂树的孤儿节点（Parent 只能设置一次，禁止重挂）；
+            // 单导入/全导入形态确定后一次性 AttachTo
+            pathSymbol = new SymbolASTNode(null);
             state = State.AfterPath;
             return new ParserLayerResult.PushLayer(
                 new PathParserLayer(pathSymbol, lineBreakSensitive: true), TokenDisposition.Replay);
@@ -93,6 +96,7 @@ namespace LatteCompiler
             {
                 if (elements.Count == 0)
                     throw context.RaiseError("Import statement requires an import path (SYNTAX §15.2)");
+                pathSymbol.AttachTo(self);
                 self.importedSymbols.Add(new ImportItem { symbolNode = pathSymbol });
                 return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
             }
@@ -102,6 +106,7 @@ namespace LatteCompiler
             {
                 if (elements.Count == 0)
                     throw context.RaiseError("Import statement requires an import path (SYNTAX §15.2)");
+                pathSymbol.AttachTo(self);
                 self.importedSymbols.Add(new ImportItem { symbolNode = pathSymbol });
                 return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
             }
@@ -114,6 +119,7 @@ namespace LatteCompiler
                 // 全部导入：import a.b.*
                 if (n.Content == "*")
                 {
+                    pathSymbol.AttachTo(self);
                     self.importedSymbols.Add(
                         new ImportItem { symbolNode = pathSymbol, importAll = true });
                     state = State.WaitEnd;

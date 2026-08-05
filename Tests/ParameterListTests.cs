@@ -119,6 +119,10 @@ namespace LatteCompiler.Tests
             TestHarness.CheckParseError("(.: i32)（裸 . 无标识符）",
                 () => ParseParameterList("(.: i32)"),
                 "Expected identifier after '.' in reserved parameter name");
+            // init 映射目标字段名必须是合法标识符（_ -> 123 数字词拒绝）
+            TestHarness.CheckParseError("(_ -> 123)（映射目标不是标识符）",
+                () => ParseParameterList("(_ -> 123)", allowMapping: true),
+                "Expected field name after '->' in init parameter mapping");
 
             TestHarness.Blank();
         }

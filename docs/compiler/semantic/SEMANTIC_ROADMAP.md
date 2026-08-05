@@ -643,10 +643,21 @@ enum case（`new.case`、`is .Case` 判别比较、判别值分配）、
 > `SetEmbeddedFieldInstruction`）与 BilVerifier §21.3 校验同步落地
 > （BilWriterTests 黄金 + BilVerifierTests 手工模块正负例）。后续施工
 > 按序推进：P3 wrapper place 绑定与只读禁令（解 PathVisitors 两处
-> Colon 归口 + 全拦截面）→ enum case 全链（EnumCaseSymbol 家族 →
-> 判别值分配 → P3 `is .Case`/`.Case(args)` → P4b `.case`/`new.case`
-> 发射）→ ext 收尾 + 局部访问器解归口 → proxy 烘焙 lowering（specific
+> Colon 归口 + 全拦截面）→ ~~enum case 全链~~（**✅ M77 已落地**）→
+> ext 收尾 + 局部访问器解归口 → proxy 烘焙 lowering（specific
 > → wildcard → `call???` 降级）→ 派发链诊断工具。
+>
+> **enum case 全链（M77，2026-08-05，PROGRESS_REPORT 详录）**：
+> EnumCaseSymbol 家族（Owner/Discriminant + ResolvedInit/HoleParameters
+> 模板槽，P3 声明点落定）+ TypeSymbol.Cases + PrintCase；P2
+> EnumCaseResolver（洞独占性/case 名复核/判别值落定）；P3 声明点
+> 模板绑定（init 选择 + 固定实参绑定 + 洞 pub 规则；泛型 enum 归口）+
+> BoundEnumCaseExpression/BoundTypeCheckExpression.IsCase + 使用侧三形态
+> （裸 `.Case`/`.Case(args)`/`is .Case`）；P4 `.case` 声明（洞签名 +
+> 判别值 res/auto）+ new.case/type.is.case 发射——端到端出合法 BIL。
+> 同批裁决落地 §9.3 init 映射赋值合成（无体 init 产 fn 定义 + 有体
+> 前插，stdlib Pair 潜伏 bug 同愈）。**遗留**：泛型 enum case 归口、
+> switch 值匹配位置保持常量限定（固定 case 不作值匹配常量）。
 
 wrapper 值语义落地要点（2026-07-29 规范修订）：wrapper 是 rich struct
 值而非对象，`obj:Wrapper` 与 proxy 体内 `this` 都是宿主隐藏字段的

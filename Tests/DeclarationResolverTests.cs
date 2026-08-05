@@ -36,6 +36,19 @@ namespace LatteCompiler.Tests
             TestDeclarationSiteAccess();
             TestConversionOperators();
             TestAsyncDeclarationGates();
+            TestConstructedBaseTypeBackfill();
+            TestExtDuplicateDetection();
+            TestOverrideGenericArity();
+            TestNamespaceNotAType();
+            TestBareGenericDefinitionArity();
+            TestInitMappingBuiltinField();
+            TestExtNativeGates();
+            TestNamespaceSegmentPriority();
+            TestInterfaceFieldDeclaration();
+            TestDuplicateInterfaceImplementation();
+            TestStaticOperatorDeclaration();
+            TestNamedImportResolution();
+            TestEnumCaseStructure();
             TestFreeze();
             return TestHarness.Summary("DeclarationResolver");
         }
@@ -292,9 +305,23 @@ namespace LatteCompiler.Tests
             var init2 = point.Methods.Where(m => m.Kind == MethodKind.Init).Skip(1).First();
             TestHarness.CheckTrue("显式类型映射按标注解析",
                 ReferenceEquals(init2.Parameters[0].Type, b.Int32));
+            // MappedField 回写（§9.3 合成的凭据）：省类型/显式类型两分支引用相等
+            TestHarness.CheckTrue("省类型映射 MappedField 落定（引用相等）",
+                ReferenceEquals(init.Parameters[0].MappedField,
+                    point.Fields.Single(f => f.Name == "x"))
+                && ReferenceEquals(init.Parameters[1].MappedField,
+                    point.Fields.Single(f => f.Name == "y")));
+            TestHarness.CheckTrue("显式类型映射 MappedField 落定（引用相等）",
+                ReferenceEquals(init2.Parameters[0].MappedField,
+                    point.Fields.Single(f => f.Name == "x")));
 
             var (unit2, _) = ResolveUnit("class C { init(_ -> missing) }\n");
             TestHarness.CheckSemanticError("映射未知字段", unit2.Diagnostics,
+                "Init parameter mapping targets unknown field: 'missing'");
+
+            // 显式写类型的映射参数同样做字段存在性检查（两分支同规则）
+            var (unit2b, _) = ResolveUnit("class C { init(v: i32 -> missing) }\n");
+            TestHarness.CheckSemanticError("显式类型映射未知字段", unit2b.Diagnostics,
                 "Init parameter mapping targets unknown field: 'missing'");
 
             // 映射到无类型标注字段：P2 无法定型（类型推断归 P3），声明侧报错
@@ -389,6 +416,10 @@ namespace LatteCompiler.Tests
                 "non-rich struct cannot be 'abstract'");
             var (u8, _) = ResolveUnit("open enum struct E {}[A]\n");
             TestHarness.CheckSemanticError("enum struct open", u8.Diagnostics, "enum struct cannot be 'open'");
+            // 非 rich enum struct 写 open：同因一报（不再叠加 non-rich struct 条）
+            TestHarness.CheckTrue("enum struct open 同因一报",
+                u8.Diagnostics.Diagnostics.Count(d => d.Severity == DiagnosticSeverity.Error) == 1,
+                string.Join("; ", u8.Diagnostics.Diagnostics.Select(d => d.Message)));
             var (u9, _) = ResolveUnit("abstract enum struct E {}[A]\n");
             TestHarness.CheckSemanticError("enum struct abstract", u9.Diagnostics,
                 "enum struct cannot be 'abstract'");
@@ -919,6 +950,101 @@ namespace LatteCompiler.Tests
             TestHarness.Blank();
         }
 
+        // ===== enum case 结构级检查（S11，§12：洞独占性 + 判别值落定 + 防御复核）=====
+        private static void TestEnumCaseStructure()
+        {
+            TestHarness.Section("P2 Enum Case Structure");
+
+            // 正例：固定实参 / 位置洞 / 具名洞 / 无括号与空括号 case（Arguments 空列表不区分）
+            var (unit, _) = ResolveUnit(
+                "enum struct Result {\n" +
+                "    pub const code: i32\n" +
+                "    pub init(_ -> code)\n" +
+                "}[\n" +
+                "    Ok(0),\n" +
+                "    Positional(_),\n" +
+                "    Failed(code = _),\n" +
+                "    Plain,\n" +
+                "    Empty()\n" +
+                "]\n");
+            CheckNoErrors("固定/位置洞/具名洞/无参形态全无诊断", unit);
+            var result = GlobalType(unit, "Result");
+            TestHarness.CheckTrue("case 全建壳（5 个，声明序）",
+                result.Cases.Count == 5 && result.Cases[1].Name == "Positional" && result.Cases[3].Name == "Plain");
+            TestHarness.CheckTrue("auto case 判别值保持 null（§12.4 编号归发射侧按声明序推导）",
+                result.Cases.All(c => c.Discriminant == null));
+            TestHarness.CheckTrue("模板槽留空（init 绑定归 P3 声明点）",
+                result.Cases.All(c => c.ResolvedInit == null && c.HoleParameters == null));
+
+            // 显式判别值落定
+            var (unit2, _) = ResolveUnit(
+                "enum struct Level {}[\n" +
+                "    Low -> 1,\n" +
+                "    High -> 100\n" +
+                "]\n");
+            CheckNoErrors("显式判别值无诊断", unit2);
+            var level = GlobalType(unit2, "Level");
+            TestHarness.CheckTrue("显式判别值落定符号（-> N 原文值）",
+                level.Cases[0].Discriminant == 1 && level.Cases[1].Discriminant == 100);
+
+            // 反例：洞嵌套在表达式内（someExpression(_) 形态，§12.1）
+            var (unit3, _) = ResolveUnit(
+                "enum struct Bad {\n" +
+                "    pub const v: i32\n" +
+                "    pub init(_ -> v)\n" +
+                "    static func wrap(x: i32): i32 { }\n" +
+                "}[\n" +
+                "    Nested(wrap(_)),\n" +
+                "    Sum((1 + _))\n" +
+                "]\n");
+            TestHarness.CheckTrue("洞嵌套两条诊断（调用实参内 / 二元表达式内）",
+                unit3.Diagnostics.Diagnostics.Count(d => d.Message ==
+                    "Enum case hole '_' must occupy an entire argument position") == 2);
+            CheckP2Error("洞必须独占实参位置（确为 P2）", unit3,
+                "Enum case hole '_' must occupy an entire argument position");
+
+            // 正例：switch pattern 的 `_` 不是模板洞（独立占位语义，不误伤）
+            var (unit4, _) = ResolveUnit(
+                "enum struct WithSwitch {\n" +
+                "    pub const v: i32\n" +
+                "    pub init(_ -> v)\n" +
+                "}[\n" +
+                "    ViaSwitch(switch (0) { (_) -> { 1 } default -> { 2 } })\n" +
+                "]\n");
+            CheckNoErrors("switch pattern 占位 `_` 不误伤", unit4);
+
+            // 防御复核直达（case 名重复 / 判别值重复与负值 Parser FinishEnumCases
+            // 必拦，经 AST 变异绕过 Parser 构造，S8e ResolveMutated 先例）：
+            // P1 名复核 + P2 名复核 + P2 判别值唯一复核
+            var (unit5, _) = ResolveMutated(
+                "enum struct Dup {}[\n" +
+                "    Alpha -> 1,\n" +
+                "    Beta -> 2\n" +
+                "]\n",
+                root =>
+                {
+                    var cases = ((EnumStructDeclarationASTNode)root.Declarations[0]).Cases;
+                    cases[1].CaseName = "Alpha";
+                    cases[1].DiscriminantValue = 1;
+                });
+            TestHarness.CheckSemanticError("P1 case 名复核（重复符号不进 Cases 表）",
+                unit5.Diagnostics, "Duplicate enum case declaration: 'Alpha'");
+            CheckP2Error("P2 case 名复核", unit5, "Duplicate enum case name: 'Alpha'");
+            CheckP2Error("P2 判别值唯一复核", unit5, "Duplicate enum discriminant value: 1");
+
+            var (unit6, _) = ResolveMutated(
+                "enum struct Neg {}[\n" +
+                "    Only -> 0\n" +
+                "]\n",
+                root =>
+                {
+                    ((EnumStructDeclarationASTNode)root.Declarations[0]).Cases[0].DiscriminantValue = -1;
+                });
+            CheckP2Error("P2 判别值非负复核", unit6, "Enum discriminant value must be non-negative");
+
+            TestHarness.Blank();
+        }
+
         private static void TestFreeze()
         {
             TestHarness.Section("P2 Freeze");
@@ -1203,6 +1329,385 @@ namespace LatteCompiler.Tests
             CheckP2Error("async operator", u5, "'async' can only be applied to functions");
             var (u6, _) = ResolveUnit("async class C { }\n");
             CheckP2Error("async 类型声明", u6, "'async' can only be applied to functions");
+        }
+
+        // ===== 构造类型 BaseType 回填（驻留早于定义基类解析的陈旧快照 +
+        // 引用定义泛型参数的未代入快照统一重算；CreatesCycle 定义级比较）=====
+        private static void TestConstructedBaseTypeBackfill()
+        {
+            TestHarness.Section("P2 Constructed BaseType Backfill");
+
+            // 字段/参数类型引用（TypeReferenceResolver）先于继承解析：Sub\<i32\>
+            // 驻留时 Sub 的显式基类尚未解析——回填后应为代入产物 Base\<i32\>（而非
+            // 默认 Object 陈旧快照或 Base\<T-sub\> 未代入快照）
+            var (unit, _) = ResolveUnit(
+                "pub open class Base\\<T> { pub var x: T\npub init(_ -> x) { } }\n" +
+                "pub class Sub\\<T> : Base\\<T> { }\n" +
+                "func f(s: Sub\\<i32>) { }\n");
+            CheckNoErrors("无诊断（泛型基类回填）", unit);
+            var subI32 = (TypeSymbol)unit.Symbols.GlobalNamespace.Methods
+                .Single(m => m.Name == "f").Parameters[0].Type!;
+            TestHarness.CheckTrue("构造类型 BaseType 代入为 Base\\<i32\\>",
+                subI32.BaseType is TypeSymbol { ConstructedFrom: not null } baseI32
+                && baseI32.ConstructedFrom.Name == "Base"
+                && ReferenceEquals(baseI32.TypeArguments![0], unit.Symbols.Bootstrap.Int32));
+
+            // 嵌套构造基类逐实参代入：Mid\<i32\>.BaseType = Wrapper\<Box\<i32\>\>
+            var (unit2, _) = ResolveUnit(
+                "pub open class Box\\<T> { }\n" +
+                "pub open class Wrapper\\<T> { }\n" +
+                "pub class Mid\\<T> : Wrapper\\<Box\\<T>> { }\n" +
+                "func g(m: Mid\\<i32>) { }\n");
+            CheckNoErrors("无诊断（嵌套构造基类回填）", unit2);
+            var midI32 = (TypeSymbol)unit2.Symbols.GlobalNamespace.Methods
+                .Single(m => m.Name == "g").Parameters[0].Type!;
+            TestHarness.CheckTrue("嵌套构造基类代入为 Wrapper\\<Box\\<i32\\>\\>",
+                midI32.BaseType is TypeSymbol { ConstructedFrom: not null } wrapper
+                && wrapper.ConstructedFrom.Name == "Wrapper"
+                && wrapper.TypeArguments![0] is TypeSymbol { ConstructedFrom: not null } boxI32
+                && boxI32.ConstructedFrom.Name == "Box"
+                && ReferenceEquals(boxI32.TypeArguments![0], unit2.Symbols.Bootstrap.Int32));
+
+            // 泛型循环继承：链上是构造实例，按定义级比较（修复前 ReferenceEquals
+            // 比构造实例被骗过）
+            var (unit3, _) = ResolveUnit(
+                "pub open class A\\<T> : B\\<T> { }\n" +
+                "pub open class B\\<T> : A\\<T> { }\n");
+            CheckP2Error("泛型循环继承", unit3, "Circular inheritance involving");
+
+            // 抽象成员跨构造基类（签名含 T）：修复前未代入快照使待实现视图停在
+            // 定义级 T，Sub 的 foo(x: i32) 实现匹配不上 → 误报未实现
+            var (unit4, _) = ResolveUnit(
+                "pub abstract class Grand\\<T> { pub abstract func foo(x: T): i32\n }\n" +
+                "pub abstract class Base\\<T> : Grand\\<T> { }\n" +
+                "pub class Sub : Base\\<i32> {\n" +
+                "    pub override func foo(x: i32): i32 { return x }\n" +
+                "}\n");
+            CheckNoErrors("跨构造基类抽象成员实现识别（两跳代入）", unit4);
+
+            // 未实现仍报
+            var (unit5, _) = ResolveUnit(
+                "pub abstract class Grand\\<T> { pub abstract func foo(x: T): i32\n }\n" +
+                "pub abstract class Base\\<T> : Grand\\<T> { }\n" +
+                "pub class Sub : Base\\<i32> { }\n");
+            CheckP2Error("跨构造基类抽象未实现仍报", unit5,
+                "does not implement abstract member 'foo'");
+        }
+
+        // ===== ext 成员注册重复/遮蔽检测（注册时按字段同名/方法同签名落诊断，
+        // 不注册——防止 P3 查找双候选静默遮蔽）=====
+        private static void TestExtDuplicateDetection()
+        {
+            TestHarness.Section("P2 Extension Duplicate Detection");
+
+            var (u1, _) = ResolveUnit(
+                "pub ext var String.tag: i32\n" +
+                "pub ext var String.tag: i32\n");
+            CheckP2Error("ext 字段同名重复", u1,
+                "Extension field 'tag' duplicates an existing member of type 'String'");
+
+            var (u2, _) = ResolveUnit(
+                "pub class C { pub var n: i32 }\n" +
+                "pub ext var C.n: i32\n");
+            CheckP2Error("ext 字段遮蔽既有字段", u2,
+                "Extension field 'n' duplicates an existing member of type 'C'");
+
+            var (u3, _) = ResolveUnit(
+                "pub class C { pub func m(x: i32): i32 { return x } }\n" +
+                "pub ext func C.m(x: i32): i32 { return 0 }\n");
+            CheckP2Error("ext 方法同签名遮蔽", u3,
+                "Extension method 'm' duplicates an existing member of type 'C'");
+
+            var (u4, _) = ResolveUnit(
+                "pub ext func String.poke(): i32 { return 1 }\n" +
+                "pub ext func String.poke(): i32 { return 2 }\n");
+            CheckP2Error("两个同签名 ext 方法互撞", u4,
+                "Extension method 'poke' duplicates an existing member of type 'String'");
+
+            // 合法：不同签名（参数类型引用不等）重载 + 不同名成员
+            var (ok, _) = ResolveUnit(
+                "pub class C { pub func m(x: i32): i32 { return x } }\n" +
+                "pub ext func C.m(x: String): i32 { return 0 }\n" +
+                "pub ext func C.other(x: i32): i32 { return x }\n");
+            CheckNoErrors("合法 ext 重载无诊断", ok);
+        }
+
+        // ===== override 泛型元数（元数不同即不同派发契约，不是合法覆写目标）=====
+        private static void TestOverrideGenericArity()
+        {
+            TestHarness.Section("P2 Override Generic Arity");
+
+            var (u1, _) = ResolveUnit(
+                "pub open class B { pub open func pick\\<U>(x: U): i32 { return 0 } }\n" +
+                "pub class S : B { pub override func pick\\<U, V>(x: U): i32 { return 0 } }\n");
+            CheckP2Error("override 元数不同", u1, "'pick': no inherited member to override");
+
+            // 合法：同元数泛型覆写（两侧泛型参数按声明序同构）
+            var (ok, _) = ResolveUnit(
+                "pub open class B { pub open func pick\\<U>(x: U): i32 { return 0 } }\n" +
+                "pub class S : B { pub override func pick\\<W>(x: W): i32 { return 0 } }\n");
+            CheckNoErrors("同元数泛型覆写无诊断", ok);
+        }
+
+        // ===== 命名空间不是类型（类型引用落袋统一拦截）+ §15.2 裸命名空间
+        // import 拒绝 =====
+        private static void TestNamespaceNotAType()
+        {
+            TestHarness.Section("P2 Namespace Is Not A Type");
+
+            var (u1, _) = ResolveUnit(
+                "namespace a.b\n" +
+                "func f(): a.b { }\n");
+            CheckP2Error("命名空间作返回类型", u1, "'a.b' is not a type");
+
+            var (u2, _) = ResolveUnit(
+                "namespace ns\n" +
+                "func g(): ns { }\n");
+            CheckP2Error("单段命名空间作返回类型", u2, "'ns' is not a type");
+
+            // §15.2 三种形态之外：具名 import 的目标必须是类型
+            var (u3, _) = ResolveUnit(
+                "namespace a.b\n" +
+                "pub class C { }\n",
+                "import a.b\n" +
+                "func h() { }\n");
+            CheckP2Error("裸命名空间 import", u3,
+                "Import target 'a.b' is not a type (§15.2)");
+
+            // 正例：具名 import 类型 / 通配 import 命名空间仍合法
+            var (ok, _) = ResolveUnit(
+                "namespace a.b\n" +
+                "pub class C { }\n",
+                "import a.b.C\n" +
+                "import a.b.*\n" +
+                "class D { var c: C }\n");
+            CheckNoErrors("具名/通配 import 合法", ok);
+        }
+
+        // ===== 裸名命中带泛型参数的定义：未构造的泛型定义不能作类型，
+        // 按 ApplyTypeArguments 同口径报元数错误 =====
+        private static void TestBareGenericDefinitionArity()
+        {
+            TestHarness.Section("P2 Bare Generic Definition Arity");
+
+            var (u1, _) = ResolveUnit(
+                "class Only\\<T> { }\n" +
+                "var x: Only\n");
+            CheckP2Error("裸名命中泛型定义（字段类型）", u1,
+                "'Only' expects 1 type argument(s), got 0");
+
+            var (u2, _) = ResolveUnit(
+                "class Only\\<T> { }\n" +
+                "func f(p: Only) { }\n");
+            CheckP2Error("裸名命中泛型定义（参数类型）", u2,
+                "'Only' expects 1 type argument(s), got 0");
+
+            // 同名不同元数共存（S10）：裸名精确命中非泛型声明，不回退误报
+            var (ok, _) = ResolveUnit(
+                "class Task { }\n" +
+                "class Task\\<TResult> { }\n" +
+                "func f(t: Task) { }\n");
+            CheckNoErrors("同名不同元数裸名合法", ok);
+        }
+
+        // ===== init 映射继承的内建字段（bootstrap Exception 程序化携带
+        // protected message 字段，SYNTAX §8.1——子类 init 直接赋值继承字段）=====
+        private static void TestInitMappingBuiltinField()
+        {
+            TestHarness.Section("P2 Init Mapping To Builtin Field");
+
+            var (ok, _) = ResolveUnit(
+                "pub class E : Exception {\n" +
+                "    pub init(_ -> message) { }\n" +
+                "}\n");
+            CheckNoErrors("init 映射继承的内建字段无诊断", ok);
+            var init = GlobalType(ok, "E").Methods.Single(m => m.Kind == MethodKind.Init);
+            TestHarness.CheckTrue("映射参数类型沿用 message 字段类型",
+                ReferenceEquals(init.Parameters[0].Type, ok.Symbols.Bootstrap.String));
+        }
+
+        // ===== ext native 成员闸门（ext 视同类型成员必 static；重载按目标
+        // 类型成员表 + 同目标 pending ext 比对）=====
+        private static void TestExtNativeGates()
+        {
+            TestHarness.Section("P2 Extension Native Gates");
+
+            var (u1, _) = ResolveUnit(
+                "@NativeLibrary(\"x\")\n" +
+                "pub ext native func String.foo(): i32\n");
+            CheckP2Error("ext native 实例形态拒绝", u1,
+                "Native member function 'foo' must be 'static'");
+
+            // 与目标类型既有成员同名（签名不同——不触发 ext 重复注册检测，
+            // 但 native 禁一切重载）
+            var (u2, _) = ResolveUnit(
+                "pub class C { pub func m(x: i32): i32 { return x } }\n" +
+                "@NativeLibrary(\"x\")\n" +
+                "pub ext static native func C.m(): i32\n");
+            CheckP2Error("ext native 与目标同名成员重载", u2,
+                "Native function 'm' cannot be overloaded");
+
+            // 合法：ext static native 无同名成员
+            var (ok, _) = ResolveUnit(
+                "@NativeLibrary(\"x\")\n" +
+                "pub ext static native func String.bar(): i32\n");
+            CheckNoErrors("合法 ext static native 无诊断", ok);
+        }
+
+        // ===== 路径中间段同名实体：类型优先于子命名空间（与首段
+        // FindInNamespace 一致）=====
+        private static void TestNamespaceSegmentPriority()
+        {
+            TestHarness.Section("P2 Namespace Segment Priority");
+
+            // q.X 中间段：q 内类型 X 与子命名空间 X 同名——类型优先
+            var (ok, _) = ResolveUnit(
+                "namespace q\n" +
+                "pub class X { }\n",
+                "namespace q.X\n" +
+                "pub class Y { }\n",
+                "namespace other\n" +
+                "class Z { var x: q.X }\n");
+            CheckNoErrors("中间段同名类型优先于子命名空间", ok);
+            var field = NsOf(ok, "other").Types.Single(t => t.Name == "Z")
+                .Fields.Single(f => f.Name == "x");
+            TestHarness.CheckTrue("解析到类型而非子命名空间",
+                field.FieldType is TypeSymbol { Name: "X", Kind: TypeKind.Class });
+        }
+
+        // ===== interface 字段禁止（SYNTAX §11 接口成员只有函数——字段不参与
+        // 闭包检查、不产生实现要求、实现类不继承，纯死声明，声明侧拒绝）=====
+        private static void TestInterfaceFieldDeclaration()
+        {
+            TestHarness.Section("P2 Interface Field Declaration");
+
+            var (u1, _) = ResolveUnit("pub interface I { var x: i32\nfunc f() }\n");
+            CheckP2Error("interface 实例字段拒绝", u1, "'x': interfaces cannot declare fields");
+
+            var (u2, _) = ResolveUnit("pub interface I { static var c: i32 }\n");
+            CheckP2Error("interface 静态字段同禁", u2, "'c': interfaces cannot declare fields");
+
+            // const 同禁（字段即拒绝，不区分 const/var）
+            var (u3, _) = ResolveUnit("pub interface I { const k: i32 = 1 }\n");
+            CheckP2Error("interface const 字段同禁", u3, "'k': interfaces cannot declare fields");
+
+            // 正例：纯函数接口（含默认实现）无诊断
+            var (ok, _) = ResolveUnit("pub interface I { func f(): i32\nfunc g() { } }\n");
+            CheckNoErrors("纯函数接口无诊断", ok);
+        }
+
+        // ===== 重复 implements 诊断（定义级判定：`I, I` 与 `I\<i32\>,
+        // I\<String\>` 同定义即重复——接口契约按定义派发，构造实参不产生
+        // 新的实现要求；重复者不进 Interfaces 表）=====
+        private static void TestDuplicateInterfaceImplementation()
+        {
+            TestHarness.Section("P2 Duplicate Interface Implementation");
+
+            // 同名重复
+            var (u1, _) = ResolveUnit(
+                "pub interface I { }\n" +
+                "pub class C implements I, I { }\n");
+            CheckP2Error("同名接口重复 implements", u1, "'C': duplicate interface 'I'");
+            TestHarness.CheckTrue("重复者不进 Interfaces 表",
+                GlobalType(u1, "C").Interfaces.Count == 1);
+
+            // 同定义不同构造（ConstructedFrom 归一后同一定义）
+            var (u2, _) = ResolveUnit(
+                "pub interface I\\<T> { }\n" +
+                "pub class C implements I\\<i32>, I\\<String> { }\n");
+            CheckP2Error("不同构造同定义重复", u2, "'C': duplicate interface 'I'");
+            TestHarness.CheckTrue("不同构造重复者同样不进表",
+                GlobalType(u2, "C").Interfaces.Count == 1);
+
+            // interface 继承侧同规则
+            var (u3, _) = ResolveUnit(
+                "pub interface I { }\n" +
+                "pub interface J : I, I { }\n");
+            CheckP2Error("interface 重复继承接口", u3, "'J': duplicate interface 'I'");
+
+            // 正例：不同定义构造共存无诊断
+            var (ok, _) = ResolveUnit(
+                "pub interface I\\<T> { }\n" +
+                "pub interface J\\<T> { }\n" +
+                "pub class C implements I\\<i32>, J\\<i32> { }\n");
+            CheckNoErrors("不同定义接口共存无诊断", ok);
+            TestHarness.CheckTrue("两接口都进表", GlobalType(ok, "C").Interfaces.Count == 2);
+        }
+
+        // ===== static operator 禁止（静态无多态：使用侧 FindInstanceOperators/
+        // FindConversionOperator 只查实例方法，static operator 纯死声明）=====
+        private static void TestStaticOperatorDeclaration()
+        {
+            TestHarness.Section("P2 Static Operator Declaration");
+
+            var (u1, _) = ResolveUnit(
+                "class C { static operator plus(other: C): C { } }\n");
+            CheckP2Error("static 算术 operator 拒绝", u1, "'plus': operators cannot be 'static'");
+
+            // castTo/castFrom 同禁（形状合法的 static 转换运算符仍是死声明）
+            var (u2, _) = ResolveUnit(
+                "class S { static operator castTo\\<TTarget>(): TTarget { } }\n");
+            CheckP2Error("static castTo 拒绝", u2, "'castTo': operators cannot be 'static'");
+            var (u3, _) = ResolveUnit(
+                "class S { }\n" +
+                "class C { static operator castFrom(obj: S): C { } }\n");
+            CheckP2Error("static castFrom 拒绝", u3, "'castFrom': operators cannot be 'static'");
+
+            // 正例：实例 operator（含形状合法的转换运算符）无诊断
+            var (ok, _) = ResolveUnit(
+                "class Vec { pub operator plus(other: Vec): Vec { return this } }\n" +
+                "class S2 { operator castTo(): i32 { return 0 } }\n");
+            CheckNoErrors("实例 operator 无诊断", ok);
+        }
+
+        // ===== 具名 import 同名多条目：失效条目跳过继续查找（不再「先者胜」
+        // 毒化有效者）；两条都有效时报歧义；同一路径重复 import 豁免 =====
+        private static void TestNamedImportResolution()
+        {
+            TestHarness.Section("P2 Named Import Resolution");
+
+            // 失效 + 有效：跳过失效者解析到有效者（失效 import 自身由
+            // ImportValidator 统一诊断一次，使用点不再报「未解析」）
+            var (u1, _) = ResolveUnit(
+                "namespace a\npub class Other { }\n",
+                "namespace b\npub class Foo { }\n",
+                "import a.Foo\n" +
+                "import b.Foo\n" +
+                "class C { var f: Foo }\n");
+            TestHarness.CheckSemanticError("失效 import 统一诊断", u1.Diagnostics,
+                "Unresolved import: 'a.Foo'");
+            TestHarness.CheckTrue("有效者解析成功（引用相等 b.Foo）",
+                ReferenceEquals(
+                    GlobalType(u1, "C").Fields.Single(f => f.Name == "f").FieldType,
+                    NsOf(u1, "b").Types.Single(t => t.Name == "Foo")));
+            TestHarness.CheckTrue("使用点无「未解析」次生诊断",
+                u1.Diagnostics.Diagnostics.Count(d =>
+                    d.Message.Contains("Unresolved type or namespace")) == 0,
+                string.Join("; ", u1.Diagnostics.Diagnostics.Select(d => d.Message)));
+
+            // 双有效：歧义诊断（且只报一次，不再叠加其他诊断）
+            var (u2, _) = ResolveUnit(
+                "namespace a\npub class Foo { }\n",
+                "namespace b\npub class Foo { }\n",
+                "import a.Foo\n" +
+                "import b.Foo\n" +
+                "class C { var f: Foo }\n");
+            CheckP2Error("双有效具名 import 歧义", u2, "Ambiguous import: 'Foo'");
+            TestHarness.CheckTrue("歧义使用点毒化不叠加「未解析」",
+                u2.Diagnostics.Diagnostics.Count(d =>
+                    d.Message.Contains("Unresolved type or namespace")) == 0);
+
+            // 同一路径重复 import：解析结果引用相等，豁免不误报
+            var (ok, _) = ResolveUnit(
+                "namespace a\npub class Foo { }\n",
+                "import a.Foo\n" +
+                "import a.Foo\n" +
+                "class C { var f: Foo }\n");
+            CheckNoErrors("同路径重复 import 豁免无诊断", ok);
+            TestHarness.CheckTrue("同路径解析到 a.Foo",
+                ReferenceEquals(
+                    GlobalType(ok, "C").Fields.Single(f => f.Name == "f").FieldType,
+                    NsOf(ok, "a").Types.Single(t => t.Name == "Foo")));
         }
     }
 }

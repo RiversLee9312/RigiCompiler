@@ -342,13 +342,16 @@ namespace LatteCompiler.Tests
                         i.Operands[0] is BilVariableOperand { Name: ".kwargs.options" }));
 
             // 调用点：位置包 new type(.array<.any>) 装箱打包；具名包 pair 逐项
+            // 后装入 .array<core::Pair<.string, .any>>（元素 = pair canonical——
+            // core::Pair 非内建无 .pair 构造头投影；与 .kwargs 契约的
+            // .array<.pair<.string, .any>> 同元素类型，§7.1）
             var mainFn = module.Functions.Single(f => f.Symbol == "$main()@.void");
             var news = mainFn.Blocks[0].Instructions.OfType<NewInstruction>().ToList();
             TestHarness.CheckTrue("位置包 array 构造 + 具名包 pair/array 构造",
                 news.Any(n => n.Type.TypeRef == ".array<.any>"
                     && n.Arguments.Count == 3)
                 && news.Any(n => n.Type.TypeRef == "core::Pair<.string, .any>")
-                && news.Any(n => n.Type.TypeRef == ".array<.any>"
+                && news.Any(n => n.Type.TypeRef == ".array<core::Pair<.string, .any>>"
                     && n.Arguments.Count == 1));
         }
 

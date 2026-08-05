@@ -405,12 +405,14 @@ namespace LatteCompiler.Tests
                 && newExpr.Arguments.Count == 1
                 && ReferenceEquals(newExpr.Arguments[0].Type, unit8.Symbols.Bootstrap.Int32));
 
-            // 9. 泛型定义不可构造保留（无实参的泛型定义名）
+            // 9. 泛型定义不可构造保留（无实参的泛型定义名）——裸名引用在
+            // 名字解析层即报元数错误并毒化（NameResolver 末段统一拦截，
+            // 与 ApplyTypeArguments 同口径），不再到达 new 的构造检查
             var (unit9, _) = BindUnit(
                 "pub open class Box\\<T> { pub init(_ -> item) { } }\n" +
                 "func main() { var box = new Box(1) }\n");
             TestHarness.CheckSemanticError("泛型定义不可构造", unit9.Diagnostics,
-                "Cannot construct generic type definition 'Box'");
+                "'Box' expects 1 type argument(s), got 0");
         }
 
         // ===== 泛型可变参数包（S9d-2，SYNTAX §4.3 定稿⑤：类型实参由
@@ -499,6 +501,29 @@ namespace LatteCompiler.Tests
                 "func main() { var v = n(null) }\n");
             TestHarness.CheckSemanticError("包内 null 无法推导", unit8.Diagnostics,
                 "P3: cannot infer a type argument from a null literal in a generic variadic pack (S9d)");
+
+            // 9. 显式泛型实参命中全可变包候选拦截（§4.3：包类型实参由值实参
+            //    推导，永不显式书写）——纯包候选显式实参报错
+            var (unit9, _) = BindUnit(
+                "func pack\\<TArgs...>(xs: TArgs...): i32 { return 0 }\n" +
+                "func main() { var v = pack\\<i32>(1) }\n");
+            TestHarness.CheckSemanticError("纯包候选显式实参拒绝", unit9.Diagnostics,
+                "'pack': generic variadic pack arguments are derived from value arguments");
+
+            // 10. 普通泛型不受误伤：同名全可变包候选共存时显式实参仍命中固定
+            //     泛型候选（包候选被排除出显式路径，不参与 ranking）
+            var (unit10, bodies10) = BindUnit(
+                "func foo\\<T>(x: T): T { return x }\n" +
+                "func foo\\<TArgs...>(xs: TArgs...): i32 { return 0 }\n" +
+                "func main() { var v = foo\\<i32>(1) }\n");
+            CheckNoErrors("无诊断（普通泛型共存不受误伤）", unit10);
+            var decl10 = (BoundLocalDeclarationStatement)BodyOf(bodies10, "main").Body.Statements[0];
+            var call10 = (BoundCallExpression)decl10.Initializer!;
+            TestHarness.CheckTrue("显式实参命中固定泛型候选",
+                call10.Method.GenericParameters.Count == 1
+                && !call10.Method.GenericParameters[0].IsVariadic
+                && call10.TypeArguments.Count == 1
+                && ReferenceEquals(call10.TypeArguments[0], unit10.Symbols.Bootstrap.Int32));
         }
 
         // ===== 泛型 operator 名字调用（S9f 复核 M69 注记：SYNTAX §4.2

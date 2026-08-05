@@ -4,9 +4,14 @@ namespace LatteCompiler
     // 为每个函数体创建独立 BindContext（函数体互不嵌套；每体一个上下文
     // 实例——旧 BindSession 的「防御性清空」由此消失），经分派器启动绑定。
     //
-    // S8d 起分两阶段：①参数默认值预绑定（声明点作用域，先于一切函数体
+    // 分三阶段：①参数默认值预绑定（S8d，声明点作用域，先于一切函数体
     // 绑定——调用点填充时 callee 的默认值必已就绪，前向引用安全）；
-    // ②逐函数体绑定（S8e 起含字段 getter/setter 访问器体）。
+    // ①·5 enum case init 模板绑定（S11，SYNTAX §12.1，同为声明点
+    // 作用域——函数体内的 .Case 引用消费符号的 ResolvedInit/
+    // HoleParameters，必须先于函数体落定）；②逐函数体绑定（S8e 起
+    // 含字段 getter/setter 访问器体），并落地 init 参数映射赋值合成
+    //（SYNTAX §9.3：构造时映射参数赋给字段——无体 init 合成映射体/
+    // 空体，有体 init 映射赋值前插用户体头部）。
     internal sealed class BindingDriver
     {
         private readonly BindEnvironment env;
@@ -30,10 +35,26 @@ namespace LatteCompiler
                     if (parameter.DefaultValue != null) env.GetParameterDefault(parameter);
                 }
             });
+            // 阶段 1.5（S11，SYNTAX §12.1）：enum case init 模板绑定
+            // （声明点作用域，先于一切函数体绑定）
+            BindEnumCaseTemplates();
             // 阶段 2：逐函数体绑定（含字段访问器体，S8e）
             WalkSkeleton((fn, symbol, fileCtx, owner) =>
             {
-                if (fn.Body == null) return;    // 抽象/接口方法无体
+                if (fn.Body == null)
+                {
+                    // 无体 init（§9.3 映射形态天然无体，OverrideChecker 已
+                    // 豁免「无体方法必须 abstract/native」）：合成映射赋值
+                    // 体/空体——BilVerifier §21.2 要求非 native 本地方法
+                    // 有 fn 定义。native init（P2 已诊断）与接口成员
+                    //（无 body 是声明语义，§21.2 豁免）不合成
+                    if (symbol.Kind == MethodKind.Init && !symbol.IsNative
+                        && symbol.Owner?.Kind != TypeKind.Interface)
+                    {
+                        SynthesizeBodilessInitBody(fn, symbol);
+                    }
+                    return; // 其余抽象/接口方法无体
+                }
                 BindBody(fn, symbol, fileCtx, owner);
             }, BindAccessorBodies);
             return bodies;
@@ -124,7 +145,8 @@ namespace LatteCompiler
             var span = parameter.DefaultValue.Span ?? fn.Span;
             if (parameter.Type is GenericParameterSymbol)
             {
-                env.Error(span, "P3: generic type parameters are not supported yet (S9)");
+                env.Error(span, "P3: default values for parameters of generic parameter " +
+                    "type are not supported");
                 return null;
             }
             if (parameter.Type is not TypeSymbol expectedType || expectedType is ErrorTypeSymbol)
@@ -169,7 +191,72 @@ namespace LatteCompiler
             {
                 env.Error(fn.Span, $"Function '{symbol.Name}' must return a value on all code paths");
             }
+            // init 参数映射（§9.3）：映射赋值序列前插到用户体头部——构造时
+            // 映射参数赋给字段，无论 init 有无体；用户体内再写同字段 =
+            // 覆盖，合法（init 内写字段自由）
+            if (symbol.Kind == MethodKind.Init)
+            {
+                var mapped = SynthesizeInitMappingAssignments(fn, symbol);
+                if (mapped.Count > 0)
+                {
+                    body = new BoundBlock(body.Syntax,
+                        mapped.Concat(body.Statements).ToList());
+                }
+            }
             bodies.Add(new BoundFunctionBody(symbol, ctx.Locals.ToList(), body));
+        }
+
+        // ===== init 参数映射赋值合成（SYNTAX §9.3）=====
+
+        // 无体 init 的体合成：逐映射参数（声明序）的赋值序列（无映射 =
+        // 空体——接收参数不做事，合法；BilVerifier §21.2 要求非 native
+        // 本地方法有 fn 定义，enum case 模板 init 同此落地）。直接构造
+        // bound 节点（自动访问器体合成先例——合成代码无 DA/return 问题）；
+        // 语法一律回指 init 声明节点；locals 空
+        private void SynthesizeBodilessInitBody(CallableDeclarationASTNode fn,
+            MethodSymbol symbol)
+        {
+            var body = new BoundBlock(fn, SynthesizeInitMappingAssignments(fn, symbol));
+            bodies.Add(new BoundFunctionBody(symbol, Array.Empty<LocalSymbol>(), body));
+        }
+
+        // 映射赋值序列（声明序）：实例字段为 this.field = param，静态字段
+        // 为字段引用直达。类型取定义级身份（字段引用 = MappedField.FieldType，
+        // 与用户体写字段同规则；值引用 = 参数类型——P2 保证映射参数类型
+        // 即字段类型或显式标注）。毒化跳过（参数/字段类型缺失或
+        // ErrorType——P2 诊断已报）；无 this 上下文（static/全局 init
+        // 映射实例字段——P2 未拦的历史怪胎）同样跳过，不合成崩溃形状
+        private static List<BoundStatement> SynthesizeInitMappingAssignments(
+            CallableDeclarationASTNode fn, MethodSymbol symbol)
+        {
+            var statements = new List<BoundStatement>();
+            foreach (var parameter in symbol.Parameters)
+            {
+                var field = parameter.MappedField;
+                if (field == null) continue;
+                if (parameter.Type is not { } parameterType || parameterType is ErrorTypeSymbol)
+                {
+                    continue;
+                }
+                if (field.FieldType is not { } fieldType || fieldType is ErrorTypeSymbol)
+                {
+                    continue;
+                }
+                BoundExpression target;
+                if (field.Owner != null && !field.IsStatic)
+                {
+                    if (symbol.Owner == null || symbol.IsStatic) continue;
+                    target = new BoundFieldAccessExpression(fn,
+                        new BoundThisExpression(fn, symbol.Owner), field, fieldType);
+                }
+                else
+                {
+                    target = new BoundFieldReferenceExpression(fn, field, fieldType);
+                }
+                statements.Add(new BoundAssignmentStatement(fn, target,
+                    new BoundValueReferenceExpression(fn, parameter, parameterType)));
+            }
+            return statements;
         }
 
         // 访问器体绑定（S8e，SYNTAX §9.4/§9.4.1）：访问器符号挂字段三槽
@@ -216,9 +303,11 @@ namespace LatteCompiler
             }
             else
             {
-                // 自动 getter：return value（backing 读）
+                // 自动 getter：return value（backing 读）。字段类型可为泛型
+                // 参数（S9a 起值层类型契约 SemanticSymbol）——仅毒化时跳过
+                // 合成（P2 诊断已报）
                 var statements = new List<BoundStatement>();
-                if (field.FieldType is TypeSymbol getterType && getterType is not ErrorTypeSymbol)
+                if (field.FieldType is { } getterType && getterType is not ErrorTypeSymbol)
                 {
                     statements.Add(new BoundReturnStatement(accessorNode,
                         PathFacility.MakeBackingFieldReference(accessorNode, field, getterType,
@@ -226,9 +315,10 @@ namespace LatteCompiler
                 }
                 body = new BoundBlock(accessorNode, statements);
             }
-            // backing 形态 setter：体首隐含 backing = value（value 即新值参数）
+            // backing 形态 setter：体首隐含 backing = value（value 即新值参数）；
+            // 字段类型可为泛型参数（同自动 getter）
             if (isSetter && field.HasBackingStorage
-                && field.FieldType is TypeSymbol backingType && backingType is not ErrorTypeSymbol)
+                && field.FieldType is { } backingType && backingType is not ErrorTypeSymbol)
             {
                 var implicitAssign = new BoundAssignmentStatement(accessorNode,
                     PathFacility.MakeBackingFieldReference(accessorNode, field, backingType,
@@ -238,14 +328,312 @@ namespace LatteCompiler
                 body = new BoundBlock(body.Syntax,
                     new List<BoundStatement> { implicitAssign }.Concat(body.Statements).ToList());
             }
-            // getter 同普通函数：return 全路径检查（符号名即字段名）
-            if (symbol.ReturnType is TypeSymbol && !BoundAnalysis.GuaranteesReturn(body))
+            // getter 同普通函数：return 全路径检查（符号名即字段名）——
+            // 返回类型可为泛型参数，与 BindBody 同一口径（!= null；
+            // S9a 起泛型函数体恢复全路径检查，访问器不豁免）
+            if (symbol.ReturnType != null && !BoundAnalysis.GuaranteesReturn(body))
             {
                 env.Error(accessorNode.Span,
                     $"Function '{symbol.Name}' must return a value on all code paths");
             }
             AsyncGates.CheckFunctionBody(body, env);
             bodies.Add(new BoundFunctionBody(symbol, ctx.Locals.ToList(), body));
+        }
+
+        // ===== 阶段 1.5：enum case init 模板绑定（S11，SYNTAX §12.1）=====
+
+        // 遍历编译单元全部 enum struct 声明（含嵌套类型内的），逐 case
+        // 绑定 init 调用模板。骨架遍历与 WalkSkeleton 同口径（重复声明
+        // 的壳同样照绑——P1 已诊断，壳上成员表自给自足不崩溃）
+        private void BindEnumCaseTemplates()
+        {
+            foreach (var file in env.Unit.SourceFiles)
+            {
+                var fileCtx = env.Declarations.FileContextOf(file);
+                foreach (var decl in file.Declarations)
+                {
+                    WalkEnumDeclarations(decl, fileCtx);
+                }
+            }
+        }
+
+        private void WalkEnumDeclarations(ASTNode node, FileContext fileCtx)
+        {
+            switch (node)
+            {
+                case EnumStructDeclarationASTNode enumNode:
+                    var symbol = env.Declarations.SymbolOf(node) as TypeSymbol
+                        ?? throw new CompilerInternalException("P1 未登记类型符号");
+                    BindCaseTemplates(enumNode, symbol, fileCtx);
+                    // 嵌套类型递归（enum 可声明在类型内）
+                    foreach (var member in enumNode.Members)
+                    {
+                        WalkEnumDeclarations(member, fileCtx);
+                    }
+                    return;
+                case ClassDeclarationASTNode or StructDeclarationASTNode
+                    or InterfaceDeclarationASTNode or WrapperDeclarationASTNode:
+                    foreach (var member in MembersOf(node))
+                    {
+                        WalkEnumDeclarations(member, fileCtx);
+                    }
+                    return;
+            }
+        }
+
+        // 单 enum 的 case 模板绑定：泛型 enum 归口（S11 范围决策——
+        // 声明侧跳过模板绑定；使用侧 expectedType/操作数为构造 enum
+        // 类型时同归口）
+        private void BindCaseTemplates(EnumStructDeclarationASTNode node, TypeSymbol enumType,
+            FileContext fileCtx)
+        {
+            if (enumType.GenericParameters.Count > 0)
+            {
+                env.Error(node.Span, "P3: generic enum cases are not supported yet (S11)");
+                return;
+            }
+            var inits = enumType.Methods.Where(m => m.Kind == MethodKind.Init).ToList();
+            foreach (var caseNode in node.Cases)
+            {
+                BindOneCaseTemplate(caseNode, inits, fileCtx, enumType);
+            }
+        }
+
+        // 单 case 模板绑定（§12.1）：结构过滤（实参个数 == init 参数
+        // 个数——每个 init 参数对应一个模板位置（固定值或洞）；具名
+        // 模板实参的名字须匹配对应位置参数名）→ 固定实参绑定与类型
+        // 适用性决胜 → 洞 pub 规则（§12.2）→ 符号两槽落定 + 固定实参
+        // 产物缓存（BindEnvironment，备 P4 case 构造入口消费）。
+        // 失败毒化：符号保持未落定（HoleParameters 为 null）——使用侧
+        // 遇未落定静默（声明点诊断已报，不二次报）。无显式 init 的零
+        // 实参 case 合法（默认零参构造，§9.3 先例）——ResolvedInit
+        // 保持 null（无 init 可选），HoleParameters 落定空列表作成功标记
+        private void BindOneCaseTemplate(EnumCaseASTNode caseNode, List<MethodSymbol> inits,
+            FileContext fileCtx, TypeSymbol enumType)
+        {
+            if (env.Declarations.SymbolOf(caseNode) is not EnumCaseSymbol caseSymbol)
+            {
+                throw new CompilerInternalException("P1 未登记 enum case 符号: "
+                    + caseNode.CaseName);
+            }
+            // 结构过滤（静默）：模板实参与 init 参数位置一一对应——个数
+            // 相等；具名模板实参名须匹配对应位置参数名
+            var candidates = inits.Where(init => StructureMatches(init, caseNode.Arguments))
+                .ToList();
+            if (candidates.Count == 0)
+            {
+                // 无显式 init 的零实参 case：默认零参构造（成功标记 =
+                // HoleParameters 空列表；失败判定同为 HoleParameters == null，
+                // 与 ResolvedInit 无交集歧义）
+                if (caseNode.Arguments.Count == 0 && inits.Count == 0)
+                {
+                    caseSymbol.HoleParameters = new List<EnumCaseHoleParameter>();
+                    env.SetEnumCaseFixedArguments(caseSymbol, Array.Empty<BoundExpression?>());
+                    return;
+                }
+                env.Error(caseNode.Span,
+                    $"Enum case '{caseNode.CaseName}' has no matching init template");
+                return;
+            }
+            // 声明点隔离上下文（复用 S8d 默认值隔离语义：无 this/看不到
+            // init 形参/无标签）；Frame.Method 取首个候选 init——只承载
+            // 文件/宿主上下文（HasThis/CanAccess 与具体候选无关）
+            var ctx = new BindContext(candidates[0], fileCtx, enumType,
+                isDefaultValueContext: true);
+            // 固定实参绑定与适用性决胜（OverloadResolution 先例：单候选
+            // 带目标类型绑定——null 字面量与嵌套 .Case 固定实参可定型；
+            // 多候选先无目标预绑，按 IsAssignable 静默过滤）
+            MethodSymbol winner;
+            BoundExpression?[]? fixedArgs;
+            if (candidates.Count == 1)
+            {
+                winner = candidates[0];
+                fixedArgs = BindFixedArguments(caseNode, winner, ctx, env);
+                if (fixedArgs == null) return;   // 表达式自身诊断已报（静默失败）
+                if (!FixedArgumentsApplicable(winner, caseNode.Arguments, fixedArgs, env))
+                {
+                    env.Error(caseNode.Span,
+                        $"Enum case '{caseNode.CaseName}' has no matching init template");
+                    return;
+                }
+            }
+            else
+            {
+                var prebound = PrebindFixedArguments(caseNode, ctx, env);
+                if (prebound == null) return;    // 同上（静默失败）
+                var applicable = candidates.Where(init =>
+                    FixedArgumentsApplicable(init, caseNode.Arguments, prebound, env)).ToList();
+                if (applicable.Count == 0)
+                {
+                    env.Error(caseNode.Span,
+                        $"Enum case '{caseNode.CaseName}' has no matching init template");
+                    return;
+                }
+                if (applicable.Count > 1)
+                {
+                    var sigs = string.Join(", ", applicable.Select(SignatureOf));
+                    env.Error(caseNode.Span, $"Enum case '{caseNode.CaseName}' matches " +
+                        $"multiple init templates: {sigs}");
+                    return;
+                }
+                winner = applicable[0];
+                fixedArgs = MaterializeFixedArguments(caseNode, winner, prebound, ctx, env);
+                if (fixedArgs == null) return;
+            }
+            // 局部声明拦截（S8d 默认值同口径：P4 无法物化跨函数局部）
+            if (ctx.Locals.Count > 0)
+            {
+                env.Error(caseNode.Span, "P3: enum case template arguments with local " +
+                    "declarations are not supported yet (S11)");
+                return;
+            }
+            // 洞签名（名/类型/位置取自对应 init 参数，§12.1）与 pub
+            // 规则（§12.2：绑定到非 pub init 的 case 必须是固定模板）
+            var holes = new List<EnumCaseHoleParameter>();
+            for (int i = 0; i < caseNode.Arguments.Count; i++)
+            {
+                if (!IsHoleArgument(caseNode.Arguments[i])) continue;
+                var parameter = winner.Parameters[i];
+                holes.Add(new EnumCaseHoleParameter(parameter.Name, parameter.Type!, i));
+            }
+            if (holes.Count > 0 && winner.Accessibility != Accessibility.Public)
+            {
+                env.Error(caseNode.Span, $"Parameterized enum case '{caseNode.CaseName}' " +
+                    "requires a pub init (its template binds to a non-pub init)");
+                return;
+            }
+            caseSymbol.ResolvedInit = winner;
+            caseSymbol.HoleParameters = holes;
+            env.SetEnumCaseFixedArguments(caseSymbol, fixedArgs);
+        }
+
+        // init 候选结构过滤（静默）：模板实参个数 == init 参数个数；
+        // 具名模板实参的名字须匹配对应位置（同下标）init 参数名
+        private static bool StructureMatches(MethodSymbol init, List<ArgumentASTNode> arguments)
+        {
+            if (init.Parameters.Count != arguments.Count) return false;
+            for (int i = 0; i < arguments.Count; i++)
+            {
+                if (arguments[i].Name != null && arguments[i].Name != init.Parameters[i].Name)
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        // 参数洞识别（§12.1：`_` 独占一个实参位置，可具名 name = _）：
+        // 实参根是单段 `_` 路径（无底座/无泛型/无后缀/无段）。镜像
+        // EnumCaseResolver.IsHoleArgument（P2 洞独占性检查的同一形态；
+        // Resolution/ 私有实现不可跨层复用，复写保持两份同步）
+        private static bool IsHoleArgument(ArgumentASTNode argument)
+        {
+            return argument.Value.IsAttached
+                && argument.Value.Expression is PathExpressionASTNode path
+                && path.Head.Expression == null && path.Head.Name == "_"
+                && path.Head.GenericArguments.Count == 0
+                && path.Head.Suffixes.Count == 0 && path.Segments.Count == 0;
+        }
+
+        // 单候选路径固定实参绑定：洞位置跳过（保持 null 占位——结果按
+        // 实参位置序对齐 init 参数序）；以 init 对应位置形参类型为期望
+        // 类型绑定。任一实参失败返回 null（表达式自身诊断已报）
+        private BoundExpression?[]? BindFixedArguments(EnumCaseASTNode caseNode,
+            MethodSymbol init, BindContext ctx, BindEnvironment env)
+        {
+            var result = new BoundExpression?[caseNode.Arguments.Count];
+            for (int i = 0; i < caseNode.Arguments.Count; i++)
+            {
+                var argument = caseNode.Arguments[i];
+                if (IsHoleArgument(argument)) continue;
+                var value = ExpressionDispatcher.Visit(argument.Value.Expression,
+                    new Scope(null), ctx, env, init.Parameters[i].Type as TypeSymbol);
+                if (value == null) return null;
+                result[i] = value;
+            }
+            return result;
+        }
+
+        // 多候选路径固定实参预绑（无目标类型；null 字面量留 null 占位
+        // 待胜者形参类型定型——OverloadResolution.PrebindArguments 先例）。
+        // 任一实参失败返回 null（表达式自身诊断已报，不级联模板诊断）
+        private BoundExpression?[]? PrebindFixedArguments(EnumCaseASTNode caseNode,
+            BindContext ctx, BindEnvironment env)
+        {
+            var result = new BoundExpression?[caseNode.Arguments.Count];
+            for (int i = 0; i < caseNode.Arguments.Count; i++)
+            {
+                var argument = caseNode.Arguments[i];
+                if (IsHoleArgument(argument)) continue;
+                if (argument.Value.Expression is LiteralExpressionASTNode
+                    { Literal: NullLiteralASTNode })
+                {
+                    continue;
+                }
+                var value = ExpressionDispatcher.Visit(argument.Value.Expression,
+                    new Scope(null), ctx, env);
+                if (value == null) return null;
+                result[i] = value;
+            }
+            return result;
+        }
+
+        // 类型适用性（静默）：固定实参类型可赋给对应位置 init 形参类型；
+        // null 占位要求形参为 Nullable\<T\>（OverloadResolution.IsApplicable
+        // 先例）；ErrorType 毒化形参静默放行（P2 诊断已报）
+        private static bool FixedArgumentsApplicable(MethodSymbol init,
+            List<ArgumentASTNode> arguments, BoundExpression?[] fixedArgs, BindEnvironment env)
+        {
+            for (int i = 0; i < arguments.Count; i++)
+            {
+                if (IsHoleArgument(arguments[i])) continue;
+                var parameterType = init.Parameters[i].Type;
+                if (parameterType is ErrorTypeSymbol) continue;
+                if (fixedArgs[i] == null)
+                {
+                    // null 字面量占位：形参须 Nullable；形参类型不可判
+                    //（泛型参数边缘场景）按不适用
+                    if (parameterType is not TypeSymbol type
+                        || type.ConstructedFrom != env.B.NullableDefinition)
+                    {
+                        return false;
+                    }
+                    continue;
+                }
+                if (parameterType is not TypeSymbol parameter
+                    || !SymbolLookup.IsAssignable(fixedArgs[i]!.Type, parameter, env))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        // 多候选路径落定：null 字面量占位以胜者形参类型重绑定型
+        // （OverloadResolution.Materialize 先例；非 null 实参适用性
+        // 已查，直接用预绑产物）
+        private BoundExpression?[]? MaterializeFixedArguments(EnumCaseASTNode caseNode,
+            MethodSymbol winner, BoundExpression?[] prebound, BindContext ctx, BindEnvironment env)
+        {
+            for (int i = 0; i < caseNode.Arguments.Count; i++)
+            {
+                if (IsHoleArgument(caseNode.Arguments[i]) || prebound[i] != null) continue;
+                var value = LiteralVisitor.Visit(caseNode.Arguments[i].Value.Expression,
+                    new Scope(null), ctx, env, winner.Parameters[i].Type as TypeSymbol);
+                if (value == null) return null;
+                prebound[i] = value;
+            }
+            return prebound;
+        }
+
+        // 歧义诊断用签名文本：name(T1, T2)（镜像 OverloadResolution
+        // 私有实现——私有不可复用）
+        private static string SignatureOf(MethodSymbol method)
+        {
+            var parts = method.Parameters.Select(p => p.Type is TypeSymbol t
+                ? BoundAnalysis.TypeDisplay(t)
+                : p.Type?.Name ?? "?");
+            return $"{method.Name}({string.Join(", ", parts)})";
         }
     }
 }

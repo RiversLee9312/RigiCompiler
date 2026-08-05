@@ -130,10 +130,22 @@ namespace LatteCompiler
                 // 泛型参数：无静态 Nullable 构造，原样
                 _ => value.Type,
             };
-            // null 侧按 Nullable\<T0\> 定型（泛型参数侧无静态 Nullable，expectedType 空）
+            // null 侧按 Nullable\<T0\> 定型
             var nullRoot = leftIsNull ? node.Left : node.Right;
-            var nullLiteral = ExpressionDispatcher.Visit(nullRoot.Expression, scope, ctx, env,
-                operandType as TypeSymbol);
+            BoundExpression? nullLiteral;
+            if (operandType is GenericParameterSymbol)
+            {
+                // S9a 修复：泛型参数侧 null 判等合法（t == null，运行期恒
+                // false/true）——expectedType 通道（TypeSymbol?）承载不了
+                // GenericParameterSymbol，null 直接定型为 T（等价
+                // LiteralVisitor 的 expectedType 放行）
+                nullLiteral = new BoundLiteralExpression(nullRoot.Expression, operandType);
+            }
+            else
+            {
+                nullLiteral = ExpressionDispatcher.Visit(nullRoot.Expression, scope, ctx, env,
+                    operandType as TypeSymbol);
+            }
             if (nullLiteral == null) return null;
             // 非空侧装箱到 Nullable\<T0\>（§12.1 装箱视图 cast）
             if (!ReferenceEquals(value.Type, operandType))
@@ -158,8 +170,9 @@ namespace LatteCompiler
         }
     }
 
-    // 一元运算（S5）：await 归 S13（归口诊断）；not/!/-/+ 经 intrinsic
-    // 键查询（+ 按恒等——SYNTAX §13.2 无一元正号）
+    // 一元运算（S5）：await 归 S13（归口诊断）；not/!/- 经 intrinsic
+    // 键查询（SYNTAX §13.2 无一元正号——Parser 已不再接受前缀 +，
+    // 不可达形态由 default 的 CompilerInternalException 防御拦截）
     internal sealed class UnaryVisitor : ExpressionVisitor<UnaryVisitor, BindContext>
     {
         protected override BoundExpression? VisitCore(ASTNode node, Scope scope, BindContext ctx,
@@ -175,9 +188,6 @@ namespace LatteCompiler
                 case "-": op = BilIntrinsicOp.Opposite; break;
                 case "not": op = BilIntrinsicOp.Not; break;
                 case "!": op = BilIntrinsicOp.BinNot; break;
-                case "+":
-                    // 一元正号：SYNTAX §13.2 无此运算符，按恒等处理
-                    return ExpressionDispatcher.Visit(unary.Operand.Expression, scope, ctx, env);
                 default:
                     throw new CompilerInternalException("未知一元运算符: " + unary.Operator);
             }
@@ -215,7 +225,13 @@ namespace LatteCompiler
                     var value = ExpressionDispatcher.Visit(compound.Value.Expression, scope, ctx, env,
                         target?.Type as TypeSymbol);
             if (target == null || value == null) return null;
-            switch (target)
+            // S8b 修复：复合赋值目标刻意走普通读路径（unassigned 读检查），
+            // 收窄区域内读路径会包 BoundSmartCastExpression——place 判定与
+            // 收窄失效剥壳按 Operand 符号进行；Target 本身保留包装（收窄
+            // 类型参与下方运算类型检查与定型）
+            var place = target is BoundSmartCastExpression smartCast
+                ? smartCast.Operand : target;
+            switch (place)
             {
                 case BoundValueReferenceExpression { Symbol: LocalSymbol local }:
                     if (local.IsConst)
@@ -235,8 +251,8 @@ namespace LatteCompiler
                     // 参数与全局/实例字段：同赋值的放行规则（S8e：带访问器
                     // 字段查 setter 存在性与可见性，无访问器字段走 const 规则）
                     {
-                        var field = target is BoundFieldReferenceExpression fr
-                            ? fr.Field : ((BoundFieldAccessExpression)target).Field;
+                        var field = place is BoundFieldReferenceExpression fr
+                            ? fr.Field : ((BoundFieldAccessExpression)place).Field;
                         if (!ConstFieldRules.CheckWritable(field, node.Span, ctx.Frame, env))
                         {
                             return null;
@@ -265,6 +281,24 @@ namespace LatteCompiler
                         {
                             env.Error(node.Span, "P3: overload resolution for 'setAtIndex' " +
                                 "is not supported yet (S8)");
+                            return null;
+                        }
+                        // 写回类型校验（S8c 修复）：写回值类型（= Target 类型）
+                        // 必须可赋给 setAtIndex 元素形参（宿主代入后，与索引
+                        // 写模式绑定同设施）——此前只查存在性，类型不一致时
+                        // P3 放行由 BilVerifier §13.6 兜底
+                        var setOperator = setters[0];
+                        var elementType = setOperator.Parameters[1].Type!;
+                        if (indexTarget.Receiver.Type is TypeSymbol writeReceiver)
+                        {
+                            elementType = SymbolLookup.SubstituteForReceiver(elementType,
+                                setOperator, writeReceiver, env.Unit.Symbols);
+                        }
+                        if (!SymbolLookup.IsAssignable(target.Type, elementType, env))
+                        {
+                            env.Error(node.Span,
+                                $"Cannot assign '{BoundAnalysis.TypeDisplay(target.Type)}' to " +
+                                $"'{BoundAnalysis.TypeDisplay(elementType)}'");
                             return null;
                         }
                         break;

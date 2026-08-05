@@ -310,6 +310,17 @@ namespace LatteCompiler.Tests
                 "{\"id\":1,\"parent\":null,\"via\":null,\"type\":\"RootASTNode\",\"span\":null,\"fields\":{}}\n" +
                 "{\"id\":2,\"parent\":1,\"via\":\"NoSuchMember\",\"type\":\"IntLiteralASTNode\",\"span\":null,\"fields\":{}}",
                 "has no [ChildAstNode] member");
+            // via 无 [i] 下标但成员是集合：落位前类型校验，不得抛裸 ArgumentException
+            CheckDeserializeError("via 缺 [i] 下标的集合成员",
+                "{\"id\":1,\"parent\":null,\"via\":null,\"type\":\"RootASTNode\",\"span\":null,\"fields\":{}}\n" +
+                "{\"id\":2,\"parent\":1,\"via\":\"Declarations\",\"type\":\"IntLiteralASTNode\",\"span\":null,\"fields\":{}}",
+                "cannot hold");
+            // 单节点成员类型与记录类型不匹配（TypeReferenceASTNode 槽装 IntLiteralASTNode）
+            CheckDeserializeError("单节点成员类型不匹配",
+                "{\"id\":1,\"parent\":null,\"via\":null,\"type\":\"RootASTNode\",\"span\":null,\"fields\":{}}\n" +
+                "{\"id\":2,\"parent\":1,\"via\":\"Declarations[0]\",\"type\":\"VariableDeclarationASTNode\",\"span\":null,\"fields\":{}}\n" +
+                "{\"id\":3,\"parent\":2,\"via\":\"TypeAnnotation\",\"type\":\"IntLiteralASTNode\",\"span\":null,\"fields\":{}}",
+                "cannot hold");
 
             TestHarness.Blank();
         }

@@ -20,6 +20,19 @@ namespace LatteCompiler.Tests
     /// §13.3 嵌套字段访问（宿主字段不可解析/非隐藏字段名/宿主类型非
     /// wrapper/内层字段不可解析/静态内层/get·set 类型/宿主对象/const
     /// 写入负例，手工模块基线正例）。
+    /// 验证器修复批次增补：namespaced 全局函数 invoke（owner 以 "::"
+    /// 结尾无 receiver）、普通参数+值包混合调用（§7.2 值包在普通参数
+    /// 之后）、loop.rev DA（§16.4 body 至少一次）、try-finally 无 catch
+    /// 判终止、同名不同元数类型共存反查（符号+元数键，手工模块）、
+    /// 跨 fn 越权块类型检查不级联、保留名家族空余部/非法字符负例。
+    /// const 发射开闸批次增补：§21.8 init 豁免（init 体内写实例 const
+    /// 字段正例——set.field 与 set.field.embedded 双形态；普通方法写入
+    /// 与 init 内静态写入反例，手工模块）。
+    /// TypesCompatible canonical 全等收紧批次增补：内建标量别名 ↔
+    /// canonical 与标准构造头 ↔ canonical 泛型宿主（含无边界 .typeid ≡
+    /// .typeid<.any>、.pair ↔ core::Pair 嵌套）正例；构造类型实参不同/
+    /// 同名不同命名空间/嵌套构造实参不同/同名不同元数负例（手工模块，
+    /// set.var 两端比对）。
     /// </summary>
     public static class BilVerifierTests
     {
@@ -181,6 +194,37 @@ namespace LatteCompiler.Tests
                 "    var s = new Square()\n" +
                 "    return s.area()\n" +
                 "}\n");
+            // 验证器修复批次：invoke 的 owner 段以 "::" 结尾是命名空间前缀
+            // （全局函数），无 receiver——首实参不得被当 .this 吞掉
+            Positive("namespaced 全局函数调用（invoke owner 命名空间前缀）",
+                "import core.coroutine.*\n" +
+                "pub func main(): i32 {\n" +
+                "    var alarm = sleep(1000)\n" +
+                "    return 0\n" +
+                "}\n");
+            // 验证器修复批次：§7.2 调用序——值包（.vargs/.kwargs）在普通
+            // 参数之后逐条比对，只有 .generic.* 前导跳过
+            Positive("普通参数 + 值包混合调用（§7.2 调用序）",
+                "func sum(first: i32, rest: i32...): i32 { return first }\n" +
+                "func config(name: String, options: named i32...): i32 { return 0 }\n" +
+                "pub func main(): i32 {\n" +
+                "    return sum(1, 2, 3) + config(\"a\", x = 1, y = 2)\n" +
+                "}\n");
+            // 验证器修复批次：§16.4 loop.rev 执行序 body → judge → condition，
+            // body 至少执行一次——judge 与循环出口以 body 出口态分析
+            Positive("do-while 体内赋值循环后可见（loop.rev DA）",
+                "pub func main(): i32 {\n" +
+                "    var x: i32\n" +
+                "    do { x = 1 } while (x < 5)\n" +
+                "    return x\n" +
+                "}\n");
+            // 验证器修复批次：try-finally 无 catch 时 catch-table 为空，
+            // body 终止即判终止
+            Positive("try-finally 无 catch 判终止（entrypoint 结构化）",
+                "func f(): i32 {\n" +
+                "    try { return 1 } finally (e) { core.io.Console.println(\"f\") }\n" +
+                "}\n" +
+                "pub func main(): i32 { return f() }\n");
 
             // ===== S11：§12.3 type.is.case / §13.3 嵌套字段访问（手工模块）=====
             // P3 尚未发射（is .Case 与 wrapper place 归 S11），故不走全管线
@@ -690,15 +734,19 @@ namespace LatteCompiler.Tests
             BilTestHarness.CheckBilInvalid("embedded 宿主字段非隐藏字段", m,
                 "不是 wrapper 隐藏字段");
 
-            // §21.3：embedded 宿主字段类型必须解析为 wrapper 类型
+            // §21.3：embedded 宿主字段类型必须解析为 wrapper 类型——声明
+            // 可反查且非 wrapper 时报错（查不到声明的场景按降级原则跳过，
+            // 与 VerifyWrapperType 一致）
             m = S11Module(
                 new GetEmbeddedFieldInstruction(BilOp.Var("svc"), BilOp.Var("lv"),
-                    BilOp.Field("com.example::Service#.wrapper.core.logging::Nope@.string"),
+                    BilOp.Field("com.example::Service#.wrapper.com.example::Plain@com.example::Plain"),
                     BilOp.Field("core.logging::Logged#level@.string")));
+            m.LocalSymbols.Add(new BilTypeDeclaration("com.example::Plain",
+                BilTypeKind.Class, new BilAccessibilityModifier(BilAccessibility.Public)));
             var serviceWithFake = (BilTypeDeclaration)m.LocalSymbols
                 .Single(e => e is BilTypeDeclaration { Symbol: "com.example::Service" });
             serviceWithFake.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field,
-                "com.example::Service#.wrapper.core.logging::Nope@.string",
+                "com.example::Service#.wrapper.com.example::Plain@com.example::Plain",
                 new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
             BilTestHarness.CheckBilInvalid("embedded 宿主字段类型非 wrapper", m,
                 "不是 wrapper 类型");
@@ -754,6 +802,121 @@ namespace LatteCompiler.Tests
                 }));
             BilTestHarness.CheckBilInvalid("embedded set 写 const 内层字段", m,
                 "不得被写入");
+
+            // ===== §21.8 init 豁免（对齐 P3 ConstFieldRules，SYNTAX §9.3）=====
+            // init 方法（§8.4 init 修饰符标识）体内写实例 const 字段放行
+            // （构造期一次性赋值；豁免不限字段宿主==函数宿主，继承的基类
+            // 字段同放行——全管线继承形态见正例「解构声明」）；普通方法
+            // 写入与 init 内静态写入仍拒
+            BilTestHarness.CheckBilValid("init 内写实例 const 字段（init 豁免，正例）",
+                ConstWriteModule(ConstWriteTarget.InstanceInInit));
+            BilTestHarness.CheckBilInvalid("普通方法写实例 const 字段（不豁免）",
+                ConstWriteModule(ConstWriteTarget.InstanceInMethod), "不得被写入");
+            BilTestHarness.CheckBilInvalid("init 内写静态 const 字段（静态不豁免）",
+                ConstWriteModule(ConstWriteTarget.StaticInInit), "不得被写入");
+            BilTestHarness.CheckBilValid("init 内 embedded 写 const 内层字段（init 豁免，正例）",
+                S11InitEmbeddedModule());
+
+            // ===== 验证器修复批次 =====
+            // S10：同名不同元数类型共存——声明反查键 = 符号 + 泛型元数
+            // （Wrap init() 与 Wrap\<T\> init(x: .i32)，两种声明顺序各验
+            // 一次：new 两形态按元数各自命中 init，互不遮蔽）
+            BilTestHarness.CheckBilValid("同名不同元数共存（plain 先声明，正例）",
+                ArityCoexistModule(genericFirst: false));
+            BilTestHarness.CheckBilValid("同名不同元数共存（generic 先声明，正例）",
+                ArityCoexistModule(genericFirst: true));
+
+            // §21.5/§21.3：跨函数 block 引用的越权块不展开——块内类型错误
+            // 只在所属 fn 视角报一次，不经引用点级联（§21.3 类型检查与
+            // §21.5 结构检查同走块成员资格过滤）
+            m = MinimalModule(out var i32Res, out _);
+            var foreignFn = new BilFunction("$foreign()@.void");
+            foreignFn.Args.Add(new BilArgDeclaration(".return", ".void"));
+            foreignFn.Vars.Add(new BilVarDeclaration(".bool", "fb"));
+            foreignFn.Vars.Add(new BilVarDeclaration(".i32", "fi"));
+            var foreignBlock = new BilBlock("foreign", BilBlockModifier.Entrypoint);
+            var boolResCf = new BilScalarResource("R_CF", BilScalarType.Bool, "true");
+            m.Resources.Add(boolResCf);
+            foreignBlock.Instructions.Add(new LoadInstruction(i32Res, BilOp.Var("fi")));
+            foreignBlock.Instructions.Add(new LoadInstruction(boolResCf, BilOp.Var("fb")));
+            foreignBlock.Instructions.Add(new SetVarInstruction(BilOp.Var("fi"), BilOp.Var("fb")));
+            foreignBlock.Instructions.Add(new RetInstruction());
+            foreignFn.Blocks.Add(foreignBlock);
+            m.LocalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "$foreign()@.void",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            m.Functions.Add(foreignFn);
+            m.Functions[0].Vars.Add(new BilVarDeclaration(".bool", "cf"));
+            m.Functions[0].Blocks[0].Instructions.Insert(1,
+                new LoadInstruction(boolResCf, BilOp.Var("cf")));
+            m.Functions[0].Blocks[0].Instructions.Insert(2, new IfInstruction(
+                BilOp.Var("cf"), foreignBlock, null));
+            var cascadeErrors = BilVerifier.Verify(m);
+            TestHarness.CheckTrue("越权块类型错误不级联（越权一条 + 所属 fn 一条）",
+                cascadeErrors.Count == 2
+                && cascadeErrors.Count(e => e.Message.Contains("不属于当前函数")) == 1
+                && cascadeErrors.Count(e => e.Message.Contains("set.var 两端")) == 1,
+                "实际: " + string.Join("; ", cascadeErrors.Select(e => e.ToString())));
+
+            // §21.1：保留名家族（.generic./.vargs./.kwargs.）放行前缀后余部
+            // 仍须合法——空余部与含非法字符均拒绝
+            m = MinimalModule(out _, out _);
+            m.Functions[0].Vars.Add(new BilVarDeclaration(".typeid", ".generic."));
+            BilTestHarness.CheckBilInvalid("保留名家族空余部（.generic.）", m,
+                "非法局部变量名");
+            m = MinimalModule(out _, out _);
+            m.Functions[0].Vars.Add(new BilVarDeclaration(".array<.any>", ".vargs.bad name"));
+            BilTestHarness.CheckBilInvalid("保留名家族余部非法字符", m,
+                "非法局部变量名");
+
+            // ===== §6.4 类型严格相等（TypesCompatible 收紧为 canonical 全等）=====
+            // 手工模块：main(a: sourceType, b: targetType) 参数入口已赋值
+            // （DA 免扰），entry 内 set.var b = a 触发两端类型比对
+
+            // 内建标量别名 ↔ canonical 是同一类型的两种拼写（§6.2）——仍兼容
+            BilTestHarness.CheckBilValid("内建别名兼容（.i32 ↔ core::i32，正例）",
+                TypeCompatModule(".i32", "core::i32"));
+            BilTestHarness.CheckBilValid("内建别名兼容（core::String ↔ .string，正例）",
+                TypeCompatModule("core::String", ".string"));
+            // §6.3：无边界 .typeid ≡ .typeid<.any>
+            BilTestHarness.CheckBilValid("无边界 .typeid ≡ .typeid<.any>（正例）",
+                TypeCompatModule(".typeid", ".typeid<.any>"));
+            // 标准构造头 ↔ canonical 泛型宿主（§6.3）——发射器 .kwargs 契约
+            // 形态（.array<.pair<.string, .any>>）与调用点打包形态
+            // （.array<core::Pair<.string, .any>>）的混用即此等价
+            var corePair = new BilTypeDeclaration("core::Pair", BilTypeKind.Class,
+                new BilAccessibilityModifier(BilAccessibility.Public));
+            corePair.GenericParameters.Add("TKey");
+            corePair.GenericParameters.Add("TValue");
+            BilTestHarness.CheckBilValid("构造头别名兼容（.pair ↔ core::Pair 嵌套，正例）",
+                TypeCompatModule(".array<.pair<.string, .any>>",
+                    ".array<core::Pair<.string, .any>>", corePair));
+
+            // 构造类型实参不同不兼容（§6.4：Array\<Dog> ≢ Array\<Animal>）
+            BilTestHarness.CheckBilInvalid("构造类型实参不同不兼容",
+                TypeCompatModule(".array<.string>", ".array<.i32>"), "set.var 两端");
+            // 不同命名空间的同名类型不兼容
+            BilTestHarness.CheckBilInvalid("同名不同命名空间不兼容",
+                TypeCompatModule("one::Box", "two::Box",
+                    new BilTypeDeclaration("one::Box", BilTypeKind.Class,
+                        new BilAccessibilityModifier(BilAccessibility.Public)),
+                    new BilTypeDeclaration("two::Box", BilTypeKind.Class,
+                        new BilAccessibilityModifier(BilAccessibility.Public))),
+                "set.var 两端");
+            // 嵌套构造逐实参递归全等
+            BilTestHarness.CheckBilInvalid("嵌套构造实参不同不兼容",
+                TypeCompatModule(".array<.array<.string>>", ".array<.array<.i32>>"),
+                "set.var 两端");
+            // 同名不同元数不兼容（Wrap ≢ Wrap\<T\>）
+            var wrapPlainCompat = new BilTypeDeclaration("com.example::Wrap", BilTypeKind.Class,
+                new BilAccessibilityModifier(BilAccessibility.Public));
+            var wrapGenericCompat = new BilTypeDeclaration("com.example::Wrap", BilTypeKind.Class,
+                new BilAccessibilityModifier(BilAccessibility.Public));
+            wrapGenericCompat.GenericParameters.Add("T");
+            BilTestHarness.CheckBilInvalid("同名不同元数不兼容（Wrap ≢ Wrap<.i32>）",
+                TypeCompatModule("com.example::Wrap", "com.example::Wrap<.i32>",
+                    wrapPlainCompat, wrapGenericCompat),
+                "set.var 两端");
         }
 
         // Vec 的索引运算符对（get 返回 .string / set 元素 .string，索引皆 .i32）
@@ -824,5 +987,208 @@ namespace LatteCompiler.Tests
         // §5.3 wrapper 隐藏字段 canonical：宿主 Service 的 Logged 字段
         private const string HostWrapperField =
             "com.example::Service#.wrapper.core.logging::Logged@core.logging::Logged";
+
+        // S10 同名不同元数共存手工模块（验证器修复批次）：com.example::Wrap
+        // （init()）与 com.example::Wrap\<T\>（init(x: .i32)）——external
+        // 声明形态聚焦指令侧（免 fn 定义）；genericFirst 控制两声明的登记
+        // 顺序；main 内 new 两形态各一次（x 已由 R_0 赋值，实参类型 .i32）
+        private static BilModule ArityCoexistModule(bool genericFirst)
+        {
+            var module = MinimalModule(out _, out var entry);
+            var wrapPlain = new BilTypeDeclaration("com.example::Wrap", BilTypeKind.Class,
+                new BilAccessibilityModifier(BilAccessibility.Public));
+            wrapPlain.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "com.example::Wrap$init()@.void",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilKeywordModifier(BilKeyword.Init),
+                }));
+            var wrapGeneric = new BilTypeDeclaration("com.example::Wrap", BilTypeKind.Class,
+                new BilAccessibilityModifier(BilAccessibility.Public));
+            wrapGeneric.GenericParameters.Add("T");
+            wrapGeneric.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "com.example::Wrap$init(x:.i32)@.void",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilKeywordModifier(BilKeyword.Init),
+                }));
+            if (genericFirst)
+            {
+                module.ExternalSymbols.Add(wrapGeneric);
+                module.ExternalSymbols.Add(wrapPlain);
+            }
+            else
+            {
+                module.ExternalSymbols.Add(wrapPlain);
+                module.ExternalSymbols.Add(wrapGeneric);
+            }
+            module.Functions[0].Vars.Add(new BilVarDeclaration("com.example::Wrap", "w0"));
+            module.Functions[0].Vars.Add(new BilVarDeclaration("com.example::Wrap<.i32>", "w1"));
+            entry.Instructions.Insert(1, new NewInstruction(
+                BilOp.Type("com.example::Wrap"), BilOp.Var("w0"), new List<BilVariableOperand>()));
+            entry.Instructions.Insert(2, new NewInstruction(
+                BilOp.Type("com.example::Wrap<.i32>"), BilOp.Var("w1"),
+                new List<BilVariableOperand> { BilOp.Var("x") }));
+            return module;
+        }
+
+        // §6.4 类型严格相等手工模块（TypesCompatible canonical 全等收紧批次）：
+        // main(a: sourceType, b: targetType) 两参数入口已赋值（DA 免构造），
+        // entry 内 load x 后 set.var b = a 触发两端类型比对，ret x 收尾；
+        // extraTypes 登记额外类型声明（core::Pair/one::Box 等使类型引用
+        // 可解析，§21.2——构造头免检声明，用户 canonical 类型须登记）
+        private static BilModule TypeCompatModule(string sourceType, string targetType,
+            params BilTypeDeclaration[] extraTypes)
+        {
+            var module = new BilModule();
+            module.Resources.Add(new BilScalarResource("R_0", BilScalarType.I32, "0"));
+            foreach (var type in extraTypes)
+            {
+                module.ExternalSymbols.Add(type);
+            }
+            var symbol = $"$main(a:{sourceType},b:{targetType})@.i32";
+            module.LocalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                symbol, new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            var main = new BilFunction(symbol);
+            main.Args.Add(new BilArgDeclaration(".return", ".i32"));
+            main.Args.Add(new BilArgDeclaration("a", sourceType));
+            main.Args.Add(new BilArgDeclaration("b", targetType));
+            main.Vars.Add(new BilVarDeclaration(".i32", "x"));
+            var entry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            entry.Instructions.Add(new LoadInstruction(
+                (BilScalarResource)module.Resources[0], BilOp.Var("x")));
+            entry.Instructions.Add(new SetVarInstruction(BilOp.Var("b"), BilOp.Var("a")));
+            entry.Instructions.Add(new RetInstruction(BilOp.Var("x")));
+            main.Blocks.Add(entry);
+            module.Functions.Add(main);
+            return module;
+        }
+
+        // §21.8 init 豁免手工模块：com.example::Entry class（const 实例字段
+        // key + const 静态字段 count + init(k)/普通方法 reset(k) 两 fn 定义；
+        // 参数入口已赋值、n 先 load 后用，DA 免扰）——writeTarget 选择写入
+        // 指令落点：init 体内写实例字段=豁免正例 / 普通方法写实例字段=反例 /
+        // init 体内写静态字段=反例（静态不在豁免内，与 P3 对齐）
+        private enum ConstWriteTarget { InstanceInInit, InstanceInMethod, StaticInInit }
+
+        private static BilModule ConstWriteModule(ConstWriteTarget writeTarget)
+        {
+            var module = new BilModule();
+            module.Resources.Add(new BilScalarResource("R_CW", BilScalarType.I32, "0"));
+            var entry = new BilTypeDeclaration("com.example::Entry", BilTypeKind.Class,
+                new BilAccessibilityModifier(BilAccessibility.Public));
+            entry.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field,
+                "com.example::Entry#key@.string",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilKeywordModifier(BilKeyword.Const),
+                }));
+            entry.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.StaticField,
+                "com.example::Entry#.static.count@.i32",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilKeywordModifier(BilKeyword.Const),
+                }));
+            entry.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "com.example::Entry$init(k:.string)@.void",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilKeywordModifier(BilKeyword.Init),
+                }));
+            entry.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "com.example::Entry$reset(k:.string)@.void",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            module.LocalSymbols.Add(entry);
+
+            var init = new BilFunction("com.example::Entry$init(k:.string)@.void");
+            init.Args.Add(new BilArgDeclaration(".return", ".void"));
+            init.Args.Add(new BilArgDeclaration(".this", "com.example::Entry"));
+            init.Args.Add(new BilArgDeclaration("k", ".string"));
+            init.Vars.Add(new BilVarDeclaration(".i32", "n"));
+            var initBlock = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            initBlock.Instructions.Add(new LoadInstruction(
+                (BilScalarResource)module.Resources[0], BilOp.Var("n")));
+            if (writeTarget == ConstWriteTarget.InstanceInInit)
+            {
+                initBlock.Instructions.Add(new SetFieldInstruction(BilOp.Var("k"),
+                    BilOp.Var(".this"), BilOp.Field("com.example::Entry#key@.string")));
+            }
+            if (writeTarget == ConstWriteTarget.StaticInInit)
+            {
+                initBlock.Instructions.Add(new SetFieldStaticInstruction(BilOp.Var("n"),
+                    BilOp.Type("com.example::Entry"),
+                    BilOp.Field("com.example::Entry#.static.count@.i32")));
+            }
+            initBlock.Instructions.Add(new RetInstruction());
+            init.Blocks.Add(initBlock);
+            module.Functions.Add(init);
+
+            var reset = new BilFunction("com.example::Entry$reset(k:.string)@.void");
+            reset.Args.Add(new BilArgDeclaration(".return", ".void"));
+            reset.Args.Add(new BilArgDeclaration(".this", "com.example::Entry"));
+            reset.Args.Add(new BilArgDeclaration("k", ".string"));
+            var resetBlock = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            if (writeTarget == ConstWriteTarget.InstanceInMethod)
+            {
+                resetBlock.Instructions.Add(new SetFieldInstruction(BilOp.Var("k"),
+                    BilOp.Var(".this"), BilOp.Field("com.example::Entry#key@.string")));
+            }
+            resetBlock.Instructions.Add(new RetInstruction());
+            reset.Blocks.Add(resetBlock);
+            module.Functions.Add(reset);
+            return module;
+        }
+
+        // §21.8 init 豁免（§13.3 embedded 形态）手工模块：Logged wrapper
+        // （const 内层字段 level）+ Service class（§5.3 wrapper 隐藏字段 +
+        // init(lv) 声明）+ init fn 定义（体内 set.field.embedded 写 const
+        // 内层字段）——embedded 写入与 set.field 同豁免规则
+        private static BilModule S11InitEmbeddedModule()
+        {
+            var module = new BilModule();
+            var logged = new BilTypeDeclaration("core.logging::Logged", BilTypeKind.Wrapper,
+                new BilAccessibilityModifier(BilAccessibility.Public),
+                new BilKeywordModifier(BilKeyword.Rich));
+            logged.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field,
+                "core.logging::Logged#level@.string",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilKeywordModifier(BilKeyword.Const),
+                }));
+            module.LocalSymbols.Add(logged);
+
+            var service = new BilTypeDeclaration("com.example::Service", BilTypeKind.Class,
+                new BilAccessibilityModifier(BilAccessibility.Public));
+            service.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field,
+                HostWrapperField,
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            service.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "com.example::Service$init(lv:.string)@.void",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilKeywordModifier(BilKeyword.Init),
+                }));
+            module.LocalSymbols.Add(service);
+
+            var init = new BilFunction("com.example::Service$init(lv:.string)@.void");
+            init.Args.Add(new BilArgDeclaration(".return", ".void"));
+            init.Args.Add(new BilArgDeclaration(".this", "com.example::Service"));
+            init.Args.Add(new BilArgDeclaration("lv", ".string"));
+            var initBlock = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            initBlock.Instructions.Add(new SetEmbeddedFieldInstruction(BilOp.Var("lv"),
+                BilOp.Var(".this"),
+                BilOp.Field(HostWrapperField), BilOp.Field("core.logging::Logged#level@.string")));
+            initBlock.Instructions.Add(new RetInstruction());
+            init.Blocks.Add(initBlock);
+            module.Functions.Add(init);
+            return module;
+        }
     }
 }

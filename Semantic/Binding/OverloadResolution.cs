@@ -73,6 +73,22 @@ namespace LatteCompiler
                 var matching = generics
                     .Where(m => m.GenericParameters.Count == explicitTypeArgs.Count)
                     .ToList();
+                // 泛型参数全可变的包候选排除（SYNTAX §4.3 定稿：包类型实参由
+                // 值实参推导，永不显式书写）——不误伤「固定+可变」混合形态
+                // （含固定参数即非全可变，固定部分仍是合法显式目标）；排除恰好
+                // 清空匹配集时落专门诊断（不报误导性的元数不匹配）
+                var packOnly = matching.Where(IsGenericPackCandidate).ToList();
+                if (packOnly.Count > 0)
+                {
+                    matching = matching.Where(m => !IsGenericPackCandidate(m)).ToList();
+                    if (matching.Count == 0)
+                    {
+                        env.Error(node.Span, $"'{packOnly[0].Name}': generic variadic pack " +
+                            "arguments are derived from value arguments and must not be " +
+                            "written explicitly (§4.3)");
+                        return null;
+                    }
+                }
                 if (matching.Count == 0)
                 {
                     if (generics.Count > 0)
@@ -88,23 +104,33 @@ namespace LatteCompiler
                     }
                     return null;
                 }
-                // 使用侧约束检查（SYNTAX §3.6）：显式实参须满足泛型参数约束
-                if (!GenericConstraints.CheckArguments(explicitTypeArgs,
-                    matching[0].GenericParameters, node.Span, env))
+                // 使用侧约束检查（SYNTAX §3.6）：显式实参逐候选判定——
+                // 约束满足性是候选固有属性（各候选 GenericParameters 独立），
+                // 不满足的候选与同元数过滤同层静默剔除；全部剔除才回放
+                // 首候选的约束诊断并整体失败（单候选场景与既有行为一致，
+                // 诊断不逐候选重复）
+                var eligible = matching
+                    .Where(m => SatisfiesConstraints(explicitTypeArgs, m, env)).ToList();
+                if (eligible.Count == 0)
                 {
+                    GenericConstraints.CheckArguments(explicitTypeArgs,
+                        matching[0].GenericParameters, node.Span, env);
                     return null;
                 }
-                pool = matching.Select(m => ViewOf(m, explicitTypeArgs, receiverType, env)).ToList();
+                pool = eligible.Select(m => ViewOf(m, explicitTypeArgs, receiverType, env)).ToList();
             }
             else
             {
+                // 非泛型方法同样经 ViewOf：宿主代入不可省——非泛型方法的
+                // 签名仍可能引用宿主泛型参数（`Box<T>.getAtIndex` 返回 T），
+                // 裸名/实例调用沿 receiver 构造链代入（否则 T 不代入，
+                // IsApplicable 误判/返回类型漏代入）
                 pool = candidates.Where(m => m.GenericParameters.Count == 0)
-                    .Select(m => new CandidateView(m, m.Parameters.Select(p => p.Type!)
-                        .ToList(), m.ReturnType))
+                    .Select(m => ViewOf(m, null, receiverType, env))
                     .ToList();
                 foreach (var candidate in candidates.Where(IsGenericPackCandidate))
                 {
-                    var pack = DerivePack(candidate, arguments, prebound!, node.Span, env);
+                    var pack = DerivePack(candidate, arguments, prebound!, node, env);
                     if (pack == null) return null;
                     // 可空元组无提升元素访问，先解包再取（pack 已判非空）
                     var view = ViewOf(candidate, new[] { pack.Value.PackType }, receiverType, env);
@@ -199,7 +225,9 @@ namespace LatteCompiler
             }
             if (winners.Count != 1)
             {
-                var sigs = string.Join(", ", applicable.Select(x => SignatureOf(x.View.Method)));
+                // 列出真正平局的 winners 子集（非全部 applicable——被占优
+                // 淘汰的候选不参与歧义，列出会误导定位）
+                var sigs = string.Join(", ", winners.Select(x => SignatureOf(x.View.Method)));
                 env.Error(node.Span, $"Call to '{pool[0].Method.Name}' is ambiguous between: {sigs}");
                 return null;
             }
@@ -246,13 +274,13 @@ namespace LatteCompiler
         // BIL §7.1）。多可变泛型参数归口诊断。返回 null = 已诊断
         private static (BoundGenericVarArgsArgument Pack, SemanticSymbol PackType)? DerivePack(
             MethodSymbol method, List<ArgumentASTNode> arguments, BoundExpression?[] boundArgs,
-            CharRange? span, BindEnvironment env)
+            ASTNode node, BindEnvironment env)
         {
             var variadics = method.GenericParameters
                 .Where(p => p.IsVariadic || p.IsNamedVariadic).ToList();
             if (variadics.Count > 1)
             {
-                env.Error(span,
+                env.Error(node.Span,
                     "P3: multiple variadic generic parameters are not supported yet (S9d)");
                 return null;
             }
@@ -312,8 +340,10 @@ namespace LatteCompiler
                     env.Unit.Symbols.Bootstrap.String, typeIdType)
                 : env.Unit.Symbols.GetConstructedType(
                     env.Unit.Symbols.Bootstrap.ArrayDefinition, typeIdType);
+            // Syntax 非空契约（BoundNode.Syntax）：空包无实参节点可指，
+            // 以调用节点承载
             var pack = new BoundGenericVarArgsArgument(
-                arguments.Count > 0 ? (ASTNode)arguments[0].Value : null!,
+                arguments.Count > 0 ? (ASTNode)arguments[0].Value : node,
                 isNamed: isNamedPack, packTypes,
                 isNamedPack ? namedTypes : null);
             return (pack, packType);
@@ -398,6 +428,49 @@ namespace LatteCompiler
                     substituted);
             }
             return type;
+        }
+
+        // 逐候选约束满足判定（§3.6，静默版 GenericConstraints.CheckArguments）：
+        // 候选过滤层不可落诊断，此处只判不报；判定语义与跳过规则（ErrorType
+        // 毒化/含未代入泛型参数跳过）与 GenericConstraints 保持一致——
+        // 全部候选均不满足时由调用方回放 CheckArguments 产出诊断
+        private static bool SatisfiesConstraints(IReadOnlyList<SemanticSymbol> typeArgs,
+            MethodSymbol candidate, BindEnvironment env)
+        {
+            var generics = candidate.GenericParameters;
+            for (int i = 0; i < generics.Count && i < typeArgs.Count; i++)
+            {
+                var argument = typeArgs[i];
+                if (argument is ErrorTypeSymbol) continue;
+                if (SymbolLookup.ContainsGenericParameter(argument)) continue;
+                foreach (var constraint in generics[i].Constraints)
+                {
+                    var bound = constraint.Bound;
+                    if (bound == null || SymbolLookup.ContainsGenericParameter(bound)) continue;
+                    var satisfied = constraint.Kind switch
+                    {
+                        GenericConstraintKind.Extends =>
+                            SymbolLookup.IsAssignable(argument, bound, env),
+                        GenericConstraintKind.Supers =>
+                            SymbolLookup.IsAssignable(bound, argument, env),
+                        GenericConstraintKind.With => bound is TypeSymbol wrapper
+                            && HasWrapperApplied(argument, wrapper),
+                        _ => true,
+                    };
+                    if (!satisfied) return false;
+                }
+            }
+            return true;
+        }
+
+        // with 判定：wrapper 在实参的 wrapper 应用集合中（构造类型回退定义；
+        // 镜像 GenericConstraints 的私有实现——静默过滤无法复用其落诊断入口）
+        private static bool HasWrapperApplied(SemanticSymbol argument, TypeSymbol wrapper)
+        {
+            var definition = argument as TypeSymbol;
+            if (definition?.ConstructedFrom != null) definition = definition.ConstructedFrom;
+            return definition != null
+                && definition.AppliedWrappers.Any(w => ReferenceEquals(w, wrapper));
         }
 
         // 结构映射（静默）：mapping[实参序] = 形参序；null = 结构不适用。

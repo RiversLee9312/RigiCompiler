@@ -8,8 +8,13 @@ namespace LatteCompiler.Tests
     /// Logger 测试：
     /// - JSONL 文件写入：所有级别（含 Verbose）都落盘，每行是合法 JSON，
     ///   ts/level/source/message 字段齐全且内容往返一致；
-    /// - 控制台门槛：默认只显示 Warning 及以上，EnableVerbose 后显示 Verbose。
+    /// - 控制台门槛：默认只显示 Warning 及以上，EnableVerbose 后显示 Verbose；
+    /// - CLI 状态还原：CaptureState/RestoreState 把套件内 Reset 破坏的
+    ///   --log-to/--verbose 状态还原（追加模式，已写入的日志不丢）。
     /// 每个用例前后用 Logger.Reset() 归位（关闭日志文件、VerboseEnabled 复位）。
+    /// RunAll 整体以 CaptureState 进入、finally RestoreState 退出：本套件在
+    /// 注册表中段，若把 CLI 经 --log-to 打开的日志文件关掉不还，后续套件的
+    /// 日志会静默全部不落盘。
     /// </summary>
     public static class LoggerTests
     {
@@ -109,6 +114,46 @@ namespace LatteCompiler.Tests
             Console.WriteLine();
         }
 
+        public static void TestCliStateRestore()
+        {
+            Console.WriteLine("=== Testing Logger CLI state capture/restore ===");
+
+            Logger.Reset();
+            var path = Path.Combine(Path.GetTempPath(), $"latte_logger_test_{Guid.NewGuid():N}.jsonl");
+            try
+            {
+                // 模拟 test --all --log-to + --verbose：套件进入前 CLI 已打开
+                // 日志文件并写了历史行
+                Logger.OpenLogFile(path);
+                Logger.EnableVerbose();
+                Logger.Warning("Cli", "before");
+
+                var state = Logger.CaptureState();
+                Logger.Reset();  // 套件自洁：CLI 状态被破坏
+                Check("Reset 后日志路径清空", Logger.CurrentLogPath == null);
+                Check("Reset 后 VerboseEnabled 复位", !Logger.VerboseEnabled);
+
+                Logger.RestoreState(state);  // 套件退出：还原 CLI 状态
+                Check("还原后日志路径恢复", Logger.CurrentLogPath == path);
+                Check("还原后 VerboseEnabled 恢复", Logger.VerboseEnabled);
+
+                Logger.Warning("Cli", "after");  // 还原后继续落盘
+                Logger.Reset();  // 释放文件后再读
+                var lines = File.ReadAllLines(path);
+                Check("还原为追加（before/after 两行都在）", lines.Length == 2);
+            }
+            catch (Exception ex)
+            {
+                Fail("CLI 状态还原", $"unexpected {ex.GetType().Name}: {ex.Message}");
+            }
+            finally
+            {
+                Logger.Reset();
+                if (File.Exists(path)) File.Delete(path);
+            }
+            Console.WriteLine();
+        }
+
         // ===== 测试辅助 =====
 
         private static void Check(string name, bool condition)
@@ -141,8 +186,20 @@ namespace LatteCompiler.Tests
             passCount = 0;
             failCount = 0;
 
-            TestJsonlFileWrite();
-            TestConsoleGating();
+            // 保存 CLI 日志状态（--log-to 路径 + VerboseEnabled），套件结束时
+            // 还原：本套件各用例的 Reset 会关掉 CLI 已打开的日志文件，不还原
+            // 则 test --all --log-to 的后续套件日志全部静默不落盘
+            var cliState = Logger.CaptureState();
+            try
+            {
+                TestJsonlFileWrite();
+                TestConsoleGating();
+                TestCliStateRestore();
+            }
+            finally
+            {
+                Logger.RestoreState(cliState);
+            }
 
             Console.WriteLine($"=== Logger Tests Complete: {passCount} passed, {failCount} failed ===");
             return failCount;

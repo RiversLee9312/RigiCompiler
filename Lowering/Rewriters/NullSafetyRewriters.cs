@@ -6,9 +6,11 @@ namespace LatteCompiler
 
     // `?.` 脱糖：
     //   a?.b ⇒ 前置 s_recv = a'；前置 s_result = null；
-    //           前置 if (s_recv != null) { s_result = cast(access', R?) }；
+    //           前置 if (s_recv != null) { <access' 前置语句> s_result = cast(access', R?) }；
     //           表达式位 s_result 引用
-    // receiver 物化保证只求值一次；Access 内的占位叶子经 safeReceivers
+    // receiver 物化保证只求值一次；Access 降级在 thenBlock 输出列表上下文
+    // 进行——子树内脱糖表达式的前置语句随 thenBlock 走（§3.4：receiver
+    // 为空则整体不求值）；Access 内的占位叶子经 safeReceivers
     // 栈映射为 cast(s_recv, T)（unwrap，§12.1——Enter 压栈/Exit 弹栈，
     // 替代旧代码无 finally 保护的手工配对）；null 检查 =
     // cmp.ne(s_recv, null 资源)（§19.1：null 资源类型即 .nullable<T>，
@@ -35,24 +37,33 @@ namespace LatteCompiler
             // 无 finally 保护的手工压弹）
             ctx.Targets.PushSafeReceiver(safeAccess.Placeholder, receiverLocal,
                 safeAccess.Placeholder.Type);
+            // Access 降级收进 thenBlock 的输出列表上下文（§3.4「receiver 为空
+            // 则整体不求值」）：Access 子树内脱糖类表达式（短路 and/or、
+            // if/switch/seq 表达式、复合赋值、if?）的前置语句落入 thenBlock，
+            // 不泄漏到 null 检查之前——与 NullFallbackRewriter else 分支的
+            // LowerAssignInNewBlock 独立块上下文同一机制
+            var thenStatements = new List<LoweredStatement>();
             LoweredExpression? access;
+            ctx.Output.Push(thenStatements);
             try
             {
                 access = LowerExpressionDispatcher.Visit(safeAccess.Access, ctx, env);
+                if (access != null)
+                {
+                    var wrapped = LoweringFacility.EnsureDeclaredType(safeAccess, access,
+                        safeAccess.Type);
+                    thenStatements.Add(new LoweredAssignmentStatement(safeAccess,
+                        SynthLocalFactory.ReferenceTo(safeAccess, result), wrapped));
+                }
             }
             finally
             {
+                ctx.Output.Pop();
                 ctx.Targets.PopSafeReceiver();
             }
             if (access == null) return null;
-            var wrapped = LoweringFacility.EnsureDeclaredType(safeAccess, access, safeAccess.Type);
-            var thenBlock = new LoweredBlock(safeAccess, new List<LoweredStatement>
-            {
-                new LoweredAssignmentStatement(safeAccess,
-                    SynthLocalFactory.ReferenceTo(safeAccess, result), wrapped),
-            });
             ctx.Output.Add(new LoweredIfStatement(safeAccess, condition,
-                thenBlock, null));
+                new LoweredBlock(safeAccess, thenStatements), null));
             return SynthLocalFactory.ReferenceTo(safeAccess, result);
         }
     }

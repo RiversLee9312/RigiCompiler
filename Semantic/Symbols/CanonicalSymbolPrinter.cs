@@ -13,6 +13,7 @@ namespace LatteCompiler
             TypeSymbol type => PrintType(type),
             FieldSymbol field => PrintField(field),
             MethodSymbol method => PrintMethod(method),
+            EnumCaseSymbol enumCase => PrintCase(enumCase),
             NamespaceSymbol ns => ns.FullName,
             GenericParameterSymbol generic => PrintTypeArgument(generic),
             _ => throw new CompilerInternalException($"未知的语义符号类型: {symbol.GetType().Name}"),
@@ -84,6 +85,13 @@ namespace LatteCompiler
                     var staticMark = method.IsStatic ? ".static." : "";
                     return $"{prefix}${staticMark}{method.Name}({PrintParameters(method)})@{PrintTypeReference(method.ReturnType)}";
             }
+        }
+
+        // enum case（BIL §8.5）：宿主类型 canonical 名 + "." + case 名
+        // （com.example::RequestResult.Failed）
+        public static string PrintCase(EnumCaseSymbol enumCase)
+        {
+            return $"{PrintType(enumCase.Owner)}.{enumCase.Name}";
         }
 
         // 成员前缀：宿主类型 canonical 名；全局符号：命名空间全名 + "::"

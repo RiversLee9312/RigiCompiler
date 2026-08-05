@@ -4,7 +4,7 @@ using System.Collections.Generic;
 namespace LatteCompiler.Tests
 {
     /// <summary>
-    /// 全量测试入口（--test-all）：自动运行全部测试套件，
+    /// 全量测试入口（test --all）：自动运行全部测试套件，
     /// 输出通过/失败总数与失败套件名；任意失败返回非零退出码。
     /// </summary>
     public static class TestRunner

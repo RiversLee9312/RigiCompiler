@@ -375,13 +375,15 @@ namespace LatteCompiler.Tests
             TestHarness.CheckSemanticError("右侧两不沾拒绝", unit7.Diagnostics,
                 "right side of 'is' must be a type");
 
-            // 诊断：is .Case（前导点 enum case 匹配）归 S11
-            var (unit8, _) = BindUnit(
-                "open class Animal { }\n" +
-                "class Dog : Animal { }\n" +
-                "func f(d: Dog): bool { return d is .Failed }\n");
-            TestHarness.CheckSemanticError("enum case is 归口 S11", unit8.Diagnostics,
-                "enum case is pattern is not supported yet (S11)");
+            // is .Case（S11，SYNTAX §12.3）：操作数为 enum struct 时绑定为
+            // IsCase 判别谓词（完整矩阵见 BinderTests.EnumCases）
+            var (unit8, bodies8) = BindUnit(
+                "enum struct Outcome { }[Ok, Failed]\n" +
+                "func f(r: Outcome): bool { return r is .Failed }\n");
+            CheckNoErrors("无诊断（is .Case 判别匹配）", unit8);
+            TestHarness.Check("is .Case 绑定形态",
+                BoundDescribe.Body(BodyOf(bodies8, "f")),
+                "Body(f, [], [Return(IsCase(Param(r,Outcome), Outcome.Failed))])");
         }
 
         // ===== typeOf（S8a，SYNTAX §3.7；BIL §12.5）=====

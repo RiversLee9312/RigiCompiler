@@ -27,6 +27,10 @@ namespace LatteCompiler
                     expectedType),
                 TypeOfExpressionASTNode => TypeOfVisitor.Visit(node, scope, ctx, env, expectedType),
                 NewExpressionASTNode => NewVisitor.Visit(node, scope, ctx, env, expectedType),
+                // 裸前导点 enum case 引用（S11，SYNTAX §12；参数化调用形态
+                // 是路径底座 + Call 后缀，归 PathVisitor 通道）
+                EnumCaseExpressionASTNode => EnumCaseVisitor.Visit(node, scope, ctx, env,
+                    expectedType),
                 LambdaExpressionASTNode => LambdaVisitor.Visit(node, scope, ctx, env,
                     expectedType),
                 // 括号是透明分组（Latte 无优先级，括号只定结构），不落 bound 节点

@@ -73,6 +73,19 @@ namespace LatteCompiler
                 lines.Add(currentLine.ToString());
                 currentLine.Clear();
                 EmitSegment(context, includesCurrentChar: false);
+                if (segments.Count == 1)
+                {
+                    // 首段 span 首修正（须在 PushToken 之后做：token 头由驱动按
+                    // tokenHeadPosition 覆盖，先改会被整个冲掉）：开界 """ 3 字符
+                    // 与强制换行不属于段内容——内容从开界行下一行行首开始
+                    var segmentStart = segments[^1].Token.CharRange.Start;
+                    segments[^1].Token.CharRange.Start = new CharPosition
+                    {
+                        line = segmentStart.line + 1,
+                        column = 1,
+                        offset = segmentStart.offset + 4,
+                    };
+                }
                 // 段 span 尾修正：引导的 $ 不属于段内容（End 回收一列）
                 var segmentEnd = segments[^1].Token.CharRange.End;
                 segmentEnd.column--;
@@ -91,6 +104,9 @@ namespace LatteCompiler
             }
             if (currentChar == Notations.BACK_SLASH)
             {
+                // 挂起的引号先归属内容再收反斜杠（与其他分支一致）——
+                // 否则转义对会插到引号串之前，解码内容顺序错乱
+                FlushQuoteRun();
                 currentLine.Append(currentChar);
                 escaped = true;
                 return LexerLayerResult.Continue.Instance;
@@ -130,25 +146,13 @@ namespace LatteCompiler
         }
 
         // 段结算与产出（M53）：段 token 以原文暂存（span 由驱动按 token 头
-        // 规则给——首段额外修正：开界 """ 与强制换行不属于任何段内容），
+        // 规则给——首段因开界占位需首修正，在插值引导处 PushToken 之后做），
         // 加入回填队列；空段也产出（解码后判空归 Parser 统一跳过）。
         // 仅首段的段首行从行首开始（后续段首行是 } 的行内残余或空行，均不剥）
         private void EmitSegment(LexerLayerContext context, bool includesCurrentChar)
         {
             var raw = string.Join("\n", lines);
             var token = new StringToken(raw);
-            if (segments.Count == 0)
-            {
-                // 首段 span 修正：token 头被开界引号占用——内容从开界 """
-                // 3 字符 + 强制换行之后开始（下一行行首）
-                var start = token.CharRange.Start;
-                token.CharRange.Start = new CharPosition
-                {
-                    line = start.line + 1,
-                    column = 1,
-                    offset = start.offset + 4,
-                };
-            }
             segments.Add((token, raw, segments.Count == 0));
             lines.Clear();
             context.PushToken(token, includesCurrentChar: includesCurrentChar);

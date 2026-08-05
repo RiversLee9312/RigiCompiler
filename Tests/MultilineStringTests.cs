@@ -34,6 +34,11 @@ namespace LatteCompiler.Tests
             ExpectString("\"\"\"\n    \\n\\t\\\\\\$\n    \"\"\"", "\n\t\\$");
             // 内容中的三引号须转义（\" 不参与终止判定）
             ExpectString("\"\"\"\n\\\"\"\"\n\"\"\"", "\"\"\"");
+            // 引号串紧跟反斜杠转义：挂起引号先归属内容，转义对不得插到引号之前
+            ExpectString("\"\"\"\nab\"\\ncd\n\"\"\"", "ab\"\ncd");
+            ExpectString("\"\"\"\nab\"\\tcd\n\"\"\"", "ab\"\tcd");
+            ExpectString("\"\"\"\nab\"\\\\cd\n\"\"\"", "ab\"\\cd");
+            ExpectString("\"\"\"\nab\"\"\\ncd\n\"\"\"", "ab\"\"\ncd");
             // 行尾归一：\r\n 内容换行恒为 \n
             ExpectString("\"\"\"\r\na\r\nb\r\n\"\"\"", "a\nb");
 
@@ -102,6 +107,15 @@ namespace LatteCompiler.Tests
             var empty = (StringToken)new Lexer().Tokenize("\"\"")[0];
             TestHarness.Check("空串 span Start", Pos(empty.CharRange.Start), "1:1");
             TestHarness.Check("空串 span End", Pos(empty.CharRange.End), "1:3");
+
+            // 插值首段 span 修正（在 PushToken 之后以 token 头为基准）：
+            // 开界 """ 与强制换行不属于段内容——Start 为开界行下一行行首（2:1），
+            // End 回收引导的 $（"ab " 占 2:1–2:3，End 排他指向 $ 的 2:4）
+            var interpTokens = new Lexer().Tokenize("\"\"\"\nab ${x}\n\"\"\"");
+            var firstSeg = (StringToken)interpTokens[0];
+            TestHarness.Check("多行插值首段内容", firstSeg.Content, "ab ");
+            TestHarness.Check("多行插值首段 span Start", Pos(firstSeg.CharRange.Start), "2:1");
+            TestHarness.Check("多行插值首段 span End", Pos(firstSeg.CharRange.End), "2:4");
 
             TestHarness.Blank();
         }

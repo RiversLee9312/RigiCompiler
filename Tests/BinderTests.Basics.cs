@@ -482,6 +482,66 @@ namespace LatteCompiler.Tests
                 ReferenceEquals(newExpr.Init, pointType.Methods.Single(m => m.Kind == MethodKind.Init)));
         }
 
+        // ===== init 参数映射赋值合成（SYNTAX §9.3）=====
+        private static void TestInitMappingSynthesis()
+        {
+            TestHarness.Section("P3 Init Mapping Synthesis");
+
+            // 无体 init 带映射：合成体 = 逐映射参数（声明序）的字段赋值
+            var (unit, bodies) = BindUnit(
+                "class Point {\n" +
+                "    pub var x: i32\n" +
+                "    pub var y: String\n" +
+                "    pub init(_ -> x, _ -> y)\n" +
+                "}\n");
+            CheckNoErrors("无诊断（无体 init 映射合成）", unit);
+            TestHarness.Check("无体 init 合成映射赋值体",
+                BoundDescribe.Body(BodyOf(bodies, "init")),
+                "Body(init, [], [Assign(InstField(x, This(Point), i32), Param(x,i32)); " +
+                "Assign(InstField(y, This(Point), String), Param(y,String))])");
+            // 结构性事实：合成节点 Syntax 回指 init 声明节点 + MappedField 引用相等
+            var point = unit.Symbols.GlobalNamespace.Types.Single(t => t.Name == "Point");
+            var initBody = BodyOf(bodies, "init");
+            var initDecl = point.Methods.Single(m => m.Kind == MethodKind.Init);
+            var firstAssign = (BoundAssignmentStatement)initBody.Body.Statements[0];
+            TestHarness.CheckTrue("合成节点 Syntax 回指 init 声明 + 字段符号引用相等",
+                ReferenceEquals(firstAssign.Syntax, initBody.Body.Syntax)
+                && firstAssign.Syntax is CallableDeclarationASTNode
+                && ReferenceEquals(((BoundFieldAccessExpression)firstAssign.Target).Field,
+                    initDecl.Parameters[0].MappedField));
+
+            // 无体 init 无映射：合成空体（§21.2 fn 定义门槛；接收参数不做事）
+            var (unit2, bodies2) = BindUnit(
+                "class Token {\n    pub init(n: i32)\n}\n");
+            CheckNoErrors("无诊断（无体无映射 init）", unit2);
+            TestHarness.Check("无体无映射 init 合成空体",
+                BoundDescribe.Body(BodyOf(bodies2, "init")), "Body(init, [], [])");
+
+            // 有体 init 带映射：映射赋值前插用户体头部（用户体再写 = 覆盖）
+            var (unit3, bodies3) = BindUnit(
+                "class C {\n" +
+                "    pub var x: i32\n" +
+                "    pub var y: i32\n" +
+                "    pub init(_ -> x, y0: i32) { y = y0 }\n" +
+                "}\n");
+            CheckNoErrors("无诊断（有体 init 映射前插）", unit3);
+            TestHarness.Check("有体 init 映射赋值前插",
+                BoundDescribe.Body(BodyOf(bodies3, "init")),
+                "Body(init, [], [Assign(InstField(x, This(C), i32), Param(x,i32)); " +
+                "Assign(InstField(y, This(C), i32), Param(y0,i32))])");
+
+            // 显式名显式类型映射（horizontal: i32 -> x）同样合成
+            var (unit4, bodies4) = BindUnit(
+                "class D {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(horizontal: i32 -> x)\n" +
+                "}\n");
+            CheckNoErrors("无诊断（显式名映射合成）", unit4);
+            TestHarness.Check("显式名映射合成赋值体",
+                BoundDescribe.Body(BodyOf(bodies4, "init")),
+                "Body(init, [], [Assign(InstField(x, This(D), i32), Param(horizontal,i32))])");
+        }
+
         // ===== return 与「所有路径显式返回」=====
         private static void TestReturn()
         {

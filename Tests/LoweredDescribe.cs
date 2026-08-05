@@ -19,6 +19,8 @@ namespace LatteCompiler.Tests
     ///   Is(e, T)  Supers(e, T)  With(e, T)（S8a；动态形态目标带 dyn 前缀：
     ///   Is(e, dyn t)；结果恒 bool 不打印）
     ///   TypeOf(e, RT)（值形态）  TypeOf(type T, RT)（类型形态）（S8a；RT = Type\<T\>）
+    ///   IsCase(e, RequestResult.Failed)（S11；§12.3 判别匹配）
+    ///   EnumCase(RequestResult.Success, [])  EnumCase(RequestResult.Failed, [args])（S11）
     /// 格式约定（语句）：
     ///   Decl(x, i32, = init)  ExprStmt(e)  CallStmt(name, [args])  Assign(t, v)  Return(v)  Return
     ///   If(c, [真], [假])  If(c, [真])
@@ -37,7 +39,7 @@ namespace LatteCompiler.Tests
     {
         public static string Body(LoweredFunctionBody body)
         {
-            var locals = string.Join(", ", body.Locals.Select(l => $"{l.Name}: {TypeShort(l.Type)}"));
+            var locals = string.Join(", ", body.Locals.Select(l => $"{l.Name}: {TypeShort.Of(l.Type)}"));
             return $"Body({body.Method.Name}, [{locals}], {Block(body.Body)})";
         }
 
@@ -52,7 +54,7 @@ namespace LatteCompiler.Tests
             {
                 LoweredBlock block => Block(block),
                 LoweredLocalDeclarationStatement decl =>
-                    $"Decl({decl.Local.Name}, {TypeShort(decl.Local.Type)}" +
+                    $"Decl({decl.Local.Name}, {TypeShort.Of(decl.Local.Type)}" +
                     $"{(decl.Initializer != null ? $", = {Expr(decl.Initializer)}" : "")})",
                 LoweredExpressionStatement exprStmt => $"ExprStmt({Expr(exprStmt.Expression)})",
                 LoweredCallStatement call => call.Receiver == null
@@ -90,8 +92,8 @@ namespace LatteCompiler.Tests
         {
             var catches = string.Join("; ", tryStmt.Catches.Select(c =>
                 c.Variable != null
-                    ? $"Catch({c.Variable.Name}, {TypeShort(c.ExceptionType)}, {Block(c.Body)})"
-                    : $"Catch({TypeShort(c.ExceptionType)}, {Block(c.Body)})"));
+                    ? $"Catch({c.Variable.Name}, {TypeShort.Of(c.ExceptionType)}, {Block(c.Body)})"
+                    : $"Catch({TypeShort.Of(c.ExceptionType)}, {Block(c.Body)})"));
             var finallyPart = tryStmt.FinallyBlock != null
                 ? $", Finally({Block(tryStmt.FinallyBlock)})"
                 : "";
@@ -108,51 +110,59 @@ namespace LatteCompiler.Tests
                 // P4a 合成常量（S7b bool；S7f null——安全访问/空值回退脱糖产物）
                 LoweredConstantExpression constant => constant.Value switch
                 {
-                    bool b => $"Const({b},{TypeShort(constant.Type)})",
-                    null => $"Const(null,{TypeShort(constant.Type)})",
+                    bool b => $"Const({b},{TypeShort.Of(constant.Type)})",
+                    null => $"Const(null,{TypeShort.Of(constant.Type)})",
                     var other => $"<Const {other}>",
                 },
                 LoweredValueReferenceExpression valueRef => valueRef.Symbol switch
                 {
-                    LocalSymbol local => $"Local({local.Name},{TypeShort(valueRef.Type)})",
-                    ParameterSymbol param => $"Param({param.Name},{TypeShort(valueRef.Type)})",
+                    LocalSymbol local => $"Local({local.Name},{TypeShort.Of(valueRef.Type)})",
+                    ParameterSymbol param => $"Param({param.Name},{TypeShort.Of(valueRef.Type)})",
                     _ => $"<{valueRef.Symbol.GetType().Name}>",
                 },
                 LoweredFieldReferenceExpression fieldRef =>
-                    $"Field({fieldRef.Field.Name},{TypeShort(fieldRef.Type)})",
+                    $"Field({fieldRef.Field.Name},{TypeShort.Of(fieldRef.Type)})",
                 LoweredBinaryExpression binary =>
-                    $"Binary({binary.Op}, {Expr(binary.Left)}, {Expr(binary.Right)}, {TypeShort(binary.Type)})",
+                    $"Binary({binary.Op}, {Expr(binary.Left)}, {Expr(binary.Right)}, {TypeShort.Of(binary.Type)})",
                 LoweredUnaryExpression unary =>
-                    $"Unary({unary.Op}, {Expr(unary.Operand)}, {TypeShort(unary.Type)})",
+                    $"Unary({unary.Op}, {Expr(unary.Operand)}, {TypeShort.Of(unary.Type)})",
                 LoweredCallExpression call =>
                     $"Call({call.Method.Name}, [{string.Join(", ", call.Arguments.Select(Expr))}], " +
-                    $"{TypeShort(call.Type)})",
+                    $"{TypeShort.Of(call.Type)})",
                 LoweredNewExpression newExpr =>
-                    $"New({TypeShort(newExpr.Type)}{(newExpr.Init != null ? ", init" : "")}, " +
+                    $"New({TypeShort.Of(newExpr.Type)}{(newExpr.Init != null ? ", init" : "")}, " +
                     $"[{string.Join(", ", newExpr.Arguments.Select(Expr))}])",
-                LoweredThisExpression => $"This({TypeShort(expr.Type)})",
+                LoweredThisExpression => $"This({TypeShort.Of(expr.Type)})",
                 LoweredInstanceCallExpression instCall =>
                     $"InstCall({instCall.Method.Name}, {Expr(instCall.Receiver)}, " +
                     $"[{string.Join(", ", instCall.Arguments.Select(Expr))}], " +
-                    $"{TypeShort(instCall.Type)})",
+                    $"{TypeShort.Of(instCall.Type)})",
                 LoweredFieldAccessExpression fieldAccess =>
                     $"InstField({fieldAccess.Field.Name}, {Expr(fieldAccess.Receiver)}, " +
-                    $"{TypeShort(fieldAccess.Type)})",
+                    $"{TypeShort.Of(fieldAccess.Type)})",
                 LoweredIndexExpression indexAccess =>
                     $"Index({Expr(indexAccess.Receiver)}, {Expr(indexAccess.Index)}, " +
-                    $"{TypeShort(indexAccess.Type)})",
+                    $"{TypeShort.Of(indexAccess.Type)})",
                 LoweredCastExpression cast =>
                     $"{(cast.IsSafe ? "SafeCast" : "Cast")}({Expr(cast.Source)}, " +
-                    $"{TypeShort(cast.TargetType)}, {TypeShort(cast.Type)})",
+                    $"{TypeShort.Of(cast.TargetType)}, {TypeShort.Of(cast.Type)})",
                 // S8a：is/supers/with（Kind 枚举名即显示名；动态形态目标带
-                // dyn 前缀）与 typeOf（类型形态目标带 type 前缀，RT 恒打印）
+                // dyn 前缀）与 typeOf（类型形态目标带 type 前缀，RT 恒打印）；
+                // S11：IsCase 打印 case 符号（§12.3 判别匹配）
                 LoweredTypeCheckExpression typeCheck =>
-                    $"{typeCheck.Kind}({Expr(typeCheck.Operand)}, " +
-                    $"{(typeCheck.TargetType != null ? TypeShort(typeCheck.TargetType) : "dyn " + Expr(typeCheck.TargetValue))})",
+                    typeCheck.Kind == BoundTypeCheckKind.IsCase
+                        ? $"IsCase({Expr(typeCheck.Operand)}, " +
+                            $"{TypeShort.Of(typeCheck.Case!.Owner)}.{typeCheck.Case.Name})"
+                        : $"{typeCheck.Kind}({Expr(typeCheck.Operand)}, " +
+                            $"{(typeCheck.TargetType != null ? TypeShort.Of(typeCheck.TargetType) : "dyn " + Expr(typeCheck.TargetValue))})",
+                // S11：enum case 构造（类型恒为宿主 enum，不重复打印）
+                LoweredEnumCaseExpression enumCase =>
+                    $"EnumCase({TypeShort.Of(enumCase.Case.Owner)}.{enumCase.Case.Name}, " +
+                    $"[{string.Join(", ", enumCase.Arguments.Select(Expr))}])",
                 LoweredTypeOfExpression typeOf =>
                     typeOf.TargetType != null
-                        ? $"TypeOf(type {TypeShort(typeOf.TargetType)}, {TypeShort(typeOf.Type)})"
-                        : $"TypeOf({Expr(typeOf.Operand)}, {TypeShort(typeOf.Type)})",
+                        ? $"TypeOf(type {TypeShort.Of(typeOf.TargetType)}, {TypeShort.Of(typeOf.Type)})"
+                        : $"TypeOf({Expr(typeOf.Operand)}, {TypeShort.Of(typeOf.Type)})",
                 _ => $"<{expr.GetType().Name}>",
             };
         }
@@ -160,7 +170,7 @@ namespace LatteCompiler.Tests
         // 字面量：值经 Origin.Syntax 回指取，类型取透传的定型结果
         private static string Literal(LoweredLiteralExpression literal)
         {
-            var type = TypeShort(literal.Type);
+            var type = TypeShort.Of(literal.Type);
             return ((LiteralExpressionASTNode)literal.Origin.Syntax).Literal switch
             {
                 IntLiteralASTNode i => $"Int({i.Value},{type})",
@@ -171,23 +181,6 @@ namespace LatteCompiler.Tests
                 NullLiteralASTNode => $"Null({type})",
                 var other => $"<{other.GetType().Name}>",
             };
-        }
-
-        // 类型短名：Nullable\<T\> 显示为 T?，其余构造类型 Name<args> 递归；
-        // null = P4a 合成 .breakid 局部（BIL §9.3 别名，无 TypeSymbol）；
-        // S9 放宽为 SemanticSymbol：泛型参数显示其名
-        private static string TypeShort(SemanticSymbol? type)
-        {
-            if (type == null) return ".breakid";
-            if (type is not TypeSymbol symbol) return type.Name;
-            if (symbol.ConstructedFrom == null) return symbol.Name;
-            if (symbol.Name == "Nullable" && symbol.TypeArguments!.Count == 1
-                && symbol.TypeArguments[0] is TypeSymbol element)
-            {
-                return TypeShort(element) + "?";
-            }
-            return symbol.Name + "<" + string.Join(", ",
-                symbol.TypeArguments!.Select(a => a is TypeSymbol t ? TypeShort(t) : a.Name)) + ">";
         }
     }
 }

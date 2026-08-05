@@ -12,13 +12,15 @@ namespace LatteCompiler
         // 具体类型或外层泛型参数（引用相等身份，`Box<T>` 内 T 即外层 T）；
         // receiver 是定义级（泛型函数体内 this）或链上无匹配构造时返回
         // 声明类型原样（宿主泛型参数身份保留，P4 按 §7.5 投影）。
-        // 非泛型字段直通声明类型。receiverType 为 null（静态上下文）时同直通
-        public static SemanticSymbol? SubstituteFieldType(FieldSymbol field,
+        // 非泛型字段直通声明类型。receiverType 为 null（静态上下文）时同直通。
+        // 调用方保证 field.FieldType 非 null（未标注字段已先行诊断）——
+        // 返回值恒非空
+        public static SemanticSymbol SubstituteFieldType(FieldSymbol field,
             TypeSymbol? receiverType)
         {
             if (field.FieldType is not GenericParameterSymbol param)
             {
-                return field.FieldType;
+                return field.FieldType!;
             }
             for (var t = receiverType; t != null; t = t.BaseType)
             {
@@ -33,7 +35,27 @@ namespace LatteCompiler
                     return t.TypeArguments[index];
                 }
             }
-            return field.FieldType;
+            return field.FieldType!;
+        }
+
+        // 方法签名类型的宿主代入（不走 OverloadResolution 的特判路径：
+        // 索引写模式 setAtIndex 形参、索引复合赋值写回校验）：沿 receiver
+        // 的 BaseType 链找到 method.Owner 所在层（同 FindInstanceMethods
+        // 链序口径）——该层为构造类型时按 SubstituteHost 代入宿主泛型
+        // 参数（Box\<T\>.setAtIndex(index, element: T) 在 Box\<i32\> 上
+        // element → i32）；链上无宿主层（ext/定义级直通）或 method 无
+        // 宿主时原样返回
+        public static SemanticSymbol SubstituteForReceiver(SemanticSymbol type,
+            MethodSymbol method, TypeSymbol receiverType, SymbolGraph symbols)
+        {
+            if (method.Owner == null) return type;
+            for (var t = receiverType; t != null; t = t.BaseType)
+            {
+                var owner = t.ConstructedFrom ?? t;
+                if (!ReferenceEquals(owner, method.Owner)) continue;
+                return SubstituteHost(type, owner, t, symbols);
+            }
+            return type;
         }
 
         // 实例方法查找：receiver 静态类型沿 BaseType 链（接口 receiver

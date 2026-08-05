@@ -13,8 +13,7 @@ namespace LatteCompiler.Tests
     /// 值块 if 转换（后续语句移入 else / 双终止丢弃）。
     /// S7c-1 新增循环降级断言：Judge 块（条件求值移入、条件内短路展开
     /// 随块走）、合成 bool 条件局部 .sN 与 .breakid 局部 .bN（Type null）、
-    /// Enumerator 恒 null、do-while rev、BoundLoop → BreakId 映射命中
-    /// （嵌套标签/值块穿透）。
+    /// do-while rev、BoundLoop → BreakId 映射命中（嵌套标签/值块穿透）。
     /// S7e 新增：cast 恒等降级（as/as? + Origin 回指）、try 降级（ExceptionSlot
     /// 复用 finally 变量或合成 .sN、有名 catch 体头合成 cast）、seq 双形态
     /// （语句恒等 / 表达式脱糖结果局部）、值块编织扩展（seq 透明、try 无
@@ -31,6 +30,7 @@ namespace LatteCompiler.Tests
     //   LowererTests.TrySeq.cs      —— try/seq/值块编织
     //   LowererTests.Values.cs      —— cast/插值/?./if?/解构/is/typeOf
     //   LowererTests.Members.cs     —— 实例成员/索引访问
+    //   LowererTests.EnumCases.cs   —— enum case 构造恒等降级/is .Case 槽透传（S11）
     public static partial class LowererTests
     {
         public static int RunAll()
@@ -65,6 +65,12 @@ namespace LatteCompiler.Tests
             TestTypeCheckLowering();
             TestTypeOfLowering();
             TestIndexLowering();
+            TestSafeAccessPrefixInThenBlock();
+            TestCompoundAssignmentIndexMaterialization();
+            TestCompoundAssignmentGetterMaterialization();
+            TestVarArgsParameterType();
+            TestVarArgsIndexLowering();
+            TestEnumCaseLowering();
             TestUnsupportedNode();
 
             return TestHarness.Summary("Lowerer");

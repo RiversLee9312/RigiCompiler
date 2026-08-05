@@ -70,6 +70,10 @@ namespace LatteCompiler
 
         private State state = State.Initial;
         private string? pendingOperator = null;
+        // pending 运算符末 token 的 End 位置（重组相邻性校验）：> 系列重组与
+        // 复合赋值 op+= 重组要求两 token span 相邻——Lexer 合并的 << <= 天然
+        // 相邻，拆 token 的 > 与 = 系列可能夹空白（`a > = b` 不得重组为 >=）
+        private CharPosition pendingOperatorEnd;
 
         // 类型操作（is/as/as?/supers/with）暂存：等待右侧类型引用解析
         private string? pendingTypeOperator = null;
@@ -726,6 +730,7 @@ namespace LatteCompiler
                 // 左操作数到此为止（运算符不属于它），封口
                 SealCurrentExpression(context);
                 pendingOperator = GetOperatorString(currentToken);
+                pendingOperatorEnd = currentToken.CharRange.End;
                 state = State.OperatorSeen;
                 return ParserLayerResult.Continue.Instance;
             }
@@ -748,12 +753,14 @@ namespace LatteCompiler
             // 因此在运算符状态下把连续的 >、= 组合为 >=、>>、>>>
             if (pendingOperator.All(c => c == '>') &&
                 currentToken is NotationToken nt &&
-                (nt.Content == ">" || nt.Content == "="))
+                (nt.Content == ">" || nt.Content == "=") &&
+                IsAdjacentToPendingOperator(currentToken))
             {
                 string combined = pendingOperator + nt.Content;
                 if (combined is ">=" or ">>" or ">>>")
                 {
                     pendingOperator = combined;
+                    pendingOperatorEnd = currentToken.CharRange.End;
                     return ParserLayerResult.Continue.Instance;
                 }
                 // 其他组合（如 >>>>）不合法，落入正常流程后会在右操作数解析时报错
@@ -765,7 +772,8 @@ namespace LatteCompiler
             // （比较的 >= >> >>> 已被重组逻辑拦截，不会到达这里）；不属于全集的组合
             // （如 == 后再遇 =）不拦截，落入正常二元流程，由右操作数层报意外 token
             if (currentToken is NotationToken assign && assign.Content == "=" &&
-                IsCompoundAssignmentOperator(pendingOperator))
+                IsCompoundAssignmentOperator(pendingOperator) &&
+                IsAdjacentToPendingOperator(assign))
             {
                 // 左操作数到此为止：当前表达式仍是未挂载子树（Attach 前已确定
                 // 最终形态），挂入 Target Root——与二元 Left 同一路径，无 Root 替换
@@ -966,8 +974,6 @@ namespace LatteCompiler
                 context.RaiseError(
                     "Generic arguments are only allowed on symbols or member access, " +
                     $"got: {currentExpression?.GetType().Name}");
-                pendingGenericArgs.Clear();
-                return;
             }
             GenericArgumentsOf(owner).AddRange(pendingGenericArgs);
             pendingGenericArgs.Clear();
@@ -1054,7 +1060,9 @@ namespace LatteCompiler
         {
             if (token is NotationToken nt)
             {
-                return nt.Content == "-" || nt.Content == "+" || nt.Content == "!";
+                // SYNTAX §13.2 固定运算符表只定义一元 -（opposite）/!（bitwiseNot）
+                // 与 not/await 关键字——无一元 +，`+x` 落入意外 token 报错
+                return nt.Content == "-" || nt.Content == "!";
             }
 
             if (token is WordToken wt)
@@ -1104,6 +1112,14 @@ namespace LatteCompiler
         {
             return op is "+" or "-" or "*" or "/" or
                    "<<" or ">>" or ">>>" or "&" or "|" or "^";
+        }
+
+        // 重组相邻性判定：pending 运算符的末 token End 与当前 token 的 Start
+        // 必须同位置（offset 比较最直接）——夹空白则按两个独立 token 走正常
+        // 流程（`a > = b` 中 = 落入右操作数层报意外 token，解析错误）
+        private bool IsAdjacentToPendingOperator(Token token)
+        {
+            return token.CharRange.Start.offset == pendingOperatorEnd.offset;
         }
 
         private string GetOperatorString(Token token)

@@ -304,7 +304,8 @@ namespace LatteCompiler
         // -> 已读：等待映射目标字段名（§9.3）
         private ParserLayerResult HandleMappedFieldExpected(Token currentToken, ParserLayerContext context)
         {
-            if (currentToken is WordToken wt)
+            // 映射目标字段名必须是合法标识符（非数字词、非保留字，与参数名一致）
+            if (currentToken is WordToken wt && Keywords.IsIdentifier(wt.Content))
             {
                 pendingMappedField = wt.Content;
                 state = State.AfterMappedField;

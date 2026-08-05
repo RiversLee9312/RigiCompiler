@@ -32,7 +32,10 @@ namespace LatteCompiler
                 return type;
             }
             if (resolved is GenericParameterSymbol) return resolved;
-            env.Error(span, "P3: generic type parameters are not supported yet (S9)");
+            // 防御性不可达：NameResolver.ResolveTypeReference 落袋前已拦截
+            // 命名空间等非类型符号并毒化为 ErrorType（"'x' is not a type"）；
+            // 保留同口径措辞兜底（符号路径如 `a.b` 不是类型）
+            env.Error(span, $"'{NameResolver.PathText(typeRef.TypeSymbol.symbol)}' is not a type");
             return null;
         }
     }

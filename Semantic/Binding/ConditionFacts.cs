@@ -9,8 +9,6 @@ namespace LatteCompiler
 
         public Dictionary<NarrowKey, TypeSymbol> False { get; } =
             new Dictionary<NarrowKey, TypeSymbol>();
-
-        public static readonly ConditionFacts Empty = new ConditionFacts();
     }
 
     // 条件事实提取器（S8b，SYNTAX §3.5 的代码化）：

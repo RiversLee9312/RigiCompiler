@@ -13,7 +13,8 @@ namespace LatteCompiler.Tests
     /// core/exceptions.latte，按逻辑名 Ordinal 排序）：
     /// 1. ParseAll() 返回恰好六棵 RootASTNode，Span.sourceName 为逻辑名
     ///    映射形（&lt;stdlib&gt;/ 前缀，含点开头文件名的反推）
-    /// 2. 结构断言：.bootstrap 顶层恰好 1 个 ext operator callable；
+    /// 2. 结构断言：.bootstrap 顶层恰好 3 个声明（namespace core +
+    ///    ext operator callable + core.Pair 泛型类）；
     ///    Console（namespace core.io + pub class + 3 callable 成员，
     ///    native 双注解）；collections（namespace core.collections +
     ///    2 interface + 2 class）；coroutine（namespace core.coroutine +

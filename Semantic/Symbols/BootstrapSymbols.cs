@@ -190,6 +190,27 @@ namespace LatteCompiler
                 bilStandardConstructor: ".array");
             ArrayDefinition.GenericParameters.Add(new GenericParameterSymbol("T"));
 
+            // Array\<T\> 索引运算符（§13.2，S8c 索引绑定的内建目标——P3 读绑
+            // getAtIndex/写绑 setAtIndex，P4b 直发 §13.6 get.array/set.array
+            // 不走 invoke）：vargs/kwargs 体内视角（Array\<...\>）的元素访问
+            // 闭环（`nums[0]`/`options[0].key`）；无体——内建特权指令承载语义
+            var arrayElementT = ArrayDefinition.GenericParameters[0];
+            var arrayGetAtIndex = new MethodSymbol("getAtIndex", MethodKind.Operator,
+                owner: ArrayDefinition, returnType: arrayElementT)
+            {
+                Accessibility = Accessibility.Public,
+            };
+            arrayGetAtIndex.Parameters.Add(new ParameterSymbol("index", Int32));
+            ArrayDefinition.Methods.Add(arrayGetAtIndex);
+            var arraySetAtIndex = new MethodSymbol("setAtIndex", MethodKind.Operator,
+                owner: ArrayDefinition)
+            {
+                Accessibility = Accessibility.Public,
+            };
+            arraySetAtIndex.Parameters.Add(new ParameterSymbol("index", Int32));
+            arraySetAtIndex.Parameters.Add(new ParameterSymbol("element", arrayElementT));
+            ArrayDefinition.Methods.Add(arraySetAtIndex);
+
             // Map\<K, V\>（S9d-2）：BIL 标准构造 .map<K, V>（§6.3）——具名
             // 泛型可变参数的隐藏参数形态（BIL §7.1：.generic.TValues =
             // .map<.string, .typeid>）；shared 按类型实参推导（同 Array）

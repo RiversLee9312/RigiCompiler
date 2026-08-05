@@ -46,21 +46,15 @@ namespace LatteCompiler
 
     // 值引用（局部/参数）：名字即操作数，零指令。
     // S9d：可变参数引用映射到隐藏包变量（.vargs.<名>/.kwargs.<名>，
-    // §7.1——源码参数名是包变量，BIL 以保留名承载）
+    // §7.1——源码参数名是包变量，BIL 以保留名承载）；映射与写入侧
+    // （AssignmentEmitter set.var）共用 EmittingFacility.ValueVariableName
     internal sealed class ValueReferenceEmitter : EmitVisitor<ValueReferenceEmitter, BilVariableOperand>
     {
         protected override BilVariableOperand VisitCore(LoweredNode node, BilBlock target,
             EmitContext ctx, EmitEnvironment env)
         {
             var valueReference = (LoweredValueReferenceExpression)node;
-            // named 参数 IsVariadic 与 IsNamedVariadic 同时为 true——具名先判
-            var name = valueReference.Symbol switch
-            {
-                ParameterSymbol { IsNamedVariadic: true } parameter => ".kwargs." + parameter.Name,
-                ParameterSymbol { IsVariadic: true } parameter => ".vargs." + parameter.Name,
-                _ => valueReference.Symbol.Name,
-            };
-            return BilOp.Var(name);
+            return BilOp.Var(EmittingFacility.ValueVariableName(valueReference.Symbol));
         }
     }
 
@@ -171,6 +165,31 @@ namespace LatteCompiler
         }
     }
 
+    // enum case 构造（S11，§14.3：new.case type(TYPE) case(CASE) TARGET
+    // [ARGS]）：洞实参逐条物化（§10.2 从左到右；P4a 已按洞签名类型物化
+    // cast，实参类型与 case 声明参数严格相等）；结果临时变量类型 = 宿主
+    // enum 类型引用
+    internal sealed class EnumCaseEmitter : EmitVisitor<EnumCaseEmitter, BilVariableOperand>
+    {
+        protected override BilVariableOperand VisitCore(LoweredNode node, BilBlock target,
+            EmitContext ctx, EmitEnvironment env)
+        {
+            var enumCase = (LoweredEnumCaseExpression)node;
+            var caseArguments = new List<BilVariableOperand>();
+            foreach (var argument in enumCase.Arguments)
+            {
+                caseArguments.Add(EmitValueDispatcher.Visit(argument, target, ctx, env));
+            }
+            var caseResult = ctx.Temps.NewTemp(enumCase.Type);
+            target.Instructions.Add(new NewCaseInstruction(
+                BilOp.Type(CanonicalSymbolPrinter.PrintType(enumCase.Case.Owner)),
+                BilOp.Case(CanonicalSymbolPrinter.PrintCase(enumCase.Case)),
+                caseResult, caseArguments)
+            { Origin = enumCase });
+            return caseResult;
+        }
+    }
+
     // this → $.this 变量操作数（§7.3，零指令——.this 在
     // .args 已声明，与参数同 $ 引用形式 §9.3）
     internal sealed class ThisEmitter : EmitVisitor<ThisEmitter, BilVariableOperand>
@@ -271,7 +290,9 @@ namespace LatteCompiler
 
     // is/supers/with（S8a，§12.3）：
     // 静态 type.X VALUE type(TARGET_TYPE) RESULT；
-    // 动态 type.X.indirect VALUE TYPEID_VAR RESULT
+    // 动态 type.X.indirect VALUE TYPEID_VAR RESULT。
+    // S11：is .Case 判别匹配发独立的 type.is.case VALUE case(CASE) RESULT
+    // （无 BilTypeCheckKind 映射——不属于 type.is/supers/with 家族，须先分流）
     internal sealed class TypeCheckEmitter : EmitVisitor<TypeCheckEmitter, BilVariableOperand>
     {
         protected override BilVariableOperand VisitCore(LoweredNode node, BilBlock target,
@@ -280,6 +301,13 @@ namespace LatteCompiler
             var typeCheck = (LoweredTypeCheckExpression)node;
             var checkValue = EmitValueDispatcher.Visit(typeCheck.Operand, target, ctx, env);
             var checkResult = ctx.Temps.NewTemp(typeCheck.Type);
+            if (typeCheck.Kind == BoundTypeCheckKind.IsCase)
+            {
+                target.Instructions.Add(new IsCaseInstruction(checkValue,
+                    BilOp.Case(CanonicalSymbolPrinter.PrintCase(typeCheck.Case!)), checkResult)
+                { Origin = typeCheck });
+                return checkResult;
+            }
             var checkKind = EmittingFacility.MapTypeCheckKind(typeCheck.Kind);
             if (typeCheck.TargetValue != null)
             {
@@ -328,9 +356,10 @@ namespace LatteCompiler
 
     // 可变参数包打包（S9d，§7.1/§14）：调用点把归包实参构造为隐藏包值——
     // 位置包 new type(.array<.any>) [元素装箱 cast 到 .any...]；具名包
-    // 每项先 new type(.pair<.string, .any>)（名字字符串资源 + 值装箱
-    // cast）再包进 .array<.pair<.string, .any>>。结果类型 = .array<.any>
-    // / .array<.pair<.string, .any>>（与 fn .args 的 .vargs./.kwargs. 类型一致）
+    // 每项先 new type(core::Pair<.string, .any>)（名字字符串资源 + 值装箱
+    // cast）再包进 new type(.array<core::Pair<.string, .any>>)。
+    // 结果类型与 fn .args 的 .vargs./.kwargs. 条目同元素类型（§7.1——
+    // core::Pair 非内建，经 canonical 投影而非 .pair 构造头别名）
     internal sealed class VarArgsEmitter : EmitVisitor<VarArgsEmitter, BilVariableOperand>
     {
         protected override BilVariableOperand VisitCore(LoweredNode node, BilBlock target,
@@ -352,30 +381,47 @@ namespace LatteCompiler
                 { Origin = pack });
                 return packResult;
             }
-            // 具名包：pair 逐项构造后装入 array
+            // 具名包：pair 逐项构造后装入 array——结果类型 =
+            // .array<.pair<.string, .any>>（与 fn .args 的 .kwargs.<名>
+            // 契约一致，§7.1）；pairTemp 类型即容器元素类型，无需装箱
             var pairType = env.Unit.Symbols.GetConstructedType(
                 BootstrapPairDefinition(env), env.Unit.Symbols.Bootstrap.String, anyType);
+            var pairValues = EmitNamedPairs(pack, pack.NamedValues, pairType,
+                value => BoxToAny(value, target, ctx, env), target, ctx, env);
+            var namedPackType = env.Unit.Symbols.GetConstructedType(
+                env.Unit.Symbols.Bootstrap.ArrayDefinition, pairType);
+            var namedPackResult = ctx.Temps.NewTemp(namedPackType);
+            target.Instructions.Add(new NewInstruction(
+                BilOp.Type(CanonicalSymbolPrinter.PrintType(namedPackType)),
+                namedPackResult, pairValues)
+            { Origin = pack });
+            return namedPackResult;
+        }
+
+        // 具名包逐项 pair 构造（值包/泛型包共用）：每项 = 名字字符串资源
+        // load + new type(.pair<.string, ELEM>) [名, 元素操作数]；元素
+        // 物化（值装箱到 Any / 类型 getid.type）由调用方回调承担
+        internal static List<BilVariableOperand> EmitNamedPairs<T>(
+            LoweredNode origin, IReadOnlyList<(string Name, T Item)> items, TypeSymbol pairType,
+            Func<T, BilVariableOperand> materializeElement, BilBlock target,
+            EmitContext ctx, EmitEnvironment env)
+        {
             var pairValues = new List<BilVariableOperand>();
-            foreach (var (name, value) in pack.NamedValues)
+            foreach (var (name, item) in items)
             {
                 var nameResource = EmittingFacility.RegisterScalarResource(BilScalarType.String,
                     "\"" + EmittingFacility.Escape(name) + "\"", env);
                 var nameTemp = ctx.Temps.NewTemp(env.Unit.Symbols.Bootstrap.String);
                 target.Instructions.Add(new LoadInstruction(nameResource, nameTemp)
-                { Origin = pack });
+                { Origin = origin });
                 var pairTemp = ctx.Temps.NewTemp(pairType);
                 target.Instructions.Add(new NewInstruction(
                     BilOp.Type(CanonicalSymbolPrinter.PrintType(pairType)),
-                    pairTemp, new List<BilVariableOperand> { nameTemp, BoxToAny(value, target, ctx, env) })
-                { Origin = pack });
+                    pairTemp, new List<BilVariableOperand> { nameTemp, materializeElement(item) })
+                { Origin = origin });
                 pairValues.Add(pairTemp);
             }
-            var namedPackResult = ctx.Temps.NewTemp(pack.Type);
-            target.Instructions.Add(new NewInstruction(
-                BilOp.Type(CanonicalSymbolPrinter.PrintType(pack.Type)),
-                namedPackResult, pairValues)
-            { Origin = pack });
-            return namedPackResult;
+            return pairValues;
         }
 
         // 值装箱到统一 Any 槽（RUNTIME §10；§12.1 引用视图转换——非 Any
@@ -446,25 +492,10 @@ namespace LatteCompiler
             var pairType = env.Unit.Symbols.GetConstructedType(
                 VarArgsEmitter.BootstrapPairDefinition(env),
                 env.Unit.Symbols.Bootstrap.String, typeIdType);
-            var pairValues = new List<BilVariableOperand>();
-            foreach (var (name, typeArgument) in pack.NamedTypes)
-            {
-                var nameResource = EmittingFacility.RegisterScalarResource(BilScalarType.String,
-                    "\"" + EmittingFacility.Escape(name) + "\"", env);
-                var nameTemp = ctx.Temps.NewTemp(env.Unit.Symbols.Bootstrap.String);
-                target.Instructions.Add(new LoadInstruction(nameResource, nameTemp)
-                { Origin = pack });
-                var pairTemp = ctx.Temps.NewTemp(pairType);
-                target.Instructions.Add(new NewInstruction(
-                    BilOp.Type(CanonicalSymbolPrinter.PrintType(pairType)),
-                    pairTemp, new List<BilVariableOperand>
-                    {
-                        nameTemp,
-                        EmittingFacility.MaterializeTypeId(typeArgument, pack, target, ctx, env),
-                    })
-                { Origin = pack });
-                pairValues.Add(pairTemp);
-            }
+            var pairValues = VarArgsEmitter.EmitNamedPairs(pack, pack.NamedTypes, pairType,
+                typeArgument => EmittingFacility.MaterializeTypeId(typeArgument, pack, target,
+                    ctx, env),
+                target, ctx, env);
             var mapType = env.Unit.Symbols.GetConstructedType(
                 env.Unit.Symbols.Bootstrap.MapDefinition,
                 env.Unit.Symbols.Bootstrap.String, typeIdType);

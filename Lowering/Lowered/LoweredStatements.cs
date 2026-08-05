@@ -128,7 +128,6 @@ namespace LatteCompiler
     //   末尾一条写条件局部的赋值；§16.3 要求每次读取 CONDITION 前由
     //   JUDGE_BLOCK 赋值）；
     // - Condition 是合成 bool 局部（.sN 体系）；
-    // - Enumerator 恒 null（发射 none；for 的枚举器块随 S7c-2 落地）；
     // - BreakId 是合成 .breakid 局部（.bN 命名，函数内唯一；Type 为
     //   null 的特例见 LocalSymbol 注释，.vars 条目投影 .breakid §9.3）
     public sealed class LoweredLoop : LoweredStatement
@@ -137,18 +136,15 @@ namespace LatteCompiler
         public LoweredBlock Judge { get; }
         public LocalSymbol Condition { get; }
         public LoweredBlock Body { get; }
-        public LoweredBlock? Enumerator { get; }
         public LocalSymbol BreakId { get; }
 
         public LoweredLoop(BoundLoop origin, bool isRev, LoweredBlock judge,
-            LocalSymbol condition, LoweredBlock body, LoweredBlock? enumerator,
-            LocalSymbol breakId) : base(origin)
+            LocalSymbol condition, LoweredBlock body, LocalSymbol breakId) : base(origin)
         {
             IsRev = isRev;
             Judge = judge;
             Condition = condition;
             Body = body;
-            Enumerator = enumerator;
             BreakId = breakId;
         }
     }

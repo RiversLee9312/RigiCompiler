@@ -313,5 +313,38 @@ namespace LatteCompiler.Tests
             TestHarness.CheckSemanticError("ns[0] 索引非值", unit12.Diagnostics,
                 "Undefined name: 'stuff'");
         }
+
+        // ===== 泛型基类成员查找（构造类型 BaseType 回填的 P3 端到端验证：
+        // Sub\<i32\> 在参数类型解析时驻留（定义基类尚未解析），修复前基类链
+        // 断在默认 Object 快照/停在未代入快照 → 误报未定义成员/类型不匹配）=====
+        private static void TestGenericBaseClassMemberLookup()
+        {
+            TestHarness.Section("P3 Generic Base Class Member Lookup");
+
+            // 泛型基类方法两跳：s.foo() 经 Sub\<i32\> → Base\<i32\> 命中
+            var (unit, bodies) = BindUnit(
+                "pub open class Base\\<T> {\n" +
+                "    pub func foo(): i32 { return 1 }\n" +
+                "}\n" +
+                "pub class Sub\\<T> : Base\\<T> { }\n" +
+                "func bar(s: Sub\\<i32>): i32 { return s.foo() }\n");
+            CheckNoErrors("无诊断（泛型基类方法查找）", unit);
+            TestHarness.Check("s.foo() 实例调用上色",
+                BoundDescribe.Body(BodyOf(bodies, "bar")),
+                "Body(bar, [], [Return(InstCall(foo, Param(s,Sub<i32>), [], i32))])");
+
+            // 泛型字段两跳代入：s.x 类型为 i32（而非定义级 T）
+            var (unit2, bodies2) = BindUnit(
+                "pub open class Base\\<T> {\n" +
+                "    pub var x: T\n" +
+                "    pub init(_ -> x) { }\n" +
+                "}\n" +
+                "pub class Sub\\<T> : Base\\<T> { }\n" +
+                "func bar(s: Sub\\<i32>) { var y: i32 = s.x }\n");
+            CheckNoErrors("无诊断（泛型字段两跳代入）", unit2);
+            TestHarness.Check("s.x 定型 i32",
+                BoundDescribe.Body(BodyOf(bodies2, "bar")),
+                "Body(bar, [y: i32], [Decl(y, i32, = InstField(x, Param(s,Sub<i32>), i32))])");
+        }
     }
 }
