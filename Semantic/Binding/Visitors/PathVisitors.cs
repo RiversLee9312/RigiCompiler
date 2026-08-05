@@ -72,7 +72,9 @@ namespace LatteCompiler
                 var binding = CallFacility.BindCall(node, calleeSegments, callArguments!, scope,
                     ctx, env, genericArguments);
                 if (binding == null) return null;
-                if (binding.IsVoid)
+                // S10：async 无结果调用有 Task 值（ResultType 非空）——仅
+                // 真 void（ResultType == null）拒绝作值
+                if (binding.ResultType == null)
                 {
                     env.Error(node.Span, $"Method '{binding.Method.Name}' has no result (void) " +
                         "and cannot be used as a value");
@@ -218,7 +220,8 @@ namespace LatteCompiler
                     node.Head.Suffixes[0].Arguments!, scope, ctx, env,
                     node.Head.GenericArguments.Count > 0 ? node.Head.GenericArguments : null);
                 if (callBase == null) return null;
-                if (callBase.IsVoid)
+                // S10：async 无结果调用有 Task 值（同 BindCall 值位置口径）
+                if (callBase.ResultType == null)
                 {
                     env.Error(node.Span, $"Method '{callBase.Method.Name}' has no result (void) " +
                         "and cannot be used as a value");
@@ -487,7 +490,8 @@ namespace LatteCompiler
                     segment.Suffixes[0].Arguments!, scope, ctx, env,
                     segment.GenericArguments.Count > 0 ? segment.GenericArguments : null);
                 if (call == null) return null;
-                if (call.IsVoid)
+                // S10：async 无结果调用有 Task 值（同 BindCall 值位置口径）
+                if (call.ResultType == null)
                 {
                     env.Error(segment.Span, $"Method '{call.Method.Name}' has no result " +
                         "(void) and cannot be used as a value");

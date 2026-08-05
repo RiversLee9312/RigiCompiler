@@ -84,7 +84,10 @@ namespace LatteCompiler
                 baseType: ValueType, isBuiltin: true);
             Wrapper = new TypeSymbol("Wrapper", TypeKind.Wrapper, Core,
                 baseType: ValueType, isRich: true, isBuiltin: true);
-            // 异常根：Object 分支普通 class，open 供用户异常类型继承
+            // 异常根：Object 分支普通 class，open 供用户异常类型继承。
+            // message 面（S10，SYNTAX §8.1：protected message 字段 + pub
+            // native getMessage()）在 String 初始化后添加（本文件末尾附近）——
+            // 构造顺序敏感：String 属性此处尚未初始化，取到 null
             Exception = new TypeSymbol("Exception", TypeKind.Class, Core,
                 baseType: Object, isBuiltin: true) { IsOpen = true };
 
@@ -133,6 +136,23 @@ namespace LatteCompiler
                 NativeSymbol = "toString",
                 Accessibility = Accessibility.Public,
                 IsOpen = true,
+            });
+
+            // 异常根 message 面（S10，SYNTAX §8.1；置于此处——String 已初始化）：
+            // protected message 字段 + pub native getMessage()——子类 init 直接
+            // 赋值继承字段（Latte 无 super 构造语法），getMessage 是 message 的
+            // 唯一公共读取通道；toString 不覆写（插值/打印走 Object 默认实现，
+            // 返回类型 canonical 名）。运行时实现归 BIL VM（S14），编译器只承载形状
+            Exception.Fields.Add(new FieldSymbol("message", owner: Exception, fieldType: String)
+            {
+                Accessibility = Accessibility.Protected,
+            });
+            Exception.Methods.Add(new MethodSymbol("getMessage", MethodKind.Regular,
+                owner: Exception, isNative: true, returnType: String)
+            {
+                NativeLibrary = "latte_rt",
+                NativeSymbol = "getMessage",
+                Accessibility = Accessibility.Public,
             });
 
             // 泛型内建（§3.1.2）：

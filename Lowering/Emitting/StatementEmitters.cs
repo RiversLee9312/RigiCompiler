@@ -125,6 +125,28 @@ namespace LatteCompiler
             {
                 arguments.Add(EmitValueDispatcher.Visit(argument, target, ctx, env));
             }
+            // S10（BIL §15.2）：async 无结果调用语句位置也有 Task 结果
+            // （fire-and-forget——丢弃句柄即不与其同步）；发 invoke 产 Task
+            // 到临时变量丢弃，而非 invoke.noret。stdlib 缺席的测试驱动
+            // 找不到 Task 定义时降级 invoke.noret（既有行为，仅测试可达）
+            if (call.Method.IsAsync)
+            {
+                var core = env.Unit.Symbols.GlobalNamespace.ChildNamespaces
+                    .FirstOrDefault(n => n.Name == "core");
+                var coroutine = core?.ChildNamespaces
+                    .FirstOrDefault(n => n.Name == "coroutine");
+                var task = coroutine?.Types.FirstOrDefault(t => t.Name == "Task"
+                    && t.GenericParameters.Count == 0);
+                if (task != null)
+                {
+                    var discarded = ctx.Temps.NewTemp(task);
+                    target.Instructions.Add(new InvokeInstruction(
+                        BilOp.Fn(CanonicalSymbolPrinter.PrintMethod(call.Method)),
+                        discarded, arguments)
+                    { Origin = call });
+                    return Unit.Value;
+                }
+            }
             target.Instructions.Add(new InvokeNoResultInstruction(
                 BilOp.Fn(CanonicalSymbolPrinter.PrintMethod(call.Method)), arguments)
             { Origin = call });

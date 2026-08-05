@@ -494,8 +494,14 @@ namespace LatteCompiler.Bil
                 return;
             }
 
-            // §15.1：返回形态匹配——有返回用 invoke，无返回用 invoke.noret
-            if (target != null && returnType == ".void")
+            // §15.1：返回形态匹配——有返回用 invoke，无返回用 invoke.noret。
+            // S10（§15.2）：async 方法调用恒有 Task 结果（无结果 async 也是
+            // core.coroutine.Task）——两种检查均豁免 async
+            var isAsync = context.Module.MethodDeclarations.TryGetValue(methodSymbol,
+                out var calleeDeclaration)
+                && calleeDeclaration.Modifiers.Any(m =>
+                    m is BilKeywordModifier { Keyword: BilKeyword.Async });
+            if (target != null && returnType == ".void" && !isAsync)
             {
                 errors.Add(new BilVerificationError("21.3", location,
                     $"无返回方法 \"{methodSymbol}\" 必须使用 invoke.noret"));
@@ -507,7 +513,16 @@ namespace LatteCompiler.Bil
             }
             if (target != null && returnType != ".void")
             {
-                CheckType(context, VarType(context, target), returnType, location,
+                // §15.2：async 有结果方法调用结果 = core.coroutine.Task\<TResult\>
+                var expectedResultType = isAsync
+                    ? $"core.coroutine::Task<{returnType}>" : returnType;
+                CheckType(context, VarType(context, target), expectedResultType, location,
+                    "invoke 结果", errors);
+            }
+            else if (target != null && isAsync)
+            {
+                // §15.2：async 无结果方法调用结果 = core.coroutine.Task
+                CheckType(context, VarType(context, target), "core.coroutine::Task", location,
                     "invoke 结果", errors);
             }
 

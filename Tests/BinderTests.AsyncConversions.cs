@@ -224,5 +224,88 @@ namespace LatteCompiler.Tests
                 "func f() { var v = pass\\<i32>(1) }\n");
             CheckNoErrors("闸门 5 共享安全泛型实参无诊断", unit9);
         }
+
+        // ===== S10：async 调用表达式类型改写（SYNTAX §4.5 表——
+        // `async func f(): TResult` 调用点类型 = core.coroutine.Task\<TResult\>、
+        // `async func f()` = core.coroutine.Task；用户决策提前至 S10 落地，
+        // await 运算符仍归 S13。Task 定义在 stdlib，用例经 BindUnitWithStdlib）=====
+        private static void TestAsyncResultTypes()
+        {
+            TestHarness.Section("P3 Async Result Types (Task<T>/Task, S10)");
+
+            // 1. 有结果 async 调用：var 推断 = Task\<String\> 构造
+            var (unit, bodies) = BindUnitWithStdlib(
+                "async func loadUser(id: i32): String { return \"u\" }\n" +
+                "func main() { var t = loadUser(42) }\n");
+            CheckNoErrors("无诊断（async 调用 var 推断）", unit);
+            var decl = (BoundLocalDeclarationStatement)BodyOf(bodies, "main").Body.Statements[0];
+            TestHarness.CheckTrue("async 调用表达式类型 = Task\\<String> 构造（core.coroutine）",
+                decl.Local.Type is TypeSymbol taskType
+                && taskType.ConstructedFrom is { Name: "Task" }
+                && taskType.ConstructedFrom.Namespace!.FullName == "core.coroutine"
+                && taskType.TypeArguments!.Count == 1
+                && ReferenceEquals(taskType.TypeArguments[0], unit.Symbols.Bootstrap.String));
+
+            // 2. 显式标注类型匹配：const t: core.coroutine.Task\<String\> = loadUser(42)
+            var (unit2, _) = BindUnitWithStdlib(
+                "async func loadUser(id: i32): String { return \"u\" }\n" +
+                "func main() { const t: core.coroutine.Task\\<String> = loadUser(42) }\n");
+            CheckNoErrors("无诊断（显式 Task 标注赋值匹配）", unit2);
+
+            // 3. 无结果 async 调用可作值：var t = flushLogs() → Task 非泛型定义
+            var (unit3, bodies3) = BindUnitWithStdlib(
+                "async func flushLogs() { }\n" +
+                "func main() { var t = flushLogs() }\n");
+            CheckNoErrors("无诊断（无结果 async 调用作值）", unit3);
+            TestHarness.CheckTrue("无结果 async 调用类型 = Task 非泛型定义",
+                ((BoundLocalDeclarationStatement)BodyOf(bodies3, "main").Body.Statements[0])
+                    .Local.Type is TypeSymbol taskDef
+                && taskDef.Name == "Task" && taskDef.ConstructedFrom == null
+                && taskDef.GenericParameters.Count == 0);
+
+            // 4. 语句位置 async 调用 → BoundCallStatement（fire-and-forget）
+            var (unit4, bodies4) = BindUnitWithStdlib(
+                "async func flushLogs() { }\n" +
+                "func main() { flushLogs() }\n");
+            CheckNoErrors("无诊断（语句位置 async 调用）", unit4);
+            TestHarness.CheckTrue("语句位置 async 调用 = BoundCallStatement",
+                BodyOf(bodies4, "main").Body.Statements[0] is BoundCallStatement);
+
+            // 5. 普通函数不受影响
+            var (unit5, bodies5) = BindUnitWithStdlib(
+                "func g(): i32 { return 1 }\n" +
+                "func main() { var t = g() }\n");
+            CheckNoErrors("无诊断（普通调用）", unit5);
+            TestHarness.CheckTrue("普通调用类型仍为 i32",
+                ReferenceEquals(((BoundLocalDeclarationStatement)BodyOf(bodies5, "main")
+                    .Body.Statements[0]).Local.Type, unit5.Symbols.Bootstrap.Int32));
+
+            // 6. 泛型 async 方法：Task\<i32\>（显式泛型实参）
+            var (unit6, bodies6) = BindUnitWithStdlib(
+                "async func gf\\<T>(x: T): T { return x }\n" +
+                "func main() { var t = gf\\<i32>(42) }\n");
+            CheckNoErrors("无诊断（泛型 async 调用）", unit6);
+            TestHarness.CheckTrue("泛型 async 调用类型 = Task\\<i32> 构造",
+                ((BoundLocalDeclarationStatement)BodyOf(bodies6, "main").Body.Statements[0])
+                    .Local.Type is TypeSymbol task6
+                && task6.ConstructedFrom?.Name == "Task"
+                && task6.TypeArguments!.Count == 1
+                && ReferenceEquals(task6.TypeArguments[0], unit6.Symbols.Bootstrap.Int32));
+
+            // 7. 实例 async 方法调用（闸门 1 共享安全：shared receiver）
+            var (unit7, bodies7) = BindUnitWithStdlib(
+                "shared class Service { pub async func run(name: String): String { return name } }\n" +
+                "func main() {\n" +
+                "    var s = new Service()\n" +
+                "    var t = s.run(\"x\")\n" +
+                "}\n");
+            CheckNoErrors("无诊断（实例 async 调用）", unit7);
+            TestHarness.CheckTrue("实例 async 调用类型 = Task\\<String> 构造",
+                ((BoundLocalDeclarationStatement)BodyOf(bodies7, "main").Body.Statements[1])
+                    .Local.Type is TypeSymbol task7
+                && task7.ConstructedFrom?.Name == "Task"
+                && task7.TypeArguments!.Count == 1
+                && ReferenceEquals(task7.TypeArguments[0], unit7.Symbols.Bootstrap.String));
+        }
     }
 }

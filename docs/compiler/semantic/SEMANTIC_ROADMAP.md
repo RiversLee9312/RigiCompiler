@@ -20,8 +20,8 @@ S1 符号图内核 ┴→ S2 P1 声明收集 → S3 P2 声明解析 ─┐
 S4 BIL 对象模型 + Writer（与 S1–S3 并行）─────────┤
                                                   ├→ S5 P3 最小闭环
                                                   └→ S6 P4 最小闭环（端到端 hello world）
-S7 控制流全套 → S8 P3 完整化 → S9 泛型 → S10 core.latte
-→ S11 wrapper/extension/enum → S12 BIL verifier
+S7 控制流全套 → S8 P3 完整化 → S9 泛型 → S10 core.latte（✅ 2026-08-05 M74）
+→ S11 wrapper/extension/enum → S12 BIL verifier（✅ 已提前至 M58，见下）
 → S13 async lowering 专项（含 BIL_STANDARD 修订）→ S14 BIL VM
 ```
 
@@ -595,7 +595,24 @@ BIL §7 落地，泛型端到端出合法 BIL：
 - **验收**：43 套件 + fuzz 6000 + 语义 fuzz 3000 全绿 + CLI
   `--emit-bil` 端到端样例核对。
 
-## S10 core.latte 载入机制
+## S10 core.latte 载入机制 ✅（2026-08-05 M74 落地）
+
+> **已完成**（M74）：载入机制本体早已在 S6 落地（EmbeddedResource 内嵌 +
+> 编译单元注入 + `native` 语法）；本里程碑完成 stdlib 文件扩充与
+> bootstrap/core.latte 边界定稿。用户决策四件套：① 类型名唯一性按
+> 「名 + 泛型元数」判定（`Task` 与 `Task\<TResult\>` 同名共存，对齐 C#
+> 先例，落 P1 重复检测 + NameResolver 查找分流）；② coroutine 运行时面
+> 以 Latte 自举声明 + 最小 native API（`sleep`/`PollingAlarm.isReady`），
+> native 返回类型放宽至用户引用类型（§4.6 修订，FFI ABI 归 Middleware）；
+> ③ 异常子类清单（RuntimeException/IOException/CastException/
+> NoSuchMethodException）+ message 挂根（bootstrap Exception 程序化携带
+> protected message + pub native getMessage）+ 子类自持 init + toString
+> 不覆写；④ P3 async 调用返回类型改写提前落地（SYNTAX §4.5 表兑现——
+> 调用点类型 = Task\<T\>/Task，await 仍归 S13）。P4b 同步：async 方法声明
+> 发射 §8.4 async 修饰符 + 语句位置 async 调用发 invoke 而非 invoke.noret
+> （§15.2 fire-and-forget）+ BilVerifier 预定义符号表补 getMessage/message
+> + async invoke 结果形态校验（§21.3）。边界定稿落 SYNTAX §15.3/§8.1。
+> 兼作前端常驻回归（StdlibSourcesTests 六源结构断言）。
 
 core 声明文件随编译器载入（自举解析 → 同一条 P1/P2 路径）、
 bootstrap 与 core.latte 边界定稿。**载入机制本身已提前至 S6 落地**

@@ -146,8 +146,11 @@ namespace LatteCompiler
                 isShared: modifiers.Contains(Keywords.SHARED));
             CollectGenericParameters(symbol.GenericParameters, generics, result);
             result.Map(node, symbol);
-            // 重复检测：同容器同名类型只保留第一个（诊断累积，收集不中断）
-            if (scope.Types.Any(t => t.Name == name))
+            // 重复检测：同容器同名同元数类型只保留第一个（S10 定稿：类型名
+            // 唯一性按「名 + 泛型参数个数」判定——Task 与 Task\<T\> 合法共存，
+            // 见 SYNTAX §15.3；诊断累积，收集不中断）
+            var arity = generics?.Parameters.Count ?? 0;
+            if (scope.Types.Any(t => t.Name == name && t.GenericParameters.Count == arity))
             {
                 unit.Diagnostics.Error(DiagnosticPhase.P1, node.Span,
                     $"Duplicate type declaration: '{name}'");

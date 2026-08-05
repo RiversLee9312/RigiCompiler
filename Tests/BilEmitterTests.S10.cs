@@ -1,0 +1,131 @@
+using System.Linq;
+using LatteCompiler.Bil;
+
+namespace LatteCompiler.Tests
+{
+    // BilEmitter S10 stdlib 端到端发射测试：异常具体子类（throw/catch/
+    // getMessage）、core.IDisposable 实现、async 调用 Task 形态（§15.2）、
+    // Task 同名不同元数声明共存（§8.2 generic 子句）。全部用例经 stdlib
+    // 全管线（EmitBilUnit）出合法 BIL（BilVerifier 零错误）。
+
+    public static partial class BilEmitterTests
+    {
+        // ===== S10：用户异常端到端（自定义子类 + stdlib 子类 catch +
+        // bootstrap getMessage）=====
+        private static void TestExceptionEmission()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "pub open class ValidationError : core.Exception {\n" +
+                "    pub init(text: String) { message = text }\n" +
+                "}\n" +
+                "func fail(): i32 {\n" +
+                "    throw new ValidationError(\"invalid\")\n" +
+                "    return 0\n" +
+                "}\n" +
+                "func handle(): String {\n" +
+                "    try {\n" +
+                "        fail()\n" +
+                "        return \"ok\"\n" +
+                "    } catch (e: core.IOException) {\n" +
+                "        return e.getMessage()\n" +
+                "    } catch (_: core.RuntimeException) {\n" +
+                "        return \"runtime error\"\n" +
+                "    }\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（异常端到端）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（异常端到端）", module);
+
+            // catch-table 引用 stdlib 异常子类（§19.5 保序）
+            var catchTable = module.Resources.OfType<BilCatchTableResource>().Single();
+            TestHarness.Check("catch-table 元素（stdlib 异常子类保序）",
+                string.Join("\n", catchTable.Entries.Select(e => e.Render())),
+                "type(core::IOException) -> blk(try0-catch0)\n" +
+                "type(core::RuntimeException) -> blk(try0-catch1)");
+
+            // 自定义异常声明：extends core::Exception、init 自持（§8.1）；
+            // message 是 bootstrap 根字段（不重复声明）
+            var validationError = module.LocalSymbols.OfType<BilTypeDeclaration>()
+                .Single(t => t.Symbol == "ValidationError");
+            TestHarness.Check("ValidationError extends 与成员声明",
+                validationError.ExtendsType + " / " +
+                string.Join("; ", validationError.Members.Select(m => m.Symbol)),
+                "core::Exception / ValidationError$init(text:.string)@.void");
+
+            // init 体 set.field 引用 bootstrap 根字段（预定义符号表闭合）
+            var validationInit = module.Functions.Single(
+                fn => fn.Symbol == "ValidationError$init(text:.string)@.void");
+            TestHarness.CheckTrue("init 体 set.field message（bootstrap 字段）",
+                validationInit.Blocks.SelectMany(b => b.Instructions)
+                    .Any(i => i is SetFieldInstruction setField
+                        && setField.Field.Symbol == "core::Exception#message@.string"));
+
+            // catch 块调用 bootstrap getMessage（预定义方法表闭合）
+            var handle = module.Functions.Single(fn => fn.Symbol == "$handle()@.string");
+            TestHarness.CheckTrue("catch 块调用 getMessage",
+                handle.Blocks.SelectMany(b => b.Instructions)
+                    .Any(i => i is InvokeInstruction invoke
+                        && invoke.Method.Symbol == "core::Exception$getMessage()@.string"));
+        }
+
+        // ===== S10：core.IDisposable 实现判定（§6.2）=====
+        private static void TestDisposableEmission()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "class Resource implements core.IDisposable {\n" +
+                "    pub func dispose() { }\n" +
+                "}\n" +
+                "func main(): i32 {\n" +
+                "    var r = new Resource()\n" +
+                "    r.dispose()\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（IDisposable）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（IDisposable）", module);
+
+            var resource = module.LocalSymbols.OfType<BilTypeDeclaration>()
+                .Single(t => t.Symbol == "Resource");
+            TestHarness.Check("Resource implements core::IDisposable",
+                string.Join(",", resource.ImplementsTypes), "core::IDisposable");
+        }
+
+        // ===== S10：async 调用 Task 形态 + Task 同名共存声明（§15.2/§8.2）=====
+        private static void TestAsyncTaskEmission()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "async func loadUser(id: i32): String { return \"u\" }\n" +
+                "async func flushLogs() { }\n" +
+                "func main(): i32 {\n" +
+                "    const task: core.coroutine.Task\\<String> = loadUser(42)\n" +
+                "    flushLogs()\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（async Task）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（async Task）", module);
+
+            // Task 同名不同元数声明共存（§8.2 generic(...) 子句区分）
+            var taskDecls = module.LocalSymbols.OfType<BilTypeDeclaration>()
+                .Where(t => t.Symbol == "core.coroutine::Task").ToList();
+            TestHarness.CheckTrue("Task 两声明（泛型 generic 子句 + 非泛型）",
+                taskDecls.Count == 2
+                && taskDecls.Any(t => t.GenericParameters.Count == 1)
+                && taskDecls.Any(t => t.GenericParameters.Count == 0));
+
+            // async 方法声明带 async 修饰符（§8.4）
+            var loadUser = module.LocalSymbols.OfType<BilSimpleMemberDeclaration>()
+                .Single(m => m.Symbol == "$loadUser(id:.i32)@.string");
+            TestHarness.CheckTrue("async 方法声明带 async 修饰符",
+                loadUser.Modifiers.Any(m => m is BilKeywordModifier { Keyword: BilKeyword.Async }));
+
+            // main：值位置 invoke 产 Task\<.string\>；async 无结果语句位置发
+            // invoke（fire-and-forget，非 invoke.noret）
+            var main = module.Functions.Single(fn => fn.Symbol == "$main()@.i32");
+            var invokeSymbols = main.Blocks.SelectMany(b => b.Instructions)
+                .OfType<InvokeInstruction>().Select(i => i.Method.Symbol).ToList();
+            TestHarness.Check("main invoke 序列（loadUser + flushLogs）",
+                string.Join(",", invokeSymbols),
+                "$loadUser(id:.i32)@.string,$flushLogs()@.void");
+            TestHarness.CheckTrue("main 无 invoke.noret（async 均有 Task 结果）",
+                !main.Blocks.SelectMany(b => b.Instructions).Any(i => i is InvokeNoResultInstruction));
+        }
+    }
+}

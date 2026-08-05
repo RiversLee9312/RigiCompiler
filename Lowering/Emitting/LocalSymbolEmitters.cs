@@ -196,6 +196,9 @@ namespace LatteCompiler
             if (method.ExtTargetPath != null) modifiers.Add(new BilKeywordModifier(BilKeyword.Ext));
             if (method.IsOverride) modifiers.Add(new BilKeywordModifier(BilKeyword.Override));
             if (method.IsAbstract) modifiers.Add(new BilKeywordModifier(BilKeyword.Abstract));
+            // S10（BIL §8.4/§15.2）：async 修饰符——调用点返回 Task 的语义
+            // 标记（§15.2 结果形态由 verifier 据此校验）
+            if (method.IsAsync) modifiers.Add(new BilKeywordModifier(BilKeyword.Async));
             if (method.Kind == MethodKind.Init) modifiers.Add(new BilKeywordModifier(BilKeyword.Init));
             if (method.Kind == MethodKind.Operator) modifiers.Add(new BilOperatorModifier(method.Name));
             // native 三件套（§8.4：symbol/lib 必须与 native 同时出现且各恰好一次）

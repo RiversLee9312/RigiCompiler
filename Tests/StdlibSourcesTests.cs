@@ -8,14 +8,17 @@ namespace LatteCompiler.Tests
     /// 断言 stdlib/**/*.latte 确实经 EmbeddedResource 进入程序集，
     /// 且被当前 Lexer+Parser 完整接受。
     ///
-    /// 覆盖（S7c-2 起三源：.bootstrap.latte / core/Console.latte /
-    /// core/collections.latte，按逻辑名 Ordinal 排序）：
-    /// 1. ParseAll() 返回恰好三棵 RootASTNode，Span.sourceName 为逻辑名
+    /// 覆盖（S10 起六源：.bootstrap.latte / core/Console.latte /
+    /// core/collections.latte / core/coroutine.latte / core/disposable.latte /
+    /// core/exceptions.latte，按逻辑名 Ordinal 排序）：
+    /// 1. ParseAll() 返回恰好六棵 RootASTNode，Span.sourceName 为逻辑名
     ///    映射形（&lt;stdlib&gt;/ 前缀，含点开头文件名的反推）
     /// 2. 结构断言：.bootstrap 顶层恰好 1 个 ext operator callable；
     ///    Console（namespace core.io + pub class + 3 callable 成员，
     ///    native 双注解）；collections（namespace core.collections +
-    ///    2 interface + 2 class）
+    ///    2 interface + 2 class）；coroutine（namespace core.coroutine +
+    ///    9 class + sleep native 全局函数）；disposable（namespace core +
+    ///    IDisposable 接口）；exceptions（namespace core + 4 异常子类）
     /// 3. Console 整棵 Root 的 AstDescribe 描述串精确比对
     /// </summary>
     public static class StdlibSourcesTests
@@ -28,6 +31,9 @@ namespace LatteCompiler.Tests
             TestBootstrapStructure();
             TestConsoleStructure();
             TestCollectionsStructure();
+            TestCoroutineStructure();
+            TestDisposableStructure();
+            TestExceptionsStructure();
             TestConsoleDescribe();
 
             return TestHarness.Summary("StdlibSources");
@@ -39,17 +45,24 @@ namespace LatteCompiler.Tests
             TestHarness.Section("ParseAll: Count & SourceName");
 
             var roots = StdlibSources.ParseAll();
-            TestHarness.CheckTrue("ParseAll 返回恰好 3 棵 RootASTNode",
-                roots.Count == 3, $"实际 {roots.Count} 棵");
-            if (roots.Count < 3) { TestHarness.Blank(); return; }
+            TestHarness.CheckTrue("ParseAll 返回恰好 6 棵 RootASTNode",
+                roots.Count == 6, $"实际 {roots.Count} 棵");
+            if (roots.Count < 6) { TestHarness.Blank(); return; }
 
-            // 逻辑名 Ordinal 排序：'.'(0x2E) < 'c'；'C'(0x43) < 'c'(0x63)
+            // 逻辑名 Ordinal 排序：'.'(0x2E) < 'c'；'C'(0x43) < 'c'(0x63)；
+            // collections < coroutine（'l' < 'r'）；d < e
             TestHarness.Check("sourceName[0]（点开头文件名反推）",
                 roots[0].Span?.sourceName ?? "<null>", "<stdlib>/.bootstrap.latte");
             TestHarness.Check("sourceName[1]",
                 roots[1].Span?.sourceName ?? "<null>", "<stdlib>/core/Console.latte");
             TestHarness.Check("sourceName[2]",
                 roots[2].Span?.sourceName ?? "<null>", "<stdlib>/core/collections.latte");
+            TestHarness.Check("sourceName[3]",
+                roots[3].Span?.sourceName ?? "<null>", "<stdlib>/core/coroutine.latte");
+            TestHarness.Check("sourceName[4]",
+                roots[4].Span?.sourceName ?? "<null>", "<stdlib>/core/disposable.latte");
+            TestHarness.Check("sourceName[5]",
+                roots[5].Span?.sourceName ?? "<null>", "<stdlib>/core/exceptions.latte");
 
             TestHarness.Blank();
         }
@@ -251,6 +264,169 @@ namespace LatteCompiler.Tests
                     .FirstOrDefault(m => m.Name == "iterate");
                 TestHarness.CheckTrue("RangeI32.iterate 带 override 修饰符",
                     iterate != null && iterate.Modifiers.Contains(Keywords.OVERRIDE));
+            }
+
+            TestHarness.Blank();
+        }
+
+        // ===== 2d. coroutine 结构（namespace + 9 class + sleep native）=====
+        private static void TestCoroutineStructure()
+        {
+            TestHarness.Section("Structure: namespace core.coroutine");
+
+            var roots = StdlibSources.ParseAll();
+            if (roots.Count < 4)
+            {
+                TestHarness.CheckTrue("ParseAll 至少 4 棵（结构断言前置）", false,
+                    $"实际 {roots.Count} 棵");
+                TestHarness.Blank();
+                return;
+            }
+            var root = roots[3];
+
+            // 顶层：namespace + Task\<TResult\>/Task/Executor/MainExecutor/
+            // ComputeExecutor/IOExecutor/PollingAlarm/EventAlarm/
+            // CoroutineLocal\<TValue\> 9 个 class + sleep native 全局函数
+            // （共 11 个声明，S10）
+            TestHarness.CheckTrue("顶层恰好 11 个声明（namespace + 9 class + func）",
+                root.Declarations.Count == 11, $"实际 {root.Declarations.Count}");
+            if (root.Declarations.Count < 11) { TestHarness.Blank(); return; }
+
+            var ns = root.Declarations[0] as NamespaceDeclarationASTNode;
+            TestHarness.CheckTrue("首声明是 namespace core.coroutine",
+                ns != null && AstDescribe.Symbol(ns.Name.symbol) == "core.coroutine");
+
+            TestHarness.CheckTrue("声明[1] 是泛型 class Task（abstract）",
+                root.Declarations[1] is ClassDeclarationASTNode task1
+                && task1.ClassName == "Task"
+                && task1.GenericParameters?.Parameters.Count == 1
+                && task1.Modifiers.Contains(Keywords.ABSTRACT));
+            TestHarness.CheckTrue("声明[2] 是非泛型 class Task（abstract，同名不同元数）",
+                root.Declarations[2] is ClassDeclarationASTNode task2
+                && task2.ClassName == "Task"
+                && (task2.GenericParameters == null
+                    || task2.GenericParameters.Parameters.Count == 0)
+                && task2.Modifiers.Contains(Keywords.ABSTRACT));
+            TestHarness.CheckTrue("声明[3] 是 class Executor（abstract）",
+                root.Declarations[3] is ClassDeclarationASTNode exec
+                && exec.ClassName == "Executor"
+                && exec.Modifiers.Contains(Keywords.ABSTRACT));
+            TestHarness.CheckTrue("声明[4..6] 是三个内置 Executor 子类",
+                root.Declarations[4] is ClassDeclarationASTNode mainExec
+                && mainExec.ClassName == "MainExecutor"
+                && root.Declarations[5] is ClassDeclarationASTNode computeExec
+                && computeExec.ClassName == "ComputeExecutor"
+                && root.Declarations[6] is ClassDeclarationASTNode ioExec
+                && ioExec.ClassName == "IOExecutor");
+            TestHarness.CheckTrue("声明[7] 是 PollingAlarm（abstract，含 isReady 抽象方法）",
+                root.Declarations[7] is ClassDeclarationASTNode alarm
+                && alarm.ClassName == "PollingAlarm"
+                && alarm.Modifiers.Contains(Keywords.ABSTRACT)
+                && alarm.Members.Count == 1
+                && alarm.Members[0] is CallableDeclarationASTNode ready
+                && ready.Name == "isReady"
+                && ready.Modifiers.Contains(Keywords.ABSTRACT)
+                && ready.Body == null);
+            TestHarness.CheckTrue("声明[8] 是 EventAlarm（abstract）",
+                root.Declarations[8] is ClassDeclarationASTNode eventAlarm
+                && eventAlarm.ClassName == "EventAlarm"
+                && eventAlarm.Modifiers.Contains(Keywords.ABSTRACT));
+            TestHarness.CheckTrue("声明[9] 是泛型 class CoroutineLocal（abstract）",
+                root.Declarations[9] is ClassDeclarationASTNode coroutineLocal
+                && coroutineLocal.ClassName == "CoroutineLocal"
+                && coroutineLocal.GenericParameters?.Parameters.Count == 1
+                && coroutineLocal.Modifiers.Contains(Keywords.ABSTRACT));
+            TestHarness.CheckTrue("声明[10] 是 sleep native 全局函数（返回 EventAlarm）",
+                root.Declarations[10] is CallableDeclarationASTNode sleep
+                && sleep.Name == "sleep"
+                && sleep.Modifiers.Contains(Keywords.NATIVE)
+                && sleep.Body == null
+                && sleep.Annotations.Count == 2
+                && sleep.ReturnType != null);
+
+            TestHarness.Blank();
+        }
+
+        // ===== 2e. disposable 结构（namespace core + IDisposable 接口）=====
+        private static void TestDisposableStructure()
+        {
+            TestHarness.Section("Structure: namespace core + IDisposable");
+
+            var roots = StdlibSources.ParseAll();
+            if (roots.Count < 5)
+            {
+                TestHarness.CheckTrue("ParseAll 至少 5 棵（结构断言前置）", false,
+                    $"实际 {roots.Count} 棵");
+                TestHarness.Blank();
+                return;
+            }
+            var root = roots[4];
+
+            TestHarness.CheckTrue("顶层恰好 2 个声明（namespace + interface）",
+                root.Declarations.Count == 2, $"实际 {root.Declarations.Count}");
+            if (root.Declarations.Count < 2) { TestHarness.Blank(); return; }
+
+            var ns = root.Declarations[0] as NamespaceDeclarationASTNode;
+            TestHarness.CheckTrue("首声明是 namespace core",
+                ns != null && AstDescribe.Symbol(ns.Name.symbol) == "core");
+            TestHarness.CheckTrue("次声明是 interface IDisposable（dispose 无体）",
+                root.Declarations[1] is InterfaceDeclarationASTNode disposable
+                && disposable.InterfaceName == "IDisposable"
+                && disposable.Members.Count == 1
+                && disposable.Members[0] is CallableDeclarationASTNode dispose
+                && dispose.Name == "dispose"
+                && dispose.Body == null);
+
+            TestHarness.Blank();
+        }
+
+        // ===== 2f. exceptions 结构（namespace core + 4 异常子类）=====
+        private static void TestExceptionsStructure()
+        {
+            TestHarness.Section("Structure: namespace core + 异常子类");
+
+            var roots = StdlibSources.ParseAll();
+            if (roots.Count < 6)
+            {
+                TestHarness.CheckTrue("ParseAll 至少 6 棵（结构断言前置）", false,
+                    $"实际 {roots.Count} 棵");
+                TestHarness.Blank();
+                return;
+            }
+            var root = roots[5];
+
+            // 顶层：namespace + RuntimeException/IOException/CastException/
+            // NoSuchMethodException 4 个 open class（共 5 个声明，S10）
+            TestHarness.CheckTrue("顶层恰好 5 个声明（namespace + 4 class）",
+                root.Declarations.Count == 5, $"实际 {root.Declarations.Count}");
+            if (root.Declarations.Count < 5) { TestHarness.Blank(); return; }
+
+            var ns = root.Declarations[0] as NamespaceDeclarationASTNode;
+            TestHarness.CheckTrue("首声明是 namespace core",
+                ns != null && AstDescribe.Symbol(ns.Name.symbol) == "core");
+
+            string[] expected = { "RuntimeException", "IOException", "CastException",
+                "NoSuchMethodException" };
+            for (int i = 0; i < expected.Length; i++)
+            {
+                var index = i + 1;
+                if (root.Declarations[index] is ClassDeclarationASTNode exceptionClass)
+                {
+                    TestHarness.CheckTrue($"声明[{index}] 是 open class {expected[i]}",
+                        exceptionClass.ClassName == expected[i]
+                        && exceptionClass.Modifiers.Contains(Keywords.OPEN));
+                    var init = exceptionClass.Members.OfType<CallableDeclarationASTNode>()
+                        .FirstOrDefault(m => m.Kind == CallableKind.Init);
+                    TestHarness.CheckTrue($"{expected[i]} 自持 init（单 String 参数）",
+                        init != null
+                        && init.Parameters.Parameters.Count == 1
+                        && init.Parameters.Parameters[0].Type != null);
+                }
+                else
+                {
+                    TestHarness.CheckTrue($"声明[{index}] 是 class {expected[i]}", false,
+                        root.Declarations[index].GetType().Name);
+                }
             }
 
             TestHarness.Blank();

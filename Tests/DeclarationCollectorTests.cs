@@ -19,6 +19,7 @@ namespace LatteCompiler.Tests
             TestNamespaces();
             TestImports();
             TestDuplicates();
+            TestArityDistinction();
             TestExtMembers();
             TestNamespaceDiagnostics();
             TestCrossFile();
@@ -284,6 +285,55 @@ namespace LatteCompiler.Tests
                 "Duplicate type declaration: 'C'");
             TestHarness.CheckTrue("跨文件重复不中断（两文件各自符号仍映射）",
                 unit2.Symbols.GlobalNamespace.Types.Count(t => t.Name == "C") == 1);
+        }
+
+        // ===== 同名不同元数类型合法共存（S10，SYNTAX §15.3：Task 与
+        // Task\<T\> 同容器不冲突——类型名唯一性按「名 + 泛型参数个数」判定）=====
+        private static void TestArityDistinction()
+        {
+            TestHarness.Section("P1 Arity Distinction (Task vs Task<T>)");
+
+            var (unit, _) = CollectUnit(
+                "class Task { }\n" +
+                "class Task\\<TResult> { }\n" +
+                "class Pair\\<A, B> { }\n" +
+                "class Pair\\<A> { }\n");
+            TestHarness.CheckTrue("同名不同元数共存无重复诊断",
+                !unit.Diagnostics.Diagnostics.Any(d =>
+                    d.Message.Contains("Duplicate type declaration")));
+
+            var global = unit.Symbols.GlobalNamespace;
+            TestHarness.CheckTrue("Task 两个声明都注册",
+                global.Types.Count(t => t.Name == "Task") == 2);
+            TestHarness.CheckTrue("Task 非泛型与泛型各自存在",
+                global.Types.Any(t => t.Name == "Task" && t.GenericParameters.Count == 0)
+                && global.Types.Any(t => t.Name == "Task" && t.GenericParameters.Count == 1));
+            TestHarness.CheckTrue("Pair 两个不同元数声明都注册",
+                global.Types.Count(t => t.Name == "Pair") == 2);
+
+            // 同名同元数仍是重复（1 元对 1 元）
+            var (unit2, _) = CollectUnit(
+                "class Task\\<A> { }\n" +
+                "class Task\\<B> { }\n");
+            TestHarness.CheckSemanticError("同名同元数仍判重复", unit2.Diagnostics,
+                "Duplicate type declaration: 'Task'");
+            TestHarness.CheckTrue("重复只保留第一个",
+                unit2.Symbols.GlobalNamespace.Types.Count(t => t.Name == "Task") == 1);
+
+            // 嵌套类型同规则
+            var (unit3, _) = CollectUnit(
+                "class Outer {\n" +
+                "    class Inner { }\n" +
+                "    class Inner\\<T> { }\n" +
+                "}\n");
+            TestHarness.CheckTrue("嵌套类型同名不同元数共存无诊断",
+                !unit3.Diagnostics.Diagnostics.Any(d =>
+                    d.Message.Contains("Duplicate type declaration")));
+            var outer = unit3.Symbols.GlobalNamespace.Types.Single(t => t.Name == "Outer");
+            TestHarness.CheckTrue("嵌套 Task 两形态都注册",
+                outer.NestedTypes.Count(t => t.Name == "Inner") == 2);
+
+            TestHarness.Blank();
         }
 
         // ===== ext 扩展成员（§4.4：拆名登记，注册归 P2）=====

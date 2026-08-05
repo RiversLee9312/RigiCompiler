@@ -654,7 +654,8 @@ pub class Console {
 - `native` 仅适用于函数；native 函数**不得**书写函数体；
 - 作为类型成员声明时必须同时是 `static`；不得用于 `init`、`operator`、getter/setter；
 - 不得与 `async` 组合，不得声明泛型参数列表，同一容器内不得与同名函数构成重载；
-- 参数与返回类型仅限 §3.2 基本类型中的整数、浮点、`bool`、`char` 与 `String`；不允许 Object、泛型参数、用户声明类型，也不允许可变参数；
+- 参数类型仅限 §3.2 基本类型中的整数、浮点、`bool`、`char` 与 `String`；不允许 Object、泛型参数、用户声明类型，也不允许可变参数；
+- **返回类型**（S10 定稿，2026-08-05）：允许 §3.2 基本类型中的整数、浮点、`bool`、`char` 与 `String`，也允许用户声明的**引用类型**（class/interface，如 `core.coroutine.sleep(...): EventAlarm`）；不允许值类型、泛型参数与可变参数。native 只负责声明运行时原生方法面的形状，FFI 参数/返回值 ABI 与 `latte_rt` 的转换细节在 Middleware 阶段定稿（`RUNTIME.md` §26），编译器不做形状之外的检查；
 - `@NativeLibrary("...")` 必填，给出原生库标识；`@NativeSymbol("...")` 可省，缺省时取函数名；两个注解的实参必须各为一个字符串字面量；
 - `@NativeLibrary` / `@NativeSymbol` 是编译器内建注解，只允许出现在 native 函数声明上；它们不属于 wrapper 体系（§14），不产生 wrapper 组合链。
 
@@ -1014,6 +1015,38 @@ try {
 ```
 
 - `catch` 子句的异常变量与 `finally(e)` 的 `e` 均为只读（`const`）——子句/块体内不可对其赋值或复合赋值。
+
+### 8.1 异常类型层级
+
+异常根 `core.Exception` 是语言级内建类型（进编译器 bootstrap，与 `Object`/`ValueType` 同列），open 可继承：
+
+```latte
+pub open class Exception { ... }   // 概念形态；实际声明在编译器 bootstrap，不在 stdlib 源
+```
+
+异常根携带（S10 定稿，2026-08-05）：
+
+- `protected var message: String` 字段——异常的人类可读描述；
+- `pub func getMessage(): String` 方法——message 的唯一公共读取通道（native 形态，运行时提供实现；`toString` 不覆写，插值/打印仍走 `Object` 的默认实现）。
+
+`throw` 操作数类型与 `catch` 子句类型必须是 `core.Exception` 或其子类（§3.1 层级兼容判定）。标准库在 `stdlib/core/exceptions.latte` 提供四个具体子类（均可继承，用户自定义异常以同样的 `: core.Exception` 声明）：
+
+| 类型 | 含义 |
+|------|------|
+| `core.RuntimeException` | 通用运行时异常基类 |
+| `core.IOException` | I/O 相关异常 |
+| `core.CastException` | `as`/`as?`/nullable 展开等类型转换失败（BIL §12.1） |
+| `core.NoSuchMethodException` | 运行期 init 重载解析失败与 wrapper 派发失败（§10/§14.6） |
+
+每个子类**自持**显式 init（异常根不写 init，无 super 构造调用语法——字段由子类 init 直接赋值继承字段）：
+
+```latte
+pub open class IOException : core.Exception {
+    pub init(text: String) { message = text }
+}
+```
+
+`getMessage()` 返回 message 的当前值；未显式赋值时为 String 零值（空字符串）。`core.GlobalExceptionHandler` 与运行时内部类型（`GCAlarm` 等）不在 stdlib 声明，随 BIL VM（S14）定稿。
 
 ---
 
@@ -1801,9 +1834,30 @@ import 即进入编译单元（与用户源同走语义全流程）：
 - `core.collections`：`IEnumerable\<T\>` / `IEnumerator\<T\>` 迭代协议
   （§7.3）与容器接口、实现；
 - `core.io`：`Console` 等 I/O 表层；
+- `core.coroutine`（S10）：`Task` / `Task\<TResult\>` / `Executor` 家族 /
+  `PollingAlarm` / `EventAlarm` / `CoroutineLocal\<TValue\>` 类型面与最小
+  native API 面（§4.5/§7.5、`RUNTIME.md` §17–§20）——协程运行时机制是
+  语言内建（async/await/yield lowering 见 §4.5/§7.5，BIL VM 在 S14 提供
+  执行），stdlib 只声明类型与 `sleep`/`isReady` 等运行时函数的形状；
+  `Task`（无结果）与 `Task\<TResult\>`（泛型）是**同名不同元数**的合法
+  共存类型（类型名唯一性按「名 + 泛型参数个数」判定；裸名引用解析到
+  非泛型声明，带实参引用解析到泛型声明）；
+- `core` 命名空间内的异常具体子类（`stdlib/core/exceptions.latte`）：
+  `RuntimeException` / `IOException` / `CastException` /
+  `NoSuchMethodException`（§8.1）；
+- `core` 命名空间内的 `IDisposable`（`stdlib/core/disposable.latte`，
+  §6.2 确定性资源管理协议）；
 - `.bootstrap.latte`：**基元类型自举辅助成员**——内建数值类型
   （`i32` 等）无法在自己的声明处携带这些实现，经 `ext` 以 Latte 自举
-  （如 `EnumerateInRange`，§13.2）。
+  （如 `EnumerateInRange`，§13.2），以及解构协议根 `core.Pair`（§18）。
+
+**bootstrap 与 stdlib 的边界**（S10 定稿）：语言级类型层级根与基元类型
+（`Any`/`Object`/`ValueType`/`Enum`/`Wrapper`/`Exception` 与 §3.2 基本类型、
+§3.1.2 特权泛型类型）由编译器硬编码构造进符号图（`BootstrapSymbols`），
+从不写入 `stdlib/` 源——它们的层级关系、内建运算符键与 shared 推导是
+编译器语义的一部分，无法用 Latte 声明表达；异常根 `core.Exception` 的
+`message` 字段与 `getMessage()` 同样由 bootstrap 程序化携带（§8.1）。
+其余全部标准库表面走 `stdlib/` Latte 源，与用户源同一条 P1–P4 路径。
 
 ---
 

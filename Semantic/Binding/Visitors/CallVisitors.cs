@@ -149,9 +149,30 @@ namespace LatteCompiler
                 Receiver = receiver,
                 TypeArguments = typeArgs ?? Array.Empty<SemanticSymbol>(),
                 GenericPack = genericPack,
-                // 代入后返回类型（泛型候选视图产物；定义级 ReturnType 是 T）
-                ResultType = calleeResultType,
+                // S10：async 调用表达式类型改写为 Task\<T\>/Task（SYNTAX §4.5）
+                ResultType = AsyncResultType(calleeMethod, calleeResultType, env),
             };
+        }
+
+        // S10（SYNTAX §4.5 表）：async 调用表达式类型改写——
+        // `async func f(): TResult` 调用点类型 = core.coroutine.Task\<TResult\>，
+        // `async func f()` = core.coroutine.Task（无结果调用仍可作值——Task
+        // 句柄本身，await 归 S13）。Task 定义由 stdlib core/coroutine.latte
+        // 声明；缺 stdlib 的驱动（测试 BindUnit 不带 stdlib）找不到定义时
+        // 保留原返回类型（void 时保持 null）容错。
+        public static SemanticSymbol? AsyncResultType(MethodSymbol method,
+            SemanticSymbol? resultType, BindEnvironment env)
+        {
+            if (!method.IsAsync) return resultType;
+            var core = env.Unit.Symbols.GlobalNamespace.ChildNamespaces
+                .FirstOrDefault(n => n.Name == "core");
+            var coroutine = core?.ChildNamespaces.FirstOrDefault(n => n.Name == "coroutine");
+            var task = coroutine?.Types.FirstOrDefault(t => t.Name == "Task"
+                && t.GenericParameters.Count == (resultType == null ? 0 : 1));
+            if (task == null) return resultType;
+            return resultType == null
+                ? task
+                : env.Unit.Symbols.GetConstructedType(task, resultType);
         }
 
         // 被调用方候选集解析：单段经 FindMethods 全查找序；多段经容器 + 末段
@@ -291,7 +312,8 @@ namespace LatteCompiler
                 Receiver = receiver,
                 TypeArguments = typeArgs ?? Array.Empty<SemanticSymbol>(),
                 GenericPack = genericPack,
-                ResultType = selectedResultType,
+                // S10：async 调用表达式类型改写（同 BindCall 口径）
+                ResultType = AsyncResultType(selected, selectedResultType, env),
             };
         }
 

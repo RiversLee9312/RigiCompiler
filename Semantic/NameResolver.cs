@@ -59,7 +59,7 @@ namespace LatteCompiler
                 if (current != null) return current;
             }
             current = ResolveFirstSegment(elements[0].name, ctx, declaringType, allowImports,
-                out var importResolved);
+                elements.Count == 1 ? elements[0].generics.Count : -1, out var importResolved);
             if (current == null)
             {
                 if (reportErrors && !importResolved)
@@ -68,10 +68,14 @@ namespace LatteCompiler
                 }
                 return unit.Symbols.ErrorType;
             }
-            // 逐段下钻（命名空间 → 子命名空间/类型；类型 → 嵌套类型）
+            // 逐段下钻（命名空间 → 子命名空间/类型；类型 → 嵌套类型）。
+            // 中间段不带泛型实参（-1 不筛元数）；末段按该段泛型实参个数分流
+            // （S10：Task 与 Task\<T\> 同名共存——裸名优先非泛型、带实参优先
+            // 精确元数，见 FindTypeIn）
             for (int i = 1; i < elements.Count; i++)
             {
-                var next = Descend(current, elements[i].name);
+                var next = Descend(current, elements[i].name,
+                    i == elements.Count - 1 ? elements[^1].generics.Count : -1);
                 if (next == null)
                 {
                     if (reportErrors)
@@ -97,7 +101,7 @@ namespace LatteCompiler
             bool allowImports, bool reportErrors, CharRange? span)
         {
             var current = ResolveFirstSegment(segments[0], ctx, declaringType: null,
-                allowImports, out var importResolved);
+                allowImports, arity: -1, out var importResolved);
             if (current == null)
             {
                 if (reportErrors && !importResolved)
@@ -108,7 +112,7 @@ namespace LatteCompiler
             }
             for (int i = 1; i < segments.Length; i++)
             {
-                var next = Descend(current, segments[i]);
+                var next = Descend(current, segments[i], arity: -1);
                 if (next == null)
                 {
                     if (reportErrors)
@@ -126,21 +130,22 @@ namespace LatteCompiler
         // → import 列表（具名末段同名 / 通配容器内查）→ core 命名空间（隐式）。
         // importResolved：具名 import 命中但自身解析失败（已诊断过）时为 true——
         // 调用方静默毒化，不再报「未解析」。
+        // arity：该段（单段路径即末段）的泛型实参个数；-1 = 容器下钻不筛元数。
         private SemanticSymbol? ResolveFirstSegment(string name, FileContext ctx,
-            TypeSymbol? declaringType, bool allowImports, out bool importResolved)
+            TypeSymbol? declaringType, bool allowImports, int arity, out bool importResolved)
         {
             importResolved = false;
             for (var t = declaringType; t != null; t = t.DeclaringType)
             {
-                var nested = t.NestedTypes.FirstOrDefault(n => n.Name == name);
+                var nested = FindTypeIn(t.NestedTypes, name, arity);
                 if (nested != null) return nested;
             }
             for (var ns = ctx.Namespace; ns != null; ns = ns.Parent)
             {
-                var hit = FindInNamespace(ns, name);
+                var hit = FindInNamespace(ns, name, arity);
                 if (hit != null) return hit;
             }
-            var globalHit = FindInNamespace(unit.Symbols.GlobalNamespace, name);
+            var globalHit = FindInNamespace(unit.Symbols.GlobalNamespace, name, arity);
             if (globalHit != null) return globalHit;
             if (allowImports)
             {
@@ -153,8 +158,8 @@ namespace LatteCompiler
                             declaringMethod: null, allowImports: false, reportErrors: false, span: null);
                         SemanticSymbol? hit = container switch
                         {
-                            NamespaceSymbol ns => ns.Types.FirstOrDefault(t => t.Name == name),
-                            TypeSymbol t => t.NestedTypes.FirstOrDefault(n => n.Name == name),
+                            NamespaceSymbol ns => FindTypeIn(ns.Types, name, arity),
+                            TypeSymbol t => FindTypeIn(t.NestedTypes, name, arity),
                             _ => null,
                         };
                         if (hit != null) return hit;
@@ -172,20 +177,34 @@ namespace LatteCompiler
                     }
                 }
             }
-            return FindInNamespace(unit.Symbols.Bootstrap.Core, name);
+            return FindInNamespace(unit.Symbols.Bootstrap.Core, name, arity);
         }
 
-        private static SemanticSymbol? FindInNamespace(NamespaceSymbol ns, string name)
+        // 按「名 + 期望元数」在类型表中查找（S10，SYNTAX §15.3：同名不同
+        // 元数合法共存）：arity >= 0 时优先精确元数匹配，回退同名任意声明
+        // （带实参但元数不匹配者落入 ApplyTypeArguments 的元数诊断；裸名但
+        // 只有泛型定义者回退定义本身——保持既有行为）；arity < 0 不筛。
+        private static TypeSymbol? FindTypeIn(IReadOnlyList<TypeSymbol> types, string name, int arity)
         {
-            return (SemanticSymbol?)ns.Types.FirstOrDefault(t => t.Name == name)
+            if (arity >= 0)
+            {
+                var exact = types.FirstOrDefault(t => t.Name == name && t.GenericParameters.Count == arity);
+                if (exact != null) return exact;
+            }
+            return types.FirstOrDefault(t => t.Name == name);
+        }
+
+        private static SemanticSymbol? FindInNamespace(NamespaceSymbol ns, string name, int arity)
+        {
+            return (SemanticSymbol?)FindTypeIn(ns.Types, name, arity)
                 ?? ns.ChildNamespaces.FirstOrDefault(n => n.Name == name);
         }
 
-        private static SemanticSymbol? Descend(SemanticSymbol current, string name) => current switch
+        private static SemanticSymbol? Descend(SemanticSymbol current, string name, int arity) => current switch
         {
             NamespaceSymbol ns => (SemanticSymbol?)ns.ChildNamespaces.FirstOrDefault(n => n.Name == name)
-                ?? ns.Types.FirstOrDefault(t => t.Name == name),
-            TypeSymbol t => t.NestedTypes.FirstOrDefault(n => n.Name == name),
+                ?? FindTypeIn(ns.Types, name, arity),
+            TypeSymbol t => FindTypeIn(t.NestedTypes, name, arity),
             _ => null,
         };
 

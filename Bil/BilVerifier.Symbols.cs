@@ -129,7 +129,13 @@ namespace LatteCompiler.Bil
                 switch (entry)
                 {
                     case BilTypeDeclaration type:
-                        if (!symbols.Add(type.Symbol))
+                        // S10：类型符号判重键 = canonical + 泛型参数个数——
+                        // Task 与 Task\<TResult\> 同名不同元数合法共存（SYNTAX
+                        // §15.3，BIL §8.2 generic(...) 子句区分）
+                        var typeKey = type.GenericParameters.Count == 0
+                            ? type.Symbol
+                            : type.Symbol + "<" + type.GenericParameters.Count + ">";
+                        if (!symbols.Add(typeKey))
                         {
                             errors.Add(new BilVerificationError("21.2", sectionName,
                                 $"类型符号重复 \"{type.Symbol}\""));

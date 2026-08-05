@@ -18,6 +18,7 @@ namespace LatteCompiler.Tests
             TestHarness.Reset();
             TestTypeReferences();
             TestGenericAndNullable();
+            TestArityLookup();
             TestNameLookupContexts();
             TestInitMapping();
             TestInheritance();
@@ -123,6 +124,51 @@ namespace LatteCompiler.Tests
             var (unit5, _) = ResolveUnit("var x: i32\\<i32>\n");
             TestHarness.CheckSemanticError("非泛型类型带实参", unit5.Diagnostics,
                 "'i32' expects 0 type argument(s), got 1");
+        }
+
+        // ===== 子任务 1：同名不同元数类型查找分流（S10，SYNTAX §15.3——
+        // 裸名解析到非泛型声明、带实参解析到泛型声明；无对应元数时回退
+        // 既有元数诊断路径）=====
+        private static void TestArityLookup()
+        {
+            TestHarness.Section("P2 Type References (arity distinction)");
+
+            var (unit, _) = ResolveUnit(
+                "shared class Task { }\n" +
+                "shared class Task\\<TResult> { }\n" +
+                "var bare: Task\n" +
+                "var generic: Task\\<i32>\n" +
+                "var deep: Task\\<Task\\<String>>\n");
+            var global = unit.Symbols.GlobalNamespace;
+
+            CheckNoErrors("无诊断", unit);
+            var bareField = global.Fields.Single(f => f.Name == "bare").FieldType;
+            TestHarness.CheckTrue("裸名 Task 解析到非泛型声明",
+                bareField is TypeSymbol bareType
+                && ReferenceEquals(bareType, global.Types.Single(t => t.Name == "Task"
+                    && t.GenericParameters.Count == 0)));
+            var genericField = global.Fields.Single(f => f.Name == "generic").FieldType;
+            TestHarness.CheckTrue("带实参 Task\\<i32> 解析到泛型声明构造",
+                genericField is TypeSymbol genericType
+                && genericType.ConstructedFrom != null
+                && ReferenceEquals(genericType.ConstructedFrom,
+                    global.Types.Single(t => t.Name == "Task" && t.GenericParameters.Count == 1))
+                && genericType.TypeArguments!.Count == 1
+                && ReferenceEquals(genericType.TypeArguments[0], unit.Symbols.Bootstrap.Int32));
+            var deepField = global.Fields.Single(f => f.Name == "deep").FieldType;
+            TestHarness.CheckTrue("嵌套 Task\\<Task\\<String>> 逐层正确构造",
+                deepField is TypeSymbol deepType
+                && deepType.ConstructedFrom != null
+                && deepType.TypeArguments![0] is TypeSymbol inner
+                && inner.ConstructedFrom?.Name == "Task"
+                && ReferenceEquals(inner.TypeArguments![0], unit.Symbols.Bootstrap.String));
+
+            // 带实参但只有非泛型声明 → 既有元数诊断
+            var (unit2, _) = ResolveUnit("class Task { }\nvar x: Task\\<i32>\n");
+            TestHarness.CheckSemanticError("仅非泛型声明带实参报元数诊断", unit2.Diagnostics,
+                "'Task' expects 0 type argument(s), got 1");
+
+            TestHarness.Blank();
         }
 
         // ===== 子任务 1：泛型构造驻留、T?、泛型参数引用 =====
@@ -744,15 +790,27 @@ namespace LatteCompiler.Tests
             TestHarness.CheckSemanticError("native × 同容器重载", u6.Diagnostics,
                 "Native function 'dup' cannot be overloaded");
 
-            // 参数/返回类型白名单（用户类型 / Object / Nullable 构造均拒绝）
+            // 参数/返回类型白名单（参数限基本类型；返回类型 S10 放宽——
+            // 基本类型或用户引用类型 class/interface，值类型仍拒绝）
             var (u7a, _) = ResolveUnit(
                 "class User { }\n" +
                 "@NativeLibrary(\"rt\")\nnative func f(u: User)\n");
             TestHarness.CheckSemanticError("参数为用户类型", u7a.Diagnostics,
                 "Parameter 'u' of native function 'f' must be a primitive type");
             var (u7b, _) = ResolveUnit("@NativeLibrary(\"rt\")\nnative func g(): Object\n");
-            TestHarness.CheckSemanticError("返回 Object", u7b.Diagnostics,
-                "Return type of native function 'g' must be a primitive type");
+            TestHarness.CheckTrue("返回 Object（class 引用类型，S10 放宽）无诊断",
+                !u7b.Diagnostics.HasErrors);
+            var (u7b2, _) = ResolveUnit(
+                "interface IUser { }\n" +
+                "@NativeLibrary(\"rt\")\nnative func g(): IUser\n");
+            TestHarness.CheckTrue("返回接口（引用类型，S10 放宽）无诊断",
+                !u7b2.Diagnostics.HasErrors);
+            var (u7b3, _) = ResolveUnit(
+                "struct User { }\n" +
+                "@NativeLibrary(\"rt\")\nnative func g(): User\n");
+            TestHarness.CheckSemanticError("返回用户 struct（值类型，仍拒绝）", u7b3.Diagnostics,
+                "Return type of native function 'g' must be a primitive type or a " +
+                "user-declared reference type (class/interface)");
             var (u7c, _) = ResolveUnit("@NativeLibrary(\"rt\")\nnative func h(x: i32?)\n");
             TestHarness.CheckSemanticError("参数为 Nullable 构造", u7c.Diagnostics,
                 "Parameter 'x' of native function 'h' must be a primitive type");

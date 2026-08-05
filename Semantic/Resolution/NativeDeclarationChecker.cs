@@ -86,7 +86,7 @@ namespace LatteCompiler
             {
                 env.Error(entry.Node.Span, $"Native function '{method.Name}' cannot be overloaded");
             }
-            // 参数与返回类型白名单（ErrorType 毒化静默；void 返回不受限）
+            // 参数类型白名单（ErrorType 毒化静默）——参数仍限基本类型（§4.6）
             foreach (var parameter in method.Parameters)
             {
                 if (parameter.Type is null or ErrorTypeSymbol) continue;    // 毒化静默
@@ -96,11 +96,20 @@ namespace LatteCompiler
                         $"Parameter '{parameter.Name}' of native function '{method.Name}' must be a primitive type (integer, float, bool, char or String)");
                 }
             }
+            // 返回类型白名单（§4.6，S10 放宽）：基本类型，或用户声明的引用类型
+            // （class/interface，含构造类型——运行时原生方法面可返回其句柄，
+            // 如 core.coroutine.sleep → EventAlarm；值类型、泛型参数与可变参数
+            // 仍不允许；FFI 参数/返回值 ABI 细节归 Middleware，编译器只做形状校验）
             if (method.ReturnType is not null and not ErrorTypeSymbol &&
                 !compatibleTypes.Contains(method.ReturnType))
             {
-                env.Error(entry.Node.Span,
-                    $"Return type of native function '{method.Name}' must be a primitive type (integer, float, bool, char or String)");
+                var isUserRefType = method.ReturnType is TypeSymbol returnType &&
+                    (returnType.Kind == TypeKind.Class || returnType.Kind == TypeKind.Interface);
+                if (!isUserRefType)
+                {
+                    env.Error(entry.Node.Span,
+                        $"Return type of native function '{method.Name}' must be a primitive type or a user-declared reference type (class/interface)");
+                }
             }
             // 内建注解：@NativeLibrary 必填；@NativeSymbol 可省，缺省取函数名
             var libraryAnnotation = fn.Annotations.FirstOrDefault(

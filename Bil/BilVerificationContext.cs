@@ -73,6 +73,10 @@ namespace LatteCompiler.Bil
             {
                 MethodSymbols.Add(method);
             }
+            foreach (var field in PredefinedFields)
+            {
+                FieldSymbols.Add(field);
+            }
         }
 
         private static readonly string[] PredefinedTypes =
@@ -94,6 +98,16 @@ namespace LatteCompiler.Bil
             // 默认实现（RUNTIME §26/BIL §22.5 内建 hook）
             "core::Any$toString()@.string",
             "core::Object$toString()@.string",
+            // 异常根 getMessage（S10，SYNTAX §8.1）：bootstrap 符号不声明的
+            // 成员面，调用点 invoke 需要可解析
+            "core::Exception$getMessage()@.string",
+        };
+
+        // 预定义字段（bootstrap 符号不声明的成员面，S10）：异常根 message
+        // 字段——异常子类 init 体发射 set.field 引用它（SYNTAX §8.1）
+        private static readonly string[] PredefinedFields =
+        {
+            "core::Exception#message@.string",
         };
 
         private void IndexSymbolSection(List<BilSymbolSectionEntry> section, bool isLocal)

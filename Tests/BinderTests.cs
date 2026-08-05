@@ -69,6 +69,7 @@ namespace LatteCompiler.Tests
             TestOverride();
             TestConversionOperators();
             TestAsyncGates();
+            TestAsyncResultTypes();
             TestGenericCalls();
             TestGenericVarArgs();
             TestOperatorNameCalls();
