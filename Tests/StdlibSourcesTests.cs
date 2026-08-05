@@ -183,7 +183,8 @@ namespace LatteCompiler.Tests
             TestHarness.CheckTrue("println 无注解", f.Annotations.Count == 0);
         }
 
-        // ===== 2c. collections 结构（namespace + 2 interface + 2 class）=====
+        // ===== 2c. collections 结构（namespace + 2 interface + 抽象基类 +
+        // 2 具体类，S9f 泛型抽象基类模式）=====
         private static void TestCollectionsStructure()
         {
             TestHarness.Section("Structure: namespace core.collections");
@@ -199,10 +200,12 @@ namespace LatteCompiler.Tests
             var root = roots[2];
 
             // 顶层：namespace + IEnumerator/IEnumerable 接口 +
-            // RangeEnumeratorI32/RangeI32 类（共 5 个声明）
-            TestHarness.CheckTrue("顶层恰好 5 个声明（namespace + 2 interface + 2 class）",
-                root.Declarations.Count == 5, $"实际 {root.Declarations.Count}");
-            if (root.Declarations.Count < 5) { TestHarness.Blank(); return; }
+            // RangeEnumerator\<T\> 抽象基类 + RangeEnumeratorI32/RangeI32
+            // 具体类（共 6 个声明，S9f）
+            TestHarness.CheckTrue("顶层恰好 6 个声明（namespace + 2 interface + " +
+                "abstract 基类 + 2 class）",
+                root.Declarations.Count == 6, $"实际 {root.Declarations.Count}");
+            if (root.Declarations.Count < 6) { TestHarness.Blank(); return; }
 
             var ns = root.Declarations[0] as NamespaceDeclarationASTNode;
             TestHarness.CheckTrue("首声明是 namespace core.collections",
@@ -213,14 +216,19 @@ namespace LatteCompiler.Tests
             TestHarness.CheckTrue("声明[2] 是 interface IEnumerable",
                 root.Declarations[2] is InterfaceDeclarationASTNode iface2
                 && iface2.InterfaceName == "IEnumerable");
-            TestHarness.CheckTrue("声明[3] 是 class RangeEnumeratorI32",
-                root.Declarations[3] is ClassDeclarationASTNode cls1
+            TestHarness.CheckTrue("声明[3] 是 abstract class RangeEnumerator（泛型）",
+                root.Declarations[3] is ClassDeclarationASTNode baseCls
+                && baseCls.ClassName == "RangeEnumerator"
+                && baseCls.Modifiers.Contains(Keywords.ABSTRACT)
+                && baseCls.GenericParameters?.Parameters.Count == 1);
+            TestHarness.CheckTrue("声明[4] 是 class RangeEnumeratorI32",
+                root.Declarations[4] is ClassDeclarationASTNode cls1
                 && cls1.ClassName == "RangeEnumeratorI32");
-            TestHarness.CheckTrue("声明[4] 是 class RangeI32",
-                root.Declarations[4] is ClassDeclarationASTNode cls2
+            TestHarness.CheckTrue("声明[5] 是 class RangeI32",
+                root.Declarations[5] is ClassDeclarationASTNode cls2
                 && cls2.ClassName == "RangeI32");
 
-            // 接口方法无体（§11）；实现类成员带 override（RangeI32.iterate）
+            // 接口方法无体（§11）；抽象基类有 abstract 方法；实现类成员带 override
             if (root.Declarations[1] is InterfaceDeclarationASTNode enumerator)
             {
                 TestHarness.CheckTrue("IEnumerator 双成员均无 Body（接口无体方法）",
@@ -228,7 +236,16 @@ namespace LatteCompiler.Tests
                     && enumerator.Members.All(m =>
                         m is CallableDeclarationASTNode { Body: null }));
             }
-            if (root.Declarations[4] is ClassDeclarationASTNode range)
+            if (root.Declarations[3] is ClassDeclarationASTNode baseClass)
+            {
+                var moveNext = baseClass.Members.OfType<CallableDeclarationASTNode>()
+                    .FirstOrDefault(m => m.Name == "moveNext");
+                TestHarness.CheckTrue("RangeEnumerator.moveNext 带 abstract + override",
+                    moveNext != null
+                    && moveNext.Modifiers.Contains(Keywords.ABSTRACT)
+                    && moveNext.Modifiers.Contains(Keywords.OVERRIDE));
+            }
+            if (root.Declarations[5] is ClassDeclarationASTNode range)
             {
                 var iterate = range.Members.OfType<CallableDeclarationASTNode>()
                     .FirstOrDefault(m => m.Name == "iterate");

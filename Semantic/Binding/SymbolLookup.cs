@@ -38,8 +38,11 @@ namespace LatteCompiler
 
         // 实例方法查找：receiver 静态类型沿 BaseType 链（接口 receiver
         // 即查接口自身，BaseType 为 null 自然终止；ext 注册成员已在目标
-        // 类型成员表）。仅 Regular 实例方法——operator 不经点号调用
-        // （for 头专用解析），init/getter/setter 归各自里程碑。
+        // 类型成员表）。Regular 实例方法 + operator（S9f 复核 M69 注记：
+        // SYNTAX §4.2 定稿「operator 名字形式与普通方法同规则」——名字
+        // 调用 a.plus\<T>(b) 命中 operator；运算符位置（a + b）/for 头
+        // （EnumerateInRange）/索引（getAtIndex）仍走各自专用解析），
+        // init/getter/setter 归各自里程碑。
         // 构造类型的成员表在其泛型定义上（构造器不复制成员列表，
         // S7f 起经 ConstructedFrom 回退——实参替换在使用侧特判）。
         // override 遮蔽（S8e，§9.2.1）：override 在分派语义上替换继承
@@ -52,7 +55,7 @@ namespace LatteCompiler
             {
                 var owner = t.ConstructedFrom ?? t;
                 foreach (var method in owner.Methods.Where(m => m.Name == name
-                    && !m.IsStatic && m.Kind == MethodKind.Regular))
+                    && !m.IsStatic && m.Kind is MethodKind.Regular or MethodKind.Operator))
                 {
                     if (result.Any(derived => derived.IsOverride
                         && SignaturesEqual(derived, method)))
@@ -251,7 +254,10 @@ namespace LatteCompiler
         // 可赋值性：同符号（驻留引用相等）直通；ErrorType 毒化静默放行；
         // T → Nullable\<T\> 装箱视图（M52）；沿 BaseType 链与接口表命中。
         // S9 放宽为 SemanticSymbol：泛型参数参与判定——同参数引用相等直通
-        // （已先行），与具体类型或异参数比较一律不可赋（false，不落诊断）
+        // （已先行），与具体类型或异参数比较一律不可赋（false，不落诊断）。
+        // S9f：沿 BaseType 链的接口判定——接口可声明在泛型基类上
+        // （RangeEnumerator\<T\> implements IEnumerator\<T\>），构造宿主
+        // RangeEnumerator\<i32\> 的接口实参沿链代入后比较
         public static bool IsAssignable(SemanticSymbol from, SemanticSymbol to,
             BindEnvironment env)
         {
@@ -267,11 +273,54 @@ namespace LatteCompiler
             {
                 return true;
             }
-            for (var t = fromType.BaseType; t != null; t = t.BaseType)
+            for (var t = fromType; t != null; t = t.BaseType)
             {
                 if (ReferenceEquals(t, toType)) return true;
+                var def = t.ConstructedFrom ?? t;
+                foreach (var iface in def.Interfaces)
+                {
+                    if (ReferenceEquals(iface, toType)) return true;
+                    if (t.ConstructedFrom != null
+                        && ReferenceEquals(
+                            SubstituteHost(iface, def, t, env.Unit.Symbols), toType))
+                    {
+                        return true;
+                    }
+                }
             }
-            return fromType.Interfaces.Any(i => ReferenceEquals(i, toType));
+            return false;
+        }
+
+        // 宿主泛型参数代入（S9f）：type 中出现的 definition 泛型参数按
+        // 声明序索引替换为 constructed 的构造实参（构造类型递归；实参可
+        // 为具体类型或外层泛型参数——引用相等身份，`Box\<T\>` 内 T 即
+        // 外层 T）。definition 与 constructed 同体时原样返回；替换产物
+        // 经驻留入口重建（P3 侧与 ResolveEnvironment.Substitute 同构）
+        public static SemanticSymbol SubstituteHost(SemanticSymbol type, TypeSymbol definition,
+            TypeSymbol constructed, SymbolGraph symbols)
+        {
+            if (ReferenceEquals(definition, constructed)) return type;
+            if (type is GenericParameterSymbol gp)
+            {
+                var index = definition.GenericParameters.IndexOf(gp);
+                return index >= 0 ? constructed.TypeArguments![index] : type;
+            }
+            if (type is TypeSymbol { ConstructedFrom: not null } inner)
+            {
+                var args = new SemanticSymbol[inner.TypeArguments!.Count];
+                var changed = false;
+                for (int i = 0; i < args.Length; i++)
+                {
+                    var argument = inner.TypeArguments[i];
+                    var substituted = SubstituteHost(argument, definition, constructed, symbols);
+                    if (substituted == null) return type;
+                    args[i] = substituted;
+                    changed |= !ReferenceEquals(substituted, argument);
+                }
+                if (!changed) return inner;
+                return symbols.GetConstructedType(inner.ConstructedFrom!, args);
+            }
+            return type;
         }
     }
 }

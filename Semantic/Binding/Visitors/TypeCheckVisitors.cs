@@ -134,16 +134,28 @@ namespace LatteCompiler
 
         // 动态形态右侧的值绑定（不落袋纯查找，命中后正常构造值引用 bound
         // 节点）：单段名 = 局部 → 参数 → 字段（FindField 全链）；多段路径 =
-        // 容器（前 N-1 段静默解析）+ 末段字段。路径带泛型实参按未命中处理
-        // （使用侧泛型归 S9）。valueFound = 是否有值符号命中（命中但绑定
-        // 失败时诊断已落袋，调用方不再重复报）
+        // 容器（前 N-1 段静默解析）+ 末段字段。S9f 解开 #18②：值路径元素
+        // 带泛型实参不再按未命中处理——实参先经 NameResolver 静默解析
+        // （M69 使用侧泛型已落地），成功即正常绑定值（值路径无类型实参
+        // 消费点，实参本身不参与绑定）；失败返回 null（落统一目标诊断）。
+        // valueFound = 是否有值符号命中（命中但绑定失败时诊断已落袋，
+        // 调用方不再重复报）
         private static BoundExpression? BindTargetValue(TypeCheckExpressionASTNode node,
             TypeReferenceASTNode typeRef, Scope scope, BindContext ctx, BindEnvironment env,
             out bool valueFound)
         {
             valueFound = false;
             var elements = typeRef.TypeSymbol.symbol.elements;
-            if (elements.Any(e => e.generics.Count > 0)) return null;
+            foreach (var element in elements)
+            {
+                foreach (var generic in element.generics)
+                {
+                    var resolved = env.Names.ResolveSymbolPath(generic, ctx.Frame.FileCtx,
+                        ctx.Frame.DeclaringType, ctx.Frame.Method, allowImports: true,
+                        reportErrors: false, span: null);
+                    if (resolved == null || resolved is ErrorTypeSymbol) return null;
+                }
+            }
             var span = typeRef.Span ?? node.Span;
             if (elements.Count == 1)
             {

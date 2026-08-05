@@ -62,6 +62,7 @@ namespace LatteCompiler
         public TypeSymbol NullableDefinition { get; }  // Nullable\<T>（Object 分支）
         public TypeSymbol BoxDefinition { get; }       // Box\<T extends ValueType>（Object 分支）
         public TypeSymbol ArrayDefinition { get; }     // Array\<T>（Object 分支，.array<T>）
+        public TypeSymbol MapDefinition { get; }       // Map\<K, V>（Object 分支，.map<K, V>）
 
         internal BootstrapSymbols(NamespaceSymbol globalNamespace)
         {
@@ -169,6 +170,16 @@ namespace LatteCompiler
                 bilStandardConstructor: ".array");
             ArrayDefinition.GenericParameters.Add(new GenericParameterSymbol("T"));
 
+            // Map\<K, V\>（S9d-2）：BIL 标准构造 .map<K, V>（§6.3）——具名
+            // 泛型可变参数的隐藏参数形态（BIL §7.1：.generic.TValues =
+            // .map<.string, .typeid>）；shared 按类型实参推导（同 Array）
+            MapDefinition = new TypeSymbol("Map", TypeKind.Class, Core,
+                baseType: Object, isBuiltin: true,
+                derivesSharedSafetyFromTypeArgument: true,
+                bilStandardConstructor: ".map");
+            MapDefinition.GenericParameters.Add(new GenericParameterSymbol("TKey"));
+            MapDefinition.GenericParameters.Add(new GenericParameterSymbol("TValue"));
+
             // 内建类型注册进 core 容器表（M40 补登：P2 名字解析经
             // 「core 命名空间隐式可见」消费——bootstrap 类型此前只有直造属性、
             // 未入容器表，裸名 i32/String/Object 无法经路径解析找到）
@@ -178,7 +189,7 @@ namespace LatteCompiler
                 Int8, Int16, Int32, Int64, UInt8, UInt16, UInt32, UInt64,
                 Float, Double, Bool, Char, String,
                 TypeDefinition, SpanDefinition, NullableDefinition, BoxDefinition,
-                ArrayDefinition,
+                ArrayDefinition, MapDefinition,
             })
             {
                 // 内建符号不经声明修饰符（SemanticSymbol 默认 Private）——

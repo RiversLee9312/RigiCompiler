@@ -17,6 +17,8 @@ namespace LatteCompiler
         public BoundExpression? Receiver;
         // S9b：显式泛型实参（非泛型调用为空列表；P4 发射 .generic.T 依据）
         public IReadOnlyList<SemanticSymbol> TypeArguments = Array.Empty<SemanticSymbol>();
+        // S9d-2：泛型可变参数包推导产物（null = 无；P4 发射 .generic.TArgs 依据）
+        public BoundGenericVarArgsArgument? GenericPack;
         // S9b：代入后返回类型（泛型候选视图产物；定义级 ReturnType 是 T）
         public SemanticSymbol? ResultType;
     }
@@ -122,7 +124,7 @@ namespace LatteCompiler
             var resolved = OverloadResolution.Resolve(node, candidates, arguments, scope, ctx, env,
                 typeArgs);
             if (resolved == null) return null;
-            var (calleeMethod, boundArguments, calleeResultType) = resolved.Value;
+            var (calleeMethod, boundArguments, calleeResultType, genericPack) = resolved.Value;
             BoundExpression? receiver = null;
             if (calleeMethod.Owner != null && !calleeMethod.IsStatic)
             {
@@ -146,6 +148,7 @@ namespace LatteCompiler
                 IsVoid = calleeMethod.ReturnType == null,
                 Receiver = receiver,
                 TypeArguments = typeArgs ?? Array.Empty<SemanticSymbol>(),
+                GenericPack = genericPack,
                 // 代入后返回类型（泛型候选视图产物；定义级 ReturnType 是 T）
                 ResultType = calleeResultType,
             };
@@ -278,7 +281,7 @@ namespace LatteCompiler
             var resolved = OverloadResolution.Resolve(node, accessible, arguments, scope, ctx, env,
                 typeArgs, receiverType);
             if (resolved == null) return null;
-            var (selected, boundArguments, selectedResultType) = resolved.Value;
+            var (selected, boundArguments, selectedResultType, genericPack) = resolved.Value;
             // S9a 放行：返回类型含泛型参数（引用相等身份透传，P4 §7.5 投影）
             return new CallBinding
             {
@@ -287,6 +290,7 @@ namespace LatteCompiler
                 IsVoid = selected.ReturnType == null,
                 Receiver = receiver,
                 TypeArguments = typeArgs ?? Array.Empty<SemanticSymbol>(),
+                GenericPack = genericPack,
                 ResultType = selectedResultType,
             };
         }

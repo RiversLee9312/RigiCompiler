@@ -115,19 +115,24 @@ namespace LatteCompiler
     // 带返回值直接调用（void 调用作语句见 LoweredCallStatement）。
     // S9e 增补 TypeArguments：显式泛型实参（P4b 调用点物化 .generic.*
     // 隐藏实参的依据，§7.2）
+    // S9d-2 增补 GenericPack：泛型可变参数包推导产物（null = 无；P4b
+    // 在 TypeArguments 之后打包物化，§7.2 序）
     public sealed class LoweredCallExpression : LoweredExpression
     {
         public MethodSymbol Method { get; }
         public IReadOnlyList<LoweredExpression> Arguments { get; }
         public IReadOnlyList<SemanticSymbol> TypeArguments { get; }
+        public LoweredGenericVarArgsArgument? GenericPack { get; }
 
         public LoweredCallExpression(BoundCallExpression origin, MethodSymbol method,
             IReadOnlyList<LoweredExpression> arguments,
-            IReadOnlyList<SemanticSymbol>? typeArguments = null) : base(origin)
+            IReadOnlyList<SemanticSymbol>? typeArguments = null,
+            LoweredGenericVarArgsArgument? genericPack = null) : base(origin)
         {
             Method = method;
             Arguments = arguments;
             TypeArguments = typeArguments ?? Array.Empty<SemanticSymbol>();
+            GenericPack = genericPack;
         }
     }
 
@@ -160,25 +165,29 @@ namespace LatteCompiler
     // BoundLoop（语句而非表达式，无法透传）；恒等降级路径由调用方传入
     // 与 Origin 相同的类型（同一来源两形态统一）。
     // S9e 增补 TypeArguments：显式泛型实参（同 LoweredCallExpression）
+    // S9d-2 增补 GenericPack：泛型可变参数包推导产物（同 LoweredCallExpression）
     public sealed class LoweredInstanceCallExpression : LoweredExpression
     {
         public LoweredExpression Receiver { get; }
         public MethodSymbol Method { get; }
         public IReadOnlyList<LoweredExpression> Arguments { get; }
         public IReadOnlyList<SemanticSymbol> TypeArguments { get; }
+        public LoweredGenericVarArgsArgument? GenericPack { get; }
         private readonly SemanticSymbol type;
 
         public override SemanticSymbol Type => type;
 
         public LoweredInstanceCallExpression(BoundNode origin, LoweredExpression receiver,
             MethodSymbol method, IReadOnlyList<LoweredExpression> arguments, SemanticSymbol type,
-            IReadOnlyList<SemanticSymbol>? typeArguments = null)
+            IReadOnlyList<SemanticSymbol>? typeArguments = null,
+            LoweredGenericVarArgsArgument? genericPack = null)
             : base(origin)
         {
             Receiver = receiver;
             Method = method;
             Arguments = arguments;
             TypeArguments = typeArguments ?? Array.Empty<SemanticSymbol>();
+            GenericPack = genericPack;
             this.type = type;
         }
     }
@@ -327,6 +336,25 @@ namespace LatteCompiler
             IsNamed = isNamed;
             Values = values;
             NamedValues = namedValues ?? Array.Empty<(string, LoweredExpression)>();
+        }
+    }
+
+    // 泛型可变参数包推导产物（S9d-2）：调用点打包形态的 P4a 恒等透传
+    // （元素为类型列表，无值子节点可降级）。非 LoweredExpression——包
+    // 不是值表达式，P4b 由调用发射器直接派发 GenericVarArgsEmitter
+    public sealed class LoweredGenericVarArgsArgument : LoweredNode
+    {
+        public bool IsNamed { get; }
+        public IReadOnlyList<SemanticSymbol> TypeArguments { get; }
+        public IReadOnlyList<(string Name, SemanticSymbol Type)> NamedTypes { get; }
+
+        public LoweredGenericVarArgsArgument(BoundGenericVarArgsArgument origin, bool isNamed,
+            IReadOnlyList<SemanticSymbol> typeArguments,
+            IReadOnlyList<(string Name, SemanticSymbol Type)>? namedTypes) : base(origin)
+        {
+            IsNamed = isNamed;
+            TypeArguments = typeArguments;
+            NamedTypes = namedTypes ?? Array.Empty<(string, SemanticSymbol)>();
         }
     }
 }

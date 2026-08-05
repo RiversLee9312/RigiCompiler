@@ -58,8 +58,12 @@ namespace LatteCompiler
                 callReceiver = LoweringFacility.EnsureDeclaredType(call, callReceiver,
                     call.Method.Owner);
             }
+            // S9d-2：泛型包无值子节点，恒等透传（打包归 P4b）
+            var genericPack = call.GenericPack == null ? null
+                : new LoweredGenericVarArgsArgument(call.GenericPack, call.GenericPack.IsNamed,
+                    call.GenericPack.TypeArguments, call.GenericPack.NamedTypes);
             return new LoweredCallStatement(call, call.Method, arguments, callReceiver,
-                call.TypeArguments);
+                call.TypeArguments, genericPack);
         }
     }
 

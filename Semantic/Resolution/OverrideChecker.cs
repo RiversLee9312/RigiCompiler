@@ -111,7 +111,7 @@ namespace LatteCompiler
                     }
                 }
             }
-            foreach (var iface in InterfaceClosure(host))
+            foreach (var iface in InterfaceClosure(host, env))
             {
                 var def = iface.ConstructedFrom ?? iface;
                 foreach (var candidate in def.Methods)
@@ -144,7 +144,7 @@ namespace LatteCompiler
                     }
                 }
             }
-            foreach (var iface in InterfaceClosure(type))
+            foreach (var iface in InterfaceClosure(type, env))
             {
                 var def = iface.ConstructedFrom ?? iface;
                 if (def.IsBuiltin) continue;
@@ -180,17 +180,24 @@ namespace LatteCompiler
             return null;
         }
 
-        // 接口闭包：宿主及基类链的 implements 传递闭包（定义级去重，保留构造形态）
-        private static List<TypeSymbol> InterfaceClosure(TypeSymbol host)
+        // 接口闭包：宿主及基类链的 implements 传递闭包（定义级去重，保留
+        // 构造形态）。S9f：接口可声明在泛型基类上（`RangeEnumerator\<T\>
+        // implements IEnumerator\<T\>`），闭包遍历沿宿主链把接口实参代入
+        // 构造实参（IEnumerator\<T\> → IEnumerator\<i32\>——签名匹配按
+        // 代入后形态比较）
+        private static List<TypeSymbol> InterfaceClosure(TypeSymbol host, ResolveEnvironment env)
         {
             var result = new List<TypeSymbol>();
             var visited = new HashSet<TypeSymbol>();
             var stack = new Stack<TypeSymbol>();
             for (var t = host; t != null; t = t.BaseType)
             {
-                foreach (var iface in (t.ConstructedFrom ?? t).Interfaces)
+                var def = t.ConstructedFrom ?? t;
+                foreach (var iface in def.Interfaces)
                 {
-                    stack.Push(iface);
+                    stack.Push(ReferenceEquals(def, t)
+                        ? iface
+                        : (TypeSymbol)(env.Substitute(iface, def, t) ?? iface));
                 }
             }
             while (stack.Count > 0)
@@ -198,9 +205,12 @@ namespace LatteCompiler
                 var iface = stack.Pop();
                 if (!visited.Add(iface.ConstructedFrom ?? iface)) continue;
                 result.Add(iface);
-                foreach (var next in (iface.ConstructedFrom ?? iface).Interfaces)
+                var def = iface.ConstructedFrom ?? iface;
+                foreach (var next in def.Interfaces)
                 {
-                    stack.Push(next);
+                    stack.Push(ReferenceEquals(def, iface)
+                        ? next
+                        : (TypeSymbol)(env.Substitute(next, def, iface) ?? next));
                 }
             }
             return result;
@@ -243,18 +253,61 @@ namespace LatteCompiler
                 _returnType is ErrorTypeSymbol ||
                 _paramTypes.Any(t => t is ErrorTypeSymbol or null);
 
-            // 签名匹配：名 + 参数个数 + 参数类型引用相等 + 返回类型引用相等
+            // 签名匹配：名 + 参数个数 + 参数类型同构 + 返回类型同构
+            // （S9f 解开 #22⑥：泛型方法覆写——两侧各自的泛型参数是不同
+            // 符号，按声明序对应比较而非引用相等；嵌套构造递归逐实参）
             public bool Matches(SignatureView other)
             {
-                if (Symbol.Name != other.Symbol.Name || _paramTypes.Length != other._paramTypes.Length)
+                if (Symbol.Name != other.Symbol.Name
+                    || _paramTypes.Length != other._paramTypes.Length)
                 {
                     return false;
                 }
                 for (int i = 0; i < _paramTypes.Length; i++)
                 {
-                    if (!ReferenceEquals(_paramTypes[i], other._paramTypes[i])) return false;
+                    if (!Equivalent(_paramTypes[i], other._paramTypes[i], Symbol,
+                        other.Symbol))
+                    {
+                        return false;
+                    }
                 }
-                return ReferenceEquals(_returnType, other._returnType);
+                return Equivalent(_returnType, other._returnType, Symbol, other.Symbol);
+            }
+
+            // 类型同构比较：引用相等即匹配；两侧的泛型参数（方法声明序）按
+            // 索引对应——覆写的 V 与基类的 U 同构；构造类型按定义 + 逐实参
+            // 递归。宿主泛型参数经 SignatureView.Of 的 Substitute 已统一为
+            // 覆写侧符号（引用相等），不在此列
+            private static bool Equivalent(SemanticSymbol? a, SemanticSymbol? b,
+                MethodSymbol aMethod, MethodSymbol bMethod)
+            {
+                if (ReferenceEquals(a, b)) return true;
+                if (a == null || b == null) return false;
+                if (a is GenericParameterSymbol ga && b is GenericParameterSymbol gb)
+                {
+                    var ia = aMethod.GenericParameters.IndexOf(ga);
+                    var ib = bMethod.GenericParameters.IndexOf(gb);
+                    return ia >= 0 && ia == ib;
+                }
+                if (a is TypeSymbol { ConstructedFrom: not null } ta
+                    && b is TypeSymbol { ConstructedFrom: not null } tb)
+                {
+                    if (!ReferenceEquals(ta.ConstructedFrom, tb.ConstructedFrom)
+                        || ta.TypeArguments!.Count != tb.TypeArguments!.Count)
+                    {
+                        return false;
+                    }
+                    for (int i = 0; i < ta.TypeArguments!.Count; i++)
+                    {
+                        if (!Equivalent(ta.TypeArguments[i], tb.TypeArguments[i],
+                            aMethod, bMethod))
+                        {
+                            return false;
+                        }
+                    }
+                    return true;
+                }
+                return false;
             }
 
             public string Key =>

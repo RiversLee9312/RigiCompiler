@@ -82,10 +82,10 @@ namespace LatteCompiler
                 {
                     return new BoundInstanceCallExpression(node, binding.Receiver,
                         binding.Method, binding.Arguments, binding.ResultType!,
-                        binding.TypeArguments);
+                        binding.TypeArguments, binding.GenericPack);
                 }
                 return new BoundCallExpression(node, binding.Method, binding.Arguments,
-                    binding.ResultType!, binding.TypeArguments);
+                    binding.ResultType!, binding.TypeArguments, binding.GenericPack);
             }
             // 非调用形态的泛型实参（`x\<T>` 无调用后缀/链上段带实参）——
             // S9b 仍归口（调用实参已由调用形态消费）
@@ -226,9 +226,10 @@ namespace LatteCompiler
                 }
                 BoundExpression callValue = callBase.Receiver != null
                     ? new BoundInstanceCallExpression(node, callBase.Receiver, callBase.Method,
-                        callBase.Arguments, callBase.ResultType!, callBase.TypeArguments)
+                        callBase.Arguments, callBase.ResultType!, callBase.TypeArguments,
+                        callBase.GenericPack)
                     : new BoundCallExpression(node, callBase.Method, callBase.Arguments,
-                        callBase.ResultType!, callBase.TypeArguments);
+                        callBase.ResultType!, callBase.TypeArguments, callBase.GenericPack);
                 var foldedCall = FoldSuffixes(node, callValue, node.Head.Suffixes, 1,
                     forAssignment && node.Segments.Count == 0, scope, ctx, env);
                 if (foldedCall == null) return null;
@@ -576,7 +577,7 @@ namespace LatteCompiler
                 var resolved = OverloadResolution.Resolve(node, candidates, suffix.Arguments,
                     scope, ctx, env, receiverType: receiver.Type as TypeSymbol);
                 if (resolved == null) return null;
-                var (op, boundArguments, opResultType) = resolved.Value;
+                var (op, boundArguments, opResultType, _) = resolved.Value;
                 if (opResultType == null)
                 {
                     env.Error(node.Span, $"Method '{op.Name}' has no result (void) " +

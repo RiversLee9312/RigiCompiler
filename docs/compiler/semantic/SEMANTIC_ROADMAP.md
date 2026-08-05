@@ -474,7 +474,7 @@ P4 同步落地——P3 绑得出来的形态，同一步内 P4 必须能发射�
 > cast/cast.safe 发射）；本里程碑剩余的 cast 相关工作为 smart cast
 > 分析与 castTo/castFrom 名字分析。
 
-## S9 泛型
+## S9 泛型（✅ 2026-08-05 M67–M73 全部落地，S9 收官）
 
 reified 泛型全链：使用侧约束检查、构造类型驻留完善、
 `.generic.*` hidden args 物化（BIL §7 规范签名与参数序）、

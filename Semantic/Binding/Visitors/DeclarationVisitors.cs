@@ -171,18 +171,18 @@ namespace LatteCompiler
                 if (binding.IsVoid)
                 {
                     return new BoundCallStatement(stmt, binding.Method, binding.Arguments,
-                        binding.Receiver, binding.TypeArguments);
+                        binding.Receiver, binding.TypeArguments, binding.GenericPack);
                 }
                 if (binding.Receiver != null)
                 {
                     return new BoundExpressionStatement(stmt,
                         new BoundInstanceCallExpression(path, binding.Receiver,
                             binding.Method, binding.Arguments, binding.ResultType!,
-                            binding.TypeArguments));
+                            binding.TypeArguments, binding.GenericPack));
                 }
                 return new BoundExpressionStatement(stmt, new BoundCallExpression(path,
                     binding.Method, binding.Arguments, binding.ResultType!,
-                    binding.TypeArguments));
+                    binding.TypeArguments, binding.GenericPack));
             }
             var expr = ExpressionDispatcher.Visit(stmt.Expression.Expression, scope, ctx, env);
             return expr == null ? null : new BoundExpressionStatement(stmt, expr);

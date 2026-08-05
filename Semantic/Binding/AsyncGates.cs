@@ -47,8 +47,8 @@ namespace LatteCompiler
                     WalkExpression(expression.Expression, env);
                     break;
                 case BoundCallStatement call:
-                    CheckAsyncCall(call.Method, call.Receiver, call.Arguments, statement.Syntax,
-                        env);
+                    CheckAsyncCall(call.Method, call.Receiver, call.Arguments, call.TypeArguments,
+                        statement.Syntax, env);
                     foreach (var argument in call.Arguments) WalkExpression(argument, env);
                     if (call.Receiver != null) WalkExpression(call.Receiver, env);
                     break;
@@ -120,12 +120,13 @@ namespace LatteCompiler
             switch (expression)
             {
                 case BoundCallExpression call:
-                    CheckAsyncCall(call.Method, null, call.Arguments, expression.Syntax, env);
+                    CheckAsyncCall(call.Method, null, call.Arguments, call.TypeArguments,
+                        expression.Syntax, env);
                     foreach (var argument in call.Arguments) WalkExpression(argument, env);
                     break;
                 case BoundInstanceCallExpression instanceCall:
                     CheckAsyncCall(instanceCall.Method, instanceCall.Receiver,
-                        instanceCall.Arguments, expression.Syntax, env);
+                        instanceCall.Arguments, instanceCall.TypeArguments, expression.Syntax, env);
                     WalkExpression(instanceCall.Receiver, env);
                     foreach (var argument in instanceCall.Arguments) WalkExpression(argument, env);
                     break;
@@ -213,9 +214,12 @@ namespace LatteCompiler
             }
         }
 
-        // 闸门 1 + 2：async 方法调用点的 receiver 与全部实际实参类型
+        // 闸门 1 + 2 + 5：async 方法调用点的 receiver、全部实际实参类型与
+        // 泛型实参（S9f 解开 #23④：M69 后 BoundCall 携带 TypeArguments，
+        // 闸门 5 调用点检查落地——泛型实参的 typeid 与实际值一同跨边界）
         private static void CheckAsyncCall(MethodSymbol method, BoundExpression? receiver,
-            IReadOnlyList<BoundExpression> arguments, ASTNode syntax, BindEnvironment env)
+            IReadOnlyList<BoundExpression> arguments, IReadOnlyList<SemanticSymbol> typeArguments,
+            ASTNode syntax, BindEnvironment env)
         {
             if (!method.IsAsync) return;
             // S9a：泛型参数类型判型后跳过（实参实际类型检查归 S9f 闸门 5）
@@ -235,6 +239,19 @@ namespace LatteCompiler
                     env.Error(syntax.Span,
                         $"argument of async function '{method.Name}' must be a " +
                         $"shared-safe type: '{BoundAnalysis.TypeDisplay(argument.Type)}'");
+                }
+            }
+            // 闸门 5：泛型实参实际类型共享安全（泛型参数自身/ErrorType
+            // 毒化跳过——泛型参数的实际类型由调用点实参约束）
+            foreach (var typeArgument in typeArguments)
+            {
+                if (typeArgument is not TypeSymbol typeArgumentType
+                    || typeArgumentType is ErrorTypeSymbol) continue;
+                if (!typeArgumentType.IsSharedSafe())
+                {
+                    env.Error(syntax.Span,
+                        $"type argument of async function '{method.Name}' must be a " +
+                        $"shared-safe type: '{BoundAnalysis.TypeDisplay(typeArgument)}'");
                 }
             }
         }

@@ -123,9 +123,10 @@ namespace LatteCompiler.Tests
                 ratioMembers.Any(d => d.Symbol == "app::Ratio$.get.doubled@.i32")
                 && !ratioMembers.Any(d => d.Symbol.Contains("set.doubled")));
 
-            // 资源形状（§19.1 标量去重：init 的 i32 0 与 stdlib 基线同键）
+            // 资源形状（§19.1 标量去重：init 的 i32 0 在 S9f 后自 stdlib
+            // 基线移除，转为用户模块新增一条）
             BilTestHarness.CheckResShape("资源（访问器样例）", module,
-                "#0 = string \"\\n\"\n#1 = i32 0\n#2 = bool false\n#3 = i32 1\n#4 = bool true");
+                "#0 = string \"\\n\"\n#1 = bool false\n#2 = i32 1\n#3 = bool true\n#4 = i32 0");
 
             // fn 形状黄金：backing getter/setter（setter 体首隐含赋值合成）
             BilTestHarness.CheckFnShape("backing getter fn（value → get.field）",

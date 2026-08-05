@@ -70,6 +70,8 @@ namespace LatteCompiler.Tests
             TestConversionOperators();
             TestAsyncGates();
             TestGenericCalls();
+            TestGenericVarArgs();
+            TestOperatorNameCalls();
             TestGenericFunctionBody();
             TestDiagnosticsAccumulation();
             return TestHarness.Summary("Binder");

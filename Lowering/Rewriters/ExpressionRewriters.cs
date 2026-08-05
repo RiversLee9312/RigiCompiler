@@ -100,7 +100,12 @@ namespace LatteCompiler
             var arguments = LoweringFacility.LowerArguments(call.Arguments, call.Method.Parameters,
                 ctx, env);
             if (arguments == null) return null;
-            return new LoweredCallExpression(call, call.Method, arguments, call.TypeArguments);
+            // S9d-2：泛型包无值子节点，恒等透传（打包归 P4b）
+            var genericPack = call.GenericPack == null ? null
+                : new LoweredGenericVarArgsArgument(call.GenericPack, call.GenericPack.IsNamed,
+                    call.GenericPack.TypeArguments, call.GenericPack.NamedTypes);
+            return new LoweredCallExpression(call, call.Method, arguments, call.TypeArguments,
+                genericPack);
         }
     }
 
@@ -345,8 +350,13 @@ namespace LatteCompiler
             var arguments = LoweringFacility.LowerArguments(instanceCall.Arguments,
                 instanceCall.Method.Parameters, ctx, env);
             if (arguments == null) return null;
+            var genericPack = instanceCall.GenericPack == null ? null
+                : new LoweredGenericVarArgsArgument(instanceCall.GenericPack,
+                    instanceCall.GenericPack.IsNamed, instanceCall.GenericPack.TypeArguments,
+                    instanceCall.GenericPack.NamedTypes);
             return new LoweredInstanceCallExpression(instanceCall, receiver,
-                instanceCall.Method, arguments, instanceCall.Type, instanceCall.TypeArguments);
+                instanceCall.Method, arguments, instanceCall.Type, instanceCall.TypeArguments,
+                genericPack);
         }
     }
 

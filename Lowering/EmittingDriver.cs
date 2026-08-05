@@ -52,11 +52,36 @@ namespace LatteCompiler
                 function.Args.Add(new BilArgDeclaration(".this",
                     CanonicalSymbolPrinter.PrintType(method.Owner)));
             }
-            // S9e：固定泛型隐藏参数（§7.1/§7.2：.generic.T = .typeid）
+            // 泛型隐藏参数（S9e/S9d-2，§7.1/§7.2 序：固定泛型 → 泛型可变包）：
+            // 固定 .generic.T = .typeid；位置包 .generic.TArgs = .array<.typeid>
+            // （.typeid 无边界 ≡ .typeid<.any>，投影即 .array<.typeid<.any>>）；
+            // 具名包 .generic.TValues = .map<.string, .typeid>（§6.3 标准构造）
+            var typeIdType = env.Unit.Symbols.GetConstructedType(
+                env.Unit.Symbols.Bootstrap.TypeDefinition, env.Unit.Symbols.Bootstrap.Any);
             foreach (var genericParameter in method.GenericParameters)
             {
-                function.Args.Add(new BilArgDeclaration(
-                    ".generic." + genericParameter.Name, ".typeid"));
+                if (genericParameter.IsNamedVariadic)
+                {
+                    var mapType = env.Unit.Symbols.GetConstructedType(
+                        env.Unit.Symbols.Bootstrap.MapDefinition,
+                        env.Unit.Symbols.Bootstrap.String, typeIdType);
+                    function.Args.Add(new BilArgDeclaration(
+                        ".generic." + genericParameter.Name,
+                        CanonicalSymbolPrinter.PrintType(mapType)));
+                }
+                else if (genericParameter.IsVariadic)
+                {
+                    var arrayType = env.Unit.Symbols.GetConstructedType(
+                        env.Unit.Symbols.Bootstrap.ArrayDefinition, typeIdType);
+                    function.Args.Add(new BilArgDeclaration(
+                        ".generic." + genericParameter.Name,
+                        CanonicalSymbolPrinter.PrintType(arrayType)));
+                }
+                else
+                {
+                    function.Args.Add(new BilArgDeclaration(
+                        ".generic." + genericParameter.Name, ".typeid"));
+                }
             }
             foreach (var parameter in method.Parameters)
             {

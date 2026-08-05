@@ -26,22 +26,26 @@ namespace LatteCompiler
     // Receiver 为 null = 静态/全局调用；非 null = 实例调用（S7c-2，
     // receiver 求值作首实参，BIL §7.3/§15.1）。
     // S9e 增补 TypeArguments：显式泛型实参（同 LoweredCallExpression）
+    // S9d-2 增补 GenericPack：泛型可变参数包推导产物（同 LoweredCallExpression）
     public sealed class LoweredCallStatement : LoweredStatement
     {
         public MethodSymbol Method { get; }
         public IReadOnlyList<LoweredExpression> Arguments { get; }
         public LoweredExpression? Receiver { get; }
         public IReadOnlyList<SemanticSymbol> TypeArguments { get; }
+        public LoweredGenericVarArgsArgument? GenericPack { get; }
 
         public LoweredCallStatement(BoundCallStatement origin, MethodSymbol method,
             IReadOnlyList<LoweredExpression> arguments, LoweredExpression? receiver = null,
-            IReadOnlyList<SemanticSymbol>? typeArguments = null)
+            IReadOnlyList<SemanticSymbol>? typeArguments = null,
+            LoweredGenericVarArgsArgument? genericPack = null)
             : base(origin)
         {
             Method = method;
             Arguments = arguments;
             Receiver = receiver;
             TypeArguments = typeArguments ?? Array.Empty<SemanticSymbol>();
+            GenericPack = genericPack;
         }
     }
 

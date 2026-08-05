@@ -33,25 +33,40 @@ namespace LatteCompiler
             }
         }
 
-        // 主入口：候选集 + 实参 → (胜者, 规范序实参, 代入后返回类型)；
-        // 失败落诊断返回 null。返回类型为胜者视图的 ReturnType（泛型候选
-        // 已代入显式实参 + 宿主构造实参；非泛型候选即声明返回类型）——
-        // 调用方据此定型 Bound 节点（定义级 Method.ReturnType 在泛型下是
-        // 未代入的 T）。
+        // 主入口：候选集 + 实参 → (胜者, 规范序实参, 代入后返回类型,
+        // 泛型可变包推导产物)；失败落诊断返回 null。返回类型为胜者视图的
+        // ReturnType（泛型候选已代入显式实参 + 宿主构造实参；非泛型候选
+        // 即声明返回类型）——调用方据此定型 Bound 节点（定义级
+        // Method.ReturnType 在泛型下是未代入的 T）。
         // explicitTypeArgs：显式泛型实参（null = 未提供；S9b 仅固定泛型
-        // 参数，可变泛型参数包归 S9d）。
+        // 参数，可变泛型参数包归 S9d——不显式书写，由值实参推导）。
         // receiverType：调用点 receiver 静态类型（null = 静态/全局调用或
         // this 上下文）——实例方法签名中的宿主泛型参数沿链取构造实参代入
         public static (MethodSymbol Method, List<BoundExpression> Arguments,
-            SemanticSymbol? ReturnType)? Resolve(
+            SemanticSymbol? ReturnType, BoundGenericVarArgsArgument? GenericPack)? Resolve(
             ASTNode node, List<MethodSymbol> candidates, List<ArgumentASTNode> arguments,
             Scope scope, BindContext ctx, BindEnvironment env,
             IReadOnlyList<SemanticSymbol>? explicitTypeArgs = null,
             TypeSymbol? receiverType = null)
         {
+            // 实参预绑定（无目标类型；null 字面量占位待胜者形参类型定型）：
+            // 存在泛型包候选时必须先做——包类型实参推导需要实参静态类型
+            // （SYNTAX §4.3 ⑤）；多候选路径复用同一结果。任一实参失败即
+            // 整体失败——表达式自身诊断已报，不级联误诊
+            var needPrebind = candidates.Any(IsGenericPackCandidate);
+            BoundExpression?[]? prebound = null;
+            if (needPrebind)
+            {
+                prebound = PrebindArguments(node, arguments, scope, ctx, env);
+                if (prebound == null) return null;
+            }
             // 候选池过滤（SYNTAX §4.2 S9 定稿）：显式实参 → 仅泛型方法
-            // （个数匹配）；不带 → 仅非泛型方法
+            // （个数匹配）；不带 → 非泛型方法 + 泛型参数全为可变的泛型
+            // 方法（S9d-2 放宽：包推导是可变泛型参数的固有形态，与「固定
+            // 泛型参数必须显式实参」不冲突——包实参永不显式书写）
             List<CandidateView> pool;
+            // 泛型包候选的推导产物（视图 → 包）：胜者落定后取回随结果返回
+            var packByView = new Dictionary<CandidateView, BoundGenericVarArgsArgument>();
             if (explicitTypeArgs != null)
             {
                 var generics = candidates.Where(m => m.GenericParameters.Count > 0).ToList();
@@ -87,6 +102,15 @@ namespace LatteCompiler
                     .Select(m => new CandidateView(m, m.Parameters.Select(p => p.Type!)
                         .ToList(), m.ReturnType))
                     .ToList();
+                foreach (var candidate in candidates.Where(IsGenericPackCandidate))
+                {
+                    var pack = DerivePack(candidate, arguments, prebound!, node.Span, env);
+                    if (pack == null) return null;
+                    // 可空元组无提升元素访问，先解包再取（pack 已判非空）
+                    var view = ViewOf(candidate, new[] { pack.Value.PackType }, receiverType, env);
+                    pool.Add(view);
+                    packByView.Add(view, pack.Value.Pack);
+                }
                 if (pool.Count == 0 && candidates.Any(m => m.GenericParameters.Count > 0))
                 {
                     env.Error(node.Span, $"'{candidates[0].Name}' is a generic method; " +
@@ -107,7 +131,8 @@ namespace LatteCompiler
             {
                 var single = CallFacility.BindArguments(pool[0].Method, arguments, scope, node.Span,
                     ctx, env, pool[0].ParameterTypes);
-                return single == null ? null : (pool[0].Method, single, pool[0].ReturnType);
+                return single == null ? null : (pool[0].Method, single, pool[0].ReturnType,
+                    packByView.GetValueOrDefault(pool[0]));
             }
             // 第一步：结构过滤（静默）——实参→形参映射（名字存在/不重复/
             // 个数适配默认值）
@@ -127,18 +152,17 @@ namespace LatteCompiler
             {
                 var only = CallFacility.BindArguments(mapped[0].View.Method, arguments, scope,
                     node.Span, ctx, env, mapped[0].View.ParameterTypes);
-                return only == null ? null : (mapped[0].View.Method, only, mapped[0].View.ReturnType);
+                return only == null ? null : (mapped[0].View.Method, only,
+                    mapped[0].View.ReturnType, packByView.GetValueOrDefault(mapped[0].View));
             }
             // 实参预绑定（无目标类型；null 字面量占位待胜者形参类型定型）。
-            // 任一实参失败即整体失败——表达式自身诊断已报，不再级联误诊
-            var boundArgs = new BoundExpression?[arguments.Count];
-            for (int i = 0; i < arguments.Count; i++)
+            // 任一实参失败即整体失败——表达式自身诊断已报，不再级联误诊；
+            // 泛型包候选存在时已提前预绑（推导需要），此处复用
+            var boundArgs = prebound;
+            if (boundArgs == null)
             {
-                if (arguments[i].Value.Expression is LiteralExpressionASTNode
-                    { Literal: NullLiteralASTNode }) continue;
-                boundArgs[i] = ExpressionDispatcher.Visit(arguments[i].Value.Expression, scope,
-                    ctx, env);
-                if (boundArgs[i] == null) return null;
+                boundArgs = PrebindArguments(node, arguments, scope, ctx, env);
+                if (boundArgs == null) return null;
             }
             // 第二步：类型适用性（静默）
             var applicable = mapped.Where(x => IsApplicable(x.View, x.Mapping, boundArgs, env))
@@ -182,8 +206,117 @@ namespace LatteCompiler
             var winner = winners[0];
             return Materialize(winner.View, winner.Mapping, boundArgs, arguments, scope,
                 node.Span, ctx, env) is { } finalArgs
-                ? (winner.View.Method, finalArgs, winner.View.ReturnType)
+                ? (winner.View.Method, finalArgs, winner.View.ReturnType,
+                    packByView.GetValueOrDefault(winner.View))
                 : null;
+        }
+
+        // 实参预绑定（无目标类型；null 字面量占位）：任一实参绑定失败返回
+        // null（表达式自身诊断已报）
+        private static BoundExpression?[]? PrebindArguments(ASTNode node,
+            List<ArgumentASTNode> arguments, Scope scope, BindContext ctx, BindEnvironment env)
+        {
+            var boundArgs = new BoundExpression?[arguments.Count];
+            for (int i = 0; i < arguments.Count; i++)
+            {
+                if (arguments[i].Value.Expression is LiteralExpressionASTNode
+                    { Literal: NullLiteralASTNode }) continue;
+                boundArgs[i] = ExpressionDispatcher.Visit(arguments[i].Value.Expression, scope,
+                    ctx, env);
+                if (boundArgs[i] == null) return null;
+            }
+            return boundArgs;
+        }
+
+        // 泛型包候选判定（S9d-2）：泛型参数全为可变的泛型方法——包类型
+        // 实参由值实参推导（§4.3 ⑤），与「固定泛型参数必须显式实参」不冲突
+        private static bool IsGenericPackCandidate(MethodSymbol method)
+        {
+            return method.GenericParameters.Count > 0
+                && method.GenericParameters.All(p => p.IsVariadic || p.IsNamedVariadic);
+        }
+
+        // 包实参推导（S9d-2，SYNTAX §4.3 定稿⑤）：类型实参 = 归包值实参的
+        // 静态类型——位置包 ← 归包位置实参类型序列；具名包 ← 归包具名
+        // 实参「名 → 类型」映射。归包判定与 CallFacility.BindArguments 同源
+        // （位置实参超固定形参且包为位置包 → 归包；具名实参名不在固定表
+        // 且包为具名包 → 归包）。逐推导类型做约束检查（§4.3：如
+        // `with Serializable`，定位到实参）；产物含代入视图用的包类型
+        // （位置 .array<.typeid<.any>> / 具名 .map<.string, .typeid<.any>>，
+        // BIL §7.1）。多可变泛型参数归口诊断。返回 null = 已诊断
+        private static (BoundGenericVarArgsArgument Pack, SemanticSymbol PackType)? DerivePack(
+            MethodSymbol method, List<ArgumentASTNode> arguments, BoundExpression?[] boundArgs,
+            CharRange? span, BindEnvironment env)
+        {
+            var variadics = method.GenericParameters
+                .Where(p => p.IsVariadic || p.IsNamedVariadic).ToList();
+            if (variadics.Count > 1)
+            {
+                env.Error(span,
+                    "P3: multiple variadic generic parameters are not supported yet (S9d)");
+                return null;
+            }
+            var packParameter = variadics[0];
+            var fixedParameters = method.Parameters
+                .Where(p => !p.IsVariadic && !p.IsNamedVariadic).ToList();
+            var hasValuePack = method.Parameters.Count > 0
+                && (method.Parameters[^1].IsVariadic || method.Parameters[^1].IsNamedVariadic);
+            var isNamedPack = packParameter.IsNamedVariadic;
+            var packTypes = new List<SemanticSymbol>();
+            var namedTypes = new List<(string Name, SemanticSymbol Type)>();
+            var nextPositional = 0;
+            for (int i = 0; i < arguments.Count; i++)
+            {
+                var argument = arguments[i];
+                bool inPack;
+                if (argument.Name == null)
+                {
+                    inPack = nextPositional >= fixedParameters.Count && hasValuePack
+                        && !isNamedPack;
+                    if (!inPack) nextPositional++;
+                }
+                else
+                {
+                    inPack = !fixedParameters.Any(p => p.Name == argument.Name)
+                        && hasValuePack && isNamedPack;
+                }
+                if (!inPack) continue;
+                var type = boundArgs[i]?.Type;
+                if (type == null)
+                {
+                    env.Error(argument.Span, "P3: cannot infer a type argument from a null " +
+                        "literal in a generic variadic pack (S9d)");
+                    return null;
+                }
+                // 逐推导类型约束检查（SYNTAX §4.3：推导出的每个类型实参
+                // 必须满足对应泛型参数的约束），失败定位到实参
+                if (!GenericConstraints.CheckArguments(new[] { type },
+                    new[] { packParameter }, argument.Value.Span ?? argument.Span, env))
+                {
+                    return null;
+                }
+                if (isNamedPack)
+                {
+                    namedTypes.Add((argument.Name!, type));
+                }
+                else
+                {
+                    packTypes.Add(type);
+                }
+            }
+            var typeIdType = env.Unit.Symbols.GetConstructedType(
+                env.Unit.Symbols.Bootstrap.TypeDefinition, env.Unit.Symbols.Bootstrap.Any);
+            var packType = isNamedPack
+                ? (SemanticSymbol)env.Unit.Symbols.GetConstructedType(
+                    env.Unit.Symbols.Bootstrap.MapDefinition,
+                    env.Unit.Symbols.Bootstrap.String, typeIdType)
+                : env.Unit.Symbols.GetConstructedType(
+                    env.Unit.Symbols.Bootstrap.ArrayDefinition, typeIdType);
+            var pack = new BoundGenericVarArgsArgument(
+                arguments.Count > 0 ? (ASTNode)arguments[0].Value : null!,
+                isNamed: isNamedPack, packTypes,
+                isNamedPack ? namedTypes : null);
+            return (pack, packType);
         }
 
         // 泛型候选代入视图：显式实参按泛型参数序代入参数/返回类型；

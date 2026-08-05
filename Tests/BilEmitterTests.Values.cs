@@ -351,5 +351,51 @@ namespace LatteCompiler.Tests
                 && news.Any(n => n.Type.TypeRef == ".array<.any>"
                     && n.Arguments.Count == 1));
         }
+
+        // ===== S9d-2：泛型可变参数包（§7.1 隐藏参数 .generic.TArgs/
+        // .generic.TValues——位置 .array<.typeid>、具名 .map<.string, .typeid>；
+        // §7.2 序：固定泛型 → 泛型可变包 → 普通参数 → 值包）=====
+        private static void TestGenericVarArgsEmission()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "pub func collect\\<TArgs...>(values: TArgs...): i32 { return 1 }\n" +
+                "pub func update\\<named TValues...>(configs: named TValues...): bool { return true }\n" +
+                "pub func main() {\n" +
+                "    var c = collect(1, \"s\")\n" +
+                "    var u = update(isDarkMode = true, userName = \"Andy\")\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（泛型可变参数）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（泛型可变参数）", module);
+
+            // fn .args：泛型包隐藏条目按 §7.2 序（固定泛型 → 泛型包 → 值包）
+            var collectFn = module.Functions.Single(f => f.Symbol == "$collect()@.i32");
+            TestHarness.CheckTrue("位置泛型包隐藏条目（.generic.TArgs = .array<.typeid<.any>>）",
+                collectFn.Args.Count == 3
+                && collectFn.Args[1].Name == ".generic.TArgs"
+                && collectFn.Args[1].TypeRef == ".array<.typeid<.any>>"
+                && collectFn.Args[2].Name == ".vargs.values"
+                && collectFn.Args[2].TypeRef == ".array<.any>");
+            var updateFn = module.Functions.Single(f => f.Symbol == "$update()@.bool");
+            TestHarness.CheckTrue("具名泛型包隐藏条目（.generic.TValues = .map<.string, .typeid<.any>>）",
+                updateFn.Args.Count == 3
+                && updateFn.Args[1].Name == ".generic.TValues"
+                && updateFn.Args[1].TypeRef == ".map<.string, .typeid<.any>>"
+                && updateFn.Args[2].Name == ".kwargs.configs"
+                && updateFn.Args[2].TypeRef == ".array<.pair<.string, .any>>");
+
+            // 调用点：位置包 new .array<.typeid<.any>> [getid.type...]；具名包
+            // pair 逐项（名 + getid.type）→ new .map<.string, .typeid<.any>>
+            var mainFn = module.Functions.Single(f => f.Symbol == "$main()@.void");
+            var mainNews = mainFn.Blocks[0].Instructions.OfType<NewInstruction>().ToList();
+            TestHarness.CheckTrue("位置包 .typeid 数组构造（2 元素）",
+                mainNews.Any(n => n.Type.TypeRef == ".array<.typeid<.any>>"
+                    && n.Arguments.Count == 2));
+            TestHarness.CheckTrue("具名包 pair/map 构造",
+                mainNews.Any(n => n.Type.TypeRef == "core::Pair<.string, .typeid<.any>>")
+                && mainNews.Any(n => n.Type.TypeRef == ".map<.string, .typeid<.any>>"
+                    && n.Arguments.Count == 2));
+            var typeIds = mainFn.Blocks[0].Instructions.OfType<GetIdTypeInstruction>().ToList();
+            TestHarness.CheckTrue("typeid 物化（i32/String/bool 三项）", typeIds.Count >= 3);
+        }
     }
 }

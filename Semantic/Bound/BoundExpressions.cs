@@ -83,20 +83,25 @@ namespace LatteCompiler
     // 仅用于有返回值的调用；void 调用作语句见 BoundCallStatement。
     // S9b 增补 TypeArguments：显式泛型实参（非泛型调用为空——P4 发射
     // .generic.T 隐藏实参的依据，§7.2）
+    // S9d-2 增补 GenericPack：泛型可变参数包推导产物（null = 无——非
+    // 泛型或固定泛型方法；P4 发射在 TypeArguments 之后、普通实参之前，§7.2）
     public sealed class BoundCallExpression : BoundExpression
     {
         public MethodSymbol Method { get; }
         public IReadOnlyList<BoundExpression> Arguments { get; }
         public IReadOnlyList<SemanticSymbol> TypeArguments { get; }
+        public BoundGenericVarArgsArgument? GenericPack { get; }
 
         public BoundCallExpression(ASTNode syntax, MethodSymbol method,
             IReadOnlyList<BoundExpression> arguments, SemanticSymbol type,
-            IReadOnlyList<SemanticSymbol>? typeArguments = null)
+            IReadOnlyList<SemanticSymbol>? typeArguments = null,
+            BoundGenericVarArgsArgument? genericPack = null)
             : base(syntax, type)
         {
             Method = method;
             Arguments = arguments;
             TypeArguments = typeArguments ?? Array.Empty<SemanticSymbol>();
+            GenericPack = genericPack;
         }
     }
 
@@ -168,22 +173,26 @@ namespace LatteCompiler
     // 成员表）。接口方法的调用以接口方法符号引用（分派归 Middleware，
     // BIL §15.1 注释约定）。Arguments 已是规范参数序。
     // S9b 增补 TypeArguments：显式泛型实参（同 BoundCallExpression）
+    // S9d-2 增补 GenericPack：泛型可变参数包推导产物（同 BoundCallExpression）
     public sealed class BoundInstanceCallExpression : BoundExpression
     {
         public BoundExpression Receiver { get; }
         public MethodSymbol Method { get; }
         public IReadOnlyList<BoundExpression> Arguments { get; }
         public IReadOnlyList<SemanticSymbol> TypeArguments { get; }
+        public BoundGenericVarArgsArgument? GenericPack { get; }
 
         public BoundInstanceCallExpression(ASTNode syntax, BoundExpression receiver,
             MethodSymbol method, IReadOnlyList<BoundExpression> arguments, SemanticSymbol type,
-            IReadOnlyList<SemanticSymbol>? typeArguments = null)
+            IReadOnlyList<SemanticSymbol>? typeArguments = null,
+            BoundGenericVarArgsArgument? genericPack = null)
             : base(syntax, type)
         {
             Receiver = receiver;
             Method = method;
             Arguments = arguments;
             TypeArguments = typeArguments ?? Array.Empty<SemanticSymbol>();
+            GenericPack = genericPack;
         }
     }
 
@@ -468,6 +477,33 @@ namespace LatteCompiler
             IsNamed = isNamed;
             Values = values;
             NamedValues = namedValues ?? Array.Empty<(string, BoundExpression)>();
+        }
+    }
+
+    // 泛型可变参数包推导产物（S9d-2，SYNTAX §4.3/§7.1）：对「泛型参数全
+    // 为可变」的方法，类型实参由对应值实参的静态类型推导——位置包
+    // （TArgs...）携带推导的类型实参序列（← 归包位置实参的静态类型）；
+    // 具名包（named TValues...）携带「名 → 静态类型」映射（← 归包具名
+    // 实参）。非 BoundExpression（无值语义，P4 打包 .array<.typeid<.any>>
+    // / .map<.string, .typeid<.any>> 隐藏实参，§7.2 序在固定泛型后普通
+    // 实参前——BoundCall 以独立槽承载）
+    public sealed class BoundGenericVarArgsArgument : BoundNode
+    {
+        // true = 具名包（元素为「名 → 类型」对）；false = 位置包
+        public bool IsNamed { get; }
+        // 位置包推导类型序列（IsNamed == false 时非空）
+        public IReadOnlyList<SemanticSymbol> TypeArguments { get; }
+        // 具名包推导类型映射（IsNamed == true 时非空）
+        public IReadOnlyList<(string Name, SemanticSymbol Type)> NamedTypes { get; }
+
+        public BoundGenericVarArgsArgument(ASTNode syntax, bool isNamed,
+            IReadOnlyList<SemanticSymbol> typeArguments,
+            IReadOnlyList<(string Name, SemanticSymbol Type)>? namedTypes)
+            : base(syntax)
+        {
+            IsNamed = isNamed;
+            TypeArguments = typeArguments;
+            NamedTypes = namedTypes ?? Array.Empty<(string, SemanticSymbol)>();
         }
     }
 }

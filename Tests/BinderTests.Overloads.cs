@@ -412,5 +412,136 @@ namespace LatteCompiler.Tests
             TestHarness.CheckSemanticError("泛型定义不可构造", unit9.Diagnostics,
                 "Cannot construct generic type definition 'Box'");
         }
+
+        // ===== 泛型可变参数包（S9d-2，SYNTAX §4.3 定稿⑤：类型实参由
+        // 对应值实参的静态类型推导——位置包 ← 位置实参序列、具名包 ←
+        // 具名实参「名 → 类型」映射；包实参永不显式书写）=====
+        private static void TestGenericVarArgs()
+        {
+            TestHarness.Section("P3 Generic Variadic Packs (S9d)");
+
+            // 1. 位置包：TArgs... ← 位置实参静态类型序列（GenericPack 携带）
+            var (unit, bodies) = BindUnit(
+                "func collect\\<TArgs...>(values: TArgs...): i32 { return 0 }\n" +
+                "func main() { var v = collect(1, \"s\", true) }\n");
+            CheckNoErrors("无诊断（位置泛型包推导）", unit);
+            var decl = (BoundLocalDeclarationStatement)BodyOf(bodies, "main").Body.Statements[0];
+            var call = (BoundCallExpression)decl.Initializer!;
+            TestHarness.CheckTrue("位置包推导产物（TArgs = i32/String/bool）",
+                call.GenericPack is { IsNamed: false } pack
+                && pack.TypeArguments.Count == 3
+                && ReferenceEquals(pack.TypeArguments[0], unit.Symbols.Bootstrap.Int32)
+                && ReferenceEquals(pack.TypeArguments[1], unit.Symbols.Bootstrap.String)
+                && ReferenceEquals(pack.TypeArguments[2], unit.Symbols.Bootstrap.Bool));
+
+            // 2. 具名包：named TValues... ← 具名实参「名 → 类型」映射
+            var (unit2, bodies2) = BindUnit(
+                "func update\\<named TValues...>(configs: named TValues...): bool { return true }\n" +
+                "func main() { var v = update(isDarkMode = true, userName = \"Andy\") }\n");
+            CheckNoErrors("无诊断（具名泛型包推导）", unit2);
+            var decl2 = (BoundLocalDeclarationStatement)BodyOf(bodies2, "main").Body.Statements[0];
+            var call2 = (BoundCallExpression)decl2.Initializer!;
+            TestHarness.CheckTrue("具名包推导产物（名 → 类型映射）",
+                call2.GenericPack is { IsNamed: true } namedPack
+                && namedPack.NamedTypes.Count == 2
+                && namedPack.NamedTypes[0].Name == "isDarkMode"
+                && ReferenceEquals(namedPack.NamedTypes[0].Type, unit2.Symbols.Bootstrap.Bool)
+                && namedPack.NamedTypes[1].Name == "userName"
+                && ReferenceEquals(namedPack.NamedTypes[1].Type, unit2.Symbols.Bootstrap.String));
+
+            // 3. 与固定形参混合：超固定数的位置实参归包
+            var (unit3, bodies3) = BindUnit(
+                "func mix\\<TArgs...>(prefix: i32, xs: TArgs...): i32 { return prefix }\n" +
+                "func main() { var v = mix(1, \"a\", 2.5) }\n");
+            CheckNoErrors("无诊断（固定形参与泛型包混合）", unit3);
+            var decl3 = (BoundLocalDeclarationStatement)BodyOf(bodies3, "main").Body.Statements[0];
+            var call3 = (BoundCallExpression)decl3.Initializer!;
+            TestHarness.CheckTrue("超固定数实参归包（TArgs = String/double）",
+                call3.GenericPack is { IsNamed: false } pack3
+                && pack3.TypeArguments.Count == 2
+                && ReferenceEquals(pack3.TypeArguments[0], unit3.Symbols.Bootstrap.String)
+                && ReferenceEquals(pack3.TypeArguments[1], unit3.Symbols.Bootstrap.Double));
+
+            // 4. 泛型包方法不再被「需要显式实参」排除（单候选可绑定）；
+            //    与非泛型共存时多候选含可变仍归口（包不参与 ranking）
+            var (unit4, _) = BindUnit(
+                "func pick(x: i32): i32 { return 1 }\n" +
+                "func pick\\<TArgs...>(xs: TArgs...): i32 { return 2 }\n" +
+                "func main() { var v = pick(1) }\n");
+            TestHarness.CheckSemanticError("非泛型与泛型包共存多候选归口", unit4.Diagnostics,
+                "P3: overload resolution with variadic parameters is not supported yet");
+
+            // 5. 固定泛型参数仍须显式实参（包推导不豁免固定参数）
+            var (unit5, _) = BindUnit(
+                "func gf\\<T>(x: T): T { return x }\n" +
+                "func main() { var v = gf(1) }\n");
+            TestHarness.CheckSemanticError("固定泛型参数仍需显式实参", unit5.Diagnostics,
+                "'gf' is a generic method; provide explicit type arguments");
+
+            // 6. 约束违反：逐推导类型做约束检查（extends ValueType，定位到实参）
+            var (unit6, _) = BindUnit(
+                "open class C { }\n" +
+                "func only\\<TArgs... extends ValueType>(xs: TArgs...): i32 { return 0 }\n" +
+                "func main() { var v = only(1, new C()) }\n");
+            TestHarness.CheckSemanticError("包推导约束违反（C 非 ValueType）", unit6.Diagnostics,
+                "Type argument 'C' does not satisfy the 'Extends ValueType' constraint of 'TArgs'");
+
+            // 7. 多可变泛型参数归口诊断
+            var (unit7, _) = BindUnit(
+                "func multi\\<TArgs..., TValues...>(a: TArgs..., b: TValues...): i32 { return 0 }\n" +
+                "func main() { var v = multi(1) }\n");
+            TestHarness.CheckSemanticError("多可变泛型参数归口", unit7.Diagnostics,
+                "P3: multiple variadic generic parameters are not supported yet (S9d)");
+
+            // 8. 包内 null 字面量无法推导类型 → 归口诊断
+            var (unit8, _) = BindUnit(
+                "func n\\<TArgs...>(xs: TArgs...): i32 { return 0 }\n" +
+                "func main() { var v = n(null) }\n");
+            TestHarness.CheckSemanticError("包内 null 无法推导", unit8.Diagnostics,
+                "P3: cannot infer a type argument from a null literal in a generic variadic pack (S9d)");
+        }
+
+        // ===== 泛型 operator 名字调用（S9f 复核 M69 注记：SYNTAX §4.2
+        // 定稿「operator 名字形式与普通方法同规则」——a.plus\<T>(b) 命中
+        // operator；运算符位置（a + b）/for 头/索引仍走专用解析）=====
+        private static void TestOperatorNameCalls()
+        {
+            TestHarness.Section("P3 Operator Name Calls (S9f)");
+
+            // 1. operator 名字调用（非泛型形态）
+            var (unit, bodies) = BindUnit(
+                "class Vec {\n" +
+                "    pub operator plus(other: Vec): Vec { return this }\n" +
+                "}\n" +
+                "func f(a: Vec, b: Vec): Vec { return a.plus(b) }\n");
+            CheckNoErrors("无诊断（operator 名字调用）", unit);
+            var plus = (BoundInstanceCallExpression)((BoundReturnStatement)
+                BodyOf(bodies, "f").Body.Statements[0]).Value!;
+            TestHarness.CheckTrue("名字调用命中 operator",
+                plus.Method.Kind == MethodKind.Operator && plus.Method.Name == "plus");
+
+            // 2. 泛型 operator 名字调用：显式实参 + 代入后返回类型
+            var (unit2, bodies2) = BindUnit(
+                "class Vec {\n" +
+                "    pub operator plus\\<TAnother>(other: TAnother): Vec { return this }\n" +
+                "}\n" +
+                "func f(a: Vec): Vec { return a.plus\\<String>(\"s\") }\n");
+            CheckNoErrors("无诊断（泛型 operator 名字调用）", unit2);
+            var genericPlus = (BoundInstanceCallExpression)((BoundReturnStatement)
+                BodyOf(bodies2, "f").Body.Statements[0]).Value!;
+            TestHarness.CheckTrue("泛型 operator 显式实参携带",
+                genericPlus.Method.Kind == MethodKind.Operator
+                && genericPlus.TypeArguments.Count == 1
+                && ReferenceEquals(genericPlus.TypeArguments[0],
+                    unit2.Symbols.Bootstrap.String));
+
+            // 3. 运算符位置不参与：a + b 仍走 intrinsic 判定（用户类型无
+            //    intrinsic 表 → 报未定义，不查 operator plus）
+            var (unit3, _) = BindUnit(
+                "class Vec { pub operator plus(other: Vec): Vec { return this } }\n" +
+                "func f(a: Vec, b: Vec): Vec { return a + b }\n");
+            TestHarness.CheckSemanticError("运算符位置不参与", unit3.Diagnostics,
+                "Operator '+' is not defined for type 'Vec'");
+        }
     }
 }

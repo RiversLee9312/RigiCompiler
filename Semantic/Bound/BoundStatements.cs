@@ -67,22 +67,26 @@ namespace LatteCompiler
     // Receiver 为 null = 静态/全局调用（S7c-2 前唯一形态）；非 null = 实例
     // 调用（receiver 求值作首实参，BIL §7.3/§15.1）。
     // S9b 增补 TypeArguments：显式泛型实参（同 BoundCallExpression）
+    // S9d-2 增补 GenericPack：泛型可变参数包推导产物（同 BoundCallExpression）
     public sealed class BoundCallStatement : BoundStatement
     {
         public MethodSymbol Method { get; }
         public IReadOnlyList<BoundExpression> Arguments { get; }
         public BoundExpression? Receiver { get; }
         public IReadOnlyList<SemanticSymbol> TypeArguments { get; }
+        public BoundGenericVarArgsArgument? GenericPack { get; }
 
         public BoundCallStatement(ASTNode syntax, MethodSymbol method,
             IReadOnlyList<BoundExpression> arguments, BoundExpression? receiver = null,
-            IReadOnlyList<SemanticSymbol>? typeArguments = null)
+            IReadOnlyList<SemanticSymbol>? typeArguments = null,
+            BoundGenericVarArgsArgument? genericPack = null)
             : base(syntax)
         {
             Method = method;
             Arguments = arguments;
             Receiver = receiver;
             TypeArguments = typeArguments ?? Array.Empty<SemanticSymbol>();
+            GenericPack = genericPack;
         }
     }
 

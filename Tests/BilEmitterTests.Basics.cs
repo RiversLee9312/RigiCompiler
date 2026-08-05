@@ -80,8 +80,9 @@ namespace LatteCompiler.Tests
                 "}\n");
             CheckNoErrors("全管线无诊断（资源去重）", unit);
             BilTestHarness.CheckBilValid("验证器零错误（资源去重）", module);
-            // stdlib 基线 R_0..R_4（"\n"/0/false/1/true）+ R_5 = "same"——
-            // "same" 不重复登记；return 0 共享 R_1
+            // stdlib 基线 R_0..R_3（"\n"/false/1/true，S9f collections 抽象
+            // 基类移除 i32 0）+ R_4 = "same"——"same" 不重复登记；
+            // return 0 自 stdlib 移除后登记为新资源
             TestHarness.CheckTrue("相同字面量只登记一个资源",
                 module.Resources.Count == 6
                 && module.Resources.Count(r => r is BilScalarResource s
@@ -89,10 +90,10 @@ namespace LatteCompiler.Tests
                 string.Join(", ", module.Resources.Select(r => r.Name)));
             var main = module.Functions.Single(f => f.Symbol == "$main()@.i32");
             var loads = main.Blocks[0].Instructions.Where(i => i is LoadInstruction).ToList();
-            // main 共三条 load（两次 "same" + return 0），两条指向同一资源 R_5
-            TestHarness.CheckTrue("两处引用同一资源（R_5）",
+            // main 共三条 load（两次 "same" + return 0），两条指向同一资源 R_4
+            TestHarness.CheckTrue("两处引用同一资源（R_4）",
                 loads.Count == 3 && loads.Count(l => l.Operands[0] is BilResourceOperand ro
-                    && ro.Resource.Name == "R_5") == 2);
+                    && ro.Resource.Name == "R_4") == 2);
         }
 
         // ===== 局部声明 + 初始化器（set.var）与赋值 =====
@@ -130,10 +131,11 @@ namespace LatteCompiler.Tests
                 "}\n");
             CheckNoErrors("全管线无诊断（一元与比较）", unit);
             BilTestHarness.CheckBilValid("验证器零错误（一元与比较）", module);
-            // 两处 5 共用同一资源（stdlib 基线 5 条资源在前）
+            // 两处 5 共用同一资源（stdlib 基线 4 条资源在前，S9f collections
+            // 抽象基类移除 i32 0 字面量）
             BilTestHarness.CheckResShape("资源（5 去重）", module,
-                "#0 = string \"\\n\"\n#1 = i32 0\n#2 = bool false\n#3 = i32 1\n" +
-                "#4 = bool true\n#5 = i32 5");
+                "#0 = string \"\\n\"\n#1 = bool false\n#2 = i32 1\n" +
+                "#3 = bool true\n#4 = i32 5");
             BilTestHarness.CheckFnShape("main 指令与 .vars", module, "$main()@.i32",
                 ".vars { .i32 a, .i32 n, .bool b, .i32 .t0, .i32 .t1, .i32 .t2, .bool .t3 }\n" +
                 "load res(#0) $.t0\n" +
@@ -207,14 +209,14 @@ namespace LatteCompiler.Tests
             BilTestHarness.CheckBilValid("验证器零错误（标量资源）", module);
             BilTestHarness.CheckResShape("Resources 全形态", module,
                 "#0 = string \"\\n\"\n" +
-                "#1 = i32 0\n" +
-                "#2 = bool false\n" +
-                "#3 = i32 1\n" +
-                "#4 = bool true\n" +
-                "#5 = f64 0.5\n" +
-                "#6 = f32 0.1\n" +
-                "#7 = char 'A'\n" +
-                "#8 = null type(.string)");
+                "#1 = bool false\n" +
+                "#2 = i32 1\n" +
+                "#3 = bool true\n" +
+                "#4 = f64 0.5\n" +
+                "#5 = f32 0.1\n" +
+                "#6 = char 'A'\n" +
+                "#7 = null type(.string)\n" +
+                "#8 = i32 0");
             BilTestHarness.CheckFnShape("main 指令与 .vars", module, "$main()@.i32",
                 ".vars { .bool b, .f64 d, .f32 f, .char c, .nullable<.string> s, " +
                 ".bool .t0, .f64 .t1, .f32 .t2, .char .t3, .nullable<.string> .t4, .i32 .t5 }\n" +

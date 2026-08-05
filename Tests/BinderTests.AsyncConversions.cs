@@ -109,6 +109,26 @@ namespace LatteCompiler.Tests
             TestHarness.CheckTrue("无转换记录 null",
                 ((BoundCastExpression)((BoundReturnStatement)((BoundBlock)BodyOf(bodies8, "d")
                     .Body).Statements[0]).Value!).Conversion == null);
+
+            // 多泛型参数 castTo（S9f 复核 #23③）：名字分析无法静态代入
+            // 多个参数 → 按不适用回退内建（BIL §12.1 第 3 条兜底），不落诊断
+            var (unit9, bodies9) = BindUnit(
+                "class S { operator castTo\\<TTarget, TOther>(): TTarget { return this as TTarget } }\n" +
+                "func f(s: S): i32 { return s as i32 }\n");
+            CheckNoErrors("多泛型参数 castTo 回退无诊断", unit9);
+            TestHarness.CheckTrue("多泛型参数回退内建",
+                ((BoundCastExpression)((BoundReturnStatement)((BoundBlock)BodyOf(bodies9, "f")
+                    .Body).Statements[0]).Value!).Conversion == null);
+
+            // 宿主泛型参数 castTo（S9f 复核 #23③）：签名含宿主泛型参数，
+            // 名字分析无构造实参可代入 → 回退内建
+            var (unit10, bodies10) = BindUnit(
+                "pub open class Box\\<T> { operator castTo(): T { return this as T } }\n" +
+                "func f(b: Box\\<i32>): i32 { return b as i32 }\n");
+            CheckNoErrors("宿主泛型参数 castTo 回退无诊断", unit10);
+            TestHarness.CheckTrue("宿主泛型参数回退内建",
+                ((BoundCastExpression)((BoundReturnStatement)((BoundBlock)BodyOf(bodies10, "f")
+                    .Body).Statements[0]).Value!).Conversion == null);
         }
 
         // ===== async 边界闸门调用点 1/2 + lambda 捕获 4（S8f，SYNTAX §4.5；
@@ -188,6 +208,21 @@ namespace LatteCompiler.Tests
                 "}\n");
             TestHarness.CheckTrue("闸门 4 体内声明名不判捕获",
                 !unit7.Diagnostics.Diagnostics.Any(d => d.Message.Contains("captures")));
+
+            // 闸门 5 调用点（S9f 解开 #23④）：async 泛型调用的类型实参
+            // 必须共享安全（typeid 与实际值一同跨边界）
+            var (unit8, _) = BindUnit(
+                "class LocalUser { }\n" +
+                "async func pass\\<T>(x: T): T { return x }\n" +
+                "func f() { var v = pass\\<LocalUser>(new LocalUser()) }\n");
+            TestHarness.CheckSemanticError("闸门 5 泛型实参非共享安全", unit8.Diagnostics,
+                "type argument of async function 'pass' must be a shared-safe type: 'LocalUser'");
+
+            // 闸门 5 合法：共享安全的泛型实参（i32）
+            var (unit9, _) = BindUnit(
+                "async func pass\\<T>(x: T): T { return x }\n" +
+                "func f() { var v = pass\\<i32>(1) }\n");
+            CheckNoErrors("闸门 5 共享安全泛型实参无诊断", unit9);
         }
     }
 }

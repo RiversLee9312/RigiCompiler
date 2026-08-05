@@ -84,6 +84,7 @@ namespace LatteCompiler.Tests
             TestOverrideProjection();
             TestGenericEmission();
             TestVarArgsEmission();
+            TestGenericVarArgsEmission();
             TestUnsupportedNodes();
 
             return TestHarness.Summary("BilEmitter");

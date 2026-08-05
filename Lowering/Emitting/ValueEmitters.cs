@@ -118,6 +118,7 @@ namespace LatteCompiler
     // 带返回值调用（§15.1）：实参从左到右物化（§10.2），再发 invoke。
     // S9e：显式泛型实参按 §7.2 调用序前置物化（.generic.T 隐藏实参——
     // 静态实参 getid.type、嵌套泛型调用转发 $.generic.T）
+    // S9d-2：泛型可变包在固定泛型之后、普通实参之前打包物化（§7.2）
     internal sealed class CallExpressionEmitter : EmitVisitor<CallExpressionEmitter, BilVariableOperand>
     {
         protected override BilVariableOperand VisitCore(LoweredNode node, BilBlock target,
@@ -129,6 +130,11 @@ namespace LatteCompiler
             {
                 callArguments.Add(EmittingFacility.MaterializeTypeId(typeArgument, callExpression,
                     target, ctx, env));
+            }
+            if (callExpression.GenericPack != null)
+            {
+                callArguments.Add(GenericVarArgsEmitter.Visit(callExpression.GenericPack, target,
+                    ctx, env));
             }
             foreach (var argument in callExpression.Arguments)
             {
@@ -177,7 +183,8 @@ namespace LatteCompiler
     }
 
     // 实例调用（§7.3/§15.1）：receiver 求值作首实参；S9e 泛型实参
-    // 在 receiver 之后、普通实参之前（§7.2 调用序）
+    // 在 receiver 之后、普通实参之前（§7.2 调用序）；S9d-2 泛型可变包
+    // 在固定泛型之后
     internal sealed class InstanceCallEmitter : EmitVisitor<InstanceCallEmitter, BilVariableOperand>
     {
         protected override BilVariableOperand VisitCore(LoweredNode node, BilBlock target,
@@ -190,6 +197,11 @@ namespace LatteCompiler
             {
                 instArguments.Add(EmittingFacility.MaterializeTypeId(typeArgument, instCall,
                     target, ctx, env));
+            }
+            if (instCall.GenericPack != null)
+            {
+                instArguments.Add(GenericVarArgsEmitter.Visit(instCall.GenericPack, target,
+                    ctx, env));
             }
             foreach (var argument in instCall.Arguments)
             {
@@ -386,13 +398,82 @@ namespace LatteCompiler
 
         // 标准 Pair 定义（.pair<.string, .any>）：bootstrap 无 Pair——
         // stdlib .bootstrap.latte 自举（core::Pair）；查命名空间兜底
-        private static TypeSymbol BootstrapPairDefinition(EmitEnvironment env)
+        internal static TypeSymbol BootstrapPairDefinition(EmitEnvironment env)
         {
             var core = env.Unit.Symbols.GlobalNamespace.ChildNamespaces
                 .FirstOrDefault(n => n.Name == "core");
             return core?.Types.FirstOrDefault(t => t.Name == "Pair")
                 ?? throw new CompilerInternalException(
                     "stdlib core::Pair 缺失（kwargs 打包依赖）");
+        }
+    }
+
+    // 泛型可变参数包打包（S9d-2，§7.1/§14）：调用点把推导的类型实参构造
+    // 为隐藏包值——位置包 new type(.array<.typeid<.any>>) [逐项 getid.type...]；
+    // 具名包逐项 new type(core::Pair<.string, .typeid<.any>>)（名字字符串
+    // 资源 + 类型 getid.type）再包进 new type(.map<.string, .typeid<.any>>)。
+    // 类型实参物化复用 MaterializeTypeId（静态实参 getid.type / 嵌套泛型
+    // 调用转发 $.generic.T），结果类型与 fn .args 的 .generic.* 包条目一致
+    // （§7.1：.array<.typeid> / .map<.string, .typeid>，无边界的 .typeid
+    // ≡ .typeid<.any>）
+    internal sealed class GenericVarArgsEmitter
+        : EmitVisitor<GenericVarArgsEmitter, BilVariableOperand>
+    {
+        protected override BilVariableOperand VisitCore(LoweredNode node, BilBlock target,
+            EmitContext ctx, EmitEnvironment env)
+        {
+            var pack = (LoweredGenericVarArgsArgument)node;
+            var typeIdType = env.Unit.Symbols.GetConstructedType(
+                env.Unit.Symbols.Bootstrap.TypeDefinition, env.Unit.Symbols.Bootstrap.Any);
+            if (!pack.IsNamed)
+            {
+                var packed = new List<BilVariableOperand>();
+                foreach (var typeArgument in pack.TypeArguments)
+                {
+                    packed.Add(EmittingFacility.MaterializeTypeId(typeArgument, pack, target,
+                        ctx, env));
+                }
+                var packType = env.Unit.Symbols.GetConstructedType(
+                    env.Unit.Symbols.Bootstrap.ArrayDefinition, typeIdType);
+                var packResult = ctx.Temps.NewTemp(packType);
+                target.Instructions.Add(new NewInstruction(
+                    BilOp.Type(CanonicalSymbolPrinter.PrintType(packType)),
+                    packResult, packed)
+                { Origin = pack });
+                return packResult;
+            }
+            // 具名包：pair 逐项构造（名 + 类型 typeid）后装入 map
+            var pairType = env.Unit.Symbols.GetConstructedType(
+                VarArgsEmitter.BootstrapPairDefinition(env),
+                env.Unit.Symbols.Bootstrap.String, typeIdType);
+            var pairValues = new List<BilVariableOperand>();
+            foreach (var (name, typeArgument) in pack.NamedTypes)
+            {
+                var nameResource = EmittingFacility.RegisterScalarResource(BilScalarType.String,
+                    "\"" + EmittingFacility.Escape(name) + "\"", env);
+                var nameTemp = ctx.Temps.NewTemp(env.Unit.Symbols.Bootstrap.String);
+                target.Instructions.Add(new LoadInstruction(nameResource, nameTemp)
+                { Origin = pack });
+                var pairTemp = ctx.Temps.NewTemp(pairType);
+                target.Instructions.Add(new NewInstruction(
+                    BilOp.Type(CanonicalSymbolPrinter.PrintType(pairType)),
+                    pairTemp, new List<BilVariableOperand>
+                    {
+                        nameTemp,
+                        EmittingFacility.MaterializeTypeId(typeArgument, pack, target, ctx, env),
+                    })
+                { Origin = pack });
+                pairValues.Add(pairTemp);
+            }
+            var mapType = env.Unit.Symbols.GetConstructedType(
+                env.Unit.Symbols.Bootstrap.MapDefinition,
+                env.Unit.Symbols.Bootstrap.String, typeIdType);
+            var namedPackResult = ctx.Temps.NewTemp(mapType);
+            target.Instructions.Add(new NewInstruction(
+                BilOp.Type(CanonicalSymbolPrinter.PrintType(mapType)),
+                namedPackResult, pairValues)
+            { Origin = pack });
+            return namedPackResult;
         }
     }
 }

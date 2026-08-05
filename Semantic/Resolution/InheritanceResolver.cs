@@ -44,7 +44,10 @@ namespace LatteCompiler
         private static void ResolveBaseClass(TypeSymbol type, TypeReferenceASTNode baseRef,
             DeclEntry entry, ResolveEnvironment env)
         {
-            var resolved = env.ResolveTypeReference(baseRef, entry);
+            // 宿主上下文是类型自身（顶层类的 entry.DeclaringType 为 null——
+            // 基类子句的泛型实参可引用自身泛型参数，如 `Sub\<T> : Base\<T>`）
+            var resolved = env.Names.ResolveTypeReference(baseRef, entry.Context, type, null,
+                baseRef.Span ?? entry.Node.Span);
             if (resolved is ErrorTypeSymbol) return;    // 毒化：保持默认基类
             if (resolved is not TypeSymbol baseType)
             {
@@ -84,7 +87,10 @@ namespace LatteCompiler
         private static void ResolveBaseStruct(TypeSymbol type, TypeReferenceASTNode baseRef,
             DeclEntry entry, ResolveEnvironment env)
         {
-            var resolved = env.ResolveTypeReference(baseRef, entry);
+            // 宿主上下文是类型自身（同 ResolveBaseClass——基类子句可引用
+            // 自身泛型参数）
+            var resolved = env.Names.ResolveTypeReference(baseRef, entry.Context, type, null,
+                baseRef.Span ?? entry.Node.Span);
             if (resolved is ErrorTypeSymbol) return;
             if (resolved is not TypeSymbol baseType)
             {
@@ -126,7 +132,10 @@ namespace LatteCompiler
         {
             foreach (var ifaceRef in interfaces)
             {
-                var resolved = env.ResolveTypeReference(ifaceRef, entry);
+                // 宿主上下文是类型自身（同 ResolveBaseClass——implements
+                // 子句可引用自身泛型参数，如 `class C\<T> : I\<T>`）
+                var resolved = env.Names.ResolveTypeReference(ifaceRef, entry.Context, type, null,
+                    ifaceRef.Span ?? entry.Node.Span);
                 if (resolved is ErrorTypeSymbol) continue;
                 if (resolved is not TypeSymbol iface ||
                     (iface.ConstructedFrom ?? iface).Kind != TypeKind.Interface)
