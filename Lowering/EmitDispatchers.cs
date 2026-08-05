@@ -86,6 +86,8 @@ namespace LatteCompiler
                     return TypeCheckEmitter.Visit(expression, target, ctx, env);
                 case LoweredTypeOfExpression:
                     return TypeOfEmitter.Visit(expression, target, ctx, env);
+                case LoweredVarArgsArgument:
+                    return VarArgsEmitter.Visit(expression, target, ctx, env);
                 default:
                     env.Error(expression.Origin.Syntax.Span,
                         $"P4: lowered expression kind not supported by minimal emission: " +

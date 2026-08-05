@@ -13,4 +13,7 @@ pub ext operator i32.EnumerateInRange(end: i32): core.collections.IEnumerable\<i
 pub open class Pair\<TKey, TValue> {
     pub const key: TKey
     pub const value: TValue
+    // S9d：显式 init（§9.3）——kwargs 打包的 .pair<.string, .any> 特权
+    // 构造经此匹配（§14.1 严格匹配唯一 init）
+    pub init(_ -> key, _ -> value) { }
 }

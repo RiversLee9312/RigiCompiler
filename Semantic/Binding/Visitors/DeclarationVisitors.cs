@@ -22,7 +22,8 @@ namespace LatteCompiler
                 env.Error(decl.Span,
                     "P3: local variable accessors are not supported yet (S11)");
             }
-            TypeSymbol? declaredType = null;
+            // S9a：声明类型可为泛型参数（引用相等身份）
+            SemanticSymbol? declaredType = null;
             if (decl.TypeAnnotation != null)
             {
                 declaredType = TypeReferences.Resolve(decl.TypeAnnotation, decl.Span, ctx.Frame,
@@ -32,7 +33,7 @@ namespace LatteCompiler
             var init = decl.Initializer == null
                 ? null
                 : ExpressionDispatcher.Visit(decl.Initializer.Expression, scope, ctx, env,
-                    declaredType);
+                    declaredType as TypeSymbol);
             var type = declaredType ?? init?.Type;
             if (type == null)
             {
@@ -83,8 +84,9 @@ namespace LatteCompiler
             if (init.Type is ErrorTypeSymbol) return null;
             var pairDef = FindCorePairDefinition(node.Span, env);
             if (pairDef == null) return null;
+            // S9a：泛型参数类型判型后不参与 Pair 查找（自然报非 Pair 诊断）
             TypeSymbol? constructed = null;
-            for (var t = init.Type; t != null; t = t.BaseType)
+            for (var t = init.Type as TypeSymbol; t != null; t = t.BaseType)
             {
                 if (ReferenceEquals(t.ConstructedFrom, pairDef))
                 {
@@ -110,14 +112,8 @@ namespace LatteCompiler
             var componentNames = new[] { "key", "value" };
             for (int i = 0; i < 2; i++)
             {
-                // 分量类型 = 构造实参（实参含未替换泛型参数归 S9）
-                if (constructed.TypeArguments![i] is not TypeSymbol componentType
-                    || SymbolLookup.ContainsGenericParameter(componentType))
-                {
-                    env.Error(node.Span,
-                        "P3: generic type parameters are not supported yet (S9)");
-                    return null;
-                }
+                // 分量类型 = 构造实参（S9a 放行：实参可为泛型参数，引用相等身份）
+                var componentType = constructed.TypeArguments![i];
                 var name = node.DestructureNames[i];
                 if (scope.DeclaresHere(name))
                 {
@@ -166,25 +162,27 @@ namespace LatteCompiler
             }
             // void 调用落成 BoundCallStatement，非 void 调用仍是表达式语句
             if (stmt.Expression.Expression is PathExpressionASTNode path
-                && CallForm.TryGet(path, out var calleeSegments, out var callArguments))
+                && CallForm.TryGet(path, out var calleeSegments, out var callArguments,
+                    out var genericArguments))
             {
                 var binding = CallFacility.BindCall(stmt, calleeSegments, callArguments!, scope,
-                    ctx, env);
+                    ctx, env, genericArguments);
                 if (binding == null) return null;
                 if (binding.IsVoid)
                 {
                     return new BoundCallStatement(stmt, binding.Method, binding.Arguments,
-                        binding.Receiver);
+                        binding.Receiver, binding.TypeArguments);
                 }
                 if (binding.Receiver != null)
                 {
                     return new BoundExpressionStatement(stmt,
                         new BoundInstanceCallExpression(path, binding.Receiver,
-                            binding.Method, binding.Arguments,
-                            (TypeSymbol)binding.Method.ReturnType!));
+                            binding.Method, binding.Arguments, binding.ResultType!,
+                            binding.TypeArguments));
                 }
                 return new BoundExpressionStatement(stmt, new BoundCallExpression(path,
-                    binding.Method, binding.Arguments, (TypeSymbol)binding.Method.ReturnType!));
+                    binding.Method, binding.Arguments, binding.ResultType!,
+                    binding.TypeArguments));
             }
             var expr = ExpressionDispatcher.Visit(stmt.Expression.Expression, scope, ctx, env);
             return expr == null ? null : new BoundExpressionStatement(stmt, expr);
@@ -198,7 +196,7 @@ namespace LatteCompiler
                 ? PathFacility.VisitForAssignment(targetPath, scope, ctx, env)
                 : ExpressionDispatcher.Visit(node.Expression.Expression, scope, ctx, env);
             var value = ExpressionDispatcher.Visit(node.AssignValue!.Expression, scope, ctx, env,
-                target?.Type);
+                target?.Type as TypeSymbol);
             if (target == null || value == null) return null;
             switch (target)
             {

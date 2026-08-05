@@ -52,11 +52,12 @@ namespace LatteCompiler
         }
 
         // 安全访问占位映射栈条目（S7f）：BoundSafeAccessReceiverExpression
-        // 实例 →（物化 receiver 局部, unwrap 目标类型）
+        // 实例 →（物化 receiver 局部, unwrap 目标类型）；S9 放宽：
+        // unwrap 目标可为泛型参数（§7.5 投影）
         internal readonly struct SafeReceiverEntry
         {
             public SafeReceiverEntry(BoundSafeAccessReceiverExpression placeholder,
-                LocalSymbol receiver, TypeSymbol unwrapType)
+                LocalSymbol receiver, SemanticSymbol unwrapType)
             {
                 Placeholder = placeholder;
                 Receiver = receiver;
@@ -67,7 +68,7 @@ namespace LatteCompiler
 
             public LocalSymbol Receiver { get; }
 
-            public TypeSymbol UnwrapType { get; }
+            public SemanticSymbol UnwrapType { get; }
         }
 
         // 值块目标映射栈：BoundValueBlock → 写入局部（引用相等查找），供嵌套
@@ -207,7 +208,7 @@ namespace LatteCompiler
 
         // 占位映射仅 Access 降级期间存活（try/finally 配对压弹）
         public void PushSafeReceiver(BoundSafeAccessReceiverExpression placeholder,
-            LocalSymbol receiver, TypeSymbol unwrapType)
+            LocalSymbol receiver, SemanticSymbol unwrapType)
         {
             safeReceivers.Push(new SafeReceiverEntry(placeholder, receiver, unwrapType));
         }

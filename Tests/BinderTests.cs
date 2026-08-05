@@ -69,6 +69,8 @@ namespace LatteCompiler.Tests
             TestOverride();
             TestConversionOperators();
             TestAsyncGates();
+            TestGenericCalls();
+            TestGenericFunctionBody();
             TestDiagnosticsAccumulation();
             return TestHarness.Summary("Binder");
         }

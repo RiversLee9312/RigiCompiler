@@ -27,7 +27,9 @@ namespace LatteCompiler
     // 类型字段、LoweredValueReferenceExpression 取符号类型）
     public abstract class LoweredExpression : LoweredNode
     {
-        public virtual TypeSymbol Type => ((BoundExpression)Origin).Type;
+        // S9 放宽为 SemanticSymbol：泛型参数（GenericParameterSymbol）按引用
+        // 相等身份透传至发射侧（BIL §7.5 .generic<$.generic.T> 投影）
+        public virtual SemanticSymbol Type => ((BoundExpression)Origin).Type;
 
         protected LoweredExpression(BoundNode origin) : base(origin)
         {

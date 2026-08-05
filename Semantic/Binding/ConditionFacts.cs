@@ -44,9 +44,13 @@ namespace LatteCompiler
                 {
                     Kind: BoundTypeCheckKind.Is, TargetType: { } targetType
                 } typeCheck:
-                    // 静态 is（真边收窄为 T；T 本身非空即蕴含非空）
+                    // 静态 is（真边收窄为 T；T 本身非空即蕴含非空）；
+                    // S9a：收窄目标为泛型参数时不收窄（判型跳过）
                     var checkKey = TryKeyOf(typeCheck.Operand, frame);
-                    if (checkKey != null) UnionOne(whenTrue, checkKey, targetType);
+                    if (checkKey != null && targetType is TypeSymbol narrowed)
+                    {
+                        UnionOne(whenTrue, checkKey, narrowed);
+                    }
                     return;
                 case BoundBinaryExpression binary:
                     switch (binary.Op)
@@ -95,10 +99,11 @@ namespace LatteCompiler
                 ? (UnnullOperand(binary.Left, binary.Right), true)
                 : (UnnullOperand(binary.Left, binary.Right), false);
             if (target == null) return;
-            if (target.Type.ConstructedFrom == null
-                || target.Type.TypeArguments == null
-                || target.Type.TypeArguments.Count != 1
-                || target.Type.TypeArguments[0] is not TypeSymbol element)
+            // S9a：泛型参数目标无静态构造展开，判型后不参与收窄
+            if (target.Type is not TypeSymbol { TypeArguments: { } arguments } targetType
+                || targetType.ConstructedFrom == null
+                || arguments.Count != 1
+                || arguments[0] is not TypeSymbol element)
             {
                 return;
             }

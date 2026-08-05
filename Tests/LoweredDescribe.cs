@@ -174,18 +174,20 @@ namespace LatteCompiler.Tests
         }
 
         // 类型短名：Nullable\<T\> 显示为 T?，其余构造类型 Name<args> 递归；
-        // null = P4a 合成 .breakid 局部（BIL §9.3 别名，无 TypeSymbol）
-        private static string TypeShort(TypeSymbol? type)
+        // null = P4a 合成 .breakid 局部（BIL §9.3 别名，无 TypeSymbol）；
+        // S9 放宽为 SemanticSymbol：泛型参数显示其名
+        private static string TypeShort(SemanticSymbol? type)
         {
             if (type == null) return ".breakid";
-            if (type.ConstructedFrom == null) return type.Name;
-            if (type.Name == "Nullable" && type.TypeArguments!.Count == 1
-                && type.TypeArguments[0] is TypeSymbol element)
+            if (type is not TypeSymbol symbol) return type.Name;
+            if (symbol.ConstructedFrom == null) return symbol.Name;
+            if (symbol.Name == "Nullable" && symbol.TypeArguments!.Count == 1
+                && symbol.TypeArguments[0] is TypeSymbol element)
             {
                 return TypeShort(element) + "?";
             }
-            return type.Name + "<" + string.Join(", ",
-                type.TypeArguments!.Select(a => a is TypeSymbol t ? TypeShort(t) : a.Name)) + ">";
+            return symbol.Name + "<" + string.Join(", ",
+                symbol.TypeArguments!.Select(a => a is TypeSymbol t ? TypeShort(t) : a.Name)) + ">";
         }
     }
 }

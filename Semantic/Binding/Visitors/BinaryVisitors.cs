@@ -54,7 +54,8 @@ namespace LatteCompiler
                     $"'{BoundAnalysis.TypeDisplay(right.Type)}')");
                 return null;
             }
-            if (!left.Type.IntrinsicOps.Contains(op))
+            // intrinsic 存在检查（S9：泛型参数无 intrinsic 表，判型后自然不命中）
+            if (left.Type is not TypeSymbol leftType || !leftType.IntrinsicOps.Contains(op))
             {
                 env.Error(binary.Span, $"Operator '{binary.Operator}' is not defined for type " +
                     $"'{BoundAnalysis.TypeDisplay(left.Type)}'");
@@ -74,8 +75,10 @@ namespace LatteCompiler
             var left = ExpressionDispatcher.Visit(node.Left.Expression, scope, ctx, env);
             if (left == null) return null;
             if (left.Type is ErrorTypeSymbol) return null;
-            if (left.Type.ConstructedFrom != env.B.NullableDefinition
-                || left.Type.TypeArguments![0] is not TypeSymbol element)
+            if (left.Type is not TypeSymbol leftType
+                || leftType.ConstructedFrom == null
+                || leftType.ConstructedFrom != env.B.NullableDefinition
+                || leftType.TypeArguments![0] is not TypeSymbol element)
             {
                 env.Error(node.Left.Span ?? node.Span,
                     $"Operator 'if?' requires a nullable left operand " +
@@ -114,13 +117,23 @@ namespace LatteCompiler
             var value = ExpressionDispatcher.Visit(valueRoot.Expression, scope, ctx, env);
             if (value == null) return null;
             if (value.Type is ErrorTypeSymbol) return null;
-            var operandType = value.Type.ConstructedFrom == env.B.NullableDefinition
-                ? value.Type
-                : env.Unit.Symbols.GetNullable(value.Type);
-            // null 侧按 Nullable\<T0\> 定型
+            // 非可空 T0 包装箱到 Nullable<T0>（§12.1 装箱视图 cast）；泛型
+            // 参数侧无静态 Nullable 构造（S9a 保守：operandType 即 T 自身，
+            // null 判等恒 false/true——不落装箱 cast）
+            var operandType = value.Type switch
+            {
+                // 已是 Nullable 构造：原样
+                TypeSymbol v when v.ConstructedFrom == env.B.NullableDefinition =>
+                    (SemanticSymbol)v,
+                // 普通类型：包装
+                TypeSymbol v2 => env.Unit.Symbols.GetNullable(v2),
+                // 泛型参数：无静态 Nullable 构造，原样
+                _ => value.Type,
+            };
+            // null 侧按 Nullable\<T0\> 定型（泛型参数侧无静态 Nullable，expectedType 空）
             var nullRoot = leftIsNull ? node.Left : node.Right;
             var nullLiteral = ExpressionDispatcher.Visit(nullRoot.Expression, scope, ctx, env,
-                operandType);
+                operandType as TypeSymbol);
             if (nullLiteral == null) return null;
             // 非空侧装箱到 Nullable\<T0\>（§12.1 装箱视图 cast）
             if (!ReferenceEquals(value.Type, operandType))
@@ -171,7 +184,9 @@ namespace LatteCompiler
             var operand = ExpressionDispatcher.Visit(unary.Operand.Expression, scope, ctx, env);
             if (operand == null) return null;
             if (operand.Type is ErrorTypeSymbol) return null;
-            if (!operand.Type.IntrinsicOps.Contains(op))
+            // intrinsic 存在检查（S9：泛型参数无 intrinsic 表，判型后不命中）
+            if (operand.Type is not TypeSymbol operandType
+                || !operandType.IntrinsicOps.Contains(op))
             {
                 env.Error(node.Span, $"Operator '{unary.Operator}' is not defined for type " +
                     $"'{BoundAnalysis.TypeDisplay(operand.Type)}'");
@@ -181,24 +196,24 @@ namespace LatteCompiler
         }
     }
 
-    // 复合赋值（S7b，SYNTAX §13.2；S8c 增补索引 place）：a op= b 即 a = a op b
-    // 的语义糖，表达式值为写回后值。Target 规则同赋值（局部/参数/字段/索引
-    // place），但读前须已赋值
-    // （读语义——普通路径绑定的 unassigned 检查，不做 forAssignment 特免）；
-    // Op 复用二元映射（10 个基础运算符，Parser 保证不含 and/or）；
-    // 类型一致与 intrinsic 存在检查同 BindBinary；Type = Target 类型；
-    // 赋值后 Target 标记 assigned
-    internal sealed class CompoundAssignmentVisitor
-        : ExpressionVisitor<CompoundAssignmentVisitor, BindContext>
-    {
-        protected override BoundExpression? VisitCore(ASTNode node, Scope scope, BindContext ctx,
-            BindEnvironment env, TypeSymbol? expectedType)
-        {
-            var compound = (CompoundAssignmentExpressionASTNode)node;
-            var op = IntrinsicMapping.MapBinary(compound.Operator);
-            var target = ExpressionDispatcher.Visit(compound.Target.Expression, scope, ctx, env);
-            var value = ExpressionDispatcher.Visit(compound.Value.Expression, scope, ctx, env,
-                target?.Type);
+            // 复合赋值（S7b，SYNTAX §13.2；S8c 增补索引 place）：a op= b 即 a = a op b
+            // 的语义糖，表达式值为写回后值。Target 规则同赋值（局部/参数/字段/索引
+            // place），但读前须已赋值
+            // （读语义——普通路径绑定的 unassigned 检查，不做 forAssignment 特免）；
+            // Op 复用二元映射（10 个基础运算符，Parser 保证不含 and/or）；
+            // 类型一致与 intrinsic 存在检查同 BindBinary；Type = Target 类型；
+            // 赋值后 Target 标记 assigned
+            internal sealed class CompoundAssignmentVisitor
+                : ExpressionVisitor<CompoundAssignmentVisitor, BindContext>
+            {
+                protected override BoundExpression? VisitCore(ASTNode node, Scope scope, BindContext ctx,
+                    BindEnvironment env, TypeSymbol? expectedType)
+                {
+                    var compound = (CompoundAssignmentExpressionASTNode)node;
+                    var op = IntrinsicMapping.MapBinary(compound.Operator);
+                    var target = ExpressionDispatcher.Visit(compound.Target.Expression, scope, ctx, env);
+                    var value = ExpressionDispatcher.Visit(compound.Value.Expression, scope, ctx, env,
+                        target?.Type as TypeSymbol);
             if (target == null || value == null) return null;
             switch (target)
             {
@@ -234,8 +249,11 @@ namespace LatteCompiler
                     // 能力）。receiver/index 的读-写双重求值与字段复合
                     // 既有行为一致（P4a 展开时处理）
                     {
-                        var setters = SymbolLookup.FindInstanceOperators(
-                            indexTarget.Receiver.Type, "setAtIndex", 2);
+                        // S9：泛型参数 receiver 无索引运算符（判型后集合为空）
+                        var setters = indexTarget.Receiver.Type is TypeSymbol receiverType
+                            ? SymbolLookup.FindInstanceOperators(
+                                receiverType, "setAtIndex", 2)
+                            : new List<MethodSymbol>();
                         if (setters.Count == 0)
                         {
                             env.Error(node.Span, $"Type " +
@@ -265,7 +283,8 @@ namespace LatteCompiler
                     $"'{BoundAnalysis.TypeDisplay(value.Type)}')");
                 return null;
             }
-            if (!target.Type.IntrinsicOps.Contains(op))
+            // intrinsic 存在检查（S9：泛型参数无 intrinsic 表，判型后不命中）
+            if (target.Type is not TypeSymbol targetType || !targetType.IntrinsicOps.Contains(op))
             {
                 env.Error(node.Span, $"Operator '{compound.Operator}=' is not defined for type " +
                     $"'{BoundAnalysis.TypeDisplay(target.Type)}'");

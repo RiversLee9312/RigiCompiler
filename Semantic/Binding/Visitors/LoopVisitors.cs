@@ -142,7 +142,9 @@ namespace LatteCompiler
                     ctx.Flow.Restore(before);
                     return null;
                 }
-                var op = SymbolLookup.FindInstanceOperator(from.Type, "EnumerateInRange");
+                // S9a：泛型参数判型后自然无 EnumerateInRange（报 operator 缺失）
+                var op = from.Type is TypeSymbol fromType
+                    ? SymbolLookup.FindInstanceOperator(fromType, "EnumerateInRange") : null;
                 if (op == null)
                 {
                     env.Error(node.Span,
@@ -151,11 +153,11 @@ namespace LatteCompiler
                     ctx.Flow.Restore(before);
                     return null;
                 }
-                if (op.ReturnType is not TypeSymbol enumerableType
-                    || SymbolLookup.ContainsGenericParameter(enumerableType))
+                if (op.ReturnType is not TypeSymbol enumerableType)
                 {
                     env.Error(node.Span,
-                        "P3: generic type parameters are not supported yet (S9)");
+                        "range for loop requires a concrete enumerable type " +
+                        $"(got '{BoundAnalysis.TypeDisplay(from.Type)}' EnumerateInRange)");
                     ctx.Flow.Restore(before);
                     return null;
                 }
@@ -176,7 +178,15 @@ namespace LatteCompiler
                 ctx.Flow.Restore(before);
                 return null;
             }
-            var itemType = ResolveEnumerableElement(iterable.Type, enumerableDef, node.Span, env);
+            // S9a：泛型参数 iterable 判型后走「未实现 IEnumerable」诊断
+            if (iterable.Type is not TypeSymbol iterableType)
+            {
+                env.Error(node.Span, $"Type '{BoundAnalysis.TypeDisplay(iterable.Type)}' " +
+                    "does not implement core.collections.IEnumerable<T> (required by for loop)");
+                ctx.Flow.Restore(before);
+                return null;
+            }
+            var itemType = ResolveEnumerableElement(iterableType, enumerableDef, node.Span, env);
             if (itemType == null) { ctx.Flow.Restore(before); return null; }
             var iterate = enumerableDef.Methods.FirstOrDefault(m => m.Name == "iterate");
             var moveNext = enumeratorDef.Methods.FirstOrDefault(m => m.Name == "moveNext");
@@ -231,33 +241,21 @@ namespace LatteCompiler
         // for-each 协议判定：type 实现 core.collections::IEnumerable\<TItem\>
         // ——type 自身即该定义的构造（迭代源的静态类型就是接口，如
         // EnumerateInRange 的返回类型），或沿自身与 BaseType 链的接口
-        // 表找该定义的构造；取实参 TItem（实参含未替换泛型参数归 S9）；
-        // 未实现即诊断
-        private static TypeSymbol? ResolveEnumerableElement(TypeSymbol type,
+        // 表找该定义的构造；取实参 TItem（S9a 放行：实参可为泛型参数，
+        // 引用相等身份——泛型函数体内 for 遍历）；未实现即诊断
+        private static SemanticSymbol? ResolveEnumerableElement(TypeSymbol type,
             TypeSymbol enumerableDef, CharRange? span, BindEnvironment env)
         {
             if (ReferenceEquals(type.ConstructedFrom, enumerableDef))
             {
-                if (type.TypeArguments![0] is TypeSymbol selfElement
-                    && !SymbolLookup.ContainsGenericParameter(selfElement))
-                {
-                    return selfElement;
-                }
-                env.Error(span, "P3: generic type parameters are not supported yet (S9)");
-                return null;
+                return type.TypeArguments![0];
             }
             for (var t = type; t != null; t = t.BaseType)
             {
                 foreach (var iface in t.Interfaces)
                 {
                     if (!ReferenceEquals(iface.ConstructedFrom, enumerableDef)) continue;
-                    if (iface.TypeArguments![0] is TypeSymbol element
-                        && !SymbolLookup.ContainsGenericParameter(element))
-                    {
-                        return element;
-                    }
-                    env.Error(span, "P3: generic type parameters are not supported yet (S9)");
-                    return null;
+                    return iface.TypeArguments![0];
                 }
             }
             env.Error(span, $"Type '{BoundAnalysis.TypeDisplay(type)}' does not implement " +

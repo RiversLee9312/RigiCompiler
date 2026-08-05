@@ -18,28 +18,36 @@ namespace LatteCompiler
             var source = ExpressionDispatcher.Visit(cast.Object.Expression, scope, ctx, env);
             var targetType = TypeReferences.Resolve(cast.TargetType, cast.Span, ctx.Frame, env);
             if (source == null || targetType == null) return null;
+            // S9a：目标为泛型参数时 as? 无静态 Nullable 构造——结果类型
+            // 保守取 T 自身（运行时按 typeid 判定可空）
             var resultType = targetType is ErrorTypeSymbol
                 ? targetType
-                : cast.IsSafe ? env.Unit.Symbols.GetNullable(targetType) : targetType;
+                : cast.IsSafe && targetType is TypeSymbol nullableTarget
+                    ? env.Unit.Symbols.GetNullable(nullableTarget)
+                    : targetType;
             var conversion = targetType is ErrorTypeSymbol || source.Type is ErrorTypeSymbol
                 ? null
-                : ResolveConversion(source, targetType, env);
+                : targetType is TypeSymbol conversionTarget
+                    ? ResolveConversion(source, conversionTarget, env)
+                    : null;
             return new BoundCastExpression(node, source, targetType, cast.IsSafe, resultType,
                 conversion);
         }
 
         // 名字分析（S8f，SYNTAX §3.5 转换优先级）：源类型的 castTo 优先，
         // 目标类型的 castFrom 兜底；均无适用候选返回 null（内建兜底）。
-        // 适用判定 = 单泛型参数代入后的签名匹配（SymbolLookup 查询）
+        // 适用判定 = 单泛型参数代入后的签名匹配（SymbolLookup 查询）。
+        // S9a：源类型为泛型参数时跳过名字分析（内建兜底——判型短路）
         private static MethodSymbol? ResolveConversion(BoundExpression source,
             TypeSymbol targetType, BindEnvironment env)
         {
+            if (source.Type is not TypeSymbol sourceType) return null;
             var symbols = env.Unit.Symbols;
-            var castTo = SymbolLookup.FindConversionOperator(source.Type, "castTo", 0,
+            var castTo = SymbolLookup.FindConversionOperator(sourceType, "castTo", 0,
                 targetType, targetType, symbols);
             if (castTo != null) return castTo;
             return SymbolLookup.FindConversionOperator(targetType, "castFrom", 1,
-                source.Type, targetType, symbols);
+                sourceType, targetType, symbols);
         }
     }
 
@@ -76,10 +84,13 @@ namespace LatteCompiler
             // 同规则）
             var probed = env.Names.ResolveSymbolPath(typeRef.TypeSymbol.symbol, ctx.Frame.FileCtx,
                 ctx.Frame.DeclaringType, ctx.Frame.Method, allowImports: true, reportErrors: false, span: null);
-            if (probed is GenericParameterSymbol)
+            // S9a 放行：右侧为泛型参数时作静态目标（is/supers/with 均合法
+            // ——运行时按 T 的 typeid 判定；with 不做 wrapper 静态拒绝）
+            if (probed is GenericParameterSymbol genericTarget)
             {
-                env.Error(span, "P3: generic type parameters are not supported yet (S9)");
-                return null;
+                if (operand == null) return null;
+                return new BoundTypeCheckExpression(node, kind, operand, genericTarget, null,
+                    env.B.Bool);
             }
             if (probed is TypeSymbol targetType && probed is not ErrorTypeSymbol)
             {
@@ -109,8 +120,10 @@ namespace LatteCompiler
                 }
                 return null;
             }
+            // S9a：泛型参数值无 Type\<T\> 构造展开（判型后不命中即报目标诊断）
             if (targetValue.Type is not ErrorTypeSymbol
-                && !ReferenceEquals(targetValue.Type.ConstructedFrom, env.B.TypeDefinition))
+                && (targetValue.Type is not TypeSymbol { ConstructedFrom: { } targetValueType }
+                    || !ReferenceEquals(targetValueType, env.B.TypeDefinition)))
             {
                 env.Error(span, TargetMessage(check));
                 return null;
@@ -150,12 +163,9 @@ namespace LatteCompiler
                 if (parameter != null)
                 {
                     valueFound = true;
-                    if (parameter.Type is not TypeSymbol paramType)
-                    {
-                        env.Error(span, "P3: generic type parameters are not supported yet (S9)");
-                        return null;
-                    }
-                    return new BoundValueReferenceExpression(typeRef, parameter, paramType);
+                    // S9a 放行：参数类型可为泛型参数（引用相等身份）
+                    return new BoundValueReferenceExpression(typeRef, parameter,
+                        parameter.Type!);
                 }
                 var field = MemberLookup.FindField(name, ctx.Frame, env);
                 if (field == null) return null;
@@ -214,11 +224,11 @@ namespace LatteCompiler
                     head.elements.Add(new SymbolElement { name = name });
                     var probed = env.Names.ResolveSymbolPath(head, ctx.Frame.FileCtx, ctx.Frame.DeclaringType,
                         ctx.Frame.Method, allowImports: true, reportErrors: false, span: null);
-                    if (probed is GenericParameterSymbol)
+                    // S9a 放行：typeOf 类型形态命中泛型参数（T → Type\<T\> 构造）
+                    if (probed is GenericParameterSymbol genericTarget)
                     {
-                        env.Error(path.Span ?? typeOf.Span,
-                            "P3: generic type parameters are not supported yet (S9)");
-                        return null;
+                        return new BoundTypeOfExpression(node, null, genericTarget,
+                            ResultType(genericTarget, env));
                     }
                     // 失败返回 ErrorType 毒化符号（TypeSymbol 子类，必须
                     // 显式排除才会落入下方路径绑定的「未解析」诊断）
@@ -239,12 +249,12 @@ namespace LatteCompiler
         }
 
         // typeOf 结果类型：Type\<T\> 构造类型；ErrorType 毒化静默
-        // （结果沿用 ErrorType，同 cast）
-        private static TypeSymbol ResultType(TypeSymbol element, BindEnvironment env)
+        // （结果沿用 ErrorType，同 cast）。S9a 放宽为 SemanticSymbol：
+        // 泛型参数实参构造 Type\<T\>（GetConstructedType 实参可含泛型参数）
+        private static TypeSymbol ResultType(SemanticSymbol element, BindEnvironment env)
         {
-            return element is ErrorTypeSymbol
-                ? element
-                : env.Unit.Symbols.GetConstructedType(env.B.TypeDefinition, element);
+            if (element is ErrorTypeSymbol error) return error;
+            return env.Unit.Symbols.GetConstructedType(env.B.TypeDefinition, element);
         }
     }
 }

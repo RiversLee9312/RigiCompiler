@@ -139,14 +139,18 @@ namespace LatteCompiler.Bil
     }
 
     // 类型声明（§8.2）：
-    // .type TYPE_SYMBOL = kind [extends BASE] [implements I, ...] [modifiers...] { ... }
-    // （generic(...) 子句随 S9 泛型落地增补）
+    // .type TYPE_SYMBOL = kind [generic(T1, T2)] [extends BASE] [implements I, ...]
+    //     [modifiers...] { ... }
+    // generic(...) 子句（S9e 定稿）：泛型参数名逗号列表（声明序；BIL
+    // 只声明名称——约束是编译期概念，使用侧已由编译器检查，运行时
+    // 不携带）
     public sealed class BilTypeDeclaration : BilSymbolSectionEntry
     {
         public string Symbol { get; }
         public BilTypeKind Kind { get; }
         public string? ExtendsType { get; set; }
         public List<string> ImplementsTypes { get; } = new List<string>();
+        public List<string> GenericParameters { get; } = new List<string>();
         // 修饰符（§8.2：pub protected internal priv / open abstract singleton /
         // rich shared；合法性由 frontend 与 verifier 各自对照 SYNTAX 检查）
         public List<BilModifier> Modifiers { get; } = new List<BilModifier>();

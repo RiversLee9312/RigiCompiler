@@ -56,6 +56,7 @@ namespace LatteCompiler
                 BoundUnaryExpression => UnaryRewriter.Visit(expression, ctx, env),
                 BoundCallExpression => CallExpressionRewriter.Visit(expression, ctx, env),
                 BoundNewExpression => NewExpressionRewriter.Visit(expression, ctx, env),
+                BoundVarArgsArgument => VarArgsRewriter.Visit(expression, ctx, env),
                 BoundIfExpression => IfExpressionRewriter.Visit(expression, ctx, env),
                 BoundSwitchExpression => SwitchExpressionRewriter.Visit(expression, ctx, env),
                 BoundSwitchPlaceholderExpression => SwitchPlaceholderRewriter.Visit(expression,

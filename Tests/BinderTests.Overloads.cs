@@ -221,12 +221,18 @@ namespace LatteCompiler.Tests
             TestHarness.CheckSemanticError("位置覆盖具名拒绝", unit12.Diagnostics,
                 "Duplicate argument for parameter 'a'");
 
-            // 可变参数归口（SYNTAX §4.3 调用绑定归后续里程碑）
-            var (unit13, _) = BindUnit(
+            // 可变参数调用（S9d）：单候选位置包放行——剩余实参打包为
+            // BoundVarArgsArgument（规范序最后元素，Type = Array\<Any\>）
+            var (unit13, bodies13) = BindUnit(
                 "func sum(numbers: i32...): i32 { return 0 }\n" +
                 "func f(): i32 { return sum(1, 2) }\n");
-            TestHarness.CheckSemanticError("可变参数归口", unit13.Diagnostics,
-                "P3: variadic parameters are not supported yet");
+            CheckNoErrors("无诊断（可变参数调用）", unit13);
+            var sumCall = (BoundCallExpression)((BoundReturnStatement)
+                ((BoundBlock)BodyOf(bodies13, "f").Body).Statements[0]).Value!;
+            TestHarness.CheckTrue("位置包打包为最后实参",
+                sumCall.Arguments.Count == 1
+                && sumCall.Arguments[0] is BoundVarArgsArgument pack
+                && !pack.IsNamed && pack.Values.Count == 2);
 
             // smart cast 交互（M56 × S8d）：收窄后的实参类型参与 ranking——
             // guard 内命中 String 版，guard 外命中 Any 版
@@ -253,13 +259,15 @@ namespace LatteCompiler.Tests
             TestHarness.CheckTrue("未收窄命中 Any 版", outerCall != null
                 && ReferenceEquals(outerCall.Method, anyTake));
 
-            // 泛型函数声明：S9 归口诊断不报级联「must return」（fuzz 观察收口——
-            // 返回类型为泛型参数时 return 值绑定必然失败，全路径检查只产噪音）
-            var (unit15, _) = BindUnit("func gf\\<T>(x: T): T { return x }\n");
-            TestHarness.CheckSemanticError("泛型函数 S9 归口", unit15.Diagnostics,
-                "P3: generic type parameters are not supported yet (S9)");
-            TestHarness.CheckTrue("无 must-return 级联", unit15.Diagnostics.Diagnostics
-                .All(d => !d.Message.Contains("must return a value on all code paths")));
+            // 泛型函数声明（S9a）：函数体内泛型参数全放行——形参/返回
+            // 类型为 T 正常绑定（引用相等身份），无诊断、无 must-return 级联
+            var (unit15, bodies15) = BindUnit("func gf\\<T>(x: T): T { return x }\n");
+            CheckNoErrors("无诊断（泛型函数体放行）", unit15);
+            TestHarness.Check("泛型函数体绑定形态",
+                BoundDescribe.Body(BodyOf(bodies15, "gf")),
+                "Body(gf, [], [Return(Param(x,T))])");
+            TestHarness.CheckTrue("返回类型为泛型参数的函数体产物",
+                bodies15.Single(b => b.Method.Name == "gf").Body.Statements.Count == 1);
         }
 
         // ===== 诊断累积：函数间互不阻断，函数内多错累积 =====
@@ -284,6 +292,125 @@ namespace LatteCompiler.Tests
             TestHarness.CheckTrue("函数内多错累积",
                 unit2.Diagnostics.Diagnostics.Count(d => d.Phase == DiagnosticPhase.P3) >= 3,
                 string.Join("; ", unit2.Diagnostics.Diagnostics.Select(d => d.Message)));
+        }
+
+        // ===== 泛型调用（S9b，SYNTAX §4.2 定稿：显式实参唯一、候选池规则、
+        // 代入后三步 ranking）=====
+        private static void TestGenericCalls()
+        {
+            TestHarness.Section("P3 Generic Calls (S9b)");
+
+            // 1. 显式实参泛型调用：代入后绑定（返回类型 = 实参，非定义级 T）
+            var (unit, bodies) = BindUnit(
+                "func identity\\<T>(x: T): T { return x }\n" +
+                "func main() { var v = identity\\<i32>(1) }\n");
+            CheckNoErrors("无诊断（显式实参泛型调用）", unit);
+            var decl = (BoundLocalDeclarationStatement)BodyOf(bodies, "main").Body.Statements[0];
+            TestHarness.Check("泛型调用绑定形态",
+                BoundDescribe.Expr(decl.Initializer!),
+                "Call(identity, [Int(1,i32)], i32)");
+            var call = (BoundCallExpression)decl.Initializer!;
+            TestHarness.CheckTrue("泛型调用返回类型代入（= 实参 i32）",
+                ReferenceEquals(call.Type, unit.Symbols.Bootstrap.Int32));
+            TestHarness.CheckTrue("泛型调用 TypeArguments 携带",
+                call.TypeArguments.Count == 1
+                && ReferenceEquals(call.TypeArguments[0], unit.Symbols.Bootstrap.Int32));
+
+            // 2. 实例泛型方法调用（box.get\<U>(u)——段泛型实参）
+            var (unit2, bodies2) = BindUnit(
+                "pub open class Box\\<T> {\n" +
+                "    pub var item: T\n" +
+                "    pub init(_ -> item) { }\n" +
+                "    pub func get\\<U>(u: U): T { return item }\n" +
+                "}\n" +
+                "func main() {\n" +
+                "    var box = new Box\\<i32>(1)\n" +
+                "    var v = box.get\\<String>(\"s\")\n" +
+                "}\n");
+            CheckNoErrors("无诊断（实例泛型方法调用 + 泛型 new）", unit2);
+            var main2 = BodyOf(bodies2, "main").Body;
+            var getCall = (BoundInstanceCallExpression)
+                ((BoundLocalDeclarationStatement)main2.Statements[1]).Initializer!;
+            TestHarness.CheckTrue("实例泛型调用方法符号（定义级）",
+                getCall.Method.Name == "get" && getCall.Method.GenericParameters.Count == 1);
+            TestHarness.CheckTrue("实例泛型调用返回类型代入（宿主 T = i32）",
+                ReferenceEquals(getCall.Type, unit2.Symbols.Bootstrap.Int32));
+            TestHarness.CheckTrue("实例泛型调用 TypeArguments 携带",
+                getCall.TypeArguments.Count == 1
+                && ReferenceEquals(getCall.TypeArguments[0], unit2.Symbols.Bootstrap.String));
+
+            // 3. 泛型实参个数不匹配
+            var (unit3, _) = BindUnit(
+                "func identity\\<T>(x: T): T { return x }\n" +
+                "func main() { var v = identity\\<i32, i64>(1) }\n");
+            TestHarness.CheckSemanticError("泛型实参个数不匹配", unit3.Diagnostics,
+                "'identity' expects 1 type argument(s), got 2");
+
+            // 4. 泛型方法缺显式实参（零推导——一切显式）
+            var (unit4, _) = BindUnit(
+                "func identity\\<T>(x: T): T { return x }\n" +
+                "func main() { var v = identity(1) }\n");
+            TestHarness.CheckSemanticError("泛型方法需要显式实参", unit4.Diagnostics,
+                "'identity' is a generic method; provide explicit type arguments");
+
+            // 5. 显式实参与非泛型方法共存：带实参时仅泛型候选（不匹配即拒绝）
+            var (unit5, bodies5) = BindUnit(
+                "func foo(x: i32): i32 { return x }\n" +
+                "func foo\\<T>(x: T): T { return x }\n" +
+                "func main() { var v = foo\\<String>(\"s\") }\n");
+            CheckNoErrors("无诊断（泛型与非泛型共存显式实参命中泛型）", unit5);
+            var decl5 = (BoundLocalDeclarationStatement)BodyOf(bodies5, "main").Body.Statements[0];
+            TestHarness.CheckTrue("命中泛型 foo（TypeArguments 非空）",
+                ((BoundCallExpression)decl5.Initializer!).TypeArguments.Count == 1);
+
+            // 6. 使用侧约束检查（SYNTAX §3.6）：类型引用实例化点
+            //    （bootstrap Box\<T extends ValueType>）
+            var (unit6, _) = BindUnit(
+                "func ok() { var x = new Box\\<i32>() }\n" +
+                "func bad() { var x = new Box\\<Any>() }\n");
+            TestHarness.CheckSemanticError("使用侧约束违反（Box<Any>）", unit6.Diagnostics,
+                "Type argument 'Any' does not satisfy the 'Extends ValueType' constraint of 'T'");
+            TestHarness.CheckTrue("仅违反处报约束诊断（正例 i32 满足）",
+                unit6.Diagnostics.Diagnostics.Count(d => d.Message.Contains("constraint")) == 1);
+
+            // 7. 使用侧约束检查：泛型调用实参（自定义约束的泛型函数）
+            var (unit7, _) = BindUnit(
+                "open class Animal { }\n" +
+                "class Dog : Animal { }\n" +
+                "func only\\<T extends Animal>(x: T): T { return x }\n" +
+                "func ok() { var v = only\\<Dog>(new Dog()) }\n" +
+                "func bad() { var v = only\\<i32>(1) }\n");
+            TestHarness.CheckSemanticError("泛型调用约束违反（only<i32>）", unit7.Diagnostics,
+                "Type argument 'i32' does not satisfy the 'Extends Animal' constraint of 'T'");
+
+            // 8. 泛型 new（S9c）：构造类型回退定义级 init + 宿主参数代入
+            //    （`new Box<i32>(1)` 的 init(_ -> item: T) 实参按 i32 绑定）
+            var (unit8, bodies8) = BindUnit(
+                "pub open class Box\\<T> {\n" +
+                "    pub var item: T\n" +
+                "    pub init(_ -> item) { }\n" +
+                "}\n" +
+                "func main() { var box = new Box\\<i32>(1) }\n");
+            CheckNoErrors("无诊断（泛型 new）", unit8);
+            var boxDecl = (BoundLocalDeclarationStatement)BodyOf(bodies8, "main").Body.Statements[0];
+            var newExpr = (BoundNewExpression)boxDecl.Initializer!;
+            TestHarness.CheckTrue("泛型 new 命中定义级 init", newExpr.Init != null
+                && newExpr.Init.Name == "init"
+                && ReferenceEquals(newExpr.Init.Owner,
+                    unit8.Symbols.GlobalNamespace.Types.Single(t => t.Name == "Box")));
+            TestHarness.CheckTrue("泛型 new 构造类型与实参绑定",
+                newExpr.Type is TypeSymbol { ConstructedFrom: not null } boxType
+                && boxType.ConstructedFrom.Name == "Box"
+                && ReferenceEquals(boxType.TypeArguments![0], unit8.Symbols.Bootstrap.Int32)
+                && newExpr.Arguments.Count == 1
+                && ReferenceEquals(newExpr.Arguments[0].Type, unit8.Symbols.Bootstrap.Int32));
+
+            // 9. 泛型定义不可构造保留（无实参的泛型定义名）
+            var (unit9, _) = BindUnit(
+                "pub open class Box\\<T> { pub init(_ -> item) { } }\n" +
+                "func main() { var box = new Box(1) }\n");
+            TestHarness.CheckSemanticError("泛型定义不可构造", unit9.Diagnostics,
+                "Cannot construct generic type definition 'Box'");
         }
     }
 }

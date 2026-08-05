@@ -6,14 +6,19 @@ namespace LatteCompiler
     // 全部为无副作用纯查询，各簇 visitor 共用。
     internal static class SymbolLookup
     {
-        // 构造类型的泛型字段最小替换（M52，S9 前置）：字段声明类型是泛型
-        // 参数时，沿 receiver 类型的 BaseType 链找到泛型定义构造，按形参
-        // 索引取实参替换；非泛型字段或非构造 receiver 直通声明类型
-        public static TypeSymbol? SubstituteFieldType(FieldSymbol field, TypeSymbol? receiverType)
+        // 构造类型的泛型字段最小替换（M52，S9 前置；S9a 放宽返回
+        // SemanticSymbol）：字段声明类型是泛型参数时，沿 receiver 类型的
+        // BaseType 链找到泛型定义构造，按形参索引取实参替换——实参可为
+        // 具体类型或外层泛型参数（引用相等身份，`Box<T>` 内 T 即外层 T）；
+        // receiver 是定义级（泛型函数体内 this）或链上无匹配构造时返回
+        // 声明类型原样（宿主泛型参数身份保留，P4 按 §7.5 投影）。
+        // 非泛型字段直通声明类型。receiverType 为 null（静态上下文）时同直通
+        public static SemanticSymbol? SubstituteFieldType(FieldSymbol field,
+            TypeSymbol? receiverType)
         {
             if (field.FieldType is not GenericParameterSymbol param)
             {
-                return field.FieldType as TypeSymbol;
+                return field.FieldType;
             }
             for (var t = receiverType; t != null; t = t.BaseType)
             {
@@ -23,11 +28,12 @@ namespace LatteCompiler
                     continue;
                 }
                 var index = t.ConstructedFrom.GenericParameters.IndexOf(param);
-                return index >= 0 && t.TypeArguments![index] is TypeSymbol concrete
-                    ? concrete
-                    : null;
+                if (index >= 0 && index < t.TypeArguments!.Count)
+                {
+                    return t.TypeArguments[index];
+                }
             }
-            return null;
+            return field.FieldType;
         }
 
         // 实例方法查找：receiver 静态类型沿 BaseType 链（接口 receiver
@@ -201,6 +207,38 @@ namespace LatteCompiler
             return signature as TypeSymbol;
         }
 
+        // 泛型签名代入（S9b）：type 中出现的 generics[i] 按索引替换为
+        // arguments[i]（引用相等身份——实参可为泛型参数）；构造类型逐项
+        // 替换后经驻留入口重建。返回 null = 任一项替换产物非法（仅防御）
+        public static SemanticSymbol? SubstituteType(SemanticSymbol type,
+            IReadOnlyList<GenericParameterSymbol> generics, IReadOnlyList<SemanticSymbol> arguments,
+            SymbolGraph symbols)
+        {
+            if (type is GenericParameterSymbol parameter)
+            {
+                for (int i = 0; i < generics.Count; i++)
+                {
+                    if (ReferenceEquals(generics[i], parameter)) return arguments[i];
+                }
+                return type;
+            }
+            if (type is TypeSymbol { ConstructedFrom: not null, TypeArguments: { } args } constructed)
+            {
+                var substituted = new SemanticSymbol[args.Count];
+                var changed = false;
+                for (int i = 0; i < args.Count; i++)
+                {
+                    var inner = SubstituteType(args[i], generics, arguments, symbols);
+                    if (inner == null) return null;
+                    substituted[i] = inner;
+                    changed |= !ReferenceEquals(inner, args[i]);
+                }
+                if (!changed) return constructed;
+                return symbols.GetConstructedType(constructed.ConstructedFrom, substituted);
+            }
+            return type;
+        }
+
         // 类型含未替换泛型参数（自身是泛型参数，或构造类型的实参递归
         // 含有）——泛型使用侧归 S9 的统一拦截点
         public static bool ContainsGenericParameter(SemanticSymbol type)
@@ -211,22 +249,29 @@ namespace LatteCompiler
         }
 
         // 可赋值性：同符号（驻留引用相等）直通；ErrorType 毒化静默放行；
-        // T → Nullable\<T\> 装箱视图（M52）；沿 BaseType 链与接口表命中
-        public static bool IsAssignable(TypeSymbol from, TypeSymbol to, BindEnvironment env)
+        // T → Nullable\<T\> 装箱视图（M52）；沿 BaseType 链与接口表命中。
+        // S9 放宽为 SemanticSymbol：泛型参数参与判定——同参数引用相等直通
+        // （已先行），与具体类型或异参数比较一律不可赋（false，不落诊断）
+        public static bool IsAssignable(SemanticSymbol from, SemanticSymbol to,
+            BindEnvironment env)
         {
             if (ReferenceEquals(from, to)) return true;
             if (from is ErrorTypeSymbol || to is ErrorTypeSymbol) return true;
-            if (ReferenceEquals(to.ConstructedFrom, env.B.NullableDefinition)
-                && to.TypeArguments![0] is TypeSymbol element
-                && IsAssignable(from, element, env))
+            // 泛型参数 vs 具体类型：不可赋（ErrorType 已先行放行）
+            if (from is GenericParameterSymbol || to is GenericParameterSymbol) return false;
+            var fromType = (TypeSymbol)from;
+            var toType = (TypeSymbol)to;
+            if (ReferenceEquals(toType.ConstructedFrom, env.B.NullableDefinition)
+                && toType.TypeArguments![0] is TypeSymbol element
+                && IsAssignable(fromType, element, env))
             {
                 return true;
             }
-            for (var t = from.BaseType; t != null; t = t.BaseType)
+            for (var t = fromType.BaseType; t != null; t = t.BaseType)
             {
-                if (ReferenceEquals(t, to)) return true;
+                if (ReferenceEquals(t, toType)) return true;
             }
-            return from.Interfaces.Any(i => ReferenceEquals(i, to));
+            return fromType.Interfaces.Any(i => ReferenceEquals(i, toType));
         }
     }
 }

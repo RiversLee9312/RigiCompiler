@@ -351,9 +351,10 @@ namespace LatteCompiler.Tests
                 && ReferenceEquals(forLoop.BreakId, mainBody.Locals[4]));
             var enumeratorLocalType = mainBody.Locals[2].Type!;
             TestHarness.CheckTrue("枚举器局部类型 = IEnumerator<i32> 构造",
-                enumeratorLocalType.ConstructedFrom != null
-                && enumeratorLocalType.ConstructedFrom.Name == "IEnumerator"
-                && ReferenceEquals(enumeratorLocalType.TypeArguments![0],
+                enumeratorLocalType is TypeSymbol enumeratorType
+                && enumeratorType.ConstructedFrom != null
+                && enumeratorType.ConstructedFrom.Name == "IEnumerator"
+                && ReferenceEquals(enumeratorType.TypeArguments![0],
                     unit.Symbols.Bootstrap.Int32));
         }
 

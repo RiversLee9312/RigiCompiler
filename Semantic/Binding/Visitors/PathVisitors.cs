@@ -54,13 +54,6 @@ namespace LatteCompiler
         public static BoundExpression? BindPath(PathExpressionASTNode node, Scope scope,
             BindContext ctx, BindEnvironment env, bool forAssignment)
         {
-            // 泛型实参（首段/段）：使用侧归 S9
-            if (node.Head.GenericArguments.Count > 0
-                || node.Segments.Any(s => s.GenericArguments.Count > 0))
-            {
-                env.Error(node.Span, "P3: generic type arguments are not supported yet (S9)");
-                return null;
-            }
             // 表达式底座（S8c：(a+b).c / new X().c / 字面量.foo）
             if (node.Head.Expression != null)
             {
@@ -71,11 +64,13 @@ namespace LatteCompiler
             {
                 return BindThisPath(node, scope, ctx, env, forAssignment);
             }
-            // 纯调用形态 → 直接调用（静态/全局）或实例调用（首段为值）
-            if (CallForm.TryGet(node, out var calleeSegments, out var callArguments))
+            // 纯调用形态 → 直接调用（静态/全局）或实例调用（首段为值）。
+            // S9b：显式泛型实参随调用形态提取（CallForm out 参数）
+            if (CallForm.TryGet(node, out var calleeSegments, out var callArguments,
+                out var genericArguments))
             {
                 var binding = CallFacility.BindCall(node, calleeSegments, callArguments!, scope,
-                    ctx, env);
+                    ctx, env, genericArguments);
                 if (binding == null) return null;
                 if (binding.IsVoid)
                 {
@@ -86,11 +81,19 @@ namespace LatteCompiler
                 if (binding.Receiver != null)
                 {
                     return new BoundInstanceCallExpression(node, binding.Receiver,
-                        binding.Method, binding.Arguments,
-                        (TypeSymbol)binding.Method.ReturnType!);
+                        binding.Method, binding.Arguments, binding.ResultType!,
+                        binding.TypeArguments);
                 }
                 return new BoundCallExpression(node, binding.Method, binding.Arguments,
-                    (TypeSymbol)binding.Method.ReturnType!);
+                    binding.ResultType!, binding.TypeArguments);
+            }
+            // 非调用形态的泛型实参（`x\<T>` 无调用后缀/链上段带实参）——
+            // S9b 仍归口（调用实参已由调用形态消费）
+            if (node.Head.GenericArguments.Count > 0
+                || node.Segments.Any(s => s.GenericArguments.Count > 0))
+            {
+                env.Error(node.Span, "P3: generic type arguments are not supported yet (S9)");
+                return null;
             }
             // wrapper 段（:连接符）归口 S11
             if (node.Segments.Any(s => s.Connector == PathConnector.Colon))
@@ -163,14 +166,16 @@ namespace LatteCompiler
                             .FirstOrDefault(p => p.Name == headName);
                         if (headParameter != null)
                         {
-                            if (headParameter.Type is not TypeSymbol headParamType)
-                            {
-                                env.Error(node.Span,
-                                    "P3: generic type parameters are not supported yet (S9)");
-                                return null;
-                            }
+                            // S9a 放行：参数类型可为泛型参数（引用相等身份）；
+                            // S9d：可变参数引用定型为 Array\<元素类型\>
+                            // （体内视角是包数组；P4 发射映射 .vargs.<名>）
+                            var paramType = headParameter.IsVariadic
+                                || headParameter.IsNamedVariadic
+                                ? (SemanticSymbol)env.Unit.Symbols.GetConstructedType(
+                                    env.B.ArrayDefinition, headParameter.Type!)
+                                : headParameter.Type!;
                             headValue = new BoundValueReferenceExpression(node, headParameter,
-                                headParamType);
+                                paramType);
                             if (!forAssignment)
                             {
                                 headValue = ApplyNarrowing(node, headValue,
@@ -210,7 +215,8 @@ namespace LatteCompiler
                 && node.Head.Suffixes[0].Kind == PathSuffixKind.Call)
             {
                 var callBase = CallFacility.BindCall(node, new List<string> { headName },
-                    node.Head.Suffixes[0].Arguments!, scope, ctx, env);
+                    node.Head.Suffixes[0].Arguments!, scope, ctx, env,
+                    node.Head.GenericArguments.Count > 0 ? node.Head.GenericArguments : null);
                 if (callBase == null) return null;
                 if (callBase.IsVoid)
                 {
@@ -220,9 +226,9 @@ namespace LatteCompiler
                 }
                 BoundExpression callValue = callBase.Receiver != null
                     ? new BoundInstanceCallExpression(node, callBase.Receiver, callBase.Method,
-                        callBase.Arguments, (TypeSymbol)callBase.Method.ReturnType!)
+                        callBase.Arguments, callBase.ResultType!, callBase.TypeArguments)
                     : new BoundCallExpression(node, callBase.Method, callBase.Arguments,
-                        (TypeSymbol)callBase.Method.ReturnType!);
+                        callBase.ResultType!, callBase.TypeArguments);
                 var foldedCall = FoldSuffixes(node, callValue, node.Head.Suffixes, 1,
                     forAssignment && node.Segments.Count == 0, scope, ctx, env);
                 if (foldedCall == null) return null;
@@ -307,9 +313,11 @@ namespace LatteCompiler
                 return null;
             }
             var fieldType = SymbolLookup.SubstituteFieldType(field, ctx.Frame.Method.Owner);
-            if (fieldType == null || SymbolLookup.ContainsGenericParameter(fieldType))
+            // S9a 放行：替换失败的泛型参数类型原样保留（定义级宿主场景）
+            if (fieldType == null)
             {
-                env.Error(node.Span, "P3: generic type parameters are not supported yet (S9)");
+                env.Error(node.Span, $"P3: field '{field.Name}' has no type annotation " +
+                    "(field type inference is not supported yet)");
                 return null;
             }
             if (field.Owner != null && !field.IsStatic)
@@ -362,7 +370,7 @@ namespace LatteCompiler
         // 静态/全局直引；不接名称解析、不走访问器/访问控制检查
         // （backing 直达是编译器机制内部路径）
         public static BoundExpression MakeBackingFieldReference(ASTNode node, FieldSymbol field,
-            TypeSymbol fieldType, BindFunctionFrame frame)
+            SemanticSymbol fieldType, BindFunctionFrame frame)
         {
             if (field.Owner != null && !field.IsStatic)
             {
@@ -439,7 +447,9 @@ namespace LatteCompiler
                 else
                 {
                     // 普通段：可空值不提供隐式成员访问（须逐段标注 ?.，§3.4）
-                    if (receiver.Type.ConstructedFrom == env.B.NullableDefinition)
+                    // （S9a：泛型参数 receiver 判型后不命中 nullable 分支）
+                    if (receiver.Type is TypeSymbol { ConstructedFrom: not null } receiverType
+                        && receiverType.ConstructedFrom == env.B.NullableDefinition)
                     {
                         env.Error(segment.Span,
                             $"Member '{segment.Name}' cannot be accessed on nullable type " +
@@ -473,7 +483,8 @@ namespace LatteCompiler
             if (segment.Suffixes[0].Kind == PathSuffixKind.Call)
             {
                 var call = CallFacility.BindInstanceMethodCall(segment, receiver, segment.Name,
-                    segment.Suffixes[0].Arguments!, scope, ctx, env);
+                    segment.Suffixes[0].Arguments!, scope, ctx, env,
+                    segment.GenericArguments.Count > 0 ? segment.GenericArguments : null);
                 if (call == null) return null;
                 if (call.IsVoid)
                 {
@@ -482,7 +493,7 @@ namespace LatteCompiler
                     return null;
                 }
                 value = new BoundInstanceCallExpression(segment, receiver,
-                    call.Method, call.Arguments, (TypeSymbol)call.Method.ReturnType!);
+                    call.Method, call.Arguments, call.ResultType!, call.TypeArguments);
                 consumed = 1;
             }
             else
@@ -531,14 +542,17 @@ namespace LatteCompiler
             // 毒化静默：receiver 已失败时不再报次生错误
             if (receiver.Type is ErrorTypeSymbol) return null;
             var display = BoundAnalysis.TypeDisplay(receiver.Type);
-            if (receiver.Type.ConstructedFrom == env.B.NullableDefinition)
+            // （S9a：泛型参数 receiver 判型后不命中 nullable 分支）
+            if (receiver.Type is TypeSymbol { ConstructedFrom: not null } receiverType
+                && receiverType.ConstructedFrom == env.B.NullableDefinition)
             {
                 env.Error(node.Span, $"Cannot index nullable type '{display}'");
                 return null;
             }
             var name = forWrite ? "setAtIndex" : "getAtIndex";
-            var candidates = SymbolLookup.FindInstanceOperators(receiver.Type, name,
-                forWrite ? 2 : 1);
+            var candidates = receiver.Type is TypeSymbol indexReceiver
+                ? SymbolLookup.FindInstanceOperators(indexReceiver, name, forWrite ? 2 : 1)
+                : new List<MethodSymbol>();
             if (candidates.Count == 0)
             {
                 env.Error(node.Span,
@@ -557,24 +571,21 @@ namespace LatteCompiler
             if (!forWrite)
             {
                 // 读模式：重载解析复用调用设施（S8d；多候选按索引实参类型
-                // ranking）——实参绑定、多参数/具名/缺失诊断自然产生
+                // ranking）——实参绑定、多参数/具名/缺失诊断自然产生。
+                // receiverType = receiver 静态类型（索引 operator 宿主代入）
                 var resolved = OverloadResolution.Resolve(node, candidates, suffix.Arguments,
-                    scope, ctx, env);
+                    scope, ctx, env, receiverType: receiver.Type as TypeSymbol);
                 if (resolved == null) return null;
-                var (op, boundArguments) = resolved.Value;
-                if (op.ReturnType == null)
+                var (op, boundArguments, opResultType) = resolved.Value;
+                if (opResultType == null)
                 {
                     env.Error(node.Span, $"Method '{op.Name}' has no result (void) " +
                         "and cannot be used as a value");
                     return null;
                 }
-                if (SymbolLookup.ContainsGenericParameter(op.ReturnType))
-                {
-                    env.Error(node.Span, "P3: generic type parameters are not supported yet (S9)");
-                    return null;
-                }
+                // S9a 放行：索引返回类型可为泛型参数（引用相等身份）
                 return new BoundIndexExpression(node, receiver, boundArguments[0], op,
-                    (TypeSymbol)op.ReturnType);
+                    opResultType);
             }
             // 写模式多候选仍归口（RHS 类型在赋值侧才可知，ranking 无法在此进行）
             if (candidates.Count > 1)
@@ -599,28 +610,21 @@ namespace LatteCompiler
                     $"'setAtIndex' has no parameter named '{argument.Name}'");
                 return null;
             }
-            if (indexParameter.Type is not TypeSymbol indexType
-                || SymbolLookup.ContainsGenericParameter(indexType))
-            {
-                env.Error(node.Span, "P3: generic type parameters are not supported yet (S9)");
-                return null;
-            }
+            // S9a 放行：索引形参类型可为泛型参数（引用相等身份）
+            var indexType = indexParameter.Type;
             var index = ExpressionDispatcher.Visit(argument.Value.Expression, scope, ctx, env,
-                indexType);
+                indexType as TypeSymbol);
             if (index == null) return null;
-            if (!SymbolLookup.IsAssignable(index.Type, indexType, env))
+            if (indexType != null && !SymbolLookup.IsAssignable(index.Type, indexType, env))
             {
                 env.Error(argument.Value.Span ?? argument.Span,
                     $"Cannot pass '{BoundAnalysis.TypeDisplay(index.Type)}' as " +
                     $"'{BoundAnalysis.TypeDisplay(indexType)}'");
                 return null;
             }
-            if (writeOp.Parameters[1].Type is not TypeSymbol elementType
-                || SymbolLookup.ContainsGenericParameter(elementType))
-            {
-                env.Error(node.Span, "P3: generic type parameters are not supported yet (S9)");
-                return null;
-            }
+            // S9a 放行：元素形参类型可为泛型参数（引用相等身份）；形参类型
+            // 必非空（P2 已定型）
+            var elementType = writeOp.Parameters[1].Type!;
             return new BoundIndexExpression(node, receiver, index, writeOp, elementType);
         }
 
@@ -630,8 +634,11 @@ namespace LatteCompiler
         private static BoundExpression? BindSafeSegment(PathSegmentASTNode segment,
             BoundExpression receiver, Scope scope, BindContext ctx, BindEnvironment env)
         {
-            if (receiver.Type.ConstructedFrom != env.B.NullableDefinition
-                || receiver.Type.TypeArguments![0] is not TypeSymbol element)
+            // （S9a：泛型参数 receiver 判型后不命中 nullable 分支）
+            if (receiver.Type is not TypeSymbol nullableReceiver
+                || nullableReceiver.ConstructedFrom == null
+                || nullableReceiver.ConstructedFrom != env.B.NullableDefinition
+                || nullableReceiver.TypeArguments![0] is not TypeSymbol element)
             {
                 env.Error(segment.Span, $"Safe access '?.' requires a nullable receiver " +
                     $"(got '{BoundAnalysis.TypeDisplay(receiver.Type)}')");
@@ -642,9 +649,15 @@ namespace LatteCompiler
             var access = BindInstanceSegment(segment, placeholder, scope, ctx, env,
                 forAssignment: false);
             if (access == null) return null;
-            var resultType = access.Type.ConstructedFrom == env.B.NullableDefinition
-                ? access.Type
-                : env.Unit.Symbols.GetNullable(access.Type);
+            // 结果类型：成员类型已可空则原样（不二次包装），否则包 Nullable；
+            // 泛型参数成员类型无静态 Nullable 构造，原样保留（S9a）
+            var resultType = access.Type switch
+            {
+                TypeSymbol accessType when accessType.ConstructedFrom
+                    == env.B.NullableDefinition => (SemanticSymbol)accessType,
+                TypeSymbol accessType => env.Unit.Symbols.GetNullable(accessType),
+                _ => access.Type,
+            };
             return new BoundSafeAccessExpression(segment, receiver, placeholder, access,
                 resultType);
         }
@@ -656,10 +669,17 @@ namespace LatteCompiler
             BoundExpression receiver, string name, BindEnvironment env, BindContext ctx,
             bool forAssignment = false)
         {
-            var field = SymbolLookup.FindInstanceField(receiver.Type, name);
+            // S9a：泛型参数 receiver 无成员表（判型后自然报未定义成员）
+            if (receiver.Type is not TypeSymbol receiverType)
+            {
+                env.Error(node.Span, $"Undefined member '{name}' on type " +
+                    $"'{BoundAnalysis.TypeDisplay(receiver.Type)}'");
+                return null;
+            }
+            var field = SymbolLookup.FindInstanceField(receiverType, name);
             if (field == null)
             {
-                env.Error(node.Span, SymbolLookup.FindInstanceMethods(receiver.Type, name).Count > 0
+                env.Error(node.Span, SymbolLookup.FindInstanceMethods(receiverType, name).Count > 0
                     ? $"'{name}' on type '{BoundAnalysis.TypeDisplay(receiver.Type)}' is not a field"
                     : $"Undefined member '{name}' on type " +
                         $"'{BoundAnalysis.TypeDisplay(receiver.Type)}'");
@@ -684,11 +704,13 @@ namespace LatteCompiler
                 return null;
             }
             // 泛型字段类型的最小替换（S7f 解构场景）：声明类型是宿主泛型
-            // 参数时按 receiver 链上的构造类型取实参；取不到具体类型归 S9
-            var fieldType = SymbolLookup.SubstituteFieldType(field, receiver.Type);
-            if (fieldType == null || SymbolLookup.ContainsGenericParameter(fieldType))
+            // 参数时按 receiver 链上的构造类型取实参；receiver 定义级时
+            // 原样保留（S9a 放行——引用相等身份）
+            var fieldType = SymbolLookup.SubstituteFieldType(field, receiverType);
+            if (fieldType == null)
             {
-                env.Error(node.Span, "P3: generic type parameters are not supported yet (S9)");
+                env.Error(node.Span, $"P3: field '{field.Name}' has no type annotation " +
+                    "(field type inference is not supported yet)");
                 return null;
             }
             var access = new BoundFieldAccessExpression(node, receiver, field, fieldType);

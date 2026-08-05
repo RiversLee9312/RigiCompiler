@@ -539,18 +539,24 @@ case(com.example::RequestResult.Failed)
 类型声明的规范形式为：
 
 ```bil
-.type TYPE_SYMBOL = kind [generic(...)]
-    [extends BASE_TYPE]
+.type TYPE_SYMBOL = kind [generic(T1, T2)] [extends BASE_TYPE]
     [implements INTERFACE_TYPE, ...]
     [modifiers...] {
     ...
 }
 ```
 
+`generic(...)` 子句（S9e 定稿）：泛型参数名逗号列表（源码声明序），仅泛型类型声明携带。BIL 只声明名称——约束是编译期概念（使用侧已由 frontend 检查），运行时不携带约束信息。泛型类型的 canonical 签名（字段/方法类型中的 `.generic<...>`）经 §7.5 与隐藏参数（§7.1）关联到这些名称。
+
 例如：
 
 ```bil
 .type com.example::Service = class pub {
+    ...
+}
+
+.type com.example::Box = class generic(T) pub open {
+    .field com.example::Box#item@.generic<$.generic.T> pub
     ...
 }
 ```

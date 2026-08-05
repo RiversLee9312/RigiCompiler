@@ -61,6 +61,7 @@ namespace LatteCompiler
         public TypeSymbol SpanDefinition { get; }      // Span\<T extends ValueType>
         public TypeSymbol NullableDefinition { get; }  // Nullable\<T>（Object 分支）
         public TypeSymbol BoxDefinition { get; }       // Box\<T extends ValueType>（Object 分支）
+        public TypeSymbol ArrayDefinition { get; }     // Array\<T>（Object 分支，.array<T>）
 
         internal BootstrapSymbols(NamespaceSymbol globalNamespace)
         {
@@ -160,6 +161,14 @@ namespace LatteCompiler
             BoxDefinition.GenericParameters[0].Constraints.Add(
                 new GenericConstraintInfo(GenericConstraintKind.Extends, ValueType));
 
+            // Array\<T\>（S9d）：BIL 标准构造 .array<T>（§6.3）；元素统一
+            // 胖值槽（RUNTIME §4 Box 表示），shared 按 T 推导（同 Nullable）
+            ArrayDefinition = new TypeSymbol("Array", TypeKind.Class, Core,
+                baseType: Object, isBuiltin: true,
+                derivesSharedSafetyFromTypeArgument: true,
+                bilStandardConstructor: ".array");
+            ArrayDefinition.GenericParameters.Add(new GenericParameterSymbol("T"));
+
             // 内建类型注册进 core 容器表（M40 补登：P2 名字解析经
             // 「core 命名空间隐式可见」消费——bootstrap 类型此前只有直造属性、
             // 未入容器表，裸名 i32/String/Object 无法经路径解析找到）
@@ -169,6 +178,7 @@ namespace LatteCompiler
                 Int8, Int16, Int32, Int64, UInt8, UInt16, UInt32, UInt64,
                 Float, Double, Bool, Char, String,
                 TypeDefinition, SpanDefinition, NullableDefinition, BoxDefinition,
+                ArrayDefinition,
             })
             {
                 // 内建符号不经声明修饰符（SemanticSymbol 默认 Private）——

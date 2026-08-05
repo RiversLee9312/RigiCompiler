@@ -62,11 +62,12 @@ namespace LatteCompiler
         // 收集分支块内命中本块的 return@ 值类型（递归嵌套块、if 分支与
         // switch 分支体）；全部须类型一致（符号 ==，驻留保证；ErrorType
         // 毒化静默跳过），不一致诊断并以首个为准；无命中（纯穿透终止）→ null。
-        // construct 为诊断消息中的构造名（"if expression"/"switch expression"）
-        public static TypeSymbol? CollectBranchValueType(BoundBlock block, BoundValueBlock shell,
-            string construct, BindEnvironment env)
+        // construct 为诊断消息中的构造名（"if expression"/"switch expression"）。
+        // S9a：值类型放宽为 SemanticSymbol（泛型参数产值按引用相等参与）
+        public static SemanticSymbol? CollectBranchValueType(BoundBlock block,
+            BoundValueBlock shell, string construct, BindEnvironment env)
         {
-            TypeSymbol? collected = null;
+            SemanticSymbol? collected = null;
             foreach (var statement in EnumerateStatements(block))
             {
                 if (statement is BoundReturnValueStatement returnValue
@@ -143,12 +144,17 @@ namespace LatteCompiler
             }
         }
 
-        // 诊断用类型显示名（迁移自旧 BindSession.TypeDisplay）
-        public static string TypeDisplay(TypeSymbol type)
+        // 诊断用类型显示名（迁移自旧 BindSession.TypeDisplay）；
+        // S9 放宽为 SemanticSymbol：泛型参数显示其名，构造实参递归显示
+        public static string TypeDisplay(SemanticSymbol type)
         {
-            if (type.ConstructedFrom == null) return type.Name;
-            return type.Name + "<" + string.Join(", ",
-                type.TypeArguments!.Select(a => a is TypeSymbol t ? TypeDisplay(t) : a.Name)) + ">";
+            if (type is not TypeSymbol symbol)
+            {
+                return type.Name;
+            }
+            if (symbol.ConstructedFrom == null) return symbol.Name;
+            return symbol.Name + "<" + string.Join(", ",
+                symbol.TypeArguments!.Select(a => a is TypeSymbol t ? TypeDisplay(t) : a.Name)) + ">";
         }
     }
 }

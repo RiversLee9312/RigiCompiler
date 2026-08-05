@@ -511,8 +511,12 @@ namespace LatteCompiler.Bil
                     "invoke 结果", errors);
             }
 
-            // §15.1：实参 ≡ 规范签名（.this 首参 + 普通参数逐项；hidden
-            // 参数形态发射器尚未产出，符号中含 hidden 形态的参数跳过比对）
+            // §15.1：实参 ≡ 规范签名（.this 首参 + 普通参数逐项；符号中
+            // hidden 形态的参数跳过比对）。
+            // S9e：泛型隐藏参数（.generic.*）已产出——hiddenCount 取被调
+            // fn 定义的 .args 隐藏条目数（§7.2 调用序 .this → .generic.* →
+            // 普通参数，实参侧跳过相同个数后与签名比对；无 fn 定义的
+            // native/external 无隐藏参数，降级 0）
             var expected = new List<(string Name, string TypeRef)>();
             foreach (var parameter in parameters)
             {
@@ -522,6 +526,14 @@ namespace LatteCompiler.Bil
                     continue;
                 }
                 expected.Add(parameter);
+            }
+            var hiddenCount = 0;
+            var calleeDefinition = context.Module.Module.Functions
+                .FirstOrDefault(f => f.Symbol == methodSymbol);
+            if (calleeDefinition != null)
+            {
+                hiddenCount = calleeDefinition.Args.Count(a => a.Name.StartsWith(".generic.")
+                    || a.Name.StartsWith(".vargs.") || a.Name.StartsWith(".kwargs."));
             }
             var argumentIndex = 0;
             if (!isStatic && owner.Length > 0)
@@ -536,16 +548,17 @@ namespace LatteCompiler.Bil
                     "invoke receiver(.this)", errors);
                 argumentIndex = 1;
             }
-            if (arguments.Count - argumentIndex != expected.Count)
+            if (arguments.Count - argumentIndex - hiddenCount != expected.Count
+                || arguments.Count - argumentIndex < hiddenCount)
             {
                 errors.Add(new BilVerificationError("21.3", location,
                     $"invoke 实参个数 {arguments.Count - argumentIndex} 与方法 \"{methodSymbol}\" " +
-                    $"签名参数个数 {expected.Count} 不一致"));
+                    $"签名参数个数 {expected.Count}（含 {hiddenCount} 个泛型/可变隐藏参数）不一致"));
                 return;
             }
             for (var i = 0; i < expected.Count; i++)
             {
-                CheckType(context, VarType(context, arguments[argumentIndex + i]),
+                CheckType(context, VarType(context, arguments[argumentIndex + hiddenCount + i]),
                     expected[i].TypeRef, location, $"invoke 实参 {i}", errors);
             }
         }

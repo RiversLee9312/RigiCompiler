@@ -36,14 +36,15 @@ namespace LatteCompiler
         // ===== Functions（§9）=====
 
         // null 返回 = 已诊断跳过。S7c-2 开闸实例方法（含 ext 成员）：
-        // .args 按 §9.2 顺序——.return 在前，实例方法 .this 次之
+        // .args 按 §9.2/§7.2 顺序——.return 在前，实例方法 .this 次之
         // （§7.3：ext 成员同以 .this 表示被扩展值的 receiver），
-        // 普通参数随后（隐藏参数随 S9 落地）
+        // 固定泛型隐藏参数（S9e：.generic.T = .typeid，声明序）随后，
+        // 普通参数最后（可变参数包随 S9d）
         private BilFunction? EmitFunction(LoweredFunctionBody body)
         {
             var method = body.Method;
             var function = new BilFunction(CanonicalSymbolPrinter.PrintMethod(method));
-            // .args（§9.2）：.return →（实例）.this → 普通参数
+            // .args（§9.2/§7.2）：.return →（实例）.this → .generic.* → 普通参数
             function.Args.Add(new BilArgDeclaration(".return",
                 CanonicalSymbolPrinter.PrintTypeReference(method.ReturnType)));
             if (method.Owner != null && !method.IsStatic)
@@ -51,10 +52,33 @@ namespace LatteCompiler
                 function.Args.Add(new BilArgDeclaration(".this",
                     CanonicalSymbolPrinter.PrintType(method.Owner)));
             }
+            // S9e：固定泛型隐藏参数（§7.1/§7.2：.generic.T = .typeid）
+            foreach (var genericParameter in method.GenericParameters)
+            {
+                function.Args.Add(new BilArgDeclaration(
+                    ".generic." + genericParameter.Name, ".typeid"));
+            }
             foreach (var parameter in method.Parameters)
             {
+                if (parameter.IsVariadic || parameter.IsNamedVariadic) continue;
                 function.Args.Add(new BilArgDeclaration(parameter.Name,
                     CanonicalSymbolPrinter.PrintTypeReference(parameter.Type)));
+            }
+            // 可变参数隐藏条目（S9d，§7.1/§7.2 序：普通参数后）：位置包
+            // .vargs.<名> = .array<.any>、具名包 .kwargs.<名> =
+            // .array<.pair<.string, .any>>（值进统一 Any 胖值槽，RUNTIME §10）
+            foreach (var parameter in method.Parameters)
+            {
+                if (parameter.IsNamedVariadic)
+                {
+                    function.Args.Add(new BilArgDeclaration(".kwargs." + parameter.Name,
+                        ".array<.pair<.string, .any>>"));
+                }
+                else if (parameter.IsVariadic)
+                {
+                    function.Args.Add(new BilArgDeclaration(".vargs." + parameter.Name,
+                        ".array<.any>"));
+                }
             }
             // 指令生成（临时变量在生成中登记）：entry block 先行入列，
             // if 分支 block 随 LoweredIfStatement 发射追加（§16.2）、

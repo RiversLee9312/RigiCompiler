@@ -151,18 +151,21 @@ namespace LatteCompiler.Bil
         private static void WriteTypeDeclaration(BilTypeDeclaration type, StringBuilder sb)
         {
             // §8.2：无 extends/implements 时单行；否则它们各占续行，
-            // 修饰符与 { 收尾行
+            // 修饰符与 { 收尾行。generic(...)（S9e）紧跟 kind 同行
             var modifiers = RenderModifiers(type.Modifiers);
             var kind = BilSpellings.Of(type.Kind);
+            var generic = type.GenericParameters.Count > 0
+                ? " generic(" + string.Join(", ", type.GenericParameters) + ")"
+                : "";
             if (type.ExtendsType == null && type.ImplementsTypes.Count == 0)
             {
-                sb.Append($"{Indent}.type {type.Symbol} = {kind}");
+                sb.Append($"{Indent}.type {type.Symbol} = {kind}{generic}");
                 if (modifiers.Length > 0) sb.Append($" {modifiers}");
                 sb.Append(" {\n");
             }
             else
             {
-                sb.Append($"{Indent}.type {type.Symbol} = {kind}\n");
+                sb.Append($"{Indent}.type {type.Symbol} = {kind}{generic}\n");
                 if (type.ExtendsType != null)
                 {
                     sb.Append($"{Indent}{Indent}extends {type.ExtendsType}\n");

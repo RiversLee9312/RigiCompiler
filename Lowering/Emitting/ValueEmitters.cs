@@ -44,14 +44,23 @@ namespace LatteCompiler
         }
     }
 
-    // 值引用（局部/参数）：名字即操作数，零指令
+    // 值引用（局部/参数）：名字即操作数，零指令。
+    // S9d：可变参数引用映射到隐藏包变量（.vargs.<名>/.kwargs.<名>，
+    // §7.1——源码参数名是包变量，BIL 以保留名承载）
     internal sealed class ValueReferenceEmitter : EmitVisitor<ValueReferenceEmitter, BilVariableOperand>
     {
         protected override BilVariableOperand VisitCore(LoweredNode node, BilBlock target,
             EmitContext ctx, EmitEnvironment env)
         {
             var valueReference = (LoweredValueReferenceExpression)node;
-            return BilOp.Var(valueReference.Symbol.Name);
+            // named 参数 IsVariadic 与 IsNamedVariadic 同时为 true——具名先判
+            var name = valueReference.Symbol switch
+            {
+                ParameterSymbol { IsNamedVariadic: true } parameter => ".kwargs." + parameter.Name,
+                ParameterSymbol { IsVariadic: true } parameter => ".vargs." + parameter.Name,
+                _ => valueReference.Symbol.Name,
+            };
+            return BilOp.Var(name);
         }
     }
 
@@ -106,7 +115,9 @@ namespace LatteCompiler
         }
     }
 
-    // 带返回值调用（§15.1）：实参从左到右物化（§10.2），再发 invoke
+    // 带返回值调用（§15.1）：实参从左到右物化（§10.2），再发 invoke。
+    // S9e：显式泛型实参按 §7.2 调用序前置物化（.generic.T 隐藏实参——
+    // 静态实参 getid.type、嵌套泛型调用转发 $.generic.T）
     internal sealed class CallExpressionEmitter : EmitVisitor<CallExpressionEmitter, BilVariableOperand>
     {
         protected override BilVariableOperand VisitCore(LoweredNode node, BilBlock target,
@@ -114,6 +125,11 @@ namespace LatteCompiler
         {
             var callExpression = (LoweredCallExpression)node;
             var callArguments = new List<BilVariableOperand>();
+            foreach (var typeArgument in callExpression.TypeArguments)
+            {
+                callArguments.Add(EmittingFacility.MaterializeTypeId(typeArgument, callExpression,
+                    target, ctx, env));
+            }
             foreach (var argument in callExpression.Arguments)
             {
                 callArguments.Add(EmitValueDispatcher.Visit(argument, target, ctx, env));
@@ -160,8 +176,8 @@ namespace LatteCompiler
         }
     }
 
-    // 实例调用（§7.3/§15.1）：receiver 求值作首实参；
-    // 接口方法符号引用时分派归 Middleware（注释约定）
+    // 实例调用（§7.3/§15.1）：receiver 求值作首实参；S9e 泛型实参
+    // 在 receiver 之后、普通实参之前（§7.2 调用序）
     internal sealed class InstanceCallEmitter : EmitVisitor<InstanceCallEmitter, BilVariableOperand>
     {
         protected override BilVariableOperand VisitCore(LoweredNode node, BilBlock target,
@@ -170,6 +186,11 @@ namespace LatteCompiler
             var instCall = (LoweredInstanceCallExpression)node;
             var instReceiver = EmitValueDispatcher.Visit(instCall.Receiver, target, ctx, env);
             var instArguments = new List<BilVariableOperand> { instReceiver };
+            foreach (var typeArgument in instCall.TypeArguments)
+            {
+                instArguments.Add(EmittingFacility.MaterializeTypeId(typeArgument, instCall,
+                    target, ctx, env));
+            }
             foreach (var argument in instCall.Arguments)
             {
                 instArguments.Add(EmitValueDispatcher.Visit(argument, target, ctx, env));
@@ -290,6 +311,88 @@ namespace LatteCompiler
                 { Origin = typeOf });
             }
             return typeOfResult;
+        }
+    }
+
+    // 可变参数包打包（S9d，§7.1/§14）：调用点把归包实参构造为隐藏包值——
+    // 位置包 new type(.array<.any>) [元素装箱 cast 到 .any...]；具名包
+    // 每项先 new type(.pair<.string, .any>)（名字字符串资源 + 值装箱
+    // cast）再包进 .array<.pair<.string, .any>>。结果类型 = .array<.any>
+    // / .array<.pair<.string, .any>>（与 fn .args 的 .vargs./.kwargs. 类型一致）
+    internal sealed class VarArgsEmitter : EmitVisitor<VarArgsEmitter, BilVariableOperand>
+    {
+        protected override BilVariableOperand VisitCore(LoweredNode node, BilBlock target,
+            EmitContext ctx, EmitEnvironment env)
+        {
+            var pack = (LoweredVarArgsArgument)node;
+            var anyType = env.Unit.Symbols.Bootstrap.Any;
+            if (!pack.IsNamed)
+            {
+                var packed = new List<BilVariableOperand>();
+                foreach (var value in pack.Values)
+                {
+                    packed.Add(BoxToAny(value, target, ctx, env));
+                }
+                var packResult = ctx.Temps.NewTemp(pack.Type);
+                target.Instructions.Add(new NewInstruction(
+                    BilOp.Type(CanonicalSymbolPrinter.PrintType(pack.Type)),
+                    packResult, packed)
+                { Origin = pack });
+                return packResult;
+            }
+            // 具名包：pair 逐项构造后装入 array
+            var pairType = env.Unit.Symbols.GetConstructedType(
+                BootstrapPairDefinition(env), env.Unit.Symbols.Bootstrap.String, anyType);
+            var pairValues = new List<BilVariableOperand>();
+            foreach (var (name, value) in pack.NamedValues)
+            {
+                var nameResource = EmittingFacility.RegisterScalarResource(BilScalarType.String,
+                    "\"" + EmittingFacility.Escape(name) + "\"", env);
+                var nameTemp = ctx.Temps.NewTemp(env.Unit.Symbols.Bootstrap.String);
+                target.Instructions.Add(new LoadInstruction(nameResource, nameTemp)
+                { Origin = pack });
+                var pairTemp = ctx.Temps.NewTemp(pairType);
+                target.Instructions.Add(new NewInstruction(
+                    BilOp.Type(CanonicalSymbolPrinter.PrintType(pairType)),
+                    pairTemp, new List<BilVariableOperand> { nameTemp, BoxToAny(value, target, ctx, env) })
+                { Origin = pack });
+                pairValues.Add(pairTemp);
+            }
+            var namedPackResult = ctx.Temps.NewTemp(pack.Type);
+            target.Instructions.Add(new NewInstruction(
+                BilOp.Type(CanonicalSymbolPrinter.PrintType(pack.Type)),
+                namedPackResult, pairValues)
+            { Origin = pack });
+            return namedPackResult;
+        }
+
+        // 值装箱到统一 Any 槽（RUNTIME §10；§12.1 引用视图转换——非 Any
+        // 时包显式 cast，Any 直通）
+        private static BilVariableOperand BoxToAny(LoweredExpression value, BilBlock target,
+            EmitContext ctx, EmitEnvironment env)
+        {
+            var valueOperand = EmitValueDispatcher.Visit(value, target, ctx, env);
+            var anyType = env.Unit.Symbols.Bootstrap.Any;
+            if (value.Type is TypeSymbol valueType && ReferenceEquals(valueType, anyType))
+            {
+                return valueOperand;
+            }
+            var boxed = ctx.Temps.NewTemp(anyType);
+            target.Instructions.Add(new CastInstruction(valueOperand, boxed,
+                BilOp.Type(CanonicalSymbolPrinter.PrintType(anyType)), isSafe: false)
+            { Origin = value });
+            return boxed;
+        }
+
+        // 标准 Pair 定义（.pair<.string, .any>）：bootstrap 无 Pair——
+        // stdlib .bootstrap.latte 自举（core::Pair）；查命名空间兜底
+        private static TypeSymbol BootstrapPairDefinition(EmitEnvironment env)
+        {
+            var core = env.Unit.Symbols.GlobalNamespace.ChildNamespaces
+                .FirstOrDefault(n => n.Name == "core");
+            return core?.Types.FirstOrDefault(t => t.Name == "Pair")
+                ?? throw new CompilerInternalException(
+                    "stdlib core::Pair 缺失（kwargs 打包依赖）");
         }
     }
 }

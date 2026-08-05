@@ -22,10 +22,11 @@ namespace LatteCompiler.Tests
                 && ReferenceEquals(cast.Conversion.Owner,
                     unit.Symbols.GlobalNamespace.Types.Single(t => t.Name == "S")));
 
-            // castTo 泛型形态（spec 示例形态）：任意目标适用；体无需返回值
-            // （返回类型是泛型参数，GuaranteesReturn 跳过）
+            // castTo 泛型形态（spec 示例形态）：任意目标适用；体以 as TTarget
+            // 返回（S9a 起泛型返回类型恢复全路径检查——体须有 return；
+            // 体在运行时从不执行）
             var (unit2, bodies2) = BindUnit(
-                "class S { operator castTo\\<TTarget>(): TTarget { } }\n" +
+                "class S { operator castTo\\<TTarget>(): TTarget { return this as TTarget } }\n" +
                 "func f(s: S): i32 { return s as i32 }\n" +
                 "func g(s: S): String { return s as String }\n");
             CheckNoErrors("castTo 泛型形态无诊断", unit2);
@@ -61,7 +62,7 @@ namespace LatteCompiler.Tests
 
             // 优先级：源 castTo 与目标 castFrom 同时适用 → castTo 胜出
             var (unit4, bodies4) = BindUnit(
-                "class S { operator castTo\\<TTarget>(): TTarget { } }\n" +
+                "class S { operator castTo\\<TTarget>(): TTarget { return this as TTarget } }\n" +
                 "class C { operator castFrom(obj: S): C { return new C() } }\n" +
                 "func f(s: S): C { return s as C }\n");
             CheckNoErrors("优先级用例无诊断", unit4);

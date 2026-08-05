@@ -15,12 +15,23 @@ namespace LatteCompiler
         // Locals 在前、临时变量在后）
         public IReadOnlyList<BilVarDeclaration> TempVars => tempVars;
 
-        // 临时变量物化（§10.1/§10.3）：登记 .vars 条目并返回变量操作数
-        public BilVariableOperand NewTemp(TypeSymbol type)
+        // 临时变量物化（§10.1/§10.3）：登记 .vars 条目并返回变量操作数；
+        // S9 放宽为 SemanticSymbol——泛型参数经 §7.5 投影（.generic<$.generic.T>）
+        public BilVariableOperand NewTemp(SemanticSymbol type)
         {
             var name = ".t" + tempCount;
             tempCount++;
             tempVars.Add(new BilVarDeclaration(CanonicalSymbolPrinter.PrintType(type), name));
+            return BilOp.Var(name);
+        }
+
+        // typeid 值临时变量（S9e，BIL §12.5/§7.1）：getid.type 结果
+        // 类型恒为 .typeid（无边界 = .typeid<.any>，§6.3）——不落类型符号
+        public BilVariableOperand NewTypeIdTemp()
+        {
+            var name = ".t" + tempCount;
+            tempCount++;
+            tempVars.Add(new BilVarDeclaration(".typeid", name));
             return BilOp.Var(name);
         }
     }

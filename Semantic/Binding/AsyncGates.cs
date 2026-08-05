@@ -197,6 +197,10 @@ namespace LatteCompiler
                 case BoundTypeOfExpression typeOf:
                     if (typeOf.Operand != null) WalkExpression(typeOf.Operand, env);
                     break;
+                case BoundVarArgsArgument varArgs:
+                    foreach (var value in varArgs.Values) WalkExpression(value, env);
+                    foreach (var (_, value) in varArgs.NamedValues) WalkExpression(value, env);
+                    break;
                 case BoundLiteralExpression:
                 case BoundValueReferenceExpression:
                 case BoundFieldReferenceExpression:
@@ -214,8 +218,9 @@ namespace LatteCompiler
             IReadOnlyList<BoundExpression> arguments, ASTNode syntax, BindEnvironment env)
         {
             if (!method.IsAsync) return;
+            // S9a：泛型参数类型判型后跳过（实参实际类型检查归 S9f 闸门 5）
             if (receiver != null && receiver.Type is not ErrorTypeSymbol
-                && !receiver.Type.IsSharedSafe())
+                && receiver.Type is TypeSymbol receiverType && !receiverType.IsSharedSafe())
             {
                 env.Error(syntax.Span,
                     $"async call receiver must be a shared-safe type: " +
@@ -224,7 +229,8 @@ namespace LatteCompiler
             foreach (var argument in arguments)
             {
                 if (argument.Type is ErrorTypeSymbol) continue;
-                if (!argument.Type.IsSharedSafe())
+                if (argument.Type is not TypeSymbol argumentType
+                    || !argumentType.IsSharedSafe())
                 {
                     env.Error(syntax.Span,
                         $"argument of async function '{method.Name}' must be a " +
@@ -267,11 +273,12 @@ namespace LatteCompiler
                 var type = symbol switch
                 {
                     LocalSymbol local => local.Type,
-                    ParameterSymbol parameter => parameter.Type as TypeSymbol,
+                    ParameterSymbol parameter => parameter.Type,
                     _ => null,
                 };
-                if (type == null || type is ErrorTypeSymbol) continue;
-                if (!type.IsSharedSafe())
+                // S9a：泛型参数类型判型后跳过（实际类型检查归 S9f 闸门 5）
+                if (type is not TypeSymbol checkedType || checkedType is ErrorTypeSymbol) continue;
+                if (!checkedType.IsSharedSafe())
                 {
                     env.Error(lambda.Span,
                         $"async lambda captures '{name}' of non-shared-safe type " +

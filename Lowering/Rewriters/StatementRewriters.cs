@@ -58,7 +58,8 @@ namespace LatteCompiler
                 callReceiver = LoweringFacility.EnsureDeclaredType(call, callReceiver,
                     call.Method.Owner);
             }
-            return new LoweredCallStatement(call, call.Method, arguments, callReceiver);
+            return new LoweredCallStatement(call, call.Method, arguments, callReceiver,
+                call.TypeArguments);
         }
     }
 

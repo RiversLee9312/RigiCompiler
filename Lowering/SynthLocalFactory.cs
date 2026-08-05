@@ -20,8 +20,9 @@ namespace LatteCompiler
         // LoweredFunctionBody.Locals；顺序即 .vars 发射顺序）
         public IReadOnlyList<LocalSymbol> SynthLocals => synthLocals;
 
-        // 合成局部（BIL §5.1 编译器保留名 .sN，函数内唯一）
-        public LocalSymbol NewSynthLocal(TypeSymbol type)
+        // 合成局部（BIL §5.1 编译器保留名 .sN，函数内唯一）；
+        // S9 放宽为 SemanticSymbol：泛型参数类型可作合成局部类型
+        public LocalSymbol NewSynthLocal(SemanticSymbol type)
         {
             var local = new LocalSymbol(".s" + synthCount, type, isConst: false);
             synthCount++;

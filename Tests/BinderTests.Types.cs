@@ -336,9 +336,10 @@ namespace LatteCompiler.Tests
             // typeOf 值形态：Operand 非 null / TargetType null，Type 为 Type\<Dog\> 构造
             TestHarness.CheckTrue("typeOf 值形态结构事实",
                 typeOfExpr.Operand != null && typeOfExpr.TargetType == null
-                && ReferenceEquals(typeOfExpr.Type.ConstructedFrom,
+                && typeOfExpr.Type is TypeSymbol typeOfType
+                && ReferenceEquals(typeOfType.ConstructedFrom,
                     unit4.Symbols.Bootstrap.TypeDefinition)
-                && ReferenceEquals(typeOfExpr.Type.TypeArguments![0], dogType));
+                && ReferenceEquals(typeOfType.TypeArguments![0], dogType));
             var dynIsExpr = (BoundTypeCheckExpression)((BoundReturnStatement)
                 BodyOf(bodies4, "k").Body.Statements[1]).Value!;
             // is 动态形态：TargetValue 非 null 且其 Type 与 typeOf 结果同一构造实例
@@ -404,15 +405,71 @@ namespace LatteCompiler.Tests
                 typeOfTypeForm.TargetType != null
                 && ReferenceEquals(typeOfTypeForm.TargetType, animalType)
                 && typeOfTypeForm.Operand == null
-                && ReferenceEquals(typeOfTypeForm.Type.ConstructedFrom,
+                && typeOfTypeForm.Type is TypeSymbol typeOfFormType
+                && ReferenceEquals(typeOfFormType.ConstructedFrom,
                     unit.Symbols.Bootstrap.TypeDefinition)
-                && ReferenceEquals(typeOfTypeForm.Type.TypeArguments![0], animalType));
+                && ReferenceEquals(typeOfFormType.TypeArguments![0], animalType));
 
             // 诊断：值/类型都未命中 → BindPath 的未定义名诊断
             var (unit2, _) = BindUnit(
                 "func m() { var t = typeOf(noSuchThing) }\n");
             TestHarness.CheckSemanticError("typeOf 两不沾拒绝", unit2.Diagnostics,
                 "Undefined name: 'noSuchThing'");
+        }
+
+        // ===== S9a 泛型函数体放行（Semantic/Binding/ 16 处 gate 解开，
+        // 类型参数按引用相等身份使用；泛型调用/泛型 new 仍归口 S9b/S9c）=====
+        private static void TestGenericFunctionBody()
+        {
+            TestHarness.Section("P3 Generic Function Body (S9a)");
+
+            // 1. 全放行形态：形参/返回类型为 T、局部 T 声明（含字段链定型）、
+            //    is T 静态目标（泛型参数不做静态收窄）
+            var (unit, bodies) = BindUnit(
+                "pub open class Box\\<T> { pub var item: T\n    pub init(_ -> item) { } }\n" +
+                "func use\\<T>(b: Box\\<T>): T {\n" +
+                "    var y: T = b.item\n" +
+                "    if (y is T) { return y }\n" +
+                "    return y\n" +
+                "}\n");
+            CheckNoErrors("无诊断（泛型函数体全放行）", unit);
+            TestHarness.Check("泛型函数体绑定形态",
+                BoundDescribe.Body(BodyOf(bodies, "use")),
+                "Body(use, [y: T], " +
+                "[Decl(y, T, = InstField(item, Param(b,Box<T>), T)); " +
+                "If(Is(Local(y,T), T), [Return(Local(y,T))]); Return(Local(y,T))])");
+
+            // 2. 泛型字段替换身份：Box<T> 实参为外层 T 时 item 类型 = 外层 T
+            //    （引用相等——替换取构造实参本身而非声明参数，S9a 修
+            //    SubstituteFieldType：实参可为泛型参数）
+            var useMethod = bodies.Single(b => b.Method.Name == "use").Method;
+            var outerT = useMethod.GenericParameters.Single(p => p.Name == "T");
+            var decl = (BoundLocalDeclarationStatement)BodyOf(bodies, "use").Body.Statements[0];
+            var fieldAccess = (BoundFieldAccessExpression)decl.Initializer!;
+            TestHarness.CheckTrue("泛型字段替换身份（item 类型 = 外层 T）",
+                ReferenceEquals(fieldAccess.Type, outerT));
+
+            // 3. 语句位置泛型调用（S9b）：泛型实参被调用形态消费——非泛型
+            //    方法带实参报「not a generic method」（不再静默丢弃实参）
+            var (unit2, _) = BindUnit(
+                "func foo(x: i32): i32 { return x }\n" +
+                "func main() { foo\\<i32>(1) }\n");
+            TestHarness.CheckSemanticError("语句位置泛型调用非泛型拒绝", unit2.Diagnostics,
+                "'foo' is not a generic method");
+
+            // 4. typeOf(T) 类型形态：T → Type<T> 构造（实参即外层 T 引用）
+            var (unit3, bodies3) = BindUnit(
+                "func f\\<T>(x: T): Type\\<T> { return typeOf(T) }\n");
+            CheckNoErrors("无诊断（typeOf 类型形态泛型参数）", unit3);
+            TestHarness.Check("typeOf(T) 绑定形态",
+                BoundDescribe.Body(BodyOf(bodies3, "f")),
+                "Body(f, [], [Return(TypeOf(type T, Type<T>))])");
+
+            // 5. 泛型参数 new 归 S9c（静态 init 查找不可行）
+            var (unit4, _) = BindUnit(
+                "func f\\<T>(): T { return new T() }\n");
+            TestHarness.CheckSemanticError("泛型参数 new 归 S9c", unit4.Diagnostics,
+                "P3: constructing a generic type parameter is not supported yet (S9)");
         }
     }
 }

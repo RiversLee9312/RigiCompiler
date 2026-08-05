@@ -163,9 +163,9 @@ namespace LatteCompiler
             // async 调用点闸门 1/2（S8f，SYNTAX §4.5）：对绑定产物的后置
             // 遍历——单一落点覆盖全部调用形态，与绑定点解耦
             AsyncGates.CheckFunctionBody(body, env);
-            // 所有路径显式返回（SYNTAX §4.1 无隐式返回）；返回类型为泛型
-            // 参数时跳过——return 值绑定必然 S9 归口失败，此检查只产级联噪音
-            if (symbol.ReturnType is TypeSymbol && !BoundAnalysis.GuaranteesReturn(body))
+            // 所有路径显式返回（SYNTAX §4.1 无隐式返回）；S9a 起返回类型
+            // 为泛型参数同样检查（泛型函数体已放行，无级联噪音）
+            if (symbol.ReturnType != null && !BoundAnalysis.GuaranteesReturn(body))
             {
                 env.Error(fn.Span, $"Function '{symbol.Name}' must return a value on all code paths");
             }

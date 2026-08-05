@@ -65,20 +65,24 @@ namespace LatteCompiler
 
     // void 调用语句（无结果方法调用只能作语句，SYNTAX §4：无隐式返回值利用）。
     // Receiver 为 null = 静态/全局调用（S7c-2 前唯一形态）；非 null = 实例
-    // 调用（receiver 求值作首实参，BIL §7.3/§15.1）
+    // 调用（receiver 求值作首实参，BIL §7.3/§15.1）。
+    // S9b 增补 TypeArguments：显式泛型实参（同 BoundCallExpression）
     public sealed class BoundCallStatement : BoundStatement
     {
         public MethodSymbol Method { get; }
         public IReadOnlyList<BoundExpression> Arguments { get; }
         public BoundExpression? Receiver { get; }
+        public IReadOnlyList<SemanticSymbol> TypeArguments { get; }
 
         public BoundCallStatement(ASTNode syntax, MethodSymbol method,
-            IReadOnlyList<BoundExpression> arguments, BoundExpression? receiver = null)
+            IReadOnlyList<BoundExpression> arguments, BoundExpression? receiver = null,
+            IReadOnlyList<SemanticSymbol>? typeArguments = null)
             : base(syntax)
         {
             Method = method;
             Arguments = arguments;
             Receiver = receiver;
+            TypeArguments = typeArguments ?? Array.Empty<SemanticSymbol>();
         }
     }
 
@@ -138,7 +142,7 @@ namespace LatteCompiler
         public BoundBlock Block { get; internal set; } = null!;
         public bool IsImplicitValue { get; internal set; }
         // 产值类型；分支纯穿透终止（无本块产值）时为 null
-        public TypeSymbol? ValueType { get; internal set; }
+        public SemanticSymbol? ValueType { get; internal set; }
         // volatile 修饰（仅 seq 表达式置位，S7e；BIL §9.6 block 修饰符）
         public bool IsVolatile { get; internal set; }
 
@@ -296,11 +300,11 @@ namespace LatteCompiler
     public sealed class BoundCatchClause : BoundNode
     {
         public LocalSymbol? Variable { get; }
-        public TypeSymbol ExceptionType { get; }
+        public SemanticSymbol ExceptionType { get; }
         public BoundBlock Body { get; }
 
         public BoundCatchClause(ASTNode syntax, LocalSymbol? variable,
-            TypeSymbol exceptionType, BoundBlock body) : base(syntax)
+            SemanticSymbol exceptionType, BoundBlock body) : base(syntax)
         {
             Variable = variable;
             ExceptionType = exceptionType;

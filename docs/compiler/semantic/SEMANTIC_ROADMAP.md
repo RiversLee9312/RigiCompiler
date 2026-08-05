@@ -480,6 +480,121 @@ reified 泛型全链：使用侧约束检查、构造类型驻留完善、
 `.generic.*` hidden args 物化（BIL §7 规范签名与参数序）、
 `.generic<...>` 类型引用发射、泛型 new/调用。
 
+2026-08-05 细化为六步（S9a–S9f），按序推进。沿用 S7/S8 确立的推进
+原则：P3 与 P4 同步落地——P3 绑得出来的形态，同一步内 P4 必须能发射，
+端到端 `--emit-bil` 可验证（S9a–S9d 为纯 P3 步，无 P4 面，逐步注明；
+hidden args 物化集中落 S9e）。
+
+**已定稿的规范前提**（M67，2026-08-05，全部落 SYNTAX §3.6/§4.2/§4.3）：
+① 固定泛型参数**必须显式实参**（零推导，Latte 一切显式哲学）；
+② 带显式实参 → 候选池仅泛型方法（按泛型实参个数匹配过滤）；不带 →
+泛型方法不参与候选，仅剩泛型候选时诊断「需要显式泛型实参」；
+③ 泛型 operator 按名字调用同规则，运算符位置（`a + b`）不参与；
+④ 使用侧约束满足判定：extends = 实参 <: 边界、supers = 反向、
+with = 查类型 `AppliedWrappers`（P2 已登记，含 interface 传染），
+边界含未替换泛型参数时跳过检查；⑤ 泛型可变参数（`TArgs...`/
+`named TArgs...`）的类型实参由对应值实参的类型**推导**（包固有形态，
+不显式书写；与①不冲突——①仅限固定泛型参数）。
+
+### S9a 泛型参数函数体内放行（纯 P3，无 P4 面）
+
+解开全部「使用侧泛型归口 S9」gate，使泛型函数体（形参/局部声明/
+返回类型为 `GenericParameterSymbol`）可完整绑定：
+
+- `Semantic/Binding/` 16 处 gate 逐一解开（现状清单见 M67 细化注记）：
+  PathVisitors（:61 泛型实参、:168 形参引用、:309/:686 字段读取后、
+  :571/:602/:618 索引运算符签名）、TypeReferences（:26 函数体内类型
+  引用）、CallVisitors（:80/:230 调用返回类型）、TypeCheckVisitors
+  （:79 is/supers/with 静态目标、:217 typeOf 类型形态）、
+  DeclarationVisitors（:113 解构分量、:337 return 兼容判定）、
+  LoopVisitors（:154 范围 for、:241/:254 for-each 元素）、
+  BindingDriver（:125 参数默认值、:166 must-return 级联跳过撤销）；
+- 类型参数在表达式/类型位置按引用相等身份使用（定义级签名发射
+  `.generic<$.generic.T>` 已就绪，S9a 零 P4 新增）；
+- 修复语句位置泛型调用静默丢实参漏洞：`ExpressionStatementVisitor`
+  → `CallForm.TryGet` 不查 `GenericArguments`，`foo\<i32>(1);` 静默
+  丢弃 `<i32>` 正常绑定——补检查并归口（同 PathVisitors 诊断）；
+- **验收**：BinderTests 新组（`func gf\<T>(x: T): T { return x }` 全
+  放行形态、`var y: T`、`x is T`、字段读取后泛型类型、泛型返回调用
+  链）+ BoundDescribe 断言 + 语句位置泛型调用诊断用例。
+
+### S9b 泛型调用绑定（纯 P3，无 P4 面）
+
+SYNTAX §4.2 定稿规则落地：
+
+- OverloadResolution 泛型路径：显式泛型实参解析（复用 NameResolver
+  类型引用解析，含毒化传播）→ 形参/返回类型 `Substitute` 代入 →
+  三步 ranking（结构过滤/类型适用性/最具体胜出）沿用 → 胜者
+  Materialize；候选池按①—③规则过滤；
+- `BoundCall` 携带泛型实参列表（新增槽或节点形态，S9e P4 透传）；
+- **使用侧约束检查共享设施**（ConstraintChecker 或等价：extends/
+  supers/with，SYNTAX §3.6 ④）——覆盖三处实例化点：类型引用
+  （`var x: Box\<i32>`，实参须满足声明约束）、泛型调用实参、泛型
+  new 实参；失败诊断定位到实参；
+- **验收**：BinderTests TestGenericCalls 新组（显式实参调用/个数
+  不匹配/需要显式实参/代入后 ranking/约束违反）+ OverloadResolution
+  泛型用例。
+
+### S9c 泛型 new（纯 P3，无 P4 面）
+
+- NewVisitor 补 `ConstructedFrom` 回退：构造类型在定义级查 init
+  （修复 `new Box\<i32>(1)` 误报 `Type 'Box' has no constructor`——
+  构造类型成员表恒空，:374 未回退）；
+- init 形参类型 Substitute 代入 + M60 重载解析规则复用（构造类型
+  目标的 init 按代入后签名参与解析）；泛型定义不可构造诊断保留；
+- 泛型 new 实参的使用侧约束检查（S9b 设施复用）；
+- **验收**：BinderTests 泛型 new 用例（带参/零参/init 代入/无匹配
+  init 诊断）+ 端到端路径打通（P4 恒等透传，发射形态归 S9e）。
+
+### S9d 泛型可变参数（纯 P3，无 P4 面）
+
+SYNTAX §4.3 定稿规则落地：
+
+- `TArgs...`/`named TArgs...` 调用绑定：类型实参由对应值实参的
+  类型推导（⑤；位置包 ← 位置实参、具名包 ← 具名值实参），逐实参
+  做约束检查；包语义在 Bound 层以 `.generic.TArgs` 形态表达
+  （array\<typeid\>/map\<string, typeid\> 的抽象值）；
+- 与值可变参数（`.vargs.args`/`.kwargs.args`）成对出现的组合形态
+  定稿核对（BIL §7.2 顺序：固定泛型 → 泛型可变包 → 普通参数 →
+  值可变包）；
+- 调用点值实参的类型化与归位（具名包 = 实参名 + 类型对）；
+- **验收**：BinderTests 泛型可变参数用例（位置/具名/约束违反/
+  与普通参数混合）。
+
+### S9e hidden args 物化（P4a + P4b）
+
+BIL §7 落地，泛型端到端出合法 BIL：
+
+- P4a：LoweredCall/LoweredNew 透传泛型实参（恒等重写，无脱糖）；
+- P4b fn 定义：EmittingDriver `.args` 按 §7.2 规范序插入
+  `.generic.T = .typeid`（固定泛型按声明序 → `.generic.TArgs`
+  array/map 包）——.return 在前、.this 次之（§9.2/§7.3），普通
+  参数随后；泛型类型定义 `.type` 声明补 `generic(...)` 子句
+  （`Bil/BilSymbols.cs` :143 占位兑现）；
+- P4b 调用点：invoke 实参前置泛型实参——静态实参 `getid.type
+  type(...)` 物化（§12.5 已发射过）、嵌套泛型调用转发 `$.generic.T`
+  引用、可变包以 `.array`/`.map` 资源构造 + 逐项 getid.type；
+  new 指令形态核对（§14.1 第一操作数已含类型实参，Middleware 据
+  其取 typeid，勿重复物化隐藏实参）；
+- BilVerifier：保持 `.generic<` 降级（M58 防误报优先），§21.7
+  `.generic.*` 参数序检查已就位零改动；
+- **验收**：BilEmitterTests 端到端（泛型函数调用/泛型 new/泛型
+  函数体内局部与运算/嵌套泛型调用转发）+ 黄金形状断言。
+
+### S9f stdlib 泛型化 + 技术债勾销
+
+- `stdlib/core/collections.latte` 泛型化：`RangeEnumerator\<T\>`/
+  `Range\<T\>`（勾销技术债 #15④；S7c-2 起 RangeEnumeratorI32 具体
+  形态替身退役），for 范围循环走泛型路径端到端；
+- 技术债勾销：#18② is/supers/with 动态形态值路径带泛型实参；
+  #22⑥ 构造宿主覆写签名比对的泛型精确性（M63 归口）；#23③ 转换
+  运算符多泛型参数/宿主泛型参数（按不适用回退判定复核）；#23④
+  async 闸门 5 调用点实际实参检查（S9b 后泛型实参静态可知，接
+  `AsyncGates` 调用点 1/2 同落点）；
+- SemanticsFuzzTests 泛型形态更新（S9 归口 → 新诊断/成功路径）；
+- **验收**：43 套件 + fuzz 6000 + 语义 fuzz 3000 全绿 + CLI
+  `--emit-bil` 端到端样例核对。
+
 ## S10 core.latte 载入机制
 
 core 声明文件随编译器载入（自举解析 → 同一条 P1/P2 路径）、

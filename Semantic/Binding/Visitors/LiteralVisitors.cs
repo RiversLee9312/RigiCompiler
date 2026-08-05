@@ -67,8 +67,12 @@ namespace LatteCompiler
                     if (!ReferenceEquals(value.Type, env.B.String))
                     {
                         // 非 String 段 → toString()（SYNTAX §3.8 全类型承诺；
-                        // Any 恒在 BaseType 链顶，查找不可能落空）
-                        var toString = SymbolLookup.FindInstanceMethods(value.Type, "toString")
+                        // Any 恒在 BaseType 链顶，查找不可能落空；S9a：
+                        // 泛型参数段在 Object 上查找——共享代码体运行时按
+                        // typeid 分派实际 toString）
+                        var toString = (value.Type is TypeSymbol valueType
+                                ? SymbolLookup.FindInstanceMethods(valueType, "toString")
+                                : SymbolLookup.FindInstanceMethods(env.B.Object, "toString"))
                             .FirstOrDefault(m => m.Parameters.Count == 0);
                         if (toString == null)
                         {

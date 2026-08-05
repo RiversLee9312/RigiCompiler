@@ -111,9 +111,16 @@ namespace LatteCompiler.Bil
         // §5.1 本地标识符字符集（资源名 / block id / 变量名）：字符限于
         // [A-Za-z0-9_-]；用户标识符不得以 . 开头，但编译器合成名/保留名
         // （.return/.this/.tN/.sN/.bN……）带前导点——验证器无法区分用户名与
-        // 合成名，统一允许至多一个前导点
+        // 合成名，统一允许至多一个前导点。
+        // S9e：§7.1 泛型/可变参数保留名家族（.generic.T / .vargs.args /
+        // .kwargs.args——§5.1 保留名，含内部点）额外放行
         internal static bool IsLocalIdentifier(string name)
         {
+            if (name.StartsWith(".generic.") || name.StartsWith(".vargs.")
+                || name.StartsWith(".kwargs."))
+            {
+                return true;
+            }
             var body = name.StartsWith(".") ? name.Substring(1) : name;
             if (body.Length == 0)
             {

@@ -15,7 +15,7 @@ namespace LatteCompiler
     // 字面量（整/浮点/字符串/字符/bool/null；Type 由 P3 按字面量种类与上下文定型）
     public sealed class BoundLiteralExpression : BoundExpression
     {
-        public BoundLiteralExpression(ASTNode syntax, TypeSymbol type) : base(syntax, type)
+        public BoundLiteralExpression(ASTNode syntax, SemanticSymbol type) : base(syntax, type)
         {
         }
     }
@@ -25,7 +25,7 @@ namespace LatteCompiler
     {
         public SemanticSymbol Symbol { get; }
 
-        public BoundValueReferenceExpression(ASTNode syntax, SemanticSymbol symbol, TypeSymbol type)
+        public BoundValueReferenceExpression(ASTNode syntax, SemanticSymbol symbol, SemanticSymbol type)
             : base(syntax, type)
         {
             Symbol = symbol;
@@ -37,7 +37,7 @@ namespace LatteCompiler
     {
         public FieldSymbol Field { get; }
 
-        public BoundFieldReferenceExpression(ASTNode syntax, FieldSymbol field, TypeSymbol type)
+        public BoundFieldReferenceExpression(ASTNode syntax, FieldSymbol field, SemanticSymbol type)
             : base(syntax, type)
         {
             Field = field;
@@ -54,7 +54,7 @@ namespace LatteCompiler
         public BoundExpression Right { get; }
 
         public BoundBinaryExpression(ASTNode syntax, BilIntrinsicOp op,
-            BoundExpression left, BoundExpression right, TypeSymbol type)
+            BoundExpression left, BoundExpression right, SemanticSymbol type)
             : base(syntax, type)
         {
             Op = op;
@@ -70,7 +70,7 @@ namespace LatteCompiler
         public BoundExpression Operand { get; }
 
         public BoundUnaryExpression(ASTNode syntax, BilIntrinsicOp op,
-            BoundExpression operand, TypeSymbol type)
+            BoundExpression operand, SemanticSymbol type)
             : base(syntax, type)
         {
             Op = op;
@@ -81,17 +81,22 @@ namespace LatteCompiler
     // 直接函数调用（无重载，S8 才做 ranking）。实参已是绑定后的规范顺序
     // （具名实参已按形参名归位；默认参数填充属 S8）。
     // 仅用于有返回值的调用；void 调用作语句见 BoundCallStatement。
+    // S9b 增补 TypeArguments：显式泛型实参（非泛型调用为空——P4 发射
+    // .generic.T 隐藏实参的依据，§7.2）
     public sealed class BoundCallExpression : BoundExpression
     {
         public MethodSymbol Method { get; }
         public IReadOnlyList<BoundExpression> Arguments { get; }
+        public IReadOnlyList<SemanticSymbol> TypeArguments { get; }
 
         public BoundCallExpression(ASTNode syntax, MethodSymbol method,
-            IReadOnlyList<BoundExpression> arguments, TypeSymbol type)
+            IReadOnlyList<BoundExpression> arguments, SemanticSymbol type,
+            IReadOnlyList<SemanticSymbol>? typeArguments = null)
             : base(syntax, type)
         {
             Method = method;
             Arguments = arguments;
+            TypeArguments = typeArguments ?? Array.Empty<SemanticSymbol>();
         }
     }
 
@@ -102,7 +107,7 @@ namespace LatteCompiler
         public MethodSymbol? Init { get; }
         public IReadOnlyList<BoundExpression> Arguments { get; }
 
-        public BoundNewExpression(ASTNode syntax, TypeSymbol constructedType, MethodSymbol? init,
+        public BoundNewExpression(ASTNode syntax, SemanticSymbol constructedType, MethodSymbol? init,
             IReadOnlyList<BoundExpression> arguments)
             : base(syntax, constructedType)
         {
@@ -120,7 +125,7 @@ namespace LatteCompiler
         public BoundValueBlock FalseBranch { get; }
 
         public BoundIfExpression(ASTNode syntax, BoundExpression condition,
-            BoundValueBlock trueBranch, BoundValueBlock falseBranch, TypeSymbol type)
+            BoundValueBlock trueBranch, BoundValueBlock falseBranch, SemanticSymbol type)
             : base(syntax, type)
         {
             Condition = condition;
@@ -139,7 +144,7 @@ namespace LatteCompiler
         public BoundExpression Value { get; }
 
         public BoundCompoundAssignmentExpression(ASTNode syntax, BoundExpression target,
-            BilIntrinsicOp op, BoundExpression value, TypeSymbol type)
+            BilIntrinsicOp op, BoundExpression value, SemanticSymbol type)
             : base(syntax, type)
         {
             Target = target;
@@ -153,7 +158,7 @@ namespace LatteCompiler
     // 方法/全局函数）中的 this 在 P3 拒绝，不落树
     public sealed class BoundThisExpression : BoundExpression
     {
-        public BoundThisExpression(ASTNode syntax, TypeSymbol type) : base(syntax, type)
+        public BoundThisExpression(ASTNode syntax, SemanticSymbol type) : base(syntax, type)
         {
         }
     }
@@ -161,20 +166,24 @@ namespace LatteCompiler
     // 实例方法调用（S7c-2）：Receiver 静态类型上色查找（沿 BaseType 链，
     // 接口 receiver 查接口自身成员；ext 注册成员同路径——P2 已挂目标类型
     // 成员表）。接口方法的调用以接口方法符号引用（分派归 Middleware，
-    // BIL §15.1 注释约定）。Arguments 已是规范参数序
+    // BIL §15.1 注释约定）。Arguments 已是规范参数序。
+    // S9b 增补 TypeArguments：显式泛型实参（同 BoundCallExpression）
     public sealed class BoundInstanceCallExpression : BoundExpression
     {
         public BoundExpression Receiver { get; }
         public MethodSymbol Method { get; }
         public IReadOnlyList<BoundExpression> Arguments { get; }
+        public IReadOnlyList<SemanticSymbol> TypeArguments { get; }
 
         public BoundInstanceCallExpression(ASTNode syntax, BoundExpression receiver,
-            MethodSymbol method, IReadOnlyList<BoundExpression> arguments, TypeSymbol type)
+            MethodSymbol method, IReadOnlyList<BoundExpression> arguments, SemanticSymbol type,
+            IReadOnlyList<SemanticSymbol>? typeArguments = null)
             : base(syntax, type)
         {
             Receiver = receiver;
             Method = method;
             Arguments = arguments;
+            TypeArguments = typeArguments ?? Array.Empty<SemanticSymbol>();
         }
     }
 
@@ -186,7 +195,7 @@ namespace LatteCompiler
         public FieldSymbol Field { get; }
 
         public BoundFieldAccessExpression(ASTNode syntax, BoundExpression receiver,
-            FieldSymbol field, TypeSymbol type) : base(syntax, type)
+            FieldSymbol field, SemanticSymbol type) : base(syntax, type)
         {
             Receiver = receiver;
             Field = field;
@@ -204,7 +213,7 @@ namespace LatteCompiler
         public MethodSymbol Operator { get; }
 
         public BoundIndexExpression(ASTNode syntax, BoundExpression receiver,
-            BoundExpression index, MethodSymbol op, TypeSymbol type) : base(syntax, type)
+            BoundExpression index, MethodSymbol op, SemanticSymbol type) : base(syntax, type)
         {
             Receiver = receiver;
             Index = index;
@@ -223,7 +232,7 @@ namespace LatteCompiler
 
         public BoundSwitchExpression(ASTNode syntax, BoundExpression selector,
             IReadOnlyList<BoundSwitchExpressionCase> cases, BoundValueBlock defaultBody,
-            TypeSymbol type)
+            SemanticSymbol type)
             : base(syntax, type)
         {
             Selector = selector;
@@ -258,7 +267,7 @@ namespace LatteCompiler
         public BoundExpression Selector { get; }
 
         public BoundSwitchPlaceholderExpression(ASTNode syntax, BoundExpression selector,
-            TypeSymbol type) : base(syntax, type)
+            SemanticSymbol type) : base(syntax, type)
         {
             Selector = selector;
         }
@@ -277,14 +286,14 @@ namespace LatteCompiler
     public sealed class BoundCastExpression : BoundExpression
     {
         public BoundExpression Source { get; }
-        public TypeSymbol TargetType { get; }
+        public SemanticSymbol TargetType { get; }
         // true = as?（失败产 null）；false = as（失败抛 core.CastException）
         public bool IsSafe { get; }
         // 名字分析选中的用户转换运算符（castTo/castFrom）；null = 内建
         public MethodSymbol? Conversion { get; }
 
         public BoundCastExpression(ASTNode syntax, BoundExpression source,
-            TypeSymbol targetType, bool isSafe, TypeSymbol type,
+            SemanticSymbol targetType, bool isSafe, SemanticSymbol type,
             MethodSymbol? conversion = null) : base(syntax, type)
         {
             Source = source;
@@ -304,10 +313,10 @@ namespace LatteCompiler
         public BoundExpression Operand { get; }
 
         // 收窄后类型（= 节点 Type；显式字段供描述器与 P4a 物化目标）
-        public TypeSymbol NarrowedType { get; }
+        public SemanticSymbol NarrowedType { get; }
 
         public BoundSmartCastExpression(ASTNode syntax, BoundExpression operand,
-            TypeSymbol narrowedType) : base(syntax, narrowedType)
+            SemanticSymbol narrowedType) : base(syntax, narrowedType)
         {
             Operand = operand;
             NarrowedType = narrowedType;
@@ -322,7 +331,7 @@ namespace LatteCompiler
     {
         public BoundValueBlock Body { get; }
 
-        public BoundSeqExpression(ASTNode syntax, BoundValueBlock body, TypeSymbol type)
+        public BoundSeqExpression(ASTNode syntax, BoundValueBlock body, SemanticSymbol type)
             : base(syntax, type)
         {
             Body = body;
@@ -342,7 +351,7 @@ namespace LatteCompiler
 
         public BoundSafeAccessExpression(ASTNode syntax, BoundExpression receiver,
             BoundSafeAccessReceiverExpression placeholder, BoundExpression access,
-            TypeSymbol type) : base(syntax, type)
+            SemanticSymbol type) : base(syntax, type)
         {
             Receiver = receiver;
             Placeholder = placeholder;
@@ -355,7 +364,7 @@ namespace LatteCompiler
     // 的 unwrap cast（§12.1 .nullable<T> → T）
     public sealed class BoundSafeAccessReceiverExpression : BoundExpression
     {
-        public BoundSafeAccessReceiverExpression(ASTNode syntax, TypeSymbol type)
+        public BoundSafeAccessReceiverExpression(ASTNode syntax, SemanticSymbol type)
             : base(syntax, type)
         {
         }
@@ -370,7 +379,7 @@ namespace LatteCompiler
         public BoundExpression Right { get; }
 
         public BoundNullFallbackExpression(ASTNode syntax, BoundExpression left,
-            BoundExpression right, TypeSymbol type) : base(syntax, type)
+            BoundExpression right, SemanticSymbol type) : base(syntax, type)
         {
             Left = left;
             Right = right;
@@ -394,12 +403,12 @@ namespace LatteCompiler
     {
         public BoundTypeCheckKind Kind { get; }
         public BoundExpression Operand { get; }
-        public TypeSymbol? TargetType { get; }
+        public SemanticSymbol? TargetType { get; }
         public BoundExpression? TargetValue { get; }
 
         public BoundTypeCheckExpression(ASTNode syntax, BoundTypeCheckKind kind,
-            BoundExpression operand, TypeSymbol? targetType, BoundExpression? targetValue,
-            TypeSymbol type) : base(syntax, type)
+            BoundExpression operand, SemanticSymbol? targetType, BoundExpression? targetValue,
+            SemanticSymbol type) : base(syntax, type)
         {
             // 双形态互斥不变量：静态/动态恰居其一
             if ((targetType == null) == (targetValue == null))
@@ -421,10 +430,10 @@ namespace LatteCompiler
     public sealed class BoundTypeOfExpression : BoundExpression
     {
         public BoundExpression? Operand { get; }
-        public TypeSymbol? TargetType { get; }
+        public SemanticSymbol? TargetType { get; }
 
         public BoundTypeOfExpression(ASTNode syntax, BoundExpression? operand,
-            TypeSymbol? targetType, TypeSymbol type) : base(syntax, type)
+            SemanticSymbol? targetType, SemanticSymbol type) : base(syntax, type)
         {
             // 双形态互斥不变量：值/类型恰居其一
             if ((operand == null) == (targetType == null))
@@ -434,6 +443,31 @@ namespace LatteCompiler
             }
             Operand = operand;
             TargetType = targetType;
+        }
+    }
+
+    // 可变参数包实参（S9d，SYNTAX §4.3/§7.2）：调用点归包的剩余实参——
+    // 作为 BoundCall 规范参数序的最后一个元素（vargs 位置包 / kwargs
+    // 具名包）。Type = Array\<Any\> 构造（BIL .array<.any>；RUNTIME §10
+    // 值进统一 Any 胖值槽）。元素保持实参原类型绑定，P4 打包时装箱 cast
+    public sealed class BoundVarArgsArgument : BoundExpression
+    {
+        // true = 具名包（kwargs，元素为「名 → 值」对）；false = 位置包（vargs）
+        public bool IsNamed { get; }
+        // 位置包元素（IsNamed == false 时非空）
+        public IReadOnlyList<BoundExpression> Values { get; }
+        // 具名包元素（IsNamed == true 时非空）
+        public IReadOnlyList<(string Name, BoundExpression Value)> NamedValues { get; }
+
+        public BoundVarArgsArgument(ASTNode syntax, bool isNamed,
+            IReadOnlyList<BoundExpression> values,
+            IReadOnlyList<(string Name, BoundExpression Value)>? namedValues,
+            SemanticSymbol type)
+            : base(syntax, type)
+        {
+            IsNamed = isNamed;
+            Values = values;
+            NamedValues = namedValues ?? Array.Empty<(string, BoundExpression)>();
         }
     }
 }

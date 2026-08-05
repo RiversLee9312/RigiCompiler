@@ -259,5 +259,97 @@ namespace LatteCompiler.Tests
                 getIdVar.Operands.Count == 2
                 && getIdVar.Operands.All(o => o is BilVariableOperand));
         }
+
+        // ===== S9e：泛型隐藏参数物化（§7.2 调用序 + §12.5 getid.type +
+        // §8.2 generic(...) 子句）=====
+        private static void TestGenericEmission()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "func identity\\<T>(x: T): T { return x }\n" +
+                "func pass\\<T>(x: T): T { return identity\\<T>(x) }\n" +
+                "func main() {\n" +
+                "    var v = identity\\<i32>(1)\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（泛型隐藏参数）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（泛型隐藏参数）", module);
+
+            // fn 定义 .args：§7.2 序 .return → .generic.T = .typeid → 普通参数
+            var identityFn = module.Functions.Single(f => f.Symbol
+                == "$identity(x:.generic<$.generic.T>)@.generic<$.generic.T>");
+            TestHarness.CheckTrue("泛型 fn .args 顺序（.return → .generic.T → 普通）",
+                identityFn.Args.Count == 3
+                && identityFn.Args[0].Name == ".return"
+                && identityFn.Args[0].TypeRef == ".generic<$.generic.T>"
+                && identityFn.Args[1].Name == ".generic.T" && identityFn.Args[1].TypeRef == ".typeid"
+                && identityFn.Args[2].Name == "x"
+                && identityFn.Args[2].TypeRef == ".generic<$.generic.T>");
+
+            // 静态实参：getid.type type(...) 物化 .typeid 临时变量 → 实参前置
+            BilTestHarness.CheckFnShape("静态泛型实参物化（main）", module, "$main()@.void",
+                ".vars { .i32 v, .typeid .t0, .i32 .t1, .i32 .t2 }\n" +
+                "getid.type type(.i32) $.t0\n" +
+                "load res(#0) $.t1\n" +
+                "invoke fn($identity(x:.generic<$.generic.T>)@.generic<$.generic.T>) $.t2 [$.t0, $.t1]\n" +
+                "set.var $.t2 $v\n" +
+                "ret\n");
+
+            // 嵌套泛型调用：转发接收的 .generic.T 隐藏参数（零指令，无 getid.type；
+            // .args 顺序已由上面的 fn .args 结构断言覆盖）
+            BilTestHarness.CheckFnShape("嵌套泛型调用转发（pass）", module,
+                "$pass(x:.generic<$.generic.T>)@.generic<$.generic.T>",
+                ".vars { .generic<$.generic.T> .t0 }\n" +
+                "invoke fn($identity(x:.generic<$.generic.T>)@.generic<$.generic.T>) $.t0 [$.generic.T, $x]\n" +
+                "ret $.t0\n");
+
+            // .type 声明 generic(...) 子句（§8.2，S9e 定稿：泛型参数名列表；
+            // stdlib core::Pair 定义级发射验证）
+            TestHarness.CheckTrue(".type generic 子句（core::Pair）",
+                module.LocalSymbols.OfType<BilTypeDeclaration>()
+                    .First(t => t.Symbol == "core::Pair") is { } pairDeclaration
+                    && pairDeclaration.GenericParameters.Count == 2
+                    && pairDeclaration.GenericParameters[0] == "TKey"
+                    && pairDeclaration.GenericParameters[1] == "TValue");
+        }
+
+        // ===== S9d：可变参数 vargs/kwargs（§7.1 隐藏包 + §14 特权构造打包）=====
+        private static void TestVarArgsEmission()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "func sum(numbers: i32...): i32 { return 1 }\n" +
+                "func config(options: named String...): Any { return options }\n" +
+                "func main() {\n" +
+                "    var s = sum(1, 2, 3)\n" +
+                "    var c = config(name = \"latte\")\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（vargs/kwargs）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（vargs/kwargs）", module);
+
+            // fn .args：普通参数区无 numbers/options（canonical 亦无——
+            // PrintMethod 跳过可变参数）；隐藏条目 .vargs./.kwargs. 在末位
+            var sumFn = module.Functions.Single(f => f.Symbol == "$sum()@.i32");
+            TestHarness.CheckTrue("位置包隐藏条目（.vargs.numbers = .array<.any>）",
+                sumFn.Args.Count == 2 && sumFn.Args[1].Name == ".vargs.numbers"
+                && sumFn.Args[1].TypeRef == ".array<.any>");
+            var configFn = module.Functions.Single(f => f.Symbol == "$config()@.any");
+            TestHarness.CheckTrue("具名包隐藏条目（.kwargs.options = .array<.pair<.string, .any>>）",
+                configFn.Args.Count == 2 && configFn.Args[1].Name == ".kwargs.options"
+                && configFn.Args[1].TypeRef == ".array<.pair<.string, .any>>");
+
+            // 体内引用：$vargs.numbers / $kwargs.options 映射（零指令）
+            TestHarness.CheckTrue("体内 kwargs 引用映射",
+                configFn.Blocks[0].Instructions
+                    .OfType<CastInstruction>().Any(i =>
+                        i.Operands[0] is BilVariableOperand { Name: ".kwargs.options" }));
+
+            // 调用点：位置包 new type(.array<.any>) 装箱打包；具名包 pair 逐项
+            var mainFn = module.Functions.Single(f => f.Symbol == "$main()@.void");
+            var news = mainFn.Blocks[0].Instructions.OfType<NewInstruction>().ToList();
+            TestHarness.CheckTrue("位置包 array 构造 + 具名包 pair/array 构造",
+                news.Any(n => n.Type.TypeRef == ".array<.any>"
+                    && n.Arguments.Count == 3)
+                && news.Any(n => n.Type.TypeRef == "core::Pair<.string, .any>")
+                && news.Any(n => n.Type.TypeRef == ".array<.any>"
+                    && n.Arguments.Count == 1));
+        }
     }
 }

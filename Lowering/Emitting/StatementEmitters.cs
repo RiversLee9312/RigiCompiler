@@ -99,7 +99,8 @@ namespace LatteCompiler
     }
 
     // void 调用语句：实参从左到右物化（§10.2），再发 invoke.noret（§15.1）；
-    // 实例调用（S7c-2）receiver 求值作首实参
+    // 实例调用（S7c-2）receiver 求值作首实参；S9e 泛型实参在 receiver
+    // 之后、普通实参之前（§7.2 调用序）
     internal sealed class CallStatementEmitter : EmitVisitor<CallStatementEmitter, Unit>
     {
         protected override Unit VisitCore(LoweredNode node, BilBlock target, EmitContext ctx,
@@ -110,6 +111,11 @@ namespace LatteCompiler
             if (call.Receiver != null)
             {
                 arguments.Add(EmitValueDispatcher.Visit(call.Receiver, target, ctx, env));
+            }
+            foreach (var typeArgument in call.TypeArguments)
+            {
+                arguments.Add(EmittingFacility.MaterializeTypeId(typeArgument, call,
+                    target, ctx, env));
             }
             foreach (var argument in call.Arguments)
             {

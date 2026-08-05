@@ -81,6 +81,11 @@ namespace LatteCompiler
         {
             var declaration = new BilTypeDeclaration(CanonicalSymbolPrinter.PrintType(type),
                 MapTypeKind(type.Kind));
+            // S9e：泛型参数名列表（§8.2 generic(...) 子句，声明序）
+            foreach (var genericParameter in type.GenericParameters)
+            {
+                declaration.GenericParameters.Add(genericParameter.Name);
+            }
             // 修饰符（§8.2）：访问（全显式）→ open/abstract/singleton → rich/shared
             // （wrapper 恒 rich 也显式输出——BIL 是显式 IR，不做源码的隐含）
             declaration.Modifiers.Add(new BilAccessibilityModifier(MapAccessibility(type.Accessibility)));

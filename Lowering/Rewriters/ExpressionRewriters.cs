@@ -100,7 +100,7 @@ namespace LatteCompiler
             var arguments = LoweringFacility.LowerArguments(call.Arguments, call.Method.Parameters,
                 ctx, env);
             if (arguments == null) return null;
-            return new LoweredCallExpression(call, call.Method, arguments);
+            return new LoweredCallExpression(call, call.Method, arguments, call.TypeArguments);
         }
     }
 
@@ -115,6 +115,32 @@ namespace LatteCompiler
                 newExpression.Init?.Parameters, ctx, env);
             if (arguments == null) return null;
             return new LoweredNewExpression(newExpression, newExpression.Init, arguments);
+        }
+    }
+
+    // 可变参数包实参（S9d）：元素递归降级透传（恒等重写——打包归 P4b）
+    internal sealed class VarArgsRewriter
+        : LoweredVisitor<VarArgsRewriter, LoweredExpression, LowerContext>
+    {
+        protected override LoweredExpression? VisitCore(BoundNode node, LowerContext ctx,
+            LowerEnvironment env)
+        {
+            var pack = (BoundVarArgsArgument)node;
+            var values = new List<LoweredExpression>();
+            foreach (var value in pack.Values)
+            {
+                var lowered = LowerExpressionDispatcher.Visit(value, ctx, env);
+                if (lowered == null) return null;
+                values.Add(lowered);
+            }
+            var namedValues = new List<(string Name, LoweredExpression Value)>();
+            foreach (var (name, value) in pack.NamedValues)
+            {
+                var lowered = LowerExpressionDispatcher.Visit(value, ctx, env);
+                if (lowered == null) return null;
+                namedValues.Add((name, lowered));
+            }
+            return new LoweredVarArgsArgument(pack, pack.IsNamed, values, namedValues);
         }
     }
 
@@ -320,7 +346,7 @@ namespace LatteCompiler
                 instanceCall.Method.Parameters, ctx, env);
             if (arguments == null) return null;
             return new LoweredInstanceCallExpression(instanceCall, receiver,
-                instanceCall.Method, arguments, instanceCall.Type);
+                instanceCall.Method, arguments, instanceCall.Type, instanceCall.TypeArguments);
         }
     }
 

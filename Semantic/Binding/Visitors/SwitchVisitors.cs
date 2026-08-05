@@ -83,7 +83,11 @@ namespace LatteCompiler
                 ? smartCast.Operand : typeCheck.Operand;
             if (operand is not BoundSwitchPlaceholderExpression placeholder) return;
             var key = ConditionFactsExtractor.TryKeyOf(placeholder.Selector, frame);
-            if (key != null) flow.SetNarrow(key, narrowedType);
+            // S9a：收窄目标为泛型参数时不做静态收窄（判型跳过）
+            if (key != null && narrowedType is TypeSymbol narrowed)
+            {
+                flow.SetNarrow(key, narrowed);
+            }
         }
 
         // switch default 分支体（两形态 Parser 强制存在；缺失即 Parser 不变量破坏）
@@ -144,7 +148,7 @@ namespace LatteCompiler
             if (selector == null) return null;
             // 产值类型统一（规则同 if 表达式）：纯穿透分支（ValueType null）
             // 不参与；有产值分支符号须引用相等（ErrorType 毒化静默）
-            TypeSymbol? type = null;
+            SemanticSymbol? type = null;
             foreach (var branch in cases.Select(c => c.Body).Append(defaultShell.Block))
             {
                 if (branch.ValueType == null) continue;
@@ -226,7 +230,7 @@ namespace LatteCompiler
             {
                 if (selector == null) return null;
                 var match = ExpressionDispatcher.Visit(caseNode.Pattern.Expression, scope, ctx, env,
-                    selector.Type);
+                    selector.Type as TypeSymbol);
                 if (match != null && match.Type is not ErrorTypeSymbol
                     && !ReferenceEquals(match.Type, env.B.Bool))
                 {
@@ -237,7 +241,7 @@ namespace LatteCompiler
                 return match;
             }
             var value = ExpressionDispatcher.Visit(caseNode.Pattern.Expression, scope, ctx, env,
-                selector?.Type);
+                selector?.Type as TypeSymbol);
             if (value != null && selector != null
                 && value.Type is not ErrorTypeSymbol && selector.Type is not ErrorTypeSymbol)
             {

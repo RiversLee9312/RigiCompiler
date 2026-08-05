@@ -4,7 +4,7 @@ namespace LatteCompiler
 {
     // BoundTree（P3 产物，SEMANTIC_ARCHITECTURE §5）：带类型的语义树。
     // 基类 BoundNode 回指 Syntax: ASTNode（必填；合成节点指向最近的语法来源）；
-    // 表达式基类 BoundExpression 额外携带分析定型后的严格类型 Type: TypeSymbol。
+    // 表达式基类 BoundExpression 额外携带分析定型后的严格类型 Type: SemanticSymbol。
     // AST 只读：P3 不修改 AST 任何字段、不重挂 Parent；
     // ExpressionRootASTNode 是透明容器，BoundTree 不为它建节点。
     // 节点按语义命名，子类集合以 P3 的分析需要为准，不与 AST 节点一一对应。
@@ -20,12 +20,14 @@ namespace LatteCompiler
         }
     }
 
-    // 表达式基类：Type 是分析定型后的严格类型（BIL §6.4 类型严格相等）
+    // 表达式基类：Type 是分析定型后的严格类型（BIL §6.4 类型严格相等）；
+    // S9 起为 SemanticSymbol——泛型参数（GenericParameterSymbol）按引用
+    // 相等身份出现在函数体内表达式的定型类型中
     public abstract class BoundExpression : BoundNode
     {
-        public TypeSymbol Type { get; }
+        public SemanticSymbol Type { get; }
 
-        protected BoundExpression(ASTNode syntax, TypeSymbol type) : base(syntax)
+        protected BoundExpression(ASTNode syntax, SemanticSymbol type) : base(syntax)
         {
             Type = type;
         }

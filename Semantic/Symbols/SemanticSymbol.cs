@@ -403,10 +403,11 @@ namespace LatteCompiler
     // 局部恒非空。
     public sealed class LocalSymbol : SemanticSymbol
     {
-        public TypeSymbol? Type { get; }
+        // S9 放宽为 SemanticSymbol：泛型函数体内局部声明的类型可为泛型参数
+        public SemanticSymbol? Type { get; }
         public bool IsConst { get; }
 
-        public LocalSymbol(string name, TypeSymbol? type, bool isConst) : base(name)
+        public LocalSymbol(string name, SemanticSymbol? type, bool isConst) : base(name)
         {
             Type = type;
             IsConst = isConst;

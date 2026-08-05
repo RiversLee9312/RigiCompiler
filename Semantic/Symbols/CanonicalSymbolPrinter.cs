@@ -18,8 +18,20 @@ namespace LatteCompiler
             _ => throw new CompilerInternalException($"未知的语义符号类型: {symbol.GetType().Name}"),
         };
 
-        // BIL 类型引用投影（§6.1）：固定内建别名 > 标准类型构造 > canonical/闭合泛型
-        public static string PrintType(TypeSymbol type)
+        // BIL 类型引用投影（§6.1）：固定内建别名 > 标准类型构造 > canonical/闭合泛型；
+        // S9 放宽为 SemanticSymbol——泛型参数走 §7.5 的 .generic<$.generic.T> 形态
+        public static string PrintType(SemanticSymbol type)
+        {
+            return type switch
+            {
+                GenericParameterSymbol generic => $".generic<$.generic.{generic.Name}>",
+                TypeSymbol symbol => PrintTypeSymbol(symbol),
+                _ => throw new CompilerInternalException(
+                    $"非法类型引用符号: {type.GetType().Name}"),
+            };
+        }
+
+        private static string PrintTypeSymbol(TypeSymbol type)
         {
             if (type.BilAlias != null)
             {
@@ -84,12 +96,15 @@ namespace LatteCompiler
             return ns is { FullName: { Length: > 0 } fullName } ? fullName + "::" : "";
         }
 
-        // 参数段（§5.2：(参数名:参数类型,...)）
+        // 参数段（§5.2：(参数名:参数类型,...)）。
+        // S9d：可变参数（IsVariadic/IsNamedVariadic）不进 canonical 参数段
+        // ——它们以隐藏参数形态存在于 fn .args（§7.1：.vargs.args/.kwargs.args）
         private static string PrintParameters(MethodSymbol method)
         {
             var parts = new List<string>();
             foreach (var p in method.Parameters)
             {
+                if (p.IsVariadic || p.IsNamedVariadic) continue;
                 parts.Add($"{p.Name}:{PrintTypeReference(p.Type)}");
             }
             return string.Join(",", parts);

@@ -25,11 +25,11 @@ namespace LatteCompiler
     public sealed class LoweredConstantExpression : LoweredExpression
     {
         public object Value { get; }
-        private readonly TypeSymbol type;
+        private readonly SemanticSymbol type;
 
-        public override TypeSymbol Type => type;
+        public override SemanticSymbol Type => type;
 
-        public LoweredConstantExpression(BoundNode origin, object value, TypeSymbol type)
+        public LoweredConstantExpression(BoundNode origin, object value, SemanticSymbol type)
             : base(origin)
         {
             Value = value;
@@ -44,13 +44,13 @@ namespace LatteCompiler
     {
         public SemanticSymbol Symbol { get; }
 
-        public override TypeSymbol Type => Symbol switch
+        public override SemanticSymbol Type => Symbol switch
         {
             // .breakid 局部（Type null）不作值引用——capability 不可读
             // （BIL §9.3），LoweredLoop/LoweredLoopControl 直接持有符号
             LocalSymbol local => local.Type ?? throw new CompilerInternalException(
                 ".breakid 局部不能作值引用: " + local.Name),
-            ParameterSymbol parameter => (TypeSymbol)parameter.Type!,
+            ParameterSymbol parameter => parameter.Type!,
             _ => throw new CompilerInternalException("未知值引用符号: " + Symbol.GetType().Name),
         };
 
@@ -84,12 +84,12 @@ namespace LatteCompiler
         public BilIntrinsicOp Op { get; }
         public LoweredExpression Left { get; }
         public LoweredExpression Right { get; }
-        private readonly TypeSymbol? type;
+        private readonly SemanticSymbol? type;
 
-        public override TypeSymbol Type => type ?? base.Type;
+        public override SemanticSymbol Type => type ?? base.Type;
 
         public LoweredBinaryExpression(BoundNode origin, BilIntrinsicOp op,
-            LoweredExpression left, LoweredExpression right, TypeSymbol? type = null) : base(origin)
+            LoweredExpression left, LoweredExpression right, SemanticSymbol? type = null) : base(origin)
         {
             Op = op;
             Left = left;
@@ -112,17 +112,22 @@ namespace LatteCompiler
         }
     }
 
-    // 带返回值直接调用（void 调用作语句见 LoweredCallStatement）
+    // 带返回值直接调用（void 调用作语句见 LoweredCallStatement）。
+    // S9e 增补 TypeArguments：显式泛型实参（P4b 调用点物化 .generic.*
+    // 隐藏实参的依据，§7.2）
     public sealed class LoweredCallExpression : LoweredExpression
     {
         public MethodSymbol Method { get; }
         public IReadOnlyList<LoweredExpression> Arguments { get; }
+        public IReadOnlyList<SemanticSymbol> TypeArguments { get; }
 
         public LoweredCallExpression(BoundCallExpression origin, MethodSymbol method,
-            IReadOnlyList<LoweredExpression> arguments) : base(origin)
+            IReadOnlyList<LoweredExpression> arguments,
+            IReadOnlyList<SemanticSymbol>? typeArguments = null) : base(origin)
         {
             Method = method;
             Arguments = arguments;
+            TypeArguments = typeArguments ?? Array.Empty<SemanticSymbol>();
         }
     }
 
@@ -153,23 +158,27 @@ namespace LatteCompiler
     // 接口方法符号引用时分派归 Middleware（注释约定）。
     // Type 自带不走 Origin 透传：for 脱糖（S7c-2）合成节点的 Origin 是
     // BoundLoop（语句而非表达式，无法透传）；恒等降级路径由调用方传入
-    // 与 Origin 相同的类型（同一来源两形态统一）
+    // 与 Origin 相同的类型（同一来源两形态统一）。
+    // S9e 增补 TypeArguments：显式泛型实参（同 LoweredCallExpression）
     public sealed class LoweredInstanceCallExpression : LoweredExpression
     {
         public LoweredExpression Receiver { get; }
         public MethodSymbol Method { get; }
         public IReadOnlyList<LoweredExpression> Arguments { get; }
-        private readonly TypeSymbol type;
+        public IReadOnlyList<SemanticSymbol> TypeArguments { get; }
+        private readonly SemanticSymbol type;
 
-        public override TypeSymbol Type => type;
+        public override SemanticSymbol Type => type;
 
         public LoweredInstanceCallExpression(BoundNode origin, LoweredExpression receiver,
-            MethodSymbol method, IReadOnlyList<LoweredExpression> arguments, TypeSymbol type)
+            MethodSymbol method, IReadOnlyList<LoweredExpression> arguments, SemanticSymbol type,
+            IReadOnlyList<SemanticSymbol>? typeArguments = null)
             : base(origin)
         {
             Receiver = receiver;
             Method = method;
             Arguments = arguments;
+            TypeArguments = typeArguments ?? Array.Empty<SemanticSymbol>();
             this.type = type;
         }
     }
@@ -182,12 +191,12 @@ namespace LatteCompiler
         // Type 默认走 Origin 透传（恒等降级路径，P3 已含替换后类型）；
         // 显式传入 = 合成路径（S7f 解构脱糖等 Origin 非表达式节点的场景，
         // 先例：LoweredCastExpression 的 Type 自带）
-        private readonly TypeSymbol? type;
+        private readonly SemanticSymbol? type;
 
-        public override TypeSymbol Type => type ?? base.Type;
+        public override SemanticSymbol Type => type ?? base.Type;
 
         public LoweredFieldAccessExpression(BoundNode origin,
-            LoweredExpression receiver, FieldSymbol field, TypeSymbol? type = null) : base(origin)
+            LoweredExpression receiver, FieldSymbol field, SemanticSymbol? type = null) : base(origin)
         {
             Receiver = receiver;
             Field = field;
@@ -224,15 +233,15 @@ namespace LatteCompiler
     public sealed class LoweredCastExpression : LoweredExpression
     {
         public LoweredExpression Source { get; }
-        public TypeSymbol TargetType { get; }
+        public SemanticSymbol TargetType { get; }
         // true = as?（cast.safe，失败产 null）；false = as（cast，失败抛异常）
         public bool IsSafe { get; }
-        private readonly TypeSymbol type;
+        private readonly SemanticSymbol type;
 
-        public override TypeSymbol Type => type;
+        public override SemanticSymbol Type => type;
 
         public LoweredCastExpression(BoundNode origin, LoweredExpression source,
-            TypeSymbol targetType, bool isSafe, TypeSymbol type) : base(origin)
+            SemanticSymbol targetType, bool isSafe, SemanticSymbol type) : base(origin)
         {
             Source = source;
             TargetType = targetType;
@@ -251,15 +260,15 @@ namespace LatteCompiler
     {
         public BoundTypeCheckKind Kind { get; }
         public LoweredExpression Operand { get; }
-        public TypeSymbol? TargetType { get; }
+        public SemanticSymbol? TargetType { get; }
         public LoweredExpression? TargetValue { get; }
-        private readonly TypeSymbol type;
+        private readonly SemanticSymbol type;
 
-        public override TypeSymbol Type => type;
+        public override SemanticSymbol Type => type;
 
         public LoweredTypeCheckExpression(BoundNode origin, BoundTypeCheckKind kind,
-            LoweredExpression operand, TypeSymbol? targetType,
-            LoweredExpression? targetValue, TypeSymbol type) : base(origin)
+            LoweredExpression operand, SemanticSymbol? targetType,
+            LoweredExpression? targetValue, SemanticSymbol type) : base(origin)
         {
             // 双形态互斥不变量：静态/动态恰居其一
             if ((targetType == null) == (targetValue == null))
@@ -282,13 +291,13 @@ namespace LatteCompiler
     public sealed class LoweredTypeOfExpression : LoweredExpression
     {
         public LoweredExpression? Operand { get; }
-        public TypeSymbol? TargetType { get; }
-        private readonly TypeSymbol type;
+        public SemanticSymbol? TargetType { get; }
+        private readonly SemanticSymbol type;
 
-        public override TypeSymbol Type => type;
+        public override SemanticSymbol Type => type;
 
         public LoweredTypeOfExpression(BoundNode origin, LoweredExpression? operand,
-            TypeSymbol? targetType, TypeSymbol type) : base(origin)
+            SemanticSymbol? targetType, SemanticSymbol type) : base(origin)
         {
             // 双形态互斥不变量：值/类型恰居其一
             if ((operand == null) == (targetType == null))
@@ -299,6 +308,25 @@ namespace LatteCompiler
             Operand = operand;
             TargetType = targetType;
             this.type = type;
+        }
+    }
+
+    // 可变参数包实参（S9d）：调用点打包形态，Type = Array\<Any\> 构造
+    // （.array<.any>）。元素保持降级原类型，P4b 打包时装箱 cast 到 .any
+    public sealed class LoweredVarArgsArgument : LoweredExpression
+    {
+        public bool IsNamed { get; }
+        public IReadOnlyList<LoweredExpression> Values { get; }
+        public IReadOnlyList<(string Name, LoweredExpression Value)> NamedValues { get; }
+
+        public LoweredVarArgsArgument(BoundVarArgsArgument origin, bool isNamed,
+            IReadOnlyList<LoweredExpression> values,
+            IReadOnlyList<(string Name, LoweredExpression Value)>? namedValues)
+            : base(origin)
+        {
+            IsNamed = isNamed;
+            Values = values;
+            NamedValues = namedValues ?? Array.Empty<(string, LoweredExpression)>();
         }
     }
 }

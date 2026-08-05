@@ -108,12 +108,17 @@ namespace LatteCompiler
         // null 资源登记（§19.1；S7f 起与合成 null 常量共用）：键 =
         // 元素类型投影；类型语义 = .nullable<元素类型>——
         // 可直接与 .nullable<T> 变量做 cmp.eq/cmp.ne（§11.5 严格相同）。
+        // S9 放宽为 SemanticSymbol：泛型参数（Nullable<T> 内的 T）不可静态
+        // 展开，直通不落键（.vars 的 .nullable<.generic<...>> 已能打印）；
         // 错误路径返回未登记的占位资源（诊断已落袋，输出按 §8 门槛不写盘）
-        public static BilResource RegisterNullResource(TypeSymbol nullableType, CharRange? span,
+        public static BilResource RegisterNullResource(SemanticSymbol nullableType, CharRange? span,
             EmitEnvironment env)
         {
-            if (nullableType.ConstructedFrom == env.Unit.Symbols.Bootstrap.NullableDefinition
-                && nullableType.TypeArguments![0] is TypeSymbol element)
+            if (nullableType is TypeSymbol type
+                && type.ConstructedFrom != null
+                && ReferenceEquals(type.ConstructedFrom,
+                    env.Unit.Symbols.Bootstrap.NullableDefinition)
+                && type.TypeArguments![0] is TypeSymbol element)
             {
                 var key = CanonicalSymbolPrinter.PrintType(element);
                 if (!env.NullKeys.TryGetValue(key, out var resource))
@@ -227,8 +232,13 @@ namespace LatteCompiler
                             ? ((float)f.Value).ToString("R", CultureInfo.InvariantCulture)
                             : f.Value.ToString("R", CultureInfo.InvariantCulture));
                 case NullLiteralASTNode:
-                    if (literal.Type.ConstructedFrom == env.Unit.Symbols.Bootstrap.NullableDefinition
-                        && literal.Type.TypeArguments![0] is TypeSymbol element)
+                    // S9：literal.Type 可为泛型参数（Nullable<T> 内层）——
+                    // 泛型参数不可静态展开，判型后走元素类型打印
+                    if (literal.Type is TypeSymbol nullType
+                        && nullType.ConstructedFrom != null
+                        && ReferenceEquals(nullType.ConstructedFrom,
+                            env.Unit.Symbols.Bootstrap.NullableDefinition)
+                        && nullType.TypeArguments![0] is TypeSymbol element)
                     {
                         return (null, CanonicalSymbolPrinter.PrintType(element));
                     }
@@ -301,6 +311,28 @@ namespace LatteCompiler
                 case '\r': return "\\r";
                 default: return c.ToString();
             }
+        }
+
+        // 泛型实参的 typeid 值物化（S9e，BIL §7.2 调用序前置）：静态实参
+        // 经 getid.type type(...)（§12.5）产 .typeid 临时变量；嵌套泛型
+        // 调用转发自身接收的 .generic.T 隐藏参数（零指令——.args 已声明，
+        // §7.5 示例）；ErrorType 已诊断，占位操作数防内部异常
+        public static BilVariableOperand MaterializeTypeId(SemanticSymbol typeArg,
+            LoweredNode origin, BilBlock target, EmitContext ctx, EmitEnvironment env)
+        {
+            if (typeArg is GenericParameterSymbol generic)
+            {
+                return BilOp.Var(".generic." + generic.Name);
+            }
+            if (typeArg is ErrorTypeSymbol)
+            {
+                return BilOp.Var("<error>");
+            }
+            var typeIdTemp = ctx.Temps.NewTypeIdTemp();
+            target.Instructions.Add(new GetIdTypeInstruction(
+                BilOp.Type(CanonicalSymbolPrinter.PrintType(typeArg)), typeIdTemp)
+            { Origin = origin });
+            return typeIdTemp;
         }
     }
 }
