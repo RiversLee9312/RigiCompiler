@@ -201,7 +201,7 @@ namespace LatteCompiler
             FieldSymbol field, bool isSetter, FileContext fileCtx, TypeSymbol? owner)
         {
             var ctx = new BindContext(symbol, fileCtx, owner);
-            if (field.HasBackingStorage) ctx.SetAccessor(field, isSetter);
+            if (field.HasBackingStorage) ctx.Accessor.Set(field, isSetter);
             BoundBlock body;
             if (accessorNode.Body != null)
             {
@@ -219,7 +219,7 @@ namespace LatteCompiler
                 {
                     statements.Add(new BoundReturnStatement(accessorNode,
                         PathFacility.MakeBackingFieldReference(accessorNode, field, getterType,
-                            ctx)));
+                            ctx.Frame)));
                 }
                 body = new BoundBlock(accessorNode, statements);
             }
@@ -228,7 +228,8 @@ namespace LatteCompiler
                 && field.FieldType is TypeSymbol backingType && backingType is not ErrorTypeSymbol)
             {
                 var implicitAssign = new BoundAssignmentStatement(accessorNode,
-                    PathFacility.MakeBackingFieldReference(accessorNode, field, backingType, ctx),
+                    PathFacility.MakeBackingFieldReference(accessorNode, field, backingType,
+                        ctx.Frame),
                     new BoundValueReferenceExpression(accessorNode, symbol.Parameters[0],
                         backingType));
                 body = new BoundBlock(body.Syntax,

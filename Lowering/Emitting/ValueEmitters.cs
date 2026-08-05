@@ -15,7 +15,7 @@ namespace LatteCompiler
         {
             var literal = (LoweredLiteralExpression)node;
             var resource = EmittingFacility.RegisterResource(literal, env);
-            var temp = EmittingFacility.NewTemp(literal.Type, ctx);
+            var temp = ctx.Temps.NewTemp(literal.Type);
             target.Instructions.Add(new LoadInstruction(resource, temp) { Origin = literal });
             return temp;
         }
@@ -37,7 +37,7 @@ namespace LatteCompiler
                         constant.Origin.Syntax.Span, env)
                     : throw new CompilerInternalException(
                         "P4a 合成常量类型未覆盖: " + constant.Value.GetType().Name);
-            var constantTemp = EmittingFacility.NewTemp(constant.Type, ctx);
+            var constantTemp = ctx.Temps.NewTemp(constant.Type);
             target.Instructions.Add(new LoadInstruction(constantResource, constantTemp)
             { Origin = constant });
             return constantTemp;
@@ -64,7 +64,7 @@ namespace LatteCompiler
             var fieldReference = (LoweredFieldReferenceExpression)node;
             var ownerRef = EmittingFacility.FieldOwnerRef(fieldReference.Field, env);
             if (ownerRef == null) return BilOp.Var("<error>");    // 已诊断
-            var fieldValue = EmittingFacility.NewTemp(fieldReference.Type, ctx);
+            var fieldValue = ctx.Temps.NewTemp(fieldReference.Type);
             target.Instructions.Add(new GetFieldStaticInstruction(
                 fieldValue, BilOp.Type(ownerRef),
                 BilOp.Field(CanonicalSymbolPrinter.PrintField(fieldReference.Field)))
@@ -82,7 +82,7 @@ namespace LatteCompiler
             var binary = (LoweredBinaryExpression)node;
             var left = EmitValueDispatcher.Visit(binary.Left, target, ctx, env);
             var right = EmitValueDispatcher.Visit(binary.Right, target, ctx, env);
-            var binaryResult = EmittingFacility.NewTemp(binary.Type, ctx);
+            var binaryResult = ctx.Temps.NewTemp(binary.Type);
             target.Instructions.Add(new BinaryIntrinsicInstruction(
                 EmittingFacility.MapBinaryOp(binary.Op), left, right, binaryResult)
             { Origin = binary });
@@ -98,7 +98,7 @@ namespace LatteCompiler
         {
             var unary = (LoweredUnaryExpression)node;
             var operand = EmitValueDispatcher.Visit(unary.Operand, target, ctx, env);
-            var unaryResult = EmittingFacility.NewTemp(unary.Type, ctx);
+            var unaryResult = ctx.Temps.NewTemp(unary.Type);
             target.Instructions.Add(new UnaryIntrinsicInstruction(
                 EmittingFacility.MapUnaryOp(unary.Op), operand, unaryResult)
             { Origin = unary });
@@ -118,7 +118,7 @@ namespace LatteCompiler
             {
                 callArguments.Add(EmitValueDispatcher.Visit(argument, target, ctx, env));
             }
-            var callResult = EmittingFacility.NewTemp(callExpression.Type, ctx);
+            var callResult = ctx.Temps.NewTemp(callExpression.Type);
             target.Instructions.Add(new InvokeInstruction(
                 BilOp.Fn(CanonicalSymbolPrinter.PrintMethod(callExpression.Method)),
                 callResult, callArguments)
@@ -140,7 +140,7 @@ namespace LatteCompiler
             {
                 newArguments.Add(EmitValueDispatcher.Visit(argument, target, ctx, env));
             }
-            var newResult = EmittingFacility.NewTemp(newExpression.Type, ctx);
+            var newResult = ctx.Temps.NewTemp(newExpression.Type);
             target.Instructions.Add(new NewInstruction(
                 BilOp.Type(CanonicalSymbolPrinter.PrintType(newExpression.Type)),
                 newResult, newArguments)
@@ -174,7 +174,7 @@ namespace LatteCompiler
             {
                 instArguments.Add(EmitValueDispatcher.Visit(argument, target, ctx, env));
             }
-            var instResult = EmittingFacility.NewTemp(instCall.Type, ctx);
+            var instResult = ctx.Temps.NewTemp(instCall.Type);
             target.Instructions.Add(new InvokeInstruction(
                 BilOp.Fn(CanonicalSymbolPrinter.PrintMethod(instCall.Method)),
                 instResult, instArguments)
@@ -191,7 +191,7 @@ namespace LatteCompiler
         {
             var fieldAccess = (LoweredFieldAccessExpression)node;
             var accessReceiver = EmitValueDispatcher.Visit(fieldAccess.Receiver, target, ctx, env);
-            var accessResult = EmittingFacility.NewTemp(fieldAccess.Type, ctx);
+            var accessResult = ctx.Temps.NewTemp(fieldAccess.Type);
             target.Instructions.Add(new GetFieldInstruction(
                 accessReceiver, accessResult,
                 BilOp.Field(CanonicalSymbolPrinter.PrintField(fieldAccess.Field)))
@@ -211,7 +211,7 @@ namespace LatteCompiler
             var indexAccess = (LoweredIndexExpression)node;
             var collection = EmitValueDispatcher.Visit(indexAccess.Receiver, target, ctx, env);
             var index = EmitValueDispatcher.Visit(indexAccess.Index, target, ctx, env);
-            var accessResult = EmittingFacility.NewTemp(indexAccess.Type, ctx);
+            var accessResult = ctx.Temps.NewTemp(indexAccess.Type);
             target.Instructions.Add(new GetArrayInstruction(collection, index, accessResult)
             { Origin = indexAccess });
             return accessResult;
@@ -227,7 +227,7 @@ namespace LatteCompiler
         {
             var cast = (LoweredCastExpression)node;
             var castSourceValue = EmitValueDispatcher.Visit(cast.Source, target, ctx, env);
-            var castResult = EmittingFacility.NewTemp(cast.Type, ctx);
+            var castResult = ctx.Temps.NewTemp(cast.Type);
             target.Instructions.Add(new CastInstruction(
                 castSourceValue, castResult,
                 BilOp.Type(CanonicalSymbolPrinter.PrintType(cast.TargetType)), cast.IsSafe)
@@ -246,7 +246,7 @@ namespace LatteCompiler
         {
             var typeCheck = (LoweredTypeCheckExpression)node;
             var checkValue = EmitValueDispatcher.Visit(typeCheck.Operand, target, ctx, env);
-            var checkResult = EmittingFacility.NewTemp(typeCheck.Type, ctx);
+            var checkResult = ctx.Temps.NewTemp(typeCheck.Type);
             var checkKind = EmittingFacility.MapTypeCheckKind(typeCheck.Kind);
             if (typeCheck.TargetValue != null)
             {
@@ -275,7 +275,7 @@ namespace LatteCompiler
             EmitContext ctx, EmitEnvironment env)
         {
             var typeOf = (LoweredTypeOfExpression)node;
-            var typeOfResult = EmittingFacility.NewTemp(typeOf.Type, ctx);
+            var typeOfResult = ctx.Temps.NewTemp(typeOf.Type);
             if (typeOf.Operand != null)
             {
                 var typeOfValue = EmitValueDispatcher.Visit(typeOf.Operand, target, ctx, env);

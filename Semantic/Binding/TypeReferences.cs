@@ -9,14 +9,14 @@ namespace LatteCompiler
     internal static class TypeReferences
     {
         public static TypeSymbol? Resolve(TypeReferenceASTNode typeRef, CharRange? span,
-            BindContext ctx, BindEnvironment env)
+            BindFunctionFrame frame, BindEnvironment env)
         {
-            var resolved = env.Names.ResolveTypeReference(typeRef, ctx.FileCtx, ctx.DeclaringType,
-                ctx.Method, span);
+            var resolved = env.Names.ResolveTypeReference(typeRef, frame.FileCtx,
+                frame.DeclaringType, frame.Method, span);
             if (resolved is TypeSymbol type)
             {
-                if (!AccessChecker.IsTypeAccessible(type, ctx.FileCtx.File, ctx.FileCtx.Namespace,
-                    ctx.DeclaringType))
+                if (!AccessChecker.IsTypeAccessible(type, frame.FileCtx.File,
+                    frame.FileCtx.Namespace, frame.DeclaringType))
                 {
                     env.Error(span, AccessChecker.InaccessibleMessage(type));
                     return null;

@@ -35,20 +35,20 @@ namespace LatteCompiler
         // this 字段）；var 根（var 局部/参数）允许——其被赋值时由失效规则
         // 清除根键。链上出现不稳定环节（调用结果/非 const 字段/…）即不可收窄
         public static NarrowKey? TryFromFieldAccess(BoundExpression receiver, FieldSymbol field,
-            BindContext ctx)
+            BindFunctionFrame frame)
         {
-            if (!ConstFieldRules.IsNarrowable(field, ctx)) return null;
+            if (!ConstFieldRules.IsNarrowable(field, frame)) return null;
             switch (receiver)
             {
                 case BoundSmartCastExpression smartCast:
                     // 收窄包装不改变底层引用身份——剥壳递归
-                    return TryFromFieldAccess(smartCast.Operand, field, ctx);
+                    return TryFromFieldAccess(smartCast.Operand, field, frame);
                 case BoundThisExpression:
                     return new NarrowKey(null, new[] { field });
                 case BoundValueReferenceExpression reference:
                     return new NarrowKey(reference.Symbol, new[] { field });
                 case BoundFieldAccessExpression access:
-                    var parent = TryFromFieldAccess(access.Receiver, access.Field, ctx);
+                    var parent = TryFromFieldAccess(access.Receiver, access.Field, frame);
                     if (parent == null) return null;
                     return new NarrowKey(parent.root,
                         parent.fields == null

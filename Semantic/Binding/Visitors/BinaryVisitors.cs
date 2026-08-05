@@ -34,7 +34,7 @@ namespace LatteCompiler
             BoundExpression? right;
             if (left != null && binary.Operator is "and" or "or")
             {
-                var leftFacts = ConditionFactsExtractor.Extract(left, ctx);
+                var leftFacts = ConditionFactsExtractor.Extract(left, ctx.Frame);
                 var narrowedSnapshot = ctx.Flow.SnapshotNarrowed();
                 ctx.Flow.ApplyNarrow(binary.Operator == "and" ? leftFacts.True : leftFacts.False);
                 right = ExpressionDispatcher.Visit(binary.Right.Expression, scope, ctx, env);
@@ -222,7 +222,7 @@ namespace LatteCompiler
                     {
                         var field = target is BoundFieldReferenceExpression fr
                             ? fr.Field : ((BoundFieldAccessExpression)target).Field;
-                        if (!ConstFieldRules.CheckWritable(field, node.Span, ctx, env))
+                        if (!ConstFieldRules.CheckWritable(field, node.Span, ctx.Frame, env))
                         {
                             return null;
                         }

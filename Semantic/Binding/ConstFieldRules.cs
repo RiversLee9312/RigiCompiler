@@ -11,12 +11,12 @@ namespace LatteCompiler
     //   不收窄——外部读写一律经访问器，读取结果不承诺稳定（§9.4.1）。
     internal static class ConstFieldRules
     {
-        public static bool CheckAssignable(FieldSymbol field, CharRange? span, BindContext ctx,
-            BindEnvironment env)
+        public static bool CheckAssignable(FieldSymbol field, CharRange? span,
+            BindFunctionFrame frame, BindEnvironment env)
         {
             if (!field.IsConst) return true;
             // init 构造方法体内的 const 实例字段赋值放行（构造期一次性赋值）
-            if (ctx.Method.Kind == MethodKind.Init && field.Owner != null && !field.IsStatic)
+            if (frame.Method.Kind == MethodKind.Init && field.Owner != null && !field.IsStatic)
             {
                 return true;
             }
@@ -28,8 +28,8 @@ namespace LatteCompiler
         // 带访问器字段检查 setter 存在性与访问器自身可见性（const+set 已被
         // P2 拒；无 setter 的 const 访问器字段由 has no setter 拦截），
         // 不再走 const 检查；无访问器字段走 const 规则
-        public static bool CheckWritable(FieldSymbol field, CharRange? span, BindContext ctx,
-            BindEnvironment env)
+        public static bool CheckWritable(FieldSymbol field, CharRange? span,
+            BindFunctionFrame frame, BindEnvironment env)
         {
             if (field.Getter != null || field.Setter != null)
             {
@@ -38,7 +38,7 @@ namespace LatteCompiler
                     env.Error(span, $"'{field.Name}' has no setter");
                     return false;
                 }
-                if (!ctx.CanAccess(field.Setter))
+                if (!frame.CanAccess(field.Setter))
                 {
                     env.Error(span, $"'{field.Name}' setter is inaccessible due to its " +
                         "accessibility level");
@@ -46,18 +46,18 @@ namespace LatteCompiler
                 }
                 return true;
             }
-            return CheckAssignable(field, span, ctx, env);
+            return CheckAssignable(field, span, frame, env);
         }
 
         // 收窄资格：const 字段（不带访问器的 backing field 直访——带访问器
         // 字段的读取经访问器、结果不承诺稳定，S8e 起排除）；构造方法 init
         // 体内的 this 字段保守排除（const 字段构造期可能尚未初始化，
         // SYNTAX §3.5）
-        public static bool IsNarrowable(FieldSymbol field, BindContext ctx)
+        public static bool IsNarrowable(FieldSymbol field, BindFunctionFrame frame)
         {
             if (!field.IsConst) return false;
             if (field.Getter != null || field.Setter != null) return false;
-            if (ctx.Method.Kind == MethodKind.Init && field.Owner != null && !field.IsStatic)
+            if (frame.Method.Kind == MethodKind.Init && field.Owner != null && !field.IsStatic)
             {
                 return false;
             }

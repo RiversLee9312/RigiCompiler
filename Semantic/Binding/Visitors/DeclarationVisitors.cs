@@ -25,7 +25,8 @@ namespace LatteCompiler
             TypeSymbol? declaredType = null;
             if (decl.TypeAnnotation != null)
             {
-                declaredType = TypeReferences.Resolve(decl.TypeAnnotation, decl.Span, ctx, env);
+                declaredType = TypeReferences.Resolve(decl.TypeAnnotation, decl.Span, ctx.Frame,
+                    env);
             }
             // 初始化表达式先于变量入作用域绑定（var x = x 报未定义而非自引用）
             var init = decl.Initializer == null
@@ -218,13 +219,15 @@ namespace LatteCompiler
                 case BoundFieldReferenceExpression fieldReference:
                     // 字段写入统一检查（S8e）：带访问器字段查 setter，
                     // 无访问器字段走 const 规则
-                    if (!ConstFieldRules.CheckWritable(fieldReference.Field, node.Span, ctx, env))
+                    if (!ConstFieldRules.CheckWritable(fieldReference.Field, node.Span, ctx.Frame,
+                        env))
                     {
                         return null;
                     }
                     break;
                 case BoundFieldAccessExpression fieldAccess:
-                    if (!ConstFieldRules.CheckWritable(fieldAccess.Field, node.Span, ctx, env))
+                    if (!ConstFieldRules.CheckWritable(fieldAccess.Field, node.Span, ctx.Frame,
+                        env))
                     {
                         return null;
                     }
@@ -262,32 +265,23 @@ namespace LatteCompiler
             // （M61：return@语句seq 提前结束该块，必须不携带值）
             if (ret.Label != null)
             {
-                BoundValueBlock? target = null;
-                var targetLoopDepth = 0;
-                foreach (var (valueBlock, loopDepth) in ctx.ValueBlocks)
-                {
-                    if (valueBlock.Label == ret.Label)
-                    {
-                        target = valueBlock;
-                        targetLoopDepth = loopDepth;
-                        break;
-                    }
-                }
+                var valueBlockEntry = ctx.Labels.FindValueBlock(ret.Label);
+                var target = valueBlockEntry?.Block;
                 if (target == null)
                 {
                     // 语句 seq 目标（M61）：隔循环拦截（同值块——P4a 编织无法
                     // 表达跳出中间循环）；隔值块拦截（值块 continuation 无法
                     // 表达「跳到外层 seq」）；不携带值（语句 seq 无产值消费者）
-                    foreach (var (seq, loopDepth, valueBlockDepth) in ctx.SeqLabels)
+                    var seqEntry = ctx.Labels.FindSeqLabel(ret.Label);
+                    if (seqEntry != null)
                     {
-                        if (seq.Label != ret.Label) continue;
-                        if (ctx.Loops.Count > loopDepth)
+                        if (ctx.Labels.LoopDepth > seqEntry.Value.LoopDepth)
                         {
                             env.Error(ret.Span, $"P3: return@{ret.Label} across a loop " +
                                 "boundary not supported yet (S7c)");
                             return null;
                         }
-                        if (ctx.ValueBlocks.Count > valueBlockDepth)
+                        if (ctx.Labels.ValueBlockDepth > seqEntry.Value.ValueBlockDepth)
                         {
                             env.Error(ret.Span, $"P3: return@{ret.Label} across a value " +
                                 "block boundary not supported yet");
@@ -300,14 +294,14 @@ namespace LatteCompiler
                                 "(target is a statement seq)");
                             return null;
                         }
-                        return new BoundSeqExitStatement(node, seq);
+                        return new BoundSeqExitStatement(node, seqEntry.Value.Seq);
                     }
                     env.Error(ret.Span, $"Undefined value block label: '{ret.Label}'");
                     return null;
                 }
                 // return@ 隔循环边界（S7c-1 拦截，S7c 技术债）：脱糖产物
                 // 只是「写值块局部」，无法表达「跳出中间循环」，P3 拒绝
-                if (ctx.Loops.Count > targetLoopDepth)
+                if (ctx.Labels.LoopDepth > valueBlockEntry!.Value.LoopDepth)
                 {
                     env.Error(ret.Span, $"P3: return@{ret.Label} across a loop " +
                         "boundary not supported yet (S7c)");
@@ -324,24 +318,24 @@ namespace LatteCompiler
             }
             if (ret.Value == null)
             {
-                if (ctx.Method.ReturnType != null)
+                if (ctx.Frame.Method.ReturnType != null)
                 {
-                    env.Error(ret.Span, $"Function '{ctx.Method.Name}' must return a value");
+                    env.Error(ret.Span, $"Function '{ctx.Frame.Method.Name}' must return a value");
                     return null;
                 }
                 return new BoundReturnStatement(node, null);
             }
             var value = ExpressionDispatcher.Visit(ret.Value.Expression, scope, ctx, env,
-                ctx.Method.ReturnType as TypeSymbol);
+                ctx.Frame.Method.ReturnType as TypeSymbol);
             if (value == null) return null;
-            if (ctx.Method.ReturnType == null)
+            if (ctx.Frame.Method.ReturnType == null)
             {
                 env.Error(ret.Value.Span ?? ret.Span,
-                    $"Void function '{ctx.Method.Name}' cannot return a value");
+                    $"Void function '{ctx.Frame.Method.Name}' cannot return a value");
                 return null;
             }
             // 返回类型为泛型参数时兼容判定归 S9
-            if (ctx.Method.ReturnType is TypeSymbol returnType
+            if (ctx.Frame.Method.ReturnType is TypeSymbol returnType
                 && !SymbolLookup.IsAssignable(value.Type, returnType, env))
             {
                 env.Error(ret.Value.Span ?? ret.Span,

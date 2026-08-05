@@ -16,7 +16,7 @@ namespace LatteCompiler
     // 条件事实提取器（S8b，SYNTAX §3.5 的代码化）：
     // 遍历**绑定后**的 Bound 条件表达式（类型与产物形态已知），产出真/假边
     // 收窄事实。纯函数式提取（只读 FlowState 之外的状态——键构造经
-    // ConstFieldRules.IsNarrowable 判定，需要 BindContext）。
+    // ConstFieldRules.IsNarrowable 判定，需要 BindFunctionFrame）。
     //
     // 提取形态：
     // - x is T（静态目标）→ 真边 x→T（蕴含非空）；假边 ∅
@@ -27,15 +27,15 @@ namespace LatteCompiler
     // 其余形态（supers/with/动态 is/普通比较……）→ 空事实
     internal static class ConditionFactsExtractor
     {
-        public static ConditionFacts Extract(BoundExpression? condition, BindContext ctx)
+        public static ConditionFacts Extract(BoundExpression? condition, BindFunctionFrame frame)
         {
             var facts = new ConditionFacts();
             if (condition == null) return facts;
-            ExtractInto(condition, ctx, facts.True, facts.False);
+            ExtractInto(condition, frame, facts.True, facts.False);
             return facts;
         }
 
-        private static void ExtractInto(BoundExpression condition, BindContext ctx,
+        private static void ExtractInto(BoundExpression condition, BindFunctionFrame frame,
             Dictionary<NarrowKey, TypeSymbol> whenTrue, Dictionary<NarrowKey, TypeSymbol> whenFalse)
         {
             switch (condition)
@@ -45,7 +45,7 @@ namespace LatteCompiler
                     Kind: BoundTypeCheckKind.Is, TargetType: { } targetType
                 } typeCheck:
                     // 静态 is（真边收窄为 T；T 本身非空即蕴含非空）
-                    var checkKey = TryKeyOf(typeCheck.Operand, ctx);
+                    var checkKey = TryKeyOf(typeCheck.Operand, frame);
                     if (checkKey != null) UnionOne(whenTrue, checkKey, targetType);
                     return;
                 case BoundBinaryExpression binary:
@@ -53,41 +53,42 @@ namespace LatteCompiler
                     {
                         case BilIntrinsicOp.And:
                             // 真边 = 左真 ∪ 右真；假边 = 左假 ∩ 右假
-                            var leftAnd = Extract(binary.Left, ctx);
-                            var rightAnd = Extract(binary.Right, ctx);
+                            var leftAnd = Extract(binary.Left, frame);
+                            var rightAnd = Extract(binary.Right, frame);
                             UnionAll(whenTrue, leftAnd.True);
                             UnionAll(whenTrue, rightAnd.True);
                             IntersectAll(whenFalse, leftAnd.False, rightAnd.False);
                             return;
                         case BilIntrinsicOp.Or:
                             // 真边 = 左真 ∩ 右真；假边 = 左假 ∪ 右假
-                            var leftOr = Extract(binary.Left, ctx);
-                            var rightOr = Extract(binary.Right, ctx);
+                            var leftOr = Extract(binary.Left, frame);
+                            var rightOr = Extract(binary.Right, frame);
                             IntersectAll(whenTrue, leftOr.True, rightOr.True);
                             UnionAll(whenFalse, leftOr.False);
                             UnionAll(whenFalse, rightOr.False);
                             return;
                         case BilIntrinsicOp.CmpEq:
                         case BilIntrinsicOp.CmpNe:
-                            ExtractNullEquality(binary, ctx, whenTrue, whenFalse);
+                            ExtractNullEquality(binary, frame, whenTrue, whenFalse);
                             return;
                         default:
                             return;
                     }
                 case BoundUnaryExpression { Op: BilIntrinsicOp.Not } unary:
                     // not 翻转：真边 ← 操作数假边；假边 ← 操作数真边
-                    ExtractInto(unary.Operand, ctx, whenFalse, whenTrue);
+                    ExtractInto(unary.Operand, frame, whenFalse, whenTrue);
                     return;
                 case BoundSmartCastExpression smartCast:
                     // 收窄包装透明（嵌套条件中的引用可能已被外层收窄）
-                    ExtractInto(smartCast.Operand, ctx, whenTrue, whenFalse);
+                    ExtractInto(smartCast.Operand, frame, whenTrue, whenFalse);
                     return;
             }
         }
 
         // null 判等提取：CmpNe 真边/CmpEq 假边收窄为元素类型 T0
         // （一侧 null 字面量 + 一侧类型 Nullable\<T0\> 的可收窄目标）
-        private static void ExtractNullEquality(BoundBinaryExpression binary, BindContext ctx,
+        private static void ExtractNullEquality(BoundBinaryExpression binary,
+            BindFunctionFrame frame,
             Dictionary<NarrowKey, TypeSymbol> whenTrue, Dictionary<NarrowKey, TypeSymbol> whenFalse)
         {
             var (target, isCmpNe) = binary.Op == BilIntrinsicOp.CmpNe
@@ -102,7 +103,7 @@ namespace LatteCompiler
                 return;
             }
             // 要求目标是 Nullable<T0> 构造（P3 已定型——null 判等特例保证）
-            var key = TryKeyOf(target, ctx);
+            var key = TryKeyOf(target, frame);
             if (key == null) return;
             if (isCmpNe)
             {
@@ -130,18 +131,18 @@ namespace LatteCompiler
         }
 
         // 可收窄目标的键构造（剥 SmartCast 壳；字段链经稳定链判定）
-        public static NarrowKey? TryKeyOf(BoundExpression expression, BindContext ctx)
+        public static NarrowKey? TryKeyOf(BoundExpression expression, BindFunctionFrame frame)
         {
             switch (expression)
             {
                 case BoundSmartCastExpression smartCast:
-                    return TryKeyOf(smartCast.Operand, ctx);
+                    return TryKeyOf(smartCast.Operand, frame);
                 case BoundValueReferenceExpression reference:
                     return NarrowKey.ForSymbol(reference.Symbol);
                 case BoundThisExpression:
                     return NarrowKey.ForThis();
                 case BoundFieldAccessExpression access:
-                    return NarrowKey.TryFromFieldAccess(access.Receiver, access.Field, ctx);
+                    return NarrowKey.TryFromFieldAccess(access.Receiver, access.Field, frame);
                 default:
                     return null;
             }

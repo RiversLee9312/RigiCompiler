@@ -23,7 +23,7 @@ namespace LatteCompiler
                 var lowered = LowerBlockVisitor.Visit(body.Body, ctx, env);
                 if (lowered == null) continue;
                 result.Add(new LoweredFunctionBody(body.Method,
-                    body.Locals.Concat(ctx.SynthLocals).ToList(), lowered));
+                    body.Locals.Concat(ctx.Synth.SynthLocals).ToList(), lowered));
             }
             return result;
         }

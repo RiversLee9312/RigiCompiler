@@ -84,7 +84,7 @@ namespace LatteCompiler
                         ? ".breakid"
                         : CanonicalSymbolPrinter.PrintType(local.Type), local.Name));
             }
-            function.Vars.AddRange(ctx.TempVars);
+            function.Vars.AddRange(ctx.Temps.TempVars);
             return function;
         }
     }

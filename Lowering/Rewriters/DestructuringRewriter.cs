@@ -15,17 +15,17 @@ namespace LatteCompiler
             var destructuring = (BoundDestructuringDeclarationStatement)node;
             var pair = LowerExpressionDispatcher.Visit(destructuring.Initializer, ctx, env);
             if (pair == null) return null;
-            var pairLocal = ctx.NewSynthLocal(pair.Type);
+            var pairLocal = ctx.Synth.NewSynthLocal(pair.Type);
             var statements = new List<LoweredStatement>
             {
                 new LoweredAssignmentStatement(destructuring,
-                    LowerContext.ReferenceTo(destructuring, pairLocal), pair),
+                    SynthLocalFactory.ReferenceTo(destructuring, pairLocal), pair),
             };
             foreach (var (local, field) in destructuring.Entries)
             {
                 statements.Add(new LoweredLocalDeclarationStatement(destructuring, local,
                     new LoweredFieldAccessExpression(destructuring,
-                        LowerContext.ReferenceTo(destructuring, pairLocal), field, local.Type!)));
+                        SynthLocalFactory.ReferenceTo(destructuring, pairLocal), field, local.Type!)));
             }
             return new LoweredBlock(destructuring, statements);
         }

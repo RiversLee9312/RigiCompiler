@@ -12,15 +12,16 @@ namespace LatteCompiler
         // reportErrors: false 为不落袋试探（typeCheck 动态形态等场景），
         // 静默时调用方传 span: null
         public static SemanticSymbol? ResolveContainer(IReadOnlyList<string> segments,
-            CharRange? span, BindContext ctx, BindEnvironment env, bool reportErrors = true)
+            CharRange? span, BindFunctionFrame frame, BindEnvironment env,
+            bool reportErrors = true)
         {
             var head = new Symbol();
             for (int i = 0; i < segments.Count - 1; i++)
             {
                 head.elements.Add(new SymbolElement { name = segments[i] });
             }
-            var container = env.Names.ResolveSymbolPath(head, ctx.FileCtx, ctx.DeclaringType,
-                ctx.Method, allowImports: true, reportErrors: reportErrors, span: span);
+            var container = env.Names.ResolveSymbolPath(head, frame.FileCtx, frame.DeclaringType,
+                frame.Method, allowImports: true, reportErrors: reportErrors, span: span);
             return container is ErrorTypeSymbol ? null : container;
         }
 
@@ -43,21 +44,22 @@ namespace LatteCompiler
         // BaseType 链，ext 方法 Owner = 目标类型；实例字段命中后由
         // 字段引用补 this，与 FindMethods 的宿主优先一致）
         // → 命名空间链 → 通配 import 容器字段
-        public static FieldSymbol? FindField(string name, BindContext ctx, BindEnvironment env)
+        public static FieldSymbol? FindField(string name, BindFunctionFrame frame,
+            BindEnvironment env)
         {
-            for (var host = ctx.Method.Owner; host != null; host = host.BaseType)
+            for (var host = frame.Method.Owner; host != null; host = host.BaseType)
             {
                 // 构造类型的成员表在其泛型定义上（S7f ConstructedFrom 回退）
                 var owner = host.ConstructedFrom ?? host;
                 var hostHit = owner.Fields.FirstOrDefault(f => f.Name == name);
                 if (hostHit != null) return hostHit;
             }
-            for (var ns = ctx.FileCtx.Namespace; ns != null; ns = ns.Parent)
+            for (var ns = frame.FileCtx.Namespace; ns != null; ns = ns.Parent)
             {
                 var hit = ns.Fields.FirstOrDefault(f => f.Name == name);
                 if (hit != null) return hit;
             }
-            foreach (var container in WildcardImportContainers(ctx, env))
+            foreach (var container in WildcardImportContainers(frame, env))
             {
                 if (container is NamespaceSymbol ns)
                 {
@@ -72,20 +74,20 @@ namespace LatteCompiler
         // 方法 Owner = 目标类型，先于命名空间全局函数；实例方法命中后
         // 由被调用方绑定补 this 或静态性检查拦截）→ 命名空间链 →
         // 通配 import 容器方法
-        public static List<MethodSymbol> FindMethods(string name, BindContext ctx,
+        public static List<MethodSymbol> FindMethods(string name, BindFunctionFrame frame,
             BindEnvironment env)
         {
             var result = new List<MethodSymbol>();
-            for (var host = ctx.Method.Owner; host != null; host = host.BaseType)
+            for (var host = frame.Method.Owner; host != null; host = host.BaseType)
             {
                 var owner = host.ConstructedFrom ?? host;
                 result.AddRange(owner.Methods.Where(m => m.Name == name));
             }
-            for (var ns = ctx.FileCtx.Namespace; ns != null; ns = ns.Parent)
+            for (var ns = frame.FileCtx.Namespace; ns != null; ns = ns.Parent)
             {
                 result.AddRange(ns.Methods.Where(m => m.Name == name));
             }
-            foreach (var container in WildcardImportContainers(ctx, env))
+            foreach (var container in WildcardImportContainers(frame, env))
             {
                 if (container is NamespaceSymbol ns)
                 {
@@ -97,13 +99,13 @@ namespace LatteCompiler
 
         // 通配 import 的容器（具名 import 经 P2 语义只导类型/命名空间，
         // 对值/函数查找无贡献）；import 路径解析静默（P2 已统一诊断）
-        public static IEnumerable<SemanticSymbol> WildcardImportContainers(BindContext ctx,
+        public static IEnumerable<SemanticSymbol> WildcardImportContainers(BindFunctionFrame frame,
             BindEnvironment env)
         {
-            foreach (var item in ctx.FileCtx.Imports)
+            foreach (var item in frame.FileCtx.Imports)
             {
                 if (!item.importAll) continue;
-                var container = env.Names.ResolveSymbolPath(item.symbolNode.symbol, ctx.FileCtx,
+                var container = env.Names.ResolveSymbolPath(item.symbolNode.symbol, frame.FileCtx,
                     declaringType: null, declaringMethod: null,
                     allowImports: false, reportErrors: false, span: null);
                 if (container is not ErrorTypeSymbol) yield return container;

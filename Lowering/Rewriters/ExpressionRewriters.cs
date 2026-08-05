@@ -12,18 +12,18 @@ namespace LatteCompiler
             LocalSymbol target, LowerContext ctx, LowerEnvironment env)
         {
             var statements = new List<LoweredStatement>();
-            ctx.OutputStack.Push(statements);
+            ctx.Output.Push(statements);
             try
             {
                 var lowered = LowerExpressionDispatcher.Visit(value, ctx, env);
                 if (lowered == null) return null;
                 statements.Add(new LoweredAssignmentStatement(origin,
-                    LowerContext.ReferenceTo(origin, target), lowered));
+                    SynthLocalFactory.ReferenceTo(origin, target), lowered));
                 return new LoweredBlock(origin, statements);
             }
             finally
             {
-                ctx.OutputStack.Pop();
+                ctx.Output.Pop();
             }
         }
     }
@@ -131,7 +131,7 @@ namespace LatteCompiler
         public static LoweredExpression? Lower(BoundBinaryExpression binary, LowerContext ctx,
             LowerEnvironment env)
         {
-            var s = ctx.NewSynthLocal(binary.Type);
+            var s = ctx.Synth.NewSynthLocal(binary.Type);
             var condition = LowerExpressionDispatcher.Visit(binary.Left, ctx, env);
             if (condition == null) return null;
             var assignRight = ExpressionFacility.LowerAssignInNewBlock(binary, binary.Right, s,
@@ -141,15 +141,15 @@ namespace LatteCompiler
                 binary.Op == BilIntrinsicOp.And ? false : true, binary.Type);
             var assignConstant = new LoweredBlock(binary, new List<LoweredStatement>
             {
-                new LoweredAssignmentStatement(binary, LowerContext.ReferenceTo(binary, s),
+                new LoweredAssignmentStatement(binary, SynthLocalFactory.ReferenceTo(binary, s),
                     constant),
             });
             var (trueBlock, falseBlock) = binary.Op == BilIntrinsicOp.And
                 ? (assignRight, assignConstant)
                 : (assignConstant, assignRight);
-            ctx.OutputStack.Peek().Add(new LoweredIfStatement(binary, condition,
+            ctx.Output.Add(new LoweredIfStatement(binary, condition,
                 trueBlock, falseBlock));
-            return LowerContext.ReferenceTo(binary, s);
+            return SynthLocalFactory.ReferenceTo(binary, s);
         }
     }
 
@@ -162,7 +162,7 @@ namespace LatteCompiler
             LowerEnvironment env)
         {
             var ifExpression = (BoundIfExpression)node;
-            var result = ctx.NewSynthLocal(ifExpression.Type);
+            var result = ctx.Synth.NewSynthLocal(ifExpression.Type);
             var condition = LowerExpressionDispatcher.Visit(ifExpression.Condition, ctx, env);
             if (condition == null) return null;
             var trueBranch = ValueBlockRewriter.Visit(ifExpression.TrueBranch,
@@ -170,9 +170,9 @@ namespace LatteCompiler
             var falseBranch = ValueBlockRewriter.Visit(ifExpression.FalseBranch,
                 new ValueBlockContext(ctx, result), env);
             if (trueBranch == null || falseBranch == null) return null;
-            ctx.OutputStack.Peek().Add(new LoweredIfStatement(ifExpression, condition,
+            ctx.Output.Add(new LoweredIfStatement(ifExpression, condition,
                 trueBranch, falseBranch));
-            return LowerContext.ReferenceTo(ifExpression, result);
+            return SynthLocalFactory.ReferenceTo(ifExpression, result);
         }
     }
 
@@ -185,7 +185,7 @@ namespace LatteCompiler
             LowerEnvironment env)
         {
             var switchExpression = (BoundSwitchExpression)node;
-            var result = ctx.NewSynthLocal(switchExpression.Type);
+            var result = ctx.Synth.NewSynthLocal(switchExpression.Type);
             var cases = new List<(BoundNode Origin, BoundExpression Match, bool IsPattern,
                 LoweredBlock Body)>();
             foreach (var boundCase in switchExpression.Cases)
@@ -201,8 +201,8 @@ namespace LatteCompiler
             var statement = SwitchFacility.LowerCore(switchExpression, switchExpression.Selector,
                 cases, defaultBody, ctx, env);
             if (statement == null) return null;
-            ctx.OutputStack.Peek().Add(statement);
-            return LowerContext.ReferenceTo(switchExpression, result);
+            ctx.Output.Add(statement);
+            return SynthLocalFactory.ReferenceTo(switchExpression, result);
         }
     }
 
@@ -216,7 +216,7 @@ namespace LatteCompiler
             LowerEnvironment env)
         {
             var placeholder = (BoundSwitchPlaceholderExpression)node;
-            return LowerContext.ReferenceTo(placeholder,
+            return SynthLocalFactory.ReferenceTo(placeholder,
                 SwitchFacility.FindTemp(placeholder.Selector, ctx));
         }
     }
@@ -239,7 +239,7 @@ namespace LatteCompiler
             target = MaterializeTarget(target, ctx);
             var value = LowerExpressionDispatcher.Visit(compound.Value, ctx, env);
             if (value == null) return null;
-            ctx.OutputStack.Peek().Add(new LoweredAssignmentStatement(compound, target,
+            ctx.Output.Add(new LoweredAssignmentStatement(compound, target,
                 new LoweredBinaryExpression(compound, compound.Op, target, value)));
             return target;
         }
@@ -273,10 +273,10 @@ namespace LatteCompiler
             LoweredExpression expr, LowerContext ctx)
         {
             if (IsSideEffectFree(expr)) return expr;
-            var local = ctx.NewSynthLocal(expr.Type);
-            ctx.OutputStack.Peek().Add(new LoweredAssignmentStatement(origin,
-                LowerContext.ReferenceTo(origin, local), expr));
-            return LowerContext.ReferenceTo(origin, local);
+            var local = ctx.Synth.NewSynthLocal(expr.Type);
+            ctx.Output.Add(new LoweredAssignmentStatement(origin,
+                SynthLocalFactory.ReferenceTo(origin, local), expr));
+            return SynthLocalFactory.ReferenceTo(origin, local);
         }
 
         // 纯读取判定（无副作用，重复求值安全）：局部/参数/静态字段/字面量/

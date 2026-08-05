@@ -153,8 +153,7 @@ namespace LatteCompiler
         {
             var ifStatement = (LoweredIfStatement)node;
             var conditionValue = EmitValueDispatcher.Visit(ifStatement.Condition, target, ctx, env);
-            var id = "if" + ctx.IfCount;
-            ctx.IfCount++;
+            var id = "if" + ctx.BlockIds.NextIf();
             var thenBlock = new BilBlock(id + "-then");
             var elseBlock = ifStatement.FalseBlock != null
                 ? new BilBlock(id + "-else") : null;
@@ -181,8 +180,7 @@ namespace LatteCompiler
             EmitEnvironment env)
         {
             var loop = (LoweredLoop)node;
-            var loopId = "loop" + ctx.LoopCount;
-            ctx.LoopCount++;
+            var loopId = "loop" + ctx.BlockIds.NextLoop();
             var loopBodyBlock = new BilBlock(loopId + "-body");
             var enumBlock = loop.Enumerator != null
                 ? new BilBlock(loopId + "-enum") : null;
@@ -231,8 +229,7 @@ namespace LatteCompiler
             var sw = (LoweredSwitch)node;
             var selectorValue = EmitValueDispatcher.Visit(sw.Selector, target, ctx, env);
             var tableResource = EmittingFacility.RegisterSwitchTable(sw, env);
-            var switchId = "switch" + ctx.SwitchCount;
-            ctx.SwitchCount++;
+            var switchId = "switch" + ctx.BlockIds.NextSwitch();
             var itemBlocks = new List<BilBlock>();
             for (var i = 0; i < sw.Cases.Count; i++)
             {
@@ -278,8 +275,7 @@ namespace LatteCompiler
             EmitEnvironment env)
         {
             var seqBlock = (LoweredSeqBlock)node;
-            var seqId = "seq" + ctx.SeqCount;
-            ctx.SeqCount++;
+            var seqId = "seq" + ctx.BlockIds.NextSeq();
             var seqBilBlock = seqBlock.IsVolatile
                 ? new BilBlock(seqId, BilBlockModifier.Volatile)
                 : new BilBlock(seqId);
@@ -302,8 +298,7 @@ namespace LatteCompiler
             EmitEnvironment env)
         {
             var tryStatement = (LoweredTryStatement)node;
-            var tryId = "try" + ctx.TryCount;
-            ctx.TryCount++;
+            var tryId = "try" + ctx.BlockIds.NextTry();
             var tryBodyBlock = new BilBlock(tryId + "-body");
             var catchBlocks = new List<BilBlock>();
             for (var i = 0; i < tryStatement.Catches.Count; i++)

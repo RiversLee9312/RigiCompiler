@@ -94,19 +94,19 @@ namespace LatteCompiler
     {
         protected override void Enter(BoundNode node, LowerContext ctx, LowerEnvironment env)
         {
-            ctx.OutputStack.Push(new List<LoweredStatement>());
+            ctx.Output.Push();
         }
 
         protected override void Exit(BoundNode node, LowerContext ctx, LowerEnvironment env)
         {
-            ctx.OutputStack.Pop();
+            ctx.Output.Pop();
         }
 
         protected override LoweredBlock? VisitCore(BoundNode node, LowerContext ctx,
             LowerEnvironment env)
         {
             var block = (BoundBlock)node;
-            var statements = ctx.OutputStack.Peek();
+            var statements = ctx.Output.Current;
             foreach (var statement in block.Statements)
             {
                 var lowered = LowerStatementDispatcher.Visit(statement, ctx, env);

@@ -23,18 +23,18 @@ namespace LatteCompiler
             var safeAccess = (BoundSafeAccessExpression)node;
             var receiver = LowerExpressionDispatcher.Visit(safeAccess.Receiver, ctx, env);
             if (receiver == null) return null;
-            var receiverLocal = ctx.NewSynthLocal(receiver.Type);
-            ctx.OutputStack.Peek().Add(new LoweredAssignmentStatement(safeAccess,
-                LowerContext.ReferenceTo(safeAccess, receiverLocal), receiver));
-            var result = ctx.NewSynthLocal(safeAccess.Type);
-            ctx.OutputStack.Peek().Add(new LoweredAssignmentStatement(safeAccess,
-                LowerContext.ReferenceTo(safeAccess, result),
+            var receiverLocal = ctx.Synth.NewSynthLocal(receiver.Type);
+            ctx.Output.Add(new LoweredAssignmentStatement(safeAccess,
+                SynthLocalFactory.ReferenceTo(safeAccess, receiverLocal), receiver));
+            var result = ctx.Synth.NewSynthLocal(safeAccess.Type);
+            ctx.Output.Add(new LoweredAssignmentStatement(safeAccess,
+                SynthLocalFactory.ReferenceTo(safeAccess, result),
                 new LoweredConstantExpression(safeAccess, null!, safeAccess.Type)));
             var condition = NullSafetyFacility.NullCheckCondition(safeAccess, receiverLocal, env);
             // 占位映射仅 Access 降级期间存活（try/finally 配对——修固旧代码
             // 无 finally 保护的手工压弹）
-            ctx.SafeReceivers.Push((safeAccess.Placeholder, receiverLocal,
-                safeAccess.Placeholder.Type));
+            ctx.Targets.PushSafeReceiver(safeAccess.Placeholder, receiverLocal,
+                safeAccess.Placeholder.Type);
             LoweredExpression? access;
             try
             {
@@ -42,18 +42,18 @@ namespace LatteCompiler
             }
             finally
             {
-                ctx.SafeReceivers.Pop();
+                ctx.Targets.PopSafeReceiver();
             }
             if (access == null) return null;
             var wrapped = LoweringFacility.EnsureDeclaredType(safeAccess, access, safeAccess.Type);
             var thenBlock = new LoweredBlock(safeAccess, new List<LoweredStatement>
             {
                 new LoweredAssignmentStatement(safeAccess,
-                    LowerContext.ReferenceTo(safeAccess, result), wrapped),
+                    SynthLocalFactory.ReferenceTo(safeAccess, result), wrapped),
             });
-            ctx.OutputStack.Peek().Add(new LoweredIfStatement(safeAccess, condition,
+            ctx.Output.Add(new LoweredIfStatement(safeAccess, condition,
                 thenBlock, null));
-            return LowerContext.ReferenceTo(safeAccess, result);
+            return SynthLocalFactory.ReferenceTo(safeAccess, result);
         }
     }
 
@@ -66,14 +66,12 @@ namespace LatteCompiler
             LowerEnvironment env)
         {
             var placeholder = (BoundSafeAccessReceiverExpression)node;
-            foreach (var (ph, receiver, unwrapType) in ctx.SafeReceivers)
+            var entry = ctx.Targets.FindSafeReceiver(placeholder);
+            if (entry != null)
             {
-                if (ReferenceEquals(ph, placeholder))
-                {
-                    return new LoweredCastExpression(placeholder,
-                        LowerContext.ReferenceTo(placeholder, receiver), unwrapType,
-                        isSafe: false, unwrapType);
-                }
+                return new LoweredCastExpression(placeholder,
+                    SynthLocalFactory.ReferenceTo(placeholder, entry.Value.Receiver),
+                    entry.Value.UnwrapType, isSafe: false, entry.Value.UnwrapType);
             }
             env.Error(placeholder.Syntax.Span,
                 "P4: safe access receiver placeholder without enclosing safe access");
@@ -95,25 +93,25 @@ namespace LatteCompiler
             var nullFallback = (BoundNullFallbackExpression)node;
             var left = LowerExpressionDispatcher.Visit(nullFallback.Left, ctx, env);
             if (left == null) return null;
-            var leftLocal = ctx.NewSynthLocal(left.Type);
-            ctx.OutputStack.Peek().Add(new LoweredAssignmentStatement(nullFallback,
-                LowerContext.ReferenceTo(nullFallback, leftLocal), left));
-            var result = ctx.NewSynthLocal(nullFallback.Type);
+            var leftLocal = ctx.Synth.NewSynthLocal(left.Type);
+            ctx.Output.Add(new LoweredAssignmentStatement(nullFallback,
+                SynthLocalFactory.ReferenceTo(nullFallback, leftLocal), left));
+            var result = ctx.Synth.NewSynthLocal(nullFallback.Type);
             var condition = NullSafetyFacility.NullCheckCondition(nullFallback, leftLocal, env);
             var thenBlock = new LoweredBlock(nullFallback, new List<LoweredStatement>
             {
                 new LoweredAssignmentStatement(nullFallback,
-                    LowerContext.ReferenceTo(nullFallback, result),
+                    SynthLocalFactory.ReferenceTo(nullFallback, result),
                     new LoweredCastExpression(nullFallback,
-                        LowerContext.ReferenceTo(nullFallback, leftLocal), nullFallback.Type,
+                        SynthLocalFactory.ReferenceTo(nullFallback, leftLocal), nullFallback.Type,
                         isSafe: false, nullFallback.Type)),
             });
             var elseBlock = ExpressionFacility.LowerAssignInNewBlock(nullFallback,
                 nullFallback.Right, result, ctx, env);
             if (elseBlock == null) return null;
-            ctx.OutputStack.Peek().Add(new LoweredIfStatement(nullFallback, condition,
+            ctx.Output.Add(new LoweredIfStatement(nullFallback, condition,
                 thenBlock, elseBlock));
-            return LowerContext.ReferenceTo(nullFallback, result);
+            return SynthLocalFactory.ReferenceTo(nullFallback, result);
         }
     }
 
@@ -124,7 +122,7 @@ namespace LatteCompiler
             LocalSymbol local, LowerEnvironment env)
         {
             return new LoweredBinaryExpression(origin, BilIntrinsicOp.CmpNe,
-                LowerContext.ReferenceTo(origin, local),
+                SynthLocalFactory.ReferenceTo(origin, local),
                 new LoweredConstantExpression(origin, null!, local.Type!),
                 env.Unit.Symbols.Bootstrap.Bool);
         }

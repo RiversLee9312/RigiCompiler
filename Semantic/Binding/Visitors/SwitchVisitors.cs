@@ -48,7 +48,7 @@ namespace LatteCompiler
                 // Q4 分支体收窄（S8b，SYNTAX §3.5）：`(_ is T)`
                 // 分支体内 selector 收窄为 T（selector 为可收窄目标时；
                 // 分支体内 `_` 不可用是 §7.2 语义）
-                ApplyCaseNarrowing(match, ctx);
+                ApplyCaseNarrowing(match, ctx.Frame, ctx.Flow);
                 var body = BlockDispatcher.Visit(caseNode.Body, scope, ctx, env);
                 branchTails.Add(ctx.Flow.Snapshot());
                 narrowedTails.Add(ctx.Flow.SnapshotNarrowed());
@@ -71,7 +71,8 @@ namespace LatteCompiler
 
         // `(_ is T)` 分支体收窄：match 剥 SmartCast 壳（外层收窄可能已包装
         // 占位）后是「is + 占位操作数 + 静态目标」形态时，selector 键 → T
-        internal static void ApplyCaseNarrowing(BoundExpression? match, BindContext ctx)
+        internal static void ApplyCaseNarrowing(BoundExpression? match, BindFunctionFrame frame,
+            FlowState flow)
         {
             if (match is not BoundTypeCheckExpression
                 { Kind: BoundTypeCheckKind.Is, TargetType: { } narrowedType } typeCheck)
@@ -81,8 +82,8 @@ namespace LatteCompiler
             var operand = typeCheck.Operand is BoundSmartCastExpression smartCast
                 ? smartCast.Operand : typeCheck.Operand;
             if (operand is not BoundSwitchPlaceholderExpression placeholder) return;
-            var key = ConditionFactsExtractor.TryKeyOf(placeholder.Selector, ctx);
-            if (key != null) ctx.Flow.SetNarrow(key, narrowedType);
+            var key = ConditionFactsExtractor.TryKeyOf(placeholder.Selector, frame);
+            if (key != null) flow.SetNarrow(key, narrowedType);
         }
 
         // switch default 分支体（两形态 Parser 强制存在；缺失即 Parser 不变量破坏）
@@ -119,7 +120,7 @@ namespace LatteCompiler
                 var match = SwitchMatchVisitor.Visit(caseNode, scope,
                     new SwitchMatchContext(ctx, selector), env);
                 // Q4 分支体收窄（同语句形态）
-                SwitchStatementVisitor.ApplyCaseNarrowing(match, ctx);
+                SwitchStatementVisitor.ApplyCaseNarrowing(match, ctx.Frame, ctx.Flow);
                 var shell = new ValueBlockShell(new BoundValueBlock(caseNode.Body, label),
                     "switch expression");
                 ValueBlockVisitor.VisitInto(caseNode.Body, scope, shell, ctx, env);
@@ -201,7 +202,7 @@ namespace LatteCompiler
             // pattern 且 selector 存活时才压栈（selector 失败时 pattern 静默跳过）
             if (IsPattern((SwitchCaseASTNode)node) && matchCtx.Selector != null)
             {
-                matchCtx.Context.SwitchSelectors.Push(matchCtx.Selector);
+                matchCtx.Context.Labels.PushSelector(matchCtx.Selector);
                 selectorPushed = true;
             }
         }
@@ -211,7 +212,7 @@ namespace LatteCompiler
         {
             if (selectorPushed)
             {
-                matchCtx.Context.SwitchSelectors.Pop();
+                matchCtx.Context.Labels.PopSelector();
             }
         }
 

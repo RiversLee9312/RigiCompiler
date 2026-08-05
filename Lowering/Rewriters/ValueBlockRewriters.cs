@@ -34,15 +34,15 @@ namespace LatteCompiler
         protected override void Enter(BoundNode node, ValueBlockContext valueCtx,
             LowerEnvironment env)
         {
-            valueCtx.Context.OutputStack.Push(new List<LoweredStatement>());
-            valueCtx.Context.ValueBlocks.Push(((BoundValueBlock)node, valueCtx.Target));
+            valueCtx.Context.Output.Push();
+            valueCtx.Context.Targets.PushValueBlock((BoundValueBlock)node, valueCtx.Target);
         }
 
         protected override void Exit(BoundNode node, ValueBlockContext valueCtx,
             LowerEnvironment env)
         {
-            valueCtx.Context.ValueBlocks.Pop();
-            valueCtx.Context.OutputStack.Pop();
+            valueCtx.Context.Targets.PopValueBlock();
+            valueCtx.Context.Output.Pop();
         }
 
         protected override LoweredBlock? VisitCore(BoundNode node, ValueBlockContext valueCtx,
@@ -50,7 +50,7 @@ namespace LatteCompiler
         {
             var valueBlock = (BoundValueBlock)node;
             var ctx = valueCtx.Context;
-            var statements = ctx.OutputStack.Peek();
+            var statements = ctx.Output.Current;
             if (valueBlock.IsImplicitValue)
             {
                 // P3 已判定：唯一语句是 BoundExpressionStatement
@@ -64,7 +64,7 @@ namespace LatteCompiler
                 var value = LowerExpressionDispatcher.Visit(expressionStatement.Expression, ctx, env);
                 if (value == null) return null;
                 statements.Add(new LoweredAssignmentStatement(expressionStatement,
-                    LowerContext.ReferenceTo(expressionStatement, valueCtx.Target), value));
+                    SynthLocalFactory.ReferenceTo(expressionStatement, valueCtx.Target), value));
             }
             else
             {
@@ -93,12 +93,9 @@ namespace LatteCompiler
         // P3 已保证 return@ 只在值块内）
         public static LocalSymbol FindTarget(BoundValueBlock valueBlock, LowerContext ctx)
         {
-            foreach (var (block, target) in ctx.ValueBlocks)
-            {
-                if (ReferenceEquals(block, valueBlock)) return target;
-            }
-            throw new CompilerInternalException(
-                "return@ 目标值块不在降级上下文内（P3 已保证只在值块内）");
+            return ctx.Targets.FindValueBlockTarget(valueBlock)
+                ?? throw new CompilerInternalException(
+                    "return@ 目标值块不在降级上下文内（P3 已保证只在值块内）");
         }
 
         // 值块语句序列的 if/switch 转换（就地；分支块不可变，故新建节点
@@ -148,11 +145,10 @@ namespace LatteCompiler
                         statements.RemoveRange(i + 1, statements.Count - i - 1);
                         return;
                     case LoweredSeqExitStatement exit:
-                        // return@语句seq（M61）：命中本层（SeqTargets 栈顶）
+                        // return@语句seq（M61）：命中本层（seq 目标栈栈顶）
                         // 即消费（自身一并删除）；命中外层保留标记向上传播；
                         // 两种情形其后语句均不可达（终止本路径）
-                        var consumeHere = ctx.SeqTargets.Count > 0
-                            && ReferenceEquals(ctx.SeqTargets.Peek(), exit.Target);
+                        var consumeHere = ctx.Targets.IsCurrentSeqTarget(exit.Target);
                         statements.RemoveRange(consumeHere ? i : i + 1,
                             statements.Count - (consumeHere ? i : i + 1));
                         return;
@@ -409,11 +405,7 @@ namespace LatteCompiler
             {
                 return false;
             }
-            foreach (var (_, target) in ctx.ValueBlocks)
-            {
-                if (ReferenceEquals(reference.Symbol, target)) return true;
-            }
-            return false;
+            return ctx.Targets.IsValueBlockTarget(reference.Symbol);
         }
 
         // 「语句序列含 LoweredSeqExit 标记」判定（M61，seq 语句降级的

@@ -361,7 +361,13 @@ Semantic/                  # P1–P3 + 符号图 + 诊断
 │   ├── BinderVisitor.cs         # CRTP 三基类（通用/ExpressionVisitor
 │   │                            #   追加 expectedType/BinderShellVisitor 壳填充）
 │   ├── BindEnvironment.cs       # 只读环境（unit/declarations/NameResolver/诊断）
-│   ├── BindContext.cs           # 函数级状态（FlowState/标签栈/作用域外全部）
+│   ├── BindContext.cs           # 函数级状态组合根（M65 组件化：Frame/Accessor/
+│   │                            #   Labels/Flow/Locals 五成员；组件即方言）
+│   ├── BindFunctionFrame.cs     # 只读函数帧（Method/FileCtx/DeclaringType/
+│   │                            #   IsDefaultValueContext + HasThis/CanAccess）
+│   ├── AccessorBodyState.cs     # 访问器体状态（S8e value 别名：Field/IsSetter）
+│   ├── BindLabelState.cs        # 控制流标签栈集（值块/循环/switch 占位/seq 标签
+│   │                            #   四栈封装 + 命中查找领域方法）
 │   ├── FlowState.cs             # DA 流分析（S8b 收窄表的家——同生命周期分叉合并）
 │   ├── Scope.cs                 # 词法作用域链
 │   ├── Dispatchers.cs           # 类别分派（Expression/Statement/Block 唯一 switch）
@@ -378,8 +384,11 @@ Lowering/                  # P4
 ├── Lowerer.cs                # P4a 瘦入口（M55 起）
 ├── LoweredVisitor.cs         # P4a CRTP 基类
 ├── LowerEnvironment.cs       # 只读环境
-├── LowerContext.cs           # 函数级状态（outputStack 前置语句机制/四映射栈/
-│                             #   transformFailed/合成局部计数）
+├── LowerContext.cs           # 函数级组合根（M65：Method/TransformFailed +
+│                             #   Synth/Output/Targets 三组件）
+├── SynthLocalFactory.cs      # 合成局部工厂（.sN/.bN 独立计数统一登记 + ReferenceTo）
+├── LowerOutputState.cs       # 前置语句机制（输出列表栈封装）
+├── LowerTargetState.cs       # 降级目标映射栈集（五栈封装 + 命中查找）
 ├── LowerDispatchers.cs       # 类别分派 + LowerBlockVisitor（输出列表压弹）
 ├── LoweringDriver.cs         # 逐函数体启动
 ├── LoweringFacility.cs       # LowerArguments/EnsureDeclaredType（cast 物化）
@@ -388,7 +397,9 @@ Lowering/                  # P4
 ├── BilEmitter.cs             # P4b 瘦入口（M55 起）
 ├── EmitVisitor.cs            # P4b CRTP 基类（签名带 BilBlock target 施工目标）
 ├── EmitEnvironment.cs        # 模块级（Module/四类资源去重表跨 fn 共享，M57）
-├── EmitContext.cs            # 函数级（TempVars/各 block 计数）
+├── EmitContext.cs            # 函数级组合根（M65：Function + Temps/BlockIds）
+├── TempVarTable.cs           # 临时变量 .tN 工厂（自 EmittingFacility 收编）
+├── BlockIdAllocator.cs       # 分支 block 编号分配器（if/loop/switch/seq/try）
 ├── EmitDispatchers.cs        # 类别分派（语句 Unit/值 BilVariableOperand，M57）
 ├── EmittingDriver.cs         # 模块组装 + fn 定义发射
 ├── EmittingFacility.cs       # 资源登记/intrinsic 枚举映射/转义 共享辅助（M57）
@@ -416,7 +427,8 @@ Bil/                       # BIL 生态（对中端零依赖）
 三树的遍历统一为 CRTP visitor 协议——静态 `Visit` 唯一入口（创建子类
 实例 + Enter/Exit 生命周期模板，栈压/弹 finally 固化）、双协议
 （`Visit → TResult?` 上行合成 / `VisitInto(shell)` 施工壳填充）、
-context 方言（同一函数级状态对象的接口视图，Environment 只读共享）、
+context 方言（同一函数级状态对象的接口视图，Environment 只读共享；
+M65 组件化落地——组合根 + 职责组件类，组件即方言）、
 类别分派器唯一 switch + 结构 visitor 簇级分文件。新增语法结构的
 落点：对应簇文件新增 visitor 类 + 分派器注册一行。
 

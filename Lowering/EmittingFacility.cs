@@ -11,10 +11,11 @@ namespace LatteCompiler
         public static readonly Unit Value = new Unit();
     }
 
-    // 发射共享设施（P4b）：intrinsic/类型检查映射/字段宿主投影/临时变量/
-    // 资源登记/字面量渲染/转义。自旧 EmitSession 同名方法迁移，行为不变——
+    // 发射共享设施（P4b）：intrinsic/类型检查映射/字段宿主投影/资源登记/
+    // 字面量渲染/转义。自旧 EmitSession 同名方法迁移，行为不变——
     // 静态设施，env/ctx 参数显式传。M57 起映射产物为 Bil/ 强类型枚举
-    // （拼写唯一定义在 BilSpellings）。
+    // （拼写唯一定义在 BilSpellings）。M65 起临时变量物化（NewTemp）
+    // 迁 TempVarTable（EmitContext.Temps）。
     internal static class EmittingFacility
     {
         // BIL §11 二元 intrinsic 映射（BilIntrinsicOp → BilBinaryOp）。
@@ -88,15 +89,6 @@ namespace LatteCompiler
             env.Error(null, $"P4: global field '{field.Name}' in the root namespace has no " +
                 "owner to project for get/set.field.static (BIL §13.4)");
             return null;
-        }
-
-        // 临时变量物化（§10.1/§10.3）：登记 .vars 条目并返回变量操作数
-        public static BilVariableOperand NewTemp(TypeSymbol type, EmitContext ctx)
-        {
-            var name = ".t" + ctx.TempCount;
-            ctx.TempCount++;
-            ctx.TempVars.Add(new BilVarDeclaration(CanonicalSymbolPrinter.PrintType(type), name));
-            return BilOp.Var(name);
         }
 
         // 字面量 → 资源：同（类型, 原文）去重，名按首次出现 R_0/R_1... 编号

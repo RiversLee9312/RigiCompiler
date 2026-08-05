@@ -113,10 +113,10 @@ namespace LatteCompiler
     }
 
     // seq 语句降级（S7e，BIL §3.4 独立 block + call 化）；M61 起 named
-    // seq 降级体期间压 SeqTargets 栈（return@语句seq 的归属比对），
+    // seq 降级体期间压 seq 目标栈（return@语句seq 的归属比对），
     // 体含 exit 标记时跑 continuation 编织（消费命中本层者、截断传播
-    // 外层者；无 exit 直通——零行为变化）。手动压栈收集（OutputStack
-    // 元素即可变 List——编织就地变换需要，仿 SwitchRewriters 先例）
+    // 外层者；无 exit 直通——零行为变化）。手动压栈收集（输出栈元素即
+    // 可变 List——编织就地变换需要，仿 SwitchRewriters 先例）
     internal sealed class SeqStatementRewriter
         : LoweredVisitor<SeqStatementRewriter, LoweredStatement, LowerContext>
     {
@@ -127,9 +127,9 @@ namespace LatteCompiler
             // 所有 seq 降级都压栈（含无名）——exit 归属比对按引用命中
             // 「本层」；无名 seq 不压栈会让栈顶指向外层 seq，导致外层
             // 目标被内层误消费（其后语句漏截断）
-            ctx.SeqTargets.Push(seqStatement);
+            ctx.Targets.PushSeqTarget(seqStatement);
             var statements = new List<LoweredStatement>();
-            ctx.OutputStack.Push(statements);
+            ctx.Output.Push(statements);
             try
             {
                 foreach (var statement in seqStatement.Body.Statements)
@@ -146,8 +146,8 @@ namespace LatteCompiler
             }
             finally
             {
-                ctx.OutputStack.Pop();
-                ctx.SeqTargets.Pop();
+                ctx.Output.Pop();
+                ctx.Targets.PopSeqTarget();
             }
             return new LoweredSeqBlock(seqStatement,
                 new LoweredBlock(seqStatement.Body, statements), seqStatement.IsVolatile);
@@ -181,7 +181,7 @@ namespace LatteCompiler
             var written = LowerExpressionDispatcher.Visit(returnValue.Value, ctx, env);
             if (written == null) return null;
             return new LoweredAssignmentStatement(returnValue,
-                LowerContext.ReferenceTo(returnValue, writeTarget), written);
+                SynthLocalFactory.ReferenceTo(returnValue, writeTarget), written);
         }
     }
 

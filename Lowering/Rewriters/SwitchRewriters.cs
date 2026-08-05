@@ -44,7 +44,7 @@ namespace LatteCompiler
             }
             var loweredSelector = LowerExpressionDispatcher.Visit(selector, ctx, env);
             if (loweredSelector == null) return null;
-            var breakId = ctx.NewBreakIdLocal();
+            var breakId = ctx.Synth.NewBreakIdLocal();
             var loweredCases = new List<LoweredSwitchCase>();
             foreach (var (caseOrigin, match, _, body) in cases)
             {
@@ -68,19 +68,19 @@ namespace LatteCompiler
                 LoweredBlock Body)> cases,
             LoweredBlock defaultBody, LowerContext ctx, LowerEnvironment env)
         {
-            var selectorTemp = ctx.NewSynthLocal(selector.Type);
+            var selectorTemp = ctx.Synth.NewSynthLocal(selector.Type);
             var loweredSelector = LowerExpressionDispatcher.Visit(selector, ctx, env);
             if (loweredSelector == null) return null;
-            ctx.OutputStack.Peek().Add(new LoweredAssignmentStatement(origin,
-                LowerContext.ReferenceTo(origin, selectorTemp), loweredSelector));
-            ctx.SwitchTemps.Push((selector, selectorTemp));
+            ctx.Output.Add(new LoweredAssignmentStatement(origin,
+                SynthLocalFactory.ReferenceTo(origin, selectorTemp), loweredSelector));
+            ctx.Targets.PushSwitchTemp(selector, selectorTemp);
             try
             {
                 return BuildPatternChain(origin, cases, 0, selectorTemp, defaultBody, ctx, env);
             }
             finally
             {
-                ctx.SwitchTemps.Pop();
+                ctx.Targets.PopSwitchTemp();
             }
         }
 
@@ -93,7 +93,7 @@ namespace LatteCompiler
             LowerEnvironment env)
         {
             var statements = new List<LoweredStatement>();
-            ctx.OutputStack.Push(statements);
+            ctx.Output.Push(statements);
             try
             {
                 var (caseOrigin, match, isPattern, body) = cases[index];
@@ -108,7 +108,7 @@ namespace LatteCompiler
                     var constant = LowerExpressionDispatcher.Visit(match, ctx, env);
                     if (constant == null) return null;
                     condition = new LoweredBinaryExpression(match, BilIntrinsicOp.CmpEq,
-                        LowerContext.ReferenceTo(match, selectorTemp), constant,
+                        SynthLocalFactory.ReferenceTo(match, selectorTemp), constant,
                         env.Unit.Symbols.Bootstrap.Bool);
                 }
                 if (condition == null) return null;
@@ -129,7 +129,7 @@ namespace LatteCompiler
             }
             finally
             {
-                ctx.OutputStack.Pop();
+                ctx.Output.Pop();
             }
         }
 
@@ -138,12 +138,9 @@ namespace LatteCompiler
         // 匹配表达式内，降级上下文必在栈上）
         public static LocalSymbol FindTemp(BoundExpression selector, LowerContext ctx)
         {
-            foreach (var (boundSelector, temp) in ctx.SwitchTemps)
-            {
-                if (ReferenceEquals(boundSelector, selector)) return temp;
-            }
-            throw new CompilerInternalException(
-                "switch 占位 _ 不在 pattern 降级上下文内（P3 已保证只在 case 匹配表达式内）");
+            return ctx.Targets.FindSwitchTemp(selector)
+                ?? throw new CompilerInternalException(
+                    "switch 占位 _ 不在 pattern 降级上下文内（P3 已保证只在 case 匹配表达式内）");
         }
     }
 }

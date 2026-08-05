@@ -12,7 +12,7 @@ namespace LatteCompiler
         {
             var cast = (CastExpressionASTNode)node;
             var source = ExpressionDispatcher.Visit(cast.Object.Expression, scope, ctx, env);
-            var targetType = TypeReferences.Resolve(cast.TargetType, cast.Span, ctx, env);
+            var targetType = TypeReferences.Resolve(cast.TargetType, cast.Span, ctx.Frame, env);
             if (source == null || targetType == null) return null;
             var resultType = targetType is ErrorTypeSymbol
                 ? targetType
@@ -52,8 +52,8 @@ namespace LatteCompiler
             // 毒化符号——TypeSymbol 子类，必须显式排除才落入动态形态）。
             // T? 目标包装 Nullable\<T\>（与 NameResolver.ResolveTypeReference
             // 同规则）
-            var probed = env.Names.ResolveSymbolPath(typeRef.TypeSymbol.symbol, ctx.FileCtx,
-                ctx.DeclaringType, ctx.Method, allowImports: true, reportErrors: false, span: null);
+            var probed = env.Names.ResolveSymbolPath(typeRef.TypeSymbol.symbol, ctx.Frame.FileCtx,
+                ctx.Frame.DeclaringType, ctx.Frame.Method, allowImports: true, reportErrors: false, span: null);
             if (probed is GenericParameterSymbol)
             {
                 env.Error(span, "P3: generic type parameters are not supported yet (S9)");
@@ -124,7 +124,7 @@ namespace LatteCompiler
                     // 源码局部 Type 恒非空（同路径绑定单段分支）
                     return new BoundValueReferenceExpression(typeRef, local, local.Type!);
                 }
-                var parameter = ctx.Method.Parameters.FirstOrDefault(p => p.Name == name);
+                var parameter = ctx.Frame.Method.Parameters.FirstOrDefault(p => p.Name == name);
                 if (parameter != null)
                 {
                     valueFound = true;
@@ -135,7 +135,7 @@ namespace LatteCompiler
                     }
                     return new BoundValueReferenceExpression(typeRef, parameter, paramType);
                 }
-                var field = MemberLookup.FindField(name, ctx, env);
+                var field = MemberLookup.FindField(name, ctx.Frame, env);
                 if (field == null) return null;
                 valueFound = true;
                 return PathFacility.BindFieldReference(typeRef, field, ctx, env);
@@ -144,7 +144,7 @@ namespace LatteCompiler
             // ResolveContainer 契约是传全段、内部取前 N-1 段），
             // 末段查字段成员（实例字段命中由 BindFieldReference 补 this）
             var container = MemberLookup.ResolveContainer(
-                elements.Select(e => e.name).ToList(), null, ctx, env, reportErrors: false);
+                elements.Select(e => e.name).ToList(), null, ctx.Frame, env, reportErrors: false);
             if (container == null) return null;
             if (MemberLookup.FindMember(container, elements[^1].name) is not FieldSymbol memberField)
             {
@@ -183,15 +183,15 @@ namespace LatteCompiler
             {
                 var name = path.Head.Name;
                 bool isValue = scope.Lookup(name) != null
-                    || ctx.Method.Parameters.Any(p => p.Name == name)
-                    || MemberLookup.FindField(name, ctx, env) != null;
+                    || ctx.Frame.Method.Parameters.Any(p => p.Name == name)
+                    || MemberLookup.FindField(name, ctx.Frame, env) != null;
                 if (!isValue)
                 {
                     // 值未命中 → 试探类型解析（不落袋），命中即类型形态
                     var head = new Symbol();
                     head.elements.Add(new SymbolElement { name = name });
-                    var probed = env.Names.ResolveSymbolPath(head, ctx.FileCtx, ctx.DeclaringType,
-                        ctx.Method, allowImports: true, reportErrors: false, span: null);
+                    var probed = env.Names.ResolveSymbolPath(head, ctx.Frame.FileCtx, ctx.Frame.DeclaringType,
+                        ctx.Frame.Method, allowImports: true, reportErrors: false, span: null);
                     if (probed is GenericParameterSymbol)
                     {
                         env.Error(path.Span ?? typeOf.Span,

@@ -19,7 +19,7 @@ namespace LatteCompiler
             {
                 ctx.Flow.Restore(before);
                 var exceptionType = TypeReferences.Resolve(catchNode.ExceptionType, catchNode.Span,
-                    ctx, env);
+                    ctx.Frame, env);
                 if (exceptionType != null
                     && !SymbolLookup.IsAssignable(exceptionType, env.B.Exception, env))
                 {
@@ -129,7 +129,7 @@ namespace LatteCompiler
             var shell = new BoundSeqStatement(node, seq.IsVolatile, seq.Label);
             if (seq.Label != null)
             {
-                ctx.SeqLabels.Push((shell, ctx.Loops.Count, ctx.ValueBlocks.Count));
+                ctx.Labels.PushSeqLabel(shell);
             }
             try
             {
@@ -137,7 +137,7 @@ namespace LatteCompiler
             }
             finally
             {
-                if (seq.Label != null) ctx.SeqLabels.Pop();
+                if (seq.Label != null) ctx.Labels.PopSeqLabel();
             }
             return shell;
         }

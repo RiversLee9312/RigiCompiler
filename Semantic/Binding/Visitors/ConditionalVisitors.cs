@@ -30,7 +30,7 @@ namespace LatteCompiler
             var ifNode = (IfStatementASTNode)node;
             var condition = ExpressionDispatcher.Visit(ifNode.Condition.Expression, scope, ctx, env);
             Conditions.CheckBool(ifNode.Condition, ifNode.Span, condition, "if", env);
-            var facts = ConditionFactsExtractor.Extract(condition, ctx);
+            var facts = ConditionFactsExtractor.Extract(condition, ctx.Frame);
             var before = ctx.Flow.Snapshot();
             var beforeNarrowed = ctx.Flow.SnapshotNarrowed();
             // then 入口 = before ∪ 真边事实
@@ -128,7 +128,7 @@ namespace LatteCompiler
             var ifNode = (IfExpressionASTNode)node;
             var condition = ExpressionDispatcher.Visit(ifNode.Condition.Expression, scope, ctx, env);
             Conditions.CheckBool(ifNode.Condition, ifNode.Span, condition, "if", env);
-            var facts = ConditionFactsExtractor.Extract(condition, ctx);
+            var facts = ConditionFactsExtractor.Extract(condition, ctx.Frame);
             var label = ifNode.Label ?? "_";
             var before = ctx.Flow.Snapshot();
             var beforeNarrowed = ctx.Flow.SnapshotNarrowed();
@@ -193,13 +193,13 @@ namespace LatteCompiler
         protected override void Enter(ASTNode node, Scope scope, ValueBlockShell shell,
             BindContext ctx, BindEnvironment env)
         {
-            ctx.ValueBlocks.Push((shell.Block, ctx.Loops.Count));
+            ctx.Labels.PushValueBlock(shell.Block);
         }
 
         protected override void Exit(ASTNode node, Scope scope, ValueBlockShell shell,
             BindContext ctx, BindEnvironment env)
         {
-            ctx.ValueBlocks.Pop();
+            ctx.Labels.PopValueBlock();
         }
 
         protected override void VisitCoreInto(ASTNode node, Scope scope, ValueBlockShell shell,

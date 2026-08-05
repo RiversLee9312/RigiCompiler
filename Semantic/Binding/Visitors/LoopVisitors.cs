@@ -29,9 +29,9 @@ namespace LatteCompiler
                 // while 体入口收窄（S8b，SYNTAX §3.5）：条件真边事实
                 // + before 中「体内不赋值」的键——先剔除体赋值根再覆盖真边；
                 // 循环后 = before（出口不收窄）；do-while 体不带（v1 简化）
-                var facts = ConditionFactsExtractor.Extract(condition, ctx);
+                var facts = ConditionFactsExtractor.Extract(condition, ctx.Frame);
                 var beforeNarrowed = ctx.Flow.SnapshotNarrowed();
-                foreach (var root in CollectAssignedRoots(loop.Body, scope, ctx))
+                foreach (var root in CollectAssignedRoots(loop.Body, scope, ctx.Frame))
                 {
                     ctx.Flow.ClearRoot(root);
                 }
@@ -46,7 +46,7 @@ namespace LatteCompiler
             // DoWhile：体先行（至少一次），条件在体后。体入口收窄不带条件
             // 真边（v1 简化），但剔除体赋值根（回边保守，同 while）
             var doBeforeNarrowed = ctx.Flow.SnapshotNarrowed();
-            foreach (var root in CollectAssignedRoots(loop.Body, scope, ctx))
+            foreach (var root in CollectAssignedRoots(loop.Body, scope, ctx.Frame))
             {
                 ctx.Flow.ClearRoot(root);
             }
@@ -65,7 +65,7 @@ namespace LatteCompiler
         // 根符号（局部/参数——含嵌套块/if/内层循环/值块内的赋值）；
         // 字段/全局目标不产生根（var 字段不可收窄；const 字段不可赋值已拦截）
         private static IEnumerable<SemanticSymbol> CollectAssignedRoots(ASTNode node, Scope scope,
-            BindContext ctx)
+            BindFunctionFrame frame)
         {
             var names = new List<string>();
             CollectAssignmentTargetNames(node, names);
@@ -77,7 +77,7 @@ namespace LatteCompiler
                     yield return local;
                     continue;
                 }
-                var parameter = ctx.Method.Parameters.FirstOrDefault(p => p.Name == name);
+                var parameter = frame.Method.Parameters.FirstOrDefault(p => p.Name == name);
                 if (parameter != null) yield return parameter;
             }
         }
@@ -200,7 +200,7 @@ namespace LatteCompiler
             // for 体入口收窄：无条件真边（条件由脱糖承载），但剔除体赋值根
             // （回边保守，同 while）
             var forBeforeNarrowed = ctx.Flow.SnapshotNarrowed();
-            foreach (var root in CollectAssignedRoots(node.Body, scope, ctx))
+            foreach (var root in CollectAssignedRoots(node.Body, scope, ctx.Frame))
             {
                 ctx.Flow.ClearRoot(root);
             }
@@ -275,13 +275,13 @@ namespace LatteCompiler
         protected override void Enter(ASTNode node, Scope scope, BoundLoop shell, BindContext ctx,
             BindEnvironment env)
         {
-            ctx.Loops.Push(shell);
+            ctx.Labels.PushLoop(shell);
         }
 
         protected override void Exit(ASTNode node, Scope scope, BoundLoop shell, BindContext ctx,
             BindEnvironment env)
         {
-            ctx.Loops.Pop();
+            ctx.Labels.PopLoop();
         }
 
         protected override void VisitCoreInto(ASTNode node, Scope scope, BoundLoop shell,
@@ -316,22 +316,7 @@ namespace LatteCompiler
             BindEnvironment env)
         {
             var control = (LoopControlStatementASTNode)node;
-            BoundLoop? target = null;
-            if (control.Label == null)
-            {
-                if (ctx.Loops.Count > 0) target = ctx.Loops.Peek();
-            }
-            else
-            {
-                foreach (var loop in ctx.Loops)
-                {
-                    if (loop.Label == control.Label)
-                    {
-                        target = loop;
-                        break;
-                    }
-                }
-            }
+            var target = ctx.Labels.FindLoop(control.Label);
             if (target == null)
             {
                 var keyword = control.IsBreak ? "break" : "continue";

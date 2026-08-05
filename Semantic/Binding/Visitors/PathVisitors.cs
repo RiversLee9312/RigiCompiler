@@ -27,19 +27,19 @@ namespace LatteCompiler
         // S8b smart cast：引用收窄查询——收窄事实表命中且类型确实变窄时
         // 包 BoundSmartCastExpression（P4a 物化为显式 cast）
         private static BoundExpression ApplyNarrowing(ASTNode node, BoundExpression bound,
-            NarrowKey? key, BindContext ctx)
+            NarrowKey? key, FlowState flow)
         {
             if (key == null) return bound;
-            var narrowed = ctx.Flow.LookupNarrow(key);
+            var narrowed = flow.LookupNarrow(key);
             if (narrowed == null || ReferenceEquals(narrowed, bound.Type)) return bound;
             return new BoundSmartCastExpression(node, bound, narrowed);
         }
 
         // 跨簇收窄包装入口（CallVisitors 调用链头用；语义同 ApplyNarrowing）
         public static BoundExpression ApplyNarrowingPublic(ASTNode node, BoundExpression bound,
-            NarrowKey? key, BindContext ctx)
+            NarrowKey? key, FlowState flow)
         {
-            return ApplyNarrowing(node, bound, key, ctx);
+            return ApplyNarrowing(node, bound, key, flow);
         }
 
         // 赋值目标绑定入口（ExpressionStatementVisitor 专用）：
@@ -104,37 +104,36 @@ namespace LatteCompiler
             // ——赋值目标位置是定义而非读取）
             var headName = node.Head.Name!;
             BoundExpression? headValue = null;
-            if (headName == "_" && ctx.SwitchSelectors.Count > 0)
+            if (headName == "_" && ctx.Labels.CurrentSelector is { } placeholderSelector)
             {
                 // switch pattern 占位（S7d）：占位栈非空时 _ 命中栈顶
                 // selector（嵌套 switch 逐层向内；栈空 = _ 不在 pattern
                 // 上下文，落普通查找报未定义名）
-                var placeholderSelector = ctx.SwitchSelectors.Peek();
                 var placeholder = new BoundSwitchPlaceholderExpression(node,
                     placeholderSelector, placeholderSelector.Type);
                 // S8b（Q4）：分支体入口已把 selector 键收窄（`(_ is T)`
                 // 分支）——占位引用同收窄
                 headValue = ApplyNarrowing(node, placeholder,
-                    ConditionFactsExtractor.TryKeyOf(placeholderSelector, ctx), ctx);
+                    ConditionFactsExtractor.TryKeyOf(placeholderSelector, ctx.Frame), ctx.Flow);
             }
             else
             {
                 // value 别名（S8e，SYNTAX §9.4.1）：backing 形态访问器体内
                 // 裸名 value 即 backing 字段——拦截在作用域链查找之前
-                if (headName == "value" && ctx.AccessorField != null
-                    && ctx.AccessorField.FieldType is TypeSymbol backingType
+                if (headName == "value" && ctx.Accessor.Field != null
+                    && ctx.Accessor.Field.FieldType is TypeSymbol backingType
                     && !SymbolLookup.ContainsGenericParameter(backingType))
                 {
                     // getter 体内 value 只读：整体作赋值 place 时拦截
                     // （value.x = 1 这类深写仍按 backing 读取后字段写处理）
                     if (forAssignment && node.Segments.Count == 0
-                        && node.Head.Suffixes.Count == 0 && !ctx.AccessorIsSetter)
+                        && node.Head.Suffixes.Count == 0 && !ctx.Accessor.IsSetter)
                     {
                         env.Error(node.Span, "Cannot assign to 'value' in a getter");
                         return null;
                     }
-                    headValue = MakeBackingFieldReference(node, ctx.AccessorField, backingType,
-                        ctx);
+                    headValue = MakeBackingFieldReference(node, ctx.Accessor.Field, backingType,
+                        ctx.Frame);
                 }
                 else
                 {
@@ -153,13 +152,14 @@ namespace LatteCompiler
                         if (!forAssignment)
                         {
                             headValue = ApplyNarrowing(node, headValue,
-                                NarrowKey.ForSymbol(headLocal), ctx);
+                                NarrowKey.ForSymbol(headLocal), ctx.Flow);
                         }
                     }
                     else
                     {
                         // 默认值表达式上下文看不到函数形参（SYNTAX §4.2 声明点作用域）
-                        var headParameter = ctx.IsDefaultValueContext ? null : ctx.Method.Parameters
+                        var headParameter = ctx.Frame.IsDefaultValueContext ? null
+                            : ctx.Frame.Method.Parameters
                             .FirstOrDefault(p => p.Name == headName);
                         if (headParameter != null)
                         {
@@ -174,14 +174,14 @@ namespace LatteCompiler
                             if (!forAssignment)
                             {
                                 headValue = ApplyNarrowing(node, headValue,
-                                    NarrowKey.ForSymbol(headParameter), ctx);
+                                    NarrowKey.ForSymbol(headParameter), ctx.Flow);
                             }
                         }
                         else
                         {
                             // 裸名字段（宿主成员/命名空间链/通配 import；实例字段
                             // 在实例上下文补 this 由 BindFieldReference 承担）
-                            var headField = MemberLookup.FindField(headName, ctx, env);
+                            var headField = MemberLookup.FindField(headName, ctx.Frame, env);
                             if (headField != null)
                             {
                                 headValue = BindFieldReference(node, headField, ctx, env,
@@ -246,7 +246,7 @@ namespace LatteCompiler
                 return null;
             }
             var segments = PathSegmentNames(node);
-            var container = MemberLookup.ResolveContainer(segments, node.Span, ctx, env);
+            var container = MemberLookup.ResolveContainer(segments, node.Span, ctx.Frame, env);
             if (container == null) return null;
             var member = MemberLookup.FindMember(container, segments[^1]);
             var pathText = string.Join(".", segments);
@@ -295,7 +295,7 @@ namespace LatteCompiler
                     return null;
                 }
             }
-            else if (!ctx.CanAccess(field))
+            else if (!ctx.Frame.CanAccess(field))
             {
                 env.Error(node.Span, AccessChecker.InaccessibleMessage(field));
                 return null;
@@ -306,7 +306,7 @@ namespace LatteCompiler
                     "(field type inference is not supported yet)");
                 return null;
             }
-            var fieldType = SymbolLookup.SubstituteFieldType(field, ctx.Method.Owner);
+            var fieldType = SymbolLookup.SubstituteFieldType(field, ctx.Frame.Method.Owner);
             if (fieldType == null || SymbolLookup.ContainsGenericParameter(fieldType))
             {
                 env.Error(node.Span, "P3: generic type parameters are not supported yet (S9)");
@@ -317,14 +317,15 @@ namespace LatteCompiler
                 // 实例字段（S7c-2）：当前上下文有 this（实例方法/ext 方法
                 // 体内，method.Owner 统一承载宿主）→ this.field；静态
                 // 上下文（static 方法/全局函数/默认值表达式）→ 诊断
-                if (ctx.HasThis)
+                if (ctx.Frame.HasThis)
                 {
                     var access = new BoundFieldAccessExpression(node,
-                        new BoundThisExpression(node, ctx.Method.Owner!), field, fieldType);
+                        new BoundThisExpression(node, ctx.Frame.Method.Owner!), field, fieldType);
                     // S8b：this.f 收窄（const 字段 + 非 init 体内，经
                     // ConstFieldRules.IsNarrowable 判定）
                     return ApplyNarrowing(node, access,
-                        NarrowKey.TryFromFieldAccess(access.Receiver, field, ctx), ctx);
+                        NarrowKey.TryFromFieldAccess(access.Receiver, field, ctx.Frame),
+                        ctx.Flow);
                 }
                 env.Error(node.Span, $"P3: instance field '{field.Name}' requires a receiver" +
                     " ('this' is not available in a static context)");
@@ -333,7 +334,8 @@ namespace LatteCompiler
             // 全局/静态字段：键 = 字段符号本身（const 全局字段收窄永不失效）
             var reference = new BoundFieldReferenceExpression(node, field, fieldType);
             return ApplyNarrowing(node, reference,
-                ConstFieldRules.IsNarrowable(field, ctx) ? NarrowKey.ForSymbol(field) : null, ctx);
+                ConstFieldRules.IsNarrowable(field, ctx.Frame) ? NarrowKey.ForSymbol(field) : null,
+                ctx.Flow);
         }
 
         // 带访问器字段的读侧检查（S8e，SYNTAX §9.4.1；BindFieldReference
@@ -346,7 +348,7 @@ namespace LatteCompiler
                 env.Error(span, $"'{field.Name}' has no getter");
                 return false;
             }
-            if (!ctx.CanAccess(field.Getter))
+            if (!ctx.Frame.CanAccess(field.Getter))
             {
                 env.Error(span, $"'{field.Name}' getter is inaccessible due to its " +
                     "accessibility level");
@@ -360,12 +362,12 @@ namespace LatteCompiler
         // 静态/全局直引；不接名称解析、不走访问器/访问控制检查
         // （backing 直达是编译器机制内部路径）
         public static BoundExpression MakeBackingFieldReference(ASTNode node, FieldSymbol field,
-            TypeSymbol fieldType, BindContext ctx)
+            TypeSymbol fieldType, BindFunctionFrame frame)
         {
             if (field.Owner != null && !field.IsStatic)
             {
                 return new BoundFieldAccessExpression(node,
-                    new BoundThisExpression(node, ctx.Method.Owner!), field, fieldType);
+                    new BoundThisExpression(node, frame.Method.Owner!), field, fieldType);
             }
             return new BoundFieldReferenceExpression(node, field, fieldType);
         }
@@ -378,12 +380,12 @@ namespace LatteCompiler
         private static BoundExpression? BindThisPath(PathExpressionASTNode node, Scope scope,
             BindContext ctx, BindEnvironment env, bool forAssignment)
         {
-            if (!ctx.HasThis)
+            if (!ctx.Frame.HasThis)
             {
                 env.Error(node.Span, "P3: 'this' is not available in a static context");
                 return null;
             }
-            BoundExpression receiver = new BoundThisExpression(node, ctx.Method.Owner!);
+            BoundExpression receiver = new BoundThisExpression(node, ctx.Frame.Method.Owner!);
             var folded = FoldSuffixes(node, receiver, node.Head.Suffixes, 0,
                 forAssignment && node.Segments.Count == 0, scope, ctx, env);
             if (folded == null) return null;
@@ -545,7 +547,7 @@ namespace LatteCompiler
             }
             // 使用点访问控制（S8e，SYNTAX §16.1：索引运算符是成员访问
             // 使用点）：不可见候选不参与；全部不可见报不可见诊断
-            var accessible = candidates.Where(ctx.CanAccess).ToList();
+            var accessible = candidates.Where(ctx.Frame.CanAccess).ToList();
             if (accessible.Count == 0)
             {
                 env.Error(node.Span, AccessChecker.InaccessibleMessage(candidates[0]));
@@ -670,7 +672,7 @@ namespace LatteCompiler
                     return null;
                 }
             }
-            else if (!ctx.CanAccess(field))
+            else if (!ctx.Frame.CanAccess(field))
             {
                 env.Error(node.Span, AccessChecker.InaccessibleMessage(field));
                 return null;
@@ -693,7 +695,7 @@ namespace LatteCompiler
             // S8b：const 字段稳定链收窄（TryFromFieldAccess 含 IsNarrowable
             // 判定；不稳定链返回 null 直通）
             return ApplyNarrowing(node, access,
-                NarrowKey.TryFromFieldAccess(receiver, field, ctx), ctx);
+                NarrowKey.TryFromFieldAccess(receiver, field, ctx.Frame), ctx.Flow);
         }
 
         private static BoundExpression? ErrorAndNull(BindEnvironment env, CharRange? span,

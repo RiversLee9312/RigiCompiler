@@ -11,12 +11,9 @@ namespace LatteCompiler
         // 即内部错误（P3 已保证目标循环包含该语句，降级上下文必在栈上）
         public static LocalSymbol FindBreakId(BoundLoop target, LowerContext ctx)
         {
-            foreach (var (loop, breakId) in ctx.Loops)
-            {
-                if (ReferenceEquals(loop, target)) return breakId;
-            }
-            throw new CompilerInternalException(
-                "break/continue 目标循环不在降级上下文内（P3 已保证目标包含语句）");
+            return ctx.Targets.FindLoopBreakId(target)
+                ?? throw new CompilerInternalException(
+                    "break/continue 目标循环不在降级上下文内（P3 已保证目标包含语句）");
         }
     }
 
@@ -36,14 +33,14 @@ namespace LatteCompiler
             // 合成顺序与旧代码一致（.sN 先于 .bN——SynthLocals 顺序即 .vars
             // 发射顺序，BIL 文本快照敏感）；压栈提前到条件降级前无语义影响
             // （条件表达式内不可能有指向本循环的 BoundLoopControl——P3 不变量）
-            condition = ctx.NewSynthLocal(((BoundLoop)node).Condition!.Type);
-            breakId = ctx.NewBreakIdLocal();
-            ctx.Loops.Push(((BoundLoop)node, breakId));
+            condition = ctx.Synth.NewSynthLocal(((BoundLoop)node).Condition!.Type);
+            breakId = ctx.Synth.NewBreakIdLocal();
+            ctx.Targets.PushLoop((BoundLoop)node, breakId);
         }
 
         protected override void Exit(BoundNode node, LowerContext ctx, LowerEnvironment env)
         {
-            ctx.Loops.Pop();
+            ctx.Targets.PopLoop();
         }
 
         protected override LoweredStatement? VisitCore(BoundNode node, LowerContext ctx,
@@ -87,15 +84,15 @@ namespace LatteCompiler
             var itemType = loop.LoopVariable!.Type!;
             var enumeratorDef = (TypeSymbol)loop.MoveNextMethod!.Owner!;
             var enumeratorType = env.Unit.Symbols.GetConstructedType(enumeratorDef, itemType);
-            enumerator = ctx.NewSynthLocal(enumeratorType);
-            condition = ctx.NewSynthLocal((TypeSymbol)loop.MoveNextMethod.ReturnType!);
-            breakId = ctx.NewBreakIdLocal();
-            ctx.Loops.Push((loop, breakId));
+            enumerator = ctx.Synth.NewSynthLocal(enumeratorType);
+            condition = ctx.Synth.NewSynthLocal((TypeSymbol)loop.MoveNextMethod.ReturnType!);
+            breakId = ctx.Synth.NewBreakIdLocal();
+            ctx.Targets.PushLoop(loop, breakId);
         }
 
         protected override void Exit(BoundNode node, LowerContext ctx, LowerEnvironment env)
         {
-            ctx.Loops.Pop();
+            ctx.Targets.PopLoop();
         }
 
         protected override LoweredStatement? VisitCore(BoundNode node, LowerContext ctx,
@@ -110,16 +107,16 @@ namespace LatteCompiler
             // 前置：.e = <iterable>.iterate()（合成节点 Origin 指 for 语句）
             var iterable = LowerExpressionDispatcher.Visit(loop.Iterable!, ctx, env);
             if (iterable == null) return null;
-            ctx.OutputStack.Peek().Add(new LoweredAssignmentStatement(loop,
-                LowerContext.ReferenceTo(loop, enumerator),
+            ctx.Output.Add(new LoweredAssignmentStatement(loop,
+                SynthLocalFactory.ReferenceTo(loop, enumerator),
                 new LoweredInstanceCallExpression(loop, iterable, loop.IterateMethod!,
                     new List<LoweredExpression>(), enumeratorType)));
             // Judge：.c = .e.moveNext()
             var judge = new LoweredBlock(loop, new List<LoweredStatement>
             {
-                new LoweredAssignmentStatement(loop, LowerContext.ReferenceTo(loop, condition),
+                new LoweredAssignmentStatement(loop, SynthLocalFactory.ReferenceTo(loop, condition),
                     new LoweredInstanceCallExpression(loop,
-                        LowerContext.ReferenceTo(loop, enumerator),
+                        SynthLocalFactory.ReferenceTo(loop, enumerator),
                         loop.MoveNextMethod, new List<LoweredExpression>(), moveNextType)),
             });
             // Body：头 = LoopVariable = .e.current()，其后体降级语句
@@ -127,9 +124,9 @@ namespace LatteCompiler
             if (body == null) return null;
             var bodyStatements = new List<LoweredStatement>
             {
-                new LoweredAssignmentStatement(loop, LowerContext.ReferenceTo(loop, loopVariable),
+                new LoweredAssignmentStatement(loop, SynthLocalFactory.ReferenceTo(loop, loopVariable),
                     new LoweredInstanceCallExpression(loop,
-                        LowerContext.ReferenceTo(loop, enumerator),
+                        SynthLocalFactory.ReferenceTo(loop, enumerator),
                         loop.CurrentMethod!, new List<LoweredExpression>(), itemType)),
             };
             bodyStatements.AddRange(body.Statements);

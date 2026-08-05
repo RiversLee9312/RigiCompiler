@@ -68,7 +68,7 @@ namespace LatteCompiler
             // 多段首段为值（局部/参数）→ 实例调用形态（S7c-2）
             if (calleeSegments.Count > 1
                 && (scope.Lookup(calleeSegments[0]) != null
-                    || ctx.Method.Parameters.Any(p => p.Name == calleeSegments[0])))
+                    || ctx.Frame.Method.Parameters.Any(p => p.Name == calleeSegments[0])))
             {
                 return BindInstanceCallForm(node, calleeSegments, arguments, scope, ctx, env);
             }
@@ -88,9 +88,9 @@ namespace LatteCompiler
             {
                 // 实例方法（S7c-2）：当前上下文有 this（实例方法/ext 方法
                 // 体内）→ 补 this receiver；静态上下文（含默认值表达式）→ 诊断
-                if (ctx.HasThis)
+                if (ctx.Frame.HasThis)
                 {
-                    receiver = new BoundThisExpression(node, ctx.Method.Owner!);
+                    receiver = new BoundThisExpression(node, ctx.Frame.Method.Owner!);
                 }
                 else
                 {
@@ -118,13 +118,14 @@ namespace LatteCompiler
             List<MethodSymbol> candidates;
             if (calleeSegments.Count == 1)
             {
-                candidates = MemberLookup.FindMethods(calleeSegments[0], ctx, env);
+                candidates = MemberLookup.FindMethods(calleeSegments[0], ctx.Frame, env);
             }
             else
             {
                 // 首段为值的多段已由 BindCall 分流（实例调用形态）；
                 // 此处前 N-1 段必为容器
-                var container = MemberLookup.ResolveContainer(calleeSegments, node.Span, ctx, env);
+                var container = MemberLookup.ResolveContainer(calleeSegments, node.Span, ctx.Frame,
+                    env);
                 if (container == null) return null;
                 candidates = container switch
                 {
@@ -146,7 +147,7 @@ namespace LatteCompiler
             }
             // 使用点访问控制（S8e，SYNTAX §16.1）：不可见候选不参与重载
             // 解析；全部不可见时报首个候选的不可见诊断
-            var accessible = candidates.Where(ctx.CanAccess).ToList();
+            var accessible = candidates.Where(ctx.Frame.CanAccess).ToList();
             if (accessible.Count == 0)
             {
                 env.Error(node.Span, AccessChecker.InaccessibleMessage(candidates[0]));
@@ -173,11 +174,11 @@ namespace LatteCompiler
                 receiver = new BoundValueReferenceExpression(node, headLocal, headLocal.Type!);
                 // S8b：调用链头收窄（x.m() 的 x 在收窄区域内）
                 receiver = PathFacility.ApplyNarrowingPublic(node, receiver,
-                    NarrowKey.ForSymbol(headLocal), ctx);
+                    NarrowKey.ForSymbol(headLocal), ctx.Flow);
             }
             else
             {
-                var headParameter = ctx.Method.Parameters.First(p => p.Name == calleeSegments[0]);
+                var headParameter = ctx.Frame.Method.Parameters.First(p => p.Name == calleeSegments[0]);
                 if (headParameter.Type is not TypeSymbol paramType)
                 {
                     env.Error(node.Span, "P3: generic type parameters are not supported yet (S9)");
@@ -185,7 +186,7 @@ namespace LatteCompiler
                 }
                 receiver = new BoundValueReferenceExpression(node, headParameter, paramType);
                 receiver = PathFacility.ApplyNarrowingPublic(node, receiver,
-                    NarrowKey.ForSymbol(headParameter), ctx);
+                    NarrowKey.ForSymbol(headParameter), ctx.Flow);
             }
             for (int i = 1; i < calleeSegments.Count - 1; i++)
             {
@@ -215,7 +216,7 @@ namespace LatteCompiler
                 return null;
             }
             // 使用点访问控制（S8e，SYNTAX §16.1）：同 ResolveCallee 口径
-            var accessible = candidates.Where(ctx.CanAccess).ToList();
+            var accessible = candidates.Where(ctx.Frame.CanAccess).ToList();
             if (accessible.Count == 0)
             {
                 env.Error(node.Span, AccessChecker.InaccessibleMessage(candidates[0]));
@@ -336,7 +337,7 @@ namespace LatteCompiler
         {
             var newNode = (NewExpressionASTNode)node;
             var type = TypeReferences.Resolve(newNode.Type, newNode.Type.Span ?? newNode.Span,
-                ctx, env);
+                ctx.Frame, env);
             if (type is ErrorTypeSymbol) return null;
             if (type == null) return null;  // 泛型参数（已诊断）
             if (type.ConstructedFrom == null && type.GenericParameters.Count > 0)
@@ -383,7 +384,7 @@ namespace LatteCompiler
             }
             // 构造调用是使用点（S8e，SYNTAX §16.1，含 init 可见性 §12.2）：
             // 不可见 init 不参与重载解析；全部不可见时报不可见诊断
-            var accessibleInits = inits.Where(ctx.CanAccess).ToList();
+            var accessibleInits = inits.Where(ctx.Frame.CanAccess).ToList();
             if (accessibleInits.Count == 0)
             {
                 env.Error(newNode.Span, AccessChecker.InaccessibleMessage(inits[0]));

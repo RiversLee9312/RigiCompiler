@@ -274,8 +274,8 @@ namespace LatteCompiler
     // return@语句seq 降级标记（M61，SYNTAX §6.1）：纯控制流标记——不产
     // 任何指令；continuation 编织（ValueBlockFacility）在目标 seq 的
     // 降级层消费：命中本层即删除（其后语句截断），命中外层则保留向上
-    // 传播。Target 回指 Bound 施工节点（引用相等即身份，经 LowerContext
-    // .SeqTargets 栈比对归属）
+    // 传播。Target 回指 Bound 施工节点（引用相等即身份，经 LowerTargetState
+    // 的 seq 目标栈比对归属）
     public sealed class LoweredSeqExitStatement : LoweredStatement
     {
         public BoundSeqStatement Target { get; }

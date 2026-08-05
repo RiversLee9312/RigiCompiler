@@ -17,7 +17,7 @@ namespace LatteCompiler
         {
             var tryStatement = (BoundTryStatement)node;
             var exceptionSlot = tryStatement.FinallyVariable
-                ?? ctx.NewSynthLocal(env.Unit.Symbols.GetNullable(env.Unit.Symbols.Bootstrap.Exception));
+                ?? ctx.Synth.NewSynthLocal(env.Unit.Symbols.GetNullable(env.Unit.Symbols.Bootstrap.Exception));
             var tryBlock = LowerBlockVisitor.Visit(tryStatement.TryBlock, ctx, env);
             if (tryBlock == null) return null;
             var catches = new List<LoweredTryCatch>();
@@ -28,9 +28,9 @@ namespace LatteCompiler
                 if (boundCatch.Variable != null)
                 {
                     var castAssign = new LoweredAssignmentStatement(boundCatch,
-                        LowerContext.ReferenceTo(boundCatch, boundCatch.Variable),
+                        SynthLocalFactory.ReferenceTo(boundCatch, boundCatch.Variable),
                         new LoweredCastExpression(boundCatch,
-                            LowerContext.ReferenceTo(boundCatch, exceptionSlot),
+                            SynthLocalFactory.ReferenceTo(boundCatch, exceptionSlot),
                             boundCatch.ExceptionType, isSafe: false,
                             boundCatch.ExceptionType));
                     body = new LoweredBlock(body.Origin,
@@ -62,13 +62,13 @@ namespace LatteCompiler
             LowerEnvironment env)
         {
             var seqExpression = (BoundSeqExpression)node;
-            var result = ctx.NewSynthLocal(seqExpression.Type);
+            var result = ctx.Synth.NewSynthLocal(seqExpression.Type);
             var body = ValueBlockRewriter.Visit(seqExpression.Body,
                 new ValueBlockContext(ctx, result), env);
             if (body == null) return null;
-            ctx.OutputStack.Peek().Add(new LoweredSeqBlock(seqExpression, body,
+            ctx.Output.Add(new LoweredSeqBlock(seqExpression, body,
                 seqExpression.Body.IsVolatile));
-            return LowerContext.ReferenceTo(seqExpression, result);
+            return SynthLocalFactory.ReferenceTo(seqExpression, result);
         }
     }
 }
