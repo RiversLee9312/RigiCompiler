@@ -220,6 +220,10 @@ namespace LatteCompiler
         public bool IsStatic { get; }
         // native 函数标记位（SYNTAX §4.6：无体原生函数；P1 建壳读修饰符即定）
         public bool IsNative { get; }
+        // async 函数标记位（SYNTAX §4.5：调用时另建协程；P1 建壳读修饰符
+        // 即定，S8f async 边界五项闸门的检查点分派依据；仅 Kind=Regular 的
+        // 函数可置位——其余 Kind 置位由 AsyncGateChecker 拒绝）
+        public bool IsAsync { get; }
         // 有无函数体（P1 建壳即定；OverrideChecker 判定接口默认实现与无体方法，
         // 访问器符号恒 false——自动访问器体由 P3 合成，不经本标记）
         public bool HasBody { get; internal set; }
@@ -251,7 +255,8 @@ namespace LatteCompiler
             bool isStatic = false,
             bool isNative = false,
             SemanticSymbol? returnType = null,
-            string? extTargetPath = null)
+            string? extTargetPath = null,
+            bool isAsync = false)
             : base(name)
         {
             Kind = kind;
@@ -259,6 +264,7 @@ namespace LatteCompiler
             Namespace = ns;
             IsStatic = isStatic;
             IsNative = isNative;
+            IsAsync = isAsync;
             ReturnType = returnType;
             ExtTargetPath = extTargetPath;
         }

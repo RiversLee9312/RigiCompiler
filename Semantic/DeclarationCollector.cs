@@ -246,7 +246,8 @@ namespace LatteCompiler
                 ns: declaringType == null ? ns : null,
                 isStatic: node.Modifiers.Contains(Keywords.STATIC),
                 isNative: node.Modifiers.Contains(Keywords.NATIVE),
-                extTargetPath: extTarget);
+                extTargetPath: extTarget,
+                isAsync: node.Modifiers.Contains(Keywords.ASYNC));
             symbol.HasBody = node.Body != null;
             CollectGenericParameters(symbol.GenericParameters, node.GenericParameters, result);
             foreach (var p in node.Parameters.Parameters)

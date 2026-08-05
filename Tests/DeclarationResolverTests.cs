@@ -33,6 +33,8 @@ namespace LatteCompiler.Tests
             TestAccessorDeclarations();
             TestOverrideModifiers();
             TestDeclarationSiteAccess();
+            TestConversionOperators();
+            TestAsyncDeclarationGates();
             TestFreeze();
             return TestHarness.Summary("DeclarationResolver");
         }
@@ -1055,6 +1057,94 @@ namespace LatteCompiler.Tests
                 "pub class C implements IHidden { }\n");
             CheckP2Error("priv 接口作 implements（跨文件）", unit3,
                 "'IHidden' is inaccessible due to its accessibility level");
+        }
+
+        // ===== S8f：castTo/castFrom 声明形状（SYNTAX §3.5）=====
+        private static void TestConversionOperators()
+        {
+            TestHarness.Section("P2 Conversion Operators (castTo/castFrom)");
+
+            // 合法形态（spec §3.5 示例：泛型形态 + 非泛型形态）
+            var (ok, _) = ResolveUnit(
+                "class S { operator castTo\\<TTarget>(): TTarget { } }\n" +
+                "class C { operator castFrom\\<TSource>(obj: TSource): C { } }\n" +
+                "class S2 { operator castTo(): i32 { } }\n" +
+                "class C2 { operator castFrom(obj: S2): C2 { } }\n");
+            CheckNoErrors("合法 castTo/castFrom 声明无诊断", ok);
+
+            // castTo 带参数：形状违反（名字分析需要零参数）
+            var (u1, _) = ResolveUnit("class S { operator castTo(x: i32): i32 { } }\n");
+            CheckP2Error("castTo 带参数", u1, "Operator 'castTo' must have no parameters");
+
+            // castTo void 返回（转换没有产物）
+            var (u2, _) = ResolveUnit("class S { operator castTo() { } }\n");
+            CheckP2Error("castTo void", u2, "Operator 'castTo' must declare a return type");
+
+            // castFrom 参数个数：0 与 2 都违反
+            var (u3, _) = ResolveUnit("class C { operator castFrom(): C { } }\n");
+            CheckP2Error("castFrom 零参数", u3,
+                "Operator 'castFrom' must have exactly one parameter");
+            var (u4, _) = ResolveUnit("class C { operator castFrom(a: i32, b: i32): C { } }\n");
+            CheckP2Error("castFrom 两参数", u4,
+                "Operator 'castFrom' must have exactly one parameter");
+
+            // castFrom void 返回
+            var (u5, _) = ResolveUnit("class C { operator castFrom(obj: i32) { } }\n");
+            CheckP2Error("castFrom void", u5,
+                "Operator 'castFrom' must declare a return type");
+
+            // 普通函数同名不是转换运算符（名字分析只搜 operator），不检查
+            var (u6, _) = ResolveUnit(
+                "func castTo(x: i32): i32 { }\nfunc castFrom(y: i32): i32 { }\n");
+            CheckNoErrors("普通函数同名无诊断", u6);
+        }
+
+        // ===== S8f：async 声明侧闸门 2/3/5 + async 仅函数（SYNTAX §4.5）=====
+        private static void TestAsyncDeclarationGates()
+        {
+            TestHarness.Section("P2 Async Declaration Gates (§4.5)");
+
+            // 合法：void / 共享安全参数与返回值 / Nullable\<T\> 按 T 推导 /
+            // 无约束泛型参数 / shared 约束边界
+            var (ok, _) = ResolveUnit(
+                "shared class SharedUser { }\n" +
+                "async func f() { }\n" +
+                "async func ok(id: i32, name: String): SharedUser { }\n" +
+                "async func nullable(s: String?): String? { }\n" +
+                "async func generic\\<T>(x: T): T { }\n" +
+                "shared class Base { }\n" +
+                "async func constrained\\<T extends Base>(x: T): T { }\n");
+            CheckNoErrors("合法 async 声明无诊断", ok);
+
+            // 闸门 2：参数是 local object
+            var (u1, _) = ResolveUnit(
+                "class LocalUser { }\n" +
+                "async func bad(u: LocalUser) { }\n");
+            CheckP2Error("闸门 2 参数", u1,
+                "Parameter 'u' of async function 'bad' must be a shared-safe type: 'LocalUser'");
+
+            // 闸门 3：返回类型是 local object
+            var (u2, _) = ResolveUnit(
+                "class LocalUser { }\n" +
+                "async func bad(): LocalUser { }\n");
+            CheckP2Error("闸门 3 返回值", u2,
+                "Return type 'LocalUser' of async function 'bad' must be a shared-safe type");
+
+            // 闸门 5：泛型参数的约束边界非共享安全（typeid 与实际值一同跨边界）
+            var (u3, _) = ResolveUnit(
+                "class LocalUser { }\n" +
+                "async func bad\\<T extends LocalUser>(x: T) { }\n");
+            CheckP2Error("闸门 5 约束边界", u3,
+                "Generic parameter 'T' of async function 'bad' must have a shared-safe " +
+                "constraint bound: 'LocalUser'");
+
+            // async 仅函数（§9.2）：init/operator/类型声明
+            var (u4, _) = ResolveUnit("class C { async init() { } }\n");
+            CheckP2Error("async init", u4, "'async' can only be applied to functions");
+            var (u5, _) = ResolveUnit("class C { async operator plus(o: i32): i32 { } }\n");
+            CheckP2Error("async operator", u5, "'async' can only be applied to functions");
+            var (u6, _) = ResolveUnit("async class C { }\n");
+            CheckP2Error("async 类型声明", u6, "'async' can only be applied to functions");
         }
     }
 }

@@ -268,20 +268,29 @@ namespace LatteCompiler
     // 目标类型（as 与 as? 同形）；节点 Type 是表达式结果类型——as 时即
     // TargetType，as? 时为 Nullable<TargetType>（P3 定型，P4 不再区分包装）。
     // 可转性不做静态拒绝（as 失败是运行时 core.CastException；castTo/castFrom
-    // 名字分析归后续里程碑）
+    // 名字分析归 S8f 落地）。
+    // Conversion（S8f，SYNTAX §3.5 转换优先级）：名字分析产物——源类型的
+    // castTo 优先、目标类型的 castFrom 兜底，均为适用候选；null = 无用户
+    // 定义转换，走内建引用视图/数值转换（BIL §12.1 第 3 条）。记录供测试
+    // 断言与调试；P4 仍发 cast（BIL §12.1 语义含 castTo/castFrom，运行时
+    // 自行分派——S8f 无 P4 面）。
     public sealed class BoundCastExpression : BoundExpression
     {
         public BoundExpression Source { get; }
         public TypeSymbol TargetType { get; }
         // true = as?（失败产 null）；false = as（失败抛 core.CastException）
         public bool IsSafe { get; }
+        // 名字分析选中的用户转换运算符（castTo/castFrom）；null = 内建
+        public MethodSymbol? Conversion { get; }
 
         public BoundCastExpression(ASTNode syntax, BoundExpression source,
-            TypeSymbol targetType, bool isSafe, TypeSymbol type) : base(syntax, type)
+            TypeSymbol targetType, bool isSafe, TypeSymbol type,
+            MethodSymbol? conversion = null) : base(syntax, type)
         {
             Source = source;
             TargetType = targetType;
             IsSafe = isSafe;
+            Conversion = conversion;
         }
     }
 

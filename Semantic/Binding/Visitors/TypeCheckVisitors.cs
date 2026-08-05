@@ -2,9 +2,13 @@ namespace LatteCompiler
 {
     // cast（S7e，SYNTAX §3.5）：as / as?。as 结果类型即目标类型，as? 结果
     // 类型 = Nullable<目标类型>（P3 定型，P4 不再区分包装）。可转性
-    // 不做静态拒绝（as 失败是运行时 core.CastException；castTo/castFrom
-    // 名字分析归 S8f）；ErrorType 毒化静默（结果沿用 ErrorType）。
-    // 自旧 BindSession.BindCast 迁移，行为不变。
+    // 不做静态拒绝（as 失败是运行时 core.CastException）；S8f 起执行
+    // castTo/castFrom 名字分析（转换优先级：源类型 castTo → 目标类型
+    // castFrom，BIL §12.1 语义第 1、2 条——适用候选记录在
+    // BoundCastExpression.Conversion，P4 仍发 cast，运行时自行分派；
+    // 均无适用候选 = 内建引用视图/数值转换，第 3 条兜底）。
+    // ErrorType 毒化静默（结果沿用 ErrorType）。
+    // 自旧 BindSession.BindCast 迁移，行为不变（S8f 增补名字分析）。
     internal sealed class CastVisitor : ExpressionVisitor<CastVisitor, BindContext>
     {
         protected override BoundExpression? VisitCore(ASTNode node, Scope scope, BindContext ctx,
@@ -17,7 +21,25 @@ namespace LatteCompiler
             var resultType = targetType is ErrorTypeSymbol
                 ? targetType
                 : cast.IsSafe ? env.Unit.Symbols.GetNullable(targetType) : targetType;
-            return new BoundCastExpression(node, source, targetType, cast.IsSafe, resultType);
+            var conversion = targetType is ErrorTypeSymbol || source.Type is ErrorTypeSymbol
+                ? null
+                : ResolveConversion(source, targetType, env);
+            return new BoundCastExpression(node, source, targetType, cast.IsSafe, resultType,
+                conversion);
+        }
+
+        // 名字分析（S8f，SYNTAX §3.5 转换优先级）：源类型的 castTo 优先，
+        // 目标类型的 castFrom 兜底；均无适用候选返回 null（内建兜底）。
+        // 适用判定 = 单泛型参数代入后的签名匹配（SymbolLookup 查询）
+        private static MethodSymbol? ResolveConversion(BoundExpression source,
+            TypeSymbol targetType, BindEnvironment env)
+        {
+            var symbols = env.Unit.Symbols;
+            var castTo = SymbolLookup.FindConversionOperator(source.Type, "castTo", 0,
+                targetType, targetType, symbols);
+            if (castTo != null) return castTo;
+            return SymbolLookup.FindConversionOperator(targetType, "castFrom", 1,
+                source.Type, targetType, symbols);
         }
     }
 

@@ -441,7 +441,27 @@ P4 同步落地——P3 绑得出来的形态，同一步内 P4 必须能发射�
   TestAccessControl/TestAccessors/TestOverride 三组达成（局部位置
   归口 S11，见上偏差①）。
 
-### S8f castTo/castFrom 名字分析 + async 边界五项闸门（纯 P3，无 P4 面）
+### S8f castTo/castFrom 名字分析 + async 边界五项闸门（纯 P3，无 P4 面）✅（M66，2026-08-05）
+
+> **已完成**（M66）：SYNTAX §3.5 转换优先级 + §4.5 五项闸门落地——
+> P1 `MethodSymbol.IsAsync`；P2 新 `ConversionOperatorChecker`
+> （castTo/castFrom 声明形状：零参数/恰一参数/必声明返回类型）与
+> 新 `AsyncGateChecker`（声明侧闸门 2 参数/3 返回值/5 泛型约束边界
+> 共享安全 + async 仅函数收口——init/operator/类型声明拒绝，置于
+> GenericConstraintChecker 后）；P3 `BoundCastExpression.Conversion`
+> 槽 + `SymbolLookup.FindConversionOperator`（单泛型参数代入签名
+> 匹配，宿主泛型按不适用回退）+ CastVisitor 三级转换优先级（源
+> castTo → 目标 castFrom → 内建，as? 同分析）+ 新 `Binding/AsyncGates.cs`
+> 调用点闸门 1/2（BoundTree 后置遍历单落点）+ 新 `LambdaVisitor`
+> 闸门 4（async lambda 捕获 AST 级扫描）。落地偏差（技术债 #23）：
+> ① 转换分析只记录不重写（P4 仍发 cast，运行时按 §12.1 分派）；
+> ② castFrom 调用形态（实例 operator 无目标实例的 receiver 语义）
+> 归 lowering/运行时定稿；③ 多泛型参数/宿主泛型参数按不适用回退；
+> ④ 闸门 5 调用点实际实参检查归 S9；⑤ lambda 捕获扫描为粗粒度
+> （体内声明名全量排除，先引用后声明形态保守漏报）；⑥ async
+> lambda 自身形参/返回类型随 lambda 绑定（S13）落查；⑦ 闸门 2
+> 调用点检查为防御性兜底（静态不可达违反——shared 单向传染保证）。
+> 详见 PROGRESS_REPORT M66 段落。
 
 - P3 castTo/castFrom 名字分析（SYNTAX §3.5 转换优先级：源类型
   `castTo` → 目标类型 `castFrom`；BIL §12.1 语义第 1、2 条）；

@@ -114,6 +114,93 @@ namespace LatteCompiler
             return FindInstanceOperators(type, name, 1).FirstOrDefault();
         }
 
+        // S8f castTo/castFrom 名字分析核心查询（SYNTAX §3.5 转换优先级）：
+        // 沿 host 的 BaseType 链找名为 name 的实例 operator（ext 注册成员
+        // 同路径），返回首个「签名适用」的候选（链序即派生层优先，同
+        // FindInstanceOperator 口径）。适用 = 至多一个泛型参数 G 时，把
+        // 签名中的 G 替换为 replaceWith 后：
+        //   - castTo（0 参）：返回类型 == target；
+        //   - castFrom（1 参）：唯一参数类型 == replaceWith 且返回类型
+        //     == target（target 为构造类型时允许 == 其泛型定义本身）。
+        // 多泛型参数 / 宿主泛型参数（S9 使用侧未落地）按不适用处理——
+        // 名字分析回退内建转换，不落诊断（BIL §12.1 第 3 条兜底）。
+        // 参数类型/返回类型是 void（null）或不可代入的类型时必不适用
+        public static MethodSymbol? FindConversionOperator(TypeSymbol host, string name,
+            int parameterCount, TypeSymbol replaceWith, TypeSymbol target,
+            SymbolGraph symbols)
+        {
+            foreach (var candidate in FindInstanceOperators(host, name, parameterCount))
+            {
+                if (candidate.GenericParameters.Count > 1) continue;
+                var genericParam = candidate.GenericParameters.Count == 1
+                    ? candidate.GenericParameters[0] : null;
+                // 返回类型：G 本身（castTo\<TTarget>()）或代入 G 后与 target
+                // 一致的普通类型；void/其它泛型参数必不适用
+                var substitutedReturn = SubstituteForConversion(candidate.ReturnType,
+                    genericParam, replaceWith, symbols);
+                if (substitutedReturn == null) continue;
+                if (!ReferenceEquals(substitutedReturn, target)
+                    && !(target.ConstructedFrom != null
+                        && ReferenceEquals(substitutedReturn, target.ConstructedFrom)))
+                {
+                    continue;
+                }
+                if (parameterCount == 0) return candidate;
+                var substitutedArgument = SubstituteForConversion(
+                    candidate.Parameters[0].Type, genericParam, replaceWith, symbols);
+                if (substitutedArgument != null
+                    && ReferenceEquals(substitutedArgument, replaceWith))
+                {
+                    return candidate;
+                }
+            }
+            return null;
+        }
+
+        // 名字分析的单泛型参数代入（仿 SubstituteFieldType 的最小替换）：
+        // signature 是 G 本身 → replacement；构造类型 → 实参逐项替换后经
+        // 驻留入口重建；其余（普通类型/其它泛型参数/void）原样返回。
+        // 宿主泛型参数（G 之外的 GenericParameterSymbol）返回 null——
+        // 不可代入即不适用，由调用方按不适用处理
+        private static TypeSymbol? SubstituteForConversion(SemanticSymbol? signature,
+            GenericParameterSymbol? genericParam, TypeSymbol replacement,
+            SymbolGraph symbols)
+        {
+            if (signature == null) return null;
+            if (genericParam != null && ReferenceEquals(signature, genericParam))
+            {
+                return replacement;
+            }
+            if (signature is GenericParameterSymbol) return null;
+            if (signature is TypeSymbol { ConstructedFrom: not null, TypeArguments: not null } type)
+            {
+                var args = new SemanticSymbol[type.TypeArguments.Count];
+                var changed = false;
+                for (int i = 0; i < args.Length; i++)
+                {
+                    var argument = type.TypeArguments[i];
+                    if (argument is GenericParameterSymbol innerGeneric)
+                    {
+                        if (genericParam != null && ReferenceEquals(innerGeneric, genericParam))
+                        {
+                            args[i] = replacement;
+                            changed = true;
+                            continue;
+                        }
+                        return null;    // 宿主/其它泛型参数：不可代入
+                    }
+                    var inner = SubstituteForConversion(argument, genericParam, replacement,
+                        symbols);
+                    if (inner == null) return null;
+                    args[i] = inner;
+                    changed |= !ReferenceEquals(inner, argument);
+                }
+                if (!changed) return type;
+                return symbols.GetConstructedType(type.ConstructedFrom, args);
+            }
+            return signature as TypeSymbol;
+        }
+
         // 类型含未替换泛型参数（自身是泛型参数，或构造类型的实参递归
         // 含有）——泛型使用侧归 S9 的统一拦截点
         public static bool ContainsGenericParameter(SemanticSymbol type)

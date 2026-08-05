@@ -27,6 +27,8 @@ namespace LatteCompiler
                     expectedType),
                 TypeOfExpressionASTNode => TypeOfVisitor.Visit(node, scope, ctx, env, expectedType),
                 NewExpressionASTNode => NewVisitor.Visit(node, scope, ctx, env, expectedType),
+                LambdaExpressionASTNode => LambdaVisitor.Visit(node, scope, ctx, env,
+                    expectedType),
                 // 括号是透明分组（Latte 无优先级，括号只定结构），不落 bound 节点
                 GroupExpressionASTNode group => Visit(group.InnerExpression.Expression, scope, ctx,
                     env, expectedType),

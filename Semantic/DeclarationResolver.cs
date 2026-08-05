@@ -48,10 +48,14 @@ namespace LatteCompiler
             AccessorChecker.Visit(env);
             OverrideChecker.Visit(env);
             NativeDeclarationChecker.Visit(env);
+            ConversionOperatorChecker.Visit(env);
             ContagionChecker.Visit(env);
             FieldClosureChecker.Visit(env);
             SharedSafetyGateChecker.Visit(env);
             GenericConstraintChecker.Visit(env);
+            // async 声明侧闸门（S8f，§4.5）依赖约束边界已解析（GenericConstraintChecker
+            // 之后——闸门 5 检查约束界的共享安全），参数/返回类型同已就绪
+            AsyncGateChecker.Visit(env);
             WrapperTargetResolver.Visit(env);
             ExtensionRegistrar.Visit(env);
             WrapperApplicationChecker.Visit(env);
