@@ -152,6 +152,28 @@ namespace LatteCompiler.Bil
         internal override IReadOnlyList<BilOperand> Operands =>
             new BilOperand[] { Value, TypeId, Target };
     }
+    // §12.3 enum case 判别检查（S11，语义由 RUNTIME §16.3 定义）：
+    // type.is.case VALUE case(ENUM_TYPE.CaseName) RESULT——隐藏判别字段与
+    // case 编译期判别常量的整数比较；非子类型检查、不比较 payload、
+    // 不改变 VALUE 静态类型；判别宽度 u16/u32 是布局内部细节
+    public sealed class IsCaseInstruction : BilInstruction
+    {
+        public BilVariableOperand Value { get; }
+        public BilCaseOperand Case { get; }
+        public BilVariableOperand Target { get; }
+
+        public IsCaseInstruction(BilVariableOperand value, BilCaseOperand caseOperand,
+            BilVariableOperand target)
+        {
+            Value = value;
+            Case = caseOperand;
+            Target = target;
+        }
+
+        internal override string Opcode => "type.is.case";
+        internal override IReadOnlyList<BilOperand> Operands =>
+            new BilOperand[] { Value, Case, Target };
+    }
 
     // §12.4 取得 wrapper 值：get.wrapper VALUE type(WRAPPER_TYPE) RESULT
     public sealed class GetWrapperInstruction : BilInstruction

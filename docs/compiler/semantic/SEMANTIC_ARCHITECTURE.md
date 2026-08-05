@@ -318,6 +318,15 @@ RUNTIME §23 GC fence 的交互）是**专项设计**，动工前须先出专项
 - 因此**待补而非待改**：落在 ROADMAP S11（wrapper lowering），在此
   之前 BIL 不改。
 
+> **S11 定稿（M75，2026-08-05）**：缺口已补入 `BIL_STANDARD.md` ——
+> `get.wrapper` 保留为 lowering/VM 内部能力（只读 place 的成员读取 =
+> 值拷贝 + `get.field`），新增 §13.3 嵌套字段访问指令
+> `get.field.embedded` / `set.field.embedded`（承载 `obj:Wrapper.field`
+> 写入与 proxy 体内 `this` 的原地访问，wrapper 方法逻辑编译期内联故
+> 无 place receiver 问题）；§12.3 同步增补 `type.is.case`（enum 判别
+> 比较，RUNTIME §16.3 承载）；§8.5/§19.1 定稿判别值资源与 u16/u32
+> 宽度规则。P3/P4 消费见 ROADMAP S11。
+
 其余因本次修订产生的 BIL 变更都是机械同步，已直接落实到规范：
 `.string` 归 ValueType 域（§6.2）、wrapper 类型声明必须显式带 `rich`
 及若干修饰符合法性条目（§8.2）。

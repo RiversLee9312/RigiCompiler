@@ -722,6 +722,13 @@ case 名称在其 enum 内唯一。`case(...)` 引用中必须包含完整 enum 
 
 `enum-struct` 的普通 `init` 不得作为 `new` 目标。所有 enum 值必须通过 `new.case` 创建。
 
+判别值（S11 注记，2026-08-05）：`discriminant` 的资源必须是整数标量资源
+（§19.1），取值非负且在 enum 内唯一；`discriminant auto` 表示编译器按声明序
+从 `0` 开始分配（`RUNTIME.md` §16.4）。判别字段宽度 u16/u32 由编译器按
+`RUNTIME.md` §16.1 选择（全部判别值可用 u16 表示且自动编号数量不超 u16
+容量用 u16，否则 u32）——宽度是布局内部细节，case 声明与 `type.is.case` /
+`new.case` 指令均不暴露判别字段符号。
+
 ### 8.6 ExternalSymbols 完整性
 
 外部类型和成员可以省略方法体与私有实现信息，但必须提供：
@@ -1037,6 +1044,21 @@ type.with.indirect VALUE TYPEID_VAR RESULT_BOOL
 
 结果必须为 `.bool`。语义分别对应 Latte 的 `is`、`supers` 和 `with`，实际 TypeSheet 查询规则由 `RUNTIME.md` 定义。
 
+enum case 判别检查（`S11`，2026-08-05 定稿；对应 Latte 的 `value is .Case`，语义由 `RUNTIME.md` §16.3 定义）：
+
+```bil
+type.is.case VALUE case(CASE_SYMBOL) RESULT_BOOL
+```
+
+比较 VALUE 的隐藏判别字段与该 case 编译期判别常量的整数相等性——不是子类型检查，不访问 `TypeSheet.baseTypeId`，不比较任何用户字段，不改变 VALUE 的静态类型；`typeOf` 语义不变（始终返回该 enum struct 的类型）。
+
+规则：
+
+- CASE_SYMBOL 必须是 `ENUM_TYPE_SYMBOL.CaseName` 形态，且以 `ENUM_TYPE_SYMBOL` 为 owner（即 §8.5 的 case 声明，不能是裸 `.CaseName`）；
+- VALUE 的严格静态类型必须等于 case 的 enum 类型；
+- RESULT_BOOL 必须为 `.bool`；
+- 判别字段宽度（u16/u32，`RUNTIME.md` §16.1）是布局内部细节：该指令不暴露判别字段符号，Middleware 按 case 的编译期判别常量与 enum 宽度执行整数比较。
+
 ### 12.4 取得 wrapper 值
 
 ```bil
@@ -1053,6 +1075,14 @@ get.wrapper.indirect VALUE WRAPPER_TYPEID_VAR RESULT
 - RESULT 类型必须严格等于 WRAPPER_TYPE；
 - 不存在对应 wrapper 时的行为必须与语言/运行时 wrapper 规则一致；
 - 该指令不等价于普通字段读取。
+
+> **S11 定稿注记（2026-08-05）**：`obj:Wrapper` 是只读 place（`SYNTAX.md` §14.5），
+> 不能整体取值；因此 `get.wrapper` 在源码可达路径上已无直接对应物，保留为
+> lowering/VM 内部能力——只读 place 的成员**读取**按「`get.wrapper` 值拷贝 +
+> 普通 `get.field`」实现（值语义读取等价），成员**写入**与 proxy 体内 `this` 的
+> 原地访问使用 §13.3 的 `get.field.embedded` / `set.field.embedded` 指令；
+> `obj:W = ...` 整体赋值是源码层编译错误，BIL 不需要写入指令。wrapper 隐藏
+> 字段命名见 §5.3，声明形态见 §8.3.1。
 
 ### 12.5 取得 typeid
 
@@ -1125,6 +1155,24 @@ set.field SOURCE OBJECT field(FIELD_SYMBOL)
 - wrapper specific/wildcard proxy；
 - runtime dynamic fallback；
 - GC/ARC 屏障与共享域操作。
+
+嵌套字段访问（wrapper 只读 place 形态，`S11`，2026-08-05 定稿；对应
+`obj:Wrapper.field` 读写与 proxy 体内 `this.field` 的原地访问）：
+
+```bil
+get.field.embedded OBJECT TARGET field(HOST_FIELD) field(INNER_FIELD)
+set.field.embedded SOURCE OBJECT field(HOST_FIELD) field(INNER_FIELD)
+```
+
+- HOST_FIELD 必须是 OBJECT 的 wrapper 隐藏字段（§5.3 命名、§8.3.1 声明）；
+- INNER_FIELD 必须是该 wrapper 类型（HOST_FIELD 的字段类型）自身的实例字段；
+- `get.field.embedded` 的 TARGET 类型必须严格等于 INNER_FIELD 的字段类型；
+- `set.field.embedded` 的 SOURCE 类型必须严格等于 INNER_FIELD 的字段类型，
+  且 INNER_FIELD 可写；
+- 语义为对宿主内嵌的那份 wrapper 成员做**原地**访问（不产生 wrapper 值拷贝）；
+  只读 place 整体不可赋值，故不存在「对整个 place 写回」的指令形态；
+- proxy 体内 `this` 的成员访问与 `obj:Wrapper` 同构：OBJECT 取宿主（`.this`
+  或具体对象），HOST_FIELD 取对应 `.wrapper.` 隐藏字段。
 
 ### 13.4 静态字段
 
@@ -1557,6 +1605,8 @@ Resources {
 整数与浮点资源必须显式写类型，避免解析器依赖源码默认字面量规则。
 
 `null type(T)` 标注**元素类型** `T`，资源本身的类型为对应的 `.nullable<T>`——因此它可以直接与 `.nullable<T>` 变量做 `cmp.eq` / `cmp.ne` 比较而满足 §11.5 的类型严格相同规则，这就是 §3.4 所称「nullable 检查」的标准形态。
+
+判别值资源（§8.5）：enum case 的 `discriminant res(R)` 使用非负整数标量资源（如 `R_Disc_0 = i32 0`）；其静态类型必须是非负整数标量，判别值与宽度检查由 frontend/verifier 按 `RUNTIME.md` §16.4/§16.1 执行。
 
 ### 19.2 数组、Pair 与 Map
 

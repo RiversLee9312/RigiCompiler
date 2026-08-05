@@ -140,9 +140,21 @@ namespace LatteCompiler.Bil
                     reads.Add(indirectTypeCheck.TypeId);
                     writes.Add(indirectTypeCheck.Target);
                     return true;
+                case IsCaseInstruction isCase:
+                    reads.Add(isCase.Value);
+                    writes.Add(isCase.Target);
+                    return true;
                 case GetWrapperInstruction getWrapper:
                     reads.Add(getWrapper.Value);
                     writes.Add(getWrapper.Target);
+                    return true;
+                case GetEmbeddedFieldInstruction getEmbedded:
+                    reads.Add(getEmbedded.Object);
+                    writes.Add(getEmbedded.Target);
+                    return true;
+                case SetEmbeddedFieldInstruction setEmbedded:
+                    reads.Add(setEmbedded.Source);
+                    reads.Add(setEmbedded.Object);
                     return true;
                 case GetIdVarInstruction getIdVar:
                     reads.Add(getIdVar.Value);
@@ -274,10 +286,35 @@ namespace LatteCompiler.Bil
                         "type." + indirectTypeCheck.Kind + " 结果", errors);
                     break;
 
+                case IsCaseInstruction isCase:
+                    VerifyCaseCheck(context, isCase, location, errors);
+                    CheckType(context, VarType(context, isCase.Target), ".bool", location,
+                        "type.is.case 结果", errors);
+                    break;
+
                 case GetWrapperInstruction getWrapper:
                     VerifyWrapperType(context, getWrapper.WrapperType.TypeRef, location, errors);
                     CheckType(context, VarType(context, getWrapper.Target),
                         getWrapper.WrapperType.TypeRef, location, "get.wrapper 结果", errors);
+                    break;
+
+                case GetEmbeddedFieldInstruction getEmbedded:
+                    VerifyEmbeddedField(context, getEmbedded.HostField.Symbol,
+                        getEmbedded.InnerField.Symbol, VarType(context, getEmbedded.Object),
+                        location, errors);
+                    CheckType(context, VarType(context, getEmbedded.Target),
+                        FieldTypeOf(context, getEmbedded.InnerField.Symbol), location,
+                        "get.field.embedded 目标变量", errors);
+                    break;
+
+                case SetEmbeddedFieldInstruction setEmbedded:
+                    VerifyEmbeddedField(context, setEmbedded.HostField.Symbol,
+                        setEmbedded.InnerField.Symbol, VarType(context, setEmbedded.Object),
+                        location, errors);
+                    CheckType(context, VarType(context, setEmbedded.Source),
+                        FieldTypeOf(context, setEmbedded.InnerField.Symbol), location,
+                        "set.field.embedded 源变量", errors);
+                    VerifyFieldWritable(context, setEmbedded.InnerField.Symbol, location, errors);
                     break;
 
                 case GetIdVarInstruction getIdVar:
@@ -799,6 +836,106 @@ namespace LatteCompiler.Bil
             {
                 CheckType(context, VarType(context, newCase.Arguments[i]),
                     caseDeclaration.Parameters[i].TypeRef, location, $"new.case 实参 {i}", errors);
+            }
+        }
+
+        // §21.3：type.is.case 校验（§12.3，S11）——case 符号可解析且以
+        // enum-struct 为 owner；VALUE 静态类型严格等于 case 的 enum 类型
+        // （目标 .bool 由调用方 CheckType 断言）
+        private static void VerifyCaseCheck(BilFunctionContext context,
+            IsCaseInstruction instruction, string location, List<BilVerificationError> errors)
+        {
+            if (!context.Module.CaseDeclarations.TryGetValue(instruction.Case.QualifiedName,
+                    out _))
+            {
+                errors.Add(new BilVerificationError("21.2", location,
+                    $"type.is.case 的 case 符号不可解析 \"{instruction.Case.QualifiedName}\""));
+                return;
+            }
+            // case 全名最后一段是 CaseName，前缀即 enum 类型（canonical 中
+            // 命名空间/嵌套类型统一以 ::/. 分段，从最后一个 . 切分）
+            var lastDot = instruction.Case.QualifiedName.LastIndexOf('.');
+            if (lastDot <= 0)
+            {
+                errors.Add(new BilVerificationError("21.2", location,
+                    $"type.is.case 的 case 符号缺少 enum 类型前缀 \"{instruction.Case.QualifiedName}\""));
+                return;
+            }
+            var enumType = instruction.Case.QualifiedName.Substring(0, lastDot);
+            VerifyResolvableType(context, enumType, location, errors);
+            if (context.Module.TypeDeclarations.TryGetValue(
+                    BilVerificationContext.StripTypeArguments(enumType), out var declaration)
+                && declaration.Kind != BilTypeKind.EnumStruct)
+            {
+                errors.Add(new BilVerificationError("21.3", location,
+                    $"type.is.case 的目标类型 \"{enumType}\" 不是 enum-struct"));
+            }
+            CheckType(context, VarType(context, instruction.Value), enumType, location,
+                "type.is.case 的操作数", errors);
+        }
+
+        // §21.3：嵌套字段访问校验（§13.3，S11）——HOST_FIELD 必须是 wrapper
+        // 隐藏字段（字段名段以 .wrapper. 开头，§5.3）且字段类型解析为 wrapper；
+        // INNER_FIELD 必须是该 wrapper（沿继承链）的实例字段；宿主对象必须
+        // 可赋值到宿主字段的 owner
+        private static void VerifyEmbeddedField(BilFunctionContext context,
+            string hostFieldSymbol, string innerFieldSymbol, string? objectType,
+            string location, List<BilVerificationError> errors)
+        {
+            if (!context.Module.FieldSymbols.Contains(hostFieldSymbol))
+            {
+                errors.Add(new BilVerificationError("21.2", location,
+                    $"嵌套字段访问的宿主字段符号不可解析 \"{hostFieldSymbol}\""));
+                return;
+            }
+            var hostType = FieldTypeOf(context, hostFieldSymbol);
+            if (hostType == null)
+            {
+                return;
+            }
+            if (!BilVerificationContext.TryParseFieldSymbol(hostFieldSymbol, out var hostOwner,
+                    out _, out _))
+            {
+                return;
+            }
+            var hash = hostFieldSymbol.IndexOf('#');
+            var at = hostFieldSymbol.LastIndexOf('@');
+            var fieldName = hostFieldSymbol.Substring(hash + 1, at - hash - 1);
+            if (!fieldName.StartsWith(".wrapper."))
+            {
+                errors.Add(new BilVerificationError("21.3", location,
+                    $"嵌套字段访问的宿主字段 \"{hostFieldSymbol}\" 不是 wrapper 隐藏字段（§5.3）"));
+                return;
+            }
+            if (!context.Module.TypeDeclarations.TryGetValue(
+                    BilVerificationContext.StripTypeArguments(hostType), out var hostDeclaration)
+                || hostDeclaration.Kind != BilTypeKind.Wrapper)
+            {
+                errors.Add(new BilVerificationError("21.3", location,
+                    $"嵌套字段访问的宿主字段类型 \"{hostType}\" 不是 wrapper 类型"));
+                return;
+            }
+            CheckHostAssignable(context, objectType, hostOwner, location,
+                "嵌套字段访问的宿主对象", errors);
+            if (!context.Module.FieldSymbols.Contains(innerFieldSymbol))
+            {
+                errors.Add(new BilVerificationError("21.2", location,
+                    $"嵌套字段访问的内层字段符号不可解析 \"{innerFieldSymbol}\""));
+                return;
+            }
+            if (BilVerificationContext.TryParseFieldSymbol(innerFieldSymbol,
+                    out var innerOwner, out var innerStatic, out _))
+            {
+                if (innerStatic)
+                {
+                    errors.Add(new BilVerificationError("21.3", location,
+                        $"嵌套字段访问的内层字段 \"{innerFieldSymbol}\" 必须是实例字段"));
+                }
+                else
+                {
+                    CheckHostAssignable(context, hostType, innerOwner, location,
+                        "嵌套字段访问的内层字段宿主", errors);
+                }
             }
         }
 

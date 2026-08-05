@@ -98,6 +98,56 @@ namespace LatteCompiler.Bil
             new BilOperand[] { Source, Object, Field };
     }
 
+    // §13.3 嵌套字段访问（wrapper 只读 place 形态，S11）：
+    // get.field.embedded OBJECT TARGET field(HOST_FIELD) field(INNER_FIELD)
+    // HOST_FIELD 必须是 OBJECT 的 wrapper 隐藏字段（§5.3/§8.3.1）；
+    // INNER_FIELD 必须是该 wrapper 自身的实例字段。对应
+    // obj:Wrapper.field 读取与 proxy 体内 this.field 的原地访问
+    public sealed class GetEmbeddedFieldInstruction : BilInstruction
+    {
+        public BilVariableOperand Object { get; }
+        public BilVariableOperand Target { get; }
+        public BilFieldOperand HostField { get; }
+        public BilFieldOperand InnerField { get; }
+
+        public GetEmbeddedFieldInstruction(BilVariableOperand objectValue,
+            BilVariableOperand target, BilFieldOperand hostField, BilFieldOperand innerField)
+        {
+            Object = objectValue;
+            Target = target;
+            HostField = hostField;
+            InnerField = innerField;
+        }
+
+        internal override string Opcode => "get.field.embedded";
+        internal override IReadOnlyList<BilOperand> Operands =>
+            new BilOperand[] { Object, Target, HostField, InnerField };
+    }
+
+    // §13.3 嵌套字段写入：set.field.embedded SOURCE OBJECT field(HOST_FIELD)
+    // field(INNER_FIELD)——原地写入宿主内嵌 wrapper 的成员（只读 place
+    // 整体不可赋值，故无「对整个 place 写回」的形态）
+    public sealed class SetEmbeddedFieldInstruction : BilInstruction
+    {
+        public BilVariableOperand Source { get; }
+        public BilVariableOperand Object { get; }
+        public BilFieldOperand HostField { get; }
+        public BilFieldOperand InnerField { get; }
+
+        public SetEmbeddedFieldInstruction(BilVariableOperand source,
+            BilVariableOperand objectValue, BilFieldOperand hostField, BilFieldOperand innerField)
+        {
+            Source = source;
+            Object = objectValue;
+            HostField = hostField;
+            InnerField = innerField;
+        }
+
+        internal override string Opcode => "set.field.embedded";
+        internal override IReadOnlyList<BilOperand> Operands =>
+            new BilOperand[] { Source, Object, HostField, InnerField };
+    }
+
     // §13.4 静态字段读取：get.field.static TARGET type(OWNER_TYPE) field(FIELD)
     public sealed class GetFieldStaticInstruction : BilInstruction
     {

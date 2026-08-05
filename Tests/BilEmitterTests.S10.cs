@@ -48,7 +48,8 @@ namespace LatteCompiler.Tests
                 .Single(t => t.Symbol == "ValidationError");
             TestHarness.Check("ValidationError extends 与成员声明",
                 validationError.ExtendsType + " / " +
-                string.Join("; ", validationError.Members.Select(m => m.Symbol)),
+                string.Join("; ", validationError.Members
+                    .OfType<BilSimpleMemberDeclaration>().Select(m => m.Symbol)),
                 "core::Exception / ValidationError$init(text:.string)@.void");
 
             // init 体 set.field 引用 bootstrap 根字段（预定义符号表闭合）
@@ -72,7 +73,7 @@ namespace LatteCompiler.Tests
         {
             var (unit, module, _) = BilTestHarness.EmitBilUnit(
                 "class Resource implements core.IDisposable {\n" +
-                "    pub func dispose() { }\n" +
+                "    pub override func dispose() { }\n" +
                 "}\n" +
                 "func main(): i32 {\n" +
                 "    var r = new Resource()\n" +

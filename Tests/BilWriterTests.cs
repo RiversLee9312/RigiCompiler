@@ -312,12 +312,20 @@ namespace LatteCompiler.Tests
                 BilOp.Type("com.example::User"), isSafe: false));
             body.Instructions.Add(new DirectTypeCheckInstruction(BilTypeCheckKind.Is,
                 BilOp.Var("a"), BilOp.Type("com.example::User"), BilOp.Var("b")));
+            body.Instructions.Add(new IsCaseInstruction(BilOp.Var("a"),
+                BilOp.Case("com.example::RequestResult.Failed"), BilOp.Var("b")));
             body.Instructions.Add(new GetWrapperInstruction(BilOp.Var("a"),
                 BilOp.Type("core.logging::Logged"), BilOp.Var("b")));
             body.Instructions.Add(new GetIdVarInstruction(BilOp.Var("a"), BilOp.Var("t")));
             body.Instructions.Add(new GetVarInstruction(BilOp.Var("a"), BilOp.Var("b")));
             body.Instructions.Add(new GetFieldInstruction(BilOp.Var("obj"), BilOp.Var("t"),
                 BilOp.Field("com.example::Service#name@.string")));
+            body.Instructions.Add(new GetEmbeddedFieldInstruction(BilOp.Var("obj"), BilOp.Var("t"),
+                BilOp.Field("com.example::Service#.wrapper.core.logging::Logged@core.logging::Logged"),
+                BilOp.Field("core.logging::Logged#level@.string")));
+            body.Instructions.Add(new SetEmbeddedFieldInstruction(BilOp.Var("v"), BilOp.Var("obj"),
+                BilOp.Field("com.example::Service#.wrapper.core.logging::Logged@core.logging::Logged"),
+                BilOp.Field("core.logging::Logged#level@.string")));
             body.Instructions.Add(new SetFieldStaticInstruction(BilOp.Var("v"),
                 BilOp.Type("com.example::Service"),
                 BilOp.Field("com.example::Service#.static.instanceCount@.i64")));
@@ -376,10 +384,13 @@ namespace LatteCompiler.Tests
                 "    .block entry entrypoint {",
                 "        cast $a $b type(com.example::User)",
                 "        type.is $a type(com.example::User) $b",
+                "        type.is.case $a case(com.example::RequestResult.Failed) $b",
                 "        get.wrapper $a type(core.logging::Logged) $b",
                 "        getid.var $a $t",
                 "        get.var $a $b",
                 "        get.field $obj $t field(com.example::Service#name@.string)",
+                "        get.field.embedded $obj $t field(com.example::Service#.wrapper.core.logging::Logged@core.logging::Logged) field(core.logging::Logged#level@.string)",
+                "        set.field.embedded $v $obj field(com.example::Service#.wrapper.core.logging::Logged@core.logging::Logged) field(core.logging::Logged#level@.string)",
                 "        set.field.static $v type(com.example::Service) field(com.example::Service#.static.instanceCount@.i64)",
                 "        get.array $arr $i $e",
                 "        new type(com.example::User) $u [$a]",

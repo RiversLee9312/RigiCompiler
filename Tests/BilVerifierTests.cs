@@ -15,6 +15,11 @@ namespace LatteCompiler.Tests
     /// 符号 / backing 与 computed 共存，手工模块基例）。
     /// M64 增补：§18 hint 指令（string 资源正例 + 非 string 资源 /
     /// 模块外资源负例）。
+    /// M75 增补（S11 规范定稿落地）：§12.3 type.is.case（case 符号/
+    /// 操作数类型/结果 bool 负例 + case 声明宿主与判别值资源负例）与
+    /// §13.3 嵌套字段访问（宿主字段不可解析/非隐藏字段名/宿主类型非
+    /// wrapper/内层字段不可解析/静态内层/get·set 类型/宿主对象/const
+    /// 写入负例，手工模块基线正例）。
     /// </summary>
     public static class BilVerifierTests
     {
@@ -176,6 +181,20 @@ namespace LatteCompiler.Tests
                 "    var s = new Square()\n" +
                 "    return s.area()\n" +
                 "}\n");
+
+            // ===== S11：§12.3 type.is.case / §13.3 嵌套字段访问（手工模块）=====
+            // P3 尚未发射（is .Case 与 wrapper place 归 S11），故不走全管线
+            // 正例；以手工模块断言指令形态与验证器规则。宿主 Service 带
+            // Logged wrapper 隐藏字段（§5.3 命名）、RequestResult enum + 两
+            // case（Failed 判别值资源 R_FC）；main(svc, e) 参数入口已赋值
+            BilTestHarness.CheckBilValid("S11 手工模块（基线，is.case + embedded 正例）",
+                S11Module(
+                    new IsCaseInstruction(BilOp.Var("e"),
+                        BilOp.Case("com.example::RequestResult.Failed"), BilOp.Var("b")),
+                    new GetEmbeddedFieldInstruction(BilOp.Var("svc"), BilOp.Var("lv"),
+                        BilOp.Field(HostWrapperField), BilOp.Field("core.logging::Logged#level@.string")),
+                    new SetEmbeddedFieldInstruction(BilOp.Var("lv"), BilOp.Var("svc"),
+                        BilOp.Field(HostWrapperField), BilOp.Field("core.logging::Logged#level@.string"))));
 
             // ===== 负例：非法模块按规则命中 =====
             NegativeCases();
@@ -609,6 +628,132 @@ namespace LatteCompiler.Tests
                 new BilScalarResource("R_Foreign", BilScalarType.String, "\"{}\"")));
             BilTestHarness.CheckBilInvalid("hint 引用模块外资源", m,
                 "不属于本模块");
+
+            // ===== S11：§12.3 type.is.case 与 §13.3 嵌套字段访问负例 =====
+            // 基线见 RunAll 的 S11Module 正例；负例均在其上改造
+
+            // §21.2：is.case 的 case 符号未登记
+            m = S11Module(new IsCaseInstruction(BilOp.Var("e"),
+                BilOp.Case("com.example::RequestResult.Missing"), BilOp.Var("b")));
+            BilTestHarness.CheckBilInvalid("is.case case 符号不可解析", m,
+                "case 符号不可解析");
+
+            // §21.3：is.case 操作数类型必须严格等于 case 的 enum 类型
+            m = S11Module(new IsCaseInstruction(BilOp.Var("svc"),
+                BilOp.Case("com.example::RequestResult.Failed"), BilOp.Var("b")));
+            BilTestHarness.CheckBilInvalid("is.case 操作数类型不符", m,
+                "type.is.case 的操作数");
+
+            // §21.3：is.case 结果必须为 .bool
+            m = S11Module(new IsCaseInstruction(BilOp.Var("e"),
+                BilOp.Case("com.example::RequestResult.Failed"), BilOp.Var("lv")));
+            BilTestHarness.CheckBilInvalid("is.case 结果非 bool", m,
+                "type.is.case 结果");
+
+            // §21.2：case 声明宿主不是 enum-struct（声明侧）
+            m = MinimalModule(out _, out _);
+            var classWithCase = new BilTypeDeclaration("com.example::Service",
+                BilTypeKind.Class, new BilAccessibilityModifier(BilAccessibility.Public));
+            classWithCase.Members.Add(new BilCaseDeclaration("com.example::Service.Foo"));
+            m.LocalSymbols.Add(classWithCase);
+            BilTestHarness.CheckBilInvalid("case 声明宿主非 enum-struct", m,
+                "宿主类型不是 enum-struct");
+
+            // §21.2：case 判别值资源未登记
+            m = MinimalModule(out _, out _);
+            var orphanCase = new BilTypeDeclaration("com.example::RequestResult",
+                BilTypeKind.EnumStruct, new BilAccessibilityModifier(BilAccessibility.Public));
+            orphanCase.Members.Add(new BilCaseDeclaration("com.example::RequestResult.Failed",
+                new[] { new BilCaseParameter("errorCode", ".i32") },
+                discriminantResource: "R_OrphanCase"));
+            m.LocalSymbols.Add(orphanCase);
+            BilTestHarness.CheckBilInvalid("case 判别值资源未登记", m,
+                "未登记");
+
+            // §21.2：embedded 宿主字段符号不可解析
+            m = S11Module(new GetEmbeddedFieldInstruction(BilOp.Var("svc"), BilOp.Var("lv"),
+                BilOp.Field("com.example::Service#name@.string"),
+                BilOp.Field("core.logging::Logged#level@.string")));
+            BilTestHarness.CheckBilInvalid("embedded 宿主字段不可解析", m,
+                "宿主字段符号不可解析");
+
+            // §21.3：embedded 宿主字段名必须以 .wrapper. 开头（§5.3 保留名）
+            m = S11Module(
+                new GetEmbeddedFieldInstruction(BilOp.Var("svc"), BilOp.Var("lv"),
+                    BilOp.Field("com.example::Service#note@.string"),
+                    BilOp.Field("core.logging::Logged#level@.string")));
+            var serviceWithNote = (BilTypeDeclaration)m.LocalSymbols
+                .Single(e => e is BilTypeDeclaration { Symbol: "com.example::Service" });
+            serviceWithNote.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field,
+                "com.example::Service#note@.string",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            BilTestHarness.CheckBilInvalid("embedded 宿主字段非隐藏字段", m,
+                "不是 wrapper 隐藏字段");
+
+            // §21.3：embedded 宿主字段类型必须解析为 wrapper 类型
+            m = S11Module(
+                new GetEmbeddedFieldInstruction(BilOp.Var("svc"), BilOp.Var("lv"),
+                    BilOp.Field("com.example::Service#.wrapper.core.logging::Nope@.string"),
+                    BilOp.Field("core.logging::Logged#level@.string")));
+            var serviceWithFake = (BilTypeDeclaration)m.LocalSymbols
+                .Single(e => e is BilTypeDeclaration { Symbol: "com.example::Service" });
+            serviceWithFake.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field,
+                "com.example::Service#.wrapper.core.logging::Nope@.string",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            BilTestHarness.CheckBilInvalid("embedded 宿主字段类型非 wrapper", m,
+                "不是 wrapper 类型");
+
+            // §21.2：embedded 内层字段符号不可解析
+            m = S11Module(new GetEmbeddedFieldInstruction(BilOp.Var("svc"), BilOp.Var("lv"),
+                BilOp.Field(HostWrapperField), BilOp.Field("core.logging::Logged#ghost@.string")));
+            BilTestHarness.CheckBilInvalid("embedded 内层字段不可解析", m,
+                "内层字段符号不可解析");
+
+            // §21.3：embedded 内层字段必须是实例字段（静态字段拒绝）
+            m = S11Module(
+                new GetEmbeddedFieldInstruction(BilOp.Var("svc"), BilOp.Var("lv"),
+                    BilOp.Field(HostWrapperField), BilOp.Field("core.logging::Logged#.static.flag@.bool")));
+            var loggedWithStatic = (BilTypeDeclaration)m.LocalSymbols
+                .Single(e => e is BilTypeDeclaration { Symbol: "core.logging::Logged" });
+            loggedWithStatic.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field,
+                "core.logging::Logged#.static.flag@.bool",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            BilTestHarness.CheckBilInvalid("embedded 内层字段为静态字段", m,
+                "必须是实例字段");
+
+            // §21.3：embedded get 结果类型必须严格等于内层字段类型
+            m = S11Module(new GetEmbeddedFieldInstruction(BilOp.Var("svc"), BilOp.Var("x"),
+                BilOp.Field(HostWrapperField), BilOp.Field("core.logging::Logged#level@.string")));
+            BilTestHarness.CheckBilInvalid("embedded get 结果类型不符", m,
+                "get.field.embedded 目标变量");
+
+            // §21.3：embedded set 源类型必须严格等于内层字段类型
+            m = S11Module(new SetEmbeddedFieldInstruction(BilOp.Var("b"), BilOp.Var("svc"),
+                BilOp.Field(HostWrapperField), BilOp.Field("core.logging::Logged#level@.string")));
+            BilTestHarness.CheckBilInvalid("embedded set 源类型不符", m,
+                "set.field.embedded 源变量");
+
+            // §21.3：embedded 宿主对象类型必须可赋值到宿主字段 owner
+            m = S11Module(new GetEmbeddedFieldInstruction(BilOp.Var("e"), BilOp.Var("lv"),
+                BilOp.Field(HostWrapperField), BilOp.Field("core.logging::Logged#level@.string")));
+            BilTestHarness.CheckBilInvalid("embedded 宿主对象类型不符", m,
+                "宿主对象");
+
+            // §21.8：embedded set 不得写入 const 内层字段
+            m = S11Module(
+                new SetEmbeddedFieldInstruction(BilOp.Var("lv"), BilOp.Var("svc"),
+                    BilOp.Field(HostWrapperField), BilOp.Field("core.logging::Logged#tag@.string")));
+            var loggedWithConst = (BilTypeDeclaration)m.LocalSymbols
+                .Single(e => e is BilTypeDeclaration { Symbol: "core.logging::Logged" });
+            loggedWithConst.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field,
+                "core.logging::Logged#tag@.string",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilKeywordModifier(BilKeyword.Const),
+                }));
+            BilTestHarness.CheckBilInvalid("embedded set 写 const 内层字段", m,
+                "不得被写入");
         }
 
         // Vec 的索引运算符对（get 返回 .string / set 元素 .string，索引皆 .i32）
@@ -620,5 +765,64 @@ namespace LatteCompiler.Tests
                 IndexOperator("Vec$$setAtIndex(index:.i32,element:.string)@.void", "setAtIndex"),
             };
         }
+
+        // S11 手工模块（§12.3/§13.3）：core.logging::Logged wrapper（rich，
+        // 实例字段 level）+ com.example::Service class（§5.3 wrapper 隐藏
+        // 字段）+ com.example::RequestResult enum-struct（Success 自动判别 /
+        // Failed 判别值资源 R_FC）+ main(svc, e)（参数入口已赋值，DA 免扰）——
+        // 正例与负例共用；body 指令后以 ret $x 收尾
+        private static BilModule S11Module(params BilInstruction[] body)
+        {
+            var module = new BilModule();
+            module.Resources.Add(new BilScalarResource("R_FC", BilScalarType.I32, "0"));
+            module.Resources.Add(new BilScalarResource("R_X", BilScalarType.I32, "0"));
+
+            var logged = new BilTypeDeclaration("core.logging::Logged", BilTypeKind.Wrapper,
+                new BilAccessibilityModifier(BilAccessibility.Public),
+                new BilKeywordModifier(BilKeyword.Rich));
+            logged.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field,
+                "core.logging::Logged#level@.string",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            module.LocalSymbols.Add(logged);
+
+            var service = new BilTypeDeclaration("com.example::Service", BilTypeKind.Class,
+                new BilAccessibilityModifier(BilAccessibility.Public));
+            service.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field,
+                HostWrapperField,
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            module.LocalSymbols.Add(service);
+
+            var result = new BilTypeDeclaration("com.example::RequestResult",
+                BilTypeKind.EnumStruct, new BilAccessibilityModifier(BilAccessibility.Public));
+            result.Members.Add(new BilCaseDeclaration("com.example::RequestResult.Success"));
+            result.Members.Add(new BilCaseDeclaration("com.example::RequestResult.Failed",
+                new[] { new BilCaseParameter("errorCode", ".i32") },
+                discriminantResource: "R_FC"));
+            module.LocalSymbols.Add(result);
+
+            module.LocalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "$main(svc:com.example::Service,e:com.example::RequestResult)@.i32",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            var main = new BilFunction(
+                "$main(svc:com.example::Service,e:com.example::RequestResult)@.i32");
+            main.Args.Add(new BilArgDeclaration(".return", ".i32"));
+            main.Args.Add(new BilArgDeclaration("svc", "com.example::Service"));
+            main.Args.Add(new BilArgDeclaration("e", "com.example::RequestResult"));
+            main.Vars.Add(new BilVarDeclaration(".string", "lv"));
+            main.Vars.Add(new BilVarDeclaration(".bool", "b"));
+            main.Vars.Add(new BilVarDeclaration(".i32", "x"));
+            var entry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            entry.Instructions.Add(new LoadInstruction(
+                (BilScalarResource)module.Resources[1], BilOp.Var("x")));
+            entry.Instructions.AddRange(body);
+            entry.Instructions.Add(new RetInstruction(BilOp.Var("x")));
+            main.Blocks.Add(entry);
+            module.Functions.Add(main);
+            return module;
+        }
+
+        // §5.3 wrapper 隐藏字段 canonical：宿主 Service 的 Logged 字段
+        private const string HostWrapperField =
+            "com.example::Service#.wrapper.core.logging::Logged@core.logging::Logged";
     }
 }

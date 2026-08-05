@@ -629,6 +629,25 @@ wrapper 静态组合链 lowering（specific/wildcard proxy、`call???` 降级、
 enum case（`new.case`、`is .Case` 判别比较、判别值分配）、
 派发链诊断工具（RUNTIME §15，编译器必备功能而非事后补充）。
 
+> **规范定稿（M75，2026-08-05）**：S11 的 BIL 侧三处定稿已落地
+> （`BIL_STANDARD.md`，ARCHITECTURE §7.1 缺口已兑现）——① §12.3 增补
+> `type.is.case`（enum 判别比较，RUNTIME §16.3 承载：非子类型检查、
+> VALUE 严格等于 case 的 enum 类型、case 必须带完整 enum 前缀、结果
+> .bool、判别宽度 u16/u32 为布局内部细节）；② §12.4 修订 + §13.3 增补
+> 嵌套字段访问 `get.field.embedded` / `set.field.embedded`（wrapper 只读
+> place 形态：`get.wrapper` 保留为 lowering/VM 内部能力——成员读取 = 值
+> 拷贝 + get.field；成员写入与 proxy 体内 `this` 原地访问用 embedded；
+> `obj:W = ...` 仍是源码层编译错误，无整体写回指令）；③ §8.5/§19.1
+> 判别值注记（整数标量资源、非负唯一、auto 按声明序从 0、宽度按
+> RUNTIME §16.1）。BIL 模型（`IsCaseInstruction`/`GetEmbeddedFieldInstruction`/
+> `SetEmbeddedFieldInstruction`）与 BilVerifier §21.3 校验同步落地
+> （BilWriterTests 黄金 + BilVerifierTests 手工模块正负例）。后续施工
+> 按序推进：P3 wrapper place 绑定与只读禁令（解 PathVisitors 两处
+> Colon 归口 + 全拦截面）→ enum case 全链（EnumCaseSymbol 家族 →
+> 判别值分配 → P3 `is .Case`/`.Case(args)` → P4b `.case`/`new.case`
+> 发射）→ ext 收尾 + 局部访问器解归口 → proxy 烘焙 lowering（specific
+> → wildcard → `call???` 降级）→ 派发链诊断工具。
+
 wrapper 值语义落地要点（2026-07-29 规范修订）：wrapper 是 rich struct
 值而非对象，`obj:Wrapper` 与 proxy 体内 `this` 都是宿主隐藏字段的
 **原地访问**。`obj:Wrapper` 是只读 place：P3 需在此拒绝整体赋值与
