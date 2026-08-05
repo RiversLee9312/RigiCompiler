@@ -145,7 +145,7 @@ namespace LatteCompiler.Bil
             };
         }
 
-        // §4.1/§18.1/§18.3 标量类型关键字（无前导点）
+        // §4.1/§19.1/§19.3 标量类型关键字（无前导点）
         public static string Of(BilScalarType type)
         {
             return type switch

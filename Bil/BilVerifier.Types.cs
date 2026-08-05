@@ -2,11 +2,12 @@ using System.Collections.Generic;
 
 namespace LatteCompiler.Bil
 {
-    // BilVerifier 类型检查（§20.3）：变量类型环境 + 逐指令 switch。
+    // BilVerifier 类型检查（§21.3）：变量类型环境 + 逐指令 switch。
     // 严格相等按 §6.4；含 .generic< 的 typeid 位置表达式与查不到声明的
     // 派生规则一律降级通过（防误报原则，见 BilVerifier.cs 文件头）。
     // S8c 增补：§13.6 get.array/set.array 非数组形态的严格三元组查询
     // （用户 getAtIndex/setAtIndex 索引运算符实现重查）。
+    // M64 增补：§18 hint 指令（资源归属本模块 §21.2 + string 标量限定 §21.3）。
     //
     // ClassifyVariables 是指令读/写变量位置的唯一分类表（DA 与 breakid
     // 检查共用）；绑定/特殊位（loop/switch 的 breakid、break/continue 的
@@ -28,10 +29,10 @@ namespace LatteCompiler.Bil
                 writes.Clear();
                 if (!ClassifyVariables(instruction, reads, writes))
                 {
-                    errors.Add(new BilVerificationError("20.3", location,
+                    errors.Add(new BilVerificationError("21.3", location,
                         $"验证器未覆盖指令类型 {instruction.GetType().Name}——请扩展 BilVerifier"));
                 }
-                // 变量可解析（§20.2）+ breakid 不得普通读写（§20.6）
+                // 变量可解析（§21.2）+ breakid 不得普通读写（§21.6）
                 foreach (var variable in reads)
                 {
                     VerifyVariableUse(context, variable, location, errors);
@@ -49,12 +50,12 @@ namespace LatteCompiler.Bil
         {
             if (!context.VariableTypes.ContainsKey(variable.Name))
             {
-                errors.Add(new BilVerificationError("20.2", location,
+                errors.Add(new BilVerificationError("21.2", location,
                     $"未声明的变量 \"${variable.Name}\""));
             }
             else if (context.BreakIdVariables.Contains(variable.Name))
             {
-                errors.Add(new BilVerificationError("20.6", location,
+                errors.Add(new BilVerificationError("21.6", location,
                     $".breakid 变量 \"${variable.Name}\" 不得被普通读写（只允许 " +
                     "loop/loop.rev/switch 绑定与 break/continue 引用）"));
             }
@@ -176,27 +177,44 @@ namespace LatteCompiler.Bil
                 case CallBlockInstruction:
                 case TryInstruction:
                     return true;
+                // hint（§18）：不读写任何变量，纯位置标记，不参与 DA
+                case HintInstruction:
+                    return true;
                 default:
                     return false;
             }
         }
 
-        // ===== 逐指令类型规则（§20.3）=====
+        // ===== 逐指令类型规则（§21.3）=====
         private static void VerifyInstructionTypes(BilFunctionContext context,
             BilInstruction instruction, string location, List<BilVerificationError> errors)
         {
             switch (instruction)
             {
                 case LoadInstruction load:
-                    // §13.1：资源类型 ≡ TARGET；资源必须属于本模块（§20.2）
+                    // §13.1：资源类型 ≡ TARGET；资源必须属于本模块（§21.2）
                     if (!context.Module.ResourceSet.Contains(load.Resource))
                     {
-                        errors.Add(new BilVerificationError("20.2", location,
+                        errors.Add(new BilVerificationError("21.2", location,
                             $"load 引用的资源 \"{load.Resource.Name}\" 不属于本模块"));
                     }
                     CheckType(context, VarType(context, load.Target),
                         BilVerificationContext.ResourceValueType(load.Resource), location,
                         "load 目标变量", errors);
+                    break;
+
+                case HintInstruction hint:
+                    // §18：资源必须属于本模块（§21.2）且为 string 标量资源
+                    if (!context.Module.ResourceSet.Contains(hint.Resource))
+                    {
+                        errors.Add(new BilVerificationError("21.2", location,
+                            $"hint 引用的资源 \"{hint.Resource.Name}\" 不属于本模块"));
+                    }
+                    if (hint.Resource is not BilScalarResource { Type: BilScalarType.String })
+                    {
+                        errors.Add(new BilVerificationError("21.3", location,
+                            $"hint 引用的资源 \"{hint.Resource.Name}\" 必须是 string 资源"));
+                    }
                     break;
 
                 case GetVarInstruction getVar:
@@ -383,16 +401,16 @@ namespace LatteCompiler.Bil
                     break;
 
                 case SwitchInstruction switchInstruction:
-                    // §16.6/§18.4：表必须是 switch-table 资源、属于本模块、
+                    // §16.6/§19.4：表必须是 switch-table 资源、属于本模块、
                     // selector 类型 ≡ 表元素类型、表项数与 block 表一致
                     if (!context.Module.ResourceSet.Contains(switchInstruction.Table))
                     {
-                        errors.Add(new BilVerificationError("20.2", location,
+                        errors.Add(new BilVerificationError("21.2", location,
                             $"switch 引用的资源 \"{switchInstruction.Table.Name}\" 不属于本模块"));
                     }
                     if (switchInstruction.Table is not BilSwitchTableResource switchTable)
                     {
-                        errors.Add(new BilVerificationError("20.3", location,
+                        errors.Add(new BilVerificationError("21.3", location,
                             $"switch 的表资源 \"{switchInstruction.Table.Name}\" 不是 switch-table"));
                     }
                     else
@@ -401,7 +419,7 @@ namespace LatteCompiler.Bil
                             switchTable.SelectorTypeRef, location, "switch selector", errors);
                         if (switchTable.Elements.Count != switchInstruction.ItemBlocks.Count)
                         {
-                            errors.Add(new BilVerificationError("20.3", location,
+                            errors.Add(new BilVerificationError("21.3", location,
                                 $"switch-table 元素数 {switchTable.Elements.Count} 与 item block 数 " +
                                 $"{switchInstruction.ItemBlocks.Count} 不一致"));
                         }
@@ -409,16 +427,16 @@ namespace LatteCompiler.Bil
                     break;
 
                 case TryInstruction tryInstruction:
-                    // §16.7/§18.5：表必须是 catch-table 资源、属于本模块、
+                    // §16.7/§19.5：表必须是 catch-table 资源、属于本模块、
                     // 条目异常类型可解析且兼容 core::Exception
                     if (!context.Module.ResourceSet.Contains(tryInstruction.CatchTable))
                     {
-                        errors.Add(new BilVerificationError("20.2", location,
+                        errors.Add(new BilVerificationError("21.2", location,
                             $"try 引用的资源 \"{tryInstruction.CatchTable.Name}\" 不属于本模块"));
                     }
                     if (tryInstruction.CatchTable is not BilCatchTableResource catchTable)
                     {
-                        errors.Add(new BilVerificationError("20.3", location,
+                        errors.Add(new BilVerificationError("21.3", location,
                             $"try 的表资源 \"{tryInstruction.CatchTable.Name}\" 不是 catch-table"));
                     }
                     else
@@ -428,7 +446,7 @@ namespace LatteCompiler.Bil
                             VerifyResolvableType(context, entry.ExceptionType.TypeRef, location, errors);
                             if (!IsExceptionCompatible(context, entry.ExceptionType.TypeRef))
                             {
-                                errors.Add(new BilVerificationError("20.3", location,
+                                errors.Add(new BilVerificationError("21.3", location,
                                     $"catch 类型 \"{entry.ExceptionType.TypeRef}\" 不兼容 core::Exception"));
                             }
                         }
@@ -439,7 +457,7 @@ namespace LatteCompiler.Bil
                     var exceptionType = VarType(context, throwInstruction.Exception);
                     if (exceptionType != null && !IsExceptionCompatible(context, exceptionType))
                     {
-                        errors.Add(new BilVerificationError("20.3", location,
+                        errors.Add(new BilVerificationError("21.3", location,
                             $"throw 值类型 \"{exceptionType}\" 不兼容 core::Exception"));
                     }
                     break;
@@ -450,7 +468,7 @@ namespace LatteCompiler.Bil
                     break;   // 无类型规则（capability 检查在 Flow.cs）
 
                 default:
-                    errors.Add(new BilVerificationError("20.3", location,
+                    errors.Add(new BilVerificationError("21.3", location,
                         $"验证器未覆盖指令类型 {instruction.GetType().Name}——请扩展 BilVerifier"));
                     break;
             }
@@ -462,16 +480,16 @@ namespace LatteCompiler.Bil
             IReadOnlyList<BilVariableOperand> arguments, BilVariableOperand? target,
             string location, List<BilVerificationError> errors)
         {
-            // §20.2：方法符号可解析
+            // §21.2：方法符号可解析
             if (!context.Module.MethodSymbols.Contains(methodSymbol))
             {
-                errors.Add(new BilVerificationError("20.2", location,
+                errors.Add(new BilVerificationError("21.2", location,
                     $"invoke 的方法符号不可解析 \"{methodSymbol}\""));
             }
             if (!BilVerificationContext.TryParseMethodSymbol(methodSymbol,
                     out var owner, out var isStatic, out var parameters, out var returnType))
             {
-                errors.Add(new BilVerificationError("20.1", location,
+                errors.Add(new BilVerificationError("21.1", location,
                     $"invoke 的方法符号不符合 canonical 语法 \"{methodSymbol}\""));
                 return;
             }
@@ -479,12 +497,12 @@ namespace LatteCompiler.Bil
             // §15.1：返回形态匹配——有返回用 invoke，无返回用 invoke.noret
             if (target != null && returnType == ".void")
             {
-                errors.Add(new BilVerificationError("20.3", location,
+                errors.Add(new BilVerificationError("21.3", location,
                     $"无返回方法 \"{methodSymbol}\" 必须使用 invoke.noret"));
             }
             if (target == null && returnType != ".void")
             {
-                errors.Add(new BilVerificationError("20.3", location,
+                errors.Add(new BilVerificationError("21.3", location,
                     $"有返回方法 \"{methodSymbol}\" 不得使用 invoke.noret"));
             }
             if (target != null && returnType != ".void")
@@ -510,7 +528,7 @@ namespace LatteCompiler.Bil
             {
                 if (arguments.Count == 0)
                 {
-                    errors.Add(new BilVerificationError("20.3", location,
+                    errors.Add(new BilVerificationError("21.3", location,
                         $"实例方法 \"{methodSymbol}\" 的 invoke 缺少 receiver 首实参"));
                     return;
                 }
@@ -520,7 +538,7 @@ namespace LatteCompiler.Bil
             }
             if (arguments.Count - argumentIndex != expected.Count)
             {
-                errors.Add(new BilVerificationError("20.3", location,
+                errors.Add(new BilVerificationError("21.3", location,
                     $"invoke 实参个数 {arguments.Count - argumentIndex} 与方法 \"{methodSymbol}\" " +
                     $"签名参数个数 {expected.Count} 不一致"));
                 return;
@@ -544,15 +562,15 @@ namespace LatteCompiler.Bil
             {
                 return;   // 查不到声明（external 不完整）降级
             }
-            // §20.8：abstract 不被构造；enum-struct 不走普通 new
+            // §21.8：abstract 不被构造；enum-struct 不走普通 new
             if (HasKeyword(declaration.Modifiers, BilKeyword.Abstract))
             {
-                errors.Add(new BilVerificationError("20.8", location,
+                errors.Add(new BilVerificationError("21.8", location,
                     $"abstract 类型 \"{typeRef}\" 不得被 new 构造"));
             }
             if (declaration.Kind == BilTypeKind.EnumStruct)
             {
-                errors.Add(new BilVerificationError("20.8", location,
+                errors.Add(new BilVerificationError("21.8", location,
                     $"enum-struct \"{typeRef}\" 不得走普通 new（应使用 new.case）"));
             }
             // §14.1：参数必须严格匹配唯一 init（无 init 声明时只允许无参构造）
@@ -568,7 +586,7 @@ namespace LatteCompiler.Bil
             {
                 if (newInstruction.Arguments.Count > 0)
                 {
-                    errors.Add(new BilVerificationError("20.3", location,
+                    errors.Add(new BilVerificationError("21.3", location,
                         $"类型 \"{typeRef}\" 没有 init 声明，不得带参数构造"));
                 }
                 return;
@@ -585,7 +603,7 @@ namespace LatteCompiler.Bil
                     return;
                 }
             }
-            errors.Add(new BilVerificationError("20.3", location,
+            errors.Add(new BilVerificationError("21.3", location,
                 $"new \"{typeRef}\" 的实参不匹配任何 init 签名"));
         }
 
@@ -671,7 +689,7 @@ namespace LatteCompiler.Bil
             }
             if (candidates.Count == 0)
             {
-                errors.Add(new BilVerificationError("20.3", location,
+                errors.Add(new BilVerificationError("21.3", location,
                     $"类型 \"{collectionType}\" 没有 {operatorName} 索引运算符实现" +
                     $"（{opcode} 要求唯一精确实现）"));
                 return;
@@ -697,7 +715,7 @@ namespace LatteCompiler.Bil
             }
             if (exact.Count == 0)
             {
-                errors.Add(new BilVerificationError("20.3", location,
+                errors.Add(new BilVerificationError("21.3", location,
                     $"{opcode} 的操作数在 \"{collectionType}\" 的 {operatorName} 实现中无精确匹配" +
                     $"（禁止隐式转换）：索引 \"{indexType}\"" +
                     (isGet ? "" : $"，元素 \"{valueType}\"")));
@@ -705,7 +723,7 @@ namespace LatteCompiler.Bil
             }
             if (exact.Count > 1)
             {
-                errors.Add(new BilVerificationError("20.3", location,
+                errors.Add(new BilVerificationError("21.3", location,
                     $"{opcode} 在 \"{collectionType}\" 上命中多个精确 {operatorName} 实现" +
                     "（必须唯一）"));
                 return;
@@ -728,24 +746,24 @@ namespace LatteCompiler.Bil
                     BilVerificationContext.StripTypeArguments(typeRef), out var declaration)
                 && declaration.Kind != BilTypeKind.EnumStruct)
             {
-                errors.Add(new BilVerificationError("20.3", location,
+                errors.Add(new BilVerificationError("21.3", location,
                     $"new.case 目标类型 \"{typeRef}\" 不是 enum-struct"));
             }
             if (!newCase.Case.QualifiedName.StartsWith(typeRef + "."))
             {
-                errors.Add(new BilVerificationError("20.3", location,
+                errors.Add(new BilVerificationError("21.3", location,
                     $"new.case 的 case \"{newCase.Case.QualifiedName}\" 不属于类型 \"{typeRef}\""));
             }
             if (!context.Module.CaseDeclarations.TryGetValue(newCase.Case.QualifiedName, out var caseDeclaration))
             {
-                errors.Add(new BilVerificationError("20.2", location,
+                errors.Add(new BilVerificationError("21.2", location,
                     $"new.case 的 case 符号不可解析 \"{newCase.Case.QualifiedName}\""));
                 return;
             }
             // case 参数签名匹配
             if (caseDeclaration.Parameters.Count != newCase.Arguments.Count)
             {
-                errors.Add(new BilVerificationError("20.3", location,
+                errors.Add(new BilVerificationError("21.3", location,
                     $"new.case 实参个数与 case 声明参数个数不一致"));
                 return;
             }
@@ -781,7 +799,7 @@ namespace LatteCompiler.Bil
         {
             if (!context.Module.FieldSymbols.Contains(fieldSymbol))
             {
-                errors.Add(new BilVerificationError("20.2", location,
+                errors.Add(new BilVerificationError("21.2", location,
                     $"字段符号不可解析 \"{fieldSymbol}\""));
                 return;
             }
@@ -803,7 +821,7 @@ namespace LatteCompiler.Bil
             }
             if (!context.Module.IsAssignableTo(actualType, ownerRef))
             {
-                errors.Add(new BilVerificationError("20.3", location,
+                errors.Add(new BilVerificationError("21.3", location,
                     $"{what}类型不匹配：实际 \"{actualType}\"，期望可赋值到 \"{ownerRef}\""));
             }
         }
@@ -813,7 +831,7 @@ namespace LatteCompiler.Bil
         {
             if (!context.Module.FieldSymbols.Contains(fieldSymbol))
             {
-                errors.Add(new BilVerificationError("20.2", location,
+                errors.Add(new BilVerificationError("21.2", location,
                     $"字段符号不可解析 \"{fieldSymbol}\""));
                 return;
             }
@@ -838,14 +856,14 @@ namespace LatteCompiler.Bil
                 : null;
         }
 
-        // §20.8：const 字段不被写入
+        // §21.8：const 字段不被写入
         private static void VerifyFieldWritable(BilFunctionContext context, string fieldSymbol,
             string location, List<BilVerificationError> errors)
         {
             if (context.Module.FieldDeclarations.TryGetValue(fieldSymbol, out var declaration)
                 && HasKeyword(declaration, BilKeyword.Const))
             {
-                errors.Add(new BilVerificationError("20.8", location,
+                errors.Add(new BilVerificationError("21.8", location,
                     $"const 字段 \"{fieldSymbol}\" 不得被写入"));
             }
         }
@@ -858,7 +876,7 @@ namespace LatteCompiler.Bil
                     BilVerificationContext.StripTypeArguments(typeRef), out var declaration)
                 && declaration.Kind != BilTypeKind.Wrapper)
             {
-                errors.Add(new BilVerificationError("20.3", location,
+                errors.Add(new BilVerificationError("21.3", location,
                     $"\"{typeRef}\" 不是 wrapper 类型"));
             }
         }
@@ -868,7 +886,7 @@ namespace LatteCompiler.Bil
         {
             if (!context.Module.IsResolvableTypeRef(typeRef))
             {
-                errors.Add(new BilVerificationError("20.2", location,
+                errors.Add(new BilVerificationError("21.2", location,
                     $"类型符号不可解析 \"{typeRef}\""));
             }
         }
@@ -919,7 +937,7 @@ namespace LatteCompiler.Bil
                 : BilVerificationContext.TypesCompatible(actual, expected);
             if (!compatible)
             {
-                errors.Add(new BilVerificationError("20.3", location,
+                errors.Add(new BilVerificationError("21.3", location,
                     $"{what}类型不匹配：实际 \"{actual}\"，期望 \"{expected}\""));
             }
         }

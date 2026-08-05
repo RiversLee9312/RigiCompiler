@@ -1,9 +1,9 @@
 namespace LatteCompiler
 {
-    // 流分析状态（VISITOR_REWRITE.md §3）：definite assignment（M41 最小版；
+    // 流分析状态（M55 visitor 化协议）：definite assignment（M41 最小版；
     // S7b 分支合并；S7c-1 循环两规则）。S8b 的 smart cast 收窄事实表将长在
     // 这里——收窄与 DA 同为流敏感事实，同生命周期分叉/合并/恢复
-    // （SMART_CAST_DESIGN.md §2）。
+    // （SYNTAX §3.5）。
     //
     // 分叉/合并原语（迁移自旧 BindSession 的内联代码，语义不变）：
     //   before = Snapshot() → 绑定分支体 → tail = Snapshot() → Restore(before)
@@ -63,7 +63,7 @@ namespace LatteCompiler
             Restore(merged);
         }
 
-        // ===== S8b smart cast 收窄事实表（SMART_CAST_DESIGN §2）=====
+        // ===== S8b smart cast 收窄事实表（SYNTAX §3.5）=====
         // 与 DA 同生命周期的流敏感事实：分叉（Snapshot/Restore）、边覆盖
         // （ApplyNarrow）、失效（ClearRoot/赋值点）、合并（**纯交集**——
         // 收窄表非单调（失效会移除键），不能用 DA 的 before∪∩ 规则：

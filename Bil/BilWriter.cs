@@ -4,9 +4,9 @@ using System.Text;
 
 namespace LatteCompiler.Bil
 {
-    // BIL 文本生成器（BIL_STANDARD §4/§5.6/§19）：模型 → 标准 BIL 文本。
+    // BIL 文本生成器（BIL_STANDARD §4/§5.6/§20）：模型 → 标准 BIL 文本。
     // 只输出标准 spelling（不输出 legacy）；段物理顺序与 §4 一致且全部
-    // 输出（空段也输出，§4）；排版严格对齐 §19 黄金示例（4 空格缩进、
+    // 输出（空段也输出，§4）；排版严格对齐 §20 黄金示例（4 空格缩进、
     // 段间空行）；换行统一 \n，不随平台漂移。
     // M57 起指令/修饰符/种类拼写全部来自模型自渲染（BilInstruction.
     // WriteTo / BilModifier.Render / BilSpellings），本类只提供段落框架
@@ -64,7 +64,7 @@ namespace LatteCompiler.Bil
             sb.Append("Resources {\n");
             for (int i = 0; i < module.Resources.Count; i++)
             {
-                // 条目后逗号（最后一项除外，§19 示例形态）
+                // 条目后逗号（最后一项除外，§20 示例形态）
                 var trailing = i < module.Resources.Count - 1 ? "," : "";
                 WriteResource(module.Resources[i], sb, Indent, trailing);
             }
@@ -89,7 +89,7 @@ namespace LatteCompiler.Bil
                     }
                     else
                     {
-                        // §18.2 规范排版：map 元素各占一行
+                        // §19.2 规范排版：map 元素各占一行
                         sb.Append($"{indent}{collection.Name} = {collection.Header} {{\n");
                         for (int i = 0; i < collection.Elements.Count; i++)
                         {
@@ -99,11 +99,11 @@ namespace LatteCompiler.Bil
                         sb.Append($"{indent}}}{trailing}\n");
                     }
                     break;
-                // §18.4 switch-table：单行形态
+                // §19.4 switch-table：单行形态
                 case BilSwitchTableResource switchTable:
                     sb.Append($"{indent}{switchTable.Name} = {switchTable.HeaderText} {{ {string.Join(", ", switchTable.Elements)} }}{trailing}\n");
                     break;
-                // §18.5 catch-table：元素各占一行
+                // §19.5 catch-table：元素各占一行
                 case BilCatchTableResource catchTable:
                     sb.Append($"{indent}{catchTable.Name} = catch-table {{\n");
                     for (int i = 0; i < catchTable.Entries.Count; i++)
@@ -133,7 +133,7 @@ namespace LatteCompiler.Bil
                         WriteTypeDeclaration(type, sb);
                         break;
                     // 段内裸成员一律单行形态输出；续行形态只存在于类型体内
-                    // （§19 wrapper 隐藏字段示例），生成器不产生该组合
+                    // （§20 wrapper 隐藏字段示例），生成器不产生该组合
                     case BilSimpleMemberDeclaration { ModifiersOnNextLine: true }:
                         throw new CompilerInternalException("段内裸成员声明不支持修饰符续行形态");
                     // §8.4.1：全局函数/全局字段以裸 .method/.field 直接出现在
@@ -192,7 +192,7 @@ namespace LatteCompiler.Bil
                     var modifiers = RenderModifiers(simple.Modifiers);
                     if (simple.ModifiersOnNextLine)
                     {
-                        // §19 wrapper 隐藏字段示例形态：符号与修饰符分两行
+                        // §20 wrapper 隐藏字段示例形态：符号与修饰符分两行
                         sb.Append($"{indent}{BilSpellings.Of(simple.Kind)} {simple.Symbol}\n");
                         sb.Append($"{indent}{Indent}{modifiers}\n");
                     }

@@ -320,7 +320,7 @@ namespace LatteCompiler.Tests
                 && extFn.Args[2].Name == "end");
         }
 
-        // ===== S7d：常量 switch → switch 指令（§16.6）+ switch-table 资源（§18.4）=====
+        // ===== S7d：常量 switch → switch 指令（§16.6）+ switch-table 资源（§19.4）=====
         private static void TestSwitchEmission()
         {
             var (unit, module, _) = BilTestHarness.EmitBilUnit(
@@ -376,7 +376,7 @@ namespace LatteCompiler.Tests
                 classifyFn.Blocks.Select(b => b.Id).Distinct().Count()
                 == classifyFn.Blocks.Count);
 
-            // 跨 fn 同表去重：case 集完全相同的两个 switch 共享一张 §18.4 表
+            // 跨 fn 同表去重：case 集完全相同的两个 switch 共享一张 §19.4 表
             var (unit2, module2, _) = BilTestHarness.EmitBilUnit(
                 "pub func a(x: i32): i32 {\n" +
                 "    switch (x) {\n" +

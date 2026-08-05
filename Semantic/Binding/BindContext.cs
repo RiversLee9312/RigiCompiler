@@ -1,6 +1,6 @@
 namespace LatteCompiler
 {
-    // 函数级绑定上下文（VISITOR_REWRITE.md §3）：一个函数体绑定期间存活的
+    // 函数级绑定上下文（M55 visitor 化协议）：一个函数体绑定期间存活的
     // 可变状态。每个函数体新建一个实例（旧 BindSession 的「防御性清空」
     // 正是状态污染证据——对象化后新建即清空，无需 Clear）。
     internal sealed class BindContext : IFlowContext

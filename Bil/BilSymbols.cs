@@ -177,7 +177,7 @@ namespace LatteCompiler.Bil
         // entrypoint/init/native/symbol(...)/lib(...)/operator(...)/getter(...)/
         // setter(...)/enum-case(...)/wrapper-proxy(...)）
         public IReadOnlyList<BilModifier> Modifiers { get; }
-        // §19 wrapper 隐藏字段示例形态：符号与修饰符分两行（数据驱动，
+        // §20 wrapper 隐藏字段示例形态：符号与修饰符分两行（数据驱动，
         // writer 不猜列宽阈值）
         public bool ModifiersOnNextLine { get; }
 

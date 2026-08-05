@@ -451,7 +451,7 @@ if (obj with Serializable) { ... }
 
 - **内建基本类型**（数值 / `bool` / `char` / `String`）的 `toString` 由内建实现提供：`String` 即自身；数值为标准十进制文本；`bool` 为 `"true"` / `"false"`；`char` 为单字符字符串。
 - **未覆写的类型**由默认实现提供（`Object` 上的 open 方法，内建提供），返回该类型的 canonical 名（如 `"com.example::User"`）。
-- 值类型调用 `toString` 时按 `RUNTIME.md` §4 装箱后进行虚派发；装箱与派发是 `BIL_STANDARD.md` §21 划给 VM/Middleware 的实现细节，源码层只需知道调用承诺成立。
+- 值类型调用 `toString` 时按 `RUNTIME.md` §4 装箱后进行虚派发；装箱与派发是 `BIL_STANDARD.md` §22 划给 VM/Middleware 的实现细节，源码层只需知道调用承诺成立。
 
 字符串插值（§3.3）以 `toString` 定义：`${}` 内表达式的静态类型不是 `String` 时，先调用其 `toString()` 再参与拼接；拼接即 `String` 的内建 `+` 运算，按源码顺序从左到右结合。每个插值段只求值一次。
 
@@ -462,7 +462,7 @@ var text = "count: ${count}, ok: ${(count > 0)}"   // "count: 3, ok: true"
 
 插值表达式的词法规则（M53 词法帧机制）：`${` 后表达式按普通 Latte 词法解析，可以包含任意字面量（字符串/字符）、嵌套 `{}`（lambda 体、seq 块）与注释，括号配平由词法层完成；表达式跨行遵循与源文件一致的续行规则（括号未闭合时换行透明，§1.1）。嵌套字符串字面量在两态宿主中均可直接使用（`"a${"b"}c"` 合法）；未闭合的嵌套字面量按词法错误就近报告。
 
-基元与默认实现均为内建行为：BIL VM 经 `BIL_STANDARD.md` §21.5 内建 hook 执行，原生环境经 `RUNTIME.md` §26 的 `latte_rt.toString` 路由。
+基元与默认实现均为内建行为：BIL VM 经 `BIL_STANDARD.md` §22.5 内建 hook 执行，原生环境经 `RUNTIME.md` §26 的 `latte_rt.toString` 路由。
 
 ---
 

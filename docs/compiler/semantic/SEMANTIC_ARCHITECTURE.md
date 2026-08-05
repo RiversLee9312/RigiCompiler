@@ -85,7 +85,7 @@ BIL 文本
 | 泛型约束检查（使用侧实参） | P3 | |
 | smart cast 分析 | P3 | 结果记录在 BoundTree，显式 cast 由 P4 物化 |
 | 访问控制检查（使用点） | P3 | |
-| definite assignment / 所有路径显式返回 | P3 | BIL §20.4 要求 frontend 保证 |
+| definite assignment / 所有路径显式返回 | P3 | BIL §21.4 要求 frontend 保证 |
 | async 边界共享安全检查 | P3 | SYNTAX §4.5 五项闸门：receiver / 参数 / TResult / 捕获 / 泛型实参 |
 | M33 值块隐式取值 | P3 | 「块内恰好一条 ExpressionStatement」判定为取值形态 |
 | 语法糖规范化（全部脱糖） | P4a | 清单见 §6.1 |
@@ -208,7 +208,7 @@ SemanticSymbol
   也不得再平衡。
 - smart cast：P3 只做**分析与标记**（某表达式在某区域内可视为窄化类型），
   显式 `cast` 指令由 P4a 物化。
-- definite assignment 与「所有路径显式返回」在 P3 报错（BIL §20.4
+- definite assignment 与「所有路径显式返回」在 P3 报错（BIL §21.4
   的对应义务在这里兑现，而不是等 BIL verifier 兜底）。
 
 ---
@@ -259,8 +259,8 @@ LoweredTree → `BilModule` 的机械线性化。此时不再有任何语言级�
 ```text
 BilModule / BilFunction / BilBlock / Bil 指令 / BilResource …
     ├── BilWriter    （模型 → 标准 BIL 文本）
-    ├── BilVerifier  （BIL §20，后续里程碑）
-    └── BilVm        （BIL §21，后续里程碑）
+    ├── BilVerifier  （BIL §21，后续里程碑）
+    └── BilVm        （BIL §22，后续里程碑）
 ```
 
 - BIL 对象模型是**自足**的：不引用 BoundTree/LoweredTree/符号图的
@@ -292,7 +292,7 @@ P4a 物化。RUNTIME.md §17–§21/§25 规定的可观察语义不变，变的
   不再是 BIL 指令层语义；
 - §17（协程指令 `await` / `yield`）：删除或降级为非标准扩展；
 - §15.2（async 方法调用的 Task 结果规则）：随 async 物化方式改写；
-- §20.3/§20.8/§21.2/§22 中涉及 await/yield/async 的验证与 lowering
+- §21.3/§21.8/§22.2/§23 中涉及 await/yield/async 的验证与 lowering
   条目：同步清理；
 - stdlib 标准（尚不存在）需要新增：Task 实现依赖的 Native 方法面
   （协程 frame 分配、continuation 捕获、调度挂钩等）。
@@ -357,7 +357,7 @@ Semantic/                  # P1–P3 + 符号图 + 诊断
 ├── DeclarationCollector.cs   # P1
 ├── DeclarationResolver.cs    # P2
 ├── Binder.cs                 # P3 瘦入口（M55 起）
-├── Binding/                  # P3 visitor 化基建（M55，VISITOR_REWRITE §3）：
+├── Binding/                  # P3 visitor 化基建（M55）：
 │   ├── BinderVisitor.cs         # CRTP 三基类（通用/ExpressionVisitor
 │   │                            #   追加 expectedType/BinderShellVisitor 壳填充）
 │   ├── BindEnvironment.cs       # 只读环境（unit/declarations/NameResolver/诊断）
@@ -412,7 +412,7 @@ Bil/                       # BIL 生态（对中端零依赖）
 `Semantic → AST`；`Lowering → Semantic`；`Lowering → Bil`；
 `Bil` 不依赖任何编译器内部目录。
 
-**M55 visitor 化定稿**（`compiler/semantic/VISITOR_REWRITE.md`）：
+**M55 visitor 化定稿**：
 三树的遍历统一为 CRTP visitor 协议——静态 `Visit` 唯一入口（创建子类
 实例 + Enter/Exit 生命周期模板，栈压/弹 finally 固化）、双协议
 （`Visit → TResult?` 上行合成 / `VisitInto(shell)` 施工壳填充）、
@@ -440,9 +440,9 @@ CLI 接入：`CompileCommand` 的 `if (!parseOnly)` 分支；新增子命令仿
 - **P4 测试**：`LoweredDescribe` 断言脱糖形态（BIL §3.4 每条规则
   至少一个用例）；发射测试直接断言 `BilWriter` 文本（BIL 文本本身
   就是规范化的快照格式，无需再造描述器）。
-- **端到端**：`compile --emit-bil` 对照 BIL §19 例子级别的黄金文件。
+- **端到端**：`compile --emit-bil` 对照 BIL §20 例子级别的黄金文件。
 - **BilVm 落地后**：新增执行断言（跑出结果/异常与预期比对），
-  测试从「形态断言」升级为「语义断言」；这也是 BIL_STANDARD §20.9
+  测试从「形态断言」升级为「语义断言」；这也是 BIL_STANDARD §21.9
   「VM 可执行性」的持续验证。
 - 每个新组件照旧在 `TestRunner` 注册表注册独立套件。
 
@@ -451,7 +451,7 @@ CLI 接入：`CompileCommand` 的 `if (!parseOnly)` 分支；新增子命令仿
 ## 11. 原则重申
 
 1. **文档驱动**：动一个语义规则前先读 SYNTAX/RUNTIME/BIL_STANDARD
-   对应章节；三份文档冲突时按 BIL §23.3 的优先序，并把冲突记录进
+   对应章节；三份文档冲突时按 BIL §24.3 的优先序，并把冲突记录进
    本文档 §7 这类待修订清单，不静默绕过。
 2. **简洁三问**同样适用于中端：每个新 pass、新节点、新符号种类
    都要过「有必要吗 / 有更简单的吗 / 能复用吗」。

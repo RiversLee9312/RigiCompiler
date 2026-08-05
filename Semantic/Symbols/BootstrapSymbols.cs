@@ -116,7 +116,7 @@ namespace LatteCompiler
 
             // toString 机制（S7f，SYNTAX §3.8）：Any 承载全类型承诺（接口
             // 形态无体）；Object 提供 open 默认实现，body 路由 latte_rt.toString
-            // （native 声明形态，BIL §21.5 内建 hook——基元标准文本、未覆写
+            // （native 声明形态，BIL §22.5 内建 hook——基元标准文本、未覆写
             // 对象返回类型 canonical 名）；用户类型 override 后经虚派发执行
             // 自身实现，不再命中原生面
             Any.Methods.Add(new MethodSymbol("toString", MethodKind.Regular,

@@ -1,6 +1,6 @@
 namespace LatteCompiler
 {
-    // 条件收窄事实对（SMART_CAST_DESIGN §2/§3）：条件表达式为真/为假
+    // 条件收窄事实对（SYNTAX §3.5）：条件表达式为真/为假
     // 两条控制流边各自的收窄事实（键 → 收窄类型）
     internal sealed class ConditionFacts
     {
@@ -13,7 +13,7 @@ namespace LatteCompiler
         public static readonly ConditionFacts Empty = new ConditionFacts();
     }
 
-    // 条件事实提取器（S8b，SMART_CAST_DESIGN §3 表格的代码化）：
+    // 条件事实提取器（S8b，SYNTAX §3.5 的代码化）：
     // 遍历**绑定后**的 Bound 条件表达式（类型与产物形态已知），产出真/假边
     // 收窄事实。纯函数式提取（只读 FlowState 之外的状态——键构造经
     // ConstFieldRules.IsNarrowable 判定，需要 BindContext）。

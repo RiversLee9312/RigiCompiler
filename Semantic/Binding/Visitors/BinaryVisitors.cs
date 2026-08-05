@@ -28,7 +28,7 @@ namespace LatteCompiler
             }
             var op = IntrinsicMapping.MapBinary(binary.Operator);
             var left = ExpressionDispatcher.Visit(binary.Left.Expression, scope, ctx, env);
-            // S8b and/or 右侧收窄上下文（SMART_CAST_DESIGN §3 短路语义）：
+            // S8b and/or 右侧收窄上下文（SYNTAX §3.5 短路语义）：
             // and 右侧以左真边、or 右侧以左假边为收窄上下文
             // （`(x is String) and (x.length > 0)` 中右侧在收窄后类型上解析）
             BoundExpression? right;

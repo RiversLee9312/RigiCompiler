@@ -4,11 +4,11 @@ using LatteCompiler.Bil;
 
 namespace LatteCompiler.Tests
 {
-    // BilEmitter try/catch/finally 与 seq 发射测试（§16.7 + §18.5 catch-table、§16.1 call 化 + §9.6 volatile）
+    // BilEmitter try/catch/finally 与 seq 发射测试（§16.7 + §19.5 catch-table、§16.1 call 化 + §9.6 volatile）
 
     public static partial class BilEmitterTests
     {
-        // ===== S7e：try/catch/finally 发射（§16.7 + §18.5 catch-table）=====
+        // ===== S7e：try/catch/finally 发射（§16.7 + §19.5 catch-table）=====
         private static void TestTryEmission()
         {
             var (unit, module, _) = BilTestHarness.EmitBilUnit(
@@ -64,13 +64,13 @@ namespace LatteCompiler.Tests
                 && tryInstruction.Operands[1] is BilVariableOperand
                 && tryInstruction.Operands[2] is BilResourceOperand
                 && tryInstruction.Operands[3] is BilBlockOperand);
-            // §18.5 catch-table：多行形态、元素保序（表序即匹配序）
+            // §19.5 catch-table：多行形态、元素保序（表序即匹配序）
             var catchTable = module.Resources.OfType<BilCatchTableResource>().Single();
             TestHarness.Check("catch-table 元素（保序）",
                 string.Join("\n", catchTable.Entries.Select(e => e.Render())),
                 "type(DerivedError) -> blk(try0-catch0)\n" +
                 "type(MyError) -> blk(try0-catch1)");
-            TestHarness.CheckTrue("catch-table 多行形态（§18.5）",
+            TestHarness.CheckTrue("catch-table 多行形态（§19.5）",
                 BilWriter.Write(module).Contains("catch-table {\n"));
         }
 

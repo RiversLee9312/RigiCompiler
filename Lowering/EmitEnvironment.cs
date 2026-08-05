@@ -19,7 +19,7 @@ namespace LatteCompiler
         // 构建中的模块（LocalSymbols/Resources/Functions 逐段填充）
         public BilModule Module { get; }
 
-        // 资源去重表（模块级，跨 fn 共享——§18.4 switch-table 等同元素
+        // 资源去重表（模块级，跨 fn 共享——§19.4 switch-table 等同元素
         // 序列资源跨 fn 去重；M57 起按资源种类分表，值为资源对象）：
         // 标量键 = (类型, 字面量原文)；null 键 = 元素类型 canonical；
         // switch-table 键 = selector 类型引用 + 元素序列；

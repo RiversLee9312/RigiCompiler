@@ -1,6 +1,6 @@
 namespace LatteCompiler
 {
-    // P2 只读环境（VISITOR_REWRITE §3 同款）：EntryCollector 产出平铺条目三表后
+    // P2 只读环境（M55 visitor 化协议同款）：EntryCollector 产出平铺条目三表后
     // 冻结（IReadOnlyList 暴露），后续 12 个阶段 visitor 共用。诊断统一经
     // Error 落袋（P2 phase；可恢复诊断模型）。各阶段共用的名字解析薄包装与
     // 声明侧静态设施也集中在本环境。

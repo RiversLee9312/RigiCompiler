@@ -7,12 +7,14 @@ namespace LatteCompiler.Tests
     /// <summary>
     /// BIL 验证器（BilVerifier，M58）测试：
     /// 正例——中端全管线产出（覆盖 M44–M54 各发射特性）必须验证器零错误；
-    /// 负例——手工构造/改造非法模块，按 §20 规则逐类断言命中。
+    /// 负例——手工构造/改造非法模块，按 §21 规则逐类断言命中。
     /// S8c 增补：§13.6 索引严格三元组查询（get.array/set.array 手工模块
     /// 基线正例 + 索引/元素/结果类型不符与无索引运算符负例）。
-    /// S8e 增补：访问器与 override 全管线正例 + §20.8 访问器声明负例
+    /// S8e 增补：访问器与 override 全管线正例 + §21.8 访问器声明负例
     /// （getter(FIELD) 引用未声明字段 / getter 修饰配非 $.get. 形态方法
     /// 符号 / backing 与 computed 共存，手工模块基例）。
+    /// M64 增补：§18 hint 指令（string 资源正例 + 非 string 资源 /
+    /// 模块外资源负例）。
     /// </summary>
     public static class BilVerifierTests
     {
@@ -213,7 +215,7 @@ namespace LatteCompiler.Tests
 
         // 索引验证手工模块（S8c §13.6）：Vec 声明指定 operator 成员 + main
         // （v/i/s/flag 赋值后执行给定的索引指令，ret $x 收尾）——Vec 置于
-        // ExternalSymbols（本地非 native 方法必须带 fn 定义，§20.2；手工
+        // ExternalSymbols（本地非 native 方法必须带 fn 定义，§21.2；手工
         // 模块不构造 operator 函数体，以外部声明形态聚焦指令侧检查）。
         // 负例均在其上改造（替换 operator 声明或索引指令）
         private static BilModule IndexModule(BilSimpleMemberDeclaration[] vecOperators,
@@ -273,41 +275,41 @@ namespace LatteCompiler.Tests
             // 基线：最小手工模块本身必须合法（负例均在其上改造）
             BilTestHarness.CheckBilValid("最小手工模块（基线）", MinimalModule(out _, out _));
 
-            // §20.1：版本号
+            // §21.1：版本号
             var m = MinimalModule(out _, out _);
             m.BilVersion = "2.0";
             BilTestHarness.CheckBilInvalid("版本号不受支持", m, "不支持的 BIL 版本");
 
-            // §20.1：保留名声明为局部变量
+            // §21.1：保留名声明为局部变量
             m = MinimalModule(out _, out _);
             m.Functions[0].Vars.Add(new BilVarDeclaration(".i32", ".this"));
             BilTestHarness.CheckBilInvalid("保留名作局部变量", m, "保留名");
 
-            // §20.1：.void 局部变量
+            // §21.1：.void 局部变量
             m = MinimalModule(out _, out _);
             m.Functions[0].Vars.Add(new BilVarDeclaration(".void", "v"));
             BilTestHarness.CheckBilInvalid(".void 局部变量", m, ".void");
 
-            // §20.5：无 entrypoint
+            // §21.5：无 entrypoint
             m = MinimalModule(out _, out var entryBlock);
             entryBlock.Instructions.Clear();
             m.Functions[0].Blocks[0] = new BilBlock("entry");
             m.Functions[0].Blocks[0].Instructions.Add(new RetInstruction());
             BilTestHarness.CheckBilInvalid("无 entrypoint block", m, "恰有一个 entrypoint");
 
-            // §20.5：双 entrypoint
+            // §21.5：双 entrypoint
             m = MinimalModule(out _, out _);
             var second = new BilBlock("second", BilBlockModifier.Entrypoint);
             second.Instructions.Add(new RetInstruction());
             m.Functions[0].Blocks.Add(second);
             BilTestHarness.CheckBilInvalid("双 entrypoint block", m, "恰有一个 entrypoint");
 
-            // §20.5：entry 落尾
+            // §21.5：entry 落尾
             m = MinimalModule(out _, out entryBlock);
             entryBlock.Instructions.RemoveAt(entryBlock.Instructions.Count - 1);
             BilTestHarness.CheckBilInvalid("entry 落尾", m, "不得以落尾结束");
 
-            // §20.5：跨函数 block 引用（if 引用了别的函数的块）
+            // §21.5：跨函数 block 引用（if 引用了别的函数的块）
             m = MinimalModule(out var zero2, out _);
             var otherFn = new BilFunction("$other()@.void");
             otherFn.Args.Add(new BilArgDeclaration(".return", ".void"));
@@ -323,40 +325,40 @@ namespace LatteCompiler.Tests
                 BilOp.Var("c"), otherBlock, null));
             BilTestHarness.CheckBilInvalid("跨函数 block 引用", m, "不属于当前函数");
 
-            // §20.2：未声明变量
+            // §21.2：未声明变量
             m = MinimalModule(out _, out entryBlock);
             entryBlock.Instructions.Insert(1, new SetVarInstruction(BilOp.Var("x"), BilOp.Var("y")));
             BilTestHarness.CheckBilInvalid("未声明变量", m, "未声明的变量");
 
-            // §20.4：读前未赋值
+            // §21.4：读前未赋值
             m = MinimalModule(out _, out entryBlock);
             entryBlock.Instructions.RemoveAt(0);   // 去掉 load，直接 ret $x
             BilTestHarness.CheckBilInvalid("读前未赋值", m, "在赋值前被读取");
 
-            // §20.3：set.var 两端类型不等
+            // §21.3：set.var 两端类型不等
             m = MinimalModule(out _, out entryBlock);
             m.Functions[0].Vars.Add(new BilVarDeclaration(".bool", "b"));
             entryBlock.Instructions.Insert(1, new SetVarInstruction(BilOp.Var("x"), BilOp.Var("b")));
             BilTestHarness.CheckBilInvalid("set.var 类型不等", m, "set.var 两端");
 
-            // §20.3：cmp 结果非 .bool
+            // §21.3：cmp 结果非 .bool
             m = MinimalModule(out _, out entryBlock);
             entryBlock.Instructions.Insert(1, new BinaryIntrinsicInstruction(
                 BilBinaryOp.CmpEq, BilOp.Var("x"), BilOp.Var("x"), BilOp.Var("x")));
             BilTestHarness.CheckBilInvalid("cmp 结果非 bool", m, "cmp 结果");
 
-            // §20.6：breakid 被普通读写
+            // §21.6：breakid 被普通读写
             m = MinimalModule(out _, out entryBlock);
             m.Functions[0].Vars.Add(new BilVarDeclaration(".breakid", "bk"));
             entryBlock.Instructions.Insert(1, new SetVarInstruction(BilOp.Var("x"), BilOp.Var("bk")));
             BilTestHarness.CheckBilInvalid("breakid 普通读写", m, "不得被普通读写");
 
-            // §20.5：非 void 裸 ret
+            // §21.5：非 void 裸 ret
             m = MinimalModule(out _, out entryBlock);
             entryBlock.Instructions[entryBlock.Instructions.Count - 1] = new RetInstruction();
             BilTestHarness.CheckBilInvalid("非 void 裸 ret", m, "不得裸 ret");
 
-            // §20.3：invoke 实参类型不符
+            // §21.3：invoke 实参类型不符
             m = MinimalModule(out _, out entryBlock);
             m.LocalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
                 "$callee(a:.i32)@.void",
@@ -373,7 +375,7 @@ namespace LatteCompiler.Tests
                 BilOp.Fn("$callee(a:.i32)@.void"), new[] { BilOp.Var("flag") }));
             BilTestHarness.CheckBilInvalid("invoke 实参类型不符", m, "invoke 实参 0");
 
-            // §20.2：native 方法不得有 fn 定义
+            // §21.2：native 方法不得有 fn 定义
             m = MinimalModule(out _, out _);
             const string nativeSymbol = "core.io::Console$.static.print(text:.string)@.void";
             m.LocalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.StaticMethod,
@@ -394,33 +396,33 @@ namespace LatteCompiler.Tests
             m.Functions.Add(nativeBody);
             BilTestHarness.CheckBilInvalid("native 带 fn 定义", m, "native 方法不得存在 fn 定义");
 
-            // §20.2：声明关键字与符号 .static. 标记不一致
+            // §21.2：声明关键字与符号 .static. 标记不一致
             m = MinimalModule(out _, out _);
             m.LocalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
                 "com.example::App$.static.run()@.void",
                 new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
             BilTestHarness.CheckBilInvalid("static 标记不一致", m, "不一致");
 
-            // §20.8：class 带 rich
+            // §21.8：class 带 rich
             m = MinimalModule(out _, out _);
             m.LocalSymbols.Add(new BilTypeDeclaration("com.example::Rich", BilTypeKind.Class,
                 new BilAccessibilityModifier(BilAccessibility.Public),
                 new BilKeywordModifier(BilKeyword.Rich)));
             BilTestHarness.CheckBilInvalid("class 带 rich", m, "rich 仅适用");
 
-            // §20.8：wrapper 未带 rich
+            // §21.8：wrapper 未带 rich
             m = MinimalModule(out _, out _);
             m.LocalSymbols.Add(new BilTypeDeclaration("com.example::Wrap", BilTypeKind.Wrapper,
                 new BilAccessibilityModifier(BilAccessibility.Public)));
             BilTestHarness.CheckBilInvalid("wrapper 未带 rich", m, "必须显式带 rich");
 
-            // §20.2：资源不属于本模块
+            // §21.2：资源不属于本模块
             m = MinimalModule(out _, out entryBlock);
             var orphan = new BilScalarResource("R_Orphan", BilScalarType.I32, "1");
             entryBlock.Instructions.Insert(1, new LoadInstruction(orphan, BilOp.Var("x")));
             BilTestHarness.CheckBilInvalid("资源不属于本模块", m, "不属于本模块");
 
-            // §20.2：类型符号不可解析
+            // §21.2：类型符号不可解析
             m = MinimalModule(out _, out entryBlock);
             m.Functions[0].Vars.Add(new BilVarDeclaration("com.example::Missing", "ghost"));
             entryBlock.Instructions.Insert(1, new NewInstruction(
@@ -428,21 +430,21 @@ namespace LatteCompiler.Tests
                 new List<BilVariableOperand>()));
             BilTestHarness.CheckBilInvalid("类型符号不可解析", m, "不可解析");
 
-            // §20.3：if 条件非 .bool
+            // §21.3：if 条件非 .bool
             m = MinimalModule(out _, out entryBlock);
             var thenBlock = new BilBlock("then");
             m.Functions[0].Blocks.Add(thenBlock);
             entryBlock.Instructions.Insert(1, new IfInstruction(BilOp.Var("x"), thenBlock, null));
             BilTestHarness.CheckBilInvalid("if 条件非 bool", m, "if 条件");
 
-            // §20.3：ret 返回值类型不符
+            // §21.3：ret 返回值类型不符
             m = MinimalModule(out _, out entryBlock);
             m.Functions[0].Vars.Add(new BilVarDeclaration(".bool", "bb"));
             entryBlock.Instructions[entryBlock.Instructions.Count - 1] =
                 new RetInstruction(BilOp.Var("bb"));
             BilTestHarness.CheckBilInvalid("ret 类型不符", m, "ret 返回值");
 
-            // §20.5：continue 引用 switch token
+            // §21.5：continue 引用 switch token
             m = MinimalModule(out _, out entryBlock);
             m.Functions[0].Vars.Add(new BilVarDeclaration(".breakid", "sw"));
             var caseBlock = new BilBlock("case0");
@@ -458,7 +460,7 @@ namespace LatteCompiler.Tests
             BilTestHarness.CheckBilInvalid("continue 引用 switch token", m,
                 "continue 不得引用 switch");
 
-            // §20.4：if 分支合并后读取（then 内赋值的变量，合并后视为未赋值）
+            // §21.4：if 分支合并后读取（then 内赋值的变量，合并后视为未赋值）
             m = MinimalModule(out _, out entryBlock);
             m.Functions[0].Vars.Add(new BilVarDeclaration(".bool", "cond3"));
             m.Functions[0].Vars.Add(new BilVarDeclaration(".i32", "y"));
@@ -475,7 +477,7 @@ namespace LatteCompiler.Tests
             // 同时 then 内 set.var $x $y 读取未赋值的 y 也报（同变量去重后各一条）
             BilTestHarness.CheckBilInvalid("if 分支合并后读取", m, "在赋值前被读取");
 
-            // §20.4：judge 未写 condition
+            // §21.4：judge 未写 condition
             m = MinimalModule(out zero2, out entryBlock);
             m.Functions[0].Vars.Add(new BilVarDeclaration(".bool", "cond2"));
             m.Functions[0].Vars.Add(new BilVarDeclaration(".breakid", "lp2"));
@@ -521,7 +523,7 @@ namespace LatteCompiler.Tests
                     new GetArrayInstruction(BilOp.Var("v"), BilOp.Var("i"), BilOp.Var("s"))),
                 "没有 getAtIndex 索引运算符实现");
 
-            // ===== S8e：§20.8 访问器声明 =====
+            // ===== S8e：§21.8 访问器声明 =====
             // 基线：手工访问器模块本身必须合法（字段 local 裸条目 + 访问器
             // 方法声明 external——外部声明无需 fn 定义，聚焦声明侧修饰规则）
             m = MinimalModule(out _, out _);
@@ -542,7 +544,7 @@ namespace LatteCompiler.Tests
                 }));
             BilTestHarness.CheckBilValid("访问器手工模块（基线，getter 正例）", m);
 
-            // §20.8：getter(FIELD) 的 FIELD 必须可解析为已声明字段符号
+            // §21.8：getter(FIELD) 的 FIELD 必须可解析为已声明字段符号
             m.ExternalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
                 "$.get.w@.i32",
                 new BilModifier[]
@@ -553,7 +555,7 @@ namespace LatteCompiler.Tests
             BilTestHarness.CheckBilInvalid("getter(FIELD) 引用未声明字段", m,
                 "访问器修饰引用的字段符号不可解析");
 
-            // §20.8：getter 修饰与方法符号形态必须一致（非 $.get. 形态即拒）
+            // §21.8：getter 修饰与方法符号形态必须一致（非 $.get. 形态即拒）
             m = MinimalModule(out _, out _);
             m.LocalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field,
                 "#v@.i32",
@@ -573,7 +575,7 @@ namespace LatteCompiler.Tests
             BilTestHarness.CheckBilInvalid("getter 修饰配非 $.get. 形态方法符号", m,
                 "修饰与方法符号形态不符");
 
-            // §20.8：backing 与 computed 是互斥的存储形态标记
+            // §21.8：backing 与 computed 是互斥的存储形态标记
             m = MinimalModule(out _, out _);
             m.LocalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field,
                 "#v@.i32",
@@ -585,6 +587,28 @@ namespace LatteCompiler.Tests
                 }));
             BilTestHarness.CheckBilInvalid("backing 与 computed 共存", m,
                 "backing 与 computed 不得共存");
+
+            // ===== M64：§18 hint 指令 =====
+            // 基线：string 资源 + entry block 内 hint——合法（纯位置标记，
+            // 不读写变量、不参与 DA、不是终结指令）
+            m = MinimalModule(out _, out entryBlock);
+            var hintResource = new BilScalarResource("R_Hint", BilScalarType.String, "\"{}\"");
+            m.Resources.Add(hintResource);
+            entryBlock.Instructions.Insert(0, new HintInstruction(hintResource));
+            BilTestHarness.CheckBilValid("hint 指令（string 资源，正例）", m);
+
+            // §21.3：hint 引用非 string 资源即非法
+            m = MinimalModule(out var hintI64, out entryBlock);
+            entryBlock.Instructions.Insert(0, new HintInstruction(hintI64));
+            BilTestHarness.CheckBilInvalid("hint 引用非 string 资源", m,
+                "必须是 string 资源");
+
+            // §21.2：hint 引用的资源必须属于本模块
+            m = MinimalModule(out _, out entryBlock);
+            entryBlock.Instructions.Insert(0, new HintInstruction(
+                new BilScalarResource("R_Foreign", BilScalarType.String, "\"{}\"")));
+            BilTestHarness.CheckBilInvalid("hint 引用模块外资源", m,
+                "不属于本模块");
         }
 
         // Vec 的索引运算符对（get 返回 .string / set 元素 .string，索引皆 .i32）

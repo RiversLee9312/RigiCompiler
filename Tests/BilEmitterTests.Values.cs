@@ -102,7 +102,7 @@ namespace LatteCompiler.Tests
                 "cast $.t4 $.t5 type(.nullable<.string>)\n" +
                 "set.var $.t5 $.s1\n" +
                 "}\n");
-            // 结构性事实：null 资源形态（§18.1：null type(元素类型)）
+            // 结构性事实：null 资源形态（§19.1：null type(元素类型)）
             TestHarness.CheckTrue("null 资源按元素类型登记（R_5/R_6）",
                 module.Resources.Any(r => r is BilNullResource n
                     && n.TypeRef == ".string")

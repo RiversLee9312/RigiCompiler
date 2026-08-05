@@ -301,7 +301,7 @@ namespace LatteCompiler
                 var module = BilEmitter.Emit(unit, lowered, Path.GetFileNameWithoutExtension(firstFile));
                 EmitDiagnostics(unit.Diagnostics, emitted);
                 if (unit.Diagnostics.HasErrors) return 1;
-                // BIL 验证器（M58，§20）：产出非法即编译器 bug——响亮失败，
+                // BIL 验证器（M58，§21）：产出非法即编译器 bug——响亮失败，
                 // 逐条输出验证错误，不落盘
                 var verificationErrors = BilVerifier.Verify(module);
                 if (verificationErrors.Count > 0)

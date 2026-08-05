@@ -1,6 +1,6 @@
 namespace LatteCompiler
 {
-    // 降级 visitor 的 CRTP 协议基类（VISITOR_REWRITE.md §6，仿 Binder 协议）：
+    // 降级 visitor 的 CRTP 协议基类（M55 visitor 化协议，仿 Binder 协议）：
     // 静态 Visit 为唯一入口——创建子类实例、模板化管理生命周期
     // （Enter/Exit 配对，outputStack/映射栈压弹在此固化），子类只实现 VisitCore。
     // 上行合成：返回降级产物；失败经 LowerEnvironment.Error 落诊断并返回 null

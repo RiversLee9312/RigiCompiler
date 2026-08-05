@@ -238,7 +238,7 @@ namespace LatteCompiler
 
     // catch 分支（S7e）：Variable 为 null = `_:` 无变量形态（有名变量的
     // 赋值已在 P4a 合成进 Body 头，此字段仅描述器展示用）；ExceptionType
-    // 进 §18.5 catch-table 资源（P4b 登记）；Origin 指 BoundCatchClause
+    // 进 §19.5 catch-table 资源（P4b 登记）；Origin 指 BoundCatchClause
     public sealed class LoweredTryCatch : LoweredNode
     {
         public LocalSymbol? Variable { get; }

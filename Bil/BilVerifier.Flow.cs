@@ -2,8 +2,8 @@ using System.Collections.Generic;
 
 namespace LatteCompiler.Bil
 {
-    // BilVerifier 控制流检查（§20.4 definite assignment + §20.5 控制流
-    // + §20.6 .breakid capability）。
+    // BilVerifier 控制流检查（§21.4 definite assignment + §21.5 控制流
+    // + §21.6 .breakid capability）。
     //
     // DA 为保守流分析（零误报优先，漏报可接受）：参数入口已赋值；线性
     // 读前赋值；if 分支独立分析、合并取交集；loop/switch/try 子块入口
@@ -11,7 +11,7 @@ namespace LatteCompiler.Bil
     // 对调用点可见，§16.1）。loop.rev 的 condition 首次读取在 body 之后，
     // 不查进入时已赋值（§16.4）。
     //
-    // 结构环（含 call blk 直接结构递归）一律拒绝——§20.5 允许实现拒绝
+    // 结构环（含 call blk 直接结构递归）一律拒绝——§21.5 允许实现拒绝
     // 无法证明有界的直接结构递归。
 
     public static partial class BilVerifier
@@ -21,7 +21,7 @@ namespace LatteCompiler.Bil
         {
             var function = context.Function;
 
-            // ===== §20.5 结构：恰一个 entrypoint block；entry 必须终止性收尾 =====
+            // ===== §21.5 结构：恰一个 entrypoint block；entry 必须终止性收尾 =====
             var entryBlocks = new List<BilBlock>();
             foreach (var block in function.Blocks)
             {
@@ -36,7 +36,7 @@ namespace LatteCompiler.Bil
             BilBlock? entryBlock = null;
             if (entryBlocks.Count != 1)
             {
-                errors.Add(new BilVerificationError("20.5", function.Symbol,
+                errors.Add(new BilVerificationError("21.5", function.Symbol,
                     $"函数必须恰有一个 entrypoint block（实际 {entryBlocks.Count}）"));
             }
             else
@@ -48,12 +48,12 @@ namespace LatteCompiler.Bil
                 if (!BlockTerminates(context, entryBlock, new HashSet<BilBlock>(
                     ReferenceEqualityComparer.Instance)))
                 {
-                    errors.Add(new BilVerificationError("20.5", function.Symbol,
+                    errors.Add(new BilVerificationError("21.5", function.Symbol,
                         $"entrypoint block \"{entryBlock.Id}\" 不得以落尾结束（必须显式 ret 或 throw）"));
                 }
             }
 
-            // ===== §20.5 块成员资格 + §20.6 breakid 绑定唯一 =====
+            // ===== §21.5 块成员资格 + §21.6 breakid 绑定唯一 =====
             var breakIdBindings = new Dictionary<string, string>();
             foreach (var (block, instruction) in InstructionsInFunction(context))
             {
@@ -62,12 +62,12 @@ namespace LatteCompiler.Bil
                 {
                     if (!context.BlockSet.Contains(referenced))
                     {
-                        errors.Add(new BilVerificationError("20.5", location,
+                        errors.Add(new BilVerificationError("21.5", location,
                             $"block 引用越权：\"{referenced.Id}\" 不属于当前函数"));
                     }
                 }
                 // loop/switch 的 breakid 绑定位：必须声明为 .breakid 变量，
-                // 且全 fn 唯一绑定一次（§9.3/§20.6）
+                // 且全 fn 唯一绑定一次（§9.3/§21.6）
                 string? boundBreakId = instruction switch
                 {
                     LoopInstruction loop => loop.BreakId.Name,
@@ -78,18 +78,18 @@ namespace LatteCompiler.Bil
                 {
                     if (!context.VariableTypes.ContainsKey(boundBreakId))
                     {
-                        errors.Add(new BilVerificationError("20.2", location,
+                        errors.Add(new BilVerificationError("21.2", location,
                             $"breakid 变量 \"${boundBreakId}\" 未声明"));
                     }
                     else if (!context.BreakIdVariables.Contains(boundBreakId))
                     {
-                        errors.Add(new BilVerificationError("20.6", location,
+                        errors.Add(new BilVerificationError("21.6", location,
                             $"loop/switch 只能绑定 .breakid 类型变量，\"${boundBreakId}\" " +
                             $"声明类型为 \"{context.VariableTypes[boundBreakId]}\""));
                     }
                     if (breakIdBindings.TryGetValue(boundBreakId, out var firstLocation))
                     {
-                        errors.Add(new BilVerificationError("20.6", location,
+                        errors.Add(new BilVerificationError("21.6", location,
                             $".breakid 变量 \"${boundBreakId}\" 被二次绑定（首次于 {firstLocation}）"));
                     }
                     else
@@ -99,7 +99,7 @@ namespace LatteCompiler.Bil
                 }
             }
 
-            // ===== §20.4 DA + token 作用域（从 entrypoint 出发的可达分析）=====
+            // ===== §21.4 DA + token 作用域（从 entrypoint 出发的可达分析）=====
             if (entryBlock == null)
             {
                 return;
@@ -182,7 +182,7 @@ namespace LatteCompiler.Bil
             }
             if (!stack.Add(block))
             {
-                errors.Add(new BilVerificationError("20.5", context.Function.Symbol,
+                errors.Add(new BilVerificationError("21.5", context.Function.Symbol,
                     $"结构块引用成环（含 call blk 直接结构递归）：\"{block.Id}\""));
                 return new HashSet<string>(assigned);
             }
@@ -197,14 +197,14 @@ namespace LatteCompiler.Bil
                     writes.Clear();
                     ClassifyVariables(instruction, reads, writes);
 
-                    // §20.4：读前已赋值
+                    // §21.4：读前已赋值
                     foreach (var variable in reads)
                     {
                         if (context.VariableTypes.ContainsKey(variable.Name)
                             && !assigned.Contains(variable.Name)
                             && reported.Add((location, variable.Name)))
                         {
-                            errors.Add(new BilVerificationError("20.4", location,
+                            errors.Add(new BilVerificationError("21.4", location,
                                 $"变量 \"${variable.Name}\" 在赋值前被读取"));
                         }
                     }
@@ -225,12 +225,12 @@ namespace LatteCompiler.Bil
                             {
                                 if (ret.Value == null && context.ReturnType != ".void")
                                 {
-                                    errors.Add(new BilVerificationError("20.5", location,
+                                    errors.Add(new BilVerificationError("21.5", location,
                                         $"非 void 函数（.return = {context.ReturnType}）不得裸 ret"));
                                 }
                                 if (ret.Value != null && context.ReturnType == ".void")
                                 {
-                                    errors.Add(new BilVerificationError("20.5", location,
+                                    errors.Add(new BilVerificationError("21.5", location,
                                         "void 函数 ret 不得带值"));
                                 }
                             }
@@ -310,20 +310,20 @@ namespace LatteCompiler.Bil
             HashSet<BilBlock> stack, List<BilVerificationError> errors,
             HashSet<(string Location, string Name)> reported, string location)
         {
-            // condition 变量必须已声明。§20.4：loop condition 在每次读取前
+            // condition 变量必须已声明。§21.4：loop condition 在每次读取前
             // 由 judge block 赋值——进入循环时不要求已赋值（judge 在首次
             // 读取前执行，loop/loop.rev 同规则），只要求 judge 块写入它
             if (!context.VariableTypes.ContainsKey(loop.Condition.Name))
             {
-                errors.Add(new BilVerificationError("20.2", location,
+                errors.Add(new BilVerificationError("21.2", location,
                     $"loop 条件变量 \"${loop.Condition.Name}\" 未声明"));
             }
 
-            // §20.4：loop condition 每次读取前由 judge block 赋值——judge 块
+            // §21.4：loop condition 每次读取前由 judge block 赋值——judge 块
             // （含嵌套结构）内必须存在对 condition 的写入
             if (!BlockWritesTo(context, loop.Judge, loop.Condition.Name))
             {
-                errors.Add(new BilVerificationError("20.4", location,
+                errors.Add(new BilVerificationError("21.4", location,
                     $"loop 的 judge block \"{loop.Judge.Id}\" 未对条件变量 " +
                     $"\"${loop.Condition.Name}\" 赋值"));
             }
@@ -342,20 +342,20 @@ namespace LatteCompiler.Bil
         }
 
         // break/continue 的 token：必须声明为 .breakid 变量，且在活跃结构
-        // 作用域内（§20.5）；continue 不得引用 switch token（§16.5）
+        // 作用域内（§21.5）；continue 不得引用 switch token（§16.5）
         private static void VerifyBreakToken(BilFunctionContext context,
             BilVariableOperand token, List<(string Name, bool IsLoop)> tokens,
             bool isContinue, string location, List<BilVerificationError> errors)
         {
             if (!context.VariableTypes.ContainsKey(token.Name))
             {
-                errors.Add(new BilVerificationError("20.2", location,
+                errors.Add(new BilVerificationError("21.2", location,
                     $"break/continue 的 token \"${token.Name}\" 未声明"));
                 return;
             }
             if (!context.BreakIdVariables.Contains(token.Name))
             {
-                errors.Add(new BilVerificationError("20.6", location,
+                errors.Add(new BilVerificationError("21.6", location,
                     $"break/continue 的 token \"${token.Name}\" 必须是 .breakid 类型变量" +
                     $"（声明类型为 \"{context.VariableTypes[token.Name]}\"）"));
                 return;
@@ -366,13 +366,13 @@ namespace LatteCompiler.Bil
                 {
                     if (isContinue && !isLoop)
                     {
-                        errors.Add(new BilVerificationError("20.5", location,
+                        errors.Add(new BilVerificationError("21.5", location,
                             $"continue 不得引用 switch 的 breakid \"${token.Name}\""));
                     }
                     return;
                 }
             }
-            errors.Add(new BilVerificationError("20.5", location,
+            errors.Add(new BilVerificationError("21.5", location,
                 $"{(isContinue ? "continue" : "break")} 的 token \"${token.Name}\" " +
                 "不在当前活跃结构作用域内"));
         }

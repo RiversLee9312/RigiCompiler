@@ -3,7 +3,7 @@ using System.Linq;
 namespace LatteCompiler.Tests
 {
     /// <summary>
-    /// S8b smart cast 测试（SMART_CAST_DESIGN §10 清单）：收窄触发（is/null 判等/
+    /// S8b smart cast 测试（SYNTAX §3.5 清单）：收窄触发（is/null 判等/
     /// and-or-not 组合/guard/循环/switch 占位）+ 收窄目标安全规则（var 失效/
     /// const 字段/var 字段不收窄）+ null 判等绑定 + P4a 物化（LoweredCastExpression）。
     /// 断言：BoundDescribe 描述串 + 结构事实；诊断断言沿用 CheckSemanticError。

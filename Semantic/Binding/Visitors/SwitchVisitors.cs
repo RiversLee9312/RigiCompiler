@@ -45,7 +45,7 @@ namespace LatteCompiler
                 var isPattern = SwitchMatchVisitor.IsPattern(caseNode);
                 var match = SwitchMatchVisitor.Visit(caseNode, scope,
                     new SwitchMatchContext(ctx, selector), env);
-                // Q4 分支体收窄（S8b，SMART_CAST_DESIGN §5）：`(_ is T)`
+                // Q4 分支体收窄（S8b，SYNTAX §3.5）：`(_ is T)`
                 // 分支体内 selector 收窄为 T（selector 为可收窄目标时；
                 // 分支体内 `_` 不可用是 §7.2 语义）
                 ApplyCaseNarrowing(match, ctx);

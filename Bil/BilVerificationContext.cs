@@ -7,7 +7,7 @@ namespace LatteCompiler.Bil
     // 只依赖 Bil/ 目录（模型以字符串为符号身份，验证器在此之上重建可解析性）。
 
     // 模块级索引：资源/类型/成员符号集合与声明反查。重复条目索引取第一个
-    // （重复本身由 §20.1/§20.2 检查报错，索引构建不得因此崩溃）。
+    // （重复本身由 §21.1/§21.2 检查报错，索引构建不得因此崩溃）。
     internal sealed class BilVerificationContext
     {
         public BilModule Module { get; }
@@ -91,7 +91,7 @@ namespace LatteCompiler.Bil
         private static readonly string[] PredefinedMethods =
         {
             // toString 机制（SYNTAX §3.8）：Any 接口承诺 + Object open native
-            // 默认实现（RUNTIME §26/BIL §21.5 内建 hook）
+            // 默认实现（RUNTIME §26/BIL §22.5 内建 hook）
             "core::Any$toString()@.string",
             "core::Object$toString()@.string",
         };
@@ -179,7 +179,7 @@ namespace LatteCompiler.Bil
 
         public static bool IsBuiltinType(string typeRef) => BuiltinTypes.Contains(typeRef);
 
-        // 类型引用可解析（§20.2）：内建 / 构造形式（.generic<...> 内部为
+        // 类型引用可解析（§21.2）：内建 / 构造形式（.generic<...> 内部为
         // typeid 位置表达式，免检；其余构造头递归检查基类型）/ 用户 canonical
         // 类型（剥泛型实参后的基名 ∈ 类型符号集合）
         public bool IsResolvableTypeRef(string typeRef)
@@ -254,7 +254,7 @@ namespace LatteCompiler.Bil
                 System.StringComparison.OrdinalIgnoreCase);
         }
 
-        // 资源的值类型（§18；无法判定的形态返回 null——调用方跳过严格匹配）：
+        // 资源的值类型（§19；无法判定的形态返回 null——调用方跳过严格匹配）：
         // 标量 → 对应内建类型；null 资源 → .nullable<T>；raw.hex/raw.bin 与
         // 复合资源（发射器尚未产出 load）跳过
         public static string? ResourceValueType(BilResource resource)
@@ -470,7 +470,7 @@ namespace LatteCompiler.Bil
 
     // 函数级索引与遍历：变量类型环境（.args 除 .return + .vars）、.breakid
     // 变量集合、block 成员资格集合、返回类型；全指令深度优先枚举（沿块引用
-    // 下钻，visited 防结构环死循环——环本身由 §20.5 检查报错）。
+    // 下钻，visited 防结构环死循环——环本身由 §21.5 检查报错）。
     internal sealed class BilFunctionContext
     {
         public BilVerificationContext Module { get; }

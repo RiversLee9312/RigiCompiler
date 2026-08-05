@@ -4,7 +4,7 @@ namespace LatteCompiler
 {
     // P4b 发射（SEMANTIC_ARCHITECTURE §6.2）：LoweredTree → BilModule 的机械
     // 线性化，不再有任何语言级决策。M55 起为 visitor 化架构
-    // （docs/compiler/semantic/VISITOR_REWRITE.md）：本类只是瘦入口——
+    // （M55 visitor 化协议）：本类只是瘦入口——
     // EmitEnvironment（模块级共享状态：Module/资源去重表/诊断）+
     // EmittingDriver（逐函数体创建 EmitContext，经类别分派器路由到结构
     // visitor）。
@@ -20,7 +20,7 @@ namespace LatteCompiler
     // S7a：局部声明/赋值（set.var §13.2、set.field.static §13.4）、
     //   §11 运算指令（BilIntrinsicOp → opcode 单点映射表）、带返回值
     //   invoke（§15.1）、new（§14.1，init 选择归 Middleware，发射不写
-    //   init 符号）、§18.1 标量资源全形态（bool/char/f32/f64/null
+    //   init 符号）、§19.1 标量资源全形态（bool/char/f32/f64/null
     //   type(...)）。
     // S7b：LoweredIfStatement → 多 block（§16.2 结构化条件：条件物化到
     //   临时变量 → if $c blk(then) blk(else)，无 else 用 none 操作数；
@@ -41,7 +41,7 @@ namespace LatteCompiler
     //   修饰符 / ext 修饰符）。
     // S7d：LoweredSwitch → switch 指令（§16.6：操作数序
     //   selector/res(常量表)/[blk(item) 表]/blk(default)/breakid，块 id
-    //   switch0-item0/switch0-default；§18.4 switch-table<T> 单行资源，
+    //   switch0-item0/switch0-default；§19.4 switch-table<T> 单行资源，
     //   同（header, 元素序列）去重——case 集相同的 switch 共享一张表；
     //   pattern switch 已在 P4a 降为 if 链，不到这里）+
     //   LoweredThrowStatement → throw（§16.9 单操作数）。
@@ -50,7 +50,7 @@ namespace LatteCompiler
     //   LoweredSeqBlock → 独立 block + call blk(seqN)（§16.1/§3.4：
     //   volatile → §9.6 block 修饰符）+ LoweredTryStatement → try 指令
     //   （§16.7 四操作数：blk(tryN-body)/$slot/res(catch-table)/
-    //   blk(tryN-finally)|none；§18.5 catch-table 多行资源，元素
+    //   blk(tryN-finally)|none；§19.5 catch-table 多行资源，元素
     //   type(T) -> blk(tryN-catchI)，空 catch 列表出空表——资源经
     //   resourceKeys 同元素序列去重）。
     // S8a：is/supers/with（§12.3 静态 type.X 与 .indirect 动态三形态）+

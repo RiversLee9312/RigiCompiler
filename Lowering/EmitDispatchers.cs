@@ -2,7 +2,7 @@ using LatteCompiler.Bil;
 
 namespace LatteCompiler
 {
-    // 类别分派器（P4b，VISITOR_REWRITE.md §6）：Lowered 节点 → 结构 visitor
+    // 类别分派器（P4b，M55 visitor 化协议）：Lowered 节点 → 结构 visitor
     // 的唯一 switch 所在（对应旧 EmitSession 的 EmitStatement/EmitValue
     // 分派）。遇未覆盖节点：报 P4 Error——语句继续后续发射（无产物），
     // 值返回 "<error>" 占位操作数（同旧 default 分支行为）。

@@ -1,6 +1,6 @@
 namespace LatteCompiler
 {
-    // P3 绑定驱动器（VISITOR_REWRITE.md §4）：遍历编译单元的声明骨架，
+    // P3 绑定驱动器（M55 visitor 化协议）：遍历编译单元的声明骨架，
     // 为每个函数体创建独立 BindContext（函数体互不嵌套；每体一个上下文
     // 实例——旧 BindSession 的「防御性清空」由此消失），经分派器启动绑定。
     //

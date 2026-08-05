@@ -900,5 +900,5 @@ pub interface IDisposable {
   - `print(text: String)`：把字符串写入标准输出；
   - `printErr(text: String)`：把字符串写入标准错误；
   - `toString(value: Any): String`：`SYNTAX.md` §3.8 的 `toString` 内建承载——内建基本类型（数值/`bool`/`char`）返回标准文本（`String` 的 `toString` 即自身，不经此路由）；未覆写 `toString` 的对象返回其类型 canonical 名。`Any` 上声明 `toString(): String`（无体，接口承诺），`Object` 提供 open 默认实现并把 body 路由到本函数；用户类型 `override` 后经普通虚派发执行自身实现，不再命中原生面。
-- **BIL VM 不链接原生库**：VM 对 `(lib, symbol)` 命中 `BIL_STANDARD.md` §21.5 内建 hook 表的 native 调用直接执行内建行为，因此在没有 Middleware 与 `latte_rt` 实现的环境下也能完整执行程序。
+- **BIL VM 不链接原生库**：VM 对 `(lib, symbol)` 命中 `BIL_STANDARD.md` §22.5 内建 hook 表的 native 调用直接执行内建行为，因此在没有 Middleware 与 `latte_rt` 实现的环境下也能完整执行程序。
 - 标准库在 Latte 层封装原生方法面（如 `core.io::Console.println` 调用 `print`），用户代码不直接依赖 `latte_rt`；格式化、插值等逻辑全部在 Latte 层演进，不进入原生方法面。

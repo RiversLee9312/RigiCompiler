@@ -26,7 +26,7 @@ namespace LatteCompiler
                 var before = ctx.Flow.Snapshot();
                 var condition = ExpressionDispatcher.Visit(loop.Condition.Expression, scope, ctx, env);
                 Conditions.CheckBool(loop.Condition, loop.Span, condition, "loop", env);
-                // while 体入口收窄（S8b，SMART_CAST_DESIGN §5）：条件真边事实
+                // while 体入口收窄（S8b，SYNTAX §3.5）：条件真边事实
                 // + before 中「体内不赋值」的键——先剔除体赋值根再覆盖真边；
                 // 循环后 = before（出口不收窄）；do-while 体不带（v1 简化）
                 var facts = ConditionFactsExtractor.Extract(condition, ctx);

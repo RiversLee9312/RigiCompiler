@@ -1,6 +1,6 @@
 namespace LatteCompiler
 {
-    // 绑定 visitor 的 CRTP 协议基类（docs/compiler/semantic/VISITOR_REWRITE.md §3 定稿，
+    // 绑定 visitor 的 CRTP 协议基类（M55 定稿，
     // 协议 v2）：静态 Visit 为唯一入口——创建子类实例（new() 约束）、模板化管理
     // 生命周期（Enter/Exit 配对，栈压/弹在此固化，杜绝手工配对泄漏），子类只
     // 实现 VisitCore。

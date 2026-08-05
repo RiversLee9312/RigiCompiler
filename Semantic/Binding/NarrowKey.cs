@@ -1,6 +1,6 @@
 namespace LatteCompiler
 {
-    // smart cast 收窄键（SMART_CAST_DESIGN §2）：可被收窄表达式的身份。
+    // smart cast 收窄键（SYNTAX §3.5）：可被收窄表达式的身份。
     // 形态：根（局部/参数/this）+ const 字段链（空 = 根本身）。
     // 值相等语义（Dictionary 键）：根引用相等 + 段序列逐元素引用相等。
     internal sealed class NarrowKey : IEquatable<NarrowKey>
@@ -29,7 +29,7 @@ namespace LatteCompiler
             return new NarrowKey(null, null);
         }
 
-        // 字段访问键构造（稳定链判定，SMART_CAST_DESIGN §4.2）：
+        // 字段访问键构造（稳定链判定，SYNTAX §3.5）：
         // receiver 链每层递归——this / 局部 / 参数 / const 字段访问；
         // 每层字段必须满足 ConstFieldRules.IsNarrowable（const + 非 init 体内
         // this 字段）；var 根（var 局部/参数）允许——其被赋值时由失效规则

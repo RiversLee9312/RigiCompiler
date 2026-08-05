@@ -17,7 +17,7 @@ namespace LatteCompiler
 
     // if 语句（S7b，SYNTAX §7.1）：else if 链包成单语句 BoundBlock（Bound 层
     // 双分支形态）。definite assignment 分支合并：before ∪ (setT ∩ setF)；
-    // 无 else 合并为 before。S8b 收窄维度（SMART_CAST_DESIGN §5）：分支入口
+    // 无 else 合并为 before。S8b 收窄维度（SYNTAX §3.5）：分支入口
     // = before ∪ 条件真/假边事实；guard——一分支终止（GuaranteesReturn）时
     // 后续收窄 = 对边流；都不终止时有 else 取纯交集、无 else 恢复 before；
     // DA 规则不因 guard 改变（行为零变化）。

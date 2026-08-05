@@ -115,7 +115,7 @@ verifier → VM**。VM 落地后测试从形态断言升级为执行断言。
   即 S1 `CanonicalSymbolPrinter` 的投影形式）：
   - `BilModule.cs`：BilModule（`BIL "1.1"` 版本头 + Metadata +
     Resources + LocalSymbols + ExternalSymbols + Functions，§4）、
-    Metadata 条目（§4.1）、Resource（§4.2/§18 资源字面量形态）。
+    Metadata 条目（§4.1）、Resource（§4.2/§19 资源字面量形态）。
   - `BilSymbols.cs`：类型声明（§8.2）与成员声明（字段 §8.3 /
     方法 §8.4 / enum case §8.5）+ 修饰符（pub/priv/backing/
     compiler-generated/entrypoint 等）。
@@ -129,7 +129,7 @@ verifier → VM**。VM 落地后测试从形态断言升级为执行断言。
     不输出 legacy，§5.6）。
   - `Origin` 以 `object?` 占位（S6 接通后改 `LoweredNode?`——或从
     第一天就放 Lowering 侧扩展，实现时按简洁三问定）。
-- **验收**：`Tests/BilWriterTests.cs`——手工构造 BIL §19 完整示例
+- **验收**：`Tests/BilWriterTests.cs`——手工构造 BIL §20 完整示例
   （含 wrapper 隐藏字段示例）的内存模型，`BilWriter` 输出与规范文本
   逐行一致（黄金文件断言），注册进 `TestRunner`。
 
@@ -175,10 +175,10 @@ verifier → VM**。VM 落地后测试从形态断言升级为执行断言。
   - Binder 查找序补「宿主类型成员」一环（println 体内裸名调用同类
     静态方法，对齐 ARCH §2 既定查找序）；
   - native 成员声明进 LocalSymbols 带 `native symbol("...") lib("...")`
-    修饰符（BIL §8.4），无 fn 定义；BIL VM 经 §21.5 内建 hook 执行
+    修饰符（BIL §8.4），无 fn 定义；BIL VM 经 §22.5 内建 hook 执行
     （S14 验收）。
 - **验收**：`main + 字面量 + core.io::Console.println + ret` 的
-  `.latte` 源码经 `compile --emit-bil` 产出与 BIL §19 示例同级的合法
+  `.latte` 源码经 `compile --emit-bil` 产出与 BIL §20 示例同级的合法
   BIL 文本（黄金文件对照）；Origin 调试链（Bil→Lowered→Bound→
   AST.Span）通。
 
@@ -204,7 +204,7 @@ S5 已能绑定的全部 Bound 节点在本步过 P4（控制流的前置：没�
 - `Lowering/BilEmitter.cs`：新发射 `set.var`（局部与全局静态字段赋值
   `set.field.static`）、§11 运算指令（`BilIntrinsicOp` → opcode 映射表
   单点）、`invoke`（带返回值）、`new`（§14.1，init 选择归 Middleware）；
-  字面量资源补齐 §18.1 标量全形态（bool/char/f32/f64/null `type(...)`）；
+  字面量资源补齐 §19.1 标量全形态（bool/char/f32/f64/null `type(...)`）；
 - `Tests/LoweredDescribe.cs`：唯一 Lowered 树描述器（仿 BoundDescribe）；
 - **验收**：`Tests/LowererTests.cs`（每类节点 Lowered 形态 +
   未覆盖诊断）+ `BilEmitterTests` 扩充（`var x = 1 + 2` 等含运算/赋值/
@@ -278,7 +278,7 @@ core.collections 的 C# 风格双接口；基元实现落 `stdlib/.bootstrap.lat
   S10 stdlib，边界清单已同步））；
 - P4a：pattern 分支降级为嵌套条件（§16.6 规则）；switch 表达式 →
   结果临时变量；
-- P4b：`switch` 指令 + `switch-table` 资源（§18.4）+ `throw`（§16.9）；
+- P4b：`switch` 指令 + `switch-table` 资源（§19.4）+ `throw`（§16.9）；
 - **验收**：常量表 switch 端到端 + pattern 降级 `LoweredDescribe`
   用例 + throw 用例。
 
@@ -289,7 +289,7 @@ core.collections 的 C# 风格双接口；基元实现落 `stdlib/.bootstrap.lat
   try/catch 路径；
 - P4a：`seq` 与 `return@` → 结构化 block + 结果临时变量 + `call`
   （§3.4）；
-- P4b：`try` 指令 + `catch-table` 资源（§18.5）+ `call blk(...)`
+- P4b：`try` 指令 + `catch-table` 资源（§19.5）+ `call blk(...)`
   （§16.1）；
 - **验收**：try/catch/finally(e) 端到端 + seq 表达式取值脱糖
   `LoweredDescribe` 用例。
@@ -337,14 +337,14 @@ P4 同步落地——P3 绑得出来的形态，同一步内 P4 必须能发射�
 
 ### S8b smart cast 分析 ✅（M56，2026-08-03）
 
-> **已完成**：定稿（M55 `SMART_CAST_DESIGN.md`）→ SYNTAX §3.5 完整
+> **已完成**：定稿（M55）→ SYNTAX §3.5 完整
 > 规则 + §3.4 null 判等段落地；P3 收窄分析（FlowState 收窄表 +
 > ConditionFactsExtractor + BoundSmartCastExpression 标记）与 P4a 物化
 > （LoweredCastExpression）三 pass 全通；SmartCastTests 55 用例
 > （注册表 #41）+ CLI 端到端三样例 BIL 核对。详见 PROGRESS_REPORT
 > M56 段落。落地偏差（Q4 澄清：分支体内 `_` 不可用是 §7.2 既有语义，
 > 覆盖 selector 可收窄场景；var 根允许——赋值失效覆盖；访问器判定
-> 归 S8e 细化）已记录于 SMART_CAST_DESIGN.md。
+> 归 S8e 细化）已并入 SYNTAX §3.5 与 PROGRESS_REPORT M56 段落。
 
 - ~~规范前置：SYNTAX §3.5 现仅一句话（「`is` 检查后在对应分支中
   自动转换类型」），动工前必须先专项定稿——分支语义、失效规则、
@@ -425,7 +425,7 @@ P4 同步落地——P3 绑得出来的形态，同一步内 P4 必须能发射�
 > ranking）+ 访问器读写检查与体绑定（Bound 节点形态不变——BIL
 > get.field/set.field 承载）+ 局部访问器归口 S11；P4 声明段小开闸
 > （BIL §8.3/§8.4 已定稿形态：getter(FIELD)/setter(FIELD)/backing/
-> computed/override/abstract 投影）+ BilVerifier §20.8 增补。
+> computed/override/abstract 投影）+ BilVerifier §21.8 增补。
 > 落地偏差：① 局部 var/const 访问器归 S11（需闭包抬升，超体量）；
 > ② 接口默认实现隐式继承（§11 显式委托语法归后续）；③ 带访问器
 > 字段必须显式类型标注（与无标注字段类型推断不共存）；④ ext 字段 +
@@ -486,7 +486,7 @@ wrapper 值语义落地要点（2026-07-29 规范修订）：wrapper 是 rich st
 
 ## S12 BIL verifier
 
-`Bil/BilVerifier.cs`：BIL §20 全部检查（词法/符号/类型/definite
+`Bil/BilVerifier.cs`：BIL §21 全部检查（词法/符号/类型/definite
 assignment/控制流/`.breakid` capability/泛型/可见性），作为
 `--emit-bil` 的默认后置自检 + 独立测试套件（合法模块通过 +
 每类违规拒绝）。
@@ -501,9 +501,9 @@ GC fence 的交互、stdlib 要求 Middleware 暴露的 Native 方法面），
 
 ## S14 BIL VM
 
-`Bil/BilVm.cs`：BIL §21 抽象值语义解释器。落地后新增执行断言
-测试形态（跑出结果/异常与预期比对），并持续验证 §20.9
-「VM 可执行性」。native 调用经 §21.5 内建 hook 表执行
+`Bil/BilVm.cs`：BIL §22 抽象值语义解释器。落地后新增执行断言
+测试形态（跑出结果/异常与预期比对），并持续验证 §21.9
+「VM 可执行性」。native 调用经 §22.5 内建 hook 表执行
 （`latte_rt` 的 `print`/`printErr` → stdout/stderr），hello world
 端到端执行断言须产生真实输出，无需任何原生库。
 

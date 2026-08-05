@@ -113,7 +113,7 @@ namespace LatteCompiler
             return RegisterScalarResource(type!.Value, literalText, env);
         }
 
-        // null 资源登记（§18.1；S7f 起与合成 null 常量共用）：键 =
+        // null 资源登记（§19.1；S7f 起与合成 null 常量共用）：键 =
         // 元素类型投影；类型语义 = .nullable<元素类型>——
         // 可直接与 .nullable<T> 变量做 cmp.eq/cmp.ne（§11.5 严格相同）。
         // 错误路径返回未登记的占位资源（诊断已落袋，输出按 §8 门槛不写盘）
@@ -152,9 +152,9 @@ namespace LatteCompiler
             return resource;
         }
 
-        // switch 常量表资源（§18.4）：selector 类型引用 = SELECTOR 类型
-        // 投影（带前导点的类型引用，与 §18.1 标量关键字不同族），元素 =
-        // 各 case 常量字面量原文（经 RenderLiteral 复用 §18.1 渲染；类型与
+        // switch 常量表资源（§19.4）：selector 类型引用 = SELECTOR 类型
+        // 投影（带前导点的类型引用，与 §19.1 标量关键字不同族），元素 =
+        // 各 case 常量字面量原文（经 RenderLiteral 复用 §19.1 渲染；类型与
         // selector 严格相同，P3 已查）。单行形态；
         // 同（selector, 元素序列）去重——case 集完全相同的多个 switch 共享一张表
         public static BilResource RegisterSwitchTable(LoweredSwitch sw, EmitEnvironment env)
@@ -178,7 +178,7 @@ namespace LatteCompiler
             return resource;
         }
 
-        // catch 表资源（S7e，§18.5）：元素 = type(EXCEPTION_TYPE) ->
+        // catch 表资源（S7e，§19.5）：元素 = type(EXCEPTION_TYPE) ->
         // blk(CATCH_BLOCK)，保序（表序即匹配序，不能重排）。多行形态；
         // 空 catch 列表出空表。同元素序列去重（元素含 block id，
         // 实际去重仅在同序列重复登记时命中——与 switch-table 同机制）
@@ -208,10 +208,10 @@ namespace LatteCompiler
             return resource;
         }
 
-        // 字面量 → (BIL 标量类型, 字面量原文)（§18.1；值取 Syntax 的解码后
+        // 字面量 → (BIL 标量类型, 字面量原文)（§19.1；值取 Syntax 的解码后
         // 内容，重新转义为 BIL 字面量原文）。null 字面量返回 (null, 元素类型
         // canonical)——P3 已把 null 定型为上下文可空类型 Nullable\<T>；
-        // Type 为 null 仅此情形（§18.4 表元素取原文时同此约定）。
+        // Type 为 null 仅此情形（§19.4 表元素取原文时同此约定）。
         // 已诊断的错误路径返回 (String, "<error>") 占位（输出不写盘）
         public static (BilScalarType? Type, string LiteralText) RenderLiteral(
             LoweredLiteralExpression literal, EmitEnvironment env)
@@ -252,7 +252,7 @@ namespace LatteCompiler
             }
         }
 
-        // AST 整数类型 → BIL 标量类型（§18.1）
+        // AST 整数类型 → BIL 标量类型（§19.1）
         public static BilScalarType IntScalarType(IntType intType)
         {
             return intType switch

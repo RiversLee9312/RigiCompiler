@@ -219,7 +219,7 @@ namespace LatteCompiler
         }
     }
 
-    // 常量 switch（§16.6）：selector 物化 + §18.4 常量表资源，
+    // 常量 switch（§16.6）：selector 物化 + §19.4 常量表资源，
     // switch $s res(T) [blk(item)...] blk(default) $breakid
     // （操作数序即规范排版序）；item/default block 加入函数
     // 并递归发射，落尾自然返回（§9.4 同 if 分支块）
@@ -293,7 +293,7 @@ namespace LatteCompiler
 
     // try（S7e，§16.7 四操作数）：blk(tryN-body) $slot
     // res(catch-table) blk(tryN-finally)|none；catch 表 =
-    // §18.5 多行资源（元素 type(T) -> blk(tryN-catchI)，
+    // §19.5 多行资源（元素 type(T) -> blk(tryN-catchI)，
     // 保序——表序即匹配序）；body/catch/finally block 加入
     // 函数并递归发射，落尾自然返回（§9.4 同 if 分支块）
     internal sealed class TryEmitter : EmitVisitor<TryEmitter, Unit>

@@ -1,8 +1,8 @@
 namespace LatteCompiler
 {
     // P4a 降级重写（SEMANTIC_ARCHITECTURE §6.1）：BoundTree → LoweredTree，
-    // 树到树重写。M55 起为 visitor 化架构（docs/compiler/semantic/
-    // VISITOR_REWRITE.md）：本类只是瘦入口——LowerEnvironment（只读）+
+    // 树到树重写。M55 起为 visitor 化架构（CRTP 协议，M55 定稿）：
+    // 本类只是瘦入口——LowerEnvironment（只读）+
     // LoweringDriver（逐函数体创建 LowerContext，经类别分派器路由到结构
     // visitor）。
     //

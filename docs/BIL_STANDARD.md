@@ -151,7 +151,7 @@ Middleware 不重新执行 source-level overload ranking。对于运算、getter
 
 以下源码结构通常不拥有同名 BIL 指令，而由 frontend 规范化为本标准已有操作：
 
-- 安全调用 `?.`：`type.is` / nullable 检查 + `if`（nullable 检查 = `cmp.eq`/`cmp.ne` 与 `null type(T)` 资源，§18.1/§11.5）；
+- 安全调用 `?.`：`type.is` / nullable 检查 + `if`（nullable 检查 = `cmp.eq`/`cmp.ne` 与 `null type(T)` 资源，§19.1/§11.5）；
 - `if?` 空值回退：nullable 检查 + `if`（同上；非空分支的取值是 `.nullable<T>` → `T` 的显式 `cast`，§12.1）；
 - smart cast：条件检查 + 显式 `cast`；
 - `seq` 与 `return@`：结构化 block、结果临时变量与 `call`；
@@ -222,7 +222,7 @@ Metadata 不得被普通 BIL 指令读取。需要在程序执行中使用的数
 
 ### 4.2 `Resources`
 
-BIL 指令中不得直接出现用户字面量。所有字面值和静态表必须在 `Resources` 中声明，再通过 `load` 或结构化指令引用。
+BIL 指令中不得直接出现用户字面量。所有字面值和静态表必须在 `Resources` 中声明，再通过 `load`、结构化指令或 `hint` 引用。
 
 资源是不可变值。加载资源产生对应 Latte 值的语义副本；具体是否复制、共享或常量折叠由 Middleware 决定。
 
@@ -682,7 +682,7 @@ wrapper-proxy(PROXY_KIND)
 
 - `native` 声明**不得**拥有对应的方法 body（`fn` 定义）；
 - `symbol("...")` 与 `lib("...")` 必须与 `native` 同时出现且各恰好一次，参数为字符串字面量，分别给出原生符号名与原生库标识；
-- `native` 方法的调用点与普通方法相同（`invoke` / `invoke.noret`），实现侧经 §21.5 的内建 hook 或 Middleware 的原生链接解析。
+- `native` 方法的调用点与普通方法相同（`invoke` / `invoke.noret`），实现侧经 §22.5 的内建 hook 或 Middleware 的原生链接解析。
 
 #### 8.4.1 全局函数与全局字段声明
 
@@ -1508,9 +1508,33 @@ frontend 必须把 `seq using(...)` 生成为结构化初始化、清理记录�
 
 ---
 
-## 18. Resources 文本格式
+## 18. 提示指令
 
-### 18.1 标量资源
+```bil
+hint res(RESOURCE_ID)
+```
+
+`hint` 向 backend 提供一段可忽略的提示；RESOURCE_ID 的资源内容是一段 JSON 文本。
+
+规则：
+
+- `hint` 只能出现在 block 内；
+- RESOURCE_ID 必须引用本模块已声明的 `string` 资源；
+- 本标准不定义 JSON 内容的 schema，由生产方（frontend）与消费方（backend）另行约定；
+- `hint` 无结果变量，不读写任何变量，不参与 definite assignment，不是终结指令，不影响控制流与异常传播；
+- `hint` 仅是指令流中的位置标记，不附着于任何特定指令、block 或符号，位置含义由消费方按 JSON 内容自行解释。
+
+**从模块中删除全部 `hint` 指令后，程序的 §22.2 可观察行为必须完全不变。**
+
+VM 执行 `hint` 为 no-op。
+
+Middleware 可以依据 `hint` 内容改进代码生成或产出附加元数据（如调试信息），也可以整体忽略；`hint` 内容不得影响可观察语义。`hint` 内容无法解析或不符合消费方预期时，消费方必须忽略该条 `hint`，不得因此拒绝编译。
+
+---
+
+## 19. Resources 文本格式
+
+### 19.1 标量资源
 
 规范形式：
 
@@ -1528,7 +1552,7 @@ Resources {
 
 `null type(T)` 标注**元素类型** `T`，资源本身的类型为对应的 `.nullable<T>`——因此它可以直接与 `.nullable<T>` 变量做 `cmp.eq` / `cmp.ne` 比较而满足 §11.5 的类型严格相同规则，这就是 §3.4 所称「nullable 检查」的标准形态。
 
-### 18.2 数组、Pair 与 Map
+### 19.2 数组、Pair 与 Map
 
 ```bil
 R_Names = array<string> { "a", "b" }
@@ -1541,7 +1565,7 @@ R_Map = map<string, i64> {
 
 复合资源的元素类型必须严格一致。
 
-### 18.3 原始数据
+### 19.3 原始数据
 
 ```bil
 R_DataHex = raw.hex x2FF2331C
@@ -1550,7 +1574,7 @@ R_DataBin = raw.bin b01010101
 
 原始数据只表示不可变 byte sequence，不自动视为 typeid、fieldid、methodid 或 Native 地址。
 
-### 18.4 switch table
+### 19.4 switch table
 
 ```bil
 R_Switch = switch-table<.i32> { 1, 2, 3 }
@@ -1558,7 +1582,7 @@ R_Switch = switch-table<.i32> { 1, 2, 3 }
 
 元素必须为编译期常量，且类型与 selector 严格相同。
 
-### 18.5 catch table
+### 19.5 catch table
 
 ```bil
 R_Catches = catch-table {
@@ -1571,7 +1595,7 @@ catch 顺序具有语义，不能重排。
 
 ---
 
-## 19. 完整文本示例
+## 20. 完整文本示例
 
 ```bil
 BIL "1.1"
@@ -1630,11 +1654,11 @@ LocalSymbols {
 
 ---
 
-## 20. BIL 验证器
+## 21. BIL 验证器
 
 验证器必须拒绝任何违反本节规则的 BIL。验证可以分阶段进行，但最终结果必须等价。
 
-### 20.1 词法与语法验证
+### 21.1 词法与语法验证
 
 检查：
 
@@ -1645,7 +1669,7 @@ LocalSymbols {
 - 括号、数组和 block 结构闭合；
 - 保留名称未被用户声明。
 
-### 20.2 符号验证
+### 21.2 符号验证
 
 检查：
 
@@ -1656,7 +1680,7 @@ LocalSymbols {
 - 方法 body 与声明一一对应（`native` 声明除外：`native` 方法不得存在方法 body，且必须恰好各带一个 `symbol("...")` 与 `lib("...")` 修饰符）；
 - entrypoint 唯一且签名符合 `SYNTAX.md`。
 
-### 20.3 类型验证
+### 21.3 类型验证
 
 检查：
 
@@ -1670,7 +1694,7 @@ LocalSymbols {
 - new/init 和 enum case 签名合法；
 - await/yield 类型合法。
 
-### 20.4 definite assignment
+### 21.4 definite assignment
 
 检查：
 
@@ -1680,7 +1704,7 @@ LocalSymbols {
 - loop condition 在每次读取前由 judge block 赋值；
 - 结果变量不会在失败路径上被错误认为已赋值。
 
-### 20.5 控制流验证
+### 21.5 控制流验证
 
 检查：
 
@@ -1694,7 +1718,7 @@ LocalSymbols {
 - catch/finally table 合法；
 - 递归 block call 若被允许，必须能够由实现安全执行；实现可以选择拒绝无法证明有界的直接结构递归。
 
-### 20.6 `.breakid` capability 验证
+### 21.6 `.breakid` capability 验证
 
 验证器必须追踪 BREAK_ID 的创建结构与作用域。
 
@@ -1708,7 +1732,7 @@ LocalSymbols {
 - 不得作为方法参数/返回值；
 - 不得存入字段、数组、Any、Box 或资源。
 
-### 20.7 泛型与参数包验证
+### 21.7 泛型与参数包验证
 
 检查：
 
@@ -1721,7 +1745,7 @@ LocalSymbols {
 - 泛型约束在 frontend 输出中已满足；
 - runtime 动态 new/is/supers/with 的边界合法。
 
-### 20.8 可见性与类型属性验证
+### 21.8 可见性与类型属性验证
 
 检查：
 
@@ -1733,7 +1757,7 @@ LocalSymbols {
 - rich/shared 闭包与跨 Coroutine 规则合法；
 - async 调用的 receiver/参数/结果满足 shared 边界。
 
-### 20.9 VM 可执行性验证
+### 21.9 VM 可执行性验证
 
 BIL VM 必须能够在不依赖 LLVM、Native ABI 和对象物理布局的情况下解释所有标准指令。
 
@@ -1741,9 +1765,9 @@ BIL VM 必须能够在不依赖 LLVM、Native ABI 和对象物理布局的情况
 
 ---
 
-## 21. BIL VM 语义要求
+## 22. BIL VM 语义要求
 
-### 21.1 抽象值模型
+### 22.1 抽象值模型
 
 VM 可以使用 C# 对象、record、数组、字典或其他抽象数据结构表示 Latte 值。
 
@@ -1757,7 +1781,7 @@ VM 不需要模拟：
 - ARC/GC 引用计数；
 - LLVM calling convention。
 
-### 21.2 必须一致的可观察行为
+### 22.2 必须一致的可观察行为
 
 VM 与 Native 实现必须在以下方面一致：
 
@@ -1773,7 +1797,7 @@ VM 与 Native 实现必须在以下方面一致：
 - typeOf/is/supers/with/cast 的结果；
 - using 清理顺序。
 
-### 21.3 运算实现查询
+### 22.3 运算实现查询
 
 VM 必须使用与 Middleware 相同的确定键查询运算实现：
 
@@ -1783,13 +1807,13 @@ opcode + exact operand type(s) + exact result type
 
 对内建类型执行语言规定的 primitive 语义；对用户类型执行精确运算实现。VM 不执行 source-level overload ranking。
 
-### 21.4 字段与索引
+### 22.4 字段与索引
 
 VM 必须把 `get.field`、`set.field`、`get.array`、`set.array` 视为独立语义操作，并根据精确类型与符号元数据执行 getter/setter/operator/wrapper 行为。
 
 不得为了实现方便而在 BIL 语义层把它们改写成与规范不同的普通调用顺序。
 
-### 21.5 native 函数的内建 hook
+### 22.5 native 函数的内建 hook
 
 VM 执行到对 `native` 方法声明的 `invoke` / `invoke.noret` 时，不寻找方法 body，而是按 `(lib, symbol)` 查询内建 hook 表并执行对应的内建行为。标准内建 hook 表：
 
@@ -1803,7 +1827,7 @@ VM 执行到对 `native` 方法声明的 `invoke` / `invoke.noret` 时，不寻�
 
 ---
 
-## 22. Middleware 合法 lowering 的边界
+## 23. Middleware 合法 lowering 的边界
 
 Middleware 可以：
 
@@ -1831,9 +1855,9 @@ Middleware 不得：
 
 ---
 
-## 23. 与 SYNTAX.md / RUNTIME.md 的职责关系
+## 24. 与 SYNTAX.md / RUNTIME.md 的职责关系
 
-### 23.1 以 SYNTAX.md 为准的内容
+### 24.1 以 SYNTAX.md 为准的内容
 
 - 源码语法；
 - 普通方法调用的 source-level overload resolution；
@@ -1846,7 +1870,7 @@ Middleware 不得：
 - 入口函数允许的源码签名；
 - 访问修饰符和声明合法性。
 
-### 23.2 以 RUNTIME.md 为准的内容
+### 24.2 以 RUNTIME.md 为准的内容
 
 - reified generic 的 runtime typeid 语义；
 - fixed/positional/named generic type 信息容器；
@@ -1857,7 +1881,7 @@ Middleware 不得：
 - rich/shared 与 GC；
 - IDisposable 和销毁检查。
 
-### 23.3 本文档独立规定的内容
+### 24.3 本文档独立规定的内容
 
 - BIL 文本结构；
 - 严格类型规则；
@@ -1877,7 +1901,7 @@ Middleware 不得：
 
 ---
 
-## 24. Legacy BIL 迁移说明
+## 25. Legacy BIL 迁移说明
 
 旧 BIL 文本可按下表迁移：
 
@@ -1903,20 +1927,25 @@ Middleware 不得：
 
 ---
 
-## 25. 待版本化扩展
+## 26. 未来绝对不允许加入的扩展
+
+- SSA 形式； （过于底层，这是Middleware的职责）
+- 任意 CFG 分支； （过于底层，完全和BIL的设计理念背道而驰）
+- 原子内存序指令； （应使用现有的block + volatile block修饰符，更底层的语义不允许在这个级别介入，这是Middleware的事情）
+- SIMD/vector 类型； （过于底层，完全和BIL的设计理念背道而驰，而且应该使用标准库类型+native函数）
+- unsafe pointer；（应使用标准库类型+native函数）
+- generator/yield-value； （现有的指令已经足够）
+- backend-specific intrinsic； （过于底层，完全和BIL的设计理念背道而驰，即使有极少数情况，也应使用统一的 hint 指令（§18））
+- 调试器专用 scope/lifetime 指令； （应使用统一的 hint 指令（§18））
+- profile-guided 元数据。 （应使用统一的 hint 指令（§18））
+
+---
+
+## 27. 未来可能加入的扩展
 
 以下能力如果未来加入，必须通过 BIL 版本或 feature flag 明确声明，不得静默改变现有指令含义：
 
-- SSA 形式；
-- 任意 CFG 分支；
-- 原子内存序指令；
-- SIMD/vector 类型；
-- unsafe pointer；
 - tail call 语义；
-- generator/yield-value；
-- backend-specific intrinsic；
-- 调试器专用 scope/lifetime 指令；
-- profile-guided 元数据。
 
 扩展必须同时定义：
 

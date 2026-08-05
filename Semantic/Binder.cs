@@ -3,7 +3,7 @@ namespace LatteCompiler
     // P3 函数体分析（SEMANTIC_ARCHITECTURE §5，SEMANTIC_ROADMAP S5 最小闭环）：
     // 以函数体为独立分析单位（函数间诊断互不阻断），AST 只读，产出 BoundTree。
     //
-    // M55 起为 visitor 化架构（docs/compiler/semantic/VISITOR_REWRITE.md）：
+    // M55 起为 visitor 化架构：
     // 本类只是瘦入口——BindEnvironment（只读共享）+ BindingDriver（逐函数体
     // 创建 BindContext，经类别分派器路由到结构 visitor）。协议：CRTP 基类
     // BinderVisitor（静态 Visit 入口 + Enter/Exit 生命周期配对）+ 双协议

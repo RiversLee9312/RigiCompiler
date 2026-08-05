@@ -27,7 +27,7 @@ namespace LatteCompiler.Bil
         public List<BilFunction> Functions { get; } = new List<BilFunction>();
     }
 
-    // §4.1/§18.1/§18.3 标量类型关键字（无前导点；拼写见 BilSpellings）
+    // §4.1/§19.1/§19.3 标量类型关键字（无前导点；拼写见 BilSpellings）
     public enum BilScalarType
     {
         String, Bool, Char, F32, F64,
@@ -51,7 +51,7 @@ namespace LatteCompiler.Bil
         }
     }
 
-    // Resources 段条目（§4.2/§18）：指令不得内联字面量，一切字面值与
+    // Resources 段条目（§4.2/§19）：指令不得内联字面量，一切字面值与
     // 静态表在 Resources 声明后经 load res(...) 引用。资源是不可变值。
     public abstract class BilResource
     {
@@ -64,7 +64,7 @@ namespace LatteCompiler.Bil
         }
     }
 
-    // 标量资源（§18.1/§18.3）：R_X = string "..." / bool true / i64 123 /
+    // 标量资源（§19.1/§19.3）：R_X = string "..." / bool true / i64 123 /
     // f64 0.5 / raw.hex x2FF... / raw.bin b0101...
     public sealed class BilScalarResource : BilResource
     {
@@ -78,7 +78,7 @@ namespace LatteCompiler.Bil
         }
     }
 
-    // null 资源（§18.1）：R_X = null type(com.example::User)
+    // null 资源（§19.1）：R_X = null type(com.example::User)
     public sealed class BilNullResource : BilResource
     {
         public string TypeRef { get; }
@@ -89,11 +89,11 @@ namespace LatteCompiler.Bil
         }
     }
 
-    // 复合资源（§18.2）：array/pair/map 通用形态。
+    // 复合资源（§19.2）：array/pair/map 通用形态。
     // Header 为构造头文本（array<string> / pair<string, i64> / map<string, i64>）；
     // 元素为字面量原文（map 为 "k" = v 行）。
     // Multiline = false：{ "a", "b" } 单行（array/pair）；
-    // Multiline = true：元素各占一行（map，§18.2 规范排版）。
+    // Multiline = true：元素各占一行（map，§19.2 规范排版）。
     // （switch-table/catch-table 有专用资源类，见下）
     public sealed class BilCollectionResource : BilResource
     {
@@ -110,7 +110,7 @@ namespace LatteCompiler.Bil
         }
     }
 
-    // switch 常量表资源（§18.4）：R_X = switch-table<SELECTOR_TYPE> { ... }，
+    // switch 常量表资源（§19.4）：R_X = switch-table<SELECTOR_TYPE> { ... }，
     // 单行形态；header 由 selector 类型引用自渲染
     public sealed class BilSwitchTableResource : BilResource
     {
@@ -127,7 +127,7 @@ namespace LatteCompiler.Bil
         internal string HeaderText => $"switch-table<{SelectorTypeRef}>";
     }
 
-    // catch 表条目（§18.5）：type(EXCEPTION_TYPE) -> blk(CATCH_BLOCK)，
+    // catch 表条目（§19.5）：type(EXCEPTION_TYPE) -> blk(CATCH_BLOCK)，
     // 保序（表序即匹配序，不能重排）
     public sealed class BilCatchEntry
     {
@@ -143,7 +143,7 @@ namespace LatteCompiler.Bil
         internal string Render() => $"{ExceptionType.Render()} -> blk({Handler.Id})";
     }
 
-    // catch 表资源（§18.5）：R_X = catch-table { 元素各占一行 }，多行形态
+    // catch 表资源（§19.5）：R_X = catch-table { 元素各占一行 }，多行形态
     public sealed class BilCatchTableResource : BilResource
     {
         public IReadOnlyList<BilCatchEntry> Entries { get; }

@@ -6,7 +6,7 @@ namespace LatteCompiler
     //   其余位置（普通方法/static 上下文/全局 const 字段）一律诊断。
     // - 字段写入统一检查（S8e）：带访问器字段走 setter 存在性与可见性
     //   （§9.4.1），无访问器字段走 const 规则。
-    // - smart cast 收窄资格（SMART_CAST_DESIGN §4.2）：仅 const 字段
+    // - smart cast 收窄资格（SYNTAX §3.5）：仅 const 字段
     //   可收窄（var 字段别名赋值不可控）；带 getter/setter 的字段（§9.4）
     //   不收窄——外部读写一律经访问器，读取结果不承诺稳定（§9.4.1）。
     internal static class ConstFieldRules
@@ -52,7 +52,7 @@ namespace LatteCompiler
         // 收窄资格：const 字段（不带访问器的 backing field 直访——带访问器
         // 字段的读取经访问器、结果不承诺稳定，S8e 起排除）；构造方法 init
         // 体内的 this 字段保守排除（const 字段构造期可能尚未初始化，
-        // SMART_CAST_DESIGN §4.3）
+        // SYNTAX §3.5）
         public static bool IsNarrowable(FieldSymbol field, BindContext ctx)
         {
             if (!field.IsConst) return false;

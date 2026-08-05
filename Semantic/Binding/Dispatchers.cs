@@ -1,6 +1,6 @@
 namespace LatteCompiler
 {
-    // 类别分派器（VISITOR_REWRITE.md §2）：AST 节点 → 结构 visitor 的唯一
+    // 类别分派器（M55 visitor 化协议）：AST 节点 → 结构 visitor 的唯一
     // switch 所在（对应旧 BindSession 的 BindExpression/BindStatement/BindBlock
     // 分派）。结构 visitor 之间不直接互调，一律经此。
     //

@@ -2,13 +2,13 @@ using System.Collections.Generic;
 
 namespace LatteCompiler.Bil
 {
-    // BilVerifier 符号检查（§20.2 符号验证 + §20.7 泛型与参数包 + §20.8
+    // BilVerifier 符号检查（§21.2 符号验证 + §21.7 泛型与参数包 + §21.8
     // 可见性与类型属性的声明侧）。指令内的符号引用可解析性在 Types.cs
     // 逐指令遍历时检查。
 
     public static partial class BilVerifier
     {
-        // ===== §20.2 符号验证（声明侧）+ §20.8 声明侧 =====
+        // ===== §21.2 符号验证（声明侧）+ §21.8 声明侧 =====
         private static void VerifyDeclarations(BilVerificationContext context,
             List<BilVerificationError> errors)
         {
@@ -22,22 +22,22 @@ namespace LatteCompiler.Bil
             {
                 if (!context.LocalMethodSymbols.Contains(function.Symbol))
                 {
-                    errors.Add(new BilVerificationError("20.2", function.Symbol,
+                    errors.Add(new BilVerificationError("21.2", function.Symbol,
                         "fn 定义在 LocalSymbols 中没有对应方法声明"));
                 }
                 if (!BilVerificationContext.TryParseMethodSymbol(function.Symbol,
                         out _, out _, out _, out _))
                 {
-                    errors.Add(new BilVerificationError("20.1", function.Symbol,
+                    errors.Add(new BilVerificationError("21.1", function.Symbol,
                         "fn 符号不符合 canonical 方法符号语法（§5.2）"));
                 }
                 if (!fnSymbols.Add(function.Symbol))
                 {
-                    errors.Add(new BilVerificationError("20.2", function.Symbol, "fn 定义重复"));
+                    errors.Add(new BilVerificationError("21.2", function.Symbol, "fn 定义重复"));
                 }
             }
 
-            // 资源类型引用可解析（§20.3：所有资源有类型）
+            // 资源类型引用可解析（§21.3：所有资源有类型）
             foreach (var resource in context.Module.Resources)
             {
                 switch (resource)
@@ -45,14 +45,14 @@ namespace LatteCompiler.Bil
                     case BilNullResource nullResource:
                         if (!context.IsResolvableTypeRef(nullResource.TypeRef))
                         {
-                            errors.Add(new BilVerificationError("20.2", "Resources",
+                            errors.Add(new BilVerificationError("21.2", "Resources",
                                 $"null 资源 \"{resource.Name}\" 的类型不可解析 \"{nullResource.TypeRef}\""));
                         }
                         break;
                     case BilSwitchTableResource switchTable:
                         if (!context.IsResolvableTypeRef(switchTable.SelectorTypeRef))
                         {
-                            errors.Add(new BilVerificationError("20.2", "Resources",
+                            errors.Add(new BilVerificationError("21.2", "Resources",
                                 $"switch-table \"{resource.Name}\" 的 selector 类型不可解析 " +
                                 $"\"{switchTable.SelectorTypeRef}\""));
                         }
@@ -62,7 +62,7 @@ namespace LatteCompiler.Bil
                         {
                             if (!context.IsResolvableTypeRef(entry.ExceptionType.TypeRef))
                             {
-                                errors.Add(new BilVerificationError("20.2", "Resources",
+                                errors.Add(new BilVerificationError("21.2", "Resources",
                                     $"catch-table \"{resource.Name}\" 的异常类型不可解析 " +
                                     $"\"{entry.ExceptionType.TypeRef}\""));
                             }
@@ -83,7 +83,7 @@ namespace LatteCompiler.Bil
             }
             if (entrypointCount > 1)
             {
-                errors.Add(new BilVerificationError("20.2", "LocalSymbols",
+                errors.Add(new BilVerificationError("21.2", "LocalSymbols",
                     $"entrypoint 方法必须唯一（实际 {entrypointCount}）"));
             }
 
@@ -108,13 +108,13 @@ namespace LatteCompiler.Bil
                     && context.TypeDeclarations.TryGetValue(qualifiedName.Substring(0, dot), out var owner)
                     && owner.Kind != BilTypeKind.EnumStruct)
                 {
-                    errors.Add(new BilVerificationError("20.2", qualifiedName,
+                    errors.Add(new BilVerificationError("21.2", qualifiedName,
                         $"case 声明的宿主类型不是 enum-struct（{BilSpellings.Of(owner.Kind)}）"));
                 }
                 if (caseDeclaration.DiscriminantResource != null
                     && !context.ResourcesByName.ContainsKey(caseDeclaration.DiscriminantResource))
                 {
-                    errors.Add(new BilVerificationError("20.2", qualifiedName,
+                    errors.Add(new BilVerificationError("21.2", qualifiedName,
                         $"discriminant 资源 \"{caseDeclaration.DiscriminantResource}\" 未登记"));
                 }
             }
@@ -131,7 +131,7 @@ namespace LatteCompiler.Bil
                     case BilTypeDeclaration type:
                         if (!symbols.Add(type.Symbol))
                         {
-                            errors.Add(new BilVerificationError("20.2", sectionName,
+                            errors.Add(new BilVerificationError("21.2", sectionName,
                                 $"类型符号重复 \"{type.Symbol}\""));
                         }
                         var memberSymbols = new HashSet<string>();
@@ -140,7 +140,7 @@ namespace LatteCompiler.Bil
                             var memberSymbol = MemberSymbolOf(member);
                             if (memberSymbol != null && !memberSymbols.Add(memberSymbol))
                             {
-                                errors.Add(new BilVerificationError("20.2", sectionName,
+                                errors.Add(new BilVerificationError("21.2", sectionName,
                                     $"成员符号重复 \"{memberSymbol}\""));
                             }
                         }
@@ -149,7 +149,7 @@ namespace LatteCompiler.Bil
                         var symbol = MemberSymbolOf(member);
                         if (symbol != null && !symbols.Add(symbol))
                         {
-                            errors.Add(new BilVerificationError("20.2", sectionName,
+                            errors.Add(new BilVerificationError("21.2", sectionName,
                                 $"裸成员符号重复 \"{symbol}\""));
                         }
                         break;
@@ -181,7 +181,7 @@ namespace LatteCompiler.Bil
                 : BilVerificationContext.TryParseFieldSymbol(symbol, out _, out symbolStatic, out _);
             if (!parsed)
             {
-                errors.Add(new BilVerificationError("20.1", symbol,
+                errors.Add(new BilVerificationError("21.1", symbol,
                     "成员符号不符合 canonical 符号语法（§5.2）"));
             }
             else
@@ -190,7 +190,7 @@ namespace LatteCompiler.Bil
                     or BilMemberKind.StaticField;
                 if (expectStatic != symbolStatic)
                 {
-                    errors.Add(new BilVerificationError("20.2", symbol,
+                    errors.Add(new BilVerificationError("21.2", symbol,
                         $"声明关键字 {BilSpellings.Of(declaration.Kind)} 与符号 .static. 标记不一致"));
                 }
             }
@@ -204,13 +204,13 @@ namespace LatteCompiler.Bil
                 if (HasKeyword(declaration, BilKeyword.Backing)
                     && HasKeyword(declaration, BilKeyword.Computed))
                 {
-                    errors.Add(new BilVerificationError("20.8", symbol,
+                    errors.Add(new BilVerificationError("21.8", symbol,
                         "backing 与 computed 不得共存"));
                 }
                 return;
             }
 
-            // §8.4/§20.8 访问器修饰合法性：getter(FIELD)/setter(FIELD) 的
+            // §8.4/§21.8 访问器修饰合法性：getter(FIELD)/setter(FIELD) 的
             // FIELD 必须可解析为已声明字段符号（local + external 声明集合）；
             // 修饰与方法符号形态必须一致（getter ↔ $.get. 形态、
             // setter ↔ $.set. 形态，§5.2）
@@ -219,19 +219,19 @@ namespace LatteCompiler.Bil
                 if (modifier is not BilAccessorModifier accessor) continue;
                 if (!context.FieldSymbols.Contains(accessor.FieldSymbol))
                 {
-                    errors.Add(new BilVerificationError("20.8", symbol,
+                    errors.Add(new BilVerificationError("21.8", symbol,
                         $"访问器修饰引用的字段符号不可解析 \"{accessor.FieldSymbol}\""));
                 }
                 if (!BilVerificationContext.TryParseAccessorForm(symbol, out var setterForm)
                     || setterForm != (accessor.Kind == BilAccessorKind.Setter))
                 {
-                    errors.Add(new BilVerificationError("20.8", symbol,
+                    errors.Add(new BilVerificationError("21.8", symbol,
                         $"{BilSpellings.Of(accessor.Kind)}(...) 修饰与方法符号形态不符" +
                         "（应为 $[.static].get.名 / $[.static].set.名，§5.2）"));
                 }
             }
 
-            // §20.2：native 方法不得有 fn 定义，且必须恰好各带一个
+            // §21.2：native 方法不得有 fn 定义，且必须恰好各带一个
             // symbol("...") 与 lib("...")；非 native 本地方法必须有 fn 定义
             var isNative = HasKeyword(declaration, BilKeyword.Native);
             var symbolModifierCount = 0;
@@ -254,12 +254,12 @@ namespace LatteCompiler.Bil
             {
                 if (symbolModifierCount != 1 || libraryModifierCount != 1)
                 {
-                    errors.Add(new BilVerificationError("20.2", symbol,
+                    errors.Add(new BilVerificationError("21.2", symbol,
                         "native 方法必须恰好各带一个 symbol(\"...\") 与 lib(\"...\") 修饰符"));
                 }
                 if (hasBody)
                 {
-                    errors.Add(new BilVerificationError("20.2", symbol,
+                    errors.Add(new BilVerificationError("21.2", symbol,
                         "native 方法不得存在 fn 定义"));
                 }
             }
@@ -271,7 +271,7 @@ namespace LatteCompiler.Bil
                     && host.Kind == BilTypeKind.Interface;
                 if (!hostIsInterface && !HasKeyword(declaration, BilKeyword.Abstract))
                 {
-                    errors.Add(new BilVerificationError("20.2", symbol,
+                    errors.Add(new BilVerificationError("21.2", symbol,
                         "非 native 本地方法缺少 fn 定义"));
                 }
             }
@@ -292,41 +292,41 @@ namespace LatteCompiler.Bil
             if (rich && type.Kind is not (BilTypeKind.Struct or BilTypeKind.EnumStruct
                 or BilTypeKind.Wrapper))
             {
-                errors.Add(new BilVerificationError("20.8", type.Symbol,
+                errors.Add(new BilVerificationError("21.8", type.Symbol,
                     $"rich 仅适用于 struct/enum-struct/wrapper（{BilSpellings.Of(type.Kind)}）"));
             }
             if (type.Kind == BilTypeKind.Wrapper && !rich)
             {
-                errors.Add(new BilVerificationError("20.8", type.Symbol,
+                errors.Add(new BilVerificationError("21.8", type.Symbol,
                     "wrapper 类型必须显式带 rich"));
             }
             if (type.Kind == BilTypeKind.EnumStruct && open)
             {
-                errors.Add(new BilVerificationError("20.8", type.Symbol, "enum-struct 不得 open"));
+                errors.Add(new BilVerificationError("21.8", type.Symbol, "enum-struct 不得 open"));
             }
             if (type.Kind is BilTypeKind.Struct or BilTypeKind.EnumStruct
                 && !rich && (open || abstractKeyword))
             {
-                errors.Add(new BilVerificationError("20.8", type.Symbol,
+                errors.Add(new BilVerificationError("21.8", type.Symbol,
                     "非 rich struct/enum-struct 不得带 open 或 abstract"));
             }
             if (singleton && !shared)
             {
-                errors.Add(new BilVerificationError("20.8", type.Symbol,
+                errors.Add(new BilVerificationError("21.8", type.Symbol,
                     "singleton 类型必须同时带 shared"));
             }
 
-            // extends/implements 类型可解析（§20.2）
+            // extends/implements 类型可解析（§21.2）
             if (type.ExtendsType != null && !context.IsResolvableTypeRef(type.ExtendsType))
             {
-                errors.Add(new BilVerificationError("20.2", type.Symbol,
+                errors.Add(new BilVerificationError("21.2", type.Symbol,
                     $"extends 类型不可解析 \"{type.ExtendsType}\""));
             }
             foreach (var interfaceType in type.ImplementsTypes)
             {
                 if (!context.IsResolvableTypeRef(interfaceType))
                 {
-                    errors.Add(new BilVerificationError("20.2", type.Symbol,
+                    errors.Add(new BilVerificationError("21.2", type.Symbol,
                         $"implements 类型不可解析 \"{interfaceType}\""));
                 }
             }
@@ -348,42 +348,42 @@ namespace LatteCompiler.Bil
                     case BilAccessibilityModifier:
                         if (accessibilitySeen)
                         {
-                            errors.Add(new BilVerificationError("20.8", context, "访问修饰符重复"));
+                            errors.Add(new BilVerificationError("21.8", context, "访问修饰符重复"));
                         }
                         accessibilitySeen = true;
                         break;
                     case BilKeywordModifier keyword:
                         if (!keywordsSeen.Add(keyword.Keyword))
                         {
-                            errors.Add(new BilVerificationError("20.8", context,
+                            errors.Add(new BilVerificationError("21.8", context,
                                 $"修饰符重复 \"{BilSpellings.Of(keyword.Keyword)}\""));
                         }
                         break;
                     case BilOperatorModifier:
                         if (operatorSeen)
                         {
-                            errors.Add(new BilVerificationError("20.8", context, "operator 修饰符重复"));
+                            errors.Add(new BilVerificationError("21.8", context, "operator 修饰符重复"));
                         }
                         operatorSeen = true;
                         break;
                     case BilNativeSymbolModifier:
                         if (nativeSymbolSeen)
                         {
-                            errors.Add(new BilVerificationError("20.8", context, "symbol 修饰符重复"));
+                            errors.Add(new BilVerificationError("21.8", context, "symbol 修饰符重复"));
                         }
                         nativeSymbolSeen = true;
                         break;
                     case BilNativeLibraryModifier:
                         if (nativeLibrarySeen)
                         {
-                            errors.Add(new BilVerificationError("20.8", context, "lib 修饰符重复"));
+                            errors.Add(new BilVerificationError("21.8", context, "lib 修饰符重复"));
                         }
                         nativeLibrarySeen = true;
                         break;
                     case BilAccessorModifier accessor:
                         if (!accessorKindsSeen.Add(accessor.Kind))
                         {
-                            errors.Add(new BilVerificationError("20.8", context,
+                            errors.Add(new BilVerificationError("21.8", context,
                                 $"{BilSpellings.Of(accessor.Kind)} 修饰符重复"));
                         }
                         break;
@@ -391,19 +391,19 @@ namespace LatteCompiler.Bil
             }
         }
 
-        // ===== §20.2（fn 级）+ §20.7 泛型与参数包 =====
+        // ===== §21.2（fn 级）+ §21.7 泛型与参数包 =====
         // .args 顺序（§7.2）与签名一致性（§9.2：参数名称和顺序必须与方法
         // 符号的规范签名一致；hidden 参数与符号互相比对的部分跳过）
         private static void VerifyFunctionSignature(BilFunctionContext context,
             List<BilVerificationError> errors)
         {
             var function = context.Function;
-            // §20.3：所有变量（.args/.vars）的类型引用必须可解析
+            // §21.3：所有变量（.args/.vars）的类型引用必须可解析
             foreach (var arg in function.Args)
             {
                 if (!context.Module.IsResolvableTypeRef(arg.TypeRef))
                 {
-                    errors.Add(new BilVerificationError("20.2", function.Symbol,
+                    errors.Add(new BilVerificationError("21.2", function.Symbol,
                         $"参数 \"{arg.Name}\" 的类型不可解析 \"{arg.TypeRef}\""));
                 }
             }
@@ -411,14 +411,14 @@ namespace LatteCompiler.Bil
             {
                 if (!context.Module.IsResolvableTypeRef(variable.TypeRef))
                 {
-                    errors.Add(new BilVerificationError("20.2", function.Symbol,
+                    errors.Add(new BilVerificationError("21.2", function.Symbol,
                         $"局部变量 \"{variable.Name}\" 的类型不可解析 \"{variable.TypeRef}\""));
                 }
             }
             if (!BilVerificationContext.TryParseMethodSymbol(function.Symbol,
                     out var owner, out var isStatic, out var parameters, out var returnType))
             {
-                return;   // malformed 已由声明侧 §20.1 报
+                return;   // malformed 已由声明侧 §21.1 报
             }
             // 访问器形态（§5.2 无参数段）：setter 的 @T 是 value 参数类型——
             // .return 恒 .void、恰好一个普通参数且类型与 @T 一致（比对在
@@ -430,14 +430,14 @@ namespace LatteCompiler.Bil
             {
                 if (context.ReturnType != ".void")
                 {
-                    errors.Add(new BilVerificationError("20.2", function.Symbol,
+                    errors.Add(new BilVerificationError("21.2", function.Symbol,
                         $"setter fn 的 .return 必须为 .void（实际 \"{context.ReturnType}\"）"));
                 }
             }
             else if (context.ReturnType != null
                 && !BilVerificationContext.TypesCompatible(context.ReturnType, returnType))
             {
-                errors.Add(new BilVerificationError("20.2", function.Symbol,
+                errors.Add(new BilVerificationError("21.2", function.Symbol,
                     $".return 类型 \"{context.ReturnType}\" 与方法符号返回类型 \"{returnType}\" 不一致"));
             }
 
@@ -452,12 +452,12 @@ namespace LatteCompiler.Bil
             {
                 if (index >= args.Count || args[index].Name != ".this")
                 {
-                    errors.Add(new BilVerificationError("20.7", function.Symbol,
+                    errors.Add(new BilVerificationError("21.7", function.Symbol,
                         "实例方法 .args 缺少 .this（应位于 .return 之后）"));
                 }
                 else if (!BilVerificationContext.TypesCompatible(args[index].TypeRef, owner))
                 {
-                    errors.Add(new BilVerificationError("20.7", function.Symbol,
+                    errors.Add(new BilVerificationError("21.7", function.Symbol,
                         $".this 类型 \"{args[index].TypeRef}\" 与宿主类型 \"{owner}\" 不一致"));
                 }
                 index++;
@@ -476,13 +476,13 @@ namespace LatteCompiler.Bil
                     : 1;
                 if (argPhase < 0)
                 {
-                    errors.Add(new BilVerificationError("20.7", function.Symbol,
+                    errors.Add(new BilVerificationError("21.7", function.Symbol,
                         ".this 位置不符合 §7.2 顺序"));
                     continue;
                 }
                 if (argPhase < phase)
                 {
-                    errors.Add(new BilVerificationError("20.7", function.Symbol,
+                    errors.Add(new BilVerificationError("21.7", function.Symbol,
                         $"参数 \"{name}\" 位置不符合 §7.2 顺序"));
                     continue;
                 }
@@ -511,13 +511,13 @@ namespace LatteCompiler.Bil
                 // 类型 ≡ 符号 @T（参数名不在符号中，不参与比对）
                 if (plainArgs.Count != 1)
                 {
-                    errors.Add(new BilVerificationError("20.7", function.Symbol,
+                    errors.Add(new BilVerificationError("21.7", function.Symbol,
                         $"setter fn 普通参数个数 {plainArgs.Count} 不符（应恰好一个 value 参数）"));
                     return;
                 }
                 if (!BilVerificationContext.TypesCompatible(plainArgs[0].TypeRef, returnType))
                 {
-                    errors.Add(new BilVerificationError("20.7", function.Symbol,
+                    errors.Add(new BilVerificationError("21.7", function.Symbol,
                         $"setter value 参数类型 \"{plainArgs[0].TypeRef}\" 与方法符号 " +
                         $"\"{returnType}\" 不一致"));
                 }
@@ -525,7 +525,7 @@ namespace LatteCompiler.Bil
             }
             if (plainArgs.Count != expected.Count)
             {
-                errors.Add(new BilVerificationError("20.7", function.Symbol,
+                errors.Add(new BilVerificationError("21.7", function.Symbol,
                     $"普通参数个数 {plainArgs.Count} 与方法符号参数个数 {expected.Count} 不一致"));
                 return;
             }
@@ -534,7 +534,7 @@ namespace LatteCompiler.Bil
                 if (plainArgs[i].Name != expected[i].Name
                     || !BilVerificationContext.TypesCompatible(plainArgs[i].TypeRef, expected[i].TypeRef))
                 {
-                    errors.Add(new BilVerificationError("20.7", function.Symbol,
+                    errors.Add(new BilVerificationError("21.7", function.Symbol,
                         $"参数 {i} \"{plainArgs[i].Name}: {plainArgs[i].TypeRef}\" 与方法符号 " +
                         $"\"{expected[i].Name}: {expected[i].TypeRef}\" 不一致"));
                 }

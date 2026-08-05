@@ -191,7 +191,7 @@ namespace LatteCompiler.Tests
                 "ret $.t1\n");
         }
 
-        // ===== §18.1 标量资源全形态（bool/f64/f32/char/null）=====
+        // ===== §19.1 标量资源全形态（bool/f64/f32/char/null）=====
         private static void TestLiteralResources()
         {
             var (unit, module, _) = BilTestHarness.EmitBilUnit(

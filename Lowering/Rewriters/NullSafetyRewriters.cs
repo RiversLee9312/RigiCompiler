@@ -11,7 +11,7 @@ namespace LatteCompiler
     // receiver 物化保证只求值一次；Access 内的占位叶子经 safeReceivers
     // 栈映射为 cast(s_recv, T)（unwrap，§12.1——Enter 压栈/Exit 弹栈，
     // 替代旧代码无 finally 保护的手工配对）；null 检查 =
-    // cmp.ne(s_recv, null 资源)（§18.1：null 资源类型即 .nullable<T>，
+    // cmp.ne(s_recv, null 资源)（§19.1：null 资源类型即 .nullable<T>，
     // 满足 §11.5 严格相同）；结果局部的 R → Nullable\<R\> 包装经
     // EnsureDeclaredType 物化（已可空时直通）
     internal sealed class SafeAccessRewriter
@@ -119,7 +119,7 @@ namespace LatteCompiler
 
     internal static class NullSafetyFacility
     {
-        // null 检查条件（§18.1/§11.5）：cmp.ne(local, null 资源) → bool
+        // null 检查条件（§19.1/§11.5）：cmp.ne(local, null 资源) → bool
         public static LoweredBinaryExpression NullCheckCondition(BoundNode origin,
             LocalSymbol local, LowerEnvironment env)
         {

@@ -3,14 +3,14 @@ using LatteCompiler.Bil;
 namespace LatteCompiler.Tests
 {
     /// <summary>
-    /// S4 BIL 对象模型 + BilWriter 测试（M38）：手工构造 BIL §19 完整示例的
-    /// 内存模型，输出与规范文本逐行一致（黄金文件断言）；另覆盖 §18 资源
+    /// S4 BIL 对象模型 + BilWriter 测试（M38）：手工构造 BIL §20 完整示例的
+    /// 内存模型，输出与规范文本逐行一致（黄金文件断言）；另覆盖 §19 资源
     /// 全形态、§8 声明形态与 §10–§16 指令形态抽样。
     /// M57 起构造走强类型模型（指令子类/枚举种类与修饰符/类型化资源），
     /// 黄金文本与迁移前逐字节一致（行为零变化判据）。
     /// 黄金文本经 Lines(...) 显式拼 \n，与源文件换行编码无关。
-    /// M58：本套件黄金锁排版；自足合法模块（§19 两个示例）同时过
-    /// BilVerifier（CheckBilValid），纯排版抽样用例（§18/§8.2+§8.5/
+    /// M58：本套件黄金锁排版；自足合法模块（§20 两个示例 + M64 §18 hint
+    /// 模块）同时过 BilVerifier（CheckBilValid），纯排版抽样用例（§19/§8.2+§8.5/
     /// §10–§16/§8.4.1）操作数与类型引用未声明进模块，不过验证器。
     /// </summary>
     public static class BilWriterTests
@@ -20,7 +20,7 @@ namespace LatteCompiler.Tests
             TestHarness.Reset();
             TestHarness.Section("BilWriter");
 
-            // ===== §19 完整黄金示例（逐行一致）=====
+            // ===== §20 完整黄金示例（逐行一致）=====
             var module = new BilModule();
             module.Metadata.Add(new BilMetadataEntry("module", BilScalarType.String, "\"com.example.app\""));
             var helloResource = new BilScalarResource("R_Hello", BilScalarType.String, "\"hello, world\"");
@@ -61,7 +61,7 @@ namespace LatteCompiler.Tests
             main.Blocks.Add(entry);
             module.Functions.Add(main);
 
-            TestHarness.Check("§19 完整黄金示例", BilWriter.Write(module), Lines(
+            TestHarness.Check("§20 完整黄金示例", BilWriter.Write(module), Lines(
                 "BIL \"1.1\"",
                 "",
                 "Metadata {",
@@ -103,10 +103,10 @@ namespace LatteCompiler.Tests
                 "        ret $result",
                 "    }",
                 "}"));
-            // §19 完整示例是自足合法模块：验证器零错误（M58）
-            BilTestHarness.CheckBilValid("§19 完整示例验证器零错误", module);
+            // §20 完整示例是自足合法模块：验证器零错误（M58）
+            BilTestHarness.CheckBilValid("§20 完整示例验证器零错误", module);
 
-            // ===== §19 wrapper 隐藏字段示例（修饰符续行形态）=====
+            // ===== §20 wrapper 隐藏字段示例（修饰符续行形态）=====
             var wrapperModule = new BilModule();
             var service = new BilTypeDeclaration("com.example::Service", BilTypeKind.Class,
                 new BilAccessibilityModifier(BilAccessibility.Public));
@@ -121,7 +121,7 @@ namespace LatteCompiler.Tests
                 modifiersOnNextLine: true));
             wrapperModule.LocalSymbols.Add(service);
 
-            TestHarness.Check("§19 wrapper 隐藏字段示例", BilWriter.Write(wrapperModule), Lines(
+            TestHarness.Check("§20 wrapper 隐藏字段示例", BilWriter.Write(wrapperModule), Lines(
                 "BIL \"1.1\"",
                 "",
                 "Metadata {",
@@ -140,9 +140,9 @@ namespace LatteCompiler.Tests
                 "ExternalSymbols {",
                 "}"));
             // wrapper 隐藏字段示例同为自足声明模块：验证器零错误（M58）
-            BilTestHarness.CheckBilValid("§19 wrapper 示例验证器零错误", wrapperModule);
+            BilTestHarness.CheckBilValid("§20 wrapper 示例验证器零错误", wrapperModule);
 
-            // ===== §18 资源全形态 =====
+            // ===== §19 资源全形态 =====
             // （排版抽样：资源引用的类型（com.example::User/core::IO*Exception）
             // 未声明进模块，不过验证器——合法性归 BilEmitter/BilVerifier 套件）
             var resModule = new BilModule();
@@ -168,7 +168,7 @@ namespace LatteCompiler.Tests
                     new BilCatchEntry(BilOp.Type("core::RuntimeException"), new BilBlock("catchRuntime")),
                 }));
 
-            TestHarness.Check("§18 资源全形态", BilWriter.Write(resModule), Lines(
+            TestHarness.Check("§19 资源全形态", BilWriter.Write(resModule), Lines(
                 "BIL \"1.1\"",
                 "",
                 "Metadata {",
@@ -200,6 +200,61 @@ namespace LatteCompiler.Tests
                 "",
                 "ExternalSymbols {",
                 "}"));
+
+            // ===== §18 hint 指令 =====
+            // 自足合法模块（string 资源 + entry block 内 hint），过验证器
+            var hintModule = new BilModule();
+            var hintResource = new BilScalarResource("R_Hint", BilScalarType.String, "\"{}\"");
+            var hintZero = new BilScalarResource("R_Zero", BilScalarType.I32, "0");
+            hintModule.Resources.Add(hintResource);
+            hintModule.Resources.Add(hintZero);
+            hintModule.LocalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "$main()@.i32",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            var hintMain = new BilFunction("$main()@.i32");
+            hintMain.Args.Add(new BilArgDeclaration(".return", ".i32"));
+            hintMain.Vars.Add(new BilVarDeclaration(".i32", "x"));
+            var hintEntry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            hintEntry.Instructions.Add(new HintInstruction(hintResource));
+            hintEntry.Instructions.Add(new LoadInstruction(hintZero, BilOp.Var("x")));
+            hintEntry.Instructions.Add(new RetInstruction(BilOp.Var("x")));
+            hintMain.Blocks.Add(hintEntry);
+            hintModule.Functions.Add(hintMain);
+
+            TestHarness.Check("§18 hint 指令", BilWriter.Write(hintModule), Lines(
+                "BIL \"1.1\"",
+                "",
+                "Metadata {",
+                "}",
+                "",
+                "Resources {",
+                "    R_Hint = string \"{}\",",
+                "    R_Zero = i32 0",
+                "}",
+                "",
+                "LocalSymbols {",
+                "    .method $main()@.i32 pub",
+                "}",
+                "",
+                "ExternalSymbols {",
+                "}",
+                "",
+                "fn($main()@.i32) {",
+                "    .args {",
+                "        .return = .i32",
+                "    }",
+                "",
+                "    .vars {",
+                "        .i32 x",
+                "    }",
+                "",
+                "    .block entry entrypoint {",
+                "        hint res(R_Hint)",
+                "        load res(R_Zero) $x",
+                "        ret $x",
+                "    }",
+                "}"));
+            BilTestHarness.CheckBilValid("§18 hint 模块验证器零错误", hintModule);
 
             // ===== §8.2 extends/implements 多行形态 + §8.5 enum case =====
             // （排版抽样：extends/implements 类型与 discriminant 资源未登记进

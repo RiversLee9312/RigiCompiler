@@ -18,7 +18,7 @@ namespace LatteCompiler.Tests
     /// （BilInstruction.Origin → LoweredNode.Origin → BoundNode.Syntax → Span）、
     /// 资源去重；S7a 新增：局部声明 + 初始化器（set.var）、赋值、二元运算
     /// （算术 + 比较）、一元运算、带返回值 invoke、表达式语句（结果丢弃）、
-    /// new 构造、§18.1 标量资源全形态（bool/f64/f32/char/null）、static 字段
+    /// new 构造、§19.1 标量资源全形态（bool/f64/f32/char/null）、static 字段
     /// 读写（get/set.field.static）；负例改为实例方法（P4 Error + 跳过 fn）。
     /// S7b：if 语句/表达式与短路 and/or 的多 block 黄金文本（§16.2 if
     /// 指令、none 操作数、if0-then 形态 block id、分支块落尾不补 ret、
@@ -29,7 +29,7 @@ namespace LatteCompiler.Tests
     /// breakid）、.vars 的 .breakid 条目（§9.3）。
     /// S7d：常量 switch 的 switch 指令发射（§16.6 操作数序 selector/
     /// res(表)/[blk item 表]/blk(default)/breakid、switch0-item0/
-    /// switch0-default 块 id、§18.4 switch-table 单行资源与跨 fn 同表
+    /// switch0-default 块 id、§19.4 switch-table 单行资源与跨 fn 同表
     /// 去重）、pattern switch 不到 P4b（P4a 已降为 if 链——无 switch
     /// 指令与表资源）、throw（§16.9 单操作数、entry 块 throw 终止不补 ret）。
     /// S8c：索引访问（§13.6 get.array/set.array 发射——读写/复合/链式形态，
