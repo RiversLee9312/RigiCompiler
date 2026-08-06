@@ -667,6 +667,48 @@ namespace LatteCompiler.Tests
             var (u4, _) = ResolveUnit("class Local { }\next static var Local.hook: Local\n");
             TestHarness.CheckSemanticError("ext 静态字段受闸门", u4.Diagnostics,
                 "Global or static field 'hook' must have a shared-safe type");
+
+            // ===== M80：ext 目标种类与闭包两闸门 =====
+            // interface 禁字段（§11，同 ModifierChecker 成员口径；ext 注入同禁），
+            // ext 方法不受限
+            var (u5, _) = ResolveUnit(
+                "interface IFly { func fly() }\n" +
+                "ext var IFly.speed: i32\n" +
+                "ext func IFly.swoop() { }\n");
+            TestHarness.CheckSemanticError("ext 字段禁注 interface", u5.Diagnostics,
+                "Extension field 'speed' cannot target interface 'IFly' (interfaces cannot declare fields)");
+            TestHarness.CheckTrue("ext 方法注册 interface 不受限",
+                u5.Symbols.GlobalNamespace.Types.Single(t => t.Name == "IFly")
+                    .Methods.Any(m => m.Name == "swoop"));
+            TestHarness.CheckTrue("被拒 ext 字段不注册（interface）",
+                !u5.Symbols.GlobalNamespace.Types.Single(t => t.Name == "IFly")
+                    .Fields.Any(f => f.Name == "speed"));
+
+            // ext 实例字段注册后与目标体内声明同受 §3.1.1 闭包表约束
+            var (u6, _) = ResolveUnit(
+                "class Local { }\n" +
+                "shared class S { }\n" +
+                "ext var S.data: Local\n");
+            TestHarness.CheckSemanticError("shared 目标拒 local object ext 字段", u6.Diagnostics,
+                "'S' is shared and cannot hold local object field 'data'");
+            TestHarness.CheckTrue("被拒 ext 字段不注册（shared）",
+                !u6.Symbols.GlobalNamespace.Types.Single(t => t.Name == "S")
+                    .Fields.Any(f => f.Name == "data"));
+
+            var (u7, _) = ResolveUnit(
+                "class Local { }\n" +
+                "struct P { var x: i32 }\n" +
+                "ext var P.tag: Local\n");
+            TestHarness.CheckSemanticError("非 rich struct 拒 object ext 字段", u7.Diagnostics,
+                "Non-rich struct 'P' cannot hold object field 'tag'");
+
+            // 正例：shared 目标持 shared-safe 字段、非 rich struct 持纯值字段
+            var (u8, _) = ResolveUnit(
+                "shared class S { }\n" +
+                "ext var S.count: i32\n" +
+                "struct P { var x: i32 }\n" +
+                "ext var P.id: i32\n");
+            CheckNoErrors("无诊断（ext 闭包正例）", u8);
         }
 
         // ===== 子任务 7a/7c：wrapper 适用性与目标矩阵（§14.9）=====

@@ -644,9 +644,10 @@ enum case（`new.case`、`is .Case` 判别比较、判别值分配）、
 > （BilWriterTests 黄金 + BilVerifierTests 手工模块正负例）。后续施工
 > 按序推进：~~P3 wrapper place 绑定与只读禁令（解 PathVisitors 两处
 > Colon 归口 + 全拦截面）~~（**✅ M79 已落地**）→ ~~enum case 全链~~
-> （**✅ M77 已落地**）→ ext 收尾 + 局部访问器解归口 → proxy 烘焙
-> lowering（specific → wildcard → `call???` 降级 + `.wrapper.` 隐藏
-> 字段声明与 get/set.field.embedded 发射）→ 派发链诊断工具。
+> （**✅ M77 已落地**）→ ~~ext 收尾~~（**✅ M80 已落地**）→ 局部访问器
+> 解归口 → proxy 烘焙 lowering（specific → wildcard → `call???` 降级 +
+> `.wrapper.` 隐藏字段声明与 get/set.field.embedded 发射）→ 派发链诊断
+> 工具。
 >
 > **wrapper place 绑定与只读禁令（M79，2026-08-06，PROGRESS_REPORT
 > 详录）**：`BoundWrapperAccessExpression`（Receiver + Wrapper，Type =
@@ -659,6 +660,14 @@ enum case（`new.case`、`is .Case` 判别比较、判别值分配）、
 > 归 proxy 烘焙）。**遗留**：泛型参数 receiver 的 with 约束 place
 > （`param:W`）与泛型 wrapper 实参代入（TTarget 显形）归 proxy 烘焙
 > 复核。
+>
+> **ext 收尾（M80，2026-08-06，PROGRESS_REPORT 详录）**：P4b 修复——
+> `EmitBuiltinExtMembers` 随迁访问器声明（内建 ext 字段 + 访问器此前
+> 被 §21.2 拒绝落盘，SYNTAX §4.4 示例形态实测复现）；P2 两闸门——
+> ext 字段禁注 interface（§11 成员禁令 ext 路径收口）+ ext 实例字段
+> 同受 §3.1.1 闭包表（`FieldClosureChecker.CheckExtensionField`）；
+> 端到端样例五组勾销技术债 #22④；priv/protected ext 可见性、ext
+> static 明文、ext 泛型目标登记技术债 #26 待裁决。
 >
 > **enum case 全链（M77，2026-08-05，PROGRESS_REPORT 详录）**：
 > EnumCaseSymbol 家族（Owner/Discriminant + ResolvedInit/HoleParameters

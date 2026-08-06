@@ -582,6 +582,8 @@ pub ext func String.reversed(): String { ... }
 pub ext var String.isEmpty: bool { get(_: _) { ... } }
 ```
 
+ext 成员在语义期注册到目标类型，注册后与声明在目标类型体内的成员同规则：访问级别默认 private（供目标类型外使用须显式 `pub` 等访问修饰符，§16.1）；ext 实例字段受 rich/shared 闭包表约束（§3.1.1），ext 静态成员受共享安全闸门约束；interface 不能持有字段，ext 字段注入 interface 同样是编译错误。
+
 ### 4.5 `async` 函数与 Task
 
 `async` 是函数修饰符，表示**每次调用该函数时都会立即创建并发布一个新的协程**。`async` 不表示“函数体才可以挂起”：普通函数也运行在当前协程中，因此同样可以执行 `await` 和 `yield`；区别仅在于普通函数调用继续使用当前协程，而 `async` 函数调用创建另一个协程。

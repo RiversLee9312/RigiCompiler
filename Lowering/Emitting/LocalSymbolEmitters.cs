@@ -57,6 +57,13 @@ namespace LatteCompiler
                 {
                     if (field.ExtTargetPath == null) continue;
                     env.Module.LocalSymbols.Add(EmitFieldDeclaration(field));
+                    // 访问器声明随字段槽驱动（同 EmitNamespace/EmitTypeDeclaration
+                    // 形态）——缺了它访问器 fn 定义将被 §21.2 拒绝（M80 修复：
+                    // SYNTAX §4.4 的 ext var + get/set 示例形态端到端必挂）
+                    foreach (var accessor in EmitFieldAccessorDeclarations(field))
+                    {
+                        env.Module.LocalSymbols.Add(accessor);
+                    }
                 }
                 foreach (var method in builtinType.Methods)
                 {

@@ -59,6 +59,22 @@ namespace LatteCompiler
     // ExpandConstructedField 迁移，行为不变。
     internal sealed class FieldClosureChecker : ResolverVisitor<FieldClosureChecker>
     {
+        // ext 实例字段的闭包检查入口（M80，ExtensionRegistrar 在注册前调用）：
+        // ext 实例字段注册后即是目标类型的实例字段，与声明在目标体内同受
+        // §3.1.1 闭包表约束——本检查器阶段运行在 ExtensionRegistrar 之前，
+        // 无法覆盖 ext 字段，故开此入口（完整复用 CheckClosureField 的直接
+        // 分类 + 泛型实参展开）。返回 true = 已落违规诊断（调用方不注册）
+        public static bool CheckExtensionField(TypeSymbol targetType, FieldSymbol field,
+            CharRange? span, ResolveEnvironment env)
+        {
+            var holder = ClassifyHolder(targetType);
+            if (holder == HolderCategory.None) return false;
+            var before = env.Unit.Diagnostics.Diagnostics.Count;
+            CheckClosureField(holder, targetType, field.Name, field.FieldType, span,
+                new HashSet<TypeSymbol>(), env);
+            return env.Unit.Diagnostics.Diagnostics.Count != before;
+        }
+
         protected override void VisitCore(ResolveEnvironment env)
         {
             foreach (var entry in env.TypeEntries)

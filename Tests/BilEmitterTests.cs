@@ -44,6 +44,9 @@ namespace LatteCompiler.Tests
     /// init 经 §9.3 映射赋值体合成照常发射声明 + fn 定义）。
     /// §9.3 增补（BilEmitterTests.Members.cs）：init 参数映射赋值合成
     /// 端到端——无体 init 的 fn 定义（set.field + ret，§21.2 门槛）。
+    /// S11 增补（BilEmitterTests.Ext.cs）：ext 收尾端到端样例（M80）——
+    /// ext 实例字段读写/实例方法调用/ext 字段 + 访问器（用户类型与内建
+    /// String）/ext static 字段常量方法/ext 字段复合赋值。
     /// </summary>
     public static partial class BilEmitterTests
     {
@@ -100,6 +103,11 @@ namespace LatteCompiler.Tests
             TestNamedPackResultType();
             TestVarArgsIndexBoxingEmission();
             TestExtFieldDeclarationModifier();
+            TestExtInstanceFieldAndMethodEmission();
+            TestExtAccessorEmission();
+            TestExtBuiltinAccessorEmission();
+            TestExtStaticEmission();
+            TestExtCompoundAssignmentEmission();
             TestConstFieldModifierEmission();
             TestSmartCastCompoundAssignmentEmission();
             TestEnumCaseEmission();

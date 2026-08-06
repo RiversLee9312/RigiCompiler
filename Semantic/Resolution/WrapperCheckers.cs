@@ -63,12 +63,30 @@ namespace LatteCompiler
                 }
                 if (symbol is FieldSymbol field)
                 {
+                    // interface 不得声明字段（SYNTAX §11，同 ModifierChecker 对
+                    // 成员字段的禁令）——ext 注入同样禁止（M80 收口：此前 ext
+                    // 条目 DeclaringType 恒 null，绕过该检查）
+                    if (targetType.Kind == TypeKind.Interface)
+                    {
+                        env.Error(entry.Node.Span,
+                            $"Extension field '{field.Name}' cannot target interface '{targetType.Name}' (interfaces cannot declare fields)");
+                        continue;
+                    }
                     // 重复/遮蔽检测：与目标类型既有字段同名即诊断（P1 同名字段口径），
                     // 不注册——防止 P3 查找双候选静默遮蔽
                     if (targetType.Fields.Any(f => f.Name == field.Name))
                     {
                         env.Error(entry.Node.Span,
                             $"Extension field '{field.Name}' duplicates an existing member of type '{targetType.Name}'");
+                        continue;
+                    }
+                    // ext 实例字段注册后是目标类型的实例字段，与声明在目标体内
+                    // 同受 §3.1.1 闭包表约束（M80 收口：FieldClosureChecker 运行
+                    // 在本阶段之前，此前 ext 字段永不被覆盖）；静态 ext 字段不
+                    // 参与实例闭包（共享安全由 SharedSafetyGateChecker 闸门 1 覆盖）
+                    if (!field.IsStatic && FieldClosureChecker.CheckExtensionField(
+                        targetType, field, entry.Node.Span, env))
+                    {
                         continue;
                     }
                     field.AttachToExtTarget(targetType);
