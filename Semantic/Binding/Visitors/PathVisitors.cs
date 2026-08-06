@@ -586,16 +586,16 @@ namespace LatteCompiler
                     local.AppliedWrappers,
                 _ => null,
             };
-            var matches = new List<TypeSymbol>();
+            var matches = new List<WrapperApplication>();
             if (symbolWrappers != null)
             {
-                matches.AddRange(symbolWrappers.Where(w => w.Name == segment.Name));
+                matches.AddRange(symbolWrappers.Where(w => w.Wrapper.Name == segment.Name));
             }
             // 泛型参数 receiver 无 AppliedWrappers（with 约束场景归后续）
             if (receiver.Type is TypeSymbol hostType)
             {
                 matches.AddRange((hostType.ConstructedFrom ?? hostType).AppliedWrappers
-                    .Where(w => w.Name == segment.Name));
+                    .Where(w => w.Wrapper.Name == segment.Name));
             }
             if (matches.Count == 0)
             {
@@ -609,7 +609,7 @@ namespace LatteCompiler
                     $"'{BoundAnalysis.TypeDisplay(receiver.Type)}'");
                 return null;
             }
-            var place = new BoundWrapperAccessExpression(segment, receiver, matches[0]);
+            var place = new BoundWrapperAccessExpression(segment, receiver, matches[0].Wrapper);
             // 带后缀（`obj:W[0]` 索引成员访问）：照常折叠
             if (segment.Suffixes.Count > 0)
             {

@@ -50,9 +50,13 @@ namespace LatteCompiler
         }
 
         // 符号路径解析：首段按查找序定位，后续逐段下钻，末段应用泛型实参。
+        // allowBareGenericDefinition（S11a wrapper 注解专用）：裸名命中泛型
+        // 定义时返回定义本身而非元数错误——wrapper 应用的 TTarget 角色代入
+        // 与元数校验由 P2 proxy 阶段（ProxyShapeChecker）负责
         public SemanticSymbol ResolveSymbolPath(Symbol path, FileContext ctx,
             TypeSymbol? declaringType, MethodSymbol? declaringMethod,
-            bool allowImports, bool reportErrors, CharRange? span)
+            bool allowImports, bool reportErrors, CharRange? span,
+            bool allowBareGenericDefinition = false)
         {
             var elements = path.elements;
             if (elements.Count == 0)
@@ -104,7 +108,9 @@ namespace LatteCompiler
             }
             // 裸名（arity 0）回退命中带泛型参数的定义：未构造的泛型定义不能
             // 直接作类型——按 ApplyTypeArguments 同口径报元数错误并毒化
-            if (current is TypeSymbol { ConstructedFrom: null } genericDef
+            // （wrapper 注解路径放行，S11a：TTarget 代入与元数归 proxy 阶段）
+            if (!allowBareGenericDefinition
+                && current is TypeSymbol { ConstructedFrom: null } genericDef
                 && genericDef.GenericParameters.Count > 0)
             {
                 if (reportErrors)

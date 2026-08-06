@@ -580,9 +580,14 @@ update(isDarkMode = true, userName = "Andy")
 ```latte
 pub ext func String.reversed(): String { ... }
 pub ext var String.isEmpty: bool { get(_: _) { ... } }
+pub ext static func Config.makeDefault(): Config { ... }
 ```
 
-ext 成员在语义期注册到目标类型，注册后与声明在目标类型体内的成员同规则：访问级别默认 private（供目标类型外使用须显式 `pub` 等访问修饰符，§16.1）；ext 实例字段受 rich/shared 闭包表约束（§3.1.1），ext 静态成员受共享安全闸门约束；interface 不能持有字段，ext 字段注入 interface 同样是编译错误。
+ext 成员在语义期注册到目标类型，注册后与声明在目标类型体内的成员同规则：访问级别默认 private（供声明文件外使用须显式 `pub` 等访问修饰符，§16.1）；ext 实例字段受 rich/shared 闭包表约束（§3.1.1），ext 静态成员（static 字段/常量/方法均合法）受共享安全闸门约束；interface 不能持有字段，ext 字段注入 interface 同样是编译错误。
+
+**ext 成员的可见性按声明位置判定而非目标类型**（§16.1）：顶层 ext 声明适用顶层规则（private = 仅声明文件可见，internal = 编译单元内可见）；ext 方法/访问器体不获得目标类型私有成员的访问特权（封装不因扩展而开口）。
+
+ext 目标不得为泛型定义：裸名命中泛型定义是编译错误（缺少类型实参），同名不同元数多命中是歧义编译错误。「扩展隐式获得目标泛型参数」的形态留作语言候补，当前不支持。
 
 ### 4.5 `async` 函数与 Task
 
@@ -1622,6 +1627,9 @@ pub wrapper Logged\<TTarget> {
 - `.proxy.*`、`.proxy.get.*`、`.proxy.set.*`、`.proxy.opr.*` 不再是可声明多个并按 pattern/优先级竞争的代理；它们分别是普通方法、getter、setter、operator 类别的唯一 universal fallback。
 - 同一个 Entity Wrapper 对每一类别只能实现零个或一个 wildcard proxy；重复声明同类别 wildcard 是编译错误。
 - 四类 wildcard 的泛型与参数形状是编译器规定的 canonical shape，不能通过额外约束或部分参数 pattern 把它缩窄为只吃某些签名。需要特殊处理某个已知成员时使用 specific proxy；需要在 universal fallback 内进一步分类时显式检查 `symbol`。
+- Entity wrapper 至多声明一个泛型参数（恰一个时即 `TTarget` 角色、`self` 的类型来源；零个时 proxy 体内引用 `self` 是编译错误）；Value/Method wrapper 不得声明 wrapper 级泛型参数（proxy 方法自身的泛型参数不受此限）。
+- specific proxy 的形状（参数名/参数类型/返回类型）必须与被代理成员**全等**（wrapper 泛型参数代入后判定；`.proxy.get.<名>`/`.proxy.set.<名>` 的 `value` 参数类型 = 字段类型）；形状不匹配的 specific proxy 是编译错误。四类 wildcard 按上例的 canonical shape 逐参数校验。
+- wrapper 实例由 `@W(...)` 应用在**宿主创建时**安装：宿主构造以求值后的应用实参调用 wrapper 的 init，结果写入宿主的编译器生成隐藏字段（`BIL_STANDARD.md` §5.3）；此后不可替换（§14.5）。
 
 ### 14.3 值修饰器（Value Wrapper）
 
@@ -1887,6 +1895,8 @@ import 即进入编译单元（与用户源同走语义全流程）：
 - **`protected`**：两种位置可见——使用点所在宿主类型沿基类链可达成员的宿主类型（子类体内）；或与成员宿主同属一个**包**。「包」即同一命名空间（限定名全等，不含子命名空间）。
 - **`internal`**：模块（项目）内可见。当前编译模型以一次编译的编译单元为模块，internal 在单元内恒可见。
 - **`pub`**：无限制。
+
+ext 成员（§4.4）的可见性按**声明位置**判定而非目标类型：顶层 ext 声明适用顶层规则（private = 仅当前文件可见）。ext 方法/访问器体不因此获得目标类型私有成员的访问特权。
 
 接口成员默认 `pub`（接口即契约）；其余声明默认 private 不变。访问控制在使用点检查：类型引用（声明侧与函数体内）、继承、成员访问（字段/方法/索引运算符）与构造调用（含 `init` 可见性，§12.2）均为使用点。
 

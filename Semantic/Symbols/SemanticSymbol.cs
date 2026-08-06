@@ -99,7 +99,7 @@ namespace LatteCompiler
         // wrapper 目标类别（@WrapperTarget(.X)，P2 解析；非 wrapper 声明为 null）
         public WrapperTargetKind? WrapperTarget { get; internal set; }
         // 挂载的 wrapper 应用（声明顺序，外层在前；P2 解析填充）
-        public List<TypeSymbol> AppliedWrappers { get; } = new List<TypeSymbol>();
+        public List<WrapperApplication> AppliedWrappers { get; } = new List<WrapperApplication>();
         // 编译器硬编码内建（bootstrap 直造，无源码声明；core.latte 载入的不算）
         public bool IsBuiltin { get; }
         // 是否 ValueType 分支（构造即定：显式传入或沿基类链传播；
@@ -250,7 +250,17 @@ namespace LatteCompiler
         public string? NativeSymbol { get; internal set; }
         public string? NativeLibrary { get; internal set; }
         // 挂载的 wrapper 应用（声明顺序，外层在前；P2 解析填充）
-        public List<TypeSymbol> AppliedWrappers { get; } = new List<TypeSymbol>();
+        public List<WrapperApplication> AppliedWrappers { get; } = new List<WrapperApplication>();
+        // wrapper 派发链（S11a P2 ProxyDispatchResolver 合成；仅被 Entity
+        // wrapper 拦截的实例成员方法/运算符/访问器）：outer→inner 序的特化
+        // fn 符号（各带 ProxySpecialization 槽），null = 无拦截。有链时本
+        // 符号的 fn 退化为转发壳（invoke 链首——绑定改写归 S11b），用户体
+        // 由 WrappedBodySymbol 承载
+        public List<MethodSymbol>? WrapperChain { get; internal set; }
+        public MethodSymbol? WrappedBodySymbol { get; internal set; }
+        // 本符号为 proxy 特化 fn 时的元数据（S11a；P3 逐组合绑定语境与
+        // P4 发射消费）；普通成员为 null
+        public ProxySpecializationInfo? ProxySpecialization { get; internal set; }
 
         public MethodSymbol(
             string name,
@@ -309,8 +319,11 @@ namespace LatteCompiler
         // true = 编译器生成 backing 存储（体内 value 别名；P4 发 backing 修饰），
         // false = 计算属性（无存储，P4 发 computed 修饰）
         public bool HasBackingStorage { get; internal set; }
+        // 编译器合成标记（S11a：`.wrapper.` 隐藏字段，BIL §5.3/§8.3.1；
+        // 声明发射归 S11c——此前 LocalSymbolEmitters 跳过本字段）
+        public bool IsCompilerGenerated { get; internal set; }
         // 挂载的 wrapper 应用（声明顺序，外层在前；P2 解析填充）
-        public List<TypeSymbol> AppliedWrappers { get; } = new List<TypeSymbol>();
+        public List<WrapperApplication> AppliedWrappers { get; } = new List<WrapperApplication>();
 
         public FieldSymbol(string name, TypeSymbol? owner = null, NamespaceSymbol? ns = null,
             bool isStatic = false, SemanticSymbol? fieldType = null, string? extTargetPath = null,
@@ -449,6 +462,65 @@ namespace LatteCompiler
         Method
     }
 
+    // wrapper 应用记录（SYNTAX §14.5：`@W(...)` 挂类型/方法/字段/栈上变量；
+    // S11a 由裸 TypeSymbol 列表升级为记录——ROADMAP S11a「应用实参登记」）：
+    // - Wrapper：应用后的 wrapper 类型。Entity wrapper 恰有一个泛型参数时
+    //   为 TTarget 代入宿主的构造类型（泛型实参代入在此显形，M79 遗留
+    //   兑现），其余情形为定义本身；
+    // - Syntax：注解 AST 节点（`@W(...)` 的 init 实参与诊断位置来源；
+    //   实参绑定与宿主构造安装归 S11b）；
+    // - HiddenField：宿主上的 `.wrapper.` 隐藏字段符号（P2 ProxyDispatchResolver
+    //   合成，BIL §5.3；栈上局部为 null——wrapper 实例在栈帧，存储合成归 S11c）。
+    public sealed class WrapperApplication
+    {
+        public TypeSymbol Wrapper { get; }
+        public AnnotationASTNode Syntax { get; }
+        public FieldSymbol? HiddenField { get; internal set; }
+
+        public WrapperApplication(TypeSymbol wrapper, AnnotationASTNode syntax)
+        {
+            Wrapper = wrapper;
+            Syntax = syntax;
+        }
+
+        // 定义级 wrapper 类型（构造类型回退定义；with 约束匹配等定义级比较用）
+        public TypeSymbol WrapperDefinition => Wrapper.ConstructedFrom ?? Wrapper;
+    }
+
+    // proxy 链环节别（S11a；对应 BIL §8.4 wrapper-proxy(PROXY_KIND) 的
+    // specific/wildcard——router/original 的 BIL 投影归 S11d/S11e）
+    public enum ProxyLinkKind
+    {
+        Specific,
+        Wildcard
+    }
+
+    // proxy 特化元数据（(proxy 声明 × 目标成员) 组合，S11a P2 合成；
+    // 挂在特化 fn 符号上）。链的下一环经 TargetMember.WrapperChain 的
+    // 序号 + 1 取得，链末环的 inner 目标是 OriginalBody
+    public sealed class ProxySpecializationInfo
+    {
+        // 命中的 .proxy.* 声明符号（P3 逐组合绑定读取其声明体）
+        public MethodSymbol ProxyDeclaration { get; }
+        // 所属 wrapper 应用（隐藏字段符号与 TTarget 代入结果在此）
+        public WrapperApplication Application { get; }
+        public ProxyLinkKind Kind { get; }
+        // 被拦截的成员（链宿主——转发壳退化的那个符号）
+        public MethodSymbol TargetMember { get; }
+        // 原始体 fn（用户方法体的新承载者；链末环 inner 的目标）
+        public MethodSymbol OriginalBody { get; }
+
+        public ProxySpecializationInfo(MethodSymbol proxyDeclaration, WrapperApplication application,
+            ProxyLinkKind kind, MethodSymbol targetMember, MethodSymbol originalBody)
+        {
+            ProxyDeclaration = proxyDeclaration;
+            Application = application;
+            Kind = kind;
+            TargetMember = targetMember;
+            OriginalBody = originalBody;
+        }
+    }
+
     // 函数体局部变量（P3 Binder 产生；ARCHITECTURE §4.1：挂在函数分析结果
     // BoundFunctionBody.Locals 上，不进符号图容器表，不受 Freeze 约束）。
     // 参数不归此类——参数符号是 ParameterSymbol，随 MethodSymbol 声明侧存在。
@@ -463,7 +535,7 @@ namespace LatteCompiler
         public bool IsConst { get; }
         // 挂载的 wrapper 应用（声明顺序，外层在前；P3 局部声明绑定时解析
         // 登记——栈上声明不进 P1/P2，SYNTAX §14.9 矩阵 C 恒合法免检查）
-        public List<TypeSymbol> AppliedWrappers { get; } = new List<TypeSymbol>();
+        public List<WrapperApplication> AppliedWrappers { get; } = new List<WrapperApplication>();
 
         public LocalSymbol(string name, SemanticSymbol? type, bool isConst) : base(name)
         {

@@ -210,6 +210,12 @@ SemanticSymbol
   显式 `cast` 指令由 P4a 物化。
 - definite assignment 与「所有路径显式返回」在 P3 报错（BIL §21.4
   的对应义务在这里兑现，而不是等 BIL verifier 兜底）。
+- wrapper proxy 体按 (proxy × 目标成员) 组合逐组绑定（M81 定稿，
+  ROADMAP S11b）：`self` 绑定为宿主角色（类型 = wrapper 泛型参数
+  代入结果），`inner` 绑定为对下一环符号的普通调用，proxy 体内
+  `this` 重写为只读 place（BoundWrapperAccessExpression）——三者在
+  非 proxy 语境出现是编译错误；同一 proxy 声明体跨组合的诊断按
+  (proxy, span, message) 去重。
 
 ---
 
@@ -234,6 +240,8 @@ SemanticSymbol
 | pattern switch（含 `_` 分支） | 常量表 switch / 嵌套条件（BIL §16.6） |
 | 解构声明 | 精确字段/索引读取 |
 | `using` | 初始化 + 清理记录 + try/finally 路径（RUNTIME §25.1） |
+| wrapper place 成员访问（`obj:W.f`、`obj:W.m()`，S11c） | 读 = `get.wrapper` 值拷贝 + `get.field`；写 = `set.field.embedded`；调用 receiver = 值拷贝（BIL §12.4 注记/§13.3） |
+| 未声明方法的 wrapper 降级（S11e，SYNTAX §14.7） | `call???` 胖值 `invoke`（BIL §15.4） |
 | 字符串插值 | 拼接/格式化调用链 |
 | trailing lambda、`TypeName(...)` 简写等 | 规范调用形态 |
 | async/await/yield | 物化为标准库 Task 机制调用（§7，专项设计） |
@@ -241,6 +249,15 @@ SemanticSymbol
 
 降级**不得改变** `SYNTAX.md` / `RUNTIME.md` 规定的可观察语义
 （求值顺序、getter/setter/operator/wrapper 调用顺序、异常路径）。
+
+> **wrapper 烘焙的 pass 归属（M81 定稿，ROADMAP S11a–S11g）**：
+> wrapper 派发分析（specific/wildcard 命中、链路计算、特化符号与
+> `.wrapper.` 隐藏字段合成）是**符号级**工作，全部落在 P2（Freeze
+> 前）；P3 对 proxy 声明体逐组合绑定（`self`/`inner`/`this` 语义，
+> 合成转发壳与解包 shim）；P4 不承载 wrapper 语义——特化 fn、
+> 原始体 fn 与转发壳在 LoweredTree/BIL 层就是普通函数与 `invoke`
+> 链，P4 唯一的 wrapper 专属工作是 place 成员访问的 embedded/
+> 值拷贝降级（上表 S11c 行）与声明段平铺。最终内联归 Middleware。
 
 ### 6.2 P4b：发射（BilEmitter）
 

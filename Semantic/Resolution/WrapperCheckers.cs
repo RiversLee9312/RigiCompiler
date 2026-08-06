@@ -171,7 +171,8 @@ namespace LatteCompiler
                     var resolved = env.Names.ResolveSymbolPath(annotation.Name.symbol, entry.Context,
                         entry.DeclaringType, declaringMethod: null,
                         allowImports: true, reportErrors: true,
-                        span: annotation.Name.Span ?? annotation.Span ?? entry.Node.Span);
+                        span: annotation.Name.Span ?? annotation.Span ?? entry.Node.Span,
+                        allowBareGenericDefinition: true);
                     if (resolved is ErrorTypeSymbol) continue;    // 毒化静默
                     if (resolved is not TypeSymbol { Kind: TypeKind.Wrapper } wrapperType)
                     {
@@ -184,7 +185,18 @@ namespace LatteCompiler
                     {
                         CheckWrapperCategoryMatch(entry, wrapperType, targetKind, annotation, env);
                     }
-                    ResolveEnvironment.AppliedWrappersOf(entry.Symbol)?.Add(wrapperType);
+                    // S11a：应用登记为 WrapperApplication 记录——Entity wrapper 恰一
+                    // 泛型参数时 TTarget 代入宿主构造（泛型实参显形）；元数非法的
+                    // Entity wrapper 由 ProxyShapeChecker 诊断，此处按定义原样登记
+                    var appliedType = wrapperType;
+                    if (wrapperType.WrapperTarget == WrapperTargetKind.Entity
+                        && wrapperType.GenericParameters.Count == 1
+                        && entry.Symbol is TypeSymbol applicationHost)
+                    {
+                        appliedType = env.Unit.Symbols.GetConstructedType(wrapperType, applicationHost);
+                    }
+                    ResolveEnvironment.AppliedWrappersOf(entry.Symbol)?.Add(
+                        new WrapperApplication(appliedType, annotation));
                 }
             }
         }
@@ -274,8 +286,9 @@ namespace LatteCompiler
                 foreach (var iface in type.Interfaces)
                 {
                     var ifaceDef = iface.ConstructedFrom ?? iface;
-                    foreach (var wrapper in ifaceDef.AppliedWrappers)
+                    foreach (var application in ifaceDef.AppliedWrappers)
                     {
+                        var wrapper = application.WrapperDefinition;
                         if (!wrapper.IsShared && type.IsShared)
                         {
                             env.Error(entry.Node.Span,

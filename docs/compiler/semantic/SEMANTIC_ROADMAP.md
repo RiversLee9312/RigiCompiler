@@ -647,9 +647,83 @@ enum case（`new.case`、`is .Case` 判别比较、判别值分配）、
 > （**✅ M77 已落地**）→ ~~ext 收尾~~（**✅ M80 已落地**）→ 局部访问器
 > 解归口（**用户决策 2026-08-06：路线 C——随 S13 lambda 闭包机制落地，
 > 移出 S11 序列**，捕获语义随之开放；`docs/HANDOVER.md` 临时交接，
-> 落地后删除）→ proxy 烘焙 lowering（specific → wildcard → `call???`
-> 降级 + `.wrapper.` 隐藏字段声明与 get/set.field.embedded 发射）→ 派发
-> 链诊断工具。
+> 落地后删除）→ proxy 烘焙 lowering 与派发链诊断工具（**M81 已细化
+> 为 S11a–S11g，见下**）。
+>
+> **S11 proxy 烘焙细化（M81，2026-08-06，纯文档里程碑）**：proxy
+> 烘焙 lowering 与派发链诊断工具细化为 S11a–S11g 七子步，规范定稿
+> 随批落地（SYNTAX §4.4/§14.2/§16.1 + BIL §8.4 + RUNTIME §14/§15）。
+> **烘焙形态定稿（用户决策 2026-08-06）**：① 声明侧烘焙——wrapper
+> 逻辑编译期进入被修饰成员的方法体、骑 vtable（RUNTIME §14 字面
+> 语义），调用点零改动；② proxy 特化体为带 `wrapper-proxy(PROXY_KIND)`
+> 修饰符的独立合成 fn（BIL §8.4），编译器不做文本内联，最终内联归
+> Middleware；③ 特化按 (proxy × 目标成员) 组合在 **P2** 合成符号
+> （Freeze 前），P3 对 proxy 声明体**逐组合绑定**（语境：宿主类型
+> 代入 wrapper 泛型参数 + `inner` = 下一环符号 + proxy 体内 `this`
+> 重写为 BoundWrapperAccessExpression），P4 不承载 wrapper 语义——
+> 烘焙产物在 BIL 层即普通 fn 与 invoke 链。
+>
+> - **S11a（P2 形状校验与符号合成）**：proxy 成员形状校验
+>   （specific 四类与 wildcard 四类按 SYNTAX §14.2 定稿的
+>   canonical shape 与目标成员全等判定；@WrapperTarget 类别 ×
+>   proxy 类别匹配矩阵；Entity wrapper 至多一泛型参数，恰一 =
+>   TTarget 角色）；wrapper 应用实参登记（AppliedWrappers 元素
+>   升级为携带 init 实参的记录，宿主构造安装用）；`.wrapper.` 隐藏
+>   字段 FieldSymbol 合成（挂宿主类型，interface 传染落到
+>   实现者）；派发链计算（被修饰成员 → outer→inner
+>   [(wrapper 应用, 命中 specific|wildcard proxy 符号)]）+
+>   逐组合特化 MethodSymbol 与原始体符号合成（wrapper 泛型
+>   代入在此完成，M79 遗留「TTarget 显形」落地）。
+>   **验收**：DeclarationResolverTests 形状负例 +
+>   CanonicalSymbolPrinter 符号黄金。（**✅ M82 已落地**，
+>   2026-08-06，PROGRESS_REPORT 详录——48 新用例；落地修订：
+>   Entity wrapper 泛型元数由「恰一」放宽为「至多一」（纯状态
+>   wrapper 与既有 fixture 兼容，`self` 仅在恰一时可用）；
+>   「必须实现 get/call」不强制执行（§14.5 纯状态用法合法）；
+>   暂缓项：Value/Method wrapper 链、无访问器字段拦截、
+>   interface 实现者链继承/override 链、合成符号的 BIL 发射
+>   由 LocalSymbolEmitters/EmittingDriver 闸门跳过归 S11c/S11d）
+> - **S11b（P3 proxy 体绑定）**：`self` = 宿主角色的 this
+>   （类型 = TTarget 代入结果）；`inner` 绑定为对下一环符号的
+>   普通调用（下一环 = 内层特化或原始体符号；wildcard 最内环 =
+>   解包 shim）；proxy 体内 `this` 重写为
+>   BoundWrapperAccessExpression（与使用点 `obj:W` 同构，
+>   BIL §13.3）；转发壳（被修饰成员原名 fn 的 body：invoke
+>   最外层特化）与 wildcard 解包 shim 的 BoundFunctionBody
+>   合成；proxy 体诊断按 (proxy, span, message) 去重。
+>   **验收**：BinderTests self/inner/this 形态与负例。
+> - **S11c（P4a/P4b wrapper place 成员访问，解 M79 归口）**：
+>   BoundWrapperAccessExpression 作 receiver——成员读 =
+>   get.wrapper 值拷贝 + get.field、成员写 = set.field.embedded、
+>   方法调用 receiver = get.wrapper 值拷贝（BIL §12.4 注记/
+>   §13.3）；`.wrapper.` 隐藏字段声明发射（§8.3.1 backing
+>   compiler-generated 形态）；使用点与 proxy 体内共用同一
+>   lowering 路径。**验收**：M79 P4 归口用例转正 + `obj:W`
+>   读/写/调用三形态端到端。
+> - **S11d（P4b 合成 fn 发射，烘焙端到端）**：Bil 模型增补
+>   `wrapper-proxy(PROXY_KIND)` 修饰符（PROXY_KIND 取值定稿
+>   BIL §8.4）；特化 fn / 原始体 fn / 转发壳平铺发射；
+>   BilVerifier 适配（合成保留名放行、修饰符校验）。
+>   **验收**：specific 与 wildcard 声明侧烘焙端到端出合法
+>   BIL（invoke 原名 → 特化链 → 原始体）。
+> - **S11e（`call???` 降级全链，SYNTAX §14.7 + BIL §15.4）**：
+>   P3 使用点降级判定（静态类型未声明方法 + wrapper 链存
+>   `.proxy.*`）与胖值 ABI 打包（实参装箱 + canonical symbol
+>   资源 + 泛型 typeid 包）；call??? router 合成 fn（按 symbol
+>   路由到 proxy 特化）；bootstrap `Any.call???` 默认实现
+>   （抛 NoSuchMethodException）；返回值调用点转换（不符抛
+>   CastException）。**验收**：未声明方法降级端到端样例。
+> - **S11f（派发链诊断工具，RUNTIME §15）**：CLI 子命令
+>   `compile --file a.latte --explain-dispatch`（用户决策
+>   形态）；报告编译单元全部烘焙链（被修饰成员 outer→inner
+>   每层命中 specific|wildcard + canonical symbol）与降级路由
+>   （存 `.proxy.*` 的类型）；调用点级过滤留扩展。数据源 =
+>   S11a 符号产物 + CanonicalSymbolPrinter（ARCH §4.4）。
+> - **S11g（复核收尾）**：M79 遗留复核（泛型参数 receiver 的
+>   with 约束 place `param:W`；泛型 wrapper 实参代入 S11a
+>   落地后回归）+ 技术债 #26 代码落地（ext 泛型目标元数/歧义
+>   诊断 + priv/protected ext 可见性按声明位置修订）+
+>   HANDOVER 与规范交叉引用清理。
 >
 > **wrapper place 绑定与只读禁令（M79，2026-08-06，PROGRESS_REPORT
 > 详录）**：`BoundWrapperAccessExpression`（Receiver + Wrapper，Type =

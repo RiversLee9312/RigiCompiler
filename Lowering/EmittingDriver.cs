@@ -27,6 +27,9 @@ namespace LatteCompiler
             // Resources 在函数发射中按（bodies 顺序 + 树内先序）登记
             foreach (var body in bodies)
             {
+                // "." 前缀保留名的 fn（wrapper proxy 声明体与 S11a 合成的
+                // 特化/原始体）：声明与定义发射统一归 S11d，此前跳过
+                if (body.Method.Name.StartsWith('.')) continue;
                 var function = EmitFunction(body);
                 if (function != null) env.Module.Functions.Add(function);
             }

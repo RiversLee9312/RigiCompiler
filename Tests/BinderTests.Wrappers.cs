@@ -143,7 +143,7 @@ namespace LatteCompiler.Tests
             var clamped6 = unit6.Symbols.GlobalNamespace.Types.First(t => t.Name == "Clamped");
             TestHarness.CheckTrue("局部 wrapper 应用登记（引用相等）",
                 health6.AppliedWrappers.Count == 1
-                && ReferenceEquals(health6.AppliedWrappers[0], clamped6));
+                && ReferenceEquals(health6.AppliedWrappers[0].Wrapper, clamped6));
 
             // 静态字段 Value wrapper（shared wrapper × 静态目标，§14.9 矩阵）
             var (unit7, bodies7) = BindUnit(

@@ -163,7 +163,7 @@ namespace LatteCompiler
             };
         }
 
-        public static List<TypeSymbol>? AppliedWrappersOf(SemanticSymbol symbol) => symbol switch
+        public static List<WrapperApplication>? AppliedWrappersOf(SemanticSymbol symbol) => symbol switch
         {
             TypeSymbol t => t.AppliedWrappers,
             FieldSymbol f => f.AppliedWrappers,

@@ -97,7 +97,8 @@ namespace LatteCompiler
                 var resolved = env.Names.ResolveSymbolPath(annotation.Name.symbol,
                     ctx.Frame.FileCtx, ctx.Frame.DeclaringType, ctx.Frame.Method,
                     allowImports: true, reportErrors: true,
-                    span: annotation.Name.Span ?? annotation.Span ?? decl.Span);
+                    span: annotation.Name.Span ?? annotation.Span ?? decl.Span,
+                    allowBareGenericDefinition: true);
                 if (resolved is ErrorTypeSymbol) continue;    // 毒化静默
                 if (resolved is not TypeSymbol { Kind: TypeKind.Wrapper } wrapperType)
                 {
@@ -114,7 +115,7 @@ namespace LatteCompiler
                         : $"Method wrapper '{wrapperType.Name}' can only be applied to methods");
                     continue;
                 }
-                local.AppliedWrappers.Add(wrapperType);
+                local.AppliedWrappers.Add(new WrapperApplication(wrapperType, annotation));
             }
         }
 

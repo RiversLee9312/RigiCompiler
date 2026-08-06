@@ -470,7 +470,7 @@ namespace LatteCompiler
             var definition = argument as TypeSymbol;
             if (definition?.ConstructedFrom != null) definition = definition.ConstructedFrom;
             return definition != null
-                && definition.AppliedWrappers.Any(w => ReferenceEquals(w, wrapper));
+                && definition.AppliedWrappers.Any(w => ReferenceEquals(w.WrapperDefinition, wrapper));
         }
 
         // 结构映射（静默）：mapping[实参序] = 形参序；null = 结构不适用。

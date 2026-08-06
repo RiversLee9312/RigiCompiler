@@ -252,6 +252,7 @@ A-Z a-z 0-9 _ -
 - 在所属作用域内必须唯一；
 - 普通用户标识符不得以 `.` 开头；
 - 以 `.` 开头的参数名和局部名由编译器保留，例如 `.this`、`.return`、`.generic.T`、`.vargs.args` 和 `.kwargs.args`。
+- 编译器合成的方法/字段符号名同样以 `.` 前缀段保留：`.proxy.`（wrapper 派发链特化与路由 fn）、`.wrapped.`（被修饰成员原始体 fn）、`.wrapper.`（wrapper 隐藏字段，§5.3）——均为 S11 烘焙产物，带 `wrapper-proxy(PROXY_KIND)` 修饰符者见 §8.4。
 
 `Resources` 和 block 可以继续使用 `R_Message`、`entry` 等本地名称；该规则不适用于类型、字段、方法和运算符等语言符号。
 
@@ -681,6 +682,15 @@ setter(FIELD_SYMBOL)
 enum-case(CASE_SYMBOL)
 wrapper-proxy(PROXY_KIND)
 ```
+
+`wrapper-proxy(PROXY_KIND)`（S11 定稿，M81）标记 wrapper 派发链的编译器合成 fn，`PROXY_KIND` 取四值之一：
+
+- `specific`：命中成员名的特定 proxy 特化体（一层一个，按 outer→inner 经 `invoke` 链接）；
+- `wildcard`：类别唯一通配 proxy 特化体；
+- `router`：`call???` 的按 `symbol` 路由体（RUNTIME §14.2）；
+- `original`：被修饰成员的原始实现体（转发壳即被修饰成员原名 fn，其 body 为对特化链首的普通 `invoke`）。
+
+合成 fn 名（`.proxy.` / `.wrapped.` 前缀）与 `.wrapper.` 隐藏字段名（§5.3）同为编译器保留名（§5.1），用户源码不可声明。编译器只生成 `invoke` 链表达烘焙结果，最终内联归 Middleware。
 
 运算符、getter、setter 和 enum case 的实现可以拥有 method body，但其调用点在 BIL 中仍使用对应的语义指令；只有普通显式方法调用或规范要求的动态 fallback 使用 `invoke`。
 

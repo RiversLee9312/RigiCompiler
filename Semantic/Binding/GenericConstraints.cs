@@ -80,13 +80,14 @@ namespace LatteCompiler
             };
         }
 
-        // with 判定：wrapper 在实参的 wrapper 应用集合中（构造类型回退定义）
+        // with 判定：wrapper 在实参的 wrapper 应用集合中（应用记录与判定边界
+        // 双双取定义级——S11a 起应用携带构造代入结果，构造类型回退定义）
         private static bool HasWrapper(SemanticSymbol argument, TypeSymbol wrapper)
         {
             var definition = argument as TypeSymbol;
             if (definition?.ConstructedFrom != null) definition = definition.ConstructedFrom;
             return definition != null
-                && definition.AppliedWrappers.Any(w => ReferenceEquals(w, wrapper));
+                && definition.AppliedWrappers.Any(w => ReferenceEquals(w.WrapperDefinition, wrapper));
         }
     }
 }

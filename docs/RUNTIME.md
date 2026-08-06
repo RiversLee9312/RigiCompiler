@@ -305,7 +305,7 @@ Latte 泛型不擦除实际类型。实现采用**单份共享 Native 代码体 
 
 ## 14. Wrapper 派发管线
 
-**静态组合**：实体修饰器在编译期把 wrapper 逻辑内联进方法体（替换 `inner`，从内到外顺序调用），因此天然骑 vtable。运行时**不能**增删、重排或禁用 wrapper。
+**静态组合**：实体修饰器在编译期把 wrapper 逻辑内联进方法体（替换 `inner`，从内到外顺序调用），因此天然骑 vtable。运行时**不能**增删、重排或禁用 wrapper。编译器产物形态（M81 定稿）：proxy 特化体是带 `wrapper-proxy(PROXY_KIND)` 修饰符的独立合成 fn（`BIL_STANDARD.md` §8.4），经普通 `invoke` 链接——编译器不做文本内联，最终内联归 Middleware。
 
 **wrapper 值的表示**：wrapper 恒为 rich struct（`SYNTAX.md` §14.9），因此它是一个带 typeid 的胖值，而不是独立的堆对象——没有对象头、没有对象身份、不作为独立 GC 节点被追踪；其内部托管引用字段照常经 `refMap` 参加 acquire/release。wrapper 实例存放在宿主的编译器生成隐藏字段中（`BIL_STANDARD.md` §5.3），因此：
 
@@ -409,6 +409,8 @@ getter / setter：
 ## 15. 派发链诊断工具
 
 编译器需提供诊断能力：给定一个调用点，打印其解析出的完整 wrapper 派发链，包括跨 wrapper 的 outer→inner 顺序、每层命中的 specific 或对应类别唯一 wildcard、canonical symbol，以及是否降级到 `call???`。这是随实现一并提供的编译器功能，而非事后补充的调试手段——§1 提到的“派发链可能有多层”这一复杂度，靠这个工具而非靠用户记忆来管理。
+
+工具形态（M81 定稿）：CLI 子命令 `compile --file <src> --explain-dispatch`，报告编译单元内全部被修饰成员的烘焙链（outer→inner 每层命中与 canonical symbol）与存在 `.proxy.*` 类型的降级路由；按调用点（源位置）过滤为预留扩展。
 
 ---
 

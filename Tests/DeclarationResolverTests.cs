@@ -29,6 +29,8 @@ namespace LatteCompiler.Tests
             TestGenericConstraints();
             TestExtRegistration();
             TestWrapperApplications();
+            TestProxyShapeChecking();
+            TestProxyDispatchChains();
             TestNativeDeclarations();
             TestAccessibility();
             TestAccessorDeclarations();
@@ -762,7 +764,7 @@ namespace LatteCompiler.Tests
             var wrapped = GlobalType(ok1, "C");
             TestHarness.CheckTrue("AppliedWrappers 记录（引用相等 + 目标类别）",
                 wrapped.AppliedWrappers.Count == 1
-                && ReferenceEquals(wrapped.AppliedWrappers[0], GlobalType(ok1, "EntityW"))
+                && ReferenceEquals(wrapped.AppliedWrappers[0].Wrapper, GlobalType(ok1, "EntityW"))
                 && GlobalType(ok1, "EntityW").WrapperTarget == WrapperTargetKind.Entity);
 
             // 矩阵 A（方法目标）
@@ -823,6 +825,323 @@ namespace LatteCompiler.Tests
             TestHarness.CheckSemanticError("注解名未解析", u17.Diagnostics, "Unresolved type or namespace: 'Missing'");
             var (u18, _) = ResolveUnit("class NotWrapper { }\n@NotWrapper\nclass C { }\n");
             TestHarness.CheckSemanticError("注解名非 wrapper", u18.Diagnostics, "'NotWrapper' is not a wrapper type");
+        }
+
+        // ===== S11a：proxy 声明侧形状校验（§14.2/§14.3/§14.4）=====
+        private static void TestProxyShapeChecking()
+        {
+            TestHarness.Section("P2 Proxy Shape Checking (§14.2–§14.4)");
+
+            // 泛型元数：Entity 至多一个（TTarget 角色），Value/Method 零个
+            var (g1, _) = ResolveUnit(
+                "@WrapperTarget(.Entity)\nwrapper W\\<TTarget, TExtra> { }\n");
+            TestHarness.CheckSemanticError("Entity wrapper 两个泛型参数", g1.Diagnostics,
+                "Entity wrapper 'W' must declare at most one generic parameter (the TTarget role)");
+            var (g2, _) = ResolveUnit(
+                "@WrapperTarget(.Value)\nwrapper W\\<TValue> { }\n");
+            TestHarness.CheckSemanticError("Value wrapper 泛型参数", g2.Diagnostics,
+                "Value wrapper 'W' cannot declare generic parameters (§14.2)");
+            var (g3, _) = ResolveUnit(
+                "@WrapperTarget(.Method)\nwrapper W\\<TTarget> { }\n");
+            TestHarness.CheckSemanticError("Method wrapper 泛型参数", g3.Diagnostics,
+                "Method wrapper 'W' cannot declare generic parameters (§14.2)");
+            var (g4, _) = ResolveUnit(
+                "@WrapperTarget(.Entity)\nwrapper W\\<TTarget> { }\n" +
+                "@WrapperTarget(.Entity)\nwrapper W0 { }\n");
+            CheckNoErrors("Entity wrapper 零/一个泛型参数均合法", g4);
+
+            // 类别矩阵：proxy 形态 × wrapper 类别
+            var (m1, _) = ResolveUnit(
+                "@WrapperTarget(.Entity)\nwrapper W { operator .proxy.get\\<T>(value: T): T { return value } }\n");
+            TestHarness.CheckSemanticError("Value 形态挂 Entity", m1.Diagnostics,
+                "Proxy '.proxy.get' is not allowed on Entity wrapper 'W'");
+            var (m2, _) = ResolveUnit(
+                "@WrapperTarget(.Entity)\nwrapper W { operator .proxy.call\\<TReturn>(): TReturn { return default } }\n");
+            TestHarness.CheckSemanticError("Method 形态挂 Entity", m2.Diagnostics,
+                "Proxy '.proxy.call' is not allowed on Entity wrapper 'W'");
+            var (m3, _) = ResolveUnit(
+                "@WrapperTarget(.Value)\nwrapper W { operator .proxy.doSomething(arg: i32): String { return \"\" } }\n");
+            TestHarness.CheckSemanticError("specific 方法挂 Value", m3.Diagnostics,
+                "Proxy '.proxy.doSomething' is not allowed on Value wrapper 'W'");
+            var (m4, _) = ResolveUnit(
+                "@WrapperTarget(.Method)\nwrapper W { operator .proxy.get\\<T>(value: T): T { return value } }\n");
+            TestHarness.CheckSemanticError("Value 形态挂 Method", m4.Diagnostics,
+                "Proxy '.proxy.get' is not allowed on Method wrapper 'W'");
+            var (m5, _) = ResolveUnit(
+                "@WrapperTarget(.Method)\n" +
+                "wrapper W { operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(symbol: String, namedArgs: named TNamedArgs..., unnamedArgs: TUnnamedArgs...): TReturn { return default } }\n");
+            TestHarness.CheckSemanticError("wildcard 挂 Method", m5.Diagnostics,
+                "Proxy '.proxy.*' is not allowed on Method wrapper 'W'");
+
+            // wildcard canonical shape
+            var (w1, _) = ResolveUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "wrapper W { operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(symbol: String): TReturn { return default } }\n");
+            TestHarness.CheckSemanticError(".proxy.* 缺参数包", w1.Diagnostics,
+                "Wildcard proxy '.proxy.*' must have the canonical shape");
+            var (w2, _) = ResolveUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "wrapper W { operator .proxy.*\\<TNamedArgs, TReturn>(symbol: String, namedArgs: named TNamedArgs..., unnamedArgs: TUnnamedArgs...): TReturn { return default } }\n");
+            TestHarness.CheckSemanticError(".proxy.* 泛型结构错", w2.Diagnostics,
+                "Wildcard proxy '.proxy.*' must have the canonical shape");
+            var (w3, _) = ResolveUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "wrapper W { operator .proxy.get.*\\<TValue>(value: TValue): TValue { return value } }\n");
+            TestHarness.CheckSemanticError(".proxy.get.* 缺 symbol", w3.Diagnostics,
+                "Wildcard proxy '.proxy.get.*' must have the canonical shape");
+            var (w4, _) = ResolveUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "wrapper W { operator .proxy.set.*\\<TValue>(symbol: String, value: TValue): TValue { return value } }\n");
+            TestHarness.CheckSemanticError(".proxy.set.* 带返回", w4.Diagnostics,
+                "Wildcard proxy '.proxy.set.*' must have the canonical shape");
+
+            // specific 形状
+            var (s1, _) = ResolveUnit(
+                "@WrapperTarget(.Entity)\nwrapper W { operator .proxy.get.name(value: i32): i32 { return value } }\n");
+            TestHarness.CheckSemanticError("specific getter 缺泛型参数", s1.Diagnostics,
+                "Accessor proxy '.proxy.get.name' must declare exactly one generic parameter");
+            var (s2, _) = ResolveUnit(
+                "@WrapperTarget(.Entity)\nwrapper W { operator .proxy.set.name\\<T>(value: T): T { return value } }\n");
+            TestHarness.CheckSemanticError("specific setter 带返回", s2.Diagnostics,
+                "Accessor proxy '.proxy.set.name' must declare exactly one generic parameter");
+            var (s3, _) = ResolveUnit(
+                "@WrapperTarget(.Entity)\nwrapper W { operator .proxy.doSomething\\<T>(arg: i32): String { return \"\" } }\n");
+            TestHarness.CheckSemanticError("specific 方法带泛型", s3.Diagnostics,
+                "Specific proxy '.proxy.doSomething' cannot declare generic parameters (§14.2)");
+            var (s4, _) = ResolveUnit(
+                "@WrapperTarget(.Entity)\nwrapper W\\<TTarget> { operator .proxy.opr.plus\\<T>(another: TTarget): TTarget { return default } }\n");
+            TestHarness.CheckSemanticError("specific operator 带泛型", s4.Diagnostics,
+                "Specific proxy '.proxy.opr.plus' cannot declare generic parameters (§14.2)");
+
+            // .proxy.call 双形态（§14.4）
+            var (c1, _) = ResolveUnit(
+                "@WrapperTarget(.Method)\nwrapper W { operator .proxy.call(.name: i32, args: named Any...): Any { return default } }\n");
+            TestHarness.CheckSemanticError(".proxy.call wildcard 形态错", c1.Diagnostics,
+                "Wildcard '.proxy.call' must have shape (.name: String, args: named Any...): Any (§14.4)");
+            var (c2, _) = ResolveUnit(
+                "@WrapperTarget(.Method)\nwrapper W { operator .proxy.call(): Any { return default } }\n");
+            TestHarness.CheckSemanticError(".proxy.call specific 缺泛型", c2.Diagnostics,
+                "Specific '.proxy.call' must declare exactly one generic parameter used as the return type (§14.4)");
+
+            // 正例：canonical 全形态（Entity 四 wildcard + specific 三类 + TTarget）
+            var (ok, _) = ResolveUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Logged\\<TTarget> {\n" +
+                "    pub init(level: String = \"INFO\")\n" +
+                "    operator .proxy.doSomething(arg: i32): String { return inner(arg) }\n" +
+                "    operator .proxy.opr.plus(another: TTarget): TTarget { return inner(another) }\n" +
+                "    operator .proxy.get.name\\<TField>(value: TField): TField { return value }\n" +
+                "    operator .proxy.set.name\\<TField>(value: TField) { inner(value) }\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(symbol: String, namedArgs: named TNamedArgs..., unnamedArgs: TUnnamedArgs...): TReturn { return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
+                "    operator .proxy.get.*\\<TValue>(symbol: String, value: TValue): TValue { return value }\n" +
+                "    operator .proxy.set.*\\<TValue>(symbol: String, value: TValue) { inner(value) }\n" +
+                "    operator .proxy.opr.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(symbol: String, namedArgs: named TNamedArgs..., unnamedArgs: TUnnamedArgs...): TReturn { return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
+                "}\n" +
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper Clamped {\n" +
+                "    operator .proxy.get\\<TValue>(value: TValue): TValue { return value }\n" +
+                "    operator .proxy.set\\<TValue>(value: TValue) { inner(value) }\n" +
+                "}\n" +
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Timed {\n" +
+                "    operator .proxy.call\\<TReturn>(): TReturn { return inner() }\n" +
+                "    operator .proxy.call(.name: String, args: named Any...): Any { return inner(args) }\n" +
+                "}\n");
+            CheckNoErrors("canonical proxy 全形态合法（§14.2/§14.3/§14.4 示例）", ok);
+        }
+
+        // ===== S11a 后半：.wrapper. 隐藏字段合成 + Entity 派发链与特化符号 =====
+        private static void TestProxyDispatchChains()
+        {
+            TestHarness.Section("P2 Proxy Dispatch Chains (S11a)");
+
+            const string logged =
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Logged\\<TTarget> {\n" +
+                "    pub init(level: String = \"INFO\")\n" +
+                "    operator .proxy.doSomething(arg: i32): String { return inner(arg) }\n" +
+                "    operator .proxy.get.level\\<TField>(value: TField): TField { return value }\n" +
+                "}\n";
+            const string audited =
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Audited {\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(symbol: String, namedArgs: named TNamedArgs..., unnamedArgs: TUnnamedArgs...): TReturn { return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
+                "}\n";
+
+            // 隐藏字段合成 + TTarget 代入显形
+            var (u1, _) = ResolveUnit(logged +
+                "@Logged\n" +
+                "pub class Service {\n" +
+                "    pub func doSomething(arg: i32): String { return \"x\" }\n" +
+                "}\n");
+            CheckNoErrors("被修饰类无诊断", u1);
+            var service = GlobalType(u1, "Service");
+            var loggedDef = GlobalType(u1, "Logged");
+            var application = service.AppliedWrappers.Single();
+            TestHarness.CheckTrue("应用记录 Wrapper 为 TTarget 代入后的构造类型",
+                application.Wrapper.ConstructedFrom != null
+                && ReferenceEquals(application.Wrapper.ConstructedFrom, loggedDef)
+                && ReferenceEquals(application.Wrapper.TypeArguments![0], service));
+            var hidden = service.Fields.Single(f => f.Name.StartsWith(".wrapper."));
+            TestHarness.CheckTrue("隐藏字段合成（§5.3 命名 + priv + compiler-generated + 类型）",
+                hidden.IsCompilerGenerated
+                && hidden.Accessibility == Accessibility.Private
+                && ReferenceEquals(hidden.FieldType, application.Wrapper)
+                && ReferenceEquals(application.HiddenField, hidden));
+            TestHarness.Check("隐藏字段 canonical（§5.3/§8.3.1 形态）",
+                "Service#.wrapper.Logged<Service>@Logged<Service>",
+                CanonicalSymbolPrinter.PrintField(hidden));
+
+            // specific 链：符号与签名拷贝
+            var doSomething = service.Methods.Single(m => m.Name == "doSomething");
+            TestHarness.CheckTrue("specific 链合成（单环）",
+                doSomething.WrapperChain is { Count: 1 }
+                && doSomething.WrappedBodySymbol != null);
+            var link = doSomething.WrapperChain![0];
+            TestHarness.CheckTrue("特化符号槽（proxy 声明/应用/类别/目标成员/原始体）",
+                link.Name == ".proxy.0.doSomething"
+                && link.ProxySpecialization != null
+                && link.ProxySpecialization.Kind == ProxyLinkKind.Specific
+                && link.ProxySpecialization.ProxyDeclaration.Name == ".proxy.doSomething"
+                && ReferenceEquals(link.ProxySpecialization.Application, application)
+                && ReferenceEquals(link.ProxySpecialization.TargetMember, doSomething)
+                && ReferenceEquals(link.ProxySpecialization.OriginalBody, doSomething.WrappedBodySymbol));
+            TestHarness.CheckTrue("特化签名 = 成员签名拷贝（符号新实例）",
+                link.Parameters.Count == 1
+                && link.Parameters[0].Name == "arg"
+                && !ReferenceEquals(link.Parameters[0], doSomething.Parameters[0])
+                && ReferenceEquals(link.Parameters[0].Type, doSomething.Parameters[0].Type)
+                && ReferenceEquals(link.ReturnType, doSomething.ReturnType));
+            TestHarness.Check("特化 fn canonical",
+                "Service$.proxy.0.doSomething(arg:.i32)@.string",
+                CanonicalSymbolPrinter.PrintMethod(link));
+            TestHarness.Check("原始体 fn canonical",
+                "Service$.wrapped.doSomething(arg:.i32)@.string",
+                CanonicalSymbolPrinter.PrintMethod(doSomething.WrappedBodySymbol!));
+
+            // wildcard 兜底 + outer→inner 声明序
+            var (u2, _) = ResolveUnit(logged + audited +
+                "@Logged\n" +
+                "@Audited\n" +
+                "pub class Service {\n" +
+                "    pub func doSomething(arg: i32): String { return \"x\" }\n" +
+                "    pub func other(): i32 { return 0 }\n" +
+                "}\n");
+            CheckNoErrors("双 wrapper 无诊断", u2);
+            var service2 = GlobalType(u2, "Service");
+            var do2 = service2.Methods.Single(m => m.Name == "doSomething");
+            TestHarness.CheckTrue("双环链：specific(Logged) → wildcard(Audited)",
+                do2.WrapperChain is { Count: 2 }
+                && do2.WrapperChain[0].ProxySpecialization!.Kind == ProxyLinkKind.Specific
+                && do2.WrapperChain[1].ProxySpecialization!.Kind == ProxyLinkKind.Wildcard
+                && do2.WrapperChain[1].ProxySpecialization!.ProxyDeclaration.Name == ".proxy.*");
+            var other2 = service2.Methods.Single(m => m.Name == "other");
+            TestHarness.CheckTrue("无 specific 命中落 wildcard（单环）",
+                other2.WrapperChain is { Count: 1 }
+                && other2.WrapperChain[0].ProxySpecialization!.Kind == ProxyLinkKind.Wildcard);
+
+            // specific 形状不符 → 编译错误
+            var (u3, _) = ResolveUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper W {\n" +
+                "    operator .proxy.doSomething(arg: i64): String { return inner(arg) }\n" +
+                "}\n" +
+                "@W\n" +
+                "pub class Service {\n" +
+                "    pub func doSomething(arg: i32): String { return \"x\" }\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("specific 形状不符（参数类型）", u3.Diagnostics,
+                "does not match the shape of member 'doSomething' of 'Service' (§14.2)");
+
+            // inert：名未命中且无 wildcard → 无链
+            var (u4, _) = ResolveUnit(logged +
+                "@Logged\n" +
+                "pub class Plain {\n" +
+                "    pub func unrelated(): i32 { return 0 }\n" +
+                "}\n");
+            CheckNoErrors("inert 无诊断", u4);
+            TestHarness.CheckTrue("inert 成员无链",
+                GlobalType(u4, "Plain").Methods.Single(m => m.Name == "unrelated").WrapperChain == null);
+
+            // 泛型成员只参与 wildcard（specific 静默让位）
+            var (u5, _) = ResolveUnit(logged + audited +
+                "@Logged\n" +
+                "@Audited\n" +
+                "pub class Box {\n" +
+                "    pub func doSomething\\<T>(arg: i32): String { return \"x\" }\n" +
+                "}\n");
+            CheckNoErrors("泛型成员无诊断", u5);
+            var genericMethod = GlobalType(u5, "Box").Methods.Single(m => m.Name == "doSomething");
+            TestHarness.CheckTrue("泛型成员：specific 让位 wildcard",
+                genericMethod.WrapperChain is { Count: 1 }
+                && genericMethod.WrapperChain[0].ProxySpecialization!.Kind == ProxyLinkKind.Wildcard);
+
+            // operator 链
+            var (u6, _) = ResolveUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper W\\<TTarget> {\n" +
+                "    operator .proxy.opr.plus(another: TTarget): TTarget { return inner(another) }\n" +
+                "}\n" +
+                "@W\n" +
+                "pub class Number {\n" +
+                "    pub operator plus(another: Number): Number { return this }\n" +
+                "}\n");
+            CheckNoErrors("operator 链无诊断", u6);
+            var plus = GlobalType(u6, "Number").Methods.Single(m => m.Name == "plus");
+            TestHarness.CheckTrue("operator specific 链（TTarget 代入后形状全等）",
+                plus.WrapperChain is { Count: 1 }
+                && plus.WrapperChain[0].Name == ".proxy.0.opr.plus"
+                && plus.WrapperChain[0].ProxySpecialization!.Kind == ProxyLinkKind.Specific);
+
+            // 访问器链（已声明访问器的字段）
+            var (u7, _) = ResolveUnit(logged +
+                "@Logged\n" +
+                "pub class Config {\n" +
+                "    pub var level: String { get(value: _) { return \"x\" } set(value: _) { } }\n" +
+                "}\n");
+            CheckNoErrors("访问器链无诊断", u7);
+            var level = GlobalType(u7, "Config").Fields.Single(f => f.Name == "level");
+            TestHarness.CheckTrue("getter specific 链",
+                level.Getter!.WrapperChain is { Count: 1 }
+                && level.Getter.WrapperChain[0].Name == ".proxy.0.get.level"
+                && level.Getter.WrappedBodySymbol!.Name == ".wrapped.get.level");
+            TestHarness.CheckTrue("setter 无 specific 且无 wildcard → 无链",
+                level.Setter!.WrapperChain == null);
+
+            // 重复应用 → 隐藏字段冲突
+            var (u8, _) = ResolveUnit(logged + "@Logged\n@Logged\npub class Dup { }\n");
+            TestHarness.CheckSemanticError("同一 wrapper 重复应用（隐藏字段冲突）", u8.Diagnostics,
+                "hidden field collision");
+
+            // interface 传染：实现者获得隐藏字段（TTarget = 实现者），interface 自身没有
+            var (u9, _) = ResolveUnit(logged +
+                "@Logged\n" +
+                "pub interface IRepo { }\n" +
+                "pub class SqlRepo implements IRepo { }\n");
+            CheckNoErrors("interface 传染无诊断", u9);
+            TestHarness.CheckTrue("interface 自身无隐藏字段",
+                !GlobalType(u9, "IRepo").Fields.Any(f => f.Name.StartsWith(".wrapper.")));
+            var impl = GlobalType(u9, "SqlRepo");
+            TestHarness.CheckTrue("实现者隐藏字段（TTarget = 实现者构造）",
+                impl.Fields.Any(f => f.Name == ".wrapper.Logged<SqlRepo>"));
+
+            // Value wrapper 实例字段：隐藏字段挂字段宿主
+            var (u10, _) = ResolveUnit(
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper Clamped {\n" +
+                "    pub var min: i32\n" +
+                "    operator .proxy.get\\<TValue>(value: TValue): TValue { return value }\n" +
+                "}\n" +
+                "pub class Player {\n" +
+                "    @Clamped\n" +
+                "    pub var health: i32\n" +
+                "}\n");
+            CheckNoErrors("Value wrapper 字段无诊断", u10);
+            var player = GlobalType(u10, "Player");
+            var health = player.Fields.Single(f => f.Name == "health");
+            TestHarness.CheckTrue("Value 应用隐藏字段挂宿主类型",
+                health.AppliedWrappers.Single().HiddenField != null
+                && player.Fields.Any(f => f.Name == ".wrapper.Clamped"));
         }
 
         // ===== 子任务 3b：native 函数声明（§4.6）=====

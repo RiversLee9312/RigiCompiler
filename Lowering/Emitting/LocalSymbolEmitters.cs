@@ -115,6 +115,8 @@ namespace LatteCompiler
             }
             foreach (var field in type.Fields)
             {
+                // `.wrapper.` 隐藏字段（S11a 合成）：声明发射归 S11c，此前跳过
+                if (field.IsCompilerGenerated) continue;
                 declaration.Members.Add(EmitFieldDeclaration(field));
                 foreach (var accessor in EmitFieldAccessorDeclarations(field))
                 {
@@ -123,6 +125,9 @@ namespace LatteCompiler
             }
             foreach (var method in type.Methods)
             {
+                // "." 前缀保留名（S11a 合成的 proxy 特化/原始体 fn 与
+                // wrapper proxy 声明）：声明发射归 S11d，此前跳过
+                if (method.Name.StartsWith('.')) continue;
                 // enum struct 的无体 init（case 模板，SYNTAX §12.1）同样
                 // 发射声明——P3 起映射赋值体合成（§9.3）为其产出 fn 定义，
                 // §21.2 门槛满足；`_ -> field` 映射借此保留在 BIL 中，
