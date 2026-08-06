@@ -282,39 +282,20 @@ namespace LatteCompiler
         }
     }
 
-    // get/set.field.embedded 走链设施（S11c，§13.3）：HiddenFields 按
-    // 最外层 → 最内层序。链长 1：embedded 指令直达；链长 ≥2：先以
-    // get.field.embedded 逐级取内层 wrapper 的原地别名（§13.3：原地访问
-    // 不产生值拷贝，每步跨两级——OBJECT 的隐藏字段读其内层隐藏字段），
-    // 到达最内层别名后末段读 = get.field、写 = set.field（§13.3 注记：
-    // proxy 体内 this 成员访问同构）
+    // get/set.field.embedded 走链设施（M88，§13.3）：WrapperChain 按
+    // 最外层 → 最内层序，投影为 wrapper(W) 链元素；整链一次 embedded
+    // 指令（末段 field(INNER)），存储合成归 Middleware
     internal static class EmbeddedFieldEmission
     {
         public static BilVariableOperand EmitRead(LoweredEmbeddedFieldExpression access,
             BilBlock target, EmitContext ctx, EmitEnvironment env)
         {
             var current = EmitValueDispatcher.Visit(access.Receiver, target, ctx, env);
-            var chain = access.HiddenFields;
-            var level = 0;
-            while (chain.Count - level >= 2)
-            {
-                current = Alias(current, chain[level], chain[level + 1], access, target, ctx);
-                level += 2;
-            }
+            var chain = ProjectWrapperChain(access.WrapperChain);
             var readResult = ctx.Temps.NewTemp(access.Type);
-            if (chain.Count - level == 1)
-            {
-                target.Instructions.Add(new GetEmbeddedFieldInstruction(current, readResult,
-                    BilOp.Field(CanonicalSymbolPrinter.PrintField(chain[level])),
-                    BilOp.Field(CanonicalSymbolPrinter.PrintField(access.Field)))
-                { Origin = access });
-            }
-            else
-            {
-                target.Instructions.Add(new GetFieldInstruction(current, readResult,
-                    BilOp.Field(CanonicalSymbolPrinter.PrintField(access.Field)))
-                { Origin = access });
-            }
+            target.Instructions.Add(new GetEmbeddedFieldInstruction(current, readResult, chain,
+                BilOp.Field(CanonicalSymbolPrinter.PrintField(access.Field)))
+            { Origin = access });
             return readResult;
         }
 
@@ -322,42 +303,57 @@ namespace LatteCompiler
             BilVariableOperand source, BilVariableOperand receiver,
             BilBlock target, EmitContext ctx, EmitEnvironment env)
         {
-            var current = receiver;
-            var chain = place.HiddenFields;
-            var level = 0;
-            while (chain.Count - level >= 2)
-            {
-                current = Alias(current, chain[level], chain[level + 1], place, target, ctx);
-                level += 2;
-            }
-            if (chain.Count - level == 1)
-            {
-                target.Instructions.Add(new SetEmbeddedFieldInstruction(source, current,
-                    BilOp.Field(CanonicalSymbolPrinter.PrintField(chain[level])),
-                    BilOp.Field(CanonicalSymbolPrinter.PrintField(place.Field)))
-                { Origin = place });
-            }
-            else
-            {
-                target.Instructions.Add(new SetFieldInstruction(source, current,
-                    BilOp.Field(CanonicalSymbolPrinter.PrintField(place.Field)))
-                { Origin = place });
-            }
+            var chain = ProjectWrapperChain(place.WrapperChain);
+            target.Instructions.Add(new SetEmbeddedFieldInstruction(source, receiver, chain,
+                BilOp.Field(CanonicalSymbolPrinter.PrintField(place.Field)))
+            { Origin = place });
         }
 
-        // 原地别名：get.field.embedded(current, alias, hfOuter, hfInner)——
-        // 取 current（W_m）上隐藏字段 hfOuter（W_{m+1}）的内层隐藏字段
-        // hfInner（W_{m+2}）的原地别名；别名临时变量类型 = 内层 wrapper 类型
-        private static BilVariableOperand Alias(BilVariableOperand current,
-            FieldSymbol outerField, FieldSymbol innerField, LoweredNode origin,
-            BilBlock target, EmitContext ctx)
+        private static IReadOnlyList<BilOperand> ProjectWrapperChain(
+            IReadOnlyList<TypeSymbol> wrappers)
         {
-            var alias = ctx.Temps.NewTemp(innerField.FieldType!);
-            target.Instructions.Add(new GetEmbeddedFieldInstruction(current, alias,
-                BilOp.Field(CanonicalSymbolPrinter.PrintField(outerField)),
-                BilOp.Field(CanonicalSymbolPrinter.PrintField(innerField)))
-            { Origin = origin });
-            return alias;
+            var chain = new BilOperand[wrappers.Count];
+            for (var i = 0; i < wrappers.Count; i++)
+            {
+                chain[i] = BilOp.Wrapper(CanonicalSymbolPrinter.PrintType(wrappers[i]));
+            }
+            return chain;
+        }
+    }
+
+    // proxy 体 self（M88，§12.5 get.self RESULT）
+    internal sealed class GetSelfEmitter : EmitVisitor<GetSelfEmitter, BilVariableOperand>
+    {
+        protected override BilVariableOperand VisitCore(LoweredNode node, BilBlock target,
+            EmitContext ctx, EmitEnvironment env)
+        {
+            var getSelf = (LoweredGetSelfExpression)node;
+            var result = ctx.Temps.NewTemp(getSelf.Type);
+            target.Instructions.Add(new GetSelfInstruction(result) { Origin = getSelf });
+            return result;
+        }
+    }
+
+    // proxy 体 inner(...)（M88，§15.4）：Type 为 void / IsVoid → noret
+    internal sealed class CallInnerEmitter : EmitVisitor<CallInnerEmitter, BilVariableOperand>
+    {
+        protected override BilVariableOperand VisitCore(LoweredNode node, BilBlock target,
+            EmitContext ctx, EmitEnvironment env)
+        {
+            var callInner = (LoweredCallInnerExpression)node;
+            var args = new List<BilVariableOperand>(callInner.Arguments.Count);
+            foreach (var argument in callInner.Arguments)
+            {
+                args.Add(EmitValueDispatcher.Visit(argument, target, ctx, env));
+            }
+            if (callInner.IsVoid)
+            {
+                target.Instructions.Add(new CallInnerNoretInstruction(args) { Origin = callInner });
+                return BilOp.Var("<void>");
+            }
+            var result = ctx.Temps.NewTemp(callInner.Type);
+            target.Instructions.Add(new CallInnerInstruction(result, args) { Origin = callInner });
+            return result;
         }
     }
 

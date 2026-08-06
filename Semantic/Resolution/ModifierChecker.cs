@@ -186,7 +186,8 @@ namespace LatteCompiler
                     }
                 }
             }
-            // ext 必须是限定名（§4.4：TargetType.memberName）且只能用于全局声明
+            // ext 必须是限定名（§4.4：TargetType.memberName）且只能用于全局声明；
+            // 顶层无 protected 概念（§16.1：顶层仅 private/internal/public）
             if (modifiers.Contains(Keywords.EXT))
             {
                 var hasQualifiedName = entry.Symbol switch
@@ -202,6 +203,11 @@ namespace LatteCompiler
                 if (entry.DeclaringType != null)
                 {
                     env.Error(entry.Node.Span, "'ext' can only be applied to global declarations");
+                }
+                if (modifiers.Contains(Keywords.PROTECTED))
+                {
+                    env.Error(entry.Node.Span,
+                        "'protected' cannot be applied to extension members");
                 }
             }
         }

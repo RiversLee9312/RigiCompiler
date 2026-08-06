@@ -171,6 +171,12 @@ namespace LatteCompiler
                 case BoundWrapperAccessExpression wrapperAccess:
                     WalkExpression(wrapperAccess.Receiver, env);
                     break;
+                // M88：proxy 体 self / inner(...) 占位
+                case BoundSelfExpression:
+                    break;
+                case BoundInnerCallExpression innerCall:
+                    foreach (var argument in innerCall.Arguments) WalkExpression(argument, env);
+                    break;
                 case BoundSwitchExpression switchExpression:
                     WalkExpression(switchExpression.Selector, env);
                     foreach (var switchCase in switchExpression.Cases)

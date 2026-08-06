@@ -30,14 +30,16 @@ namespace LatteCompiler
         }
 
         // private：顶层声明同文件可见；成员/嵌套类型在声明类型及其嵌套类型
-        // （递归）内可见（§16.1）
+        // （递归）内可见（§16.1）。ext 成员按声明位置（顶层规则）而非目标类型
+        // 容器判定（§4.4/§16.1）
         private static bool CheckPrivate(SemanticSymbol target, RootASTNode? useFile,
             TypeSymbol? useHost)
         {
             var container = ContainingTypeOf(target);
             if (container == null)
             {
-                // 顶层声明：同文件（SourceFile 缺失 = 不经声明收集的产物，保守放行）
+                // 顶层声明（含顶层 ext）：同文件（SourceFile 缺失 = 不经声明
+                // 收集的产物，保守放行）
                 return target.SourceFile == null ||
                     (useFile != null && ReferenceEquals(target.SourceFile, useFile));
             }
@@ -65,9 +67,12 @@ namespace LatteCompiler
             return targetNs != null && useNamespace != null && ReferenceEquals(targetNs, useNamespace);
         }
 
-        // 符号的直接宿主类型（成员 = Owner；嵌套类型 = DeclaringType；顶层 = null）
+        // 符号的直接宿主类型（成员 = Owner；嵌套类型 = DeclaringType；顶层 = null）。
+        // ext 成员虽经 AttachToExtTarget 改写 Owner，可见性仍按声明位置——
+        // 此处视同无宿主（顶层），与 §4.4/§16.1 对齐
         public static TypeSymbol? ContainingTypeOf(SemanticSymbol target)
         {
+            if (IsExtensionMember(target)) return null;
             return target switch
             {
                 TypeSymbol t => t.DeclaringType,
@@ -76,6 +81,14 @@ namespace LatteCompiler
                 _ => null,
             };
         }
+
+        // ext 成员识别（P1 拆名登记的 ExtTargetPath 原文非空）
+        private static bool IsExtensionMember(SemanticSymbol target) => target switch
+        {
+            FieldSymbol { ExtTargetPath: not null } => true,
+            MethodSymbol { ExtTargetPath: not null } => true,
+            _ => false,
+        };
 
         // 符号所在命名空间（沿宿主链上溯；顶层符号直取）
         public static NamespaceSymbol? ContainingNamespaceOf(SemanticSymbol target)

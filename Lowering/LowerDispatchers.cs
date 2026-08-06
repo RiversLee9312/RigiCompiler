@@ -64,6 +64,8 @@ namespace LatteCompiler
                 BoundCompoundAssignmentExpression => CompoundAssignmentRewriter.Visit(expression,
                     ctx, env),
                 BoundThisExpression => ThisRewriter.Visit(expression, ctx, env),
+                BoundSelfExpression => SelfRewriter.Visit(expression, ctx, env),
+                BoundInnerCallExpression => InnerCallRewriter.Visit(expression, ctx, env),
                 BoundInstanceCallExpression => InstanceCallRewriter.Visit(expression, ctx, env),
                 BoundFieldAccessExpression => FieldAccessRewriter.Visit(expression, ctx, env),
                 BoundIndexExpression => IndexRewriter.Visit(expression, ctx, env),

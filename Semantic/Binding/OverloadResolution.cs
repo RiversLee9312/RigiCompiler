@@ -531,7 +531,7 @@ namespace LatteCompiler
                 }
                 // S11e：降级调用结果 Any 可作任意形参实参（运行时 cast 兜底）
                 if (!SymbolLookup.IsAssignable(boundArgs[i]!.Type, paramType, env)
-                    && !BoundAnalysis.IsDowngradeCallResult(boundArgs[i]!)) return false;
+                    && !BoundAnalysis.IsDowngradeCallResult(boundArgs[i]!, env)) return false;
             }
             return true;
         }
@@ -578,7 +578,7 @@ namespace LatteCompiler
                 // 防御终检（与适用性判定同源，预期必过）；S11e：降级调用
                 // 结果豁免同 IsApplicable（动态结果可传入任意形参，cast 兜底）
                 if (!SymbolLookup.IsAssignable(value.Type, paramType, env)
-                    && !BoundAnalysis.IsDowngradeCallResult(value))
+                    && !BoundAnalysis.IsDowngradeCallResult(value, env))
                 {
                     env.Error(arguments[i].Value.Span ?? arguments[i].Span,
                         $"Cannot pass '{BoundAnalysis.TypeDisplay(value.Type)}' as " +

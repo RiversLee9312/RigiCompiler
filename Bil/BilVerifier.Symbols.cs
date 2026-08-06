@@ -208,6 +208,10 @@ namespace LatteCompiler.Bil
             // 修饰符不得重复（同访问级两次 / 同关键字两次）
             VerifyModifierDuplicates(declaration.Modifiers, symbol, errors);
 
+            // §8.3.1/§21.8：wrapped(W) 可出现在类型/字段声明上；方法上非法
+            VerifyWrappedModifiers(context, declaration.Modifiers, symbol, allowWrapped: !isMethod,
+                errors);
+
             if (!isMethod)
             {
                 // §8.3：backing 与 computed 是互斥的存储形态标记
@@ -241,58 +245,51 @@ namespace LatteCompiler.Bil
                 }
             }
 
-            // §8.4/§21.8 wrapper-proxy(PROXY_KIND)（S11d）：只标记编译器
-            // 合成保留名 fn（§5.1：.proxy./.wrapped. 名段）；保留名方法
-            // 必须带本修饰符（缺失即非烘焙产物——用户伪造保留名同此拦截）；
-            // kind 与名段一致：.wrapped. ↔ original（被修饰成员原始实现
-            // 体），.proxy. ↔ specific|wildcard|router（特化/解包 shim/
-            // 路由 fn；original 只允许 .wrapped.）。
-            // S11e：router 修饰符放行名 call???（宿主降级路由 fn，BIL §8.4
-            // 按 symbol 路由体）——wrapper-proxy(router) 允许在名 call???
-            // 的方法上，且 call??? ↔ router 双向一致（.proxy./.wrapped. 名
-            // 段不得 router、call??? 不得其他 kind）
+            // §8.4/§21.8 wrapper-proxy(PROXY_KIND)（M88）：只允许在 wrapper
+            // 类型内、名以 `.proxy.` 开头的方法上；`.proxy.` 名 ↔ 修饰符
+            // 双向一致；kind ↔ 形状类别（名以 `.*` 结尾 → wildcard，否则
+            // specific）。烘焙特化/original/router 归 Middleware，不再出现
+            // 于 BIL 文本
             var nameSegment = MethodNameSegment(symbol);
-            var isProxyReserved = nameSegment != null && nameSegment.StartsWith(".proxy.");
-            var isWrappedReserved = nameSegment != null && nameSegment.StartsWith(".wrapped.");
-            var isRouterReserved = nameSegment == "call???";
+            var isProxyTemplate = nameSegment != null && nameSegment.StartsWith(".proxy.");
             BilWrapperProxyModifier? wrapperProxy = null;
             foreach (var modifier in declaration.Modifiers)
             {
                 if (modifier is BilWrapperProxyModifier found) wrapperProxy = found;
             }
-            if (wrapperProxy != null && !isProxyReserved && !isWrappedReserved && !isRouterReserved)
+            if (wrapperProxy != null && !isProxyTemplate)
             {
                 errors.Add(new BilVerificationError("21.8", symbol,
-                    "wrapper-proxy(...) 只允许在编译器合成保留名（.proxy./.wrapped./call???）方法上（§5.1）"));
+                    "wrapper-proxy(...) 只允许在名以 .proxy. 开头的方法上（§8.4）"));
             }
-            if (wrapperProxy == null && (isProxyReserved || isWrappedReserved))
+            if (wrapperProxy == null && isProxyTemplate)
             {
                 errors.Add(new BilVerificationError("21.8", symbol,
-                    "合成保留名（.proxy./.wrapped.）方法缺少 wrapper-proxy(...) 修饰符（§8.4）"));
+                    ".proxy. 方法缺少 wrapper-proxy(...) 修饰符（§8.4）"));
             }
-            if (wrapperProxy != null)
+            if (isProxyTemplate)
             {
-                if (isWrappedReserved && wrapperProxy.Kind != BilProxyKind.Original)
+                // §21.2：proxy 模板必须声明在 wrapper 类型内
+                if (ownerType == null
+                    || !context.TryGetTypeDeclaration(ownerType, out var proxyHost)
+                    || proxyHost.Kind != BilTypeKind.Wrapper)
                 {
-                    errors.Add(new BilVerificationError("21.8", symbol,
-                        ".wrapped. 原始体 fn 必须带 wrapper-proxy(original)（§8.4）"));
+                    errors.Add(new BilVerificationError("21.2", symbol,
+                        ".proxy. 方法必须声明在 wrapper 类型内（§8.4）"));
                 }
-                if (isProxyReserved && wrapperProxy.Kind == BilProxyKind.Original)
+            }
+            if (wrapperProxy != null && isProxyTemplate && nameSegment != null)
+            {
+                var expectWildcard = nameSegment.EndsWith(".*");
+                if (expectWildcard && wrapperProxy.Kind != BilProxyKind.Wildcard)
                 {
                     errors.Add(new BilVerificationError("21.8", symbol,
-                        ".proxy. 名段不得带 wrapper-proxy(original)（original 仅用于 .wrapped.，§8.4）"));
+                        "通配 proxy（名以 .* 结尾）必须带 wrapper-proxy(wildcard)（§8.4）"));
                 }
-                // S11e：call??? 必须带 wrapper-proxy(router)；.proxy./.wrapped.
-                // 名段不得带 router（router 只用于宿主降级路由 fn）
-                if (isRouterReserved && wrapperProxy.Kind != BilProxyKind.Router)
+                if (!expectWildcard && wrapperProxy.Kind != BilProxyKind.Specific)
                 {
                     errors.Add(new BilVerificationError("21.8", symbol,
-                        "call??? 降级路由 fn 必须带 wrapper-proxy(router)（§8.4）"));
-                }
-                if ((isProxyReserved || isWrappedReserved) && wrapperProxy.Kind == BilProxyKind.Router)
-                {
-                    errors.Add(new BilVerificationError("21.8", symbol,
-                        ".proxy./.wrapped. 名段不得带 wrapper-proxy(router)（router 仅用于 call???，§8.4）"));
+                        "具名 proxy 必须带 wrapper-proxy(specific)（§8.4）"));
                 }
             }
 
@@ -381,6 +378,9 @@ namespace LatteCompiler.Bil
                     "singleton 类型必须同时带 shared"));
             }
 
+            // §8.3.1/§21.8：类型声明上的 wrapped(W)
+            VerifyWrappedModifiers(context, type.Modifiers, type.Symbol, allowWrapped: true, errors);
+
             // extends/implements 类型可解析（§21.2）
             if (type.ExtendsType != null && !context.IsResolvableTypeRef(type.ExtendsType))
             {
@@ -393,6 +393,35 @@ namespace LatteCompiler.Bil
                 {
                     errors.Add(new BilVerificationError("21.2", type.Symbol,
                         $"implements 类型不可解析 \"{interfaceType}\""));
+                }
+            }
+        }
+
+        // §8.3.1 wrapped(WRAPPER_TYPE_REF)：合法位置 = 类型/字段声明；
+        // WRAPPER_TYPE_REF 必须是 wrapper 类型（查不到降级通过）
+        private static void VerifyWrappedModifiers(BilVerificationContext context,
+            IReadOnlyList<BilModifier> modifiers, string location, bool allowWrapped,
+            List<BilVerificationError> errors)
+        {
+            foreach (var modifier in modifiers)
+            {
+                if (modifier is not BilWrappedModifier wrapped) continue;
+                if (!allowWrapped)
+                {
+                    errors.Add(new BilVerificationError("21.8", location,
+                        "wrapped(...) 只允许在类型声明或字段声明上（§8.3.1）"));
+                    continue;
+                }
+                if (!context.IsResolvableTypeRef(wrapped.WrapperTypeRef))
+                {
+                    // 查不到降级通过（零误报优先）
+                    continue;
+                }
+                if (context.TryGetTypeDeclaration(wrapped.WrapperTypeRef, out var wrapperDecl)
+                    && wrapperDecl.Kind != BilTypeKind.Wrapper)
+                {
+                    errors.Add(new BilVerificationError("21.8", location,
+                        $"wrapped(...) 的类型 \"{wrapped.WrapperTypeRef}\" 不是 wrapper 类型（§8.3.1）"));
                 }
             }
         }

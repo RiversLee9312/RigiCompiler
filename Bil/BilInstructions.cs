@@ -86,6 +86,14 @@ namespace LatteCompiler.Bil
         internal override string Render() => $"field({Symbol})";
     }
 
+    // wrapper(WRAPPER_TYPE_REF)（§13.3 embedded 链元素，M88）
+    public sealed class BilWrapperOperand : BilOperand
+    {
+        public string TypeRef { get; }
+        public BilWrapperOperand(string typeRef) { TypeRef = typeRef; }
+        internal override string Render() => $"wrapper({TypeRef})";
+    }
+
     // type(TYPE_SYMBOL_OR_REF)
     public sealed class BilTypeOperand : BilOperand
     {
@@ -153,6 +161,7 @@ namespace LatteCompiler.Bil
         public static BilVariableOperand Var(string name) => new BilVariableOperand(name);
         public static BilFnOperand Fn(string symbol) => new BilFnOperand(symbol);
         public static BilFieldOperand Field(string symbol) => new BilFieldOperand(symbol);
+        public static BilWrapperOperand Wrapper(string typeRef) => new BilWrapperOperand(typeRef);
         public static BilTypeOperand Type(string typeRef) => new BilTypeOperand(typeRef);
         public static BilCaseOperand Case(string qualifiedName) => new BilCaseOperand(qualifiedName);
     }

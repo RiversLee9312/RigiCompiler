@@ -19,8 +19,10 @@ BIL 模块（内存对象模型 + 文本序列化）。
 
 `BIL_STANDARD.md` §3.3「frontend 不变量」是中端的**需求清单**：名称解析、
 访问控制、类型推断、重载解析、默认参数填充、具名参数重排、泛型约束检查、
-smart cast、rich/shared 闭包检查、async 共享安全、extension/wrapper 静态
-组合链、语法糖规范化——全部必须在中端完成，Middleware 一概不做。
+smart cast、rich/shared 闭包检查、async 共享安全、extension 注册、
+wrapper 形状校验与应用标记、语法糖规范化——全部必须在中端完成。
+wrapper **烘焙**（派发链合成、inner 链接、原始体替换、隐藏存储/router
+体）归 Middleware（BIL §23 边界；见 §5.2），不在中端完成。
 
 总体管线为四个 pass、两棵树、一个符号图：
 
@@ -74,7 +76,7 @@ BIL 文本
 | 全局/静态字段的共享安全闸门 | P2 | SYNTAX §3.1.1 闸门 1：全局变量/常量、静态字段及其访问器类型 |
 | wrapper 目标矩阵检查 | P2 | SYNTAX §14.9：宿主可内嵌性 + shared 目标矩阵 A–D + interface 实现者传染 |
 | 泛型约束检查（声明侧） | P2 | 约束自身良构 |
-| wrapper 适用性与静态组合链确定 | P2 | `@WrapperTarget` 类别 × 目标声明 |
+| wrapper 适用性与应用登记 | P2 | `@WrapperTarget` 类别 × 目标声明；形状校验 + AppliedWrappers/WrapperApplication 登记（Freeze 前零合成符号；烘焙归 Middleware，见 §5.2） |
 | extension 目标注册 | P2 | `ext` 成员挂到目标类型符号 |
 | canonical symbol 定形 | P2 | 符号图建成即可打印（§4.4） |
 | 名称解析（表达式内） | P3 | 作用域链：块 → 参数 → 成员 → 全局 → import |
@@ -210,12 +212,42 @@ SemanticSymbol
   显式 `cast` 指令由 P4a 物化。
 - definite assignment 与「所有路径显式返回」在 P3 报错（BIL §21.4
   的对应义务在这里兑现，而不是等 BIL verifier 兜底）。
-- wrapper proxy 体按 (proxy × 目标成员) 组合逐组绑定（M81 定稿，
-  **M83 已落地**，ROADMAP S11b）：`self` 绑定为宿主角色（类型 =
-  wrapper 泛型参数代入结果），`inner` 绑定为对下一环符号的普通
-  调用，proxy 体内 `this` 重写为只读 place（BoundWrapperAccess
-  Expression）——三者在非 proxy 语境出现是编译错误；同一 proxy
-  声明体跨组合的诊断按 (proxy, span, message) 去重。
+- wrapper proxy 声明体**模板态绑定**与 pass 归属（**M88 定稿**，
+  推翻 M81 定稿①③；烘焙归 Middleware，BIL §23 边界）：
+  - **P1**：符号壳（proxy 成员与普通成员同路径收集）。
+  - **P2**：只保留形状校验（`ProxyShapeChecker`：元数/类别矩阵/
+    canonical shape）与 wrapper 应用登记（`AppliedWrappers` /
+    `WrapperApplication`，TTarget 代入显形、宿主构造安装用）。
+    **不再**合成隐藏字段、派发链、特化符号或降级链——Freeze 前
+    零合成符号。
+  - **P3**：
+    - **proxy 声明体模板态绑定**——绑定语境 = proxy 声明符号自身：
+      wrapper 级泛型参数（`TTarget`）与 proxy 方法级泛型参数
+      （`TReturn`/`TField` 等）按既有泛型参数路径直接解析
+      （#27⑧ 随之闭环）；`self` 类型 = `TTarget` 泛型参数
+      （Entity 恰一时；零个则引用 `self` 报错——SYNTAX §14.2）；
+      `this` = wrapper 实例自身（模板 fn 的 `.this`，绑定宿主即
+      wrapper 类型，不再重写为 `BoundWrapperAccessExpression`）；
+      `inner(...)` 绑定为占位调用节点（实参正常绑定；期望形状 =
+      specific 按 proxy 声明自身签名 / wildcard 按 canonical 形状
+      去 symbol；返回类型 = proxy 声明返回类型）。非 proxy 语境
+      出现 `self`/`inner` 是编译错误；诊断按 (proxy, span, message)
+      去重。
+    - **使用点 wrapper place 绑定**（M79）原样保留：双源同池查找
+      + 只读禁令全拦截面。
+    - **未声明方法降级判定**保留：candidates 空 + wrapper 链含
+      `.proxy.*` → 产物改 `invoke core::Any$call???`（bootstrap
+      声明 + VM hook，toString 先例）；`IsDowngradeCallResult`
+      五位置豁免保留，判定改为引用相等 bootstrap `Any.call???`。
+  - **P4**：发射 wrapper 类型的 proxy 成员为带
+    `wrapper-proxy(specific|wildcard)` 修饰符的**模板 fn**
+    （`inner` → `call.inner`、`self` → `get.self` 占位指令）；
+    使用点 place 成员访问的 embedded 降级与声明段平铺仍归 P4
+    （操作数见 §6.1）。
+  - **一切烘焙**（特化 / inner 链接 / 原始体替换 / 隐藏存储 /
+    `call???` 类别路由体）**归 Middleware**（BIL §23 边界）。
+    frontend 产物只携带标记：应用登记、proxy 模板 fn、降级调用点
+    对 `core::Any$call???` 的 `invoke`。
 
 ---
 
@@ -240,8 +272,8 @@ SemanticSymbol
 | pattern switch（含 `_` 分支） | 常量表 switch / 嵌套条件（BIL §16.6） |
 | 解构声明 | 精确字段/索引读取 |
 | `using` | 初始化 + 清理记录 + try/finally 路径（RUNTIME §25.1） |
-| wrapper place 成员访问（`obj:W.f`、`obj:W.m()`，S11c） | 读 = `get.wrapper` 值拷贝 + `get.field`；写 = `set.field.embedded`；调用 receiver = 值拷贝（BIL §12.4 注记/§13.3） |
-| 未声明方法的 wrapper 降级（S11e，SYNTAX §14.7） | `call???` 胖值 `invoke`（BIL §15.4） |
+| wrapper place 成员访问（`obj:W.f`、`obj:W.m()`） | Entity 应用成员读/调用 = `get.wrapper` 值拷贝 + 普通 `get.field`/`invoke`（BIL §12.4）；成员写 = embedded 链，操作数为 wrapper 类型引用 `wrapper(W)`（非隐藏字段符号；BIL §13.3；存储由 Middleware 合成） |
+| 未声明方法的 wrapper 降级（SYNTAX §14.7） | `invoke core::Any$call???`（胖值 ABI；BIL §15.5） |
 | 字符串插值 | 拼接/格式化调用链 |
 | trailing lambda、`TypeName(...)` 简写等 | 规范调用形态 |
 | async/await/yield | 物化为标准库 Task 机制调用（§7，专项设计） |
@@ -250,14 +282,11 @@ SemanticSymbol
 降级**不得改变** `SYNTAX.md` / `RUNTIME.md` 规定的可观察语义
 （求值顺序、getter/setter/operator/wrapper 调用顺序、异常路径）。
 
-> **wrapper 烘焙的 pass 归属（M81 定稿，ROADMAP S11a–S11g）**：
-> wrapper 派发分析（specific/wildcard 命中、链路计算、特化符号与
-> `.wrapper.` 隐藏字段合成）是**符号级**工作，全部落在 P2（Freeze
-> 前）；P3 对 proxy 声明体逐组合绑定（`self`/`inner`/`this` 语义，
-> 合成转发壳与解包 shim）；P4 不承载 wrapper 语义——特化 fn、
-> 原始体 fn 与转发壳在 LoweredTree/BIL 层就是普通函数与 `invoke`
-> 链，P4 唯一的 wrapper 专属工作是 place 成员访问的 embedded/
-> 值拷贝降级（上表 S11c 行）与声明段平铺。最终内联归 Middleware。
+> **wrapper 烘焙的 pass 归属（M88 定稿，推翻 M81 ①③）**：详见 §5.2
+> 整段。摘要——P1 符号壳；P2 只形状校验 + 应用登记（Freeze 前零
+> 合成符号）；P3 proxy 模板态绑定 + 使用点 place/降级判定；P4 发射
+> 带 `wrapper-proxy(...)` 的模板 fn（`call.inner`/`get.self`）与
+> place embedded 降级（上表）；**一切烘焙归 Middleware**（BIL §23）。
 
 ### 6.2 P4b：发射（BilEmitter）
 
@@ -318,35 +347,27 @@ async lowering 的具体形态（状态机切分、continuation 表示、与
 RUNTIME §23 GC fence 的交互）是**专项设计**，动工前须先出专项文档
 （对标 `EXPRESSION_ARCHITECTURE.md` 的角色），列入 ROADMAP 后段。
 
-### 7.1 wrapper 值语义修订带来的 BIL 缺口（2026-07-29）
+### 7.1 wrapper 值语义与 BIL 形态（现状，M75 + M88）
 
-规范修订把 wrapper 从 Object 改为恒 rich struct，并规定 `obj:Wrapper`
-是**只读 place**：只能作成员访问的接收者，不可整体赋值、不可整体取值
-（SYNTAX §14.5/§14.9）。现行 `BIL_STANDARD.md` §12.4 只有值语义的
-`get.wrapper` / `get.wrapper.indirect`，**缺少 place 形态**：无法表达
-「以宿主持有的那份 wrapper 为接收者读写其字段、调用其方法」，也无法
-表达 proxy 体内 `this` 的原地访问。
+规范把 wrapper 定为恒 rich struct，`obj:Wrapper` 为**只读 place**
+（SYNTAX §14.5/§14.9）。相关 BIL 缺口与归属如下：
 
-- 缺口是**只读 place 的取址/接收者形态**，不是赋值形态——源码层
-  `obj:W = ...` 是编译错误，BIL 侧不需要为它准备写入指令。
-- `get.wrapper` 的值语义读取在源码可达路径上已无对应物（源码取不出
-  整份 wrapper）。它是保留为 lowering/VM 内部能力，还是收窄为
-  place 形态的一部分，与 §5.3 的 wrapper 隐藏字段命名一并确定。
-- 因此**待补而非待改**：落在 ROADMAP S11（wrapper lowering），在此
-  之前 BIL 不改。
+- **§12.4 / §13.3 place 形态（M75 已落地）**：`get.wrapper` 保留为
+  lowering/VM 内部能力；`get.field.embedded` / `set.field.embedded`
+  承载 `obj:Wrapper.field` 与成员访问链。源码层 `obj:W = ...` 仍是
+  编译错误，BIL 不为整体赋值准备写入指令。
+- **embedded 链操作数（M88）**：由隐藏字段符号改为 **wrapper 类型
+  引用**（`wrapper(W)` 元素）；隐藏存储由 Middleware 合成（命名约定
+  BIL §5.3，布局属 Middleware；BIL 文本不再声明 `.wrapper.` 隐藏
+  字段——与 RUNTIME §14 一致）。
+- **proxy 模板占位指令（M88）**：模板 fn 体内 `inner` / `self` 分别
+  发 `call.inner` / `get.self`；特化、inner 链接、原始体、router 体
+  均不在 frontend 合成（§5.2）。
+- **enum 判别**：§12.3 `type.is.case` + §8.5/§19.1 判别值资源与
+  u16/u32 宽度规则（M75）仍有效。
 
-> **S11 定稿（M75，2026-08-05）**：缺口已补入 `BIL_STANDARD.md` ——
-> `get.wrapper` 保留为 lowering/VM 内部能力（只读 place 的成员读取 =
-> 值拷贝 + `get.field`），新增 §13.3 嵌套字段访问指令
-> `get.field.embedded` / `set.field.embedded`（承载 `obj:Wrapper.field`
-> 写入与 proxy 体内 `this` 的原地访问，wrapper 方法逻辑编译期内联故
-> 无 place receiver 问题）；§12.3 同步增补 `type.is.case`（enum 判别
-> 比较，RUNTIME §16.3 承载）；§8.5/§19.1 定稿判别值资源与 u16/u32
-> 宽度规则。P3/P4 消费见 ROADMAP S11。
-
-其余因本次修订产生的 BIL 变更都是机械同步，已直接落实到规范：
-`.string` 归 ValueType 域（§6.2）、wrapper 类型声明必须显式带 `rich`
-及若干修饰符合法性条目（§8.2）。
+其余机械同步已落实：`.string` 归 ValueType 域（§6.2）、wrapper 类型
+声明必须显式带 `rich` 及若干修饰符合法性条目（§8.2）。
 
 ---
 

@@ -94,20 +94,26 @@ namespace LatteCompiler
                 function.Args.Add(new BilArgDeclaration(parameter.Name,
                     CanonicalSymbolPrinter.PrintTypeReference(parameter.Type)));
             }
-            // 可变参数隐藏条目（S9d，§7.1/§7.2 序：普通参数后）：位置包
-            // .vargs.<名> = .array<.any>、具名包 .kwargs.<名> =
-            // .array<.pair<.string, .any>>（值进统一 Any 胖值槽，RUNTIME §10）
+            // 可变参数隐藏条目（S9d，§7.1/§7.2 序：普通参数后 vargs → kwargs）：
+            // 位置包 .vargs.<名> = .array<.any>、具名包 .kwargs.<名> =
+            // .array<.pair<.string, .any>>（值进统一 Any 胖值槽，RUNTIME §10）。
+            // 具名可变参数 IsNamedVariadic 同时带 IsVariadic（嵌套语义）——
+            // 位置包只收「纯位置」；两趟分发保证源序 named 先于 positional
+            // 时仍满足 §7.2（vargs 先于 kwargs）
+            foreach (var parameter in method.Parameters)
+            {
+                if (parameter.IsVariadic && !parameter.IsNamedVariadic)
+                {
+                    function.Args.Add(new BilArgDeclaration(".vargs." + parameter.Name,
+                        ".array<.any>"));
+                }
+            }
             foreach (var parameter in method.Parameters)
             {
                 if (parameter.IsNamedVariadic)
                 {
                     function.Args.Add(new BilArgDeclaration(".kwargs." + parameter.Name,
                         ".array<.pair<.string, .any>>"));
-                }
-                else if (parameter.IsVariadic)
-                {
-                    function.Args.Add(new BilArgDeclaration(".vargs." + parameter.Name,
-                        ".array<.any>"));
                 }
             }
             // 指令生成（临时变量在生成中登记）：entry block 先行入列，

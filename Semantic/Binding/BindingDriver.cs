@@ -4,18 +4,10 @@ namespace LatteCompiler
     // 为每个函数体创建独立 BindContext（函数体互不嵌套；每体一个上下文
     // 实例——旧 BindSession 的「防御性清空」由此消失），经分派器启动绑定。
     //
-    // 分三阶段：①参数默认值预绑定（S8d，声明点作用域，先于一切函数体
-    // 绑定——调用点填充时 callee 的默认值必已就绪，前向引用安全）；
-    // ①·5 enum case init 模板绑定（S11，SYNTAX §12.1，同为声明点
-    // 作用域——函数体内的 .Case 引用消费符号的 ResolvedInit/
-    // HoleParameters，必须先于函数体落定）；②逐函数体绑定（S8e 起
-    // 含字段 getter/setter 访问器体），并落地 init 参数映射赋值合成
-    //（SYNTAX §9.3：构造时映射参数赋给字段——无体 init 合成映射体/
-    // 空体，有体 init 映射赋值前插用户体头部）。②·5 proxy 体逐组合绑定
-    //（S11b：转发壳/特化体/解包 shim 三件套，被拦截成员用户体改挂
-    // WrappedBodySymbol）；②·6 call??? 降级链体绑定（S11e：router 直通
-    // 体 + 逐环降级特化体零前奏 + Any.call??? 默认体 throw
-    // NoSuchMethodException）。
+    // 分阶段：①参数默认值预绑定（S8d）；①·5 enum case init 模板绑定
+    //（S11）；②逐函数体绑定（含访问器 + M88 proxy 声明体模板态绑定——
+    // `.proxy.` 成员按其自身符号绑定，经 ProxyBodyState 提供 self/inner
+    // 模板语境；烘焙归 Middleware，无转发壳/特化/shim/降级链体合成）。
     internal sealed class BindingDriver
     {
         private readonly BindEnvironment env;
@@ -29,6 +21,8 @@ namespace LatteCompiler
 
         public IReadOnlyList<BoundFunctionBody> Run()
         {
+            // Any.call??? 参数签名落定（stdlib Pair 可能已入图）
+            env.B.EnsureCallWildcard(env.Unit.Symbols);
             // 阶段 1（S8d）：参数默认值绑定（SYNTAX §4.2 声明点作用域）。
             // GetParameterDefault 记忆化按需绑定——前向依赖（f(a = h())
             // 声明先于 h）由调用点查表递归触发，声明顺序不影响语义
@@ -42,23 +36,9 @@ namespace LatteCompiler
             // 阶段 1.5（S11，SYNTAX §12.1）：enum case init 模板绑定
             // （声明点作用域，先于一切函数体绑定）
             BindEnumCaseTemplates();
-            // 阶段 2：逐函数体绑定（含字段访问器体，S8e）。
-            // S11b 分流：proxy 声明体（.proxy. 前缀名）不按普通 operator
-            // 体绑定（self/inner/this 上色依赖 (proxy × 目标成员) 组合
-            // 语境），收集归阶段 2.5 逐组合绑定；被拦截成员（S11a 链
-            // 合成，WrapperChain 非空）的用户体改挂原始体符号
-            //（.wrapped.——产物 Method 即 WrappedBodySymbol），本符号
-            // 退化为转发壳（阶段 2.5 合成 invoke 链首）
-            var proxyDeclarations =
-                new Dictionary<MethodSymbol, (CallableDeclarationASTNode Node, FileContext FileCtx)>();
-            var interceptedMembers = new List<(MethodSymbol Symbol, ASTNode Syntax)>();
+            // 阶段 2：逐函数体绑定（含字段访问器体 + proxy 模板态，M88）
             WalkSkeleton((fn, symbol, fileCtx, owner) =>
             {
-                if (symbol.Name.StartsWith(".proxy."))
-                {
-                    proxyDeclarations[symbol] = (fn, fileCtx);
-                    return;
-                }
                 if (fn.Body == null)
                 {
                     // 无体 init（§9.3 映射形态天然无体，OverrideChecker 已
@@ -73,16 +53,8 @@ namespace LatteCompiler
                     }
                     return; // 其余抽象/接口方法无体
                 }
-                BindBody(fn, symbol.WrappedBodySymbol ?? symbol, fileCtx, owner);
-                if (symbol.WrapperChain != null) interceptedMembers.Add((symbol, fn));
-            }, (node, fileCtx, owner) => BindAccessorBodies(node, fileCtx, owner,
-                interceptedMembers));
-            // 阶段 2.5（S11b）：proxy 体逐组合绑定——转发壳/特化体/解包
-            // shim 三件套（ROADMAP S11b）
-            BindProxyBodies(proxyDeclarations, interceptedMembers);
-            // 阶段 2.6（S11e）：call??? 降级链体绑定——router 直通体 +
-            // 逐环降级特化体（零前奏）+ Any.call??? 默认体
-            BindDowngradeBodies(proxyDeclarations);
+                BindBody(fn, symbol, fileCtx, owner);
+            }, BindAccessorBodies);
             return bodies;
         }
 
@@ -207,7 +179,27 @@ namespace LatteCompiler
             FileContext fileCtx, TypeSymbol? owner)
         {
             var ctx = new BindContext(symbol, fileCtx, owner);
-            var body = BlockDispatcher.Visit(fn.Body!, null, ctx, env);
+            // M88：`.proxy.` 声明体模板态——Method = proxy 自身、DeclaringType
+            // = wrapper；SelfType = wrapper 恰一泛型参数时的该参数
+            if (symbol.Name.StartsWith(".proxy."))
+            {
+                GenericParameterSymbol? selfType = null;
+                if (owner is { Kind: TypeKind.Wrapper, GenericParameters.Count: 1 })
+                {
+                    selfType = owner.GenericParameters[0];
+                }
+                ctx.Proxy.Activate(selfType);
+                env.CurrentProxy = symbol;
+            }
+            BoundBlock body;
+            try
+            {
+                body = BlockDispatcher.Visit(fn.Body!, null, ctx, env);
+            }
+            finally
+            {
+                env.CurrentProxy = null;
+            }
             // async 调用点闸门 1/2（S8f，SYNTAX §4.5）：对绑定产物的后置
             // 遍历——单一落点覆盖全部调用形态，与绑定点解耦
             AsyncGates.CheckFunctionBody(body, env);
@@ -291,29 +283,17 @@ namespace LatteCompiler
         // （独立 BindContext + 块分派 + return 全路径检查），产物进
         // bodies（P4 LoweringDriver 数据驱动自动捡起）
         private void BindAccessorBodies(VariableDeclarationASTNode node, FileContext fileCtx,
-            TypeSymbol? owner, List<(MethodSymbol Symbol, ASTNode Syntax)> interceptedMembers)
+            TypeSymbol? owner)
         {
             var field = env.Declarations.SymbolOf(node) as FieldSymbol
                 ?? throw new CompilerInternalException("P1 未登记字段符号: " + node.Name);
             if (node.Getter != null && field.Getter != null)
             {
-                // S11b：被拦截访问器的用户体改挂原始体符号（.wrapped.get.x），
-                // 本符号退化转发壳（阶段 2.5 合成）
-                BindAccessorBody(node.Getter, field.Getter.WrappedBodySymbol ?? field.Getter,
-                    field, isSetter: false, fileCtx, owner);
-                if (field.Getter.WrapperChain != null)
-                {
-                    interceptedMembers.Add((field.Getter, node.Getter));
-                }
+                BindAccessorBody(node.Getter, field.Getter, field, isSetter: false, fileCtx, owner);
             }
             if (node.Setter != null && field.Setter != null)
             {
-                BindAccessorBody(node.Setter, field.Setter.WrappedBodySymbol ?? field.Setter,
-                    field, isSetter: true, fileCtx, owner);
-                if (field.Setter.WrapperChain != null)
-                {
-                    interceptedMembers.Add((field.Setter, node.Setter));
-                }
+                BindAccessorBody(node.Setter, field.Setter, field, isSetter: true, fileCtx, owner);
             }
         }
 
@@ -674,473 +654,19 @@ namespace LatteCompiler
             return $"{method.Name}({string.Join(", ", parts)})";
         }
 
-        // ===== 阶段 2.5：proxy 体逐组合绑定（S11b，ROADMAP S11b）=====
-        //
-        // 对全部被拦截成员（S11a 链合成，WrapperChain 非空）：
-        //   ① 转发壳（被修饰成员原名 fn）：body = invoke 链首（骑 vtable，
-        //      RUNTIME §14 声明侧烘焙——调用点零改动）；
-        //   ② 逐环特化 fn：绑定命中的 proxy 声明体（组合语境挂
-        //      BindContext.Proxy——self = 宿主角色的 this、inner = 对下一环
-        //      符号的普通调用、this 重写为 BoundWrapperAccessExpression）；
-        //      wildcard 环的前奏物化三形参（symbol = canonical 字符串常量、
-        //      namedArgs/unnamedArgs = 自 fn 形参打包，M81 定稿「wildcard
-        //      特化签名 = 成员签名」），get 类别的 value 形参物化为 invoke
-        //      下一环；
-        //   ③ wildcard 解包 shim：body = 逐元素 cast 解包后 invoke 下一环
-        //     （§14.7 同款 CastException 语义）。
-        // 直接构造 bound 节点的部分（转发壳/shim/前奏）仿 M77 init 映射
-        // 赋值合成先例——Syntax 回指声明节点、无 DA/return 问题；诊断按
-        // (proxy, span, message) 去重（BindEnvironment.CurrentProxy）。
-        private void BindProxyBodies(
-            Dictionary<MethodSymbol, (CallableDeclarationASTNode Node, FileContext FileCtx)>
-                proxyDeclarations,
-            List<(MethodSymbol Symbol, ASTNode Syntax)> interceptedMembers)
-        {
-            foreach (var (member, syntax) in interceptedMembers)
-            {
-                var chain = member.WrapperChain!;
-                SynthesizeRouterShell(member, syntax);
-                for (var i = 0; i < chain.Count; i++)
-                {
-                    BindProxyLinkBody(chain[i], i, proxyDeclarations);
-                    if (chain[i].ProxySpecialization!.UnwrapShim is { } shim)
-                    {
-                        // per-member 链特化符号恒带 ProxySpecialization（可空
-                        // 化适配：降级链符号不经本路径——P3 阶段 2.6 落体）
-                        SynthesizeUnwrapShimBody(shim, chain[i].ProxySpecialization!, i, syntax);
-                    }
-                }
-            }
-        }
-
-        // ① 转发壳：被修饰成员原名 fn 的 body = invoke 最外层特化（实参 =
-        // 本 fn 形参逐一引用；固定泛型参数逐位转发——嵌套转发 P4b 物化
-        // $.generic.T 零指令（M71 先例）；含可变泛型参数时不带显式实参，
-        // 包转发归 S11g 复核）
-        private void SynthesizeRouterShell(MethodSymbol member, ASTNode syntax)
-        {
-            var chainHead = member.WrapperChain![0];
-            var thisExpr = new BoundThisExpression(syntax, member.Owner!);
-            var typeArgs = member.GenericParameters.Count > 0
-                && member.GenericParameters.All(p => !p.IsVariadic && !p.IsNamedVariadic)
-                ? member.GenericParameters.Cast<SemanticSymbol>().ToList()
-                : null;
-            var args = member.Parameters
-                .Select(p => (BoundExpression)new BoundValueReferenceExpression(syntax, p, p.Type!))
-                .ToList();
-            BoundBlock body;
-            if (member.ReturnType is { } returnType)
-            {
-                body = new BoundBlock(syntax, new List<BoundStatement> {
-                    new BoundReturnStatement(syntax, new BoundInstanceCallExpression(syntax,
-                        thisExpr, chainHead, args, returnType, typeArgs)) });
-            }
-            else
-            {
-                body = new BoundBlock(syntax, new List<BoundStatement> {
-                    new BoundCallStatement(syntax, chainHead, args, thisExpr, typeArgs) });
-            }
-            bodies.Add(new BoundFunctionBody(member, Array.Empty<LocalSymbol>(), body));
-        }
-
-        // ② 单环特化体绑定：组合语境（BindContext.Proxy）+ 前奏物化 +
-        // proxy 声明 AST 体经块分派绑定。产物 Method = 特化符号（.args =
-        // 成员签名拷贝——proxy 声明形参与成员同名的部分直通，同名查找
-        // 命中特化符号形参；不同名部分（symbol/namedArgs/unnamedArgs/
-        // get 的 value）由前奏物化局部承载，PathVisitors 裸名查找拦截）
-        private void BindProxyLinkBody(MethodSymbol link, int linkIndex,
-            Dictionary<MethodSymbol, (CallableDeclarationASTNode Node, FileContext FileCtx)>
-                proxyDeclarations)
-        {
-            var spec = link.ProxySpecialization!;
-            if (!proxyDeclarations.TryGetValue(spec.ProxyDeclaration, out var decl))
-            {
-                throw new CompilerInternalException("P3 未收集 proxy 声明体: "
-                    + spec.ProxyDeclaration.Name);
-            }
-            if (decl.Node.Body == null)
-            {
-                // 无体 proxy 声明（P2 形状校验不拦体有无）——毒化：链已建，
-                // 本环按空体处理（诊断落袋，不中断）
-                env.Error(decl.Node.Span,
-                    $"Proxy '{spec.ProxyDeclaration.Name}' has no body (§14.2)");
-                return;
-            }
-            // per-member 链恒非空（TargetMember 可空化适配，S11e）；降级链
-            //（TargetMember 为 null）不经本路径——体绑定归阶段 2.6
-            var chain = spec.TargetMember!.WrapperChain!;
-            var next = linkIndex + 1 < chain.Count ? chain[linkIndex + 1] : spec.OriginalBody;
-            // self 类型 = TTarget 代入结果（应用记录 Wrapper 构造的实参）；
-            // wrapper 零泛型参数时为 null——self 引用由 PathVisitors 拒绝
-            //（§14.2 末条）
-            var selfType = spec.Application.WrapperDefinition.GenericParameters.Count == 1
-                ? spec.Application.Wrapper.TypeArguments![0] as TypeSymbol
-                : null;
-            var ctx = new BindContext(link, decl.FileCtx, link.Owner);
-            ctx.Proxy.Set(spec, spec.UnwrapShim ?? next, selfType);
-            env.CurrentProxy = spec.ProxyDeclaration;
-            try
-            {
-                var prelude = SynthesizeProxyPrelude(ctx, spec, link, next, decl.Node);
-                var body = BlockDispatcher.Visit(decl.Node.Body, null, ctx, env);
-                if (prelude.Count > 0)
-                {
-                    body = new BoundBlock(body.Syntax,
-                        prelude.Concat(body.Statements).ToList());
-                }
-                // return 全路径检查（与 BindBody 同口径；消息用 proxy 声明
-                // 名——各组合消息一致，诊断去重天然只报一次）
-                if (link.ReturnType != null && !BoundAnalysis.GuaranteesReturn(body))
-                {
-                    env.Error(decl.Node.Span, $"Function '{spec.ProxyDeclaration.Name}' " +
-                        "must return a value on all code paths");
-                }
-                AsyncGates.CheckFunctionBody(body, env);
-                bodies.Add(new BoundFunctionBody(link, ctx.Locals.ToList(), body));
-            }
-            finally
-            {
-                env.CurrentProxy = null;
-            }
-        }
-
-        // 特化前奏物化：proxy 声明形参中「与特化 fn（成员签名拷贝）不同名」
-        // 的部分物化为合成局部（const，登记 ctx.Locals 与 MaterializedLocals，
-        // 初始化语句前插体首）——wildcard 的 symbol/namedArgs/unnamedArgs
-        // 三形参与 get 类别的 value 形参（= invoke 下一环的无参调用结果；
-        // setter 的 value 与成员形参同名直通，不在此列）
-        private List<BoundStatement> SynthesizeProxyPrelude(BindContext ctx,
-            ProxySpecializationInfo spec, MethodSymbol link, MethodSymbol next, ASTNode syntax)
-        {
-            var prelude = new List<BoundStatement>();
-            var memberParamNames = new HashSet<string>(link.Parameters.Select(p => p.Name));
-            foreach (var proxyParam in spec.ProxyDeclaration.Parameters)
-            {
-                if (memberParamNames.Contains(proxyParam.Name)) continue;   // 直通
-                BoundExpression? initializer = proxyParam.Name switch
-                {
-                    // §14.8 canonical symbol（CanonicalSymbolPrinter 唯一
-                    // canonical 来源，ARCH §4.4）；per-member 链恒非空
-                    //（TargetMember 可空化适配，S11e）
-                    "symbol" => MakeStringLiteral(env,
-                        CanonicalSymbolPrinter.PrintMethod(spec.TargetMember!)),
-                    // 包自 fn 形参打包（Type = Array\<Any\> 构造，与 M72 调用点
-                    // 打包节点同口径）；具名包元素 = 具名可变参数（P2 已排除
-                    // 可变参数成员建链，当前恒空包）
-                    "namedArgs" => PackMemberArguments(link, named: true, syntax),
-                    "unnamedArgs" => PackMemberArguments(link, named: false, syntax),
-                    // get 类别：value = 内层结果（invoke 下一环的无参调用）
-                    "value" when spec.TargetMember!.Kind == MethodKind.Getter =>
-                        new BoundInstanceCallExpression(syntax,
-                            new BoundThisExpression(syntax, link.Owner!), next,
-                            new List<BoundExpression>(), next.ReturnType!),
-                    // 未识别形参名（P2 形状校验保证不出现）——防御跳过，
-                    // 体内引用落 Undefined name 诊断（可恢复）
-                    _ => null,
-                };
-                if (initializer == null) continue;
-                var local = new LocalSymbol(proxyParam.Name, initializer.Type, isConst: true);
-                ctx.Locals.Add(local);
-                ctx.Proxy.MaterializedLocals[proxyParam.Name] = local;
-                prelude.Add(new BoundLocalDeclarationStatement(syntax, local, initializer));
-            }
-            return prelude;
-        }
-
-        // 成员形参打包（wildcard 前奏）：实参引用特化 fn 形参（同名同序
-        // 拷贝，BIL .args 一致）；具名包元素 = 具名可变参数（当前恒空——
-        // P2 已排除可变参数成员建链），位置包 = 全形参声明序。
-        // 包类型 = §14.7 胖值 ABI 元素形态：具名包 Array\<Pair\<String, Any\>\>、
-        // 位置包 Array\<Any\>（与 P4b VarArgsEmitter 产物及 shim 形参同型——
-        // S11d 发射对齐；core::Pair 缺席时具名包降级 Array\<Any\>，
-        // 同 PathVisitors.VariadicParameterViewType 先例）
-        private BoundExpression PackMemberArguments(MethodSymbol link, bool named, ASTNode syntax)
-        {
-            if (named)
-            {
-                var namedValues = link.Parameters
-                    .Where(p => p.IsNamedVariadic)
-                    .Select(p => (p.Name, (BoundExpression)new BoundValueReferenceExpression(
-                        syntax, p, p.Type!)))
-                    .ToList();
-                return new BoundVarArgsArgument(syntax, isNamed: true,
-                    Array.Empty<BoundExpression>(), namedValues, NamedPackType(env));
-            }
-            var packType = env.Unit.Symbols.GetConstructedType(env.B.ArrayDefinition, env.B.Any);
-            var values = link.Parameters
-                .Where(p => !p.IsNamedVariadic)
-                .Select(p => (BoundExpression)new BoundValueReferenceExpression(syntax, p, p.Type!))
-                .ToList();
-            return new BoundVarArgsArgument(syntax, isNamed: false, values, null, packType);
-        }
-
-        // 具名包 ABI 类型（§14.7：Array\<Pair\<String, Any\>\>；core::Pair
-        // 缺席——无 stdlib 的测试驱动——时降级 Array\<Any\>）。P2 侧
-        // ProxyDispatchResolver.SynthesizeUnwrapShim 的 namedArgs 形参
-        // 与本类型逐项一致（invoke 签名严格匹配）
+        // 具名包 ABI 类型（§14.7；委托 BootstrapSymbols 单源）
         internal static TypeSymbol NamedPackType(BindEnvironment env)
         {
-            var core = env.Unit.Symbols.GlobalNamespace.ChildNamespaces
-                .FirstOrDefault(n => n.Name == "core");
-            var pairDefinition = core?.Types.FirstOrDefault(t => t.Name == "Pair"
-                && t.GenericParameters.Count == 2);
-            var elementType = pairDefinition == null
-                ? (TypeSymbol)env.B.Any
-                : env.Unit.Symbols.GetConstructedType(pairDefinition, env.B.String, env.B.Any);
-            return env.Unit.Symbols.GetConstructedType(env.B.ArrayDefinition, elementType);
+            return BootstrapSymbols.NamedPackType(env.Unit.Symbols);
         }
 
-        // ③ wildcard 解包 shim body：形参（成员签名，经 shim 泛型拷贝代入）
-        // 逐一从 unnamedArgs 索引取出并 cast（Any → 形参类型，拆箱——§14.7
-        // 同款 CastException 语义；目标即 Any 时省 cast 直通），invoke
-        // 下一环。namedArgs 恒空包（P2 已排除可变参数成员），不解包
-        private void SynthesizeUnwrapShimBody(MethodSymbol shim, ProxySpecializationInfo spec,
-            int linkIndex, ASTNode syntax)
-        {
-            // per-member 链恒非空（TargetMember 可空化适配，S11e）；降级链
-            //（TargetMember 为 null）不经本路径——shim 只随 per-member 链合成
-            var member = spec.TargetMember!;
-            var chain = member.WrapperChain!;
-            var next = linkIndex + 1 < chain.Count ? chain[linkIndex + 1] : spec.OriginalBody;
-            var packType = shim.Parameters[1].Type!;
-            var unnamedRef = new BoundValueReferenceExpression(syntax, shim.Parameters[1], packType);
-            var arrayGetAtIndex = env.B.ArrayDefinition.Methods
-                .First(m => m.Name == "getAtIndex");
-            var args = new List<BoundExpression>();
-            for (var i = 0; i < member.Parameters.Count; i++)
-            {
-                var paramType = SubstituteMemberGenerics(member.Parameters[i].Type!, member, shim);
-                BoundExpression element = new BoundIndexExpression(syntax, unnamedRef,
-                    MakeIntLiteral(i), arrayGetAtIndex, env.B.Any);
-                if (!ReferenceEquals(paramType, env.B.Any))
-                {
-                    element = new BoundCastExpression(syntax, element, paramType,
-                        isSafe: false, paramType);
-                }
-                args.Add(element);
-            }
-            var typeArgs = next.GenericParameters.Count > 0
-                && next.GenericParameters.All(p => !p.IsVariadic && !p.IsNamedVariadic)
-                ? shim.GenericParameters.Cast<SemanticSymbol>().ToList()
-                : null;
-            var thisExpr = new BoundThisExpression(syntax, member.Owner!);
-            BoundBlock body;
-            if (shim.ReturnType is { } returnType)
-            {
-                body = new BoundBlock(syntax, new List<BoundStatement> {
-                    new BoundReturnStatement(syntax, new BoundInstanceCallExpression(syntax,
-                        thisExpr, next, args, returnType, typeArgs)) });
-            }
-            else
-            {
-                body = new BoundBlock(syntax, new List<BoundStatement> {
-                    new BoundCallStatement(syntax, next, args, thisExpr, typeArgs) });
-            }
-            bodies.Add(new BoundFunctionBody(shim, Array.Empty<LocalSymbol>(), body));
-        }
-
-        // ===== 阶段 2.6：call??? 降级链体绑定（S11e，SYNTAX §14.7 + BIL §15.4）=====
-        //
-        // 对每个带降级链的宿主类型（P2 ComputeDowngradeChains 合成，wrapper
-        // 链含普通方法类别 .proxy.* 时）：
-        //   ① router（宿主成员 call???）体：直接构造 bound——
-        //      return invoke 链首(this, symbol, namedArgs, unnamedArgs)
-        //      （仿 SynthesizeRouterShell，但胖值三参是 router 形参逐一引用）；
-        //   ② 逐环降级特化体：proxy 声明体零前奏绑定（降级链特化 fn 签名 =
-        //      (symbol/namedArgs/unnamedArgs) 胖值三参，与 proxy 声明形参同名
-        //      直通——无前奏物化，对照 BindProxyLinkBody 的 per-member 前奏
-        //      路径）；inner = 下一环特化或链末 Any.call???（canonical 体只传
-        //      双具名，symbol 由 CallVisitors 自动补为当前 fn symbol 形参引用）；
-        //   ③ Any.call??? 默认体（全编译单元一次，惰性）：throw new
-        //      NoSuchMethodException(symbol)。NoSuchMethodException 缺失（无
-        //      stdlib 的测试驱动）→ 跳过体合成（HasBody 保持但无 fn 定义；
-        //      端到端发射必经 stdlib——P4 无定义发射归 Agent C）
-        private void BindDowngradeBodies(
-            Dictionary<MethodSymbol, (CallableDeclarationASTNode Node, FileContext FileCtx)>
-                proxyDeclarations)
-        {
-            var hosts = new List<(TypeSymbol Host, ASTNode Declaration)>();
-            foreach (var file in env.Unit.SourceFiles)
-            {
-                foreach (var decl in file.Declarations)
-                {
-                    WalkDowngradeHosts(decl, hosts);
-                }
-            }
-            if (hosts.Count == 0) return;
-            foreach (var (host, declaration) in hosts)
-            {
-                SynthesizeDowngradeRouterBody(host, declaration);
-                var chain = host.DowngradeChain!;
-                for (var i = 0; i < chain.Count; i++)
-                {
-                    BindDowngradeLinkBody(chain[i], i, chain, proxyDeclarations);
-                }
-            }
-            SynthesizeAnyCallWildcardBody(hosts[0].Declaration);
-        }
-
-        // 收集带降级链的宿主类型（定义级；遍历编译单元声明骨架，同阶段 1.5
-        // enum 的 WalkEnumDeclarations 口径——嵌套类型递归）
-        private void WalkDowngradeHosts(ASTNode node,
-            List<(TypeSymbol Host, ASTNode Declaration)> hosts)
-        {
-            switch (node)
-            {
-                case ClassDeclarationASTNode or StructDeclarationASTNode
-                    or InterfaceDeclarationASTNode or EnumStructDeclarationASTNode
-                    or WrapperDeclarationASTNode:
-                    var symbol = env.Declarations.SymbolOf(node) as TypeSymbol
-                        ?? throw new CompilerInternalException("P1 未登记类型符号");
-                    if (symbol.DowngradeRouter != null && symbol.DowngradeChain != null)
-                    {
-                        hosts.Add((symbol, node));
-                    }
-                    foreach (var member in MembersOf(node))
-                    {
-                        WalkDowngradeHosts(member, hosts);
-                    }
-                    return;
-            }
-        }
-
-        // ① router 直通体：return invoke 链首(this, symbol, namedArgs,
-        // unnamedArgs)。直接构造 bound（仿 SynthesizeRouterShell）；Syntax
-        // 指宿主声明节点（BoundNode.Syntax 必填）；无合成局部
-        private void SynthesizeDowngradeRouterBody(TypeSymbol host, ASTNode syntax)
-        {
-            var router = host.DowngradeRouter!;
-            var thisExpr = new BoundThisExpression(syntax, host);
-            var args = router.Parameters
-                .Select(p => (BoundExpression)new BoundValueReferenceExpression(syntax, p, p.Type!))
-                .ToList();
-            var body = new BoundBlock(syntax, new List<BoundStatement> {
-                new BoundReturnStatement(syntax, new BoundInstanceCallExpression(syntax,
-                    thisExpr, host.DowngradeChain![0], args, env.B.Any)) });
-            bodies.Add(new BoundFunctionBody(router, Array.Empty<LocalSymbol>(), body));
-        }
-
-        // ② 单环降级特化体：BindProxyLinkBody 的零前奏变体——降级链特化 fn
-        // 的形参（symbol/namedArgs/unnamedArgs）与 proxy 声明形参同名，无
-        // 前奏物化，直接经块分派绑 proxy 声明体。诊断按 (proxy, span, message)
-        // 去重（BindEnvironment.CurrentProxy，同 per-member 路径）。技术债：
-        // proxy 声明泛型参数（TReturn 等）在降级语境无对应（链符号非泛型），
-        // canonical 体不消费类型引用不受影响；非 canonical 体引用泛型参数
-        // 归 S11g 复核
-        private void BindDowngradeLinkBody(MethodSymbol link, int linkIndex,
-            List<MethodSymbol> chain,
-            Dictionary<MethodSymbol, (CallableDeclarationASTNode Node, FileContext FileCtx)>
-                proxyDeclarations)
-        {
-            var spec = link.ProxySpecialization!;
-            if (!proxyDeclarations.TryGetValue(spec.ProxyDeclaration, out var decl))
-            {
-                throw new CompilerInternalException("P3 未收集 proxy 声明体: "
-                    + spec.ProxyDeclaration.Name);
-            }
-            if (decl.Node.Body == null)
-            {
-                // 无体 proxy 声明（同 BindProxyLinkBody :752-758 口径）——
-                // 毒化：链已建，本环按空体处理（诊断落袋，不中断）
-                env.Error(decl.Node.Span,
-                    $"Proxy '{spec.ProxyDeclaration.Name}' has no body (§14.2)");
-                return;
-            }
-            // inner 目标：下一环特化；链末环 = Any.call???（OriginalBody）
-            var innerTarget = linkIndex + 1 < chain.Count ? chain[linkIndex + 1] : spec.OriginalBody;
-            // self 类型 = TTarget 代入结果（同 BindProxyLinkBody 规则；零
-            // 泛型 wrapper 为 null——self 引用由 PathVisitors 拒绝）
-            var selfType = spec.Application.WrapperDefinition.GenericParameters.Count == 1
-                ? spec.Application.Wrapper.TypeArguments![0] as TypeSymbol
-                : null;
-            var ctx = new BindContext(link, decl.FileCtx, link.Owner);
-            ctx.Proxy.Set(spec, innerTarget, selfType);
-            env.CurrentProxy = spec.ProxyDeclaration;
-            try
-            {
-                var body = BlockDispatcher.Visit(decl.Node.Body, null, ctx, env);
-                // return 全路径检查（link.ReturnType = Any 非空恒查；消息措辞
-                // 同 BindProxyLinkBody）
-                if (link.ReturnType != null && !BoundAnalysis.GuaranteesReturn(body))
-                {
-                    env.Error(decl.Node.Span, $"Function '{spec.ProxyDeclaration.Name}' " +
-                        "must return a value on all code paths");
-                }
-                AsyncGates.CheckFunctionBody(body, env);
-                bodies.Add(new BoundFunctionBody(link, ctx.Locals.ToList(), body));
-            }
-            finally
-            {
-                env.CurrentProxy = null;
-            }
-        }
-
-        // ③ Any.call??? 默认体（全编译单元一次，惰性）：throw new
-        // NoSuchMethodException(symbol)——未声明方法的降级调用在链末兜底抛错
-        //（RUNTIME §14.2；BIL §16.9 throw 发射已就位）。NoSuchMethodException
-        // 由 stdlib core/exceptions.latte 声明（单参 init(text: String)）；
-        // 缺失（无 stdlib 的测试驱动）时跳过体合成。Syntax 取首个宿主声明节点
-        private void SynthesizeAnyCallWildcardBody(ASTNode syntax)
-        {
-            var anyCall = env.B.Any.Methods.FirstOrDefault(m => m.Name == "call???");
-            if (anyCall == null) return;
-            // 幂等：多宿主共享同一 Any.call???（P2 单 slot），体只合成一次
-            if (bodies.Any(b => ReferenceEquals(b.Method, anyCall))) return;
-            var core = env.Unit.Symbols.GlobalNamespace.ChildNamespaces
-                .FirstOrDefault(n => n.Name == "core");
-            var exceptionType = core?.Types.FirstOrDefault(t => t.Name == "NoSuchMethodException");
-            var init = exceptionType?.Methods.FirstOrDefault(m => m.Kind == MethodKind.Init
-                && m.Parameters.Count == 1);
-            if (exceptionType == null || init == null) return;
-            var symbolRef = new BoundValueReferenceExpression(syntax, anyCall.Parameters[0],
-                anyCall.Parameters[0].Type!);
-            var body = new BoundBlock(syntax, new List<BoundStatement> {
-                new BoundThrowStatement(syntax,
-                    new BoundNewExpression(syntax, exceptionType, init,
-                        new List<BoundExpression> { symbolRef })) });
-            bodies.Add(new BoundFunctionBody(anyCall, Array.Empty<LocalSymbol>(), body));
-        }
-
-        // 成员签名类型中的成员泛型参数替换为目标符号的同位拷贝（shim
-        // 与特化/原始体各自独立拷贝成员泛型参数——P2 SynthesizeBodySymbol
-        // 同序）；构造类型逐实参递归
-        private SemanticSymbol SubstituteMemberGenerics(SemanticSymbol type, MethodSymbol member,
-            MethodSymbol target)
-        {
-            if (type is GenericParameterSymbol gp)
-            {
-                var index = member.GenericParameters.IndexOf(gp);
-                return index >= 0 ? target.GenericParameters[index] : gp;
-            }
-            if (type is TypeSymbol { ConstructedFrom: not null } constructed)
-            {
-                var args = new SemanticSymbol[constructed.TypeArguments!.Count];
-                for (var i = 0; i < args.Length; i++)
-                {
-                    args[i] = SubstituteMemberGenerics(constructed.TypeArguments[i], member, target);
-                }
-                return env.Unit.Symbols.GetConstructedType(constructed.ConstructedFrom!, args);
-            }
-            return type;
-        }
-
-        // 合成字面量（S11b proxy 前奏 + S11e 降级调用点共用）：BoundLiteralExpression
-        // 的 Syntax 契约是 LiteralExpressionASTNode（P4b 发射与 BoundDescribe
-        // 强转取值）——程序化构造 AST 包装节点，Span 缺省（合成节点不入
-        // AST 完整性验证范围）
+        // 合成字面量（降级调用点 symbol 串）：BoundLiteralExpression 的 Syntax
+        // 契约是 LiteralExpressionASTNode（P4b 发射与 BoundDescribe 强转取值）
         internal static BoundExpression MakeStringLiteral(BindEnvironment env, string value)
         {
             var expr = new LiteralExpressionASTNode();
             expr.AttachLiteral(new StringLiteralASTNode(expr) { Value = value });
             return new BoundLiteralExpression(expr, env.B.String);
-        }
-
-        private BoundExpression MakeIntLiteral(long value)
-        {
-            var expr = new LiteralExpressionASTNode();
-            expr.AttachLiteral(new IntLiteralASTNode(expr)
-                { Value = value, IntType = IntType.I32 });
-            return new BoundLiteralExpression(expr, env.B.Int32);
         }
     }
 }

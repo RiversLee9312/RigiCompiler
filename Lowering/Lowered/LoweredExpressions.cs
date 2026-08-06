@@ -266,30 +266,51 @@ namespace LatteCompiler
         }
     }
 
-    // 嵌套字段访问（S11c，BIL §13.3 get/set.field.embedded）：wrapper place
-    // 成员写与字段-Value 应用成员读的承载节点——读形态与赋值 place 形态
-    // 共用（指令选择归 P4b 按所在位置，LoweredIndexExpression 先例）。
-    // Receiver = 终极宿主值（place 链尽头：对象/参数/this）；HiddenFields =
-    // `.wrapper.` 隐藏字段链（§5.3，最外层→最内层序）；Field = 最内层
-    // wrapper 上的目标实例字段。Type 自带（字段类型——合成路径 Origin 可能
-    // 非表达式节点，先例：LoweredCastExpression）
+    // 嵌套字段访问（S11c/M88，BIL §13.3 get/set.field.embedded）：wrapper
+    // place 成员写与字段-Value 应用成员读的承载节点——读/写 place 共用。
+    // Receiver = 终极宿主值；WrapperChain = wrapper 类型链（最外层→最内层，
+    // 对应链元素 wrapper(W)，存储合成归 Middleware）；Field = 最内层
+    // wrapper 上的目标实例字段。Type 自带
     public sealed class LoweredEmbeddedFieldExpression : LoweredExpression
     {
         public LoweredExpression Receiver { get; }
-        public IReadOnlyList<FieldSymbol> HiddenFields { get; }
+        public IReadOnlyList<TypeSymbol> WrapperChain { get; }
         public FieldSymbol Field { get; }
         private readonly SemanticSymbol type;
 
         public override SemanticSymbol Type => type;
 
         public LoweredEmbeddedFieldExpression(BoundNode origin, LoweredExpression receiver,
-            IReadOnlyList<FieldSymbol> hiddenFields, FieldSymbol field, SemanticSymbol type)
+            IReadOnlyList<TypeSymbol> wrapperChain, FieldSymbol field, SemanticSymbol type)
             : base(origin)
         {
             Receiver = receiver;
-            HiddenFields = hiddenFields;
+            WrapperChain = wrapperChain;
             Field = field;
             this.type = type;
+        }
+    }
+
+    // proxy 体 self（M88，BIL §12.5 get.self）：Type 透传（= TTarget）
+    public sealed class LoweredGetSelfExpression : LoweredExpression
+    {
+        public LoweredGetSelfExpression(BoundSelfExpression origin) : base(origin)
+        {
+        }
+    }
+
+    // proxy 体 inner(...)（M88，BIL §15.4 call.inner / call.inner.noret）：
+    // Arguments 已下降；Type 透传（void 时 IsVoid，P4b 选 noret 形态）
+    public sealed class LoweredCallInnerExpression : LoweredExpression
+    {
+        public IReadOnlyList<LoweredExpression> Arguments { get; }
+        public bool IsVoid { get; }
+
+        public LoweredCallInnerExpression(BoundInnerCallExpression origin,
+            IReadOnlyList<LoweredExpression> arguments) : base(origin)
+        {
+            Arguments = arguments;
+            IsVoid = origin.IsVoid;
         }
     }
 

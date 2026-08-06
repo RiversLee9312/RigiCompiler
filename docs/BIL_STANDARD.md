@@ -252,7 +252,7 @@ A-Z a-z 0-9 _ -
 - 在所属作用域内必须唯一；
 - 普通用户标识符不得以 `.` 开头；
 - 以 `.` 开头的参数名和局部名由编译器保留，例如 `.this`、`.return`、`.generic.T`、`.vargs.args` 和 `.kwargs.args`。
-- 编译器合成的方法/字段符号名同样以 `.` 前缀段保留：`.proxy.`（wrapper 派发链特化与路由 fn）、`.wrapped.`（被修饰成员原始体 fn）、`.wrapper.`（wrapper 隐藏字段，§5.3）——均为 S11 烘焙产物，带 `wrapper-proxy(PROXY_KIND)` 修饰符者见 §8.4。
+- 以 `.` 前缀段保留的成员名还包括：`.proxy.`（wrapper 类型内的 proxy 模板成员名，见 §8.4 `wrapper-proxy`）；方法名 `call???` 是 `core::Any` 的内建方法名（`?` 非标识符字符，用户源码不可声明，见 §15.5 / §22.5）。wrapper 隐藏存储的命名约定见 §5.3——该符号**不**出现于 BIL 文本（存储合成归 Middleware）。
 
 `Resources` 和 block 可以继续使用 `R_Message`、`entry` 等本地名称；该规则不适用于类型、字段、方法和运算符等语言符号。
 
@@ -284,9 +284,9 @@ setter：
 
 canonical symbol 中的参数名称、泛型 hidden argument 和可变参数 hidden argument 必须遵循第 7 节以及 `SYNTAX.md` / `RUNTIME.md` 的规定。符号的类型部分使用 BIL 类型引用，因此可以出现闭合泛型、`.generic<...>` 等形式。
 
-### 5.3 wrapper 生成字段
+### 5.3 wrapper 存储命名约定（Middleware ABI）
 
-编译器为 wrapper 实例生成隐藏字段时，字段名称部分固定为：
+BIL 文本**不**声明 wrapper 隐藏字段。Middleware 为宿主合成 wrapper 实例存储时，字段名称部分约定为：
 
 ```text
 [可能有的类型全名]#.wrapper.wrapper类型全称
@@ -298,13 +298,13 @@ canonical symbol 中的参数名称、泛型 hidden argument 和可变参数 hid
 命名空间::[可能有的类型全名]#.wrapper.wrapper类型全称@<wrapper 类型引用>
 ```
 
-例如类型 `com.example::Service` 被 `core.logging::Logged` 修饰时，其 wrapper 隐藏字段为：
+例如类型 `com.example::Service` 被 `core.logging::Logged` 修饰时：
 
 ```text
 com.example::Service#.wrapper.core.logging::Logged@core.logging::Logged
 ```
 
-该字段仍是编译器生成、用户不可直接声明同名或绕过 `get.wrapper` 访问的隐藏存储。若同一实体存在多个 wrapper，每个 wrapper 以自己的完整类型名形成唯一字段名称。解析时，`#` 分隔 owner 与字段名，最后一个 `@` 分隔字段名与字段类型；`.wrapper.` 之后、最终 `@` 之前的内容整体视为 wrapper 完整类型名。
+该命名约定是 Middleware 合成存储与诊断显示的 ABI 约定，不是 BIL 字段声明形态。用户不可声明同名字段，也不得绕过 `get.wrapper` / `get.field.embedded` 访问该存储。若同一实体存在多个 wrapper，每个 wrapper 以自己的完整类型名形成唯一字段名称。解析时，`#` 分隔 owner 与字段名，最后一个 `@` 分隔字段名与字段类型；`.wrapper.` 之后、最终 `@` 之前的内容整体视为 wrapper 完整类型名。宿主上的 wrapper **应用标记**见 §8.3.1。
 
 ### 5.4 注释
 
@@ -578,7 +578,10 @@ wrapper
 pub protected internal priv
 open abstract singleton
 rich shared
+wrapped(WRAPPER_TYPE_REF)
 ```
+
+`wrapped(WRAPPER_TYPE_REF)` 可重复出现，声明序 = outer→inner 应用序；语义见 §8.3.1。
 
 修饰符合法性必须与 `SYNTAX.md` 一致。例如：
 
@@ -617,7 +620,10 @@ ext
 backing computed
 readable writable
 compiler-generated
+wrapped(WRAPPER_TYPE_REF)
 ```
+
+`wrapped(WRAPPER_TYPE_REF)` 可重复出现，声明序 = outer→inner 应用序；语义见 §8.3.1。
 
 字段符号可以关联：
 
@@ -629,21 +635,28 @@ compiler-generated
 
 BIL 的 `get.field` / `set.field` 始终引用逻辑字段 canonical symbol，不引用 Native offset。
 
-#### 8.3.1 wrapper 隐藏字段
+#### 8.3.1 wrapper 应用标记
 
-wrapper 隐藏字段必须使用第 5.3 节的名称：
-
-```text
-[可能有的类型全名]#.wrapper.wrapper类型全称
-```
-
-完整符号包含命名空间和 `@wrapper 类型` 后缀。例如：
+类型声明与字段声明可携带修饰符 `wrapped(WRAPPER_TYPE_REF)`（可重复；声明序 = outer→inner 应用序）。这是 frontend 对 Middleware 的 **wrapper 应用标记**——标明该类型/字段实例在创建时安装了哪些 wrapper；BIL 文本不声明对应的隐藏存储（存储合成归 Middleware，命名约定见 §5.3）。
 
 ```bil
-.field com.example::Service#.wrapper.core.logging::Logged@core.logging::Logged priv backing compiler-generated
+.type com.example::Service = class pub wrapped(core.logging::Logged) {
+    .field com.example::Service#name@.string pub
+    ...
+}
+
+.field com.example::Service#config@com.example::Config
+    pub wrapped(core.logging::Logged)
 ```
 
-该字段名称由编译器保留。用户字段不得以 `.wrapper.` 开头，也不得伪造其他 wrapper 类型的隐藏字段。
+规则：
+
+- `WRAPPER_TYPE_REF` 必须是 wrapper 类型引用；
+- 同一声明上可出现多个 `wrapped(...)`，顺序即 outer→inner；
+- 应用 init 实参的 BIL 承载形态留白（与局部/静态存储合成同批归后续）；
+- 局部变量上的 wrapper 应用标记形态见 §9.3 注记（同批留白）。
+
+普通 backing 字段（`backing` / `compiler-generated` 等）与本标记无关，按 §8.3 字段修饰符表照常使用。
 
 ### 8.4 方法声明
 
@@ -683,16 +696,16 @@ enum-case(CASE_SYMBOL)
 wrapper-proxy(PROXY_KIND)
 ```
 
-`wrapper-proxy(PROXY_KIND)`（S11 定稿，M81）标记 wrapper 派发链的编译器合成 fn，`PROXY_KIND` 取四值之一：
+`wrapper-proxy(PROXY_KIND)` 标记 wrapper 类型声明内的 `.proxy.*` 成员 fn（**proxy 模板**：P3 模板态绑定产物，体内可出现 `call.inner` / `get.self`）。`PROXY_KIND` 取两值之一：
 
-- `specific`：命中成员名的特定 proxy 特化体（一层一个，按 outer→inner 经 `invoke` 链接）；
-- `wildcard`：类别唯一通配 proxy 特化体；
-- `router`：`call???` 的按 `symbol` 路由体（RUNTIME §14.2）；
-- `original`：被修饰成员的原始实现体（转发壳即被修饰成员原名 fn，其 body 为对特化链首的普通 `invoke`）。
+- `specific`：specific proxy 模板（命中成员名的特定代理）；
+- `wildcard`：wildcard proxy 模板（类别唯一通配代理）。
 
-合成 fn 名（`.proxy.` / `.wrapped.` 前缀）与 `.wrapper.` 隐藏字段名（§5.3）同为编译器保留名（§5.1），用户源码不可声明。编译器只生成 `invoke` 链表达烘焙结果，最终内联归 Middleware。
+`.proxy.` 前缀成员名（§5.1）与本修饰符双向一致：带 `.proxy.` 名的方法必须带本修饰符，带本修饰符的方法名必须以 `.proxy.` 开头；`kind` 与成员形状类别一致（specific ↔ 具名 `.proxy.<成员>` / `.proxy.get.<名>` 等；wildcard ↔ `.proxy.*` / `.proxy.get.*` / `.proxy.set.*` / `.proxy.opr.*`）。同一方法不得重复携带本修饰符。
 
-S11e（M86）落地形态：`router` 是宿主类型的成员 fn，名为 `call???`（`?` 非标识符字符，用户源码不可声明，同为编译器保留名）；其体为对降级特化链首的普通 `invoke`。降级特化 fn 名 `.proxy.<序>.???`（序 = wrapper 应用 outer→inner 序号），标 `wrapper-proxy(wildcard)`；链末 inner 目标是 `core::Any$call???` 默认实现（`Any` 的成员，不标本修饰符——`Any` 为内建类型不进符号段，只产 fn 定义，体 = 抛 `core.NoSuchMethodException`）。三者的规范签名统一为 §15.4 的胖值形态。
+烘焙（特化合成、inner 链接、原始体替换、存储合成）整体归 Middleware；frontend 只发射 proxy 模板与应用标记，不在 BIL 文本中合成特化/原始体/路由 fn。
+
+`call???` 是 `core::Any` 的 native 内建方法（§22.5 hook），frontend 不为其产 fn 定义（内建无 body 先例，同 `native`）；降级调用点见 §15.5。
 
 运算符、getter、setter 和 enum case 的实现可以拥有 method body，但其调用点在 BIL 中仍使用对应的语义指令；只有普通显式方法调用或规范要求的动态 fallback 使用 `invoke`。
 
@@ -823,6 +836,8 @@ fn(com.example::Owner$method(value:.i32)@.void) {
 - 普通局部变量在首次读取前必须被明确赋值；
 - `.breakid` 只能由 `loop`、`loop.rev` 或 `switch` 绑定；
 - `.breakid` 不得由 `load`、`set.var`、参数传入、字段写入、数组写入或普通方法返回产生。
+
+> **注记**：局部变量上的 wrapper 应用标记（源码 `@W(...)` 注解于局部声明）的 BIL 承载形态留白，与 §8.3.1 应用 init 实参、静态/局部存储合成同批归后续。
 
 ### 9.4 block
 
@@ -1093,10 +1108,25 @@ get.wrapper.indirect VALUE WRAPPER_TYPEID_VAR RESULT
 > lowering/VM 内部能力——只读 place 的成员**读取**按「`get.wrapper` 值拷贝 +
 > 普通 `get.field`」实现（值语义读取等价），成员**写入**与 proxy 体内 `this` 的
 > 原地访问使用 §13.3 的 `get.field.embedded` / `set.field.embedded` 指令；
-> `obj:W = ...` 整体赋值是源码层编译错误，BIL 不需要写入指令。wrapper 隐藏
-> 字段命名见 §5.3，声明形态见 §8.3.1。
+> `obj:W = ...` 整体赋值是源码层编译错误，BIL 不需要写入指令。存储由
+> Middleware 合成（命名约定 §5.3）；应用标记见 §8.3.1。
 
-### 12.5 取得 typeid
+### 12.5 取得宿主实例（proxy 模板）
+
+```bil
+get.self RESULT
+```
+
+仅 proxy 模板 fn（带 `wrapper-proxy`，§8.4）体内合法。语义对应源码层 `self`：取被修饰宿主实例。
+
+规则：
+
+- 必须出现在 `wrapper-proxy(specific|wildcard)` 标记的方法体内；出现在其他 fn 内非法；
+- RESULT 类型必须严格等于该模板 fn 所属 wrapper 的 `TTarget` 泛型参数（Entity wrapper 恰一泛型参数时的代入结果）；
+- 零泛型参数的 wrapper 模板内出现本指令即非法；
+- 该指令不读取字段，不产生 wrapper 值拷贝。
+
+### 12.6 取得 typeid
 
 ```bil
 getid.type type(TYPE_SYMBOL) TARGET_TYPEID
@@ -1168,23 +1198,37 @@ set.field SOURCE OBJECT field(FIELD_SYMBOL)
 - runtime dynamic fallback；
 - GC/ARC 屏障与共享域操作。
 
-嵌套字段访问（wrapper 只读 place 形态，`S11`，2026-08-05 定稿；对应
-`obj:Wrapper.field` 读写与 proxy 体内 `this.field` 的原地访问）：
+嵌套字段访问（wrapper 只读 place 形态与深层字段；对应 `obj:Wrapper.field`
+读写、proxy 体内 `this.field` 原地访问，以及普通嵌套字段）：
 
 ```bil
-get.field.embedded OBJECT TARGET field(HOST_FIELD) field(INNER_FIELD)
-set.field.embedded SOURCE OBJECT field(HOST_FIELD) field(INNER_FIELD)
+get.field.embedded OBJECT TARGET CHAIN_ELEM... field(INNER_FIELD)
+set.field.embedded SOURCE OBJECT CHAIN_ELEM... field(INNER_FIELD)
 ```
 
-- HOST_FIELD 必须是 OBJECT 的 wrapper 隐藏字段（§5.3 命名、§8.3.1 声明）；
-- INNER_FIELD 必须是该 wrapper 类型（HOST_FIELD 的字段类型）自身的实例字段；
-- `get.field.embedded` 的 TARGET 类型必须严格等于 INNER_FIELD 的字段类型；
-- `set.field.embedded` 的 SOURCE 类型必须严格等于 INNER_FIELD 的字段类型，
-  且 INNER_FIELD 可写；
-- 语义为对宿主内嵌的那份 wrapper 成员做**原地**访问（不产生 wrapper 值拷贝）；
+链元素 `CHAIN_ELEM` 取两态之一：
+
+- `field(FIELD)`：沿普通实例字段下钻；
+- `wrapper(WRAPPER_TYPE_REF)`：沿宿主的 wrapper 应用下钻到该 wrapper 的隐藏存储（应用标记见 §8.3.1；存储由 Middleware 合成，命名约定 §5.3），再继续后续链元素或末段字段访问。
+
+首段可以是 `field(HOST_FIELD)` 或 `wrapper(WRAPPER_TYPE)`。例如：
+
+```bil
+get.field.embedded $obj $x wrapper(core.logging::Logged) field(core.logging::Logged#level@.i32)
+set.field.embedded $v $obj wrapper(core.logging::Logged) field(core.logging::Logged#level@.i32)
+get.field.embedded $obj $y field(com.example::Service#inner@com.example::Inner) field(com.example::Inner#name@.string)
+```
+
+规则：
+
+- 链至少含一个链元素，末段必须是 `field(INNER_FIELD)`（被读写的目标字段）；
+- `wrapper(WRAPPER_TYPE)` 元素要求当前宿主位置的静态类型具有该 wrapper 应用标记（§8.3.1）；
+- `field(FIELD)` 元素要求 FIELD 是当前宿主位置静态类型可访问的实例字段；
+- `get.field.embedded` 的 TARGET 类型必须严格等于末段 INNER_FIELD 的字段类型；
+- `set.field.embedded` 的 SOURCE 类型必须严格等于末段 INNER_FIELD 的字段类型，且 INNER_FIELD 可写；
+- 语义为对嵌套位置做**原地**访问（经 wrapper 元素时不产生 wrapper 值拷贝）；
   只读 place 整体不可赋值，故不存在「对整个 place 写回」的指令形态；
-- proxy 体内 `this` 的成员访问与 `obj:Wrapper` 同构：OBJECT 取宿主（`.this`
-  或具体对象），HOST_FIELD 取对应 `.wrapper.` 隐藏字段。
+- proxy 体内 `this` 的成员访问与 `obj:Wrapper` 同构：OBJECT 取宿主（`.this` 或具体对象），链以 `wrapper(该模板所属 wrapper 类型)` 起。
 
 ### 13.4 静态字段
 
@@ -1338,9 +1382,25 @@ invoke.indirect.noret METHODID_VAR [ARG_0, ARG_1, ...]
 
 `METHODID_VAR` 必须为携带完整规范签名的 `.methodid<TSignature>`。参数和结果必须严格匹配该签名。
 
-### 15.4 wrapper 动态 fallback
+### 15.4 调用派发链下一环（proxy 模板）
 
-对于静态类型上没有声明、但根据 `SYNTAX.md` 必须降级到 wildcard proxy 的普通方法请求，frontend 生成对统一 `call???` 方法符号的普通 `invoke`。
+```bil
+call.inner RESULT [ARG_0, ARG_1, ...]
+call.inner.noret [ARG_0, ARG_1, ...]
+```
+
+仅 proxy 模板 fn（带 `wrapper-proxy`，§8.4）体内合法。语义对应源码层 `inner(...)`：表达「调用派发链下一环」的占位；Middleware 烘焙时将本指令链接到下一环（下一特化、原始体或类别路由）。
+
+规则：
+
+- 必须出现在 `wrapper-proxy(specific|wildcard)` 标记的方法体内；出现在其他 fn 内非法；
+- 操作数 = 源码层 `inner(...)` 的显式实参（wildcard 的 `symbol` 不重复出现——下一环 ABI 由 Middleware 知道）；
+- 带返回的模板用 `call.inner`，RESULT 类型必须严格等于该模板 fn 的声明返回类型；void 模板用 `call.inner.noret`；
+- 参数个数与类型必须与模板 fn 声明的（经源码 `inner` 规则过滤后的）显式实参一致。
+
+### 15.5 wrapper 动态 fallback
+
+对于静态类型上没有声明、但根据 `SYNTAX.md` 必须降级到 wildcard proxy 的普通方法请求，frontend 生成对 `core::Any$call???` 的普通 `invoke`。
 
 已声明的：
 
@@ -1351,9 +1411,11 @@ invoke.indirect.noret METHODID_VAR [ARG_0, ARG_1, ...]
 
 仍使用各自 BIL 指令，不因最终可能经过 wrapper 路由而预先改写为 `invoke`。
 
-落地形态（M86）：`call???` 的规范签名是 `RUNTIME.md` §14.2 泛型逻辑签名的实质化——`(symbol: .string, namedArgs: .array<core::Pair<.string, .any>>, unnamedArgs: .array<.any>): .any`（非泛型；实参的装箱/拆包转换沿用 §12.1 cast 语义）。降级调用点 invoke 的目标是 receiver 静态类型上的 `call???` router 成员（沿基类链走查；仅 wrapper 链含 `.proxy.*` 的类型拥有），实参规范序 = receiver、symbol 字符串资源、具名包构造、位置包构造；返回值为 `.any` 胖值，调用点按期望类型插入一次 §12.1 cast（不符抛 `core.CastException`）。链形态：router → 逐应用降级特化（`.proxy.<序>.???`，outer→inner）→ 链末 `core::Any$call???` 默认实现（抛 `core.NoSuchMethodException`）。
+`call???` 的规范签名是 `RUNTIME.md` §14.2 泛型逻辑签名的实质化——`(symbol: .string, namedArgs: .array<core::Pair<.string, .any>>, unnamedArgs: .array<.any>): .any`（非泛型；实参的装箱/拆包转换沿用 §12.1 cast 语义）。降级调用点 `invoke` 的目标**恒为** `core::Any$call???`（vtable 正常解析继承）；实参规范序 = receiver、symbol 字符串资源、具名包构造、位置包构造；返回值为 `.any` 胖值，调用点按期望类型插入一次 §12.1 cast（不符抛 `core.CastException`）。
 
-### 15.5 canonical symbol 与参数包
+frontend 判定降级资格（静态类型无声明方法且 wrapper 链含 `.proxy.*`）只读应用标记（§8.3.1）与 proxy 声明，不合成任何符号；被命中宿主的类别路由体由 Middleware 合成（`RUNTIME.md` §14.2）。`call???` 自身是 `core::Any` 的 native 内建方法，无 BIL fn 定义，行为见 §22.5。
+
+### 15.6 canonical symbol 与参数包
 
 当调用 `call???` 或 wrapper wildcard 需要 canonical symbol 时：
 
@@ -1711,13 +1773,17 @@ fn(com.example::App$.static.main(args:.array<.string>)@.i32) {
 }
 ```
 
-wrapper 隐藏字段示例：
+wrapper 应用标记与 proxy 模板示例：
 
 ```bil
 LocalSymbols {
-    .type com.example::Service = class pub {
-        .field com.example::Service#.wrapper.core.logging::Logged@core.logging::Logged
-            priv backing compiler-generated
+    .type com.example::Service = class pub wrapped(core.logging::Logged) {
+        .field com.example::Service#name@.string pub
+    }
+
+    .type core.logging::Logged = wrapper generic(TTarget) rich {
+        .method core.logging::Logged$.proxy.get.name(value:.string)@.string
+            pub wrapper-proxy(specific)
     }
 }
 ```
@@ -1747,7 +1813,9 @@ LocalSymbols {
 - canonical 限定正确；
 - local symbol 不重复；
 - external symbol 签名完整；
-- 方法 body 与声明一一对应（`native` 声明除外：`native` 方法不得存在方法 body，且必须恰好各带一个 `symbol("...")` 与 `lib("...")` 修饰符；内建类型宿主的 fn 定义豁免——内建类型不进符号段（§6.2/§6.3 别名投影闭合），其成员 fn 定义（如 `core::Any$call???` 默认实现，M86）无对应声明是合法形态）；
+- 方法 body 与声明一一对应（`native` 声明除外：`native` 方法不得存在方法 body，且必须恰好各带一个 `symbol("...")` 与 `lib("...")` 修饰符）；
+- `core::Any$call???` 为预定义内建方法符号（§15.5 / §22.5）——无 LocalSymbols/ExternalSymbols 声明、无 fn 定义，可被 `invoke` 引用；
+- proxy 模板 fn（名以 `.proxy.` 开头，§5.1）必须声明在 wrapper 类型内，且与 `wrapper-proxy` 修饰符双向一致（见 §21.8）；
 - entrypoint 唯一且签名符合 `SYNTAX.md`。
 
 ### 21.3 类型验证
@@ -1762,7 +1830,9 @@ LocalSymbols {
 - direct/indirect invoke 签名完全匹配；
 - cast 目标合法；
 - new/init 和 enum case 签名合法；
-- await/yield 类型合法。
+- await/yield 类型合法；
+- `get.self` / `call.inner` / `call.inner.noret` 仅出现在 proxy 模板 fn 内，且类型规则见 §12.5 / §15.4；
+- `get.field.embedded` / `set.field.embedded` 链元素合法（`field` / `wrapper` 两态；`wrapper` 元素要求宿主具有对应应用标记 §8.3.1）。
 
 ### 21.4 definite assignment
 
@@ -1827,7 +1897,8 @@ LocalSymbols {
 - enum struct 不走普通 new；
 - rich/shared 闭包与跨 Coroutine 规则合法；
 - async 调用的 receiver/参数/结果满足 shared 边界；
-- `wrapper-proxy(PROXY_KIND)`（§8.4）只允许在 `.proxy.`/`.wrapped.` 保留名方法与 `call???` 名方法上；保留名方法必须带本修饰符；kind 与名一致（`.wrapped.` ↔ `original`、`call???` ↔ `router`、`.proxy.` 名不得 `original`/`router`）；同一方法不得重复携带本修饰符。
+- `wrapper-proxy(PROXY_KIND)`（§8.4）只允许在 wrapper 类型内、名以 `.proxy.` 开头的方法上；此类方法必须带本修饰符；`PROXY_KIND` 仅 `specific` / `wildcard`，且与成员形状类别一致（specific ↔ 具名 proxy；wildcard ↔ `.*` 通配 proxy）；同一方法不得重复携带本修饰符；
+- `wrapped(WRAPPER_TYPE_REF)`（§8.3.1）的 `WRAPPER_TYPE_REF` 必须是 wrapper 类型；可重复，顺序保留。
 
 ### 21.9 VM 可执行性验证
 
@@ -1889,13 +1960,14 @@ VM 必须把 `get.field`、`set.field`、`get.array`、`set.array` 视为独立�
 
 VM 执行到对 `native` 方法声明的 `invoke` / `invoke.noret` 时，不寻找方法 body，而是按 `(lib, symbol)` 查询内建 hook 表并执行对应的内建行为。标准内建 hook 表：
 
-| lib | symbol | 参数 | 行为 |
+| lib / 键 | symbol | 参数 | 行为 |
 |---|---|---|---|
 | `latte_rt` | `print` | `text: .string` | 将字符串写入标准输出 |
 | `latte_rt` | `printErr` | `text: .string` | 将字符串写入标准错误 |
 | `latte_rt` | `toString` | `value: .any` | 返回值的字符串表示（`SYNTAX.md` §3.8）：内建数值/`bool`/`char` 为标准文本；未覆写 `toString` 的对象为其类型 canonical 名 |
+| （方法 hook） | `core::Any$call???` | 见 §15.5 胖值签名 | 按 `symbol` 路由 wrapper 请求；无路由命中抛 `core::NoSuchMethodException` |
 
-`String` 的 `toString` 即值自身，不产生 native 调用；覆写了 `toString` 的类型经虚派发执行自身实现，不命中本表。命中表之外的 `(lib, symbol)` 组合 VM 无法解释，必须拒绝执行并报错。该表只随 BIL 标准修订扩充；Middleware 的原生链接不受此表约束。
+`String` 的 `toString` 即值自身，不产生 native 调用；覆写了 `toString` 的类型经虚派发执行自身实现，不命中本表。`call???` 按方法符号命中本表（无 `(lib, symbol)` 对），无 BIL fn 定义。命中表之外的 `(lib, symbol)` 组合 VM 无法解释，必须拒绝执行并报错。该表只随 BIL 标准修订扩充；Middleware 的原生链接不受此表约束。
 
 ---
 
@@ -1936,7 +2008,7 @@ Middleware 不得：
 - 运算符名称和语言含义；
 - getter/setter、wrapper、extension、async、using 的源码规则；
 - 类型、字段、方法、运算符、getter/setter 的 canonical symbol 命名；
-- wrapper 生成字段的 `.wrapper.<wrapper 类型全称>` 名称；
+- wrapper 存储命名约定（`.wrapper.<wrapper 类型全称>`，Middleware ABI，§5.3）；
 - 泛型参数命名；
 - 可变参数声明形态；
 - 入口函数允许的源码签名；

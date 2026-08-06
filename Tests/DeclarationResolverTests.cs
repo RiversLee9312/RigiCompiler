@@ -712,6 +712,38 @@ namespace LatteCompiler.Tests
                 "struct P { var x: i32 }\n" +
                 "ext var P.id: i32\n");
             CheckNoErrors("无诊断（ext 闭包正例）", u8);
+
+            // ===== M81 裁决落地：ext 目标泛型元数/歧义 + protected 禁令 =====
+            // 裸名命中泛型定义 → 元数诊断（§4.4；与 ResolveSymbolPath 同款措辞）
+            var (u9, _) = ResolveUnit(
+                "class Box\\<T> { }\n" +
+                "ext func Box.foo() { }\n");
+            TestHarness.CheckSemanticError("ext 目标裸名命中泛型定义", u9.Diagnostics,
+                "'Box' expects 1 type argument(s), got 0");
+            TestHarness.CheckTrue("被拒 ext 方法不注册（裸名泛型）",
+                !u9.Symbols.GlobalNamespace.Types.Single(t => t.Name == "Box")
+                    .Methods.Any(m => m.Name == "foo"));
+
+            // 同名不同元数多命中 → 歧义
+            var (u10, _) = ResolveUnit(
+                "class Box { }\n" +
+                "class Box\\<T> { }\n" +
+                "ext func Box.bar() { }\n");
+            TestHarness.CheckSemanticError("ext 目标同名不同元数歧义", u10.Diagnostics,
+                "Ambiguous extension target: 'Box'");
+
+            // 非泛型目标仍合法（对照）
+            var (u11, _) = ResolveUnit(
+                "class Box { }\n" +
+                "ext func Box.ok() { }\n");
+            CheckNoErrors("无诊断（ext 非泛型目标）", u11);
+
+            // protected 不得挂 ext（顶层无 protected，§16.1）
+            var (u12, _) = ResolveUnit(
+                "class C { }\n" +
+                "protected ext func C.p() { }\n");
+            TestHarness.CheckSemanticError("ext 禁 protected", u12.Diagnostics,
+                "'protected' cannot be applied to extension members");
         }
 
         // ===== 子任务 7a/7c：wrapper 适用性与目标矩阵（§14.9）=====
@@ -952,354 +984,63 @@ namespace LatteCompiler.Tests
         }
 
         // ===== S11a 后半：.wrapper. 隐藏字段合成 + Entity 派发链与特化符号 =====
+        // M88：烘焙合成已删——保留应用登记与形状匹配诊断冒烟
         private static void TestProxyDispatchChains()
         {
-            TestHarness.Section("P2 Proxy Dispatch Chains (S11a)");
-
-            const string logged =
+            TestHarness.Section("P2 Proxy Match (M88, no synthesis)");
+            const string src =
                 "@WrapperTarget(.Entity)\n" +
                 "pub wrapper Logged\\<TTarget> {\n" +
-                "    pub init(level: String = \"INFO\")\n" +
                 "    operator .proxy.doSomething(arg: i32): String { return inner(arg) }\n" +
-                "    operator .proxy.get.level\\<TField>(value: TField): TField { return value }\n" +
-                "}\n";
-            const string audited =
-                "@WrapperTarget(.Entity)\n" +
-                "pub wrapper Audited {\n" +
-                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(symbol: String, namedArgs: named TNamedArgs..., unnamedArgs: TUnnamedArgs...): TReturn { return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
-                "}\n";
-
-            // 隐藏字段合成 + TTarget 代入显形
-            var (u1, _) = ResolveUnit(logged +
-                "@Logged\n" +
-                "pub class Service {\n" +
-                "    pub func doSomething(arg: i32): String { return \"x\" }\n" +
-                "}\n");
-            CheckNoErrors("被修饰类无诊断", u1);
-            var service = GlobalType(u1, "Service");
-            var loggedDef = GlobalType(u1, "Logged");
-            var application = service.AppliedWrappers.Single();
-            TestHarness.CheckTrue("应用记录 Wrapper 为 TTarget 代入后的构造类型",
-                application.Wrapper.ConstructedFrom != null
-                && ReferenceEquals(application.Wrapper.ConstructedFrom, loggedDef)
-                && ReferenceEquals(application.Wrapper.TypeArguments![0], service));
-            var hidden = service.Fields.Single(f => f.Name.StartsWith(".wrapper."));
-            TestHarness.CheckTrue("隐藏字段合成（§5.3 命名 + priv + compiler-generated + 类型）",
-                hidden.IsCompilerGenerated
-                && hidden.Accessibility == Accessibility.Private
-                && ReferenceEquals(hidden.FieldType, application.Wrapper)
-                && ReferenceEquals(application.HiddenField, hidden));
-            TestHarness.Check("隐藏字段 canonical（§5.3/§8.3.1 形态）",
-                "Service#.wrapper.Logged<Service>@Logged<Service>",
-                CanonicalSymbolPrinter.PrintField(hidden));
-
-            // specific 链：符号与签名拷贝
-            var doSomething = service.Methods.Single(m => m.Name == "doSomething");
-            TestHarness.CheckTrue("specific 链合成（单环）",
-                doSomething.WrapperChain is { Count: 1 }
-                && doSomething.WrappedBodySymbol != null);
-            var link = doSomething.WrapperChain![0];
-            TestHarness.CheckTrue("特化符号槽（proxy 声明/应用/类别/目标成员/原始体）",
-                link.Name == ".proxy.0.doSomething"
-                && link.ProxySpecialization != null
-                && link.ProxySpecialization.Kind == ProxyLinkKind.Specific
-                && link.ProxySpecialization.ProxyDeclaration.Name == ".proxy.doSomething"
-                && ReferenceEquals(link.ProxySpecialization.Application, application)
-                && ReferenceEquals(link.ProxySpecialization.TargetMember, doSomething)
-                && ReferenceEquals(link.ProxySpecialization.OriginalBody, doSomething.WrappedBodySymbol));
-            TestHarness.CheckTrue("特化签名 = 成员签名拷贝（符号新实例）",
-                link.Parameters.Count == 1
-                && link.Parameters[0].Name == "arg"
-                && !ReferenceEquals(link.Parameters[0], doSomething.Parameters[0])
-                && ReferenceEquals(link.Parameters[0].Type, doSomething.Parameters[0].Type)
-                && ReferenceEquals(link.ReturnType, doSomething.ReturnType));
-            TestHarness.Check("特化 fn canonical",
-                "Service$.proxy.0.doSomething(arg:.i32)@.string",
-                CanonicalSymbolPrinter.PrintMethod(link));
-            TestHarness.Check("原始体 fn canonical",
-                "Service$.wrapped.doSomething(arg:.i32)@.string",
-                CanonicalSymbolPrinter.PrintMethod(doSomething.WrappedBodySymbol!));
-
-            // wildcard 兜底 + outer→inner 声明序
-            var (u2, _) = ResolveUnit(logged + audited +
-                "@Logged\n" +
-                "@Audited\n" +
-                "pub class Service {\n" +
-                "    pub func doSomething(arg: i32): String { return \"x\" }\n" +
-                "    pub func other(): i32 { return 0 }\n" +
-                "}\n");
-            CheckNoErrors("双 wrapper 无诊断", u2);
-            var service2 = GlobalType(u2, "Service");
-            var do2 = service2.Methods.Single(m => m.Name == "doSomething");
-            TestHarness.CheckTrue("双环链：specific(Logged) → wildcard(Audited)",
-                do2.WrapperChain is { Count: 2 }
-                && do2.WrapperChain[0].ProxySpecialization!.Kind == ProxyLinkKind.Specific
-                && do2.WrapperChain[1].ProxySpecialization!.Kind == ProxyLinkKind.Wildcard
-                && do2.WrapperChain[1].ProxySpecialization!.ProxyDeclaration.Name == ".proxy.*");
-            var other2 = service2.Methods.Single(m => m.Name == "other");
-            TestHarness.CheckTrue("无 specific 命中落 wildcard（单环）",
-                other2.WrapperChain is { Count: 1 }
-                && other2.WrapperChain[0].ProxySpecialization!.Kind == ProxyLinkKind.Wildcard);
-
-            // S11b：wildcard 环的解包 shim 符号合成（specific 环无 shim——
-            // 其 inner 直通下一环）
-            TestHarness.CheckTrue("specific 环无解包 shim",
-                do2.WrapperChain![0].ProxySpecialization!.UnwrapShim == null);
-            var doShim = do2.WrapperChain[1].ProxySpecialization!.UnwrapShim;
-            TestHarness.CheckTrue("wildcard 环解包 shim 合成（双包参签名 + 返回拷贝）",
-                doShim != null
-                && doShim.Name == ".proxy.unwrap.1.doSomething"
-                && doShim.Parameters.Count == 2
-                && doShim.Parameters[0].Name == "namedArgs"
-                && doShim.Parameters[1].Name == "unnamedArgs"
-                && ReferenceEquals(doShim.Parameters[0].Type, doShim.Parameters[1].Type)
-                && ReferenceEquals(doShim.ReturnType, do2.ReturnType)
-                && doShim.HasBody);
-            TestHarness.Check("shim fn canonical",
-                "Service$.proxy.unwrap.1.doSomething(namedArgs:.array<.any>,unnamedArgs:.array<.any>)@.string",
-                CanonicalSymbolPrinter.PrintMethod(doShim!));
-            var otherShim = other2.WrapperChain![0].ProxySpecialization!.UnwrapShim;
-            TestHarness.CheckTrue("单环 wildcard 的 shim 序号随环位",
-                otherShim != null && otherShim.Name == ".proxy.unwrap.0.other");
-
-            // specific 形状不符 → 编译错误
-            var (u3, _) = ResolveUnit(
-                "@WrapperTarget(.Entity)\n" +
-                "pub wrapper W {\n" +
-                "    operator .proxy.doSomething(arg: i64): String { return inner(arg) }\n" +
                 "}\n" +
-                "@W\n" +
+                "@Logged\n" +
                 "pub class Service {\n" +
                 "    pub func doSomething(arg: i32): String { return \"x\" }\n" +
-                "}\n");
-            TestHarness.CheckSemanticError("specific 形状不符（参数类型）", u3.Diagnostics,
-                "does not match the shape of member 'doSomething' of 'Service' (§14.2)");
-
-            // inert：名未命中且无 wildcard → 无链
-            var (u4, _) = ResolveUnit(logged +
-                "@Logged\n" +
-                "pub class Plain {\n" +
-                "    pub func unrelated(): i32 { return 0 }\n" +
-                "}\n");
-            CheckNoErrors("inert 无诊断", u4);
-            TestHarness.CheckTrue("inert 成员无链",
-                GlobalType(u4, "Plain").Methods.Single(m => m.Name == "unrelated").WrapperChain == null);
-
-            // 泛型成员只参与 wildcard（specific 静默让位）
-            var (u5, _) = ResolveUnit(logged + audited +
-                "@Logged\n" +
-                "@Audited\n" +
-                "pub class Box {\n" +
-                "    pub func doSomething\\<T>(arg: i32): String { return \"x\" }\n" +
-                "}\n");
-            CheckNoErrors("泛型成员无诊断", u5);
-            var genericMethod = GlobalType(u5, "Box").Methods.Single(m => m.Name == "doSomething");
-            TestHarness.CheckTrue("泛型成员：specific 让位 wildcard",
-                genericMethod.WrapperChain is { Count: 1 }
-                && genericMethod.WrapperChain[0].ProxySpecialization!.Kind == ProxyLinkKind.Wildcard);
-
-            // operator 链
-            var (u6, _) = ResolveUnit(
+                "}\n";
+            var (unit, _) = ResolveUnit(src);
+            CheckNoErrors("被修饰类无诊断", unit);
+            var service = GlobalType(unit, "Service");
+            TestHarness.CheckTrue("AppliedWrappers 登记", service.AppliedWrappers.Count == 1);
+            TestHarness.CheckTrue("无隐藏字段合成", !service.Fields.Any(f => f.Name.StartsWith(".wrapper.")));
+            TestHarness.CheckTrue("无特化/原始体合成",
+                !service.Methods.Any(m => m.Name.StartsWith(".proxy.") || m.Name.StartsWith(".wrapped.")));
+            // 名中形状不符诊断（措辞保留）
+            var (bad, _) = ResolveUnit(
                 "@WrapperTarget(.Entity)\n" +
                 "pub wrapper W\\<TTarget> {\n" +
-                "    operator .proxy.opr.plus(another: TTarget): TTarget { return inner(another) }\n" +
+                "    operator .proxy.foo(arg: String): i32 { return 0 }\n" +
                 "}\n" +
                 "@W\n" +
-                "pub class Number {\n" +
-                "    pub operator plus(another: Number): Number { return this }\n" +
-                "}\n");
-            CheckNoErrors("operator 链无诊断", u6);
-            var plus = GlobalType(u6, "Number").Methods.Single(m => m.Name == "plus");
-            TestHarness.CheckTrue("operator specific 链（TTarget 代入后形状全等）",
-                plus.WrapperChain is { Count: 1 }
-                && plus.WrapperChain[0].Name == ".proxy.0.opr.plus"
-                && plus.WrapperChain[0].ProxySpecialization!.Kind == ProxyLinkKind.Specific);
-
-            // 访问器链（已声明访问器的字段）
-            var (u7, _) = ResolveUnit(logged +
-                "@Logged\n" +
-                "pub class Config {\n" +
-                "    pub var level: String { get(value: _) { return \"x\" } set(value: _) { } }\n" +
-                "}\n");
-            CheckNoErrors("访问器链无诊断", u7);
-            var level = GlobalType(u7, "Config").Fields.Single(f => f.Name == "level");
-            TestHarness.CheckTrue("getter specific 链",
-                level.Getter!.WrapperChain is { Count: 1 }
-                && level.Getter.WrapperChain[0].Name == ".proxy.0.get.level"
-                && level.Getter.WrappedBodySymbol!.Name == ".wrapped.get.level");
-            TestHarness.CheckTrue("setter 无 specific 且无 wildcard → 无链",
-                level.Setter!.WrapperChain == null);
-
-            // 重复应用 → 隐藏字段冲突
-            var (u8, _) = ResolveUnit(logged + "@Logged\n@Logged\npub class Dup { }\n");
-            TestHarness.CheckSemanticError("同一 wrapper 重复应用（隐藏字段冲突）", u8.Diagnostics,
-                "hidden field collision");
-
-            // interface 传染：实现者获得隐藏字段（TTarget = 实现者），interface 自身没有
-            var (u9, _) = ResolveUnit(logged +
-                "@Logged\n" +
-                "pub interface IRepo { }\n" +
-                "pub class SqlRepo implements IRepo { }\n");
-            CheckNoErrors("interface 传染无诊断", u9);
-            TestHarness.CheckTrue("interface 自身无隐藏字段",
-                !GlobalType(u9, "IRepo").Fields.Any(f => f.Name.StartsWith(".wrapper.")));
-            var impl = GlobalType(u9, "SqlRepo");
-            TestHarness.CheckTrue("实现者隐藏字段（TTarget = 实现者构造）",
-                impl.Fields.Any(f => f.Name == ".wrapper.Logged<SqlRepo>"));
-
-            // Value wrapper 实例字段：隐藏字段挂字段宿主
-            var (u10, _) = ResolveUnit(
-                "@WrapperTarget(.Value)\n" +
-                "pub wrapper Clamped {\n" +
-                "    pub var min: i32\n" +
-                "    operator .proxy.get\\<TValue>(value: TValue): TValue { return value }\n" +
-                "}\n" +
-                "pub class Player {\n" +
-                "    @Clamped\n" +
-                "    pub var health: i32\n" +
-                "}\n");
-            CheckNoErrors("Value wrapper 字段无诊断", u10);
-            var player = GlobalType(u10, "Player");
-            var health = player.Fields.Single(f => f.Name == "health");
-            TestHarness.CheckTrue("Value 应用隐藏字段挂宿主类型",
-                health.AppliedWrappers.Single().HiddenField != null
-                && player.Fields.Any(f => f.Name == ".wrapper.Clamped"));
+                "pub class H { pub func foo(arg: i32): String { return \"x\" } }\n");
+            TestHarness.CheckTrue("specific 形状不符诊断",
+                bad.Diagnostics.Diagnostics.Any(d => d.Message.Contains("does not match the shape")));
         }
 
-        // ===== S11e：call??? 降级链合成（router + 逐应用降级特化 + Any.call???）=====
+        // M88：降级链合成已删——PrintDowngradeRequest 与资格判定冒烟
         private static void TestDowngradeChains()
         {
-            TestHarness.Section("P2 Downgrade Chains (S11e)");
-
-            const string logged =
-                "@WrapperTarget(.Entity)\n" +
-                "pub wrapper Logged\\<TTarget> {\n" +
-                "    pub init(level: String = \"INFO\")\n" +
-                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(symbol: String, namedArgs: named TNamedArgs..., unnamedArgs: TUnnamedArgs...): TReturn { return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
-                "}\n";
-            const string audited =
+            TestHarness.Section("P2 Downgrade Eligibility (M88, no synthesis)");
+            const string src =
                 "@WrapperTarget(.Entity)\n" +
                 "pub wrapper Audited {\n" +
-                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(symbol: String, namedArgs: named TNamedArgs..., unnamedArgs: TUnnamedArgs...): TReturn { return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
-                "}\n";
-
-            // 1. 基础链合成：单 .proxy.* wrapper → router + 单环链 + Any.call???
-            var (u1, _) = ResolveUnit(logged +
-                "@Logged\n" +
-                "pub class Service {\n" +
-                "    pub func doSomething(arg: i32): String { return \"x\" }\n" +
-                "}\n");
-            CheckNoErrors("降级链无诊断", u1);
-            var service = GlobalType(u1, "Service");
-            var any = u1.Symbols.Bootstrap.Any;
-            var router = service.DowngradeRouter;
-            TestHarness.CheckTrue("router 合成（宿主成员 call??? + HasBody）",
-                router != null
-                && router.Name == "call???"
-                && ReferenceEquals(router.Owner, service)
-                && service.Methods.Contains(router)
-                && router.HasBody);
-            // 测试单元无 core::Pair（ResolveUnit 不注入 stdlib）——NamedPackType
-            // 按 §14.7 降级 Array\<Any\>，与 shim 具名包同口径
-            var expectedPack = u1.Symbols.GetConstructedType(
-                u1.Symbols.Bootstrap.ArrayDefinition, u1.Symbols.Bootstrap.Any);
-            TestHarness.CheckTrue("router 三参数签名（胖值 ABI，非 variadic）",
-                router!.Parameters.Count == 3
-                && router.Parameters[0].Name == "symbol"
-                && ReferenceEquals(router.Parameters[0].Type, u1.Symbols.Bootstrap.String)
-                && router.Parameters[1].Name == "namedArgs"
-                && ReferenceEquals(router.Parameters[1].Type, expectedPack)
-                && router.Parameters[2].Name == "unnamedArgs"
-                && ReferenceEquals(router.Parameters[2].Type, expectedPack)
-                && ReferenceEquals(router.ReturnType, any));
-            TestHarness.CheckTrue("降级链单环 + link 名",
-                service.DowngradeChain is { Count: 1 }
-                && service.DowngradeChain[0].Name == ".proxy.0.???");
-            var link = service.DowngradeChain![0];
-            var anyCall = any.Methods.Single(m => m.Name == "call???");
-            TestHarness.CheckTrue("降级特化元数据（Wildcard + 无目标成员 + 原始体 = Any.call???）",
-                link.ProxySpecialization != null
-                && link.ProxySpecialization.Kind == ProxyLinkKind.Wildcard
-                && link.ProxySpecialization.TargetMember == null
-                && ReferenceEquals(link.ProxySpecialization.OriginalBody, anyCall)
-                && link.HasBody);
-            TestHarness.CheckTrue("Any.call??? 全单元一次 + Public",
-                any.Methods.Count(m => m.Name == "call???") == 1
-                && anyCall.Accessibility == Accessibility.Public
-                && ReferenceEquals(anyCall.Owner, any));
-            TestHarness.Check("router canonical",
-                "Service$call???(symbol:.string,namedArgs:.array<.any>,unnamedArgs:.array<.any>)@.any",
-                CanonicalSymbolPrinter.PrintMethod(router!));
-            TestHarness.Check("降级特化 canonical",
-                "Service$.proxy.0.???(symbol:.string,namedArgs:.array<.any>,unnamedArgs:.array<.any>)@.any",
-                CanonicalSymbolPrinter.PrintMethod(link));
-            TestHarness.Check("Any.call??? canonical",
-                "core::Any$call???(symbol:.string,namedArgs:.array<.any>,unnamedArgs:.array<.any>)@.any",
-                CanonicalSymbolPrinter.PrintMethod(anyCall));
-
-            // 2. 双应用双环链：OriginalBody 均指向同一 Any.call???
-            var (u2, _) = ResolveUnit(logged + audited +
-                "@Logged\n" +
-                "@Audited\n" +
-                "pub class Service {\n" +
-                "    pub func doSomething(arg: i32): String { return \"x\" }\n" +
-                "}\n");
-            CheckNoErrors("双 wrapper 降级链无诊断", u2);
-            var service2 = GlobalType(u2, "Service");
-            TestHarness.CheckTrue("双环链（.proxy.0.???/.proxy.1.???，outer→inner）",
-                service2.DowngradeChain is { Count: 2 }
-                && service2.DowngradeChain[0].Name == ".proxy.0.???"
-                && service2.DowngradeChain[1].Name == ".proxy.1.???");
-            var any2Call = u2.Symbols.Bootstrap.Any.Methods.Single(m => m.Name == "call???");
-            TestHarness.CheckTrue("双环 OriginalBody 均指向同一 Any.call???（全单元一次）",
-                ReferenceEquals(service2.DowngradeChain![0].ProxySpecialization!.OriginalBody, any2Call)
-                && ReferenceEquals(service2.DowngradeChain[1].ProxySpecialization!.OriginalBody, any2Call)
-                && service2.DowngradeChain[1].ProxySpecialization!.Application.WrapperDefinition.Name == "Audited");
-
-            // 3. 无 .proxy.* 无链：specific-only wrapper 与无 wrapper 均无
-            // router/链/Any.call???
-            var (u3, _) = ResolveUnit(
-                "@WrapperTarget(.Entity)\n" +
-                "pub wrapper Logged\\<TTarget> {\n" +
-                "    pub init(level: String = \"INFO\")\n" +
-                "    operator .proxy.doSomething(arg: i32): String { return inner(arg) }\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., unnamedArgs: TUnnamedArgs...): TReturn {\n" +
+                "        return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs)\n" +
+                "    }\n" +
                 "}\n" +
-                "@Logged\n" +
-                "pub class Service {\n" +
-                "    pub func doSomething(arg: i32): String { return \"x\" }\n" +
-                "}\n");
-            CheckNoErrors("specific-only 无降级链无诊断", u3);
-            var service3 = GlobalType(u3, "Service");
-            TestHarness.CheckTrue("specific-only 无 router/链/Any.call???",
-                service3.DowngradeRouter == null
-                && service3.DowngradeChain == null
-                && !u3.Symbols.Bootstrap.Any.Methods.Any(m => m.Name == "call???"));
-            var (u3b, _) = ResolveUnit(
-                "pub class Plain {\n    pub func f(): i32 { return 0 }\n}\n");
-            CheckNoErrors("无 wrapper 无降级链无诊断", u3b);
-            TestHarness.CheckTrue("无 wrapper 无 router/链/Any.call???",
-                GlobalType(u3b, "Plain").DowngradeRouter == null
-                && GlobalType(u3b, "Plain").DowngradeChain == null
-                && !u3b.Symbols.Bootstrap.Any.Methods.Any(m => m.Name == "call???"));
-
-            // 4. PrintDowngradeRequest 黄金（位置实参只写类型、具名写 名:类型；
-            // 返回段恒 .any；空实参列表参数段为空）
-            var (u4, _) = ResolveUnit("namespace test\nclass Service { }\n");
-            var service4 = NsOf(u4, "test").Types.Single(t => t.Name == "Service");
-            TestHarness.Check("PrintDowngradeRequest 黄金（位置 i32 + 具名 name:String）",
-                "test::Service$fetch(.i32,name:.string)@.any",
-                CanonicalSymbolPrinter.PrintDowngradeRequest(service4, "fetch",
-                    new (string?, SemanticSymbol)[] {
-                        (null, u4.Symbols.Bootstrap.Int32),
-                        ("name", u4.Symbols.Bootstrap.String),
-                    }));
-            TestHarness.Check("PrintDowngradeRequest 空实参列表",
-                "test::Service$fetch()@.any",
-                CanonicalSymbolPrinter.PrintDowngradeRequest(service4, "fetch",
-                    Array.Empty<(string?, SemanticSymbol)>()));
+                "@Audited\n" +
+                "pub class Service { pub func known(): i32 { return 1 } }\n";
+            var (unit, _) = ResolveUnit(src);
+            CheckNoErrors("有 .proxy.* 应用无诊断", unit);
+            var service = GlobalType(unit, "Service");
+            TestHarness.CheckTrue("降级资格", ProxyMatching.HasMethodWildcardProxy(service));
+            TestHarness.CheckTrue("无 router 合成", !service.Methods.Any(m => m.Name == "call???"));
+            TestHarness.Check("PrintDowngradeRequest",
+                "Service$fetch(.i32)@.any",
+                CanonicalSymbolPrinter.PrintDowngradeRequest(service, "fetch",
+                    new (string?, SemanticSymbol)[] { (null, unit.Symbols.Bootstrap.Int32) }));
         }
 
-        // ===== 子任务 3b：native 函数声明（§4.6）=====
         private static void TestNativeDeclarations()
         {
             TestHarness.Section("P2 Native Functions (§4.6)");

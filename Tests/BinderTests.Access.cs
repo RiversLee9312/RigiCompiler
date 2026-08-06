@@ -109,6 +109,45 @@ namespace LatteCompiler.Tests
                 "}\n");
             TestHarness.CheckSemanticError("priv 字段跨类写拒绝", unit10.Diagnostics,
                 "'secret' is inaccessible due to its accessibility level");
+
+            // ===== M81 裁决：ext 可见性按声明位置（§4.4/§16.1）=====
+            // priv ext 同文件可见（默认 private = 仅声明文件）
+            var (unit11, _) = BindUnit(
+                "pub class Host { }\n" +
+                "ext func Host.localHelp(): i32 { return 1 }\n" +
+                "pub func use(h: Host): i32 { return h.localHelp() }\n");
+            CheckNoErrors("priv ext 同文件可见", unit11);
+
+            // priv ext 跨文件拒绝（按声明文件，非目标类型容器）
+            var (unit12, _) = BindUnit(
+                "pub class Host { }\n" +
+                "ext func Host.localHelp(): i32 { return 1 }\n",
+                "pub func use(h: Host): i32 { return h.localHelp() }\n");
+            TestHarness.CheckSemanticError("priv ext 跨文件拒绝", unit12.Diagnostics,
+                "'localHelp' is inaccessible due to its accessibility level");
+
+            // pub ext 跨文件可见
+            var (unit13, _) = BindUnit(
+                "pub class Host { }\n" +
+                "pub ext func Host.pubHelp(): i32 { return 1 }\n",
+                "pub func use(h: Host): i32 { return h.pubHelp() }\n");
+            CheckNoErrors("pub ext 跨文件可见", unit13);
+
+            // internal ext 跨文件放行（单编译单元即模块）
+            var (unit14, _) = BindUnit(
+                "pub class Host { }\n" +
+                "internal ext func Host.modHelp(): i32 { return 1 }\n",
+                "pub func use(h: Host): i32 { return h.modHelp() }\n");
+            CheckNoErrors("internal ext 跨文件放行", unit14);
+
+            // ext 方法体不获得目标类型私有成员特权（DeclaringType = 语法宿主 null）
+            var (unit15, _) = BindUnit(
+                "pub class Host {\n" +
+                "    var secret: i32\n" +
+                "}\n" +
+                "pub ext func Host.leak(): i32 { return this.secret }\n");
+            TestHarness.CheckSemanticError("ext 体不获目标 priv 成员特权", unit15.Diagnostics,
+                "'secret' is inaccessible due to its accessibility level");
         }
 
         // ===== 访问器绑定（S8e，SYNTAX §9.4/§9.4.1）=====

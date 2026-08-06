@@ -64,6 +64,12 @@ namespace LatteCompiler
         public TypeSymbol ArrayDefinition { get; }     // Array\<T>（Object 分支，.array<T>）
         public TypeSymbol MapDefinition { get; }       // Map\<K, V>（Object 分支，.map<K, V>）
 
+        // Any.call???（M88，RUNTIME §14.2 / SYNTAX §14.7）：未声明方法降级
+        // 的统一入口。bootstrap 声明 + VM 内建 hook（pub native，getMessage
+        // 先例）；签名 = 非泛型胖值 ABI。参数类型在 EnsureCallWildcard 落定
+        //（具名包依赖 stdlib core.Pair，构造期 Pair 尚未载入）
+        public MethodSymbol CallWildcard { get; private set; } = null!;
+
         internal BootstrapSymbols(NamespaceSymbol globalNamespace)
         {
             // core 挂进全局命名空间树：用户文件的 namespace core.* 声明与
@@ -154,6 +160,18 @@ namespace LatteCompiler
                 NativeSymbol = "getMessage",
                 Accessibility = Accessibility.Public,
             });
+
+            // Any.call??? 壳（M88）：参数类型在 EnsureCallWildcard 填（Array/
+            // Pair 构造需 SymbolGraph）；此处先挂成员占位，签名参数列表在
+            // Ensure 时补齐。pub native 形态照抄 getMessage
+            CallWildcard = new MethodSymbol("call???", MethodKind.Regular,
+                owner: Any, isNative: true, returnType: Any)
+            {
+                NativeLibrary = "latte_rt",
+                NativeSymbol = "call???",
+                Accessibility = Accessibility.Public,
+            };
+            Any.Methods.Add(CallWildcard);
 
             // 泛型内建（§3.1.2）：
             // Box\<T> <: Object 为内建事实（BaseType 链直接表达，不经 baseTypeId 证明）；
@@ -273,6 +291,31 @@ namespace LatteCompiler
         private static IReadOnlySet<BilIntrinsicOp> Ops(params BilIntrinsicOp[] ops)
         {
             return new HashSet<BilIntrinsicOp>(ops);
+        }
+
+        // 具名包 ABI 类型（§14.7：Array\<Pair\<String, Any\>\>；core::Pair
+        // 缺席——无 stdlib 的测试驱动——时降级 Array\<Any\>）。P2/P3 共用
+        public static TypeSymbol NamedPackType(SymbolGraph symbols)
+        {
+            var pairDefinition = symbols.Bootstrap.Core.Types.FirstOrDefault(t => t.Name == "Pair"
+                && t.GenericParameters.Count == 2);
+            var bootstrap = symbols.Bootstrap;
+            var elementType = pairDefinition == null
+                ? bootstrap.Any
+                : symbols.GetConstructedType(pairDefinition, bootstrap.String, bootstrap.Any);
+            return symbols.GetConstructedType(bootstrap.ArrayDefinition, elementType);
+        }
+
+        // call??? 参数签名落定（幂等）：symbol: String + namedArgs 具名包 +
+        // unnamedArgs: Array\<Any\> → Any。P1 后（stdlib Pair 可能已入图）
+        // 由 BindingDriver / 首次降级绑定触发
+        public void EnsureCallWildcard(SymbolGraph symbols)
+        {
+            if (CallWildcard.Parameters.Count > 0) return;
+            var packType = symbols.GetConstructedType(ArrayDefinition, Any);
+            CallWildcard.Parameters.Add(new ParameterSymbol("symbol", String));
+            CallWildcard.Parameters.Add(new ParameterSymbol("namedArgs", NamedPackType(symbols)));
+            CallWildcard.Parameters.Add(new ParameterSymbol("unnamedArgs", packType));
         }
     }
 }

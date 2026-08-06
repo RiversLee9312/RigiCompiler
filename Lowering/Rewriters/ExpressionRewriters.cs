@@ -414,6 +414,35 @@ namespace LatteCompiler
         }
     }
 
+    // proxy 体 self → get.self（M88，BIL §12.5）
+    internal sealed class SelfRewriter : LoweredVisitor<SelfRewriter, LoweredExpression, LowerContext>
+    {
+        protected override LoweredExpression? VisitCore(BoundNode node, LowerContext ctx,
+            LowerEnvironment env)
+        {
+            return new LoweredGetSelfExpression((BoundSelfExpression)node);
+        }
+    }
+
+    // proxy 体 inner(...) → call.inner（M88，BIL §15.4）；实参逐一下降
+    internal sealed class InnerCallRewriter
+        : LoweredVisitor<InnerCallRewriter, LoweredExpression, LowerContext>
+    {
+        protected override LoweredExpression? VisitCore(BoundNode node, LowerContext ctx,
+            LowerEnvironment env)
+        {
+            var inner = (BoundInnerCallExpression)node;
+            var arguments = new List<LoweredExpression>(inner.Arguments.Count);
+            foreach (var argument in inner.Arguments)
+            {
+                var lowered = LowerExpressionDispatcher.Visit(argument, ctx, env);
+                if (lowered == null) return null;
+                arguments.Add(lowered);
+            }
+            return new LoweredCallInnerExpression(inner, arguments);
+        }
+    }
+
     // 实例调用：receiver 降级 + 调用点 cast 物化（BIL §6.5）——
     // receiver 静态类型 ≠ 方法宿主时包显式 cast（沿 BaseType 链找到的
     // 成员在子类 receiver 上调用时的装箱/基类视图转换，§12.1）。

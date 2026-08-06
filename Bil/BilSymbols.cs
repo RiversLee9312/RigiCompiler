@@ -49,14 +49,13 @@ namespace LatteCompiler.Bil
         Getter, Setter,
     }
 
-    // §8.4 wrapper-proxy(PROXY_KIND) 修饰符的四态（S11d）：
-    // specific/wildcard = 命中成员名/类别通配的 proxy 特化体（.proxy. 名段，
-    // 含 wildcard 解包 shim 的 .proxy.unwrap. 名段）；router = call???
-    // 按 symbol 路由体（S11e 落地）；original = 被修饰成员原始实现体
-    //（.wrapped. 名段——转发壳即被修饰成员原名 fn，不标本修饰符）
+    // §8.4 wrapper-proxy(PROXY_KIND) 修饰符的两态（M88）：
+    // specific = 具名 proxy 模板（.proxy.<成员> / .proxy.get.<名> 等）；
+    // wildcard = 类别通配 proxy 模板（.proxy.* / .proxy.get.* 等）。
+    // 烘焙特化/original/router 归 Middleware，BIL 文本只承载模板
     public enum BilProxyKind
     {
-        Specific, Wildcard, Router, Original,
+        Specific, Wildcard,
     }
 
     // 声明修饰符基类（§8.2 类型修饰符 / §8.3 字段修饰符 / §8.4 方法
@@ -148,9 +147,9 @@ namespace LatteCompiler.Bil
         internal override string Render() => $"lib(\"{Library}\")";
     }
 
-    // wrapper-proxy(PROXY_KIND) 修饰符（§8.4，S11d）：wrapper 派发链的
-    // 编译器合成 fn 标记（.proxy./.wrapped. 保留名段，§5.1；kind 与名段
-    // 的一致性由 verifier §21.8 复核）
+    // wrapper-proxy(PROXY_KIND) 修饰符（§8.4，M88）：wrapper 类型内的
+    // `.proxy.*` 模板 fn 标记（体内可出现 call.inner/get.self；kind 与
+    // 成员形状类别的一致性由 verifier §21.8 复核）
     public sealed class BilWrapperProxyModifier : BilModifier
     {
         public BilProxyKind Kind { get; }
@@ -161,6 +160,20 @@ namespace LatteCompiler.Bil
         }
 
         internal override string Render() => $"wrapper-proxy({BilSpellings.Of(Kind)})";
+    }
+
+    // wrapped(WRAPPER_TYPE_REF) 修饰符（§8.3.1，M88）：类型/字段声明上的
+    // wrapper 应用标记（可重复，声明序 = outer→inner；存储合成归 Middleware）
+    public sealed class BilWrappedModifier : BilModifier
+    {
+        public string WrapperTypeRef { get; }
+
+        public BilWrappedModifier(string wrapperTypeRef)
+        {
+            WrapperTypeRef = wrapperTypeRef;
+        }
+
+        internal override string Render() => $"wrapped({WrapperTypeRef})";
     }
 
     // 类型声明（§8.2）：

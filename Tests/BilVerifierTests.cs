@@ -236,9 +236,11 @@ namespace LatteCompiler.Tests
                     new IsCaseInstruction(BilOp.Var("e"),
                         BilOp.Case("com.example::RequestResult.Failed"), BilOp.Var("b")),
                     new GetEmbeddedFieldInstruction(BilOp.Var("svc"), BilOp.Var("lv"),
-                        BilOp.Field(HostWrapperField), BilOp.Field("core.logging::Logged#level@.string")),
+                        BilOp.Wrapper("core.logging::Logged"),
+                        BilOp.Field("core.logging::Logged#level@.string")),
                     new SetEmbeddedFieldInstruction(BilOp.Var("lv"), BilOp.Var("svc"),
-                        BilOp.Field(HostWrapperField), BilOp.Field("core.logging::Logged#level@.string"))));
+                        BilOp.Wrapper("core.logging::Logged"),
+                        BilOp.Field("core.logging::Logged#level@.string"))));
 
             // ===== 负例：非法模块按规则命中 =====
             NegativeCases();
@@ -714,53 +716,35 @@ namespace LatteCompiler.Tests
             BilTestHarness.CheckBilInvalid("case 判别值资源未登记", m,
                 "未登记");
 
-            // §21.2：embedded 宿主字段符号不可解析
+            // §21.2：embedded 链字段符号不可解析
             m = S11Module(new GetEmbeddedFieldInstruction(BilOp.Var("svc"), BilOp.Var("lv"),
                 BilOp.Field("com.example::Service#name@.string"),
                 BilOp.Field("core.logging::Logged#level@.string")));
-            BilTestHarness.CheckBilInvalid("embedded 宿主字段不可解析", m,
-                "宿主字段符号不可解析");
+            BilTestHarness.CheckBilInvalid("embedded 链字段不可解析", m,
+                "链字段符号不可解析");
 
-            // §21.3：embedded 宿主字段名必须以 .wrapper. 开头（§5.3 保留名）
+            // §21.3：embedded wrapper 元素必须是 wrapper 类型
             m = S11Module(
                 new GetEmbeddedFieldInstruction(BilOp.Var("svc"), BilOp.Var("lv"),
-                    BilOp.Field("com.example::Service#note@.string"),
-                    BilOp.Field("core.logging::Logged#level@.string")));
-            var serviceWithNote = (BilTypeDeclaration)m.LocalSymbols
-                .Single(e => e is BilTypeDeclaration { Symbol: "com.example::Service" });
-            serviceWithNote.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field,
-                "com.example::Service#note@.string",
-                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
-            BilTestHarness.CheckBilInvalid("embedded 宿主字段非隐藏字段", m,
-                "不是 wrapper 隐藏字段");
-
-            // §21.3：embedded 宿主字段类型必须解析为 wrapper 类型——声明
-            // 可反查且非 wrapper 时报错（查不到声明的场景按降级原则跳过，
-            // 与 VerifyWrapperType 一致）
-            m = S11Module(
-                new GetEmbeddedFieldInstruction(BilOp.Var("svc"), BilOp.Var("lv"),
-                    BilOp.Field("com.example::Service#.wrapper.com.example::Plain@com.example::Plain"),
+                    BilOp.Wrapper("com.example::Plain"),
                     BilOp.Field("core.logging::Logged#level@.string")));
             m.LocalSymbols.Add(new BilTypeDeclaration("com.example::Plain",
                 BilTypeKind.Class, new BilAccessibilityModifier(BilAccessibility.Public)));
-            var serviceWithFake = (BilTypeDeclaration)m.LocalSymbols
-                .Single(e => e is BilTypeDeclaration { Symbol: "com.example::Service" });
-            serviceWithFake.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field,
-                "com.example::Service#.wrapper.com.example::Plain@com.example::Plain",
-                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
-            BilTestHarness.CheckBilInvalid("embedded 宿主字段类型非 wrapper", m,
+            BilTestHarness.CheckBilInvalid("embedded wrapper 元素非 wrapper 类型", m,
                 "不是 wrapper 类型");
 
             // §21.2：embedded 内层字段符号不可解析
             m = S11Module(new GetEmbeddedFieldInstruction(BilOp.Var("svc"), BilOp.Var("lv"),
-                BilOp.Field(HostWrapperField), BilOp.Field("core.logging::Logged#ghost@.string")));
+                BilOp.Wrapper("core.logging::Logged"),
+                BilOp.Field("core.logging::Logged#ghost@.string")));
             BilTestHarness.CheckBilInvalid("embedded 内层字段不可解析", m,
                 "内层字段符号不可解析");
 
             // §21.3：embedded 内层字段必须是实例字段（静态字段拒绝）
             m = S11Module(
                 new GetEmbeddedFieldInstruction(BilOp.Var("svc"), BilOp.Var("lv"),
-                    BilOp.Field(HostWrapperField), BilOp.Field("core.logging::Logged#.static.flag@.bool")));
+                    BilOp.Wrapper("core.logging::Logged"),
+                    BilOp.Field("core.logging::Logged#.static.flag@.bool")));
             var loggedWithStatic = (BilTypeDeclaration)m.LocalSymbols
                 .Single(e => e is BilTypeDeclaration { Symbol: "core.logging::Logged" });
             loggedWithStatic.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field,
@@ -771,26 +755,23 @@ namespace LatteCompiler.Tests
 
             // §21.3：embedded get 结果类型必须严格等于内层字段类型
             m = S11Module(new GetEmbeddedFieldInstruction(BilOp.Var("svc"), BilOp.Var("x"),
-                BilOp.Field(HostWrapperField), BilOp.Field("core.logging::Logged#level@.string")));
+                BilOp.Wrapper("core.logging::Logged"),
+                BilOp.Field("core.logging::Logged#level@.string")));
             BilTestHarness.CheckBilInvalid("embedded get 结果类型不符", m,
                 "get.field.embedded 目标变量");
 
             // §21.3：embedded set 源类型必须严格等于内层字段类型
             m = S11Module(new SetEmbeddedFieldInstruction(BilOp.Var("b"), BilOp.Var("svc"),
-                BilOp.Field(HostWrapperField), BilOp.Field("core.logging::Logged#level@.string")));
+                BilOp.Wrapper("core.logging::Logged"),
+                BilOp.Field("core.logging::Logged#level@.string")));
             BilTestHarness.CheckBilInvalid("embedded set 源类型不符", m,
                 "set.field.embedded 源变量");
-
-            // §21.3：embedded 宿主对象类型必须可赋值到宿主字段 owner
-            m = S11Module(new GetEmbeddedFieldInstruction(BilOp.Var("e"), BilOp.Var("lv"),
-                BilOp.Field(HostWrapperField), BilOp.Field("core.logging::Logged#level@.string")));
-            BilTestHarness.CheckBilInvalid("embedded 宿主对象类型不符", m,
-                "宿主对象");
 
             // §21.8：embedded set 不得写入 const 内层字段
             m = S11Module(
                 new SetEmbeddedFieldInstruction(BilOp.Var("lv"), BilOp.Var("svc"),
-                    BilOp.Field(HostWrapperField), BilOp.Field("core.logging::Logged#tag@.string")));
+                    BilOp.Wrapper("core.logging::Logged"),
+                    BilOp.Field("core.logging::Logged#tag@.string")));
             var loggedWithConst = (BilTypeDeclaration)m.LocalSymbols
                 .Single(e => e is BilTypeDeclaration { Symbol: "core.logging::Logged" });
             loggedWithConst.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field,
@@ -803,126 +784,126 @@ namespace LatteCompiler.Tests
             BilTestHarness.CheckBilInvalid("embedded set 写 const 内层字段", m,
                 "不得被写入");
 
-            // ===== §8.4/§21.8 wrapper-proxy(PROXY_KIND)（S11d）=====
-            // 声明形态聚焦修饰符规则（ExternalSymbols 免 fn 定义，同
-            // IndexModule 先例）；全管线烘焙正例见 BilEmitterTests
+            // ===== §8.4/§21.8 wrapper-proxy（M88：specific|wildcard 两态）=====
+            // proxy 模板必须在 wrapper 类型内；ExternalSymbols 免 fn 定义
             m = MinimalModule(out _, out _);
-            var bakedHost = new BilTypeDeclaration("Svc", BilTypeKind.Class,
-                new BilAccessibilityModifier(BilAccessibility.Public));
-            bakedHost.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
-                "Svc$.proxy.0.x()@.void",
-                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Private),
-                    new BilWrapperProxyModifier(BilProxyKind.Specific) }));
-            bakedHost.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
-                "Svc$.wrapped.x()@.void",
-                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Private),
-                    new BilWrapperProxyModifier(BilProxyKind.Original) }));
-            bakedHost.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
-                "Svc$.proxy.unwrap.0.x(namedArgs:.array<.any>)@.void",
-                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Private),
-                    new BilWrapperProxyModifier(BilProxyKind.Wildcard) }));
-            m.ExternalSymbols.Add(bakedHost);
-            BilTestHarness.CheckBilValid("wrapper-proxy 烘焙声明（specific/original/wildcard 正例）", m);
-
-            // §21.8：非保留名带 wrapper-proxy
-            m = MinimalModule(out _, out _);
-            var nonReservedHost = new BilTypeDeclaration("Svc", BilTypeKind.Class,
-                new BilAccessibilityModifier(BilAccessibility.Public));
-            nonReservedHost.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
-                "Svc$f()@.void",
+            var proxyWrapper = new BilTypeDeclaration("core.logging::Logged", BilTypeKind.Wrapper,
+                new BilAccessibilityModifier(BilAccessibility.Public),
+                new BilKeywordModifier(BilKeyword.Rich));
+            proxyWrapper.GenericParameters.Add("TTarget");
+            proxyWrapper.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "core.logging::Logged$.proxy.doSomething(arg:.i32)@.string",
                 new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public),
                     new BilWrapperProxyModifier(BilProxyKind.Specific) }));
-            m.ExternalSymbols.Add(nonReservedHost);
-            BilTestHarness.CheckBilInvalid("非保留名带 wrapper-proxy", m,
-                "只允许在编译器合成保留名");
+            proxyWrapper.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "core.logging::Logged$.proxy.*(symbol:.string)@.any",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilWrapperProxyModifier(BilProxyKind.Wildcard) }));
+            m.ExternalSymbols.Add(proxyWrapper);
+            BilTestHarness.CheckBilValid("wrapper-proxy 模板声明（specific/wildcard 正例）", m);
 
-            // §21.8：合成保留名缺 wrapper-proxy
+            // §21.8：非 .proxy. 名带 wrapper-proxy
             m = MinimalModule(out _, out _);
-            var unmarkedHost = new BilTypeDeclaration("Svc", BilTypeKind.Class,
-                new BilAccessibilityModifier(BilAccessibility.Public));
-            unmarkedHost.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
-                "Svc$.proxy.0.x()@.void",
-                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Private) }));
-            m.ExternalSymbols.Add(unmarkedHost);
-            BilTestHarness.CheckBilInvalid("保留名缺 wrapper-proxy", m,
+            var nonProxyHost = new BilTypeDeclaration("core.logging::Logged", BilTypeKind.Wrapper,
+                new BilAccessibilityModifier(BilAccessibility.Public),
+                new BilKeywordModifier(BilKeyword.Rich));
+            nonProxyHost.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "core.logging::Logged$f()@.void",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilWrapperProxyModifier(BilProxyKind.Specific) }));
+            m.ExternalSymbols.Add(nonProxyHost);
+            BilTestHarness.CheckBilInvalid("非 .proxy. 名带 wrapper-proxy", m,
+                "只允许在名以 .proxy. 开头");
+
+            // §21.8：.proxy. 名缺 wrapper-proxy
+            m = MinimalModule(out _, out _);
+            var unmarkedProxy = new BilTypeDeclaration("core.logging::Logged", BilTypeKind.Wrapper,
+                new BilAccessibilityModifier(BilAccessibility.Public),
+                new BilKeywordModifier(BilKeyword.Rich));
+            unmarkedProxy.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "core.logging::Logged$.proxy.x()@.void",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            m.ExternalSymbols.Add(unmarkedProxy);
+            BilTestHarness.CheckBilInvalid(".proxy. 名缺 wrapper-proxy", m,
                 "缺少 wrapper-proxy(...)");
 
-            // §21.8：.wrapped. 名段 kind 必须 original
+            // §21.2：.proxy. 方法不在 wrapper 类型内
             m = MinimalModule(out _, out _);
-            var wrongKindHost = new BilTypeDeclaration("Svc", BilTypeKind.Class,
+            var classHost = new BilTypeDeclaration("Svc", BilTypeKind.Class,
                 new BilAccessibilityModifier(BilAccessibility.Public));
-            wrongKindHost.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
-                "Svc$.wrapped.x()@.void",
-                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Private),
+            classHost.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "Svc$.proxy.x()@.void",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public),
                     new BilWrapperProxyModifier(BilProxyKind.Specific) }));
-            m.ExternalSymbols.Add(wrongKindHost);
-            BilTestHarness.CheckBilInvalid(".wrapped. kind 非 original", m,
-                "必须带 wrapper-proxy(original)");
+            m.ExternalSymbols.Add(classHost);
+            BilTestHarness.CheckBilInvalid(".proxy. 不在 wrapper 类型内", m,
+                "必须声明在 wrapper 类型内");
 
-            // §21.8：.proxy. 名段不得 original
+            // §21.8：通配 proxy 名必须 wildcard kind
             m = MinimalModule(out _, out _);
-            var originalOnProxyHost = new BilTypeDeclaration("Svc", BilTypeKind.Class,
-                new BilAccessibilityModifier(BilAccessibility.Public));
-            originalOnProxyHost.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
-                "Svc$.proxy.0.x()@.void",
-                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Private),
-                    new BilWrapperProxyModifier(BilProxyKind.Original) }));
-            m.ExternalSymbols.Add(originalOnProxyHost);
-            BilTestHarness.CheckBilInvalid(".proxy. 带 original", m,
-                "不得带 wrapper-proxy(original)");
+            var wrongWildKind = new BilTypeDeclaration("core.logging::Logged", BilTypeKind.Wrapper,
+                new BilAccessibilityModifier(BilAccessibility.Public),
+                new BilKeywordModifier(BilKeyword.Rich));
+            wrongWildKind.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "core.logging::Logged$.proxy.*(symbol:.string)@.any",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilWrapperProxyModifier(BilProxyKind.Specific) }));
+            m.ExternalSymbols.Add(wrongWildKind);
+            BilTestHarness.CheckBilInvalid("通配 proxy 带 specific", m,
+                "必须带 wrapper-proxy(wildcard)");
+
+            // §21.8：具名 proxy 必须 specific kind
+            m = MinimalModule(out _, out _);
+            var wrongSpecKind = new BilTypeDeclaration("core.logging::Logged", BilTypeKind.Wrapper,
+                new BilAccessibilityModifier(BilAccessibility.Public),
+                new BilKeywordModifier(BilKeyword.Rich));
+            wrongSpecKind.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "core.logging::Logged$.proxy.x()@.void",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilWrapperProxyModifier(BilProxyKind.Wildcard) }));
+            m.ExternalSymbols.Add(wrongSpecKind);
+            BilTestHarness.CheckBilInvalid("具名 proxy 带 wildcard", m,
+                "必须带 wrapper-proxy(specific)");
 
             // §21.8：wrapper-proxy 修饰符重复
             m = MinimalModule(out _, out _);
-            var dupProxyHost = new BilTypeDeclaration("Svc", BilTypeKind.Class,
-                new BilAccessibilityModifier(BilAccessibility.Public));
+            var dupProxyHost = new BilTypeDeclaration("core.logging::Logged", BilTypeKind.Wrapper,
+                new BilAccessibilityModifier(BilAccessibility.Public),
+                new BilKeywordModifier(BilKeyword.Rich));
             dupProxyHost.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
-                "Svc$.proxy.0.x()@.void",
-                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Private),
+                "core.logging::Logged$.proxy.x()@.void",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public),
                     new BilWrapperProxyModifier(BilProxyKind.Specific),
                     new BilWrapperProxyModifier(BilProxyKind.Wildcard) }));
             m.ExternalSymbols.Add(dupProxyHost);
             BilTestHarness.CheckBilInvalid("wrapper-proxy 修饰符重复", m,
                 "wrapper-proxy 修饰符重复");
 
-            // ===== §8.4/§21.8 wrapper-proxy(router)（S11e）=====
-            // router 正例：call??? 降级路由 fn + wrapper-proxy(router) 通过
-            //（§8.4 router 定义——按 symbol 路由体；ExternalSymbols 免 fn
-            // 定义同 S11d 烘焙声明先例）
-            m = MinimalModule(out _, out _);
-            var routerHost = new BilTypeDeclaration("Svc", BilTypeKind.Class,
-                new BilAccessibilityModifier(BilAccessibility.Public));
-            routerHost.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
-                "Svc$call???(symbol:.string,namedArgs:.array<core::Pair<.string, .any>>," +
-                "unnamedArgs:.array<.any>)@.any",
-                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Private),
-                    new BilWrapperProxyModifier(BilProxyKind.Router) }));
-            m.ExternalSymbols.Add(routerHost);
-            BilTestHarness.CheckBilValid("router 声明正例（call??? + wrapper-proxy(router)）", m);
+            // §21.3：get.self / call.inner 仅 proxy 模板 fn 内合法
+            BilTestHarness.CheckBilValid("get.self/call.inner 在 proxy 模板内（正例）",
+                ProxyTemplateModule(includeSelfInner: true));
+            BilTestHarness.CheckBilInvalid("get.self 在普通 fn 内",
+                OrdinaryFnWithGetSelfModule(), "仅允许在带 wrapper-proxy");
 
-            // §21.8：wrapper-proxy(router) 在非 call??? 名上 → 拒
-            //（router 修饰符只放行降级路由名）
+            // §8.3.1 wrapped(W) 正例 / 非 wrapper 类型拒
             m = MinimalModule(out _, out _);
-            var wrongRouterNameHost = new BilTypeDeclaration("Svc", BilTypeKind.Class,
-                new BilAccessibilityModifier(BilAccessibility.Public));
-            wrongRouterNameHost.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
-                "Svc$call(symbol:.string)@.any",
-                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Private),
-                    new BilWrapperProxyModifier(BilProxyKind.Router) }));
-            m.ExternalSymbols.Add(wrongRouterNameHost);
-            BilTestHarness.CheckBilInvalid("router 修饰符在非 call??? 名上", m,
-                "只允许在编译器合成保留名");
-
-            // §21.8：call??? 名带非 router kind → 拒（call??? ↔ router 双向一致）
+            m.LocalSymbols.Add(new BilTypeDeclaration("core.logging::Logged", BilTypeKind.Wrapper,
+                new BilAccessibilityModifier(BilAccessibility.Public),
+                new BilKeywordModifier(BilKeyword.Rich)));
+            var wrappedService = new BilTypeDeclaration("com.example::Service", BilTypeKind.Class,
+                new BilAccessibilityModifier(BilAccessibility.Public),
+                new BilWrappedModifier("core.logging::Logged"));
+            m.LocalSymbols.Add(wrappedService);
+            BilTestHarness.CheckBilValid("wrapped(W) 类型声明正例", m);
             m = MinimalModule(out _, out _);
-            var wrongRouterKindHost = new BilTypeDeclaration("Svc", BilTypeKind.Class,
-                new BilAccessibilityModifier(BilAccessibility.Public));
-            wrongRouterKindHost.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
-                "Svc$call???(symbol:.string)@.any",
-                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Private),
-                    new BilWrapperProxyModifier(BilProxyKind.Specific) }));
-            m.ExternalSymbols.Add(wrongRouterKindHost);
-            BilTestHarness.CheckBilInvalid("call??? 名带 wrapper-proxy(specific)", m,
-                "必须带 wrapper-proxy(router)");
+            m.LocalSymbols.Add(new BilTypeDeclaration("com.example::Plain", BilTypeKind.Class,
+                new BilAccessibilityModifier(BilAccessibility.Public)));
+            var badWrapped = new BilTypeDeclaration("com.example::Service", BilTypeKind.Class,
+                new BilAccessibilityModifier(BilAccessibility.Public),
+                new BilWrappedModifier("com.example::Plain"));
+            m.LocalSymbols.Add(badWrapped);
+            BilTestHarness.CheckBilInvalid("wrapped 非 wrapper 类型", m,
+                "不是 wrapper 类型");
 
 
             // ===== §21.8 init 豁免（对齐 P3 ConstFieldRules，SYNTAX §9.3）=====
@@ -1051,11 +1032,9 @@ namespace LatteCompiler.Tests
             };
         }
 
-        // S11 手工模块（§12.3/§13.3）：core.logging::Logged wrapper（rich，
-        // 实例字段 level）+ com.example::Service class（§5.3 wrapper 隐藏
-        // 字段）+ com.example::RequestResult enum-struct（Success 自动判别 /
-        // Failed 判别值资源 R_FC）+ main(svc, e)（参数入口已赋值，DA 免扰）——
-        // 正例与负例共用；body 指令后以 ret $x 收尾
+        // S11 手工模块（§12.3/§13.3，M88）：core.logging::Logged wrapper（rich，
+        // 实例字段 level）+ com.example::Service class（wrapped 应用标记）+
+        // RequestResult enum-struct + main(svc, e)——正例与负例共用
         private static BilModule S11Module(params BilInstruction[] body)
         {
             var module = new BilModule();
@@ -1071,10 +1050,8 @@ namespace LatteCompiler.Tests
             module.LocalSymbols.Add(logged);
 
             var service = new BilTypeDeclaration("com.example::Service", BilTypeKind.Class,
-                new BilAccessibilityModifier(BilAccessibility.Public));
-            service.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field,
-                HostWrapperField,
-                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+                new BilAccessibilityModifier(BilAccessibility.Public),
+                new BilWrappedModifier("core.logging::Logged"));
             module.LocalSymbols.Add(service);
 
             var result = new BilTypeDeclaration("com.example::RequestResult",
@@ -1106,9 +1083,53 @@ namespace LatteCompiler.Tests
             return module;
         }
 
-        // §5.3 wrapper 隐藏字段 canonical：宿主 Service 的 Logged 字段
-        private const string HostWrapperField =
-            "com.example::Service#.wrapper.core.logging::Logged@core.logging::Logged";
+        // M88：proxy 模板 fn 含 get.self + call.inner 正例
+        private static BilModule ProxyTemplateModule(bool includeSelfInner)
+        {
+            var module = MinimalModule(out _, out _);
+            var logged = new BilTypeDeclaration("core.logging::Logged", BilTypeKind.Wrapper,
+                new BilAccessibilityModifier(BilAccessibility.Public),
+                new BilKeywordModifier(BilKeyword.Rich));
+            logged.GenericParameters.Add("TTarget");
+            var proxySym = "core.logging::Logged$.proxy.doSomething(arg:.i32)@.string";
+            logged.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method, proxySym,
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilWrapperProxyModifier(BilProxyKind.Specific),
+                }));
+            module.LocalSymbols.Add(logged);
+            var fn = new BilFunction(proxySym);
+            fn.Args.Add(new BilArgDeclaration(".return", ".string"));
+            fn.Args.Add(new BilArgDeclaration(".this", "core.logging::Logged"));
+            fn.Args.Add(new BilArgDeclaration("arg", ".i32"));
+            fn.Vars.Add(new BilVarDeclaration(".generic<$.generic.TTarget>", "self"));
+            fn.Vars.Add(new BilVarDeclaration(".string", "r"));
+            var entry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            if (includeSelfInner)
+            {
+                entry.Instructions.Add(new GetSelfInstruction(BilOp.Var("self")));
+                entry.Instructions.Add(new CallInnerInstruction(BilOp.Var("r"),
+                    new[] { BilOp.Var("arg") }));
+                entry.Instructions.Add(new RetInstruction(BilOp.Var("r")));
+            }
+            else
+            {
+                entry.Instructions.Add(new RetInstruction(BilOp.Var("r")));
+            }
+            fn.Blocks.Add(entry);
+            module.Functions.Add(fn);
+            // MinimalModule 已有 $main——保留
+            return module;
+        }
+
+        private static BilModule OrdinaryFnWithGetSelfModule()
+        {
+            var module = MinimalModule(out _, out var entry);
+            module.Functions[0].Vars.Add(new BilVarDeclaration(".i32", "self"));
+            entry.Instructions.Insert(0, new GetSelfInstruction(BilOp.Var("self")));
+            return module;
+        }
 
         // S10 同名不同元数共存手工模块（验证器修复批次）：com.example::Wrap
         // （init()）与 com.example::Wrap\<T\>（init(x: .i32)）——external
@@ -1266,10 +1287,9 @@ namespace LatteCompiler.Tests
             return module;
         }
 
-        // §21.8 init 豁免（§13.3 embedded 形态）手工模块：Logged wrapper
-        // （const 内层字段 level）+ Service class（§5.3 wrapper 隐藏字段 +
-        // init(lv) 声明）+ init fn 定义（体内 set.field.embedded 写 const
-        // 内层字段）——embedded 写入与 set.field 同豁免规则
+        // §21.8 init 豁免（§13.3 embedded 形态，M88 wrapper 链）：Logged
+        // wrapper（const 内层字段）+ Service（wrapped 标记 + init）+ init
+        // 体内 set.field.embedded wrapper(W) 写 const 内层字段
         private static BilModule S11InitEmbeddedModule()
         {
             var module = new BilModule();
@@ -1286,10 +1306,8 @@ namespace LatteCompiler.Tests
             module.LocalSymbols.Add(logged);
 
             var service = new BilTypeDeclaration("com.example::Service", BilTypeKind.Class,
-                new BilAccessibilityModifier(BilAccessibility.Public));
-            service.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field,
-                HostWrapperField,
-                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+                new BilAccessibilityModifier(BilAccessibility.Public),
+                new BilWrappedModifier("core.logging::Logged"));
             service.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
                 "com.example::Service$init(lv:.string)@.void",
                 new BilModifier[]
@@ -1306,7 +1324,8 @@ namespace LatteCompiler.Tests
             var initBlock = new BilBlock("entry", BilBlockModifier.Entrypoint);
             initBlock.Instructions.Add(new SetEmbeddedFieldInstruction(BilOp.Var("lv"),
                 BilOp.Var(".this"),
-                BilOp.Field(HostWrapperField), BilOp.Field("core.logging::Logged#level@.string")));
+                BilOp.Wrapper("core.logging::Logged"),
+                BilOp.Field("core.logging::Logged#level@.string")));
             initBlock.Instructions.Add(new RetInstruction());
             init.Blocks.Add(initBlock);
             module.Functions.Add(init);

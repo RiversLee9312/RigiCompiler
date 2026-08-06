@@ -122,6 +122,18 @@ namespace LatteCompiler
                 var binding = CallFacility.BindCall(node, calleeSegments, callArguments!, scope,
                     ctx, env, genericArguments);
                 if (binding == null) return null;
+                // M88：inner(...) 占位
+                if (binding.IsInnerCall)
+                {
+                    if (binding.IsVoid)
+                    {
+                        env.Error(node.Span, "Method 'inner' has no result (void) " +
+                            "and cannot be used as a value");
+                        return null;
+                    }
+                    return new BoundInnerCallExpression(node, binding.Arguments,
+                        binding.ResultType!);
+                }
                 // S10：async 无结果调用有 Task 值（ResultType 非空）——仅
                 // 真 void（ResultType == null）拒绝作值
                 if (binding.ResultType == null)
@@ -194,17 +206,7 @@ namespace LatteCompiler
                 else
                 {
                     var headLocal = scope.Lookup(headName);
-                    if (headLocal == null
-                        && ctx.Proxy.MaterializedLocals.TryGetValue(headName, out var materialized))
-                    {
-                        // proxy 前奏物化局部（S11b：wildcard 的 symbol/
-                        // namedArgs/unnamedArgs 与 get 的 value；非 proxy
-                        // 语境本表恒空）：前奏恒先于体赋值——免 DA
-                        // unassigned 检查（合成局部不入 FlowState/Scope）
-                        headValue = new BoundValueReferenceExpression(node, materialized,
-                            materialized.Type!);
-                    }
-                    else if (headLocal != null)
+                    if (headLocal != null)
                     {
                         if (!forAssignment && !ctx.Flow.IsAssigned(headLocal))
                         {
@@ -477,27 +479,9 @@ namespace LatteCompiler
                 env.Error(node.Span, "P3: 'this' is not available in a static context");
                 return null;
             }
+            // M88：模板态下 proxy 声明的 Owner 即 wrapper 类型，this 走普通
+            // 实例上色（不再重写 BoundWrapperAccessExpression）
             BoundExpression receiver = new BoundThisExpression(node, ctx.Frame.Method.Owner!);
-            // S11b（SYNTAX §14.2/§14.5）：proxy 体内的 this 重写为 wrapper
-            // 只读 place（与使用点 `obj:W` 同构——原地访问宿主持有的那份
-            // wrapper）；链末裸 this（无段无后缀）即整体赋值/取值，只读禁令
-            // 与 BindWrapperSegment 同族措辞一处收口
-            if (ctx.Proxy.IsActive)
-            {
-                receiver = new BoundWrapperAccessExpression(node, receiver,
-                    ctx.Proxy.Application!);
-                if (node.Segments.Count == 0 && node.Head.Suffixes.Count == 0)
-                {
-                    if (forAssignment)
-                    {
-                        env.Error(node.Span, "Cannot assign to wrapper place 'this'");
-                        return null;
-                    }
-                    env.Error(node.Span, "Wrapper place 'this' cannot be used as a value " +
-                        "(only as a member access receiver)");
-                    return null;
-                }
-            }
             var folded = FoldSuffixes(node, receiver, node.Head.Suffixes, 0,
                 forAssignment && node.Segments.Count == 0, scope, ctx, env);
             if (folded == null) return null;
@@ -508,9 +492,9 @@ namespace LatteCompiler
             return BindInstanceChain(node, folded, node.Segments, scope, ctx, env, forAssignment);
         }
 
-        // self 路径（S11b，SYNTAX §14.2）：proxy 体内 self = 被修饰对象实例
-        //（宿主角色的 this，类型 = TTarget 代入结果）；wrapper 零泛型参数
-        // 时 self 不可用（§14.2 末条）；非 proxy 语境是编译错误（ARCH §5.2）
+        // self 路径（M88，SYNTAX §14.2）：proxy 体内 self = BoundSelfExpression
+        //（Type = TTarget 泛型参数）；wrapper 零泛型参数时 self 不可用；
+        // 非 proxy 语境是编译错误（ARCH §5.2）
         private static BoundExpression? BindSelfPath(PathExpressionASTNode node, Scope scope,
             BindContext ctx, BindEnvironment env, bool forAssignment)
         {
@@ -526,7 +510,7 @@ namespace LatteCompiler
                     "no TTarget generic parameter (§14.2)");
                 return null;
             }
-            BoundExpression receiver = new BoundThisExpression(node, ctx.Proxy.SelfType);
+            BoundExpression receiver = new BoundSelfExpression(node, ctx.Proxy.SelfType);
             var folded = FoldSuffixes(node, receiver, node.Head.Suffixes, 0,
                 forAssignment && node.Segments.Count == 0, scope, ctx, env);
             if (folded == null) return null;
@@ -619,11 +603,12 @@ namespace LatteCompiler
         }
 
         // wrapper place 段（S11，SYNTAX §14.1/§14.5）：`obj:W`——绑定在宿主
-        // 上的那份 wrapper 的只读 place。wrapper 查找双源同池：宿主来源符号
-        //（字段/局部的 AppliedWrappers——Value wrapper）与宿主静态类型
-        //（Entity wrapper，构造类型回退定义）；按段名匹配，恰好一命中，
-        // 零命中（无应用）/多命中（同名歧义）均诊断。nullable 宿主拒绝
-        //（与普通段同口径；Colon 无安全访问形态）。
+        // 上的那份 wrapper 的只读 place。wrapper 查找三源同池：宿主来源符号
+        //（字段/局部的 AppliedWrappers——Value wrapper）、宿主静态类型
+        //（Entity wrapper，构造类型回退定义）、泛型参数 with 约束（等价
+        // AppliedWrappers，合成 WrapperApplication.FromConstraint）；按段名
+        // 匹配，恰好一命中，零命中（无应用）/多命中（同名歧义）均诊断。
+        // nullable 宿主拒绝（与普通段同口径；Colon 无安全访问形态）。
         // 只读禁令（§14.5 全拦截面收口）：链末且无后缀的 Colon 段即整体
         // 赋值/取值——拒绝；取值逃逸（变量初始化/实参/返回值/推断源/运算
         // 与类型检查操作数……）全部经路径绑定结果，收口于本处。带后缀
@@ -657,11 +642,24 @@ namespace LatteCompiler
             {
                 matches.AddRange(symbolWrappers.Where(w => w.Wrapper.Name == segment.Name));
             }
-            // 泛型参数 receiver 无 AppliedWrappers（with 约束场景归后续）
             if (receiver.Type is TypeSymbol hostType)
             {
                 matches.AddRange((hostType.ConstructedFrom ?? hostType).AppliedWrappers
                     .Where(w => w.Wrapper.Name == segment.Name));
+            }
+            // 第三源：泛型参数 with 约束（M79 遗留 param:W）——with ≡ AppliedWrappers
+            if (receiver.Type is GenericParameterSymbol gp)
+            {
+                foreach (var constraint in gp.Constraints)
+                {
+                    if (constraint.Kind != GenericConstraintKind.With) continue;
+                    if (constraint.Bound is not TypeSymbol wrapperBound) continue;
+                    var wrapper = wrapperBound.ConstructedFrom ?? wrapperBound;
+                    if (wrapper.Name == segment.Name)
+                    {
+                        matches.Add(WrapperApplication.FromConstraint(wrapper));
+                    }
+                }
             }
             if (matches.Count == 0)
             {

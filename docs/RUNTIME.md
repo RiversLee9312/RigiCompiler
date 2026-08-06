@@ -16,7 +16,7 @@
 - `shared` 是类型声明属性：shared class 构成可跨 Coroutine 引用的共享对象域，shared rich struct 与 shared wrapper 则以值语义进入共享图；静态字段闭包禁止 shared 图反向指向 local object。`String` 是非 rich ValueType，天然可跨越所有共享边界（见 §4）。
 - 生命周期管理分为 microGC、microSGC 与 macroGC：前两者分别以非同步/同步 ARC 处理绝大多数即时释放，macroGC 仅对 ARC 遗留的候选闭包做低门槛、小步快跑的循环检测。
 - 运行时不支持 finalizer。外部资源由 `core.IDisposable`/`using` 确定性释放；GC 只在对象销毁时检查遗漏并上报全局异常，绝不代替用户执行 `dispose()`（见 §25）。
-- wrapper 逻辑烘焙进方法体、骑静态 vtable、`call???` 固定 slot 兜底，实现 swizzling/forwarding 表达力而无动态派发框架。
+- wrapper 逻辑经 Middleware 烘焙进方法体、骑静态 vtable、`call???` 固定 slot 兜底，实现 swizzling/forwarding 表达力而无动态派发框架（见 §14）。
 - 加载期扁平化 + 二分接口查找，AOT 友好、无 JIT 依赖。
 - 原生协程从 `main` 开始贯穿整个程序；Executor 是可观察的调度域，Worker 保持透明。
 - `enum struct` 以隐藏判别字段统一固定 case 与参数化 case；所有 enum 值都必须通过具名 case 入口产生，init 从不作为普通 constructor 暴露。
@@ -26,7 +26,7 @@
 - 引用全场 16 字节，需 16 字节对齐，cache 密度减半，指针密集结构受影响。
 - 普通泛型容器使用统一胖值槽：`Array\<i32>` 固定为 16 字节/元素，而不是按 `i32` 的原生 4 字节连续布局。缓冲区场景由 `Span\<T extends ValueType>` 单独兜底（见 §5），不为此给 `Array` 开特例。不提供泛型热路径的单态化特化 pass——typeid 间接是共享泛型代码的固定成本，需要原生连续布局时改用 `Span\<T>` 或非泛型代码。
 - 通过接口访问字段恒为虚调用（接口字段降级为 getter/setter）。
-- 单个 `obj.foo()` 的派发链可能有多层（specific proxy、各类别唯一 wildcard、跨 wrapper 嵌套、`call???` 兜底）；编译器需实现派发链诊断工具（见 §14）。
+- 单个 `obj.foo()` 的派发链可能有多层（specific proxy、各类别唯一 wildcard、跨 wrapper 嵌套、`call???` 兜底）；编译器需实现派发链诊断工具（见 §15）。
 - run-to-suspension 不提供一般性的隐藏抢占点；长期计算任务需要显式 `yield`。唯一的内部例外之一是 macroGC acquire/release 慢路径可生成不可见的 `yield core.GCAlarm(...)`，用于在 GC ownership fence 上挂起当前 Coroutine（见 §23）。
 
 ---
@@ -305,13 +305,19 @@ Latte 泛型不擦除实际类型。实现采用**单份共享 Native 代码体 
 
 ## 14. Wrapper 派发管线
 
-**静态组合**：实体修饰器在编译期把 wrapper 逻辑内联进方法体（替换 `inner`，从内到外顺序调用），因此天然骑 vtable。运行时**不能**增删、重排或禁用 wrapper。编译器产物形态（M81 定稿）：proxy 特化体是带 `wrapper-proxy(PROXY_KIND)` 修饰符的独立合成 fn（`BIL_STANDARD.md` §8.4），经普通 `invoke` 链接——编译器不做文本内联，最终内联归 Middleware。
+**静态组合**：实体修饰器在语言语义上把 wrapper 逻辑按声明序从内到外嵌套进方法派发（替换 `inner`），因此天然骑 vtable。运行时**不能**增删、重排或禁用 wrapper。烘焙动作（逐应用特化、inner 链接、原始体替换，以及 `call???` router 体合成）由 Middleware 在合法 lowering 时完成（边界见 `BIL_STANDARD.md` §23）；frontend（编译器）产物只携带三类标记，不合成派发链符号、不替换原始方法体：
 
-**wrapper 值的表示**：wrapper 恒为 rich struct（`SYNTAX.md` §14.9），因此它是一个带 typeid 的胖值，而不是独立的堆对象——没有对象头、没有对象身份、不作为独立 GC 节点被追踪；其内部托管引用字段照常经 `refMap` 参加 acquire/release。wrapper 实例存放在宿主的编译器生成隐藏字段中（`BIL_STANDARD.md` §5.3），因此：
+- (a) 声明上的 wrapper 应用标记（BIL 修饰符）；
+- (b) proxy 模板 fn——wrapper 类型的成员 fn，带 `wrapper-proxy(specific|wildcard)` 修饰符（`BIL_STANDARD.md` §8.4），体内的 `inner` / `self` 以占位指令表达（`call.inner` 见 `BIL_STANDARD.md` §15，`get.self` 见 `BIL_STANDARD.md` §12）；
+- (c) 未声明方法的降级调用点 = 对 `core::Any$call???` 的普通 `invoke`（见 §14.2）。
+
+最终内联仍归 Middleware。
+
+**wrapper 值的表示**：wrapper 恒为 rich struct（`SYNTAX.md` §14.9），因此它是一个带 typeid 的胖值，而不是独立的堆对象——没有对象头、没有对象身份、不作为独立 GC 节点被追踪；其内部托管引用字段照常经 `refMap` 参加 acquire/release。wrapper 实例存放在宿主的 Middleware 合成隐藏存储中（命名约定见 `BIL_STANDARD.md` §5.3；存储布局是 Middleware 的实现职责，BIL 文本不再声明隐藏字段），因此：
 
 - 宿主类型必须允许内嵌 rich struct；非 rich struct 不能被修饰，这是编译期不变量，运行时无需检查。
 - 非 shared wrapper 可能持有 local object，所以只能出现在非 shared 宿主与栈帧中；shared wrapper 走 microSGC 路径。
-- 路径表达式 `value:WrapperType` 与 proxy 体内的 `this` 都是对该隐藏字段的**原地访问**，从不复制。源码层 `value:WrapperType` 是只读 place（`SYNTAX.md` §14.5）：既不能被整体赋值，也不能被整体取出，因此运行时不存在脱离宿主独立存活的 wrapper 值，也不为 wrapper 提供任何别名或共享机制。
+- 路径表达式 `value:WrapperType` 与 proxy 体内的 `this` 都是对该隐藏存储的**原地访问**，从不复制。源码层 `value:WrapperType` 是只读 place（`SYNTAX.md` §14.5）：既不能被整体赋值，也不能被整体取出，因此运行时不存在脱离宿主独立存活的 wrapper 值，也不为 wrapper 提供任何别名或共享机制。wrapper place 的 embedded 链指令操作数是 **wrapper 类型引用**（而非编译器合成的隐藏字段符号）。
 
 ### 14.1 四类唯一 wildcard proxy
 
@@ -352,7 +358,7 @@ operator .proxy.opr.*<named TNamedArgs..., TUnnamedArgs..., TReturn>(
 
 ### 14.2 单一 `call???` slot
 
-`call???` 定义在 `Any`（万物基类）上，因此是每个对象 vtable 中一个**固定 offset 的 slot**，不涉及动态向 vtable 增加条目：
+`call???` 定义在 `Any`（万物基类）上，因此是每个对象 vtable 中一个**固定 offset 的 slot**，不涉及动态向 vtable 增加条目；继承链经 vtable 正常解析：
 
 ```latte
 call???<TResult, named TNamedArgs..., TUnnamedArgs...>(
@@ -362,15 +368,14 @@ call???<TResult, named TNamedArgs..., TUnnamedArgs...>(
 ): TResult
 ```
 
-- 默认实现（请求未被任何 wrapper 路由时）直接抛 `core.NoSuchMethodException`，含可按配置启用的 log 代码。
-- 方法、getter、setter、operator 在 compiler lowering 后本质上都是方法请求。运行时只保留这一个 slot；编译器生成的 `call???` body 根据 canonical `symbol` 判定类别并转入 `.proxy.*`、`.proxy.get.*`、`.proxy.set.*` 或 `.proxy.opr.*`，不另外设置 `get???`、`set???`、`opr???`。
-- 对已有声明成员，编译期先把匹配的 specific proxy 或对应类别 wildcard 烘焙进其方法体；对需要进入统一 fallback 的请求，编译器生成/调用 `call???` router。
+- `call???` 是 bootstrap 内建方法（与 `Any.toString` 同先例）：bootstrap 声明 + VM 内建 hook 实现（`BIL_STANDARD.md` §22.5）。默认实现（请求未被任何 wrapper 路由时）由该 hook 提供，直接抛 `core.NoSuchMethodException`，含可按配置启用的 log 代码——**不是**编译器生成的 body。
+- 方法、getter、setter、operator 在 lowering 后本质上都是方法请求。运行时只保留这一个 slot；对已有声明成员的命中烘焙，以及 `call???` 按 canonical `symbol` 判定类别并转入 `.proxy.*`、`.proxy.get.*`、`.proxy.set.*` 或 `.proxy.opr.*` 的类别路由体，均由 Middleware 合成，不另外设置 `get???`、`set???`、`opr???`。类别路由作为 Middleware 插入点的架构预留（`SYNTAX.md` §14.7 末条语义不变，执行主体为 Middleware）。
 - 跨模块编译调用方时，若被调用成员已有普通实现则走正常 vtable slot；需要 fallback 时交给 `call???`，而 `call???` 自身仍经 vtable 解决继承。
-- 给已有方法增加 specific proxy 后，只需重编译被修饰模块，使原 vtable slot 指向新的 wrapped body；调用方无需因 wrapper 变化而重编译。
+- 给已有方法增加 specific proxy 后，只需重编译被修饰模块并由 Middleware 重新烘焙，使原 vtable slot 指向新的 wrapped body；调用方无需因 wrapper 变化而重编译。
 
-**未声明普通方法的降级规则**（对应 `SYNTAX.md` §14.7）：静态类型无匹配声明方法且 wrapper 链中存在 `.proxy.*` 时，编译为携带 canonical symbol 的 `call???`；实参按统一胖值 ABI 传递，返回值在调用点按期望类型转换，不符抛 `core.CastException`。
+**未声明普通方法的降级规则**（对应 `SYNTAX.md` §14.7）：静态类型无匹配声明方法且 wrapper 链中存在 `.proxy.*` 时，frontend 发射对 `core::Any$call???` 的普通 `invoke`（携带 canonical symbol）；实参按统一胖值 ABI 传递，返回值在调用点按期望类型转换，不符抛 `core.CastException`。frontend **不**合成任何 router / 降级链符号。
 
-落地形态注记（M86）：上文的 `call???` 泛型签名是**逻辑签名**——frontend 的烘焙产物实质化为非泛型胖值签名 `(symbol: String, namedArgs: Array\<Pair\<String, Any\>\>, unnamedArgs: Array\<Any\>): Any`（`BIL_STANDARD.md` §15.4）。泛型 typeid 包不单独传递：每个 `Any` 胖值自描述 typeid（§2），wildcard proxy 体可在包元素上直接做 `is`/`as` 检查；`TResult` 的角色由调用点的 cast 物化承担（`BIL_STANDARD.md` §12.1，不符抛 `core.CastException`）。router 是宿主类型的成员 fn（名 `call???`，`wrapper-proxy(router)` 修饰符），体为对降级特化链首的普通 `invoke`；链末 inner 目标是 `Any.call???` 默认实现。
+落地形态注记（M86）：上文的 `call???` 泛型签名是**逻辑签名**——`call???` 的规范签名实质化为非泛型胖值签名 `(symbol: String, namedArgs: Array\<Pair\<String, Any\>\>, unnamedArgs: Array\<Any\>): Any`（`BIL_STANDARD.md` §15.4）。泛型 typeid 包不单独传递：每个 `Any` 胖值自描述 typeid（§2），wildcard proxy 体可在包元素上直接做 `is`/`as` 检查；`TResult` 的角色由调用点的 cast 物化承担（`BIL_STANDARD.md` §12.1，不符抛 `core.CastException`）。frontend 降级调用点发射 `invoke core::Any$call???`；被 wrapper 命中的宿主上的类别路由体由 Middleware 按 vtable 语义合成（链末落到 `Any.call???` 的 VM hook 默认实现）。
 
 ### 14.3 canonical symbol ABI
 
@@ -410,9 +415,9 @@ getter / setter：
 
 ## 15. 派发链诊断工具
 
-编译器需提供诊断能力：给定一个调用点，打印其解析出的完整 wrapper 派发链，包括跨 wrapper 的 outer→inner 顺序、每层命中的 specific 或对应类别唯一 wildcard、canonical symbol，以及是否降级到 `call???`。这是随实现一并提供的编译器功能，而非事后补充的调试手段——§1 提到的“派发链可能有多层”这一复杂度，靠这个工具而非靠用户记忆来管理。
+编译器需提供诊断能力：给定一个调用点，打印其解析出的完整 wrapper 派发链——即 **Middleware 将要烘焙的链**，包括跨 wrapper 的 outer→inner 顺序、每层命中的 specific 或对应类别唯一 wildcard、proxy 模板声明的 canonical symbol，以及是否具备降级到 `call???` 的资格。这是随实现一并提供的编译器功能，而非事后补充的调试手段——§1 提到的“派发链可能有多层”这一复杂度，靠这个工具而非靠用户记忆来管理。
 
-工具形态（M81 定稿）：CLI 子命令 `compile --file <src> --explain-dispatch`，报告编译单元内全部被修饰成员的烘焙链（outer→inner 每层命中与 canonical symbol）与存在 `.proxy.*` 类型的降级路由；按调用点（源位置）过滤为预留扩展。
+工具形态：CLI 子命令 `compile --file <src> --explain-dispatch`。数据源为编译器报告的**应用登记 × proxy 声明的形状匹配结果**（每层将命中 specific|wildcard 与 proxy 声明 canonical symbol）与**降级资格**（wrapper 链是否含 `.proxy.*`）。编译器不再合成烘焙符号，报告中的特化身份改为 proxy 模板声明的 canonical symbol；按调用点（源位置）过滤为预留扩展。
 
 ---
 

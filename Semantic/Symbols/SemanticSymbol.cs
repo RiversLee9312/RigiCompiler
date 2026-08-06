@@ -100,12 +100,6 @@ namespace LatteCompiler
         public WrapperTargetKind? WrapperTarget { get; internal set; }
         // 挂载的 wrapper 应用（声明顺序，外层在前；P2 解析填充）
         public List<WrapperApplication> AppliedWrappers { get; } = new List<WrapperApplication>();
-        // call??? 降级链（S11e，SYNTAX §14.7 + BIL §15.4）：wrapper 链含方法类别
-        // .proxy.* 时 P2 ProxyDispatchResolver 合成——router（宿主成员，名
-        // call???，wrapper-proxy(router)）与逐应用降级特化链（.proxy.<序>.???，
-        // outer→inner）；链末 inner = Any.call??? 默认实现。无 .proxy.* 链恒 null
-        public MethodSymbol? DowngradeRouter { get; internal set; }
-        public List<MethodSymbol>? DowngradeChain { get; internal set; }
         // 编译器硬编码内建（bootstrap 直造，无源码声明；core.latte 载入的不算）
         public bool IsBuiltin { get; }
         // 是否 ValueType 分支（构造即定：显式传入或沿基类链传播；
@@ -257,16 +251,6 @@ namespace LatteCompiler
         public string? NativeLibrary { get; internal set; }
         // 挂载的 wrapper 应用（声明顺序，外层在前；P2 解析填充）
         public List<WrapperApplication> AppliedWrappers { get; } = new List<WrapperApplication>();
-        // wrapper 派发链（S11a P2 ProxyDispatchResolver 合成；仅被 Entity
-        // wrapper 拦截的实例成员方法/运算符/访问器）：outer→inner 序的特化
-        // fn 符号（各带 ProxySpecialization 槽），null = 无拦截。有链时本
-        // 符号的 fn 退化为转发壳（invoke 链首——S11b 由 BindingDriver 阶段
-        // 2.5 合成绑定改写），用户体由 WrappedBodySymbol 承载
-        public List<MethodSymbol>? WrapperChain { get; internal set; }
-        public MethodSymbol? WrappedBodySymbol { get; internal set; }
-        // 本符号为 proxy 特化 fn 时的元数据（S11a；P3 逐组合绑定语境与
-        // P4 发射消费）；普通成员为 null
-        public ProxySpecializationInfo? ProxySpecialization { get; internal set; }
 
         public MethodSymbol(
             string name,
@@ -325,10 +309,6 @@ namespace LatteCompiler
         // true = 编译器生成 backing 存储（体内 value 别名；P4 发 backing 修饰），
         // false = 计算属性（无存储，P4 发 computed 修饰）
         public bool HasBackingStorage { get; internal set; }
-        // 编译器合成标记（S11a：`.wrapper.` 隐藏字段，BIL §5.3/§8.3.1；
-        // S11c 起 LocalSymbolEmitters 照常发射（priv var backing
-        // compiler-generated 形态））
-        public bool IsCompilerGenerated { get; internal set; }
         // 挂载的 wrapper 应用（声明顺序，外层在前；P2 解析填充）
         public List<WrapperApplication> AppliedWrappers { get; } = new List<WrapperApplication>();
 
@@ -470,23 +450,19 @@ namespace LatteCompiler
     }
 
     // wrapper 应用记录（SYNTAX §14.5：`@W(...)` 挂类型/方法/字段/栈上变量；
-    // S11a 由裸 TypeSymbol 列表升级为记录——ROADMAP S11a「应用实参登记」）：
+    // S11a 由裸 TypeSymbol 列表升级为记录——ROADMAP S11a「应用实参登记」；
+    // M88：仅标记，不合成隐藏字段/派发链——烘焙归 Middleware）：
     // - Wrapper：应用后的 wrapper 类型。Entity wrapper 恰有一个泛型参数时
-    //   为 TTarget 代入宿主的构造类型（泛型实参代入在此显形，M79 遗留
-    //   兑现），其余情形为定义本身；
-    // - Syntax：注解 AST 节点（`@W(...)` 的 init 实参与诊断位置来源；
-    //   实参绑定与宿主构造安装归后续里程碑——安装赋值依赖隐藏字段
-    //   的 P4 发射（§8.3.1 声明已于 S11c 开闸））；
-    // - HiddenField：宿主上的 `.wrapper.` 隐藏字段符号（P2 ProxyDispatchResolver
-    //   合成，BIL §5.3；栈上局部为 null——wrapper 实例在栈帧，存储合成
-    //   归后续里程碑（S11c 暂归口，S11g 复核））。
+    //   为 TTarget 代入宿主的构造类型（泛型实参代入在此显形），其余情形
+    //   为定义本身；
+    // - Syntax：注解 AST 节点（`@W(...)` 的 init 实参与诊断位置来源）。
+    //   约束推导合成应用（FromConstraint）无注解——Syntax 为 null。
     public sealed class WrapperApplication
     {
         public TypeSymbol Wrapper { get; }
-        public AnnotationASTNode Syntax { get; }
-        public FieldSymbol? HiddenField { get; internal set; }
+        public AnnotationASTNode? Syntax { get; }
 
-        public WrapperApplication(TypeSymbol wrapper, AnnotationASTNode syntax)
+        public WrapperApplication(TypeSymbol wrapper, AnnotationASTNode? syntax)
         {
             Wrapper = wrapper;
             Syntax = syntax;
@@ -494,47 +470,10 @@ namespace LatteCompiler
 
         // 定义级 wrapper 类型（构造类型回退定义；with 约束匹配等定义级比较用）
         public TypeSymbol WrapperDefinition => Wrapper.ConstructedFrom ?? Wrapper;
-    }
 
-    // proxy 链环节别（S11a；对应 BIL §8.4 wrapper-proxy(PROXY_KIND) 的
-    // specific/wildcard——router/original 的 BIL 投影归 S11d/S11e）
-    public enum ProxyLinkKind
-    {
-        Specific,
-        Wildcard
-    }
-
-    // proxy 特化元数据（(proxy 声明 × 目标成员) 组合，S11a P2 合成；
-    // 挂在特化 fn 符号上）。per-member 链的下一环经
-    // TargetMember.WrapperChain 的序号 + 1 取得，链末环的 inner 目标是
-    // OriginalBody；S11e 降级链不适用（TargetMember 为 null，见下）
-    public sealed class ProxySpecializationInfo
-    {
-        // 命中的 .proxy.* 声明符号（P3 逐组合绑定读取其声明体）
-        public MethodSymbol ProxyDeclaration { get; }
-        // 所属 wrapper 应用（隐藏字段符号与 TTarget 代入结果在此）
-        public WrapperApplication Application { get; }
-        public ProxyLinkKind Kind { get; }
-        // 被拦截的成员（链宿主——转发壳退化的那个符号；S11e 降级链为
-        // null——未声明方法的降级特化无目标成员）
-        public MethodSymbol? TargetMember { get; }
-        // 原始体 fn（用户方法体的新承载者；链末环 inner 的目标）
-        public MethodSymbol OriginalBody { get; }
-        // wildcard 解包 shim fn（S11b：仅普通方法/operator 类别的 wildcard
-        // 环非空——其 inner 以包形态（namedArgs/unnamedArgs）调用，shim 签名
-        // = 双包参，body = 解包（逐元素 cast）后 invoke 下一环；specific 环
-        // 与 get/set wildcard 环的 inner 直通下一环，本槽为 null）
-        public MethodSymbol? UnwrapShim { get; internal set; }
-
-        public ProxySpecializationInfo(MethodSymbol proxyDeclaration, WrapperApplication application,
-            ProxyLinkKind kind, MethodSymbol? targetMember, MethodSymbol originalBody)
-        {
-            ProxyDeclaration = proxyDeclaration;
-            Application = application;
-            Kind = kind;
-            TargetMember = targetMember;
-            OriginalBody = originalBody;
-        }
+        // with 约束推导的合成应用（无 @W 注解；存储属实参宿主，编译器不合成）
+        public static WrapperApplication FromConstraint(TypeSymbol wrapper) =>
+            new WrapperApplication(wrapper, null);
     }
 
     // 函数体局部变量（P3 Binder 产生；ARCHITECTURE §4.1：挂在函数分析结果

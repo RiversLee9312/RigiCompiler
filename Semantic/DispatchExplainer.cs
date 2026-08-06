@@ -5,16 +5,15 @@ using System.Text;
 
 namespace LatteCompiler
 {
-    // 派发链诊断报告（S11f / RUNTIME §15）：从编译单元符号图读取 S11a/S11e
-    // 烘焙产物，按类型分组输出 outer→inner 链与降级路由。CLI
-    // `compile --explain-dispatch` 与测试套件共用；调用点级过滤为预留扩展。
+    // 派发链诊断报告（S11f / RUNTIME §15；M88：烘焙归 Middleware——
+    // frontend 报告应用登记 × proxy 形状匹配预览 + 降级资格，不读合成链槽）。
+    // CLI `compile --explain-dispatch` 与测试套件共用。
     public static class DispatchExplainer
     {
-        // 生成完整报告文本（末尾换行；无产物时单行明示）
         public static string Explain(CompilationUnit unit)
         {
             var hosts = CollectHostTypes(unit.Symbols.GlobalNamespace)
-                .Where(HasBakingProducts)
+                .Where(t => t.AppliedWrappers.Count > 0)
                 .OrderBy(t => CanonicalSymbolPrinter.PrintType(t), StringComparer.Ordinal)
                 .ToList();
             if (hosts.Count == 0) return "(no dispatch chains)\n";
@@ -23,94 +22,102 @@ namespace LatteCompiler
             foreach (var host in hosts)
             {
                 sb.Append("type ").Append(CanonicalSymbolPrinter.PrintType(host)).Append('\n');
-                if (host.AppliedWrappers.Count > 0)
+                sb.Append("  applied:");
+                foreach (var app in host.AppliedWrappers)
                 {
-                    sb.Append("  applied:");
-                    foreach (var app in host.AppliedWrappers)
-                    {
-                        sb.Append(' ').Append(FormatApplication(app));
-                    }
-                    sb.Append('\n');
+                    sb.Append(' ').Append(FormatApplication(app));
                 }
-                foreach (var member in EnumerateChainedMembers(host))
+                sb.Append('\n');
+                foreach (var member in EnumerateMembers(host))
                 {
-                    sb.Append("  member ").Append(CanonicalSymbolPrinter.PrintMethod(member)).Append('\n');
-                    var chain = member.WrapperChain!;
-                    for (var i = 0; i < chain.Count; i++)
-                    {
-                        var link = chain[i];
-                        var info = link.ProxySpecialization!;
-                        sb.Append("    [").Append(i).Append("] ")
-                            .Append(FormatLinkKind(info.Kind)).Append(' ')
-                            .Append(info.ProxyDeclaration.Name).Append(' ')
-                            .Append(CanonicalSymbolPrinter.PrintMethod(link)).Append('\n');
-                    }
-                    sb.Append("    wrapped ")
-                        .Append(CanonicalSymbolPrinter.PrintMethod(member.WrappedBodySymbol!))
+                    var (specificName, wildcardName) = ProxyNamesOf(member);
+                    sb.Append("  member ").Append(CanonicalSymbolPrinter.PrintMethod(member))
                         .Append('\n');
+                    for (var i = 0; i < host.AppliedWrappers.Count; i++)
+                    {
+                        var app = host.AppliedWrappers[i];
+                        var (kind, proxy) = MatchPreview(app, specificName, wildcardName);
+                        sb.Append("    [").Append(i).Append("] ").Append(kind);
+                        if (proxy != null)
+                        {
+                            sb.Append(' ').Append(CanonicalSymbolPrinter.PrintMethod(proxy));
+                        }
+                        sb.Append('\n');
+                    }
                 }
-                if (host.DowngradeRouter is { } router)
+                // 降级资格：wrapper 链含 `.proxy.*` → 报告 invoke core::Any$call???
+                if (ProxyMatching.HasMethodWildcardProxy(host))
                 {
                     sb.Append("  downgrade\n");
-                    sb.Append("    router ").Append(CanonicalSymbolPrinter.PrintMethod(router)).Append('\n');
-                    var dchain = host.DowngradeChain ?? (IReadOnlyList<MethodSymbol>)Array.Empty<MethodSymbol>();
-                    for (var i = 0; i < dchain.Count; i++)
-                    {
-                        sb.Append("    [").Append(i).Append("] ")
-                            .Append(CanonicalSymbolPrinter.PrintMethod(dchain[i])).Append('\n');
-                    }
-                    // 链末恒为 Any.call???（OriginalBody 槽，全单元共享）
-                    var end = dchain.Count > 0
-                        ? dchain[0].ProxySpecialization!.OriginalBody
-                        : null;
-                    if (end != null)
-                    {
-                        sb.Append("    end ").Append(CanonicalSymbolPrinter.PrintMethod(end)).Append('\n');
-                    }
+                    sb.Append("    invoke core::Any$call???\n");
                 }
             }
             return sb.ToString();
         }
 
-        private static bool HasBakingProducts(TypeSymbol type)
+        // 名命中预览（specific 优先 / wildcard 回退）；形状全等细节归 P2
+        // ProxyMatchChecker——explainer 只报将命中的 proxy 模板声明
+        private static (string Kind, MethodSymbol? Proxy) MatchPreview(
+            WrapperApplication app, string specificName, string wildcardName)
         {
-            if (type.DowngradeRouter != null) return true;
-            if (type.AppliedWrappers.Count > 0) return true;
-            return type.Methods.Any(m => m.WrapperChain != null)
-                || type.Fields.Any(f => f.Getter?.WrapperChain != null || f.Setter?.WrapperChain != null);
+            var wrapperDef = app.WrapperDefinition;
+            if (ProxyMatching.HasInvalidGenericArity(wrapperDef)) return ("inert", null);
+            var specific = wrapperDef.Methods.FirstOrDefault(m => m.Name == specificName);
+            if (specific != null && !ProxyMatching.ContainsErrorType(specific))
+            {
+                return ("specific", specific);
+            }
+            var wildcard = wrapperDef.Methods.FirstOrDefault(m => m.Name == wildcardName);
+            if (wildcard != null && !ProxyMatching.ContainsErrorType(wildcard))
+            {
+                return ("wildcard", wildcard);
+            }
+            return ("inert", null);
         }
 
-        // 被拦截成员：Methods 表上的实例方法/运算符 + 访问器（Getter/Setter 不进 Methods）
-        private static IEnumerable<MethodSymbol> EnumerateChainedMembers(TypeSymbol host)
+        private static (string Specific, string Wildcard) ProxyNamesOf(MethodSymbol member)
+        {
+            if (member.Kind == MethodKind.Getter)
+            {
+                return (".proxy.get." + member.Name, ".proxy.get.*");
+            }
+            if (member.Kind == MethodKind.Setter)
+            {
+                return (".proxy.set." + member.Name, ".proxy.set.*");
+            }
+            if (member.Kind == MethodKind.Operator)
+            {
+                return (".proxy.opr." + member.Name, ".proxy.opr.*");
+            }
+            return (".proxy." + member.Name, ".proxy.*");
+        }
+
+        private static IEnumerable<MethodSymbol> EnumerateMembers(TypeSymbol host)
         {
             var members = new List<MethodSymbol>();
             foreach (var m in host.Methods)
             {
-                if (m.WrapperChain != null) members.Add(m);
+                if (m.Name.StartsWith('.')) continue;
+                if (m.Kind is MethodKind.Regular or MethodKind.Operator)
+                {
+                    if (!m.IsStatic && m.HasBody) members.Add(m);
+                }
             }
             foreach (var f in host.Fields)
             {
-                if (f.Getter?.WrapperChain != null) members.Add(f.Getter);
-                if (f.Setter?.WrapperChain != null) members.Add(f.Setter);
+                if (f.IsStatic || f.Name.StartsWith('.')) continue;
+                if (f.Getter != null) members.Add(f.Getter);
+                if (f.Setter != null) members.Add(f.Setter);
             }
             return members.OrderBy(m => CanonicalSymbolPrinter.PrintMethod(m), StringComparer.Ordinal);
         }
 
         private static string FormatApplication(WrapperApplication app)
         {
-            // 定义名@应用类型（含 TTarget 代入后的构造）
             var def = app.WrapperDefinition;
             return def.Name + "@" + CanonicalSymbolPrinter.PrintType(app.Wrapper);
         }
 
-        private static string FormatLinkKind(ProxyLinkKind kind) => kind switch
-        {
-            ProxyLinkKind.Specific => "specific",
-            ProxyLinkKind.Wildcard => "wildcard",
-            _ => kind.ToString().ToLowerInvariant(),
-        };
-
-        // 命名空间树 + 嵌套类型深度优先收集（跳过内建与构造实例）
         private static IEnumerable<TypeSymbol> CollectHostTypes(NamespaceSymbol ns)
         {
             foreach (var type in ns.Types)

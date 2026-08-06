@@ -119,6 +119,7 @@ namespace LatteCompiler.Tests
             TestWrapperFieldValueEmission();
             TestWrapperCompoundAssignmentEmission();
             TestWrapperPlaceEmissionGates();
+            TestGenericParamWithWrapperEmission();
             TestProxyBakingEmission();
             TestProxyWildcardBakingEmission();
             TestProxyAccessorBakingEmission();

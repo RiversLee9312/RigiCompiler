@@ -92,43 +92,39 @@ namespace LatteCompiler
         }
 
         // ===== embedded 链构造（字段写 place 与字段-Value 读共用）=====
-        // 自最内层 place 向外走 chain：逐层取 `.wrapper.` 隐藏字段（Entity
-        // 应用 = place.Receiver 本身即宿主；字段-Value 应用 = place.Receiver
-        // 是字段访问，宿主为其 receiver），直到非 place 的终极宿主表达式。
-        // sharedHost 非 null 时直接使用（复合赋值的宿主单次求值共享）
+        // 自最内层 place 向外收集 wrapper(W) 链（Application.Wrapper，
+        // 最外层→最内层）；终极宿主经 HostOf 下钻。局部/静态应用仍归口
+        // （栈帧/静态存储合成归后续）。sharedHost 非 null 时直接使用
         public static LoweredEmbeddedFieldExpression? BuildEmbedded(BoundNode origin,
             BoundWrapperAccessExpression place, FieldSymbol targetField,
             LoweredExpression? sharedHost, LowerContext ctx, LowerEnvironment env)
         {
-            var hiddenFields = new List<FieldSymbol>();
-            BoundExpression host = place.Receiver;
-            for (var current = place; ;)
+            var wrappers = new List<TypeSymbol>();
+            BoundWrapperAccessExpression current = place;
+            while (true)
             {
-                var hiddenField = current.Application.HiddenField;
-                if (hiddenField == null)
+                if (IsLocalOrStaticApplication(current))
                 {
-                    // 局部/静态/全局目标（存储合成归后续）与 interface 传染
-                    // 应用（实现者各自持有隐藏字段，应用记录槽不回写）
                     env.Error(current.Syntax.Span,
-                        "P4: wrapper place storage for local variables, static fields and " +
-                        "interface-typed receivers is not supported yet (S11)");
+                        "P4: local/static wrapper place storage is not supported yet (S11)");
                     return null;
                 }
-                hiddenFields.Insert(0, hiddenField);
-                host = HostOf(current);
-                if (host is BoundWrapperAccessExpression outer)
+                wrappers.Add(current.Wrapper);
+                var host = HostOf(current);
+                if (host is BoundWrapperAccessExpression nested)
                 {
-                    current = outer;
+                    current = nested;
+                    continue;
                 }
-                else
-                {
-                    break;
-                }
+                break;
             }
-            var receiver = sharedHost ?? LowerExpressionDispatcher.Visit(host, ctx, env);
-            if (receiver == null) return null;
-            return new LoweredEmbeddedFieldExpression(origin, receiver, hiddenFields,
-                targetField, targetField.FieldType!);
+            // wrappers 当前最内→最外（从 place 向外收集）；发射序最外→最内
+            wrappers.Reverse();
+            var hostExpr = sharedHost ?? LowerExpressionDispatcher.Visit(
+                UltimateHostExpression(place), ctx, env);
+            if (hostExpr == null) return null;
+            return new LoweredEmbeddedFieldExpression(origin, hostExpr, wrappers, targetField,
+                targetField.FieldType!);
         }
 
         // place 的宿主表达式：字段-Value 应用 = 字段访问的 receiver（wrapper

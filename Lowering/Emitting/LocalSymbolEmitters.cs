@@ -102,6 +102,12 @@ namespace LatteCompiler
             if (type.IsSingleton) declaration.Modifiers.Add(new BilKeywordModifier(BilKeyword.Singleton));
             if (type.IsRich) declaration.Modifiers.Add(new BilKeywordModifier(BilKeyword.Rich));
             if (type.IsShared) declaration.Modifiers.Add(new BilKeywordModifier(BilKeyword.Shared));
+            // §8.3.1 wrapped(W)：应用标记 outer→inner = 列表序
+            foreach (var application in type.AppliedWrappers)
+            {
+                declaration.Modifiers.Add(new BilWrappedModifier(
+                    CanonicalSymbolPrinter.PrintType(application.Wrapper)));
+            }
             // extends：与种类默认基类相同则省略（P1 建壳即填默认基类——
             // class→Object / struct→ValueType / enum struct→Enum /
             // wrapper→Wrapper；P2 仅在源码显式继承时覆盖），不同才输出
@@ -115,9 +121,6 @@ namespace LatteCompiler
             }
             foreach (var field in type.Fields)
             {
-                // `.wrapper.` 隐藏字段（S11a 合成）照常发射（S11c 开闸，
-                // §8.3.1：priv var backing compiler-generated 形态由
-                // EmitFieldDeclaration 的 IsCompilerGenerated 分支产出）
                 declaration.Members.Add(EmitFieldDeclaration(field));
                 foreach (var accessor in EmitFieldAccessorDeclarations(field))
                 {
@@ -126,21 +129,15 @@ namespace LatteCompiler
             }
             foreach (var method in type.Methods)
             {
-                // "." 前缀名分流（S11d 开闸）：烘焙产物（特化/原始体/解包
-                // shim）照常发射声明（wrapper-proxy(...) 修饰符由
-                // EmitMethodDeclaration 投影）；S11e 降级特化
-                //（.proxy.<序>.???，ProxySpecialization 非空且 TargetMember
-                // 为 null）同为烘焙产物，经 IsBakedProxyProduct 自动覆盖。
-                // wrapper 类型内的 proxy 声明模板（.proxy.<名>/.proxy.* 等）
-                // 是编译期模板——体只经逐组合绑定进特化 fn，自身无 fn 定义，
-                // 不进 BIL。router（宿主成员 call???）不以 "." 开头，天然
-                // 通过本分流，声明照常发射（wrapper-proxy(router) 投影见
-                // EmitMethodDeclaration）
-                if (method.Name.StartsWith('.') && !IsBakedProxyProduct(method)) continue;
+                // M88：proxy 声明模板（.proxy.*）进 BIL（wrapper-proxy 修饰符）；
+                // 旧烘焙合成名（.wrapped./.proxy.<序>.）不再产生，若残留跳过
+                if (method.Name.StartsWith(".wrapped.")
+                    || IsLegacyBakedProxyName(method.Name))
+                {
+                    continue;
+                }
                 // enum struct 的无体 init（case 模板，SYNTAX §12.1）同样
-                // 发射声明——P3 起映射赋值体合成（§9.3）为其产出 fn 定义，
-                // §21.2 门槛满足；`_ -> field` 映射借此保留在 BIL 中，
-                // 供 VM case 入口消费（S14）
+                // 发射声明——P3 起映射赋值体合成（§9.3）为其产出 fn 定义
                 declaration.Members.Add(EmitMethodDeclaration(method));
             }
             // enum case 声明（§8.5，S11；非 enum struct 的 Cases 恒空）：
@@ -181,13 +178,6 @@ namespace LatteCompiler
                 { new BilAccessibilityModifier(MapAccessibility(field.Accessibility)) };
             modifiers.Add(new BilKeywordModifier(field.IsConst ? BilKeyword.Const : BilKeyword.Var));
             if (field.ExtTargetPath != null) modifiers.Add(new BilKeywordModifier(BilKeyword.Ext));
-            if (field.IsCompilerGenerated)
-            {
-                // §8.3.1 wrapper 隐藏字段：编译器生成存储（backing +
-                // compiler-generated），无 getter/setter 标记
-                modifiers.Add(new BilKeywordModifier(BilKeyword.Backing));
-                modifiers.Add(new BilKeywordModifier(BilKeyword.CompilerGenerated));
-            }
             if (field.Getter != null || field.Setter != null)
             {
                 // §9.4：backing 形态 = 编译器生成存储（backing + compiler-generated），
@@ -200,6 +190,12 @@ namespace LatteCompiler
                 {
                     modifiers.Add(new BilKeywordModifier(BilKeyword.CompilerGenerated));
                 }
+            }
+            // §8.3.1 wrapped(W)：字段应用标记 outer→inner = 列表序
+            foreach (var application in field.AppliedWrappers)
+            {
+                modifiers.Add(new BilWrappedModifier(
+                    CanonicalSymbolPrinter.PrintType(application.Wrapper)));
             }
             return new BilSimpleMemberDeclaration(
                 field.IsStatic ? BilMemberKind.StaticField : BilMemberKind.Field,
@@ -235,15 +231,15 @@ namespace LatteCompiler
                 modifiers);
         }
 
-        // S11d："." 前缀名中的烘焙产物判定——特化 fn（ProxySpecialization
-        // 槽非空）/原始体 fn（.wrapped. 名段）/wildcard 解包 shim
-        //（.proxy.unwrap. 名段）三件套进 BIL；其余 "." 前缀名（wrapper
-        // 类型的 proxy 声明模板）不进
-        private static bool IsBakedProxyProduct(MethodSymbol method)
+        // M88：旧烘焙合成名（.proxy.<数字>... / .proxy.unwrap.）——不再产生，
+        // 防御性跳过
+        private static bool IsLegacyBakedProxyName(string name)
         {
-            return method.ProxySpecialization != null
-                || method.Name.StartsWith(".wrapped.")
-                || method.Name.StartsWith(".proxy.unwrap.");
+            if (name.StartsWith(".proxy.unwrap.", StringComparison.Ordinal)) return true;
+            // .proxy.<digit>... 特化/降级环，非用户声明的 .proxy.name / .proxy.*
+            if (!name.StartsWith(".proxy.", StringComparison.Ordinal)) return false;
+            var rest = name.AsSpan(".proxy.".Length);
+            return rest.Length > 0 && char.IsDigit(rest[0]);
         }
 
         // 方法声明（§8.4）：类型成员与全局函数共形态。
@@ -285,34 +281,15 @@ namespace LatteCompiler
             {
                 modifiers.Add(new BilKeywordModifier(BilKeyword.Entrypoint));
             }
-            // wrapper-proxy(PROXY_KIND)（§8.4，S11d）：烘焙三件套投影——
-            // 特化 fn 按 ProxySpecialization.Kind 取 specific/wildcard；
-            // 原始体 fn（.wrapped.）取 original；wildcard 解包 shim
-            //（.proxy.unwrap.——wildcard 环的解包辅助）取 wildcard。
-            // 转发壳（被拦截成员原名 fn）是普通成员声明，不标本修饰符。
-            // S11e：router（宿主成员 call???，P2 ComputeDowngradeChains
-            // 合成）取 router——按宿主引用相等判定（引用相等即身份）；
-            // 降级特化 .proxy.<序>.??? 的 ProxySpecialization 非空
-            //（Kind=Wildcard），走下方特化分支自动覆盖。Any.call??? 是
-            // 链末默认实现（非 router），不标本修饰符——其宿主 Any 为
-            // 内建类型，声明不经本路径（EmitTypeTree 跳过 IsBuiltin）
-            if (ReferenceEquals(method.Owner?.DowngradeRouter, method))
+            // M88：wrapper 类型内的 proxy 声明模板投影 wrapper-proxy
+            //（specific|wildcard）；烘焙特化/original/router 归 Middleware
+            if (method.Name.StartsWith(".proxy.", StringComparison.Ordinal)
+                && method.Owner?.Kind == TypeKind.Wrapper)
             {
-                modifiers.Add(new BilWrapperProxyModifier(BilProxyKind.Router));
-            }
-            else if (method.ProxySpecialization is { } specialization)
-            {
-                modifiers.Add(new BilWrapperProxyModifier(
-                    specialization.Kind == ProxyLinkKind.Specific
-                        ? BilProxyKind.Specific : BilProxyKind.Wildcard));
-            }
-            else if (method.Name.StartsWith(".wrapped."))
-            {
-                modifiers.Add(new BilWrapperProxyModifier(BilProxyKind.Original));
-            }
-            else if (method.Name.StartsWith(".proxy.unwrap."))
-            {
-                modifiers.Add(new BilWrapperProxyModifier(BilProxyKind.Wildcard));
+                var kind = method.Name.EndsWith(".*", StringComparison.Ordinal)
+                    ? BilProxyKind.Wildcard
+                    : BilProxyKind.Specific;
+                modifiers.Add(new BilWrapperProxyModifier(kind));
             }
             return new BilSimpleMemberDeclaration(
                 method.IsStatic ? BilMemberKind.StaticMethod : BilMemberKind.Method,

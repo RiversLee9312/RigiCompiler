@@ -146,8 +146,13 @@ namespace LatteCompiler.Tests
                     $"GetWrapper({Expr(getWrapper.Source)}, {TypeShort.Of(getWrapper.Wrapper)})",
                 LoweredEmbeddedFieldExpression embedded =>
                     $"Embedded({Expr(embedded.Receiver)}, " +
-                    $"[{string.Join(" > ", embedded.HiddenFields.Select(f => f.Name))}], " +
+                    $"[{string.Join(" > ", embedded.WrapperChain.Select(TypeShort.Of))}], " +
                     $"{embedded.Field.Name}, {TypeShort.Of(embedded.Type)})",
+                LoweredGetSelfExpression getSelf =>
+                    $"GetSelf({TypeShort.Of(getSelf.Type)})",
+                LoweredCallInnerExpression callInner =>
+                    $"CallInner({string.Join(", ", callInner.Arguments.Select(Expr))}" +
+                    $"{(callInner.IsVoid ? ", void" : "")}, {TypeShort.Of(callInner.Type)})",
                 LoweredIndexExpression indexAccess =>
                     $"Index({Expr(indexAccess.Receiver)}, {Expr(indexAccess.Index)}, " +
                     $"{TypeShort.Of(indexAccess.Type)})",

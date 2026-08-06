@@ -123,7 +123,9 @@ namespace LatteCompiler
             return current;
         }
 
-        // ext 目标路径（字符串段，SYNTAX §4.4 原文无泛型）走同一查找序
+        // ext 目标路径（字符串段，SYNTAX §4.4 原文无泛型）走同一查找序。
+        // 收口：裸名命中泛型定义报元数错误；同名不同元数多命中报歧义
+        // （不改共享 FindTypeIn，以免影响类型引用等其它路径）
         public SemanticSymbol ResolveDottedPath(string[] segments, FileContext ctx,
             bool allowImports, bool reportErrors, CharRange? span)
         {
@@ -135,6 +137,10 @@ namespace LatteCompiler
                 {
                     Error(span, $"Unresolved extension target: '{string.Join(".", segments)}'");
                 }
+                return unit.Symbols.ErrorType;
+            }
+            if (RejectBareGenericExtTarget(current, reportErrors, span))
+            {
                 return unit.Symbols.ErrorType;
             }
             for (int i = 1; i < segments.Length; i++)
@@ -149,8 +155,48 @@ namespace LatteCompiler
                     return unit.Symbols.ErrorType;
                 }
                 current = next;
+                if (RejectBareGenericExtTarget(current, reportErrors, span))
+                {
+                    return unit.Symbols.ErrorType;
+                }
             }
             return current;
+        }
+
+        // ext 目标段：同名不同元数歧义优先于裸名泛型元数诊断；诊断受
+        // reportErrors 控制，毒化始终生效（NativeDeclarationChecker 静默路径契约）
+        private bool RejectBareGenericExtTarget(SemanticSymbol symbol, bool reportErrors,
+            CharRange? span)
+        {
+            if (symbol is not TypeSymbol type) return false;
+            if (HasAmbiguousAritySiblings(type))
+            {
+                if (reportErrors)
+                {
+                    Error(span, $"Ambiguous extension target: '{type.Name}'");
+                }
+                return true;
+            }
+            if (type is { ConstructedFrom: null } && type.GenericParameters.Count > 0)
+            {
+                if (reportErrors)
+                {
+                    Error(span, $"'{type.Name}' expects {type.GenericParameters.Count} " +
+                        "type argument(s), got 0");
+                }
+                return true;
+            }
+            return false;
+        }
+
+        // 同容器内同名不同类型元数共存（S10）时 ext 裸名无法消歧
+        private static bool HasAmbiguousAritySiblings(TypeSymbol type)
+        {
+            IReadOnlyList<TypeSymbol>? siblings = type.DeclaringType != null
+                ? type.DeclaringType.NestedTypes
+                : type.Namespace?.Types;
+            if (siblings == null) return false;
+            return siblings.Count(t => t.Name == type.Name) > 1;
         }
 
         // 首段查找序：宿主类型链 NestedTypes → 文件命名空间及父链 → 全局命名空间

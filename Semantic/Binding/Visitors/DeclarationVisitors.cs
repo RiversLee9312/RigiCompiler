@@ -55,7 +55,7 @@ namespace LatteCompiler
             }
             if (declaredType != null && init != null
                 && !SymbolLookup.IsAssignable(init.Type, declaredType, env)
-                && !BoundAnalysis.IsDowngradeCallResult(init))
+                && !BoundAnalysis.IsDowngradeCallResult(init, env))
             {
                 env.Error(decl.Initializer!.Span ?? decl.Span,
                     $"Cannot assign '{BoundAnalysis.TypeDisplay(init.Type)}' to " +
@@ -223,6 +223,14 @@ namespace LatteCompiler
                 var binding = CallFacility.BindCall(stmt, calleeSegments, callArguments!, scope,
                     ctx, env, genericArguments);
                 if (binding == null) return null;
+                // M88：inner(...) 语句位置（含 void）
+                if (binding.IsInnerCall)
+                {
+                    var innerType = binding.ResultType ?? env.B.Any;
+                    return new BoundExpressionStatement(stmt,
+                        new BoundInnerCallExpression(path, binding.Arguments, innerType,
+                            isVoid: binding.IsVoid));
+                }
                 if (binding.IsVoid)
                 {
                     return new BoundCallStatement(stmt, binding.Method, binding.Arguments,
@@ -296,7 +304,7 @@ namespace LatteCompiler
                     return null;
             }
             if (!SymbolLookup.IsAssignable(value.Type, target.Type, env)
-                && !BoundAnalysis.IsDowngradeCallResult(value))
+                && !BoundAnalysis.IsDowngradeCallResult(value, env))
             {
                 env.Error(node.AssignValue.Span ?? node.Span,
                     $"Cannot assign '{BoundAnalysis.TypeDisplay(value.Type)}' to " +
@@ -392,7 +400,7 @@ namespace LatteCompiler
             // S11e：降级调用结果 Any 可返回任意声明类型（P4a cast 物化兜底）
             if (ctx.Frame.Method.ReturnType is TypeSymbol returnType
                 && !SymbolLookup.IsAssignable(value.Type, returnType, env)
-                && !BoundAnalysis.IsDowngradeCallResult(value))
+                && !BoundAnalysis.IsDowngradeCallResult(value, env))
             {
                 env.Error(ret.Value.Span ?? ret.Span,
                     $"Cannot return '{BoundAnalysis.TypeDisplay(value.Type)}' from function " +

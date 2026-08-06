@@ -106,22 +106,32 @@ namespace LatteCompiler.Tests
             // §20 完整示例是自足合法模块：验证器零错误（M58）
             BilTestHarness.CheckBilValid("§20 完整示例验证器零错误", module);
 
-            // ===== §20 wrapper 隐藏字段示例（修饰符续行形态）=====
+            // ===== §20 wrapper 应用标记与 proxy 模板示例（M88）=====
+            // 黄金按 §20 用 LocalSymbols 排版；验证器侧把 proxy 模板放
+            // ExternalSymbols（声明无 body，§9.1 本地方法才强制 fn）
             var wrapperModule = new BilModule();
             var service = new BilTypeDeclaration("com.example::Service", BilTypeKind.Class,
-                new BilAccessibilityModifier(BilAccessibility.Public));
+                new BilAccessibilityModifier(BilAccessibility.Public),
+                new BilWrappedModifier("core.logging::Logged"));
             service.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field,
-                "com.example::Service#.wrapper.core.logging::Logged@core.logging::Logged",
+                "com.example::Service#name@.string",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            wrapperModule.LocalSymbols.Add(service);
+            var logged = new BilTypeDeclaration("core.logging::Logged", BilTypeKind.Wrapper,
+                new BilAccessibilityModifier(BilAccessibility.Public),
+                new BilKeywordModifier(BilKeyword.Rich));
+            logged.GenericParameters.Add("TTarget");
+            logged.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "core.logging::Logged$.proxy.get.name(value:.string)@.string",
                 new BilModifier[]
                 {
-                    new BilAccessibilityModifier(BilAccessibility.Private),
-                    new BilKeywordModifier(BilKeyword.Backing),
-                    new BilKeywordModifier(BilKeyword.CompilerGenerated),
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilWrapperProxyModifier(BilProxyKind.Specific),
                 },
                 modifiersOnNextLine: true));
-            wrapperModule.LocalSymbols.Add(service);
+            wrapperModule.LocalSymbols.Add(logged);
 
-            TestHarness.Check("§20 wrapper 隐藏字段示例", BilWriter.Write(wrapperModule), Lines(
+            TestHarness.Check("§20 wrapper 应用标记与 proxy 模板示例", BilWriter.Write(wrapperModule), Lines(
                 "BIL \"1.1\"",
                 "",
                 "Metadata {",
@@ -131,16 +141,21 @@ namespace LatteCompiler.Tests
                 "}",
                 "",
                 "LocalSymbols {",
-                "    .type com.example::Service = class pub {",
-                "        .field com.example::Service#.wrapper.core.logging::Logged@core.logging::Logged",
-                "            priv backing compiler-generated",
+                "    .type com.example::Service = class pub wrapped(core.logging::Logged) {",
+                "        .field com.example::Service#name@.string pub",
+                "    }",
+                "    .type core.logging::Logged = wrapper generic(TTarget) pub rich {",
+                "        .method core.logging::Logged$.proxy.get.name(value:.string)@.string",
+                "            pub wrapper-proxy(specific)",
                 "    }",
                 "}",
                 "",
                 "ExternalSymbols {",
                 "}"));
-            // wrapper 隐藏字段示例同为自足声明模块：验证器零错误（M58）
-            BilTestHarness.CheckBilValid("§20 wrapper 示例验证器零错误", wrapperModule);
+            var wrapperValid = new BilModule();
+            wrapperValid.LocalSymbols.Add(service);
+            wrapperValid.ExternalSymbols.Add(logged);
+            BilTestHarness.CheckBilValid("§20 wrapper 示例验证器零错误", wrapperValid);
 
             // ===== §19 资源全形态 =====
             // （排版抽样：资源引用的类型（com.example::User/core::IO*Exception）
@@ -321,11 +336,15 @@ namespace LatteCompiler.Tests
             body.Instructions.Add(new GetFieldInstruction(BilOp.Var("obj"), BilOp.Var("t"),
                 BilOp.Field("com.example::Service#name@.string")));
             body.Instructions.Add(new GetEmbeddedFieldInstruction(BilOp.Var("obj"), BilOp.Var("t"),
-                BilOp.Field("com.example::Service#.wrapper.core.logging::Logged@core.logging::Logged"),
+                BilOp.Wrapper("core.logging::Logged"),
                 BilOp.Field("core.logging::Logged#level@.string")));
             body.Instructions.Add(new SetEmbeddedFieldInstruction(BilOp.Var("v"), BilOp.Var("obj"),
-                BilOp.Field("com.example::Service#.wrapper.core.logging::Logged@core.logging::Logged"),
+                BilOp.Wrapper("core.logging::Logged"),
                 BilOp.Field("core.logging::Logged#level@.string")));
+            body.Instructions.Add(new GetSelfInstruction(BilOp.Var("self")));
+            body.Instructions.Add(new CallInnerInstruction(BilOp.Var("r"),
+                new[] { BilOp.Var("a") }));
+            body.Instructions.Add(new CallInnerNoretInstruction(new[] { BilOp.Var("a") }));
             body.Instructions.Add(new SetFieldStaticInstruction(BilOp.Var("v"),
                 BilOp.Type("com.example::Service"),
                 BilOp.Field("com.example::Service#.static.instanceCount@.i64")));
@@ -389,8 +408,11 @@ namespace LatteCompiler.Tests
                 "        getid.var $a $t",
                 "        get.var $a $b",
                 "        get.field $obj $t field(com.example::Service#name@.string)",
-                "        get.field.embedded $obj $t field(com.example::Service#.wrapper.core.logging::Logged@core.logging::Logged) field(core.logging::Logged#level@.string)",
-                "        set.field.embedded $v $obj field(com.example::Service#.wrapper.core.logging::Logged@core.logging::Logged) field(core.logging::Logged#level@.string)",
+                "        get.field.embedded $obj $t wrapper(core.logging::Logged) field(core.logging::Logged#level@.string)",
+                "        set.field.embedded $v $obj wrapper(core.logging::Logged) field(core.logging::Logged#level@.string)",
+                "        get.self $self",
+                "        call.inner $r [$a]",
+                "        call.inner.noret [$a]",
                 "        set.field.static $v type(com.example::Service) field(com.example::Service#.static.instanceCount@.i64)",
                 "        get.array $arr $i $e",
                 "        new type(com.example::User) $u [$a]",

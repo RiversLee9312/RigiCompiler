@@ -159,7 +159,7 @@ pub shared rich struct SharedEntry {
 | local class | local object、shared object | 所有 ValueType |
 | shared class | 仅 shared object | 非 rich ValueType、shared rich ValueType |
 
-这些限制递归应用于字段、继承得到的字段、泛型实参所展开的字段和编译器生成的隐藏字段（包括 §14.9 的 wrapper 隐藏字段）。由此保证：从任意 shared class、shared rich struct 或 shared wrapper 出发，沿字段递归遍历，不可能到达 local object 或非 shared rich 值。
+这些限制递归应用于字段、继承得到的字段、泛型实参所展开的字段、编译器生成的隐藏字段，以及 Middleware 合成的 wrapper 隐藏存储（§14.9）。由此保证：从任意 shared class、shared rich struct 或 shared wrapper 出发，沿字段递归遍历，不可能到达 local object 或非 shared rich 值。
 
 **`rich` 与 `shared` 的传染性（单向）**：
 
@@ -399,7 +399,7 @@ func dump\<TItem with Serializable>(item: TItem) { ... }
 
 - `T extends B`：实参 `A` 满足 ⟺ `A` 可赋给 `B`（子类型/实现关系，`IsAssignable`）；`B` 是基本类型层级特权关系时同样适用（如 `Box\<i32>` 满足 `T extends ValueType`）。
 - `T supers B`：实参 `A` 满足 ⟺ `B` 可赋给 `A`（反向）。
-- `T with W`：实参 `A` 满足 ⟺ `W` 在 `A` 的 wrapper 应用集合中（编译期查类型的 `AppliedWrappers`，含 interface 传染结果；构造类型随定义传播）。
+- `T with W`：实参 `A` 满足 ⟺ `W` 在 `A` 的 wrapper 应用集合中（编译期查类型的 `AppliedWrappers`，含 interface 传染结果；构造类型随定义传播）。`with` 约束在函数体内等价于一次 wrapper 应用：带 `with W` 约束的泛型参数 `param` 上写 `param:W` 是合法的 wrapper place（§14.5），只读禁令与应用语义同直接应用一致；wrapper 存储在实参宿主的隐藏存储中，编译器不为泛型参数合成任何存储。
 - 约束边界自身含未替换泛型参数时（如 `class C\<T1 extends T2, T2>`，边界是外层泛型参数），使用侧检查**跳过**（不做静态拒绝，由外层调用代入后自然满足）；实参为 `ErrorType` 时静默放行（毒化传播）。
 
 ```latte
@@ -1629,11 +1629,11 @@ pub wrapper Logged\<TTarget> {
 - 四类 wildcard 的泛型与参数形状是编译器规定的 canonical shape，不能通过额外约束或部分参数 pattern 把它缩窄为只吃某些签名。需要特殊处理某个已知成员时使用 specific proxy；需要在 universal fallback 内进一步分类时显式检查 `symbol`。
 - Entity wrapper 至多声明一个泛型参数（恰一个时即 `TTarget` 角色、`self` 的类型来源；零个时 proxy 体内引用 `self` 是编译错误）；Value/Method wrapper 不得声明 wrapper 级泛型参数（proxy 方法自身的泛型参数不受此限）。
 - specific proxy 的形状（参数名/参数类型/返回类型）必须与被代理成员**全等**（wrapper 泛型参数代入后判定；`.proxy.get.<名>`/`.proxy.set.<名>` 的 `value` 参数类型 = 字段类型）；形状不匹配的 specific proxy 是编译错误。四类 wildcard 按上例的 canonical shape 逐参数校验。
-- wrapper 实例由 `@W(...)` 应用在**宿主创建时**安装：宿主构造以求值后的应用实参调用 wrapper 的 init，结果写入宿主的编译器生成隐藏字段（`BIL_STANDARD.md` §5.3）；此后不可替换（§14.5）。
+- wrapper 实例由 `@W(...)` 应用在**宿主创建时**安装：宿主构造以求值后的应用实参调用 wrapper 的 init，结果写入宿主的 Middleware 合成的隐藏存储（命名约定 `BIL_STANDARD.md` §5.3）；此后不可替换（§14.5）。
 
 ### 14.3 值修饰器（Value Wrapper）
 
-修饰字段或栈上变量（`var`/`const`）。修饰实例字段时，wrapper 存放在宿主类型的隐藏字段中，因此宿主必须能够内嵌 rich struct（见 §14.9）；修饰栈上变量时 wrapper 存放在栈帧中，对变量类型没有额外要求。
+修饰字段或栈上变量（`var`/`const`）。修饰实例字段时，wrapper 存放在宿主类型的 Middleware 合成隐藏存储中，因此宿主必须能够内嵌 rich struct（见 §14.9）；修饰栈上变量时 wrapper 存放在栈帧中，对变量类型没有额外要求。
 
 ```latte
 @WrapperTarget(.Value)
@@ -1720,6 +1720,8 @@ wrapper 自身的字段可变性仍按普通规则由字段声明（`var`/`const
 
 proxy 方法体内的 `this` 同样是原地访问宿主持有的那份 wrapper，因此 `@Clamped(0, 100)` 这类可变 wrapper 状态在多次调用之间保持一致。
 
+wrapper place 的接收者来源有三：字段/局部变量的应用（`@W` 标注）、宿主静态类型的应用（Entity wrapper 经类型声明标注），以及泛型参数的 `with W` 约束（§3.6——约束等价于一次应用，`param:W` 合法且语义相同）。
+
 ### 14.6 派发顺序与 wildcard 唯一性
 
 当一个调用同时被多个 wrapper 命中时：
@@ -1743,7 +1745,7 @@ service.fetchUserById(42)     // 降级为携带 canonical symbol 的 call??? �
 - 一旦 wrapper 链中存在 `.proxy.*`，对该静态类型未声明方法的调用不再具有原成员声明提供的静态类型保证。
 - 实参按统一胖值 ABI 传入；返回值在调用点按期望类型插入一次转换，不符则抛 `core.CastException`。
 - 无任何 wildcard proxy 可路由请求时，最终落到 `Any.call???` 的默认实现并抛 `core.NoSuchMethodException`。
-- getter、setter 和 operator 在编译器 lowering 后同样是方法请求；运行时仍只保留一个 `call???` slot，并由编译器生成的 router 根据 `symbol` 将到达该入口的请求转入 `.proxy.get.*`、`.proxy.set.*` 或 `.proxy.opr.*`。这不要求为三类操作额外增加 `get???`、`set???` 或 `opr???` slot。
+- getter、setter 和 operator 在编译器 lowering 后同样是方法请求；运行时仍只保留一个 `call???` slot，并由 Middleware 合成的路由体根据 `symbol` 将到达该入口的请求转入 `.proxy.get.*`、`.proxy.set.*` 或 `.proxy.opr.*`（`RUNTIME.md` §14.2）。这不要求为三类操作额外增加 `get???`、`set???` 或 `opr???` slot。
 
 ### 14.8 canonical symbol
 
@@ -1793,7 +1795,7 @@ setter：
 - wrapper 可以标记 `shared`，成为 shared rich 值：它的字段闭包按 §3.1.1 收紧为只能持有 shared object 与共享安全 ValueType，换来可以修饰任意目标的资格。
 - wrapper 不能标记 `open`/`abstract`（rich struct 的继承规则另有约束时以 §10 为准），也不能标记 `singleton`。
 
-**宿主可内嵌性（对全部三类 wrapper 生效）**：wrapper 实例存放在宿主的编译器生成隐藏字段中（`BIL_STANDARD.md` §5.3），因此宿主类型必须允许内嵌 rich struct。由此：
+**宿主可内嵌性（对全部三类 wrapper 生效）**：wrapper 实例存放在宿主的 Middleware 合成的隐藏存储中（命名约定 `BIL_STANDARD.md` §5.3），因此宿主类型必须允许内嵌 rich struct。由此：
 
 - 合法的 Entity wrapper 目标是 class、interface、wrapper、rich struct、rich enum struct；
 - **非 rich struct 与非 rich enum struct 不能被任何 wrapper 修饰**，它们的字段不能挂 Value wrapper，实例方法也不能挂 Method wrapper；
@@ -1814,12 +1816,12 @@ setter：
 - **C. 栈上变量**：全部 `var`/`const` 局部变量；
 - **D. 类型**：非 shared 的类型。
 
-其根据是 §3.1.1 的逃逸闸门：全局/静态存储与 shared 类型的字段闭包都不得触及 local object，而非 shared wrapper 的隐藏字段可能持有 local object。反过来，shared wrapper 修饰非 shared 目标始终合法——shared 闭包比 local 闭包更严，不会引入新的逃逸路径。
+其根据是 §3.1.1 的逃逸闸门：全局/静态存储与 shared 类型的字段闭包都不得触及 local object，而非 shared wrapper 的隐藏存储可能持有 local object。反过来，shared wrapper 修饰非 shared 目标始终合法——shared 闭包比 local 闭包更严，不会引入新的逃逸路径。
 
 **interface 目标的传染校验**：interface 本身不产生实例，被修饰 interface 的 wrapper 实例落在每个实现者上。因此：
 
 - 被修饰的 interface 的所有实现者必须自身是合法 wrapper 目标（class、rich struct、rich enum struct）；
-- 被**非 shared** wrapper 修饰的 interface **不得被 shared 类型实现**（否则 shared 实现者会获得一个可能持有 local object 的隐藏字段）。
+- 被**非 shared** wrapper 修饰的 interface **不得被 shared 类型实现**（否则 shared 实现者会获得一个可能持有 local object 的隐藏存储）。
 
 这两条在实现者声明处检查并报错，而不是在 interface 声明处。
 

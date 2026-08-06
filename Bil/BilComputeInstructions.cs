@@ -195,7 +195,24 @@ namespace LatteCompiler.Bil
             new BilOperand[] { Value, WrapperType, Target };
     }
 
-    // §12.5 取得值的 typeid：getid.var VALUE RESULT
+    // §12.5 取得宿主实例（proxy 模板）：get.self RESULT
+    // 仅 wrapper-proxy 标记的 fn 体内合法；RESULT = 模板所属 wrapper 的
+    // TTarget（Entity 恰一泛型参数时的代入结果）
+    public sealed class GetSelfInstruction : BilInstruction
+    {
+        public BilVariableOperand Target { get; }
+
+        public GetSelfInstruction(BilVariableOperand target)
+        {
+            Target = target;
+        }
+
+        internal override string Opcode => "get.self";
+        internal override IReadOnlyList<BilOperand> Operands =>
+            new BilOperand[] { Target };
+    }
+
+    // §12.6 取得值的 typeid：getid.var VALUE RESULT
     public sealed class GetIdVarInstruction : BilInstruction
     {
         public BilVariableOperand Value { get; }
@@ -212,7 +229,7 @@ namespace LatteCompiler.Bil
             new BilOperand[] { Value, Target };
     }
 
-    // §12.5 取得类型的 typeid：getid.type type(TYPE_SYMBOL) RESULT
+    // §12.6 取得类型的 typeid：getid.type type(TYPE_SYMBOL) RESULT
     public sealed class GetIdTypeInstruction : BilInstruction
     {
         public BilTypeOperand TargetType { get; }

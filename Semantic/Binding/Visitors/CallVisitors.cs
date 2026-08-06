@@ -8,7 +8,9 @@ namespace LatteCompiler
 
     // 调用绑定的中间产物：值位置与语句位置分别落成
     // BoundCallExpression / BoundCallStatement（void 调用）；
-    // Receiver 为 null = 静态/全局调用，非 null = 实例调用（S7c-2）
+    // Receiver 为 null = 静态/全局调用，非 null = 实例调用（S7c-2）。
+    // IsInnerCall：M88 proxy 体 inner(...) 占位——Method 不用，Arguments
+    // 已绑，落成 BoundInnerCallExpression
     internal sealed class CallBinding
     {
         public MethodSymbol Method = null!;
@@ -21,6 +23,8 @@ namespace LatteCompiler
         public BoundGenericVarArgsArgument? GenericPack;
         // S9b：代入后返回类型（泛型候选视图产物；定义级 ReturnType 是 T）
         public SemanticSymbol? ResultType;
+        // M88：inner(...) 模板占位
+        public bool IsInnerCall;
     }
 
     // 调用形态判定：符号头 + 全 Dot 段（无中间后缀）+ 整条链恰好一个
@@ -118,65 +122,12 @@ namespace LatteCompiler
             List<ArgumentASTNode> arguments, Scope scope, BindContext ctx, BindEnvironment env,
             List<TypeReferenceASTNode>? genericArguments = null)
         {
-            // S11b（SYNTAX §14.2/§14.6）：proxy 体内 inner(...) 绑定为对下
-            // 一环符号的普通调用（链末 = 原始体；wildcard 普通/operator 环
-            // = 解包 shim——双包实参经其实参匹配自然承载）；非 proxy 语境的
-            // inner 是编译错误（ARCH §5.2）
+            // M88（SYNTAX §14.2 / ARCH §5.2）：proxy 体内 inner(...) 绑定为
+            // BoundInnerCallExpression 占位（实参正常绑定；形状按 proxy 声明
+            // 自身签名校验）。非 proxy 语境的 inner 是编译错误
             if (calleeSegments.Count == 1 && calleeSegments[0] == "inner")
             {
-                if (!ctx.Proxy.IsActive)
-                {
-                    env.Error(node.Span,
-                        "P3: 'inner' is only available in a wrapper proxy body (§14.2)");
-                    return null;
-                }
-                var innerTarget = ctx.Proxy.InnerTarget!;
-                // 目标泛型参数全固定时逐位转发当前 fn 的泛型参数（拷贝同源
-                // 同序——P4b 物化 $.generic.T 零指令，M71 先例）；含可变泛
-                // 型参数包时不带显式实参（包转发归 S11g 复核）
-                IReadOnlyList<SemanticSymbol>? innerTypeArgs =
-                    innerTarget.GenericParameters.Count > 0
-                    && innerTarget.GenericParameters.All(p => !p.IsVariadic && !p.IsNamedVariadic)
-                    ? ctx.Frame.Method.GenericParameters.Cast<SemanticSymbol>().ToList()
-                    : null;
-                // S11e：降级链 inner 自动补 symbol——降级特化/Any.call???
-                // 的胖值签名首形参名是 symbol（canonical wildcard 体
-                // `inner(namedArgs=..., unnamedArgs=...)` 双具名不传 symbol），
-                // 用户实参未绑定 symbol（无 symbol 具名实参且第 0 位不是位置
-                // 实参）时合成 symbol 具名实参 = 当前 fn 的 symbol 形参引用
-                //（proxy 声明形参与特化 fn 同名直通——零前奏下裸名 symbol
-                // 落 fn 形参）。per-member 链的 inner = shim 双参（无 symbol
-                // 形参），本判定天然不触发
-                List<ArgumentASTNode> effectiveArguments = arguments;
-                if (innerTarget.Parameters.Count > 0
-                    && innerTarget.Parameters[0].Name == "symbol"
-                    && !arguments.Any(a => a.Name == "symbol")
-                    && (arguments.Count == 0 || arguments[0].Name != null))
-                {
-                    var synthesized = new ArgumentASTNode(null) { Name = "symbol" };
-                    var symbolPath = new PathExpressionASTNode();
-                    symbolPath.Head.Name = "symbol";
-                    synthesized.Value.Attach(symbolPath);
-                    effectiveArguments = arguments.Append(synthesized).ToList();
-                }
-                var resolvedInner = OverloadResolution.Resolve(node,
-                    new List<MethodSymbol> { innerTarget }, effectiveArguments, scope, ctx, env,
-                    innerTypeArgs, receiverType: ctx.Frame.Method.Owner);
-                if (resolvedInner == null) return null;
-                var (innerMethod, innerArguments, innerResultType, innerPack) =
-                    resolvedInner.Value;
-                return new CallBinding
-                {
-                    Method = innerMethod,
-                    Arguments = innerArguments,
-                    IsVoid = innerMethod.ReturnType == null,
-                    // 链内调用 receiver = 宿主 this（特化/原始体/shim 符号的
-                    // Owner 恒为宿主类型）
-                    Receiver = new BoundThisExpression(node, ctx.Frame.Method.Owner!),
-                    TypeArguments = innerTypeArgs ?? Array.Empty<SemanticSymbol>(),
-                    GenericPack = innerPack,
-                    ResultType = AsyncResultType(innerMethod, innerResultType, env),
-                };
+                return BindInnerCall(node, arguments, scope, ctx, env);
             }
             // 多段首段为值（局部/参数）→ 实例调用形态（S7c-2）
             if (calleeSegments.Count > 1
@@ -392,23 +343,21 @@ namespace LatteCompiler
             if (candidates.Count == 0)
             {
                 // 同名字段存在 → 保持既有 "is not a method" 诊断（行为不变）；
-                // 否则进入 S11e 降级判定（SYNTAX §14.7 + RUNTIME §14.3）：
-                // 未声明方法且 receiver 类型链（每步定义级回退）上宿主含
-                // .proxy.* 降级链时，调用点降级为对 router（宿主成员
-                // call???）的胖值调用
+                // 否则进入 M88 降级判定（SYNTAX §14.7）：未声明方法且
+                // receiver 类型链上存在「wrapper 定义声明了 .proxy.*
+                // wildcard」→ 调用点降级为 invoke Any.call???
                 if (SymbolLookup.FindInstanceField(receiverType, name) != null)
                 {
                     env.Error(node.Span, $"'{name}' on type '{BoundAnalysis.TypeDisplay(receiver.Type)}' is not a method");
                     return null;
                 }
-                var router = FindDowngradeRouter(receiverType);
-                if (router == null)
+                if (!ProxyMatching.IsDowngradeEligible(receiverType))
                 {
                     env.Error(node.Span, $"Undefined member '{name}' on type " +
                         $"'{BoundAnalysis.TypeDisplay(receiver.Type)}'");
                     return null;
                 }
-                return BindDowngradeCall(node, receiver, receiverType, name, router, arguments,
+                return BindDowngradeCall(node, receiver, receiverType, name, arguments,
                     scope, ctx, env);
             }
             // 使用点访问控制（S8e，SYNTAX §16.1）：同 ResolveCallee 口径
@@ -440,37 +389,129 @@ namespace LatteCompiler
             };
         }
 
-        // S11e：沿 receiver 静态类型链（每步定义级回退——降级链只合成在
-        // 定义级宿主，构造类型经 ConstructedFrom 命中）找首个带降级链
-        //（.proxy.* wrapper 链）的宿主；无链返回 null
-        private static MethodSymbol? FindDowngradeRouter(TypeSymbol receiverType)
+        // M88：proxy 体 inner(...) 模板占位绑定
+        private static CallBinding? BindInnerCall(ASTNode node, List<ArgumentASTNode> arguments,
+            Scope scope, BindContext ctx, BindEnvironment env)
         {
-            for (var t = receiverType; t != null; t = t.BaseType)
+            if (!ctx.Proxy.IsActive)
             {
-                var definition = t.ConstructedFrom ?? t;
-                if (definition.DowngradeRouter != null) return definition.DowngradeRouter;
+                env.Error(node.Span,
+                    "P3: 'inner' is only available in a wrapper proxy body (§14.2)");
+                return null;
             }
-            return null;
+            var proxy = ctx.Frame.Method;
+            // 实参无目标类型预绑
+            var boundArgs = new List<BoundExpression>();
+            for (int i = 0; i < arguments.Count; i++)
+            {
+                var bound = ExpressionDispatcher.Visit(arguments[i].Value.Expression, scope, ctx,
+                    env);
+                if (bound == null) return null;
+                boundArgs.Add(bound);
+            }
+            // 形状检查：specific → 与 proxy 声明自身参数列表比对；
+            // wildcard → 排除 symbol 形参后与其余 canonical 形参比对
+            var isWildcard = proxy.Name.EndsWith(".*", StringComparison.Ordinal);
+            if (isWildcard)
+            {
+                // canonical：inner(namedArgs=..., unnamedArgs=...)，symbol 由
+                // Middleware ABI 承担，不在此补
+                var expected = proxy.Parameters.Where(p => p.Name != "symbol").ToList();
+                if (!InnerShapeMatches(expected, arguments, boundArgs, env))
+                {
+                    env.Error(node.Span,
+                        $"inner(...) arguments do not match proxy '{proxy.Name}' shape (§14.2)");
+                    return null;
+                }
+            }
+            else
+            {
+                if (!InnerShapeMatches(proxy.Parameters, arguments, boundArgs, env))
+                {
+                    env.Error(node.Span,
+                        $"inner(...) arguments do not match proxy '{proxy.Name}' shape (§14.2)");
+                    return null;
+                }
+            }
+            var isVoid = proxy.ReturnType == null;
+            return new CallBinding
+            {
+                Method = proxy,
+                Arguments = boundArgs,
+                IsVoid = isVoid,
+                Receiver = null,
+                TypeArguments = Array.Empty<SemanticSymbol>(),
+                GenericPack = null,
+                ResultType = isVoid ? null : proxy.ReturnType,
+                IsInnerCall = true,
+            };
         }
 
-        // S11e 降级调用合成（SYNTAX §14.7 + RUNTIME §14.3 胖值 ABI）：未声明
-        // 方法的调用点改绑宿主 router（call???）——三实参（规范序 = router
-        // 形参序）：
-        //   symbol = 调用点降级请求 canonical（PrintDowngradeRequest：位置
-        //     实参只写类型、具名写 名:类型，返回段恒 .any）；
-        //   namedArgs = 具名包（BoundVarArgsArgument，ABI = NamedPackType）；
-        //   unnamedArgs = 位置包（Array\<Any\> 构造）。
-        // 返回值恒 Any——调用点转换由 P4a §6.5 物化承担（Any→T cast 失败抛
-        // core.CastException）；P3 侧不做 cast 包装（设计定稿：转换骑 M51
-        // 既有五位置物化）。显式泛型实参（genericArguments）照常降级、忽略
-        // 实参——技术债归 S11g 复核（降级链符号非泛型，泛型信息无从传递）
+        // inner 实参形状：个数一致；具名按名归位；类型兼容（无目标预绑
+        // 产物 vs 形参类型）。wildcard 形参类型常为泛型参数（TNamedArgs 等）
+        // 或可变参数包——体内引用视角是 Array 包（VariadicParameterViewType），
+        // 与声明元素类型不同，须按体内视角比对；同名参数转发直通
+        private static bool InnerShapeMatches(IReadOnlyList<ParameterSymbol> parameters,
+            List<ArgumentASTNode> arguments, List<BoundExpression> boundArgs, BindEnvironment env)
+        {
+            if (parameters.Count != arguments.Count) return false;
+            var used = new bool[parameters.Count];
+            for (int i = 0; i < arguments.Count; i++)
+            {
+                int targetIndex;
+                if (arguments[i].Name != null)
+                {
+                    targetIndex = -1;
+                    for (int p = 0; p < parameters.Count; p++)
+                    {
+                        if (parameters[p].Name == arguments[i].Name) { targetIndex = p; break; }
+                    }
+                    if (targetIndex < 0 || used[targetIndex]) return false;
+                }
+                else
+                {
+                    targetIndex = -1;
+                    for (int p = 0; p < parameters.Count; p++)
+                    {
+                        if (!used[p]) { targetIndex = p; break; }
+                    }
+                    if (targetIndex < 0) return false;
+                }
+                used[targetIndex] = true;
+                var parameter = parameters[targetIndex];
+                var paramType = parameter.Type;
+                if (paramType is ErrorTypeSymbol) continue;
+                // 同名参数直通转发（wildcard 包转发典型形态）
+                if (boundArgs[i] is BoundValueReferenceExpression { Symbol: ParameterSymbol argParam }
+                    && argParam.Name == parameter.Name)
+                {
+                    continue;
+                }
+                // 可变参数：体内视角是包数组，与声明元素类型不同
+                var expected = parameter.IsVariadic || parameter.IsNamedVariadic
+                    ? PathFacility.VariadicParameterViewType(parameter, env)
+                    : paramType;
+                if (expected == null) continue;
+                if (!SymbolLookup.IsAssignable(boundArgs[i].Type, expected, env)
+                    && !BoundAnalysis.IsDowngradeCallResult(boundArgs[i], env))
+                {
+                    return false;
+                }
+            }
+            return used.All(u => u);
+        }
+
+        // M88 降级调用合成（SYNTAX §14.7 胖值 ABI）：未声明方法的调用点改绑
+        // bootstrap Any.call???——三实参：
+        //   symbol = PrintDowngradeRequest canonical；
+        //   namedArgs = 具名包；unnamedArgs = 位置包。
+        // 返回值恒 Any——调用点转换由 P4a §6.5 物化承担
         private static CallBinding? BindDowngradeCall(ASTNode node, BoundExpression receiver,
-            TypeSymbol receiverType, string name, MethodSymbol router,
+            TypeSymbol receiverType, string name,
             List<ArgumentASTNode> arguments, Scope scope, BindContext ctx, BindEnvironment env)
         {
-            // 预绑全部实参（无目标类型——降级 ABI 全进 Any 胖值槽；
-            // OverloadResolution.PrebindArguments 先例）。任一实参失败返回
-            // null（表达式自身诊断已报，不级联）
+            env.B.EnsureCallWildcard(env.Unit.Symbols);
+            var callWildcard = env.B.CallWildcard;
             var boundArgs = new BoundExpression[arguments.Count];
             for (int i = 0; i < arguments.Count; i++)
             {
@@ -479,9 +520,6 @@ namespace LatteCompiler
                 if (bound == null) return null;
                 boundArgs[i] = bound;
             }
-            // symbol 请求 canonical 与双包元素：按调用点书写序（位置实参只写
-            // 类型、具名实参写 名:类型；具名包元素 = 具名实参、位置包元素 =
-            // 位置实参，均保源序）
             var requestArgs = new (string? ArgName, SemanticSymbol ArgType)[arguments.Count];
             var positionalValues = new List<BoundExpression>();
             var namedValues = new List<(string Name, BoundExpression Value)>();
@@ -505,7 +543,7 @@ namespace LatteCompiler
                 Array.Empty<BoundExpression>(), namedValues, BindingDriver.NamedPackType(env));
             return new CallBinding
             {
-                Method = router,
+                Method = callWildcard,
                 Arguments = new List<BoundExpression> { symbolLit, namedPack, unnamedPack },
                 IsVoid = false,
                 Receiver = receiver,
@@ -614,7 +652,7 @@ namespace LatteCompiler
                 // S11e：降级调用结果 Any 可作任意形参实参（P4a cast 物化
                 // 兜底，同 OverloadResolution.IsApplicable 豁免口径）
                 if (expected != null && !SymbolLookup.IsAssignable(value.Type, expected, env)
-                    && !BoundAnalysis.IsDowngradeCallResult(value))
+                    && !BoundAnalysis.IsDowngradeCallResult(value, env))
                 {
                     env.Error(argument.Value.Span ?? argument.Span,
                         $"Cannot pass '{BoundAnalysis.TypeDisplay(value.Type)}' as " +

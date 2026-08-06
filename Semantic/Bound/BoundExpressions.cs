@@ -256,11 +256,8 @@ namespace LatteCompiler
     // Colon 段按赋值/取值分别诊断（全拦截面收口于 PathFacility 一处）。
     // Application = 命中的 wrapper 应用记录（S11a：Entity 恰一泛型参数时
     // Wrapper 为 TTarget 代入后的构造类型——泛型实参显形；Value/Method 为
-    // 定义本身；S11c 起 P4 经 Application.HiddenField 取 `.wrapper.` 隐藏
-    // 字段符号——Entity/字段-Value 应用由 P2 落定，局部/静态为 null）。
-    // Type = Wrapper。P4 发射（S11c，BIL §12.4 注记/§13.3）：成员读 =
-    // get.wrapper 值拷贝 + get.field、成员写 = set.field.embedded、
-    // 方法调用 receiver = get.wrapper 值拷贝
+    // 定义本身）。Type = Wrapper。P4 发射（M88：操作数改 wrapper(W)，
+    // 隐藏字段合成归 Middleware）
     public sealed class BoundWrapperAccessExpression : BoundExpression
     {
         public BoundExpression Receiver { get; }
@@ -272,6 +269,33 @@ namespace LatteCompiler
         {
             Receiver = receiver;
             Application = application;
+        }
+    }
+
+    // proxy 体 self（M88，ARCH §5.2 / SYNTAX §14.2）：模板态下 self = 被修饰
+    // 对象角色，Type = ProxyBodyState.SelfType（TTarget 泛型参数）。P4 发射
+    // get.self 占位指令（下一棒）
+    public sealed class BoundSelfExpression : BoundExpression
+    {
+        public BoundSelfExpression(ASTNode syntax, SemanticSymbol type) : base(syntax, type)
+        {
+        }
+    }
+
+    // proxy 体 inner(...)（M88，ARCH §5.2 / SYNTAX §14.2）：模板态占位调用。
+    // Arguments = 实参绑定产物；Type = proxy 声明返回类型（void 时本节点
+    // 仅出现在语句位置，Type 取 Any 占位且 IsVoid = true）。P4 发射
+    // call.inner 占位指令（下一棒）
+    public sealed class BoundInnerCallExpression : BoundExpression
+    {
+        public IReadOnlyList<BoundExpression> Arguments { get; }
+        public bool IsVoid { get; }
+
+        public BoundInnerCallExpression(ASTNode syntax, IReadOnlyList<BoundExpression> arguments,
+            SemanticSymbol type, bool isVoid = false) : base(syntax, type)
+        {
+            Arguments = arguments;
+            IsVoid = isVoid;
         }
     }
 

@@ -78,9 +78,9 @@ namespace LatteCompiler
             // S11a：proxy 声明侧形状校验（§14.2/§14.3/§14.4 canonical shape 与
             // 类别矩阵；依赖 WrapperTarget 与参数/返回类型已解析）
             ProxyShapeChecker.Visit(env);
-            // S11a 后半：`.wrapper.` 隐藏字段合成 + Entity 派发链计算与
-            // 特化/原始体符号合成（Freeze 前最后的符号写入）
-            ProxyDispatchResolver.Visit(env);
+            // M88：specific 形状匹配诊断（名中形状不符即诊断；零符号合成——
+            // 烘焙归 Middleware）
+            ProxyMatchChecker.Visit(env);
             // P2 结束冻结符号图（ARCHITECTURE §2：P3/P4 只读）
             unit.Symbols.Freeze();
         }
