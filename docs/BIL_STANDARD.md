@@ -1091,6 +1091,7 @@ type.is.case VALUE case(CASE_SYMBOL) RESULT_BOOL
 ```bil
 get.wrapper VALUE type(WRAPPER_TYPE) RESULT
 get.wrapper.indirect VALUE WRAPPER_TYPEID_VAR RESULT
+get.wrapper.field OBJECT field(HOST_FIELD) type(WRAPPER_TYPE) RESULT
 ```
 
 语义对应路径表达式 `value:WrapperType`：取得绑定到 VALUE 的指定 wrapper 实例。
@@ -1103,13 +1104,32 @@ get.wrapper.indirect VALUE WRAPPER_TYPEID_VAR RESULT
 - 不存在对应 wrapper 时的行为必须与语言/运行时 wrapper 规则一致；
 - 该指令不等价于普通字段读取。
 
-> **S11 定稿注记（2026-08-05）**：`obj:Wrapper` 是只读 place（`SYNTAX.md` §14.5），
-> 不能整体取值；因此 `get.wrapper` 在源码可达路径上已无直接对应物，保留为
-> lowering/VM 内部能力——只读 place 的成员**读取**按「`get.wrapper` 值拷贝 +
-> 普通 `get.field`」实现（值语义读取等价），成员**写入**与 proxy 体内 `this` 的
-> 原地访问使用 §13.3 的 `get.field.embedded` / `set.field.embedded` 指令；
-> `obj:W = ...` 整体赋值是源码层编译错误，BIL 不需要写入指令。存储由
-> Middleware 合成（命名约定 §5.3）；应用标记见 §8.3.1。
+`get.wrapper.field`（字段-Value 应用形态）：从属主对象 OBJECT 上挂在
+HOST_FIELD 的 Value wrapper 应用取得 wrapper 值拷贝（随后可对 RESULT 发
+普通 `invoke` / `get.array` / `get.field`）。
+
+规则：
+
+- HOST_FIELD 必须是实例字段，且带 `wrapped(WRAPPER_TYPE)` 应用标记（§8.3.1）；
+- OBJECT 的严格静态类型必须可赋值到 HOST_FIELD 的 owner；
+- WRAPPER_TYPE 必须是 wrapper 类型；RESULT 类型必须严格等于 WRAPPER_TYPE；
+- 该指令只产值拷贝，不写入字段应用存储。
+
+> **S11 定稿注记（2026-08-05；M84 补字段-Value）**：`obj:Wrapper` 是只读 place
+> （`SYNTAX.md` §14.5），不能整体取值；因此 `get.wrapper` /
+> `get.wrapper.field` 在源码可达路径上无直接对应物，保留为 lowering/VM
+> 内部能力——Entity 应用成员**读取**/调用/索引读按「`get.wrapper` 值拷贝 +
+> 普通 `get.field`/`invoke`/`get.array`」；字段-Value 应用的调用/索引读按
+> 「`get.wrapper.field` 值拷贝 + 普通指令」；字段读写与成员**写入**与 proxy
+> 体内 `this` 的原地访问使用 §13.3 的 `get.field.embedded` /
+> `set.field.embedded`。字段-Value 应用寻址编码为已有链元素相邻对
+> `field(HOST_FIELD), wrapper(W)`（HOST_FIELD 带 `wrapped(W)`，§8.3.1；同
+> owner 多字段同 W 由此区分）；Entity 类型应用仍为单独 `wrapper(W)`。
+> 深层写穿 `place.a.b... = rhs` 在 frontend P4a 展开为多个现有 get/set
+> 系列（**不新增**专用深写 opcode；最外层必要写回复用已有
+> `set.field.embedded`，不把整条深路径压进单条超长链）。`obj:W = ...`
+> 整体赋值是源码层编译错误，BIL 不需要写入指令。存储由 Middleware 合成
+> （命名约定 §5.3）；应用标记见 §8.3.1。
 
 ### 12.5 取得宿主实例（proxy 模板）
 
@@ -1206,24 +1226,32 @@ get.field.embedded OBJECT TARGET CHAIN_ELEM... field(INNER_FIELD)
 set.field.embedded SOURCE OBJECT CHAIN_ELEM... field(INNER_FIELD)
 ```
 
-链元素 `CHAIN_ELEM` 取两态之一：
+链元素 `CHAIN_ELEM` 取两态之一（**不**新增第三态 opcode/操作数类）：
 
-- `field(FIELD)`：沿普通实例字段下钻；
+- `field(FIELD)`：沿普通实例字段下钻；或作为字段-Value 应用对的 `HOST_FIELD`（见下）；
 - `wrapper(WRAPPER_TYPE_REF)`：沿宿主的 wrapper 应用下钻到该 wrapper 的隐藏存储（应用标记见 §8.3.1；存储由 Middleware 合成，命名约定 §5.3），再继续后续链元素或末段字段访问。
 
-首段可以是 `field(HOST_FIELD)` 或 `wrapper(WRAPPER_TYPE)`。例如：
+**字段-Value 应用**编码为相邻对 `field(HOST_FIELD), wrapper(W)`：HOST_FIELD
+必须是实例字段且带 `wrapped(W)`（§8.3.1）；当前位置转为 W 的隐藏存储。
+同 owner 上多个字段应用同一 W 时，靠不同的 `field(HOST_FIELD)` 区分。
+**Entity 类型应用**仍为单独的 `wrapper(W)`（当前位置类型声明带 `wrapped(W)`）。
+
+首段可以是 `field(...)` 或 `wrapper(WRAPPER_TYPE)`。例如：
 
 ```bil
 get.field.embedded $obj $x wrapper(core.logging::Logged) field(core.logging::Logged#level@.i32)
 set.field.embedded $v $obj wrapper(core.logging::Logged) field(core.logging::Logged#level@.i32)
+get.field.embedded $hero $m field(com.example::Hero#hp@.i32) wrapper(core.clamp::Clamped) field(core.clamp::Clamped#min@.i32)
+set.field.embedded $v $hero field(com.example::Hero#mp@.i32) wrapper(core.clamp::Clamped) field(core.clamp::Clamped#min@.i32)
 get.field.embedded $obj $y field(com.example::Service#inner@com.example::Inner) field(com.example::Inner#name@.string)
 ```
 
 规则：
 
 - 链至少含一个链元素，末段必须是 `field(INNER_FIELD)`（被读写的目标字段）；
-- `wrapper(WRAPPER_TYPE)` 元素要求当前宿主位置的静态类型具有该 wrapper 应用标记（§8.3.1）；
-- `field(FIELD)` 元素要求 FIELD 是当前宿主位置静态类型可访问的实例字段；
+- 相邻 `field(F), wrapper(W)` 且 F 声明带 `wrapped(W)` 时视为**字段应用对**：OBJECT/当前位置必须可赋值到 F 的 owner，F 必须是实例字段，位置转为 W；F 带其它 `wrapped(*)` 但不匹配 W 则非法；
+- 单独的 `wrapper(WRAPPER_TYPE)` 为**类型应用**：要求当前位置静态类型的类型声明具有该 wrapper 应用标记（§8.3.1；外部/无法解析的类型引用可降级）；
+- 普通 `field(FIELD)`（非字段应用对之首）要求 FIELD 是当前位置静态类型可访问的实例字段，位置转为该字段类型；
 - `get.field.embedded` 的 TARGET 类型必须严格等于末段 INNER_FIELD 的字段类型；
 - `set.field.embedded` 的 SOURCE 类型必须严格等于末段 INNER_FIELD 的字段类型，且 INNER_FIELD 可写；
 - 语义为对嵌套位置做**原地**访问（经 wrapper 元素时不产生 wrapper 值拷贝）；
@@ -1394,9 +1422,11 @@ call.inner.noret [ARG_0, ARG_1, ...]
 规则：
 
 - 必须出现在 `wrapper-proxy(specific|wildcard)` 标记的方法体内；出现在其他 fn 内非法；
-- 操作数 = 源码层 `inner(...)` 的显式实参（wildcard 的 `symbol` 不重复出现——下一环 ABI 由 Middleware 知道）；
+- 操作数序对齐 §7.2 调用序子集：**先**模板 fn 声明中的**可变泛型包**隐藏参数（`.generic.<Pack>`，按声明序；固定泛型参数不出现在本列表——特化侧由 Middleware 自持），**再**源码层 `inner(...)` 的显式值实参（含 `.kwargs.*` / `.vargs.*` 包整体转发；wildcard 的 `symbol` 不重复出现——下一环 ABI 由 Middleware 知道）。例如 wildcard 模板：
+  `call.inner $.t0 [$.generic.TNamedArgs, $.generic.TUnnamedArgs, $.kwargs.namedArgs, $.vargs.unnamedArgs]`；
+- 源码语法不变：`inner(...)` 只写值实参；泛型包由 frontend 在 Bound/Lowered 层显式携带并在本指令前置物化，Middleware 消费解包/烘焙；
 - 带返回的模板用 `call.inner`，RESULT 类型必须严格等于该模板 fn 的声明返回类型；void 模板用 `call.inner.noret`；
-- 参数个数与类型必须与模板 fn 声明的（经源码 `inner` 规则过滤后的）显式实参一致。
+- 值实参个数与类型必须与模板 fn 声明的（经源码 `inner` 规则过滤后的）显式实参一致；前置 `.generic.*` 操作数必须可解析为当前 fn `.args` 中已声明的同名隐藏参数。
 
 ### 15.5 wrapper 动态 fallback
 
@@ -1423,6 +1453,8 @@ frontend 判定降级资格（静态类型无声明方法且 wrapper 链含 `.pr
 - `.generic.<Name>`、`.vargs.<Name>`、`.kwargs.<Name>` 采用第 7 节规定的名称；
 - symbol 字符串存放在 `Resources` 中；
 - 实际 hidden argument 值按方法规范签名传入。
+
+proxy 模板体内 `call.inner` 的包透传（§15.4）与本节同源：可变泛型包以 `.generic.<Pack>` 前置操作数整体转发，值包以 `.vargs.<Name>` / `.kwargs.<Name>` 随显式实参转发；二者均由 Middleware 在烘焙下一环时消费（解包、shim、特化链接），frontend 不展开包元素。
 
 ---
 
@@ -1832,7 +1864,8 @@ LocalSymbols {
 - new/init 和 enum case 签名合法；
 - await/yield 类型合法；
 - `get.self` / `call.inner` / `call.inner.noret` 仅出现在 proxy 模板 fn 内，且类型规则见 §12.5 / §15.4；
-- `get.field.embedded` / `set.field.embedded` 链元素合法（`field` / `wrapper` 两态；`wrapper` 元素要求宿主具有对应应用标记 §8.3.1）。
+- `get.wrapper` / `get.wrapper.field` 类型规则见 §12.4（后者要求 HOST_FIELD 带 `wrapped(W)`、OBJECT 可赋值到字段 owner、RESULT = W）；
+- `get.field.embedded` / `set.field.embedded` 链元素合法（`field` / `wrapper` 两态；字段应用对 `field(HOST_FIELD)+wrapper(W)` 要求 HOST_FIELD 带 `wrapped(W)`；类型应用 `wrapper(W)` 要求当前位置类型声明带对应应用标记 §8.3.1）。
 
 ### 21.4 definite assignment
 

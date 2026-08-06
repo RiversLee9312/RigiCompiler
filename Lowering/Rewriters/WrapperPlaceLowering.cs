@@ -1,24 +1,22 @@
 namespace LatteCompiler
 {
-    // wrapper place 降级设施（S11c，SYNTAX §14.5 + BIL §12.4 注记/§13.3）：
-    // 使用点与 proxy 体内共用同一 lowering 路径（proxy fn 体的发射闸门归
-    // S11d，本设施是其唯一入口）。
+    // wrapper place 降级设施（S11c/M84，SYNTAX §14.5 + BIL §12.4/§13.3）：
+    // 使用点与 proxy 体内共用同一 lowering 路径。
     //
     // 形态矩阵（按应用类别分派——应用记录的宿主形态决定可用指令）：
-    // - Entity 应用（挂类型，隐藏字段在宿主类型上）：成员读/方法调用/索引读
-    //   = get.wrapper 值拷贝链（§12.4 注记）；成员写 = set.field.embedded 链；
-    // - 字段-Value 应用（挂实例字段，隐藏字段在字段宿主类型上）：字段读 =
-    //   get.field.embedded 链、字段写 = set.field.embedded 链（宿主值取字段
-    //   访问的 receiver——wrapper 实例按字段槽挂在属主对象上，字段值本身
-    //   寻址不到它）；方法调用/索引归口（get.wrapper 的 VALUE 规则只为
-    //   Entity 形态定义，BIL 无 embedded 索引指令）；
-    // - 局部/静态/全局目标：隐藏字段为 null（栈帧/静态存储合成归后续
-    //   里程碑，P2 注记）——统一归口。
+    // - Entity 应用：成员读/方法调用/索引读 = get.wrapper 值拷贝链；
+    //   字段写 = set.field.embedded 链；
+    // - 字段-Value 应用：字段读写 = get/set.field.embedded 链
+    //   （PlaceChain = field(HOST_FIELD)+wrapper(W) 相邻对）；方法调用/
+    //   索引读 = get.wrapper.field 值拷贝后复用普通 invoke/get.array；
+    //   索引写显式拒绝；
+    // - 局部/静态：统一归口（栈帧/静态存储合成归 Middleware）；
+    // - 深层纯字段写穿 place.a.b... = rhs：P4a 多 get/set（正向 get +
+    //   叶写 + 反向 set；值类型中间写回；引用中间停止；最外层必要
+    //   写回复用已有 set.field.embedded，不新增深写 opcode）。
     internal static class WrapperPlaceLowering
     {
         // ===== 类别判定（应用记录归属：类型应用 vs 字段/局部/静态应用）=====
-        // 经 place.Receiver 形状与 Application 引用相等比对判定——P3 已保证
-        // 命中唯一（同名歧义在 BindWrapperSegment 诊断），此处按形状还原
         private static bool IsFieldApplication(BoundWrapperAccessExpression place)
         {
             return place.Receiver is BoundFieldAccessExpression fieldAccess
@@ -37,42 +35,50 @@ namespace LatteCompiler
             };
         }
 
-        // ===== Entity 值拷贝物化（get.wrapper 链）=====
-        // 字段读/方法调用/索引读的接收者物化：place 链逐级 get.wrapper 值拷贝
-        // （§12.4 注记），返回最内层 wrapper 值的合成局部引用。非 Entity 应用
-        // （字段-Value/局部/静态）归口——这些形态无 get.wrapper 的合法 VALUE。
-        // sharedHost 非 null 时直接用作物化起点（复合赋值的宿主单次求值共享）
+        // ===== 值拷贝物化（Entity = get.wrapper；字段-Value = get.wrapper.field）=====
+        // 方法调用/索引读的接收者物化。sharedHost 非 null 时在终极宿主
+        // 层直接使用（复合赋值/深写的宿主单次求值共享）
         public static LoweredExpression? Materialize(BoundWrapperAccessExpression place,
             LoweredExpression? sharedHost, LowerContext ctx, LowerEnvironment env)
         {
-            // 逐级收集 place 链（最内层 → 最外层），每层都必须是 Entity 应用
-            var chain = new List<BoundWrapperAccessExpression>();
-            BoundExpression host = place;
-            while (host is BoundWrapperAccessExpression current)
+            if (IsLocalOrStaticApplication(place))
             {
-                if (IsFieldApplication(current) || IsLocalOrStaticApplication(current))
-                {
-                    env.Error(current.Syntax.Span,
-                        "P4: this wrapper place form cannot be materialized as a value " +
-                        "(field-applied/local/static wrapper places, S11)");
-                    return null;
-                }
-                chain.Add(current);
-                host = current.Receiver;
+                env.Error(place.Syntax.Span,
+                    "P4: local/static wrapper place storage is not supported yet (S11)");
+                return null;
             }
-            var value = sharedHost ?? LowerExpressionDispatcher.Visit(host, ctx, env);
-            if (value == null) return null;
-            // 最外层 → 最内层逐缀 get.wrapper 物化（每层一个合成局部）
-            for (var i = chain.Count - 1; i >= 0; i--)
+            if (IsFieldApplication(place))
             {
-                var level = chain[i];
-                var local = ctx.Synth.NewSynthLocal(level.Wrapper);
-                ctx.Output.Add(new LoweredAssignmentStatement(level,
-                    SynthLocalFactory.ReferenceTo(level, local),
-                    new LoweredGetWrapperExpression(level, value, level.Wrapper)));
-                value = SynthLocalFactory.ReferenceTo(level, local);
+                var fieldAccess = (BoundFieldAccessExpression)place.Receiver;
+                var hostValue = MaterializeHost(fieldAccess.Receiver, sharedHost, ctx, env);
+                if (hostValue == null) return null;
+                var local = ctx.Synth.NewSynthLocal(place.Wrapper);
+                ctx.Output.Add(new LoweredAssignmentStatement(place,
+                    SynthLocalFactory.ReferenceTo(place, local),
+                    new LoweredGetFieldWrapperExpression(place, hostValue, fieldAccess.Field,
+                        place.Wrapper)));
+                return SynthLocalFactory.ReferenceTo(place, local);
             }
-            return value;
+            // Entity 应用：Receiver 可为嵌套 place 或普通宿主
+            var source = MaterializeHost(place.Receiver, sharedHost, ctx, env);
+            if (source == null) return null;
+            var entityLocal = ctx.Synth.NewSynthLocal(place.Wrapper);
+            ctx.Output.Add(new LoweredAssignmentStatement(place,
+                SynthLocalFactory.ReferenceTo(place, entityLocal),
+                new LoweredGetWrapperExpression(place, source, place.Wrapper)));
+            return SynthLocalFactory.ReferenceTo(place, entityLocal);
+        }
+
+        // 宿主表达式物化：嵌套 place 递归 Materialize；否则 sharedHost 或 Visit
+        private static LoweredExpression? MaterializeHost(BoundExpression host,
+            LoweredExpression? sharedHost, LowerContext ctx, LowerEnvironment env)
+        {
+            if (host is BoundWrapperAccessExpression nested)
+            {
+                return Materialize(nested, sharedHost, ctx, env);
+            }
+            if (sharedHost != null) return sharedHost;
+            return LowerExpressionDispatcher.Visit(host, ctx, env);
         }
 
         // ===== 字段读（Entity → 值拷贝 + get.field；字段-Value → embedded 读）=====
@@ -82,8 +88,7 @@ namespace LatteCompiler
         {
             if (IsFieldApplication(place) || IsLocalOrStaticApplication(place))
             {
-                // 字段-Value 读 = embedded 链（原地读与值拷贝读取可观察等价）；
-                // 局部/静态在 BuildEmbedded 内按 HiddenField null 归口
+                // 字段-Value 读 = embedded 链；局部/静态在 BuildEmbedded 内归口
                 return BuildEmbedded(access, place, access.Field, sharedHost, ctx, env);
             }
             var materialized = Materialize(place, sharedHost, ctx, env);
@@ -92,14 +97,13 @@ namespace LatteCompiler
         }
 
         // ===== embedded 链构造（字段写 place 与字段-Value 读共用）=====
-        // 自最内层 place 向外收集 wrapper(W) 链（Application.Wrapper，
-        // 最外层→最内层）；终极宿主经 HostOf 下钻。局部/静态应用仍归口
-        // （栈帧/静态存储合成归后续）。sharedHost 非 null 时直接使用
+        // PlaceChain 最外层→最内层：Entity 应用只加 W；字段-Value 应用加
+        // HOST_FIELD 再加 W（相邻对，同 owner 多字段同 W 可区分）
         public static LoweredEmbeddedFieldExpression? BuildEmbedded(BoundNode origin,
             BoundWrapperAccessExpression place, FieldSymbol targetField,
             LoweredExpression? sharedHost, LowerContext ctx, LowerEnvironment env)
         {
-            var wrappers = new List<TypeSymbol>();
+            var places = new List<BoundWrapperAccessExpression>();
             BoundWrapperAccessExpression current = place;
             while (true)
             {
@@ -109,7 +113,7 @@ namespace LatteCompiler
                         "P4: local/static wrapper place storage is not supported yet (S11)");
                     return null;
                 }
-                wrappers.Add(current.Wrapper);
+                places.Add(current);
                 var host = HostOf(current);
                 if (host is BoundWrapperAccessExpression nested)
                 {
@@ -118,17 +122,23 @@ namespace LatteCompiler
                 }
                 break;
             }
-            // wrappers 当前最内→最外（从 place 向外收集）；发射序最外→最内
-            wrappers.Reverse();
+            places.Reverse();
+            var chain = new List<SemanticSymbol>(places.Count * 2);
+            foreach (var p in places)
+            {
+                if (IsFieldApplication(p))
+                {
+                    chain.Add(((BoundFieldAccessExpression)p.Receiver).Field);
+                }
+                chain.Add(p.Wrapper);
+            }
             var hostExpr = sharedHost ?? LowerExpressionDispatcher.Visit(
                 UltimateHostExpression(place), ctx, env);
             if (hostExpr == null) return null;
-            return new LoweredEmbeddedFieldExpression(origin, hostExpr, wrappers, targetField,
+            return new LoweredEmbeddedFieldExpression(origin, hostExpr, chain, targetField,
                 targetField.FieldType!);
         }
 
-        // place 的宿主表达式：字段-Value 应用 = 字段访问的 receiver（wrapper
-        // 实例按字段槽挂属主对象）；Entity 应用 = place.Receiver 本身
         private static BoundExpression HostOf(BoundWrapperAccessExpression place)
         {
             return IsFieldApplication(place)
@@ -136,8 +146,6 @@ namespace LatteCompiler
                 : place.Receiver;
         }
 
-        // 终极宿主表达式（place 链尽头；复合赋值的宿主单次求值共享用——
-        // 读路径与写路径共用同一物化引用）
         public static BoundExpression UltimateHostExpression(BoundWrapperAccessExpression place)
         {
             BoundExpression host = place;
@@ -148,14 +156,34 @@ namespace LatteCompiler
             return host;
         }
 
-        // ===== 赋值目标拦截（StatementRewriters/CompoundAssignmentRewriter 共用）=====
-        // 目标为 wrapper place 直接字段（place.field）时返回该字段访问——
-        // 走 embedded 写；更深层级写入（place.a.b，写穿中间拷贝会丢失）与
-        // 索引写（BIL 无 embedded 索引指令）经 ContainsPlaceInTarget 归口
+        // ===== 赋值目标拦截 =====
+        // 目标为 wrapper place 直接字段（place.field）时返回该字段访问
         public static BoundFieldAccessExpression? DirectPlaceFieldTarget(BoundExpression target)
         {
             return target is BoundFieldAccessExpression access
                 && access.Receiver is BoundWrapperAccessExpression ? access : null;
+        }
+
+        // 深层纯字段链 place.a.b...（至少两层字段；含索引则 false）
+        public static bool TryDeepFieldWriteTarget(BoundExpression target,
+            out BoundWrapperAccessExpression place, out List<BoundFieldAccessExpression> chain)
+        {
+            place = null!;
+            chain = new List<BoundFieldAccessExpression>();
+            BoundExpression current = target;
+            while (current is BoundFieldAccessExpression fieldAccess)
+            {
+                chain.Add(fieldAccess);
+                current = fieldAccess.Receiver;
+            }
+            if (current is not BoundWrapperAccessExpression wrapperPlace || chain.Count < 2)
+            {
+                chain.Clear();
+                return false;
+            }
+            place = wrapperPlace;
+            chain.Reverse();
+            return true;
         }
 
         // 目标表达式 receiver 链深处含 wrapper place（非直接字段目标）
@@ -182,12 +210,242 @@ namespace LatteCompiler
             }
         }
 
-        // 写穿/索引写归口（消息一处收口）
         public static void UnsupportedWrite(BoundNode node, LowerEnvironment env)
         {
             env.Error(node.Syntax.Span,
                 "P4: writes through wrapper place member or index chains are not " +
                 "supported yet (S11)");
         }
+
+        // 共享写路径终极宿主物化（深写/深层复合/直接 wrapper 字段复合共用）：
+        // 读路径与写回路径共用同一 host 引用，RHS 可能替换可变字段，故仅真正
+        // 稳定的局部/参数引用与 this 可直通；字段引用/字段访问（即便无 getter）、
+        // 调用、索引、字面量/常量等一律 RHS 前写合成局部（§13.2 单次固定）。
+        // 不改变一般 CompoundAssignmentRewriter 的 IsSideEffectFree 全局策略。
+        public static LoweredExpression MaterializeSharedWriteHost(BoundNode origin,
+            LoweredExpression host, LowerContext ctx)
+        {
+            if (host is LoweredValueReferenceExpression or LoweredThisExpression)
+            {
+                return host;
+            }
+            var hostLocal = ctx.Synth.NewSynthLocal(host.Type);
+            ctx.Output.Add(new LoweredAssignmentStatement(origin,
+                SynthLocalFactory.ReferenceTo(origin, hostLocal), host));
+            return SynthLocalFactory.ReferenceTo(origin, hostLocal);
+        }
+
+        // ===== 深层纯字段写穿（P4a 展开：正向 get + 叶写 + 反向 set）=====
+        // 求值序：终极宿主 → 正向各字段 get（各一次）→ RHS → 叶写 → 反向写回。
+        // 返回完成的赋值语句（叶写）；写回作为前置语句落入 Output。
+        // 失败时已落诊断并返回 null。
+        public static LoweredStatement? LowerDeepFieldWrite(BoundNode origin,
+            BoundWrapperAccessExpression place, List<BoundFieldAccessExpression> chain,
+            BoundExpression rhsBound, LowerContext ctx, LowerEnvironment env)
+        {
+            // 1. 终极宿主单次求值（共享写路径：字段宿主亦物化）
+            var hostBound = UltimateHostExpression(place);
+            var host = LowerExpressionDispatcher.Visit(hostBound, ctx, env);
+            if (host == null) return null;
+            host = MaterializeSharedWriteHost(hostBound, host, ctx);
+
+            // 2. 正向：首字段经 LowerFieldRead；其后逐字段 get 并物化局部
+            var intermediates = new List<(LoweredExpression Local, FieldSymbol Field,
+                BoundFieldAccessExpression Access)>();
+            var firstAccess = chain[0];
+            var firstRead = LowerFieldRead(firstAccess, place, host, ctx, env);
+            if (firstRead == null) return null;
+            var firstLocal = MaterializeInto(firstAccess, firstRead, ctx);
+            intermediates.Add((firstLocal, firstAccess.Field, firstAccess));
+
+            for (var i = 1; i < chain.Count - 1; i++)
+            {
+                var access = chain[i];
+                var read = new LoweredFieldAccessExpression(access, intermediates[i - 1].Local,
+                    access.Field);
+                var local = MaterializeInto(access, read, ctx);
+                intermediates.Add((local, access.Field, access));
+            }
+
+            var leafAccess = chain[chain.Count - 1];
+            var leafParent = intermediates[intermediates.Count - 1].Local;
+            var leafPlace = new LoweredFieldAccessExpression(leafAccess, leafParent,
+                leafAccess.Field);
+
+            // 3. RHS（目标 receiver 已全部求值）
+            var rhs = LowerExpressionDispatcher.Visit(rhsBound, ctx, env);
+            if (rhs == null) return null;
+            rhs = LoweringFacility.EnsureDeclaredType(origin, rhs, leafAccess.Type);
+
+            // 4. 叶写 + 5. 反向写回（叶写必须先于写回；返回值由调用方
+            //    追加到 Output，故无写回时直接返回叶写，有写回时叶写先
+            //    Output.Add、末条写回作返回值——块收集序 = 前缀 + 返回）
+            var leafWrite = new LoweredAssignmentStatement(origin, leafPlace, rhs);
+            var writebacks = new List<LoweredStatement>();
+            for (var i = intermediates.Count - 1; i >= 0; i--)
+            {
+                var (local, field, access) = intermediates[i];
+                var valueKind = ClassifyWritebackType(local.Type, access.Syntax.Span, env);
+                if (valueKind == null) return null;
+                if (valueKind == false) break;
+                if (!CheckWritebackWritable(field, access.Syntax.Span, ctx, env))
+                {
+                    return null;
+                }
+                if (i == 0)
+                {
+                    var writePlace = BuildEmbedded(access, place, field, host, ctx, env);
+                    if (writePlace == null) return null;
+                    writebacks.Add(new LoweredAssignmentStatement(origin, writePlace, local));
+                }
+                else
+                {
+                    var parentLocal = intermediates[i - 1].Local;
+                    var parentPlace = new LoweredFieldAccessExpression(access, parentLocal, field);
+                    writebacks.Add(new LoweredAssignmentStatement(origin, parentPlace, local));
+                }
+            }
+            if (writebacks.Count == 0) return leafWrite;
+            ctx.Output.Add(leafWrite);
+            for (var i = 0; i < writebacks.Count - 1; i++)
+            {
+                ctx.Output.Add(writebacks[i]);
+            }
+            return writebacks[writebacks.Count - 1];
+        }
+
+        // 深层复合赋值 place.a.b op= rhs：读叶 → 运算 → 叶写 → 同反向写回
+        public static LoweredExpression? LowerDeepFieldCompound(
+            BoundCompoundAssignmentExpression compound, BoundWrapperAccessExpression place,
+            List<BoundFieldAccessExpression> chain, LowerContext ctx, LowerEnvironment env)
+        {
+            var hostBound = UltimateHostExpression(place);
+            var host = LowerExpressionDispatcher.Visit(hostBound, ctx, env);
+            if (host == null) return null;
+            host = MaterializeSharedWriteHost(hostBound, host, ctx);
+
+            var intermediates = new List<(LoweredExpression Local, FieldSymbol Field,
+                BoundFieldAccessExpression Access)>();
+            var firstAccess = chain[0];
+            var firstRead = LowerFieldRead(firstAccess, place, host, ctx, env);
+            if (firstRead == null) return null;
+            var firstLocal = MaterializeInto(firstAccess, firstRead, ctx);
+            intermediates.Add((firstLocal, firstAccess.Field, firstAccess));
+
+            for (var i = 1; i < chain.Count - 1; i++)
+            {
+                var access = chain[i];
+                var read = new LoweredFieldAccessExpression(access, intermediates[i - 1].Local,
+                    access.Field);
+                var local = MaterializeInto(access, read, ctx);
+                intermediates.Add((local, access.Field, access));
+            }
+
+            var leafAccess = chain[chain.Count - 1];
+            var leafParent = intermediates[intermediates.Count - 1].Local;
+            var leafRead = new LoweredFieldAccessExpression(leafAccess, leafParent,
+                leafAccess.Field);
+
+            var value = LowerExpressionDispatcher.Visit(compound.Value, ctx, env);
+            if (value == null) return null;
+            value = LoweringFacility.EnsureDeclaredType(compound, value, leafAccess.Type);
+            LoweredExpression binary = new LoweredBinaryExpression(compound, compound.Op,
+                leafRead, value);
+            binary = LoweringFacility.EnsureDeclaredType(compound, binary, leafAccess.Type);
+            var result = ctx.Synth.NewSynthLocal(leafAccess.Type);
+            ctx.Output.Add(new LoweredAssignmentStatement(compound,
+                SynthLocalFactory.ReferenceTo(compound, result), binary));
+            var resultRef = SynthLocalFactory.ReferenceTo(compound, result);
+            // 叶写（复合赋值路径全部走 Output，表达式位返回结果引用）
+            ctx.Output.Add(new LoweredAssignmentStatement(compound,
+                new LoweredFieldAccessExpression(leafAccess, leafParent, leafAccess.Field),
+                resultRef));
+
+            for (var i = intermediates.Count - 1; i >= 0; i--)
+            {
+                var (local, field, access) = intermediates[i];
+                var valueKind = ClassifyWritebackType(local.Type, access.Syntax.Span, env);
+                if (valueKind == null) return null;
+                if (valueKind == false) break;
+                if (!CheckWritebackWritable(field, access.Syntax.Span, ctx, env))
+                {
+                    return null;
+                }
+                if (i == 0)
+                {
+                    var writePlace = BuildEmbedded(access, place, field, host, ctx, env);
+                    if (writePlace == null) return null;
+                    ctx.Output.Add(new LoweredAssignmentStatement(compound, writePlace, local));
+                }
+                else
+                {
+                    var parentLocal = intermediates[i - 1].Local;
+                    var parentPlace = new LoweredFieldAccessExpression(access, parentLocal, field);
+                    ctx.Output.Add(new LoweredAssignmentStatement(compound, parentPlace, local));
+                }
+            }
+            return resultRef;
+        }
+
+        private static LoweredExpression MaterializeInto(BoundNode origin,
+            LoweredExpression expr, LowerContext ctx)
+        {
+            if (IsStableValueReference(expr))
+            {
+                return expr;
+            }
+            var local = ctx.Synth.NewSynthLocal(expr.Type);
+            ctx.Output.Add(new LoweredAssignmentStatement(origin,
+                SynthLocalFactory.ReferenceTo(origin, local), expr));
+            return SynthLocalFactory.ReferenceTo(origin, local);
+        }
+
+        // 写回判定：TypeSymbol → 值/引用分支；GenericParameterSymbol 等非
+        // 具体类型不得静默当引用丢写回——落 P4 诊断（true=值/false=引用/
+        // null=已诊断失败）
+        private static bool? ClassifyWritebackType(SemanticSymbol? type, CharRange? span,
+            LowerEnvironment env)
+        {
+            if (type is TypeSymbol ts) return ts.IsValueTypeBranch;
+            env.Error(span,
+                "P4: deep field write-back through non-concrete intermediate type " +
+                $"(got {type?.GetType().Name ?? "null"}) is not supported");
+            return null;
+        }
+
+        // 中间值字段反向写回可写性（复用 FieldSymbol/ConstFieldRules 口径）
+        private static bool CheckWritebackWritable(FieldSymbol field, CharRange? span,
+            LowerContext ctx, LowerEnvironment env)
+        {
+            if (field.Getter != null || field.Setter != null)
+            {
+                if (field.Setter == null)
+                {
+                    env.Error(span, $"'{field.Name}' has no setter");
+                    return false;
+                }
+                if (!AccessChecker.IsAccessible(field.Setter, ctx.Method.SourceFile,
+                        AccessChecker.ContainingNamespaceOf(ctx.Method), ctx.Method.Owner))
+                {
+                    env.Error(span, AccessChecker.InaccessibleMessage(field.Setter));
+                    return false;
+                }
+                return true;
+            }
+            if (field.IsConst)
+            {
+                if (ctx.Method.Kind == MethodKind.Init && field.Owner != null && !field.IsStatic)
+                {
+                    return true;
+                }
+                env.Error(span, $"Cannot assign to const field '{field.Name}'");
+                return false;
+            }
+            return true;
+        }
+
+        // 中间层物化直通判定：仅已是稳定局部/参数引用可跳过多余 .sN
+        private static bool IsStableValueReference(LoweredExpression expr) =>
+            expr is LoweredValueReferenceExpression;
     }
 }

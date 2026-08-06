@@ -144,14 +144,20 @@ namespace LatteCompiler.Tests
                 // 最外层→最内层，目标字段在最内层 wrapper 上）
                 LoweredGetWrapperExpression getWrapper =>
                     $"GetWrapper({Expr(getWrapper.Source)}, {TypeShort.Of(getWrapper.Wrapper)})",
+                LoweredGetFieldWrapperExpression getFieldWrapper =>
+                    $"GetFieldWrapper({Expr(getFieldWrapper.Object)}, {getFieldWrapper.HostField.Name}, " +
+                    $"{TypeShort.Of(getFieldWrapper.Wrapper)})",
                 LoweredEmbeddedFieldExpression embedded =>
                     $"Embedded({Expr(embedded.Receiver)}, " +
-                    $"[{string.Join(" > ", embedded.WrapperChain.Select(TypeShort.Of))}], " +
+                    $"[{string.Join(" > ", embedded.PlaceChain.Select(DescribePlaceElement))}], " +
                     $"{embedded.Field.Name}, {TypeShort.Of(embedded.Type)})",
                 LoweredGetSelfExpression getSelf =>
                     $"GetSelf({TypeShort.Of(getSelf.Type)})",
                 LoweredCallInnerExpression callInner =>
                     $"CallInner({string.Join(", ", callInner.Arguments.Select(Expr))}" +
+                    $"{(callInner.ForwardedGenericPacks.Count == 0 ? ""
+                        : ", packs=[" + string.Join(", ",
+                            callInner.ForwardedGenericPacks.Select(p => p.Name)) + "]")}" +
                     $"{(callInner.IsVoid ? ", void" : "")}, {TypeShort.Of(callInner.Type)})",
                 LoweredIndexExpression indexAccess =>
                     $"Index({Expr(indexAccess.Receiver)}, {Expr(indexAccess.Index)}, " +
@@ -179,6 +185,14 @@ namespace LatteCompiler.Tests
                 _ => $"<{expr.GetType().Name}>",
             };
         }
+
+        // PlaceChain 元素：FieldSymbol 用字段名，TypeSymbol 用短类型名
+        private static string DescribePlaceElement(SemanticSymbol element) => element switch
+        {
+            FieldSymbol field => field.Name,
+            TypeSymbol type => TypeShort.Of(type),
+            _ => element.Name,
+        };
 
         // 字面量：值经 Origin.Syntax 回指取，类型取透传的定型结果
         private static string Literal(LoweredLiteralExpression literal)

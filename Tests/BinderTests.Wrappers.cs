@@ -424,9 +424,9 @@ namespace LatteCompiler.Tests
             CheckNoErrors("P3 字段-Value 绑定无诊断", unit3);
             var lowered3 = Lowerer.Lower(unit3, bodies3);
             CheckNoErrors("P4 字段-Value 降级无诊断", unit3);
-            TestHarness.Check("字段-Value 字段读降级形态（embedded 读）",
+            TestHarness.Check("字段-Value 字段读降级形态（embedded 读 field+wrapper）",
                 "Body(f, [], " +
-                "[Return(Embedded(Param(hero,Hero), [Clamped], min, i32))])",
+                "[Return(Embedded(Param(hero,Hero), [hp > Clamped], min, i32))])",
                 LoweredDescribe.Body(lowered3.Single(b => b.Method.Name == "f")));
 
             // 归口：局部 wrapper place（栈帧存储合成归后续里程碑）
@@ -445,6 +445,56 @@ namespace LatteCompiler.Tests
             Lowerer.Lower(unit4, bodies4);
             TestHarness.CheckSemanticError("P4 局部 wrapper place 归口", unit4.Diagnostics,
                 "local/static wrapper place storage is not supported yet");
+
+            // M84：字段-Value 方法调用 → GetFieldWrapper 物化
+            var (unit5, bodies5) = BindUnit(
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper Clamped {\n" +
+                "    pub var min: i32\n" +
+                "    pub init(_ -> min)\n" +
+                "    pub func clamp(v: i32): i32 { return v }\n" +
+                "}\n" +
+                "pub class Hero {\n" +
+                "    @Clamped\n" +
+                "    pub var hp: i32\n" +
+                "    pub init(h: i32) { hp = h }\n" +
+                "}\n" +
+                "pub func f(hero: Hero): i32 {\n" +
+                "    return hero.hp:Clamped.clamp(1)\n" +
+                "}\n");
+            CheckNoErrors("P3 字段-Value 调用绑定无诊断", unit5);
+            var lowered5 = Lowerer.Lower(unit5, bodies5);
+            CheckNoErrors("P4 字段-Value 调用降级无诊断", unit5);
+            TestHarness.Check("字段-Value 调用降级形态（GetFieldWrapper + InstCall）",
+                "Body(f, [.s0: Clamped], " +
+                "[Assign(Local(.s0,Clamped), GetFieldWrapper(Param(hero,Hero), hp, Clamped)); " +
+                "Return(InstCall(clamp, Local(.s0,Clamped), [Int(1,i32)], i32))])",
+                LoweredDescribe.Body(lowered5.Single(b => b.Method.Name == "f")));
+
+            // M84：深层写穿一层值中间
+            var (unit6, bodies6) = BindUnit(
+                "pub struct Inner {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(v: i32) { x = v }\n" +
+                "}\n" +
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Logged {\n" +
+                "    pub var sub: Inner\n" +
+                "    pub init(_ -> sub)\n" +
+                "}\n" +
+                "@Logged\n" +
+                "pub class Service { pub init() }\n" +
+                "pub func f(s: Service) {\n" +
+                "    s:Logged.sub.x = 1\n" +
+                "}\n");
+            CheckNoErrors("P3 深写绑定无诊断", unit6);
+            var lowered6 = Lowerer.Lower(unit6, bodies6);
+            CheckNoErrors("P4 深写降级无诊断", unit6);
+            var deepDesc = LoweredDescribe.Body(lowered6.Single(b => b.Method.Name == "f"));
+            TestHarness.CheckTrue("深写含 GetWrapper", deepDesc.Contains("GetWrapper"));
+            TestHarness.CheckTrue("深写含叶 set InstField x", deepDesc.Contains("InstField(x,"));
+            TestHarness.CheckTrue("深写含 embedded 写回 sub",
+                deepDesc.Contains("Embedded(") && deepDesc.Contains("sub"));
         }
 
         // ===== S11b proxy 体逐组合绑定：转发壳/特化体/解包 shim 三件套 +
@@ -477,6 +527,66 @@ namespace LatteCompiler.Tests
                 "pub func g(): i32 { return self }\n");
             TestHarness.CheckSemanticError("非 proxy 语境 self 诊断",
                 unit2.Diagnostics, "'self' is only available");
+        }
+
+        // ===== #27⑦ inner 泛型包透传：声明序锁定 + Bound/Lowered 描述 =====
+        private static void TestInnerCallGenericPackForwarding()
+        {
+            TestHarness.Section("P3 Inner Call Generic Pack Forwarding (#27⑦)");
+            var (unit, bodies) = BindUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Audited {\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., " +
+                "unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn { return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
+                "}\n" +
+                "@Audited\n" +
+                "pub class Service {\n" +
+                "    pub func fetch(id: i32): String { return \"r\" }\n" +
+                "}\n");
+            CheckNoErrors("wildcard 模板包透传无诊断", unit);
+            var proxyBody = bodies.First(b => b.Method.Name == ".proxy.*");
+            var boundDesc = BoundDescribe.Body(proxyBody);
+            TestHarness.CheckTrue("Bound 含 packs 声明序",
+                boundDesc.Contains("packs=[TNamedArgs, TUnnamedArgs]"));
+            // 固定泛型 TReturn 不入 ForwardedGenericPacks
+            TestHarness.CheckTrue("固定泛型 TReturn 不入 packs",
+                !boundDesc.Contains("TReturn]") && !boundDesc.Contains("TReturn,"));
+            var inner = FindFirstInnerCall(proxyBody.Body);
+            TestHarness.CheckTrue("找到 BoundInnerCall", inner != null);
+            if (inner != null)
+            {
+                TestHarness.CheckTrue("恰两包", inner.ForwardedGenericPacks.Count == 2);
+                TestHarness.Check("包0=TNamedArgs", "TNamedArgs",
+                    inner.ForwardedGenericPacks[0].Name);
+                TestHarness.Check("包1=TUnnamedArgs", "TUnnamedArgs",
+                    inner.ForwardedGenericPacks[1].Name);
+                TestHarness.CheckTrue("具名包标记",
+                    inner.ForwardedGenericPacks[0].IsNamedVariadic);
+                TestHarness.CheckTrue("位置包标记",
+                    inner.ForwardedGenericPacks[1].IsVariadic
+                    && !inner.ForwardedGenericPacks[1].IsNamedVariadic);
+            }
+            var lowered = Lowerer.Lower(unit, bodies);
+            CheckNoErrors("P4a 包透传无诊断", unit);
+            var loweredProxy = lowered.First(b => b.Method.Name == ".proxy.*");
+            TestHarness.CheckTrue("Lowered 含 packs 声明序",
+                LoweredDescribe.Body(loweredProxy)
+                    .Contains("packs=[TNamedArgs, TUnnamedArgs]"));
+        }
+
+        // 仅本套件：wildcard 模板体 return inner(...) 单层形态
+        private static BoundInnerCallExpression? FindFirstInnerCall(BoundBlock body)
+        {
+            foreach (var stmt in body.Statements)
+            {
+                if (stmt is BoundReturnStatement { Value: BoundInnerCallExpression inner })
+                    return inner;
+                if (stmt is BoundExpressionStatement { Expression: BoundInnerCallExpression expr })
+                    return expr;
+            }
+            return null;
         }
 
         // ===== #27⑧ proxy 声明泛型参数体内类型引用（模板态天然可解析）=====
@@ -686,6 +796,105 @@ namespace LatteCompiler.Tests
                 "pub func g(p: Plain) { p.missing() }\n");
             TestHarness.CheckSemanticError("无 wrapper 不降级",
                 unit2.Diagnostics, "Undefined member");
+
+            // #28③：interface 应用 .proxy.* → 实现者类实例未声明调用可降级
+            // （应用槽不回写实现者；资格经 Interfaces 传递闭包只读查询）
+            const string wildcardW =
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Audited {\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., " +
+                "unnamedArgs: TUnnamedArgs...): TReturn {\n" +
+                "        return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs)\n" +
+                "    }\n" +
+                "}\n";
+            var (unitIface, bodiesIface) = BindUnit(wildcardW +
+                "@Audited\n" +
+                "pub interface IService { }\n" +
+                "pub class SvcImpl implements IService { pub init() }\n" +
+                "pub func fIface(s: SvcImpl) { s.fetch(1) }\n");
+            CheckNoErrors("#28③ 直接 implements 接口 wildcard 可降级", unitIface);
+            TestHarness.CheckTrue("#28③ 实现者调用 Any.call???",
+                BoundDescribe.Body(bodiesIface.Single(b => b.Method.Name == "fIface"))
+                    .Contains("call???"));
+            TestHarness.CheckTrue("#28③ 实现者不回写 AppliedWrappers",
+                unitIface.Symbols.GlobalNamespace.Types
+                    .Single(t => t.Name == "SvcImpl").AppliedWrappers.Count == 0);
+
+            // #28③：接口继承传递闭包（IChild : IBase，wrapper 在 IBase）
+            var (unitTrans, bodiesTrans) = BindUnit(wildcardW +
+                "@Audited\n" +
+                "pub interface IBase { }\n" +
+                "pub interface IChild : IBase { }\n" +
+                "pub class ViaChild implements IChild { pub init() }\n" +
+                "pub func fTrans(s: ViaChild) { s.remote() }\n");
+            CheckNoErrors("#28③ 继承接口传递闭包可降级", unitTrans);
+            TestHarness.CheckTrue("#28③ 传递闭包调用 Any.call???",
+                BoundDescribe.Body(bodiesTrans.Single(b => b.Method.Name == "fTrans"))
+                    .Contains("call???"));
+
+            // #28③：仅 specific proxy（无 .proxy.*）不具降级资格
+            var (unitSpec, _) = BindUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper SpecificOnly {\n" +
+                "    operator .proxy.known(): i32 { return inner() }\n" +
+                "}\n" +
+                "@SpecificOnly\n" +
+                "pub interface IKnown { func known(): i32 }\n" +
+                "pub class SpecImpl implements IKnown {\n" +
+                "    pub init()\n" +
+                "    pub func known(): i32 { return 1 }\n" +
+                "}\n" +
+                "pub func gSpec(s: SpecImpl) { s.missing() }\n");
+            TestHarness.CheckSemanticError("#28③ 仅 specific 不降级",
+                unitSpec.Diagnostics, "Undefined member");
+
+            // #28④：if? 右操作数 / throw 操作数 / 复合赋值 RHS / 索引写值
+            // ——P3 豁免降级 Any（P4a cast 物化；普通 Any 不误伤）
+            const string w =
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper W {\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., " +
+                "unnamedArgs: TUnnamedArgs...): TReturn {\n" +
+                "        return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs)\n" +
+                "    }\n" +
+                "}\n" +
+                "@W\n" +
+                "pub class Svc { pub init() }\n" +
+                "pub class User { pub init() }\n";
+            var (unitIf, _) = BindUnit(w +
+                "pub func fIf(u: User?, s: Svc): User { return u if? s.fetch() }\n");
+            CheckNoErrors("#28④ if? 右操作数降级豁免", unitIf);
+            var (unitThrow, _) = BindUnit(w +
+                "pub func fThrow(s: Svc) { throw s.err() }\n");
+            CheckNoErrors("#28④ throw 操作数降级豁免", unitThrow);
+            var (unitComp, _) = BindUnit(w +
+                "pub func fComp(s: Svc): String {\n" +
+                "    var t = \"a\"\n" +
+                "    t += s.suffix()\n" +
+                "    return t\n" +
+                "}\n");
+            CheckNoErrors("#28④ 复合赋值 RHS 降级豁免", unitComp);
+            var (unitIdx, _) = BindUnit(w +
+                "pub class Bag {\n" +
+                "    pub var item: User\n" +
+                "    pub init(_ -> item)\n" +
+                "    pub operator getAtIndex(index: i32): User { return item }\n" +
+                "    pub operator setAtIndex(index: i32, element: User) { item = element }\n" +
+                "}\n" +
+                "pub func fIdx(b: Bag, s: Svc) { b[0] = s.fetch() }\n");
+            CheckNoErrors("#28④ 索引写值降级豁免", unitIdx);
+            // 普通 Any（非降级）不误伤
+            var (unitPlainAny, _) = BindUnit(
+                "pub class User { pub init() }\n" +
+                "pub func gIf(u: User?, a: Any): User { return u if? a }\n");
+            TestHarness.CheckSemanticError("普通 Any 不作 if? 回退",
+                unitPlainAny.Diagnostics, "Null fallback must be assignable");
+            var (unitPlainThrow, _) = BindUnit(
+                "pub func gThrow(a: Any) { throw a }\n");
+            TestHarness.CheckSemanticError("普通 Any 不可 throw",
+                unitPlainThrow.Diagnostics, "Cannot throw");
         }
     }
 }

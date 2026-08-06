@@ -53,9 +53,8 @@ namespace LatteCompiler
             LoweredExpression? callReceiver = null;
             if (call.Receiver != null)
             {
-                // S11c：wrapper place 作 receiver——get.wrapper 值拷贝物化
-                //（与 InstanceCallRewriter 同路径；物化产物类型即 wrapper
-                // 类型本身，不再做宿主 cast）
+                // S11c/M84：wrapper place 作 receiver——get.wrapper /
+                // get.wrapper.field 值拷贝物化（与 InstanceCallRewriter 同路径）
                 if (call.Receiver is BoundWrapperAccessExpression place)
                 {
                     callReceiver = WrapperPlaceLowering.Materialize(place, null, ctx, env);
@@ -92,9 +91,8 @@ namespace LatteCompiler
             LowerEnvironment env)
         {
             var assignment = (BoundAssignmentStatement)node;
-            // S11c：wrapper place 直接字段写入 = set.field.embedded 链
-            //（§13.3；求值序不变——BuildEmbedded 内宿主先行降级）；
-            // 更深层级写穿（place.a.b）与索引写归口
+            // S11c/M84：wrapper place 直接字段写入 = set.field.embedded 链
+            //（§13.3；求值序不变——BuildEmbedded 内宿主先行降级）
             if (WrapperPlaceLowering.DirectPlaceFieldTarget(assignment.Target)
                 is { } placeAccess)
             {
@@ -107,6 +105,13 @@ namespace LatteCompiler
                 placeValue = LoweringFacility.EnsureDeclaredType(assignment, placeValue,
                     placeAccess.Type);
                 return new LoweredAssignmentStatement(assignment, writePlace, placeValue);
+            }
+            // M84：深层纯字段写穿 place.a.b... = rhs → 正向 get + 叶写 + 反向 set
+            if (WrapperPlaceLowering.TryDeepFieldWriteTarget(assignment.Target,
+                    out var deepPlace, out var deepChain))
+            {
+                return WrapperPlaceLowering.LowerDeepFieldWrite(assignment, deepPlace, deepChain,
+                    assignment.Value, ctx, env);
             }
             if (WrapperPlaceLowering.ContainsPlaceInTarget(assignment.Target))
             {
@@ -143,7 +148,8 @@ namespace LatteCompiler
         }
     }
 
-    // throw 恒等降级（S7d，BIL §16.9 直接对应）
+    // throw 降级（S7d，BIL §16.9）。#28④：降级调用结果的静态类型为
+    // Any，仅该形态须先 cast 到 core.Exception，保证 BilVerifier §21.3 合法
     internal sealed class ThrowRewriter
         : LoweredVisitor<ThrowRewriter, LoweredStatement, LowerContext>
     {
@@ -153,6 +159,12 @@ namespace LatteCompiler
             var throwStatement = (BoundThrowStatement)node;
             var thrown = LowerExpressionDispatcher.Visit(throwStatement.Exception, ctx, env);
             if (thrown == null) return null;
+            if (throwStatement.Exception is BoundInstanceCallExpression { Method: { } method }
+                && ReferenceEquals(method, env.Unit.Symbols.Bootstrap.CallWildcard))
+            {
+                thrown = LoweringFacility.EnsureDeclaredType(throwStatement, thrown,
+                    env.Unit.Symbols.Bootstrap.Exception);
+            }
             return new LoweredThrowStatement(throwStatement, thrown);
         }
     }

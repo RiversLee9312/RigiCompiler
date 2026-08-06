@@ -117,17 +117,26 @@ namespace LatteCompiler.Tests
             TestWrapperNestedChainEmission();
             TestWrapperIndexReadEmission();
             TestWrapperFieldValueEmission();
+            TestWrapperFieldValueSameWrapperTwoFields();
             TestWrapperCompoundAssignmentEmission();
             TestWrapperPlaceEmissionGates();
+            TestWrapperFieldValueCallAndIndexEmission();
+            TestWrapperDeepWriteEmission();
+            TestWrapperDeepWriteMixedBoundary();
+            TestWrapperDeepCompoundAssignmentEmission();
+            TestWrapperSharedHostFieldStability();
             TestGenericParamWithWrapperEmission();
             TestProxyBakingEmission();
             TestProxyWildcardBakingEmission();
+            TestProxySpecificVariadicEmission();
             TestProxyAccessorBakingEmission();
             TestDowngradeEmissionSingle();
             TestDowngradeCastMaterialization();
             TestDowngradeStatementPosition();
             TestDowngradeDoubleChain();
             TestDowngradeGateNoChain();
+            TestDowngradeViaInterface();
+            TestDowngradeExemptionPositions();
             TestUnsupportedNodes();
 
             return TestHarness.Summary("BilEmitter");

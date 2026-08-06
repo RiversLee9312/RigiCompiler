@@ -331,6 +331,9 @@ namespace LatteCompiler.Tests
                 BilOp.Case("com.example::RequestResult.Failed"), BilOp.Var("b")));
             body.Instructions.Add(new GetWrapperInstruction(BilOp.Var("a"),
                 BilOp.Type("core.logging::Logged"), BilOp.Var("b")));
+            body.Instructions.Add(new GetWrapperFieldInstruction(BilOp.Var("obj"),
+                BilOp.Field("com.example::Hero#hp@.i32"),
+                BilOp.Type("core.clamp::Clamped"), BilOp.Var("b")));
             body.Instructions.Add(new GetIdVarInstruction(BilOp.Var("a"), BilOp.Var("t")));
             body.Instructions.Add(new GetVarInstruction(BilOp.Var("a"), BilOp.Var("b")));
             body.Instructions.Add(new GetFieldInstruction(BilOp.Var("obj"), BilOp.Var("t"),
@@ -405,6 +408,7 @@ namespace LatteCompiler.Tests
                 "        type.is $a type(com.example::User) $b",
                 "        type.is.case $a case(com.example::RequestResult.Failed) $b",
                 "        get.wrapper $a type(core.logging::Logged) $b",
+                "        get.wrapper.field $obj field(com.example::Hero#hp@.i32) type(core.clamp::Clamped) $b",
                 "        getid.var $a $t",
                 "        get.var $a $b",
                 "        get.field $obj $t field(com.example::Service#name@.string)",

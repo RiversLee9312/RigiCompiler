@@ -223,13 +223,14 @@ namespace LatteCompiler
                 var binding = CallFacility.BindCall(stmt, calleeSegments, callArguments!, scope,
                     ctx, env, genericArguments);
                 if (binding == null) return null;
-                // M88：inner(...) 语句位置（含 void）
+                // M88：inner(...) 语句位置（含 void）；#27⑦ 携带泛型包透传
                 if (binding.IsInnerCall)
                 {
                     var innerType = binding.ResultType ?? env.B.Any;
                     return new BoundExpressionStatement(stmt,
                         new BoundInnerCallExpression(path, binding.Arguments, innerType,
-                            isVoid: binding.IsVoid));
+                            isVoid: binding.IsVoid,
+                            forwardedGenericPacks: binding.ForwardedGenericPacks));
                 }
                 if (binding.IsVoid)
                 {

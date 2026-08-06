@@ -308,7 +308,7 @@ Latte 泛型不擦除实际类型。实现采用**单份共享 Native 代码体 
 **静态组合**：实体修饰器在语言语义上把 wrapper 逻辑按声明序从内到外嵌套进方法派发（替换 `inner`），因此天然骑 vtable。运行时**不能**增删、重排或禁用 wrapper。烘焙动作（逐应用特化、inner 链接、原始体替换，以及 `call???` router 体合成）由 Middleware 在合法 lowering 时完成（边界见 `BIL_STANDARD.md` §23）；frontend（编译器）产物只携带三类标记，不合成派发链符号、不替换原始方法体：
 
 - (a) 声明上的 wrapper 应用标记（BIL 修饰符）；
-- (b) proxy 模板 fn——wrapper 类型的成员 fn，带 `wrapper-proxy(specific|wildcard)` 修饰符（`BIL_STANDARD.md` §8.4），体内的 `inner` / `self` 以占位指令表达（`call.inner` 见 `BIL_STANDARD.md` §15，`get.self` 见 `BIL_STANDARD.md` §12）；
+- (b) proxy 模板 fn——wrapper 类型的成员 fn，带 `wrapper-proxy(specific|wildcard)` 修饰符（`BIL_STANDARD.md` §8.4），体内的 `inner` / `self` 以占位指令表达（`call.inner` 见 `BIL_STANDARD.md` §15.4，`get.self` 见 `BIL_STANDARD.md` §12）。`call.inner` 操作数显式携带待转发的可变泛型包（`.generic.<Pack>` 前置）与值包（`.kwargs.*` / `.vargs.*` 随后）；Middleware 烘焙下一环时消费这些包操作数（解包/shim/特化链接），frontend 不展开；
 - (c) 未声明方法的降级调用点 = 对 `core::Any$call???` 的普通 `invoke`（见 §14.2）。
 
 最终内联仍归 Middleware。
@@ -317,7 +317,7 @@ Latte 泛型不擦除实际类型。实现采用**单份共享 Native 代码体 
 
 - 宿主类型必须允许内嵌 rich struct；非 rich struct 不能被修饰，这是编译期不变量，运行时无需检查。
 - 非 shared wrapper 可能持有 local object，所以只能出现在非 shared 宿主与栈帧中；shared wrapper 走 microSGC 路径。
-- 路径表达式 `value:WrapperType` 与 proxy 体内的 `this` 都是对该隐藏存储的**原地访问**，从不复制。源码层 `value:WrapperType` 是只读 place（`SYNTAX.md` §14.5）：既不能被整体赋值，也不能被整体取出，因此运行时不存在脱离宿主独立存活的 wrapper 值，也不为 wrapper 提供任何别名或共享机制。wrapper place 的 embedded 链指令操作数是 **wrapper 类型引用**（而非编译器合成的隐藏字段符号）。
+- 路径表达式 `value:WrapperType` 与 proxy 体内的 `this` 都是对该隐藏存储的**原地访问**，从不复制。源码层 `value:WrapperType` 是只读 place（`SYNTAX.md` §14.5）：既不能被整体赋值，也不能被整体取出，因此运行时不存在脱离宿主独立存活的 wrapper 值，也不为 wrapper 提供任何别名或共享机制。wrapper place 的 embedded 链指令操作数是已有两态 `field(F)|wrapper(W)`（而非编译器合成的隐藏字段符号；字段-Value 应用 = 相邻 `field(HOST_FIELD)+wrapper(W)`，Entity 应用 = `wrapper(W)`）。frontend lowering 在成员**读取**/调用/索引读路径上可经 `get.wrapper` / `get.wrapper.field` 取得**值拷贝**供后续普通指令消费（与原地写路径分离；BIL §12.4）；深层写穿由 frontend 展开为多次现有 get/set（最外层必要写回复用 `set.field.embedded`），不新增专用深写指令、也不把整条深路径压进单条超长链。
 
 ### 14.1 四类唯一 wildcard proxy
 

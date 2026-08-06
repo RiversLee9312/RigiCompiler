@@ -122,7 +122,7 @@ namespace LatteCompiler
                 var binding = CallFacility.BindCall(node, calleeSegments, callArguments!, scope,
                     ctx, env, genericArguments);
                 if (binding == null) return null;
-                // M88：inner(...) 占位
+                // M88：inner(...) 占位；#27⑦ 携带泛型包透传
                 if (binding.IsInnerCall)
                 {
                     if (binding.IsVoid)
@@ -132,7 +132,8 @@ namespace LatteCompiler
                         return null;
                     }
                     return new BoundInnerCallExpression(node, binding.Arguments,
-                        binding.ResultType!);
+                        binding.ResultType!,
+                        forwardedGenericPacks: binding.ForwardedGenericPacks);
                 }
                 // S10：async 无结果调用有 Task 值（ResultType 非空）——仅
                 // 真 void（ResultType == null）拒绝作值

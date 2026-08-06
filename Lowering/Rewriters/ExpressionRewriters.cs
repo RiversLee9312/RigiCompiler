@@ -7,7 +7,8 @@ namespace LatteCompiler
     internal static class ExpressionFacility
     {
         // 在独立块上下文里降级表达式并写目标局部（前置语句随块走）；
-        // 产物是单语句合成块（Origin 指最近语法来源）
+        // 产物是单语句合成块（Origin 指最近语法来源）。值按目标局部类型
+        // cast 物化（BIL §6.5——#28④ if? 右操作数降级 Any→T 等同路径）
         public static LoweredBlock? LowerAssignInNewBlock(BoundNode origin, BoundExpression value,
             LocalSymbol target, LowerContext ctx, LowerEnvironment env)
         {
@@ -17,6 +18,7 @@ namespace LatteCompiler
             {
                 var lowered = LowerExpressionDispatcher.Visit(value, ctx, env);
                 if (lowered == null) return null;
+                lowered = LoweringFacility.EnsureDeclaredType(origin, lowered, target.Type);
                 statements.Add(new LoweredAssignmentStatement(origin,
                     SynthLocalFactory.ReferenceTo(origin, target), lowered));
                 return new LoweredBlock(origin, statements);
@@ -265,13 +267,19 @@ namespace LatteCompiler
             LowerEnvironment env)
         {
             var compound = (BoundCompoundAssignmentExpression)node;
-            // S11c：wrapper place 直接字段复合赋值——读/写分离专用路径
-            //（读 = 值拷贝/embedded 读、写 = embedded 链；宿主单次求值共享）。
-            // 更深层级写穿（place.a.b）与索引复合（place[i]）归口
+            // S11c/M84：wrapper place 直接字段复合赋值——读/写分离专用路径
+            //（读 = 值拷贝/embedded 读、写 = embedded 链；宿主单次求值共享）
             if (compound.Target is BoundFieldAccessExpression
                 { Receiver: BoundWrapperAccessExpression } placeAccess)
             {
                 return RewriteWrapperPlaceCompound(compound, placeAccess, ctx, env);
+            }
+            // M84：深层纯字段复合赋值 place.a.b op= rhs
+            if (WrapperPlaceLowering.TryDeepFieldWriteTarget(compound.Target,
+                    out var deepPlace, out var deepChain))
+            {
+                return WrapperPlaceLowering.LowerDeepFieldCompound(compound, deepPlace, deepChain,
+                    ctx, env);
             }
             if (WrapperPlaceLowering.ContainsPlaceInTarget(compound.Target))
             {
@@ -283,6 +291,8 @@ namespace LatteCompiler
             target = MaterializeTarget(target, ctx);
             var value = LowerExpressionDispatcher.Visit(compound.Value, ctx, env);
             if (value == null) return null;
+            // #28④：RHS cast 物化到 place 运算类型（降级 Any→T；§11 同型）
+            value = LoweringFacility.EnsureDeclaredType(compound, value, compound.Target.Type);
             LoweredExpression binary = new LoweredBinaryExpression(compound, compound.Op,
                 target, value);
             // 写回值按 place 声明类型物化 cast（BIL §6.5，与普通赋值
@@ -314,13 +324,7 @@ namespace LatteCompiler
             var hostBound = WrapperPlaceLowering.UltimateHostExpression(place);
             var host = LowerExpressionDispatcher.Visit(hostBound, ctx, env);
             if (host == null) return null;
-            if (!IsSideEffectFree(host))
-            {
-                var hostLocal = ctx.Synth.NewSynthLocal(host.Type);
-                ctx.Output.Add(new LoweredAssignmentStatement(hostBound,
-                    SynthLocalFactory.ReferenceTo(hostBound, hostLocal), host));
-                host = SynthLocalFactory.ReferenceTo(hostBound, hostLocal);
-            }
+            host = WrapperPlaceLowering.MaterializeSharedWriteHost(hostBound, host, ctx);
             var read = WrapperPlaceLowering.LowerFieldRead(placeAccess, place, host, ctx, env);
             if (read == null) return null;
             var write = WrapperPlaceLowering.BuildEmbedded(placeAccess, place, placeAccess.Field,
@@ -328,6 +332,8 @@ namespace LatteCompiler
             if (write == null) return null;
             var value = LowerExpressionDispatcher.Visit(compound.Value, ctx, env);
             if (value == null) return null;
+            // #28④：RHS cast 物化到 place 运算类型（与一般复合赋值同规则）
+            value = LoweringFacility.EnsureDeclaredType(compound, value, placeAccess.Type);
             LoweredExpression binary = new LoweredBinaryExpression(compound, compound.Op,
                 read, value);
             binary = LoweringFacility.EnsureDeclaredType(compound, binary, placeAccess.Type);
@@ -446,8 +452,8 @@ namespace LatteCompiler
     // 实例调用：receiver 降级 + 调用点 cast 物化（BIL §6.5）——
     // receiver 静态类型 ≠ 方法宿主时包显式 cast（沿 BaseType 链找到的
     // 成员在子类 receiver 上调用时的装箱/基类视图转换，§12.1）。
-    // S11c：wrapper place 作 receiver——get.wrapper 值拷贝物化（§12.4
-    // 注记，WrapperPlaceLowering 共用路径）；物化产物类型即 wrapper
+    // S11c/M84：wrapper place 作 receiver——Entity = get.wrapper、字段-Value
+    // = get.wrapper.field 值拷贝物化（§12.4）；物化产物类型即 wrapper
     // 类型（方法宿主本身），不再做宿主 cast
     internal sealed class InstanceCallRewriter
         : LoweredVisitor<InstanceCallRewriter, LoweredExpression, LowerContext>
@@ -514,8 +520,8 @@ namespace LatteCompiler
             LowerEnvironment env)
         {
             var indexAccess = (BoundIndexExpression)node;
-            // S11c：wrapper place 作 receiver——Entity 应用 get.wrapper 值
-            // 拷贝物化（§12.4 注记；字段-Value/局部/静态归口）
+            // S11c/M84：wrapper place 作 receiver——Entity = get.wrapper、
+            // 字段-Value = get.wrapper.field 值拷贝物化（索引写仍归口）
             var receiver = indexAccess.Receiver is BoundWrapperAccessExpression place
                 ? WrapperPlaceLowering.Materialize(place, null, ctx, env)
                 : LowerExpressionDispatcher.Visit(indexAccess.Receiver, ctx, env);

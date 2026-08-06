@@ -1718,6 +1718,8 @@ takeWrapper(service:Logged)          // ❌ 同上：不能作实参、返回值
 
 wrapper 自身的字段可变性仍按普通规则由字段声明（`var`/`const`）与可见性决定；"只读"约束的是 `obj:Wrapper` 这个 place 整体，不是其成员。
 
+对 place 上方法调用与索引**读**，编译器可取 wrapper 值拷贝作为 receiver（Entity 应用经 `get.wrapper`，字段-Value 应用经 `get.wrapper.field`；见 `BIL_STANDARD.md` §12.4），与字段原地读写路径分离。深层字段写穿 `place.a.b... = rhs` 在语义上等价于：正向逐字段读取并物化中间值、写叶、再对值类型中间层反向写回（遇引用类型中间层即停止；需要写回但 const/无 setter/不可见时诊断）。含索引或调用的深写目标非法。
+
 proxy 方法体内的 `this` 同样是原地访问宿主持有的那份 wrapper，因此 `@Clamped(0, 100)` 这类可变 wrapper 状态在多次调用之间保持一致。
 
 wrapper place 的接收者来源有三：字段/局部变量的应用（`@W` 标注）、宿主静态类型的应用（Entity wrapper 经类型声明标注），以及泛型参数的 `with W` 约束（§3.6——约束等价于一次应用，`param:W` 合法且语义相同）。
@@ -1730,6 +1732,7 @@ wrapper place 的接收者来源有三：字段/局部变量的应用（`@W` 标
 - **同一 wrapper 内**：匹配的 specific proxy 优先于对应类别的 wildcard proxy；二者是择一关系，不会在同一 wrapper 层同时执行。
 - **同一 wrapper 内**：普通方法、getter、setter、operator 四个类别分别最多存在一个 wildcard proxy，因此不存在同类别 wildcard 的重叠、排序或 priority。
 - specific proxy 或 wildcard proxy 调用 `inner(...)` 后，下一层 wrapper 独立重复同一套 specific → wildcard → 实体成员/下一层的选择。
+- **`inner(...)` 源码形态不变**：只写值实参（含对 vargs/kwargs 包参数的具名/位置转发）。模板 fn 上的可变泛型包（`TNamedArgs...` / `TUnnamedArgs...` 等）由编译器在 Bound/Lowered 层显式携带，并在 BIL `call.inner` 中按 §7.2 序**前置**为 `.generic.<Pack>` 操作数（值包随后）；包解包与下一环烘焙归 Middleware（见 `BIL_STANDARD.md` §15.4）。固定泛型参数不出现在 `call.inner` 操作数列表中。
 
 `@ProxyPriority` 不再存在；编译器不进行 wildcard pattern 重叠分析，也不维护任何用户指定的数值优先级。
 

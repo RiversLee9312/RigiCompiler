@@ -1014,6 +1014,48 @@ namespace LatteCompiler.Tests
                 "pub class H { pub func foo(arg: i32): String { return \"x\" } }\n");
             TestHarness.CheckTrue("specific 形状不符诊断",
                 bad.Diagnostics.Diagnostics.Any(d => d.Message.Contains("does not match the shape")));
+
+            // #27⑦：specific variadic 形状正例（双方同为位置包 → 无形状不符）
+            var (okVar, _) = ResolveUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Wv\\<TTarget> {\n" +
+                "    operator .proxy.sum(nums: i32...): i32 { return inner(nums) }\n" +
+                "}\n" +
+                "@Wv\n" +
+                "pub class Hv {\n" +
+                "    pub func sum(nums: i32...): i32 { return 0 }\n" +
+                "}\n");
+            CheckNoErrors("specific variadic 同形无诊断", okVar);
+            TestHarness.CheckTrue("无形状不符（variadic 正例）",
+                !okVar.Diagnostics.Diagnostics.Any(d =>
+                    d.Message.Contains("does not match the shape")));
+
+            // #27⑦：普通参数 vs 包参数误判同形负例
+            var (badVar, _) = ResolveUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Wb\\<TTarget> {\n" +
+                "    operator .proxy.sum(nums: i32): i32 { return inner(nums) }\n" +
+                "}\n" +
+                "@Wb\n" +
+                "pub class Hb {\n" +
+                "    pub func sum(nums: i32...): i32 { return 0 }\n" +
+                "}\n");
+            TestHarness.CheckTrue("ordinary vs variadic 形状不符",
+                badVar.Diagnostics.Diagnostics.Any(d =>
+                    d.Message.Contains("does not match the shape")));
+
+            var (badPackKind, _) = ResolveUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Wk\\<TTarget> {\n" +
+                "    operator .proxy.sum(nums: i32...): i32 { return inner(nums) }\n" +
+                "}\n" +
+                "@Wk\n" +
+                "pub class Hk {\n" +
+                "    pub func sum(nums: named i32...): i32 { return 0 }\n" +
+                "}\n");
+            TestHarness.CheckTrue("positional vs named variadic 形状不符",
+                badPackKind.Diagnostics.Diagnostics.Any(d =>
+                    d.Message.Contains("does not match the shape")));
         }
 
         // M88：降级链合成已删——PrintDowngradeRequest 与资格判定冒烟

@@ -282,19 +282,27 @@ namespace LatteCompiler
         }
     }
 
-    // proxy 体 inner(...)（M88，ARCH §5.2 / SYNTAX §14.2）：模板态占位调用。
-    // Arguments = 实参绑定产物；Type = proxy 声明返回类型（void 时本节点
-    // 仅出现在语句位置，Type 取 Any 占位且 IsVoid = true）。P4 发射
-    // call.inner 占位指令（下一棒）
+    // proxy 体 inner(...)（M88，ARCH §5.2 / SYNTAX §14.2；#27⑦ 包透传）：
+    // 模板态占位调用。Arguments = 源码层显式值实参绑定产物；
+    // ForwardedGenericPacks = 当前 proxy 方法声明序中的可变泛型包
+    // （IsVariadic/IsNamedVariadic；固定泛型不入列）——P4b 按 BIL §7.2
+    // 序前置为 $.generic.<Name>，再接值实参（含 .kwargs./.vargs.）。
+    // Type = proxy 声明返回类型（void 时本节点仅出现在语句位置，Type 取
+    // Any 占位且 IsVoid = true）。P4 发射 call.inner 占位指令（下一棒）
     public sealed class BoundInnerCallExpression : BoundExpression
     {
         public IReadOnlyList<BoundExpression> Arguments { get; }
+        public IReadOnlyList<GenericParameterSymbol> ForwardedGenericPacks { get; }
         public bool IsVoid { get; }
 
         public BoundInnerCallExpression(ASTNode syntax, IReadOnlyList<BoundExpression> arguments,
-            SemanticSymbol type, bool isVoid = false) : base(syntax, type)
+            SemanticSymbol type, bool isVoid = false,
+            IReadOnlyList<GenericParameterSymbol>? forwardedGenericPacks = null)
+            : base(syntax, type)
         {
             Arguments = arguments;
+            ForwardedGenericPacks = forwardedGenericPacks
+                ?? Array.Empty<GenericParameterSymbol>();
             IsVoid = isVoid;
         }
     }

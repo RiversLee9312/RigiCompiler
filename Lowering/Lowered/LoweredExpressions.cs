@@ -266,26 +266,48 @@ namespace LatteCompiler
         }
     }
 
+    // 字段-Value wrapper 值拷贝（M84，BIL §12.4 get.wrapper.field）：
+    // 从属主对象的特定字段应用取得 wrapper 值拷贝，供方法调用/索引读
+    // 复用普通 invoke/get.array。Object = 字段属主；HostField = 带
+    // Value wrapper 应用的实例字段；Wrapper = 应用类型。Type 走 Origin
+    public sealed class LoweredGetFieldWrapperExpression : LoweredExpression
+    {
+        public LoweredExpression Object { get; }
+        public FieldSymbol HostField { get; }
+        public TypeSymbol Wrapper { get; }
+
+        public LoweredGetFieldWrapperExpression(BoundWrapperAccessExpression origin,
+            LoweredExpression objectValue, FieldSymbol hostField, TypeSymbol wrapper)
+            : base(origin)
+        {
+            Object = objectValue;
+            HostField = hostField;
+            Wrapper = wrapper;
+        }
+    }
+
     // 嵌套字段访问（S11c/M88，BIL §13.3 get/set.field.embedded）：wrapper
     // place 成员写与字段-Value 应用成员读的承载节点——读/写 place 共用。
-    // Receiver = 终极宿主值；WrapperChain = wrapper 类型链（最外层→最内层，
-    // 对应链元素 wrapper(W)，存储合成归 Middleware）；Field = 最内层
-    // wrapper 上的目标实例字段。Type 自带
+    // Receiver = 终极宿主值；PlaceChain = 寻址语义链（最外层→最内层）：
+    //   TypeSymbol = 类型/Entity 应用（投影 wrapper(W)）；
+    //   FieldSymbol = 字段下钻或字段-Value 应用的 HOST_FIELD（投影 field(F)；
+    //     字段应用编码为相邻 FieldSymbol + TypeSymbol 对）。
+    // Field = 最内层目标实例字段。Type 自带
     public sealed class LoweredEmbeddedFieldExpression : LoweredExpression
     {
         public LoweredExpression Receiver { get; }
-        public IReadOnlyList<TypeSymbol> WrapperChain { get; }
+        public IReadOnlyList<SemanticSymbol> PlaceChain { get; }
         public FieldSymbol Field { get; }
         private readonly SemanticSymbol type;
 
         public override SemanticSymbol Type => type;
 
         public LoweredEmbeddedFieldExpression(BoundNode origin, LoweredExpression receiver,
-            IReadOnlyList<TypeSymbol> wrapperChain, FieldSymbol field, SemanticSymbol type)
+            IReadOnlyList<SemanticSymbol> placeChain, FieldSymbol field, SemanticSymbol type)
             : base(origin)
         {
             Receiver = receiver;
-            WrapperChain = wrapperChain;
+            PlaceChain = placeChain;
             Field = field;
             this.type = type;
         }
@@ -299,17 +321,20 @@ namespace LatteCompiler
         }
     }
 
-    // proxy 体 inner(...)（M88，BIL §15.4 call.inner / call.inner.noret）：
-    // Arguments 已下降；Type 透传（void 时 IsVoid，P4b 选 noret 形态）
+    // proxy 体 inner(...)（M88，BIL §15.4 call.inner / call.inner.noret；
+    // #27⑦）：Arguments 已下降；ForwardedGenericPacks 透传自 Bound
+    // （P4b 前置 $.generic.<Name>）；Type 透传（void 时 IsVoid，P4b 选 noret）
     public sealed class LoweredCallInnerExpression : LoweredExpression
     {
         public IReadOnlyList<LoweredExpression> Arguments { get; }
+        public IReadOnlyList<GenericParameterSymbol> ForwardedGenericPacks { get; }
         public bool IsVoid { get; }
 
         public LoweredCallInnerExpression(BoundInnerCallExpression origin,
             IReadOnlyList<LoweredExpression> arguments) : base(origin)
         {
             Arguments = arguments;
+            ForwardedGenericPacks = origin.ForwardedGenericPacks;
             IsVoid = origin.IsVoid;
         }
     }

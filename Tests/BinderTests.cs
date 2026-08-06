@@ -88,6 +88,7 @@ namespace LatteCompiler.Tests
             TestWrapperPlaceLowering();
             TestProxyBodyBinding();
             TestProxyGenericParamTypeRefs();
+            TestInnerCallGenericPackForwarding();
             TestGenericParamWithWrapperPlace();
             TestDowngradeBinding();
             return TestHarness.Summary("Binder");

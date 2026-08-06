@@ -13,6 +13,7 @@ namespace LatteCompiler.Tests
             TestHarness.Reset();
             TestEmptyReport();
             TestAppliedReport();
+            TestVariadicMemberWildcardPreview();
             TestCliFlag();
             return TestHarness.Summary("DispatchExplainer");
         }
@@ -45,6 +46,31 @@ namespace LatteCompiler.Tests
             TestHarness.CheckTrue("含 type 行", report.Contains("type "));
             TestHarness.CheckTrue("含 applied", report.Contains("applied:"));
             TestHarness.CheckTrue("含 member", report.Contains("member "));
+        }
+
+        // #27⑦：可变值参数成员与泛型成员进入 wildcard 匹配预览（不再跳过）
+        private static void TestVariadicMemberWildcardPreview()
+        {
+            TestHarness.Section("Variadic / generic member wildcard preview (#27⑦)");
+            var unit = ResolveUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Audited {\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., " +
+                "unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn { return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
+                "}\n" +
+                "@Audited\n" +
+                "pub class Service {\n" +
+                "    pub func log(msgs: String...): i32 { return 0 }\n" +
+                "    pub func id\\<T>(x: T): T { return x }\n" +
+                "}\n");
+            CheckNoErrors("可变/泛型成员宿主无诊断", unit);
+            var report = DispatchExplainer.Explain(unit);
+            TestHarness.CheckTrue("含 log 成员", report.Contains("member ") && report.Contains("log"));
+            TestHarness.CheckTrue("含 id 成员", report.Contains("id"));
+            TestHarness.CheckTrue("log 命中 wildcard",
+                report.Contains("wildcard") && report.Contains(".proxy.*"));
         }
 
         private static void TestCliFlag()

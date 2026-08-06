@@ -195,6 +195,29 @@ namespace LatteCompiler.Bil
             new BilOperand[] { Value, WrapperType, Target };
     }
 
+    // §12.4 字段-Value 应用：从属主对象的特定字段应用取得 wrapper 值拷贝
+    // get.wrapper.field OBJECT field(HOST_FIELD) type(WRAPPER_TYPE) RESULT
+    public sealed class GetWrapperFieldInstruction : BilInstruction
+    {
+        public BilVariableOperand Object { get; }
+        public BilFieldOperand HostField { get; }
+        public BilTypeOperand WrapperType { get; }
+        public BilVariableOperand Target { get; }
+
+        public GetWrapperFieldInstruction(BilVariableOperand objectValue, BilFieldOperand hostField,
+            BilTypeOperand wrapperType, BilVariableOperand target)
+        {
+            Object = objectValue;
+            HostField = hostField;
+            WrapperType = wrapperType;
+            Target = target;
+        }
+
+        internal override string Opcode => "get.wrapper.field";
+        internal override IReadOnlyList<BilOperand> Operands =>
+            new BilOperand[] { Object, HostField, WrapperType, Target };
+    }
+
     // §12.5 取得宿主实例（proxy 模板）：get.self RESULT
     // 仅 wrapper-proxy 标记的 fn 体内合法；RESULT = 模板所属 wrapper 的
     // TTarget（Entity 恰一泛型参数时的代入结果）

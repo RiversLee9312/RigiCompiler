@@ -241,6 +241,11 @@ namespace LatteCompiler.Tests
                     new SetEmbeddedFieldInstruction(BilOp.Var("lv"), BilOp.Var("svc"),
                         BilOp.Wrapper("core.logging::Logged"),
                         BilOp.Field("core.logging::Logged#level@.string"))));
+            BilTestHarness.CheckBilValid("S11 get.wrapper.field 正例",
+                FieldValueModule(
+                    new GetWrapperFieldInstruction(BilOp.Var("hero"),
+                        BilOp.Field("com.example::Hero#hp@.i32"),
+                        BilOp.Type("core.clamp::Clamped"), BilOp.Var("w"))));
 
             // ===== 负例：非法模块按规则命中 =====
             NegativeCases();
@@ -784,6 +789,99 @@ namespace LatteCompiler.Tests
             BilTestHarness.CheckBilInvalid("embedded set 写 const 内层字段", m,
                 "不得被写入");
 
+            // ===== M84：§12.4 get.wrapper.field 负例 =====
+            m = FieldValueModule(new GetWrapperFieldInstruction(BilOp.Var("hero"),
+                BilOp.Field("com.example::Hero#ghost@.i32"),
+                BilOp.Type("core.clamp::Clamped"), BilOp.Var("w")));
+            BilTestHarness.CheckBilInvalid("get.wrapper.field 宿主字段不可解析", m,
+                "宿主字段符号不可解析");
+
+            m = FieldValueModule(new GetWrapperFieldInstruction(BilOp.Var("hero"),
+                BilOp.Field("com.example::Hero#hp@.i32"),
+                BilOp.Type("com.example::Plain"), BilOp.Var("w")));
+            m.LocalSymbols.Add(new BilTypeDeclaration("com.example::Plain",
+                BilTypeKind.Class, new BilAccessibilityModifier(BilAccessibility.Public)));
+            BilTestHarness.CheckBilInvalid("get.wrapper.field 非 wrapper 类型", m,
+                "不是 wrapper 类型");
+
+            m = FieldValueModule(new GetWrapperFieldInstruction(BilOp.Var("hero"),
+                BilOp.Field("com.example::Hero#raw@.i32"),
+                BilOp.Type("core.clamp::Clamped"), BilOp.Var("w")));
+            var heroDecl = (BilTypeDeclaration)m.LocalSymbols
+                .Single(e => e is BilTypeDeclaration { Symbol: "com.example::Hero" });
+            heroDecl.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field,
+                "com.example::Hero#raw@.i32",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            BilTestHarness.CheckBilInvalid("get.wrapper.field 字段缺 wrapped 标记", m,
+                "必须带 wrapped");
+
+            m = FieldValueModule(new GetWrapperFieldInstruction(BilOp.Var("hero"),
+                BilOp.Field("com.example::Hero#hp@.i32"),
+                BilOp.Type("core.clamp::Clamped"), BilOp.Var("x")));
+            BilTestHarness.CheckBilInvalid("get.wrapper.field 结果类型不符", m,
+                "get.wrapper.field 结果");
+
+            // 静态 HOST_FIELD
+            m = FieldValueModule(new GetWrapperFieldInstruction(BilOp.Var("hero"),
+                BilOp.Field("com.example::Hero#.static.counter@.i32"),
+                BilOp.Type("core.clamp::Clamped"), BilOp.Var("w")));
+            heroDecl = (BilTypeDeclaration)m.LocalSymbols
+                .Single(e => e is BilTypeDeclaration { Symbol: "com.example::Hero" });
+            heroDecl.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field,
+                "com.example::Hero#.static.counter@.i32",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilWrappedModifier("core.clamp::Clamped"),
+                }));
+            BilTestHarness.CheckBilInvalid("get.wrapper.field 静态 HOST_FIELD", m,
+                "必须是实例字段");
+
+            // OBJECT owner 不匹配（可解析的非 owner 类型；内建 .i32 查不到会降级）
+            m = FieldValueModule(new GetWrapperFieldInstruction(BilOp.Var("plain"),
+                BilOp.Field("com.example::Hero#hp@.i32"),
+                BilOp.Type("core.clamp::Clamped"), BilOp.Var("w")));
+            m.LocalSymbols.Add(new BilTypeDeclaration("com.example::Plain",
+                BilTypeKind.Class, new BilAccessibilityModifier(BilAccessibility.Public)));
+            m.Functions[0].Vars.Add(new BilVarDeclaration("com.example::Plain", "plain"));
+            BilTestHarness.CheckBilInvalid("get.wrapper.field OBJECT owner 不匹配", m,
+                "宿主对象");
+
+            // 字段应用对：field(F)+wrapper(W) 但 F 缺匹配 wrapped
+            m = FieldValueModule(new GetEmbeddedFieldInstruction(BilOp.Var("hero"),
+                BilOp.Var("x"),
+                new BilOperand[]
+                {
+                    BilOp.Field("com.example::Hero#raw@.i32"),
+                    BilOp.Wrapper("core.clamp::Clamped"),
+                },
+                BilOp.Field("core.clamp::Clamped#min@.i32")));
+            heroDecl = (BilTypeDeclaration)m.LocalSymbols
+                .Single(e => e is BilTypeDeclaration { Symbol: "com.example::Hero" });
+            heroDecl.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field,
+                "com.example::Hero#raw@.i32",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilWrappedModifier("core.clamp::Other"),
+                }));
+            m.LocalSymbols.Add(new BilTypeDeclaration("core.clamp::Other", BilTypeKind.Wrapper,
+                new BilAccessibilityModifier(BilAccessibility.Public),
+                new BilKeywordModifier(BilKeyword.Rich)));
+            BilTestHarness.CheckBilInvalid("embedded 字段应用对错 W", m,
+                "要求当前位置类型");
+
+            // 字段应用对正例：field(HOST)+wrapper(W)
+            BilTestHarness.CheckBilValid("embedded 字段应用对 field+wrapper 正例",
+                FieldValueModule(new GetEmbeddedFieldInstruction(BilOp.Var("hero"),
+                    BilOp.Var("x"),
+                    new BilOperand[]
+                    {
+                        BilOp.Field("com.example::Hero#hp@.i32"),
+                        BilOp.Wrapper("core.clamp::Clamped"),
+                    },
+                    BilOp.Field("core.clamp::Clamped#min@.i32"))));
+
             // ===== §8.4/§21.8 wrapper-proxy（M88：specific|wildcard 两态）=====
             // proxy 模板必须在 wrapper 类型内；ExternalSymbols 免 fn 定义
             m = MinimalModule(out _, out _);
@@ -884,6 +982,11 @@ namespace LatteCompiler.Tests
                 ProxyTemplateModule(includeSelfInner: true));
             BilTestHarness.CheckBilInvalid("get.self 在普通 fn 内",
                 OrdinaryFnWithGetSelfModule(), "仅允许在带 wrapper-proxy");
+            // #27⑦ / §15.4：call.inner 前置 .generic 操作数须已声明（统一变量引用）
+            BilTestHarness.CheckBilInvalid("call.inner 未声明 .generic 操作数",
+                CallInnerUndeclaredGenericModule(), "未声明的变量");
+            BilTestHarness.CheckBilInvalid("call.inner 泛型包顺序错误",
+                CallInnerWrongGenericOrderModule(), "按 .args 声明序前置");
 
             // §8.3.1 wrapped(W) 正例 / 非 wrapper 类型拒
             m = MinimalModule(out _, out _);
@@ -1032,6 +1135,49 @@ namespace LatteCompiler.Tests
             };
         }
 
+        // M84：字段-Value get.wrapper.field 手工模块——Hero#hp 带 wrapped(Clamped)
+        private static BilModule FieldValueModule(params BilInstruction[] body)
+        {
+            var module = new BilModule();
+            var clamped = new BilTypeDeclaration("core.clamp::Clamped", BilTypeKind.Wrapper,
+                new BilAccessibilityModifier(BilAccessibility.Public),
+                new BilKeywordModifier(BilKeyword.Rich));
+            clamped.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field,
+                "core.clamp::Clamped#min@.i32",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            module.LocalSymbols.Add(clamped);
+
+            var hero = new BilTypeDeclaration("com.example::Hero", BilTypeKind.Class,
+                new BilAccessibilityModifier(BilAccessibility.Public));
+            hero.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field,
+                "com.example::Hero#hp@.i32",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilWrappedModifier("core.clamp::Clamped"),
+                }));
+            module.LocalSymbols.Add(hero);
+
+            module.LocalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "$main(hero:com.example::Hero)@.i32",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            var main = new BilFunction("$main(hero:com.example::Hero)@.i32");
+            main.Args.Add(new BilArgDeclaration(".return", ".i32"));
+            main.Args.Add(new BilArgDeclaration("hero", "com.example::Hero"));
+            main.Vars.Add(new BilVarDeclaration("core.clamp::Clamped", "w"));
+            main.Vars.Add(new BilVarDeclaration(".i32", "x"));
+            var entry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            entry.Instructions.AddRange(body);
+            entry.Instructions.Add(new RetInstruction(BilOp.Var("x")));
+            main.Blocks.Add(entry);
+            module.Functions.Add(main);
+            // x 未赋值——加 load 免 DA（若 body 未写 x）
+            module.Resources.Add(new BilScalarResource("R_X", BilScalarType.I32, "0"));
+            entry.Instructions.Insert(0, new LoadInstruction(
+                (BilScalarResource)module.Resources[0], BilOp.Var("x")));
+            return module;
+        }
+
         // S11 手工模块（§12.3/§13.3，M88）：core.logging::Logged wrapper（rich，
         // 实例字段 level）+ com.example::Service class（wrapped 应用标记）+
         // RequestResult enum-struct + main(svc, e)——正例与负例共用
@@ -1128,6 +1274,39 @@ namespace LatteCompiler.Tests
             var module = MinimalModule(out _, out var entry);
             module.Functions[0].Vars.Add(new BilVarDeclaration(".i32", "self"));
             entry.Instructions.Insert(0, new GetSelfInstruction(BilOp.Var("self")));
+            return module;
+        }
+
+        // #27⑦：proxy 模板 call.inner 引用未在 .args 声明的 .generic.TNamedArgs
+        private static BilModule CallInnerUndeclaredGenericModule()
+        {
+            var module = ProxyTemplateModule(includeSelfInner: false);
+            var fn = module.Functions.Single(f => f.Symbol.Contains(".proxy."));
+            var entry = fn.Blocks[0];
+            entry.Instructions.Clear();
+            entry.Instructions.Add(new CallInnerInstruction(BilOp.Var("r"),
+                new[] { BilOp.Var(".generic.TNamedArgs"), BilOp.Var("arg") }));
+            entry.Instructions.Add(new RetInstruction(BilOp.Var("r")));
+            return module;
+        }
+
+        private static BilModule CallInnerWrongGenericOrderModule()
+        {
+            var module = ProxyTemplateModule(includeSelfInner: false);
+            var fn = module.Functions.Single(f => f.Symbol.Contains(".proxy."));
+            fn.Args.Insert(2, new BilArgDeclaration(".generic.TNamedArgs",
+                ".map<.string,.typeid<.any>>"));
+            fn.Args.Insert(3, new BilArgDeclaration(".generic.TUnnamedArgs",
+                ".array<.typeid<.any>>"));
+            var entry = fn.Blocks[0];
+            entry.Instructions.Clear();
+            entry.Instructions.Add(new CallInnerInstruction(BilOp.Var("r"), new[]
+            {
+                BilOp.Var(".generic.TUnnamedArgs"),
+                BilOp.Var(".generic.TNamedArgs"),
+                BilOp.Var("arg"),
+            }));
+            entry.Instructions.Add(new RetInstruction(BilOp.Var("r")));
             return module;
         }
 

@@ -148,6 +148,10 @@ namespace LatteCompiler.Bil
                     reads.Add(getWrapper.Value);
                     writes.Add(getWrapper.Target);
                     return true;
+                case GetWrapperFieldInstruction getWrapperField:
+                    reads.Add(getWrapperField.Object);
+                    writes.Add(getWrapperField.Target);
+                    return true;
                 case GetSelfInstruction getSelf:
                     writes.Add(getSelf.Target);
                     return true;
@@ -308,6 +312,10 @@ namespace LatteCompiler.Bil
                         getWrapper.WrapperType.TypeRef, location, "get.wrapper 结果", errors);
                     break;
 
+                case GetWrapperFieldInstruction getWrapperField:
+                    VerifyGetWrapperField(context, getWrapperField, location, errors);
+                    break;
+
                 case GetSelfInstruction getSelf:
                     VerifyProxyTemplateInstruction(context, location, "get.self", errors);
                     VerifyGetSelfResult(context, getSelf, location, errors);
@@ -333,6 +341,7 @@ namespace LatteCompiler.Bil
 
                 case CallInnerInstruction callInner:
                     VerifyProxyTemplateInstruction(context, location, "call.inner", errors);
+                    VerifyCallInnerPackArguments(context, callInner.Arguments, location, errors);
                     if (context.ReturnType != null && context.ReturnType != ".void")
                     {
                         CheckType(context, VarType(context, callInner.Target), context.ReturnType,
@@ -340,8 +349,10 @@ namespace LatteCompiler.Bil
                     }
                     break;
 
-                case CallInnerNoretInstruction:
+                case CallInnerNoretInstruction callInnerNoret:
                     VerifyProxyTemplateInstruction(context, location, "call.inner.noret", errors);
+                    VerifyCallInnerPackArguments(context, callInnerNoret.Arguments, location,
+                        errors);
                     break;
 
                 case GetIdVarInstruction getIdVar:
@@ -937,6 +948,44 @@ namespace LatteCompiler.Bil
                 $"{opcode} 仅允许在带 wrapper-proxy 修饰符的 fn 体内（§12.5/§15.4）"));
         }
 
+        // §15.4/#27⑦：call.inner 的泛型包操作数必须完整、按当前 fn .args
+        // 声明序前置；固定 .generic.T（.typeid）不得混入。值实参从包前缀后开始。
+        private static void VerifyCallInnerPackArguments(BilFunctionContext context,
+            IReadOnlyList<BilVariableOperand> arguments, string location,
+            List<BilVerificationError> errors)
+        {
+            var expectedPacks = context.Function.Args
+                .Where(a => a.Name.StartsWith(".generic.") && IsGenericPackType(a.TypeRef))
+                .ToList();
+            for (var i = 0; i < expectedPacks.Count; i++)
+            {
+                if (i >= arguments.Count || arguments[i].Name != expectedPacks[i].Name)
+                {
+                    var actual = i < arguments.Count ? "$" + arguments[i].Name : "<missing>";
+                    errors.Add(new BilVerificationError("21.3", location,
+                        $"call.inner 泛型包操作数 {i} 应为 \"${expectedPacks[i].Name}\"" +
+                        $"（按 .args 声明序前置），实际为 \"{actual}\""));
+                    continue;
+                }
+                CheckType(context, VarType(context, arguments[i]), expectedPacks[i].TypeRef,
+                    location, "call.inner 泛型包操作数", errors);
+            }
+            for (var i = expectedPacks.Count; i < arguments.Count; i++)
+            {
+                if (!arguments[i].Name.StartsWith(".generic.")) continue;
+                errors.Add(new BilVerificationError("21.3", location,
+                    $"call.inner 的泛型包操作数 \"${arguments[i].Name}\" 必须按 " +
+                    ".args 声明序前置，且固定泛型参数不得出现在参数列表中"));
+            }
+        }
+
+        private static bool IsGenericPackType(string typeRef)
+        {
+            var normalized = typeRef.Replace(" ", "");
+            return normalized == ".array<.typeid<.any>>"
+                || normalized == ".map<.string,.typeid<.any>>";
+        }
+
         // §12.5：RESULT 类型 = 模板所属 wrapper 的 TTarget（generic 参数投影
         // `.generic<$.generic.NAME>`）；查不到定义级泛型参数信息时降级通过
         private static void VerifyGetSelfResult(BilFunctionContext context,
@@ -967,9 +1016,12 @@ namespace LatteCompiler.Bil
                 "get.self 结果", errors);
         }
 
-        // §21.3：嵌套字段访问校验（§13.3，M88）——链至少一元素，元素两态
-        // field(F) / wrapper(W)；W 必须是 wrapper 类型（查不到降级）；
-        // INNER_FIELD 必须是实例字段且可解析
+        // §21.3：嵌套字段访问校验（§13.3）——链至少一元素，元素两态 field(F)/
+        // wrapper(W)；按序跟踪当前位置类型：
+        //   field(F),wrapper(W) 且 F 声明带 wrapped(W) → 字段应用（位置转 W）；
+        //   普通 field(F) → 按下钻字段类型；
+        //   wrapper(W) → 类型应用（当前 type 声明须带 wrapped(W)，查不到降级）；
+        // INNER_FIELD 实例且 owner 可赋到最终当前位置。每步至多一条诊断。
         private static void VerifyEmbeddedChain(BilFunctionContext context,
             IReadOnlyList<BilOperand> chain, string innerFieldSymbol, string? objectType,
             string location, List<BilVerificationError> errors)
@@ -978,77 +1030,191 @@ namespace LatteCompiler.Bil
             {
                 errors.Add(new BilVerificationError("21.3", location,
                     "get/set.field.embedded 链至少含一个链元素（§13.3）"));
+                return;
             }
-            foreach (var element in chain)
+
+            string? currentType = objectType;
+            var i = 0;
+            while (i < chain.Count)
             {
-                switch (element)
+                switch (chain[i])
                 {
                     case BilFieldOperand fieldElement:
-                        if (!context.Module.FieldSymbols.Contains(fieldElement.Symbol))
+                        if (!TryValidateChainField(context, fieldElement.Symbol, location, errors,
+                                out var fieldOwner, out var fieldType))
                         {
-                            errors.Add(new BilVerificationError("21.2", location,
-                                $"嵌套字段访问的链字段符号不可解析 \"{fieldElement.Symbol}\""));
+                            return;
                         }
-                        else if (BilVerificationContext.TryParseFieldSymbol(fieldElement.Symbol,
-                                     out _, out var fieldStatic, out _)
-                                 && fieldStatic)
+                        // 相邻 field(F)+wrapper(W)：F 带 wrapped(W) 则字段应用对
+                        if (i + 1 < chain.Count && chain[i + 1] is BilWrapperOperand pairWrapper)
                         {
-                            errors.Add(new BilVerificationError("21.3", location,
-                                $"嵌套字段访问的链字段 \"{fieldElement.Symbol}\" 必须是实例字段"));
+                            var pairKind = ClassifyFieldWrapperPair(context, fieldElement.Symbol,
+                                pairWrapper.TypeRef);
+                            if (pairKind == FieldWrapperPairKind.FieldApplication)
+                            {
+                                if (!VerifyWrapperElementType(context, pairWrapper.TypeRef,
+                                        location, errors))
+                                {
+                                    return;
+                                }
+                                CheckHostAssignable(context, currentType, fieldOwner, location,
+                                    "嵌套字段访问的字段应用宿主", errors);
+                                currentType = pairWrapper.TypeRef;
+                                i += 2;
+                                break;
+                            }
+                            // 不匹配时先按普通字段下钻；下一轮把 W 验证为该字段
+                            // 类型上的 Entity 应用。这样 `field(F),wrapper(W)` 同时
+                            // 可表达字段应用与普通字段后的类型应用，匹配标记消歧。
                         }
+                        CheckHostAssignable(context, currentType, fieldOwner, location,
+                            "嵌套字段访问的链字段宿主", errors);
+                        currentType = fieldType;
+                        i += 1;
                         break;
+
                     case BilWrapperOperand wrapperElement:
-                        if (!context.Module.IsResolvableTypeRef(wrapperElement.TypeRef))
+                        if (!VerifyWrapperElementType(context, wrapperElement.TypeRef,
+                                location, errors))
                         {
-                            break;   // 查不到降级
+                            return;
                         }
-                        if (context.Module.TryGetTypeDeclaration(wrapperElement.TypeRef,
-                                out var wrapperDecl)
-                            && wrapperDecl.Kind != BilTypeKind.Wrapper)
+                        // 类型应用：当前 type 声明须带 wrapped(W)；查不到/外部降级
+                        if (currentType != null
+                            && context.Module.TryGetTypeDeclaration(currentType, out var hostDecl)
+                            && !DeclarationHasWrapped(hostDecl, wrapperElement.TypeRef))
                         {
                             errors.Add(new BilVerificationError("21.3", location,
-                                $"嵌套字段访问的 wrapper 元素 \"{wrapperElement.TypeRef}\" " +
-                                "不是 wrapper 类型（§13.3）"));
+                                $"嵌套字段访问的类型应用 wrapper(\"{wrapperElement.TypeRef}\") " +
+                                $"要求当前位置类型 \"{currentType}\" 带 " +
+                                $"wrapped({wrapperElement.TypeRef}) 应用标记（§8.3.1/§13.3）"));
+                            return;
                         }
+                        if (currentType != null
+                            && BilVerificationContext.IsBuiltinType(currentType))
+                        {
+                            errors.Add(new BilVerificationError("21.3", location,
+                                $"嵌套字段访问的类型应用 wrapper(\"{wrapperElement.TypeRef}\") " +
+                                $"要求当前位置类型 \"{currentType}\" 带 " +
+                                $"wrapped({wrapperElement.TypeRef}) 应用标记（§8.3.1/§13.3）"));
+                            return;
+                        }
+                        currentType = wrapperElement.TypeRef;
+                        i += 1;
                         break;
+
                     default:
                         errors.Add(new BilVerificationError("21.3", location,
                             "嵌套字段访问的链元素必须是 field(...) 或 wrapper(...)（§13.3）"));
-                        break;
+                        return;
                 }
             }
+
             if (!context.Module.FieldSymbols.Contains(innerFieldSymbol))
             {
                 errors.Add(new BilVerificationError("21.2", location,
                     $"嵌套字段访问的内层字段符号不可解析 \"{innerFieldSymbol}\""));
                 return;
             }
-            if (BilVerificationContext.TryParseFieldSymbol(innerFieldSymbol,
+            if (!BilVerificationContext.TryParseFieldSymbol(innerFieldSymbol,
                     out var innerOwner, out var innerStatic, out _))
             {
-                if (innerStatic)
+                return;
+            }
+            if (innerStatic)
+            {
+                errors.Add(new BilVerificationError("21.3", location,
+                    $"嵌套字段访问的内层字段 \"{innerFieldSymbol}\" 必须是实例字段"));
+                return;
+            }
+            CheckHostAssignable(context, currentType, innerOwner, location,
+                "嵌套字段访问的内层字段宿主", errors);
+        }
+
+        private enum FieldWrapperPairKind
+        {
+            None,
+            FieldApplication,
+        }
+
+        private static FieldWrapperPairKind ClassifyFieldWrapperPair(
+            BilFunctionContext context, string fieldSymbol, string wrapperTypeRef)
+        {
+            if (!context.Module.FieldDeclarations.TryGetValue(fieldSymbol, out var fieldDecl))
+            {
+                // 字段符号已在 TryValidateChainField 确认可解析；声明缺席时
+                // 无法核 wrapped → 不按字段应用对处理（降级为普通 field）
+                return FieldWrapperPairKind.None;
+            }
+            foreach (var modifier in fieldDecl.Modifiers)
+            {
+                if (modifier is not BilWrappedModifier wrapped) continue;
+                if (BilVerificationContext.TypesCompatible(wrapped.WrapperTypeRef, wrapperTypeRef))
                 {
-                    errors.Add(new BilVerificationError("21.3", location,
-                        $"嵌套字段访问的内层字段 \"{innerFieldSymbol}\" 必须是实例字段"));
+                    return FieldWrapperPairKind.FieldApplication;
                 }
             }
-            // 宿主对象可解析时做宽松可赋值检查（首段 field 的 owner 或任意）
-            if (chain.Count > 0 && chain[0] is BilFieldOperand firstField
-                && BilVerificationContext.TryParseFieldSymbol(firstField.Symbol,
-                    out var firstOwner, out _, out _))
+            return FieldWrapperPairKind.None;
+        }
+
+        private static bool DeclarationHasWrapped(BilTypeDeclaration declaration,
+            string wrapperTypeRef)
+        {
+            foreach (var modifier in declaration.Modifiers)
             {
-                CheckHostAssignable(context, objectType, firstOwner, location,
-                    "嵌套字段访问的宿主对象", errors);
+                if (modifier is BilWrappedModifier wrapped
+                    && BilVerificationContext.TypesCompatible(wrapped.WrapperTypeRef,
+                        wrapperTypeRef))
+                {
+                    return true;
+                }
             }
-            // 内层字段沿末段 wrapper 宿主可赋值（有 wrapper 末段时）
-            if (chain.Count > 0 && chain[chain.Count - 1] is BilWrapperOperand lastWrapper
-                && BilVerificationContext.TryParseFieldSymbol(innerFieldSymbol,
-                    out innerOwner, out innerStatic, out _)
-                && !innerStatic)
+            return false;
+        }
+
+        // 链字段可解析 + 实例；失败已落诊断并返回 false
+        private static bool TryValidateChainField(BilFunctionContext context, string fieldSymbol,
+            string location, List<BilVerificationError> errors,
+            out string fieldOwner, out string fieldType)
+        {
+            fieldOwner = "";
+            fieldType = "";
+            if (!context.Module.FieldSymbols.Contains(fieldSymbol))
             {
-                CheckHostAssignable(context, lastWrapper.TypeRef, innerOwner, location,
-                    "嵌套字段访问的内层字段宿主", errors);
+                errors.Add(new BilVerificationError("21.2", location,
+                    $"嵌套字段访问的链字段符号不可解析 \"{fieldSymbol}\""));
+                return false;
             }
+            if (!BilVerificationContext.TryParseFieldSymbol(fieldSymbol,
+                    out fieldOwner, out var isStatic, out fieldType))
+            {
+                return false;
+            }
+            if (isStatic)
+            {
+                errors.Add(new BilVerificationError("21.3", location,
+                    $"嵌套字段访问的链字段 \"{fieldSymbol}\" 必须是实例字段"));
+                return false;
+            }
+            return true;
+        }
+
+        // wrapper 元素必须是 wrapper 类型（查不到类型引用降级通过）
+        private static bool VerifyWrapperElementType(BilFunctionContext context, string typeRef,
+            string location, List<BilVerificationError> errors)
+        {
+            if (!context.Module.IsResolvableTypeRef(typeRef))
+            {
+                return true;
+            }
+            if (context.Module.TryGetTypeDeclaration(typeRef, out var wrapperDecl)
+                && wrapperDecl.Kind != BilTypeKind.Wrapper)
+            {
+                errors.Add(new BilVerificationError("21.3", location,
+                    $"嵌套字段访问的 wrapper 元素 \"{typeRef}\" 不是 wrapper 类型（§13.3）"));
+                return false;
+            }
+            return true;
         }
 
         private static bool SignatureMatches(BilFunctionContext context,
@@ -1175,6 +1341,56 @@ namespace LatteCompiler.Bil
             {
                 errors.Add(new BilVerificationError("21.3", location,
                     $"\"{typeRef}\" 不是 wrapper 类型"));
+            }
+        }
+
+        // §12.4 get.wrapper.field：OBJECT 可赋值到 HOST_FIELD owner；
+        // HOST_FIELD 实例字段且带 wrapped(WRAPPER_TYPE)；RESULT = W
+        private static void VerifyGetWrapperField(BilFunctionContext context,
+            GetWrapperFieldInstruction instruction, string location,
+            List<BilVerificationError> errors)
+        {
+            VerifyWrapperType(context, instruction.WrapperType.TypeRef, location, errors);
+            CheckType(context, VarType(context, instruction.Target),
+                instruction.WrapperType.TypeRef, location, "get.wrapper.field 结果", errors);
+            var fieldSymbol = instruction.HostField.Symbol;
+            if (!context.Module.FieldSymbols.Contains(fieldSymbol))
+            {
+                errors.Add(new BilVerificationError("21.2", location,
+                    $"get.wrapper.field 的宿主字段符号不可解析 \"{fieldSymbol}\""));
+                return;
+            }
+            if (BilVerificationContext.TryParseFieldSymbol(fieldSymbol,
+                    out var owner, out var isStatic, out _))
+            {
+                if (isStatic)
+                {
+                    errors.Add(new BilVerificationError("21.3", location,
+                        $"get.wrapper.field 的宿主字段 \"{fieldSymbol}\" 必须是实例字段"));
+                }
+                CheckHostAssignable(context, VarType(context, instruction.Object), owner,
+                    location, "get.wrapper.field 的宿主对象", errors);
+            }
+            if (!context.Module.FieldDeclarations.TryGetValue(fieldSymbol, out var fieldDecl))
+            {
+                return;
+            }
+            var hasWrapped = false;
+            foreach (var modifier in fieldDecl.Modifiers)
+            {
+                if (modifier is BilWrappedModifier wrapped
+                    && BilVerificationContext.TypesCompatible(wrapped.WrapperTypeRef,
+                        instruction.WrapperType.TypeRef))
+                {
+                    hasWrapped = true;
+                    break;
+                }
+            }
+            if (!hasWrapped)
+            {
+                errors.Add(new BilVerificationError("21.3", location,
+                    $"get.wrapper.field 的宿主字段 \"{fieldSymbol}\" 必须带 " +
+                    $"wrapped({instruction.WrapperType.TypeRef}) 应用标记（§8.3.1/§12.4）"));
             }
         }
 

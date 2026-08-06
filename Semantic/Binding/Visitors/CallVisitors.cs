@@ -10,7 +10,8 @@ namespace LatteCompiler
     // BoundCallExpression / BoundCallStatement（void 调用）；
     // Receiver 为 null = 静态/全局调用，非 null = 实例调用（S7c-2）。
     // IsInnerCall：M88 proxy 体 inner(...) 占位——Method 不用，Arguments
-    // 已绑，落成 BoundInnerCallExpression
+    // 已绑，落成 BoundInnerCallExpression；ForwardedGenericPacks 为 #27⑦
+    // 待转发的可变泛型包（声明序）
     internal sealed class CallBinding
     {
         public MethodSymbol Method = null!;
@@ -25,6 +26,9 @@ namespace LatteCompiler
         public SemanticSymbol? ResultType;
         // M88：inner(...) 模板占位
         public bool IsInnerCall;
+        // #27⑦：inner 待转发的可变泛型包（仅 IsInnerCall；固定泛型不入列）
+        public IReadOnlyList<GenericParameterSymbol> ForwardedGenericPacks =
+            Array.Empty<GenericParameterSymbol>();
     }
 
     // 调用形态判定：符号头 + 全 Dot 段（无中间后缀）+ 整条链恰好一个
@@ -434,6 +438,16 @@ namespace LatteCompiler
                 }
             }
             var isVoid = proxy.ReturnType == null;
+            // #27⑦：按声明序收集 proxy 方法可变泛型包（固定泛型不转发——
+            // 特化侧 Middleware 自持；包整体透传才需显式前置操作数）
+            var forwardedPacks = new List<GenericParameterSymbol>();
+            foreach (var genericParameter in proxy.GenericParameters)
+            {
+                if (genericParameter.IsVariadic || genericParameter.IsNamedVariadic)
+                {
+                    forwardedPacks.Add(genericParameter);
+                }
+            }
             return new CallBinding
             {
                 Method = proxy,
@@ -444,6 +458,7 @@ namespace LatteCompiler
                 GenericPack = null,
                 ResultType = isVoid ? null : proxy.ReturnType,
                 IsInnerCall = true,
+                ForwardedGenericPacks = forwardedPacks,
             };
         }
 

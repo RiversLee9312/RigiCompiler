@@ -316,10 +316,12 @@ namespace LatteCompiler
             }
         }
 
-        // M88：降级调用结果判定（SYNTAX §14.7）——调用点静态类型恒 Any
+        // M88/#28④：降级调用结果判定（SYNTAX §14.7）——调用点静态类型恒 Any
         //（胖值 ABI），P3 类型兼容性检查豁免。识别：BoundInstanceCallExpression
         // 且方法即 bootstrap Any.call???（引用相等）。语义边界：仅直接包裹
-        // 降级调用的表达式
+        // 降级调用的表达式。豁免位置：声明初始化/赋值（含索引写）/return/
+        // 实参/if? 右操作数/throw 操作数/复合赋值 RHS——转换均骑 P4a
+        // EnsureDeclaredType（§6.5）物化显式 cast
         public static bool IsDowngradeCallResult(BoundExpression expression, BindEnvironment env)
         {
             return expression is BoundInstanceCallExpression { Method: { } method }

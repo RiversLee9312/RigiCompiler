@@ -89,7 +89,9 @@ namespace LatteCompiler
             if (right == null) return null;
             // 毒化静默：任一侧已失败时不再报次生错误
             if (right.Type is ErrorTypeSymbol) return null;
-            if (!SymbolLookup.IsAssignable(right.Type, element, env))
+            // #28④：降级调用结果 Any 可作 if? 回退值（P4a cast 物化到 T）
+            if (!SymbolLookup.IsAssignable(right.Type, element, env)
+                && !BoundAnalysis.IsDowngradeCallResult(right, env))
             {
                 env.Error(node.Right.Span ?? node.Span,
                     $"Null fallback must be assignable to '{BoundAnalysis.TypeDisplay(element)}' " +
@@ -310,7 +312,10 @@ namespace LatteCompiler
             }
             // 毒化静默：任一侧已失败时不再报次生错误
             if (target.Type is ErrorTypeSymbol || value.Type is ErrorTypeSymbol) return null;
-            if (!ReferenceEquals(target.Type, value.Type))
+            // #28④：降级调用结果 Any 可作复合赋值 RHS（P4a 先 cast 到
+            // place 类型再参与运算——§11 要求同型操作数）
+            if (!ReferenceEquals(target.Type, value.Type)
+                && !BoundAnalysis.IsDowngradeCallResult(value, env))
             {
                 env.Error(node.Span, $"Compound assignment requires operands of the same type " +
                     $"(got '{BoundAnalysis.TypeDisplay(target.Type)}' and " +

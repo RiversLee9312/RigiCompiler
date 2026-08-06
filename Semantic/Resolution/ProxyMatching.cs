@@ -67,7 +67,8 @@ namespace LatteCompiler
             return true;
         }
 
-        // 宿主是否具备方法类别 `.proxy.*` wildcard（降级资格，沿应用列表）
+        // 宿主定义是否具备方法类别 `.proxy.*` wildcard（只读 AppliedWrappers，
+        // 不回写实现者——interface 传染宿主见 IsDowngradeEligible 传递闭包）
         public static bool HasMethodWildcardProxy(TypeSymbol hostDefinition)
         {
             foreach (var application in hostDefinition.AppliedWrappers)
@@ -79,13 +80,33 @@ namespace LatteCompiler
             return false;
         }
 
-        // 沿 receiver 静态类型链（每步 ConstructedFrom 回退定义级）查降级资格
+        // #28③：receiver 自身 + BaseType 链 + 每层 Interfaces 传递闭包查降级资格。
+        // 资格只依赖 wrapper 定义是否声明 `.proxy.*` → 定义级去重；构造泛型
+        // 接口回退 definition（不引入 ResolveEnvironment）；HashSet 防接口环。
         public static bool IsDowngradeEligible(TypeSymbol receiverType)
         {
+            var visited = new HashSet<TypeSymbol>();
             for (var t = receiverType; t != null; t = t.BaseType)
             {
                 var definition = t.ConstructedFrom ?? t;
+                if (!visited.Add(definition)) continue;
                 if (HasMethodWildcardProxy(definition)) return true;
+                if (AnyInterfaceEligible(definition, visited)) return true;
+            }
+            return false;
+        }
+
+        // Interfaces 传递闭包（class implements 与 interface : Base 均落
+        // TypeSymbol.Interfaces；构造形态回退 definition）
+        private static bool AnyInterfaceEligible(TypeSymbol definition,
+            HashSet<TypeSymbol> visited)
+        {
+            foreach (var iface in definition.Interfaces)
+            {
+                var ifaceDef = iface.ConstructedFrom ?? iface;
+                if (!visited.Add(ifaceDef)) continue;
+                if (HasMethodWildcardProxy(ifaceDef)) return true;
+                if (AnyInterfaceEligible(ifaceDef, visited)) return true;
             }
             return false;
         }
@@ -103,10 +124,16 @@ namespace LatteCompiler
             if (proxy.Parameters.Count != member.Parameters.Count) return false;
             for (var i = 0; i < proxy.Parameters.Count; i++)
             {
-                if (proxy.Parameters[i].Name != member.Parameters[i].Name) return false;
+                var proxyParam = proxy.Parameters[i];
+                var memberParam = member.Parameters[i];
+                if (proxyParam.Name != memberParam.Name) return false;
+                // #27⑦：可变/具名可变形状必须同形——普通参数与包参数不得
+                // 误判同形（类型槽在包形态下是元素类型，仅比类型不够）
+                if (proxyParam.IsVariadic != memberParam.IsVariadic) return false;
+                if (proxyParam.IsNamedVariadic != memberParam.IsNamedVariadic) return false;
                 if (!ReferenceEquals(
-                        SubstituteViaApplication(proxy.Parameters[i].Type, application, env),
-                        member.Parameters[i].Type))
+                        SubstituteViaApplication(proxyParam.Type, application, env),
+                        memberParam.Type))
                 {
                     return false;
                 }
@@ -158,7 +185,8 @@ namespace LatteCompiler
                     {
                         continue;
                     }
-                    if (member.Parameters.Any(p => p.IsVariadic || p.IsNamedVariadic)) continue;
+                    // #27⑦：不再跳过可变值参数成员——wildcard 可命中；
+                    // specific 经 SpecificShapeMatches 比 variadic 形状
                     var isOperator = member.Kind == MethodKind.Operator;
                     var specificName = (isOperator ? ".proxy.opr." : ".proxy.") + member.Name;
                     CheckMember(env, host, member, specificName);

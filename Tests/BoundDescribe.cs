@@ -166,7 +166,10 @@ namespace LatteCompiler.Tests
                 BoundThisExpression => $"This({TypeShort.Of(expr.Type)})",
                 BoundSelfExpression => $"Self({TypeShort.Of(expr.Type)})",
                 BoundInnerCallExpression innerCall =>
-                    $"InnerCall([{string.Join(", ", innerCall.Arguments.Select(Expr))}], " +
+                    $"InnerCall([{string.Join(", ", innerCall.Arguments.Select(Expr))}]" +
+                    $"{(innerCall.ForwardedGenericPacks.Count == 0 ? ""
+                        : ", packs=[" + string.Join(", ",
+                            innerCall.ForwardedGenericPacks.Select(p => p.Name)) + "]")}, " +
                     $"{(innerCall.IsVoid ? "void" : TypeShort.Of(innerCall.Type))})",
                 BoundInstanceCallExpression instCall =>
                     $"InstCall({instCall.Method.Name}, {Expr(instCall.Receiver)}, " +

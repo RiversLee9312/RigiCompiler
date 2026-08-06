@@ -196,15 +196,53 @@ namespace LatteCompiler.Tests
             TestHarness.CheckTrue("无 .wrapper. 隐藏字段",
                 !hero.Members.OfType<BilSimpleMemberDeclaration>()
                     .Any(d => d.Symbol.Contains("#.wrapper.")));
-            BilTestHarness.CheckFnShape("字段-Value 读写（get/set.field.embedded wrapper）",
+            BilTestHarness.CheckFnShape(
+                "字段-Value 读写（get/set.field.embedded field+wrapper）",
                 module, "$f(hero:Hero)@.i32",
                 ".vars { .i32 .t0, .i32 .t1 }\n" +
                 "load res(#0) $.t0\n" +
-                "set.field.embedded $.t0 $hero wrapper(Clamped) " +
+                "set.field.embedded $.t0 $hero field(Hero#hp@.i32) wrapper(Clamped) " +
                 "field(Clamped#min@.i32)\n" +
-                "get.field.embedded $hero $.t1 wrapper(Clamped) " +
+                "get.field.embedded $hero $.t1 field(Hero#hp@.i32) wrapper(Clamped) " +
                 "field(Clamped#min@.i32)\n" +
                 "ret $.t1\n");
+        }
+
+        // ===== 同 owner 两字段同 W：hp/mp 必须产生不同 field(HOST_FIELD) =====
+        private static void TestWrapperFieldValueSameWrapperTwoFields()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper Clamped {\n" +
+                "    pub var min: i32\n" +
+                "    pub init(_ -> min)\n" +
+                "}\n" +
+                "pub class Hero {\n" +
+                "    @Clamped\n" +
+                "    pub var hp: i32\n" +
+                "    @Clamped\n" +
+                "    pub var mp: i32\n" +
+                "    pub init(h: i32, m: i32) { hp = h\n mp = m }\n" +
+                "}\n" +
+                "pub func f(hero: Hero): i32 {\n" +
+                "    hero.hp:Clamped.min = 1\n" +
+                "    hero.mp:Clamped.min = 2\n" +
+                "    return hero.hp:Clamped.min\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（同 W 两字段）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（同 W 两字段）", module);
+            BilTestHarness.CheckFnShape("同 owner 两字段同 W（hp/mp 不同 HOST_FIELD）",
+                module, "$f(hero:Hero)@.i32",
+                ".vars { .i32 .t0, .i32 .t1, .i32 .t2 }\n" +
+                "load res(#0) $.t0\n" +
+                "set.field.embedded $.t0 $hero field(Hero#hp@.i32) wrapper(Clamped) " +
+                "field(Clamped#min@.i32)\n" +
+                "load res(#1) $.t1\n" +
+                "set.field.embedded $.t1 $hero field(Hero#mp@.i32) wrapper(Clamped) " +
+                "field(Clamped#min@.i32)\n" +
+                "get.field.embedded $hero $.t2 field(Hero#hp@.i32) wrapper(Clamped) " +
+                "field(Clamped#min@.i32)\n" +
+                "ret $.t2\n");
         }
 
         // ===== Entity 复合赋值（读/写分离 + 宿主单次求值）=====
@@ -271,24 +309,6 @@ namespace LatteCompiler.Tests
             TestHarness.CheckSemanticError("静态字段 wrapper place 归口", unit2.Diagnostics,
                 "local/static wrapper place storage is not supported yet");
 
-            var (unit3, _, _) = BilTestHarness.EmitBilUnit(
-                "@WrapperTarget(.Value)\n" +
-                "pub wrapper Clamped {\n" +
-                "    pub var min: i32\n" +
-                "    pub init(_ -> min)\n" +
-                "    pub func clamp(v: i32): i32 { return v }\n" +
-                "}\n" +
-                "pub class Hero {\n" +
-                "    @Clamped\n" +
-                "    pub var hp: i32\n" +
-                "    pub init(h: i32) { hp = h }\n" +
-                "}\n" +
-                "pub func f(hero: Hero): i32 {\n" +
-                "    return hero.hp:Clamped.clamp(1)\n" +
-                "}\n");
-            TestHarness.CheckSemanticError("字段-Value 方法调用归口", unit3.Diagnostics,
-                "cannot be materialized as a value");
-
             var (unit4, _, _) = BilTestHarness.EmitBilUnit(
                 "@WrapperTarget(.Entity)\n" +
                 "pub wrapper Indexed {\n" +
@@ -304,9 +324,90 @@ namespace LatteCompiler.Tests
                 "}\n");
             TestHarness.CheckSemanticError("wrapper place 索引写归口", unit4.Diagnostics,
                 "writes through wrapper place member or index chains");
+        }
 
-            var (unit5, _, _) = BilTestHarness.EmitBilUnit(
-                "pub class Inner {\n" +
+        // ===== M84：字段-Value 方法调用 / 索引读（get.wrapper.field）=====
+        private static void TestWrapperFieldValueCallAndIndexEmission()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper Clamped {\n" +
+                "    pub var min: i32\n" +
+                "    pub init(_ -> min)\n" +
+                "    pub func clamp(v: i32): i32 { return v }\n" +
+                "}\n" +
+                "pub class Hero {\n" +
+                "    @Clamped\n" +
+                "    pub var hp: i32\n" +
+                "    pub init(h: i32) { hp = h }\n" +
+                "}\n" +
+                "pub func f(hero: Hero): i32 {\n" +
+                "    return hero.hp:Clamped.clamp(1)\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（字段-Value 调用）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（字段-Value 调用）", module);
+            BilTestHarness.CheckFnShape("字段-Value 方法调用（get.wrapper.field + invoke）",
+                module, "$f(hero:Hero)@.i32",
+                ".vars { Clamped .s0, Clamped .t0, .i32 .t1, .i32 .t2 }\n" +
+                "get.wrapper.field $hero field(Hero#hp@.i32) type(Clamped) $.t0\n" +
+                "set.var $.t0 $.s0\n" +
+                "load res(#0) $.t1\n" +
+                "invoke fn(Clamped$clamp(v:.i32)@.i32) $.t2 [$.s0, $.t1]\n" +
+                "ret $.t2\n");
+
+            var (unit2, module2, _) = BilTestHarness.EmitBilUnit(
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper Indexed {\n" +
+                "    pub var store: i32\n" +
+                "    pub init(_ -> store)\n" +
+                "    pub operator getAtIndex(index: i32): i32 { return store }\n" +
+                "    pub operator setAtIndex(index: i32, value: i32) { store = value }\n" +
+                "}\n" +
+                "pub class Holder {\n" +
+                "    @Indexed\n" +
+                "    pub var slot: i32\n" +
+                "    pub init(v: i32) { slot = v }\n" +
+                "}\n" +
+                "pub func f(h: Holder): i32 {\n" +
+                "    return h.slot:Indexed[0]\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（字段-Value 索引读）", unit2);
+            BilTestHarness.CheckBilValid("验证器零错误（字段-Value 索引读）", module2);
+            BilTestHarness.CheckFnShape("字段-Value 索引读（get.wrapper.field + get.array）",
+                module2, "$f(h:Holder)@.i32",
+                ".vars { Indexed .s0, Indexed .t0, .i32 .t1, .i32 .t2 }\n" +
+                "get.wrapper.field $h field(Holder#slot@.i32) type(Indexed) $.t0\n" +
+                "set.var $.t0 $.s0\n" +
+                "load res(#0) $.t1\n" +
+                "get.array $.s0 $.t1 $.t2\n" +
+                "ret $.t2\n");
+
+            var (unit3, _, _) = BilTestHarness.EmitBilUnit(
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper Indexed {\n" +
+                "    pub var store: i32\n" +
+                "    pub init(_ -> store)\n" +
+                "    pub operator getAtIndex(index: i32): i32 { return store }\n" +
+                "    pub operator setAtIndex(index: i32, value: i32) { store = value }\n" +
+                "}\n" +
+                "pub class Holder {\n" +
+                "    @Indexed\n" +
+                "    pub var slot: i32\n" +
+                "    pub init(v: i32) { slot = v }\n" +
+                "}\n" +
+                "pub func f(h: Holder) {\n" +
+                "    h.slot:Indexed[0] = 1\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("字段-Value 索引写归口", unit3.Diagnostics,
+                "writes through wrapper place member or index chains");
+        }
+
+        // ===== M84：深层写穿 place.a.b... =====
+        private static void TestWrapperDeepWriteEmission()
+        {
+            // 一层值中间
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "pub struct Inner {\n" +
                 "    pub var x: i32\n" +
                 "    pub init(v: i32) { x = v }\n" +
                 "}\n" +
@@ -320,8 +421,393 @@ namespace LatteCompiler.Tests
                 "pub func f(s: Service) {\n" +
                 "    s:Logged.sub.x = 1\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("深层写穿归口", unit5.Diagnostics,
-                "writes through wrapper place member or index chains");
+            CheckNoErrors("全管线无诊断（一层值中间深写）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（一层值中间深写）", module);
+            BilTestHarness.CheckFnShape("一层值中间深写（get + 叶写 + embedded 写回）",
+                module, "$f(s:Service)@.void",
+                ".vars { Logged .s0, Inner .s1, Logged .t0, Inner .t1, .i32 .t2 }\n" +
+                "get.wrapper $s type(Logged) $.t0\n" +
+                "set.var $.t0 $.s0\n" +
+                "get.field $.s0 $.t1 field(Logged#sub@Inner)\n" +
+                "set.var $.t1 $.s1\n" +
+                "load res(#0) $.t2\n" +
+                "set.field $.t2 $.s1 field(Inner#x@.i32)\n" +
+                "set.field.embedded $.s1 $s wrapper(Logged) field(Logged#sub@Inner)\n" +
+                "ret\n");
+
+            // 两层值中间
+            var (unit2, module2, _) = BilTestHarness.EmitBilUnit(
+                "pub struct Leaf { pub var x: i32\n pub init(v: i32) { x = v } }\n" +
+                "pub struct Mid { pub var leaf: Leaf\n pub init(l: Leaf) { leaf = l } }\n" +
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Box {\n" +
+                "    pub var mid: Mid\n" +
+                "    pub init(_ -> mid)\n" +
+                "}\n" +
+                "@Box\n" +
+                "pub class Service { pub init() }\n" +
+                "pub func f(s: Service) {\n" +
+                "    s:Box.mid.leaf.x = 7\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（两层值中间深写）", unit2);
+            BilTestHarness.CheckBilValid("验证器零错误（两层值中间深写）", module2);
+            BilTestHarness.CheckFnShape("两层值中间深写（双写回）",
+                module2, "$f(s:Service)@.void",
+                ".vars { Box .s0, Mid .s1, Leaf .s2, Box .t0, Mid .t1, Leaf .t2, .i32 .t3 }\n" +
+                "get.wrapper $s type(Box) $.t0\n" +
+                "set.var $.t0 $.s0\n" +
+                "get.field $.s0 $.t1 field(Box#mid@Mid)\n" +
+                "set.var $.t1 $.s1\n" +
+                "get.field $.s1 $.t2 field(Mid#leaf@Leaf)\n" +
+                "set.var $.t2 $.s2\n" +
+                "load res(#0) $.t3\n" +
+                "set.field $.t3 $.s2 field(Leaf#x@.i32)\n" +
+                "set.field $.s2 $.s1 field(Mid#leaf@Leaf)\n" +
+                "set.field.embedded $.s1 $s wrapper(Box) field(Box#mid@Mid)\n" +
+                "ret\n");
+
+            // 引用中间：叶写后不多余写回
+            var (unit3, module3, _) = BilTestHarness.EmitBilUnit(
+                "pub class Node {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(v: i32) { x = v }\n" +
+                "}\n" +
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Logged {\n" +
+                "    pub var node: Node\n" +
+                "    pub init(_ -> node)\n" +
+                "}\n" +
+                "@Logged\n" +
+                "pub class Service { pub init() }\n" +
+                "pub func f(s: Service) {\n" +
+                "    s:Logged.node.x = 1\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（引用中间深写）", unit3);
+            BilTestHarness.CheckBilValid("验证器零错误（引用中间深写）", module3);
+            BilTestHarness.CheckFnShape("引用中间深写（无写回）",
+                module3, "$f(s:Service)@.void",
+                ".vars { Logged .s0, Node .s1, Logged .t0, Node .t1, .i32 .t2 }\n" +
+                "get.wrapper $s type(Logged) $.t0\n" +
+                "set.var $.t0 $.s0\n" +
+                "get.field $.s0 $.t1 field(Logged#node@Node)\n" +
+                "set.var $.t1 $.s1\n" +
+                "load res(#0) $.t2\n" +
+                "set.field $.t2 $.s1 field(Node#x@.i32)\n" +
+                "ret\n");
+
+            // 只读值中间拒绝
+            var (unit4, _, _) = BilTestHarness.EmitBilUnit(
+                "pub struct Inner {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(v: i32) { x = v }\n" +
+                "}\n" +
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Logged {\n" +
+                "    pub const sub: Inner\n" +
+                "    pub init(_ -> sub)\n" +
+                "}\n" +
+                "@Logged\n" +
+                "pub class Service { pub init() }\n" +
+                "pub func f(s: Service) {\n" +
+                "    s:Logged.sub.x = 1\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("只读值中间深写拒绝", unit4.Diagnostics,
+                "Cannot assign to const field");
+
+            // 字段-Value place 一层值中间
+            var (unit5, module5, _) = BilTestHarness.EmitBilUnit(
+                "pub struct Inner {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(v: i32) { x = v }\n" +
+                "}\n" +
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper Boxed {\n" +
+                "    pub var sub: Inner\n" +
+                "    pub init(_ -> sub)\n" +
+                "}\n" +
+                "pub class Hero {\n" +
+                "    @Boxed\n" +
+                "    pub var hp: i32\n" +
+                "    pub init(h: i32) { hp = h }\n" +
+                "}\n" +
+                "pub func f(hero: Hero) {\n" +
+                "    hero.hp:Boxed.sub.x = 3\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（字段-Value 深写）", unit5);
+            BilTestHarness.CheckBilValid("验证器零错误（字段-Value 深写）", module5);
+            BilTestHarness.CheckFnShape("字段-Value 一层值中间深写",
+                module5, "$f(hero:Hero)@.void",
+                ".vars { Inner .s0, Inner .t0, .i32 .t1 }\n" +
+                "get.field.embedded $hero $.t0 field(Hero#hp@.i32) wrapper(Boxed) " +
+                "field(Boxed#sub@Inner)\n" +
+                "set.var $.t0 $.s0\n" +
+                "load res(#0) $.t1\n" +
+                "set.field $.t1 $.s0 field(Inner#x@.i32)\n" +
+                "set.field.embedded $.s0 $hero field(Hero#hp@.i32) wrapper(Boxed) " +
+                "field(Boxed#sub@Inner)\n" +
+                "ret\n");
+
+            // 只读 getter 中间（无 setter）拒绝写回
+            var (unit6, _, _) = BilTestHarness.EmitBilUnit(
+                "pub struct Inner {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(v: i32) { x = v }\n" +
+                "}\n" +
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Logged {\n" +
+                "    pub var sub: Inner {\n" +
+                "        pub get(value: _) { return value }\n" +
+                "    }\n" +
+                "    pub init(_ -> sub)\n" +
+                "}\n" +
+                "@Logged\n" +
+                "pub class Service { pub init() }\n" +
+                "pub func f(s: Service) {\n" +
+                "    s:Logged.sub.x = 1\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("无 setter 中间深写拒绝", unit6.Diagnostics,
+                "has no setter");
+
+            // RHS 与 receiver 求值序：宿主字段 getter 先于 RHS 副作用调用
+            var (unit7, module7, _) = BilTestHarness.EmitBilUnit(
+                "pub struct Inner {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(v: i32) { x = v }\n" +
+                "}\n" +
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Logged {\n" +
+                "    pub var sub: Inner\n" +
+                "    pub init(_ -> sub)\n" +
+                "}\n" +
+                "@Logged\n" +
+                "pub class Service { pub init() }\n" +
+                "pub func side(): i32 { return 9 }\n" +
+                "pub func f(s: Service) {\n" +
+                "    s:Logged.sub.x = side()\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（深写求值序）", unit7);
+            BilTestHarness.CheckBilValid("验证器零错误（深写求值序）", module7);
+            var fFn = module7.Functions.Single(fn => fn.Symbol == "$f(s:Service)@.void");
+            var ops = fFn.Blocks[0].Instructions.Select(i => i.Opcode).ToList();
+            var getWrapperAt = ops.IndexOf("get.wrapper");
+            var sideAt = ops.FindIndex(o => o is "invoke" or "invoke.noret");
+            var setLeafAt = ops.IndexOf("set.field");
+            var embeddedAt = ops.IndexOf("set.field.embedded");
+            TestHarness.CheckTrue("求值序：get.wrapper 先于 side()",
+                getWrapperAt >= 0 && sideAt > getWrapperAt);
+            TestHarness.CheckTrue("求值序：side() 先于叶 set.field",
+                sideAt >= 0 && setLeafAt > sideAt);
+            TestHarness.CheckTrue("求值序：叶写先于 embedded 写回",
+                setLeafAt >= 0 && embeddedAt > setLeafAt);
+        }
+
+        // ===== 混合边界：值/引用中间停止点锁定 =====
+        private static void TestWrapperDeepWriteMixedBoundary()
+        {
+            // W.a(value).b(ref).x：引用中间停止，无写回
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "pub class Node {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(v: i32) { x = v }\n" +
+                "}\n" +
+                "pub rich struct MidVal {\n" +
+                "    pub var b: Node\n" +
+                "    pub init(n: Node) { b = n }\n" +
+                "}\n" +
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Box {\n" +
+                "    pub var a: MidVal\n" +
+                "    pub init(_ -> a)\n" +
+                "}\n" +
+                "@Box\n" +
+                "pub class Service { pub init() }\n" +
+                "pub func f(s: Service) {\n" +
+                "    s:Box.a.b.x = 1\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（值→引用边界）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（值→引用边界）", module);
+            BilTestHarness.CheckFnShape("W.a(value).b(ref).x（引用停止无写回）",
+                module, "$f(s:Service)@.void",
+                ".vars { Box .s0, MidVal .s1, Node .s2, Box .t0, MidVal .t1, " +
+                "Node .t2, .i32 .t3 }\n" +
+                "get.wrapper $s type(Box) $.t0\n" +
+                "set.var $.t0 $.s0\n" +
+                "get.field $.s0 $.t1 field(Box#a@MidVal)\n" +
+                "set.var $.t1 $.s1\n" +
+                "get.field $.s1 $.t2 field(MidVal#b@Node)\n" +
+                "set.var $.t2 $.s2\n" +
+                "load res(#0) $.t3\n" +
+                "set.field $.t3 $.s2 field(Node#x@.i32)\n" +
+                "ret\n");
+
+            // W.a(ref).b(value).x：值中间写回 a，引用 a 停止（无 embedded）
+            var (unit2, module2, _) = BilTestHarness.EmitBilUnit(
+                "pub struct Leaf {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(v: i32) { x = v }\n" +
+                "}\n" +
+                "pub class MidRef {\n" +
+                "    pub var b: Leaf\n" +
+                "    pub init(l: Leaf) { b = l }\n" +
+                "}\n" +
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Box {\n" +
+                "    pub var a: MidRef\n" +
+                "    pub init(_ -> a)\n" +
+                "}\n" +
+                "@Box\n" +
+                "pub class Service { pub init() }\n" +
+                "pub func f(s: Service) {\n" +
+                "    s:Box.a.b.x = 1\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（引用→值边界）", unit2);
+            BilTestHarness.CheckBilValid("验证器零错误（引用→值边界）", module2);
+            BilTestHarness.CheckFnShape("W.a(ref).b(value).x（值写回 a，无 embedded）",
+                module2, "$f(s:Service)@.void",
+                ".vars { Box .s0, MidRef .s1, Leaf .s2, Box .t0, MidRef .t1, " +
+                "Leaf .t2, .i32 .t3 }\n" +
+                "get.wrapper $s type(Box) $.t0\n" +
+                "set.var $.t0 $.s0\n" +
+                "get.field $.s0 $.t1 field(Box#a@MidRef)\n" +
+                "set.var $.t1 $.s1\n" +
+                "get.field $.s1 $.t2 field(MidRef#b@Leaf)\n" +
+                "set.var $.t2 $.s2\n" +
+                "load res(#0) $.t3\n" +
+                "set.field $.t3 $.s2 field(Leaf#x@.i32)\n" +
+                "set.field $.s2 $.s1 field(MidRef#b@Leaf)\n" +
+                "ret\n");
+        }
+
+        // ===== 深层复合赋值 place.a.b += rhs =====
+        private static void TestWrapperDeepCompoundAssignmentEmission()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "pub struct Inner {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(v: i32) { x = v }\n" +
+                "}\n" +
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Logged {\n" +
+                "    pub var sub: Inner\n" +
+                "    pub init(_ -> sub)\n" +
+                "}\n" +
+                "@Logged\n" +
+                "pub class Service { pub init() }\n" +
+                "pub func f(s: Service): i32 {\n" +
+                "    s:Logged.sub.x += 1\n" +
+                "    return s:Logged.sub.x\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（深层复合赋值）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（深层复合赋值）", module);
+            BilTestHarness.CheckFnShape(
+                "深层复合 place.a.b += rhs（get→RHS→叶set→反向set）",
+                module, "$f(s:Service)@.i32",
+                ".vars { Logged .s0, Inner .s1, .i32 .s2, Logged .s3, " +
+                "Logged .t0, Inner .t1, .i32 .t2, .i32 .t3, .i32 .t4, Logged .t5, " +
+                "Inner .t6, .i32 .t7 }\n" +
+                "get.wrapper $s type(Logged) $.t0\n" +
+                "set.var $.t0 $.s0\n" +
+                "get.field $.s0 $.t1 field(Logged#sub@Inner)\n" +
+                "set.var $.t1 $.s1\n" +
+                "get.field $.s1 $.t2 field(Inner#x@.i32)\n" +
+                "load res(#0) $.t3\n" +
+                "add $.t2 $.t3 $.t4\n" +
+                "set.var $.t4 $.s2\n" +
+                "set.field $.s2 $.s1 field(Inner#x@.i32)\n" +
+                "set.field.embedded $.s1 $s wrapper(Logged) field(Logged#sub@Inner)\n" +
+                "get.wrapper $s type(Logged) $.t5\n" +
+                "set.var $.t5 $.s3\n" +
+                "get.field $.s3 $.t6 field(Logged#sub@Inner)\n" +
+                "get.field $.t6 $.t7 field(Inner#x@.i32)\n" +
+                "ret $.t7\n");
+        }
+
+        // ===== 共享写路径宿主稳定性：可变普通字段 host 在 RHS 前物化一次 =====
+        // h.service:W.sub.x = h.replaceAndReturn()——service 无 getter 但 RHS
+        // 可能替换该字段；host 必须物化到 .sN，get.wrapper 与 embedded 写回
+        // 共用同一 .sN，RHS 后不再 get.field Host#service。
+        private static void TestWrapperSharedHostFieldStability()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "pub struct Inner {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(v: i32) { x = v }\n" +
+                "}\n" +
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Logged {\n" +
+                "    pub var sub: Inner\n" +
+                "    pub init(_ -> sub)\n" +
+                "}\n" +
+                "@Logged\n" +
+                "pub class Service { pub init() }\n" +
+                "pub class Host {\n" +
+                "    pub var service: Service\n" +
+                "    pub init(s: Service) { service = s }\n" +
+                "    pub func replaceAndReturn(): i32 {\n" +
+                "        service = new Service()\n" +
+                "        return 9\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func f(h: Host) {\n" +
+                "    h.service:Logged.sub.x = h.replaceAndReturn()\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（共享宿主字段稳定性深写）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（共享宿主字段稳定性深写）", module);
+            BilTestHarness.CheckFnShape(
+                "可变字段 host 深写（RHS 前物化一次，wrapper/embedded 共用 .sN）",
+                module, "$f(h:Host)@.void",
+                ".vars { Service .s0, Logged .s1, Inner .s2, Service .t0, " +
+                "Logged .t1, Inner .t2, .i32 .t3 }\n" +
+                "get.field $h $.t0 field(Host#service@Service)\n" +
+                "set.var $.t0 $.s0\n" +
+                "get.wrapper $.s0 type(Logged) $.t1\n" +
+                "set.var $.t1 $.s1\n" +
+                "get.field $.s1 $.t2 field(Logged#sub@Inner)\n" +
+                "set.var $.t2 $.s2\n" +
+                "invoke fn(Host$replaceAndReturn()@.i32) $.t3 [$h]\n" +
+                "set.field $.t3 $.s2 field(Inner#x@.i32)\n" +
+                "set.field.embedded $.s2 $.s0 wrapper(Logged) " +
+                "field(Logged#sub@Inner)\n" +
+                "ret\n");
+
+            // 直接 wrapper 字段复合：同一宿主稳定性规则
+            var (unit2, module2, _) = BilTestHarness.EmitBilUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Counted {\n" +
+                "    pub var count: i32\n" +
+                "    pub init(_ -> count)\n" +
+                "}\n" +
+                "@Counted\n" +
+                "pub class Service { pub init() }\n" +
+                "pub class Host {\n" +
+                "    pub var service: Service\n" +
+                "    pub init(s: Service) { service = s }\n" +
+                "    pub func replaceAndReturn(): i32 {\n" +
+                "        service = new Service()\n" +
+                "        return 1\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func f(h: Host) {\n" +
+                "    h.service:Counted.count += h.replaceAndReturn()\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（共享宿主字段稳定性复合）", unit2);
+            BilTestHarness.CheckBilValid("验证器零错误（共享宿主字段稳定性复合）", module2);
+            BilTestHarness.CheckFnShape(
+                "可变字段 host 直接复合（RHS 前物化，读/写共用 .sN）",
+                module2, "$f(h:Host)@.void",
+                ".vars { Service .s0, Counted .s1, .i32 .s2, Service .t0, " +
+                "Counted .t1, .i32 .t2, .i32 .t3, .i32 .t4 }\n" +
+                "get.field $h $.t0 field(Host#service@Service)\n" +
+                "set.var $.t0 $.s0\n" +
+                "get.wrapper $.s0 type(Counted) $.t1\n" +
+                "set.var $.t1 $.s1\n" +
+                "get.field $.s1 $.t2 field(Counted#count@.i32)\n" +
+                "invoke fn(Host$replaceAndReturn()@.i32) $.t3 [$h]\n" +
+                "add $.t2 $.t3 $.t4\n" +
+                "set.var $.t4 $.s2\n" +
+                "set.field.embedded $.s2 $.s0 wrapper(Counted) " +
+                "field(Counted#count@.i32)\n" +
+                "ret\n");
         }
 
         // ===== M79：param:W（泛型参数 with 约束）get.wrapper / embedded 端到端 =====
@@ -450,11 +936,36 @@ namespace LatteCompiler.Tests
                 !service.Members.OfType<BilSimpleMemberDeclaration>().Any(d =>
                     d.Symbol.Contains(".proxy.unwrap.") || d.Symbol.Contains("$.proxy.0.")));
 
-            BilTestHarness.CheckFnShape("wildcard 模板 fn（call.inner 包转发）",
+            // #27⑦：call.inner 操作数 = 泛型包（声明序）前置 + 值包
+            BilTestHarness.CheckFnShape("wildcard 模板 fn（call.inner 泛型包+值包转发）",
                 module, "Audited$$.proxy.*(symbol:.string)@.generic<$.generic.TReturn>",
                 ".vars { .generic<$.generic.TReturn> .t0 }\n" +
-                "call.inner $.t0 [$.kwargs.namedArgs, $.vargs.unnamedArgs]\n" +
+                "call.inner $.t0 [$.generic.TNamedArgs, $.generic.TUnnamedArgs, " +
+                "$.kwargs.namedArgs, $.vargs.unnamedArgs]\n" +
                 "ret $.t0\n");
+        }
+
+        private static void TestProxySpecificVariadicEmission()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Batched\\<TTarget> {\n" +
+                "    operator .proxy.sum(nums: i32...): i32 { return inner(nums) }\n" +
+                "}\n" +
+                "@Batched\n" +
+                "pub class Values {\n" +
+                "    pub init()\n" +
+                "    pub func sum(nums: i32...): i32 { return 0 }\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（specific variadic 模板）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（specific variadic 模板）", module);
+            var proxy = module.Functions.Single(f => f.Symbol.Contains(".proxy.sum"));
+            TestHarness.CheckTrue("specific variadic .args 声明值包",
+                proxy.Args.Any(a => a.Name == ".vargs.nums"));
+            var callInner = proxy.Blocks.SelectMany(b => b.Instructions)
+                .OfType<CallInnerInstruction>().Single();
+            TestHarness.Check("specific variadic call.inner 整包转发", ".vargs.nums",
+                callInner.Arguments.Single().Name);
         }
 
         // ===== M88：get 访问器 proxy 模板（标记产物，无合成链）=====
@@ -670,6 +1181,144 @@ namespace LatteCompiler.Tests
                 "pub func f(p: Plain) { p.missing() }\n");
             TestHarness.CheckSemanticError("无 wrapper 不降级", unit.Diagnostics,
                 "Undefined member");
+        }
+
+        // ===== #28③：interface 传染宿主降级资格（传递闭包只读查询）=====
+        private static void TestDowngradeViaInterface()
+        {
+            const string wildcardW =
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Audited {\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., " +
+                "unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn { return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
+                "}\n";
+
+            // 直接 implements 带 .proxy.* 的 interface
+            {
+                var (unit, module, _) = BilTestHarness.EmitBilUnit(wildcardW +
+                    "@Audited\n" +
+                    "pub interface IService { }\n" +
+                    "pub class SvcImpl implements IService { pub init() }\n" +
+                    "pub func f(s: SvcImpl): Any { return s.fetch(1) }\n");
+                CheckNoErrors("全管线无诊断（#28③ 直接 implements）", unit);
+                BilTestHarness.CheckBilValid("验证器零错误（#28③ 直接 implements）", module);
+                TestHarness.CheckTrue("#28③ 实现者无 wrapped 标记（不回写）",
+                    !module.LocalSymbols.OfType<BilTypeDeclaration>()
+                        .Single(t => t.Symbol == "SvcImpl")
+                        .Modifiers.OfType<BilWrappedModifier>().Any());
+                TestHarness.CheckTrue("#28③ 调用点 invoke Any.call???",
+                    module.Functions.Single(fn => fn.Symbol.StartsWith("$f("))
+                        .Blocks[0].Instructions.OfType<InvokeInstruction>()
+                        .Any(i => i.Method.Symbol.StartsWith("core::Any$call???")));
+            }
+
+            // 接口继承传递闭包
+            {
+                var (unit, module, _) = BilTestHarness.EmitBilUnit(wildcardW +
+                    "@Audited\n" +
+                    "pub interface IBase { }\n" +
+                    "pub interface IChild : IBase { }\n" +
+                    "pub class ViaChild implements IChild { pub init() }\n" +
+                    "pub func f(s: ViaChild): Any { return s.remote() }\n");
+                CheckNoErrors("全管线无诊断（#28③ 传递闭包）", unit);
+                BilTestHarness.CheckBilValid("验证器零错误（#28③ 传递闭包）", module);
+                TestHarness.CheckTrue("#28③ 传递闭包 invoke Any.call???",
+                    module.Functions.Single(fn => fn.Symbol.StartsWith("$f("))
+                        .Blocks[0].Instructions.OfType<InvokeInstruction>()
+                        .Any(i => i.Method.Symbol.StartsWith("core::Any$call???")));
+            }
+
+            // 仅 specific / 无 wrapper 不误放行
+            {
+                var (unitSpec, _, _) = BilTestHarness.EmitBilUnit(
+                    "@WrapperTarget(.Entity)\n" +
+                    "pub wrapper SpecificOnly {\n" +
+                    "    operator .proxy.known(): i32 { return inner() }\n" +
+                    "}\n" +
+                    "@SpecificOnly\n" +
+                    "pub interface IKnown { func known(): i32 }\n" +
+                    "pub class SpecImpl implements IKnown {\n" +
+                    "    pub init()\n" +
+                    "    pub func known(): i32 { return 1 }\n" +
+                    "}\n" +
+                    "pub func f(s: SpecImpl) { s.missing() }\n");
+                TestHarness.CheckSemanticError("#28③ 仅 specific 不降级（P4）",
+                    unitSpec.Diagnostics, "Undefined member");
+            }
+        }
+
+        // ===== #28④：if?/throw/复合赋值 RHS/索引写 降级 + cast 物化 =====
+        private static void TestDowngradeExemptionPositions()
+        {
+            const string fixture =
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper W {\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., " +
+                "unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn { return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
+                "}\n" +
+                "@W\n" +
+                "pub class Service { pub init() }\n" +
+                "pub class User { pub init() }\n";
+
+            // if? 右操作数：Any → User cast
+            {
+                var (unit, module, text) = BilTestHarness.EmitBilUnit(fixture +
+                    "pub func f(u: User?, s: Service): User { return u if? s.fetch() }\n");
+                CheckNoErrors("全管线无诊断（if? 降级）", unit);
+                BilTestHarness.CheckBilValid("验证器零错误（if? 降级）", module);
+                TestHarness.CheckTrue("if? else 支 cast User",
+                    text.Contains("call???") && text.Contains("cast") && text.Contains("type(User)"));
+            }
+
+            // throw 操作数：Any → Exception cast
+            {
+                var (unit, module, _) = BilTestHarness.EmitBilUnit(fixture +
+                    "pub func f(s: Service) { throw s.err() }\n");
+                CheckNoErrors("全管线无诊断（throw 降级）", unit);
+                BilTestHarness.CheckBilValid("验证器零错误（throw 降级）", module);
+                var fail = module.Functions.Single(f => f.Symbol.StartsWith("$f("));
+                var hasCastToException = fail.Blocks[0].Instructions
+                    .OfType<CastInstruction>()
+                    .Any(c => c.TargetType.TypeRef.Contains("Exception"));
+                TestHarness.CheckTrue("throw 前 cast Exception", hasCastToException);
+                TestHarness.CheckTrue("throw 指令存在",
+                    fail.Blocks[0].Instructions.OfType<ThrowInstruction>().Any());
+            }
+
+            // 复合赋值 RHS：Any → String cast 后 add
+            {
+                var (unit, module, text) = BilTestHarness.EmitBilUnit(fixture +
+                    "pub func f(s: Service): String {\n" +
+                    "    var t = \"a\"\n" +
+                    "    t += s.suffix()\n" +
+                    "    return t\n" +
+                    "}\n");
+                CheckNoErrors("全管线无诊断（复合赋值降级）", unit);
+                BilTestHarness.CheckBilValid("验证器零错误（复合赋值降级）", module);
+                TestHarness.CheckTrue("复合赋值 RHS cast + add",
+                    text.Contains("call???") && text.Contains("add") && text.Contains("type(.string)"));
+            }
+
+            // 索引写值：Any → User cast 后 set.array
+            {
+                var (unit, module, text) = BilTestHarness.EmitBilUnit(fixture +
+                    "pub class Bag {\n" +
+                    "    pub var item: User\n" +
+                    "    pub init(_ -> item)\n" +
+                    "    pub operator getAtIndex(index: i32): User { return item }\n" +
+                    "    pub operator setAtIndex(index: i32, element: User) { item = element }\n" +
+                    "}\n" +
+                    "pub func f(b: Bag, s: Service) { b[0] = s.fetch() }\n");
+                CheckNoErrors("全管线无诊断（索引写降级）", unit);
+                BilTestHarness.CheckBilValid("验证器零错误（索引写降级）", module);
+                TestHarness.CheckTrue("索引写 cast User + set.array",
+                    text.Contains("call???") && text.Contains("set.array")
+                    && text.Contains("type(User)"));
+            }
         }
 
         private static string RenderMember(BilTypeDeclaration type, string symbol)

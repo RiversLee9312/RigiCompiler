@@ -269,6 +269,25 @@ namespace LatteCompiler
         }
     }
 
+    // 字段-Value wrapper 值拷贝（M84，§12.4：
+    // get.wrapper.field OBJECT field(HOST_FIELD) type(WRAPPER_TYPE) RESULT）
+    internal sealed class GetFieldWrapperEmitter
+        : EmitVisitor<GetFieldWrapperEmitter, BilVariableOperand>
+    {
+        protected override BilVariableOperand VisitCore(LoweredNode node, BilBlock target,
+            EmitContext ctx, EmitEnvironment env)
+        {
+            var getFieldWrapper = (LoweredGetFieldWrapperExpression)node;
+            var objectValue = EmitValueDispatcher.Visit(getFieldWrapper.Object, target, ctx, env);
+            var result = ctx.Temps.NewTemp(getFieldWrapper.Type);
+            target.Instructions.Add(new GetWrapperFieldInstruction(objectValue,
+                BilOp.Field(CanonicalSymbolPrinter.PrintField(getFieldWrapper.HostField)),
+                BilOp.Type(CanonicalSymbolPrinter.PrintType(getFieldWrapper.Wrapper)), result)
+            { Origin = getFieldWrapper });
+            return result;
+        }
+    }
+
     // 嵌套字段读取（S11c，§13.3 get.field.embedded 链）：字段-Value 应用的
     // wrapper place 成员读；写入形态（赋值目标）见 AssignmentEmitter 的
     // set.field.embedded 分支（同一 EmbeddedFieldEmission 走链设施）
@@ -282,16 +301,16 @@ namespace LatteCompiler
         }
     }
 
-    // get/set.field.embedded 走链设施（M88，§13.3）：WrapperChain 按
-    // 最外层 → 最内层序，投影为 wrapper(W) 链元素；整链一次 embedded
-    // 指令（末段 field(INNER)），存储合成归 Middleware
+    // get/set.field.embedded 走链设施（M88，§13.3）：PlaceChain 最外层→最内层，
+    // FieldSymbol→field(F)、TypeSymbol→wrapper(W)；字段应用 = 相邻 field+wrapper
+    // 对；整链一次 embedded（末段 field(INNER)），存储合成归 Middleware
     internal static class EmbeddedFieldEmission
     {
         public static BilVariableOperand EmitRead(LoweredEmbeddedFieldExpression access,
             BilBlock target, EmitContext ctx, EmitEnvironment env)
         {
             var current = EmitValueDispatcher.Visit(access.Receiver, target, ctx, env);
-            var chain = ProjectWrapperChain(access.WrapperChain);
+            var chain = ProjectPlaceChain(access.PlaceChain);
             var readResult = ctx.Temps.NewTemp(access.Type);
             target.Instructions.Add(new GetEmbeddedFieldInstruction(current, readResult, chain,
                 BilOp.Field(CanonicalSymbolPrinter.PrintField(access.Field)))
@@ -303,19 +322,26 @@ namespace LatteCompiler
             BilVariableOperand source, BilVariableOperand receiver,
             BilBlock target, EmitContext ctx, EmitEnvironment env)
         {
-            var chain = ProjectWrapperChain(place.WrapperChain);
+            var chain = ProjectPlaceChain(place.PlaceChain);
             target.Instructions.Add(new SetEmbeddedFieldInstruction(source, receiver, chain,
                 BilOp.Field(CanonicalSymbolPrinter.PrintField(place.Field)))
             { Origin = place });
         }
 
-        private static IReadOnlyList<BilOperand> ProjectWrapperChain(
-            IReadOnlyList<TypeSymbol> wrappers)
+        private static IReadOnlyList<BilOperand> ProjectPlaceChain(
+            IReadOnlyList<SemanticSymbol> placeChain)
         {
-            var chain = new BilOperand[wrappers.Count];
-            for (var i = 0; i < wrappers.Count; i++)
+            var chain = new BilOperand[placeChain.Count];
+            for (var i = 0; i < placeChain.Count; i++)
             {
-                chain[i] = BilOp.Wrapper(CanonicalSymbolPrinter.PrintType(wrappers[i]));
+                chain[i] = placeChain[i] switch
+                {
+                    FieldSymbol field => BilOp.Field(CanonicalSymbolPrinter.PrintField(field)),
+                    TypeSymbol type => BilOp.Wrapper(CanonicalSymbolPrinter.PrintType(type)),
+                    _ => throw new CompilerInternalException(
+                        "embedded PlaceChain element must be FieldSymbol or TypeSymbol, got " +
+                        (placeChain[i]?.GetType().Name ?? "null")),
+                };
             }
             return chain;
         }
@@ -334,14 +360,24 @@ namespace LatteCompiler
         }
     }
 
-    // proxy 体 inner(...)（M88，§15.4）：Type 为 void / IsVoid → noret
+    // proxy 体 inner(...)（M88，§15.4；#27⑦ 泛型包显式前置）：
+    // 操作数序 = ForwardedGenericPacks（$.generic.<Name>，声明序）+
+    // 源码层显式值实参（含 .kwargs./.vargs.）；void / IsVoid → noret
     internal sealed class CallInnerEmitter : EmitVisitor<CallInnerEmitter, BilVariableOperand>
     {
         protected override BilVariableOperand VisitCore(LoweredNode node, BilBlock target,
             EmitContext ctx, EmitEnvironment env)
         {
             var callInner = (LoweredCallInnerExpression)node;
-            var args = new List<BilVariableOperand>(callInner.Arguments.Count);
+            var args = new List<BilVariableOperand>(
+                callInner.ForwardedGenericPacks.Count + callInner.Arguments.Count);
+            // BIL §7.2 / §15.4：可变泛型包前置（复用 MaterializeTypeId——
+            // GenericParameterSymbol → BilOp.Var(".generic." + Name)，
+            // 不手写 $ 前缀；.args 已声明，零指令转发）
+            foreach (var pack in callInner.ForwardedGenericPacks)
+            {
+                args.Add(EmittingFacility.MaterializeTypeId(pack, callInner, target, ctx, env));
+            }
             foreach (var argument in callInner.Arguments)
             {
                 args.Add(EmitValueDispatcher.Visit(argument, target, ctx, env));

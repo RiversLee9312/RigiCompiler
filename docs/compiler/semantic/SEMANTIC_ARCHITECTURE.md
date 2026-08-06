@@ -230,9 +230,11 @@ SemanticSymbol
       wrapper 类型，不再重写为 `BoundWrapperAccessExpression`）；
       `inner(...)` 绑定为占位调用节点（实参正常绑定；期望形状 =
       specific 按 proxy 声明自身签名 / wildcard 按 canonical 形状
-      去 symbol；返回类型 = proxy 声明返回类型）。非 proxy 语境
-      出现 `self`/`inner` 是编译错误；诊断按 (proxy, span, message)
-      去重。
+      去 symbol；返回类型 = proxy 声明返回类型）。**#27⑦ 包透传**：
+      Bound 节点显式携带当前 proxy 方法声明序中的可变泛型包列表
+      （`IsVariadic`/`IsNamedVariadic`；固定泛型不入列），不可仅在
+      emitter 临时扫声明隐式推断。非 proxy 语境出现 `self`/`inner`
+      是编译错误；诊断按 (proxy, span, message) 去重。
     - **使用点 wrapper place 绑定**（M79）原样保留：双源同池查找
       + 只读禁令全拦截面。
     - **未声明方法降级判定**保留：candidates 空 + wrapper 链含
@@ -241,13 +243,15 @@ SemanticSymbol
       五位置豁免保留，判定改为引用相等 bootstrap `Any.call???`。
   - **P4**：发射 wrapper 类型的 proxy 成员为带
     `wrapper-proxy(specific|wildcard)` 修饰符的**模板 fn**
-    （`inner` → `call.inner`、`self` → `get.self` 占位指令）；
-    使用点 place 成员访问的 embedded 降级与声明段平铺仍归 P4
-    （操作数见 §6.1）。
+    （`inner` → `call.inner`、`self` → `get.self` 占位指令；
+    `call.inner` 操作数 = 可变泛型包 `.generic.<Pack>` 前置 +
+    显式值实参，BIL §15.4 / §7.2）；使用点 place 成员访问的
+    embedded 降级与声明段平铺仍归 P4（操作数见 §6.1）。
   - **一切烘焙**（特化 / inner 链接 / 原始体替换 / 隐藏存储 /
-    `call???` 类别路由体）**归 Middleware**（BIL §23 边界）。
-    frontend 产物只携带标记：应用登记、proxy 模板 fn、降级调用点
-    对 `core::Any$call???` 的 `invoke`。
+    `call???` 类别路由体 / 包解包 shim）**归 Middleware**
+    （BIL §23 边界）。frontend 产物只携带标记：应用登记、proxy
+    模板 fn（含 `call.inner` 包透传操作数）、降级调用点对
+    `core::Any$call???` 的 `invoke`。
 
 ---
 
@@ -272,7 +276,7 @@ SemanticSymbol
 | pattern switch（含 `_` 分支） | 常量表 switch / 嵌套条件（BIL §16.6） |
 | 解构声明 | 精确字段/索引读取 |
 | `using` | 初始化 + 清理记录 + try/finally 路径（RUNTIME §25.1） |
-| wrapper place 成员访问（`obj:W.f`、`obj:W.m()`） | Entity 应用成员读/调用 = `get.wrapper` 值拷贝 + 普通 `get.field`/`invoke`（BIL §12.4）；成员写 = embedded 链，操作数为 wrapper 类型引用 `wrapper(W)`（非隐藏字段符号；BIL §13.3；存储由 Middleware 合成） |
+| wrapper place 成员访问（`obj:W.f`、`obj:W.m()`） | Entity 应用成员读/调用/索引读 = `get.wrapper` 值拷贝 + 普通 `get.field`/`invoke`/`get.array`（BIL §12.4）；字段-Value 应用字段读写 = embedded 链（寻址 = 已有 `field(HOST_FIELD)+wrapper(W)` 对），调用/索引读 = `get.wrapper.field` 值拷贝 + 普通指令；成员写（直接字段）= embedded 链（Entity = `wrapper(W)`；字段-Value = `field(HOST_FIELD)+wrapper(W)`）；深层纯字段写穿 `place.a.b...` = P4a 多 get/set（正向 get + 叶写 + 反向 set；值类型中间写回，引用中间停止；最外层必要写回复用已有 `set.field.embedded`，**不新增**专用深写 opcode）；索引写与局部/静态存储仍归口 |
 | 未声明方法的 wrapper 降级（SYNTAX §14.7） | `invoke core::Any$call???`（胖值 ABI；BIL §15.5） |
 | 字符串插值 | 拼接/格式化调用链 |
 | trailing lambda、`TypeName(...)` 简写等 | 规范调用形态 |
@@ -352,14 +356,17 @@ RUNTIME §23 GC fence 的交互）是**专项设计**，动工前须先出专项
 规范把 wrapper 定为恒 rich struct，`obj:Wrapper` 为**只读 place**
 （SYNTAX §14.5/§14.9）。相关 BIL 缺口与归属如下：
 
-- **§12.4 / §13.3 place 形态（M75 已落地）**：`get.wrapper` 保留为
-  lowering/VM 内部能力；`get.field.embedded` / `set.field.embedded`
-  承载 `obj:Wrapper.field` 与成员访问链。源码层 `obj:W = ...` 仍是
-  编译错误，BIL 不为整体赋值准备写入指令。
-- **embedded 链操作数（M88）**：由隐藏字段符号改为 **wrapper 类型
-  引用**（`wrapper(W)` 元素）；隐藏存储由 Middleware 合成（命名约定
-  BIL §5.3，布局属 Middleware；BIL 文本不再声明 `.wrapper.` 隐藏
-  字段——与 RUNTIME §14 一致）。
+- **§12.4 / §13.3 place 形态（M75 + M84）**：`get.wrapper` /
+  `get.wrapper.field` 保留为 lowering/VM 内部能力；`get.field.embedded` /
+  `set.field.embedded` 承载直接字段读写与成员写。深层写穿**不新增**
+  专用深写 opcode，由 P4a 展开为多个现有 get/set；最外层必要写回
+  复用已有 `set.field.embedded`（不是禁止使用 final set.field.embedded）。
+  源码层 `obj:W = ...` 仍是编译错误，BIL 不为整体赋值准备写入指令。
+- **embedded 链操作数（M88）**：两态 `field(F)|wrapper(W)`（不扩展新
+  字节码类）；Entity 应用 = `wrapper(W)`；字段-Value 应用寻址 =
+  相邻 `field(HOST_FIELD)+wrapper(W)`（HOST_FIELD 带 `wrapped(W)`）。
+  隐藏存储由 Middleware 合成（命名约定 BIL §5.3；BIL 文本不再声明
+  `.wrapper.` 隐藏字段——与 RUNTIME §14 一致）。
 - **proxy 模板占位指令（M88）**：模板 fn 体内 `inner` / `self` 分别
   发 `call.inner` / `get.self`；特化、inner 链接、原始体、router 体
   均不在 frontend 合成（§5.2）。

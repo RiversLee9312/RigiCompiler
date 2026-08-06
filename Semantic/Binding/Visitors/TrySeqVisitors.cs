@@ -134,7 +134,9 @@ namespace LatteCompiler
             var exception = ExpressionDispatcher.Visit(throwNode.Exception.Expression, scope, ctx,
                 env, env.B.Exception);
             if (exception == null) return null;
-            if (!SymbolLookup.IsAssignable(exception.Type, env.B.Exception, env))
+            // #28④：降级调用结果 Any 可 throw（P4a cast 物化到 Exception）
+            if (!SymbolLookup.IsAssignable(exception.Type, env.B.Exception, env)
+                && !BoundAnalysis.IsDowngradeCallResult(exception, env))
             {
                 env.Error(throwNode.Exception.Span ?? throwNode.Span,
                     $"Cannot throw '{BoundAnalysis.TypeDisplay(exception.Type)}' " +

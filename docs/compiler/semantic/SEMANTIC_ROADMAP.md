@@ -718,7 +718,11 @@ enum case（`new.case`、`is .Case` 判别比较、判别值分配）、
 >   复合赋值读写分离 + 宿主单次求值共享；隐藏字段 §8.3.1 声明
 >   开闸（priv var backing compiler-generated）；落地注记：
 >   深层写穿（`place.a.b`）/索引写/字段-Value 调用与索引/局部
->   与静态存储合成显式归口，归 S11g 复核）
+>   与静态存储合成显式归口，归 S11g 复核。**M91 已部分消解**：
+>   字段-Value 方法调用/索引读经 `get.wrapper.field` 值拷贝；字段应用
+>   寻址复用 `field(HOST_FIELD),wrapper(W)`；深层纯字段写穿由 P4a
+>   展开为正向 get + 叶写 + 按值类型边界反向 set，不新增专用 opcode。
+>   索引写与局部/静态存储继续显式归口）
 > - **S11d（P4b 合成 fn 发射，烘焙端到端）**：Bil 模型增补
 >   `wrapper-proxy(PROXY_KIND)` 修饰符（PROXY_KIND 取值定稿
 >   BIL §8.4）；特化 fn / 原始体 fn / 转发壳平铺发射；
@@ -753,7 +757,10 @@ enum case（`new.case`、`is .Case` 判别比较、判别值分配）、
 >   inner 自动补 symbol（合成具名实参）+ 类型兼容豁免五位置
 >   骑 §6.5 cast 物化（Any→T 不符抛 CastException）；请求
 >   symbol 格式定稿 SYNTAX §14.8 末段；遗留五项登记技术债
->   #28，归 S11g 复核）
+>   #28，归 S11g 复核；**M89 已收口 #28③④**：降级资格只读遍历
+>   receiver/BaseType/Interfaces 传递闭包；if?/throw/复合赋值/索引写
+>   位置补 P3 豁免与 P4a §6.5 cast 物化。#28① 待专项，#28② 维持
+>   SYNTAX §14.7 既定错误行为）
 > - **S11f（派发链诊断工具，RUNTIME §15）**：CLI 子命令
 >   `compile --file a.latte --explain-dispatch`（用户决策
 >   形态）；报告编译单元全部烘焙链（被修饰成员 outer→inner
@@ -771,7 +778,12 @@ enum case（`new.case`、`is .Case` 判别比较、判别值分配）、
 >   落地后回归）+ 技术债 #26 代码落地（ext 泛型目标元数/歧义
 >   诊断 + priv/protected ext 可见性按声明位置修订）+ #27⑦⑧
 >   （可变参数成员链与 inner/转发壳泛型包转发、proxy 声明泛型
->   参数的体内类型引用代入）+ 规范交叉引用清理。
+>   参数的体内类型引用代入）+ 规范交叉引用清理。**M90 已收口
+>   #27⑦**：Bound/Lowered 显式携带可变泛型包，P4b 按声明序前置
+>   `.generic.<Pack>` 到 `call.inner` 值实参列表；可变成员参与 proxy
+>   匹配，解包与烘焙仍归 Middleware。**M91 已收口 M84 两项**：
+>   字段-Value 调用/索引读与深层纯字段写穿落地；局部/静态存储按
+>   用户裁决等待 `.args/.vars` 应用标记 + init 实参 ABI，保持 P4 诊断。
 >
 > **wrapper place 绑定与只读禁令（M79，2026-08-06，PROGRESS_REPORT
 > 详录）**：`BoundWrapperAccessExpression`（Receiver + Wrapper，Type =
