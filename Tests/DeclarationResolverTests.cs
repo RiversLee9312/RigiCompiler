@@ -1040,6 +1040,27 @@ namespace LatteCompiler.Tests
                 other2.WrapperChain is { Count: 1 }
                 && other2.WrapperChain[0].ProxySpecialization!.Kind == ProxyLinkKind.Wildcard);
 
+            // S11b：wildcard 环的解包 shim 符号合成（specific 环无 shim——
+            // 其 inner 直通下一环）
+            TestHarness.CheckTrue("specific 环无解包 shim",
+                do2.WrapperChain[0].ProxySpecialization!.UnwrapShim == null);
+            var doShim = do2.WrapperChain[1].ProxySpecialization!.UnwrapShim;
+            TestHarness.CheckTrue("wildcard 环解包 shim 合成（双包参签名 + 返回拷贝）",
+                doShim != null
+                && doShim.Name == ".proxy.unwrap.1.doSomething"
+                && doShim.Parameters.Count == 2
+                && doShim.Parameters[0].Name == "namedArgs"
+                && doShim.Parameters[1].Name == "unnamedArgs"
+                && ReferenceEquals(doShim.Parameters[0].Type, doShim.Parameters[1].Type)
+                && ReferenceEquals(doShim.ReturnType, do2.ReturnType)
+                && doShim.HasBody);
+            TestHarness.Check("shim fn canonical",
+                "Service$.proxy.unwrap.1.doSomething(namedArgs:.array<.any>,unnamedArgs:.array<.any>)@.string",
+                CanonicalSymbolPrinter.PrintMethod(doShim!));
+            var otherShim = other2.WrapperChain![0].ProxySpecialization!.UnwrapShim;
+            TestHarness.CheckTrue("单环 wildcard 的 shim 序号随环位",
+                otherShim != null && otherShim.Name == ".proxy.unwrap.0.other");
+
             // specific 形状不符 → 编译错误
             var (u3, _) = ResolveUnit(
                 "@WrapperTarget(.Entity)\n" +

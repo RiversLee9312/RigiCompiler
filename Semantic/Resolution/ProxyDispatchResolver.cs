@@ -26,7 +26,7 @@ namespace LatteCompiler
     // .proxy.set/.proxy.call 拦截）、interface 实现者的链继承与
     // override 覆写链、无访问器字段的 get/set 拦截（需自动访问器合成
     // + P4 接线）、async 成员交互（S13）、static/init 成员不拦截、
-    // 合成 fn 的 BIL 发射（S11d）与隐藏字段声明发射（S11c）。
+    // 合成 fn 的 BIL 发射（S11d）。隐藏字段声明发射已于 S11c 开闸。
     internal sealed class ProxyDispatchResolver : ResolverVisitor<ProxyDispatchResolver>
     {
         protected override void VisitCore(ResolveEnvironment env)
@@ -182,6 +182,11 @@ namespace LatteCompiler
             MethodSymbol member, string memberKey, string specificName, string wildcardName)
         {
             if (ContainsErrorType(member)) return;   // 毒化静默
+            // 可变参数（vargs/kwargs）成员不拦截：转发壳 invoke 链首的包展开
+            // 在 Bound 层无表达（包形参引用打包会嵌套），归技术债 #27（S11b
+            // 登记——含可变泛型参数包的成员同此边界：inner 转发的包推导
+            // 归 S11g 复核）
+            if (member.Parameters.Any(p => p.IsVariadic || p.IsNamedVariadic)) return;
             // 第一趟：逐应用定命中（outer→inner，§14.6 specific 优先于 wildcard）
             var hits = new List<(WrapperApplication Application, MethodSymbol Proxy, ProxyLinkKind Kind)>();
             foreach (var application in host.AppliedWrappers)
@@ -227,14 +232,57 @@ namespace LatteCompiler
             host.Methods.Add(original);
             member.WrappedBodySymbol = original;
             member.WrapperChain = new List<MethodSymbol>();
+            // 解包 shim 仅普通方法/operator 类别需要（S11b）：wildcard 环的
+            // inner 以双包形态调用，经 shim 解包调下一环；get/set wildcard
+            // 的 inner 形态（无参 / 单 value 参）与下一环签名直通，无需 shim
+            var needsUnwrapShim = member.Kind is not MethodKind.Getter
+                and not MethodKind.Setter;
             for (var i = 0; i < hits.Count; i++)
             {
                 var link = SynthesizeBodySymbol(host, member, ".proxy." + i + "." + memberKey, env);
                 link.ProxySpecialization = new ProxySpecializationInfo(
                     hits[i].Proxy, hits[i].Application, hits[i].Kind, member, original);
+                if (needsUnwrapShim && hits[i].Kind == ProxyLinkKind.Wildcard)
+                {
+                    var shim = SynthesizeUnwrapShim(host, member,
+                        ".proxy.unwrap." + i + "." + memberKey, env);
+                    host.Methods.Add(shim);
+                    link.ProxySpecialization.UnwrapShim = shim;
+                }
                 member.WrapperChain.Add(link);
                 host.Methods.Add(link);
             }
+        }
+
+        // wildcard 解包 shim（S11b）：名 .proxy.unwrap.<序>.<成员键>，签名 =
+        // (namedArgs: Array\<Any\>, unnamedArgs: Array\<Any\>) → 成员返回类型
+        //（成员泛型参数同款拷贝——shim body 经 TypeArguments 向下一环转发，
+        // 归 P3 合成）；体内解包（逐元素 cast Any → 形参类型，§14.7 同款
+        // CastException 语义）后 invoke 下一环。发射归 S11d（"." 前缀名
+        // 闸门已就位）
+        private static MethodSymbol SynthesizeUnwrapShim(TypeSymbol host, MethodSymbol member,
+            string name, ResolveEnvironment env)
+        {
+            var symbol = new MethodSymbol(name, MethodKind.Regular, owner: host)
+            {
+                HasBody = true,
+            };
+            var genericMap = new Dictionary<GenericParameterSymbol, GenericParameterSymbol>(
+                ReferenceEqualityComparer.Instance);
+            foreach (var gp in member.GenericParameters)
+            {
+                var copy = new GenericParameterSymbol(gp.Name, gp.IsVariadic, gp.IsNamedVariadic);
+                symbol.GenericParameters.Add(copy);
+                genericMap[gp] = copy;
+            }
+            var packType = env.Unit.Symbols.GetConstructedType(
+                env.Unit.Symbols.Bootstrap.ArrayDefinition, env.Unit.Symbols.Bootstrap.Any);
+            symbol.Parameters.Add(new ParameterSymbol("namedArgs", packType,
+                defaultValue: null, isVariadic: false, isNamedVariadic: false));
+            symbol.Parameters.Add(new ParameterSymbol("unnamedArgs", packType,
+                defaultValue: null, isVariadic: false, isNamedVariadic: false));
+            symbol.ReturnType = SubstituteSignatureTypes(member.ReturnType, genericMap, env);
+            return symbol;
         }
 
         // 特化/原始体 fn：名 + Regular 种类 + 宿主 Owner + 成员签名拷贝

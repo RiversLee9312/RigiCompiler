@@ -85,7 +85,8 @@ namespace LatteCompiler.Tests
             TestWrapperPlaceBinding();
             TestWrapperPlaceReadOnly();
             TestWrapperPlaceErrors();
-            TestWrapperPlaceLoweringGate();
+            TestWrapperPlaceLowering();
+            TestProxyBodyBinding();
             return TestHarness.Summary("Binder");
         }
 

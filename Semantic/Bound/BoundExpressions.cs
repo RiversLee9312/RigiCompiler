@@ -254,20 +254,24 @@ namespace LatteCompiler
     // 那份 wrapper 的只读存储位置。它只作成员访问的接收者出现（字段读写、
     // 方法调用、索引），永不作为完整表达式的值产出——P3 绑定期封死：链末
     // Colon 段按赋值/取值分别诊断（全拦截面收口于 PathFacility 一处）。
-    // Wrapper = 命中应用记录的 wrapper 类型（S11a 起 Entity 为 TTarget 代入
-    // 后的构造类型——泛型实参显形；Value/Method 为定义本身）。Type = Wrapper。
-    // P4 发射归 proxy 烘焙（S11 后续：成员读 = 值拷贝 + get.field，
-    // 成员写 = set.field.embedded，BIL §13.3）
+    // Application = 命中的 wrapper 应用记录（S11a：Entity 恰一泛型参数时
+    // Wrapper 为 TTarget 代入后的构造类型——泛型实参显形；Value/Method 为
+    // 定义本身；S11c 起 P4 经 Application.HiddenField 取 `.wrapper.` 隐藏
+    // 字段符号——Entity/字段-Value 应用由 P2 落定，局部/静态为 null）。
+    // Type = Wrapper。P4 发射（S11c，BIL §12.4 注记/§13.3）：成员读 =
+    // get.wrapper 值拷贝 + get.field、成员写 = set.field.embedded、
+    // 方法调用 receiver = get.wrapper 值拷贝
     public sealed class BoundWrapperAccessExpression : BoundExpression
     {
         public BoundExpression Receiver { get; }
-        public TypeSymbol Wrapper { get; }
+        public WrapperApplication Application { get; }
+        public TypeSymbol Wrapper => Application.Wrapper;
 
         public BoundWrapperAccessExpression(ASTNode syntax, BoundExpression receiver,
-            TypeSymbol wrapper) : base(syntax, wrapper)
+            WrapperApplication application) : base(syntax, application.Wrapper)
         {
             Receiver = receiver;
-            Wrapper = wrapper;
+            Application = application;
         }
     }
 

@@ -254,8 +254,8 @@ namespace LatteCompiler
         // wrapper 派发链（S11a P2 ProxyDispatchResolver 合成；仅被 Entity
         // wrapper 拦截的实例成员方法/运算符/访问器）：outer→inner 序的特化
         // fn 符号（各带 ProxySpecialization 槽），null = 无拦截。有链时本
-        // 符号的 fn 退化为转发壳（invoke 链首——绑定改写归 S11b），用户体
-        // 由 WrappedBodySymbol 承载
+        // 符号的 fn 退化为转发壳（invoke 链首——S11b 由 BindingDriver 阶段
+        // 2.5 合成绑定改写），用户体由 WrappedBodySymbol 承载
         public List<MethodSymbol>? WrapperChain { get; internal set; }
         public MethodSymbol? WrappedBodySymbol { get; internal set; }
         // 本符号为 proxy 特化 fn 时的元数据（S11a；P3 逐组合绑定语境与
@@ -320,7 +320,8 @@ namespace LatteCompiler
         // false = 计算属性（无存储，P4 发 computed 修饰）
         public bool HasBackingStorage { get; internal set; }
         // 编译器合成标记（S11a：`.wrapper.` 隐藏字段，BIL §5.3/§8.3.1；
-        // 声明发射归 S11c——此前 LocalSymbolEmitters 跳过本字段）
+        // S11c 起 LocalSymbolEmitters 照常发射（priv var backing
+        // compiler-generated 形态））
         public bool IsCompilerGenerated { get; internal set; }
         // 挂载的 wrapper 应用（声明顺序，外层在前；P2 解析填充）
         public List<WrapperApplication> AppliedWrappers { get; } = new List<WrapperApplication>();
@@ -468,9 +469,11 @@ namespace LatteCompiler
     //   为 TTarget 代入宿主的构造类型（泛型实参代入在此显形，M79 遗留
     //   兑现），其余情形为定义本身；
     // - Syntax：注解 AST 节点（`@W(...)` 的 init 实参与诊断位置来源；
-    //   实参绑定与宿主构造安装归 S11b）；
+    //   实参绑定与宿主构造安装归后续里程碑——安装赋值依赖隐藏字段
+    //   的 P4 发射（§8.3.1 声明已于 S11c 开闸））；
     // - HiddenField：宿主上的 `.wrapper.` 隐藏字段符号（P2 ProxyDispatchResolver
-    //   合成，BIL §5.3；栈上局部为 null——wrapper 实例在栈帧，存储合成归 S11c）。
+    //   合成，BIL §5.3；栈上局部为 null——wrapper 实例在栈帧，存储合成
+    //   归后续里程碑（S11c 暂归口，S11g 复核））。
     public sealed class WrapperApplication
     {
         public TypeSymbol Wrapper { get; }
@@ -509,6 +512,11 @@ namespace LatteCompiler
         public MethodSymbol TargetMember { get; }
         // 原始体 fn（用户方法体的新承载者；链末环 inner 的目标）
         public MethodSymbol OriginalBody { get; }
+        // wildcard 解包 shim fn（S11b：仅普通方法/operator 类别的 wildcard
+        // 环非空——其 inner 以包形态（namedArgs/unnamedArgs）调用，shim 签名
+        // = 双包参，body = 解包（逐元素 cast）后 invoke 下一环；specific 环
+        // 与 get/set wildcard 环的 inner 直通下一环，本槽为 null）
+        public MethodSymbol? UnwrapShim { get; internal set; }
 
         public ProxySpecializationInfo(MethodSymbol proxyDeclaration, WrapperApplication application,
             ProxyLinkKind kind, MethodSymbol targetMember, MethodSymbol originalBody)

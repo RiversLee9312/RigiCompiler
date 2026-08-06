@@ -47,7 +47,8 @@ namespace LatteCompiler
             var place = assignment.Target;
             while (place is LoweredCastExpression castShell) place = castShell.Source;
             // 接收者先行物化（set.field/set.array 两形态；set.var/
-            // set.field.static 无 receiver 不动）
+            // set.field.static 无 receiver 不动；S11c embedded 写 place
+            // 的宿主同序先行物化）
             BilVariableOperand? writeReceiver = null;
             BilVariableOperand? indexReceiver = null;
             BilVariableOperand? indexOperand = null;
@@ -61,6 +62,10 @@ namespace LatteCompiler
                     indexReceiver = EmitValueDispatcher.Visit(indexTarget.Receiver, target,
                         ctx, env);
                     indexOperand = EmitValueDispatcher.Visit(indexTarget.Index, target,
+                        ctx, env);
+                    break;
+                case LoweredEmbeddedFieldExpression embeddedTarget:
+                    writeReceiver = EmitValueDispatcher.Visit(embeddedTarget.Receiver, target,
                         ctx, env);
                     break;
             }
@@ -99,6 +104,12 @@ namespace LatteCompiler
                     target.Instructions.Add(new SetArrayInstruction(
                         indexReceiver!, indexOperand!, assignedValue)
                     { Origin = assignment });
+                    break;
+                case LoweredEmbeddedFieldExpression embeddedTarget:
+                    // wrapper place 字段写入（S11c，§13.3：set.field.embedded
+                    // 链——宿主先行物化（上方），SOURCE 后求值）
+                    EmbeddedFieldEmission.EmitWrite(embeddedTarget, assignedValue,
+                        writeReceiver!, target, ctx, env);
                     break;
                 default:
                     // P3 已强制赋值目标为 place（值引用/字段引用/索引访问）

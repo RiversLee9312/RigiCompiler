@@ -53,10 +53,23 @@ namespace LatteCompiler
             LoweredExpression? callReceiver = null;
             if (call.Receiver != null)
             {
-                callReceiver = LowerExpressionDispatcher.Visit(call.Receiver, ctx, env);
+                // S11c：wrapper place 作 receiver——get.wrapper 值拷贝物化
+                //（与 InstanceCallRewriter 同路径；物化产物类型即 wrapper
+                // 类型本身，不再做宿主 cast）
+                if (call.Receiver is BoundWrapperAccessExpression place)
+                {
+                    callReceiver = WrapperPlaceLowering.Materialize(place, null, ctx, env);
+                }
+                else
+                {
+                    callReceiver = LowerExpressionDispatcher.Visit(call.Receiver, ctx, env);
+                    if (callReceiver != null)
+                    {
+                        callReceiver = LoweringFacility.EnsureDeclaredType(call, callReceiver,
+                            call.Method.Owner);
+                    }
+                }
                 if (callReceiver == null) return null;
-                callReceiver = LoweringFacility.EnsureDeclaredType(call, callReceiver,
-                    call.Method.Owner);
             }
             // S9d-2：泛型包无值子节点，恒等透传（打包归 P4b）
             var genericPack = call.GenericPack == null ? null
@@ -79,6 +92,27 @@ namespace LatteCompiler
             LowerEnvironment env)
         {
             var assignment = (BoundAssignmentStatement)node;
+            // S11c：wrapper place 直接字段写入 = set.field.embedded 链
+            //（§13.3；求值序不变——BuildEmbedded 内宿主先行降级）；
+            // 更深层级写穿（place.a.b）与索引写归口
+            if (WrapperPlaceLowering.DirectPlaceFieldTarget(assignment.Target)
+                is { } placeAccess)
+            {
+                var writePlace = WrapperPlaceLowering.BuildEmbedded(placeAccess,
+                    (BoundWrapperAccessExpression)placeAccess.Receiver, placeAccess.Field,
+                    null, ctx, env);
+                if (writePlace == null) return null;
+                var placeValue = LowerExpressionDispatcher.Visit(assignment.Value, ctx, env);
+                if (placeValue == null) return null;
+                placeValue = LoweringFacility.EnsureDeclaredType(assignment, placeValue,
+                    placeAccess.Type);
+                return new LoweredAssignmentStatement(assignment, writePlace, placeValue);
+            }
+            if (WrapperPlaceLowering.ContainsPlaceInTarget(assignment.Target))
+            {
+                WrapperPlaceLowering.UnsupportedWrite(assignment.Target, env);
+                return null;
+            }
             var target = LowerExpressionDispatcher.Visit(assignment.Target, ctx, env);
             var value = LowerExpressionDispatcher.Visit(assignment.Value, ctx, env);
             if (target == null || value == null) return null;

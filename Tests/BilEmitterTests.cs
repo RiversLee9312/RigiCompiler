@@ -111,6 +111,14 @@ namespace LatteCompiler.Tests
             TestConstFieldModifierEmission();
             TestSmartCastCompoundAssignmentEmission();
             TestEnumCaseEmission();
+            TestWrapperEntityReadEmission();
+            TestWrapperEntityWriteEmission();
+            TestWrapperEntityCallEmission();
+            TestWrapperNestedChainEmission();
+            TestWrapperIndexReadEmission();
+            TestWrapperFieldValueEmission();
+            TestWrapperCompoundAssignmentEmission();
+            TestWrapperPlaceEmissionGates();
             TestUnsupportedNodes();
 
             return TestHarness.Summary("BilEmitter");

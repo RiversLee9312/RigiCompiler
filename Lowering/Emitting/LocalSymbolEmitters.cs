@@ -115,8 +115,9 @@ namespace LatteCompiler
             }
             foreach (var field in type.Fields)
             {
-                // `.wrapper.` 隐藏字段（S11a 合成）：声明发射归 S11c，此前跳过
-                if (field.IsCompilerGenerated) continue;
+                // `.wrapper.` 隐藏字段（S11a 合成）照常发射（S11c 开闸，
+                // §8.3.1：priv var backing compiler-generated 形态由
+                // EmitFieldDeclaration 的 IsCompilerGenerated 分支产出）
                 declaration.Members.Add(EmitFieldDeclaration(field));
                 foreach (var accessor in EmitFieldAccessorDeclarations(field))
                 {
@@ -163,6 +164,8 @@ namespace LatteCompiler
         // 豁免——init 方法体内写实例 const 字段合法，M56 P3 同规则，
         // ConstFieldRules）；ext 字段带 ext 修饰符；带访问器字段追加形态
         // 标记（backing/computed → readable → writable → compiler-generated）。
+        // S11c：`.wrapper.` 隐藏字段（IsCompilerGenerated）发 §8.3.1 形态
+        //（backing compiler-generated，无访问器标记）。
         // 修饰符按 §8.3 表序：访问 → const/var → ext → 访问器形态标记
         private static BilSimpleMemberDeclaration EmitFieldDeclaration(FieldSymbol field)
         {
@@ -170,6 +173,13 @@ namespace LatteCompiler
                 { new BilAccessibilityModifier(MapAccessibility(field.Accessibility)) };
             modifiers.Add(new BilKeywordModifier(field.IsConst ? BilKeyword.Const : BilKeyword.Var));
             if (field.ExtTargetPath != null) modifiers.Add(new BilKeywordModifier(BilKeyword.Ext));
+            if (field.IsCompilerGenerated)
+            {
+                // §8.3.1 wrapper 隐藏字段：编译器生成存储（backing +
+                // compiler-generated），无 getter/setter 标记
+                modifiers.Add(new BilKeywordModifier(BilKeyword.Backing));
+                modifiers.Add(new BilKeywordModifier(BilKeyword.CompilerGenerated));
+            }
             if (field.Getter != null || field.Setter != null)
             {
                 // §9.4：backing 形态 = 编译器生成存储（backing + compiler-generated），

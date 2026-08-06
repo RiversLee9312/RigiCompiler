@@ -247,6 +247,52 @@ namespace LatteCompiler
         }
     }
 
+    // wrapper 值拷贝（S11c，BIL §12.4 get.wrapper）：wrapper place 作成员
+    // 访问接收者（字段读/方法调用/索引读）时的物化——取得绑定在宿主上的
+    // 那份 wrapper 的值拷贝。Source = 宿主值（嵌套 place 链经外层
+    // get.wrapper 产物逐级物化）；Wrapper = 目标 wrapper 类型（Entity
+    // 应用可为 TTarget 代入后的构造类型）。Type 走 Origin 透传（Origin
+    // 恒为 BoundWrapperAccessExpression，其 Type = Wrapper）
+    public sealed class LoweredGetWrapperExpression : LoweredExpression
+    {
+        public LoweredExpression Source { get; }
+        public TypeSymbol Wrapper { get; }
+
+        public LoweredGetWrapperExpression(BoundWrapperAccessExpression origin,
+            LoweredExpression source, TypeSymbol wrapper) : base(origin)
+        {
+            Source = source;
+            Wrapper = wrapper;
+        }
+    }
+
+    // 嵌套字段访问（S11c，BIL §13.3 get/set.field.embedded）：wrapper place
+    // 成员写与字段-Value 应用成员读的承载节点——读形态与赋值 place 形态
+    // 共用（指令选择归 P4b 按所在位置，LoweredIndexExpression 先例）。
+    // Receiver = 终极宿主值（place 链尽头：对象/参数/this）；HiddenFields =
+    // `.wrapper.` 隐藏字段链（§5.3，最外层→最内层序）；Field = 最内层
+    // wrapper 上的目标实例字段。Type 自带（字段类型——合成路径 Origin 可能
+    // 非表达式节点，先例：LoweredCastExpression）
+    public sealed class LoweredEmbeddedFieldExpression : LoweredExpression
+    {
+        public LoweredExpression Receiver { get; }
+        public IReadOnlyList<FieldSymbol> HiddenFields { get; }
+        public FieldSymbol Field { get; }
+        private readonly SemanticSymbol type;
+
+        public override SemanticSymbol Type => type;
+
+        public LoweredEmbeddedFieldExpression(BoundNode origin, LoweredExpression receiver,
+            IReadOnlyList<FieldSymbol> hiddenFields, FieldSymbol field, SemanticSymbol type)
+            : base(origin)
+        {
+            Receiver = receiver;
+            HiddenFields = hiddenFields;
+            Field = field;
+            this.type = type;
+        }
+    }
+
     // cast（S7e；BIL §12.1/§12.2 直接对应）：as → cast、as? → cast.safe。
     // TargetType 是转换目标类型（指令的 type 操作数）；Type 是表达式结果
     // 类型（as 即 TargetType，as? 为 Nullable<TargetType>——P3 已定型）。

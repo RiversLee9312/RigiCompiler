@@ -252,6 +252,115 @@ namespace LatteCompiler
         }
     }
 
+    // wrapper 值拷贝（S11c，§12.4：get.wrapper VALUE type(WRAPPER_TYPE) RESULT）——
+    // wrapper place 作成员访问接收者的物化
+    internal sealed class GetWrapperEmitter : EmitVisitor<GetWrapperEmitter, BilVariableOperand>
+    {
+        protected override BilVariableOperand VisitCore(LoweredNode node, BilBlock target,
+            EmitContext ctx, EmitEnvironment env)
+        {
+            var getWrapper = (LoweredGetWrapperExpression)node;
+            var wrapperValue = EmitValueDispatcher.Visit(getWrapper.Source, target, ctx, env);
+            var wrapperResult = ctx.Temps.NewTemp(getWrapper.Type);
+            target.Instructions.Add(new GetWrapperInstruction(wrapperValue,
+                BilOp.Type(CanonicalSymbolPrinter.PrintType(getWrapper.Wrapper)), wrapperResult)
+            { Origin = getWrapper });
+            return wrapperResult;
+        }
+    }
+
+    // 嵌套字段读取（S11c，§13.3 get.field.embedded 链）：字段-Value 应用的
+    // wrapper place 成员读；写入形态（赋值目标）见 AssignmentEmitter 的
+    // set.field.embedded 分支（同一 EmbeddedFieldEmission 走链设施）
+    internal sealed class EmbeddedFieldEmitter : EmitVisitor<EmbeddedFieldEmitter, BilVariableOperand>
+    {
+        protected override BilVariableOperand VisitCore(LoweredNode node, BilBlock target,
+            EmitContext ctx, EmitEnvironment env)
+        {
+            return EmbeddedFieldEmission.EmitRead((LoweredEmbeddedFieldExpression)node,
+                target, ctx, env);
+        }
+    }
+
+    // get/set.field.embedded 走链设施（S11c，§13.3）：HiddenFields 按
+    // 最外层 → 最内层序。链长 1：embedded 指令直达；链长 ≥2：先以
+    // get.field.embedded 逐级取内层 wrapper 的原地别名（§13.3：原地访问
+    // 不产生值拷贝，每步跨两级——OBJECT 的隐藏字段读其内层隐藏字段），
+    // 到达最内层别名后末段读 = get.field、写 = set.field（§13.3 注记：
+    // proxy 体内 this 成员访问同构）
+    internal static class EmbeddedFieldEmission
+    {
+        public static BilVariableOperand EmitRead(LoweredEmbeddedFieldExpression access,
+            BilBlock target, EmitContext ctx, EmitEnvironment env)
+        {
+            var current = EmitValueDispatcher.Visit(access.Receiver, target, ctx, env);
+            var chain = access.HiddenFields;
+            var level = 0;
+            while (chain.Count - level >= 2)
+            {
+                current = Alias(current, chain[level], chain[level + 1], access, target, ctx);
+                level += 2;
+            }
+            var readResult = ctx.Temps.NewTemp(access.Type);
+            if (chain.Count - level == 1)
+            {
+                target.Instructions.Add(new GetEmbeddedFieldInstruction(current, readResult,
+                    BilOp.Field(CanonicalSymbolPrinter.PrintField(chain[level])),
+                    BilOp.Field(CanonicalSymbolPrinter.PrintField(access.Field)))
+                { Origin = access });
+            }
+            else
+            {
+                target.Instructions.Add(new GetFieldInstruction(current, readResult,
+                    BilOp.Field(CanonicalSymbolPrinter.PrintField(access.Field)))
+                { Origin = access });
+            }
+            return readResult;
+        }
+
+        public static void EmitWrite(LoweredEmbeddedFieldExpression place,
+            BilVariableOperand source, BilVariableOperand receiver,
+            BilBlock target, EmitContext ctx, EmitEnvironment env)
+        {
+            var current = receiver;
+            var chain = place.HiddenFields;
+            var level = 0;
+            while (chain.Count - level >= 2)
+            {
+                current = Alias(current, chain[level], chain[level + 1], place, target, ctx);
+                level += 2;
+            }
+            if (chain.Count - level == 1)
+            {
+                target.Instructions.Add(new SetEmbeddedFieldInstruction(source, current,
+                    BilOp.Field(CanonicalSymbolPrinter.PrintField(chain[level])),
+                    BilOp.Field(CanonicalSymbolPrinter.PrintField(place.Field)))
+                { Origin = place });
+            }
+            else
+            {
+                target.Instructions.Add(new SetFieldInstruction(source, current,
+                    BilOp.Field(CanonicalSymbolPrinter.PrintField(place.Field)))
+                { Origin = place });
+            }
+        }
+
+        // 原地别名：get.field.embedded(current, alias, hfOuter, hfInner)——
+        // 取 current（W_m）上隐藏字段 hfOuter（W_{m+1}）的内层隐藏字段
+        // hfInner（W_{m+2}）的原地别名；别名临时变量类型 = 内层 wrapper 类型
+        private static BilVariableOperand Alias(BilVariableOperand current,
+            FieldSymbol outerField, FieldSymbol innerField, LoweredNode origin,
+            BilBlock target, EmitContext ctx)
+        {
+            var alias = ctx.Temps.NewTemp(innerField.FieldType!);
+            target.Instructions.Add(new GetEmbeddedFieldInstruction(current, alias,
+                BilOp.Field(CanonicalSymbolPrinter.PrintField(outerField)),
+                BilOp.Field(CanonicalSymbolPrinter.PrintField(innerField)))
+            { Origin = origin });
+            return alias;
+        }
+    }
+
     // 索引读取（S8c，§13.6：get.array COLLECTION INDEX RESULT）——
     // collection/index 物化，结果物化 .t 临时变量；写入形态（赋值目标）
     // 见 AssignmentEmitter 的 set.array 分支

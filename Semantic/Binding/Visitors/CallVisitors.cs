@@ -118,6 +118,46 @@ namespace LatteCompiler
             List<ArgumentASTNode> arguments, Scope scope, BindContext ctx, BindEnvironment env,
             List<TypeReferenceASTNode>? genericArguments = null)
         {
+            // S11b（SYNTAX §14.2/§14.6）：proxy 体内 inner(...) 绑定为对下
+            // 一环符号的普通调用（链末 = 原始体；wildcard 普通/operator 环
+            // = 解包 shim——双包实参经其实参匹配自然承载）；非 proxy 语境的
+            // inner 是编译错误（ARCH §5.2）
+            if (calleeSegments.Count == 1 && calleeSegments[0] == "inner")
+            {
+                if (!ctx.Proxy.IsActive)
+                {
+                    env.Error(node.Span,
+                        "P3: 'inner' is only available in a wrapper proxy body (§14.2)");
+                    return null;
+                }
+                var innerTarget = ctx.Proxy.InnerTarget!;
+                // 目标泛型参数全固定时逐位转发当前 fn 的泛型参数（拷贝同源
+                // 同序——P4b 物化 $.generic.T 零指令，M71 先例）；含可变泛
+                // 型参数包时不带显式实参（包转发归 S11g 复核）
+                IReadOnlyList<SemanticSymbol>? innerTypeArgs =
+                    innerTarget.GenericParameters.Count > 0
+                    && innerTarget.GenericParameters.All(p => !p.IsVariadic && !p.IsNamedVariadic)
+                    ? ctx.Frame.Method.GenericParameters.Cast<SemanticSymbol>().ToList()
+                    : null;
+                var resolvedInner = OverloadResolution.Resolve(node,
+                    new List<MethodSymbol> { innerTarget }, arguments, scope, ctx, env,
+                    innerTypeArgs, receiverType: ctx.Frame.Method.Owner);
+                if (resolvedInner == null) return null;
+                var (innerMethod, innerArguments, innerResultType, innerPack) =
+                    resolvedInner.Value;
+                return new CallBinding
+                {
+                    Method = innerMethod,
+                    Arguments = innerArguments,
+                    IsVoid = innerMethod.ReturnType == null,
+                    // 链内调用 receiver = 宿主 this（特化/原始体/shim 符号的
+                    // Owner 恒为宿主类型）
+                    Receiver = new BoundThisExpression(node, ctx.Frame.Method.Owner!),
+                    TypeArguments = innerTypeArgs ?? Array.Empty<SemanticSymbol>(),
+                    GenericPack = innerPack,
+                    ResultType = AsyncResultType(innerMethod, innerResultType, env),
+                };
+            }
             // 多段首段为值（局部/参数）→ 实例调用形态（S7c-2）
             if (calleeSegments.Count > 1
                 && (scope.Lookup(calleeSegments[0]) != null

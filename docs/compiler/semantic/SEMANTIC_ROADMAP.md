@@ -646,9 +646,9 @@ enum case（`new.case`、`is .Case` 判别比较、判别值分配）、
 > Colon 归口 + 全拦截面）~~（**✅ M79 已落地**）→ ~~enum case 全链~~
 > （**✅ M77 已落地**）→ ~~ext 收尾~~（**✅ M80 已落地**）→ 局部访问器
 > 解归口（**用户决策 2026-08-06：路线 C——随 S13 lambda 闭包机制落地，
-> 移出 S11 序列**，捕获语义随之开放；`docs/HANDOVER.md` 临时交接，
-> 落地后删除）→ proxy 烘焙 lowering 与派发链诊断工具（**M81 已细化
-> 为 S11a–S11g，见下**）。
+> 移出 S11 序列**，捕获语义随之开放；决策由 PROGRESS_REPORT 技术债
+> #22① 承载，M83 起 HANDOVER.md 按约定删除）→ proxy 烘焙 lowering
+> 与派发链诊断工具（**M81 已细化为 S11a–S11g，见下**）。
 >
 > **S11 proxy 烘焙细化（M81，2026-08-06，纯文档里程碑）**：proxy
 > 烘焙 lowering 与派发链诊断工具细化为 S11a–S11g 七子步，规范定稿
@@ -692,6 +692,17 @@ enum case（`new.case`、`is .Case` 判别比较、判别值分配）、
 >   最外层特化）与 wildcard 解包 shim 的 BoundFunctionBody
 >   合成；proxy 体诊断按 (proxy, span, message) 去重。
 >   **验收**：BinderTests self/inner/this 形态与负例。
+>   （**✅ M83 已落地**，2026-08-06，PROGRESS_REPORT 详录——
+>   31 新用例；落地形态：BindingDriver 阶段 2 分流 + 阶段 2.5
+>   三件套（转发壳/特化体/解包 shim），wildcard 解包 shim 符号
+>   随 S11a 同批 P2 合成（`.proxy.unwrap.<序>.<键>` 双包参）；
+>   落地注记：① wildcard 前奏的包类型 `Array\<Any\>` 是烘焙链
+>   内部约定（§14.8 名值对 ABI 归 call??? 的 S11e）；② 可变
+>   参数成员不拦截建链（包展开 Bound 层无表达，技术债 #27⑦）；
+>   ③ proxy 声明泛型参数的体内类型引用代入暂缓（GenericSubstitution
+>   槽预留，#27⑧ 归本路线图的 S11g 复核）；④ P4 侧 LoweringDriver/
+>   EmittingDriver 跳过合成 fn 与转发壳——`--emit-bil` 对含链源码
+>   由 §21.2 拦截不落盘（S11d 开闸解除））
 > - **S11c（P4a/P4b wrapper place 成员访问，解 M79 归口）**：
 >   BoundWrapperAccessExpression 作 receiver——成员读 =
 >   get.wrapper 值拷贝 + get.field、成员写 = set.field.embedded、
@@ -699,7 +710,15 @@ enum case（`new.case`、`is .Case` 判别比较、判别值分配）、
 >   §13.3）；`.wrapper.` 隐藏字段声明发射（§8.3.1 backing
 >   compiler-generated 形态）；使用点与 proxy 体内共用同一
 >   lowering 路径。**验收**：M79 P4 归口用例转正 + `obj:W`
->   读/写/调用三形态端到端。
+>   读/写/调用三形态端到端。（**✅ M84 已落地**，2026-08-06，
+>   PROGRESS_REPORT 详录——37 新用例；落地形态：P3 节点携带
+>   命中应用记录（Application 槽）+ 新设施 `WrapperPlaceLowering`
+>   按应用类别分派（Entity = get.wrapper 值拷贝链 / set.field.
+>   embedded 链；字段-Value = embedded 链，宿主取字段属主对象）；
+>   复合赋值读写分离 + 宿主单次求值共享；隐藏字段 §8.3.1 声明
+>   开闸（priv var backing compiler-generated）；落地注记：
+>   深层写穿（`place.a.b`）/索引写/字段-Value 调用与索引/局部
+>   与静态存储合成显式归口，归 S11g 复核）
 > - **S11d（P4b 合成 fn 发射，烘焙端到端）**：Bil 模型增补
 >   `wrapper-proxy(PROXY_KIND)` 修饰符（PROXY_KIND 取值定稿
 >   BIL §8.4）；特化 fn / 原始体 fn / 转发壳平铺发射；
@@ -722,8 +741,9 @@ enum case（`new.case`、`is .Case` 判别比较、判别值分配）、
 > - **S11g（复核收尾）**：M79 遗留复核（泛型参数 receiver 的
 >   with 约束 place `param:W`；泛型 wrapper 实参代入 S11a
 >   落地后回归）+ 技术债 #26 代码落地（ext 泛型目标元数/歧义
->   诊断 + priv/protected ext 可见性按声明位置修订）+
->   HANDOVER 与规范交叉引用清理。
+>   诊断 + priv/protected ext 可见性按声明位置修订）+ #27⑦⑧
+>   （可变参数成员链与 inner/转发壳泛型包转发、proxy 声明泛型
+>   参数的体内类型引用代入）+ 规范交叉引用清理。
 >
 > **wrapper place 绑定与只读禁令（M79，2026-08-06，PROGRESS_REPORT
 > 详录）**：`BoundWrapperAccessExpression`（Receiver + Wrapper，Type =

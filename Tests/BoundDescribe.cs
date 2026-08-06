@@ -192,6 +192,10 @@ namespace LatteCompiler.Tests
                 // S8b：smart cast 标记（Type = NarrowedType）
                 BoundSmartCastExpression smartCast =>
                     $"SmartCast({Expr(smartCast.Operand)}, {TypeShort.Of(smartCast.NarrowedType)})",
+                // S9d：可变参数包（调用点归包/前奏物化打包，S11b）
+                BoundVarArgsArgument varArgs => varArgs.IsNamed
+                    ? $"KwArgs([{string.Join(", ", varArgs.NamedValues.Select(p => $"{p.Name} = {Expr(p.Value)}"))}])"
+                    : $"VarArgs([{string.Join(", ", varArgs.Values.Select(Expr))}])",
                 BoundSeqExpression seqExpr => $"SeqExpr({ValueBlock(seqExpr.Body)})",
                 // S7f：安全访问（占位叶子打 SafeReceiver；结果类型 P3 定型）
                 BoundSafeAccessExpression safeAccess =>

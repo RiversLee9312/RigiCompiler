@@ -140,6 +140,14 @@ namespace LatteCompiler.Tests
                 LoweredFieldAccessExpression fieldAccess =>
                     $"InstField({fieldAccess.Field.Name}, {Expr(fieldAccess.Receiver)}, " +
                     $"{TypeShort.Of(fieldAccess.Type)})",
+                // S11c：wrapper 值拷贝与嵌套字段访问（隐藏字段链
+                // 最外层→最内层，目标字段在最内层 wrapper 上）
+                LoweredGetWrapperExpression getWrapper =>
+                    $"GetWrapper({Expr(getWrapper.Source)}, {TypeShort.Of(getWrapper.Wrapper)})",
+                LoweredEmbeddedFieldExpression embedded =>
+                    $"Embedded({Expr(embedded.Receiver)}, " +
+                    $"[{string.Join(" > ", embedded.HiddenFields.Select(f => f.Name))}], " +
+                    $"{embedded.Field.Name}, {TypeShort.Of(embedded.Type)})",
                 LoweredIndexExpression indexAccess =>
                     $"Index({Expr(indexAccess.Receiver)}, {Expr(indexAccess.Index)}, " +
                     $"{TypeShort.Of(indexAccess.Type)})",

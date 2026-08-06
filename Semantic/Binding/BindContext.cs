@@ -27,6 +27,9 @@ namespace LatteCompiler
         // 访问器体绑定状态（S8e；非访问器体上下文 Field 为 null）
         public AccessorBodyState Accessor { get; } = new AccessorBodyState();
 
+        // proxy 体绑定状态（S11b；非 proxy 体上下文 Specialization 为 null）
+        public ProxyBodyState Proxy { get; } = new ProxyBodyState();
+
         // 控制流标签栈集（S7b/S7c-1/S7d/M61）
         public BindLabelState Labels { get; } = new BindLabelState();
 

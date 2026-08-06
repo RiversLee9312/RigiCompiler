@@ -211,11 +211,11 @@ SemanticSymbol
 - definite assignment 与「所有路径显式返回」在 P3 报错（BIL §21.4
   的对应义务在这里兑现，而不是等 BIL verifier 兜底）。
 - wrapper proxy 体按 (proxy × 目标成员) 组合逐组绑定（M81 定稿，
-  ROADMAP S11b）：`self` 绑定为宿主角色（类型 = wrapper 泛型参数
-  代入结果），`inner` 绑定为对下一环符号的普通调用，proxy 体内
-  `this` 重写为只读 place（BoundWrapperAccessExpression）——三者在
-  非 proxy 语境出现是编译错误；同一 proxy 声明体跨组合的诊断按
-  (proxy, span, message) 去重。
+  **M83 已落地**，ROADMAP S11b）：`self` 绑定为宿主角色（类型 =
+  wrapper 泛型参数代入结果），`inner` 绑定为对下一环符号的普通
+  调用，proxy 体内 `this` 重写为只读 place（BoundWrapperAccess
+  Expression）——三者在非 proxy 语境出现是编译错误；同一 proxy
+  声明体跨组合的诊断按 (proxy, span, message) 去重。
 
 ---
 

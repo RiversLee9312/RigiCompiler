@@ -107,6 +107,13 @@ namespace LatteCompiler
             {
                 return BindThisPath(node, scope, ctx, env, forAssignment);
             }
+            // self 首段（S11b，SYNTAX §14.2）：proxy 体内绑定为宿主角色的
+            // this（类型 = TTarget 代入结果）；非 proxy 语境是编译错误
+            //（ARCH §5.2——self/inner/this 重写三者仅在 proxy 体语境存在）
+            if (node.Head.Name == "self")
+            {
+                return BindSelfPath(node, scope, ctx, env, forAssignment);
+            }
             // 纯调用形态 → 直接调用（静态/全局）或实例调用（首段为值）。
             // S9b：显式泛型实参随调用形态提取（CallForm out 参数）
             if (CallForm.TryGet(node, out var calleeSegments, out var callArguments,
@@ -187,7 +194,17 @@ namespace LatteCompiler
                 else
                 {
                     var headLocal = scope.Lookup(headName);
-                    if (headLocal != null)
+                    if (headLocal == null
+                        && ctx.Proxy.MaterializedLocals.TryGetValue(headName, out var materialized))
+                    {
+                        // proxy 前奏物化局部（S11b：wildcard 的 symbol/
+                        // namedArgs/unnamedArgs 与 get 的 value；非 proxy
+                        // 语境本表恒空）：前奏恒先于体赋值——免 DA
+                        // unassigned 检查（合成局部不入 FlowState/Scope）
+                        headValue = new BoundValueReferenceExpression(node, materialized,
+                            materialized.Type!);
+                    }
+                    else if (headLocal != null)
                     {
                         if (!forAssignment && !ctx.Flow.IsAssigned(headLocal))
                         {
@@ -461,6 +478,55 @@ namespace LatteCompiler
                 return null;
             }
             BoundExpression receiver = new BoundThisExpression(node, ctx.Frame.Method.Owner!);
+            // S11b（SYNTAX §14.2/§14.5）：proxy 体内的 this 重写为 wrapper
+            // 只读 place（与使用点 `obj:W` 同构——原地访问宿主持有的那份
+            // wrapper）；链末裸 this（无段无后缀）即整体赋值/取值，只读禁令
+            // 与 BindWrapperSegment 同族措辞一处收口
+            if (ctx.Proxy.IsActive)
+            {
+                receiver = new BoundWrapperAccessExpression(node, receiver,
+                    ctx.Proxy.Application!);
+                if (node.Segments.Count == 0 && node.Head.Suffixes.Count == 0)
+                {
+                    if (forAssignment)
+                    {
+                        env.Error(node.Span, "Cannot assign to wrapper place 'this'");
+                        return null;
+                    }
+                    env.Error(node.Span, "Wrapper place 'this' cannot be used as a value " +
+                        "(only as a member access receiver)");
+                    return null;
+                }
+            }
+            var folded = FoldSuffixes(node, receiver, node.Head.Suffixes, 0,
+                forAssignment && node.Segments.Count == 0, scope, ctx, env);
+            if (folded == null) return null;
+            if (node.Segments.Count == 0)
+            {
+                return folded;
+            }
+            return BindInstanceChain(node, folded, node.Segments, scope, ctx, env, forAssignment);
+        }
+
+        // self 路径（S11b，SYNTAX §14.2）：proxy 体内 self = 被修饰对象实例
+        //（宿主角色的 this，类型 = TTarget 代入结果）；wrapper 零泛型参数
+        // 时 self 不可用（§14.2 末条）；非 proxy 语境是编译错误（ARCH §5.2）
+        private static BoundExpression? BindSelfPath(PathExpressionASTNode node, Scope scope,
+            BindContext ctx, BindEnvironment env, bool forAssignment)
+        {
+            if (!ctx.Proxy.IsActive)
+            {
+                env.Error(node.Span,
+                    "P3: 'self' is only available in a wrapper proxy body (§14.2)");
+                return null;
+            }
+            if (ctx.Proxy.SelfType == null)
+            {
+                env.Error(node.Span, "P3: 'self' is not available here: the wrapper declares " +
+                    "no TTarget generic parameter (§14.2)");
+                return null;
+            }
+            BoundExpression receiver = new BoundThisExpression(node, ctx.Proxy.SelfType);
             var folded = FoldSuffixes(node, receiver, node.Head.Suffixes, 0,
                 forAssignment && node.Segments.Count == 0, scope, ctx, env);
             if (folded == null) return null;
@@ -609,7 +675,7 @@ namespace LatteCompiler
                     $"'{BoundAnalysis.TypeDisplay(receiver.Type)}'");
                 return null;
             }
-            var place = new BoundWrapperAccessExpression(segment, receiver, matches[0].Wrapper);
+            var place = new BoundWrapperAccessExpression(segment, receiver, matches[0]);
             // 带后缀（`obj:W[0]` 索引成员访问）：照常折叠
             if (segment.Suffixes.Count > 0)
             {

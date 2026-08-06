@@ -73,8 +73,23 @@ namespace LatteCompiler
                 : null;
         }
 
+        // proxy 体诊断去重（S11b，ROADMAP S11b）：同一 proxy 声明体按
+        // (proxy × 目标成员) 逐组合绑定——同一声明被绑定多次，体内同一
+        // 错误（同 AST 位置同消息）每组合重复落袋。去重键 = (proxy 声明
+        // 符号, span 引用, 消息)——span 取 AST 节点的同一 CharRange 实例
+        //（引用相等命中）；CurrentProxy 由 BindingDriver 在逐组合绑定
+        // 期间设置（单趟顺序执行，无需栈）
+        private readonly HashSet<(MethodSymbol Proxy, CharRange? Span, string Message)>
+            proxyDiagnostics = new HashSet<(MethodSymbol, CharRange?, string)>();
+        internal MethodSymbol? CurrentProxy { get; set; }
+
         public void Error(CharRange? span, string message)
         {
+            if (CurrentProxy is { } proxy
+                && !proxyDiagnostics.Add((proxy, span, message)))
+            {
+                return;
+            }
             Unit.Diagnostics.Error(DiagnosticPhase.P3, span, message);
         }
     }
