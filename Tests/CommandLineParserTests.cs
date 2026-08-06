@@ -52,8 +52,8 @@ namespace LatteCompiler.Tests
             var help = commands.First(c => c.Mask.Name == "help");
             var compileSubs = compile.SubCommands.Select(s => s.Mask.Name).ToList();
             var testSubs = test.SubCommands.Select(s => s.Mask.Name).ToList();
-            Check("compile 子命令齐全（--file/--parse-only/--dump-ast/--emit-bil/--sema-only/--verbose/--log-to）",
-                new[] { "--file", "--parse-only", "--dump-ast", "--emit-bil", "--sema-only", "--verbose", "--log-to" }.All(compileSubs.Contains));
+            Check("compile 子命令齐全（--file/--parse-only/--dump-ast/--emit-bil/--sema-only/--explain-dispatch/--verbose/--log-to）",
+                new[] { "--file", "--parse-only", "--dump-ast", "--emit-bil", "--sema-only", "--explain-dispatch", "--verbose", "--log-to" }.All(compileSubs.Contains));
             Check("test 子命令齐全（--all/--run/--verbose/--log-to）",
                 new[] { "--all", "--run", "--verbose", "--log-to" }.All(testSubs.Contains));
             Check("help 无子命令", help.SubCommands.Count == 0);
@@ -125,6 +125,15 @@ namespace LatteCompiler.Tests
                 new[] { "compile", "--file", "a", "--emit-bil", "o", "--sema-only" }, "互斥");
             CheckParseError("compile --sema-only --emit-bil 互斥（反向）",
                 new[] { "compile", "--file", "a", "--sema-only", "--emit-bil", "o" }, "互斥");
+            CheckParseError("compile --explain-dispatch --emit-bil 互斥",
+                new[] { "compile", "--file", "a", "--explain-dispatch", "--emit-bil", "o" }, "互斥");
+            CheckParseError("compile --explain-dispatch --sema-only 互斥",
+                new[] { "compile", "--file", "a", "--explain-dispatch", "--sema-only" }, "互斥");
+            CheckParseError("compile --parse-only --explain-dispatch 互斥",
+                new[] { "compile", "--file", "a", "--parse-only", "--explain-dispatch" }, "互斥");
+            CheckParseOk("compile --explain-dispatch 合法",
+                new[] { "compile", "--file", "a", "--explain-dispatch" },
+                r => r.Has("--explain-dispatch"));
             CheckParseOk("compile 子命令之间无互斥", new[] { "compile", "--file", "a", "--parse-only", "--dump-ast", "o" },
                 r => r.Has("--parse-only") && r.Has("--dump-ast"));
             Console.WriteLine();

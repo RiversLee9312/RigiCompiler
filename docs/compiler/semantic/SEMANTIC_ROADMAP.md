@@ -760,6 +760,12 @@ enum case（`new.case`、`is .Case` 判别比较、判别值分配）、
 >   每层命中 specific|wildcard + canonical symbol）与降级路由
 >   （存 `.proxy.*` 的类型）；调用点级过滤留扩展。数据源 =
 >   S11a 符号产物 + CanonicalSymbolPrinter（ARCH §4.4）。
+>   （**✅ M87 已落地**，2026-08-06，PROGRESS_REPORT 详录——
+>   新套件 20 + CLI 互斥 4；落地形态：`Semantic/DispatchExplainer.cs`
+>   按类型 canonical 名 Ordinal 分组输出 applied/member 链/
+>   downgrade 段，无产物明示 `(no dispatch chains)`；CLI 与
+>   `--parse-only`/`--emit-bil`/`--sema-only` 互斥，P1–P3 后写
+>   stdout）
 > - **S11g（复核收尾）**：M79 遗留复核（泛型参数 receiver 的
 >   with 约束 place `param:W`；泛型 wrapper 实参代入 S11a
 >   落地后回归）+ 技术债 #26 代码落地（ext 泛型目标元数/歧义

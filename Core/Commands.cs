@@ -76,7 +76,7 @@ namespace LatteCompiler
         {
             Name = "--parse-only",
             Description = "只解析：AST 以 JSONL 输出到 stdout（同时给 --dump-ast 则写文件）",
-            MutuallyExclusive = { "--emit-bil", "--sema-only" },
+            MutuallyExclusive = { "--emit-bil", "--sema-only", "--explain-dispatch" },
         };
     }
 
@@ -93,28 +93,39 @@ namespace LatteCompiler
         };
     }
 
-    /// <summary>--emit-bil：语义分析通过后把 BIL 文本写入指定文件。与 --parse-only/--sema-only 互斥。</summary>
+    /// <summary>--emit-bil：语义分析通过后把 BIL 文本写入指定文件。与 --parse-only/--sema-only/--explain-dispatch 互斥。</summary>
     public class EmitBilOption : ICommandLineOption
     {
         public CommandLineMask Mask { get; } = new()
         {
             Name = "--emit-bil",
-            Description = "语义分析通过后把 BIL 文本写入指定文件（与 --parse-only/--sema-only 互斥）",
+            Description = "语义分析通过后把 BIL 文本写入指定文件（与 --parse-only/--sema-only/--explain-dispatch 互斥）",
             ArgsHint = "<路径>",
             MinArgs = 1,
             MaxArgs = 1,
-            MutuallyExclusive = { "--parse-only", "--sema-only" },
+            MutuallyExclusive = { "--parse-only", "--sema-only", "--explain-dispatch" },
         };
     }
 
-    /// <summary>--sema-only：只做语义分析（P1–P3），输出诊断后结束，不发射 BIL。与 --parse-only/--emit-bil 互斥。</summary>
+    /// <summary>--sema-only：只做语义分析（P1–P3），输出诊断后结束，不发射 BIL。与 --parse-only/--emit-bil/--explain-dispatch 互斥。</summary>
     public class SemaOnlyOption : ICommandLineOption
     {
         public CommandLineMask Mask { get; } = new()
         {
             Name = "--sema-only",
-            Description = "只做语义分析（P1–P3）：输出诊断后结束，不发射 BIL（与 --parse-only/--emit-bil 互斥）",
-            MutuallyExclusive = { "--parse-only", "--emit-bil" },
+            Description = "只做语义分析（P1–P3）：输出诊断后结束，不发射 BIL（与 --parse-only/--emit-bil/--explain-dispatch 互斥）",
+            MutuallyExclusive = { "--parse-only", "--emit-bil", "--explain-dispatch" },
+        };
+    }
+
+    /// <summary>--explain-dispatch：语义分析通过后把 wrapper 派发链报告打印到 stdout（RUNTIME §15）。与 --parse-only/--emit-bil/--sema-only 互斥。</summary>
+    public class ExplainDispatchOption : ICommandLineOption
+    {
+        public CommandLineMask Mask { get; } = new()
+        {
+            Name = "--explain-dispatch",
+            Description = "语义分析通过后把 wrapper 派发链报告打印到 stdout（与 --parse-only/--emit-bil/--sema-only 互斥）",
+            MutuallyExclusive = { "--parse-only", "--emit-bil", "--sema-only" },
         };
     }
 
@@ -163,6 +174,7 @@ namespace LatteCompiler
             new DumpAstOption(),
             new EmitBilOption(),
             new SemaOnlyOption(),
+            new ExplainDispatchOption(),
             new VerboseOption(),
             new LogToOption(),
         };
@@ -186,6 +198,7 @@ namespace LatteCompiler
 
             bool parseOnly = result.Has("--parse-only");
             bool semaOnly = result.Has("--sema-only");
+            bool explainDispatch = result.Has("--explain-dispatch");
             string? dumpPath = result.Get("--dump-ast")?[0];
             string? emitBilPath = result.Get("--emit-bil")?[0];
 
@@ -239,7 +252,8 @@ namespace LatteCompiler
                             AstJsonlSerializer.Serialize(ast, Console.Out);
                             dumped++;
                         }
-                        if (!parseOnly)
+                        // --explain-dispatch 报告走 stdout 数据流，跳过「解析成功」噪声
+                        if (!parseOnly && !explainDispatch)
                         {
                             Console.WriteLine($"解析成功: {file}");
                         }
@@ -268,8 +282,9 @@ namespace LatteCompiler
             // 任一文件解析失败：语义管线不再推进（CompilationUnit 需要完整源集）
             if (failed > 0) return 1;
             if (parseOnly) return 0;
-            // 语义管线（S6）：stdlib + 用户源 → P1–P3（--emit-bil 时继续 P4 发射）
-            return RunSemanticPipeline(files[0], userRoots, semaOnly, emitBilPath);
+            // 语义管线（S6）：stdlib + 用户源 → P1–P3（--emit-bil 时继续 P4 发射；
+            // --explain-dispatch 打印派发链报告后结束）
+            return RunSemanticPipeline(files[0], userRoots, semaOnly, explainDispatch, emitBilPath);
         }
 
         // 词法 + 语法解析；词法/语法错误原样抛出，由 Execute 逐文件捕获
@@ -286,10 +301,12 @@ namespace LatteCompiler
 
         // 语义管线（S6）：stdlib（在前）+ 用户源组 CompilationUnit → P1 → P2 → P3，
         // 诊断统一经 Logger 输出后有 Error 即停（返回 1）；--sema-only 到此结束；
+        // --explain-dispatch 打印派发链报告到 stdout 后结束（S11f / RUNTIME §15）；
         // --emit-bil 继续 P4（Lowerer → BilEmitter）→ BilVerifier 验证（M58，
         // 非法即报错不落盘）→ BilWriter 把 BIL 文本写文件，
         // moduleName 取第一个源文件的去扩展名文件名
-        private static int RunSemanticPipeline(string firstFile, List<RootASTNode> userRoots, bool semaOnly, string? emitBilPath)
+        private static int RunSemanticPipeline(string firstFile, List<RootASTNode> userRoots,
+            bool semaOnly, bool explainDispatch, string? emitBilPath)
         {
             var roots = new List<RootASTNode>();
             roots.AddRange(StdlibSources.ParseAll());
@@ -302,6 +319,12 @@ namespace LatteCompiler
             var bodies = Binder.Bind(unit, declarations);
             EmitDiagnostics(unit.Diagnostics, 0);
             if (unit.Diagnostics.HasErrors) return 1;
+            if (explainDispatch)
+            {
+                // 报告走 stdout 数据流（日志/诊断已走 stderr）
+                Console.Out.Write(DispatchExplainer.Explain(unit));
+                return 0;
+            }
             if (semaOnly) return 0;
             if (emitBilPath != null)
             {

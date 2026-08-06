@@ -55,6 +55,7 @@ namespace LatteCompiler.Tests
             ("Lowerer", LowererTests.RunAll),
             ("SmartCast", SmartCastTests.RunAll),
             ("SemanticsFuzz", SemanticsFuzzTests.RunAll),
+            ("DispatchExplainer", DispatchExplainerTests.RunAll),
         };
 
         // 套件数量（对外编号 1..SuiteCount，即注册表顺序）
