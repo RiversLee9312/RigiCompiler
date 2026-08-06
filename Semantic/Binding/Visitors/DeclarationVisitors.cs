@@ -13,6 +13,13 @@ namespace LatteCompiler
             // 解构声明（S7f，SYNTAX §18）：与单名形态互斥
             if (decl.DestructureNames != null)
             {
+                // 解构分量上的 wrapper 应用归口（S11——分量的隐藏字段/栈帧
+                // 槽布局归 proxy 烘焙统一处理）
+                if (decl.Annotations.Count > 0)
+                {
+                    env.Error(decl.Span, "P3: wrapper applications on destructuring " +
+                        "declarations are not supported yet (S11)");
+                }
                 return BindDestructuring(decl, scope, ctx, env);
             }
             // 局部变量访问器（S8e 归口，§9.4.1：栈上访问器暂未实现）——
@@ -59,10 +66,56 @@ namespace LatteCompiler
                 return null;
             }
             var local = new LocalSymbol(decl.Name, type, decl.IsConst);
+            RegisterLocalWrapperApplications(decl, local, ctx, env);
             scope.Declare(local);
             ctx.Locals.Add(local);
             if (init != null) ctx.Flow.MarkAssigned(local);
             return new BoundLocalDeclarationStatement(node, local, init);
+        }
+
+        // 局部变量 wrapper 应用登记（S11，SYNTAX §14.3/§14.9 矩阵 C）：
+        // 栈上声明不进 P1/P2——注解解析与类别检查在此落地；栈上变量恒为
+        // 合法 Value wrapper 目标（矩阵 C），无 shared/宿主检查。诊断措辞
+        // 与 P2 WrapperCheckers 对齐
+        private static void RegisterLocalWrapperApplications(VariableDeclarationASTNode decl,
+            LocalSymbol local, BindContext ctx, BindEnvironment env)
+        {
+            foreach (var annotation in decl.Annotations)
+            {
+                if (ResolveEnvironment.IsWrapperTargetAnnotation(annotation))
+                {
+                    env.Error(annotation.Span ?? decl.Span,
+                        "@WrapperTarget can only be applied to wrapper declarations");
+                    continue;
+                }
+                if (ResolveEnvironment.NativeAnnotationNameOf(annotation) is { } builtinName)
+                {
+                    env.Error(annotation.Span ?? decl.Span,
+                        $"@{builtinName} can only be applied to native functions");
+                    continue;
+                }
+                var resolved = env.Names.ResolveSymbolPath(annotation.Name.symbol,
+                    ctx.Frame.FileCtx, ctx.Frame.DeclaringType, ctx.Frame.Method,
+                    allowImports: true, reportErrors: true,
+                    span: annotation.Name.Span ?? annotation.Span ?? decl.Span);
+                if (resolved is ErrorTypeSymbol) continue;    // 毒化静默
+                if (resolved is not TypeSymbol { Kind: TypeKind.Wrapper } wrapperType)
+                {
+                    env.Error(annotation.Span ?? decl.Span,
+                        $"'{NameResolver.PathText(annotation.Name.symbol)}' is not a wrapper type");
+                    continue;
+                }
+                // wrapper 声明自身的 @WrapperTarget 缺失/非法已在 P2 声明处报过，静默
+                if (wrapperType.WrapperTarget is { } targetKind
+                    && targetKind != WrapperTargetKind.Value)
+                {
+                    env.Error(annotation.Span ?? decl.Span, targetKind == WrapperTargetKind.Entity
+                        ? $"Entity wrapper '{wrapperType.Name}' can only be applied to type declarations"
+                        : $"Method wrapper '{wrapperType.Name}' can only be applied to methods");
+                    continue;
+                }
+                local.AppliedWrappers.Add(wrapperType);
+            }
         }
 
         // 解构声明（S7f，SYNTAX §18）：var (a, b) = pair——初始化器类型

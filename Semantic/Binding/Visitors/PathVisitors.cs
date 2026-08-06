@@ -1,14 +1,16 @@
 namespace LatteCompiler
 {
-    // 路径表达式（M42 统一形态）的值位置绑定（S5/S7c-2/S7f/S8c，
-    // SYNTAX §1.4/§3.4/§9/§13.2）。
+    // 路径表达式（M42 统一形态）的值位置绑定（S5/S7c-2/S7f/S8c/S11，
+    // SYNTAX §1.4/§3.4/§9/§13.2/§14.5）。
     // 形态分派：泛型实参检查（S9）→ 表达式底座（(a+b).c / new X().c）→
-    // this 首段 → 纯调用形态（直接/静态/裸名实例调用）→ Colon 归口（S11）→
+    // this 首段 → 纯调用形态（直接/静态/裸名实例调用）→
     // 泛化链折叠：首段按值解析（占位/局部/参数/裸名字段）→ 首段后缀折叠
-    // （索引访问 getAtIndex/setAtIndex；值调用归口）→ 实例链上色；
+    // （索引访问 getAtIndex/setAtIndex；值调用归口）→ 实例链上色（含
+    // S11 wrapper place 段：`obj:W` 双源查找 + 只读禁令全拦截面）；
     // 首段非值且首个后缀是 Call → 调用结果底座（foo().c / foo()[0] /
     // foo()?.bar）；否则容器路径（末段成员后缀折叠，Type.staticField[0] /
-    // ns.field[i]；中间段带后缀保持归口）。自旧 BindSession.BindPath 等
+    // ns.field[i]；S11 起 Colon 段切分——Type.staticField:W 交实例链；
+    // 中间段带后缀保持归口）。自旧 BindSession.BindPath 等
     // 迁移；S8c 解开原表达式底座/索引/后缀链的 S8 归口拦截。
 
     // 路径表达式值绑定（分派器入口；forAssignment = false）。
@@ -131,17 +133,12 @@ namespace LatteCompiler
                     binding.ResultType!, binding.TypeArguments, binding.GenericPack);
             }
             // 非调用形态的泛型实参（`x\<T>` 无调用后缀/链上段带实参）——
-            // S9b 仍归口（调用实参已由调用形态消费）
+            // S9b 仍归口（调用实参已由调用形态消费；wrapper 段带显式泛型
+            // 实参同此拦截，泛型 wrapper 的实参代入归 proxy 烘焙）
             if (node.Head.GenericArguments.Count > 0
                 || node.Segments.Any(s => s.GenericArguments.Count > 0))
             {
                 env.Error(node.Span, "P3: generic type arguments are not supported yet (S9)");
-                return null;
-            }
-            // wrapper 段（:连接符）归口 S11
-            if (node.Segments.Any(s => s.Connector == PathConnector.Colon))
-            {
-                env.Error(node.Span, "P3: wrapper access is not supported yet (S11)");
                 return null;
             }
             // ===== S8c 泛化链折叠：首段按值解析 → 首段后缀折叠 → 实例链 =====
@@ -290,16 +287,37 @@ namespace LatteCompiler
                 env.Error(node.Span, $"Undefined name: '{headName}'");
                 return null;
             }
-            // 容器路径（多段）：首段或中间段带后缀保持归口（容器成员链上
-            // 的后缀折叠未支持）；末段成员字段解析后折叠末段后缀
-            // （S8c：Type.staticField[0] / ns.field[i]）
+            // 容器路径（多段）：S11 起 Colon 段切分——容器只消费到首个
+            // Colon 段之前（Type.staticField:W 形态的静态字段宿主），
+            // Colon 起剩余段交实例链（wrapper place 绑定与只读禁令同
+            // 实例路径一处）。首段或容器中间段带后缀保持归口；成员段
+            // 字段解析后折叠其后缀
+            var colonIndex = -1;
+            for (int i = 0; i < node.Segments.Count; i++)
+            {
+                if (node.Segments[i].Connector == PathConnector.Colon)
+                {
+                    colonIndex = i;
+                    break;
+                }
+            }
+            var memberIndex = colonIndex < 0 ? node.Segments.Count - 1 : colonIndex - 1;
+            // `Type:W`：首段非值且无成员段——wrapper place 需要值宿主
+            if (memberIndex < 0)
+            {
+                env.Error(node.Span,
+                    $"Wrapper place ':{node.Segments[0].Name}' requires a value host");
+                return null;
+            }
             if (node.Head.Suffixes.Count > 0
-                || node.Segments.Take(node.Segments.Count - 1).Any(s => s.Suffixes.Count > 0))
+                || node.Segments.Take(memberIndex).Any(s => s.Suffixes.Count > 0))
             {
                 env.Error(node.Span, "P3: instance member access is not supported yet (S8)");
                 return null;
             }
-            var segments = PathSegmentNames(node);
+            // 容器部分段名序列（首段名 + 成员前各段名；Colon 起段不属容器）
+            var segments = new List<string> { node.Head.Name! };
+            segments.AddRange(node.Segments.Take(memberIndex + 1).Select(s => s.Name));
             var container = MemberLookup.ResolveContainer(segments, node.Span, ctx.Frame, env);
             if (container == null) return null;
             var member = MemberLookup.FindMember(container, segments[^1]);
@@ -307,11 +325,19 @@ namespace LatteCompiler
             switch (member)
             {
                 case FieldSymbol memberField:
+                    // forAssignment 仅当字段是全路径最终 place（无 Colon 剩余段
+                    // 且成员段无后缀）——Colon 剩余段场景字段是宿主读取
                     var fieldValue = BindFieldReference(node, memberField, ctx, env,
-                        forAssignment && node.Segments[^1].Suffixes.Count == 0);
+                        forAssignment && colonIndex < 0
+                            && node.Segments[memberIndex].Suffixes.Count == 0);
                     if (fieldValue == null) return null;
-                    return FoldSuffixes(node, fieldValue, node.Segments[^1].Suffixes, 0,
-                        forAssignment, scope, ctx, env);
+                    var foldedMember = FoldSuffixes(node, fieldValue,
+                        node.Segments[memberIndex].Suffixes, 0,
+                        forAssignment && colonIndex < 0, scope, ctx, env);
+                    if (foldedMember == null) return null;
+                    if (colonIndex < 0) return foldedMember;
+                    return BindInstanceChain(node, foldedMember,
+                        node.Segments.Skip(colonIndex).ToList(), scope, ctx, env, forAssignment);
                 case MethodSymbol:
                     return ErrorAndNull(env, node.Span,
                         $"Method '{pathText}' cannot be used as a value");
@@ -320,14 +346,6 @@ namespace LatteCompiler
                 default:
                     return ErrorAndNull(env, node.Span, $"'{pathText}' cannot be used as a value");
             }
-        }
-
-        // 路径的段名序列（首段名 + 各段名）；调用方保证无表达式底座
-        private static List<string> PathSegmentNames(PathExpressionASTNode node)
-        {
-            var segments = new List<string> { node.Head.Name! };
-            segments.AddRange(node.Segments.Select(s => s.Name));
-            return segments;
         }
 
         // 字段引用上色（迁移自旧 BindSession.BindFieldReference，行为不变）：
@@ -506,8 +524,11 @@ namespace LatteCompiler
                 }
                 else if (segment.Connector == PathConnector.Colon)
                 {
-                    env.Error(segment.Span, "P3: wrapper access is not supported yet (S11)");
-                    return null;
+                    // wrapper place 段（S11，SYNTAX §14.5）
+                    next = BindWrapperSegment(segment, receiver,
+                        isTerminal: i == chainSegments.Count - 1,
+                        forAssignment: forAssignment && i == chainSegments.Count - 1,
+                        scope, ctx, env);
                 }
                 else
                 {
@@ -529,6 +550,83 @@ namespace LatteCompiler
                 receiver = next;
             }
             return receiver;
+        }
+
+        // wrapper place 段（S11，SYNTAX §14.1/§14.5）：`obj:W`——绑定在宿主
+        // 上的那份 wrapper 的只读 place。wrapper 查找双源同池：宿主来源符号
+        //（字段/局部的 AppliedWrappers——Value wrapper）与宿主静态类型
+        //（Entity wrapper，构造类型回退定义）；按段名匹配，恰好一命中，
+        // 零命中（无应用）/多命中（同名歧义）均诊断。nullable 宿主拒绝
+        //（与普通段同口径；Colon 无安全访问形态）。
+        // 只读禁令（§14.5 全拦截面收口）：链末且无后缀的 Colon 段即整体
+        // 赋值/取值——拒绝；取值逃逸（变量初始化/实参/返回值/推断源/运算
+        // 与类型检查操作数……）全部经路径绑定结果，收口于本处。带后缀
+        //（索引成员访问）或非链末（字段/方法段继续消费）即成员访问接收者
+        // ——合法。
+        private static BoundExpression? BindWrapperSegment(PathSegmentASTNode segment,
+            BoundExpression receiver, bool isTerminal, bool forAssignment, Scope scope,
+            BindContext ctx, BindEnvironment env)
+        {
+            if (receiver.Type is TypeSymbol { ConstructedFrom: not null } nullableReceiver
+                && nullableReceiver.ConstructedFrom == env.B.NullableDefinition)
+            {
+                env.Error(segment.Span,
+                    $"Wrapper place ':{segment.Name}' cannot be accessed on nullable type " +
+                    $"'{BoundAnalysis.TypeDisplay(receiver.Type)}'");
+                return null;
+            }
+            // 符号源判型剥 SmartCast 壳（收窄包装不改变宿主来源符号）
+            var host = receiver is BoundSmartCastExpression smartCast
+                ? smartCast.Operand : receiver;
+            var symbolWrappers = host switch
+            {
+                BoundFieldAccessExpression fieldAccess => fieldAccess.Field.AppliedWrappers,
+                BoundFieldReferenceExpression fieldReference => fieldReference.Field.AppliedWrappers,
+                BoundValueReferenceExpression { Symbol: LocalSymbol local } =>
+                    local.AppliedWrappers,
+                _ => null,
+            };
+            var matches = new List<TypeSymbol>();
+            if (symbolWrappers != null)
+            {
+                matches.AddRange(symbolWrappers.Where(w => w.Name == segment.Name));
+            }
+            // 泛型参数 receiver 无 AppliedWrappers（with 约束场景归后续）
+            if (receiver.Type is TypeSymbol hostType)
+            {
+                matches.AddRange((hostType.ConstructedFrom ?? hostType).AppliedWrappers
+                    .Where(w => w.Name == segment.Name));
+            }
+            if (matches.Count == 0)
+            {
+                env.Error(segment.Span, $"'{BoundAnalysis.TypeDisplay(receiver.Type)}' " +
+                    $"has no wrapper '{segment.Name}' applied");
+                return null;
+            }
+            if (matches.Count > 1)
+            {
+                env.Error(segment.Span, $"Ambiguous wrapper '{segment.Name}' on " +
+                    $"'{BoundAnalysis.TypeDisplay(receiver.Type)}'");
+                return null;
+            }
+            var place = new BoundWrapperAccessExpression(segment, receiver, matches[0]);
+            // 带后缀（`obj:W[0]` 索引成员访问）：照常折叠
+            if (segment.Suffixes.Count > 0)
+            {
+                return FoldSuffixes(segment, place, segment.Suffixes, 0, forAssignment, scope,
+                    ctx, env);
+            }
+            // 非链末：place 作成员访问接收者，交后续段继续消费
+            if (!isTerminal) return place;
+            // 只读禁令（§14.5）：wrapper place 不可整体赋值也不可整体取值
+            if (forAssignment)
+            {
+                env.Error(segment.Span, $"Cannot assign to wrapper place ':{segment.Name}'");
+                return null;
+            }
+            env.Error(segment.Span, $"Wrapper place ':{segment.Name}' cannot be used as a " +
+                "value (only as a member access receiver)");
+            return null;
         }
 
         // 普通实例段（S8c 段后缀折叠）：无后缀 → 字段；首个后缀 Call →

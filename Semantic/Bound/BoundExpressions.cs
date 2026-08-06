@@ -9,7 +9,7 @@ namespace LatteCompiler
     // 直接调用（无重载）/ new 构造 / if 表达式 / 复合赋值 /
     // this / 实例方法调用 / 实例字段访问 / enum case 构造 / switch 表达式 / cast /
     // seq 表达式 / 安全访问 `?.`（含占位叶子）/ if? 空值回退 / is·supers·with·is .Case /
-    // typeOf / 索引访问（getAtIndex·setAtIndex）。
+    // typeOf / 索引访问（getAtIndex·setAtIndex）/ wrapper place（S11）。
     // 字面量值不冗余存储——经 Syntax（LiteralExpressionASTNode.Literal）取。
 
     // 字面量（整/浮点/字符串/字符/bool/null；Type 由 P3 按字面量种类与上下文定型）
@@ -247,6 +247,27 @@ namespace LatteCompiler
         {
             Case = caseSymbol;
             Arguments = arguments;
+        }
+    }
+
+    // wrapper place 访问（S11，SYNTAX §14.1/§14.5）：`obj:W`——绑定在宿主上的
+    // 那份 wrapper 的只读存储位置。它只作成员访问的接收者出现（字段读写、
+    // 方法调用、索引），永不作为完整表达式的值产出——P3 绑定期封死：链末
+    // Colon 段按赋值/取值分别诊断（全拦截面收口于 PathFacility 一处）。
+    // Wrapper = 命中的 wrapper 应用符号（Entity：宿主类型 AppliedWrappers；
+    // Value：字段/局部符号 AppliedWrappers；定义级——泛型 wrapper 的实参
+    // 代入归 proxy 烘焙）。Type = Wrapper。P4 发射归 proxy 烘焙（S11 后续：
+    // 成员读 = 值拷贝 + get.field，成员写 = set.field.embedded，BIL §13.3）
+    public sealed class BoundWrapperAccessExpression : BoundExpression
+    {
+        public BoundExpression Receiver { get; }
+        public TypeSymbol Wrapper { get; }
+
+        public BoundWrapperAccessExpression(ASTNode syntax, BoundExpression receiver,
+            TypeSymbol wrapper) : base(syntax, wrapper)
+        {
+            Receiver = receiver;
+            Wrapper = wrapper;
         }
     }
 

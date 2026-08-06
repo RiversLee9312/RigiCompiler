@@ -82,6 +82,10 @@ namespace LatteCompiler.Tests
             TestEnumCases();
             TestDiagnosticsAccumulation();
             TestKwArgsBodyView();
+            TestWrapperPlaceBinding();
+            TestWrapperPlaceReadOnly();
+            TestWrapperPlaceErrors();
+            TestWrapperPlaceLoweringGate();
             return TestHarness.Summary("Binder");
         }
 

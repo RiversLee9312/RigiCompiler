@@ -461,6 +461,9 @@ namespace LatteCompiler
         // S9 放宽为 SemanticSymbol：泛型函数体内局部声明的类型可为泛型参数
         public SemanticSymbol? Type { get; }
         public bool IsConst { get; }
+        // 挂载的 wrapper 应用（声明顺序，外层在前；P3 局部声明绑定时解析
+        // 登记——栈上声明不进 P1/P2，SYNTAX §14.9 矩阵 C 恒合法免检查）
+        public List<TypeSymbol> AppliedWrappers { get; } = new List<TypeSymbol>();
 
         public LocalSymbol(string name, SemanticSymbol? type, bool isConst) : base(name)
         {

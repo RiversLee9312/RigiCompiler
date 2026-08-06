@@ -77,14 +77,19 @@ namespace LatteCompiler
                     ctx, env),
                 BoundNullFallbackExpression => NullFallbackRewriter.Visit(expression, ctx, env),
                 BoundSeqExpression => SeqExpressionRewriter.Visit(expression, ctx, env),
+                // S11：wrapper place 的 lowering 归 proxy 烘焙（隐藏字段
+                // get/set.field.embedded 发射随该步落地）
+                BoundWrapperAccessExpression => Unsupported(expression, env,
+                    "P4: wrapper place lowering is not supported yet (S11)"),
                 _ => Unsupported(expression, env),
             };
         }
 
-        private static LoweredExpression? Unsupported(BoundNode node, LowerEnvironment env)
+        private static LoweredExpression? Unsupported(BoundNode node, LowerEnvironment env,
+            string? message = null)
         {
             env.Error(node.Syntax.Span,
-                $"P4: node kind not supported by minimal lowering (S7): " +
+                message ?? $"P4: node kind not supported by minimal lowering (S7): " +
                 node.GetType().Name);
             return null;
         }

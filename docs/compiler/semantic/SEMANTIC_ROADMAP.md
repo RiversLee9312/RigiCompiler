@@ -642,10 +642,23 @@ enum case（`new.case`、`is .Case` 判别比较、判别值分配）、
 > RUNTIME §16.1）。BIL 模型（`IsCaseInstruction`/`GetEmbeddedFieldInstruction`/
 > `SetEmbeddedFieldInstruction`）与 BilVerifier §21.3 校验同步落地
 > （BilWriterTests 黄金 + BilVerifierTests 手工模块正负例）。后续施工
-> 按序推进：P3 wrapper place 绑定与只读禁令（解 PathVisitors 两处
-> Colon 归口 + 全拦截面）→ ~~enum case 全链~~（**✅ M77 已落地**）→
-> ext 收尾 + 局部访问器解归口 → proxy 烘焙 lowering（specific
-> → wildcard → `call???` 降级）→ 派发链诊断工具。
+> 按序推进：~~P3 wrapper place 绑定与只读禁令（解 PathVisitors 两处
+> Colon 归口 + 全拦截面）~~（**✅ M79 已落地**）→ ~~enum case 全链~~
+> （**✅ M77 已落地**）→ ext 收尾 + 局部访问器解归口 → proxy 烘焙
+> lowering（specific → wildcard → `call???` 降级 + `.wrapper.` 隐藏
+> 字段声明与 get/set.field.embedded 发射）→ 派发链诊断工具。
+>
+> **wrapper place 绑定与只读禁令（M79，2026-08-06，PROGRESS_REPORT
+> 详录）**：`BoundWrapperAccessExpression`（Receiver + Wrapper，Type =
+> Wrapper 定义——只作成员访问接收者，永不作路径绑定结果产出）+
+> BindWrapperSegment 双源同池查找（字段/局部符号 AppliedWrappers +
+> 宿主类型 AppliedWrappers 构造回退定义）+ 只读禁令全拦截面（链末无
+> 后缀 Colon 段按赋值/取值一处收口全部逃逸路径）+ 容器路径 Colon
+> 切分（`Type.staticField:W`）+ 局部变量 wrapper 应用 P3 登记
+> （LocalSymbol.AppliedWrappers，矩阵 C 恒合法）+ P4 显式归口（发射
+> 归 proxy 烘焙）。**遗留**：泛型参数 receiver 的 with 约束 place
+> （`param:W`）与泛型 wrapper 实参代入（TTarget 显形）归 proxy 烘焙
+> 复核。
 >
 > **enum case 全链（M77，2026-08-05，PROGRESS_REPORT 详录）**：
 > EnumCaseSymbol 家族（Owner/Discriminant + ResolvedInit/HoleParameters

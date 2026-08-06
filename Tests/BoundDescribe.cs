@@ -174,6 +174,10 @@ namespace LatteCompiler.Tests
                 // S8c：索引访问（Operator 符号不打印——黄金描述聚焦形态与定型）
                 BoundIndexExpression index =>
                     $"Index({Expr(index.Receiver)}, {Expr(index.Index)}, {TypeShort.Of(index.Type)})",
+                // S11：wrapper place（只读存储位置；Wrapper 符号即 Type，不重复打印）
+                BoundWrapperAccessExpression wrapperAccess =>
+                    $"WrapperPlace({Expr(wrapperAccess.Receiver)}, " +
+                    $"{wrapperAccess.Wrapper.Name})",
                 // S11：enum case 构造（类型恒为宿主 enum，不重复打印）
                 BoundEnumCaseExpression enumCase =>
                     $"EnumCase({TypeShort.Of(enumCase.Case.Owner)}.{enumCase.Case.Name}, " +

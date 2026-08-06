@@ -167,6 +167,10 @@ namespace LatteCompiler
                 case BoundEnumCaseExpression enumCase:
                     foreach (var argument in enumCase.Arguments) WalkExpression(argument, env);
                     break;
+                // S11：wrapper place（只读 place 无调用语义，receiver 递归）
+                case BoundWrapperAccessExpression wrapperAccess:
+                    WalkExpression(wrapperAccess.Receiver, env);
+                    break;
                 case BoundSwitchExpression switchExpression:
                     WalkExpression(switchExpression.Selector, env);
                     foreach (var switchCase in switchExpression.Cases)
