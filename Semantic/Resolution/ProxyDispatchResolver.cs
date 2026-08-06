@@ -3,7 +3,7 @@ namespace LatteCompiler
     // ===== S11a：wrapper 派发链计算与符号合成（ROADMAP S11a 后半）=====
     //
     // 前置：WrapperApplicationChecker（应用登记，WrapperApplication 记录）
-    // 与 ProxyShapeChecker（声明侧形状校验）已运行。本阶段两件事：
+    // 与 ProxyShapeChecker（声明侧形状校验）已运行。本阶段三件事：
     //
     //   1. `.wrapper.` 隐藏字段合成（BIL §5.3 命名、§8.3.1 声明形态）：
     //      Entity 应用挂宿主类型；interface 传染落到每个实现者（TTarget
@@ -26,13 +26,19 @@ namespace LatteCompiler
     // .proxy.set/.proxy.call 拦截）、interface 实现者的链继承与
     // override 覆写链、无访问器字段的 get/set 拦截（需自动访问器合成
     // + P4 接线）、async 成员交互（S13）、static/init 成员不拦截、
-    // 合成 fn 的 BIL 发射（S11d）。隐藏字段声明发射已于 S11c 开闸。
+    // 合成 fn 的 BIL 发射（S11d；S11e 降级链的 router/特化符号发射
+    // 归后续里程碑——LocalSymbolEmitters 侧跳过声明）。隐藏字段声明
+    // 发射已于 S11c 开闸。
     internal sealed class ProxyDispatchResolver : ResolverVisitor<ProxyDispatchResolver>
     {
         protected override void VisitCore(ResolveEnvironment env)
         {
+            // 三件事：① `.wrapper.` 隐藏字段合成（S11a）；
+            // ② Entity 派发链计算与特化/原始体符号合成（S11a/S11b）；
+            // ③ call??? 降级链合成（S11e）
             SynthesizeHiddenFields(env);
             ComputeDispatchChains(env);
+            ComputeDowngradeChains(env);
         }
 
         // ===== 1. `.wrapper.` 隐藏字段合成（BIL §5.3/§8.3.1）=====
@@ -79,6 +85,94 @@ namespace LatteCompiler
                     }
                 }
             }
+        }
+
+        // ===== 3. call??? 降级链合成（S11e，SYNTAX §14.7 + BIL §15.4）=====
+        // 宿主 wrapper 链含普通方法类别 .proxy.* 时合成：router（宿主成员
+        // call???）+ 逐应用降级特化 .proxy.<序>.???（签名统一为非泛型胖值
+        // 形态 (symbol: String, namedArgs: 具名包 ABI, unnamedArgs: Array\<Any\>)
+        // : Any——RUNTIME §14.2 泛型逻辑签名的实质化，typeid 随 Any 胖值自
+        // 描述）；链末 inner = Any.call??? 默认实现（全编译单元至多一次）。
+        // 体绑定归 P3 BindingDriver 阶段 2.6；发射归 P4（M85 闸门已开）
+        private static void ComputeDowngradeChains(ResolveEnvironment env)
+        {
+            MethodSymbol? callWildcard = null;   // Any.call??? 惰性合成（全编译单元一次）
+            foreach (var entry in env.TypeEntries)
+            {
+                if (!entry.InGraph) continue;
+                var host = (TypeSymbol)entry.Symbol;
+                if (host.IsBuiltin || host.ConstructedFrom != null) continue;
+                if (host.AppliedWrappers.Count == 0) continue;
+                // 逐应用查方法类别 wildcard（outer→inner 声明序；形状/元数/毒化
+                // 跳过口径同 BuildChainForMember）
+                var hits = new List<(WrapperApplication Application, MethodSymbol Proxy)>();
+                foreach (var application in host.AppliedWrappers)
+                {
+                    var wrapperDef = application.WrapperDefinition;
+                    if (HasInvalidGenericArity(wrapperDef)) continue;
+                    var proxy = wrapperDef.Methods.FirstOrDefault(m => m.Name == ".proxy.*");
+                    if (proxy == null || ContainsErrorType(proxy)) continue;
+                    hits.Add((application, proxy));
+                }
+                if (hits.Count == 0) continue;
+                callWildcard ??= EnsureCallWildcard(env);
+                // router：宿主成员，名 call???（用户不可声明——? 非标识符字符，
+                // 零冲突）；体 = P3 合成直通 invoke 链首
+                var router = SynthesizeFatSymbol(host, "call???", env);
+                host.Methods.Add(router);
+                host.DowngradeRouter = router;
+                var chain = new List<MethodSymbol>();
+                for (var i = 0; i < hits.Count; i++)
+                {
+                    var link = SynthesizeFatSymbol(host, ".proxy." + i + ".???", env);
+                    link.ProxySpecialization = new ProxySpecializationInfo(
+                        hits[i].Proxy, hits[i].Application, ProxyLinkKind.Wildcard,
+                        targetMember: null, originalBody: callWildcard);
+                    host.Methods.Add(link);
+                    chain.Add(link);
+                }
+                host.DowngradeChain = chain;
+            }
+        }
+
+        // Any.call??? 单一 slot 默认实现（RUNTIME §14.2）：先查已有（幂等——
+        // 多宿主类型场景下全编译单元只合成一次），无则合成 + 置 Public
+        // （bootstrap 成员即公开契约，仿 BootstrapSymbols 的 Public 设置）+
+        // 挂 Any.Methods。体 = P3 合成 throw NoSuchMethodException（本任务不合成）
+        private static MethodSymbol EnsureCallWildcard(ResolveEnvironment env)
+        {
+            var any = env.Unit.Symbols.Bootstrap.Any;
+            var existing = any.Methods.FirstOrDefault(m => m.Name == "call???");
+            if (existing != null) return existing;
+            var callWildcard = SynthesizeFatSymbol(any, "call???", env);
+            callWildcard.Accessibility = Accessibility.Public;
+            any.Methods.Add(callWildcard);
+            return callWildcard;
+        }
+
+        // 非泛型胖值签名 fn（S11e）：三参数 (symbol: String, namedArgs: 具名包
+        // ABI, unnamedArgs: Array\<Any\>) → Any。具名包 ABI = §14.7 的
+        // Array\<Pair\<String, Any\>\>（NamedPackType，core::Pair 缺席降级
+        // Array\<Any\>）——与 wildcard 解包 shim 的双包参同型，invoke 两端
+        // 严格匹配（S11d 发射对齐）；非 variadic。胖值 ABI 依据
+        // §14.7/RUNTIME §14.3（未声明方法的实参与返回统一经 Any 胖值槽）
+        private static MethodSymbol SynthesizeFatSymbol(TypeSymbol owner, string name,
+            ResolveEnvironment env)
+        {
+            var symbol = new MethodSymbol(name, MethodKind.Regular, owner: owner)
+            {
+                HasBody = true,
+            };
+            var packType = env.Unit.Symbols.GetConstructedType(
+                env.Unit.Symbols.Bootstrap.ArrayDefinition, env.Unit.Symbols.Bootstrap.Any);
+            symbol.Parameters.Add(new ParameterSymbol("symbol", env.Unit.Symbols.Bootstrap.String,
+                defaultValue: null, isVariadic: false, isNamedVariadic: false));
+            symbol.Parameters.Add(new ParameterSymbol("namedArgs", NamedPackType(env),
+                defaultValue: null, isVariadic: false, isNamedVariadic: false));
+            symbol.Parameters.Add(new ParameterSymbol("unnamedArgs", packType,
+                defaultValue: null, isVariadic: false, isNamedVariadic: false));
+            symbol.ReturnType = env.Unit.Symbols.Bootstrap.Any;
+            return symbol;
         }
 
         // 元数非法的 wrapper 声明（Entity 多参数 / Value·Method 带参数）已由

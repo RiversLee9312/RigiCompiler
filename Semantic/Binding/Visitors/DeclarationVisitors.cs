@@ -54,7 +54,8 @@ namespace LatteCompiler
                 return null;
             }
             if (declaredType != null && init != null
-                && !SymbolLookup.IsAssignable(init.Type, declaredType, env))
+                && !SymbolLookup.IsAssignable(init.Type, declaredType, env)
+                && !BoundAnalysis.IsDowngradeCallResult(init))
             {
                 env.Error(decl.Initializer!.Span ?? decl.Span,
                     $"Cannot assign '{BoundAnalysis.TypeDisplay(init.Type)}' to " +
@@ -294,7 +295,8 @@ namespace LatteCompiler
                         "Assignment target must be a variable");
                     return null;
             }
-            if (!SymbolLookup.IsAssignable(value.Type, target.Type, env))
+            if (!SymbolLookup.IsAssignable(value.Type, target.Type, env)
+                && !BoundAnalysis.IsDowngradeCallResult(value))
             {
                 env.Error(node.AssignValue.Span ?? node.Span,
                     $"Cannot assign '{BoundAnalysis.TypeDisplay(value.Type)}' to " +
@@ -386,9 +388,11 @@ namespace LatteCompiler
                     $"Void function '{ctx.Frame.Method.Name}' cannot return a value");
                 return null;
             }
-            // 返回类型为泛型参数时兼容判定归 S9
+            // 返回类型为泛型参数时兼容判定归 S9；
+            // S11e：降级调用结果 Any 可返回任意声明类型（P4a cast 物化兜底）
             if (ctx.Frame.Method.ReturnType is TypeSymbol returnType
-                && !SymbolLookup.IsAssignable(value.Type, returnType, env))
+                && !SymbolLookup.IsAssignable(value.Type, returnType, env)
+                && !BoundAnalysis.IsDowngradeCallResult(value))
             {
                 env.Error(ret.Value.Span ?? ret.Span,
                     $"Cannot return '{BoundAnalysis.TypeDisplay(value.Type)}' from function " +

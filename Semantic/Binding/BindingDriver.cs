@@ -11,7 +11,11 @@ namespace LatteCompiler
     // HoleParameters，必须先于函数体落定）；②逐函数体绑定（S8e 起
     // 含字段 getter/setter 访问器体），并落地 init 参数映射赋值合成
     //（SYNTAX §9.3：构造时映射参数赋给字段——无体 init 合成映射体/
-    // 空体，有体 init 映射赋值前插用户体头部）。
+    // 空体，有体 init 映射赋值前插用户体头部）。②·5 proxy 体逐组合绑定
+    //（S11b：转发壳/特化体/解包 shim 三件套，被拦截成员用户体改挂
+    // WrappedBodySymbol）；②·6 call??? 降级链体绑定（S11e：router 直通
+    // 体 + 逐环降级特化体零前奏 + Any.call??? 默认体 throw
+    // NoSuchMethodException）。
     internal sealed class BindingDriver
     {
         private readonly BindEnvironment env;
@@ -76,6 +80,9 @@ namespace LatteCompiler
             // 阶段 2.5（S11b）：proxy 体逐组合绑定——转发壳/特化体/解包
             // shim 三件套（ROADMAP S11b）
             BindProxyBodies(proxyDeclarations, interceptedMembers);
+            // 阶段 2.6（S11e）：call??? 降级链体绑定——router 直通体 +
+            // 逐环降级特化体（零前奏）+ Any.call??? 默认体
+            BindDowngradeBodies(proxyDeclarations);
             return bodies;
         }
 
@@ -698,7 +705,9 @@ namespace LatteCompiler
                     BindProxyLinkBody(chain[i], i, proxyDeclarations);
                     if (chain[i].ProxySpecialization!.UnwrapShim is { } shim)
                     {
-                        SynthesizeUnwrapShimBody(shim, chain[i].ProxySpecialization, i, syntax);
+                        // per-member 链特化符号恒带 ProxySpecialization（可空
+                        // 化适配：降级链符号不经本路径——P3 阶段 2.6 落体）
+                        SynthesizeUnwrapShimBody(shim, chain[i].ProxySpecialization!, i, syntax);
                     }
                 }
             }
@@ -757,7 +766,9 @@ namespace LatteCompiler
                     $"Proxy '{spec.ProxyDeclaration.Name}' has no body (§14.2)");
                 return;
             }
-            var chain = spec.TargetMember.WrapperChain!;
+            // per-member 链恒非空（TargetMember 可空化适配，S11e）；降级链
+            //（TargetMember 为 null）不经本路径——体绑定归阶段 2.6
+            var chain = spec.TargetMember!.WrapperChain!;
             var next = linkIndex + 1 < chain.Count ? chain[linkIndex + 1] : spec.OriginalBody;
             // self 类型 = TTarget 代入结果（应用记录 Wrapper 构造的实参）；
             // wrapper 零泛型参数时为 null——self 引用由 PathVisitors 拒绝
@@ -809,16 +820,17 @@ namespace LatteCompiler
                 BoundExpression? initializer = proxyParam.Name switch
                 {
                     // §14.8 canonical symbol（CanonicalSymbolPrinter 唯一
-                    // canonical 来源，ARCH §4.4）
-                    "symbol" => MakeStringLiteral(
-                        CanonicalSymbolPrinter.PrintMethod(spec.TargetMember)),
+                    // canonical 来源，ARCH §4.4）；per-member 链恒非空
+                    //（TargetMember 可空化适配，S11e）
+                    "symbol" => MakeStringLiteral(env,
+                        CanonicalSymbolPrinter.PrintMethod(spec.TargetMember!)),
                     // 包自 fn 形参打包（Type = Array\<Any\> 构造，与 M72 调用点
                     // 打包节点同口径）；具名包元素 = 具名可变参数（P2 已排除
                     // 可变参数成员建链，当前恒空包）
                     "namedArgs" => PackMemberArguments(link, named: true, syntax),
                     "unnamedArgs" => PackMemberArguments(link, named: false, syntax),
                     // get 类别：value = 内层结果（invoke 下一环的无参调用）
-                    "value" when spec.TargetMember.Kind == MethodKind.Getter =>
+                    "value" when spec.TargetMember!.Kind == MethodKind.Getter =>
                         new BoundInstanceCallExpression(syntax,
                             new BoundThisExpression(syntax, link.Owner!), next,
                             new List<BoundExpression>(), next.ReturnType!),
@@ -885,7 +897,9 @@ namespace LatteCompiler
         private void SynthesizeUnwrapShimBody(MethodSymbol shim, ProxySpecializationInfo spec,
             int linkIndex, ASTNode syntax)
         {
-            var member = spec.TargetMember;
+            // per-member 链恒非空（TargetMember 可空化适配，S11e）；降级链
+            //（TargetMember 为 null）不经本路径——shim 只随 per-member 链合成
+            var member = spec.TargetMember!;
             var chain = member.WrapperChain!;
             var next = linkIndex + 1 < chain.Count ? chain[linkIndex + 1] : spec.OriginalBody;
             var packType = shim.Parameters[1].Type!;
@@ -925,6 +939,168 @@ namespace LatteCompiler
             bodies.Add(new BoundFunctionBody(shim, Array.Empty<LocalSymbol>(), body));
         }
 
+        // ===== 阶段 2.6：call??? 降级链体绑定（S11e，SYNTAX §14.7 + BIL §15.4）=====
+        //
+        // 对每个带降级链的宿主类型（P2 ComputeDowngradeChains 合成，wrapper
+        // 链含普通方法类别 .proxy.* 时）：
+        //   ① router（宿主成员 call???）体：直接构造 bound——
+        //      return invoke 链首(this, symbol, namedArgs, unnamedArgs)
+        //      （仿 SynthesizeRouterShell，但胖值三参是 router 形参逐一引用）；
+        //   ② 逐环降级特化体：proxy 声明体零前奏绑定（降级链特化 fn 签名 =
+        //      (symbol/namedArgs/unnamedArgs) 胖值三参，与 proxy 声明形参同名
+        //      直通——无前奏物化，对照 BindProxyLinkBody 的 per-member 前奏
+        //      路径）；inner = 下一环特化或链末 Any.call???（canonical 体只传
+        //      双具名，symbol 由 CallVisitors 自动补为当前 fn symbol 形参引用）；
+        //   ③ Any.call??? 默认体（全编译单元一次，惰性）：throw new
+        //      NoSuchMethodException(symbol)。NoSuchMethodException 缺失（无
+        //      stdlib 的测试驱动）→ 跳过体合成（HasBody 保持但无 fn 定义；
+        //      端到端发射必经 stdlib——P4 无定义发射归 Agent C）
+        private void BindDowngradeBodies(
+            Dictionary<MethodSymbol, (CallableDeclarationASTNode Node, FileContext FileCtx)>
+                proxyDeclarations)
+        {
+            var hosts = new List<(TypeSymbol Host, ASTNode Declaration)>();
+            foreach (var file in env.Unit.SourceFiles)
+            {
+                foreach (var decl in file.Declarations)
+                {
+                    WalkDowngradeHosts(decl, hosts);
+                }
+            }
+            if (hosts.Count == 0) return;
+            foreach (var (host, declaration) in hosts)
+            {
+                SynthesizeDowngradeRouterBody(host, declaration);
+                var chain = host.DowngradeChain!;
+                for (var i = 0; i < chain.Count; i++)
+                {
+                    BindDowngradeLinkBody(chain[i], i, chain, proxyDeclarations);
+                }
+            }
+            SynthesizeAnyCallWildcardBody(hosts[0].Declaration);
+        }
+
+        // 收集带降级链的宿主类型（定义级；遍历编译单元声明骨架，同阶段 1.5
+        // enum 的 WalkEnumDeclarations 口径——嵌套类型递归）
+        private void WalkDowngradeHosts(ASTNode node,
+            List<(TypeSymbol Host, ASTNode Declaration)> hosts)
+        {
+            switch (node)
+            {
+                case ClassDeclarationASTNode or StructDeclarationASTNode
+                    or InterfaceDeclarationASTNode or EnumStructDeclarationASTNode
+                    or WrapperDeclarationASTNode:
+                    var symbol = env.Declarations.SymbolOf(node) as TypeSymbol
+                        ?? throw new CompilerInternalException("P1 未登记类型符号");
+                    if (symbol.DowngradeRouter != null && symbol.DowngradeChain != null)
+                    {
+                        hosts.Add((symbol, node));
+                    }
+                    foreach (var member in MembersOf(node))
+                    {
+                        WalkDowngradeHosts(member, hosts);
+                    }
+                    return;
+            }
+        }
+
+        // ① router 直通体：return invoke 链首(this, symbol, namedArgs,
+        // unnamedArgs)。直接构造 bound（仿 SynthesizeRouterShell）；Syntax
+        // 指宿主声明节点（BoundNode.Syntax 必填）；无合成局部
+        private void SynthesizeDowngradeRouterBody(TypeSymbol host, ASTNode syntax)
+        {
+            var router = host.DowngradeRouter!;
+            var thisExpr = new BoundThisExpression(syntax, host);
+            var args = router.Parameters
+                .Select(p => (BoundExpression)new BoundValueReferenceExpression(syntax, p, p.Type!))
+                .ToList();
+            var body = new BoundBlock(syntax, new List<BoundStatement> {
+                new BoundReturnStatement(syntax, new BoundInstanceCallExpression(syntax,
+                    thisExpr, host.DowngradeChain![0], args, env.B.Any)) });
+            bodies.Add(new BoundFunctionBody(router, Array.Empty<LocalSymbol>(), body));
+        }
+
+        // ② 单环降级特化体：BindProxyLinkBody 的零前奏变体——降级链特化 fn
+        // 的形参（symbol/namedArgs/unnamedArgs）与 proxy 声明形参同名，无
+        // 前奏物化，直接经块分派绑 proxy 声明体。诊断按 (proxy, span, message)
+        // 去重（BindEnvironment.CurrentProxy，同 per-member 路径）。技术债：
+        // proxy 声明泛型参数（TReturn 等）在降级语境无对应（链符号非泛型），
+        // canonical 体不消费类型引用不受影响；非 canonical 体引用泛型参数
+        // 归 S11g 复核
+        private void BindDowngradeLinkBody(MethodSymbol link, int linkIndex,
+            List<MethodSymbol> chain,
+            Dictionary<MethodSymbol, (CallableDeclarationASTNode Node, FileContext FileCtx)>
+                proxyDeclarations)
+        {
+            var spec = link.ProxySpecialization!;
+            if (!proxyDeclarations.TryGetValue(spec.ProxyDeclaration, out var decl))
+            {
+                throw new CompilerInternalException("P3 未收集 proxy 声明体: "
+                    + spec.ProxyDeclaration.Name);
+            }
+            if (decl.Node.Body == null)
+            {
+                // 无体 proxy 声明（同 BindProxyLinkBody :752-758 口径）——
+                // 毒化：链已建，本环按空体处理（诊断落袋，不中断）
+                env.Error(decl.Node.Span,
+                    $"Proxy '{spec.ProxyDeclaration.Name}' has no body (§14.2)");
+                return;
+            }
+            // inner 目标：下一环特化；链末环 = Any.call???（OriginalBody）
+            var innerTarget = linkIndex + 1 < chain.Count ? chain[linkIndex + 1] : spec.OriginalBody;
+            // self 类型 = TTarget 代入结果（同 BindProxyLinkBody 规则；零
+            // 泛型 wrapper 为 null——self 引用由 PathVisitors 拒绝）
+            var selfType = spec.Application.WrapperDefinition.GenericParameters.Count == 1
+                ? spec.Application.Wrapper.TypeArguments![0] as TypeSymbol
+                : null;
+            var ctx = new BindContext(link, decl.FileCtx, link.Owner);
+            ctx.Proxy.Set(spec, innerTarget, selfType);
+            env.CurrentProxy = spec.ProxyDeclaration;
+            try
+            {
+                var body = BlockDispatcher.Visit(decl.Node.Body, null, ctx, env);
+                // return 全路径检查（link.ReturnType = Any 非空恒查；消息措辞
+                // 同 BindProxyLinkBody）
+                if (link.ReturnType != null && !BoundAnalysis.GuaranteesReturn(body))
+                {
+                    env.Error(decl.Node.Span, $"Function '{spec.ProxyDeclaration.Name}' " +
+                        "must return a value on all code paths");
+                }
+                AsyncGates.CheckFunctionBody(body, env);
+                bodies.Add(new BoundFunctionBody(link, ctx.Locals.ToList(), body));
+            }
+            finally
+            {
+                env.CurrentProxy = null;
+            }
+        }
+
+        // ③ Any.call??? 默认体（全编译单元一次，惰性）：throw new
+        // NoSuchMethodException(symbol)——未声明方法的降级调用在链末兜底抛错
+        //（RUNTIME §14.2；BIL §16.9 throw 发射已就位）。NoSuchMethodException
+        // 由 stdlib core/exceptions.latte 声明（单参 init(text: String)）；
+        // 缺失（无 stdlib 的测试驱动）时跳过体合成。Syntax 取首个宿主声明节点
+        private void SynthesizeAnyCallWildcardBody(ASTNode syntax)
+        {
+            var anyCall = env.B.Any.Methods.FirstOrDefault(m => m.Name == "call???");
+            if (anyCall == null) return;
+            // 幂等：多宿主共享同一 Any.call???（P2 单 slot），体只合成一次
+            if (bodies.Any(b => ReferenceEquals(b.Method, anyCall))) return;
+            var core = env.Unit.Symbols.GlobalNamespace.ChildNamespaces
+                .FirstOrDefault(n => n.Name == "core");
+            var exceptionType = core?.Types.FirstOrDefault(t => t.Name == "NoSuchMethodException");
+            var init = exceptionType?.Methods.FirstOrDefault(m => m.Kind == MethodKind.Init
+                && m.Parameters.Count == 1);
+            if (exceptionType == null || init == null) return;
+            var symbolRef = new BoundValueReferenceExpression(syntax, anyCall.Parameters[0],
+                anyCall.Parameters[0].Type!);
+            var body = new BoundBlock(syntax, new List<BoundStatement> {
+                new BoundThrowStatement(syntax,
+                    new BoundNewExpression(syntax, exceptionType, init,
+                        new List<BoundExpression> { symbolRef })) });
+            bodies.Add(new BoundFunctionBody(anyCall, Array.Empty<LocalSymbol>(), body));
+        }
+
         // 成员签名类型中的成员泛型参数替换为目标符号的同位拷贝（shim
         // 与特化/原始体各自独立拷贝成员泛型参数——P2 SynthesizeBodySymbol
         // 同序）；构造类型逐实参递归
@@ -948,11 +1124,11 @@ namespace LatteCompiler
             return type;
         }
 
-        // 合成字面量（S11b proxy 前奏/shim 用）：BoundLiteralExpression 的
-        // Syntax 契约是 LiteralExpressionASTNode（P4b 发射与 BoundDescribe
+        // 合成字面量（S11b proxy 前奏 + S11e 降级调用点共用）：BoundLiteralExpression
+        // 的 Syntax 契约是 LiteralExpressionASTNode（P4b 发射与 BoundDescribe
         // 强转取值）——程序化构造 AST 包装节点，Span 缺省（合成节点不入
         // AST 完整性验证范围）
-        private BoundExpression MakeStringLiteral(string value)
+        internal static BoundExpression MakeStringLiteral(BindEnvironment env, string value)
         {
             var expr = new LiteralExpressionASTNode();
             expr.AttachLiteral(new StringLiteralASTNode(expr) { Value = value });

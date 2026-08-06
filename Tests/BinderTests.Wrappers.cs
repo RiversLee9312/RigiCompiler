@@ -718,5 +718,230 @@ namespace LatteCompiler.Tests
                 "This(Service), [Param(arg,i32)], String))])",
                 LoweredDescribe.Body(lowered11.Single(b => b.Method.Name == ".proxy.0.doSomething")));
         }
+
+        // ===== S11e call??? 降级调用点与阶段 2.6 体绑定：调用点降级判定
+        //（router 胖值三实参）/inner 自动补 symbol/router·链体·Any.call???
+        // 默认体 =====
+        private static void TestDowngradeBinding()
+        {
+            TestHarness.Section("P3 Downgrade Binding (S11e)");
+
+            // 降级链固定夹具：Entity wrapper 含普通方法类别 .proxy.* wildcard
+            //（canonical 体双具名转发）；Service 挂链即得 router + 单环降级特化
+            // + Any.call??? 默认体（P2 ComputeDowngradeChains 合成）
+            const string fixture =
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Audited {\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn { return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
+                "}\n" +
+                "@Audited\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "}\n";
+
+            // 1. 降级绑定形态：位置实参 42 → router 三实参（symbol 字面量 +
+            // 具名包空 + 位置包 [Int]），Type = Any
+            var (unit1, bodies1) = BindUnit(fixture +
+                "pub func f(service: Service): Any {\n" +
+                "    return service.fetchUserById(42)\n" +
+                "}\n");
+            CheckNoErrors("降级绑定无诊断", unit1);
+            var downgradeCall1 = (BoundInstanceCallExpression)((BoundReturnStatement)
+                ((BoundBlock)BodyOf(bodies1, "f").Body).Statements[0]).Value!;
+            TestHarness.Check("降级调用形态（router 三实参）",
+                "InstCall(call???, Param(service,Service), " +
+                "[Str(\"Service$fetchUserById(.i32)@.any\",String), KwArgs([]), " +
+                "VarArgs([Int(42,i32)])], Any)",
+                BoundDescribe.Expr(downgradeCall1));
+            TestHarness.CheckTrue("降级调用 Type = Any（引用相等）",
+                ReferenceEquals(downgradeCall1.Type, unit1.Symbols.Bootstrap.Any)
+                && ReferenceEquals(downgradeCall1.Method,
+                    unit1.Symbols.GlobalNamespace.Types.First(t => t.Name == "Service")
+                        .DowngradeRouter),
+                BoundDescribe.Expr(downgradeCall1));
+
+            // 2. 具名实参（Latte 具名实参书写 =，SYNTAX §4.2）：symbol 串含
+            // 名:类型；namedArgs 包两元素、unnamedArgs 空
+            var (unit2, bodies2) = BindUnit(fixture +
+                "pub func f(service: Service): Any {\n" +
+                "    return service.get(id = 1, name = \"x\")\n" +
+                "}\n");
+            CheckNoErrors("具名实参降级无诊断", unit2);
+            TestHarness.Check("具名实参降级形态",
+                "Return(InstCall(call???, Param(service,Service), " +
+                "[Str(\"Service$get(id:.i32,name:.string)@.any\",String), " +
+                "KwArgs([id = Int(1,i32), name = Str(\"x\",String)]), VarArgs([])], Any))",
+                BoundDescribe.Stmt(((BoundBlock)BodyOf(bodies2, "f").Body).Statements[0]));
+
+            // 3. 负例无链：wrapper 无 .proxy.*（或无 wrapper）→ 保持 Undefined member
+            var (unit3, _) = BindUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Plain {\n" +
+                "    pub var level: String\n" +
+                "    pub init(_ -> level)\n" +
+                "}\n" +
+                "@Plain\n" +
+                "pub class Service { pub init() }\n" +
+                "pub func f(service: Service): Any {\n" +
+                "    return service.fetchUserById(42)\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("无降级链保持 Undefined member", unit3.Diagnostics,
+                "Undefined member 'fetchUserById' on type 'Service'");
+
+            // 4. 字段同名：is not a method 优先于降级
+            var (unit4, _) = BindUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Audited {\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn { return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
+                "}\n" +
+                "@Audited\n" +
+                "pub class Service {\n" +
+                "    pub var fetchUserById: String = \"x\"\n" +
+                "    pub init()\n" +
+                "}\n" +
+                "pub func f(service: Service): Any {\n" +
+                "    return service.fetchUserById(42)\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("同名字段优先 is not a method", unit4.Diagnostics,
+                "'fetchUserById' on type 'Service' is not a method");
+
+            // 5. router/链体形态（无 stdlib：Any.call??? 无体——NoSuchMethodException
+            // 缺失，链末 inner 仍可绑——符号与形参 P2 已合成）
+            var (unit5, bodies5) = BindUnit(fixture);
+            CheckNoErrors("router/链体绑定无诊断", unit5);
+            TestHarness.Check("router 直通体（invoke 链首三形参引用）",
+                "Body(call???, [], [Return(InstCall(.proxy.0.???, This(Service), " +
+                "[Param(symbol,String), Param(namedArgs,Array<Any>), " +
+                "Param(unnamedArgs,Array<Any>)], Any))])",
+                BoundDescribe.Body(BodyOf(bodies5, "call???")));
+            TestHarness.Check("降级特化体（canonical 体 + inner = Any.call??? 自动补 symbol）",
+                "Body(.proxy.0.???, [], [Return(InstCall(call???, This(Service), " +
+                "[Param(symbol,String), Param(namedArgs,Array<Any>), " +
+                "Param(unnamedArgs,Array<Any>)], Any))])",
+                BoundDescribe.Body(BodyOf(bodies5, ".proxy.0.???")));
+            var linkCall5 = (BoundInstanceCallExpression)((BoundReturnStatement)
+                ((BoundBlock)BodyOf(bodies5, ".proxy.0.???").Body).Statements[0]).Value!;
+            TestHarness.CheckTrue("inner 自动补 symbol（= 当前 fn symbol 形参引用）",
+                linkCall5.Method.Name == "call???"
+                && ReferenceEquals(linkCall5.Arguments[0].Type, unit5.Symbols.Bootstrap.String)
+                && linkCall5.Arguments[0] is BoundValueReferenceExpression symbolRef
+                && ReferenceEquals(symbolRef.Symbol,
+                    BodyOf(bodies5, ".proxy.0.???").Method.Parameters[0]),
+                BoundDescribe.Expr(linkCall5));
+            TestHarness.CheckTrue("Any.call??? 无 stdlib 无体（NoSuchMethodException 缺失）",
+                !bodies5.Any(b => ReferenceEquals(b.Method,
+                    unit5.Symbols.Bootstrap.Any.Methods.FirstOrDefault(m => m.Name == "call???"))),
+                string.Join("; ", bodies5.Select(b => b.Method.Name)));
+
+            // 5b. Any.call??? 默认体（带 stdlib 驱动：exceptions.latte 的
+            // NoSuchMethodException）：throw new NoSuchMethodException(symbol)
+            var (unit5b, bodies5b) = BindUnitWithStdlib(fixture);
+            CheckNoErrors("stdlib 全链绑定无诊断", unit5b);
+            var anyCall5b = unit5b.Symbols.Bootstrap.Any.Methods.Single(m => m.Name == "call???");
+            TestHarness.Check("Any.call??? 默认体（throw new NoSuchMethodException）",
+                "Body(call???, [], [Throw(New(NoSuchMethodException, init, " +
+                "[Param(symbol,String)]))])",
+                BoundDescribe.Body(bodies5b.Single(b => ReferenceEquals(b.Method, anyCall5b))));
+
+            // 6. 语句位置：service.ping() 裸语句 → 零诊断（非 void 调用落成
+            // 表达式语句——降级结果 Any 有值）
+            var (unit6, bodies6) = BindUnit(fixture +
+                "pub func f(service: Service) {\n" +
+                "    service.ping()\n" +
+                "}\n");
+            CheckNoErrors("语句位置降级无诊断", unit6);
+            TestHarness.Check("语句位置降级形态（表达式语句）",
+                "[ExprStmt(InstCall(call???, Param(service,Service), " +
+                "[Str(\"Service$ping()@.any\",String), KwArgs([]), VarArgs([])], Any))]",
+                BoundDescribe.Block((BoundBlock)BodyOf(bodies6, "f").Body));
+
+            // 7. 值位置定型：var x = service.fetch() → x: Any
+            var (unit7, bodies7) = BindUnit(fixture +
+                "pub func f(service: Service): i32 {\n" +
+                "    var x = service.fetch()\n" +
+                "    return 1\n" +
+                "}\n");
+            CheckNoErrors("值位置降级无诊断", unit7);
+            TestHarness.Check("值位置 var 推断 = Any",
+                "Body(f, [x: Any], [Decl(x, Any, = InstCall(call???, Param(service,Service), " +
+                "[Str(\"Service$fetch()@.any\",String), KwArgs([]), VarArgs([])], Any)); " +
+                "Return(Int(1,i32))])",
+                BoundDescribe.Body(BodyOf(bodies7, "f")));
+
+            // 8. return 位置（S11e 一致性扩展）：User f() { return service.fetch() }
+            // ——Any→User 返回兼容性豁免（Bound 形态保留降级调用值，
+            // P4a EnsureDeclaredType 物化 cast .any → User）
+            var (unit8, bodies8) = BindUnit(fixture +
+                "pub class User { pub init() }\n" +
+                "pub func f(service: Service): User {\n" +
+                "    return service.fetch()\n" +
+                "}\n");
+            CheckNoErrors("return 位置降级无诊断", unit8);
+            var returnCall8 = (BoundInstanceCallExpression)((BoundReturnStatement)
+                ((BoundBlock)BodyOf(bodies8, "f").Body).Statements[0]).Value!;
+            TestHarness.CheckTrue("return 值即降级调用（Type = Any）",
+                ReferenceEquals(returnCall8.Type, unit8.Symbols.Bootstrap.Any)
+                && ReferenceEquals(returnCall8.Method,
+                    unit8.Symbols.GlobalNamespace.Types.First(t => t.Name == "Service")
+                        .DowngradeRouter),
+                BoundDescribe.Expr(returnCall8));
+            var lowered8 = Lowerer.Lower(unit8, bodies8);
+            CheckNoErrors("P4 return cast 物化无诊断", unit8);
+            var loweredReturn8 = (LoweredReturnStatement)lowered8.Single(b => b.Method.Name == "f")
+                .Body.Statements[0];
+            TestHarness.CheckTrue("return cast 物化（Any → User）",
+                loweredReturn8.Value is LoweredCastExpression cast8
+                && cast8.TargetType is TypeSymbol { Name: "User" }
+                && cast8.Source is LoweredInstanceCallExpression
+                && ReferenceEquals(cast8.Source.Type, unit8.Symbols.Bootstrap.Any),
+                LoweredDescribe.Body(lowered8.Single(b => b.Method.Name == "f")));
+
+            // 9. 实参位置（S11e 一致性扩展）：foo(service.fetch())（foo 形参
+            // User）——单候选快路径 CallFacility.BindArguments 零诊断；
+            // 降级实参 Any 传入 User 形参（P4a LowerArguments cast 物化）
+            var (unit9, bodies9) = BindUnit(fixture +
+                "pub class User { pub init() }\n" +
+                "pub func foo(u: User) { }\n" +
+                "pub func f(service: Service) {\n" +
+                "    foo(service.fetch())\n" +
+                "}\n");
+            CheckNoErrors("实参位置降级无诊断", unit9);
+            TestHarness.Check("实参位置降级形态（降级调用作 foo 实参）",
+                "[CallStmt(foo, [InstCall(call???, Param(service,Service), " +
+                "[Str(\"Service$fetch()@.any\",String), KwArgs([]), VarArgs([])], Any)])]",
+                BoundDescribe.Block((BoundBlock)BodyOf(bodies9, "f").Body));
+
+            // 9b. 实参位置多候选路径：重载候选按类型适用性过滤——降级实参
+            // Any 令 User 形参候选适用（OverloadResolution.IsApplicable
+            // 豁免），String 实参剔除另一候选，唯一定胜零诊断
+            var (unit9b, bodies9b) = BindUnit(fixture +
+                "pub class User { pub init() }\n" +
+                "pub func foo(u: User, tag: String) { }\n" +
+                "pub func foo(u: User, tag: User) { }\n" +
+                "pub func f(service: Service) {\n" +
+                "    foo(service.fetch(), \"x\")\n" +
+                "}\n");
+            CheckNoErrors("实参位置多候选降级无诊断", unit9b);
+            TestHarness.Check("多候选胜者（User 形参候选）",
+                "[CallStmt(foo, [InstCall(call???, Param(service,Service), " +
+                "[Str(\"Service$fetch()@.any\",String), KwArgs([]), VarArgs([])], Any), " +
+                "Str(\"x\",String)])]",
+                BoundDescribe.Block((BoundBlock)BodyOf(bodies9b, "f").Body));
+
+            // 10. 负例：普通 Any 值仍被拒（豁免不误伤——仅直接包裹降级调用
+            // 的表达式放行，`Any a` 赋值保持诊断）
+            var (unit10, _) = BindUnit(fixture +
+                "pub class User { pub init() }\n" +
+                "pub func f(a: Any): User {\n" +
+                "    var u: User = a\n" +
+                "    return u\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("普通 Any 赋值保持诊断", unit10.Diagnostics,
+                "Cannot assign 'Any' to 'User'");
+        }
     }
 }

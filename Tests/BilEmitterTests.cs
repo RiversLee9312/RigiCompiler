@@ -122,6 +122,11 @@ namespace LatteCompiler.Tests
             TestProxyBakingEmission();
             TestProxyWildcardBakingEmission();
             TestProxyAccessorBakingEmission();
+            TestDowngradeEmissionSingle();
+            TestDowngradeCastMaterialization();
+            TestDowngradeStatementPosition();
+            TestDowngradeDoubleChain();
+            TestDowngradeGateNoChain();
             TestUnsupportedNodes();
 
             return TestHarness.Summary("BilEmitter");

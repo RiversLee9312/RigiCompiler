@@ -16,11 +16,15 @@ namespace LatteCompiler.Bil
             VerifySectionDuplicates(context.Module.LocalSymbols, "LocalSymbols", errors);
             VerifySectionDuplicates(context.Module.ExternalSymbols, "ExternalSymbols", errors);
 
-            // fn 定义必须对应 LocalSymbols 方法声明（§9.1）；符号形态合法
+            // fn 定义必须对应 LocalSymbols 方法声明（§9.1）；符号形态合法。
+            // S11e：builtin 宿主的编译器合成 fn 定义（如 Any.call??? 默认
+            // 实现）无声明可对应——内建类型不进符号段（BilVerificationContext
+            // PredefinedTypes 硬编码环境），此处豁免（IsPredefinedTypeHost）
             var fnSymbols = new HashSet<string>();
             foreach (var function in context.Module.Functions)
             {
-                if (!context.LocalMethodSymbols.Contains(function.Symbol))
+                if (!context.LocalMethodSymbols.Contains(function.Symbol)
+                    && !IsBuiltinHostedFunction(context, function.Symbol))
                 {
                     errors.Add(new BilVerificationError("21.2", function.Symbol,
                         "fn 定义在 LocalSymbols 中没有对应方法声明"));
@@ -242,19 +246,24 @@ namespace LatteCompiler.Bil
             // 必须带本修饰符（缺失即非烘焙产物——用户伪造保留名同此拦截）；
             // kind 与名段一致：.wrapped. ↔ original（被修饰成员原始实现
             // 体），.proxy. ↔ specific|wildcard|router（特化/解包 shim/
-            // 路由 fn；original 只允许 .wrapped.）
+            // 路由 fn；original 只允许 .wrapped.）。
+            // S11e：router 修饰符放行名 call???（宿主降级路由 fn，BIL §8.4
+            // 按 symbol 路由体）——wrapper-proxy(router) 允许在名 call???
+            // 的方法上，且 call??? ↔ router 双向一致（.proxy./.wrapped. 名
+            // 段不得 router、call??? 不得其他 kind）
             var nameSegment = MethodNameSegment(symbol);
             var isProxyReserved = nameSegment != null && nameSegment.StartsWith(".proxy.");
             var isWrappedReserved = nameSegment != null && nameSegment.StartsWith(".wrapped.");
+            var isRouterReserved = nameSegment == "call???";
             BilWrapperProxyModifier? wrapperProxy = null;
             foreach (var modifier in declaration.Modifiers)
             {
                 if (modifier is BilWrapperProxyModifier found) wrapperProxy = found;
             }
-            if (wrapperProxy != null && !isProxyReserved && !isWrappedReserved)
+            if (wrapperProxy != null && !isProxyReserved && !isWrappedReserved && !isRouterReserved)
             {
                 errors.Add(new BilVerificationError("21.8", symbol,
-                    "wrapper-proxy(...) 只允许在编译器合成保留名（.proxy./.wrapped.）方法上（§5.1）"));
+                    "wrapper-proxy(...) 只允许在编译器合成保留名（.proxy./.wrapped./call???）方法上（§5.1）"));
             }
             if (wrapperProxy == null && (isProxyReserved || isWrappedReserved))
             {
@@ -272,6 +281,18 @@ namespace LatteCompiler.Bil
                 {
                     errors.Add(new BilVerificationError("21.8", symbol,
                         ".proxy. 名段不得带 wrapper-proxy(original)（original 仅用于 .wrapped.，§8.4）"));
+                }
+                // S11e：call??? 必须带 wrapper-proxy(router)；.proxy./.wrapped.
+                // 名段不得带 router（router 只用于宿主降级路由 fn）
+                if (isRouterReserved && wrapperProxy.Kind != BilProxyKind.Router)
+                {
+                    errors.Add(new BilVerificationError("21.8", symbol,
+                        "call??? 降级路由 fn 必须带 wrapper-proxy(router)（§8.4）"));
+                }
+                if ((isProxyReserved || isWrappedReserved) && wrapperProxy.Kind == BilProxyKind.Router)
+                {
+                    errors.Add(new BilVerificationError("21.8", symbol,
+                        ".proxy./.wrapped. 名段不得带 wrapper-proxy(router)（router 仅用于 call???，§8.4）"));
                 }
             }
 
@@ -442,6 +463,17 @@ namespace LatteCompiler.Bil
                         break;
                 }
             }
+        }
+
+        // S11e：fn 定义宿主为预定义内建类型（canonical owner 段 ∈
+        // PredefinedTypes）——内建类型不进符号段，其编译器合成成员
+        //（如 Any.call??? 默认实现）无本地声明可对应，§9.1 对 builtin
+        // 宿主豁免（structural 事实，非用户可伪造的形态）
+        private static bool IsBuiltinHostedFunction(BilVerificationContext context, string symbol)
+        {
+            return BilVerificationContext.TryParseMethodSymbol(symbol,
+                    out var owner, out _, out _, out _)
+                && context.IsPredefinedTypeHost(owner);
         }
 
         // 方法名段提取（$ 之后、参数段/@ 之前；$$ 运算符形态跳过第二个

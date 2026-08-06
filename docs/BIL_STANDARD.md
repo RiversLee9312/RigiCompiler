@@ -692,6 +692,8 @@ wrapper-proxy(PROXY_KIND)
 
 合成 fn 名（`.proxy.` / `.wrapped.` 前缀）与 `.wrapper.` 隐藏字段名（§5.3）同为编译器保留名（§5.1），用户源码不可声明。编译器只生成 `invoke` 链表达烘焙结果，最终内联归 Middleware。
 
+S11e（M86）落地形态：`router` 是宿主类型的成员 fn，名为 `call???`（`?` 非标识符字符，用户源码不可声明，同为编译器保留名）；其体为对降级特化链首的普通 `invoke`。降级特化 fn 名 `.proxy.<序>.???`（序 = wrapper 应用 outer→inner 序号），标 `wrapper-proxy(wildcard)`；链末 inner 目标是 `core::Any$call???` 默认实现（`Any` 的成员，不标本修饰符——`Any` 为内建类型不进符号段，只产 fn 定义，体 = 抛 `core.NoSuchMethodException`）。三者的规范签名统一为 §15.4 的胖值形态。
+
 运算符、getter、setter 和 enum case 的实现可以拥有 method body，但其调用点在 BIL 中仍使用对应的语义指令；只有普通显式方法调用或规范要求的动态 fallback 使用 `invoke`。
 
 `native` 方法声明由运行时原生方法面提供实现（`SYNTAX.md` §4.6、`RUNTIME.md` §26）：
@@ -1349,11 +1351,13 @@ invoke.indirect.noret METHODID_VAR [ARG_0, ARG_1, ...]
 
 仍使用各自 BIL 指令，不因最终可能经过 wrapper 路由而预先改写为 `invoke`。
 
+落地形态（M86）：`call???` 的规范签名是 `RUNTIME.md` §14.2 泛型逻辑签名的实质化——`(symbol: .string, namedArgs: .array<core::Pair<.string, .any>>, unnamedArgs: .array<.any>): .any`（非泛型；实参的装箱/拆包转换沿用 §12.1 cast 语义）。降级调用点 invoke 的目标是 receiver 静态类型上的 `call???` router 成员（沿基类链走查；仅 wrapper 链含 `.proxy.*` 的类型拥有），实参规范序 = receiver、symbol 字符串资源、具名包构造、位置包构造；返回值为 `.any` 胖值，调用点按期望类型插入一次 §12.1 cast（不符抛 `core.CastException`）。链形态：router → 逐应用降级特化（`.proxy.<序>.???`，outer→inner）→ 链末 `core::Any$call???` 默认实现（抛 `core.NoSuchMethodException`）。
+
 ### 15.5 canonical symbol 与参数包
 
 当调用 `call???` 或 wrapper wildcard 需要 canonical symbol 时：
 
-- canonical symbol 格式遵循 `SYNTAX.md` / `RUNTIME.md`；
+- canonical symbol 格式遵循 `SYNTAX.md` / `RUNTIME.md`（未声明方法的降级请求 symbol 格式定稿见 `SYNTAX.md` §14.8 末段——参数段只带调用点静态类型、返回段恒 `.any`）；
 - `.generic.<Name>`、`.vargs.<Name>`、`.kwargs.<Name>` 采用第 7 节规定的名称；
 - symbol 字符串存放在 `Resources` 中；
 - 实际 hidden argument 值按方法规范签名传入。
@@ -1743,7 +1747,7 @@ LocalSymbols {
 - canonical 限定正确；
 - local symbol 不重复；
 - external symbol 签名完整；
-- 方法 body 与声明一一对应（`native` 声明除外：`native` 方法不得存在方法 body，且必须恰好各带一个 `symbol("...")` 与 `lib("...")` 修饰符）；
+- 方法 body 与声明一一对应（`native` 声明除外：`native` 方法不得存在方法 body，且必须恰好各带一个 `symbol("...")` 与 `lib("...")` 修饰符；内建类型宿主的 fn 定义豁免——内建类型不进符号段（§6.2/§6.3 别名投影闭合），其成员 fn 定义（如 `core::Any$call???` 默认实现，M86）无对应声明是合法形态）；
 - entrypoint 唯一且签名符合 `SYNTAX.md`。
 
 ### 21.3 类型验证
@@ -1822,7 +1826,8 @@ LocalSymbols {
 - abstract 不被构造；
 - enum struct 不走普通 new；
 - rich/shared 闭包与跨 Coroutine 规则合法；
-- async 调用的 receiver/参数/结果满足 shared 边界。
+- async 调用的 receiver/参数/结果满足 shared 边界；
+- `wrapper-proxy(PROXY_KIND)`（§8.4）只允许在 `.proxy.`/`.wrapped.` 保留名方法与 `call???` 名方法上；保留名方法必须带本修饰符；kind 与名一致（`.wrapped.` ↔ `original`、`call???` ↔ `router`、`.proxy.` 名不得 `original`/`router`）；同一方法不得重复携带本修饰符。
 
 ### 21.9 VM 可执行性验证
 

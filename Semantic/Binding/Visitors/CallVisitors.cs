@@ -139,8 +139,28 @@ namespace LatteCompiler
                     && innerTarget.GenericParameters.All(p => !p.IsVariadic && !p.IsNamedVariadic)
                     ? ctx.Frame.Method.GenericParameters.Cast<SemanticSymbol>().ToList()
                     : null;
+                // S11e：降级链 inner 自动补 symbol——降级特化/Any.call???
+                // 的胖值签名首形参名是 symbol（canonical wildcard 体
+                // `inner(namedArgs=..., unnamedArgs=...)` 双具名不传 symbol），
+                // 用户实参未绑定 symbol（无 symbol 具名实参且第 0 位不是位置
+                // 实参）时合成 symbol 具名实参 = 当前 fn 的 symbol 形参引用
+                //（proxy 声明形参与特化 fn 同名直通——零前奏下裸名 symbol
+                // 落 fn 形参）。per-member 链的 inner = shim 双参（无 symbol
+                // 形参），本判定天然不触发
+                List<ArgumentASTNode> effectiveArguments = arguments;
+                if (innerTarget.Parameters.Count > 0
+                    && innerTarget.Parameters[0].Name == "symbol"
+                    && !arguments.Any(a => a.Name == "symbol")
+                    && (arguments.Count == 0 || arguments[0].Name != null))
+                {
+                    var synthesized = new ArgumentASTNode(null) { Name = "symbol" };
+                    var symbolPath = new PathExpressionASTNode();
+                    symbolPath.Head.Name = "symbol";
+                    synthesized.Value.Attach(symbolPath);
+                    effectiveArguments = arguments.Append(synthesized).ToList();
+                }
                 var resolvedInner = OverloadResolution.Resolve(node,
-                    new List<MethodSymbol> { innerTarget }, arguments, scope, ctx, env,
+                    new List<MethodSymbol> { innerTarget }, effectiveArguments, scope, ctx, env,
                     innerTypeArgs, receiverType: ctx.Frame.Method.Owner);
                 if (resolvedInner == null) return null;
                 var (innerMethod, innerArguments, innerResultType, innerPack) =
@@ -371,11 +391,25 @@ namespace LatteCompiler
             var candidates = SymbolLookup.FindInstanceMethods(receiverType, name);
             if (candidates.Count == 0)
             {
-                env.Error(node.Span, SymbolLookup.FindInstanceField(receiverType, name) != null
-                    ? $"'{name}' on type '{BoundAnalysis.TypeDisplay(receiver.Type)}' is not a method"
-                    : $"Undefined member '{name}' on type " +
+                // 同名字段存在 → 保持既有 "is not a method" 诊断（行为不变）；
+                // 否则进入 S11e 降级判定（SYNTAX §14.7 + RUNTIME §14.3）：
+                // 未声明方法且 receiver 类型链（每步定义级回退）上宿主含
+                // .proxy.* 降级链时，调用点降级为对 router（宿主成员
+                // call???）的胖值调用
+                if (SymbolLookup.FindInstanceField(receiverType, name) != null)
+                {
+                    env.Error(node.Span, $"'{name}' on type '{BoundAnalysis.TypeDisplay(receiver.Type)}' is not a method");
+                    return null;
+                }
+                var router = FindDowngradeRouter(receiverType);
+                if (router == null)
+                {
+                    env.Error(node.Span, $"Undefined member '{name}' on type " +
                         $"'{BoundAnalysis.TypeDisplay(receiver.Type)}'");
-                return null;
+                    return null;
+                }
+                return BindDowngradeCall(node, receiver, receiverType, name, router, arguments,
+                    scope, ctx, env);
             }
             // 使用点访问控制（S8e，SYNTAX §16.1）：同 ResolveCallee 口径
             var accessible = candidates.Where(ctx.Frame.CanAccess).ToList();
@@ -403,6 +437,81 @@ namespace LatteCompiler
                 GenericPack = genericPack,
                 // S10：async 调用表达式类型改写（同 BindCall 口径）
                 ResultType = AsyncResultType(selected, selectedResultType, env),
+            };
+        }
+
+        // S11e：沿 receiver 静态类型链（每步定义级回退——降级链只合成在
+        // 定义级宿主，构造类型经 ConstructedFrom 命中）找首个带降级链
+        //（.proxy.* wrapper 链）的宿主；无链返回 null
+        private static MethodSymbol? FindDowngradeRouter(TypeSymbol receiverType)
+        {
+            for (var t = receiverType; t != null; t = t.BaseType)
+            {
+                var definition = t.ConstructedFrom ?? t;
+                if (definition.DowngradeRouter != null) return definition.DowngradeRouter;
+            }
+            return null;
+        }
+
+        // S11e 降级调用合成（SYNTAX §14.7 + RUNTIME §14.3 胖值 ABI）：未声明
+        // 方法的调用点改绑宿主 router（call???）——三实参（规范序 = router
+        // 形参序）：
+        //   symbol = 调用点降级请求 canonical（PrintDowngradeRequest：位置
+        //     实参只写类型、具名写 名:类型，返回段恒 .any）；
+        //   namedArgs = 具名包（BoundVarArgsArgument，ABI = NamedPackType）；
+        //   unnamedArgs = 位置包（Array\<Any\> 构造）。
+        // 返回值恒 Any——调用点转换由 P4a §6.5 物化承担（Any→T cast 失败抛
+        // core.CastException）；P3 侧不做 cast 包装（设计定稿：转换骑 M51
+        // 既有五位置物化）。显式泛型实参（genericArguments）照常降级、忽略
+        // 实参——技术债归 S11g 复核（降级链符号非泛型，泛型信息无从传递）
+        private static CallBinding? BindDowngradeCall(ASTNode node, BoundExpression receiver,
+            TypeSymbol receiverType, string name, MethodSymbol router,
+            List<ArgumentASTNode> arguments, Scope scope, BindContext ctx, BindEnvironment env)
+        {
+            // 预绑全部实参（无目标类型——降级 ABI 全进 Any 胖值槽；
+            // OverloadResolution.PrebindArguments 先例）。任一实参失败返回
+            // null（表达式自身诊断已报，不级联）
+            var boundArgs = new BoundExpression[arguments.Count];
+            for (int i = 0; i < arguments.Count; i++)
+            {
+                var bound = ExpressionDispatcher.Visit(arguments[i].Value.Expression, scope, ctx,
+                    env);
+                if (bound == null) return null;
+                boundArgs[i] = bound;
+            }
+            // symbol 请求 canonical 与双包元素：按调用点书写序（位置实参只写
+            // 类型、具名实参写 名:类型；具名包元素 = 具名实参、位置包元素 =
+            // 位置实参，均保源序）
+            var requestArgs = new (string? ArgName, SemanticSymbol ArgType)[arguments.Count];
+            var positionalValues = new List<BoundExpression>();
+            var namedValues = new List<(string Name, BoundExpression Value)>();
+            for (int i = 0; i < arguments.Count; i++)
+            {
+                requestArgs[i] = (arguments[i].Name, boundArgs[i].Type);
+                if (arguments[i].Name != null)
+                {
+                    namedValues.Add((arguments[i].Name!, boundArgs[i]));
+                }
+                else
+                {
+                    positionalValues.Add(boundArgs[i]);
+                }
+            }
+            var symbolLit = BindingDriver.MakeStringLiteral(env,
+                CanonicalSymbolPrinter.PrintDowngradeRequest(receiverType, name, requestArgs));
+            var unnamedPack = new BoundVarArgsArgument(node, isNamed: false, positionalValues, null,
+                env.Unit.Symbols.GetConstructedType(env.B.ArrayDefinition, env.B.Any));
+            var namedPack = new BoundVarArgsArgument(node, isNamed: true,
+                Array.Empty<BoundExpression>(), namedValues, BindingDriver.NamedPackType(env));
+            return new CallBinding
+            {
+                Method = router,
+                Arguments = new List<BoundExpression> { symbolLit, namedPack, unnamedPack },
+                IsVoid = false,
+                Receiver = receiver,
+                TypeArguments = Array.Empty<SemanticSymbol>(),
+                GenericPack = null,
+                ResultType = env.B.Any,
             };
         }
 
@@ -502,7 +611,10 @@ namespace LatteCompiler
                     failed = true;
                     continue;
                 }
-                if (expected != null && !SymbolLookup.IsAssignable(value.Type, expected, env))
+                // S11e：降级调用结果 Any 可作任意形参实参（P4a cast 物化
+                // 兜底，同 OverloadResolution.IsApplicable 豁免口径）
+                if (expected != null && !SymbolLookup.IsAssignable(value.Type, expected, env)
+                    && !BoundAnalysis.IsDowngradeCallResult(value))
                 {
                     env.Error(argument.Value.Span ?? argument.Span,
                         $"Cannot pass '{BoundAnalysis.TypeDisplay(value.Type)}' as " +

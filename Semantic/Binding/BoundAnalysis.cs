@@ -310,6 +310,24 @@ namespace LatteCompiler
             }
         }
 
+        // S11e：降级调用结果判定（SYNTAX §14.7 + BIL §15.4）——调用点静态
+        // 类型恒 Any（胖值 ABI），到目标类型的具体转换由 P4a §6.5 cast 物化
+        // 承担（EnsureDeclaredType：Any→T 引用不等即物化），P3 各类型兼容性
+        // 检查据此豁免类型判定（运行时链末 Any.call??? 抛 NoSuchMethodException、
+        // 调用点 cast 抛 CastException 兜底）。识别：BoundInstanceCallExpression
+        // 且方法即宿主 router（call???，宿主引用相等）。语义边界：仅直接
+        // 包裹降级调用的表达式（不递归下钻子表达式）。声明初始化检查
+        //（LocalDeclarationVisitor）、赋值检查（ExpressionStatementVisitor）、
+        // return 兼容性（ReturnVisitor）与实参适用性（OverloadResolution /
+        // CallFacility）共用——本文件为唯一定义点（M86 自
+        // ExpressionStatementVisitor 迁入中立设施）
+        public static bool IsDowngradeCallResult(BoundExpression expression)
+        {
+            return expression is BoundInstanceCallExpression { Method: { } method }
+                && method.Owner != null
+                && ReferenceEquals(method.Owner.DowngradeRouter, method);
+        }
+
         // 诊断用类型显示名（迁移自旧 BindSession.TypeDisplay）；
         // S9 放宽为 SemanticSymbol：泛型参数显示其名，构造实参递归显示
         public static string TypeDisplay(SemanticSymbol type)

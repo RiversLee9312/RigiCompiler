@@ -102,6 +102,16 @@ namespace LatteCompiler.Bil
             // 异常根 getMessage（S10，SYNTAX §8.1）：bootstrap 符号不声明的
             // 成员面，调用点 invoke 需要可解析
             "core::Exception$getMessage()@.string",
+            // S11e（BIL §15.4）：Any.call??? 链末默认实现——bootstrap 内建
+            // 宿主不进 LocalSymbols（EmitTypeTree 跳过 IsBuiltin），其合成
+            // 成员 fn 定义已平铺发射（P3 阶段 2.6 绑体：throw new
+            // NoSuchMethodException(symbol)），调用点 invoke（降级特化链末
+            // 环）需要可解析。签名 = 非泛型胖值 ABI（SYNTAX §14.7：
+            // symbol + 具名包 Array<Pair<String, Any>> + 位置包 Array<Any>
+            // → Any），与 SynthesizeFatSymbol 发射形态逐字符一致
+            "core::Any$call???(symbol:.string," +
+                "namedArgs:.array<core::Pair<.string, .any>>," +
+                "unnamedArgs:.array<.any>)@.any",
         };
 
         // 预定义字段（bootstrap 符号不声明的成员面，S10）：异常根 message
@@ -195,6 +205,15 @@ namespace LatteCompiler.Bil
         };
 
         public static bool IsBuiltinType(string typeRef) => BuiltinTypes.Contains(typeRef);
+
+        // S11e：canonical 宿主段是否预定义内建类型（core::Any 等，PredefinedTypes
+        // 集）——内建类型从不进 LocalSymbols/ExternalSymbols，其编译器合成
+        // 成员（如 Any.call??? 默认实现）的 fn 定义无声明可对应，§21.2 的
+        // fn↔声明检查对 builtin 宿主豁免（结构性事实，非伪造逃生门）
+        public bool IsPredefinedTypeHost(string owner)
+        {
+            return PredefinedTypes.Contains(owner);
+        }
 
         // 类型引用可解析（§21.2）：内建 / 构造形式（.generic<...> 内部为
         // typeid 位置表达式，免检；其余构造头递归检查基类型）/ 用户 canonical

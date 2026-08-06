@@ -507,7 +507,237 @@ namespace LatteCompiler.Tests
                 "ret $value\n");
         }
 
-        // 成员声明形状渲染（Kind|Symbol|修饰符逗号序）
+        // ===== S11e call??? 降级发射端到端（单环，验收核心）=====
+        // 验收（SYNTAX §14.7 + BIL §15.4）：未声明方法调用点降级为
+        // invoke router（胖值三实参：symbol 字符串资源 + 具名空包 + 位置
+        // 包含 cast）→ router 直通体 invoke 链首特化 → 特化零前奏直通链
+        // 末 Any.call??? → 链末默认体 new NoSuchMethodException + throw
+        private static void TestDowngradeEmissionSingle()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper W {\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn { return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
+                "}\n" +
+                "@W\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "}\n" +
+                "pub func f(service: Service): Any {\n" +
+                "    return service.fetchUserById(42)\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（降级单环）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（降级单环）", module);
+
+            // 声明形态（§8.4）：router wrapper-proxy(router)、降级特化
+            // wrapper-proxy(wildcard) 均 priv；Any.call??? 宿主内建无声明
+            var service = module.LocalSymbols.OfType<BilTypeDeclaration>()
+                .Single(t => t.Symbol == "Service");
+            TestHarness.Check("router 声明（wrapper-proxy(router)）",
+                "Method|Service$call???(symbol:.string,namedArgs:.array<core::Pair<.string, .any>>," +
+                "unnamedArgs:.array<.any>)@.any|priv,wrapper-proxy(router)",
+                RenderMember(service, "Service$call???(symbol:.string," +
+                    "namedArgs:.array<core::Pair<.string, .any>>,unnamedArgs:.array<.any>)@.any"));
+            TestHarness.Check("降级特化声明（wrapper-proxy(wildcard)）",
+                "Method|Service$.proxy.0.???(symbol:.string,namedArgs:.array<core::Pair<.string, .any>>," +
+                "unnamedArgs:.array<.any>)@.any|priv,wrapper-proxy(wildcard)",
+                RenderMember(service, "Service$.proxy.0.???(symbol:.string," +
+                    "namedArgs:.array<core::Pair<.string, .any>>,unnamedArgs:.array<.any>)@.any"));
+
+            // 降级请求 symbol 字符串资源内容（§14.7：位置实参只写类型、
+            // 返回段恒 .any；本样例无具名实参）
+            TestHarness.CheckTrue("降级请求 symbol 资源内容",
+                module.Resources.OfType<BilScalarResource>().Any(r =>
+                    r.Type == BilScalarType.String
+                    && r.LiteralText == "\"Service$fetchUserById(.i32)@.any\""));
+
+            // 调用点：invoke router——receiver 在前、三实参（symbol 资源 /
+            // 具名空包构造 / 位置包含 cast 42→Any）。资源按本 fn 内首次
+            // 出现顺序重编号（#0 = symbol 字符串、#1 = 42）
+            BilTestHarness.CheckFnShape("调用点 fn（invoke router 胖值三参）",
+                module, "$f(service:Service)@.any",
+                ".vars { .string .t0, .array<core::Pair<.string, .any>> .t1, .i32 .t2, .any .t3, " +
+                ".array<.any> .t4, .any .t5 }\n" +
+                "load res(#0) $.t0\n" +
+                "new type(.array<core::Pair<.string, .any>>) $.t1 []\n" +
+                "load res(#1) $.t2\n" +
+                "cast $.t2 $.t3 type(.any)\n" +
+                "new type(.array<.any>) $.t4 [$.t3]\n" +
+                "invoke fn(Service$call???(symbol:.string,namedArgs:.array<core::Pair<.string, .any>>," +
+                "unnamedArgs:.array<.any>)@.any) $.t5 [$service, $.t0, $.t1, $.t4]\n" +
+                "ret $.t5\n");
+            // router fn：直通体 invoke 链首特化（this + 胖值三形参逐一引用）
+            BilTestHarness.CheckFnShape("router fn（invoke 链首特化）",
+                module, "Service$call???(symbol:.string,namedArgs:.array<core::Pair<.string, .any>>," +
+                "unnamedArgs:.array<.any>)@.any",
+                ".vars { .any .t0 }\n" +
+                "invoke fn(Service$.proxy.0.???(symbol:.string,namedArgs:.array<core::Pair<.string, .any>>," +
+                "unnamedArgs:.array<.any>)@.any) $.t0 [$.this, $symbol, $namedArgs, $unnamedArgs]\n" +
+                "ret $.t0\n");
+            // 特化 fn：零前奏直通链末 Any.call???（receiver 沿宿主 cast 到
+            // Any——InstanceCallRewriter §6.5 物化；symbol 由 CallVisitors
+            // 自动补为当前 fn 形参引用）
+            BilTestHarness.CheckFnShape("降级特化 fn（invoke Any.call??? 链末）",
+                module, "Service$.proxy.0.???(symbol:.string,namedArgs:.array<core::Pair<.string, .any>>," +
+                "unnamedArgs:.array<.any>)@.any",
+                ".vars { .any .t0, .any .t1 }\n" +
+                "cast $.this $.t0 type(.any)\n" +
+                "invoke fn(core::Any$call???(symbol:.string,namedArgs:.array<core::Pair<.string, .any>>," +
+                "unnamedArgs:.array<.any>)@.any) $.t1 [$.t0, $symbol, $namedArgs, $unnamedArgs]\n" +
+                "ret $.t1\n");
+            // Any.call??? 链末默认体（RUNTIME §14.2）：new NoSuchMethodException + throw
+            BilTestHarness.CheckFnShape("Any.call??? 默认体（new + throw）",
+                module, "core::Any$call???(symbol:.string,namedArgs:.array<core::Pair<.string, .any>>," +
+                "unnamedArgs:.array<.any>)@.any",
+                ".vars { core::NoSuchMethodException .t0 }\n" +
+                "new type(core::NoSuchMethodException) $.t0 [$symbol]\n" +
+                "throw $.t0\n");
+        }
+
+        // ===== S11e 值位置 cast 物化（§12.1/§6.5）=====
+        // 未声明方法降级调用返回 Any（胖值 ABI），赋给 class 局部时
+        // EnsureDeclaredType 物化 cast .any → User（引用不等即物化）
+        private static void TestDowngradeCastMaterialization()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper W {\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn { return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
+                "}\n" +
+                "pub class User {\n" +
+                "    pub var id: i32\n" +
+                "    pub init(i: i32) { id = i }\n" +
+                "}\n" +
+                "@W\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "}\n" +
+                "pub func f(service: Service): User {\n" +
+                "    var u: User = service.fetch()\n" +
+                "    return u\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（cast 物化）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（cast 物化）", module);
+            // invoke（Any 结果）后 cast .any → User 物化，再 set.var 落局部
+            // （#0 = symbol 字符串，本 fn 内首次出现）
+            BilTestHarness.CheckFnShape("值位置 cast 物化（invoke 后 cast User）",
+                module, "$f(service:Service)@User",
+                ".vars { User u, .string .t0, .array<core::Pair<.string, .any>> .t1, " +
+                ".array<.any> .t2, .any .t3, User .t4 }\n" +
+                "load res(#0) $.t0\n" +
+                "new type(.array<core::Pair<.string, .any>>) $.t1 []\n" +
+                "new type(.array<.any>) $.t2 []\n" +
+                "invoke fn(Service$call???(symbol:.string,namedArgs:.array<core::Pair<.string, .any>>," +
+                "unnamedArgs:.array<.any>)@.any) $.t3 [$service, $.t0, $.t1, $.t2]\n" +
+                "cast $.t3 $.t4 type(User)\n" +
+                "set.var $.t4 $u\n" +
+                "ret $u\n");
+        }
+
+        // ===== S11e 语句位置降级调用 =====
+        // `service.ping()` 裸语句：非 void 调用的语句位置形态走既有路径
+        //（丢弃返回值），合法 BIL
+        private static void TestDowngradeStatementPosition()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper W {\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn { return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
+                "}\n" +
+                "@W\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "}\n" +
+                "pub func f(service: Service) {\n" +
+                "    service.ping()\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（语句位置）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（语句位置）", module);
+            TestHarness.CheckTrue("语句位置降级 fn 平铺",
+                module.Functions.Any(f => f.Symbol == "$f(service:Service)@.void")
+                && module.Functions.Any(f => f.Symbol.StartsWith("Service$call???")));
+        }
+
+        // ===== S11e 双 wrapper 双环（链长 2）=====
+        // 两个 .proxy.* wrapper 应用 → 降级链 .proxy.0 → .proxy.1 →
+        // Any.call???；router 直通 .proxy.0，逐环直通下一环，端到端合法
+        private static void TestDowngradeDoubleChain()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper W1 {\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn { return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
+                "}\n" +
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper W2 {\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn { return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
+                "}\n" +
+                "@W1\n" +
+                "@W2\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "}\n" +
+                "pub func f(service: Service): Any {\n" +
+                "    return service.fetch()\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（双环）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（双环）", module);
+            // 两个降级特化 fn 定义平铺（.proxy.0 → .proxy.1 → Any.call???）
+            var service = module.LocalSymbols.OfType<BilTypeDeclaration>()
+                .Single(t => t.Symbol == "Service");
+            TestHarness.CheckTrue("双环特化声明齐全（.proxy.0/.proxy.1 均 wrapper-proxy(wildcard)）",
+                service.Members.OfType<BilSimpleMemberDeclaration>()
+                    .Count(d => d.Symbol.StartsWith("Service$.proxy.") && d.Symbol.Contains(".???"))
+                    == 2
+                && service.Members.OfType<BilSimpleMemberDeclaration>()
+                    .All(d => !d.Symbol.StartsWith("Service$.proxy.") || !d.Symbol.Contains(".???")
+                        || d.Modifiers.OfType<BilWrapperProxyModifier>()
+                            .Any(m => m.Kind == BilProxyKind.Wildcard)));
+            // 链首特化 invoke 下一环特化（.proxy.0 体引用 .proxy.1）
+            TestHarness.CheckTrue("链首特化 invoke 下一环（.proxy.0 → .proxy.1）",
+                module.Functions.Any(f => f.Symbol.StartsWith("Service$.proxy.0.???")
+                    && f.Blocks.SelectMany(b => b.Instructions).OfType<InvokeInstruction>()
+                        .Any(i => i.Method.Symbol.StartsWith("Service$.proxy.1.???"))));
+            // 链末特化 invoke Any.call???
+            TestHarness.CheckTrue("链末特化 invoke Any.call???",
+                module.Functions.Any(f => f.Symbol.StartsWith("Service$.proxy.1.???")
+                    && f.Blocks.SelectMany(b => b.Instructions).OfType<InvokeInstruction>()
+                        .Any(i => i.Method.Symbol.StartsWith("core::Any$call???"))));
+        }
+
+        // ===== S11e 负例：无 .proxy.* 链不降级 =====
+        // wrapper 不含普通方法类别 .proxy.* → P2 不合成降级链 → 未声明方法
+        // 调用保持既有 Undefined member 语义错误，不产生 BIL
+        private static void TestDowngradeGateNoChain()
+        {
+            var (unit, _, _) = BilTestHarness.EmitBilUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper W {\n" +
+                "    pub var level: String\n" +
+                "    pub init(_ -> level)\n" +
+                "}\n" +
+                "@W\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "}\n" +
+                "pub func f(service: Service): Any {\n" +
+                "    return service.unknownMethod(1)\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("无 .proxy.* 链不降级（Undefined member）",
+                unit.Diagnostics, "Undefined member");
+        }
+
+
         private static string RenderMember(BilTypeDeclaration type, string symbol)
         {
             var declaration = type.Members.OfType<BilSimpleMemberDeclaration>()

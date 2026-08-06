@@ -884,6 +884,47 @@ namespace LatteCompiler.Tests
             BilTestHarness.CheckBilInvalid("wrapper-proxy 修饰符重复", m,
                 "wrapper-proxy 修饰符重复");
 
+            // ===== §8.4/§21.8 wrapper-proxy(router)（S11e）=====
+            // router 正例：call??? 降级路由 fn + wrapper-proxy(router) 通过
+            //（§8.4 router 定义——按 symbol 路由体；ExternalSymbols 免 fn
+            // 定义同 S11d 烘焙声明先例）
+            m = MinimalModule(out _, out _);
+            var routerHost = new BilTypeDeclaration("Svc", BilTypeKind.Class,
+                new BilAccessibilityModifier(BilAccessibility.Public));
+            routerHost.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "Svc$call???(symbol:.string,namedArgs:.array<core::Pair<.string, .any>>," +
+                "unnamedArgs:.array<.any>)@.any",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Private),
+                    new BilWrapperProxyModifier(BilProxyKind.Router) }));
+            m.ExternalSymbols.Add(routerHost);
+            BilTestHarness.CheckBilValid("router 声明正例（call??? + wrapper-proxy(router)）", m);
+
+            // §21.8：wrapper-proxy(router) 在非 call??? 名上 → 拒
+            //（router 修饰符只放行降级路由名）
+            m = MinimalModule(out _, out _);
+            var wrongRouterNameHost = new BilTypeDeclaration("Svc", BilTypeKind.Class,
+                new BilAccessibilityModifier(BilAccessibility.Public));
+            wrongRouterNameHost.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "Svc$call(symbol:.string)@.any",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Private),
+                    new BilWrapperProxyModifier(BilProxyKind.Router) }));
+            m.ExternalSymbols.Add(wrongRouterNameHost);
+            BilTestHarness.CheckBilInvalid("router 修饰符在非 call??? 名上", m,
+                "只允许在编译器合成保留名");
+
+            // §21.8：call??? 名带非 router kind → 拒（call??? ↔ router 双向一致）
+            m = MinimalModule(out _, out _);
+            var wrongRouterKindHost = new BilTypeDeclaration("Svc", BilTypeKind.Class,
+                new BilAccessibilityModifier(BilAccessibility.Public));
+            wrongRouterKindHost.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "Svc$call???(symbol:.string)@.any",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Private),
+                    new BilWrapperProxyModifier(BilProxyKind.Specific) }));
+            m.ExternalSymbols.Add(wrongRouterKindHost);
+            BilTestHarness.CheckBilInvalid("call??? 名带 wrapper-proxy(specific)", m,
+                "必须带 wrapper-proxy(router)");
+
+
             // ===== §21.8 init 豁免（对齐 P3 ConstFieldRules，SYNTAX §9.3）=====
             // init 方法（§8.4 init 修饰符标识）体内写实例 const 字段放行
             // （构造期一次性赋值；豁免不限字段宿主==函数宿主，继承的基类

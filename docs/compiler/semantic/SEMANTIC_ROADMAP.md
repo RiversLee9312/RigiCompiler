@@ -741,6 +741,19 @@ enum case（`new.case`、`is .Case` 判别比较、判别值分配）、
 >   路由到 proxy 特化）；bootstrap `Any.call???` 默认实现
 >   （抛 NoSuchMethodException）；返回值调用点转换（不符抛
 >   CastException）。**验收**：未声明方法降级端到端样例。
+>   （**✅ M86 已落地**，2026-08-06，PROGRESS_REPORT 详录——
+>   69 新用例；落地修订：泛型逻辑签名实质化为**非泛型胖值
+>   签名** `(symbol: String, namedArgs: Array\<Pair\<String,
+>   Any\>\>, unnamedArgs: Array\<Any\>): Any`（三合成符号统一，
+>   独立泛型 typeid 包取消——Any 胖值自描述 typeid；结构性
+>   必然：双泛型包/双值包/包整体转发无 Bound 层表达）；
+>   落地形态：router = 宿主成员 `call???`（wrapper-proxy(
+>   router)）+ 逐应用降级特化 `.proxy.<序>.???`（零前奏形参
+>   直通）+ Any.call??? 体合成 throw NoSuchMethodException +
+>   inner 自动补 symbol（合成具名实参）+ 类型兼容豁免五位置
+>   骑 §6.5 cast 物化（Any→T 不符抛 CastException）；请求
+>   symbol 格式定稿 SYNTAX §14.8 末段；遗留五项登记技术债
+>   #28，归 S11g 复核）
 > - **S11f（派发链诊断工具，RUNTIME §15）**：CLI 子命令
 >   `compile --file a.latte --explain-dispatch`（用户决策
 >   形态）；报告编译单元全部烘焙链（被修饰成员 outer→inner

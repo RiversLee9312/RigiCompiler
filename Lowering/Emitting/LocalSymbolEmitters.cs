@@ -128,9 +128,14 @@ namespace LatteCompiler
             {
                 // "." 前缀名分流（S11d 开闸）：烘焙产物（特化/原始体/解包
                 // shim）照常发射声明（wrapper-proxy(...) 修饰符由
-                // EmitMethodDeclaration 投影）；wrapper 类型内的 proxy
-                // 声明模板（.proxy.<名>/.proxy.* 等）是编译期模板——体只
-                // 经逐组合绑定进特化 fn，自身无 fn 定义，不进 BIL
+                // EmitMethodDeclaration 投影）；S11e 降级特化
+                //（.proxy.<序>.???，ProxySpecialization 非空且 TargetMember
+                // 为 null）同为烘焙产物，经 IsBakedProxyProduct 自动覆盖。
+                // wrapper 类型内的 proxy 声明模板（.proxy.<名>/.proxy.* 等）
+                // 是编译期模板——体只经逐组合绑定进特化 fn，自身无 fn 定义，
+                // 不进 BIL。router（宿主成员 call???）不以 "." 开头，天然
+                // 通过本分流，声明照常发射（wrapper-proxy(router) 投影见
+                // EmitMethodDeclaration）
                 if (method.Name.StartsWith('.') && !IsBakedProxyProduct(method)) continue;
                 // enum struct 的无体 init（case 模板，SYNTAX §12.1）同样
                 // 发射声明——P3 起映射赋值体合成（§9.3）为其产出 fn 定义，
@@ -284,8 +289,18 @@ namespace LatteCompiler
             // 特化 fn 按 ProxySpecialization.Kind 取 specific/wildcard；
             // 原始体 fn（.wrapped.）取 original；wildcard 解包 shim
             //（.proxy.unwrap.——wildcard 环的解包辅助）取 wildcard。
-            // 转发壳（被拦截成员原名 fn）是普通成员声明，不标本修饰符
-            if (method.ProxySpecialization is { } specialization)
+            // 转发壳（被拦截成员原名 fn）是普通成员声明，不标本修饰符。
+            // S11e：router（宿主成员 call???，P2 ComputeDowngradeChains
+            // 合成）取 router——按宿主引用相等判定（引用相等即身份）；
+            // 降级特化 .proxy.<序>.??? 的 ProxySpecialization 非空
+            //（Kind=Wildcard），走下方特化分支自动覆盖。Any.call??? 是
+            // 链末默认实现（非 router），不标本修饰符——其宿主 Any 为
+            // 内建类型，声明不经本路径（EmitTypeTree 跳过 IsBuiltin）
+            if (ReferenceEquals(method.Owner?.DowngradeRouter, method))
+            {
+                modifiers.Add(new BilWrapperProxyModifier(BilProxyKind.Router));
+            }
+            else if (method.ProxySpecialization is { } specialization)
             {
                 modifiers.Add(new BilWrapperProxyModifier(
                     specialization.Kind == ProxyLinkKind.Specific

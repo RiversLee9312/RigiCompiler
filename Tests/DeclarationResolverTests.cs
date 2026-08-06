@@ -31,6 +31,7 @@ namespace LatteCompiler.Tests
             TestWrapperApplications();
             TestProxyShapeChecking();
             TestProxyDispatchChains();
+            TestDowngradeChains();
             TestNativeDeclarations();
             TestAccessibility();
             TestAccessorDeclarations();
@@ -1043,7 +1044,7 @@ namespace LatteCompiler.Tests
             // S11b：wildcard 环的解包 shim 符号合成（specific 环无 shim——
             // 其 inner 直通下一环）
             TestHarness.CheckTrue("specific 环无解包 shim",
-                do2.WrapperChain[0].ProxySpecialization!.UnwrapShim == null);
+                do2.WrapperChain![0].ProxySpecialization!.UnwrapShim == null);
             var doShim = do2.WrapperChain[1].ProxySpecialization!.UnwrapShim;
             TestHarness.CheckTrue("wildcard 环解包 shim 合成（双包参签名 + 返回拷贝）",
                 doShim != null
@@ -1163,6 +1164,139 @@ namespace LatteCompiler.Tests
             TestHarness.CheckTrue("Value 应用隐藏字段挂宿主类型",
                 health.AppliedWrappers.Single().HiddenField != null
                 && player.Fields.Any(f => f.Name == ".wrapper.Clamped"));
+        }
+
+        // ===== S11e：call??? 降级链合成（router + 逐应用降级特化 + Any.call???）=====
+        private static void TestDowngradeChains()
+        {
+            TestHarness.Section("P2 Downgrade Chains (S11e)");
+
+            const string logged =
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Logged\\<TTarget> {\n" +
+                "    pub init(level: String = \"INFO\")\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(symbol: String, namedArgs: named TNamedArgs..., unnamedArgs: TUnnamedArgs...): TReturn { return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
+                "}\n";
+            const string audited =
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Audited {\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(symbol: String, namedArgs: named TNamedArgs..., unnamedArgs: TUnnamedArgs...): TReturn { return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
+                "}\n";
+
+            // 1. 基础链合成：单 .proxy.* wrapper → router + 单环链 + Any.call???
+            var (u1, _) = ResolveUnit(logged +
+                "@Logged\n" +
+                "pub class Service {\n" +
+                "    pub func doSomething(arg: i32): String { return \"x\" }\n" +
+                "}\n");
+            CheckNoErrors("降级链无诊断", u1);
+            var service = GlobalType(u1, "Service");
+            var any = u1.Symbols.Bootstrap.Any;
+            var router = service.DowngradeRouter;
+            TestHarness.CheckTrue("router 合成（宿主成员 call??? + HasBody）",
+                router != null
+                && router.Name == "call???"
+                && ReferenceEquals(router.Owner, service)
+                && service.Methods.Contains(router)
+                && router.HasBody);
+            // 测试单元无 core::Pair（ResolveUnit 不注入 stdlib）——NamedPackType
+            // 按 §14.7 降级 Array\<Any\>，与 shim 具名包同口径
+            var expectedPack = u1.Symbols.GetConstructedType(
+                u1.Symbols.Bootstrap.ArrayDefinition, u1.Symbols.Bootstrap.Any);
+            TestHarness.CheckTrue("router 三参数签名（胖值 ABI，非 variadic）",
+                router!.Parameters.Count == 3
+                && router.Parameters[0].Name == "symbol"
+                && ReferenceEquals(router.Parameters[0].Type, u1.Symbols.Bootstrap.String)
+                && router.Parameters[1].Name == "namedArgs"
+                && ReferenceEquals(router.Parameters[1].Type, expectedPack)
+                && router.Parameters[2].Name == "unnamedArgs"
+                && ReferenceEquals(router.Parameters[2].Type, expectedPack)
+                && ReferenceEquals(router.ReturnType, any));
+            TestHarness.CheckTrue("降级链单环 + link 名",
+                service.DowngradeChain is { Count: 1 }
+                && service.DowngradeChain[0].Name == ".proxy.0.???");
+            var link = service.DowngradeChain![0];
+            var anyCall = any.Methods.Single(m => m.Name == "call???");
+            TestHarness.CheckTrue("降级特化元数据（Wildcard + 无目标成员 + 原始体 = Any.call???）",
+                link.ProxySpecialization != null
+                && link.ProxySpecialization.Kind == ProxyLinkKind.Wildcard
+                && link.ProxySpecialization.TargetMember == null
+                && ReferenceEquals(link.ProxySpecialization.OriginalBody, anyCall)
+                && link.HasBody);
+            TestHarness.CheckTrue("Any.call??? 全单元一次 + Public",
+                any.Methods.Count(m => m.Name == "call???") == 1
+                && anyCall.Accessibility == Accessibility.Public
+                && ReferenceEquals(anyCall.Owner, any));
+            TestHarness.Check("router canonical",
+                "Service$call???(symbol:.string,namedArgs:.array<.any>,unnamedArgs:.array<.any>)@.any",
+                CanonicalSymbolPrinter.PrintMethod(router!));
+            TestHarness.Check("降级特化 canonical",
+                "Service$.proxy.0.???(symbol:.string,namedArgs:.array<.any>,unnamedArgs:.array<.any>)@.any",
+                CanonicalSymbolPrinter.PrintMethod(link));
+            TestHarness.Check("Any.call??? canonical",
+                "core::Any$call???(symbol:.string,namedArgs:.array<.any>,unnamedArgs:.array<.any>)@.any",
+                CanonicalSymbolPrinter.PrintMethod(anyCall));
+
+            // 2. 双应用双环链：OriginalBody 均指向同一 Any.call???
+            var (u2, _) = ResolveUnit(logged + audited +
+                "@Logged\n" +
+                "@Audited\n" +
+                "pub class Service {\n" +
+                "    pub func doSomething(arg: i32): String { return \"x\" }\n" +
+                "}\n");
+            CheckNoErrors("双 wrapper 降级链无诊断", u2);
+            var service2 = GlobalType(u2, "Service");
+            TestHarness.CheckTrue("双环链（.proxy.0.???/.proxy.1.???，outer→inner）",
+                service2.DowngradeChain is { Count: 2 }
+                && service2.DowngradeChain[0].Name == ".proxy.0.???"
+                && service2.DowngradeChain[1].Name == ".proxy.1.???");
+            var any2Call = u2.Symbols.Bootstrap.Any.Methods.Single(m => m.Name == "call???");
+            TestHarness.CheckTrue("双环 OriginalBody 均指向同一 Any.call???（全单元一次）",
+                ReferenceEquals(service2.DowngradeChain![0].ProxySpecialization!.OriginalBody, any2Call)
+                && ReferenceEquals(service2.DowngradeChain[1].ProxySpecialization!.OriginalBody, any2Call)
+                && service2.DowngradeChain[1].ProxySpecialization!.Application.WrapperDefinition.Name == "Audited");
+
+            // 3. 无 .proxy.* 无链：specific-only wrapper 与无 wrapper 均无
+            // router/链/Any.call???
+            var (u3, _) = ResolveUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Logged\\<TTarget> {\n" +
+                "    pub init(level: String = \"INFO\")\n" +
+                "    operator .proxy.doSomething(arg: i32): String { return inner(arg) }\n" +
+                "}\n" +
+                "@Logged\n" +
+                "pub class Service {\n" +
+                "    pub func doSomething(arg: i32): String { return \"x\" }\n" +
+                "}\n");
+            CheckNoErrors("specific-only 无降级链无诊断", u3);
+            var service3 = GlobalType(u3, "Service");
+            TestHarness.CheckTrue("specific-only 无 router/链/Any.call???",
+                service3.DowngradeRouter == null
+                && service3.DowngradeChain == null
+                && !u3.Symbols.Bootstrap.Any.Methods.Any(m => m.Name == "call???"));
+            var (u3b, _) = ResolveUnit(
+                "pub class Plain {\n    pub func f(): i32 { return 0 }\n}\n");
+            CheckNoErrors("无 wrapper 无降级链无诊断", u3b);
+            TestHarness.CheckTrue("无 wrapper 无 router/链/Any.call???",
+                GlobalType(u3b, "Plain").DowngradeRouter == null
+                && GlobalType(u3b, "Plain").DowngradeChain == null
+                && !u3b.Symbols.Bootstrap.Any.Methods.Any(m => m.Name == "call???"));
+
+            // 4. PrintDowngradeRequest 黄金（位置实参只写类型、具名写 名:类型；
+            // 返回段恒 .any；空实参列表参数段为空）
+            var (u4, _) = ResolveUnit("namespace test\nclass Service { }\n");
+            var service4 = NsOf(u4, "test").Types.Single(t => t.Name == "Service");
+            TestHarness.Check("PrintDowngradeRequest 黄金（位置 i32 + 具名 name:String）",
+                "test::Service$fetch(.i32,name:.string)@.any",
+                CanonicalSymbolPrinter.PrintDowngradeRequest(service4, "fetch",
+                    new (string?, SemanticSymbol)[] {
+                        (null, u4.Symbols.Bootstrap.Int32),
+                        ("name", u4.Symbols.Bootstrap.String),
+                    }));
+            TestHarness.Check("PrintDowngradeRequest 空实参列表",
+                "test::Service$fetch()@.any",
+                CanonicalSymbolPrinter.PrintDowngradeRequest(service4, "fetch",
+                    Array.Empty<(string?, SemanticSymbol)>()));
         }
 
         // ===== 子任务 3b：native 函数声明（§4.6）=====

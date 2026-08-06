@@ -100,6 +100,12 @@ namespace LatteCompiler
         public WrapperTargetKind? WrapperTarget { get; internal set; }
         // 挂载的 wrapper 应用（声明顺序，外层在前；P2 解析填充）
         public List<WrapperApplication> AppliedWrappers { get; } = new List<WrapperApplication>();
+        // call??? 降级链（S11e，SYNTAX §14.7 + BIL §15.4）：wrapper 链含方法类别
+        // .proxy.* 时 P2 ProxyDispatchResolver 合成——router（宿主成员，名
+        // call???，wrapper-proxy(router)）与逐应用降级特化链（.proxy.<序>.???，
+        // outer→inner）；链末 inner = Any.call??? 默认实现。无 .proxy.* 链恒 null
+        public MethodSymbol? DowngradeRouter { get; internal set; }
+        public List<MethodSymbol>? DowngradeChain { get; internal set; }
         // 编译器硬编码内建（bootstrap 直造，无源码声明；core.latte 载入的不算）
         public bool IsBuiltin { get; }
         // 是否 ValueType 分支（构造即定：显式传入或沿基类链传播；
@@ -499,8 +505,9 @@ namespace LatteCompiler
     }
 
     // proxy 特化元数据（(proxy 声明 × 目标成员) 组合，S11a P2 合成；
-    // 挂在特化 fn 符号上）。链的下一环经 TargetMember.WrapperChain 的
-    // 序号 + 1 取得，链末环的 inner 目标是 OriginalBody
+    // 挂在特化 fn 符号上）。per-member 链的下一环经
+    // TargetMember.WrapperChain 的序号 + 1 取得，链末环的 inner 目标是
+    // OriginalBody；S11e 降级链不适用（TargetMember 为 null，见下）
     public sealed class ProxySpecializationInfo
     {
         // 命中的 .proxy.* 声明符号（P3 逐组合绑定读取其声明体）
@@ -508,8 +515,9 @@ namespace LatteCompiler
         // 所属 wrapper 应用（隐藏字段符号与 TTarget 代入结果在此）
         public WrapperApplication Application { get; }
         public ProxyLinkKind Kind { get; }
-        // 被拦截的成员（链宿主——转发壳退化的那个符号）
-        public MethodSymbol TargetMember { get; }
+        // 被拦截的成员（链宿主——转发壳退化的那个符号；S11e 降级链为
+        // null——未声明方法的降级特化无目标成员）
+        public MethodSymbol? TargetMember { get; }
         // 原始体 fn（用户方法体的新承载者；链末环 inner 的目标）
         public MethodSymbol OriginalBody { get; }
         // wildcard 解包 shim fn（S11b：仅普通方法/operator 类别的 wildcard
@@ -519,7 +527,7 @@ namespace LatteCompiler
         public MethodSymbol? UnwrapShim { get; internal set; }
 
         public ProxySpecializationInfo(MethodSymbol proxyDeclaration, WrapperApplication application,
-            ProxyLinkKind kind, MethodSymbol targetMember, MethodSymbol originalBody)
+            ProxyLinkKind kind, MethodSymbol? targetMember, MethodSymbol originalBody)
         {
             ProxyDeclaration = proxyDeclaration;
             Application = application;

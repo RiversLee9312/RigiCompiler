@@ -43,6 +43,11 @@ namespace LatteCompiler
         private BilFunction? EmitFunction(LoweredFunctionBody body)
         {
             var method = body.Method;
+            // S11e 开闸：call??? 降级链符号（router/降级特化/Any.call???）
+            // 的 fn 定义全部平铺发射——P3 阶段 2.6 已绑体。Any.call???
+            // 宿主内建类型不进符号段（EmitTypeTree 跳过 IsBuiltin）无声明，
+            // 其 fn 定义对应检查由 BilVerifier §21.2 的 builtin 宿主豁免
+            // 承担（BilVerificationContext.IsPredefinedTypeHost）
             var function = new BilFunction(CanonicalSymbolPrinter.PrintMethod(method));
             // .args（§9.2/§7.2）：.return →（实例）.this → .generic.* → 普通参数
             function.Args.Add(new BilArgDeclaration(".return",

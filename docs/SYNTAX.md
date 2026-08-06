@@ -1783,6 +1783,8 @@ setter：
 
 这些以 `.` 开头的名称由编译器保留，普通源码参数不能声明同名标识符。canonical symbol 连同 hidden arguments 完整描述本次调用的类别、声明位置、static 属性、参数类型、泛型实参和返回类型；具体 Native 路由见 `RUNTIME.md` §14。
 
+未声明方法的降级请求（§14.7）没有声明位置与参数名可编码，其 symbol 由调用点合成（M86 定稿）：宿主前缀取 receiver 静态类型的定义级 canonical 名；参数段按调用点书写序——位置实参只写静态类型、具名实参写 `名:类型`；返回段恒为 `.any`（胖值 ABI 返回 `Any`，向期望类型的转换在调用点由编译器插入一次 cast，不符抛 `core.CastException`，见 `RUNTIME.md` §14.2）。例如 `service.fetchUserById(42)`（`service` 静态类型 `myapp::Service`）的请求 symbol 为 `myapp::Service$fetchUserById(.i32)@.any`。
+
 ### 14.9 wrapper 的 `rich`/`shared` 规则与目标矩阵
 
 **wrapper 恒为 rich struct。** 这是 wrapper 语义的基础而非实现细节：wrapper 实例必须与被修饰的实体、方法或值同生共死，因此它必须是 unique ownership 的值，而不是可被任意别名的引用类型。作为 rich struct，它既保有值语义，又可以持有 Object 字段。
