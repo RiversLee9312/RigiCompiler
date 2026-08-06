@@ -645,9 +645,11 @@ enum case（`new.case`、`is .Case` 判别比较、判别值分配）、
 > 按序推进：~~P3 wrapper place 绑定与只读禁令（解 PathVisitors 两处
 > Colon 归口 + 全拦截面）~~（**✅ M79 已落地**）→ ~~enum case 全链~~
 > （**✅ M77 已落地**）→ ~~ext 收尾~~（**✅ M80 已落地**）→ 局部访问器
-> 解归口 → proxy 烘焙 lowering（specific → wildcard → `call???` 降级 +
-> `.wrapper.` 隐藏字段声明与 get/set.field.embedded 发射）→ 派发链诊断
-> 工具。
+> 解归口（**用户决策 2026-08-06：路线 C——随 S13 lambda 闭包机制落地，
+> 移出 S11 序列**，捕获语义随之开放；`docs/HANDOVER.md` 临时交接，
+> 落地后删除）→ proxy 烘焙 lowering（specific → wildcard → `call???`
+> 降级 + `.wrapper.` 隐藏字段声明与 get/set.field.embedded 发射）→ 派发
+> 链诊断工具。
 >
 > **wrapper place 绑定与只读禁令（M79，2026-08-06，PROGRESS_REPORT
 > 详录）**：`BoundWrapperAccessExpression`（Receiver + Wrapper，Type =
