@@ -686,8 +686,8 @@ namespace LatteCompiler.Tests
                     d.Message.Contains("Undefined function: 'missingFn'")) == 1,
                 string.Join("; ", unit10.Diagnostics.Diagnostics.Select(d => d.Message)));
 
-            // G. P4 闸门：合成 fn（. 前缀）与转发壳（WrapperChain）零
-            // lowering 产物、零归口诊断（发射归 S11d）
+            // G. P4 开闸（S11d）：合成 fn（特化/原始体/shim）与转发壳
+            // 全量 lowering 产物、零诊断（发射端到端见 BilEmitterTests）
             var (unit11, bodies11) = BindUnit(
                 "@WrapperTarget(.Entity)\n" +
                 "pub wrapper Logged\\<TTarget> {\n" +
@@ -702,12 +702,21 @@ namespace LatteCompiler.Tests
                 "pub func caller(s: Service): String { return s.doSomething(1) }\n");
             CheckNoErrors("P3 全链无诊断", unit11);
             var lowered11 = Lowerer.Lower(unit11, bodies11);
-            TestHarness.CheckTrue("P4 闸门：合成 fn 与转发壳零产物零诊断",
-                !unit11.Diagnostics.HasErrors
-                && lowered11.All(b => !b.Method.Name.StartsWith(".")
-                    && b.Method.Name != "doSomething")
+            CheckNoErrors("P4 全链降级无诊断", unit11);
+            TestHarness.CheckTrue("P4 开闸：转发壳/原始体/特化体三件套产物齐备",
+                lowered11.Any(b => b.Method.Name == "doSomething")
+                && lowered11.Any(b => b.Method.Name == ".wrapped.doSomething")
+                && lowered11.Any(b => b.Method.Name == ".proxy.0.doSomething")
                 && lowered11.Any(b => b.Method.Name == "caller"),
-                string.Join("; ", unit11.Diagnostics.Diagnostics.Select(d => d.Message)));
+                string.Join("; ", lowered11.Select(b => b.Method.Name)));
+            TestHarness.Check("转发壳降级形态（invoke 链首）",
+                "Body(doSomething, [], [Return(InstCall(.proxy.0.doSomething, " +
+                "This(Service), [Param(arg,i32)], String))])",
+                LoweredDescribe.Body(lowered11.Single(b => b.Method.Name == "doSomething")));
+            TestHarness.Check("特化体降级形态（inner = 链末原始体调用）",
+                "Body(.proxy.0.doSomething, [], [Return(InstCall(.wrapped.doSomething, " +
+                "This(Service), [Param(arg,i32)], String))])",
+                LoweredDescribe.Body(lowered11.Single(b => b.Method.Name == ".proxy.0.doSomething")));
         }
     }
 }

@@ -837,10 +837,13 @@ namespace LatteCompiler
 
         // 成员形参打包（wildcard 前奏）：实参引用特化 fn 形参（同名同序
         // 拷贝，BIL .args 一致）；具名包元素 = 具名可变参数（当前恒空——
-        // P2 已排除可变参数成员建链），位置包 = 全形参声明序
+        // P2 已排除可变参数成员建链），位置包 = 全形参声明序。
+        // 包类型 = §14.7 胖值 ABI 元素形态：具名包 Array\<Pair\<String, Any\>\>、
+        // 位置包 Array\<Any\>（与 P4b VarArgsEmitter 产物及 shim 形参同型——
+        // S11d 发射对齐；core::Pair 缺席时具名包降级 Array\<Any\>，
+        // 同 PathVisitors.VariadicParameterViewType 先例）
         private BoundExpression PackMemberArguments(MethodSymbol link, bool named, ASTNode syntax)
         {
-            var packType = env.Unit.Symbols.GetConstructedType(env.B.ArrayDefinition, env.B.Any);
             if (named)
             {
                 var namedValues = link.Parameters
@@ -849,13 +852,30 @@ namespace LatteCompiler
                         syntax, p, p.Type!)))
                     .ToList();
                 return new BoundVarArgsArgument(syntax, isNamed: true,
-                    Array.Empty<BoundExpression>(), namedValues, packType);
+                    Array.Empty<BoundExpression>(), namedValues, NamedPackType(env));
             }
+            var packType = env.Unit.Symbols.GetConstructedType(env.B.ArrayDefinition, env.B.Any);
             var values = link.Parameters
                 .Where(p => !p.IsNamedVariadic)
                 .Select(p => (BoundExpression)new BoundValueReferenceExpression(syntax, p, p.Type!))
                 .ToList();
             return new BoundVarArgsArgument(syntax, isNamed: false, values, null, packType);
+        }
+
+        // 具名包 ABI 类型（§14.7：Array\<Pair\<String, Any\>\>；core::Pair
+        // 缺席——无 stdlib 的测试驱动——时降级 Array\<Any\>）。P2 侧
+        // ProxyDispatchResolver.SynthesizeUnwrapShim 的 namedArgs 形参
+        // 与本类型逐项一致（invoke 签名严格匹配）
+        internal static TypeSymbol NamedPackType(BindEnvironment env)
+        {
+            var core = env.Unit.Symbols.GlobalNamespace.ChildNamespaces
+                .FirstOrDefault(n => n.Name == "core");
+            var pairDefinition = core?.Types.FirstOrDefault(t => t.Name == "Pair"
+                && t.GenericParameters.Count == 2);
+            var elementType = pairDefinition == null
+                ? (TypeSymbol)env.B.Any
+                : env.Unit.Symbols.GetConstructedType(pairDefinition, env.B.String, env.B.Any);
+            return env.Unit.Symbols.GetConstructedType(env.B.ArrayDefinition, elementType);
         }
 
         // ③ wildcard 解包 shim body：形参（成员签名，经 shim 泛型拷贝代入）

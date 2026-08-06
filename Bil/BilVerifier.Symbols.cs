@@ -237,6 +237,44 @@ namespace LatteCompiler.Bil
                 }
             }
 
+            // §8.4/§21.8 wrapper-proxy(PROXY_KIND)（S11d）：只标记编译器
+            // 合成保留名 fn（§5.1：.proxy./.wrapped. 名段）；保留名方法
+            // 必须带本修饰符（缺失即非烘焙产物——用户伪造保留名同此拦截）；
+            // kind 与名段一致：.wrapped. ↔ original（被修饰成员原始实现
+            // 体），.proxy. ↔ specific|wildcard|router（特化/解包 shim/
+            // 路由 fn；original 只允许 .wrapped.）
+            var nameSegment = MethodNameSegment(symbol);
+            var isProxyReserved = nameSegment != null && nameSegment.StartsWith(".proxy.");
+            var isWrappedReserved = nameSegment != null && nameSegment.StartsWith(".wrapped.");
+            BilWrapperProxyModifier? wrapperProxy = null;
+            foreach (var modifier in declaration.Modifiers)
+            {
+                if (modifier is BilWrapperProxyModifier found) wrapperProxy = found;
+            }
+            if (wrapperProxy != null && !isProxyReserved && !isWrappedReserved)
+            {
+                errors.Add(new BilVerificationError("21.8", symbol,
+                    "wrapper-proxy(...) 只允许在编译器合成保留名（.proxy./.wrapped.）方法上（§5.1）"));
+            }
+            if (wrapperProxy == null && (isProxyReserved || isWrappedReserved))
+            {
+                errors.Add(new BilVerificationError("21.8", symbol,
+                    "合成保留名（.proxy./.wrapped.）方法缺少 wrapper-proxy(...) 修饰符（§8.4）"));
+            }
+            if (wrapperProxy != null)
+            {
+                if (isWrappedReserved && wrapperProxy.Kind != BilProxyKind.Original)
+                {
+                    errors.Add(new BilVerificationError("21.8", symbol,
+                        ".wrapped. 原始体 fn 必须带 wrapper-proxy(original)（§8.4）"));
+                }
+                if (isProxyReserved && wrapperProxy.Kind == BilProxyKind.Original)
+                {
+                    errors.Add(new BilVerificationError("21.8", symbol,
+                        ".proxy. 名段不得带 wrapper-proxy(original)（original 仅用于 .wrapped.，§8.4）"));
+                }
+            }
+
             // §21.2：native 方法不得有 fn 定义，且必须恰好各带一个
             // symbol("...") 与 lib("...")；非 native 本地方法必须有 fn 定义
             var isNative = HasKeyword(declaration, BilKeyword.Native);
@@ -346,6 +384,7 @@ namespace LatteCompiler.Bil
             var operatorSeen = false;
             var nativeSymbolSeen = false;
             var nativeLibrarySeen = false;
+            var wrapperProxySeen = false;
             var accessorKindsSeen = new HashSet<BilAccessorKind>();
             foreach (var modifier in modifiers)
             {
@@ -393,8 +432,34 @@ namespace LatteCompiler.Bil
                                 $"{BilSpellings.Of(accessor.Kind)} 修饰符重复"));
                         }
                         break;
+                    case BilWrapperProxyModifier:
+                        if (wrapperProxySeen)
+                        {
+                            errors.Add(new BilVerificationError("21.8", context,
+                                "wrapper-proxy 修饰符重复"));
+                        }
+                        wrapperProxySeen = true;
+                        break;
                 }
             }
+        }
+
+        // 方法名段提取（$ 之后、参数段/@ 之前；$$ 运算符形态跳过第二个
+        // $，.static. 前缀跳过）——wrapper-proxy 修饰符按名段判定合成
+        // 保留名（S11d）。符号 malformed 时返回 null（由 §21.1 另报）
+        private static string? MethodNameSegment(string symbol)
+        {
+            var dollar = symbol.IndexOf('$');
+            if (dollar < 0) return null;
+            var rest = symbol.Substring(dollar + 1);
+            if (rest.StartsWith("$")) rest = rest.Substring(1);
+            if (rest.StartsWith(".static.")) rest = rest.Substring(".static.".Length);
+            var end = rest.Length;
+            var paren = rest.IndexOf('(');
+            if (paren >= 0 && paren < end) end = paren;
+            var at = rest.IndexOf('@');
+            if (at >= 0 && at < end) end = at;
+            return rest.Substring(0, end);
         }
 
         // ===== §21.2（fn 级）+ §21.7 泛型与参数包 =====

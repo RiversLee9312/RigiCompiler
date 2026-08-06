@@ -329,5 +329,191 @@ namespace LatteCompiler.Tests
             TestHarness.CheckSemanticError("深层写穿归口", unit5.Diagnostics,
                 "writes through wrapper place member or index chains");
         }
+        // ===== S11d proxy 烘焙端到端（specific 单环）=====
+        // 验收：invoke 原名（转发壳）→ 特化链 → 原始体，全链合法 BIL
+        private static void TestProxyBakingEmission()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Logged\\<TTarget> {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.doSomething(arg: i32): String { return inner(arg) }\n" +
+                "}\n" +
+                "@Logged\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    pub func doSomething(arg: i32): String { return \"x\" }\n" +
+                "}\n" +
+                "pub func caller(s: Service): String { return s.doSomething(1) }\n");
+            CheckNoErrors("全管线无诊断（specific 烘焙）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（specific 烘焙）", module);
+
+            // 声明形态（§8.4）：特化 wrapper-proxy(specific)、原始体
+            // wrapper-proxy(original) 均 priv；转发壳（原名 fn）是普通
+            // 成员声明，不带 wrapper-proxy
+            var service = module.LocalSymbols.OfType<BilTypeDeclaration>()
+                .Single(t => t.Symbol == "Service");
+            TestHarness.Check("原始体声明（wrapper-proxy(original)）",
+                "Method|Service$.wrapped.doSomething(arg:.i32)@.string|priv,wrapper-proxy(original)",
+                RenderMember(service, "Service$.wrapped.doSomething(arg:.i32)@.string"));
+            TestHarness.Check("特化声明（wrapper-proxy(specific)）",
+                "Method|Service$.proxy.0.doSomething(arg:.i32)@.string|priv,wrapper-proxy(specific)",
+                RenderMember(service, "Service$.proxy.0.doSomething(arg:.i32)@.string"));
+            TestHarness.Check("转发壳声明（普通成员，无 wrapper-proxy）",
+                "Method|Service$doSomething(arg:.i32)@.string|pub",
+                RenderMember(service, "Service$doSomething(arg:.i32)@.string"));
+            // wrapper 类型内的 proxy 声明模板不进 BIL（编译期模板，
+            // 自身无 fn 定义）
+            var logged = module.LocalSymbols.OfType<BilTypeDeclaration>()
+                .Single(t => t.Symbol == "Logged");
+            TestHarness.CheckTrue("proxy 声明模板不进符号段",
+                logged.Members.OfType<BilSimpleMemberDeclaration>()
+                    .All(d => !d.Symbol.Contains(".proxy."))
+                && service.Members.OfType<BilSimpleMemberDeclaration>()
+                    .Count(d => d.Symbol.Contains(".proxy.")) == 1);
+
+            // fn 定义平铺：转发壳 = invoke 链首；原始体 = 用户方法体；
+            // 特化体 = inner 调用链末原始体
+            BilTestHarness.CheckFnShape("转发壳 fn（invoke 链首）",
+                module, "Service$doSomething(arg:.i32)@.string",
+                ".vars { .string .t0 }\n" +
+                "invoke fn(Service$.proxy.0.doSomething(arg:.i32)@.string) $.t0 [$.this, $arg]\n" +
+                "ret $.t0\n");
+            BilTestHarness.CheckFnShape("原始体 fn（用户方法体）",
+                module, "Service$.wrapped.doSomething(arg:.i32)@.string",
+                ".vars { .string .t0 }\n" +
+                "load res(#0) $.t0\n" +
+                "ret $.t0\n");
+            BilTestHarness.CheckFnShape("特化 fn（inner = 原始体调用）",
+                module, "Service$.proxy.0.doSomething(arg:.i32)@.string",
+                ".vars { .string .t0 }\n" +
+                "invoke fn(Service$.wrapped.doSomething(arg:.i32)@.string) $.t0 [$.this, $arg]\n" +
+                "ret $.t0\n");
+            // 调用点零改动（声明侧烘焙骑 vtable）：caller 仍 invoke 原名
+            BilTestHarness.CheckFnShape("caller（invoke 原名，烘焙对外透明）",
+                module, "$caller(s:Service)@.string",
+                ".vars { .i32 .t0, .string .t1 }\n" +
+                "load res(#0) $.t0\n" +
+                "invoke fn(Service$doSomething(arg:.i32)@.string) $.t1 [$s, $.t0]\n" +
+                "ret $.t1\n");
+        }
+
+        // ===== S11d proxy 烘焙端到端（wildcard 单环 + 解包 shim）=====
+        private static void TestProxyWildcardBakingEmission()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Audited {\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn { return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
+                "}\n" +
+                "@Audited\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    pub func fetch(id: i32): String { return \"r\" }\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（wildcard 烘焙）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（wildcard 烘焙）", module);
+
+            // shim 与特化均 wrapper-proxy(wildcard)；shim 具名包形参 =
+            // §14.7 ABI 形态 .array<core::Pair<.string, .any>>
+            var service = module.LocalSymbols.OfType<BilTypeDeclaration>()
+                .Single(t => t.Symbol == "Service");
+            TestHarness.Check("解包 shim 声明（wrapper-proxy(wildcard)）",
+                "Method|Service$.proxy.unwrap.0.fetch(namedArgs:.array<core::Pair<.string, .any>>," +
+                "unnamedArgs:.array<.any>)@.string|priv,wrapper-proxy(wildcard)",
+                RenderMember(service, "Service$.proxy.unwrap.0.fetch(" +
+                    "namedArgs:.array<core::Pair<.string, .any>>,unnamedArgs:.array<.any>)@.string"));
+            TestHarness.Check("wildcard 特化声明（wrapper-proxy(wildcard)）",
+                "Method|Service$.proxy.0.fetch(id:.i32)@.string|priv,wrapper-proxy(wildcard)",
+                RenderMember(service, "Service$.proxy.0.fetch(id:.i32)@.string"));
+
+            // 特化体：前奏三形参物化（symbol 常量 + 双包打包）+ inner = shim
+            BilTestHarness.CheckFnShape("wildcard 特化 fn（前奏物化 + invoke shim）",
+                module, "Service$.proxy.0.fetch(id:.i32)@.string",
+                ".vars { .string symbol, .array<core::Pair<.string, .any>> namedArgs, " +
+                ".array<.any> unnamedArgs, .string .t0, " +
+                ".array<core::Pair<.string, .any>> .t1, .any .t2, .array<.any> .t3, " +
+                ".string .t4 }\n" +
+                "load res(#0) $.t0\n" +
+                "set.var $.t0 $symbol\n" +
+                "new type(.array<core::Pair<.string, .any>>) $.t1 []\n" +
+                "set.var $.t1 $namedArgs\n" +
+                "cast $id $.t2 type(.any)\n" +
+                "new type(.array<.any>) $.t3 [$.t2]\n" +
+                "set.var $.t3 $unnamedArgs\n" +
+                "invoke fn(Service$.proxy.unwrap.0.fetch(namedArgs:.array<core::Pair<.string, .any>>," +
+                "unnamedArgs:.array<.any>)@.string) $.t4 [$.this, $namedArgs, $unnamedArgs]\n" +
+                "ret $.t4\n");
+            // shim：逐元素 cast 解包 + invoke 原始体
+            BilTestHarness.CheckFnShape("解包 shim fn（cast 解包 + invoke 原始体）",
+                module, "Service$.proxy.unwrap.0.fetch(namedArgs:.array<core::Pair<.string, .any>>," +
+                "unnamedArgs:.array<.any>)@.string",
+                ".vars { .i32 .t0, .any .t1, .i32 .t2, .string .t3 }\n" +
+                "load res(#0) $.t0\n" +
+                "get.array $unnamedArgs $.t0 $.t1\n" +
+                "cast $.t1 $.t2 type(.i32)\n" +
+                "invoke fn(Service$.wrapped.fetch(id:.i32)@.string) $.t3 [$.this, $.t2]\n" +
+                "ret $.t3\n");
+        }
+
+        // ===== S11d proxy 烘焙端到端（get 访问器链）=====
+        private static void TestProxyAccessorBakingEmission()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Logged\\<TTarget> {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.get.name\\<TField>(value: TField): TField { return value }\n" +
+                "}\n" +
+                "@Logged\n" +
+                "pub class Service {\n" +
+                "    pub var name: String { get }\n" +
+                "    pub init(_ -> name)\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（访问器链烘焙）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（访问器链烘焙）", module);
+
+            var service = module.LocalSymbols.OfType<BilTypeDeclaration>()
+                .Single(t => t.Symbol == "Service");
+            // getter 转发壳声明走字段槽（getter(FIELD)，无 wrapper-proxy）；
+            // 原始体/特化走类型成员表（wrapper-proxy(original/specific)）
+            TestHarness.Check("getter 转发壳声明（字段槽 getter(FIELD)）",
+                "Method|Service$.get.name@.string|pub,getter(Service#name@.string)",
+                RenderMember(service, "Service$.get.name@.string"));
+            TestHarness.Check("getter 原始体声明（wrapper-proxy(original)）",
+                "Method|Service$.wrapped.get.name()@.string|priv,wrapper-proxy(original)",
+                RenderMember(service, "Service$.wrapped.get.name()@.string"));
+            TestHarness.Check("getter 特化声明（wrapper-proxy(specific)）",
+                "Method|Service$.proxy.0.get.name()@.string|priv,wrapper-proxy(specific)",
+                RenderMember(service, "Service$.proxy.0.get.name()@.string"));
+
+            BilTestHarness.CheckFnShape("getter 转发壳 fn（invoke get 链首）",
+                module, "Service$.get.name@.string",
+                ".vars { .string .t0 }\n" +
+                "invoke fn(Service$.proxy.0.get.name()@.string) $.t0 [$.this]\n" +
+                "ret $.t0\n");
+            BilTestHarness.CheckFnShape("getter 原始体 fn（自动访问器合成体）",
+                module, "Service$.wrapped.get.name()@.string",
+                ".vars { .string .t0 }\n" +
+                "get.field $.this $.t0 field(Service#name@.string)\n" +
+                "ret $.t0\n");
+            BilTestHarness.CheckFnShape("getter 特化 fn（value 前奏 = invoke 下一环）",
+                module, "Service$.proxy.0.get.name()@.string",
+                ".vars { .string value, .string .t0 }\n" +
+                "invoke fn(Service$.wrapped.get.name()@.string) $.t0 [$.this]\n" +
+                "set.var $.t0 $value\n" +
+                "ret $value\n");
+        }
+
+        // 成员声明形状渲染（Kind|Symbol|修饰符逗号序）
+        private static string RenderMember(BilTypeDeclaration type, string symbol)
+        {
+            var declaration = type.Members.OfType<BilSimpleMemberDeclaration>()
+                .Single(d => d.Symbol == symbol);
+            return declaration.Kind + "|" + declaration.Symbol + "|" + string.Join(",",
+                declaration.Modifiers.Select(m => m.Render()));
+        }
     }
 }

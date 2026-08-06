@@ -255,11 +255,13 @@ namespace LatteCompiler
         }
 
         // wildcard 解包 shim（S11b）：名 .proxy.unwrap.<序>.<成员键>，签名 =
-        // (namedArgs: Array\<Any\>, unnamedArgs: Array\<Any\>) → 成员返回类型
+        // (namedArgs: 具名包 ABI, unnamedArgs: Array\<Any\>) → 成员返回类型
         //（成员泛型参数同款拷贝——shim body 经 TypeArguments 向下一环转发，
         // 归 P3 合成）；体内解包（逐元素 cast Any → 形参类型，§14.7 同款
-        // CastException 语义）后 invoke 下一环。发射归 S11d（"." 前缀名
-        // 闸门已就位）
+        // CastException 语义）后 invoke 下一环。namedArgs 形参类型 =
+        // §14.7 具名包 ABI 形态 Array\<Pair\<String, Any\>\>（core::Pair
+        // 缺席时降级 Array\<Any\>）——与 P3 前奏物化的具名包局部同型
+        //（S11d 发射对齐，invoke 签名严格匹配）
         private static MethodSymbol SynthesizeUnwrapShim(TypeSymbol host, MethodSymbol member,
             string name, ResolveEnvironment env)
         {
@@ -277,12 +279,28 @@ namespace LatteCompiler
             }
             var packType = env.Unit.Symbols.GetConstructedType(
                 env.Unit.Symbols.Bootstrap.ArrayDefinition, env.Unit.Symbols.Bootstrap.Any);
-            symbol.Parameters.Add(new ParameterSymbol("namedArgs", packType,
+            symbol.Parameters.Add(new ParameterSymbol("namedArgs", NamedPackType(env),
                 defaultValue: null, isVariadic: false, isNamedVariadic: false));
             symbol.Parameters.Add(new ParameterSymbol("unnamedArgs", packType,
                 defaultValue: null, isVariadic: false, isNamedVariadic: false));
             symbol.ReturnType = SubstituteSignatureTypes(member.ReturnType, genericMap, env);
             return symbol;
+        }
+
+        // 具名包 ABI 类型（§14.7；core::Pair 缺席降级 Array\<Any\>——与
+        // BindingDriver.NamedPackType 同一规则两处落地，invoke 两端同型）
+        private static TypeSymbol NamedPackType(ResolveEnvironment env)
+        {
+            var core = env.Unit.Symbols.GlobalNamespace.ChildNamespaces
+                .FirstOrDefault(n => n.Name == "core");
+            var pairDefinition = core?.Types.FirstOrDefault(t => t.Name == "Pair"
+                && t.GenericParameters.Count == 2);
+            var bootstrap = env.Unit.Symbols.Bootstrap;
+            var elementType = pairDefinition == null
+                ? bootstrap.Any
+                : env.Unit.Symbols.GetConstructedType(pairDefinition, bootstrap.String,
+                    bootstrap.Any);
+            return env.Unit.Symbols.GetConstructedType(bootstrap.ArrayDefinition, elementType);
         }
 
         // 特化/原始体 fn：名 + Regular 种类 + 宿主 Owner + 成员签名拷贝

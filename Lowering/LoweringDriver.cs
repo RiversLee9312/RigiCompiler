@@ -19,12 +19,6 @@ namespace LatteCompiler
             var result = new List<LoweredFunctionBody>();
             foreach (var body in bodies)
             {
-                // S11 烘焙合成 fn（S11a 特化/原始体/shim 的 "." 前缀保留名）
-                // 与 S11b 转发壳（WrapperChain 非空）：发射统一归 S11d，
-                // lowering 无消费者（且 proxy 体内 wrapper place 成员访问
-                // 的降级归 S11c）——跳过，不落归口噪音
-                if (body.Method.Name.StartsWith('.')) continue;
-                if (body.Method.WrapperChain != null) continue;
                 var ctx = new LowerContext(body.Method);
                 var lowered = LowerBlockVisitor.Visit(body.Body, ctx, env);
                 if (lowered == null) continue;

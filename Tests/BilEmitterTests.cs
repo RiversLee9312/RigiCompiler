@@ -119,6 +119,9 @@ namespace LatteCompiler.Tests
             TestWrapperFieldValueEmission();
             TestWrapperCompoundAssignmentEmission();
             TestWrapperPlaceEmissionGates();
+            TestProxyBakingEmission();
+            TestProxyWildcardBakingEmission();
+            TestProxyAccessorBakingEmission();
             TestUnsupportedNodes();
 
             return TestHarness.Summary("BilEmitter");

@@ -126,9 +126,12 @@ namespace LatteCompiler
             }
             foreach (var method in type.Methods)
             {
-                // "." 前缀保留名（S11a 合成的 proxy 特化/原始体 fn 与
-                // wrapper proxy 声明）：声明发射归 S11d，此前跳过
-                if (method.Name.StartsWith('.')) continue;
+                // "." 前缀名分流（S11d 开闸）：烘焙产物（特化/原始体/解包
+                // shim）照常发射声明（wrapper-proxy(...) 修饰符由
+                // EmitMethodDeclaration 投影）；wrapper 类型内的 proxy
+                // 声明模板（.proxy.<名>/.proxy.* 等）是编译期模板——体只
+                // 经逐组合绑定进特化 fn，自身无 fn 定义，不进 BIL
+                if (method.Name.StartsWith('.') && !IsBakedProxyProduct(method)) continue;
                 // enum struct 的无体 init（case 模板，SYNTAX §12.1）同样
                 // 发射声明——P3 起映射赋值体合成（§9.3）为其产出 fn 定义，
                 // §21.2 门槛满足；`_ -> field` 映射借此保留在 BIL 中，
@@ -227,6 +230,17 @@ namespace LatteCompiler
                 modifiers);
         }
 
+        // S11d："." 前缀名中的烘焙产物判定——特化 fn（ProxySpecialization
+        // 槽非空）/原始体 fn（.wrapped. 名段）/wildcard 解包 shim
+        //（.proxy.unwrap. 名段）三件套进 BIL；其余 "." 前缀名（wrapper
+        // 类型的 proxy 声明模板）不进
+        private static bool IsBakedProxyProduct(MethodSymbol method)
+        {
+            return method.ProxySpecialization != null
+                || method.Name.StartsWith(".wrapped.")
+                || method.Name.StartsWith(".proxy.unwrap.");
+        }
+
         // 方法声明（§8.4）：类型成员与全局函数共形态。
         // S7c-2 开闸 init/operator 与实例方法：init 走普通 canonical
         // （$init...@.void）+ init 修饰符；operator 走 $$名 canonical +
@@ -265,6 +279,25 @@ namespace LatteCompiler
                 && method.Name == "main")
             {
                 modifiers.Add(new BilKeywordModifier(BilKeyword.Entrypoint));
+            }
+            // wrapper-proxy(PROXY_KIND)（§8.4，S11d）：烘焙三件套投影——
+            // 特化 fn 按 ProxySpecialization.Kind 取 specific/wildcard；
+            // 原始体 fn（.wrapped.）取 original；wildcard 解包 shim
+            //（.proxy.unwrap.——wildcard 环的解包辅助）取 wildcard。
+            // 转发壳（被拦截成员原名 fn）是普通成员声明，不标本修饰符
+            if (method.ProxySpecialization is { } specialization)
+            {
+                modifiers.Add(new BilWrapperProxyModifier(
+                    specialization.Kind == ProxyLinkKind.Specific
+                        ? BilProxyKind.Specific : BilProxyKind.Wildcard));
+            }
+            else if (method.Name.StartsWith(".wrapped."))
+            {
+                modifiers.Add(new BilWrapperProxyModifier(BilProxyKind.Original));
+            }
+            else if (method.Name.StartsWith(".proxy.unwrap."))
+            {
+                modifiers.Add(new BilWrapperProxyModifier(BilProxyKind.Wildcard));
             }
             return new BilSimpleMemberDeclaration(
                 method.IsStatic ? BilMemberKind.StaticMethod : BilMemberKind.Method,

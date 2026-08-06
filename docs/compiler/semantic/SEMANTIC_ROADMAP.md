@@ -724,7 +724,16 @@ enum case（`new.case`、`is .Case` 判别比较、判别值分配）、
 >   BIL §8.4）；特化 fn / 原始体 fn / 转发壳平铺发射；
 >   BilVerifier 适配（合成保留名放行、修饰符校验）。
 >   **验收**：specific 与 wildcard 声明侧烘焙端到端出合法
->   BIL（invoke 原名 → 特化链 → 原始体）。
+>   BIL（invoke 原名 → 特化链 → 原始体）。（**✅ M85 已落地**，
+>   2026-08-06，PROGRESS_REPORT 详录——33 新用例；落地形态：
+>   `BilProxyKind` 四态 + `BilWrapperProxyModifier`；
+>   LocalSymbolEmitters 闸门改分流（烘焙产物发射、proxy 声明
+>   模板不进 BIL）+ 修饰符投影（specific/wildcard/original）；
+>   双驱动闸门删除（特化/原始体/转发壳/解包 shim 平铺）；
+>   BilVerifier §21.8（保留名 ↔ 修饰符双向校验 + kind ↔ 名段
+>   一致）；同批修复 wildcard 具名包 ABI 类型不符（§14.7
+>   `Array\<Pair\<String, Any\>\>` 两处同改）；get 访问器链
+>   同批端到端）
 > - **S11e（`call???` 降级全链，SYNTAX §14.7 + BIL §15.4）**：
 >   P3 使用点降级判定（静态类型未声明方法 + wrapper 链存
 >   `.proxy.*`）与胖值 ABI 打包（实参装箱 + canonical symbol

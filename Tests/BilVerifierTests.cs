@@ -803,6 +803,87 @@ namespace LatteCompiler.Tests
             BilTestHarness.CheckBilInvalid("embedded set 写 const 内层字段", m,
                 "不得被写入");
 
+            // ===== §8.4/§21.8 wrapper-proxy(PROXY_KIND)（S11d）=====
+            // 声明形态聚焦修饰符规则（ExternalSymbols 免 fn 定义，同
+            // IndexModule 先例）；全管线烘焙正例见 BilEmitterTests
+            m = MinimalModule(out _, out _);
+            var bakedHost = new BilTypeDeclaration("Svc", BilTypeKind.Class,
+                new BilAccessibilityModifier(BilAccessibility.Public));
+            bakedHost.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "Svc$.proxy.0.x()@.void",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Private),
+                    new BilWrapperProxyModifier(BilProxyKind.Specific) }));
+            bakedHost.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "Svc$.wrapped.x()@.void",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Private),
+                    new BilWrapperProxyModifier(BilProxyKind.Original) }));
+            bakedHost.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "Svc$.proxy.unwrap.0.x(namedArgs:.array<.any>)@.void",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Private),
+                    new BilWrapperProxyModifier(BilProxyKind.Wildcard) }));
+            m.ExternalSymbols.Add(bakedHost);
+            BilTestHarness.CheckBilValid("wrapper-proxy 烘焙声明（specific/original/wildcard 正例）", m);
+
+            // §21.8：非保留名带 wrapper-proxy
+            m = MinimalModule(out _, out _);
+            var nonReservedHost = new BilTypeDeclaration("Svc", BilTypeKind.Class,
+                new BilAccessibilityModifier(BilAccessibility.Public));
+            nonReservedHost.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "Svc$f()@.void",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilWrapperProxyModifier(BilProxyKind.Specific) }));
+            m.ExternalSymbols.Add(nonReservedHost);
+            BilTestHarness.CheckBilInvalid("非保留名带 wrapper-proxy", m,
+                "只允许在编译器合成保留名");
+
+            // §21.8：合成保留名缺 wrapper-proxy
+            m = MinimalModule(out _, out _);
+            var unmarkedHost = new BilTypeDeclaration("Svc", BilTypeKind.Class,
+                new BilAccessibilityModifier(BilAccessibility.Public));
+            unmarkedHost.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "Svc$.proxy.0.x()@.void",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Private) }));
+            m.ExternalSymbols.Add(unmarkedHost);
+            BilTestHarness.CheckBilInvalid("保留名缺 wrapper-proxy", m,
+                "缺少 wrapper-proxy(...)");
+
+            // §21.8：.wrapped. 名段 kind 必须 original
+            m = MinimalModule(out _, out _);
+            var wrongKindHost = new BilTypeDeclaration("Svc", BilTypeKind.Class,
+                new BilAccessibilityModifier(BilAccessibility.Public));
+            wrongKindHost.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "Svc$.wrapped.x()@.void",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Private),
+                    new BilWrapperProxyModifier(BilProxyKind.Specific) }));
+            m.ExternalSymbols.Add(wrongKindHost);
+            BilTestHarness.CheckBilInvalid(".wrapped. kind 非 original", m,
+                "必须带 wrapper-proxy(original)");
+
+            // §21.8：.proxy. 名段不得 original
+            m = MinimalModule(out _, out _);
+            var originalOnProxyHost = new BilTypeDeclaration("Svc", BilTypeKind.Class,
+                new BilAccessibilityModifier(BilAccessibility.Public));
+            originalOnProxyHost.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "Svc$.proxy.0.x()@.void",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Private),
+                    new BilWrapperProxyModifier(BilProxyKind.Original) }));
+            m.ExternalSymbols.Add(originalOnProxyHost);
+            BilTestHarness.CheckBilInvalid(".proxy. 带 original", m,
+                "不得带 wrapper-proxy(original)");
+
+            // §21.8：wrapper-proxy 修饰符重复
+            m = MinimalModule(out _, out _);
+            var dupProxyHost = new BilTypeDeclaration("Svc", BilTypeKind.Class,
+                new BilAccessibilityModifier(BilAccessibility.Public));
+            dupProxyHost.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "Svc$.proxy.0.x()@.void",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Private),
+                    new BilWrapperProxyModifier(BilProxyKind.Specific),
+                    new BilWrapperProxyModifier(BilProxyKind.Wildcard) }));
+            m.ExternalSymbols.Add(dupProxyHost);
+            BilTestHarness.CheckBilInvalid("wrapper-proxy 修饰符重复", m,
+                "wrapper-proxy 修饰符重复");
+
             // ===== §21.8 init 豁免（对齐 P3 ConstFieldRules，SYNTAX §9.3）=====
             // init 方法（§8.4 init 修饰符标识）体内写实例 const 字段放行
             // （构造期一次性赋值；豁免不限字段宿主==函数宿主，继承的基类

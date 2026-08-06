@@ -145,6 +145,19 @@ namespace LatteCompiler.Bil
             };
         }
 
+        // §8.4 wrapper-proxy(...) 修饰符的 PROXY_KIND 四态拼写（S11d）
+        public static string Of(BilProxyKind kind)
+        {
+            return kind switch
+            {
+                BilProxyKind.Specific => "specific",
+                BilProxyKind.Wildcard => "wildcard",
+                BilProxyKind.Router => "router",
+                BilProxyKind.Original => "original",
+                _ => throw new CompilerInternalException("未知 BilProxyKind: " + kind),
+            };
+        }
+
         // §4.1/§19.1/§19.3 标量类型关键字（无前导点）
         public static string Of(BilScalarType type)
         {
