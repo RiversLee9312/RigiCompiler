@@ -5,6 +5,11 @@ namespace LatteCompiler.Bil
     // CompilerInternalException（内部错误，与用户源码错误区分）。
     internal static class BilSpellings
     {
+        // §15.4：proxy 模板内由 Middleware 链接的保留调用目标。
+        // super 暂留给后续 ABI，当前仅实现 inner。
+        public const string InnerReservedFunction = "..inner";
+        public const string SuperReservedFunction = "..super";
+
         // §11 运算 opcode（§5.6：不带前导点）
         public static string Of(BilBinaryOp op)
         {

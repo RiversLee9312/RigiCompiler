@@ -90,9 +90,12 @@ namespace LatteCompiler.Tests
             TestTypeCheckEmission();
             TestTypeOfEmission();
             TestIndexEmission();
+            TestContainerCallSuffixChainEmission();
             TestAccessorEmission();
             TestOverrideProjection();
+            TestSuperEmission();
             TestGenericEmission();
+            TestGenericVarianceEmission();
             TestVarArgsEmission();
             TestGenericVarArgsEmission();
             TestExceptionEmission();

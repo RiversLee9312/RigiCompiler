@@ -4,16 +4,17 @@ namespace LatteCompiler
     // 使用点与 proxy 体内共用同一 lowering 路径。
     //
     // 形态矩阵（按应用类别分派——应用记录的宿主形态决定可用指令）：
-    // - Entity 应用：成员读/方法调用/索引读 = get.wrapper 值拷贝链；
-    //   字段写 = set.field.embedded 链；
-    // - 字段-Value 应用：字段读写 = get/set.field.embedded 链
-    //   （PlaceChain = field(HOST_FIELD)+wrapper(W) 相邻对）；方法调用/
-    //   索引读 = get.wrapper.field 值拷贝后复用普通 invoke/get.array；
-    //   索引写显式拒绝；
+    // - Entity 应用：成员读/方法调用/索引读 = get.wrapper 值拷贝 +
+    //   普通 get.field/invoke/get.array；字段写 = set.wrapper.field 链；
+    // - 字段-Value 应用：字段读 = get.wrapper.field 值拷贝 + 普通
+    //   get.field；字段写 = set.wrapper.field 链（PlaceChain =
+    //   field(HOST_FIELD)+wrapper(W) 相邻对）；方法调用/索引读 =
+    //   get.wrapper.field 值拷贝后复用普通 invoke/get.array；索引写显式拒绝；
+    // - 嵌套 wrapper 链：逐层 Materialize 值拷贝后继续普通 get.field；
     // - 局部/静态：统一归口（栈帧/静态存储合成归 Middleware）；
     // - 深层纯字段写穿 place.a.b... = rhs：P4a 多 get/set（正向 get +
     //   叶写 + 反向 set；值类型中间写回；引用中间停止；最外层必要
-    //   写回复用已有 set.field.embedded，不新增深写 opcode）。
+    //   写回复用 set.wrapper.field；普通值中间反向写回发 set.field）。
     internal static class WrapperPlaceLowering
     {
         // ===== 类别判定（应用记录归属：类型应用 vs 字段/局部/静态应用）=====
@@ -81,25 +82,21 @@ namespace LatteCompiler
             return LowerExpressionDispatcher.Visit(host, ctx, env);
         }
 
-        // ===== 字段读（Entity → 值拷贝 + get.field；字段-Value → embedded 读）=====
+        // ===== 字段读：一律 Materialize(place) + 普通 get.field =====
+        // Entity = get.wrapper；字段-Value = get.wrapper.field；嵌套链逐层物化
         public static LoweredExpression? LowerFieldRead(BoundFieldAccessExpression access,
             BoundWrapperAccessExpression place, LoweredExpression? sharedHost,
             LowerContext ctx, LowerEnvironment env)
         {
-            if (IsFieldApplication(place) || IsLocalOrStaticApplication(place))
-            {
-                // 字段-Value 读 = embedded 链；局部/静态在 BuildEmbedded 内归口
-                return BuildEmbedded(access, place, access.Field, sharedHost, ctx, env);
-            }
             var materialized = Materialize(place, sharedHost, ctx, env);
             if (materialized == null) return null;
             return new LoweredFieldAccessExpression(access, materialized, access.Field);
         }
 
-        // ===== embedded 链构造（字段写 place 与字段-Value 读共用）=====
+        // ===== set.wrapper.field 写 place 构造（仅写侧）=====
         // PlaceChain 最外层→最内层：Entity 应用只加 W；字段-Value 应用加
         // HOST_FIELD 再加 W（相邻对，同 owner 多字段同 W 可区分）
-        public static LoweredEmbeddedFieldExpression? BuildEmbedded(BoundNode origin,
+        public static LoweredWrapperFieldExpression? BuildWrapperFieldPlace(BoundNode origin,
             BoundWrapperAccessExpression place, FieldSymbol targetField,
             LoweredExpression? sharedHost, LowerContext ctx, LowerEnvironment env)
         {
@@ -135,7 +132,7 @@ namespace LatteCompiler
             var hostExpr = sharedHost ?? LowerExpressionDispatcher.Visit(
                 UltimateHostExpression(place), ctx, env);
             if (hostExpr == null) return null;
-            return new LoweredEmbeddedFieldExpression(origin, hostExpr, chain, targetField,
+            return new LoweredWrapperFieldExpression(origin, hostExpr, chain, targetField,
                 targetField.FieldType!);
         }
 
@@ -294,7 +291,7 @@ namespace LatteCompiler
                 }
                 if (i == 0)
                 {
-                    var writePlace = BuildEmbedded(access, place, field, host, ctx, env);
+                    var writePlace = BuildWrapperFieldPlace(access, place, field, host, ctx, env);
                     if (writePlace == null) return null;
                     writebacks.Add(new LoweredAssignmentStatement(origin, writePlace, local));
                 }
@@ -373,7 +370,7 @@ namespace LatteCompiler
                 }
                 if (i == 0)
                 {
-                    var writePlace = BuildEmbedded(access, place, field, host, ctx, env);
+                    var writePlace = BuildWrapperFieldPlace(access, place, field, host, ctx, env);
                     if (writePlace == null) return null;
                     ctx.Output.Add(new LoweredAssignmentStatement(compound, writePlace, local));
                 }

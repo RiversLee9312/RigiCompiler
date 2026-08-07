@@ -23,6 +23,12 @@ namespace LatteCompiler.Bil
             var fnSymbols = new HashSet<string>();
             foreach (var function in context.Module.Functions)
             {
+                if (function.Symbol == BilSpellings.SuperReservedFunction)
+                {
+                    errors.Add(new BilVerificationError("21.2", function.Symbol,
+                        "保留符号 ..super 不得声明为普通 fn"));
+                    continue;
+                }
                 if (!context.LocalMethodSymbols.Contains(function.Symbol)
                     && !IsBuiltinHostedFunction(context, function.Symbol))
                 {
@@ -182,6 +188,13 @@ namespace LatteCompiler.Bil
             List<BilVerificationError> errors)
         {
             var symbol = declaration.Symbol;
+
+            if (symbol == BilSpellings.SuperReservedFunction)
+            {
+                errors.Add(new BilVerificationError("21.2", symbol,
+                    "保留符号 ..super 不得声明为普通成员"));
+                return;
+            }
 
             // §8.3/§8.4：声明关键字与符号中 .static. 标记必须一致
             var isMethod = declaration.Kind is BilMemberKind.Method or BilMemberKind.StaticMethod;
@@ -567,7 +580,7 @@ namespace LatteCompiler.Bil
                 }
             }
             else if (context.ReturnType != null
-                && !BilVerificationContext.TypesCompatible(context.ReturnType, returnType))
+                && !context.Module.TypesAssignable(context.ReturnType, returnType))
             {
                 errors.Add(new BilVerificationError("21.2", function.Symbol,
                     $".return 类型 \"{context.ReturnType}\" 与方法符号返回类型 \"{returnType}\" 不一致"));
@@ -647,7 +660,7 @@ namespace LatteCompiler.Bil
                         $"setter fn 普通参数个数 {plainArgs.Count} 不符（应恰好一个 value 参数）"));
                     return;
                 }
-                if (!BilVerificationContext.TypesCompatible(plainArgs[0].TypeRef, returnType))
+                if (!context.Module.TypesAssignable(plainArgs[0].TypeRef, returnType))
                 {
                     errors.Add(new BilVerificationError("21.7", function.Symbol,
                         $"setter value 参数类型 \"{plainArgs[0].TypeRef}\" 与方法符号 " +
@@ -664,7 +677,7 @@ namespace LatteCompiler.Bil
             for (var i = 0; i < plainArgs.Count; i++)
             {
                 if (plainArgs[i].Name != expected[i].Name
-                    || !BilVerificationContext.TypesCompatible(plainArgs[i].TypeRef, expected[i].TypeRef))
+                    || !context.Module.TypesAssignable(plainArgs[i].TypeRef, expected[i].TypeRef))
                 {
                     errors.Add(new BilVerificationError("21.7", function.Symbol,
                         $"参数 {i} \"{plainArgs[i].Name}: {plainArgs[i].TypeRef}\" 与方法符号 " +

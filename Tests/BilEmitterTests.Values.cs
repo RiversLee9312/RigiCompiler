@@ -311,6 +311,33 @@ namespace LatteCompiler.Tests
                     && pairDeclaration.GenericParameters[1] == "TValue");
         }
 
+        private static void TestGenericVarianceEmission()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "open class Animal { }\n" +
+                "class Dog : Animal { }\n" +
+                "class Producer\\<out T> { }\n" +
+                "class Consumer\\<in T> { }\n" +
+                "func takeProducer(value: Producer\\<Animal>) { }\n" +
+                "func takeConsumer(value: Consumer\\<Dog>) { }\n" +
+                "func main(producer: Producer\\<Dog>, consumer: Consumer\\<Animal>) {\n" +
+                "    takeProducer(producer)\n" +
+                "    takeConsumer(consumer)\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（泛型型变）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（泛型型变）", module);
+            var producer = module.LocalSymbols.OfType<BilTypeDeclaration>()
+                .Single(t => t.Symbol == "Producer");
+            var consumer = module.LocalSymbols.OfType<BilTypeDeclaration>()
+                .Single(t => t.Symbol == "Consumer");
+            TestHarness.CheckTrue("BIL 泛型声明保留 out/in",
+                producer.GenericVariances.Single() == BilGenericVariance.Out
+                && consumer.GenericVariances.Single() == BilGenericVariance.In);
+            TestHarness.CheckTrue("BIL 泛型声明 writer 保留 out/in",
+                BilWriter.Write(module).Contains("generic(out T)")
+                && BilWriter.Write(module).Contains("generic(in T)"));
+        }
+
         // ===== S9d：可变参数 vargs/kwargs（§7.1 隐藏包 + §14 特权构造打包）=====
         private static void TestVarArgsEmission()
         {

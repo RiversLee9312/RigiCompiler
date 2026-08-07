@@ -155,20 +155,9 @@ namespace LatteCompiler.Bil
                 case GetSelfInstruction getSelf:
                     writes.Add(getSelf.Target);
                     return true;
-                case GetEmbeddedFieldInstruction getEmbedded:
-                    reads.Add(getEmbedded.Object);
-                    writes.Add(getEmbedded.Target);
-                    return true;
-                case SetEmbeddedFieldInstruction setEmbedded:
-                    reads.Add(setEmbedded.Source);
-                    reads.Add(setEmbedded.Object);
-                    return true;
-                case CallInnerInstruction callInner:
-                    reads.AddRange(callInner.Arguments);
-                    writes.Add(callInner.Target);
-                    return true;
-                case CallInnerNoretInstruction callInnerNoret:
-                    reads.AddRange(callInnerNoret.Arguments);
+                case SetWrapperFieldInstruction setWrapperField:
+                    reads.Add(setWrapperField.Source);
+                    reads.Add(setWrapperField.Object);
                     return true;
                 case GetIdVarInstruction getIdVar:
                     reads.Add(getIdVar.Value);
@@ -321,38 +310,25 @@ namespace LatteCompiler.Bil
                     VerifyGetSelfResult(context, getSelf, location, errors);
                     break;
 
-                case GetEmbeddedFieldInstruction getEmbedded:
-                    VerifyEmbeddedChain(context, getEmbedded.Chain, getEmbedded.InnerField.Symbol,
-                        VarType(context, getEmbedded.Object), location, errors);
-                    CheckType(context, VarType(context, getEmbedded.Target),
-                        FieldTypeOf(context, getEmbedded.InnerField.Symbol), location,
-                        "get.field.embedded 目标变量", errors);
-                    break;
-
-                case SetEmbeddedFieldInstruction setEmbedded:
-                    VerifyEmbeddedChain(context, setEmbedded.Chain, setEmbedded.InnerField.Symbol,
-                        VarType(context, setEmbedded.Object), location, errors);
-                    CheckType(context, VarType(context, setEmbedded.Source),
-                        FieldTypeOf(context, setEmbedded.InnerField.Symbol), location,
-                        "set.field.embedded 源变量", errors);
-                    VerifyFieldWritable(context, setEmbedded.InnerField.Symbol,
-                        isInstanceWrite: true, location, errors);
-                    break;
-
-                case CallInnerInstruction callInner:
-                    VerifyProxyTemplateInstruction(context, location, "call.inner", errors);
-                    VerifyCallInnerPackArguments(context, callInner.Arguments, location, errors);
-                    if (context.ReturnType != null && context.ReturnType != ".void")
+                case SetWrapperFieldInstruction setWrapperField:
+                    // wrapper 隐藏存储写后门：链结构校验，且链必须含 wrapper
+                    // 元素（非纯 field 普通嵌套写——后者走 set.field）
+                    if (!ChainHasWrapperElement(setWrapperField.Chain))
                     {
-                        CheckType(context, VarType(context, callInner.Target), context.ReturnType,
-                            location, "call.inner 结果", errors);
+                        errors.Add(new BilVerificationError("21.3", location,
+                            "set.wrapper.field 链必须含至少一个 wrapper(...) 元素" +
+                            "（wrapper 隐藏存储后门，非普通字段写入；§13.3）"));
+                        break;
                     }
-                    break;
-
-                case CallInnerNoretInstruction callInnerNoret:
-                    VerifyProxyTemplateInstruction(context, location, "call.inner.noret", errors);
-                    VerifyCallInnerPackArguments(context, callInnerNoret.Arguments, location,
-                        errors);
+                    VerifyWrapperFieldChain(context, setWrapperField.Chain,
+                        setWrapperField.InnerField.Symbol,
+                        VarType(context, setWrapperField.Object), location,
+                        "set.wrapper.field", errors);
+                    CheckType(context, VarType(context, setWrapperField.Source),
+                        FieldTypeOf(context, setWrapperField.InnerField.Symbol), location,
+                        "set.wrapper.field 源变量", errors);
+                    VerifyFieldWritable(context, setWrapperField.InnerField.Symbol,
+                        isInstanceWrite: true, location, errors);
                     break;
 
                 case GetIdVarInstruction getIdVar:
@@ -557,6 +533,17 @@ namespace LatteCompiler.Bil
             IReadOnlyList<BilVariableOperand> arguments, BilVariableOperand? target,
             string location, List<BilVerificationError> errors)
         {
+            // §15.4：保留目标不是 canonical 方法，不得进入方法符号/receiver 校验。
+            if (methodSymbol == BilSpellings.InnerReservedFunction)
+            {
+                VerifyInnerInvoke(context, arguments, target, location, errors);
+                return;
+            }
+            if (methodSymbol == BilSpellings.SuperReservedFunction)
+            {
+                VerifySuperInvoke(context, arguments, target, location, errors);
+                return;
+            }
             // §21.2：方法符号可解析
             if (!context.Module.MethodSymbols.Contains(methodSymbol))
             {
@@ -930,7 +917,7 @@ namespace LatteCompiler.Bil
                 "type.is.case 的操作数", errors);
         }
 
-        // §21.3：get.self / call.inner(.noret) 仅在带 wrapper-proxy 的 fn 体内合法
+        // §21.3：get.self / invoke fn(..inner) 仅在带 wrapper-proxy 的 fn 体内合法
         private static void VerifyProxyTemplateInstruction(BilFunctionContext context,
             string location, string opcode, List<BilVerificationError> errors)
         {
@@ -948,9 +935,9 @@ namespace LatteCompiler.Bil
                 $"{opcode} 仅允许在带 wrapper-proxy 修饰符的 fn 体内（§12.5/§15.4）"));
         }
 
-        // §15.4/#27⑦：call.inner 的泛型包操作数必须完整、按当前 fn .args
+        // §15.4/#27⑦：invoke fn(..inner) 的泛型包操作数必须完整、按当前 fn .args
         // 声明序前置；固定 .generic.T（.typeid）不得混入。值实参从包前缀后开始。
-        private static void VerifyCallInnerPackArguments(BilFunctionContext context,
+        private static void VerifyInnerPackArguments(BilFunctionContext context,
             IReadOnlyList<BilVariableOperand> arguments, string location,
             List<BilVerificationError> errors)
         {
@@ -963,19 +950,109 @@ namespace LatteCompiler.Bil
                 {
                     var actual = i < arguments.Count ? "$" + arguments[i].Name : "<missing>";
                     errors.Add(new BilVerificationError("21.3", location,
-                        $"call.inner 泛型包操作数 {i} 应为 \"${expectedPacks[i].Name}\"" +
+                        $"invoke fn(..inner) 泛型包操作数 {i} 应为 \"${expectedPacks[i].Name}\"" +
                         $"（按 .args 声明序前置），实际为 \"{actual}\""));
                     continue;
                 }
                 CheckType(context, VarType(context, arguments[i]), expectedPacks[i].TypeRef,
-                    location, "call.inner 泛型包操作数", errors);
+                    location, "invoke fn(..inner) 泛型包操作数", errors);
             }
             for (var i = expectedPacks.Count; i < arguments.Count; i++)
             {
                 if (!arguments[i].Name.StartsWith(".generic.")) continue;
                 errors.Add(new BilVerificationError("21.3", location,
-                    $"call.inner 的泛型包操作数 \"${arguments[i].Name}\" 必须按 " +
+                    $"invoke fn(..inner) 的泛型包操作数 \"${arguments[i].Name}\" 必须按 " +
                     ".args 声明序前置，且固定泛型参数不得出现在参数列表中"));
+            }
+        }
+
+        // §15.4：inner ABI 无 receiver；泛型包与值实参保持模板态原序，
+        // Middleware 据此链接下一环。
+        private static void VerifyInnerInvoke(BilFunctionContext context,
+            IReadOnlyList<BilVariableOperand> arguments, BilVariableOperand? target,
+            string location, List<BilVerificationError> errors)
+        {
+            VerifyProxyTemplateInstruction(context, location, "invoke fn(..inner)", errors);
+            if (arguments.Any(argument => argument.Name == ".this"))
+            {
+                errors.Add(new BilVerificationError("21.3", location,
+                    "invoke fn(..inner) 不接受 receiver（$.this）"));
+            }
+            VerifyInnerPackArguments(context, arguments, location, errors);
+            if (context.ReturnType == ".void")
+            {
+                if (target != null)
+                {
+                    errors.Add(new BilVerificationError("21.3", location,
+                        "void proxy 模板必须使用 invoke.noret fn(..inner)"));
+                }
+                return;
+            }
+            if (target == null)
+            {
+                errors.Add(new BilVerificationError("21.3", location,
+                    "有返回 proxy 模板必须使用 invoke fn(..inner)"));
+                return;
+            }
+            CheckType(context, VarType(context, target), context.ReturnType, location,
+                "invoke fn(..inner) 结果", errors);
+        }
+
+        // ..super 是 Middleware 的直接基类原始实现入口，不是可声明/可解析的
+        // canonical 方法。调用者必须是 override 或 init，receiver 固定为 $.this。
+        private static void VerifySuperInvoke(BilFunctionContext context,
+            IReadOnlyList<BilVariableOperand> arguments, BilVariableOperand? target,
+            string location, List<BilVerificationError> errors)
+        {
+            if (!context.Module.MethodDeclarations.TryGetValue(context.Function.Symbol,
+                    out var declaration)
+                || (!HasKeyword(declaration, BilKeyword.Override)
+                    && !HasKeyword(declaration, BilKeyword.Init)))
+            {
+                errors.Add(new BilVerificationError("21.3", location,
+                    "invoke fn(..super) 仅允许在 override 或 init fn 体内"));
+            }
+            if (arguments.Count == 0 || arguments[0].Name != ".this")
+            {
+                errors.Add(new BilVerificationError("21.3", location,
+                    "invoke fn(..super) 的首实参必须精确为 $.this"));
+            }
+            var expectedHidden = context.Function.Args
+                .Where(argument => argument.Name.StartsWith(".generic."))
+                .ToList();
+            for (var i = 0; i < expectedHidden.Count; i++)
+            {
+                var position = i + 1;
+                if (position >= arguments.Count || arguments[position].Name != expectedHidden[i].Name)
+                {
+                    errors.Add(new BilVerificationError("21.3", location,
+                        $"invoke fn(..super) 泛型隐藏实参 {i} 应为 " +
+                        $"\"${expectedHidden[i].Name}\"（紧随 $.this 且按 .args 声明序）"));
+                }
+            }
+            var isInit = declaration != null && HasKeyword(declaration, BilKeyword.Init);
+            if (isInit && target != null)
+            {
+                errors.Add(new BilVerificationError("21.3", location,
+                    "init 体内的 invoke fn(..super) 必须使用 invoke.noret"));
+            }
+            if (!isInit)
+            {
+                if (context.ReturnType == ".void" && target != null)
+                {
+                    errors.Add(new BilVerificationError("21.3", location,
+                        "void override 必须使用 invoke.noret fn(..super)"));
+                }
+                if (context.ReturnType != ".void" && target == null)
+                {
+                    errors.Add(new BilVerificationError("21.3", location,
+                        "有返回 override 必须使用 invoke fn(..super)"));
+                }
+                if (target != null)
+                {
+                    CheckType(context, VarType(context, target), context.ReturnType, location,
+                        "invoke fn(..super) 结果", errors);
+                }
             }
         }
 
@@ -1016,20 +1093,21 @@ namespace LatteCompiler.Bil
                 "get.self 结果", errors);
         }
 
-        // §21.3：嵌套字段访问校验（§13.3）——链至少一元素，元素两态 field(F)/
-        // wrapper(W)；按序跟踪当前位置类型：
+        // §21.3：set.wrapper.field 链校验（§13.3）——链至少一元素，元素两态
+        // field(F)/wrapper(W)；按序跟踪当前位置类型：
         //   field(F),wrapper(W) 且 F 声明带 wrapped(W) → 字段应用（位置转 W）；
         //   普通 field(F) → 按下钻字段类型；
         //   wrapper(W) → 类型应用（当前 type 声明须带 wrapped(W)，查不到降级）；
         // INNER_FIELD 实例且 owner 可赋到最终当前位置。每步至多一条诊断。
-        private static void VerifyEmbeddedChain(BilFunctionContext context,
+        // opcodeLabel 用于空链等错误文本（set.wrapper.field）。
+        private static void VerifyWrapperFieldChain(BilFunctionContext context,
             IReadOnlyList<BilOperand> chain, string innerFieldSymbol, string? objectType,
-            string location, List<BilVerificationError> errors)
+            string location, string opcodeLabel, List<BilVerificationError> errors)
         {
             if (chain.Count == 0)
             {
                 errors.Add(new BilVerificationError("21.3", location,
-                    "get/set.field.embedded 链至少含一个链元素（§13.3）"));
+                    opcodeLabel + " 链至少含一个链元素（§13.3）"));
                 return;
             }
 
@@ -1131,6 +1209,15 @@ namespace LatteCompiler.Bil
                 "嵌套字段访问的内层字段宿主", errors);
         }
 
+        private static bool ChainHasWrapperElement(IReadOnlyList<BilOperand> chain)
+        {
+            for (var i = 0; i < chain.Count; i++)
+            {
+                if (chain[i] is BilWrapperOperand) return true;
+            }
+            return false;
+        }
+
         private enum FieldWrapperPairKind
         {
             None,
@@ -1229,7 +1316,7 @@ namespace LatteCompiler.Bil
             {
                 var argumentType = VarType(context, arguments[i]);
                 if (argumentType != null
-                    && !BilVerificationContext.TypesCompatible(argumentType, parameters[i].TypeRef))
+                    && !context.Module.TypesAssignable(argumentType, parameters[i].TypeRef))
                 {
                     return false;
                 }
@@ -1304,7 +1391,7 @@ namespace LatteCompiler.Bil
         // 标识）体内写实例 const 字段放行；P3 豁免不限字段宿主与函数宿主
         // 一致（init 体内写任意实例 const 字段均放行，含继承的基类字段），
         // BIL 侧对齐；静态写入（set.field.static）不在豁免内——isInstanceWrite
-        // 由指令形态给出（embedded 内层字段必为实例，§21.3 已拦截静态）。
+        // 由指令形态给出（set.wrapper.field 内层字段必为实例，§21.3 已拦截静态）。
         // fn 声明查不到时模块已有 §21.2 错误（fn 无对应本地声明），不豁免
         private static void VerifyFieldWritable(BilFunctionContext context, string fieldSymbol,
             bool isInstanceWrite, string location, List<BilVerificationError> errors)
@@ -1447,7 +1534,7 @@ namespace LatteCompiler.Bil
             }
             var compatible = prefixMatch
                 ? (actual == expected || actual.StartsWith(expected + "<"))
-                : BilVerificationContext.TypesCompatible(actual, expected);
+                : context.Module.TypesAssignable(actual, expected);
             if (!compatible)
             {
                 errors.Add(new BilVerificationError("21.3", location,

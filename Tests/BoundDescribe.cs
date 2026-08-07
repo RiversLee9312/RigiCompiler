@@ -171,6 +171,9 @@ namespace LatteCompiler.Tests
                         : ", packs=[" + string.Join(", ",
                             innerCall.ForwardedGenericPacks.Select(p => p.Name)) + "]")}, " +
                     $"{(innerCall.IsVoid ? "void" : TypeShort.Of(innerCall.Type))})",
+                BoundSuperCallExpression superCall =>
+                    $"SuperCall({superCall.Method.Name}, [{string.Join(", ", superCall.Arguments.Select(Expr))}], " +
+                    $"{(superCall.IsVoid ? "void" : TypeShort.Of(superCall.Type))})",
                 BoundInstanceCallExpression instCall =>
                     $"InstCall({instCall.Method.Name}, {Expr(instCall.Receiver)}, " +
                     $"[{string.Join(", ", instCall.Arguments.Select(Expr))}], " +

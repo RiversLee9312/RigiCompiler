@@ -66,7 +66,24 @@ namespace LatteCompiler
                 }
             }
 
-            // 二、具体类必须实现继承链全部 abstract 成员与无体接口成员（§9.2.1；
+            // 二、访问器是独立的 override 单元。访问器符号挂在字段三槽上，
+            // 不进入 P2 条目表，因此必须从字段条目反向访问；getter 与 setter
+            // 分别匹配，不能因同名字段或另一种访问器而互相命中。
+            foreach (var entry in env.Entries)
+            {
+                if (!entry.InGraph || entry.DeclaringType == null
+                    || entry.Symbol is not FieldSymbol field
+                    || entry.Node is not VariableDeclarationASTNode declaration)
+                {
+                    continue;
+                }
+                CheckAccessorOverride(entry.DeclaringType, field, field.Getter,
+                    declaration.Getter, env);
+                CheckAccessorOverride(entry.DeclaringType, field, field.Setter,
+                    declaration.Setter, env);
+            }
+
+            // 三、具体类必须实现继承链全部 abstract 成员与无体接口成员（§9.2.1；
             // 有默认实现的接口成员隐式继承——显式委托语法归后续，§11）
             foreach (var entry in env.TypeEntries)
             {
@@ -88,6 +105,94 @@ namespace LatteCompiler
                     }
                 }
             }
+        }
+
+        private static string AccessorText(MethodSymbol accessor) =>
+            accessor.Kind == MethodKind.Getter ? "getter" : "setter";
+
+        private static void CheckAccessorOverride(TypeSymbol host, FieldSymbol field,
+            MethodSymbol? accessor, PropertyAccessorASTNode? declaration,
+            ResolveEnvironment env)
+        {
+            if (field.IsStatic || accessor == null || declaration == null || field.FieldType == null
+                || field.FieldType is ErrorTypeSymbol)
+            {
+                return;
+            }
+
+            var matches = FindInheritedAccessorMatches(host, field, accessor, env);
+            if (accessor.IsOverride)
+            {
+                if (matches.Count == 0)
+                {
+                    env.Error(declaration.Span,
+                        $"'{accessor.Name}' {AccessorText(accessor)} has no inherited accessor to override");
+                }
+                else if (!matches.Exists(m => m.IsOverridable))
+                {
+                    env.Error(declaration.Span,
+                        $"'{accessor.Name}' {AccessorText(accessor)} inherited accessor is not 'open'");
+                }
+            }
+            else if (matches.Count > 0)
+            {
+                env.Error(declaration.Span,
+                    $"'{accessor.Name}' {AccessorText(accessor)} hides an inherited accessor; declare it 'override'");
+            }
+        }
+
+        private static List<InheritedMatch> FindInheritedAccessorMatches(TypeSymbol host,
+            FieldSymbol field, MethodSymbol accessor, ResolveEnvironment env)
+        {
+            var result = new List<InheritedMatch>();
+            for (var type = host.BaseType; type != null; type = type.BaseType)
+            {
+                AddAccessorMatches(result, type, field.Name, accessor, env);
+            }
+            foreach (var iface in InterfaceClosure(host, env))
+            {
+                AddAccessorMatches(result, iface, field.Name, accessor, env);
+            }
+            return result;
+        }
+
+        private static void AddAccessorMatches(List<InheritedMatch> result, TypeSymbol constructed,
+            string fieldName, MethodSymbol accessor, ResolveEnvironment env)
+        {
+            var definition = constructed.ConstructedFrom ?? constructed;
+            var field = definition.Fields.FirstOrDefault(f => f.Name == fieldName);
+            if (field == null) return;
+            var candidate = accessor.Kind == MethodKind.Getter ? field.Getter : field.Setter;
+            if (candidate == null) return;
+            var candidateType = accessor.Kind == MethodKind.Getter
+                ? candidate.ReturnType
+                : candidate.Parameters.FirstOrDefault()?.Type;
+            var currentType = accessor.Kind == MethodKind.Getter
+                ? accessor.ReturnType
+                : accessor.Parameters.FirstOrDefault()?.Type;
+            if (ReferenceEquals(definition, constructed)
+                ? EquivalentAccessorType(candidateType, currentType)
+                : EquivalentAccessorType(env.Substitute(candidateType, definition, constructed), currentType))
+            {
+                result.Add(new InheritedMatch(candidate,
+                    candidate.IsOpen || candidate.IsAbstract || definition.Kind == TypeKind.Interface));
+            }
+        }
+
+        private static bool EquivalentAccessorType(SemanticSymbol? a, SemanticSymbol? b)
+        {
+            if (ReferenceEquals(a, b)) return true;
+            if (a == null || b == null) return false;
+            if (a is TypeSymbol { ConstructedFrom: not null } ta
+                && b is TypeSymbol { ConstructedFrom: not null } tb)
+            {
+                if (!ReferenceEquals(ta.ConstructedFrom, tb.ConstructedFrom)
+                    || ta.TypeArguments!.Count != tb.TypeArguments!.Count) return false;
+                for (var i = 0; i < ta.TypeArguments.Count; i++)
+                    if (!EquivalentAccessorType(ta.TypeArguments[i], tb.TypeArguments[i])) return false;
+                return true;
+            }
+            return false;
         }
 
         // 继承命中集：基类链（含内建——Object.toString 是合法覆写目标）+
@@ -124,6 +229,41 @@ namespace LatteCompiler
                 }
             }
             return result;
+        }
+
+        internal static IEnumerable<MethodSymbol> InheritedMethodsForWrapper(TypeSymbol host,
+            MethodSymbol method, ResolveEnvironment env)
+        {
+            return FindInheritedMatches(host, SignatureView.Raw(method), env)
+                .Where(match => match.IsOverridable)
+                .Select(match => match.Method)
+                .Distinct();
+        }
+
+        internal static IEnumerable<FieldSymbol> InheritedFieldsForAccessor(TypeSymbol host,
+            MethodSymbol accessor, ResolveEnvironment env)
+        {
+            var result = new List<FieldSymbol>();
+            for (var type = host.BaseType; type != null; type = type.BaseType)
+            {
+                AddInheritedField(result, type, accessor);
+            }
+            foreach (var iface in InterfaceClosure(host, env))
+            {
+                AddInheritedField(result, iface, accessor);
+            }
+            return result.Distinct();
+        }
+
+        private static void AddInheritedField(List<FieldSymbol> result, TypeSymbol constructed,
+            MethodSymbol accessor)
+        {
+            var definition = constructed.ConstructedFrom ?? constructed;
+            var field = definition.Fields.FirstOrDefault(f => f.Name == accessor.Name);
+            if (field != null && (accessor.Kind == MethodKind.Getter ? field.Getter : field.Setter) != null)
+            {
+                result.Add(field);
+            }
         }
 
         // 待实现成员闭包：基类链的 abstract 方法 + 接口闭包的无体方法
@@ -185,7 +325,7 @@ namespace LatteCompiler
         // implements IEnumerator\<T\>`），闭包遍历沿宿主链把接口实参代入
         // 构造实参（IEnumerator\<T\> → IEnumerator\<i32\>——签名匹配按
         // 代入后形态比较）
-        private static List<TypeSymbol> InterfaceClosure(TypeSymbol host, ResolveEnvironment env)
+        internal static List<TypeSymbol> InterfaceClosure(TypeSymbol host, ResolveEnvironment env)
         {
             var result = new List<TypeSymbol>();
             var visited = new HashSet<TypeSymbol>();

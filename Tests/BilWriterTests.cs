@@ -338,16 +338,14 @@ namespace LatteCompiler.Tests
             body.Instructions.Add(new GetVarInstruction(BilOp.Var("a"), BilOp.Var("b")));
             body.Instructions.Add(new GetFieldInstruction(BilOp.Var("obj"), BilOp.Var("t"),
                 BilOp.Field("com.example::Service#name@.string")));
-            body.Instructions.Add(new GetEmbeddedFieldInstruction(BilOp.Var("obj"), BilOp.Var("t"),
-                BilOp.Wrapper("core.logging::Logged"),
-                BilOp.Field("core.logging::Logged#level@.string")));
-            body.Instructions.Add(new SetEmbeddedFieldInstruction(BilOp.Var("v"), BilOp.Var("obj"),
+            body.Instructions.Add(new SetWrapperFieldInstruction(BilOp.Var("v"), BilOp.Var("obj"),
                 BilOp.Wrapper("core.logging::Logged"),
                 BilOp.Field("core.logging::Logged#level@.string")));
             body.Instructions.Add(new GetSelfInstruction(BilOp.Var("self")));
-            body.Instructions.Add(new CallInnerInstruction(BilOp.Var("r"),
-                new[] { BilOp.Var("a") }));
-            body.Instructions.Add(new CallInnerNoretInstruction(new[] { BilOp.Var("a") }));
+            body.Instructions.Add(new InvokeInstruction(BilOp.Fn(BilSpellings.InnerReservedFunction),
+                BilOp.Var("r"), new[] { BilOp.Var("a") }));
+            body.Instructions.Add(new InvokeNoResultInstruction(
+                BilOp.Fn(BilSpellings.InnerReservedFunction), new[] { BilOp.Var("a") }));
             body.Instructions.Add(new SetFieldStaticInstruction(BilOp.Var("v"),
                 BilOp.Type("com.example::Service"),
                 BilOp.Field("com.example::Service#.static.instanceCount@.i64")));
@@ -412,11 +410,10 @@ namespace LatteCompiler.Tests
                 "        getid.var $a $t",
                 "        get.var $a $b",
                 "        get.field $obj $t field(com.example::Service#name@.string)",
-                "        get.field.embedded $obj $t wrapper(core.logging::Logged) field(core.logging::Logged#level@.string)",
-                "        set.field.embedded $v $obj wrapper(core.logging::Logged) field(core.logging::Logged#level@.string)",
+                "        set.wrapper.field $v $obj wrapper(core.logging::Logged) field(core.logging::Logged#level@.string)",
                 "        get.self $self",
-                "        call.inner $r [$a]",
-                "        call.inner.noret [$a]",
+                "        invoke fn(..inner) $r [$a]",
+                "        invoke.noret fn(..inner) [$a]",
                 "        set.field.static $v type(com.example::Service) field(com.example::Service#.static.instanceCount@.i64)",
                 "        get.array $arr $i $e",
                 "        new type(com.example::User) $u [$a]",

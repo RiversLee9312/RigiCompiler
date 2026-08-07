@@ -59,15 +59,16 @@ namespace LatteCompiler
             FieldSymbol field, ResolveEnvironment env)
         {
             if (node == null || symbol == null) return;
-            // 修饰符白名单：仅访问级别（§9.4.1）；重复与多级别互斥同声明规则
+            // 访问器允许访问级别以及独立的 open/override；字段本身仍不接受
+            // 这两个继承修饰符（§9.4.1）。重复由本方法处理，因为访问器不进 P2 条目表。
             foreach (var group in node.Modifiers.GroupBy(m => m))
             {
                 if (group.Key is not (Keywords.PUB or Keywords.PRIV or Keywords.PROTECTED
-                    or Keywords.INTERNAL))
+                    or Keywords.INTERNAL or Keywords.OPEN or Keywords.OVERRIDE))
                 {
                     env.Error(node.Span,
                         $"Accessor modifier '{group.Key}' is not allowed here " +
-                        "(access modifiers only: pub/protected/internal/priv)");
+                        "(access modifiers, open or override only)");
                 }
                 else if (group.Count() > 1)
                 {
@@ -80,6 +81,18 @@ namespace LatteCompiler
                 env.Error(node.Span,
                     "Access modifiers are mutually exclusive (pub/protected/internal/priv)");
             }
+            if (node.Modifiers.Contains(Keywords.OPEN) && node.Modifiers.Contains(Keywords.OVERRIDE))
+            {
+                env.Error(node.Span, "Accessor 'open' and 'override' are mutually exclusive");
+            }
+            if ((field.Owner == null || field.IsStatic)
+                && node.Modifiers.Any(m => m is Keywords.OPEN or Keywords.OVERRIDE))
+            {
+                env.Error(node.Span,
+                    "'open'/'override' cannot be applied to global or static accessors");
+            }
+            symbol.IsOpen = node.Modifiers.Contains(Keywords.OPEN);
+            symbol.IsOverride = node.Modifiers.Contains(Keywords.OVERRIDE);
             // 可见性落定：访问器显式修饰 ?? 字段声明级别（§9.4.1）；
             // 文件身份随字段（访问器符号不经 AddEntry）
             var hasExplicit = node.Modifiers.Any(m =>

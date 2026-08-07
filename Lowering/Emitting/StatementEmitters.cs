@@ -47,8 +47,8 @@ namespace LatteCompiler
             var place = assignment.Target;
             while (place is LoweredCastExpression castShell) place = castShell.Source;
             // 接收者先行物化（set.field/set.array 两形态；set.var/
-            // set.field.static 无 receiver 不动；S11c embedded 写 place
-            // 的宿主同序先行物化）
+            // set.field.static 无 receiver 不动；S11c set.wrapper.field 写
+            // place 的宿主同序先行物化）
             BilVariableOperand? writeReceiver = null;
             BilVariableOperand? indexReceiver = null;
             BilVariableOperand? indexOperand = null;
@@ -64,8 +64,8 @@ namespace LatteCompiler
                     indexOperand = EmitValueDispatcher.Visit(indexTarget.Index, target,
                         ctx, env);
                     break;
-                case LoweredEmbeddedFieldExpression embeddedTarget:
-                    writeReceiver = EmitValueDispatcher.Visit(embeddedTarget.Receiver, target,
+                case LoweredWrapperFieldExpression wrapperFieldTarget:
+                    writeReceiver = EmitValueDispatcher.Visit(wrapperFieldTarget.Receiver, target,
                         ctx, env);
                     break;
             }
@@ -105,10 +105,10 @@ namespace LatteCompiler
                         indexReceiver!, indexOperand!, assignedValue)
                     { Origin = assignment });
                     break;
-                case LoweredEmbeddedFieldExpression embeddedTarget:
-                    // wrapper place 字段写入（S11c，§13.3：set.field.embedded
-                    // 链——宿主先行物化（上方），SOURCE 后求值）
-                    EmbeddedFieldEmission.EmitWrite(embeddedTarget, assignedValue,
+                case LoweredWrapperFieldExpression wrapperFieldTarget:
+                    // wrapper place 字段写入（§13.3：set.wrapper.field 链——
+                    // 宿主先行物化（上方），SOURCE 后求值；非普通 set.field）
+                    WrapperFieldEmission.EmitWrite(wrapperFieldTarget, assignedValue,
                         writeReceiver!, target, ctx, env);
                     break;
                 default:

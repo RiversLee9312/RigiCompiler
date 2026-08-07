@@ -51,6 +51,37 @@ namespace LatteCompiler.Tests
                 "ret\n");
         }
 
+        private static void TestSuperEmission()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "open class A {\n" +
+                "    pub init(n: i32) {}\n" +
+                "    pub open func f(x: i32): i32 { return x }\n" +
+                "    pub open func ping() {}\n" +
+                "}\n" +
+                "class B: A {\n" +
+                "    pub init(n: i32) { super(n) }\n" +
+                "    pub override func f(x: i32): i32 { return super(x) }\n" +
+                "    pub override func ping() { super() }\n" +
+                "}\n");
+            CheckNoErrors("全管线 super 发射", unit);
+            BilTestHarness.CheckBilValid("验证器接受合法 ..super", module);
+            var f = module.Functions.Single(fn => fn.Symbol == "B$f(x:.i32)@.i32");
+            var fInvoke = f.Blocks[0].Instructions.OfType<InvokeInstruction>().Single();
+            TestHarness.CheckTrue("super 返回调用发 ..super 且 $.this 首参",
+                fInvoke.Method.Symbol == BilSpellings.SuperReservedFunction
+                && fInvoke.Arguments[0].Name == ".this");
+            var ping = module.Functions.Single(fn => fn.Symbol == "B$ping()@.void");
+            TestHarness.CheckTrue("void super 发 invoke.noret ..super",
+                ping.Blocks[0].Instructions.OfType<InvokeNoResultInstruction>().Any(invoke =>
+                    invoke.Method.Symbol == BilSpellings.SuperReservedFunction
+                    && invoke.Arguments[0].Name == ".this"));
+            var init = module.Functions.Single(fn => fn.Symbol == "B$init(n:.i32)@.void");
+            TestHarness.CheckTrue("init super 发 ..super",
+                init.Blocks[0].Instructions.OfType<InvokeNoResultInstruction>().Any(invoke =>
+                    invoke.Method.Symbol == BilSpellings.SuperReservedFunction));
+        }
+
         // ===== S7c-2：实例成员发射（.this/实例 invoke/get.field/set.field/
         // init/operator 声明形态）=====
         private static void TestInstanceEmission()
@@ -222,6 +253,30 @@ namespace LatteCompiler.Tests
                 "get.array $b $.t23 $.t24\n" +
                 "add $.t22 $.t24 $.t25\n" +
                 "ret $.t25\n");
+        }
+
+        // ===== #20②：容器成员 Call 后缀后实例链端到端（Factory.make().field）=====
+        private static void TestContainerCallSuffixChainEmission()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "pub class Box {\n" +
+                "    pub var field: i32\n" +
+                "    pub init() { field = 3 }\n" +
+                "}\n" +
+                "pub class Factory {\n" +
+                "    pub static func make(): Box { return new Box() }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    return Factory.make().field\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（容器 Call 后缀链）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（容器 Call 后缀链）", module);
+            BilTestHarness.CheckFnShape("main 指令（静态调用 → get.field）",
+                module, "$main()@.i32",
+                ".vars { Box .t0, .i32 .t1 }\n" +
+                "invoke fn(Factory$.static.make()@Box) $.t0 []\n" +
+                "get.field $.t0 $.t1 field(Box#field@.i32)\n" +
+                "ret $.t1\n");
         }
     }
 }

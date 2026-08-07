@@ -321,7 +321,8 @@ namespace LatteCompiler
             if (generics == null) return;
             foreach (var p in generics.Parameters)
             {
-                var gp = new GenericParameterSymbol(p.Name, p.IsVariadic, p.IsNamedVariadic);
+                var gp = new GenericParameterSymbol(p.Name, p.IsVariadic, p.IsNamedVariadic,
+                    p.Variance);
                 target.Add(gp);
                 result.Map(p, gp);
             }

@@ -140,17 +140,16 @@ namespace LatteCompiler.Tests
                 LoweredFieldAccessExpression fieldAccess =>
                     $"InstField({fieldAccess.Field.Name}, {Expr(fieldAccess.Receiver)}, " +
                     $"{TypeShort.Of(fieldAccess.Type)})",
-                // S11c：wrapper 值拷贝与嵌套字段访问（隐藏字段链
-                // 最外层→最内层，目标字段在最内层 wrapper 上）
+                // S11c：wrapper 值拷贝与 set.wrapper.field 写 place
                 LoweredGetWrapperExpression getWrapper =>
                     $"GetWrapper({Expr(getWrapper.Source)}, {TypeShort.Of(getWrapper.Wrapper)})",
                 LoweredGetFieldWrapperExpression getFieldWrapper =>
                     $"GetFieldWrapper({Expr(getFieldWrapper.Object)}, {getFieldWrapper.HostField.Name}, " +
                     $"{TypeShort.Of(getFieldWrapper.Wrapper)})",
-                LoweredEmbeddedFieldExpression embedded =>
-                    $"Embedded({Expr(embedded.Receiver)}, " +
-                    $"[{string.Join(" > ", embedded.PlaceChain.Select(DescribePlaceElement))}], " +
-                    $"{embedded.Field.Name}, {TypeShort.Of(embedded.Type)})",
+                LoweredWrapperFieldExpression wrapperField =>
+                    $"WrapperField({Expr(wrapperField.Receiver)}, " +
+                    $"[{string.Join(" > ", wrapperField.PlaceChain.Select(DescribePlaceElement))}], " +
+                    $"{wrapperField.Field.Name}, {TypeShort.Of(wrapperField.Type)})",
                 LoweredGetSelfExpression getSelf =>
                     $"GetSelf({TypeShort.Of(getSelf.Type)})",
                 LoweredCallInnerExpression callInner =>
@@ -159,6 +158,9 @@ namespace LatteCompiler.Tests
                         : ", packs=[" + string.Join(", ",
                             callInner.ForwardedGenericPacks.Select(p => p.Name)) + "]")}" +
                     $"{(callInner.IsVoid ? ", void" : "")}, {TypeShort.Of(callInner.Type)})",
+                LoweredSuperCallExpression superCall =>
+                    $"SuperCall({superCall.Method.Name}, [{string.Join(", ", superCall.Arguments.Select(Expr))}]" +
+                    $"{(superCall.IsVoid ? ", void" : "")}, {TypeShort.Of(superCall.Type)})",
                 LoweredIndexExpression indexAccess =>
                     $"Index({Expr(indexAccess.Receiver)}, {Expr(indexAccess.Index)}, " +
                     $"{TypeShort.Of(indexAccess.Type)})",

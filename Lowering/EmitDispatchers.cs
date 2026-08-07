@@ -84,12 +84,12 @@ namespace LatteCompiler
                     return GetWrapperEmitter.Visit(expression, target, ctx, env);
                 case LoweredGetFieldWrapperExpression:
                     return GetFieldWrapperEmitter.Visit(expression, target, ctx, env);
-                case LoweredEmbeddedFieldExpression:
-                    return EmbeddedFieldEmitter.Visit(expression, target, ctx, env);
                 case LoweredGetSelfExpression:
                     return GetSelfEmitter.Visit(expression, target, ctx, env);
                 case LoweredCallInnerExpression:
                     return CallInnerEmitter.Visit(expression, target, ctx, env);
+                case LoweredSuperCallExpression:
+                    return SuperCallEmitter.Visit(expression, target, ctx, env);
                 case LoweredIndexExpression:
                     return IndexAccessEmitter.Visit(expression, target, ctx, env);
                 case LoweredCastExpression:

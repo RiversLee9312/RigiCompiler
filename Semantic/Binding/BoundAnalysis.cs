@@ -308,6 +308,9 @@ namespace LatteCompiler
                 case BoundInnerCallExpression innerCall:
                     foreach (var argument in innerCall.Arguments) yield return argument;
                     break;
+                case BoundSuperCallExpression superCall:
+                    foreach (var argument in superCall.Arguments) yield return argument;
+                    break;
                 case BoundWrapperAccessExpression wrapperAccess:
                     yield return wrapperAccess.Receiver;
                     break;

@@ -268,7 +268,7 @@ namespace LatteCompiler
         {
             var compound = (BoundCompoundAssignmentExpression)node;
             // S11c/M84：wrapper place 直接字段复合赋值——读/写分离专用路径
-            //（读 = 值拷贝/embedded 读、写 = embedded 链；宿主单次求值共享）
+            //（读 = Materialize + get.field、写 = set.wrapper.field 链；宿主单次求值共享）
             if (compound.Target is BoundFieldAccessExpression
                 { Receiver: BoundWrapperAccessExpression } placeAccess)
             {
@@ -311,11 +311,10 @@ namespace LatteCompiler
         }
 
         // wrapper place 直接字段复合赋值（S11c）：place.field op= value。
-        // 读路径（Entity 值拷贝 / 字段-Value embedded 读）与写路径
-        //（set.field.embedded 链）分离——读路径产物是值拷贝，写后重读
-        // 不到新值，故表达式位直取写回值的结果局部（与一般路径的「重读
-        // place」等价——post-write 值）。终极宿主物化合成局部共享
-        //（§13.2 单次求值：宿主只降级一次）
+        // 读路径（Materialize + get.field）与写路径（set.wrapper.field 链）
+        // 分离——读路径产物是值拷贝，写后重读不到新值，故表达式位直取
+        // 写回值的结果局部（与一般路径的「重读 place」等价——post-write
+        // 值）。终极宿主物化合成局部共享（§13.2 单次求值：宿主只降级一次）
         private static LoweredExpression? RewriteWrapperPlaceCompound(
             BoundCompoundAssignmentExpression compound, BoundFieldAccessExpression placeAccess,
             LowerContext ctx, LowerEnvironment env)
@@ -327,8 +326,8 @@ namespace LatteCompiler
             host = WrapperPlaceLowering.MaterializeSharedWriteHost(hostBound, host, ctx);
             var read = WrapperPlaceLowering.LowerFieldRead(placeAccess, place, host, ctx, env);
             if (read == null) return null;
-            var write = WrapperPlaceLowering.BuildEmbedded(placeAccess, place, placeAccess.Field,
-                host, ctx, env);
+            var write = WrapperPlaceLowering.BuildWrapperFieldPlace(placeAccess, place,
+                placeAccess.Field, host, ctx, env);
             if (write == null) return null;
             var value = LowerExpressionDispatcher.Visit(compound.Value, ctx, env);
             if (value == null) return null;
@@ -430,7 +429,7 @@ namespace LatteCompiler
         }
     }
 
-    // proxy 体 inner(...) → call.inner（M88，BIL §15.4）；实参逐一下降
+    // proxy 体 inner(...) → invoke fn(..inner)（M88，BIL §15.4）；实参逐一下降
     internal sealed class InnerCallRewriter
         : LoweredVisitor<InnerCallRewriter, LoweredExpression, LowerContext>
     {
@@ -446,6 +445,23 @@ namespace LatteCompiler
                 arguments.Add(lowered);
             }
             return new LoweredCallInnerExpression(inner, arguments);
+        }
+    }
+
+    internal sealed class SuperCallRewriter
+        : LoweredVisitor<SuperCallRewriter, LoweredExpression, LowerContext>
+    {
+        protected override LoweredExpression? VisitCore(BoundNode node, LowerContext ctx,
+            LowerEnvironment env)
+        {
+            var super = (BoundSuperCallExpression)node;
+            var arguments = LoweringFacility.LowerArguments(super.Arguments,
+                super.Method.Parameters, ctx, env);
+            if (arguments == null) return null;
+            var genericPack = super.GenericPack == null ? null
+                : new LoweredGenericVarArgsArgument(super.GenericPack, super.GenericPack.IsNamed,
+                    super.GenericPack.TypeArguments, super.GenericPack.NamedTypes);
+            return new LoweredSuperCallExpression(super, arguments, genericPack);
         }
     }
 
@@ -493,9 +509,8 @@ namespace LatteCompiler
             LowerEnvironment env)
         {
             var fieldAccess = (BoundFieldAccessExpression)node;
-            // S11c：wrapper place 作 receiver——Entity 应用 = get.wrapper 值
-            // 拷贝 + get.field；字段-Value 应用 = get.field.embedded 链
-            //（WrapperPlaceLowering 共用路径）
+            // S11c：wrapper place 作 receiver——Materialize 值拷贝 + 普通
+            // get.field（Entity = get.wrapper；字段-Value = get.wrapper.field）
             if (fieldAccess.Receiver is BoundWrapperAccessExpression place)
             {
                 return WrapperPlaceLowering.LowerFieldRead(fieldAccess, place, null, ctx, env);

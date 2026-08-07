@@ -93,6 +93,12 @@ namespace LatteCompiler
             foreach (var genericParameter in type.GenericParameters)
             {
                 declaration.GenericParameters.Add(genericParameter.Name);
+                declaration.GenericVariances.Add(genericParameter.Variance switch
+                {
+                    GenericVariance.Out => BilGenericVariance.Out,
+                    GenericVariance.In => BilGenericVariance.In,
+                    _ => BilGenericVariance.None,
+                });
             }
             // 修饰符（§8.2）：访问（全显式）→ open/abstract/singleton → rich/shared
             // （wrapper 恒 rich 也显式输出——BIL 是显式 IR，不做源码的隐含）

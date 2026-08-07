@@ -8,8 +8,8 @@ namespace LatteCompiler.Tests
     // 与只读禁令全拦截面（链末 Colon 段按赋值/取值诊断——变量初始化/
     // 实参/返回值/推断源/运算与类型检查操作数全经路径绑定结果一处收口）。
     // P4a 降级（S11c）：Entity = get.wrapper 值拷贝 + get.field /
-    // set.field.embedded；字段-Value = get/set.field.embedded 链；
-    // 局部/静态存储归口（栈帧/静态存储合成归后续里程碑）。
+    // set.wrapper.field；字段-Value 读 = get.wrapper.field + get.field、
+    // 写 = set.wrapper.field 链；局部/静态存储归口（栈帧/静态存储合成归后续里程碑）。
 
     public static partial class BinderTests
     {
@@ -385,7 +385,7 @@ namespace LatteCompiler.Tests
                 "Return(InstField(level, Local(.s0,Logged), String))])",
                 LoweredDescribe.Body(lowered.Single(b => b.Method.Name == "f")));
 
-            // Entity 字段写：set.field.embedded 链（§13.3）
+            // Entity 字段写：set.wrapper.field 链（§13.3）
             var (unit2, bodies2) = BindUnit(
                 "@WrapperTarget(.Entity)\n" +
                 "pub wrapper Logged {\n" +
@@ -400,13 +400,13 @@ namespace LatteCompiler.Tests
             CheckNoErrors("P3 写字段绑定无诊断", unit2);
             var lowered2 = Lowerer.Lower(unit2, bodies2);
             CheckNoErrors("P4 写字段降级无诊断", unit2);
-            TestHarness.Check("Entity 字段写降级形态（embedded 链）",
+            TestHarness.Check("Entity 字段写降级形态（set.wrapper.field place）",
                 "Body(f, [], " +
-                "[Assign(Embedded(Param(s,Service), [Logged], level, String), " +
+                "[Assign(WrapperField(Param(s,Service), [Logged], level, String), " +
                 "Str(\"TRACE\",String))])",
                 LoweredDescribe.Body(lowered2.Single(b => b.Method.Name == "f")));
 
-            // 字段-Value 应用字段读：embedded 链（宿主值 = 字段访问的 receiver）
+            // 字段-Value 应用字段读：get.wrapper.field 值拷贝 + 普通 get.field
             var (unit3, bodies3) = BindUnit(
                 "@WrapperTarget(.Value)\n" +
                 "pub wrapper Clamped {\n" +
@@ -424,9 +424,10 @@ namespace LatteCompiler.Tests
             CheckNoErrors("P3 字段-Value 绑定无诊断", unit3);
             var lowered3 = Lowerer.Lower(unit3, bodies3);
             CheckNoErrors("P4 字段-Value 降级无诊断", unit3);
-            TestHarness.Check("字段-Value 字段读降级形态（embedded 读 field+wrapper）",
-                "Body(f, [], " +
-                "[Return(Embedded(Param(hero,Hero), [hp > Clamped], min, i32))])",
+            TestHarness.Check("字段-Value 字段读降级形态（GetFieldWrapper + InstField）",
+                "Body(f, [.s0: Clamped], " +
+                "[Assign(Local(.s0,Clamped), GetFieldWrapper(Param(hero,Hero), hp, Clamped)); " +
+                "Return(InstField(min, Local(.s0,Clamped), i32))])",
                 LoweredDescribe.Body(lowered3.Single(b => b.Method.Name == "f")));
 
             // 归口：局部 wrapper place（栈帧存储合成归后续里程碑）
@@ -493,8 +494,8 @@ namespace LatteCompiler.Tests
             var deepDesc = LoweredDescribe.Body(lowered6.Single(b => b.Method.Name == "f"));
             TestHarness.CheckTrue("深写含 GetWrapper", deepDesc.Contains("GetWrapper"));
             TestHarness.CheckTrue("深写含叶 set InstField x", deepDesc.Contains("InstField(x,"));
-            TestHarness.CheckTrue("深写含 embedded 写回 sub",
-                deepDesc.Contains("Embedded(") && deepDesc.Contains("sub"));
+            TestHarness.CheckTrue("深写含 WrapperField 写回 sub",
+                deepDesc.Contains("WrapperField(") && deepDesc.Contains("sub"));
         }
 
         // ===== S11b proxy 体逐组合绑定：转发壳/特化体/解包 shim 三件套 +
@@ -753,7 +754,7 @@ namespace LatteCompiler.Tests
                 "Return(InstField(level, Local(.s0,Logged), String))])",
                 LoweredDescribe.Body(lowered8.Single(b => b.Method.Name == "low")));
 
-            // P4a 写：embedded
+            // P4a 写：set.wrapper.field place
             var (unit9, bodies9) = BindUnit(fixture +
                 "pub func wlow\\<T with Logged>(param: T) {\n" +
                 "    param:Logged.level = \"X\"\n" +
@@ -761,9 +762,9 @@ namespace LatteCompiler.Tests
             CheckNoErrors("param:W 写 P3 无诊断", unit9);
             var lowered9 = Lowerer.Lower(unit9, bodies9);
             CheckNoErrors("param:W 写 P4 无诊断", unit9);
-            TestHarness.Check("param:W 字段写降级（embedded）",
+            TestHarness.Check("param:W 字段写降级（WrapperField place）",
                 "Body(wlow, [], " +
-                "[Assign(Embedded(Param(param,T), [Logged], level, String), " +
+                "[Assign(WrapperField(Param(param,T), [Logged], level, String), " +
                 "Str(\"X\",String))])",
                 LoweredDescribe.Body(lowered9.Single(b => b.Method.Name == "wlow")));
         }
@@ -790,6 +791,16 @@ namespace LatteCompiler.Tests
             var f = bodies.Single(b => b.Method.Name == "f");
             TestHarness.CheckTrue("调用 Any.call???",
                 BoundDescribe.Body(f).Contains("call???"));
+
+            var (genericUnit, genericBodies) = BindUnit(fixture +
+                "pub func fGeneric(service: Service): Any {\n" +
+                "    return service.fetch\\<i32, String>(42)\n" +
+                "}\n");
+            CheckNoErrors("降级调用解析显式泛型无诊断", genericUnit);
+            TestHarness.CheckTrue("降级 symbol 携带显式泛型",
+                BoundDescribe.Body(genericBodies.Single(b => b.Method.Name == "fGeneric"))
+                    .Contains("Service$fetch<.i32,.string>(.i32)@.any"));
+
             // 无链时保持 Undefined member
             var (unit2, _) = BindUnit(
                 "pub class Plain { }\n" +
@@ -797,8 +808,8 @@ namespace LatteCompiler.Tests
             TestHarness.CheckSemanticError("无 wrapper 不降级",
                 unit2.Diagnostics, "Undefined member");
 
-            // #28③：interface 应用 .proxy.* → 实现者类实例未声明调用可降级
-            // （应用槽不回写实现者；资格经 Interfaces 传递闭包只读查询）
+            // #28③：interface 应用 .proxy.* → 实现者显式重声明后调用可降级
+            // （wrapper 传递闭包要求实现者声明处重复应用；资格查询仍沿闭包）
             const string wildcardW =
                 "@WrapperTarget(.Entity)\n" +
                 "pub wrapper Audited {\n" +
@@ -811,21 +822,24 @@ namespace LatteCompiler.Tests
             var (unitIface, bodiesIface) = BindUnit(wildcardW +
                 "@Audited\n" +
                 "pub interface IService { }\n" +
+                "@Audited\n" +
                 "pub class SvcImpl implements IService { pub init() }\n" +
                 "pub func fIface(s: SvcImpl) { s.fetch(1) }\n");
             CheckNoErrors("#28③ 直接 implements 接口 wildcard 可降级", unitIface);
             TestHarness.CheckTrue("#28③ 实现者调用 Any.call???",
                 BoundDescribe.Body(bodiesIface.Single(b => b.Method.Name == "fIface"))
                     .Contains("call???"));
-            TestHarness.CheckTrue("#28③ 实现者不回写 AppliedWrappers",
+            TestHarness.CheckTrue("#28③ 实现者显式登记 AppliedWrappers",
                 unitIface.Symbols.GlobalNamespace.Types
-                    .Single(t => t.Name == "SvcImpl").AppliedWrappers.Count == 0);
+                    .Single(t => t.Name == "SvcImpl").AppliedWrappers.Count == 1);
 
             // #28③：接口继承传递闭包（IChild : IBase，wrapper 在 IBase）
             var (unitTrans, bodiesTrans) = BindUnit(wildcardW +
                 "@Audited\n" +
                 "pub interface IBase { }\n" +
+                "@Audited\n" +
                 "pub interface IChild : IBase { }\n" +
+                "@Audited\n" +
                 "pub class ViaChild implements IChild { pub init() }\n" +
                 "pub func fTrans(s: ViaChild) { s.remote() }\n");
             CheckNoErrors("#28③ 继承接口传递闭包可降级", unitTrans);

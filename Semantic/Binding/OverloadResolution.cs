@@ -5,9 +5,12 @@ namespace LatteCompiler
     // 类型适用性（静默）→ 最具体胜出；前两步不产生诊断，唯一落定后
     // 实参已是规范参数序（ARCH §2）。
     // S9b 增补泛型方法（SYNTAX §4.2 定稿）：调用带显式泛型实参时候选池
-    // 仅泛型方法（实参个数与泛型参数个数匹配过滤），不带时泛型方法不
-    // 参与候选（仅剩泛型候选时诊断「需要显式泛型实参」）；泛型候选按
-    // 实参代入后的签名参与三步（SubstituteType 视图，符号身份不变）。
+    // 仅泛型方法（实参个数与**固定**泛型参数个数匹配——§4.2「泛型可变
+    // 参数除外」/§4.3 包实参不显式书写；混合 `f\<T, TArgs...>` 按固定
+    // 元数匹配，包由值实参推导进 GenericPack），不带时泛型方法不参与
+    // 候选（仅剩泛型候选时诊断「需要显式泛型实参」；全可变包候选无显式
+    // 时仍参与——包推导是固有形态）；泛型候选按实参代入后的签名参与
+    // 三步（SubstituteType 视图，符号身份不变）。
     // 可变参数方法不参与调用绑定，归口诊断。
     //
     // 单候选（含结构过滤后唯一）走 CallFacility.BindArguments 快路径——
@@ -50,28 +53,31 @@ namespace LatteCompiler
             TypeSymbol? receiverType = null)
         {
             // 实参预绑定（无目标类型；null 字面量占位待胜者形参类型定型）：
-            // 存在泛型包候选时必须先做——包类型实参推导需要实参静态类型
-            // （SYNTAX §4.3 ⑤）；多候选路径复用同一结果。任一实参失败即
-            // 整体失败——表达式自身诊断已报，不级联误诊
-            var needPrebind = candidates.Any(IsGenericPackCandidate);
+            // 存在任意可变泛型包（全可变或固定+包混合）时必须先做——包类型
+            // 实参推导需要实参静态类型（SYNTAX §4.3 ⑤）；多候选路径复用
+            // 同一结果。任一实参失败即整体失败——表达式自身诊断已报，不
+            // 级联误诊
+            var needPrebind = candidates.Any(HasVariadicGenericPack);
             BoundExpression?[]? prebound = null;
             if (needPrebind)
             {
                 prebound = PrebindArguments(node, arguments, scope, ctx, env);
                 if (prebound == null) return null;
             }
-            // 候选池过滤（SYNTAX §4.2 S9 定稿）：显式实参 → 仅泛型方法
-            // （个数匹配）；不带 → 非泛型方法 + 泛型参数全为可变的泛型
-            // 方法（S9d-2 放宽：包推导是可变泛型参数的固有形态，与「固定
-            // 泛型参数必须显式实参」不冲突——包实参永不显式书写）
+            // 候选池过滤（SYNTAX §4.2/§4.3 S9 定稿 + #25①）：显式实参 →
+            // 仅泛型方法，元数按**固定**泛型参数个数匹配（包除外、不显式
+            // 书写）；不带 → 非泛型方法 + 泛型参数全为可变的泛型方法
+            // （S9d-2 放宽：包推导是可变泛型参数的固有形态，与「固定泛型
+            // 参数必须显式实参」不冲突——包实参永不显式书写）
             List<CandidateView> pool;
             // 泛型包候选的推导产物（视图 → 包）：胜者落定后取回随结果返回
             var packByView = new Dictionary<CandidateView, BoundGenericVarArgsArgument>();
             if (explicitTypeArgs != null)
             {
                 var generics = candidates.Where(m => m.GenericParameters.Count > 0).ToList();
+                // §4.2：实参个数与固定泛型参数列表一致（泛型可变参数除外）
                 var matching = generics
-                    .Where(m => m.GenericParameters.Count == explicitTypeArgs.Count)
+                    .Where(m => FixedGenericCount(m) == explicitTypeArgs.Count)
                     .ToList();
                 // 泛型参数全可变的包候选排除（SYNTAX §4.3 定稿：包类型实参由
                 // 值实参推导，永不显式书写）——不误伤「固定+可变」混合形态
@@ -91,10 +97,19 @@ namespace LatteCompiler
                 }
                 if (matching.Count == 0)
                 {
+                    // 候选全是全可变包且给了显式实参（固定元数 0 ≠ N>0）：
+                    // 专门诊断，避免「expects 0 type argument(s)」误导
+                    if (generics.Count > 0 && generics.All(IsGenericPackCandidate))
+                    {
+                        env.Error(node.Span, $"'{generics[0].Name}': generic variadic pack " +
+                            "arguments are derived from value arguments and must not be " +
+                            "written explicitly (§4.3)");
+                        return null;
+                    }
                     if (generics.Count > 0)
                     {
                         env.Error(node.Span, $"'{generics[0].Name}' expects " +
-                            $"{generics[0].GenericParameters.Count} type argument(s), got " +
+                            $"{FixedGenericCount(generics[0])} type argument(s), got " +
                             $"{explicitTypeArgs.Count}");
                     }
                     else
@@ -104,20 +119,38 @@ namespace LatteCompiler
                     }
                     return null;
                 }
-                // 使用侧约束检查（SYNTAX §3.6）：显式实参逐候选判定——
-                // 约束满足性是候选固有属性（各候选 GenericParameters 独立），
-                // 不满足的候选与同元数过滤同层静默剔除；全部剔除才回放
-                // 首候选的约束诊断并整体失败（单候选场景与既有行为一致，
-                // 诊断不逐候选重复）
+                // 使用侧约束检查（SYNTAX §3.6）：显式实参只对照**固定**泛型
+                // 参数（包约束在 DerivePack 逐推导类型检查）；不满足的候选
+                // 与同元数过滤同层静默剔除；全部剔除才回放首候选的约束诊断
                 var eligible = matching
                     .Where(m => SatisfiesConstraints(explicitTypeArgs, m, env)).ToList();
                 if (eligible.Count == 0)
                 {
                     GenericConstraints.CheckArguments(explicitTypeArgs,
-                        matching[0].GenericParameters, node.Span, env);
+                        FixedGenericParameters(matching[0]), node.Span, env);
                     return null;
                 }
-                pool = eligible.Select(m => ViewOf(m, explicitTypeArgs, receiverType, env)).ToList();
+                // 混合候选：固定显式实参 + 包由值实参推导；代入视图用
+                // 「固定实参 ∪ 包类型」完整序列，GenericPack 单独携带推导
+                // 产物；CallBinding.TypeArguments 仍只收固定显式（调用方传入）
+                pool = new List<CandidateView>(eligible.Count);
+                foreach (var method in eligible)
+                {
+                    if (HasVariadicGenericPack(method))
+                    {
+                        var pack = DerivePack(method, arguments, prebound!, node, env);
+                        if (pack == null) return null;
+                        var combined = BuildSubstitutionArgs(method, explicitTypeArgs,
+                            pack.Value.PackType);
+                        var view = ViewOf(method, combined, receiverType, env);
+                        pool.Add(view);
+                        packByView.Add(view, pack.Value.Pack);
+                    }
+                    else
+                    {
+                        pool.Add(ViewOf(method, explicitTypeArgs, receiverType, env));
+                    }
+                }
             }
             else
             {
@@ -256,12 +289,53 @@ namespace LatteCompiler
             return boundArgs;
         }
 
+        // 固定泛型参数个数（§4.2：显式实参元数口径——可变包除外）
+        private static int FixedGenericCount(MethodSymbol method)
+        {
+            return method.GenericParameters.Count(p => !p.IsVariadic && !p.IsNamedVariadic);
+        }
+
+        // 固定泛型参数序列（声明序，供约束检查/显式实参对照）
+        private static List<GenericParameterSymbol> FixedGenericParameters(MethodSymbol method)
+        {
+            return method.GenericParameters
+                .Where(p => !p.IsVariadic && !p.IsNamedVariadic).ToList();
+        }
+
+        // 是否含可变泛型包（全可变或固定+包混合）
+        private static bool HasVariadicGenericPack(MethodSymbol method)
+        {
+            return method.GenericParameters.Any(p => p.IsVariadic || p.IsNamedVariadic);
+        }
+
         // 泛型包候选判定（S9d-2）：泛型参数全为可变的泛型方法——包类型
-        // 实参由值实参推导（§4.3 ⑤），与「固定泛型参数必须显式实参」不冲突
+        // 实参由值实参推导（§4.3 ⑤），与「固定泛型参数必须显式实参」不冲突；
+        // 无显式实参路径仅此类参与候选（混合形态仍须固定显式实参）
         private static bool IsGenericPackCandidate(MethodSymbol method)
         {
             return method.GenericParameters.Count > 0
                 && method.GenericParameters.All(p => p.IsVariadic || p.IsNamedVariadic);
+        }
+
+        // 混合形态代入序列：固定显式实参按声明序填入固定槽，可变包槽填
+        // 包容器类型（.array<.typeid>/ .map<...>）——与 DerivePack 产物一致
+        private static IReadOnlyList<SemanticSymbol> BuildSubstitutionArgs(
+            MethodSymbol method, IReadOnlyList<SemanticSymbol> fixedArgs, SemanticSymbol packType)
+        {
+            var result = new List<SemanticSymbol>(method.GenericParameters.Count);
+            var fixedIndex = 0;
+            foreach (var parameter in method.GenericParameters)
+            {
+                if (parameter.IsVariadic || parameter.IsNamedVariadic)
+                {
+                    result.Add(packType);
+                }
+                else
+                {
+                    result.Add(fixedArgs[fixedIndex++]);
+                }
+            }
+            return result;
         }
 
         // 包实参推导（S9d-2，SYNTAX §4.3 定稿⑤）：类型实参 = 归包值实参的
@@ -388,8 +462,11 @@ namespace LatteCompiler
             return new CandidateView(method, parameterTypes, returnType);
         }
 
-        // 双层代入：方法泛型参数（显式实参）→ 宿主泛型参数（构造实参）→
-        // 原样（身份保留）。构造类型逐项替换后经驻留入口重建
+        // 双层代入：方法泛型参数（显式实参 / 混合形态的包容器类型）→
+        // 宿主泛型参数（构造实参）→ 原样（身份保留）。构造类型逐项替换后
+        // 经驻留入口重建。methodArgs 可能短于 methodGenerics（防御：仅
+        // 固定显式、包槽未并入时保留身份，避免越界——正常路径由
+        // BuildSubstitutionArgs 补齐）
         private static SemanticSymbol? SubstituteAll(SemanticSymbol type,
             IReadOnlyList<GenericParameterSymbol> methodGenerics,
             IReadOnlyList<SemanticSymbol> methodArgs,
@@ -400,13 +477,18 @@ namespace LatteCompiler
             {
                 for (int i = 0; i < methodGenerics.Count; i++)
                 {
-                    if (ReferenceEquals(methodGenerics[i], parameter)) return methodArgs[i];
+                    if (!ReferenceEquals(methodGenerics[i], parameter)) continue;
+                    return i < methodArgs.Count ? methodArgs[i] : type;
                 }
                 if (hostArgs != null)
                 {
                     for (int i = 0; i < hostGenerics.Count; i++)
                     {
-                        if (ReferenceEquals(hostGenerics[i], parameter)) return hostArgs[i];
+                        if (ReferenceEquals(hostGenerics[i], parameter)
+                            && i < hostArgs.Count)
+                        {
+                            return hostArgs[i];
+                        }
                     }
                 }
                 return type;
@@ -431,13 +513,14 @@ namespace LatteCompiler
         }
 
         // 逐候选约束满足判定（§3.6，静默版 GenericConstraints.CheckArguments）：
-        // 候选过滤层不可落诊断，此处只判不报；判定语义与跳过规则（ErrorType
-        // 毒化/含未代入泛型参数跳过）与 GenericConstraints 保持一致——
-        // 全部候选均不满足时由调用方回放 CheckArguments 产出诊断
+        // 候选过滤层不可落诊断，此处只判不报；显式实参只对照固定泛型参数
+        // （包约束在 DerivePack）。判定语义与跳过规则（ErrorType 毒化/含未
+        // 代入泛型参数跳过）与 GenericConstraints 保持一致——全部候选均不
+        // 满足时由调用方回放 CheckArguments 产出诊断
         private static bool SatisfiesConstraints(IReadOnlyList<SemanticSymbol> typeArgs,
             MethodSymbol candidate, BindEnvironment env)
         {
-            var generics = candidate.GenericParameters;
+            var generics = FixedGenericParameters(candidate);
             for (int i = 0; i < generics.Count && i < typeArgs.Count; i++)
             {
                 var argument = typeArgs[i];

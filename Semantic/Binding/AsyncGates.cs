@@ -177,6 +177,11 @@ namespace LatteCompiler
                 case BoundInnerCallExpression innerCall:
                     foreach (var argument in innerCall.Arguments) WalkExpression(argument, env);
                     break;
+                case BoundSuperCallExpression superCall:
+                    CheckAsyncCall(superCall.Method, null, superCall.Arguments,
+                        superCall.TypeArguments, superCall.GenericPack, expression.Syntax, env);
+                    foreach (var argument in superCall.Arguments) WalkExpression(argument, env);
+                    break;
                 case BoundSwitchExpression switchExpression:
                     WalkExpression(switchExpression.Selector, env);
                     foreach (var switchCase in switchExpression.Cases)

@@ -146,7 +146,7 @@ namespace LatteCompiler
 
             // 异常根 message 面（S10，SYNTAX §8.1；置于此处——String 已初始化）：
             // protected message 字段 + pub native getMessage()——子类 init 直接
-            // 赋值继承字段（Latte 无 super 构造语法），getMessage 是 message 的
+            // 赋值继承字段（init 也可选 super(...)），getMessage 是 message 的
             // 唯一公共读取通道；toString 不覆写（插值/打印走 Object 默认实现，
             // 返回类型 canonical 名）。运行时实现归 BIL VM（S14），编译器只承载形状
             Exception.Fields.Add(new FieldSymbol("message", owner: Exception, fieldType: String)

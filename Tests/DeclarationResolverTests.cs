@@ -18,6 +18,7 @@ namespace LatteCompiler.Tests
             TestHarness.Reset();
             TestTypeReferences();
             TestGenericAndNullable();
+            TestGenericVariance();
             TestArityLookup();
             TestNameLookupContexts();
             TestInitMapping();
@@ -64,6 +65,36 @@ namespace LatteCompiler.Tests
             var decls = DeclarationCollector.Collect(unit);
             DeclarationResolver.Resolve(unit, decls);
             return (unit, decls);
+        }
+
+        private static void TestGenericVariance()
+        {
+            TestHarness.Section("P2 Generic Variance (§3.6)");
+
+            var (ok, _) = ResolveUnit(
+                "class Producer\\<out T> {\n" +
+                "    pub const value: T\n" +
+                "    pub func get(): T { return value }\n" +
+                "}\n" +
+                "class Consumer\\<in T> {\n" +
+                "    pub func put(value: T) { }\n" +
+                "}\n");
+            CheckNoErrors("合法 covariant/contravariant 声明", ok);
+
+            var (badOut, _) = ResolveUnit(
+                "class Producer\\<out T> { pub func put(value: T) { } }\n");
+            TestHarness.CheckSemanticError("out 不能出现在方法参数", badOut.Diagnostics,
+                "covariant parameter 'T' cannot be used in parameter 'value' of method 'put'");
+
+            var (badIn, _) = ResolveUnit(
+                "class Consumer\\<in T> { pub func get(): T { return default } }\n");
+            TestHarness.CheckSemanticError("in 不能出现在方法返回值", badIn.Diagnostics,
+                "contravariant parameter 'T' cannot be used in return type of method 'get'");
+
+            var (badFunction, _) = ResolveUnit(
+                "func f\\<out T>(): T { return default }\n");
+            TestHarness.CheckSemanticError("函数泛型参数不接受型变", badFunction.Diagnostics,
+                "variance is only allowed on type declarations");
         }
 
         // 无诊断断言（失败时附带诊断袋内容）
@@ -850,6 +881,7 @@ namespace LatteCompiler.Tests
                 "Shared type 'Impl' cannot implement interface 'IW' wrapped by non-shared wrapper 'EntityW'");
             var (ok5, _) = ResolveUnit(WrapperPrelude +
                 "@EntityW\ninterface IW { }\n" +
+                "@EntityW\n" +
                 "class Impl implements IW { }\n");
             CheckNoErrors("非 shared 实现者合法", ok5);
 
@@ -858,6 +890,46 @@ namespace LatteCompiler.Tests
             TestHarness.CheckSemanticError("注解名未解析", u17.Diagnostics, "Unresolved type or namespace: 'Missing'");
             var (u18, _) = ResolveUnit("class NotWrapper { }\n@NotWrapper\nclass C { }\n");
             TestHarness.CheckSemanticError("注解名非 wrapper", u18.Diagnostics, "'NotWrapper' is not a wrapper type");
+
+            // wrapper 继承闭包沿间接 interface 展开，子接口和实现者都必须显式重声明。
+            var (u19, _) = ResolveUnit(WrapperPrelude +
+                "@EntityW\ninterface IBase { }\n" +
+                "interface IChild : IBase { }\n" +
+                "class Impl implements IChild { }\n");
+            TestHarness.CheckSemanticError("间接 interface wrapper 必须显式重声明", u19.Diagnostics,
+                "Entity wrapper 'EntityW' inherited by 'IChild' must be explicitly redeclared");
+
+            // getter/setter 的 wrapper 应用挂在字段声明上；override 访问器沿字段
+            // 继承闭包检查显式重声明规则。
+            var (u20, _) = ResolveUnit(WrapperPrelude +
+                "open class Base {\n" +
+                "    @ValueW\n" +
+                "    pub var value: i32 {\n" +
+                "        open get(value: _) { return value }\n" +
+                "    }\n" +
+                "}\n" +
+                "class Child : Base {\n" +
+                "    pub var value: i32 {\n" +
+                "        override get(value: _) { return value }\n" +
+                "    }\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("override getter wrapper 必须显式重声明", u20.Diagnostics,
+                "Accessor wrapper 'ValueW' inherited by 'value' must be explicitly redeclared");
+
+            var (ok6, _) = ResolveUnit(WrapperPrelude +
+                "open class Base {\n" +
+                "    @ValueW\n" +
+                "    pub var value: i32 {\n" +
+                "        open get(value: _) { return value }\n" +
+                "    }\n" +
+                "}\n" +
+                "class Child : Base {\n" +
+                "    @ValueW\n" +
+                "    pub var value: i32 {\n" +
+                "        override get(value: _) { return value }\n" +
+                "    }\n" +
+                "}\n");
+            CheckNoErrors("override getter wrapper 显式重声明合法", ok6);
         }
 
         // ===== S11a：proxy 声明侧形状校验（§14.2/§14.3/§14.4）=====
@@ -1080,6 +1152,12 @@ namespace LatteCompiler.Tests
             TestHarness.Check("PrintDowngradeRequest",
                 "Service$fetch(.i32)@.any",
                 CanonicalSymbolPrinter.PrintDowngradeRequest(service, "fetch",
+                    Array.Empty<SemanticSymbol>(),
+                    new (string?, SemanticSymbol)[] { (null, unit.Symbols.Bootstrap.Int32) }));
+            TestHarness.Check("PrintDowngradeRequest 显式泛型",
+                "Service$fetch<.i32,.string>(.i32)@.any",
+                CanonicalSymbolPrinter.PrintDowngradeRequest(service, "fetch",
+                    new SemanticSymbol[] { unit.Symbols.Bootstrap.Int32, unit.Symbols.Bootstrap.String },
                     new (string?, SemanticSymbol)[] { (null, unit.Symbols.Bootstrap.Int32) }));
         }
 
@@ -1395,7 +1473,7 @@ namespace LatteCompiler.Tests
                 "    }\n" +
                 "}\n");
             CheckP2Error("访问器修饰符白名单（static get）", unit,
-                "'static' is not allowed here (access modifiers only");
+                "Accessor modifier 'static' is not allowed here (access modifiers, open or override only)");
 
             // const 字段不得声明 setter
             var (unit2, _) = ResolveUnit(
@@ -1463,6 +1541,51 @@ namespace LatteCompiler.Tests
                 b.Getter!.Accessibility == Accessibility.Public);
             TestHarness.CheckTrue("显式 priv setter",
                 b.Setter!.Accessibility == Accessibility.Private);
+
+            // getter/setter 是独立的多态单元：open 与 override 分别登记并匹配。
+            var (unit7, _) = ResolveUnit(
+                "open class Base {\n" +
+                "    pub var value: i32 {\n" +
+                "        open get(value: _) { return value }\n" +
+                "        open set(value: _) { }\n" +
+                "    }\n" +
+                "}\n" +
+                "class Child : Base {\n" +
+                "    pub var value: i32 {\n" +
+                "        override get(value: _) { return value }\n" +
+                "        override set(value: _) { }\n" +
+                "    }\n" +
+                "}\n");
+            CheckNoErrors("getter/setter open 与 override 合法", unit7);
+            var child = GlobalType(unit7, "Child").Fields.Single(f => f.Name == "value");
+            TestHarness.CheckTrue("getter 标记 override", child.Getter!.IsOverride);
+            TestHarness.CheckTrue("setter 标记 override", child.Setter!.IsOverride);
+
+            var (unit8, _) = ResolveUnit(
+                "open class Base {\n" +
+                "    pub var value: i32 {\n" +
+                "        open get(value: _) { return value }\n" +
+                "    }\n" +
+                "}\n" +
+                "class Child : Base {\n" +
+                "    pub var value: i32 {\n" +
+                "        get(value: _) { return value }\n" +
+                "    }\n" +
+                "}\n");
+            CheckP2Error("getter 隐藏必须显式 override", unit8,
+                "'value' getter hides an inherited accessor; declare it 'override'");
+
+            var (unit9, _) = ResolveUnit(
+                "var globalValue: i32 {\n" +
+                "    open get(value: _) { return value }\n" +
+                "}\n" +
+                "class C {\n" +
+                "    static var staticValue: i32 {\n" +
+                "        override get(value: _) { return value }\n" +
+                "    }\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("全局/静态访问器不能多态", unit9.Diagnostics,
+                "'open'/'override' cannot be applied to global or static accessors");
         }
 
         // ===== S8e：override/open/abstract 修饰符位置（SYNTAX §9.2.1，

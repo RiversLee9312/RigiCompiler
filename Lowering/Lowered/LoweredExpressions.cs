@@ -286,14 +286,14 @@ namespace LatteCompiler
         }
     }
 
-    // 嵌套字段访问（S11c/M88，BIL §13.3 get/set.field.embedded）：wrapper
-    // place 成员写与字段-Value 应用成员读的承载节点——读/写 place 共用。
+    // wrapper place 字段写 place（S11c/M88，BIL §13.3 set.wrapper.field）：
+    // 仅作赋值目标，读侧一律 Materialize + 普通 LoweredFieldAccessExpression。
     // Receiver = 终极宿主值；PlaceChain = 寻址语义链（最外层→最内层）：
     //   TypeSymbol = 类型/Entity 应用（投影 wrapper(W)）；
-    //   FieldSymbol = 字段下钻或字段-Value 应用的 HOST_FIELD（投影 field(F)；
+    //   FieldSymbol = 字段-Value 应用的 HOST_FIELD（投影 field(F)；
     //     字段应用编码为相邻 FieldSymbol + TypeSymbol 对）。
     // Field = 最内层目标实例字段。Type 自带
-    public sealed class LoweredEmbeddedFieldExpression : LoweredExpression
+    public sealed class LoweredWrapperFieldExpression : LoweredExpression
     {
         public LoweredExpression Receiver { get; }
         public IReadOnlyList<SemanticSymbol> PlaceChain { get; }
@@ -302,7 +302,7 @@ namespace LatteCompiler
 
         public override SemanticSymbol Type => type;
 
-        public LoweredEmbeddedFieldExpression(BoundNode origin, LoweredExpression receiver,
+        public LoweredWrapperFieldExpression(BoundNode origin, LoweredExpression receiver,
             IReadOnlyList<SemanticSymbol> placeChain, FieldSymbol field, SemanticSymbol type)
             : base(origin)
         {
@@ -321,7 +321,7 @@ namespace LatteCompiler
         }
     }
 
-    // proxy 体 inner(...)（M88，BIL §15.4 call.inner / call.inner.noret；
+    // proxy 体 inner(...)（M88，BIL §15.4 invoke fn(..inner) / invoke.noret；
     // #27⑦）：Arguments 已下降；ForwardedGenericPacks 透传自 Bound
     // （P4b 前置 $.generic.<Name>）；Type 透传（void 时 IsVoid，P4b 选 noret）
     public sealed class LoweredCallInnerExpression : LoweredExpression
@@ -335,6 +335,27 @@ namespace LatteCompiler
         {
             Arguments = arguments;
             ForwardedGenericPacks = origin.ForwardedGenericPacks;
+            IsVoid = origin.IsVoid;
+        }
+    }
+
+    // 直接基类调用的独立 lowered 标记；发射目标固定为 fn(..super)。
+    public sealed class LoweredSuperCallExpression : LoweredExpression
+    {
+        public MethodSymbol Method { get; }
+        public IReadOnlyList<LoweredExpression> Arguments { get; }
+        public IReadOnlyList<SemanticSymbol> TypeArguments { get; }
+        public LoweredGenericVarArgsArgument? GenericPack { get; }
+        public bool IsVoid { get; }
+
+        public LoweredSuperCallExpression(BoundSuperCallExpression origin,
+            IReadOnlyList<LoweredExpression> arguments, LoweredGenericVarArgsArgument? genericPack)
+            : base(origin)
+        {
+            Method = origin.Method;
+            Arguments = arguments;
+            TypeArguments = origin.TypeArguments;
+            GenericPack = genericPack;
             IsVoid = origin.IsVoid;
         }
     }

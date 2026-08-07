@@ -288,7 +288,7 @@ namespace LatteCompiler
     // （IsVariadic/IsNamedVariadic；固定泛型不入列）——P4b 按 BIL §7.2
     // 序前置为 $.generic.<Name>，再接值实参（含 .kwargs./.vargs.）。
     // Type = proxy 声明返回类型（void 时本节点仅出现在语句位置，Type 取
-    // Any 占位且 IsVoid = true）。P4 发射 call.inner 占位指令（下一棒）
+    // Any 占位且 IsVoid = true）。P4 发射 invoke fn(..inner) 占位调用（下一棒）
     public sealed class BoundInnerCallExpression : BoundExpression
     {
         public IReadOnlyList<BoundExpression> Arguments { get; }
@@ -303,6 +303,28 @@ namespace LatteCompiler
             Arguments = arguments;
             ForwardedGenericPacks = forwardedGenericPacks
                 ?? Array.Empty<GenericParameterSymbol>();
+            IsVoid = isVoid;
+        }
+    }
+
+    // 直接基类实现调用：P4 必须发射保留符号 ..super，不能重入普通派发链。
+    public sealed class BoundSuperCallExpression : BoundExpression
+    {
+        public MethodSymbol Method { get; }
+        public IReadOnlyList<BoundExpression> Arguments { get; }
+        public IReadOnlyList<SemanticSymbol> TypeArguments { get; }
+        public BoundGenericVarArgsArgument? GenericPack { get; }
+        public bool IsVoid { get; }
+
+        public BoundSuperCallExpression(ASTNode syntax, MethodSymbol method,
+            IReadOnlyList<BoundExpression> arguments, SemanticSymbol type,
+            IReadOnlyList<SemanticSymbol> typeArguments,
+            BoundGenericVarArgsArgument? genericPack, bool isVoid = false) : base(syntax, type)
+        {
+            Method = method;
+            Arguments = arguments;
+            TypeArguments = typeArguments;
+            GenericPack = genericPack;
             IsVoid = isVoid;
         }
     }

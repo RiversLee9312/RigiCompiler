@@ -26,7 +26,7 @@ namespace LatteCompiler.Tests
     /// 判终止、同名不同元数类型共存反查（符号+元数键，手工模块）、
     /// 跨 fn 越权块类型检查不级联、保留名家族空余部/非法字符负例。
     /// const 发射开闸批次增补：§21.8 init 豁免（init 体内写实例 const
-    /// 字段正例——set.field 与 set.field.embedded 双形态；普通方法写入
+    /// 字段正例——set.field 与 set.wrapper.field 双形态；普通方法写入
     /// 与 init 内静态写入反例，手工模块）。
     /// TypesCompatible canonical 全等收紧批次增补：内建标量别名 ↔
     /// canonical 与标准构造头 ↔ canonical 泛型宿主（含无边界 .typeid ≡
@@ -231,14 +231,12 @@ namespace LatteCompiler.Tests
             // 正例；以手工模块断言指令形态与验证器规则。宿主 Service 带
             // Logged wrapper 隐藏字段（§5.3 命名）、RequestResult enum + 两
             // case（Failed 判别值资源 R_FC）；main(svc, e) 参数入口已赋值
-            BilTestHarness.CheckBilValid("S11 手工模块（基线，is.case + embedded 正例）",
+            // 基线：is.case + set.wrapper.field；lv 经 S11Module 内 R_LV load 已赋值
+            BilTestHarness.CheckBilValid("S11 手工模块（基线，is.case + set.wrapper.field 正例）",
                 S11Module(
                     new IsCaseInstruction(BilOp.Var("e"),
                         BilOp.Case("com.example::RequestResult.Failed"), BilOp.Var("b")),
-                    new GetEmbeddedFieldInstruction(BilOp.Var("svc"), BilOp.Var("lv"),
-                        BilOp.Wrapper("core.logging::Logged"),
-                        BilOp.Field("core.logging::Logged#level@.string")),
-                    new SetEmbeddedFieldInstruction(BilOp.Var("lv"), BilOp.Var("svc"),
+                    new SetWrapperFieldInstruction(BilOp.Var("lv"), BilOp.Var("svc"),
                         BilOp.Wrapper("core.logging::Logged"),
                         BilOp.Field("core.logging::Logged#level@.string"))));
             BilTestHarness.CheckBilValid("S11 get.wrapper.field 正例",
@@ -246,6 +244,10 @@ namespace LatteCompiler.Tests
                     new GetWrapperFieldInstruction(BilOp.Var("hero"),
                         BilOp.Field("com.example::Hero#hp@.i32"),
                         BilOp.Type("core.clamp::Clamped"), BilOp.Var("w"))));
+            BilTestHarness.CheckBilValid("..super 手工模块（override 正例）",
+                SuperInvokeModule(validReceiver: true));
+            BilTestHarness.CheckBilInvalid("..super 缺 $.this 首参",
+                SuperInvokeModule(validReceiver: false), "首实参必须精确为 $.this");
 
             // ===== 负例：非法模块按规则命中 =====
             NegativeCases();
@@ -721,33 +723,41 @@ namespace LatteCompiler.Tests
             BilTestHarness.CheckBilInvalid("case 判别值资源未登记", m,
                 "未登记");
 
-            // §21.2：embedded 链字段符号不可解析
-            m = S11Module(new GetEmbeddedFieldInstruction(BilOp.Var("svc"), BilOp.Var("lv"),
+            // §21.2：set.wrapper.field 链字段符号不可解析
+            m = S11Module(new SetWrapperFieldInstruction(BilOp.Var("lv"), BilOp.Var("svc"),
                 BilOp.Field("com.example::Service#name@.string"),
                 BilOp.Field("core.logging::Logged#level@.string")));
-            BilTestHarness.CheckBilInvalid("embedded 链字段不可解析", m,
+            // 纯 field 链先被「必须含 wrapper」拒绝；带 wrapper 的不可解析字段：
+            m = S11Module(new SetWrapperFieldInstruction(BilOp.Var("lv"), BilOp.Var("svc"),
+                new BilOperand[]
+                {
+                    BilOp.Field("com.example::Service#ghost@.string"),
+                    BilOp.Wrapper("core.logging::Logged"),
+                },
+                BilOp.Field("core.logging::Logged#level@.string")));
+            BilTestHarness.CheckBilInvalid("set.wrapper.field 链字段不可解析", m,
                 "链字段符号不可解析");
 
-            // §21.3：embedded wrapper 元素必须是 wrapper 类型
+            // §21.3：set.wrapper.field wrapper 元素必须是 wrapper 类型
             m = S11Module(
-                new GetEmbeddedFieldInstruction(BilOp.Var("svc"), BilOp.Var("lv"),
+                new SetWrapperFieldInstruction(BilOp.Var("lv"), BilOp.Var("svc"),
                     BilOp.Wrapper("com.example::Plain"),
                     BilOp.Field("core.logging::Logged#level@.string")));
             m.LocalSymbols.Add(new BilTypeDeclaration("com.example::Plain",
                 BilTypeKind.Class, new BilAccessibilityModifier(BilAccessibility.Public)));
-            BilTestHarness.CheckBilInvalid("embedded wrapper 元素非 wrapper 类型", m,
+            BilTestHarness.CheckBilInvalid("set.wrapper.field wrapper 元素非 wrapper 类型", m,
                 "不是 wrapper 类型");
 
-            // §21.2：embedded 内层字段符号不可解析
-            m = S11Module(new GetEmbeddedFieldInstruction(BilOp.Var("svc"), BilOp.Var("lv"),
+            // §21.2：set.wrapper.field 内层字段符号不可解析
+            m = S11Module(new SetWrapperFieldInstruction(BilOp.Var("lv"), BilOp.Var("svc"),
                 BilOp.Wrapper("core.logging::Logged"),
                 BilOp.Field("core.logging::Logged#ghost@.string")));
-            BilTestHarness.CheckBilInvalid("embedded 内层字段不可解析", m,
+            BilTestHarness.CheckBilInvalid("set.wrapper.field 内层字段不可解析", m,
                 "内层字段符号不可解析");
 
-            // §21.3：embedded 内层字段必须是实例字段（静态字段拒绝）
+            // §21.3：set.wrapper.field 内层字段必须是实例字段（静态字段拒绝）
             m = S11Module(
-                new GetEmbeddedFieldInstruction(BilOp.Var("svc"), BilOp.Var("lv"),
+                new SetWrapperFieldInstruction(BilOp.Var("flag"), BilOp.Var("svc"),
                     BilOp.Wrapper("core.logging::Logged"),
                     BilOp.Field("core.logging::Logged#.static.flag@.bool")));
             var loggedWithStatic = (BilTypeDeclaration)m.LocalSymbols
@@ -755,26 +765,27 @@ namespace LatteCompiler.Tests
             loggedWithStatic.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field,
                 "core.logging::Logged#.static.flag@.bool",
                 new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
-            BilTestHarness.CheckBilInvalid("embedded 内层字段为静态字段", m,
+            m.Functions[0].Vars.Add(new BilVarDeclaration(".bool", "flag"));
+            BilTestHarness.CheckBilInvalid("set.wrapper.field 内层字段为静态字段", m,
                 "必须是实例字段");
 
-            // §21.3：embedded get 结果类型必须严格等于内层字段类型
-            m = S11Module(new GetEmbeddedFieldInstruction(BilOp.Var("svc"), BilOp.Var("x"),
+            // §21.3：set.wrapper.field 源类型必须严格等于内层字段类型
+            m = S11Module(new SetWrapperFieldInstruction(BilOp.Var("b"), BilOp.Var("svc"),
                 BilOp.Wrapper("core.logging::Logged"),
                 BilOp.Field("core.logging::Logged#level@.string")));
-            BilTestHarness.CheckBilInvalid("embedded get 结果类型不符", m,
-                "get.field.embedded 目标变量");
+            BilTestHarness.CheckBilInvalid("set.wrapper.field 源类型不符", m,
+                "set.wrapper.field 源变量");
 
-            // §21.3：embedded set 源类型必须严格等于内层字段类型
-            m = S11Module(new SetEmbeddedFieldInstruction(BilOp.Var("b"), BilOp.Var("svc"),
-                BilOp.Wrapper("core.logging::Logged"),
-                BilOp.Field("core.logging::Logged#level@.string")));
-            BilTestHarness.CheckBilInvalid("embedded set 源类型不符", m,
-                "set.field.embedded 源变量");
+            // §21.3：set.wrapper.field 禁止纯 field 链（非 wrapper 后门）
+            m = S11Module(new SetWrapperFieldInstruction(BilOp.Var("lv"), BilOp.Var("svc"),
+                BilOp.Field("com.example::Service#name@.string"),
+                BilOp.Field("com.example::Service#name@.string")));
+            BilTestHarness.CheckBilInvalid("set.wrapper.field 纯 field 链拒绝", m,
+                "set.wrapper.field 链必须含至少一个 wrapper");
 
-            // §21.8：embedded set 不得写入 const 内层字段
+            // §21.8：set.wrapper.field 不得写入 const 内层字段
             m = S11Module(
-                new SetEmbeddedFieldInstruction(BilOp.Var("lv"), BilOp.Var("svc"),
+                new SetWrapperFieldInstruction(BilOp.Var("lv"), BilOp.Var("svc"),
                     BilOp.Wrapper("core.logging::Logged"),
                     BilOp.Field("core.logging::Logged#tag@.string")));
             var loggedWithConst = (BilTypeDeclaration)m.LocalSymbols
@@ -786,7 +797,7 @@ namespace LatteCompiler.Tests
                     new BilAccessibilityModifier(BilAccessibility.Public),
                     new BilKeywordModifier(BilKeyword.Const),
                 }));
-            BilTestHarness.CheckBilInvalid("embedded set 写 const 内层字段", m,
+            BilTestHarness.CheckBilInvalid("set.wrapper.field 写 const 内层字段", m,
                 "不得被写入");
 
             // ===== M84：§12.4 get.wrapper.field 负例 =====
@@ -848,8 +859,8 @@ namespace LatteCompiler.Tests
                 "宿主对象");
 
             // 字段应用对：field(F)+wrapper(W) 但 F 缺匹配 wrapped
-            m = FieldValueModule(new GetEmbeddedFieldInstruction(BilOp.Var("hero"),
-                BilOp.Var("x"),
+            m = FieldValueModule(new SetWrapperFieldInstruction(BilOp.Var("x"),
+                BilOp.Var("hero"),
                 new BilOperand[]
                 {
                     BilOp.Field("com.example::Hero#raw@.i32"),
@@ -868,13 +879,13 @@ namespace LatteCompiler.Tests
             m.LocalSymbols.Add(new BilTypeDeclaration("core.clamp::Other", BilTypeKind.Wrapper,
                 new BilAccessibilityModifier(BilAccessibility.Public),
                 new BilKeywordModifier(BilKeyword.Rich)));
-            BilTestHarness.CheckBilInvalid("embedded 字段应用对错 W", m,
+            BilTestHarness.CheckBilInvalid("set.wrapper.field 字段应用对错 W", m,
                 "要求当前位置类型");
 
             // 字段应用对正例：field(HOST)+wrapper(W)
-            BilTestHarness.CheckBilValid("embedded 字段应用对 field+wrapper 正例",
-                FieldValueModule(new GetEmbeddedFieldInstruction(BilOp.Var("hero"),
-                    BilOp.Var("x"),
+            BilTestHarness.CheckBilValid("set.wrapper.field 字段应用对 field+wrapper 正例",
+                FieldValueModule(new SetWrapperFieldInstruction(BilOp.Var("x"),
+                    BilOp.Var("hero"),
                     new BilOperand[]
                     {
                         BilOp.Field("com.example::Hero#hp@.i32"),
@@ -977,16 +988,18 @@ namespace LatteCompiler.Tests
             BilTestHarness.CheckBilInvalid("wrapper-proxy 修饰符重复", m,
                 "wrapper-proxy 修饰符重复");
 
-            // §21.3：get.self / call.inner 仅 proxy 模板 fn 内合法
-            BilTestHarness.CheckBilValid("get.self/call.inner 在 proxy 模板内（正例）",
+            // §21.3：get.self / invoke fn(..inner) 仅 proxy 模板 fn 内合法
+            BilTestHarness.CheckBilValid("get.self/invoke fn(..inner) 在 proxy 模板内（正例）",
                 ProxyTemplateModule(includeSelfInner: true));
             BilTestHarness.CheckBilInvalid("get.self 在普通 fn 内",
                 OrdinaryFnWithGetSelfModule(), "仅允许在带 wrapper-proxy");
-            // #27⑦ / §15.4：call.inner 前置 .generic 操作数须已声明（统一变量引用）
-            BilTestHarness.CheckBilInvalid("call.inner 未声明 .generic 操作数",
-                CallInnerUndeclaredGenericModule(), "未声明的变量");
-            BilTestHarness.CheckBilInvalid("call.inner 泛型包顺序错误",
-                CallInnerWrongGenericOrderModule(), "按 .args 声明序前置");
+            // #27⑦ / §15.4：invoke fn(..inner) 前置 .generic 操作数须已声明
+            BilTestHarness.CheckBilInvalid("invoke fn(..inner) 未声明 .generic 操作数",
+                InnerUndeclaredGenericModule(), "未声明的变量");
+            BilTestHarness.CheckBilInvalid("invoke fn(..inner) 泛型包顺序错误",
+                InnerWrongGenericOrderModule(), "按 .args 声明序前置");
+            BilTestHarness.CheckBilInvalid("invoke fn(..inner) 不接受 receiver",
+                InnerWithReceiverModule(), "不接受 receiver");
 
             // §8.3.1 wrapped(W) 正例 / 非 wrapper 类型拒
             m = MinimalModule(out _, out _);
@@ -1020,8 +1033,8 @@ namespace LatteCompiler.Tests
                 ConstWriteModule(ConstWriteTarget.InstanceInMethod), "不得被写入");
             BilTestHarness.CheckBilInvalid("init 内写静态 const 字段（静态不豁免）",
                 ConstWriteModule(ConstWriteTarget.StaticInInit), "不得被写入");
-            BilTestHarness.CheckBilValid("init 内 embedded 写 const 内层字段（init 豁免，正例）",
-                S11InitEmbeddedModule());
+            BilTestHarness.CheckBilValid("init 内 set.wrapper.field 写 const 内层字段（init 豁免，正例）",
+                S11InitWrapperFieldModule());
 
             // ===== 验证器修复批次 =====
             // S10：同名不同元数类型共存——声明反查键 = 符号 + 泛型元数
@@ -1186,6 +1199,7 @@ namespace LatteCompiler.Tests
             var module = new BilModule();
             module.Resources.Add(new BilScalarResource("R_FC", BilScalarType.I32, "0"));
             module.Resources.Add(new BilScalarResource("R_X", BilScalarType.I32, "0"));
+            module.Resources.Add(new BilScalarResource("R_LV", BilScalarType.String, "TRACE"));
 
             var logged = new BilTypeDeclaration("core.logging::Logged", BilTypeKind.Wrapper,
                 new BilAccessibilityModifier(BilAccessibility.Public),
@@ -1222,6 +1236,8 @@ namespace LatteCompiler.Tests
             var entry = new BilBlock("entry", BilBlockModifier.Entrypoint);
             entry.Instructions.Add(new LoadInstruction(
                 (BilScalarResource)module.Resources[1], BilOp.Var("x")));
+            entry.Instructions.Add(new LoadInstruction(
+                (BilScalarResource)module.Resources[2], BilOp.Var("lv")));
             entry.Instructions.AddRange(body);
             entry.Instructions.Add(new RetInstruction(BilOp.Var("x")));
             main.Blocks.Add(entry);
@@ -1229,7 +1245,7 @@ namespace LatteCompiler.Tests
             return module;
         }
 
-        // M88：proxy 模板 fn 含 get.self + call.inner 正例
+        // M88：proxy 模板 fn 含 get.self + invoke fn(..inner) 正例
         private static BilModule ProxyTemplateModule(bool includeSelfInner)
         {
             var module = MinimalModule(out _, out _);
@@ -1255,7 +1271,8 @@ namespace LatteCompiler.Tests
             if (includeSelfInner)
             {
                 entry.Instructions.Add(new GetSelfInstruction(BilOp.Var("self")));
-                entry.Instructions.Add(new CallInnerInstruction(BilOp.Var("r"),
+                entry.Instructions.Add(new InvokeInstruction(
+                    BilOp.Fn(BilSpellings.InnerReservedFunction), BilOp.Var("r"),
                     new[] { BilOp.Var("arg") }));
                 entry.Instructions.Add(new RetInstruction(BilOp.Var("r")));
             }
@@ -1277,20 +1294,52 @@ namespace LatteCompiler.Tests
             return module;
         }
 
-        // #27⑦：proxy 模板 call.inner 引用未在 .args 声明的 .generic.TNamedArgs
-        private static BilModule CallInnerUndeclaredGenericModule()
+        // #27⑦：proxy 模板 invoke fn(..inner) 引用未在 .args 声明的 .generic.TNamedArgs
+        private static BilModule InnerUndeclaredGenericModule()
         {
             var module = ProxyTemplateModule(includeSelfInner: false);
             var fn = module.Functions.Single(f => f.Symbol.Contains(".proxy."));
             var entry = fn.Blocks[0];
             entry.Instructions.Clear();
-            entry.Instructions.Add(new CallInnerInstruction(BilOp.Var("r"),
+            entry.Instructions.Add(new InvokeInstruction(
+                BilOp.Fn(BilSpellings.InnerReservedFunction), BilOp.Var("r"),
                 new[] { BilOp.Var(".generic.TNamedArgs"), BilOp.Var("arg") }));
             entry.Instructions.Add(new RetInstruction(BilOp.Var("r")));
             return module;
         }
 
-        private static BilModule CallInnerWrongGenericOrderModule()
+        private static BilModule SuperInvokeModule(bool validReceiver)
+        {
+            var module = new BilModule();
+            var baseType = new BilTypeDeclaration("Base", BilTypeKind.Class,
+                new BilAccessibilityModifier(BilAccessibility.Public),
+                new BilKeywordModifier(BilKeyword.Open));
+            var derived = new BilTypeDeclaration("Derived", BilTypeKind.Class,
+                new BilAccessibilityModifier(BilAccessibility.Public));
+            derived.ExtendsType = "Base";
+            var symbol = "Derived$f()@.i32";
+            derived.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method, symbol,
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilKeywordModifier(BilKeyword.Override),
+                }));
+            module.LocalSymbols.Add(baseType);
+            module.LocalSymbols.Add(derived);
+            var fn = new BilFunction(symbol);
+            fn.Args.Add(new BilArgDeclaration(".return", ".i32"));
+            fn.Args.Add(new BilArgDeclaration(".this", "Derived"));
+            fn.Vars.Add(new BilVarDeclaration(".i32", "r"));
+            var entry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            entry.Instructions.Add(new InvokeInstruction(BilOp.Fn(BilSpellings.SuperReservedFunction),
+                BilOp.Var("r"), new[] { BilOp.Var(validReceiver ? ".this" : "r") }));
+            entry.Instructions.Add(new RetInstruction(BilOp.Var("r")));
+            fn.Blocks.Add(entry);
+            module.Functions.Add(fn);
+            return module;
+        }
+
+        private static BilModule InnerWrongGenericOrderModule()
         {
             var module = ProxyTemplateModule(includeSelfInner: false);
             var fn = module.Functions.Single(f => f.Symbol.Contains(".proxy."));
@@ -1300,12 +1349,26 @@ namespace LatteCompiler.Tests
                 ".array<.typeid<.any>>"));
             var entry = fn.Blocks[0];
             entry.Instructions.Clear();
-            entry.Instructions.Add(new CallInnerInstruction(BilOp.Var("r"), new[]
+            entry.Instructions.Add(new InvokeInstruction(
+                BilOp.Fn(BilSpellings.InnerReservedFunction), BilOp.Var("r"), new[]
             {
                 BilOp.Var(".generic.TUnnamedArgs"),
                 BilOp.Var(".generic.TNamedArgs"),
                 BilOp.Var("arg"),
             }));
+            entry.Instructions.Add(new RetInstruction(BilOp.Var("r")));
+            return module;
+        }
+
+        private static BilModule InnerWithReceiverModule()
+        {
+            var module = ProxyTemplateModule(includeSelfInner: false);
+            var fn = module.Functions.Single(f => f.Symbol.Contains(".proxy."));
+            var entry = fn.Blocks[0];
+            entry.Instructions.Clear();
+            entry.Instructions.Add(new InvokeInstruction(
+                BilOp.Fn(BilSpellings.InnerReservedFunction), BilOp.Var("r"),
+                new[] { BilOp.Var(".this"), BilOp.Var("arg") }));
             entry.Instructions.Add(new RetInstruction(BilOp.Var("r")));
             return module;
         }
@@ -1466,10 +1529,10 @@ namespace LatteCompiler.Tests
             return module;
         }
 
-        // §21.8 init 豁免（§13.3 embedded 形态，M88 wrapper 链）：Logged
+        // §21.8 init 豁免（§13.3 set.wrapper.field，M88 wrapper 链）：Logged
         // wrapper（const 内层字段）+ Service（wrapped 标记 + init）+ init
-        // 体内 set.field.embedded wrapper(W) 写 const 内层字段
-        private static BilModule S11InitEmbeddedModule()
+        // 体内 set.wrapper.field wrapper(W) 写 const 内层字段
+        private static BilModule S11InitWrapperFieldModule()
         {
             var module = new BilModule();
             var logged = new BilTypeDeclaration("core.logging::Logged", BilTypeKind.Wrapper,
@@ -1501,7 +1564,7 @@ namespace LatteCompiler.Tests
             init.Args.Add(new BilArgDeclaration(".this", "com.example::Service"));
             init.Args.Add(new BilArgDeclaration("lv", ".string"));
             var initBlock = new BilBlock("entry", BilBlockModifier.Entrypoint);
-            initBlock.Instructions.Add(new SetEmbeddedFieldInstruction(BilOp.Var("lv"),
+            initBlock.Instructions.Add(new SetWrapperFieldInstruction(BilOp.Var("lv"),
                 BilOp.Var(".this"),
                 BilOp.Wrapper("core.logging::Logged"),
                 BilOp.Field("core.logging::Logged#level@.string")));

@@ -288,42 +288,18 @@ namespace LatteCompiler
         }
     }
 
-    // 嵌套字段读取（S11c，§13.3 get.field.embedded 链）：字段-Value 应用的
-    // wrapper place 成员读；写入形态（赋值目标）见 AssignmentEmitter 的
-    // set.field.embedded 分支（同一 EmbeddedFieldEmission 走链设施）
-    internal sealed class EmbeddedFieldEmitter : EmitVisitor<EmbeddedFieldEmitter, BilVariableOperand>
+    // set.wrapper.field 写链设施（§13.3）：PlaceChain 最外层→最内层，
+    // FieldSymbol→field(F)、TypeSymbol→wrapper(W)；字段应用 = 相邻
+    // field+wrapper 对。读侧不经此设施（Materialize + 普通 get.field）。
+    // 普通值中间反向写回仍走 set.field。
+    internal static class WrapperFieldEmission
     {
-        protected override BilVariableOperand VisitCore(LoweredNode node, BilBlock target,
-            EmitContext ctx, EmitEnvironment env)
-        {
-            return EmbeddedFieldEmission.EmitRead((LoweredEmbeddedFieldExpression)node,
-                target, ctx, env);
-        }
-    }
-
-    // get/set.field.embedded 走链设施（M88，§13.3）：PlaceChain 最外层→最内层，
-    // FieldSymbol→field(F)、TypeSymbol→wrapper(W)；字段应用 = 相邻 field+wrapper
-    // 对；整链一次 embedded（末段 field(INNER)），存储合成归 Middleware
-    internal static class EmbeddedFieldEmission
-    {
-        public static BilVariableOperand EmitRead(LoweredEmbeddedFieldExpression access,
-            BilBlock target, EmitContext ctx, EmitEnvironment env)
-        {
-            var current = EmitValueDispatcher.Visit(access.Receiver, target, ctx, env);
-            var chain = ProjectPlaceChain(access.PlaceChain);
-            var readResult = ctx.Temps.NewTemp(access.Type);
-            target.Instructions.Add(new GetEmbeddedFieldInstruction(current, readResult, chain,
-                BilOp.Field(CanonicalSymbolPrinter.PrintField(access.Field)))
-            { Origin = access });
-            return readResult;
-        }
-
-        public static void EmitWrite(LoweredEmbeddedFieldExpression place,
+        public static void EmitWrite(LoweredWrapperFieldExpression place,
             BilVariableOperand source, BilVariableOperand receiver,
             BilBlock target, EmitContext ctx, EmitEnvironment env)
         {
             var chain = ProjectPlaceChain(place.PlaceChain);
-            target.Instructions.Add(new SetEmbeddedFieldInstruction(source, receiver, chain,
+            target.Instructions.Add(new SetWrapperFieldInstruction(source, receiver, chain,
                 BilOp.Field(CanonicalSymbolPrinter.PrintField(place.Field)))
             { Origin = place });
         }
@@ -339,7 +315,7 @@ namespace LatteCompiler
                     FieldSymbol field => BilOp.Field(CanonicalSymbolPrinter.PrintField(field)),
                     TypeSymbol type => BilOp.Wrapper(CanonicalSymbolPrinter.PrintType(type)),
                     _ => throw new CompilerInternalException(
-                        "embedded PlaceChain element must be FieldSymbol or TypeSymbol, got " +
+                        "wrapper PlaceChain element must be FieldSymbol or TypeSymbol, got " +
                         (placeChain[i]?.GetType().Name ?? "null")),
                 };
             }
@@ -384,11 +360,46 @@ namespace LatteCompiler
             }
             if (callInner.IsVoid)
             {
-                target.Instructions.Add(new CallInnerNoretInstruction(args) { Origin = callInner });
+                target.Instructions.Add(new InvokeNoResultInstruction(
+                    BilOp.Fn(BilSpellings.InnerReservedFunction), args) { Origin = callInner });
                 return BilOp.Var("<void>");
             }
             var result = ctx.Temps.NewTemp(callInner.Type);
-            target.Instructions.Add(new CallInnerInstruction(result, args) { Origin = callInner });
+            target.Instructions.Add(new InvokeInstruction(
+                BilOp.Fn(BilSpellings.InnerReservedFunction), result, args) { Origin = callInner });
+            return result;
+        }
+    }
+
+    // super ABI = $.this + generic hidden args + normal args；BIL 不泄露 base canonical 名。
+    internal sealed class SuperCallEmitter : EmitVisitor<SuperCallEmitter, BilVariableOperand>
+    {
+        protected override BilVariableOperand VisitCore(LoweredNode node, BilBlock target,
+            EmitContext ctx, EmitEnvironment env)
+        {
+            var super = (LoweredSuperCallExpression)node;
+            var args = new List<BilVariableOperand> { BilOp.Var(".this") };
+            foreach (var typeArgument in super.TypeArguments)
+            {
+                args.Add(EmittingFacility.MaterializeTypeId(typeArgument, super, target, ctx, env));
+            }
+            if (super.GenericPack != null)
+            {
+                args.Add(GenericVarArgsEmitter.Visit(super.GenericPack, target, ctx, env));
+            }
+            foreach (var argument in super.Arguments)
+            {
+                args.Add(EmitValueDispatcher.Visit(argument, target, ctx, env));
+            }
+            if (super.IsVoid)
+            {
+                target.Instructions.Add(new InvokeNoResultInstruction(
+                    BilOp.Fn(BilSpellings.SuperReservedFunction), args) { Origin = super });
+                return BilOp.Var("<void>");
+            }
+            var result = ctx.Temps.NewTemp(super.Type);
+            target.Instructions.Add(new InvokeInstruction(
+                BilOp.Fn(BilSpellings.SuperReservedFunction), result, args) { Origin = super });
             return result;
         }
     }

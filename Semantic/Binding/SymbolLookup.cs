@@ -297,20 +297,53 @@ namespace LatteCompiler
             }
             for (var t = fromType; t != null; t = t.BaseType)
             {
-                if (ReferenceEquals(t, toType)) return true;
+                if (TypesAssignableWithVariance(t, toType, env)) return true;
                 var def = t.ConstructedFrom ?? t;
                 foreach (var iface in def.Interfaces)
                 {
-                    if (ReferenceEquals(iface, toType)) return true;
+                    if (TypesAssignableWithVariance(iface, toType, env)) return true;
                     if (t.ConstructedFrom != null
-                        && ReferenceEquals(
-                            SubstituteHost(iface, def, t, env.Unit.Symbols), toType))
+                        && TypesAssignableWithVariance(
+                            SubstituteHost(iface, def, t, env.Unit.Symbols), toType, env))
                     {
                         return true;
                     }
                 }
             }
             return false;
+        }
+
+        private static bool TypesAssignableWithVariance(SemanticSymbol? from,
+            SemanticSymbol to, BindEnvironment env)
+        {
+            if (ReferenceEquals(from, to)) return true;
+            if (from is not TypeSymbol { ConstructedFrom: { } fromDefinition,
+                TypeArguments: { } fromArguments }
+                || to is not TypeSymbol { ConstructedFrom: { } toDefinition,
+                    TypeArguments: { } toArguments }
+                || !ReferenceEquals(fromDefinition, toDefinition)
+                || fromArguments.Count != toArguments.Count)
+            {
+                return false;
+            }
+
+            for (var i = 0; i < fromArguments.Count; i++)
+            {
+                var variance = fromDefinition.GenericParameters[i].Variance;
+                if (variance == GenericVariance.None)
+                {
+                    if (!ReferenceEquals(fromArguments[i], toArguments[i])) return false;
+                }
+                else if (variance == GenericVariance.Out)
+                {
+                    if (!IsAssignable(fromArguments[i], toArguments[i], env)) return false;
+                }
+                else if (!IsAssignable(toArguments[i], fromArguments[i], env))
+                {
+                    return false;
+                }
+            }
+            return true;
         }
 
         // 宿主泛型参数代入（S9f）：type 中出现的 definition 泛型参数按

@@ -5,9 +5,10 @@ namespace LatteCompiler.Tests
 {
     // BilEmitter（P4b）wrapper 标记产物端到端（M88）：
     // - place 成员访问：Entity 读 = get.wrapper 值拷贝 + get.field；
-    //   写 = set.field.embedded wrapper(W)；字段-Value = embedded 链；
+    //   写 = set.wrapper.field wrapper(W)；字段-Value 读 = get.wrapper.field
+    //   + get.field、写 = set.wrapper.field；
     // - 应用标记 §8.3.1 wrapped(W)（无隐藏字段声明）；
-    // - proxy 模板 fn：wrapper-proxy(specific|wildcard) + get.self/call.inner；
+    // - proxy 模板 fn：wrapper-proxy(specific|wildcard) + get.self/invoke fn(..inner)；
     // - 降级调用点：invoke core::Any$call??? + symbol 资源 + 双包。
     public static partial class BilEmitterTests
     {
@@ -46,7 +47,7 @@ namespace LatteCompiler.Tests
                 "ret $.t1\n");
         }
 
-        // ===== Entity 字段写（set.field.embedded wrapper(W)）=====
+        // ===== Entity 字段写（set.wrapper.field wrapper(W)）=====
         private static void TestWrapperEntityWriteEmission()
         {
             var (unit, module, _) = BilTestHarness.EmitBilUnit(
@@ -62,11 +63,11 @@ namespace LatteCompiler.Tests
                 "}\n");
             CheckNoErrors("全管线无诊断（Entity 字段写）", unit);
             BilTestHarness.CheckBilValid("验证器零错误（Entity 字段写）", module);
-            BilTestHarness.CheckFnShape("Entity 字段写（set.field.embedded wrapper）",
+            BilTestHarness.CheckFnShape("Entity 字段写（set.wrapper.field wrapper）",
                 module, "$f(s:Service)@.void",
                 ".vars { .string .t0 }\n" +
                 "load res(#0) $.t0\n" +
-                "set.field.embedded $.t0 $s wrapper(Logged) " +
+                "set.wrapper.field $.t0 $s wrapper(Logged) " +
                 "field(Logged#level@.string)\n" +
                 "ret\n");
         }
@@ -166,7 +167,7 @@ namespace LatteCompiler.Tests
                 "ret $.t2\n");
         }
 
-        // ===== 字段-Value：embedded wrapper(W) + 字段 wrapped 标记 =====
+        // ===== 字段-Value：get.wrapper.field + get.field + 字段 wrapped 标记 =====
         private static void TestWrapperFieldValueEmission()
         {
             var (unit, module, _) = BilTestHarness.EmitBilUnit(
@@ -197,15 +198,16 @@ namespace LatteCompiler.Tests
                 !hero.Members.OfType<BilSimpleMemberDeclaration>()
                     .Any(d => d.Symbol.Contains("#.wrapper.")));
             BilTestHarness.CheckFnShape(
-                "字段-Value 读写（get/set.field.embedded field+wrapper）",
+                "字段-Value 读写（get.wrapper.field+get.field / set.wrapper.field）",
                 module, "$f(hero:Hero)@.i32",
-                ".vars { .i32 .t0, .i32 .t1 }\n" +
+                ".vars { Clamped .s0, .i32 .t0, Clamped .t1, .i32 .t2 }\n" +
                 "load res(#0) $.t0\n" +
-                "set.field.embedded $.t0 $hero field(Hero#hp@.i32) wrapper(Clamped) " +
+                "set.wrapper.field $.t0 $hero field(Hero#hp@.i32) wrapper(Clamped) " +
                 "field(Clamped#min@.i32)\n" +
-                "get.field.embedded $hero $.t1 field(Hero#hp@.i32) wrapper(Clamped) " +
-                "field(Clamped#min@.i32)\n" +
-                "ret $.t1\n");
+                "get.wrapper.field $hero field(Hero#hp@.i32) type(Clamped) $.t1\n" +
+                "set.var $.t1 $.s0\n" +
+                "get.field $.s0 $.t2 field(Clamped#min@.i32)\n" +
+                "ret $.t2\n");
         }
 
         // ===== 同 owner 两字段同 W：hp/mp 必须产生不同 field(HOST_FIELD) =====
@@ -233,16 +235,17 @@ namespace LatteCompiler.Tests
             BilTestHarness.CheckBilValid("验证器零错误（同 W 两字段）", module);
             BilTestHarness.CheckFnShape("同 owner 两字段同 W（hp/mp 不同 HOST_FIELD）",
                 module, "$f(hero:Hero)@.i32",
-                ".vars { .i32 .t0, .i32 .t1, .i32 .t2 }\n" +
+                ".vars { Clamped .s0, .i32 .t0, .i32 .t1, Clamped .t2, .i32 .t3 }\n" +
                 "load res(#0) $.t0\n" +
-                "set.field.embedded $.t0 $hero field(Hero#hp@.i32) wrapper(Clamped) " +
+                "set.wrapper.field $.t0 $hero field(Hero#hp@.i32) wrapper(Clamped) " +
                 "field(Clamped#min@.i32)\n" +
                 "load res(#1) $.t1\n" +
-                "set.field.embedded $.t1 $hero field(Hero#mp@.i32) wrapper(Clamped) " +
+                "set.wrapper.field $.t1 $hero field(Hero#mp@.i32) wrapper(Clamped) " +
                 "field(Clamped#min@.i32)\n" +
-                "get.field.embedded $hero $.t2 field(Hero#hp@.i32) wrapper(Clamped) " +
-                "field(Clamped#min@.i32)\n" +
-                "ret $.t2\n");
+                "get.wrapper.field $hero field(Hero#hp@.i32) type(Clamped) $.t2\n" +
+                "set.var $.t2 $.s0\n" +
+                "get.field $.s0 $.t3 field(Clamped#min@.i32)\n" +
+                "ret $.t3\n");
         }
 
         // ===== Entity 复合赋值（读/写分离 + 宿主单次求值）=====
@@ -261,7 +264,7 @@ namespace LatteCompiler.Tests
                 "}\n");
             CheckNoErrors("全管线无诊断（复合赋值）", unit);
             BilTestHarness.CheckBilValid("验证器零错误（复合赋值）", module);
-            BilTestHarness.CheckFnShape("复合赋值（读 = 值拷贝，写 = embedded wrapper）",
+            BilTestHarness.CheckFnShape("复合赋值（读 = 值拷贝，写 = set.wrapper.field）",
                 module, "$f(s:Service)@.void",
                 ".vars { Counted .s0, .i32 .s1, Counted .t0, .i32 .t1, .i32 .t2, " +
                 ".i32 .t3 }\n" +
@@ -271,7 +274,7 @@ namespace LatteCompiler.Tests
                 "load res(#0) $.t2\n" +
                 "add $.t1 $.t2 $.t3\n" +
                 "set.var $.t3 $.s1\n" +
-                "set.field.embedded $.s1 $s wrapper(Counted) " +
+                "set.wrapper.field $.s1 $s wrapper(Counted) " +
                 "field(Counted#count@.i32)\n" +
                 "ret\n");
         }
@@ -423,7 +426,7 @@ namespace LatteCompiler.Tests
                 "}\n");
             CheckNoErrors("全管线无诊断（一层值中间深写）", unit);
             BilTestHarness.CheckBilValid("验证器零错误（一层值中间深写）", module);
-            BilTestHarness.CheckFnShape("一层值中间深写（get + 叶写 + embedded 写回）",
+            BilTestHarness.CheckFnShape("一层值中间深写（get + 叶写 + set.wrapper.field 写回）",
                 module, "$f(s:Service)@.void",
                 ".vars { Logged .s0, Inner .s1, Logged .t0, Inner .t1, .i32 .t2 }\n" +
                 "get.wrapper $s type(Logged) $.t0\n" +
@@ -432,7 +435,7 @@ namespace LatteCompiler.Tests
                 "set.var $.t1 $.s1\n" +
                 "load res(#0) $.t2\n" +
                 "set.field $.t2 $.s1 field(Inner#x@.i32)\n" +
-                "set.field.embedded $.s1 $s wrapper(Logged) field(Logged#sub@Inner)\n" +
+                "set.wrapper.field $.s1 $s wrapper(Logged) field(Logged#sub@Inner)\n" +
                 "ret\n");
 
             // 两层值中间
@@ -463,7 +466,7 @@ namespace LatteCompiler.Tests
                 "load res(#0) $.t3\n" +
                 "set.field $.t3 $.s2 field(Leaf#x@.i32)\n" +
                 "set.field $.s2 $.s1 field(Mid#leaf@Leaf)\n" +
-                "set.field.embedded $.s1 $s wrapper(Box) field(Box#mid@Mid)\n" +
+                "set.wrapper.field $.s1 $s wrapper(Box) field(Box#mid@Mid)\n" +
                 "ret\n");
 
             // 引用中间：叶写后不多余写回
@@ -537,13 +540,14 @@ namespace LatteCompiler.Tests
             BilTestHarness.CheckBilValid("验证器零错误（字段-Value 深写）", module5);
             BilTestHarness.CheckFnShape("字段-Value 一层值中间深写",
                 module5, "$f(hero:Hero)@.void",
-                ".vars { Inner .s0, Inner .t0, .i32 .t1 }\n" +
-                "get.field.embedded $hero $.t0 field(Hero#hp@.i32) wrapper(Boxed) " +
-                "field(Boxed#sub@Inner)\n" +
+                ".vars { Boxed .s0, Inner .s1, Boxed .t0, Inner .t1, .i32 .t2 }\n" +
+                "get.wrapper.field $hero field(Hero#hp@.i32) type(Boxed) $.t0\n" +
                 "set.var $.t0 $.s0\n" +
-                "load res(#0) $.t1\n" +
-                "set.field $.t1 $.s0 field(Inner#x@.i32)\n" +
-                "set.field.embedded $.s0 $hero field(Hero#hp@.i32) wrapper(Boxed) " +
+                "get.field $.s0 $.t1 field(Boxed#sub@Inner)\n" +
+                "set.var $.t1 $.s1\n" +
+                "load res(#0) $.t2\n" +
+                "set.field $.t2 $.s1 field(Inner#x@.i32)\n" +
+                "set.wrapper.field $.s1 $hero field(Hero#hp@.i32) wrapper(Boxed) " +
                 "field(Boxed#sub@Inner)\n" +
                 "ret\n");
 
@@ -592,13 +596,13 @@ namespace LatteCompiler.Tests
             var getWrapperAt = ops.IndexOf("get.wrapper");
             var sideAt = ops.FindIndex(o => o is "invoke" or "invoke.noret");
             var setLeafAt = ops.IndexOf("set.field");
-            var embeddedAt = ops.IndexOf("set.field.embedded");
+            var writebackAt = ops.IndexOf("set.wrapper.field");
             TestHarness.CheckTrue("求值序：get.wrapper 先于 side()",
                 getWrapperAt >= 0 && sideAt > getWrapperAt);
             TestHarness.CheckTrue("求值序：side() 先于叶 set.field",
                 sideAt >= 0 && setLeafAt > sideAt);
-            TestHarness.CheckTrue("求值序：叶写先于 embedded 写回",
-                setLeafAt >= 0 && embeddedAt > setLeafAt);
+            TestHarness.CheckTrue("求值序：叶写先于 set.wrapper.field 写回",
+                setLeafAt >= 0 && writebackAt > setLeafAt);
         }
 
         // ===== 混合边界：值/引用中间停止点锁定 =====
@@ -640,7 +644,7 @@ namespace LatteCompiler.Tests
                 "set.field $.t3 $.s2 field(Node#x@.i32)\n" +
                 "ret\n");
 
-            // W.a(ref).b(value).x：值中间写回 a，引用 a 停止（无 embedded）
+            // W.a(ref).b(value).x：值中间写回 a，引用 a 停止（无 set.wrapper.field）
             var (unit2, module2, _) = BilTestHarness.EmitBilUnit(
                 "pub struct Leaf {\n" +
                 "    pub var x: i32\n" +
@@ -662,7 +666,7 @@ namespace LatteCompiler.Tests
                 "}\n");
             CheckNoErrors("全管线无诊断（引用→值边界）", unit2);
             BilTestHarness.CheckBilValid("验证器零错误（引用→值边界）", module2);
-            BilTestHarness.CheckFnShape("W.a(ref).b(value).x（值写回 a，无 embedded）",
+            BilTestHarness.CheckFnShape("W.a(ref).b(value).x（值写回 a，无 set.wrapper.field）",
                 module2, "$f(s:Service)@.void",
                 ".vars { Box .s0, MidRef .s1, Leaf .s2, Box .t0, MidRef .t1, " +
                 "Leaf .t2, .i32 .t3 }\n" +
@@ -714,7 +718,7 @@ namespace LatteCompiler.Tests
                 "add $.t2 $.t3 $.t4\n" +
                 "set.var $.t4 $.s2\n" +
                 "set.field $.s2 $.s1 field(Inner#x@.i32)\n" +
-                "set.field.embedded $.s1 $s wrapper(Logged) field(Logged#sub@Inner)\n" +
+                "set.wrapper.field $.s1 $s wrapper(Logged) field(Logged#sub@Inner)\n" +
                 "get.wrapper $s type(Logged) $.t5\n" +
                 "set.var $.t5 $.s3\n" +
                 "get.field $.s3 $.t6 field(Logged#sub@Inner)\n" +
@@ -724,8 +728,8 @@ namespace LatteCompiler.Tests
 
         // ===== 共享写路径宿主稳定性：可变普通字段 host 在 RHS 前物化一次 =====
         // h.service:W.sub.x = h.replaceAndReturn()——service 无 getter 但 RHS
-        // 可能替换该字段；host 必须物化到 .sN，get.wrapper 与 embedded 写回
-        // 共用同一 .sN，RHS 后不再 get.field Host#service。
+        // 可能替换该字段；host 必须物化到 .sN，get.wrapper 与 set.wrapper.field
+        // 写回共用同一 .sN，RHS 后不再 get.field Host#service。
         private static void TestWrapperSharedHostFieldStability()
         {
             var (unit, module, _) = BilTestHarness.EmitBilUnit(
@@ -754,7 +758,7 @@ namespace LatteCompiler.Tests
             CheckNoErrors("全管线无诊断（共享宿主字段稳定性深写）", unit);
             BilTestHarness.CheckBilValid("验证器零错误（共享宿主字段稳定性深写）", module);
             BilTestHarness.CheckFnShape(
-                "可变字段 host 深写（RHS 前物化一次，wrapper/embedded 共用 .sN）",
+                "可变字段 host 深写（RHS 前物化一次，wrapper/写回共用 .sN）",
                 module, "$f(h:Host)@.void",
                 ".vars { Service .s0, Logged .s1, Inner .s2, Service .t0, " +
                 "Logged .t1, Inner .t2, .i32 .t3 }\n" +
@@ -766,7 +770,7 @@ namespace LatteCompiler.Tests
                 "set.var $.t2 $.s2\n" +
                 "invoke fn(Host$replaceAndReturn()@.i32) $.t3 [$h]\n" +
                 "set.field $.t3 $.s2 field(Inner#x@.i32)\n" +
-                "set.field.embedded $.s2 $.s0 wrapper(Logged) " +
+                "set.wrapper.field $.s2 $.s0 wrapper(Logged) " +
                 "field(Logged#sub@Inner)\n" +
                 "ret\n");
 
@@ -805,12 +809,12 @@ namespace LatteCompiler.Tests
                 "invoke fn(Host$replaceAndReturn()@.i32) $.t3 [$h]\n" +
                 "add $.t2 $.t3 $.t4\n" +
                 "set.var $.t4 $.s2\n" +
-                "set.field.embedded $.s2 $.s0 wrapper(Counted) " +
+                "set.wrapper.field $.s2 $.s0 wrapper(Counted) " +
                 "field(Counted#count@.i32)\n" +
                 "ret\n");
         }
 
-        // ===== M79：param:W（泛型参数 with 约束）get.wrapper / embedded 端到端 =====
+        // ===== M79：param:W（泛型参数 with 约束）get.wrapper / set.wrapper.field 端到端 =====
         private static void TestGenericParamWithWrapperEmission()
         {
             var (unit, module, _) = BilTestHarness.EmitBilUnit(
@@ -843,16 +847,16 @@ namespace LatteCompiler.Tests
                 "}\n");
             CheckNoErrors("全管线无诊断（param:W 写）", unit2);
             BilTestHarness.CheckBilValid("验证器零错误（param:W 写）", module2);
-            BilTestHarness.CheckFnShape("param:W 字段写（set.field.embedded wrapper）",
+            BilTestHarness.CheckFnShape("param:W 字段写（set.wrapper.field wrapper）",
                 module2, "$g(param:.generic<$.generic.T>)@.void",
                 ".vars { .string .t0 }\n" +
                 "load res(#0) $.t0\n" +
-                "set.field.embedded $.t0 $param wrapper(Logged) " +
+                "set.wrapper.field $.t0 $param wrapper(Logged) " +
                 "field(Logged#level@.string)\n" +
                 "ret\n");
         }
 
-        // ===== M88：specific proxy 模板 fn（wrapper-proxy + get.self/call.inner）=====
+        // ===== M88：specific proxy 模板 fn（wrapper-proxy + get.self/invoke fn(..inner)）=====
         private static void TestProxyBakingEmission()
         {
             var (unit, module, _) = BilTestHarness.EmitBilUnit(
@@ -888,13 +892,13 @@ namespace LatteCompiler.Tests
                 !service.Members.OfType<BilSimpleMemberDeclaration>().Any(d =>
                     d.Symbol.Contains("$.proxy.0.") || d.Symbol.Contains("$.wrapped.")));
 
-            BilTestHarness.CheckFnShape("specific 模板 fn（get.self + call.inner）",
+            BilTestHarness.CheckFnShape("specific 模板 fn（get.self + invoke fn(..inner)）",
                 module, "Logged$$.proxy.doSomething(arg:.i32)@.string",
                 ".vars { .generic<$.generic.TTarget> host, " +
                 ".generic<$.generic.TTarget> .t0, .string .t1 }\n" +
                 "get.self $.t0\n" +
                 "set.var $.t0 $host\n" +
-                "call.inner $.t1 [$arg]\n" +
+                "invoke fn(..inner) $.t1 [$arg]\n" +
                 "ret $.t1\n");
             BilTestHarness.CheckFnShape("caller（invoke 原名，烘焙归 Middleware）",
                 module, "$caller(s:Service)@.string",
@@ -904,7 +908,7 @@ namespace LatteCompiler.Tests
                 "ret $.t1\n");
         }
 
-        // ===== M88：wildcard proxy 模板 fn（call.inner 包转发）=====
+        // ===== M88：wildcard proxy 模板 fn（invoke fn(..inner) 包转发）=====
         private static void TestProxyWildcardBakingEmission()
         {
             var (unit, module, _) = BilTestHarness.EmitBilUnit(
@@ -936,11 +940,11 @@ namespace LatteCompiler.Tests
                 !service.Members.OfType<BilSimpleMemberDeclaration>().Any(d =>
                     d.Symbol.Contains(".proxy.unwrap.") || d.Symbol.Contains("$.proxy.0.")));
 
-            // #27⑦：call.inner 操作数 = 泛型包（声明序）前置 + 值包
-            BilTestHarness.CheckFnShape("wildcard 模板 fn（call.inner 泛型包+值包转发）",
+            // #27⑦：invoke fn(..inner) 操作数 = 泛型包（声明序）前置 + 值包
+            BilTestHarness.CheckFnShape("wildcard 模板 fn（invoke fn(..inner) 泛型包+值包转发）",
                 module, "Audited$$.proxy.*(symbol:.string)@.generic<$.generic.TReturn>",
                 ".vars { .generic<$.generic.TReturn> .t0 }\n" +
-                "call.inner $.t0 [$.generic.TNamedArgs, $.generic.TUnnamedArgs, " +
+                "invoke fn(..inner) $.t0 [$.generic.TNamedArgs, $.generic.TUnnamedArgs, " +
                 "$.kwargs.namedArgs, $.vargs.unnamedArgs]\n" +
                 "ret $.t0\n");
         }
@@ -962,10 +966,11 @@ namespace LatteCompiler.Tests
             var proxy = module.Functions.Single(f => f.Symbol.Contains(".proxy.sum"));
             TestHarness.CheckTrue("specific variadic .args 声明值包",
                 proxy.Args.Any(a => a.Name == ".vargs.nums"));
-            var callInner = proxy.Blocks.SelectMany(b => b.Instructions)
-                .OfType<CallInnerInstruction>().Single();
-            TestHarness.Check("specific variadic call.inner 整包转发", ".vargs.nums",
-                callInner.Arguments.Single().Name);
+            var innerInvoke = proxy.Blocks.SelectMany(b => b.Instructions)
+                .OfType<InvokeInstruction>().Single(i =>
+                    i.Method.Symbol == BilSpellings.InnerReservedFunction);
+            TestHarness.Check("specific variadic invoke fn(..inner) 整包转发", ".vargs.nums",
+                innerInvoke.Arguments.Single().Name);
         }
 
         // ===== M88：get 访问器 proxy 模板（标记产物，无合成链）=====
@@ -1020,7 +1025,7 @@ namespace LatteCompiler.Tests
                 "    pub init()\n" +
                 "}\n" +
                 "pub func f(service: Service): Any {\n" +
-                "    return service.fetchUserById(42)\n" +
+                "    return service.fetchUserById\\<i32, String>(42)\n" +
                 "}\n");
             CheckNoErrors("全管线无诊断（降级单环）", unit);
             BilTestHarness.CheckBilValid("验证器零错误（降级单环）", module);
@@ -1036,7 +1041,7 @@ namespace LatteCompiler.Tests
             TestHarness.CheckTrue("降级请求 symbol 资源",
                 module.Resources.OfType<BilScalarResource>().Any(r =>
                     r.Type == BilScalarType.String
-                    && r.LiteralText == "\"Service$fetchUserById(.i32)@.any\""));
+                    && r.LiteralText == "\"Service$fetchUserById<.i32,.string>(.i32)@.any\""));
 
             BilTestHarness.CheckFnShape("调用点（invoke Any.call??? 胖值三参）",
                 module, "$f(service:Service)@.any",
@@ -1200,14 +1205,15 @@ namespace LatteCompiler.Tests
                 var (unit, module, _) = BilTestHarness.EmitBilUnit(wildcardW +
                     "@Audited\n" +
                     "pub interface IService { }\n" +
+                    "@Audited\n" +
                     "pub class SvcImpl implements IService { pub init() }\n" +
                     "pub func f(s: SvcImpl): Any { return s.fetch(1) }\n");
                 CheckNoErrors("全管线无诊断（#28③ 直接 implements）", unit);
                 BilTestHarness.CheckBilValid("验证器零错误（#28③ 直接 implements）", module);
-                TestHarness.CheckTrue("#28③ 实现者无 wrapped 标记（不回写）",
-                    !module.LocalSymbols.OfType<BilTypeDeclaration>()
+                TestHarness.CheckTrue("#28③ 实现者显式 wrapped 标记",
+                    module.LocalSymbols.OfType<BilTypeDeclaration>()
                         .Single(t => t.Symbol == "SvcImpl")
-                        .Modifiers.OfType<BilWrappedModifier>().Any());
+                        .Modifiers.OfType<BilWrappedModifier>().Any(m => m.WrapperTypeRef == "Audited"));
                 TestHarness.CheckTrue("#28③ 调用点 invoke Any.call???",
                     module.Functions.Single(fn => fn.Symbol.StartsWith("$f("))
                         .Blocks[0].Instructions.OfType<InvokeInstruction>()
@@ -1219,7 +1225,9 @@ namespace LatteCompiler.Tests
                 var (unit, module, _) = BilTestHarness.EmitBilUnit(wildcardW +
                     "@Audited\n" +
                     "pub interface IBase { }\n" +
+                    "@Audited\n" +
                     "pub interface IChild : IBase { }\n" +
+                    "@Audited\n" +
                     "pub class ViaChild implements IChild { pub init() }\n" +
                     "pub func f(s: ViaChild): Any { return s.remote() }\n");
                 CheckNoErrors("全管线无诊断（#28③ 传递闭包）", unit);

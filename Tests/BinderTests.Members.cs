@@ -108,6 +108,52 @@ namespace LatteCompiler.Tests
                     sizedType.Methods.Single(m => m.Name == "size")));
         }
 
+        private static void TestSuperCalls()
+        {
+            TestHarness.Section("P3 Super Calls");
+            var (unit, bodies) = BindUnit(
+                "open class A {\n" +
+                "    pub init(n: i32) {}\n" +
+                "    pub open func f(x: i32): i32 { return x }\n" +
+                "    pub open func f(x: String): i32 { return 2 }\n" +
+                "    pub open func ping() {}\n" +
+                "}\n" +
+                "open class B: A {\n" +
+                "    pub init(n: i32) { super(n) }\n" +
+                "    pub override func f(x: i32): i32 { return super(x) }\n" +
+                "    pub override func ping() { super() }\n" +
+                "}\n" +
+                "class C: B {\n" +
+                "    pub init(n: i32) {}\n" +
+                "    pub override func f(x: i32): i32 { return super(x) }\n" +
+                "}\n");
+            CheckNoErrors("super 正例", unit);
+            var bF = bodies.Where(body => body.Method.Owner?.Name == "B" && body.Method.Name == "f")
+                .Single().Body.Statements[0] as BoundReturnStatement;
+            TestHarness.CheckTrue("super 返回值有独立 Bound 节点",
+                bF?.Value is BoundSuperCallExpression { Method.Owner.Name: "A" });
+            var bPing = bodies.Where(body => body.Method.Owner?.Name == "B" && body.Method.Name == "ping")
+                .Single().Body.Statements[0] as BoundExpressionStatement;
+            TestHarness.CheckTrue("void super 有独立 Bound 节点",
+                bPing?.Expression is BoundSuperCallExpression { IsVoid: true });
+            var cF = bodies.Where(body => body.Method.Owner?.Name == "C" && body.Method.Name == "f")
+                .Single().Body.Statements[0] as BoundReturnStatement;
+            TestHarness.CheckTrue("super 仅命中直接基类", cF?.Value is BoundSuperCallExpression
+                { Method.Owner.Name: "B" });
+
+            var (invalid, _) = BindUnit(
+                "open class A { pub open func f(): i32 { return 1 } }\n" +
+                "class B: A {\n" +
+                "    pub func plain(): i32 { return super() }\n" +
+                "    pub static func stat(): i32 { return super() }\n" +
+                "}\n" +
+                "func global(): i32 { return super() }\n");
+            TestHarness.CheckSemanticError("non-override super", invalid.Diagnostics,
+                "super(...) is only available in an override method or init body");
+            TestHarness.CheckSemanticError("static/global super", invalid.Diagnostics,
+                "super(...) is only available in an instance member body");
+        }
+
         // ===== 索引访问（S8c，SYNTAX §13.2：getAtIndex/setAtIndex 绑定、
         // 表达式底座路径、赋值 place 扩展）=====
         private static void TestIndexAccess()
@@ -312,6 +358,108 @@ namespace LatteCompiler.Tests
                 "pub func q(): i32 { return stuff[0] }\n");
             TestHarness.CheckSemanticError("ns[0] 索引非值", unit12.Diagnostics,
                 "Undefined name: 'stuff'");
+        }
+
+        // ===== 容器中间段 Call 后缀后实例链（#20②：ns.make().field /
+        // Type.make()[0].value；复用 CallFacility + BindInstanceChain）=====
+        private static void TestContainerCallSuffixChain()
+        {
+            TestHarness.Section("P3 Container Call Suffix Chain");
+
+            var (unit, bodies) = BindUnit(
+                "namespace ns\n" +
+                "class Box {\n" +
+                "    pub var field: i32\n" +
+                "    pub init() { field = 0 }\n" +
+                "}\n" +
+                "class Nested {\n" +
+                "    pub var value: i32\n" +
+                "    pub init(v: i32) { value = v }\n" +
+                "}\n" +
+                "class Bag {\n" +
+                "    pub var first: Nested\n" +
+                "    pub operator getAtIndex(index: i32): Nested { return first }\n" +
+                "    pub init(n: Nested) { first = n }\n" +
+                "}\n" +
+                "pub func make(): Box { return new Box() }\n" +
+                "pub func makeBag(): Bag { return new Bag(new Nested(1)) }\n" +
+                "pub func voidMake() { }\n" +
+                "class Factory {\n" +
+                "    pub static func make(): Box { return new Box() }\n" +
+                "}\n",
+                "func fieldAfter(): i32 { return ns.make().field }\n" +
+                "func indexAfter(): i32 { return ns.makeBag()[0].value }\n" +
+                "func typeStatic(): i32 { return ns.Factory.make().field }\n" +
+                "func assignEnd() { ns.make().field = 9 }\n");
+            CheckNoErrors("无诊断（容器 Call 后缀链）", unit);
+            TestHarness.Check("ns.make().field 调用后字段",
+                BoundDescribe.Body(BodyOf(bodies, "fieldAfter")),
+                "Body(fieldAfter, [], [Return(InstField(field, Call(make, [], Box), i32))])");
+            TestHarness.Check("ns.makeBag()[0].value 调用后索引/字段",
+                BoundDescribe.Body(BodyOf(bodies, "indexAfter")),
+                "Body(indexAfter, [], [Return(InstField(value, " +
+                "Index(Call(makeBag, [], Bag), Int(0,i32), Nested), i32))])");
+            TestHarness.Check("ns.Factory.make().field 类型容器静态调用后字段",
+                BoundDescribe.Body(BodyOf(bodies, "typeStatic")),
+                "Body(typeStatic, [], [Return(InstField(field, Call(make, [], Box), i32))])");
+            TestHarness.Check("ns.make().field = 9 全路径末端赋值",
+                BoundDescribe.Body(BodyOf(bodies, "assignEnd")),
+                "Body(assignEnd, [], [Assign(InstField(field, Call(make, [], Box), i32), " +
+                "Int(9,i32))])");
+
+            // 底座行为保留：裸名 foo().field / makeBag()[i]
+            var (unitBase, bodiesBase) = BindUnit(
+                "class Box {\n" +
+                "    pub var field: i32\n" +
+                "    pub init() { field = 0 }\n" +
+                "}\n" +
+                "class Nested {\n" +
+                "    pub var value: i32\n" +
+                "    pub init(v: i32) { value = v }\n" +
+                "}\n" +
+                "class Bag {\n" +
+                "    pub var first: Nested\n" +
+                "    pub operator getAtIndex(index: i32): Nested { return first }\n" +
+                "    pub init(n: Nested) { first = n }\n" +
+                "}\n" +
+                "func make(): Box { return new Box() }\n" +
+                "func makeBag(): Bag { return new Bag(new Nested(1)) }\n" +
+                "func bareField(): i32 { return make().field }\n" +
+                "func bareIndex(): i32 { return makeBag()[0].value }\n");
+            CheckNoErrors("无诊断（裸名调用底座保留）", unitBase);
+            TestHarness.Check("make().field 底座保留",
+                BoundDescribe.Body(BodyOf(bodiesBase, "bareField")),
+                "Body(bareField, [], [Return(InstField(field, Call(make, [], Box), i32))])");
+            TestHarness.Check("makeBag()[0].value 底座保留",
+                BoundDescribe.Body(BodyOf(bodiesBase, "bareIndex")),
+                "Body(bareIndex, [], [Return(InstField(value, " +
+                "Index(Call(makeBag, [], Bag), Int(0,i32), Nested), i32))])");
+
+            // ===== 负例 =====
+            var (unitNeg1, _) = BindUnit(
+                "namespace ns\n" +
+                "pub func make(): i32 { return 1 }\n",
+                "func f(): i32 { return ns.make }\n");
+            TestHarness.CheckSemanticError("无后缀方法不能作为值", unitNeg1.Diagnostics,
+                "Method 'ns.make' cannot be used as a value");
+
+            var (unitNeg2, _) = BindUnit(
+                "namespace ns\n" +
+                "class Box {\n" +
+                "    pub var field: i32\n" +
+                "    pub init() { field = 0 }\n" +
+                "}\n" +
+                "pub func make(): Box { return new Box() }\n",
+                "func f(): i32 { return ns.make().nope }\n");
+            TestHarness.CheckSemanticError("调用后未知成员", unitNeg2.Diagnostics,
+                "Undefined member 'nope'");
+
+            var (unitNeg3, _) = BindUnit(
+                "namespace ns\n" +
+                "pub func voidMake() { }\n",
+                "func f() { var x = ns.voidMake().field }\n");
+            TestHarness.CheckSemanticError("void 调用不能作 receiver", unitNeg3.Diagnostics,
+                "has no result (void) and cannot be used as a value");
         }
 
         // ===== 泛型基类成员查找（构造类型 BaseType 回填的 P3 端到端验证：

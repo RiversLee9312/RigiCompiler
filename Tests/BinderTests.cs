@@ -50,6 +50,7 @@ namespace LatteCompiler.Tests
             TestLoopControl();
             TestInstanceMembers();
             TestIndexAccess();
+            TestContainerCallSuffixChain();
             TestForLoops();
             TestSwitch();
             TestThrow();
@@ -68,6 +69,7 @@ namespace LatteCompiler.Tests
             TestAccessControl();
             TestAccessors();
             TestOverride();
+            TestSuperCalls();
             TestConversionOperators();
             TestAsyncGates();
             TestAsyncResultTypes();
@@ -76,6 +78,7 @@ namespace LatteCompiler.Tests
             TestOperatorNameCalls();
             TestGenericFunctionBody();
             TestGenericBaseClassMemberLookup();
+            TestGenericVarianceAssignability();
             TestCallFixes();
             TestGateFixes();
             TestFlowFixes();

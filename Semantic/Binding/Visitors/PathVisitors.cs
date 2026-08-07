@@ -10,7 +10,8 @@ namespace LatteCompiler
     // 首段非值且首个后缀是 Call → 调用结果底座（foo().c / foo()[0] /
     // foo()?.bar）；否则容器路径（末段成员后缀折叠，Type.staticField[0] /
     // ns.field[i]；S11 起 Colon 段切分——Type.staticField:W 交实例链；
-    // 中间段带后缀保持归口）。自旧 BindSession.BindPath 等
+    // 容器成员段 Call 后缀后交实例链——ns.make().field / Type.make()[0]；
+    // 中间 Index/Colon 仍归口）。自旧 BindSession.BindPath 等
     // 迁移；S8c 解开原表达式底座/索引/后缀链的 S8 归口拦截。
 
     // 路径表达式值绑定（分派器入口；forAssignment = false）。
@@ -114,6 +115,15 @@ namespace LatteCompiler
             {
                 return BindSelfPath(node, scope, ctx, env, forAssignment);
             }
+            // 先拦截链式/非调用 super；合法的单段 Call 留给 CallFacility 的
+            // 语境与直接基类重载解析。
+            if (node.Head.Name == "super" && (node.Segments.Count != 0
+                || node.Head.Suffixes.Count != 1
+                || node.Head.Suffixes[0].Kind != PathSuffixKind.Call))
+            {
+                env.Error(node.Span, "P3: 'super' must be used only as super(...)");
+                return null;
+            }
             // 纯调用形态 → 直接调用（静态/全局）或实例调用（首段为值）。
             // S9b：显式泛型实参随调用形态提取（CallForm out 参数）
             if (CallForm.TryGet(node, out var calleeSegments, out var callArguments,
@@ -135,6 +145,16 @@ namespace LatteCompiler
                         binding.ResultType!,
                         forwardedGenericPacks: binding.ForwardedGenericPacks);
                 }
+                if (binding.IsSuperCall)
+                {
+                    if (binding.IsVoid)
+                    {
+                        env.Error(node.Span, "Method 'super' has no result (void) and cannot be used as a value");
+                        return null;
+                    }
+                    return new BoundSuperCallExpression(node, binding.Method, binding.Arguments,
+                        binding.ResultType!, binding.TypeArguments, binding.GenericPack);
+                }
                 // S10：async 无结果调用有 Task 值（ResultType 非空）——仅
                 // 真 void（ResultType == null）拒绝作值
                 if (binding.ResultType == null)
@@ -151,6 +171,11 @@ namespace LatteCompiler
                 }
                 return new BoundCallExpression(node, binding.Method, binding.Arguments,
                     binding.ResultType!, binding.TypeArguments, binding.GenericPack);
+            }
+            if (node.Head.Name == "super")
+            {
+                env.Error(node.Span, "P3: 'super' must be used only as super(...)");
+                return null;
             }
             // 非调用形态的泛型实参（`x\<T>` 无调用后缀/链上段带实参）——
             // S9b 仍归口（调用实参已由调用形态消费；wrapper 段带显式泛型
@@ -310,8 +335,10 @@ namespace LatteCompiler
             // 容器路径（多段）：S11 起 Colon 段切分——容器只消费到首个
             // Colon 段之前（Type.staticField:W 形态的静态字段宿主），
             // Colon 起剩余段交实例链（wrapper place 绑定与只读禁令同
-            // 实例路径一处）。首段或容器中间段带后缀保持归口；成员段
-            // 字段解析后折叠其后缀
+            // 实例路径一处）。容器成员段首后缀为 Call 时（#20②：
+            // ns.make().field / Type.make()[0].x）——调用结果作 receiver，
+            // 折叠该段剩余后缀后交实例链；无 Call 的中间 Index/其他后缀
+            // 仍归口；无后缀 ns.Foo 方法仍「不能作为值」
             var colonIndex = -1;
             for (int i = 0; i < node.Segments.Count; i++)
             {
@@ -329,11 +356,36 @@ namespace LatteCompiler
                     $"Wrapper place ':{node.Segments[0].Name}' requires a value host");
                 return null;
             }
-            if (node.Head.Suffixes.Count > 0
-                || node.Segments.Take(memberIndex).Any(s => s.Suffixes.Count > 0))
+            // 首段后缀：Call 已在上方「调用结果底座」分支处理；此处多段
+            // 容器上的 Index/其他仍归口
+            if (node.Head.Suffixes.Count > 0)
             {
                 env.Error(node.Span, "P3: instance member access is not supported yet (S8)");
                 return null;
+            }
+            // 扫描容器段（至 memberIndex）：首个 Call 后缀段为值转换点；
+            // 其前不得有任何后缀（中间 Index 等保持归口）
+            var callSegIndex = -1;
+            for (int i = 0; i <= memberIndex; i++)
+            {
+                var seg = node.Segments[i];
+                if (seg.Suffixes.Count == 0) continue;
+                if (seg.Suffixes[0].Kind == PathSuffixKind.Call)
+                {
+                    callSegIndex = i;
+                    break;
+                }
+                if (i < memberIndex)
+                {
+                    env.Error(node.Span, "P3: instance member access is not supported yet (S8)");
+                    return null;
+                }
+                // i == memberIndex 且首后缀非 Call（字段后索引等）→ 下方字段路径
+                break;
+            }
+            if (callSegIndex >= 0)
+            {
+                return BindContainerCallChain(node, callSegIndex, scope, ctx, env, forAssignment);
             }
             // 容器部分段名序列（首段名 + 成员前各段名；Colon 起段不属容器）
             var segments = new List<string> { node.Head.Name! };
@@ -366,6 +418,76 @@ namespace LatteCompiler
                 default:
                     return ErrorAndNull(env, node.Span, $"'{pathText}' cannot be used as a value");
             }
+        }
+
+        // 容器路径上成员段 Call 后缀（#20②）：`ns.make().field` /
+        // `Type.factory()[0].x`——CallFacility 绑定调用（与纯调用形态同池），
+        // 调用结果作 receiver，折叠该段剩余后缀后 BindInstanceChain 续链。
+        // void 调用不能作值/receiver
+        private static BoundExpression? BindContainerCallChain(PathExpressionASTNode node,
+            int callSegIndex, Scope scope, BindContext ctx, BindEnvironment env, bool forAssignment)
+        {
+            var callSeg = node.Segments[callSegIndex];
+            var calleeSegments = new List<string> { node.Head.Name! };
+            for (int i = 0; i <= callSegIndex; i++)
+            {
+                calleeSegments.Add(node.Segments[i].Name);
+            }
+            var binding = CallFacility.BindCall(node, calleeSegments, callSeg.Suffixes[0].Arguments!,
+                scope, ctx, env,
+                callSeg.GenericArguments.Count > 0 ? callSeg.GenericArguments : null);
+            if (binding == null) return null;
+            if (binding.IsInnerCall)
+            {
+                if (binding.IsVoid)
+                {
+                    env.Error(node.Span, "Method 'inner' has no result (void) " +
+                        "and cannot be used as a value");
+                    return null;
+                }
+                BoundExpression innerValue = new BoundInnerCallExpression(node, binding.Arguments,
+                    binding.ResultType!,
+                    forwardedGenericPacks: binding.ForwardedGenericPacks);
+                var afterInner = node.Segments.Skip(callSegIndex + 1).ToList();
+                var foldedInner = FoldSuffixes(node, innerValue, callSeg.Suffixes, 1,
+                    forAssignment && afterInner.Count == 0, scope, ctx, env);
+                if (foldedInner == null) return null;
+                return BindInstanceChain(node, foldedInner, afterInner, scope, ctx, env,
+                    forAssignment);
+            }
+            if (binding.IsSuperCall)
+            {
+                if (binding.IsVoid)
+                {
+                    env.Error(node.Span, "Method 'super' has no result (void) and cannot be used as a value");
+                    return null;
+                }
+                BoundExpression superValue = new BoundSuperCallExpression(node, binding.Method,
+                    binding.Arguments, binding.ResultType!, binding.TypeArguments, binding.GenericPack);
+                var afterSuper = node.Segments.Skip(callSegIndex + 1).ToList();
+                var foldedSuper = FoldSuffixes(node, superValue, callSeg.Suffixes, 1,
+                    forAssignment && afterSuper.Count == 0, scope, ctx, env);
+                if (foldedSuper == null) return null;
+                return BindInstanceChain(node, foldedSuper, afterSuper, scope, ctx, env, forAssignment);
+            }
+            // S10：async 无结果调用有 Task 值——仅真 void 拒绝
+            if (binding.ResultType == null)
+            {
+                env.Error(node.Span, $"Method '{binding.Method.Name}' has no result (void) " +
+                    "and cannot be used as a value");
+                return null;
+            }
+            BoundExpression callValue = binding.Receiver != null
+                ? new BoundInstanceCallExpression(node, binding.Receiver, binding.Method,
+                    binding.Arguments, binding.ResultType!, binding.TypeArguments,
+                    binding.GenericPack)
+                : new BoundCallExpression(node, binding.Method, binding.Arguments,
+                    binding.ResultType!, binding.TypeArguments, binding.GenericPack);
+            var afterCall = node.Segments.Skip(callSegIndex + 1).ToList();
+            var foldedCall = FoldSuffixes(node, callValue, callSeg.Suffixes, 1,
+                forAssignment && afterCall.Count == 0, scope, ctx, env);
+            if (foldedCall == null) return null;
+            return BindInstanceChain(node, foldedCall, afterCall, scope, ctx, env, forAssignment);
         }
 
         // 字段引用上色（迁移自旧 BindSession.BindFieldReference，行为不变）：

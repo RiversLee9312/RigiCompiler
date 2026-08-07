@@ -232,8 +232,9 @@ namespace LatteCompiler
         // 有无函数体（P1 建壳即定；OverrideChecker 判定接口默认实现与无体方法，
         // 访问器符号恒 false——自动访问器体由 P3 合成，不经本标记）
         public bool HasBody { get; internal set; }
-        // 继承多态三标记（SYNTAX §9.2/§9.2.1；P2 EntryCollector 读声明修饰符写入，
-        // OverrideChecker 消费；仅 Regular 成员方法可置位，其余 Kind 恒 false）
+        // 继承多态标记（SYNTAX §9.2/§9.2.1；P2 EntryCollector/AccessorChecker
+        // 读声明修饰符写入，OverrideChecker 消费）。普通方法与 getter/setter
+        // 均可使用 IsOpen/IsOverride；IsAbstract 仍仅用于普通方法。
         public bool IsOpen { get; internal set; }
         public bool IsAbstract { get; internal set; }
         public bool IsOverride { get; internal set; }
@@ -412,15 +413,19 @@ namespace LatteCompiler
 
     public sealed class GenericParameterSymbol : SemanticSymbol
     {
+        // 类型声明泛型参数的型变方向（函数泛型参数必须保持 invariant）。
+        public GenericVariance Variance { get; }
         // 位置可变（TArgs...）/ 具名可变（named TArgs...）泛型参数（P1 读标记位）
         public bool IsVariadic { get; }
         public bool IsNamedVariadic { get; }
         // 约束子句（extends/supers/with；P2 解析填充；声明顺序）
         public List<GenericConstraintInfo> Constraints { get; } = new List<GenericConstraintInfo>();
 
-        public GenericParameterSymbol(string name, bool isVariadic = false, bool isNamedVariadic = false)
+        public GenericParameterSymbol(string name, bool isVariadic = false,
+            bool isNamedVariadic = false, GenericVariance variance = GenericVariance.None)
             : base(name)
         {
+            Variance = variance;
             IsVariadic = isVariadic;
             IsNamedVariadic = isNamedVariadic;
         }

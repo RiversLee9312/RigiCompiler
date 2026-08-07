@@ -66,6 +66,7 @@ namespace LatteCompiler
                 BoundThisExpression => ThisRewriter.Visit(expression, ctx, env),
                 BoundSelfExpression => SelfRewriter.Visit(expression, ctx, env),
                 BoundInnerCallExpression => InnerCallRewriter.Visit(expression, ctx, env),
+                BoundSuperCallExpression => SuperCallRewriter.Visit(expression, ctx, env),
                 BoundInstanceCallExpression => InstanceCallRewriter.Visit(expression, ctx, env),
                 BoundFieldAccessExpression => FieldAccessRewriter.Visit(expression, ctx, env),
                 BoundIndexExpression => IndexRewriter.Visit(expression, ctx, env),
@@ -80,8 +81,9 @@ namespace LatteCompiler
                 BoundNullFallbackExpression => NullFallbackRewriter.Visit(expression, ctx, env),
                 BoundSeqExpression => SeqExpressionRewriter.Visit(expression, ctx, env),
                 // S11c：wrapper place 只作成员访问接收者——字段读/方法调用/
-                // 索引读/字段写/复合赋值由各消费方 rewriter 拦截（get.wrapper
-                // 值拷贝与 get/set.field.embedded 链，WrapperPlaceLowering）；
+                // 索引读/字段写/复合赋值由各消费方 rewriter 拦截（get.wrapper/
+                // get.wrapper.field 值拷贝 + 普通 get.field 与 set.wrapper.field
+                // 写链，WrapperPlaceLowering）；
                 // 裸 place 到达此处即 P3 不变量被破坏，防御性归口
                 BoundWrapperAccessExpression => Unsupported(expression, env,
                     "P4: bare wrapper place reached lowering (only valid as a member access receiver)"),

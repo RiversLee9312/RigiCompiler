@@ -299,4 +299,174 @@ namespace LatteCompiler
             }
         }
     }
+
+    // ===== wrapper 继承闭包检查 =====
+    //
+    // wrapper 应用是声明列表语义，不是隐式传染：子声明必须把继承闭包中
+    // 的应用按原相对顺序重新写出。这里只比较 WrapperDefinition 身份和
+    // 注解实参结构；额外应用允许，重复路径按定义级身份去重。
+    internal sealed class WrapperInheritanceChecker : ResolverVisitor<WrapperInheritanceChecker>
+    {
+        protected override void VisitCore(ResolveEnvironment env)
+        {
+            foreach (var entry in env.TypeEntries)
+            {
+                if (!entry.InGraph || entry.Symbol is not TypeSymbol type || type.IsBuiltin) continue;
+                CheckList(entry, type.AppliedWrappers,
+                    InheritedEntityWrappers(type, env), "Entity", env);
+            }
+
+            foreach (var entry in env.Entries)
+            {
+                if (!entry.InGraph || entry.DeclaringType == null) continue;
+                if (entry.Symbol is MethodSymbol { Kind: MethodKind.Regular, IsOverride: true } method)
+                {
+                    var inherited = OverrideChecker.InheritedMethodsForWrapper(
+                        entry.DeclaringType, method, env)
+                        .SelectMany(m => m.AppliedWrappers);
+                    CheckList(entry, method.AppliedWrappers, inherited, "Method", env);
+                }
+                else if (entry.Symbol is FieldSymbol field
+                    && entry.Node is VariableDeclarationASTNode)
+                {
+                    var inherited = new List<WrapperApplication>();
+                    if (field.Getter?.IsOverride == true)
+                    {
+                        inherited.AddRange(OverrideChecker.InheritedFieldsForAccessor(
+                            entry.DeclaringType, field.Getter, env)
+                            .SelectMany(f => f.AppliedWrappers));
+                    }
+                    if (field.Setter?.IsOverride == true)
+                    {
+                        inherited.AddRange(OverrideChecker.InheritedFieldsForAccessor(
+                            entry.DeclaringType, field.Setter, env)
+                            .SelectMany(f => f.AppliedWrappers));
+                    }
+                    if (inherited.Count > 0)
+                    {
+                        // getter/setter wrapper 应用挂在同一个字段声明上；同一字段
+                        // 的两个访问器只检查一次，避免同一缺失应用产生重复诊断。
+                        CheckList(entry, field.AppliedWrappers, inherited, "Accessor", env);
+                    }
+                }
+            }
+        }
+
+        private static void CheckList(DeclEntry entry, IReadOnlyList<WrapperApplication> actual,
+            IEnumerable<WrapperApplication> inherited, string category, ResolveEnvironment env)
+        {
+            var required = inherited
+                .GroupBy(a => a.WrapperDefinition, ReferenceEqualityComparer.Instance)
+                .Select(group => group.First())
+                .ToList();
+            var positions = new List<int>();
+            foreach (var expected in required)
+            {
+                var expectedDefinition = expected.WrapperDefinition;
+                var matches = actual
+                    .Select((application, index) => (application, index))
+                    .Where(pair => ReferenceEquals(pair.application.WrapperDefinition, expectedDefinition))
+                    .ToList();
+                if (matches.Count == 0)
+                {
+                    env.Error(entry.Node.Span,
+                        $"{category} wrapper '{expectedDefinition.Name}' inherited by '{entry.Symbol.Name}' " +
+                        "must be explicitly redeclared");
+                    continue;
+                }
+                var matchingParameters = matches.FirstOrDefault(pair =>
+                    WrapperArgumentKey(pair.application.Syntax) == WrapperArgumentKey(expected.Syntax));
+                if (matchingParameters.application == null)
+                {
+                    env.Error(entry.Node.Span,
+                        $"{category} wrapper '{expectedDefinition.Name}' has conflicting arguments in redeclaration");
+                }
+                positions.Add(matchingParameters.application != null
+                    ? matchingParameters.index
+                    : matches[0].index);
+            }
+            if (positions.Zip(positions.Skip(1), (left, right) => left > right).Any(x => x))
+            {
+                env.Error(entry.Node.Span,
+                    $"{category} wrapper redeclarations cannot reorder inherited wrappers");
+            }
+        }
+
+        private static List<WrapperApplication> InheritedEntityWrappers(TypeSymbol host,
+            ResolveEnvironment env)
+        {
+            var result = new List<WrapperApplication>();
+            var visited = new HashSet<TypeSymbol>(ReferenceEqualityComparer.Instance);
+            if (host.BaseType != null) CollectType(host.BaseType, host, result, visited, env);
+            foreach (var iface in host.Interfaces)
+                CollectType(iface, host, result, visited, env);
+            return result;
+        }
+
+        private static void CollectType(TypeSymbol type, TypeSymbol target,
+            List<WrapperApplication> result, HashSet<TypeSymbol> visited, ResolveEnvironment env)
+        {
+            var definition = type.ConstructedFrom ?? type;
+            if (!visited.Add(definition)) return;
+            if (type.BaseType != null) CollectType(type.BaseType, target, result, visited, env);
+            foreach (var iface in type.Interfaces)
+            {
+                var next = ReferenceEquals(definition, type)
+                    ? iface
+                    : (TypeSymbol)(env.Substitute(iface, definition, type) ?? iface);
+                CollectType(next, target, result, visited, env);
+            }
+            foreach (var application in definition.AppliedWrappers)
+            {
+                result.Add(NormalizeEntityApplication(application, target, env));
+            }
+        }
+
+        private static WrapperApplication NormalizeEntityApplication(WrapperApplication application,
+            TypeSymbol target, ResolveEnvironment env)
+        {
+            var definition = application.WrapperDefinition;
+            if (definition.WrapperTarget == WrapperTargetKind.Entity
+                && definition.GenericParameters.Count == 1)
+            {
+                return new WrapperApplication(
+                    env.Unit.Symbols.GetConstructedType(definition, target), application.Syntax);
+            }
+            return application;
+        }
+
+        private static string WrapperArgumentKey(AnnotationASTNode? annotation)
+        {
+            if (annotation == null) return "<constraint>";
+            return string.Join(";", annotation.Arguments.Select(a =>
+                (a.Name ?? "_") + "=" + ExpressionKey(a.Value.Expression)));
+        }
+
+        private static string ExpressionKey(ExpressionASTNode expression)
+        {
+            return expression switch
+            {
+                LiteralExpressionASTNode literal => LiteralKey(literal.Literal),
+                PathExpressionASTNode path => "path:" + path.Head.Name +
+                    string.Join("", path.Segments.Select(s => "." + s.Name)),
+                EnumCaseExpressionASTNode e => "case:" + e.CaseName,
+                UnaryExpressionASTNode unary => "unary:" + unary.Operator + "(" +
+                    ExpressionKey(unary.Operand.Expression) + ")",
+                BinaryExpressionASTNode binary => "binary:" + binary.Operator + "(" +
+                    ExpressionKey(binary.Left.Expression) + "," + ExpressionKey(binary.Right.Expression) + ")",
+                _ => expression.GetType().FullName ?? expression.GetType().Name,
+            };
+        }
+
+        private static string LiteralKey(LiteralASTNode literal) => literal switch
+        {
+            IntLiteralASTNode i => $"i:{i.IntType}:{i.Value}",
+            FloatLiteralASTNode f => $"f:{f.IsFloat}:{f.Value:R}",
+            StringLiteralASTNode s => "s:" + s.Value,
+            CharLiteralASTNode c => "c:" + c.Value,
+            BoolLiteralASTNode b => "b:" + b.Value,
+            NullLiteralASTNode => "null",
+            _ => literal.GetType().FullName ?? literal.GetType().Name,
+        };
+    }
 }

@@ -232,6 +232,14 @@ namespace LatteCompiler
                             isVoid: binding.IsVoid,
                             forwardedGenericPacks: binding.ForwardedGenericPacks));
                 }
+                if (binding.IsSuperCall)
+                {
+                    var superType = binding.ResultType ?? env.B.Any;
+                    return new BoundExpressionStatement(stmt,
+                        new BoundSuperCallExpression(path, binding.Method, binding.Arguments,
+                            superType, binding.TypeArguments, binding.GenericPack,
+                            isVoid: binding.IsVoid));
+                }
                 if (binding.IsVoid)
                 {
                     return new BoundCallStatement(stmt, binding.Method, binding.Arguments,

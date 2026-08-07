@@ -26,6 +26,7 @@ namespace LatteCompiler
         public SemanticSymbol? ResultType;
         // M88：inner(...) 模板占位
         public bool IsInnerCall;
+        public bool IsSuperCall;
         // #27⑦：inner 待转发的可变泛型包（仅 IsInnerCall；固定泛型不入列）
         public IReadOnlyList<GenericParameterSymbol> ForwardedGenericPacks =
             Array.Empty<GenericParameterSymbol>();
@@ -132,6 +133,10 @@ namespace LatteCompiler
             if (calleeSegments.Count == 1 && calleeSegments[0] == "inner")
             {
                 return BindInnerCall(node, arguments, scope, ctx, env);
+            }
+            if (calleeSegments.Count == 1 && calleeSegments[0] == "super")
+            {
+                return BindSuperCall(node, arguments, scope, ctx, env, genericArguments);
             }
             // 多段首段为值（局部/参数）→ 实例调用形态（S7c-2）
             if (calleeSegments.Count > 1
@@ -361,8 +366,12 @@ namespace LatteCompiler
                         $"'{BoundAnalysis.TypeDisplay(receiver.Type)}'");
                     return null;
                 }
+                var downgradeTypeArgs = genericArguments == null
+                    ? Array.Empty<SemanticSymbol>()
+                    : ResolveGenericArguments(genericArguments, node, ctx, env);
+                if (downgradeTypeArgs == null) return null;
                 return BindDowngradeCall(node, receiver, receiverType, name, arguments,
-                    scope, ctx, env);
+                    downgradeTypeArgs, scope, ctx, env);
             }
             // 使用点访问控制（S8e，SYNTAX §16.1）：同 ResolveCallee 口径
             var accessible = candidates.Where(ctx.Frame.CanAccess).ToList();
@@ -462,6 +471,75 @@ namespace LatteCompiler
             };
         }
 
+        // super(...) 仅绑定直接基类原始实现；访问控制和 wrapper 派发均不参与。
+        private static CallBinding? BindSuperCall(ASTNode node, List<ArgumentASTNode> arguments,
+            Scope scope, BindContext ctx, BindEnvironment env,
+            List<TypeReferenceASTNode>? genericArguments)
+        {
+            var current = ctx.Frame.Method;
+            if (genericArguments != null)
+            {
+                env.Error(node.Span, "P3: super(...) does not accept explicit type arguments");
+                return null;
+            }
+            if (ctx.Proxy.IsActive)
+            {
+                env.Error(node.Span, "P3: super(...) is not available in a wrapper proxy body");
+                return null;
+            }
+            if (current.Owner == null || current.IsStatic)
+            {
+                env.Error(node.Span, "P3: super(...) is only available in an instance member body");
+                return null;
+            }
+            if (current.Kind != MethodKind.Init
+                && (current.Kind != MethodKind.Regular || !current.IsOverride))
+            {
+                env.Error(node.Span,
+                    "P3: super(...) is only available in an override method or init body");
+                return null;
+            }
+            var baseType = current.Owner.BaseType;
+            if (baseType == null)
+            {
+                env.Error(node.Span, "P3: super(...) requires a direct base type");
+                return null;
+            }
+            if (current.GenericParameters.Any(p => p.IsVariadic || p.IsNamedVariadic))
+            {
+                env.Error(node.Span,
+                    "P3: super(...) in a method with generic variadic parameters is not supported yet");
+                return null;
+            }
+            var baseDefinition = baseType.ConstructedFrom ?? baseType;
+            var candidates = baseDefinition.Methods.Where(method => current.Kind == MethodKind.Init
+                ? method.Kind == MethodKind.Init
+                : method.Kind == MethodKind.Regular && !method.IsStatic && method.Name == current.Name)
+                .ToList();
+            if (candidates.Count == 0)
+            {
+                env.Error(node.Span, current.Kind == MethodKind.Init
+                    ? "P3: direct base type has no applicable init for super(...)"
+                    : $"P3: direct base type has no method '{current.Name}' for super(...)");
+                return null;
+            }
+            var forwardedTypeArgs = current.GenericParameters.Cast<SemanticSymbol>().ToList();
+            var resolved = OverloadResolution.Resolve(node, candidates, arguments, scope, ctx, env,
+                forwardedTypeArgs.Count == 0 ? null : forwardedTypeArgs, receiverType: baseType);
+            if (resolved == null) return null;
+            return new CallBinding
+            {
+                Method = resolved.Value.Method,
+                Arguments = resolved.Value.Arguments,
+                IsVoid = resolved.Value.ReturnType == null,
+                Receiver = null,
+                TypeArguments = forwardedTypeArgs,
+                GenericPack = resolved.Value.GenericPack,
+                ResultType = resolved.Value.ReturnType,
+                IsSuperCall = true,
+            };
+        }
+
         // inner 实参形状：个数一致；具名按名归位；类型兼容（无目标预绑
         // 产物 vs 形参类型）。wildcard 形参类型常为泛型参数（TNamedArgs 等）
         // 或可变参数包——体内引用视角是 Array 包（VariadicParameterViewType），
@@ -523,7 +601,8 @@ namespace LatteCompiler
         // 返回值恒 Any——调用点转换由 P4a §6.5 物化承担
         private static CallBinding? BindDowngradeCall(ASTNode node, BoundExpression receiver,
             TypeSymbol receiverType, string name,
-            List<ArgumentASTNode> arguments, Scope scope, BindContext ctx, BindEnvironment env)
+            List<ArgumentASTNode> arguments, IReadOnlyList<SemanticSymbol> typeArguments,
+            Scope scope, BindContext ctx, BindEnvironment env)
         {
             env.B.EnsureCallWildcard(env.Unit.Symbols);
             var callWildcard = env.B.CallWildcard;
@@ -551,7 +630,8 @@ namespace LatteCompiler
                 }
             }
             var symbolLit = BindingDriver.MakeStringLiteral(env,
-                CanonicalSymbolPrinter.PrintDowngradeRequest(receiverType, name, requestArgs));
+                CanonicalSymbolPrinter.PrintDowngradeRequest(receiverType, name, typeArguments,
+                    requestArgs));
             var unnamedPack = new BoundVarArgsArgument(node, isNamed: false, positionalValues, null,
                 env.Unit.Symbols.GetConstructedType(env.B.ArrayDefinition, env.B.Any));
             var namedPack = new BoundVarArgsArgument(node, isNamed: true,

@@ -404,8 +404,6 @@ func dump\<TItem with Serializable>(item: TItem) { ... }
 
 ```latte
 // 型变（同 Kotlin 的 in/out）
-
-// 型变（同 Kotlin 的 in/out）
 class Producer\<out TElement> { ... }
 class Consumer\<in TElement> { ... }
 
@@ -414,6 +412,19 @@ func create\<TResult>(): TResult {
     return TResult()
 }
 ```
+
+型变只适用于 class、interface、struct、enum struct 和 wrapper 的类型泛型参数；
+函数、方法和 operator 的泛型参数必须使用默认 invariant。类型声明中的使用位置按
+读写方向检查：
+
+- `out T` 只能出现在结果位置、getter 返回值、`const` 字段以及 covariant 泛型
+  实参中；方法参数、setter 参数、可变字段和 invariant 泛型实参中出现均为编译错误。
+- `in T` 只能出现在方法参数、setter 参数以及 contravariant 泛型实参中；方法返回值、
+  getter 返回值、字段和 invariant 泛型实参中出现均为编译错误。
+- 同时存在 getter/setter 的字段是 invariant；普通 `var` 字段也是 invariant。
+- 构造泛型类型之间的赋值遵循声明处方向：`Producer<Dog>` 可赋给
+  `Producer<Animal>`，`Consumer<Animal>` 可赋给 `Consumer<Dog>`；未标注型变的
+  泛型类型要求实参严格相同。型变递归穿透嵌套构造类型，但遇 invariant 参数即停止。
 
 ### 3.7 运行时类型与反射（`typeOf` / `Type\<T>` / `new` / `with`）
 
@@ -1050,7 +1061,7 @@ pub open class Exception { ... }   // 概念形态；实际声明在编译器 bo
 | `core.CastException` | `as`/`as?`/nullable 展开等类型转换失败（BIL §12.1） |
 | `core.NoSuchMethodException` | 运行期 init 重载解析失败与 wrapper 派发失败（§10/§14.6） |
 
-每个子类**自持**显式 init（异常根不写 init，无 super 构造调用语法——字段由子类 init 直接赋值继承字段）：
+每个子类**自持**显式 init（异常根不写 init；需要时 init 体可选调用 `super(...)`，字段也可直接赋值继承字段）：
 
 ```latte
 pub open class IOException : core.Exception {
@@ -1117,11 +1128,17 @@ pub shared class SharedSession {
 
 #### 9.2.1 `override` 配套规则
 
-- `open`/`abstract`/`override` 仅适用于普通成员方法；字段、`init`、operator、getter/setter 与 `static` 方法上使用即编译错误（静态无多态）。接口成员天然可覆写，接口内写 `open`/`abstract` 为冗余错误。
+- `open`/`override` 也适用于非 static 成员 getter/setter，且 getter 与 setter 分别是独立的多态单元；字段本身、全局访问器和 static 访问器不接受这两个修饰符。`abstract` 仍仅适用于普通成员方法；`init`、operator 与 `static` 方法不参与多态。
 - `override` 必须在基类链或接口表中找到签名匹配（名称 + 参数类型序列 + 返回类型均严格相等）的 `open`/`abstract` 方法或接口成员；找不到、或目标非 `open`/`abstract`，均为编译错误。
 - 与继承成员同名同签名的成员必须显式 `override`（禁止静默隐藏）。
 - `abstract` 方法必须位于 `abstract` 类内；接口之外的无体方法必须标 `abstract` 或 `native`。
 - 非 `abstract` 类必须实现继承链上全部 `abstract` 成员与无体接口成员（有默认实现的接口成员隐式继承；§11 的显式委托语法 `override func m() -> InterfaceName` 暂未实现）；`new` 一个 `abstract` 类是编译错误。
+
+#### 9.2.2 `super(...)`
+
+`super(...)` 是保留调用名，只能写成调用，不能作为值、不能链式访问（没有 `super.run(...)`）。在 regular 方法中，它仅允许出现在当前 `override` 方法体内，并在**直接基类**的同名实例 regular 方法重载中按普通重载规则选择；不再次按可见性过滤候选。init 体也可选调用 `super(...)`，候选仅为直接基类 init 重载，不要求调用或限制调用次数。static/global/proxy 体及非 override regular 方法中均非法。
+
+override 方法的固定泛型参数按当前声明序隐式转发，源码调用点不写显式泛型；含泛型可变参数包的 super 转发当前归口为编译错误。`super` 绕过 wrapper 派发链，BIL 只生成 `fn(..super)`（§15.5）。
 
 ### 9.3 构造函数（`init`）
 
@@ -1187,7 +1204,7 @@ pub func example() {
 
 #### 9.4.1 绑定语义
 
-- 访问器上的修饰符仅允许访问级别（`pub`/`protected`/`internal`/`priv`）；访问器的可见性 = 访问器显式修饰 ?? 字段声明的访问级别 ?? private。
+- 访问器上的修饰符允许访问级别以及 `open`/`override`；访问器的可见性 = 访问器显式修饰 ?? 字段声明的访问级别 ?? private。`open` 与 `override` 互斥，getter/setter 分别检查继承目标。接口不能声明字段或属性访问器。
 - **backing 形态**（`value: _`）：编译器生成隐藏 backing 存储（永为私有，用户不可直接访问）；访问器体内 `value` 是 backing 的别名——getter 体内只读、setter 体内可读写。setter 语义 = 进入时隐含 `backing = value`（`value` 即新值），随后执行体；体可改写 `value`（即改写 backing），用于钳制、通知等场景。
 - **自动访问器**（无体，如 `pub get` / `priv set`）：编译器合成实现——getter 为 `return value`，setter 为空体（隐式 `backing = value` 已足）。无体 + 计算形态（无 backing）是编译错误（编译器无法生成计算实现）。
 - `const` 字段不得声明 setter。仅声明 get 的字段不可写、仅声明 set 的字段不可读；访问器自身的可见性在读写使用点分别检查。
@@ -1732,7 +1749,7 @@ wrapper place 的接收者来源有三：字段/局部变量的应用（`@W` 标
 - **同一 wrapper 内**：匹配的 specific proxy 优先于对应类别的 wildcard proxy；二者是择一关系，不会在同一 wrapper 层同时执行。
 - **同一 wrapper 内**：普通方法、getter、setter、operator 四个类别分别最多存在一个 wildcard proxy，因此不存在同类别 wildcard 的重叠、排序或 priority。
 - specific proxy 或 wildcard proxy 调用 `inner(...)` 后，下一层 wrapper 独立重复同一套 specific → wildcard → 实体成员/下一层的选择。
-- **`inner(...)` 源码形态不变**：只写值实参（含对 vargs/kwargs 包参数的具名/位置转发）。模板 fn 上的可变泛型包（`TNamedArgs...` / `TUnnamedArgs...` 等）由编译器在 Bound/Lowered 层显式携带，并在 BIL `call.inner` 中按 §7.2 序**前置**为 `.generic.<Pack>` 操作数（值包随后）；包解包与下一环烘焙归 Middleware（见 `BIL_STANDARD.md` §15.4）。固定泛型参数不出现在 `call.inner` 操作数列表中。
+- **`inner(...)` 源码形态不变**：只写值实参（含对 vargs/kwargs 包参数的具名/位置转发）。模板 fn 上的可变泛型包（`TNamedArgs...` / `TUnnamedArgs...` 等）由编译器在 Bound/Lowered 层显式携带，并在 BIL `invoke fn(..inner)` 中按 §7.2 序**前置**为 `.generic.<Pack>` 操作数（值包随后）；包解包与下一环烘焙归 Middleware（见 `BIL_STANDARD.md` §15.4）。固定泛型参数不出现在该调用操作数列表中。
 
 `@ProxyPriority` 不再存在；编译器不进行 wildcard pattern 重叠分析，也不维护任何用户指定的数值优先级。
 
@@ -1788,7 +1805,7 @@ setter：
 
 这些以 `.` 开头的名称由编译器保留，普通源码参数不能声明同名标识符。canonical symbol 连同 hidden arguments 完整描述本次调用的类别、声明位置、static 属性、参数类型、泛型实参和返回类型；具体 Native 路由见 `RUNTIME.md` §14。
 
-未声明方法的降级请求（§14.7）没有声明位置与参数名可编码，其 symbol 由调用点合成（M86 定稿）：宿主前缀取 receiver 静态类型的定义级 canonical 名；参数段按调用点书写序——位置实参只写静态类型、具名实参写 `名:类型`；返回段恒为 `.any`（胖值 ABI 返回 `Any`，向期望类型的转换在调用点由编译器插入一次 cast，不符抛 `core.CastException`，见 `RUNTIME.md` §14.2）。例如 `service.fetchUserById(42)`（`service` 静态类型 `myapp::Service`）的请求 symbol 为 `myapp::Service$fetchUserById(.i32)@.any`。
+未声明方法的降级请求（§14.7）没有声明位置与参数名可编码，其 symbol 由调用点合成（M86 定稿，M92 补齐显式泛型实参）：宿主前缀取 receiver 静态类型的定义级 canonical 名；若调用点存在显式泛型实参，则按书写序以 canonical 类型引用编码在方法名后的 `<...>` 段，无显式泛型实参时省略该段；参数段按调用点书写序——位置实参只写静态类型、具名实参写 `名:类型`；返回段恒为 `.any`（胖值 ABI 返回 `Any`，向期望类型的转换在调用点由编译器插入一次 cast，不符抛 `core.CastException`，见 `RUNTIME.md` §14.2）。例如 `service.fetchUserById(42)`（`service` 静态类型 `myapp::Service`）的请求 symbol 为 `myapp::Service$fetchUserById(.i32)@.any`；`service.fetchUserById\<i32, String>(42)` 则为 `myapp::Service$fetchUserById<.i32,.string>(.i32)@.any`。
 
 ### 14.9 wrapper 的 `rich`/`shared` 规则与目标矩阵
 
@@ -1827,6 +1844,12 @@ setter：
 - 被**非 shared** wrapper 修饰的 interface **不得被 shared 类型实现**（否则 shared 实现者会获得一个可能持有 local object 的隐藏存储）。
 
 这两条在实现者声明处检查并报错，而不是在 interface 声明处。
+
+**wrapper 继承闭包**：wrapper 应用不是隐式传染，而是声明列表语义。子类型、子接口
+以及 override 的普通方法和 getter/setter 必须在自己的声明处显式重复继承闭包中的
+wrapper 应用；闭包沿间接基类和 interface 继续展开。重复声明必须保持 wrapper 定义、
+应用实参和相对顺序一致，不能删除、替换或重排；额外 wrapper 可以追加。getter/setter
+的应用挂在其字段声明上，getter 与 setter 的 override 检查分别进行。
 
 ---
 
@@ -1954,7 +1977,7 @@ var (key, value) = pair   // pair 必须为 core.Pair\<TKey, TValue> 的子类
 `if`, `else`, `switch`, `default`, `for`, `in`, `to`, `while`, `do`, `break`, `continue`, `return`, `yield`, `try`, `catch`, `finally`, `throw`
 
 ### 运算符关键字
-`and`, `or`, `not`, `is`, `supers`, `as`, `with`, `new`, `typeOf`, `await`
+`and`, `or`, `not`, `is`, `supers`, `as`, `with`, `new`, `typeOf`, `await`, `super`
 
 ### 类型关键字
 `extends`, `supers`, `implements`, `like`, `with`

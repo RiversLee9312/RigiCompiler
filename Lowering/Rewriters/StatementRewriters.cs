@@ -91,12 +91,12 @@ namespace LatteCompiler
             LowerEnvironment env)
         {
             var assignment = (BoundAssignmentStatement)node;
-            // S11c/M84：wrapper place 直接字段写入 = set.field.embedded 链
-            //（§13.3；求值序不变——BuildEmbedded 内宿主先行降级）
+            // S11c/M84：wrapper place 直接字段写入 = set.wrapper.field 链
+            //（§13.3；求值序不变——BuildWrapperFieldPlace 内宿主先行降级）
             if (WrapperPlaceLowering.DirectPlaceFieldTarget(assignment.Target)
                 is { } placeAccess)
             {
-                var writePlace = WrapperPlaceLowering.BuildEmbedded(placeAccess,
+                var writePlace = WrapperPlaceLowering.BuildWrapperFieldPlace(placeAccess,
                     (BoundWrapperAccessExpression)placeAccess.Receiver, placeAccess.Field,
                     null, ctx, env);
                 if (writePlace == null) return null;

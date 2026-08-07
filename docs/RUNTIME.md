@@ -261,6 +261,8 @@ Latte 泛型不擦除实际类型。实现采用**单份共享 Native 代码体 
 
 编译器传参形态（S9 定稿，2026-08-05，与 `BIL_STANDARD.md` §7 一致）：泛型函数的 `.args` 以 `.generic.T = .typeid` 隐藏参数承载固定泛型参数、`.generic.TArgs` 承载可变泛型包（`.array<.typeid>` / `.map<.string, .typeid>`），按 §7.2 规范序排列；调用点静态类型实参以 `getid.type` 物化 typeid（BIL §12.5），嵌套泛型调用把接收到的 `.generic.T` 隐藏参数原样转发。以 `.` 开头的隐藏参数名由编译器保留，普通源码参数不得声明同名标识符。
 
+override 中的 `super(...)` 将当前固定泛型隐藏参数按声明序转发给 `fn(..super)`，并以 `$.this` 为首参。Middleware 将其解析为直接基类原始实现；frontend 不生成 `..create`，该符号只表示 Middleware/VM 的 create 生命周期阶段。
+
 - ValueType 进入统一泛型值槽时使用 §4 的 Box 特权表示：小值内联，大值由 unique 裸数据块承载；无论哪种情况，实际 typeid 都保留。
 - Object 使用普通胖引用表示；泛型代码通过 typeid 与对象头实际 typeid 完成视图和动态类型操作。
 - 泛型字段或跨 Coroutine 边界必须对实际类型执行共享闭包检查：shared 容器只接受 shared Object、shared rich ValueType 或非 rich ValueType。
@@ -308,7 +310,7 @@ Latte 泛型不擦除实际类型。实现采用**单份共享 Native 代码体 
 **静态组合**：实体修饰器在语言语义上把 wrapper 逻辑按声明序从内到外嵌套进方法派发（替换 `inner`），因此天然骑 vtable。运行时**不能**增删、重排或禁用 wrapper。烘焙动作（逐应用特化、inner 链接、原始体替换，以及 `call???` router 体合成）由 Middleware 在合法 lowering 时完成（边界见 `BIL_STANDARD.md` §23）；frontend（编译器）产物只携带三类标记，不合成派发链符号、不替换原始方法体：
 
 - (a) 声明上的 wrapper 应用标记（BIL 修饰符）；
-- (b) proxy 模板 fn——wrapper 类型的成员 fn，带 `wrapper-proxy(specific|wildcard)` 修饰符（`BIL_STANDARD.md` §8.4），体内的 `inner` / `self` 以占位指令表达（`call.inner` 见 `BIL_STANDARD.md` §15.4，`get.self` 见 `BIL_STANDARD.md` §12）。`call.inner` 操作数显式携带待转发的可变泛型包（`.generic.<Pack>` 前置）与值包（`.kwargs.*` / `.vargs.*` 随后）；Middleware 烘焙下一环时消费这些包操作数（解包/shim/特化链接），frontend 不展开；
+- (b) proxy 模板 fn——wrapper 类型的成员 fn，带 `wrapper-proxy(specific|wildcard)` 修饰符（`BIL_STANDARD.md` §8.4），体内的 `inner` / `self` 以占位指令表达（`invoke fn(..inner)` 见 `BIL_STANDARD.md` §15.4，`get.self` 见 `BIL_STANDARD.md` §12）。`fn(..inner)` 调用操作数显式携带待转发的可变泛型包（`.generic.<Pack>` 前置）与值包（`.kwargs.*` / `.vargs.*` 随后）；Middleware 烘焙下一环时消费这些包操作数（解包/shim/特化链接），frontend 不展开；
 - (c) 未声明方法的降级调用点 = 对 `core::Any$call???` 的普通 `invoke`（见 §14.2）。
 
 最终内联仍归 Middleware。
@@ -317,7 +319,7 @@ Latte 泛型不擦除实际类型。实现采用**单份共享 Native 代码体 
 
 - 宿主类型必须允许内嵌 rich struct；非 rich struct 不能被修饰，这是编译期不变量，运行时无需检查。
 - 非 shared wrapper 可能持有 local object，所以只能出现在非 shared 宿主与栈帧中；shared wrapper 走 microSGC 路径。
-- 路径表达式 `value:WrapperType` 与 proxy 体内的 `this` 都是对该隐藏存储的**原地访问**，从不复制。源码层 `value:WrapperType` 是只读 place（`SYNTAX.md` §14.5）：既不能被整体赋值，也不能被整体取出，因此运行时不存在脱离宿主独立存活的 wrapper 值，也不为 wrapper 提供任何别名或共享机制。wrapper place 的 embedded 链指令操作数是已有两态 `field(F)|wrapper(W)`（而非编译器合成的隐藏字段符号；字段-Value 应用 = 相邻 `field(HOST_FIELD)+wrapper(W)`，Entity 应用 = `wrapper(W)`）。frontend lowering 在成员**读取**/调用/索引读路径上可经 `get.wrapper` / `get.wrapper.field` 取得**值拷贝**供后续普通指令消费（与原地写路径分离；BIL §12.4）；深层写穿由 frontend 展开为多次现有 get/set（最外层必要写回复用 `set.field.embedded`），不新增专用深写指令、也不把整条深路径压进单条超长链。
+- 路径表达式 `value:WrapperType` 与 proxy 体内的 `this` 都是对该隐藏存储的**原地访问**，从不复制。源码层 `value:WrapperType` 是只读 place（`SYNTAX.md` §14.5）：既不能被整体赋值，也不能被整体取出，因此运行时不存在脱离宿主独立存活的 wrapper 值，也不为 wrapper 提供任何别名或共享机制。wrapper place 写侧链指令操作数是已有两态 `field(F)|wrapper(W)`（而非编译器合成的隐藏字段符号；字段-Value 应用 = 相邻 `field(HOST_FIELD)+wrapper(W)`，Entity 应用 = `wrapper(W)`）。frontend lowering 在成员**读取**/调用/索引读路径上经 `get.wrapper` / `get.wrapper.field` 取得**值拷贝**，再发普通 `get.field`/`invoke`/`get.array`（与原地写路径分离；BIL §12.4）；wrapper 字段原地写走 `set.wrapper.field`；深层写穿由 frontend 展开为多次现有 get/set（最外层必要写回复用 `set.wrapper.field`，普通值中间反向写回仍发 `set.field`），不新增专用深写指令、也不把整条深路径压进单条超长链。隐藏存储不可用普通字段寻址（M88）。
 
 ### 14.1 四类唯一 wildcard proxy
 
@@ -403,6 +405,8 @@ getter / setter：
 
 泛型与可变参数被规范化为保留名称的隐藏参数：
 
+- 类型声明的 `out`/`in` 方向保留在 BIL `.type generic(...)` 元数据中；它只影响
+  构造类型的赋值兼容，不改变 hidden typeid 参数的顺序或 ABI；
 - 单个泛型 `T` → `.generic.T: Type`；
 - 匿名可变泛型 `TArgs...` → `.generic.TArgs: Array\<Type>`；
 - 具名可变泛型 `named TArgs...` → `.generic.TArgs: Array\<Pair\<String, Type>>`；
@@ -410,6 +414,8 @@ getter / setter：
 - 具名值可变参数 `named args...` → `.kwargs.args: Array\<Pair\<String, Any>>`。
 
 这些 hidden arguments 与 canonical symbol 一起保留实际泛型 typeid、值参数包及其名称，不需要为动态 forwarding 再建立第二套类型擦除协议。以 `.` 开头的 hidden 参数名由编译器保留。
+
+未声明方法的降级请求没有声明侧泛型参数名可展开为 hidden argument；调用点的显式泛型实参按书写序编码在方法名后的 `<...>` 段，使用 canonical 类型引用（例如 `Service$fetch<.i32,.string>(.i32)@.any`）。该段属于 `symbol` 字符串，不新增 `call???` 的 hidden 参数或 BIL invoke 操作数。
 
 ---
 

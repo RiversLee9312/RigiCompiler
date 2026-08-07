@@ -148,7 +148,7 @@ namespace LatteCompiler.Bil
     }
 
     // wrapper-proxy(PROXY_KIND) 修饰符（§8.4，M88）：wrapper 类型内的
-    // `.proxy.*` 模板 fn 标记（体内可出现 call.inner/get.self；kind 与
+    // `.proxy.*` 模板 fn 标记（体内可出现 invoke fn(..inner)/get.self；kind 与
     // 成员形状类别的一致性由 verifier §21.8 复核）
     public sealed class BilWrapperProxyModifier : BilModifier
     {
@@ -177,7 +177,7 @@ namespace LatteCompiler.Bil
     }
 
     // 类型声明（§8.2）：
-    // .type TYPE_SYMBOL = kind [generic(T1, T2)] [extends BASE] [implements I, ...]
+    // .type TYPE_SYMBOL = kind [generic(T1, out T2)] [extends BASE] [implements I, ...]
     //     [modifiers...] { ... }
     // generic(...) 子句（S9e 定稿）：泛型参数名逗号列表（声明序；BIL
     // 只声明名称——约束是编译期概念，使用侧已由编译器检查，运行时
@@ -189,6 +189,7 @@ namespace LatteCompiler.Bil
         public string? ExtendsType { get; set; }
         public List<string> ImplementsTypes { get; } = new List<string>();
         public List<string> GenericParameters { get; } = new List<string>();
+        public List<BilGenericVariance> GenericVariances { get; } = new List<BilGenericVariance>();
         // 修饰符（§8.2：pub protected internal priv / open abstract singleton /
         // rich shared；合法性由 frontend 与 verifier 各自对照 SYNTAX 检查）
         public List<BilModifier> Modifiers { get; } = new List<BilModifier>();
@@ -200,6 +201,13 @@ namespace LatteCompiler.Bil
             Kind = kind;
             Modifiers.AddRange(modifiers);
         }
+    }
+
+    public enum BilGenericVariance
+    {
+        None,
+        Out,
+        In,
     }
 
     // 成员声明基类：既可出现在类型体 Members 中（§8.3/§8.4），也可作为

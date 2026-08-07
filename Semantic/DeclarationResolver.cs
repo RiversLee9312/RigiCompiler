@@ -74,7 +74,9 @@ namespace LatteCompiler
             AsyncGateChecker.Visit(env);
             WrapperTargetResolver.Visit(env);
             ExtensionRegistrar.Visit(env);
+            VarianceChecker.Visit(env);
             WrapperApplicationChecker.Visit(env);
+            WrapperInheritanceChecker.Visit(env);
             // S11a：proxy 声明侧形状校验（§14.2/§14.3/§14.4 canonical shape 与
             // 类别矩阵；依赖 WrapperTarget 与参数/返回类型已解析）
             ProxyShapeChecker.Visit(env);

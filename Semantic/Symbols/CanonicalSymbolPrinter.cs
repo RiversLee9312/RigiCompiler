@@ -96,10 +96,12 @@ namespace LatteCompiler
 
         // S11e 降级请求 canonical symbol（SYNTAX §14.7/§14.8 落地形态）：未声明
         // 方法无声明位置与参数名——宿主前缀 = receiver 静态类型定义级 canonical
-        // 名，参数段按调用点书写序：位置实参只写静态类型、具名实参写 名:类型；
+        // 名；显式泛型实参按调用点书写序编码在方法名后的 <...> 段；参数段按
+        // 调用点书写序：位置实参只写静态类型、具名实参写 名:类型；
         // 返回段恒 .any（胖值 ABI 返回 Any，调用点转换由 P4a §6.5 物化承担，
         // 不符抛 core.CastException）
         public static string PrintDowngradeRequest(TypeSymbol receiverType, string name,
+            IReadOnlyList<SemanticSymbol> typeArguments,
             IReadOnlyList<(string? ArgName, SemanticSymbol ArgType)> arguments)
         {
             var parts = new List<string>();
@@ -110,7 +112,10 @@ namespace LatteCompiler
                     : argName + ":" + PrintTypeReference(argType));
             }
             var owner = CanonicalTypeName(receiverType.ConstructedFrom ?? receiverType);
-            return $"{owner}${name}({string.Join(",", parts)})@.any";
+            var genericPart = typeArguments.Count == 0
+                ? ""
+                : $"<{string.Join(",", typeArguments.Select(PrintTypeReference))}>";
+            return $"{owner}${name}{genericPart}({string.Join(",", parts)})@.any";
         }
 
         // 成员前缀：宿主类型 canonical 名；全局符号：命名空间全名 + "::"

@@ -10,6 +10,10 @@
 > 允许并行的地方已注明；
 > 未注明的按序推进，不跳步。
 
+> 已完成的 super 全链：P3 仅在 override/init 的直接 BaseType 上解析，P4 使用
+> `fn(..super)`；wrapper 继承检查与 variance 已在 M96 补齐。`..create` 仅为
+> Middleware/VM 生命周期步骤，frontend 不生成。
+
 ---
 
 ## 总览与依赖
@@ -595,6 +599,17 @@ BIL §7 落地，泛型端到端出合法 BIL：
 - **验收**：43 套件 + fuzz 6000 + 语义 fuzz 3000 全绿 + CLI
   `--emit-bil` 端到端样例核对。
 
+### S9g 型变检查与构造类型赋值（✅ 2026-08-07，M96）
+
+- P1/P2 将 `GenericVariance` 写入 `GenericParameterSymbol`；`out`/`in` 只允许
+  类型声明泛型参数，函数、方法和 operator 泛型参数拒绝型变；
+- 新 `VarianceChecker` 检查字段读写、getter/setter、方法参数/返回值以及嵌套泛型
+  实参的协变/逆变位置；可变字段和 invariant 容器将型变参数收紧为 invariant；
+- P3 `SymbolLookup.IsAssignable` 对同一泛型定义的构造类型按 `out`/`in` 方向递归
+  比较实参，未标注型变保持严格相等，并沿基类/interface 代入路径消费该规则；
+- 验收：声明侧非法位置、getter/setter 读写方向、Producer/Consumer 构造类型赋值
+  与反向拒绝用例。
+
 ## S10 core.latte 载入机制 ✅（2026-08-05 M74 落地）
 
 > **已完成**（M74）：载入机制本体早已在 S6 落地（EmbeddedResource 内嵌 +
@@ -634,14 +649,14 @@ enum case（`new.case`、`is .Case` 判别比较、判别值分配）、
 > `type.is.case`（enum 判别比较，RUNTIME §16.3 承载：非子类型检查、
 > VALUE 严格等于 case 的 enum 类型、case 必须带完整 enum 前缀、结果
 > .bool、判别宽度 u16/u32 为布局内部细节）；② §12.4 修订 + §13.3 增补
-> 嵌套字段访问 `get.field.embedded` / `set.field.embedded`（wrapper 只读
-> place 形态：`get.wrapper` 保留为 lowering/VM 内部能力——成员读取 = 值
-> 拷贝 + get.field；成员写入与 proxy 体内 `this` 原地访问用 embedded；
+> 嵌套字段 place 形态（当时读/写共用一条嵌套链指令，**后来读侧统一为
+> `get.wrapper`/`get.wrapper.field` 值拷贝 + 普通 `get.field`，写侧保留
+> `set.wrapper.field`**；`get.wrapper` 保留为 lowering/VM 内部能力；
 > `obj:W = ...` 仍是源码层编译错误，无整体写回指令）；③ §8.5/§19.1
 > 判别值注记（整数标量资源、非负唯一、auto 按声明序从 0、宽度按
-> RUNTIME §16.1）。BIL 模型（`IsCaseInstruction`/`GetEmbeddedFieldInstruction`/
-> `SetEmbeddedFieldInstruction`）与 BilVerifier §21.3 校验同步落地
-> （BilWriterTests 黄金 + BilVerifierTests 手工模块正负例）。后续施工
+> RUNTIME §16.1）。BIL 模型（`IsCaseInstruction`/`SetWrapperFieldInstruction`
+> 等）与 BilVerifier §21.3 校验同步落地（BilWriterTests 黄金 +
+> BilVerifierTests 手工模块正负例）。后续施工
 > 按序推进：~~P3 wrapper place 绑定与只读禁令（解 PathVisitors 两处
 > Colon 归口 + 全拦截面）~~（**✅ M79 已落地**）→ ~~enum case 全链~~
 > （**✅ M77 已落地**）→ ~~ext 收尾~~（**✅ M80 已落地**）→ 局部访问器
@@ -705,24 +720,20 @@ enum case（`new.case`、`is .Case` 判别比较、判别值分配）、
 >   由 §21.2 拦截不落盘（S11d 开闸解除））
 > - **S11c（P4a/P4b wrapper place 成员访问，解 M79 归口）**：
 >   BoundWrapperAccessExpression 作 receiver——成员读 =
->   get.wrapper 值拷贝 + get.field、成员写 = set.field.embedded、
+>   get.wrapper 值拷贝 + get.field、成员写 = set.wrapper.field、
 >   方法调用 receiver = get.wrapper 值拷贝（BIL §12.4 注记/
->   §13.3）；`.wrapper.` 隐藏字段声明发射（§8.3.1 backing
->   compiler-generated 形态）；使用点与 proxy 体内共用同一
->   lowering 路径。**验收**：M79 P4 归口用例转正 + `obj:W`
->   读/写/调用三形态端到端。（**✅ M84 已落地**，2026-08-06，
->   PROGRESS_REPORT 详录——37 新用例；落地形态：P3 节点携带
->   命中应用记录（Application 槽）+ 新设施 `WrapperPlaceLowering`
->   按应用类别分派（Entity = get.wrapper 值拷贝链 / set.field.
->   embedded 链；字段-Value = embedded 链，宿主取字段属主对象）；
->   复合赋值读写分离 + 宿主单次求值共享；隐藏字段 §8.3.1 声明
->   开闸（priv var backing compiler-generated）；落地注记：
->   深层写穿（`place.a.b`）/索引写/字段-Value 调用与索引/局部
->   与静态存储合成显式归口，归 S11g 复核。**M91 已部分消解**：
->   字段-Value 方法调用/索引读经 `get.wrapper.field` 值拷贝；字段应用
->   寻址复用 `field(HOST_FIELD),wrapper(W)`；深层纯字段写穿由 P4a
->   展开为正向 get + 叶写 + 按值类型边界反向 set，不新增专用 opcode。
->   索引写与局部/静态存储继续显式归口）
+>   §13.3）；使用点与 proxy 体内共用同一 lowering 路径。
+>   **验收**：M79 P4 归口用例转正 + `obj:W` 读/写/调用三形态端到端。
+>   （**✅ M84 已落地**，2026-08-06，PROGRESS_REPORT 详录——37 新用例；
+>   落地形态：P3 节点携带命中应用记录（Application 槽）+ 新设施
+>   `WrapperPlaceLowering` 按应用类别分派；复合赋值读写分离 + 宿主
+>   单次求值共享；**读侧后统一为** Materialize + 普通 get.field，
+>   写侧 `set.wrapper.field`；落地注记：深层写穿（`place.a.b`）/索引写/
+>   字段-Value 调用与索引/局部与静态存储合成显式归口，归 S11g 复核。
+>   **M91 已部分消解**：字段-Value 方法调用/索引读经 `get.wrapper.field`
+>   值拷贝；字段应用寻址复用 `field(HOST_FIELD),wrapper(W)`；深层纯字段
+>   写穿由 P4a 展开为正向 get + 叶写 + 按值类型边界反向 set，不新增
+>   专用 opcode。索引写与局部/静态存储继续显式归口）
 > - **S11d（P4b 合成 fn 发射，烘焙端到端）**：Bil 模型增补
 >   `wrapper-proxy(PROXY_KIND)` 修饰符（PROXY_KIND 取值定稿
 >   BIL §8.4）；特化 fn / 原始体 fn / 转发壳平铺发射；
@@ -759,8 +770,10 @@ enum case（`new.case`、`is .Case` 判别比较、判别值分配）、
 >   symbol 格式定稿 SYNTAX §14.8 末段；遗留五项登记技术债
 >   #28，归 S11g 复核；**M89 已收口 #28③④**：降级资格只读遍历
 >   receiver/BaseType/Interfaces 传递闭包；if?/throw/复合赋值/索引写
->   位置补 P3 豁免与 P4a §6.5 cast 物化。#28① 待专项，#28② 维持
->   SYNTAX §14.7 既定错误行为）
+>   位置补 P3 豁免与 P4a §6.5 cast 物化；**M92 已收口 #28①**：显式
+>   泛型实参按 canonical 类型引用编码在降级请求方法名后的 `<...>` 段，
+>   P3 复用使用点解析/访问检查，三参胖值 ABI 不变。#28② 维持 SYNTAX
+>   §14.7 既定错误行为）
 > - **S11f（派发链诊断工具，RUNTIME §15）**：CLI 子命令
 >   `compile --file a.latte --explain-dispatch`（用户决策
 >   形态）；报告编译单元全部烘焙链（被修饰成员 outer→inner
@@ -780,10 +793,12 @@ enum case（`new.case`、`is .Case` 判别比较、判别值分配）、
 >   （可变参数成员链与 inner/转发壳泛型包转发、proxy 声明泛型
 >   参数的体内类型引用代入）+ 规范交叉引用清理。**M90 已收口
 >   #27⑦**：Bound/Lowered 显式携带可变泛型包，P4b 按声明序前置
->   `.generic.<Pack>` 到 `call.inner` 值实参列表；可变成员参与 proxy
+>   `.generic.<Pack>` 到 `invoke fn(..inner)` 值实参列表；可变成员参与 proxy
 >   匹配，解包与烘焙仍归 Middleware。**M91 已收口 M84 两项**：
 >   字段-Value 调用/索引读与深层纯字段写穿落地；局部/静态存储按
 >   用户裁决等待 `.args/.vars` 应用标记 + init 实参 ABI，保持 P4 诊断。
+>   **M92 已收口 #28①**：降级调用的显式泛型实参进入 symbol `<...>` 段；
+>   #28② 按既定规范维持错误行为。
 >
 > **wrapper place 绑定与只读禁令（M79，2026-08-06，PROGRESS_REPORT
 > 详录）**：`BoundWrapperAccessExpression`（Receiver + Wrapper，Type =

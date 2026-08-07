@@ -98,58 +98,19 @@ namespace LatteCompiler.Bil
             new BilOperand[] { Source, Object, Field };
     }
 
-    // §13.3 嵌套字段访问（wrapper 只读 place 形态，M88）：
-    // get.field.embedded OBJECT TARGET CHAIN_ELEM... field(INNER_FIELD)
-    // 链元素两态：field(FIELD) / wrapper(WRAPPER_TYPE_REF)（§8.3.1 应用
-    // 标记；存储合成归 Middleware）。末段 INNER_FIELD 是被读的目标字段
-    public sealed class GetEmbeddedFieldInstruction : BilInstruction
-    {
-        public BilVariableOperand Object { get; }
-        public BilVariableOperand Target { get; }
-        // 链元素（至少一；BilFieldOperand | BilWrapperOperand）
-        public IReadOnlyList<BilOperand> Chain { get; }
-        public BilFieldOperand InnerField { get; }
-
-        public GetEmbeddedFieldInstruction(BilVariableOperand objectValue,
-            BilVariableOperand target, IReadOnlyList<BilOperand> chain, BilFieldOperand innerField)
-        {
-            Object = objectValue;
-            Target = target;
-            Chain = chain;
-            InnerField = innerField;
-        }
-
-        // 便捷：单链元素
-        public GetEmbeddedFieldInstruction(BilVariableOperand objectValue,
-            BilVariableOperand target, BilOperand chainElement, BilFieldOperand innerField)
-            : this(objectValue, target, new[] { chainElement }, innerField)
-        {
-        }
-
-        internal override string Opcode => "get.field.embedded";
-        internal override IReadOnlyList<BilOperand> Operands
-        {
-            get
-            {
-                var list = new List<BilOperand>(2 + Chain.Count + 1) { Object, Target };
-                list.AddRange(Chain);
-                list.Add(InnerField);
-                return list;
-            }
-        }
-    }
-
-    // §13.3 嵌套字段写入：set.field.embedded SOURCE OBJECT CHAIN_ELEM...
-    // field(INNER_FIELD)——原地写入（只读 place 整体不可赋值，故无
-    // 「对整个 place 写回」的形态）
-    public sealed class SetEmbeddedFieldInstruction : BilInstruction
+    // §13.3 wrapper 隐藏存储写入后门：set.wrapper.field SOURCE OBJECT
+    // CHAIN_ELEM... field(INNER_FIELD)。CHAIN 表达 field(F)+wrapper(W) 或
+    // wrapper(W) 的 wrapper 存储寻址（非普通 set.field；读侧走
+    // get.wrapper / get.wrapper.field 值拷贝 + 普通 get.field；普通值类型
+    // 中间层反向写回由 lowering 发 set.field）
+    public sealed class SetWrapperFieldInstruction : BilInstruction
     {
         public BilVariableOperand Source { get; }
         public BilVariableOperand Object { get; }
         public IReadOnlyList<BilOperand> Chain { get; }
         public BilFieldOperand InnerField { get; }
 
-        public SetEmbeddedFieldInstruction(BilVariableOperand source,
+        public SetWrapperFieldInstruction(BilVariableOperand source,
             BilVariableOperand objectValue, IReadOnlyList<BilOperand> chain,
             BilFieldOperand innerField)
         {
@@ -159,13 +120,13 @@ namespace LatteCompiler.Bil
             InnerField = innerField;
         }
 
-        public SetEmbeddedFieldInstruction(BilVariableOperand source,
+        public SetWrapperFieldInstruction(BilVariableOperand source,
             BilVariableOperand objectValue, BilOperand chainElement, BilFieldOperand innerField)
             : this(source, objectValue, new[] { chainElement }, innerField)
         {
         }
 
-        internal override string Opcode => "set.field.embedded";
+        internal override string Opcode => "set.wrapper.field";
         internal override IReadOnlyList<BilOperand> Operands
         {
             get
@@ -339,37 +300,4 @@ namespace LatteCompiler.Bil
             new BilOperand[] { Method, new BilOperandList(Arguments) };
     }
 
-    // §15.4 派发链下一环（proxy 模板）：call.inner RESULT [ARGS]
-    // 仅 wrapper-proxy 标记的 fn 体内合法；Middleware 烘焙时链接到下一环
-    public sealed class CallInnerInstruction : BilInstruction
-    {
-        public BilVariableOperand Target { get; }
-        public IReadOnlyList<BilVariableOperand> Arguments { get; }
-
-        public CallInnerInstruction(BilVariableOperand target,
-            IReadOnlyList<BilVariableOperand> arguments)
-        {
-            Target = target;
-            Arguments = arguments;
-        }
-
-        internal override string Opcode => "call.inner";
-        internal override IReadOnlyList<BilOperand> Operands =>
-            new BilOperand[] { Target, new BilOperandList(Arguments) };
-    }
-
-    // §15.4 void 形态：call.inner.noret [ARGS]
-    public sealed class CallInnerNoretInstruction : BilInstruction
-    {
-        public IReadOnlyList<BilVariableOperand> Arguments { get; }
-
-        public CallInnerNoretInstruction(IReadOnlyList<BilVariableOperand> arguments)
-        {
-            Arguments = arguments;
-        }
-
-        internal override string Opcode => "call.inner.noret";
-        internal override IReadOnlyList<BilOperand> Operands =>
-            new BilOperand[] { new BilOperandList(Arguments) };
-    }
 }

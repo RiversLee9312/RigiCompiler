@@ -524,6 +524,69 @@ namespace LatteCompiler.Tests
                 && !call10.Method.GenericParameters[0].IsVariadic
                 && call10.TypeArguments.Count == 1
                 && ReferenceEquals(call10.TypeArguments[0], unit10.Symbols.Bootstrap.Int32));
+
+            // ===== #25① 混合泛型 `f\<T, TArgs...>`：显式实参按固定元数匹配
+            // （SYNTAX §4.2/§4.3）——TypeArguments 只收固定显式，包进 GenericPack =====
+
+            // 11. 正例：固定显式 1 个 + 位置包由值实参推导；返回类型代入 T
+            var (unit11, bodies11) = BindUnit(
+                "func mix\\<T, TArgs...>(seed: T, xs: TArgs...): T { return seed }\n" +
+                "func main() { var v = mix\\<i32>(1, \"a\", true) }\n");
+            CheckNoErrors("无诊断（混合泛型显式调用正例）", unit11);
+            var decl11 = (BoundLocalDeclarationStatement)BodyOf(bodies11, "main").Body.Statements[0];
+            var call11 = (BoundCallExpression)decl11.Initializer!;
+            TestHarness.CheckTrue("混合调用返回类型代入（T = i32）",
+                ReferenceEquals(call11.Type, unit11.Symbols.Bootstrap.Int32));
+            TestHarness.CheckTrue("TypeArguments 只保留固定显式实参",
+                call11.TypeArguments.Count == 1
+                && ReferenceEquals(call11.TypeArguments[0], unit11.Symbols.Bootstrap.Int32));
+            TestHarness.CheckTrue("GenericPack 承载包推导（String/bool）",
+                call11.GenericPack is { IsNamed: false } pack11
+                && pack11.TypeArguments.Count == 2
+                && ReferenceEquals(pack11.TypeArguments[0], unit11.Symbols.Bootstrap.String)
+                && ReferenceEquals(pack11.TypeArguments[1], unit11.Symbols.Bootstrap.Bool));
+            TestHarness.CheckTrue("TypeArguments 与 GenericPack 分离（包类型不进 TypeArguments）",
+                call11.TypeArguments.Count == 1 && call11.GenericPack != null
+                && !call11.TypeArguments.Any(a =>
+                    ReferenceEquals(a, unit11.Symbols.Bootstrap.String)
+                    || ReferenceEquals(a, unit11.Symbols.Bootstrap.Bool)));
+
+            // 12. 固定数量错误：多写（把包实参也写进显式列表）
+            var (unit12, _) = BindUnit(
+                "func mix\\<T, TArgs...>(seed: T, xs: TArgs...): T { return seed }\n" +
+                "func main() { var v = mix\\<i32, String>(1, \"a\") }\n");
+            TestHarness.CheckSemanticError("混合形态多写包实参", unit12.Diagnostics,
+                "'mix' expects 1 type argument(s), got 2");
+
+            // 13. 固定数量错误：少写（缺固定显式）
+            var (unit13, _) = BindUnit(
+                "func mix\\<T, U, TArgs...>(a: T, b: U, xs: TArgs...): T { return a }\n" +
+                "func main() { var v = mix\\<i32>(1, \"s\") }\n");
+            TestHarness.CheckSemanticError("混合形态固定数量不足", unit13.Diagnostics,
+                "'mix' expects 2 type argument(s), got 1");
+
+            // 14. 混合缺显式：仍须提供固定实参（不走全可变包路径）
+            var (unit14, _) = BindUnit(
+                "func mix\\<T, TArgs...>(seed: T, xs: TArgs...): T { return seed }\n" +
+                "func main() { var v = mix(1, \"a\") }\n");
+            TestHarness.CheckSemanticError("混合形态缺显式仍报需要显式实参", unit14.Diagnostics,
+                "'mix' is a generic method; provide explicit type arguments");
+
+            // 15. 具名包混合：固定显式 + named 包推导
+            var (unit15, bodies15) = BindUnit(
+                "func cfg\\<T, named TValues...>(seed: T, opts: named TValues...): T { return seed }\n" +
+                "func main() { var v = cfg\\<i32>(1, flag = true, name = \"x\") }\n");
+            CheckNoErrors("无诊断（混合具名包）", unit15);
+            var call15 = (BoundCallExpression)
+                ((BoundLocalDeclarationStatement)BodyOf(bodies15, "main").Body.Statements[0])
+                .Initializer!;
+            TestHarness.CheckTrue("混合具名包 TypeArguments/GenericPack 分离",
+                call15.TypeArguments.Count == 1
+                && ReferenceEquals(call15.TypeArguments[0], unit15.Symbols.Bootstrap.Int32)
+                && call15.GenericPack is { IsNamed: true } named15
+                && named15.NamedTypes.Count == 2
+                && named15.NamedTypes[0].Name == "flag"
+                && ReferenceEquals(named15.NamedTypes[0].Type, unit15.Symbols.Bootstrap.Bool));
         }
 
         // ===== 泛型 operator 名字调用（S9f 复核 M69 注记：SYNTAX §4.2

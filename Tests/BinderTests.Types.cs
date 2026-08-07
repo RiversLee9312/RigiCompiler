@@ -4,6 +4,33 @@ namespace LatteCompiler.Tests
 {
     public static partial class BinderTests
     {
+        private static void TestGenericVarianceAssignability()
+        {
+            TestHarness.Section("P3 Generic Variance Assignability (§3.6)");
+
+            var (unit, _) = BindUnit(
+                "open class Animal { }\n" +
+                "class Dog : Animal { }\n" +
+                "class Producer\\<out T> { }\n" +
+                "class Consumer\\<in T> { }\n" +
+                "func takeAnimalProducer(value: Producer\\<Animal>) { }\n" +
+                "func takeDogConsumer(value: Consumer\\<Dog>) { }\n" +
+                "func test(producer: Producer\\<Dog>, consumer: Consumer\\<Animal>) {\n" +
+                "    takeAnimalProducer(producer)\n" +
+                "    takeDogConsumer(consumer)\n" +
+                "}\n");
+            CheckNoErrors("协变/逆变构造类型可赋值", unit);
+
+            var (bad, _) = BindUnit(
+                "open class Animal { }\n" +
+                "class Dog : Animal { }\n" +
+                "class Producer\\<out T> { }\n" +
+                "func takeDogProducer(value: Producer\\<Dog>) { }\n" +
+                "func test(value: Producer\\<Animal>) { takeDogProducer(value) }\n");
+            TestHarness.CheckSemanticError("协变方向反向赋值拒绝", bad.Diagnostics,
+                "Cannot pass 'Producer<Animal>' as 'Producer<Dog>'");
+        }
+
         // ===== cast（S7e，SYNTAX §3.5）=====
         private static void TestCast()
         {

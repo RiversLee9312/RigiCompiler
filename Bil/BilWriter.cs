@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text;
 
 namespace LatteCompiler.Bil
@@ -155,7 +156,8 @@ namespace LatteCompiler.Bil
             var modifiers = RenderModifiers(type.Modifiers);
             var kind = BilSpellings.Of(type.Kind);
             var generic = type.GenericParameters.Count > 0
-                ? " generic(" + string.Join(", ", type.GenericParameters) + ")"
+                ? " generic(" + string.Join(", ", type.GenericParameters.Select((name, i) =>
+                    GenericParameterText(type, name, i))) + ")"
                 : "";
             if (type.ExtendsType == null && type.ImplementsTypes.Count == 0)
             {
@@ -183,6 +185,19 @@ namespace LatteCompiler.Bil
                 WriteMember(member, sb, Indent + Indent);
             }
             sb.Append($"{Indent}}}\n");
+        }
+
+        private static string GenericParameterText(BilTypeDeclaration type, string name, int index)
+        {
+            var variance = index < type.GenericVariances.Count
+                ? type.GenericVariances[index]
+                : BilGenericVariance.None;
+            return variance switch
+            {
+                BilGenericVariance.Out => "out " + name,
+                BilGenericVariance.In => "in " + name,
+                _ => name,
+            };
         }
 
         // 成员声明输出；indent 为成员行基础缩进（类型体内两级，§8.4.1 段内

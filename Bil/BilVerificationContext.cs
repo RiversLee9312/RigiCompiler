@@ -362,6 +362,65 @@ namespace LatteCompiler.Bil
             return NormalizeTypeRef(actual) == NormalizeTypeRef(expected);
         }
 
+        // 调用签名的赋值兼容：在严格 canonical 相等之外，消费 BIL 类型声明中
+        // 的 in/out 元数据。索引、wrapper 链等专用形态继续使用上面的严格比较。
+        public bool TypesAssignable(string actual, string expected)
+        {
+            if (actual.Contains(".generic<") || expected.Contains(".generic<")) return true;
+            var normalizedActual = NormalizeTypeRef(actual);
+            var normalizedExpected = NormalizeTypeRef(expected);
+            if (normalizedActual == normalizedExpected) return true;
+
+            var actualArguments = TypeArgumentsOf(normalizedActual);
+            var expectedArguments = TypeArgumentsOf(normalizedExpected);
+            if (actualArguments != null && expectedArguments != null
+                && StripTypeArguments(normalizedActual) == StripTypeArguments(normalizedExpected)
+                && actualArguments.Count == expectedArguments.Count
+                && TryGetTypeDeclaration(normalizedActual, out var declaration))
+            {
+                for (var i = 0; i < actualArguments.Count; i++)
+                {
+                    var variance = i < declaration.GenericVariances.Count
+                        ? declaration.GenericVariances[i]
+                        : BilGenericVariance.None;
+                    if (variance == BilGenericVariance.Out)
+                    {
+                        if (!TypesAssignable(actualArguments[i], expectedArguments[i])) return false;
+                    }
+                    else if (variance == BilGenericVariance.In)
+                    {
+                        if (!TypesAssignable(expectedArguments[i], actualArguments[i])) return false;
+                    }
+                    else if (NormalizeTypeRef(actualArguments[i])
+                        != NormalizeTypeRef(expectedArguments[i]))
+                    {
+                        return false;
+                    }
+                }
+                return true;
+            }
+
+            return IsNominalAssignable(normalizedActual, normalizedExpected,
+                new HashSet<string>(StringComparer.Ordinal));
+        }
+
+        private bool IsNominalAssignable(string actual, string expected, HashSet<string> visited)
+        {
+            if (NormalizeTypeRef(actual) == NormalizeTypeRef(expected)) return true;
+            if (!visited.Add(DeclarationKeyOf(actual))) return false;
+            if (!TryGetTypeDeclaration(actual, out var declaration)) return false;
+            if (declaration.ExtendsType != null
+                && TypesAssignable(declaration.ExtendsType, expected)) return true;
+            return declaration.ImplementsTypes.Any(iface => TypesAssignable(iface, expected));
+        }
+
+        private static List<string>? TypeArgumentsOf(string typeRef)
+        {
+            var angle = typeRef.IndexOf('<');
+            if (angle < 0 || !typeRef.EndsWith(">")) return null;
+            return SplitTopLevel(typeRef.Substring(angle + 1, typeRef.Length - angle - 2));
+        }
+
         // 资源的值类型（§19；无法判定的形态返回 null——调用方跳过严格匹配）：
         // 标量 → 对应内建类型；null 资源 → .nullable<T>；raw.hex/raw.bin 与
         // 复合资源（发射器尚未产出 load）跳过

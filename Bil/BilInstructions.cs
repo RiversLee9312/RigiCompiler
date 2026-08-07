@@ -86,7 +86,7 @@ namespace LatteCompiler.Bil
         internal override string Render() => $"field({Symbol})";
     }
 
-    // wrapper(WRAPPER_TYPE_REF)（§13.3 embedded 链元素，M88）
+    // wrapper(WRAPPER_TYPE_REF)（§13.3 set.wrapper.field 链元素，M88）
     public sealed class BilWrapperOperand : BilOperand
     {
         public string TypeRef { get; }
