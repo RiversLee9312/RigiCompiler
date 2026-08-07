@@ -36,9 +36,14 @@ namespace LatteCompiler
             {
                 var leftFacts = ConditionFactsExtractor.Extract(left, ctx.Frame);
                 var narrowedSnapshot = ctx.Flow.SnapshotNarrowed();
+                var narrowedEpoch = ctx.Flow.NarrowedEpoch;
                 ctx.Flow.ApplyNarrow(binary.Operator == "and" ? leftFacts.True : leftFacts.False);
                 right = ExpressionDispatcher.Visit(binary.Right.Expression, scope, ctx, env);
-                ctx.Flow.RestoreNarrowed(narrowedSnapshot);
+                // await 清除收窄后不能恢复挂起前快照；DA 不在此操作中触碰。
+                if (ctx.Flow.NarrowedEpoch == narrowedEpoch)
+                {
+                    ctx.Flow.RestoreNarrowed(narrowedSnapshot);
+                }
             }
             else
             {
@@ -177,16 +182,65 @@ namespace LatteCompiler
     // 不可达形态由 default 的 CompilerInternalException 防御拦截）
     internal sealed class UnaryVisitor : ExpressionVisitor<UnaryVisitor, BindContext>
     {
+        internal static BoundExpression? BindStatementAwait(ASTNode node, Scope scope,
+            BindContext ctx, BindEnvironment env)
+        {
+            return BindCore(node, scope, ctx, env, statementPosition: true);
+        }
+
+        internal static bool IsAwait(ASTNode node, out UnaryExpressionASTNode awaitNode)
+        {
+            while (node is GroupExpressionASTNode group)
+            {
+                node = group.InnerExpression.Expression;
+            }
+            if (node is UnaryExpressionASTNode { Operator: "await" } unary)
+            {
+                awaitNode = unary;
+                return true;
+            }
+            awaitNode = null!;
+            return false;
+        }
+
         protected override BoundExpression? VisitCore(ASTNode node, Scope scope, BindContext ctx,
             BindEnvironment env, TypeSymbol? expectedType)
+        {
+            return BindCore(node, scope, ctx, env, statementPosition: false, expectedType);
+        }
+
+        private static BoundExpression? BindCore(ASTNode node, Scope scope, BindContext ctx,
+            BindEnvironment env, bool statementPosition, TypeSymbol? expectedType = null)
         {
             var unary = (UnaryExpressionASTNode)node;
             BilIntrinsicOp op;
             switch (unary.Operator)
             {
                 case "await":
-                    env.Error(node.Span, "P3: await is not supported yet (S13)");
-                    return null;
+                    var awaitOperand = ExpressionDispatcher.Visit(unary.Operand.Expression, scope, ctx, env);
+                    if (awaitOperand == null || awaitOperand.Type is ErrorTypeSymbol) return null;
+                    if (awaitOperand.Type is not TypeSymbol taskType
+                        || !TryGetAwaitResult(taskType, env, out var resultType))
+                    {
+                        env.Error(node.Span, $"P3: await operand must be exactly core.coroutine.Task or " +
+                            $"core.coroutine.Task<T>, got '{BoundAnalysis.TypeDisplay(awaitOperand.Type)}'");
+                        return null;
+                    }
+                    if (resultType == null && !statementPosition)
+                    {
+                        env.Error(node.Span, "P3: await core.coroutine.Task without a result is only valid " +
+                            "as an expression statement");
+                        return null;
+                    }
+                    if (resultType != null && expectedType != null
+                        && !SymbolLookup.IsAssignable(resultType, expectedType, env))
+                    {
+                        env.Error(node.Span, $"Cannot await Task<{BoundAnalysis.TypeDisplay(resultType)}> " +
+                            $"as '{BoundAnalysis.TypeDisplay(expectedType)}'");
+                        return null;
+                    }
+                    ctx.Flow.ClearNarrowed();
+                    return new BoundAwaitExpression(node, awaitOperand, resultType != null, resultType);
                 case "-": op = BilIntrinsicOp.Opposite; break;
                 case "not": op = BilIntrinsicOp.Not; break;
                 case "!": op = BilIntrinsicOp.BinNot; break;
@@ -205,6 +259,27 @@ namespace LatteCompiler
                 return null;
             }
             return new BoundUnaryExpression(node, op, operand, operand.Type);
+        }
+
+        private static bool TryGetAwaitResult(TypeSymbol taskType, BindEnvironment env,
+            out SemanticSymbol? resultType)
+        {
+            resultType = null;
+            var core = env.Unit.Symbols.GlobalNamespace.ChildNamespaces
+                .FirstOrDefault(n => n.Name == "core");
+            var coroutine = core?.ChildNamespaces.FirstOrDefault(n => n.Name == "coroutine");
+            var taskDefinitions = coroutine?.Types.Where(t => t.Name == "Task").ToList();
+            if (taskDefinitions == null) return false;
+            var plain = taskDefinitions.FirstOrDefault(t => t.GenericParameters.Count == 0);
+            var generic = taskDefinitions.FirstOrDefault(t => t.GenericParameters.Count == 1);
+            if (ReferenceEquals(taskType, plain)) return true;
+            if (taskType.ConstructedFrom != null && ReferenceEquals(taskType.ConstructedFrom, generic)
+                && taskType.TypeArguments is { Count: 1 })
+            {
+                resultType = taskType.TypeArguments[0];
+                return true;
+            }
+            return false;
         }
     }
 
@@ -236,6 +311,13 @@ namespace LatteCompiler
             switch (place)
             {
                 case BoundValueReferenceExpression { Symbol: LocalSymbol local }:
+                    if (local.IsUsingResource)
+                    {
+                        env.Error(node.Span,
+                            $"Cannot assign to using resource '{local.Name}'; " +
+                            "using resource bindings cannot be reassigned");
+                        return null;
+                    }
                     if (local.IsConst)
                     {
                         env.Error(node.Span, $"Cannot assign to const '{local.Name}'");

@@ -1659,8 +1659,14 @@ await TASK RESULT
 - Task 失败时在 await 点重新抛出保存异常；
 - Task 取消时传播取消；
 - Task 未完成时挂起当前 Coroutine，并在其原 Executor 恢复。
+- Task 已终止时不要求实际挂起；未终止时必须先保存 continuation，再原子登记 waiter
+  并转为 `Suspended`，避免终态与登记竞态丢失唤醒。
+- waiter 终态恢复时重新发布到 waiter 自己永久绑定的 Executor，而不是 Task 所属 Coroutine
+  的 Executor。
 
-BIL 不规定 continuation frame 和 Worker 调度的物理实现。
+BIL 不规定 continuation frame 和 Worker 调度的物理实现。continuation frame、state 编号、
+waiter 数据结构和 Native ABI 仍不属于 BIL；Middleware 可以将本指令降为状态机，但不得
+改变上述可观察语义。
 
 ### 17.2 yield
 
@@ -1689,6 +1695,8 @@ frontend 必须把 `seq using(...)` 生成为结构化初始化、清理记录�
 - await/yield 只挂起，不触发提前清理；
 - `dispose()` 自身可 await/yield；
 - 外层 completion 必须等待清理全部完成。
+- 清理记录、当前 `dispose()` 调用和逆序清理游标属于 continuation 的活跃状态；finally
+  中的挂起恢复后必须回到同一清理进度。BIL 不增加 `using` 或 cleanup opcode。
 
 ---
 

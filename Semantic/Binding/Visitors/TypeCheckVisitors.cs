@@ -185,8 +185,8 @@ namespace LatteCompiler
             if (elements.Count == 1)
             {
                 var name = elements[0].name;
-                var local = scope.Lookup(name);
-                if (local != null)
+                var symbol = scope.LookupSymbol(name);
+                if (symbol is LocalSymbol local)
                 {
                     valueFound = true;
                     if (!ctx.Flow.IsAssigned(local))
@@ -196,10 +196,13 @@ namespace LatteCompiler
                     // 源码局部 Type 恒非空（同路径绑定单段分支）
                     return new BoundValueReferenceExpression(typeRef, local, local.Type!);
                 }
-                var parameter = ctx.Frame.Method.Parameters.FirstOrDefault(p => p.Name == name);
+                var parameter = symbol as ParameterSymbol
+                    ?? ctx.Frame.Method.Parameters.FirstOrDefault(p => p.Name == name);
                 if (parameter != null)
                 {
                     valueFound = true;
+                    if (ctx.IsLambda && !ctx.LambdaParameters.Contains(parameter))
+                        ctx.CapturedSymbols.Add(parameter);
                     // S9a 放行：参数类型可为泛型参数（引用相等身份）
                     return new BoundValueReferenceExpression(typeRef, parameter,
                         parameter.Type!);
@@ -251,7 +254,7 @@ namespace LatteCompiler
                 && path.Segments.Count == 0)
             {
                 var name = path.Head.Name;
-                bool isValue = scope.Lookup(name) != null
+                bool isValue = scope.LookupSymbol(name) != null
                     || ctx.Frame.Method.Parameters.Any(p => p.Name == name)
                     || MemberLookup.FindField(name, ctx.Frame, env) != null;
                 if (!isValue)

@@ -107,7 +107,24 @@ namespace LatteCompiler
                 : new LoweredGenericVarArgsArgument(call.GenericPack, call.GenericPack.IsNamed,
                     call.GenericPack.TypeArguments, call.GenericPack.NamedTypes);
             return new LoweredCallExpression(call, call.Method, arguments, call.TypeArguments,
-                genericPack);
+                genericPack, call.IsIndirect);
+        }
+    }
+
+    internal sealed class LambdaRewriter
+        : LoweredVisitor<LambdaRewriter, LoweredExpression, LowerContext>
+    {
+        protected override LoweredExpression? VisitCore(BoundNode node, LowerContext ctx,
+            LowerEnvironment env)
+        {
+            var lambda = (BoundLambdaExpression)node;
+            if (lambda.CapturedSymbols.Count != 0)
+            {
+                env.Error(lambda.Syntax.Span,
+                    "S13 P4 pending: captured lambda closure lowering is not available");
+                return null;
+            }
+            return new LoweredLambdaExpression(lambda);
         }
     }
 
@@ -445,6 +462,18 @@ namespace LatteCompiler
                 arguments.Add(lowered);
             }
             return new LoweredCallInnerExpression(inner, arguments);
+        }
+    }
+
+    internal sealed class AwaitRewriter
+        : LoweredVisitor<AwaitRewriter, LoweredExpression, LowerContext>
+    {
+        protected override LoweredExpression? VisitCore(BoundNode node, LowerContext ctx,
+            LowerEnvironment env)
+        {
+            var awaitExpression = (BoundAwaitExpression)node;
+            var operand = LowerExpressionDispatcher.Visit(awaitExpression.Operand, ctx, env);
+            return operand == null ? null : new LoweredAwaitExpression(awaitExpression, operand);
         }
     }
 

@@ -848,11 +848,27 @@ assignment/控制流/`.breakid` capability/泛型/可见性），作为
 
 ## S13 async lowering 专项 + BIL_STANDARD 修订
 
-先出专项设计文档（async/await/yield → 标准库 Task 机制调用的具体
-形态：状态机切分、continuation 表示、eager spawn、与 RUNTIME §23
-GC fence 的交互、stdlib 要求 Middleware 暴露的 Native 方法面），
-同步修订 BIL_STANDARD（ARCHITECTURE §7 待修订清单逐条落实），
-然后实现。`using` 可挂起清理与 async lowering 在此汇合。
+> **设计已定稿，await/yield、using 两种形态与 lambda P3 Slice A 已实现**：`ASYNC_LOWERING_DESIGN.md`
+>（2026-08-07）。复杂 continuation、动态/可挂起清理和 Middleware 仍待实现。
+> 不更新 `PROGRESS_REPORT`，实现完成时由主代理按实际产物登记。
+
+S13 保留 BIL §17：`await Task<T>/Task`、`yield` 与 using 两种形态已直接形成
+强类型 BIL/try-finally 产物，async `invoke` 保持 eager spawn；Middleware 后续把挂起点
+lower 为状态机与 continuation。按设计顺序推进：① P3/P4/BIL 的 await/yield 定型、
+发射和 verifier（M97/M98）；② using 语句形态的嵌套 try/finally 清理（M99）；③
+using 表达式形态的结果局部与嵌套清理（M100）；④ 动态/可挂起 dispose 与复杂
+continuation 清理游标；⑤ lambda P4 closure environment/cell 与 invoke lowering；⑥
+Middleware Task/Alarm/state-machine/GC fence；⑦ 局部访问器 closure cell；⑧ async lambda
+复用 closure 并接 shared-safe 与 spawn。stdlib 保持源码类型面，Coroutine/frame/fence
+采用 Middleware 保留接口，不提前扩展 S14 VM。
+
+当前 S13 lambda P4 B0 收口（不占用 M 编号，里程碑由主代理登记）：Binder 保持
+captured lambda 在 P3 仅产捕获集且无诊断；无捕获 lambda 已形成 synthetic body、
+`.methodid`/`getid.method`、`invoke.indirect` 与 synthetic fn declaration；captured
+lambda 仍由 `LambdaRewriter` 在 P4 报 pending。`methodid` 按 canonical 参数/返回
+签名校验，`invoke.indirect` 覆盖参数个数、参数类型和有返回/`noret` 形态；不开放
+函数值比较、字段存储或 captured lambda P4。当前四个 B0 套件计数为 Binder 884、
+Lowerer 206、BilEmitter 481、BilVerifier 150，均为通过用例。
 
 ## S14 BIL VM
 

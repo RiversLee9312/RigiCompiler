@@ -63,6 +63,18 @@ namespace LatteCompiler
         }
     }
 
+    // yield（S13，SYNTAX §7.5）：Alarm 为 null 表示裸 yield；非 null 时已
+    // 定型为可赋值到 PollingAlarm 或 EventAlarm 的表达式。
+    public sealed class BoundYieldStatement : BoundStatement
+    {
+        public BoundExpression? Alarm { get; }
+
+        public BoundYieldStatement(ASTNode syntax, BoundExpression? alarm) : base(syntax)
+        {
+            Alarm = alarm;
+        }
+    }
+
     // void 调用语句（无结果方法调用只能作语句，SYNTAX §4：无隐式返回值利用）。
     // Receiver 为 null = 静态/全局调用（S7c-2 前唯一形态）；非 null = 实例
     // 调用（receiver 求值作首实参，BIL §7.3/§15.1）。
@@ -75,11 +87,14 @@ namespace LatteCompiler
         public BoundExpression? Receiver { get; }
         public IReadOnlyList<SemanticSymbol> TypeArguments { get; }
         public BoundGenericVarArgsArgument? GenericPack { get; }
+        public bool IsIndirect { get; }
+        public LocalSymbol? IndirectHandle { get; }
 
         public BoundCallStatement(ASTNode syntax, MethodSymbol method,
             IReadOnlyList<BoundExpression> arguments, BoundExpression? receiver = null,
             IReadOnlyList<SemanticSymbol>? typeArguments = null,
-            BoundGenericVarArgsArgument? genericPack = null)
+            BoundGenericVarArgsArgument? genericPack = null, bool isIndirect = false,
+            LocalSymbol? indirectHandle = null)
             : base(syntax)
         {
             Method = method;
@@ -87,6 +102,8 @@ namespace LatteCompiler
             Receiver = receiver;
             TypeArguments = typeArguments ?? Array.Empty<SemanticSymbol>();
             GenericPack = genericPack;
+            IsIndirect = isIndirect;
+            IndirectHandle = indirectHandle;
         }
     }
 
@@ -318,23 +335,47 @@ namespace LatteCompiler
 
     // seq 语句（S7e，SYNTAX §10.1）：块级顺序执行区（BIL §3.4 独立 block +
     // call 化）。不压值块标签栈——体内 return@ 指向它报未定义标签（规范
-    // 未明，M50 登记）；using 绑定列表属 S13，P3 已拦截
+    // 未明，M50 登记）；using 绑定列表是语句 seq 的 P3 绑定产物，表达式
+    // using 仍归 S13（expression lowering pending）
     public sealed class BoundSeqStatement : BoundStatement
     {
         // 施工壳模式（同 BoundValueBlock.Block）：语句 seq 作 return@ 目标
         // 时须在绑体前压标签栈（M61），体绑完回填
         public BoundBlock Body { get; internal set; } = null!;
+        public IReadOnlyList<BoundUsingBinding> UsingBindings { get; internal set; } =
+            Array.Empty<BoundUsingBinding>();
         public bool IsVolatile { get; }
         // named 标签（仅显式 named 时非 null——语句 seq 不享有值块的 `_`
         // 默认标签，避免与值块默认值冲突；非 null 即可作 return@ 目标，
         // SYNTAX §6.1，M61）
         public string? Label { get; }
 
-        public BoundSeqStatement(ASTNode syntax, bool isVolatile, string? label = null)
+        public BoundSeqStatement(ASTNode syntax, bool isVolatile, string? label = null,
+            IReadOnlyList<BoundUsingBinding>? usingBindings = null)
             : base(syntax)
         {
             IsVolatile = isVolatile;
             Label = label;
+            UsingBindings = usingBindings ?? Array.Empty<BoundUsingBinding>();
+        }
+    }
+
+    // using 绑定的 P3 产物；DisposeMethod 已在绑定期解析，P4 不重新查名。
+    public sealed class BoundUsingBinding : BoundNode
+    {
+        public LocalSymbol Local { get; }
+        public BoundExpression Initializer { get; }
+        public MethodSymbol DisposeMethod { get; }
+        public BoundCallStatement DisposeCall { get; }
+
+        public BoundUsingBinding(UsingBindingASTNode syntax, LocalSymbol local,
+            BoundExpression initializer, MethodSymbol disposeMethod,
+            BoundCallStatement disposeCall) : base(syntax)
+        {
+            Local = local;
+            Initializer = initializer;
+            DisposeMethod = disposeMethod;
+            DisposeCall = disposeCall;
         }
     }
 

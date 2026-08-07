@@ -54,8 +54,8 @@ BIL 文本
    （M29 后 AST 无 annotations 挂点，这是刻意设计，不走回头路）；
    语义信息全部活在 BoundTree/LoweredTree 与符号图上。
 3. **P4a 与 P4b 分离（LoweredTree 存在的理由）**：emit 之前要做的
-   lowering 相当深——async/await 物化为对标准库 Task 实现的调用
-   （见 §7）、using 物化为清理记录与 try/finally 路径等；同时避免
+   lowering 相当深——async/await 首切片直接物化为 BIL §17 指令，后续由
+   Middleware 降为状态机（见 §7），using 物化为清理记录与 try/finally 路径等；同时避免
    P4 内部实现与 BIL 对象模型（及未来 BIL verifier/VM）互相捆绑，
    保持关注点分离。
 4. **符号是驻留对象图**，引用相等即身份相等；canonical symbol 字符串
@@ -288,7 +288,7 @@ SemanticSymbol
 | 未声明方法的 wrapper 降级（SYNTAX §14.7） | `invoke core::Any$call???`（胖值 ABI；BIL §15.5） |
 | 字符串插值 | 拼接/格式化调用链 |
 | trailing lambda、`TypeName(...)` 简写等 | 规范调用形态 |
-| async/await/yield | 物化为标准库 Task 机制调用（§7，专项设计） |
+| async/await/yield | 首切片直接发 BIL §17；状态机由 Middleware 后续降级（§7，专项设计） |
 | 隐藏参数（`.generic.*` / `.vargs.*` / `.kwargs.*`） | 按 BIL §7 规范签名显式化 |
 
 降级**不得改变** `SYNTAX.md` / `RUNTIME.md` 规定的可观察语义
@@ -334,30 +334,16 @@ BilModule / BilFunction / BilBlock / Bil 指令 / BilResource …
 
 ## 7. 深度 lowering 与 BIL_STANDARD 待修订清单
 
-**定稿方向（2026-07-29）**：async/await/yield 在 P4a 物化为对标准库
-Task 实现的调用；Task 实现进一步调用 stdlib 标准要求 Middleware 暴露的
-Native 方法。**Middleware 完全不关心上层异步模型**。`using` 同理在
-P4a 物化。RUNTIME.md §17–§21/§25 规定的可观察语义不变，变的只是
-实现层次归属（Middleware → 中端 lowering + stdlib + Native hooks）。
+**S13 定稿（2026-08-07）**：BIL §17 是标准协程语义，不删除也不降级为
+普通 stdlib 调用。首个实现切片由 P3/P4 把 `await Task<T>/Task` 和 `yield`
+直接落为强类型 BIL 指令，async 调用保持 §15.2 的 eager `invoke` 语义；`using`
+仍由 P4a 编织为 `try/finally` 清理路径。
 
-该方向与现行 `BIL_STANDARD.md`（草案 1.1）存在正面冲突，以下条目
-**待修订**（修订是独立里程碑，本文档不代改规范）：
-
-- §1.1：「协程 frame、continuation 和状态机的物理布局」不再属于
-  Middleware，改属 stdlib + Native hooks；
-- §1.2：「异常、`await` 和 `yield` 的可观察语义」「source-level `async`
-  调用的 eager spawn 语义」改由 lowering 产物 + stdlib 保证，
-  不再是 BIL 指令层语义；
-- §17（协程指令 `await` / `yield`）：删除或降级为非标准扩展；
-- §15.2（async 方法调用的 Task 结果规则）：随 async 物化方式改写；
-- §21.3/§21.8/§22.2/§23 中涉及 await/yield/async 的验证与 lowering
-  条目：同步清理；
-- stdlib 标准（尚不存在）需要新增：Task 实现依赖的 Native 方法面
-  （协程 frame 分配、continuation 捕获、调度挂钩等）。
-
-async lowering 的具体形态（状态机切分、continuation 表示、与
-RUNTIME §23 GC fence 的交互）是**专项设计**，动工前须先出专项文档
-（对标 `EXPRESSION_ARCHITECTURE.md` 的角色），列入 ROADMAP 后段。
+Middleware 是 BIL §17 的实现者，负责把可挂起函数 lower 为状态机、保存和恢复
+continuation、注册 Task/Alarm waiter，并在 frame/Task/清理记录引用发布时遵守
+`RUNTIME.md` §23 ownership fence。frame 布局、state 编号和 Native ABI 不属于 BIL，
+也不以 stdlib 普通调用伪装。完整裁决、closure/局部访问器接入及 Middleware 保留
+native 面见 `ASYNC_LOWERING_DESIGN.md`。
 
 ### 7.1 wrapper 值语义与 BIL 形态（现状，M75 + M88）
 

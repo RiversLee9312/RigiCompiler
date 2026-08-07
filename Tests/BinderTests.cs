@@ -72,7 +72,9 @@ namespace LatteCompiler.Tests
             TestSuperCalls();
             TestConversionOperators();
             TestAsyncGates();
+            TestYieldBinding();
             TestAsyncResultTypes();
+            TestAwaitBinding();
             TestGenericCalls();
             TestGenericVarArgs();
             TestOperatorNameCalls();
@@ -94,6 +96,7 @@ namespace LatteCompiler.Tests
             TestInnerCallGenericPackForwarding();
             TestGenericParamWithWrapperPlace();
             TestDowngradeBinding();
+            TestLambdaBinding();
             return TestHarness.Summary("Binder");
         }
 

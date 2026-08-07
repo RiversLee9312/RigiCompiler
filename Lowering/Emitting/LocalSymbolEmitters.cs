@@ -39,6 +39,11 @@ namespace LatteCompiler
             }
         }
 
+        public static BilSimpleMemberDeclaration EmitSyntheticMethodDeclaration(MethodSymbol method)
+        {
+            return EmitMethodDeclaration(method);
+        }
+
         // 内建类型的 ext 成员声明（S7c-2）：内建类型自身不声明
         // （EmitTypeTree 跳过 IsBuiltin——基元经 BIL 别名投影而非符号
         // 引用），但 P2 注册到其上的 ext 成员（如 .bootstrap 的

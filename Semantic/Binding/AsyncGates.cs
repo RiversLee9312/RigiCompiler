@@ -48,6 +48,9 @@ namespace LatteCompiler
                 case BoundExpressionStatement expression:
                     WalkExpression(expression.Expression, env);
                     break;
+                case BoundYieldStatement yield:
+                    if (yield.Alarm != null) WalkExpression(yield.Alarm, env);
+                    break;
                 case BoundCallStatement call:
                     CheckAsyncCall(call.Method, call.Receiver, call.Arguments, call.TypeArguments,
                         call.GenericPack, statement.Syntax, env);
@@ -98,6 +101,11 @@ namespace LatteCompiler
                     }
                     break;
                 case BoundSeqStatement seqStatement:
+                    foreach (var binding in seqStatement.UsingBindings)
+                    {
+                        WalkExpression(binding.Initializer, env);
+                        WalkStatement(binding.DisposeCall, env);
+                    }
                     WalkBlock(seqStatement.Body, env);
                     break;
                 case BoundLoopControl:
@@ -139,6 +147,9 @@ namespace LatteCompiler
                     break;
                 case BoundUnaryExpression unary:
                     WalkExpression(unary.Operand, env);
+                    break;
+                case BoundAwaitExpression awaitExpression:
+                    WalkExpression(awaitExpression.Operand, env);
                     break;
                 case BoundNewExpression newExpression:
                     foreach (var argument in newExpression.Arguments)
@@ -201,7 +212,16 @@ namespace LatteCompiler
                     WalkExpression(smartCast.Operand, env);
                     break;
                 case BoundSeqExpression seqExpression:
+                    foreach (var binding in seqExpression.UsingBindings)
+                    {
+                        WalkExpression(binding.Initializer, env);
+                        WalkStatement(binding.DisposeCall, env);
+                    }
                     WalkBlock(seqExpression.Body.Block, env);
+                    break;
+                case BoundLambdaExpression lambda:
+                    if (lambda.ExpressionBody != null) WalkExpression(lambda.ExpressionBody, env);
+                    if (lambda.BlockBody != null) WalkBlock(lambda.BlockBody, env);
                     break;
                 case BoundSafeAccessExpression safeAccess:
                     WalkExpression(safeAccess.Receiver, env);
@@ -325,6 +345,31 @@ namespace LatteCompiler
 
         // ===== 闸门 4：async lambda 捕获变量 =====
 
+        // async lambda 的形参与结果和 async 函数使用同一共享安全规则；捕获
+        // 仍由下面的符号级闸门单独检查。
+        public static void CheckLambdaSignature(IReadOnlyList<ParameterSymbol> parameters,
+            SemanticSymbol returnType, LambdaExpressionASTNode lambda, BindEnvironment env)
+        {
+            foreach (var parameter in parameters)
+            {
+                if (parameter.Type is not TypeSymbol type || type is ErrorTypeSymbol) continue;
+                if (!type.IsSharedSafe())
+                {
+                    env.Error(lambda.Span,
+                        $"Parameter '{parameter.Name}' of async lambda must be a shared-safe type: " +
+                        $"'{type.Name}'");
+                }
+            }
+            if (returnType is TypeSymbol returnTypeSymbol
+                && returnTypeSymbol is not ErrorTypeSymbol
+                && !returnTypeSymbol.IsSharedSafe())
+            {
+                env.Error(lambda.Span,
+                    $"Return type of async lambda must be a shared-safe type: " +
+                    $"'{returnTypeSymbol.Name}'");
+            }
+        }
+
         // 粗粒度 AST 扫描（lambda 绑定归 S13，无符号级作用域）：收集体内
         // 全部裸路径头名（PathExpressionASTNode.Head.Name），排除 lambda
         // 自身形参与体内任意嵌套深度声明的局部名（嵌套 lambda 形参同排——
@@ -364,6 +409,32 @@ namespace LatteCompiler
                 if (type is not TypeSymbol checkedType || checkedType is ErrorTypeSymbol) continue;
                 if (!checkedType.IsSharedSafe())
                 {
+                    env.Error(lambda.Span,
+                        $"async lambda captures '{name}' of non-shared-safe type " +
+                        $"'{BoundAnalysis.TypeDisplay(type)}'");
+                }
+            }
+        }
+
+        // S13：lambda 已完成符号绑定后，以引用身份检查捕获集合。
+        // 保留上面的 AST helper 供旧调用点与独立分析使用。
+        public static void CheckLambdaCaptures(IReadOnlySet<SemanticSymbol> captures,
+            LambdaExpressionASTNode lambda, BindEnvironment env)
+        {
+            foreach (var symbol in captures)
+            {
+                var type = symbol switch
+                {
+                    LocalSymbol local => local.Type,
+                    ParameterSymbol parameter => parameter.Type,
+                    ThisSymbol thisSymbol => thisSymbol.Type,
+                    _ => null,
+                };
+                if (type is not TypeSymbol checkedType || checkedType is ErrorTypeSymbol)
+                    continue;
+                if (!checkedType.IsSharedSafe())
+                {
+                    var name = symbol is ThisSymbol ? "this" : symbol.Name;
                     env.Error(lambda.Span,
                         $"async lambda captures '{name}' of non-shared-safe type " +
                         $"'{BoundAnalysis.TypeDisplay(type)}'");

@@ -24,6 +24,13 @@ namespace LatteCompiler
             assigned.Add(local);
         }
 
+        // Lambda 入口只继承外层的 DA 事实；收窄表由新上下文保持为空。
+        public void InheritAssignedFrom(FlowState outer)
+        {
+            assigned.Clear();
+            assigned.UnionWith(outer.assigned);
+        }
+
         // 分叉：当前集快照（分支入口前的 before 集）
         public HashSet<LocalSymbol> Snapshot()
         {
@@ -73,6 +80,8 @@ namespace LatteCompiler
         private readonly Dictionary<NarrowKey, TypeSymbol> narrowed =
             new Dictionary<NarrowKey, TypeSymbol>();
 
+        public int NarrowedEpoch { get; private set; }
+
         // 查询收窄：命中返回收窄类型（引用绑定点包装 BoundSmartCastExpression）
         public TypeSymbol? LookupNarrow(NarrowKey key)
         {
@@ -107,6 +116,13 @@ namespace LatteCompiler
             {
                 narrowed.Remove(key);
             }
+        }
+
+        // 挂起点后的代码不能继续使用当前收窄；DA 集合独立维护，故保持不变。
+        public void ClearNarrowed()
+        {
+            narrowed.Clear();
+            NarrowedEpoch++;
         }
 
         private readonly List<NarrowKey> rootScratch = new List<NarrowKey>();

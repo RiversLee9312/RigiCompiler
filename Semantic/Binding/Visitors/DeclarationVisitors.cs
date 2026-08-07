@@ -215,6 +215,12 @@ namespace LatteCompiler
             {
                 return BindAssignment(stmt, scope, ctx, env);
             }
+            if (UnaryVisitor.IsAwait(stmt.Expression.Expression, out var awaitNode))
+            {
+                var awaitExpression = UnaryVisitor.BindStatementAwait(awaitNode, scope, ctx, env);
+                return awaitExpression == null ? null : new BoundExpressionStatement(stmt,
+                    awaitExpression);
+            }
             // void 调用落成 BoundCallStatement，非 void 调用仍是表达式语句
             if (stmt.Expression.Expression is PathExpressionASTNode path
                 && CallForm.TryGet(path, out var calleeSegments, out var callArguments,
@@ -243,7 +249,8 @@ namespace LatteCompiler
                 if (binding.IsVoid)
                 {
                     return new BoundCallStatement(stmt, binding.Method, binding.Arguments,
-                        binding.Receiver, binding.TypeArguments, binding.GenericPack);
+                        binding.Receiver, binding.TypeArguments, binding.GenericPack,
+                        binding.IsIndirect, binding.IndirectHandle);
                 }
                 if (binding.Receiver != null)
                 {
@@ -254,9 +261,12 @@ namespace LatteCompiler
                 }
                 return new BoundExpressionStatement(stmt, new BoundCallExpression(path,
                     binding.Method, binding.Arguments, binding.ResultType!,
-                    binding.TypeArguments, binding.GenericPack));
+                    binding.TypeArguments, binding.GenericPack, binding.IsIndirect,
+                    binding.IndirectHandle));
             }
             var expr = ExpressionDispatcher.Visit(stmt.Expression.Expression, scope, ctx, env);
+            if (expr != null && LambdaFacility.CheckUnsupportedConsumer(expr, stmt, env))
+                return null;
             return expr == null ? null : new BoundExpressionStatement(stmt, expr);
         }
 
@@ -270,9 +280,18 @@ namespace LatteCompiler
             var value = ExpressionDispatcher.Visit(node.AssignValue!.Expression, scope, ctx, env,
                 target?.Type as TypeSymbol);
             if (target == null || value == null) return null;
+            if (LambdaFacility.CheckUnsupportedConsumer(value, node.AssignValue, env))
+                return null;
             switch (target)
             {
                 case BoundValueReferenceExpression { Symbol: LocalSymbol local }:
+                    if (local.IsUsingResource)
+                    {
+                        env.Error(node.Span,
+                            $"Cannot assign to using resource '{local.Name}'; " +
+                            "using resource bindings cannot be reassigned");
+                        return null;
+                    }
                     if (local.IsConst)
                     {
                         env.Error(node.Span, $"Cannot assign to const '{local.Name}'");
@@ -385,6 +404,8 @@ namespace LatteCompiler
                 }
                 var labelValue = ExpressionDispatcher.Visit(ret.Value.Expression, scope, ctx, env);
                 if (labelValue == null) return null;
+                if (LambdaFacility.CheckUnsupportedConsumer(labelValue, ret.Value, env))
+                    return null;
                 return new BoundReturnValueStatement(node, target, labelValue);
             }
             if (ret.Value == null)
@@ -399,6 +420,7 @@ namespace LatteCompiler
             var value = ExpressionDispatcher.Visit(ret.Value.Expression, scope, ctx, env,
                 ctx.Frame.Method.ReturnType as TypeSymbol);
             if (value == null) return null;
+            if (LambdaFacility.CheckUnsupportedConsumer(value, ret.Value, env)) return null;
             if (ctx.Frame.Method.ReturnType == null)
             {
                 env.Error(ret.Value.Span ?? ret.Span,

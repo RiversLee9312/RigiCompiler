@@ -57,6 +57,8 @@ namespace LatteCompiler.Tests
                     $"Decl({decl.Local.Name}, {TypeShort.Of(decl.Local.Type)}" +
                     $"{(decl.Initializer != null ? $", = {Expr(decl.Initializer)}" : "")})",
                 LoweredExpressionStatement exprStmt => $"ExprStmt({Expr(exprStmt.Expression)})",
+                LoweredYieldStatement yield => yield.Alarm == null
+                    ? "Yield" : $"Yield({Expr(yield.Alarm)})",
                 LoweredCallStatement call => call.Receiver == null
                     ? $"CallStmt({call.Method.Name}, [{string.Join(", ", call.Arguments.Select(Expr))}])"
                     : $"InstCallStmt({call.Method.Name}, {Expr(call.Receiver)}, " +
@@ -126,6 +128,9 @@ namespace LatteCompiler.Tests
                     $"Binary({binary.Op}, {Expr(binary.Left)}, {Expr(binary.Right)}, {TypeShort.Of(binary.Type)})",
                 LoweredUnaryExpression unary =>
                     $"Unary({unary.Op}, {Expr(unary.Operand)}, {TypeShort.Of(unary.Type)})",
+                LoweredAwaitExpression awaitExpression =>
+                    $"Await({Expr(awaitExpression.Operand)}, " +
+                    $"{(awaitExpression.HasResult ? TypeShort.Of(awaitExpression.ResultType!) : "void")})",
                 LoweredCallExpression call =>
                     $"Call({call.Method.Name}, [{string.Join(", ", call.Arguments.Select(Expr))}], " +
                     $"{TypeShort.Of(call.Type)})",

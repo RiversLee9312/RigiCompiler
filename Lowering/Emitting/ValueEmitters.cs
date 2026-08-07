@@ -135,6 +135,14 @@ namespace LatteCompiler
                 callArguments.Add(EmitValueDispatcher.Visit(argument, target, ctx, env));
             }
             var callResult = ctx.Temps.NewTemp(callExpression.Type);
+            if (callExpression.IsIndirect)
+            {
+                var handle = BilOp.Var(EmittingFacility.ValueVariableName(
+                    callExpression.IndirectHandle!));
+                target.Instructions.Add(new InvokeIndirectInstruction(handle, callResult,
+                    callArguments) { Origin = callExpression });
+                return callResult;
+            }
             target.Instructions.Add(new InvokeInstruction(
                 BilOp.Fn(CanonicalSymbolPrinter.PrintMethod(callExpression.Method)),
                 callResult, callArguments)
@@ -368,6 +376,38 @@ namespace LatteCompiler
             target.Instructions.Add(new InvokeInstruction(
                 BilOp.Fn(BilSpellings.InnerReservedFunction), result, args) { Origin = callInner });
             return result;
+        }
+    }
+
+    internal sealed class AwaitEmitter : EmitVisitor<AwaitEmitter, BilVariableOperand>
+    {
+        protected override BilVariableOperand VisitCore(LoweredNode node, BilBlock target,
+            EmitContext ctx, EmitEnvironment env)
+        {
+            var awaitExpression = (LoweredAwaitExpression)node;
+            var task = EmitValueDispatcher.Visit(awaitExpression.Operand, target, ctx, env);
+            if (!awaitExpression.HasResult)
+            {
+                target.Instructions.Add(new AwaitInstruction(task) { Origin = awaitExpression });
+                return BilOp.Var("<void>");
+            }
+            var result = ctx.Temps.NewTemp(awaitExpression.ResultType!);
+            target.Instructions.Add(new AwaitInstruction(task, result) { Origin = awaitExpression });
+            return result;
+        }
+    }
+
+    internal sealed class LambdaEmitter : EmitVisitor<LambdaEmitter, BilVariableOperand>
+    {
+        protected override BilVariableOperand VisitCore(LoweredNode node, BilBlock target,
+            EmitContext ctx, EmitEnvironment env)
+        {
+            var lambda = (LoweredLambdaExpression)node;
+            var handle = ctx.Temps.NewMethodIdTemp((LambdaTypeSymbol)lambda.Type);
+            target.Instructions.Add(new GetIdMethodInstruction(
+                BilOp.Fn(CanonicalSymbolPrinter.PrintMethod(lambda.Method)), handle)
+            { Origin = lambda });
+            return handle;
         }
     }
 

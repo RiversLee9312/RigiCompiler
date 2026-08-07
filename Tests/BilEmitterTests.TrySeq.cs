@@ -142,6 +142,54 @@ namespace LatteCompiler.Tests
             TestHarness.CheckTrue("call 单操作数 blk（§16.1）",
                 callInstruction.Operands.Count == 1
                 && callInstruction.Operands[0] is BilBlockOperand);
+
+            var (unit3, module3, _) = BilTestHarness.EmitBilUnit(
+                "class ExprResource implements core.IDisposable { pub override func dispose() { } }\n" +
+                "func acquireExpr(): ExprResource { return new ExprResource() }\n" +
+                "func exprUsing(): ExprResource { return seq using(const a = acquireExpr()) " +
+                "using(var b: ExprResource = a) { return@_ b } }\n");
+            CheckNoErrors("表达式 using BIL 无诊断", unit3);
+            BilTestHarness.CheckBilValid("表达式 using BIL 验证器零错误", module3);
+            var exprFn = module3.Functions.Single(f => f.Symbol == "$exprUsing()@ExprResource");
+            var exprText = BilWriter.Write(module3);
+            BilTestHarness.CheckFnShape("表达式 using 结果局部与 ret/vars", module3,
+                "$exprUsing()@ExprResource",
+                ".vars { ExprResource a, ExprResource b, ExprResource .s0, " +
+                ".nullable<core::Exception> .s1, .nullable<core::Exception> .s2, " +
+                "ExprResource .t0 }\n" +
+                ".block entry entrypoint {\n" +
+                "call blk(seq0)\n" +
+                "ret $.s0\n" +
+                "}\n" +
+                ".block seq0 {\n" +
+                "invoke fn($acquireExpr()@ExprResource) $.t0 []\n" +
+                "set.var $.t0 $a\n" +
+                "try blk(try0-body) $.s2 res(#0) blk(try0-finally)\n" +
+                "}\n" +
+                ".block try0-body {\n" +
+                "set.var $a $b\n" +
+                "try blk(try1-body) $.s1 res(#0) blk(try1-finally)\n" +
+                "}\n" +
+                ".block try1-body {\n" +
+                "set.var $b $.s0\n" +
+                "}\n" +
+                ".block try1-finally {\n" +
+                "invoke.noret fn(ExprResource$dispose()@.void) [$b]\n" +
+                "}\n" +
+                ".block try0-finally {\n" +
+                "invoke.noret fn(ExprResource$dispose()@.void) [$a]\n" +
+                "}\n");
+            var exprBlocks = exprFn.Blocks;
+            TestHarness.CheckTrue("表达式 using call blk 与 nested try 结构",
+                exprBlocks.Any(b => b.Instructions.Any(i => i is CallBlockInstruction))
+                && exprBlocks.Count(i => i.Instructions.Any(x => x is TryInstruction)) >= 2);
+            var disposeReceivers = exprBlocks.SelectMany(b => b.Instructions)
+                .OfType<InvokeNoResultInstruction>()
+                .Where(i => i.Method.Symbol.Contains("dispose"))
+                .Select(i => i.Arguments[0].Render())
+                .ToList();
+            TestHarness.Check("表达式 using BIL dispose 逆序", string.Join(",", disposeReceivers),
+                "$b,$a");
         }
     }
 }

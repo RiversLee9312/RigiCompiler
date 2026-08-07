@@ -58,6 +58,7 @@ namespace LatteCompiler
             {
                 VariableDeclarationASTNode => LocalDeclarationVisitor.Visit(node, scope, ctx, env),
                 ExpressionStatementASTNode => ExpressionStatementVisitor.Visit(node, scope, ctx, env),
+                YieldStatementASTNode => YieldVisitor.Visit(node, scope, ctx, env),
                 ReturnStatementASTNode => ReturnVisitor.Visit(node, scope, ctx, env),
                 IfStatementASTNode => IfStatementVisitor.Visit(node, scope, ctx, env),
                 LoopStatementASTNode => LoopVisitor.Visit(node, scope, ctx, env),

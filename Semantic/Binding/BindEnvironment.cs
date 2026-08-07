@@ -20,6 +20,20 @@ namespace LatteCompiler
 
         public BootstrapSymbols B => Unit.Symbols.Bootstrap;
 
+        private int syntheticLambdaOrdinal;
+        internal List<BoundLambdaExpression> SyntheticLambdas { get; } =
+            new List<BoundLambdaExpression>();
+
+        internal MethodSymbol NewSyntheticLambdaMethod(SemanticSymbol returnType)
+        {
+            var method = new MethodSymbol(".__lambda." + syntheticLambdaOrdinal++,
+                MethodKind.Regular, ns: Unit.Symbols.GlobalNamespace, isStatic: true,
+                returnType: returnType);
+            method.IsSynthetic = true;
+            method.HasBody = true;
+            return method;
+        }
+
         // 参数默认值绑定产物（S8d）：BindingDriver 驱动绑定（声明点作用域），
         // 调用点缺省时查表填充。记忆化按需绑定：前向依赖（f(a = h()) 声明
         // 先于 h）由调用点查表递归触发被依赖参数的绑定，结果入表不重绑

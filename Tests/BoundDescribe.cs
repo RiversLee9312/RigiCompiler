@@ -65,6 +65,8 @@ namespace LatteCompiler.Tests
                     $"Decl({decl.Local.Name}, {TypeShort.Of(decl.Local.Type)}" +
                     $"{(decl.Initializer != null ? $", = {Expr(decl.Initializer)}" : "")})",
                 BoundExpressionStatement exprStmt => $"ExprStmt({Expr(exprStmt.Expression)})",
+                BoundYieldStatement yield => yield.Alarm == null
+                    ? "Yield" : $"Yield({Expr(yield.Alarm)})",
                 BoundCallStatement call => call.Receiver == null
                     ? $"CallStmt({call.Method.Name}, [{string.Join(", ", call.Arguments.Select(Expr))}])"
                     : $"InstCallStmt({call.Method.Name}, {Expr(call.Receiver)}, " +
@@ -94,7 +96,8 @@ namespace LatteCompiler.Tests
                 BoundTryStatement tryStmt => Try(tryStmt),
                 BoundSeqStatement seqStmt =>
                     $"{(seqStmt.IsVolatile ? "SeqVolatile" : "Seq")}" +
-                    $"{(seqStmt.Label != null ? "@" + seqStmt.Label : "")}({Block(seqStmt.Body)})",
+                    $"{(seqStmt.Label != null ? "@" + seqStmt.Label : "")}" +
+                    $"({(seqStmt.UsingBindings.Count == 0 ? "" : string.Join(", ", seqStmt.UsingBindings.Select(Using)))}{Block(seqStmt.Body)})",
                 // M61：return@语句seq（不携带值，Target.Label 必非 null）
                 BoundSeqExitStatement seqExit => $"SeqExit(@{seqExit.Target.Label})",
                 // S7f 解构声明：Destructuring([a: String ← key; b: i32 ← value], init)
@@ -122,6 +125,10 @@ namespace LatteCompiler.Tests
             return $"Try({Block(tryStmt.TryBlock)}, [{catches}], {finallyPart})";
         }
 
+        private static string Using(BoundUsingBinding binding) =>
+            $"using({(binding.Local.IsConst ? "const" : "var")} {binding.Local.Name}, " +
+            $"{Expr(binding.Initializer)}, dispose={binding.DisposeMethod.Name})";
+
         // 值块：ValueBlock(标签, 产值类型, [块])；隐式取值带 implicit 标记；
         // 纯穿透（无本块产值）类型显式 -；volatile（S7e seq）带 volatile 标记
         public static string ValueBlock(BoundValueBlock valueBlock)
@@ -139,6 +146,10 @@ namespace LatteCompiler.Tests
             {
                 null => "<null>",
                 BoundLiteralExpression literal => Literal(literal),
+                BoundLambdaExpression lambda =>
+                    $"Lambda([{string.Join(", ", lambda.Parameters.Select(p => p.Name))}], " +
+                    $"{(lambda.ExpressionBody != null ? Expr(lambda.ExpressionBody) : Block(lambda.BlockBody!))}, " +
+                    $"{TypeShort.Of(lambda.ReturnType)}, captures=[{string.Join(", ", lambda.CapturedSymbols.Select(s => s.Name))}])",
                 BoundValueReferenceExpression valueRef => valueRef.Symbol switch
                 {
                     LocalSymbol local => $"Local({local.Name},{TypeShort.Of(valueRef.Type)})",
@@ -151,6 +162,9 @@ namespace LatteCompiler.Tests
                     $"Binary({binary.Op}, {Expr(binary.Left)}, {Expr(binary.Right)}, {TypeShort.Of(binary.Type)})",
                 BoundUnaryExpression unary =>
                     $"Unary({unary.Op}, {Expr(unary.Operand)}, {TypeShort.Of(unary.Type)})",
+                BoundAwaitExpression awaitExpression =>
+                    $"Await({Expr(awaitExpression.Operand)}, " +
+                    $"{(awaitExpression.HasResult ? TypeShort.Of(awaitExpression.ResultType!) : "void")})",
                 BoundCallExpression call =>
                     $"Call({call.Method.Name}, [{string.Join(", ", call.Arguments.Select(Expr))}], " +
                     $"{TypeShort.Of(call.Type)})",
@@ -206,7 +220,9 @@ namespace LatteCompiler.Tests
                 BoundVarArgsArgument varArgs => varArgs.IsNamed
                     ? $"KwArgs([{string.Join(", ", varArgs.NamedValues.Select(p => $"{p.Name} = {Expr(p.Value)}"))}])"
                     : $"VarArgs([{string.Join(", ", varArgs.Values.Select(Expr))}])",
-                BoundSeqExpression seqExpr => $"SeqExpr({ValueBlock(seqExpr.Body)})",
+                BoundSeqExpression seqExpr =>
+                    $"SeqExpr([{string.Join(", ", seqExpr.UsingBindings.Select(Using))}], " +
+                    $"{ValueBlock(seqExpr.Body)})",
                 // S7f：安全访问（占位叶子打 SafeReceiver；结果类型 P3 定型）
                 BoundSafeAccessExpression safeAccess =>
                     $"SafeAccess({Expr(safeAccess.Receiver)}, {Expr(safeAccess.Access)}, " +

@@ -163,6 +163,83 @@ namespace LatteCompiler.Tests
                 "Return(Param(x,i32))])");
         }
 
+        // ===== using 降级（S10：初始化顺序 + nested try/finally）=====
+        private static void TestUsingLowering()
+        {
+            var (unit, _, lowered) = LowerUnitWithStdlib(
+                "class Resource implements core.IDisposable {\n" +
+                "    pub override func dispose() { }\n" +
+                "}\n" +
+                "func acquire(): Resource { return new Resource() }\n" +
+                "func use(r: Resource) { }\n" +
+                "func single() {\n" +
+                "    seq using(const r = acquire()) { use(r) }\n" +
+                "}\n");
+            CheckNoErrors("using 单资源降级无诊断", unit);
+            TestHarness.Check("using 单资源 nested try/finally",
+                LoweredDescribe.Body(BodyOf(lowered, "single")),
+                "Body(single, [r: Resource, .s0: Exception?], [Seq([Decl(r, Resource, = Call(acquire, [], Resource)); " +
+                "Try([[CallStmt(use, [Local(r,Resource)])]], [], Finally([InstCallStmt(dispose, Local(r,Resource), [])]), .s0)])])");
+
+            var (unit2, _, lowered2) = LowerUnitWithStdlib(
+                "class Resource2 implements core.IDisposable {\n" +
+                "    pub override func dispose() { }\n" +
+                "}\n" +
+                "func first(): Resource2 { return new Resource2() }\n" +
+                "func second(a: Resource2): Resource2 { return a }\n" +
+                "func use2(a: Resource2, b: Resource2) { }\n" +
+                "func many() {\n" +
+                "    seq using(const a = first()) using(var b: Resource2 = second(a)) { use2(a, b) }\n" +
+                "}\n");
+            CheckNoErrors("using 多资源降级无诊断", unit2);
+            var many = (LoweredSeqBlock)BodyOf(lowered2, "many").Body.Statements.Single();
+            var outer = (LoweredTryStatement)many.Body.Statements[1];
+            var innerBody = (LoweredBlock)outer.TryBlock.Statements[0];
+            var inner = (LoweredTryStatement)innerBody.Statements[1];
+            TestHarness.CheckTrue("using 多资源初始化源码顺序",
+                ((LoweredLocalDeclarationStatement)many.Body.Statements[0]).Local.Name == "a" &&
+                ((LoweredLocalDeclarationStatement)innerBody.Statements[0]).Local.Name == "b");
+            TestHarness.CheckTrue("using 多资源 dispose 逆序",
+                ((LoweredCallStatement)inner.FinallyBlock!.Statements[0]).Method.Name == "dispose" &&
+                ((LoweredValueReferenceExpression)((LoweredCallStatement)
+                    inner.FinallyBlock.Statements[0]).Receiver!).Symbol.Name == "b" &&
+                ((LoweredCallStatement)outer.FinallyBlock!.Statements[0]).Method.Name == "dispose" &&
+                ((LoweredValueReferenceExpression)((LoweredCallStatement)
+                    outer.FinallyBlock.Statements[0]).Receiver!).Symbol.Name == "a");
+            TestHarness.CheckTrue("using 多资源 try 嵌套",
+                inner.TryBlock.Statements.Count == 1 &&
+                inner.TryBlock.Statements[0] is LoweredBlock);
+
+            var (unit3, _, lowered3) = LowerUnitWithStdlib(
+                "class ExprResource implements core.IDisposable { pub override func dispose() { } }\n" +
+                "func acquireExpr(): ExprResource { return new ExprResource() }\n" +
+                "func exprUsing(): ExprResource { return seq using(const a = acquireExpr()) " +
+                "using(var b: ExprResource = a) { return@_ b } }\n");
+            CheckNoErrors("表达式 using 降级无诊断", unit3);
+            var exprBody = BodyOf(lowered3, "exprUsing");
+            var exprSeq = (LoweredSeqBlock)exprBody.Body.Statements[0];
+            var exprOuter = (LoweredTryStatement)exprSeq.Body.Statements[1];
+            var exprInnerBody = (LoweredBlock)exprOuter.TryBlock.Statements[0];
+            var exprInner = (LoweredTryStatement)exprInnerBody.Statements[1];
+            TestHarness.Check("表达式 using 完整 Lowered 形状", LoweredDescribe.Body(exprBody),
+                "Body(exprUsing, [a: ExprResource, b: ExprResource, .s0: ExprResource, .s1: Exception?, .s2: Exception?], " +
+                "[Seq([Decl(a, ExprResource, = Call(acquireExpr, [], ExprResource)); " +
+                "Try([[Decl(b, ExprResource, = Local(a,ExprResource)); " +
+                "Try([[Assign(Local(.s0,ExprResource), Local(b,ExprResource))]], [], " +
+                "Finally([InstCallStmt(dispose, Local(b,ExprResource), [])]), .s1)]], [], " +
+                "Finally([InstCallStmt(dispose, Local(a,ExprResource), [])]), .s2)]); " +
+                "Return(Local(.s0,ExprResource))])");
+            TestHarness.CheckTrue("表达式 using 结果局部来自值块",
+                exprInner.TryBlock.Statements[0] is LoweredBlock
+                && exprSeq.Body.Statements.Count == 2
+                && exprBody.Body.Statements[1] is LoweredReturnStatement);
+            TestHarness.CheckTrue("表达式 using dispose 逆序",
+                ((LoweredValueReferenceExpression)((LoweredCallStatement)
+                    exprInner.FinallyBlock!.Statements[0]).Receiver!).Symbol.Name == "b" &&
+                ((LoweredValueReferenceExpression)((LoweredCallStatement)
+                    exprOuter.FinallyBlock!.Statements[0]).Receiver!).Symbol.Name == "a");
+        }
+
         // ===== 值块编织扩展（S7e：seq 透明 / try 规则 / finally 拦截）=====
         private static void TestTryWeaving()
         {
@@ -239,6 +316,20 @@ namespace LatteCompiler.Tests
                 "is not supported yet (S7e)");
             TestHarness.CheckTrue("拦截后跳过该函数体",
                 !lowered4.Any(b => b.Method.Name == "bad"));
+
+            // 已知边界：复杂外层值块 continuation 穿越 using 的 try/finally
+            // 仍必须由 S7e P4 拦截，不能因表达式 using 的正常降级而放宽。
+            var (unit5, _, lowered5) = LowerUnitWithStdlib(
+                "class BoundaryResource implements core.IDisposable { pub override func dispose() { } }\n" +
+                "func acquireBoundary(): BoundaryResource { return new BoundaryResource() }\n" +
+                "func boundary(c: bool): i32 { return seq { " +
+                "seq using(const r = acquireBoundary()) { if (c) { return@_ 1 } } " +
+                "return@_ 2 } }\n");
+            TestHarness.CheckSemanticError("using 外层 continuation 已知边界拦截", unit5.Diagnostics,
+                "P4: value block weaving across try-finally with partial termination " +
+                "is not supported yet (S7e)");
+            TestHarness.CheckTrue("using 外层 continuation 拦截后跳过函数体",
+                !lowered5.Any(b => b.Method.Name == "boundary"));
         }
     }
 }

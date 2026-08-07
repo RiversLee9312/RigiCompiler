@@ -1,0 +1,193 @@
+# S13 Async Lowering 专项设计
+
+> 状态：定稿；await/yield、using 两种形态、lambda P3 绑定与无捕获 lambda P4
+> function-handle lowering 已实现；捕获 lambda closure environment/cell、复杂
+> continuation 与完整可挂起清理待实现
+> 范围：S13 的 async/await/yield/using、lambda 闭包与局部访问器；不进入 S14 BIL VM。
+
+## 1. 裁决与边界
+
+本设计以 `SYNTAX.md` §4.5、§5.3、§6.2、§7.5，`RUNTIME.md` §17--§25 和
+`BIL_STANDARD.md` §17/§22 为准。BIL 已经拥有强类型 `await`/`yield` 指令，
+因此不把它们改写为普通 stdlib 调用，也不删除 BIL §17。
+
+首个实现切片的异步落地是：
+
+1. `await Task<T>` 发 `await $task $result`，结果变量严格为 `T`。
+2. `await Task` 发 `await $task`，仅作为语句完成点；在要求值的位置报 P3 诊断。
+3. `yield`、`yield PollingAlarm`、`yield EventAlarm` 直接发 BIL `yield` 指令。
+4. async 调用继续用带 `async` 修饰的方法 `invoke` 表示 eager spawn，不新增 spawn 指令。
+
+这一步不要求 frontend 自己拆函数、合成 Coroutine frame 或改变函数 ABI。Middleware
+消费合法 BIL 后，才可把含挂起点的函数降为状态机。这样首切片不依赖尚未稳定的
+闭包/frame ABI，同时保留 BIL VM 的抽象解释空间。
+
+## 2. 分层职责
+
+| 层 | 责任 |
+|---|---|
+| P3 | await/yield 定型、挂起点收窄失效、lambda 捕获分析、局部访问器的符号归属与可访问性 |
+| P4a | `using` 清理路径编织；后续闭包/frame 提升的语义重写；不把 await/yield 改为调用 |
+| P4b | 直接发 `await`/`yield`；async `invoke` 保留；发射 closure/访问器所需 BIL 形态 |
+| BIL verifier | 复核 §17 的 Task/Alarm 类型、结果类型、挂起点的 DA/控制流不变量 |
+| Middleware | eager spawn、Task waiter、Alarm 注册、continuation、状态机和 GC ownership fence |
+| S14 VM | 以后解释同一 BIL §17 语义，不是本专项交付物 |
+
+P4 不得重新解析 Task 成员、重载或类型；P3 必须在 Bound 节点上保留已解析的 Task
+结果类型、Alarm 类别和所有捕获符号。
+
+## 3. 状态机与 continuation
+
+### 3.1 Middleware 降级模型
+
+Middleware 对每个可达挂起点把函数切为 state：入口为 `state 0`，每个 `await` 或
+`yield` 后的下一条可执行语句为唯一恢复 state。结构化 `try/finally`、循环、值块和
+`using` 清理路径不改变此原则；其活动控制状态必须随 continuation 保存。
+
+continuation 的逻辑内容为：
+
+- 程序计数 state；
+- 所有跨挂起点仍可能读取、或为 finally/dispose/异常传播所需的局部、参数、临时值和 `.return` 槽；
+- 活动异常/try 状态、循环/值块控制状态和 `using` 清理游标；
+- 当前 Coroutine 的 Executor、CoroutineLocal 上下文与等待登记；
+- 精确 GC 根映射，含 Object 引用与 rich ValueType/Box 的 refMap 信息。
+
+局部仅在挂起点后仍可能读取时进入 frame，其余保持普通临时值。state 编号、frame 字段
+顺序、对象布局和 Native ABI 都是 Middleware 内部细节，不进入 BIL 文本。
+
+### 3.2 Task 与 eager spawn
+
+async `invoke` 的操作数先按既有 BIL 左到右规则求值。Middleware 随后创建 Task 和
+Coroutine、复制/获取已由 P3 共享安全闸门许可的 receiver/参数/捕获、绑定 Executor，
+并原子发布 `Created -> Runnable`，最后返回热 Task。函数体异常记录为 Task 失败，绝不
+回流为调用表达式的同步异常；实参求值异常仍属于调用方。
+
+`await` 在 Task 已终止时不创建 continuation；未终止时先完整写入 continuation，再原子
+登记 waiter 并转为 Suspended。终态与登记须避免丢失唤醒。恢复永远发布到等待者自己的
+Executor，并在恢复点取得成功值、重抛保存异常或传播取消。
+
+### 3.3 yield
+
+裸 `yield` 保存 continuation 后执行 `Running -> Runnable`。`yield Alarm` 保存
+continuation 后注册 PollingAlarm/EventAlarm 等待；即使 Alarm 已就绪或已触发，也必须
+结束当前执行段。PollingAlarm 的 `isReady()` 只能由调度侧同步调用；EventAlarm callback
+只发布 waiter，不执行 Latte 用户代码。
+
+## 4. GC fence 与 frame 发布
+
+把值写入 Coroutine frame、Task 终态、waiter 链、closure 环境或 using 清理记录均可能
+建立/移除托管引用。Middleware 必须把引用槽写入、对应 acquire/release 与候选元数据更新
+放在 `RUNTIME.md` §23 定义的同一个 ownership region 中；16 字节原子胖引用写入不能替代
+该 fence。
+
+顺序要求：
+
+1. continuation/frame 的所有根槽先初始化并完成 acquire；
+2. 在同一或后续受 fence 保护的 region 内发布 waiter/Coroutine 状态；
+3. 只有发布成功后才允许当前 Worker 放弃执行权；
+4. 恢复时先原子取得唯一运行权，再读取 frame 与清理/异常状态；
+5. frame、Task 终态和清理记录的最后一次释放也走 ownership region。
+
+若进入 ownership region 时 macroGC 已处于 STARTING/PROCESSING，使用运行时内部
+`GCAlarm` 走 §23 双重检查；这是不可见挂起，不产生源码/BIL `yield`，但 continuation
+仍须保存 Coroutine-owned `cFlag` 状态。
+
+## 5. await/yield/using lowering
+
+### 5.1 首切片 Bound 与 BIL
+
+- 新增 `BoundAwaitExpression`：Task 操作数、是否有结果、`TResult?`；P3 只接受精确的
+  `core.coroutine.Task` 或 `Task<T>`，必要的子类型视图转换仍由既有 cast 规则先物化。
+- 新增 `BoundYieldStatement`：无 Alarm 或已定型的 PollingAlarm/EventAlarm 操作数。
+- Lowered 层保持同构节点；发射器生成 BIL §17，不能退化为 `invoke`。
+- smart cast 在 await/yield 后清除当前函数的收窄事实；DA 的“已赋值”事实不因挂起而清除。
+- `await Task` 只能出现在语句位置；`await Task<T>` 可作表达式或语句（语句位置丢弃结果）。
+
+### 5.2 using
+
+`using` 不引入 BIL 指令。当前首切片开放语句形态 `seq using(...)`：P3 固化资源局部、
+无参 `dispose` 符号和初始化器，P4a 为每个成功初始化的资源建立逆序清理结构，并用
+嵌套 `try/finally` 编织初始化异常前缀、正常落尾、`return`、`throw`、`break` 与
+`continue` 路径。using 资源槽不可重赋值，async/open/abstract dispose 暂时拒绝，避免
+fire-and-forget 或动态派发绕过清理完成语义。表达式 using 与 `return@`/seq-exit 的
+部分终止编织仍是后续切片。
+
+普通 `dispose()` 内部可含 BIL `await`/`yield`。当前每个资源独立的 finally 结构把挂起点
+留在对应清理块内；Middleware 后续必须保存当前 dispose 调用和清理进度，外层 return、
+异常传播或 Task 终态在清理完成前不得发布。当前切片只保守拒绝 async/open/abstract
+dispose；完整动态派发与可挂起清理游标仍待实现。无论如何不新增独立 BIL 清理 opcode。
+
+## 6. lambda 闭包与局部访问器
+
+普通 lambda 和局部访问器采用同一 closure environment，不各造一套捕获机制。P3 对每个
+lambda/局部访问器记录按符号身份排序的捕获集及模式：只读捕获、可变共享 cell 捕获、
+`this` 捕获、泛型 typeid 捕获。捕获值的求值发生在 closure 创建点且只发生一次。
+
+- `const` 和从未被任何闭包写入的局部可按值捕获；rich 值复制遵守 refMap acquire。
+- 被 lambda 或局部访问器写入的 `var` 抬升为唯一 cell，所有同一词法槽的读写经该 cell，
+  从而不复制可变语义。
+- async lambda 的 closure environment、receiver、参数、结果、捕获和泛型实参继续受
+  shared-safe 五项闸门；不共享安全的 cell/捕获在 P3 报错。
+- 普通 lambda 允许捕获 local object，因为它仍在当前 Coroutine；若其后被作为 async
+  lambda 的捕获或跨协程发布，P3 必须在发布边界拒绝。
+
+局部 `var`/`const` 访问器按路线 C 实现：声明槽提升为 closure environment 的逻辑字段，
+getter/setter 是闭包关联的函数体，读写仍经已有 `get.var`/`set.var` 语义入口或等价的
+closure-field lowering。访问器不能越过其词法存活期逃逸；若访问器或其 closure 逃逸，则
+对应 cell/environment 一并提升并由 frame/ARC 根映射持有。不承诺把局部访问器内联，也不
+为其建立全局 canonical 字段符号。
+
+首次闭包子步只要求普通 lambda 与局部访问器闭环；async lambda 在其基础上增加 eager
+spawn 和 shared-safe 检查，不另设第二种闭包对象。
+
+## 7. stdlib 与 Middleware native 面
+
+`stdlib/core/coroutine.latte` 是源码可见的类型面，不暴露 Coroutine、frame、waiter 或
+GC fence。保留 `Task`/`Task<T>` 无公开构造入口、Executor/Alarm 类型与 `sleep`；S13 不以
+扩充用户可调用 native 函数为首要前提。
+
+Middleware 必须提供以下保留运行时面；这些是实现接口而非 BIL canonical symbol，也不得
+被普通 Latte `native` 声明伪造：
+
+| 保留面 | 消费者 | 语义 |
+|---|---|---|
+| `coroutine.spawn` | async `invoke` | 建 Task/Coroutine、绑定 Executor、发布 eager runnable |
+| `task.await` | BIL `await` | 终态读取或 waiter 原子登记/恢复 |
+| `coroutine.yield` | BIL `yield` | Runnable 重发布或 Alarm 等待登记 |
+| `coroutine.complete/fail/cancel` | async state machine | 写 Task 终态并发布 waiter |
+| `coroutine.frame` | state machine | 分配、扫描、保存、恢复 continuation |
+| `gc.ownership-region` | 引用槽发布/回收 | 执行 RUNTIME §23 双检与 GCAlarm 等待 |
+| `alarm.poll/event` | yield Alarm 与 `sleep` | Polling 探测、Event waiter 注册/触发 |
+
+`latte_rt.sleep(i32): EventAlarm` 仍是当前唯一需要由 stdlib 声明的协程 native 函数。
+以后若公开 Executor 选择或 CoroutineLocal 的 get/set，必须先在 `SYNTAX.md` 的 native
+形状限制、`coroutine.latte` 签名、BIL §22.5 VM hook 和 Middleware 接口四处同时定稿；
+本专项不以私有 native ABI 绕过现有强类型声明规则。
+
+## 8. 实施顺序与验收
+
+1. P3/P4/BIL 首切片：await/yield 定型、挂起点收窄屏障、发射和 verifier。✅
+2. using 语句形态：嵌套 try/finally 的逆序清理，覆盖正常、异常、return/break 与初始化失败。✅
+   复杂 outer value-block continuation、动态/async dispose 与完整清理游标仍待后续切片。
+3. lambda P3：普通 lambda 参数/返回/符号级捕获与 async 闸门。✅
+4. closure P4：无捕获 lambda 已发射 `getid.method` + `invoke.indirect`（含
+   synthetic fn declaration 与 verifier 校验）；捕获 lambda 在 P4 保持 pending，
+   后续再扩展 environment 与可变 cell。
+5. Middleware：async invoke eager spawn、Task/Alarm continuation、GC fence、状态机。
+6. async lambda：复用 closure，再接 shared-safe 与 spawn。
+
+前两步以 Bound/Lowered/BIL 形态和 verifier 测试为主；当前 B0 回归计数为
+`Binder 884`、`Lowerer 206`、`BilEmitter 481`、`BilVerifier 150`（均为通过用例，
+测试套件总数仍为 44）。Middleware 以集成测试验证 Task
+终态、Executor 恢复、Alarm、using 清理和 GC fence；S14 才为同一 BIL 指令增加 VM 执行
+断言。不得因 S13 提前实现或扩展 S14 VM。
+
+## 9. 未决风险
+
+- 可挂起 finally/using 与异常 completion 最容易漏掉清理游标或覆盖异常，必须先固化嵌套
+  try/finally/return/break 的形态测试。
+- 闭包 cell 与 frame 同时持有 rich 值时，重复 acquire/release 或遗漏 root map 会破坏 ARC；
+  environment/frame 发布必须统一纳入 ownership region。
+- async lambda 的 P3 捕获扫描已收窄为符号级；无捕获 lambda 的 P4 函数句柄/间接调用
+  已实现；P4 闭包环境与可变 cell 仍未实现，捕获 lambda 不得进入函数句柄发射。
+- 取消语义已有运行时终态但缺少源码取消 API；首切片仅正确传播既有取消，不新增取消入口。

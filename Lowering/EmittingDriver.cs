@@ -24,6 +24,11 @@ namespace LatteCompiler
                 $"\"{env.ModuleName}\""));
             LocalSymbolEmitters.EmitNamespace(env.Unit.Symbols.GlobalNamespace, env);
             LocalSymbolEmitters.EmitBuiltinExtMembers(env);
+            foreach (var body in bodies.Where(b => b.Method.IsSynthetic))
+            {
+                env.Module.LocalSymbols.Add(
+                    LocalSymbolEmitters.EmitSyntheticMethodDeclaration(body.Method));
+            }
             // Resources 在函数发射中按（bodies 顺序 + 树内先序）登记
             foreach (var body in bodies)
             {

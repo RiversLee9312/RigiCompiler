@@ -268,4 +268,21 @@ namespace LatteCompiler.Bil
         internal override IReadOnlyList<BilOperand> Operands =>
             new BilOperand[] { TargetType, Target };
     }
+
+    // §12.6：getid.method fn(METHOD_SYMBOL) RESULT
+    public sealed class GetIdMethodInstruction : BilInstruction
+    {
+        public BilFnOperand Method { get; }
+        public BilVariableOperand Target { get; }
+
+        public GetIdMethodInstruction(BilFnOperand method, BilVariableOperand target)
+        {
+            Method = method;
+            Target = target;
+        }
+
+        internal override string Opcode => "getid.method";
+        internal override IReadOnlyList<BilOperand> Operands =>
+            new BilOperand[] { Method, Target };
+    }
 }

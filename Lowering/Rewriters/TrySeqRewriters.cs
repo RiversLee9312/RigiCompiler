@@ -63,10 +63,58 @@ namespace LatteCompiler
         {
             var seqExpression = (BoundSeqExpression)node;
             var result = ctx.Synth.NewSynthLocal(seqExpression.Type);
+            // 复杂外层值块 continuation 穿越 using 生成的 try/finally 仍由
+            // ValueBlockRewriter 的 S7e 拦截负责；不要为表达式 using 放宽该边界。
             var body = ValueBlockRewriter.Visit(seqExpression.Body,
                 new ValueBlockContext(ctx, result), env);
             if (body == null) return null;
-            ctx.Output.Add(new LoweredSeqBlock(seqExpression, body,
+            var protectedBody = body;
+            var declarations = new List<List<LoweredStatement>>();
+            foreach (var binding in seqExpression.UsingBindings)
+            {
+                var declarationStatements = new List<LoweredStatement>();
+                ctx.Output.Push(declarationStatements);
+                try
+                {
+                    var declaration = LowerStatementDispatcher.Visit(
+                        new BoundLocalDeclarationStatement(binding.Syntax, binding.Local,
+                            binding.Initializer), ctx, env);
+                    if (declaration == null) return null;
+                    declarationStatements.Add(declaration);
+                }
+                finally
+                {
+                    ctx.Output.Pop();
+                }
+                declarations.Add(declarationStatements);
+            }
+            for (var i = seqExpression.UsingBindings.Count - 1; i >= 0; i--)
+            {
+                var binding = seqExpression.UsingBindings[i];
+                var finallyStatements = new List<LoweredStatement>();
+                ctx.Output.Push(finallyStatements);
+                try
+                {
+                    var dispose = LowerStatementDispatcher.Visit(binding.DisposeCall, ctx, env);
+                    if (dispose == null) return null;
+                    finallyStatements.Add(dispose);
+                }
+                finally
+                {
+                    ctx.Output.Pop();
+                }
+                var tryBlock = new LoweredBlock(binding,
+                    new List<LoweredStatement> { protectedBody });
+                protectedBody = new LoweredBlock(binding,
+                    declarations[i].Concat(new LoweredStatement[] {
+                        new LoweredTryStatement(seqExpression, tryBlock,
+                            Array.Empty<LoweredTryCatch>(),
+                            new LoweredBlock(binding, finallyStatements),
+                            ctx.Synth.NewSynthLocal(env.Unit.Symbols.GetNullable(
+                                env.Unit.Symbols.Bootstrap.Exception)))
+                    }).ToList());
+            }
+            ctx.Output.Add(new LoweredSeqBlock(seqExpression, protectedBody,
                 seqExpression.Body.IsVolatile));
             return SynthLocalFactory.ReferenceTo(seqExpression, result);
         }

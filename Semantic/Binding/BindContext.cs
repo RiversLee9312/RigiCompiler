@@ -15,9 +15,13 @@ namespace LatteCompiler
     internal sealed class BindContext
     {
         public BindContext(MethodSymbol method, FileContext fileCtx, TypeSymbol? declaringType,
-            bool isDefaultValueContext = false)
+            bool isDefaultValueContext = false, bool isLambda = false,
+            ThisSymbol? thisSymbol = null)
         {
             Frame = new BindFunctionFrame(method, fileCtx, declaringType, isDefaultValueContext);
+            IsLambda = isLambda;
+            This = thisSymbol ?? (Frame.HasThis && declaringType != null
+                ? new ThisSymbol(declaringType) : null);
         }
 
         // 只读函数帧（当前函数/文件上下文/宿主类型/默认值上下文标记
@@ -38,5 +42,10 @@ namespace LatteCompiler
 
         // 流分析状态（DA；S8b 收窄表将长在这里）
         public FlowState Flow { get; } = new FlowState();
+
+        public bool IsLambda { get; }
+        public HashSet<SemanticSymbol> CapturedSymbols { get; } = new HashSet<SemanticSymbol>();
+        public HashSet<ParameterSymbol> LambdaParameters { get; } = new HashSet<ParameterSymbol>();
+        public ThisSymbol? This { get; }
     }
 }

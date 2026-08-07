@@ -163,5 +163,25 @@ namespace LatteCompiler.Tests
             TestHarness.CheckTrue("跳过未覆盖函数体（无 LoweredFunctionBody 产出）",
                 lowered.Count == 0);
         }
+
+        private static void TestLambdaLowering()
+        {
+            var (unit, _, lowered) = LowerUnit(
+                "func f() { var fn = func{(): i32 -> 42 } }\n");
+            TestHarness.CheckTrue("无捕获 lambda P4 降级无诊断", !unit.Diagnostics.HasErrors,
+                string.Join("; ", unit.Diagnostics.Diagnostics.Select(
+                    d => $"{d.Phase}: {d.Message}")));
+            TestHarness.CheckTrue("lambda 与宿主函数均生成 Lowered body", lowered.Count == 2);
+            TestHarness.CheckTrue("lambda Lowered body 携带合成方法",
+                lowered.Any(body => body.Method.IsSynthetic));
+
+            var captured = LowerUnit(
+                "func f(p: i32) { var fn = func{(): i32 -> p } }\n");
+            TestHarness.CheckTrue("捕获 lambda 在 P4 保持 pending",
+                captured.Unit.Diagnostics.Diagnostics.Any(d => d.Phase == DiagnosticPhase.P4
+                    && d.Message.Contains("captured lambda closure lowering is not available")));
+            TestHarness.CheckTrue("捕获 lambda pending 后不产 synthetic Lowered body",
+                captured.Lowered.Count == 0);
+        }
     }
 }

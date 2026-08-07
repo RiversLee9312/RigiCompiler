@@ -154,7 +154,7 @@ namespace LatteCompiler.Tests
             CheckNoErrors("finally 并集通过", unit9);
 
             // GuaranteesReturn：finally 终止覆盖所有路径
-            var (unit10, _) = BindUnit(
+            var (unit10, bodies10) = BindUnitWithStdlib(
                 "func risky() {\n" +
                 "}\n" +
                 "func gr(): i32 {\n" +
@@ -253,7 +253,7 @@ namespace LatteCompiler.Tests
                 "}\n");
             CheckNoErrors("seq 表达式无诊断", unit4);
             TestHarness.Check("seq 表达式形态", BoundDescribe.Body(BodyOf(bodies4, "se")),
-                "Body(se, [], [Return(SeqExpr(ValueBlock(_, i32, [ReturnValue(_, Int(42,i32))])))])");
+                "Body(se, [], [Return(SeqExpr([], ValueBlock(_, i32, [ReturnValue(_, Int(42,i32))])))])");
 
             // 表达式形态：隐式取值（单表达式语句）
             var (unit5, bodies5) = BindUnit(
@@ -262,7 +262,7 @@ namespace LatteCompiler.Tests
                 "}\n");
             CheckNoErrors("隐式取值无诊断", unit5);
             TestHarness.Check("隐式取值形态", BoundDescribe.Body(BodyOf(bodies5, "si")),
-                "Body(si, [], [Return(SeqExpr(ValueBlock(_, i32, implicit, [ExprStmt(Int(42,i32))])))])");
+                "Body(si, [], [Return(SeqExpr([], ValueBlock(_, i32, implicit, [ExprStmt(Int(42,i32))])))])");
 
             // 表达式形态：named 标签
             var (unit6, bodies6) = BindUnit(
@@ -271,7 +271,7 @@ namespace LatteCompiler.Tests
                 "}\n");
             CheckNoErrors("named seq 无诊断", unit6);
             TestHarness.Check("named seq 形态", BoundDescribe.Body(BodyOf(bodies6, "sn")),
-                "Body(sn, [], [Return(SeqExpr(ValueBlock(calc, i32, [ReturnValue(calc, Int(7,i32))])))])");
+                "Body(sn, [], [Return(SeqExpr([], ValueBlock(calc, i32, [ReturnValue(calc, Int(7,i32))])))])");
 
             // 表达式形态：volatile 置位到值块
             var (unit7, bodies7) = BindUnit(
@@ -280,7 +280,7 @@ namespace LatteCompiler.Tests
                 "}\n");
             CheckNoErrors("volatile seq 表达式无诊断", unit7);
             TestHarness.Check("volatile 置位", BoundDescribe.Body(BodyOf(bodies7, "sv")),
-                "Body(sv, [], [Return(SeqExpr(ValueBlock(_, i32, implicit, volatile, " +
+                "Body(sv, [], [Return(SeqExpr([], ValueBlock(_, i32, implicit, volatile, " +
                 "[ExprStmt(Int(1,i32))])))])");
 
             // 诊断：表达式形态无产值
@@ -296,18 +296,150 @@ namespace LatteCompiler.Tests
             TestHarness.CheckSemanticError("无产值拒绝", unit9.Diagnostics,
                 "seq expression must produce a value (at least one path must return@ a value)");
 
-            // 诊断：using 绑定归 S13（语句与表达式形态同拦截）
-            var (unit10, _) = BindUnit(
-                "func openFile(): i32 {\n" +
-                "    return 1\n" +
+            // 语句形态 using：逐项绑定、资源类型与 dispose 符号落定
+            var (unit10, bodies10) = BindUnitWithStdlib(
+                "class UsingResource implements core.IDisposable {\n" +
+                "    pub override func dispose() { }\n" +
                 "}\n" +
-                "func use(f: i32) {\n" +
-                "}\n" +
+                "func acquire(): UsingResource { return new UsingResource() }\n" +
+                "func use(r: UsingResource) { }\n" +
                 "func su() {\n" +
-                "    seq using(const file = openFile()) { use(file) }\n" +
+                "    seq using(const file = acquire()) { use(file) }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("using 拦截", unit10.Diagnostics,
-                "P3: using bindings are not supported yet (S13)");
+            CheckNoErrors("语句 using 通过", unit10);
+            TestHarness.Check("using 绑定产物", BoundDescribe.Body(
+                BodyOf(bodies10, "su")),
+                "Body(su, [file: UsingResource], [Seq(using(const file, Call(acquire, [], UsingResource), dispose=dispose)[CallStmt(use, [Local(file,UsingResource)])])])");
+
+            var (unitUsingMany, _) = BindUnitWithStdlib(
+                "class UsingResource2 implements core.IDisposable { pub override func dispose() { } }\n" +
+                "func acquire2(): UsingResource2 { return new UsingResource2() }\n" +
+                "func use2(a: UsingResource2, b: UsingResource2) { }\n" +
+                "func sm() { seq using(const a = acquire2()) using(var b: UsingResource2 = a) { use2(a, b) } }\n");
+            CheckNoErrors("using 多资源顺序引用", unitUsingMany);
+
+            var (unitUsingReassign, _) = BindUnitWithStdlib(
+                "class ReassignableResource implements core.IDisposable { pub override func dispose() { } }\n" +
+                "func acquireReassignable(): ReassignableResource { return new ReassignableResource() }\n" +
+                "func suReassign() { seq using(var resource = acquireReassignable()) { resource = acquireReassignable() } }\n");
+            TestHarness.CheckSemanticError("var using 资源禁止重赋值", unitUsingReassign.Diagnostics,
+                "Cannot assign to using resource 'resource'; using resource bindings cannot be reassigned");
+
+            var (unitUsingCompoundReassign, _) = BindUnitWithStdlib(
+                "class CompoundResource implements core.IDisposable { pub override func dispose() { } }\n" +
+                "func acquireCompound(): CompoundResource { return new CompoundResource() }\n" +
+                "func suCompound() { seq using(var resource = acquireCompound()) { resource += resource } }\n");
+            TestHarness.CheckSemanticError("var using 资源禁止复合重赋值",
+                unitUsingCompoundReassign.Diagnostics,
+                "Cannot assign to using resource 'resource'; using resource bindings cannot be reassigned");
+
+            var (unitAsyncDispose, _) = BindUnitWithStdlib(
+                "class AsyncResource implements core.IDisposable { pub override async func dispose() { } }\n" +
+                "func acquireAsync(): AsyncResource { return new AsyncResource() }\n" +
+                "func suAsync() { seq using(var resource = acquireAsync()) { } }\n");
+            TestHarness.CheckSemanticError("async dispose using 拒绝", unitAsyncDispose.Diagnostics,
+                "has an unsupported dispose method (dispose must be synchronous, closed, and non-abstract)");
+
+            var (unitBadResource, _) = BindUnit(
+                "func bad(): i32 { return 1 }\n" +
+                "func sbad() { seq using(var x = bad()) { } }\n");
+            TestHarness.CheckSemanticError("非 IDisposable using 拒绝", unitBadResource.Diagnostics,
+                "must be assignable to 'core.IDisposable'");
+
+            // 表达式形态 using：initializer 与体可见前序资源，绑定规则与语句形态一致
+            var (unitExprUsing, exprBodies) = BindUnitWithStdlib(
+                "class Resource implements core.IDisposable { pub override func dispose() { } }\n" +
+                "func acquire(): Resource { return new Resource() }\n" +
+                "func sexpr(): Resource { return seq using(const r = acquire()) { return@_ r } }\n");
+            CheckNoErrors("表达式 using 通过", unitExprUsing);
+            TestHarness.Check("表达式 using 绑定产物", BoundDescribe.Body(
+                BodyOf(exprBodies, "sexpr")),
+                "Body(sexpr, [r: Resource], [Return(SeqExpr([using(const r, Call(acquire, [], Resource), dispose=dispose)], " +
+                "ValueBlock(_, Resource, [ReturnValue(_, Local(r,Resource))])))])");
+
+            var (unitExprMany, _) = BindUnitWithStdlib(
+                "class Resource2 implements core.IDisposable { pub override func dispose() { } }\n" +
+                "func acquire2(): Resource2 { return new Resource2() }\n" +
+                "func exprMany(): Resource2 { return seq using(const a = acquire2()) " +
+                "using(var b: Resource2 = a) { return@_ b } }\n");
+            CheckNoErrors("表达式 using 多资源顺序引用", unitExprMany);
+
+            var (unitExprReassign, _) = BindUnitWithStdlib(
+                "class Resource3 implements core.IDisposable { pub override func dispose() { } }\n" +
+                "func acquire3(): Resource3 { return new Resource3() }\n" +
+                "func exprReassign(): Resource3 { return seq using(var r = acquire3()) " +
+                "{ r = acquire3()\nreturn@_ r } }\n");
+            TestHarness.CheckSemanticError("表达式 using 资源禁止重赋值", unitExprReassign.Diagnostics,
+                "Cannot assign to using resource 'r'; using resource bindings cannot be reassigned");
+
+            var (unitExprAsync, _) = BindUnitWithStdlib(
+                "class AsyncResource2 implements core.IDisposable { pub override async func dispose() { } }\n" +
+                "func acquireAsync2(): AsyncResource2 { return new AsyncResource2() }\n" +
+                "func exprAsync(): AsyncResource2 { return seq using(var r = acquireAsync2()) { return@_ r } }\n");
+            TestHarness.CheckSemanticError("表达式 using async dispose 拒绝", unitExprAsync.Diagnostics,
+                "has an unsupported dispose method (dispose must be synchronous, closed, and non-abstract)");
+
+            // 显式类型的降级调用结果仍由 P4a 负责 cast 物化；无类型 Any 不因
+            // 此豁免 IDisposable 规则，仍须保守拒绝。
+            var (unitExprMismatch, _) = BindUnitWithStdlib(
+                "@WrapperTarget(.Entity)\n" +
+                "wrapper W {\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(" +
+                " symbol: String, namedArgs: named TNamedArgs..., unnamedArgs: TUnnamedArgs..." +
+                "): TReturn { return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
+                "}\n" +
+                "class Resource implements core.IDisposable { pub override func dispose() { } }\n" +
+                "@W class Service { pub init() }\n" +
+                "func exprMismatch(service: Service): Resource { " +
+                "return seq using(var resource: Resource = service.fetch()) { return@_ resource } }\n");
+            CheckNoErrors("表达式 using 显式类型接受降级 Any", unitExprMismatch);
+
+            var (unitExprAny, _) = BindUnitWithStdlib(
+                "@WrapperTarget(.Entity)\n" +
+                "wrapper W {\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(" +
+                " symbol: String, namedArgs: named TNamedArgs..., unnamedArgs: TUnnamedArgs..." +
+                "): TReturn { return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
+                "}\n" +
+                "@W class Service { pub init() }\n" +
+                "func exprAny(service: Service): Any { " +
+                "return seq using(var resource = service.fetch()) { return@_ resource } }\n");
+            TestHarness.CheckSemanticError("表达式 using 无类型 Any 仍拒绝", unitExprAny.Diagnostics,
+                "must be assignable to 'core.IDisposable'");
+
+            var (unitExprDuplicate, _) = BindUnitWithStdlib(
+                "class DuplicateResource implements core.IDisposable { pub override func dispose() { } }\n" +
+                "func acquireDuplicate(): DuplicateResource { return new DuplicateResource() }\n" +
+                "func exprDuplicate(): DuplicateResource { return seq " +
+                "using(const resource = acquireDuplicate()) using(var resource = acquireDuplicate()) " +
+                "{ return@_ resource } }\n");
+            TestHarness.CheckSemanticError("表达式 using 重复资源名拒绝", unitExprDuplicate.Diagnostics,
+                "Duplicate local variable 'resource'");
+
+            var (unitExprParameterDispose, _) = BindUnitWithStdlib(
+                "class ParameterDisposeResource implements core.IDisposable { " +
+                "pub func dispose(reason: i32) { } }\n" +
+                "func acquireParameterDispose(): ParameterDisposeResource { " +
+                "return new ParameterDisposeResource() }\n" +
+                "func exprParameterDispose() { seq using(var resource = acquireParameterDispose()) { } }\n");
+            TestHarness.CheckSemanticError("表达式 using 带参 dispose 拒绝", unitExprParameterDispose.Diagnostics,
+                "has no accessible no-argument dispose method");
+
+            var (unitExprOpenDispose, _) = BindUnitWithStdlib(
+                "open class OpenDisposeResource implements core.IDisposable { " +
+                "pub open override func dispose() { } }\n" +
+                "func acquireOpenDispose(): OpenDisposeResource { return new OpenDisposeResource() }\n" +
+                "func exprOpenDispose() { seq using(var resource = acquireOpenDispose()) { } }\n");
+            TestHarness.CheckSemanticError("表达式 using open dispose 拒绝", unitExprOpenDispose.Diagnostics,
+                "has an unsupported dispose method");
+
+            var (unitExprAbstractDispose, _) = BindUnitWithStdlib(
+                "abstract class AbstractDisposeResource implements core.IDisposable { " +
+                "pub abstract override func dispose() }\n" +
+                "func exprAbstractDispose(resource: AbstractDisposeResource) { " +
+                "seq using(var resource2 = resource) { } }\n");
+            TestHarness.CheckSemanticError("表达式 using abstract dispose 拒绝", unitExprAbstractDispose.Diagnostics,
+                "has an unsupported dispose method");
 
             // 诊断：语句 seq 不压值块栈——return@ 指向它报未定义标签
             var (unit11, _) = BindUnit(
@@ -332,7 +464,7 @@ namespace LatteCompiler.Tests
                 "}\n");
             CheckNoErrors("seq 穿透无诊断", unit12);
             TestHarness.Check("seq 穿透形态", BoundDescribe.Body(BodyOf(bodies12, "st")),
-                "Body(st, [dummy: i32], [Return(SeqExpr(ValueBlock(_, i32, [Decl(dummy, i32, = Int(0,i32)); Seq([ReturnValue(_, Int(1,i32))])])))])");
+                "Body(st, [dummy: i32], [Return(SeqExpr([], ValueBlock(_, i32, [Decl(dummy, i32, = Int(0,i32)); Seq([ReturnValue(_, Int(1,i32))])])))])");
 
             // return@ 穿透 try 命中外层值块（try 与全部 catch 终止）
             var (unit13, _) = BindUnit(

@@ -89,6 +89,65 @@ namespace LatteCompiler.Tests
                 string.Join(",", resource.ImplementsTypes), "core::IDisposable");
         }
 
+        // ===== S10：using 语句端到端（nested try/finally + dispose 逆序）=====
+        private static void TestUsingEmission()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "class Resource implements core.IDisposable {\n" +
+                "    pub override func dispose() { }\n" +
+                "}\n" +
+                "func acquire(): Resource { return new Resource() }\n" +
+                "func use(r: Resource) { }\n" +
+                "func main() {\n" +
+                "    seq using(const a = acquire()) using(var b: Resource = acquire()) { use(a) }\n" +
+                "}\n");
+            CheckNoErrors("using BIL 全管线无诊断", unit);
+            BilTestHarness.CheckBilValid("using BIL 验证器零错误", module);
+
+            var main = module.Functions.Single(f => f.Symbol == "$main()@.void");
+            var disposeInvokes = main.Blocks.SelectMany(b => b.Instructions)
+                .OfType<InvokeNoResultInstruction>()
+                .Where(i => i.Method.Symbol == "Resource$dispose()@.void")
+                .ToList();
+            TestHarness.CheckTrue("using dispose invoke.noret 数量", disposeInvokes.Count == 2);
+            TestHarness.CheckTrue("using dispose invoke.noret 逆序",
+                disposeInvokes[0].Arguments.Count == 1 &&
+                disposeInvokes[0].Arguments[0] is BilVariableOperand firstReceiver &&
+                firstReceiver.Name == "b" &&
+                disposeInvokes[1].Arguments.Count == 1 &&
+                disposeInvokes[1].Arguments[0] is BilVariableOperand secondReceiver &&
+                secondReceiver.Name == "a");
+
+            var (awaitUnit, awaitModule, _) = BilTestHarness.EmitBilUnit(
+                "class AwaitResource implements core.IDisposable {\n" +
+                "    pub override func dispose() { }\n" +
+                "}\n" +
+                "async func flush() { }\n" +
+                "func acquireAwait(): AwaitResource { return new AwaitResource() }\n" +
+                "func awaitBody() {\n" +
+                "    seq using(var r = acquireAwait()) { await flush() }\n" +
+                "}\n");
+            CheckNoErrors("using body await 无诊断", awaitUnit);
+            BilTestHarness.CheckBilValid("using body await verifier 零错误", awaitModule);
+            TestHarness.CheckTrue("using body await 保留 await",
+                awaitModule.Functions.Single(f => f.Symbol == "$awaitBody()@.void")
+                    .Blocks.SelectMany(b => b.Instructions).OfType<AwaitInstruction>().Count() == 1);
+
+            var (yieldUnit, yieldModule, _) = BilTestHarness.EmitBilUnit(
+                "class YieldResource implements core.IDisposable {\n" +
+                "    pub override func dispose() { }\n" +
+                "}\n" +
+                "func acquireYield(): YieldResource { return new YieldResource() }\n" +
+                "func yieldBody() {\n" +
+                "    seq using(var r = acquireYield()) { yield }\n" +
+                "}\n");
+            CheckNoErrors("using body yield 无诊断", yieldUnit);
+            BilTestHarness.CheckBilValid("using body yield verifier 零错误", yieldModule);
+            TestHarness.CheckTrue("using body yield 保留 yield",
+                yieldModule.Functions.Single(f => f.Symbol == "$yieldBody()@.void")
+                    .Blocks.SelectMany(b => b.Instructions).OfType<YieldInstruction>().Count() == 1);
+        }
+
         // ===== S10：async 调用 Task 形态 + Task 同名共存声明（§15.2/§8.2）=====
         private static void TestAsyncTaskEmission()
         {
@@ -127,6 +186,50 @@ namespace LatteCompiler.Tests
                 "$loadUser(id:.i32)@.string,$flushLogs()@.void");
             TestHarness.CheckTrue("main 无 invoke.noret（async 均有 Task 结果）",
                 !main.Blocks.SelectMany(b => b.Instructions).Any(i => i is InvokeNoResultInstruction));
+        }
+
+        private static void TestAwaitEmission()
+        {
+            var (unit, module, text) = BilTestHarness.EmitBilUnit(
+                "async func load(): String { return \"ok\" }\n" +
+                "async func flush() { }\n" +
+                "func main() {\n" +
+                "    var value = await load()\n" +
+                "    await flush()\n" +
+                "}\n");
+            CheckNoErrors("await BIL 全管线无诊断", unit);
+            BilTestHarness.CheckBilValid("await BIL 验证器零错误", module);
+            TestHarness.CheckTrue("await 发射严格 TASK [RESULT]",
+                module.Functions.Single(f => f.Symbol == "$main()@.void").Blocks
+                    .SelectMany(b => b.Instructions).OfType<AwaitInstruction>().Count() == 2);
+            TestHarness.CheckTrue("await 文本含值与无值两形态",
+                text.Contains("await $") && text.Split('\n').Count(line => line.StartsWith("        await ")) == 2);
+        }
+
+        private static void TestYieldEmission()
+        {
+            var (unit, module, text) = BilTestHarness.EmitBilUnit(
+                "import core.coroutine.*\n" +
+                "func main() {\n" +
+                "    yield\n" +
+                "    yield sleep(1)\n" +
+                "}");
+            CheckNoErrors("yield BIL 全管线无诊断", unit);
+            BilTestHarness.CheckBilValid("yield BIL 验证器零错误", module);
+            var instructions = module.Functions.Single(f => f.Symbol == "$main()@.void")
+                .Blocks.SelectMany(b => b.Instructions).OfType<YieldInstruction>().ToList();
+            TestHarness.CheckTrue("yield 裸/Alarm 两形态", instructions.Count == 2
+                && instructions[0].Alarm == null && instructions[1].Alarm != null);
+            TestHarness.CheckTrue("yield 文本严格形态", text.Contains("yield\n")
+                && text.Contains("yield $") && !text.Contains("yield RESULT"));
+
+            // 用户定义 Alarm 子类必须贯通 P3 类型判定、P4 发射与 verifier。
+            var (derivedUnit, derivedModule, _) = BilTestHarness.EmitBilUnit(
+                "import core.coroutine.*\n" +
+                "shared abstract class UserPolling : PollingAlarm { }\n" +
+                "func main(alarm: UserPolling) { yield alarm }\n");
+            CheckNoErrors("用户 Alarm 子类 yield 全管线无诊断", derivedUnit);
+            BilTestHarness.CheckBilValid("用户 Alarm 子类 yield verifier 零错误", derivedModule);
         }
     }
 }

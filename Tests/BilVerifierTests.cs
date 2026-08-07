@@ -59,6 +59,9 @@ namespace LatteCompiler.Tests
                 "    var d = double(21)\n" +
                 "    return d\n" +
                 "}\n");
+            TestAwaitInstructions();
+            TestYieldInstructions();
+            TestIndirectInvokeShapes();
             Positive("实例成员（this/get.field/set.field/实例 invoke）",
                 "pub class Counter {\n" +
                 "    pub var value: i32\n" +
@@ -253,6 +256,48 @@ namespace LatteCompiler.Tests
             NegativeCases();
 
             return TestHarness.Summary("BilVerifier");
+        }
+
+        private static void TestIndirectInvokeShapes()
+        {
+            var module = MinimalModule(out _, out var entry);
+            const string method = "$noop()@.void";
+            module.LocalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method, method,
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            var noop = new BilFunction(method);
+            noop.Args.Add(new BilArgDeclaration(".return", ".void"));
+            var noopEntry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            noopEntry.Instructions.Add(new RetInstruction());
+            noop.Blocks.Add(noopEntry);
+            module.Functions.Add(noop);
+            module.Functions[0].Vars.Add(new BilVarDeclaration(".methodid<()@.void>", "handle"));
+            entry.Instructions.Insert(1, new GetIdMethodInstruction(BilOp.Fn(method),
+                BilOp.Var("handle")));
+            entry.Instructions.Insert(2, new InvokeIndirectNoResultInstruction(
+                BilOp.Var("handle"), new List<BilVariableOperand>()));
+            BilTestHarness.CheckBilValid("void methodid + invoke.indirect.noret 正例", module);
+
+            module = MinimalModule(out _, out entry);
+            module.Functions[0].Vars.Add(new BilVarDeclaration(".methodid<(.i32)@.i32>", "handle"));
+            module.Functions[0].Vars.Add(new BilVarDeclaration(".i32", "arg"));
+            module.Functions[0].Vars.Add(new BilVarDeclaration(".bool", "wrong"));
+            entry.Instructions.Insert(1, new GetIdMethodInstruction(
+                BilOp.Fn("$id(value:.i32)@.i32"), BilOp.Var("handle")));
+            module.LocalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "$id(value:.i32)@.i32",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            var id = new BilFunction("$id(value:.i32)@.i32");
+            id.Args.Add(new BilArgDeclaration(".return", ".i32"));
+            id.Args.Add(new BilArgDeclaration("value", ".i32"));
+            var idEntry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            idEntry.Instructions.Add(new RetInstruction(BilOp.Var("value")));
+            id.Blocks.Add(idEntry);
+            module.Functions.Add(id);
+            entry.Instructions.Insert(2, new LoadInstruction(module.Resources[0], BilOp.Var("arg")));
+            entry.Instructions.Insert(3, new InvokeIndirectInstruction(BilOp.Var("handle"),
+                BilOp.Var("wrong"), new[] { BilOp.Var("arg") }));
+            BilTestHarness.CheckBilInvalid("methodid 参数/返回形态不匹配",
+                module, "invoke.indirect 结果");
         }
 
         private static void Positive(string label, string userSource)
@@ -1305,6 +1350,102 @@ namespace LatteCompiler.Tests
                 BilOp.Fn(BilSpellings.InnerReservedFunction), BilOp.Var("r"),
                 new[] { BilOp.Var(".generic.TNamedArgs"), BilOp.Var("arg") }));
             entry.Instructions.Add(new RetInstruction(BilOp.Var("r")));
+            return module;
+        }
+
+        private static void TestAwaitInstructions()
+        {
+            TestHarness.Section("BilVerifier await");
+            BilTestHarness.CheckBilValid("await Task 正例", AwaitModule(
+                "core.coroutine::Task", null, null));
+            BilTestHarness.CheckBilValid("await Task<T> 匹配正例", AwaitModule(
+                "core.coroutine::Task<.i32>", ".i32", "result"));
+            BilTestHarness.CheckBilInvalid("await Task<T> 缺 RESULT", AwaitModule(
+                "core.coroutine::Task<.i32>", null, null), "必须带 RESULT");
+            BilTestHarness.CheckBilInvalid("await Task<T> 错误 RESULT", AwaitModule(
+                "core.coroutine::Task<.i32>", ".string", "result"), "严格等于");
+            BilTestHarness.CheckBilInvalid("await 非 Task", AwaitModule(
+                ".i32", null, null), "必须是精确");
+        }
+
+        private static void TestYieldInstructions()
+        {
+            TestHarness.Section("BilVerifier yield");
+            BilTestHarness.CheckBilValid("裸 yield 正例", YieldModule(null, false));
+            BilTestHarness.CheckBilValid("PollingAlarm 正例", YieldModule(
+                "core.coroutine::PollingAlarm", false));
+            BilTestHarness.CheckBilValid("EventAlarm 正例", YieldModule(
+                "core.coroutine::EventAlarm", false));
+            BilTestHarness.CheckBilValid("Alarm 子类正例", YieldModule("UserPolling", true));
+            BilTestHarness.CheckBilInvalid("yield 非 Alarm", YieldModule(".i32", false),
+                "必须可赋值");
+            BilTestHarness.CheckBilInvalid("yield 未赋值 Alarm", YieldModule(
+                "core.coroutine::EventAlarm", false, unassigned: true), "赋值前被读取");
+        }
+
+        private static BilModule YieldModule(string? alarmType, bool derived,
+            bool unassigned = false)
+        {
+            var module = new BilModule();
+            var polling = new BilTypeDeclaration("core.coroutine::PollingAlarm", BilTypeKind.Class);
+            var eventAlarm = new BilTypeDeclaration("core.coroutine::EventAlarm", BilTypeKind.Class);
+            module.ExternalSymbols.Add(polling);
+            module.ExternalSymbols.Add(eventAlarm);
+            if (derived)
+            {
+                var user = new BilTypeDeclaration("UserPolling", BilTypeKind.Class)
+                {
+                    ExtendsType = "core.coroutine::PollingAlarm"
+                };
+                module.ExternalSymbols.Add(user);
+            }
+            var symbol = alarmType == null
+                ? "$f()@.void"
+                : "$f(alarm:" + alarmType + ")@.void";
+            module.LocalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method, symbol,
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            var function = new BilFunction(symbol);
+            function.Args.Add(new BilArgDeclaration(".return", ".void"));
+            if (alarmType != null)
+            {
+                if (unassigned) function.Vars.Add(new BilVarDeclaration(alarmType, "alarm"));
+                else function.Args.Add(new BilArgDeclaration("alarm", alarmType));
+            }
+            var block = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            block.Instructions.Add(new YieldInstruction(
+                alarmType == null ? null : BilOp.Var("alarm")));
+            block.Instructions.Add(new RetInstruction());
+            function.Blocks.Add(block);
+            module.Functions.Add(function);
+            return module;
+        }
+
+        private static BilModule AwaitModule(string taskType, string? resultType,
+            string? resultName)
+        {
+            var module = new BilModule();
+            var taskDeclaration = new BilTypeDeclaration("core.coroutine::Task", BilTypeKind.Class);
+            if (taskType.Contains("<", StringComparison.Ordinal))
+            {
+                taskDeclaration.GenericParameters.Add("TResult");
+            }
+            module.ExternalSymbols.Add(taskDeclaration);
+            var symbol = "$f(task:" + taskType + ")@.void";
+            module.LocalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method, symbol,
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            var function = new BilFunction(symbol);
+            function.Args.Add(new BilArgDeclaration(".return", ".void"));
+            function.Args.Add(new BilArgDeclaration("task", taskType));
+            if (resultName != null)
+            {
+                function.Vars.Add(new BilVarDeclaration(resultType!, resultName));
+            }
+            var block = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            block.Instructions.Add(new AwaitInstruction(BilOp.Var("task"),
+                resultName == null ? null : BilOp.Var(resultName)));
+            block.Instructions.Add(new RetInstruction());
+            function.Blocks.Add(block);
+            module.Functions.Add(function);
             return module;
         }
 

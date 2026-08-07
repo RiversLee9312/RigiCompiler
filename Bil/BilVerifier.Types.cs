@@ -127,6 +127,13 @@ namespace LatteCompiler.Bil
                     reads.Add(unary.Operand);
                     writes.Add(unary.Target);
                     return true;
+                case AwaitInstruction awaitInstruction:
+                    reads.Add(awaitInstruction.Task);
+                    if (awaitInstruction.Result != null) writes.Add(awaitInstruction.Result);
+                    return true;
+                case YieldInstruction yieldInstruction:
+                    if (yieldInstruction.Alarm != null) reads.Add(yieldInstruction.Alarm);
+                    return true;
                 case CastInstruction cast:
                     reads.Add(cast.Source);
                     writes.Add(cast.Target);
@@ -165,6 +172,18 @@ namespace LatteCompiler.Bil
                     return true;
                 case GetIdTypeInstruction getIdType:
                     writes.Add(getIdType.Target);
+                    return true;
+                case GetIdMethodInstruction getIdMethod:
+                    writes.Add(getIdMethod.Target);
+                    return true;
+                case InvokeIndirectInstruction invokeIndirect:
+                    reads.Add(invokeIndirect.MethodId);
+                    reads.AddRange(invokeIndirect.Arguments);
+                    writes.Add(invokeIndirect.Target);
+                    return true;
+                case InvokeIndirectNoResultInstruction invokeIndirectNoResult:
+                    reads.Add(invokeIndirectNoResult.MethodId);
+                    reads.AddRange(invokeIndirectNoResult.Arguments);
                     return true;
                 case RetInstruction ret:
                     if (ret.Value != null)
@@ -263,6 +282,14 @@ namespace LatteCompiler.Bil
                         VarType(context, unary.Operand), location, "一元运算结果", errors);
                     break;
 
+                case YieldInstruction yieldInstruction:
+                    VerifyYield(context, yieldInstruction, location, errors);
+                    break;
+
+                case AwaitInstruction awaitInstruction:
+                    VerifyAwait(context, awaitInstruction, location, errors);
+                    break;
+
                 case CastInstruction cast:
                     // §12.1：RESULT ≡ TARGET_TYPE；§12.2：cast.safe 结果为 nullable 形式
                     VerifyResolvableType(context, cast.TargetType.TypeRef, location, errors);
@@ -340,6 +367,10 @@ namespace LatteCompiler.Bil
                     VerifyResolvableType(context, getIdType.TargetType.TypeRef, location, errors);
                     CheckType(context, VarType(context, getIdType.Target), ".typeid", location,
                         "getid.type 结果", errors, prefixMatch: true);
+                    break;
+
+                case GetIdMethodInstruction getIdMethod:
+                    VerifyGetIdMethod(context, getIdMethod, location, errors);
                     break;
 
                 case GetFieldInstruction getField:
@@ -432,6 +463,16 @@ namespace LatteCompiler.Bil
                 case InvokeNoResultInstruction invokeNoResult:
                     VerifyInvoke(context, invokeNoResult.Method.Symbol, invokeNoResult.Arguments,
                         null, location, errors);
+                    break;
+
+                case InvokeIndirectInstruction invokeIndirect:
+                    VerifyIndirectInvoke(context, invokeIndirect.MethodId,
+                        invokeIndirect.Arguments, invokeIndirect.Target, location, errors);
+                    break;
+
+                case InvokeIndirectNoResultInstruction invokeIndirectNoResult:
+                    VerifyIndirectInvoke(context, invokeIndirectNoResult.MethodId,
+                        invokeIndirectNoResult.Arguments, null, location, errors);
                     break;
 
                 case RetInstruction ret:
@@ -528,6 +569,141 @@ namespace LatteCompiler.Bil
         }
 
         // ===== 指令级辅助 =====
+
+        private static void VerifyAwait(BilFunctionContext context,
+            AwaitInstruction instruction, string location, List<BilVerificationError> errors)
+        {
+            var taskType = VarType(context, instruction.Task);
+            if (taskType == null) return;
+            var normalizedTask = BilVerificationContext.NormalizeTypeRef(taskType);
+            const string taskHead = "core.coroutine::Task";
+            if (normalizedTask == taskHead)
+            {
+                if (instruction.Result != null)
+                {
+                    errors.Add(new BilVerificationError("21.3", location,
+                        "await core.coroutine::Task 不得带 RESULT"));
+                }
+                return;
+            }
+            if (!normalizedTask.StartsWith(taskHead + "<", StringComparison.Ordinal)
+                || !normalizedTask.EndsWith(">"))
+            {
+                errors.Add(new BilVerificationError("21.3", location,
+                    $"await TASK 类型必须是精确 core.coroutine::Task 或 Task<T>，实际 \"{taskType}\""));
+                return;
+            }
+            var resultArguments = BilVerificationContext.SplitTopLevel(
+                normalizedTask.Substring(taskHead.Length + 1,
+                    normalizedTask.Length - taskHead.Length - 2));
+            if (resultArguments.Count != 1 || instruction.Result == null)
+            {
+                if (instruction.Result == null)
+                {
+                    errors.Add(new BilVerificationError("21.3", location,
+                        "await Task<T> 必须带 RESULT"));
+                }
+                return;
+            }
+            var actualResultType = VarType(context, instruction.Result);
+            if (actualResultType != null
+                && !BilVerificationContext.TypesCompatible(actualResultType, resultArguments[0]))
+            {
+                    errors.Add(new BilVerificationError("21.3", location,
+                        $"await RESULT 类型必须严格等于 Task<T> 的 T：实际 \"{actualResultType}\"，" +
+                        $"期望 \"{resultArguments[0]}\""));
+            }
+        }
+
+        private static void VerifyYield(BilFunctionContext context,
+            YieldInstruction instruction, string location, List<BilVerificationError> errors)
+        {
+            if (instruction.Alarm == null) return;
+            var alarmType = VarType(context, instruction.Alarm);
+            if (alarmType == null) return;
+            if (!IsAlarmCompatible(context, alarmType, "core.coroutine::PollingAlarm")
+                && !IsAlarmCompatible(context, alarmType, "core.coroutine::EventAlarm"))
+            {
+                errors.Add(new BilVerificationError("21.3", location,
+                    $"yield ALARM 类型必须可赋值到 PollingAlarm 或 EventAlarm，实际 \"{alarmType}\""));
+            }
+        }
+
+        private static bool IsAlarmCompatible(BilFunctionContext context, string actual,
+            string expected)
+        {
+            // TypesAssignable supplies the nominal/variance check. If either side's
+            // declaration is absent, the inheritance graph is incomplete and this
+            // check must degrade without manufacturing a verifier error.
+            if (context.Module.TypesAssignable(actual, expected)) return true;
+            var actualKnown = context.Module.IsResolvableTypeRef(actual)
+                || context.Module.TryGetTypeDeclaration(actual, out _);
+            if (!actualKnown
+                || !context.Module.TryGetTypeDeclaration(expected, out _)) return true;
+            return false;
+        }
+
+        private static void VerifyGetIdMethod(BilFunctionContext context,
+            GetIdMethodInstruction instruction, string location,
+            List<BilVerificationError> errors)
+        {
+            var symbol = instruction.Method.Symbol;
+            if (!context.Module.MethodSymbols.Contains(symbol))
+            {
+                errors.Add(new BilVerificationError("21.2", location,
+                    $"getid.method 的方法符号不可解析 \"{symbol}\""));
+                return;
+            }
+            if (!BilVerificationContext.TryParseMethodSymbol(symbol,
+                out _, out _, out var parameters, out var returnType)) return;
+            var signature = ".methodid<(" + string.Join(",", parameters.Select(p => p.TypeRef))
+                + ")@" + returnType + ">";
+            CheckType(context, VarType(context, instruction.Target), signature, location,
+                "getid.method 结果", errors);
+        }
+
+        private static void VerifyIndirectInvoke(BilFunctionContext context,
+            BilVariableOperand methodId, IReadOnlyList<BilVariableOperand> arguments,
+            BilVariableOperand? target, string location, List<BilVerificationError> errors)
+        {
+            var type = VarType(context, methodId);
+            if (type == null || !type.StartsWith(".methodid<", StringComparison.Ordinal)) return;
+            var signature = type.Substring(".methodid<".Length,
+                type.Length - ".methodid<".Length - 1);
+            var close = signature.LastIndexOf(")@", StringComparison.Ordinal);
+            if (close < 0) return;
+            var parameterText = signature.Substring(1, close - 1);
+            var returnType = signature.Substring(close + 2);
+            var expected = parameterText.Length == 0
+                ? new List<string>()
+                : BilVerificationContext.SplitTopLevel(parameterText);
+            if (arguments.Count != expected.Count)
+            {
+                errors.Add(new BilVerificationError("21.3", location,
+                    $"invoke.indirect 实参个数 {arguments.Count} 与 methodid 签名参数个数 " +
+                    $"{expected.Count} 不一致"));
+                return;
+            }
+            for (var i = 0; i < expected.Count; i++)
+            {
+                CheckType(context, VarType(context, arguments[i]), expected[i], location,
+                    $"invoke.indirect 实参 {i}", errors);
+            }
+            if (target == null)
+            {
+                if (returnType != ".void")
+                    errors.Add(new BilVerificationError("21.3", location,
+                        "有返回 methodid 不得使用 invoke.indirect.noret"));
+            }
+            else
+            {
+                if (returnType == ".void")
+                    errors.Add(new BilVerificationError("21.3", location,
+                        "无返回 methodid 必须使用 invoke.indirect.noret"));
+                CheckType(context, VarType(context, target), returnType, location,
+                    "invoke.indirect 结果", errors);
+            }
+        }
 
         private static void VerifyInvoke(BilFunctionContext context, string methodSymbol,
             IReadOnlyList<BilVariableOperand> arguments, BilVariableOperand? target,

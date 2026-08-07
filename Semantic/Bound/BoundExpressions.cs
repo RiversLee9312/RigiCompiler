@@ -91,17 +91,22 @@ namespace LatteCompiler
         public IReadOnlyList<BoundExpression> Arguments { get; }
         public IReadOnlyList<SemanticSymbol> TypeArguments { get; }
         public BoundGenericVarArgsArgument? GenericPack { get; }
+        public bool IsIndirect { get; }
+        public LocalSymbol? IndirectHandle { get; }
 
         public BoundCallExpression(ASTNode syntax, MethodSymbol method,
             IReadOnlyList<BoundExpression> arguments, SemanticSymbol type,
             IReadOnlyList<SemanticSymbol>? typeArguments = null,
-            BoundGenericVarArgsArgument? genericPack = null)
+            BoundGenericVarArgsArgument? genericPack = null, bool isIndirect = false,
+            LocalSymbol? indirectHandle = null)
             : base(syntax, type)
         {
             Method = method;
             Arguments = arguments;
             TypeArguments = typeArguments ?? Array.Empty<SemanticSymbol>();
             GenericPack = genericPack;
+            IsIndirect = isIndirect;
+            IndirectHandle = indirectHandle;
         }
     }
 
@@ -307,6 +312,57 @@ namespace LatteCompiler
         }
     }
 
+    // 普通 lambda（S13 Slice A/P3）：体已在隔离绑定上下文中完成，
+    // 不承载 closure invoke ABI；Lowering 消费归 S13 P4。
+    public sealed class BoundLambdaExpression : BoundExpression
+    {
+        public LambdaExpressionASTNode LambdaSyntax { get; }
+        public IReadOnlyList<ParameterASTNode> Parameters { get; }
+        public BoundExpression? ExpressionBody { get; }
+        public BoundBlock? BlockBody { get; }
+        public SemanticSymbol ReturnType { get; }
+        public IReadOnlySet<SemanticSymbol> CapturedSymbols { get; }
+        public MethodSymbol Method { get; }
+        public BoundFunctionBody SyntheticBody { get; }
+
+        public BoundLambdaExpression(LambdaExpressionASTNode syntax,
+            IReadOnlyList<ParameterASTNode> parameters, BoundExpression? expressionBody,
+            BoundBlock? blockBody, SemanticSymbol returnType,
+            IReadOnlySet<SemanticSymbol> capturedSymbols,
+            IReadOnlyList<ParameterSymbol> parameterSymbols, MethodSymbol method,
+            BoundFunctionBody syntheticBody)
+            : base(syntax, new LambdaTypeSymbol(parameterSymbols, returnType, method))
+        {
+            LambdaSyntax = syntax;
+            Parameters = parameters;
+            ExpressionBody = expressionBody;
+            BlockBody = blockBody;
+            ReturnType = returnType;
+            CapturedSymbols = capturedSymbols;
+            Method = method;
+            SyntheticBody = syntheticBody;
+        }
+    }
+
+    // await（S13）：Operand 必须是精确 core.coroutine.Task 或 Task<T>。
+    // 无结果形态只由语句位置构造；其 Type 保留 Task 类型，避免用 Any
+    // 伪造一个可参与推断的结果。
+    public sealed class BoundAwaitExpression : BoundExpression
+    {
+        public BoundExpression Operand { get; }
+        public bool HasResult { get; }
+        public SemanticSymbol? ResultType { get; }
+
+        public BoundAwaitExpression(ASTNode syntax, BoundExpression operand,
+            bool hasResult, SemanticSymbol? resultType)
+            : base(syntax, resultType ?? operand.Type)
+        {
+            Operand = operand;
+            HasResult = hasResult;
+            ResultType = resultType;
+        }
+    }
+
     // 直接基类实现调用：P4 必须发射保留符号 ..super，不能重入普通派发链。
     public sealed class BoundSuperCallExpression : BoundExpression
     {
@@ -432,17 +488,21 @@ namespace LatteCompiler
     }
 
     // seq 表达式（S7e，SYNTAX §10.2）：体即值块（复用 BoundValueBlock，
-    // 取值规则同 if 表达式分支体；using 绑定列表属 S13，P3 已拦截）。
+    // 取值规则同 if 表达式分支体）；using 绑定列表为 P3 产物。
     // 壳存在的理由：BoundValueBlock 是 BoundNode 非表达式，BindExpression
     // 必须返回表达式节点；Type = Body.ValueType
     public sealed class BoundSeqExpression : BoundExpression
     {
         public BoundValueBlock Body { get; }
+        public IReadOnlyList<BoundUsingBinding> UsingBindings { get; internal set; } =
+            Array.Empty<BoundUsingBinding>();
 
-        public BoundSeqExpression(ASTNode syntax, BoundValueBlock body, SemanticSymbol type)
+        public BoundSeqExpression(ASTNode syntax, BoundValueBlock body, SemanticSymbol type,
+            IReadOnlyList<BoundUsingBinding>? usingBindings = null)
             : base(syntax, type)
         {
             Body = body;
+            UsingBindings = usingBindings ?? Array.Empty<BoundUsingBinding>();
         }
     }
 

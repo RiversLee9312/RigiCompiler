@@ -15,6 +15,7 @@ namespace LatteCompiler
                 BoundDestructuringDeclarationStatement => DestructuringRewriter.Visit(statement,
                     ctx, env),
                 BoundExpressionStatement => ExpressionStatementRewriter.Visit(statement, ctx, env),
+                BoundYieldStatement => YieldRewriter.Visit(statement, ctx, env),
                 BoundCallStatement => CallStatementRewriter.Visit(statement, ctx, env),
                 BoundLoop loop => loop.Kind == LoopKind.For
                     ? ForLoopRewriter.Visit(loop, ctx, env)
@@ -54,6 +55,7 @@ namespace LatteCompiler
                 BoundFieldReferenceExpression => FieldReferenceRewriter.Visit(expression, ctx, env),
                 BoundBinaryExpression => BinaryRewriter.Visit(expression, ctx, env),
                 BoundUnaryExpression => UnaryRewriter.Visit(expression, ctx, env),
+                BoundAwaitExpression => AwaitRewriter.Visit(expression, ctx, env),
                 BoundCallExpression => CallExpressionRewriter.Visit(expression, ctx, env),
                 BoundNewExpression => NewExpressionRewriter.Visit(expression, ctx, env),
                 BoundVarArgsArgument => VarArgsRewriter.Visit(expression, ctx, env),
@@ -80,6 +82,7 @@ namespace LatteCompiler
                     ctx, env),
                 BoundNullFallbackExpression => NullFallbackRewriter.Visit(expression, ctx, env),
                 BoundSeqExpression => SeqExpressionRewriter.Visit(expression, ctx, env),
+                BoundLambdaExpression => LambdaRewriter.Visit(expression, ctx, env),
                 // S11c：wrapper place 只作成员访问接收者——字段读/方法调用/
                 // 索引读/字段写/复合赋值由各消费方 rewriter 拦截（get.wrapper/
                 // get.wrapper.field 值拷贝 + 普通 get.field 与 set.wrapper.field

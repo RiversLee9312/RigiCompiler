@@ -300,4 +300,40 @@ namespace LatteCompiler.Bil
             new BilOperand[] { Method, new BilOperandList(Arguments) };
     }
 
+    // §15.3：间接调用。METHODID 已由 getid.method 产生并携带完整签名。
+    public sealed class InvokeIndirectInstruction : BilInstruction
+    {
+        public BilVariableOperand MethodId { get; }
+        public BilVariableOperand Target { get; }
+        public IReadOnlyList<BilVariableOperand> Arguments { get; }
+
+        public InvokeIndirectInstruction(BilVariableOperand methodId, BilVariableOperand target,
+            IReadOnlyList<BilVariableOperand> arguments)
+        {
+            MethodId = methodId;
+            Target = target;
+            Arguments = arguments;
+        }
+
+        internal override string Opcode => "invoke.indirect";
+        internal override IReadOnlyList<BilOperand> Operands =>
+            new BilOperand[] { MethodId, Target, new BilOperandList(Arguments) };
+    }
+
+    public sealed class InvokeIndirectNoResultInstruction : BilInstruction
+    {
+        public BilVariableOperand MethodId { get; }
+        public IReadOnlyList<BilVariableOperand> Arguments { get; }
+
+        public InvokeIndirectNoResultInstruction(BilVariableOperand methodId,
+            IReadOnlyList<BilVariableOperand> arguments)
+        {
+            MethodId = methodId;
+            Arguments = arguments;
+        }
+
+        internal override string Opcode => "invoke.indirect.noret";
+        internal override IReadOnlyList<BilOperand> Operands =>
+            new BilOperand[] { MethodId, new BilOperandList(Arguments) };
+    }
 }

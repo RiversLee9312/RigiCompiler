@@ -129,16 +129,20 @@ namespace LatteCompiler
         public IReadOnlyList<LoweredExpression> Arguments { get; }
         public IReadOnlyList<SemanticSymbol> TypeArguments { get; }
         public LoweredGenericVarArgsArgument? GenericPack { get; }
+        public bool IsIndirect { get; }
+        public LocalSymbol? IndirectHandle { get; }
 
         public LoweredCallExpression(BoundCallExpression origin, MethodSymbol method,
             IReadOnlyList<LoweredExpression> arguments,
             IReadOnlyList<SemanticSymbol>? typeArguments = null,
-            LoweredGenericVarArgsArgument? genericPack = null) : base(origin)
+            LoweredGenericVarArgsArgument? genericPack = null, bool isIndirect = false) : base(origin)
         {
             Method = method;
             Arguments = arguments;
             TypeArguments = typeArguments ?? Array.Empty<SemanticSymbol>();
             GenericPack = genericPack;
+            IsIndirect = isIndirect;
+            IndirectHandle = origin.IndirectHandle;
         }
     }
 
@@ -336,6 +340,32 @@ namespace LatteCompiler
             Arguments = arguments;
             ForwardedGenericPacks = origin.ForwardedGenericPacks;
             IsVoid = origin.IsVoid;
+        }
+    }
+
+    public sealed class LoweredLambdaExpression : LoweredExpression
+    {
+        public MethodSymbol Method { get; }
+
+        public LoweredLambdaExpression(BoundLambdaExpression origin) : base(origin)
+        {
+            Method = origin.Method;
+        }
+    }
+
+    // await（S13，P4a 同构节点）：挂起点不退化为 invoke。
+    public sealed class LoweredAwaitExpression : LoweredExpression
+    {
+        public LoweredExpression Operand { get; }
+        public bool HasResult { get; }
+        public SemanticSymbol? ResultType { get; }
+
+        public LoweredAwaitExpression(BoundAwaitExpression origin,
+            LoweredExpression operand) : base(origin)
+        {
+            Operand = operand;
+            HasResult = origin.HasResult;
+            ResultType = origin.ResultType;
         }
     }
 

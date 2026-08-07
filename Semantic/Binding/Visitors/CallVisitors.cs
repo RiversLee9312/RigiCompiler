@@ -27,6 +27,8 @@ namespace LatteCompiler
         // M88：inner(...) 模板占位
         public bool IsInnerCall;
         public bool IsSuperCall;
+        public bool IsIndirect;
+        public LocalSymbol? IndirectHandle;
         // #27⑦：inner 待转发的可变泛型包（仅 IsInnerCall；固定泛型不入列）
         public IReadOnlyList<GenericParameterSymbol> ForwardedGenericPacks =
             Array.Empty<GenericParameterSymbol>();
@@ -138,9 +140,25 @@ namespace LatteCompiler
             {
                 return BindSuperCall(node, arguments, scope, ctx, env, genericArguments);
             }
+            if (calleeSegments.Count == 1
+                && scope.LookupSymbol(calleeSegments[0]) is LocalSymbol local
+                && local.Type is LambdaTypeSymbol lambdaType)
+            {
+                var bound = BindArguments(lambdaType.Method, arguments, scope, node.Span, ctx, env);
+                if (bound == null) return null;
+                return new CallBinding
+                {
+                    Method = lambdaType.Method,
+                    Arguments = bound,
+                    IsVoid = lambdaType.ReturnType is not TypeSymbol,
+                    ResultType = lambdaType.ReturnType,
+                    IsIndirect = true,
+                    IndirectHandle = local,
+                };
+            }
             // 多段首段为值（局部/参数）→ 实例调用形态（S7c-2）
             if (calleeSegments.Count > 1
-                && (scope.Lookup(calleeSegments[0]) != null
+                && (scope.LookupSymbol(calleeSegments[0]) != null
                     || ctx.Frame.Method.Parameters.Any(p => p.Name == calleeSegments[0])))
             {
                 return BindInstanceCallForm(node, calleeSegments, arguments, scope, ctx, env,
@@ -159,7 +177,15 @@ namespace LatteCompiler
             // （ViewOf 仅对有主泛型候选生效）
             var resolved = OverloadResolution.Resolve(node, candidates, arguments, scope, ctx, env,
                 typeArgs, receiverType: ctx.Frame.Method.Owner);
-            if (resolved == null) return null;
+            if (resolved == null)
+            {
+                if (arguments.Any(argument => argument.Value.Expression is LambdaExpressionASTNode))
+                {
+                    env.Error(node.Span,
+                        "S13 P4 pending: lambda callable consumption/closure invoke is not available");
+                }
+                return null;
+            }
             var (calleeMethod, boundArguments, calleeResultType, genericPack) = resolved.Value;
             BoundExpression? receiver = null;
             if (calleeMethod.Owner != null && !calleeMethod.IsStatic)
@@ -173,6 +199,7 @@ namespace LatteCompiler
                     && IsOnThisChain(thisOwner, calleeMethod.Owner))
                 {
                     receiver = new BoundThisExpression(node, thisOwner);
+                    if (ctx.IsLambda && ctx.This != null) ctx.CapturedSymbols.Add(ctx.This);
                 }
                 else if (!ctx.Frame.HasThis)
                 {
@@ -295,8 +322,8 @@ namespace LatteCompiler
             List<TypeReferenceASTNode>? genericArguments = null)
         {
             BoundExpression receiver;
-            var headLocal = scope.Lookup(calleeSegments[0]);
-            if (headLocal != null)
+            var headSymbol = scope.LookupSymbol(calleeSegments[0]);
+            if (headSymbol is LocalSymbol headLocal)
             {
                 if (!ctx.Flow.IsAssigned(headLocal))
                 {
@@ -304,13 +331,16 @@ namespace LatteCompiler
                         $"Use of unassigned local variable '{calleeSegments[0]}'");
                 }
                 receiver = new BoundValueReferenceExpression(node, headLocal, headLocal.Type!);
+                if (ctx.IsLambda && !ctx.Locals.Contains(headLocal))
+                    ctx.CapturedSymbols.Add(headLocal);
                 // S8b：调用链头收窄（x.m() 的 x 在收窄区域内）
                 receiver = PathFacility.ApplyNarrowingPublic(node, receiver,
                     NarrowKey.ForSymbol(headLocal), ctx.Flow);
             }
             else
             {
-                var headParameter = ctx.Frame.Method.Parameters.First(p => p.Name == calleeSegments[0]);
+                var headParameter = headSymbol as ParameterSymbol
+                    ?? ctx.Frame.Method.Parameters.First(p => p.Name == calleeSegments[0]);
                 // S9a 放行：参数类型可为泛型参数（引用相等身份）；
                 // S9d 修复：可变参数体内视角（与 PathVisitors 首段参数
                 // 同一包装——位置包 Array\<元素类型\>、具名包
@@ -319,6 +349,8 @@ namespace LatteCompiler
                 var headParameterType = PathFacility.VariadicParameterViewType(headParameter, env);
                 receiver = new BoundValueReferenceExpression(node, headParameter,
                     headParameterType);
+                if (ctx.IsLambda && !ctx.LambdaParameters.Contains(headParameter))
+                    ctx.CapturedSymbols.Add(headParameter);
                 receiver = PathFacility.ApplyNarrowingPublic(node, receiver,
                     NarrowKey.ForSymbol(headParameter), ctx.Flow);
             }

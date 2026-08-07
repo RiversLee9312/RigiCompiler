@@ -150,7 +150,7 @@ namespace LatteCompiler
     // seq 语句（S7e，SYNTAX §10.1）：块级顺序执行区——绑定直通块分派
     // （作用域/DA 语义与裸块相同）；M61 起 named 语句 seq 可作 return@
     // 目标（§6.1：压标签栈绑体，try/finally 配对；仅显式 named 压栈——
-    // `_` 默认标签值块专属）；using 归 S13（拦截）
+    // `_` 默认标签值块专属）；两种 seq using 形态共用同一绑定设施。
     internal sealed class SeqStatementVisitor
         : BinderVisitor<SeqStatementVisitor, BoundStatement, BindContext>
     {
@@ -158,11 +158,6 @@ namespace LatteCompiler
             BindEnvironment env)
         {
             var seq = (SeqBlockExpressionASTNode)node;
-            if (seq.UsingBindings.Count > 0)
-            {
-                env.Error(seq.Span, "P3: using bindings are not supported yet (S13)");
-                return null;
-            }
             var shell = new BoundSeqStatement(node, seq.IsVolatile, seq.Label);
             if (seq.Label != null)
             {
@@ -170,7 +165,10 @@ namespace LatteCompiler
             }
             try
             {
-                shell.Body = BlockDispatcher.Visit(seq.Body, scope, ctx, env);
+                var usingScope = new Scope(scope);
+                var bindings = UsingBindingBinder.Bind(seq.UsingBindings, usingScope, ctx, env);
+                shell.UsingBindings = bindings;
+                shell.Body = BlockDispatcher.Visit(seq.Body, usingScope, ctx, env);
             }
             finally
             {
@@ -181,8 +179,8 @@ namespace LatteCompiler
     }
 
     // seq 表达式（S7e，SYNTAX §10.2）：体即值块（标签同源 Label ?? "_"，
-    // 取值规则同 if 表达式分支体）；volatile 置位到值块（BIL §9.6
-    // block 修饰符）；using 归 S13（拦截）；必须产值（至少一条路径
+    // 取值规则同 if 表达式分支体）；using initializer/body 可见前序资源；
+    // 必须产值（至少一条路径
     // return@——无产值的 seq 块应写语句形态）
     internal sealed class SeqExpressionVisitor
         : ExpressionVisitor<SeqExpressionVisitor, BindContext>
@@ -191,14 +189,11 @@ namespace LatteCompiler
             BindEnvironment env, TypeSymbol? expectedType)
         {
             var seq = (SeqBlockExpressionASTNode)node;
-            if (seq.UsingBindings.Count > 0)
-            {
-                env.Error(seq.Span, "P3: using bindings are not supported yet (S13)");
-                return null;
-            }
+            var usingScope = new Scope(scope);
+            var usingBindings = UsingBindingBinder.Bind(seq.UsingBindings, usingScope, ctx, env);
             var shell = new ValueBlockShell(new BoundValueBlock(seq.Body, seq.Label ?? "_"),
                 "seq expression");
-            ValueBlockVisitor.VisitInto(seq.Body, scope, shell, ctx, env);
+            ValueBlockVisitor.VisitInto(seq.Body, usingScope, shell, ctx, env);
             shell.Block.IsVolatile = seq.IsVolatile;
             if (shell.Block.ValueType == null)
             {
@@ -206,7 +201,77 @@ namespace LatteCompiler
                     "(at least one path must return@ a value)");
                 return null;
             }
-            return new BoundSeqExpression(node, shell.Block, shell.Block.ValueType);
+            return new BoundSeqExpression(node, shell.Block, shell.Block.ValueType, usingBindings);
+        }
+    }
+
+    internal static class UsingBindingBinder
+    {
+        public static IReadOnlyList<BoundUsingBinding> Bind(
+            IReadOnlyList<UsingBindingASTNode> nodes, Scope scope, BindContext ctx,
+            BindEnvironment env)
+        {
+            var bindings = new List<BoundUsingBinding>();
+            foreach (var usingNode in nodes)
+            {
+                var declaredType = usingNode.Type == null
+                    ? null
+                    : TypeReferences.Resolve(usingNode.Type, usingNode.Span, ctx.Frame, env);
+                var initializer = ExpressionDispatcher.Visit(usingNode.Initializer.Expression,
+                    scope, ctx, env, declaredType as TypeSymbol);
+                var resourceType = declaredType ?? initializer?.Type;
+                if (initializer == null || resourceType is not TypeSymbol type
+                    || type is ErrorTypeSymbol) continue;
+                if (declaredType != null && !SymbolLookup.IsAssignable(initializer.Type,
+                    declaredType, env)
+                    && !BoundAnalysis.IsDowngradeCallResult(initializer, env))
+                {
+                    env.Error(usingNode.Initializer.Span ?? usingNode.Span,
+                        $"Cannot assign '{BoundAnalysis.TypeDisplay(initializer.Type)}' to " +
+                        $"'{BoundAnalysis.TypeDisplay(declaredType)}'");
+                }
+                var disposable = env.Unit.Symbols.GlobalNamespace.ChildNamespaces
+                    .FirstOrDefault(n => n.Name == "core")?.Types
+                    .FirstOrDefault(t => t.Name == "IDisposable" && t.GenericParameters.Count == 0);
+                if (disposable == null || !SymbolLookup.IsAssignable(type, disposable, env))
+                {
+                    env.Error(usingNode.Span, $"using resource type '{BoundAnalysis.TypeDisplay(type)}' " +
+                        "must be assignable to 'core.IDisposable'");
+                    continue;
+                }
+                var dispose = SymbolLookup.FindInstanceMethods(type, "dispose")
+                    .FirstOrDefault(m => m.Parameters.Count == 0 && m.ReturnType == null
+                        && ctx.Frame.CanAccess(m));
+                if (dispose == null)
+                {
+                    env.Error(usingNode.Span,
+                        $"using resource type '{BoundAnalysis.TypeDisplay(type)}' has no accessible no-argument dispose method");
+                    continue;
+                }
+                if (dispose.IsAsync || dispose.IsOpen || dispose.IsAbstract)
+                {
+                    env.Error(usingNode.Span,
+                        $"using resource type '{BoundAnalysis.TypeDisplay(type)}' has an unsupported dispose method " +
+                        "(dispose must be synchronous, closed, and non-abstract)");
+                    continue;
+                }
+                if (scope.DeclaresHere(usingNode.VariableName))
+                {
+                    env.Error(usingNode.Span, $"Duplicate local variable '{usingNode.VariableName}'");
+                    continue;
+                }
+                var local = new LocalSymbol(usingNode.VariableName, resourceType, usingNode.IsConst,
+                    isUsingResource: true);
+                scope.Declare(local);
+                ctx.Locals.Add(local);
+                ctx.Flow.MarkAssigned(local);
+                var receiver = new BoundValueReferenceExpression(usingNode, local, resourceType);
+                var disposeCall = new BoundCallStatement(usingNode, dispose,
+                    Array.Empty<BoundExpression>(), receiver);
+                bindings.Add(new BoundUsingBinding(usingNode, local, initializer, dispose,
+                    disposeCall));
+            }
+            return bindings;
         }
     }
 }

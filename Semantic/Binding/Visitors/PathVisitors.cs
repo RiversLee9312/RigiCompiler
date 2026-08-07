@@ -170,7 +170,8 @@ namespace LatteCompiler
                         binding.TypeArguments, binding.GenericPack);
                 }
                 return new BoundCallExpression(node, binding.Method, binding.Arguments,
-                    binding.ResultType!, binding.TypeArguments, binding.GenericPack);
+                    binding.ResultType!, binding.TypeArguments, binding.GenericPack,
+                    binding.IsIndirect, binding.IndirectHandle);
             }
             if (node.Head.Name == "super")
             {
@@ -231,22 +232,36 @@ namespace LatteCompiler
                 }
                 else
                 {
-                    var headLocal = scope.Lookup(headName);
-                    if (headLocal != null)
+                    var headSymbol = scope.LookupSymbol(headName);
+                    if (headSymbol != null)
                     {
-                        if (!forAssignment && !ctx.Flow.IsAssigned(headLocal))
+                        if (headSymbol is LocalSymbol headLocal
+                            && !forAssignment && !ctx.Flow.IsAssigned(headLocal))
                         {
                             env.Error(node.Span, $"Use of unassigned local variable '{headName}'");
                         }
                         // 源码局部 Type 恒非空（null 是 P4a 合成 .breakid
                         // 局部的特例，P3 不可能遇到）
-                        headValue = new BoundValueReferenceExpression(node, headLocal,
-                            headLocal.Type!);
+                        var headType = headSymbol switch
+                        {
+                            LocalSymbol localSymbol => localSymbol.Type,
+                            ParameterSymbol parameter => VariadicParameterViewType(parameter, env),
+                            _ => null,
+                        };
+                        if (headType == null)
+                        {
+                            env.Error(node.Span, $"Undefined value '{headName}'");
+                            return null;
+                        }
+                        if (ctx.IsLambda && !ctx.LambdaParameters.Contains(headSymbol)
+                            && (headSymbol is not LocalSymbol local || !ctx.Locals.Contains(local)))
+                            ctx.CapturedSymbols.Add(headSymbol);
+                        headValue = new BoundValueReferenceExpression(node, headSymbol, headType);
                         // S8b：收窄区域内包 SmartCast
                         if (!forAssignment)
                         {
                             headValue = ApplyNarrowing(node, headValue,
-                                NarrowKey.ForSymbol(headLocal), ctx.Flow);
+                                NarrowKey.ForSymbol(headSymbol), ctx.Flow);
                         }
                     }
                     else
@@ -318,7 +333,8 @@ namespace LatteCompiler
                         callBase.Arguments, callBase.ResultType!, callBase.TypeArguments,
                         callBase.GenericPack)
                     : new BoundCallExpression(node, callBase.Method, callBase.Arguments,
-                        callBase.ResultType!, callBase.TypeArguments, callBase.GenericPack);
+                        callBase.ResultType!, callBase.TypeArguments, callBase.GenericPack,
+                        callBase.IsIndirect, callBase.IndirectHandle);
                 var foldedCall = FoldSuffixes(node, callValue, node.Head.Suffixes, 1,
                     forAssignment && node.Segments.Count == 0, scope, ctx, env);
                 if (foldedCall == null) return null;
@@ -482,7 +498,8 @@ namespace LatteCompiler
                     binding.Arguments, binding.ResultType!, binding.TypeArguments,
                     binding.GenericPack)
                 : new BoundCallExpression(node, binding.Method, binding.Arguments,
-                    binding.ResultType!, binding.TypeArguments, binding.GenericPack);
+                    binding.ResultType!, binding.TypeArguments, binding.GenericPack,
+                    binding.IsIndirect, binding.IndirectHandle);
             var afterCall = node.Segments.Skip(callSegIndex + 1).ToList();
             var foldedCall = FoldSuffixes(node, callValue, callSeg.Suffixes, 1,
                 forAssignment && afterCall.Count == 0, scope, ctx, env);
@@ -605,6 +622,7 @@ namespace LatteCompiler
             // M88：模板态下 proxy 声明的 Owner 即 wrapper 类型，this 走普通
             // 实例上色（不再重写 BoundWrapperAccessExpression）
             BoundExpression receiver = new BoundThisExpression(node, ctx.Frame.Method.Owner!);
+            if (ctx.IsLambda && ctx.This != null) ctx.CapturedSymbols.Add(ctx.This);
             var folded = FoldSuffixes(node, receiver, node.Head.Suffixes, 0,
                 forAssignment && node.Segments.Count == 0, scope, ctx, env);
             if (folded == null) return null;

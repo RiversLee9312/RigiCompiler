@@ -4,15 +4,19 @@ namespace LatteCompiler
     // （"if expression"/"switch expression"）——避免为两种调用方各建一个 visitor
     internal sealed class ValueBlockShell
     {
-        public ValueBlockShell(BoundValueBlock block, string construct)
+        public ValueBlockShell(BoundValueBlock block, string construct,
+            bool allowImplicitValue = true)
         {
             Block = block;
             Construct = construct;
+            AllowImplicitValue = allowImplicitValue;
         }
 
         public BoundValueBlock Block { get; }
 
         public string Construct { get; }
+
+        public bool AllowImplicitValue { get; }
     }
 
     // if 语句（S7b，SYNTAX §7.1）：else if 链包成单语句 BoundBlock（Bound 层
@@ -213,7 +217,7 @@ namespace LatteCompiler
             var block = BlockDispatcher.Visit(blockNode, scope, ctx, env);
             shell.Block.Block = block;
             // M33 判定：语法上恰好一条纯表达式语句
-            if (blockNode.Statements.Count == 1
+            if (shell.AllowImplicitValue && blockNode.Statements.Count == 1
                 && blockNode.Statements[0] is ExpressionStatementASTNode { AssignValue: null })
             {
                 shell.Block.IsImplicitValue = true;
@@ -222,6 +226,12 @@ namespace LatteCompiler
                 if (block.Statements.Count == 1
                     && block.Statements[0] is BoundExpressionStatement expressionStatement)
                 {
+                    if (expressionStatement.Expression is BoundAwaitExpression { HasResult: false })
+                    {
+                        env.Error(node.Span, $"{shell.Construct} branch must produce a value " +
+                            "(an await of core.coroutine.Task has no result)");
+                        return;
+                    }
                     shell.Block.ValueType = expressionStatement.Expression.Type;
                 }
                 else if (block.Statements.Count == 1

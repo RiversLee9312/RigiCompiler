@@ -100,7 +100,10 @@ namespace LatteCompiler.Tests
             TestGenericVarArgsEmission();
             TestExceptionEmission();
             TestDisposableEmission();
+            TestUsingEmission();
             TestAsyncTaskEmission();
+            TestAwaitEmission();
+            TestYieldEmission();
             TestGenericNullableNullResource();
             TestVarArgsParameterAssignment();
             TestNamedPackResultType();
@@ -140,6 +143,7 @@ namespace LatteCompiler.Tests
             TestDowngradeGateNoChain();
             TestDowngradeViaInterface();
             TestDowngradeExemptionPositions();
+            TestLambdaEmission();
             TestUnsupportedNodes();
 
             return TestHarness.Summary("BilEmitter");

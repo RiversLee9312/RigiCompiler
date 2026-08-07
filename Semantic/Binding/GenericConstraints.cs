@@ -66,6 +66,25 @@ namespace LatteCompiler
             return ok;
         }
 
+        // yield 的 Alarm 约束只接受 extends：这是唯一能证明 T 的每个实例
+        // 都属于 Alarm 子类的约束形态。约束边界缺失或 Alarm 声明缺失时
+        // 返回 false，让调用方按声明不完整原则保守放行。
+        public static bool IsAlarmParameter(GenericParameterSymbol parameter,
+            TypeSymbol? pollingAlarm, TypeSymbol? eventAlarm, BindEnvironment env)
+        {
+            if (pollingAlarm == null && eventAlarm == null) return false;
+            foreach (var constraint in parameter.Constraints)
+            {
+                if (constraint.Kind != GenericConstraintKind.Extends
+                    || constraint.Bound is not TypeSymbol bound) continue;
+                if (pollingAlarm != null && SymbolLookup.IsAssignable(bound, pollingAlarm, env))
+                    return true;
+                if (eventAlarm != null && SymbolLookup.IsAssignable(bound, eventAlarm, env))
+                    return true;
+            }
+            return false;
+        }
+
         // 单条约束的满足判定（§3.6）
         private static bool Satisfied(GenericConstraintKind kind, SemanticSymbol argument,
             SemanticSymbol bound, BindEnvironment env)

@@ -21,6 +21,8 @@ namespace LatteCompiler
                     return AssignmentEmitter.Visit(statement, target, ctx, env);
                 case LoweredExpressionStatement:
                     return ExpressionStatementEmitter.Visit(statement, target, ctx, env);
+                case LoweredYieldStatement:
+                    return YieldEmitter.Visit(statement, target, ctx, env);
                 case LoweredCallStatement:
                     return CallStatementEmitter.Visit(statement, target, ctx, env);
                 case LoweredReturnStatement:
@@ -68,8 +70,12 @@ namespace LatteCompiler
                     return BinaryEmitter.Visit(expression, target, ctx, env);
                 case LoweredUnaryExpression:
                     return UnaryEmitter.Visit(expression, target, ctx, env);
+                case LoweredAwaitExpression:
+                    return AwaitEmitter.Visit(expression, target, ctx, env);
                 case LoweredCallExpression:
                     return CallExpressionEmitter.Visit(expression, target, ctx, env);
+                case LoweredLambdaExpression:
+                    return LambdaEmitter.Visit(expression, target, ctx, env);
                 case LoweredNewExpression:
                     return NewExpressionEmitter.Visit(expression, target, ctx, env);
                 case LoweredEnumCaseExpression:

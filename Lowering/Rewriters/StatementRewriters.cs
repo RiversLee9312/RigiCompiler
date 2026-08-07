@@ -200,14 +200,61 @@ namespace LatteCompiler
                     ValueBlockFacility.TransformStatements(statements, ctx, env);
                     if (ctx.TransformFailed) return null;
                 }
+                // 初始化器按源码顺序降级；每个声明置于自己的 finally 之外，
+                // 因而初始化失败不会释放尚未成功建立的资源。
+                var declarations = new List<List<LoweredStatement>>();
+                foreach (var binding in seqStatement.UsingBindings)
+                {
+                    var declarationStatements = new List<LoweredStatement>();
+                    ctx.Output.Push(declarationStatements);
+                    try
+                    {
+                        var declaration = LowerStatementDispatcher.Visit(
+                            new BoundLocalDeclarationStatement(binding.Syntax, binding.Local,
+                                binding.Initializer), ctx, env);
+                        if (declaration == null) return null;
+                        declarationStatements.Add(declaration);
+                    }
+                    finally
+                    {
+                        ctx.Output.Pop();
+                    }
+                    declarations.Add(declarationStatements);
+                }
+                var protectedBody = new LoweredBlock(seqStatement.Body, statements);
+                for (var i = seqStatement.UsingBindings.Count - 1; i >= 0; i--)
+                {
+                    var binding = seqStatement.UsingBindings[i];
+                    var finallyStatements = new List<LoweredStatement>();
+                    ctx.Output.Push(finallyStatements);
+                    try
+                    {
+                        var dispose = LowerStatementDispatcher.Visit(binding.DisposeCall, ctx, env);
+                        if (dispose == null) return null;
+                        finallyStatements.Add(dispose);
+                    }
+                    finally
+                    {
+                        ctx.Output.Pop();
+                    }
+                    var tryBlock = new LoweredBlock(binding,
+                        new List<LoweredStatement> { protectedBody });
+                    protectedBody = new LoweredBlock(binding,
+                        declarations[i].Concat(new LoweredStatement[] {
+                            new LoweredTryStatement(seqStatement, tryBlock,
+                                Array.Empty<LoweredTryCatch>(),
+                                 new LoweredBlock(binding, finallyStatements),
+                                 ctx.Synth.NewSynthLocal(env.Unit.Symbols.GetNullable(
+                                     env.Unit.Symbols.Bootstrap.Exception)))
+                        }).ToList());
+                }
+                return new LoweredSeqBlock(seqStatement, protectedBody, seqStatement.IsVolatile);
             }
             finally
             {
                 ctx.Output.Pop();
                 ctx.Targets.PopSeqTarget();
             }
-            return new LoweredSeqBlock(seqStatement,
-                new LoweredBlock(seqStatement.Body, statements), seqStatement.IsVolatile);
         }
     }
 

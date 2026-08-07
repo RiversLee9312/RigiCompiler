@@ -228,6 +228,23 @@ namespace LatteCompiler.Bil
             {
                 if (typeRef.StartsWith(constructor) && typeRef.EndsWith(">"))
                 {
+                    if (constructor == ".methodid<")
+                    {
+                        var signature = typeRef.Substring(constructor.Length,
+                            typeRef.Length - constructor.Length - 1);
+                        var close = signature.LastIndexOf(")@",
+                            StringComparison.Ordinal);
+                        if (signature.Length < 3 || signature[0] != '(' || close < 0)
+                            return false;
+                        var parameters = signature.Substring(1, close - 1);
+                        if (parameters.Length > 0
+                            && SplitTopLevel(parameters).Any(
+                                parameter => !IsResolvableTypeRef(parameter)))
+                        {
+                            return false;
+                        }
+                        return IsResolvableTypeRef(signature.Substring(close + 2));
+                    }
                     if (constructor == ".generic<")
                     {
                         return true;

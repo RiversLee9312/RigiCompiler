@@ -57,6 +57,7 @@ namespace LatteCompiler.Tests
             TestCastLowering();
             TestTryLowering();
             TestSeqLowering();
+            TestUsingLowering();
             TestTryWeaving();
             TestInterpolationLowering();
             TestSafeAccessLowering();
@@ -71,6 +72,9 @@ namespace LatteCompiler.Tests
             TestVarArgsParameterType();
             TestVarArgsIndexLowering();
             TestEnumCaseLowering();
+            TestAwaitLowering();
+            TestYieldLowering();
+            TestLambdaLowering();
             TestUnsupportedNode();
 
             return TestHarness.Summary("Lowerer");

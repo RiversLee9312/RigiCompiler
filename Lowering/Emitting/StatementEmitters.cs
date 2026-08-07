@@ -160,6 +160,13 @@ namespace LatteCompiler
             {
                 arguments.Add(EmitValueDispatcher.Visit(argument, target, ctx, env));
             }
+            if (call.IsIndirect)
+            {
+                target.Instructions.Add(new InvokeIndirectNoResultInstruction(
+                    BilOp.Var(EmittingFacility.ValueVariableName(call.IndirectHandle!)),
+                    arguments) { Origin = call });
+                return Unit.Value;
+            }
             // S10（BIL §15.2）：async 无结果调用语句位置也有 Task 结果
             // （fire-and-forget——丢弃句柄即不与其同步）；发 invoke 产 Task
             // 到临时变量丢弃，而非 invoke.noret。stdlib 缺席的测试驱动

@@ -29,8 +29,45 @@ namespace LatteCompiler
         {
             var facts = new ConditionFacts();
             if (condition == null) return facts;
+            // 条件在求值期间若跨越挂起点，挂起前的事实不能在恢复后重放到
+            // 分支入口；DA 仍由 FlowState 的独立集合维护。
+            if (ContainsAwait(condition)) return facts;
             ExtractInto(condition, frame, facts.True, facts.False);
             return facts;
+        }
+
+        private static bool ContainsAwait(BoundExpression expression)
+        {
+            switch (expression)
+            {
+                case BoundAwaitExpression:
+                    return true;
+                case BoundIfExpression conditional:
+                    return ContainsAwait(conditional.Condition)
+                        || ContainsAwait(conditional.TrueBranch.Block)
+                        || ContainsAwait(conditional.FalseBranch.Block);
+                case BoundSwitchExpression @switch:
+                    return ContainsAwait(@switch.Selector)
+                        || @switch.Cases.Any(c => ContainsAwait(c.Match)
+                            || ContainsAwait(c.Body.Block))
+                        || ContainsAwait(@switch.DefaultBody.Block);
+                case BoundSeqExpression seq:
+                    return ContainsAwait(seq.Body.Block);
+                default:
+                    return BoundAnalysis.ChildExpressions(expression).Any(ContainsAwait);
+            }
+        }
+
+        private static bool ContainsAwait(BoundBlock block)
+        {
+            foreach (var statement in BoundAnalysis.EnumerateStatements(block))
+            {
+                foreach (var expression in BoundAnalysis.StatementCarriedExpressions(statement))
+                {
+                    if (ContainsAwait(expression)) return true;
+                }
+            }
+            return false;
         }
 
         private static void ExtractInto(BoundExpression condition, BindFunctionFrame frame,

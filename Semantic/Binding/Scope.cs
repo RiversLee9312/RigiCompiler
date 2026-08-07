@@ -5,7 +5,8 @@ namespace LatteCompiler
     internal sealed class Scope
     {
         private readonly Scope? parent;
-        private readonly Dictionary<string, LocalSymbol> locals = new Dictionary<string, LocalSymbol>();
+        private readonly Dictionary<string, SemanticSymbol> symbols =
+            new Dictionary<string, SemanticSymbol>();
 
         public Scope(Scope? parent)
         {
@@ -14,19 +15,34 @@ namespace LatteCompiler
 
         public bool DeclaresHere(string name)
         {
-            return locals.ContainsKey(name);
+            return symbols.ContainsKey(name);
         }
 
         public void Declare(LocalSymbol local)
         {
-            locals[local.Name] = local;
+            symbols[local.Name] = local;
+        }
+
+        public void Declare(ParameterSymbol parameter)
+        {
+            symbols[parameter.Name] = parameter;
         }
 
         public LocalSymbol? Lookup(string name)
         {
             for (var scope = this; scope != null; scope = scope.parent)
             {
-                if (scope.locals.TryGetValue(name, out var local)) return local;
+                if (scope.symbols.TryGetValue(name, out var symbol))
+                    return symbol as LocalSymbol;
+            }
+            return null;
+        }
+
+        public SemanticSymbol? LookupSymbol(string name)
+        {
+            for (var scope = this; scope != null; scope = scope.parent)
+            {
+                if (scope.symbols.TryGetValue(name, out var symbol)) return symbol;
             }
             return null;
         }

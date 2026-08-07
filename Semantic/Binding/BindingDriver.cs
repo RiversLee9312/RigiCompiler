@@ -55,6 +55,14 @@ namespace LatteCompiler
                 }
                 BindBody(fn, symbol, fileCtx, owner);
             }, BindAccessorBodies);
+            foreach (var lambda in env.SyntheticLambdas)
+            {
+                if (lambda.CapturedSymbols.Count > 0)
+                {
+                    continue;
+                }
+                bodies.Add(lambda.SyntheticBody);
+            }
             return bodies;
         }
 

@@ -186,6 +186,25 @@ namespace LatteCompiler.Tests
             TestHarness.CheckTrue("闸门 4 无捕获诊断",
                 !unit5.Diagnostics.Diagnostics.Any(d => d.Message.Contains("captures")));
 
+            // async lambda 的闸门 2/3：形参与返回类型共享安全规则与 async
+            // 函数一致，捕获检查仍独立按符号执行。
+            var (unit5b, _) = BindUnit(
+                "shared class SharedUser { }\n" +
+                "class LocalUser { }\n" +
+                "func f() {\n" +
+                "    var loader = async func{(u: LocalUser): SharedUser -> new SharedUser()}\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("async lambda 非共享安全形参", unit5b.Diagnostics,
+                "Parameter 'u' of async lambda must be a shared-safe type");
+
+            var (unit5c, _) = BindUnit(
+                "class LocalUser { }\n" +
+                "func f() {\n" +
+                "    var loader = async func{(): LocalUser -> new LocalUser()}\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("async lambda 非共享安全返回类型", unit5c.Diagnostics,
+                "Return type of async lambda must be a shared-safe type");
+
             // 闸门 4：捕获宿主参数
             var (unit6, _) = BindUnit(
                 "shared class SharedUser { }\n" +
@@ -306,6 +325,150 @@ namespace LatteCompiler.Tests
                 && task7.ConstructedFrom?.Name == "Task"
                 && task7.TypeArguments!.Count == 1
                 && ReferenceEquals(task7.TypeArguments[0], unit7.Symbols.Bootstrap.String));
+        }
+
+        private static void TestYieldBinding()
+        {
+            TestHarness.Section("P3 Yield");
+            var (unit, bodies) = BindUnitWithStdlib(
+                "import core.coroutine.*\n" +
+                "shared abstract class MyPolling : core.coroutine.PollingAlarm { }\n" +
+                "shared abstract class MyEvent : core.coroutine.EventAlarm { }\n" +
+                "func main(p: MyPolling, e: MyEvent) {\n" +
+                "    yield\n" +
+                "    yield sleep(1)\n" +
+                "    yield p\n" +
+                "    yield e\n" +
+                "}");
+            CheckNoErrors("yield 裸/ sleep/Alarm 子类/普通 main 合法", unit);
+            var statements = ((BoundBlock)BodyOf(bodies, "main").Body).Statements;
+            TestHarness.CheckTrue("yield Bound 形态", statements.Count(s => s is BoundYieldStatement) == 4
+                && ((BoundYieldStatement)statements[0]).Alarm == null);
+
+            var (bad, _) = BindUnitWithStdlib("func take(s: String) { }\n" +
+                "func f(x: String?) {\n" +
+                "    if (x != null) {\n" +
+                "        yield\n" +
+                "        take(x)\n" +
+                "    }\n" +
+                "}\n" +
+                "func g(): i32 {\n" +
+                "    yield 1\n" +
+                "    return 0\n" +
+                "}");
+            TestHarness.CheckSemanticError("yield 后 smart-cast 失效/非 Alarm 诊断", bad.Diagnostics,
+                "yield alarm must be assignable");
+            TestHarness.CheckSemanticError("yield 后 smart-cast 失效单独诊断", bad.Diagnostics,
+                "argument");
+
+            var (nested, _) = BindUnitWithStdlib("import core.coroutine.*\n" +
+                "func f(x: core.coroutine.EventAlarm) {\n" +
+                "    while (true) {\n" +
+                "        yield x\n" +
+                "        break\n" +
+                "    }\n" +
+                "    try { yield } finally(_) { yield x }\n" +
+                "}");
+            CheckNoErrors("yield 循环与 try/finally 合法", nested);
+
+            // await 藏在索引 guard 内时，条件事实也必须失效；否则 d 的
+            // 旧 non-null smart-cast 会从 guard 恢复到 return。
+            var indexGuard = BindUnitWithStdlib(
+                "class Dog { }\n" +
+                "class Flags {\n" +
+                "    pub operator getAtIndex(index: i32): bool { return true }\n" +
+                "}\n" +
+                "async func nextIndex(): i32 { return 0 }\n" +
+                "func f(d: Dog?, flags: Flags): Dog {\n" +
+                "    if ((d != null) and (flags[await nextIndex()])) { return d }\n" +
+                "    return new Dog()\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("索引 guard 内 await 后不恢复 smart cast",
+                indexGuard.Unit.Diagnostics, "Cannot return");
+
+            var constrainedAlarm = BindUnitWithStdlib(
+                "import core.coroutine.*\n" +
+                "func constrained\\<T extends PollingAlarm>(alarm: T) { yield alarm }\n");
+            CheckNoErrors("泛型 Alarm extends 约束允许 yield", constrainedAlarm.Unit);
+            var genericAlarm = BindUnitWithStdlib(
+                "import core.coroutine.*\n" +
+                "func unconstrained\\<T>(value: T) { yield value }\n");
+            TestHarness.CheckSemanticError("无约束泛型 yield 仍拒绝",
+                genericAlarm.Unit.Diagnostics, "yield alarm must be assignable");
+        }
+
+        private static void TestAwaitBinding()
+        {
+            TestHarness.Section("P3 Await Binding (S13)");
+
+            var (unit, bodies) = BindUnitWithStdlib(
+                "async func load(): String { return \"ok\" }\n" +
+                "async func flush() { }\n" +
+                "func main() {\n" +
+                "    const value = await load()\n" +
+                "    await flush()\n" +
+                "}\n");
+            CheckNoErrors("Task<T> 值 await 与 Task 语句 await 无诊断", unit);
+            var statements = BodyOf(bodies, "main").Body.Statements;
+            TestHarness.Check("Task<T> await 绑定形态", BoundDescribe.Stmt(statements[0]),
+                "Decl(value, String, = Await(Call(load, [], Task<String>), String))");
+            TestHarness.Check("Task await 语句绑定形态", BoundDescribe.Stmt(statements[1]),
+                "ExprStmt(Await(Call(flush, [], Task), void))");
+
+            var grouped = BindUnitWithStdlib(
+                "async func flush() { }\n" +
+                "func main() { (await flush()) }\n");
+            CheckNoErrors("括号包裹的无结果 await 仍是合法表达式语句", grouped.Unit);
+
+            var valueBlock = BindUnitWithStdlib(
+                "async func flush() { }\n" +
+                "func main() { var x = if (true) { await flush() } else { return@_ 1 } }\n");
+            TestHarness.CheckSemanticError("值块不能隐式取无结果 await", valueBlock.Unit.Diagnostics,
+                "branch must produce a value");
+
+            var (nonTask, _) = BindUnitWithStdlib(
+                "func value(): String { return \"x\" }\n" +
+                "func main() { var x = await value() }\n");
+            TestHarness.CheckSemanticError("非 Task await 拒绝", nonTask.Diagnostics,
+                "await operand must be exactly");
+
+            var (voidValue, _) = BindUnitWithStdlib(
+                "async func flush() { }\n" +
+                "func main() { var x = await flush() }\n");
+            TestHarness.CheckSemanticError("Task 在值位置拒绝", voidValue.Diagnostics,
+                "without a result is only valid");
+
+            var (smartCast, _) = BindUnitWithStdlib(
+                "class Dog { }\n" +
+                "async func pause() { }\n" +
+                "func f(d: Dog?): Dog {\n" +
+                "    if (d != null) {\n" +
+                "        await pause()\n" +
+                "        return d\n" +
+                "    }\n" +
+                "    return new Dog()\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("smart cast 跨 await 失效", smartCast.Diagnostics,
+                "Cannot return");
+
+            var guardAwait = BindUnitWithStdlib(
+                "class Dog { }\n" +
+                "async func ready(): bool { return true }\n" +
+                "func f(d: Dog?): Dog {\n" +
+                "    if ((d != null) and (await ready())) { return d }\n" +
+                "    return new Dog()\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("guard 中 await 后不复活 smart cast", guardAwait.Unit.Diagnostics,
+                "Cannot return");
+
+            var rightAfterAwait = BindUnitWithStdlib(
+                "class Dog { pub var name: String }\n" +
+                "async func ready(): bool { return true }\n" +
+                "func f(d: Dog?): bool {\n" +
+                "    return (await ready()) and (d.name == \"x\")\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("and 右侧 await 后不继承旧 smart cast",
+                rightAfterAwait.Unit.Diagnostics, "cannot be accessed on nullable type");
         }
     }
 }

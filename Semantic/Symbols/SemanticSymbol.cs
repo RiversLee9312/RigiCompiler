@@ -75,7 +75,8 @@ namespace LatteCompiler
         Struct,
         EnumStruct,
         Interface,
-        Wrapper
+        Wrapper,
+        AnonymousCallable
     }
 
     public class TypeSymbol : SemanticSymbol
@@ -203,6 +204,24 @@ namespace LatteCompiler
         }
     }
 
+    // Lambda 的匿名 callable 类型。它只作为 BoundTree 的类型身份存在，
+    // 不挂入 NamespaceSymbol/SymbolGraph，避免冻结用户命名空间图被污染。
+    public sealed class LambdaTypeSymbol : TypeSymbol
+    {
+        public IReadOnlyList<ParameterSymbol> Parameters { get; }
+        public SemanticSymbol ReturnType { get; }
+        public MethodSymbol Method { get; }
+
+        public LambdaTypeSymbol(IReadOnlyList<ParameterSymbol> parameters,
+            SemanticSymbol returnType, MethodSymbol method)
+            : base("<lambda>", TypeKind.AnonymousCallable)
+        {
+            Parameters = parameters;
+            ReturnType = returnType;
+            Method = method;
+        }
+    }
+
     public enum MethodKind
     {
         Regular,
@@ -229,6 +248,7 @@ namespace LatteCompiler
         // 即定，S8f async 边界五项闸门的检查点分派依据；仅 Kind=Regular 的
         // 函数可置位——其余 Kind 置位由 AsyncGateChecker 拒绝）
         public bool IsAsync { get; }
+        public bool IsSynthetic { get; internal set; }
         // 有无函数体（P1 建壳即定；OverrideChecker 判定接口默认实现与无体方法，
         // 访问器符号恒 false——自动访问器体由 P3 合成，不经本标记）
         public bool HasBody { get; internal set; }
@@ -493,14 +513,30 @@ namespace LatteCompiler
         // S9 放宽为 SemanticSymbol：泛型函数体内局部声明的类型可为泛型参数
         public SemanticSymbol? Type { get; }
         public bool IsConst { get; }
+        // using 资源绑定即使写作 var 也不可重赋值，避免 finally 捕获错误资源。
+        public bool IsUsingResource { get; }
         // 挂载的 wrapper 应用（声明顺序，外层在前；P3 局部声明绑定时解析
         // 登记——栈上声明不进 P1/P2，SYNTAX §14.9 矩阵 C 恒合法免检查）
         public List<WrapperApplication> AppliedWrappers { get; } = new List<WrapperApplication>();
 
-        public LocalSymbol(string name, SemanticSymbol? type, bool isConst) : base(name)
+        public LocalSymbol(string name, SemanticSymbol? type, bool isConst,
+            bool isUsingResource = false) : base(name)
         {
             Type = type;
             IsConst = isConst;
+            IsUsingResource = isUsingResource;
+        }
+    }
+
+    // 实例上下文的 this 身份。它不是用户可声明符号，也不进入符号图；
+    // 仅供 lambda 捕获集合按引用身份记录。
+    public sealed class ThisSymbol : SemanticSymbol
+    {
+        public TypeSymbol Type { get; }
+
+        public ThisSymbol(TypeSymbol type) : base("this")
+        {
+            Type = type;
         }
     }
 

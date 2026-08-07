@@ -272,25 +272,34 @@ namespace LatteCompiler.Bil
                                 stack, errors, reported);
                             break;
                         case TryInstruction tryInstruction:
-                            AnalyzeBlock(context, tryInstruction.Body,
+                            var tryExit = AnalyzeBlock(context, tryInstruction.Body,
                                 new HashSet<string>(assigned), tokens, stack, errors, reported);
                             if (tryInstruction.CatchTable is BilCatchTableResource catchTable)
                             {
+                                var catchExit = new HashSet<string>(tryExit);
                                 foreach (var entry in catchTable.Entries)
                                 {
                                     // 异常槽在 handler 内视为已赋值（§16.7）
                                     var handlerAssigned = new HashSet<string>(assigned)
                                         { tryInstruction.ExceptionSlot.Name };
-                                    AnalyzeBlock(context, entry.Handler, handlerAssigned, tokens,
+                                    var handlerExit = AnalyzeBlock(context, entry.Handler, handlerAssigned, tokens,
                                         stack, errors, reported);
+                                    catchExit.IntersectWith(handlerExit);
                                 }
+                                assigned = catchExit;
+                            }
+                            else
+                            {
+                                // 无 catch 时正常路径必经 body，异常路径不回到
+                                // try 后续；finally 可继续更新该正常出口的 DA。
+                                assigned = tryExit;
                             }
                             if (tryInstruction.FinallyBlock != null)
                             {
-                                AnalyzeBlock(context, tryInstruction.FinallyBlock,
-                                    new HashSet<string>(assigned), tokens, stack, errors, reported);
+                                assigned = AnalyzeBlock(context, tryInstruction.FinallyBlock,
+                                    assigned, tokens, stack, errors, reported);
                             }
-                            break;   // 出口保守：保持进入态
+                            break;
                     }
 
                     foreach (var variable in writes)

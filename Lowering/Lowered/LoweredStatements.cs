@@ -34,6 +34,8 @@ namespace LatteCompiler
         public LoweredExpression? Receiver { get; }
         public IReadOnlyList<SemanticSymbol> TypeArguments { get; }
         public LoweredGenericVarArgsArgument? GenericPack { get; }
+        public bool IsIndirect { get; }
+        public LocalSymbol? IndirectHandle { get; }
 
         public LoweredCallStatement(BoundCallStatement origin, MethodSymbol method,
             IReadOnlyList<LoweredExpression> arguments, LoweredExpression? receiver = null,
@@ -46,6 +48,8 @@ namespace LatteCompiler
             Receiver = receiver;
             TypeArguments = typeArguments ?? Array.Empty<SemanticSymbol>();
             GenericPack = genericPack;
+            IsIndirect = origin.IsIndirect;
+            IndirectHandle = origin.IndirectHandle;
         }
     }
 
@@ -86,6 +90,18 @@ namespace LatteCompiler
             LoweredExpression expression) : base(origin)
         {
             Expression = expression;
+        }
+    }
+
+    // yield（S13，P4a 同构节点）：挂起点不退化为调用。
+    public sealed class LoweredYieldStatement : LoweredStatement
+    {
+        public LoweredExpression? Alarm { get; }
+
+        public LoweredYieldStatement(BoundYieldStatement origin, LoweredExpression? alarm)
+            : base(origin)
+        {
+            Alarm = alarm;
         }
     }
 

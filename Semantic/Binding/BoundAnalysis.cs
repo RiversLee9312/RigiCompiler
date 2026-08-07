@@ -158,7 +158,7 @@ namespace LatteCompiler
 
         // 语句直接携带的表达式（嵌套值块的下钻入口；复合语句的块由
         // 语句级递归覆盖，不在此列出）
-        private static IEnumerable<BoundExpression> StatementCarriedExpressions(
+        internal static IEnumerable<BoundExpression> StatementCarriedExpressions(
             BoundStatement statement)
         {
             switch (statement)
@@ -171,6 +171,9 @@ namespace LatteCompiler
                     break;
                 case BoundExpressionStatement expressionStatement:
                     yield return expressionStatement.Expression;
+                    break;
+                case BoundYieldStatement yield:
+                    if (yield.Alarm != null) yield return yield.Alarm;
                     break;
                 case BoundCallStatement call:
                     if (call.Receiver != null) yield return call.Receiver;
@@ -248,7 +251,7 @@ namespace LatteCompiler
         // 表达式的直接子表达式（透明穿透用）。注意
         // BoundSwitchPlaceholderExpression.Selector 是回指边（selector 已由
         // 所属 switch 枚举），不跟随——避免重复枚举
-        private static IEnumerable<BoundExpression> ChildExpressions(BoundExpression expression)
+        internal static IEnumerable<BoundExpression> ChildExpressions(BoundExpression expression)
         {
             switch (expression)
             {
@@ -258,6 +261,9 @@ namespace LatteCompiler
                     break;
                 case BoundUnaryExpression unary:
                     yield return unary.Operand;
+                    break;
+                case BoundAwaitExpression awaitExpression:
+                    yield return awaitExpression.Operand;
                     break;
                 case BoundCallExpression call:
                     foreach (var argument in call.Arguments) yield return argument;
@@ -311,8 +317,20 @@ namespace LatteCompiler
                 case BoundSuperCallExpression superCall:
                     foreach (var argument in superCall.Arguments) yield return argument;
                     break;
+                case BoundEnumCaseExpression enumCase:
+                    foreach (var argument in enumCase.Arguments) yield return argument;
+                    break;
                 case BoundWrapperAccessExpression wrapperAccess:
                     yield return wrapperAccess.Receiver;
+                    break;
+                case BoundLambdaExpression lambda:
+                    if (lambda.ExpressionBody != null) yield return lambda.ExpressionBody;
+                    if (lambda.BlockBody != null)
+                    {
+                        foreach (var statement in lambda.BlockBody.Statements)
+                            foreach (var childExpression in StatementCarriedExpressions(statement))
+                                yield return childExpression;
+                    }
                     break;
                 // 叶子（字面量/值引用/字段引用/this/self/安全访问占位）与
                 // BoundSwitchPlaceholderExpression（回指跳过）：无子表达式
