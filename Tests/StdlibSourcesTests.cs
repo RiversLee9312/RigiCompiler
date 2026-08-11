@@ -13,8 +13,9 @@ namespace LatteCompiler.Tests
     /// core/exceptions.latte，按逻辑名 Ordinal 排序）：
     /// 1. ParseAll() 返回恰好六棵 RootASTNode，Span.sourceName 为逻辑名
     ///    映射形（&lt;stdlib&gt;/ 前缀，含点开头文件名的反推）
-    /// 2. 结构断言：.bootstrap 顶层恰好 3 个声明（namespace core +
-    ///    ext operator callable + core.Pair 泛型类）；
+    /// 2. 结构断言：.bootstrap 顶层 137 个声明（namespace core +
+    ///    ext operator callable + core.Pair 泛型类 + lambda 对象模型
+    ///    四家族 132 个 abstract class + Cell/ReadonlyCell，SYNTAX §5.2）；
     ///    Console（namespace core.io + pub class + 3 callable 成员，
     ///    native 双注解）；collections（namespace core.collections +
     ///    2 interface + 2 class）；coroutine（namespace core.coroutine +
@@ -82,8 +83,10 @@ namespace LatteCompiler.Tests
             }
             var root = roots[0];
 
-            TestHarness.CheckTrue("顶层恰好 3 个声明（namespace + ext operator + Pair）",
-                root.Declarations.Count == 3, $"实际 {root.Declarations.Count}");
+            // lambda 对象模型（SYNTAX §5.2）：Func/Action/AsyncFunc/AsyncAction
+            // 各 33 个元数变种 + Cell/ReadonlyCell，共 134 个 class 声明
+            TestHarness.CheckTrue("顶层恰好 137 个声明（namespace + ext operator + Pair + 134 callable/Cell）",
+                root.Declarations.Count == 137, $"实际 {root.Declarations.Count}");
             TestHarness.CheckTrue("首声明是 namespace core",
                 root.Declarations.Count > 0
                 && root.Declarations[0] is NamespaceDeclarationASTNode,
@@ -111,6 +114,34 @@ namespace LatteCompiler.Tests
                     pair.Modifiers.Contains(Keywords.OPEN)
                     && pair.GenericParameters?.Parameters.Count == 2);
             }
+
+            // lambda 对象模型基类族与 Cell（SYNTAX §5.2）：元数 0–32 预生成
+            var classes = root.Declarations.OfType<ClassDeclarationASTNode>().Skip(1).ToList();
+            TestHarness.CheckTrue("Func 族 33 个元数变种",
+                classes.Count(c => c.ClassName == "Func") == 33,
+                $"实际 {classes.Count(c => c.ClassName == "Func")}");
+            TestHarness.CheckTrue("Action 族 33 个元数变种",
+                classes.Count(c => c.ClassName == "Action") == 33,
+                $"实际 {classes.Count(c => c.ClassName == "Action")}");
+            TestHarness.CheckTrue("AsyncFunc 族 33 个元数变种",
+                classes.Count(c => c.ClassName == "AsyncFunc") == 33,
+                $"实际 {classes.Count(c => c.ClassName == "AsyncFunc")}");
+            TestHarness.CheckTrue("AsyncAction 族 33 个元数变种",
+                classes.Count(c => c.ClassName == "AsyncAction") == 33,
+                $"实际 {classes.Count(c => c.ClassName == "AsyncAction")}");
+            TestHarness.CheckTrue("Cell/ReadonlyCell 各 1 个",
+                classes.Count(c => c.ClassName == "Cell") == 1
+                    && classes.Count(c => c.ClassName == "ReadonlyCell") == 1);
+            var asyncFunc = classes.FirstOrDefault(c => c.ClassName == "AsyncFunc"
+                && c.GenericParameters?.Parameters.Count == 1);
+            TestHarness.CheckTrue("AsyncFunc 是 shared abstract class",
+                asyncFunc != null && asyncFunc.Modifiers.Contains(Keywords.SHARED)
+                    && asyncFunc.Modifiers.Contains(Keywords.ABSTRACT));
+            var func = classes.FirstOrDefault(c => c.ClassName == "Func"
+                && c.GenericParameters?.Parameters.Count == 1);
+            TestHarness.CheckTrue("Func 非 shared（abstract class）",
+                func != null && !func.Modifiers.Contains(Keywords.SHARED)
+                    && func.Modifiers.Contains(Keywords.ABSTRACT));
 
             TestHarness.Blank();
         }

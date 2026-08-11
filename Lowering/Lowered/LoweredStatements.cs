@@ -34,13 +34,16 @@ namespace LatteCompiler
         public LoweredExpression? Receiver { get; }
         public IReadOnlyList<SemanticSymbol> TypeArguments { get; }
         public LoweredGenericVarArgsArgument? GenericPack { get; }
+        // 间接调用（§15.3 callable 协议）：物化目标对象表达式后虚调用其
+        // $$call；非间接调用为 null
         public bool IsIndirect { get; }
-        public LocalSymbol? IndirectHandle { get; }
+        public LoweredExpression? IndirectTarget { get; }
 
-        public LoweredCallStatement(BoundCallStatement origin, MethodSymbol method,
+        public LoweredCallStatement(BoundNode origin, MethodSymbol method,
             IReadOnlyList<LoweredExpression> arguments, LoweredExpression? receiver = null,
             IReadOnlyList<SemanticSymbol>? typeArguments = null,
-            LoweredGenericVarArgsArgument? genericPack = null)
+            LoweredGenericVarArgsArgument? genericPack = null,
+            LoweredExpression? indirectTarget = null)
             : base(origin)
         {
             Method = method;
@@ -48,8 +51,8 @@ namespace LatteCompiler
             Receiver = receiver;
             TypeArguments = typeArguments ?? Array.Empty<SemanticSymbol>();
             GenericPack = genericPack;
-            IsIndirect = origin.IsIndirect;
-            IndirectHandle = origin.IndirectHandle;
+            IsIndirect = indirectTarget != null;
+            IndirectTarget = indirectTarget;
         }
     }
 

@@ -23,11 +23,6 @@ namespace LatteCompiler
         // S9 放宽为 SemanticSymbol——泛型参数走 §7.5 的 .generic<$.generic.T> 形态
         public static string PrintType(SemanticSymbol type)
         {
-            if (type is LambdaTypeSymbol lambda)
-            {
-                var parameters = lambda.Parameters.Select(p => PrintTypeReference(p.Type));
-                return $".methodid<({string.Join(",", parameters)})@{PrintTypeReference(lambda.ReturnType)}>";
-            }
             return type switch
             {
                 GenericParameterSymbol generic => $".generic<$.generic.{generic.Name}>",

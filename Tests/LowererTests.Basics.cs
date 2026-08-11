@@ -164,24 +164,86 @@ namespace LatteCompiler.Tests
                 lowered.Count == 0);
         }
 
+        // lambda 对象模型（SYNTAX §5.2）：宿主 + init + $$call 三 body；
+        // 表达式降为 New(隐藏类)；捕获局部 init 为 cell 构造；读取 getValue。
         private static void TestLambdaLowering()
         {
-            var (unit, _, lowered) = LowerUnit(
+            var (unit, _, lowered) = LowerUnitWithStdlib(
                 "func f() { var fn = func{(): i32 -> 42 } }\n");
             TestHarness.CheckTrue("无捕获 lambda P4 降级无诊断", !unit.Diagnostics.HasErrors,
                 string.Join("; ", unit.Diagnostics.Diagnostics.Select(
                     d => $"{d.Phase}: {d.Message}")));
-            TestHarness.CheckTrue("lambda 与宿主函数均生成 Lowered body", lowered.Count == 2);
-            TestHarness.CheckTrue("lambda Lowered body 携带合成方法",
-                lowered.Any(body => body.Method.IsSynthetic));
+            var noCapBodies = LambdaRelatedBodies(lowered, "f");
+            TestHarness.CheckTrue("无捕获 lambda 产 3 个 Lowered body（宿主+init+$$call）",
+                noCapBodies.Count == 3);
+            TestHarness.Check("无捕获宿主 Lowered 形态",
+                NormLambda(LoweredDescribe.Body(BodyOf(noCapBodies, "f"))),
+                "Body(f, [fn: ..lambda..UUID], [Decl(fn, ..lambda..UUID, = " +
+                "New(..lambda..UUID, init, []))])");
+            TestHarness.Check("无捕获 $$call Lowered 形态",
+                NormLambda(LoweredDescribe.Body(LambdaCallBody(noCapBodies))),
+                "Body(call, [], [Return(Int(42,i32))])");
+            TestHarness.Check("无捕获 init Lowered 形态",
+                NormLambda(LoweredDescribe.Body(LambdaInitBody(noCapBodies))),
+                "Body(init, [], [])");
 
-            var captured = LowerUnit(
-                "func f(p: i32) { var fn = func{(): i32 -> p } }\n");
-            TestHarness.CheckTrue("捕获 lambda 在 P4 保持 pending",
-                captured.Unit.Diagnostics.Diagnostics.Any(d => d.Phase == DiagnosticPhase.P4
-                    && d.Message.Contains("captured lambda closure lowering is not available")));
-            TestHarness.CheckTrue("捕获 lambda pending 后不产 synthetic Lowered body",
-                captured.Lowered.Count == 0);
+            var captured = LowerUnitWithStdlib(
+                "func f(p: i32) { var x = 1\n" +
+                "    var fn = func{(): i32 -> (p + x) }\n" +
+                "    x = 2 }\n");
+            TestHarness.CheckTrue("捕获 lambda P4 降级无诊断", !captured.Unit.Diagnostics.HasErrors,
+                string.Join("; ", captured.Unit.Diagnostics.Diagnostics.Select(
+                    d => $"{d.Phase}: {d.Message}")));
+            var capBodies = LambdaRelatedBodies(captured.Lowered, "f");
+            TestHarness.CheckTrue("捕获 lambda 产 3 个 Lowered body（宿主+init+$$call）",
+                capBodies.Count == 3);
+            TestHarness.Check("捕获宿主 Lowered 形态（cell 构造 + CellRef 实参 + setValue）",
+                NormLambda(LoweredDescribe.Body(BodyOf(capBodies, "f"))),
+                "Body(f, [x: i32, fn: ..lambda..UUID, .c.p: Cell<i32>], [" +
+                "Decl(.c.p, Cell<i32>, = New(Cell<i32>, init, [Param(p,i32)])); " +
+                "Decl(x, i32, = New(Cell<i32>, init, [Int(1,i32)])); " +
+                "Decl(fn, ..lambda..UUID, = New(..lambda..UUID, init, " +
+                "[CellRef(.c.p,Cell<i32>), CellRef(x,Cell<i32>)])); " +
+                "InstCallStmt(setValue, CellRef(x,Cell<i32>), [Int(2,i32)])])");
+            TestHarness.Check("捕获 $$call 读取 getValue",
+                NormLambda(LoweredDescribe.Body(LambdaCallBody(capBodies))),
+                "Body(call, [], [Return(Binary(Add, " +
+                "InstCall(getValue, InstField(.capture.p, This(i32), Cell<i32>), [], i32), " +
+                "InstCall(getValue, InstField(.capture.x, This(i32), Cell<i32>), [], i32), " +
+                "i32))])");
+            TestHarness.Check("捕获 init 写 .capture 字段",
+                NormLambda(LoweredDescribe.Body(LambdaInitBody(capBodies))),
+                "Body(init, [], [" +
+                "Assign(InstField(.capture.p, This(..lambda..UUID), Cell<i32>), Param(c0,Cell<i32>)); " +
+                "Assign(InstField(.capture.x, This(..lambda..UUID), Cell<i32>), Param(c1,Cell<i32>))])");
         }
+
+        private static string NormLambda(string text) =>
+            BilTestHarness.NormalizeLambdaUuids(text);
+
+        private static List<LoweredFunctionBody> LambdaRelatedBodies(
+            IReadOnlyList<LoweredFunctionBody> lowered, string hostName)
+        {
+            return lowered.Where(b =>
+                b.Method.Name == hostName
+                || (b.Method.Owner != null
+                    && b.Method.Owner.Name.StartsWith("..lambda..",
+                        System.StringComparison.Ordinal))).ToList();
+        }
+
+        private static LoweredFunctionBody LambdaCallBody(
+            IReadOnlyList<LoweredFunctionBody> bodies) =>
+            bodies.Single(b => b.Method.Name == "call"
+                && b.Method.Owner != null
+                && b.Method.Owner.Name.StartsWith("..lambda..",
+                    System.StringComparison.Ordinal));
+
+        private static LoweredFunctionBody LambdaInitBody(
+            IReadOnlyList<LoweredFunctionBody> bodies) =>
+            bodies.Single(b => b.Method.Name == "init"
+                && b.Method.Owner != null
+                && b.Method.Owner.Name.StartsWith("..lambda..",
+                    System.StringComparison.Ordinal));
+
     }
 }

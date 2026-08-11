@@ -17,3 +17,561 @@ pub open class Pair\<TKey, TValue> {
     // 构造经此匹配（§14.1 严格匹配唯一 init）
     pub init(_ -> key, _ -> value) { }
 }
+
+// lambda 对象模型基类与捕获 Cell（SYNTAX §5.2）：每个 lambda 编译期
+// 生成隐藏类，继承下列四家族之一；捕获经 Cell/ReadonlyCell 传入。
+// 各家族预生成 0–32 参数元数变种（共 132 个 abstract 声明）。
+// Async* 为 shared（async 边界共享安全闸门）；Func/Action/Cell 非 shared
+// （Cell 的 shared 安全性由编译器 passthrough 特殊判定）。
+
+pub abstract class Func\<TRet> {
+    pub abstract operator call(): TRet
+}
+
+pub abstract class Func\<TRet, T0> {
+    pub abstract operator call(arg0: T0): TRet
+}
+
+pub abstract class Func\<TRet, T0, T1> {
+    pub abstract operator call(arg0: T0, arg1: T1): TRet
+}
+
+pub abstract class Func\<TRet, T0, T1, T2> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2): TRet
+}
+
+pub abstract class Func\<TRet, T0, T1, T2, T3> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3): TRet
+}
+
+pub abstract class Func\<TRet, T0, T1, T2, T3, T4> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4): TRet
+}
+
+pub abstract class Func\<TRet, T0, T1, T2, T3, T4, T5> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5): TRet
+}
+
+pub abstract class Func\<TRet, T0, T1, T2, T3, T4, T5, T6> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6): TRet
+}
+
+pub abstract class Func\<TRet, T0, T1, T2, T3, T4, T5, T6, T7> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7): TRet
+}
+
+pub abstract class Func\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8): TRet
+}
+
+pub abstract class Func\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9): TRet
+}
+
+pub abstract class Func\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10): TRet
+}
+
+pub abstract class Func\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11): TRet
+}
+
+pub abstract class Func\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12): TRet
+}
+
+pub abstract class Func\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13): TRet
+}
+
+pub abstract class Func\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14): TRet
+}
+
+pub abstract class Func\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15): TRet
+}
+
+pub abstract class Func\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16): TRet
+}
+
+pub abstract class Func\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17): TRet
+}
+
+pub abstract class Func\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18): TRet
+}
+
+pub abstract class Func\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19): TRet
+}
+
+pub abstract class Func\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20): TRet
+}
+
+pub abstract class Func\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21): TRet
+}
+
+pub abstract class Func\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21, arg22: T22): TRet
+}
+
+pub abstract class Func\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21, arg22: T22, arg23: T23): TRet
+}
+
+pub abstract class Func\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21, arg22: T22, arg23: T23, arg24: T24): TRet
+}
+
+pub abstract class Func\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21, arg22: T22, arg23: T23, arg24: T24, arg25: T25): TRet
+}
+
+pub abstract class Func\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21, arg22: T22, arg23: T23, arg24: T24, arg25: T25, arg26: T26): TRet
+}
+
+pub abstract class Func\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21, arg22: T22, arg23: T23, arg24: T24, arg25: T25, arg26: T26, arg27: T27): TRet
+}
+
+pub abstract class Func\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27, T28> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21, arg22: T22, arg23: T23, arg24: T24, arg25: T25, arg26: T26, arg27: T27, arg28: T28): TRet
+}
+
+pub abstract class Func\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27, T28, T29> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21, arg22: T22, arg23: T23, arg24: T24, arg25: T25, arg26: T26, arg27: T27, arg28: T28, arg29: T29): TRet
+}
+
+pub abstract class Func\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27, T28, T29, T30> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21, arg22: T22, arg23: T23, arg24: T24, arg25: T25, arg26: T26, arg27: T27, arg28: T28, arg29: T29, arg30: T30): TRet
+}
+
+pub abstract class Func\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27, T28, T29, T30, T31> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21, arg22: T22, arg23: T23, arg24: T24, arg25: T25, arg26: T26, arg27: T27, arg28: T28, arg29: T29, arg30: T30, arg31: T31): TRet
+}
+
+pub abstract class Action {
+    pub abstract operator call()
+}
+
+pub abstract class Action\<T0> {
+    pub abstract operator call(arg0: T0)
+}
+
+pub abstract class Action\<T0, T1> {
+    pub abstract operator call(arg0: T0, arg1: T1)
+}
+
+pub abstract class Action\<T0, T1, T2> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2)
+}
+
+pub abstract class Action\<T0, T1, T2, T3> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3)
+}
+
+pub abstract class Action\<T0, T1, T2, T3, T4> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4)
+}
+
+pub abstract class Action\<T0, T1, T2, T3, T4, T5> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5)
+}
+
+pub abstract class Action\<T0, T1, T2, T3, T4, T5, T6> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6)
+}
+
+pub abstract class Action\<T0, T1, T2, T3, T4, T5, T6, T7> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7)
+}
+
+pub abstract class Action\<T0, T1, T2, T3, T4, T5, T6, T7, T8> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8)
+}
+
+pub abstract class Action\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9)
+}
+
+pub abstract class Action\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10)
+}
+
+pub abstract class Action\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11)
+}
+
+pub abstract class Action\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12)
+}
+
+pub abstract class Action\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13)
+}
+
+pub abstract class Action\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14)
+}
+
+pub abstract class Action\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15)
+}
+
+pub abstract class Action\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16)
+}
+
+pub abstract class Action\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17)
+}
+
+pub abstract class Action\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18)
+}
+
+pub abstract class Action\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19)
+}
+
+pub abstract class Action\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20)
+}
+
+pub abstract class Action\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21)
+}
+
+pub abstract class Action\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21, arg22: T22)
+}
+
+pub abstract class Action\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21, arg22: T22, arg23: T23)
+}
+
+pub abstract class Action\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21, arg22: T22, arg23: T23, arg24: T24)
+}
+
+pub abstract class Action\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21, arg22: T22, arg23: T23, arg24: T24, arg25: T25)
+}
+
+pub abstract class Action\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21, arg22: T22, arg23: T23, arg24: T24, arg25: T25, arg26: T26)
+}
+
+pub abstract class Action\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21, arg22: T22, arg23: T23, arg24: T24, arg25: T25, arg26: T26, arg27: T27)
+}
+
+pub abstract class Action\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27, T28> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21, arg22: T22, arg23: T23, arg24: T24, arg25: T25, arg26: T26, arg27: T27, arg28: T28)
+}
+
+pub abstract class Action\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27, T28, T29> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21, arg22: T22, arg23: T23, arg24: T24, arg25: T25, arg26: T26, arg27: T27, arg28: T28, arg29: T29)
+}
+
+pub abstract class Action\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27, T28, T29, T30> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21, arg22: T22, arg23: T23, arg24: T24, arg25: T25, arg26: T26, arg27: T27, arg28: T28, arg29: T29, arg30: T30)
+}
+
+pub abstract class Action\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27, T28, T29, T30, T31> {
+    pub abstract operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21, arg22: T22, arg23: T23, arg24: T24, arg25: T25, arg26: T26, arg27: T27, arg28: T28, arg29: T29, arg30: T30, arg31: T31)
+}
+
+pub shared abstract class AsyncFunc\<TRet> {
+    pub abstract async operator call(): TRet
+}
+
+pub shared abstract class AsyncFunc\<TRet, T0> {
+    pub abstract async operator call(arg0: T0): TRet
+}
+
+pub shared abstract class AsyncFunc\<TRet, T0, T1> {
+    pub abstract async operator call(arg0: T0, arg1: T1): TRet
+}
+
+pub shared abstract class AsyncFunc\<TRet, T0, T1, T2> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2): TRet
+}
+
+pub shared abstract class AsyncFunc\<TRet, T0, T1, T2, T3> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3): TRet
+}
+
+pub shared abstract class AsyncFunc\<TRet, T0, T1, T2, T3, T4> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4): TRet
+}
+
+pub shared abstract class AsyncFunc\<TRet, T0, T1, T2, T3, T4, T5> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5): TRet
+}
+
+pub shared abstract class AsyncFunc\<TRet, T0, T1, T2, T3, T4, T5, T6> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6): TRet
+}
+
+pub shared abstract class AsyncFunc\<TRet, T0, T1, T2, T3, T4, T5, T6, T7> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7): TRet
+}
+
+pub shared abstract class AsyncFunc\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8): TRet
+}
+
+pub shared abstract class AsyncFunc\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9): TRet
+}
+
+pub shared abstract class AsyncFunc\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10): TRet
+}
+
+pub shared abstract class AsyncFunc\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11): TRet
+}
+
+pub shared abstract class AsyncFunc\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12): TRet
+}
+
+pub shared abstract class AsyncFunc\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13): TRet
+}
+
+pub shared abstract class AsyncFunc\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14): TRet
+}
+
+pub shared abstract class AsyncFunc\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15): TRet
+}
+
+pub shared abstract class AsyncFunc\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16): TRet
+}
+
+pub shared abstract class AsyncFunc\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17): TRet
+}
+
+pub shared abstract class AsyncFunc\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18): TRet
+}
+
+pub shared abstract class AsyncFunc\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19): TRet
+}
+
+pub shared abstract class AsyncFunc\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20): TRet
+}
+
+pub shared abstract class AsyncFunc\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21): TRet
+}
+
+pub shared abstract class AsyncFunc\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21, arg22: T22): TRet
+}
+
+pub shared abstract class AsyncFunc\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21, arg22: T22, arg23: T23): TRet
+}
+
+pub shared abstract class AsyncFunc\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21, arg22: T22, arg23: T23, arg24: T24): TRet
+}
+
+pub shared abstract class AsyncFunc\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21, arg22: T22, arg23: T23, arg24: T24, arg25: T25): TRet
+}
+
+pub shared abstract class AsyncFunc\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21, arg22: T22, arg23: T23, arg24: T24, arg25: T25, arg26: T26): TRet
+}
+
+pub shared abstract class AsyncFunc\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21, arg22: T22, arg23: T23, arg24: T24, arg25: T25, arg26: T26, arg27: T27): TRet
+}
+
+pub shared abstract class AsyncFunc\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27, T28> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21, arg22: T22, arg23: T23, arg24: T24, arg25: T25, arg26: T26, arg27: T27, arg28: T28): TRet
+}
+
+pub shared abstract class AsyncFunc\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27, T28, T29> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21, arg22: T22, arg23: T23, arg24: T24, arg25: T25, arg26: T26, arg27: T27, arg28: T28, arg29: T29): TRet
+}
+
+pub shared abstract class AsyncFunc\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27, T28, T29, T30> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21, arg22: T22, arg23: T23, arg24: T24, arg25: T25, arg26: T26, arg27: T27, arg28: T28, arg29: T29, arg30: T30): TRet
+}
+
+pub shared abstract class AsyncFunc\<TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27, T28, T29, T30, T31> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21, arg22: T22, arg23: T23, arg24: T24, arg25: T25, arg26: T26, arg27: T27, arg28: T28, arg29: T29, arg30: T30, arg31: T31): TRet
+}
+
+pub shared abstract class AsyncAction {
+    pub abstract async operator call()
+}
+
+pub shared abstract class AsyncAction\<T0> {
+    pub abstract async operator call(arg0: T0)
+}
+
+pub shared abstract class AsyncAction\<T0, T1> {
+    pub abstract async operator call(arg0: T0, arg1: T1)
+}
+
+pub shared abstract class AsyncAction\<T0, T1, T2> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2)
+}
+
+pub shared abstract class AsyncAction\<T0, T1, T2, T3> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3)
+}
+
+pub shared abstract class AsyncAction\<T0, T1, T2, T3, T4> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4)
+}
+
+pub shared abstract class AsyncAction\<T0, T1, T2, T3, T4, T5> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5)
+}
+
+pub shared abstract class AsyncAction\<T0, T1, T2, T3, T4, T5, T6> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6)
+}
+
+pub shared abstract class AsyncAction\<T0, T1, T2, T3, T4, T5, T6, T7> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7)
+}
+
+pub shared abstract class AsyncAction\<T0, T1, T2, T3, T4, T5, T6, T7, T8> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8)
+}
+
+pub shared abstract class AsyncAction\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9)
+}
+
+pub shared abstract class AsyncAction\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10)
+}
+
+pub shared abstract class AsyncAction\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11)
+}
+
+pub shared abstract class AsyncAction\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12)
+}
+
+pub shared abstract class AsyncAction\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13)
+}
+
+pub shared abstract class AsyncAction\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14)
+}
+
+pub shared abstract class AsyncAction\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15)
+}
+
+pub shared abstract class AsyncAction\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16)
+}
+
+pub shared abstract class AsyncAction\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17)
+}
+
+pub shared abstract class AsyncAction\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18)
+}
+
+pub shared abstract class AsyncAction\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19)
+}
+
+pub shared abstract class AsyncAction\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20)
+}
+
+pub shared abstract class AsyncAction\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21)
+}
+
+pub shared abstract class AsyncAction\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21, arg22: T22)
+}
+
+pub shared abstract class AsyncAction\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21, arg22: T22, arg23: T23)
+}
+
+pub shared abstract class AsyncAction\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21, arg22: T22, arg23: T23, arg24: T24)
+}
+
+pub shared abstract class AsyncAction\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21, arg22: T22, arg23: T23, arg24: T24, arg25: T25)
+}
+
+pub shared abstract class AsyncAction\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21, arg22: T22, arg23: T23, arg24: T24, arg25: T25, arg26: T26)
+}
+
+pub shared abstract class AsyncAction\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21, arg22: T22, arg23: T23, arg24: T24, arg25: T25, arg26: T26, arg27: T27)
+}
+
+pub shared abstract class AsyncAction\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27, T28> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21, arg22: T22, arg23: T23, arg24: T24, arg25: T25, arg26: T26, arg27: T27, arg28: T28)
+}
+
+pub shared abstract class AsyncAction\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27, T28, T29> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21, arg22: T22, arg23: T23, arg24: T24, arg25: T25, arg26: T26, arg27: T27, arg28: T28, arg29: T29)
+}
+
+pub shared abstract class AsyncAction\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27, T28, T29, T30> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21, arg22: T22, arg23: T23, arg24: T24, arg25: T25, arg26: T26, arg27: T27, arg28: T28, arg29: T29, arg30: T30)
+}
+
+pub shared abstract class AsyncAction\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27, T28, T29, T30, T31> {
+    pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21, arg22: T22, arg23: T23, arg24: T24, arg25: T25, arg26: T26, arg27: T27, arg28: T28, arg29: T29, arg30: T30, arg31: T31)
+}
+
+// 捕获单元：lambda 捕获的外层变量经 Cell 传入（§5.2）。
+// var 捕获 → Cell\<T\>；const 捕获 → ReadonlyCell\<T\>；this 不套 Cell。
+pub class Cell\<T> {
+    var value: T
+    // 无参 init：未初始化 var 被捕获时的空 cell 构造点（源级 DA 保证
+    // 空值不可观测——读必先经赋值，BIL 层 cell 先空构造）
+    pub init() { }
+    pub init(_ -> value)
+    pub func getValue(): T {
+        return value
+    }
+    pub func setValue(v: T) {
+        value = v
+    }
+}
+
+pub class ReadonlyCell\<T> {
+    const value: T
+    pub init(_ -> value)
+    pub func getValue(): T {
+        return value
+    }
+}

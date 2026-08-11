@@ -1,4 +1,4 @@
-namespace LatteCompiler
+﻿namespace LatteCompiler
 {
     // 路径表达式（M42 统一形态）的值位置绑定（S5/S7c-2/S7f/S8c/S11，
     // SYNTAX §1.4/§3.4/§9/§13.2/§14.5）。
@@ -171,7 +171,7 @@ namespace LatteCompiler
                 }
                 return new BoundCallExpression(node, binding.Method, binding.Arguments,
                     binding.ResultType!, binding.TypeArguments, binding.GenericPack,
-                    binding.IsIndirect, binding.IndirectHandle);
+                    binding.IsIndirect, binding.IndirectTarget);
             }
             if (node.Head.Name == "super")
             {
@@ -334,7 +334,7 @@ namespace LatteCompiler
                         callBase.GenericPack)
                     : new BoundCallExpression(node, callBase.Method, callBase.Arguments,
                         callBase.ResultType!, callBase.TypeArguments, callBase.GenericPack,
-                        callBase.IsIndirect, callBase.IndirectHandle);
+                        callBase.IsIndirect, callBase.IndirectTarget);
                 var foldedCall = FoldSuffixes(node, callValue, node.Head.Suffixes, 1,
                     forAssignment && node.Segments.Count == 0, scope, ctx, env);
                 if (foldedCall == null) return null;
@@ -499,7 +499,7 @@ namespace LatteCompiler
                     binding.GenericPack)
                 : new BoundCallExpression(node, binding.Method, binding.Arguments,
                     binding.ResultType!, binding.TypeArguments, binding.GenericPack,
-                    binding.IsIndirect, binding.IndirectHandle);
+                    binding.IsIndirect, binding.IndirectTarget);
             var afterCall = node.Segments.Skip(callSegIndex + 1).ToList();
             var foldedCall = FoldSuffixes(node, callValue, callSeg.Suffixes, 1,
                 forAssignment && afterCall.Count == 0, scope, ctx, env);
@@ -538,17 +538,25 @@ namespace LatteCompiler
                 return null;
             }
             // S9a 放行：替换失败的泛型参数类型原样保留（定义级宿主场景）；
-            // 返回值恒非空（FieldType 非 null 上面已查，SymbolLookup 契约）
-            var fieldType = SymbolLookup.SubstituteFieldType(field, ctx.Frame.Method.Owner);
+            // 返回值恒非空（FieldType 非 null 上面已查，SymbolLookup 契约）。
+            // lambda 语境（§5.2）：有效 this 类型取 LambdaThisType（外层 this），
+            // Frame.Method 是隐藏类 $$call（恒实例）——代入宿主与 this 上色
+            // 都必须用外层有效 this 类型，且裸字段访问即 this 捕获
+            var effectiveThis = ctx.IsLambda
+                ? ctx.LambdaThisType
+                : (ctx.Frame.HasThis ? ctx.Frame.Method.Owner : null);
+            var fieldType = SymbolLookup.SubstituteFieldType(field, effectiveThis
+                ?? ctx.Frame.Method.Owner);
             if (field.Owner != null && !field.IsStatic)
             {
                 // 实例字段（S7c-2）：当前上下文有 this（实例方法/ext 方法
                 // 体内，method.Owner 统一承载宿主）→ this.field；静态
                 // 上下文（static 方法/全局函数/默认值表达式）→ 诊断
-                if (ctx.Frame.HasThis)
+                if (effectiveThis != null)
                 {
+                    if (ctx.IsLambda && ctx.This != null) ctx.CapturedSymbols.Add(ctx.This);
                     var access = new BoundFieldAccessExpression(node,
-                        new BoundThisExpression(node, ctx.Frame.Method.Owner!), field, fieldType);
+                        new BoundThisExpression(node, effectiveThis), field, fieldType);
                     // S8b：this.f 收窄（const 字段 + 非 init 体内，经
                     // ConstFieldRules.IsNarrowable 判定）；赋值 place
                     // （forAssignment）不包——目标被 SmartCast 包装会落赋值
@@ -614,14 +622,20 @@ namespace LatteCompiler
         private static BoundExpression? BindThisPath(PathExpressionASTNode node, Scope scope,
             BindContext ctx, BindEnvironment env, bool forAssignment)
         {
-            if (!ctx.Frame.HasThis)
+            // lambda 语境（SYNTAX §5.2）：函数级宿主是隐藏类的 $$call（实例方法，
+            // Frame.HasThis 恒真），但源码层 this 指向外层声明位置的实例——
+            // 有效 this 类型取 LambdaThisType（外层静态上下文中的 lambda 为 null）
+            var thisType = ctx.IsLambda
+                ? ctx.LambdaThisType
+                : (ctx.Frame.HasThis ? ctx.Frame.Method.Owner : null);
+            if (thisType == null)
             {
                 env.Error(node.Span, "P3: 'this' is not available in a static context");
                 return null;
             }
             // M88：模板态下 proxy 声明的 Owner 即 wrapper 类型，this 走普通
             // 实例上色（不再重写 BoundWrapperAccessExpression）
-            BoundExpression receiver = new BoundThisExpression(node, ctx.Frame.Method.Owner!);
+            BoundExpression receiver = new BoundThisExpression(node, thisType);
             if (ctx.IsLambda && ctx.This != null) ctx.CapturedSymbols.Add(ctx.This);
             var folded = FoldSuffixes(node, receiver, node.Head.Suffixes, 0,
                 forAssignment && node.Segments.Count == 0, scope, ctx, env);
@@ -878,7 +892,8 @@ namespace LatteCompiler
 
         // 值上的后缀折叠（S8c）：按序折叠——Index 后缀绑索引访问（forWrite
         // 且是全路径最后一个后缀时为写模式 setAtIndex，否则读模式
-        // getAtIndex）；Call 后缀是值调用/函数值形态（未支持）
+        // getAtIndex）；Call 后缀 = callable 协议间接调用（SYNTAX §5.2：
+        // 值类型声明 operator call 即可像函数一样调用，BIL §15.3）
         private static BoundExpression? FoldSuffixes(ASTNode node, BoundExpression receiver,
             IReadOnlyList<PathSuffixASTNode> suffixes, int startIndex, bool forWrite,
             Scope scope, BindContext ctx, BindEnvironment env)
@@ -888,8 +903,28 @@ namespace LatteCompiler
                 var suffix = suffixes[i];
                 if (suffix.Kind == PathSuffixKind.Call)
                 {
-                    env.Error(suffix.Span, "P3: calling a value is not supported yet (S8)");
-                    return null;
+                    if (receiver.Type is not TypeSymbol callableType
+                        || CallFacility.BindIndirectCallOverload(suffix, receiver, callableType,
+                            suffix.Arguments!, null, scope, ctx, env) is not { } valueCall)
+                    {
+                        env.Error(suffix.Span,
+                            "P3: value of type " +
+                            $"'{BoundAnalysis.TypeDisplay(receiver.Type)}' is not callable " +
+                            "(no operator call)");
+                        return null;
+                    }
+                    // S10：async 无结果调用有 Task 值——仅真 void 拒绝作值
+                    //（语句位置的 void 间接调用归 CallForm 直写形态 f(args)）
+                    if (valueCall.ResultType == null)
+                    {
+                        env.Error(suffix.Span, "Method 'call' has no result (void) " +
+                            "and cannot be used as a value");
+                        return null;
+                    }
+                    receiver = new BoundCallExpression(suffix, valueCall.Method,
+                        valueCall.Arguments, valueCall.ResultType!,
+                        isIndirect: true, indirectTarget: receiver);
+                    continue;
                 }
                 var next = BindIndexAccess(suffix, receiver, suffix,
                     forWrite && i == suffixes.Count - 1, scope, ctx, env);

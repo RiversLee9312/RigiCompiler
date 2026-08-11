@@ -170,7 +170,7 @@ namespace LatteCompiler.Tests
                 "func load(u: LocalUser, id: i32): SharedUser { return new SharedUser() }\n" +
                 "func f() {\n" +
                 "    var local = new LocalUser()\n" +
-                "    var loader = async func{(id: i32): SharedUser -> load(local, id)}\n" +
+                "    var loader = func{async (id: i32): SharedUser -> load(local, id)}\n" +
                 "}\n");
             TestHarness.CheckSemanticError("闸门 4 捕获非共享安全", unit4.Diagnostics,
                 "async lambda captures 'local' of non-shared-safe type 'LocalUser'");
@@ -181,7 +181,7 @@ namespace LatteCompiler.Tests
                 "func load(name: String, id: i32): SharedUser { return new SharedUser() }\n" +
                 "func f() {\n" +
                 "    var name = \"x\"\n" +
-                "    var loader = async func{(id: i32): SharedUser -> load(name, id)}\n" +
+                "    var loader = func{async (id: i32): SharedUser -> load(name, id)}\n" +
                 "}\n");
             TestHarness.CheckTrue("闸门 4 无捕获诊断",
                 !unit5.Diagnostics.Diagnostics.Any(d => d.Message.Contains("captures")));
@@ -192,7 +192,7 @@ namespace LatteCompiler.Tests
                 "shared class SharedUser { }\n" +
                 "class LocalUser { }\n" +
                 "func f() {\n" +
-                "    var loader = async func{(u: LocalUser): SharedUser -> new SharedUser()}\n" +
+                "    var loader = func{async (u: LocalUser): SharedUser -> new SharedUser()}\n" +
                 "}\n");
             TestHarness.CheckSemanticError("async lambda 非共享安全形参", unit5b.Diagnostics,
                 "Parameter 'u' of async lambda must be a shared-safe type");
@@ -200,7 +200,7 @@ namespace LatteCompiler.Tests
             var (unit5c, _) = BindUnit(
                 "class LocalUser { }\n" +
                 "func f() {\n" +
-                "    var loader = async func{(): LocalUser -> new LocalUser()}\n" +
+                "    var loader = func{async (): LocalUser -> new LocalUser()}\n" +
                 "}\n");
             TestHarness.CheckSemanticError("async lambda 非共享安全返回类型", unit5c.Diagnostics,
                 "Return type of async lambda must be a shared-safe type");
@@ -211,7 +211,7 @@ namespace LatteCompiler.Tests
                 "class LocalUser { }\n" +
                 "func load(u: LocalUser, id: i32): SharedUser { return new SharedUser() }\n" +
                 "func f(u: LocalUser) {\n" +
-                "    var loader = async func{(id: i32): SharedUser -> load(u, id)}\n" +
+                "    var loader = func{async (id: i32): SharedUser -> load(u, id)}\n" +
                 "}\n");
             TestHarness.CheckSemanticError("闸门 4 捕获宿主参数", unit6.Diagnostics,
                 "async lambda captures 'u' of non-shared-safe type 'LocalUser'");
@@ -222,7 +222,7 @@ namespace LatteCompiler.Tests
                 "func load(name: String, id: i32): SharedUser { return new SharedUser() }\n" +
                 "func f() {\n" +
                 "    var name = \"x\"\n" +
-                "    var loader = async func{(id: i32): SharedUser -> { var text = \"y\"\n" +
+                "    var loader = func{async (id: i32): SharedUser -> { var text = \"y\"\n" +
                 "        return@_ load(text, id) }}\n" +
                 "}\n");
             TestHarness.CheckTrue("闸门 4 体内声明名不判捕获",

@@ -51,7 +51,7 @@ namespace LatteCompiler
 
                 foreach (var member in type.Methods)
                 {
-                    if (!member.Name.StartsWith(".proxy.")) continue;
+                    if (member.ProxyTemplate == null) continue;
                     var span = env.EntryOfSymbol[member].Node.Span;
                     var category = Classify(member.Name);
                     if (!IsAllowed(targetKind, category))

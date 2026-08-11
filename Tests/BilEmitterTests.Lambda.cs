@@ -1,11 +1,32 @@
 using System.Linq;
+using System.Text.RegularExpressions;
 using LatteCompiler.Bil;
 
 namespace LatteCompiler.Tests
 {
+    // BilEmitter lambda 对象模型（SYNTAX §5.2）：隐藏类 + new/invoke.indirect +
+    // cell 捕获闭环。UUID 经 BilTestHarness.NormalizeLambdaUuids 归一。
     public static partial class BilEmitterTests
     {
         private static void TestLambdaEmission()
+        {
+            TestLambdaNoCapture();
+            TestLambdaVarCapture();
+            TestLambdaConstCapture();
+            TestLambdaThisCapture();
+            TestLambdaNestedCapture();
+            TestLambdaVoidAction();
+            TestLambdaAsync();
+            TestLambdaExplicitFuncType();
+            TestLambdaParamCapturePrologue();
+            TestLambdaBlockBody();
+            TestLambdaCompoundAssignCapture();
+            TestLambdaGenericContext();
+            TestLambdaVoidIndirectCall();
+        }
+
+        // 无捕获：隐藏类 extends Func、new 空参、invoke.indirect
+        private static void TestLambdaNoCapture()
         {
             var (unit, module, text) = BilTestHarness.EmitBilUnit(
                 "pub func main(): i32 {\n" +
@@ -14,18 +35,393 @@ namespace LatteCompiler.Tests
                 "}\n");
             CheckNoErrors("无捕获 lambda 全管线无诊断", unit);
             BilTestHarness.CheckBilValid("无捕获 lambda 验证器零错误", module);
-            TestHarness.CheckTrue("无捕获 lambda 有 synthetic fn declaration",
-                module.LocalSymbols.OfType<BilSimpleMemberDeclaration>()
-                    .Any(symbol => symbol.Symbol.Contains(".__lambda.", System.StringComparison.Ordinal)));
-            TestHarness.CheckTrue("无捕获 lambda 发射 getid.method",
-                text.Contains("getid.method fn("));
-            TestHarness.CheckTrue("无捕获 lambda 发射 invoke.indirect",
-                text.Contains("invoke.indirect "));
-            TestHarness.CheckTrue("methodid canonical 参数/返回签名",
-                module.Functions.Any(function => function.Symbol.Contains(".__lambda.",
-                    System.StringComparison.Ordinal)
-                    && function.Symbol.Contains("x:.i32)@.i32",
-                        System.StringComparison.Ordinal)));
+            AssertLambdaClass(module, "无捕获", "core::Func<.i32, .i32>", hasCaptureField: false);
+            TestHarness.CheckTrue("无捕获 lambda 文本含 new type + invoke.indirect",
+                text.Contains("new type(..lambda..UUID)")
+                && text.Contains("invoke.indirect "));
+            BilTestHarness.CheckFnShape("无捕获 lambda main 形状", module, "$main()@.i32",
+                ".vars { ..lambda..UUID fn, ..lambda..UUID .t0, .i32 .t1, .i32 .t2 }\n" +
+                "new type(..lambda..UUID) $.t0 []\n" +
+                "set.var $.t0 $fn\n" +
+                "load res(#0) $.t1\n" +
+                "invoke.indirect $fn $.t2 [$.t1]\n" +
+                "ret $.t2\n");
+        }
+
+        // var 捕获闭环：.cell + new cell + setValue 写 + invoke.indirect 调
+        private static void TestLambdaVarCapture()
+        {
+            var (unit, module, text) = BilTestHarness.EmitBilUnit(
+                "pub func main(): i32 {\n" +
+                "    var x = 1\n" +
+                "    var f = func{(): i32 -> (x + 1)}\n" +
+                "    x = 2\n" +
+                "    return f()\n" +
+                "}\n");
+            CheckNoErrors("var 捕获 lambda 全管线无诊断", unit);
+            BilTestHarness.CheckBilValid("var 捕获 lambda 验证器零错误", module);
+            AssertLambdaClass(module, "var 捕获", "core::Func<.i32>", hasCaptureField: true,
+                captureTypeFragment: ".cell<.i32>");
+            TestHarness.CheckTrue("var 捕获 .vars 含 .cell<.i32>",
+                module.Functions.First(f => f.Symbol == "$main()@.i32")
+                    .Vars.Any(v => v.Name == "x" && v.TypeRef == ".cell<.i32>"));
+            TestHarness.CheckTrue("var 捕获文本：new cell / setValue / invoke.indirect",
+                text.Contains("new type(.cell<.i32>)")
+                && text.Contains("invoke.noret fn(core::Cell$setValue")
+                && text.Contains("invoke.indirect $f "));
+            BilTestHarness.CheckFnShape("var 捕获 main 形状", module, "$main()@.i32",
+                ".vars { .cell<.i32> x, ..lambda..UUID f, .i32 .t0, .cell<.i32> .t1, " +
+                "..lambda..UUID .t2, .i32 .t3, .i32 .t4 }\n" +
+                "load res(#0) $.t0\n" +
+                "new type(.cell<.i32>) $.t1 [$.t0]\n" +
+                "set.var $.t1 $x\n" +
+                "new type(..lambda..UUID) $.t2 [$x]\n" +
+                "set.var $.t2 $f\n" +
+                "load res(#1) $.t3\n" +
+                "invoke.noret fn(core::Cell$setValue(v:.generic<$.generic.T>)@.void) [$x, $.t3]\n" +
+                "invoke.indirect $f $.t4 []\n" +
+                "ret $.t4\n");
+        }
+
+        // const 捕获 → .readonly_cell + ReadonlyCell$getValue
+        private static void TestLambdaConstCapture()
+        {
+            var (unit, module, text) = BilTestHarness.EmitBilUnit(
+                "pub func main(): i32 {\n" +
+                "    const c = 41\n" +
+                "    var f = func{(): i32 -> (c + 1)}\n" +
+                "    return f()\n" +
+                "}\n");
+            CheckNoErrors("const 捕获 lambda 全管线无诊断", unit);
+            BilTestHarness.CheckBilValid("const 捕获 lambda 验证器零错误", module);
+            AssertLambdaClass(module, "const 捕获", "core::Func<.i32>", hasCaptureField: true,
+                captureTypeFragment: ".readonly_cell<.i32>");
+            TestHarness.CheckTrue("const 捕获 .vars 含 .readonly_cell<.i32>",
+                module.Functions.First(f => f.Symbol == "$main()@.i32")
+                    .Vars.Any(v => v.Name == "c" && v.TypeRef == ".readonly_cell<.i32>"));
+            TestHarness.CheckTrue("const 捕获 $$call 走 ReadonlyCell$getValue",
+                text.Contains("invoke fn(core::ReadonlyCell$getValue()@.generic<$.generic.T>)"));
+        }
+
+        // this 捕获：隐藏类 .capture.this + new [$.this] + 验证器闭环
+        private static void TestLambdaThisCapture()
+        {
+            var (unit, module, text) = BilTestHarness.EmitBilUnit(
+                "class Counter {\n" +
+                "    pub var n: i32\n" +
+                "    pub func bump(): i32 {\n" +
+                "        var f = func{(): i32 -> (n + 1)}\n" +
+                "        return f()\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 { return 0 }\n");
+            CheckNoErrors("this 捕获 lambda 全管线无诊断", unit);
+            BilTestHarness.CheckBilValid("this 捕获 lambda 验证器零错误", module);
+            AssertLambdaClass(module, "this 捕获", "core::Func<.i32>", hasCaptureField: true,
+                captureTypeFragment: "@Counter");
+            TestHarness.CheckTrue("this 捕获字段名为 .capture.this",
+                module.LocalSymbols.OfType<BilTypeDeclaration>()
+                    .Where(t => t.Symbol.StartsWith("..lambda.."))
+                    .SelectMany(t => t.Members.OfType<BilSimpleMemberDeclaration>())
+                    .Any(m => m.Kind == BilMemberKind.Field
+                        && m.Symbol.Contains("#.capture.this@Counter")));
+            TestHarness.CheckTrue("this 捕获构造传 $.this + invoke.indirect",
+                text.Contains("new type(..lambda..UUID) $.t0 [$.this]")
+                && text.Contains("invoke.indirect $f "));
+            TestHarness.CheckTrue("this 捕获 init set.field 宿主 $.this",
+                text.Contains("set.field $c0 $.this field(..lambda..UUID#.capture.this@Counter)"));
+        }
+
+        // 嵌套：外层返回 Func，内层捕获外层 cell（字段引用传递）
+        private static void TestLambdaNestedCapture()
+        {
+            var (unit, module, text) = BilTestHarness.EmitBilUnit(
+                "pub func main(): i32 {\n" +
+                "    var x = 1\n" +
+                "    var outer = func{(): core.Func\\<i32> -> func{(): i32 -> (x + 1)}}\n" +
+                "    var mid = outer()\n" +
+                "    return mid()\n" +
+                "}\n");
+            CheckNoErrors("嵌套 lambda 全管线无诊断", unit);
+            BilTestHarness.CheckBilValid("嵌套 lambda 验证器零错误", module);
+            var lambdaTypes = module.LocalSymbols.OfType<BilTypeDeclaration>()
+                .Where(t => t.Symbol.StartsWith("..lambda..")).ToList();
+            TestHarness.CheckTrue("嵌套 lambda 恰两个隐藏类", lambdaTypes.Count == 2);
+            TestHarness.CheckTrue("嵌套外层 extends Func<Func<i32>>",
+                lambdaTypes.Any(t => t.ExtendsType == "core::Func<core::Func<.i32>>"));
+            TestHarness.CheckTrue("嵌套内层 extends Func<i32>",
+                lambdaTypes.Any(t => t.ExtendsType == "core::Func<.i32>"));
+            TestHarness.CheckTrue("嵌套两层均含 .capture.x cell 字段",
+                lambdaTypes.All(t => t.Members.OfType<BilSimpleMemberDeclaration>()
+                    .Any(m => m.Kind == BilMemberKind.Field
+                        && m.Symbol.Contains("#.capture.x@.cell<.i32>"))));
+            TestHarness.CheckTrue("嵌套调用两次 invoke.indirect",
+                Regex.Matches(text, @"invoke\.indirect \$").Count >= 2);
+        }
+
+        // void lambda → core::Action；语句位置 invoke.indirect.noret
+        private static void TestLambdaVoidAction()
+        {
+            var (unit, module, text) = BilTestHarness.EmitBilUnit(
+                "pub func sink(v: i32) { }\n" +
+                "pub func main(): i32 {\n" +
+                "    var act = func{() -> { sink(1) }}\n" +
+                "    act()\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckNoErrors("void lambda 全管线无诊断", unit);
+            BilTestHarness.CheckBilValid("void lambda 验证器零错误", module);
+            AssertLambdaClass(module, "void", "core::Action", hasCaptureField: false);
+            TestHarness.CheckTrue("void lambda 语句调用 invoke.indirect.noret",
+                text.Contains("invoke.indirect.noret $act []"));
+            BilTestHarness.CheckFnShape("void lambda main 形状", module, "$main()@.i32",
+                ".vars { ..lambda..UUID act, ..lambda..UUID .t0, .i32 .t1 }\n" +
+                "new type(..lambda..UUID) $.t0 []\n" +
+                "set.var $.t0 $act\n" +
+                "invoke.indirect.noret $act []\n" +
+                "load res(#0) $.t1\n" +
+                "ret $.t1\n");
+        }
+
+        // async lambda → shared AsyncFunc；调用结果 Task<.string>
+        private static void TestLambdaAsync()
+        {
+            var (unit, module, text) = BilTestHarness.EmitBilUnit(
+                "pub func main(): i32 {\n" +
+                "    var f = func{async (id: i32): String -> \"ok\"}\n" +
+                "    var t = f(1)\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckNoErrors("async lambda 全管线无诊断", unit);
+            BilTestHarness.CheckBilValid("async lambda 验证器零错误", module);
+            var lambda = module.LocalSymbols.OfType<BilTypeDeclaration>()
+                .Single(t => t.Symbol.StartsWith("..lambda.."));
+            TestHarness.CheckTrue("async lambda extends AsyncFunc<.string, .i32>",
+                lambda.ExtendsType == "core::AsyncFunc<.string, .i32>");
+            TestHarness.CheckTrue("async lambda 类型带 shared",
+                lambda.Modifiers.OfType<BilKeywordModifier>()
+                    .Any(m => m.Keyword == BilKeyword.Shared));
+            TestHarness.CheckTrue("async 调用结果 Task<.string>",
+                module.Functions.First(f => f.Symbol == "$main()@.i32")
+                    .Vars.Any(v => v.Name == "t"
+                        && v.TypeRef == "core.coroutine::Task<.string>"));
+            TestHarness.CheckTrue("async $$call 声明带 async",
+                lambda.Members.OfType<BilSimpleMemberDeclaration>()
+                    .Any(m => m.Symbol.Contains("$$call")
+                        && m.Modifiers.OfType<BilKeywordModifier>()
+                            .Any(k => k.Keyword == BilKeyword.Async)));
+            TestHarness.CheckTrue("async 调用点 invoke.indirect（有结果）",
+                text.Contains("invoke.indirect $f "));
+        }
+
+        // 显式 Func 标注：new 后 cast 到 core::Func
+        private static void TestLambdaExplicitFuncType()
+        {
+            var (unit, module, text) = BilTestHarness.EmitBilUnit(
+                "pub func main(): i32 {\n" +
+                "    const f: core.Func\\<i32, i32> = func{(x: i32): i32 -> x}\n" +
+                "    return f(1)\n" +
+                "}\n");
+            CheckNoErrors("显式 Func 标注全管线无诊断", unit);
+            BilTestHarness.CheckBilValid("显式 Func 标注验证器零错误", module);
+            TestHarness.CheckTrue("显式标注 f 类型 = core::Func<.i32, .i32>",
+                module.Functions.First(f => f.Symbol == "$main()@.i32")
+                    .Vars.Any(v => v.Name == "f" && v.TypeRef == "core::Func<.i32, .i32>"));
+            BilTestHarness.CheckFnShape("显式 Func 标注 main 形状（new + cast）", module,
+                "$main()@.i32",
+                ".vars { core::Func<.i32, .i32> f, ..lambda..UUID .t0, " +
+                "core::Func<.i32, .i32> .t1, .i32 .t2, .i32 .t3 }\n" +
+                "new type(..lambda..UUID) $.t0 []\n" +
+                "cast $.t0 $.t1 type(core::Func<.i32, .i32>)\n" +
+                "set.var $.t1 $f\n" +
+                "load res(#0) $.t2\n" +
+                "invoke.indirect $f $.t3 [$.t2]\n" +
+                "ret $.t3\n");
+            TestHarness.CheckTrue("显式标注文本含 cast type(core::Func",
+                text.Contains("cast $.t0 $.t1 type(core::Func<.i32, .i32>)"));
+        }
+
+        // 参数捕获 prologue：.c.<名> cell 局部
+        private static void TestLambdaParamCapturePrologue()
+        {
+            var (unit, module, text) = BilTestHarness.EmitBilUnit(
+                "pub func host(p: i32): i32 {\n" +
+                "    var f = func{(): i32 -> p}\n" +
+                "    return f()\n" +
+                "}\n" +
+                "pub func main(): i32 { return host(1) }\n");
+            CheckNoErrors("参数捕获 prologue 全管线无诊断", unit);
+            BilTestHarness.CheckBilValid("参数捕获 prologue 验证器零错误", module);
+            BilTestHarness.CheckFnShape("参数捕获 host 形状（.c.p prologue）", module,
+                "$host(p:.i32)@.i32",
+                ".vars { ..lambda..UUID f, .cell<.i32> .c.p, .cell<.i32> .t0, " +
+                "..lambda..UUID .t1, .i32 .t2 }\n" +
+                "new type(.cell<.i32>) $.t0 [$p]\n" +
+                "set.var $.t0 $.c.p\n" +
+                "new type(..lambda..UUID) $.t1 [$.c.p]\n" +
+                "set.var $.t1 $f\n" +
+                "invoke.indirect $f $.t2 []\n" +
+                "ret $.t2\n");
+            TestHarness.CheckTrue("参数捕获文本含 $.c.p",
+                text.Contains("$.c.p"));
+        }
+
+        // 块体 lambda：值块降级 return@_ → $$call 体含 ret
+        private static void TestLambdaBlockBody()
+        {
+            var (unit, module, text) = BilTestHarness.EmitBilUnit(
+                "pub func main(): i32 {\n" +
+                "    var x = 1\n" +
+                "    var fn = func{(): i32 -> {\n" +
+                "        var d = (x * 2)\n" +
+                "        return@_ d\n" +
+                "    }}\n" +
+                "    return fn()\n" +
+                "}\n");
+            CheckNoErrors("块体 lambda 全管线无诊断", unit);
+            BilTestHarness.CheckBilValid("块体 lambda 验证器零错误", module);
+            AssertLambdaClass(module, "块体", "core::Func<.i32>", hasCaptureField: true,
+                captureTypeFragment: ".cell<.i32>");
+            var callFn = module.Functions.First(f => f.Symbol.Contains("$$call"));
+            BilTestHarness.CheckFnShape("块体 lambda $$call 含 ret（值块降级）", module,
+                callFn.Symbol,
+                ".vars { .i32 d, .i32 .s0, .cell<.i32> .t0, .i32 .t1, .i32 .t2, .i32 .t3 }\n" +
+                "get.field $.this $.t0 field(..lambda..UUID#.capture.x@.cell<.i32>)\n" +
+                "invoke fn(core::Cell$getValue()@.generic<$.generic.T>) $.t1 [$.t0]\n" +
+                "load res(#0) $.t2\n" +
+                "mul $.t1 $.t2 $.t3\n" +
+                "set.var $.t3 $d\n" +
+                "set.var $d $.s0\n" +
+                "ret $.s0\n");
+        }
+
+        // 复合赋值捕获写回：getValue → 运算 → setValue（.s0 承载运算结果）
+        private static void TestLambdaCompoundAssignCapture()
+        {
+            var (unit, module, text) = BilTestHarness.EmitBilUnit(
+                "pub func main(): i32 {\n" +
+                "    var total = 0\n" +
+                "    var add = func{(x: i32) -> { total += x }}\n" +
+                "    add(5)\n" +
+                "    return total\n" +
+                "}\n");
+            CheckNoErrors("复合赋值捕获写回全管线无诊断", unit);
+            BilTestHarness.CheckBilValid("复合赋值捕获写回验证器零错误", module);
+            AssertLambdaClass(module, "复合赋值捕获", "core::Action<.i32>", hasCaptureField: true,
+                captureTypeFragment: ".cell<.i32>");
+            var callFn = module.Functions.First(f => f.Symbol.Contains("$$call"));
+            BilTestHarness.CheckFnShape("复合赋值捕获 $$call getValue→add→setValue", module,
+                callFn.Symbol,
+                ".vars { .i32 .s0, .cell<.i32> .t0, .i32 .t1, .i32 .t2, .cell<.i32> .t3 }\n" +
+                "get.field $.this $.t0 field(..lambda..UUID#.capture.total@.cell<.i32>)\n" +
+                "invoke fn(core::Cell$getValue()@.generic<$.generic.T>) $.t1 [$.t0]\n" +
+                "add $.t1 $x $.t2\n" +
+                "set.var $.t2 $.s0\n" +
+                "get.field $.this $.t3 field(..lambda..UUID#.capture.total@.cell<.i32>)\n" +
+                "invoke.noret fn(core::Cell$setValue(v:.generic<$.generic.T>)@.void) [$.t3, $.s0]\n" +
+                "ret\n");
+            BilTestHarness.CheckFnShape("复合赋值捕获 main 形状", module, "$main()@.i32",
+                ".vars { .cell<.i32> total, ..lambda..UUID add, .i32 .t0, .cell<.i32> .t1, " +
+                "..lambda..UUID .t2, .i32 .t3, .i32 .t4 }\n" +
+                "load res(#0) $.t0\n" +
+                "new type(.cell<.i32>) $.t1 [$.t0]\n" +
+                "set.var $.t1 $total\n" +
+                "new type(..lambda..UUID) $.t2 [$total]\n" +
+                "set.var $.t2 $add\n" +
+                "load res(#1) $.t3\n" +
+                "invoke.indirect.noret $add [$.t3]\n" +
+                "invoke fn(core::Cell$getValue()@.generic<$.generic.T>) $.t4 [$total]\n" +
+                "ret $.t4\n");
+        }
+
+        // 泛型上下文 lambda：隐藏类共享外层 generic(T)，构造点转发 typeid
+        private static void TestLambdaGenericContext()
+        {
+            var (unit, module, text) = BilTestHarness.EmitBilUnit(
+                "pub func wrap\\<T>(x: T): core.Func\\<T, T> {\n" +
+                "    var id = func{(v: T): T -> v}\n" +
+                "    return id\n" +
+                "}\n" +
+                "pub func main(): i32 { return 0 }\n");
+            CheckNoErrors("泛型上下文 lambda 全管线无诊断", unit);
+            BilTestHarness.CheckBilValid("泛型上下文 lambda 验证器零错误", module);
+            var lambda = module.LocalSymbols.OfType<BilTypeDeclaration>()
+                .Single(t => t.Symbol.StartsWith("..lambda.."));
+            TestHarness.CheckTrue("泛型上下文隐藏类带 generic(T)",
+                lambda.GenericParameters.Count == 1
+                && lambda.GenericParameters[0] == "T");
+            TestHarness.CheckTrue("泛型上下文 extends Func<T, T>",
+                lambda.ExtendsType
+                == "core::Func<.generic<$.generic.T>, .generic<$.generic.T>>");
+            TestHarness.CheckTrue("构造点 type 操作数转发 typeid",
+                text.Contains("new type(..lambda..UUID<.generic<$.generic.T>>)"));
+            BilTestHarness.CheckFnShape("泛型上下文 wrap 形状", module,
+                "$wrap(x:.generic<$.generic.T>)@core::Func<.generic<$.generic.T>, .generic<$.generic.T>>",
+                ".vars { ..lambda..UUID<.generic<$.generic.T>> id, " +
+                "..lambda..UUID<.generic<$.generic.T>> .t0, " +
+                "core::Func<.generic<$.generic.T>, .generic<$.generic.T>> .t1 }\n" +
+                "new type(..lambda..UUID<.generic<$.generic.T>>) $.t0 []\n" +
+                "set.var $.t0 $id\n" +
+                "cast $id $.t1 type(core::Func<.generic<$.generic.T>, .generic<$.generic.T>>)\n" +
+                "ret $.t1\n");
+        }
+
+        // 语句位置 void 间接调用：Action 局部 act() → invoke.indirect.noret
+        private static void TestLambdaVoidIndirectCall()
+        {
+            var (unit, module, text) = BilTestHarness.EmitBilUnit(
+                "pub func sink(v: i32) { }\n" +
+                "pub func main(): i32 {\n" +
+                "    var act: core.Action = func{() -> { sink(0) }}\n" +
+                "    act()\n" +
+                "    return 1\n" +
+                "}\n");
+            CheckNoErrors("语句位置 void 间接调用全管线无诊断", unit);
+            BilTestHarness.CheckBilValid("语句位置 void 间接调用验证器零错误", module);
+            TestHarness.CheckTrue("act 静态类型 core::Action",
+                module.Functions.First(f => f.Symbol == "$main()@.i32")
+                    .Vars.Any(v => v.Name == "act" && v.TypeRef == "core::Action"));
+            TestHarness.CheckTrue("语句位置 act() 发 invoke.indirect.noret",
+                text.Contains("invoke.indirect.noret $act []"));
+        }
+
+        // 隐藏类结构：class + extends + operator(call) + 可选 capture 字段
+        private static void AssertLambdaClass(BilModule module, string label,
+            string extendsType, bool hasCaptureField, string? captureTypeFragment = null)
+        {
+            var lambda = module.LocalSymbols.OfType<BilTypeDeclaration>()
+                .FirstOrDefault(t => t.Symbol.StartsWith("..lambda.."));
+            TestHarness.CheckTrue($"{label} LocalSymbols 含 ..lambda..UUID class",
+                lambda != null && lambda.Kind == BilTypeKind.Class);
+            if (lambda == null) return;
+            TestHarness.CheckTrue($"{label} extends {extendsType}",
+                lambda.ExtendsType == extendsType);
+            TestHarness.CheckTrue($"{label} 含 operator(call) 成员",
+                lambda.Members.OfType<BilSimpleMemberDeclaration>()
+                    .Any(m => m.Kind == BilMemberKind.Method
+                        && m.Symbol.Contains("$$call")
+                        && m.Modifiers.OfType<BilOperatorModifier>()
+                            .Any(op => op.Name == "call")));
+            TestHarness.CheckTrue($"{label} 含 init 成员",
+                lambda.Members.OfType<BilSimpleMemberDeclaration>()
+                    .Any(m => m.Kind == BilMemberKind.Method
+                        && m.Symbol.Contains("$init")
+                        && m.Modifiers.OfType<BilKeywordModifier>()
+                            .Any(k => k.Keyword == BilKeyword.Init)));
+            var captureFields = lambda.Members.OfType<BilSimpleMemberDeclaration>()
+                .Where(m => m.Kind == BilMemberKind.Field
+                    && m.Symbol.Contains("#.capture.")).ToList();
+            if (hasCaptureField)
+            {
+                TestHarness.CheckTrue($"{label} 含 .capture 字段",
+                    captureFields.Count >= 1
+                    && (captureTypeFragment == null
+                        || captureFields.Any(f => f.Symbol.Contains(captureTypeFragment))));
+            }
+            else
+            {
+                TestHarness.CheckTrue($"{label} 无 .capture 字段", captureFields.Count == 0);
+            }
         }
     }
 }

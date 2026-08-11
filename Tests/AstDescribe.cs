@@ -18,7 +18,7 @@ namespace LatteCompiler.Tests
     ///   New(T, [args])  Cast(x as[?] T)  Check(x is T | is .Case)  EnumCase(.N)
     ///   If(c, [then块], [else块])  Switch(s, [p -> b块], default -> d块)（均可带 named 标签）
     ///   SwitchStmt(s, [p -> b块], default -> d块)（语句形态）  TypeOf(x)
-    ///   Lambda[ async]([ps])[\&lt;gs&gt;]: R ->[ named L] body（单表达式或 [块]）  Seq(...)
+    ///   Lambda[ async]([ps])[: R] ->[ named L] body（单表达式或 [块]；无 :R = void）  Seq(...)
     /// 格式约定（语句/声明）见各方法注释。
     /// </summary>
     public static class AstDescribe
@@ -90,15 +90,16 @@ namespace LatteCompiler.Tests
             return $"Switch({Expr(s.Selector.Expression)}{Named(s.Label)}, [{cases}], default -> {def})";
         }
 
-        // Lambda[ async]([params])[\<generics>]: Ret ->[ named L] body
-        // （body 为单表达式或多语句 [块]，两形态互斥，§5.1）
+        // Lambda[ async]([params])[: Ret] ->[ named L] body
+        // （body 为单表达式或多语句 [块]，两形态互斥，§5.1；省略 : Ret = void）
         private static string Lambda(LambdaExpressionASTNode l)
         {
             string desc = "Lambda";
             if (l.IsAsync) desc += " async";
             desc += $"({Params(l.Parameters)})";
-            if (l.GenericParameters != null) desc += Generics(l.GenericParameters);
-            desc += $": {Type(l.ReturnType)} ->";
+            // 与 CallableDeclaration 一致：有返回类型才写 ": T"，省略即 void
+            if (l.ReturnType != null) desc += $": {Type(l.ReturnType)}";
+            desc += " ->";
             if (l.Label != null) desc += $" named {l.Label}";
             desc += l.BlockBody != null ? $" {Block(l.BlockBody)}" : $" {Expr(l.Body!.Expression)}";
             return desc;

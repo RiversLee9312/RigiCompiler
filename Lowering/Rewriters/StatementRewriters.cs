@@ -3,7 +3,9 @@ namespace LatteCompiler
     // 语句降级（S5–S7e 恒等降级为主）。自旧 LowerSession.LowerStatement
     // 各分支迁移，行为不变。
 
-    // 局部声明：初始化表达式降级 + cast 物化（BIL §6.5）
+    // 局部声明：初始化表达式降级 + cast 物化（BIL §6.5）；
+    // 被捕获局部（SYNTAX §5.2）：存储是 cell——声明处构造 cell
+    // （有初始化器 = init(value)，无初始化器 = init() 空构造）
     internal sealed class LocalDeclarationRewriter
         : LoweredVisitor<LocalDeclarationRewriter, LoweredStatement, LowerContext>
     {
@@ -19,6 +21,21 @@ namespace LatteCompiler
                 // 初始化 cast 物化（BIL §6.5）：值类型 ≠ 局部声明类型
                 initializer = LoweringFacility.EnsureDeclaredType(decl, initializer,
                     decl.Local.Type);
+            }
+            if (decl.Local.CaptureCell != CaptureCellKind.None)
+            {
+                var readOnly = decl.Local.CaptureCell == CaptureCellKind.ReadonlyCell;
+                var cellType = CallableModel.ConstructCell(env.Unit, decl.Local.Type!, readOnly)
+                    ?? env.Unit.Symbols.ErrorType;
+                // 无初始化器的被捕获 const 局部不存在（P3：const 必须初始化）
+                var init = initializer != null
+                    ? CallableModel.FindCellInit(env.Unit, readOnly, valueInit: true)
+                    : CallableModel.FindCellInit(env.Unit, readOnly, valueInit: false);
+                initializer = new LoweredNewExpression(decl, init,
+                    initializer == null
+                        ? new List<LoweredExpression>()
+                        : new List<LoweredExpression> { initializer },
+                    cellType);
             }
             return new LoweredLocalDeclarationStatement(decl, decl.Local, initializer);
         }
@@ -74,8 +91,15 @@ namespace LatteCompiler
             var genericPack = call.GenericPack == null ? null
                 : new LoweredGenericVarArgsArgument(call.GenericPack, call.GenericPack.IsNamed,
                     call.GenericPack.TypeArguments, call.GenericPack.NamedTypes);
+            // §15.3 间接调用：目标对象表达式降级透传
+            LoweredExpression? indirectTarget = null;
+            if (call.IsIndirect)
+            {
+                indirectTarget = LowerExpressionDispatcher.Visit(call.IndirectTarget!, ctx, env);
+                if (indirectTarget == null) return null;
+            }
             return new LoweredCallStatement(call, call.Method, arguments, callReceiver,
-                call.TypeArguments, genericPack);
+                call.TypeArguments, genericPack, indirectTarget);
         }
     }
 
@@ -117,6 +141,17 @@ namespace LatteCompiler
             {
                 WrapperPlaceLowering.UnsupportedWrite(assignment.Target, env);
                 return null;
+            }
+            // 闭包存储计划（SYNTAX §5.2）：被捕获值引用的写入 = cell setValue
+            // 调用（读写在 plan 一处收口；求值序 = 右值先行物化）
+            if (ctx.Closure.IsCapturedReference(assignment.Target))
+            {
+                var cellValue = LowerExpressionDispatcher.Visit(assignment.Value, ctx, env);
+                if (cellValue == null) return null;
+                cellValue = LoweringFacility.EnsureDeclaredType(assignment, cellValue,
+                    assignment.Target.Type);
+                // 判定已命中，改写恒成功（null 仅限内部错误——this/const 写入）
+                return ctx.Closure.TryRewriteAssignment(assignment, cellValue);
             }
             var target = LowerExpressionDispatcher.Visit(assignment.Target, ctx, env);
             var value = LowerExpressionDispatcher.Visit(assignment.Value, ctx, env);

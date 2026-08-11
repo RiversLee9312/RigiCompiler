@@ -180,7 +180,10 @@ namespace LatteCompiler
                     {
                         continue;
                     }
-                    if (member.Name.StartsWith('.') || member.IsStatic || member.IsNative
+                    // proxy 模板成员（SYNTAX §14.2，仅 wrapper 可声明——P2 已
+                    // 校验）不参与命中；点前缀名仅为编译器合成（lambda 捕获
+                    // 字段等），不会出现于 wrapper 宿主类型
+                    if (member.ProxyTemplate != null || member.IsStatic || member.IsNative
                         || member.IsAbstract || !member.HasBody)
                     {
                         continue;
@@ -193,7 +196,7 @@ namespace LatteCompiler
                 }
                 foreach (var field in host.Fields)
                 {
-                    if (field.IsStatic || field.Name.StartsWith('.')) continue;
+                    if (field.IsStatic) continue;
                     if (field.Getter is { } getter)
                     {
                         CheckMember(env, host, getter, ".proxy.get." + field.Name);

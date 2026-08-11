@@ -91,14 +91,16 @@ namespace LatteCompiler
         public IReadOnlyList<BoundExpression> Arguments { get; }
         public IReadOnlyList<SemanticSymbol> TypeArguments { get; }
         public BoundGenericVarArgsArgument? GenericPack { get; }
+        // 间接调用（§15.3 callable 协议：对 IndirectTarget 对象虚调用其
+        // $$call 实现）；非间接调用为 null
         public bool IsIndirect { get; }
-        public LocalSymbol? IndirectHandle { get; }
+        public BoundExpression? IndirectTarget { get; }
 
         public BoundCallExpression(ASTNode syntax, MethodSymbol method,
             IReadOnlyList<BoundExpression> arguments, SemanticSymbol type,
             IReadOnlyList<SemanticSymbol>? typeArguments = null,
             BoundGenericVarArgsArgument? genericPack = null, bool isIndirect = false,
-            LocalSymbol? indirectHandle = null)
+            BoundExpression? indirectTarget = null)
             : base(syntax, type)
         {
             Method = method;
@@ -106,7 +108,7 @@ namespace LatteCompiler
             TypeArguments = typeArguments ?? Array.Empty<SemanticSymbol>();
             GenericPack = genericPack;
             IsIndirect = isIndirect;
-            IndirectHandle = indirectHandle;
+            IndirectTarget = indirectTarget;
         }
     }
 
@@ -312,35 +314,33 @@ namespace LatteCompiler
         }
     }
 
-    // 普通 lambda（S13 Slice A/P3）：体已在隔离绑定上下文中完成，
-    // 不承载 closure invoke ABI；Lowering 消费归 S13 P4。
+    // lambda（SYNTAX §5.2 对象模型）：表达式的静态类型 = 编译期生成的隐藏类
+    // （..lambda..UUID，与声明位置同命名空间，继承 core::Func/Action/AsyncFunc/
+    // AsyncAction 之一）。捕获经隐藏类 init 以 Cell/ReadonlyCell 字段传入
+    // （this 捕获为普通字段）；CallBody 是 $$call 运算符的函数体，InitBody
+    // 是逐字段赋值的构造函数体。P4a 降级为普通 new 构造，无 BIL 特例
     public sealed class BoundLambdaExpression : BoundExpression
     {
         public LambdaExpressionASTNode LambdaSyntax { get; }
-        public IReadOnlyList<ParameterASTNode> Parameters { get; }
-        public BoundExpression? ExpressionBody { get; }
-        public BoundBlock? BlockBody { get; }
-        public SemanticSymbol ReturnType { get; }
+        // null = void lambda（基类 Action/AsyncAction）
+        public SemanticSymbol? ReturnType { get; }
         public IReadOnlySet<SemanticSymbol> CapturedSymbols { get; }
-        public MethodSymbol Method { get; }
-        public BoundFunctionBody SyntheticBody { get; }
+        public LambdaClosureInfo Closure { get; }
+        public BoundFunctionBody CallBody { get; }
+        public BoundFunctionBody InitBody { get; }
 
         public BoundLambdaExpression(LambdaExpressionASTNode syntax,
-            IReadOnlyList<ParameterASTNode> parameters, BoundExpression? expressionBody,
-            BoundBlock? blockBody, SemanticSymbol returnType,
-            IReadOnlySet<SemanticSymbol> capturedSymbols,
-            IReadOnlyList<ParameterSymbol> parameterSymbols, MethodSymbol method,
-            BoundFunctionBody syntheticBody)
-            : base(syntax, new LambdaTypeSymbol(parameterSymbols, returnType, method))
+            SemanticSymbol? returnType, IReadOnlySet<SemanticSymbol> capturedSymbols,
+            LambdaClosureInfo closure, BoundFunctionBody callBody, BoundFunctionBody initBody,
+            TypeSymbol expressionType)
+            : base(syntax, expressionType)
         {
             LambdaSyntax = syntax;
-            Parameters = parameters;
-            ExpressionBody = expressionBody;
-            BlockBody = blockBody;
             ReturnType = returnType;
             CapturedSymbols = capturedSymbols;
-            Method = method;
-            SyntheticBody = syntheticBody;
+            Closure = closure;
+            CallBody = callBody;
+            InitBody = initBody;
         }
     }
 

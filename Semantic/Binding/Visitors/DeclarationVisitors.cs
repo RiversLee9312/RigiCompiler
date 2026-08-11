@@ -1,4 +1,4 @@
-namespace LatteCompiler
+﻿namespace LatteCompiler
 {
     // 局部变量声明（S5）与解构声明（S7f，SYNTAX §18）。
     // 自旧 BindSession.BindLocalDeclaration/BindDestructuring/FindCorePairDefinition
@@ -250,7 +250,7 @@ namespace LatteCompiler
                 {
                     return new BoundCallStatement(stmt, binding.Method, binding.Arguments,
                         binding.Receiver, binding.TypeArguments, binding.GenericPack,
-                        binding.IsIndirect, binding.IndirectHandle);
+                        binding.IsIndirect, binding.IndirectTarget);
                 }
                 if (binding.Receiver != null)
                 {
@@ -262,11 +262,9 @@ namespace LatteCompiler
                 return new BoundExpressionStatement(stmt, new BoundCallExpression(path,
                     binding.Method, binding.Arguments, binding.ResultType!,
                     binding.TypeArguments, binding.GenericPack, binding.IsIndirect,
-                    binding.IndirectHandle));
+                    binding.IndirectTarget));
             }
             var expr = ExpressionDispatcher.Visit(stmt.Expression.Expression, scope, ctx, env);
-            if (expr != null && LambdaFacility.CheckUnsupportedConsumer(expr, stmt, env))
-                return null;
             return expr == null ? null : new BoundExpressionStatement(stmt, expr);
         }
 
@@ -280,8 +278,6 @@ namespace LatteCompiler
             var value = ExpressionDispatcher.Visit(node.AssignValue!.Expression, scope, ctx, env,
                 target?.Type as TypeSymbol);
             if (target == null || value == null) return null;
-            if (LambdaFacility.CheckUnsupportedConsumer(value, node.AssignValue, env))
-                return null;
             switch (target)
             {
                 case BoundValueReferenceExpression { Symbol: LocalSymbol local }:
@@ -404,8 +400,6 @@ namespace LatteCompiler
                 }
                 var labelValue = ExpressionDispatcher.Visit(ret.Value.Expression, scope, ctx, env);
                 if (labelValue == null) return null;
-                if (LambdaFacility.CheckUnsupportedConsumer(labelValue, ret.Value, env))
-                    return null;
                 return new BoundReturnValueStatement(node, target, labelValue);
             }
             if (ret.Value == null)
@@ -420,7 +414,6 @@ namespace LatteCompiler
             var value = ExpressionDispatcher.Visit(ret.Value.Expression, scope, ctx, env,
                 ctx.Frame.Method.ReturnType as TypeSymbol);
             if (value == null) return null;
-            if (LambdaFacility.CheckUnsupportedConsumer(value, ret.Value, env)) return null;
             if (ctx.Frame.Method.ReturnType == null)
             {
                 env.Error(ret.Value.Span ?? ret.Span,

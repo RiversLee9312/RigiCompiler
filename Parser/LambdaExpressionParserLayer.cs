@@ -5,29 +5,32 @@ namespace LatteCompiler
     /// <summary>
     /// Lambda 表达式解析器（roadmap #21，SYNTAX.md §5.1）
     ///
-    /// 解析 [async] func{(params)\&lt;T&gt;: ReturnType -> [named 标签] body}
-    /// func/async 关键字由 ExpressionParserLayer 先行消费，本层从 { 开始；
+    /// 解析 func{[async] (params)[: ReturnType] -> [named 标签] body}
+    /// （省略 : ReturnType 即为无返回值 void lambda，基类为 core.Action 族，见 §5.2）
+    /// func 关键字由 ExpressionParserLayer 先行消费，本层从 { 开始；
+    /// async 标记写在 { 之后、形参列表之前（SYNTAX §5：func{async (...)...}）；
     /// trailing lambda（list.map{...}）同样从 { 进入，因此入口统一。
     ///
     /// 体两形态（互斥，创建时定）：
-    /// - 单表达式体：-> expr（隐式取值），委托 ExpressionParserLayer
+    /// - 单表达式体：-> expr（有返回值时隐式取值；void 时为表达式语句语义，语义层定）
     /// - 多语句块体：-> { ... }（SYNTAX §5.1），委托 CodeBlockParserLayer；
-    ///   所有路径必须显式 return@_ / return@标签 产出值
+    ///   有返回值时所有路径必须显式 return@_ / return@标签 产出值（语义层校验）
     /// named 标签写在 -> 之后、体之前，配合 return@标签 穿透内层匿名块。
     ///
     /// 状态流转：
-    /// OpenBraceExpected →（委托形参列表）→ AfterParameters
-    ///   → [AfterGenerics] →（委托返回类型）→ ArrowExpected
+    /// OpenBraceExpected → AsyncOrParameters →（委托形参列表）→ AfterParameters
+    ///   →（可选 : 返回类型）→ ArrowExpected / 或直接 -> 进 BodyStart（void）
     ///   → BodyStart → [BodyLabelExpected → BodyAfterLabel]
     ///   →（单表达式：委托 ExpressionParserLayer / 块体：委托 CodeBlockParserLayer）
     ///   → CloseBraceExpected → 弹出
     ///
     /// 委托说明（Delegate, don't implement）：
     /// - 形参列表委托 ParameterListParserLayer（原地写入 node.Parameters）
-    /// - 泛型形参委托 GenericParametersParserLayer（原地写入 node.GenericParameters）
-    /// - 返回类型委托 TypeReferenceParserLayer（原地写入 node.ReturnType）
+    /// - 返回类型委托 TypeReferenceParserLayer（原地写入 node.ReturnType；省略则 null）
     /// - 单表达式体委托 ExpressionParserLayer（直接附加到 node.Body Root，无回传）
     /// - 块体委托 CodeBlockParserLayer（原地填充 node.BlockBody）
+    ///
+    /// lambda 不支持泛型形参（SYNTAX §5.1）：遇 \< 报明确错误；泛型 callable 请显式声明类型。
     ///
     /// lambda 是裸 return 边界（SYNTAX §5.1）：体内（含嵌套 seq/if/循环等代码块、
     /// 以及单表达式体内 if/switch 表达式的分支块）一律禁止裸 return，
@@ -40,8 +43,8 @@ namespace LatteCompiler
         private enum State
         {
             OpenBraceExpected,  // 等待 {
-            AfterParameters,    // 形参列表已解析，等待 : 或 \<（泛型形参）
-            AfterGenerics,      // 泛型形参已解析，等待 :
+            AsyncOrParameters,  // { 已读：可选 async 标记，否则进入形参列表
+            AfterParameters,    // 形参列表已解析，等待 :（返回类型）或 ->（void）
             ArrowExpected,      // 返回类型已解析，等待 ->
             BodyStart,          // -> 已读：named 标签、{ 块体或单表达式体
             BodyLabelExpected,  // named 已读：等待标签名
@@ -79,10 +82,10 @@ namespace LatteCompiler
             {
                 case State.OpenBraceExpected:
                     return HandleOpenBraceExpected(currentToken, context);
+                case State.AsyncOrParameters:
+                    return HandleAsyncOrParameters(currentToken, context);
                 case State.AfterParameters:
                     return HandleAfterParameters(currentToken, context);
-                case State.AfterGenerics:
-                    return HandleAfterGenerics(currentToken, context);
                 case State.ArrowExpected:
                     return HandleArrowExpected(currentToken, context);
                 case State.BodyStart:
@@ -99,54 +102,63 @@ namespace LatteCompiler
             }
         }
 
-        // 等待 { ：消费后直接委托形参列表（ParameterListParserLayer 自行等待 ( ）
+        // 等待 { ：消费后进入 async/形参判定（ParameterListParserLayer 自行等待 ( ）
         private ParserLayerResult HandleOpenBraceExpected(Token currentToken, ParserLayerContext context)
         {
             if (currentToken is NotationToken nt && nt.Content == "{")
             {
-                state = State.AfterParameters;
-                return new ParserLayerResult.PushLayer(
-                    new ParameterListParserLayer(targetNode.Parameters), TokenDisposition.Consume);
+                state = State.AsyncOrParameters;
+                return ParserLayerResult.Continue.Instance;
             }
 
             context.RaiseError($"Expected '{{' to start lambda body, got: {currentToken}");
             return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
-        // 形参列表已解析：: 进入返回类型，\< 进入泛型形参（SYNTAX §5.1 泛型在形参列表之后）
+        // { 已读：可选的 async 标记（SYNTAX §5：func{async (...)...}，仅识别一次，
+        // 且只在 ( 之前——形参名与 async 无歧义）；其余 token 交给形参列表层
+        private ParserLayerResult HandleAsyncOrParameters(Token currentToken, ParserLayerContext context)
+        {
+            if (!targetNode.IsAsync && currentToken is WordToken wt && wt.Content == Keywords.ASYNC)
+            {
+                targetNode.IsAsync = true;
+                return ParserLayerResult.Continue.Instance;
+            }
+
+            state = State.AfterParameters;
+            return new ParserLayerResult.PushLayer(
+                new ParameterListParserLayer(targetNode.Parameters), TokenDisposition.Replay);
+        }
+
+        // 形参列表已解析：
+        // - : → 有返回类型，委托 TypeReferenceParserLayer，再等 ->
+        // - -> → 省略返回类型 = void lambda（SYNTAX §5.1），直接进 BodyStart
+        // - \< → 明确拒绝（lambda 不支持泛型形参）
         private ParserLayerResult HandleAfterParameters(Token currentToken, ParserLayerContext context)
         {
-            if (currentToken is NotationToken nt && nt.Content == ":")
+            if (currentToken is NotationToken colon && colon.Content == ":")
             {
+                // 有返回类型：创建 ReturnType 施工目标后委托类型引用层
+                targetNode.ReturnType = new TypeReferenceASTNode(targetNode);
                 state = State.ArrowExpected;
                 return new ParserLayerResult.PushLayer(
                     new TypeReferenceParserLayer(targetNode.ReturnType), TokenDisposition.Consume);
+            }
+
+            if (currentToken is NotationToken arrow && arrow.Content == Notations.ARROW)
+            {
+                // 省略返回类型 = 无返回值 void lambda（ReturnType 保持 null）
+                state = State.BodyStart;
+                return ParserLayerResult.Continue.Instance;
             }
 
             if (currentToken is NotationToken bs && bs.Content == "\\")
             {
-                targetNode.GenericParameters = new GenericParameterListASTNode(targetNode);
-                state = State.AfterGenerics;
-                // GenericParametersParserLayer 初始状态等待 \，保留当前 token
-                return new ParserLayerResult.PushLayer(
-                    new GenericParametersParserLayer(targetNode.GenericParameters), TokenDisposition.Replay);
+                context.RaiseError("lambda 不支持泛型参数（SYNTAX §5.1）");
+                return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
             }
 
-            context.RaiseError($"Expected ':' or '\\<' after lambda parameter list, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
-        }
-
-        // 泛型形参已解析：必须是 : （返回类型）
-        private ParserLayerResult HandleAfterGenerics(Token currentToken, ParserLayerContext context)
-        {
-            if (currentToken is NotationToken nt && nt.Content == ":")
-            {
-                state = State.ArrowExpected;
-                return new ParserLayerResult.PushLayer(
-                    new TypeReferenceParserLayer(targetNode.ReturnType), TokenDisposition.Consume);
-            }
-
-            context.RaiseError($"Expected ':' after lambda generic parameters, got: {currentToken}");
+            context.RaiseError($"Expected ':' or '->' after lambda parameter list, got: {currentToken}");
             return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 

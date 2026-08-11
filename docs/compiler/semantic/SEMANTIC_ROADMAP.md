@@ -848,27 +848,29 @@ assignment/控制流/`.breakid` capability/泛型/可见性），作为
 
 ## S13 async lowering 专项 + BIL_STANDARD 修订
 
-> **设计已定稿，await/yield、using 两种形态与 lambda P3 Slice A 已实现**：`ASYNC_LOWERING_DESIGN.md`
->（2026-08-07）。复杂 continuation、动态/可挂起清理和 Middleware 仍待实现。
-> 不更新 `PROGRESS_REPORT`，实现完成时由主代理按实际产物登记。
+> **设计已定稿；await/yield、using 两种形态与 lambda 对象模型（M103）已实现**：
+> `ASYNC_LOWERING_DESIGN.md`（§6/§8 以 SYNTAX §5.2 为准）。复杂 continuation、
+> 动态/可挂起清理和 Middleware 仍待实现。
 
 S13 保留 BIL §17：`await Task<T>/Task`、`yield` 与 using 两种形态已直接形成
 强类型 BIL/try-finally 产物，async `invoke` 保持 eager spawn；Middleware 后续把挂起点
 lower 为状态机与 continuation。按设计顺序推进：① P3/P4/BIL 的 await/yield 定型、
 发射和 verifier（M97/M98）；② using 语句形态的嵌套 try/finally 清理（M99）；③
 using 表达式形态的结果局部与嵌套清理（M100）；④ 动态/可挂起 dispose 与复杂
-continuation 清理游标；⑤ lambda P4 closure environment/cell 与 invoke lowering；⑥
-Middleware Task/Alarm/state-machine/GC fence；⑦ 局部访问器 closure cell；⑧ async lambda
-复用 closure 并接 shared-safe 与 spawn。stdlib 保持源码类型面，Coroutine/frame/fence
-采用 Middleware 保留接口，不提前扩展 S14 VM。
+continuation 清理游标；⑤ ~~lambda P4 closure environment/cell 与 invoke lowering~~
+**✅ M103 对象模型全链**；⑥ Middleware Task/Alarm/state-machine/GC fence；⑦ 局部
+访问器 closure cell；⑧ async lambda 复用（M103 已覆盖隐藏类/Async 族/闸门，Middleware
+spawn 仍归 ⑥）。stdlib 保持源码类型面，Coroutine/frame/fence 采用 Middleware 保留
+接口，不提前扩展 S14 VM。
 
-当前 S13 lambda P4 B0 收口（不占用 M 编号，里程碑由主代理登记）：Binder 保持
-captured lambda 在 P3 仅产捕获集且无诊断；无捕获 lambda 已形成 synthetic body、
-`.methodid`/`getid.method`、`invoke.indirect` 与 synthetic fn declaration；captured
-lambda 仍由 `LambdaRewriter` 在 P4 报 pending。`methodid` 按 canonical 参数/返回
-签名校验，`invoke.indirect` 覆盖参数个数、参数类型和有返回/`noret` 形态；不开放
-函数值比较、字段存储或 captured lambda P4。当前四个 B0 套件计数为 Binder 884、
-Lowerer 206、BilEmitter 481、BilVerifier 150，均为通过用例。
+**M103 lambda 对象模型（SYNTAX §5.2，取代 M102 `.methodid` 路线）**：隐藏类
+`..lambda..UUID`（同 NS）继承 `core::Func`/`Action`/`AsyncFunc`/`AsyncAction`
+（`.bootstrap.latte` 0–32 元数）；捕获全 Cell 化（`Cell<T>`/`ReadonlyCell<T>`，this
+普通字段例外；BIL `.cell<T>`/`.readonly_cell<T>`）；`invoke.indirect` = 对象虚调用
+`$$call`（callable 协议），`getid.method`/`.methodid` 全删；`LambdaTypeSymbol` 废除；
+`ClosureStoragePlan` + `CallableModel`；值块体降级；验证器 §15.3 沿 extends 查 $$call
++ 宿主泛型签名代入。归口：循环/catch/finally(e)/using 变量捕获、`(act)()` 括号 void
+间接调用。分项：Binder 893、Lowerer 211、BilEmitter 572、BilVerifier 151。
 
 ## S14 BIL VM
 

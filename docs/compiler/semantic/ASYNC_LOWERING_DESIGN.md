@@ -1,9 +1,9 @@
 # S13 Async Lowering 专项设计
 
-> 状态：定稿；await/yield、using 两种形态、lambda P3 绑定与无捕获 lambda P4
-> function-handle lowering 已实现；捕获 lambda closure environment/cell、复杂
-> continuation 与完整可挂起清理待实现
+> 状态：定稿；await/yield、using 两种形态与 lambda 对象模型（M103，SYNTAX §5.2）
+> 已实现；复杂 continuation、完整可挂起清理与 Middleware 待实现。
 > 范围：S13 的 async/await/yield/using、lambda 闭包与局部访问器；不进入 S14 BIL VM。
+> **闭包捕获形态以 SYNTAX §5.2 为准**（全 Cell 化；本节早期「按值捕获」描述已过时）。
 
 ## 1. 裁决与边界
 
@@ -119,26 +119,28 @@ dispose；完整动态派发与可挂起清理游标仍待实现。无论如何�
 
 ## 6. lambda 闭包与局部访问器
 
-普通 lambda 和局部访问器采用同一 closure environment，不各造一套捕获机制。P3 对每个
-lambda/局部访问器记录按符号身份排序的捕获集及模式：只读捕获、可变共享 cell 捕获、
-`this` 捕获、泛型 typeid 捕获。捕获值的求值发生在 closure 创建点且只发生一次。
+> **定稿形态以 SYNTAX §5.2 为准（M103）**。早期草案中的「const/未写入局部可按值捕获」
+> 已否决——**被捕获变量一律 Cell 化**（`const` → `ReadonlyCell<T>`，`var` → `Cell<T>`），
+> 仅 `this` 与 lambda 自身参数例外（this 作普通字段；自身参数不捕获）。理由：值 wrapper
+> 对 get 的代理行为意味着按值拷贝会冻结 proxy 结果。
 
-- `const` 和从未被任何闭包写入的局部可按值捕获；rich 值复制遵守 refMap acquire。
-- 被 lambda 或局部访问器写入的 `var` 抬升为唯一 cell，所有同一词法槽的读写经该 cell，
-  从而不复制可变语义。
-- async lambda 的 closure environment、receiver、参数、结果、捕获和泛型实参继续受
-  shared-safe 五项闸门；不共享安全的 cell/捕获在 P3 报错。
-- 普通 lambda 允许捕获 local object，因为它仍在当前 Coroutine；若其后被作为 async
+普通 lambda 和局部访问器采用同一 closure 机制（隐藏类捕获字段 + Cell），不各造一套。
+P3 对每个 lambda 记录按符号身份排序的捕获集；捕获在 lambda 求值点经构造函数传入，只
+发生一次。落地要点（M103）：
+
+- 隐藏类 `..lambda..UUID` 继承 `core::Func`/`Action`/`AsyncFunc`/`AsyncAction`；
+  调用走 `invoke.indirect` → 对象虚调用 `$$call`（callable 协议）。
+- 被捕获局部/参数存储改 cell（.vars 投影 + 参数 prologue `.c.<名>`）；读写走
+  getValue/setValue；BIL `.cell<T>`/`.readonly_cell<T>`。
+- async lambda 的 receiver/参数/结果/捕获/泛型实参继续受 shared-safe 五项闸门；
+  不共享安全的 cell/捕获在 P3 报错。
+- 普通 lambda 允许捕获 local object（仍在当前 Coroutine）；若其后被作为 async
   lambda 的捕获或跨协程发布，P3 必须在发布边界拒绝。
+- 循环变量/catch/finally(e)/using 变量被捕获暂不支持（cell 创建点语义待定）。
 
-局部 `var`/`const` 访问器按路线 C 实现：声明槽提升为 closure environment 的逻辑字段，
-getter/setter 是闭包关联的函数体，读写仍经已有 `get.var`/`set.var` 语义入口或等价的
-closure-field lowering。访问器不能越过其词法存活期逃逸；若访问器或其 closure 逃逸，则
-对应 cell/environment 一并提升并由 frame/ARC 根映射持有。不承诺把局部访问器内联，也不
-为其建立全局 canonical 字段符号。
-
-首次闭包子步只要求普通 lambda 与局部访问器闭环；async lambda 在其基础上增加 eager
-spawn 和 shared-safe 检查，不另设第二种闭包对象。
+局部 `var`/`const` 访问器按路线 C 实现（**仍待**）：声明槽提升为 closure 逻辑字段，
+getter/setter 是闭包关联的函数体，复用 `ClosureStoragePlan`。访问器不能越过其词法
+存活期逃逸。async lambda 不另设第二种闭包对象（M103 已覆盖 Async 族隐藏类）。
 
 ## 7. stdlib 与 Middleware native 面
 
@@ -170,14 +172,14 @@ Middleware 必须提供以下保留运行时面；这些是实现接口而非 BI
 2. using 语句形态：嵌套 try/finally 的逆序清理，覆盖正常、异常、return/break 与初始化失败。✅
    复杂 outer value-block continuation、动态/async dispose 与完整清理游标仍待后续切片。
 3. lambda P3：普通 lambda 参数/返回/符号级捕获与 async 闸门。✅
-4. closure P4：无捕获 lambda 已发射 `getid.method` + `invoke.indirect`（含
-   synthetic fn declaration 与 verifier 校验）；捕获 lambda 在 P4 保持 pending，
-   后续再扩展 environment 与可变 cell。
+4. closure P4 / 对象模型（M103）：隐藏类 + Cell 捕获 + `invoke.indirect`→`$$call` +
+   值块体降级 + 验证器 §15.3；`.methodid`/`getid.method` 路线已废除。✅
 5. Middleware：async invoke eager spawn、Task/Alarm continuation、GC fence、状态机。
-6. async lambda：复用 closure，再接 shared-safe 与 spawn。
+6. 局部访问器路线 C（复用 ClosureStoragePlan）与归口项（循环/catch/using 捕获、
+   `(act)()` 括号 void 间接调用）。
 
-前两步以 Bound/Lowered/BIL 形态和 verifier 测试为主；当前 B0 回归计数为
-`Binder 884`、`Lowerer 206`、`BilEmitter 481`、`BilVerifier 150`（均为通过用例，
+前两步以 Bound/Lowered/BIL 形态和 verifier 测试为主；M103 后分项为
+`Binder 893`、`Lowerer 211`、`BilEmitter 572`、`BilVerifier 151`（均为通过用例，
 测试套件总数仍为 44）。Middleware 以集成测试验证 Task
 终态、Executor 恢复、Alarm、using 清理和 GC fence；S14 才为同一 BIL 指令增加 VM 执行
 断言。不得因 S13 提前实现或扩展 S14 VM。
@@ -188,6 +190,6 @@ Middleware 必须提供以下保留运行时面；这些是实现接口而非 BI
   try/finally/return/break 的形态测试。
 - 闭包 cell 与 frame 同时持有 rich 值时，重复 acquire/release 或遗漏 root map 会破坏 ARC；
   environment/frame 发布必须统一纳入 ownership region。
-- async lambda 的 P3 捕获扫描已收窄为符号级；无捕获 lambda 的 P4 函数句柄/间接调用
-  已实现；P4 闭包环境与可变 cell 仍未实现，捕获 lambda 不得进入函数句柄发射。
+- 循环/catch/finally(e)/using 变量捕获的 cell 创建点语义未定；括号形态 void 间接调用
+  `(act)()` 仍归口。
 - 取消语义已有运行时终态但缺少源码取消 API；首切片仅正确传播既有取消，不新增取消入口。

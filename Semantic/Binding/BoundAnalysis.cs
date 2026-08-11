@@ -324,13 +324,9 @@ namespace LatteCompiler
                     yield return wrapperAccess.Receiver;
                     break;
                 case BoundLambdaExpression lambda:
-                    if (lambda.ExpressionBody != null) yield return lambda.ExpressionBody;
-                    if (lambda.BlockBody != null)
-                    {
-                        foreach (var statement in lambda.BlockBody.Statements)
-                            foreach (var childExpression in StatementCarriedExpressions(statement))
-                                yield return childExpression;
-                    }
+                    foreach (var statement in lambda.CallBody.Body.Statements)
+                        foreach (var childExpression in StatementCarriedExpressions(statement))
+                            yield return childExpression;
                     break;
                 // 叶子（字面量/值引用/字段引用/this/self/安全访问占位）与
                 // BoundSwitchPlaceholderExpression（回指跳过）：无子表达式

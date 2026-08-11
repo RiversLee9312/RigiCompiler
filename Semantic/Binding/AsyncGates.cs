@@ -220,8 +220,7 @@ namespace LatteCompiler
                     WalkBlock(seqExpression.Body.Block, env);
                     break;
                 case BoundLambdaExpression lambda:
-                    if (lambda.ExpressionBody != null) WalkExpression(lambda.ExpressionBody, env);
-                    if (lambda.BlockBody != null) WalkBlock(lambda.BlockBody, env);
+                    WalkBlock(lambda.CallBody.Body, env);
                     break;
                 case BoundSafeAccessExpression safeAccess:
                     WalkExpression(safeAccess.Receiver, env);
@@ -348,7 +347,7 @@ namespace LatteCompiler
         // async lambda 的形参与结果和 async 函数使用同一共享安全规则；捕获
         // 仍由下面的符号级闸门单独检查。
         public static void CheckLambdaSignature(IReadOnlyList<ParameterSymbol> parameters,
-            SemanticSymbol returnType, LambdaExpressionASTNode lambda, BindEnvironment env)
+            SemanticSymbol? returnType, LambdaExpressionASTNode lambda, BindEnvironment env)
         {
             foreach (var parameter in parameters)
             {
@@ -360,6 +359,7 @@ namespace LatteCompiler
                         $"'{type.Name}'");
                 }
             }
+            // void lambda（省略返回类型）无返回值闸门
             if (returnType is TypeSymbol returnTypeSymbol
                 && returnTypeSymbol is not ErrorTypeSymbol
                 && !returnTypeSymbol.IsSharedSafe())

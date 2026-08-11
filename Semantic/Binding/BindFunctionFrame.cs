@@ -7,12 +7,13 @@ namespace LatteCompiler
     internal sealed class BindFunctionFrame
     {
         public BindFunctionFrame(MethodSymbol method, FileContext fileCtx, TypeSymbol? declaringType,
-            bool isDefaultValueContext)
+            bool isDefaultValueContext, TypeSymbol? lookupHost = null)
         {
             Method = method;
             FileCtx = fileCtx;
             DeclaringType = declaringType;
             IsDefaultValueContext = isDefaultValueContext;
+            LookupHost = lookupHost ?? method.Owner;
         }
 
         // 当前函数上下文
@@ -32,6 +33,12 @@ namespace LatteCompiler
         // 实例访问器（S8e）同样经此判定：访问器符号 Owner/IsStatic 随字段
         // （P1），实例访问器天然满足条件，无需特判
         public bool HasThis => Method.Owner != null && !Method.IsStatic && !IsDefaultValueContext;
+
+        // 成员查找宿主（MemberLookup.FindField/FindMethods 的宿主链起点）：
+        // 普通函数 = Method.Owner（ext 方法 = 目标类型）；lambda 语境 =
+        // 外层查找宿主逐层传播（隐藏类 $$call 的 Owner 是隐藏类——词法上
+        // 可见的宿主成员必须沿外层上下文解析，SYNTAX §5.2）
+        public TypeSymbol? LookupHost { get; }
 
         // 使用点访问控制便捷入口（S8e，SYNTAX §16.1）：以本上下文的文件/
         // 命名空间/宿主类型（DeclaringType = 词法宿主）判定目标符号可见性

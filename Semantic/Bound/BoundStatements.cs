@@ -87,14 +87,16 @@ namespace LatteCompiler
         public BoundExpression? Receiver { get; }
         public IReadOnlyList<SemanticSymbol> TypeArguments { get; }
         public BoundGenericVarArgsArgument? GenericPack { get; }
+        // 间接调用（§15.3 callable 协议）：对 IndirectTarget 对象虚调用
+        // 其 $$call 实现；非间接调用为 null
         public bool IsIndirect { get; }
-        public LocalSymbol? IndirectHandle { get; }
+        public BoundExpression? IndirectTarget { get; }
 
         public BoundCallStatement(ASTNode syntax, MethodSymbol method,
             IReadOnlyList<BoundExpression> arguments, BoundExpression? receiver = null,
             IReadOnlyList<SemanticSymbol>? typeArguments = null,
             BoundGenericVarArgsArgument? genericPack = null, bool isIndirect = false,
-            LocalSymbol? indirectHandle = null)
+            BoundExpression? indirectTarget = null)
             : base(syntax)
         {
             Method = method;
@@ -103,7 +105,7 @@ namespace LatteCompiler
             TypeArguments = typeArguments ?? Array.Empty<SemanticSymbol>();
             GenericPack = genericPack;
             IsIndirect = isIndirect;
-            IndirectHandle = indirectHandle;
+            IndirectTarget = indirectTarget;
         }
     }
 

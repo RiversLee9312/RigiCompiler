@@ -137,6 +137,9 @@ namespace LatteCompiler.Tests
                 LoweredNewExpression newExpr =>
                     $"New({TypeShort.Of(newExpr.Type)}{(newExpr.Init != null ? ", init" : "")}, " +
                     $"[{string.Join(", ", newExpr.Arguments.Select(Expr))}])",
+                // SYNTAX §5.2：cell 对象引用（捕获局部/参数的 cell 变量本身）
+                LoweredCellReferenceExpression cellRef =>
+                    $"CellRef({cellRef.Symbol.Name},{TypeShort.Of(cellRef.Type)})",
                 LoweredThisExpression => $"This({TypeShort.Of(expr.Type)})",
                 LoweredInstanceCallExpression instCall =>
                     $"InstCall({instCall.Method.Name}, {Expr(instCall.Receiver)}, " +

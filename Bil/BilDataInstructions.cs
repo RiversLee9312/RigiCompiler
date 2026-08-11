@@ -300,40 +300,41 @@ namespace LatteCompiler.Bil
             new BilOperand[] { Method, new BilOperandList(Arguments) };
     }
 
-    // §15.3：间接调用。METHODID 已由 getid.method 产生并携带完整签名。
+    // §15.3：间接调用（callable 协议）——CALL_TARGET 是声明了 operator call
+    // 的对象引用，调用 = 对该对象虚调用其 $$call 实现；实参列表不含 receiver
     public sealed class InvokeIndirectInstruction : BilInstruction
     {
-        public BilVariableOperand MethodId { get; }
+        public BilVariableOperand CallTarget { get; }
         public BilVariableOperand Target { get; }
         public IReadOnlyList<BilVariableOperand> Arguments { get; }
 
-        public InvokeIndirectInstruction(BilVariableOperand methodId, BilVariableOperand target,
+        public InvokeIndirectInstruction(BilVariableOperand callTarget, BilVariableOperand target,
             IReadOnlyList<BilVariableOperand> arguments)
         {
-            MethodId = methodId;
+            CallTarget = callTarget;
             Target = target;
             Arguments = arguments;
         }
 
         internal override string Opcode => "invoke.indirect";
         internal override IReadOnlyList<BilOperand> Operands =>
-            new BilOperand[] { MethodId, Target, new BilOperandList(Arguments) };
+            new BilOperand[] { CallTarget, Target, new BilOperandList(Arguments) };
     }
 
     public sealed class InvokeIndirectNoResultInstruction : BilInstruction
     {
-        public BilVariableOperand MethodId { get; }
+        public BilVariableOperand CallTarget { get; }
         public IReadOnlyList<BilVariableOperand> Arguments { get; }
 
-        public InvokeIndirectNoResultInstruction(BilVariableOperand methodId,
+        public InvokeIndirectNoResultInstruction(BilVariableOperand callTarget,
             IReadOnlyList<BilVariableOperand> arguments)
         {
-            MethodId = methodId;
+            CallTarget = callTarget;
             Arguments = arguments;
         }
 
         internal override string Opcode => "invoke.indirect.noret";
         internal override IReadOnlyList<BilOperand> Operands =>
-            new BilOperand[] { MethodId, new BilOperandList(Arguments) };
+            new BilOperand[] { CallTarget, new BilOperandList(Arguments) };
     }
 }

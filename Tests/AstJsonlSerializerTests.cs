@@ -218,6 +218,9 @@ namespace LatteCompiler.Tests
             // lambda 表达式
             CheckRoundTrip("lambda 表达式",
                 "var f = func{(x: i32): i32 -> (x + 1)}\n");
+            // void lambda（ReturnType = null）
+            CheckRoundTrip("void lambda 表达式",
+                "var f = func{() -> (1 + 1)}\n");
             // seq 块（using 资源绑定）
             CheckRoundTrip("seq 块（using 绑定）",
                 "func main() {\n" +

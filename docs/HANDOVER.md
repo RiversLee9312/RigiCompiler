@@ -1,15 +1,15 @@
 # LatteCompiler 临时交接
 
-> 更新时间：2026-08-08
+> 更新时间：2026-08-11
 > 目的：供下一次对话的 coding agent 快速恢复上下文。
 > 真实仓库根：`C:\Users\SaRiv\source\repos\LatteCompiler\LatteCompiler`
 
 ## 当前状态
 
-本次工作已完成并准备提交 M97–M102。不要回退工作树中已有的 S13 改动。
+M97–M103 均已落地。不要回退工作树中已有的 S13 改动。
 进度权威来源是 `docs/PROGRESS_REPORT.md`；本文件只提供恢复上下文。
 
-### 已完成里程碑
+### 已完成里程碑（M97–M103）
 
 - **M97 await**：`Task`/`Task<T>` P3 绑定，`BoundAwaitExpression`、P4a/P4b
   `await TASK [RESULT]`，await 后清除 smart-cast 但保留 DA，BilVerifier 校验结果类型。
@@ -20,46 +20,48 @@
   已建立前缀，finally 按逆序 dispose；P4 使用 nested try/finally，不新增 opcode。
 - **M100 using 表达式**：结果局部先写入，再以完整值块作为 protected body 包入资源
   nested try/finally；结果局部在清理后返回。复杂 outer value-block continuation 仍保守拦截。
-- **M101 lambda P3 Slice A**：匿名 `LambdaTypeSymbol`、`BoundLambdaExpression`，隔离
-  `Scope/BindContext`，符号级捕获集，DA 只继承已赋值事实，不继承 smart-cast；嵌套捕获
-  向外传递；async lambda 补参数/返回/捕获共享安全闸门。
-- **M102 lambda P4 B0**：仅无捕获普通 lambda 可进入 P4。生成 synthetic body 和
-  LocalSymbols method declaration；局部 lambda 值使用 `.methodid`，发射 `getid.method`
-  和 `invoke.indirect`/`invoke.indirect.noret`；verifier 校验 methodid 参数/返回签名。
+- **M101 lambda P3 Slice A**：匿名 callable 绑定与符号级捕获集（后续 M103 废除
+  `LambdaTypeSymbol`，改为隐藏类对象模型）。
+- **M102 lambda P4 B0**：曾以 `.methodid`/`getid.method` 发射无捕获 lambda——
+  **已由 M103 整体替换**为隐藏类 + `$$call` 对象模型（见下）。
+- **M103 lambda 对象模型全链**（SYNTAX §5.2，2026-08-11）：
+  - 隐藏类 `..lambda..UUID` 继承 Func/Action/AsyncFunc/AsyncAction（0–32 元数）；
+  - 捕获全 Cell 化（`core::Cell<T>` / `ReadonlyCell<T>`，this 普通字段例外）；
+  - BIL `.cell<T>`/`.readonly_cell<T>`；`invoke.indirect` = 对象虚调用 `$$call`；
+  - 删 `getid.method`/`.methodid`；`LambdaTypeSymbol` 废除；
+  - `ClosureStoragePlan` + `CallableModel`；值块体降级；验证器 §15.3 重写。
 
-## 明确未实现边界
+## 明确未实现边界（M103 后）
 
-- 捕获 lambda 的 closure environment、按值捕获、可变 `var`/参数的 closure cell。
-- 函数值比较、字段/静态字段存储、普通函数参数/返回值传递等未定形态。
-- async lambda 的 eager spawn、Task 化和 closure 复用。
-- 局部访问器路线 C，需和 closure cell 共用环境机制。
-- 动态/可挂起 dispose、完整清理游标、复杂 continuation。
+- ~~捕获 lambda 的 closure environment / cell~~ → **M103 已落地**（全 Cell 化）。
+- ~~async lambda 的 eager spawn / Task 化~~ → **M103 已落地**（AsyncFunc/AsyncAction +
+  async `$$call` + invoke.indirect 结果 Task）。
+- ~~函数值字段/返回值传递~~ → **M103 已落地**（普通对象 upcast + cast 物化）。
+- 循环变量 / catch / finally(e) / using 资源变量**被捕获**暂不支持（cell 创建点语义待定）。
+- 语句位置括号形态 void 间接调用 `(act)()` 归口（直接 `act()` 已发
+  `invoke.indirect.noret`）。
+- 局部访问器路线 C（与 closure cell 共用机制，仍待施工）。
+- 动态/可挂起 dispose、完整清理游标、复杂 outer value-block continuation。
 - Middleware 的 Task/Alarm 状态机、continuation、GC ownership fence；S14 VM 执行。
-
-捕获 lambda 的预期行为：P3 能绑定并记录捕获；P4 在
-`Lowering/Rewriters/ExpressionRewriters.cs` 的 `LambdaRewriter` 报明确
-`captured lambda closure lowering is not available` pending，并跳过该函数体。
 
 ## 关键代码位置
 
-- `Semantic/Binding/Visitors/LambdaVisitors.cs`：lambda P3 绑定、synthetic body 注册、
-  async 闸门和 pending consumer。
-- `Semantic/Binding/BindingDriver.cs`：`env.SyntheticLambdas` 汇入 bodies；捕获 lambda
-  不在此阶段报错，保持 P3 无诊断。
-- `Semantic/Bound/BoundExpressions.cs`：`BoundLambdaExpression`、lambda callable 类型。
-- `Lowering/Rewriters/ExpressionRewriters.cs`：无捕获 lambda P4a；捕获 lambda pending。
-- `Lowering/Emitting/ValueEmitters.cs`：lambda handle、indirect call、await/yield 发射。
-- `Bil/BilFunction.cs`：`BilMethodIdType`。
-- `Bil/BilComputeInstructions.cs`：`GetIdMethodInstruction`。
-- `Bil/BilDataInstructions.cs`：`InvokeIndirectInstruction` 与 noret 形态。
-- `Bil/BilVerifier.Types.cs`：methodid canonical 签名、indirect invoke 参数/返回校验。
-- `Lowering/Emitting/LocalSymbolEmitters.cs`、`Lowering/EmittingDriver.cs`：synthetic
-  lambda method declaration 和 function body 发射。
-- `Tests/BinderTests.Lambda.cs`、`Tests/LowererTests.Basics.cs`、
-  `Tests/BilEmitterTests.Lambda.cs`、`Tests/BilVerifierTests.cs`：lambda 回归覆盖。
-- `docs/compiler/semantic/ASYNC_LOWERING_DESIGN.md`：S13 设计边界。
-- `docs/compiler/semantic/SEMANTIC_ROADMAP.md`：S13 顺序和当前 B0 状态。
-- `docs/PROGRESS_REPORT.md`：M97–M102 里程碑与精确测试数。
+- `Semantic/Binding/CallableModel.cs`：Func/Action/Cell 族查找与构造（M103 新）。
+- `Semantic/Binding/Visitors/LambdaVisitors.cs`：lambda P3 绑定、隐藏类合成、捕获集。
+- `Semantic/Binding/BindingDriver.cs`：synthetic lambda bodies 汇入。
+- `Lowering/ClosureStoragePlan.cs`：闭包存储判定表（M103 新）。
+- `Lowering/Rewriters/ExpressionRewriters.cs`：lambda P4a / 值块体降级。
+- `Lowering/Emitting/ValueEmitters.cs`：new 隐藏类、invoke.indirect、await/yield。
+- `Lowering/Emitting/LocalSymbolEmitters.cs`、`Lowering/EmittingDriver.cs`：
+  synthetic 类型声明 + cell .vars / 参数 prologue。
+- `Bil/BilDataInstructions.cs`：`InvokeIndirectInstruction`（对象 `$$call`）。
+- `Bil/BilVerifier.Types.cs`：§15.3 $$call 查找 + 宿主泛型签名代入。
+- `stdlib/.bootstrap.latte`：Func/Action/AsyncFunc/AsyncAction（0–32）+ Cell/ReadonlyCell。
+- `Tests/BinderTests.Lambda.cs`、`Tests/LowererTests.*.cs`、
+  `Tests/BilEmitterTests.Lambda.cs`、`Tests/BilVerifierTests.cs`。
+- `docs/compiler/semantic/ASYNC_LOWERING_DESIGN.md`：§6/§8 以 SYNTAX §5.2 为准（M103 注记）。
+- `docs/compiler/semantic/SEMANTIC_ROADMAP.md`：S13 状态。
+- `docs/PROGRESS_REPORT.md`：M103 里程碑与精确测试数。
 
 ## 验证基线
 
@@ -68,25 +70,22 @@
 ```text
 dotnet build
 dotnet run --no-build -- test --all
-git diff --check
 ```
 
-当前基线：
+当前基线（2026-08-11）：
 
 - build：0 errors, 0 warnings
 - 44 test suites，0 failed
-- deterministic：3441/3441
+- deterministic：3536/3536
 - Lexer fuzz：6000/6000
 - semantic fuzz：3000/3000
-- 分项：Binder 884、Lowerer 206、BilEmitter 481、BilVerifier 150
+- 分项：Binder 893、Lowerer 211、BilEmitter 572、BilVerifier 151
 
 ## 下一步建议
 
-下一次只推进 closure environment/cell，不要同时推进 Middleware。推荐顺序：
-
-1. 先为无捕获 B0 的 synthetic method 机制确定是否复用同一保留符号/声明路径。
-2. 做只读 `const`/从未被闭包写入局部的按值捕获，明确创建点求值一次和环境字段布局。
-3. 再做被闭包写入的 `var`/参数唯一 cell，并同步 DA、smart-cast 失效和复合赋值单次求值。
-4. 最后接局部访问器路线 C、async lambda 和 Middleware 生命周期。
+1. 循环/catch/finally(e)/using 变量捕获的 cell 创建点语义定稿与落地；或
+2. 括号形态 void 间接调用 `(act)()` 归口解封；或
+3. 局部访问器路线 C（复用 ClosureStoragePlan）；或
+4. Middleware Task/Alarm 状态机边界（勿与 frontend 混推）。
 
 任何后续里程碑完成后，独立运行完整 `test --all`，再更新 `docs/PROGRESS_REPORT.md`。

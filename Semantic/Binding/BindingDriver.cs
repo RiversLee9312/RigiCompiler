@@ -55,13 +55,13 @@ namespace LatteCompiler
                 }
                 BindBody(fn, symbol, fileCtx, owner);
             }, BindAccessorBodies);
+            // lambda 对象模型（SYNTAX §5.2）：每个 lambda 的隐藏类 init 体与
+            // $$call 体全部汇入函数体列表（捕获与否不再有区别——闭包经
+            // init 的 Cell 参数传入，P4 降级为普通 new + invoke）
             foreach (var lambda in env.SyntheticLambdas)
             {
-                if (lambda.CapturedSymbols.Count > 0)
-                {
-                    continue;
-                }
-                bodies.Add(lambda.SyntheticBody);
+                bodies.Add(lambda.InitBody);
+                bodies.Add(lambda.CallBody);
             }
             return bodies;
         }
@@ -187,9 +187,9 @@ namespace LatteCompiler
             FileContext fileCtx, TypeSymbol? owner)
         {
             var ctx = new BindContext(symbol, fileCtx, owner);
-            // M88：`.proxy.` 声明体模板态——Method = proxy 自身、DeclaringType
-            // = wrapper；SelfType = wrapper 恰一泛型参数时的该参数
-            if (symbol.Name.StartsWith(".proxy."))
+            // M88：proxy 模板声明体（SYNTAX §14.2）——Method = proxy 自身、
+            // DeclaringType = wrapper；SelfType = wrapper 恰一泛型参数时的该参数
+            if (symbol.ProxyTemplate != null)
             {
                 GenericParameterSymbol? selfType = null;
                 if (owner is { Kind: TypeKind.Wrapper, GenericParameters.Count: 1 })

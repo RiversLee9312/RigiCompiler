@@ -16,12 +16,15 @@ namespace LatteCompiler
     {
         public BindContext(MethodSymbol method, FileContext fileCtx, TypeSymbol? declaringType,
             bool isDefaultValueContext = false, bool isLambda = false,
-            ThisSymbol? thisSymbol = null)
+            ThisSymbol? thisSymbol = null, TypeSymbol? lambdaThisType = null,
+            TypeSymbol? lookupHost = null)
         {
-            Frame = new BindFunctionFrame(method, fileCtx, declaringType, isDefaultValueContext);
+            Frame = new BindFunctionFrame(method, fileCtx, declaringType, isDefaultValueContext,
+                lookupHost);
             IsLambda = isLambda;
             This = thisSymbol ?? (Frame.HasThis && declaringType != null
                 ? new ThisSymbol(declaringType) : null);
+            LambdaThisType = lambdaThisType;
         }
 
         // 只读函数帧（当前函数/文件上下文/宿主类型/默认值上下文标记
@@ -47,5 +50,9 @@ namespace LatteCompiler
         public HashSet<SemanticSymbol> CapturedSymbols { get; } = new HashSet<SemanticSymbol>();
         public HashSet<ParameterSymbol> LambdaParameters { get; } = new HashSet<ParameterSymbol>();
         public ThisSymbol? This { get; }
+        // lambda 体内的有效 this 类型（SYNTAX §5.2：lambda 的函数级宿主是隐藏类的
+        // $$call，但源码层 this 指向外层声明位置的实例——此槽承载外层有效 this 类型，
+        // 捕获后 P4 经 .capture.this 字段物化）；非 lambda 上下文恒 null
+        public TypeSymbol? LambdaThisType { get; }
     }
 }

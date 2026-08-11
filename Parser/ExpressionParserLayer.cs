@@ -62,7 +62,6 @@ namespace LatteCompiler
             SafeDotExpected,      // ? 之后等待 .
             GenericAngleExpected, // \ 之后等待 <（泛型实参列表）
             GenericArgParsed,     // 一个泛型实参已解析，等待 , 或 >
-            AsyncSeen,            // async 已读，等待 func（async lambda）
             TypeOperatorSeen,     // 类型操作符 is/as/supers/with 已读，等待右侧类型
             IfNullFallbackSeen,   // 中缀 if 已读，等待 ? 组成 if?（S7f 空值回退）
             Completed             // 完成
@@ -95,8 +94,6 @@ namespace LatteCompiler
         // trailing lambda 的实参节点（lambda 弹栈后与当前表达式一并封口）
         private CharPosition pendingSuffixStart;
         private ArgumentASTNode? pendingTrailingArgument = null;
-        // async lambda 的 async 关键字起点（span 含 async，M31）
-        private CharPosition pendingAsyncStart;
 
         public ExpressionParserLayer(
             ExpressionRootASTNode target,
@@ -207,9 +204,6 @@ namespace LatteCompiler
                 case State.GenericArgParsed:
                     return HandleGenericArgParsed(currentToken, context);
 
-                case State.AsyncSeen:
-                    return HandleAsyncSeen(currentToken, context);
-
                 case State.TypeOperatorSeen:
                     return HandleTypeOperatorSeen(currentToken, context);
 
@@ -257,18 +251,19 @@ namespace LatteCompiler
             }
 
             // 3.1 关键字起始的结构化表达式（SYNTAX §5/§7/§3.7/§6）：
-            // lambda、async lambda、if、switch、typeOf、seq
+            // lambda、if、switch、typeOf、seq
             if (currentToken is WordToken kw)
             {
                 switch (kw.Content)
                 {
                     case Keywords.FUNC:
-                        return DelegateLambdaParsing(false, context.GetLocation().Start, context);
+                        return DelegateLambdaParsing(context.GetLocation().Start, context);
                     case Keywords.ASYNC:
-                        // 先消费 async（记起点：span 含 async），下一 token 必须是 func
-                        pendingAsyncStart = context.GetLocation().Start;
-                        state = State.AsyncSeen;
-                        return ParserLayerResult.Continue.Instance;
+                        // async lambda 语法为 func{async (...)...}（SYNTAX §5），
+                        // async 不是表达式起始关键字
+                        context.RaiseError(
+                            "async lambda 写作 func{async (...)...}，'async' 不能出现在表达式起始位置");
+                        break;
                     case Keywords.IF:
                         // span 含起始关键字（M31：子层 FirstRange 从 ( 起算，这里显式记 Start）
                         var ifNode = new IfExpressionASTNode();
@@ -391,26 +386,14 @@ namespace LatteCompiler
             return new ParserLayerResult.PushLayer(layer, disposition);
         }
 
-        // 委托 lambda 表达式解析（func 已消费；isAsync 标记 async lambda）；
-        // keywordStart 为 func（或 async）关键字起点：span 含起始关键字（M31）
+        // 委托 lambda 表达式解析（func 已消费；async 标记由 LambdaExpressionParserLayer
+        // 在 { 之后识别）；keywordStart 为 func 关键字起点：span 含起始关键字（M31）
         private ParserLayerResult DelegateLambdaParsing(
-            bool isAsync, CharPosition keywordStart, ParserLayerContext context)
+            CharPosition keywordStart, ParserLayerContext context)
         {
-            var lambdaNode = new LambdaExpressionASTNode() { IsAsync = isAsync };
+            var lambdaNode = new LambdaExpressionASTNode();
             StartSpan(lambdaNode, keywordStart, context);
             return DelegateStructuredParsing(lambdaNode, new LambdaExpressionParserLayer(lambdaNode));
-        }
-
-        // async 已读：下一 token 必须是 func（async lambda，SYNTAX §5.3）
-        private ParserLayerResult HandleAsyncSeen(Token currentToken, ParserLayerContext context)
-        {
-            if (currentToken is WordToken wt && wt.Content == Keywords.FUNC)
-            {
-                return DelegateLambdaParsing(true, pendingAsyncStart, context);
-            }
-
-            context.RaiseError($"Expected 'func' after 'async' (async lambda), got: {currentToken}");
-            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
         // 类型操作符已读：as 后可接一个 ?（安全转换），随后委托类型引用解析

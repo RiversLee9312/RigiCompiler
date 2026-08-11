@@ -30,6 +30,11 @@ namespace LatteCompiler
         // 五映射栈）
         public LowerTargetState Targets { get; } = new LowerTargetState();
 
+        // 闭包存储计划（SYNTAX §5.2；LoweringDriver 在体降级前构建——
+        // 被捕获局部/参数的 cell 化与 lambda 体内捕获访问的唯一判定表；
+        // 无闭包语境时为「空计划」（全部查询走默认路径）
+        public ClosureStoragePlan Closure { get; internal set; } = null!;
+
         // 编织拦截失败标记（S7e）：try+finally 部分终止编织拦截在
         // TransformWithContinuation 深处触发（void 链路无法返回值传播），
         // 置位后值块降级放弃产物——诊断已落袋，函数体跳过

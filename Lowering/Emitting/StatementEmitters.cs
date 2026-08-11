@@ -162,9 +162,29 @@ namespace LatteCompiler
             }
             if (call.IsIndirect)
             {
+                // §15.3 间接调用（无结果语句）：物化目标对象后虚调用其 $$call。
+                // async call（AsyncAction 族）也有 Task 结果（§15.2
+                // fire-and-forget）——发 invoke 产 Task 丢弃，而非 noret
+                //（stdlib 缺席时与直接调用同口径降级 noret，仅测试可达）
+                var indirectTarget = EmitValueDispatcher.Visit(call.IndirectTarget!,
+                    target, ctx, env);
+                if (call.Method.IsAsync)
+                {
+                    var coroutine = env.Unit.Symbols.GlobalNamespace.ChildNamespaces
+                        .FirstOrDefault(n => n.Name == "core")?.ChildNamespaces
+                        .FirstOrDefault(n => n.Name == "coroutine");
+                    var task = coroutine?.Types.FirstOrDefault(t => t.Name == "Task"
+                        && t.GenericParameters.Count == 0);
+                    if (task != null)
+                    {
+                        var discarded = ctx.Temps.NewTemp(task);
+                        target.Instructions.Add(new InvokeIndirectInstruction(indirectTarget,
+                            discarded, arguments) { Origin = call });
+                        return Unit.Value;
+                    }
+                }
                 target.Instructions.Add(new InvokeIndirectNoResultInstruction(
-                    BilOp.Var(EmittingFacility.ValueVariableName(call.IndirectHandle!)),
-                    arguments) { Origin = call });
+                    indirectTarget, arguments) { Origin = call });
                 return Unit.Value;
             }
             // S10（BIL §15.2）：async 无结果调用语句位置也有 Task 结果

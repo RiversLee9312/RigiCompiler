@@ -260,44 +260,53 @@ namespace LatteCompiler.Tests
 
         private static void TestIndirectInvokeShapes()
         {
+            // §15.3 callable 协议：invoke.indirect 的对象必须（沿 extends 链）
+            // 声明与实参严格匹配的 $$call。Handler 置 ExternalSymbols（本地
+            // 非 native 方法必须带 fn 定义，§21.2；手工模块以外部声明形态
+            // 聚焦指令侧检查——同 IndexModule 先例）
             var module = MinimalModule(out _, out var entry);
-            const string method = "$noop()@.void";
-            module.LocalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method, method,
-                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
-            var noop = new BilFunction(method);
-            noop.Args.Add(new BilArgDeclaration(".return", ".void"));
-            var noopEntry = new BilBlock("entry", BilBlockModifier.Entrypoint);
-            noopEntry.Instructions.Add(new RetInstruction());
-            noop.Blocks.Add(noopEntry);
-            module.Functions.Add(noop);
-            module.Functions[0].Vars.Add(new BilVarDeclaration(".methodid<()@.void>", "handle"));
-            entry.Instructions.Insert(1, new GetIdMethodInstruction(BilOp.Fn(method),
-                BilOp.Var("handle")));
+            var voidHandler = new BilTypeDeclaration("Handler", BilTypeKind.Class);
+            voidHandler.Modifiers.Add(new BilAccessibilityModifier(BilAccessibility.Public));
+            voidHandler.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "Handler$$call()@.void",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilOperatorModifier("call") }));
+            module.ExternalSymbols.Add(voidHandler);
+            module.Functions[0].Vars.Add(new BilVarDeclaration("Handler", "h"));
+            entry.Instructions.Insert(1, new NewInstruction(BilOp.Type("Handler"),
+                BilOp.Var("h"), new List<BilVariableOperand>()));
             entry.Instructions.Insert(2, new InvokeIndirectNoResultInstruction(
-                BilOp.Var("handle"), new List<BilVariableOperand>()));
-            BilTestHarness.CheckBilValid("void methodid + invoke.indirect.noret 正例", module);
+                BilOp.Var("h"), new List<BilVariableOperand>()));
+            BilTestHarness.CheckBilValid("operator call 对象 + invoke.indirect.noret 正例", module);
 
             module = MinimalModule(out _, out entry);
-            module.Functions[0].Vars.Add(new BilVarDeclaration(".methodid<(.i32)@.i32>", "handle"));
+            var intHandler = new BilTypeDeclaration("Handler", BilTypeKind.Class);
+            intHandler.Modifiers.Add(new BilAccessibilityModifier(BilAccessibility.Public));
+            intHandler.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "Handler$$call(value:.i32)@.i32",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilOperatorModifier("call") }));
+            module.ExternalSymbols.Add(intHandler);
+            module.Functions[0].Vars.Add(new BilVarDeclaration("Handler", "h"));
             module.Functions[0].Vars.Add(new BilVarDeclaration(".i32", "arg"));
             module.Functions[0].Vars.Add(new BilVarDeclaration(".bool", "wrong"));
-            entry.Instructions.Insert(1, new GetIdMethodInstruction(
-                BilOp.Fn("$id(value:.i32)@.i32"), BilOp.Var("handle")));
-            module.LocalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
-                "$id(value:.i32)@.i32",
-                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
-            var id = new BilFunction("$id(value:.i32)@.i32");
-            id.Args.Add(new BilArgDeclaration(".return", ".i32"));
-            id.Args.Add(new BilArgDeclaration("value", ".i32"));
-            var idEntry = new BilBlock("entry", BilBlockModifier.Entrypoint);
-            idEntry.Instructions.Add(new RetInstruction(BilOp.Var("value")));
-            id.Blocks.Add(idEntry);
-            module.Functions.Add(id);
-            entry.Instructions.Insert(2, new LoadInstruction(module.Resources[0], BilOp.Var("arg")));
-            entry.Instructions.Insert(3, new InvokeIndirectInstruction(BilOp.Var("handle"),
+            entry.Instructions.Insert(1, new NewInstruction(BilOp.Type("Handler"),
+                BilOp.Var("h"), new List<BilVariableOperand>()));
+            entry.Instructions.Insert(2, new LoadInstruction(module.Resources[0],
+                BilOp.Var("arg")));
+            entry.Instructions.Insert(3, new InvokeIndirectInstruction(BilOp.Var("h"),
                 BilOp.Var("wrong"), new[] { BilOp.Var("arg") }));
-            BilTestHarness.CheckBilInvalid("methodid 参数/返回形态不匹配",
+            BilTestHarness.CheckBilInvalid("invoke.indirect 结果类型不匹配",
                 module, "invoke.indirect 结果");
+
+            module = MinimalModule(out _, out entry);
+            module.Functions[0].Vars.Add(new BilVarDeclaration(".i32", "plain"));
+            entry.Instructions.Insert(1, new LoadInstruction(module.Resources[0],
+                BilOp.Var("plain")));
+            entry.Instructions.Insert(2, new InvokeIndirectNoResultInstruction(
+                BilOp.Var("plain"), new List<BilVariableOperand>()));
+            BilTestHarness.CheckBilInvalid("无 operator call 的类型不得 invoke.indirect",
+                module, "operator call");
         }
 
         private static void Positive(string label, string userSource)

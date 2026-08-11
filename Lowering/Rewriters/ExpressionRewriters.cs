@@ -39,6 +39,8 @@ namespace LatteCompiler
         }
     }
 
+    // 值引用（局部/参数）：闭包存储计划（SYNTAX §5.2）命中时被捕获符号
+    // 改写为 cell getValue 调用 / 捕获字段访问；未命中为普通变量引用
     internal sealed class ValueReferenceRewriter
         : LoweredVisitor<ValueReferenceRewriter, LoweredExpression, LowerContext>
     {
@@ -46,7 +48,8 @@ namespace LatteCompiler
             LowerEnvironment env)
         {
             var reference = (BoundValueReferenceExpression)node;
-            return new LoweredValueReferenceExpression(reference, reference.Symbol);
+            return ctx.Closure.TryRewriteValueRead(reference)
+                ?? new LoweredValueReferenceExpression(reference, reference.Symbol);
         }
     }
 
@@ -106,8 +109,16 @@ namespace LatteCompiler
             var genericPack = call.GenericPack == null ? null
                 : new LoweredGenericVarArgsArgument(call.GenericPack, call.GenericPack.IsNamed,
                     call.GenericPack.TypeArguments, call.GenericPack.NamedTypes);
+            // §15.3 间接调用：目标对象表达式降级透传（§10.2 求值序——
+            // 目标在实参之后物化与直接调用 receiver 序一致归发射侧）
+            LoweredExpression? indirectTarget = null;
+            if (call.IsIndirect)
+            {
+                indirectTarget = LowerExpressionDispatcher.Visit(call.IndirectTarget!, ctx, env);
+                if (indirectTarget == null) return null;
+            }
             return new LoweredCallExpression(call, call.Method, arguments, call.TypeArguments,
-                genericPack, call.IsIndirect);
+                genericPack, call.IsIndirect, indirectTarget);
         }
     }
 
@@ -117,14 +128,28 @@ namespace LatteCompiler
         protected override LoweredExpression? VisitCore(BoundNode node, LowerContext ctx,
             LowerEnvironment env)
         {
+            // lambda 对象模型（SYNTAX §5.2）：表达式降级为隐藏类构造——
+            // new type(..lambda..UUID) [逐捕获 cell/this 实参]；实参取当前
+            // 函数上下文中各捕获符号的 cell 对象（cell 沿引用传递共享语义）
             var lambda = (BoundLambdaExpression)node;
-            if (lambda.CapturedSymbols.Count != 0)
+            var arguments = new List<LoweredExpression>();
+            foreach (var capture in lambda.Closure.Captures)
             {
-                env.Error(lambda.Syntax.Span,
-                    "S13 P4 pending: captured lambda closure lowering is not available");
-                return null;
+                if (!capture.IsThis && !ctx.Closure.HasCellObjectFor(capture.Symbol))
+                {
+                    // stdlib 缺席的降级路径（P3 已就 core::Func/Action 族
+                    // 缺失落诊断）——不抛出，跳过本函数体
+                    env.Error(lambda.Syntax.Span,
+                        "P4: lambda closure lowering requires the stdlib core::Cell family");
+                    return null;
+                }
+                arguments.Add(capture.IsThis
+                    ? ctx.Closure.ThisValueFor(lambda, ctx.Method.Owner
+                        ?? env.Unit.Symbols.ErrorType)
+                    : ctx.Closure.CellObjectFor(lambda, capture.Symbol));
             }
-            return new LoweredLambdaExpression(lambda);
+            return new LoweredNewExpression(lambda, lambda.Closure.Init, arguments,
+                lambda.Type);
         }
     }
 
@@ -303,6 +328,29 @@ namespace LatteCompiler
                 WrapperPlaceLowering.UnsupportedWrite(compound.Target, env);
                 return null;
             }
+            // 闭包存储计划（SYNTAX §5.2）：被捕获变量的复合赋值——
+            // 读 = cell getValue、写 = cell setValue；写回值物化 .sN 共享
+            //（§13.2 单次求值，与 wrapper place 复合赋值同构）
+            if (compound.Target is BoundValueReferenceExpression compoundReference
+                && ctx.Closure.TryRewriteValueRead(compoundReference) is { } cellRead)
+            {
+                var cellCompoundValue = LowerExpressionDispatcher.Visit(compound.Value, ctx, env);
+                if (cellCompoundValue == null) return null;
+                cellCompoundValue = LoweringFacility.EnsureDeclaredType(compound,
+                    cellCompoundValue, compound.Target.Type);
+                LoweredExpression cellBinary = new LoweredBinaryExpression(compound,
+                    compound.Op, cellRead, cellCompoundValue);
+                cellBinary = LoweringFacility.EnsureDeclaredType(compound, cellBinary,
+                    compound.Target.Type);
+                var cellResult = ctx.Synth.NewSynthLocal(compound.Target.Type);
+                ctx.Output.Add(new LoweredAssignmentStatement(compound,
+                    SynthLocalFactory.ReferenceTo(compound, cellResult), cellBinary));
+                var cellWrite = ctx.Closure.TryRewriteCellWrite(compound, compound.Target,
+                    SynthLocalFactory.ReferenceTo(compound, cellResult));
+                if (cellWrite == null) return null;
+                ctx.Output.Add(cellWrite);
+                return SynthLocalFactory.ReferenceTo(compound, cellResult);
+            }
             var target = LowerExpressionDispatcher.Visit(compound.Target, ctx, env);
             if (target == null) return null;
             target = MaterializeTarget(target, ctx);
@@ -432,7 +480,11 @@ namespace LatteCompiler
         protected override LoweredExpression? VisitCore(BoundNode node, LowerContext ctx,
             LowerEnvironment env)
         {
-            return new LoweredThisExpression((BoundThisExpression)node);
+            // lambda 体内 this 命中捕获条目时改写为 .capture.this 字段访问
+            // （SYNTAX §5.2）；否则为普通 $.this
+            var thisExpression = (BoundThisExpression)node;
+            return ctx.Closure.TryRewriteThis(thisExpression)
+                ?? new LoweredThisExpression(thisExpression);
         }
     }
 

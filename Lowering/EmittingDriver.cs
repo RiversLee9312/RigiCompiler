@@ -29,6 +29,20 @@ namespace LatteCompiler
                 env.Module.LocalSymbols.Add(
                     LocalSymbolEmitters.EmitSyntheticMethodDeclaration(body.Method));
             }
+            // lambda 隐藏类声明（SYNTAX §5.2）：合成类型不进符号图（避免污染
+            // 冻结的用户命名空间图），声明由函数体的宿主归属驱动收集——
+            // init 体与 $$call 体的 Owner 即隐藏类；只有 bodies 在场的类
+            // 才发射声明（降级失败的函数体不产生声明，与 §21.2 fn↔声明
+            // 对应检查同口径）
+            foreach (var hiddenClass in bodies
+                .Select(b => b.Method.Owner)
+                .Where(owner => owner?.LambdaClosure != null)
+                .Distinct()
+                .Cast<TypeSymbol>())
+            {
+                env.Module.LocalSymbols.Add(
+                    LocalSymbolEmitters.EmitSyntheticTypeDeclaration(hiddenClass, env));
+            }
             // Resources 在函数发射中按（bodies 顺序 + 树内先序）登记
             foreach (var body in bodies)
             {
@@ -141,16 +155,35 @@ namespace LatteCompiler
                 entry.Instructions.Add(new RetInstruction());
             }
             // .vars（§9.3）：Locals 在前、临时变量在后；Type 为 null 的
-            // 合成局部是 .breakid capability（§9.3 别名，无 TypeSymbol）
+            // 合成局部是 .breakid capability（§9.3 别名，无 TypeSymbol）。
+            // 被捕获局部（SYNTAX §5.2）：存储类型为 cell——.vars 条目按
+            // CaptureCell 标记投影为 .cell<T>/.readonly_cell<T>
             foreach (var local in body.Locals)
             {
                 function.Vars.Add(new BilVarDeclaration(
                     local.Type == null
                         ? ".breakid"
-                        : CanonicalSymbolPrinter.PrintType(local.Type), local.Name));
+                        : LocalStorageTypeRef(local, env), local.Name));
             }
             function.Vars.AddRange(ctx.Temps.TempVars);
             return function;
+        }
+
+        // 局部的 BIL 存储类型引用（§9.3 .vars 条目）：被捕获局部按
+        // CaptureCell 投影为 cell 构造（§6.3 特权拼写经定义认领——
+        // CallableModel 幂等）；普通局部为声明类型 canonical
+        private static string LocalStorageTypeRef(LocalSymbol local, EmitEnvironment env)
+        {
+            if (local.CaptureCell != CaptureCellKind.None)
+            {
+                var cellType = CallableModel.ConstructCell(env.Unit, local.Type!,
+                    local.CaptureCell == CaptureCellKind.ReadonlyCell);
+                if (cellType != null)
+                {
+                    return CanonicalSymbolPrinter.PrintType(cellType);
+                }
+            }
+            return CanonicalSymbolPrinter.PrintType(local.Type!);
         }
     }
 }

@@ -34,12 +34,5 @@ namespace LatteCompiler
             tempVars.Add(new BilVarDeclaration(".typeid", name));
             return BilOp.Var(name);
         }
-
-        public BilVariableOperand NewMethodIdTemp(LambdaTypeSymbol type)
-        {
-            var name = ".t" + tempCount++;
-            tempVars.Add(new BilVarDeclaration(CanonicalSymbolPrinter.PrintType(type), name));
-            return BilOp.Var(name);
-        }
     }
 }

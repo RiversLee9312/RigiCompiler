@@ -155,14 +155,19 @@ namespace LatteCompiler
                 env.Error(entry.Node.Span, $"'{op.Name}': operators cannot be 'static'");
             }
             // open/abstract/override 仅普通成员方法（§9.2.1）：字段/init/operator/
-            // 全局函数/static 方法上使用即错误；静态无多态
+            // 全局函数/static 方法上使用即错误；静态无多态。
+            // 例外（§5.2 callable 协议）：operator call 参与多态——Func/Action/
+            // AsyncFunc/AsyncAction 的 abstract call 与 lambda 隐藏类的 override
             var open = modifiers.Contains(Keywords.OPEN);
             var abstractM = modifiers.Contains(Keywords.ABSTRACT);
             var overrideM = modifiers.Contains(Keywords.OVERRIDE);
             if (open || abstractM || overrideM)
             {
                 if (entry.Symbol is not MethodSymbol inheritMethod ||
-                    inheritMethod.Kind != MethodKind.Regular || entry.DeclaringType == null)
+                    (inheritMethod.Kind != MethodKind.Regular
+                        && !(inheritMethod.Kind == MethodKind.Operator
+                            && inheritMethod.Name == "call"))
+                    || entry.DeclaringType == null)
                 {
                     env.Error(entry.Node.Span,
                         "'open'/'abstract'/'override' can only be applied to member methods");

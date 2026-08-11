@@ -20,9 +20,9 @@ namespace LatteCompiler
     // 例外——见下）；void 返回合法。
     //
     // 随附 async 修饰符合法性收口（§9.2："async 仅适用于函数与 lambda"）：
-    // init/operator/getter/setter 上的 async 在此拒绝（ModifierChecker 只
-    // 拦了字段——本阶段补 init/operator 与类型声明；访问器块修饰符白名单
-    // 已由 AccessorChecker 拦）。
+    // init/getter/setter 上的 async 在此拒绝（ModifierChecker 只
+    // 拦了字段——本阶段补 init 与类型声明；访问器块修饰符白名单
+    // 已由 AccessorChecker 拦）；operator call 例外（§5.2 callable 协议）。
     internal sealed class AsyncGateChecker : ResolverVisitor<AsyncGateChecker>
     {
         protected override void VisitCore(ResolveEnvironment env)
@@ -42,8 +42,11 @@ namespace LatteCompiler
                     }
                     continue;
                 }
-                // async 仅普通函数（§9.2：init/operator 不是函数）
-                if (method.Kind != MethodKind.Regular)
+                // async 仅普通函数（§9.2：init/operator 不是函数）；
+                // 例外（§5.2 callable 协议）：operator call 可 async
+                // （core.AsyncFunc/AsyncAction 的 abstract async call）
+                if (method.Kind != MethodKind.Regular
+                    && !(method.Kind == MethodKind.Operator && method.Name == "call"))
                 {
                     env.Error(entry.Node.Span, "'async' can only be applied to functions");
                     continue;

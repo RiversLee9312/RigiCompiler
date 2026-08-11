@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using LatteCompiler.Bil;
 
 namespace LatteCompiler.Tests
@@ -15,11 +16,20 @@ namespace LatteCompiler.Tests
     /// RenderResources 的文本风格，但资源名按首次出现顺序重编号为
     /// res(#0)/res(#1)……——消除 stdlib 基线资源（R_0..R_4）偏移这一
     /// 最脆弱点；指令序列/操作数/.tN 编号/block id 仍逐字节锁定。
+    /// lambda 对象模型（SYNTAX §5.2）：隐藏类名含编译期 UUID，比较前
+    /// 统一归一化为 `..lambda..UUID`。
     /// </summary>
     public static class BilTestHarness
     {
         // 用户源文件名（Origin 链断言 sourceName 用）
         public const string UserSourceName = "hello.latte";
+
+        // lambda 隐藏类名 UUID 归一化（Guid "N" = 32 位十六进制）
+        private static readonly Regex LambdaUuidPattern = new Regex(
+            @"\.\.lambda\.\.[0-9a-fA-F]{32}", RegexOptions.Compiled);
+
+        public static string NormalizeLambdaUuids(string text) =>
+            LambdaUuidPattern.Replace(text, "..lambda..UUID");
 
         // ===== 中端全管线驱动（自 BilEmitterTests 提升共享）=====
         // stdlib（在前）+ 用户源组 CompilationUnit → P1 → P2 → P3 → P4a
@@ -36,7 +46,7 @@ namespace LatteCompiler.Tests
             var bodies = Binder.Bind(unit, declarations);
             var lowered = Lowerer.Lower(unit, bodies);
             var module = BilEmitter.Emit(unit, lowered, moduleName);
-            return (unit, module, BilWriter.Write(module));
+            return (unit, module, NormalizeLambdaUuids(BilWriter.Write(module)));
         }
 
         // ===== 验证器断言 =====
@@ -83,7 +93,8 @@ namespace LatteCompiler.Tests
                     $"模块中找不到 fn {fnSymbol}（实际: {string.Join(", ", module.Functions.Select(f => f.Symbol))}）");
                 return;
             }
-            TestHarness.Check(label, RenderFnShape(function), expected);
+            TestHarness.Check(label, NormalizeLambdaUuids(RenderFnShape(function)),
+                NormalizeLambdaUuids(expected));
         }
 
         // 资源段形状：每资源一行（原名重编号为 #k）

@@ -201,7 +201,8 @@ namespace LatteCompiler.Bil
         private static readonly string[] TypeConstructors =
         {
             ".array<", ".map<", ".pair<", ".nullable<",
-            ".typeid<", ".fieldid<", ".methodid<", ".generic<",
+            ".cell<", ".readonly_cell<",
+            ".typeid<", ".fieldid<", ".generic<",
         };
 
         public static bool IsBuiltinType(string typeRef) => BuiltinTypes.Contains(typeRef);
@@ -228,23 +229,6 @@ namespace LatteCompiler.Bil
             {
                 if (typeRef.StartsWith(constructor) && typeRef.EndsWith(">"))
                 {
-                    if (constructor == ".methodid<")
-                    {
-                        var signature = typeRef.Substring(constructor.Length,
-                            typeRef.Length - constructor.Length - 1);
-                        var close = signature.LastIndexOf(")@",
-                            StringComparison.Ordinal);
-                        if (signature.Length < 3 || signature[0] != '(' || close < 0)
-                            return false;
-                        var parameters = signature.Substring(1, close - 1);
-                        if (parameters.Length > 0
-                            && SplitTopLevel(parameters).Any(
-                                parameter => !IsResolvableTypeRef(parameter)))
-                        {
-                            return false;
-                        }
-                        return IsResolvableTypeRef(signature.Substring(close + 2));
-                    }
                     if (constructor == ".generic<")
                     {
                         return true;
@@ -328,6 +312,7 @@ namespace LatteCompiler.Bil
             {
                 [".array"] = "core::Array", [".map"] = "core::Map",
                 [".pair"] = "core::Pair", [".nullable"] = "core::Nullable",
+                [".cell"] = "core::Cell", [".readonly_cell"] = "core::ReadonlyCell",
                 [".typeid"] = "core::Type",
             };
 
@@ -467,6 +452,27 @@ namespace LatteCompiler.Bil
         {
             return NormalizeTypeRef(StripTypeArguments(chainNodeType))
                 == NormalizeTypeRef(StripTypeArguments(ownerRef));
+        }
+
+        // 沿 extends 链解析「宿主在 owner 定义处的构造形态」（成员签名
+        // 泛型代入用）：从 typeRef 出发逐跳 ExtendsType，命中定义级归属
+        // 时返回该跳的构造形态（含实参）；链断/查不到声明返回 null
+        //（调用方降级——不制造验证器错误）
+        public string? ResolveConstructedHostForm(string typeRef, string ownerRef)
+        {
+            var current = NormalizeTypeRef(typeRef);
+            var visited = new HashSet<string>(StringComparer.Ordinal);
+            while (visited.Add(current))
+            {
+                if (HostMatches(current, ownerRef)) return current;
+                if (!TryGetTypeDeclaration(current, out var declaration)
+                    || declaration.ExtendsType == null)
+                {
+                    return null;
+                }
+                current = NormalizeTypeRef(declaration.ExtendsType);
+            }
+            return null;
         }
 
         // 赋值兼容的宿主判定（§13.3/§15.1：字段/方法的宿主对象可以是

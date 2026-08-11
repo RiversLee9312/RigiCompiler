@@ -129,22 +129,26 @@ namespace LatteCompiler
         public IReadOnlyList<LoweredExpression> Arguments { get; }
         public IReadOnlyList<SemanticSymbol> TypeArguments { get; }
         public LoweredGenericVarArgsArgument? GenericPack { get; }
+        // 间接调用（§15.3 callable 协议）：物化目标对象表达式后虚调用其
+        // $$call；非间接调用为 null
         public bool IsIndirect { get; }
-        public LocalSymbol? IndirectHandle { get; }
+        public LoweredExpression? IndirectTarget { get; }
 
         public LoweredCallExpression(BoundCallExpression origin, MethodSymbol method,
             IReadOnlyList<LoweredExpression> arguments,
             IReadOnlyList<SemanticSymbol>? typeArguments = null,
-            LoweredGenericVarArgsArgument? genericPack = null, bool isIndirect = false) : base(origin)
+            LoweredGenericVarArgsArgument? genericPack = null, bool isIndirect = false,
+            LoweredExpression? indirectTarget = null) : base(origin)
         {
             Method = method;
             Arguments = arguments;
             TypeArguments = typeArguments ?? Array.Empty<SemanticSymbol>();
             GenericPack = genericPack;
             IsIndirect = isIndirect;
-            IndirectHandle = origin.IndirectHandle;
+            IndirectTarget = indirectTarget;
         }
     }
+
 
     // new 构造（SYNTAX §9.3）：Init 为匹配到的构造函数符号；
     // 无显式 init 的零参构造 Init 为 null
@@ -152,20 +156,54 @@ namespace LatteCompiler
     {
         public MethodSymbol? Init { get; }
         public IReadOnlyList<LoweredExpression> Arguments { get; }
+        // 合成路径显式类型（Origin 非 BoundNewExpression 时必带——闭包 cell
+        // 构造与 lambda 隐藏类构造，SYNTAX §5.2）；null = Origin 透传
+        private readonly SemanticSymbol? type;
 
-        public LoweredNewExpression(BoundNewExpression origin, MethodSymbol? init,
-            IReadOnlyList<LoweredExpression> arguments) : base(origin)
+        public override SemanticSymbol Type => type ?? base.Type;
+
+        public LoweredNewExpression(BoundNode origin, MethodSymbol? init,
+            IReadOnlyList<LoweredExpression> arguments, SemanticSymbol? type = null)
+            : base(origin)
         {
             Init = init;
             Arguments = arguments;
+            this.type = type;
         }
     }
 
-    // this 引用（S7c-2；emitter 映射 $.this 变量操作数，零指令）
+    // this 引用（S7c-2；emitter 映射 $.this 变量操作数，零指令）；
+    // 合成路径显式类型（lambda 构造的 this 捕获实参——Origin 是 lambda
+    // 节点，透传类型是隐藏类而非外层 this 类型，§5.2）
     public sealed class LoweredThisExpression : LoweredExpression
     {
-        public LoweredThisExpression(BoundThisExpression origin) : base(origin)
+        private readonly SemanticSymbol? type;
+
+        public override SemanticSymbol Type => type ?? base.Type;
+
+        public LoweredThisExpression(BoundNode origin, SemanticSymbol? type = null) : base(origin)
         {
+            this.type = type;
+        }
+    }
+
+    // cell 对象引用（SYNTAX §5.2 闭包模型）：被捕获局部/参数的 cell 变量
+    // 本身的引用——零指令取操作数（局部 = 原名 var；参数 = .c.<名> 合成
+    // 局部）。只出现在两个位置：cell 读写调用（getValue/setValue）的
+    // receiver、lambda 隐藏类构造的 init 实参。值语义的读取永远经
+    // getValue 调用，不引用本节点
+    public sealed class LoweredCellReferenceExpression : LoweredExpression
+    {
+        public SemanticSymbol Symbol { get; }
+        private readonly SemanticSymbol type;
+
+        public override SemanticSymbol Type => type;
+
+        public LoweredCellReferenceExpression(BoundNode origin, SemanticSymbol symbol,
+            SemanticSymbol cellType) : base(origin)
+        {
+            Symbol = symbol;
+            type = cellType;
         }
     }
 
@@ -340,16 +378,6 @@ namespace LatteCompiler
             Arguments = arguments;
             ForwardedGenericPacks = origin.ForwardedGenericPacks;
             IsVoid = origin.IsVoid;
-        }
-    }
-
-    public sealed class LoweredLambdaExpression : LoweredExpression
-    {
-        public MethodSymbol Method { get; }
-
-        public LoweredLambdaExpression(BoundLambdaExpression origin) : base(origin)
-        {
-            Method = origin.Method;
         }
     }
 

@@ -147,9 +147,10 @@ namespace LatteCompiler.Tests
                 null => "<null>",
                 BoundLiteralExpression literal => Literal(literal),
                 BoundLambdaExpression lambda =>
-                    $"Lambda([{string.Join(", ", lambda.Parameters.Select(p => p.Name))}], " +
-                    $"{(lambda.ExpressionBody != null ? Expr(lambda.ExpressionBody) : Block(lambda.BlockBody!))}, " +
-                    $"{TypeShort.Of(lambda.ReturnType)}, captures=[{string.Join(", ", lambda.CapturedSymbols.Select(s => s.Name))}])",
+                    $"Lambda([{string.Join(", ", lambda.Closure.Call.Parameters.Select(p => p.Name))}], " +
+                    $"{Block(lambda.CallBody.Body)}, " +
+                    $"{(lambda.ReturnType != null ? TypeShort.Of(lambda.ReturnType) : "void")}, " +
+                    $"captures=[{string.Join(", ", lambda.CapturedSymbols.Select(s => s.Name))}])",
                 BoundValueReferenceExpression valueRef => valueRef.Symbol switch
                 {
                     LocalSymbol local => $"Local({local.Name},{TypeShort.Of(valueRef.Type)})",

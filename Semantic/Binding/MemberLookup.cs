@@ -1,4 +1,4 @@
-namespace LatteCompiler
+﻿namespace LatteCompiler
 {
     // 名字解析查找序设施（自旧 BindSession 迁移，行为不变）：
     // 值/调用的名字解析查找序——块作用域链（Scope，调用方查）→ 参数 →
@@ -47,7 +47,7 @@ namespace LatteCompiler
         public static FieldSymbol? FindField(string name, BindFunctionFrame frame,
             BindEnvironment env)
         {
-            for (var host = frame.Method.Owner; host != null; host = host.BaseType)
+            for (var host = frame.LookupHost; host != null; host = host.BaseType)
             {
                 // 构造类型的成员表在其泛型定义上（S7f ConstructedFrom 回退）
                 var owner = host.ConstructedFrom ?? host;
@@ -78,7 +78,7 @@ namespace LatteCompiler
             BindEnvironment env)
         {
             var result = new List<MethodSymbol>();
-            for (var host = frame.Method.Owner; host != null; host = host.BaseType)
+            for (var host = frame.LookupHost; host != null; host = host.BaseType)
             {
                 var owner = host.ConstructedFrom ?? host;
                 result.AddRange(owner.Methods.Where(m => m.Name == name));

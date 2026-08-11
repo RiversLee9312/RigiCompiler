@@ -76,7 +76,6 @@ namespace LatteCompiler
         EnumStruct,
         Interface,
         Wrapper,
-        AnonymousCallable
     }
 
     public class TypeSymbol : SemanticSymbol
@@ -106,16 +105,17 @@ namespace LatteCompiler
         // 是否 ValueType 分支（构造即定：显式传入或沿基类链传播；
         // 供 shared-safe 推导等使用，避免与根类型单例做引用比较）
         public bool IsValueTypeBranch { get; }
-        // 「shared 安全按泛型实参推导」的定义级特权（仅 Nullable\<T>，
-        // SYNTAX §3.1.2：显式书写的库容器不适用）
-        public bool DerivesSharedSafetyFromTypeArgument { get; }
+        // 「shared 安全按泛型实参推导」的定义级特权（SYNTAX §3.1.2：Nullable\<T\>；
+        // §5.2 起另含 core::Cell\<T\>/ReadonlyCell\<T\>——源码声明，P3 首次定位时认领）
+        public bool DerivesSharedSafetyFromTypeArgument { get; internal set; }
 
         // BIL 类型引用投影提示（CanonicalSymbolPrinter 消费；两者皆空走 canonical）：
         // BilAlias = 固定内建别名（BIL §6.2：.i32/.string/.any …）；
         // BilStandardConstructor = 标准类型构造（BIL §6.3：.nullable/.typeid/.array …，
-        // 登记在泛型定义上，构造类型经 ConstructedFrom 取）
+        // 登记在泛型定义上，构造类型经 ConstructedFrom 取；internal set 供源码
+        // 声明的特权类型认领——core::Cell/ReadonlyCell，SYNTAX §5.2）
         public string? BilAlias { get; }
-        public string? BilStandardConstructor { get; }
+        public string? BilStandardConstructor { get; internal set; }
 
         // 基元 intrinsic 键空间（BIL §11：内建类型登记的「精确键」运算集合；
         // 非内建运算类型为空集；结果类型维度在消费侧判定，见 S5）
@@ -136,6 +136,10 @@ namespace LatteCompiler
         // （泛型声明内部的 List\<T>）
         public TypeSymbol? ConstructedFrom { get; }
         public IReadOnlyList<SemanticSymbol>? TypeArguments { get; }
+
+        // lambda 隐藏类的闭包信息（SYNTAX §5.2；P3 LambdaVisitor 合成时写入，
+        // 非 lambda 类型恒 null——兼作隐藏类识别标记，供 P4 闭包存储计划消费）
+        public LambdaClosureInfo? LambdaClosure { get; internal set; }
 
         public TypeSymbol(
             string name,
@@ -197,28 +201,68 @@ namespace LatteCompiler
             if (IsShared) return true;
             // 非 rich ValueType（全部基元、String、Type\<T>、Span\<T>、非 rich struct/enum struct）
             if (!IsRich && IsValueTypeBranch) return true;
-            // Nullable\<T> 按 T 推导（§3.1.2 特权，仅此一家）
+            // Nullable\<T\>/Cell\<T\>/ReadonlyCell\<T\> 按 T 推导（§3.1.2/§5.2 特权）
             if (ConstructedFrom is { DerivesSharedSafetyFromTypeArgument: true }
                 && TypeArguments![0] is TypeSymbol element && element.IsSharedSafe()) return true;
             return false;
         }
     }
 
-    // Lambda 的匿名 callable 类型。它只作为 BoundTree 的类型身份存在，
-    // 不挂入 NamespaceSymbol/SymbolGraph，避免冻结用户命名空间图被污染。
-    public sealed class LambdaTypeSymbol : TypeSymbol
-    {
-        public IReadOnlyList<ParameterSymbol> Parameters { get; }
-        public SemanticSymbol ReturnType { get; }
-        public MethodSymbol Method { get; }
+    // ===== lambda 对象模型（SYNTAX §5.2）=====
 
-        public LambdaTypeSymbol(IReadOnlyList<ParameterSymbol> parameters,
-            SemanticSymbol returnType, MethodSymbol method)
-            : base("<lambda>", TypeKind.AnonymousCallable)
+    // 被捕获变量/参数的 cell 化形态：None = 未被捕获（普通存储）；
+    // Cell = 可变捕获（core::Cell\<T\>）；ReadonlyCell = const 捕获
+    // （core::ReadonlyCell\<T\>，仅 getValue——lambda 内写入由 P3 符号层拦截）
+    public enum CaptureCellKind
+    {
+        None,
+        Cell,
+        ReadonlyCell,
+    }
+
+    // lambda 捕获集条目（P3 LambdaVisitor 按符号身份落定，排序确定：
+    // this 先行，其余按符号名序）：Symbol 是外层局部/参数/ThisSymbol；
+    // Field 是隐藏类上对应的存储字段（this 捕获为普通字段，其余为
+    // Cell/ReadonlyCell 构造类型字段）
+    public sealed class LambdaCaptureEntry
+    {
+        public SemanticSymbol Symbol { get; }
+        public FieldSymbol Field { get; }
+        public bool IsThis { get; }
+        public bool IsReadOnly { get; }
+
+        public LambdaCaptureEntry(SemanticSymbol symbol, FieldSymbol field,
+            bool isThis, bool isReadOnly)
         {
-            Parameters = parameters;
-            ReturnType = returnType;
-            Method = method;
+            Symbol = symbol;
+            Field = field;
+            IsThis = isThis;
+            IsReadOnly = isReadOnly;
+        }
+    }
+
+    // lambda 隐藏类的闭包信息（SYNTAX §5.2 对象模型）：挂在隐藏类
+    // TypeSymbol.LambdaClosure 上（非 lambda 类型恒 null，兼作隐藏类标记）。
+    // init 参数列表 = Captures 序逐条对应（无捕获时为空参数 init）；
+    // ValueBlock = 有返回值块体 lambda 的值块（return@ 目标——P4a 按值块
+    // 协议降级 $$call 体；单表达式体/void 体为 null）
+    public sealed class LambdaClosureInfo
+    {
+        public TypeSymbol HiddenClass { get; }
+        public MethodSymbol Init { get; }
+        public MethodSymbol Call { get; }
+        public IReadOnlyList<LambdaCaptureEntry> Captures { get; }
+        public BoundValueBlock? ValueBlock { get; }
+
+        public LambdaClosureInfo(TypeSymbol hiddenClass, MethodSymbol init,
+            MethodSymbol call, IReadOnlyList<LambdaCaptureEntry> captures,
+            BoundValueBlock? valueBlock = null)
+        {
+            HiddenClass = hiddenClass;
+            Init = init;
+            Call = call;
+            Captures = captures;
+            ValueBlock = valueBlock;
         }
     }
 
@@ -229,6 +273,16 @@ namespace LatteCompiler
         Operator,
         Getter,
         Setter
+    }
+
+    // wrapper proxy 模板类别（SYNTAX §14.2）：P1 建壳时按源码声明名
+    // （.proxy.<...> 为 Specific、以 .* 收尾为 Wildcard）落定一次，之后
+    // 全部内部消费（P2 形状校验/P3 模板态绑定/P4 修饰符投影）只读属性，
+    // 不再操作符号名字符串
+    public enum ProxyTemplateKind
+    {
+        Specific,
+        Wildcard,
     }
 
     // 含 init、operator、getter/setter、全局函数、ext 成员（以属性区分）。
@@ -249,6 +303,10 @@ namespace LatteCompiler
         // 函数可置位——其余 Kind 置位由 AsyncGateChecker 拒绝）
         public bool IsAsync { get; }
         public bool IsSynthetic { get; internal set; }
+        // wrapper proxy 模板标记（SYNTAX §14.2；P1 建壳按声明名落定——
+        // 非 proxy 成员恒 null）：P2/P3/P4 的模板识别与 Specific/Wildcard
+        // 区分一律经此属性，禁止再按 Name 前缀判定
+        public ProxyTemplateKind? ProxyTemplate { get; internal set; }
         // 有无函数体（P1 建壳即定；OverrideChecker 判定接口默认实现与无体方法，
         // 访问器符号恒 false——自动访问器体由 P3 合成，不经本标记）
         public bool HasBody { get; internal set; }
@@ -404,6 +462,12 @@ namespace LatteCompiler
         // 参数类型（P2 解析后填；SemanticSymbol：TypeSymbol 或 GenericParameterSymbol）
         public SemanticSymbol? Type { get; internal set; }
 
+        // lambda 捕获 cell 化形态（SYNTAX §5.2；P3 LambdaVisitor 在捕获集
+        // 落定后写入）：非 None 时本参数在 BIL 的存储是 cell——函数入口
+        // 由 P4a 合成 .c.<名> cell 局部并用实参构造，体内读写全经
+        // getValue/setValue（this 从不捕获为参数，无此形态）
+        public CaptureCellKind CaptureCell { get; internal set; }
+
         // init 参数映射的目标字段（SYNTAX §9.3：`name[:type] -> field`；
         // P2 TypeReferenceResolver 字段存在性检查命中时落定，无映射为 null）。
         // P3 BindingDriver 据此合成构造时映射赋值（this.field = param）
@@ -515,6 +579,11 @@ namespace LatteCompiler
         public bool IsConst { get; }
         // using 资源绑定即使写作 var 也不可重赋值，避免 finally 捕获错误资源。
         public bool IsUsingResource { get; }
+        // lambda 捕获 cell 化形态（SYNTAX §5.2；P3 LambdaVisitor 在捕获集
+        // 落定后写入）：非 None 时本局部在 BIL 的存储是 cell（.vars 条目
+        // 类型为 .cell<T>/.readonly_cell<T>，声明处构造，读写全经
+        // getValue/setValue）
+        public CaptureCellKind CaptureCell { get; internal set; }
         // 挂载的 wrapper 应用（声明顺序，外层在前；P3 局部声明绑定时解析
         // 登记——栈上声明不进 P1/P2，SYNTAX §14.9 矩阵 C 恒合法免检查）
         public List<WrapperApplication> AppliedWrappers { get; } = new List<WrapperApplication>();

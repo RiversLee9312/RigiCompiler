@@ -336,7 +336,7 @@ obj as? String
 - **失效**：`var` 局部/参数被重新赋值；字段稳定链上任一 `var` 环节被赋值。
 - **switch**：`(_ is T)` 分支体内 `_` 收窄为 T（selector 本身是可收窄目标时同收窄）。
 - **循环**：`while` 条件为真的收窄在循环体内有效（体内赋值照常失效）；循环结束后收窄不保留；`do-while` 体内不带条件收窄。
-- **边界**：收窄不跨 `await`/`yield` 挂起点；被 lambda 捕获且 lambda 内可能赋值的 `var` 收窄失效（两规则的实现归 S13）。
+- **边界**：收窄不跨 `await`/`yield` 挂起点；**被 lambda 捕获的变量**（自声明处起）一律不再参与 smart cast（收窄失效，见 §5.2）。
 - **`?.` 与 `if?` 不产生收窄**：`a?.b` 不使 a 变为非空（`a?.b != null` 亦不反推 a 非空）；`x if? y` 是值级回退表达式，无收窄区域。两者与 smart cast 正交互补。
 
 > 注记：`is .Case`（enum case 判别，§12.3）编译为隐藏判别字段的整数比较（`RUNTIME.md` §16.3），不是类型检查；它不触发 smart cast——判别匹配不会改变值的静态类型（§12.3）。
@@ -692,11 +692,11 @@ pub class Console {
 // 完整形式
 func{(x: i32, y: i32): i32 -> (x + y)}
 
-// 带泛型
-func{(width: TSize, height: TSize)\<TSize extends Size>: TSize -> ... }
+// void 形态：省略返回类型 = 无返回值 lambda（基类为 core.Action 族，见 §5.2）
+func{(x: i32) -> ... }
 
-// 带修饰符
-pub func{(x: i32): i32 -> (x + 1)}
+// async：标记写在 `{` 之后、参数列表之前（不是 `async func{...}`）
+func{async (id: i32): SharedUser -> loadUserNow(id)}
 
 // 多语句体：用 return@ 显式产出返回值（匿名体的默认标签是 _）
 func{(x: i32): i32 -> {
@@ -713,27 +713,76 @@ func{(x: i32): i32 -> named calc {
 ```
 
 规则：
-- 体为单表达式时，该表达式即返回值（隐式取值，无需 `return@`）
-- 体为多语句代码块时，所有执行路径都必须显式 `return@_` 或 `return@标签` 产出值——规则同 §6.1；落到块尾而没有 `return@` 是编译错误
+- **lambda 不接受任何修饰符**（含 `pub`/`priv`/`static` 等）：修饰符对 lambda 无意义，书写即为编译错误
+- **lambda 不支持泛型形参**（泛型 callable 请显式声明类型）；`func{(x: T)\<T>: T -> ...}` 形态为编译错误
+- **省略返回类型 = 无返回值（void）lambda**，与普通函数省略返回类型即 void 对齐；基类为 `core.Action` / `core.AsyncAction` 族（见 §5.2）
+- **参数个数最多 32 个**（硬性上限，与标准库 `Func`/`Action` 家族预生成的元数变种一致，见 §5.2）
+- 体为单表达式时：有返回值则该表达式即返回值（隐式取值，无需 `return@`）；无返回值则为表达式语句语义
+- 体为多语句代码块时：有返回值则所有执行路径都必须显式 `return@_` 或 `return@标签` 产出值——规则同 §6.1；落到块尾而没有 `return@` 是编译错误；无返回值时块尾自然结束即可
 - lambda 体内不允许裸 `return`：lambda 不是外层函数的值块，裸 `return` 的指向会含糊（返回 lambda 自身还是穿透外层函数），一律显式写 `return@`
 
-### 5.2 Trailing Lambda
+### 5.2 对象模型
+
+每个 lambda 在编译期生成一个**隐藏类**：
+
+- **命名空间**与声明该 lambda 的位置相同；
+- **类名**形如 `..lambda..UUID`（`UUID` 由编译器分配）——这是编译器生成的隐藏类型，用户源码永远写不出这个名字；
+- **基类**按 lambda 形态四选一（均声明在标准库 `core` 中，为 `abstract class`，各含一个 abstract `operator call`；泛型参数 `TRet` 在最前）：
+
+| 形态 | 基类 | shared |
+|------|------|--------|
+| 有返回值 | `core.Func\<TRet, T0, …>` | 否 |
+| 无返回值 | `core.Action\<T0, …>` | 否 |
+| 有返回值且 async | `core.AsyncFunc\<TRet, T0, …>` | **是**（`shared class`） |
+| 无返回值且 async | `core.AsyncAction\<T0, …>` | **是**（`shared class`） |
+
+标准库为每个家族预生成 **0 到 32 个参数**的元数变种，因此 lambda **最多 32 个参数**。
+
+**静态类型与转换**：
+
+- lambda 表达式的静态类型就是该隐藏类本身；
+- 因名字不可书写，显式标注位置永远写基类（如 `Func\<i32, i32>` / `core.Func\<i32, i32>`）；
+- 隐藏类 → 基类按普通隐式向上转换处理，无特例。
+
+**值语义**：lambda 值是普通对象——可以存字段、作为返回值、随意传递，与其他对象值相同。
+
+**调用约定（callable 协议）**：任何声明了 `operator call` 的类型的值都可以像函数一样被调用（`expr(args)`）。这是通用的 callable 协议，不是 lambda 特例；lambda 隐藏类通过覆写基类的 abstract `operator call` 接入该协议。
+
+**捕获**：
+
+- lambda 在被求值时创建隐藏类对象；被捕获的外层变量通过构造函数以 Cell 传入；
+- 被捕获的变量（除 `this` 与 lambda 自身参数外）一律 Cell 化：
+  - 可变（`var`）捕获 → `core.Cell\<T>`（`getValue` / `setValue`）；
+  - 不可变（`const`）捕获 → `core.ReadonlyCell\<T>`（仅 `getValue`）；
+  - **`this` 捕获不套 Cell**，直接作为普通字段；
+- 被捕获变量从**声明处起**整个生命周期的读写都经过 cell 的 `getValue`/`setValue`；
+- 之所以 `const` 也要 Cell 化：值 wrapper 对 get 的代理行为意味着按值拷贝会冻结 proxy 结果、脱钩 wrapper 状态，一律走 Cell 才能保持代理语义；
+- lambda 内对 `const` 捕获的写入仍是编译错误（符号层检查）；
+- **被 lambda 捕获的变量不再参与 smart cast**（收窄失效，见 §3.5）；
+- lambda 内的赋值**不影响**外层 definite assignment（保守）。
+
+**泛型 lambda**（如 `func{(x: T)\<T>: T -> ...}`）：隐藏类同样泛型化，泛型实参的 typeid 经构造函数传入。
+
+### 5.3 Trailing Lambda
 
 ```latte
 list.map{(item: String): i32 -> item.length}
 ```
 
-### 5.3 `async` Lambda
+### 5.4 `async` Lambda
 
-Lambda 可以使用 `async` 修饰。调用 async lambda 与调用 async 函数相同：立即创建新协程并返回 Task。
+async 标记写在 `{` 之后、参数列表之前：`func{async (...)...}`（**不是** `async func{...}`）。
 
 ```latte
-const loader = async func{(id: i32): SharedUser -> loadUserNow(id)}
+const loader = func{async (id: i32): SharedUser -> loadUserNow(id)}
 const task: core.coroutine.Task\<SharedUser> = loader(42)
 const user = await task
 ```
 
-普通 lambda 在当前协程中执行；async lambda 在新协程中执行。
+- async lambda 的静态类型是 `core.AsyncFunc\<…>` / `core.AsyncAction\<…>`（均为 **shared class**）的隐藏子类对象；
+- 调用约定与 async 函数相同（§4.5）：立即创建新协程，调用表达式类型为 `core.coroutine.Task\<TResult>` / `core.coroutine.Task`；
+- 普通 lambda 在当前协程中执行；async lambda 在新协程中执行；
+- **shared 拦截**：因 Async 基类是 shared，非共享安全的捕获 / 参数 / 返回值在 async lambda 上是编译错误——与 §4.5 五项闸门一致（闸门 4 专查捕获；参数与返回值同闸门 2、3）。类型系统亦因 shared 基类天然拦截「非 shared-safe 的值无法被 async lambda 捕获」。
 
 ---
 
@@ -1123,12 +1172,12 @@ pub shared class SharedSession {
 | `static` | 静态方法/字段 |
 | `rich` | 允许 struct 直接或间接持有 Object；仅适用于 struct/enum struct（wrapper 恒为 rich，不显式书写） |
 | `shared` | 将 class 声明为可跨协程共享的对象类型，或将 rich struct / wrapper 声明为可进入共享图的值类型 |
-| `async` | 调用时创建新协程并返回 Task；仅适用于函数和 lambda |
+| `async` | 调用时创建新协程并返回 Task；函数写在声明前（`async func`）；lambda 写在 `{` 之后、参数列表之前（`func{async (...)...}`，见 §5.4） |
 | `native` | 声明无函数体的原生函数，由运行时原生方法面提供实现；仅适用于函数，须配 `@NativeLibrary`（§4.6） |
 
 #### 9.2.1 `override` 配套规则
 
-- `open`/`override` 也适用于非 static 成员 getter/setter，且 getter 与 setter 分别是独立的多态单元；字段本身、全局访问器和 static 访问器不接受这两个修饰符。`abstract` 仍仅适用于普通成员方法；`init`、operator 与 `static` 方法不参与多态。
+- `open`/`override` 也适用于非 static 成员 getter/setter，且 getter 与 setter 分别是独立的多态单元；字段本身、全局访问器和 static 访问器不接受这两个修饰符。`abstract` 仍仅适用于普通成员方法；`init` 与 `static` 方法不参与多态。**callable 协议例外**（SYNTAX §5.2）：`operator call` 可 `abstract`/`override`/`async`（`core.Func`/`Action`/`AsyncFunc`/`AsyncAction` 基类族与 lambda 隐藏类覆写依赖此例外）；其余 operator 仍不参与多态。
 - `override` 必须在基类链或接口表中找到签名匹配（名称 + 参数类型序列 + 返回类型均严格相等）的 `open`/`abstract` 方法或接口成员；找不到、或目标非 `open`/`abstract`，均为编译错误。
 - 与继承成员同名同签名的成员必须显式 `override`（禁止静默隐藏）。
 - `abstract` 方法必须位于 `abstract` 类内；接口之外的无体方法必须标 `abstract` 或 `native`。
@@ -1552,6 +1601,15 @@ pub operator plus\<TAnother extends Addable>(another: TAnother): MyType { ... }
 - `a to b` 为半开区间 `[a, b)`；`this` 即区间起点（start），`end` 为终点（不含）。
 - 返回的 `IEnumerable\<T\>` 随即按 for-each 协议迭代（§7.3）。
 
+#### 调用运算符（callable 协议）
+
+| 运算符/访问形式 | 名称 | 签名 |
+|-----------------|------|------|
+| 值调用 `expr(args)` | `call` | `operator call(...): TRet` 或 void（省略返回类型） |
+
+- 任何声明了 `operator call` 的类型的值都可以像函数一样被调用（§5.2）；这是通用 callable 协议，不是 lambda 特例。
+- `operator call` 可 `abstract`/`override`/`async`（§9.2.1 例外）；async 时调用点结果为 `Task\<TRet\>` / `Task`（§4.5）。
+
 #### 通用规则
 
 - `+=`/`-=`/`*=`/`/=`/`<<=`/`>>=`/`>>>=`/`&=`/`|=`/`^=` 从对应运算符自动推导
@@ -1895,7 +1953,14 @@ import 即进入编译单元（与用户源同走语义全流程）：
   §6.2 确定性资源管理协议）；
 - `.bootstrap.latte`：**基元类型自举辅助成员**——内建数值类型
   （`i32` 等）无法在自己的声明处携带这些实现，经 `ext` 以 Latte 自举
-  （如 `EnumerateInRange`，§13.2），以及解构协议根 `core.Pair`（§18）。
+  （如 `EnumerateInRange`，§13.2），以及解构协议根 `core.Pair`（§18）；
+  另含 callable / 闭包运行时面（§5.2）：
+  - `core.Func\<TRet, T0…\>` / `core.Action\<T0…\>` /
+    `core.AsyncFunc\<TRet, T0…\>` / `core.AsyncAction\<T0…\>`（各 0–32 元数变种，
+    abstract class + abstract `operator call`；Async 族为 `shared class`）；
+  - `core.Cell\<T\>`（`getValue`/`setValue` + 值参/空参 init）与
+    `core.ReadonlyCell\<T\>`（仅 `getValue` + 值参 init）——lambda 捕获存储
+    （BIL 特权拼写 `.cell<T>`/`.readonly_cell<T>`）。
 
 **bootstrap 与 stdlib 的边界**（S10 定稿）：语言级类型层级根与基元类型
 （`Any`/`Object`/`ValueType`/`Enum`/`Wrapper`/`Exception` 与 §3.2 基本类型、
@@ -1903,7 +1968,8 @@ import 即进入编译单元（与用户源同走语义全流程）：
 从不写入 `stdlib/` 源——它们的层级关系、内建运算符键与 shared 推导是
 编译器语义的一部分，无法用 Latte 声明表达；异常根 `core.Exception` 的
 `message` 字段与 `getMessage()` 同样由 bootstrap 程序化携带（§8.1）。
-其余全部标准库表面走 `stdlib/` Latte 源，与用户源同一条 P1–P4 路径。
+其余全部标准库表面走 `stdlib/` Latte 源，与用户源同一条 P1–P4 路径
+（含上列 Func/Action/Cell 族——它们虽由 `.bootstrap.latte` 提供，仍走源路径）。
 
 ---
 

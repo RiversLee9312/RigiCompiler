@@ -137,9 +137,10 @@ namespace LatteCompiler
             var callResult = ctx.Temps.NewTemp(callExpression.Type);
             if (callExpression.IsIndirect)
             {
-                var handle = BilOp.Var(EmittingFacility.ValueVariableName(
-                    callExpression.IndirectHandle!));
-                target.Instructions.Add(new InvokeIndirectInstruction(handle, callResult,
+                // §15.3 间接调用：物化目标对象表达式后虚调用其 $$call
+                var indirectTarget = EmitValueDispatcher.Visit(callExpression.IndirectTarget!,
+                    target, ctx, env);
+                target.Instructions.Add(new InvokeIndirectInstruction(indirectTarget, callResult,
                     callArguments) { Origin = callExpression });
                 return callResult;
             }
@@ -397,19 +398,19 @@ namespace LatteCompiler
         }
     }
 
-    internal sealed class LambdaEmitter : EmitVisitor<LambdaEmitter, BilVariableOperand>
+    // cell 对象引用（SYNTAX §5.2 闭包模型）：cell 变量名即操作数，零指令
+    // （Symbol 恒为 LocalSymbol——源码局部的 cell 变量即原名 var，被捕获
+    // 参数的为 .c.<名> 合成局部）
+    internal sealed class CellReferenceEmitter : EmitVisitor<CellReferenceEmitter, BilVariableOperand>
     {
         protected override BilVariableOperand VisitCore(LoweredNode node, BilBlock target,
             EmitContext ctx, EmitEnvironment env)
         {
-            var lambda = (LoweredLambdaExpression)node;
-            var handle = ctx.Temps.NewMethodIdTemp((LambdaTypeSymbol)lambda.Type);
-            target.Instructions.Add(new GetIdMethodInstruction(
-                BilOp.Fn(CanonicalSymbolPrinter.PrintMethod(lambda.Method)), handle)
-            { Origin = lambda });
-            return handle;
+            var cellReference = (LoweredCellReferenceExpression)node;
+            return BilOp.Var(cellReference.Symbol.Name);
         }
     }
+
 
     // super ABI = $.this + generic hidden args + normal args；BIL 不泄露 base canonical 名。
     internal sealed class SuperCallEmitter : EmitVisitor<SuperCallEmitter, BilVariableOperand>

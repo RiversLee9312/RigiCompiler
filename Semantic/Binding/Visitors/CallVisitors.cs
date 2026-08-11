@@ -27,8 +27,10 @@ namespace LatteCompiler
         // M88：inner(...) 模板占位
         public bool IsInnerCall;
         public bool IsSuperCall;
+        // 间接调用（SYNTAX §5.2 callable 协议，BIL §15.3）：对 IndirectTarget
+        // 对象虚调用其 $$call 实现（Method = 命中的 call 运算符符号）
         public bool IsIndirect;
-        public LocalSymbol? IndirectHandle;
+        public BoundExpression? IndirectTarget;
         // #27⑦：inner 待转发的可变泛型包（仅 IsInnerCall；固定泛型不入列）
         public IReadOnlyList<GenericParameterSymbol> ForwardedGenericPacks =
             Array.Empty<GenericParameterSymbol>();
@@ -140,21 +142,39 @@ namespace LatteCompiler
             {
                 return BindSuperCall(node, arguments, scope, ctx, env, genericArguments);
             }
-            if (calleeSegments.Count == 1
-                && scope.LookupSymbol(calleeSegments[0]) is LocalSymbol local
-                && local.Type is LambdaTypeSymbol lambdaType)
+            // callable 协议（SYNTAX §5.2，BIL §15.3）：单段被调用名解析为
+            // 局部/参数且其类型声明了 operator call → 间接调用（对该对象
+            // 虚调用 $$call；lambda 隐藏类经覆写 abstract call 接入本协议）
+            if (calleeSegments.Count == 1)
             {
-                var bound = BindArguments(lambdaType.Method, arguments, scope, node.Span, ctx, env);
-                if (bound == null) return null;
-                return new CallBinding
+                var headSymbol = scope.LookupSymbol(calleeSegments[0])
+                    ?? (ctx.Frame.IsDefaultValueContext
+                        ? null
+                        : ctx.Frame.Method.Parameters
+                            .FirstOrDefault(p => p.Name == calleeSegments[0]));
+                if (headSymbol is LocalSymbol or ParameterSymbol)
                 {
-                    Method = lambdaType.Method,
-                    Arguments = bound,
-                    IsVoid = lambdaType.ReturnType is not TypeSymbol,
-                    ResultType = lambdaType.ReturnType,
-                    IsIndirect = true,
-                    IndirectHandle = local,
-                };
+                    var callableReceiver = BindCallableReceiver(node, headSymbol, ctx, env);
+                    if (callableReceiver?.Type is TypeSymbol callableType
+                        && FindCallOperators(callableType).Count > 0)
+                    {
+                        return BindIndirectCallOverload(node, callableReceiver, callableType,
+                            arguments, genericArguments, scope, ctx, env);
+                    }
+                }
+                if (headSymbol == null
+                    && MemberLookup.FindField(calleeSegments[0], ctx.Frame, env) is { } bareField)
+                {
+                    // 裸名字段（宿主类型的 callable 字段补 this）——与普通
+                    // 字段引用同路径绑定（含访问控制/收窄/this 捕获记录）
+                    var fieldReceiver = PathFacility.BindFieldReference(node, bareField, ctx, env);
+                    if (fieldReceiver?.Type is TypeSymbol fieldCallableType
+                        && FindCallOperators(fieldCallableType).Count > 0)
+                    {
+                        return BindIndirectCallOverload(node, fieldReceiver, fieldCallableType,
+                            arguments, genericArguments, scope, ctx, env);
+                    }
+                }
             }
             // 多段首段为值（局部/参数）→ 实例调用形态（S7c-2）
             if (calleeSegments.Count > 1
@@ -179,11 +199,6 @@ namespace LatteCompiler
                 typeArgs, receiverType: ctx.Frame.Method.Owner);
             if (resolved == null)
             {
-                if (arguments.Any(argument => argument.Value.Expression is LambdaExpressionASTNode))
-                {
-                    env.Error(node.Span,
-                        "S13 P4 pending: lambda callable consumption/closure invoke is not available");
-                }
                 return null;
             }
             var (calleeMethod, boundArguments, calleeResultType, genericPack) = resolved.Value;
@@ -193,15 +208,18 @@ namespace LatteCompiler
                 // 实例方法（S7c-2）：补 this 仅限 callee 宿主在当前 this
                 // 类型的 BaseType 链（含接口闭包）上——`A.m()` 命中他类
                 // 实例方法时 this 类型不符，不能盲补（B 的 this 不是 A 的
-                // receiver）；静态上下文（含默认值表达式）→ 诊断
-                var thisOwner = ctx.Frame.Method.Owner;
-                if (ctx.Frame.HasThis && thisOwner != null
+                // receiver）；静态上下文（含默认值表达式）→ 诊断。
+                // lambda 语境（§5.2）：Frame.Method 是隐藏类 $$call（恒实例），
+                // 有效 this 类型与可用性取 LambdaThisType（外层 this）
+                var thisOwner = ctx.IsLambda ? ctx.LambdaThisType
+                    : (ctx.Frame.HasThis ? ctx.Frame.Method.Owner : null);
+                if (thisOwner != null
                     && IsOnThisChain(thisOwner, calleeMethod.Owner))
                 {
                     receiver = new BoundThisExpression(node, thisOwner);
                     if (ctx.IsLambda && ctx.This != null) ctx.CapturedSymbols.Add(ctx.This);
                 }
-                else if (!ctx.Frame.HasThis)
+                else if (thisOwner == null)
                 {
                     env.Error(node.Span, $"P3: instance method '{calleeMethod.Name}' requires " +
                         "a receiver ('this' is not available in a static context)");
@@ -226,6 +244,88 @@ namespace LatteCompiler
                 // S10：async 调用表达式类型改写为 Task\<T\>/Task（SYNTAX §4.5）
                 ResultType = AsyncResultType(calleeMethod, calleeResultType, env),
             };
+        }
+
+        // 间接调用的重载落定（callable 协议共享落点：局部/参数值、callable
+        // 字段、任意值表达式的调用后缀）：operator call 候选经
+        // OverloadResolution 判定（默认参数/具名实参同直接调用口径）
+        public static CallBinding? BindIndirectCallOverload(ASTNode node,
+            BoundExpression indirectTarget, TypeSymbol callableType,
+            List<ArgumentASTNode> arguments, List<TypeReferenceASTNode>? genericArguments,
+            Scope scope, BindContext ctx, BindEnvironment env)
+        {
+            if (genericArguments != null)
+            {
+                env.Error(node.Span,
+                    "P3: explicit generic arguments are not allowed on indirect calls");
+                return null;
+            }
+            var callOperators = FindCallOperators(callableType);
+            var resolvedCall = OverloadResolution.Resolve(node, callOperators,
+                arguments, scope, ctx, env, null, receiverType: callableType);
+            if (resolvedCall == null) return null;
+            var (callOperator, callArguments, callResultType, callPack) = resolvedCall.Value;
+            if (callPack != null)
+            {
+                env.Error(node.Span,
+                    "P3: generic variadic call operators are not supported on indirect calls");
+                return null;
+            }
+            return new CallBinding
+            {
+                Method = callOperator,
+                Arguments = callArguments,
+                IsVoid = callOperator.ReturnType == null,
+                ResultType = AsyncResultType(callOperator, callResultType, env),
+                IsIndirect = true,
+                IndirectTarget = indirectTarget,
+            };
+        }
+
+        // callable 协议的 operator call 收集（沿 BaseType 链，定义级回退；
+        // 不预过滤参数个数——默认参数/具名实参由 OverloadResolution 判定）：
+        // 首个声明了 call 的层级即停——派生覆写遮蔽基类抽象 call（override
+        // 语义），否则 lambda 隐藏类的 override 与基类 abstract 会双候选歧义
+        private static List<MethodSymbol> FindCallOperators(TypeSymbol type)
+        {
+            for (var t = type; t != null; t = t.BaseType)
+            {
+                var owner = t.ConstructedFrom ?? t;
+                var found = owner.Methods.Where(m => m.Kind == MethodKind.Operator
+                    && m.Name == "call" && !m.IsStatic).ToList();
+                if (found.Count > 0) return found;
+            }
+            return new List<MethodSymbol>();
+        }
+
+        // callable 接收者绑定（单段局部/参数）：收窄包装与 lambda 捕获记录
+        // 口径同 BindInstanceCallForm 的链头处理
+        private static BoundExpression BindCallableReceiver(ASTNode node, SemanticSymbol headSymbol,
+            BindContext ctx, BindEnvironment env)
+        {
+            BoundExpression receiver;
+            if (headSymbol is LocalSymbol headLocal)
+            {
+                if (!ctx.Flow.IsAssigned(headLocal))
+                {
+                    env.Error(node.Span,
+                        $"Use of unassigned local variable '{headLocal.Name}'");
+                }
+                receiver = new BoundValueReferenceExpression(node, headLocal, headLocal.Type!);
+                if (ctx.IsLambda && !ctx.Locals.Contains(headLocal))
+                    ctx.CapturedSymbols.Add(headLocal);
+                return PathFacility.ApplyNarrowingPublic(node, receiver,
+                    NarrowKey.ForSymbol(headLocal), ctx.Flow);
+            }
+            var headParameter = (ParameterSymbol)headSymbol;
+            // S9d：可变参数体内视角（Array\<元素\> 包装——包上无 call operator，
+            // 不会命中间接调用，视角统一口径保留）
+            var headParameterType = PathFacility.VariadicParameterViewType(headParameter, env);
+            receiver = new BoundValueReferenceExpression(node, headParameter, headParameterType);
+            if (ctx.IsLambda && !ctx.LambdaParameters.Contains(headParameter))
+                ctx.CapturedSymbols.Add(headParameter);
+            return PathFacility.ApplyNarrowingPublic(node, receiver,
+                NarrowKey.ForSymbol(headParameter), ctx.Flow);
         }
 
         // this 类型链命中判定（S7c-2 补 this 前置检查）：method 宿主
@@ -383,12 +483,20 @@ namespace LatteCompiler
             var candidates = SymbolLookup.FindInstanceMethods(receiverType, name);
             if (candidates.Count == 0)
             {
-                // 同名字段存在 → 保持既有 "is not a method" 诊断（行为不变）；
-                // 否则进入 M88 降级判定（SYNTAX §14.7）：未声明方法且
-                // receiver 类型链上存在「wrapper 定义声明了 .proxy.*
-                // wildcard」→ 调用点降级为 invoke Any.call???
-                if (SymbolLookup.FindInstanceField(receiverType, name) != null)
+                // 同名字段存在：字段类型声明了 operator call → callable 协议
+                // （SYNTAX §5.2，BIL §15.3）——对该字段对象虚调用 $$call；
+                // 否则保持既有 "is not a method" 诊断（行为不变）
+                if (SymbolLookup.FindInstanceField(receiverType, name) is { } callableField)
                 {
+                    var fieldType = SymbolLookup.SubstituteFieldType(callableField, receiverType);
+                    if (fieldType is TypeSymbol callableFieldType
+                        && FindCallOperators(callableFieldType).Count > 0)
+                    {
+                        var fieldTarget = new BoundFieldAccessExpression(node, receiver,
+                            callableField, fieldType);
+                        return BindIndirectCallOverload(node, fieldTarget, callableFieldType,
+                            arguments, genericArguments, scope, ctx, env);
+                    }
                     env.Error(node.Span, $"'{name}' on type '{BoundAnalysis.TypeDisplay(receiver.Type)}' is not a method");
                     return null;
                 }
@@ -456,7 +564,7 @@ namespace LatteCompiler
             }
             // 形状检查：specific → 与 proxy 声明自身参数列表比对；
             // wildcard → 排除 symbol 形参后与其余 canonical 形参比对
-            var isWildcard = proxy.Name.EndsWith(".*", StringComparison.Ordinal);
+            var isWildcard = proxy.ProxyTemplate == ProxyTemplateKind.Wildcard;
             if (isWildcard)
             {
                 // canonical：inner(namedArgs=..., unnamedArgs=...)，symbol 由

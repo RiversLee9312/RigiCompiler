@@ -269,17 +269,18 @@ namespace LatteCompiler
     }
 
     // Lambda 表达式（SYNTAX.md §5.1）：
-    // [async] func{(params)\<T>: ReturnType -> [named 标签] body}
+    // [async] func{(params)[: ReturnType] -> [named 标签] body}
+    // 省略 : ReturnType = 无返回值 void lambda（基类 core.Action 族，见 §5.2）
     // 体两形态互斥（创建时定，参照 ExpressionStatementASTNode 双 Root 槽先例）：
-    // - Body：单表达式体，该表达式即返回值（隐式取值）
-    // - BlockBody：多语句代码块体，所有路径必须显式 return@_ / return@标签 产出值；
+    // - Body：单表达式体（有返回值时隐式取值；void 时为表达式语句语义，语义层定）
+    // - BlockBody：多语句代码块体（有返回值时所有路径须显式 return@_ / return@标签；
     //   块内禁止裸 return（§5.1，由 CodeBlockParserLayer 的 allowBareReturn 标记强制）
+    // lambda 不支持泛型形参（§5.1）；泛型 callable 请显式声明类型
     public class LambdaExpressionASTNode : ExpressionASTNode
     {
         public bool IsAsync;                              // async 修饰
         [ChildAstNode] public ParameterListASTNode Parameters;           // 形参列表 (...)
-        [ChildAstNode] public GenericParameterListASTNode? GenericParameters;  // 泛型形参 \<...>（可选）
-        [ChildAstNode] public TypeReferenceASTNode ReturnType;           // 返回类型
+        [ChildAstNode] public TypeReferenceASTNode? ReturnType;          // 返回类型（null = void）
         public string? Label;                             // named 标签（可选，-> 之后、体之前）
         [ChildAstNode] public ExpressionRootASTNode? Body;               // 单表达式体（与 BlockBody 互斥）
         [ChildAstNode] public CodeBlockASTNode? BlockBody;               // 多语句块体（与 Body 互斥）
@@ -288,8 +289,7 @@ namespace LatteCompiler
         {
             IsAsync = false;
             Parameters = new ParameterListASTNode(this);
-            GenericParameters = null;
-            ReturnType = new TypeReferenceASTNode(this);
+            ReturnType = null;
             Label = null;
             Body = null;
             BlockBody = null;

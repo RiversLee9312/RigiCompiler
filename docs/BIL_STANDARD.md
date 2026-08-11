@@ -380,9 +380,10 @@ invoke.noret fn(core::Console$.static.println(value:.string)@.void) [$value]
 .map<TKey, TValue>
 .pair<TFirst, TSecond>
 .nullable<T>
+.cell<T>
+.readonly_cell<T>
 .typeid<TBound>
 .fieldid<TOwner, TValue, instance|static>
-.methodid<TSignature>
 .generic<TYPEID_PLACE>
 ```
 
@@ -392,9 +393,13 @@ invoke.noret fn(core::Console$.static.println(value:.string)@.void) [$value]
 - `.map<K,V>` 对应标准运行时 Map；
 - `.pair<A,B>` 对应标准 Pair；
 - `.nullable<T>` 对应 `Nullable\<T>`；
+- `.cell<T>` 对应标准库 `core::Cell\<T>`（`getValue`/`setValue`）的特权拼写，与 `.array<T>`、`.nullable<T>` 同类；
+- `.readonly_cell<T>` 对应标准库 `core::ReadonlyCell\<T>`（仅 `getValue`）的特权拼写；
+- `.cell` / `.readonly_cell` 的 `T` 递归按类型构造规则解析；用途为闭包捕获与需要共享可变槽位的场景；读写经普通 `invoke` 调用 `getValue`/`setValue`，无专用指令；
+- 共享安全性为 passthrough：`.cell<T>` / `.readonly_cell<T>` 的共享安全性等同于 `T`（与 Box 同例，需特殊判定，不按普通 class 闭包表）；
 - `.typeid<TBound>` 是 BIL 中具类型边界的运行时类型句柄，对应源码 `Type\<TBound>` 的语义；
 - 未写边界的 `.typeid` 等价于 `.typeid<.any>`；
-- `.fieldid` 与 `.methodid` 必须携带足以验证间接访问/调用的签名；
+- `.fieldid` 必须携带足以验证间接访问的签名；
 - `.generic<...>` 表示“由指定 typeid 位置描述的实际类型”。
 
 示例：
@@ -1157,15 +1162,13 @@ get.self RESULT
 getid.type type(TYPE_SYMBOL) TARGET_TYPEID
 getid.var VALUE TARGET_TYPEID
 getid.field field(FIELD_SYMBOL) TARGET_FIELDID
-getid.method fn(METHOD_SYMBOL) TARGET_METHODID
 ```
 
 规则：
 
 - `getid.type` 返回指定类型的运行时 typeid；
 - `getid.var` 返回值的实际运行时类型，Object 使用对象实际类型而非仅静态视图；
-- `getid.field` 返回携带字段签名的 `.fieldid<...>`；
-- `getid.method` 返回携带方法完整签名的 `.methodid<...>`。
+- `getid.field` 返回携带字段签名的 `.fieldid<...>`。
 
 ---
 
@@ -1416,11 +1419,20 @@ async receiver、参数和结果的 shared 闭包合法性应由 frontend 检查
 ### 15.3 间接调用
 
 ```bil
-invoke.indirect METHODID_VAR RESULT [ARG_0, ARG_1, ...]
-invoke.indirect.noret METHODID_VAR [ARG_0, ARG_1, ...]
+invoke.indirect OBJECT_VAR RESULT [ARG_0, ARG_1, ...]
+invoke.indirect.noret OBJECT_VAR [ARG_0, ARG_1, ...]
 ```
 
-`METHODID_VAR` 必须为携带完整规范签名的 `.methodid<TSignature>`。参数和结果必须严格匹配该签名。
+`OBJECT_VAR` 是静态类型声明了 `operator call` 的对象引用。间接调用 = 对该对象虚调用其 `$$call` 实现（通用 callable 协议；任何实现 `operator call` 的类型都可用，不限于 lambda 隐藏类）。
+
+规则：
+
+- `OBJECT_VAR` 的静态类型必须声明恰好一个与实参列表逐类型严格匹配、且返回形态匹配的 `$$call`（canonical 名 `$$call`，§8.4 operator 声明形态）；
+- 参数与结果严格匹配该 `$$call` 签名（canonical 全等，同 §15.1 口径）；
+- 有返回使用 `invoke.indirect`，无返回使用 `invoke.indirect.noret`；
+- 若命中的 `$$call` 带 `async`（如 `core::AsyncFunc` / `core::AsyncAction` 子类的实现），按 §15.2 同一规则：使用 `invoke.indirect`（非 noret），结果为 `core.coroutine.Task\<TResult>` / `core.coroutine.Task`，eager spawn。
+
+lambda 的 BIL 形态是普通 `new type(..lambda..UUID)` 构造 + `invoke.indirect`；BIL 没有 lambda 专属指令。
 
 ### 15.4 调用派发链下一环（proxy 模板）
 
@@ -1766,7 +1778,7 @@ R_DataHex = raw.hex x2FF2331C
 R_DataBin = raw.bin b01010101
 ```
 
-原始数据只表示不可变 byte sequence，不自动视为 typeid、fieldid、methodid 或 Native 地址。
+原始数据只表示不可变 byte sequence，不自动视为 typeid、fieldid 或 Native 地址。
 
 ### 19.4 switch table
 
@@ -1885,11 +1897,12 @@ LocalSymbols {
 检查：
 
 - 所有变量和资源有类型；
+- 标准类型构造（`.array` / `.map` / `.pair` / `.nullable` / `.cell` / `.readonly_cell` / `.typeid` / `.fieldid` / `.generic`）实参可解析且元数合法；
 - 指令源/目标类型严格满足规则；
 - 不存在隐式数值提升或子类型赋值；
 - 运算实现按精确类型唯一；
 - getter/setter/index 实现按精确类型唯一；
-- direct/indirect invoke 签名完全匹配；
+- direct invoke 签名完全匹配；`invoke.indirect` / `invoke.indirect.noret` 按 §15.3：`OBJECT_VAR` 静态类型恰有一个与实参/返回形态严格匹配的 `$$call`（含 async 时结果为 `Task\<TResult>` / `Task`）；
 - cast 目标合法；
 - new/init 和 enum case 签名合法；
 - await/yield 类型合法；
@@ -1958,7 +1971,7 @@ LocalSymbols {
   对齐 SYNTAX §9.3；静态字段写入不豁免）；
 - abstract 不被构造；
 - enum struct 不走普通 new；
-- rich/shared 闭包与跨 Coroutine 规则合法；
+- rich/shared 闭包与跨 Coroutine 规则合法（`.cell<T>` / `.readonly_cell<T>` 共享安全 passthrough：等同于 `T`，与 Box 同例，不按普通 class 闭包表）；
 - async 调用的 receiver/参数/结果满足 shared 边界；
 - `wrapper-proxy(PROXY_KIND)`（§8.4）只允许在 wrapper 类型内、名以 `.proxy.` 开头的方法上；此类方法必须带本修饰符；`PROXY_KIND` 仅 `specific` / `wildcard`，且与成员形状类别一致（specific ↔ 具名 proxy；wildcard ↔ `.*` 通配 proxy）；同一方法不得重复携带本修饰符；
 - `wrapped(WRAPPER_TYPE_REF)`（§8.3.1）的 `WRAPPER_TYPE_REF` 必须是 wrapper 类型；可重复，顺序保留。

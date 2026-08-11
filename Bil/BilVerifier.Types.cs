@@ -173,16 +173,13 @@ namespace LatteCompiler.Bil
                 case GetIdTypeInstruction getIdType:
                     writes.Add(getIdType.Target);
                     return true;
-                case GetIdMethodInstruction getIdMethod:
-                    writes.Add(getIdMethod.Target);
-                    return true;
                 case InvokeIndirectInstruction invokeIndirect:
-                    reads.Add(invokeIndirect.MethodId);
+                    reads.Add(invokeIndirect.CallTarget);
                     reads.AddRange(invokeIndirect.Arguments);
                     writes.Add(invokeIndirect.Target);
                     return true;
                 case InvokeIndirectNoResultInstruction invokeIndirectNoResult:
-                    reads.Add(invokeIndirectNoResult.MethodId);
+                    reads.Add(invokeIndirectNoResult.CallTarget);
                     reads.AddRange(invokeIndirectNoResult.Arguments);
                     return true;
                 case RetInstruction ret:
@@ -369,10 +366,6 @@ namespace LatteCompiler.Bil
                         "getid.type 结果", errors, prefixMatch: true);
                     break;
 
-                case GetIdMethodInstruction getIdMethod:
-                    VerifyGetIdMethod(context, getIdMethod, location, errors);
-                    break;
-
                 case GetFieldInstruction getField:
                     VerifyInstanceField(context, getField.Field.Symbol, VarType(context, getField.Object),
                         location, errors);
@@ -466,12 +459,12 @@ namespace LatteCompiler.Bil
                     break;
 
                 case InvokeIndirectInstruction invokeIndirect:
-                    VerifyIndirectInvoke(context, invokeIndirect.MethodId,
+                    VerifyIndirectInvoke(context, invokeIndirect.CallTarget,
                         invokeIndirect.Arguments, invokeIndirect.Target, location, errors);
                     break;
 
                 case InvokeIndirectNoResultInstruction invokeIndirectNoResult:
-                    VerifyIndirectInvoke(context, invokeIndirectNoResult.MethodId,
+                    VerifyIndirectInvoke(context, invokeIndirectNoResult.CallTarget,
                         invokeIndirectNoResult.Arguments, null, location, errors);
                     break;
 
@@ -643,67 +636,151 @@ namespace LatteCompiler.Bil
             return false;
         }
 
-        private static void VerifyGetIdMethod(BilFunctionContext context,
-            GetIdMethodInstruction instruction, string location,
-            List<BilVerificationError> errors)
-        {
-            var symbol = instruction.Method.Symbol;
-            if (!context.Module.MethodSymbols.Contains(symbol))
-            {
-                errors.Add(new BilVerificationError("21.2", location,
-                    $"getid.method 的方法符号不可解析 \"{symbol}\""));
-                return;
-            }
-            if (!BilVerificationContext.TryParseMethodSymbol(symbol,
-                out _, out _, out var parameters, out var returnType)) return;
-            var signature = ".methodid<(" + string.Join(",", parameters.Select(p => p.TypeRef))
-                + ")@" + returnType + ">";
-            CheckType(context, VarType(context, instruction.Target), signature, location,
-                "getid.method 结果", errors);
-        }
-
+        // §15.3 间接调用（callable 协议）：CALL_TARGET 的静态类型（沿 extends
+        // 链）必须声明与实参列表严格匹配的 $$call（operator(call) 成员，
+        // canonical 名 $$call）；宿主泛型实参按 §6.4 严格口径代入候选签名
         private static void VerifyIndirectInvoke(BilFunctionContext context,
-            BilVariableOperand methodId, IReadOnlyList<BilVariableOperand> arguments,
+            BilVariableOperand callTarget, IReadOnlyList<BilVariableOperand> arguments,
             BilVariableOperand? target, string location, List<BilVerificationError> errors)
         {
-            var type = VarType(context, methodId);
-            if (type == null || !type.StartsWith(".methodid<", StringComparison.Ordinal)) return;
-            var signature = type.Substring(".methodid<".Length,
-                type.Length - ".methodid<".Length - 1);
-            var close = signature.LastIndexOf(")@", StringComparison.Ordinal);
-            if (close < 0) return;
-            var parameterText = signature.Substring(1, close - 1);
-            var returnType = signature.Substring(close + 2);
-            var expected = parameterText.Length == 0
-                ? new List<string>()
-                : BilVerificationContext.SplitTopLevel(parameterText);
-            if (arguments.Count != expected.Count)
+            var type = VarType(context, callTarget);
+            if (type == null) return;
+            if (!TryFindCallOperator(context, type, arguments, out var returnType,
+                    out var isAsync))
             {
                 errors.Add(new BilVerificationError("21.3", location,
-                    $"invoke.indirect 实参个数 {arguments.Count} 与 methodid 签名参数个数 " +
-                    $"{expected.Count} 不一致"));
+                    $"invoke.indirect 目标类型 \"{type}\" 没有与实参列表匹配的 " +
+                    "operator call 实现"));
                 return;
             }
-            for (var i = 0; i < expected.Count; i++)
-            {
-                CheckType(context, VarType(context, arguments[i]), expected[i], location,
-                    $"invoke.indirect 实参 {i}", errors);
-            }
+            // 返回形态（§15.1/§15.2 同口径）：async call 恒有 Task 结果
             if (target == null)
             {
-                if (returnType != ".void")
+                if (returnType != ".void" || isAsync)
+                {
                     errors.Add(new BilVerificationError("21.3", location,
-                        "有返回 methodid 不得使用 invoke.indirect.noret"));
+                        "有返回（或 async）的 operator call 不得使用 invoke.indirect.noret"));
+                }
+                return;
             }
-            else
+            var expectedResult = isAsync
+                ? (returnType == ".void"
+                    ? "core.coroutine::Task"
+                    : $"core.coroutine::Task<{returnType}>")
+                : returnType;
+            if (returnType == ".void" && !isAsync)
             {
-                if (returnType == ".void")
-                    errors.Add(new BilVerificationError("21.3", location,
-                        "无返回 methodid 必须使用 invoke.indirect.noret"));
-                CheckType(context, VarType(context, target), returnType, location,
-                    "invoke.indirect 结果", errors);
+                errors.Add(new BilVerificationError("21.3", location,
+                    "无返回 operator call 必须使用 invoke.indirect.noret"));
+                return;
             }
+            CheckType(context, VarType(context, target), expectedResult, location,
+                "invoke.indirect 结果", errors);
         }
+
+        // 沿 extends 链查找与实参列表严格匹配的 $$call 成员（宿主泛型代入后
+        // 逐实参 §6.4 全等比对）；查不到声明（external 不完整）降级为通过
+        private static bool TryFindCallOperator(BilFunctionContext context, string objectTypeRef,
+            IReadOnlyList<BilVariableOperand> arguments, out string returnType, out bool isAsync)
+        {
+            returnType = ".void";
+            isAsync = false;
+            // 内建类型（.i32/.string 等别名形态）无声明表条目且确定无
+            // operator call——直接判负（不走「查不到声明降级」通道）
+            if (BilVerificationContext.IsBuiltinType(objectTypeRef)) return false;
+            var current = BilVerificationContext.NormalizeTypeRef(objectTypeRef);
+            var visited = new HashSet<string>(StringComparer.Ordinal);
+            while (visited.Add(current))
+            {
+                if (!context.Module.TryGetTypeDeclaration(current, out var declaration))
+                {
+                    return true;   // 链断/查不到声明：降级（同 §13.6 口径）
+                }
+                foreach (var member in declaration.Members)
+                {
+                    if (member is not BilSimpleMemberDeclaration simple
+                        || !simple.Modifiers.Any(m => m is BilOperatorModifier
+                        {
+                            Name: "call"
+                        }))
+                    {
+                        continue;
+                    }
+                    if (!BilVerificationContext.TryParseMethodSymbol(simple.Symbol,
+                            out _, out _, out var parameters, out var candidateReturn))
+                    {
+                        continue;
+                    }
+                    if (parameters.Count != arguments.Count) continue;
+                    var matches = true;
+                    for (var i = 0; i < parameters.Count; i++)
+                    {
+                        var expected = SubstituteHostGenerics(parameters[i].TypeRef,
+                            declaration, current);
+                        if (!BilVerificationContext.TypesCompatible(
+                                VarType(context, arguments[i]) ?? "", expected))
+                        {
+                            matches = false;
+                            break;
+                        }
+                    }
+                    if (!matches) continue;
+                    returnType = SubstituteHostGenerics(candidateReturn, declaration, current);
+                    isAsync = simple.Modifiers.Any(m =>
+                        m is BilKeywordModifier { Keyword: BilKeyword.Async });
+                    return true;
+                }
+                if (declaration.ExtendsType == null) return false;
+                current = BilVerificationContext.NormalizeTypeRef(declaration.ExtendsType);
+            }
+            return false;
+        }
+
+        // 宿主代入辅助：receiver 在 owner 定义处的构造形态解析 +
+        // 声明查表（一次性出两个产物）；查不到声明/链断返回 false（降级）
+        private static bool TryGetHostSubstitution(BilFunctionContext context,
+            string? receiverTypeRef, string ownerRef, out BilTypeDeclaration declaration,
+            out string hostForm)
+        {
+            declaration = null!;
+            hostForm = "";
+            if (receiverTypeRef == null) return false;
+            var resolved = context.Module.ResolveConstructedHostForm(receiverTypeRef, ownerRef);
+            if (resolved == null) return false;
+            if (!context.Module.TryGetTypeDeclaration(resolved, out declaration)) return false;
+            hostForm = resolved;
+            return true;
+        }
+
+        // 宿主泛型代入：成员签名中的 .generic<$.generic.<名>> 按宿主构造实参
+        // 替换（声明的 GenericParameters 名序 ↔ 宿主类型实参序；无实参的
+        // 非泛型宿主恒等返回）
+        private static string SubstituteHostGenerics(string typeRef,
+            BilTypeDeclaration declaration, string hostTypeRef)
+        {
+            if (declaration.GenericParameters.Count == 0
+                || !typeRef.Contains(".generic<", StringComparison.Ordinal))
+            {
+                return typeRef;
+            }
+            var angle = hostTypeRef.IndexOf('<');
+            if (angle < 0 || !hostTypeRef.EndsWith(">", StringComparison.Ordinal))
+            {
+                return typeRef;
+            }
+            var arguments = BilVerificationContext.SplitTopLevel(hostTypeRef.Substring(
+                angle + 1, hostTypeRef.Length - angle - 2));
+            if (arguments.Count != declaration.GenericParameters.Count) return typeRef;
+            var result = typeRef;
+            for (var i = 0; i < arguments.Count; i++)
+            {
+                result = result.Replace(
+                    ".generic<$.generic." + declaration.GenericParameters[i] + ">",
+                    arguments[i], StringComparison.Ordinal);
+            }
+            return result;
+        }
+
 
         private static void VerifyInvoke(BilFunctionContext context, string methodSymbol,
             IReadOnlyList<BilVariableOperand> arguments, BilVariableOperand? target,
@@ -732,6 +809,22 @@ namespace LatteCompiler.Bil
                 errors.Add(new BilVerificationError("21.1", location,
                     $"invoke 的方法符号不符合 canonical 语法 \"{methodSymbol}\""));
                 return;
+            }
+            // 泛型宿主成员签名代入（§6.3 构造头类型的成员调用——
+            // core::Cell\<T\>.getValue/setValue 等）：在任何返回形态/实参
+            // 比对之前，按 receiver 首实参在 owner 定义处的构造形态把签名
+            // 中的 .generic<$.generic.*> 替换为构造实参；非泛型宿主代入恒等
+            if (!isStatic && owner.Length > 0 && !owner.EndsWith("::")
+                && arguments.Count > 0
+                && TryGetHostSubstitution(context, VarType(context, arguments[0]), owner,
+                    out var hostDeclaration, out var hostForm))
+            {
+                returnType = SubstituteHostGenerics(returnType, hostDeclaration, hostForm);
+                for (var i = 0; i < parameters.Count; i++)
+                {
+                    parameters[i] = (parameters[i].Name,
+                        SubstituteHostGenerics(parameters[i].TypeRef, hostDeclaration, hostForm));
+                }
             }
 
             // §15.1：返回形态匹配——有返回用 invoke，无返回用 invoke.noret。
@@ -885,6 +978,14 @@ namespace LatteCompiler.Bil
                         out _, out _, out var parameters, out _))
                 {
                     continue;
+                }
+                // 泛型宿主的 init 签名代入（§6.3 构造头类型——core::Cell\<T\>
+                // 的 init(value: T) 等）：按 new 的 type 操作数构造实参替换
+                // 签名中的 .generic<$.generic.*> 再严格匹配
+                for (var i = 0; i < parameters.Count; i++)
+                {
+                    parameters[i] = (parameters[i].Name,
+                        SubstituteHostGenerics(parameters[i].TypeRef, declaration, typeRef));
                 }
                 if (SignatureMatches(context, parameters, newInstruction.Arguments))
                 {

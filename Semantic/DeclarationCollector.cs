@@ -253,6 +253,14 @@ namespace LatteCompiler
                 isNative: node.Modifiers.Contains(Keywords.NATIVE),
                 extTargetPath: extTarget,
                 isAsync: node.Modifiers.Contains(Keywords.ASYNC));
+            // wrapper proxy 模板（SYNTAX §14.2）：声明名即语法——建壳时落定
+            // 属性标记（Specific/Wildcard），后续 pass 只读属性不查名字
+            if (name.StartsWith(".proxy.", StringComparison.Ordinal))
+            {
+                symbol.ProxyTemplate = name.EndsWith(".*", StringComparison.Ordinal)
+                    ? ProxyTemplateKind.Wildcard
+                    : ProxyTemplateKind.Specific;
+            }
             symbol.HasBody = node.Body != null;
             CollectGenericParameters(symbol.GenericParameters, node.GenericParameters, result);
             foreach (var p in node.Parameters.Parameters)

@@ -41,6 +41,16 @@ namespace LatteCompiler
             return local;
         }
 
+        // 被捕获参数的 cell 局部（SYNTAX §5.2 闭包模型）：.c.<参数名> 命名，
+        // 函数入口 prologue 用实参构造；命名对参数名确定——发射侧零映射表
+        //（EmittingFacility.ValueVariableName 同名规则直接命中）
+        public LocalSymbol NewCaptureCellLocal(string parameterName, SemanticSymbol cellType)
+        {
+            var local = new LocalSymbol(".c." + parameterName, cellType, isConst: false);
+            synthLocals.Add(local);
+            return local;
+        }
+
         // 合成值引用（Origin 指最近语法来源，ARCH §5.1）
         public static LoweredValueReferenceExpression ReferenceTo(BoundNode origin,
             SemanticSymbol symbol)

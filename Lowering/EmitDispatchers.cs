@@ -74,8 +74,8 @@ namespace LatteCompiler
                     return AwaitEmitter.Visit(expression, target, ctx, env);
                 case LoweredCallExpression:
                     return CallExpressionEmitter.Visit(expression, target, ctx, env);
-                case LoweredLambdaExpression:
-                    return LambdaEmitter.Visit(expression, target, ctx, env);
+                case LoweredCellReferenceExpression:
+                    return CellReferenceEmitter.Visit(expression, target, ctx, env);
                 case LoweredNewExpression:
                     return NewExpressionEmitter.Visit(expression, target, ctx, env);
                 case LoweredEnumCaseExpression:

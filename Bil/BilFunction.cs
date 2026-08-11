@@ -55,33 +55,6 @@ namespace LatteCompiler.Bil
         }
     }
 
-    // BIL §6.3/§12.6/§15.3：methodid 不是无结构的类型字符串。
-    public sealed class BilMethodSignature
-    {
-        public IReadOnlyList<string> ParameterTypes { get; }
-        public string ReturnType { get; }
-
-        public BilMethodSignature(IReadOnlyList<string> parameterTypes, string returnType)
-        {
-            ParameterTypes = parameterTypes;
-            ReturnType = returnType;
-        }
-
-        public string Render() => $"({string.Join(",", ParameterTypes)})@{ReturnType}";
-    }
-
-    public sealed class BilMethodIdType
-    {
-        public BilMethodSignature Signature { get; }
-
-        public BilMethodIdType(BilMethodSignature signature)
-        {
-            Signature = signature;
-        }
-
-        public string Render() => $".methodid<{Signature.Render()}>";
-    }
-
     // block（§9.4–§9.6）：结构化代码 region，非 LLVM basic block；
     // 共享函数的参数与局部变量，不能接受独立参数
     public sealed class BilBlock

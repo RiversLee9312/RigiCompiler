@@ -44,6 +44,15 @@ namespace LatteCompiler
             return EmitMethodDeclaration(method);
         }
 
+        // lambda 隐藏类声明发射（SYNTAX §5.2 对象模型，EmittingDriver 调用）：
+        // 与普通类型声明同路径——字段（.capture.* cell 字段）/init/$$call
+        // 成员声明由 type.Fields/Methods 表驱动
+        public static BilTypeDeclaration EmitSyntheticTypeDeclaration(TypeSymbol type,
+            EmitEnvironment env)
+        {
+            return EmitTypeDeclaration(type, env);
+        }
+
         // 内建类型的 ext 成员声明（S7c-2）：内建类型自身不声明
         // （EmitTypeTree 跳过 IsBuiltin——基元经 BIL 别名投影而非符号
         // 引用），但 P2 注册到其上的 ext 成员（如 .bootstrap 的
@@ -140,13 +149,6 @@ namespace LatteCompiler
             }
             foreach (var method in type.Methods)
             {
-                // M88：proxy 声明模板（.proxy.*）进 BIL（wrapper-proxy 修饰符）；
-                // 旧烘焙合成名（.wrapped./.proxy.<序>.）不再产生，若残留跳过
-                if (method.Name.StartsWith(".wrapped.")
-                    || IsLegacyBakedProxyName(method.Name))
-                {
-                    continue;
-                }
                 // enum struct 的无体 init（case 模板，SYNTAX §12.1）同样
                 // 发射声明——P3 起映射赋值体合成（§9.3）为其产出 fn 定义
                 declaration.Members.Add(EmitMethodDeclaration(method));
@@ -242,15 +244,12 @@ namespace LatteCompiler
                 modifiers);
         }
 
-        // M88：旧烘焙合成名（.proxy.<数字>... / .proxy.unwrap.）——不再产生，
-        // 防御性跳过
-        private static bool IsLegacyBakedProxyName(string name)
+        // proxy 模板类别 → BIL 修饰符类别（§8.4 wrapper-proxy(PROXY_KIND)）
+        private static BilProxyKind MapProxyKind(ProxyTemplateKind kind)
         {
-            if (name.StartsWith(".proxy.unwrap.", StringComparison.Ordinal)) return true;
-            // .proxy.<digit>... 特化/降级环，非用户声明的 .proxy.name / .proxy.*
-            if (!name.StartsWith(".proxy.", StringComparison.Ordinal)) return false;
-            var rest = name.AsSpan(".proxy.".Length);
-            return rest.Length > 0 && char.IsDigit(rest[0]);
+            return kind == ProxyTemplateKind.Wildcard
+                ? BilProxyKind.Wildcard
+                : BilProxyKind.Specific;
         }
 
         // 方法声明（§8.4）：类型成员与全局函数共形态。
@@ -293,14 +292,12 @@ namespace LatteCompiler
                 modifiers.Add(new BilKeywordModifier(BilKeyword.Entrypoint));
             }
             // M88：wrapper 类型内的 proxy 声明模板投影 wrapper-proxy
-            //（specific|wildcard）；烘焙特化/original/router 归 Middleware
-            if (method.Name.StartsWith(".proxy.", StringComparison.Ordinal)
+            //（specific|wildcard）——类别取 P1 落定的符号属性，不查名字；
+            // 烘焙特化/original/router 归 Middleware
+            if (method.ProxyTemplate is { } proxyTemplateKind
                 && method.Owner?.Kind == TypeKind.Wrapper)
             {
-                var kind = method.Name.EndsWith(".*", StringComparison.Ordinal)
-                    ? BilProxyKind.Wildcard
-                    : BilProxyKind.Specific;
-                modifiers.Add(new BilWrapperProxyModifier(kind));
+                modifiers.Add(new BilWrapperProxyModifier(MapProxyKind(proxyTemplateKind)));
             }
             return new BilSimpleMemberDeclaration(
                 method.IsStatic ? BilMemberKind.StaticMethod : BilMemberKind.Method,

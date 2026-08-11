@@ -129,6 +129,11 @@ namespace LatteCompiler.Bil
             {
                 body = name.Substring(".kwargs.".Length);
             }
+            else if (name.StartsWith(".c."))
+            {
+                // 被捕获参数的 cell 合成局部（SYNTAX §5.2 闭包模型）
+                body = name.Substring(".c.".Length);
+            }
             else
             {
                 body = name.StartsWith(".") ? name.Substring(1) : name;

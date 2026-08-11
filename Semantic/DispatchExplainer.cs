@@ -97,7 +97,9 @@ namespace LatteCompiler
             var members = new List<MethodSymbol>();
             foreach (var m in host.Methods)
             {
-                if (m.Name.StartsWith('.')) continue;
+                // proxy 模板成员（仅 wrapper 可声明）不进宿主成员报告；
+                // 点前缀名仅为编译器合成，不会出现于 wrapper 宿主类型
+                if (m.ProxyTemplate != null) continue;
                 if (m.Kind is MethodKind.Regular or MethodKind.Operator)
                 {
                     if (!m.IsStatic && m.HasBody) members.Add(m);
@@ -105,7 +107,7 @@ namespace LatteCompiler
             }
             foreach (var f in host.Fields)
             {
-                if (f.IsStatic || f.Name.StartsWith('.')) continue;
+                if (f.IsStatic) continue;
                 if (f.Getter != null) members.Add(f.Getter);
                 if (f.Setter != null) members.Add(f.Setter);
             }
