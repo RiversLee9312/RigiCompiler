@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
 using LatteCompiler.Bil;
@@ -5,7 +7,8 @@ using LatteCompiler.Bil;
 namespace LatteCompiler.Tests
 {
     // BilEmitter lambda 对象模型（SYNTAX §5.2）：隐藏类 + new/invoke.indirect +
-    // cell 捕获闭环。UUID 经 BilTestHarness.NormalizeLambdaUuids 归一。
+    // cell 捕获闭环（逐变量合成 ..cell..UUID 隐藏子类）。UUID 经
+    // BilTestHarness.NormalizeLambdaUuids 归一。
     public static partial class BilEmitterTests
     {
         private static void TestLambdaEmission()
@@ -48,32 +51,43 @@ namespace LatteCompiler.Tests
                 "ret $.t2\n");
         }
 
-        // var 捕获闭环：.cell + new cell + setValue 写 + invoke.indirect 调
+        // var 捕获闭环：cell 隐藏子类 + new cell + setValue 写 + invoke.indirect 调
         private static void TestLambdaVarCapture()
         {
-            var (unit, module, text) = BilTestHarness.EmitBilUnit(
+            const string source =
                 "pub func main(): i32 {\n" +
                 "    var x = 1\n" +
                 "    var f = func{(): i32 -> (x + 1)}\n" +
                 "    x = 2\n" +
                 "    return f()\n" +
-                "}\n");
+                "}\n";
+            var (unit, module, text) = BilTestHarness.EmitBilUnit(source);
             CheckNoErrors("var 捕获 lambda 全管线无诊断", unit);
             BilTestHarness.CheckBilValid("var 捕获 lambda 验证器零错误", module);
             AssertLambdaClass(module, "var 捕获", "core::Func<.i32>", hasCaptureField: true,
-                captureTypeFragment: ".cell<.i32>");
-            TestHarness.CheckTrue("var 捕获 .vars 含 .cell<.i32>",
+                captureTypeFragment: "..cell..");
+            // cell 隐藏子类声明形态（新机制核心不变量）
+            AssertCellSubclassDeclaration(module, "var 捕获", readOnly: false, elementType: ".i32");
+            // TypeSymbol 结构：名以 ..cell.. 开头、CellStorage 非 null、基类 Cell
+            var cellClass = CellClassOfCapturedLocal(source, "x");
+            TestHarness.CheckTrue("var 捕获 TypeSymbol 为 cell 隐藏子类（Cell 基类）",
+                cellClass != null
+                && cellClass.Name.StartsWith("..cell..", StringComparison.Ordinal)
+                && cellClass.CellStorage != null
+                && cellClass.BaseType is { ConstructedFrom: { Name: "Cell" } });
+            TestHarness.CheckTrue("var 捕获 .vars 含 cell 隐藏子类",
                 module.Functions.First(f => f.Symbol == "$main()@.i32")
-                    .Vars.Any(v => v.Name == "x" && v.TypeRef == ".cell<.i32>"));
+                    .Vars.Any(v => v.Name == "x" && v.TypeRef.StartsWith("..cell..",
+                        StringComparison.Ordinal)));
             TestHarness.CheckTrue("var 捕获文本：new cell / setValue / invoke.indirect",
-                text.Contains("new type(.cell<.i32>)")
+                text.Contains("new type(..cell..UUID)")
                 && text.Contains("invoke.noret fn(core::Cell$setValue")
                 && text.Contains("invoke.indirect $f "));
             BilTestHarness.CheckFnShape("var 捕获 main 形状", module, "$main()@.i32",
-                ".vars { .cell<.i32> x, ..lambda..UUID f, .i32 .t0, .cell<.i32> .t1, " +
+                ".vars { ..cell..UUID x, ..lambda..UUID f, .i32 .t0, ..cell..UUID .t1, " +
                 "..lambda..UUID .t2, .i32 .t3, .i32 .t4 }\n" +
                 "load res(#0) $.t0\n" +
-                "new type(.cell<.i32>) $.t1 [$.t0]\n" +
+                "new type(..cell..UUID) $.t1 [$.t0]\n" +
                 "set.var $.t1 $x\n" +
                 "new type(..lambda..UUID) $.t2 [$x]\n" +
                 "set.var $.t2 $f\n" +
@@ -83,7 +97,7 @@ namespace LatteCompiler.Tests
                 "ret $.t4\n");
         }
 
-        // const 捕获 → .readonly_cell + ReadonlyCell$getValue
+        // const 捕获 → ReadonlyCell 隐藏子类 + ReadonlyCell$getValue
         private static void TestLambdaConstCapture()
         {
             var (unit, module, text) = BilTestHarness.EmitBilUnit(
@@ -95,10 +109,12 @@ namespace LatteCompiler.Tests
             CheckNoErrors("const 捕获 lambda 全管线无诊断", unit);
             BilTestHarness.CheckBilValid("const 捕获 lambda 验证器零错误", module);
             AssertLambdaClass(module, "const 捕获", "core::Func<.i32>", hasCaptureField: true,
-                captureTypeFragment: ".readonly_cell<.i32>");
-            TestHarness.CheckTrue("const 捕获 .vars 含 .readonly_cell<.i32>",
+                captureTypeFragment: "..cell..");
+            AssertCellSubclassDeclaration(module, "const 捕获", readOnly: true, elementType: ".i32");
+            TestHarness.CheckTrue("const 捕获 .vars 含 cell 隐藏子类",
                 module.Functions.First(f => f.Symbol == "$main()@.i32")
-                    .Vars.Any(v => v.Name == "c" && v.TypeRef == ".readonly_cell<.i32>"));
+                    .Vars.Any(v => v.Name == "c" && v.TypeRef.StartsWith("..cell..",
+                        StringComparison.Ordinal)));
             TestHarness.CheckTrue("const 捕获 $$call 走 ReadonlyCell$getValue",
                 text.Contains("invoke fn(core::ReadonlyCell$getValue()@.generic<$.generic.T>)"));
         }
@@ -154,7 +170,8 @@ namespace LatteCompiler.Tests
             TestHarness.CheckTrue("嵌套两层均含 .capture.x cell 字段",
                 lambdaTypes.All(t => t.Members.OfType<BilSimpleMemberDeclaration>()
                     .Any(m => m.Kind == BilMemberKind.Field
-                        && m.Symbol.Contains("#.capture.x@.cell<.i32>"))));
+                        && m.Symbol.Contains("#.capture.x@")
+                        && m.Symbol.Contains("..cell.."))));
             TestHarness.CheckTrue("嵌套调用两次 invoke.indirect",
                 Regex.Matches(text, @"invoke\.indirect \$").Count >= 2);
         }
@@ -254,9 +271,9 @@ namespace LatteCompiler.Tests
             BilTestHarness.CheckBilValid("参数捕获 prologue 验证器零错误", module);
             BilTestHarness.CheckFnShape("参数捕获 host 形状（.c.p prologue）", module,
                 "$host(p:.i32)@.i32",
-                ".vars { ..lambda..UUID f, .cell<.i32> .c.p, .cell<.i32> .t0, " +
+                ".vars { ..lambda..UUID f, ..cell..UUID .c.p, ..cell..UUID .t0, " +
                 "..lambda..UUID .t1, .i32 .t2 }\n" +
-                "new type(.cell<.i32>) $.t0 [$p]\n" +
+                "new type(..cell..UUID) $.t0 [$p]\n" +
                 "set.var $.t0 $.c.p\n" +
                 "new type(..lambda..UUID) $.t1 [$.c.p]\n" +
                 "set.var $.t1 $f\n" +
@@ -281,12 +298,12 @@ namespace LatteCompiler.Tests
             CheckNoErrors("块体 lambda 全管线无诊断", unit);
             BilTestHarness.CheckBilValid("块体 lambda 验证器零错误", module);
             AssertLambdaClass(module, "块体", "core::Func<.i32>", hasCaptureField: true,
-                captureTypeFragment: ".cell<.i32>");
+                captureTypeFragment: "..cell..");
             var callFn = module.Functions.First(f => f.Symbol.Contains("$$call"));
             BilTestHarness.CheckFnShape("块体 lambda $$call 含 ret（值块降级）", module,
                 callFn.Symbol,
-                ".vars { .i32 d, .i32 .s0, .cell<.i32> .t0, .i32 .t1, .i32 .t2, .i32 .t3 }\n" +
-                "get.field $.this $.t0 field(..lambda..UUID#.capture.x@.cell<.i32>)\n" +
+                ".vars { .i32 d, .i32 .s0, ..cell..UUID .t0, .i32 .t1, .i32 .t2, .i32 .t3 }\n" +
+                "get.field $.this $.t0 field(..lambda..UUID#.capture.x@..cell..UUID)\n" +
                 "invoke fn(core::Cell$getValue()@.generic<$.generic.T>) $.t1 [$.t0]\n" +
                 "load res(#0) $.t2\n" +
                 "mul $.t1 $.t2 $.t3\n" +
@@ -308,23 +325,23 @@ namespace LatteCompiler.Tests
             CheckNoErrors("复合赋值捕获写回全管线无诊断", unit);
             BilTestHarness.CheckBilValid("复合赋值捕获写回验证器零错误", module);
             AssertLambdaClass(module, "复合赋值捕获", "core::Action<.i32>", hasCaptureField: true,
-                captureTypeFragment: ".cell<.i32>");
+                captureTypeFragment: "..cell..");
             var callFn = module.Functions.First(f => f.Symbol.Contains("$$call"));
             BilTestHarness.CheckFnShape("复合赋值捕获 $$call getValue→add→setValue", module,
                 callFn.Symbol,
-                ".vars { .i32 .s0, .cell<.i32> .t0, .i32 .t1, .i32 .t2, .cell<.i32> .t3 }\n" +
-                "get.field $.this $.t0 field(..lambda..UUID#.capture.total@.cell<.i32>)\n" +
+                ".vars { .i32 .s0, ..cell..UUID .t0, .i32 .t1, .i32 .t2, ..cell..UUID .t3 }\n" +
+                "get.field $.this $.t0 field(..lambda..UUID#.capture.total@..cell..UUID)\n" +
                 "invoke fn(core::Cell$getValue()@.generic<$.generic.T>) $.t1 [$.t0]\n" +
                 "add $.t1 $x $.t2\n" +
                 "set.var $.t2 $.s0\n" +
-                "get.field $.this $.t3 field(..lambda..UUID#.capture.total@.cell<.i32>)\n" +
+                "get.field $.this $.t3 field(..lambda..UUID#.capture.total@..cell..UUID)\n" +
                 "invoke.noret fn(core::Cell$setValue(v:.generic<$.generic.T>)@.void) [$.t3, $.s0]\n" +
                 "ret\n");
             BilTestHarness.CheckFnShape("复合赋值捕获 main 形状", module, "$main()@.i32",
-                ".vars { .cell<.i32> total, ..lambda..UUID add, .i32 .t0, .cell<.i32> .t1, " +
+                ".vars { ..cell..UUID total, ..lambda..UUID add, .i32 .t0, ..cell..UUID .t1, " +
                 "..lambda..UUID .t2, .i32 .t3, .i32 .t4 }\n" +
                 "load res(#0) $.t0\n" +
-                "new type(.cell<.i32>) $.t1 [$.t0]\n" +
+                "new type(..cell..UUID) $.t1 [$.t0]\n" +
                 "set.var $.t1 $total\n" +
                 "new type(..lambda..UUID) $.t2 [$total]\n" +
                 "set.var $.t2 $add\n" +
@@ -386,6 +403,7 @@ namespace LatteCompiler.Tests
         }
 
         // 隐藏类结构：class + extends + operator(call) + 可选 capture 字段
+        // capture 字段类型：cell 捕获为 ..cell..UUID 隐藏子类；this 捕获为宿主类型
         private static void AssertLambdaClass(BilModule module, string label,
             string extendsType, bool hasCaptureField, string? captureTypeFragment = null)
         {
@@ -422,6 +440,78 @@ namespace LatteCompiler.Tests
             {
                 TestHarness.CheckTrue($"{label} 无 .capture 字段", captureFields.Count == 0);
             }
+        }
+
+        // cell 隐藏子类声明形态：extends .cell<.T>/.readonly_cell<.T> + value 字段 +
+        // override getValue（Cell 风味另含 init()/setValue）
+        private static void AssertCellSubclassDeclaration(BilModule module, string label,
+            bool readOnly, string elementType)
+        {
+            var expectedExtends = readOnly
+                ? $".readonly_cell<{elementType}>"
+                : $".cell<{elementType}>";
+            var cells = module.LocalSymbols.OfType<BilTypeDeclaration>()
+                .Where(t => t.Symbol.StartsWith("..cell..")).ToList();
+            TestHarness.CheckTrue($"{label} LocalSymbols 含 ..cell.. 隐藏子类",
+                cells.Count >= 1);
+            var cell = cells.FirstOrDefault(t => t.ExtendsType == expectedExtends);
+            TestHarness.CheckTrue($"{label} cell 子类 extends {expectedExtends}",
+                cell != null);
+            if (cell == null) return;
+            var members = cell.Members.OfType<BilSimpleMemberDeclaration>().ToList();
+            var valueField = members.FirstOrDefault(m =>
+                m.Kind == BilMemberKind.Field && m.Symbol.Contains("#value@"));
+            TestHarness.CheckTrue($"{label} cell 子类含 pub {(readOnly ? "const" : "var")} value",
+                valueField != null
+                && valueField.Symbol.EndsWith($"#value@{elementType}", StringComparison.Ordinal)
+                && valueField.Modifiers.OfType<BilAccessibilityModifier>()
+                    .Any(a => a.Accessibility == BilAccessibility.Public)
+                && valueField.Modifiers.OfType<BilKeywordModifier>().Any(k =>
+                    k.Keyword == (readOnly ? BilKeyword.Const : BilKeyword.Var)));
+            TestHarness.CheckTrue($"{label} cell 子类 override getValue",
+                members.Any(m => m.Kind == BilMemberKind.Method
+                    && m.Symbol.Contains("$getValue()")
+                    && m.Modifiers.OfType<BilKeywordModifier>()
+                        .Any(k => k.Keyword == BilKeyword.Override)));
+            if (readOnly)
+            {
+                TestHarness.CheckTrue($"{label} ReadonlyCell 无 setValue/空 init",
+                    !members.Any(m => m.Symbol.Contains("$setValue"))
+                    && !members.Any(m => m.Symbol.Contains("$init()@")));
+                TestHarness.CheckTrue($"{label} ReadonlyCell 含 init(value)",
+                    members.Any(m => m.Kind == BilMemberKind.Method
+                        && m.Symbol.Contains("$init(value:")
+                        && m.Modifiers.OfType<BilKeywordModifier>()
+                            .Any(k => k.Keyword == BilKeyword.Init)));
+            }
+            else
+            {
+                TestHarness.CheckTrue($"{label} Cell 含 init()/init(value)/override setValue",
+                    members.Any(m => m.Symbol.Contains("$init()@")
+                        && m.Modifiers.OfType<BilKeywordModifier>()
+                            .Any(k => k.Keyword == BilKeyword.Init))
+                    && members.Any(m => m.Symbol.Contains("$init(value:")
+                        && m.Modifiers.OfType<BilKeywordModifier>()
+                            .Any(k => k.Keyword == BilKeyword.Init))
+                    && members.Any(m => m.Symbol.Contains("$setValue")
+                        && m.Modifiers.OfType<BilKeywordModifier>()
+                            .Any(k => k.Keyword == BilKeyword.Override)));
+            }
+        }
+
+        // 重新绑定拿被捕获局部的 cell 隐藏子类 TypeSymbol（EmitBilUnit 不返回 bodies）
+        private static TypeSymbol? CellClassOfCapturedLocal(string source, string localName)
+        {
+            var roots = new List<RootASTNode>();
+            roots.AddRange(StdlibSources.ParseAll());
+            roots.Add(TestHarness.ParseRoot(source, BilTestHarness.UserSourceName));
+            var unit = new CompilationUnit(roots.ToArray());
+            var declarations = DeclarationCollector.Collect(unit);
+            DeclarationResolver.Resolve(unit, declarations);
+            var bodies = Binder.Bind(unit, declarations);
+            var local = bodies.SelectMany(b => b.Locals)
+                .FirstOrDefault(l => l.Name == localName);
+            return local?.CellStorage?.CellClass;
         }
     }
 }

@@ -126,6 +126,7 @@ namespace LatteCompiler.Tests
             TestWrapperFieldValueSameWrapperTwoFields();
             TestWrapperCompoundAssignmentEmission();
             TestWrapperPlaceEmissionGates();
+            TestWrapperCellStorageCoverage();
             TestWrapperFieldValueCallAndIndexEmission();
             TestWrapperDeepWriteEmission();
             TestWrapperDeepWriteMixedBoundary();

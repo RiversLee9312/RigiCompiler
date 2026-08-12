@@ -44,16 +44,17 @@
             TestHarness.CheckTrue("参数捕获按符号身份记录",
                 first.CapturedSymbols.Count == 1
                 && first.CapturedSymbols.Any(s => s.Name == "p"));
-            TestHarness.CheckTrue("var 捕获 → .capture 字段 + Cell 构造类型",
+            TestHarness.CheckTrue("var 捕获 → .capture 字段 + cell 隐藏子类（基类 Cell）",
                 first.Closure.Captures.Count == 1
                 && first.Closure.Captures[0].Field.Name == ".capture.p"
                 && first.Closure.Captures[0].Field.FieldType is TypeSymbol
                 {
-                    ConstructedFrom: { Name: "Cell" }
+                    CellStorage: not null,
+                    BaseType.ConstructedFrom: { Name: "Cell" }
                 });
-            TestHarness.CheckTrue("被捕获参数置 CaptureCell 标记",
+            TestHarness.CheckTrue("被捕获参数置 CellStorage 标记（Cell 风味）",
                 first.CapturedSymbols.OfType<ParameterSymbol>().Single()
-                    .CaptureCell == CaptureCellKind.Cell);
+                    .CellStorage is { IsReadOnly: false });
             TestHarness.CheckTrue("init 参数 = 捕获序（c0 = cell 类型）",
                 first.Closure.Init.Parameters.Count == 1
                 && first.Closure.Init.Parameters[0].Name == "c0");
@@ -73,14 +74,15 @@
             var constLambda = (BoundLambdaExpression)BodyOf(constCapture.Bodies, "f")
                 .Body.Statements.OfType<BoundLocalDeclarationStatement>()
                 .Single(s => s.Local.Name == "fn").Initializer!;
-            TestHarness.CheckTrue("const 捕获 → ReadonlyCell 字段 + 符号标记",
+            TestHarness.CheckTrue("const 捕获 → ReadonlyCell 子类字段 + 符号标记",
                 constLambda.Closure.Captures[0].IsReadOnly
                 && constLambda.Closure.Captures[0].Field.FieldType is TypeSymbol
                 {
-                    ConstructedFrom: { Name: "ReadonlyCell" }
+                    CellStorage: not null,
+                    BaseType.ConstructedFrom: { Name: "ReadonlyCell" }
                 }
                 && constLambda.CapturedSymbols.OfType<LocalSymbol>().Single()
-                    .CaptureCell == CaptureCellKind.ReadonlyCell);
+                    .CellStorage is { IsReadOnly: true });
 
             // void lambda（省略返回类型）：基类 Action 族
             var voidLambda = BindUnitWithStdlib(

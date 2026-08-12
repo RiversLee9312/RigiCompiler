@@ -67,15 +67,21 @@ namespace LatteCompiler
         }
     }
 
-    // 全局/static 字段引用（实例字段引用属后续里程碑）
+    // 全局/static 字段引用（实例字段引用属后续里程碑）。
+    // Type 默认走 Origin 透传；显式传入 = 合成路径（统一 cell 存储：
+    // cell 化静态字段的 cell 对象引用，Type = 隐藏子类而非值类型）
     public sealed class LoweredFieldReferenceExpression : LoweredExpression
     {
         public FieldSymbol Field { get; }
+        private readonly SemanticSymbol? type;
 
-        public LoweredFieldReferenceExpression(BoundFieldReferenceExpression origin,
-            FieldSymbol field) : base(origin)
+        public override SemanticSymbol Type => type ?? base.Type;
+
+        public LoweredFieldReferenceExpression(BoundNode origin,
+            FieldSymbol field, SemanticSymbol? type = null) : base(origin)
         {
             Field = field;
+            this.type = type;
         }
     }
 

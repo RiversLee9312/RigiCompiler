@@ -199,6 +199,7 @@ Latte 不要求每一个源码类型节点都一一对应一个普通 Native 对
   - **复制语义按值深拷贝**：`var b = a` 在语义上产生一份独立的字符数据。实现可以引入对用户完全透明的 copy-on-write 或不可变共享优化，但**源码语义、类型检查与用户代码一律不得假设这些优化存在**——正如 BIL 永远不得假设某种 GC 模型或 GC 行为。任何可观察到共享的行为都是实现缺陷，而不是可依赖的特性。
   - `String` 不可被继承，也不可被 wrapper 修饰（非 rich struct 的通用规则，见 §14.9）。
 - `Nullable\<T>` 属于 `Object` 分支，但其 shared 属性由 `T` 推导而非由声明给出：`T` 是共享安全类型时，`Nullable\<T>` 也是共享安全类型。这个特权只属于 `Nullable\<T>`，因为它由 `T?` 隐式生成、用户无法声明它的 shared 变体。显式书写的库容器（`Array\<T>`、`Map\<K, V>` 等）不适用本规则——需要跨协程时应当选用相应的 shared 容器类型。
+- `Cell\<T>` / `ReadonlyCell\<T>`（§5.2 / §15.3）的物理表示是编译器特权：用户源码不可见、不可直接声明或 `new` 基类；实际实例恒为编译器逐变量合成的隐藏子类（同 Box——物理表示属编译器特权，见统一 cell 存储）。
 - 其他由规范明确标记为内建、编译器生成或系统特权的机制，也可以拥有普通用户类型不能声明或复制的 lowering、布局或派发规则。
 
 这些特权只属于语言规范明确列出的内建机制。用户声明的 class、struct、interface 或 wrapper 不能通过源码复制其布局、身份、派发或生命周期规则。
@@ -748,14 +749,16 @@ func{(x: i32): i32 -> named calc {
 
 **调用约定（callable 协议）**：任何声明了 `operator call` 的类型的值都可以像函数一样被调用（`expr(args)`）。这是通用的 callable 协议，不是 lambda 特例；lambda 隐藏类通过覆写基类的 abstract `operator call` 接入该协议。
 
-**捕获**：
+**捕获**（与 §14.3 wrapper 值存储共用**统一 cell 存储**机制）：
 
-- lambda 在被求值时创建隐藏类对象；被捕获的外层变量通过构造函数以 Cell 传入；
+- lambda 在被求值时创建隐藏类对象；被捕获的外层变量通过构造函数以 cell 对象传入；
+- `core.Cell\<T>` / `core.ReadonlyCell\<T>` 是**抽象基类**（仅抽象 `getValue`/`setValue`——ReadonlyCell 无 `setValue`；无 `value` 字段、无显式 init）；实际 cell 对象恒为编译器（P3）逐变量合成的隐藏子类 `..cell..UUID`（`..` 前缀用户不可名；与声明位置同命名空间；自持 `pub var value: T` 字段——const/ReadonlyCell 风味为 `pub const`；override `getValue`/`setValue` + `init()`/`init(value)`）；
 - 被捕获的变量（除 `this` 与 lambda 自身参数外）一律 Cell 化：
-  - 可变（`var`）捕获 → `core.Cell\<T>`（`getValue` / `setValue`）；
-  - 不可变（`const`）捕获 → `core.ReadonlyCell\<T>`（仅 `getValue`）；
+  - 可变（`var`）捕获 → 继承 `core.Cell\<T>` 的隐藏子类；
+  - 不可变（`const`）捕获 → 继承 `core.ReadonlyCell\<T>` 的隐藏子类；
   - **`this` 捕获不套 Cell**，直接作为普通字段；
-- 被捕获变量从**声明处起**整个生命周期的读写都经过 cell 的 `getValue`/`setValue`；
+- 隐藏类的 `.capture.*` 字段类型 = 该变量的 cell 隐藏子类（非抽象基类）；已被 wrapper 值 cell 化的变量按引用直接捕获，不套第二层 cell；
+- 被捕获变量从**声明处起**整个生命周期的读写都经过 cell 的 `getValue`/`setValue`（定义级成员引用虚派发）；
 - 之所以 `const` 也要 Cell 化：值 wrapper 对 get 的代理行为意味着按值拷贝会冻结 proxy 结果、脱钩 wrapper 状态，一律走 Cell 才能保持代理语义；
 - lambda 内对 `const` 捕获的写入仍是编译错误（符号层检查）；
 - **被 lambda 捕获的变量不再参与 smart cast**（收窄失效，见 §3.5）；
@@ -1708,7 +1711,7 @@ pub wrapper Logged\<TTarget> {
 
 ### 14.3 值修饰器（Value Wrapper）
 
-修饰字段或栈上变量（`var`/`const`）。修饰实例字段时，wrapper 存放在宿主类型的 Middleware 合成隐藏存储中，因此宿主必须能够内嵌 rich struct（见 §14.9）；修饰栈上变量时 wrapper 存放在栈帧中，对变量类型没有额外要求。
+修饰字段或栈上变量（`var`/`const`）。修饰实例字段时，wrapper 存放在宿主类型的 Middleware 合成隐藏存储中，因此宿主必须能够内嵌 rich struct（见 §14.9）；修饰栈上变量与静态/全局字段时，值统一由编译器合成的 cell 隐藏子类盛装（§5.2 同一机制），wrapper 应用标记挂在子类的 `value` 字段上（BIL `wrapped(W)`）；cell 的构造时机归 Middleware，对变量类型没有额外的宿主内嵌要求。
 
 ```latte
 @WrapperTarget(.Value)
@@ -1878,7 +1881,7 @@ setter：
 - 合法的 Entity wrapper 目标是 class、interface、wrapper、rich struct、rich enum struct；
 - **非 rich struct 与非 rich enum struct 不能被任何 wrapper 修饰**，它们的字段不能挂 Value wrapper，实例方法也不能挂 Method wrapper；
 - 因此全部基元类型、`String`、`Type\<T>`、`Span\<T>` 都不可被修饰；
-- 修饰栈上变量、全局/静态字段、全局/静态方法时不涉及宿主内嵌，本条不适用。
+- 修饰栈上变量、全局/静态字段、全局/静态方法时不涉及宿主内嵌，本条不适用；栈上变量与全局/静态字段上 Value wrapper 的存储形态见 §14.3（统一 cell 隐藏子类，非宿主内嵌）。
 
 **shared 目标矩阵**：
 
@@ -1891,7 +1894,7 @@ setter：
 
 - **A. 方法**：不是全局方法或静态方法，且所属类型不是 shared；
 - **B. 字段**：不是全局字段或静态字段，且所属类型不是 shared；
-- **C. 栈上变量**：全部 `var`/`const` 局部变量；
+- **C. 栈上变量**：全部 `var`/`const` 局部变量（Value wrapper 存储形态 = 编译器合成的 cell 隐藏子类，见 §14.3）；
 - **D. 类型**：非 shared 的类型。
 
 其根据是 §3.1.1 的逃逸闸门：全局/静态存储与 shared 类型的字段闭包都不得触及 local object，而非 shared wrapper 的隐藏存储可能持有 local object。反过来，shared wrapper 修饰非 shared 目标始终合法——shared 闭包比 local 闭包更严，不会引入新的逃逸路径。
@@ -1958,9 +1961,11 @@ import 即进入编译单元（与用户源同走语义全流程）：
   - `core.Func\<TRet, T0…\>` / `core.Action\<T0…\>` /
     `core.AsyncFunc\<TRet, T0…\>` / `core.AsyncAction\<T0…\>`（各 0–32 元数变种，
     abstract class + abstract `operator call`；Async 族为 `shared class`）；
-  - `core.Cell\<T\>`（`getValue`/`setValue` + 值参/空参 init）与
-    `core.ReadonlyCell\<T\>`（仅 `getValue` + 值参 init）——lambda 捕获存储
-    （BIL 特权拼写 `.cell<T>`/`.readonly_cell<T>`）。
+  - `core.Cell\<T\>` / `core.ReadonlyCell\<T\>`——**抽象基类**（抽象
+    `getValue`/`setValue`——ReadonlyCell 无 `setValue`；无 `value` 字段、
+    无显式 init）；实际实例恒为编译器合成的隐藏子类 `..cell..UUID`
+    （统一 cell 存储，§5.2 / §14.3）；BIL 特权拼写 `.cell<T>`/
+    `.readonly_cell<T>` 保留供 Middleware 激进优化识别。
 
 **bootstrap 与 stdlib 的边界**（S10 定稿）：语言级类型层级根与基元类型
 （`Any`/`Object`/`ValueType`/`Enum`/`Wrapper`/`Exception` 与 §3.2 基本类型、

@@ -141,6 +141,11 @@ namespace LatteCompiler
         // 非 lambda 类型恒 null——兼作隐藏类识别标记，供 P4 闭包存储计划消费）
         public LambdaClosureInfo? LambdaClosure { get; internal set; }
 
+        // cell 隐藏子类的存储信息回挂（统一 cell 存储；P3 CellClassFactory
+        // 合成时写入，非 cell 子类恒 null——兼作 cell 子类识别标记，供 P4b
+        // 声明收集消费）
+        public CellStorageInfo? CellStorage { get; internal set; }
+
         public TypeSymbol(
             string name,
             TypeKind kind,
@@ -208,16 +213,41 @@ namespace LatteCompiler
         }
     }
 
-    // ===== lambda 对象模型（SYNTAX §5.2）=====
+    // ===== 统一 cell 存储（SYNTAX §5.2 捕获 / §14.3 wrapper 值）=====
 
-    // 被捕获变量/参数的 cell 化形态：None = 未被捕获（普通存储）；
-    // Cell = 可变捕获（core::Cell\<T\>）；ReadonlyCell = const 捕获
-    // （core::ReadonlyCell\<T\>，仅 getValue——lambda 内写入由 P3 符号层拦截）
-    public enum CaptureCellKind
+    // cell 化符号的存储信息：凡被 cell 盛装的符号（lambda 捕获的局部/参数、
+    // 被 wrapper 修饰的局部/静态字段）逐变量合成一个 Cell/ReadonlyCell 隐藏
+    // 子类（..cell..UUID，与用户源码不可名的 `..` 前缀，不进符号图容器表）。
+    // 子类自持 pub value 字段（wrapper 应用经该字段的 wrapped(W) 标记承载），
+    // override 基类抽象 getValue/setValue——对 Middleware 而言就是「普通类 +
+    // 带标记字段」，一看即知如何烘焙；.cell<T>/.readonly_cell<T> 特权拼写仅
+    // 供 Middleware 激进优化识别。信息同时回挂隐藏子类 TypeSymbol.CellStorage
+    // （兼作 cell 子类识别标记，供 P4b 声明收集）
+    public sealed class CellStorageInfo
     {
-        None,
-        Cell,
-        ReadonlyCell,
+        // 隐藏子类定义级符号（基类 = Cell<T>/ReadonlyCell<T> 构造类型）
+        public TypeSymbol CellClass { get; }
+        // 存储类型引用：泛型上下文共享时为自构造形态，否则 = CellClass
+        public TypeSymbol CellType { get; }
+        // ReadonlyCell 风味（const 值；无 setValue/DefaultInit 写通道）
+        public bool IsReadOnly { get; }
+        // pub value 字段（盛装值；wrapper 应用的 wrapped(W) 载体）
+        public FieldSymbol ValueField { get; }
+        // init(value)（值参构造点）
+        public MethodSymbol ValueInit { get; }
+        // init()（空构造点——未初始化 var 的空 cell；仅 Cell 风味）
+        public MethodSymbol? DefaultInit { get; }
+
+        public CellStorageInfo(TypeSymbol cellClass, TypeSymbol cellType, bool isReadOnly,
+            FieldSymbol valueField, MethodSymbol valueInit, MethodSymbol? defaultInit)
+        {
+            CellClass = cellClass;
+            CellType = cellType;
+            IsReadOnly = isReadOnly;
+            ValueField = valueField;
+            ValueInit = valueInit;
+            DefaultInit = defaultInit;
+        }
     }
 
     // lambda 捕获集条目（P3 LambdaVisitor 按符号身份落定，排序确定：
@@ -390,6 +420,12 @@ namespace LatteCompiler
         public bool HasBackingStorage { get; internal set; }
         // 挂载的 wrapper 应用（声明顺序，外层在前；P2 解析填充）
         public List<WrapperApplication> AppliedWrappers { get; } = new List<WrapperApplication>();
+        // 静态/全局字段的 wrapper cell 化存储（统一 cell 存储，SYNTAX §14.3；
+        // P3 BindingDriver 阶段 1.6 写入）：非 null 时本字段在 BIL 的存储是
+        // cell——字段类型投影为隐藏子类（wrapped(W) 标记由子类 value 字段
+        // 承载），读写全经 getValue/setValue；构造时机归 Middleware。
+        // 实例字段无此形态（wrapper 存储 = 宿主隐藏存储，M88）
+        public CellStorageInfo? CellStorage { get; internal set; }
 
         public FieldSymbol(string name, TypeSymbol? owner = null, NamespaceSymbol? ns = null,
             bool isStatic = false, SemanticSymbol? fieldType = null, string? extTargetPath = null,
@@ -462,11 +498,11 @@ namespace LatteCompiler
         // 参数类型（P2 解析后填；SemanticSymbol：TypeSymbol 或 GenericParameterSymbol）
         public SemanticSymbol? Type { get; internal set; }
 
-        // lambda 捕获 cell 化形态（SYNTAX §5.2；P3 LambdaVisitor 在捕获集
-        // 落定后写入）：非 None 时本参数在 BIL 的存储是 cell——函数入口
-        // 由 P4a 合成 .c.<名> cell 局部并用实参构造，体内读写全经
-        // getValue/setValue（this 从不捕获为参数，无此形态）
-        public CaptureCellKind CaptureCell { get; internal set; }
+        // lambda 捕获 cell 化存储（统一 cell 存储，SYNTAX §5.2；P3
+        // LambdaVisitor 在捕获集落定后写入）：非 null 时本参数在 BIL 的
+        // 存储是 cell——函数入口由 P4a 合成 .c.<名> cell 局部并用实参构造，
+        // 体内读写全经 getValue/setValue（this 从不捕获为参数，无此形态）
+        public CellStorageInfo? CellStorage { get; internal set; }
 
         // init 参数映射的目标字段（SYNTAX §9.3：`name[:type] -> field`；
         // P2 TypeReferenceResolver 字段存在性检查命中时落定，无映射为 null）。
@@ -579,11 +615,10 @@ namespace LatteCompiler
         public bool IsConst { get; }
         // using 资源绑定即使写作 var 也不可重赋值，避免 finally 捕获错误资源。
         public bool IsUsingResource { get; }
-        // lambda 捕获 cell 化形态（SYNTAX §5.2；P3 LambdaVisitor 在捕获集
-        // 落定后写入）：非 None 时本局部在 BIL 的存储是 cell（.vars 条目
-        // 类型为 .cell<T>/.readonly_cell<T>，声明处构造，读写全经
-        // getValue/setValue）
-        public CaptureCellKind CaptureCell { get; internal set; }
+        // cell 化存储（统一 cell 存储；P3 写入）：lambda 捕获（§5.2）或被
+        // wrapper 修饰（§14.3）时本局部在 BIL 的存储是 cell（.vars 条目
+        // 类型为隐藏子类，声明处构造，读写全经 getValue/setValue）
+        public CellStorageInfo? CellStorage { get; internal set; }
         // 挂载的 wrapper 应用（声明顺序，外层在前；P3 局部声明绑定时解析
         // 登记——栈上声明不进 P1/P2，SYNTAX §14.9 矩阵 C 恒合法免检查）
         public List<WrapperApplication> AppliedWrappers { get; } = new List<WrapperApplication>();

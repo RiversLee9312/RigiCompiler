@@ -245,6 +245,13 @@ SemanticSymbol
       是编译错误；诊断按 (proxy, span, message) 去重。
     - **使用点 wrapper place 绑定**（M79）原样保留：双源同池查找
       + 只读禁令全拦截面。
+    - **局部/静态 wrapper 应用触发 cell 子类合成**（M104 统一
+      cell 存储，P3 合成例外）：`CellClassFactory` 逐变量合成
+      隐藏子类 `..cell..UUID`（P2 仍 Freeze 前零合成；合成方法体
+      经 `BindEnvironment.SyntheticCellBodies` 汇入 BindingDriver
+      函数体列表走统一 P4 管线；静态/全局字段 cell 化在
+      BindingDriver 阶段 1.6）。wrapper 应用标记挂在子类
+      `value` 字段上（同 `WrapperApplication` 实例）。
     - **未声明方法降级判定**保留：candidates 空 + wrapper 链含
       `.proxy.*` → 产物改 `invoke core::Any$call???`（bootstrap
       声明 + VM hook，toString 先例）；`IsDowngradeCallResult`
@@ -253,13 +260,16 @@ SemanticSymbol
     `wrapper-proxy(specific|wildcard)` 修饰符的**模板 fn**
     （`inner` → `invoke fn(..inner)`、`self` → `get.self` 占位指令；
     `invoke fn(..inner)` 操作数 = 可变泛型包 `.generic.<Pack>` 前置 +
-    显式值实参，BIL §15.4 / §7.2）；    使用点 place 成员访问降级（读 = 值拷贝 + 普通指令；写 =
-    set.wrapper.field）与声明段平铺仍归 P4（操作数见 §6.1）。
+    显式值实参，BIL §15.4 / §7.2）；使用点 place 成员访问降级（读 =
+    值拷贝 + 普通指令；写 = set.wrapper.field；局部/静态走 cell
+    根分派）与声明段平铺仍归 P4（操作数见 §6.1）；cell 子类声明
+    按方法体宿主归属收集发射（同 lambda 口径）。
   - **一切烘焙**（特化 / inner 链接 / 原始体替换 / 隐藏存储 /
-    `call???` 类别路由体 / 包解包 shim）**归 Middleware**
-    （BIL §23 边界）。frontend 产物只携带标记：应用登记、proxy
-    模板 fn（含 `invoke fn(..inner)` 包透传操作数）、降级调用点对
-    `core::Any$call???` 的 `invoke`。
+    `call???` 类别路由体 / 包解包 shim / **静态 cell 构造时机**）
+    **归 Middleware**（BIL §23 边界）。frontend 产物只携带标记：
+    应用登记、proxy 模板 fn（含 `invoke fn(..inner)` 包透传操作数）、
+    降级调用点对 `core::Any$call???` 的 `invoke`、cell 子类声明
+    （含 `value` 字段 `wrapped(W)`）。
 
 ---
 
@@ -284,7 +294,7 @@ SemanticSymbol
 | pattern switch（含 `_` 分支） | 常量表 switch / 嵌套条件（BIL §16.6） |
 | 解构声明 | 精确字段/索引读取 |
 | `using` | 初始化 + 清理记录 + try/finally 路径（RUNTIME §25.1） |
-| wrapper place 成员访问（`obj:W.f`、`obj:W.m()`） | **全部读取**统一值拷贝 + 普通指令：Entity = `get.wrapper` + `get.field`/`invoke`/`get.array`；字段-Value = `get.wrapper.field` + 普通指令；嵌套链逐层物化（BIL §12.4）。成员写（直接字段）= `set.wrapper.field`（Entity = `wrapper(W)`；字段-Value = `field(HOST_FIELD)+wrapper(W)`）；深层纯字段写穿 `place.a.b...` = P4a 多 get/set（正向 get + 叶写 + 反向 set；值类型中间写回，引用中间停止；最外层必要写回复用 `set.wrapper.field`，普通值中间反向写回仍发 `set.field`，**不新增**专用深写 opcode）；索引写与局部/静态存储仍归口 |
+| wrapper place 成员访问（`obj:W.f`、`obj:W.m()`） | **全部读取**统一值拷贝 + 普通指令：Entity = `get.wrapper` + `get.field`/`invoke`/`get.array`；字段-Value = `get.wrapper.field` + 普通指令；嵌套链逐层物化（BIL §12.4）。成员写（直接字段）= `set.wrapper.field`（Entity = `wrapper(W)`；字段-Value = `field(HOST_FIELD)+wrapper(W)`）；深层纯字段写穿 `place.a.b...` = P4a 多 get/set（正向 get + 叶写 + 反向 set；值类型中间写回，引用中间停止；最外层必要写回复用 `set.wrapper.field`，普通值中间反向写回仍发 `set.field`，**不新增**专用深写 opcode）；**局部/静态存储 = cell 根**（M104 统一 cell 存储：读 = `get.wrapper.field $cell field(value) type(W)`，写 = `set.wrapper.field` 链 `field(value)+wrapper(W)`，复合赋值读写分离；静态字段值读写 = `get.field.static` 取 cell + getValue/setValue）；索引写仍归口 |
 | 未声明方法的 wrapper 降级（SYNTAX §14.7） | `invoke core::Any$call???`（胖值 ABI；BIL §15.5） |
 | 字符串插值 | 拼接/格式化调用链 |
 | trailing lambda、`TypeName(...)` 简写等 | 规范调用形态 |
@@ -345,7 +355,7 @@ continuation、注册 Task/Alarm waiter，并在 frame/Task/清理记录引用�
 也不以 stdlib 普通调用伪装。完整裁决、closure/局部访问器接入及 Middleware 保留
 native 面见 `ASYNC_LOWERING_DESIGN.md`。
 
-### 7.1 wrapper 值语义与 BIL 形态（现状，M75 + M88）
+### 7.1 wrapper 值语义与 BIL 形态（现状，M75 + M88 + M104）
 
 规范把 wrapper 定为恒 rich struct，`obj:Wrapper` 为**只读 place**
 （SYNTAX §14.5/§14.9）。相关 BIL 缺口与归属如下：
@@ -363,6 +373,19 @@ native 面见 `ASYNC_LOWERING_DESIGN.md`。
   隐藏存储由 Middleware 合成（命名约定 BIL §5.3；BIL 文本不再声明
   `.wrapper.` 隐藏字段——与 RUNTIME §14 一致）；隐藏存储不可用普通
   字段寻址。
+- **统一 cell 存储（M104）**：lambda 捕获与局部/静态 Value wrapper
+  共用同一机制——`core::Cell<T>`/`ReadonlyCell<T>` 为抽象基类；P3
+  `CellClassFactory` 逐变量合成隐藏子类 `..cell..UUID`（自持
+  `pub value: T`，wrapper 应用以同 `WrapperApplication` 挂在该字段
+  上，BIL 投影为字段 `wrapped(W)`）。局部/静态 place 以 **cell 根**
+  分派：读 = `get.wrapper.field $cell field(value) type(W)`；写 =
+  `set.wrapper.field` 链 `field(value)+wrapper(W)`；复合赋值读写分离；
+  深写复用 M84 既有机制（cell 对象为终极宿主）。静态字段 BIL 声明
+  类型投影为 cell 子类、字段槽不再投 `wrapped(W)`；cell 构造时机归
+  Middleware（frontend 只生成与标注）。捕获侧 `.capture.*` 字段类型
+  = cell 子类；已 cell 化变量按引用直接捕获不套第二层。P4a
+  `ClosureStoragePlan` 通用化为 cell 存储计划；`CellStorageLowering`
+  改写静态/全局 cell 读写；`WrapperPlaceLowering` 局部/静态归口删除。
 - **proxy 模板占位指令（M88）**：模板 fn 体内 `inner` / `self` 分别
   发 `invoke fn(..inner)` / `get.self`；特化、inner 链接、原始体、router 体
   均不在 frontend 合成（§5.2）。

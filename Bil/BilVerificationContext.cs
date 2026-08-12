@@ -444,14 +444,16 @@ namespace LatteCompiler.Bil
         }
 
         // 宿主归属判定（IsAssignableTo 专用）：链节点与 owner 按「定义级」
-        // 比较——剥泛型实参后归一化全等。§5.2 符号的宿主段恒为定义级
-        // canonical（不带实参），声明侧 ExtendsType 与类型引用恒带实参，
-        // 构造类型的成员符号仍是定义级——归属不是类型相等（§6.4 的
-        // Wrap ≠ Wrap\<T\> 不适用：Box\<.i32\> 的实例成员符号宿主即 Box）
+        // 比较——归一化（构造头别名映射，§6.3）后剥泛型实参全等。§5.2 符号
+        // 的宿主段恒为定义级 canonical（不带实参），声明侧 ExtendsType 与
+        // 类型引用恒带实参，构造类型的成员符号仍是定义级——归属不是类型
+        // 相等（§6.4 的 Wrap ≠ Wrap\<T\> 不适用：Box\<.i32\> 的实例成员
+        // 符号宿主即 Box）。归一化须在剥实参之前：cell 隐藏子类的
+        // ExtendsType 投影为特权拼写 .cell<.i32>，先剥会使别名表失配
         private static bool HostMatches(string chainNodeType, string ownerRef)
         {
-            return NormalizeTypeRef(StripTypeArguments(chainNodeType))
-                == NormalizeTypeRef(StripTypeArguments(ownerRef));
+            return StripTypeArguments(NormalizeTypeRef(chainNodeType))
+                == StripTypeArguments(NormalizeTypeRef(ownerRef));
         }
 
         // 沿 extends 链解析「宿主在 owner 定义处的构造形态」（成员签名

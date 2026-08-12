@@ -59,12 +59,17 @@ namespace LatteCompiler
             return type == null ? ".void" : Print(type);
         }
 
-        // 字段 / 全局变量 / 全局常量（§5.2）：命名空间::[类名...]#[.static.]名称@字段类型
+        // 字段 / 全局变量 / 全局常量（§5.2）：命名空间::[类名...]#[.static.]名称@字段类型。
+        // cell 化的静态/全局字段（统一 cell 存储，SYNTAX §14.3）：存储类型为
+        // cell 隐藏子类（值类型仍在符号 FieldType 上，语义层类型不变）
         public static string PrintField(FieldSymbol field)
         {
             var prefix = OwnerPrefix(field.Owner, field.Namespace);
             var staticMark = field.IsStatic ? ".static." : "";
-            return $"{prefix}#{staticMark}{field.Name}@{PrintTypeReference(field.FieldType)}";
+            var fieldType = field.CellStorage is { } storage
+                ? PrintType(storage.CellType)
+                : PrintTypeReference(field.FieldType);
+            return $"{prefix}#{staticMark}{field.Name}@{fieldType}";
         }
 
         // 方法（§5.2）：普通/init 走 $名 形态；operator 用 $$；getter/setter

@@ -11,10 +11,12 @@ namespace LatteCompiler
     // ——lambda 值就是普通对象，BIL 无 lambda 特例（new + invoke.indirect）。
     //
     // 捕获规则（§5.2）：除 this 与 lambda 自身参数外一律 Cell 化——
-    // var 捕获 → Cell\<T\>（getValue/setValue）、const 捕获 → ReadonlyCell\<T\>
-    //（仅 getValue）；this 捕获是普通字段。被捕获的局部/参数符号置
-    // CaptureCell 标记（P4a 据此把外层函数内的存储替换为 cell）并清洗
-    // 外层流态的收窄事实（被捕获变量退出 smart cast，§3.5）。
+    // var 捕获 → Cell\<T\> 子类、const 捕获 → ReadonlyCell\<T\> 子类
+    //（统一 cell 存储：逐变量隐藏子类，CellClassFactory 合成）；this
+    // 捕获是普通字段。被捕获的局部/参数符号置 CellStorage 标记（P4a 据此
+    // 把外层函数内的存储替换为 cell）并清洗外层流态的收窄事实（被捕获
+    // 变量退出 smart cast，§3.5）。已被 wrapper cell 化的变量直接按
+    // 引用捕获该 cell（不套第二层 cell）
     //
     // 泛型上下文：外层方法/外层声明类型链的泛型参数以**同一符号对象**
     // 挂进隐藏类 GenericParameters（GenericParameterSymbol 无宿主回指，
@@ -192,14 +194,14 @@ namespace LatteCompiler
             }
 
             // ===== 8. 捕获落定：闭包字段 + init + init 体 =====
-            var captures = BuildCaptures(lambda, lambdaCtx, hiddenClass, env);
+            var captures = BuildCaptures(lambda, lambdaCtx, ctx, hiddenClass, env);
             var (init, initBody) = SynthesizeInit(lambda, hiddenClass, captures);
             hiddenClass.LambdaClosure = new LambdaClosureInfo(hiddenClass, init, call, captures,
                 valueBlock);
 
             // 被捕获变量退出 smart cast（§5.2/§3.5）：清洗**外层**流态中这些根的
             // 既有收窄事实（本 lambda 之前的收窄在捕获点即时失效）；之后的收窄
-            // 由 FlowState.SetNarrow/ApplyNarrow 按 CaptureCell 标记拦截
+            // 由 FlowState.SetNarrow/ApplyNarrow 按 CellStorage 标记拦截
             foreach (var captured in lambdaCtx.CapturedSymbols)
             {
                 ctx.Flow.ClearRoot(captured);
@@ -223,19 +225,17 @@ namespace LatteCompiler
         private static IEnumerable<GenericParameterSymbol> InScopeGenericParameters(
             BindContext ctx)
         {
-            for (var t = ctx.Frame.DeclaringType; t != null; t = t.DeclaringType)
-            {
-                foreach (var parameter in t.GenericParameters) yield return parameter;
-            }
-            foreach (var parameter in ctx.Frame.Method.GenericParameters) yield return parameter;
+            return CellClassFactory.InScopeGenericParameters(ctx);
         }
 
         // 捕获集 → 闭包字段序列（排序确定：this 先行，其余按符号名 Ordinal 序）：
-        // this → 普通字段（外层有效 this 类型）；const 局部 → ReadonlyCell；
-        // 可变局部/参数 → Cell。同时回写符号 CaptureCell 标记并清洗外层收窄事实
+        // this → 普通字段（外层有效 this 类型）；其余符号经 CellClassFactory
+        // 统一 cell 化（幂等——已 cell 化的符号直接复用既有 cell 存储，不套
+        // 第二层 cell），捕获字段类型 = 该符号的 cell 隐藏子类。同时回写符号
+        // CellStorage 标记并清洗外层收窄事实
         private static IReadOnlyList<LambdaCaptureEntry> BuildCaptures(
-            LambdaExpressionASTNode lambda, BindContext lambdaCtx, TypeSymbol hiddenClass,
-            BindEnvironment env)
+            LambdaExpressionASTNode lambda, BindContext lambdaCtx, BindContext outerCtx,
+            TypeSymbol hiddenClass, BindEnvironment env)
         {
             var ordered = lambdaCtx.CapturedSymbols
                 .OrderBy(symbol => symbol is ThisSymbol ? 0 : 1)
@@ -256,27 +256,27 @@ namespace LatteCompiler
                         }
                     case LocalSymbol local:
                         {
-                            var readOnly = local.IsConst;
-                            var cellType = CallableModel.ConstructCell(env.Unit, local.Type!,
-                                readOnly) ?? env.Unit.Symbols.ErrorType;
-                            local.CaptureCell = readOnly
-                                ? CaptureCellKind.ReadonlyCell : CaptureCellKind.Cell;
+                            // cell 化语义归外层函数上下文（隐藏子类与外层同
+                            // 命名空间、共享外层泛型上下文）
+                            var storage = CellClassFactory.EnsureCellStorage(local, lambda,
+                                outerCtx, env);
                             var field = new FieldSymbol(".capture." + local.Name,
-                                owner: hiddenClass, fieldType: cellType);
+                                owner: hiddenClass,
+                                fieldType: storage?.CellType ?? env.Unit.Symbols.ErrorType);
                             hiddenClass.Fields.Add(field);
                             captures.Add(new LambdaCaptureEntry(symbol, field,
-                                isThis: false, isReadOnly: readOnly));
+                                isThis: false, isReadOnly: storage?.IsReadOnly ?? local.IsConst));
                             break;
                         }
                     case ParameterSymbol parameter:
                         {
-                            // 参数无 const 概念（可写），恒 Cell；lambda 自身参数
-                            // 已在传递捕获时排除，不会到达此处
-                            var cellType = CallableModel.ConstructCell(env.Unit, parameter.Type!,
-                                readOnly: false) ?? env.Unit.Symbols.ErrorType;
-                            parameter.CaptureCell = CaptureCellKind.Cell;
+                            // 参数无 const 概念（可写），恒 Cell 风味；lambda
+                            // 自身参数已在传递捕获时排除，不会到达此处
+                            var storage = CellClassFactory.EnsureCellStorage(parameter, lambda,
+                                outerCtx, env);
                             var field = new FieldSymbol(".capture." + parameter.Name,
-                                owner: hiddenClass, fieldType: cellType);
+                                owner: hiddenClass,
+                                fieldType: storage?.CellType ?? env.Unit.Symbols.ErrorType);
                             hiddenClass.Fields.Add(field);
                             captures.Add(new LambdaCaptureEntry(symbol, field,
                                 isThis: false, isReadOnly: false));

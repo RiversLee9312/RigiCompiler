@@ -3,11 +3,11 @@ using System.Linq;
 
 namespace LatteCompiler
 {
-    // 闭包存储计划（SYNTAX §5.2，P4a）：一个函数体内「符号 → 存储形态」的
-    // 判定表。三种形态：
+    // cell 存储计划（统一 cell 存储，SYNTAX §5.2 捕获 / §14.3 wrapper 值，
+    // P4a）：一个函数体内「符号 → 存储形态」的判定表。三种形态：
     // - 默认（无条目）：普通局部/参数，BIL 变量直存；
-    // - CellLocal：本函数的被捕获局部/参数——存储是函数级 cell 变量
-    //   （局部 = 原名 var，.vars 类型为 .cell<T>/.readonly_cell<T>；参数 =
+    // - CellLocal：本函数的 cell 化局部/参数——存储是函数级 cell 变量
+    //   （局部 = 原名 var，.vars 类型为逐变量合成的隐藏子类；参数 =
     //   .c.<名> 合成局部，prologue 在函数入口用实参构造）；读 = getValue
     //   调用，写 = setValue 调用；
     // - ClosureField：lambda $$call 体内的外层捕获符号——cell 在隐藏类
@@ -15,7 +15,7 @@ namespace LatteCompiler
     //   get.field + setValue，cell 对象引用 = get.field（this 捕获例外：
     //   普通字段，无 cell 包装）。
     // 读写改写全部复用现有 Lowered 节点（实例调用/字段访问/new），
-    // BIL 无闭包特例指令。
+    // BIL 无闭包/cell 特例指令。
     internal sealed class ClosureStoragePlan
     {
         private sealed class Entry
@@ -51,13 +51,10 @@ namespace LatteCompiler
             cellSetValue = CallableModel.FindCellSetValue(unit);
             readonlyCellGetValue = CallableModel.FindCellGetValue(unit, readOnly: true);
             available = cellGetValue != null && cellSetValue != null
-                && readonlyCellGetValue != null
-                && CallableModel.FindCellInit(unit, readOnly: false, valueInit: true) != null
-                && CallableModel.FindCellInit(unit, readOnly: false, valueInit: false) != null
-                && CallableModel.FindCellInit(unit, readOnly: true, valueInit: true) != null;
+                && readonlyCellGetValue != null;
         }
 
-        // 构建判定表：lambda $$call 体先登 closure 条目；再登本函数被捕获的
+        // 构建判定表：lambda $$call 体先登 closure 条目；再登本函数被 cell 化的
         // 局部与参数（参数产生 .c.<名> synth 局部与 prologue 构造语句）
         public static ClosureStoragePlan Build(BoundFunctionBody body, LowerContext ctx,
             LowerEnvironment env)
@@ -82,40 +79,34 @@ namespace LatteCompiler
             }
             foreach (var local in body.Locals)
             {
-                if (local.CaptureCell == CaptureCellKind.None) continue;
-                var readOnly = local.CaptureCell == CaptureCellKind.ReadonlyCell;
+                if (local.CellStorage is not { } storage) continue;
                 plan.entries[local] = new Entry
                 {
                     Symbol = local,
-                    IsReadOnly = readOnly,
-                    CellType = CallableModel.ConstructCell(env.Unit, local.Type!, readOnly)
-                        ?? env.Unit.Symbols.ErrorType,
+                    IsReadOnly = storage.IsReadOnly,
+                    CellType = storage.CellType,
                 };
             }
             foreach (var parameter in body.Method.Parameters)
             {
-                if (parameter.CaptureCell == CaptureCellKind.None) continue;
-                var readOnly = parameter.CaptureCell == CaptureCellKind.ReadonlyCell;
-                var cellType = CallableModel.ConstructCell(env.Unit, parameter.Type!, readOnly)
-                    ?? env.Unit.Symbols.ErrorType;
-                var cellLocal = ctx.Synth.NewCaptureCellLocal(parameter.Name, cellType);
+                if (parameter.CellStorage is not { } storage) continue;
+                var cellLocal = ctx.Synth.NewCaptureCellLocal(parameter.Name, storage.CellType);
                 plan.entries[parameter] = new Entry
                 {
                     Symbol = parameter,
-                    IsReadOnly = readOnly,
-                    CellType = cellType,
+                    IsReadOnly = storage.IsReadOnly,
+                    CellType = storage.CellType,
                     ParamCellLocal = cellLocal,
                 };
-                // prologue：.c.<名> = new Cell<T>(<实参>)（实参引用直造——
+                // prologue：.c.<名> = new ..cell..UUID(<实参>)（实参引用直造——
                 // 不经值引用降级，避免被本计划的 CellLocal 条目递归拦截）
-                var init = CallableModel.FindCellInit(env.Unit, readOnly, valueInit: true);
                 plan.prologue.Add(new LoweredLocalDeclarationStatement(body.Body, cellLocal,
-                    new LoweredNewExpression(body.Body, init,
+                    new LoweredNewExpression(body.Body, storage.ValueInit,
                         new List<LoweredExpression>
                         {
                             new LoweredValueReferenceExpression(body.Body, parameter)
                         },
-                        cellType)));
+                        storage.CellType)));
             }
             return plan;
         }
@@ -228,7 +219,7 @@ namespace LatteCompiler
 
         // cell 对象引用：ClosureField = this 字段访问；CellLocal = cell 变量
         //（参数 = .c.<名> synth 局部；局部 = 局部符号本身——.vars 条目类型
-        //  在发射侧按 CaptureCell 标记投影为 .cell<T>/.readonly_cell<T>）
+        //  在发射侧按 CellStorage 投影为隐藏子类）
         private LoweredExpression CellObjectExpression(BoundNode origin, Entry entry)
         {
             if (entry.Capture is { } capture)

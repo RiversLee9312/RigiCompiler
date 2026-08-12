@@ -28,8 +28,13 @@ namespace LatteCompiler.Tests
         private static readonly Regex LambdaUuidPattern = new Regex(
             @"\.\.lambda\.\.[0-9a-fA-F]{32}", RegexOptions.Compiled);
 
+        // cell 隐藏子类名 UUID 归一化（统一 cell 存储：逐变量合成，Guid "N"）
+        private static readonly Regex CellUuidPattern = new Regex(
+            @"\.\.cell\.\.[0-9a-fA-F]{32}", RegexOptions.Compiled);
+
         public static string NormalizeLambdaUuids(string text) =>
-            LambdaUuidPattern.Replace(text, "..lambda..UUID");
+            CellUuidPattern.Replace(
+                LambdaUuidPattern.Replace(text, "..lambda..UUID"), "..cell..UUID");
 
         // ===== 中端全管线驱动（自 BilEmitterTests 提升共享）=====
         // stdlib（在前）+ 用户源组 CompilationUnit → P1 → P2 → P3 → P4a

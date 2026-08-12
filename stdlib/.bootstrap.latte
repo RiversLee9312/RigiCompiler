@@ -552,26 +552,17 @@ pub shared abstract class AsyncAction\<T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T
     pub abstract async operator call(arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6, arg7: T7, arg8: T8, arg9: T9, arg10: T10, arg11: T11, arg12: T12, arg13: T13, arg14: T14, arg15: T15, arg16: T16, arg17: T17, arg18: T18, arg19: T19, arg20: T20, arg21: T21, arg22: T22, arg23: T23, arg24: T24, arg25: T25, arg26: T26, arg27: T27, arg28: T28, arg29: T29, arg30: T30, arg31: T31)
 }
 
-// 捕获单元：lambda 捕获的外层变量经 Cell 传入（§5.2）。
-// var 捕获 → Cell\<T\>；const 捕获 → ReadonlyCell\<T\>；this 不套 Cell。
-pub class Cell\<T> {
-    var value: T
-    // 无参 init：未初始化 var 被捕获时的空 cell 构造点（源级 DA 保证
-    // 空值不可观测——读必先经赋值，BIL 层 cell 先空构造）
-    pub init() { }
-    pub init(_ -> value)
-    pub func getValue(): T {
-        return value
-    }
-    pub func setValue(v: T) {
-        value = v
-    }
+// 捕获单元：lambda 捕获的外层变量与被 wrapper 修饰的值统一经 Cell 盛装
+//（§5.2/§14.3）。var → Cell\<T\>；const → ReadonlyCell\<T\>；this 不套 Cell。
+// 基类恒为抽象——不定义 value 存储；每个 cell 化变量由编译器逐变量合成
+// 隐藏子类（..cell..UUID），子类自行声明 pub value 字段（wrapper 应用经
+// 该字段的 wrapped(W) 标记承载）并 override getValue/setValue，Middleware
+// 据「继承 Cell 族 + 字段 wrapper 标记」识别烘焙与优化对象。
+pub abstract class Cell\<T> {
+    pub abstract func getValue(): T
+    pub abstract func setValue(v: T)
 }
 
-pub class ReadonlyCell\<T> {
-    const value: T
-    pub init(_ -> value)
-    pub func getValue(): T {
-        return value
-    }
+pub abstract class ReadonlyCell\<T> {
+    pub abstract func getValue(): T
 }

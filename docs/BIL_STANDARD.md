@@ -253,6 +253,7 @@ A-Z a-z 0-9 _ -
 - 普通用户标识符不得以 `.` 开头；
 - 以 `.` 开头的参数名和局部名由编译器保留，例如 `.this`、`.return`、`.generic.T`、`.vargs.args` 和 `.kwargs.args`。
 - 以 `.` 前缀段保留的成员名还包括：`.proxy.`（wrapper 类型内的 proxy 模板成员名，见 §8.4 `wrapper-proxy`）；方法名 `call???` 是 `core::Any` 的内建方法名（`?` 非标识符字符，用户源码不可声明，见 §15.5 / §22.5）。wrapper 隐藏存储的命名约定见 §5.3——该符号**不**出现于 BIL 文本（存储合成归 Middleware）。
+- 编译器合成的隐藏类型名以 `..` 前缀保留：`..lambda..UUID`（lambda 隐藏类，见 `SYNTAX.md` §5.2）与 `..cell..UUID`（统一 cell 存储的隐藏子类，见 `SYNTAX.md` §5.2 / §14.3）；用户源码不可声明同名类型。
 
 `Resources` 和 block 可以继续使用 `R_Message`、`entry` 等本地名称；该规则不适用于类型、字段、方法和运算符等语言符号。
 
@@ -393,9 +394,10 @@ invoke.noret fn(core::Console$.static.println(value:.string)@.void) [$value]
 - `.map<K,V>` 对应标准运行时 Map；
 - `.pair<A,B>` 对应标准 Pair；
 - `.nullable<T>` 对应 `Nullable\<T>`；
-- `.cell<T>` 对应标准库 `core::Cell\<T>`（`getValue`/`setValue`）的特权拼写，与 `.array<T>`、`.nullable<T>` 同类；
-- `.readonly_cell<T>` 对应标准库 `core::ReadonlyCell\<T>`（仅 `getValue`）的特权拼写；
-- `.cell` / `.readonly_cell` 的 `T` 递归按类型构造规则解析；用途为闭包捕获与需要共享可变槽位的场景；读写经普通 `invoke` 调用 `getValue`/`setValue`，无专用指令；
+- `.cell<T>` 对应标准库 `core::Cell\<T>`（抽象基类，抽象 `getValue`/`setValue`）的特权拼写，与 `.array<T>`、`.nullable<T>` 同类；
+- `.readonly_cell<T>` 对应标准库 `core::ReadonlyCell\<T>`（抽象基类，仅抽象 `getValue`）的特权拼写；
+- `.cell` / `.readonly_cell` 的 `T` 递归按类型构造规则解析；用途为闭包捕获与 wrapper 值统一 cell 存储（`SYNTAX.md` §5.2 / §14.3）；**基类抽象化后 BIL 中不再被直接 `new`**——实际 cell 对象恒为 `..cell..UUID` 隐藏子类实例（`.type` 声明 `extends .cell<T>` / `.readonly_cell<T>`）；读写经普通 `invoke` 虚派发 `getValue`/`setValue`，无专用指令；
+- 特权拼写的定位 = Middleware 激进优化识别点（消除 cell 间接/直读槽位等）；验证规则不变——即使不做特判、按普通类烘焙也可正确工作；
 - 共享安全性为 passthrough：`.cell<T>` / `.readonly_cell<T>` 的共享安全性等同于 `T`（与 Box 同例，需特殊判定，不按普通 class 闭包表）；
 - `.typeid<TBound>` 是 BIL 中具类型边界的运行时类型句柄，对应源码 `Type\<TBound>` 的语义；
 - 未写边界的 `.typeid` 等价于 `.typeid<.any>`；
@@ -662,8 +664,8 @@ BIL 的 `get.field` / `set.field` 始终引用逻辑字段 canonical symbol，�
 
 - `WRAPPER_TYPE_REF` 必须是 wrapper 类型引用；
 - 同一声明上可出现多个 `wrapped(...)`，顺序即 outer→inner；
-- 应用 init 实参的 BIL 承载形态留白（与局部/静态存储合成同批归后续）；
-- 局部变量上的 wrapper 应用标记形态见 §9.3 注记（同批留白）。
+- 应用 init 实参的 BIL 承载形态留白（既有留白不变）；
+- 局部变量上的 wrapper 应用标记由 cell 隐藏子类的 `value` 字段 `wrapped(W)` 承载（`.vars` 无新语法；见 §9.3 注记与 `SYNTAX.md` §14.3 统一 cell 存储）；静态/全局字段的 BIL 声明类型投影为 cell 子类、不再在字段槽投 `wrapped(W)`（避免双份隐藏存储；wrapper 标记挂在子类 `value` 字段上）。
 
 普通 backing 字段（`backing` / `compiler-generated` 等）与本标记无关，按 §8.3 字段修饰符表照常使用。
 
@@ -846,7 +848,7 @@ fn(com.example::Owner$method(value:.i32)@.void) {
 - `.breakid` 只能由 `loop`、`loop.rev` 或 `switch` 绑定；
 - `.breakid` 不得由 `load`、`set.var`、参数传入、字段写入、数组写入或普通方法返回产生。
 
-> **注记**：局部变量上的 wrapper 应用标记（源码 `@W(...)` 注解于局部声明）的 BIL 承载形态留白，与 §8.3.1 应用 init 实参、静态/局部存储合成同批归后续。
+> **注记**：局部变量上的 wrapper 应用标记（源码 `@W(...)` 注解于局部声明）由 cell 隐藏子类的 `value` 字段 `wrapped(W)` 承载（`.vars` 无新语法；统一 cell 存储见 `SYNTAX.md` §5.2 / §14.3 与 §8.3.1）。应用 init 实参的 BIL 承载形态仍按 §8.3.1 留白。
 
 ### 9.4 block
 

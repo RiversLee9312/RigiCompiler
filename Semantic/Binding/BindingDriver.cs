@@ -36,6 +36,11 @@ namespace LatteCompiler
             // 阶段 1.5（S11，SYNTAX §12.1）：enum case init 模板绑定
             // （声明点作用域，先于一切函数体绑定）
             BindEnumCaseTemplates();
+            // 阶段 1.6（统一 cell 存储，SYNTAX §14.3）：静态/全局字段的
+            // wrapper cell 化——逐字段合成 cell 隐藏子类（实例字段不在此列：
+            // 其 wrapper 存储是宿主隐藏存储，M88；cell 的构造时机归
+            // Middleware，frontend 只生成与标注）
+            SynthesizeFieldCellStorage();
             // 阶段 2：逐函数体绑定（含字段访问器体 + proxy 模板态，M88）
             WalkSkeleton((fn, symbol, fileCtx, owner) =>
             {
@@ -62,6 +67,12 @@ namespace LatteCompiler
             {
                 bodies.Add(lambda.InitBody);
                 bodies.Add(lambda.CallBody);
+            }
+            // cell 隐藏子类方法体（统一 cell 存储，SYNTAX §5.2/§14.3）：
+            // init/getValue/setValue 合成体，随函数体列表走统一 P4 管线
+            foreach (var cellBody in env.SyntheticCellBodies)
+            {
+                bodies.Add(cellBody);
             }
             return bodies;
         }
@@ -230,6 +241,57 @@ namespace LatteCompiler
                 }
             }
             bodies.Add(new BoundFunctionBody(symbol, ctx.Locals.ToList(), body));
+        }
+
+        // ===== 阶段 1.6：静态/全局字段 wrapper cell 化（统一 cell 存储）=====
+
+        // 遍历编译单元全部字段声明（含嵌套类型内的），被 wrapper 修饰的
+        // 静态/全局字段逐字段 cell 化——cell 隐藏子类自持 pub value 字段
+        // （wrapped(W) 标记的 BIL 载体），字段读写经 getValue/setValue
+        private void SynthesizeFieldCellStorage()
+        {
+            foreach (var file in env.Unit.SourceFiles)
+            {
+                var fileCtx = env.Declarations.FileContextOf(file);
+                foreach (var decl in file.Declarations)
+                {
+                    WalkFieldDeclarations(decl, fileCtx);
+                }
+            }
+        }
+
+        private void WalkFieldDeclarations(ASTNode node, FileContext fileCtx)
+        {
+            switch (node)
+            {
+                case VariableDeclarationASTNode variable:
+                    if (env.Declarations.SymbolOf(variable) is not FieldSymbol field)
+                    {
+                        throw new CompilerInternalException("P1 未登记字段符号: " + variable.Name);
+                    }
+                    // 实例字段的 wrapper 存储 = 宿主隐藏存储（M88），不走 cell
+                    if (field.AppliedWrappers.Count == 0
+                        || (!field.IsStatic && field.Owner != null))
+                    {
+                        return;
+                    }
+                    if (field.FieldType == null)
+                    {
+                        env.Error(variable.Span, "P3: wrapper-decorated static/global field " +
+                            $"'{field.Name}' requires a type annotation");
+                        return;
+                    }
+                    CellClassFactory.EnsureCellStorage(field, variable, fileCtx.Namespace, env);
+                    return;
+                case ClassDeclarationASTNode or StructDeclarationASTNode
+                    or InterfaceDeclarationASTNode or EnumStructDeclarationASTNode
+                    or WrapperDeclarationASTNode:
+                    foreach (var member in MembersOf(node))
+                    {
+                        WalkFieldDeclarations(member, fileCtx);
+                    }
+                    return;
+            }
         }
 
         // ===== init 参数映射赋值合成（SYNTAX §9.3）=====

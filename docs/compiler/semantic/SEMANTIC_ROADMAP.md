@@ -733,7 +733,8 @@ enum case（`new.case`、`is .Case` 判别比较、判别值分配）、
 >   **M91 已部分消解**：字段-Value 方法调用/索引读经 `get.wrapper.field`
 >   值拷贝；字段应用寻址复用 `field(HOST_FIELD),wrapper(W)`；深层纯字段
 >   写穿由 P4a 展开为正向 get + 叶写 + 按值类型边界反向 set，不新增
->   专用 opcode。索引写与局部/静态存储继续显式归口）
+>   专用 opcode。**M104 已解局部与静态 wrapper place 存储**（统一 cell
+>   存储）；索引写与深层写穿剩余形态继续显式归口）
 > - **S11d（P4b 合成 fn 发射，烘焙端到端）**：Bil 模型增补
 >   `wrapper-proxy(PROXY_KIND)` 修饰符（PROXY_KIND 取值定稿
 >   BIL §8.4）；特化 fn / 原始体 fn / 转发壳平铺发射；
@@ -795,8 +796,10 @@ enum case（`new.case`、`is .Case` 判别比较、判别值分配）、
 >   #27⑦**：Bound/Lowered 显式携带可变泛型包，P4b 按声明序前置
 >   `.generic.<Pack>` 到 `invoke fn(..inner)` 值实参列表；可变成员参与 proxy
 >   匹配，解包与烘焙仍归 Middleware。**M91 已收口 M84 两项**：
->   字段-Value 调用/索引读与深层纯字段写穿落地；局部/静态存储按
->   用户裁决等待 `.args/.vars` 应用标记 + init 实参 ABI，保持 P4 诊断。
+>   字段-Value 调用/索引读与深层纯字段写穿落地。**M104 已解
+>   局部与静态 wrapper place 存储**（统一 cell 存储：抽象基类 +
+>   逐变量 `..cell..UUID` 隐藏子类 + value 字段 `wrapped(W)`；
+>   init 实参 ABI 仍留白）。索引写与深层写穿剩余形态保持归口。
 >   **M92 已收口 #28①**：降级调用的显式泛型实参进入 symbol `<...>` 段；
 >   #28② 按既定规范维持错误行为。
 >
@@ -871,6 +874,8 @@ spawn 仍归 ⑥）。stdlib 保持源码类型面，Coroutine/frame/fence 采�
 `ClosureStoragePlan` + `CallableModel`；值块体降级；验证器 §15.3 沿 extends 查 $$call
 + 宿主泛型签名代入。归口：循环/catch/finally(e)/using 变量捕获、`(act)()` 括号 void
 间接调用。分项：Binder 893、Lowerer 211、BilEmitter 572、BilVerifier 151。
+**M104**：捕获 cell 化已切换为抽象基类 + 逐变量隐藏子类形态（与 §14.3 wrapper
+值存储统一为 cell 存储；见 PROGRESS_REPORT M104）。
 
 ## S14 BIL VM
 

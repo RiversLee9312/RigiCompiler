@@ -11,7 +11,11 @@ namespace LatteCompiler
     //   field(HOST_FIELD)+wrapper(W) 相邻对）；方法调用/索引读 =
     //   get.wrapper.field 值拷贝后复用普通 invoke/get.array；索引写显式拒绝；
     // - 嵌套 wrapper 链：逐层 Materialize 值拷贝后继续普通 get.field；
-    // - 局部/静态：统一归口（栈帧/静态存储合成归 Middleware）；
+    // - 局部/静态（统一 cell 存储，SYNTAX §14.3）：place 根是被 wrapper
+    //   修饰的局部/静态/全局字段时，存储是逐变量合成的 cell 隐藏子类——
+    //   宿主 = cell 对象引用，链 = field(value)+wrapper(W) 相邻对（子类
+    //   value 字段的 wrapped(W) 标记与源符号应用同实例，验证器按字段
+    //   应用对消歧）；读 = get.wrapper.field 值拷贝，写 = set.wrapper.field；
     // - 深层纯字段写穿 place.a.b... = rhs：P4a 多 get/set（正向 get +
     //   叶写 + 反向 set；值类型中间写回；引用中间停止；最外层必要
     //   写回复用 set.wrapper.field；普通值中间反向写回发 set.field）。
@@ -44,9 +48,23 @@ namespace LatteCompiler
         {
             if (IsLocalOrStaticApplication(place))
             {
-                env.Error(place.Syntax.Span,
-                    "P4: local/static wrapper place storage is not supported yet (S11)");
-                return null;
+                // 统一 cell 存储：局部/静态的 wrapper place = cell 子类
+                // value 字段上的字段-Value 应用——get.wrapper.field 值拷贝
+                //（宿主 = cell 对象引用；HOST_FIELD = 子类 value 字段）
+                var storage = CellStorageOf(place);
+                var cellObject = sharedHost ?? TryCellObjectOf(place, env);
+                if (storage == null || cellObject == null)
+                {
+                    env.Error(place.Syntax.Span,
+                        "P4: wrapper place cell storage is missing (P3 synthesis skipped)");
+                    return null;
+                }
+                var cellLocal = ctx.Synth.NewSynthLocal(place.Wrapper);
+                ctx.Output.Add(new LoweredAssignmentStatement(place,
+                    SynthLocalFactory.ReferenceTo(place, cellLocal),
+                    new LoweredGetFieldWrapperExpression(place, cellObject,
+                        storage.ValueField, place.Wrapper)));
+                return SynthLocalFactory.ReferenceTo(place, cellLocal);
             }
             if (IsFieldApplication(place))
             {
@@ -95,20 +113,29 @@ namespace LatteCompiler
 
         // ===== set.wrapper.field 写 place 构造（仅写侧）=====
         // PlaceChain 最外层→最内层：Entity 应用只加 W；字段-Value 应用加
-        // HOST_FIELD 再加 W（相邻对，同 owner 多字段同 W 可区分）
+        // HOST_FIELD 再加 W（相邻对，同 owner 多字段同 W 可区分）；局部/
+        // 静态应用为 cell 根——加 cell 子类 value 字段再加 W，宿主 = cell
+        // 对象引用（不再向下展开）
         public static LoweredWrapperFieldExpression? BuildWrapperFieldPlace(BoundNode origin,
             BoundWrapperAccessExpression place, FieldSymbol targetField,
             LoweredExpression? sharedHost, LowerContext ctx, LowerEnvironment env)
         {
             var places = new List<BoundWrapperAccessExpression>();
             BoundWrapperAccessExpression current = place;
+            BoundWrapperAccessExpression? cellRoot = null;
             while (true)
             {
                 if (IsLocalOrStaticApplication(current))
                 {
-                    env.Error(current.Syntax.Span,
-                        "P4: local/static wrapper place storage is not supported yet (S11)");
-                    return null;
+                    if (CellStorageOf(current) == null)
+                    {
+                        env.Error(current.Syntax.Span,
+                            "P4: wrapper place cell storage is missing (P3 synthesis skipped)");
+                        return null;
+                    }
+                    places.Add(current);
+                    cellRoot = current;
+                    break;
                 }
                 places.Add(current);
                 var host = HostOf(current);
@@ -127,13 +154,91 @@ namespace LatteCompiler
                 {
                     chain.Add(((BoundFieldAccessExpression)p.Receiver).Field);
                 }
+                else if (IsLocalOrStaticApplication(p))
+                {
+                    // cell 根的字段-Value 应用对：field(value)+wrapper(W)
+                    chain.Add(CellStorageOf(p)!.ValueField);
+                }
                 chain.Add(p.Wrapper);
             }
-            var hostExpr = sharedHost ?? LowerExpressionDispatcher.Visit(
-                UltimateHostExpression(place), ctx, env);
+            LoweredExpression? hostExpr;
+            if (cellRoot != null)
+            {
+                hostExpr = sharedHost ?? TryCellObjectOf(cellRoot, env);
+            }
+            else
+            {
+                hostExpr = sharedHost ?? LowerExpressionDispatcher.Visit(
+                    UltimateHostExpression(place), ctx, env);
+            }
             if (hostExpr == null) return null;
             return new LoweredWrapperFieldExpression(origin, hostExpr, chain, targetField,
                 targetField.FieldType!);
+        }
+
+        // ===== 局部/静态 cell 根设施（统一 cell 存储）=====
+        // place 接收者符号的 cell 存储（局部/静态/全局字段；无 = 未 cell 化）
+        private static CellStorageInfo? CellStorageOf(BoundWrapperAccessExpression place)
+        {
+            return place.Receiver switch
+            {
+                BoundValueReferenceExpression { Symbol: LocalSymbol local } =>
+                    local.CellStorage,
+                BoundFieldReferenceExpression fieldReference =>
+                    fieldReference.Field.CellStorage,
+                _ => null,
+            };
+        }
+
+        // cell 对象引用：局部 = cell 变量直引（零指令）；静态/全局 =
+        // get.field.static 取 cell。storage 缺失（毒化/stdlib 缺席）返回 null
+        private static LoweredExpression? TryCellObjectOf(BoundWrapperAccessExpression place,
+            LowerEnvironment env)
+        {
+            switch (place.Receiver)
+            {
+                case BoundValueReferenceExpression
+                    { Symbol: LocalSymbol { CellStorage: { } storage } local }:
+                    return new LoweredCellReferenceExpression(place, local, storage.CellType);
+                case BoundFieldReferenceExpression
+                    { Field.CellStorage: { } storage } fieldReference:
+                    return CellStorageLowering.CellObjectOf(place, fieldReference.Field, storage);
+                default:
+                    return null;
+            }
+        }
+
+        // 写路径终极宿主物化（复合赋值/深写的宿主单次求值共享入口）：
+        // cell 根返回 cell 对象引用（变量/静态字段直读，零副作用，无需
+        // 共享物化）；其余 = Visit + MaterializeSharedWriteHost 共享
+        public static LoweredExpression? LowerUltimateHostForWrite(
+            BoundWrapperAccessExpression place, LowerContext ctx, LowerEnvironment env)
+        {
+            BoundWrapperAccessExpression current = place;
+            while (true)
+            {
+                if (IsLocalOrStaticApplication(current))
+                {
+                    var cellObject = TryCellObjectOf(current, env);
+                    if (cellObject == null)
+                    {
+                        env.Error(current.Syntax.Span,
+                            "P4: wrapper place cell storage is missing (P3 synthesis skipped)");
+                    }
+                    return cellObject;
+                }
+                var host = HostOf(current);
+                if (host is BoundWrapperAccessExpression nested)
+                {
+                    current = nested;
+                    continue;
+                }
+                var hostBound = UltimateHostExpression(place);
+                var hostValue = LowerExpressionDispatcher.Visit(hostBound, ctx, env);
+                return hostValue == null
+                    ? null
+                    : MaterializeSharedWriteHost(hostBound, hostValue, ctx);
+            }
         }
 
         private static BoundExpression HostOf(BoundWrapperAccessExpression place)
@@ -240,11 +345,10 @@ namespace LatteCompiler
             BoundWrapperAccessExpression place, List<BoundFieldAccessExpression> chain,
             BoundExpression rhsBound, LowerContext ctx, LowerEnvironment env)
         {
-            // 1. 终极宿主单次求值（共享写路径：字段宿主亦物化）
-            var hostBound = UltimateHostExpression(place);
-            var host = LowerExpressionDispatcher.Visit(hostBound, ctx, env);
+            // 1. 终极宿主单次求值（cell 根直取 cell 对象引用；其余共享
+            //    写路径：字段宿主亦物化）
+            var host = LowerUltimateHostForWrite(place, ctx, env);
             if (host == null) return null;
-            host = MaterializeSharedWriteHost(hostBound, host, ctx);
 
             // 2. 正向：首字段经 LowerFieldRead；其后逐字段 get 并物化局部
             var intermediates = new List<(LoweredExpression Local, FieldSymbol Field,
@@ -316,10 +420,8 @@ namespace LatteCompiler
             BoundCompoundAssignmentExpression compound, BoundWrapperAccessExpression place,
             List<BoundFieldAccessExpression> chain, LowerContext ctx, LowerEnvironment env)
         {
-            var hostBound = UltimateHostExpression(place);
-            var host = LowerExpressionDispatcher.Visit(hostBound, ctx, env);
+            var host = LowerUltimateHostForWrite(place, ctx, env);
             if (host == null) return null;
-            host = MaterializeSharedWriteHost(hostBound, host, ctx);
 
             var intermediates = new List<(LoweredExpression Local, FieldSymbol Field,
                 BoundFieldAccessExpression Access)>();

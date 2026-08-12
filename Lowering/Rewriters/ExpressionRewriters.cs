@@ -53,6 +53,8 @@ namespace LatteCompiler
         }
     }
 
+    // 静态/全局字段引用：统一 cell 存储（SYNTAX §14.3）命中时 cell 化
+    // 字段的值读取改写为 cell getValue 调用；未命中为普通字段引用
     internal sealed class FieldReferenceRewriter
         : LoweredVisitor<FieldReferenceRewriter, LoweredExpression, LowerContext>
     {
@@ -60,7 +62,8 @@ namespace LatteCompiler
             LowerEnvironment env)
         {
             var reference = (BoundFieldReferenceExpression)node;
-            return new LoweredFieldReferenceExpression(reference, reference.Field);
+            return CellStorageLowering.TryRewriteStaticRead(reference, env)
+                ?? new LoweredFieldReferenceExpression(reference, reference.Field);
         }
     }
 
@@ -351,6 +354,29 @@ namespace LatteCompiler
                 ctx.Output.Add(cellWrite);
                 return SynthLocalFactory.ReferenceTo(compound, cellResult);
             }
+            // 静态/全局 cell 化字段的复合赋值（统一 cell 存储，SYNTAX §14.3）
+            // ——读 = cell getValue、写 = cell setValue，与局部 cell 同构
+            if (compound.Target is BoundFieldReferenceExpression staticReference
+                && CellStorageLowering.TryRewriteStaticRead(staticReference, env)
+                    is { } staticCellRead)
+            {
+                var staticCompoundValue = LowerExpressionDispatcher.Visit(compound.Value, ctx, env);
+                if (staticCompoundValue == null) return null;
+                staticCompoundValue = LoweringFacility.EnsureDeclaredType(compound,
+                    staticCompoundValue, compound.Target.Type);
+                LoweredExpression staticBinary = new LoweredBinaryExpression(compound,
+                    compound.Op, staticCellRead, staticCompoundValue);
+                staticBinary = LoweringFacility.EnsureDeclaredType(compound, staticBinary,
+                    compound.Target.Type);
+                var staticResult = ctx.Synth.NewSynthLocal(compound.Target.Type);
+                ctx.Output.Add(new LoweredAssignmentStatement(compound,
+                    SynthLocalFactory.ReferenceTo(compound, staticResult), staticBinary));
+                var staticWrite = CellStorageLowering.TryRewriteStaticWrite(compound,
+                    compound.Target, SynthLocalFactory.ReferenceTo(compound, staticResult), env);
+                if (staticWrite == null) return null;
+                ctx.Output.Add(staticWrite);
+                return SynthLocalFactory.ReferenceTo(compound, staticResult);
+            }
             var target = LowerExpressionDispatcher.Visit(compound.Target, ctx, env);
             if (target == null) return null;
             target = MaterializeTarget(target, ctx);
@@ -385,10 +411,8 @@ namespace LatteCompiler
             LowerContext ctx, LowerEnvironment env)
         {
             var place = (BoundWrapperAccessExpression)placeAccess.Receiver;
-            var hostBound = WrapperPlaceLowering.UltimateHostExpression(place);
-            var host = LowerExpressionDispatcher.Visit(hostBound, ctx, env);
+            var host = WrapperPlaceLowering.LowerUltimateHostForWrite(place, ctx, env);
             if (host == null) return null;
-            host = WrapperPlaceLowering.MaterializeSharedWriteHost(hostBound, host, ctx);
             var read = WrapperPlaceLowering.LowerFieldRead(placeAccess, place, host, ctx, env);
             if (read == null) return null;
             var write = WrapperPlaceLowering.BuildWrapperFieldPlace(placeAccess, place,

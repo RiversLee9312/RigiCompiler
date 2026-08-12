@@ -279,10 +279,12 @@ namespace LatteCompiler.Tests
                 "ret\n");
         }
 
-        // ===== 归口负例 =====
+        // ===== 局部/静态 wrapper place 端到端正例 + 索引写归口负例 =====
         private static void TestWrapperPlaceEmissionGates()
         {
-            var (unit, _, _) = BilTestHarness.EmitBilUnit(
+            // 局部 wrapper：读 getValue 路径经 place = get.wrapper.field($x,value)+get.field；
+            // 写 = set.wrapper.field 链 field(value)→wrapper(W)→field(内层)
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
                 "@WrapperTarget(.Value)\n" +
                 "pub wrapper Clamped {\n" +
                 "    pub var min: i32\n" +
@@ -291,12 +293,38 @@ namespace LatteCompiler.Tests
                 "pub func f(): i32 {\n" +
                 "    @Clamped\n" +
                 "    var health: i32 = 50\n" +
+                "    health:Clamped.min = 10\n" +
                 "    return health:Clamped.min\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("局部 wrapper place 归口", unit.Diagnostics,
-                "local/static wrapper place storage is not supported yet");
+            CheckNoErrors("全管线无诊断（局部 wrapper place）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（局部 wrapper place）", module);
+            AssertCellSubclassDeclaration(module, "局部 wrapper place",
+                readOnly: false, elementType: ".i32");
+            TestHarness.CheckTrue("局部 cell value 字段带 wrapped(Clamped)",
+                module.LocalSymbols.OfType<BilTypeDeclaration>()
+                    .Where(t => t.Symbol.StartsWith("..cell.."))
+                    .SelectMany(t => t.Members.OfType<BilSimpleMemberDeclaration>())
+                    .Any(m => m.Symbol.Contains("#value@")
+                        && m.Modifiers.OfType<BilWrappedModifier>()
+                            .Any(w => w.WrapperTypeRef == "Clamped")));
+            BilTestHarness.CheckFnShape(
+                "局部 wrapper place 读写（new cell + set.wrapper.field + get.wrapper.field）",
+                module, "$f()@.i32",
+                ".vars { ..cell..UUID health, Clamped .s0, .i32 .t0, ..cell..UUID .t1, " +
+                ".i32 .t2, Clamped .t3, .i32 .t4 }\n" +
+                "load res(#0) $.t0\n" +
+                "new type(..cell..UUID) $.t1 [$.t0]\n" +
+                "set.var $.t1 $health\n" +
+                "load res(#1) $.t2\n" +
+                "set.wrapper.field $.t2 $health field(..cell..UUID#value@.i32) wrapper(Clamped) " +
+                "field(Clamped#min@.i32)\n" +
+                "get.wrapper.field $health field(..cell..UUID#value@.i32) type(Clamped) $.t3\n" +
+                "set.var $.t3 $.s0\n" +
+                "get.field $.s0 $.t4 field(Clamped#min@.i32)\n" +
+                "ret $.t4\n");
 
-            var (unit2, _, _) = BilTestHarness.EmitBilUnit(
+            // 静态字段 place：宿主 = get.field.static 取 cell
+            var (unit2, module2, _) = BilTestHarness.EmitBilUnit(
                 "@WrapperTarget(.Value)\n" +
                 "pub shared wrapper SClamp {\n" +
                 "    pub var min: i32\n" +
@@ -307,11 +335,34 @@ namespace LatteCompiler.Tests
                 "    pub static var counter: i32 = 0\n" +
                 "}\n" +
                 "pub func f(): i32 {\n" +
+                "    Holder.counter:SClamp.min = 5\n" +
                 "    return Holder.counter:SClamp.min\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("静态字段 wrapper place 归口", unit2.Diagnostics,
-                "local/static wrapper place storage is not supported yet");
+            CheckNoErrors("全管线无诊断（静态字段 wrapper place）", unit2);
+            BilTestHarness.CheckBilValid("验证器零错误（静态字段 wrapper place）", module2);
+            var holder = module2.LocalSymbols.OfType<BilTypeDeclaration>()
+                .Single(t => t.Symbol == "Holder");
+            var counter = holder.Members.OfType<BilSimpleMemberDeclaration>()
+                .Single(d => d.Symbol.Contains("#.static.counter@"));
+            TestHarness.CheckTrue("静态字段声明类型 = cell 子类（无 wrapped 在字段槽）",
+                counter.Symbol.Contains("@..cell..")
+                && !counter.Modifiers.OfType<BilWrappedModifier>().Any());
+            BilTestHarness.CheckFnShape(
+                "静态字段 place 读写（get.field.static 取 cell + wrapper.field）",
+                module2, "$f()@.i32",
+                ".vars { SClamp .s0, ..cell..UUID .t0, .i32 .t1, ..cell..UUID .t2, " +
+                "SClamp .t3, .i32 .t4 }\n" +
+                "get.field.static $.t0 type(Holder) field(Holder#.static.counter@..cell..UUID)\n" +
+                "load res(#0) $.t1\n" +
+                "set.wrapper.field $.t1 $.t0 field(..cell..UUID#value@.i32) wrapper(SClamp) " +
+                "field(SClamp#min@.i32)\n" +
+                "get.field.static $.t2 type(Holder) field(Holder#.static.counter@..cell..UUID)\n" +
+                "get.wrapper.field $.t2 field(..cell..UUID#value@.i32) type(SClamp) $.t3\n" +
+                "set.var $.t3 $.s0\n" +
+                "get.field $.s0 $.t4 field(SClamp#min@.i32)\n" +
+                "ret $.t4\n");
 
+            // 索引写归口负例（保留）
             var (unit4, _, _) = BilTestHarness.EmitBilUnit(
                 "@WrapperTarget(.Entity)\n" +
                 "pub wrapper Indexed {\n" +
@@ -327,6 +378,241 @@ namespace LatteCompiler.Tests
                 "}\n");
             TestHarness.CheckSemanticError("wrapper place 索引写归口", unit4.Diagnostics,
                 "writes through wrapper place member or index chains");
+        }
+
+        // ===== 局部/静态 cell 存储扩展覆盖 =====
+        private static void TestWrapperCellStorageCoverage()
+        {
+            // wrapped const 局部 → ReadonlyCell
+            var (unitConst, moduleConst, _) = BilTestHarness.EmitBilUnit(
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper Clamped {\n" +
+                "    pub var min: i32\n" +
+                "    pub init(_ -> min)\n" +
+                "}\n" +
+                "pub func f(): i32 {\n" +
+                "    @Clamped\n" +
+                "    const health: i32 = 50\n" +
+                "    return health:Clamped.min\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（wrapped const 局部）", unitConst);
+            BilTestHarness.CheckBilValid("验证器零错误（wrapped const 局部）", moduleConst);
+            AssertCellSubclassDeclaration(moduleConst, "wrapped const 局部",
+                readOnly: true, elementType: ".i32");
+            TestHarness.CheckTrue("const cell value 为 const + wrapped(Clamped)",
+                moduleConst.LocalSymbols.OfType<BilTypeDeclaration>()
+                    .Where(t => t.Symbol.StartsWith("..cell.."))
+                    .SelectMany(t => t.Members.OfType<BilSimpleMemberDeclaration>())
+                    .Any(m => m.Symbol.Contains("#value@")
+                        && m.Modifiers.OfType<BilKeywordModifier>()
+                            .Any(k => k.Keyword == BilKeyword.Const)
+                        && m.Modifiers.OfType<BilWrappedModifier>()
+                            .Any(w => w.WrapperTypeRef == "Clamped")));
+            BilTestHarness.CheckFnShape("wrapped const 局部 place 读",
+                moduleConst, "$f()@.i32",
+                ".vars { ..cell..UUID health, Clamped .s0, .i32 .t0, ..cell..UUID .t1, " +
+                "Clamped .t2, .i32 .t3 }\n" +
+                "load res(#0) $.t0\n" +
+                "new type(..cell..UUID) $.t1 [$.t0]\n" +
+                "set.var $.t1 $health\n" +
+                "get.wrapper.field $health field(..cell..UUID#value@.i32) type(Clamped) $.t2\n" +
+                "set.var $.t2 $.s0\n" +
+                "get.field $.s0 $.t3 field(Clamped#min@.i32)\n" +
+                "ret $.t3\n");
+
+            // wrapped 局部被 lambda 捕获：capture 字段类型 = 已有 cell 子类；外层写 setValue
+            var (unitCap, moduleCap, _) = BilTestHarness.EmitBilUnit(
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper Clamped {\n" +
+                "    pub var min: i32\n" +
+                "    pub init(_ -> min)\n" +
+                "}\n" +
+                "pub func f(): i32 {\n" +
+                "    @Clamped\n" +
+                "    var health: i32 = 50\n" +
+                "    var g = func{(): i32 -> health}\n" +
+                "    health = 60\n" +
+                "    return g()\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（wrapped 局部 lambda 捕获）", unitCap);
+            BilTestHarness.CheckBilValid("验证器零错误（wrapped 局部 lambda 捕获）", moduleCap);
+            AssertLambdaClass(moduleCap, "wrapped 局部捕获", "core::Func<.i32>",
+                hasCaptureField: true, captureTypeFragment: "..cell..");
+            TestHarness.CheckTrue("恰一个 cell 隐藏子类（不套第二层）",
+                moduleCap.LocalSymbols.OfType<BilTypeDeclaration>()
+                    .Count(t => t.Symbol.StartsWith("..cell..")) == 1);
+            BilTestHarness.CheckFnShape("wrapped 局部捕获外层（cell 引用实参 + setValue）",
+                moduleCap, "$f()@.i32",
+                ".vars { ..cell..UUID health, ..lambda..UUID g, .i32 .t0, ..cell..UUID .t1, " +
+                "..lambda..UUID .t2, .i32 .t3, .i32 .t4 }\n" +
+                "load res(#0) $.t0\n" +
+                "new type(..cell..UUID) $.t1 [$.t0]\n" +
+                "set.var $.t1 $health\n" +
+                "new type(..lambda..UUID) $.t2 [$health]\n" +
+                "set.var $.t2 $g\n" +
+                "load res(#1) $.t3\n" +
+                "invoke.noret fn(core::Cell$setValue(v:.generic<$.generic.T>)@.void) " +
+                "[$health, $.t3]\n" +
+                "invoke.indirect $g $.t4 []\n" +
+                "ret $.t4\n");
+            var callFn = moduleCap.Functions.First(f => f.Symbol.Contains("$$call"));
+            BilTestHarness.CheckFnShape("wrapped 局部捕获 $$call getValue",
+                moduleCap, callFn.Symbol,
+                ".vars { ..cell..UUID .t0, .i32 .t1 }\n" +
+                "get.field $.this $.t0 field(..lambda..UUID#.capture.health@..cell..UUID)\n" +
+                "invoke fn(core::Cell$getValue()@.generic<$.generic.T>) $.t1 [$.t0]\n" +
+                "ret $.t1\n");
+
+            // 局部 wrapper 复合赋值 + 深写
+            var (unitComp, moduleComp, _) = BilTestHarness.EmitBilUnit(
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper Clamped {\n" +
+                "    pub var min: i32\n" +
+                "    pub init(_ -> min)\n" +
+                "}\n" +
+                "pub func f(): i32 {\n" +
+                "    @Clamped\n" +
+                "    var health: i32 = 50\n" +
+                "    health:Clamped.min += 1\n" +
+                "    return health:Clamped.min\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（局部 wrapper 复合赋值）", unitComp);
+            BilTestHarness.CheckBilValid("验证器零错误（局部 wrapper 复合赋值）", moduleComp);
+            BilTestHarness.CheckFnShape("局部 wrapper 复合赋值 place.f += rhs",
+                moduleComp, "$f()@.i32",
+                ".vars { ..cell..UUID health, Clamped .s0, .i32 .s1, Clamped .s2, " +
+                ".i32 .t0, ..cell..UUID .t1, Clamped .t2, .i32 .t3, .i32 .t4, .i32 .t5, " +
+                "Clamped .t6, .i32 .t7 }\n" +
+                "load res(#0) $.t0\n" +
+                "new type(..cell..UUID) $.t1 [$.t0]\n" +
+                "set.var $.t1 $health\n" +
+                "get.wrapper.field $health field(..cell..UUID#value@.i32) type(Clamped) $.t2\n" +
+                "set.var $.t2 $.s0\n" +
+                "get.field $.s0 $.t3 field(Clamped#min@.i32)\n" +
+                "load res(#1) $.t4\n" +
+                "add $.t3 $.t4 $.t5\n" +
+                "set.var $.t5 $.s1\n" +
+                "set.wrapper.field $.s1 $health field(..cell..UUID#value@.i32) wrapper(Clamped) " +
+                "field(Clamped#min@.i32)\n" +
+                "get.wrapper.field $health field(..cell..UUID#value@.i32) type(Clamped) $.t6\n" +
+                "set.var $.t6 $.s2\n" +
+                "get.field $.s2 $.t7 field(Clamped#min@.i32)\n" +
+                "ret $.t7\n");
+
+            var (unitDeep, moduleDeep, _) = BilTestHarness.EmitBilUnit(
+                "pub struct Inner { pub var x: i32\n pub init(v: i32) { x = v } }\n" +
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper Boxed {\n" +
+                "    pub var sub: Inner\n" +
+                "    pub init(_ -> sub)\n" +
+                "}\n" +
+                "pub func f(): i32 {\n" +
+                "    @Boxed\n" +
+                "    var slot: i32 = 0\n" +
+                "    slot:Boxed.sub.x = 3\n" +
+                "    return slot:Boxed.sub.x\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（局部 wrapper 深写）", unitDeep);
+            BilTestHarness.CheckBilValid("验证器零错误（局部 wrapper 深写）", moduleDeep);
+            BilTestHarness.CheckFnShape("局部 wrapper 深写 place.a.b",
+                moduleDeep, "$f()@.i32",
+                ".vars { ..cell..UUID slot, Boxed .s0, Inner .s1, Boxed .s2, " +
+                ".i32 .t0, ..cell..UUID .t1, Boxed .t2, Inner .t3, .i32 .t4, " +
+                "Boxed .t5, Inner .t6, .i32 .t7 }\n" +
+                "load res(#0) $.t0\n" +
+                "new type(..cell..UUID) $.t1 [$.t0]\n" +
+                "set.var $.t1 $slot\n" +
+                "get.wrapper.field $slot field(..cell..UUID#value@.i32) type(Boxed) $.t2\n" +
+                "set.var $.t2 $.s0\n" +
+                "get.field $.s0 $.t3 field(Boxed#sub@Inner)\n" +
+                "set.var $.t3 $.s1\n" +
+                "load res(#1) $.t4\n" +
+                "set.field $.t4 $.s1 field(Inner#x@.i32)\n" +
+                "set.wrapper.field $.s1 $slot field(..cell..UUID#value@.i32) wrapper(Boxed) " +
+                "field(Boxed#sub@Inner)\n" +
+                "get.wrapper.field $slot field(..cell..UUID#value@.i32) type(Boxed) $.t5\n" +
+                "set.var $.t5 $.s2\n" +
+                "get.field $.s2 $.t6 field(Boxed#sub@Inner)\n" +
+                "get.field $.t6 $.t7 field(Inner#x@.i32)\n" +
+                "ret $.t7\n");
+
+            // 静态字段普通读写（非 place）
+            var (unitStatic, moduleStatic, _) = BilTestHarness.EmitBilUnit(
+                "@WrapperTarget(.Value)\n" +
+                "pub shared wrapper SClamp {\n" +
+                "    pub var min: i32\n" +
+                "    pub init(_ -> min)\n" +
+                "}\n" +
+                "pub class Holder {\n" +
+                "    @SClamp\n" +
+                "    pub static var counter: i32 = 0\n" +
+                "}\n" +
+                "pub func g(): i32 {\n" +
+                "    Holder.counter = 7\n" +
+                "    return Holder.counter\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（静态字段普通读写）", unitStatic);
+            BilTestHarness.CheckBilValid("验证器零错误（静态字段普通读写）", moduleStatic);
+            BilTestHarness.CheckFnShape(
+                "静态字段普通读写（get.field.static + setValue/getValue）",
+                moduleStatic, "$g()@.i32",
+                ".vars { ..cell..UUID .t0, .i32 .t1, ..cell..UUID .t2, .i32 .t3 }\n" +
+                "get.field.static $.t0 type(Holder) field(Holder#.static.counter@..cell..UUID)\n" +
+                "load res(#0) $.t1\n" +
+                "invoke.noret fn(core::Cell$setValue(v:.generic<$.generic.T>)@.void) " +
+                "[$.t0, $.t1]\n" +
+                "get.field.static $.t2 type(Holder) field(Holder#.static.counter@..cell..UUID)\n" +
+                "invoke fn(core::Cell$getValue()@.generic<$.generic.T>) $.t3 [$.t2]\n" +
+                "ret $.t3\n");
+
+            // 多 Value wrapper 分别 place（x:A / x:B）
+            var (unitMulti, moduleMulti, _) = BilTestHarness.EmitBilUnit(
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper A {\n" +
+                "    pub var tag: String\n" +
+                "    pub init(_ -> tag)\n" +
+                "}\n" +
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper B {\n" +
+                "    pub var n: i32\n" +
+                "    pub init(_ -> n)\n" +
+                "}\n" +
+                "pub func f(): i32 {\n" +
+                "    @A\n" +
+                "    @B\n" +
+                "    var x: i32 = 1\n" +
+                "    return x:B.n\n" +
+                "}\n" +
+                "pub func g(): String {\n" +
+                "    @A\n" +
+                "    @B\n" +
+                "    var x: i32 = 1\n" +
+                "    return x:A.tag\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（多 Value wrapper 分别 place）", unitMulti);
+            BilTestHarness.CheckBilValid("验证器零错误（多 Value wrapper 分别 place）",
+                moduleMulti);
+            BilTestHarness.CheckFnShape("x:B.n place 读",
+                moduleMulti, "$f()@.i32",
+                ".vars { ..cell..UUID x, B .s0, .i32 .t0, ..cell..UUID .t1, B .t2, .i32 .t3 }\n" +
+                "load res(#0) $.t0\n" +
+                "new type(..cell..UUID) $.t1 [$.t0]\n" +
+                "set.var $.t1 $x\n" +
+                "get.wrapper.field $x field(..cell..UUID#value@.i32) type(B) $.t2\n" +
+                "set.var $.t2 $.s0\n" +
+                "get.field $.s0 $.t3 field(B#n@.i32)\n" +
+                "ret $.t3\n");
+            BilTestHarness.CheckFnShape("x:A.tag place 读",
+                moduleMulti, "$g()@.string",
+                ".vars { ..cell..UUID x, A .s0, .i32 .t0, ..cell..UUID .t1, A .t2, " +
+                ".string .t3 }\n" +
+                "load res(#0) $.t0\n" +
+                "new type(..cell..UUID) $.t1 [$.t0]\n" +
+                "set.var $.t1 $x\n" +
+                "get.wrapper.field $x field(..cell..UUID#value@.i32) type(A) $.t2\n" +
+                "set.var $.t2 $.s0\n" +
+                "get.field $.s0 $.t3 field(A#tag@.string)\n" +
+                "ret $.t3\n");
         }
 
         // ===== M84：字段-Value 方法调用 / 索引读（get.wrapper.field）=====

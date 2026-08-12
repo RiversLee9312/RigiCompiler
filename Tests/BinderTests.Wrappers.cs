@@ -122,8 +122,8 @@ namespace LatteCompiler.Tests
                     ((BoundReturnStatement)((BoundBlock)BodyOf(bodies5, "check").Body).Statements[0])
                     .Value));
 
-            // 局部变量 Value wrapper（P3 登记，§14.9 矩阵 C 恒合法）
-            var (unit6, bodies6) = BindUnit(
+            // 局部变量 Value wrapper（P3 登记 + cell 存储合成，需 stdlib Cell 族）
+            var (unit6, bodies6) = BindUnitWithStdlib(
                 "@WrapperTarget(.Value)\n" +
                 "pub wrapper Clamped {\n" +
                 "    pub var min: i32\n" +
@@ -146,9 +146,14 @@ namespace LatteCompiler.Tests
             TestHarness.CheckTrue("局部 wrapper 应用登记（引用相等）",
                 health6.AppliedWrappers.Count == 1
                 && ReferenceEquals(health6.AppliedWrappers[0].Wrapper, clamped6));
+            TestHarness.CheckTrue("局部 Value wrapper 合成 Cell 存储",
+                health6.CellStorage is { IsReadOnly: false, CellClass.Name: var cn }
+                && cn.StartsWith("..cell..", System.StringComparison.Ordinal)
+                && ReferenceEquals(health6.CellStorage.ValueField.AppliedWrappers[0],
+                    health6.AppliedWrappers[0]));
 
             // 静态字段 Value wrapper（shared wrapper × 静态目标，§14.9 矩阵）
-            var (unit7, bodies7) = BindUnit(
+            var (unit7, bodies7) = BindUnitWithStdlib(
                 "@WrapperTarget(.Value)\n" +
                 "pub shared wrapper SClamp {\n" +
                 "    pub var min: i32\n" +
@@ -167,6 +172,11 @@ namespace LatteCompiler.Tests
                 BoundDescribe.Expr(
                     ((BoundReturnStatement)((BoundBlock)BodyOf(bodies7, "f").Body).Statements[0])
                     .Value));
+            var counter7 = unit7.Symbols.GlobalNamespace.Types
+                .First(t => t.Name == "Holder").Fields.First(f => f.Name == "counter");
+            TestHarness.CheckTrue("静态字段 Value wrapper 合成 Cell 存储",
+                counter7.CellStorage is { IsReadOnly: false, CellClass.Name: var scn }
+                && scn.StartsWith("..cell..", System.StringComparison.Ordinal));
 
             // wrapper place 上的索引后缀（成员访问扩展：getAtIndex operator）
             var (unit8, bodies8) = BindUnit(
@@ -430,8 +440,8 @@ namespace LatteCompiler.Tests
                 "Return(InstField(min, Local(.s0,Clamped), i32))])",
                 LoweredDescribe.Body(lowered3.Single(b => b.Method.Name == "f")));
 
-            // 归口：局部 wrapper place（栈帧存储合成归后续里程碑）
-            var (unit4, bodies4) = BindUnit(
+            // 局部 wrapper place 正例：cell 宿主 + GetFieldWrapper(value)/WrapperField 链
+            var (unit4, bodies4) = BindUnitWithStdlib(
                 "@WrapperTarget(.Value)\n" +
                 "pub wrapper Clamped {\n" +
                 "    pub var min: i32\n" +
@@ -440,12 +450,180 @@ namespace LatteCompiler.Tests
                 "pub func f(): i32 {\n" +
                 "    @Clamped\n" +
                 "    var health: i32 = 50\n" +
+                "    health:Clamped.min = 10\n" +
                 "    return health:Clamped.min\n" +
                 "}\n");
             CheckNoErrors("P3 局部 place 绑定无诊断", unit4);
-            Lowerer.Lower(unit4, bodies4);
-            TestHarness.CheckSemanticError("P4 局部 wrapper place 归口", unit4.Diagnostics,
-                "local/static wrapper place storage is not supported yet");
+            var lowered4 = Lowerer.Lower(unit4, bodies4);
+            CheckNoErrors("P4 局部 wrapper place 降级无诊断", unit4);
+            var localPlaceDesc = BilTestHarness.NormalizeLambdaUuids(
+                LoweredDescribe.Body(lowered4.Single(b => b.Method.Name == "f")));
+            TestHarness.Check("局部 wrapper place 降级形态（cell 构造 + 读写）",
+                "Body(f, [health: i32, .s0: Clamped], [" +
+                "Decl(health, i32, = New(..cell..UUID, init, [Int(50,i32)])); " +
+                "Assign(WrapperField(CellRef(health,..cell..UUID), [value > Clamped], min, i32), " +
+                "Int(10,i32)); " +
+                "Assign(Local(.s0,Clamped), GetFieldWrapper(CellRef(health,..cell..UUID), value, Clamped)); " +
+                "Return(InstField(min, Local(.s0,Clamped), i32))])",
+                localPlaceDesc);
+
+            // wrapped const 局部：ReadonlyCell 子类（无 setValue、value 为 const）
+            var (unitConst, bodiesConst) = BindUnitWithStdlib(
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper Clamped {\n" +
+                "    pub var min: i32\n" +
+                "    pub init(_ -> min)\n" +
+                "}\n" +
+                "pub func f(): i32 {\n" +
+                "    @Clamped\n" +
+                "    const health: i32 = 50\n" +
+                "    return health:Clamped.min\n" +
+                "}\n");
+            CheckNoErrors("P3 wrapped const 局部无诊断", unitConst);
+            var healthConst = BodyOf(bodiesConst, "f").Locals.First(l => l.Name == "health");
+            TestHarness.CheckTrue("const 局部 CellStorage 只读",
+                healthConst.CellStorage is { IsReadOnly: true }
+                && healthConst.CellStorage.CellClass.BaseType is
+                    { ConstructedFrom: { Name: "ReadonlyCell" } });
+            var loweredConst = Lowerer.Lower(unitConst, bodiesConst);
+            CheckNoErrors("P4 wrapped const 局部无诊断", unitConst);
+            TestHarness.CheckTrue("const 局部 place 读走 GetFieldWrapper(CellRef)",
+                BilTestHarness.NormalizeLambdaUuids(LoweredDescribe.Body(
+                    loweredConst.Single(b => b.Method.Name == "f")))
+                    .Contains("GetFieldWrapper(CellRef(health,..cell..UUID), value, Clamped)"));
+
+            // wrapped 局部被 lambda 捕获：不套第二层 cell，.capture 字段类型 = 已有 cell 子类
+            var (unitCap, bodiesCap) = BindUnitWithStdlib(
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper Clamped {\n" +
+                "    pub var min: i32\n" +
+                "    pub init(_ -> min)\n" +
+                "}\n" +
+                "pub func f(): i32 {\n" +
+                "    @Clamped\n" +
+                "    var health: i32 = 50\n" +
+                "    var g = func{(): i32 -> health}\n" +
+                "    health = 60\n" +
+                "    return g()\n" +
+                "}\n");
+            CheckNoErrors("P3 wrapped 局部 lambda 捕获无诊断", unitCap);
+            var healthCap = BodyOf(bodiesCap, "f").Locals.First(l => l.Name == "health");
+            TestHarness.CheckTrue("捕获前已有单一 CellStorage",
+                healthCap.CellStorage != null
+                && healthCap.CellStorage.CellClass.Name.StartsWith("..cell..",
+                    System.StringComparison.Ordinal));
+            var loweredCap = Lowerer.Lower(unitCap, bodiesCap);
+            CheckNoErrors("P4 wrapped 局部 lambda 捕获无诊断", unitCap);
+            var capDesc = BilTestHarness.NormalizeLambdaUuids(
+                LoweredDescribe.Body(loweredCap.Single(b => b.Method.Name == "f")));
+            TestHarness.CheckTrue("捕获构造传 CellRef（不套第二层 cell）",
+                capDesc.Contains("CellRef(health,..cell..UUID)")
+                && capDesc.Contains("InstCallStmt(setValue, CellRef(health,..cell..UUID)"));
+
+            // 局部 wrapper 复合赋值 + 深写
+            var (unitComp, bodiesComp) = BindUnitWithStdlib(
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper Clamped {\n" +
+                "    pub var min: i32\n" +
+                "    pub init(_ -> min)\n" +
+                "}\n" +
+                "pub struct Inner { pub var x: i32\n pub init(v: i32) { x = v } }\n" +
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper Boxed {\n" +
+                "    pub var sub: Inner\n" +
+                "    pub init(_ -> sub)\n" +
+                "}\n" +
+                "pub func f(): i32 {\n" +
+                "    @Clamped\n" +
+                "    var health: i32 = 50\n" +
+                "    health:Clamped.min += 1\n" +
+                "    return health:Clamped.min\n" +
+                "}\n" +
+                "pub func deep(): i32 {\n" +
+                "    @Boxed\n" +
+                "    var slot: i32 = 0\n" +
+                "    slot:Boxed.sub.x = 3\n" +
+                "    return slot:Boxed.sub.x\n" +
+                "}\n");
+            CheckNoErrors("P3 局部 wrapper 复合/深写无诊断", unitComp);
+            var loweredComp = Lowerer.Lower(unitComp, bodiesComp);
+            CheckNoErrors("P4 局部 wrapper 复合/深写无诊断", unitComp);
+            var compDesc = BilTestHarness.NormalizeLambdaUuids(
+                LoweredDescribe.Body(loweredComp.Single(b => b.Method.Name == "f")));
+            TestHarness.CheckTrue("复合赋值读 GetFieldWrapper + 写 WrapperField",
+                compDesc.Contains("GetFieldWrapper(CellRef(health,..cell..UUID), value, Clamped)")
+                && compDesc.Contains(
+                    "WrapperField(CellRef(health,..cell..UUID), [value > Clamped], min, i32)"));
+            var deepDescLocal = BilTestHarness.NormalizeLambdaUuids(
+                LoweredDescribe.Body(loweredComp.Single(b => b.Method.Name == "deep")));
+            TestHarness.CheckTrue("局部 wrapper 深写含叶 set + WrapperField 写回",
+                deepDescLocal.Contains("InstField(x,")
+                && deepDescLocal.Contains("WrapperField(CellRef(slot,..cell..UUID)")
+                && deepDescLocal.Contains("sub"));
+
+            // 静态字段普通读写（非 place）：getValue/setValue
+            var (unitStaticRw, bodiesStaticRw) = BindUnitWithStdlib(
+                "@WrapperTarget(.Value)\n" +
+                "pub shared wrapper SClamp {\n" +
+                "    pub var min: i32\n" +
+                "    pub init(_ -> min)\n" +
+                "}\n" +
+                "pub class Holder {\n" +
+                "    @SClamp\n" +
+                "    pub static var counter: i32 = 0\n" +
+                "}\n" +
+                "pub func g(): i32 {\n" +
+                "    Holder.counter = 7\n" +
+                "    return Holder.counter\n" +
+                "}\n");
+            CheckNoErrors("P3 静态字段普通读写无诊断", unitStaticRw);
+            var loweredStaticRw = Lowerer.Lower(unitStaticRw, bodiesStaticRw);
+            CheckNoErrors("P4 静态字段普通读写无诊断", unitStaticRw);
+            TestHarness.Check("静态字段普通读写降级（setValue/getValue）",
+                BilTestHarness.NormalizeLambdaUuids(
+                    LoweredDescribe.Body(loweredStaticRw.Single(b => b.Method.Name == "g"))),
+                "Body(g, [], [" +
+                "InstCallStmt(setValue, Field(counter,..cell..UUID), [Int(7,i32)]); " +
+                "Return(InstCall(getValue, Field(counter,..cell..UUID), [], i32))])");
+
+            // 多 Value wrapper 分别 place（x:A / x:B；嵌套 x:A:B 需 Entity 应用）
+            var (unitMulti, bodiesMulti) = BindUnitWithStdlib(
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper A {\n" +
+                "    pub var tag: String\n" +
+                "    pub init(_ -> tag)\n" +
+                "}\n" +
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper B {\n" +
+                "    pub var n: i32\n" +
+                "    pub init(_ -> n)\n" +
+                "}\n" +
+                "pub func f(): i32 {\n" +
+                "    @A\n" +
+                "    @B\n" +
+                "    var x: i32 = 1\n" +
+                "    return x:B.n\n" +
+                "}\n" +
+                "pub func g(): String {\n" +
+                "    @A\n" +
+                "    @B\n" +
+                "    var x: i32 = 1\n" +
+                "    return x:A.tag\n" +
+                "}\n");
+            CheckNoErrors("P3 多 Value wrapper 分别 place 无诊断", unitMulti);
+            TestHarness.Check("x:B 形态",
+                "InstField(n, WrapperPlace(Local(x,i32), B), i32)",
+                BoundDescribe.Expr(
+                    ((BoundReturnStatement)((BoundBlock)BodyOf(bodiesMulti, "f").Body)
+                        .Statements[1]).Value));
+            TestHarness.Check("x:A 形态",
+                "InstField(tag, WrapperPlace(Local(x,i32), A), String)",
+                BoundDescribe.Expr(
+                    ((BoundReturnStatement)((BoundBlock)BodyOf(bodiesMulti, "g").Body)
+                        .Statements[1]).Value));
+            var xMulti = BodyOf(bodiesMulti, "f").Locals.First(l => l.Name == "x");
+            TestHarness.CheckTrue("多 wrapper 共用单一 cell 存储",
+                xMulti.AppliedWrappers.Count == 2 && xMulti.CellStorage != null);
 
             // M84：字段-Value 方法调用 → GetFieldWrapper 物化
             var (unit5, bodies5) = BindUnit(

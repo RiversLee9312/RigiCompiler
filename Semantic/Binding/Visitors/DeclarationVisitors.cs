@@ -118,6 +118,13 @@
                 }
                 local.AppliedWrappers.Add(new WrapperApplication(wrapperType, annotation));
             }
+            // 统一 cell 存储（SYNTAX §14.3）：被 wrapper 修饰的局部值用逐变量
+            // 合成的 cell 隐藏子类盛装——登记完成后 cell 化（wrapper 应用由
+            // 子类 value 字段的 wrapped(W) 标记承载，读写经 getValue/setValue）
+            if (local.AppliedWrappers.Count > 0)
+            {
+                CellClassFactory.EnsureCellStorage(local, decl, ctx, env);
+            }
         }
 
         // 解构声明（S7f，SYNTAX §18）：var (a, b) = pair——初始化器类型

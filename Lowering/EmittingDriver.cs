@@ -43,6 +43,17 @@ namespace LatteCompiler
                 env.Module.LocalSymbols.Add(
                     LocalSymbolEmitters.EmitSyntheticTypeDeclaration(hiddenClass, env));
             }
+            // cell 隐藏子类声明（统一 cell 存储，SYNTAX §5.2/§14.3）：同
+            // lambda 收集口径——init/getValue/setValue 体的 Owner 即子类
+            foreach (var cellClass in bodies
+                .Select(b => b.Method.Owner)
+                .Where(owner => owner?.CellStorage != null)
+                .Distinct()
+                .Cast<TypeSymbol>())
+            {
+                env.Module.LocalSymbols.Add(
+                    LocalSymbolEmitters.EmitSyntheticTypeDeclaration(cellClass, env));
+            }
             // Resources 在函数发射中按（bodies 顺序 + 树内先序）登记
             foreach (var body in bodies)
             {
@@ -156,32 +167,26 @@ namespace LatteCompiler
             }
             // .vars（§9.3）：Locals 在前、临时变量在后；Type 为 null 的
             // 合成局部是 .breakid capability（§9.3 别名，无 TypeSymbol）。
-            // 被捕获局部（SYNTAX §5.2）：存储类型为 cell——.vars 条目按
-            // CaptureCell 标记投影为 .cell<T>/.readonly_cell<T>
+            // cell 化局部（统一 cell 存储，SYNTAX §5.2/§14.3）：存储类型
+            // 为逐变量合成的隐藏子类——.vars 条目按 CellStorage 投影
             foreach (var local in body.Locals)
             {
                 function.Vars.Add(new BilVarDeclaration(
                     local.Type == null
                         ? ".breakid"
-                        : LocalStorageTypeRef(local, env), local.Name));
+                        : LocalStorageTypeRef(local), local.Name));
             }
             function.Vars.AddRange(ctx.Temps.TempVars);
             return function;
         }
 
-        // 局部的 BIL 存储类型引用（§9.3 .vars 条目）：被捕获局部按
-        // CaptureCell 投影为 cell 构造（§6.3 特权拼写经定义认领——
-        // CallableModel 幂等）；普通局部为声明类型 canonical
-        private static string LocalStorageTypeRef(LocalSymbol local, EmitEnvironment env)
+        // 局部的 BIL 存储类型引用（§9.3 .vars 条目）：cell 化局部投影为
+        // 隐藏子类（统一 cell 存储）；普通局部为声明类型 canonical
+        private static string LocalStorageTypeRef(LocalSymbol local)
         {
-            if (local.CaptureCell != CaptureCellKind.None)
+            if (local.CellStorage is { } storage)
             {
-                var cellType = CallableModel.ConstructCell(env.Unit, local.Type!,
-                    local.CaptureCell == CaptureCellKind.ReadonlyCell);
-                if (cellType != null)
-                {
-                    return CanonicalSymbolPrinter.PrintType(cellType);
-                }
+                return CanonicalSymbolPrinter.PrintType(storage.CellType);
             }
             return CanonicalSymbolPrinter.PrintType(local.Type!);
         }

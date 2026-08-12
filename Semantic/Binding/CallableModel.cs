@@ -5,12 +5,14 @@ namespace LatteCompiler
 {
     // lambda 对象模型类型门面（SYNTAX §5.2）：core 命名空间内源码声明的
     // Func/Action/AsyncFunc/AsyncAction 四家族（0–32 参数元数预生成）与
-    // Cell/ReadonlyCell 捕获单元的统一定位/构造入口。
+    // Cell/ReadonlyCell 捕获单元抽象基类的统一定位/构造入口。
     //
     // Cell 族在首次定位时完成特权认领（幂等）：BilStandardConstructor 使
     // canonical 投影为 BIL §6.3 特权拼写 .cell<T>/.readonly_cell<T>；
     // DerivesSharedSafetyFromTypeArgument 使 shared 安全性按 T 透传
     // （与 Box/Nullable 同例——Cell 是编译器闭包 plumbing 的容器壳）。
+    // 基类恒抽象（getValue/setValue 为 abstract，无 value 存储）——实际
+    // cell 实例恒为逐变量合成的隐藏子类（CellClassFactory）
     internal static class CallableModel
     {
         // SYNTAX §5.1：lambda 形参个数硬性上限（与 stdlib 预生成元数一致）
@@ -89,9 +91,10 @@ namespace LatteCompiler
                 : unit.Symbols.GetConstructedType(definition, elementType);
         }
 
-        // Cell/ReadonlyCell 上的访问器方法（定义级符号——BIL 成员引用恒为
-        // 定义级 canonical，宿主泛型实参代入由验证器按 §6.4 严格口径处理）：
-        // getValue 两家都有；setValue 仅 Cell（ReadonlyCell 无写通道）
+        // Cell/ReadonlyCell 上的抽象访问器方法（定义级符号——BIL 成员引用
+        // 恒为定义级 canonical，宿主泛型实参代入由验证器按 §6.4 严格口径
+        // 处理；虚派发到隐藏子类的 override 体）：getValue 两家都有；
+        // setValue 仅 Cell（ReadonlyCell 无写通道）
         public static MethodSymbol? FindCellGetValue(CompilationUnit unit, bool readOnly)
         {
             var definition = readOnly ? FindReadonlyCellDefinition(unit) : FindCellDefinition(unit);
@@ -101,16 +104,6 @@ namespace LatteCompiler
         public static MethodSymbol? FindCellSetValue(CompilationUnit unit)
         {
             return FindCellDefinition(unit)?.Methods.FirstOrDefault(m => m.Name == "setValue");
-        }
-
-        // Cell 构造 init：valueInit = init(value)（声明/实参构造点）；
-        // defaultInit = init()（未初始化 var 被捕获的空 cell 构造点）
-        public static MethodSymbol? FindCellInit(CompilationUnit unit, bool readOnly,
-            bool valueInit)
-        {
-            var definition = readOnly ? FindReadonlyCellDefinition(unit) : FindCellDefinition(unit);
-            return definition?.Methods.FirstOrDefault(m => m.Kind == MethodKind.Init
-                && m.Parameters.Count == (valueInit ? 1 : 0));
         }
     }
 }

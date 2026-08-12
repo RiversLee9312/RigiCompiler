@@ -4,8 +4,9 @@ namespace LatteCompiler
     // 各分支迁移，行为不变。
 
     // 局部声明：初始化表达式降级 + cast 物化（BIL §6.5）；
-    // 被捕获局部（SYNTAX §5.2）：存储是 cell——声明处构造 cell
-    // （有初始化器 = init(value)，无初始化器 = init() 空构造）
+    // cell 化局部（统一 cell 存储，SYNTAX §5.2/§14.3）：存储是 cell——
+    // 声明处构造隐藏子类实例（有初始化器 = init(value)，无初始化器 =
+    // init() 空构造）
     internal sealed class LocalDeclarationRewriter
         : LoweredVisitor<LocalDeclarationRewriter, LoweredStatement, LowerContext>
     {
@@ -22,20 +23,18 @@ namespace LatteCompiler
                 initializer = LoweringFacility.EnsureDeclaredType(decl, initializer,
                     decl.Local.Type);
             }
-            if (decl.Local.CaptureCell != CaptureCellKind.None)
+            if (decl.Local.CellStorage is { } storage)
             {
-                var readOnly = decl.Local.CaptureCell == CaptureCellKind.ReadonlyCell;
-                var cellType = CallableModel.ConstructCell(env.Unit, decl.Local.Type!, readOnly)
-                    ?? env.Unit.Symbols.ErrorType;
-                // 无初始化器的被捕获 const 局部不存在（P3：const 必须初始化）
-                var init = initializer != null
-                    ? CallableModel.FindCellInit(env.Unit, readOnly, valueInit: true)
-                    : CallableModel.FindCellInit(env.Unit, readOnly, valueInit: false);
+                // 无初始化器的 const 局部不存在（P3：const 必须初始化）——
+                // ReadonlyCell 风味无空构造（DefaultInit 恒 null）
+                var init = initializer != null ? storage.ValueInit
+                    : storage.DefaultInit ?? throw new CompilerInternalException(
+                        "ReadonlyCell 局部缺初始化器: " + decl.Local.Name);
                 initializer = new LoweredNewExpression(decl, init,
                     initializer == null
                         ? new List<LoweredExpression>()
                         : new List<LoweredExpression> { initializer },
-                    cellType);
+                    storage.CellType);
             }
             return new LoweredLocalDeclarationStatement(decl, decl.Local, initializer);
         }
@@ -152,6 +151,18 @@ namespace LatteCompiler
                     assignment.Target.Type);
                 // 判定已命中，改写恒成功（null 仅限内部错误——this/const 写入）
                 return ctx.Closure.TryRewriteAssignment(assignment, cellValue);
+            }
+            // 静态/全局 cell 化字段的写入 = cell setValue 调用（统一 cell
+            // 存储，SYNTAX §14.3；求值序与上同——右值先行物化）
+            if (assignment.Target is BoundFieldReferenceExpression
+                { Field.CellStorage: not null })
+            {
+                var staticCellValue = LowerExpressionDispatcher.Visit(assignment.Value, ctx, env);
+                if (staticCellValue == null) return null;
+                staticCellValue = LoweringFacility.EnsureDeclaredType(assignment,
+                    staticCellValue, assignment.Target.Type);
+                return CellStorageLowering.TryRewriteStaticWrite(assignment, assignment.Target,
+                    staticCellValue, env);
             }
             var target = LowerExpressionDispatcher.Visit(assignment.Target, ctx, env);
             var value = LowerExpressionDispatcher.Visit(assignment.Value, ctx, env);

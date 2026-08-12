@@ -315,11 +315,18 @@ override 中的 `super(...)` 将当前固定泛型隐藏参数按声明序转发
 
 最终内联仍归 Middleware。
 
-**wrapper 值的表示**：wrapper 恒为 rich struct（`SYNTAX.md` §14.9），因此它是一个带 typeid 的胖值，而不是独立的堆对象——没有对象头、没有对象身份、不作为独立 GC 节点被追踪；其内部托管引用字段照常经 `refMap` 参加 acquire/release。wrapper 实例存放在宿主的 Middleware 合成隐藏存储中（命名约定见 `BIL_STANDARD.md` §5.3；存储布局是 Middleware 的实现职责，BIL 文本不再声明隐藏字段），因此：
+**wrapper 值的表示**：wrapper 恒为 rich struct（`SYNTAX.md` §14.9），因此它是一个带 typeid 的胖值，而不是独立的堆对象——没有对象头、没有对象身份、不作为独立 GC 节点被追踪；其内部托管引用字段照常经 `refMap` 参加 acquire/release。
+
+**实例字段 / Entity 形态**（宿主内嵌）：wrapper 实例存放在宿主的 Middleware 合成隐藏存储中（命名约定见 `BIL_STANDARD.md` §5.3；存储布局是 Middleware 的实现职责，BIL 文本不再声明隐藏字段），因此：
 
 - 宿主类型必须允许内嵌 rich struct；非 rich struct 不能被修饰，这是编译期不变量，运行时无需检查。
-- 非 shared wrapper 可能持有 local object，所以只能出现在非 shared 宿主与栈帧中；shared wrapper 走 microSGC 路径。
-- 路径表达式 `value:WrapperType` 与 proxy 体内的 `this` 都是对该隐藏存储的**原地访问**，从不复制。源码层 `value:WrapperType` 是只读 place（`SYNTAX.md` §14.5）：既不能被整体赋值，也不能被整体取出，因此运行时不存在脱离宿主独立存活的 wrapper 值，也不为 wrapper 提供任何别名或共享机制。wrapper place 写侧链指令操作数是已有两态 `field(F)|wrapper(W)`（而非编译器合成的隐藏字段符号；字段-Value 应用 = 相邻 `field(HOST_FIELD)+wrapper(W)`，Entity 应用 = `wrapper(W)`）。frontend lowering 在成员**读取**/调用/索引读路径上经 `get.wrapper` / `get.wrapper.field` 取得**值拷贝**，再发普通 `get.field`/`invoke`/`get.array`（与原地写路径分离；BIL §12.4）；wrapper 字段原地写走 `set.wrapper.field`；深层写穿由 frontend 展开为多次现有 get/set（最外层必要写回复用 `set.wrapper.field`，普通值中间反向写回仍发 `set.field`），不新增专用深写指令、也不把整条深路径压进单条超长链。隐藏存储不可用普通字段寻址（M88）。
+- 非 shared wrapper 可能持有 local object，所以只能出现在非 shared 宿主中；shared wrapper 走 microSGC 路径。
+
+**局部 / 静态 / 全局形态**（统一 cell 存储，`SYNTAX.md` §5.2 / §14.3）：被 Value wrapper 修饰的局部变量与静态/全局字段，值由编译器逐变量合成的 cell 隐藏子类盛装——子类 `extends .cell<T>` / `.readonly_cell<T>`，自持 `pub value` 字段并带 `wrapped(W)` 标记。Middleware 的烘焙识别契约 = 「继承 Cell 族 + 字段 wrapper 标记」；即使不做 Cell 特判、按普通类烘焙也可正确工作（`getValue`/`setValue` 是普通虚调用，`get.wrapper.field`/`set.wrapper.field` 走既有字段-Value 应用机制），`.cell`/`.readonly_cell` 特权拼写的特判仅供激进优化（消除 cell 间接/直读槽位等）。栈帧（或静态槽）持有的是 **cell 对象引用**；wrapper 状态内嵌于 cell 实例子类 `value` 字段的隐藏存储，生命周期与栈值/静态槽一致——非 shared wrapper 因此可合法出现在栈帧与局部 cell 路径上，而不必依赖宿主类型内嵌。
+
+**place 访问**（两形态共用）：
+
+- 路径表达式 `value:WrapperType` 与 proxy 体内的 `this` 都是对 wrapper 隐藏存储的**原地访问**，从不复制。源码层 `value:WrapperType` 是只读 place（`SYNTAX.md` §14.5）：既不能被整体赋值，也不能被整体取出，因此运行时不存在脱离宿主独立存活的 wrapper 值，也不为 wrapper 提供任何别名或共享机制。wrapper place 写侧链指令操作数是已有两态 `field(F)|wrapper(W)`（而非编译器合成的隐藏字段符号；字段-Value 应用 = 相邻 `field(HOST_FIELD)+wrapper(W)`——局部/静态时 `HOST_FIELD` 即 cell 子类的 `value` 字段；Entity 应用 = `wrapper(W)`）。frontend lowering 在成员**读取**/调用/索引读路径上经 `get.wrapper` / `get.wrapper.field` 取得**值拷贝**，再发普通 `get.field`/`invoke`/`get.array`（与原地写路径分离；BIL §12.4）；wrapper 字段原地写走 `set.wrapper.field`；深层写穿由 frontend 展开为多次现有 get/set（最外层必要写回复用 `set.wrapper.field`，普通值中间反向写回仍发 `set.field`），不新增专用深写指令、也不把整条深路径压进单条超长链。隐藏存储不可用普通字段寻址（M88）。
 
 ### 14.1 四类唯一 wildcard proxy
 

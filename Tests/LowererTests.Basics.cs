@@ -199,23 +199,23 @@ namespace LatteCompiler.Tests
                 capBodies.Count == 3);
             TestHarness.Check("捕获宿主 Lowered 形态（cell 构造 + CellRef 实参 + setValue）",
                 NormLambda(LoweredDescribe.Body(BodyOf(capBodies, "f"))),
-                "Body(f, [x: i32, fn: ..lambda..UUID, .c.p: Cell<i32>], [" +
-                "Decl(.c.p, Cell<i32>, = New(Cell<i32>, init, [Param(p,i32)])); " +
-                "Decl(x, i32, = New(Cell<i32>, init, [Int(1,i32)])); " +
+                "Body(f, [x: i32, fn: ..lambda..UUID, .c.p: ..cell..UUID], [" +
+                "Decl(.c.p, ..cell..UUID, = New(..cell..UUID, init, [Param(p,i32)])); " +
+                "Decl(x, i32, = New(..cell..UUID, init, [Int(1,i32)])); " +
                 "Decl(fn, ..lambda..UUID, = New(..lambda..UUID, init, " +
-                "[CellRef(.c.p,Cell<i32>), CellRef(x,Cell<i32>)])); " +
-                "InstCallStmt(setValue, CellRef(x,Cell<i32>), [Int(2,i32)])])");
+                "[CellRef(.c.p,..cell..UUID), CellRef(x,..cell..UUID)])); " +
+                "InstCallStmt(setValue, CellRef(x,..cell..UUID), [Int(2,i32)])])");
             TestHarness.Check("捕获 $$call 读取 getValue",
                 NormLambda(LoweredDescribe.Body(LambdaCallBody(capBodies))),
                 "Body(call, [], [Return(Binary(Add, " +
-                "InstCall(getValue, InstField(.capture.p, This(i32), Cell<i32>), [], i32), " +
-                "InstCall(getValue, InstField(.capture.x, This(i32), Cell<i32>), [], i32), " +
+                "InstCall(getValue, InstField(.capture.p, This(i32), ..cell..UUID), [], i32), " +
+                "InstCall(getValue, InstField(.capture.x, This(i32), ..cell..UUID), [], i32), " +
                 "i32))])");
             TestHarness.Check("捕获 init 写 .capture 字段",
                 NormLambda(LoweredDescribe.Body(LambdaInitBody(capBodies))),
                 "Body(init, [], [" +
-                "Assign(InstField(.capture.p, This(..lambda..UUID), Cell<i32>), Param(c0,Cell<i32>)); " +
-                "Assign(InstField(.capture.x, This(..lambda..UUID), Cell<i32>), Param(c1,Cell<i32>))])");
+                "Assign(InstField(.capture.p, This(..lambda..UUID), ..cell..UUID), Param(c0,..cell..UUID)); " +
+                "Assign(InstField(.capture.x, This(..lambda..UUID), ..cell..UUID), Param(c1,..cell..UUID))])");
         }
 
         private static string NormLambda(string text) =>

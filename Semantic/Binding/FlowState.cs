@@ -89,31 +89,31 @@ namespace LatteCompiler
         }
 
         // 边事实覆盖（同键覆盖当前表）。
-        // 被 lambda 捕获的变量不参与收窄（SYNTAX §5.2/§3.5：cell 化后存在
-        // 编译器不可见的写通道——lambda 体内的 setValue）——根符号带
-        // CaptureCell 标记的事实一律不落入表
+        // 被 cell 化的变量不参与收窄（SYNTAX §5.2/§3.5：cell 化后存在
+        // 编译器不可见的写通道——lambda 体内的 setValue；wrapper 值的
+        // 代理写同例）——根符号带 CellStorage 标记的事实一律不落入表
         public void ApplyNarrow(IReadOnlyDictionary<NarrowKey, TypeSymbol> facts)
         {
             foreach (var (key, type) in facts)
             {
-                if (IsCaptureCellRoot(key)) continue;
+                if (IsCellStorageRoot(key)) continue;
                 narrowed[key] = type;
             }
         }
 
-        // 单条收窄（switch 分支体入口等场景；捕获根拦截同 ApplyNarrow）
+        // 单条收窄（switch 分支体入口等场景；cell 化根拦截同 ApplyNarrow）
         public void SetNarrow(NarrowKey key, TypeSymbol type)
         {
-            if (IsCaptureCellRoot(key)) return;
+            if (IsCellStorageRoot(key)) return;
             narrowed[key] = type;
         }
 
-        private static bool IsCaptureCellRoot(NarrowKey key)
+        private static bool IsCellStorageRoot(NarrowKey key)
         {
             return key.Root switch
             {
-                LocalSymbol local => local.CaptureCell != CaptureCellKind.None,
-                ParameterSymbol parameter => parameter.CaptureCell != CaptureCellKind.None,
+                LocalSymbol local => local.CellStorage != null,
+                ParameterSymbol parameter => parameter.CellStorage != null,
                 _ => false,
             };
         }

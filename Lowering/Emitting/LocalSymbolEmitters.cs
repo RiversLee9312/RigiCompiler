@@ -204,11 +204,17 @@ namespace LatteCompiler
                     modifiers.Add(new BilKeywordModifier(BilKeyword.CompilerGenerated));
                 }
             }
-            // §8.3.1 wrapped(W)：字段应用标记 outer→inner = 列表序
-            foreach (var application in field.AppliedWrappers)
+            // §8.3.1 wrapped(W)：字段应用标记 outer→inner = 列表序。
+            // cell 化的静态/全局字段（统一 cell 存储）：wrapper 标记由 cell
+            // 子类的 value 字段承载，字段自身不再投影（避免 Middleware 对
+            // 同一应用合成两份隐藏存储）
+            if (field.CellStorage == null)
             {
-                modifiers.Add(new BilWrappedModifier(
-                    CanonicalSymbolPrinter.PrintType(application.Wrapper)));
+                foreach (var application in field.AppliedWrappers)
+                {
+                    modifiers.Add(new BilWrappedModifier(
+                        CanonicalSymbolPrinter.PrintType(application.Wrapper)));
+                }
             }
             return new BilSimpleMemberDeclaration(
                 field.IsStatic ? BilMemberKind.StaticField : BilMemberKind.Field,
