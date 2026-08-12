@@ -627,7 +627,7 @@ Lexer 只做简单字符识别，不理解语义。例如 `3.14` 会输出三个
 - **AST 结构断言**：表达式类测试除描述串快照外，还应断言结构性事实（Root 是否存在/已填充、Expression 的具体类型、Parent 链、子 Root 填充、无节点共享）——快照不能作为唯一验证方式。
 - **独立 Layer 测试**：经 `Parser.Parse(tokens, new TestRootParserLayer(), entryLayer)` 驱动（`TestHarness.ParseWithLayer` 封装）。`TestRootParserLayer` 只接受 EOF——被测 Layer 提前结束或漏消费普通 token 会立即失败，能发现 Layer 边界问题。
 - **约定：每新增一个 ParserLayer，必须在 `Tests/` 添加对应测试类，并在 `TestRunner` 注册表注册（`test` 菜单与 `test --run N` 的编号即注册表顺序）。**
-- 测试数量与通过状态等易变数字只记录在 `docs/legacy/PROGRESS_REPORT.md`，本文件不保存。
+- 测试数量与通过状态等易变数字只记录在 `docs/legacy/PROGRESS_REPORT.md`（已废弃，数字止于 M112），本文件不保存。
 
 验证改动（已验证可用）：
 
@@ -673,10 +673,9 @@ dotnet run -- test --all    # 全量；或：dotnet run -- test --run 5（单个
 
 ### 进度对齐标准（必须遵守）
 
-- **`docs/legacy/PROGRESS_REPORT.md` 是项目进度的唯一权威来源**。不要新建单点完成报告/实现总结类文档。
-- **更新时机**：每完成一个里程碑（新增 ParserLayer、落地一项机制、完成一次语法迁移）必须立即更新。
-- **更新方式**：保持文档既有结构不变，并在「里程碑历史」**顶部**追加新段落（倒序）。
-- **分工**：`PARSER_ROADMAP.md` 管「计划」，`PROGRESS_REPORT.md` 管「现状」。计划调整改 ROADMAP，进度推进改 PROGRESS_REPORT。
+- **`docs/legacy/PROGRESS_REPORT.md` 已于 2026-08-12 废弃**（M112 frontend 待办清零后进度文档驱动阶段结束），仅作历史编年史保留（止于 M112），**不再更新**。进度现状以代码与 git 历史为准。
+- 不要新建单点完成报告/实现总结类文档。
+- **分工**：`PARSER_ROADMAP.md` / `SEMANTIC_ROADMAP.md` 管「计划」，计划调整改 ROADMAP。
 
 ---
 
