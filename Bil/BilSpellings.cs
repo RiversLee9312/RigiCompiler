@@ -10,6 +10,12 @@ namespace LatteCompiler.Bil
         public const string InnerReservedFunction = "..inner";
         public const string SuperReservedFunction = "..super";
 
+        // §9.7：实体 wrapper 初始化方法保留名（方法简单名精确匹配）
+        public const string InitWrapperMethodName = "..init.wrapper";
+
+        // §8.7：Method wrapper 静态壳体 companion 类型名保留前缀
+        public const string CompanionTypeNamePrefix = "..companion.";
+
         // §11 运算 opcode（§5.6：不带前导点）
         public static string Of(BilBinaryOp op)
         {

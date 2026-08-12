@@ -262,6 +262,60 @@ namespace LatteCompiler.Tests
 
         // ===== S9e：泛型隐藏参数物化（§7.2 调用序 + §12.5 getid.type +
         // §8.2 generic(...) 子句）=====
+        // ===== M108：invoke.indirect 泛型 ABI（typeid 前缀与 direct 同构）=====
+        private static void TestIndirectGenericEmission()
+        {
+            // 显式泛型实参间接调用：f\<i32>(x) → getid.type + invoke.indirect
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "pub class Mapper {\n" +
+                "    pub operator call\\<T>(x: T): T { return x }\n" +
+                "}\n" +
+                "func main() {\n" +
+                "    var f = new Mapper()\n" +
+                "    var v = f\\<i32>(1)\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（间接泛型调用）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（间接泛型调用）", module);
+
+            // $$call fn .args：.return → .this → .generic.T → 普通参数
+            var callFn = module.Functions.Single(f => f.Symbol.Contains("$$call")
+                && f.Symbol.Contains("Mapper"));
+            TestHarness.CheckTrue("泛型 $$call .args 含 .generic.T = .typeid",
+                callFn.Args.Any(a => a.Name == ".generic.T" && a.TypeRef == ".typeid"));
+
+            // 调用点：getid.type 前置 + invoke.indirect 实参 [typeid, value]
+            BilTestHarness.CheckFnShape("间接泛型 typeid 前缀（main）", module, "$main()@.void",
+                ".vars { Mapper f, .i32 v, Mapper .t0, .typeid .t1, .i32 .t2, .i32 .t3 }\n" +
+                "new type(Mapper) $.t0 []\n" +
+                "set.var $.t0 $f\n" +
+                "getid.type type(.i32) $.t1\n" +
+                "load res(#0) $.t2\n" +
+                "invoke.indirect $f $.t3 [$.t1, $.t2]\n" +
+                "set.var $.t3 $v\n" +
+                "ret\n");
+
+            // 泛型可变包命中 call 运算符：.array<.typeid<.any>> 前置
+            var (unit2, module2, _) = BilTestHarness.EmitBilUnit(
+                "pub class Collector {\n" +
+                "    pub operator call\\<TArgs...>(values: TArgs...): i32 { return 0 }\n" +
+                "}\n" +
+                "func main() {\n" +
+                "    var f = new Collector()\n" +
+                "    var v = f(1, \"s\")\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（间接泛型包）", unit2);
+            BilTestHarness.CheckBilValid("验证器零错误（间接泛型包）", module2);
+            var main2 = module2.Functions.Single(f => f.Symbol == "$main()@.void");
+            var news = main2.Blocks[0].Instructions.OfType<NewInstruction>().ToList();
+            TestHarness.CheckTrue("间接泛型包 .array<.typeid<.any>> 构造",
+                news.Any(n => n.Type.TypeRef == ".array<.typeid<.any>>"
+                    && n.Arguments.Count == 2));
+            TestHarness.CheckTrue("间接包调用含 invoke.indirect",
+                main2.Blocks[0].Instructions.OfType<InvokeIndirectInstruction>().Any());
+            var typeIds = main2.Blocks[0].Instructions.OfType<GetIdTypeInstruction>().ToList();
+            TestHarness.CheckTrue("间接包 typeid 物化（i32/String）", typeIds.Count >= 2);
+        }
+
         private static void TestGenericEmission()
         {
             var (unit, module, _) = BilTestHarness.EmitBilUnit(

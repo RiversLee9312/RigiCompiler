@@ -415,6 +415,79 @@ namespace LatteCompiler.Tests
                 "'Box' expects 1 type argument(s), got 0");
         }
 
+        // ===== M108：间接调用泛型（operator call\<T> + 约束；与 direct 同构）=====
+        private static void TestIndirectGenericCalls()
+        {
+            TestHarness.Section("P3 Indirect Generic Calls (M108)");
+
+            // 1. 显式泛型实参间接调用：callable 对象的 operator call\<T>
+            var (unit, bodies) = BindUnit(
+                "pub class Mapper {\n" +
+                "    pub operator call\\<T>(x: T): T { return x }\n" +
+                "}\n" +
+                "func main() {\n" +
+                "    var f = new Mapper()\n" +
+                "    var v = f\\<i32>(1)\n" +
+                "}\n");
+            CheckNoErrors("无诊断（显式泛型间接调用）", unit);
+            var main = BodyOf(bodies, "main").Body;
+            var call = (BoundCallExpression)
+                ((BoundLocalDeclarationStatement)main.Statements[1]).Initializer!;
+            TestHarness.CheckTrue("间接调用 IsIndirect + TypeArguments",
+                call.IsIndirect && call.TypeArguments.Count == 1
+                && ReferenceEquals(call.TypeArguments[0], unit.Symbols.Bootstrap.Int32)
+                && ReferenceEquals(call.Type, unit.Symbols.Bootstrap.Int32)
+                && call.Method.Name == "call" && call.Method.GenericParameters.Count == 1);
+
+            // 2. 约束违反：间接路径 GenericConstraints 生效
+            var (unit2, _) = BindUnit(
+                "open class Animal { }\n" +
+                "class Dog : Animal { }\n" +
+                "pub class OnlyAnimal {\n" +
+                "    pub operator call\\<T extends Animal>(x: T): T { return x }\n" +
+                "}\n" +
+                "func bad() {\n" +
+                "    var f = new OnlyAnimal()\n" +
+                "    var v = f\\<i32>(1)\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("间接调用约束违反", unit2.Diagnostics,
+                "Type argument 'i32' does not satisfy the 'Extends Animal' constraint of 'T'");
+
+            // 3. 泛型可变包命中 call 运算符（位置包推导）
+            var (unit3, bodies3) = BindUnit(
+                "pub class Collector {\n" +
+                "    pub operator call\\<TArgs...>(values: TArgs...): i32 { return 0 }\n" +
+                "}\n" +
+                "func main() {\n" +
+                "    var f = new Collector()\n" +
+                "    var v = f(1, \"s\")\n" +
+                "}\n");
+            CheckNoErrors("无诊断（泛型可变包间接调用）", unit3);
+            var packCall = (BoundCallExpression)
+                ((BoundLocalDeclarationStatement)BodyOf(bodies3, "main").Body.Statements[1])
+                .Initializer!;
+            TestHarness.CheckTrue("间接调用 GenericPack 携带",
+                packCall.IsIndirect && packCall.GenericPack != null
+                && !packCall.GenericPack.IsNamed
+                && packCall.GenericPack.TypeArguments.Count == 2
+                && ReferenceEquals(packCall.GenericPack.TypeArguments[0],
+                    unit3.Symbols.Bootstrap.Int32)
+                && ReferenceEquals(packCall.GenericPack.TypeArguments[1],
+                    unit3.Symbols.Bootstrap.String));
+
+            // 4. 缺显式实参仍诊断（固定泛型 call 零推导）
+            var (unit4, _) = BindUnit(
+                "pub class Mapper {\n" +
+                "    pub operator call\\<T>(x: T): T { return x }\n" +
+                "}\n" +
+                "func main() {\n" +
+                "    var f = new Mapper()\n" +
+                "    var v = f(1)\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("间接调用缺显式泛型实参", unit4.Diagnostics,
+                "'call' is a generic method; provide explicit type arguments");
+        }
+
         // ===== 泛型可变参数包（S9d-2，SYNTAX §4.3 定稿⑤：类型实参由
         // 对应值实参的静态类型推导——位置包 ← 位置实参序列、具名包 ←
         // 具名实参「名 → 类型」映射；包实参永不显式书写）=====

@@ -21,7 +21,7 @@ namespace LatteCompiler.Tests
     /// S8e 增补（BinderTests.Access.cs）：使用点访问控制（§16.1 多文件
     /// pub/priv/protected/internal 矩阵 + priv init 构造拦截 + priv 字段
     /// 读写）、访问器绑定（§9.4.1——读写节点形态不变/访问器体绑定与合成/
-    /// 读写存在性与可见性/value 别名/smart cast 不收窄/局部归口 S11）、
+    /// 读写存在性与可见性/value 别名/smart cast 不收窄；M107 局部访问器路线 C）、
     /// override 配套（§9.2.1 正例与逐条负例 + new abstract）。
     /// 诊断断言沿用消息子串惯例（CheckSemanticError）；符号比较一律引用相等。
     /// </summary>
@@ -68,6 +68,7 @@ namespace LatteCompiler.Tests
             TestOverloadResolution();
             TestAccessControl();
             TestAccessors();
+            TestLocalAccessors();
             TestOverride();
             TestSuperCalls();
             TestConversionOperators();
@@ -76,6 +77,7 @@ namespace LatteCompiler.Tests
             TestAsyncResultTypes();
             TestAwaitBinding();
             TestGenericCalls();
+            TestIndirectGenericCalls();
             TestGenericVarArgs();
             TestOperatorNameCalls();
             TestGenericFunctionBody();
@@ -89,6 +91,8 @@ namespace LatteCompiler.Tests
             TestKwArgsBodyView();
             TestWrapperPlaceBinding();
             TestWrapperPlaceReadOnly();
+            TestStaticMethodCompanionBinding();
+            TestWrapperInitArgBinding();
             TestWrapperPlaceErrors();
             TestWrapperPlaceLowering();
             TestProxyBodyBinding();

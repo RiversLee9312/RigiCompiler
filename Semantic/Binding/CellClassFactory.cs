@@ -5,24 +5,34 @@ using System.Linq;
 namespace LatteCompiler
 {
     // cell 隐藏子类合成工厂（统一 cell 存储，SYNTAX §5.2 捕获 / §14.3
-    // wrapper 值）：每个被 cell 盛装的符号（lambda 捕获的局部/参数、被
-    // wrapper 修饰的局部/静态字段）逐变量合成一个 ..cell..UUID 隐藏子类
-    // ——同 lambda 隐藏类先例：与声明位置同命名空间、不进符号图容器表、
-    // 泛型上下文同符号对象共享。子类自行声明 pub value 字段（wrapper
-    // 应用经该字段的 wrapped(W) 标记承载——同 WrapperApplication 实例，
-    // WrapperPlaceLowering 按引用匹配直接命中）并 override 基类抽象
-    // getValue/setValue；对 Middleware 而言就是「普通类 + 带标记字段」，
-    // 一看即知如何烘焙，不特殊处理 Cell 也可正确工作。
-    // 合成方法体直接构造 Bound 节点（lambda SynthesizeInit 先例——合成
-    // 代码无 DA/return 问题），汇入 env.SyntheticCellBodies 由
-    // BindingDriver 收尾进函数体列表，走统一 P4 管线。
+    // wrapper 值 / §9.4 局部访问器路线 C）：每个被 cell 盛装的符号（lambda
+    // 捕获的局部/参数、被 wrapper 修饰的局部/静态字段、带 getter/setter
+    // 的局部）逐变量合成一个 ..cell..UUID 隐藏子类——同 lambda 隐藏类先例：
+    // 与声明位置同命名空间、不进符号图容器表、泛型上下文同符号对象共享。
+    // 子类自行声明 pub value 字段（wrapper 应用经该字段的 wrapped(W) 标记
+    // 承载——同 WrapperApplication 实例，WrapperPlaceLowering 按引用匹配
+    // 直接命中）并 override 基类抽象 getValue/setValue；局部访问器的
+    // override 体 = 用户访问器体（backing 形态 value 别名 → value 字段；
+    // 自动访问器 = 默认透传体）。对 Middleware 而言就是「普通类 + 带标记
+    // 字段」，一看即知如何烘焙，不特殊处理 Cell 也可正确工作。
+    // 合成方法体直接构造 Bound 节点或经声明点词法作用域绑定用户体，
+    // 汇入 env.SyntheticCellBodies 由 BindingDriver 收尾进函数体列表，
+    // 走统一 P4 管线。
     internal static class CellClassFactory
     {
-        // 局部 cell 化（幂等——多重捕获/既有 wrapper 存储直接复用）
+        // 局部 cell 化（幂等——多重捕获/既有 wrapper/访问器存储直接复用）
         public static CellStorageInfo? EnsureCellStorage(LocalSymbol local, ASTNode syntax,
-            BindContext ctx, BindEnvironment env)
+            BindContext ctx, BindEnvironment env,
+            Scope? scope = null,
+            PropertyAccessorASTNode? getterNode = null,
+            PropertyAccessorASTNode? setterNode = null)
         {
             if (local.CellStorage != null) return local.CellStorage;
+            if (getterNode != null || setterNode != null)
+            {
+                return local.CellStorage = CreateWithAccessors(local, syntax, ctx, env,
+                    scope ?? new Scope(null), getterNode, setterNode);
+            }
             return local.CellStorage = Create(ctx.Frame.FileCtx.Namespace,
                 InScopeGenericParameters(ctx).ToList(), local.Type!, local.IsConst,
                 local.AppliedWrappers, syntax, env);
@@ -53,6 +63,322 @@ namespace LatteCompiler
                 field.IsConst, field.AppliedWrappers, syntax, env);
         }
 
+        // 局部访问器 cell 化（M107 路线 C，SYNTAX §9.4）：getValue/setValue
+        // override 体 = 用户访问器体；backing 形态 value 别名 → cell.value；
+        // 自由变量按 lambda 同规则捕获进 cell（init 追加捕获实参）
+        private static CellStorageInfo? CreateWithAccessors(LocalSymbol local, ASTNode syntax,
+            BindContext outerCtx, BindEnvironment env, Scope scope,
+            PropertyAccessorASTNode? getterNode, PropertyAccessorASTNode? setterNode)
+        {
+            var elementType = local.Type!;
+            var readOnly = local.IsConst;
+            var unit = env.Unit;
+            if (elementType is ErrorTypeSymbol) return null;
+            // M112：在册集合含合成 Owner 共享的外层方法泛型（见
+            // InScopeGenericParameters）；仍不在册则显式归口
+            var genericParameters = InScopeGenericParameters(outerCtx).ToList();
+            if (elementType is GenericParameterSymbol genericElement
+                && !genericParameters.Contains(genericElement))
+            {
+                env.Error(syntax.Span,
+                    "P3: cell storage for generic-parameter-typed values in this context " +
+                    "is not supported yet");
+                return null;
+            }
+            var baseType = CallableModel.ConstructCell(unit, elementType, readOnly);
+            if (baseType == null)
+            {
+                env.Error(syntax.Span,
+                    "P3: cell storage requires the core::Cell/ReadonlyCell family " +
+                    "(stdlib not loaded)");
+                return null;
+            }
+            var cellClass = new TypeSymbol(
+                "..cell.." + Guid.NewGuid().ToString("N"),
+                TypeKind.Class, ns: outerCtx.Frame.FileCtx.Namespace, baseType: baseType)
+            {
+                Accessibility = Accessibility.Public,
+            };
+            foreach (var genericParameter in genericParameters)
+            {
+                cellClass.GenericParameters.Add(genericParameter);
+            }
+            var cellType = genericParameters.Count == 0
+                ? cellClass
+                : unit.Symbols.GetConstructedType(cellClass, genericParameters.ToArray());
+
+            var valueField = new FieldSymbol("value", owner: cellClass,
+                fieldType: elementType, isConst: readOnly)
+            {
+                Accessibility = Accessibility.Public,
+            };
+            valueField.AppliedWrappers.AddRange(local.AppliedWrappers);
+            cellClass.Fields.Add(valueField);
+
+            // 先建 getValue/setValue 方法壳（体稍后填），供访问器体绑定 Frame
+            var getValue = NewMethod("getValue", MethodKind.Regular, cellClass, elementType,
+                isOverride: true);
+            cellClass.Methods.Add(getValue);
+            MethodSymbol? setValue = null;
+            if (!readOnly)
+            {
+                setValue = NewMethod("setValue", MethodKind.Regular, cellClass, null,
+                    isOverride: true);
+                setValue.Parameters.Add(new ParameterSymbol("value", elementType));
+                cellClass.Methods.Add(setValue);
+            }
+
+            // 绑定用户访问器体（词法作用域 = 声明点；isLambda 复用自由变量捕获）
+            var hasBacking = local.HasBackingStorage;
+            BoundFunctionBody getBody;
+            HashSet<SemanticSymbol> captured = new HashSet<SemanticSymbol>();
+            if (getterNode != null)
+            {
+                var (block, bodyLocals, bodyCaptures) = BindAccessorBody(getterNode, getValue,
+                    valueField, hasBacking, isSetter: false, elementType, scope, outerCtx, env);
+                getBody = new BoundFunctionBody(getValue, bodyLocals, block);
+                foreach (var c in bodyCaptures) captured.Add(c);
+                local.Getter = getValue;
+            }
+            else
+            {
+                // 仅 setter：保留默认 getValue（P3 读侧已拒，体不可达）
+                getBody = new BoundFunctionBody(getValue, Array.Empty<LocalSymbol>(),
+                    new BoundBlock(syntax, new BoundStatement[]
+                    {
+                        new BoundReturnStatement(syntax, new BoundFieldAccessExpression(syntax,
+                            new BoundThisExpression(syntax, cellClass), valueField, elementType)),
+                    }));
+            }
+
+            BoundFunctionBody? setBody = null;
+            if (setValue != null)
+            {
+                if (setterNode != null && !local.IsConst)
+                {
+                    var (block, bodyLocals, bodyCaptures) = BindAccessorBody(setterNode, setValue,
+                        valueField, hasBacking, isSetter: true, elementType, scope, outerCtx, env);
+                    setBody = new BoundFunctionBody(setValue, bodyLocals, block);
+                    foreach (var c in bodyCaptures) captured.Add(c);
+                    local.Setter = setValue;
+                }
+                else
+                {
+                    // 仅 getter 的 var：默认 setValue 透传（P3 写侧已拒）
+                    var parameter = setValue.Parameters[0];
+                    setBody = new BoundFunctionBody(setValue, Array.Empty<LocalSymbol>(),
+                        new BoundBlock(syntax, new BoundStatement[]
+                        {
+                            AssignValue(syntax, cellClass, valueField, elementType,
+                                new BoundValueReferenceExpression(syntax, parameter, elementType)),
+                        }));
+                }
+            }
+
+            // 自由变量捕获（排除本局部自身——声明点尚未入 scope，防御性剔除）
+            captured.Remove(local);
+            var captures = BuildAccessorCaptures(syntax, captured, outerCtx, cellClass, env);
+
+            // init 壳：值参 + 捕获实参；空构造仅 Cell 风味
+            MethodSymbol? defaultInit = null;
+            if (!readOnly)
+            {
+                defaultInit = NewMethod("init", MethodKind.Init, cellClass, null,
+                    isOverride: false);
+                AddCaptureParameters(defaultInit, captures);
+                cellClass.Methods.Insert(0, defaultInit);
+            }
+            var valueInit = NewMethod("init", MethodKind.Init, cellClass, null,
+                isOverride: false);
+            valueInit.Parameters.Add(new ParameterSymbol("value", elementType));
+            AddCaptureParameters(valueInit, captures);
+            cellClass.Methods.Insert(defaultInit == null ? 0 : 1, valueInit);
+
+            // init 体
+            var methods = new List<BoundFunctionBody>();
+            if (defaultInit != null)
+            {
+                methods.Add(new BoundFunctionBody(defaultInit, Array.Empty<LocalSymbol>(),
+                    new BoundBlock(syntax, CaptureAssignStatements(syntax, cellClass, defaultInit,
+                        captures, valueParamOffset: 0))));
+            }
+            var valueInitStmts = new List<BoundStatement>
+            {
+                AssignValue(syntax, cellClass, valueField, elementType,
+                    new BoundValueReferenceExpression(syntax, valueInit.Parameters[0],
+                        elementType)),
+            };
+            valueInitStmts.AddRange(CaptureAssignStatements(syntax, cellClass, valueInit,
+                captures, valueParamOffset: 1));
+            methods.Add(new BoundFunctionBody(valueInit, Array.Empty<LocalSymbol>(),
+                new BoundBlock(syntax, valueInitStmts)));
+            methods.Add(getBody);
+            if (setBody != null) methods.Add(setBody);
+
+            var info = new CellStorageInfo(cellClass, cellType, readOnly, valueField,
+                valueInit, defaultInit, captures);
+            cellClass.CellStorage = info;
+            foreach (var body in methods) env.SyntheticCellBodies.Add(body);
+            // M109b-1：value 字段 wrapped(W) → cell 子类 ..init.wrapper
+            WrapperInitSynthesis.SynthesizeForCell(info, syntax, env);
+            return info;
+        }
+
+        // 单访问器体绑定：独立 BindContext（Frame.Method = getValue/setValue，
+        // LookupHost/DeclaringType/this 沿外层——同 lambda）；backing 形态
+        // Accessor.Set(valueField)；自动体合成同字段访问器
+        private static (BoundBlock Body, IReadOnlyList<LocalSymbol> Locals,
+            HashSet<SemanticSymbol> Captures) BindAccessorBody(
+            PropertyAccessorASTNode accessorNode, MethodSymbol method, FieldSymbol valueField,
+            bool hasBacking, bool isSetter, SemanticSymbol elementType, Scope outerScope,
+            BindContext outerCtx, BindEnvironment env)
+        {
+            var accessorCtx = new BindContext(method, outerCtx.Frame.FileCtx,
+                outerCtx.Frame.DeclaringType, isLambda: true, thisSymbol: outerCtx.This,
+                lambdaThisType: outerCtx.IsLambda
+                    ? outerCtx.LambdaThisType
+                    : (outerCtx.Frame.HasThis ? outerCtx.Frame.Method.Owner : null),
+                lookupHost: outerCtx.Frame.LookupHost);
+            accessorCtx.Flow.InheritAssignedFrom(outerCtx.Flow);
+            if (hasBacking) accessorCtx.Accessor.Set(valueField, isSetter);
+
+            var accessorScope = new Scope(outerScope);
+            foreach (var outerParameter in outerCtx.Frame.Method.Parameters)
+                accessorScope.Declare(outerParameter);
+            // setter 的 value 参数经 Frame.Method.Parameters 解析，无需入 scope；
+            // 标记为「非捕获」（同 lambda 自身参数）——value 在 Method.Parameters 内，
+            // PathVisitors 走参数路径不进 CapturedSymbols
+
+            BoundBlock body;
+            if (accessorNode.Body != null)
+            {
+                body = BlockDispatcher.Visit(accessorNode.Body, accessorScope, accessorCtx, env);
+            }
+            else if (isSetter)
+            {
+                body = new BoundBlock(accessorNode, new List<BoundStatement>());
+            }
+            else
+            {
+                // 自动 getter：return value（backing 读）
+                var statements = new List<BoundStatement>();
+                if (elementType is not ErrorTypeSymbol)
+                {
+                    statements.Add(new BoundReturnStatement(accessorNode,
+                        PathFacility.MakeBackingFieldReference(accessorNode, valueField,
+                            elementType, accessorCtx.Frame)));
+                }
+                body = new BoundBlock(accessorNode, statements);
+            }
+            // backing setter：体首隐含 value 字段 = value 参数
+            if (isSetter && hasBacking && elementType is not ErrorTypeSymbol)
+            {
+                var implicitAssign = new BoundAssignmentStatement(accessorNode,
+                    PathFacility.MakeBackingFieldReference(accessorNode, valueField, elementType,
+                        accessorCtx.Frame),
+                    new BoundValueReferenceExpression(accessorNode, method.Parameters[0],
+                        elementType));
+                body = new BoundBlock(body.Syntax,
+                    new List<BoundStatement> { implicitAssign }.Concat(body.Statements).ToList());
+            }
+            if (method.ReturnType != null && !BoundAnalysis.GuaranteesReturn(body))
+            {
+                env.Error(accessorNode.Span,
+                    $"Function '{method.Name}' must return a value on all code paths");
+            }
+            AsyncGates.CheckFunctionBody(body, env);
+            // 嵌套 lambda 捕获向外传递（同 LambdaVisitor）
+            foreach (var nested in accessorCtx.CapturedSymbols)
+            {
+                // 已在 accessorCtx.CapturedSymbols
+            }
+            return (body, accessorCtx.Locals.ToList(), accessorCtx.CapturedSymbols);
+        }
+
+        private static IReadOnlyList<LambdaCaptureEntry> BuildAccessorCaptures(
+            ASTNode syntax, HashSet<SemanticSymbol> captured, BindContext outerCtx,
+            TypeSymbol cellClass, BindEnvironment env)
+        {
+            var ordered = captured
+                .OrderBy(symbol => symbol is ThisSymbol ? 0 : 1)
+                .ThenBy(symbol => symbol.Name, StringComparer.Ordinal);
+            var captures = new List<LambdaCaptureEntry>();
+            foreach (var symbol in ordered)
+            {
+                switch (symbol)
+                {
+                    case ThisSymbol:
+                        {
+                            var field = new FieldSymbol(".capture.this", owner: cellClass,
+                                fieldType: outerCtx.IsLambda
+                                    ? outerCtx.LambdaThisType
+                                    : (outerCtx.Frame.HasThis
+                                        ? outerCtx.Frame.Method.Owner
+                                        : env.Unit.Symbols.ErrorType)
+                                    ?? env.Unit.Symbols.ErrorType);
+                            cellClass.Fields.Add(field);
+                            captures.Add(new LambdaCaptureEntry(symbol, field,
+                                isThis: true, isReadOnly: true));
+                            break;
+                        }
+                    case LocalSymbol outerLocal:
+                        {
+                            var storage = EnsureCellStorage(outerLocal, syntax, outerCtx, env);
+                            var field = new FieldSymbol(".capture." + outerLocal.Name,
+                                owner: cellClass,
+                                fieldType: storage?.CellType ?? env.Unit.Symbols.ErrorType);
+                            cellClass.Fields.Add(field);
+                            captures.Add(new LambdaCaptureEntry(symbol, field,
+                                isThis: false,
+                                isReadOnly: storage?.IsReadOnly ?? outerLocal.IsConst));
+                            outerCtx.Flow.ClearRoot(outerLocal);
+                            break;
+                        }
+                    case ParameterSymbol parameter:
+                        {
+                            var storage = EnsureCellStorage(parameter, syntax, outerCtx, env);
+                            var field = new FieldSymbol(".capture." + parameter.Name,
+                                owner: cellClass,
+                                fieldType: storage?.CellType ?? env.Unit.Symbols.ErrorType);
+                            cellClass.Fields.Add(field);
+                            captures.Add(new LambdaCaptureEntry(symbol, field,
+                                isThis: false, isReadOnly: false));
+                            outerCtx.Flow.ClearRoot(parameter);
+                            break;
+                        }
+                }
+            }
+            return captures;
+        }
+
+        private static void AddCaptureParameters(MethodSymbol init,
+            IReadOnlyList<LambdaCaptureEntry> captures)
+        {
+            for (var i = 0; i < captures.Count; i++)
+            {
+                init.Parameters.Add(new ParameterSymbol("c" + i, captures[i].Field.FieldType));
+            }
+        }
+
+        private static List<BoundStatement> CaptureAssignStatements(ASTNode syntax,
+            TypeSymbol cellClass, MethodSymbol init, IReadOnlyList<LambdaCaptureEntry> captures,
+            int valueParamOffset)
+        {
+            var statements = new List<BoundStatement>();
+            for (var i = 0; i < captures.Count; i++)
+            {
+                var entry = captures[i];
+                var parameter = init.Parameters[valueParamOffset + i];
+                statements.Add(new BoundAssignmentStatement(syntax,
+                    new BoundFieldAccessExpression(syntax,
+                        new BoundThisExpression(syntax, cellClass), entry.Field,
+                        entry.Field.FieldType!),
+                    new BoundValueReferenceExpression(syntax, parameter,
+                        entry.Field.FieldType!)));
+            }
+            return statements;
+        }
+
         // 隐藏子类合成：基类 = Cell<T>/ReadonlyCell<T> 构造类型；stdlib
         // 缺席时毒化返回 null（诊断落袋，符号保持未 cell 化——P4 消费点
         // 按缺失各自归口，不二次报）
@@ -65,8 +391,8 @@ namespace LatteCompiler
             // 毒化静默（类型解析失败的诊断已在前序落袋，不合成残缺子类）
             if (elementType is ErrorTypeSymbol) return null;
             // 泛型参数值类型的 cell 化要求该参数在合成点的在册集合内
-            //（lambda 体内包装外层方法泛型参数等缺席场景无法转发 typeid——
-            // 显式归口，不合成残缺子类）
+            //（M112：外层方法泛型经 Owner 共享已覆盖 lambda/cell 合成主路径；
+            // 仍不在册的残缺场景显式归口，不合成残缺子类）
             if (elementType is GenericParameterSymbol genericElement
                 && !genericParameters.Contains(genericElement))
             {
@@ -162,6 +488,8 @@ namespace LatteCompiler
                 valueInit, readOnly ? null : methods[0].Method);
             cellClass.CellStorage = info;
             foreach (var (_, body) in methods) env.SyntheticCellBodies.Add(body);
+            // M109b-1：value 字段 wrapped(W) → cell 子类 ..init.wrapper
+            WrapperInitSynthesis.SynthesizeForCell(info, syntax, env);
             return info;
         }
 
@@ -186,16 +514,35 @@ namespace LatteCompiler
                 value);
         }
 
-        // 外层方法 + 外层声明类型链的泛型参数（声明类型链先行、方法随后——
-        // 与 NameResolver.FindGenericParameter 的查找范围一致；同符号对象共享）
+        // 外层方法 + 外层声明类型链 + 合成方法 Owner 的泛型参数（声明类型链
+        // 先行、Owner 补齐、方法随后——与 NameResolver.FindGenericParameter
+        // 的查找范围一致；同符号对象共享，HashSet 去重保序）。
+        // M112：lambda $$call / cell getValue·setValue·init 等合成方法自身
+        // 无 GenericParameters，外层**方法**泛型经 M103 挂在 Owner（隐藏类/
+        // cell 子类）GenericParameters——须从 Owner 纳入在册集合，否则嵌套
+        // lambda 捕获 T 型局部时守卫误拒、体内 `var y: T` 亦无法解析。
         internal static IEnumerable<GenericParameterSymbol> InScopeGenericParameters(
             BindContext ctx)
         {
+            var seen = new HashSet<GenericParameterSymbol>();
             for (var t = ctx.Frame.DeclaringType; t != null; t = t.DeclaringType)
             {
-                foreach (var parameter in t.GenericParameters) yield return parameter;
+                foreach (var parameter in t.GenericParameters)
+                {
+                    if (seen.Add(parameter)) yield return parameter;
+                }
             }
-            foreach (var parameter in ctx.Frame.Method.GenericParameters) yield return parameter;
+            if (ctx.Frame.Method.Owner != null)
+            {
+                foreach (var parameter in ctx.Frame.Method.Owner.GenericParameters)
+                {
+                    if (seen.Add(parameter)) yield return parameter;
+                }
+            }
+            foreach (var parameter in ctx.Frame.Method.GenericParameters)
+            {
+                if (seen.Add(parameter)) yield return parameter;
+            }
         }
     }
 }

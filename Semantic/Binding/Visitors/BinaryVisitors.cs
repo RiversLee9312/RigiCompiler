@@ -318,6 +318,20 @@ namespace LatteCompiler
                             "using resource bindings cannot be reassigned");
                         return null;
                     }
+                    // 局部访问器：复合赋值 = 读+写（M107，§9.4.1）
+                    if (local.Getter != null || local.Setter != null)
+                    {
+                        if (local.Getter == null)
+                        {
+                            env.Error(node.Span, $"'{local.Name}' has no getter");
+                            return null;
+                        }
+                        if (local.Setter == null)
+                        {
+                            env.Error(node.Span, $"'{local.Name}' has no setter");
+                            return null;
+                        }
+                    }
                     if (local.IsConst)
                     {
                         env.Error(node.Span, $"Cannot assign to const '{local.Name}'");

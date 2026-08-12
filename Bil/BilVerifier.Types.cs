@@ -111,6 +111,25 @@ namespace LatteCompiler.Bil
                     reads.AddRange(newCase.Arguments);
                     writes.Add(newCase.Target);
                     return true;
+                case NewWrappedInstruction newWrapped:
+                    reads.AddRange(newWrapped.WrapperArguments);
+                    reads.AddRange(newWrapped.InitArguments);
+                    writes.Add(newWrapped.Target);
+                    return true;
+                case NewWrappedCaseInstruction newWrappedCase:
+                    reads.AddRange(newWrappedCase.WrapperArguments);
+                    reads.AddRange(newWrappedCase.CaseArguments);
+                    writes.Add(newWrappedCase.Target);
+                    return true;
+                case NewWrapperFieldInstruction newWrapperField:
+                    reads.AddRange(newWrapperField.Arguments);
+                    return true;
+                case NewWrapperMethodInstruction newWrapperMethod:
+                    reads.AddRange(newWrapperMethod.Arguments);
+                    return true;
+                case NewWrapperEntityInstruction newWrapperEntity:
+                    reads.AddRange(newWrapperEntity.Arguments);
+                    return true;
                 case InvokeInstruction invoke:
                     reads.AddRange(invoke.Arguments);
                     writes.Add(invoke.Target);
@@ -448,6 +467,26 @@ namespace LatteCompiler.Bil
                     VerifyNewCase(context, newCase, location, errors);
                     break;
 
+                case NewWrappedInstruction newWrapped:
+                    VerifyNewWrapped(context, newWrapped, location, errors);
+                    break;
+
+                case NewWrappedCaseInstruction newWrappedCase:
+                    VerifyNewWrappedCase(context, newWrappedCase, location, errors);
+                    break;
+
+                case NewWrapperFieldInstruction newWrapperField:
+                    VerifyNewWrapperField(context, newWrapperField, location, errors);
+                    break;
+
+                case NewWrapperMethodInstruction newWrapperMethod:
+                    VerifyNewWrapperMethod(context, newWrapperMethod, location, errors);
+                    break;
+
+                case NewWrapperEntityInstruction newWrapperEntity:
+                    VerifyNewWrapperEntity(context, newWrapperEntity, location, errors);
+                    break;
+
                 case InvokeInstruction invoke:
                     VerifyInvoke(context, invoke.Method.Symbol, invoke.Arguments,
                         invoke.Target, location, errors);
@@ -638,19 +677,23 @@ namespace LatteCompiler.Bil
 
         // §15.3 间接调用（callable 协议）：CALL_TARGET 的静态类型（沿 extends
         // 链）必须声明与实参列表严格匹配的 $$call（operator(call) 成员，
-        // canonical 名 $$call）；宿主泛型实参按 §6.4 严格口径代入候选签名
+        // canonical 名 $$call）；宿主泛型实参按 §6.4 严格口径代入候选签名。
+        // M108：泛型 $$call 的 typeid/包前缀与 direct invoke 同构（§7.2 序）
         private static void VerifyIndirectInvoke(BilFunctionContext context,
             BilVariableOperand callTarget, IReadOnlyList<BilVariableOperand> arguments,
             BilVariableOperand? target, string location, List<BilVerificationError> errors)
         {
             var type = VarType(context, callTarget);
             if (type == null) return;
-            if (!TryFindCallOperator(context, type, arguments, out var returnType,
-                    out var isAsync))
+            if (!TryFindCallOperator(context, type, arguments, location, errors,
+                    out var returnType, out var isAsync, out var found))
             {
-                errors.Add(new BilVerificationError("21.3", location,
-                    $"invoke.indirect 目标类型 \"{type}\" 没有与实参列表匹配的 " +
-                    "operator call 实现"));
+                if (!found)
+                {
+                    errors.Add(new BilVerificationError("21.3", location,
+                        $"invoke.indirect 目标类型 \"{type}\" 没有与实参列表匹配的 " +
+                        "operator call 实现"));
+                }
                 return;
             }
             // 返回形态（§15.1/§15.2 同口径）：async call 恒有 Task 结果
@@ -679,12 +722,18 @@ namespace LatteCompiler.Bil
         }
 
         // 沿 extends 链查找与实参列表严格匹配的 $$call 成员（宿主泛型代入后
-        // 逐实参 §6.4 全等比对）；查不到声明（external 不完整）降级为通过
+        // 逐实参 §6.4 全等比对；M108：泛型隐藏条目 typeid/包前缀同 §15.1
+        // invoke 口径）。查不到声明（external 不完整）降级为通过。
+        // 返回 false 且 found=false = 无匹配候选；found=true 且 false =
+        // 已命中候选但前缀形态错误（诊断已落袋）
         private static bool TryFindCallOperator(BilFunctionContext context, string objectTypeRef,
-            IReadOnlyList<BilVariableOperand> arguments, out string returnType, out bool isAsync)
+            IReadOnlyList<BilVariableOperand> arguments, string location,
+            List<BilVerificationError> errors, out string returnType, out bool isAsync,
+            out bool found)
         {
             returnType = ".void";
             isAsync = false;
+            found = false;
             // 内建类型（.i32/.string 等别名形态）无声明表条目且确定无
             // operator call——直接判负（不走「查不到声明降级」通道）
             if (BilVerificationContext.IsBuiltinType(objectTypeRef)) return false;
@@ -694,6 +743,7 @@ namespace LatteCompiler.Bil
             {
                 if (!context.Module.TryGetTypeDeclaration(current, out var declaration))
                 {
+                    found = true;
                     return true;   // 链断/查不到声明：降级（同 §13.6 口径）
                 }
                 foreach (var member in declaration.Members)
@@ -711,14 +761,71 @@ namespace LatteCompiler.Bil
                     {
                         continue;
                     }
-                    if (parameters.Count != arguments.Count) continue;
-                    var matches = true;
-                    for (var i = 0; i < parameters.Count; i++)
+                    // 普通参数（符号段无 hidden）+ fn 定义侧 .generic.*/值包
+                    // （同 §15.1 VerifyInvoke：无 fn 定义时 hidden=0）
+                    var ordinary = new List<(string Name, string TypeRef)>();
+                    foreach (var parameter in parameters)
                     {
-                        var expected = SubstituteHostGenerics(parameters[i].TypeRef,
+                        if (parameter.Name.StartsWith(".generic.")
+                            || parameter.Name.StartsWith(".vargs.")
+                            || parameter.Name.StartsWith(".kwargs."))
+                        {
+                            continue;
+                        }
+                        ordinary.Add(parameter);
+                    }
+                    var genericHidden = new List<BilArgDeclaration>();
+                    var packArguments = new List<BilArgDeclaration>();
+                    var calleeDefinition = context.Module.Module.Functions
+                        .FirstOrDefault(f => f.Symbol == simple.Symbol);
+                    if (calleeDefinition != null)
+                    {
+                        foreach (var arg in calleeDefinition.Args)
+                        {
+                            if (arg.Name.StartsWith(".generic.")) genericHidden.Add(arg);
+                            else if (arg.Name.StartsWith(".vargs.")
+                                || arg.Name.StartsWith(".kwargs."))
+                            {
+                                packArguments.Add(arg);
+                            }
+                        }
+                    }
+                    var expectedCount = genericHidden.Count + ordinary.Count + packArguments.Count;
+                    if (arguments.Count != expectedCount) continue;
+                    // 前缀：固定 .generic.T = .typeid / 包 = .array|.map 形态
+                    for (var i = 0; i < genericHidden.Count; i++)
+                    {
+                        var actualType = VarType(context, arguments[i]) ?? "";
+                        if (!BilVerificationContext.TypesCompatible(actualType,
+                                genericHidden[i].TypeRef))
+                        {
+                            errors.Add(new BilVerificationError("21.3", location,
+                                $"invoke.indirect 泛型隐藏实参 {i} 类型 \"{actualType}\" " +
+                                $"与 \"{genericHidden[i].Name}: {genericHidden[i].TypeRef}\" 不匹配"));
+                            found = true;
+                            return false;
+                        }
+                    }
+                    var valueStart = genericHidden.Count;
+                    var matches = true;
+                    for (var i = 0; i < ordinary.Count; i++)
+                    {
+                        var expected = SubstituteHostGenerics(ordinary[i].TypeRef,
                             declaration, current);
                         if (!BilVerificationContext.TypesCompatible(
-                                VarType(context, arguments[i]) ?? "", expected))
+                                VarType(context, arguments[valueStart + i]) ?? "", expected))
+                        {
+                            matches = false;
+                            break;
+                        }
+                    }
+                    if (!matches) continue;
+                    for (var i = 0; i < packArguments.Count; i++)
+                    {
+                        var packIndex = valueStart + ordinary.Count + i;
+                        if (!BilVerificationContext.TypesCompatible(
+                                VarType(context, arguments[packIndex]) ?? "",
+                                packArguments[i].TypeRef))
                         {
                             matches = false;
                             break;
@@ -728,6 +835,7 @@ namespace LatteCompiler.Bil
                     returnType = SubstituteHostGenerics(candidateReturn, declaration, current);
                     isAsync = simple.Modifiers.Any(m =>
                         m is BilKeywordModifier { Keyword: BilKeyword.Async });
+                    found = true;
                     return true;
                 }
                 if (declaration.ExtendsType == null) return false;
@@ -954,7 +1062,231 @@ namespace LatteCompiler.Bil
                 errors.Add(new BilVerificationError("21.8", location,
                     $"enum-struct \"{typeRef}\" 不得走普通 new（应使用 new.case）"));
             }
+            // §14.4：有参 ..init.wrapper 的类型必须用 new.wrapped
+            if (TryGetInitWrapperParameters(declaration, typeRef, out var wrapperParams)
+                && wrapperParams.Count > 0)
+            {
+                errors.Add(new BilVerificationError("21.3", location,
+                    $"类型 \"{typeRef}\" 的 ..init.wrapper 有参数，必须使用 new.wrapped（§14.4）"));
+                return;
+            }
             // §14.1：参数必须严格匹配唯一 init（无 init 声明时只允许无参构造）
+            if (!MatchAnyInit(context, declaration, typeRef, newInstruction.Arguments))
+            {
+                if (CollectInits(declaration).Count == 0)
+                {
+                    if (newInstruction.Arguments.Count > 0)
+                    {
+                        errors.Add(new BilVerificationError("21.3", location,
+                            $"类型 \"{typeRef}\" 没有 init 声明，不得带参数构造"));
+                    }
+                }
+                else
+                {
+                    errors.Add(new BilVerificationError("21.3", location,
+                        $"new \"{typeRef}\" 的实参不匹配任何 init 签名"));
+                }
+            }
+        }
+
+        // §14.4.1 new.wrapped type(T) RESULT [WRAPPER_ARGS] [INIT_ARGS]
+        private static void VerifyNewWrapped(BilFunctionContext context,
+            NewWrappedInstruction instruction, string location, List<BilVerificationError> errors)
+        {
+            var typeRef = instruction.Type.TypeRef;
+            VerifyResolvableType(context, typeRef, location, errors);
+            CheckType(context, VarType(context, instruction.Target), typeRef, location,
+                "new.wrapped 结果", errors);
+            if (!context.Module.TryGetTypeDeclaration(typeRef, out var declaration))
+            {
+                return;
+            }
+            if (HasKeyword(declaration.Modifiers, BilKeyword.Abstract))
+            {
+                errors.Add(new BilVerificationError("21.8", location,
+                    $"abstract 类型 \"{typeRef}\" 不得被 new.wrapped 构造"));
+            }
+            if (declaration.Kind == BilTypeKind.EnumStruct)
+            {
+                errors.Add(new BilVerificationError("21.8", location,
+                    $"enum-struct \"{typeRef}\" 不得走 new.wrapped（应使用 new.wrapped.case）"));
+            }
+            if (!TryGetInitWrapperParameters(declaration, typeRef, out var wrapperParams)
+                || wrapperParams.Count == 0)
+            {
+                errors.Add(new BilVerificationError("21.3", location,
+                    $"类型 \"{typeRef}\" 无有参 ..init.wrapper，禁止 new.wrapped（§14.4）"));
+                return;
+            }
+            if (!SignatureMatches(context, wrapperParams, instruction.WrapperArguments))
+            {
+                errors.Add(new BilVerificationError("21.3", location,
+                    $"new.wrapped \"{typeRef}\" 的 wrapper 前缀实参不匹配 ..init.wrapper 签名"));
+            }
+            if (!MatchAnyInit(context, declaration, typeRef, instruction.InitArguments))
+            {
+                errors.Add(new BilVerificationError("21.3", location,
+                    $"new.wrapped \"{typeRef}\" 的 init 实参不匹配任何 init 签名"));
+            }
+        }
+
+        // §14.4.2 new.wrapped.case
+        private static void VerifyNewWrappedCase(BilFunctionContext context,
+            NewWrappedCaseInstruction instruction, string location,
+            List<BilVerificationError> errors)
+        {
+            var typeRef = instruction.Type.TypeRef;
+            VerifyResolvableType(context, typeRef, location, errors);
+            CheckType(context, VarType(context, instruction.Target), typeRef, location,
+                "new.wrapped.case 结果", errors);
+            if (!context.Module.TryGetTypeDeclaration(typeRef, out var declaration))
+            {
+                return;
+            }
+            if (declaration.Kind != BilTypeKind.EnumStruct)
+            {
+                errors.Add(new BilVerificationError("21.3", location,
+                    $"new.wrapped.case 的目标 \"{typeRef}\" 不是 enum-struct"));
+            }
+            if (!TryGetInitWrapperParameters(declaration, typeRef, out var wrapperParams)
+                || wrapperParams.Count == 0)
+            {
+                errors.Add(new BilVerificationError("21.3", location,
+                    $"类型 \"{typeRef}\" 无有参 ..init.wrapper，禁止 new.wrapped.case（§14.4）"));
+                return;
+            }
+            if (!SignatureMatches(context, wrapperParams, instruction.WrapperArguments))
+            {
+                errors.Add(new BilVerificationError("21.3", location,
+                    $"new.wrapped.case \"{typeRef}\" 的 wrapper 前缀实参不匹配 ..init.wrapper 签名"));
+            }
+            // case 实参：复用 new.case 校验路径的结构（case 可解析 + 洞签名）
+            VerifyNewCaseArguments(context, instruction.Case.QualifiedName, typeRef,
+                instruction.CaseArguments, location, "new.wrapped.case", errors);
+        }
+
+        private static void VerifyNewWrapperField(BilFunctionContext context,
+            NewWrapperFieldInstruction instruction, string location,
+            List<BilVerificationError> errors)
+        {
+            if (!RequireInitWrapperBody(context, location, "new.wrapper.field", errors))
+            {
+                return;
+            }
+            VerifyWrapperType(context, instruction.WrapperType.TypeRef, location, errors);
+            VerifyWrapperInitArguments(context, instruction.WrapperType.TypeRef,
+                instruction.Arguments, location, "new.wrapper.field", errors);
+            var fieldSymbol = instruction.Field.Symbol;
+            if (!context.Module.FieldSymbols.Contains(fieldSymbol))
+            {
+                errors.Add(new BilVerificationError("21.2", location,
+                    $"new.wrapper.field 的字段符号不可解析 \"{fieldSymbol}\""));
+                return;
+            }
+            if (!BilVerificationContext.TryParseFieldSymbol(fieldSymbol,
+                    out _, out var isStatic, out _))
+            {
+                return;
+            }
+            if (isStatic)
+            {
+                errors.Add(new BilVerificationError("21.3", location,
+                    $"new.wrapper.field 的字段 \"{fieldSymbol}\" 必须是实例字段"));
+            }
+            if (!context.Module.FieldDeclarations.TryGetValue(fieldSymbol, out var fieldDecl)
+                || !MemberHasWrapped(fieldDecl, instruction.WrapperType.TypeRef))
+            {
+                errors.Add(new BilVerificationError("21.3", location,
+                    $"new.wrapper.field 的字段 \"{fieldSymbol}\" 必须带 wrapped(" +
+                    $"{instruction.WrapperType.TypeRef})（§14.5）"));
+            }
+        }
+
+        private static void VerifyNewWrapperMethod(BilFunctionContext context,
+            NewWrapperMethodInstruction instruction, string location,
+            List<BilVerificationError> errors)
+        {
+            if (!RequireInitWrapperBody(context, location, "new.wrapper.method", errors))
+            {
+                return;
+            }
+            VerifyWrapperType(context, instruction.WrapperType.TypeRef, location, errors);
+            VerifyWrapperInitArguments(context, instruction.WrapperType.TypeRef,
+                instruction.Arguments, location, "new.wrapper.method", errors);
+            var methodSymbol = instruction.Method.Symbol;
+            if (!context.Module.MethodSymbols.Contains(methodSymbol)
+                && methodSymbol != BilSpellings.InnerReservedFunction
+                && methodSymbol != BilSpellings.SuperReservedFunction)
+            {
+                errors.Add(new BilVerificationError("21.2", location,
+                    $"new.wrapper.method 的方法符号不可解析 \"{methodSymbol}\""));
+            }
+        }
+
+        private static void VerifyNewWrapperEntity(BilFunctionContext context,
+            NewWrapperEntityInstruction instruction, string location,
+            List<BilVerificationError> errors)
+        {
+            if (!RequireInitWrapperBody(context, location, "new.wrapper.entity", errors))
+            {
+                return;
+            }
+            VerifyWrapperType(context, instruction.WrapperType.TypeRef, location, errors);
+            VerifyWrapperInitArguments(context, instruction.WrapperType.TypeRef,
+                instruction.Arguments, location, "new.wrapper.entity", errors);
+            // 宿主类型声明须带 wrapped(W)
+            if (BilVerificationContext.TryParseMethodSymbol(context.Function.Symbol,
+                    out var owner, out _, out _, out _)
+                && context.Module.TryGetTypeDeclaration(owner, out var hostDecl)
+                && !DeclarationHasWrapped(hostDecl, instruction.WrapperType.TypeRef))
+            {
+                errors.Add(new BilVerificationError("21.3", location,
+                    $"new.wrapper.entity 要求宿主类型 \"{owner}\" 带 wrapped(" +
+                    $"{instruction.WrapperType.TypeRef})（§14.5）"));
+            }
+        }
+
+        private static bool RequireInitWrapperBody(BilFunctionContext context, string location,
+            string opcode, List<BilVerificationError> errors)
+        {
+            var name = MethodNameSegment(context.Function.Symbol);
+            if (name == BilSpellings.InitWrapperMethodName)
+            {
+                return true;
+            }
+            errors.Add(new BilVerificationError("21.3", location,
+                $"{opcode} 仅允许在 ..init.wrapper fn 体内（§14.5）"));
+            return false;
+        }
+
+        private static void VerifyWrapperInitArguments(BilFunctionContext context,
+            string wrapperTypeRef, IReadOnlyList<BilVariableOperand> arguments,
+            string location, string opcode, List<BilVerificationError> errors)
+        {
+            if (!context.Module.TryGetTypeDeclaration(wrapperTypeRef, out var declaration))
+            {
+                return;
+            }
+            if (!MatchAnyInit(context, declaration, wrapperTypeRef, arguments))
+            {
+                if (CollectInits(declaration).Count == 0)
+                {
+                    if (arguments.Count > 0)
+                    {
+                        errors.Add(new BilVerificationError("21.3", location,
+                            $"{opcode}：wrapper \"{wrapperTypeRef}\" 无 init，不得带参数"));
+                    }
+                }
+                else
+                {
+                    errors.Add(new BilVerificationError("21.3", location,
+                        $"{opcode} 的实参不匹配 wrapper \"{wrapperTypeRef}\" 的任何 init 签名"));
+                }
+            }
+        }
+
+        private static List<BilSimpleMemberDeclaration> CollectInits(BilTypeDeclaration declaration)
+        {
             var inits = new List<BilSimpleMemberDeclaration>();
             foreach (var member in declaration.Members)
             {
@@ -963,14 +1295,16 @@ namespace LatteCompiler.Bil
                     inits.Add(simple);
                 }
             }
+            return inits;
+        }
+
+        private static bool MatchAnyInit(BilFunctionContext context, BilTypeDeclaration declaration,
+            string typeRef, IReadOnlyList<BilVariableOperand> arguments)
+        {
+            var inits = CollectInits(declaration);
             if (inits.Count == 0)
             {
-                if (newInstruction.Arguments.Count > 0)
-                {
-                    errors.Add(new BilVerificationError("21.3", location,
-                        $"类型 \"{typeRef}\" 没有 init 声明，不得带参数构造"));
-                }
-                return;
+                return arguments.Count == 0;
             }
             foreach (var init in inits)
             {
@@ -979,21 +1313,100 @@ namespace LatteCompiler.Bil
                 {
                     continue;
                 }
-                // 泛型宿主的 init 签名代入（§6.3 构造头类型——core::Cell\<T\>
-                // 的 init(value: T) 等）：按 new 的 type 操作数构造实参替换
-                // 签名中的 .generic<$.generic.*> 再严格匹配
                 for (var i = 0; i < parameters.Count; i++)
                 {
                     parameters[i] = (parameters[i].Name,
                         SubstituteHostGenerics(parameters[i].TypeRef, declaration, typeRef));
                 }
-                if (SignatureMatches(context, parameters, newInstruction.Arguments))
+                if (SignatureMatches(context, parameters, arguments))
                 {
-                    return;
+                    return true;
                 }
             }
-            errors.Add(new BilVerificationError("21.3", location,
-                $"new \"{typeRef}\" 的实参不匹配任何 init 签名"));
+            return false;
+        }
+
+        // 查找类型上的 ..init.wrapper 并解析参数表（代入宿主泛型）
+        private static bool TryGetInitWrapperParameters(BilTypeDeclaration declaration,
+            string typeRef, out List<(string Name, string TypeRef)> parameters)
+        {
+            parameters = new List<(string, string)>();
+            BilSimpleMemberDeclaration? found = null;
+            foreach (var member in declaration.Members)
+            {
+                if (member is not BilSimpleMemberDeclaration simple) continue;
+                if (MethodNameSegment(simple.Symbol) != BilSpellings.InitWrapperMethodName)
+                {
+                    continue;
+                }
+                found = simple;
+                break;
+            }
+            if (found == null)
+            {
+                return false;
+            }
+            if (!BilVerificationContext.TryParseMethodSymbol(found.Symbol,
+                    out _, out _, out parameters, out _))
+            {
+                return false;
+            }
+            for (var i = 0; i < parameters.Count; i++)
+            {
+                parameters[i] = (parameters[i].Name,
+                    SubstituteHostGenerics(parameters[i].TypeRef, declaration, typeRef));
+            }
+            return true;
+        }
+
+        private static bool MemberHasWrapped(BilSimpleMemberDeclaration declaration,
+            string wrapperTypeRef)
+        {
+            foreach (var modifier in declaration.Modifiers)
+            {
+                if (modifier is BilWrappedModifier wrapped
+                    && BilVerificationContext.TypesCompatible(wrapped.WrapperTypeRef,
+                        wrapperTypeRef))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static void VerifyNewCaseArguments(BilFunctionContext context,
+            string caseQualifiedName, string enumTypeRef,
+            IReadOnlyList<BilVariableOperand> arguments, string location, string opcode,
+            List<BilVerificationError> errors)
+        {
+            if (!context.Module.CaseDeclarations.TryGetValue(caseQualifiedName, out var caseDecl))
+            {
+                // 宽松：有的模块用完整符号索引
+                foreach (var kv in context.Module.CaseDeclarations)
+                {
+                    if (kv.Key == caseQualifiedName || kv.Value.QualifiedName == caseQualifiedName)
+                    {
+                        caseDecl = kv.Value;
+                        break;
+                    }
+                }
+            }
+            if (caseDecl == null)
+            {
+                errors.Add(new BilVerificationError("21.2", location,
+                    $"{opcode} 的 case 符号不可解析 \"{caseQualifiedName}\""));
+                return;
+            }
+            var expected = new List<(string Name, string TypeRef)>();
+            foreach (var p in caseDecl.Parameters)
+            {
+                expected.Add((p.Name, p.TypeRef));
+            }
+            if (!SignatureMatches(context, expected, arguments))
+            {
+                errors.Add(new BilVerificationError("21.3", location,
+                    $"{opcode} 的 case 实参不匹配 case 洞签名"));
+            }
         }
 
         // §13.6 非数组索引：严格三元组查询（collection + index + result/
@@ -1124,16 +1537,27 @@ namespace LatteCompiler.Bil
 
         private static void VerifyNewCase(BilFunctionContext context, NewCaseInstruction newCase,
             string location, List<BilVerificationError> errors)
-        {var typeRef = newCase.Type.TypeRef;
+        {
+            var typeRef = newCase.Type.TypeRef;
             VerifyResolvableType(context, typeRef, location, errors);
             CheckType(context, VarType(context, newCase.Target), typeRef, location,
                 "new.case 结果", errors);
             // §14.3：ENUM_TYPE 必须是 enum-struct 且 case owner 一致
-            if (context.Module.TryGetTypeDeclaration(typeRef, out var declaration)
-                && declaration.Kind != BilTypeKind.EnumStruct)
+            if (context.Module.TryGetTypeDeclaration(typeRef, out var declaration))
             {
-                errors.Add(new BilVerificationError("21.3", location,
-                    $"new.case 目标类型 \"{typeRef}\" 不是 enum-struct"));
+                if (declaration.Kind != BilTypeKind.EnumStruct)
+                {
+                    errors.Add(new BilVerificationError("21.3", location,
+                        $"new.case 目标类型 \"{typeRef}\" 不是 enum-struct"));
+                }
+                // §14.4：有参 ..init.wrapper 必须用 new.wrapped.case
+                if (TryGetInitWrapperParameters(declaration, typeRef, out var wrapperParams)
+                    && wrapperParams.Count > 0)
+                {
+                    errors.Add(new BilVerificationError("21.3", location,
+                        $"类型 \"{typeRef}\" 的 ..init.wrapper 有参数，必须使用 new.wrapped.case（§14.4）"));
+                    return;
+                }
             }
             if (!newCase.Case.QualifiedName.StartsWith(typeRef + "."))
             {

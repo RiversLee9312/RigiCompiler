@@ -326,6 +326,13 @@ namespace LatteCompiler
                 return WrapperPlaceLowering.LowerDeepFieldCompound(compound, deepPlace, deepChain,
                     ctx, env);
             }
+            // M111：索引复合赋值 place[i] op= rhs / place.a.b[i] op= rhs
+            if (WrapperPlaceLowering.TryIndexWriteTarget(compound.Target,
+                    out var indexPlace, out var indexFields, out var indexExpr))
+            {
+                return WrapperPlaceLowering.LowerIndexCompound(compound, indexPlace, indexFields,
+                    indexExpr, ctx, env);
+            }
             if (WrapperPlaceLowering.ContainsPlaceInTarget(compound.Target))
             {
                 WrapperPlaceLowering.UnsupportedWrite(compound.Target, env);
@@ -641,7 +648,8 @@ namespace LatteCompiler
         {
             var indexAccess = (BoundIndexExpression)node;
             // S11c/M84：wrapper place 作 receiver——Entity = get.wrapper、
-            // 字段-Value = get.wrapper.field 值拷贝物化（索引写仍归口）
+            // 字段-Value = get.wrapper.field 值拷贝物化（索引写归 Assignment/
+            // Compound 专用路径，读路径仍走本 rewriter）
             var receiver = indexAccess.Receiver is BoundWrapperAccessExpression place
                 ? WrapperPlaceLowering.Materialize(place, null, ctx, env)
                 : LowerExpressionDispatcher.Visit(indexAccess.Receiver, ctx, env);

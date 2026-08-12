@@ -153,24 +153,68 @@ namespace LatteCompiler
     }
 
     // new 构造（§14.1：init 选择归 Middleware（按精确参数类型），
-    // 发射不写 init 符号）
+    // 发射不写 init 符号）。M109b-1 §14.4：有参 ..init.wrapper 时发
+    // new.wrapped（第一表 = WrapperArguments，第二表 = Arguments）
     internal sealed class NewExpressionEmitter : EmitVisitor<NewExpressionEmitter, BilVariableOperand>
     {
         protected override BilVariableOperand VisitCore(LoweredNode node, BilBlock target,
             EmitContext ctx, EmitEnvironment env)
         {
             var newExpression = (LoweredNewExpression)node;
-            var newArguments = new List<BilVariableOperand>();
+            var initArguments = new List<BilVariableOperand>();
             foreach (var argument in newExpression.Arguments)
             {
-                newArguments.Add(EmitValueDispatcher.Visit(argument, target, ctx, env));
+                initArguments.Add(EmitValueDispatcher.Visit(argument, target, ctx, env));
             }
             var newResult = ctx.Temps.NewTemp(newExpression.Type);
-            target.Instructions.Add(new NewInstruction(
-                BilOp.Type(CanonicalSymbolPrinter.PrintType(newExpression.Type)),
-                newResult, newArguments)
-            { Origin = newExpression });
+            var typeOp = BilOp.Type(CanonicalSymbolPrinter.PrintType(newExpression.Type));
+            if (newExpression.WrapperArguments != null)
+            {
+                var wrapperArguments = new List<BilVariableOperand>();
+                foreach (var argument in newExpression.WrapperArguments)
+                {
+                    wrapperArguments.Add(EmitValueDispatcher.Visit(argument, target, ctx, env));
+                }
+                target.Instructions.Add(new NewWrappedInstruction(
+                    typeOp, newResult, wrapperArguments, initArguments)
+                { Origin = newExpression });
+            }
+            else
+            {
+                target.Instructions.Add(new NewInstruction(typeOp, newResult, initArguments)
+                { Origin = newExpression });
+            }
             return newResult;
+        }
+    }
+
+    // §14.5 new.wrapper.*（仅 ..init.wrapper 体内）
+    internal sealed class NewWrapperEmitter : EmitVisitor<NewWrapperEmitter, Unit>
+    {
+        protected override Unit VisitCore(LoweredNode node, BilBlock target,
+            EmitContext ctx, EmitEnvironment env)
+        {
+            var stmt = (LoweredNewWrapperStatement)node;
+            var args = new List<BilVariableOperand>();
+            foreach (var argument in stmt.Arguments)
+            {
+                args.Add(EmitValueDispatcher.Visit(argument, target, ctx, env));
+            }
+            var wrapperType = BilOp.Type(CanonicalSymbolPrinter.PrintType(stmt.WrapperType));
+            BilInstruction instruction = stmt.Kind switch
+            {
+                BoundNewWrapperKind.Entity => new NewWrapperEntityInstruction(wrapperType, args),
+                BoundNewWrapperKind.Field => new NewWrapperFieldInstruction(
+                    BilOp.Field(CanonicalSymbolPrinter.PrintField((FieldSymbol)stmt.Target!)),
+                    wrapperType, args),
+                BoundNewWrapperKind.Method => new NewWrapperMethodInstruction(
+                    BilOp.Fn(CanonicalSymbolPrinter.PrintMethod((MethodSymbol)stmt.Target!)),
+                    wrapperType, args),
+                _ => throw new CompilerInternalException("未知 BoundNewWrapperKind: " + stmt.Kind),
+            };
+            instruction.Origin = stmt;
+            target.Instructions.Add(instruction);
+            return Unit.Value;
         }
     }
 

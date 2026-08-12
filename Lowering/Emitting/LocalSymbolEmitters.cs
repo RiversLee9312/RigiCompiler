@@ -122,6 +122,11 @@ namespace LatteCompiler
             if (type.IsSingleton) declaration.Modifiers.Add(new BilKeywordModifier(BilKeyword.Singleton));
             if (type.IsRich) declaration.Modifiers.Add(new BilKeywordModifier(BilKeyword.Rich));
             if (type.IsShared) declaration.Modifiers.Add(new BilKeywordModifier(BilKeyword.Shared));
+            // M109b-2 §8.7：companion singleton 建议 compiler-generated
+            if (type.CompanionInfo != null)
+            {
+                declaration.Modifiers.Add(new BilKeywordModifier(BilKeyword.CompilerGenerated));
+            }
             // §8.3.1 wrapped(W)：应用标记 outer→inner = 列表序
             foreach (var application in type.AppliedWrappers)
             {
@@ -284,6 +289,14 @@ namespace LatteCompiler
             if (method.IsAsync) modifiers.Add(new BilKeywordModifier(BilKeyword.Async));
             if (method.Kind == MethodKind.Init) modifiers.Add(new BilKeywordModifier(BilKeyword.Init));
             if (method.Kind == MethodKind.Operator) modifiers.Add(new BilOperatorModifier(method.Name));
+            // M109b §9.7/§8.7：..init.wrapper / companion 实例方法 / 静态壳体
+            // 均 compiler-generated（priv/pub 由 Accessibility）
+            if (method.Name == BilSpellings.InitWrapperMethodName
+                || method.IsCompanionInstance
+                || method.Companion != null)
+            {
+                modifiers.Add(new BilKeywordModifier(BilKeyword.CompilerGenerated));
+            }
             // native 三件套（§8.4：symbol/lib 必须与 native 同时出现且各恰好一次）
             if (method.IsNative)
             {

@@ -77,6 +77,10 @@ namespace LatteCompiler
                     };
                 }
             }
+            // 局部 cell 登记（读写改写用）：构造点不限于声明语句——
+            // LocalDeclarationRewriter（普通/using 声明）、ForLoopRewriter
+            // Body 头、TryRewriter catch/finally(e) 体头均可能构造；
+            // 本表只管 getValue/setValue 与 cell 对象引用，不负责构造
             foreach (var local in body.Locals)
             {
                 if (local.CellStorage is not { } storage) continue;
@@ -100,6 +104,8 @@ namespace LatteCompiler
                 };
                 // prologue：.c.<名> = new ..cell..UUID(<实参>)（实参引用直造——
                 // 不经值引用降级，避免被本计划的 CellLocal 条目递归拦截）
+                // M109b-1：参数 cell 无 wrapper 应用（EnsureCellStorage 空列表），
+                // WrapperArguments 恒 null——普通 new
                 plan.prologue.Add(new LoweredLocalDeclarationStatement(body.Body, cellLocal,
                     new LoweredNewExpression(body.Body, storage.ValueInit,
                         new List<LoweredExpression>
@@ -107,6 +113,22 @@ namespace LatteCompiler
                             new LoweredValueReferenceExpression(body.Body, parameter)
                         },
                         storage.CellType)));
+            }
+            // 局部访问器 cell 的 getValue/setValue 体（M107）：用户体引用的
+            // 外层自由变量按 ClosureField 登记——与 lambda $$call 同路径改写
+            if (body.Method.Owner?.CellStorage is { AccessorCaptures.Count: > 0 } cellStorage
+                && (body.Method.Name == "getValue" || body.Method.Name == "setValue"))
+            {
+                foreach (var capture in cellStorage.AccessorCaptures)
+                {
+                    plan.entries[capture.Symbol] = new Entry
+                    {
+                        IsReadOnly = capture.IsReadOnly,
+                        CellType = capture.Field.FieldType as TypeSymbol
+                            ?? env.Unit.Symbols.ErrorType,
+                        Capture = capture,
+                    };
+                }
             }
             return plan;
         }
@@ -136,13 +158,21 @@ namespace LatteCompiler
         }
 
         // this 引用改写（lambda 体内的 BoundThisExpression → .capture.this
-        // 字段访问；this 捕获每闭包至多一条）；未命中 → null（默认 $.this）
+        // 字段访问；this 捕获每闭包至多一条）；未命中 → null（默认 $.this）。
+        // M107：cell getValue/setValue 体内存在「真 this」（cell 自身，
+        // Type = cellClass）与「外层 this 捕获」并存——仅当 Type 匹配捕获
+        // 字段类型时改写，避免把 this.value 误改成 .capture.this
         public LoweredExpression? TryRewriteThis(BoundThisExpression node)
         {
             foreach (var entry in entries.Values)
             {
                 if (entry.Capture is { IsThis: true } capture)
                 {
+                    if (capture.Field.FieldType != null
+                        && !ReferenceEquals(node.Type, capture.Field.FieldType))
+                    {
+                        continue;
+                    }
                     return new LoweredFieldAccessExpression(node,
                         new LoweredThisExpression(node), capture.Field,
                         capture.Field.FieldType);

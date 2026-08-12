@@ -296,8 +296,13 @@ namespace LatteCompiler.Bil
                             }
                             if (tryInstruction.FinallyBlock != null)
                             {
+                                // §16.7：try 指令在进 finally 前恒写 EXCEPTION_VAR
+                                // （正常路径写 null / 异常路径写当前逃逸异常）——
+                                // finally(e) cell 化后体头读 slot 构造 cell 合法
+                                var finallyAssigned = new HashSet<string>(assigned)
+                                    { tryInstruction.ExceptionSlot.Name };
                                 assigned = AnalyzeBlock(context, tryInstruction.FinallyBlock,
-                                    assigned, tokens, stack, errors, reported);
+                                    finallyAssigned, tokens, stack, errors, reported);
                             }
                             break;
                     }

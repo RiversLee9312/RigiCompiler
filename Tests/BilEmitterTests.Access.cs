@@ -221,5 +221,84 @@ namespace LatteCompiler.Tests
             TestHarness.CheckTrue("abstract 方法无 fn 定义",
                 !module.Functions.Any(f => f.Symbol.Contains("Concept$id")));
         }
+
+        // ===== M107：局部访问器端到端（路线 C = cell getValue/setValue 用户体）=====
+        private static void TestLocalAccessorEmission()
+        {
+            // backing 局部：读写经 getValue/setValue；用户 getter 含运算
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "pub func main(): i32 {\n" +
+                "    var x: i32 {\n" +
+                "        get(value: _) { return value + 1 }\n" +
+                "        set(value: _) { }\n" +
+                "    } = 10\n" +
+                "    x = 20\n" +
+                "    return x\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（局部访问器 backing）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（局部访问器 backing）", module);
+            TestHarness.CheckTrue("LocalSymbols 含 ..cell.. 隐藏子类",
+                module.LocalSymbols.OfType<BilTypeDeclaration>()
+                    .Any(t => t.Symbol.StartsWith("..cell..")));
+            var text = BilWriter.Write(module);
+            TestHarness.CheckTrue("main 读写经 Cell getValue/setValue",
+                text.Contains("setValue") && text.Contains("getValue"));
+            // getValue 用户体含 add（value + 1）——整模块文本中 cell getValue 段
+            TestHarness.CheckTrue("getValue override fn 存在",
+                module.Functions.Any(f => f.Symbol.Contains("$getValue()")));
+            TestHarness.CheckTrue("getValue 用户体含 add（value+1）",
+                text.Contains("add") && text.Contains("getValue"));
+
+            // 被 lambda 捕获的访问器局部：读写经 cell 引用
+            var (unit2, module2, _) = BilTestHarness.EmitBilUnit(
+                "pub func main(): i32 {\n" +
+                "    var x: i32 {\n" +
+                "        get(value: _) { return value }\n" +
+                "        set(value: _) { }\n" +
+                "    } = 0\n" +
+                "    var act = func{(v: i32) -> { x = v }}\n" +
+                "    act(42)\n" +
+                "    return x\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（访问器局部捕获）", unit2);
+            BilTestHarness.CheckBilValid("验证器零错误（访问器局部捕获）", module2);
+            var text2 = BilWriter.Write(module2);
+            TestHarness.CheckTrue("捕获路径含 setValue + invoke.indirect",
+                text2.Contains("setValue") && text2.Contains("invoke.indirect"));
+
+            // 自动访问器
+            var (unit3, module3, _) = BilTestHarness.EmitBilUnit(
+                "pub func main(): i32 {\n" +
+                "    var h: i32 {\n" +
+                "        get\n" +
+                "        set\n" +
+                "    } = 7\n" +
+                "    h = 8\n" +
+                "    return h\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（自动局部访问器）", unit3);
+            BilTestHarness.CheckBilValid("验证器零错误（自动局部访问器）", module3);
+
+            // M112：外层方法泛型 T + 局部访问器 + lambda 捕获
+            var (unit4, module4, text4) = BilTestHarness.EmitBilUnit(
+                "pub func wrap\\<T>(x: T): T {\n" +
+                "    var y: T {\n" +
+                "        get(value: _) { return value }\n" +
+                "        set(value: _) { }\n" +
+                "    } = x\n" +
+                "    var f = func{(): T -> y}\n" +
+                "    return f()\n" +
+                "}\n" +
+                "pub func main(): i32 { return 0 }\n");
+            CheckNoErrors("全管线无诊断（方法泛型 T 访问器捕获）", unit4);
+            BilTestHarness.CheckBilValid("验证器零错误（方法泛型 T 访问器捕获）", module4);
+            var cell4 = module4.LocalSymbols.OfType<BilTypeDeclaration>()
+                .Single(t => t.Symbol.StartsWith("..cell.."));
+            TestHarness.CheckTrue("访问器 cell generic(T)",
+                cell4.GenericParameters.Count == 1 && cell4.GenericParameters[0] == "T");
+            TestHarness.CheckTrue("构造转发 $.generic.T",
+                text4.Contains("new type(..cell..UUID<.generic<$.generic.T>>)")
+                && text4.Contains("new type(..lambda..UUID<.generic<$.generic.T>>)"));
+        }
     }
 }

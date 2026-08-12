@@ -7,7 +7,7 @@
 > **文档分工**：源语言合法性以 `SYNTAX.md` 为准；运行时可观察行为以
 > `RUNTIME.md` 为准；BIL 编码与验证规则以 `BIL_STANDARD.md` 为准。
 > 本文档只规定中端**内部**如何组织，不重新定义上述三者的语义。
-> 里程碑计划见同目录 `SEMANTIC_ROADMAP.md`；进度现状见 `docs/PROGRESS_REPORT.md`。
+> 里程碑计划见同目录 `SEMANTIC_ROADMAP.md`；进度现状见 `docs/legacy/PROGRESS_REPORT.md`。
 
 > `super(...)` 在 P3 绑定为独立 Bound/Lowered 调用标记，候选来自直接 BaseType
 > 并复用 OverloadResolution；P4b 固定发 `invoke fn(..super)`，由 Middleware

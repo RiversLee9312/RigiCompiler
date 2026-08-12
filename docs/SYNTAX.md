@@ -762,7 +762,8 @@ func{(x: i32): i32 -> named calc {
 - 之所以 `const` 也要 Cell 化：值 wrapper 对 get 的代理行为意味着按值拷贝会冻结 proxy 结果、脱钩 wrapper 状态，一律走 Cell 才能保持代理语义；
 - lambda 内对 `const` 捕获的写入仍是编译错误（符号层检查）；
 - **被 lambda 捕获的变量不再参与 smart cast**（收窄失效，见 §3.5）；
-- lambda 内的赋值**不影响**外层 definite assignment（保守）。
+- lambda 内的赋值**不影响**外层 definite assignment（保守）；
+- **for 循环变量**被捕获时按**每迭代新 cell**处理（各 lambda 见当迭代的值，见 §7.3）；**catch / finally(e) / using** 变量被捕获时在进入对应块时构造一个 cell（见 §8 / §6.2）。
 
 **泛型 lambda**（如 `func{(x: T)\<T>: T -> ...}`）：隐藏类同样泛型化，泛型实参的 typeid 经构造函数传入。
 
@@ -999,7 +1000,8 @@ do {
   `to` 是 for 头专用语法，不是通用表达式。
 - 基元数值类型的 `EnumerateInRange` 实现由 SDK 自举源提供（见 §15.3）。
 - 循环变量是只读的（`const`）：循环体内不可对其赋值或复合赋值；
-  每轮迭代是一个新的绑定。
+  每轮迭代是一个新的绑定。被 lambda 捕获时每迭代构造新 cell，各 lambda
+  见当迭代的值（与 §5.2 捕获语义一致）。
 
 ### 7.4 带标签的循环
 
@@ -1090,6 +1092,7 @@ try {
 ```
 
 - `catch` 子句的异常变量与 `finally(e)` 的 `e` 均为只读（`const`）——子句/块体内不可对其赋值或复合赋值。
+- 被 lambda 捕获时，进入 catch / finally 块时构造一个 cell（见 §5.2）；`using` 资源变量同理（进入 using 作用域时构造）。
 
 ### 8.1 异常类型层级
 
@@ -1261,7 +1264,15 @@ pub func example() {
 - **自动访问器**（无体，如 `pub get` / `priv set`）：编译器合成实现——getter 为 `return value`，setter 为空体（隐式 `backing = value` 已足）。无体 + 计算形态（无 backing）是编译错误（编译器无法生成计算实现）。
 - `const` 字段不得声明 setter。仅声明 get 的字段不可写、仅声明 set 的字段不可读；访问器自身的可见性在读写使用点分别检查。
 - 带访问器的字段，外部读写一律经访问器；其读取结果不参与 smart cast 收窄（§3.5）。
-- 当前落地位置为类/struct 字段与全局变量两类；栈上局部变量/常量的访问器暂未实现（编译错误，归后续里程碑）。
+- **栈上局部变量/常量的访问器**（路线 C，与闭包 cell 共用机制）：
+  - 带访问器的局部声明在绑定期立即 cell 化（无论是否被捕获）：合成 `Cell`/`ReadonlyCell` 隐藏子类，`override getValue` 体 = 用户 getter 体、`override setValue` 体 = 用户 setter 体。
+  - **backing 形态**（`value` 参数）：cell 的 `value` 字段即 backing 存储；访问器体内 `value` 是该字段的别名；自动访问器（无体）= 默认透传（`return value` / 隐含 `value =`）。
+  - **计算形态**（`_` 参数）：cell `value` 字段形态保留但闲置（实现统一）；无体 + 计算形态仍是编译错误（§9.4.1）。
+  - 读 = `getValue` 调用、写 = `setValue` 调用（与捕获 cell 读写同构）；仅 get 不可写、仅 set 不可读。
+  - **捕获**：带访问器局部被 lambda 捕获 = 已 cell 化变量按引用直捕（§5.2）；lambda 内读写同样经 getValue/setValue，访问器代理一切读写。访问器体引用的外层局部/参数/this 按 lambda 同规则捕获进该 cell（init 追加捕获实参）。
+  - **修饰符**：局部访问器无可见性/多态概念——禁止 `pub`/`priv`/`protected`/`internal`/`open`/`override`。
+  - `const` 局部不得声明 setter；带访问器局部不参与 smart cast 收窄（cell 化根一律不收窄）。
+  - 参数访问器：形参列表不接受访问器块；若出现则为编译错误（本里程碑仅局部变量）。
 
 ### 9.5 内部类
 
@@ -1707,7 +1718,7 @@ pub wrapper Logged\<TTarget> {
 - 四类 wildcard 的泛型与参数形状是编译器规定的 canonical shape，不能通过额外约束或部分参数 pattern 把它缩窄为只吃某些签名。需要特殊处理某个已知成员时使用 specific proxy；需要在 universal fallback 内进一步分类时显式检查 `symbol`。
 - Entity wrapper 至多声明一个泛型参数（恰一个时即 `TTarget` 角色、`self` 的类型来源；零个时 proxy 体内引用 `self` 是编译错误）；Value/Method wrapper 不得声明 wrapper 级泛型参数（proxy 方法自身的泛型参数不受此限）。
 - specific proxy 的形状（参数名/参数类型/返回类型）必须与被代理成员**全等**（wrapper 泛型参数代入后判定；`.proxy.get.<名>`/`.proxy.set.<名>` 的 `value` 参数类型 = 字段类型）；形状不匹配的 specific proxy 是编译错误。四类 wildcard 按上例的 canonical shape 逐参数校验。
-- wrapper 实例由 `@W(...)` 应用在**宿主创建时**安装：宿主构造以求值后的应用实参调用 wrapper 的 init，结果写入宿主的 Middleware 合成的隐藏存储（命名约定 `BIL_STANDARD.md` §5.3）；此后不可替换（§14.5）。
+- wrapper 实例由 `@W(...)` 应用在**宿主创建时**安装：frontend 为宿主合成 `..init.wrapper`（体内 `new.wrapper.*`，应用实参经该方法参数 / `new.wrapped` 前缀传入；见 `BIL_STANDARD.md` §9.7 / §14.4 / §14.5），Middleware/VM 在实体 init 之前自动调用之，结果写入宿主的 Middleware 合成隐藏存储（命名约定 `BIL_STANDARD.md` §5.3）；此后不可替换（§14.5）。
 
 ### 14.3 值修饰器（Value Wrapper）
 

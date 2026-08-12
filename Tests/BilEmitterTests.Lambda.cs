@@ -25,7 +25,18 @@ namespace LatteCompiler.Tests
             TestLambdaBlockBody();
             TestLambdaCompoundAssignCapture();
             TestLambdaGenericContext();
+            TestLambdaMethodGenericCellCapture();
+            TestLambdaMethodGenericNestedCapture();
+            TestLambdaMethodGenericParamCapture();
             TestLambdaVoidIndirectCall();
+            TestLambdaVoidIndirectCallGrouped();
+            TestLambdaVoidIndirectCallReturned();
+            TestLambdaVoidIndirectCallIndexed();
+            TestLambdaForCapture();
+            TestLambdaNestedForCapture();
+            TestLambdaCatchCapture();
+            TestLambdaFinallyCapture();
+            TestLambdaUsingCapture();
         }
 
         // 无捕获：隐藏类 extends Func、new 空参、invoke.indirect
@@ -383,6 +394,101 @@ namespace LatteCompiler.Tests
                 "ret $.t1\n");
         }
 
+        // M112：外层方法泛型 T 的局部经 cell 捕获——cell/lambda 均 generic(T)，
+        // 构造点转发 $.generic.T；读写经 getValue/setValue
+        private static void TestLambdaMethodGenericCellCapture()
+        {
+            var (unit, module, text) = BilTestHarness.EmitBilUnit(
+                "pub func wrap\\<T>(x: T): T {\n" +
+                "    var y: T = x\n" +
+                "    var f = func{(): T -> y}\n" +
+                "    y = x\n" +
+                "    return f()\n" +
+                "}\n" +
+                "pub func main(): i32 { return 0 }\n");
+            CheckNoErrors("方法泛型 T cell 捕获全管线无诊断", unit);
+            BilTestHarness.CheckBilValid("方法泛型 T cell 捕获验证器零错误", module);
+            var cell = module.LocalSymbols.OfType<BilTypeDeclaration>()
+                .Single(t => t.Symbol.StartsWith("..cell.."));
+            var lambda = module.LocalSymbols.OfType<BilTypeDeclaration>()
+                .Single(t => t.Symbol.StartsWith("..lambda.."));
+            TestHarness.CheckTrue("cell 子类 generic(T)",
+                cell.GenericParameters.Count == 1 && cell.GenericParameters[0] == "T");
+            TestHarness.CheckTrue("cell extends .cell<T>",
+                cell.ExtendsType == ".cell<.generic<$.generic.T>>");
+            TestHarness.CheckTrue("lambda 隐藏类 generic(T)",
+                lambda.GenericParameters.Count == 1 && lambda.GenericParameters[0] == "T");
+            TestHarness.CheckTrue("构造 cell/lambda 均转发 $.generic.T",
+                text.Contains("new type(..cell..UUID<.generic<$.generic.T>>)")
+                && text.Contains("new type(..lambda..UUID<.generic<$.generic.T>>)"));
+            TestHarness.CheckTrue("读写经 Cell getValue/setValue",
+                text.Contains("getValue") && text.Contains("setValue"));
+            BilTestHarness.CheckFnShape("方法泛型 T cell 捕获 wrap 形状", module,
+                "$wrap(x:.generic<$.generic.T>)@.generic<$.generic.T>",
+                ".vars { ..cell..UUID<.generic<$.generic.T>> y, " +
+                "..lambda..UUID<.generic<$.generic.T>> f, " +
+                "..cell..UUID<.generic<$.generic.T>> .t0, " +
+                "..lambda..UUID<.generic<$.generic.T>> .t1, " +
+                ".generic<$.generic.T> .t2 }\n" +
+                "new type(..cell..UUID<.generic<$.generic.T>>) $.t0 [$x]\n" +
+                "set.var $.t0 $y\n" +
+                "new type(..lambda..UUID<.generic<$.generic.T>>) $.t1 [$y]\n" +
+                "set.var $.t1 $f\n" +
+                "invoke.noret fn(core::Cell$setValue(v:.generic<$.generic.T>)@.void) [$y, $x]\n" +
+                "invoke.indirect $f $.t2 []\n" +
+                "ret $.t2\n");
+        }
+
+        // M112：嵌套 lambda 捕获外层方法泛型 T 的参数——两侧 hidden class + cell
+        private static void TestLambdaMethodGenericNestedCapture()
+        {
+            var (unit, module, text) = BilTestHarness.EmitBilUnit(
+                "pub func wrap\\<T>(x: T): T {\n" +
+                "    var f = func{(v: T): T -> {\n" +
+                "        var g = func{(): T -> v}\n" +
+                "        return@_ g()\n" +
+                "    }}\n" +
+                "    return f(x)\n" +
+                "}\n" +
+                "pub func main(): i32 { return 0 }\n");
+            CheckNoErrors("嵌套 lambda 方法泛型 T 捕获全管线无诊断", unit);
+            BilTestHarness.CheckBilValid("嵌套 lambda 方法泛型 T 捕获验证器零错误", module);
+            var lambdas = module.LocalSymbols.OfType<BilTypeDeclaration>()
+                .Where(t => t.Symbol.StartsWith("..lambda..")).ToList();
+            var cells = module.LocalSymbols.OfType<BilTypeDeclaration>()
+                .Where(t => t.Symbol.StartsWith("..cell..")).ToList();
+            TestHarness.CheckTrue("两层 lambda 均 generic(T)",
+                lambdas.Count == 2
+                && lambdas.All(l => l.GenericParameters.Count == 1
+                    && l.GenericParameters[0] == "T"));
+            TestHarness.CheckTrue("捕获 cell 至少一枚且 generic(T)",
+                cells.Count >= 1
+                && cells.All(c => c.GenericParameters.Count == 1
+                    && c.GenericParameters[0] == "T"));
+            TestHarness.CheckTrue("嵌套构造转发 $.generic.T",
+                text.Contains("new type(..lambda..UUID<.generic<$.generic.T>>)"));
+        }
+
+        // M112：直接捕获方法泛型参数 x: T（prologue .c.x cell）
+        private static void TestLambdaMethodGenericParamCapture()
+        {
+            var (unit, module, text) = BilTestHarness.EmitBilUnit(
+                "pub func wrap\\<T>(x: T): T {\n" +
+                "    var f = func{(): T -> x}\n" +
+                "    return f()\n" +
+                "}\n" +
+                "pub func main(): i32 { return 0 }\n");
+            CheckNoErrors("方法泛型参数捕获全管线无诊断", unit);
+            BilTestHarness.CheckBilValid("方法泛型参数捕获验证器零错误", module);
+            TestHarness.CheckTrue("参数 prologue 构造 cell<.generic.T>",
+                text.Contains("new type(..cell..UUID<.generic<$.generic.T>>)"));
+            TestHarness.CheckTrue(".vars 含 .c.x cell",
+                module.Functions.First(f => f.Symbol.StartsWith("$wrap("))
+                    .Vars.Any(v => v.Name == ".c.x"
+                        && v.TypeRef.StartsWith("..cell..")
+                        && v.TypeRef.Contains(".generic<$.generic.T>")));
+        }
+
         // 语句位置 void 间接调用：Action 局部 act() → invoke.indirect.noret
         private static void TestLambdaVoidIndirectCall()
         {
@@ -400,6 +506,262 @@ namespace LatteCompiler.Tests
                     .Vars.Any(v => v.Name == "act" && v.TypeRef == "core::Action"));
             TestHarness.CheckTrue("语句位置 act() 发 invoke.indirect.noret",
                 text.Contains("invoke.indirect.noret $act []"));
+        }
+
+        // M105：括号形态 (act)() 语句位置 → invoke.indirect.noret
+        private static void TestLambdaVoidIndirectCallGrouped()
+        {
+            var (unit, module, text) = BilTestHarness.EmitBilUnit(
+                "pub func sink(v: i32) { }\n" +
+                "pub func main(): i32 {\n" +
+                "    var act: core.Action = func{() -> { sink(0) }}\n" +
+                "    (act)()\n" +
+                "    return 1\n" +
+                "}\n");
+            CheckNoErrors("括号形态 (act)() 语句位置全管线无诊断", unit);
+            BilTestHarness.CheckBilValid("括号形态 (act)() 验证器零错误", module);
+            TestHarness.CheckTrue("括号形态 (act)() 发 invoke.indirect.noret",
+                text.Contains("invoke.indirect.noret $act []"));
+        }
+
+        // M105：(getHandler())() —— 返回 Action 的调用结果再间接调用
+        private static void TestLambdaVoidIndirectCallReturned()
+        {
+            var (unit, module, text) = BilTestHarness.EmitBilUnit(
+                "pub func sink(v: i32) { }\n" +
+                "pub func getHandler(): core.Action { return func{() -> { sink(0) }} }\n" +
+                "pub func main(): i32 {\n" +
+                "    (getHandler())()\n" +
+                "    return 1\n" +
+                "}\n");
+            CheckNoErrors("(getHandler())() 语句位置全管线无诊断", unit);
+            BilTestHarness.CheckBilValid("(getHandler())() 验证器零错误", module);
+            TestHarness.CheckTrue("(getHandler())() 发 invoke.indirect.noret",
+                text.Contains("invoke.indirect.noret"));
+        }
+
+        // M105：handlers[0]() —— 索引后 void 间接调用
+        private static void TestLambdaVoidIndirectCallIndexed()
+        {
+            var (unit, module, text) = BilTestHarness.EmitBilUnit(
+                "pub func sink(v: i32) { }\n" +
+                "class Handlers {\n" +
+                "    pub var h: core.Action\n" +
+                "    pub init(_ -> h)\n" +
+                "    pub operator getAtIndex(index: i32): core.Action { return h }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var handlers = new Handlers(h = func{() -> { sink(0) }})\n" +
+                "    handlers[0]()\n" +
+                "    return 1\n" +
+                "}\n");
+            CheckNoErrors("handlers[0]() 语句位置全管线无诊断", unit);
+            BilTestHarness.CheckBilValid("handlers[0]() 验证器零错误", module);
+            TestHarness.CheckTrue("handlers[0]() 发 invoke.indirect.noret",
+                text.Contains("invoke.indirect.noret"));
+        }
+
+        // 块内指令文本（Opcode + 操作数 Render，供结构断言）
+        private static string RenderBlockText(BilBlock block)
+        {
+            return string.Join("\n", block.Instructions.Select(i =>
+                i.Opcode + " " + string.Join(" ", i.Operands.Select(o => o.Render()))));
+        }
+
+        // M106：for 循环变量捕获——每迭代新 cell（Body 头 new cell + invoke.indirect）
+        private static void TestLambdaForCapture()
+        {
+            var (unit, module, text) = BilTestHarness.EmitBilUnit(
+                "pub func main(): i32 {\n" +
+                "    var f: core.Func\\<i32> = func{(): i32 -> 0}\n" +
+                "    for (i in 0 to 1) {\n" +
+                "        f = func{(): i32 -> i}\n" +
+                "    }\n" +
+                "    return f()\n" +
+                "}\n");
+            CheckNoErrors("for 捕获 lambda 全管线无诊断", unit);
+            BilTestHarness.CheckBilValid("for 捕获 lambda 验证器零错误", module);
+            // 初始化器 lambda 无捕获——断言含 .capture.i 的那一个
+            var capturing = module.LocalSymbols.OfType<BilTypeDeclaration>()
+                .Where(t => t.Symbol.StartsWith("..lambda.."))
+                .FirstOrDefault(t => t.Members.OfType<BilSimpleMemberDeclaration>()
+                    .Any(m => m.Kind == BilMemberKind.Field
+                        && m.Symbol.Contains("#.capture.i@")
+                        && m.Symbol.Contains("..cell..")));
+            TestHarness.CheckTrue("for 捕获隐藏类含 .capture.i cell 字段",
+                capturing != null && capturing.ExtendsType == "core::Func<.i32>");
+            AssertCellSubclassDeclaration(module, "for 捕获", readOnly: true, elementType: ".i32");
+            TestHarness.CheckTrue("for 捕获 .vars 含 cell 化循环变量 i",
+                module.Functions.First(f => f.Symbol == "$main()@.i32")
+                    .Vars.Any(v => v.Name == "i" && v.TypeRef.StartsWith("..cell..",
+                        StringComparison.Ordinal)));
+            // cell 构造落在 loop Body 块内（每迭代 new）
+            var bodyBlock = module.Functions.First(f => f.Symbol == "$main()@.i32")
+                .Blocks.First(b => b.Id.Contains("body"));
+            TestHarness.CheckTrue("for 捕获 cell 构造在 loop Body 块内",
+                BilTestHarness.NormalizeLambdaUuids(RenderBlockText(bodyBlock))
+                    .Contains("new type(..cell..UUID)"));
+            TestHarness.CheckTrue("for 捕获 invoke.indirect 可用",
+                text.Contains("invoke.indirect $f "));
+        }
+
+        // M106：嵌套——外层 for 变量经外层 lambda 传给内层 lambda
+        private static void TestLambdaNestedForCapture()
+        {
+            var (unit, module, text) = BilTestHarness.EmitBilUnit(
+                "pub func main(): i32 {\n" +
+                "    var outer: core.Func\\<core.Func\\<i32>> = " +
+                "func{(): core.Func\\<i32> -> func{(): i32 -> 0}}\n" +
+                "    for (i in 0 to 1) {\n" +
+                "        outer = func{(): core.Func\\<i32> -> func{(): i32 -> i}}\n" +
+                "    }\n" +
+                "    var mid = outer()\n" +
+                "    return mid()\n" +
+                "}\n");
+            CheckNoErrors("嵌套 for 捕获全管线无诊断", unit);
+            BilTestHarness.CheckBilValid("嵌套 for 捕获验证器零错误", module);
+            // 初始化器两层无捕获 + 循环内两层有捕获 = 至少 4 个隐藏类；
+            // 断言捕获 i 的恰两层（外层 Func<Func<i32>> + 内层 Func<i32>）
+            var capturingI = module.LocalSymbols.OfType<BilTypeDeclaration>()
+                .Where(t => t.Symbol.StartsWith("..lambda.."))
+                .Where(t => t.Members.OfType<BilSimpleMemberDeclaration>()
+                    .Any(m => m.Kind == BilMemberKind.Field
+                        && m.Symbol.Contains("#.capture.i@")
+                        && m.Symbol.Contains("..cell..")))
+                .ToList();
+            TestHarness.CheckTrue("嵌套 for 捕获 i 的恰两个隐藏类", capturingI.Count == 2);
+            TestHarness.CheckTrue("嵌套 for 外层 extends Func<Func<i32>>",
+                capturingI.Any(t => t.ExtendsType == "core::Func<core::Func<.i32>>"));
+            TestHarness.CheckTrue("嵌套 for 内层 extends Func<i32>",
+                capturingI.Any(t => t.ExtendsType == "core::Func<.i32>"));
+            TestHarness.CheckTrue("嵌套 for 捕获两次 invoke.indirect",
+                Regex.Matches(text, @"invoke\.indirect \$").Count >= 2);
+        }
+
+        // M106：catch 变量捕获——catch 体头 new cell(cast slot)
+        private static void TestLambdaCatchCapture()
+        {
+            var (unit, module, text) = BilTestHarness.EmitBilUnit(
+                "open class MyError : core.Exception { }\n" +
+                "pub func main(): i32 {\n" +
+                "    try {\n" +
+                "        throw new MyError()\n" +
+                "    } catch (e: MyError) {\n" +
+                "        var act = func{() -> { var x = e }}\n" +
+                "        act()\n" +
+                "    }\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckNoErrors("catch 捕获 lambda 全管线无诊断", unit);
+            BilTestHarness.CheckBilValid("catch 捕获 lambda 验证器零错误", module);
+            AssertCellSubclassDeclaration(module, "catch 捕获", readOnly: true,
+                elementType: "MyError");
+            TestHarness.CheckTrue("catch 捕获 .vars 含 cell 化 e",
+                module.Functions.First(f => f.Symbol == "$main()@.i32")
+                    .Vars.Any(v => v.Name == "e" && v.TypeRef.StartsWith("..cell..",
+                        StringComparison.Ordinal)));
+            var catchBlock = module.Functions.First(f => f.Symbol == "$main()@.i32")
+                .Blocks.First(b => b.Id.Contains("catch"));
+            var catchText = BilTestHarness.NormalizeLambdaUuids(RenderBlockText(catchBlock));
+            TestHarness.CheckTrue("catch 体头 cast + new cell",
+                catchText.Contains("cast $") && catchText.Contains("new type(..cell..UUID)"));
+            TestHarness.CheckTrue("catch 捕获 invoke.indirect 可用",
+                text.Contains("invoke.indirect.noret $act ")
+                || text.Contains("invoke.indirect $act "));
+        }
+
+        // M106：finally(e) 捕获——slot 与变量分离，finally 体头 new cell(slot)
+        private static void TestLambdaFinallyCapture()
+        {
+            var (unit, module, text) = BilTestHarness.EmitBilUnit(
+                "pub func main(): i32 {\n" +
+                "    try {\n" +
+                "    } finally(e) {\n" +
+                "        var act = func{() -> { var x = e }}\n" +
+                "        act()\n" +
+                "    }\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckNoErrors("finally(e) 捕获全管线无诊断", unit);
+            BilTestHarness.CheckBilValid("finally(e) 捕获验证器零错误", module);
+            var main = module.Functions.First(f => f.Symbol == "$main()@.i32");
+            TestHarness.CheckTrue("finally 捕获 e 为 cell 类型",
+                main.Vars.Any(v => v.Name == "e" && v.TypeRef.StartsWith("..cell..",
+                    StringComparison.Ordinal)));
+            // ExceptionSlot 是普通 .sN（Nullable），非 e 自身
+            var tryInst = main.Blocks.SelectMany(b => b.Instructions)
+                .OfType<TryInstruction>().First();
+            var slotName = tryInst.ExceptionSlot.Name;
+            TestHarness.CheckTrue("finally 捕获 ExceptionSlot 与 e 分离（.sN）",
+                slotName.StartsWith(".s", StringComparison.Ordinal) && slotName != "e");
+            TestHarness.CheckTrue("finally 捕获 slot 类型为 nullable Exception",
+                main.Vars.Any(v => v.Name == slotName
+                    && v.TypeRef == ".nullable<core::Exception>"));
+            var finallyBlock = main.Blocks.First(b => b.Id.Contains("finally"));
+            TestHarness.CheckTrue("finally 体头 new cell(slot)",
+                BilTestHarness.NormalizeLambdaUuids(RenderBlockText(finallyBlock))
+                    .Contains("new type(..cell..UUID)"));
+            TestHarness.CheckTrue("finally 捕获 invoke.indirect 可用",
+                text.Contains("invoke.indirect.noret $act ")
+                || text.Contains("invoke.indirect $act "));
+        }
+
+        // M106：using 捕获——const/var 两风味 + dispose receiver 读改写
+        private static void TestLambdaUsingCapture()
+        {
+            // const 风味
+            var (unit, module, text) = BilTestHarness.EmitBilUnit(
+                "class Res implements core.IDisposable {\n" +
+                "    pub var n: i32\n" +
+                "    pub init(_ -> n)\n" +
+                "    pub override func dispose() { }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var f: core.Func\\<i32> = func{(): i32 -> 0}\n" +
+                "    seq using(const r = new Res(n = 7)) {\n" +
+                "        f = func{(): i32 -> r.n}\n" +
+                "    }\n" +
+                "    return f()\n" +
+                "}\n");
+            CheckNoErrors("using const 捕获全管线无诊断", unit);
+            BilTestHarness.CheckBilValid("using const 捕获验证器零错误", module);
+            AssertCellSubclassDeclaration(module, "using const 捕获", readOnly: true,
+                elementType: "Res");
+            TestHarness.CheckTrue("using const 捕获 .vars 含 cell 化 r",
+                module.Functions.First(f => f.Symbol == "$main()@.i32")
+                    .Vars.Any(v => v.Name == "r" && v.TypeRef.StartsWith("..cell..",
+                        StringComparison.Ordinal)));
+            TestHarness.CheckTrue("using const 捕获 new cell + dispose getValue",
+                text.Contains("new type(..cell..UUID)")
+                && text.Contains("invoke fn(core::ReadonlyCell$getValue")
+                && text.Contains("dispose"));
+            TestHarness.CheckTrue("using const 捕获 invoke.indirect 可用",
+                text.Contains("invoke.indirect $f "));
+
+            // var 风味（源写 var → Cell 风味；using 资源仍禁重赋值）
+            var (unit2, module2, text2) = BilTestHarness.EmitBilUnit(
+                "class Res2 implements core.IDisposable {\n" +
+                "    pub var n: i32\n" +
+                "    pub init(_ -> n)\n" +
+                "    pub override func dispose() { }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var f: core.Func\\<i32> = func{(): i32 -> 0}\n" +
+                "    seq using(var r: Res2 = new Res2(n = 3)) {\n" +
+                "        f = func{(): i32 -> r.n}\n" +
+                "    }\n" +
+                "    return f()\n" +
+                "}\n");
+            CheckNoErrors("using var 捕获全管线无诊断", unit2);
+            BilTestHarness.CheckBilValid("using var 捕获验证器零错误", module2);
+            TestHarness.CheckTrue("using var 捕获 .vars 含 cell 化 r",
+                module2.Functions.First(f => f.Symbol == "$main()@.i32")
+                    .Vars.Any(v => v.Name == "r" && v.TypeRef.StartsWith("..cell..",
+                        StringComparison.Ordinal)));
+            TestHarness.CheckTrue("using var 捕获 dispose 经 getValue 读 receiver",
+                text2.Contains("getValue") && text2.Contains("dispose"));
+            TestHarness.CheckTrue("using var 捕获 invoke.indirect 可用",
+                text2.Contains("invoke.indirect $f "));
         }
 
         // 隐藏类结构：class + extends + operator(call) + 可选 capture 字段

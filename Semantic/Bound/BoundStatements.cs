@@ -392,4 +392,32 @@ namespace LatteCompiler
             Target = target;
         }
     }
+
+    // wrapper 安装指令（M109b-1，BIL §14.5）：仅出现在合成 `..init.wrapper`
+    // 体内。Kind 三态对应 new.wrapper.entity / .field / .method；Target 在
+    // Field/Method 形态分别挂 FieldSymbol / MethodSymbol（Entity 为 null）。
+    public enum BoundNewWrapperKind
+    {
+        Entity,
+        Field,
+        Method,
+    }
+
+    public sealed class BoundNewWrapperStatement : BoundStatement
+    {
+        public BoundNewWrapperKind Kind { get; }
+        public TypeSymbol WrapperType { get; }
+        public SemanticSymbol? Target { get; }
+        public IReadOnlyList<BoundExpression> Arguments { get; }
+
+        public BoundNewWrapperStatement(ASTNode syntax, BoundNewWrapperKind kind,
+            TypeSymbol wrapperType, SemanticSymbol? target,
+            IReadOnlyList<BoundExpression> arguments) : base(syntax)
+        {
+            Kind = kind;
+            WrapperType = wrapperType;
+            Target = target;
+            Arguments = arguments;
+        }
+    }
 }

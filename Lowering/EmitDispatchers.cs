@@ -41,6 +41,8 @@ namespace LatteCompiler
                     return SeqBlockEmitter.Visit(statement, target, ctx, env);
                 case LoweredTryStatement:
                     return TryEmitter.Visit(statement, target, ctx, env);
+                case LoweredNewWrapperStatement:
+                    return NewWrapperEmitter.Visit(statement, target, ctx, env);
                 default:
                     env.Error(statement.Origin.Syntax.Span,
                         $"P4: lowered statement kind not supported by minimal emission: " +

@@ -253,7 +253,8 @@ A-Z a-z 0-9 _ -
 - 普通用户标识符不得以 `.` 开头；
 - 以 `.` 开头的参数名和局部名由编译器保留，例如 `.this`、`.return`、`.generic.T`、`.vargs.args` 和 `.kwargs.args`。
 - 以 `.` 前缀段保留的成员名还包括：`.proxy.`（wrapper 类型内的 proxy 模板成员名，见 §8.4 `wrapper-proxy`）；方法名 `call???` 是 `core::Any` 的内建方法名（`?` 非标识符字符，用户源码不可声明，见 §15.5 / §22.5）。wrapper 隐藏存储的命名约定见 §5.3——该符号**不**出现于 BIL 文本（存储合成归 Middleware）。
-- 编译器合成的隐藏类型名以 `..` 前缀保留：`..lambda..UUID`（lambda 隐藏类，见 `SYNTAX.md` §5.2）与 `..cell..UUID`（统一 cell 存储的隐藏子类，见 `SYNTAX.md` §5.2 / §14.3）；用户源码不可声明同名类型。
+- 编译器合成的隐藏类型名以 `..` 前缀保留：`..lambda..UUID`（lambda 隐藏类，见 `SYNTAX.md` §5.2）、`..cell..UUID`（统一 cell 存储的隐藏子类，见 `SYNTAX.md` §5.2 / §14.3）与 `..companion.UUID`（静态方法被 Method wrapper 修饰时合成的 singleton companion，见 §8.7）；用户源码不可声明同名类型。
+- 编译器合成的保留方法名以 `..` 前缀保留：`..init.wrapper`（实体 wrapper 初始化方法，见 §9.7）——用户源码不可声明同名方法。
 
 `Resources` 和 block 可以继续使用 `R_Message`、`entry` 等本地名称；该规则不适用于类型、字段、方法和运算符等语言符号。
 
@@ -664,8 +665,8 @@ BIL 的 `get.field` / `set.field` 始终引用逻辑字段 canonical symbol，�
 
 - `WRAPPER_TYPE_REF` 必须是 wrapper 类型引用；
 - 同一声明上可出现多个 `wrapped(...)`，顺序即 outer→inner；
-- 应用 init 实参的 BIL 承载形态留白（既有留白不变）；
-- 局部变量上的 wrapper 应用标记由 cell 隐藏子类的 `value` 字段 `wrapped(W)` 承载（`.vars` 无新语法；见 §9.3 注记与 `SYNTAX.md` §14.3 统一 cell 存储）；静态/全局字段的 BIL 声明类型投影为 cell 子类、不再在字段槽投 `wrapped(W)`（避免双份隐藏存储；wrapper 标记挂在子类 `value` 字段上）。
+- **应用 init 实参**不写在 `wrapped(W)` 修饰符上：由宿主实体的合成方法 `..init.wrapper` 体内的 `new.wrapper.*` 指令承载（§9.7 / §14.5）；若 `..init.wrapper` 自身有参数，创建宿主对象须用 `new.wrapped` 家族把这些参数前缀传入（§14.4）；
+- 局部变量上的 wrapper 应用标记由 cell 隐藏子类的 `value` 字段 `wrapped(W)` 承载（`.vars` 无新语法；见 §9.3 注记与 `SYNTAX.md` §14.3 统一 cell 存储）；静态/全局字段的 BIL 声明类型投影为 cell 子类、不再在字段槽投 `wrapped(W)`（避免双份隐藏存储；wrapper 标记挂在子类 `value` 字段上）。cell 子类上 `@W(args)` 的实参成为该 cell 类型 `..init.wrapper` 的参数（M109b 生成职责）。
 
 普通 backing 字段（`backing` / `compiler-generated` 等）与本标记无关，按 §8.3 字段修饰符表照常使用。
 
@@ -778,6 +779,27 @@ case 名称在其 enum 内唯一。`case(...)` 引用中必须包含完整 enum 
 - enum case 精确签名；
 - 泛型约束与 hidden argument 形态。
 
+### 8.7 `..companion.UUID` singleton（Method wrapper 壳体）
+
+静态方法被 Method wrapper 修饰时，frontend（M109b）为**每个被修饰的静态方法**合成一个 companion singleton 类型，UUID 为该静态方法自己的稳定 UUID：
+
+```bil
+.type ..companion.<UUID> = class singleton shared pub compiler-generated {
+    .method ..companion.<UUID>$<原方法简单名>(...)@Ret pub compiler-generated
+        [原方法上的 wrapped(W) 应用标记改挂到本实例方法]
+}
+```
+
+约定：
+
+- 类型名保留前缀 `..companion.`（§5.1）；`UUID` 段不得为空，且在模块内唯一；
+- 类型必须是 `class`，且同时带 `singleton` 与 `shared`（§8.2 singleton 规则）；建议带 `compiler-generated`；
+- companion 内生成**实例**方法：方法简单名**沿用原静态方法简单名**（不另加 `..wrapped.` 前缀——companion 类型已隔离命名空间）；该方法承接原静态方法体，并被原 Method wrapper 修饰（`wrapped(W)` 挂在 companion 方法声明上，若 BIL 方法侧暂不投 `wrapped` 则由 Middleware 按 companion 合成契约识别）；
+- 原 owner 上保留**同名静态壳体方法**：签名与源码静态方法一致；fn 体仅：取得 companion singleton 实例 → `invoke` / `invoke.noret` 其对应实例方法（实参转发）→ `ret`（有返回时）；
+- 用户源码不可声明 `..companion.*` 类型。
+
+> **注记（调用时机）**：companion 的 wrapper 安装走 companion 类型自身的 `..init.wrapper`（若有参则创建 companion 用 `new.wrapped`；singleton 构造时机归 Middleware）。壳体静态方法不负责安装 wrapper。
+
 ---
 
 ## 9. 函数、参数、局部变量与 block
@@ -848,7 +870,7 @@ fn(com.example::Owner$method(value:.i32)@.void) {
 - `.breakid` 只能由 `loop`、`loop.rev` 或 `switch` 绑定；
 - `.breakid` 不得由 `load`、`set.var`、参数传入、字段写入、数组写入或普通方法返回产生。
 
-> **注记**：局部变量上的 wrapper 应用标记（源码 `@W(...)` 注解于局部声明）由 cell 隐藏子类的 `value` 字段 `wrapped(W)` 承载（`.vars` 无新语法；统一 cell 存储见 `SYNTAX.md` §5.2 / §14.3 与 §8.3.1）。应用 init 实参的 BIL 承载形态仍按 §8.3.1 留白。
+> **注记**：局部变量上的 wrapper 应用标记（源码 `@W(...)` 注解于局部声明）由 cell 隐藏子类的 `value` 字段 `wrapped(W)` 承载（`.vars` 无新语法；统一 cell 存储见 `SYNTAX.md` §5.2 / §14.3 与 §8.3.1）。应用 init 实参见 §9.7 / §14.4 / §14.5。
 
 ### 9.4 block
 
@@ -884,6 +906,50 @@ volatile
 `volatile` 表示该 block 内可观察操作的源码顺序必须被保留，不得进行改变其 volatile 语义的重排。具体 LLVM volatile/atomic lowering 由 Middleware 决定。
 
 `atomic[$lock]` 不是当前 Latte 语法或 BIL 标准的一部分，不得出现在标准 BIL 中。
+
+### 9.7 `..init.wrapper`（实体 wrapper 初始化方法）
+
+编译器为「带有 wrapper 应用、需要在创建时安装 wrapper」的每个实体（class/struct/enum-struct/wrapper 类型本身，或 cell 隐藏子类等合成类型）至多生成**一个**实例方法，保留名：
+
+```text
+..init.wrapper
+```
+
+canonical 形态示例：
+
+```bil
+.method com.example::Service$..init.wrapper(level:.string)@.void
+    priv compiler-generated
+
+fn(com.example::Service$..init.wrapper(level:.string)@.void) {
+    .args {
+        .return = .void,
+        .this = com.example::Service,
+        level = .string
+    }
+    .block entry entrypoint {
+        new.wrapper.entity type(core.logging::Logged) [$level]
+        ret
+    }
+}
+```
+
+规则：
+
+- **保留名**：方法简单名精确为 `..init.wrapper`（§5.1）；用户源码不可声明；
+- **每实体至多一个**（同一 owner 类型上不得重载或重复声明）；
+- **返回类型**必须为 `.void`；
+- **实例方法**（符号不得含 `.static.`；`.args` 含 `.this = OWNER`）；
+- **可见性 / 修饰符**：`priv` + `compiler-generated`（仿合成 fn 惯例；验证器要求二者均在）；
+- **允许参数**：当 wrapper 应用带 init 实参、或 cell 子类需把字段/局部上 `@W(args)` 的实参传入时，这些值成为本方法的规范序参数；参数名由 frontend 分配（稳定、唯一）；无 init 实参时参数列表可为空；
+- **方法体**：仅允许普通数据/控制流指令，以及 §14.5 的三条 `new.wrapper.*` 指令（安装本实体相关 wrapper）；不得 `new` 本实体（防递归构造约定由 frontend 遵守）；
+- **调用时机（规范注记）**：本方法在实体 **init 之前**由 Middleware/VM **自动调用**；frontend **无法介入**调用时机，也不得在普通用户方法中显式 `invoke` 本方法（验证器可对非合成调用点给出诊断，Middleware 以自动调用为准）。有参时，调用方通过 §14.4 `new.wrapped` 把前缀实参传入构造路径，由运行时转交给本方法。
+
+**M109b 生成职责（本步不实现 frontend，仅定契约）**：
+
+- 类型声明带 `wrapped(W)`（Entity）或成员字段带 `wrapped(W)`（字段-Value）时，在 owner 类型上合成 `..init.wrapper`，体内按 outer→inner 对每个应用发对应 `new.wrapper.entity` / `new.wrapper.field`；
+- 方法带 Method wrapper 时：静态方法走 §8.7 companion；实例方法在 owner 的 `..init.wrapper` 内发 `new.wrapper.method`（或按 Middleware 约定在方法首次绑定前安装——以 §14.5 指令语义为准，frontend 在 M109b 按应用表发射）；
+- cell 子类：`value` 字段上每个 `wrapped(W)` 的应用实参提升为 cell 类型 `..init.wrapper` 的参数；`new ..cell..UUID(...)` / `new.wrapped` 在变量初始化点传入这些实参。
 
 ---
 
@@ -1373,6 +1439,65 @@ new.case type(ENUM_TYPE) case(ENUM_TYPE.CaseName) RESULT [ARG_0, ARG_1, ...]
 - 固定 case 使用空参数列表；
 - 该指令是 enum 值的唯一标准构造形式。
 
+### 14.4 `new.wrapped` 家族（有参 `..init.wrapper` 的实体构造）
+
+当目标类型声明了**带参数**的 `..init.wrapper`（§9.7）时，创建该类型实例**必须**使用本家族指令；无参 `..init.wrapper` 或未声明 `..init.wrapper` 的类型**禁止**使用本家族，仍用普通 `new` / `new.case`（§14.1 / §14.3）。
+
+#### 14.4.1 普通构造
+
+```bil
+new.wrapped type(TYPE_SYMBOL) RESULT [WRAPPER_ARG_0, ...] [INIT_ARG_0, ...]
+```
+
+**形态定稿理由**：与 `new type(TYPE) RESULT [ARGS]` 同构，仅在 RESULT 后增加**第二个**实参列表。两个相邻 `[...]` 列表在词法上无二义（无需查表即可分段）；第一表 = `..init.wrapper` 参数（声明序），第二表 = 命中的 `init` 重载实参（已完成默认值填充与具名重排，同 §14.1）。平铺单表会在未知 `..init.wrapper` 元数时无法分段，故不采用。
+
+规则：
+
+- TYPE_SYMBOL / RESULT / abstract / enum-struct 限制同 §14.1（enum-struct 不得用本指令，改用 §14.4.2）；
+- TYPE 必须恰好声明一个 `..init.wrapper`，且其规范参数列表**非空**；
+- `WRAPPER_ARG_*` 个数与类型必须与该 `..init.wrapper` 签名**严格匹配**（复用 §3.3 调用映射后的规范序；hidden generic 规则同普通 invoke）；
+- `INIT_ARG_*` 必须与 TYPE 上唯一匹配的 `init` 规范签名严格匹配（同 §14.1）；
+- 与普通 `new` **互斥**：有参 `..init.wrapper` 的类型上出现 `new` → 非法；无参或未声明 `..init.wrapper` 的类型上出现 `new.wrapped` → 非法。
+
+语义：运行时先分配实例，以 `WRAPPER_ARG_*` 调用 `..init.wrapper`（实体 init 之前，§9.7），再以 `INIT_ARG_*` 调用命中的 `init`。
+
+#### 14.4.2 enum case 构造
+
+```bil
+new.wrapped.case type(ENUM_TYPE) case(ENUM_TYPE.CaseName) RESULT
+    [WRAPPER_ARG_0, ...] [CASE_ARG_0, ...]
+```
+
+规则：在 §14.3 之上叠加与 §14.4.1 相同的 wrapper 前缀实参与互斥规则（`new.case` ↔ `new.wrapped.case`）。
+
+### 14.5 wrapper 初始化指令（仅 `..init.wrapper` 体内）
+
+以下三条指令**只能**出现在方法简单名为 `..init.wrapper` 的 fn 体内（§9.7）；其它 fn 中出现一律非法。语义：按 ARGS 调用 wrapper 类型的 init 重载，将结果写入 Middleware 合成的隐藏存储（命名约定 §5.3）；**无结果变量**（不产生可流动的 wrapper 值）。
+
+```bil
+new.wrapper.field field(FIELD_SYMBOL) type(WRAPPER_TYPE) [ARG_0, ...]
+new.wrapper.method fn(METHOD_SYMBOL) type(WRAPPER_TYPE) [ARG_0, ...]
+new.wrapper.entity type(WRAPPER_TYPE) [ARG_0, ...]
+```
+
+操作数序（对齐 `get.wrapper` / `field(...)` / `fn(...)` / `type(...)` 既有拼写）：
+
+| 指令 | 操作数 |
+|------|--------|
+| `new.wrapper.field` | `field(FIELD)` → `type(WRAPPER_TYPE)` → `[ARGS]` |
+| `new.wrapper.method` | `fn(METHOD)` → `type(WRAPPER_TYPE)` → `[ARGS]` |
+| `new.wrapper.entity` | `type(WRAPPER_TYPE)` → `[ARGS]` |
+
+规则：
+
+- `WRAPPER_TYPE` 必须是 wrapper 类型引用；
+- `ARGS` 必须与 `WRAPPER_TYPE` 上唯一匹配的 `init` 规范签名严格匹配（§3.3 / §14.1 同一套严格匹配；含默认值填充后的规范序）；
+- `new.wrapper.field`：`FIELD` 必须是当前 `..init.wrapper` 宿主类型（或沿继承可见）的实例字段，且该字段声明带 `wrapped(WRAPPER_TYPE)`（§8.3.1）；
+- `new.wrapper.method`：`METHOD` 必须是当前宿主上的方法符号（实例或静态——静态方法的 Method wrapper 通常改挂 companion，见 §8.7；本指令用于仍挂在宿主上的方法应用）；
+- `new.wrapper.entity`：当前宿主类型声明必须带 `wrapped(WRAPPER_TYPE)`；
+- 同一 `..init.wrapper` 体内，对同一目标（同一 FIELD / 同一 METHOD / entity×同一 W）的重复初始化非法（验证器可检静态重复）；
+- 指令不读/写普通局部结果；ARGS 中的变量按 §21.4 DA 规则须已赋值。
+
 ---
 
 ## 15. 方法调用
@@ -1433,6 +1558,13 @@ invoke.indirect.noret OBJECT_VAR [ARG_0, ARG_1, ...]
 - 参数与结果严格匹配该 `$$call` 签名（canonical 全等，同 §15.1 口径）；
 - 有返回使用 `invoke.indirect`，无返回使用 `invoke.indirect.noret`；
 - 若命中的 `$$call` 带 `async`（如 `core::AsyncFunc` / `core::AsyncAction` 子类的实现），按 §15.2 同一规则：使用 `invoke.indirect`（非 noret），结果为 `core.coroutine.Task\<TResult>` / `core.coroutine.Task`，eager spawn。
+
+**泛型 ABI（与 §15.1 direct invoke 完全同构）**：
+
+- 当命中的 `$$call` 为泛型方法时，其 fn `.args` 携带 `.generic.T = .typeid` 隐藏条目（固定泛型）与/或 `.generic.TArgs`/`.generic.TValues` 包形态（§7.1/§7.2）；
+- 调用点实参列表前部平铺 typeid 前缀：固定泛型以 `getid.type type(...)` 物化的 `.typeid` 临时（嵌套转发时为 `$.generic.T`），泛型可变包以 `.array<.typeid<.any>>` / `.map<.string, .typeid<.any>>` 打包物化——序与形态同 direct invoke；
+- 值实参（含 `.vargs.*`/`.kwargs.*` 包）紧随 typeid/包前缀之后；
+- 验证器按被调 `$$call` 的 fn 定义 hidden 条目数跳过前缀并校验前缀类型，再比对普通参数与值包（缺/错 typeid 前缀非法）。
 
 lambda 的 BIL 形态是普通 `new type(..lambda..UUID)` 构造 + `invoke.indirect`；BIL 没有 lambda 专属指令。
 
@@ -1892,6 +2024,8 @@ LocalSymbols {
 - 方法 body 与声明一一对应（`native` 声明除外：`native` 方法不得存在方法 body，且必须恰好各带一个 `symbol("...")` 与 `lib("...")` 修饰符）；
 - `core::Any$call???` 为预定义内建方法符号（§15.5 / §22.5）——无 LocalSymbols/ExternalSymbols 声明、无 fn 定义，可被 `invoke` 引用；
 - proxy 模板 fn（名以 `.proxy.` 开头，§5.1）必须声明在 wrapper 类型内，且与 `wrapper-proxy` 修饰符双向一致（见 §21.8）；
+- `..init.wrapper`（§9.7）：每 owner 至多一个；返回 `.void`；实例方法；必须 `priv` + `compiler-generated`；
+- `..companion.*` 类型（§8.7）：必须是 `class` 且带 `singleton` + `shared`；类型名保留前缀；
 - entrypoint 唯一且签名符合 `SYNTAX.md`。
 
 ### 21.3 类型验证
@@ -1904,13 +2038,15 @@ LocalSymbols {
 - 不存在隐式数值提升或子类型赋值；
 - 运算实现按精确类型唯一；
 - getter/setter/index 实现按精确类型唯一；
-- direct invoke 签名完全匹配；`invoke.indirect` / `invoke.indirect.noret` 按 §15.3：`OBJECT_VAR` 静态类型恰有一个与实参/返回形态严格匹配的 `$$call`（含 async 时结果为 `Task\<TResult>` / `Task`）；
+- direct invoke 签名完全匹配；`invoke.indirect` / `invoke.indirect.noret` 按 §15.3：`OBJECT_VAR` 静态类型恰有一个与实参/返回形态严格匹配的 `$$call`（含 async 时结果为 `Task\<TResult>` / `Task`；泛型 `$$call` 的 typeid/包前缀与 §15.1 同构校验）；
 - cast 目标合法；
 - new/init 和 enum case 签名合法；
 - await/yield 类型合法；
 - `get.self` / `invoke fn(..inner)` / `invoke.noret fn(..inner)` 仅出现在 proxy 模板 fn 内，且类型规则见 §12.5 / §15.4；
 - `get.wrapper` / `get.wrapper.field` 类型规则见 §12.4（后者要求 HOST_FIELD 带 `wrapped(W)`、OBJECT 可赋值到字段 owner、RESULT = W）；
-- `set.wrapper.field` 链元素合法（`field` / `wrapper` 两态；字段应用对 `field(HOST_FIELD)+wrapper(W)` 要求 HOST_FIELD 带 `wrapped(W)`；类型应用 `wrapper(W)` 要求当前位置类型声明带对应应用标记 §8.3.1；链必须含 wrapper 元素）。
+- `set.wrapper.field` 链元素合法（`field` / `wrapper` 两态；字段应用对 `field(HOST_FIELD)+wrapper(W)` 要求 HOST_FIELD 带 `wrapped(W)`；类型应用 `wrapper(W)` 要求当前位置类型声明带对应应用标记 §8.3.1；链必须含 wrapper 元素）；
+- `new.wrapper.field` / `new.wrapper.method` / `new.wrapper.entity`（§14.5）仅允许出现在 `..init.wrapper` fn 体内；WRAPPER_TYPE 与 ARGS 匹配 wrapper init；field/method/entity 目标与 `wrapped(W)` 标记一致；
+- `new.wrapped` / `new.wrapped.case`（§14.4）：第一实参表匹配目标类型 `..init.wrapper` 签名且该签名非空；第二实参表匹配 init / case；与普通 `new` / `new.case` 互斥（有参 `..init.wrapper` 必须用 wrapped 家族，否则禁止）。
 
 ### 21.4 definite assignment
 
@@ -1976,7 +2112,9 @@ LocalSymbols {
 - rich/shared 闭包与跨 Coroutine 规则合法（`.cell<T>` / `.readonly_cell<T>` 共享安全 passthrough：等同于 `T`，与 Box 同例，不按普通 class 闭包表）；
 - async 调用的 receiver/参数/结果满足 shared 边界；
 - `wrapper-proxy(PROXY_KIND)`（§8.4）只允许在 wrapper 类型内、名以 `.proxy.` 开头的方法上；此类方法必须带本修饰符；`PROXY_KIND` 仅 `specific` / `wildcard`，且与成员形状类别一致（specific ↔ 具名 proxy；wildcard ↔ `.*` 通配 proxy）；同一方法不得重复携带本修饰符；
-- `wrapped(WRAPPER_TYPE_REF)`（§8.3.1）的 `WRAPPER_TYPE_REF` 必须是 wrapper 类型；可重复，顺序保留。
+- `wrapped(WRAPPER_TYPE_REF)`（§8.3.1）的 `WRAPPER_TYPE_REF` 必须是 wrapper 类型；可重复，顺序保留；
+- `..init.wrapper` 声明与 fn 定义满足 §9.7（唯一性 / void / priv + compiler-generated / 非 static）；
+- `..companion.*` 满足 §8.7（class + singleton + shared；壳体静态方法体形态由 frontend 保证，验证器检查 companion 类型结构）。
 
 ### 21.9 VM 可执行性验证
 

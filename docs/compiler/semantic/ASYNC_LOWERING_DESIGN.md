@@ -136,10 +136,12 @@ P3 对每个 lambda 记录按符号身份排序的捕获集；捕获在 lambda �
   不共享安全的 cell/捕获在 P3 报错。
 - 普通 lambda 允许捕获 local object（仍在当前 Coroutine）；若其后被作为 async
   lambda 的捕获或跨协程发布，P3 必须在发布边界拒绝。
-- 循环变量/catch/finally(e)/using 变量被捕获暂不支持（cell 创建点语义待定）。
+- 循环变量/catch/finally(e)/using 变量被捕获已支持（**M106**：for 每迭代新 cell；
+  catch/finally/using 进入块时构造）。
 
-局部 `var`/`const` 访问器按路线 C 实现（**仍待**）：声明槽提升为 closure 逻辑字段，
-getter/setter 是闭包关联的函数体，复用 `ClosureStoragePlan`。访问器不能越过其词法
+局部 `var`/`const` 访问器按路线 C 实现（**M107 已落地**）：声明即 cell 化，
+`override getValue/setValue` 体 = 用户访问器体；自由变量捕获进 cell（init 追加
+实参），复用 `ClosureStoragePlan` ClosureField 路径。访问器不能越过其词法
 存活期逃逸。async lambda 不另设第二种闭包对象（M103 已覆盖 Async 族隐藏类）。
 
 ## 7. stdlib 与 Middleware native 面
@@ -175,8 +177,8 @@ Middleware 必须提供以下保留运行时面；这些是实现接口而非 BI
 4. closure P4 / 对象模型（M103）：隐藏类 + Cell 捕获 + `invoke.indirect`→`$$call` +
    值块体降级 + 验证器 §15.3；`.methodid`/`getid.method` 路线已废除。✅
 5. Middleware：async invoke eager spawn、Task/Alarm continuation、GC fence、状态机。
-6. 局部访问器路线 C（复用 ClosureStoragePlan）与归口项（循环/catch/using 捕获、
-   `(act)()` 括号 void 间接调用）。
+6. ~~局部访问器路线 C~~（**M107 已落地**）与归口项（~~循环/catch/using 捕获~~
+   **M106**、~~`(act)()` 括号 void 间接调用~~ **M105**）。
 
 前两步以 Bound/Lowered/BIL 形态和 verifier 测试为主；M103 后分项为
 `Binder 893`、`Lowerer 211`、`BilEmitter 572`、`BilVerifier 151`（均为通过用例，

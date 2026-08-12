@@ -321,21 +321,194 @@ namespace LatteCompiler.Tests
                 BoundDescribe.Body(BodyOf(bodies7, "use2")).Contains(
                     "SmartCast(InstField(plain, This(Box), String?), String)"));
 
-            // 局部 var 带访问器 → S11 归口诊断；局部仍按普通局部绑定（不中断）
-            var (unit8, bodies8) = BindUnit(
+            // 局部访问器（M107 路线 C）：正例见 TestLocalAccessors
+        }
+
+        // ===== 局部变量访问器（M107 路线 C，SYNTAX §9.4 栈上形态）=====
+        private static void TestLocalAccessors()
+        {
+            TestHarness.Section("P3 Local Accessors");
+
+            // backing 读写：cell 化 + Getter/Setter 槽
+            var (unit, bodies) = BindUnitWithStdlib(
                 "pub func f(): i32 {\n" +
                 "    var local: i32 {\n" +
                 "        get(value: _) { return value }\n" +
                 "        set(value: _) { }\n" +
                 "    } = 0\n" +
+                "    local = 1\n" +
                 "    return local\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("局部访问器归口（S11）", unit8.Diagnostics,
-                "P3: local variable accessors are not supported yet (S11)");
-            TestHarness.Check("局部仍按普通局部绑定",
-                BoundDescribe.Body(BodyOf(bodies8, "f")),
-                "Body(f, [local: i32], [Decl(local, i32, = Int(0,i32)); " +
-                "Return(Local(local,i32))])");
+            CheckNoErrors("backing 局部访问器无诊断", unit);
+            var local = BodyOf(bodies, "f").Locals.First(l => l.Name == "local");
+            TestHarness.CheckTrue("backing 局部 cell 化", local.CellStorage != null);
+            TestHarness.CheckTrue("backing 局部 Getter/Setter 槽",
+                local.Getter != null && local.Setter != null && local.HasBackingStorage);
+
+            // 计算形态
+            var (unit2, bodies2) = BindUnitWithStdlib(
+                "pub func f(base: i32): i32 {\n" +
+                "    var doubled: i32 {\n" +
+                "        get(_: _) { return base + base }\n" +
+                "        set(_: _) { }\n" +
+                "    } = 0\n" +
+                "    return doubled\n" +
+                "}\n");
+            CheckNoErrors("计算形态局部访问器无诊断", unit2);
+            var doubled = BodyOf(bodies2, "f").Locals.First(l => l.Name == "doubled");
+            TestHarness.CheckTrue("计算形态无 backing",
+                doubled.Getter != null && !doubled.HasBackingStorage);
+
+            // 自动访问器
+            var (unit3, _) = BindUnitWithStdlib(
+                "pub func f(): i32 {\n" +
+                "    var h: i32 {\n" +
+                "        get\n" +
+                "        set\n" +
+                "    } = 7\n" +
+                "    h = 8\n" +
+                "    return h\n" +
+                "}\n");
+            CheckNoErrors("自动访问器无诊断", unit3);
+
+            // const + setter
+            var (unit4, _) = BindUnitWithStdlib(
+                "pub func f(): i32 {\n" +
+                "    const c: i32 {\n" +
+                "        get(value: _) { return value }\n" +
+                "        set(value: _) { }\n" +
+                "    } = 1\n" +
+                "    return c\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("const 局部不得有 setter", unit4.Diagnostics,
+                "Const local 'c' cannot declare a setter");
+
+            // 无体计算形态（parser 要求 (_: _) 必带体，源码不可达——自动
+            // 访问器后手工翻 HasBackingField=false 直达 P3 防御检查，同 P2 字段先例）
+            {
+                var roots = new List<RootASTNode>();
+                roots.AddRange(StdlibSources.ParseAll());
+                var user = TestHarness.ParseRoot(
+                    "pub func f(): i32 {\n" +
+                    "    var x: i32 {\n" +
+                    "        get\n" +
+                    "    } = 0\n" +
+                    "    return x\n" +
+                    "}\n");
+                var fn = user.Declarations.OfType<CallableDeclarationASTNode>().First();
+                var localDecl = fn.Body!.Statements.OfType<VariableDeclarationASTNode>().First();
+                localDecl.Getter!.HasBackingField = false;
+                roots.Add(user);
+                var unit5b = new CompilationUnit(roots.ToArray());
+                var decls5b = DeclarationCollector.Collect(unit5b);
+                DeclarationResolver.Resolve(unit5b, decls5b);
+                Binder.Bind(unit5b, decls5b);
+                TestHarness.CheckSemanticError("无体计算 getter", unit5b.Diagnostics,
+                    "Computed getter of 'x' must have a body");
+            }
+
+            // 仅 get 写
+            var (unit6, _) = BindUnitWithStdlib(
+                "pub func f(): i32 {\n" +
+                "    var x: i32 {\n" +
+                "        get(value: _) { return value }\n" +
+                "    } = 0\n" +
+                "    x = 1\n" +
+                "    return x\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("仅 get 不可写", unit6.Diagnostics,
+                "'x' has no setter");
+
+            // 仅 set 读
+            var (unit7, _) = BindUnitWithStdlib(
+                "pub func f(): i32 {\n" +
+                "    var x: i32 {\n" +
+                "        set(value: _) { }\n" +
+                "    } = 0\n" +
+                "    return x\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("仅 set 不可读", unit7.Diagnostics,
+                "'x' has no getter");
+
+            // pub/priv 修饰符
+            var (unit8, _) = BindUnitWithStdlib(
+                "pub func f(): i32 {\n" +
+                "    var x: i32 {\n" +
+                "        pub get(value: _) { return value }\n" +
+                "        priv set(value: _) { }\n" +
+                "    } = 0\n" +
+                "    return x\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("局部访问器禁 pub", unit8.Diagnostics,
+                "Local variable accessor cannot have modifier 'pub'");
+            TestHarness.CheckSemanticError("局部访问器禁 priv", unit8.Diagnostics,
+                "Local variable accessor cannot have modifier 'priv'");
+
+            // 访问器体内引用外层局部
+            var (unit9, bodies9) = BindUnitWithStdlib(
+                "pub func f(): i32 {\n" +
+                "    var outer = 10\n" +
+                "    var x: i32 {\n" +
+                "        get(_: _) { return outer }\n" +
+                "        set(_: _) { outer = value }\n" +
+                "    } = 0\n" +
+                "    x = 1\n" +
+                "    return outer\n" +
+                "}\n");
+            CheckNoErrors("访问器体内引用外层局部", unit9);
+            var xLocal = BodyOf(bodies9, "f").Locals.First(l => l.Name == "x");
+            TestHarness.CheckTrue("外层引用触发捕获条目",
+                xLocal.CellStorage is { AccessorCaptures.Count: > 0 });
+
+            // getter 副作用：写外层局部（可观测 cell 捕获）
+            var (unit10, bodies10) = BindUnitWithStdlib(
+                "pub func f(): i32 {\n" +
+                "    var log = 0\n" +
+                "    var x: i32 {\n" +
+                "        get(value: _) { log = log + 1\n" +
+                "            return value }\n" +
+                "        set(value: _) { }\n" +
+                "    } = 5\n" +
+                "    var a = x\n" +
+                "    var b = x\n" +
+                "    return log\n" +
+                "}\n");
+            CheckNoErrors("getter 副作用写外层", unit10);
+            TestHarness.CheckTrue("副作用访问器 cell + 捕获",
+                BodyOf(bodies10, "f").Locals.First(l => l.Name == "x").CellStorage
+                    is { AccessorCaptures.Count: > 0 });
+
+            // M112：外层方法泛型 T + 局部访问器 cell 化
+            var (unit11, bodies11) = BindUnitWithStdlib(
+                "pub func wrap\\<T>(x: T): T {\n" +
+                "    var y: T {\n" +
+                "        get(value: _) { return value }\n" +
+                "        set(value: _) { }\n" +
+                "    } = x\n" +
+                "    y = x\n" +
+                "    return y\n" +
+                "}\n");
+            CheckNoErrors("方法泛型 T 局部访问器 cell 化无诊断", unit11);
+            var yAcc = BodyOf(bodies11, "wrap").Locals.First(l => l.Name == "y");
+            TestHarness.CheckTrue("访问器 cell 子类共享 generic(T)",
+                yAcc.CellStorage != null
+                && yAcc.CellStorage.CellClass.GenericParameters.Count == 1
+                && yAcc.CellStorage.CellClass.GenericParameters[0].Name == "T");
+
+            // M112：方法泛型 T 访问器 + lambda 捕获
+            var (unit12, bodies12) = BindUnitWithStdlib(
+                "pub func wrap\\<T>(x: T): T {\n" +
+                "    var y: T {\n" +
+                "        get(value: _) { return value }\n" +
+                "        set(value: _) { }\n" +
+                "    } = x\n" +
+                "    var f = func{(): T -> y}\n" +
+                "    return f()\n" +
+                "}\n");
+            CheckNoErrors("方法泛型 T 访问器被 lambda 捕获无诊断", unit12);
+            var yCap = BodyOf(bodies12, "wrap").Locals.First(l => l.Name == "y");
+            TestHarness.CheckTrue("访问器与捕获共享同一 cell",
+                yCap.CellStorage != null && yCap.Getter != null);
         }
 
         // ===== override 配套（S8e，SYNTAX §9.2.1；P3 侧正例 + new abstract）=====

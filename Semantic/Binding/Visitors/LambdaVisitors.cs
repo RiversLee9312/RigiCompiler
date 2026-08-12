@@ -182,13 +182,19 @@ namespace LatteCompiler
             }
 
             // ===== 7. 内层 lambda 的捕获是外层 lambda 的传递捕获 =====
-            // lambda 自身参数和体内局部只属于内层上下文，不能沿此边界泄漏为外捕获。
+            // 内层自身参数不外泄；外层 lambda 自身的参数/局部也不再向外传递
+            // （外层 $$call 已有 CellLocal 存储——嵌套构造点取本层 cell 对象；
+            // 误传会导致外层 init 在真正外层作用域找不到 cell，P4 报 Cell 族缺失）
             if (ctx.IsLambda)
             {
                 foreach (var captured in lambdaCtx.CapturedSymbols)
                 {
-                    if (captured is ParameterSymbol parameter
-                        && lambdaCtx.LambdaParameters.Contains(parameter)) continue;
+                    if (captured is ParameterSymbol nestedParameter
+                        && lambdaCtx.LambdaParameters.Contains(nestedParameter)) continue;
+                    if (captured is ParameterSymbol outerParameter
+                        && ctx.LambdaParameters.Contains(outerParameter)) continue;
+                    if (captured is LocalSymbol outerLocal
+                        && ctx.Locals.Contains(outerLocal)) continue;
                     ctx.CapturedSymbols.Add(captured);
                 }
             }

@@ -356,6 +356,20 @@ namespace LatteCompiler.Tests
             body.Instructions.Add(new NewCaseInstruction(BilOp.Type("com.example::RequestResult"),
                 BilOp.Case("com.example::RequestResult.Failed"), BilOp.Var("r"),
                 new[] { BilOp.Var("e") }));
+            body.Instructions.Add(new NewWrappedInstruction(BilOp.Type("com.example::Service"),
+                BilOp.Var("svc"), new[] { BilOp.Var("level") }, new[] { BilOp.Var("a") }));
+            body.Instructions.Add(new NewWrappedCaseInstruction(
+                BilOp.Type("com.example::RequestResult"),
+                BilOp.Case("com.example::RequestResult.Failed"), BilOp.Var("r"),
+                new[] { BilOp.Var("level") }, new[] { BilOp.Var("e") }));
+            body.Instructions.Add(new NewWrapperFieldInstruction(
+                BilOp.Field("com.example::Hero#hp@.i32"),
+                BilOp.Type("core.clamp::Clamped"), new[] { BilOp.Var("a"), BilOp.Var("b") }));
+            body.Instructions.Add(new NewWrapperMethodInstruction(
+                BilOp.Fn("com.example::Service$load(id:.i64)@com.example::User"),
+                BilOp.Type("core.logging::Timed"), new BilVariableOperand[0]));
+            body.Instructions.Add(new NewWrapperEntityInstruction(
+                BilOp.Type("core.logging::Logged"), new[] { BilOp.Var("level") }));
             body.Instructions.Add(new InvokeInstruction(
                 BilOp.Fn("com.example::Service$load(id:.i64)@com.example::User"), BilOp.Var("r"),
                 new[] { BilOp.Var("a"), BilOp.Var("b") }));
@@ -418,6 +432,11 @@ namespace LatteCompiler.Tests
                 "        get.array $arr $i $e",
                 "        new type(com.example::User) $u [$a]",
                 "        new.case type(com.example::RequestResult) case(com.example::RequestResult.Failed) $r [$e]",
+                "        new.wrapped type(com.example::Service) $svc [$level] [$a]",
+                "        new.wrapped.case type(com.example::RequestResult) case(com.example::RequestResult.Failed) $r [$level] [$e]",
+                "        new.wrapper.field field(com.example::Hero#hp@.i32) type(core.clamp::Clamped) [$a, $b]",
+                "        new.wrapper.method fn(com.example::Service$load(id:.i64)@com.example::User) type(core.logging::Timed) []",
+                "        new.wrapper.entity type(core.logging::Logged) [$level]",
                 "        invoke fn(com.example::Service$load(id:.i64)@com.example::User) $r [$a, $b]",
                 "        if $cond blk(then) none",
                 "        loop $cond blk(body) none blk(judge) $brk",

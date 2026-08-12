@@ -4,7 +4,8 @@ using System.Linq;
 namespace LatteCompiler
 {
     // 符号路径与类型引用解析（P2 声明骨架与 P3 函数体共用）。
-    // 查找序：泛型参数（方法 → 宿主类型链）→ 宿主类型链 NestedTypes →
+    // 查找序：泛型参数（方法 → 合成 Owner 外层方法共享 → 宿主类型链）→
+    //   宿主类型链 NestedTypes →
     //   文件命名空间及父链 → 全局命名空间 → import 列表（具名/通配）→
     //   core 命名空间（隐式可见：i32/String/Object 等裸名由此解析）。
     // 诊断按构造时给定的 Phase 写入编译单元诊断袋；解析失败一律返回
@@ -306,6 +307,22 @@ namespace LatteCompiler
             {
                 var hit = declaringMethod.GenericParameters.FirstOrDefault(p => p.Name == name);
                 if (hit != null) return hit;
+                // M112：合成类（lambda 隐藏类 / cell 子类）把外层方法泛型参数
+                // 以同符号对象挂在 Owner.GenericParameters（M103 类型级共享）。
+                // $$call/getValue 等合成方法自身无 GenericParameters，须从 Owner
+                // 补齐「相对 DeclaringType 链多出来的」条目——方法级遮蔽类型级
+                // （与源方法体查找序一致：method GP → type chain GP）
+                if (declaringMethod.Owner != null)
+                {
+                    var typeChain = new HashSet<GenericParameterSymbol>();
+                    for (var t = declaringType; t != null; t = t.DeclaringType)
+                    {
+                        foreach (var parameter in t.GenericParameters) typeChain.Add(parameter);
+                    }
+                    hit = declaringMethod.Owner.GenericParameters.FirstOrDefault(p =>
+                        p.Name == name && !typeChain.Contains(p));
+                    if (hit != null) return hit;
+                }
             }
             for (var t = declaringType; t != null; t = t.DeclaringType)
             {

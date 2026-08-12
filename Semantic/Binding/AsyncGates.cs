@@ -111,6 +111,9 @@ namespace LatteCompiler
                 case BoundLoopControl:
                 case BoundSeqExitStatement:
                     break;
+                case BoundNewWrapperStatement newWrapper:
+                    foreach (var argument in newWrapper.Arguments) WalkExpression(argument, env);
+                    break;
                 default:
                     throw new CompilerInternalException(
                         "async 闸门遍历遇未知 Bound 语句节点: " + statement.GetType().Name);

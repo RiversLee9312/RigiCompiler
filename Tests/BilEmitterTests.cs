@@ -92,9 +92,11 @@ namespace LatteCompiler.Tests
             TestIndexEmission();
             TestContainerCallSuffixChainEmission();
             TestAccessorEmission();
+            TestLocalAccessorEmission();
             TestOverrideProjection();
             TestSuperEmission();
             TestGenericEmission();
+            TestIndirectGenericEmission();
             TestGenericVarianceEmission();
             TestVarArgsEmission();
             TestGenericVarArgsEmission();
@@ -128,6 +130,7 @@ namespace LatteCompiler.Tests
             TestWrapperPlaceEmissionGates();
             TestWrapperCellStorageCoverage();
             TestWrapperFieldValueCallAndIndexEmission();
+            TestWrapperIndexWriteEmission();
             TestWrapperDeepWriteEmission();
             TestWrapperDeepWriteMixedBoundary();
             TestWrapperDeepCompoundAssignmentEmission();
@@ -144,6 +147,9 @@ namespace LatteCompiler.Tests
             TestDowngradeGateNoChain();
             TestDowngradeViaInterface();
             TestDowngradeExemptionPositions();
+            TestInitWrapperTypeLevelEmission();
+            TestInitWrapperCellArgsEmission();
+            TestStaticMethodCompanionEmission();
             TestLambdaEmission();
             TestUnsupportedNodes();
 

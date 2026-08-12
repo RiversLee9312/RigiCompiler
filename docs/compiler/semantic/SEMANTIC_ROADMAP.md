@@ -2,7 +2,7 @@
 
 > **用途**: 中端（AST → BIL）的里程碑计划。架构定稿见同目录
 > `SEMANTIC_ARCHITECTURE.md`；本文档只管「计划」，进度现状一律记
-> `docs/PROGRESS_REPORT.md`（落地时在其里程碑历史领取全局 M 编号）。
+> `docs/legacy/PROGRESS_REPORT.md`（落地时在其里程碑历史领取全局 M 编号）。
 >
 > 编号 S0–S14 是**计划序号**，近细远粗：S0–S8 已细化到文件级施工
 > 清单（S0–S6 于 2026-07-31 细化，S7 于 2026-07-31 细化为 S7a–S7f，

@@ -119,15 +119,24 @@ namespace LatteCompiler
                         SynthLocalFactory.ReferenceTo(loop, enumerator),
                         loop.MoveNextMethod, new List<LoweredExpression>(), moveNextType)),
             });
-            // Body：头 = LoopVariable = .e.current()，其后体降级语句
+            // Body：头 = LoopVariable = .e.current()，其后体降级语句。
+            // 被 lambda 捕获时每迭代新 cell（C#5 foreach 语义，SYNTAX §5.2/§7.3）：
+            // loopVar = new ..cell..UUID(.e.current())——Body 头每轮执行即新 cell
             var body = LowerBlockVisitor.Visit(loop.Body, ctx, env);
             if (body == null) return null;
+            LoweredExpression currentValue = new LoweredInstanceCallExpression(loop,
+                SynthLocalFactory.ReferenceTo(loop, enumerator),
+                loop.CurrentMethod!, new List<LoweredExpression>(), itemType);
+            if (loopVariable.CellStorage is { } storage)
+            {
+                var wrapperArgs = CellWrappedNew.LowerWrapperInitArgs(loop, storage, ctx, env);
+                currentValue = new LoweredNewExpression(loop, storage.ValueInit,
+                    new List<LoweredExpression> { currentValue }, storage.CellType, wrapperArgs);
+            }
             var bodyStatements = new List<LoweredStatement>
             {
-                new LoweredAssignmentStatement(loop, SynthLocalFactory.ReferenceTo(loop, loopVariable),
-                    new LoweredInstanceCallExpression(loop,
-                        SynthLocalFactory.ReferenceTo(loop, enumerator),
-                        loop.CurrentMethod!, new List<LoweredExpression>(), itemType)),
+                new LoweredAssignmentStatement(loop,
+                    SynthLocalFactory.ReferenceTo(loop, loopVariable), currentValue),
             };
             bodyStatements.AddRange(body.Statements);
             return new LoweredLoop(loop, isRev: false, judge, condition,

@@ -309,4 +309,23 @@ namespace LatteCompiler
             Target = target;
         }
     }
+
+    // wrapper 安装（M109b-1，BIL §14.5）：仅 `..init.wrapper` 体内
+    public sealed class LoweredNewWrapperStatement : LoweredStatement
+    {
+        public BoundNewWrapperKind Kind { get; }
+        public TypeSymbol WrapperType { get; }
+        public SemanticSymbol? Target { get; }
+        public IReadOnlyList<LoweredExpression> Arguments { get; }
+
+        public LoweredNewWrapperStatement(BoundNode origin, BoundNewWrapperKind kind,
+            TypeSymbol wrapperType, SemanticSymbol? target,
+            IReadOnlyList<LoweredExpression> arguments) : base(origin)
+        {
+            Kind = kind;
+            WrapperType = wrapperType;
+            Target = target;
+            Arguments = arguments;
+        }
+    }
 }

@@ -41,9 +41,24 @@ namespace LatteCompiler
             // 其 wrapper 存储是宿主隐藏存储，M88；cell 的构造时机归
             // Middleware，frontend 只生成与标注）
             SynthesizeFieldCellStorage();
+            // 阶段 1.7（M109b，BIL §9.7/§8.7）：类型级 ..init.wrapper 合成
+            // + 静态 Method wrapper companion 合成
+            WrapperInitSynthesis.SynthesizeForTypes(env);
             // 阶段 2：逐函数体绑定（含字段访问器体 + proxy 模板态，M88）
             WalkSkeleton((fn, symbol, fileCtx, owner) =>
             {
+                // M109b-2：静态 Method wrapper 壳体——体迁 companion 实例方法，
+                // 原方法合成 invoke 壳体
+                if (symbol.Companion is { } companionInfo)
+                {
+                    if (fn.Body != null)
+                    {
+                        BindCompanionInstanceBody(fn, companionInfo, fileCtx, owner);
+                    }
+                    bodies.Add(WrapperInitSynthesis.SynthesizeShellBody(fn, symbol,
+                        companionInfo, env));
+                    return;
+                }
                 if (fn.Body == null)
                 {
                     // 无体 init（§9.3 映射形态天然无体，OverrideChecker 已
@@ -194,6 +209,23 @@ namespace LatteCompiler
             return value;
         }
 
+        // M109b-2：原静态方法体以 companion 实例方法为宿主绑定
+        // （IsCompanionInstance → HasThis=false；LookupHost=原宿主）
+        private void BindCompanionInstanceBody(CallableDeclarationASTNode fn,
+            StaticMethodCompanionInfo companion, FileContext fileCtx, TypeSymbol? owner)
+        {
+            var instance = companion.InstanceMethod;
+            var ctx = new BindContext(instance, fileCtx, owner, lookupHost: owner);
+            var body = BlockDispatcher.Visit(fn.Body!, null, ctx, env);
+            AsyncGates.CheckFunctionBody(body, env);
+            if (instance.ReturnType != null && !BoundAnalysis.GuaranteesReturn(body))
+            {
+                env.Error(fn.Span,
+                    $"Function '{companion.ShellMethod.Name}' must return a value on all code paths");
+            }
+            bodies.Add(new BoundFunctionBody(instance, ctx.Locals.ToList(), body));
+        }
+
         private void BindBody(CallableDeclarationASTNode fn, MethodSymbol symbol,
             FileContext fileCtx, TypeSymbol? owner)
         {
@@ -281,6 +313,9 @@ namespace LatteCompiler
                             $"'{field.Name}' requires a type annotation");
                         return;
                     }
+                    // M109b-1：静态/全局字段 wrapper 实参在声明点绑定
+                    // （静态语境——无 this / 无局部；仿参数默认值）
+                    BindFieldWrapperInitArgs(field, variable, fileCtx);
                     CellClassFactory.EnsureCellStorage(field, variable, fileCtx.Namespace, env);
                     return;
                 case ClassDeclarationASTNode or StructDeclarationASTNode
@@ -291,6 +326,26 @@ namespace LatteCompiler
                         WalkFieldDeclarations(member, fileCtx);
                     }
                     return;
+            }
+        }
+
+        // 静态/全局字段 wrapper 应用 init 实参绑定（M109b-1）：声明点
+        // 静态语境（IsDefaultValueContext——无 this / 无形参）
+        private void BindFieldWrapperInitArgs(FieldSymbol field,
+            VariableDeclarationASTNode variable, FileContext fileCtx)
+        {
+            // 合成占位方法仅作 BindContext 宿主（不进符号表）
+            var host = new MethodSymbol(".field.wrapper.bind", MethodKind.Regular,
+                owner: field.Owner, ns: field.Namespace, isStatic: true)
+            {
+                HasBody = false,
+                IsSynthetic = true,
+            };
+            var ctx = new BindContext(host, fileCtx, field.Owner, isDefaultValueContext: true);
+            var scope = new Scope(null);
+            foreach (var app in field.AppliedWrappers)
+            {
+                WrapperInitSynthesis.BindInitArgsInScope(app, scope, ctx, env, variable);
             }
         }
 

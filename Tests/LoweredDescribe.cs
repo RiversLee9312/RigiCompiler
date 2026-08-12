@@ -84,6 +84,10 @@ namespace LatteCompiler.Tests
                 // M61：return@语句seq 标记（编织后命中本层者被消费删除——
                 // 仅传播中的外层目标可见）
                 LoweredSeqExitStatement seqExit => $"SeqExit(@{seqExit.Target.Label})",
+                LoweredNewWrapperStatement nw =>
+                    $"NewWrapper({nw.Kind}, {nw.WrapperType.Name}" +
+                    $"{(nw.Target != null ? ", " + nw.Target.Name : "")}, " +
+                    $"[{string.Join(", ", nw.Arguments.Select(Expr))}])",
                 _ => $"<{stmt.GetType().Name}>",
             };
         }

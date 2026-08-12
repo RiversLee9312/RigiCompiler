@@ -23,7 +23,7 @@ namespace LatteCompiler.Tests
                 "@WrapperTarget(.Entity)\n" +
                 "pub wrapper Logged {\n" +
                 "    pub var level: String\n" +
-                "    pub init(_ -> level)\n" +
+                "    pub init() { level = \"INFO\" }\n" +
                 "    pub func dump(): String { return level }\n" +
                 "}\n" +
                 "@Logged\n" +
@@ -45,7 +45,7 @@ namespace LatteCompiler.Tests
                 "@WrapperTarget(.Entity)\n" +
                 "pub wrapper Logged {\n" +
                 "    pub var level: String\n" +
-                "    pub init(_ -> level)\n" +
+                "    pub init() { level = \"INFO\" }\n" +
                 "    pub func dump(): String { return level }\n" +
                 "}\n" +
                 "@Logged\n" +
@@ -65,7 +65,7 @@ namespace LatteCompiler.Tests
                 "@WrapperTarget(.Entity)\n" +
                 "pub wrapper Logged {\n" +
                 "    pub var level: String\n" +
-                "    pub init(_ -> level)\n" +
+                "    pub init() { level = \"INFO\" }\n" +
                 "}\n" +
                 "@Logged\n" +
                 "pub class Service { pub init() }\n" +
@@ -84,7 +84,7 @@ namespace LatteCompiler.Tests
                 "@WrapperTarget(.Entity)\n" +
                 "pub wrapper Inner {\n" +
                 "    pub var tag: String\n" +
-                "    pub init(_ -> tag)\n" +
+                "    pub init() { tag = \"x\" }\n" +
                 "}\n" +
                 "@WrapperTarget(.Entity)\n" +
                 "@Inner\n" +
@@ -108,7 +108,7 @@ namespace LatteCompiler.Tests
                 "@WrapperTarget(.Entity)\n" +
                 "pub wrapper Logged {\n" +
                 "    pub var level: String\n" +
-                "    pub init(_ -> level)\n" +
+                "    pub init() { level = \"INFO\" }\n" +
                 "}\n" +
                 "@Logged\n" +
                 "pub class Service {\n" +
@@ -127,7 +127,7 @@ namespace LatteCompiler.Tests
                 "@WrapperTarget(.Value)\n" +
                 "pub wrapper Clamped {\n" +
                 "    pub var min: i32\n" +
-                "    pub init(_ -> min)\n" +
+                "    pub init() { min = 0 }\n" +
                 "}\n" +
                 "pub func f(): i32 {\n" +
                 "    @Clamped\n" +
@@ -157,7 +157,7 @@ namespace LatteCompiler.Tests
                 "@WrapperTarget(.Value)\n" +
                 "pub shared wrapper SClamp {\n" +
                 "    pub var min: i32\n" +
-                "    pub init(_ -> min)\n" +
+                "    pub init() { min = 0 }\n" +
                 "}\n" +
                 "pub class Holder {\n" +
                 "    @SClamp\n" +
@@ -183,7 +183,7 @@ namespace LatteCompiler.Tests
                 "@WrapperTarget(.Entity)\n" +
                 "pub wrapper Indexed {\n" +
                 "    pub var store: i32\n" +
-                "    pub init(_ -> store)\n" +
+                "    pub init() { store = 0 }\n" +
                 "    pub operator getAtIndex(index: i32): i32 { return store }\n" +
                 "}\n" +
                 "@Indexed\n" +
@@ -208,7 +208,7 @@ namespace LatteCompiler.Tests
                 "@WrapperTarget(.Entity)\n" +
                 "pub wrapper Logged {\n" +
                 "    pub var level: String\n" +
-                "    pub init(_ -> level)\n" +
+                "    pub init() { level = \"INFO\" }\n" +
                 "}\n" +
                 "@Logged\n" +
                 "pub class Service { pub init() }\n";
@@ -271,6 +271,125 @@ namespace LatteCompiler.Tests
                 "Wrapper place ':Logged' cannot be used as a value");
         }
 
+        // ===== M109b-2：静态 Method wrapper companion 语义 =====
+        private static void TestStaticMethodCompanionBinding()
+        {
+            TestHarness.Section("P3 Static Method Companion (M109b-2)");
+
+            var (unit, bodies) = BindUnitWithStdlib(
+                "@WrapperTarget(.Method)\n" +
+                "pub shared wrapper Timed { pub init() }\n" +
+                "pub class Math {\n" +
+                "    @Timed\n" +
+                "    pub static func square(x: i32): i32 { return (x * x) }\n" +
+                "}\n" +
+                "pub func f(n: i32): i32 { return Math.square(n) }\n");
+            CheckNoErrors("静态 Method companion 绑定无诊断", unit);
+
+            var shell = bodies.Select(b => b.Method)
+                .First(m => m.Name == "square" && m.IsStatic);
+            TestHarness.CheckTrue("原静态方法有 Companion 槽", shell.Companion != null);
+            var info = shell.Companion!;
+            TestHarness.CheckTrue("companion 类型名 ..companion. + UUID",
+                info.CompanionType.Name.StartsWith("..companion.", StringComparison.Ordinal)
+                && info.CompanionType.IsSingleton
+                && info.CompanionType.IsShared);
+            TestHarness.CheckTrue("实例方法承接 wrapper 应用",
+                info.InstanceMethod.AppliedWrappers.Count == 1
+                && !info.InstanceMethod.IsStatic
+                && info.InstanceMethod.IsCompanionInstance);
+            TestHarness.CheckTrue("壳体不再挂 wrapper", shell.AppliedWrappers.Count == 0);
+
+            var shellBody = bodies.First(b => ReferenceEquals(b.Method, shell));
+            TestHarness.CheckTrue("壳体体为 return(invoke companion)",
+                shellBody.Body.Statements.Count == 1
+                && shellBody.Body.Statements[0] is BoundReturnStatement
+                {
+                    Value: BoundInstanceCallExpression
+                    {
+                        Method: { IsCompanionInstance: true },
+                        Receiver: BoundNewExpression
+                    }
+                });
+
+            var instanceBody = bodies.First(b =>
+                ReferenceEquals(b.Method, info.InstanceMethod));
+            TestHarness.CheckTrue("companion 实例方法体含用户 return",
+                instanceBody.Body.Statements.Any(s => s is BoundReturnStatement));
+
+            // 调用点无感：f 体仍是对 Math.square 的静态调用
+            var fBody = bodies.First(b => b.Method.Name == "f");
+            TestHarness.CheckTrue("调用点仍绑壳体静态方法",
+                fBody.Body.Statements.OfType<BoundReturnStatement>()
+                    .Any(r => r.Value is BoundCallExpression c
+                        && c.Method.IsStatic && c.Method.Name == "square"));
+        }
+
+        // ===== M109b-1：wrapper init 实参绑定诊断 =====
+        private static void TestWrapperInitArgBinding()
+        {
+            TestHarness.Section("P3 Wrapper Init Arg Binding (M109b-1)");
+
+            // 类型级：实参类型不匹配
+            var (unit, _) = BindUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Logged {\n" +
+                "    pub var level: String\n" +
+                "    pub init(_ -> level)\n" +
+                "}\n" +
+                "@Logged(42)\n" +
+                "pub class Service { pub init() }\n");
+            TestHarness.CheckSemanticError("类型级 wrapper init 实参类型不匹配", unit.Diagnostics,
+                "level");
+
+            // 类型级：缺实参
+            var (unit2, _) = BindUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Logged {\n" +
+                "    pub var level: String\n" +
+                "    pub init(_ -> level)\n" +
+                "}\n" +
+                "@Logged\n" +
+                "pub class Service { pub init() }\n");
+            TestHarness.CheckSemanticError("类型级 wrapper init 缺实参", unit2.Diagnostics,
+                "Missing argument");
+
+            // 局部 cell：实参类型不匹配
+            var (unit3, _) = BindUnit(
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper Clamped {\n" +
+                "    pub var min: i32\n" +
+                "    pub init(_ -> min)\n" +
+                "}\n" +
+                "pub func f() {\n" +
+                "    @Clamped(\"nope\")\n" +
+                "    var x: i32 = 1\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("局部 wrapper init 实参类型不匹配", unit3.Diagnostics,
+                "min");
+
+            // 正例：局部 args 引用外层参数（cell 需 stdlib）
+            var (unit4, bodies) = BindUnitWithStdlib(
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper Clamped {\n" +
+                "    pub var min: i32\n" +
+                "    pub init(_ -> min)\n" +
+                "}\n" +
+                "pub func f(lo: i32): i32 {\n" +
+                "    @Clamped(lo)\n" +
+                "    const health: i32 = 50\n" +
+                "    return health\n" +
+                "}\n");
+            CheckNoErrors("局部 wrapper args 引用外层参数无诊断", unit4);
+            var fBody = bodies.First(b => b.Method.Name == "f");
+            var health = fBody.Locals.First(l => l.Name == "health");
+            TestHarness.CheckTrue("局部 AppliedWrappers 已绑定 init 实参",
+                health.AppliedWrappers.Count == 1
+                && health.AppliedWrappers[0].BoundInitArguments is { Count: 1 });
+            TestHarness.CheckTrue("cell ..init.wrapper 有参",
+                health.CellStorage?.InitWrapper is { Parameters.Count: 1 });
+        }
+
         // ===== wrapper place 绑定负例（查找/宿主/登记检查）=====
         private static void TestWrapperPlaceErrors()
         {
@@ -280,7 +399,7 @@ namespace LatteCompiler.Tests
                 "@WrapperTarget(.Entity)\n" +
                 "pub wrapper Logged {\n" +
                 "    pub var level: String\n" +
-                "    pub init(_ -> level)\n" +
+                "    pub init() { level = \"INFO\" }\n" +
                 "}\n" +
                 "@Logged\n" +
                 "pub class Service { pub init() }\n";
@@ -344,7 +463,7 @@ namespace LatteCompiler.Tests
                 "@WrapperTarget(.Value)\n" +
                 "pub wrapper Clamped {\n" +
                 "    pub var min: i32\n" +
-                "    pub init(_ -> min)\n" +
+                "    pub init() { min = 0 }\n" +
                 "}\n" +
                 "pub func f(): i32 {\n" +
                 "    @Clamped\n" +
@@ -359,7 +478,7 @@ namespace LatteCompiler.Tests
                 "@WrapperTarget(.Value)\n" +
                 "pub wrapper Clamped {\n" +
                 "    pub var min: i32\n" +
-                "    pub init(_ -> min)\n" +
+                "    pub init() { min = 0 }\n" +
                 "}\n" +
                 "pub func f(): i32 {\n" +
                 "    var x: i32 = 1\n" +
@@ -379,7 +498,7 @@ namespace LatteCompiler.Tests
                 "@WrapperTarget(.Entity)\n" +
                 "pub wrapper Logged {\n" +
                 "    pub var level: String\n" +
-                "    pub init(_ -> level)\n" +
+                "    pub init() { level = \"INFO\" }\n" +
                 "}\n" +
                 "@Logged\n" +
                 "pub class Service { pub init() }\n" +
@@ -400,7 +519,7 @@ namespace LatteCompiler.Tests
                 "@WrapperTarget(.Entity)\n" +
                 "pub wrapper Logged {\n" +
                 "    pub var level: String\n" +
-                "    pub init(_ -> level)\n" +
+                "    pub init() { level = \"INFO\" }\n" +
                 "}\n" +
                 "@Logged\n" +
                 "pub class Service { pub init() }\n" +
@@ -421,7 +540,7 @@ namespace LatteCompiler.Tests
                 "@WrapperTarget(.Value)\n" +
                 "pub wrapper Clamped {\n" +
                 "    pub var min: i32\n" +
-                "    pub init(_ -> min)\n" +
+                "    pub init() { min = 0 }\n" +
                 "}\n" +
                 "pub class Hero {\n" +
                 "    @Clamped\n" +
@@ -445,7 +564,7 @@ namespace LatteCompiler.Tests
                 "@WrapperTarget(.Value)\n" +
                 "pub wrapper Clamped {\n" +
                 "    pub var min: i32\n" +
-                "    pub init(_ -> min)\n" +
+                "    pub init() { min = 0 }\n" +
                 "}\n" +
                 "pub func f(): i32 {\n" +
                 "    @Clamped\n" +
@@ -472,7 +591,7 @@ namespace LatteCompiler.Tests
                 "@WrapperTarget(.Value)\n" +
                 "pub wrapper Clamped {\n" +
                 "    pub var min: i32\n" +
-                "    pub init(_ -> min)\n" +
+                "    pub init() { min = 0 }\n" +
                 "}\n" +
                 "pub func f(): i32 {\n" +
                 "    @Clamped\n" +
@@ -497,7 +616,7 @@ namespace LatteCompiler.Tests
                 "@WrapperTarget(.Value)\n" +
                 "pub wrapper Clamped {\n" +
                 "    pub var min: i32\n" +
-                "    pub init(_ -> min)\n" +
+                "    pub init() { min = 0 }\n" +
                 "}\n" +
                 "pub func f(): i32 {\n" +
                 "    @Clamped\n" +
@@ -525,13 +644,13 @@ namespace LatteCompiler.Tests
                 "@WrapperTarget(.Value)\n" +
                 "pub wrapper Clamped {\n" +
                 "    pub var min: i32\n" +
-                "    pub init(_ -> min)\n" +
+                "    pub init() { min = 0 }\n" +
                 "}\n" +
                 "pub struct Inner { pub var x: i32\n pub init(v: i32) { x = v } }\n" +
                 "@WrapperTarget(.Value)\n" +
                 "pub wrapper Boxed {\n" +
                 "    pub var sub: Inner\n" +
-                "    pub init(_ -> sub)\n" +
+                "    pub init() { sub = new Inner(0) }\n" +
                 "}\n" +
                 "pub func f(): i32 {\n" +
                 "    @Clamped\n" +
@@ -566,7 +685,7 @@ namespace LatteCompiler.Tests
                 "@WrapperTarget(.Value)\n" +
                 "pub shared wrapper SClamp {\n" +
                 "    pub var min: i32\n" +
-                "    pub init(_ -> min)\n" +
+                "    pub init() { min = 0 }\n" +
                 "}\n" +
                 "pub class Holder {\n" +
                 "    @SClamp\n" +
@@ -591,12 +710,12 @@ namespace LatteCompiler.Tests
                 "@WrapperTarget(.Value)\n" +
                 "pub wrapper A {\n" +
                 "    pub var tag: String\n" +
-                "    pub init(_ -> tag)\n" +
+                "    pub init() { tag = \"x\" }\n" +
                 "}\n" +
                 "@WrapperTarget(.Value)\n" +
                 "pub wrapper B {\n" +
                 "    pub var n: i32\n" +
-                "    pub init(_ -> n)\n" +
+                "    pub init() { n = 0 }\n" +
                 "}\n" +
                 "pub func f(): i32 {\n" +
                 "    @A\n" +
@@ -630,7 +749,7 @@ namespace LatteCompiler.Tests
                 "@WrapperTarget(.Value)\n" +
                 "pub wrapper Clamped {\n" +
                 "    pub var min: i32\n" +
-                "    pub init(_ -> min)\n" +
+                "    pub init() { min = 0 }\n" +
                 "    pub func clamp(v: i32): i32 { return v }\n" +
                 "}\n" +
                 "pub class Hero {\n" +
@@ -659,7 +778,7 @@ namespace LatteCompiler.Tests
                 "@WrapperTarget(.Entity)\n" +
                 "pub wrapper Logged {\n" +
                 "    pub var sub: Inner\n" +
-                "    pub init(_ -> sub)\n" +
+                "    pub init() { sub = new Inner(0) }\n" +
                 "}\n" +
                 "@Logged\n" +
                 "pub class Service { pub init() }\n" +
@@ -826,7 +945,7 @@ namespace LatteCompiler.Tests
                 "@WrapperTarget(.Entity)\n" +
                 "pub wrapper Logged {\n" +
                 "    pub var level: String\n" +
-                "    pub init(_ -> level)\n" +
+                "    pub init() { level = \"INFO\" }\n" +
                 "    pub func dump(): String { return level }\n" +
                 "}\n";
 
@@ -901,7 +1020,7 @@ namespace LatteCompiler.Tests
                 "@WrapperTarget(.Entity)\n" +
                 "pub wrapper Inner {\n" +
                 "    pub var tag: String\n" +
-                "    pub init(_ -> tag)\n" +
+                "    pub init() { tag = \"x\" }\n" +
                 "}\n" +
                 "@WrapperTarget(.Entity)\n" +
                 "@Inner\n" +

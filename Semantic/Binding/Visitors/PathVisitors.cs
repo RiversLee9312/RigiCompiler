@@ -92,6 +92,54 @@
             return BindPath(node, scope, ctx, env, forAssignment: true);
         }
 
+        // M105 语句位置尾 Call 分流：判定路径是否以「值上的 Call 后缀」结尾
+        //（FoldSuffixes 会处理的形态——非 CallForm 直写、非实例段首 Call
+        // 方法调用）。命中时绑定去掉该后缀后的 receiver；形态不匹配返回
+        // false（调用方走通用兜底）。绑定失败 receiver 为 null（诊断已落）。
+        // 不新建 AST：临时摘除尾 Call 后缀复用 BindPath，finally 还原。
+        public static bool TryBindReceiverBeforeTrailingValueCall(PathExpressionASTNode node,
+            Scope scope, BindContext ctx, BindEnvironment env,
+            out BoundExpression? receiver, out PathSuffixASTNode? trailingCall)
+        {
+            receiver = null;
+            trailingCall = null;
+            List<PathSuffixASTNode> suffixList;
+            int callIndex;
+            if (node.Segments.Count == 0)
+            {
+                if (node.Head.Suffixes.Count == 0) return false;
+                if (node.Head.Suffixes[^1].Kind != PathSuffixKind.Call) return false;
+                // 符号头 + 唯一 Call = CallForm 形态，由既有分流处理
+                if (node.Head.Name != null && node.Head.Expression == null
+                    && node.Head.Suffixes.Count == 1)
+                {
+                    return false;
+                }
+                suffixList = node.Head.Suffixes;
+                callIndex = suffixList.Count - 1;
+            }
+            else
+            {
+                var lastSeg = node.Segments[^1];
+                // 末段仅一个 Call → 实例方法/CallForm 链形态，不分流
+                if (lastSeg.Suffixes.Count < 2) return false;
+                if (lastSeg.Suffixes[^1].Kind != PathSuffixKind.Call) return false;
+                suffixList = lastSeg.Suffixes;
+                callIndex = lastSeg.Suffixes.Count - 1;
+            }
+            trailingCall = suffixList[callIndex];
+            suffixList.RemoveAt(callIndex);
+            try
+            {
+                receiver = BindPath(node, scope, ctx, env, forAssignment: false);
+            }
+            finally
+            {
+                suffixList.Insert(callIndex, trailingCall);
+            }
+            return true;
+        }
+
         // 路径绑定核心（PathVisitor 与 VisitForAssignment 共用）；
         // expectedType 只下传到表达式底座的参数化 enum case 特判（S11）
         public static BoundExpression? BindPath(PathExpressionASTNode node, Scope scope,
@@ -251,6 +299,15 @@
                         if (headType == null)
                         {
                             env.Error(node.Span, $"Undefined value '{headName}'");
+                            return null;
+                        }
+                        // 局部访问器读检查（M107，§9.4.1）：仅 set 不可读
+                        if (!forAssignment
+                            && headSymbol is LocalSymbol accessorLocal
+                            && (accessorLocal.Getter != null || accessorLocal.Setter != null)
+                            && accessorLocal.Getter == null)
+                        {
+                            env.Error(node.Span, $"'{accessorLocal.Name}' has no getter");
                             return null;
                         }
                         if (ctx.IsLambda && !ctx.LambdaParameters.Contains(headSymbol)
@@ -923,6 +980,7 @@
                     }
                     receiver = new BoundCallExpression(suffix, valueCall.Method,
                         valueCall.Arguments, valueCall.ResultType!,
+                        valueCall.TypeArguments, valueCall.GenericPack,
                         isIndirect: true, indirectTarget: receiver);
                     continue;
                 }

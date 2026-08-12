@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 
 namespace LatteCompiler
@@ -146,6 +147,11 @@ namespace LatteCompiler
         // 声明收集消费）
         public CellStorageInfo? CellStorage { get; internal set; }
 
+        // 静态 Method wrapper companion 信息回挂（M109b-2，BIL §8.7）：
+        // 非 null 时本类型是 `..companion.UUID` singleton（兼识别标记，供
+        // P4b 声明收集）；Shell 方法上的 Companion 槽指向同一对象
+        public StaticMethodCompanionInfo? CompanionInfo { get; internal set; }
+
         public TypeSymbol(
             string name,
             TypeKind kind,
@@ -213,16 +219,37 @@ namespace LatteCompiler
         }
     }
 
+    // ===== 静态 Method wrapper companion（M109b-2，BIL §8.7）=====
+
+    // 每个被 Method wrapper 修饰的静态方法合成一个 companion singleton：
+    // UUID = 合成时 Guid；实例方法承接原静态方法体 + wrapper 应用；
+    // 原方法降为壳体（new companion → invoke 实例方法 → ret）。
+    public sealed class StaticMethodCompanionInfo
+    {
+        public TypeSymbol CompanionType { get; }
+        public MethodSymbol InstanceMethod { get; }
+        public MethodSymbol ShellMethod { get; }
+
+        public StaticMethodCompanionInfo(TypeSymbol companionType, MethodSymbol instanceMethod,
+            MethodSymbol shellMethod)
+        {
+            CompanionType = companionType;
+            InstanceMethod = instanceMethod;
+            ShellMethod = shellMethod;
+        }
+    }
+
     // ===== 统一 cell 存储（SYNTAX §5.2 捕获 / §14.3 wrapper 值）=====
 
     // cell 化符号的存储信息：凡被 cell 盛装的符号（lambda 捕获的局部/参数、
-    // 被 wrapper 修饰的局部/静态字段）逐变量合成一个 Cell/ReadonlyCell 隐藏
-    // 子类（..cell..UUID，与用户源码不可名的 `..` 前缀，不进符号图容器表）。
-    // 子类自持 pub value 字段（wrapper 应用经该字段的 wrapped(W) 标记承载），
-    // override 基类抽象 getValue/setValue——对 Middleware 而言就是「普通类 +
-    // 带标记字段」，一看即知如何烘焙；.cell<T>/.readonly_cell<T> 特权拼写仅
-    // 供 Middleware 激进优化识别。信息同时回挂隐藏子类 TypeSymbol.CellStorage
-    // （兼作 cell 子类识别标记，供 P4b 声明收集）
+    // 被 wrapper 修饰的局部/静态字段、带访问器的局部——M107 路线 C）逐变量
+    // 合成一个 Cell/ReadonlyCell 隐藏子类（..cell..UUID，与用户源码不可名的
+    // `..` 前缀，不进符号图容器表）。子类自持 pub value 字段（wrapper 应用经
+    // 该字段的 wrapped(W) 标记承载），override 基类抽象 getValue/setValue——
+    // 对 Middleware 而言就是「普通类 + 带标记字段」，一看即知如何烘焙；
+    // .cell<T>/.readonly_cell<T> 特权拼写仅供 Middleware 激进优化识别。
+    // 信息同时回挂隐藏子类 TypeSymbol.CellStorage（兼作 cell 子类识别标记，
+    // 供 P4b 声明收集）
     public sealed class CellStorageInfo
     {
         // 隐藏子类定义级符号（基类 = Cell<T>/ReadonlyCell<T> 构造类型）
@@ -231,15 +258,26 @@ namespace LatteCompiler
         public TypeSymbol CellType { get; }
         // ReadonlyCell 风味（const 值；无 setValue/DefaultInit 写通道）
         public bool IsReadOnly { get; }
-        // pub value 字段（盛装值；wrapper 应用的 wrapped(W) 载体）
+        // pub value 字段（盛装值；wrapper 应用的 wrapped(W) 载体；局部访问器
+        // backing 形态的 value 别名目标）
         public FieldSymbol ValueField { get; }
-        // init(value)（值参构造点）
+        // init(value[, captures...])（值参构造点；访问器自由变量捕获实参接在值后）
         public MethodSymbol ValueInit { get; }
-        // init()（空构造点——未初始化 var 的空 cell；仅 Cell 风味）
+        // init([captures...])（空构造点——未初始化 var 的空 cell；仅 Cell 风味）
         public MethodSymbol? DefaultInit { get; }
+        // 局部访问器 getValue/setValue 用户体引用的外层自由变量捕获
+        // （M107：this 先行，其余名序；空 = 无自由变量 / 非访问器 cell）
+        public IReadOnlyList<LambdaCaptureEntry> AccessorCaptures { get; }
+        // cell 子类 `..init.wrapper`（M109b-1）：value 字段带 wrapped(W) 时合成；
+        // 无 wrapper 应用为 null。有参时构造点改 new.wrapped
+        public MethodSymbol? InitWrapper { get; internal set; }
+        // 构造点传入 `..init.wrapper` 的实参（声明点绑定的扁平列表；
+        // 与 InitWrapper.Parameters 一一对应；无参时为空）
+        public IReadOnlyList<BoundExpression> WrapperInitArguments { get; internal set; }
 
         public CellStorageInfo(TypeSymbol cellClass, TypeSymbol cellType, bool isReadOnly,
-            FieldSymbol valueField, MethodSymbol valueInit, MethodSymbol? defaultInit)
+            FieldSymbol valueField, MethodSymbol valueInit, MethodSymbol? defaultInit,
+            IReadOnlyList<LambdaCaptureEntry>? accessorCaptures = null)
         {
             CellClass = cellClass;
             CellType = cellType;
@@ -247,6 +285,8 @@ namespace LatteCompiler
             ValueField = valueField;
             ValueInit = valueInit;
             DefaultInit = defaultInit;
+            AccessorCaptures = accessorCaptures ?? Array.Empty<LambdaCaptureEntry>();
+            WrapperInitArguments = Array.Empty<BoundExpression>();
         }
     }
 
@@ -360,6 +400,12 @@ namespace LatteCompiler
         public string? NativeLibrary { get; internal set; }
         // 挂载的 wrapper 应用（声明顺序，外层在前；P2 解析填充）
         public List<WrapperApplication> AppliedWrappers { get; } = new List<WrapperApplication>();
+        // 静态 Method wrapper 壳体（M109b-2）：仅原静态方法置位，指向
+        // companion singleton 与生成实例方法；companion 实例方法为 null
+        public StaticMethodCompanionInfo? Companion { get; internal set; }
+        // companion 内生成的实例方法（§8.7）：源码体迁入；BIL 有 .this，
+        // 但绑定态视同静态（无 this——源体本为静态方法）
+        public bool IsCompanionInstance { get; internal set; }
 
         public MethodSymbol(
             string name,
@@ -587,6 +633,11 @@ namespace LatteCompiler
         public TypeSymbol Wrapper { get; }
         public AnnotationASTNode? Syntax { get; }
 
+        // wrapper init 实参绑定产物（M109b-1）：规范序；null = 尚未绑定 /
+        // 绑定失败。cell 场景在声明点词法作用域绑定；类型级在合成
+        // ..init.wrapper 体内绑定。FromConstraint 无注解 → 恒空列表
+        public IReadOnlyList<BoundExpression>? BoundInitArguments { get; internal set; }
+
         public WrapperApplication(TypeSymbol wrapper, AnnotationASTNode? syntax)
         {
             Wrapper = wrapper;
@@ -615,10 +666,19 @@ namespace LatteCompiler
         public bool IsConst { get; }
         // using 资源绑定即使写作 var 也不可重赋值，避免 finally 捕获错误资源。
         public bool IsUsingResource { get; }
-        // cell 化存储（统一 cell 存储；P3 写入）：lambda 捕获（§5.2）或被
-        // wrapper 修饰（§14.3）时本局部在 BIL 的存储是 cell（.vars 条目
-        // 类型为隐藏子类，声明处构造，读写全经 getValue/setValue）
+        // cell 化存储（统一 cell 存储；P3 写入）：lambda 捕获（§5.2）、被
+        // wrapper 修饰（§14.3）或带访问器（§9.4 路线 C，M107）时本局部在
+        // BIL 的存储是 cell（.vars 条目类型为隐藏子类，声明处构造，读写
+        // 全经 getValue/setValue——访问器体即 override 体）
         public CellStorageInfo? CellStorage { get; internal set; }
+        // 局部访问器槽（SYNTAX §9.4 路线 C，M107；null = 无该访问器）。
+        // 指向 cell 子类的 getValue/setValue override（存在性供读写检查；
+        // 体经 SyntheticCellBodies 走统一 P4）。无字段访问器的
+        // getter(FIELD) BIL 投影——局部访问器不进类型成员表
+        public MethodSymbol? Getter { get; internal set; }
+        public MethodSymbol? Setter { get; internal set; }
+        // 访问器 backing 形态标记（§9.4：仅在 Getter/Setter 任一非空时有意义）
+        public bool HasBackingStorage { get; internal set; }
         // 挂载的 wrapper 应用（声明顺序，外层在前；P3 局部声明绑定时解析
         // 登记——栈上声明不进 P1/P2，SYNTAX §14.9 矩阵 C 恒合法免检查）
         public List<WrapperApplication> AppliedWrappers { get; } = new List<WrapperApplication>();

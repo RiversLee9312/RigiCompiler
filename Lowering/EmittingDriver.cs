@@ -54,6 +54,16 @@ namespace LatteCompiler
                 env.Module.LocalSymbols.Add(
                     LocalSymbolEmitters.EmitSyntheticTypeDeclaration(cellClass, env));
             }
+            // 静态 Method wrapper companion singleton（M109b-2，BIL §8.7）
+            foreach (var companion in bodies
+                .Select(b => b.Method.Owner)
+                .Where(owner => owner?.CompanionInfo != null)
+                .Distinct()
+                .Cast<TypeSymbol>())
+            {
+                env.Module.LocalSymbols.Add(
+                    LocalSymbolEmitters.EmitSyntheticTypeDeclaration(companion, env));
+            }
             // Resources 在函数发射中按（bodies 顺序 + 树内先序）登记
             foreach (var body in bodies)
             {

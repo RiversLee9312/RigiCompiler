@@ -262,6 +262,128 @@ namespace LatteCompiler.Bil
             new BilOperand[] { Type, Case, Target, new BilOperandList(Arguments) };
     }
 
+    // §14.4.1 有参 ..init.wrapper 的普通构造：
+    // new.wrapped type(TYPE) TARGET [WRAPPER_ARGS] [INIT_ARGS]
+    public sealed class NewWrappedInstruction : BilInstruction
+    {
+        public BilTypeOperand Type { get; }
+        public BilVariableOperand Target { get; }
+        public IReadOnlyList<BilVariableOperand> WrapperArguments { get; }
+        public IReadOnlyList<BilVariableOperand> InitArguments { get; }
+
+        public NewWrappedInstruction(BilTypeOperand type, BilVariableOperand target,
+            IReadOnlyList<BilVariableOperand> wrapperArguments,
+            IReadOnlyList<BilVariableOperand> initArguments)
+        {
+            Type = type;
+            Target = target;
+            WrapperArguments = wrapperArguments;
+            InitArguments = initArguments;
+        }
+
+        internal override string Opcode => "new.wrapped";
+        internal override IReadOnlyList<BilOperand> Operands =>
+            new BilOperand[]
+            {
+                Type, Target,
+                new BilOperandList(WrapperArguments),
+                new BilOperandList(InitArguments),
+            };
+    }
+
+    // §14.4.2 有参 ..init.wrapper 的 enum case 构造：
+    // new.wrapped.case type(ENUM) case(CASE) TARGET [WRAPPER_ARGS] [CASE_ARGS]
+    public sealed class NewWrappedCaseInstruction : BilInstruction
+    {
+        public BilTypeOperand Type { get; }
+        public BilCaseOperand Case { get; }
+        public BilVariableOperand Target { get; }
+        public IReadOnlyList<BilVariableOperand> WrapperArguments { get; }
+        public IReadOnlyList<BilVariableOperand> CaseArguments { get; }
+
+        public NewWrappedCaseInstruction(BilTypeOperand type, BilCaseOperand caseOperand,
+            BilVariableOperand target,
+            IReadOnlyList<BilVariableOperand> wrapperArguments,
+            IReadOnlyList<BilVariableOperand> caseArguments)
+        {
+            Type = type;
+            Case = caseOperand;
+            Target = target;
+            WrapperArguments = wrapperArguments;
+            CaseArguments = caseArguments;
+        }
+
+        internal override string Opcode => "new.wrapped.case";
+        internal override IReadOnlyList<BilOperand> Operands =>
+            new BilOperand[]
+            {
+                Type, Case, Target,
+                new BilOperandList(WrapperArguments),
+                new BilOperandList(CaseArguments),
+            };
+    }
+
+    // §14.5 字段-Value wrapper 初始化（仅 ..init.wrapper 体内）：
+    // new.wrapper.field field(FIELD) type(WRAPPER) [ARGS]
+    public sealed class NewWrapperFieldInstruction : BilInstruction
+    {
+        public BilFieldOperand Field { get; }
+        public BilTypeOperand WrapperType { get; }
+        public IReadOnlyList<BilVariableOperand> Arguments { get; }
+
+        public NewWrapperFieldInstruction(BilFieldOperand field, BilTypeOperand wrapperType,
+            IReadOnlyList<BilVariableOperand> arguments)
+        {
+            Field = field;
+            WrapperType = wrapperType;
+            Arguments = arguments;
+        }
+
+        internal override string Opcode => "new.wrapper.field";
+        internal override IReadOnlyList<BilOperand> Operands =>
+            new BilOperand[] { Field, WrapperType, new BilOperandList(Arguments) };
+    }
+
+    // §14.5 方法 Method wrapper 初始化（仅 ..init.wrapper 体内）：
+    // new.wrapper.method fn(METHOD) type(WRAPPER) [ARGS]
+    public sealed class NewWrapperMethodInstruction : BilInstruction
+    {
+        public BilFnOperand Method { get; }
+        public BilTypeOperand WrapperType { get; }
+        public IReadOnlyList<BilVariableOperand> Arguments { get; }
+
+        public NewWrapperMethodInstruction(BilFnOperand method, BilTypeOperand wrapperType,
+            IReadOnlyList<BilVariableOperand> arguments)
+        {
+            Method = method;
+            WrapperType = wrapperType;
+            Arguments = arguments;
+        }
+
+        internal override string Opcode => "new.wrapper.method";
+        internal override IReadOnlyList<BilOperand> Operands =>
+            new BilOperand[] { Method, WrapperType, new BilOperandList(Arguments) };
+    }
+
+    // §14.5 实体 Entity wrapper 初始化（仅 ..init.wrapper 体内）：
+    // new.wrapper.entity type(WRAPPER) [ARGS]
+    public sealed class NewWrapperEntityInstruction : BilInstruction
+    {
+        public BilTypeOperand WrapperType { get; }
+        public IReadOnlyList<BilVariableOperand> Arguments { get; }
+
+        public NewWrapperEntityInstruction(BilTypeOperand wrapperType,
+            IReadOnlyList<BilVariableOperand> arguments)
+        {
+            WrapperType = wrapperType;
+            Arguments = arguments;
+        }
+
+        internal override string Opcode => "new.wrapper.entity";
+        internal override IReadOnlyList<BilOperand> Operands =>
+            new BilOperand[] { WrapperType, new BilOperandList(Arguments) };
+    }
+
     // §15.1 带返回值直接调用：invoke fn(METHOD) TARGET [ARGS]
     public sealed class InvokeInstruction : BilInstruction
     {

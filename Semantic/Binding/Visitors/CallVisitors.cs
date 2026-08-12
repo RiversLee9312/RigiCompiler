@@ -248,38 +248,40 @@ namespace LatteCompiler
 
         // 间接调用的重载落定（callable 协议共享落点：局部/参数值、callable
         // 字段、任意值表达式的调用后缀）：operator call 候选经
-        // OverloadResolution 判定（默认参数/具名实参同直接调用口径）
+        // OverloadResolution 判定（默认参数/具名实参/显式泛型/泛型可变包
+        // 同直接调用口径——M108：invoke.indirect 泛型 ABI 与 invoke 同构）
         public static CallBinding? BindIndirectCallOverload(ASTNode node,
             BoundExpression indirectTarget, TypeSymbol callableType,
             List<ArgumentASTNode> arguments, List<TypeReferenceASTNode>? genericArguments,
             Scope scope, BindContext ctx, BindEnvironment env)
         {
-            if (genericArguments != null)
-            {
-                env.Error(node.Span,
-                    "P3: explicit generic arguments are not allowed on indirect calls");
-                return null;
-            }
+            var typeArgs = genericArguments == null
+                ? null
+                : ResolveGenericArguments(genericArguments, node, ctx, env);
+            if (genericArguments != null && typeArgs == null) return null;
             var callOperators = FindCallOperators(callableType);
             var resolvedCall = OverloadResolution.Resolve(node, callOperators,
-                arguments, scope, ctx, env, null, receiverType: callableType);
+                arguments, scope, ctx, env, typeArgs, receiverType: callableType);
             if (resolvedCall == null) return null;
             var (callOperator, callArguments, callResultType, callPack) = resolvedCall.Value;
-            if (callPack != null)
-            {
-                env.Error(node.Span,
-                    "P3: generic variadic call operators are not supported on indirect calls");
-                return null;
-            }
             return new CallBinding
             {
                 Method = callOperator,
                 Arguments = callArguments,
                 IsVoid = callOperator.ReturnType == null,
+                TypeArguments = typeArgs ?? Array.Empty<SemanticSymbol>(),
+                GenericPack = callPack,
                 ResultType = AsyncResultType(callOperator, callResultType, env),
                 IsIndirect = true,
                 IndirectTarget = indirectTarget,
             };
+        }
+
+        // 类型是否声明 operator call（M105 语句位置尾 Call 分流：不可调时
+        // 回退通用兜底，让 FoldSuffixes 报原「not callable」诊断）
+        public static bool HasCallOperator(TypeSymbol type)
+        {
+            return FindCallOperators(type).Count > 0;
         }
 
         // callable 协议的 operator call 收集（沿 BaseType 链，定义级回退；
@@ -310,6 +312,12 @@ namespace LatteCompiler
                 {
                     env.Error(node.Span,
                         $"Use of unassigned local variable '{headLocal.Name}'");
+                }
+                // 局部访问器读（M107）：作 callable 接收者即读
+                if ((headLocal.Getter != null || headLocal.Setter != null)
+                    && headLocal.Getter == null)
+                {
+                    env.Error(node.Span, $"'{headLocal.Name}' has no getter");
                 }
                 receiver = new BoundValueReferenceExpression(node, headLocal, headLocal.Type!);
                 if (ctx.IsLambda && !ctx.Locals.Contains(headLocal))

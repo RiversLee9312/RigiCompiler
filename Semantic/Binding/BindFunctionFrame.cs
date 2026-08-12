@@ -31,8 +31,11 @@ namespace LatteCompiler
         // 当前上下文是否有 this receiver（实例方法/ext 方法体内；
         // 默认值表达式上下文视同静态——三处实例上色判定统一走此属性）。
         // 实例访问器（S8e）同样经此判定：访问器符号 Owner/IsStatic 随字段
-        // （P1），实例访问器天然满足条件，无需特判
-        public bool HasThis => Method.Owner != null && !Method.IsStatic && !IsDefaultValueContext;
+        // （P1），实例访问器天然满足条件，无需特判。
+        // M109b-2：companion 实例方法 BIL 有 .this，但源体本为静态方法——
+        // 绑定态视同静态（无 this）
+        public bool HasThis => Method.Owner != null && !Method.IsStatic && !IsDefaultValueContext
+            && !Method.IsCompanionInstance;
 
         // 成员查找宿主（MemberLookup.FindField/FindMethods 的宿主链起点）：
         // 普通函数 = Method.Owner（ext 方法 = 目标类型）；lambda 语境 =

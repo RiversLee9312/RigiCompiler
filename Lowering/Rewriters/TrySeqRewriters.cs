@@ -1,14 +1,18 @@
 namespace LatteCompiler
 {
     // try 降级（S7e，SYNTAX §8；BIL §16.7）。自旧 LowerSession.LowerTry
-    // 迁移，行为不变。
+    // 迁移，行为不变；M106 补 catch/finally(e) 被 lambda 捕获时的 cell 构造。
     // try → LoweredTryStatement（指令直接对应）：
-    // - ExceptionSlot（$slot 操作数承载局部）：finally(e) 的 e 非空时
-    //   即该局部（指令直写——e 的「无异常为 null」语义即指令写 slot
-    //   语义），否则合成 .sN（类型 Nullable<core.Exception>）；
+    // - ExceptionSlot（$slot 操作数承载局部）：finally(e) 的 e 非空且未
+    //   cell 化时即该局部（指令直写——e 的「无异常为 null」语义即指令
+    //   写 slot 语义）；e 被 cell 化时 slot 与变量分离（合成 .sN 普通
+    //   临时，类型 Nullable<core.Exception>——.vars 不投影 cell），
+    //   finally 体头 `e = new ..cell..(slot)`；否则合成 .sN；
     // - 有名 catch：体头合成「变量 = cast slot」（Origin 指
     //   BoundCatchClause）——slot 的 Nullable<core.Exception> 到
     //   catch 类型的收窄走显式 cast（BIL §12.1），P3 已查兼容；
+    //   被 lambda 捕获时再包 `new ..cell..(cast)`（进入 catch 块时
+    //   构造一个 cell，SYNTAX §5.2/§8）；
     // - 三分支体各自恒等降级（前置语句随块走）
     internal sealed class TryRewriter : LoweredVisitor<TryRewriter, LoweredStatement, LowerContext>
     {
@@ -16,8 +20,14 @@ namespace LatteCompiler
             LowerEnvironment env)
         {
             var tryStatement = (BoundTryStatement)node;
-            var exceptionSlot = tryStatement.FinallyVariable
-                ?? ctx.Synth.NewSynthLocal(env.Unit.Symbols.GetNullable(env.Unit.Symbols.Bootstrap.Exception));
+            // ExceptionSlot：cell 化 finally(e) 时分离——try 指令只能直写
+            // Nullable<Exception> 普通局部，不能写 cell 类型 .vars 条目
+            var exceptionSlot = tryStatement.FinallyVariable is { CellStorage: not null }
+                ? ctx.Synth.NewSynthLocal(env.Unit.Symbols.GetNullable(
+                    env.Unit.Symbols.Bootstrap.Exception))
+                : tryStatement.FinallyVariable
+                    ?? ctx.Synth.NewSynthLocal(env.Unit.Symbols.GetNullable(
+                        env.Unit.Symbols.Bootstrap.Exception));
             var tryBlock = LowerBlockVisitor.Visit(tryStatement.TryBlock, ctx, env);
             if (tryBlock == null) return null;
             var catches = new List<LoweredTryCatch>();
@@ -27,12 +37,22 @@ namespace LatteCompiler
                 if (body == null) return null;
                 if (boundCatch.Variable != null)
                 {
+                    // cast slot → catch 类型；cell 化时再包 new ..cell..(cast)
+                    LoweredExpression catchValue = new LoweredCastExpression(boundCatch,
+                        SynthLocalFactory.ReferenceTo(boundCatch, exceptionSlot),
+                        boundCatch.ExceptionType, isSafe: false,
+                        boundCatch.ExceptionType);
+                    if (boundCatch.Variable.CellStorage is { } catchStorage)
+                    {
+                        var wrapperArgs = CellWrappedNew.LowerWrapperInitArgs(boundCatch,
+                            catchStorage, ctx, env);
+                        catchValue = new LoweredNewExpression(boundCatch, catchStorage.ValueInit,
+                            new List<LoweredExpression> { catchValue }, catchStorage.CellType,
+                            wrapperArgs);
+                    }
                     var castAssign = new LoweredAssignmentStatement(boundCatch,
                         SynthLocalFactory.ReferenceTo(boundCatch, boundCatch.Variable),
-                        new LoweredCastExpression(boundCatch,
-                            SynthLocalFactory.ReferenceTo(boundCatch, exceptionSlot),
-                            boundCatch.ExceptionType, isSafe: false,
-                            boundCatch.ExceptionType));
+                        catchValue);
                     body = new LoweredBlock(body.Origin,
                         new List<LoweredStatement> { castAssign }
                             .Concat(body.Statements).ToList());
@@ -45,6 +65,23 @@ namespace LatteCompiler
             {
                 finallyBlock = LowerBlockVisitor.Visit(tryStatement.FinallyBlock, ctx, env);
                 if (finallyBlock == null) return null;
+                // cell 化 finally(e)：体头 e = new ..cell..(slot)
+                if (tryStatement.FinallyVariable is { CellStorage: { } finallyStorage } finallyVar)
+                {
+                    var wrapperArgs = CellWrappedNew.LowerWrapperInitArgs(tryStatement,
+                        finallyStorage, ctx, env);
+                    var cellAssign = new LoweredAssignmentStatement(tryStatement,
+                        SynthLocalFactory.ReferenceTo(tryStatement, finallyVar),
+                        new LoweredNewExpression(tryStatement, finallyStorage.ValueInit,
+                            new List<LoweredExpression>
+                            {
+                                SynthLocalFactory.ReferenceTo(tryStatement, exceptionSlot)
+                            },
+                            finallyStorage.CellType, wrapperArgs));
+                    finallyBlock = new LoweredBlock(finallyBlock.Origin,
+                        new List<LoweredStatement> { cellAssign }
+                            .Concat(finallyBlock.Statements).ToList());
+                }
             }
             return new LoweredTryStatement(tryStatement, tryBlock, catches, finallyBlock,
                 exceptionSlot);

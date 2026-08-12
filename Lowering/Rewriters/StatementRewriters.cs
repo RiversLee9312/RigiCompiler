@@ -30,11 +30,26 @@ namespace LatteCompiler
                 var init = initializer != null ? storage.ValueInit
                     : storage.DefaultInit ?? throw new CompilerInternalException(
                         "ReadonlyCell 局部缺初始化器: " + decl.Local.Name);
-                initializer = new LoweredNewExpression(decl, init,
-                    initializer == null
-                        ? new List<LoweredExpression>()
-                        : new List<LoweredExpression> { initializer },
-                    storage.CellType);
+                // M107：局部访问器自由变量捕获实参接在值参之后（同 lambda init）
+                var args = new List<LoweredExpression>();
+                if (initializer != null) args.Add(initializer);
+                foreach (var capture in storage.AccessorCaptures)
+                {
+                    if (capture.IsThis)
+                    {
+                        args.Add(ctx.Closure.ThisValueFor(decl,
+                            capture.Field.FieldType as TypeSymbol
+                            ?? env.Unit.Symbols.ErrorType));
+                    }
+                    else
+                    {
+                        args.Add(ctx.Closure.CellObjectFor(decl, capture.Symbol));
+                    }
+                }
+                // M109b-1：有参 ..init.wrapper → new.wrapped 前缀实参
+                var wrapperArgs = CellWrappedNew.LowerWrapperInitArgs(decl, storage, ctx, env);
+                initializer = new LoweredNewExpression(decl, init, args, storage.CellType,
+                    wrapperArgs);
             }
             return new LoweredLocalDeclarationStatement(decl, decl.Local, initializer);
         }
@@ -135,6 +150,13 @@ namespace LatteCompiler
             {
                 return WrapperPlaceLowering.LowerDeepFieldWrite(assignment, deepPlace, deepChain,
                     assignment.Value, ctx, env);
+            }
+            // M111：索引写 place[i] / place.a.b[i] = rhs
+            if (WrapperPlaceLowering.TryIndexWriteTarget(assignment.Target,
+                    out var indexPlace, out var indexFields, out var indexExpr))
+            {
+                return WrapperPlaceLowering.LowerIndexWrite(assignment, indexPlace, indexFields,
+                    indexExpr, assignment.Value, ctx, env);
             }
             if (WrapperPlaceLowering.ContainsPlaceInTarget(assignment.Target))
             {
@@ -347,6 +369,47 @@ namespace LatteCompiler
             var loopControl = (BoundLoopControl)node;
             return new LoweredLoopControl(loopControl, loopControl.IsBreak,
                 LoopFacility.FindBreakId(loopControl.Target, ctx));
+        }
+    }
+
+    // M109b-1：cell 构造点 wrapper 前缀实参降级。无参 → null（普通 new）；
+    // 有参 → 非 null 列表（new.wrapped）。共享于 LocalDeclaration/Loop/TrySeq/
+    // ClosureStoragePlan 四构造点
+    internal static class CellWrappedNew
+    {
+        public static IReadOnlyList<LoweredExpression>? LowerWrapperInitArgs(
+            BoundNode origin, CellStorageInfo storage, LowerContext ctx, LowerEnvironment env)
+        {
+            if (storage.InitWrapper == null || storage.InitWrapper.Parameters.Count == 0)
+                return null;
+            var result = new List<LoweredExpression>();
+            foreach (var bound in storage.WrapperInitArguments)
+            {
+                var lowered = LowerExpressionDispatcher.Visit(bound, ctx, env);
+                if (lowered == null) return null;
+                result.Add(lowered);
+            }
+            return result;
+        }
+    }
+
+    // §14.5 new.wrapper.* 恒等降级
+    internal sealed class NewWrapperRewriter
+        : LoweredVisitor<NewWrapperRewriter, LoweredStatement, LowerContext>
+    {
+        protected override LoweredStatement? VisitCore(BoundNode node, LowerContext ctx,
+            LowerEnvironment env)
+        {
+            var stmt = (BoundNewWrapperStatement)node;
+            var args = new List<LoweredExpression>();
+            foreach (var argument in stmt.Arguments)
+            {
+                var lowered = LowerExpressionDispatcher.Visit(argument, ctx, env);
+                if (lowered == null) return null;
+                args.Add(lowered);
+            }
+            return new LoweredNewWrapperStatement(stmt, stmt.Kind, stmt.WrapperType, stmt.Target,
+                args);
         }
     }
 }

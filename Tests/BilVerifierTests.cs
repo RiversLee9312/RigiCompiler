@@ -252,10 +252,435 @@ namespace LatteCompiler.Tests
             BilTestHarness.CheckBilInvalid("..super 缺 $.this 首参",
                 SuperInvokeModule(validReceiver: false), "首实参必须精确为 $.this");
 
+            // ===== M109a：..init.wrapper / new.wrapped / new.wrapper.* / companion =====
+            TestInitWrapperAndNewWrapped();
+
             // ===== 负例：非法模块按规则命中 =====
             NegativeCases();
 
             return TestHarness.Summary("BilVerifier");
+        }
+
+        private static void TestInitWrapperAndNewWrapped()
+        {
+            TestHarness.Section("BilVerifier M109a wrapper init");
+            BilTestHarness.CheckBilValid("..init.wrapper + new.wrapper.entity 正例",
+                InitWrapperModule(includeEntity: true));
+            BilTestHarness.CheckBilValid("new.wrapped 正例（有参 ..init.wrapper）",
+                NewWrappedHostModule());
+            BilTestHarness.CheckBilValid("..companion 结构正例",
+                CompanionModule());
+
+            BilTestHarness.CheckBilInvalid("new.wrapper.entity 出现在非 ..init.wrapper",
+                OrdinaryFnWithNewWrapperEntityModule(), "仅允许在 ..init.wrapper");
+            BilTestHarness.CheckBilInvalid("new.wrapper.field 出现在非 ..init.wrapper",
+                OrdinaryFnWithNewWrapperFieldModule(), "仅允许在 ..init.wrapper");
+            BilTestHarness.CheckBilInvalid("new.wrapper.method 出现在非 ..init.wrapper",
+                OrdinaryFnWithNewWrapperMethodModule(), "仅允许在 ..init.wrapper");
+
+            BilTestHarness.CheckBilInvalid("..init.wrapper 非 void",
+                InitWrapperBadReturnModule(), "返回 .void");
+            BilTestHarness.CheckBilInvalid("..init.wrapper 缺 priv/compiler-generated",
+                InitWrapperMissingModifiersModule(), "priv 与 compiler-generated");
+            BilTestHarness.CheckBilInvalid("同一实体两个 ..init.wrapper",
+                DuplicateInitWrapperModule(), "至多一个");
+
+            BilTestHarness.CheckBilInvalid("有参 ..init.wrapper 上普通 new",
+                NewOnParameterizedInitWrapperModule(), "必须使用 new.wrapped");
+            BilTestHarness.CheckBilInvalid("无参 ..init.wrapper 上 new.wrapped",
+                NewWrappedOnParameterlessModule(), "禁止 new.wrapped");
+            BilTestHarness.CheckBilInvalid("new.wrapped wrapper 前缀类型不符",
+                NewWrappedBadWrapperArgsModule(), "wrapper 前缀实参不匹配");
+
+            BilTestHarness.CheckBilInvalid("..companion 非 singleton",
+                CompanionNotSingletonModule(), "singleton 与 shared");
+            BilTestHarness.CheckBilInvalid("..companion 无实例方法",
+                CompanionNoMethodModule(), "至少有一个实例方法");
+        }
+
+        // 带 Logged wrapper 的 Service + 有参 ..init.wrapper（level:.string）
+        private static BilModule InitWrapperModule(bool includeEntity)
+        {
+            var module = new BilModule();
+            var logged = new BilTypeDeclaration("core.logging::Logged", BilTypeKind.Wrapper,
+                new BilAccessibilityModifier(BilAccessibility.Public),
+                new BilKeywordModifier(BilKeyword.Rich));
+            logged.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "core.logging::Logged$init(level:.string)@.void",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilKeywordModifier(BilKeyword.Init),
+                }));
+            module.LocalSymbols.Add(logged);
+
+            var service = new BilTypeDeclaration("com.example::Service", BilTypeKind.Class,
+                new BilAccessibilityModifier(BilAccessibility.Public),
+                new BilWrappedModifier("core.logging::Logged"));
+            service.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "com.example::Service$init()@.void",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilKeywordModifier(BilKeyword.Init),
+                }));
+            var initWrapperSym =
+                "com.example::Service$..init.wrapper(level:.string)@.void";
+            service.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                initWrapperSym,
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Private),
+                    new BilKeywordModifier(BilKeyword.CompilerGenerated),
+                }));
+            module.LocalSymbols.Add(service);
+
+            // init 声明在 LocalSymbols → 必须有对应 fn 体（§21.2）
+            AddVoidInstanceFn(module, "core.logging::Logged$init(level:.string)@.void",
+                "core.logging::Logged", "level", ".string");
+            AddVoidInstanceFn(module, "com.example::Service$init()@.void",
+                "com.example::Service", null, null);
+
+            var iw = new BilFunction(initWrapperSym);
+            iw.Args.Add(new BilArgDeclaration(".return", ".void"));
+            iw.Args.Add(new BilArgDeclaration(".this", "com.example::Service"));
+            iw.Args.Add(new BilArgDeclaration("level", ".string"));
+            var entry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            if (includeEntity)
+            {
+                entry.Instructions.Add(new NewWrapperEntityInstruction(
+                    BilOp.Type("core.logging::Logged"), new[] { BilOp.Var("level") }));
+            }
+            entry.Instructions.Add(new RetInstruction());
+            iw.Blocks.Add(entry);
+            module.Functions.Add(iw);
+            return module;
+        }
+
+        private static void AddVoidInstanceFn(BilModule module, string symbol, string thisType,
+            string? paramName, string? paramType)
+        {
+            var fn = new BilFunction(symbol);
+            fn.Args.Add(new BilArgDeclaration(".return", ".void"));
+            fn.Args.Add(new BilArgDeclaration(".this", thisType));
+            if (paramName != null && paramType != null)
+            {
+                fn.Args.Add(new BilArgDeclaration(paramName, paramType));
+            }
+            var entry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            entry.Instructions.Add(new RetInstruction());
+            fn.Blocks.Add(entry);
+            module.Functions.Add(fn);
+        }
+
+        private static BilModule NewWrappedHostModule()
+        {
+            var module = InitWrapperModule(includeEntity: true);
+            // 调用方 main：new.wrapped Service [$level] []
+            module.LocalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "$main(level:.string)@.void",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            var main = new BilFunction("$main(level:.string)@.void");
+            main.Args.Add(new BilArgDeclaration(".return", ".void"));
+            main.Args.Add(new BilArgDeclaration("level", ".string"));
+            main.Vars.Add(new BilVarDeclaration("com.example::Service", "svc"));
+            var entry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            entry.Instructions.Add(new NewWrappedInstruction(
+                BilOp.Type("com.example::Service"), BilOp.Var("svc"),
+                new[] { BilOp.Var("level") }, new BilVariableOperand[0]));
+            entry.Instructions.Add(new RetInstruction());
+            main.Blocks.Add(entry);
+            module.Functions.Add(main);
+            return module;
+        }
+
+        private static BilModule CompanionModule()
+        {
+            var module = new BilModule();
+            var companion = new BilTypeDeclaration("..companion.abc123", BilTypeKind.Class,
+                new BilAccessibilityModifier(BilAccessibility.Public),
+                new BilKeywordModifier(BilKeyword.Singleton),
+                new BilKeywordModifier(BilKeyword.Shared),
+                new BilKeywordModifier(BilKeyword.CompilerGenerated));
+            companion.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "..companion.abc123$heavy()@.i32",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilKeywordModifier(BilKeyword.CompilerGenerated),
+                }));
+            module.LocalSymbols.Add(companion);
+            module.LocalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "..companion.abc123$heavy()@.i32",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilKeywordModifier(BilKeyword.CompilerGenerated),
+                }));
+            // companion 方法体（空 ret 需值——给参数路径简化：void 壳体）
+            // 改用 void 方法避免返回值 DA
+            // 上面已声明 @.i32——补 fn 返回常量
+            module.Resources.Add(new BilScalarResource("R_Zero", BilScalarType.I32, "0"));
+            var fn = new BilFunction("..companion.abc123$heavy()@.i32");
+            fn.Args.Add(new BilArgDeclaration(".return", ".i32"));
+            fn.Args.Add(new BilArgDeclaration(".this", "..companion.abc123"));
+            fn.Vars.Add(new BilVarDeclaration(".i32", "r"));
+            var entry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            entry.Instructions.Add(new LoadInstruction(
+                (BilScalarResource)module.Resources[0], BilOp.Var("r")));
+            entry.Instructions.Add(new RetInstruction(BilOp.Var("r")));
+            fn.Blocks.Add(entry);
+            module.Functions.Add(fn);
+            return module;
+        }
+
+        private static BilModule OrdinaryFnWithNewWrapperEntityModule()
+        {
+            var module = InitWrapperModule(includeEntity: false);
+            module.LocalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "$main(level:.string)@.void",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            var main = new BilFunction("$main(level:.string)@.void");
+            main.Args.Add(new BilArgDeclaration(".return", ".void"));
+            main.Args.Add(new BilArgDeclaration("level", ".string"));
+            var entry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            entry.Instructions.Add(new NewWrapperEntityInstruction(
+                BilOp.Type("core.logging::Logged"), new[] { BilOp.Var("level") }));
+            entry.Instructions.Add(new RetInstruction());
+            main.Blocks.Add(entry);
+            module.Functions.Add(main);
+            return module;
+        }
+
+        private static BilModule OrdinaryFnWithNewWrapperFieldModule()
+        {
+            var module = OrdinaryFnWithNewWrapperEntityModule();
+            var main = module.Functions.Single(f => f.Symbol.StartsWith("$main"));
+            main.Blocks[0].Instructions.Clear();
+            main.Blocks[0].Instructions.Add(new NewWrapperFieldInstruction(
+                BilOp.Field("com.example::Service#x@.i32"),
+                BilOp.Type("core.logging::Logged"), new[] { BilOp.Var("level") }));
+            main.Blocks[0].Instructions.Add(new RetInstruction());
+            return module;
+        }
+
+        private static BilModule OrdinaryFnWithNewWrapperMethodModule()
+        {
+            var module = OrdinaryFnWithNewWrapperEntityModule();
+            var main = module.Functions.Single(f => f.Symbol.StartsWith("$main"));
+            main.Blocks[0].Instructions.Clear();
+            main.Blocks[0].Instructions.Add(new NewWrapperMethodInstruction(
+                BilOp.Fn("com.example::Service$init()@.void"),
+                BilOp.Type("core.logging::Logged"), new[] { BilOp.Var("level") }));
+            main.Blocks[0].Instructions.Add(new RetInstruction());
+            return module;
+        }
+
+        private static BilModule InitWrapperBadReturnModule()
+        {
+            var module = InitWrapperModule(includeEntity: false);
+            // 替换声明与 fn 为非 void
+            var service = (BilTypeDeclaration)module.LocalSymbols
+                .Single(s => s is BilTypeDeclaration t && t.Symbol == "com.example::Service");
+            service.Members.RemoveAll(m => m is BilSimpleMemberDeclaration sm
+                && MethodNameOf(sm.Symbol) == BilSpellings.InitWrapperMethodName);
+            var badSym = "com.example::Service$..init.wrapper(level:.string)@.i32";
+            service.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method, badSym,
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Private),
+                    new BilKeywordModifier(BilKeyword.CompilerGenerated),
+                }));
+            module.Functions.Clear();
+            var iw = new BilFunction(badSym);
+            iw.Args.Add(new BilArgDeclaration(".return", ".i32"));
+            iw.Args.Add(new BilArgDeclaration(".this", "com.example::Service"));
+            iw.Args.Add(new BilArgDeclaration("level", ".string"));
+            iw.Vars.Add(new BilVarDeclaration(".i32", "r"));
+            module.Resources.Add(new BilScalarResource("R_Z", BilScalarType.I32, "0"));
+            var entry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            entry.Instructions.Add(new LoadInstruction(
+                (BilScalarResource)module.Resources[0], BilOp.Var("r")));
+            entry.Instructions.Add(new RetInstruction(BilOp.Var("r")));
+            iw.Blocks.Add(entry);
+            module.Functions.Add(iw);
+            return module;
+        }
+
+        private static BilModule InitWrapperMissingModifiersModule()
+        {
+            var module = InitWrapperModule(includeEntity: false);
+            var service = (BilTypeDeclaration)module.LocalSymbols
+                .Single(s => s is BilTypeDeclaration t && t.Symbol == "com.example::Service");
+            var iwDecl = (BilSimpleMemberDeclaration)service.Members
+                .Single(m => m is BilSimpleMemberDeclaration sm
+                    && MethodNameOf(sm.Symbol) == BilSpellings.InitWrapperMethodName);
+            // 换成 pub 且无 compiler-generated
+            service.Members.Remove(iwDecl);
+            service.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method, iwDecl.Symbol,
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            return module;
+        }
+
+        private static BilModule DuplicateInitWrapperModule()
+        {
+            var module = InitWrapperModule(includeEntity: false);
+            var service = (BilTypeDeclaration)module.LocalSymbols
+                .Single(s => s is BilTypeDeclaration t && t.Symbol == "com.example::Service");
+            service.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "com.example::Service$..init.wrapper(other:.i32)@.void",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Private),
+                    new BilKeywordModifier(BilKeyword.CompilerGenerated),
+                }));
+            return module;
+        }
+
+        private static BilModule NewOnParameterizedInitWrapperModule()
+        {
+            var module = InitWrapperModule(includeEntity: true);
+            module.LocalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "$main()@.void",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            var main = new BilFunction("$main()@.void");
+            main.Args.Add(new BilArgDeclaration(".return", ".void"));
+            main.Vars.Add(new BilVarDeclaration("com.example::Service", "svc"));
+            var entry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            entry.Instructions.Add(new NewInstruction(BilOp.Type("com.example::Service"),
+                BilOp.Var("svc"), new BilVariableOperand[0]));
+            entry.Instructions.Add(new RetInstruction());
+            main.Blocks.Add(entry);
+            module.Functions.Add(main);
+            return module;
+        }
+
+        private static BilModule NewWrappedOnParameterlessModule()
+        {
+            var module = new BilModule();
+            var logged = new BilTypeDeclaration("core.logging::Logged", BilTypeKind.Wrapper,
+                new BilAccessibilityModifier(BilAccessibility.Public),
+                new BilKeywordModifier(BilKeyword.Rich));
+            logged.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "core.logging::Logged$init()@.void",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilKeywordModifier(BilKeyword.Init),
+                }));
+            module.LocalSymbols.Add(logged);
+            var service = new BilTypeDeclaration("com.example::Service", BilTypeKind.Class,
+                new BilAccessibilityModifier(BilAccessibility.Public),
+                new BilWrappedModifier("core.logging::Logged"));
+            service.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "com.example::Service$init()@.void",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilKeywordModifier(BilKeyword.Init),
+                }));
+            var iwSym = "com.example::Service$..init.wrapper()@.void";
+            service.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method, iwSym,
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Private),
+                    new BilKeywordModifier(BilKeyword.CompilerGenerated),
+                }));
+            module.LocalSymbols.Add(service);
+            AddVoidInstanceFn(module, "core.logging::Logged$init()@.void",
+                "core.logging::Logged", null, null);
+            AddVoidInstanceFn(module, "com.example::Service$init()@.void",
+                "com.example::Service", null, null);
+            var iw = new BilFunction(iwSym);
+            iw.Args.Add(new BilArgDeclaration(".return", ".void"));
+            iw.Args.Add(new BilArgDeclaration(".this", "com.example::Service"));
+            var iwEntry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            iwEntry.Instructions.Add(new NewWrapperEntityInstruction(
+                BilOp.Type("core.logging::Logged"), new BilVariableOperand[0]));
+            iwEntry.Instructions.Add(new RetInstruction());
+            iw.Blocks.Add(iwEntry);
+            module.Functions.Add(iw);
+
+            module.LocalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "$main()@.void",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            var main = new BilFunction("$main()@.void");
+            main.Args.Add(new BilArgDeclaration(".return", ".void"));
+            main.Vars.Add(new BilVarDeclaration("com.example::Service", "svc"));
+            var entry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            entry.Instructions.Add(new NewWrappedInstruction(
+                BilOp.Type("com.example::Service"), BilOp.Var("svc"),
+                new BilVariableOperand[0], new BilVariableOperand[0]));
+            entry.Instructions.Add(new RetInstruction());
+            main.Blocks.Add(entry);
+            module.Functions.Add(main);
+            return module;
+        }
+
+        private static BilModule NewWrappedBadWrapperArgsModule()
+        {
+            var module = InitWrapperModule(includeEntity: true);
+            module.Resources.Add(new BilScalarResource("R_One", BilScalarType.I32, "1"));
+            module.LocalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "$main()@.void",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            var main = new BilFunction("$main()@.void");
+            main.Args.Add(new BilArgDeclaration(".return", ".void"));
+            main.Vars.Add(new BilVarDeclaration(".i32", "n"));
+            main.Vars.Add(new BilVarDeclaration("com.example::Service", "svc"));
+            var entry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            entry.Instructions.Add(new LoadInstruction(
+                (BilScalarResource)module.Resources[0], BilOp.Var("n")));
+            entry.Instructions.Add(new NewWrappedInstruction(
+                BilOp.Type("com.example::Service"), BilOp.Var("svc"),
+                new[] { BilOp.Var("n") }, new BilVariableOperand[0]));
+            entry.Instructions.Add(new RetInstruction());
+            main.Blocks.Add(entry);
+            module.Functions.Add(main);
+            return module;
+        }
+
+        private static BilModule CompanionNotSingletonModule()
+        {
+            var module = new BilModule();
+            var companion = new BilTypeDeclaration("..companion.x", BilTypeKind.Class,
+                new BilAccessibilityModifier(BilAccessibility.Public));
+            companion.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "..companion.x$m()@.void",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            module.LocalSymbols.Add(companion);
+            module.LocalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "..companion.x$m()@.void",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            var fn = new BilFunction("..companion.x$m()@.void");
+            fn.Args.Add(new BilArgDeclaration(".return", ".void"));
+            fn.Args.Add(new BilArgDeclaration(".this", "..companion.x"));
+            var entry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            entry.Instructions.Add(new RetInstruction());
+            fn.Blocks.Add(entry);
+            module.Functions.Add(fn);
+            return module;
+        }
+
+        private static BilModule CompanionNoMethodModule()
+        {
+            var module = new BilModule();
+            var companion = new BilTypeDeclaration("..companion.empty", BilTypeKind.Class,
+                new BilAccessibilityModifier(BilAccessibility.Public),
+                new BilKeywordModifier(BilKeyword.Singleton),
+                new BilKeywordModifier(BilKeyword.Shared));
+            module.LocalSymbols.Add(companion);
+            return module;
+        }
+
+        private static string? MethodNameOf(string symbol)
+        {
+            var dollar = symbol.IndexOf('$');
+            if (dollar < 0) return null;
+            var rest = symbol.Substring(dollar + 1);
+            if (rest.StartsWith(".static.")) rest = rest.Substring(".static.".Length);
+            var paren = rest.IndexOf('(');
+            return paren >= 0 ? rest.Substring(0, paren) : rest;
         }
 
         private static void TestIndirectInvokeShapes()
@@ -307,6 +732,76 @@ namespace LatteCompiler.Tests
                 BilOp.Var("plain"), new List<BilVariableOperand>()));
             BilTestHarness.CheckBilInvalid("无 operator call 的类型不得 invoke.indirect",
                 module, "operator call");
+
+            // M108 §15.3 泛型负例：缺 typeid 前缀 / 错误前缀类型
+            // 带 fn 定义（.generic.T = .typeid）的泛型 $$call——实参仅 value
+            // 无 typeid 前缀应拒；前缀为 .i32 非 .typeid 应拒
+            module = MinimalModule(out _, out entry);
+            var genericHandler = new BilTypeDeclaration("GHandler", BilTypeKind.Class);
+            genericHandler.Modifiers.Add(new BilAccessibilityModifier(BilAccessibility.Public));
+            genericHandler.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "GHandler$$call(value:.i32)@.i32",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilOperatorModifier("call") }));
+            module.LocalSymbols.Add(genericHandler);
+            module.LocalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "GHandler$$call(value:.i32)@.i32",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilOperatorModifier("call") }));
+            var callFn = new BilFunction("GHandler$$call(value:.i32)@.i32");
+            callFn.Args.Add(new BilArgDeclaration(".return", ".i32"));
+            callFn.Args.Add(new BilArgDeclaration(".this", "GHandler"));
+            callFn.Args.Add(new BilArgDeclaration(".generic.T", ".typeid"));
+            callFn.Args.Add(new BilArgDeclaration("value", ".i32"));
+            var callEntry = new BilBlock("entry");
+            callEntry.Instructions.Add(new RetInstruction(BilOp.Var("value")));
+            callFn.Blocks.Add(callEntry);
+            module.Functions.Add(callFn);
+            module.Functions[0].Vars.Add(new BilVarDeclaration("GHandler", "h"));
+            module.Functions[0].Vars.Add(new BilVarDeclaration(".i32", "arg"));
+            module.Functions[0].Vars.Add(new BilVarDeclaration(".i32", "r"));
+            entry.Instructions.Insert(1, new NewInstruction(BilOp.Type("GHandler"),
+                BilOp.Var("h"), new List<BilVariableOperand>()));
+            entry.Instructions.Insert(2, new LoadInstruction(module.Resources[0],
+                BilOp.Var("arg")));
+            entry.Instructions.Insert(3, new InvokeIndirectInstruction(BilOp.Var("h"),
+                BilOp.Var("r"), new[] { BilOp.Var("arg") }));
+            BilTestHarness.CheckBilInvalid("invoke.indirect 缺 typeid 前缀",
+                module, "operator call");
+
+            module = MinimalModule(out _, out entry);
+            var genericHandler2 = new BilTypeDeclaration("GHandler", BilTypeKind.Class);
+            genericHandler2.Modifiers.Add(new BilAccessibilityModifier(BilAccessibility.Public));
+            genericHandler2.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "GHandler$$call(value:.i32)@.i32",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilOperatorModifier("call") }));
+            module.LocalSymbols.Add(genericHandler2);
+            module.LocalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "GHandler$$call(value:.i32)@.i32",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilOperatorModifier("call") }));
+            callFn = new BilFunction("GHandler$$call(value:.i32)@.i32");
+            callFn.Args.Add(new BilArgDeclaration(".return", ".i32"));
+            callFn.Args.Add(new BilArgDeclaration(".this", "GHandler"));
+            callFn.Args.Add(new BilArgDeclaration(".generic.T", ".typeid"));
+            callFn.Args.Add(new BilArgDeclaration("value", ".i32"));
+            callEntry = new BilBlock("entry");
+            callEntry.Instructions.Add(new RetInstruction(BilOp.Var("value")));
+            callFn.Blocks.Add(callEntry);
+            module.Functions.Add(callFn);
+            module.Functions[0].Vars.Add(new BilVarDeclaration("GHandler", "h"));
+            module.Functions[0].Vars.Add(new BilVarDeclaration(".i32", "arg"));
+            module.Functions[0].Vars.Add(new BilVarDeclaration(".i32", "r"));
+            entry.Instructions.Insert(1, new NewInstruction(BilOp.Type("GHandler"),
+                BilOp.Var("h"), new List<BilVariableOperand>()));
+            entry.Instructions.Insert(2, new LoadInstruction(module.Resources[0],
+                BilOp.Var("arg")));
+            // 前缀误用 .i32 而非 .typeid
+            entry.Instructions.Insert(3, new InvokeIndirectInstruction(BilOp.Var("h"),
+                BilOp.Var("r"), new[] { BilOp.Var("arg"), BilOp.Var("arg") }));
+            BilTestHarness.CheckBilInvalid("invoke.indirect 错误 typeid 前缀类型",
+                module, "泛型隐藏实参");
         }
 
         private static void Positive(string label, string userSource)

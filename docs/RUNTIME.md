@@ -307,11 +307,12 @@ override 中的 `super(...)` 将当前固定泛型隐藏参数按声明序转发
 
 ## 14. Wrapper 派发管线
 
-**静态组合**：实体修饰器在语言语义上把 wrapper 逻辑按声明序从内到外嵌套进方法派发（替换 `inner`），因此天然骑 vtable。运行时**不能**增删、重排或禁用 wrapper。烘焙动作（逐应用特化、inner 链接、原始体替换，以及 `call???` router 体合成）由 Middleware 在合法 lowering 时完成（边界见 `BIL_STANDARD.md` §23）；frontend（编译器）产物只携带三类标记，不合成派发链符号、不替换原始方法体：
+**静态组合**：实体修饰器在语言语义上把 wrapper 逻辑按声明序从内到外嵌套进方法派发（替换 `inner`），因此天然骑 vtable。运行时**不能**增删、重排或禁用 wrapper。烘焙动作（逐应用特化、inner 链接、原始体替换，以及 `call???` router 体合成）由 Middleware 在合法 lowering 时完成（边界见 `BIL_STANDARD.md` §23）；frontend（编译器）产物携带标记与 wrapper 安装契约，不合成派发链符号、不替换原始方法体：
 
-- (a) 声明上的 wrapper 应用标记（BIL 修饰符）；
+- (a) 声明上的 wrapper 应用标记（BIL 修饰符 `wrapped(W)`）；应用 **init 实参**由宿主 `..init.wrapper` + `new.wrapper.*` / 有参时 `new.wrapped` 家族承载（`BIL_STANDARD.md` §8.3.1 / §9.7 / §14.4 / §14.5）——Middleware/VM 在实体 init **之前**自动调用 `..init.wrapper`；
 - (b) proxy 模板 fn——wrapper 类型的成员 fn，带 `wrapper-proxy(specific|wildcard)` 修饰符（`BIL_STANDARD.md` §8.4），体内的 `inner` / `self` 以占位指令表达（`invoke fn(..inner)` 见 `BIL_STANDARD.md` §15.4，`get.self` 见 `BIL_STANDARD.md` §12）。`fn(..inner)` 调用操作数显式携带待转发的可变泛型包（`.generic.<Pack>` 前置）与值包（`.kwargs.*` / `.vargs.*` 随后）；Middleware 烘焙下一环时消费这些包操作数（解包/shim/特化链接），frontend 不展开；
-- (c) 未声明方法的降级调用点 = 对 `core::Any$call???` 的普通 `invoke`（见 §14.2）。
+- (c) 未声明方法的降级调用点 = 对 `core::Any$call???` 的普通 `invoke`（见 §14.2）；
+- (d) 静态方法被 Method wrapper 修饰时的 `..companion.UUID` singleton 与静态壳体（`BIL_STANDARD.md` §8.7）。
 
 最终内联仍归 Middleware。
 

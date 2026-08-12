@@ -22,13 +22,6 @@
                 }
                 return BindDestructuring(decl, scope, ctx, env);
             }
-            // 局部变量访问器（S8e 归口，§9.4.1：栈上访问器暂未实现）——
-            // 降级不中断，继续按普通局部绑定
-            if (decl.Getter != null || decl.Setter != null)
-            {
-                env.Error(decl.Span,
-                    "P3: local variable accessors are not supported yet (S11)");
-            }
             // S9a：声明类型可为泛型参数（引用相等身份）
             SemanticSymbol? declaredType = null;
             if (decl.TypeAnnotation != null)
@@ -47,6 +40,12 @@
                 env.Error(decl.Span,
                     $"Variable '{decl.Name}' requires a type annotation or an initializer");
                 return null;
+            }
+            // 带访问器局部须显式类型标注（同字段规则——推断与访问器不共存）
+            if ((decl.Getter != null || decl.Setter != null) && decl.TypeAnnotation == null)
+            {
+                env.Error(decl.Span,
+                    $"Local '{decl.Name}' with accessors requires a type annotation");
             }
             if (decl.IsConst && init == null)
             {
@@ -67,19 +66,75 @@
                 return null;
             }
             var local = new LocalSymbol(decl.Name, type, decl.IsConst);
-            RegisterLocalWrapperApplications(decl, local, ctx, env);
+            // wrapper 应用先登记（不 cell 化）——访问器与 wrapper 共用一次
+            // EnsureCellStorage（路线 C：cell 承载访问器体 + wrapped(W)）
+            CollectLocalWrapperApplications(decl, local, scope, ctx, env);
+            var hasAccessors = decl.Getter != null || decl.Setter != null;
+            if (hasAccessors)
+            {
+                ValidateAndPrepareLocalAccessors(decl, local, env);
+                // 访问器体绑定在声明点词法作用域（本局部尚未 Declare——
+                // 体内自引用按未定义；自由变量捕获不收本符号）
+                CellClassFactory.EnsureCellStorage(local, decl, ctx, env, scope,
+                    decl.Getter, decl.Setter);
+            }
+            else if (local.AppliedWrappers.Count > 0)
+            {
+                CellClassFactory.EnsureCellStorage(local, decl, ctx, env);
+            }
             scope.Declare(local);
             ctx.Locals.Add(local);
             if (init != null) ctx.Flow.MarkAssigned(local);
             return new BoundLocalDeclarationStatement(node, local, init);
         }
 
+        // 局部访问器声明侧校验（M107，SYNTAX §9.4/§9.4.1 栈上形态）：
+        // const+setter、无体计算、访问级别修饰符禁令；HasBackingStorage 落定
+        private static void ValidateAndPrepareLocalAccessors(VariableDeclarationASTNode decl,
+            LocalSymbol local, BindEnvironment env)
+        {
+            var sample = (decl.Getter ?? decl.Setter)!;
+            local.HasBackingStorage = sample.HasBackingField;
+            if (local.IsConst && decl.Setter != null)
+            {
+                env.Error(decl.Setter.Span ?? decl.Span,
+                    $"Const local '{local.Name}' cannot declare a setter");
+            }
+            if (decl.Getter is { Body: null } && !local.HasBackingStorage)
+            {
+                env.Error(decl.Getter.Span ?? decl.Span,
+                    $"Computed getter of '{local.Name}' must have a body " +
+                    "(compiler-generated accessors require a backing field)");
+            }
+            if (decl.Setter is { Body: null } && !local.HasBackingStorage)
+            {
+                env.Error(decl.Setter.Span ?? decl.Span,
+                    $"Computed setter of '{local.Name}' must have a body " +
+                    "(compiler-generated accessors require a backing field)");
+            }
+            CheckLocalAccessorModifiers(decl.Getter, env);
+            CheckLocalAccessorModifiers(decl.Setter, env);
+        }
+
+        // 局部访问器无可见性/多态概念（§9.4 栈上形态）——禁 pub/priv 等
+        private static void CheckLocalAccessorModifiers(PropertyAccessorASTNode? accessor,
+            BindEnvironment env)
+        {
+            if (accessor == null || accessor.Modifiers.Count == 0) return;
+            foreach (var modifier in accessor.Modifiers.Distinct())
+            {
+                env.Error(accessor.Span,
+                    $"Local variable accessor cannot have modifier '{modifier}' " +
+                    "(local accessors have no visibility or inheritance)");
+            }
+        }
+
         // 局部变量 wrapper 应用登记（S11，SYNTAX §14.3/§14.9 矩阵 C）：
         // 栈上声明不进 P1/P2——注解解析与类别检查在此落地；栈上变量恒为
         // 合法 Value wrapper 目标（矩阵 C），无 shared/宿主检查。诊断措辞
-        // 与 P2 WrapperCheckers 对齐
-        private static void RegisterLocalWrapperApplications(VariableDeclarationASTNode decl,
-            LocalSymbol local, BindContext ctx, BindEnvironment env)
+        // 与 P2 WrapperCheckers 对齐。cell 化由调用方统一触发（可与访问器合并）
+        private static void CollectLocalWrapperApplications(VariableDeclarationASTNode decl,
+            LocalSymbol local, Scope scope, BindContext ctx, BindEnvironment env)
         {
             foreach (var annotation in decl.Annotations)
             {
@@ -116,14 +171,10 @@
                         : $"Method wrapper '{wrapperType.Name}' can only be applied to methods");
                     continue;
                 }
-                local.AppliedWrappers.Add(new WrapperApplication(wrapperType, annotation));
-            }
-            // 统一 cell 存储（SYNTAX §14.3）：被 wrapper 修饰的局部值用逐变量
-            // 合成的 cell 隐藏子类盛装——登记完成后 cell 化（wrapper 应用由
-            // 子类 value 字段的 wrapped(W) 标记承载，读写经 getValue/setValue）
-            if (local.AppliedWrappers.Count > 0)
-            {
-                CellClassFactory.EnsureCellStorage(local, decl, ctx, env);
+                var app = new WrapperApplication(wrapperType, annotation);
+                // M109b-1：cell 场景实参在声明点词法作用域绑定（外层局部/参数）
+                WrapperInitSynthesis.BindInitArgsInScope(app, scope, ctx, env, decl);
+                local.AppliedWrappers.Add(app);
             }
         }
 
@@ -271,6 +322,37 @@
                     binding.TypeArguments, binding.GenericPack, binding.IsIndirect,
                     binding.IndirectTarget));
             }
+            // M105：非 CallForm 尾 Call 分流——`(act)()` / `(getHandler())()` /
+            // `handlers[0]()` 等值上的 void 间接调用在语句位置落 BoundCallStatement
+            //（invoke.indirect.noret）；不可调回退通用兜底保诊断文本；非 void
+            // 产值调用包表达式语句（与 FoldSuffixes 一致，避免重复绑定）
+            if (stmt.Expression.Expression is PathExpressionASTNode trailPath
+                && PathFacility.TryBindReceiverBeforeTrailingValueCall(trailPath, scope, ctx, env,
+                    out var trailReceiver, out var trailCall))
+            {
+                if (trailReceiver == null) return null;
+                if (trailReceiver.Type is TypeSymbol trailCallable
+                    && CallFacility.HasCallOperator(trailCallable))
+                {
+                    var trailBinding = CallFacility.BindIndirectCallOverload(trailCall!,
+                        trailReceiver, trailCallable, trailCall!.Arguments!, null, scope, ctx,
+                        env);
+                    if (trailBinding == null) return null;
+                    if (trailBinding.ResultType == null)
+                    {
+                        return new BoundCallStatement(stmt, trailBinding.Method,
+                            trailBinding.Arguments, trailBinding.Receiver,
+                            trailBinding.TypeArguments, trailBinding.GenericPack,
+                            isIndirect: true, indirectTarget: trailReceiver);
+                    }
+                    return new BoundExpressionStatement(stmt,
+                        new BoundCallExpression(trailCall, trailBinding.Method,
+                            trailBinding.Arguments, trailBinding.ResultType!,
+                            trailBinding.TypeArguments, trailBinding.GenericPack,
+                            isIndirect: true, indirectTarget: trailReceiver));
+                }
+                // 不可调：落入下方通用兜底，由 FoldSuffixes 报原诊断
+            }
             var expr = ExpressionDispatcher.Visit(stmt.Expression.Expression, scope, ctx, env);
             return expr == null ? null : new BoundExpressionStatement(stmt, expr);
         }
@@ -293,6 +375,12 @@
                         env.Error(node.Span,
                             $"Cannot assign to using resource '{local.Name}'; " +
                             "using resource bindings cannot be reassigned");
+                        return null;
+                    }
+                    // 局部访问器写检查（M107，§9.4.1）：仅 get 不可写
+                    if ((local.Getter != null || local.Setter != null) && local.Setter == null)
+                    {
+                        env.Error(node.Span, $"'{local.Name}' has no setter");
                         return null;
                     }
                     if (local.IsConst)

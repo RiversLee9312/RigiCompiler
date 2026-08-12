@@ -100,6 +100,10 @@ namespace LatteCompiler.Tests
                     $"({(seqStmt.UsingBindings.Count == 0 ? "" : string.Join(", ", seqStmt.UsingBindings.Select(Using)))}{Block(seqStmt.Body)})",
                 // M61：return@语句seq（不携带值，Target.Label 必非 null）
                 BoundSeqExitStatement seqExit => $"SeqExit(@{seqExit.Target.Label})",
+                BoundNewWrapperStatement nw =>
+                    $"NewWrapper({nw.Kind}, {nw.WrapperType.Name}" +
+                    $"{(nw.Target != null ? ", " + nw.Target.Name : "")}, " +
+                    $"[{string.Join(", ", nw.Arguments.Select(Expr))}])",
                 // S7f 解构声明：Destructuring([a: String ← key; b: i32 ← value], init)
                 BoundDestructuringDeclarationStatement destructuring =>
                     $"Destructuring([{string.Join("; ", destructuring.Entries.Select(e => $"{e.Local.Name}: {TypeShort.Of(e.Local.Type)} ← {e.Field.Name}"))}], {Expr(destructuring.Initializer)})",

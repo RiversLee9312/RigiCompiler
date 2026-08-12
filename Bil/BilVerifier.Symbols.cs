@@ -258,12 +258,31 @@ namespace LatteCompiler.Bil
                 }
             }
 
+            // §9.7/§21.8：..init.wrapper 签名与修饰符
+            var nameSegment = MethodNameSegment(symbol);
+            if (nameSegment == BilSpellings.InitWrapperMethodName)
+            {
+                if (!BilVerificationContext.TryParseMethodSymbol(symbol,
+                        out _, out var initWrapperStatic, out _, out var initWrapperRet)
+                    || initWrapperStatic
+                    || initWrapperRet != ".void")
+                {
+                    errors.Add(new BilVerificationError("21.8", symbol,
+                        "..init.wrapper 必须是返回 .void 的实例方法（§9.7）"));
+                }
+                if (!HasKeyword(declaration, BilKeyword.CompilerGenerated)
+                    || !HasAccessibility(declaration, BilAccessibility.Private))
+                {
+                    errors.Add(new BilVerificationError("21.8", symbol,
+                        "..init.wrapper 必须带 priv 与 compiler-generated（§9.7）"));
+                }
+            }
+
             // §8.4/§21.8 wrapper-proxy(PROXY_KIND)（M88）：只允许在 wrapper
             // 类型内、名以 `.proxy.` 开头的方法上；`.proxy.` 名 ↔ 修饰符
             // 双向一致；kind ↔ 形状类别（名以 `.*` 结尾 → wildcard，否则
             // specific）。烘焙特化/original/router 归 Middleware，不再出现
             // 于 BIL 文本
-            var nameSegment = MethodNameSegment(symbol);
             var isProxyTemplate = nameSegment != null && nameSegment.StartsWith(".proxy.");
             BilWrapperProxyModifier? wrapperProxy = null;
             foreach (var modifier in declaration.Modifiers)
@@ -389,6 +408,57 @@ namespace LatteCompiler.Bil
             {
                 errors.Add(new BilVerificationError("21.8", type.Symbol,
                     "singleton 类型必须同时带 shared"));
+            }
+
+            // §8.7/§21.8：..companion.* 结构
+            if (type.Symbol.StartsWith(BilSpellings.CompanionTypeNamePrefix))
+            {
+                if (type.Symbol.Length <= BilSpellings.CompanionTypeNamePrefix.Length)
+                {
+                    errors.Add(new BilVerificationError("21.8", type.Symbol,
+                        "..companion. 类型名 UUID 段不得为空（§8.7）"));
+                }
+                if (type.Kind != BilTypeKind.Class)
+                {
+                    errors.Add(new BilVerificationError("21.8", type.Symbol,
+                        "..companion.* 必须是 class（§8.7）"));
+                }
+                if (!singleton || !shared)
+                {
+                    errors.Add(new BilVerificationError("21.8", type.Symbol,
+                        "..companion.* 必须同时带 singleton 与 shared（§8.7）"));
+                }
+                var hasInstanceMethod = false;
+                foreach (var member in type.Members)
+                {
+                    if (member is BilSimpleMemberDeclaration simple
+                        && simple.Kind == BilMemberKind.Method)
+                    {
+                        hasInstanceMethod = true;
+                        break;
+                    }
+                }
+                if (!hasInstanceMethod)
+                {
+                    errors.Add(new BilVerificationError("21.8", type.Symbol,
+                        "..companion.* 必须至少有一个实例方法（§8.7）"));
+                }
+            }
+
+            // §9.7：每实体至多一个 ..init.wrapper
+            var initWrapperCount = 0;
+            foreach (var member in type.Members)
+            {
+                if (member is BilSimpleMemberDeclaration simple
+                    && MethodNameSegment(simple.Symbol) == BilSpellings.InitWrapperMethodName)
+                {
+                    initWrapperCount++;
+                }
+            }
+            if (initWrapperCount > 1)
+            {
+                errors.Add(new BilVerificationError("21.8", type.Symbol,
+                    "同一实体至多一个 ..init.wrapper 方法（§9.7）"));
             }
 
             // §8.3.1/§21.8：类型声明上的 wrapped(W)
@@ -697,6 +767,20 @@ namespace LatteCompiler.Bil
             {
                 if (modifier is BilKeywordModifier keywordModifier
                     && keywordModifier.Keyword == keyword)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        internal static bool HasAccessibility(BilSimpleMemberDeclaration declaration,
+            BilAccessibility accessibility)
+        {
+            foreach (var modifier in declaration.Modifiers)
+            {
+                if (modifier is BilAccessibilityModifier access
+                    && access.Accessibility == accessibility)
                 {
                     return true;
                 }

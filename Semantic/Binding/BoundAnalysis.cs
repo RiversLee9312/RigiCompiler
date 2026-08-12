@@ -204,6 +204,9 @@ namespace LatteCompiler
                     foreach (var switchCase in switchStatement.Cases)
                         yield return switchCase.Match;
                     break;
+                case BoundNewWrapperStatement newWrapper:
+                    foreach (var argument in newWrapper.Arguments) yield return argument;
+                    break;
             }
         }
 

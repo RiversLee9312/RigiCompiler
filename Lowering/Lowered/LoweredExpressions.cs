@@ -157,11 +157,15 @@ namespace LatteCompiler
 
 
     // new 构造（SYNTAX §9.3）：Init 为匹配到的构造函数符号；
-    // 无显式 init 的零参构造 Init 为 null
+    // 无显式 init 的零参构造 Init 为 null。
+    // M109b-1：WrapperArguments 非 null 时发射 new.wrapped（第一表 =
+    // ..init.wrapper 实参；第二表 = Arguments = init 实参）；null = 普通 new
     public sealed class LoweredNewExpression : LoweredExpression
     {
         public MethodSymbol? Init { get; }
         public IReadOnlyList<LoweredExpression> Arguments { get; }
+        // 有参 ..init.wrapper 前缀实参（BIL §14.4）；null = 普通 new
+        public IReadOnlyList<LoweredExpression>? WrapperArguments { get; }
         // 合成路径显式类型（Origin 非 BoundNewExpression 时必带——闭包 cell
         // 构造与 lambda 隐藏类构造，SYNTAX §5.2）；null = Origin 透传
         private readonly SemanticSymbol? type;
@@ -169,11 +173,13 @@ namespace LatteCompiler
         public override SemanticSymbol Type => type ?? base.Type;
 
         public LoweredNewExpression(BoundNode origin, MethodSymbol? init,
-            IReadOnlyList<LoweredExpression> arguments, SemanticSymbol? type = null)
+            IReadOnlyList<LoweredExpression> arguments, SemanticSymbol? type = null,
+            IReadOnlyList<LoweredExpression>? wrapperArguments = null)
             : base(origin)
         {
             Init = init;
             Arguments = arguments;
+            WrapperArguments = wrapperArguments;
             this.type = type;
         }
     }

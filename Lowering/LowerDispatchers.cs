@@ -30,6 +30,7 @@ namespace LatteCompiler
                 BoundIfStatement => IfStatementRewriter.Visit(statement, ctx, env),
                 BoundReturnValueStatement => ReturnValueRewriter.Visit(statement, ctx, env),
                 BoundLoopControl => LoopControlRewriter.Visit(statement, ctx, env),
+                BoundNewWrapperStatement => NewWrapperRewriter.Visit(statement, ctx, env),
                 _ => Unsupported(statement, env),
             };
         }
