@@ -1,7 +1,7 @@
 using System.Collections.Generic;
-using LatteCompiler.Bil;
+using RigiCompiler.Bil;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 值发射（S6–S8c；BIL §10–§15）。自旧 EmitSession.EmitValue 各分支
     // 迁移，行为不变——表达式物化为变量操作数（§10.1）。
@@ -680,7 +680,7 @@ namespace LatteCompiler
         }
 
         // 标准 Pair 定义（.pair<.string, .any>）：bootstrap 无 Pair——
-        // stdlib .bootstrap.latte 自举（core::Pair）；查命名空间兜底
+        // stdlib .bootstrap.rg 自举（core::Pair）；查命名空间兜底
         internal static TypeSymbol BootstrapPairDefinition(EmitEnvironment env)
         {
             var core = env.Unit.Symbols.GlobalNamespace.ChildNamespaces

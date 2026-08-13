@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // P3 绑定驱动器（M55 visitor 化协议）：遍历编译单元的声明骨架，
     // 为每个函数体创建独立 BindContext（函数体互不嵌套；每体一个上下文

@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 符号结构：源码中的符号引用（如 a.b\<i32>），由 PathParserLayer 填充。
     // Symbol（elements: SymbolElementSet）→ SymbolElement（name + generics: SymbolSet）。

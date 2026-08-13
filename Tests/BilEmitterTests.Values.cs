@@ -1,8 +1,8 @@
 using System.Collections.Generic;
 using System.Linq;
-using LatteCompiler.Bil;
+using RigiCompiler.Bil;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     // BilEmitter 值形态发射测试（cast/字符串插值/?. 安全调用/if? 空值回退/解构/is-supers-with/typeOf）
 
@@ -400,7 +400,7 @@ namespace LatteCompiler.Tests
                 "func config(options: named String...): Any { return options }\n" +
                 "func main() {\n" +
                 "    var s = sum(1, 2, 3)\n" +
-                "    var c = config(name = \"latte\")\n" +
+                "    var c = config(name = \"rigi\")\n" +
                 "}\n");
             CheckNoErrors("全管线无诊断（vargs/kwargs）", unit);
             BilTestHarness.CheckBilValid("验证器零错误（vargs/kwargs）", module);

@@ -5,12 +5,13 @@
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <AssemblyName>rigic</AssemblyName>
   </PropertyGroup>
 
-  <!-- stdlib 内嵌源（M43）：LogicalName 保持路径形态（stdlib/core/Console.latte），
+  <!-- stdlib 内嵌源（M43）：LogicalName 保持路径形态（stdlib/core/Console.rg），
        StdlibSources 据此反推 sourceName -->
   <ItemGroup>
-    <EmbeddedResource Include="stdlib/**/*.latte" LogicalName="stdlib/%(RecursiveDir)%(FileName)%(Extension)" />
+    <EmbeddedResource Include="stdlib/**/*.rg" LogicalName="stdlib/%(RecursiveDir)%(FileName)%(Extension)" />
   </ItemGroup>
 
 </Project>

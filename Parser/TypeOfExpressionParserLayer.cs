@@ -1,6 +1,6 @@
 using System;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     /// <summary>
     /// typeOf 表达式解析器（SYNTAX.md §3.7）

@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // cast（S7e，SYNTAX §3.5）：as / as?。as 结果类型即目标类型，as? 结果
     // 类型 = Nullable<目标类型>（P3 定型，P4 不再区分包装）。可转性

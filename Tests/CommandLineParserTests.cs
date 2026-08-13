@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     /// <summary>
     /// 命令行解析器测试：
@@ -64,7 +64,7 @@ namespace LatteCompiler.Tests
         {
             Console.WriteLine("=== Testing COMMAND matching ===");
 
-            CheckParseOk("compile 匹配", new[] { "compile", "--file", "a.latte" },
+            CheckParseOk("compile 匹配", new[] { "compile", "--file", "a.rg" },
                 r => r.Command.Mask.Name == "compile");
             CheckParseOk("test 匹配", new[] { "test" }, r => r.Command.Mask.Name == "test");
             CheckParseOk("help 匹配", new[] { "help" }, r => r.Command.Mask.Name == "help");
@@ -77,15 +77,15 @@ namespace LatteCompiler.Tests
         {
             Console.WriteLine("=== Testing sub-command matching (空格 / = 两形态) ===");
 
-            CheckParseOk("--file 空格形态多路径", new[] { "compile", "--file", "a.latte", "b.latte" },
-                r => r.Get("--file") is { Count: 2 } f && f[0] == "a.latte" && f[1] == "b.latte");
-            CheckParseOk("--file= 形态", new[] { "compile", "--file=a.latte" },
-                r => r.Get("--file") is { Count: 1 } f && f[0] == "a.latte");
-            CheckParseOk("--file= 与空格形态混用", new[] { "compile", "--file=a.latte", "b.latte" },
+            CheckParseOk("--file 空格形态多路径", new[] { "compile", "--file", "a.rg", "b.rg" },
+                r => r.Get("--file") is { Count: 2 } f && f[0] == "a.rg" && f[1] == "b.rg");
+            CheckParseOk("--file= 形态", new[] { "compile", "--file=a.rg" },
+                r => r.Get("--file") is { Count: 1 } f && f[0] == "a.rg");
+            CheckParseOk("--file= 与空格形态混用", new[] { "compile", "--file=a.rg", "b.rg" },
                 r => r.Get("--file") is { Count: 2 });
-            CheckParseOk("--dump-ast= 形态", new[] { "compile", "--file", "a.latte", "--dump-ast=o.jsonl" },
+            CheckParseOk("--dump-ast= 形态", new[] { "compile", "--file", "a.rg", "--dump-ast=o.jsonl" },
                 r => r.Get("--dump-ast") is { Count: 1 } d && d[0] == "o.jsonl");
-            CheckParseOk("无参子命令", new[] { "compile", "--file", "a.latte", "--parse-only" },
+            CheckParseOk("无参子命令", new[] { "compile", "--file", "a.rg", "--parse-only" },
                 r => r.Has("--parse-only") && r.Get("--parse-only")!.Count == 0);
             CheckParseOk("--run 零参数合法", new[] { "test", "--run" },
                 r => r.Get("--run") is { Count: 0 });
@@ -143,9 +143,9 @@ namespace LatteCompiler.Tests
         {
             Console.WriteLine("=== Testing stray args ===");
 
-            CheckParseError("compile 裸参数报游离", new[] { "compile", "a.latte" }, "游离参数");
+            CheckParseError("compile 裸参数报游离", new[] { "compile", "a.rg" }, "游离参数");
             CheckParseError("test 裸参数报游离", new[] { "test", "1" }, "游离参数");
-            CheckParseError("子命令前的裸参数报游离", new[] { "compile", "a.latte", "--file", "b" }, "游离参数");
+            CheckParseError("子命令前的裸参数报游离", new[] { "compile", "a.rg", "--file", "b" }, "游离参数");
             Console.WriteLine();
         }
 
@@ -198,11 +198,11 @@ namespace LatteCompiler.Tests
         {
             Console.WriteLine("=== Testing output path errors (compile 端到端) ===");
 
-            var dir = Path.Combine(Path.GetTempPath(), $"latte_cli_test_{Guid.NewGuid():N}");
+            var dir = Path.Combine(Path.GetTempPath(), $"rigi_cli_test_{Guid.NewGuid():N}");
             Directory.CreateDirectory(dir);
             try
             {
-                var src = Path.Combine(dir, "hello.latte");
+                var src = Path.Combine(dir, "hello.rg");
                 File.WriteAllText(src, "pub func main(): i32 { return 0 }\n");
                 // 不存在目录下的输出路径：StreamWriter/File.WriteAllText 抛
                 // DirectoryNotFoundException（IOException 子类）——此前无 catch 直接崩溃

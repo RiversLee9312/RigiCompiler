@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // canonical symbol 打印（SEMANTIC_ARCHITECTURE §4.4）：BIL §5.2 的
     // canonical 字符串是符号图的序列化投影，供 BIL 发射、诊断消息与派发链

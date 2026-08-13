@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 访问器体绑定状态（M65 Bind 侧组件化拆分，自 BindContext 迁出）：
     // backing 形态访问器体内裸名 value 是 backing 字段的别名

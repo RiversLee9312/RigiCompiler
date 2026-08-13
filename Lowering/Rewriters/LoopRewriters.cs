@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 循环降级（S7c-1 while/do-while；S7c-2 for 脱糖，SYNTAX §7.3；
     // BIL §16.3/§16.4）。自旧 LowerSession.LowerLoop/LowerForLoop/

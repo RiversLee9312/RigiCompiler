@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // ===== 声明条目收集（含 open/abstract/singleton 标记位写符号）=====
     //

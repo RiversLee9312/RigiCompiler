@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 语句 AST 节点（P2 语句系统）
     //

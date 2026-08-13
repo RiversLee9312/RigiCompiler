@@ -2,9 +2,9 @@ using System;
 using System.Reflection;
 using System.Text;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
-    // stdlib 内嵌源载入（ROADMAP S6/S10 机制的最小子集，M43）：stdlib/**/*.latte 以
+    // stdlib 内嵌源载入（ROADMAP S6/S10 机制的最小子集，M43）：stdlib/**/*.rg 以
     // EmbeddedResource 内嵌进本程序集（LogicalName 保持 stdlib/ 路径形态），编译时
     // 取出经 Lexer+Parser 解析为 RootASTNode，作为编译单元（CompilationUnit）的源
     // 文件注入，与用户源同走 P1/P2/P3/P4 路径。CLI（compile）默认注入；测试可显式
@@ -29,12 +29,12 @@ namespace LatteCompiler
             foreach (var name in names)
             {
                 if (!name.StartsWith(ResourcePrefix, StringComparison.Ordinal) ||
-                    !name.EndsWith(".latte", StringComparison.Ordinal))
+                    !name.EndsWith(".rg", StringComparison.Ordinal))
                 {
                     continue;
                 }
 
-                // 逻辑名 → sourceName：stdlib/core/Console.latte → <stdlib>/core/Console.latte
+                // 逻辑名 → sourceName：stdlib/core/Console.rg → <stdlib>/core/Console.rg
                 // （RecursiveDir 的分隔符与平台相关，统一归一为 /）
                 var sourceName = SourceNamePrefix
                     + name.Substring(ResourcePrefix.Length).Replace('\\', '/');
@@ -51,7 +51,7 @@ namespace LatteCompiler
             if (roots.Count == 0)
             {
                 throw new CompilerInternalException(
-                    "stdlib 内嵌源缺失：程序集中未找到任何 stdlib/**/*.latte 资源（EmbeddedResource 配置失效）");
+                    "stdlib 内嵌源缺失：程序集中未找到任何 stdlib/**/*.rg 资源（EmbeddedResource 配置失效）");
             }
             return roots;
         }

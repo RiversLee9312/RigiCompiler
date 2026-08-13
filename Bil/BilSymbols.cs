@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-namespace LatteCompiler.Bil
+namespace RigiCompiler.Bil
 {
     // BIL 符号声明（BIL_STANDARD §8）：LocalSymbols 声明本程序集定义的
     // 类型及成员；ExternalSymbols 声明使用但由他处定义的符号（§8.6：

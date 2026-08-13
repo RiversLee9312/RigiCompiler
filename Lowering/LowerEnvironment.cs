@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 只读降级环境（P4a）：全编译期不变。诊断统一经 Error 落袋（P4 phase）。
     internal sealed class LowerEnvironment

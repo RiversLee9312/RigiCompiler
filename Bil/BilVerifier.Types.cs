@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-namespace LatteCompiler.Bil
+namespace RigiCompiler.Bil
 {
     // BilVerifier 类型检查（§21.3）：变量类型环境 + 逐指令 switch。
     // 严格相等按 §6.4；含 .generic< 的 typeid 位置表达式与查不到声明的

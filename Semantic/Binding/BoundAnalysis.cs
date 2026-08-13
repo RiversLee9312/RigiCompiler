@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // BoundTree 静态分析（自旧 BindSession 原样迁移，行为不变）：
     // 对绑定产物的纯查询设施，visitor 与驱动器共用。

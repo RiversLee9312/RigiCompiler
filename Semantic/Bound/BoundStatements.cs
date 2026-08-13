@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // Bound 语句节点（S5 最小集 + S7b 控制流首批 + S7c-1 循环 + S7d switch/throw
     // + S7e try/seq，SEMANTIC_ROADMAP）：
@@ -245,7 +245,7 @@ namespace LatteCompiler
 
     // switch 语句（S7d，SYNTAX §7.2）：Selector 已定型；Cases 保序（首个命中
     // 胜出，BIL §16.6 表序语义）；DefaultBody 恒存在（Parser 强制）。
-    // Latte 层 break 不指向 switch（规范未登记），故引用相等身份不需要
+    // Rigi 层 break 不指向 switch（规范未登记），故引用相等身份不需要
     public sealed class BoundSwitchStatement : BoundStatement
     {
         public BoundExpression Selector { get; }

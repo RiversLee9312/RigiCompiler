@@ -1,6 +1,6 @@
 using System.Linq;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     /// <summary>
     /// S2 P1 声明收集测试（M39）：符号壳建立（类型/成员/全局 + 泛型参数与参数）、

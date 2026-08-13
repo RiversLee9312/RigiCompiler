@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 控制流标签栈集（M65 Bind 侧组件化拆分，自 BindContext 迁出）：
     // 值块/循环/switch 占位/语句 seq 四条标签栈的统一家。裸 Stack 与

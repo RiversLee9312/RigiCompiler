@@ -1,5 +1,5 @@
 // 基元类型自举辅助成员（SYNTAX §15.3）：内建数值类型无法在自己的
-// 声明处携带这些实现，经 ext 以 Latte 自举（§13.2 枚举运算符）。
+// 声明处携带这些实现，经 ext 以 Rigi 自举（§13.2 枚举运算符）。
 // this 即区间起点（start），end 为终点（不含）——半开区间 [this, end)。
 // core.Pair 同批自举（M52，SYNTAX §18）：解构声明 var (a, b) = pair
 // 要求 pair 类型是 core.Pair\<TKey, TValue\> 的子类——P3 按 canonical

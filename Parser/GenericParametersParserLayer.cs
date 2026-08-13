@@ -1,7 +1,7 @@
 using System;
 using System.Linq;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     /// <summary>
     /// 泛型参数列表解析器

@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     /// <summary>
     /// 实参列表解析器

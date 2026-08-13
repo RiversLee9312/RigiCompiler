@@ -1,6 +1,6 @@
 using System;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     /// <summary>
     /// 函数形参列表解析器（roadmap #5）

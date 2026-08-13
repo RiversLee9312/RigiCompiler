@@ -1,6 +1,6 @@
 using System;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     // 符号路径解析测试（PathParserLayer）：独立 Layer 驱动
     // （TestHarness.ParseWithLayer + TestRootParserLayer 垫底），

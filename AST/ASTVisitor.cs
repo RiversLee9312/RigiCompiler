@@ -3,7 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     /// <summary>
     /// 统一 AST 遍历基建（M28）：深度优先先序（父先于子）。

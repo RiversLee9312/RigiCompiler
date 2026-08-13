@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 安全访问与空值回退脱糖（S7f，SYNTAX §3.4；BIL §3.4）。
     // 自旧 LowerSession.LowerSafeAccess/LowerSafeReceiver/

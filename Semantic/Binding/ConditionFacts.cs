@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 条件收窄事实对（SYNTAX §3.5）：条件表达式为真/为假
     // 两条控制流边各自的收窄事实（键 → 收窄类型）

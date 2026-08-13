@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-namespace LatteCompiler.Bil
+namespace RigiCompiler.Bil
 {
     // §11 运算指令与 §12 转换/运行时类型指令（M57 强类型化）。
     // 操作数全为变量（§10.1）；结果变量一律为指令最后一个操作数（§10.3）。

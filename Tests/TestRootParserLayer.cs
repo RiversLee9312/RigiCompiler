@@ -1,6 +1,6 @@
 using System;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     /// <summary>
     /// 测试专用垫底 Layer（大扫除 §13.3）

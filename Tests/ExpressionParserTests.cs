@@ -1,6 +1,6 @@
 using System;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     // 表达式解析测试：全管线驱动，断言 AST 树产物
     // （AstDescribe 精确描述串 + 结构事实），不断言控制台文本。
@@ -82,7 +82,7 @@ namespace LatteCompiler.Tests
         {
             TestHarness.Section("Error Cases (expect ParserException)");
 
-            // Latte 没有运算符优先级：未括号化的多个运算符必须报错
+            // Rigi 没有运算符优先级：未括号化的多个运算符必须报错
             TestHarness.CheckParseError("var e1 = 1 + 2 * 3",
                 () => TestHarness.ParseRoot("var e1 = 1 + 2 * 3"), "没有运算符优先级");
             // 括号未闭合

@@ -1,6 +1,6 @@
 using System;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     // 类型引用解析测试（TypeReferenceParserLayer）：
     // 独立 Layer 驱动（TestRootParserLayer 垫底）+ 全管线集成，

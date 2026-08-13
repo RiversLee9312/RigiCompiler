@@ -1,6 +1,6 @@
 using System;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     /// <summary>
     /// Seq 块解析器（roadmap #11，P2）

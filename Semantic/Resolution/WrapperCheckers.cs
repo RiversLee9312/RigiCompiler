@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // ===== 子任务 7a：wrapper 声明的 @WrapperTarget 解析 =====
     //

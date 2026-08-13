@@ -4,7 +4,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     /// <summary>
     /// Tokenizes a string（双引号字符串；单引号字符字面量由 CharLexerLayer 处理）。

@@ -1,6 +1,6 @@
 using System;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // Token 定义：Lexer 的输出契约（Parser 的输入）。
     // 关键字不是独立 Token 类型——以 WordToken 形式出现，由 Parser 比对 Keywords 常量识别。

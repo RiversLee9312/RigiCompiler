@@ -1,6 +1,6 @@
 using System;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     /// <summary>
     /// 循环解析器（roadmap #9，SYNTAX.md §7.3/§7.4）

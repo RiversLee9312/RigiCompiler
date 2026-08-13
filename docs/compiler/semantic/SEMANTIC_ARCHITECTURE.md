@@ -1,4 +1,4 @@
-# Latte 语义分析与 BIL 生成架构（中端）
+# Rigi 语义分析与 BIL 生成架构（中端）
 
 > **状态**: 架构定稿 1.0（2026-07-29 讨论定稿）
 > **定位**: 本文档规定 AST → BIL 之间全部编译阶段（下称**中端**）的架构：
@@ -106,7 +106,7 @@ BIL 文本
 | Resources 提取（字面量 → `res(...)`） | P4b | BIL §4.2：指令不得内联字面量 |
 | block 结构生成（if/loop/switch/try） | P4b | BIL §16 结构化控制流 |
 
-P1 与 P2 分开的原因：Latte 声明可以互相前向引用，必须先收齐全部名字
+P1 与 P2 分开的原因：Rigi 声明可以互相前向引用，必须先收齐全部名字
 再解析类型引用。P2 结束后符号图**冻结**——P3/P4 只读它，不再写入
 （局部变量符号除外，它们归属各自函数的分析结果）。
 
@@ -118,7 +118,7 @@ P1 与 P2 分开的原因：Latte 声明可以互相前向引用，必须先收�
 ## 3. 编译单元模型
 
 - 一次 `compile` 调用处理一个**编译单元**（未来对应一个程序集 / 一个
-  BIL 文件）：多个 `.latte` 源文件 + bootstrap 符号 + `core.latte` 声明。
+  BIL 文件）：多个 `.rg` 源文件 + bootstrap 符号 + `core.rg` 声明。
 - P1/P2 面向整个编译单元一次性执行（跨文件前向引用因此天然成立）；
   P3 以**函数体**（含字段/全局变量初始化器、enum case 判别值等表达式体）
   为独立分析单位，函数间诊断互不阻断。
@@ -159,9 +159,9 @@ SemanticSymbol
   不设独立的 nullable 表示（SYNTAX §3.4）。
 - 符号图允许构造期两阶段（P1 建壳、P2 填内容），P2 结束后不可变。
 
-### 4.3 bootstrap 与 core.latte（混合策略）
+### 4.3 bootstrap 与 core.rg（混合策略）
 
-类型层级根与基元类型无处用源码声明，采用**硬编码 bootstrap + core.latte
+类型层级根与基元类型无处用源码声明，采用**硬编码 bootstrap + core.rg
 声明文件**的混合：
 
 - **硬编码 bootstrap**：`Any`、`Object`、`ValueType`、`Enum`、`Wrapper`、
@@ -173,12 +173,12 @@ SemanticSymbol
   `String` 与 `Wrapper` 都在 `ValueType` 分支下（`String` 非 rich、
   `Wrapper` 恒 rich）；`Nullable\<T>` 的 shared 属性由 `T` 推导而不是
   查声明修饰符；`Wrapper` 是全部 wrapper 声明的隐式基类。
-- **core.latte**：其余标准库表层（`core::Console`、`core.coroutine::Task`
+- **core.rg**：其余标准库表层（`core::Console`、`core.coroutine::Task`
   / `Executor` / Alarm 家族、`core::IDisposable`、异常类型、
-  `core.ComparisonResult` 等）以 Latte 声明文件形式随编译器载入，
+  `core.ComparisonResult` 等）以 Rigi 声明文件形式随编译器载入，
   用自己的前端解析后走同一条 P1/P2 路径。这同时构成前端的常驻回归测试。
 - 划分原则：**类型系统与编译器本身依赖的进 bootstrap；只有语义分析的
-  "用户"才依赖的进 core.latte**。基元类型上的运算符集合属于 bootstrap
+  "用户"才依赖的进 core.rg**。基元类型上的运算符集合属于 bootstrap
   的一部分（BIL §11 的 intrinsic 键空间）。
 
 ### 4.4 canonical symbol 是投影，不是身份

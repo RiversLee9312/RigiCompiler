@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 符号（notation）常量：Lexer 字符识别与 Parser 符号比对共用的单字符/多字符记号。
     public static class Notations
@@ -84,7 +84,7 @@ namespace LatteCompiler
     // >=、>>、>>> 运算符由 ExpressionParserLayer 在运算符状态下重新组合。
     // 斜杠家族（/、//、/*）一律由 SlashLexerLayer 分流，不在此合并。
     // 复合赋值（*=、/=、+= 等）同样不合并：拆成两个 token，将来由 Parser 重组（M31）。
-    // ++、-- 不属于 Latte 语法（SYNTAX 全文无此运算符），不再合并。
+    // ++、-- 不属于 Rigi 语法（SYNTAX 全文无此运算符），不再合并。
 };
     }
 }

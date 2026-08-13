@@ -1,6 +1,6 @@
 using System.Linq;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     /// <summary>
     /// 类型短名共享工具（自 BoundDescribe/LoweredDescribe 提取，消除两份逐行重复）：

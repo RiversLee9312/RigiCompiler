@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 函数级绑定上下文（M55 visitor 化协议；M65 组件化拆分）：一个
     // 函数体绑定期间存活的可变状态。每个函数体新建一个实例（旧

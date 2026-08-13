@@ -1,8 +1,8 @@
 using System.Collections.Generic;
 using System.Linq;
-using LatteCompiler.Bil;
+using RigiCompiler.Bil;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     /// <summary>
     /// S6 P4 最小闭环 + S7a 基础发射补齐测试：Lowerer（P4a 恒等重写）+

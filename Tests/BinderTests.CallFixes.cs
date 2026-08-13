@@ -1,6 +1,6 @@
 using System.Linq;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     // BinderTests 的调用/路径/二元修复部分（review 批次）：
     // 收窄区域内复合赋值剥壳（S8b）、写模式索引宿主代入（S8c）、

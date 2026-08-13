@@ -2,7 +2,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // P1 声明收集（SEMANTIC_ARCHITECTURE §2）：遍历编译单元全部声明骨架
     // （不进函数体）建命名空间/类型/成员/全局符号壳。

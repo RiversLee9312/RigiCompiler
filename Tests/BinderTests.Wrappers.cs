@@ -1,6 +1,6 @@
 using System.Linq;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     // BinderTests 的 S11 wrapper place 部分（SYNTAX §14.1/§14.5）：
     // `obj:W` 只读 place 绑定（Entity：宿主类型 AppliedWrappers；Value：

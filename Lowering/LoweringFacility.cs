@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 降级共享设施（自旧 LowerSession 迁移，行为不变）：实参降级与子类型
     // cast 物化（ARCH §6.1，BIL §6.5）。
@@ -87,7 +87,7 @@ namespace LatteCompiler
                 ? (TypeSymbol)indexAccess.Type : null;
         }
 
-        // core::Pair 定义查找（.bootstrap.latte 自举，按「名 + 泛型
+        // core::Pair 定义查找（.bootstrap.rg 自举，按「名 + 泛型
         // 元数 2」查询——与 Binding/PathVisitors.FindCorePairDefinition
         // 同款；P4b VarArgsEmitter.BootstrapPairDefinition 先例）
         private static TypeSymbol FindCorePairDefinition(LowerEnvironment env)

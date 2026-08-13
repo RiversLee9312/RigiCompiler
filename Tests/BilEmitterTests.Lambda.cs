@@ -2,9 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
-using LatteCompiler.Bil;
+using RigiCompiler.Bil;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     // BilEmitter lambda 对象模型（SYNTAX §5.2）：隐藏类 + new/invoke.indirect +
     // cell 捕获闭环（逐变量合成 ..cell..UUID 隐藏子类）。UUID 经

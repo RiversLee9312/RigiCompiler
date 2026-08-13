@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // ===== 泛型型变声明与使用位置检查（SYNTAX §3.6） =====
     //

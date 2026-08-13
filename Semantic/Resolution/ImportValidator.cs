@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // ===== import 可解析性校验（import/namespace 模块语义义务）=====
     //

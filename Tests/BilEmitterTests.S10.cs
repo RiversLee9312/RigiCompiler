@@ -1,7 +1,7 @@
 using System.Linq;
-using LatteCompiler.Bil;
+using RigiCompiler.Bil;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     // BilEmitter S10 stdlib 端到端发射测试：异常具体子类（throw/catch/
     // getMessage）、core.IDisposable 实现、async 调用 Task 形态（§15.2）、

@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // Bound 表达式节点（S5 最小集 + S7b 首批 + S7c-2 实例成员 + S7d switch
     // + S7e cast/seq + S7f 安全访问/空值回退 + S8a 类型谓词/typeOf

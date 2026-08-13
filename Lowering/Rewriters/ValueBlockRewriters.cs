@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 值块降级与 if 转换（S7b 起；S7d continuation 编织重写，修复 M46
     // else-if 链缺陷；S7e seq/try 编织扩展）。自旧 LowerSession

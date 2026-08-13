@@ -2,9 +2,9 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
-using LatteCompiler.Bil;
+using RigiCompiler.Bil;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     /// <summary>
     /// BIL 测试基建（M58）：BilVerifier 断言 + 中端全管线驱动 + 规范化
@@ -22,7 +22,7 @@ namespace LatteCompiler.Tests
     public static class BilTestHarness
     {
         // 用户源文件名（Origin 链断言 sourceName 用）
-        public const string UserSourceName = "hello.latte";
+        public const string UserSourceName = "hello.rg";
 
         // lambda 隐藏类名 UUID 归一化（Guid "N" = 32 位十六进制）
         private static readonly Regex LambdaUuidPattern = new Regex(

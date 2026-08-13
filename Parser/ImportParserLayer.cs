@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     /// <summary>
     /// import 语句解析器（SYNTAX.md §15.2，P5 重建）

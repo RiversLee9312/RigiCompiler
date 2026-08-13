@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 循环绑定（S7c-1 while/do-while/break/continue；S7c-2 for 双形态，
     // SYNTAX §7.3/§13.2）。自旧 BindSession.BindLoop/BindLoopControl/

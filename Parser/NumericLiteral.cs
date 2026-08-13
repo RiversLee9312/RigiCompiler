@@ -1,6 +1,6 @@
 using System;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     /// <summary>
     /// 数字字面量的统一判定与解析（M31）：LiteralParserLayer / RootParserLayer /

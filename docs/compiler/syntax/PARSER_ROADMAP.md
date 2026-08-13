@@ -1,4 +1,4 @@
-# Latte Compiler Parser 实现路线图
+# Rigi Compiler Parser 实现路线图
 
 > **版本**: 2.1  
 > **创建日期**: 2026-07-17  
@@ -8,7 +8,7 @@
 > 大扫除（M23）前的设计（如 Layer 回传结果、targetNode 回填等已被禁止的模式），
 > 请勿照搬；现行架构以 `../../../AGENTS.md` §4 与 `EXPRESSION_ARCHITECTURE.md` 为准。
 
-本文档详细描述 Latte Parser 的完整实现路线图，包括所有需要实现的 ParserLayer 组件、它们的依赖关系、优先级以及详细的实现指导。
+本文档详细描述 Rigi Parser 的完整实现路线图，包括所有需要实现的 ParserLayer 组件、它们的依赖关系、优先级以及详细的实现指导。
 
 ---
 
@@ -109,7 +109,7 @@ public class LiteralParserLayer : IParserLayer
 - `NullLiteralASTNode`
 
 **测试用例**:
-```latte
+```rigi
 42              // i32 默认
 100L            // i64
 0xFF            // 十六进制
@@ -164,7 +164,7 @@ public class TypeReferenceParserLayer : IParserLayer
   - `NullableTypeNode`
 
 **测试用例**:
-```latte
+```rigi
 i32                    // 基本类型
 String                 // 对象类型
 Container\<i32>        // 泛型类型
@@ -184,7 +184,7 @@ String?                // 可空类型
 **状态**: ✅ 已完成（2026-07-18 M8 收尾，67/67 测试通过；`:` wrapper 访问待 P5）
 
 **功能描述**:
-解析所有类型的表达式。Latte 没有运算符优先级，必须用括号明确指定运算顺序。
+解析所有类型的表达式。Rigi 没有运算符优先级，必须用括号明确指定运算顺序。
 
 **关键设计**:
 ```csharp
@@ -200,7 +200,7 @@ public class ExpressionParserLayer : IParserLayer
         Index               // 索引表达式
     }
     
-    // 重要: Latte 要求运算符必须用括号明确优先级
+    // 重要: Rigi 要求运算符必须用括号明确优先级
     // 不能有隐式优先级
 }
 ```
@@ -222,7 +222,7 @@ public class ExpressionParserLayer : IParserLayer
   - `CastExprASTNode` (as/as?)
 
 **测试用例**:
-```latte
+```rigi
 // 字面量
 42
 "hello"
@@ -298,7 +298,7 @@ public class ParameterListParserLayer : IParserLayer
 ```
 
 **测试用例**:
-```latte
+```rigi
 // 普通参数
 func add(a: i32, b: i32): i32
 
@@ -376,7 +376,7 @@ public class IfStatementParserLayer : IParserLayer
 ```
 
 **测试用例**:
-```latte
+```rigi
 // if 语句
 if (x > 0) {
     print(x)
@@ -422,7 +422,7 @@ public class SwitchStatementParserLayer : IParserLayer
 ```
 
 **测试用例**:
-```latte
+```rigi
 var result = switch(expr) {
     (1) -> { "one" }                   // 值匹配
     (2) -> { "two" }
@@ -473,7 +473,7 @@ public class LoopParserLayer : IParserLayer
 ```
 
 **测试用例**:
-```latte
+```rigi
 // for-each
 for (item in collection) {
     print(item)
@@ -535,7 +535,7 @@ public class TryCatchFinallyParserLayer : IParserLayer
 ```
 
 **测试用例**:
-```latte
+```rigi
 try {
     riskyOperation()
 } catch (e: IOException) {
@@ -581,7 +581,7 @@ public class SeqBlockParserLayer : IParserLayer
 ```
 
 **测试用例**:
-```latte
+```rigi
 // 简单作用域
 seq {
     var temp = computeSomething()
@@ -642,7 +642,7 @@ public class CoroutineOpsParserLayer : IParserLayer
 ```
 
 **测试用例**:
-```latte
+```rigi
 // await 表达式
 await flushLogs()
 const user = await loadUser(42)
@@ -706,7 +706,7 @@ public class ClassDeclarationParserLayer : IParserLayer
 ```
 
 **测试用例**:
-```latte
+```rigi
 // 简单类
 pub class User {
     pub var name: String
@@ -772,7 +772,7 @@ public class StructDeclarationParserLayer : IParserLayer
 ```
 
 **测试用例**:
-```latte
+```rigi
 // 普通 struct (不能持有 Object)
 pub struct Vector2 {
     pub var x: float
@@ -833,7 +833,7 @@ public class InterfaceDeclarationParserLayer : IParserLayer
 ```
 
 **测试用例**:
-```latte
+```rigi
 pub interface Drawable {
     func draw(canvas: Canvas)
     
@@ -880,7 +880,7 @@ public class EnumStructDeclarationParserLayer : IParserLayer
 ```
 
 **测试用例**:
-```latte
+```rigi
 pub enum struct Direction {
     pub const degrees: i32
     
@@ -959,7 +959,7 @@ public class FunctionDeclarationParserLayer : IParserLayer
 ```
 
 **测试用例**:
-```latte
+```rigi
 // 简单函数
 pub func add(a: i32, b: i32): i32 {
     return (a + b)
@@ -1031,7 +1031,7 @@ public class InitDeclarationParserLayer : IParserLayer
 ```
 
 **测试用例**:
-```latte
+```rigi
 pub class Point {
     pub var x: i32
     pub var y: i32
@@ -1079,7 +1079,7 @@ public class OperatorDeclarationParserLayer : IParserLayer
 ```
 
 **测试用例**:
-```latte
+```rigi
 pub struct Vector2 {
     pub operator plus(another: Vector2): Vector2 {
         return Vector2(
@@ -1134,7 +1134,7 @@ public class WrapperDeclarationParserLayer : IParserLayer
 ```
 
 **测试用例**:
-```latte
+```rigi
 // Entity Wrapper
 pub wrapper Logged entity {
     // Specific proxy
@@ -1221,7 +1221,7 @@ public class LambdaExpressionParserLayer : IParserLayer
 ```
 
 **测试用例**:
-```latte
+```rigi
 // 简单 lambda
 func{(x: i32): i32 -> (x + 1)}
 
@@ -1274,7 +1274,7 @@ AST 见 `AST/DeclarationNodes.cs`（GenericParameterListASTNode /
 GenericParameterASTNode / GenericConstraintASTNode）。
 
 **测试用例**:
-```latte
+```rigi
 // 简单泛型
 class Container\<TElement>
 
@@ -1328,7 +1328,7 @@ public class PropertyAccessorParserLayer : IParserLayer
 ```
 
 **测试用例**:
-```latte
+```rigi
 var width: i32 {
     pub get(value: _) {
         return value
@@ -1723,26 +1723,26 @@ public class PerformanceTests
 1. 实现 `FunctionDeclarationParserLayer`
 2. 实现 `InitDeclarationParserLayer`
 3. 实现 `OperatorDeclarationParserLayer`
-4. **里程碑**：可以解析完整的 Latte 程序
+4. **里程碑**：可以解析完整的 Rigi 程序
 
 ### 第六阶段：高级特性 (P5-P6)
 1. 实现 `WrapperDeclarationParserLayer`
 2. 实现 `LambdaExpressionParserLayer`
 3. 实现 `GenericParametersParserLayer`
 4. 实现 `PropertyAccessorParserLayer`
-5. **里程碑**：完整的 Latte 语法支持
+5. **里程碑**：完整的 Rigi 语法支持
 
 ---
 
 ## 常见陷阱和注意事项
 
 ### 1. 换行处理
-- 记住 Latte 使用换行作为语句终止符
+- 记住 Rigi 使用换行作为语句终止符
 - `()` 和 `[]` 内的换行被忽略
 - `{}` 内的换行不被忽略
 
 ### 2. 运算符优先级
-- Latte **没有**运算符优先级
+- Rigi **没有**运算符优先级
 - 必须用括号明确指定运算顺序
 - `a + b * c` 是编译错误
 - `(a + (b * c))` 或 `((a + b) * c)` 才是合法的
@@ -1803,7 +1803,7 @@ public class PerformanceTests
 
 ## 参考资源
 
-- [SYNTAX.md](../../SYNTAX.md) - Latte 完整语法规范
+- [SYNTAX.md](../../SYNTAX.md) - Rigi 完整语法规范
 - [FRONTEND_TYPES.md](./FRONTEND_TYPES.md) - 前端数据类型说明
 - [BIL_STANDARD.md](../../BIL_STANDARD.md) - BIL 中间表示标准
 - [RUNTIME.md](../../RUNTIME.md) - 运行时模型

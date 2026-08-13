@@ -1,6 +1,6 @@
 using System;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     /// <summary>
     /// switch 解析器（roadmap #8，SYNTAX.md §7.2）

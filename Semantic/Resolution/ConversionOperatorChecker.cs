@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // ===== castTo/castFrom 声明形状检查（SYNTAX §3.5，S8f）=====
     //

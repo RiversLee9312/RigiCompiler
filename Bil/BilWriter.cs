@@ -3,7 +3,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 
-namespace LatteCompiler.Bil
+namespace RigiCompiler.Bil
 {
     // BIL 文本生成器（BIL_STANDARD §4/§5.6/§20）：模型 → 标准 BIL 文本。
     // 只输出标准 spelling（不输出 legacy）；段物理顺序与 §4 一致且全部

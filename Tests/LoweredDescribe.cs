@@ -1,6 +1,6 @@
 using System.Linq;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     /// <summary>
     /// 统一 LoweredTree 描述器（S7a）：P4a 测试共用的唯一描述器，仿 BoundDescribe。

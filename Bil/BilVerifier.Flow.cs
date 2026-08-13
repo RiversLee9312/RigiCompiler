@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-namespace LatteCompiler.Bil
+namespace RigiCompiler.Bil
 {
     // BilVerifier 控制流检查（§21.4 definite assignment + §21.5 控制流
     // + §21.6 .breakid capability）。

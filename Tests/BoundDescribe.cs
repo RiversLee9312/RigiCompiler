@@ -1,6 +1,6 @@
 using System.Linq;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     /// <summary>
     /// 统一 BoundTree 描述器（S5，M41）：P3 测试共用的唯一描述器，仿 AstDescribe。

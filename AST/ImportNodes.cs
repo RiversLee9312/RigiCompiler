@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // import 列表项（SYNTAX §15.2）：携带一个符号路径节点。
     // 不是 ASTNode（struct），以 [AstCarrier] 标注；配合 ImportASTNode.importedSymbols

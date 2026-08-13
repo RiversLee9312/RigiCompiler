@@ -1,4 +1,4 @@
-﻿namespace LatteCompiler
+﻿namespace RigiCompiler
 {
     // 路径表达式（M42 统一形态）的值位置绑定（S5/S7c-2/S7f/S8c/S11，
     // SYNTAX §1.4/§3.4/§9/§13.2/§14.5）。
@@ -73,7 +73,7 @@
                 : parameter.Type!;
         }
 
-        // core::Pair 定义查找（.bootstrap.latte 自举提供，按「名 + 泛型
+        // core::Pair 定义查找（.bootstrap.rg 自举提供，按「名 + 泛型
         // 元数」查询；与 DeclarationVisitors.FindCorePairDefinition 同一
         // 查询——具名包体内视角缺失时降级而非诊断，故不共享带诊断版本）
         private static TypeSymbol? FindCorePairDefinition(BindEnvironment env)

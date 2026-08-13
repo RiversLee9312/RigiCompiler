@@ -1,4 +1,4 @@
-// Latte 标准库：core.coroutine 协程类型面（S10，SYNTAX §4.5/§7.5、
+// Rigi 标准库：core.coroutine 协程类型面（S10，SYNTAX §4.5/§7.5、
 // RUNTIME.md §17–§20）。
 // 协程运行时机制（async/await/yield、Task 终态、Executor 调度、Alarm
 // 等待）是语言内建语义，BIL VM（S14）提供执行；本文件只声明类型与
@@ -45,6 +45,6 @@ pub shared abstract class EventAlarm {
 pub shared abstract class CoroutineLocal\<TValue> {
 }
 
-@NativeLibrary("latte_rt")
+@NativeLibrary("rigi_rt")
 @NativeSymbol("sleep")
 pub native func sleep(milliseconds: i32): EventAlarm

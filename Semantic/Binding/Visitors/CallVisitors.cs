@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 调用绑定（S5/S7c-2/S8d）与 new 构造（S5）。
     // 自旧 BindSession.BindCall/BindCallee/BindInstanceCallForm/
@@ -356,7 +356,7 @@ namespace LatteCompiler
         // S10（SYNTAX §4.5 表）：async 调用表达式类型改写——
         // `async func f(): TResult` 调用点类型 = core.coroutine.Task\<TResult\>，
         // `async func f()` = core.coroutine.Task（无结果调用仍可作值——Task
-        // 句柄本身，await 归 S13）。Task 定义由 stdlib core/coroutine.latte
+        // 句柄本身，await 归 S13）。Task 定义由 stdlib core/coroutine.rg
         // 声明；缺 stdlib 的驱动（测试 BindUnit 不带 stdlib）找不到定义时
         // 保留原返回类型（void 时保持 null）容错。
         public static SemanticSymbol? AsyncResultType(MethodSymbol method,

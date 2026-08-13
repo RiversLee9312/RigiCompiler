@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-namespace LatteCompiler.Bil
+namespace RigiCompiler.Bil
 {
     // §18 提示指令（M64）：hint res(RESOURCE_ID)——向 backend 提供一段可忽略的
     // 提示，资源内容是一段 JSON 文本（schema 由生产/消费方约定，模型不解释内容）。

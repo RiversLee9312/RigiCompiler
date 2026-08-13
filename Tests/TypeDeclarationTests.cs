@@ -1,6 +1,6 @@
 using System;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     /// <summary>
     /// 类型声明解析测试（P3 M13/M14/M15 统一声明层）：全管线驱动，
@@ -445,8 +445,8 @@ namespace LatteCompiler.Tests
                 "class C {priv static native func print(text: String)}");
 
             // 内建注解 + native（@NativeLibrary/@NativeSymbol 字符串实参）
-            TestDecl("class C {\n@NativeLibrary(\"latte_rt\")\n@NativeSymbol(\"print\")\npriv static native func print(text: String)\n}",
-                "class C {@NativeLibrary(Str(\"latte_rt\")) @NativeSymbol(Str(\"print\")) priv static native func print(text: String)}");
+            TestDecl("class C {\n@NativeLibrary(\"rigi_rt\")\n@NativeSymbol(\"print\")\npriv static native func print(text: String)\n}",
+                "class C {@NativeLibrary(Str(\"rigi_rt\")) @NativeSymbol(Str(\"print\")) priv static native func print(text: String)}");
 
             TestHarness.Blank();
         }

@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 共享符号查询设施（自旧 BindSession 静态/实例辅助原样迁移，行为不变）：
     // 实例成员沿 BaseType 链查找、泛型字段最小替换（S7f/M52，S9 前置）、

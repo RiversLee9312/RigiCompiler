@@ -1,7 +1,7 @@
 using System.Linq;
-using LatteCompiler.Bil;
+using RigiCompiler.Bil;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     // BilEmitter（P4b）修复批次回归测试：
     // - Nullable\<泛型参数\> 的 null 资源按 §7.5 canonical（.generic<$.generic.T>）
@@ -84,7 +84,7 @@ namespace LatteCompiler.Tests
             var (unit, module, _) = BilTestHarness.EmitBilUnit(
                 "func config(options: named String...): Any { return options }\n" +
                 "pub func main() {\n" +
-                "    var c = config(name = \"latte\")\n" +
+                "    var c = config(name = \"rigi\")\n" +
                 "}\n");
             CheckNoErrors("全管线无诊断（具名包结果类型）", unit);
             BilTestHarness.CheckBilValid("验证器零错误（具名包结果类型）", module);

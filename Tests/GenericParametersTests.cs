@@ -1,6 +1,6 @@
 using System;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     // 泛型参数列表解析测试（GenericParametersParserLayer）：独立 Layer 驱动
     // （TestHarness.ParseWithLayer），断言 AstDescribe.Generics 描述串。

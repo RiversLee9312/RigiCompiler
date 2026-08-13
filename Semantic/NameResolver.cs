@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 符号路径与类型引用解析（P2 声明骨架与 P3 函数体共用）。
     // 查找序：泛型参数（方法 → 合成 Owner 外层方法共享 → 宿主类型链）→

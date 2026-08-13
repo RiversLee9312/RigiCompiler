@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // ===== 访问器声明侧检查与签名回填（SYNTAX §9.4/§9.4.1，S8e）=====
     //

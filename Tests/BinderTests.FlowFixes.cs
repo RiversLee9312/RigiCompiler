@@ -1,4 +1,4 @@
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     /// <summary>
     /// P3 流分析/smart cast 修复组测试（review 发现的六处确认 bug）：

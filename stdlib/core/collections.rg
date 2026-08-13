@@ -1,4 +1,4 @@
-// Latte 标准库：core.collections 迭代协议（SYNTAX.md §7.3/§15.3）。
+// Rigi 标准库：core.collections 迭代协议（SYNTAX.md §7.3/§15.3）。
 // IEnumerable\<T\>/IEnumerator\<T\> 是 C# 风格双接口（可重入，每次
 // iterate() 产生独立枚举器）。RangeEnumerator\<T\> 是范围循环枚举器的
 // 泛型抽象基类（S9f）：共享状态机骨架（value_/end_/started_ 字段与

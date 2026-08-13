@@ -1,6 +1,6 @@
-using LatteCompiler.Bil;
+using RigiCompiler.Bil;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 函数级发射上下文（P4b）：一个 fn 定义发射期间存活的可变状态。
     // 每个函数新建一个实例（同 BindContext/LowerContext 原则）。

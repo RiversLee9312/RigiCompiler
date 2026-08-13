@@ -1,6 +1,6 @@
 using System;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     /// <summary>
     /// namespace 声明解析测试（SYNTAX §15.1，P5 收尾）

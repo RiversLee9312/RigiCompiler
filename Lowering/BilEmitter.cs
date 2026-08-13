@@ -1,6 +1,6 @@
-using LatteCompiler.Bil;
+using RigiCompiler.Bil;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // P4b 发射（SEMANTIC_ARCHITECTURE §6.2）：LoweredTree → BilModule 的机械
     // 线性化，不再有任何语言级决策。M55 起为 visitor 化架构

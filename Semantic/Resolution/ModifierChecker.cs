@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // ===== 子任务 3：修饰符合法性 =====
     //

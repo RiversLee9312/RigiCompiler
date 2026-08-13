@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 静态/全局字段的 cell 存储降级设施（统一 cell 存储，SYNTAX §14.3）：
     // 被 wrapper 修饰的静态/全局字段，存储是逐字段合成的 cell 隐藏子类

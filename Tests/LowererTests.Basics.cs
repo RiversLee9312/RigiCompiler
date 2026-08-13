@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     // LowererTests 基础组：局部声明/赋值/表达式与调用语句/一元与字段引用/
     // new 构造/Origin 调试链 + 未覆盖节点负例（测试私有 Bound 子类注入）。

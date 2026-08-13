@@ -1,5 +1,5 @@
-// Latte 标准库：确定性资源管理协议（S10，SYNTAX §6.2、RUNTIME.md §25）。
-// Latte 无 finalizer；外部资源由实现本接口的类型经 using（S13 物化）或
+// Rigi 标准库：确定性资源管理协议（S10，SYNTAX §6.2、RUNTIME.md §25）。
+// Rigi 无 finalizer；外部资源由实现本接口的类型经 using（S13 物化）或
 // 用户代码显式 dispose() 确定性释放；GC 只在对象销毁时检查遗漏并上报
 // 全局异常，绝不代替用户调用 dispose()。
 namespace core

@@ -4,7 +4,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     /// <summary>
     /// 字符串转义表（单行/多行字符串共用，SYNTAX §3.3）：

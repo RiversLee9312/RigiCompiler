@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 解构声明脱糖（S7f，SYNTAX §18；BIL §3.4「精确字段读取」）：
     //   var (a, b) = pair ⇒ Block[ s_pair = pair'（只求值一次）；

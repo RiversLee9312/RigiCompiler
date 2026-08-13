@@ -1,6 +1,6 @@
 using System;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     /// <summary>
     /// AST 完整性验证器测试（Attribute 驱动重写后；M28 增加 span 与类型审计用例）

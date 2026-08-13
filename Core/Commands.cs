@@ -3,9 +3,9 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using System.Text.Json;
-using LatteCompiler.Bil;
+using RigiCompiler.Bil;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // ===== 共享子命令插件（compile 与 test 注册同一个插件类，语义同 M26）=====
 
@@ -56,13 +56,13 @@ namespace LatteCompiler
 
     // ===== compile 的子命令插件 =====
 
-    /// <summary>--file：要编译的 Latte 源文件（1 个或多个）。</summary>
+    /// <summary>--file：要编译的 Rigi 源文件（1 个或多个）。</summary>
     public class FileOption : ICommandLineOption
     {
         public CommandLineMask Mask { get; } = new()
         {
             Name = "--file",
-            Description = "要编译的 Latte 源文件（1 个或多个）",
+            Description = "要编译的 Rigi 源文件（1 个或多个）",
             ArgsHint = "<路径...>",
             MinArgs = 1,
             MaxArgs = int.MaxValue,
@@ -158,13 +158,13 @@ namespace LatteCompiler
 
     // ===== 顶层 COMMAND 插件 =====
 
-    /// <summary>compile：编译 Latte 源文件（词法+语法+语义分析，--emit-bil 发射 BIL）。</summary>
+    /// <summary>compile：编译 Rigi 源文件（词法+语法+语义分析，--emit-bil 发射 BIL）。</summary>
     public class CompileCommand : ICommandLineCommand
     {
         public CommandLineMask Mask { get; } = new()
         {
             Name = "compile",
-            Description = "编译 Latte 源文件（词法+语法+语义分析，--emit-bil 发射 BIL）",
+            Description = "编译 Rigi 源文件（词法+语法+语义分析，--emit-bil 发射 BIL）",
         };
 
         public IReadOnlyList<ICommandLineOption> SubCommands { get; } = new ICommandLineOption[]

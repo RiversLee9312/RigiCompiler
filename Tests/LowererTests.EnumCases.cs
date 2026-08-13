@@ -1,6 +1,6 @@
 using System.Linq;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     // LowererTests enum case 组（S11）：enum case 构造恒等降级（固定/
     // 位置/乱序具名归位 + 洞签名 cast 物化 §14.3 严格匹配）与 is .Case

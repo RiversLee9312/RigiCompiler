@@ -1,6 +1,6 @@
 using System;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     /// <summary>
     /// import 语句解析测试（SYNTAX §15.2，P5 ImportParserLayer 重建）

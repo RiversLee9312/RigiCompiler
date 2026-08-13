@@ -1,6 +1,6 @@
 using System.Linq;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     public static partial class BinderTests
     {
@@ -13,13 +13,13 @@ namespace LatteCompiler.Tests
             var (unit, bodies) = BindUnit(
                 "func greet(name: String = \"World\", punct: String = \"!\"): String { return name }\n" +
                 "func a(): String { return greet() }\n" +
-                "func b(): String { return greet(\"Latte\") }\n" +
+                "func b(): String { return greet(\"Rigi\") }\n" +
                 "func c(): String { return greet(punct = \"?\") }\n");
             CheckNoErrors("无诊断（默认参数正例）", unit);
             TestHarness.Check("全缺省填充", BoundDescribe.Body(BodyOf(bodies, "a")),
                 "Body(a, [], [Return(Call(greet, [Str(\"World\",String), Str(\"!\",String)], String))])");
             TestHarness.Check("部分缺省填充", BoundDescribe.Body(BodyOf(bodies, "b")),
-                "Body(b, [], [Return(Call(greet, [Str(\"Latte\",String), Str(\"!\",String)], String))])");
+                "Body(b, [], [Return(Call(greet, [Str(\"Rigi\",String), Str(\"!\",String)], String))])");
             TestHarness.Check("具名跳位缺省", BoundDescribe.Body(BodyOf(bodies, "c")),
                 "Body(c, [], [Return(Call(greet, [Str(\"World\",String), Str(\"?\",String)], String))])");
 

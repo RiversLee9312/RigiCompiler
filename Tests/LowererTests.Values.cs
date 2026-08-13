@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     // LowererTests 值组：cast 恒等/字符串插值与子类型 cast 物化/?. 安全调用/
     // if? 空值回退/解构脱糖/is 类型谓词/typeOf。

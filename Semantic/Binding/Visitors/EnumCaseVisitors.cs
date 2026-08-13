@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // enum case 引用（S11，SYNTAX §12）：裸前导点 `.Success`（值位置，
     // expectedType 提供 enum 上下文——§12「编译器不会单凭 case 名反向

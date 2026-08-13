@@ -1,6 +1,6 @@
 using System;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 字面量节点的公共基类：LiteralParserLayer 的施工目标类型
     // （LiteralExpressionASTNode.AttachLiteral 只接受 LiteralASTNode）

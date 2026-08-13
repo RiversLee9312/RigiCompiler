@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using System.Text;
 
-namespace LatteCompiler.Bil
+namespace RigiCompiler.Bil
 {
     // BIL 指令与操作数模型（BIL_STANDARD §10–§16 + §18 提示指令；协程指令
     // §17 暂缓——见 SEMANTIC_ARCHITECTURE §7 待修订清单与 ROADMAP S13）。

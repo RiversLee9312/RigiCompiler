@@ -1,4 +1,4 @@
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     /// <summary>
     /// S0 诊断基建测试（M36）：DiagnosticBag 累积、多错不互断、
@@ -31,7 +31,7 @@ namespace LatteCompiler.Tests
             // Error 触发门槛；Span 携带（构造一个真实 CharRange）
             var span = new CharRange
             {
-                sourceName = "a.latte",
+                sourceName = "a.rg",
                 Start = new CharPosition { line = 3, column = 5, offset = 40 },
                 End = new CharPosition { line = 3, column = 9, offset = 44 },
             };
@@ -39,7 +39,7 @@ namespace LatteCompiler.Tests
             TestHarness.CheckTrue("Error 后 HasErrors == true", bag.HasErrors);
             TestHarness.CheckTrue("Error 的 Span 携带",
                 bag.Diagnostics[1].Span is { } s
-                && s.sourceName == "a.latte" && s.Start.line == 3 && s.Start.column == 5);
+                && s.sourceName == "a.rg" && s.Start.line == 3 && s.Start.column == 5);
             TestHarness.CheckTrue("Error 的 Phase 携带",
                 bag.Diagnostics[1].Phase == DiagnosticPhase.P2);
 

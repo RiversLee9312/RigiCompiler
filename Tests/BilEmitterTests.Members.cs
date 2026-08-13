@@ -1,8 +1,8 @@
 using System.Collections.Generic;
 using System.Linq;
-using LatteCompiler.Bil;
+using RigiCompiler.Bil;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     // BilEmitter 实例成员与索引发射测试（.this/实例 invoke/get.field/set.field/init/operator 声明形态、§13.6 get.array/set.array）
 

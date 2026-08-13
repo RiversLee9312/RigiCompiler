@@ -1,7 +1,7 @@
 using System.Linq;
-using LatteCompiler.Bil;
+using RigiCompiler.Bil;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     // BilEmitterTests enum case 组（S11）：§8.5 .case 声明发射（挂类型
     // Members + 洞签名形态 + discriminant auto/res(R)）与 §14.3 new.case /

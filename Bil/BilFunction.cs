@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-namespace LatteCompiler.Bil
+namespace RigiCompiler.Bil
 {
     // BIL 函数、参数、局部变量与 block（BIL_STANDARD §9）。
 

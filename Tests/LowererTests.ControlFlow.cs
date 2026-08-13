@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     // LowererTests 控制流组：bool 短路/if 表达式/复合赋值/值块 if 转换/
     // 循环降级/for 脱糖/switch/throw/else-if 链 continuation 编织。

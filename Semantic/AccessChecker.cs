@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 使用点访问控制判定（SYNTAX §16/§16.1，S8e）：P2 声明侧与 P3 函数体内共用。
     // 判定只读符号（Accessibility/SourceFile/宿主与命名空间驻留实例），

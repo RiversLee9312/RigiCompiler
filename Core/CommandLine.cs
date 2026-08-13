@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     /// <summary>
     /// 命令行选项/子命令的自描述元数据：解析器与帮助生成器完全由它驱动，
@@ -186,12 +186,12 @@ namespace LatteCompiler
     /// <summary>帮助文本生成器：概览 / COMMAND 详情 / 子命令详情全部由注册表程序生成。</summary>
     public static class CommandLineHelp
     {
-        // 概览：全部 COMMAND 及各自子命令（裸 dotnet run 与 help 无参时的输出）
+        // 概览：全部 COMMAND 及各自子命令（裸 rigic 与 help 无参时的输出）
         public static void PrintOverview()
         {
-            Console.WriteLine("Latte 编译器命令行");
+            Console.WriteLine("Rigi 编译器命令行");
             Console.WriteLine();
-            Console.WriteLine("用法: dotnet run -- <COMMAND> [--sub-cmd [args...]...]");
+            Console.WriteLine("用法: rigic <COMMAND> [--sub-cmd [args...]...]");
             Console.WriteLine();
             foreach (var cmd in CommandLineRegistry.Commands)
             {

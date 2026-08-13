@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 声明条目：遍历 AST 骨架时收集的「节点 + 符号 + 名字解析上下文」。
     // InGraph = 符号进入了容器成员表（P1 重复声明的符号不在容器内，

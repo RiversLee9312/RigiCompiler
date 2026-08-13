@@ -1,6 +1,6 @@
-using LatteCompiler.Bil;
+using RigiCompiler.Bil;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     internal sealed class YieldEmitter : EmitVisitor<YieldEmitter, Unit>
     {

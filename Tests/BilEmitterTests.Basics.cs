@@ -1,8 +1,8 @@
 using System.Collections.Generic;
 using System.Linq;
-using LatteCompiler.Bil;
+using RigiCompiler.Bil;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     // BilEmitter 基础发射测试（hello world 结构/Origin 链/资源去重/局部声明与赋值/一元与比较/invoke/new/标量资源/static 字段/未覆盖节点负例）
 

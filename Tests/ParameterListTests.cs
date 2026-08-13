@@ -1,6 +1,6 @@
 using System;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     // 函数形参列表解析测试（ParameterListParserLayer，roadmap #5）：独立 Layer 驱动
     // （TestHarness.ParseWithLayer），断言 AstDescribe.Params 描述串。

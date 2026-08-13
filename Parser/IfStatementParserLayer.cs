@@ -1,6 +1,6 @@
 using System;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     /// <summary>
     /// if 解析器（roadmap #7，SYNTAX.md §7.1）

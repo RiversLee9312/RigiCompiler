@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // try 降级（S7e，SYNTAX §8；BIL §16.7）。自旧 LowerSession.LowerTry
     // 迁移，行为不变；M106 补 catch/finally(e) 被 lambda 捕获时的 cell 构造。

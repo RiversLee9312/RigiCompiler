@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 语义符号家族（P1/P2 产物，SEMANTIC_ARCHITECTURE §4）。
     // 核心不变量：每个声明实体在整个编译单元中恰有一个符号实例——
@@ -101,7 +101,7 @@ namespace LatteCompiler
         public WrapperTargetKind? WrapperTarget { get; internal set; }
         // 挂载的 wrapper 应用（声明顺序，外层在前；P2 解析填充）
         public List<WrapperApplication> AppliedWrappers { get; } = new List<WrapperApplication>();
-        // 编译器硬编码内建（bootstrap 直造，无源码声明；core.latte 载入的不算）
+        // 编译器硬编码内建（bootstrap 直造，无源码声明；core.rg 载入的不算）
         public bool IsBuiltin { get; }
         // 是否 ValueType 分支（构造即定：显式传入或沿基类链传播；
         // 供 shared-safe 推导等使用，避免与根类型单例做引用比较）

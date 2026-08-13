@@ -1,6 +1,6 @@
 using System;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     /// <summary>
     /// namespace 声明解析器（SYNTAX.md §15.1，P5 收尾）

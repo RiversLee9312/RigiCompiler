@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 降级 visitor 的 CRTP 协议基类（M55 visitor 化协议，仿 Binder 协议）：
     // 静态 Visit 为唯一入口——创建子类实例、模板化管理生命周期

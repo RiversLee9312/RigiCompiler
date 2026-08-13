@@ -1,4 +1,4 @@
-﻿namespace LatteCompiler
+﻿namespace RigiCompiler
 {
     // 名字解析查找序设施（自旧 BindSession 迁移，行为不变）：
     // 值/调用的名字解析查找序——块作用域链（Scope，调用方查）→ 参数 →

@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // lambda 对象模型绑定（SYNTAX §5.2）：每个 lambda 在绑定期合成隐藏类
     // （..lambda..UUID，与声明位置同命名空间），继承 core::Func/Action/

@@ -1,6 +1,6 @@
 using System.Linq;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     // BinderTests 的 S8e 部分：使用点访问控制（SYNTAX §16.1）、访问器绑定
     // （§9.4/§9.4.1）与 override 配套（§9.2.1）的 P3 测试。

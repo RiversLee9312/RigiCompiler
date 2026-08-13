@@ -1,6 +1,6 @@
 using System;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     // 属性访问器解析测试（PropertyAccessorParserLayer，SYNTAX.md §9.4）：全管线驱动，
     // 取对应声明节点，断言 AstDescribe.VarDecl 描述串（含完整初始化器表达式描述）。

@@ -1,7 +1,7 @@
 using System.Linq;
-using LatteCompiler.Bil;
+using RigiCompiler.Bil;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     // BilEmitter（P4b）ext 收尾端到端样例（M80，SYNTAX §4.4 + BIL §8.3/§8.4/
     // §8.4.1/§7.3）——勾销技术债 #22④（ext 字段 + 访问器路径已通无端到端

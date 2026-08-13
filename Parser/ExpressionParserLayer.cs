@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     /// <summary>
     /// 表达式解析器层 - 通用框架
@@ -25,7 +25,7 @@ namespace LatteCompiler
     /// - 表达式完整时执行且仅执行一次 target.Attach(currentExpression)，随后立即 Pop；
     /// - 不产生任何返回值：委托出去的子 Layer 一律原地填充传入的目标节点。
     ///
-    /// 重要：Latte 没有运算符优先级！
+    /// 重要：Rigi 没有运算符优先级！
     /// 所有运算必须用括号明确指定，如 (1 + 2) * 3。
     /// 因此每层表达式最多消费一个二元运算符；右操作数与一元操作数
     /// 通过 allowBinaryOperator / allowPrefixUnary 禁止继续吞并运算符。
@@ -38,7 +38,7 @@ namespace LatteCompiler
         // 本层创建了一个括号分组，正在等待其右括号 )
         private bool expectClosingParen = false;
 
-        // 运算符限制（Latte 无运算符优先级）：
+        // 运算符限制（Rigi 无运算符优先级）：
         // 右操作数层与一元表达式结果禁止再直接消费二元运算符
         private bool allowBinaryOperator = true;
         // 一元操作数层禁止连续的一元运算符（not not x 必须写成 not (not x)）
@@ -692,7 +692,7 @@ namespace LatteCompiler
                 if (!allowBinaryOperator)
                 {
                     context.RaiseError(
-                        "Latte 没有运算符优先级：运算符 'if?' 必须用括号明确运算顺序");
+                        "Rigi 没有运算符优先级：运算符 'if?' 必须用括号明确运算顺序");
                 }
                 SealCurrentExpression(context);
                 pendingOperator = "if?";
@@ -706,7 +706,7 @@ namespace LatteCompiler
                 if (!allowBinaryOperator)
                 {
                     context.RaiseError(
-                        $"Latte 没有运算符优先级：运算符 '{GetOperatorString(currentToken)}' " +
+                        $"Rigi 没有运算符优先级：运算符 '{GetOperatorString(currentToken)}' " +
                         "必须用括号明确运算顺序");
                 }
 
@@ -826,7 +826,7 @@ namespace LatteCompiler
                 || (currentToken is WordToken ifWord && ifWord.Content == Keywords.IF))
             {
                 context.RaiseError(
-                    $"Latte 没有运算符优先级：运算符 '{GetOperatorString(currentToken)}' " +
+                    $"Rigi 没有运算符优先级：运算符 '{GetOperatorString(currentToken)}' " +
                     "必须用括号明确运算顺序");
             }
 

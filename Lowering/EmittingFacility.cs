@@ -1,8 +1,8 @@
 using System.Globalization;
 using System.Text;
-using LatteCompiler.Bil;
+using RigiCompiler.Bil;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 无产物占位：语句/块发射的 TResult——副作用填充 target（BilBlock），
     // 无返回值语义（EmitVisitor 协议需要一个具体 TResult 类型承载）

@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 前置语句输出状态（M65 Lowering 侧组件化拆分，自 LowerContext
     // 迁出）：前置语句机制——当前块输出语句列表栈。块降级为每块建

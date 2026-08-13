@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // cell 隐藏子类合成工厂（统一 cell 存储，SYNTAX §5.2 捕获 / §14.3
     // wrapper 值 / §9.4 局部访问器路线 C）：每个被 cell 盛装的符号（lambda

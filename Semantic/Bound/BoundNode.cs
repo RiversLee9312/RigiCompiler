@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // BoundTree（P3 产物，SEMANTIC_ARCHITECTURE §5）：带类型的语义树。
     // 基类 BoundNode 回指 Syntax: ASTNode（必填；合成节点指向最近的语法来源）；

@@ -1,6 +1,6 @@
 using System.Linq;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     /// <summary>
     /// S8b smart cast 测试（SYNTAX §3.5 清单）：收窄触发（is/null 判等/

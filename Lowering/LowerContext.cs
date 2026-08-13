@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 函数级降级上下文（P4a）：一个函数体降级期间存活的可变状态。
     // 每个函数体新建一个实例（同 BindContext 原则——新建即清空）。

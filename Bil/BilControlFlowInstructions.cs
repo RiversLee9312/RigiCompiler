@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-namespace LatteCompiler.Bil
+namespace RigiCompiler.Bil
 {
     // §16 结构化控制流指令（M57 强类型化）。block 引用持有 BilBlock
     // 对象；可选 block 位置（if 的 else / loop 的 enum / try 的 finally）

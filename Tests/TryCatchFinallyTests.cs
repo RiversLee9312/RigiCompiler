@@ -1,6 +1,6 @@
 using System;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     // Try-Catch-Finally 语句解析测试（roadmap #10，SYNTAX.md §8）：代码块独立驱动
     // （TestHarness.ParseBlock），断言 AstDescribe 精确描述串。

@@ -1,6 +1,6 @@
 using System;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // AST 结构标注（大扫除 Validator 重写）：
     // 用 Attribute 显式声明节点间的父子结构关系，ASTIntegrityValidator

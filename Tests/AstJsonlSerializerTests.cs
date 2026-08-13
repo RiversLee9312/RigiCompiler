@@ -5,12 +5,12 @@ using System.Linq;
 using System.Reflection;
 using System.Text.Json;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     /// <summary>
     /// AST JSONL 序列化/反序列化测试（格式 v2，M32：carrier 记录化 + 往返无损）。
     ///
-    /// 序列化：解析小段 Latte 源码 → AstJsonlSerializer 序列化到 StringWriter → 断言：
+    /// 序列化：解析小段 Rigi 源码 → AstJsonlSerializer 序列化到 StringWriter → 断言：
     /// - 每行是合法 JSON，id/parent/via/type/span/fields 六个键齐全；
     /// - id 从 1 连续自增，parent 引用已出现的 id（根为 null）；
     /// - 非根行 via 非空，fields 不含 Parent；
@@ -278,7 +278,7 @@ namespace LatteCompiler.Tests
                 var first = new StringWriter();
                 AstJsonlSerializer.Serialize(ast, first);
 
-                var withMeta = "{\"file\":\"a.latte\"}\n" + first;
+                var withMeta = "{\"file\":\"a.rg\"}\n" + first;
                 var restored = AstJsonlDeserializer.Deserialize(new StringReader(withMeta));
                 var second = new StringWriter();
                 AstJsonlSerializer.Serialize(restored, second);

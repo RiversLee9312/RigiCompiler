@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 函数级绑定上下文的只读帧（M65 Bind 侧组件化拆分，自 BindContext
     // 迁出）：当前函数是谁、在哪、能否访问——构造一次性赋值，之后不可变。

@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 表达式降级（S5–S8c；前置语句追加到当前块输出列表）。
     // 自旧 LowerSession.LowerExpression 各分支迁移，行为不变。

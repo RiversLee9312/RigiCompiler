@@ -1,7 +1,7 @@
 using System;
 using System.Globalization;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 字面量解析器层 - 使用状态机处理多个 token 组成的字面量
     // 施工协议：构造函数接收 LiteralExpressionASTNode 目标，

@@ -1,4 +1,4 @@
-namespace LatteCompiler.Bil
+namespace RigiCompiler.Bil
 {
     // BIL 文本拼写唯一定义点（M57）：全部枚举 → 标准拼写的映射集中于此，
     // 模型与 BilWriter 不得再出现拼写字面量。未知枚举值一律

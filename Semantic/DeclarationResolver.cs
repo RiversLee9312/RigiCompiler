@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // P2 声明解析（SEMANTIC_ARCHITECTURE §2，SEMANTIC_ROADMAP S3）：
     // 在 P1 符号壳上填充类型引用与继承图，并完成全部声明侧合法性检查。

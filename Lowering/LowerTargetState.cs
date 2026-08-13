@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 降级目标状态（M65 Lowering 侧组件化拆分，自 LowerContext 迁出）：
     // 值块/循环/switch 占位/语句 seq/安全访问占位五条映射栈的统一家

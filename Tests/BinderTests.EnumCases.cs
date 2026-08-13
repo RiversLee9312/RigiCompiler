@@ -1,6 +1,6 @@
 using System.Linq;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     /// <summary>
     /// S11 enum case（SYNTAX §12）P3 测试：声明点 init 模板绑定（结构过滤/

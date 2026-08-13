@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 分支 block 编号分配器（M65 Lowering 侧组件化拆分，自 EmitContext
     // 迁出）：if/loop/switch/seq/try 结构化指令子块 id 的序号来源

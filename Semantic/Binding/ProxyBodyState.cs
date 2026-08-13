@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // proxy 体模板态绑定语境（M88，ARCH §5.2）：绑定 `.proxy.` 声明体期间
     // 存活的组件，挂 BindContext.Proxy。IsActive 时 self/inner 可用；

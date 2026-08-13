@@ -1,6 +1,6 @@
-using LatteCompiler;
+using RigiCompiler;
 
-// Latte 编译器命令行入口：dotnet run -- <COMMAND> [--sub-cmd [args...]...]
+// Rigi 编译器命令行入口：rigic <COMMAND> [--sub-cmd [args...]...]
 // COMMAND 共三个：compile / test / help（注册表见 Core/CommandLine.cs，
 // 插件实现见 Core/Commands.cs；帮助文本由注册表程序生成，可用 help 查看）。
 // 无参数 → 等同于 help（打印概览）。

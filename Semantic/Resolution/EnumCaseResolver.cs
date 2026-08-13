@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // ===== enum case 结构级检查与判别值落定（SYNTAX §12，S11）=====
     //

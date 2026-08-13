@@ -1,6 +1,6 @@
 using System;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     // throw 语句解析测试：代码块独立驱动（TestHarness.ParseBlock），
     // 断言 AstDescribe 精确描述串。

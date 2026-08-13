@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 绑定 visitor 的 CRTP 协议基类（M55 定稿，
     // 协议 v2）：静态 Visit 为唯一入口——创建子类实例（new() 约束）、模板化管理

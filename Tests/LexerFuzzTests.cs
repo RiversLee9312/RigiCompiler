@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     /// <summary>
     /// Lexer fuzz 测试（M25）：Slash 层（/、/=、//、/*）、EOF 支持、注释处理的高强度验证。

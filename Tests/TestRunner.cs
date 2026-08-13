@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     /// <summary>
     /// 全量测试入口（test --all）：自动运行全部测试套件，

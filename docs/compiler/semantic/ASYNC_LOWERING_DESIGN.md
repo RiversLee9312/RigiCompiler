@@ -71,7 +71,7 @@ Executor，并在恢复点取得成功值、重抛保存异常或传播取消。
 裸 `yield` 保存 continuation 后执行 `Running -> Runnable`。`yield Alarm` 保存
 continuation 后注册 PollingAlarm/EventAlarm 等待；即使 Alarm 已就绪或已触发，也必须
 结束当前执行段。PollingAlarm 的 `isReady()` 只能由调度侧同步调用；EventAlarm callback
-只发布 waiter，不执行 Latte 用户代码。
+只发布 waiter，不执行 Rigi 用户代码。
 
 ## 4. GC fence 与 frame 发布
 
@@ -146,12 +146,12 @@ P3 对每个 lambda 记录按符号身份排序的捕获集；捕获在 lambda �
 
 ## 7. stdlib 与 Middleware native 面
 
-`stdlib/core/coroutine.latte` 是源码可见的类型面，不暴露 Coroutine、frame、waiter 或
+`stdlib/core/coroutine.rg` 是源码可见的类型面，不暴露 Coroutine、frame、waiter 或
 GC fence。保留 `Task`/`Task<T>` 无公开构造入口、Executor/Alarm 类型与 `sleep`；S13 不以
 扩充用户可调用 native 函数为首要前提。
 
 Middleware 必须提供以下保留运行时面；这些是实现接口而非 BIL canonical symbol，也不得
-被普通 Latte `native` 声明伪造：
+被普通 Rigi `native` 声明伪造：
 
 | 保留面 | 消费者 | 语义 |
 |---|---|---|
@@ -163,9 +163,9 @@ Middleware 必须提供以下保留运行时面；这些是实现接口而非 BI
 | `gc.ownership-region` | 引用槽发布/回收 | 执行 RUNTIME §23 双检与 GCAlarm 等待 |
 | `alarm.poll/event` | yield Alarm 与 `sleep` | Polling 探测、Event waiter 注册/触发 |
 
-`latte_rt.sleep(i32): EventAlarm` 仍是当前唯一需要由 stdlib 声明的协程 native 函数。
+`rigi_rt.sleep(i32): EventAlarm` 仍是当前唯一需要由 stdlib 声明的协程 native 函数。
 以后若公开 Executor 选择或 CoroutineLocal 的 get/set，必须先在 `SYNTAX.md` 的 native
-形状限制、`coroutine.latte` 签名、BIL §22.5 VM hook 和 Middleware 接口四处同时定稿；
+形状限制、`coroutine.rg` 签名、BIL §22.5 VM hook 和 Middleware 接口四处同时定稿；
 本专项不以私有 native ABI 绕过现有强类型声明规则。
 
 ## 8. 实施顺序与验收

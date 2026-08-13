@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-namespace LatteCompiler.Bil
+namespace RigiCompiler.Bil
 {
     // §13 值/变量/字段/索引指令与 §14 构造、§15 调用指令（M57 强类型化；
     // S8c 增补 §13.6 set.array——get.array 模型自 M57 已存在）。

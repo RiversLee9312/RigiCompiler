@@ -1,8 +1,8 @@
 using System.Collections.Generic;
 using System.Linq;
-using LatteCompiler.Bil;
+using RigiCompiler.Bil;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     // BilEmitter 控制流发射测试（if 语句/if 表达式/短路 and/or/while 与 do-while/for/常量 switch/pattern switch/throw）
 

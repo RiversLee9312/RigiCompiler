@@ -1,6 +1,6 @@
 using System;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     // Lambda 表达式解析测试（roadmap #21，SYNTAX.md §5.1）：全管线驱动，
     // 断言初始化表达式的 AstDescribe 描述串。

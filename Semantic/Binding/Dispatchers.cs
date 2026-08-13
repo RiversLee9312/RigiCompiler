@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 类别分派器（M55 visitor 化协议）：AST 节点 → 结构 visitor 的唯一
     // switch 所在（对应旧 BindSession 的 BindExpression/BindStatement/BindBlock
@@ -33,7 +33,7 @@ namespace LatteCompiler
                     expectedType),
                 LambdaExpressionASTNode => LambdaVisitor.Visit(node, scope, ctx, env,
                     expectedType),
-                // 括号是透明分组（Latte 无优先级，括号只定结构），不落 bound 节点
+                // 括号是透明分组（Rigi 无优先级，括号只定结构），不落 bound 节点
                 GroupExpressionASTNode group => Visit(group.InnerExpression.Expression, scope, ctx,
                     env, expectedType),
                 ExpressionRootASTNode => throw new CompilerInternalException(

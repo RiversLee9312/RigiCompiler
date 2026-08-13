@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-namespace LatteCompiler.Bil
+namespace RigiCompiler.Bil
 {
     // BilVerifier 符号检查（§21.2 符号验证 + §21.7 泛型与参数包 + §21.8
     // 可见性与类型属性的声明侧）。指令内的符号引用可解析性在 Types.cs

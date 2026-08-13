@@ -1,7 +1,7 @@
 using System.Collections.Generic;
-using LatteCompiler.Bil;
+using RigiCompiler.Bil;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 语句发射（S6–S8c；BIL §13/§15/§16）。自旧 EmitSession.EmitStatement
     // 各分支迁移，行为不变——无产物（Unit），副作用填充 target 指令流；

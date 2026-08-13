@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // ===== 子任务 1：类型引用解析（字段 → 方法，init 映射依赖字段类型）=====
     //

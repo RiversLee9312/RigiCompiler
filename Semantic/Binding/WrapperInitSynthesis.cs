@@ -1,9 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using LatteCompiler.Bil;
+using RigiCompiler.Bil;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // M109b：`..init.wrapper` 合成（BIL §9.7 / §14.5）+ 静态 Method wrapper
     // companion（§8.7）。

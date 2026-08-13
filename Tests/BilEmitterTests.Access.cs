@@ -1,7 +1,7 @@
 using System.Linq;
-using LatteCompiler.Bil;
+using RigiCompiler.Bil;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     // BilEmitter 的 S8e 部分：访问器声明发射（§8.3 字段形态标记 + §8.4
     // getter(FIELD)/setter(FIELD) 声明，字段槽驱动）与 override/abstract

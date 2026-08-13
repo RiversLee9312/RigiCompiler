@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 使用侧泛型约束检查（S9b，SYNTAX §3.6 定稿）：泛型实参对声明约束的
     // 满足性——extends（实参可赋给边界）、supers（边界可赋给实参）、

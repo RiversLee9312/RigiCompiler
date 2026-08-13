@@ -1,8 +1,8 @@
-# Latte 运行时模型
+# Rigi 运行时模型
 
-本文档描述 Latte 的运行时表示与语义，回答"怎么跑"。语言表层语法见 `SYNTAX.md`。
+本文档描述 Rigi 的运行时表示与语义，回答"怎么跑"。语言表层语法见 `SYNTAX.md`。
 
-核心取舍：**运行时类型信息完全具化（reified）+ 单份共享 Native 代码体 + 统一胖值槽**。Latte 不擦除泛型实参的实际类型；所有独特能力（`is`/`supers`/`with`、`Type\<T>`/`new`、wrapper 派发）都建立在“typeid 始终伴随值与泛型调用”这一机制上。ValueType 进入统一泛型/动态槽位时使用系统特权 Box 表示，而不是退化成普通堆对象。
+核心取舍：**运行时类型信息完全具化（reified）+ 单份共享 Native 代码体 + 统一胖值槽**。Rigi 不擦除泛型实参的实际类型；所有独特能力（`is`/`supers`/`with`、`Type\<T>`/`new`、wrapper 派发）都建立在“typeid 始终伴随值与泛型调用”这一机制上。ValueType 进入统一泛型/动态槽位时使用系统特权 Box 表示，而不是退化成普通堆对象。
 
 ---
 
@@ -89,7 +89,7 @@
 
 当 ValueType 需要进入统一的泛型、`Object`、`Any`、动态参数或其他固定 ABI 槽位时，运行时使用 `Box\<T extends ValueType>` 的**系统特权表示**。这不是类型擦除后的补救：实际 ValueType 的 typeid 始终保留；Box 的目的，是让任意 ValueType 以规整的 128-bit 外槽进入统一多态体系，同时避免把它实现成带对象头、对象身份和独立 GC 节点的普通堆对象。
 
-在 Latte 类型系统中，`Box\<T>` 位于 `Object` 分支，可以参加统一的泛型与动态派发；在 Native 物理表示中，它仍遵守 ValueType 的复制语义。这是运行时明确开放的效率后门，而不是普通用户类型可以复制的布局规则。
+在 Rigi 类型系统中，`Box\<T>` 位于 `Object` 分支，可以参加统一的泛型与动态派发；在 Native 物理表示中，它仍遵守 ValueType 的复制语义。这是运行时明确开放的效率后门，而不是普通用户类型可以复制的布局规则。
 
 `Box\<T>` 是编译器 intrinsic／语义投影，不是普通 nominal class：
 
@@ -249,7 +249,7 @@ Object:          [view typeid   | object pointer]
 
 ## 10. 泛型的运行时实现
 
-Latte 泛型不擦除实际类型。实现采用**单份共享 Native 代码体 + 隐式 typeid 侧信道 + 统一胖值 ABI**；不为每组类型实参重复生成机器码，但泛型体在运行时始终能取得真实类型。
+Rigi 泛型不擦除实际类型。实现采用**单份共享 Native 代码体 + 隐式 typeid 侧信道 + 统一胖值 ABI**；不为每组类型实参重复生成机器码，但泛型体在运行时始终能取得真实类型。
 
 编译器向泛型函数/类型隐式传入类型信息：
 
@@ -333,7 +333,7 @@ override 中的 `super(...)` 将当前固定泛型隐藏参数按声明序转发
 
 Entity Wrapper 可以分别实现以下四种 universal wildcard；每一类别在同一个 wrapper 中只能出现零个或一个：
 
-```latte
+```rigi
 operator .proxy.*<named TNamedArgs..., TUnnamedArgs..., TReturn>(
     symbol: String,
     namedArgs: named TNamedArgs...,
@@ -370,7 +370,7 @@ operator .proxy.opr.*<named TNamedArgs..., TUnnamedArgs..., TReturn>(
 
 `call???` 定义在 `Any`（万物基类）上，因此是每个对象 vtable 中一个**固定 offset 的 slot**，不涉及动态向 vtable 增加条目；继承链经 vtable 正常解析：
 
-```latte
+```rigi
 call???<TResult, named TNamedArgs..., TUnnamedArgs...>(
     symbol: String,
     namedArgs: named TNamedArgs...,
@@ -471,7 +471,7 @@ Enum 没有对源码开放的普通构造入口。init 只作为编译器生成 
 
 对 enum case 的模式检查：
 
-```latte
+```rigi
 value is .Failed
 ```
 
@@ -497,7 +497,7 @@ value is .Failed
 
 ## 17. 原生协程、Executor 与 Worker
 
-Latte 从 `main` 开始就在协程中执行。协程（Coroutine）是语言的逻辑执行单元；Executor 是协程永久绑定的调度域；Worker 是 Executor 内部实际运行用户代码的操作系统线程。
+Rigi 从 `main` 开始就在协程中执行。协程（Coroutine）是语言的逻辑执行单元；Executor 是协程永久绑定的调度域；Worker 是 Executor 内部实际运行用户代码的操作系统线程。
 
 ### 17.1 核心不变量
 
@@ -508,7 +508,7 @@ Latte 从 `main` 开始就在协程中执行。协程（Coroutine）是语言的
 - Coroutine 挂起后不再占用 Worker；恢复时重新进入所属 Executor 的逻辑待执行协程池，并可由该 Executor 的任意 Worker 取走。
 - 同一 Executor 的全部 Worker 使用相同调度策略，并从同一个逻辑 Runnable Set 获取工作。
 
-“共享待执行协程池”只是一项语义约束。实现可以使用单队列、分片队列、per-worker 本地队列、局部缓存或 work stealing；这些差异不得被 Latte 程序观察，也不得改变上述不变量。
+“共享待执行协程池”只是一项语义约束。实现可以使用单队列、分片队列、per-worker 本地队列、局部缓存或 work stealing；这些差异不得被 Rigi 程序观察，也不得改变上述不变量。
 
 ### 17.2 run-to-suspension
 
@@ -522,7 +522,7 @@ Coroutine 采用 run-to-suspension。一个 Worker 开始执行某个 Coroutine 
 - 未处理异常；
 - 进入取消终态。
 
-编译器和运行时不在普通语句、循环回边或函数调用之间暗中插入协程轮换点。操作系统仍可抢占 Worker 线程，但 OS 抢占不会使该 Worker 在同一个 Latte 执行段中改为执行另一个 Coroutine。
+编译器和运行时不在普通语句、循环回边或函数调用之间暗中插入协程轮换点。操作系统仍可抢占 Worker 线程，但 OS 抢占不会使该 Worker 在同一个 Rigi 执行段中改为执行另一个 Coroutine。
 
 普通函数和普通 lambda 在当前 Coroutine 内执行，并可以使当前 Coroutine `await` 或 `yield`；`async` 的意义是“调用时另建 Coroutine”，而不是“允许函数体挂起”。
 
@@ -616,7 +616,7 @@ Running → Runnable
 
 `core.coroutine.PollingAlarm` 定义同步探测方法：
 
-```latte
+```rigi
 pub func isReady(): bool
 ```
 
@@ -641,7 +641,7 @@ pub func isReady(): bool
 2. 未触发时进入 `Suspended(EventAlarm)`；
 3. 已触发时仍结束当前执行段，但立即具备重新发布条件；
 4. 事件源触发时，callback 原子地标记 Alarm，并把 waiter 重新发布到各自所属 Executor；
-5. callback 不直接恢复 continuation，也不执行用户 Latte 代码。
+5. callback 不直接恢复 continuation，也不执行用户 Rigi 代码。
 
 注册和触发之间必须进行原子握手，保证并发发生时不丢失唤醒；同一个 waiter 最多只能被发布一次。EventAlarm 的重复触发是幂等的。
 
@@ -649,7 +649,7 @@ pub func isReady(): bool
 
 标准库函数：
 
-```latte
+```rigi
 core.coroutine.sleep(milliseconds: i32): core.coroutine.EventAlarm
 ```
 
@@ -717,7 +717,7 @@ shared 只允许对象跨 Coroutine 可达，并不使共享可变字段自动�
 
 ## 22. 三级 GC：microGC、microSGC 与 macroGC
 
-Latte 的“GC”由两层确定性 ARC 和一层候选式循环回收组成。正常路径优先由 ARC 即时解决；macroGC 只处理 ARC 无法独立释放的循环候选。
+Rigi 的“GC”由两层确定性 ARC 和一层候选式循环回收组成。正常路径优先由 ARC 即时解决；macroGC 只处理 ARC 无法独立释放的循环候选。
 
 ### 22.1 microGC
 
@@ -767,7 +767,7 @@ macroGC 可分别处理 local/shared 候选，但只要进入一次 macroGC pass
 
 `cFlag.PROCESSING` 表示该 Coroutine 正处于一个引用 acquire/release 区域；`ENTERING` 表示它试图进入但因 macroGC 已开始而在 `GCAlarm` 上等待。
 
-`cFlag` 的协议身份必须绑定 Coroutine，而不是 Worker：Coroutine 是 Latte 最小且稳定的串行执行/所有权主体，同一 Coroutine 任意时刻最多由一个 Worker 执行；Worker 只是 Executor 内透明且可替换的执行载体。Coroutine 在 `GCAlarm` 上挂起后释放原 Worker，恢复时可以由同一 Executor 的任意 Worker 继续，因此 `ENTERING → Suspended → 恢复 → retry` 的状态必须随 Coroutine 保存。实现不得让 macroGC correctness 依赖挂起前后的 Worker 绑定、Worker 生命周期或具体调度队列结构。Worker-local 缓存可以作为不可观察优化，但不能取代 Coroutine-owned `cFlag`。
+`cFlag` 的协议身份必须绑定 Coroutine，而不是 Worker：Coroutine 是 Rigi 最小且稳定的串行执行/所有权主体，同一 Coroutine 任意时刻最多由一个 Worker 执行；Worker 只是 Executor 内透明且可替换的执行载体。Coroutine 在 `GCAlarm` 上挂起后释放原 Worker，恢复时可以由同一 Executor 的任意 Worker 继续，因此 `ENTERING → Suspended → 恢复 → retry` 的状态必须随 Coroutine 保存。实现不得让 macroGC correctness 依赖挂起前后的 Worker 绑定、Worker 生命周期或具体调度队列结构。Worker-local 缓存可以作为不可观察优化，但不能取代 Coroutine-owned `cFlag`。
 
 ### 23.2 GC 侧协议
 
@@ -814,7 +814,7 @@ retry:
 
 源码中看不到 GC 等待语句。`yield` 在此处特指编译器生成的隐藏语句：
 
-```latte
+```rigi
 yield core.GCAlarm(...)
 ```
 
@@ -863,11 +863,11 @@ macroGC 的低触发门槛、候选闭包扫描和 ownership-only fence 共同�
 
 ## 25. 确定性资源管理：`IDisposable`、`using` 与全局泄漏异常
 
-Latte 明确不支持 finalizer，也不允许运行时在对象回收阶段调用任意用户终结逻辑。对象内存由 microGC/microSGC/macroGC 管理；文件、句柄、流、锁封装等外部资源则由 `core.IDisposable` 确定性管理。
+Rigi 明确不支持 finalizer，也不允许运行时在对象回收阶段调用任意用户终结逻辑。对象内存由 microGC/microSGC/macroGC 管理；文件、句柄、流、锁封装等外部资源则由 `core.IDisposable` 确定性管理。
 
 概念接口为：
 
-```latte
+```rigi
 pub interface IDisposable {
     func dispose()
 }
@@ -916,14 +916,14 @@ pub interface IDisposable {
 
 ---
 
-## 26. native 互操作与 `latte_rt`
+## 26. native 互操作与 `rigi_rt`
 
-`native` 函数（`SYNTAX.md` §4.6）把 Latte 调用路由到运行时原生方法面。原生方法面由一个 C 编写的 shim 库提供，库标识为 `latte_rt`：它把 libc 风格的 C 函数包装为 Latte 调用约定下的可调用入口，并负责 Latte 值（如 `String` 的 native 表示）与 C 类型之间的转换。
+`native` 函数（`SYNTAX.md` §4.6）把 Rigi 调用路由到运行时原生方法面。原生方法面由一个 C 编写的 shim 库提供，库标识为 `rigi_rt`：它把 libc 风格的 C 函数包装为 Rigi 调用约定下的可调用入口，并负责 Rigi 值（如 `String` 的 native 表示）与 C 类型之间的转换。
 
 - **调用约定**：暂定 fastcall；精确的寄存器/栈分配、胖值槽传递与 `String` 布局规则在 Middleware 阶段定稿，本节不预先约束。
 - **第一版原生方法面**只有三个定参函数，不提供可变参数：
   - `print(text: String)`：把字符串写入标准输出；
   - `printErr(text: String)`：把字符串写入标准错误；
   - `toString(value: Any): String`：`SYNTAX.md` §3.8 的 `toString` 内建承载——内建基本类型（数值/`bool`/`char`）返回标准文本（`String` 的 `toString` 即自身，不经此路由）；未覆写 `toString` 的对象返回其类型 canonical 名。`Any` 上声明 `toString(): String`（无体，接口承诺），`Object` 提供 open 默认实现并把 body 路由到本函数；用户类型 `override` 后经普通虚派发执行自身实现，不再命中原生面。
-- **BIL VM 不链接原生库**：VM 对 `(lib, symbol)` 命中 `BIL_STANDARD.md` §22.5 内建 hook 表的 native 调用直接执行内建行为，因此在没有 Middleware 与 `latte_rt` 实现的环境下也能完整执行程序。
-- 标准库在 Latte 层封装原生方法面（如 `core.io::Console.println` 调用 `print`），用户代码不直接依赖 `latte_rt`；格式化、插值等逻辑全部在 Latte 层演进，不进入原生方法面。
+- **BIL VM 不链接原生库**：VM 对 `(lib, symbol)` 命中 `BIL_STANDARD.md` §22.5 内建 hook 表的 native 调用直接执行内建行为，因此在没有 Middleware 与 `rigi_rt` 实现的环境下也能完整执行程序。
+- 标准库在 Rigi 层封装原生方法面（如 `core.io::Console.println` 调用 `print`），用户代码不直接依赖 `rigi_rt`；格式化、插值等逻辑全部在 Rigi 层演进，不进入原生方法面。

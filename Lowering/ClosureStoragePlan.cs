@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // cell 存储计划（统一 cell 存储，SYNTAX §5.2 捕获 / §14.3 wrapper 值，
     // P4a）：一个函数体内「符号 → 存储形态」的判定表。三种形态：

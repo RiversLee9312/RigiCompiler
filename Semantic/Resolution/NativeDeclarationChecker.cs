@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // ===== 子任务 3b：native 函数声明检查（SYNTAX §4.6）=====
     //

@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // ===== M88：proxy 形状匹配设施（原 ProxyDispatchResolver.BuildChainForMember
     // 的诊断半——零符号合成）=====

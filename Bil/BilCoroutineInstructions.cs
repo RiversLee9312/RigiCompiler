@@ -1,4 +1,4 @@
-namespace LatteCompiler.Bil
+namespace RigiCompiler.Bil
 {
     // §17：await TASK [RESULT]。结果操作数可选，严格保持 Task 先、结果后。
     public sealed class AwaitInstruction : BilInstruction

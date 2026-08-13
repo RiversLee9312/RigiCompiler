@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // Lowered 语句节点（S6 最小集 + S7a 补齐 + S7b 脱糖 + S7c-1 循环 + S7d
     // switch/throw + S7e try/seq，SEMANTIC_ROADMAP）：块 / 局部变量声明 /
@@ -188,7 +188,7 @@ namespace LatteCompiler
     // 到达本节点——含 pattern 的 switch 已在 P4a 降级为嵌套
     // LoweredIfStatement（§16.6：含 _ 的 pattern 分支不能进常量表）。
     // Cases 保序（表序 = 匹配序）；DefaultBody 恒存在（P3/Parser 强制）。
-    // BreakId 是合成 .breakid 局部（.bN 命名，约定同 LoweredLoop；Latte 层
+    // BreakId 是合成 .breakid 局部（.bN 命名，约定同 LoweredLoop；Rigi 层
     // break 不指向 switch——规范未登记，该 id 仅满足指令形态要求，无人引用）
     public sealed class LoweredSwitch : LoweredStatement
     {

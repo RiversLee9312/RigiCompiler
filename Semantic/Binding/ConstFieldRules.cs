@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // const 字段规则（S8b 前置，FieldSymbol.IsConst 配套）：
     // - const 字段赋值检查：仅 init 构造方法体内的 const 实例字段赋值放行

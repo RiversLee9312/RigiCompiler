@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     internal sealed class YieldVisitor
         : BinderVisitor<YieldVisitor, BoundStatement, BindContext>

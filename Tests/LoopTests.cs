@@ -1,6 +1,6 @@
 using System;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     /// <summary>
     /// 循环解析测试（roadmap #9，SYNTAX.md §7.3/§7.4）

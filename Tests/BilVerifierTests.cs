@@ -1,8 +1,8 @@
 using System.Collections.Generic;
 using System.Linq;
-using LatteCompiler.Bil;
+using RigiCompiler.Bil;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     /// <summary>
     /// BIL 验证器（BilVerifier，M58）测试：
@@ -1006,7 +1006,7 @@ namespace LatteCompiler.Tests
                     new BilAccessibilityModifier(BilAccessibility.Private),
                     new BilKeywordModifier(BilKeyword.Native),
                     new BilNativeSymbolModifier("print"),
-                    new BilNativeLibraryModifier("latte_rt"),
+                    new BilNativeLibraryModifier("rigi_rt"),
                 }));
             var nativeBody = new BilFunction(nativeSymbol);
             nativeBody.Args.Add(new BilArgDeclaration(".return", ".void"));

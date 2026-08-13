@@ -1,4 +1,4 @@
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     /// <summary>
     /// S1 符号图内核测试（M37）：构造泛型驻留（同一引用）、bootstrap 层级、

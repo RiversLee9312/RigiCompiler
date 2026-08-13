@@ -1,6 +1,6 @@
 using System.Linq;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     // P3 闸门/驱动/重载修复批次（review 确认问题）的回归测试：
     // 1. async 闸门 2 对可变参数包按 SYNTAX §4.5 判定「展开后的每一个

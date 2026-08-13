@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // lambda 对象模型类型门面（SYNTAX §5.2）：core 命名空间内源码声明的
     // Func/Action/AsyncFunc/AsyncAction 四家族（0–32 参数元数预生成）与

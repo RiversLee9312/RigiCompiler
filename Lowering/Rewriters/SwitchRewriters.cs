@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // switch 降级（S7d，SYNTAX §7.2；BIL §16.6）。
     // 自旧 LowerSession.LowerSwitchStatement/LowerSwitchCore/

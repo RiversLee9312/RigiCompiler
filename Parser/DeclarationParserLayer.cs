@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     /// <summary>
     /// 通用声明层：解析**任何位置**的任何声明，把结果挂到 target（父节点的声明容器）。

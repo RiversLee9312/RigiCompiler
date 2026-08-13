@@ -4,7 +4,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 块注释层（M31 重写）：只跟踪 * 状态（*/ 闭合），不做任何转义。
     // 换行不吞（与行注释一致）：注释按行分段，换行本身以 LineBreakToken 入流——

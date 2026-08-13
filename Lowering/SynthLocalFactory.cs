@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 合成局部工厂（M65 Lowering 侧组件化拆分，自 LowerContext 迁出）：
     // 合成局部（.sN，BIL §5.1 编译器保留名，函数内唯一）与 .breakid

@@ -2,7 +2,7 @@ using System;
 using System.IO;
 using System.Text.Json;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     /// <summary>
     /// Logger 测试：
@@ -26,7 +26,7 @@ namespace LatteCompiler.Tests
             Console.WriteLine("=== Testing Logger JSONL file write ===");
 
             Logger.Reset();
-            var path = Path.Combine(Path.GetTempPath(), $"latte_logger_test_{Guid.NewGuid():N}.jsonl");
+            var path = Path.Combine(Path.GetTempPath(), $"rigi_logger_test_{Guid.NewGuid():N}.jsonl");
             try
             {
                 Logger.OpenLogFile(path);
@@ -119,7 +119,7 @@ namespace LatteCompiler.Tests
             Console.WriteLine("=== Testing Logger CLI state capture/restore ===");
 
             Logger.Reset();
-            var path = Path.Combine(Path.GetTempPath(), $"latte_logger_test_{Guid.NewGuid():N}.jsonl");
+            var path = Path.Combine(Path.GetTempPath(), $"rigi_logger_test_{Guid.NewGuid():N}.jsonl");
             try
             {
                 // 模拟 test --all --log-to + --verbose：套件进入前 CLI 已打开

@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // ===== 子任务 2：继承 / implements 图 + 循环继承 =====
     //

@@ -7,7 +7,7 @@ using System.Reflection;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     /// <summary>
     /// JSONL → AST 反序列化（格式 v2，M32）：AstJsonlSerializer 的逆操作，
@@ -21,7 +21,7 @@ namespace LatteCompiler
     ///
     /// 三阶段实现：
     /// 1. 逐行解析 JSON 为记录（id/parentId/via/type/span/fields），type 名
-    ///    在本程序集 LatteCompiler 命名空间下定位（ASTNode 派生类或 [AstCarrier]
+    ///    在本程序集 RigiCompiler 命名空间下定位（ASTNode 派生类或 [AstCarrier]
     ///    类型，缓存字典）；
     /// 2. 自根向下创建实例并挂接：
     ///    - parent=null → RootASTNode（唯一）；
@@ -181,7 +181,7 @@ namespace LatteCompiler
             return records;
         }
 
-        // type 名 → 类型（本程序集 LatteCompiler 命名空间下的非抽象 ASTNode
+        // type 名 → 类型（本程序集 RigiCompiler 命名空间下的非抽象 ASTNode
         // 派生类或 [AstCarrier] 类型；缓存）
         private static readonly Dictionary<string, Type> TypeMap = BuildTypeMap();
 

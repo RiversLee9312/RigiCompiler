@@ -1,6 +1,6 @@
 using System.Linq;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     // Lowerer（P4a）修复批次回归测试：
     // - ?. 的 Access 降级前置语句收进 thenBlock（§3.4「receiver 为空则

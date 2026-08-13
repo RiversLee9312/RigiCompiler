@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // AST 节点基类。节点类型一律用 CLR 类型判断（is / GetType()），
     // 不再有 ASTNodeType 枚举。子节点成员以 [ChildAstNode] 标注、

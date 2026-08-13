@@ -1,6 +1,6 @@
 using System;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 类型引用 AST 节点
     // 注意：rich/shared 不属于类型引用！它们是类型声明的修饰符

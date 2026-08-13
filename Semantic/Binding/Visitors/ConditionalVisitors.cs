@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 值块壳的包装（壳协议 TShell 实参）：BoundValueBlock 壳 + 诊断构造名
     // （"if expression"/"switch expression"）——避免为两种调用方各建一个 visitor

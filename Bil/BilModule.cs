@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-namespace LatteCompiler.Bil
+namespace RigiCompiler.Bil
 {
     // BIL 模块与程序集结构（BIL_STANDARD §4）。
     // BIL 对象模型是自足的：不引用 Semantic/Lowering/AST 的任何类型

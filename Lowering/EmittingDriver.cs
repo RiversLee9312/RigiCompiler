@@ -1,6 +1,6 @@
-using LatteCompiler.Bil;
+using RigiCompiler.Bil;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // P4b 发射驱动器：metadata module 条目 → LocalSymbols 段（命名空间
     // 平铺 + 内建 ext 成员）→ 逐函数体发射 fn 定义。每个函数新建独立

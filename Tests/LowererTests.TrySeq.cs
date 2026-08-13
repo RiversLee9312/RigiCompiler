@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     // LowererTests try/seq 组：try-catch-finally 降级、seq 语句/表达式
     // 双形态、值块编织扩展（seq 透明 / try 规则 / finally 拦截）。

@@ -1,6 +1,6 @@
 using System;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     /// <summary>
     /// switch 解析测试（roadmap #8，SYNTAX.md §7.2：表达式与语句两种形态）

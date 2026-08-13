@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-namespace LatteCompiler.Bil
+namespace RigiCompiler.Bil
 {
     // BIL 验证器（M58，BIL_STANDARD §21；提前自路线图 S12）：消费 BilModule
     // 对象模型，检查 frontend 产出是否满足 §21 的合法性约束，输出结构化

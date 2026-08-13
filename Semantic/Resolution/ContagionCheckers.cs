@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // ===== 子任务 4：rich/shared 单向传染 + 字段闭包 =====
 

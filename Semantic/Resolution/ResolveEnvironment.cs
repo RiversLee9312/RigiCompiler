@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // P2 只读环境（M55 visitor 化协议同款）：EntryCollector 产出平铺条目三表后
     // 冻结（IReadOnlyList 暴露），后续 12 个阶段 visitor 共用。诊断统一经
@@ -156,9 +156,9 @@ namespace LatteCompiler
             }
             return caseRef.CaseName switch
             {
-                "Entity" => LatteCompiler.WrapperTargetKind.Entity,
-                "Value" => LatteCompiler.WrapperTargetKind.Value,
-                "Method" => LatteCompiler.WrapperTargetKind.Method,
+                "Entity" => RigiCompiler.WrapperTargetKind.Entity,
+                "Value" => RigiCompiler.WrapperTargetKind.Value,
+                "Method" => RigiCompiler.WrapperTargetKind.Method,
                 _ => null,
             };
         }

@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // ===== override 配套检查（SYNTAX §9.2/§9.2.1，S8e）=====
     //

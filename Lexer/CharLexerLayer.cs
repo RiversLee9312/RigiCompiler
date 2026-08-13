@@ -4,7 +4,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     /// <summary>
     /// 字符字面量层（SYNTAX §3.3）：单引号内必须恰好一个字符或一个转义序列，

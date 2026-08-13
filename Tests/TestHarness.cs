@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     /// <summary>
     /// 统一测试驱动与断言基建（M31）：全部测试套件共用一份，替代原先每个套件

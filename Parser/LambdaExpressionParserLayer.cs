@@ -1,6 +1,6 @@
 using System;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     /// <summary>
     /// Lambda 表达式解析器（roadmap #21，SYNTAX.md §5.1）

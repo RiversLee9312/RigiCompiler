@@ -1,4 +1,4 @@
-﻿namespace LatteCompiler
+﻿namespace RigiCompiler
 {
     // 局部变量声明（S5）与解构声明（S7f，SYNTAX §18）。
     // 自旧 BindSession.BindLocalDeclaration/BindDestructuring/FindCorePairDefinition
@@ -181,7 +181,7 @@
         // 解构声明（S7f，SYNTAX §18）：var (a, b) = pair——初始化器类型
         // 必须沿 BaseType 链达到 core.Pair\<TKey, TValue\> 构造；每个名字
         // 绑定为对应分量类型的局部（字段读取由 P4a 脱糖）。core.Pair 是
-        // .bootstrap.latte 自举声明，编译器按 canonical 名硬编码参照
+        // .bootstrap.rg 自举声明，编译器按 canonical 名硬编码参照
         // （同 M48 core.collections 协议先例）
         private static BoundStatement? BindDestructuring(VariableDeclarationASTNode node,
             Scope scope, BindContext ctx, BindEnvironment env)
@@ -243,7 +243,7 @@
             return new BoundDestructuringDeclarationStatement(node, init, entries);
         }
 
-        // core.Pair 定义查找（.bootstrap.latte 自举提供；缺席即诊断——
+        // core.Pair 定义查找（.bootstrap.rg 自举提供；缺席即诊断——
         // BindUnit 类不带 stdlib 的驱动触不到解构绑定）
         private static TypeSymbol? FindCorePairDefinition(CharRange? span, BindEnvironment env)
         {

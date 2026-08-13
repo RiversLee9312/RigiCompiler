@@ -1,9 +1,9 @@
 using System.Collections.Generic;
 using System.Globalization;
 using System.Reflection;
-using LatteCompiler.Bil;
+using RigiCompiler.Bil;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // ===== LocalSymbols（§8）=====
     // 符号图遍历发射（命名空间平铺/类型树/成员声明/内建 ext 成员），

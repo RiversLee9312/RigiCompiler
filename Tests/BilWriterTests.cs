@@ -1,6 +1,6 @@
-using LatteCompiler.Bil;
+using RigiCompiler.Bil;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     /// <summary>
     /// S4 BIL 对象模型 + BilWriter 测试（M38）：手工构造 BIL §20 完整示例的
@@ -469,7 +469,7 @@ namespace LatteCompiler.Tests
                     new BilAccessibilityModifier(BilAccessibility.Private),
                     new BilKeywordModifier(BilKeyword.Native),
                     new BilNativeSymbolModifier("print"),
-                    new BilNativeLibraryModifier("latte_rt"),
+                    new BilNativeLibraryModifier("rigi_rt"),
                 }));
             consoleType.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.StaticMethod,
                 "core.io::Console$.static.printErr(value:.string)@.void",
@@ -478,7 +478,7 @@ namespace LatteCompiler.Tests
                     new BilAccessibilityModifier(BilAccessibility.Private),
                     new BilKeywordModifier(BilKeyword.Native),
                     new BilNativeSymbolModifier("printErr"),
-                    new BilNativeLibraryModifier("latte_rt"),
+                    new BilNativeLibraryModifier("rigi_rt"),
                 }));
             consoleType.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.StaticMethod,
                 "core.io::Console$.static.println(value:.string)@.void",
@@ -505,8 +505,8 @@ namespace LatteCompiler.Tests
                 "",
                 "LocalSymbols {",
                 "    .type core.io::Console = class pub {",
-                "        .static-method core.io::Console$.static.print(value:.string)@.void priv native symbol(\"print\") lib(\"latte_rt\")",
-                "        .static-method core.io::Console$.static.printErr(value:.string)@.void priv native symbol(\"printErr\") lib(\"latte_rt\")",
+                "        .static-method core.io::Console$.static.print(value:.string)@.void priv native symbol(\"print\") lib(\"rigi_rt\")",
+                "        .static-method core.io::Console$.static.printErr(value:.string)@.void priv native symbol(\"printErr\") lib(\"rigi_rt\")",
                 "        .static-method core.io::Console$.static.println(value:.string)@.void pub",
                 "    }",
                 "    .method $main()@.i32 pub entrypoint",

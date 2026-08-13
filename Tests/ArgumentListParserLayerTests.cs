@@ -1,6 +1,6 @@
 using System;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     // 实参列表解析测试（ArgumentListParserLayer）：实参列表挂在表达式节点上
     // （Call/Index/New），因此用全管线 var v = foo(...) / a[...] / new T(...) 驱动，

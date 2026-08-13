@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     /// <summary>
     /// S5 P3 最小闭环测试（M41）：Binder 的 bound 形态与定型类型断言 + 结构性事实。

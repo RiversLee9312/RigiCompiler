@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 变量声明 AST 节点
     // 同一个节点覆盖：栈上局部变量、类/struct 字段、全局变量

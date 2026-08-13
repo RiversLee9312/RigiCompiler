@@ -6,7 +6,7 @@ using System.Linq;
 using System.Reflection;
 using System.Text.Json;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     /// <summary>
     /// AST → JSONL 序列化（格式 v2，M32：carrier 记录化）：深度优先，每节点一行：

@@ -1,6 +1,6 @@
-using LatteCompiler.Bil;
+using RigiCompiler.Bil;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 发射环境（P4b，模块级）：整个发射期存活的共享状态。
     internal sealed class EmitEnvironment

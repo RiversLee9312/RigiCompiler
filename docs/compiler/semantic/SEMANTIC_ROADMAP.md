@@ -1,4 +1,4 @@
-# Latte 语义分析与 BIL 生成路线图
+# Rigi 语义分析与 BIL 生成路线图
 
 > **用途**: 中端（AST → BIL）的里程碑计划。架构定稿见同目录
 > `SEMANTIC_ARCHITECTURE.md`；本文档只管「计划」，进度现状一律记
@@ -24,7 +24,7 @@ S1 符号图内核 ┴→ S2 P1 声明收集 → S3 P2 声明解析 ─┐
 S4 BIL 对象模型 + Writer（与 S1–S3 并行）─────────┤
                                                   ├→ S5 P3 最小闭环
                                                   └→ S6 P4 最小闭环（端到端 hello world）
-S7 控制流全套 → S8 P3 完整化 → S9 泛型 → S10 core.latte（✅ 2026-08-05 M74）
+S7 控制流全套 → S8 P3 完整化 → S9 泛型 → S10 core.rg（✅ 2026-08-05 M74）
 → S11 wrapper/extension/enum → S12 BIL verifier（✅ 已提前至 M58，见下）
 → S13 async lowering 专项（含 BIL_STANDARD 修订）→ S14 BIL VM
 ```
@@ -172,8 +172,8 @@ verifier → VM**。VM 落地后测试从形态断言升级为执行断言。
     标记位（`MethodSymbol.IsNative`）、P2 新增 `CheckNativeDeclarations`
     子任务（注解解析填 `NativeSymbol`/`NativeLibrary` + SYNTAX §4.6
     全部规则校验，并在 wrapper 应用检查中为两个内建注解加豁免）；
-  - `stdlib/core/Console.latte`（`core.io::Console`：priv static
-    native `print`/`printErr`（lib `latte_rt`）+ pub static `println`
+  - `stdlib/core/Console.rg`（`core.io::Console`：priv static
+    native `print`/`printErr`（lib `rigi_rt`）+ pub static `println`
     包装）以 EmbeddedResource 内嵌载入，加入编译单元走同一
     P1/P2/P3 路径；
   - Binder 查找序补「宿主类型成员」一环（println 体内裸名调用同类
@@ -182,7 +182,7 @@ verifier → VM**。VM 落地后测试从形态断言升级为执行断言。
     修饰符（BIL §8.4），无 fn 定义；BIL VM 经 §22.5 内建 hook 执行
     （S14 验收）。
 - **验收**：`main + 字面量 + core.io::Console.println + ret` 的
-  `.latte` 源码经 `compile --emit-bil` 产出与 BIL §20 示例同级的合法
+  `.rg` 源码经 `compile --emit-bil` 产出与 BIL §20 示例同级的合法
   BIL 文本（黄金文件对照）；Origin 调试链（Bil→Lowered→Bound→
   AST.Span）通。
 
@@ -235,7 +235,7 @@ S5 已能绑定的全部 Bound 节点在本步过 P4（控制流的前置：没�
 2026-08-01 协议定稿（已落 SYNTAX §7.3/§13.2/§15.3）：范围循环半开
 `[a, b)`、步长 +1；`a to b` 即 `a.EnumerateInRange(b)`（T 上的实例
 运算符，`this` 即 start）；`IEnumerable\<T\>`/`IEnumerator\<T\>` 为
-core.collections 的 C# 风格双接口；基元实现落 `stdlib/.bootstrap.latte`
+core.collections 的 C# 风格双接口；基元实现落 `stdlib/.bootstrap.rg`
 （SDK 自举源，默认参与编译）。据此拆两步：
 
 **S7c-1（while / do-while / break / continue）**
@@ -265,9 +265,9 @@ core.collections 的 C# 风格双接口；基元实现落 `stdlib/.bootstrap.lat
 - P4b 开闸：实例方法 fn 定义（`.args` 首条 `.this = OwnerType`）、
   `invoke` receiver 首实参、`get.field`/`set.field`（§13.3）、
   operator/init 的 §8.4 声明形态。
-- stdlib：`stdlib/core/collections.latte`（双接口 + `RangeEnumeratorI32`
+- stdlib：`stdlib/core/collections.rg`（双接口 + `RangeEnumeratorI32`
   **class**——SYNTAX §10 struct 不得实现接口；泛型 `RangeEnumerator\<T\>`
-  留 S9）+ `stdlib/.bootstrap.latte`（`pub ext operator
+  留 S9）+ `stdlib/.bootstrap.rg`（`pub ext operator
   i32.EnumerateInRange`）。早验证：ext+operator 前端组合、点开头文件
   内嵌匹配。
 - **验收**：this/实例调用/实例字段绑定与发射用例 + `for (i in 0 to 3)`
@@ -490,7 +490,7 @@ reified 泛型全链：使用侧约束检查、构造类型驻留完善、
 hidden args 物化集中落 S9e）。
 
 **已定稿的规范前提**（M67，2026-08-05，全部落 SYNTAX §3.6/§4.2/§4.3）：
-① 固定泛型参数**必须显式实参**（零推导，Latte 一切显式哲学）；
+① 固定泛型参数**必须显式实参**（零推导，Rigi 一切显式哲学）；
 ② 带显式实参 → 候选池仅泛型方法（按泛型实参个数匹配过滤）；不带 →
 泛型方法不参与候选，仅剩泛型候选时诊断「需要显式泛型实参」；
 ③ 泛型 operator 按名字调用同规则，运算符位置（`a + b`）不参与；
@@ -587,7 +587,7 @@ BIL §7 落地，泛型端到端出合法 BIL：
 
 ### S9f stdlib 泛型化 + 技术债勾销
 
-- `stdlib/core/collections.latte` 泛型化：`RangeEnumerator\<T\>`/
+- `stdlib/core/collections.rg` 泛型化：`RangeEnumerator\<T\>`/
   `Range\<T\>`（勾销技术债 #15④；S7c-2 起 RangeEnumeratorI32 具体
   形态替身退役），for 范围循环走泛型路径端到端；
 - 技术债勾销：#18② is/supers/with 动态形态值路径带泛型实参；
@@ -610,14 +610,14 @@ BIL §7 落地，泛型端到端出合法 BIL：
 - 验收：声明侧非法位置、getter/setter 读写方向、Producer/Consumer 构造类型赋值
   与反向拒绝用例。
 
-## S10 core.latte 载入机制 ✅（2026-08-05 M74 落地）
+## S10 core.rg 载入机制 ✅（2026-08-05 M74 落地）
 
 > **已完成**（M74）：载入机制本体早已在 S6 落地（EmbeddedResource 内嵌 +
 > 编译单元注入 + `native` 语法）；本里程碑完成 stdlib 文件扩充与
-> bootstrap/core.latte 边界定稿。用户决策四件套：① 类型名唯一性按
+> bootstrap/core.rg 边界定稿。用户决策四件套：① 类型名唯一性按
 > 「名 + 泛型元数」判定（`Task` 与 `Task\<TResult\>` 同名共存，对齐 C#
 > 先例，落 P1 重复检测 + NameResolver 查找分流）；② coroutine 运行时面
-> 以 Latte 自举声明 + 最小 native API（`sleep`/`PollingAlarm.isReady`），
+> 以 Rigi 自举声明 + 最小 native API（`sleep`/`PollingAlarm.isReady`），
 > native 返回类型放宽至用户引用类型（§4.6 修订，FFI ABI 归 Middleware）；
 > ③ 异常子类清单（RuntimeException/IOException/CastException/
 > NoSuchMethodException）+ message 挂根（bootstrap Exception 程序化携带
@@ -630,12 +630,12 @@ BIL §7 落地，泛型端到端出合法 BIL：
 > 兼作前端常驻回归（StdlibSourcesTests 六源结构断言）。
 
 core 声明文件随编译器载入（自举解析 → 同一条 P1/P2 路径）、
-bootstrap 与 core.latte 边界定稿。**载入机制本身已提前至 S6 落地**
+bootstrap 与 core.rg 边界定稿。**载入机制本身已提前至 S6 落地**
 （EmbeddedResource 内嵌 + 编译单元注入，含 `native` 函数语法与
 `core.io::Console` 最小文件）；本里程碑剩余工作为 stdlib 文件扩充
 （`core.coroutine::Task`/`Executor` 家族、异常具体子类（异常根
 `core.Exception` 已于 S7d/M49 定稿进 bootstrap）、`IDisposable` 等）
-与 bootstrap/core.latte 边界定稿。兼作前端常驻回归测试。
+与 bootstrap/core.rg 边界定稿。兼作前端常驻回归测试。
 
 ## S11 wrapper / extension / enum struct
 
@@ -776,7 +776,7 @@ enum case（`new.case`、`is .Case` 判别比较、判别值分配）、
 >   P3 复用使用点解析/访问检查，三参胖值 ABI 不变。#28② 维持 SYNTAX
 >   §14.7 既定错误行为）
 > - **S11f（派发链诊断工具，RUNTIME §15）**：CLI 子命令
->   `compile --file a.latte --explain-dispatch`（用户决策
+>   `compile --file a.rg --explain-dispatch`（用户决策
 >   形态）；报告编译单元全部烘焙链（被修饰成员 outer→inner
 >   每层命中 specific|wildcard + canonical symbol）与降级路由
 >   （存 `.proxy.*` 的类型）；调用点级过滤留扩展。数据源 =
@@ -868,7 +868,7 @@ spawn 仍归 ⑥）。stdlib 保持源码类型面，Coroutine/frame/fence 采�
 
 **M103 lambda 对象模型（SYNTAX §5.2，取代 M102 `.methodid` 路线）**：隐藏类
 `..lambda..UUID`（同 NS）继承 `core::Func`/`Action`/`AsyncFunc`/`AsyncAction`
-（`.bootstrap.latte` 0–32 元数）；捕获全 Cell 化（`Cell<T>`/`ReadonlyCell<T>`，this
+（`.bootstrap.rg` 0–32 元数）；捕获全 Cell 化（`Cell<T>`/`ReadonlyCell<T>`，this
 普通字段例外；BIL `.cell<T>`/`.readonly_cell<T>`）；`invoke.indirect` = 对象虚调用
 `$$call`（callable 协议），`getid.method`/`.methodid` 全删；`LambdaTypeSymbol` 废除；
 `ClosureStoragePlan` + `CallableModel`；值块体降级；验证器 §15.3 沿 extends 查 $$call
@@ -882,7 +882,7 @@ spawn 仍归 ⑥）。stdlib 保持源码类型面，Coroutine/frame/fence 采�
 `Bil/BilVm.cs`：BIL §22 抽象值语义解释器。落地后新增执行断言
 测试形态（跑出结果/异常与预期比对），并持续验证 §21.9
 「VM 可执行性」。native 调用经 §22.5 内建 hook 表执行
-（`latte_rt` 的 `print`/`printErr` → stdout/stderr），hello world
+（`rigi_rt` 的 `print`/`printErr` → stdout/stderr），hello world
 端到端执行断言须产生真实输出，无需任何原生库。
 
 ---

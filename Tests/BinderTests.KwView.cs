@@ -1,6 +1,6 @@
 using System.Linq;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     // BinderTests 的 kwargs 体内视角部分（S9d 修正，BIL §7.1）：
     // named 值可变参数体内定型 Array\<Pair\<String, T\>\>（元素 = core::Pair

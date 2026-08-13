@@ -1,16 +1,16 @@
-# Latte 语言语法参考
+# Rigi 语言语法参考
 
 ## 1. 基本规则
 
 ### 1.1 语句终止与续行
 
-Latte 不使用分号。顶层和代码块中的换行通常就是语句终止符。
+Rigi 不使用分号。顶层和代码块中的换行通常就是语句终止符。
 
 `()` 与 `[]` 所包围的分组、调用参数表和索引参数表尚未闭合时，其中的换行按空白处理，可以自然续行。`{}` 作为函数体、控制流体、lambda/`seq` 块或类型体时**不会**吞掉内部换行；块中的各条语句仍由换行分隔。换言之，自动续行来自尚未闭合的符号结构，而不是“只要位于任意大括号内就忽略换行”。
 
 ### 1.2 注释
 
-```latte
+```rigi
 // 单行注释
 /* 多行注释 */
 /** 文档注释（Java 风格） */
@@ -18,9 +18,9 @@ Latte 不使用分号。顶层和代码块中的换行通常就是语句终止�
 
 ### 1.3 普通运算符没有优先级
 
-Latte **没有普通运算符优先级**。当一个表达式中出现多个普通一元/二元运算符，而其运算树不能由括号唯一确定时，编译器直接报错；编译器不会借用其他语言的优先级表进行猜测。
+Rigi **没有普通运算符优先级**。当一个表达式中出现多个普通一元/二元运算符，而其运算树不能由括号唯一确定时，编译器直接报错；编译器不会借用其他语言的优先级表进行猜测。
 
-```latte
+```rigi
 // 编译错误：未指定运算树
 var result = 1 + 2 * 3
 
@@ -39,9 +39,9 @@ var value = -(await foo().bar[0])
 
 ### 1.4 符号表达式与路径表达式
 
-Latte 将调用参数表 `()` 和索引参数表 `[]` 视为**符号表达式（SymbolExpression）**的一部分，而不是参与优先级竞争的后缀运算符。符号表达式可以递归嵌套：
+Rigi 将调用参数表 `()` 和索引参数表 `[]` 视为**符号表达式（SymbolExpression）**的一部分，而不是参与优先级竞争的后缀运算符。符号表达式可以递归嵌套：
 
-```latte
+```rigi
 // 外层是索引 SymbolExpression，内层是调用 SymbolExpression a(1, 2)
 a(1, 2)[2]
 
@@ -59,7 +59,7 @@ a[0](1, 2)
 
 例如：
 
-```latte
+```rigi
 foo().bar[0]?.length:MyWrapper
 ```
 
@@ -77,7 +77,7 @@ foo()  .  bar[0]  ?.  length  :  MyWrapper
 
 使用 `const`（不可变）和 `var`（可变）声明变量，类型标注写在冒号后面，支持类型推断。
 
-```latte
+```rigi
 const name: String = "Hello"
 const inferred = "World"       // 类型推断为 String
 var count: i32 = 0
@@ -115,7 +115,7 @@ Any
 
 ### 3.1.1 `rich` 与 `shared` 类型修饰符
 
-Latte 将值类型按是否允许携带托管对象引用分为普通 ValueType 与 rich ValueType，并将对象按是否允许跨协程共享分为 local object 与 shared object。`rich` 和 `shared` 都是**类型声明修饰符**，不是变量或引用位置修饰符。
+Rigi 将值类型按是否允许携带托管对象引用分为普通 ValueType 与 rich ValueType，并将对象按是否允许跨协程共享分为 local object 与 shared object。`rich` 和 `shared` 都是**类型声明修饰符**，不是变量或引用位置修饰符。
 
 - `rich` 仅用于 `struct`（包括 `enum struct`）与 `wrapper`。未标记 `rich` 的 struct 不得直接或间接持有任何 Object，也不得内嵌 rich struct。
 - `wrapper` 恒为 rich struct，`rich` 由声明形式隐含，源码中不再显式书写（见 §14.9）。
@@ -124,7 +124,7 @@ Latte 将值类型按是否允许携带托管对象引用分为普通 ValueType 
 - 标记 `shared` 的 class 实例是 shared object，可以被多个 Coroutine 引用；`shared` 只表示共享资格和相应的生命周期管理，不自动使对象字段操作具备线程安全。
 - `shared rich struct` 仍然是值类型，复制与装箱继续采用值语义/unique ownership；`shared` 表示它的字段闭包可以安全地进入 shared object graph。
 
-```latte
+```rigi
 pub struct Point {
     pub var x: float
     pub var y: float
@@ -191,7 +191,7 @@ pub shared rich struct SharedEntry {
 
 ### 3.1.2 编译器特权类型与运行时表示
 
-Latte 不要求每一个源码类型节点都一一对应一个普通 Native 对象类型或独立 `TypeSheet`。少数内建抽象由编译器与运行时共同提供特权 lowering；它们在语法、类型检查和泛型约束中表现为正常类型，但物理表示可以绕过普通用户类型的对象模型。
+Rigi 不要求每一个源码类型节点都一一对应一个普通 Native 对象类型或独立 `TypeSheet`。少数内建抽象由编译器与运行时共同提供特权 lowering；它们在语法、类型检查和泛型约束中表现为正常类型，但物理表示可以绕过普通用户类型的对象模型。
 
 - `Box\<T extends ValueType>` 在语法类型层级中属于 `Object`，可以进入 `Object`/`Any` 多态位置并满足相应约束；但它不是普通 class，不生成 Box 对象头、Box identity 或独立的 `Box\<T>` TypeSheet。Box 槽中的 typeid 始终是底层实际 ValueType `T` 的 typeid，Native 表示与复制/销毁规则见 `RUNTIME.md` §4。
 - `Span\<T extends ValueType>` 是编译器与运行时共同实现的连续原生缓冲区后门，不按普通泛型容器的 16 字节元素槽布局；其索引、步长与 GC 扫描均使用内建 lowering。
@@ -219,7 +219,7 @@ Latte 不要求每一个源码类型节点都一一对应一个普通 Native 对
 
 ### 3.3 字面量
 
-```latte
+```rigi
 // 整数（默认 i32）
 42
 1_000_000        // 下划线分隔（不允许连续下划线或下划线开头）
@@ -270,7 +270,7 @@ false
 - 转义与单行字符串相同（`\n`、`\t`、`\\`、`\"`、`\$` 等），未知转义是编译错误；剥除缩进先于转义处理，行内单个 `"` 或 `""` 免转义。
 - 内容中的换行恒为 `\n`（行尾归一在词法入口完成）；`${}` 插值与单行字符串一致；`\$` 转义的字面 `$` 不构成插值引导（单行/多行相同）。
 
-```latte
+```rigi
 var text = """
     line1
     line2 with "quotes" and ${interp}
@@ -286,7 +286,7 @@ var text = """
 
 `Nullable\<T>` 的 shared 属性由 `T` 推导：`T` 是共享安全类型时 `Nullable\<T>` 也是，因此 `String?`、`SharedUser?` 可以出现在全局字段与 async 边界上，而 `LocalUser?` 不可以（见 §3.1.1、§3.1.2）。
 
-```latte
+```rigi
 var name: String? = null
 
 // 安全调用
@@ -311,7 +311,7 @@ obj as? String
 
 ### 3.5 类型转换与类型检查
 
-```latte
+```rigi
 // 类型检查
 obj is String         // obj 是否为 String 或其子类
 obj supers Animal     // obj 的类型是否为 Animal 的基类
@@ -344,7 +344,7 @@ obj as? String
 
 转换优先级：源类型的 `castTo` → 目标类型的 `castFrom`（前者不存在或抛异常时才尝试后者）。
 
-```latte
+```rigi
 // 自定义类型转换（定义在源类型上）
 operator castTo\<TTarget>(): TTarget { ... }
 
@@ -360,7 +360,7 @@ class Celsius {
 
 **泛型列表语法：一律以 `\<` 开启、以 `>` 闭合。** 无论是泛型声明（类型参数列表）还是泛型使用（类型实参列表），都必须写作 `Name\<...>` 的形式：
 
-```latte
+```rigi
 // 声明：类型、函数、wrapper 的类型参数列表
 class Container\<TElement> { ... }
 func transform\<TInput, TResult>(input: TInput): TResult { ... }
@@ -374,15 +374,15 @@ Span.alloc\<f32>(1000)
 
 `\<` 是两个独立字符（反斜杠 + 小于号），不是一个新符号。这样设计的原因：
 
-- `<` 在 Latte 中**只**是比较运算符，与泛型列表不存在词法歧义（`a < b` 永远是比较，`a\<b>` 永远是泛型）；
+- `<` 在 Rigi 中**只**是比较运算符，与泛型列表不存在词法歧义（`a < b` 永远是比较，`a\<b>` 永远是泛型）；
 - 解析器无需回溯或前瞻即可区分泛型与比较，也不依赖空格等脆弱约定；
-- 与 Latte"一切显式"的设计哲学一致：泛型边界显式标注，正如运算顺序必须显式加括号。
+- 与 Rigi"一切显式"的设计哲学一致：泛型边界显式标注，正如运算顺序必须显式加括号。
 
 闭合符保持单个 `>`：`\<` 已无歧义地开启了泛型语境，其后的 `>` 只可能是闭合符。嵌套泛型的连续闭合写作 `>>`，如 `List\<Map\<String, i32>>`。
 
-Latte 的泛型在语义和运行时类型信息上都保持**具化（reified）**。实现采用单份共享 Native 代码体、隐式 typeid 传递与统一胖值槽，而不是为每组类型实参生成一份单态化机器码。共享代码体不等于类型擦除：实际泛型类型始终随 typeid 存在，可以直接用于 `TElement()`、`is`、`supers`、`with`、`typeOf` 与运行时构造（详见 RUNTIME.md）。ValueType 进入统一泛型/动态槽位时由系统特权 `Box` 表示按尺寸内联或间接保存。
+Rigi 的泛型在语义和运行时类型信息上都保持**具化（reified）**。实现采用单份共享 Native 代码体、隐式 typeid 传递与统一胖值槽，而不是为每组类型实参生成一份单态化机器码。共享代码体不等于类型擦除：实际泛型类型始终随 typeid 存在，可以直接用于 `TElement()`、`is`、`supers`、`with`、`typeOf` 与运行时构造（详见 RUNTIME.md）。ValueType 进入统一泛型/动态槽位时由系统特权 `Box` 表示按尺寸内联或间接保存。
 
-```latte
+```rigi
 // 类/struct 泛型
 class Container\<TElement> { ... }
 
@@ -403,7 +403,7 @@ func dump\<TItem with Serializable>(item: TItem) { ... }
 - `T with W`：实参 `A` 满足 ⟺ `W` 在 `A` 的 wrapper 应用集合中（编译期查类型的 `AppliedWrappers`，含 interface 传染结果；构造类型随定义传播）。`with` 约束在函数体内等价于一次 wrapper 应用：带 `with W` 约束的泛型参数 `param` 上写 `param:W` 是合法的 wrapper place（§14.5），只读禁令与应用语义同直接应用一致；wrapper 存储在实参宿主的隐藏存储中，编译器不为泛型参数合成任何存储。
 - 约束边界自身含未替换泛型参数时（如 `class C\<T1 extends T2, T2>`，边界是外层泛型参数），使用侧检查**跳过**（不做静态拒绝，由外层调用代入后自然满足）；实参为 `ErrorType` 时静默放行（毒化传播）。
 
-```latte
+```rigi
 // 型变（同 Kotlin 的 in/out）
 class Producer\<out TElement> { ... }
 class Consumer\<in TElement> { ... }
@@ -438,14 +438,14 @@ func create\<TResult>(): TResult {
 - **值形态（常态）**：操作数先按值绑定，取值的运行时实际类型，返回 `Type\<T静态\>`——`T` 是类型边界（`BIL_STANDARD.md` §6.3 `.typeid<TBound>` 语义），实际类型为其子类型亦属该边界。
 - **类型形态**：操作数无法绑定为值、且可解析为类型引用时，返回该类型的 `Type\<T>`。
 
-```latte
+```rigi
 var box = Box(12, 12, 24)
 var t = typeOf(box)              // t: Type\<Box>
 ```
 
 **`new`**：显式发起一次普通类型构造。其目标可以是静态类型符号，也可以是一个 `Type\<T>` 值；静态类型也可以继续使用 `TypeName(...)` 作为简写。
 
-```latte
+```rigi
 const file = new File("./mydoc")
 
 var t = typeOf(box)
@@ -459,7 +459,7 @@ var another = new t(12, 12, 24)  // 按 t 所指类型的 init 构造
 
 **在 `is` / `supers` 中使用 `Type\<T>` 值**：`Type\<T>` 的值可当作类型出现在 `is` / `supers` 右侧。
 
-```latte
+```rigi
 var t = typeOf(box)
 if (obj is t) { ... }
 if (obj supers t) { ... }
@@ -467,7 +467,7 @@ if (obj supers t) { ... }
 
 **`with`**：判断某类型是否被指定 wrapper 修饰，可用作运算符或泛型约束（见 §3.6）。
 
-```latte
+```rigi
 if (obj with Serializable) { ... }
 ```
 
@@ -483,14 +483,14 @@ if (obj with Serializable) { ... }
 
 字符串插值（§3.3）以 `toString` 定义：`${}` 内表达式的静态类型不是 `String` 时，先调用其 `toString()` 再参与拼接；拼接即 `String` 的内建 `+` 运算，按源码顺序从左到右结合。每个插值段只求值一次。
 
-```latte
+```rigi
 var count = 3
 var text = "count: ${count}, ok: ${(count > 0)}"   // "count: 3, ok: true"
 ```
 
-插值表达式的词法规则（M53 词法帧机制）：`${` 后表达式按普通 Latte 词法解析，可以包含任意字面量（字符串/字符）、嵌套 `{}`（lambda 体、seq 块）与注释，括号配平由词法层完成；表达式跨行遵循与源文件一致的续行规则（括号未闭合时换行透明，§1.1）。嵌套字符串字面量在两态宿主中均可直接使用（`"a${"b"}c"` 合法）；未闭合的嵌套字面量按词法错误就近报告。
+插值表达式的词法规则（M53 词法帧机制）：`${` 后表达式按普通 Rigi 词法解析，可以包含任意字面量（字符串/字符）、嵌套 `{}`（lambda 体、seq 块）与注释，括号配平由词法层完成；表达式跨行遵循与源文件一致的续行规则（括号未闭合时换行透明，§1.1）。嵌套字符串字面量在两态宿主中均可直接使用（`"a${"b"}c"` 合法）；未闭合的嵌套字面量按词法错误就近报告。
 
-基元与默认实现均为内建行为：BIL VM 经 `BIL_STANDARD.md` §22.5 内建 hook 执行，原生环境经 `RUNTIME.md` §26 的 `latte_rt.toString` 路由。
+基元与默认实现均为内建行为：BIL VM 经 `BIL_STANDARD.md` §22.5 内建 hook 执行，原生环境经 `RUNTIME.md` §26 的 `rigi_rt.toString` 路由。
 
 ---
 
@@ -498,7 +498,7 @@ var text = "count: ${count}, ok: ${(count > 0)}"   // "count: 3, ok: true"
 
 ### 4.1 函数声明
 
-```latte
+```rigi
 pub func add(a: i32, b: i32): i32 {
     return a + b
 }
@@ -513,9 +513,9 @@ pub func greet(name: String = "World"): String {
 
 ### 4.2 函数调用、具名参数与重载解析
 
-```latte
+```rigi
 greet()
-greet(name="Latte")    // 具名参数用 = 而非 :
+greet(name="Rigi")    // 具名参数用 = 而非 :
 ```
 
 **实参映射**：位置实参按源码顺序依次填充形参列表中第 1、2、… 个位置（与具名实参的穿插位置无关）；具名实参按形参名归位，`name` 必须存在于形参表；同一形参被填充多次（位置与具名冲突、或两个同名实参）是编译错误。实参表达式的求值序为**规范参数序**（形参声明序）而非源码书写序——绑定产物即按形参序排列，后端按序求值。
@@ -530,9 +530,9 @@ greet(name="Latte")    // 具名参数用 = 而非 :
 
 实例方法与 `ext` 扩展方法同池参与解析（继承链上的同名方法同池；可见性检查在 §16 访问控制独立进行）。构造函数（init）的重载解析与函数调用同一规则。
 
-**泛型方法（S9 定稿，2026-08-05）**：泛型方法（带泛型参数列表的 func/operator，按名字调用时）**必须显式给出全部泛型实参，不做从实参推导**——与 Latte「一切显式」哲学一致：
+**泛型方法（S9 定稿，2026-08-05）**：泛型方法（带泛型参数列表的 func/operator，按名字调用时）**必须显式给出全部泛型实参，不做从实参推导**——与 Rigi「一切显式」哲学一致：
 
-```latte
+```rigi
 func transform\<TInput, TResult>(input: TInput): TResult { ... }
 var r = transform\<i32, String>(42)     // ✅ 显式实参
 var r = transform(42)                   // ❌ 编译错误：泛型方法需要显式泛型实参
@@ -544,7 +544,7 @@ var r = transform(42)                   // ❌ 编译错误：泛型方法需要
 - 泛型 `operator` 的**运算符位置**（`a + b`、索引等）不参与解析（运算符调用无泛型实参书写位置，报归口诊断）；其名字形式（`a.plus\<TAnother>(b)`）与普通方法同规则。泛型 init 不存在（init 不得声明泛型参数列表）。
 - 带可变参数（§4.3）形参的方法暂不参与调用绑定，归口编译错误（值可变参数主线后延；泛型可变参数见 §4.3 定稿）。
 
-```latte
+```rigi
 func show(x: Any) { ... }
 func show(x: String) { ... }
 show("hi")              // String 更具体 → show(String)
@@ -555,13 +555,13 @@ combine("x", "y")       // 编译错误：二义，两个候选互不占优
 
 func greet(name: String = "World", punct: String = "!"): String { ... }
 greet()                 // = greet("World", "!")
-greet("Latte")          // = greet("Latte", "!")
+greet("Rigi")          // = greet("Rigi", "!")
 greet(punct="?")        // = greet("World", "?")
 ```
 
 ### 4.3 可变参数
 
-```latte
+```rigi
 // 位置可变参数
 pub func sum(numbers: i32...): i32 { ... }
 
@@ -589,7 +589,7 @@ update(isDarkMode = true, userName = "Andy")
 
 使用 `ext` 修饰符：
 
-```latte
+```rigi
 pub ext func String.reversed(): String { ... }
 pub ext var String.isEmpty: bool { get(_: _) { ... } }
 pub ext static func Config.makeDefault(): Config { ... }
@@ -605,7 +605,7 @@ ext 目标不得为泛型定义：裸名命中泛型定义是编译错误（缺�
 
 `async` 是函数修饰符，表示**每次调用该函数时都会立即创建并发布一个新的协程**。`async` 不表示“函数体才可以挂起”：普通函数也运行在当前协程中，因此同样可以执行 `await` 和 `yield`；区别仅在于普通函数调用继续使用当前协程，而 `async` 函数调用创建另一个协程。
 
-```latte
+```rigi
 pub async func loadUser(id: i32): SharedUser {
     const response = await requestUser(id)
     return response.user
@@ -623,14 +623,14 @@ pub async func flushLogs() {
 | `async func f(): TResult` | `core.coroutine.Task\<TResult>` |
 | `async func f()` | `core.coroutine.Task` |
 
-```latte
+```rigi
 const userTask: core.coroutine.Task\<SharedUser> = loadUser(42)
 const flushTask: core.coroutine.Task = flushLogs()
 ```
 
 调用是 eager 的：协程在调用时启动，不会等到第一次 `await` 才启动。直接丢弃返回的 Task 即表示启动任务后不与其同步，可用于 fork/fire-and-forget：
 
-```latte
+```rigi
 flushLogs()              // 启动后继续执行
 const user = await loadUser(42)
 ```
@@ -647,7 +647,7 @@ async 调用会把一批值从当前协程送进新协程，因此以下**五处
 
 编译器在 async 声明处检查 2、3、5 的声明类型，在 async 调用点检查 1、2、5 的实际类型，在 async lambda 处检查 4。违反者为编译错误，不存在运行时补救。
 
-```latte
+```rigi
 pub shared class SharedUser { pub const id: i64 }
 pub class LocalUser { pub var name: String }
 
@@ -658,17 +658,17 @@ pub async func alsoBad(): LocalUser { ... }                       // ❌ Task �
 
 ### 4.6 `native` 函数
 
-`native` 函数声明一个由运行时原生方法面提供的函数：它没有 Latte 函数体，调用经 BIL 中的 `native` 方法声明路由到原生实现（见 `BIL_STANDARD.md` §8.4 与 `RUNTIME.md` §26）。标准库用它封装 libc 风格的原生能力（如控制台输出），普通 Latte 代码调用 native 函数与调用普通函数语法完全相同。
+`native` 函数声明一个由运行时原生方法面提供的函数：它没有 Rigi 函数体，调用经 BIL 中的 `native` 方法声明路由到原生实现（见 `BIL_STANDARD.md` §8.4 与 `RUNTIME.md` §26）。标准库用它封装 libc 风格的原生能力（如控制台输出），普通 Rigi 代码调用 native 函数与调用普通函数语法完全相同。
 
-```latte
+```rigi
 namespace core.io
 
 pub class Console {
-    @NativeLibrary("latte_rt")
+    @NativeLibrary("rigi_rt")
     @NativeSymbol("print")
     priv static native func print(text: String)
 
-    @NativeLibrary("latte_rt")        // @NativeSymbol 缺省时取函数名
+    @NativeLibrary("rigi_rt")        // @NativeSymbol 缺省时取函数名
     priv static native func printErr(text: String)
 }
 ```
@@ -679,7 +679,7 @@ pub class Console {
 - 作为类型成员声明时必须同时是 `static`；不得用于 `init`、`operator`、getter/setter；
 - 不得与 `async` 组合，不得声明泛型参数列表，同一容器内不得与同名函数构成重载；
 - 参数类型仅限 §3.2 基本类型中的整数、浮点、`bool`、`char` 与 `String`；不允许 Object、泛型参数、用户声明类型，也不允许可变参数；
-- **返回类型**（S10 定稿，2026-08-05）：允许 §3.2 基本类型中的整数、浮点、`bool`、`char` 与 `String`，也允许用户声明的**引用类型**（class/interface，如 `core.coroutine.sleep(...): EventAlarm`）；不允许值类型、泛型参数与可变参数。native 只负责声明运行时原生方法面的形状，FFI 参数/返回值 ABI 与 `latte_rt` 的转换细节在 Middleware 阶段定稿（`RUNTIME.md` §26），编译器不做形状之外的检查；
+- **返回类型**（S10 定稿，2026-08-05）：允许 §3.2 基本类型中的整数、浮点、`bool`、`char` 与 `String`，也允许用户声明的**引用类型**（class/interface，如 `core.coroutine.sleep(...): EventAlarm`）；不允许值类型、泛型参数与可变参数。native 只负责声明运行时原生方法面的形状，FFI 参数/返回值 ABI 与 `rigi_rt` 的转换细节在 Middleware 阶段定稿（`RUNTIME.md` §26），编译器不做形状之外的检查；
 - `@NativeLibrary("...")` 必填，给出原生库标识；`@NativeSymbol("...")` 可省，缺省时取函数名；两个注解的实参必须各为一个字符串字面量；
 - `@NativeLibrary` / `@NativeSymbol` 是编译器内建注解，只允许出现在 native 函数声明上；它们不属于 wrapper 体系（§14），不产生 wrapper 组合链。
 
@@ -689,7 +689,7 @@ pub class Console {
 
 ### 5.1 Lambda 语法
 
-```latte
+```rigi
 // 完整形式
 func{(x: i32, y: i32): i32 -> (x + y)}
 
@@ -769,7 +769,7 @@ func{(x: i32): i32 -> named calc {
 
 ### 5.3 Trailing Lambda
 
-```latte
+```rigi
 list.map{(item: String): i32 -> item.length}
 ```
 
@@ -777,7 +777,7 @@ list.map{(item: String): i32 -> item.length}
 
 async 标记写在 `{` 之后、参数列表之前：`func{async (...)...}`（**不是** `async func{...}`）。
 
-```latte
+```rigi
 const loader = func{async (id: i32): SharedUser -> loadUserNow(id)}
 const task: core.coroutine.Task\<SharedUser> = loader(42)
 const user = await task
@@ -794,7 +794,7 @@ const user = await task
 
 `seq` 块等同于 C 的 `{}`，用于创建作用域、限制变量生命周期，不是 lambda。裸 `return`（不带 `@标签`）在 `seq` 块内仍然透传给外层函数，直接参与外层函数的控制流，语义与普通 `{}` 一致：
 
-```latte
+```rigi
 pub func process(): i32 {
     seq {
         var temp = computeSomething()
@@ -820,7 +820,7 @@ volatile seq {
 - **命名**：同 §7.4 的循环标签，用 `named` 给 `seq` 块起名，配合 `return@名字` 精确指定从哪一层 `seq` 返回。
 - **默认标签**：未显式 `named` 的值块（`seq` 块、if/switch 表达式分支体），其隐式默认标签就是 `_`——`return@_ value` 表示"从最内层这个匿名值块返回 `value`"。
 
-```latte
+```rigi
 const result = seq {
     const ac = a * c
     const discriminant = (b * b) - (4.0 * ac)
@@ -841,9 +841,9 @@ const result = seq {
 
 ### 6.2 `using` 资源绑定
 
-Latte 不提供 finalizer。需要确定性释放外部资源的类型实现 `core.IDisposable`：
+Rigi 不提供 finalizer。需要确定性释放外部资源的类型实现 `core.IDisposable`：
 
-```latte
+```rigi
 pub interface IDisposable {
     func dispose()
 }
@@ -851,7 +851,7 @@ pub interface IDisposable {
 
 `using` 是 `seq` 的资源绑定子句。可以在 `seq` 与可选的 `named` 之间放置一个或多个 `using(...)`；每个 `using` 内必须是一条单行的 `const` 或 `var` 声明并完成初始化，其结果类型必须实现 `core.IDisposable`。
 
-```latte
+```rigi
 seq using(const file = new File("./mydoc"))
 using(const stream = new FileInputStream(file))
 using(var reader = new StreamReader(stream))
@@ -862,7 +862,7 @@ named readFile {
 
 也可以省略 `named`：
 
-```latte
+```rigi
 seq using(const resource = openResource()) {
     use(resource)
 }
@@ -886,7 +886,7 @@ seq using(const resource = openResource()) {
 
 ### 7.1 条件
 
-```latte
+```rigi
 // if 语句
 if (condition) {
     ...
@@ -922,7 +922,7 @@ if 表达式规则：
 
 switch 有两种形态：表达式形态与语句形态。两者共用同一套匹配规则，区别只在出现位置与分支体：
 
-```latte
+```rigi
 // 表达式形态：switch 出现在表达式位置，产出值
 var result = switch(expr) {
     (1) -> { "one" }
@@ -962,7 +962,7 @@ var result = switch(expr) named match {
 
 ### 7.3 循环
 
-```latte
+```rigi
 // for-each
 for (item in collection) {
     ...
@@ -1007,7 +1007,7 @@ do {
 
 使用 `named` 关键字声明标签：
 
-```latte
+```rigi
 for (i in 0 to 10) named outer {
     for (j in 0 to 10) named inner {
         if (someCondition) {
@@ -1031,7 +1031,7 @@ do named loop {
 
 `await` 是一元运算符，用于等待 `core.coroutine.Task` 或 `core.coroutine.Task\<TResult>`：
 
-```latte
+```rigi
 await flushLogs()
 const user = await loadUser(42)
 const result = await aTaskExpression
@@ -1045,7 +1045,7 @@ const result = await aTaskExpression
 
 `yield` 是只能单独出现的语句，不能作为表达式、参数或返回值使用。它有三种形式：
 
-```latte
+```rigi
 yield                         // 主动结束当前执行段，重新参与调度
 yield pollingAlarm            // 等待 PollingAlarm 就绪
 yield eventAlarm              // 等待 EventAlarm 通知
@@ -1056,7 +1056,7 @@ yield sleep(1000)             // 基于 EventAlarm 的非阻塞睡眠
 
 `core.coroutine.PollingAlarm` 提供：
 
-```latte
+```rigi
 pub func isReady(): bool
 ```
 
@@ -1066,7 +1066,7 @@ pub func isReady(): bool
 
 标准睡眠函数为：
 
-```latte
+```rigi
 core.coroutine.sleep(milliseconds: i32): core.coroutine.EventAlarm
 ```
 
@@ -1078,7 +1078,7 @@ core.coroutine.sleep(milliseconds: i32): core.coroutine.EventAlarm
 
 ## 8. 异常处理
 
-```latte
+```rigi
 try {
     riskyOperation()
 } catch (e: IOException) {
@@ -1098,7 +1098,7 @@ try {
 
 异常根 `core.Exception` 是语言级内建类型（进编译器 bootstrap，与 `Object`/`ValueType` 同列），open 可继承：
 
-```latte
+```rigi
 pub open class Exception { ... }   // 概念形态；实际声明在编译器 bootstrap，不在 stdlib 源
 ```
 
@@ -1107,7 +1107,7 @@ pub open class Exception { ... }   // 概念形态；实际声明在编译器 bo
 - `protected var message: String` 字段——异常的人类可读描述；
 - `pub func getMessage(): String` 方法——message 的唯一公共读取通道（native 形态，运行时提供实现；`toString` 不覆写，插值/打印仍走 `Object` 的默认实现）。
 
-`throw` 操作数类型与 `catch` 子句类型必须是 `core.Exception` 或其子类（§3.1 层级兼容判定）。标准库在 `stdlib/core/exceptions.latte` 提供四个具体子类（均可继承，用户自定义异常以同样的 `: core.Exception` 声明）：
+`throw` 操作数类型与 `catch` 子句类型必须是 `core.Exception` 或其子类（§3.1 层级兼容判定）。标准库在 `stdlib/core/exceptions.rg` 提供四个具体子类（均可继承，用户自定义异常以同样的 `: core.Exception` 声明）：
 
 | 类型 | 含义 |
 |------|------|
@@ -1118,7 +1118,7 @@ pub open class Exception { ... }   // 概念形态；实际声明在编译器 bo
 
 每个子类**自持**显式 init（异常根不写 init；需要时 init 体可选调用 `super(...)`，字段也可直接赋值继承字段）：
 
-```latte
+```rigi
 pub open class IOException : core.Exception {
     pub init(text: String) { message = text }
 }
@@ -1132,7 +1132,7 @@ pub open class IOException : core.Exception {
 
 ### 9.1 类声明
 
-```latte
+```rigi
 pub open class Animal {
     pub var name: String
     priv var age: i32
@@ -1197,7 +1197,7 @@ override 方法的固定泛型参数按当前声明序隐式转发，源码调�
 
 ### 9.3 构造函数（`init`）
 
-```latte
+```rigi
 pub class Point {
     pub var x: i32
     pub var y: i32
@@ -1228,7 +1228,7 @@ pub class Point {
 
 getter/setter 可以在以下所有位置定义：类/struct 的字段、全局变量、栈上的 `var` 和 `const`。
 
-```latte
+```rigi
 var width: i32 {
     pub get(value: _) {
         return value
@@ -1276,7 +1276,7 @@ pub func example() {
 
 ### 9.5 内部类
 
-```latte
+```rigi
 pub class Outer {
     pub class Inner { ... }
     pub singleton class Companion { ... }   // 类似 Java 静态内部类
@@ -1285,7 +1285,7 @@ pub class Outer {
 
 ### 9.6 委托（`like`）
 
-```latte
+```rigi
 pub class Apple : Fruit like pear {
     pub var pear: Pear = Pear()
     // 将 Fruit 接口的实现委托给 pear 字段
@@ -1298,7 +1298,7 @@ pub class Apple : Fruit like pear {
 
 普通 struct 是不含托管对象引用的 ValueType：
 
-```latte
+```rigi
 pub struct Vector2 {
     pub var x: float
     pub var y: float
@@ -1313,7 +1313,7 @@ pub struct Vector2 {
 
 需要让 struct 持有 Object 或内嵌其他 rich struct 时，必须使用 `rich`：
 
-```latte
+```rigi
 pub rich struct Entry {
     pub var owner: User
     pub var metadata: Metadata
@@ -1322,7 +1322,7 @@ pub rich struct Entry {
 
 需要让 rich struct 安全进入 shared object graph 时，同时使用 `shared rich`：
 
-```latte
+```rigi
 pub shared rich struct SharedEntry {
     pub var owner: SharedUser
     pub var location: Vector2
@@ -1347,7 +1347,7 @@ pub shared rich struct SharedEntry {
 
 ## 11. interface
 
-```latte
+```rigi
 pub interface Drawable {
     func draw(canvas: Canvas)
 
@@ -1378,7 +1378,7 @@ pub class Circle : Shape implements Drawable {
 
 `enum struct` 是带有编译器隐藏判别字段的 ValueType。它既可以表达传统固定枚举值，也可以表达通过具名 case 接收运行时参数的枚举值。
 
-```latte
+```rigi
 pub enum struct Direction {
     pub const degrees: i32
 
@@ -1407,7 +1407,7 @@ pub enum struct Direction {
 - case 名称在同一个 enum 中必须唯一。
 - 省略 enum 类型名的 `.CaseName` 必须拥有一个已经确定 enum 静态类型的 receiver/期望类型上下文；编译器不会单凭 case 名反向猜测 enum 类型。
 
-```latte
+```rigi
 // 正确：赋值 receiver 已显式指定为 RequestResult
 const result: RequestResult = .Success
 
@@ -1422,7 +1422,7 @@ const inferred = .Success
 
 case 模板中的普通实参在声明处固定；独占一个实参位置的 `_` 表示调用 case 时必须填入的参数洞。
 
-```latte
+```rigi
 pub enum struct RequestResult {
     pub const errorCode: i32
 
@@ -1437,7 +1437,7 @@ pub enum struct RequestResult {
 
 由此生成的使用形式为：
 
-```latte
+```rigi
 const success: RequestResult = .Success
 const failed: RequestResult = .Failed(404)
 const failedNamed: RequestResult = .Failed(errorCode = 404)
@@ -1459,7 +1459,7 @@ const failedNamed: RequestResult = .Failed(errorCode = 404)
 
 init 的 `pub` 含义是允许 case 把 init 的参数暴露为参数洞，从而形成可由调用方使用的参数化 case。绑定到非 `pub` init 的 case 必须是固定 case，不得包含 `_`：
 
-```latte
+```rigi
 pub enum struct TokenKind {
     pub const code: i32
 
@@ -1477,7 +1477,7 @@ pub enum struct TokenKind {
 
 `is` 的右侧可以是 enum case：
 
-```latte
+```rigi
 if (result is .Failed) {
     log(result.errorCode)
 }
@@ -1485,7 +1485,7 @@ if (result is .Failed) {
 
 这只检查隐藏判别字段，不比较 payload，也不会改变值的静态类型。参数化 case 在 `is` 右侧不带参数；需要比较完整值时使用 `==`，需要附加 payload 条件时显式组合条件。
 
-```latte
+```rigi
 if ((result is .Failed) and (result.errorCode == 404)) {
     ...
 }
@@ -1503,7 +1503,7 @@ const message = switch(result) {
 
 默认情况下，case 的隐藏判别值由编译器分配，不保证在 case 增删、重排或重新 codegen 后保持不变。需要稳定判别值时，使用 `->`：
 
-```latte
+```rigi
 pub enum struct SteadyABIEnum {}[
     First -> 0,
     Second -> 2,
@@ -1513,7 +1513,7 @@ pub enum struct SteadyABIEnum {}[
 
 参数化 case 同样可以指定：
 
-```latte
+```rigi
 pub enum struct StableRequestResult {
     pub const errorCode: i32
     pub init(_ -> errorCode)
@@ -1539,7 +1539,7 @@ pub enum struct StableRequestResult {
 
 使用 `operator` 关键字替代 `func`，固定的 camelCase 命名：
 
-```latte
+```rigi
 pub operator plus(another: MyType): MyType { ... }
 pub operator plus\<TAnother extends Addable>(another: TAnother): MyType { ... }
 ```
@@ -1650,7 +1650,7 @@ Wrapper 是绑定到被修饰实体生命周期的**值**，类似 Python 装饰
 
 修饰 class、interface、wrapper、rich struct（含 rich enum struct）。非 rich struct 不是合法目标，见 §14.9。
 
-```latte
+```rigi
 @WrapperTarget(.Entity)
 pub wrapper Logged\<TTarget> {
     pub init(level: String = "INFO")
@@ -1724,7 +1724,7 @@ pub wrapper Logged\<TTarget> {
 
 修饰字段或栈上变量（`var`/`const`）。修饰实例字段时，wrapper 存放在宿主类型的 Middleware 合成隐藏存储中，因此宿主必须能够内嵌 rich struct（见 §14.9）；修饰栈上变量与静态/全局字段时，值统一由编译器合成的 cell 隐藏子类盛装（§5.2 同一机制），wrapper 应用标记挂在子类的 `value` 字段上（BIL `wrapped(W)`）；cell 的构造时机归 Middleware，对变量类型没有额外的宿主内嵌要求。
 
-```latte
+```rigi
 @WrapperTarget(.Value)
 pub wrapper Clamped {
     pub var min: i32
@@ -1753,7 +1753,7 @@ var health: i32 = 50
 
 修饰 lambda 或方法。
 
-```latte
+```rigi
 @WrapperTarget(.Method)
 pub wrapper Timed {
     pub init()
@@ -1779,7 +1779,7 @@ pub func heavyComputation(): i32 { ... }
 
 ### 14.5 使用 Wrapper
 
-```latte
+```rigi
 @Logged("DEBUG")
 @Serializable()
 pub class MyService {
@@ -1829,7 +1829,7 @@ wrapper place 的接收者来源有三：字段/局部变量的应用（`@W` 标
 
 当对某个值调用其**静态类型上未声明**的方法，且该类型的 wrapper 链中存在普通方法类别的 `.proxy.*` 时，调用会**降级**为动态派发（编译为对统一 `call???` 的调用，见 `RUNTIME.md`）；否则为编译错误。
 
-```latte
+```rigi
 // service 的静态类型上没有 fetchUserById，但存在 .proxy.*
 service.fetchUserById(42)     // 降级为携带 canonical symbol 的 call??? 请求
 ```
@@ -1929,13 +1929,13 @@ wrapper 应用；闭包沿间接基类和 interface 继续展开。重复声明�
 
 ### 15.1 命名空间声明
 
-```latte
+```rigi
 namespace com.example.myapp
 ```
 
 ### 15.2 导入
 
-```latte
+```rigi
 import core.collections.List             // 单个导入
 import core.collections.{List, Map}      // 多个导入
 import core.collections.*                // 全部导入
@@ -1946,7 +1946,7 @@ import core.collections.*                // 全部导入
 
 ### 15.3 SDK 自举源
 
-编译器自带的标准库 Latte 源（`stdlib/`）随每次编译**默认参与编译**，无需
+编译器自带的标准库 Rigi 源（`stdlib/`）随每次编译**默认参与编译**，无需
 import 即进入编译单元（与用户源同走语义全流程）：
 
 - `core.collections`：`IEnumerable\<T\>` / `IEnumerator\<T\>` 迭代协议
@@ -1960,13 +1960,13 @@ import 即进入编译单元（与用户源同走语义全流程）：
   `Task`（无结果）与 `Task\<TResult\>`（泛型）是**同名不同元数**的合法
   共存类型（类型名唯一性按「名 + 泛型参数个数」判定；裸名引用解析到
   非泛型声明，带实参引用解析到泛型声明）；
-- `core` 命名空间内的异常具体子类（`stdlib/core/exceptions.latte`）：
+- `core` 命名空间内的异常具体子类（`stdlib/core/exceptions.rg`）：
   `RuntimeException` / `IOException` / `CastException` /
   `NoSuchMethodException`（§8.1）；
-- `core` 命名空间内的 `IDisposable`（`stdlib/core/disposable.latte`，
+- `core` 命名空间内的 `IDisposable`（`stdlib/core/disposable.rg`，
   §6.2 确定性资源管理协议）；
-- `.bootstrap.latte`：**基元类型自举辅助成员**——内建数值类型
-  （`i32` 等）无法在自己的声明处携带这些实现，经 `ext` 以 Latte 自举
+- `.bootstrap.rg`：**基元类型自举辅助成员**——内建数值类型
+  （`i32` 等）无法在自己的声明处携带这些实现，经 `ext` 以 Rigi 自举
   （如 `EnumerateInRange`，§13.2），以及解构协议根 `core.Pair`（§18）；
   另含 callable / 闭包运行时面（§5.2）：
   - `core.Func\<TRet, T0…\>` / `core.Action\<T0…\>` /
@@ -1982,10 +1982,10 @@ import 即进入编译单元（与用户源同走语义全流程）：
 （`Any`/`Object`/`ValueType`/`Enum`/`Wrapper`/`Exception` 与 §3.2 基本类型、
 §3.1.2 特权泛型类型）由编译器硬编码构造进符号图（`BootstrapSymbols`），
 从不写入 `stdlib/` 源——它们的层级关系、内建运算符键与 shared 推导是
-编译器语义的一部分，无法用 Latte 声明表达；异常根 `core.Exception` 的
+编译器语义的一部分，无法用 Rigi 声明表达；异常根 `core.Exception` 的
 `message` 字段与 `getMessage()` 同样由 bootstrap 程序化携带（§8.1）。
-其余全部标准库表面走 `stdlib/` Latte 源，与用户源同一条 P1–P4 路径
-（含上列 Func/Action/Cell 族——它们虽由 `.bootstrap.latte` 提供，仍走源路径）。
+其余全部标准库表面走 `stdlib/` Rigi 源，与用户源同一条 P1–P4 路径
+（含上列 Func/Action/Cell 族——它们虽由 `.bootstrap.rg` 提供，仍走源路径）。
 
 ---
 
@@ -2016,7 +2016,7 @@ ext 成员（§4.4）的可见性按**声明位置**判定而非目标类型：�
 
 ## 17. 程序入口
 
-```latte
+```rigi
 // 无参数
 pub func main(): i32 {
     return 0
@@ -2039,11 +2039,11 @@ pub func main() {
 
 ## 18. 解构声明
 
-```latte
+```rigi
 var (key, value) = pair   // pair 必须为 core.Pair\<TKey, TValue> 的子类
 ```
 
-规则：解构名字必须恰好两个，按声明序绑定到 `key`/`value` 分量（类型取 `core.Pair` 构造的实参）；解构必须带初始化器，不支持类型标注；`const (k, v) = pair` 同样适用（分量局部只读）。`core.Pair` 是 `stdlib/.bootstrap.latte` 的自举 open class（§15.3），可继承——用户类型经继承它获得解构能力。
+规则：解构名字必须恰好两个，按声明序绑定到 `key`/`value` 分量（类型取 `core.Pair` 构造的实参）；解构必须带初始化器，不支持类型标注；`const (k, v) = pair` 同样适用（分量局部只读）。`core.Pair` 是 `stdlib/.bootstrap.rg` 的自举 open class（§15.3），可继承——用户类型经继承它获得解构能力。
 
 ---
 

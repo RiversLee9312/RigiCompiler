@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-namespace LatteCompiler.Bil
+namespace RigiCompiler.Bil
 {
     // BIL 验证器共享索引与解析工具（M58）：为 BilVerifier 各检查类别提供
     // 模块级符号索引、函数级变量/block 索引、canonical 符号解析与类型引用工具。

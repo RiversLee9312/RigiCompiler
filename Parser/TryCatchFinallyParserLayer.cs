@@ -1,6 +1,6 @@
 using System;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     /// <summary>
     /// Try-Catch-Finally 语句解析器（roadmap #10，P2）

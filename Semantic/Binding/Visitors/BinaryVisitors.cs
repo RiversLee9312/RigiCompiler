@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 二元/一元/复合赋值运算（S5/S7b，SYNTAX §13.2）与 if? 空值回退（S7f，§3.4）。
     // 自旧 BindSession.BindBinary/BindNullFallback/BindUnary/BindCompoundAssignment

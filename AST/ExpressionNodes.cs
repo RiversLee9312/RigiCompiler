@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 表达式基类
     // 表达式节点允许在施工期间暂时没有父节点（作为未挂载子树组合），

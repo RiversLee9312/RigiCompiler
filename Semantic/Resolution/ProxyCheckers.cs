@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // ===== S11a：wrapper proxy 成员声明侧形状校验（SYNTAX §14.2/§14.3/§14.4）=====
     //

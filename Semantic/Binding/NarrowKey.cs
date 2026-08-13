@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // smart cast 收窄键（SYNTAX §3.5）：可被收窄表达式的身份。
     // 形态：根（局部/参数/this）+ const 字段链（空 = 根本身）。

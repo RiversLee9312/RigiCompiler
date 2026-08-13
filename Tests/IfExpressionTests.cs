@@ -1,6 +1,6 @@
 using System;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     /// <summary>
     /// if 表达式解析测试（roadmap #7 表达式模式，SYNTAX.md §7.1）

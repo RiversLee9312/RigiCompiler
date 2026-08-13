@@ -1,7 +1,7 @@
 using System;
 using System.Linq;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     /// <summary>
     /// 多行字符串测试（M32，SYNTAX §3.3 Swift 风格严格多行）。

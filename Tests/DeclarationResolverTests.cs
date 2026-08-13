@@ -1,6 +1,6 @@
 using System.Linq;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     /// <summary>
     /// S3 P2 声明解析测试（M40）：七个子任务各自独立测试组——
@@ -1252,7 +1252,7 @@ namespace LatteCompiler.Tests
             var (ok1, _) = ResolveUnit(
                 "namespace core.io\n" +
                 "pub class Console {\n" +
-                "@NativeLibrary(\"latte_rt\")\n" +
+                "@NativeLibrary(\"rigi_rt\")\n" +
                 "@NativeSymbol(\"print\")\n" +
                 "priv static native func print(text: String)\n" +
                 "}\n");
@@ -1261,19 +1261,19 @@ namespace LatteCompiler.Tests
                 .Methods.Single(m => m.Name == "print");
             TestHarness.CheckTrue("IsNative/IsStatic 标记位", print.IsNative && print.IsStatic);
             TestHarness.Check("NativeSymbol 取注解实参", print.NativeSymbol ?? "", "print");
-            TestHarness.Check("NativeLibrary 取注解实参", print.NativeLibrary ?? "", "latte_rt");
+            TestHarness.Check("NativeLibrary 取注解实参", print.NativeLibrary ?? "", "rigi_rt");
 
             // 正例：@NativeSymbol 缺省取函数名
             var (ok2, _) = ResolveUnit(
                 "class C {\n" +
-                "@NativeLibrary(\"latte_rt\")\n" +
+                "@NativeLibrary(\"rigi_rt\")\n" +
                 "priv static native func printErr(text: String)\n" +
                 "}\n");
             CheckNoErrors("缺省 @NativeSymbol 无诊断", ok2);
             var printErr = GlobalType(ok2, "C").Methods.Single(m => m.Name == "printErr");
             TestHarness.CheckTrue("IsNative 标记位", printErr.IsNative);
             TestHarness.Check("NativeSymbol 缺省取函数名", printErr.NativeSymbol ?? "", "printErr");
-            TestHarness.Check("NativeLibrary 取注解实参", printErr.NativeLibrary ?? "", "latte_rt");
+            TestHarness.Check("NativeLibrary 取注解实参", printErr.NativeLibrary ?? "", "rigi_rt");
 
             // 正例：全局 native 函数（无需 static）+ 白名单全形态 + void 返回 + 路径形态注解
             var (ok3, _) = ResolveUnit(

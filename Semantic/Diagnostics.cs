@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 中端可恢复诊断（P1–P4 通用，SEMANTIC_ARCHITECTURE §8）。
     // 与前端 LexerException/ParserException（单发即死）严格不同：中端诊断

@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 派发链诊断报告（S11f / RUNTIME §15；M88：烘焙归 Middleware——
     // frontend 报告应用登记 × proxy 形状匹配预览 + 降级资格，不读合成链槽）。

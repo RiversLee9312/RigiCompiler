@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // ===== async 声明侧检查 + 边界闸门 2/3/5（SYNTAX §4.5，S8f）=====
     //

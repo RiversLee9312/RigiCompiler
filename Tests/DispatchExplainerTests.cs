@@ -1,6 +1,6 @@
 using System.Linq;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     /// <summary>
     /// S11f 派发链诊断工具测试（RUNTIME §15；M88：仅应用登记 + 降级资格）。

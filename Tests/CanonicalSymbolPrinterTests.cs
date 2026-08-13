@@ -1,4 +1,4 @@
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     /// <summary>
     /// S1 canonical symbol 打印测试（M37）：CanonicalSymbolPrinter 输出
@@ -62,7 +62,7 @@ namespace LatteCompiler.Tests
                 CanonicalSymbolPrinter.PrintMethod(setName), "com.example::Service$.set.name@.string");
 
             // ===== §20 黄金示例两个符号 =====
-            // Array 定义模拟 core.latte 未来载入的形态（标准构造 .array）
+            // Array 定义模拟 core.rg 未来载入的形态（标准构造 .array）
             var arrayDef = new TypeSymbol("Array", TypeKind.Class, b.Core,
                 baseType: b.Object, bilStandardConstructor: ".array");
             arrayDef.GenericParameters.Add(new GenericParameterSymbol("T"));

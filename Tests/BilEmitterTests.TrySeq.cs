@@ -1,8 +1,8 @@
 using System.Collections.Generic;
 using System.Linq;
-using LatteCompiler.Bil;
+using RigiCompiler.Bil;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     // BilEmitter try/catch/finally 与 seq 发射测试（§16.7 + §19.5 catch-table、§16.1 call 化 + §9.6 volatile）
 

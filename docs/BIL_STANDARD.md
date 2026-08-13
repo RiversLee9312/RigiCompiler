@@ -1,20 +1,20 @@
-# Latte BIL 标准
+# Rigi BIL 标准
 
 > 状态：规范草案 1.1  
 > BIL：Basic Intermediate Language（基础中介语言）
 
-本文档定义 Latte 编译器 frontend 与 Middleware 之间的标准中间表示 BIL。
+本文档定义 Rigi 编译器 frontend 与 Middleware 之间的标准中间表示 BIL。
 
-本文档只规定 BIL 的程序结构、类型规则、符号模型、指令语义、验证规则和文本表示。Latte 表层语言规则以 `SYNTAX.md` 为准；Native 运行时表示与行为以 `RUNTIME.md` 为准。
+本文档只规定 BIL 的程序结构、类型规则、符号模型、指令语义、验证规则和文本表示。Rigi 表层语言规则以 `SYNTAX.md` 为准；Native 运行时表示与行为以 `RUNTIME.md` 为准。
 
 ---
 
 ## 1. 定位与编译边界
 
-Latte 的标准编译流水线为：
+Rigi 的标准编译流水线为：
 
 ```text
-Latte source
+Rigi source
     ↓ compiler frontend
 BIL
     ↓ compiler Middleware
@@ -52,7 +52,7 @@ BIL 描述程序“执行什么语义”，不描述该语义在目标平台上�
 
 BIL 必须完整保留以下信息：
 
-- Latte 语义类型；
+- Rigi 语义类型；
 - 类型、字段、方法、enum case 和资源的符号身份；
 - 泛型具化所需的 typeid 参数；
 - 位置可变参数与具名可变参数的规范化参数包；
@@ -224,7 +224,7 @@ Metadata 不得被普通 BIL 指令读取。需要在程序执行中使用的数
 
 BIL 指令中不得直接出现用户字面量。所有字面值和静态表必须在 `Resources` 中声明，再通过 `load`、结构化指令或 `hint` 引用。
 
-资源是不可变值。加载资源产生对应 Latte 值的语义副本；具体是否复制、共享或常量折叠由 Middleware 决定。
+资源是不可变值。加载资源产生对应 Rigi 值的语义副本；具体是否复制、共享或常量折叠由 Middleware 决定。
 
 ### 4.3 `LocalSymbols`
 
@@ -370,7 +370,7 @@ invoke.noret fn(core::Console$.static.println(value:.string)@.void) [$value]
 
 - `.void` 只能用作无结果方法的返回类型，不得声明普通变量；
 - `.breakid` 是结构化控制 capability，不是普通整数和值类型；
-- `.any`、`.object`、`.valuetype` 是 Latte 根类型的标准 BIL 别名；
+- `.any`、`.object`、`.valuetype` 是 Rigi 根类型的标准 BIL 别名；
 - `.string` 是**非 rich 值类型**（`SYNTAX.md` §3.1.2），赋值兼容与复制按值类型规则处理，不属于 `.object` 分支。它的物理表示是运行时特权裸缓冲区；BIL 与 BIL VM 一律按值语义（深拷贝）理解 `.string`，不得假设任何共享缓冲区、驻留或 copy-on-write 优化的存在——与「BIL 不得假设特定 GC 模型」同理。
 
 ### 6.3 标准类型构造
@@ -905,7 +905,7 @@ volatile
 
 `volatile` 表示该 block 内可观察操作的源码顺序必须被保留，不得进行改变其 volatile 语义的重排。具体 LLVM volatile/atomic lowering 由 Middleware 决定。
 
-`atomic[$lock]` 不是当前 Latte 语法或 BIL 标准的一部分，不得出现在标准 BIL 中。
+`atomic[$lock]` 不是当前 Rigi 语法或 BIL 标准的一部分，不得出现在标准 BIL 中。
 
 ### 9.7 `..init.wrapper`（实体 wrapper 初始化方法）
 
@@ -1014,9 +1014,9 @@ div OPR1 OPR2 RESULT
 opposite OPR RESULT
 ```
 
-对应 Latte 运算符：
+对应 Rigi 运算符：
 
-| BIL | Latte operator |
+| BIL | Rigi operator |
 |---|---|
 | `add` | `plus` |
 | `sub` | `minus` |
@@ -1026,7 +1026,7 @@ opposite OPR RESULT
 
 对于内建整数/浮点类型，Middleware 可以直接生成 LLVM 算术指令。对于用户类型，Middleware 按精确类型选择唯一运算实现。
 
-`add` 作用于两个 `.string` 操作数时是**内建字符串拼接**（Latte `String` 的 `+`）：按值语义产出一个新字符串，VM 内建执行，不属于 `latte_rt` 原生方法面（RUNTIME §26）。
+`add` 作用于两个 `.string` 操作数时是**内建字符串拼接**（Rigi `String` 的 `+`）：按值语义产出一个新字符串，VM 内建执行，不属于 `rigi_rt` 原生方法面（RUNTIME §26）。
 
 ### 11.3 逻辑运算
 
@@ -1106,7 +1106,7 @@ cast SOURCE RESULT type(TARGET_TYPE)
 cast.indirect SOURCE RESULT TYPEID_VAR
 ```
 
-`cast` 表示 Latte 的强制转换语义，包括：
+`cast` 表示 Rigi 的强制转换语义，包括：
 
 1. 源类型的 `castTo`；
 2. 目标类型的 `castFrom`；
@@ -1116,7 +1116,7 @@ cast.indirect SOURCE RESULT TYPEID_VAR
 
 - 值类型到 `Object`/`Any` 分支的装箱视图（`RUNTIME.md` §4）；
 - 派生类到基类/接口的视图改写（无数据移动）；
-- `T` 到 `.nullable<T>` 的装箱视图，以及 `.nullable<T>` 到 `T` 的展开——后者在源为 `null` 时抛 `core.CastException`（Latte 层 `nullableVar as T` 即此语义）。
+- `T` 到 `.nullable<T>` 的装箱视图，以及 `.nullable<T>` 到 `T` 的展开——后者在源为 `null` 时抛 `core.CastException`（Rigi 层 `nullableVar as T` 即此语义）。
 
 优先级与失败行为必须与 `SYNTAX.md` 一致。失败抛出 `core.CastException`。
 
@@ -1146,9 +1146,9 @@ type.with VALUE type(WRAPPER_TYPE) RESULT_BOOL
 type.with.indirect VALUE TYPEID_VAR RESULT_BOOL
 ```
 
-结果必须为 `.bool`。语义分别对应 Latte 的 `is`、`supers` 和 `with`，实际 TypeSheet 查询规则由 `RUNTIME.md` 定义。
+结果必须为 `.bool`。语义分别对应 Rigi 的 `is`、`supers` 和 `with`，实际 TypeSheet 查询规则由 `RUNTIME.md` 定义。
 
-enum case 判别检查（`S11`，2026-08-05 定稿；对应 Latte 的 `value is .Case`，语义由 `RUNTIME.md` §16.3 定义）：
+enum case 判别检查（`S11`，2026-08-05 定稿；对应 Rigi 的 `value is .Case`，语义由 `RUNTIME.md` §16.3 定义）：
 
 ```bil
 type.is.case VALUE case(CASE_SYMBOL) RESULT_BOOL
@@ -1373,7 +1373,7 @@ get.array COLLECTION INDEX RESULT
 set.array COLLECTION INDEX ELEMENT
 ```
 
-这些指令表示 Latte 的 `getAtIndex` / `setAtIndex` 语义，不预先降为方法调用。
+这些指令表示 Rigi 的 `getAtIndex` / `setAtIndex` 语义，不预先降为方法调用。
 
 验证器使用严格三元组查询：
 
@@ -1783,7 +1783,7 @@ ret VALUE
 throw EXCEPTION
 ```
 
-EXCEPTION 必须是 Latte 异常根类型的兼容值。兼容性若需要视图转换，frontend 必须先生成 `cast`。
+EXCEPTION 必须是 Rigi 异常根类型的兼容值。兼容性若需要视图转换，frontend 必须先生成 `cast`。
 
 ---
 
@@ -2128,7 +2128,7 @@ BIL VM 必须能够在不依赖 LLVM、Native ABI 和对象物理布局的情况
 
 ### 22.1 抽象值模型
 
-VM 可以使用 C# 对象、record、数组、字典或其他抽象数据结构表示 Latte 值。
+VM 可以使用 C# 对象、record、数组、字典或其他抽象数据结构表示 Rigi 值。
 
 VM 不需要模拟：
 
@@ -2178,9 +2178,9 @@ VM 执行到对 `native` 方法声明的 `invoke` / `invoke.noret` 时，不寻�
 
 | lib / 键 | symbol | 参数 | 行为 |
 |---|---|---|---|
-| `latte_rt` | `print` | `text: .string` | 将字符串写入标准输出 |
-| `latte_rt` | `printErr` | `text: .string` | 将字符串写入标准错误 |
-| `latte_rt` | `toString` | `value: .any` | 返回值的字符串表示（`SYNTAX.md` §3.8）：内建数值/`bool`/`char` 为标准文本；未覆写 `toString` 的对象为其类型 canonical 名 |
+| `rigi_rt` | `print` | `text: .string` | 将字符串写入标准输出 |
+| `rigi_rt` | `printErr` | `text: .string` | 将字符串写入标准错误 |
+| `rigi_rt` | `toString` | `value: .any` | 返回值的字符串表示（`SYNTAX.md` §3.8）：内建数值/`bool`/`char` 为标准文本；未覆写 `toString` 的对象为其类型 canonical 名 |
 | （方法 hook） | `core::Any$call???` | 见 §15.5 胖值签名 | 按 `symbol` 路由 wrapper 请求；无路由命中抛 `core::NoSuchMethodException` |
 
 `String` 的 `toString` 即值自身，不产生 native 调用；覆写了 `toString` 的类型经虚派发执行自身实现，不命中本表。`call???` 按方法符号命中本表（无 `(lib, symbol)` 对），无 BIL fn 定义。命中表之外的 `(lib, symbol)` 组合 VM 无法解释，必须拒绝执行并报错。该表只随 BIL 标准修订扩充；Middleware 的原生链接不受此表约束。

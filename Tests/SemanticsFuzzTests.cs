@@ -3,14 +3,14 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Text;
-using LatteCompiler.Bil;
+using RigiCompiler.Bil;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     /// <summary>
     /// 语义 fuzz 测试（S8d：重载解析 + 默认参数 + 具名实参重排）。
     ///
-    /// 固定种子随机生成多声明 Latte 源：函数重载组（名字池自然碰撞）、
+    /// 固定种子随机生成多声明 Rigi 源：函数重载组（名字池自然碰撞）、
     /// 默认参数（字面量/全局函数调用/简单构造/刻意类型不匹配）、具名实参
     /// （正名/未知名/重复填充/跳位）、可空形参与 null 实参、自定义类
     /// （init 重载/实例方法重载/open 继承 ranking 三人组），并混入少量
@@ -61,7 +61,7 @@ namespace LatteCompiler.Tests
 
             // 冒烟/性能标定可用环境变量缩小用例数；默认 3000（CI 全量）
             int caseCount = DefaultCaseCount;
-            if (int.TryParse(Environment.GetEnvironmentVariable("LATTE_SEMFUZZ_CASES"),
+            if (int.TryParse(Environment.GetEnvironmentVariable("RIGI_SEMFUZZ_CASES"),
                     out int overrideCount) && overrideCount > 0)
             {
                 caseCount = overrideCount;

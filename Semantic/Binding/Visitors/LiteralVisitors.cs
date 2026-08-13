@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 字面量绑定（S5 定型；S7f 字符串插值规范化，SYNTAX §3.8）。
     // 自旧 BindSession.BindLiteral/BindStringInterpolation/NullLiteralError 迁移，行为不变。

@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 只读绑定环境（M55 visitor 化协议）：全编译期不变，作为固定参数
     // 传入所有 visitor。诊断统一经 Error 落袋（P3 phase；可恢复诊断模型）。

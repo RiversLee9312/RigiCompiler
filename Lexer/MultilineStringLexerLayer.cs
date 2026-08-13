@@ -4,7 +4,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     /// <summary>
     /// 多行字符串层（""" 开界已由 QuoteLexerLayer 预消费，SYNTAX §3.3）：

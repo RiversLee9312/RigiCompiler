@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     /// <summary>
     /// 统一 AST 描述器（M31）：全部测试套件共用一份，替代原先 13+ 份分叉的

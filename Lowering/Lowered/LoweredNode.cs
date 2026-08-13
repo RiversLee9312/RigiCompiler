@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // LoweredTree（P4a 产物，SEMANTIC_ARCHITECTURE §6.1）：降级重写后的语义树。
     // 基类 LoweredNode 回指 Origin: BoundNode（必填）——完整调试链

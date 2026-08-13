@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // wrapper place 降级设施（S11c/M84，SYNTAX §14.5 + BIL §12.4/§13.3）：
     // 使用点与 proxy 体内共用同一 lowering 路径。

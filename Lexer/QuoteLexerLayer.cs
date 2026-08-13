@@ -4,7 +4,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     /// <summary>
     /// 引号分流层：单行字符串 "..."、空字符串 ""、多行字符串 """ 的统一入口。

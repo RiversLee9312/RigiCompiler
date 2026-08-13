@@ -1,6 +1,6 @@
 using System;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     // 变量声明解析测试：全管线驱动，断言 AST 树产物
     // （AstDescribe 精确描述串 + 结构事实）。

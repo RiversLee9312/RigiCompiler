@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.CompilerServices;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 符号图容器（SEMANTIC_ARCHITECTURE §4）：编译单元唯一符号对象图的持有者。
     // 构造期两阶段（P1 建壳、P2 填内容），P2 结束 Freeze 后声明侧不可变

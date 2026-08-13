@@ -172,14 +172,14 @@ return new ParserLayerResult.PushLayer(
 
 ## 运算符处理与无优先级规则
 
-Latte **没有运算符优先级**（SYNTAX.md §1.3）：未括号化的多个运算符必须报错。
+Rigi **没有运算符优先级**（SYNTAX.md §1.3）：未括号化的多个运算符必须报错。
 
 实现方式（每层表达式实例的两个开关）：
 
 - `allowBinaryOperator`：右操作数层与一元表达式结果置 `false`
 - `allowPrefixUnary`：一元操作数层置 `false`
 
-```latte
+```rigi
 var r = 1 + 2 * 3      // ❌ 报错：右操作数层不允许再消费二元运算符
 var r = 1 + (2 * 3)    // ✅ 括号组是全新的表达式层，恢复全部能力
 var v = not not x      // ❌ 报错：一元操作数层不允许连续一元
@@ -194,7 +194,7 @@ ExpressionParserLayer 在运算符状态下把相邻的 `>`、`=` 重组为对�
 
 ### 解析函数调用
 
-```latte
+```rigi
 foo(1, name = 2)
 ```
 
@@ -210,7 +210,7 @@ ExpressionParserLayer（target = 某 ExpressionRootASTNode）
 
 ### 解析后缀链
 
-```latte
+```rigi
 foo().bar\<i32>(x)
 ```
 
@@ -225,7 +225,7 @@ foo        → PathExpression（Head.Name = foo）
 
 ### 解析二元表达式
 
-```latte
+```rigi
 (1 + 2)
 ```
 

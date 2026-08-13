@@ -4,7 +4,7 @@ using System.IO;
 using System.Text;
 using System.Text.Json;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 日志级别：Verbose 是诊断噪音（默认不进控制台），Warning/Error 始终输出到控制台
     public enum LogLevel

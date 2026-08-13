@@ -1,6 +1,6 @@
 # Frontend 数据类型说明
 
-本文档描述 LatteCompiler Frontend 阶段**实际使用**的数据类型（与当前代码一致，2026-07-29 修订）。
+本文档描述 RigiCompiler Frontend 阶段**实际使用**的数据类型（与当前代码一致，2026-07-29 修订）。
 
 ## 1. 位置信息
 
@@ -21,7 +21,7 @@
 | **CharToken** | Char | 字符字面量（`'a'`，M34）：`Value` 为转义展开后的字符，无插值概念 |
 | **NotationToken** | Notation | 符号：单字符（`(`、`.`、`<` 等）或多字符（`==`、`->`、`<=` 等） |
 | **CommentToken** | Comment | 注释（Parser 主循环统一跳过，不参与语法） |
-| **LineBreakToken** | LineBreak | 换行（Latte 的语句终止符） |
+| **LineBreakToken** | LineBreak | 换行（Rigi 的语句终止符） |
 | **EndOfFileToken** | EndOfFile | 文件结束（M25 起为正式 token）：Lexer 在输出末尾追加，只由 RootParserLayer 消费 |
 
 注意：

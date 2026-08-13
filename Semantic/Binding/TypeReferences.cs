@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 函数体内类型引用解析（迁移自旧 BindSession.ResolveBodyTypeReference）：
     // 委托 NameResolver（P2 同设施，诊断按 P3 phase 落袋）。S9a 起返回

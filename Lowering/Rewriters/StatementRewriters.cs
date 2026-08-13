@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 语句降级（S5–S7e 恒等降级为主）。自旧 LowerSession.LowerStatement
     // 各分支迁移，行为不变。

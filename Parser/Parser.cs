@@ -5,7 +5,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // Token 处置方式（具名枚举，替代原 bool shouldKeepToken）
     public enum TokenDisposition

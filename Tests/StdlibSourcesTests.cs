@@ -1,16 +1,16 @@
 using System;
 using System.Linq;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     /// <summary>
     /// stdlib 内嵌源载入测试（M43，Semantic/StdlibSources.cs）：
-    /// 断言 stdlib/**/*.latte 确实经 EmbeddedResource 进入程序集，
+    /// 断言 stdlib/**/*.rg 确实经 EmbeddedResource 进入程序集，
     /// 且被当前 Lexer+Parser 完整接受。
     ///
-    /// 覆盖（S10 起六源：.bootstrap.latte / core/Console.latte /
-    /// core/collections.latte / core/coroutine.latte / core/disposable.latte /
-    /// core/exceptions.latte，按逻辑名 Ordinal 排序）：
+    /// 覆盖（S10 起六源：.bootstrap.rg / core/Console.rg /
+    /// core/collections.rg / core/coroutine.rg / core/disposable.rg /
+    /// core/exceptions.rg，按逻辑名 Ordinal 排序）：
     /// 1. ParseAll() 返回恰好六棵 RootASTNode，Span.sourceName 为逻辑名
     ///    映射形（&lt;stdlib&gt;/ 前缀，含点开头文件名的反推）
     /// 2. 结构断言：.bootstrap 顶层 137 个声明（namespace core +
@@ -54,17 +54,17 @@ namespace LatteCompiler.Tests
             // 逻辑名 Ordinal 排序：'.'(0x2E) < 'c'；'C'(0x43) < 'c'(0x63)；
             // collections < coroutine（'l' < 'r'）；d < e
             TestHarness.Check("sourceName[0]（点开头文件名反推）",
-                roots[0].Span?.sourceName ?? "<null>", "<stdlib>/.bootstrap.latte");
+                roots[0].Span?.sourceName ?? "<null>", "<stdlib>/.bootstrap.rg");
             TestHarness.Check("sourceName[1]",
-                roots[1].Span?.sourceName ?? "<null>", "<stdlib>/core/Console.latte");
+                roots[1].Span?.sourceName ?? "<null>", "<stdlib>/core/Console.rg");
             TestHarness.Check("sourceName[2]",
-                roots[2].Span?.sourceName ?? "<null>", "<stdlib>/core/collections.latte");
+                roots[2].Span?.sourceName ?? "<null>", "<stdlib>/core/collections.rg");
             TestHarness.Check("sourceName[3]",
-                roots[3].Span?.sourceName ?? "<null>", "<stdlib>/core/coroutine.latte");
+                roots[3].Span?.sourceName ?? "<null>", "<stdlib>/core/coroutine.rg");
             TestHarness.Check("sourceName[4]",
-                roots[4].Span?.sourceName ?? "<null>", "<stdlib>/core/disposable.latte");
+                roots[4].Span?.sourceName ?? "<null>", "<stdlib>/core/disposable.rg");
             TestHarness.Check("sourceName[5]",
-                roots[5].Span?.sourceName ?? "<null>", "<stdlib>/core/exceptions.latte");
+                roots[5].Span?.sourceName ?? "<null>", "<stdlib>/core/exceptions.rg");
 
             TestHarness.Blank();
         }
@@ -101,7 +101,7 @@ namespace LatteCompiler.Tests
             TestHarness.CheckTrue("带 ext 修饰符", fn.Modifiers.Contains(Keywords.EXT));
             TestHarness.CheckTrue("带 pub 修饰符", fn.Modifiers.Contains(Keywords.PUB));
             TestHarness.CheckTrue("Kind 是 Operator", fn.Kind == CallableKind.Operator);
-            TestHarness.CheckTrue("有 Body（Latte 自举实现）", fn.Body != null);
+            TestHarness.CheckTrue("有 Body（Rigi 自举实现）", fn.Body != null);
 
             // M52：core.Pair\<TKey, TValue\> 自举声明（SYNTAX §18 解构协议根）
             var pair = root.Declarations.Count > 2
@@ -214,7 +214,7 @@ namespace LatteCompiler.Tests
             }
         }
 
-        // println：Latte 层包装（有 Body、无注解、无 native）
+        // println：Rigi 层包装（有 Body、无注解、无 native）
         private static void CheckPrintln(ASTNode member)
         {
             var f = member as CallableDeclarationASTNode;
@@ -480,8 +480,8 @@ namespace LatteCompiler.Tests
 
             TestHarness.Check("Console Root 描述串", AstDescribe.Root(roots[1]),
                 "namespace core.io; pub class Console {" +
-                @"@NativeLibrary(Str(""latte_rt"")) @NativeSymbol(Str(""print"")) priv static native func print(text: String), " +
-                @"@NativeLibrary(Str(""latte_rt"")) @NativeSymbol(Str(""printErr"")) priv static native func printErr(text: String), " +
+                @"@NativeLibrary(Str(""rigi_rt"")) @NativeSymbol(Str(""print"")) priv static native func print(text: String), " +
+                @"@NativeLibrary(Str(""rigi_rt"")) @NativeSymbol(Str(""printErr"")) priv static native func printErr(text: String), " +
                 "pub static func println(text: String) {}}");
 
             TestHarness.Blank();

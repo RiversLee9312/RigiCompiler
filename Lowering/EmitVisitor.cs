@@ -1,6 +1,6 @@
-using LatteCompiler.Bil;
+using RigiCompiler.Bil;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 发射 visitor 的 CRTP 协议基类（M55 visitor 化协议，仿 Lowered 协议）：
     // 静态 Visit 为唯一入口——创建子类实例、模板化管理生命周期（Enter/Exit

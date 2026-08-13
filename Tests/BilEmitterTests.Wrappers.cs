@@ -1,7 +1,7 @@
 using System.Linq;
-using LatteCompiler.Bil;
+using RigiCompiler.Bil;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     // BilEmitter（P4b）wrapper 标记产物端到端（M88）：
     // - place 成员访问：Entity 读 = get.wrapper 值拷贝 + get.field；

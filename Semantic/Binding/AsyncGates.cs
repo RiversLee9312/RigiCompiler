@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // async 边界闸门 P3 侧（SYNTAX §4.5，S8f；仅分析侧，无 P4 面）：
     // async 调用把一批值从当前协程送进新协程，跨界类型必须共享安全

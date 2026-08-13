@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // switch 语句/表达式绑定（S7d，SYNTAX §7.2）。
     // 自旧 BindSession.BindSwitchStatement/BindSwitchExpression/BindSwitchMatch

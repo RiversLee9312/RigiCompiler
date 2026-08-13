@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // P3 函数体分析（SEMANTIC_ARCHITECTURE §5，SEMANTIC_ROADMAP S5 最小闭环）：
     // 以函数体为独立分析单位（函数间诊断互不阻断），AST 只读，产出 BoundTree。

@@ -2,7 +2,7 @@ using System;
 using System.IO;
 using System.Linq;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     // 字面量解析测试：全管线驱动，断言 AST 树产物
     // （AstDescribe 精确描述串 + 结构事实），不断言控制台文本。

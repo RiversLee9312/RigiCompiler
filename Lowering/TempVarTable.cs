@@ -1,6 +1,6 @@
-using LatteCompiler.Bil;
+using RigiCompiler.Bil;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 临时变量表（M65 Lowering 侧组件化拆分，自 EmitContext 迁出）：
     // 当前函数的临时变量（编译器保留名 .t0/.t1...，§5.1：用户标识符

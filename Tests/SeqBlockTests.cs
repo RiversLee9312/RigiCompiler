@@ -1,6 +1,6 @@
 using System;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     // Seq 块解析测试（roadmap #11，SYNTAX.md §6）：代码块独立驱动
     // （TestHarness.ParseBlock），断言 AstDescribe 精确描述串。

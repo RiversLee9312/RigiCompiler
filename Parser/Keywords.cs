@@ -1,6 +1,6 @@
 using System;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 关键字常量：Lexer 不区分关键字（一律输出 WordToken），
     // 由 Parser 各 Layer 比对这里的常量识别。

@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 流分析状态（M55 visitor 化协议）：definite assignment（M41 最小版；
     // S7b 分支合并；S7c-1 循环两规则）。S8b 的 smart cast 收窄事实表将长在

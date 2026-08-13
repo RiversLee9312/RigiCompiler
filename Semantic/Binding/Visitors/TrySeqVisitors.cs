@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // try/catch/finally（S7e，SYNTAX §8）、throw（S7d）、seq 双形态（S7e，§10）。
     // 自旧 BindSession.BindTry/BindThrow/BindSeqStatement/BindSeqExpression

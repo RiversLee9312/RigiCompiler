@@ -1,6 +1,6 @@
 using System;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     /// <summary>
     /// 变量声明解析器层
@@ -244,7 +244,7 @@ namespace LatteCompiler
             if (currentToken is LineBreakToken)
             {
                 // 仅声明，无类型标注和初始化
-                // 这在 Latte 中可能不合法，需要类型推断或显式类型
+                // 这在 Rigi 中可能不合法，需要类型推断或显式类型
                 context.LogWarning("Variable declaration without type or initializer");
                 state = State.Completed;
                 return new ParserLayerResult.PopLayer(TokenDisposition.Replay);

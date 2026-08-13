@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // BIL §11 intrinsic 键空间的运算维度：内建类型的「精确键」运算
     // （完整键 = opcode + operand type + declared result type，§11.1；
@@ -20,7 +20,7 @@ namespace LatteCompiler
     }
 
     // 硬编码 bootstrap（SEMANTIC_ARCHITECTURE §4.3）：类型层级根与基元类型
-    // 无处用源码声明，由符号图初始化时直接构造；core.latte（S10）负责其余
+    // 无处用源码声明，由符号图初始化时直接构造；core.rg（S10）负责其余
     // 标准库表层（core::Console、Task 等），走同一条 P1/P2 路径。
     // 层级事实（SYNTAX §3.1/§3.1.2，2026-07-29 修订后三条易错点）：
     //   String 与 Wrapper 都在 ValueType 分支下（String 非 rich、Wrapper 恒 rich）；
@@ -126,7 +126,7 @@ namespace LatteCompiler
                     BilIntrinsicOp.Add));
 
             // toString 机制（S7f，SYNTAX §3.8）：Any 承载全类型承诺（接口
-            // 形态无体）；Object 提供 open 默认实现，body 路由 latte_rt.toString
+            // 形态无体）；Object 提供 open 默认实现，body 路由 rigi_rt.toString
             // （native 声明形态，BIL §22.5 内建 hook——基元标准文本、未覆写
             // 对象返回类型 canonical 名）；用户类型 override 后经虚派发执行
             // 自身实现，不再命中原生面
@@ -138,7 +138,7 @@ namespace LatteCompiler
             Object.Methods.Add(new MethodSymbol("toString", MethodKind.Regular,
                 owner: Object, isNative: true, returnType: String)
             {
-                NativeLibrary = "latte_rt",
+                NativeLibrary = "rigi_rt",
                 NativeSymbol = "toString",
                 Accessibility = Accessibility.Public,
                 IsOpen = true,
@@ -156,7 +156,7 @@ namespace LatteCompiler
             Exception.Methods.Add(new MethodSymbol("getMessage", MethodKind.Regular,
                 owner: Exception, isNative: true, returnType: String)
             {
-                NativeLibrary = "latte_rt",
+                NativeLibrary = "rigi_rt",
                 NativeSymbol = "getMessage",
                 Accessibility = Accessibility.Public,
             });
@@ -167,7 +167,7 @@ namespace LatteCompiler
             CallWildcard = new MethodSymbol("call???", MethodKind.Regular,
                 owner: Any, isNative: true, returnType: Any)
             {
-                NativeLibrary = "latte_rt",
+                NativeLibrary = "rigi_rt",
                 NativeSymbol = "call???",
                 Accessibility = Accessibility.Public,
             };

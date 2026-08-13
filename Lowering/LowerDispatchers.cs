@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 类别分派器（P4a，M55 visitor 化协议）：Bound 节点 → 结构 visitor
     // 的唯一 switch 所在（对应旧 LowerSession 的 LowerStatement/LowerExpression

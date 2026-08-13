@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // 重载解析（S8d，SYNTAX §4.2）：source-level ranking 的唯一落点
     // （BIL §3.3——之后各层不再 ranking）。三步：结构过滤（静默）→

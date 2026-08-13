@@ -1,4 +1,4 @@
-namespace LatteCompiler
+namespace RigiCompiler
 {
     // P4a 降级驱动器：逐函数体创建独立 LowerContext 降级；合成局部
     // （.s/.b 前缀，脱糖产物）跟在源码局部之后收尾。遇失败（null）跳过

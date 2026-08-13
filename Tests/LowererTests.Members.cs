@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 
-namespace LatteCompiler.Tests
+namespace RigiCompiler.Tests
 {
     // LowererTests 成员访问组：实例成员恒等降级（this/实例调用/实例字段）
     // + 索引访问（读/写/复合三形态共用 LoweredIndexExpression）。
