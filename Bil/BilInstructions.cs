@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Text;
+using RigiCompiler.Bil.Vm;
 
 namespace RigiCompiler.Bil
 {
@@ -33,6 +34,12 @@ namespace RigiCompiler.Bil
         // §16.6 switch / §16.7 try 规范排版：首行只放前 N 个操作数，
         // 其余各占一行（默认 int.MaxValue = 全部同行，即单行形态）
         internal virtual int FirstLineOperandCount => int.MaxValue;
+
+        // VM 分发（BIL_VM_DESIGN §5）：子类覆盖 Execute；默认抛带 opcode 名
+        internal virtual void Execute(VmContext context, VmCoroutine coroutine)
+        {
+            throw new VmUnimplementedInstructionException(Opcode);
+        }
 
         // 指令行渲染：indent 为指令行基础缩进（函数 block 内两级）；
         // 多行形态的续行再进一级

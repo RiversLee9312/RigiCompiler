@@ -20,8 +20,9 @@ namespace RigiCompiler
     ///
     /// 两路输出相互独立：
     /// - 控制台：默认只显示 Warning 及以上；EnableVerbose() 后也显示 Verbose；
-    /// - 文件（--log-to）：不做级别过滤，所有级别（含 Verbose）都以 JSONL 写入，
-    ///   每行一条 {"ts":..., "level":..., "source":..., "message":...}，便于 grep 诊断。
+    /// - 文件（--log-to）：JSONL 每行一条 {"ts":..., "level":..., "source":..., "message":...}；
+    ///   与控制台同门槛——Verbose 默认不落盘（全量测试的逐 token verbose 会产生
+    ///   GB 级日志），需 EnableVerbose()（--verbose）显式开启。
     /// </summary>
     public static class Logger
     {
@@ -65,14 +66,17 @@ namespace RigiCompiler
             {
                 Console.Error.WriteLine($"{level.ToString().ToUpperInvariant()} [{source}]{message}");
             }
-            // 文件日志不过滤级别（用途就是从一大坨日志里 grep）
-            logWriter?.WriteLine(JsonSerializer.Serialize(new Dictionary<string, string>
+            // 文件日志与控制台同门槛：Verbose 默认不落盘（诊断时先 --verbose）
+            if (level != LogLevel.Verbose || VerboseEnabled)
             {
-                ["ts"] = DateTimeOffset.Now.ToString("o"),
-                ["level"] = level.ToString().ToLowerInvariant(),
-                ["source"] = source,
-                ["message"] = message
-            }));
+                logWriter?.WriteLine(JsonSerializer.Serialize(new Dictionary<string, string>
+                {
+                    ["ts"] = DateTimeOffset.Now.ToString("o"),
+                    ["level"] = level.ToString().ToLowerInvariant(),
+                    ["source"] = source,
+                    ["message"] = message
+                }));
+            }
         }
 
         // 测试用：关闭并释放日志文件、VerboseEnabled 归位

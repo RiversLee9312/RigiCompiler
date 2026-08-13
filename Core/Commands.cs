@@ -9,23 +9,23 @@ namespace RigiCompiler
 {
     // ===== 共享子命令插件（compile 与 test 注册同一个插件类，语义同 M26）=====
 
-    /// <summary>--verbose：控制台输出 verbose 级日志（默认只显示 Warning 及以上）。</summary>
+    /// <summary>--verbose：控制台与日志文件输出 verbose 级日志（默认只显示 Warning 及以上）。</summary>
     public class VerboseOption : ICommandLineOption
     {
         public CommandLineMask Mask { get; } = new()
         {
             Name = "--verbose",
-            Description = "控制台输出 verbose 级日志（默认只显示 Warning 及以上）",
+            Description = "控制台与日志文件输出 verbose 级日志（默认只显示 Warning 及以上）",
         };
     }
 
-    /// <summary>--log-to：全部日志（含 verbose）以 JSONL 写入指定文件。</summary>
+    /// <summary>--log-to：日志以 JSONL 写入指定文件（verbose 需同时传 --verbose）。</summary>
     public class LogToOption : ICommandLineOption
     {
         public CommandLineMask Mask { get; } = new()
         {
             Name = "--log-to",
-            Description = "全部日志（含 verbose）以 JSONL 写入指定文件",
+            Description = "日志以 JSONL 写入指定文件（verbose 需同时传 --verbose）",
             ArgsHint = "<路径>",
             MinArgs = 1,
             MaxArgs = 1,
@@ -153,6 +153,19 @@ namespace RigiCompiler
             MinArgs = 0,
             MaxArgs = int.MaxValue,
             MutuallyExclusive = { "--all" },
+        };
+    }
+
+    /// <summary>--suite-args：把可选参数传给被跑套件（未实现带参入口的套件忽略）。</summary>
+    public class SuiteArgsOption : ICommandLineOption
+    {
+        public CommandLineMask Mask { get; } = new()
+        {
+            Name = "--suite-args",
+            Description = "传给被跑套件的可选参数（未实现带参入口的套件忽略）",
+            ArgsHint = "[值...]",
+            MinArgs = 0,
+            MaxArgs = int.MaxValue,
         };
     }
 
@@ -397,6 +410,7 @@ namespace RigiCompiler
         {
             new AllOption(),
             new RunOption(),
+            new SuiteArgsOption(),
             new VerboseOption(),
             new LogToOption(),
         };
@@ -409,10 +423,12 @@ namespace RigiCompiler
                 return 2;
             }
 
+            IReadOnlyList<string>? suiteArgs = result.Get("--suite-args");
+
             if (result.Has("--all"))
             {
                 // 退出码即失败用例总数；clamp 防 Unix 8 位退出码回绕假绿
-                return Math.Min(Tests.TestRunner.RunAllSuites(), 255);
+                return Math.Min(Tests.TestRunner.RunAllSuites(suiteArgs), 255);
             }
 
             var runArgs = result.Get("--run");
@@ -429,7 +445,13 @@ namespace RigiCompiler
                     }
                     numbers.Add(n);
                 }
-                return Math.Min(Tests.TestRunner.RunSuites(numbers), 255);
+                return Math.Min(Tests.TestRunner.RunSuites(numbers, suiteArgs), 255);
+            }
+
+            if (suiteArgs != null)
+            {
+                Console.Error.WriteLine("--suite-args 仅在 test --run 或 test --all 时生效");
+                return 2;
             }
 
             // test 裸用 / --run 不带编号 → 打印套件菜单后退出

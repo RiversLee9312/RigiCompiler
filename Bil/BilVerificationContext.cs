@@ -119,6 +119,9 @@ namespace RigiCompiler.Bil
         private static readonly string[] PredefinedFields =
         {
             "core::Exception#message@.string",
+            // Array.length（V2.5，RUNTIME §26）：bootstrap const 字段，
+            // 内建类型不进符号段，get.field 需要可解析
+            "core::Array#length@.i32",
         };
 
         private void IndexSymbolSection(List<BilSymbolSectionEntry> section, bool isLocal)
@@ -235,6 +238,14 @@ namespace RigiCompiler.Bil
                     }
                     var inner = typeRef.Substring(
                         constructor.Length, typeRef.Length - constructor.Length - 1);
+                    if (constructor == ".fieldid<")
+                    {
+                        var fieldIdParts = SplitTopLevel(inner);
+                        return fieldIdParts.Count == 3
+                            && IsResolvableTypeRef(fieldIdParts[0])
+                            && IsResolvableTypeRef(fieldIdParts[1])
+                            && (fieldIdParts[2] == "instance" || fieldIdParts[2] == "static");
+                    }
                     foreach (var part in SplitTopLevel(inner))
                     {
                         if (!IsResolvableTypeRef(part))
@@ -645,6 +656,60 @@ namespace RigiCompiler.Bil
             isStatic = name.StartsWith(".static.");
             fieldType = symbol.Substring(at + 1);
             return true;
+        }
+
+        // §21.8 / §14.3：沿 extends 链收集 enum struct 实例字段（静态字段
+        // 不在本规则）。构造形态 `EnumType<...>` 经 DeclarationKeyOf 反查
+        // 定义级 Kind（SYNTAX §12 允许泛型 enum struct）；字段类型含
+        // `.generic<` 的参数位跳过（验证期无法判定是否 enum）。声明查不到
+        // 则该跳降级跳过（防误报）。
+        public List<string> CollectEnumStructInstanceFields(string typeRef)
+        {
+            var result = new List<string>();
+            var seen = new HashSet<string>();
+            var visited = new HashSet<string>();
+            var current = typeRef;
+            while (visited.Add(DeclarationKeyOf(current)))
+            {
+                if (!TryGetTypeDeclaration(current, out var declaration))
+                {
+                    break;
+                }
+                foreach (var member in declaration.Members)
+                {
+                    if (member is not BilSimpleMemberDeclaration simple
+                        || simple.Kind != BilMemberKind.Field)
+                    {
+                        continue;
+                    }
+                    if (!TryParseFieldSymbol(simple.Symbol, out _, out var isStatic,
+                            out var fieldType)
+                        || isStatic
+                        || !IsEnumStructFieldType(fieldType)
+                        || !seen.Add(simple.Symbol))
+                    {
+                        continue;
+                    }
+                    result.Add(simple.Symbol);
+                }
+                if (declaration.ExtendsType == null)
+                {
+                    break;
+                }
+                current = declaration.ExtendsType;
+            }
+            return result;
+        }
+
+        // 字段类型是否为 enum struct（精确名或构造形态反查 Kind）
+        public bool IsEnumStructFieldType(string typeRef)
+        {
+            if (typeRef.IndexOf(".generic<", StringComparison.Ordinal) >= 0)
+            {
+                return false;
+            }
+            return TryGetTypeDeclaration(typeRef, out var declaration)
+                && declaration.Kind == BilTypeKind.EnumStruct;
         }
 
         // 访问器符号形态判定（§5.2：完整 canonical 方法符号中

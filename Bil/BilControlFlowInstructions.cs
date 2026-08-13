@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using RigiCompiler.Bil.Vm;
 
 namespace RigiCompiler.Bil
 {
@@ -21,6 +22,12 @@ namespace RigiCompiler.Bil
         internal override IReadOnlyList<BilOperand> Operands =>
             Value == null ? (IReadOnlyList<BilOperand>)new BilOperand[0]
                 : new BilOperand[] { Value };
+
+        internal override void Execute(VmContext context, VmCoroutine coroutine)
+        {
+            var value = Value == null ? null : coroutine.ReadVar(Value.Name);
+            coroutine.Complete(VmCompletion.Return(value));
+        }
     }
 
     // §16.2 条件：if COND blk(THEN) blk(ELSE)|none
@@ -45,6 +52,24 @@ namespace RigiCompiler.Bil
                 Condition, new BilBlockOperand(ThenBlock),
                 ElseBlock != null ? new BilBlockOperand(ElseBlock) : BilNoneOperand.Instance,
             };
+
+        internal override void Execute(VmContext context, VmCoroutine coroutine)
+        {
+            var condition = coroutine.ReadVar(Condition.Name);
+            if (condition is not VmBool flag)
+            {
+                throw new VmException("if 条件不是 .bool：" + condition.TypeRef);
+            }
+            if (flag.Value)
+            {
+                coroutine.PushBlock(ThenBlock);
+                return;
+            }
+            if (ElseBlock != null)
+            {
+                coroutine.PushBlock(ElseBlock);
+            }
+        }
     }
 
     // §16.3/§16.4 循环：loop|loop.rev COND blk(BODY) blk(ENUM)|none
@@ -78,6 +103,11 @@ namespace RigiCompiler.Bil
                 EnumBlock != null ? new BilBlockOperand(EnumBlock) : BilNoneOperand.Instance,
                 new BilBlockOperand(Judge), BreakId,
             };
+
+        internal override void Execute(VmContext context, VmCoroutine coroutine)
+        {
+            coroutine.EnterLoop(this);
+        }
     }
 
     // §16.5 break：break BREAKID
@@ -93,6 +123,16 @@ namespace RigiCompiler.Bil
         internal override string Opcode => "break";
         internal override IReadOnlyList<BilOperand> Operands =>
             new BilOperand[] { BreakId };
+
+        internal override void Execute(VmContext context, VmCoroutine coroutine)
+        {
+            var token = coroutine.ReadVar(BreakId.Name);
+            if (token is not VmBreakId breakId)
+            {
+                throw new VmException("break 操作数不是 .breakid：" + token.TypeRef);
+            }
+            coroutine.Complete(VmCompletion.Break(breakId));
+        }
     }
 
     // §16.5 continue：continue BREAKID
@@ -108,6 +148,20 @@ namespace RigiCompiler.Bil
         internal override string Opcode => "continue";
         internal override IReadOnlyList<BilOperand> Operands =>
             new BilOperand[] { BreakId };
+
+        internal override void Execute(VmContext context, VmCoroutine coroutine)
+        {
+            var token = coroutine.ReadVar(BreakId.Name);
+            if (token is not VmBreakId breakId)
+            {
+                throw new VmException("continue 操作数不是 .breakid：" + token.TypeRef);
+            }
+            if (!breakId.AllowsContinue)
+            {
+                throw new VmException("continue 不能引用 switch 的 .breakid");
+            }
+            coroutine.Complete(VmCompletion.Continue(breakId));
+        }
     }
 
     // §16.6 switch：switch SELECTOR res(TABLE) [blk(ITEM)...] blk(DEFAULT)
@@ -150,6 +204,40 @@ namespace RigiCompiler.Bil
                 };
             }
         }
+
+        internal override void Execute(VmContext context, VmCoroutine coroutine)
+        {
+            if (Table is not BilSwitchTableResource table)
+            {
+                throw new VmException("switch 的表不是 switch-table：" + Table.Name);
+            }
+            var selector = coroutine.ReadVar(Selector.Name);
+            var index = -1;
+            for (var i = 0; i < table.Elements.Count; i++)
+            {
+                var key = context.LoadSwitchElement(table.SelectorTypeRef, table.Elements[i]);
+                if (ValuesEqual(selector, key))
+                {
+                    index = i;
+                    break;
+                }
+            }
+            coroutine.EnterSwitch(this, index);
+        }
+
+        private static bool ValuesEqual(VmValue left, VmValue right)
+        {
+            if (left is VmNull || right is VmNull)
+            {
+                return left is VmNull && right is VmNull;
+            }
+            if (!VmTypeOps.IsPrimitiveOperand(left) || !VmTypeOps.IsPrimitiveOperand(right))
+            {
+                return false;
+            }
+            var result = BilComputeExecution.EvalBinary(BilBinaryOp.CmpEq, left, right);
+            return result is VmBool flag && flag.Value;
+        }
     }
 
     // §16.1 block 调用：call blk(BLOCK)（不建栈帧，block 落尾自然
@@ -166,6 +254,11 @@ namespace RigiCompiler.Bil
         internal override string Opcode => "call";
         internal override IReadOnlyList<BilOperand> Operands =>
             new BilOperand[] { new BilBlockOperand(Block) };
+
+        internal override void Execute(VmContext context, VmCoroutine coroutine)
+        {
+            coroutine.PushBlock(Block);
+        }
     }
 
     // §16.7 try/catch/finally：try blk(BODY) SLOT res(CATCH_TABLE)
@@ -196,6 +289,11 @@ namespace RigiCompiler.Bil
                 FinallyBlock != null ? new BilBlockOperand(FinallyBlock)
                     : BilNoneOperand.Instance,
             };
+
+        internal override void Execute(VmContext context, VmCoroutine coroutine)
+        {
+            coroutine.EnterTry(this);
+        }
     }
 
     // §16.9 throw：throw EXCEPTION
@@ -211,5 +309,12 @@ namespace RigiCompiler.Bil
         internal override string Opcode => "throw";
         internal override IReadOnlyList<BilOperand> Operands =>
             new BilOperand[] { Exception };
+
+        internal override void Execute(VmContext context, VmCoroutine coroutine)
+        {
+            var value = coroutine.ReadVar(Exception.Name);
+            coroutine.Complete(VmCompletion.Throw(new VmException(
+                "throw " + value.TypeRef, value)));
+        }
     }
 }

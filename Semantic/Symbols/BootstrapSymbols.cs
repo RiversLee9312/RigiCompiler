@@ -229,6 +229,15 @@ namespace RigiCompiler
             arraySetAtIndex.Parameters.Add(new ParameterSymbol("element", arrayElementT));
             ArrayDefinition.Methods.Add(arraySetAtIndex);
 
+            // Array\<T\>.length（V2.5，RUNTIME §26）：const 字段，VM 直读
+            // VmArray.Length；无 backing 存储——不进对象字段表。
+            var arrayLength = new FieldSymbol("length", owner: ArrayDefinition,
+                fieldType: Int32, isConst: true)
+            {
+                Accessibility = Accessibility.Public,
+            };
+            ArrayDefinition.Fields.Add(arrayLength);
+
             // Map\<K, V\>（S9d-2）：BIL 标准构造 .map<K, V>（§6.3）——具名
             // 泛型可变参数的隐藏参数形态（BIL §7.1：.generic.TValues =
             // .map<.string, .typeid>）；shared 按类型实参推导（同 Array）

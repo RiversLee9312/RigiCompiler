@@ -3,8 +3,9 @@ namespace RigiCompiler
     // ===== 子任务 3b：native 函数声明检查（SYNTAX §4.6）=====
     //
     // 自旧 DeclarationResolver.ResolveSession.CheckNativeDeclarations/
-    // CheckNativeFunction 迁移，行为不变。白名单集合的构建自旧方法体开头
-    // 上移到 Enter——Enter/Exit 协议在本 pass 的真实落地（任务级状态）。
+    // CheckNativeFunction 迁移。V2.5 放行 generic+native（alloc_array
+    // 经 .generic.T 物化 typeid，RUNTIME §26 / BIL §22.5）；其余规则不变。
+    // 白名单集合的构建自旧方法体开头上移到 Enter。
     internal sealed class NativeDeclarationChecker : ResolverVisitor<NativeDeclarationChecker>
     {
         // 参数/返回类型白名单（§4.6：§3.2 基本类型中的整数/浮点/bool/char/String）
@@ -77,11 +78,6 @@ namespace RigiCompiler
             {
                 env.Error(entry.Node.Span, $"Native function '{method.Name}' cannot be 'async'");
             }
-            if (fn.GenericParameters != null)
-            {
-                env.Error(fn.GenericParameters.Span ?? entry.Node.Span,
-                    $"Native function '{method.Name}' cannot declare generic parameters");
-            }
             // 同容器内不得与同名函数构成重载（容器表不含 P1 重复声明，此处比的是合法重载）；
             // ext 成员尚未注册进目标容器（ExtensionRegistrar 在本阶段之后）——按目标
             // 类型既有成员表 + 同目标其余 pending ext 比对（自身计入一次，> 1 即重载）；
@@ -122,7 +118,7 @@ namespace RigiCompiler
             }
             // 返回类型白名单（§4.6，S10 放宽）：基本类型，或用户声明的引用类型
             // （class/interface，含构造类型——运行时原生方法面可返回其句柄，
-            // 如 core.coroutine.sleep → EventAlarm；值类型、泛型参数与可变参数
+            // 如 core.coroutine.make_sleep_alarm → EventAlarm；值类型、泛型参数与可变参数
             // 仍不允许；FFI 参数/返回值 ABI 细节归 Middleware，编译器只做形状校验）
             if (method.ReturnType is not null and not ErrorTypeSymbol &&
                 !compatibleTypes.Contains(method.ReturnType))

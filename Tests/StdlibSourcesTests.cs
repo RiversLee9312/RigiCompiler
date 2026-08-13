@@ -18,8 +18,9 @@ namespace RigiCompiler.Tests
     ///    四家族 132 个 abstract class + Cell/ReadonlyCell，SYNTAX §5.2）；
     ///    Console（namespace core.io + pub class + 3 callable 成员，
     ///    native 双注解）；collections（namespace core.collections +
-    ///    2 interface + 2 class）；coroutine（namespace core.coroutine +
-    ///    9 class + sleep native 全局函数）；disposable（namespace core +
+    ///    2 interface + 2 class + alloc_array/arrayOf/arrayOfElements）；
+    ///    coroutine（namespace core.coroutine +
+    ///    9 class + make_sleep_alarm native + sleep 包装）；disposable（namespace core +
     ///    IDisposable 接口）；exceptions（namespace core + 4 异常子类）
     /// 3. Console 整棵 Root 的 AstDescribe 描述串精确比对
     /// </summary>
@@ -247,10 +248,10 @@ namespace RigiCompiler.Tests
             // 顶层：namespace + IEnumerator/IEnumerable 接口 +
             // RangeEnumerator\<T\> 抽象基类 + RangeEnumeratorI32/RangeI32
             // 具体类（共 6 个声明，S9f）
-            TestHarness.CheckTrue("顶层恰好 6 个声明（namespace + 2 interface + " +
-                "abstract 基类 + 2 class）",
-                root.Declarations.Count == 6, $"实际 {root.Declarations.Count}");
-            if (root.Declarations.Count < 6) { TestHarness.Blank(); return; }
+            TestHarness.CheckTrue("顶层恰好 9 个声明（namespace + 2 interface + " +
+                "abstract 基类 + 2 class + alloc_array/arrayOf/arrayOfElements）",
+                root.Declarations.Count == 9, $"实际 {root.Declarations.Count}");
+            if (root.Declarations.Count < 9) { TestHarness.Blank(); return; }
 
             var ns = root.Declarations[0] as NamespaceDeclarationASTNode;
             TestHarness.CheckTrue("首声明是 namespace core.collections",
@@ -272,6 +273,22 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("声明[5] 是 class RangeI32",
                 root.Declarations[5] is ClassDeclarationASTNode cls2
                 && cls2.ClassName == "RangeI32");
+            TestHarness.CheckTrue("声明[6] 是 alloc_array native",
+                root.Declarations[6] is CallableDeclarationASTNode alloc
+                && alloc.Name == "alloc_array"
+                && alloc.Modifiers.Contains(Keywords.NATIVE)
+                && alloc.Body == null
+                && alloc.GenericParameters?.Parameters.Count == 1);
+            TestHarness.CheckTrue("声明[7] 是 arrayOf",
+                root.Declarations[7] is CallableDeclarationASTNode arrayOf
+                && arrayOf.Name == "arrayOf"
+                && arrayOf.Body != null
+                && arrayOf.GenericParameters?.Parameters.Count == 1);
+            TestHarness.CheckTrue("声明[8] 是 arrayOfElements",
+                root.Declarations[8] is CallableDeclarationASTNode arrayOfElements
+                && arrayOfElements.Name == "arrayOfElements"
+                && arrayOfElements.Body != null
+                && arrayOfElements.GenericParameters?.Parameters.Count == 1);
 
             // 接口方法无体（§11）；抽象基类有 abstract 方法；实现类成员带 override
             if (root.Declarations[1] is InterfaceDeclarationASTNode enumerator)
@@ -301,7 +318,7 @@ namespace RigiCompiler.Tests
             TestHarness.Blank();
         }
 
-        // ===== 2d. coroutine 结构（namespace + 9 class + sleep native）=====
+        // ===== 2d. coroutine 结构（namespace + 9 class + make_sleep_alarm + sleep）=====
         private static void TestCoroutineStructure()
         {
             TestHarness.Section("Structure: namespace core.coroutine");
@@ -318,11 +335,11 @@ namespace RigiCompiler.Tests
 
             // 顶层：namespace + Task\<TResult\>/Task/Executor/MainExecutor/
             // ComputeExecutor/IOExecutor/PollingAlarm/EventAlarm/
-            // CoroutineLocal\<TValue\> 9 个 class + sleep native 全局函数
-            // （共 11 个声明，S10）
-            TestHarness.CheckTrue("顶层恰好 11 个声明（namespace + 9 class + func）",
-                root.Declarations.Count == 11, $"实际 {root.Declarations.Count}");
-            if (root.Declarations.Count < 11) { TestHarness.Blank(); return; }
+            // CoroutineLocal\<TValue\> 9 个 class + make_sleep_alarm native
+            // + sleep Rigi 包装（共 12 个声明，RUNTIME §19.4）
+            TestHarness.CheckTrue("顶层恰好 12 个声明（namespace + 9 class + 2 func）",
+                root.Declarations.Count == 12, $"实际 {root.Declarations.Count}");
+            if (root.Declarations.Count < 12) { TestHarness.Blank(); return; }
 
             var ns = root.Declarations[0] as NamespaceDeclarationASTNode;
             TestHarness.CheckTrue("首声明是 namespace core.coroutine",
@@ -368,12 +385,19 @@ namespace RigiCompiler.Tests
                 && coroutineLocal.ClassName == "CoroutineLocal"
                 && coroutineLocal.GenericParameters?.Parameters.Count == 1
                 && coroutineLocal.Modifiers.Contains(Keywords.ABSTRACT));
-            TestHarness.CheckTrue("声明[10] 是 sleep native 全局函数（返回 EventAlarm）",
-                root.Declarations[10] is CallableDeclarationASTNode sleep
+            TestHarness.CheckTrue("声明[10] 是 make_sleep_alarm priv native（返回 EventAlarm）",
+                root.Declarations[10] is CallableDeclarationASTNode makeSleep
+                && makeSleep.Name == "make_sleep_alarm"
+                && makeSleep.Modifiers.Contains(Keywords.NATIVE)
+                && makeSleep.Modifiers.Contains(Keywords.PRIV)
+                && makeSleep.Body == null
+                && makeSleep.Annotations.Count == 2
+                && makeSleep.ReturnType != null);
+            TestHarness.CheckTrue("声明[11] 是 sleep Rigi 包装（非 native，有体）",
+                root.Declarations[11] is CallableDeclarationASTNode sleep
                 && sleep.Name == "sleep"
-                && sleep.Modifiers.Contains(Keywords.NATIVE)
-                && sleep.Body == null
-                && sleep.Annotations.Count == 2
+                && !sleep.Modifiers.Contains(Keywords.NATIVE)
+                && sleep.Body != null
                 && sleep.ReturnType != null);
 
             TestHarness.Blank();

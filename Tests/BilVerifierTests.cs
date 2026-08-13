@@ -33,6 +33,10 @@ namespace RigiCompiler.Tests
     /// .typeid<.any>、.pair ↔ core::Pair 嵌套）正例；构造类型实参不同/
     /// 同名不同命名空间/嵌套构造实参不同/同名不同元数负例（手工模块，
     /// set.var 两端比对）。
+    /// §21.8 enum struct 实例字段 init 全路径 set.field（§14.3 无零值）：
+    /// 正例 5（单路径 / if 双分支 / loop.rev / try-finally / 派生写基类字段）
+    /// + 负例 5（未写 / if 单分支 / 正向 loop / set 前 get / 另一 init 重载未写）
+    /// + 回归 2（非 enum 字段不受约束、enum 局部仍走 DA）。
     /// </summary>
     public static class BilVerifierTests
     {
@@ -117,6 +121,83 @@ namespace RigiCompiler.Tests
                 "        return 1\n" +
                 "    } finally (f) {\n" +
                 "    }\n" +
+                "    return 0\n" +
+                "}\n");
+            Positive("enum 局部变量 DA（读前已写）",
+                "enum struct Color {}[Red, Blue]\n" +
+                "pub func main(): i32 {\n" +
+                "    var c: Color = .Red\n" +
+                "    return 0\n" +
+                "}\n");
+            Positive("enum struct 实例字段 init 单路径 set.field（全管线）",
+                "enum struct Color {}[Red, Blue]\n" +
+                "pub class Flag {\n" +
+                "    pub var kind: Color\n" +
+                "    pub init(k: Color) { kind = k }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var f = new Flag(.Red)\n" +
+                "    return 0\n" +
+                "}\n");
+            Positive("enum struct 实例字段 init if 双分支 set.field（全管线）",
+                "enum struct Color {}[Red, Blue]\n" +
+                "pub class Flag {\n" +
+                "    pub var kind: Color\n" +
+                "    pub init(k: Color, alt: Color, which: bool) {\n" +
+                "        if (which) { kind = k } else { kind = alt }\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var f = new Flag(.Red, .Blue, true)\n" +
+                "    return 0\n" +
+                "}\n");
+            Positive("enum struct 实例字段 init loop.rev set.field（全管线）",
+                "enum struct Color {}[Red, Blue]\n" +
+                "pub class Flag {\n" +
+                "    pub var kind: Color\n" +
+                "    pub init(k: Color) {\n" +
+                "        do { kind = k } while (false)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var f = new Flag(.Red)\n" +
+                "    return 0\n" +
+                "}\n");
+            Positive("enum struct 实例字段 init try-finally set.field（全管线）",
+                "enum struct Color {}[Red, Blue]\n" +
+                "pub class Flag {\n" +
+                "    pub var kind: Color\n" +
+                "    pub init(k: Color) {\n" +
+                "        try { var n: i32 = 0 } finally (e) { kind = k }\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var f = new Flag(.Red)\n" +
+                "    return 0\n" +
+                "}\n");
+            Positive("派生 init 设置基类 enum struct 字段（全管线）",
+                "enum struct Color {}[Red, Blue]\n" +
+                "pub open class Base {\n" +
+                "    pub var kind: Color\n" +
+                "    pub init(k: Color) { kind = k }\n" +
+                "}\n" +
+                "pub class Derived : Base {\n" +
+                "    pub init(k: Color) {\n" +
+                "        super(k)\n" +
+                "        kind = k\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var d = new Derived(.Red)\n" +
+                "    return 0\n" +
+                "}\n");
+            Positive("非 enum 实例字段 init 不强制 set.field（回归）",
+                "pub class Box {\n" +
+                "    pub var n: i32\n" +
+                "    pub init() { }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var b = new Box()\n" +
                 "    return 0\n" +
                 "}\n");
             Positive("cast/is/typeOf",
@@ -252,11 +333,15 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckBilInvalid("..super 缺 $.this 首参",
                 SuperInvokeModule(validReceiver: false), "首实参必须精确为 $.this");
 
+            // ===== V3：indirect 全家 + getid.field 手工模块 =====
+            TestV3IndirectForms();
+
             // ===== M109a：..init.wrapper / new.wrapped / new.wrapper.* / companion =====
             TestInitWrapperAndNewWrapped();
 
             // ===== 负例：非法模块按规则命中 =====
             NegativeCases();
+            TestEnumStructInstanceFieldInit();
 
             return TestHarness.Summary("BilVerifier");
         }
@@ -296,6 +381,52 @@ namespace RigiCompiler.Tests
                 CompanionNotSingletonModule(), "singleton 与 shared");
             BilTestHarness.CheckBilInvalid("..companion 无实例方法",
                 CompanionNoMethodModule(), "至少有一个实例方法");
+        }
+
+        private static void TestV3IndirectForms()
+        {
+            TestHarness.Section("BilVerifier V3 indirect");
+            BilTestHarness.CheckBilValid("cast.indirect 正例",
+                V3IndirectModule(
+                    new CastIndirectInstruction(BilOp.Var("obj"), BilOp.Var("casted"),
+                        BilOp.Var("tid"), isSafe: false)));
+            BilTestHarness.CheckBilValid("cast.safe.indirect 正例",
+                V3IndirectModule(
+                    new CastIndirectInstruction(BilOp.Var("obj"), BilOp.Var("safe"),
+                        BilOp.Var("tid"), isSafe: true)));
+            BilTestHarness.CheckBilValid("get.wrapper.indirect 正例",
+                V3IndirectModule(
+                    new GetWrapperIndirectInstruction(BilOp.Var("obj"), BilOp.Var("wid"),
+                        BilOp.Var("w"))));
+            BilTestHarness.CheckBilValid("getid.field 正例",
+                V3IndirectModule(
+                    new GetIdFieldInstruction(BilOp.Field("Box#n@.i32"), BilOp.Var("fid"))));
+            BilTestHarness.CheckBilValid("get/set.field.indirect 正例",
+                V3IndirectModule(
+                    new SetFieldIndirectInstruction(BilOp.Var("x"), BilOp.Var("obj"),
+                        BilOp.Var("fid")),
+                    new GetFieldIndirectInstruction(BilOp.Var("obj"), BilOp.Var("x"),
+                        BilOp.Var("fid"))));
+            BilTestHarness.CheckBilValid("get/set.field.static.indirect 正例",
+                V3IndirectModule(
+                    new SetFieldStaticIndirectInstruction(BilOp.Var("x"), BilOp.Var("tid"),
+                        BilOp.Var("sfid")),
+                    new GetFieldStaticIndirectInstruction(BilOp.Var("x"), BilOp.Var("tid"),
+                        BilOp.Var("sfid"))));
+            BilTestHarness.CheckBilValid("new.indirect 正例",
+                V3IndirectModule(
+                    new NewIndirectInstruction(BilOp.Var("tid"), BilOp.Var("obj"),
+                        Array.Empty<BilVariableOperand>())));
+
+            BilTestHarness.CheckBilInvalid("getid.field 字段不可解析",
+                V3IndirectModule(
+                    new GetIdFieldInstruction(BilOp.Field("Box#ghost@.i32"), BilOp.Var("fid"))),
+                "getid.field 的字段符号不可解析");
+            BilTestHarness.CheckBilInvalid("cast.indirect typeid 类型不符",
+                V3IndirectModule(
+                    new CastIndirectInstruction(BilOp.Var("obj"), BilOp.Var("casted"),
+                        BilOp.Var("x"), isSafe: false)),
+                "cast.indirect typeid");
         }
 
         // 带 Logged wrapper 的 Service + 有参 ..init.wrapper（level:.string）
@@ -806,11 +937,28 @@ namespace RigiCompiler.Tests
 
         private static void Positive(string label, string userSource)
         {
-            var (unit, module, _) = BilTestHarness.EmitBilUnit(userSource);
+            CompilationUnit unit;
+            BilModule module;
+            try
+            {
+                (unit, module, _) = BilTestHarness.EmitBilUnit(userSource);
+            }
+            catch (Exception ex)
+            {
+                TestHarness.CheckTrue(label + "：全管线未抛异常", false, ex.ToString());
+                return;
+            }
             TestHarness.CheckTrue(label + "：全管线无诊断", !unit.Diagnostics.HasErrors,
                 string.Join("; ", unit.Diagnostics.Diagnostics.Select(
                     d => $"{d.Phase}: {d.Message}")));
-            BilTestHarness.CheckBilValid(label + "：验证器零错误", module);
+            try
+            {
+                BilTestHarness.CheckBilValid(label + "：验证器零错误", module);
+            }
+            catch (Exception ex)
+            {
+                TestHarness.CheckTrue(label + "：验证器未抛异常", false, ex.ToString());
+            }
         }
 
         // 最小合法模块：fn($main()@.i32) + 声明 + entry block（load R_0 → ret）
@@ -1794,6 +1942,68 @@ namespace RigiCompiler.Tests
             return module;
         }
 
+        // V3：Box 类型 + typeid/fieldid 槽，供 indirect 全家校验
+        private static BilModule V3IndirectModule(params BilInstruction[] body)
+        {
+            var module = new BilModule();
+            module.Resources.Add(new BilScalarResource("R_0", BilScalarType.I32, "0"));
+            var box = new BilTypeDeclaration("Box", BilTypeKind.Class,
+                new BilAccessibilityModifier(BilAccessibility.Public),
+                new BilWrappedModifier("Wrap"));
+            box.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field, "Box#n@.i32",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            box.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.StaticField,
+                "Box#.static.count@.i32",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            box.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method, "Box$init()@.void",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilKeywordModifier(BilKeyword.Init),
+                }));
+            module.LocalSymbols.Add(box);
+            var wrap = new BilTypeDeclaration("Wrap", BilTypeKind.Wrapper,
+                new BilAccessibilityModifier(BilAccessibility.Public),
+                new BilKeywordModifier(BilKeyword.Rich));
+            module.LocalSymbols.Add(wrap);
+            module.LocalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "$main()@.i32",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            var main = new BilFunction("$main()@.i32");
+            main.Args.Add(new BilArgDeclaration(".return", ".i32"));
+            main.Vars.Add(new BilVarDeclaration(".i32", "x"));
+            main.Vars.Add(new BilVarDeclaration("Box", "obj"));
+            main.Vars.Add(new BilVarDeclaration("Box", "casted"));
+            main.Vars.Add(new BilVarDeclaration(".nullable<Box>", "safe"));
+            main.Vars.Add(new BilVarDeclaration(".typeid<Box>", "tid"));
+            main.Vars.Add(new BilVarDeclaration(".typeid<Wrap>", "wid"));
+            main.Vars.Add(new BilVarDeclaration("Wrap", "w"));
+            main.Vars.Add(new BilVarDeclaration(".fieldid<Box, .i32, instance>", "fid"));
+            main.Vars.Add(new BilVarDeclaration(".fieldid<Box, .i32, static>", "sfid"));
+            var entry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            entry.Instructions.Add(new LoadInstruction(module.Resources[0], BilOp.Var("x")));
+            entry.Instructions.Add(new GetIdTypeInstruction(BilOp.Type("Box"), BilOp.Var("tid")));
+            entry.Instructions.Add(new GetIdTypeInstruction(BilOp.Type("Wrap"), BilOp.Var("wid")));
+            entry.Instructions.Add(new GetIdFieldInstruction(BilOp.Field("Box#n@.i32"),
+                BilOp.Var("fid")));
+            entry.Instructions.Add(new GetIdFieldInstruction(BilOp.Field("Box#.static.count@.i32"),
+                BilOp.Var("sfid")));
+            entry.Instructions.Add(new NewInstruction(BilOp.Type("Box"), BilOp.Var("obj"),
+                Array.Empty<BilVariableOperand>()));
+            entry.Instructions.AddRange(body);
+            entry.Instructions.Add(new RetInstruction(BilOp.Var("x")));
+            main.Blocks.Add(entry);
+            module.Functions.Add(main);
+            var init = new BilFunction("Box$init()@.void");
+            init.Args.Add(new BilArgDeclaration(".return", ".void"));
+            init.Args.Add(new BilArgDeclaration(".this", "Box"));
+            var initEntry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            initEntry.Instructions.Add(new RetInstruction());
+            init.Blocks.Add(initEntry);
+            module.Functions.Add(init);
+            return module;
+        }
+
         // M88：proxy 模板 fn 含 get.self + invoke fn(..inner) 正例
         private static BilModule ProxyTemplateModule(bool includeSelfInner)
         {
@@ -2093,6 +2303,284 @@ namespace RigiCompiler.Tests
             entry.Instructions.Add(new RetInstruction(BilOp.Var("x")));
             main.Blocks.Add(entry);
             module.Functions.Add(main);
+            return module;
+        }
+
+        // §21.8 enum struct 实例字段 init 全路径 set.field（§14.3 无零值）
+        private const string EnumColorType = "com.example::Color";
+        private const string EnumHostType = "com.example::Host";
+        private const string EnumKindField = "com.example::Host#kind@com.example::Color";
+        private const string EnumHostInit = "com.example::Host$init(c:com.example::Color)@.void";
+        private const string EnumBaseType = "com.example::Base";
+        private const string EnumBaseKindField = "com.example::Base#kind@com.example::Color";
+        private const string EnumDerivedType = "com.example::Derived";
+        private const string EnumDerivedInit = "com.example::Derived$init(c:com.example::Color)@.void";
+
+        private static void TestEnumStructInstanceFieldInit()
+        {
+            TestHarness.Section("BilVerifier §21.8 enum struct 实例字段");
+
+            BilTestHarness.CheckBilValid("init 单路径 set.field",
+                EnumFieldInitModule((module, init, entry) =>
+                {
+                    entry.Instructions.Add(new SetFieldInstruction(BilOp.Var("c"),
+                        BilOp.Var(".this"), BilOp.Field(EnumKindField)));
+                    entry.Instructions.Add(new RetInstruction());
+                }));
+
+            BilTestHarness.CheckBilValid("if 双分支都 set.field",
+                EnumFieldInitModule((module, init, entry) =>
+                {
+                    var thenBlock = new BilBlock("then");
+                    thenBlock.Instructions.Add(new SetFieldInstruction(BilOp.Var("c"),
+                        BilOp.Var(".this"), BilOp.Field(EnumKindField)));
+                    var elseBlock = new BilBlock("else");
+                    elseBlock.Instructions.Add(new SetFieldInstruction(BilOp.Var("c"),
+                        BilOp.Var(".this"), BilOp.Field(EnumKindField)));
+                    init.Blocks.Add(thenBlock);
+                    init.Blocks.Add(elseBlock);
+                    entry.Instructions.Add(new LoadInstruction(
+                        (BilScalarResource)module.Resources[1], BilOp.Var("cond")));
+                    entry.Instructions.Add(new IfInstruction(
+                        BilOp.Var("cond"), thenBlock, elseBlock));
+                    entry.Instructions.Add(new RetInstruction());
+                }));
+
+            BilTestHarness.CheckBilValid("loop.rev body 内 set.field（至少一次）",
+                EnumFieldInitModule((module, init, entry) =>
+                {
+                    var body = new BilBlock("body");
+                    body.Instructions.Add(new SetFieldInstruction(BilOp.Var("c"),
+                        BilOp.Var(".this"), BilOp.Field(EnumKindField)));
+                    var judge = new BilBlock("judge");
+                    judge.Instructions.Add(new LoadInstruction(
+                        (BilScalarResource)module.Resources[1], BilOp.Var("cond")));
+                    init.Blocks.Add(body);
+                    init.Blocks.Add(judge);
+                    entry.Instructions.Add(new LoopInstruction(
+                        BilOp.Var("cond"), body, null, judge, BilOp.Var("brk"), isRev: true));
+                    entry.Instructions.Add(new RetInstruction());
+                }));
+
+            BilTestHarness.CheckBilValid("try-finally 在 finally set.field",
+                EnumFieldInitModule((module, init, entry) =>
+                {
+                    var catchTable = new BilCatchTableResource("R_EF",
+                        Array.Empty<BilCatchEntry>());
+                    module.Resources.Add(catchTable);
+                    var tryBody = new BilBlock("tryBody");
+                    var finallyBlock = new BilBlock("finally");
+                    finallyBlock.Instructions.Add(new SetFieldInstruction(BilOp.Var("c"),
+                        BilOp.Var(".this"), BilOp.Field(EnumKindField)));
+                    init.Blocks.Add(tryBody);
+                    init.Blocks.Add(finallyBlock);
+                    entry.Instructions.Add(new TryInstruction(tryBody, BilOp.Var("ex"),
+                        catchTable, finallyBlock));
+                    entry.Instructions.Add(new RetInstruction());
+                }));
+
+            BilTestHarness.CheckBilValid("派生 init 设置基类 enum 字段",
+                EnumFieldDerivedInitModule(setBaseField: true));
+
+            BilTestHarness.CheckBilInvalid("init 完全没 set.field",
+                EnumFieldInitModule((module, init, entry) =>
+                {
+                    entry.Instructions.Add(new RetInstruction());
+                }), "全部执行路径");
+
+            BilTestHarness.CheckBilInvalid("if 只在一分支 set.field",
+                EnumFieldInitModule((module, init, entry) =>
+                {
+                    var thenBlock = new BilBlock("then");
+                    thenBlock.Instructions.Add(new SetFieldInstruction(BilOp.Var("c"),
+                        BilOp.Var(".this"), BilOp.Field(EnumKindField)));
+                    var elseBlock = new BilBlock("else");
+                    init.Blocks.Add(thenBlock);
+                    init.Blocks.Add(elseBlock);
+                    entry.Instructions.Add(new LoadInstruction(
+                        (BilScalarResource)module.Resources[1], BilOp.Var("cond")));
+                    entry.Instructions.Add(new IfInstruction(
+                        BilOp.Var("cond"), thenBlock, elseBlock));
+                    entry.Instructions.Add(new RetInstruction());
+                }), "全部执行路径");
+
+            BilTestHarness.CheckBilInvalid("正向 loop body 内 set.field（可能零次）",
+                EnumFieldInitModule((module, init, entry) =>
+                {
+                    var body = new BilBlock("body");
+                    body.Instructions.Add(new SetFieldInstruction(BilOp.Var("c"),
+                        BilOp.Var(".this"), BilOp.Field(EnumKindField)));
+                    var judge = new BilBlock("judge");
+                    judge.Instructions.Add(new LoadInstruction(
+                        (BilScalarResource)module.Resources[1], BilOp.Var("cond")));
+                    init.Blocks.Add(body);
+                    init.Blocks.Add(judge);
+                    entry.Instructions.Add(new LoadInstruction(
+                        (BilScalarResource)module.Resources[1], BilOp.Var("cond")));
+                    entry.Instructions.Add(new LoopInstruction(
+                        BilOp.Var("cond"), body, null, judge, BilOp.Var("brk"), isRev: false));
+                    entry.Instructions.Add(new RetInstruction());
+                }), "全部执行路径");
+
+            BilTestHarness.CheckBilInvalid("set.field 之前 get.field",
+                EnumFieldInitModule((module, init, entry) =>
+                {
+                    entry.Instructions.Add(new GetFieldInstruction(BilOp.Var(".this"),
+                        BilOp.Var("tmp"), BilOp.Field(EnumKindField)));
+                    entry.Instructions.Add(new SetFieldInstruction(BilOp.Var("c"),
+                        BilOp.Var(".this"), BilOp.Field(EnumKindField)));
+                    entry.Instructions.Add(new RetInstruction());
+                }), "于 set.field 之前被 get.field 读取");
+
+            BilTestHarness.CheckBilInvalid("另一 init 重载未 set.field",
+                EnumFieldTwoInitModule(), "全部执行路径");
+
+            BilTestHarness.CheckBilValid("非 enum 实例字段不受本规则约束",
+                NonEnumFieldInitModule());
+            BilTestHarness.CheckBilInvalid("enum 局部变量仍走 DA（读前未写）",
+                EnumLocalUnreadModule(), "在赋值前被读取");
+        }
+
+        private static BilModule EnumFieldInitModule(
+            Action<BilModule, BilFunction, BilBlock> fillInit)
+        {
+            var module = new BilModule();
+            module.Resources.Add(new BilScalarResource("R_0", BilScalarType.I32, "0"));
+            module.Resources.Add(new BilScalarResource("R_T", BilScalarType.Bool, "true"));
+            var color = new BilTypeDeclaration(EnumColorType, BilTypeKind.EnumStruct,
+                new BilAccessibilityModifier(BilAccessibility.Public));
+            color.Members.Add(new BilCaseDeclaration(EnumColorType + ".Red"));
+            module.LocalSymbols.Add(color);
+            var host = new BilTypeDeclaration(EnumHostType, BilTypeKind.Class,
+                new BilAccessibilityModifier(BilAccessibility.Public));
+            host.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field, EnumKindField,
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            host.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method, EnumHostInit,
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilKeywordModifier(BilKeyword.Init),
+                }));
+            module.LocalSymbols.Add(host);
+            var init = new BilFunction(EnumHostInit);
+            init.Args.Add(new BilArgDeclaration(".return", ".void"));
+            init.Args.Add(new BilArgDeclaration(".this", EnumHostType));
+            init.Args.Add(new BilArgDeclaration("c", EnumColorType));
+            init.Vars.Add(new BilVarDeclaration(".bool", "cond"));
+            init.Vars.Add(new BilVarDeclaration(".breakid", "brk"));
+            init.Vars.Add(new BilVarDeclaration(EnumColorType, "tmp"));
+            init.Vars.Add(new BilVarDeclaration(".nullable<core::Exception>", "ex"));
+            var entry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            init.Blocks.Add(entry);
+            module.Functions.Add(init);
+            fillInit(module, init, entry);
+            return module;
+        }
+
+        private static BilModule EnumFieldDerivedInitModule(bool setBaseField)
+        {
+            var module = new BilModule();
+            var color = new BilTypeDeclaration(EnumColorType, BilTypeKind.EnumStruct,
+                new BilAccessibilityModifier(BilAccessibility.Public));
+            color.Members.Add(new BilCaseDeclaration(EnumColorType + ".Red"));
+            module.LocalSymbols.Add(color);
+            var baseType = new BilTypeDeclaration(EnumBaseType, BilTypeKind.Class,
+                new BilAccessibilityModifier(BilAccessibility.Public),
+                new BilKeywordModifier(BilKeyword.Open));
+            baseType.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field,
+                EnumBaseKindField,
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            module.LocalSymbols.Add(baseType);
+            var derived = new BilTypeDeclaration(EnumDerivedType, BilTypeKind.Class,
+                new BilAccessibilityModifier(BilAccessibility.Public));
+            derived.ExtendsType = EnumBaseType;
+            derived.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                EnumDerivedInit,
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilKeywordModifier(BilKeyword.Init),
+                }));
+            module.LocalSymbols.Add(derived);
+            var init = new BilFunction(EnumDerivedInit);
+            init.Args.Add(new BilArgDeclaration(".return", ".void"));
+            init.Args.Add(new BilArgDeclaration(".this", EnumDerivedType));
+            init.Args.Add(new BilArgDeclaration("c", EnumColorType));
+            var entry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            if (setBaseField)
+            {
+                entry.Instructions.Add(new SetFieldInstruction(BilOp.Var("c"),
+                    BilOp.Var(".this"), BilOp.Field(EnumBaseKindField)));
+            }
+            entry.Instructions.Add(new RetInstruction());
+            init.Blocks.Add(entry);
+            module.Functions.Add(init);
+            return module;
+        }
+
+        private static BilModule EnumFieldTwoInitModule()
+        {
+            var module = EnumFieldInitModule((m, init, entry) =>
+            {
+                entry.Instructions.Add(new SetFieldInstruction(BilOp.Var("c"),
+                    BilOp.Var(".this"), BilOp.Field(EnumKindField)));
+                entry.Instructions.Add(new RetInstruction());
+            });
+            var host = (BilTypeDeclaration)module.LocalSymbols[1];
+            var emptyInitSym = EnumHostType + "$init()@.void";
+            host.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method, emptyInitSym,
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilKeywordModifier(BilKeyword.Init),
+                }));
+            var empty = new BilFunction(emptyInitSym);
+            empty.Args.Add(new BilArgDeclaration(".return", ".void"));
+            empty.Args.Add(new BilArgDeclaration(".this", EnumHostType));
+            var emptyEntry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            emptyEntry.Instructions.Add(new RetInstruction());
+            empty.Blocks.Add(emptyEntry);
+            module.Functions.Add(empty);
+            return module;
+        }
+
+        private static BilModule NonEnumFieldInitModule()
+        {
+            var module = new BilModule();
+            var host = new BilTypeDeclaration(EnumHostType, BilTypeKind.Class,
+                new BilAccessibilityModifier(BilAccessibility.Public));
+            host.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field,
+                EnumHostType + "#n@.i32",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            var initSym = EnumHostType + "$init()@.void";
+            host.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method, initSym,
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilKeywordModifier(BilKeyword.Init),
+                }));
+            module.LocalSymbols.Add(host);
+            var init = new BilFunction(initSym);
+            init.Args.Add(new BilArgDeclaration(".return", ".void"));
+            init.Args.Add(new BilArgDeclaration(".this", EnumHostType));
+            var entry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            entry.Instructions.Add(new RetInstruction());
+            init.Blocks.Add(entry);
+            module.Functions.Add(init);
+            return module;
+        }
+
+        private static BilModule EnumLocalUnreadModule()
+        {
+            var module = MinimalModule(out _, out _);
+            var color = new BilTypeDeclaration(EnumColorType, BilTypeKind.EnumStruct,
+                new BilAccessibilityModifier(BilAccessibility.Public));
+            color.Members.Add(new BilCaseDeclaration(EnumColorType + ".Red"));
+            module.LocalSymbols.Add(color);
+            module.Functions[0].Vars.Add(new BilVarDeclaration(EnumColorType, "c"));
+            module.Functions[0].Vars.Add(new BilVarDeclaration(EnumColorType, "d"));
+            module.Functions[0].Blocks[0].Instructions.Insert(1,
+                new GetVarInstruction(BilOp.Var("c"), BilOp.Var("d")));
             return module;
         }
 

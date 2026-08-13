@@ -1185,13 +1185,17 @@ namespace RigiCompiler.Tests
             TestHarness.CheckSemanticError("native 变量", u3d.Diagnostics,
                 "'native' can only be applied to functions");
 
-            // 组合禁忌：async / 泛型参数列表 / 同容器同名重载
+            // 组合禁忌：async / 同容器同名重载（V2.5 放行 generic+native）
             var (u4, _) = ResolveUnit("@NativeLibrary(\"rt\")\nasync native func f(): i32\n");
             TestHarness.CheckSemanticError("native × async", u4.Diagnostics,
                 "Native function 'f' cannot be 'async'");
-            var (u5, _) = ResolveUnit("@NativeLibrary(\"rt\")\nnative func f\\<T>(x: i32)\n");
-            TestHarness.CheckSemanticError("native × 泛型参数列表", u5.Diagnostics,
-                "Native function 'f' cannot declare generic parameters");
+            var (u5, _) = ResolveUnit(
+                "@NativeLibrary(\"rigi_rt\")\n@NativeSymbol(\"alloc_array\")\n" +
+                "priv native func alloc_array\\<T>(size: i32): Array\\<T>\n");
+            CheckNoErrors("native × 泛型（V2.5 放行）", u5);
+            var alloc = u5.Symbols.GlobalNamespace.Methods.Single(m => m.Name == "alloc_array");
+            TestHarness.CheckTrue("泛型 native 标记位",
+                alloc.IsNative && alloc.GenericParameters.Count == 1);
             var (u6, _) = ResolveUnit(
                 "@NativeLibrary(\"rt\")\nnative func dup(x: i32)\n" +
                 "func dup(x: i32, y: i32) { }\n");

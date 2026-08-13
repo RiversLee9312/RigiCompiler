@@ -1,4 +1,5 @@
-// Rigi 标准库：core.collections 迭代协议（SYNTAX.md §7.3/§15.3）。
+// Rigi 标准库：core.collections 迭代协议（SYNTAX.md §7.3/§15.3）
+// 与 Array\<T\> 构造入口（RUNTIME.md §26）。
 // IEnumerable\<T\>/IEnumerator\<T\> 是 C# 风格双接口（可重入，每次
 // iterate() 产生独立枚举器）。RangeEnumerator\<T\> 是范围循环枚举器的
 // 泛型抽象基类（S9f）：共享状态机骨架（value_/end_/started_ 字段与
@@ -71,4 +72,27 @@ pub class RangeI32 implements IEnumerable\<i32> {
     pub override func iterate(): IEnumerator\<i32> {
         return new RangeEnumeratorI32(start_, end_)
     }
+}
+
+// Array\<T\> 合法构造入口（RUNTIME.md §26 / BIL_STANDARD.md §22.5）：
+// 用户代码只走 arrayOf / arrayOfElements；alloc_array 是私有 native，
+// 经泛型 hidden .generic.T 物化 typeid，VM hook 分配零值数组。
+// arrayOfElements 体内视角 elements 已是 Array\<T\>（M78）。
+@NativeLibrary("rigi_rt")
+@NativeSymbol("alloc_array")
+priv native func alloc_array\<T>(size: i32): Array\<T>
+
+pub func arrayOf\<T>(size: i32): Array\<T> {
+    return alloc_array\<T>(size)
+}
+
+pub func arrayOfElements\<T>(elements: T...): Array\<T> {
+    var result = alloc_array\<T>(elements.length)
+    var i: i32 = elements.length
+    i = i - elements.length
+    while (i < elements.length) {
+        result[i] = elements[i]
+        i = i + 1
+    }
+    return result
 }

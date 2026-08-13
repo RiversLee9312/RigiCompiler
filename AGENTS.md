@@ -456,6 +456,7 @@ RigiCompiler/
 | `docs/compiler/syntax/EXPRESSION_ARCHITECTURE.md` | 表达式架构专项设计 | ⭐⭐ |
 | `docs/compiler/semantic/SEMANTIC_ARCHITECTURE.md` | 语义分析与 BIL 生成架构（中端） | ⭐⭐⭐ |
 | `docs/compiler/semantic/SEMANTIC_ROADMAP.md` | 语义分析路线图 | ⭐⭐ |
+| `docs/compiler/vm/BIL_VM_DESIGN.md` | BIL VM（S14）设计定稿 | ⭐⭐⭐ |
 | `Parser/Parser.cs` | 层栈式 Parser 的核心协议 | ⭐⭐⭐ |
 | `Lexer/Tokens.cs` / `Parser/Keywords.cs` / `AST/ASTNode.cs` | Token/关键字/AST 基类等核心数据结构（M30 拆分自原 `Core/Utilities.cs`） | ⭐⭐⭐ |
 

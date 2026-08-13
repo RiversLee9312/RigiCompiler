@@ -885,6 +885,10 @@ spawn 仍归 ⑥）。stdlib 保持源码类型面，Coroutine/frame/fence 采�
 （`rigi_rt` 的 `print`/`printErr` → stdout/stderr），hello world
 端到端执行断言须产生真实输出，无需任何原生库。
 
+设计定稿见 `docs/compiler/vm/BIL_VM_DESIGN.md`（值模型、真并发
+Executor/显式 Step 循环、家族基类 Execute 分发、indirect 先于控制流、
+时序不变测试纪律、V1–V5 实施切片）。
+
 ---
 
 ## 与前端的接口备忘

@@ -14,10 +14,11 @@ namespace RigiCompiler.Bil
     // capability、声明侧符号规则。
     //
     // 检查按 §21 类别分文件（partial class）：
-    //   BilVerifier.cs          —— 入口 + §21.1 词法与语法
-    //   BilVerifier.Symbols.cs  —— §21.2 符号 + §21.7 泛型参数包 + §21.8 声明侧
-    //   BilVerifier.Types.cs    —— §21.3 类型（逐指令 switch）
-    //   BilVerifier.Flow.cs     —— §21.4 DA + §21.5 控制流 + §21.6 breakid
+    //   BilVerifier.cs             —— 入口 + §21.1 词法与语法
+    //   BilVerifier.Symbols.cs     —— §21.2 符号 + §21.7 泛型参数包 + §21.8 声明侧
+    //   BilVerifier.Types.cs       —— §21.3 类型（逐指令 switch）
+    //   BilVerifier.Flow.cs        —— §21.4 DA + §21.5 控制流 + §21.6 breakid
+    //   BilVerifier.EnumFields.cs  —— §21.8 enum struct 实例字段 init 全路径写入
     // §21.9（VM 可执行性）是 VM 语义要求，非静态可判，不在静态验证范围。
     //
     // 防误报降级原则：验证器宁可漏报不可误报——含 .generic< 的 typeid 位置

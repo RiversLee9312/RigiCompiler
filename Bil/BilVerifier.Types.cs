@@ -157,6 +157,11 @@ namespace RigiCompiler.Bil
                     reads.Add(cast.Source);
                     writes.Add(cast.Target);
                     return true;
+                case CastIndirectInstruction castIndirect:
+                    reads.Add(castIndirect.Source);
+                    reads.Add(castIndirect.TypeId);
+                    writes.Add(castIndirect.Target);
+                    return true;
                 case DirectTypeCheckInstruction directTypeCheck:
                     reads.Add(directTypeCheck.Value);
                     writes.Add(directTypeCheck.Target);
@@ -173,6 +178,11 @@ namespace RigiCompiler.Bil
                 case GetWrapperInstruction getWrapper:
                     reads.Add(getWrapper.Value);
                     writes.Add(getWrapper.Target);
+                    return true;
+                case GetWrapperIndirectInstruction getWrapperIndirect:
+                    reads.Add(getWrapperIndirect.Value);
+                    reads.Add(getWrapperIndirect.WrapperTypeId);
+                    writes.Add(getWrapperIndirect.Target);
                     return true;
                 case GetWrapperFieldInstruction getWrapperField:
                     reads.Add(getWrapperField.Object);
@@ -191,6 +201,34 @@ namespace RigiCompiler.Bil
                     return true;
                 case GetIdTypeInstruction getIdType:
                     writes.Add(getIdType.Target);
+                    return true;
+                case GetIdFieldInstruction getIdField:
+                    writes.Add(getIdField.Target);
+                    return true;
+                case GetFieldIndirectInstruction getFieldIndirect:
+                    reads.Add(getFieldIndirect.Object);
+                    reads.Add(getFieldIndirect.FieldId);
+                    writes.Add(getFieldIndirect.Target);
+                    return true;
+                case SetFieldIndirectInstruction setFieldIndirect:
+                    reads.Add(setFieldIndirect.Source);
+                    reads.Add(setFieldIndirect.Object);
+                    reads.Add(setFieldIndirect.FieldId);
+                    return true;
+                case GetFieldStaticIndirectInstruction getFieldStaticIndirect:
+                    reads.Add(getFieldStaticIndirect.TypeId);
+                    reads.Add(getFieldStaticIndirect.FieldId);
+                    writes.Add(getFieldStaticIndirect.Target);
+                    return true;
+                case SetFieldStaticIndirectInstruction setFieldStaticIndirect:
+                    reads.Add(setFieldStaticIndirect.Source);
+                    reads.Add(setFieldStaticIndirect.TypeId);
+                    reads.Add(setFieldStaticIndirect.FieldId);
+                    return true;
+                case NewIndirectInstruction newIndirect:
+                    reads.Add(newIndirect.TypeId);
+                    reads.AddRange(newIndirect.Arguments);
+                    writes.Add(newIndirect.Target);
                     return true;
                 case InvokeIndirectInstruction invokeIndirect:
                     reads.Add(invokeIndirect.CallTarget);
@@ -315,6 +353,10 @@ namespace RigiCompiler.Bil
                         location, "cast 结果", errors);
                     break;
 
+                case CastIndirectInstruction castIndirect:
+                    VerifyCastIndirect(context, castIndirect, location, errors);
+                    break;
+
                 case DirectTypeCheckInstruction directTypeCheck:
                     VerifyResolvableType(context, directTypeCheck.TargetType.TypeRef, location, errors);
                     CheckType(context, VarType(context, directTypeCheck.Target), ".bool", location,
@@ -342,6 +384,12 @@ namespace RigiCompiler.Bil
                     VerifyWrapperType(context, getWrapper.WrapperType.TypeRef, location, errors);
                     CheckType(context, VarType(context, getWrapper.Target),
                         getWrapper.WrapperType.TypeRef, location, "get.wrapper 结果", errors);
+                    break;
+
+                case GetWrapperIndirectInstruction getWrapperIndirect:
+                    CheckType(context, VarType(context, getWrapperIndirect.WrapperTypeId),
+                        ".typeid", location, "get.wrapper.indirect typeid", errors,
+                        prefixMatch: true);
                     break;
 
                 case GetWrapperFieldInstruction getWrapperField:
@@ -383,6 +431,48 @@ namespace RigiCompiler.Bil
                     VerifyResolvableType(context, getIdType.TargetType.TypeRef, location, errors);
                     CheckType(context, VarType(context, getIdType.Target), ".typeid", location,
                         "getid.type 结果", errors, prefixMatch: true);
+                    break;
+
+                case GetIdFieldInstruction getIdField:
+                    if (!context.Module.FieldSymbols.Contains(getIdField.Field.Symbol))
+                    {
+                        errors.Add(new BilVerificationError("21.2", location,
+                            $"getid.field 的字段符号不可解析 \"{getIdField.Field.Symbol}\""));
+                    }
+                    CheckType(context, VarType(context, getIdField.Target), ".fieldid", location,
+                        "getid.field 结果", errors, prefixMatch: true);
+                    break;
+
+                case GetFieldIndirectInstruction getFieldIndirect:
+                    VerifyFieldIndirect(context, getFieldIndirect.Object, getFieldIndirect.Target,
+                        getFieldIndirect.FieldId, isWrite: false, location, errors);
+                    break;
+
+                case SetFieldIndirectInstruction setFieldIndirect:
+                    VerifyFieldIndirect(context, setFieldIndirect.Object, setFieldIndirect.Source,
+                        setFieldIndirect.FieldId, isWrite: true, location, errors);
+                    break;
+
+                case GetFieldStaticIndirectInstruction getFieldStaticIndirect:
+                    VerifyStaticFieldIndirect(context, getFieldStaticIndirect.Target,
+                        getFieldStaticIndirect.TypeId, getFieldStaticIndirect.FieldId,
+                        isWrite: false, location, errors);
+                    break;
+
+                case SetFieldStaticIndirectInstruction setFieldStaticIndirect:
+                    VerifyStaticFieldIndirect(context, setFieldStaticIndirect.Source,
+                        setFieldStaticIndirect.TypeId, setFieldStaticIndirect.FieldId,
+                        isWrite: true, location, errors);
+                    break;
+
+                case NewIndirectInstruction newIndirect:
+                    CheckType(context, VarType(context, newIndirect.TypeId), ".typeid",
+                        location, "new.indirect typeid", errors, prefixMatch: true);
+                    if (TryTypeIdBound(VarType(context, newIndirect.TypeId), out var newBound))
+                    {
+                        CheckType(context, VarType(context, newIndirect.Target), newBound,
+                            location, "new.indirect 结果", errors);
+                    }
                     break;
 
                 case GetFieldInstruction getField:
@@ -972,8 +1062,8 @@ namespace RigiCompiler.Bil
             // hidden 形态的参数跳过比对）。
             // S9e：泛型隐藏参数（.generic.*）已产出——取被调 fn 定义的 .args
             // 隐藏条目数，receiver 后前导跳过相同个数；S9d：值包（.vargs/
-            // .kwargs）在普通参数之后逐条比对（无 fn 定义的 native/external
-            // 无隐藏参数，降级 0）
+            // .kwargs）在普通参数之后逐条比对。无 fn 的 native：符号参数段
+            // 中的 .generic.* 计入 hidden（V2.5 alloc_array）。
             var expected = new List<(string Name, string TypeRef)>();
             foreach (var parameter in parameters)
             {
@@ -998,6 +1088,12 @@ namespace RigiCompiler.Bil
                         packArguments.Add(arg);
                     }
                 }
+            }
+            else
+            {
+                // native / external 无 fn：固定泛型 hidden 写在符号参数段
+                // （V2.5 alloc_array：.generic.T:.typeid）
+                genericHiddenCount = parameters.Count(p => p.Name.StartsWith(".generic."));
             }
             var argumentIndex = 0;
             // owner 段以 "::" 结尾的是命名空间前缀（全局函数），无 receiver
@@ -2112,7 +2208,9 @@ namespace RigiCompiler.Bil
 
         // 当前 fn 是否 init 方法：§8.4 以声明的 init 修饰符标识（init 的
         // canonical 是普通 $init(...)@.void 形态，不作判定依据）；fn 定义
-        // 必对应 LocalSymbols 声明（§21.2），查不到声明即非 init
+        // 必对应 LocalSymbols 声明（§21.2），查不到声明即非 init。
+        // §21.8 enum struct 实例字段全路径 set.field 见
+        // BilVerifier.EnumFields.cs（同用本判定）。
         private static bool IsInitFunction(BilFunctionContext context)
         {
             return context.Module.MethodDeclarations.TryGetValue(context.Function.Symbol,
@@ -2217,6 +2315,124 @@ namespace RigiCompiler.Bil
         }
 
         // ===== 类型比较原语 =====
+
+        // §12.2 cast.indirect：TYPEID_VAR 为 .typeid<TBound>，RESULT 匹配边界
+        // （safe 时为 .nullable<TBound>）
+        private static void VerifyCastIndirect(BilFunctionContext context,
+            CastIndirectInstruction instruction, string location, List<BilVerificationError> errors)
+        {
+            CheckType(context, VarType(context, instruction.TypeId), ".typeid", location,
+                "cast.indirect typeid", errors, prefixMatch: true);
+            if (!TryTypeIdBound(VarType(context, instruction.TypeId), out var bound))
+            {
+                return;
+            }
+            CheckType(context, VarType(context, instruction.Target),
+                instruction.IsSafe ? ".nullable<" + bound + ">" : bound,
+                location, "cast.indirect 结果", errors);
+        }
+
+        // §13.5：FIELDID_VAR 携带 owner/值类型/instance|static；据此检查 OBJECT 与值槽
+        private static void VerifyFieldIndirect(BilFunctionContext context,
+            BilVariableOperand objectVar, BilVariableOperand valueVar,
+            BilVariableOperand fieldIdVar, bool isWrite, string location,
+            List<BilVerificationError> errors)
+        {
+            var fieldIdType = VarType(context, fieldIdVar);
+            CheckType(context, fieldIdType, ".fieldid", location,
+                "间接字段 fieldid", errors, prefixMatch: true);
+            if (!TryParseFieldIdType(fieldIdType, out var owner, out var valueType, out var isStatic))
+            {
+                return;
+            }
+            if (isStatic)
+            {
+                errors.Add(new BilVerificationError("21.3", location,
+                    "get/set.field.indirect 的 fieldid 必须是 instance"));
+            }
+            var objectType = VarType(context, objectVar);
+            if (objectType != null && owner.Length > 0
+                && !context.Module.TypesAssignable(objectType, owner))
+            {
+                errors.Add(new BilVerificationError("21.3", location,
+                    $"间接字段对象类型 \"{objectType}\" 不可赋值到 owner \"{owner}\""));
+            }
+            CheckType(context, VarType(context, valueVar), valueType, location,
+                isWrite ? "set.field.indirect 源变量" : "get.field.indirect 目标变量", errors);
+        }
+
+        private static void VerifyStaticFieldIndirect(BilFunctionContext context,
+            BilVariableOperand valueVar, BilVariableOperand typeIdVar,
+            BilVariableOperand fieldIdVar, bool isWrite, string location,
+            List<BilVerificationError> errors)
+        {
+            CheckType(context, VarType(context, typeIdVar), ".typeid", location,
+                "间接静态字段 typeid", errors, prefixMatch: true);
+            var fieldIdType = VarType(context, fieldIdVar);
+            CheckType(context, fieldIdType, ".fieldid", location,
+                "间接静态字段 fieldid", errors, prefixMatch: true);
+            if (!TryParseFieldIdType(fieldIdType, out _, out var valueType, out var isStatic))
+            {
+                return;
+            }
+            if (!isStatic)
+            {
+                errors.Add(new BilVerificationError("21.3", location,
+                    "get/set.field.static.indirect 的 fieldid 必须是 static"));
+            }
+            CheckType(context, VarType(context, valueVar), valueType, location,
+                isWrite ? "set.field.static.indirect 源变量" : "get.field.static.indirect 目标变量",
+                errors);
+        }
+
+        private static bool TryTypeIdBound(string? typeRef, out string bound)
+        {
+            bound = ".any";
+            if (typeRef == null)
+            {
+                return false;
+            }
+            var normalized = BilVerificationContext.NormalizeTypeRef(typeRef);
+            const string head = "core::Type<";
+            if (normalized.StartsWith(head, StringComparison.Ordinal) && normalized.EndsWith(">"))
+            {
+                bound = normalized.Substring(head.Length, normalized.Length - head.Length - 1);
+                return true;
+            }
+            if (normalized == "core::Type" || typeRef == ".typeid")
+            {
+                bound = ".any";
+                return true;
+            }
+            return false;
+        }
+
+        private static bool TryParseFieldIdType(string? typeRef, out string owner,
+            out string valueType, out bool isStatic)
+        {
+            owner = "";
+            valueType = "";
+            isStatic = false;
+            if (typeRef == null)
+            {
+                return false;
+            }
+            const string head = ".fieldid<";
+            if (!typeRef.StartsWith(head, StringComparison.Ordinal) || !typeRef.EndsWith(">"))
+            {
+                return false;
+            }
+            var parts = BilVerificationContext.SplitTopLevel(
+                typeRef.Substring(head.Length, typeRef.Length - head.Length - 1));
+            if (parts.Count != 3)
+            {
+                return false;
+            }
+            owner = parts[0].Trim();
+            valueType = parts[1].Trim();
+            isStatic = parts[2].Trim() == "static";
+            return owner.Length > 0 && valueType.Length > 0;
+        }
 
         private static string? VarType(BilFunctionContext context, BilVariableOperand variable)
         {

@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using RigiCompiler.Bil.Vm;
 
 namespace RigiCompiler.Bil
 {
@@ -19,5 +20,9 @@ namespace RigiCompiler.Bil
         internal override string Opcode => "hint";
         internal override IReadOnlyList<BilOperand> Operands =>
             new BilOperand[] { new BilResourceOperand(Resource) };
+
+        internal override void Execute(VmContext context, VmCoroutine coroutine)
+        {
+        }
     }
 }

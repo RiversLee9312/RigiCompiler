@@ -54,8 +54,8 @@ namespace RigiCompiler.Tests
             var testSubs = test.SubCommands.Select(s => s.Mask.Name).ToList();
             Check("compile 子命令齐全（--file/--parse-only/--dump-ast/--emit-bil/--sema-only/--explain-dispatch/--verbose/--log-to）",
                 new[] { "--file", "--parse-only", "--dump-ast", "--emit-bil", "--sema-only", "--explain-dispatch", "--verbose", "--log-to" }.All(compileSubs.Contains));
-            Check("test 子命令齐全（--all/--run/--verbose/--log-to）",
-                new[] { "--all", "--run", "--verbose", "--log-to" }.All(testSubs.Contains));
+            Check("test 子命令齐全（--all/--run/--suite-args/--verbose/--log-to）",
+                new[] { "--all", "--run", "--suite-args", "--verbose", "--log-to" }.All(testSubs.Contains));
             Check("help 无子命令", help.SubCommands.Count == 0);
             Console.WriteLine();
         }
@@ -91,6 +91,18 @@ namespace RigiCompiler.Tests
                 r => r.Get("--run") is { Count: 0 });
             CheckParseOk("--run 多编号", new[] { "test", "--run", "1", "3" },
                 r => r.Get("--run") is { Count: 2 } n && n[0] == "1" && n[1] == "3");
+            CheckParseOk("--suite-args 零参数合法", new[] { "test", "--run", "1", "--suite-args" },
+                r => r.Has("--suite-args") && r.Get("--suite-args")!.Count == 0);
+            CheckParseOk("--suite-args 多值", new[] { "test", "--run", "43", "--suite-args", "0", "100" },
+                r => r.Get("--suite-args") is { Count: 2 } a && a[0] == "0" && a[1] == "100"
+                    && r.Get("--run") is { Count: 1 } n && n[0] == "43");
+            CheckParseOk("--suite-args= 形态", new[] { "test", "--run", "43", "--suite-args=0", "100" },
+                r => r.Get("--suite-args") is { Count: 2 } a && a[0] == "0" && a[1] == "100");
+            CheckParseOk("--suite-args 在 --run 之前", new[] { "test", "--suite-args", "10", "20", "--run", "43" },
+                r => r.Get("--suite-args") is { Count: 2 } a && a[0] == "10" && a[1] == "20"
+                    && r.Get("--run") is { Count: 1 } n && n[0] == "43");
+            CheckParseOk("--all 与 --suite-args 可同现", new[] { "test", "--all", "--suite-args", "0", "100" },
+                r => r.Has("--all") && r.Get("--suite-args") is { Count: 2 });
             CheckParseError("未知子命令报错", new[] { "test", "--bogus" }, "未知子命令");
             CheckParseError("重复子命令报错", new[] { "compile", "--file", "a", "--file", "b" }, "重复");
             Console.WriteLine();
@@ -109,6 +121,8 @@ namespace RigiCompiler.Tests
             CheckParseOk("help 一个裸参数", new[] { "help", "compile" },
                 r => r.CommandArgs.Count == 1 && r.CommandArgs[0] == "compile");
             CheckParseError("help 两个裸参数报错（MaxArgs=1）", new[] { "help", "a", "b" }, "参数个数");
+            CheckParseOk("--suite-args 任意个数（3 个）", new[] { "test", "--run", "1", "--suite-args", "a", "b", "c" },
+                r => r.Get("--suite-args")!.Count == 3);
             Console.WriteLine();
         }
 

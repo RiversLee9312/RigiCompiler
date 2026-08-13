@@ -88,7 +88,7 @@ namespace RigiCompiler
                     return $"{prefix}$${method.Name}({PrintParameters(method)})@{PrintTypeReference(method.ReturnType)}";
                 default:
                     var staticMark = method.IsStatic ? ".static." : "";
-                    return $"{prefix}${staticMark}{method.Name}({PrintParameters(method)})@{PrintTypeReference(method.ReturnType)}";
+                    return $"{prefix}${staticMark}{method.Name}({PrintParameters(method, includeNativeGenericHidden: method.IsNative)})@{PrintTypeReference(method.ReturnType)}";
             }
         }
 
@@ -136,9 +136,23 @@ namespace RigiCompiler
         // 参数段（§5.2：(参数名:参数类型,...)）。
         // S9d：可变参数（IsVariadic/IsNamedVariadic）不进 canonical 参数段
         // ——它们以隐藏参数形态存在于 fn .args（§7.1：.vargs.args/.kwargs.args）
-        private static string PrintParameters(MethodSymbol method)
+        // V2.5：native 无 fn 定义，固定泛型 hidden 写入符号参数段
+        // （.generic.T:.typeid），供验证器按 §7.2 跳过比对并计数。
+        private static string PrintParameters(MethodSymbol method,
+            bool includeNativeGenericHidden = false)
         {
             var parts = new List<string>();
+            if (includeNativeGenericHidden)
+            {
+                foreach (var genericParameter in method.GenericParameters)
+                {
+                    if (genericParameter.IsVariadic || genericParameter.IsNamedVariadic)
+                    {
+                        continue;
+                    }
+                    parts.Add(".generic." + genericParameter.Name + ":.typeid");
+                }
+            }
             foreach (var p in method.Parameters)
             {
                 if (p.IsVariadic || p.IsNamedVariadic) continue;

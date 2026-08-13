@@ -6,7 +6,8 @@ namespace RigiCompiler.Tests
 {
     /// <summary>
     /// Logger 测试：
-    /// - JSONL 文件写入：所有级别（含 Verbose）都落盘，每行是合法 JSON，
+    /// - JSONL 文件写入：与控制台同门槛——默认 Warning 及以上落盘，
+    ///   EnableVerbose 后 Verbose 也落盘，每行是合法 JSON，
     ///   ts/level/source/message 字段齐全且内容往返一致；
     /// - 控制台门槛：默认只显示 Warning 及以上，EnableVerbose 后显示 Verbose；
     /// - CLI 状态还原：CaptureState/RestoreState 把套件内 Reset 破坏的
@@ -30,18 +31,18 @@ namespace RigiCompiler.Tests
             try
             {
                 Logger.OpenLogFile(path);
-                // 不 EnableVerbose：文件日志不受控制台门槛影响，Verbose 也应落盘
+                // 不 EnableVerbose：文件与控制台同门槛，Verbose 不落盘
                 Logger.Verbose("Lexer", "verbose 消息");
                 Logger.Warning("Parser", "warning 消息");
                 Logger.Error("Lexer", "error 消息");
                 Logger.Reset();  // 关闭并释放文件后再读
 
                 var lines = File.ReadAllLines(path);
-                Check("文件写入 3 行", lines.Length == 3);
+                Check("文件写入 2 行（默认不记 verbose）", lines.Length == 2);
 
-                var expectedLevels = new[] { "verbose", "warning", "error" };
-                var expectedSources = new[] { "Lexer", "Parser", "Lexer" };
-                var expectedMessages = new[] { "verbose 消息", "warning 消息", "error 消息" };
+                var expectedLevels = new[] { "warning", "error" };
+                var expectedSources = new[] { "Parser", "Lexer" };
+                var expectedMessages = new[] { "warning 消息", "error 消息" };
                 bool allValid = lines.Length == expectedLevels.Length;
                 for (int i = 0; i < lines.Length && allValid; i++)
                 {
@@ -70,6 +71,26 @@ namespace RigiCompiler.Tests
             {
                 Logger.Reset();
                 if (File.Exists(path)) File.Delete(path);
+            }
+
+            // EnableVerbose 后 Verbose 也落盘
+            var verbosePath = Path.Combine(Path.GetTempPath(), $"rigi_logger_test_{Guid.NewGuid():N}.jsonl");
+            try
+            {
+                Logger.Reset();
+                Logger.OpenLogFile(verbosePath);
+                Logger.EnableVerbose();
+                Logger.Verbose("Lexer", "verbose 消息");
+                Logger.Reset();
+
+                var verboseLines = File.ReadAllLines(verbosePath);
+                Check("EnableVerbose 后 verbose 落盘",
+                    verboseLines.Length == 1 && verboseLines[0].Contains("\"verbose\""));
+            }
+            finally
+            {
+                Logger.Reset();
+                if (File.Exists(verbosePath)) File.Delete(verbosePath);
             }
             Console.WriteLine();
         }

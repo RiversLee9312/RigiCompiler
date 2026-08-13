@@ -325,19 +325,41 @@ namespace RigiCompiler.Tests
             var tryCatchTable = new BilCatchTableResource("R_Catches", new BilCatchEntry[0]);
             body.Instructions.Add(new CastInstruction(BilOp.Var("a"), BilOp.Var("b"),
                 BilOp.Type("com.example::User"), isSafe: false));
+            body.Instructions.Add(new CastInstruction(BilOp.Var("a"), BilOp.Var("b"),
+                BilOp.Type("com.example::User"), isSafe: true));
+            body.Instructions.Add(new CastIndirectInstruction(BilOp.Var("a"), BilOp.Var("b"),
+                BilOp.Var("tid"), isSafe: false));
+            body.Instructions.Add(new CastIndirectInstruction(BilOp.Var("a"), BilOp.Var("b"),
+                BilOp.Var("tid"), isSafe: true));
             body.Instructions.Add(new DirectTypeCheckInstruction(BilTypeCheckKind.Is,
                 BilOp.Var("a"), BilOp.Type("com.example::User"), BilOp.Var("b")));
+            body.Instructions.Add(new DirectTypeCheckInstruction(BilTypeCheckKind.Supers,
+                BilOp.Var("a"), BilOp.Type("com.example::User"), BilOp.Var("b")));
+            body.Instructions.Add(new DirectTypeCheckInstruction(BilTypeCheckKind.With,
+                BilOp.Var("a"), BilOp.Type("core.logging::Logged"), BilOp.Var("b")));
+            body.Instructions.Add(new IndirectTypeCheckInstruction(BilTypeCheckKind.Is,
+                BilOp.Var("a"), BilOp.Var("tid"), BilOp.Var("b")));
             body.Instructions.Add(new IsCaseInstruction(BilOp.Var("a"),
                 BilOp.Case("com.example::RequestResult.Failed"), BilOp.Var("b")));
             body.Instructions.Add(new GetWrapperInstruction(BilOp.Var("a"),
                 BilOp.Type("core.logging::Logged"), BilOp.Var("b")));
+            body.Instructions.Add(new GetWrapperIndirectInstruction(BilOp.Var("a"),
+                BilOp.Var("tid"), BilOp.Var("b")));
             body.Instructions.Add(new GetWrapperFieldInstruction(BilOp.Var("obj"),
                 BilOp.Field("com.example::Hero#hp@.i32"),
                 BilOp.Type("core.clamp::Clamped"), BilOp.Var("b")));
             body.Instructions.Add(new GetIdVarInstruction(BilOp.Var("a"), BilOp.Var("t")));
+            body.Instructions.Add(new GetIdTypeInstruction(BilOp.Type("com.example::User"),
+                BilOp.Var("t")));
+            body.Instructions.Add(new GetIdFieldInstruction(
+                BilOp.Field("com.example::Service#name@.string"), BilOp.Var("fid")));
             body.Instructions.Add(new GetVarInstruction(BilOp.Var("a"), BilOp.Var("b")));
             body.Instructions.Add(new GetFieldInstruction(BilOp.Var("obj"), BilOp.Var("t"),
                 BilOp.Field("com.example::Service#name@.string")));
+            body.Instructions.Add(new GetFieldIndirectInstruction(BilOp.Var("obj"),
+                BilOp.Var("t"), BilOp.Var("fid")));
+            body.Instructions.Add(new SetFieldIndirectInstruction(BilOp.Var("v"),
+                BilOp.Var("obj"), BilOp.Var("fid")));
             body.Instructions.Add(new SetWrapperFieldInstruction(BilOp.Var("v"), BilOp.Var("obj"),
                 BilOp.Wrapper("core.logging::Logged"),
                 BilOp.Field("core.logging::Logged#level@.string")));
@@ -349,9 +371,15 @@ namespace RigiCompiler.Tests
             body.Instructions.Add(new SetFieldStaticInstruction(BilOp.Var("v"),
                 BilOp.Type("com.example::Service"),
                 BilOp.Field("com.example::Service#.static.instanceCount@.i64")));
+            body.Instructions.Add(new GetFieldStaticIndirectInstruction(BilOp.Var("t"),
+                BilOp.Var("tid"), BilOp.Var("fid")));
+            body.Instructions.Add(new SetFieldStaticIndirectInstruction(BilOp.Var("v"),
+                BilOp.Var("tid"), BilOp.Var("fid")));
             body.Instructions.Add(new GetArrayInstruction(BilOp.Var("arr"), BilOp.Var("i"),
                 BilOp.Var("e")));
             body.Instructions.Add(new NewInstruction(BilOp.Type("com.example::User"),
+                BilOp.Var("u"), new[] { BilOp.Var("a") }));
+            body.Instructions.Add(new NewIndirectInstruction(BilOp.Var("tid"),
                 BilOp.Var("u"), new[] { BilOp.Var("a") }));
             body.Instructions.Add(new NewCaseInstruction(BilOp.Type("com.example::RequestResult"),
                 BilOp.Case("com.example::RequestResult.Failed"), BilOp.Var("r"),
@@ -373,6 +401,10 @@ namespace RigiCompiler.Tests
             body.Instructions.Add(new InvokeInstruction(
                 BilOp.Fn("com.example::Service$load(id:.i64)@com.example::User"), BilOp.Var("r"),
                 new[] { BilOp.Var("a"), BilOp.Var("b") }));
+            body.Instructions.Add(new InvokeIndirectInstruction(BilOp.Var("fn"),
+                BilOp.Var("r"), new[] { BilOp.Var("a") }));
+            body.Instructions.Add(new InvokeIndirectNoResultInstruction(BilOp.Var("fn"),
+                new[] { BilOp.Var("a") }));
             body.Instructions.Add(new IfInstruction(BilOp.Var("cond"), new BilBlock("then"), null));
             body.Instructions.Add(new LoopInstruction(BilOp.Var("cond"), new BilBlock("body"),
                 null, new BilBlock("judge"), BilOp.Var("brk"), isRev: false));
@@ -417,20 +449,34 @@ namespace RigiCompiler.Tests
                 "",
                 "    .block entry entrypoint {",
                 "        cast $a $b type(com.example::User)",
+                "        cast.safe $a $b type(com.example::User)",
+                "        cast.indirect $a $b $tid",
+                "        cast.safe.indirect $a $b $tid",
                 "        type.is $a type(com.example::User) $b",
+                "        type.supers $a type(com.example::User) $b",
+                "        type.with $a type(core.logging::Logged) $b",
+                "        type.is.indirect $a $tid $b",
                 "        type.is.case $a case(com.example::RequestResult.Failed) $b",
                 "        get.wrapper $a type(core.logging::Logged) $b",
+                "        get.wrapper.indirect $a $tid $b",
                 "        get.wrapper.field $obj field(com.example::Hero#hp@.i32) type(core.clamp::Clamped) $b",
                 "        getid.var $a $t",
+                "        getid.type type(com.example::User) $t",
+                "        getid.field field(com.example::Service#name@.string) $fid",
                 "        get.var $a $b",
                 "        get.field $obj $t field(com.example::Service#name@.string)",
+                "        get.field.indirect $obj $t $fid",
+                "        set.field.indirect $v $obj $fid",
                 "        set.wrapper.field $v $obj wrapper(core.logging::Logged) field(core.logging::Logged#level@.string)",
                 "        get.self $self",
                 "        invoke fn(..inner) $r [$a]",
                 "        invoke.noret fn(..inner) [$a]",
                 "        set.field.static $v type(com.example::Service) field(com.example::Service#.static.instanceCount@.i64)",
+                "        get.field.static.indirect $t $tid $fid",
+                "        set.field.static.indirect $v $tid $fid",
                 "        get.array $arr $i $e",
                 "        new type(com.example::User) $u [$a]",
+                "        new.indirect $tid $u [$a]",
                 "        new.case type(com.example::RequestResult) case(com.example::RequestResult.Failed) $r [$e]",
                 "        new.wrapped type(com.example::Service) $svc [$level] [$a]",
                 "        new.wrapped.case type(com.example::RequestResult) case(com.example::RequestResult.Failed) $r [$level] [$e]",
@@ -438,6 +484,8 @@ namespace RigiCompiler.Tests
                 "        new.wrapper.method fn(com.example::Service$load(id:.i64)@com.example::User) type(core.logging::Timed) []",
                 "        new.wrapper.entity type(core.logging::Logged) [$level]",
                 "        invoke fn(com.example::Service$load(id:.i64)@com.example::User) $r [$a, $b]",
+                "        invoke.indirect $fn $r [$a]",
+                "        invoke.indirect.noret $fn [$a]",
                 "        if $cond blk(then) none",
                 "        loop $cond blk(body) none blk(judge) $brk",
                 "        loop.rev $cond blk(body) blk(enum) blk(judge) $brk",

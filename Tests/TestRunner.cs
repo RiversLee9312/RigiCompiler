@@ -9,53 +9,54 @@ namespace RigiCompiler.Tests
     /// </summary>
     public static class TestRunner
     {
-        // 套件注册表：名字 + 运行入口（返回失败用例数）
-        private static readonly (string Name, Func<int> Run)[] Suites =
+        // 套件注册表：名字 + 无参入口 + 可选带参入口（未实现则忽略 --suite-args）
+        private static readonly (string Name, Func<int> Run, Func<IReadOnlyList<string>, int>? RunWithArgs)[] Suites =
         {
-            ("Literal", LiteralParserTests.RunAll),
-            ("TypeReference", TypeReferenceParserTests.RunAll),
-            ("VariableDeclaration", VariableDeclarationTests.RunAll),
-            ("Expression", ExpressionParserTests.RunAll),
-            ("GenericParsing", GenericParsingTests.RunAll),
-            ("GenericParameters", GenericParametersTests.RunAll),
-            ("ParameterList", ParameterListTests.RunAll),
-            ("Lambda", LambdaExpressionTests.RunAll),
-            ("IfExpression", IfExpressionTests.RunAll),
-            ("SwitchExpression", SwitchExpressionTests.RunAll),
-            ("TypeOf", TypeOfExpressionTests.RunAll),
-            ("CodeBlock", CodeBlockTests.RunAll),
-            ("Loop", LoopTests.RunAll),
-            ("TryCatchFinally", TryCatchFinallyTests.RunAll),
-            ("SeqBlock", SeqBlockTests.RunAll),
-            ("Throw", ThrowStatementTests.RunAll),
-            ("CoroutineOps", CoroutineOpsTests.RunAll),
-            ("TypeDeclaration", TypeDeclarationTests.RunAll),
-            ("PropertyAccessor", PropertyAccessorTests.RunAll),
-            ("Import", ImportTests.RunAll),
-            ("Namespace", NamespaceTests.RunAll),
-            ("TokenDisposition", TokenDispositionTests.RunAll),
-            ("ASTIntegrityValidator", ASTIntegrityValidatorTests.RunAll),
-            ("LexerFuzz", LexerFuzzTests.RunAll),
-            ("Logger", LoggerTests.RunAll),
-            ("AstJsonlSerializer", AstJsonlSerializerTests.RunAll),
-            ("CommandLineParser", CommandLineParserTests.RunAll),
-            ("Path", PathParserLayerTests.RunAll),
-            ("ArgumentList", ArgumentListParserLayerTests.RunAll),
-            ("MultilineString", MultilineStringTests.RunAll),
-            ("Diagnostics", DiagnosticsTests.RunAll),
-            ("SymbolGraph", SymbolGraphTests.RunAll),
-            ("CanonicalSymbolPrinter", CanonicalSymbolPrinterTests.RunAll),
-            ("BilWriter", BilWriterTests.RunAll),
-            ("BilVerifier", BilVerifierTests.RunAll),
-            ("DeclarationCollector", DeclarationCollectorTests.RunAll),
-            ("DeclarationResolver", DeclarationResolverTests.RunAll),
-            ("Binder", BinderTests.RunAll),
-            ("StdlibSources", StdlibSourcesTests.RunAll),
-            ("BilEmitter", BilEmitterTests.RunAll),
-            ("Lowerer", LowererTests.RunAll),
-            ("SmartCast", SmartCastTests.RunAll),
-            ("SemanticsFuzz", SemanticsFuzzTests.RunAll),
-            ("DispatchExplainer", DispatchExplainerTests.RunAll),
+            ("Literal", LiteralParserTests.RunAll, null),
+            ("TypeReference", TypeReferenceParserTests.RunAll, null),
+            ("VariableDeclaration", VariableDeclarationTests.RunAll, null),
+            ("Expression", ExpressionParserTests.RunAll, null),
+            ("GenericParsing", GenericParsingTests.RunAll, null),
+            ("GenericParameters", GenericParametersTests.RunAll, null),
+            ("ParameterList", ParameterListTests.RunAll, null),
+            ("Lambda", LambdaExpressionTests.RunAll, null),
+            ("IfExpression", IfExpressionTests.RunAll, null),
+            ("SwitchExpression", SwitchExpressionTests.RunAll, null),
+            ("TypeOf", TypeOfExpressionTests.RunAll, null),
+            ("CodeBlock", CodeBlockTests.RunAll, null),
+            ("Loop", LoopTests.RunAll, null),
+            ("TryCatchFinally", TryCatchFinallyTests.RunAll, null),
+            ("SeqBlock", SeqBlockTests.RunAll, null),
+            ("Throw", ThrowStatementTests.RunAll, null),
+            ("CoroutineOps", CoroutineOpsTests.RunAll, null),
+            ("TypeDeclaration", TypeDeclarationTests.RunAll, null),
+            ("PropertyAccessor", PropertyAccessorTests.RunAll, null),
+            ("Import", ImportTests.RunAll, null),
+            ("Namespace", NamespaceTests.RunAll, null),
+            ("TokenDisposition", TokenDispositionTests.RunAll, null),
+            ("ASTIntegrityValidator", ASTIntegrityValidatorTests.RunAll, null),
+            ("LexerFuzz", LexerFuzzTests.RunAll, null),
+            ("Logger", LoggerTests.RunAll, null),
+            ("AstJsonlSerializer", AstJsonlSerializerTests.RunAll, null),
+            ("CommandLineParser", CommandLineParserTests.RunAll, null),
+            ("Path", PathParserLayerTests.RunAll, null),
+            ("ArgumentList", ArgumentListParserLayerTests.RunAll, null),
+            ("MultilineString", MultilineStringTests.RunAll, null),
+            ("Diagnostics", DiagnosticsTests.RunAll, null),
+            ("SymbolGraph", SymbolGraphTests.RunAll, null),
+            ("CanonicalSymbolPrinter", CanonicalSymbolPrinterTests.RunAll, null),
+            ("BilWriter", BilWriterTests.RunAll, null),
+            ("BilVerifier", BilVerifierTests.RunAll, null),
+            ("DeclarationCollector", DeclarationCollectorTests.RunAll, null),
+            ("DeclarationResolver", DeclarationResolverTests.RunAll, null),
+            ("Binder", BinderTests.RunAll, null),
+            ("StdlibSources", StdlibSourcesTests.RunAll, null),
+            ("BilEmitter", BilEmitterTests.RunAll, null),
+            ("Lowerer", LowererTests.RunAll, null),
+            ("SmartCast", SmartCastTests.RunAll, null),
+            ("SemanticsFuzz", SemanticsFuzzTests.RunAll, SemanticsFuzzTests.RunWithArgs),
+            ("DispatchExplainer", DispatchExplainerTests.RunAll, null),
+            ("BilVm", BilVmTests.RunAll, null),
         };
 
         // 套件数量（对外编号 1..SuiteCount，即注册表顺序）
@@ -69,32 +70,44 @@ namespace RigiCompiler.Tests
             {
                 Console.WriteLine($"{i + 1}. {Suites[i].Name}");
             }
+            Console.WriteLine("可选: test --run <编号> --suite-args <值...> 传参给支持的套件（未实现则忽略）");
         }
 
-        // 按编号（1 起）运行单个套件，返回失败用例数；编号越界由调用方校验
-        public static int RunSuite(int number) => Suites[number - 1].Run();
+        // 按编号（1 起）运行单个套件，返回失败用例数；编号越界由调用方校验。
+        // 带 --suite-args 时优先走 RunWithArgs；未实现则忽略参数。
+        public static int RunSuite(int number, IReadOnlyList<string>? args = null)
+        {
+            var suite = Suites[number - 1];
+            if (args is { Count: > 0 } && suite.RunWithArgs != null)
+                return suite.RunWithArgs(args);
+            if (args is { Count: > 0 })
+                Console.WriteLine($"  （套件 {suite.Name} 不接受 --suite-args，已忽略）");
+            return suite.Run();
+        }
 
         // 按编号依次运行多个套件，返回失败用例总数
-        public static int RunSuites(IReadOnlyList<int> numbers)
+        public static int RunSuites(IReadOnlyList<int> numbers, IReadOnlyList<string>? args = null)
         {
             int totalFail = 0;
             foreach (var n in numbers)
             {
-                totalFail += RunSuite(n);
+                totalFail += RunSuite(n, args);
             }
             return totalFail;
         }
 
         // 运行全部套件，返回失败用例总数（0 = 全部通过）
-        public static int RunAllSuites()
+        public static int RunAllSuites(IReadOnlyList<string>? args = null)
         {
             int totalFail = 0;
             var failedSuites = new List<string>();
-            foreach (var (name, run) in Suites)
+            foreach (var suite in Suites)
             {
-                int fail = run();
+                int fail = args is { Count: > 0 } && suite.RunWithArgs != null
+                    ? suite.RunWithArgs(args)
+                    : suite.Run();
                 totalFail += fail;
-                if (fail > 0) failedSuites.Add($"{name}({fail})");
+                if (fail > 0) failedSuites.Add($"{suite.Name}({fail})");
             }
             Console.WriteLine("========================================");
             Console.WriteLine($"Test suites: {Suites.Length}, failed cases total: {totalFail}");

@@ -1026,6 +1026,11 @@ opposite OPR RESULT
 
 对于内建整数/浮点类型，Middleware 可以直接生成 LLVM 算术指令。对于用户类型，Middleware 按精确类型选择唯一运算实现。
 
+内建整数算术（`add`/`sub`/`mul`/`opposite`）溢出行为为**二进制补码回绕**
+（two's-complement wraparound）：不产生异常、不饱和、不截断诊断；有符号与
+无符号类型同例。VM 参考实现（§22）必须逐字复现该行为。浮点类型遵循
+IEEE 754（产生 inf/NaN，不抛异常）。
+
 `add` 作用于两个 `.string` 操作数时是**内建字符串拼接**（Rigi `String` 的 `+`）：按值语义产出一个新字符串，VM 内建执行，不属于 `rigi_rt` 原生方法面（RUNTIME §26）。
 
 ### 11.3 逻辑运算
@@ -1439,6 +1444,20 @@ new.case type(ENUM_TYPE) case(ENUM_TYPE.CaseName) RESULT [ARG_0, ARG_1, ...]
 - 固定 case 使用空参数列表；
 - 该指令是 enum 值的唯一标准构造形式。
 
+enum struct **没有零值**。enum 类型的存储位置（`.vars` 条目、字段、数组
+元素）在被读取前必须已经由 `new.case` / `new.wrapped.case` 构造写入：
+
+- frontend 经 DA 与 init 编织保证该不变量；
+- 验证器拒绝「声明了 enum struct 字段、但宿主类型存在未在全路径写入该
+  字段的 init」的模块（§21.8）；局部变量读前未写由既有 DA 规则拒绝；
+- VM / 运行时读到未构造的 enum 槽一律按宿主错误处理，不存在「默认
+  case」兜底。
+
+推论：`.array<enum struct>` 的批量零初始化与本条冲突——
+`arrayOf\<T>(size)`（`RUNTIME.md` §26）在 T 为 enum struct 时由 frontend
+在泛型实例化点拒绝（编译期诊断）；`arrayOfElements\<T>(elements...)`
+不受限（元素逐项显式给出）。
+
 ### 14.4 `new.wrapped` 家族（有参 `..init.wrapper` 的实体构造）
 
 当目标类型声明了**带参数**的 `..init.wrapper`（§9.7）时，创建该类型实例**必须**使用本家族指令；无参 `..init.wrapper` 或未声明 `..init.wrapper` 的类型**禁止**使用本家族，仍用普通 `new` / `new.case`（§14.1 / §14.3）。
@@ -1513,6 +1532,7 @@ invoke.noret fn(METHOD_SYMBOL) [ARG_0, ARG_1, ...]
 
 - 参数列表必须与方法的完整规范 BIL 参数签名逐项严格相同；`.return` 是结果描述，不是调用实参；
 - 参数列表包含 `.this`、泛型 hidden args、普通参数和 vararg/kwarg 包；
+- 值类型方法的 `.this` 实参**别名**调用点 place（不产生拷贝），方法体内经 `.this` 的字段写原地生效（`SYNTAX.md` §10）；引用类型 `.this` 为普通引用传递；
 - 返回方法使用 `invoke`，无返回方法使用 `invoke.noret`；
 - RESULT 类型必须等于调用表达式类型；
 - 调用顺序不代表 Native ABI。
@@ -2115,6 +2135,7 @@ LocalSymbols {
 - `wrapped(WRAPPER_TYPE_REF)`（§8.3.1）的 `WRAPPER_TYPE_REF` 必须是 wrapper 类型；可重复，顺序保留；
 - `..init.wrapper` 声明与 fn 定义满足 §9.7（唯一性 / void / priv + compiler-generated / 非 static）；
 - `..companion.*` 满足 §8.7（class + singleton + shared；壳体静态方法体形态由 frontend 保证，验证器检查 companion 类型结构）。
+- enum struct 类型的实例字段：宿主类型的每个 init 必须在全部执行路径上对该字段发 `set.field`（先于任何读路径），否则拒绝模块（§14.3「enum 无零值」）。
 
 ### 21.9 VM 可执行性验证
 
@@ -2180,6 +2201,8 @@ VM 执行到对 `native` 方法声明的 `invoke` / `invoke.noret` 时，不寻�
 |---|---|---|---|
 | `rigi_rt` | `print` | `text: .string` | 将字符串写入标准输出 |
 | `rigi_rt` | `printErr` | `text: .string` | 将字符串写入标准错误 |
+| `rigi_rt` | `alloc_array` | 泛型 hidden `.typeid`（经 `.generic.T` 物化）+ `size: .i32` | 分配并返回元素零值初始化的 `.array<T>`；T 为 enum struct 按宿主错误（§14.3 无零值）。仅供 stdlib `arrayOf`/`arrayOfElements` 系列的私有 native 声明调用，用户代码不可直达 |
+| `rigi_rt` | `make_sleep_alarm` | `milliseconds: .i64` | 创建并返回 `core.coroutine::EventAlarm`：基于单调时钟、到期转 ready 的粘滞事件 Alarm（`RUNTIME.md` §19.3/§19.4），配合 §17 `yield ALARM` 实现非阻塞睡眠。仅供 stdlib `sleep` 的私有 native 声明调用，用户代码不可直达 |
 | `rigi_rt` | `toString` | `value: .any` | 返回值的字符串表示（`SYNTAX.md` §3.8）：内建数值/`bool`/`char` 为标准文本；未覆写 `toString` 的对象为其类型 canonical 名 |
 | （方法 hook） | `core::Any$call???` | 见 §15.5 胖值签名 | 按 `symbol` 路由 wrapper 请求；无路由命中抛 `core::NoSuchMethodException` |
 

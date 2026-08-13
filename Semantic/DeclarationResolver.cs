@@ -16,8 +16,9 @@ namespace RigiCompiler
     //      位置与体、具体类待实现成员）、声明侧访问控制（§16：类型引用/
     //      继承/约束命中处的使用点检查，AccessChecker 与 P3 共用）；
     //      随附 native 函数声明检查（§4.6：无体/成员必 static/禁 init/operator/
-    //      async/泛型/重载、参数与返回类型基元白名单、@NativeLibrary 必填、
-    //      @NativeSymbol 缺省取函数名、内建注解禁挂非 native 声明）；
+    //      async/重载、参数与返回类型基元白名单、@NativeLibrary 必填、
+    //      @NativeSymbol 缺省取函数名、内建注解禁挂非 native 声明；
+    //      V2.5 放行 generic+native——hidden typeid 经 .generic.T 物化）；
     //   4. rich/shared 单向传染 + 字段闭包检查（§3.1.1 闭包表七行，递归）；
     //   5. 共享安全闸门：全局/静态字段类型必须共享安全（§3.1.1 闸门 1）；
     //   6. 泛型约束声明侧检查（Target 为泛型参数、with 边界为 wrapper）；

@@ -163,7 +163,8 @@ Middleware 必须提供以下保留运行时面；这些是实现接口而非 BI
 | `gc.ownership-region` | 引用槽发布/回收 | 执行 RUNTIME §23 双检与 GCAlarm 等待 |
 | `alarm.poll/event` | yield Alarm 与 `sleep` | Polling 探测、Event waiter 注册/触发 |
 
-`rigi_rt.sleep(i32): EventAlarm` 仍是当前唯一需要由 stdlib 声明的协程 native 函数。
+`rigi_rt.make_sleep_alarm(i64): EventAlarm` 仍是当前唯一需要由 stdlib 声明的协程 native
+函数（`sleep(i32)` 是它在 Rigi 层的包装，RUNTIME §19.4）。
 以后若公开 Executor 选择或 CoroutineLocal 的 get/set，必须先在 `SYNTAX.md` 的 native
 形状限制、`coroutine.rg` 签名、BIL §22.5 VM hook 和 Middleware 接口四处同时定稿；
 本专项不以私有 native ABI 绕过现有强类型声明规则。

@@ -677,9 +677,9 @@ pub class Console {
 
 - `native` 仅适用于函数；native 函数**不得**书写函数体；
 - 作为类型成员声明时必须同时是 `static`；不得用于 `init`、`operator`、getter/setter；
-- 不得与 `async` 组合，不得声明泛型参数列表，同一容器内不得与同名函数构成重载；
+- 不得与 `async` 组合；同一容器内不得与同名函数构成重载；允许声明泛型参数列表（generic native：hidden typeid 按 `RUNTIME.md` §10 传参形态物化，首例 `alloc_array`，`BIL_STANDARD.md` §22.5）；
 - 参数类型仅限 §3.2 基本类型中的整数、浮点、`bool`、`char` 与 `String`；不允许 Object、泛型参数、用户声明类型，也不允许可变参数；
-- **返回类型**（S10 定稿，2026-08-05）：允许 §3.2 基本类型中的整数、浮点、`bool`、`char` 与 `String`，也允许用户声明的**引用类型**（class/interface，如 `core.coroutine.sleep(...): EventAlarm`）；不允许值类型、泛型参数与可变参数。native 只负责声明运行时原生方法面的形状，FFI 参数/返回值 ABI 与 `rigi_rt` 的转换细节在 Middleware 阶段定稿（`RUNTIME.md` §26），编译器不做形状之外的检查；
+- **返回类型**（S10 定稿，2026-08-05）：允许 §3.2 基本类型中的整数、浮点、`bool`、`char` 与 `String`，也允许用户声明的**引用类型**（class/interface，如 `core.coroutine.make_sleep_alarm(...): EventAlarm`）；不允许值类型、泛型参数与可变参数。native 只负责声明运行时原生方法面的形状，FFI 参数/返回值 ABI 与 `rigi_rt` 的转换细节在 Middleware 阶段定稿（`RUNTIME.md` §26），编译器不做形状之外的检查；
 - `@NativeLibrary("...")` 必填，给出原生库标识；`@NativeSymbol("...")` 可省，缺省时取函数名；两个注解的实参必须各为一个字符串字面量；
 - `@NativeLibrary` / `@NativeSymbol` 是编译器内建注解，只允许出现在 native 函数声明上；它们不属于 wrapper 体系（§14），不产生 wrapper 组合链。
 
@@ -1332,6 +1332,7 @@ pub shared rich struct SharedEntry {
 规则：
 
 - struct 是值类型（`ValueType` 子类），复制、参数传递和装箱继续遵守值语义。
+- struct 实例方法的 receiver（`this`）按**调用点 place 的引用**处理：方法体内对 `this` 字段的写入原地生效于该 place。这不改变值语义——赋值、参数传递与返回仍是深拷贝；只有以可写 place 为 receiver 的调用原地生效，对临时副本调用时修改随副本丢弃。
 - 非 rich struct 不得直接或间接持有 Object，也不得内嵌 rich struct；其 `refMap` 恒为空。
 - rich struct 可以持有 local/shared object 和任意 ValueType。
 - shared rich struct 只能持有 shared object、shared rich ValueType 和非 rich ValueType。

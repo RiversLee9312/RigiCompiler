@@ -30,6 +30,7 @@ namespace RigiCompiler.Tests
         private const int Seed = 20260804;
         private const int DefaultCaseCount = 3000;
         private const int DeterminismEvery = 60;   // 3000/60 = 50 例确定性抽查
+        private const int ProgressEvery = 25;      // 每 N 个已跑 case 打一行进度并 flush
 
         private static int passCount;
         private static int failCount;
@@ -47,18 +48,24 @@ namespace RigiCompiler.Tests
 
         private static readonly List<string> failureLog = new();
 
+        // --suite-args <from> <to>：含两端的 case 序号区间（种子固定，区间可复现）
+        public static int RunWithArgs(IReadOnlyList<string> args)
+        {
+            if (args.Count != 2
+                || !int.TryParse(args[0], out int from)
+                || !int.TryParse(args[1], out int to)
+                || from < 0 || to < from)
+            {
+                Console.Error.WriteLine(
+                    "SemanticsFuzz --suite-args 需要 <from> <to>（含两端的 case 序号，from>=0 且 to>=from）");
+                Console.Error.Flush();
+                return 1;
+            }
+            return RunRange(from, to);
+        }
+
         public static int RunAll()
         {
-            Console.WriteLine("\n╔════════════════════════════════════╗");
-            Console.WriteLine("║  Semantics Fuzz Tests (S8d)        ║");
-            Console.WriteLine("╚════════════════════════════════════╝\n");
-
-            passCount = failCount = 0;
-            crashes = parseFailures = verifierFailures = nondeterministic = duplicateDiagnostics = 0;
-            cleanCases = errorCases = 0;
-            messageFrequency.Clear();
-            failureLog.Clear();
-
             // 冒烟/性能标定可用环境变量缩小用例数；默认 3000（CI 全量）
             int caseCount = DefaultCaseCount;
             if (int.TryParse(Environment.GetEnvironmentVariable("RIGI_SEMFUZZ_CASES"),
@@ -66,13 +73,39 @@ namespace RigiCompiler.Tests
             {
                 caseCount = overrideCount;
             }
+            return RunRange(0, caseCount - 1);
+        }
+
+        private static int RunRange(int from, int to)
+        {
+            Console.WriteLine("\n╔════════════════════════════════════╗");
+            Console.WriteLine("║  Semantics Fuzz Tests (S8d)        ║");
+            Console.WriteLine("╚════════════════════════════════════╝\n");
+            Console.Out.Flush();
+
+            passCount = failCount = 0;
+            crashes = parseFailures = verifierFailures = nondeterministic = duplicateDiagnostics = 0;
+            cleanCases = errorCases = 0;
+            messageFrequency.Clear();
+            failureLog.Clear();
+
+            int caseCount = to - from + 1;
+            ReportProgress($"SemanticsFuzz 区间 case#{from}..{to}（种子 {Seed}，共 {caseCount} 例）");
 
             var rng = new Random(Seed);
             var stopwatch = Stopwatch.StartNew();
-            for (int i = 0; i < caseCount; i++)
+            int ran = 0;
+            for (int i = 0; i <= to; i++)
             {
                 string source = new Generator(rng).Generate();
+                if (i < from) continue;
+                // 进度打在 RunCase 之前：卡死时能看到正在跑的编号
+                if (ran % ProgressEvery == 0 || caseCount <= ProgressEvery)
+                    ReportProgress($"SemanticsFuzz 开始 case#{i}（种子 {Seed}，本区间已跑 {ran}/{caseCount}）");
+                if (caseCount <= 10)
+                    DumpSource(i, source);
                 RunCase(i, source);
+                ran++;
             }
             stopwatch.Stop();
 
@@ -96,7 +129,26 @@ namespace RigiCompiler.Tests
                 Console.WriteLine($"  ...（其余 {failureLog.Count - 10} 条省略）");
             }
             Console.WriteLine($"=== Semantics Fuzz Tests Complete: {passCount} passed, {failCount} failed ===");
+            Console.Out.Flush();
             return failCount;
+        }
+
+        private static void ReportProgress(string message)
+        {
+            Console.WriteLine("  [progress] " + message);
+            Console.Out.Flush();
+            Logger.Verbose("SemanticsFuzz", message);
+        }
+
+        private static void DumpSource(int index, string source)
+        {
+            Console.WriteLine($"  [dump] case#{index}（种子 {Seed}）输入源码：");
+            foreach (string line in source.Split('\n'))
+            {
+                Console.WriteLine("      | " + line);
+            }
+            Console.Out.Flush();
+            Logger.Verbose("SemanticsFuzz", $"dump case#{index}:\n{source}");
         }
 
         // ===== 单用例驱动与不变量断言 =====

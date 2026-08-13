@@ -653,6 +653,10 @@ pub func isReady(): bool
 core.coroutine.sleep(milliseconds: i32): core.coroutine.EventAlarm
 ```
 
+`sleep` 是 Rigi 层包装：它调用私有 native 声明
+`make_sleep_alarm(milliseconds: i64): EventAlarm`（§26 / `BIL_STANDARD.md`
+§22.5 hook 表）创建 Alarm。
+
 返回运行时内部的 EventAlarm 子类。它把 deadline 注册到系统时钟树；时钟到期时 signal 该 Alarm，并由 Alarm 将等待 Coroutine 发布回原 Executor。
 
 `sleep` 的等待不占用 Worker，也不调用阻塞当前 Worker 的系统 sleep。计时基于单调时钟；到达 deadline 只表示 Coroutine 重新可运行，实际继续执行时间仍取决于 Executor 调度。
@@ -921,9 +925,12 @@ pub interface IDisposable {
 `native` 函数（`SYNTAX.md` §4.6）把 Rigi 调用路由到运行时原生方法面。原生方法面由一个 C 编写的 shim 库提供，库标识为 `rigi_rt`：它把 libc 风格的 C 函数包装为 Rigi 调用约定下的可调用入口，并负责 Rigi 值（如 `String` 的 native 表示）与 C 类型之间的转换。
 
 - **调用约定**：暂定 fastcall；精确的寄存器/栈分配、胖值槽传递与 `String` 布局规则在 Middleware 阶段定稿，本节不预先约束。
-- **第一版原生方法面**只有三个定参函数，不提供可变参数：
+- **第一版原生方法面**只有五个函数，不提供可变参数：
   - `print(text: String)`：把字符串写入标准输出；
   - `printErr(text: String)`：把字符串写入标准错误；
   - `toString(value: Any): String`：`SYNTAX.md` §3.8 的 `toString` 内建承载——内建基本类型（数值/`bool`/`char`）返回标准文本（`String` 的 `toString` 即自身，不经此路由）；未覆写 `toString` 的对象返回其类型 canonical 名。`Any` 上声明 `toString(): String`（无体，接口承诺），`Object` 提供 open 默认实现并把 body 路由到本函数；用户类型 `override` 后经普通虚派发执行自身实现，不再命中原生面。
+  - `alloc_array(typeid, size)`：分配元素零值初始化的 `Array\<T>`（T 由泛型 hidden typeid 物化，传参形态见 §10）。它只经标准库的私有 native 声明暴露：`Array\<T>` 的合法构造入口是 stdlib 的 `arrayOf\<T>(size)` 与 `arrayOfElements\<T>(elements...)`（后者在 Rigi 层把元素逐项放入），用户代码不直接调用 `alloc_array`。两个入口签名分离（长度 vs 元素包），不存在 `i32` 长度与 `i32` 元素的重载混淆。T 为 enum struct 时 `arrayOf` 由 frontend 在泛型实例化点拒绝（`BIL_STANDARD.md` §14.3「enum 无零值」）。
+  - `make_sleep_alarm(milliseconds: i64): EventAlarm`：创建基于单调时钟、到期转 ready 的粘滞事件 Alarm（§19.3）。只经 stdlib `sleep` 的私有 native 声明暴露（§19.4），用户代码不直接调用。
+- **GC 类设施（如 GCAlarm）不属于本表面，也不进 stdlib 与 VM**：BIL 明确规定不得对 GC 机制与实现作任何假设（`BIL_STANDARD.md` §1.1/§22.1），此类设施是 Middleware 的内部实现细节，没有任何跨层可见形态。
 - **BIL VM 不链接原生库**：VM 对 `(lib, symbol)` 命中 `BIL_STANDARD.md` §22.5 内建 hook 表的 native 调用直接执行内建行为，因此在没有 Middleware 与 `rigi_rt` 实现的环境下也能完整执行程序。
 - 标准库在 Rigi 层封装原生方法面（如 `core.io::Console.println` 调用 `print`），用户代码不直接依赖 `rigi_rt`；格式化、插值等逻辑全部在 Rigi 层演进，不进入原生方法面。

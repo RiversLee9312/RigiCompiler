@@ -13,8 +13,9 @@
 //     先例）；EventAlarm 由事件源 callback 通知（§19.3）。
 //   - CoroutineLocal\<TValue\> 是 per-coroutine 上下文的唯一机制
 //     （§20.2），实例通常经全局存储持有（shared）；get/set 成员随 S13 定稿。
-//   - sleep 是唯一 native 静态面（§19.4）：返回用户引用类型 EventAlarm
-//     ——§4.6 返回类型放宽（S10）的首个使用点；FFI ABI 归 Middleware。
+//   - make_sleep_alarm 是 native 面（§19.4 / RUNTIME §26）：i64 毫秒 →
+//     粘滞 EventAlarm；sleep 是 Rigi 层包装（i32 → i64 显式 as）。
+//     §4.6 返回类型放宽（S10）的使用点；FFI ABI 归 Middleware。
 namespace core.coroutine
 
 pub shared abstract class Task\<TResult> {
@@ -46,5 +47,9 @@ pub shared abstract class CoroutineLocal\<TValue> {
 }
 
 @NativeLibrary("rigi_rt")
-@NativeSymbol("sleep")
-pub native func sleep(milliseconds: i32): EventAlarm
+@NativeSymbol("make_sleep_alarm")
+priv native func make_sleep_alarm(milliseconds: i64): EventAlarm
+
+pub func sleep(milliseconds: i32): EventAlarm {
+    return make_sleep_alarm((milliseconds as i64))
+}
