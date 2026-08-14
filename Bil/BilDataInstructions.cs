@@ -963,7 +963,10 @@ namespace RigiCompiler.Bil
             wrapper.Host = hostValue;
             host.WriteHidden(hiddenKey, wrapper);
             var initArgs = ReadArgs(coroutine, arguments);
-            if (!context.TryFindInit(wrapperType, initArgs, out var initSymbol))
+            // TryFindInit 在「无 init 声明 + 零实参」时返回 true 且 initSymbol 为空：
+            // 该形态表示安装即完成，不能拿空符号去 invoke
+            if (!context.TryFindInit(wrapperType, initArgs, out var initSymbol)
+                || initSymbol.Length == 0)
             {
                 if (arguments.Count > 0)
                 {
@@ -1115,6 +1118,15 @@ namespace RigiCompiler.Bil
                 if (resultSlot != null)
                 {
                     coroutine.WriteVar(resultSlot, result);
+                }
+                return;
+            }
+            // §22.5 方法 hook（core::Any$call???）：无 BIL fn 定义，按方法符号命中
+            if (context.Hooks.TryInvokeMethod(context, methodSymbol, args, out var methodResult))
+            {
+                if (resultSlot != null)
+                {
+                    coroutine.WriteVar(resultSlot, methodResult);
                 }
                 return;
             }

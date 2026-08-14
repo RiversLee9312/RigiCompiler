@@ -50,6 +50,7 @@ namespace RigiCompiler.Tests
             TestGetWrapperDirectModule();
             TestIndirectFieldAndNew();
             TestUserOperatorAdd();
+            TestDowngradeCallWildcard();
             TestIfElse();
             TestWhileAndDoWhile();
             TestForRangeAndBreakContinue();
@@ -726,6 +727,49 @@ namespace RigiCompiler.Tests
             var result = BilVm.Run(module);
             CheckOk("用户 operator plus", result);
             CheckI32("Vector2 add.x", result, 4);
+        }
+
+        // §22.5 方法 hook core::Any$call???：烘焙归 Middleware，VM 行为参考
+        // 即链末默认实现——未路由抛 core::NoSuchMethodException（RUNTIME §14.2）。
+        private static void TestDowngradeCallWildcard()
+        {
+            const string service =
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper W {\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., " +
+                "unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn { return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
+                "}\n" +
+                "@W\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "}\n";
+            var thrown = Run(service +
+                "pub func main(): i32 {\n" +
+                "    var service = new Service()\n" +
+                "    service.fetchUserById(42)\n" +
+                "    return 0\n" +
+                "}\n");
+            TestHarness.CheckTrue("降级未路由抛 NoSuchMethodException",
+                thrown.Exception?.ExceptionObject is VmObject obj
+                && obj.TypeRef.Contains("NoSuchMethodException"),
+                thrown.Exception?.ToString() ?? "<null>");
+            TestHarness.CheckTrue("异常消息带请求 symbol",
+                thrown.Exception?.Message.Contains("Service$fetchUserById") == true,
+                thrown.Exception?.Message ?? "<null>");
+            var caught = Run(service +
+                "pub func main(): i32 {\n" +
+                "    var service = new Service()\n" +
+                "    try {\n" +
+                "        service.fetchUserById(42)\n" +
+                "    } catch (e: core.NoSuchMethodException) {\n" +
+                "        return 7\n" +
+                "    }\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckOk("降级异常可 catch", caught);
+            CheckI32("catch 返回 7", caught, 7);
         }
 
         private static BilModule IndirectBoxModule()

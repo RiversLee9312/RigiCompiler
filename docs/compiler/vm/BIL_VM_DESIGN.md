@@ -1,8 +1,7 @@
-# S14 BIL VM 设计
+# BIL VM 设计
 
-> 状态：定稿；V1–V5 五切片全部落地（45 套件全绿，BilVmTests 251）。
 > 依据：`BIL_STANDARD.md` §21.9 / §22（VM 可执行性与语义要求）、`RUNTIME.md`
-> §17–§19（Coroutine / Executor / Task / Alarm）、`SEMANTIC_ROADMAP.md` §S14。
+> §17–§19（Coroutine / Executor / Task / Alarm）、`../../legacy/SEMANTIC_ROADMAP.md` §S14。
 > 定位：**行为参考实现**。优先级：可维护性 > 代码易读性 > 行为正确性；
 > 明确不以性能为目标。Native 实现（Middleware/LLVM）与本 VM 必须在
 > §22.2 列出的全部可观察行为上一致。
@@ -125,7 +124,7 @@ Bil/
 
 - `throw` 抛出 `VmException`（包装语言级异常对象），沿块执行栈与调用帧链
   逐层展开，按 catch-table 资源匹配、执行 finally。
-- `using` 清理已由 P4a 编织为 try/finally 形态（S13），VM 只需正确实现
+- `using` 清理已由 P4a 编织为 try/finally 形态，VM 只需正确实现
   try completion 语义，using 清理顺序（§22.2）自然成立。
 
 ## 5. 指令分发：家族基类 + Execute
@@ -154,7 +153,7 @@ indirect 是表达正常 Rigi 程序（泛型、lambda、运行时类型驱动�
 | 指令 | 规范位置 | 模型现状 |
 |---|---|---|
 | `type.is.indirect` / `type.supers.indirect` / `type.with.indirect` | §12.3 | ✅ `IndirectTypeCheckInstruction` |
-| `invoke.indirect` / `invoke.indirect.noret` | §15.3 | ✅ 已有（lambda `$$call` 虚调用，M103/M108） |
+| `invoke.indirect` / `invoke.indirect.noret` | §15.3 | ✅ 已有（lambda `$$call` 虚调用） |
 | `cast.indirect` / `cast.safe.indirect` | §12.2 | ❌ 待补（TYPEID_VAR 解引用 + `.typeid<TBound>` 边界） |
 | `get.wrapper.indirect` | §12.4 | ❌ 待补 |
 | `getid.field` | §12.6 | ❌ 待补（新增 `GetIdFieldInstruction`） |
@@ -177,13 +176,13 @@ indirect 是表达正常 Rigi 程序（泛型、lambda、运行时类型驱动�
 | （方法 hook）`core::Any$call???` | 按 symbol 路由；无路由抛 `core::NoSuchMethodException` |
 
 表外 `(lib, symbol)` 拒绝执行并报错；表只随 BIL 标准修订扩充
-（`alloc_array` 与 `make_sleep_alarm` 即两次修订扩充，均经用户裁决定稿）。
+（`alloc_array` 与 `make_sleep_alarm` 即两次修订扩充，均经用户裁定）。
 GC 类设施（GCAlarm 等）永不进表：BIL 禁止对 GC 机制与实现作任何假设
 （§1.1/§22.1），其为 Middleware 内部细节。
 
 ## 8. 测试策略
 
-落地后新增**执行断言**测试形态（ROADMAP §S14）：跑出结果/异常与预期比对，
+以**执行断言**测试形态（`../../legacy/SEMANTIC_ROADMAP.md` §S14）：跑出结果/异常与预期比对，
 持续验证 §21.9「VM 可执行性」。
 
 基建：`Tests/` 新增 BilVm 测试套件（登记 TestRunner）；harness 提供
@@ -212,8 +211,6 @@ GC 类设施（GCAlarm 等）永不进表：BIL 禁止对 GC 机制与实现作�
    （`.breakid`）、`switch`、`try`、`throw`。
 5. **V5 协程**：eager spawn 全语义、`await`、`yield`（裸/PollingAlarm/
    EventAlarm）、Task 终态传播（成功/异常/取消的 VM 内部分）、quiescence。
-
-每片落地时测试全绿方进下一片；切片内指令按家族基类逐族落地。
 
 ## 10. 明确不做
 

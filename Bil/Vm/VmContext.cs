@@ -247,7 +247,7 @@ namespace RigiCompiler.Bil.Vm
                 case BilNullResource:
                     return VmNull.Instance;
                 default:
-                    throw new VmException("V1 不支持资源形态：" + resource.GetType().Name);
+                    throw new VmException("不支持的资源形态：" + resource.GetType().Name);
             }
         }
 
@@ -1004,7 +1004,7 @@ namespace RigiCompiler.Bil.Vm
                 case BilScalarType.F64:
                     return new VmF64(double.Parse(text, CultureInfo.InvariantCulture));
                 default:
-                    throw new VmException("V1 不支持标量资源类型：" + resource.Type);
+                    throw new VmException("不支持的标量资源类型：" + resource.Type);
             }
         }
 

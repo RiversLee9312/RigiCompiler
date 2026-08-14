@@ -1,0 +1,444 @@
+# 符号模型 / 函数、参数、局部变量与 block（§8–§9）
+
+> 本文件是 [BIL_STANDARD.md](../BIL_STANDARD.md)（BIL 标准）的章节拆分，§ 编号与原文件一致；总目录与章节索引见该索引文档。
+
+## 8. 符号模型
+
+### 8.1 符号引用
+
+BIL 不为语言符号再分配独立的 Type/Field/Method ID。类型和成员直接以 canonical symbol 作为稳定身份。
+
+标准参数表达式为：
+
+```bil
+fn(METHOD_SYMBOL)
+field(FIELD_SYMBOL)
+case(ENUM_TYPE_SYMBOL.CaseName)
+type(TYPE_SYMBOL)
+blk(BLOCK_ID)
+res(RESOURCE_ID)
+$VariableName
+```
+
+示例：
+
+```bil
+type(com.example::Service)
+field(com.example::Service#name@.string)
+fn(com.example::Service$load(id:.i64)@com.example::User)
+fn(com.example::Number$$plus(another:com.example::Number)@com.example::Number)
+fn(com.example::Service$.get.name@.string)
+case(com.example::RequestResult.Failed)
+```
+
+`fn(...)` 与 `field(...)` 内的字符串必须已经是完整 canonical symbol；解析器和验证器不得依赖额外 owner 前缀补全。类型、字段类型、参数类型和返回类型也是符号身份的一部分。
+
+### 8.2 类型声明
+
+类型声明的规范形式为：
+
+```bil
+.type TYPE_SYMBOL = kind [generic(T1, out T2, in T3)] [extends BASE_TYPE]
+    [implements INTERFACE_TYPE, ...]
+    [modifiers...] {
+    ...
+}
+```
+
+`generic(...)` 子句：泛型参数按源码声明序列出，型变参数保留 `out` 或
+`in` 前缀；函数泛型参数不携带型变。约束是编译期概念，BIL 不携带约束信息。泛型
+类型的 canonical 签名（字段/方法类型中的 `.generic<...>`）经 §7.5 与隐藏参数
+（§7.1）关联到这些名称。调用签名的类型兼容检查消费该方向：`out` 递归检查实际
+实参可赋给期望实参，`in` 反向检查，未标注参数严格相等。
+
+例如：
+
+```bil
+.type com.example::Service = class pub {
+    ...
+}
+
+.type com.example::Box = class generic(T) pub open {
+    .field com.example::Box#item@.generic<$.generic.T> pub
+    ...
+}
+```
+
+`kind` 为：
+
+```text
+class
+struct
+enum-struct
+interface
+wrapper
+```
+
+类型修饰符可以包括：
+
+```text
+pub protected internal priv
+open abstract singleton
+rich shared
+wrapped(WRAPPER_TYPE_REF)
+```
+
+`wrapped(WRAPPER_TYPE_REF)` 可重复出现，声明序 = outer→inner 应用序；语义见 §8.3.1。
+
+修饰符合法性必须与 `SYNTAX.md` 一致。例如：
+
+- `rich` 仅适用于 struct/enum struct 和 wrapper；
+- `wrapper` 类型**必须**显式带 `rich`——源码中 `rich` 由 `wrapper` 声明形式隐含且禁止书写，但 BIL 是显式 IR，不做该隐含（`SYNTAX.md` §14.9）；
+- `shared` class、`shared rich` struct 与 `shared` wrapper 的闭包必须合法；
+- 非 rich struct 与非 rich `enum-struct` 不得带 `open` 或 `abstract`；
+- `enum-struct` 不得 `open`；
+- `singleton` 类型必须同时带 `shared`；
+- `abstract` 与 `singleton` 的组合必须合法。
+
+### 8.3 字段声明
+
+字段符号表示源码和语言语义中的逻辑字段/属性，不要求一定对应一块直接存储。字段声明直接使用 canonical 字段符号：
+
+```bil
+.field FIELD_SYMBOL [modifiers...]
+.static-field FIELD_SYMBOL [modifiers...]
+```
+
+例如：
+
+```bil
+.field com.example::Service#name@.string pub const readable
+.static-field com.example::Service#.static.instanceCount@.i64 internal var readable writable
+```
+
+`.field` 要求符号中不含 `.static.`；`.static-field` 要求符号中含 `.static.`。canonical symbol 的 `@字段类型` 是字段声明类型，不得再在声明右侧重复定义另一类型。
+
+字段修饰符可以包括：
+
+```text
+pub protected internal priv
+const var
+ext
+backing computed
+readable writable
+compiler-generated
+wrapped(WRAPPER_TYPE_REF)
+```
+
+`wrapped(WRAPPER_TYPE_REF)` 可重复出现，声明序 = outer→inner 应用序；语义见 §8.3.1。
+
+字段符号可以关联：
+
+- 直接 backing storage；
+- 编译器生成 getter/setter；
+- 用户 getter/setter；
+- extension field；
+- wrapper getter/setter 链。
+
+BIL 的 `get.field` / `set.field` 始终引用逻辑字段 canonical symbol，不引用 Native offset。
+
+#### 8.3.1 wrapper 应用标记
+
+类型声明与字段声明可携带修饰符 `wrapped(WRAPPER_TYPE_REF)`（可重复；声明序 = outer→inner 应用序）。这是 frontend 对 Middleware 的 **wrapper 应用标记**——标明该类型/字段实例在创建时安装了哪些 wrapper；BIL 文本不声明对应的隐藏存储（存储合成归 Middleware，命名约定见 §5.3）。
+
+```bil
+.type com.example::Service = class pub wrapped(core.logging::Logged) {
+    .field com.example::Service#name@.string pub
+    ...
+}
+
+.field com.example::Service#config@com.example::Config
+    pub wrapped(core.logging::Logged)
+```
+
+规则：
+
+- `WRAPPER_TYPE_REF` 必须是 wrapper 类型引用；
+- 同一声明上可出现多个 `wrapped(...)`，顺序即 outer→inner；
+- **应用 init 实参**不写在 `wrapped(W)` 修饰符上：由宿主实体的合成方法 `..init.wrapper` 体内的 `new.wrapper.*` 指令承载（§9.7 / §14.5）；若 `..init.wrapper` 自身有参数，创建宿主对象须用 `new.wrapped` 家族把这些参数前缀传入（§14.4）；
+- 局部变量上的 wrapper 应用标记由 cell 隐藏子类的 `value` 字段 `wrapped(W)` 承载（`.vars` 无新语法；见 §9.3 注记与 `SYNTAX.md` §14.3 统一 cell 存储）；静态/全局字段的 BIL 声明类型投影为 cell 子类、不再在字段槽投 `wrapped(W)`（避免双份隐藏存储；wrapper 标记挂在子类 `value` 字段上）。cell 子类上 `@W(args)` 的实参成为该 cell 类型 `..init.wrapper` 的参数。
+
+普通 backing 字段（`backing` / `compiler-generated` 等）与本标记无关，按 §8.3 字段修饰符表照常使用。
+
+### 8.4 方法声明
+
+方法声明直接使用完整 canonical 方法符号：
+
+```bil
+.method METHOD_SYMBOL [modifiers...]
+.static-method METHOD_SYMBOL [modifiers...]
+```
+
+例如：
+
+```bil
+.method com.example::Service$load(id:.i64)@com.example::User pub
+.static-method com.example::App$.static.main(args:.array<.string>)@.i32 pub entrypoint
+.method com.example::Number$$plus(another:com.example::Number)@com.example::Number pub operator(plus)
+.method com.example::Service$.get.name@.string pub getter(com.example::Service#name@.string)
+.method com.example::Service$.set.name@.string priv setter(com.example::Service#name@.string)
+```
+
+`.method` 要求普通实例/全局方法符号；`.static-method` 要求符号中含 `.static.`。运算符使用 `$$运算符名称`；getter/setter 使用 `$[.static].get.` / `$[.static].set.`。构造函数使用普通方法 canonical 形式中的方法名 `init`，返回类型写 `.void`。
+
+方法修饰符可以包括：
+
+```text
+pub protected internal priv
+static ext override abstract
+async entrypoint
+init
+native
+symbol("NATIVE_SYMBOL_NAME")
+lib("NATIVE_LIBRARY_NAME")
+operator(OPERATOR_NAME)
+getter(FIELD_SYMBOL)
+setter(FIELD_SYMBOL)
+enum-case(CASE_SYMBOL)
+wrapper-proxy(PROXY_KIND)
+```
+
+`wrapper-proxy(PROXY_KIND)` 标记 wrapper 类型声明内的 `.proxy.*` 成员 fn（**proxy 模板**：模板态绑定产物，体内可出现 `invoke fn(..inner)` / `get.self`）。`PROXY_KIND` 取两值之一：
+
+- `specific`：specific proxy 模板（命中成员名的特定代理）；
+- `wildcard`：wildcard proxy 模板（类别唯一通配代理）。
+
+`.proxy.` 前缀成员名（§5.1）与本修饰符双向一致：带 `.proxy.` 名的方法必须带本修饰符，带本修饰符的方法名必须以 `.proxy.` 开头；`kind` 与成员形状类别一致（specific ↔ 具名 `.proxy.<成员>` / `.proxy.get.<名>` 等；wildcard ↔ `.proxy.*` / `.proxy.get.*` / `.proxy.set.*` / `.proxy.opr.*`）。同一方法不得重复携带本修饰符。
+
+烘焙（特化合成、inner 链接、原始体替换、存储合成）整体归 Middleware；frontend 只发射 proxy 模板与应用标记，不在 BIL 文本中合成特化/原始体/路由 fn。
+
+`call???` 是 `core::Any` 的 native 内建方法（§22.5 hook），frontend 不为其产 fn 定义（内建无 body 先例，同 `native`）；降级调用点见 §15.5。
+
+运算符、getter、setter 和 enum case 的实现可以拥有 method body，但其调用点在 BIL 中仍使用对应的语义指令；只有普通显式方法调用或规范要求的动态 fallback 使用 `invoke`。
+
+`native` 方法声明由运行时原生方法面提供实现（`SYNTAX.md` §4.6、`RUNTIME.md` §26）：
+
+- `native` 声明**不得**拥有对应的方法 body（`fn` 定义）；
+- `symbol("...")` 与 `lib("...")` 必须与 `native` 同时出现且各恰好一次，参数为字符串字面量，分别给出原生符号名与原生库标识；
+- `native` 方法的调用点与普通方法相同（`invoke` / `invoke.noret`），实现侧经 §22.5 的内建 hook 或 Middleware 的原生链接解析。
+
+#### 8.4.1 全局函数与全局字段声明
+
+不属于任何类型的全局函数与全局字段，其声明以裸 `.method` / `.field` 形式直接出现在 `LocalSymbols` / `ExternalSymbols` 段内，不包裹在 `.type` 中：
+
+```bil
+LocalSymbols {
+    .method $main()@.i32 pub entrypoint
+}
+```
+
+段内条目顺序：类型声明与裸成员声明按生成器输出顺序排列；验证器不得要求裸成员必须位于类型声明之前或之后。
+
+### 8.5 enum case 声明
+
+case 使用源码类型限定形式：
+
+```bil
+.case ENUM_TYPE_SYMBOL.CaseName(PARAM_NAME: PARAM_TYPE, ...)
+    [discriminant RESOURCE_OR_AUTO]
+```
+
+例如：
+
+```bil
+.case com.example::RequestResult.Success() discriminant auto
+.case com.example::RequestResult.Failed(errorCode:.i32) discriminant res(R_FailedCase)
+```
+
+case 名称在其 enum 内唯一。`case(...)` 引用中必须包含完整 enum 类型符号，不能仅写 `.Failed`；源码中的省略类型写法已经由 frontend 解析完成。
+
+`enum-struct` 的普通 `init` 不得作为 `new` 目标。所有 enum 值必须通过 `new.case` 创建。
+
+判别值：`discriminant` 的资源必须是整数标量资源
+（§19.1），取值非负且在 enum 内唯一；`discriminant auto` 表示编译器按声明序
+从 `0` 开始分配（`RUNTIME.md` §16.4）。判别字段宽度 u16/u32 由编译器按
+`RUNTIME.md` §16.1 选择（全部判别值可用 u16 表示且自动编号数量不超 u16
+容量用 u16，否则 u32）——宽度是布局内部细节，case 声明与 `type.is.case` /
+`new.case` 指令均不暴露判别字段符号。
+
+### 8.6 ExternalSymbols 完整性
+
+外部类型和成员可以省略方法体与私有实现信息，但必须提供：
+
+- canonical 类型与成员符号；
+- 类型种类与继承/接口关系；
+- 影响类型验证的修饰符；
+- 字段类型、static 属性、可读写性和可见性；
+- 方法完整 BIL 签名、async 属性与调用类别；
+- 运算符精确签名；
+- enum case 精确签名；
+- 泛型约束与 hidden argument 形态。
+
+### 8.7 `..companion.UUID` singleton（Method wrapper 壳体）
+
+静态方法被 Method wrapper 修饰时，frontend 为**每个被修饰的静态方法**合成一个 companion singleton 类型，UUID 为该静态方法自己的稳定 UUID：
+
+```bil
+.type ..companion.<UUID> = class singleton shared pub compiler-generated {
+    .method ..companion.<UUID>$<原方法简单名>(...)@Ret pub compiler-generated
+        [原方法上的 wrapped(W) 应用标记改挂到本实例方法]
+}
+```
+
+约定：
+
+- 类型名保留前缀 `..companion.`（§5.1）；`UUID` 段不得为空，且在模块内唯一；
+- 类型必须是 `class`，且同时带 `singleton` 与 `shared`（§8.2 singleton 规则）；建议带 `compiler-generated`；
+- companion 内生成**实例**方法：方法简单名**沿用原静态方法简单名**（不另加 `..wrapped.` 前缀——companion 类型已隔离命名空间）；该方法承接原静态方法体，并被原 Method wrapper 修饰（`wrapped(W)` 挂在 companion 方法声明上，若 BIL 方法侧不投 `wrapped` 则由 Middleware 按 companion 合成契约识别）；
+- 原 owner 上保留**同名静态壳体方法**：签名与源码静态方法一致；fn 体仅：取得 companion singleton 实例 → `invoke` / `invoke.noret` 其对应实例方法（实参转发）→ `ret`（有返回时）；
+- 用户源码不可声明 `..companion.*` 类型。
+
+> **注记（调用时机）**：companion 的 wrapper 安装走 companion 类型自身的 `..init.wrapper`（若有参则创建 companion 用 `new.wrapped`；singleton 构造时机归 Middleware）。壳体静态方法不负责安装 wrapper。
+
+---
+
+## 9. 函数、参数、局部变量与 block
+
+### 9.1 函数定义
+
+```bil
+fn(com.example::Owner$method(value:.i32)@.void) {
+    .args {
+        ...
+    }
+
+    .vars {
+        ...
+    }
+
+    .block entry entrypoint {
+        ...
+    }
+
+    .block helper {
+        ...
+    }
+}
+```
+
+函数定义必须对应一个 `LocalSymbols` 方法声明。
+
+### 9.2 `.args`
+
+`.args` 重申函数体可引用的语义参数：
+
+```bil
+.args {
+    .return = RETURN_TYPE,
+    .this = OWNER_TYPE,
+    .generic.T = .typeid,
+    arg0 = TYPE,
+    .vargs.args = .array<.any>,
+    .kwargs.options = .array<.pair<.string, .any>>
+}
+```
+
+规则：
+
+- `.return` 必须与方法声明一致；
+- void 方法写 `.return = .void`；
+- `.this` 仅在签名需要 receiver 时出现；
+- 参数名称和顺序必须与方法符号的规范签名一致；
+- 参数在函数入口处视为已赋值。
+
+### 9.3 `.vars`
+
+```bil
+.vars {
+    .i32 counter,
+    com.example::User user,
+    .typeid runtimeType,
+    .breakid loopToken
+}
+```
+
+规则：
+
+- 局部变量在当前函数内唯一；
+- 参数和局部变量使用同一 `$name` 引用形式；
+- 普通局部变量在首次读取前必须被明确赋值；
+- `.breakid` 只能由 `loop`、`loop.rev` 或 `switch` 绑定；
+- `.breakid` 不得由 `load`、`set.var`、参数传入、字段写入、数组写入或普通方法返回产生。
+
+> **注记**：局部变量上的 wrapper 应用标记（源码 `@W(...)` 注解于局部声明）由 cell 隐藏子类的 `value` 字段 `wrapped(W)` 承载（`.vars` 无新语法；统一 cell 存储见 `SYNTAX.md` §5.2 / §14.3 与 §8.3.1）。应用 init 实参见 §9.7 / §14.4 / §14.5。
+
+### 9.4 block
+
+BIL block 是结构化代码 region，不是 LLVM basic block。
+
+每个函数：
+
+- 必须恰有一个 `entrypoint` block；
+- block ID 必须唯一；
+- block 不能接受独立参数；
+- block 共享函数的参数和局部变量；
+- block 正常执行到末尾时，返回到引用它的结构化指令；
+- entrypoint block 不得正常落到末尾，必须显式 `ret` 或以异常/其他终止流程结束。
+
+### 9.5 block 引用限制
+
+`call`、`if`、`loop`、`switch` 和 `try` 引用的 block：
+
+- 必须存在；
+- 必须位于当前函数；
+- 不得引用其他函数的 block；
+- 不得通过资源或整数伪造。
+
+### 9.6 block 修饰符
+
+标准 block 修饰符为：
+
+```text
+entrypoint
+volatile
+```
+
+`volatile` 表示该 block 内可观察操作的源码顺序必须被保留，不得进行改变其 volatile 语义的重排。具体 LLVM volatile/atomic lowering 由 Middleware 决定。
+
+`atomic[$lock]` 不是当前 Rigi 语法或 BIL 标准的一部分，不得出现在标准 BIL 中。
+
+### 9.7 `..init.wrapper`（实体 wrapper 初始化方法）
+
+编译器为「带有 wrapper 应用、需要在创建时安装 wrapper」的每个实体（class/struct/enum-struct/wrapper 类型本身，或 cell 隐藏子类等合成类型）至多生成**一个**实例方法，保留名：
+
+```text
+..init.wrapper
+```
+
+canonical 形态示例：
+
+```bil
+.method com.example::Service$..init.wrapper(level:.string)@.void
+    priv compiler-generated
+
+fn(com.example::Service$..init.wrapper(level:.string)@.void) {
+    .args {
+        .return = .void,
+        .this = com.example::Service,
+        level = .string
+    }
+    .block entry entrypoint {
+        new.wrapper.entity type(core.logging::Logged) [$level]
+        ret
+    }
+}
+```
+
+规则：
+
+- **保留名**：方法简单名精确为 `..init.wrapper`（§5.1）；用户源码不可声明；
+- **每实体至多一个**（同一 owner 类型上不得重载或重复声明）；
+- **返回类型**必须为 `.void`；
+- **实例方法**（符号不得含 `.static.`；`.args` 含 `.this = OWNER`）；
+- **可见性 / 修饰符**：`priv` + `compiler-generated`（仿合成 fn 惯例；验证器要求二者均在）；
+- **允许参数**：当 wrapper 应用带 init 实参、或 cell 子类需把字段/局部上 `@W(args)` 的实参传入时，这些值成为本方法的规范序参数；参数名由 frontend 分配（稳定、唯一）；无 init 实参时参数列表可为空；
+- **方法体**：仅允许普通数据/控制流指令，以及 §14.5 的三条 `new.wrapper.*` 指令（安装本实体相关 wrapper）；不得 `new` 本实体（防递归构造约定由 frontend 遵守）；
+- **调用时机（规范注记）**：本方法在实体 **init 之前**由 Middleware/VM **自动调用**；frontend **无法介入**调用时机，也不得在普通用户方法中显式 `invoke` 本方法（验证器可对非合成调用点给出诊断，Middleware 以自动调用为准）。有参时，调用方通过 §14.4 `new.wrapped` 把前缀实参传入构造路径，由运行时转交给本方法。
+
+**生成职责**：
+
+- 类型声明带 `wrapped(W)`（Entity）或成员字段带 `wrapped(W)`（字段-Value）时，在 owner 类型上合成 `..init.wrapper`，体内按 outer→inner 对每个应用发对应 `new.wrapper.entity` / `new.wrapper.field`；
+- 方法带 Method wrapper 时：静态方法走 §8.7 companion；实例方法在 owner 的 `..init.wrapper` 内发 `new.wrapper.method`（或按 Middleware 约定在方法首次绑定前安装——以 §14.5 指令语义为准，frontend 按应用表发射）；
+- cell 子类：`value` 字段上每个 `wrapped(W)` 的应用实参提升为 cell 类型 `..init.wrapper` 的参数；`new ..cell..UUID(...)` / `new.wrapped` 在变量初始化点传入这些实参。
+
+---

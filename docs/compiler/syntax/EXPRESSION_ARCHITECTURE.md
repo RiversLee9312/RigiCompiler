@@ -1,8 +1,5 @@
 # ExpressionParserLayer 架构设计
 
-**日期**: 2026-07-26  
-**版本**: 4.0（大扫除：TokenDisposition + 施工目标协议 + ExpressionRootASTNode，与当前代码一致）
-
 ## 设计原则
 
 ### ✅ 正确的模块化原则
@@ -28,7 +25,7 @@ ExpressionParserLayer (通用框架，构造时接收唯一挂载目标 Expressi
   ├─ 识别表达式起点
   │  ├─ 字面量？      → 创建 LiteralExpressionASTNode，委托 LiteralParserLayer（原地 AttachLiteral）
   │  ├─ new？         → 创建 NewExpressionASTNode，委托 TypeReferenceParserLayer（原地填充 Type）
-  │  ├─ 符号？        → 创建 PathExpressionASTNode（首段符号名；后缀链就地生长，M42）
+  │  ├─ 符号？        → 创建 PathExpressionASTNode（首段符号名；后缀链就地生长）
   │  ├─ 括号？        → 创建 GroupExpressionASTNode，递归 ExpressionParserLayer(group.InnerExpression)
   │  └─ 一元运算符？  → 创建 UnaryExpressionASTNode + 递归 ExpressionParserLayer(unary.Operand)
   │
@@ -37,7 +34,7 @@ ExpressionParserLayer (通用框架，构造时接收唯一挂载目标 Expressi
   │  ├─ 二元           → BinaryExpressionASTNode（每层最多消费一个，见「无优先级规则」）
   │  └─ > 系列重组     → >=、>>、>>>（Lexer 不合并 > 系列）
   │
-  └─ 处理后缀链（SYNTAX.md §1.4：路径表达式在运算符之前整体形成——M42 起
+  └─ 处理后缀链（SYNTAX.md §1.4：路径表达式在运算符之前整体形成——
      │                一条完整路径链恰一个 PathExpressionASTNode）
      ├─ (  → 给当前段/首段追加 Call 后缀，实参委托 ArgumentListParserLayer
      ├─ [  → 给当前段/首段追加 Index 后缀，实参委托 ArgumentListParserLayer
@@ -49,7 +46,7 @@ ExpressionParserLayer (通用框架，构造时接收唯一挂载目标 Expressi
      └─ new 的 ( → 填充 NewExpressionASTNode.Arguments（不生成路径后缀）
 ```
 
-**M42 统一路径形态**：表达式位置的符号引用、调用、索引、成员访问
+**统一路径形态**：表达式位置的符号引用、调用、索引、成员访问
 （含 `?.`）、wrapper 访问（`:`）统一施工为单个 `PathExpressionASTNode`
 （首段 + 段序列，段带泛型实参与调用/索引后缀）；非符号起点的表达式
 （分组、字面量、调用结果）遇路径后缀时包装为路径的表达式底座
@@ -58,7 +55,7 @@ ExpressionParserLayer (通用框架，构造时接收唯一挂载目标 Expressi
 语法层只表达 §1.4 的形态事实。`PathParserLayer` 继续服务**类型引用**
 与 **import 路径**的符号解析（纯静态路径，不参与本统一）。
 
-## 施工目标协议（大扫除后）
+## 施工目标协议
 
 Parser 分为**控制流系统**与 **AST 施工系统**：
 
@@ -82,7 +79,7 @@ Parser 分为**控制流系统**与 **AST 施工系统**：
 父 Layer 恢复执行
 ```
 
-**已删除的机制**（大扫除前存在，禁止恢复）：
+**已删除的机制**（禁止恢复）：
 `IResultProducer` / `IResultConsumer` / `GetResult()` / `OnChildResult()` /
 `pendingResultHandler`，以及任何形式的回传替代（回调、Context 字段、父层引用等）。
 
@@ -115,7 +112,7 @@ return new ParserLayerResult.PushLayer(
     new LiteralParserLayer(literalExpr), TokenDisposition.Replay);
 ```
 
-### 2. 路径起点与路径段施工（M42）
+### 2. 路径起点与路径段施工
 
 符号起点不再委托子 Layer：本层直接创建 `PathExpressionASTNode` 并填入
 首段符号名，后续 `.`/`?.`/`:`/`\<`/`(`/`[` 全部由本层状态机就地追加
@@ -128,7 +125,7 @@ currentExpression = path;
 state = State.PrimaryParsed;
 ```
 
-**PathParserLayer 的职责边界**（M42 后收窄）：
+**PathParserLayer 的职责边界**：
 - **类型引用**的符号路径（`List\<Map\<String, i32>>`）与 **import 路径**
   ——纯静态路径，继续由它解析（Symbol 形态）
 - 表达式位置的路径不再经过它；泛型实参统一走 TypeReferenceParserLayer
@@ -244,25 +241,20 @@ ExpressionParserLayer
 
 ## 模块清单
 
-### 已实现的专门 Layer
+### 专门 Layer
 | Layer | 职责 | 状态 |
 |-------|------|------|
 | LiteralParserLayer | 字面量解析（AttachLiteral 到 LiteralExpressionASTNode） | ✅ |
-| PathParserLayer | 符号路径 + `\<` 泛型实参（M42 起收窄为类型引用与 import 路径专用；表达式路径由 ExpressionParserLayer 就地施工） | ✅ |
+| PathParserLayer | 符号路径 + `\<` 泛型实参（收窄为类型引用与 import 路径专用；表达式路径由 ExpressionParserLayer 就地施工） | ✅ |
 | TypeReferenceParserLayer | 类型引用 | ✅ |
 | ArgumentListParserLayer | 调用/索引/构造实参列表 | ✅ |
 | GenericParametersParserLayer | 泛型参数列表 `\<...>`（声明侧） | ✅ |
 | ParameterListParserLayer | 函数形参列表 `(...)`（声明侧） | ✅ |
-| LambdaExpressionParserLayer | Lambda（完整/泛型/async/trailing；体双形态：单表达式/块） | ✅ M8/M33 |
-| IfStatementParserLayer | if 表达式（强制 else）/ if 语句（分支体为代码块） | ✅ M7/M8/M33 |
-| SwitchStatementParserLayer | switch 表达式 + switch 语句（强制 default，分支体为代码块） | ✅ M8/M33 |
-| TypeOfExpressionParserLayer | typeOf 表达式 | ✅ M8 |
-| SeqBlockParserLayer | seq 块（语句 + 表达式双形态） | ✅ M10 |
-
-### 待实现的表达式能力
-| 能力 | 优先级 | 说明 |
-|------|--------|------|
-| 数组字面量 `[1, 2, 3]` | P2 遗留 | 与索引 `[]` 的语境区分；注：SYNTAX.md 当前未定义数组字面量语法，实现前需先补充规范 |
+| LambdaExpressionParserLayer | Lambda（完整/泛型/async/trailing；体双形态：单表达式/块） | ✅ |
+| IfStatementParserLayer | if 表达式（强制 else）/ if 语句（分支体为代码块） | ✅ |
+| SwitchStatementParserLayer | switch 表达式 + switch 语句（强制 default，分支体为代码块） | ✅ |
+| TypeOfExpressionParserLayer | typeOf 表达式 | ✅ |
+| SeqBlockParserLayer | seq 块（语句 + 表达式双形态） | ✅ |
 
 ## 优势总结
 

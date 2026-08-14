@@ -1,8 +1,9 @@
 namespace RigiCompiler.Bil.Vm
 {
     // §22.5 native hook 表（BIL_VM_DESIGN §7 / RUNTIME.md §26）：
-    // rigi_rt print / printErr / toString / alloc_array / make_sleep_alarm；
-    // call??? 留后续切片。表外 (lib, symbol) 拒绝执行。单次 print 调用加锁原子写入。
+    // (lib, symbol) 表：rigi_rt print / printErr / toString / alloc_array /
+    // make_sleep_alarm，表外拒绝执行；单次 print 调用加锁原子写入。
+    // 方法 hook 表：core::Any$call??? 按方法符号命中（无 (lib, symbol) 对）。
 
     public sealed class VmHooks
     {
@@ -10,10 +11,19 @@ namespace RigiCompiler.Bil.Vm
 
         private readonly Dictionary<(string Library, string Symbol), Hook> _table =
             new Dictionary<(string, string), Hook>();
+        private readonly Dictionary<string, Hook> _methodTable =
+            new Dictionary<string, Hook>(StringComparer.Ordinal);
 
         public void Register(string library, string symbol, Hook hook)
         {
             _table[(library, symbol)] = hook;
+        }
+
+        // 方法 hook 按「宿主$方法名」（签名段之前）索引：call??? 的 namedArgs
+        // 参数类型随 stdlib core::Pair 在否而变（NamedPackType 回退），不按全签名匹配
+        public void RegisterMethod(string methodSymbol, Hook hook)
+        {
+            _methodTable[MethodKeyOf(methodSymbol)] = hook;
         }
 
         public VmValue Invoke(VmContext context, string library, string symbol,
@@ -26,6 +36,24 @@ namespace RigiCompiler.Bil.Vm
             return hook(context, arguments);
         }
 
+        public bool TryInvokeMethod(VmContext context, string methodSymbol,
+            IReadOnlyList<VmValue> arguments, out VmValue result)
+        {
+            if (_methodTable.TryGetValue(MethodKeyOf(methodSymbol), out var hook))
+            {
+                result = hook(context, arguments);
+                return true;
+            }
+            result = VmVoid.Instance;
+            return false;
+        }
+
+        private static string MethodKeyOf(string methodSymbol)
+        {
+            var paren = methodSymbol.IndexOf('(');
+            return paren < 0 ? methodSymbol : methodSymbol.Substring(0, paren);
+        }
+
         public static VmHooks CreateStandard()
         {
             var hooks = new VmHooks();
@@ -34,6 +62,7 @@ namespace RigiCompiler.Bil.Vm
             hooks.Register("rigi_rt", "toString", ToStringHook);
             hooks.Register("rigi_rt", "alloc_array", AllocArray);
             hooks.Register("rigi_rt", "make_sleep_alarm", MakeSleepAlarm);
+            hooks.RegisterMethod("core::Any$call???", CallWildcard);
             return hooks;
         }
 
@@ -88,6 +117,24 @@ namespace RigiCompiler.Bil.Vm
                 throw new VmException("make_sleep_alarm 需要恰好 1 个 i64 参数");
             }
             return VmEventAlarm.Sleep(milliseconds.Value);
+        }
+
+        // §22.5 方法 hook（RUNTIME §14.2 / SYNTAX §14.7）：wrapper 降级请求的
+        // 链末默认实现。派发链烘焙（specific/wildcard 特化合成）归 Middleware，
+        // 本 VM 的行为参考即「未路由 → 抛 core::NoSuchMethodException」。
+        // 实参序（BIL §15.6）：receiver(.any) + symbol(.string) + namedArgs + unnamedArgs。
+        private static VmValue CallWildcard(VmContext context, IReadOnlyList<VmValue> arguments)
+        {
+            if (arguments.Count != 4
+                || arguments[0] is not VmAny
+                || arguments[1] is not VmString symbol
+                || arguments[2] is not VmArray
+                || arguments[3] is not VmArray)
+            {
+                throw new VmException("call??? 需要 (this: .any, symbol: .string,"
+                    + " namedArgs: .array, unnamedArgs: .array)");
+            }
+            throw context.NoSuchMethod("未路由的降级请求：" + symbol.Value);
         }
 
         private static string RequireString(string hookName, IReadOnlyList<VmValue> arguments)
