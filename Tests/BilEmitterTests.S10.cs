@@ -11,12 +11,13 @@ namespace RigiCompiler.Tests
     public static partial class BilEmitterTests
     {
         // ===== S10：用户异常端到端（自定义子类 + stdlib 子类 catch +
-        // bootstrap getMessage）=====
+        // 抽象 getMessage 多态派发）=====
         private static void TestExceptionEmission()
         {
             var (unit, module, _) = BilTestHarness.EmitBilUnit(
                 "pub open class ValidationError : core.Exception {\n" +
                 "    pub init(text: String) { message = text }\n" +
+                "    pub override func getMessage(): String { return message }\n" +
                 "}\n" +
                 "func fail(): i32 {\n" +
                 "    throw new ValidationError(\"invalid\")\n" +
@@ -50,7 +51,7 @@ namespace RigiCompiler.Tests
                 validationError.ExtendsType + " / " +
                 string.Join("; ", validationError.Members
                     .OfType<BilSimpleMemberDeclaration>().Select(m => m.Symbol)),
-                "core::Exception / ValidationError$init(text:.string)@.void");
+                "core::Exception / ValidationError$init(text:.string)@.void; ValidationError$getMessage()@.string");
 
             // init 体 set.field 引用 bootstrap 根字段（预定义符号表闭合）
             var validationInit = module.Functions.Single(
@@ -60,12 +61,22 @@ namespace RigiCompiler.Tests
                     .Any(i => i is SetFieldInstruction setField
                         && setField.Field.Symbol == "core::Exception#message@.string"));
 
-            // catch 块调用 bootstrap getMessage（预定义方法表闭合）
+            // catch 块调用 getMessage：接收者静态类型为 core::IOException，
+            // override 遮蔽使 invoke 指向 IOException 的 override（§9.2.1）
             var handle = module.Functions.Single(fn => fn.Symbol == "$handle()@.string");
-            TestHarness.CheckTrue("catch 块调用 getMessage",
+            TestHarness.CheckTrue("catch 块调用 getMessage（指向 IOException override）",
                 handle.Blocks.SelectMany(b => b.Instructions)
                     .Any(i => i is InvokeInstruction invoke
-                        && invoke.Method.Symbol == "core::Exception$getMessage()@.string"));
+                        && invoke.Method.Symbol == "core::IOException$getMessage()@.string"));
+
+            // stdlib 具体子类各自发射 getMessage override 声明（抽象化落点：
+            // 具体实现进符号段，抽象根仅作可解析预定义符号）
+            var ioException = module.LocalSymbols.OfType<BilTypeDeclaration>()
+                .Single(t => t.Symbol == "core::IOException");
+            TestHarness.CheckTrue("IOException 声明 getMessage override",
+                ioException.Members.OfType<BilSimpleMemberDeclaration>().Any(d =>
+                    d.Symbol == "core::IOException$getMessage()@.string"
+                    && d.Modifiers.Any(m => m is BilKeywordModifier { Keyword: BilKeyword.Override })));
         }
 
         // ===== S10：core.IDisposable 实现判定（§6.2）=====

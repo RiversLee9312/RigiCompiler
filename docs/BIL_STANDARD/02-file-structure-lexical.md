@@ -78,7 +78,7 @@ A-Z a-z 0-9 _ -
 - 普通用户标识符不得以 `.` 开头；
 - 以 `.` 开头的参数名和局部名由编译器保留，例如 `.this`、`.return`、`.generic.T`、`.vargs.args` 和 `.kwargs.args`。
 - 以 `.` 前缀段保留的成员名还包括：`.proxy.`（wrapper 类型内的 proxy 模板成员名，见 §8.4 `wrapper-proxy`）；方法名 `call???` 是 `core::Any` 的内建方法名（`?` 非标识符字符，用户源码不可声明，见 §15.5 / §22.5）。wrapper 隐藏存储的命名约定见 §5.3——该符号**不**出现于 BIL 文本（存储合成归 Middleware）。
-- 编译器合成的隐藏类型名以 `..` 前缀保留：`..lambda..UUID`（lambda 隐藏类，见 `SYNTAX.md` §5.2）、`..cell..UUID`（统一 cell 存储的隐藏子类，见 `SYNTAX.md` §5.2 / §14.3）与 `..companion.UUID`（静态方法被 Method wrapper 修饰时合成的 singleton companion，见 §8.7）；用户源码不可声明同名类型。
+- 编译器合成的隐藏类型名以 `..` 前缀保留：`..lambda..UUID`（lambda 隐藏类，见 `SYNTAX.md` §5.2）、`..cell..UUID`（统一 cell 存储的隐藏子类，见 `SYNTAX.md` §5.2 / §14.3）与 `..companion`（静态方法/静态字段收敛的 companion singleton——声明类的嵌套类，见 §8.7）；用户源码不可声明同名类型。
 - 编译器合成的保留方法名以 `..` 前缀保留：`..init.wrapper`（实体 wrapper 初始化方法，见 §9.7）——用户源码不可声明同名方法。
 
 `Resources` 和 block 可以继续使用 `R_Message`、`entry` 等本地名称；该规则不适用于类型、字段、方法和运算符等语言符号。

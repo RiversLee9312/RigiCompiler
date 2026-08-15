@@ -207,7 +207,8 @@ namespace RigiCompiler
                     return new LoweredCellReferenceExpression(place, local, storage.CellType);
                 case BoundFieldReferenceExpression
                     { Field.CellStorage: { } storage } fieldReference:
-                    return CellStorageLowering.CellObjectOf(place, fieldReference.Field, storage);
+                    return CellStorageLowering.CellObjectOf(place, fieldReference.Field,
+                        storage, env);
                 default:
                     return null;
             }

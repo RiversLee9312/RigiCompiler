@@ -39,31 +39,88 @@ namespace RigiCompiler.Bil.Vm
             throw new VmException("操作数不是 fieldid：" + value.TypeRef);
         }
 
-        internal static bool Is(VmContext context, VmValue value, string targetType)
+        // .generic< 是 typeid 占位（§14.3 / SYNTAX §14.8），执行期类型操作必须
+        // 先按当前调用帧的泛型绑定（hidden .generic.X typeid 实参）解析成具体
+        // typeid 再继续；解析不到抛 VmException（绝不恒等放行）。
+        internal static string ResolveTypeRef(VmContext context, VmCoroutine coroutine,
+            string typeRef)
         {
-            if (value is VmNull)
+            if (!typeRef.Contains(".generic<", StringComparison.Ordinal))
             {
-                return false;
+                return typeRef;
             }
-            return context.Types.TypesAssignable(ActualType(value), targetType);
+            return ResolveTypeRefImpl(context, coroutine, typeRef);
         }
 
-        internal static bool Supers(VmContext context, VmValue value, string targetType)
+        private static string ResolveTypeRefImpl(VmContext context, VmCoroutine coroutine,
+            string typeRef)
         {
-            if (value is VmNull)
+            var angle = typeRef.IndexOf('<');
+            if (angle > 0 && typeRef.EndsWith(">"))
             {
-                return false;
+                var head = typeRef.Substring(0, angle);
+                var inner = typeRef.Substring(angle + 1, typeRef.Length - angle - 2);
+                if (head == ".generic")
+                {
+                    return ResolveGenericPlaceholder(context, coroutine, inner);
+                }
+                var arguments = BilVerificationContext.SplitTopLevel(inner);
+                var resolved = new List<string>(arguments.Count);
+                foreach (var argument in arguments)
+                {
+                    resolved.Add(ResolveTypeRefImpl(context, coroutine, argument));
+                }
+                return head + "<" + string.Join(", ", resolved) + ">";
             }
-            return context.Types.TypesAssignable(targetType, ActualType(value));
+            return typeRef;
         }
 
-        internal static bool With(VmContext context, VmValue value, string wrapperType)
+        // 占位内文形如 $.generic.NAME（$ 为引用标记），映射到当前帧同名 hidden
+        // typeid 实参；未绑定（直接构造模块等语境）抛清晰 VmException。
+        private static string ResolveGenericPlaceholder(VmContext context, VmCoroutine coroutine,
+            string inner)
+        {
+            var name = inner.StartsWith("$", StringComparison.Ordinal) ? inner.Substring(1) : inner;
+            var frame = coroutine.CurrentFrame;
+            if (frame.Slots.TryGetValue(name, out var value) && value is VmTypeId typeId)
+            {
+                return typeId.TypeSymbol;
+            }
+            throw new VmException("无法解析泛型占位 .generic<" + inner
+                + ">：当前调用帧未绑定该 typeid");
+        }
+
+        internal static bool Is(VmContext context, VmCoroutine coroutine, VmValue value,
+            string targetType)
         {
             if (value is VmNull)
             {
                 return false;
             }
-            return TypeHasWrapper(context, ActualType(value), wrapperType,
+            var resolved = ResolveTypeRef(context, coroutine, targetType);
+            return context.Types.TypesAssignable(ActualType(value), resolved);
+        }
+
+        internal static bool Supers(VmContext context, VmCoroutine coroutine, VmValue value,
+            string targetType)
+        {
+            if (value is VmNull)
+            {
+                return false;
+            }
+            var resolved = ResolveTypeRef(context, coroutine, targetType);
+            return context.Types.TypesAssignable(resolved, ActualType(value));
+        }
+
+        internal static bool With(VmContext context, VmCoroutine coroutine, VmValue value,
+            string wrapperType)
+        {
+            if (value is VmNull)
+            {
+                return false;
+            }
+            var resolved = ResolveTypeRef(context, coroutine, wrapperType);
+            return TypeHasWrapper(context, ActualType(value), resolved,
                 new HashSet<string>(StringComparer.Ordinal));
         }
 
@@ -180,8 +237,18 @@ namespace RigiCompiler.Bil.Vm
                 return true;
             }
 
-            if (context.Types.TypesAssignable(ActualType(source), requested)
-                || context.Types.TypesAssignable(ActualType(source), normalizedTarget))
+            // 构造泛型类型 → 其开放宿主（实例方法 receiver 的擦除 cast，BIL §7）：
+            // Store<.i32> → Store。剥实参后缀后全等即同一类型声明。
+            var actualType = ActualType(source);
+            if (BilVerificationContext.StripTypeArguments(actualType) == normalizedTarget
+                || BilVerificationContext.StripTypeArguments(actualType) == requested)
+            {
+                result = source.Copy();
+                return true;
+            }
+
+            if (context.Types.TypesAssignable(actualType, requested)
+                || context.Types.TypesAssignable(actualType, normalizedTarget))
             {
                 result = source.Copy();
                 return true;
@@ -190,18 +257,22 @@ namespace RigiCompiler.Bil.Vm
             return false;
         }
 
-        internal static VmValue CastOrThrow(VmContext context, VmValue source, string targetType)
+        internal static VmValue CastOrThrow(VmContext context, VmCoroutine coroutine,
+            VmValue source, string targetType)
         {
-            if (TryCast(context, source, targetType, out var result))
+            var resolved = ResolveTypeRef(context, coroutine, targetType);
+            if (TryCast(context, source, resolved, out var result))
             {
                 return result;
             }
-            throw context.CastFailed("无法将 " + source.TypeRef + " 转换为 " + targetType);
+            throw context.CastFailed("无法将 " + source.TypeRef + " 转换为 " + resolved);
         }
 
-        internal static VmValue CastSafe(VmContext context, VmValue source, string targetType)
+        internal static VmValue CastSafe(VmContext context, VmCoroutine coroutine,
+            VmValue source, string targetType)
         {
-            return TryCast(context, source, targetType, out var result)
+            var resolved = ResolveTypeRef(context, coroutine, targetType);
+            return TryCast(context, source, resolved, out var result)
                 ? result
                 : VmNull.Instance;
         }

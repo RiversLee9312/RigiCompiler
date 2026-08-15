@@ -37,6 +37,7 @@ namespace RigiCompiler.Tests
             TestLambdaCatchCapture();
             TestLambdaFinallyCapture();
             TestLambdaUsingCapture();
+            TestLambdaMethodWrapperEmission();
         }
 
         // 无捕获：隐藏类 extends Func、new 空参、invoke.indirect
@@ -642,7 +643,9 @@ namespace RigiCompiler.Tests
         private static void TestLambdaCatchCapture()
         {
             var (unit, module, text) = BilTestHarness.EmitBilUnit(
-                "open class MyError : core.Exception { }\n" +
+                "open class MyError : core.Exception {\n" +
+                "    pub override func getMessage(): String { return message }\n" +
+                "}\n" +
                 "pub func main(): i32 {\n" +
                 "    try {\n" +
                 "        throw new MyError()\n" +
@@ -762,6 +765,58 @@ namespace RigiCompiler.Tests
                 text2.Contains("getValue") && text2.Contains("dispose"));
             TestHarness.CheckTrue("using var 捕获 invoke.indirect 可用",
                 text2.Contains("invoke.indirect $f "));
+        }
+
+        // lambda 头内部 Method wrapper（SYNTAX §5.1/§14.4）：隐藏类合成
+        // ..init.wrapper；带实参时构造点改 new.wrapped（wrapper 实参在
+        // lambda 表达式求值语境求值，可引用外层局部 tag）。
+        private static void TestLambdaMethodWrapperEmission()
+        {
+            var (unit, module, text) = BilTestHarness.EmitBilUnit(
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Timed {\n" +
+                "    pub init(tag: String)\n" +
+                "    operator .proxy.call\\<TReturn>(x: i32): TReturn {\n" +
+                "        return ((x + 100) as TReturn)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var tag = \"t\"\n" +
+                "    var f = func{ @Timed(tag) (x: i32): i32 -> (x + 1) }\n" +
+                "    return f(41)\n" +
+                "}\n");
+            CheckNoErrors("lambda Method wrapper 全管线无诊断", unit);
+            BilTestHarness.CheckBilValid("lambda Method wrapper 验证器零错误", module);
+
+            // 隐藏类声明含 ..init.wrapper(w0) 成员
+            var lambdaType = module.LocalSymbols.OfType<BilTypeDeclaration>()
+                .Single(t => t.Symbol.StartsWith("..lambda.."));
+            TestHarness.CheckTrue("lambda 隐藏类声明含 ..init.wrapper 成员",
+                lambdaType.Members.OfType<BilSimpleMemberDeclaration>()
+                    .Any(m => m.Symbol.Contains("..init.wrapper(w0:.string)")));
+
+            var iwFn = module.Functions.Single(f => f.Symbol.Contains("..init.wrapper"));
+            BilTestHarness.CheckFnShape("lambda ..init.wrapper 体（method + 参数转发）",
+                module, iwFn.Symbol,
+                ".vars {  }\n" +
+                "new.wrapper.method fn(..lambda..UUID$$call(x:.i32)@.i32) type(Timed) [$w0]\n" +
+                "ret\n");
+
+            BilTestHarness.CheckFnShape("lambda 构造点 new.wrapped 传 wrapper args",
+                module, "$main()@.i32",
+                ".vars { .string tag, ..lambda..UUID f, .string .t0, ..lambda..UUID .t1, " +
+                ".i32 .t2, .i32 .t3 }\n" +
+                "load res(#0) $.t0\n" +
+                "set.var $.t0 $tag\n" +
+                "new.wrapped type(..lambda..UUID) $.t1 [$tag] []\n" +
+                "set.var $.t1 $f\n" +
+                "load res(#1) $.t2\n" +
+                "invoke.indirect $f $.t3 [$.t2]\n" +
+                "ret $.t3\n");
+
+            TestHarness.CheckTrue("lambda Method wrapper 文本含 new.wrapped 与 new.wrapper.method",
+                text.Contains("new.wrapped type(..lambda..UUID)")
+                && text.Contains("new.wrapper.method fn(..lambda..UUID$$call"));
         }
 
         // 隐藏类结构：class + extends + operator(call) + 可选 capture 字段

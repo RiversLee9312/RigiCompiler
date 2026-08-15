@@ -34,6 +34,7 @@ namespace RigiCompiler.Tests
             TestLocalDeclarations();
             TestValueReferences();
             TestBinaryOperators();
+            TestUserEqualityOperators();
             TestUnaryOperators();
             TestAssignments();
             TestCalls();

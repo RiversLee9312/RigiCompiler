@@ -95,7 +95,7 @@ ASTIntegrityValidator 校验父子指针一致性与 Span 合法性，
 | **GroupExpressionASTNode** | InnerExpression | 括号分组 |
 | **NewExpressionASTNode** | Type、Arguments | new 构造 |
 | **ArgumentASTNode** | Name?、Value | 调用/索引/构造实参（可具名）；非 Expression 子类 |
-| **LambdaExpressionASTNode** | IsAsync、Parameters、GenericParameters?、ReturnType、Label?、Body? / BlockBody?（互斥） | lambda（体双形态：单表达式 Body / 多语句块 BlockBody，块内禁裸 return） |
+| **LambdaExpressionASTNode** | IsAsync、Parameters、ReturnType、Label?、Body? / BlockBody?（互斥） | lambda（体双形态：单表达式 Body / 多语句块 BlockBody，块内禁裸 return） |
 | **IfExpressionASTNode** | Condition、ThenBody、ElseBody、Label? | if 表达式（强制 else，分支体为代码块，取值 return@_ / return@标签） |
 | **SwitchExpressionASTNode** | Selector、Cases、DefaultBody、Label? | switch 表达式（强制 default，DefaultBody 为 CodeBlockASTNode?） |
 | **SwitchCaseASTNode** | Pattern、Body | case 分支（Body 为代码块）；非 Expression 子类 |

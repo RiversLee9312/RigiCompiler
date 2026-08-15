@@ -756,7 +756,31 @@ namespace RigiCompiler.Bil
                 coroutine.WriteVar(target.Name, new VmI32(array.Length));
                 return;
             }
-            coroutine.WriteVar(target.Name, ReadInstanceField(instance, fieldSymbol).Copy());
+            var raw = ReadInstanceField(instance, fieldSymbol).Copy();
+            var wrappers = context.CollectWrappedWrappers(fieldSymbol);
+            if (wrappers.Count == 0)
+            {
+                // 字段自身无 wrapped 标记、但宿主类型带 wrapped 标记 → Entity
+                // getter 类别（.proxy.get.<名> / .proxy.get.*）
+                var entityWrappers = context.CollectEntityWrappers(FieldOwner(fieldSymbol));
+                if (entityWrappers.Count > 0)
+                {
+                    if (VmWrapperDispatch.ApplyEntityGetChain(context, coroutine, instance,
+                            fieldSymbol, FieldType(fieldSymbol), entityWrappers, raw,
+                            out var entityFinal))
+                    {
+                        coroutine.WriteVar(target.Name, entityFinal);
+                    }
+                    return;
+                }
+                coroutine.WriteVar(target.Name, raw);
+                return;
+            }
+            if (VmWrapperDispatch.ApplyGetChain(context, coroutine, instance, fieldSymbol,
+                    FieldType(fieldSymbol), wrappers, raw, out var final))
+            {
+                coroutine.WriteVar(target.Name, final);
+            }
         }
 
         internal static void SetField(VmContext context, VmCoroutine coroutine,
@@ -769,8 +793,38 @@ namespace RigiCompiler.Bil
                     new[] { objectVar, source }, resultSlot: null);
                 return;
             }
-            WriteInstanceField(coroutine.ReadVar(objectVar.Name), fieldSymbol,
-                coroutine.ReadVar(source.Name).Copy());
+            var instance = coroutine.ReadVar(objectVar.Name);
+            var value = coroutine.ReadVar(source.Name).Copy();
+            var isInit = context.IsInitFunctionOf(coroutine.CurrentFrame.Function.Symbol,
+                FieldOwner(fieldSymbol));
+            var wrappers = context.CollectWrappedWrappers(fieldSymbol);
+            if (wrappers.Count > 0)
+            {
+                if (!isInit)
+                {
+                    VmWrapperDispatch.ApplySetChain(context, coroutine, instance, fieldSymbol,
+                        FieldType(fieldSymbol), wrappers, value);
+                }
+                else
+                {
+                    WriteInstanceField(instance, fieldSymbol, value);
+                }
+                return;
+            }
+            // 字段自身无 wrapped 标记、但宿主类型带 wrapped 标记 → Entity
+            // setter 类别（.proxy.set.<名> / .proxy.set.*）；构造期豁免同 Value
+            if (!isInit)
+            {
+                var entityWrappers = context.CollectEntityWrappers(FieldOwner(fieldSymbol));
+                if (entityWrappers.Count > 0
+                    && VmWrapperDispatch.TryStartEntitySetChain(context, coroutine, instance,
+                        fieldSymbol, FieldType(fieldSymbol), entityWrappers, value,
+                        resultSlot: null))
+                {
+                    return;
+                }
+            }
+            WriteInstanceField(instance, fieldSymbol, value);
         }
 
         internal static void GetFieldStatic(VmContext context, VmCoroutine coroutine,
@@ -912,6 +966,25 @@ namespace RigiCompiler.Bil
                 coroutine.WriteVar(target.Name, array);
                 return;
             }
+            // singleton（§8.7，裁定 2）：全模块唯一实例。已初始化时返回
+            // 缓存实例（不再重跑 init）；在途（init 尚未跑完）时是循环依赖
+            // → 抛带循环链的 VmException；首次构造走同步路径——借当前协程
+            // 的调用帧把 init 跑完再登记，嵌套 new 在此递归（Step 重入，同
+            // ProbePolling），保证任一 singleton 的 init 里访问另一 singleton
+            // 时按需递归触发、副作用恰好一次
+            if (context.IsSingletonType(typeRef))
+            {
+                var existing = context.GetSingleton(typeRef);
+                if (existing != null)
+                {
+                    coroutine.WriteVar(target.Name, existing);
+                    return;
+                }
+                if (context.IsInitializing(typeRef))
+                {
+                    throw context.SingletonCycleException(typeRef);
+                }
+            }
             var instance = context.AllocateObject(typeRef);
             coroutine.WriteVar(target.Name, instance);
             var initArgs = ReadArgs(coroutine, initArguments);
@@ -919,6 +992,31 @@ namespace RigiCompiler.Bil
                 && initArguments.Count > 0)
             {
                 throw new VmException("new 实参不匹配任何 init：" + typeRef);
+            }
+            if (context.IsSingletonType(typeRef))
+            {
+                context.BeginInitializing(typeRef);
+                var depth = coroutine.CallStack.Count;
+                try
+                {
+                    PushConstructorTail(context, coroutine, typeRef, initSymbol,
+                        initArguments, wrapperArguments, target);
+                    while (coroutine.CallStack.Count > depth
+                        && coroutine.State == VmCoroutineState.Running)
+                    {
+                        coroutine.Step(context);
+                    }
+                }
+                finally
+                {
+                    context.EndInitializing(typeRef);
+                }
+                if (coroutine.State != VmCoroutineState.Running)
+                {
+                    throw coroutine.Failure ?? new VmException("singleton 初始化失败：" + typeRef);
+                }
+                context.RegisterSingleton(typeRef, instance);
+                return;
             }
             PushConstructorTail(context, coroutine, typeRef, initSymbol,
                 initArguments, wrapperArguments, target);
@@ -1013,14 +1111,16 @@ namespace RigiCompiler.Bil
             {
                 throw new VmException("类型没有 ..init.wrapper：" + typeRef);
             }
-            if (initCall != null)
-            {
-                BilInvokeExecution.InvokeValues(context, coroutine, initSymbol, initCall,
-                    resultSlot: null);
-            }
+            // §9.7/§14.4：..init.wrapper 在实体 init 之前自动调用（wrapper 先
+            // 安装、再跑 init）
             if (wrapperCall != null)
             {
                 BilInvokeExecution.InvokeValues(context, coroutine, wrapperSymbol, wrapperCall,
+                    resultSlot: null);
+            }
+            if (initCall != null)
+            {
+                BilInvokeExecution.InvokeValues(context, coroutine, initSymbol, initCall,
                     resultSlot: null);
             }
         }
@@ -1034,6 +1134,18 @@ namespace RigiCompiler.Bil
                 values[i] = coroutine.ReadVar(arguments[i].Name);
             }
             return values;
+        }
+
+        private static string FieldType(string fieldSymbol)
+        {
+            return BilVerificationContext.TryParseFieldSymbol(fieldSymbol,
+                out _, out _, out var fieldType) ? fieldType : ".any";
+        }
+
+        private static string FieldOwner(string fieldSymbol)
+        {
+            return BilVerificationContext.TryParseFieldSymbol(fieldSymbol,
+                out var owner, out _, out _) ? owner : "";
         }
 
         private static bool FieldHasWrapped(VmContext context, string fieldSymbol,
@@ -1112,6 +1224,24 @@ namespace RigiCompiler.Bil
         internal static void InvokeValues(VmContext context, VmCoroutine coroutine,
             string methodSymbol, IReadOnlyList<VmValue> args, string? resultSlot)
         {
+            // §15.4：invoke fn(..inner) 是 proxy 模板内的保留目标，由派发上下文
+            // 在执行期解析「下一环」；上下文外出现抛清晰 VmException。
+            if (methodSymbol == BilSpellings.InnerReservedFunction)
+            {
+                VmWrapperDispatch.ResolveInner(context, coroutine, args, resultSlot);
+                return;
+            }
+            if (methodSymbol == BilSpellings.SuperReservedFunction)
+            {
+                throw new VmException("invoke fn(..super) 未实现（Middleware 边界）");
+            }
+            // §14.2/§14.3 call??? 降级路由：在方法 hook 默认抛之前拦截，按
+            // receiver 类型 wrapper 链找能路由的 proxy；无路由时落回 hook 默认
+            if (IsCallWildcardSymbol(methodSymbol)
+                && VmWrapperDispatch.TryStartCallChain(context, coroutine, args, resultSlot))
+            {
+                return;
+            }
             if (context.TryResolveNative(methodSymbol, out var library, out var nativeSymbol))
             {
                 var result = context.Hooks.Invoke(context, library, nativeSymbol, args);
@@ -1130,6 +1260,29 @@ namespace RigiCompiler.Bil
                 }
                 return;
             }
+            // §14.2 Entity wrapper 成员方法派发：Host 类型声明带 wrapped 标记时
+            // 按 outer→inner 建链；无 wrapper 或无 proxy 可路由走普通 invoke
+            if (VmWrapperDispatch.TryStartMethodChain(context, coroutine, methodSymbol,
+                    args, resultSlot))
+            {
+                return;
+            }
+            // §14.4 Method wrapper 派发（.proxy.call）：wrapper 安装是运行时事实
+            // （frontend 在宿主 ..init.wrapper 内发 new.wrapper.method，静态方法经
+            // companion 实例）；查 receiver 实例的 method 隐藏存储，命中则建链。
+            if (VmWrapperDispatch.TryStartMethodWrapperChain(context, coroutine, methodSymbol,
+                    args, resultSlot))
+            {
+                return;
+            }
+            InvokeResolved(context, coroutine, methodSymbol, args, resultSlot);
+        }
+
+        // 跳过 wrapper 派发/原生/hook 的普通 fn 解析与压帧（方法派发链末的
+        // 原始 fn 落点复用；逻辑虚派发 FindVirtualFunction）
+        internal static void InvokeResolved(VmContext context, VmCoroutine coroutine,
+            string methodSymbol, IReadOnlyList<VmValue> args, string? resultSlot)
+        {
             var function = context.FindVirtualFunction(methodSymbol, args);
             if (function == null)
             {
@@ -1141,6 +1294,14 @@ namespace RigiCompiler.Bil
                 return;
             }
             coroutine.PushFrame(function, args, resultSlot);
+        }
+
+        // call??? 符号判定（core::Any$call??? 前缀，签名段之前）
+        private static bool IsCallWildcardSymbol(string methodSymbol)
+        {
+            var paren = methodSymbol.IndexOf('(');
+            var head = paren < 0 ? methodSymbol : methodSymbol.Substring(0, paren);
+            return head == "core::Any$call???";
         }
 
         // RUNTIME §18.1：求实参（已完成）→ 建 Coroutine/Task → 绑定 Executor

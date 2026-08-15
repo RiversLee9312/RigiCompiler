@@ -156,7 +156,7 @@ BIL 的 `get.field` / `set.field` 始终引用逻辑字段 canonical symbol，�
 - `WRAPPER_TYPE_REF` 必须是 wrapper 类型引用；
 - 同一声明上可出现多个 `wrapped(...)`，顺序即 outer→inner；
 - **应用 init 实参**不写在 `wrapped(W)` 修饰符上：由宿主实体的合成方法 `..init.wrapper` 体内的 `new.wrapper.*` 指令承载（§9.7 / §14.5）；若 `..init.wrapper` 自身有参数，创建宿主对象须用 `new.wrapped` 家族把这些参数前缀传入（§14.4）；
-- 局部变量上的 wrapper 应用标记由 cell 隐藏子类的 `value` 字段 `wrapped(W)` 承载（`.vars` 无新语法；见 §9.3 注记与 `SYNTAX.md` §14.3 统一 cell 存储）；静态/全局字段的 BIL 声明类型投影为 cell 子类、不再在字段槽投 `wrapped(W)`（避免双份隐藏存储；wrapper 标记挂在子类 `value` 字段上）。cell 子类上 `@W(args)` 的实参成为该 cell 类型 `..init.wrapper` 的参数。
+- 局部变量上的 wrapper 应用标记由 cell 隐藏子类的 `value` 字段 `wrapped(W)` 承载（`.vars` 无新语法；见 §9.3 注记与 `SYNTAX.md` §14.3 统一 cell 存储）；静态字段的 BIL 声明类型投影为 cell 子类、全局字段的 cell 子类即 singleton（不再发字段槽声明），静态/全局均不在字段槽投 `wrapped(W)`（避免双份隐藏存储；wrapper 标记挂在子类 `value` 字段上）。cell 子类上 `@W(args)` 的实参成为该 cell 类型 `..init.wrapper` 的参数。
 
 普通 backing 字段（`backing` / `compiler-generated` 等）与本标记无关，按 §8.3 字段修饰符表照常使用。
 
@@ -269,26 +269,27 @@ case 名称在其 enum 内唯一。`case(...)` 引用中必须包含完整 enum 
 - enum case 精确签名；
 - 泛型约束与 hidden argument 形态。
 
-### 8.7 `..companion.UUID` singleton（Method wrapper 壳体）
+### 8.7 companion singleton（静态问题统一收敛）
 
-静态方法被 Method wrapper 修饰时，frontend 为**每个被修饰的静态方法**合成一个 companion singleton 类型，UUID 为该静态方法自己的稳定 UUID：
+静态方法被 Method wrapper 修饰、或静态字段被 Value wrapper 修饰时，frontend 为**每个声明类**合成一个 companion singleton 类型——同一类的全部静态方法与全部静态字段共用一个 companion；该 singleton 是声明类的**嵌套类**（canonical 形态 `命名空间::外层...companion`，无 UUID），companion 自身 static 成员递归同理（每个声明类各有一个自己的 companion，嵌套在各自类里）：
 
 ```bil
-.type ..companion.<UUID> = class singleton shared pub compiler-generated {
-    .method ..companion.<UUID>$<原方法简单名>(...)@Ret pub compiler-generated
+.type <外层>...companion = class singleton shared pub compiler-generated {
+    .field <外层>...companion#<静态字段名>@<cell 类型> pub var
+    .method <外层>...companion$<原方法简单名>(...)@Ret pub compiler-generated
         [原方法上的 wrapped(W) 应用标记改挂到本实例方法]
+    .method <外层>...companion$init()@.void pub init
 }
 ```
 
 约定：
 
-- 类型名保留前缀 `..companion.`（§5.1）；`UUID` 段不得为空，且在模块内唯一；
+- companion 是声明类的嵌套类，类型名段为保留名 `..companion`（§5.1 `..` 前缀保留，用户源码不可声明）；
 - 类型必须是 `class`，且同时带 `singleton` 与 `shared`（§8.2 singleton 规则）；建议带 `compiler-generated`；
-- companion 内生成**实例**方法：方法简单名**沿用原静态方法简单名**（不另加 `..wrapped.` 前缀——companion 类型已隔离命名空间）；该方法承接原静态方法体，并被原 Method wrapper 修饰（`wrapped(W)` 挂在 companion 方法声明上，若 BIL 方法侧不投 `wrapped` 则由 Middleware 按 companion 合成契约识别）；
-- 原 owner 上保留**同名静态壳体方法**：签名与源码静态方法一致；fn 体仅：取得 companion singleton 实例 → `invoke` / `invoke.noret` 其对应实例方法（实参转发）→ `ret`（有返回时）；
-- 用户源码不可声明 `..companion.*` 类型。
+- **静态 Method wrapper**：companion 内生成**实例**方法——方法简单名**沿用原静态方法简单名**（不另加 `..wrapped.` 前缀——companion 类型已隔离命名空间）；该方法承接原静态方法体，并被原 Method wrapper 修饰（`wrapped(W)` 挂在 companion 方法声明上，若 BIL 方法侧不投 `wrapped` 则由 Middleware 按 companion 合成契约识别）；原 owner 上保留**同名静态壳体方法**——签名与源码静态方法一致，fn 体仅：取得 companion singleton 实例 → `invoke` / `invoke.noret` 其对应实例方法（实参转发）→ `ret`（有返回时）；
+- **静态 Value wrapper**：字段的 cell 存储对象成为 companion 的实例字段（`#<名>@<cell 类型>`）；companion 的 `init` 里求值字段初始化表达式并构造 cell（走 `new.wrapped` / 普通 `new`，经 cell 自身 `..init.wrapper` 安装 wrapper）；源码对 `C.field` 的读写访问路径改写为「companion 单例实例 → 其实例字段（cell）→ getValue/setValue」，place 访问 `C.field:W.x` 的 `get.wrapper.field`/`set.wrapper.field` 以该 cell 字段为 HOST_FIELD。
 
-> **注记（调用时机）**：companion 的 wrapper 安装走 companion 类型自身的 `..init.wrapper`（若有参则创建 companion 用 `new.wrapped`；singleton 构造时机归 Middleware）。壳体静态方法不负责安装 wrapper。
+> **注记（调用时机）**：所有 singleton（含 companion 与全局 wrapped 字段的 cell 单例——见 §14.3）由 VM/Middleware 在 main 开始执行前**急切初始化**——构造 → init 跑完（companion 的 `init` 即完成 cell 构造与 wrapper 安装，Method wrapper 安装走 companion 自身 `..init.wrapper`；全局字段的初值表达式在 cell 单例的 `init` 里求值）。运行期 `new type(singleton)` 返回该单例唯一实例（不再重跑 init）；壳体静态方法不负责安装 wrapper。**初始化无序**：不得假设任何 singleton 的初始化顺序，任一 singleton 的 `init` 里访问另一 singleton（`new` 或经字段路径）按需递归触发其构造与初始化，且 init 副作用恰好一次；初始化循环（直接或间接触发自身构造）抛带循环链的异常。
 
 ---
 
@@ -439,6 +440,11 @@ fn(com.example::Service$..init.wrapper(level:.string)@.void) {
 
 - 类型声明带 `wrapped(W)`（Entity）或成员字段带 `wrapped(W)`（字段-Value）时，在 owner 类型上合成 `..init.wrapper`，体内按 outer→inner 对每个应用发对应 `new.wrapper.entity` / `new.wrapper.field`；
 - 方法带 Method wrapper 时：静态方法走 §8.7 companion；实例方法在 owner 的 `..init.wrapper` 内发 `new.wrapper.method`（或按 Middleware 约定在方法首次绑定前安装——以 §14.5 指令语义为准，frontend 按应用表发射）；
-- cell 子类：`value` 字段上每个 `wrapped(W)` 的应用实参提升为 cell 类型 `..init.wrapper` 的参数；`new ..cell..UUID(...)` / `new.wrapped` 在变量初始化点传入这些实参。
+- cell 子类（非 singleton）：`value` 字段上每个 `wrapped(W)` 的应用实参提升为 cell 类型 `..init.wrapper` 的参数；`new ..cell..UUID(...)` / `new.wrapped` 在变量初始化点传入这些实参。
+- **cell 子类 init 元数约定**（编译器按「初值是否依赖外界」选择）：
+  - **0 元 `init()`**：初值不依赖外界的场景——命名空间级全局 wrapped 字段的 cell 单例（字段初值表达式在 `init` 体内求值并写入 `value` 字段）；未初始化 `var` 的空 cell 构造点也用 0 元 `init()`（体为空块，源级 DA 保证读前已赋值）。
+  - **1 元 `init(value)`**：初值依赖外界的场景——函数内 `const`/`var` 局部（有初始化器；被捕获的局部同此）、被捕获的参数（函数序言以实参值构造）、静态 wrapped 字段（有初始化器）；外界先算完初值表达式，经 `value` 实参传入。静态 wrapped 字段的「外界」是宿主 companion 的 `init`——companion `init` 求值初始化器后以 1 元 `init(value)` 构造 cell。
+  - **const 风味（ReadonlyCell 子类）**：`value` 为 `const` 字段，写 `value` 靠 init 豁免（§21.8），无 `setValue`。
+  - **wrapper 安装契约**：构造时 VM 自动缝合 `..init.wrapper`（在实体 `init` 之前——见调用时机）；全局 cell 单例（带 `wrapped(W)` 时）的 `..init.wrapper` 为无参、wrapper init 实参在全局作用域绑定（与局部 cell 有参 `..init.wrapper` 经 `new.wrapped` 传参的形态不同）。
 
 ---

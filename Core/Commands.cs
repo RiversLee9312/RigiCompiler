@@ -4,6 +4,7 @@ using System.IO;
 using System.Text;
 using System.Text.Json;
 using RigiCompiler.Bil;
+using RigiCompiler.Bil.Vm;
 
 namespace RigiCompiler
 {
@@ -166,6 +167,16 @@ namespace RigiCompiler
             ArgsHint = "[值...]",
             MinArgs = 0,
             MaxArgs = int.MaxValue,
+        };
+    }
+
+    /// <summary>--spawned：标记测试子进程（fuzz 套件在进程内跑完自己的区间，不再并行派生）。</summary>
+    public class SpawnedOption : ICommandLineOption
+    {
+        public CommandLineMask Mask { get; } = new()
+        {
+            Name = "--spawned",
+            Description = "标记测试子进程（fuzz 套件在进程内跑完自己的区间，不再并行派生）",
         };
     }
 
@@ -411,6 +422,7 @@ namespace RigiCompiler
             new AllOption(),
             new RunOption(),
             new SuiteArgsOption(),
+            new SpawnedOption(),
             new VerboseOption(),
             new LogToOption(),
         };
@@ -424,6 +436,10 @@ namespace RigiCompiler
             }
 
             IReadOnlyList<string>? suiteArgs = result.Get("--suite-args");
+
+            // --spawned 只用于并行 fuzz 的测试子进程：设置后 fuzz 套件在进程内
+            // 跑完自己的区间，不再二次派生。由 TestRunner 透传给套件。
+            Tests.TestRunner.IsSpawned = result.Has("--spawned");
 
             if (result.Has("--all"))
             {
@@ -454,9 +470,236 @@ namespace RigiCompiler
                 return 2;
             }
 
+            if (result.Has("--spawned"))
+            {
+                Console.Error.WriteLine("--spawned 仅在 test --run 或 test --all 时生效");
+                return 2;
+            }
+
             // test 裸用 / --run 不带编号 → 打印套件菜单后退出
             Tests.TestRunner.PrintMenu();
             return 0;
+        }
+    }
+
+    /// <summary>vm：加载并执行 BIL 文件（多文件合并为一个模块后运行入口函数）。</summary>
+    public class BilFileOption : ICommandLineOption
+    {
+        public CommandLineMask Mask { get; } = new()
+        {
+            Name = "--file",
+            Description = "要加载执行的 BIL 文件（1 个或多个，合并为一个模块）",
+            ArgsHint = "<路径...>",
+            MinArgs = 1,
+            MaxArgs = int.MaxValue,
+        };
+    }
+
+    /// <summary>vm：加载并执行 BIL 文件（多文件合并为一个模块后运行入口函数）。</summary>
+    public class VmCommand : ICommandLineCommand
+    {
+        public CommandLineMask Mask { get; } = new()
+        {
+            Name = "vm",
+            Description = "加载并执行 BIL 文件（多文件合并为一个模块后运行入口函数）",
+        };
+
+        public IReadOnlyList<ICommandLineOption> SubCommands { get; } = new ICommandLineOption[]
+        {
+            new BilFileOption(),
+            new VerboseOption(),
+            new LogToOption(),
+        };
+
+        public int Execute(CommandLineParseResult result)
+        {
+            // --verbose / --log-to 在主体之前应用
+            if (LoggerOptions.Apply(result) is { } loggerError)
+            {
+                Console.Error.WriteLine(loggerError);
+                return 2;
+            }
+
+            var files = result.Get("--file");
+            if (files == null)
+            {
+                Console.Error.WriteLine("vm 需要 --file <路径...> 指定 BIL 文件");
+                return 2;
+            }
+
+            // 逐个解析并合并为一个模块；符号/资源/函数重复即报错
+            var module = new BilModule();
+            foreach (var file in files)
+            {
+                string text;
+                try
+                {
+                    text = File.ReadAllText(file);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
+                    or FileNotFoundException or DirectoryNotFoundException)
+                {
+                    Console.Error.WriteLine($"无法读取 BIL 文件 {file}: {ex.Message}");
+                    return 1;
+                }
+                BilModule parsed;
+                try
+                {
+                    parsed = BilReader.Read(text);
+                }
+                catch (BilParseException ex)
+                {
+                    Console.Error.WriteLine($"解析失败 {file}: {ex.Message}");
+                    return 1;
+                }
+                if (!MergeModule(module, parsed, out var duplicate))
+                {
+                    Console.Error.WriteLine($"合并失败 {file}: 符号重复 \"{duplicate}\"");
+                    return 1;
+                }
+            }
+
+            // 合并后验证：错误逐条输出到 stderr
+            var verificationErrors = BilVerifier.Verify(module);
+            if (verificationErrors.Count > 0)
+            {
+                foreach (var error in verificationErrors)
+                {
+                    Console.Error.WriteLine(error.ToString());
+                }
+                return 1;
+            }
+
+            // 恰一个 entrypoint fn：零个/多个分别报错退出码 2
+            var entrypoints = new List<BilSimpleMemberDeclaration>();
+            foreach (var entry in module.LocalSymbols)
+            {
+                if (entry is BilSimpleMemberDeclaration member
+                    && HasKeyword(member, BilKeyword.Entrypoint))
+                {
+                    entrypoints.Add(member);
+                }
+            }
+            if (entrypoints.Count == 0)
+            {
+                Console.Error.WriteLine("找不到入口：模块没有 entrypoint fn");
+                return 2;
+            }
+            if (entrypoints.Count > 1)
+            {
+                Console.Error.WriteLine("模块存在多个 entrypoint fn：");
+                foreach (var entry in entrypoints)
+                {
+                    Console.Error.WriteLine("  " + entry.Symbol);
+                }
+                return 2;
+            }
+
+            // 运行：VM stdout/stderr 原样写对应流；同步/异步异常 → stderr 退出码 1
+            BilVmResult run;
+            try
+            {
+                run = BilVm.Run(module);
+            }
+            catch (VmException ex)
+            {
+                Console.Error.WriteLine(ex.Message);
+                return 1;
+            }
+            Console.Out.Write(run.Stdout);
+            Console.Error.Write(run.Stderr);
+            if (run.Exception != null)
+            {
+                Console.Error.WriteLine(run.Exception.Message);
+                return 1;
+            }
+            return 0;
+        }
+
+        // 多文件合并：Resources/符号段/Functions 拼接；资源名/符号/函数名重复即失败
+        private static bool MergeModule(BilModule target, BilModule source, out string? duplicate)
+        {
+            duplicate = null;
+            // 三个独立名字空间：资源名 / 符号段条目键（类型按元数、成员按符号）/
+            // 函数符号——方法的声明与 fn 定义同符号但分属不同空间，不互为重复
+            var resourceNames = new HashSet<string>();
+            var symbolKeys = new HashSet<string>();
+            var functionSymbols = new HashSet<string>();
+            foreach (var resource in target.Resources) resourceNames.Add(resource.Name);
+            foreach (var entry in target.LocalSymbols) CollectKeys(entry, symbolKeys);
+            foreach (var entry in target.ExternalSymbols) CollectKeys(entry, symbolKeys);
+            foreach (var function in target.Functions) functionSymbols.Add(function.Symbol);
+
+            foreach (var resource in source.Resources)
+            {
+                if (!resourceNames.Add(resource.Name))
+                {
+                    duplicate = $"资源 \"{resource.Name}\"";
+                    return false;
+                }
+                target.Resources.Add(resource);
+            }
+            foreach (var entry in source.LocalSymbols)
+            {
+                foreach (var key in KeysOf(entry))
+                {
+                    if (!symbolKeys.Add(key)) { duplicate = key; return false; }
+                }
+                target.LocalSymbols.Add(entry);
+            }
+            foreach (var entry in source.ExternalSymbols)
+            {
+                foreach (var key in KeysOf(entry))
+                {
+                    if (!symbolKeys.Add(key)) { duplicate = key; return false; }
+                }
+                target.ExternalSymbols.Add(entry);
+            }
+            foreach (var function in source.Functions)
+            {
+                if (!functionSymbols.Add(function.Symbol))
+                {
+                    duplicate = function.Symbol;
+                    return false;
+                }
+                target.Functions.Add(function);
+            }
+            return true;
+        }
+
+        private static IEnumerable<string> KeysOf(BilSymbolSectionEntry entry)
+        {
+            switch (entry)
+            {
+                case BilTypeDeclaration type:
+                    yield return type.GenericParameters.Count == 0
+                        ? type.Symbol : type.Symbol + "<" + type.GenericParameters.Count + ">";
+                    break;
+                case BilSimpleMemberDeclaration member:
+                    yield return member.Symbol;
+                    break;
+                case BilCaseDeclaration caseDeclaration:
+                    yield return caseDeclaration.QualifiedName;
+                    break;
+            }
+        }
+
+        private static void CollectKeys(BilSymbolSectionEntry entry, HashSet<string> keys)
+        {
+            foreach (var key in KeysOf(entry)) keys.Add(key);
+        }
+
+        private static bool HasKeyword(BilSimpleMemberDeclaration member, BilKeyword keyword)
+        {
+            foreach (var modifier in member.Modifiers)
+            {
+                if (modifier is BilKeywordModifier keywordModifier
+                    && keywordModifier.Keyword == keyword)
+                {
+                    return true;
+                }
+            }
+            return false;
         }
     }
 

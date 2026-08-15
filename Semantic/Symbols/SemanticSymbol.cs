@@ -147,10 +147,12 @@ namespace RigiCompiler
         // 声明收集消费）
         public CellStorageInfo? CellStorage { get; internal set; }
 
-        // 静态 Method wrapper companion 信息回挂（M109b-2，BIL §8.7）：
-        // 非 null 时本类型是 `..companion.UUID` singleton（兼识别标记，供
-        // P4b 声明收集）；Shell 方法上的 Companion 槽指向同一对象
-        public StaticMethodCompanionInfo? CompanionInfo { get; internal set; }
+        // 静态 companion 信息回挂（BIL §8.7）：非 null 时本类型是声明类
+        // 的 companion singleton（嵌套类、无 UUID），兼识别标记供 P4b
+        // 声明收集。宿主类的 CompanionInfo 指向自己的 companion；companion
+        // 自身也持有一份（自指，识别其 singleton 身份）。Shell 方法上的
+        // Companion 槽（MethodSymbol.Companion）指向同一 companion 类型
+        public StaticCompanionInfo? CompanionInfo { get; internal set; }
 
         public TypeSymbol(
             string name,
@@ -219,11 +221,32 @@ namespace RigiCompiler
         }
     }
 
-    // ===== 静态 Method wrapper companion（M109b-2，BIL §8.7）=====
+    // ===== 静态 companion singleton（BIL §8.7）=====
 
-    // 每个被 Method wrapper 修饰的静态方法合成一个 companion singleton：
-    // UUID = 合成时 Guid；实例方法承接原静态方法体 + wrapper 应用；
-    // 原方法降为壳体（new companion → invoke 实例方法 → ret）。
+    // 每个声明类的静态问题统一收敛到一个 companion singleton：同一类的
+    // 被 Method wrapper 修饰的静态方法（迁为 companion 实例方法）与被
+    // Value wrapper 修饰的静态字段（cell 存储挂 companion 实例）共用
+    // 同一 companion——该 singleton 是声明类的嵌套类（canonical：
+    // 命名空间::外层...companion，无 UUID），自身 singleton+shared+
+    // compiler-generated；初始化（含 cell 构造与 wrapper 安装）由
+    // VM/Middleware 在 main 前完成。
+    public sealed class StaticCompanionInfo
+    {
+        // companion 类型自身（挂本信息的类型即 companion；宿主类的
+        // CompanionInfo 槽也指向它）
+        public TypeSymbol CompanionType { get; }
+        // 迁入的静态字段条目（源字段 + companion 上的 cell 实例字段 + cell 存储）
+        public List<StaticFieldCompanionEntry> Fields { get; } = new List<StaticFieldCompanionEntry>();
+
+        public StaticCompanionInfo(TypeSymbol companionType)
+        {
+            CompanionType = companionType;
+        }
+    }
+
+    // 每个被 Method wrapper 修饰的静态方法：实例方法承接原静态方法体 +
+    // wrapper 应用；原方法降为壳体（new companion → invoke 实例方法 → ret）。
+    // CompanionType 为宿主类共享的那一个 companion
     public sealed class StaticMethodCompanionInfo
     {
         public TypeSymbol CompanionType { get; }
@@ -236,6 +259,26 @@ namespace RigiCompiler
             CompanionType = companionType;
             InstanceMethod = instanceMethod;
             ShellMethod = shellMethod;
+        }
+    }
+
+    // 迁入 companion 的静态字段条目（统一 cell 存储，SYNTAX §14.3）：cell
+    // 对象成为 companion 实例字段，companion 的 init 里求值字段初始化器
+    // 并构造 cell（含 ..init.wrapper 安装）
+    public sealed class StaticFieldCompanionEntry
+    {
+        public FieldSymbol SourceField { get; }
+        public FieldSymbol CellField { get; }
+        public CellStorageInfo Storage { get; }
+        // 字段初始化表达式绑定产物（声明点静态语境；null = 无初始化器）
+        public BoundExpression? InitValue { get; internal set; }
+
+        public StaticFieldCompanionEntry(FieldSymbol sourceField, FieldSymbol cellField,
+            CellStorageInfo storage)
+        {
+            SourceField = sourceField;
+            CellField = cellField;
+            Storage = storage;
         }
     }
 
@@ -323,16 +366,26 @@ namespace RigiCompiler
         public MethodSymbol Call { get; }
         public IReadOnlyList<LambdaCaptureEntry> Captures { get; }
         public BoundValueBlock? ValueBlock { get; }
+        // Method wrapper 安装方法（SYNTAX §14.4）：lambda 头内部注解挂到
+        // $$call 运算符后合成；无 wrapper 应用为 null。有参时构造点改
+        // new.wrapped（LambdaRewriter 按 WrapperInitArguments 平铺实参）
+        public MethodSymbol? InitWrapper { get; }
+        // 构造点传入 ..init.wrapper 的实参（lambda 表达式求值语境已绑定的
+        // 扁平列表；与 InitWrapper.Parameters 一一对应；无参时为空）
+        public IReadOnlyList<BoundExpression> WrapperInitArguments { get; }
 
         public LambdaClosureInfo(TypeSymbol hiddenClass, MethodSymbol init,
             MethodSymbol call, IReadOnlyList<LambdaCaptureEntry> captures,
-            BoundValueBlock? valueBlock = null)
+            BoundValueBlock? valueBlock = null, MethodSymbol? initWrapper = null,
+            IReadOnlyList<BoundExpression>? wrapperInitArguments = null)
         {
             HiddenClass = hiddenClass;
             Init = init;
             Call = call;
             Captures = captures;
             ValueBlock = valueBlock;
+            InitWrapper = initWrapper;
+            WrapperInitArguments = wrapperInitArguments ?? Array.Empty<BoundExpression>();
         }
     }
 
@@ -472,6 +525,11 @@ namespace RigiCompiler
         // 承载），读写全经 getValue/setValue；构造时机归 Middleware。
         // 实例字段无此形态（wrapper 存储 = 宿主隐藏存储，M88）
         public CellStorageInfo? CellStorage { get; internal set; }
+        // 静态字段的 companion cell 落地（BIL §8.7）：非 null 时本静态
+        // 字段的 cell 存储在 companion 实例上（CompanionCellField 即
+        // companion 上盛装 cell 的实例字段）；BIL 不再为宿主发静态字段
+        // 声明，读写经「companion 单例 → 该实例字段（cell）→ getValue/setValue」
+        public FieldSymbol? CompanionCellField { get; internal set; }
 
         public FieldSymbol(string name, TypeSymbol? owner = null, NamespaceSymbol? ns = null,
             bool isStatic = false, SemanticSymbol? fieldType = null, string? extTargetPath = null,

@@ -195,6 +195,45 @@ namespace RigiCompiler.Tests
                 "Body(f, [], [Return(Binary(CmpEq, Param(a,String), Param(b,String), bool))])");
         }
 
+        // ===== 用户类型 ==/!=（SYNTAX §13.2：映射 operator equals，!= 由 equals
+        // 取反推导；VM §22.3 cmp.eq/cmp.ne 按精确类型派发用户 equals）=====
+        private static void TestUserEqualityOperators()
+        {
+            TestHarness.Section("P3 User Equality Operators (==/!=)");
+
+            // 正例：用户类型定义 equals → == 绑 CmpEq、!= 绑 CmpNe（结果 bool）
+            var (unit, bodies) = BindUnit(
+                "class Vec { pub operator equals(other: Vec): bool { return true } }\n" +
+                "func eq(a: Vec, b: Vec): bool { return (a == b) }\n" +
+                "func ne(a: Vec, b: Vec): bool { return (a != b) }\n");
+            CheckNoErrors("无诊断（用户 equals 的 ==/!=）", unit);
+            TestHarness.Check("用户类型 ==", BoundDescribe.Body(BodyOf(bodies, "eq")),
+                "Body(eq, [], [Return(Binary(CmpEq, Param(a,Vec), Param(b,Vec), bool))])");
+            TestHarness.Check("用户类型 !=", BoundDescribe.Body(BodyOf(bodies, "ne")),
+                "Body(ne, [], [Return(Binary(CmpNe, Param(a,Vec), Param(b,Vec), bool))])");
+
+            // 泛型 equals（TAnother 形参）同样命中（按名 + 参数个数查找）
+            var (unit2, bodies2) = BindUnit(
+                "class Vec { pub operator equals\\<TAnother>(another: TAnother): bool { return true } }\n" +
+                "func eq(a: Vec, b: Vec): bool { return (a == b) }\n");
+            CheckNoErrors("无诊断（泛型 equals 的 ==）", unit2);
+            TestHarness.Check("泛型 equals 用户类型 ==", BoundDescribe.Body(BodyOf(bodies2, "eq")),
+                "Body(eq, [], [Return(Binary(CmpEq, Param(a,Vec), Param(b,Vec), bool))])");
+
+            // 负例：未定义 equals 的用户类型保持编译错误（文档无默认相等语义）
+            var (unit3, _) = BindUnit(
+                "class Plain { }\nfunc eq(a: Plain, b: Plain): bool { return (a == b) }\n");
+            TestHarness.CheckSemanticError("未定义 equals 的用户类型 ==", unit3.Diagnostics,
+                "Operator '==' is not defined for type 'Plain'");
+
+            // 回归：用户引用类型 null 判等仍走 S8b 特例（不要求 equals）
+            var (unit4, bodies4) = BindUnit(
+                "class Plain { }\nfunc f(d: Plain?): bool { return (d == null) }\n");
+            CheckNoErrors("无诊断（用户类型 == null）", unit4);
+            TestHarness.Check("用户类型 null 判等", BoundDescribe.Body(BodyOf(bodies4, "f")),
+                "Body(f, [], [Return(Binary(CmpEq, Param(d,Plain?), Null(Plain?), bool))])");
+        }
+
         // ===== 一元 intrinsic 运算 =====
         private static void TestUnaryOperators()
         {

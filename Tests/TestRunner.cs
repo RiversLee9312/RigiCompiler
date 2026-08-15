@@ -57,10 +57,27 @@ namespace RigiCompiler.Tests
             ("SemanticsFuzz", SemanticsFuzzTests.RunAll, SemanticsFuzzTests.RunWithArgs),
             ("DispatchExplainer", DispatchExplainerTests.RunAll, null),
             ("BilVm", BilVmTests.RunAll, null),
+            ("BilReader", BilReaderTests.RunAll, null),
+            ("BilVmStress", BilVmStressTests.RunAll, null),
         };
 
         // 套件数量（对外编号 1..SuiteCount，即注册表顺序）
         public static int SuiteCount => Suites.Length;
+
+        // --spawned 状态：由 TestCommand 在执行前设置；fuzz 套件据此判断
+        // 自己是否已是被派生的子进程（是则无论区间多大都在进程内跑完，禁止再 spawn）
+        public static bool IsSpawned { get; set; }
+
+        // 按注册名找套件编号（1 起）；找不到返回 -1。并行 fuzz 用名字寻址，
+        // 避免硬编码套件号在注册表顺序调整后失效。
+        public static int GetSuiteNumber(string name)
+        {
+            for (int i = 0; i < Suites.Length; i++)
+            {
+                if (Suites[i].Name == name) return i + 1;
+            }
+            return -1;
+        }
 
         // 打印测试选项菜单（test 裸用 / test --run 不带编号时）
         public static void PrintMenu()

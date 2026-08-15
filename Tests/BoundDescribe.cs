@@ -154,7 +154,9 @@ namespace RigiCompiler.Tests
                     $"Lambda([{string.Join(", ", lambda.Closure.Call.Parameters.Select(p => p.Name))}], " +
                     $"{Block(lambda.CallBody.Body)}, " +
                     $"{(lambda.ReturnType != null ? TypeShort.Of(lambda.ReturnType) : "void")}, " +
-                    $"captures=[{string.Join(", ", lambda.CapturedSymbols.Select(s => s.Name))}])",
+                    $"captures=[{string.Join(", ", lambda.CapturedSymbols.Select(s => s.Name))}]" +
+                    $"{(lambda.Closure.Call.AppliedWrappers.Count == 0 ? "" :
+                        ", wrappers=[" + string.Join(", ", lambda.Closure.Call.AppliedWrappers.Select(a => a.Wrapper.Name)) + "]")})",
                 BoundValueReferenceExpression valueRef => valueRef.Symbol switch
                 {
                     LocalSymbol local => $"Local({local.Name},{TypeShort.Of(valueRef.Type)})",

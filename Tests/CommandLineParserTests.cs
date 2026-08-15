@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
+using RigiCompiler.Bil;
 
 namespace RigiCompiler.Tests
 {
@@ -26,12 +28,13 @@ namespace RigiCompiler.Tests
             Console.WriteLine("=== Testing registry integrity ===");
 
             var commands = CommandLineRegistry.Commands;
-            Check("注册表恰好三个 COMMAND", commands.Length == 3);
+            Check("注册表恰好四个 COMMAND", commands.Length == 4);
 
             var names = commands.Select(c => c.Mask.Name).ToList();
             Check("COMMAND 名字唯一", names.Distinct().Count() == names.Count);
-            Check("包含 compile/test/help",
-                names.Contains("compile") && names.Contains("test") && names.Contains("help"));
+            Check("包含 compile/test/vm/help",
+                names.Contains("compile") && names.Contains("test")
+                && names.Contains("vm") && names.Contains("help"));
             Check("COMMAND 名字不带 -- 前缀", commands.All(c => !c.Mask.Name.StartsWith("--")));
 
             foreach (var cmd in commands)
@@ -56,6 +59,10 @@ namespace RigiCompiler.Tests
                 new[] { "--file", "--parse-only", "--dump-ast", "--emit-bil", "--sema-only", "--explain-dispatch", "--verbose", "--log-to" }.All(compileSubs.Contains));
             Check("test 子命令齐全（--all/--run/--suite-args/--verbose/--log-to）",
                 new[] { "--all", "--run", "--suite-args", "--verbose", "--log-to" }.All(testSubs.Contains));
+            var vm = commands.First(c => c.Mask.Name == "vm");
+            var vmSubs = vm.SubCommands.Select(s => s.Mask.Name).ToList();
+            Check("vm 子命令齐全（--file/--verbose/--log-to）",
+                new[] { "--file", "--verbose", "--log-to" }.All(vmSubs.Contains));
             Check("help 无子命令", help.SubCommands.Count == 0);
             Console.WriteLine();
         }
@@ -103,6 +110,11 @@ namespace RigiCompiler.Tests
                     && r.Get("--run") is { Count: 1 } n && n[0] == "43");
             CheckParseOk("--all 与 --suite-args 可同现", new[] { "test", "--all", "--suite-args", "0", "100" },
                 r => r.Has("--all") && r.Get("--suite-args") is { Count: 2 });
+            CheckParseOk("vm --file 空格形态多路径", new[] { "vm", "--file", "a.bil", "b.bil" },
+                r => r.Command.Mask.Name == "vm" && r.Get("--file") is { Count: 2 } f
+                    && f[0] == "a.bil" && f[1] == "b.bil");
+            CheckParseOk("vm --file= 形态", new[] { "vm", "--file=a.bil" },
+                r => r.Get("--file") is { Count: 1 } f && f[0] == "a.bil");
             CheckParseError("未知子命令报错", new[] { "test", "--bogus" }, "未知子命令");
             CheckParseError("重复子命令报错", new[] { "compile", "--file", "a", "--file", "b" }, "重复");
             Console.WriteLine();
@@ -248,6 +260,76 @@ namespace RigiCompiler.Tests
             return new CompileCommand().Execute(result!);
         }
 
+        // ===== vm 命令端到端 =====
+        public static void TestVmCommand()
+        {
+            Console.WriteLine("=== Testing vm 命令端到端 ===");
+
+            // 缺 --file → 退出码 2
+            var missing = RunVm("vm");
+            Check("vm 缺 --file 退出码 2", missing.Code == 2);
+
+            var dir = Path.Combine(Path.GetTempPath(), $"rigi_vm_test_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(dir);
+            try
+            {
+                // 正常执行：println 原样进 stdout
+                var (_, _, text) = BilTestHarness.EmitBilUnit(
+                    "pub func main(): i32 {\n" +
+                    "    core.io.Console.println(\"vm ok\")\n" +
+                    "    return 42\n" +
+                    "}\n");
+                var okPath = Path.Combine(dir, "main.bil");
+                File.WriteAllText(okPath, text, new UTF8Encoding(false));
+                var ok = RunVm("vm", "--file", okPath);
+                Check("vm 正常执行退出码 0", ok.Code == 0);
+                Check("vm stdout 精确", ok.Out == "vm ok\n");
+
+                // VM 异常（除零）→ stderr 输出异常信息、退出码 1
+                var (_, _, divText) = BilTestHarness.EmitBilUnit(
+                    "pub func main(): i32 {\n" +
+                    "    var a: i32 = 1\n" +
+                    "    var b: i32 = 0\n" +
+                    "    return (a / b)\n" +
+                    "}\n");
+                var divPath = Path.Combine(dir, "div.bil");
+                File.WriteAllText(divPath, divText, new UTF8Encoding(false));
+                var div = RunVm("vm", "--file", divPath);
+                Check("vm 异常退出码 1", div.Code == 1);
+                Check("vm 异常信息含除零", div.Err.Contains("除以零"));
+            }
+            finally
+            {
+                Directory.Delete(dir, recursive: true);
+            }
+            Console.WriteLine();
+        }
+
+        // 驱动 vm COMMAND 端到端，捕获 stdout/stderr
+        private static (int Code, string Out, string Err) RunVm(params string[] args)
+        {
+            if (!CommandLineParser.TryParse(args, out var result, out var error))
+            {
+                throw new InvalidOperationException($"测试构造的命令行应解析成功: {error}");
+            }
+            var oldOut = Console.Out;
+            var oldErr = Console.Error;
+            var outWriter = new StringWriter();
+            var errWriter = new StringWriter();
+            Console.SetOut(outWriter);
+            Console.SetError(errWriter);
+            try
+            {
+                int code = new VmCommand().Execute(result!);
+                return (code, outWriter.ToString(), errWriter.ToString());
+            }
+            finally
+            {
+                Console.SetOut(oldOut);
+                Console.SetError(oldErr);
+            }
+        }
+
         // ===== 入口 =====
         public static int RunAll()
         {
@@ -265,6 +347,7 @@ namespace RigiCompiler.Tests
             TestMutualExclusion();
             TestStrayArgs();
             TestOutputPathErrors();
+            TestVmCommand();
 
             Console.WriteLine($"=== CommandLineParser Tests Complete: {passCount} passed, {failCount} failed ===");
             return failCount;

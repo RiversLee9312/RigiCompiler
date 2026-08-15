@@ -290,8 +290,8 @@ namespace RigiCompiler.Tests
                 .First(m => m.Name == "square" && m.IsStatic);
             TestHarness.CheckTrue("原静态方法有 Companion 槽", shell.Companion != null);
             var info = shell.Companion!;
-            TestHarness.CheckTrue("companion 类型名 ..companion. + UUID",
-                info.CompanionType.Name.StartsWith("..companion.", StringComparison.Ordinal)
+            TestHarness.CheckTrue("companion 类型名 ..companion（无 UUID）",
+                info.CompanionType.Name == "..companion"
                 && info.CompanionType.IsSingleton
                 && info.CompanionType.IsShared);
             TestHarness.CheckTrue("实例方法承接 wrapper 应用",
@@ -702,8 +702,10 @@ namespace RigiCompiler.Tests
                 BilTestHarness.NormalizeLambdaUuids(
                     LoweredDescribe.Body(loweredStaticRw.Single(b => b.Method.Name == "g"))),
                 "Body(g, [], [" +
-                "InstCallStmt(setValue, Field(counter,..cell..UUID), [Int(7,i32)]); " +
-                "Return(InstCall(getValue, Field(counter,..cell..UUID), [], i32))])");
+                "InstCallStmt(setValue, InstField(counter, New(..companion, []), ..cell..UUID), " +
+                "[Int(7,i32)]); " +
+                "Return(InstCall(getValue, InstField(counter, New(..companion, []), ..cell..UUID), " +
+                "[], i32))])");
 
             // 多 Value wrapper 分别 place（x:A / x:B；嵌套 x:A:B 需 Entity 应用）
             var (unitMulti, bodiesMulti) = BindUnitWithStdlib(
@@ -825,6 +827,22 @@ namespace RigiCompiler.Tests
                 "pub func g(): i32 { return self }\n");
             TestHarness.CheckSemanticError("非 proxy 语境 self 诊断",
                 unit2.Diagnostics, "'self' is only available");
+
+            // 负例：wildcard 体内 inner 漏传保留首参 → P3 形状不匹配（全形状新规则）
+            var (unit3, _) = BindUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper W {\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., " +
+                "unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn { return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
+                "}\n" +
+                "@W\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("wildcard inner 漏传 symbol 报形状不匹配",
+                unit3.Diagnostics, "inner(...) arguments do not match proxy '.proxy.*' shape");
         }
 
         // ===== #27⑦ inner 泛型包透传：声明序锁定 + Bound/Lowered 描述 =====
@@ -837,7 +855,7 @@ namespace RigiCompiler.Tests
                 "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
                 "        symbol: String, namedArgs: named TNamedArgs..., " +
                 "unnamedArgs: TUnnamedArgs...\n" +
-                "    ): TReturn { return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
+                "    ): TReturn { return inner(symbol=symbol, namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
                 "}\n" +
                 "@Audited\n" +
                 "pub class Service {\n" +
@@ -923,7 +941,7 @@ namespace RigiCompiler.Tests
                 "pub wrapper Audited {\n" +
                 "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
                 "        symbol: String, namedArgs: named TNamedArgs..., unnamedArgs: TUnnamedArgs...): TReturn {\n" +
-                "        var r: TReturn = inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs)\n" +
+                "        var r: TReturn = inner(symbol=symbol, namedArgs=namedArgs, unnamedArgs=unnamedArgs)\n" +
                 "        return r\n" +
                 "    }\n" +
                 "}\n" +
@@ -1075,7 +1093,7 @@ namespace RigiCompiler.Tests
                 "pub wrapper Audited {\n" +
                 "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
                 "        symbol: String, namedArgs: named TNamedArgs..., unnamedArgs: TUnnamedArgs...): TReturn {\n" +
-                "        return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs)\n" +
+                "        return inner(symbol=symbol, namedArgs=namedArgs, unnamedArgs=unnamedArgs)\n" +
                 "    }\n" +
                 "}\n" +
                 "@Audited\n" +
@@ -1113,7 +1131,7 @@ namespace RigiCompiler.Tests
                 "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
                 "        symbol: String, namedArgs: named TNamedArgs..., " +
                 "unnamedArgs: TUnnamedArgs...): TReturn {\n" +
-                "        return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs)\n" +
+                "        return inner(symbol=symbol, namedArgs=namedArgs, unnamedArgs=unnamedArgs)\n" +
                 "    }\n" +
                 "}\n";
             var (unitIface, bodiesIface) = BindUnit(wildcardW +
@@ -1168,7 +1186,7 @@ namespace RigiCompiler.Tests
                 "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
                 "        symbol: String, namedArgs: named TNamedArgs..., " +
                 "unnamedArgs: TUnnamedArgs...): TReturn {\n" +
-                "        return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs)\n" +
+                "        return inner(symbol=symbol, namedArgs=namedArgs, unnamedArgs=unnamedArgs)\n" +
                 "    }\n" +
                 "}\n" +
                 "@W\n" +

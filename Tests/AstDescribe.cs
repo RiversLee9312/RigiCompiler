@@ -94,7 +94,8 @@ namespace RigiCompiler.Tests
         // （body 为单表达式或多语句 [块]，两形态互斥，§5.1；省略 : Ret = void）
         private static string Lambda(LambdaExpressionASTNode l)
         {
-            string desc = "Lambda";
+            // 注解前缀（lambda 头内部 @W，§14.4）：渲染在 Lambda 之前
+            string desc = Annotations(l) + "Lambda";
             if (l.IsAsync) desc += " async";
             desc += $"({Params(l.Parameters)})";
             // 与 CallableDeclaration 一致：有返回类型才写 ": T"，省略即 void

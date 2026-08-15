@@ -216,7 +216,9 @@ namespace RigiCompiler.Tests
 
             // throw 终止同效
             var (unit2, bodies2) = BindUnit(
-                "open class E : core.Exception { }\n" +
+                "open class E : core.Exception {\n" +
+                "    pub override func getMessage(): String { return message }\n" +
+                "}\n" +
                 "func g(x: String?): String {\n" +
                 "    if (x == null) { throw new E() }\n" +
                 "    return x\n" +

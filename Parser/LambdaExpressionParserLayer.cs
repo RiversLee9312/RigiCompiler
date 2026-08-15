@@ -1,14 +1,17 @@
 using System;
+using System.Collections.Generic;
 
 namespace RigiCompiler
 {
     /// <summary>
     /// Lambda 表达式解析器（roadmap #21，SYNTAX.md §5.1）
     ///
-    /// 解析 func{[async] (params)[: ReturnType] -> [named 标签] body}
+    /// 解析 func{[@W(...)] [async] (params)[: ReturnType] -> [named 标签] body}
     /// （省略 : ReturnType 即为无返回值 void lambda，基类为 core.Action 族，见 §5.2）
     /// func 关键字由 ExpressionParserLayer 先行消费，本层从 { 开始；
     /// async 标记写在 { 之后、形参列表之前（SYNTAX §5：func{async (...)...}）；
+    /// wrapper 注解写在同一位置且更靠前（用户裁定：func{ @Timed async (...)...}），
+    /// 语义 = Method wrapper 修饰该 lambda（SYNTAX §14.4）；
     /// trailing lambda（list.map{...}）同样从 { 进入，因此入口统一。
     ///
     /// 体两形态（互斥，创建时定）：
@@ -18,13 +21,16 @@ namespace RigiCompiler
     /// named 标签写在 -> 之后、体之前，配合 return@标签 穿透内层匿名块。
     ///
     /// 状态流转：
-    /// OpenBraceExpected → AsyncOrParameters →（委托形参列表）→ AfterParameters
+    /// OpenBraceExpected → AnnotationsOrAsync →（可多 @Name[(args)]）→
+    ///   AsyncOrParameters →（委托形参列表）→ AfterParameters
     ///   →（可选 : 返回类型）→ ArrowExpected / 或直接 -> 进 BodyStart（void）
     ///   → BodyStart → [BodyLabelExpected → BodyAfterLabel]
     ///   →（单表达式：委托 ExpressionParserLayer / 块体：委托 CodeBlockParserLayer）
     ///   → CloseBraceExpected → 弹出
     ///
     /// 委托说明（Delegate, don't implement）：
+    /// - 注解名复用 PathParserLayer（原地写入 AnnotationASTNode.Name）
+    /// - 注解实参复用 ArgumentListParserLayer（原地写入 AnnotationASTNode.Arguments）
     /// - 形参列表委托 ParameterListParserLayer（原地写入 node.Parameters）
     /// - 返回类型委托 TypeReferenceParserLayer（原地写入 node.ReturnType；省略则 null）
     /// - 单表达式体委托 ExpressionParserLayer（直接附加到 node.Body Root，无回传）
@@ -39,11 +45,15 @@ namespace RigiCompiler
     public class LambdaExpressionParserLayer : IParserLayer, ISpanReceiver
     {
         private readonly LambdaExpressionASTNode targetNode;
+        // 正在解析的注解（@Name[(args)]）：targetNode 即 lambda 节点，可直接挂接
+        private AnnotationASTNode? currentAnnotation;
 
         private enum State
         {
             OpenBraceExpected,  // 等待 {
-            AsyncOrParameters,  // { 已读：可选 async 标记，否则进入形参列表
+            AnnotationsOrAsync, // { 已读：可多个 @Name[(args)]，随后 async 或形参
+            AnnotationName,     // @ 已读：注解名由 PathParserLayer 解析，等 ( 或下一 token
+            AsyncOrParameters,  // 注解已读完：可选 async 标记，否则进入形参列表
             AfterParameters,    // 形参列表已解析，等待 :（返回类型）或 ->（void）
             ArrowExpected,      // 返回类型已解析，等待 ->
             BodyStart,          // -> 已读：named 标签、{ 块体或单表达式体
@@ -82,6 +92,10 @@ namespace RigiCompiler
             {
                 case State.OpenBraceExpected:
                     return HandleOpenBraceExpected(currentToken, context);
+                case State.AnnotationsOrAsync:
+                    return HandleAnnotationsOrAsync(currentToken, context);
+                case State.AnnotationName:
+                    return HandleAnnotationName(currentToken, context);
                 case State.AsyncOrParameters:
                     return HandleAsyncOrParameters(currentToken, context);
                 case State.AfterParameters:
@@ -102,12 +116,12 @@ namespace RigiCompiler
             }
         }
 
-        // 等待 { ：消费后进入 async/形参判定（ParameterListParserLayer 自行等待 ( ）
+        // 等待 { ：消费后进入注解/async/形参判定（ParameterListParserLayer 自行等待 ( ）
         private ParserLayerResult HandleOpenBraceExpected(Token currentToken, ParserLayerContext context)
         {
             if (currentToken is NotationToken nt && nt.Content == "{")
             {
-                state = State.AsyncOrParameters;
+                state = State.AnnotationsOrAsync;
                 return ParserLayerResult.Continue.Instance;
             }
 
@@ -115,8 +129,83 @@ namespace RigiCompiler
             return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
-        // { 已读：可选的 async 标记（SYNTAX §5：func{async (...)...}，仅识别一次，
-        // 且只在 ( 之前——形参名与 async 无歧义）；其余 token 交给形参列表层
+        // { 已读：可多个 @Name[(args)]（Method wrapper 应用，SYNTAX §14.4），
+        // 随后可选的 async 标记，再进入形参列表。注解直接挂到 lambda 节点
+        // （lambda 节点先于本层创建，无声明层的「先解析后 Attach」问题）。
+        private ParserLayerResult HandleAnnotationsOrAsync(Token currentToken, ParserLayerContext context)
+        {
+            // 注解列表结束（或还没开始）：封口上一枚注解的 span
+            SealCurrentAnnotation(context);
+
+            if (currentToken is NotationToken at && at.Content == "@")
+            {
+                var ann = new AnnotationASTNode(targetNode);
+                var loc = context.GetLocation();
+                ann.Span = new CharRange { Start = loc.Start, End = loc.End, sourceName = loc.sourceName };
+                targetNode.Annotations.Add(ann);
+                currentAnnotation = ann;
+                state = State.AnnotationName;
+                // 注解名（可为 a.b 路径）复用 PathParserLayer
+                return new ParserLayerResult.PushLayer(
+                    new PathParserLayer(ann.Name, lineBreakSensitive: true), TokenDisposition.Consume);
+            }
+
+            // 非注解：转 async/形参判定
+            state = State.AsyncOrParameters;
+            return HandleAsyncOrParameters(currentToken, context);
+        }
+
+        // 注解名已解析：( 转实参列表（复用 ArgumentListParserLayer，开括号由本层
+        // 消费——与声明注解既有约定一致）；否则注解结束，当前 token 交回注解/async 判定
+        private ParserLayerResult HandleAnnotationName(Token currentToken, ParserLayerContext context)
+        {
+            var ann = currentAnnotation!;
+            // 注解名不得为空（@(1) 或 @ 后换行）
+            if (ann.Name.symbol.elements.Count == 0)
+            {
+                throw context.RaiseError($"Expected annotation name after '@', got: {currentToken}");
+            }
+
+            // 注解名后紧跟 ( 才算注解实参（@Timed("tag")）；有空白间隔的 ( 是
+            // lambda 形参列表（@Timed (x: i32)）——用户裁定的 lambda 头语法
+            if (currentToken is NotationToken n && n.Content == "("
+                && IsContiguousWithPrevious(currentToken, context))
+            {
+                ann.HasArguments = true;
+                state = State.AnnotationsOrAsync;
+                return new ParserLayerResult.PushLayer(
+                    new ArgumentListParserLayer(
+                        ann.Arguments, ArgumentListParserLayer.BracketKind.Round, ann), TokenDisposition.Consume);
+            }
+
+            SealCurrentAnnotation(context);
+            state = State.AnnotationsOrAsync;
+            return HandleAnnotationsOrAsync(currentToken, context);
+        }
+
+        // 当前 token 是否与最近被消费的 token 紧邻（无空白/注释间隔）。
+        // lambda 头内注解名后的 ( 据此区分注解实参与 lambda 形参列表
+        private static bool IsContiguousWithPrevious(Token currentToken, ParserLayerContext context)
+        {
+            var previous = context.GetPreviousLocation();
+            return currentToken.CharRange.Start.offset == previous.End.offset
+                && currentToken.CharRange.sourceName == previous.sourceName;
+        }
+
+        // 当前注解 span 封口：End 取最近被消费的 token（注解名末尾或实参列表的 )）
+        private void SealCurrentAnnotation(ParserLayerContext context)
+        {
+            if (currentAnnotation is not { Span: { } s })
+            {
+                return;
+            }
+            s.End = context.GetPreviousLocation().End;
+            currentAnnotation.Span = s;
+            currentAnnotation = null;
+        }
+
+        // 注解已读完：可选的 async 标记（SYNTAX §5：func{async (...)...}，仅识别
+        // 一次，且只在 ( 之前——形参名与 async 无歧义）；其余 token 交给形参列表层
         private ParserLayerResult HandleAsyncOrParameters(Token currentToken, ParserLayerContext context)
         {
             if (!targetNode.IsAsync && currentToken is WordToken wt && wt.Content == Keywords.ASYNC)

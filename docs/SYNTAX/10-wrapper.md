@@ -52,7 +52,7 @@ pub wrapper Logged\<TTarget> {
         unnamedArgs: TUnnamedArgs...
     ): TReturn {
         log("calling ${symbol}")
-        return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs)
+        return inner(symbol=symbol, namedArgs=namedArgs, unnamedArgs=unnamedArgs)
     }
 
     operator .proxy.get.*\<TValue>(
@@ -66,7 +66,7 @@ pub wrapper Logged\<TTarget> {
         symbol: String,
         value: TValue
     ) {
-        inner(value)
+        inner(symbol=symbol, value=value)
     }
 
     operator .proxy.opr.*\<named TNamedArgs..., TUnnamedArgs..., TReturn>(
@@ -74,7 +74,7 @@ pub wrapper Logged\<TTarget> {
         namedArgs: named TNamedArgs...,
         unnamedArgs: TUnnamedArgs...
     ): TReturn {
-        return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs)
+        return inner(symbol=symbol, namedArgs=namedArgs, unnamedArgs=unnamedArgs)
     }
 }
 ```
@@ -91,7 +91,7 @@ pub wrapper Logged\<TTarget> {
 
 ### 14.3 值修饰器（Value Wrapper）
 
-修饰字段或栈上变量（`var`/`const`）。修饰实例字段时，wrapper 存放在宿主类型的 Middleware 合成隐藏存储中，因此宿主必须能够内嵌 rich struct（见 §14.9）；修饰栈上变量与静态/全局字段时，值统一由编译器合成的 cell 隐藏子类盛装（§5.2 同一机制），wrapper 应用标记挂在子类的 `value` 字段上（BIL `wrapped(W)`）；cell 的构造时机归 Middleware，对变量类型没有额外的宿主内嵌要求。
+修饰字段或栈上变量（`var`/`const`）。修饰实例字段时，wrapper 存放在宿主类型的 Middleware 合成隐藏存储中，因此宿主必须能够内嵌 rich struct（见 §14.9）；修饰栈上变量与静态/全局字段时，值统一由编译器合成的 cell 隐藏子类盛装（§5.2 同一机制），wrapper 应用标记挂在子类的 `value` 字段上（BIL `wrapped(W)`）；**静态字段**的 cell 存储落地在声明类的 companion singleton 实例上（与静态 Method wrapper 同一 companion，见 §14.4），cell 构造与 wrapper 安装由 companion 的 `init` 完成、VM/Middleware 在 main 前急切初始化；**局部** cell 在声明点构造；**全局**字段的 cell 隐藏子类即 singleton（cell 自身为共享单例，字段初值表达式在 cell 单例的 `init` 里求值），与静态字段同由 VM/Middleware 在 main 前急切初始化。对变量类型没有额外的宿主内嵌要求。
 
 ```rigi
 @WrapperTarget(.Value)
@@ -135,15 +135,26 @@ pub wrapper Timed {
         return result
     }
 
-    // 通配符 + 可变参数（"至少有前面这些参数的方法"）
+    // 通配符 + 可变参数（"至少有前面这些参数的方法"）。
+    // .name 是编译器保留的带点参数名（用户无法伪造），运行时值为完整
+    // BIL 风格方法符号（普通方法如 Service$fetch(id:.i32)@.string；
+    // lambda 场景为 ..lambda..UUID$$call(x:.i32)@.i32）。
     operator .proxy.call(.name: String, args: named Any...): Any {
-        return inner(args)
+        return inner(.name, args)
     }
 }
 
-// 使用
+// 使用：方法
 @Timed()
 pub func heavyComputation(): i32 { ... }
+
+// 使用：lambda（annotation 写在 lambda 头内部，见 §5.1）
+var f = func{ @Timed() async (x: i32): i32 -> { ... }}
+
+// 错误示范——annotation 在 var 声明上：会被认为修饰 var 变量本身
+// （Value wrapper 目标），而 Timed 是 .Method 目标，因此编译报错
+@Timed
+var a = func{ async (x: i32): i32 -> { ... }}
 ```
 
 ### 14.5 使用 Wrapper
@@ -190,7 +201,7 @@ wrapper place 的接收者来源有三：字段/局部变量的应用（`@W` 标
 - **同一 wrapper 内**：匹配的 specific proxy 优先于对应类别的 wildcard proxy；二者是择一关系，不会在同一 wrapper 层同时执行。
 - **同一 wrapper 内**：普通方法、getter、setter、operator 四个类别分别最多存在一个 wildcard proxy，因此不存在同类别 wildcard 的重叠、排序或 priority。
 - specific proxy 或 wildcard proxy 调用 `inner(...)` 后，下一层 wrapper 独立重复同一套 specific → wildcard → 实体成员/下一层的选择。
-- **`inner(...)` 源码形态不变**：只写值实参（含对 vargs/kwargs 包参数的具名/位置转发）。模板 fn 上的可变泛型包（`TNamedArgs...` / `TUnnamedArgs...` 等）由编译器在 Bound/Lowered 层显式携带，并在 BIL `invoke fn(..inner)` 中按 §7.2 序**前置**为 `.generic.<Pack>` 操作数（值包随后）；包解包与下一环烘焙归 Middleware（见 `BIL_STANDARD.md` §15.4）。固定泛型参数不出现在该调用操作数列表中。
+- **`inner(...)` 的调用形状 = proxy 函数自身的参数形状**。specific proxy 的参数列表本身与被代理成员全等，inner 写全部值实参（含对 vargs/kwargs 包参数的具名/位置转发）；wildcard proxy 的保留首参（Entity 为 `symbol`，Method wrapper 为 `.name`）同样必须显式出现在 inner 实参中。模板 fn 上的可变泛型包（`TNamedArgs...` / `TUnnamedArgs...` 等）由编译器在 Bound/Lowered 层显式携带，并在 BIL `invoke fn(..inner)` 中按 §7.2 序**前置**为 `.generic.<Pack>` 操作数（保留首参与值包随后）；包解包与下一环烘焙归 Middleware（见 `BIL_STANDARD.md` §15.4）。固定泛型参数不出现在该调用操作数列表中。
 
 `@ProxyPriority` 不再存在；编译器不进行 wildcard pattern 重叠分析，也不维护任何用户指定的数值优先级。
 

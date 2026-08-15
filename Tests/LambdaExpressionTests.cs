@@ -251,7 +251,29 @@ namespace RigiCompiler.Tests
             TestHarness.Blank();
         }
 
-        // ===== 10. AST 结构断言（AGENTS §5：快照不作为唯一验证方式）=====
+        // ===== 10. lambda 头内部 annotation（SYNTAX §5.1/§14.4）=====
+        public static void TestLambdaAnnotations()
+        {
+            TestHarness.Section("Testing Lambda Head Annotations");
+
+            // 无参注解：func{ 之后、形参列表之前
+            TestLambda("var f = func{ @Timed (x: i32): i32 -> (x + 1) }",
+                "@Timed Lambda([x: i32]): i32 -> Group(Binary(Path(x, []) + Int(1,I32)))");
+            // 带参注解：@Timed("tag")（实参复用 ArgumentListParserLayer）
+            TestLambda("var f = func{ @Timed(\"tag\") (x: i32): i32 -> (x + 1) }",
+                "@Timed(Str(\"tag\")) Lambda([x: i32]): i32 -> Group(Binary(Path(x, []) + Int(1,I32)))");
+            // 多个注解：声明序 outer→inner
+            TestLambda("var f = func{ @WOuter @WInner(\"x\") (x: i32): i32 -> x }",
+                "@WOuter @WInner(Str(\"x\")) Lambda([x: i32]): i32 -> Path(x, [])");
+            // 注解在 async 之前（用户裁定位置）
+            TestLambda("var f = func{ @Timed async (x: i32): i32 -> (x + 1) }",
+                "@Timed Lambda async([x: i32]): i32 -> Group(Binary(Path(x, []) + Int(1,I32)))");
+            // 注解直接挂 lambda 节点；无注解时列表为空（既有用例已覆盖描述串不变）
+
+            TestHarness.Blank();
+        }
+
+        // ===== 11. AST 结构断言（AGENTS §5：快照不作为唯一验证方式）=====
         public static void TestStructuralAssertions()
         {
             TestHarness.Section("Structural Assertions");
@@ -294,6 +316,25 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("void 单表达式体 Body 已填充",
                 voidLambda.Body != null && voidLambda.Body.IsAttached);
 
+            // lambda 头内部注解：Annotations 挂 lambda 节点、顺序与实参形态
+            var annDecl = (VariableDeclarationASTNode)TestHarness.ParseFirstDecl(
+                "var f = func{ @WOuter @WInner(\"x\") async (x: i32): i32 -> x }");
+            var annLambda = (LambdaExpressionASTNode)annDecl.Initializer!.Expression;
+            TestHarness.CheckTrue("lambda 注解列表数量与顺序",
+                annLambda.Annotations.Count == 2
+                && annLambda.Annotations[0].Name.symbol.elements[0].name == "WOuter"
+                && annLambda.Annotations[1].Name.symbol.elements[0].name == "WInner");
+            TestHarness.CheckTrue("无参注解 HasArguments=false、实参表为空",
+                !annLambda.Annotations[0].HasArguments
+                && annLambda.Annotations[0].Arguments.Count == 0);
+            TestHarness.CheckTrue("带参注解 HasArguments=true、实参挂接",
+                annLambda.Annotations[1].HasArguments
+                && annLambda.Annotations[1].Arguments.Count == 1
+                && annLambda.Annotations[1].Arguments[0].Value.IsAttached);
+            TestHarness.CheckTrue("注解 Parent 是 lambda 节点",
+                ReferenceEquals(annLambda.Annotations[0].Parent, annLambda)
+                && ReferenceEquals(annLambda.Annotations[1].Parent, annLambda));
+
             TestHarness.Blank();
         }
 
@@ -330,6 +371,7 @@ namespace RigiCompiler.Tests
             TestVoidLambdas();
             TestBareReturnErrors();
             TestErrorCases();
+            TestLambdaAnnotations();
             TestStructuralAssertions();
 
             return TestHarness.Summary("Lambda");

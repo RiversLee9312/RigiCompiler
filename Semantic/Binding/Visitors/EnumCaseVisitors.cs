@@ -17,6 +17,20 @@ namespace RigiCompiler
             BindEnvironment env, TypeSymbol? expectedType)
         {
             var caseNode = (EnumCaseExpressionASTNode)node;
+            // §14.4：Method wrapper wildcard 的保留首参名是带点 `.name`
+            // （编译器保留、用户无法伪造）。parser 把前导点标识符按 enum
+            // case 形态解析；在 proxy 模板体内若存在同名保留首参，则优先
+            // 绑定为参数引用，而不是 enum case。
+            if (caseNode.CaseName == "name" && ctx.Proxy.IsActive)
+            {
+                var reserved = ctx.Frame.Method.Parameters
+                    .FirstOrDefault(p => p.Name == ".name");
+                if (reserved != null)
+                {
+                    return new BoundValueReferenceExpression(node, reserved,
+                        PathFacility.VariadicParameterViewType(reserved, env));
+                }
+            }
             var caseSymbol = EnumCaseFacility.ResolveCase(caseNode.CaseName,
                 caseNode.Span ?? node.Span, expectedType, env);
             if (caseSymbol == null) return null;

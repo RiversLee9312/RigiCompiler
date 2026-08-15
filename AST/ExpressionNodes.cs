@@ -276,9 +276,10 @@ namespace RigiCompiler
     // - BlockBody：多语句代码块体（有返回值时所有路径须显式 return@_ / return@标签；
     //   块内禁止裸 return（§5.1，由 CodeBlockParserLayer 的 allowBareReturn 标记强制）
     // lambda 不支持泛型形参（§5.1）；泛型 callable 请显式声明类型
-    public class LambdaExpressionASTNode : ExpressionASTNode
+    public class LambdaExpressionASTNode : ExpressionASTNode, IMethodWrapperAttachable
     {
         public bool IsAsync;                              // async 修饰
+        [ChildAstNode] public List<AnnotationASTNode> Annotations { get; } = new List<AnnotationASTNode>(); // lambda 头内部 @Name[(args)]（§14.4）
         [ChildAstNode] public ParameterListASTNode Parameters;           // 形参列表 (...)
         [ChildAstNode] public TypeReferenceASTNode? ReturnType;          // 返回类型（null = void）
         public string? Label;                             // named 标签（可选，-> 之后、体之前）

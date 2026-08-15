@@ -156,6 +156,10 @@ namespace RigiCompiler.Bil.Vm
         public VmExecutor BoundExecutor { get; }
         public VmTask Task { get; }
         public Stack<VmCallFrame> CallStack { get; }
+        // wrapper 派发上下文栈：invoke fn(..inner) 在执行期解析「下一环」
+        // （BIL §15.4 / SYNTAX §14.3：set 链 outer→inner 的下一环落点）
+        internal Stack<VmWrapperDispatchFrame> WrapperDispatch { get; } =
+            new Stack<VmWrapperDispatchFrame>();
         public VmValue? Result { get; private set; }
         public VmException? Failure { get; private set; }
 
@@ -280,7 +284,7 @@ namespace RigiCompiler.Bil.Vm
 
         public void YieldAlarm(VmContext context, VmValue alarm)
         {
-            if (VmTypeOps.Is(context, alarm, "core.coroutine::EventAlarm"))
+            if (VmTypeOps.Is(context, this, alarm, "core.coroutine::EventAlarm"))
             {
                 if (alarm is not VmEventAlarm eventAlarm)
                 {
@@ -293,7 +297,7 @@ namespace RigiCompiler.Bil.Vm
                 BoundExecutor.Publish(this);
                 return;
             }
-            if (VmTypeOps.Is(context, alarm, "core.coroutine::PollingAlarm"))
+            if (VmTypeOps.Is(context, this, alarm, "core.coroutine::PollingAlarm"))
             {
                 _pollingAlarm = alarm;
                 _pollBackoffMs = 1;
@@ -614,7 +618,7 @@ namespace RigiCompiler.Bil.Vm
             }
             foreach (var entry in table.Entries)
             {
-                if (!VmTypeOps.Is(_context, exception, entry.ExceptionType.TypeRef))
+                if (!VmTypeOps.Is(_context, this, exception, entry.ExceptionType.TypeRef))
                 {
                     continue;
                 }

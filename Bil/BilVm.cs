@@ -35,6 +35,10 @@ namespace RigiCompiler.Bil
         {
             var context = new VmContext(Module);
             var executor = new VmExecutor(context);
+            // §8.7：main 前急切初始化全部 singleton（companion 的 init 即完成
+            // 静态字段 cell 构造与 wrapper 安装）；运行期 new type(singleton)
+            // 返回同一份已初始化实例
+            context.InitializeSingletons(executor);
             var entry = context.FindEntrypoint();
             var main = executor.Spawn(entry, Array.Empty<VmValue>());
             executor.Publish(main);

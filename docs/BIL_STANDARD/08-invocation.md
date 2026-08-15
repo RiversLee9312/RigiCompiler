@@ -84,9 +84,9 @@ invoke.noret fn(..inner) [ARG_0, ARG_1, ...]
 
 - 必须出现在 `wrapper-proxy(specific|wildcard)` 标记的方法体内；出现在其他 fn 内非法；
 - `fn(..inner)` 是保留目标，不是 canonical 方法符号，不查 `MethodSymbols`，也**不携带 receiver**；
-- 操作数序对齐 §7.2 调用序子集：**先**模板 fn 声明中的**可变泛型包**隐藏参数（`.generic.<Pack>`，按声明序；固定泛型参数不出现在本列表——特化侧由 Middleware 自持），**再**源码层 `inner(...)` 的显式值实参（含 `.kwargs.*` / `.vargs.*` 包整体转发；wildcard 的 `symbol` 不重复出现——下一环 ABI 由 Middleware 知道）。例如 wildcard 模板：
-  `invoke fn(..inner) $.t0 [$.generic.TNamedArgs, $.generic.TUnnamedArgs, $.kwargs.namedArgs, $.vargs.unnamedArgs]`；
-- 源码语法不变：`inner(...)` 只写值实参；泛型包由 frontend 在 Bound/Lowered 层显式携带并在调用前置物化，Middleware 消费解包/烘焙；
+- 操作数序对齐 §7.2 调用序子集：**先**模板 fn 声明中的**可变泛型包**隐藏参数（`.generic.<Pack>`，按声明序；固定泛型参数不出现在本列表——特化侧由 Middleware 自持），**再**源码层 `inner(...)` 的显式值实参（按声明序；wildcard 的保留首参 `symbol` / `.name` 显式携带，随后是 `.kwargs.*` / `.vargs.*` 包整体转发）。例如 wildcard 模板：
+  `invoke fn(..inner) $.t0 [$.generic.TNamedArgs, $.generic.TUnnamedArgs, $symbol, $.kwargs.namedArgs, $.vargs.unnamedArgs]`；
+- 源码语法：`inner(...)` 的调用形状 = proxy 函数自身的参数形状（wildcard 保留首参必须显式写出）；泛型包由 frontend 在 Bound/Lowered 层显式携带并在调用前置物化，Middleware 消费解包/烘焙；
 - 带返回的模板用 `invoke fn(..inner)`，RESULT 类型必须严格等于该模板 fn 的声明返回类型；void 模板用 `invoke.noret fn(..inner)`；
 - 值实参个数与类型必须与模板 fn 声明的（经源码 `inner` 规则过滤后的）显式实参一致；前置 `.generic.*` 操作数必须可解析为当前 fn `.args` 中已声明的同名隐藏参数。
 

@@ -148,6 +148,26 @@ namespace RigiCompiler.Tests
                 "ret $n\n");
         }
 
+        // ===== 用户类型 ==/!=（SYNTAX §13.2）：映射 operator equals；发射
+        // 仍为 cmp.eq/cmp.ne（VM §22.3 按精确类型派发用户 equals + 取反）=====
+        private static void TestUserOperatorEqualsEmission()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "class Vec { pub operator equals(other: Vec): bool { return true } }\n" +
+                "pub func eq(a: Vec, b: Vec): bool { return (a == b) }\n" +
+                "pub func ne(a: Vec, b: Vec): bool { return (a != b) }\n");
+            CheckNoErrors("全管线无诊断（用户 ==/!= 发射）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（用户 ==/!= 发射）", module);
+            BilTestHarness.CheckFnShape("用户 ==", module, "$eq(a:Vec,b:Vec)@.bool",
+                ".vars { .bool .t0 }\n" +
+                "cmp.eq $a $b $.t0\n" +
+                "ret $.t0\n");
+            BilTestHarness.CheckFnShape("用户 !=", module, "$ne(a:Vec,b:Vec)@.bool",
+                ".vars { .bool .t0 }\n" +
+                "cmp.ne $a $b $.t0\n" +
+                "ret $.t0\n");
+        }
+
         // ===== 带返回值 invoke（§15.1）与表达式语句（结果物化后丢弃）=====
         private static void TestInvokeWithResult()
         {

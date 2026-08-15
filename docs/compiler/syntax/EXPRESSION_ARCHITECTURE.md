@@ -250,7 +250,7 @@ ExpressionParserLayer
 | ArgumentListParserLayer | 调用/索引/构造实参列表 | ✅ |
 | GenericParametersParserLayer | 泛型参数列表 `\<...>`（声明侧） | ✅ |
 | ParameterListParserLayer | 函数形参列表 `(...)`（声明侧） | ✅ |
-| LambdaExpressionParserLayer | Lambda（完整/泛型/async/trailing；体双形态：单表达式/块） | ✅ |
+| LambdaExpressionParserLayer | Lambda（完整/async/trailing；体双形态：单表达式/块） | ✅ |
 | IfStatementParserLayer | if 表达式（强制 else）/ if 语句（分支体为代码块） | ✅ |
 | SwitchStatementParserLayer | switch 表达式 + switch 语句（强制 default，分支体为代码块） | ✅ |
 | TypeOfExpressionParserLayer | typeOf 表达式 | ✅ |

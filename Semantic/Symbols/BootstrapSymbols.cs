@@ -90,12 +90,13 @@ namespace RigiCompiler
                 baseType: ValueType, isBuiltin: true);
             Wrapper = new TypeSymbol("Wrapper", TypeKind.Wrapper, Core,
                 baseType: ValueType, isRich: true, isBuiltin: true);
-            // 异常根：Object 分支普通 class，open 供用户异常类型继承。
-            // message 面（S10，SYNTAX §8.1：protected message 字段 + pub
-            // native getMessage()）在 String 初始化后添加（本文件末尾附近）——
-            // 构造顺序敏感：String 属性此处尚未初始化，取到 null
+            // 异常根：Object 分支普通抽象 class（abstract 天然 open，供用户
+            // 异常类型继承；bootstrap 合成符号不经 ModifierChecker，互斥规则
+            // 不适用）。message 面（S10，SYNTAX §8.1：protected message 字段 +
+            // pub abstract getMessage()）在 String 初始化后添加（本文件末尾
+            // 附近）——构造顺序敏感：String 属性此处尚未初始化，取到 null
             Exception = new TypeSymbol("Exception", TypeKind.Class, Core,
-                baseType: Object, isBuiltin: true) { IsOpen = true };
+                baseType: Object, isBuiltin: true) { IsAbstract = true };
 
             // 数值类型：整数 = 算术 + 位运算 + 比较；浮点 = 算术 + 比较
             // （无符号不含 Opposite——一元负号对无符号无意义）
@@ -125,14 +126,19 @@ namespace RigiCompiler
                 intrinsicOps: Ops(BilIntrinsicOp.CmpEq, BilIntrinsicOp.CmpNe,
                     BilIntrinsicOp.Add));
 
-            // toString 机制（S7f，SYNTAX §3.8）：Any 承载全类型承诺（接口
-            // 形态无体）；Object 提供 open 默认实现，body 路由 rigi_rt.toString
-            // （native 声明形态，BIL §22.5 内建 hook——基元标准文本、未覆写
-            // 对象返回类型 canonical 名）；用户类型 override 后经虚派发执行
-            // 自身实现，不再命中原生面
+            // toString 机制（S7f，SYNTAX §3.8）：Any 承载全类型承诺——直接
+            // 声明为 native（rigi_rt/toString，§22.5 内建 hook，基元标准文本、
+            // 未覆写对象返回类型 canonical 名）；Object 提供 open native 默认
+            // 实现（同 hook）。二者都被发射进 BIL LocalSymbols（见
+            // EmitBuiltinNativeMembers），使 VM 的 TryResolveNative 能把
+            // invoke core::Any$toString()@.string / core::Object$toString()
+            // 路由到 hook；用户类型 override 后经虚派发执行自身实现，
+            // 不再命中原生面
             Any.Methods.Add(new MethodSymbol("toString", MethodKind.Regular,
-                owner: Any, returnType: String)
+                owner: Any, isNative: true, returnType: String)
             {
+                NativeLibrary = "rigi_rt",
+                NativeSymbol = "toString",
                 Accessibility = Accessibility.Public,
             });
             Object.Methods.Add(new MethodSymbol("toString", MethodKind.Regular,
@@ -145,25 +151,25 @@ namespace RigiCompiler
             });
 
             // 异常根 message 面（S10，SYNTAX §8.1；置于此处——String 已初始化）：
-            // protected message 字段 + pub native getMessage()——子类 init 直接
+            // protected message 字段 + pub abstract getMessage()——子类 init 直接
             // 赋值继承字段（init 也可选 super(...)），getMessage 是 message 的
-            // 唯一公共读取通道；toString 不覆写（插值/打印走 Object 默认实现，
-            // 返回类型 canonical 名）。运行时实现归 BIL VM（S14），编译器只承载形状
+            // 唯一公共读取通道，由各具体异常子类 override 各自实现（用户裁定：
+            // 不再走 native/hook）；toString 不覆写（插值/打印走 Object 默认实现，
+            // 返回类型 canonical 名）
             Exception.Fields.Add(new FieldSymbol("message", owner: Exception, fieldType: String)
             {
                 Accessibility = Accessibility.Protected,
             });
             Exception.Methods.Add(new MethodSymbol("getMessage", MethodKind.Regular,
-                owner: Exception, isNative: true, returnType: String)
+                owner: Exception, returnType: String)
             {
-                NativeLibrary = "rigi_rt",
-                NativeSymbol = "getMessage",
+                IsAbstract = true,
                 Accessibility = Accessibility.Public,
             });
 
             // Any.call??? 壳（M88）：参数类型在 EnsureCallWildcard 填（Array/
             // Pair 构造需 SymbolGraph）；此处先挂成员占位，签名参数列表在
-            // Ensure 时补齐。pub native 形态照抄 getMessage
+            // Ensure 时补齐。pub native 形态与 toString 先例一致
             CallWildcard = new MethodSymbol("call???", MethodKind.Regular,
                 owner: Any, isNative: true, returnType: Any)
             {

@@ -51,6 +51,30 @@ namespace RigiCompiler.Tests
             TestIndirectFieldAndNew();
             TestUserOperatorAdd();
             TestDowngradeCallWildcard();
+            TestMethodWrapperWildcardInnerFullShape();
+            TestLambdaMethodWrapperWildcardInner();
+            TestWildcardInnerMiddleOfWrapperChain();
+            TestWrapperValueGetProxyInitArg();
+            TestValueWrapperClampedMutableVar();
+            TestValueWrapperTwoLayerOrder();
+            TestValueWrapperGetOnlyProxy();
+            TestStringInterpolationToString();
+            TestEntitySpecificMethodProxySurrounds();
+            TestEntityWildcardMethodProxyBothDirections();
+            TestEntityGetterSetterProxyCounts();
+            TestEntityOperatorProxyWildcardDirectModule();
+            TestEntityProxyStatePersists();
+            TestEntityProxySelfReadsHostField();
+            TestEntityGenericCastUnboundDirectModule();
+            TestMethodWrapperCallSpecificSurrounds();
+            TestMethodWrapperStaticViaCompanion();
+            TestMethodWrapperDoubleLayerOrder();
+            TestMethodWrapperStatePersists();
+            TestMethodWrapperArgPassThrough();
+            TestMethodWrapperGetSelfDirectModule();
+            TestMethodWrapperNotEqualsViaOprEqualsDirectModule();
+            TestExceptionGetMessage();
+            TestLambdaMethodWrapperEndToEnd();
             TestIfElse();
             TestWhileAndDoWhile();
             TestForRangeAndBreakContinue();
@@ -739,7 +763,7 @@ namespace RigiCompiler.Tests
                 "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
                 "        symbol: String, namedArgs: named TNamedArgs..., " +
                 "unnamedArgs: TUnnamedArgs...\n" +
-                "    ): TReturn { return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
+                "    ): TReturn { return inner(symbol=symbol, namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
                 "}\n" +
                 "@W\n" +
                 "pub class Service {\n" +
@@ -770,6 +794,843 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckOk("降级异常可 catch", caught);
             CheckI32("catch 返回 7", caught, 7);
+        }
+
+        // Method wrapper wildcard 全形状转发：.name 显式传入 inner，VM 消费它
+        // 重路由下一环；.name 运行时值 = 完整 BIL 方法符号。
+        private static void TestMethodWrapperWildcardInnerFullShape()
+        {
+            var result = Run(
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Timed {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call(.name: String, args: named Any...): Any {\n" +
+                "        core.io.Console.println(\"name=\" + .name)\n" +
+                "        return inner(.name, args)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    @Timed\n" +
+                "    pub func fetch(x: i32): i32 { return (x + 1) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    return s.fetch(41)\n" +
+                "}\n");
+            CheckOk("Method wrapper wildcard 全形状 inner", result);
+            CheckI32("普通方法经 wildcard 返回 42", result, 42);
+            TestHarness.CheckTrue(".name = 完整 BIL 方法符号",
+                result.Stdout.Contains("name=Service$fetch(x:.i32)@.i32") == true,
+                result.Stdout);
+        }
+
+        // lambda 头 Method wrapper wildcard：.name 诚实填 $$call 合成符号。
+        private static void TestLambdaMethodWrapperWildcardInner()
+        {
+            var result = Run(
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Timed {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call(.name: String, args: named Any...): Any {\n" +
+                "        core.io.Console.println(\"name=\" + .name)\n" +
+                "        return inner(.name, args)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var fn = func{ @Timed (x: i32): i32 -> (x + 1) }\n" +
+                "    return fn(41)\n" +
+                "}\n");
+            CheckOk("lambda Method wrapper wildcard 全形状 inner", result);
+            CheckI32("lambda 经 wildcard 返回 42", result, 42);
+            TestHarness.CheckTrue(".name = $$call 合成符号",
+                result.Stdout.Contains("name=..lambda..")
+                && result.Stdout.Contains("$$call(x:.i32)@.i32"),
+                result.Stdout);
+        }
+
+        // 双 Entity wrapper：外层 specific，内层 wildcard。wildcard 环 inner 全形状
+        // 透传，VM 按传入 symbol 重路由到链末原始方法。
+        private static void TestWildcardInnerMiddleOfWrapperChain()
+        {
+            var result = Run(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper WOuter {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.ping(x: i32): i32 { return inner(x) }\n" +
+                "}\n" +
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper WInner {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., " +
+                "unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn {\n" +
+                "        core.io.Console.println(\"inner:\" + symbol)\n" +
+                "        return inner(symbol=symbol, namedArgs=namedArgs, unnamedArgs=unnamedArgs)\n" +
+                "    }\n" +
+                "}\n" +
+                "@WOuter\n" +
+                "@WInner\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    pub func ping(x: i32): i32 { return (x + 1) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    return s.ping(41)\n" +
+                "}\n");
+            CheckOk("wildcard 在双 wrapper 链中间", result);
+            CheckI32("双链 wildcard 透传返回 42", result, 42);
+            TestHarness.CheckTrue("wildcard 环收到正确 symbol",
+                result.Stdout.Contains("inner:Service$ping(x:.i32)@.i32") == true,
+                result.Stdout);
+        }
+
+        // Value wrapper 最原始的用户场景回归：init 实参透传 + get proxy
+        // 每次先计数、状态原地持久。init 实参 a=10 落到 step；const b 初值
+        // 0 三次读取经 .proxy.get 链依次得到 10/20/30；最后 count==3。
+        private static void TestWrapperValueGetProxyInitArg()
+        {
+            var result = Run(
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper WrapperA {\n" +
+                "    pub var count: i32\n" +
+                "    pub var step: i32\n" +
+                "    pub init(s: i32) {\n" +
+                "        count = 0\n" +
+                "        step = s\n" +
+                "    }\n" +
+                "    operator .proxy.get\\<TValue>(value: TValue): TValue {\n" +
+                "        count = (count + 1)\n" +
+                "        return (((value as i32) + (count * step)) as TValue)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = 10\n" +
+                "    @WrapperA(a)\n" +
+                "    const b = 0\n" +
+                "    var r1 = b\n" +
+                "    var r2 = b\n" +
+                "    var r3 = b\n" +
+                "    var ok1 = ((b:WrapperA.step == 10) and (r1 == 10))\n" +
+                "    var ok2 = (((ok1 and (r2 == 20)) and (r3 == 30))" +
+                " and (b:WrapperA.count == 3))\n" +
+                "    if (ok2) {\n" +
+                "        core.io.Console.println(\"ok\")\n" +
+                "        return 0\n" +
+                "    } else {\n" +
+                "        core.io.Console.println(\"FAIL\")\n" +
+                "        return 1\n" +
+                "    }\n" +
+                "}\n");
+            CheckOk("WrapperA init 实参透传 + get proxy 状态持久", result);
+            TestHarness.Check("WrapperA stdout 精确 ok", result.Stdout, "ok\n");
+            CheckI32("WrapperA main 返回 0", result, 0);
+        }
+
+        // Value 派发 a)：同时实现 get/set 的 Clamped 风格 wrapper 修饰可变
+        // var——写 200 经 set 链夹到 100、写 -20 经 set 链夹到 0（inner 写回）。
+        private static void TestValueWrapperClampedMutableVar()
+        {
+            var result = Run(
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper Clamped {\n" +
+                "    pub var min: i32\n" +
+                "    pub var max: i32\n" +
+                "    pub init() {\n" +
+                "        min = 0\n" +
+                "        max = 100\n" +
+                "    }\n" +
+                "    operator .proxy.get\\<TValue>(value: TValue): TValue { return value }\n" +
+                "    operator .proxy.set\\<TValue>(value: TValue) {\n" +
+                "        var v = (value as i32)\n" +
+                "        if ((v > max)) { v = max }\n" +
+                "        if ((v < min)) { v = min }\n" +
+                "        inner((v as TValue))\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    @Clamped\n" +
+                "    var health: i32 = 50\n" +
+                "    health = 200\n" +
+                "    var a = health\n" +
+                "    health = -20\n" +
+                "    var b = health\n" +
+                "    if (((a == 100) and (b == 0))) {\n" +
+                "        core.io.Console.println(\"ok\")\n" +
+                "        return 0\n" +
+                "    } else {\n" +
+                "        core.io.Console.println(\"FAIL\")\n" +
+                "        return 1\n" +
+                "    }\n" +
+                "}\n");
+            CheckOk("Clamped 局部 var 写夹取", result);
+            TestHarness.Check("Clamped stdout 精确 ok", result.Stdout, "ok\n");
+            CheckI32("Clamped main 返回 0", result, 0);
+        }
+
+        // Value 派发 b)：同一局部叠两个 Value wrapper——读序内层先
+        //（B.get → A.get）、写序外层先（A.set → B.set）。
+        private static void TestValueWrapperTwoLayerOrder()
+        {
+            var result = Run(
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper A {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.get\\<TValue>(value: TValue): TValue {\n" +
+                "        core.io.Console.println(\"A.get\")\n" +
+                "        return value\n" +
+                "    }\n" +
+                "    operator .proxy.set\\<TValue>(value: TValue) {\n" +
+                "        core.io.Console.println(\"A.set\")\n" +
+                "        inner(value)\n" +
+                "    }\n" +
+                "}\n" +
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper B {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.get\\<TValue>(value: TValue): TValue {\n" +
+                "        core.io.Console.println(\"B.get\")\n" +
+                "        return value\n" +
+                "    }\n" +
+                "    operator .proxy.set\\<TValue>(value: TValue) {\n" +
+                "        core.io.Console.println(\"B.set\")\n" +
+                "        inner(value)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    @A\n" +
+                "    @B\n" +
+                "    var x: i32 = 0\n" +
+                "    x = 1\n" +
+                "    var r = x\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckOk("双层 Value wrapper 读序内层先/写序外层先", result);
+            TestHarness.Check("双层 Value wrapper 顺序 stdout", result.Stdout,
+                "A.set\n" +
+                "B.set\n" +
+                "B.get\n" +
+                "A.get\n");
+        }
+
+        // Value 派发 c)：只带 get proxy 的 wrapper 修饰可变 var——非 init 写入
+        // 在 VM 抛 VmException（含 wrapper 名与 .proxy.set）；const 场景读经
+        // proxy 生效。
+        private static void TestValueWrapperGetOnlyProxy()
+        {
+            var mutable = Run(
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper ReadOnly {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.get\\<TValue>(value: TValue): TValue {\n" +
+                "        return (((value as i32) + 1) as TValue)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    @ReadOnly\n" +
+                "    var x: i32 = 1\n" +
+                "    x = 2\n" +
+                "    return 0\n" +
+                "}\n");
+            TestHarness.CheckTrue("get-only wrapper 非 init 写入抛 VmException",
+                mutable.Exception != null
+                && mutable.Exception.Message.Contains("ReadOnly")
+                && mutable.Exception.Message.Contains(".proxy.set"),
+                mutable.Exception?.ToString() ?? "<null>");
+
+            var readOnly = Run(
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper ReadOnly {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.get\\<TValue>(value: TValue): TValue {\n" +
+                "        return (((value as i32) + 1) as TValue)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    @ReadOnly\n" +
+                "    const y: i32 = 1\n" +
+                "    var v = y\n" +
+                "    return v\n" +
+                "}\n");
+            CheckOk("get-only wrapper const 读经 proxy", readOnly);
+            CheckI32("const 初值 1 经 get proxy 返回 2", readOnly, 2);
+        }
+
+        // String 插值：i32 插值 + 拼接混合；class 实例插值输出类型名。
+        private static void TestStringInterpolationToString()
+        {
+            var result = Run(
+                "pub class Point {\n" +
+                "    pub var x: i32\n" +
+                "    pub var y: i32\n" +
+                "    pub init(a: i32, b: i32) {\n" +
+                "        x = a\n" +
+                "        y = b\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var n = 42\n" +
+                "    var p = new Point(1, 2)\n" +
+                "    core.io.Console.println((\"n=${n}\") + \"!\")\n" +
+                "    core.io.Console.println(\"p=${p}\")\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckOk("String 插值 i32 与 class 实例", result);
+            TestHarness.Check("插值 stdout", result.Stdout,
+                "n=42!\n" +
+                "p=Point\n");
+            CheckI32("插值 main 返回 0", result, 0);
+        }
+
+        // Entity 派发 a)：specific 方法 proxy 环绕 inner——前后各 println，
+        // 验证顺序与返回值（proxy 可改返回值）。
+        private static void TestEntitySpecificMethodProxySurrounds()
+        {
+            var result = Run(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Around {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.fetch(x: i32): i32 {\n" +
+                "        core.io.Console.println(\"before\")\n" +
+                "        var r = inner(x)\n" +
+                "        core.io.Console.println(\"after\")\n" +
+                "        return (r + 1)\n" +
+                "    }\n" +
+                "}\n" +
+                "@Around\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    pub func fetch(x: i32): i32 {\n" +
+                "        core.io.Console.println(\"body\")\n" +
+                "        return (x * 2)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    return s.fetch(21)\n" +
+                "}\n");
+            CheckOk("Entity specific 方法 proxy 环绕", result);
+            TestHarness.Check("环绕 stdout 顺序", result.Stdout,
+                "before\n" +
+                "body\n" +
+                "after\n");
+            CheckI32("proxy 改返回值 21*2+1", result, 43);
+        }
+
+        // Entity 派发 b)：wildcard 方法 proxy 两方向——已声明成员无 specific
+        // 时落 wildcard 并经 inner 到原始方法；未声明成员经 call??? 进入同一
+        // wildcard 并被 proxy 直接路由成功（不 inner）。
+        private static void TestEntityWildcardMethodProxyBothDirections()
+        {
+            var result = Run(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Router {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., " +
+                "unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn {\n" +
+                "        core.io.Console.println(symbol)\n" +
+                "        if (symbol == \"Service$fetchUserById(.i32)@.any\") {\n" +
+                "            return (99 as TReturn)\n" +
+                "        } else {\n" +
+                "            return inner(symbol=symbol, namedArgs=namedArgs, " +
+                "unnamedArgs=unnamedArgs)\n" +
+                "        }\n" +
+                "    }\n" +
+                "}\n" +
+                "@Router\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    pub func ping(x: i32): i32 { return (x + 1) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    var a = s.ping(41)\n" +
+                "    var b = (s.fetchUserById(42) as i32)\n" +
+                "    return ((a * 1000) + b)\n" +
+                "}\n");
+            CheckOk("Entity wildcard 两方向", result);
+            CheckI32("ping 经 inner=42、fetchUserById 被 proxy 路由=99", result, 42099);
+            TestHarness.CheckTrue("wildcard 收到已声明 symbol",
+                result.Stdout.Contains("Service$ping") == true, result.Stdout);
+            TestHarness.CheckTrue("wildcard 收到未声明 symbol",
+                result.Stdout.Contains("Service$fetchUserById") == true, result.Stdout);
+        }
+
+        // Entity 派发 c)：getter/setter proxy——宿主字段读写各绕一层并计数。
+        private static void TestEntityGetterSetterProxyCounts()
+        {
+            var result = Run(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Counting {\n" +
+                "    pub var gets: i32\n" +
+                "    pub var sets: i32\n" +
+                "    pub init() {\n" +
+                "        gets = 0\n" +
+                "        sets = 0\n" +
+                "    }\n" +
+                "    operator .proxy.get.name\\<TField>(value: TField): TField {\n" +
+                "        gets = (gets + 1)\n" +
+                "        return value\n" +
+                "    }\n" +
+                "    operator .proxy.set.name\\<TField>(value: TField) {\n" +
+                "        sets = (sets + 1)\n" +
+                "        inner(value)\n" +
+                "    }\n" +
+                "}\n" +
+                "@Counting\n" +
+                "pub class Service {\n" +
+                "    pub var name: String\n" +
+                "    pub init() { name = \"a\" }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    s.name = \"b\"\n" +
+                "    var n = s.name\n" +
+                "    var ok1 = ((n == \"b\") and (s:Counting.gets == 1))\n" +
+                "    var ok2 = (ok1 and (s:Counting.sets == 1))\n" +
+                "    if (ok2) { return 1 } else { return 0 }\n" +
+                "}\n");
+            CheckOk("Entity getter/setter proxy 计数", result);
+            CheckI32("写读各绕一层且字段生效", result, 1);
+        }
+
+        // Entity 派发 e)：operator proxy——frontend 的 `+` 不查用户 operator
+        //（TestUserOperatorAdd 同因），直接发 add 指令验证 `+` 命中
+        // .proxy.opr.*（wildcard proxy 直接返回 (99,0) 的 Vec）。
+        private static void TestEntityOperatorProxyWildcardDirectModule()
+        {
+            var result = BilVm.Run(WrappedVecOperatorProxyModule());
+            CheckOk("Entity operator .proxy.opr.* 直构", result);
+            CheckI32("+ 命中 .proxy.opr.* 返回 99", result, 99);
+        }
+
+        // Entity 派发 f)：proxy 状态跨调用持久（计数器累加，值参与返回值）。
+        private static void TestEntityProxyStatePersists()
+        {
+            var result = Run(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Counting {\n" +
+                "    pub var calls: i32\n" +
+                "    pub init() { calls = 0 }\n" +
+                "    operator .proxy.fetch(x: i32): i32 {\n" +
+                "        calls = (calls + 1)\n" +
+                "        return (inner(x) + calls)\n" +
+                "    }\n" +
+                "}\n" +
+                "@Counting\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    pub func fetch(x: i32): i32 { return x }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    var a = s.fetch(10)\n" +
+                "    var b = s.fetch(10)\n" +
+                "    if (((a == 11) and (b == 12))) { return 1 } else { return 0 }\n" +
+                "}\n");
+            CheckOk("Entity proxy 状态持久", result);
+            CheckI32("第 1 次 11、第 2 次 12", result, 1);
+        }
+
+        // Entity 派发 g)：get.self——Entity proxy 体内读宿主字段。
+        private static void TestEntityProxySelfReadsHostField()
+        {
+            var result = Run(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper W\\<TTarget> {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.peek(): i32 {\n" +
+                "        var host = (self as Service)\n" +
+                "        return host.n\n" +
+                "    }\n" +
+                "}\n" +
+                "@W\n" +
+                "pub class Service {\n" +
+                "    pub var n: i32\n" +
+                "    pub init() { n = 42 }\n" +
+                "    pub func peek(): i32 { return 0 }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    return s.peek()\n" +
+                "}\n");
+            CheckOk("Entity proxy self 读宿主字段", result);
+            CheckI32("self.n == 42", result, 42);
+        }
+
+        // Entity 派发 h)：负例直构——未绑定语境下 .generic 参与 cast 抛
+        // VmException（执行期类型操作绝不恒等放行）。
+        private static void TestEntityGenericCastUnboundDirectModule()
+        {
+            var result = BilVm.Run(UnboundGenericCastModule());
+            TestHarness.CheckTrue("未绑定 .generic cast 抛 VmException",
+                result.Exception != null
+                && result.Exception.Message.Contains("无法解析泛型占位")
+                && result.Exception.Message.Contains(".generic<$.generic.T>"),
+                result.Exception?.ToString() ?? "<null>");
+        }
+
+        // .proxy.call a)：实例方法 specific 环绕 + 改返回值（形状镜像被修饰
+        // 方法参数）。
+        private static void TestMethodWrapperCallSpecificSurrounds()
+        {
+            var result = Run(
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Timed {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call\\<TReturn>(x: i32): TReturn {\n" +
+                "        core.io.Console.println(\"before\")\n" +
+                "        var r = inner(x)\n" +
+                "        core.io.Console.println(\"after\")\n" +
+                "        return (((r as i32) + 1) as TReturn)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    @Timed\n" +
+                "    pub func fetch(x: i32): i32 {\n" +
+                "        core.io.Console.println(\"body\")\n" +
+                "        return (x * 2)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    return s.fetch(21)\n" +
+                "}\n");
+            CheckOk("Method wrapper specific 环绕", result);
+            TestHarness.Check("Method wrapper stdout 顺序", result.Stdout,
+                "before\n" +
+                "body\n" +
+                "after\n");
+            CheckI32("Method wrapper 改返回值 43", result, 43);
+        }
+
+        // .proxy.call b)：静态方法经 companion（shared Method wrapper）。
+        private static void TestMethodWrapperStaticViaCompanion()
+        {
+            var result = Run(
+                "@WrapperTarget(.Method)\n" +
+                "pub shared wrapper Timed {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call\\<TReturn>(x: i32): TReturn { return inner(x) }\n" +
+                "}\n" +
+                "pub class Calc {\n" +
+                "    pub init()\n" +
+                "    @Timed\n" +
+                "    pub static func total(x: i32): i32 { return (x + 1) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    return Calc.total(41)\n" +
+                "}\n");
+            CheckOk("静态 Method wrapper 经 companion", result);
+            CheckI32("Calc.total(41) 返回 42", result, 42);
+        }
+
+        // .proxy.call c)：同方法双 Method wrapper 的 outer→inner 顺序。
+        private static void TestMethodWrapperDoubleLayerOrder()
+        {
+            var result = Run(
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper A {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call\\<TReturn>(x: i32): TReturn {\n" +
+                "        core.io.Console.println(\"A\")\n" +
+                "        return inner(x)\n" +
+                "    }\n" +
+                "}\n" +
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper B {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call\\<TReturn>(x: i32): TReturn {\n" +
+                "        core.io.Console.println(\"B\")\n" +
+                "        return inner(x)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    @A\n" +
+                "    @B\n" +
+                "    pub func fetch(x: i32): i32 {\n" +
+                "        core.io.Console.println(\"body\")\n" +
+                "        return x\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    return s.fetch(42)\n" +
+                "}\n");
+            CheckOk("双 Method wrapper 顺序", result);
+            TestHarness.Check("双 Method wrapper stdout", result.Stdout,
+                "A\n" +
+                "B\n" +
+                "body\n");
+            CheckI32("双 Method wrapper 透传 42", result, 42);
+        }
+
+        // .proxy.call d)：wrapper 状态跨调用持久（计数器累加）。
+        private static void TestMethodWrapperStatePersists()
+        {
+            var result = Run(
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Counted {\n" +
+                "    pub var calls: i32\n" +
+                "    pub init() { calls = 0 }\n" +
+                "    operator .proxy.call\\<TReturn>(x: i32): TReturn {\n" +
+                "        calls = (calls + 1)\n" +
+                "        var r = inner(x)\n" +
+                "        return (((r as i32) + calls) as TReturn)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    @Counted\n" +
+                "    pub func fetch(x: i32): i32 { return (x * 10) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    var a = s.fetch(1)\n" +
+                "    var b = s.fetch(1)\n" +
+                "    return ((a * 100) + b)\n" +
+                "}\n");
+            CheckOk("Method wrapper 状态持久", result);
+            CheckI32("第 1 次 11、第 2 次 12 → 1112", result, 1112);
+        }
+
+        // .proxy.call e)：参数透传正确性（三参数，proxy 内插值打印实参）。
+        private static void TestMethodWrapperArgPassThrough()
+        {
+            var result = Run(
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Echo {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call\\<TReturn>(a: i32, b: i32, c: i32): TReturn {\n" +
+                "        core.io.Console.println(\"a=${a} b=${b} c=${c}\")\n" +
+                "        return inner(a, b, c)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    @Echo\n" +
+                "    pub func sum(a: i32, b: i32, c: i32): i32 {\n" +
+                "        return (((a * 100) + (b * 10)) + c)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    return s.sum(1, 2, 3)\n" +
+                "}\n");
+            CheckOk("Method wrapper 参数透传", result);
+            TestHarness.Check("实参插值 stdout", result.Stdout, "a=1 b=2 c=3\n");
+            CheckI32("sum(1,2,3) 返回 123", result, 123);
+        }
+
+        // .proxy.call f)：get.self 直构模块——Method wrapper 的 .proxy.call
+        // 模板 fn 内 get.self 产出宿主（.this 为 wrapper 实例）。
+        private static void TestMethodWrapperGetSelfDirectModule()
+        {
+            var module = MethodWrapperGetSelfModule();
+            var host = new VmObject("Host", valueType: false);
+            host.WriteField("Host#n@.i32", new VmI32(42));
+            var wrapper = new VmObject("Timed", valueType: true) { Host = host };
+            var result = RunPrepared(module, "Timed$$.proxy.call(x:.i32)@.i32",
+                new VmValue[] { wrapper, new VmI32(0) });
+            CheckOk("Method wrapper get.self 直构", result);
+            CheckI32("self.n == 42", result, 42);
+        }
+
+        // .proxy.call g)：!= 经 .proxy.opr.equals 链取反——直构模块
+        // WrappedVecNeModule：proxy 恒 true → != 得 false。
+        private static void TestMethodWrapperNotEqualsViaOprEqualsDirectModule()
+        {
+            var result = BilVm.Run(WrappedVecNeModule());
+            CheckOk("WrappedVecNeModule 直构", result);
+            CheckBool("proxy equals 恒 true → != 取反 false", result, false);
+        }
+
+        // 异常 getMessage 三场景：失败 cast 的 CastException 消息含类型信息；
+        // wrapper 降级未路由的 NoSuchMethodException 消息含请求 symbol；
+        // 用户子类 override getMessage 返回自定义串并多态打印。
+        private static void TestExceptionGetMessage()
+        {
+            var cast = Run(
+                "pub open class Animal { pub init() {} }\n" +
+                "pub class Dog : Animal { pub init() {} }\n" +
+                "pub func main(): i32 {\n" +
+                "    try {\n" +
+                "        var a: Animal = new Animal()\n" +
+                "        var d = (a as Dog)\n" +
+                "        return 0\n" +
+                "    } catch (e: core.CastException) {\n" +
+                "        core.io.Console.println(e.getMessage())\n" +
+                "        return 7\n" +
+                "    }\n" +
+                "}\n");
+            CheckOk("CastException 被 catch", cast);
+            CheckI32("CastException catch 返回 7", cast, 7);
+            TestHarness.CheckTrue("getMessage 含源类型",
+                cast.Stdout.Contains("Animal") == true, cast.Stdout);
+            TestHarness.CheckTrue("getMessage 含目标类型",
+                cast.Stdout.Contains("Dog") == true, cast.Stdout);
+
+            const string service =
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper W {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., " +
+                "unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn { return inner(symbol=symbol, namedArgs=namedArgs, " +
+                "unnamedArgs=unnamedArgs) }\n" +
+                "}\n" +
+                "@W\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "}\n";
+            var downgrade = Run(service +
+                "pub func main(): i32 {\n" +
+                "    var service = new Service()\n" +
+                "    try {\n" +
+                "        service.fetchUserById(42)\n" +
+                "        return 0\n" +
+                "    } catch (e: core.NoSuchMethodException) {\n" +
+                "        core.io.Console.println(e.getMessage())\n" +
+                "        return 7\n" +
+                "    }\n" +
+                "}\n");
+            CheckOk("NoSuchMethodException 被 catch", downgrade);
+            CheckI32("NoSuchMethodException catch 返回 7", downgrade, 7);
+            TestHarness.CheckTrue("getMessage 含请求 symbol",
+                downgrade.Stdout.Contains("Service$fetchUserById") == true,
+                downgrade.Stdout);
+
+            var custom = Run(
+                "pub open class MyException : core.Exception {\n" +
+                "    pub init()\n" +
+                "    pub override func getMessage(): String { return \"custom-message\" }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    try {\n" +
+                "        throw new MyException()\n" +
+                "        return 0\n" +
+                "    } catch (e: core.Exception) {\n" +
+                "        core.io.Console.println(e.getMessage())\n" +
+                "        return 7\n" +
+                "    }\n" +
+                "}\n");
+            CheckOk("用户异常 override getMessage 被 catch", custom);
+            TestHarness.Check("多态 getMessage stdout", custom.Stdout, "custom-message\n");
+            CheckI32("用户异常 catch 返回 7", custom, 7);
+        }
+
+        // lambda Method wrapper VM 端到端：specific 环绕 + 改返回值；状态
+        // 持久；捕获 lambda 共存；双 Method wrapper 顺序；init 实参形态
+        //（实参为外层局部，验证透传）。
+        private static void TestLambdaMethodWrapperEndToEnd()
+        {
+            var surround = Run(
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Timed {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call\\<TReturn>(x: i32): TReturn {\n" +
+                "        core.io.Console.println(\"before\")\n" +
+                "        var r = inner(x)\n" +
+                "        core.io.Console.println(\"after\")\n" +
+                "        return (((r as i32) + 1) as TReturn)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var f = func{ @Timed (x: i32): i32 -> (x + 1) }\n" +
+                "    return f(41)\n" +
+                "}\n");
+            CheckOk("lambda Method wrapper 环绕", surround);
+            TestHarness.Check("lambda 环绕 stdout", surround.Stdout,
+                "before\n" +
+                "after\n");
+            CheckI32("lambda 经 wrapper 返回 43", surround, 43);
+
+            var state = Run(
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Counted {\n" +
+                "    pub var calls: i32\n" +
+                "    pub init() { calls = 0 }\n" +
+                "    operator .proxy.call\\<TReturn>(x: i32): TReturn {\n" +
+                "        calls = (calls + 1)\n" +
+                "        var r = inner(x)\n" +
+                "        return (((r as i32) + calls) as TReturn)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var f = func{ @Counted (x: i32): i32 -> (x * 10) }\n" +
+                "    var a = f(1)\n" +
+                "    var b = f(1)\n" +
+                "    return ((a * 100) + b)\n" +
+                "}\n");
+            CheckOk("lambda Method wrapper 状态持久", state);
+            CheckI32("lambda 第 1 次 11、第 2 次 12 → 1112", state, 1112);
+
+            var captured = Run(
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Timed {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call\\<TReturn>(x: i32): TReturn { return inner(x) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var base = 40\n" +
+                "    var f = func{ @Timed (x: i32): i32 -> (x + base) }\n" +
+                "    return f(2)\n" +
+                "}\n");
+            CheckOk("捕获 lambda + Method wrapper 共存", captured);
+            CheckI32("base 40 + x 2 经 wrapper 返回 42", captured, 42);
+
+            var doubleLayer = Run(
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper A {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call\\<TReturn>(x: i32): TReturn {\n" +
+                "        core.io.Console.println(\"A\")\n" +
+                "        return inner(x)\n" +
+                "    }\n" +
+                "}\n" +
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper B {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call\\<TReturn>(x: i32): TReturn {\n" +
+                "        core.io.Console.println(\"B\")\n" +
+                "        return inner(x)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var f = func{ @A @B (x: i32): i32 -> (x + 1) }\n" +
+                "    return f(41)\n" +
+                "}\n");
+            CheckOk("lambda 双 Method wrapper", doubleLayer);
+            TestHarness.Check("lambda 双 wrapper stdout", doubleLayer.Stdout,
+                "A\n" +
+                "B\n");
+            CheckI32("lambda 双 wrapper 返回 42", doubleLayer, 42);
+
+            var initArg = Run(
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Tagged {\n" +
+                "    pub var tag: String\n" +
+                "    pub init(t: String) { tag = t }\n" +
+                "    operator .proxy.call\\<TReturn>(x: i32): TReturn {\n" +
+                "        core.io.Console.println(\"tag=\" + tag)\n" +
+                "        return inner(x)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var tag = \"hi\"\n" +
+                "    var f = func{ @Tagged(tag) (x: i32): i32 -> (x + 1) }\n" +
+                "    return f(41)\n" +
+                "}\n");
+            CheckOk("lambda Method wrapper init 实参透传", initArg);
+            TestHarness.Check("init 实参 stdout", initArg.Stdout, "tag=hi\n");
+            CheckI32("init 实参透传后返回 42", initArg, 42);
         }
 
         private static BilModule IndirectBoxModule()
@@ -928,6 +1789,365 @@ namespace RigiCompiler.Tests
             entry.Instructions.Add(new GetFieldInstruction(BilOp.Var("c"), BilOp.Var("x"),
                 BilOp.Field("Vec#x@.i32")));
             entry.Instructions.Add(new RetInstruction(BilOp.Var("x")));
+            main.Blocks.Add(entry);
+            module.Functions.Add(main);
+            return module;
+        }
+
+        // Entity operator 派发直构：Vec 带 wrapped(W)，W 只有 wildcard
+        // .proxy.opr.*。frontend 的 `+` 不查用户 operator（TestUserOperatorAdd
+        // 同因），此处直接发 add 指令验证 `+` 命中 .proxy.opr.*——proxy 直接
+        // 返回 (99,0) 的 Vec，链末原始 plus 不会被走到。
+        private static BilModule WrappedVecOperatorProxyModule()
+        {
+            var module = new BilModule();
+            module.Resources.Add(new BilScalarResource("R_99", BilScalarType.I32, "99"));
+            module.Resources.Add(new BilScalarResource("R_0", BilScalarType.I32, "0"));
+
+            var w = new BilTypeDeclaration("W", BilTypeKind.Wrapper,
+                new BilAccessibilityModifier(BilAccessibility.Public),
+                new BilKeywordModifier(BilKeyword.Rich));
+            w.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "W$$.proxy.opr.*(symbol:.string)@Vec",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Private),
+                    new BilOperatorModifier(".proxy.opr.*"),
+                    new BilWrapperProxyModifier(BilProxyKind.Wildcard),
+                }));
+            module.LocalSymbols.Add(w);
+
+            var vec = new BilTypeDeclaration("Vec", BilTypeKind.Struct,
+                new BilAccessibilityModifier(BilAccessibility.Public),
+                new BilKeywordModifier(BilKeyword.Rich),
+                new BilWrappedModifier("W"));
+            vec.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field,
+                "Vec#x@.i32",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            vec.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field,
+                "Vec#y@.i32",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            vec.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "Vec$init(x:.i32,y:.i32)@.void",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilKeywordModifier(BilKeyword.Init),
+                }));
+            vec.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "Vec$..init.wrapper()@.void",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Private),
+                    new BilKeywordModifier(BilKeyword.CompilerGenerated),
+                }));
+            vec.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "Vec$$plus(other:Vec)@Vec",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilOperatorModifier("plus"),
+                }));
+            module.LocalSymbols.Add(vec);
+            module.LocalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "$main()@.i32",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilKeywordModifier(BilKeyword.Entrypoint),
+                }));
+
+            var proxy = new BilFunction("W$$.proxy.opr.*(symbol:.string)@Vec");
+            proxy.Args.Add(new BilArgDeclaration(".return", "Vec"));
+            proxy.Args.Add(new BilArgDeclaration(".this", "W"));
+            proxy.Args.Add(new BilArgDeclaration("symbol", ".string"));
+            proxy.Args.Add(new BilArgDeclaration(".kwargs.namedArgs",
+                ".array<.pair<.string, .any>>"));
+            proxy.Args.Add(new BilArgDeclaration(".vargs.unnamedArgs", ".array<.any>"));
+            proxy.Vars.Add(new BilVarDeclaration(".i32", "n99"));
+            proxy.Vars.Add(new BilVarDeclaration(".i32", "z0"));
+            proxy.Vars.Add(new BilVarDeclaration("Vec", "r"));
+            var proxyEntry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            proxyEntry.Instructions.Add(new LoadInstruction(module.Resources[0],
+                BilOp.Var("n99")));
+            proxyEntry.Instructions.Add(new LoadInstruction(module.Resources[1],
+                BilOp.Var("z0")));
+            proxyEntry.Instructions.Add(new NewInstruction(BilOp.Type("Vec"),
+                BilOp.Var("r"), new[] { BilOp.Var("n99"), BilOp.Var("z0") }));
+            proxyEntry.Instructions.Add(new RetInstruction(BilOp.Var("r")));
+            proxy.Blocks.Add(proxyEntry);
+            module.Functions.Add(proxy);
+
+            var init = new BilFunction("Vec$init(x:.i32,y:.i32)@.void");
+            init.Args.Add(new BilArgDeclaration(".return", ".void"));
+            init.Args.Add(new BilArgDeclaration(".this", "Vec"));
+            init.Args.Add(new BilArgDeclaration("x", ".i32"));
+            init.Args.Add(new BilArgDeclaration("y", ".i32"));
+            var initEntry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            initEntry.Instructions.Add(new SetFieldInstruction(BilOp.Var("x"),
+                BilOp.Var(".this"), BilOp.Field("Vec#x@.i32")));
+            initEntry.Instructions.Add(new SetFieldInstruction(BilOp.Var("y"),
+                BilOp.Var(".this"), BilOp.Field("Vec#y@.i32")));
+            initEntry.Instructions.Add(new RetInstruction());
+            init.Blocks.Add(initEntry);
+            module.Functions.Add(init);
+
+            var initWrapper = new BilFunction("Vec$..init.wrapper()@.void");
+            initWrapper.Args.Add(new BilArgDeclaration(".return", ".void"));
+            initWrapper.Args.Add(new BilArgDeclaration(".this", "Vec"));
+            var wrapperEntry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            wrapperEntry.Instructions.Add(new NewWrapperEntityInstruction(BilOp.Type("W"),
+                Array.Empty<BilVariableOperand>()));
+            wrapperEntry.Instructions.Add(new RetInstruction());
+            initWrapper.Blocks.Add(wrapperEntry);
+            module.Functions.Add(initWrapper);
+
+            var plus = new BilFunction("Vec$$plus(other:Vec)@Vec");
+            plus.Args.Add(new BilArgDeclaration(".return", "Vec"));
+            plus.Args.Add(new BilArgDeclaration(".this", "Vec"));
+            plus.Args.Add(new BilArgDeclaration("other", "Vec"));
+            plus.Vars.Add(new BilVarDeclaration(".i32", "z0"));
+            plus.Vars.Add(new BilVarDeclaration("Vec", "r"));
+            var plusEntry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            plusEntry.Instructions.Add(new LoadInstruction(module.Resources[1],
+                BilOp.Var("z0")));
+            plusEntry.Instructions.Add(new NewInstruction(BilOp.Type("Vec"),
+                BilOp.Var("r"), new[] { BilOp.Var("z0"), BilOp.Var("z0") }));
+            plusEntry.Instructions.Add(new RetInstruction(BilOp.Var("r")));
+            plus.Blocks.Add(plusEntry);
+            module.Functions.Add(plus);
+
+            var main = new BilFunction("$main()@.i32");
+            main.Args.Add(new BilArgDeclaration(".return", ".i32"));
+            main.Vars.Add(new BilVarDeclaration(".i32", "n99"));
+            main.Vars.Add(new BilVarDeclaration(".i32", "z0"));
+            main.Vars.Add(new BilVarDeclaration("Vec", "a"));
+            main.Vars.Add(new BilVarDeclaration("Vec", "b"));
+            main.Vars.Add(new BilVarDeclaration("Vec", "c"));
+            main.Vars.Add(new BilVarDeclaration(".i32", "x"));
+            var entry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            entry.Instructions.Add(new LoadInstruction(module.Resources[0],
+                BilOp.Var("n99")));
+            entry.Instructions.Add(new LoadInstruction(module.Resources[1],
+                BilOp.Var("z0")));
+            entry.Instructions.Add(new NewWrappedInstruction(BilOp.Type("Vec"),
+                BilOp.Var("a"), Array.Empty<BilVariableOperand>(),
+                new[] { BilOp.Var("n99"), BilOp.Var("z0") }));
+            entry.Instructions.Add(new NewWrappedInstruction(BilOp.Type("Vec"),
+                BilOp.Var("b"), Array.Empty<BilVariableOperand>(),
+                new[] { BilOp.Var("z0"), BilOp.Var("n99") }));
+            entry.Instructions.Add(new BinaryIntrinsicInstruction(BilBinaryOp.Add,
+                BilOp.Var("a"), BilOp.Var("b"), BilOp.Var("c")));
+            entry.Instructions.Add(new GetFieldInstruction(BilOp.Var("c"),
+                BilOp.Var("x"), BilOp.Field("Vec#x@.i32")));
+            entry.Instructions.Add(new RetInstruction(BilOp.Var("x")));
+            main.Blocks.Add(entry);
+            module.Functions.Add(main);
+            return module;
+        }
+
+        // != 直构：Vec 带 wrapped(W)，W 的 .proxy.opr.equals 恒 true；`a != b`
+        // 由 equals 取反推导，因此结果为 false（原始 equals 返回 false 但不会
+        // 被走到）。
+        private static BilModule WrappedVecNeModule()
+        {
+            var module = new BilModule();
+            module.Resources.Add(new BilScalarResource("R_1", BilScalarType.I32, "1"));
+            module.Resources.Add(new BilScalarResource("R_2", BilScalarType.I32, "2"));
+            module.Resources.Add(new BilScalarResource("R_TRUE", BilScalarType.Bool, "true"));
+            module.Resources.Add(new BilScalarResource("R_FALSE", BilScalarType.Bool, "false"));
+
+            var w = new BilTypeDeclaration("W", BilTypeKind.Wrapper,
+                new BilAccessibilityModifier(BilAccessibility.Public),
+                new BilKeywordModifier(BilKeyword.Rich));
+            w.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "W$$.proxy.opr.equals(other:Vec)@.bool",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Private),
+                    new BilOperatorModifier(".proxy.opr.equals"),
+                    new BilWrapperProxyModifier(BilProxyKind.Specific),
+                }));
+            module.LocalSymbols.Add(w);
+
+            var vec = new BilTypeDeclaration("Vec", BilTypeKind.Struct,
+                new BilAccessibilityModifier(BilAccessibility.Public),
+                new BilKeywordModifier(BilKeyword.Rich),
+                new BilWrappedModifier("W"));
+            vec.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field,
+                "Vec#x@.i32",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            vec.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field,
+                "Vec#y@.i32",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            vec.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "Vec$init(x:.i32,y:.i32)@.void",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilKeywordModifier(BilKeyword.Init),
+                }));
+            vec.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "Vec$..init.wrapper()@.void",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Private),
+                    new BilKeywordModifier(BilKeyword.CompilerGenerated),
+                }));
+            vec.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "Vec$$equals(other:Vec)@.bool",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilOperatorModifier("equals"),
+                }));
+            module.LocalSymbols.Add(vec);
+            module.LocalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "$main()@.bool",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilKeywordModifier(BilKeyword.Entrypoint),
+                }));
+
+            var proxy = new BilFunction("W$$.proxy.opr.equals(other:Vec)@.bool");
+            proxy.Args.Add(new BilArgDeclaration(".return", ".bool"));
+            proxy.Args.Add(new BilArgDeclaration(".this", "W"));
+            proxy.Args.Add(new BilArgDeclaration("other", "Vec"));
+            proxy.Vars.Add(new BilVarDeclaration(".bool", "t"));
+            var proxyEntry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            proxyEntry.Instructions.Add(new LoadInstruction(module.Resources[2],
+                BilOp.Var("t")));
+            proxyEntry.Instructions.Add(new RetInstruction(BilOp.Var("t")));
+            proxy.Blocks.Add(proxyEntry);
+            module.Functions.Add(proxy);
+
+            var init = new BilFunction("Vec$init(x:.i32,y:.i32)@.void");
+            init.Args.Add(new BilArgDeclaration(".return", ".void"));
+            init.Args.Add(new BilArgDeclaration(".this", "Vec"));
+            init.Args.Add(new BilArgDeclaration("x", ".i32"));
+            init.Args.Add(new BilArgDeclaration("y", ".i32"));
+            var initEntry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            initEntry.Instructions.Add(new SetFieldInstruction(BilOp.Var("x"),
+                BilOp.Var(".this"), BilOp.Field("Vec#x@.i32")));
+            initEntry.Instructions.Add(new SetFieldInstruction(BilOp.Var("y"),
+                BilOp.Var(".this"), BilOp.Field("Vec#y@.i32")));
+            initEntry.Instructions.Add(new RetInstruction());
+            init.Blocks.Add(initEntry);
+            module.Functions.Add(init);
+
+            var initWrapper = new BilFunction("Vec$..init.wrapper()@.void");
+            initWrapper.Args.Add(new BilArgDeclaration(".return", ".void"));
+            initWrapper.Args.Add(new BilArgDeclaration(".this", "Vec"));
+            var wrapperEntry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            wrapperEntry.Instructions.Add(new NewWrapperEntityInstruction(BilOp.Type("W"),
+                Array.Empty<BilVariableOperand>()));
+            wrapperEntry.Instructions.Add(new RetInstruction());
+            initWrapper.Blocks.Add(wrapperEntry);
+            module.Functions.Add(initWrapper);
+
+            var equals = new BilFunction("Vec$$equals(other:Vec)@.bool");
+            equals.Args.Add(new BilArgDeclaration(".return", ".bool"));
+            equals.Args.Add(new BilArgDeclaration(".this", "Vec"));
+            equals.Args.Add(new BilArgDeclaration("other", "Vec"));
+            equals.Vars.Add(new BilVarDeclaration(".bool", "f"));
+            var equalsEntry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            equalsEntry.Instructions.Add(new LoadInstruction(module.Resources[3],
+                BilOp.Var("f")));
+            equalsEntry.Instructions.Add(new RetInstruction(BilOp.Var("f")));
+            equals.Blocks.Add(equalsEntry);
+            module.Functions.Add(equals);
+
+            var main = new BilFunction("$main()@.bool");
+            main.Args.Add(new BilArgDeclaration(".return", ".bool"));
+            main.Vars.Add(new BilVarDeclaration(".i32", "one"));
+            main.Vars.Add(new BilVarDeclaration(".i32", "two"));
+            main.Vars.Add(new BilVarDeclaration("Vec", "a"));
+            main.Vars.Add(new BilVarDeclaration("Vec", "b"));
+            main.Vars.Add(new BilVarDeclaration(".bool", "r"));
+            var entry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            entry.Instructions.Add(new LoadInstruction(module.Resources[0],
+                BilOp.Var("one")));
+            entry.Instructions.Add(new LoadInstruction(module.Resources[1],
+                BilOp.Var("two")));
+            entry.Instructions.Add(new NewWrappedInstruction(BilOp.Type("Vec"),
+                BilOp.Var("a"), Array.Empty<BilVariableOperand>(),
+                new[] { BilOp.Var("one"), BilOp.Var("two") }));
+            entry.Instructions.Add(new NewWrappedInstruction(BilOp.Type("Vec"),
+                BilOp.Var("b"), Array.Empty<BilVariableOperand>(),
+                new[] { BilOp.Var("one"), BilOp.Var("two") }));
+            entry.Instructions.Add(new BinaryIntrinsicInstruction(BilBinaryOp.CmpNe,
+                BilOp.Var("a"), BilOp.Var("b"), BilOp.Var("r")));
+            entry.Instructions.Add(new RetInstruction(BilOp.Var("r")));
+            main.Blocks.Add(entry);
+            module.Functions.Add(main);
+            return module;
+        }
+
+        // Method wrapper .proxy.call 的 get.self 直构：proxy 模板 fn 的
+        // .this 是 wrapper 实例，get.self 产出已安装的宿主（Host.n == 42）。
+        private static BilModule MethodWrapperGetSelfModule()
+        {
+            var module = new BilModule();
+            var timed = new BilTypeDeclaration("Timed", BilTypeKind.Wrapper,
+                new BilAccessibilityModifier(BilAccessibility.Public),
+                new BilKeywordModifier(BilKeyword.Rich));
+            timed.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "Timed$$.proxy.call(x:.i32)@.i32",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Private),
+                    new BilOperatorModifier(".proxy.call"),
+                    new BilWrapperProxyModifier(BilProxyKind.Specific),
+                }));
+            module.LocalSymbols.Add(timed);
+
+            var host = new BilTypeDeclaration("Host", BilTypeKind.Class,
+                new BilAccessibilityModifier(BilAccessibility.Public));
+            host.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field,
+                "Host#n@.i32",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            module.LocalSymbols.Add(host);
+
+            var proxy = new BilFunction("Timed$$.proxy.call(x:.i32)@.i32");
+            proxy.Args.Add(new BilArgDeclaration(".return", ".i32"));
+            proxy.Args.Add(new BilArgDeclaration(".this", "Timed"));
+            proxy.Args.Add(new BilArgDeclaration("x", ".i32"));
+            proxy.Vars.Add(new BilVarDeclaration("Host", "s"));
+            proxy.Vars.Add(new BilVarDeclaration(".i32", "n"));
+            var entry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            entry.Instructions.Add(new GetSelfInstruction(BilOp.Var("s")));
+            entry.Instructions.Add(new GetFieldInstruction(BilOp.Var("s"),
+                BilOp.Var("n"), BilOp.Field("Host#n@.i32")));
+            entry.Instructions.Add(new RetInstruction(BilOp.Var("n")));
+            proxy.Blocks.Add(entry);
+            module.Functions.Add(proxy);
+            return module;
+        }
+
+        // 未绑定语境下 .generic 参与 cast 的负例直构：fn 没有同名 .generic
+        // hidden 实参槽位，执行期类型解析必须抛 VmException（绝不恒等放行）。
+        private static BilModule UnboundGenericCastModule()
+        {
+            var module = new BilModule();
+            module.Resources.Add(new BilScalarResource("R_1", BilScalarType.I32, "1"));
+            module.LocalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "$main()@.i32",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilKeywordModifier(BilKeyword.Entrypoint),
+                }));
+            var main = new BilFunction("$main()@.i32");
+            main.Args.Add(new BilArgDeclaration(".return", ".i32"));
+            main.Vars.Add(new BilVarDeclaration(".i32", "n"));
+            main.Vars.Add(new BilVarDeclaration(".generic<$.generic.T>", "r"));
+            var entry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            entry.Instructions.Add(new LoadInstruction(module.Resources[0],
+                BilOp.Var("n")));
+            entry.Instructions.Add(new CastInstruction(BilOp.Var("n"), BilOp.Var("r"),
+                BilOp.Type(".generic<$.generic.T>"), isSafe: false));
+            entry.Instructions.Add(new RetInstruction(BilOp.Var("n")));
             main.Blocks.Add(entry);
             module.Functions.Add(main);
             return module;

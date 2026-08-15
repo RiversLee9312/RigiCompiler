@@ -49,9 +49,11 @@ namespace RigiCompiler
         }
 
         // 静态/全局字段 cell 化（幂等；P3 BindingDriver 阶段 1.6 调用）：
-        // 命名空间取声明文件；在册泛型参数 = 宿主类型链（无方法上下文）
-        public static CellStorageInfo? EnsureCellStorage(FieldSymbol field, ASTNode syntax,
-            NamespaceSymbol ns, BindEnvironment env)
+        // 命名空间取声明文件；在册泛型参数 = 宿主类型链（无方法上下文）。
+        // 全局字段（Owner == null，裁定 1）：cell 子类即 singleton——
+        // 初值表达式在 cell 单例的 init 里求值，main 前就绪
+        public static CellStorageInfo? EnsureCellStorage(FieldSymbol field,
+            VariableDeclarationASTNode variable, FileContext fileCtx, BindEnvironment env)
         {
             if (field.CellStorage != null) return field.CellStorage;
             var genericParameters = new List<GenericParameterSymbol>();
@@ -59,8 +61,16 @@ namespace RigiCompiler
             {
                 genericParameters.AddRange(t.GenericParameters);
             }
-            return field.CellStorage = Create(ns, genericParameters, field.FieldType!,
-                field.IsConst, field.AppliedWrappers, syntax, env);
+            var isGlobal = field.Owner == null;
+            BoundExpression? initializer = null;
+            if (isGlobal)
+            {
+                initializer = WrapperInitSynthesis.BindFieldInitializer(field, variable,
+                    fileCtx, env);
+            }
+            return field.CellStorage = Create(fileCtx.Namespace, genericParameters,
+                field.FieldType!, field.IsConst, field.AppliedWrappers, variable, env,
+                isSingleton: isGlobal, initializer: initializer);
         }
 
         // 局部访问器 cell 化（M107 路线 C，SYNTAX §9.4）：getValue/setValue
@@ -95,7 +105,8 @@ namespace RigiCompiler
             }
             var cellClass = new TypeSymbol(
                 "..cell.." + Guid.NewGuid().ToString("N"),
-                TypeKind.Class, ns: outerCtx.Frame.FileCtx.Namespace, baseType: baseType)
+                TypeKind.Class, ns: outerCtx.Frame.FileCtx.Namespace, baseType: baseType,
+                isShared: IsSharedElement(elementType))
             {
                 Accessibility = Accessibility.Public,
             };
@@ -385,7 +396,7 @@ namespace RigiCompiler
         private static CellStorageInfo? Create(NamespaceSymbol ns,
             IReadOnlyList<GenericParameterSymbol> genericParameters, SemanticSymbol elementType,
             bool readOnly, IReadOnlyList<WrapperApplication> wrappers, ASTNode syntax,
-            BindEnvironment env)
+            BindEnvironment env, bool isSingleton = false, BoundExpression? initializer = null)
         {
             var unit = env.Unit;
             // 毒化静默（类型解析失败的诊断已在前序落袋，不合成残缺子类）
@@ -411,9 +422,11 @@ namespace RigiCompiler
             }
             var cellClass = new TypeSymbol(
                 "..cell.." + Guid.NewGuid().ToString("N"),
-                TypeKind.Class, ns: ns, baseType: baseType)
+                TypeKind.Class, ns: ns, baseType: baseType,
+                isShared: isSingleton || IsSharedElement(elementType))
             {
                 Accessibility = Accessibility.Public,
+                IsSingleton = isSingleton,
             };
             // 泛型上下文共享：在册泛型参数以同符号对象挂进隐藏子类
             //（序即构造点 type 实参序——声明类型链先行、方法随后）
@@ -438,28 +451,51 @@ namespace RigiCompiler
             // 成员与体序：init → init(value) → getValue → setValue（声明与
             // fn 发射同序）。体一律直接构造 Bound 节点（Syntax 回指合成来源）
             var methods = new List<(MethodSymbol Method, BoundFunctionBody Body)>();
-            if (!readOnly)
+            MethodSymbol? defaultInit = null;
+            // 空构造 init()：未初始化 var 的空 cell 构造点（体为空块）；源级
+            // DA 保证空值不可观测（读必先经赋值）。singleton cell（全局字段）
+            // 的无参 init 只承担初值求值、写 value 字段（wrapper 安装走
+            // ..init.wrapper，§14.5）——ReadonlyCell 风味也补一个无参 init
+            // 供 VM 构造单例
+            if (!readOnly || initializer != null)
             {
-                // 空构造 init()（体为空块）：未初始化 var 的空 cell 构造点——
-                // 源级 DA 保证空值不可观测（读必先经赋值）
                 var method = NewMethod("init", MethodKind.Init, cellClass, null,
                     isOverride: false);
+                var initStatements = new List<BoundStatement>();
+                if (initializer != null)
+                {
+                    initStatements.Add(AssignValue(syntax, cellClass, valueField, elementType,
+                        initializer));
+                }
+                defaultInit = method;
                 methods.Add((method, new BoundFunctionBody(method,
-                    Array.Empty<LocalSymbol>(), new BoundBlock(syntax,
-                        Array.Empty<BoundStatement>()))));
+                    Array.Empty<LocalSymbol>(), new BoundBlock(syntax, initStatements))));
             }
             // init(value)：体 = this.value = value（const 字段写由 init
-            // 豁免，BIL §21.8）
-            var valueInit = NewMethod("init", MethodKind.Init, cellClass, null,
-                isOverride: false);
-            var initParameter = new ParameterSymbol("value", elementType);
-            valueInit.Parameters.Add(initParameter);
-            methods.Add((valueInit, new BoundFunctionBody(valueInit,
-                Array.Empty<LocalSymbol>(), new BoundBlock(syntax, new BoundStatement[]
-                {
-                    AssignValue(syntax, cellClass, valueField, elementType,
-                        new BoundValueReferenceExpression(syntax, initParameter, elementType)),
-                }))));
+            // 豁免，BIL §21.8）。singleton cell（全局字段）初值在无参 init
+            // 内求值，不另设 1 元 init(value)——用户裁定的 init 元数规则：
+            // 静态/全局 → 0 元、函数内 const → 1 元（Cell 子类同理）
+            MethodSymbol valueInit;
+            if (isSingleton)
+            {
+                valueInit = defaultInit
+                    ?? throw new CompilerInternalException("singleton cell 缺无参 init: " +
+                        cellClass.Name);
+            }
+            else
+            {
+                valueInit = NewMethod("init", MethodKind.Init, cellClass, null,
+                    isOverride: false);
+                var initParameter = new ParameterSymbol("value", elementType);
+                valueInit.Parameters.Add(initParameter);
+                methods.Add((valueInit, new BoundFunctionBody(valueInit,
+                    Array.Empty<LocalSymbol>(), new BoundBlock(syntax, new BoundStatement[]
+                    {
+                        AssignValue(syntax, cellClass, valueField, elementType,
+                            new BoundValueReferenceExpression(syntax, initParameter,
+                                elementType)),
+                    }))));
+            }
             // override getValue：return this.value
             var getValue = NewMethod("getValue", MethodKind.Regular, cellClass, elementType,
                 isOverride: true);
@@ -485,13 +521,37 @@ namespace RigiCompiler
             }
             foreach (var (method, _) in methods) cellClass.Methods.Add(method);
             var info = new CellStorageInfo(cellClass, cellType, readOnly, valueField,
-                valueInit, readOnly ? null : methods[0].Method);
+                valueInit, defaultInit);
             cellClass.CellStorage = info;
             foreach (var (_, body) in methods) env.SyntheticCellBodies.Add(body);
-            // M109b-1：value 字段 wrapped(W) → cell 子类 ..init.wrapper
-            WrapperInitSynthesis.SynthesizeForCell(info, syntax, env);
+            // M109b-1：value 字段 wrapped(W) → cell 子类 ..init.wrapper。
+            // singleton cell（全局字段）走无参 ..init.wrapper（wrapper 实参按
+            // 全局作用域在体内求值）；非 singleton 走有参 new.wrapped 形态
+            if (isSingleton)
+            {
+                WrapperInitSynthesis.SynthesizeForSingletonCell(info, syntax, env);
+            }
+            else
+            {
+                WrapperInitSynthesis.SynthesizeForCell(info, syntax, env);
+            }
             return info;
         }
+
+        // cell 隐藏子类 shared 判定（用户裁定，堵死「经 lambda 捕获 / Value
+        // wrapper 把普通值偷带进并发上下文」）：仅当元素类型**本身被显式声明
+        // 为 shared**（声明修饰符 IsShared）时子类才 shared——
+        //   · 元素 = 显式 shared 类型（含其构造类型 Foo<...>——IsShared 随定义
+        //     传播）→ 子类 shared；
+        //   · 元素 = i32/bool/char 等非 rich 内建值类型 → 不 shared（即便它们
+        //     通常 shared-safe——值经 cell 装箱成为可变容器，跨协程共享须靠
+        //     显式 shared 声明放行，不自动豁免）；
+        //   · 元素 = 未标 shared 的普通 struct/class/wrapper → 不 shared；
+        //   · 元素 = 泛型参数 T → 不 shared（无法静态证明显式 shared）。
+        // 非 shared 的 cell 会被 shared 闸门（async 边界 / 全局静态字段）拦下；
+        // 显式 shared 元素合成的 shared cell 则合法放行。
+        private static bool IsSharedElement(SemanticSymbol elementType) =>
+            elementType is TypeSymbol { IsShared: true };
 
         private static MethodSymbol NewMethod(string name, MethodKind kind, TypeSymbol owner,
             SemanticSymbol? returnType, bool isOverride)

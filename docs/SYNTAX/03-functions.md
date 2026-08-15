@@ -113,6 +113,8 @@ ext 目标不得为泛型定义：裸名命中泛型定义是编译错误（缺�
 
 `async` 是函数修饰符，表示**每次调用该函数时都会立即创建并发布一个新的协程**。`async` 不表示“函数体才可以挂起”：普通函数也运行在当前协程中，因此同样可以执行 `await` 和 `yield`；区别仅在于普通函数调用继续使用当前协程，而 `async` 函数调用创建另一个协程。
 
+`init` 不能声明为 `async`（任何 init 都不允许是 async 的）。
+
 ```rigi
 pub async func loadUser(id: i32): SharedUser {
     const response = await requestUser(id)

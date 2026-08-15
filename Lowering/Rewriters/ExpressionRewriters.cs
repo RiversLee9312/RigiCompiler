@@ -151,8 +151,19 @@ namespace RigiCompiler
                         ?? env.Unit.Symbols.ErrorType)
                     : ctx.Closure.CellObjectFor(lambda, capture.Symbol));
             }
+            // Method wrapper 带实参（SYNTAX §14.4）：构造点改走 new.wrapped，
+            // 第一表 = ..init.wrapper 实参（已在外层函数作用域绑定），
+            // 第二表 = 捕获/this 实参
+            IReadOnlyList<LoweredExpression>? wrapperArguments = null;
+            if (lambda.Closure.InitWrapper is { Parameters.Count: > 0 })
+            {
+                wrapperArguments = LoweringFacility.LowerArguments(
+                    lambda.Closure.WrapperInitArguments, lambda.Closure.InitWrapper.Parameters,
+                    ctx, env);
+                if (wrapperArguments == null) return null;
+            }
             return new LoweredNewExpression(lambda, lambda.Closure.Init, arguments,
-                lambda.Type);
+                lambda.Type, wrapperArguments);
         }
     }
 
@@ -166,7 +177,18 @@ namespace RigiCompiler
             var arguments = LoweringFacility.LowerArguments(newExpression.Arguments,
                 newExpression.Init?.Parameters, ctx, env);
             if (arguments == null) return null;
-            return new LoweredNewExpression(newExpression, newExpression.Init, arguments);
+            // cell 隐藏子类构造（companion init 里构造静态字段 cell，§8.7）：
+            // 有参 ..init.wrapper → new.wrapped 前缀实参（与局部 cell 构造点同）
+            IReadOnlyList<LoweredExpression>? wrapperArgs = null;
+            if (newExpression.Init?.Owner?.CellStorage is { } storage
+                && storage.InitWrapper != null && storage.InitWrapper.Parameters.Count > 0)
+            {
+                wrapperArgs = CellWrappedNew.LowerWrapperInitArgs(newExpression, storage,
+                    ctx, env);
+                if (wrapperArgs == null) return null;
+            }
+            return new LoweredNewExpression(newExpression, newExpression.Init, arguments,
+                wrapperArguments: wrapperArgs);
         }
     }
 

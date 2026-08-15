@@ -32,15 +32,9 @@ namespace RigiCompiler.Tests
         private static readonly Regex CellUuidPattern = new Regex(
             @"\.\.cell\.\.[0-9a-fA-F]{32}", RegexOptions.Compiled);
 
-        // companion singleton 名 UUID 归一化（M109b-2，§8.7：..companion.<UUID>）
-        private static readonly Regex CompanionUuidPattern = new Regex(
-            @"\.\.companion\.[0-9a-fA-F]{32}", RegexOptions.Compiled);
-
         public static string NormalizeLambdaUuids(string text) =>
-            CompanionUuidPattern.Replace(
-                CellUuidPattern.Replace(
-                    LambdaUuidPattern.Replace(text, "..lambda..UUID"), "..cell..UUID"),
-                "..companion.UUID");
+            CellUuidPattern.Replace(
+                LambdaUuidPattern.Replace(text, "..lambda..UUID"), "..cell..UUID");
 
         // ===== 中端全管线驱动（自 BilEmitterTests 提升共享）=====
         // stdlib（在前）+ 用户源组 CompilationUnit → P1 → P2 → P3 → P4a

@@ -1763,6 +1763,43 @@ namespace RigiCompiler.Bil
             }
         }
 
+        // §15.4：wildcard proxy 的 inner 全形状显式携带保留首参
+        // （Entity 为 symbol，Method wrapper 为 .name）。若当前 fn 声明了保留首参，
+        // invoke fn(..inner) 必须在泛型包前置操作数之后、其余值实参之前给出同名
+        // 操作数（即与 .args 值实参声明序一致）。
+        private static void VerifyInnerReservedFirstArgument(BilFunctionContext context,
+            IReadOnlyList<BilVariableOperand> arguments, string location,
+            List<BilVerificationError> errors)
+        {
+            BilArgDeclaration? reserved = null;
+            foreach (var arg in context.Function.Args)
+            {
+                if (arg.Name == "symbol" || arg.Name == ".name")
+                {
+                    reserved = arg;
+                    break;
+                }
+            }
+            if (reserved == null)
+            {
+                return;
+            }
+            var packCount = context.Function.Args.Count(a =>
+                a.Name.StartsWith(".generic.") && IsGenericPackType(a.TypeRef));
+            if (packCount >= arguments.Count || arguments[packCount].Name != reserved.Value.Name)
+            {
+                var actual = packCount < arguments.Count
+                    ? "$" + arguments[packCount].Name
+                    : "<missing>";
+                errors.Add(new BilVerificationError("21.3", location,
+                    $"invoke fn(..inner) 保留首参操作数应紧随泛型包前置，为 " +
+                    $"\"${reserved.Value.Name}\"（wildcard 全形状显式携带），实际为 \"{actual}\""));
+                return;
+            }
+            CheckType(context, VarType(context, arguments[packCount]), reserved.Value.TypeRef,
+                location, "invoke fn(..inner) 保留首参操作数", errors);
+        }
+
         // §15.4：inner ABI 无 receiver；泛型包与值实参保持模板态原序，
         // Middleware 据此链接下一环。
         private static void VerifyInnerInvoke(BilFunctionContext context,
@@ -1776,6 +1813,9 @@ namespace RigiCompiler.Bil
                     "invoke fn(..inner) 不接受 receiver（$.this）"));
             }
             VerifyInnerPackArguments(context, arguments, location, errors);
+            // §15.4：wildcard 全形状 inner 显式携带保留首参（symbol / .name），
+            // 位置紧随泛型包前置操作数之后（值实参声明序第一位）。
+            VerifyInnerReservedFirstArgument(context, arguments, location, errors);
             if (context.ReturnType == ".void")
             {
                 if (target != null)

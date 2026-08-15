@@ -70,6 +70,8 @@ namespace RigiCompiler.Bil.Vm
             _slots.WriteHidden(key, value);
         }
 
+        public IReadOnlyList<string> HiddenKeysInOrder => _slots.HiddenKeysInOrder;
+
         IVmFieldHost IVmFieldHost.DeepCopySlots() => _slots.DeepCopySlots();
     }
 }

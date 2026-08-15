@@ -24,6 +24,7 @@ namespace RigiCompiler
                 $"\"{env.ModuleName}\""));
             LocalSymbolEmitters.EmitNamespace(env.Unit.Symbols.GlobalNamespace, env);
             LocalSymbolEmitters.EmitBuiltinExtMembers(env);
+            LocalSymbolEmitters.EmitBuiltinNativeMethods(env);
             foreach (var body in bodies.Where(b => b.Method.IsSynthetic))
             {
                 env.Module.LocalSymbols.Add(
@@ -54,10 +55,13 @@ namespace RigiCompiler
                 env.Module.LocalSymbols.Add(
                     LocalSymbolEmitters.EmitSyntheticTypeDeclaration(cellClass, env));
             }
-            // 静态 Method wrapper companion singleton（M109b-2，BIL §8.7）
+            // 静态 Method wrapper companion singleton（M109b-2，BIL §8.7）：
+            // 仅 companion 自身（CompanionInfo 自指）——宿主类也持 CompanionInfo
+            // 作反向链接，不在此重复发射
             foreach (var companion in bodies
                 .Select(b => b.Method.Owner)
-                .Where(owner => owner?.CompanionInfo != null)
+                .Where(owner => owner?.CompanionInfo != null
+                    && ReferenceEquals(owner.CompanionInfo.CompanionType, owner))
                 .Distinct()
                 .Cast<TypeSymbol>())
             {

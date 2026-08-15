@@ -39,6 +39,32 @@ func{(x: i32): i32 -> named calc {
 - 体为多语句代码块时：有返回值则所有执行路径都必须显式 `return@_` 或 `return@标签` 产出值——规则同 §6.1；落到块尾而没有 `return@` 是编译错误；无返回值时块尾自然结束即可
 - lambda 体内不允许裸 `return`：lambda 不是外层函数的值块，裸 `return` 的指向会含糊（返回 lambda 自身还是穿透外层函数），一律显式写 `return@`
 
+#### lambda 头内部 annotation（Method wrapper）
+
+annotation 写在 **lambda 头内部**：`func{` 之后、`async`/形参列表之前。
+
+```rigi
+func{ @Timed /*以及其它 wrappers*/ async (x: i32): i32 -> {
+    doSomething()
+    const doubled = (x * 2)
+    return@_ doubled
+}}
+```
+
+规则：
+- 可写多个 `@Name` / `@Name(args)`，声明序即 wrapper 嵌套序（outer → inner，§14.4）
+- 语义 = **Method wrapper** 修饰该 lambda（等价于把同一组 annotation 写在 lambda 隐藏类的 `operator call` 上）；Value/Entity 目标 wrapper 在此处是编译错误
+- annotation 写在 `var` 声明上不是 lambda wrapper：那会被认为修饰变量本身（Value wrapper 目标），目标类别不符时按 §14.9 报错
+- **注解实参列表的紧贴书写**：`@Name(args)` 的 `(` 必须与注解名**紧邻**（无空白/注释）才解析为注解实参列表；`@Name (x: i32)`（中间有空白/注释）中的 `(` 按 lambda 形参列表解析（`@Name` 视为无实参注解）
+
+```rigi
+// 正例：( 紧邻 Timed —— @Timed("tag") 是带实参的 Method wrapper
+func{ @Timed("tag") (x: i32): i32 -> x }
+
+// 反例：( 与 Timed 之间有空白 —— (x: i32) 是 lambda 形参列表，@Timed 无实参
+func{ @Timed (x: i32): i32 -> x }
+```
+
 ### 5.2 对象模型
 
 每个 lambda 在编译期生成一个**隐藏类**：
@@ -82,7 +108,7 @@ func{(x: i32): i32 -> named calc {
 - lambda 内的赋值**不影响**外层 definite assignment（保守）；
 - **for 循环变量**被捕获时按**每迭代新 cell**处理（各 lambda 见当迭代的值，见 §7.3）；**catch / finally(e) / using** 变量被捕获时在进入对应块时构造一个 cell（见 §8 / §6.2）。
 
-**泛型 lambda**（如 `func{(x: T)\<T>: T -> ...}`）：隐藏类同样泛型化，泛型实参的 typeid 经构造函数传入。
+**泛型上下文中的 lambda**（如 `func{(x: T) -> ...}` 捕获外层泛型 `T`）：lambda 自身不声明泛型形参（见 §5.1），隐藏类共享外层函数/声明类型链的泛型参数符号（同一符号对象挂进隐藏类 `GenericParameters`）；外层泛型实参的 typeid 在构造点经构造函数转发传入。
 
 ### 5.3 Trailing Lambda
 

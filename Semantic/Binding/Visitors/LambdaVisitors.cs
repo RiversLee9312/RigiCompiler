@@ -95,6 +95,14 @@ namespace RigiCompiler
             foreach (var parameter in parameterSymbols) call.Parameters.Add(parameter);
             hiddenClass.Methods.Add(call);
 
+            // ===== 3.5 lambda 头内部 wrapper 注解（SYNTAX §14.4）=====
+            // 语义 = Method wrapper 修饰该 lambda：注解绑定在 lambda 表达式求值
+            // 语境（外层函数作用域），实参可引用外层局部；wrapper 应用挂到
+            // 隐藏类 $$call 运算符上（与普通实例方法 Method wrapper 同构）。
+            CollectLambdaWrapperApplications(lambda, call, scope, ctx, env);
+            var (initWrapper, wrapperInitArguments) =
+                SynthesizeLambdaInitWrapper(lambda, hiddenClass, call, env);
+
             // ===== 4. 隔离绑定上下文（宿主 = 隐藏类；词法宿主/泛型解析 = 外层）=====
             var lambdaCtx = new BindContext(call, ctx.Frame.FileCtx, ctx.Frame.DeclaringType,
                 isLambda: true, thisSymbol: ctx.This,
@@ -203,7 +211,7 @@ namespace RigiCompiler
             var captures = BuildCaptures(lambda, lambdaCtx, ctx, hiddenClass, env);
             var (init, initBody) = SynthesizeInit(lambda, hiddenClass, captures);
             hiddenClass.LambdaClosure = new LambdaClosureInfo(hiddenClass, init, call, captures,
-                valueBlock);
+                valueBlock, initWrapper, wrapperInitArguments);
 
             // 被捕获变量退出 smart cast（§5.2/§3.5）：清洗**外层**流态中这些根的
             // 既有收窄事实（本 lambda 之前的收窄在捕获点即时失效）；之后的收窄
@@ -232,6 +240,114 @@ namespace RigiCompiler
             BindContext ctx)
         {
             return CellClassFactory.InScopeGenericParameters(ctx);
+        }
+
+        // lambda 头内部注解登记（SYNTAX §14.4）：只接受 @WrapperTarget(.Method)
+        // 的 wrapper；@WrapperTarget 内建注解挂 lambda 上非法；Value/Entity 目标
+        // 报「不适用于 lambda」类诊断。wrapper 实参在外层函数作用域绑定
+        // （与局部变量 wrapper 的声明点绑定同机制，可引用外层局部）。
+        private static void CollectLambdaWrapperApplications(LambdaExpressionASTNode lambda,
+            MethodSymbol call, Scope scope, BindContext ctx, BindEnvironment env)
+        {
+            foreach (var annotation in lambda.Annotations)
+            {
+                if (ResolveEnvironment.IsWrapperTargetAnnotation(annotation))
+                {
+                    env.Error(annotation.Span ?? lambda.Span,
+                        "@WrapperTarget can only be applied to wrapper declarations");
+                    continue;
+                }
+                if (ResolveEnvironment.NativeAnnotationNameOf(annotation) is { } builtinName)
+                {
+                    env.Error(annotation.Span ?? lambda.Span,
+                        $"@{builtinName} can only be applied to native functions");
+                    continue;
+                }
+                var resolved = env.Names.ResolveSymbolPath(annotation.Name.symbol,
+                    ctx.Frame.FileCtx, ctx.Frame.DeclaringType, ctx.Frame.Method,
+                    allowImports: true, reportErrors: true,
+                    span: annotation.Name.Span ?? annotation.Span ?? lambda.Span,
+                    allowBareGenericDefinition: true);
+                if (resolved is ErrorTypeSymbol) continue;    // 毒化静默
+                if (resolved is not TypeSymbol { Kind: TypeKind.Wrapper } wrapperType)
+                {
+                    env.Error(annotation.Span ?? lambda.Span,
+                        $"'{NameResolver.PathText(annotation.Name.symbol)}' is not a wrapper type");
+                    continue;
+                }
+                // wrapper 声明自身的 @WrapperTarget 缺失/非法已在 P2 声明处报过，静默
+                if (wrapperType.WrapperTarget is { } targetKind)
+                {
+                    if (targetKind != WrapperTargetKind.Method)
+                    {
+                        env.Error(annotation.Span ?? lambda.Span, targetKind == WrapperTargetKind.Entity
+                            ? $"Entity wrapper '{wrapperType.Name}' cannot be applied to a lambda (only to type declarations)"
+                            : $"Value wrapper '{wrapperType.Name}' cannot be applied to a lambda (only to fields and variables)");
+                        continue;
+                    }
+                    // 与实例方法同规则：非 shared wrapper 不能修饰 shared 宿主
+                    // （async lambda 的隐藏类是 shared）
+                    if (!wrapperType.IsShared && call.Owner is { IsShared: true })
+                    {
+                        env.Error(annotation.Span ?? lambda.Span,
+                            $"Non-shared wrapper '{wrapperType.Name}' cannot wrap a lambda of shared type '{call.Owner.Name}'");
+                        continue;
+                    }
+                }
+                var app = new WrapperApplication(wrapperType, annotation);
+                // 实参在 lambda 表达式求值语境（外层函数作用域）绑定
+                WrapperInitSynthesis.BindInitArgsInScope(app, scope, ctx, env, lambda);
+                call.AppliedWrappers.Add(app);
+            }
+        }
+
+        // lambda 隐藏类 ..init.wrapper 合成（§14.4）：Method wrapper 应用挂
+        // $$call 运算符；体内按声明序 outer→inner 发 new.wrapper.method。
+        // 带实参时实参提升为本方法参数（w0..wN，序 = 应用序 × 实参序），
+        // 构造点改走 new.wrapped（LambdaRewriter 消费本方法的参数签名）。
+        private static (MethodSymbol? InitWrapper, IReadOnlyList<BoundExpression> Args)
+            SynthesizeLambdaInitWrapper(LambdaExpressionASTNode lambda,
+            TypeSymbol hiddenClass, MethodSymbol call, BindEnvironment env)
+        {
+            if (call.AppliedWrappers.Count == 0) return (null, Array.Empty<BoundExpression>());
+
+            // 参数 = 逐应用逐 init 实参平铺（应用须已在外层作用域绑定）
+            var parameters = new List<ParameterSymbol>();
+            var wrapperArgExprs = new List<BoundExpression>();
+            var paramIndex = 0;
+            foreach (var app in call.AppliedWrappers)
+            {
+                var bound = app.BoundInitArguments;
+                if (bound == null) continue;   // 绑定失败：诊断已报，跳过安装
+                for (var i = 0; i < bound.Count; i++)
+                {
+                    parameters.Add(new ParameterSymbol("w" + paramIndex, bound[i].Type));
+                    wrapperArgExprs.Add(bound[i]);
+                    paramIndex++;
+                }
+            }
+
+            var initWrapper = WrapperInitSynthesis.NewInitWrapperMethod(hiddenClass, parameters);
+            hiddenClass.Methods.Add(initWrapper);
+
+            // 体：按应用序发 new.wrapper.method，实参 = 对应参数切片
+            var statements = new List<BoundStatement>();
+            var cursor = 0;
+            foreach (var app in call.AppliedWrappers)
+            {
+                if (app.BoundInitArguments == null) continue;
+                var args = new List<BoundExpression>();
+                for (var i = 0; i < app.BoundInitArguments.Count; i++)
+                {
+                    var p = parameters[cursor++];
+                    args.Add(new BoundValueReferenceExpression((ASTNode?)app.Syntax ?? lambda, p, p.Type!));
+                }
+                statements.Add(new BoundNewWrapperStatement((ASTNode?)app.Syntax ?? lambda,
+                    BoundNewWrapperKind.Method, app.Wrapper, call, args));
+            }
+            env.SyntheticCellBodies.Add(new BoundFunctionBody(initWrapper,
+                Array.Empty<LocalSymbol>(), new BoundBlock(lambda, statements)));
+            return (initWrapper, wrapperArgExprs);
         }
 
         // 捕获集 → 闭包字段序列（排序确定：this 先行，其余按符号名 Ordinal 序）：

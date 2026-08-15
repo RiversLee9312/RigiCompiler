@@ -116,7 +116,9 @@ namespace RigiCompiler.Tests
 
             // try 体内 guard 收窄不泄入 catch 体（该路径上 x 恰恰可能是 null）
             var (unit, bodies) = BindUnit(
-                "open class E : core.Exception { }\n" +
+                "open class E : core.Exception {\n" +
+                "    pub override func getMessage(): String { return message }\n" +
+                "}\n" +
                 "func f(x: String?, b: bool): String? {\n" +
                 "    try {\n" +
                 "        if (x == null) { throw new E() }\n" +
@@ -136,7 +138,9 @@ namespace RigiCompiler.Tests
 
             // try 体内 guard 收窄不活到 try 之后（catch 路径上不成立 → 交集剔除）
             var (unit2, bodies2) = BindUnit(
-                "open class E : core.Exception { }\n" +
+                "open class E : core.Exception {\n" +
+                "    pub override func getMessage(): String { return message }\n" +
+                "}\n" +
                 "func g(x: String?): String? {\n" +
                 "    try {\n" +
                 "        if (x == null) { throw new E() }\n" +
@@ -155,7 +159,9 @@ namespace RigiCompiler.Tests
 
             // 正例：无 catch 时出口路径唯一（try 正常完成）——guard 收窄成立
             var (unit3, bodies3) = BindUnit(
-                "open class E : core.Exception { }\n" +
+                "open class E : core.Exception {\n" +
+                "    pub override func getMessage(): String { return message }\n" +
+                "}\n" +
                 "func h(x: String?): String {\n" +
                 "    try {\n" +
                 "        if (x == null) { throw new E() }\n" +

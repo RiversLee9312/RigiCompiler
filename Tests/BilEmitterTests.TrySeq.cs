@@ -13,6 +13,7 @@ namespace RigiCompiler.Tests
         {
             var (unit, module, _) = BilTestHarness.EmitBilUnit(
                 "open class MyError : core.Exception {\n" +
+                "    pub override func getMessage(): String { return message }\n" +
                 "}\n" +
                 "class DerivedError : MyError {\n" +
                 "}\n" +

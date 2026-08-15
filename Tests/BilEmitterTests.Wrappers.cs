@@ -1,4 +1,4 @@
-using System.Linq;
+﻿using System.Linq;
 using RigiCompiler.Bil;
 
 namespace RigiCompiler.Tests
@@ -342,25 +342,39 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckBilValid("验证器零错误（静态字段 wrapper place）", module2);
             var holder = module2.LocalSymbols.OfType<BilTypeDeclaration>()
                 .Single(t => t.Symbol == "Holder");
-            var counter = holder.Members.OfType<BilSimpleMemberDeclaration>()
-                .Single(d => d.Symbol.Contains("#.static.counter@"));
-            TestHarness.CheckTrue("静态字段声明类型 = cell 子类（无 wrapped 在字段槽）",
-                counter.Symbol.Contains("@..cell..")
-                && !counter.Modifiers.OfType<BilWrappedModifier>().Any());
+            TestHarness.CheckTrue("静态字段不再发宿主静态字段声明",
+                !holder.Members.OfType<BilSimpleMemberDeclaration>()
+                    .Any(d => d.Symbol.Contains("#.static.counter@")));
+            var companion = module2.LocalSymbols.OfType<BilTypeDeclaration>()
+                .Single(t => t.Symbol == "Holder...companion");
+            TestHarness.CheckTrue("companion 带 singleton + shared + compiler-generated",
+                companion.Modifiers.OfType<BilKeywordModifier>()
+                    .Any(m => m.Keyword == BilKeyword.Singleton)
+                && companion.Modifiers.OfType<BilKeywordModifier>()
+                    .Any(m => m.Keyword == BilKeyword.Shared)
+                && companion.Modifiers.OfType<BilKeywordModifier>()
+                    .Any(m => m.Keyword == BilKeyword.CompilerGenerated));
+            TestHarness.CheckTrue("companion 含 cell 实例字段 + init",
+                companion.Members.OfType<BilSimpleMemberDeclaration>()
+                    .Any(d => d.Symbol.Contains("#counter@..cell.."))
+                && companion.Members.OfType<BilSimpleMemberDeclaration>()
+                    .Any(d => d.Symbol.Contains("$init()")));
             BilTestHarness.CheckFnShape(
-                "静态字段 place 读写（get.field.static 取 cell + wrapper.field）",
+                "静态字段 place 读写（new companion + get.field cell + wrapper.field）",
                 module2, "$f()@.i32",
-                ".vars { SClamp .s0, ..cell..UUID .t0, .i32 .t1, ..cell..UUID .t2, " +
-                "SClamp .t3, .i32 .t4 }\n" +
-                "get.field.static $.t0 type(Holder) field(Holder#.static.counter@..cell..UUID)\n" +
-                "load res(#0) $.t1\n" +
-                "set.wrapper.field $.t1 $.t0 field(..cell..UUID#value@.i32) wrapper(SClamp) " +
+                ".vars { SClamp .s0, Holder...companion .t0, ..cell..UUID .t1, " +
+                ".i32 .t2, Holder...companion .t3, ..cell..UUID .t4, SClamp .t5, .i32 .t6 }\n" +
+                "new type(Holder...companion) $.t0 []\n" +
+                "get.field $.t0 $.t1 field(Holder...companion#counter@..cell..UUID)\n" +
+                "load res(#0) $.t2\n" +
+                "set.wrapper.field $.t2 $.t1 field(..cell..UUID#value@.i32) wrapper(SClamp) " +
                 "field(SClamp#min@.i32)\n" +
-                "get.field.static $.t2 type(Holder) field(Holder#.static.counter@..cell..UUID)\n" +
-                "get.wrapper.field $.t2 field(..cell..UUID#value@.i32) type(SClamp) $.t3\n" +
-                "set.var $.t3 $.s0\n" +
-                "get.field $.s0 $.t4 field(SClamp#min@.i32)\n" +
-                "ret $.t4\n");
+                "new type(Holder...companion) $.t3 []\n" +
+                "get.field $.t3 $.t4 field(Holder...companion#counter@..cell..UUID)\n" +
+                "get.wrapper.field $.t4 field(..cell..UUID#value@.i32) type(SClamp) $.t5\n" +
+                "set.var $.t5 $.s0\n" +
+                "get.field $.s0 $.t6 field(SClamp#min@.i32)\n" +
+                "ret $.t6\n");
 
         }
 
@@ -538,16 +552,19 @@ namespace RigiCompiler.Tests
             CheckNoErrors("全管线无诊断（静态字段普通读写）", unitStatic);
             BilTestHarness.CheckBilValid("验证器零错误（静态字段普通读写）", moduleStatic);
             BilTestHarness.CheckFnShape(
-                "静态字段普通读写（get.field.static + setValue/getValue）",
+                "静态字段普通读写（new companion + get.field cell + setValue/getValue）",
                 moduleStatic, "$g()@.i32",
-                ".vars { ..cell..UUID .t0, .i32 .t1, ..cell..UUID .t2, .i32 .t3 }\n" +
-                "get.field.static $.t0 type(Holder) field(Holder#.static.counter@..cell..UUID)\n" +
-                "load res(#0) $.t1\n" +
+                ".vars { Holder...companion .t0, ..cell..UUID .t1, .i32 .t2, " +
+                "Holder...companion .t3, ..cell..UUID .t4, .i32 .t5 }\n" +
+                "new type(Holder...companion) $.t0 []\n" +
+                "get.field $.t0 $.t1 field(Holder...companion#counter@..cell..UUID)\n" +
+                "load res(#0) $.t2\n" +
                 "invoke.noret fn(core::Cell$setValue(v:.generic<$.generic.T>)@.void) " +
-                "[$.t0, $.t1]\n" +
-                "get.field.static $.t2 type(Holder) field(Holder#.static.counter@..cell..UUID)\n" +
-                "invoke fn(core::Cell$getValue()@.generic<$.generic.T>) $.t3 [$.t2]\n" +
-                "ret $.t3\n");
+                "[$.t1, $.t2]\n" +
+                "new type(Holder...companion) $.t3 []\n" +
+                "get.field $.t3 $.t4 field(Holder...companion#counter@..cell..UUID)\n" +
+                "invoke fn(core::Cell$getValue()@.generic<$.generic.T>) $.t5 [$.t4]\n" +
+                "ret $.t5\n");
 
             // 多 Value wrapper 分别 place（x:A / x:B）
             var (unitMulti, moduleMulti, _) = BilTestHarness.EmitBilUnit(
@@ -1447,7 +1464,7 @@ namespace RigiCompiler.Tests
                 "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
                 "        symbol: String, namedArgs: named TNamedArgs..., " +
                 "unnamedArgs: TUnnamedArgs...\n" +
-                "    ): TReturn { return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
+                "    ): TReturn { return inner(symbol=symbol, namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
                 "}\n" +
                 "@Audited\n" +
                 "pub class Service {\n" +
@@ -1470,12 +1487,13 @@ namespace RigiCompiler.Tests
                 !service.Members.OfType<BilSimpleMemberDeclaration>().Any(d =>
                     d.Symbol.Contains(".proxy.unwrap.") || d.Symbol.Contains("$.proxy.0.")));
 
-            // #27⑦：invoke fn(..inner) 操作数 = 泛型包（声明序）前置 + 值包
+            // #27⑦：invoke fn(..inner) 操作数 = 泛型包（声明序）前置 +
+            // 值实参（wildcard 全形状：symbol 紧随包后，再值包）
             BilTestHarness.CheckFnShape("wildcard 模板 fn（invoke fn(..inner) 泛型包+值包转发）",
                 module, "Audited$$.proxy.*(symbol:.string)@.generic<$.generic.TReturn>",
                 ".vars { .generic<$.generic.TReturn> .t0 }\n" +
                 "invoke fn(..inner) $.t0 [$.generic.TNamedArgs, $.generic.TUnnamedArgs, " +
-                "$.kwargs.namedArgs, $.vargs.unnamedArgs]\n" +
+                "$symbol, $.kwargs.namedArgs, $.vargs.unnamedArgs]\n" +
                 "ret $.t0\n");
         }
 
@@ -1539,6 +1557,78 @@ namespace RigiCompiler.Tests
                     d.Symbol.Contains(".wrapped.get") || d.Symbol.Contains(".proxy.0.get")));
         }
 
+        // ===== 全局 wrapped 字段 singleton cell（裁定 1）：wrapper 安装走
+        // ..init.wrapper（§14.5），无参 init 只写值初值 =====
+        private static void TestGlobalWrappedFieldEmission()
+        {
+            // 无 wrapper 实参：..init.wrapper 无实参，new.wrapper.field 无实参
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "@WrapperTarget(.Value)\n" +
+                "pub shared wrapper Counting {\n" +
+                "    pub var gets: i32\n" +
+                "    pub init() { gets = 0 }\n" +
+                "    operator .proxy.get\\<TValue>(value: TValue): TValue { return value }\n" +
+                "    operator .proxy.set\\<TValue>(value: TValue) { inner(value) }\n" +
+                "}\n" +
+                "@Counting\n" +
+                "var g: i32 = 40\n" +
+                "pub func f(): i32 { return g }\n");
+            CheckNoErrors("全管线无诊断（全局 wrapped 字段）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（全局 wrapped 字段）", module);
+
+            var cell = module.LocalSymbols.OfType<BilTypeDeclaration>()
+                .Single(t => t.Symbol.StartsWith("..cell.."));
+            TestHarness.CheckTrue("全局字段 cell 是 singleton + shared + compiler-generated",
+                cell.Modifiers.OfType<BilKeywordModifier>()
+                    .Any(m => m.Keyword == BilKeyword.Singleton)
+                && cell.Modifiers.OfType<BilKeywordModifier>()
+                    .Any(m => m.Keyword == BilKeyword.Shared)
+                && cell.Modifiers.OfType<BilKeywordModifier>()
+                    .Any(m => m.Keyword == BilKeyword.CompilerGenerated));
+            TestHarness.CheckTrue("cell 含无参 ..init.wrapper",
+                cell.Members.OfType<BilSimpleMemberDeclaration>()
+                    .Any(d => d.Symbol.Contains("..init.wrapper()")));
+
+            var initFn = module.Functions.Single(f =>
+                f.Symbol.Contains("$init()") && f.Symbol.Contains("..cell.."));
+            BilTestHarness.CheckFnShape("全局字段 cell 无参 init 只写 value",
+                module, initFn.Symbol,
+                ".vars { .i32 .t0 }\n" +
+                "load res(#0) $.t0\n" +
+                "set.field $.t0 $.this field(..cell..UUID#value@.i32)\n" +
+                "ret\n");
+            var iwFn = module.Functions.Single(f => f.Symbol.Contains("..init.wrapper"));
+            BilTestHarness.CheckFnShape("全局字段 cell ..init.wrapper（new.wrapper.field）",
+                module, iwFn.Symbol,
+                ".vars {  }\n" +
+                "new.wrapper.field field(..cell..UUID#value@.i32) type(Counting) []\n" +
+                "ret\n");
+
+            // 带 wrapper 实参：实参按全局作用域在 ..init.wrapper 体内求值
+            var (unit2, module2, _) = BilTestHarness.EmitBilUnit(
+                "@WrapperTarget(.Value)\n" +
+                "pub shared wrapper SClamp {\n" +
+                "    pub var min: i32\n" +
+                "    pub var max: i32\n" +
+                "    pub init(_ -> min, _ -> max)\n" +
+                "    operator .proxy.get\\<TValue>(value: TValue): TValue { return value }\n" +
+                "    operator .proxy.set\\<TValue>(value: TValue) { inner(value) }\n" +
+                "}\n" +
+                "@SClamp(40, 2)\n" +
+                "var h: i32 = 40\n" +
+                "pub func g(): i32 { return h }\n");
+            CheckNoErrors("全管线无诊断（全局 wrapped 字段带实参）", unit2);
+            BilTestHarness.CheckBilValid("验证器零错误（全局 wrapped 字段带实参）", module2);
+            var iwFn2 = module2.Functions.Single(f => f.Symbol.Contains("..init.wrapper"));
+            BilTestHarness.CheckFnShape("全局字段 cell ..init.wrapper（体内求值实参）",
+                module2, iwFn2.Symbol,
+                ".vars { .i32 .t0, .i32 .t1 }\n" +
+                "load res(#0) $.t0\n" +
+                "load res(#1) $.t1\n" +
+                "new.wrapper.field field(..cell..UUID#value@.i32) type(SClamp) [$.t0, $.t1]\n" +
+                "ret\n");
+        }
+
         // ===== M88：降级调用点 → invoke core::Any$call??? =====
         private static void TestDowngradeEmissionSingle()
         {
@@ -1548,7 +1638,7 @@ namespace RigiCompiler.Tests
                 "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
                 "        symbol: String, namedArgs: named TNamedArgs..., " +
                 "unnamedArgs: TUnnamedArgs...\n" +
-                "    ): TReturn { return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
+                "    ): TReturn { return inner(symbol=symbol, namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
                 "}\n" +
                 "@W\n" +
                 "pub class Service {\n" +
@@ -1598,7 +1688,7 @@ namespace RigiCompiler.Tests
                 "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
                 "        symbol: String, namedArgs: named TNamedArgs..., " +
                 "unnamedArgs: TUnnamedArgs...\n" +
-                "    ): TReturn { return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
+                "    ): TReturn { return inner(symbol=symbol, namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
                 "}\n" +
                 "pub class User {\n" +
                 "    pub var id: i32\n" +
@@ -1640,7 +1730,7 @@ namespace RigiCompiler.Tests
                 "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
                 "        symbol: String, namedArgs: named TNamedArgs..., " +
                 "unnamedArgs: TUnnamedArgs...\n" +
-                "    ): TReturn { return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
+                "    ): TReturn { return inner(symbol=symbol, namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
                 "}\n" +
                 "@W\n" +
                 "pub class Service {\n" +
@@ -1674,14 +1764,14 @@ namespace RigiCompiler.Tests
                 "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
                 "        symbol: String, namedArgs: named TNamedArgs..., " +
                 "unnamedArgs: TUnnamedArgs...\n" +
-                "    ): TReturn { return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
+                "    ): TReturn { return inner(symbol=symbol, namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
                 "}\n" +
                 "@WrapperTarget(.Entity)\n" +
                 "pub wrapper W2 {\n" +
                 "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
                 "        symbol: String, namedArgs: named TNamedArgs..., " +
                 "unnamedArgs: TUnnamedArgs...\n" +
-                "    ): TReturn { return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
+                "    ): TReturn { return inner(symbol=symbol, namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
                 "}\n" +
                 "@W1\n" +
                 "@W2\n" +
@@ -1727,7 +1817,7 @@ namespace RigiCompiler.Tests
                 "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
                 "        symbol: String, namedArgs: named TNamedArgs..., " +
                 "unnamedArgs: TUnnamedArgs...\n" +
-                "    ): TReturn { return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
+                "    ): TReturn { return inner(symbol=symbol, namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
                 "}\n";
 
             // 直接 implements 带 .proxy.* 的 interface
@@ -1796,7 +1886,7 @@ namespace RigiCompiler.Tests
                 "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
                 "        symbol: String, namedArgs: named TNamedArgs..., " +
                 "unnamedArgs: TUnnamedArgs...\n" +
-                "    ): TReturn { return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
+                "    ): TReturn { return inner(symbol=symbol, namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
                 "}\n" +
                 "@W\n" +
                 "pub class Service { pub init() }\n" +
@@ -1947,10 +2037,10 @@ namespace RigiCompiler.Tests
             CheckNoErrors("全管线无诊断（静态 Method companion）", unit);
             BilTestHarness.CheckBilValid("验证器零错误（静态 Method companion）", module);
 
-            var companions = module.LocalSymbols.OfType<BilTypeDeclaration>()
-                .Where(t => t.Symbol.StartsWith("..companion.")).ToList();
-            TestHarness.CheckTrue("恰一个 ..companion.UUID 类型", companions.Count == 1);
-            var companion = companions[0];
+            var companion = module.LocalSymbols.OfType<BilTypeDeclaration>()
+                .Single(t => t.Symbol.EndsWith("..companion"));
+            TestHarness.CheckTrue("companion 嵌套于宿主（Math...companion）",
+                companion.Symbol == "Math...companion");
             TestHarness.CheckTrue("companion 带 singleton + shared + compiler-generated",
                 companion.Modifiers.OfType<BilKeywordModifier>()
                     .Any(m => m.Keyword == BilKeyword.Singleton)
@@ -1976,17 +2066,17 @@ namespace RigiCompiler.Tests
             var shellFn = module.Functions.Single(f => f.Symbol.Contains("Math$.static.square("));
             BilTestHarness.CheckFnShape("壳体静态方法体（new companion + invoke + ret）",
                 module, shellFn.Symbol,
-                ".vars { ..companion.UUID .t0, .i32 .t1 }\n" +
-                "new type(..companion.UUID) $.t0 []\n" +
-                "invoke fn(..companion.UUID$square(x:.i32)@.i32) $.t1 [$.t0, $x]\n" +
+                ".vars { Math...companion .t0, .i32 .t1 }\n" +
+                "new type(Math...companion) $.t0 []\n" +
+                "invoke fn(Math...companion$square(x:.i32)@.i32) $.t1 [$.t0, $x]\n" +
                 "ret $.t1\n");
 
             var iwFn = module.Functions.Single(f =>
-                f.Symbol.Contains("..companion.") && f.Symbol.Contains("..init.wrapper"));
+                f.Symbol.Contains("..companion") && f.Symbol.Contains("..init.wrapper"));
             BilTestHarness.CheckFnShape("companion ..init.wrapper（new.wrapper.method）",
                 module, iwFn.Symbol,
                 ".vars {  }\n" +
-                "new.wrapper.method fn(..companion.UUID$square(x:.i32)@.i32) type(Timed) []\n" +
+                "new.wrapper.method fn(Math...companion$square(x:.i32)@.i32) type(Timed) []\n" +
                 "ret\n");
 
             // 调用点零改动：仍 invoke Math$.static.square
@@ -2008,9 +2098,14 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("全管线无诊断（多静态 companion）", unit2);
             BilTestHarness.CheckBilValid("验证器零错误（多静态 companion）", module2);
-            TestHarness.CheckTrue("两静态方法 → 两 companion",
-                module2.LocalSymbols.OfType<BilTypeDeclaration>()
-                    .Count(t => t.Symbol.StartsWith("..companion.")) == 2);
+            var utilCompanion = module2.LocalSymbols.OfType<BilTypeDeclaration>()
+                .Single(t => t.Symbol.EndsWith("..companion"));
+            TestHarness.CheckTrue("两静态方法 → 一个 companion 两个实例方法",
+                utilCompanion.Symbol == "Util...companion"
+                && utilCompanion.Members.OfType<BilSimpleMemberDeclaration>()
+                    .Any(d => d.Symbol.Contains("$a("))
+                && utilCompanion.Members.OfType<BilSimpleMemberDeclaration>()
+                    .Any(d => d.Symbol.Contains("$b(")));
 
             // void 壳体：invoke.noret + ret
             var (unit3, module3, _) = BilTestHarness.EmitBilUnit(
@@ -2026,9 +2121,9 @@ namespace RigiCompiler.Tests
             var voidShell = module3.Functions.Single(f => f.Symbol.Contains("S$.static.work("));
             BilTestHarness.CheckFnShape("void 壳体（new + invoke.noret + ret）",
                 module3, voidShell.Symbol,
-                ".vars { ..companion.UUID .t0 }\n" +
-                "new type(..companion.UUID) $.t0 []\n" +
-                "invoke.noret fn(..companion.UUID$work()@.void) [$.t0]\n" +
+                ".vars { S...companion .t0 }\n" +
+                "new type(S...companion) $.t0 []\n" +
+                "invoke.noret fn(S...companion$work()@.void) [$.t0]\n" +
                 "ret\n");
 
             // 泛型静态方法
@@ -2045,9 +2140,9 @@ namespace RigiCompiler.Tests
             var genShell = module4.Functions.Single(f => f.Symbol.Contains("G$.static.id("));
             BilTestHarness.CheckFnShape("泛型壳体 typeid 转发",
                 module4, genShell.Symbol,
-                ".vars { ..companion.UUID .t0, .generic<$.generic.T> .t1 }\n" +
-                "new type(..companion.UUID) $.t0 []\n" +
-                "invoke fn(..companion.UUID$id(x:.generic<$.generic.T>)@" +
+                ".vars { G...companion .t0, .generic<$.generic.T> .t1 }\n" +
+                "new type(G...companion) $.t0 []\n" +
+                "invoke fn(G...companion$id(x:.generic<$.generic.T>)@" +
                 ".generic<$.generic.T>) $.t1 [$.t0, $.generic.T, $x]\n" +
                 "ret $.t1\n");
         }

@@ -99,8 +99,10 @@ namespace RigiCompiler.Bil
             // 默认实现（RUNTIME §26/BIL §22.5 内建 hook）
             "core::Any$toString()@.string",
             "core::Object$toString()@.string",
-            // 异常根 getMessage（S10，SYNTAX §8.1）：bootstrap 符号不声明的
-            // 成员面，调用点 invoke 需要可解析
+            // 异常根 getMessage（S10，SYNTAX §8.1）：bootstrap 抽象方法不
+            // 落地符号段（EmitTypeTree 跳过 IsBuiltin），但调用点若以
+            // core::Exception 静态类型 invoke（catch 到 Exception 基类型）
+            // 仍需要可解析；具体子类 override 已各自发射 fn 定义
             "core::Exception$getMessage()@.string",
             // S11e（BIL §15.4）：Any.call??? 链末默认实现——bootstrap 内建
             // 宿主不进 LocalSymbols（EmitTypeTree 跳过 IsBuiltin），其合成

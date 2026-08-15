@@ -179,6 +179,7 @@ namespace RigiCompiler
         {
             new CompileCommand(),
             new TestCommand(),
+            new VmCommand(),
             new HelpCommand(),
         };
     }

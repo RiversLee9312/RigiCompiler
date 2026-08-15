@@ -12,6 +12,8 @@ namespace RigiCompiler.Bil.Vm
         void WriteField(string fieldSymbol, VmValue value);
         bool TryReadHidden(string key, out VmValue value);
         void WriteHidden(string key, VmValue value);
+        // 隐藏存储写入序（§14.4：new.wrapper.* 安装序即 wrapper 链 outer→inner）
+        IReadOnlyList<string> HiddenKeysInOrder { get; }
         VmValue? Host { get; set; }
         IVmFieldHost DeepCopySlots();
     }
@@ -20,6 +22,7 @@ namespace RigiCompiler.Bil.Vm
     {
         private readonly Dictionary<string, VmValue> _fields = new Dictionary<string, VmValue>();
         private readonly Dictionary<string, VmValue> _hidden = new Dictionary<string, VmValue>();
+        private readonly List<string> _hiddenOrder = new List<string>();
 
         public string TypeRef { get; }
         public VmValue? Host { get; set; }
@@ -46,8 +49,14 @@ namespace RigiCompiler.Bil.Vm
 
         public void WriteHidden(string key, VmValue value)
         {
+            if (!_hidden.ContainsKey(key))
+            {
+                _hiddenOrder.Add(key);
+            }
             _hidden[key] = value;
         }
+
+        public IReadOnlyList<string> HiddenKeysInOrder => _hiddenOrder;
 
         public IVmFieldHost DeepCopySlots()
         {
@@ -60,6 +69,7 @@ namespace RigiCompiler.Bil.Vm
             {
                 copy._hidden[pair.Key] = pair.Value.Copy();
             }
+            copy._hiddenOrder.AddRange(_hiddenOrder);
             return copy;
         }
     }
@@ -119,6 +129,8 @@ namespace RigiCompiler.Bil.Vm
         {
             _slots.WriteHidden(key, value);
         }
+
+        public IReadOnlyList<string> HiddenKeysInOrder => _slots.HiddenKeysInOrder;
 
         IVmFieldHost IVmFieldHost.DeepCopySlots() => _slots.DeepCopySlots();
 

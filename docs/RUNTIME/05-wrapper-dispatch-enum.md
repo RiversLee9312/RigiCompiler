@@ -7,9 +7,9 @@
 **静态组合**：实体修饰器在语言语义上把 wrapper 逻辑按声明序从内到外嵌套进方法派发（替换 `inner`），因此天然骑 vtable。运行时**不能**增删、重排或禁用 wrapper。烘焙动作（逐应用特化、inner 链接、原始体替换，以及 `call???` router 体合成）由 Middleware 在合法 lowering 时完成（边界见 `BIL_STANDARD.md` §23）；frontend（编译器）产物携带标记与 wrapper 安装契约，不合成派发链符号、不替换原始方法体：
 
 - (a) 声明上的 wrapper 应用标记（BIL 修饰符 `wrapped(W)`）；应用 **init 实参**由宿主 `..init.wrapper` + `new.wrapper.*` / 有参时 `new.wrapped` 家族承载（`BIL_STANDARD.md` §8.3.1 / §9.7 / §14.4 / §14.5）——Middleware/VM 在实体 init **之前**自动调用 `..init.wrapper`；
-- (b) proxy 模板 fn——wrapper 类型的成员 fn，带 `wrapper-proxy(specific|wildcard)` 修饰符（`BIL_STANDARD.md` §8.4），体内的 `inner` / `self` 以占位指令表达（`invoke fn(..inner)` 见 `BIL_STANDARD.md` §15.4，`get.self` 见 `BIL_STANDARD.md` §12）。`fn(..inner)` 调用操作数显式携带待转发的可变泛型包（`.generic.<Pack>` 前置）与值包（`.kwargs.*` / `.vargs.*` 随后）；Middleware 烘焙下一环时消费这些包操作数（解包/shim/特化链接），frontend 不展开；
+- (b) proxy 模板 fn——wrapper 类型的成员 fn，带 `wrapper-proxy(specific|wildcard)` 修饰符（`BIL_STANDARD.md` §8.4），体内的 `inner` / `self` 以占位指令表达（`invoke fn(..inner)` 见 `BIL_STANDARD.md` §15.4，`get.self` 见 `BIL_STANDARD.md` §12）。`fn(..inner)` 调用操作数显式携带待转发的可变泛型包（`.generic.<Pack>` 前置）、wildcard 保留首参（`symbol` / `.name`）与值包（`.kwargs.*` / `.vargs.*` 随后，按声明序）；Middleware 烘焙下一环时消费这些操作数（解包/shim/特化链接），frontend 不展开；
 - (c) 未声明方法的降级调用点 = 对 `core::Any$call???` 的普通 `invoke`（见 §14.2）；
-- (d) 静态方法被 Method wrapper 修饰时的 `..companion.UUID` singleton 与静态壳体（`BIL_STANDARD.md` §8.7）。
+- (d) 静态方法被 Method wrapper 修饰、静态字段被 Value wrapper 修饰时的 companion singleton（声明类的嵌套类 `..companion`，无 UUID）与静态壳体——所有 singleton（含 companion）由 VM/Middleware 在 main 开始执行前**急切初始化**（`BIL_STANDARD.md` §8.7）。
 
 最终内联仍归 Middleware。
 
@@ -20,7 +20,7 @@
 - 宿主类型必须允许内嵌 rich struct；非 rich struct 不能被修饰，这是编译期不变量，运行时无需检查。
 - 非 shared wrapper 可能持有 local object，所以只能出现在非 shared 宿主中；shared wrapper 走 microSGC 路径。
 
-**局部 / 静态 / 全局形态**（统一 cell 存储，`SYNTAX.md` §5.2 / §14.3）：被 Value wrapper 修饰的局部变量与静态/全局字段，值由编译器逐变量合成的 cell 隐藏子类盛装——子类 `extends .cell<T>` / `.readonly_cell<T>`，自持 `pub value` 字段并带 `wrapped(W)` 标记。Middleware 的烘焙识别契约 = 「继承 Cell 族 + 字段 wrapper 标记」；即使不做 Cell 特判、按普通类烘焙也可正确工作（`getValue`/`setValue` 是普通虚调用，`get.wrapper.field`/`set.wrapper.field` 走既有字段-Value 应用机制），`.cell`/`.readonly_cell` 特权拼写的特判仅供激进优化（消除 cell 间接/直读槽位等）。栈帧（或静态槽）持有的是 **cell 对象引用**；wrapper 状态内嵌于 cell 实例子类 `value` 字段的隐藏存储，生命周期与栈值/静态槽一致——非 shared wrapper 因此可合法出现在栈帧与局部 cell 路径上，而不必依赖宿主类型内嵌。
+**局部 / 静态 / 全局形态**（统一 cell 存储，`SYNTAX.md` §5.2 / §14.3）：被 Value wrapper 修饰的局部变量与静态/全局字段，值由编译器逐变量合成的 cell 隐藏子类盛装——子类 `extends .cell<T>` / `.readonly_cell<T>`，自持 `pub value` 字段并带 `wrapped(W)` 标记。Middleware 的烘焙识别契约 = 「继承 Cell 族 + 字段 wrapper 标记」；即使不做 Cell 特判、按普通类烘焙也可正确工作（`getValue`/`setValue` 是普通虚调用，`get.wrapper.field`/`set.wrapper.field` 走既有字段-Value 应用机制），`.cell`/`.readonly_cell` 特权拼写的特判仅供激进优化（消除 cell 间接/直读槽位等）。栈帧（或静态槽）持有的是 **cell 对象引用**；wrapper 状态内嵌于 cell 实例子类 `value` 字段的隐藏存储，生命周期与栈值/静态槽一致——非 shared wrapper 因此可合法出现在栈帧与局部 cell 路径上，而不必依赖宿主类型内嵌。**静态字段**的 cell 存储落在 companion 实例上（`BIL_STANDARD.md` §8.7），cell 构造与 wrapper 安装由 companion 的 `init` 完成（VM/Middleware main 前急切初始化）；**局部** cell 的构造时机在声明点；**全局**字段的 cell 隐藏子类即 singleton（cell 自身为共享单例，字段初值在 cell 单例的 `init` 里求值），与静态字段同由 VM/Middleware 在 main 前急切初始化。
 
 **place 访问**（两形态共用）：
 
@@ -53,6 +53,10 @@ operator .proxy.opr.*<named TNamedArgs..., TUnnamedArgs..., TReturn>(
     unnamedArgs: TUnnamedArgs...
 ): TReturn
 ```
+
+wildcard 体内 `inner(...)` 必须写**全形状**（保留首参在 inner 中显式传递，不在 ABI 隐式承担）：
+- `.proxy.*` / `.proxy.opr.*`：`inner(symbol=symbol, namedArgs=namedArgs, unnamedArgs=unnamedArgs)`；
+- `.proxy.get.*` / `.proxy.set.*`：`inner(symbol=symbol, value=value)`。
 
 这些 wildcard 不是可重复声明并按泛型 pattern 竞争的 overload，而是四个操作类别各自唯一的 fallback handler。其参数和泛型形状由编译器固定；同一 wrapper 内重复实现同类别 wildcard 是编译错误。
 

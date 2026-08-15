@@ -62,6 +62,17 @@ namespace RigiCompiler
             // intrinsic 存在检查（S9：泛型参数无 intrinsic 表，判型后自然不命中）
             if (left.Type is not TypeSymbol leftType || !leftType.IntrinsicOps.Contains(op))
             {
+                // ==/!= 用户类型（SYNTAX §13.2）：映射到 operator equals；
+                // != 由 equals 取反自动推导。VM §22.3 对 cmp.eq/cmp.ne 按
+                // 精确类型派发用户 equals（经 wrapper operator 链），cmp.ne
+                // 再取反——前端只需确认 equals 存在即放行；未定义 equals
+                // 的用户类型保持编译错误（文档无默认身份/结构相等语义）。
+                if (binary.Operator is "==" or "!="
+                    && left.Type is TypeSymbol userType
+                    && SymbolLookup.FindInstanceOperators(userType, "equals", 1).Count > 0)
+                {
+                    return new BoundBinaryExpression(node, op, left, right, env.B.Bool);
+                }
                 env.Error(binary.Span, $"Operator '{binary.Operator}' is not defined for type " +
                     $"'{BoundAnalysis.TypeDisplay(left.Type)}'");
                 return null;

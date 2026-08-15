@@ -253,6 +253,197 @@
                 "    return y\n" +
                 "}\n");
             CheckNoErrors("方法泛型 T 局部经 cell 读写无诊断", methodGenericWrite.Unit);
+
+            // ===== lambda 头内部 Method wrapper（SYNTAX §5.1/§14.4）=====
+            var lambdaWrapped = BindUnitWithStdlib(
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Timed {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call\\<TReturn>(x: i32): TReturn {\n" +
+                "        return ((x + 100) as TReturn)\n" +
+                "    }\n" +
+                "}\n" +
+                "func f(): i32 {\n" +
+                "    var fn = func{ @Timed (x: i32): i32 -> (x + 1) }\n" +
+                "    return fn(1)\n" +
+                "}\n");
+            CheckNoErrors("lambda 头 @Timed 无诊断", lambdaWrapped.Unit);
+            var wrappedLambda = (BoundLambdaExpression)BodyOf(lambdaWrapped.Bodies, "f")
+                .Body.Statements.OfType<BoundLocalDeclarationStatement>()
+                .Single(s => s.Local.Name == "fn").Initializer!;
+            TestHarness.CheckTrue("lambda $$call 挂 Method wrapper 应用",
+                wrappedLambda.Closure.Call.AppliedWrappers.Count == 1
+                && wrappedLambda.Closure.Call.AppliedWrappers[0].Wrapper.Name == "Timed");
+            TestHarness.CheckTrue("lambda 隐藏类合成 ..init.wrapper（无参）",
+                wrappedLambda.Closure.InitWrapper != null
+                && wrappedLambda.Closure.InitWrapper.Name == "..init.wrapper"
+                && wrappedLambda.Closure.InitWrapper.Parameters.Count == 0
+                && wrappedLambda.Closure.InitWrapper.Owner == wrappedLambda.Closure.HiddenClass);
+            TestHarness.CheckTrue("..init.wrapper 体汇入函数体列表",
+                lambdaWrapped.Bodies.Any(b => b.Method == wrappedLambda.Closure.InitWrapper));
+
+            var lambdaWrappedArg = BindUnitWithStdlib(
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Tagged {\n" +
+                "    pub init(tag: String)\n" +
+                "    operator .proxy.call\\<TReturn>(x: i32): TReturn {\n" +
+                "        return (x as TReturn)\n" +
+                "    }\n" +
+                "}\n" +
+                "func f(): i32 {\n" +
+                "    var tag = \"hi\"\n" +
+                "    var fn = func{ @Tagged(tag) (x: i32): i32 -> (x + 1) }\n" +
+                "    return fn(1)\n" +
+                "}\n");
+            CheckNoErrors("lambda 头 wrapper 带实参（引用外层局部）无诊断",
+                lambdaWrappedArg.Unit);
+            var taggedLambda = (BoundLambdaExpression)BodyOf(lambdaWrappedArg.Bodies, "f")
+                .Body.Statements.OfType<BoundLocalDeclarationStatement>()
+                .Single(s => s.Local.Name == "fn").Initializer!;
+            var taggedApp = taggedLambda.Closure.Call.AppliedWrappers.Single();
+            TestHarness.CheckTrue("wrapper 实参在外层作用域绑定",
+                taggedApp.BoundInitArguments is { Count: 1 }
+                && taggedApp.BoundInitArguments[0].Type.Name == "String");
+            TestHarness.CheckTrue("..init.wrapper 有参且参数平铺 w0",
+                taggedLambda.Closure.InitWrapper is { Parameters.Count: 1 }
+                && taggedLambda.Closure.InitWrapper.Parameters[0].Name == "w0");
+            TestHarness.CheckTrue("WrapperInitArguments 与 ..init.wrapper 参数一一对应",
+                taggedLambda.Closure.WrapperInitArguments.Count == 1);
+
+            var doubleWrapped = BindUnitWithStdlib(
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper WOuter {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call\\<TReturn>(x: i32): TReturn { return inner(x) }\n" +
+                "}\n" +
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper WInner {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call\\<TReturn>(x: i32): TReturn { return inner(x) }\n" +
+                "}\n" +
+                "func f(): i32 {\n" +
+                "    var fn = func{ @WOuter @WInner (x: i32): i32 -> x }\n" +
+                "    return fn(1)\n" +
+                "}\n");
+            CheckNoErrors("lambda 头双 Method wrapper 无诊断", doubleWrapped.Unit);
+            var doubleLambda = (BoundLambdaExpression)BodyOf(doubleWrapped.Bodies, "f")
+                .Body.Statements.OfType<BoundLocalDeclarationStatement>()
+                .Single(s => s.Local.Name == "fn").Initializer!;
+            TestHarness.CheckTrue("多 wrapper 按声明序 outer→inner 挂 $$call",
+                doubleLambda.Closure.Call.AppliedWrappers.Select(a => a.Wrapper.Name)
+                    .SequenceEqual(new[] { "WOuter", "WInner" }));
+
+            // 负例：Value/Entity wrapper 挂 lambda 头
+            var valueOnLambda = BindUnitWithStdlib(
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper Clamped {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.get\\<TValue>(value: TValue): TValue { return value }\n" +
+                "}\n" +
+                "func f(): i32 {\n" +
+                "    var fn = func{ @Clamped (x: i32): i32 -> x }\n" +
+                "    return fn(1)\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("Value wrapper 不适用于 lambda",
+                valueOnLambda.Unit.Diagnostics, "cannot be applied to a lambda");
+
+            var entityOnLambda = BindUnitWithStdlib(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Logged {\n" +
+                "    pub init()\n" +
+                "}\n" +
+                "func f(): i32 {\n" +
+                "    var fn = func{ @Logged (x: i32): i32 -> x }\n" +
+                "    return fn(1)\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("Entity wrapper 不适用于 lambda",
+                entityOnLambda.Unit.Diagnostics, "cannot be applied to a lambda");
+
+            // 负例：@Timed 写在 var 声明上（修饰变量本身，Value 目标错误）
+            var onVar = BindUnitWithStdlib(
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Timed {\n" +
+                "    pub init()\n" +
+                "}\n" +
+                "func f(): i32 {\n" +
+                "    @Timed var a = func{(x: i32): i32 -> x}\n" +
+                "    return a(1)\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("var 声明上的 @Timed 按 Value 目标报错",
+                onVar.Unit.Diagnostics, "Method wrapper 'Timed' can only be applied to methods");
+
+            // ===== cell 隐藏子类 shared 判定（用户裁定）=====
+            // 仅元素类型**显式声明 shared**时 cell 子类才 shared；i32 等非
+            // rich 内建值类型与未标 shared 的类型一律不 shared。
+            var i32Cell = BindUnitWithStdlib(
+                "func f(): i32 {\n" +
+                "    var local = 5\n" +
+                "    var fn = func{(): i32 -> (local + 1)}\n" +
+                "    return fn()\n" +
+                "}\n");
+            CheckNoErrors("i32 捕获 cell 无诊断", i32Cell.Unit);
+            var i32Local = BodyOf(i32Cell.Bodies, "f").Locals.First(l => l.Name == "local");
+            TestHarness.CheckTrue("i32 捕获 cell 子类非 shared",
+                i32Local.CellStorage is { } i32Storage && !i32Storage.CellClass.IsShared);
+
+            var plainClassCell = BindUnitWithStdlib(
+                "class LocalBox { }\n" +
+                "func f(): LocalBox {\n" +
+                "    var box = new LocalBox()\n" +
+                "    var fn = func{(): LocalBox -> box}\n" +
+                "    return fn()\n" +
+                "}\n");
+            CheckNoErrors("未标 shared 的 class 捕获 cell 无诊断", plainClassCell.Unit);
+            var plainBoxLocal = BodyOf(plainClassCell.Bodies, "f").Locals
+                .First(l => l.Name == "box");
+            TestHarness.CheckTrue("未标 shared 的 class 捕获 cell 子类非 shared",
+                plainBoxLocal.CellStorage is { } plainStorage
+                && !plainStorage.CellClass.IsShared);
+
+            var sharedClassCell = BindUnitWithStdlib(
+                "shared class SharedBox { }\n" +
+                "func f(): SharedBox {\n" +
+                "    var box = new SharedBox()\n" +
+                "    var fn = func{(): SharedBox -> box}\n" +
+                "    return fn()\n" +
+                "}\n");
+            CheckNoErrors("shared class 捕获 cell 无诊断", sharedClassCell.Unit);
+            var sharedBoxLocal = BodyOf(sharedClassCell.Bodies, "f").Locals
+                .First(l => l.Name == "box");
+            TestHarness.CheckTrue("显式 shared class 元素 cell 子类 shared",
+                sharedBoxLocal.CellStorage is { } sharedBoxStorage
+                && sharedBoxStorage.CellClass.IsShared);
+
+            var sharedStructCell = BindUnitWithStdlib(
+                "shared rich struct SharedPoint {\n" +
+                "    pub var x: i32\n" +
+                "    pub var y: i32\n" +
+                "    pub init(_ -> x, _ -> y)\n" +
+                "}\n" +
+                "func f(): SharedPoint {\n" +
+                "    var p = new SharedPoint(1, 2)\n" +
+                "    var fn = func{(): SharedPoint -> p}\n" +
+                "    return fn()\n" +
+                "}\n");
+            CheckNoErrors("shared rich struct 捕获 cell 无诊断", sharedStructCell.Unit);
+            var sharedPointLocal = BodyOf(sharedStructCell.Bodies, "f").Locals
+                .First(l => l.Name == "p");
+            TestHarness.CheckTrue("显式 shared rich struct 元素 cell 子类 shared",
+                sharedPointLocal.CellStorage is { } sharedPointStorage
+                && sharedPointStorage.CellClass.IsShared);
+
+            var genericTCell = BindUnitWithStdlib(
+                "func wrap\\<T>(x: T): T {\n" +
+                "    var y: T = x\n" +
+                "    var f = func{(): T -> y}\n" +
+                "    return f()\n" +
+                "}\n");
+            CheckNoErrors("泛型 T 捕获 cell 无诊断", genericTCell.Unit);
+            var genericYLocal = BodyOf(genericTCell.Bodies, "wrap").Locals
+                .First(l => l.Name == "y");
+            TestHarness.CheckTrue("泛型参数 T 元素 cell 子类非 shared",
+                genericYLocal.CellStorage is { } genericStorage
+                && !genericStorage.CellClass.IsShared);
         }
     }
 }

@@ -22,6 +22,13 @@ namespace RigiCompiler.Bil.Vm
         private readonly Dictionary<string, string> _setters;
         private readonly Dictionary<string, VmValue> _statics = new Dictionary<string, VmValue>();
         private readonly object _staticLock = new object();
+        private readonly Dictionary<string, VmValue> _singletons = new Dictionary<string, VmValue>();
+        private readonly object _singletonLock = new object();
+        // singleton 构造在途栈（BIL §8.7，裁定 2）：正在初始化（init 尚未跑完）
+        // 的类型，栈序即构造链；预初始化单协程同步执行，仅 InitializeSingletons
+        // 期间读写，仍加锁与 _singletons 口径一致
+        private readonly List<string> _initializing = new List<string>();
+        private readonly object _initializingLock = new object();
         private readonly StringBuilder _stdout = new StringBuilder();
         private readonly StringBuilder _stderr = new StringBuilder();
         private readonly object _stdoutLock = new object();
@@ -418,6 +425,126 @@ namespace RigiCompiler.Bil.Vm
             return true;
         }
 
+        // 字段声明上的 wrapped(W) 应用标记，按声明序 outer→inner 收集
+        // （§8.3.1：可重复出现，顺序即派发链嵌套序；无标记返回空列表）
+        public IReadOnlyList<string> CollectWrappedWrappers(string fieldSymbol)
+        {
+            var field = FindField(fieldSymbol);
+            var result = new List<string>();
+            if (field == null)
+            {
+                return result;
+            }
+            foreach (var modifier in field.Modifiers)
+            {
+                if (modifier is BilWrappedModifier wrapped)
+                {
+                    result.Add(wrapped.WrapperTypeRef);
+                }
+            }
+            return result;
+        }
+
+        // 类型声明上的 wrapped(W) 应用标记（Entity wrapper），按声明序
+        // outer→inner 收集（§8.3.1：与字段 Value wrapper 标记同源，挂类型声明）
+        public IReadOnlyList<string> CollectEntityWrappers(string typeRef)
+        {
+            var result = new List<string>();
+            var declaration = FindType(typeRef);
+            if (declaration == null)
+            {
+                return result;
+            }
+            foreach (var modifier in declaration.Modifiers)
+            {
+                if (modifier is BilWrappedModifier wrapped)
+                {
+                    result.Add(wrapped.WrapperTypeRef);
+                }
+            }
+            return result;
+        }
+
+        // 字段符号的简单名（Host#name@T → name），用于 .proxy.get.<名>/.
+        // proxy.set.<名> 的 specific proxy 命中
+        public static string FieldSimpleName(string fieldSymbol)
+        {
+            var hash = fieldSymbol.IndexOf('#');
+            var at = fieldSymbol.LastIndexOf('@');
+            if (hash < 0 || at <= hash)
+            {
+                return "";
+            }
+            var name = fieldSymbol.Substring(hash + 1, at - hash - 1);
+            if (name.StartsWith(".static.", StringComparison.Ordinal))
+            {
+                name = name.Substring(".static.".Length);
+            }
+            return name;
+        }
+
+        // 找 value wrapper 的 proxy 模板 fn 符号（.proxy.get / .proxy.set；无则 null）。
+        // 仅匹配带 wrapper-proxy 修饰符的成员，防与普通同名方法误判
+        public string? FindWrapperProxy(string wrapperType, string proxyName)
+        {
+            var declaration = FindType(wrapperType);
+            if (declaration == null)
+            {
+                return null;
+            }
+            foreach (var member in declaration.Members)
+            {
+                if (member is not BilSimpleMemberDeclaration simple
+                    || simple.Kind != BilMemberKind.Method)
+                {
+                    continue;
+                }
+                if (MethodNameOf(simple.Symbol) != proxyName)
+                {
+                    continue;
+                }
+                foreach (var modifier in simple.Modifiers)
+                {
+                    if (modifier is BilWrapperProxyModifier)
+                    {
+                        return simple.Symbol;
+                    }
+                }
+            }
+            return null;
+        }
+
+        // 当前 fn 是否为给定字段所属类型的 init（声明带 Init 关键字修饰）。
+        // 构造期一次性赋值豁免 proxy 链（§14.3 / §21.8：cell 子类的
+        // init(value) 会写带 wrapped 标记的 value 字段，只带 get proxy 的
+        // wrapper 也必须能初始化 const/ReadonlyCell）
+        public bool IsInitFunctionOf(string functionSymbol, string fieldOwner)
+        {
+            if (!BilVerificationContext.TryParseMethodSymbol(functionSymbol,
+                    out var owner, out _, out _, out _))
+            {
+                return false;
+            }
+            if (!TypesEqual(owner, fieldOwner)
+                && BilVerificationContext.StripTypeArguments(owner)
+                    != BilVerificationContext.StripTypeArguments(fieldOwner))
+            {
+                return false;
+            }
+            if (!_members.TryGetValue(functionSymbol, out var member))
+            {
+                return false;
+            }
+            foreach (var modifier in member.Modifiers)
+            {
+                if (modifier is BilKeywordModifier keyword && keyword.Keyword == BilKeyword.Init)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         public string? FindIndexOperator(string collectionType, bool isGet)
         {
             var operatorName = isGet ? "getAtIndex" : "setAtIndex";
@@ -554,6 +681,157 @@ namespace RigiCompiler.Bil.Vm
                 instance.WriteField(field.Symbol, ZeroOf(fieldType));
             }
             return instance;
+        }
+
+        // ===== singleton（BIL §8.2 / §8.7）=====
+
+        // 类型是否 singleton（含 companion）。VM 语义：singleton 全模块
+        // 唯一实例，main 前由 InitializeSingletons 急切初始化；运行期
+        // new type(singleton) 返回同一份已初始化实例（不再重跑 init）
+        public bool IsSingletonType(string typeRef)
+        {
+            var declaration = FindType(typeRef);
+            if (declaration == null) return false;
+            foreach (var modifier in declaration.Modifiers)
+            {
+                if (modifier is BilKeywordModifier keyword
+                    && keyword.Keyword == BilKeyword.Singleton)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // 取已缓存 singleton（null = 尚未构造）
+        public VmValue? GetSingleton(string typeRef)
+        {
+            lock (_singletonLock)
+            {
+                return _singletons.TryGetValue(typeRef, out var value) ? value : null;
+            }
+        }
+
+        // 登记 singleton 实例（幂等：仅首次写入——构造期间登记即标记
+        // 在途，递归/环引用命中同一份半成品实例）
+        public void RegisterSingleton(string typeRef, VmValue instance)
+        {
+            lock (_singletonLock)
+            {
+                if (!_singletons.ContainsKey(typeRef))
+                {
+                    _singletons[typeRef] = instance;
+                }
+            }
+        }
+
+        // 是否正在初始化（init 在途，尚未登记为已就绪）
+        public bool IsInitializing(string typeRef)
+        {
+            lock (_initializingLock)
+            {
+                return _initializing.Contains(typeRef);
+            }
+        }
+
+        // 进入构造：压入在途栈（幂等语义由 New 的环检测前置保证——同一
+        // 类型不会重复入栈）
+        public void BeginInitializing(string typeRef)
+        {
+            lock (_initializingLock)
+            {
+                _initializing.Add(typeRef);
+            }
+        }
+
+        // 离开构造：弹出最近一次入栈的本类型条目
+        public void EndInitializing(string typeRef)
+        {
+            lock (_initializingLock)
+            {
+                var index = _initializing.LastIndexOf(typeRef);
+                if (index >= 0)
+                {
+                    _initializing.RemoveAt(index);
+                }
+            }
+        }
+
+        // 循环依赖异常（裁定 2）：链 = 在途栈中首次出现 typeRef 起的子链 +
+        // typeRef 自身，报清晰循环链而非栈溢出
+        public VmException SingletonCycleException(string typeRef)
+        {
+            var chain = new List<string>();
+            lock (_initializingLock)
+            {
+                var index = _initializing.IndexOf(typeRef);
+                for (var i = index < 0 ? 0 : index; i < _initializing.Count; i++)
+                {
+                    chain.Add(_initializing[i]);
+                }
+            }
+            chain.Add(typeRef);
+            return new VmException("singleton 初始化循环依赖：" + string.Join(" → ", chain));
+        }
+
+        // main 前急切初始化全部 singleton（§8.7）：构造 → init 跑完
+        // （companion 的 init 即完成 cell 构造与 wrapper 安装）。初始化
+        // 依赖（companion init 引用别的 singleton）由 New 的递归构造触发；
+        // 本循环按声明序逐一补全尚未构造者
+        public void InitializeSingletons(VmExecutor executor)
+        {
+            foreach (var declaration in _types.Values)
+            {
+                var singleton = false;
+                foreach (var modifier in declaration.Modifiers)
+                {
+                    if (modifier is BilKeywordModifier keyword
+                        && keyword.Keyword == BilKeyword.Singleton)
+                    {
+                        singleton = true;
+                        break;
+                    }
+                }
+                if (!singleton) continue;
+                var typeRef = declaration.Symbol;
+                if (GetSingleton(typeRef) != null) continue;
+                ConstructSingleton(executor, typeRef);
+            }
+        }
+
+        // 同步构造单个 singleton：借一次性协程跑 new（分配 + init +
+        // ..init.wrapper），驱动至构造帧完全退回引导帧
+        private void ConstructSingleton(VmExecutor executor, string typeRef)
+        {
+            var coroutine = new VmCoroutine(executor, "core.coroutine::Task");
+            coroutine.TryTransition(VmCoroutineState.Created, VmCoroutineState.Running);
+            coroutine.PushFrame(SingletonBootstrapFunction, Array.Empty<VmValue>(), null);
+            BilDataExecution.New(this, coroutine, typeRef, SingletonBootstrapTarget,
+                Array.Empty<BilVariableOperand>(), null);
+            while (coroutine.CallStack.Count > 1 && coroutine.State == VmCoroutineState.Running)
+            {
+                coroutine.Step(this);
+            }
+            if (coroutine.State != VmCoroutineState.Running)
+            {
+                throw coroutine.Failure ?? new VmException("singleton 初始化失败：" + typeRef);
+            }
+        }
+
+        // singleton 构造的引导帧与目标槽：New 需要一帧写入目标变量，逐
+        // singleton 复用同一静态引导 fn（只承载目标槽，不含用户指令）
+        private static readonly BilFunction SingletonBootstrapFunction = CreateSingletonBootstrap();
+        private static readonly BilVariableOperand SingletonBootstrapTarget = BilOp.Var(".singleton");
+
+        private static BilFunction CreateSingletonBootstrap()
+        {
+            var function = new BilFunction("..singleton.init");
+            function.Args.Add(new BilArgDeclaration(".return", ".void"));
+            function.Vars.Add(new BilVarDeclaration(".any", ".singleton"));
+            var entry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            entry.Instructions.Add(new RetInstruction());
+            function.Blocks.Add(entry);
+            return function;
         }
 
         public VmValue ReadStaticField(string fieldSymbol)
@@ -929,7 +1207,7 @@ namespace RigiCompiler.Bil.Vm
             return count;
         }
 
-        private static string MethodNameOf(string symbol)
+        internal static string MethodNameOf(string symbol)
         {
             var dollar = symbol.IndexOf('$');
             if (dollar < 0)

@@ -655,6 +655,12 @@ namespace RigiCompiler.Tests
                 "pub func f(): A { return new A() }\n");
             TestHarness.CheckSemanticError("new abstract 类", unit12.Diagnostics,
                 "Cannot construct an instance of abstract type 'A'");
+
+            // 异常根 core.Exception 已抽象化（用户裁定）：直接构造被拒
+            var (unit13, _) = BindUnit(
+                "pub func f(): core.Exception { return new core.Exception() }\n");
+            TestHarness.CheckSemanticError("new core.Exception 拒绝", unit13.Diagnostics,
+                "Cannot construct an instance of abstract type 'Exception'");
         }
     }
 }

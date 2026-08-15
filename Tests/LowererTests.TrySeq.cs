@@ -14,6 +14,7 @@ namespace RigiCompiler.Tests
             // 有名 catch：体头合成「变量 = cast slot」，slot 为合成 .sN
             var (unit, bound, lowered) = LowerUnit(
                 "class MyException : core.Exception {\n" +
+                "    pub override func getMessage(): String { return message }\n" +
                 "}\n" +
                 "func handle(e: MyException) {\n" +
                 "}\n" +
@@ -60,6 +61,7 @@ namespace RigiCompiler.Tests
             // _: 无变量 catch——体头无合成 cast
             var (unit3, _, lowered3) = LowerUnit(
                 "class MyException : core.Exception {\n" +
+                "    pub override func getMessage(): String { return message }\n" +
                 "}\n" +
                 "func log() {\n" +
                 "}\n" +

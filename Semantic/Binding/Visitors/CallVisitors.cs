@@ -570,29 +570,14 @@ namespace RigiCompiler
                 if (bound == null) return null;
                 boundArgs.Add(bound);
             }
-            // 形状检查：specific → 与 proxy 声明自身参数列表比对；
-            // wildcard → 排除 symbol 形参后与其余 canonical 形参比对
-            var isWildcard = proxy.ProxyTemplate == ProxyTemplateKind.Wildcard;
-            if (isWildcard)
+            // 形状检查：inner(...) 调用形状 = proxy 函数自身的参数形状（全形状）。
+            // wildcard 的保留首参（symbol / .name）同样必须显式出现在 inner 实参里，
+            // 由 BIL invoke fn(..inner) 显式携带，VM 消费它做下一环重路由。
+            if (!InnerShapeMatches(proxy.Parameters, arguments, boundArgs, env))
             {
-                // canonical：inner(namedArgs=..., unnamedArgs=...)，symbol 由
-                // Middleware ABI 承担，不在此补
-                var expected = proxy.Parameters.Where(p => p.Name != "symbol").ToList();
-                if (!InnerShapeMatches(expected, arguments, boundArgs, env))
-                {
-                    env.Error(node.Span,
-                        $"inner(...) arguments do not match proxy '{proxy.Name}' shape (§14.2)");
-                    return null;
-                }
-            }
-            else
-            {
-                if (!InnerShapeMatches(proxy.Parameters, arguments, boundArgs, env))
-                {
-                    env.Error(node.Span,
-                        $"inner(...) arguments do not match proxy '{proxy.Name}' shape (§14.2)");
-                    return null;
-                }
+                env.Error(node.Span,
+                    $"inner(...) arguments do not match proxy '{proxy.Name}' shape (§14.2)");
+                return null;
             }
             var isVoid = proxy.ReturnType == null;
             // #27⑦：按声明序收集 proxy 方法可变泛型包（固定泛型不转发——

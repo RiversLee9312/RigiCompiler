@@ -27,6 +27,9 @@ namespace RigiCompiler
             }
             foreach (var field in ns.Fields)
             {
+                // 全局 wrapped 字段（裁定 1）：cell 子类即 singleton，BIL 不再
+                // 发全局字段声明（访问经 cell 单例 getValue/setValue）
+                if (field.CellStorage != null && field.Owner == null) continue;
                 env.Module.LocalSymbols.Add(EmitFieldDeclaration(field));
                 foreach (var accessor in EmitFieldAccessorDeclarations(field))
                 {
@@ -87,6 +90,33 @@ namespace RigiCompiler
             }
         }
 
+        // 内建类型的 native 方法声明（toString 机制）：内建类型自身不声明
+        // （EmitTypeTree 跳过 IsBuiltin），但其 native 方法（Any.toString /
+        // Object.toString）需要 BIL 声明才能让 VM 的 TryResolveNative 经
+        // §22.5 rigi_rt hook 路由（BIL §8.4 native symbol/lib 三件套）。
+        // call??? 除外：它经方法 hook 表（VmHooks.RegisterMethod）按符号
+        // 命中，不走 (lib, symbol) 表——若声明进 LocalSymbols 会抢在方法
+        // hook 之前被 TryResolveNative 路由到不存在的 rigi_rt/call???。
+        // Exception.getMessage 已抽象化（用户裁定）——不再是 native，本循环
+        // 只发射 IsNative 成员，抽象方法不落地；具体子类的 override 经
+        // EmitTypeTree 正常发射 fn 定义，调用点 invoke 指向子类 override 或
+        // 抽象根符号（后者由 VM FindVirtualFunction 沿 extends 链多态派发）。
+        public static void EmitBuiltinNativeMethods(EmitEnvironment env)
+        {
+            foreach (var property in typeof(BootstrapSymbols).GetProperties(
+                BindingFlags.Public | BindingFlags.Instance))
+            {
+                if (property.GetValue(env.Unit.Symbols.Bootstrap) is not TypeSymbol
+                    { IsBuiltin: true } builtinType) continue;
+                foreach (var method in builtinType.Methods)
+                {
+                    if (!method.IsNative) continue;
+                    if (ReferenceEquals(method, env.Unit.Symbols.Bootstrap.CallWildcard)) continue;
+                    env.Module.LocalSymbols.Add(EmitMethodDeclaration(method));
+                }
+            }
+        }
+
         private static void EmitTypeTree(TypeSymbol type, EmitEnvironment env)
         {
             // 内建 bootstrap 符号（基元/层级根）不声明：经 BIL 别名投影引用；
@@ -122,8 +152,12 @@ namespace RigiCompiler
             if (type.IsSingleton) declaration.Modifiers.Add(new BilKeywordModifier(BilKeyword.Singleton));
             if (type.IsRich) declaration.Modifiers.Add(new BilKeywordModifier(BilKeyword.Rich));
             if (type.IsShared) declaration.Modifiers.Add(new BilKeywordModifier(BilKeyword.Shared));
-            // M109b-2 §8.7：companion singleton 建议 compiler-generated
-            if (type.CompanionInfo != null)
+            // M109b-2 §8.7：companion singleton 建议 compiler-generated（仅
+            // companion 自身——宿主类持 CompanionInfo 作反向链接不投影）；
+            // 全局字段 singleton cell（裁定 1）同样标记 compiler-generated
+            if ((type.CompanionInfo != null
+                    && ReferenceEquals(type.CompanionInfo.CompanionType, type))
+                || (type.CellStorage != null && type.IsSingleton))
             {
                 declaration.Modifiers.Add(new BilKeywordModifier(BilKeyword.CompilerGenerated));
             }
@@ -146,6 +180,9 @@ namespace RigiCompiler
             }
             foreach (var field in type.Fields)
             {
+                // 静态字段的 cell 存储已落到 companion 实例字段（§8.7）——
+                // 宿主不再发静态字段声明（访问经 companion 单例）
+                if (field.CompanionCellField != null) continue;
                 declaration.Members.Add(EmitFieldDeclaration(field));
                 foreach (var accessor in EmitFieldAccessorDeclarations(field))
                 {

@@ -66,6 +66,7 @@ namespace RigiCompiler.Tests
             TestResourceDeduplication();
             TestLocalDeclarationAndAssignment();
             TestUnaryAndComparison();
+            TestUserOperatorEqualsEmission();
             TestInvokeWithResult();
             TestNew();
             TestLiteralResources();
@@ -149,6 +150,7 @@ namespace RigiCompiler.Tests
             TestDowngradeExemptionPositions();
             TestInitWrapperTypeLevelEmission();
             TestInitWrapperCellArgsEmission();
+            TestGlobalWrappedFieldEmission();
             TestStaticMethodCompanionEmission();
             TestLambdaEmission();
             TestUnsupportedNodes();

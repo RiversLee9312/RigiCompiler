@@ -316,7 +316,7 @@ namespace RigiCompiler
                     // M109b-1：静态/全局字段 wrapper 实参在声明点绑定
                     // （静态语境——无 this / 无局部；仿参数默认值）
                     BindFieldWrapperInitArgs(field, variable, fileCtx);
-                    CellClassFactory.EnsureCellStorage(field, variable, fileCtx.Namespace, env);
+                    CellClassFactory.EnsureCellStorage(field, variable, fileCtx, env);
                     return;
                 case ClassDeclarationASTNode or StructDeclarationASTNode
                     or InterfaceDeclarationASTNode or EnumStructDeclarationASTNode

@@ -453,8 +453,11 @@ namespace RigiCompiler.Tests
         private static void TestThrowEmission()
         {
             var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "pub open class Boom : core.Exception {\n" +
+                "    pub override func getMessage(): String { return message }\n" +
+                "}\n" +
                 "pub func fail(): i32 {\n" +
-                "    throw new core.Exception()\n" +
+                "    throw new Boom()\n" +
                 "}\n" +
                 "pub func main(): i32 {\n" +
                 "    return 0\n" +
@@ -463,8 +466,8 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckBilValid("验证器零错误（throw 发射）", module);
             var fail = module.Functions.Single(f => f.Symbol == "$fail()@.i32");
             BilTestHarness.CheckFnShape("fail 指令与 .vars", module, "$fail()@.i32",
-                ".vars { core::Exception .t0 }\n" +
-                "new type(core::Exception) $.t0 []\n" +
+                ".vars { Boom .t0 }\n" +
+                "new type(Boom) $.t0 []\n" +
                 "throw $.t0\n");
             var throwInstruction = fail.Blocks[0].Instructions.Single(i => i is ThrowInstruction);
             TestHarness.CheckTrue("throw 单操作数（§16.9）",

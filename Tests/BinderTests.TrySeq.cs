@@ -10,6 +10,7 @@ namespace RigiCompiler.Tests
             // 基本形态：catch 变量 const，命中即已赋值
             var (unit, bodies) = BindUnit(
                 "class MyException : core.Exception {\n" +
+                "    pub override func getMessage(): String { return message }\n" +
                 "}\n" +
                 "func handle(e: MyException) {\n" +
                 "}\n" +
@@ -31,6 +32,7 @@ namespace RigiCompiler.Tests
             // _: 无变量形态
             var (unit2, bodies2) = BindUnit(
                 "class MyException : core.Exception {\n" +
+                "    pub override func getMessage(): String { return message }\n" +
                 "}\n" +
                 "func risky() {\n" +
                 "}\n" +
@@ -85,6 +87,7 @@ namespace RigiCompiler.Tests
             // 诊断：catch 变量 const 赋值拒绝
             var (unit5, _) = BindUnit(
                 "class MyException : core.Exception {\n" +
+                "    pub override func getMessage(): String { return message }\n" +
                 "}\n" +
                 "func cb() {\n" +
                 "    try {\n" +
@@ -98,6 +101,7 @@ namespace RigiCompiler.Tests
             // definite assignment：try/catch 交集——仅 try 赋值不够
             var (unit6, _) = BindUnit(
                 "class MyException : core.Exception {\n" +
+                "    pub override func getMessage(): String { return message }\n" +
                 "}\n" +
                 "func da(): i32 {\n" +
                 "    var x: i32\n" +
@@ -113,6 +117,7 @@ namespace RigiCompiler.Tests
             // definite assignment：try 与 catch 都赋值 → 交集成立
             var (unit7, _) = BindUnit(
                 "class MyException : core.Exception {\n" +
+                "    pub override func getMessage(): String { return message }\n" +
                 "}\n" +
                 "func da2(): i32 {\n" +
                 "    var x: i32\n" +
@@ -140,6 +145,7 @@ namespace RigiCompiler.Tests
             // definite assignment：finally 恒执行并集
             var (unit9, _) = BindUnit(
                 "class MyException : core.Exception {\n" +
+                "    pub override func getMessage(): String { return message }\n" +
                 "}\n" +
                 "func da4(): i32 {\n" +
                 "    var x: i32\n" +
@@ -169,6 +175,7 @@ namespace RigiCompiler.Tests
             // GuaranteesReturn：try 与全部 catch 都返回
             var (unit11, _) = BindUnit(
                 "class MyException : core.Exception {\n" +
+                "    pub override func getMessage(): String { return message }\n" +
                 "}\n" +
                 "func gr2(): i32 {\n" +
                 "    try {\n" +
@@ -192,6 +199,7 @@ namespace RigiCompiler.Tests
             // 诊断：try 返回但 catch 不返回
             var (unit13, _) = BindUnit(
                 "class MyException : core.Exception {\n" +
+                "    pub override func getMessage(): String { return message }\n" +
                 "}\n" +
                 "func log() {\n" +
                 "}\n" +
@@ -386,7 +394,7 @@ namespace RigiCompiler.Tests
                 "wrapper W {\n" +
                 "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(" +
                 " symbol: String, namedArgs: named TNamedArgs..., unnamedArgs: TUnnamedArgs..." +
-                "): TReturn { return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
+                "): TReturn { return inner(symbol=symbol, namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
                 "}\n" +
                 "class Resource implements core.IDisposable { pub override func dispose() { } }\n" +
                 "@W class Service { pub init() }\n" +
@@ -399,7 +407,7 @@ namespace RigiCompiler.Tests
                 "wrapper W {\n" +
                 "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(" +
                 " symbol: String, namedArgs: named TNamedArgs..., unnamedArgs: TUnnamedArgs..." +
-                "): TReturn { return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
+                "): TReturn { return inner(symbol=symbol, namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
                 "}\n" +
                 "@W class Service { pub init() }\n" +
                 "func exprAny(service: Service): Any { " +
@@ -469,6 +477,7 @@ namespace RigiCompiler.Tests
             // return@ 穿透 try 命中外层值块（try 与全部 catch 终止）
             var (unit13, _) = BindUnit(
                 "class MyException : core.Exception {\n" +
+                "    pub override func getMessage(): String { return message }\n" +
                 "}\n" +
                 "func tt(): i32 {\n" +
                 "    return seq {\n" +

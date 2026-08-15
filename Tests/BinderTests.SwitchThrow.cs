@@ -176,6 +176,7 @@ namespace RigiCompiler.Tests
             // throw 终止路径：函数仅 throw 即满足「所有路径显式返回」
             var (unit, bodies) = BindUnit(
                 "class MyException : core.Exception {\n" +
+                "    pub override func getMessage(): String { return message }\n" +
                 "}\n" +
                 "func f(): i32 {\n" +
                 "    throw new MyException()\n" +
@@ -187,12 +188,13 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("异常表达式定型为用户异常类",
                 throwStmt.Exception.Type.Name == "MyException");
 
-            // 直接抛异常根本身（open class 零参构造）
+            // 异常根 core.Exception 已抽象化（用户裁定）：直接抛根本身被拒
             var (unit2, _) = BindUnit(
                 "func g() {\n" +
                 "    throw new core.Exception()\n" +
                 "}\n");
-            CheckNoErrors("直接抛 core.Exception 无诊断", unit2);
+            TestHarness.CheckSemanticError("直接抛 core.Exception 被拒", unit2.Diagnostics,
+                "Cannot construct an instance of abstract type 'Exception'");
 
             // 诊断：throw 非异常类型
             var (unit3, _) = BindUnit(

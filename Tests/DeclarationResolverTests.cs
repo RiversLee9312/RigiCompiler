@@ -1037,10 +1037,10 @@ namespace RigiCompiler.Tests
                 "    operator .proxy.opr.plus(another: TTarget): TTarget { return inner(another) }\n" +
                 "    operator .proxy.get.name\\<TField>(value: TField): TField { return value }\n" +
                 "    operator .proxy.set.name\\<TField>(value: TField) { inner(value) }\n" +
-                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(symbol: String, namedArgs: named TNamedArgs..., unnamedArgs: TUnnamedArgs...): TReturn { return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(symbol: String, namedArgs: named TNamedArgs..., unnamedArgs: TUnnamedArgs...): TReturn { return inner(symbol=symbol, namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
                 "    operator .proxy.get.*\\<TValue>(symbol: String, value: TValue): TValue { return value }\n" +
-                "    operator .proxy.set.*\\<TValue>(symbol: String, value: TValue) { inner(value) }\n" +
-                "    operator .proxy.opr.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(symbol: String, namedArgs: named TNamedArgs..., unnamedArgs: TUnnamedArgs...): TReturn { return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
+                "    operator .proxy.set.*\\<TValue>(symbol: String, value: TValue) { inner(symbol=symbol, value=value) }\n" +
+                "    operator .proxy.opr.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(symbol: String, namedArgs: named TNamedArgs..., unnamedArgs: TUnnamedArgs...): TReturn { return inner(symbol=symbol, namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
                 "}\n" +
                 "@WrapperTarget(.Value)\n" +
                 "pub wrapper Clamped {\n" +
@@ -1050,7 +1050,7 @@ namespace RigiCompiler.Tests
                 "@WrapperTarget(.Method)\n" +
                 "pub wrapper Timed {\n" +
                 "    operator .proxy.call\\<TReturn>(): TReturn { return inner() }\n" +
-                "    operator .proxy.call(.name: String, args: named Any...): Any { return inner(args) }\n" +
+                "    operator .proxy.call(.name: String, args: named Any...): Any { return inner(.name, args) }\n" +
                 "}\n");
             CheckNoErrors("canonical proxy 全形态合法（§14.2/§14.3/§14.4 示例）", ok);
         }
@@ -1139,7 +1139,7 @@ namespace RigiCompiler.Tests
                 "pub wrapper Audited {\n" +
                 "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
                 "        symbol: String, namedArgs: named TNamedArgs..., unnamedArgs: TUnnamedArgs...): TReturn {\n" +
-                "        return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs)\n" +
+                "        return inner(symbol=symbol, namedArgs=namedArgs, unnamedArgs=unnamedArgs)\n" +
                 "    }\n" +
                 "}\n" +
                 "@Audited\n" +
@@ -1945,6 +1945,7 @@ namespace RigiCompiler.Tests
             var (ok, _) = ResolveUnit(
                 "pub class E : Exception {\n" +
                 "    pub init(_ -> message) { }\n" +
+                "    pub override func getMessage(): String { return message }\n" +
                 "}\n");
             CheckNoErrors("init 映射继承的内建字段无诊断", ok);
             var init = GlobalType(ok, "E").Methods.Single(m => m.Kind == MethodKind.Init);

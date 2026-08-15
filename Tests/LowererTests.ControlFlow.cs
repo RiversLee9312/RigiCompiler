@@ -427,6 +427,7 @@ namespace RigiCompiler.Tests
         {
             var (unit, _, lowered) = LowerUnit(
                 "class MyException : core.Exception {\n" +
+                "    pub override func getMessage(): String { return message }\n" +
                 "}\n" +
                 "func f(): i32 {\n" +
                 "    throw new MyException()\n" +
@@ -437,15 +438,18 @@ namespace RigiCompiler.Tests
 
             // 值块内 throw：路径终止（其后语句截断，if 转换不编织 continuation）
             var (unit2, _, lowered2) = LowerUnit(
+                "class MyException : core.Exception {\n" +
+                "    pub override func getMessage(): String { return message }\n" +
+                "}\n" +
                 "func f(x: i32): i32 {\n" +
                 "    return if (x > 0) {\n" +
-                "        throw new core.Exception()\n" +
+                "        throw new MyException()\n" +
                 "    } else { 0 }\n" +
                 "}\n");
             CheckNoErrors("无诊断（值块内 throw）", unit2);
             TestHarness.Check("值块内 throw 终止", LoweredDescribe.Body(BodyOf(lowered2, "f")),
                 "Body(f, [.s0: i32], [If(Binary(CmpGt, Param(x,i32), Int(0,i32), bool), " +
-                "[Throw(New(Exception, []))], [Assign(Local(.s0,i32), Int(0,i32))]); " +
+                "[Throw(New(MyException, []))], [Assign(Local(.s0,i32), Int(0,i32))]); " +
                 "Return(Local(.s0,i32))])");
         }
 

@@ -5,15 +5,16 @@ using RigiCompiler.Bil;
 
 namespace RigiCompiler
 {
-    // M109b：`..init.wrapper` 合成（BIL §9.7 / §14.5）+ 静态 Method wrapper
-    // companion（§8.7）。
+    // M109b：`..init.wrapper` 合成（BIL §9.7 / §14.5）+ 静态 companion
+    // （§8.7）。
     // 类型级：Entity/字段-Value/实例 Method 应用 → owner 上至多一个
     // priv+compiler-generated 实例 void 方法，体内按 outer→inner 发
     // new.wrapper.*；应用实参在本 fn 体内绑定（允许 this；无参）。
     // cell 级：value 字段 wrapped(W) 的应用实参提升为本方法参数（声明点
     // 已绑定的 BoundInitArguments 按序平铺）；构造点 new.wrapped 传入。
-    // 静态 Method wrapper（M109b-2）：每方法合成 `..companion.UUID`
-    // singleton + 实例方法（体 = 原静态体、wrapper 改挂）+ 原方法降壳体。
+    // 静态 companion（§8.7）：每个声明类一个嵌套 singleton（..companion，
+    // 无 UUID）；静态 Method wrapper 迁实例方法 + 原方法降壳体，静态
+    // Value wrapper 字段的 cell 存储挂 companion 实例（init 里构造）。
     internal static class WrapperInitSynthesis
     {
         // 类型级合成入口（BindingDriver 阶段 1.7）：遍历用户类型声明
@@ -62,17 +63,12 @@ namespace RigiCompiler
         public static void TrySynthesizeForType(TypeSymbol type, ASTNode syntax,
             FileContext fileCtx, BindEnvironment env)
         {
+            // 静态成员 companion（§8.7；每类一个、嵌套、共享，先于本实体
+            // ..init.wrapper，以便 companion 上再合成其自身的 init/..init.wrapper）
+            EnsureStaticCompanion(type, syntax, fileCtx, env);
+
             if (type.Methods.Any(m => m.Name == BilSpellings.InitWrapperMethodName))
                 return;
-
-            // 静态 Method wrapper → companion（§8.7；先于本实体 ..init.wrapper，
-            // 以便 companion 上再合成其自身的 ..init.wrapper）
-            foreach (var staticMethod in type.Methods.ToList())
-            {
-                if (!staticMethod.IsStatic || staticMethod.AppliedWrappers.Count == 0) continue;
-                if (staticMethod.Companion != null) continue;
-                SynthesizeCompanion(staticMethod, type, syntax, fileCtx, env);
-            }
 
             var hasEntityOrFieldOrInstance = type.AppliedWrappers.Count > 0
                 || type.Fields.Any(f => !f.IsStatic && f.AppliedWrappers.Count > 0)
@@ -128,20 +124,62 @@ namespace RigiCompiler
                 Array.Empty<LocalSymbol>(), new BoundBlock(syntax, statements)));
         }
 
-        // §8.7：静态方法 + Method wrapper → companion singleton + 实例方法 + 壳体
-        private static void SynthesizeCompanion(MethodSymbol shell, TypeSymbol host,
-            ASTNode syntax, FileContext fileCtx, BindEnvironment env)
+        // §8.7：确保声明类有 companion（幂等）。含静态 Method wrapper 或
+        // 静态 Value wrapper 字段时创建；迁入方法/字段并合成 companion 的
+        // init（cell 构造）与 ..init.wrapper（Method wrapper 安装）
+        private static void EnsureStaticCompanion(TypeSymbol host, ASTNode syntax,
+            FileContext fileCtx, BindEnvironment env)
         {
-            var uuid = Guid.NewGuid().ToString("N");
-            var companionName = BilSpellings.CompanionTypeNamePrefix + uuid;
+            var hasWrappedStaticMethod = host.Methods.Any(m => m.IsStatic
+                && m.AppliedWrappers.Count > 0 && m.Companion == null);
+            var hasWrappedStaticField = host.Fields.Any(f => f.IsStatic
+                && f.CellStorage != null && f.CompanionCellField == null);
+            if (!hasWrappedStaticMethod && !hasWrappedStaticField) return;
+
+            var info = host.CompanionInfo;
+            if (info == null)
+            {
+                info = new StaticCompanionInfo(CreateCompanionType(host, syntax, fileCtx, env));
+                host.CompanionInfo = info;
+                // companion 自身也持同一份（自指——识别 singleton 身份供 P4b
+                // 声明收集与 compiler-generated 投影）
+                info.CompanionType.CompanionInfo = info;
+            }
+            var companion = info.CompanionType;
+
+            foreach (var staticMethod in host.Methods.ToList())
+            {
+                if (!staticMethod.IsStatic || staticMethod.AppliedWrappers.Count == 0
+                    || staticMethod.Companion != null) continue;
+                SynthesizeCompanionMethod(info, staticMethod);
+            }
+            // 静态字段需要 AST 初始化器——遍历类型成员 AST 拿声明节点
+            foreach (var member in MembersOf(syntax))
+            {
+                if (member is not VariableDeclarationASTNode variable) continue;
+                if (env.Declarations.SymbolOf(variable) is not FieldSymbol field) continue;
+                if (!field.IsStatic || field.CellStorage == null
+                    || field.CompanionCellField != null) continue;
+                SynthesizeCompanionField(info, field, variable, syntax, fileCtx, env);
+            }
+
+            // companion 自身 init（cell 构造）与 ..init.wrapper（Method wrapper 安装）
+            SynthesizeCompanionInit(info, syntax, env);
+            TrySynthesizeForType(companion, syntax, fileCtx, env);
+        }
+
+        // companion 类型：宿主类的嵌套类（canonical 命名空间::外层...companion），
+        // 无 UUID；singleton+shared+compiler-generated；共享宿主类型链泛型参数
+        private static TypeSymbol CreateCompanionType(TypeSymbol host, ASTNode syntax,
+            FileContext fileCtx, BindEnvironment env)
+        {
             var objectType = env.Unit.Symbols.Bootstrap.Object;
-            var companion = new TypeSymbol(companionName, TypeKind.Class,
-                ns: fileCtx.Namespace, baseType: objectType, isShared: true)
+            var companion = new TypeSymbol(BilSpellings.CompanionTypeName, TypeKind.Class,
+                ns: fileCtx.Namespace, declaringType: host, baseType: objectType, isShared: true)
             {
                 Accessibility = Accessibility.Public,
                 IsSingleton = true,
             };
-            // 泛型宿主：companion 共享宿主类型链泛型参数（同 cell 上下文共享）
             var hostGenerics = new List<GenericParameterSymbol>();
             for (var t = host; t != null; t = t.DeclaringType)
             {
@@ -151,8 +189,15 @@ namespace RigiCompiler
             {
                 companion.GenericParameters.Add(gp);
             }
+            return companion;
+        }
 
-            // 实例方法：简单名沿用；签名拷贝；wrapper 改挂；体稍后绑定
+        // 静态方法迁入 companion：实例方法沿用简单名、签名拷贝、wrapper 改挂；
+        // 体稍后绑定（BindingDriver.BindCompanionInstanceBody）
+        private static void SynthesizeCompanionMethod(StaticCompanionInfo info,
+            MethodSymbol shell)
+        {
+            var companion = info.CompanionType;
             var instance = new MethodSymbol(shell.Name, MethodKind.Regular, owner: companion,
                 returnType: shell.ReturnType, isAsync: shell.IsAsync)
             {
@@ -173,13 +218,112 @@ namespace RigiCompiler
             instance.AppliedWrappers.AddRange(shell.AppliedWrappers);
             shell.AppliedWrappers.Clear();
             companion.Methods.Add(instance);
+            shell.Companion = new StaticMethodCompanionInfo(companion, instance, shell);
+        }
 
-            var info = new StaticMethodCompanionInfo(companion, instance, shell);
-            companion.CompanionInfo = info;
-            shell.Companion = info;
+        // 静态字段的 cell 落地 companion：cell 对象成为 companion 实例字段；
+        // 字段初始化器在声明点静态语境绑定（仿参数默认值/字段 wrapper 实参）
+        private static void SynthesizeCompanionField(StaticCompanionInfo info,
+            FieldSymbol field, VariableDeclarationASTNode variable, ASTNode syntax,
+            FileContext fileCtx, BindEnvironment env)
+        {
+            var storage = field.CellStorage!;
+            var companion = info.CompanionType;
+            var cellField = new FieldSymbol(field.Name, owner: companion,
+                fieldType: storage.CellType)
+            {
+                Accessibility = Accessibility.Public,
+            };
+            companion.Fields.Add(cellField);
+            var entry = new StaticFieldCompanionEntry(field, cellField, storage);
+            info.Fields.Add(entry);
+            field.CompanionCellField = cellField;
+            entry.InitValue = BindFieldInitializer(field, variable, fileCtx, env);
+        }
 
-            // companion 自身 ..init.wrapper（方法 wrapper → new.wrapper.method）
-            TrySynthesizeForType(companion, syntax, fileCtx, env);
+        // 静态字段初始化器绑定（声明点静态语境：无 this/无形参；仿
+        // BindFieldWrapperInitArgs 的隔离上下文）。公开供全局字段 singleton
+        // cell 的初值绑定复用（裁定 1）
+        public static BoundExpression? BindFieldInitializer(FieldSymbol field,
+            VariableDeclarationASTNode variable, FileContext fileCtx, BindEnvironment env)
+        {
+            if (variable.Initializer == null) return null;
+            if (field.FieldType is not TypeSymbol expectedType || expectedType is ErrorTypeSymbol)
+            {
+                return null;
+            }
+            var host = new MethodSymbol(".field.init.bind", MethodKind.Regular,
+                owner: field.Owner, ns: field.Namespace, isStatic: true)
+            {
+                HasBody = false,
+                IsSynthetic = true,
+            };
+            var ctx = new BindContext(host, fileCtx, field.Owner, isDefaultValueContext: true);
+            var scope = new Scope(null);
+            var value = ExpressionDispatcher.Visit(variable.Initializer.Expression,
+                scope, ctx, env, expectedType);
+            if (value == null) return null;
+            if (ctx.Locals.Count > 0)
+            {
+                env.Error(variable.Initializer.Span ?? variable.Span,
+                    "P3: field initializer with local declarations is not supported");
+                return null;
+            }
+            if (!SymbolLookup.IsAssignable(value.Type, expectedType, env))
+            {
+                env.Error(variable.Initializer.Span ?? variable.Span,
+                    $"Field '{field.Name}' initializer must be of type " +
+                    $"'{BoundAnalysis.TypeDisplay(expectedType)}', got " +
+                    $"'{BoundAnalysis.TypeDisplay(value.Type)}'");
+                return null;
+            }
+            return value;
+        }
+
+        // companion 的 init：求值各静态字段初始化器并构造 cell（赋值到
+        // companion 的 cell 实例字段）；cell 构造走 BoundNewExpression
+        // （P4 NewExpressionRewriter 按 cell 存储补 new.wrapped 前缀）。
+        // 无初始化器的 var 字段用空构造 init()（DefaultInit）
+        private static void SynthesizeCompanionInit(StaticCompanionInfo info, ASTNode syntax,
+            BindEnvironment env)
+        {
+            if (info.Fields.Count == 0) return;
+            var companion = info.CompanionType;
+            if (companion.Methods.Any(m => m.Kind == MethodKind.Init && m.Parameters.Count == 0))
+            {
+                return;
+            }
+            var init = new MethodSymbol("init", MethodKind.Init, owner: companion, returnType: null)
+            {
+                Accessibility = Accessibility.Public,
+                HasBody = true,
+                IsSynthetic = true,
+            };
+            companion.Methods.Add(init);
+            var statements = new List<BoundStatement>();
+            foreach (var entry in info.Fields)
+            {
+                var storage = entry.Storage;
+                BoundExpression? cellNew = null;
+                if (entry.InitValue != null)
+                {
+                    cellNew = new BoundNewExpression(syntax, storage.CellType,
+                        storage.ValueInit, new List<BoundExpression> { entry.InitValue });
+                }
+                else if (storage.DefaultInit != null)
+                {
+                    cellNew = new BoundNewExpression(syntax, storage.CellType,
+                        storage.DefaultInit, new List<BoundExpression>());
+                }
+                if (cellNew == null) continue;
+                statements.Add(new BoundAssignmentStatement(syntax,
+                    new BoundFieldAccessExpression(syntax,
+                        new BoundThisExpression(syntax, companion), entry.CellField,
+                        storage.CellType),
+                    cellNew));
+            }
+            env.SyntheticCellBodies.Add(new BoundFunctionBody(init,
+                Array.Empty<LocalSymbol>(), new BoundBlock(syntax, statements)));
         }
 
         // cell 子类：value 字段 wrapper 应用 → 有参/无参 ..init.wrapper
@@ -238,6 +382,52 @@ namespace RigiCompiler
                     BoundNewWrapperKind.Field, app.Wrapper, valueField, args));
             }
 
+            env.SyntheticCellBodies.Add(new BoundFunctionBody(method,
+                Array.Empty<LocalSymbol>(), new BoundBlock(syntax, statements)));
+        }
+
+        // 生成 cell value 字段 wrapper 应用安装语句（绑定实参直接求值形态）：
+        // 供 singleton cell（全局字段，裁定 1）的无参 ..init.wrapper 安装
+        // wrapper——与 SynthesizeForCell 的 ..init.wrapper 参数引用形态相对。
+        // 声明点绑定失败的 app（BoundInitArguments == null，诊断已报）跳过
+        private static List<BoundStatement> SynthesizeCellWrapperInstallStatements(
+            FieldSymbol valueField, ASTNode syntax)
+        {
+            var statements = new List<BoundStatement>();
+            foreach (var app in valueField.AppliedWrappers)
+            {
+                if (app.BoundInitArguments == null) continue;
+                statements.Add(new BoundNewWrapperStatement(app.Syntax ?? syntax,
+                    BoundNewWrapperKind.Field, app.Wrapper, valueField,
+                    app.BoundInitArguments.ToList()));
+            }
+            return statements;
+        }
+
+        // singleton cell（全局字段，裁定 1）的 ..init.wrapper 合成：value 字段
+        // 带 wrapped(W) 时合成无参 ..init.wrapper（priv + compiler-generated
+        // 实例 void 方法），体内按 outer→inner 发 new.wrapper.field。wrapper
+        // 实参不依赖函数局部，已在声明点按全局作用域绑定（BoundInitArguments），
+        // 此处直接在 ..init.wrapper 体内求值（与类型级/静态 companion 的
+        // ..init.wrapper 同形态）——与 SynthesizeForCell 的有参 new.wrapped
+        // 传参形态相对（局部场景实参依赖函数局部，须经构造点传入）。无参
+        // init() 只求值字段初值、写 value 字段，不内联 wrapper 安装（§14.5）
+        public static void SynthesizeForSingletonCell(CellStorageInfo storage, ASTNode syntax,
+            BindEnvironment env)
+        {
+            var valueField = storage.ValueField;
+            if (valueField.AppliedWrappers.Count == 0) return;
+            var cellClass = storage.CellClass;
+            if (cellClass.Methods.Any(m => m.Name == BilSpellings.InitWrapperMethodName))
+            {
+                return;
+            }
+
+            var method = NewInitWrapperMethod(cellClass, Array.Empty<ParameterSymbol>());
+            cellClass.Methods.Add(method);
+            storage.InitWrapper = method;
+
+            var statements = SynthesizeCellWrapperInstallStatements(valueField, syntax);
             env.SyntheticCellBodies.Add(new BoundFunctionBody(method,
                 Array.Empty<LocalSymbol>(), new BoundBlock(syntax, statements)));
         }
@@ -316,7 +506,7 @@ namespace RigiCompiler
                 new BoundBlock(syntax, statements));
         }
 
-        private static MethodSymbol NewInitWrapperMethod(TypeSymbol owner,
+        internal static MethodSymbol NewInitWrapperMethod(TypeSymbol owner,
             IReadOnlyList<ParameterSymbol> parameters)
         {
             var method = new MethodSymbol(BilSpellings.InitWrapperMethodName, MethodKind.Regular,

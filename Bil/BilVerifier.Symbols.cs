@@ -410,23 +410,18 @@ namespace RigiCompiler.Bil
                     "singleton 类型必须同时带 shared"));
             }
 
-            // §8.7/§21.8：..companion.* 结构
-            if (type.Symbol.StartsWith(BilSpellings.CompanionTypeNamePrefix))
+            // §8.7/§21.8：companion（声明类的嵌套类，名以 ..companion 收尾）结构
+            if (type.Symbol.EndsWith(BilSpellings.CompanionTypeName, StringComparison.Ordinal))
             {
-                if (type.Symbol.Length <= BilSpellings.CompanionTypeNamePrefix.Length)
-                {
-                    errors.Add(new BilVerificationError("21.8", type.Symbol,
-                        "..companion. 类型名 UUID 段不得为空（§8.7）"));
-                }
                 if (type.Kind != BilTypeKind.Class)
                 {
                     errors.Add(new BilVerificationError("21.8", type.Symbol,
-                        "..companion.* 必须是 class（§8.7）"));
+                        "companion 必须是 class（§8.7）"));
                 }
                 if (!singleton || !shared)
                 {
                     errors.Add(new BilVerificationError("21.8", type.Symbol,
-                        "..companion.* 必须同时带 singleton 与 shared（§8.7）"));
+                        "companion 必须同时带 singleton 与 shared（§8.7）"));
                 }
                 var hasInstanceMethod = false;
                 foreach (var member in type.Members)
@@ -441,7 +436,7 @@ namespace RigiCompiler.Bil
                 if (!hasInstanceMethod)
                 {
                     errors.Add(new BilVerificationError("21.8", type.Symbol,
-                        "..companion.* 必须至少有一个实例方法（§8.7）"));
+                        "companion 必须至少有一个实例方法（§8.7）"));
                 }
             }
 

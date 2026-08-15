@@ -266,8 +266,11 @@ namespace RigiCompiler
             }
         }
 
-        // 待实现成员闭包：基类链的 abstract 方法 + 接口闭包的无体方法
-        // （内建类型跳过；有体接口成员隐式继承，不待实现）
+        // 待实现成员闭包：基类链的 abstract 方法 + 接口闭包的无体方法。
+        // 内建类型成员的豁免仅限「自身有实现」者（native 或有方法体）——
+        // 基类链循环只收 abstract，内建 abstract（Exception.getMessage）照收，
+        // 用户子类必须实现；Object/Any.toString 是 native 具体实现，天然不
+        // 在 abstract 之列，先例不破。有体接口成员隐式继承，不待实现。
         private static List<SignatureView> FindRequiredMembers(TypeSymbol type,
             ResolveEnvironment env)
         {
@@ -275,7 +278,6 @@ namespace RigiCompiler
             for (var t = type.BaseType; t != null; t = t.BaseType)
             {
                 var def = t.ConstructedFrom ?? t;
-                if (def.IsBuiltin) continue;
                 foreach (var m in def.Methods)
                 {
                     if (m.IsAbstract)

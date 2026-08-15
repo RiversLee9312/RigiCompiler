@@ -105,8 +105,8 @@ namespace RigiCompiler.Bil
         {
             var source = coroutine.ReadVar(Source.Name);
             var converted = IsSafe
-                ? VmTypeOps.CastSafe(context, source, TargetType.TypeRef)
-                : VmTypeOps.CastOrThrow(context, source, TargetType.TypeRef);
+                ? VmTypeOps.CastSafe(context, coroutine, source, TargetType.TypeRef)
+                : VmTypeOps.CastOrThrow(context, coroutine, source, TargetType.TypeRef);
             coroutine.WriteVar(Target.Name, converted);
         }
     }
@@ -137,8 +137,8 @@ namespace RigiCompiler.Bil
             var source = coroutine.ReadVar(Source.Name);
             var targetType = VmTypeOps.RequireTypeId(coroutine.ReadVar(TypeId.Name));
             var converted = IsSafe
-                ? VmTypeOps.CastSafe(context, source, targetType)
-                : VmTypeOps.CastOrThrow(context, source, targetType);
+                ? VmTypeOps.CastSafe(context, coroutine, source, targetType)
+                : VmTypeOps.CastOrThrow(context, coroutine, source, targetType);
             coroutine.WriteVar(Target.Name, converted);
         }
     }
@@ -177,9 +177,9 @@ namespace RigiCompiler.Bil
             var targetType = ResolveTargetType(coroutine);
             var matched = Kind switch
             {
-                BilTypeCheckKind.Is => VmTypeOps.Is(context, value, targetType),
-                BilTypeCheckKind.Supers => VmTypeOps.Supers(context, value, targetType),
-                BilTypeCheckKind.With => VmTypeOps.With(context, value, targetType),
+                BilTypeCheckKind.Is => VmTypeOps.Is(context, coroutine, value, targetType),
+                BilTypeCheckKind.Supers => VmTypeOps.Supers(context, coroutine, value, targetType),
+                BilTypeCheckKind.With => VmTypeOps.With(context, coroutine, value, targetType),
                 _ => throw new VmException("未知类型检查 " + Kind),
             };
             coroutine.WriteVar(Target.Name, new VmBool(matched));
@@ -486,6 +486,11 @@ namespace RigiCompiler.Bil
             {
                 throw new VmException("没有用户 operator " + name + "：" + operand.TypeRef);
             }
+            if (VmWrapperDispatch.TryStartOperatorChain(context, coroutine, symbol, operand,
+                    Array.Empty<VmValue>(), instruction.Target.Name))
+            {
+                return;
+            }
             BilInvokeExecution.InvokeValues(context, coroutine, symbol,
                 new[] { operand }, instruction.Target.Name);
         }
@@ -501,8 +506,20 @@ namespace RigiCompiler.Bil
             }
             if (instruction.Op == BilBinaryOp.CmpNe)
             {
-                InvokeSync(context, coroutine, symbol, new[] { left, right },
-                    instruction.Target.Name);
+                // != 由 equals 取反推导（SYNTAX §13.2：`!=` 无独立用户 operator，
+                // 恒为 equals 取反）。内部 equals 调用必须经过 wrapper operator 链
+                // （.proxy.opr.equals / .proxy.opr.*），取反逻辑不变。
+                var depth = coroutine.CallStack.Count;
+                if (VmWrapperDispatch.TryStartOperatorChain(context, coroutine, symbol, left,
+                        new[] { right }, instruction.Target.Name))
+                {
+                    StepToDepth(context, coroutine, depth);
+                }
+                else
+                {
+                    InvokeSync(context, coroutine, symbol, new[] { left, right },
+                        instruction.Target.Name);
+                }
                 if (coroutine.HasAbruptCompletion
                     || coroutine.State != VmCoroutineState.Running)
                 {
@@ -515,6 +532,12 @@ namespace RigiCompiler.Bil
                 }
                 return;
             }
+            // Entity operator 派发（§14.2）：命中带 wrapped 宿主时走 .proxy.opr.*
+            if (VmWrapperDispatch.TryStartOperatorChain(context, coroutine, symbol, left,
+                    new[] { right }, instruction.Target.Name))
+            {
+                return;
+            }
             BilInvokeExecution.InvokeValues(context, coroutine, symbol,
                 new[] { left, right }, instruction.Target.Name);
         }
@@ -524,6 +547,12 @@ namespace RigiCompiler.Bil
         {
             var depth = coroutine.CallStack.Count;
             BilInvokeExecution.InvokeValues(context, coroutine, symbol, arguments, resultSlot);
+            StepToDepth(context, coroutine, depth);
+        }
+
+        // 同步推进已发起的调用/派发链直至回落到给定栈深（proxy 链逐环同步嵌套）
+        private static void StepToDepth(VmContext context, VmCoroutine coroutine, int depth)
+        {
             while (coroutine.CallStack.Count > depth
                 && coroutine.State == VmCoroutineState.Running
                 && !coroutine.HasAbruptCompletion)

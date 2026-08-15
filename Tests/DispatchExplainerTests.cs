@@ -58,7 +58,7 @@ namespace RigiCompiler.Tests
                 "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
                 "        symbol: String, namedArgs: named TNamedArgs..., " +
                 "unnamedArgs: TUnnamedArgs...\n" +
-                "    ): TReturn { return inner(namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
+                "    ): TReturn { return inner(symbol=symbol, namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
                 "}\n" +
                 "@Audited\n" +
                 "pub class Service {\n" +

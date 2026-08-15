@@ -116,7 +116,7 @@ namespace RigiCompiler.Tests
             Positive("throw 与 try/catch/finally",
                 "pub func main(): i32 {\n" +
                 "    try {\n" +
-                "        throw new core.Exception()\n" +
+                "        throw new core.RuntimeException(\"boom\")\n" +
                 "    } catch (e: core.Exception) {\n" +
                 "        return 1\n" +
                 "    } finally (f) {\n" +
@@ -528,13 +528,13 @@ namespace RigiCompiler.Tests
         private static BilModule CompanionModule()
         {
             var module = new BilModule();
-            var companion = new BilTypeDeclaration("..companion.abc123", BilTypeKind.Class,
+            var companion = new BilTypeDeclaration("Math...companion", BilTypeKind.Class,
                 new BilAccessibilityModifier(BilAccessibility.Public),
                 new BilKeywordModifier(BilKeyword.Singleton),
                 new BilKeywordModifier(BilKeyword.Shared),
                 new BilKeywordModifier(BilKeyword.CompilerGenerated));
             companion.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
-                "..companion.abc123$heavy()@.i32",
+                "Math...companion$heavy()@.i32",
                 new BilModifier[]
                 {
                     new BilAccessibilityModifier(BilAccessibility.Public),
@@ -542,7 +542,7 @@ namespace RigiCompiler.Tests
                 }));
             module.LocalSymbols.Add(companion);
             module.LocalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
-                "..companion.abc123$heavy()@.i32",
+                "Math...companion$heavy()@.i32",
                 new BilModifier[]
                 {
                     new BilAccessibilityModifier(BilAccessibility.Public),
@@ -552,9 +552,9 @@ namespace RigiCompiler.Tests
             // 改用 void 方法避免返回值 DA
             // 上面已声明 @.i32——补 fn 返回常量
             module.Resources.Add(new BilScalarResource("R_Zero", BilScalarType.I32, "0"));
-            var fn = new BilFunction("..companion.abc123$heavy()@.i32");
+            var fn = new BilFunction("Math...companion$heavy()@.i32");
             fn.Args.Add(new BilArgDeclaration(".return", ".i32"));
-            fn.Args.Add(new BilArgDeclaration(".this", "..companion.abc123"));
+            fn.Args.Add(new BilArgDeclaration(".this", "Math...companion"));
             fn.Vars.Add(new BilVarDeclaration(".i32", "r"));
             var entry = new BilBlock("entry", BilBlockModifier.Entrypoint);
             entry.Instructions.Add(new LoadInstruction(
@@ -774,18 +774,18 @@ namespace RigiCompiler.Tests
         private static BilModule CompanionNotSingletonModule()
         {
             var module = new BilModule();
-            var companion = new BilTypeDeclaration("..companion.x", BilTypeKind.Class,
+            var companion = new BilTypeDeclaration("Math...companion", BilTypeKind.Class,
                 new BilAccessibilityModifier(BilAccessibility.Public));
             companion.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
-                "..companion.x$m()@.void",
+                "Math...companion$m()@.void",
                 new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
             module.LocalSymbols.Add(companion);
             module.LocalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
-                "..companion.x$m()@.void",
+                "Math...companion$m()@.void",
                 new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
-            var fn = new BilFunction("..companion.x$m()@.void");
+            var fn = new BilFunction("Math...companion$m()@.void");
             fn.Args.Add(new BilArgDeclaration(".return", ".void"));
-            fn.Args.Add(new BilArgDeclaration(".this", "..companion.x"));
+            fn.Args.Add(new BilArgDeclaration(".this", "Math...companion"));
             var entry = new BilBlock("entry", BilBlockModifier.Entrypoint);
             entry.Instructions.Add(new RetInstruction());
             fn.Blocks.Add(entry);
@@ -796,7 +796,7 @@ namespace RigiCompiler.Tests
         private static BilModule CompanionNoMethodModule()
         {
             var module = new BilModule();
-            var companion = new BilTypeDeclaration("..companion.empty", BilTypeKind.Class,
+            var companion = new BilTypeDeclaration("Math...companion", BilTypeKind.Class,
                 new BilAccessibilityModifier(BilAccessibility.Public),
                 new BilKeywordModifier(BilKeyword.Singleton),
                 new BilKeywordModifier(BilKeyword.Shared));
@@ -1697,6 +1697,8 @@ namespace RigiCompiler.Tests
                 InnerWrongGenericOrderModule(), "按 .args 声明序前置");
             BilTestHarness.CheckBilInvalid("invoke fn(..inner) 不接受 receiver",
                 InnerWithReceiverModule(), "不接受 receiver");
+            BilTestHarness.CheckBilInvalid("invoke fn(..inner) 缺 wildcard 保留首参操作数",
+                WildcardInnerMissingReservedModule(), "保留首参操作数");
 
             // §8.3.1 wrapped(W) 正例 / 非 wrapper 类型拒
             m = MinimalModule(out _, out _);
@@ -2050,6 +2052,38 @@ namespace RigiCompiler.Tests
             var module = MinimalModule(out _, out var entry);
             module.Functions[0].Vars.Add(new BilVarDeclaration(".i32", "self"));
             entry.Instructions.Insert(0, new GetSelfInstruction(BilOp.Var("self")));
+            return module;
+        }
+
+        // wildcard 全形状负例：fn 声明了 symbol 保留首参，但 invoke fn(..inner)
+        // 操作数为空（未显式携带 symbol）→ §15.4 验证错误。
+        private static BilModule WildcardInnerMissingReservedModule()
+        {
+            var module = MinimalModule(out _, out _);
+            var logged = new BilTypeDeclaration("core.logging::Logged", BilTypeKind.Wrapper,
+                new BilAccessibilityModifier(BilAccessibility.Public),
+                new BilKeywordModifier(BilKeyword.Rich));
+            logged.GenericParameters.Add("TTarget");
+            var proxySym = "core.logging::Logged$.proxy.*(symbol:.string)@.any";
+            logged.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method, proxySym,
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilWrapperProxyModifier(BilProxyKind.Wildcard),
+                }));
+            module.LocalSymbols.Add(logged);
+            var fn = new BilFunction(proxySym);
+            fn.Args.Add(new BilArgDeclaration(".return", ".any"));
+            fn.Args.Add(new BilArgDeclaration(".this", "core.logging::Logged"));
+            fn.Args.Add(new BilArgDeclaration("symbol", ".string"));
+            fn.Vars.Add(new BilVarDeclaration(".any", "r"));
+            var entry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            entry.Instructions.Add(new InvokeInstruction(
+                BilOp.Fn(BilSpellings.InnerReservedFunction), BilOp.Var("r"),
+                Array.Empty<BilVariableOperand>()));
+            entry.Instructions.Add(new RetInstruction(BilOp.Var("r")));
+            fn.Blocks.Add(entry);
+            module.Functions.Add(fn);
             return module;
         }
 
