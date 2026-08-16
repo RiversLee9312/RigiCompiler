@@ -47,6 +47,16 @@ namespace RigiCompiler
             targetNode = target;
         }
 
+        // 种子形态（负号折叠的浮点回退）：- 与整数部分已被外层消费
+        // （如 -3.14 的 3），确认是浮点后直接从 IntegerPart 状态继续
+        // 组合小数/指数部分，AST 形状与不经负号候选路径完全一致
+        internal LiteralParserLayer(LiteralExpressionASTNode target, string integerPartSeed)
+        {
+            targetNode = target;
+            integerPart = integerPartSeed;
+            state = ParserState.IntegerPart;
+        }
+
         // 层弹出时回填施工目标与字面量节点的源码范围（M28）
         public void ReceiveSpan(CharRange span)
         {

@@ -145,9 +145,66 @@ namespace RigiCompiler.Tests
             TestHarness.Blank();
         }
 
-        public static void TestFloatLiterals()
+        // 负号折叠（SYNTAX §3.3）：一元 - 直接作用于整数字面量时并入字面量，
+        // AST 得负值 IntLiteral（无 Opposite 节点）；范围按目标类型完整
+        // 有符号区间（下界可书写）；无符号负值报错；括号/二元/浮点不折叠
+        public static void TestNegativeIntFolding()
         {
-            TestHarness.Section("Float Literals");
+            TestHarness.Section("Negative Integer Literal Folding");
+
+            // 无后缀按 i32 区间：下界可达、下界之下报错（上界正例在
+            // TestIntRangeChecks：2147483648 不折叠时仍报错）
+            TestNeg("-5", "Int(-5,I32)");
+            TestNeg("-2147483648", "Int(-2147483648,I32)");
+            TestHarness.CheckParseError("-2147483649",
+                () => TestHarness.ParseFirstDecl("var v = -2147483649"), "out of range for i32");
+            // i8 / i16 / i64 下界与下界之下
+            TestNeg("-128B", "Int(-128,I8)");
+            TestHarness.CheckParseError("-129B",
+                () => TestHarness.ParseFirstDecl("var v = -129B"), "out of range for i8");
+            TestNeg("-32768S", "Int(-32768,I16)");
+            TestHarness.CheckParseError("-32769S",
+                () => TestHarness.ParseFirstDecl("var v = -32769S"), "out of range for i16");
+            TestNeg("-9223372036854775808L", "Int(-9223372036854775808,I64)");
+            TestHarness.CheckParseError("-9223372036854775809L",
+                () => TestHarness.ParseFirstDecl("var v = -9223372036854775809L"), "out of range for i64");
+            // 进制前缀同样折叠
+            TestNeg("-0xFF", "Int(-255,I32,hex)");
+            // 无符号类型负值报错
+            TestHarness.CheckParseError("-1U",
+                () => TestHarness.ParseFirstDecl("var v = -1U"), "negative value not allowed for u32");
+            TestHarness.CheckParseError("-1UL",
+                () => TestHarness.ParseFirstDecl("var v = -1UL"), "negative value not allowed for u64");
+            // 空白介入仍视为直接作用，折叠
+            TestNeg("- 5", "Int(-5,I32)");
+            // 零折叠为零
+            TestNeg("-0", "Int(0,I32)");
+
+            // 不折叠情形（维持 Opposite 现状）
+            // 括号介入：字面量按正数区间检查，超界仍报错
+            TestNeg("-(5)", "Unary(- Group(Int(5,I32)))");
+            TestHarness.CheckParseError("-(2147483648)",
+                () => TestHarness.ParseFirstDecl("var v = -(2147483648)"), "out of range for i32");
+            // 二元减号中的字面量是独立正字面量，超界报错
+            TestHarness.CheckParseError("a - 2147483648",
+                () => TestHarness.ParseFirstDecl("var v = a - 2147483648"), "out of range for i32");
+            // 浮点不折叠（本次不动，维持 Opposite）
+            TestNeg("-1.5", "Unary(- Float(1.5))");
+            TestNeg("-2e3", "Unary(- Float(2000))");
+            // 非字面量对象不折叠
+            TestNeg("-x", "Unary(- Path(x, []))");
+            // --5 / - -5：内层折叠为负字面量，外层走 Opposite
+            TestNeg("--5", "Unary(- Int(-5,I32))");
+            TestNeg("- -5", "Unary(- Int(-5,I32))");
+            // 外层作用于非字面量仍保持「连续一元」报错
+            TestHarness.CheckParseError("- -x",
+                () => TestHarness.ParseFirstDecl("var v = - -x"), "连续的一元运算符");
+
+            TestHarness.Blank();
+        }
+
+        public static void TestFloatLiterals()
+        {            TestHarness.Section("Float Literals");
 
             TestLit("3.14", "Float(3.14)");
             TestLit("0.1f", "Float(0.1f)");
@@ -421,6 +478,20 @@ namespace RigiCompiler.Tests
 
         private static string Pos(CharPosition p) => $"{p.line}:{p.column}";
 
+        // 辅助：解析变量声明并比对初始化表达式的 AST 描述串（负号折叠用）
+        private static void TestNeg(string code, string expectedDesc)
+        {
+            try
+            {
+                var decl = (VariableDeclarationASTNode)TestHarness.ParseFirstDecl("var v = " + code);
+                TestHarness.Check(code, AstDescribe.Expr(decl.Initializer!.Expression), expectedDesc);
+            }
+            catch (Exception ex)
+            {
+                TestHarness.CheckTrue($"{code} => 意外异常", false, ex.Message);
+            }
+        }
+
         // 辅助：解析单个字面量并比对 AST 描述串
         private static void TestLit(string code, string expectedDesc)
         {
@@ -444,6 +515,7 @@ namespace RigiCompiler.Tests
             TestIntSuffixErrors();
             TestUInt64Boundaries();
             TestIntRangeChecks();
+            TestNegativeIntFolding();
             TestUnderscoreSeparators();
             TestFloatLiterals();
             TestScientificNotationLiterals();

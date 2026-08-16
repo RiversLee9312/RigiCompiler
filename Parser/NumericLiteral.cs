@@ -38,13 +38,17 @@ namespace RigiCompiler
         // 解析整数字面量：拆进制前缀与后缀、校验下划线、换算值、按后缀
         // 目标类型查范围（转换前拦截，不再漏到 VM 装载）。值一律以 decimal
         // 装载（128 位十进制，可精确覆盖 u64 全范围 0..18446744073709551615）。
+        // negative = 负号折叠语境（一元 - 直接作用于本字面量，SYNTAX §3.3）：
+        // 按目标类型的完整有符号区间检查负侧幅度（如 i32 允许 -2147483648）
+        // 并把值取负；无符号类型在负语境下报「不能为负」。
         // 失败返回 false 并给出 error（调用方经 context.RaiseError 抛出）。
         public static bool TryParseInt(
             string content,
             out decimal value,
             out IntType type,
             out LiteralIntBase numBase,
-            out string? error)
+            out string? error,
+            bool negative = false)
         {
             value = 0;
             type = IntType.I32;
@@ -138,8 +142,27 @@ namespace RigiCompiler
             }
 
             // 5. 后缀目标类型范围检查（此时还有源码 span 可报好位置）；
-            // 字面量本身不带符号（负号是一元运算符），下限检查为防御性
+            // 字面量本身不带符号（负号是一元运算符），下限检查为防御性。
+            // 负号折叠语境：允许负侧幅度到下界（|值| <= -min）并取负，
+            // 由此可书写各符号类型下界（-2147483648、-128B 等）
             var (min, max, typeName) = RangeOf(type);
+            if (negative)
+            {
+                if (min == 0)
+                {
+                    error = $"Invalid integer literal: '-{content}' " +
+                            $"(negative value not allowed for {typeName})";
+                    return false;
+                }
+                if (value > -min)
+                {
+                    error = $"Invalid integer literal: '-{content}' " +
+                            $"(value out of range for {typeName})";
+                    return false;
+                }
+                value = -value;
+                return true;
+            }
             if (value < min || value > max)
             {
                 error = $"Invalid integer literal: '{content}' " +

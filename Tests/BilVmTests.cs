@@ -23,6 +23,7 @@ namespace RigiCompiler.Tests
             TestHelloWorld();
             TestLocalArithmetic();
             TestUnaryNegation();
+            TestNegativeLiteralFolding();
             TestInvokeWithResult();
             TestStringConcat();
             TestScalarLocals();
@@ -131,6 +132,26 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckOk("一元", result);
             CheckI32("-5", result, -5);
+        }
+
+        // 负号折叠端到端（SYNTAX §3.3）：负号并入整数字面量，各符号类型
+        // 下界可书写并经 BIL 标量资源文本（负文本）装载运行
+        private static void TestNegativeLiteralFolding()
+        {
+            var result = Run(
+                "pub func main(): i32 {\n" +
+                "    return -2147483648\n" +
+                "}\n");
+            CheckOk("i32 下界折叠", result);
+            CheckI32("return -2147483648", result, -2147483648);
+
+            var i8 = Run(
+                "pub func main(): i32 {\n" +
+                "    const a: i8 = -128B\n" +
+                "    if (a == -128B) { return 1 } else { return 0 }\n" +
+                "}\n");
+            CheckOk("i8 下界折叠", i8);
+            CheckI32("-128B 变量初始化与比较", i8, 1);
         }
 
         private static void TestInvokeWithResult()

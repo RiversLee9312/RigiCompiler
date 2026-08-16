@@ -3,29 +3,29 @@ using System;
 namespace RigiCompiler.Tests
 {
     /// <summary>
-    /// 类型声明解析测试（P3 M13/M14/M15 统一声明层）：全管线驱动�?
-    /// 断言整棵 Root �?AstDescribe 描述串；错误用例断言 ParserException 消息片段�?
+    /// 类型声明解析测试（P3 M13/M14/M15 统一声明层）：全管线驱动�?
+    /// 断言整棵 Root �?AstDescribe 描述串；错误用例断言 ParserException 消息片段�?
     ///
-    /// 覆盖�?
-    /// 1. 简�?class 声明（空 body�?
-    /// 2. 带修饰符�?class（pub, open, abstract, etc.�?
+    /// 覆盖�?
+    /// 1. 简�?class 声明（空 body�?
+    /// 2. 带修饰符�?class（pub, open, abstract, etc.�?
     /// 3. interface 声明
     /// 4. struct 声明
     /// 5. wrapper 声明
     /// 6. 全局字段与全局函数
-    /// 7. 类成员（字段/方法/init/operator�?
-    /// 8. 继承�?implements 列表
+    /// 7. 类成员（字段/方法/init/operator�?
+    /// 8. 继承�?implements 列表
     /// 9. 嵌套类型（多层）
-    /// 10. 声明上的泛型参数（类�?函数/operator，含约束与可变参数）
-    /// 11. enum struct �?[case 列表]（固�?参数�?case、显式判别值、错误用例）
-    /// 12. init 参数映射（_ -> field，含默认�?显式�?混合形态、错误用例）
-    /// 13. like 委托（�?.6）与 ext 扩展成员（�?.4�?
-    /// 14. @ 注解（wrapper 应用，�?4.5，P5�?
-    /// 15. wrapper proxy 成员�?proxy.* specific/wildcard，�?4.2/§14.6，P5�?
+    /// 10. 声明上的泛型参数（类�?函数/operator，含约束与可变参数）
+    /// 11. enum struct �?[case 列表]（固�?参数�?case、显式判别值、错误用例）
+    /// 12. init 参数映射（_ -> field，含默认�?显式�?混合形态、错误用例）
+    /// 13. like 委托（�?.6）与 ext 扩展成员（�?.4�?
+    /// 14. @ 注解（wrapper 应用，�?4.5，P5�?
+    /// 15. wrapper proxy 成员�?proxy.* specific/wildcard，�?4.2/§14.6，P5�?
     /// </summary>
     public class TypeDeclarationTests
     {
-        // ===== 1. 简�?class 声明 =====
+        // ===== 1. 简�?class 声明 =====
         public static void TestSimpleClass()
         {
             TestHarness.Section("Simple Class Declaration");
@@ -39,7 +39,7 @@ namespace RigiCompiler.Tests
             TestHarness.Blank();
         }
 
-        // ===== 2. 带修饰符�?class =====
+        // ===== 2. 带修饰符�?class =====
         public static void TestClassWithModifiers()
         {
             TestHarness.Section("Class with Modifiers");
@@ -113,7 +113,7 @@ namespace RigiCompiler.Tests
             TestHarness.Blank();
         }
 
-        // ===== 6. 全局字段与全局函数（复用同一�?DeclarationParserLayer�?====
+        // ===== 6. 全局字段与全局函数（复用同一�?DeclarationParserLayer�?====
         public static void TestGlobals()
         {
             TestHarness.Section("Global Fields / Functions");
@@ -127,7 +127,7 @@ namespace RigiCompiler.Tests
             TestHarness.Blank();
         }
 
-        // ===== 7. 类成员（字段/方法/init/operator 全部复用同一路径�?====
+        // ===== 7. 类成员（字段/方法/init/operator 全部复用同一路径�?====
         public static void TestMembers()
         {
             TestHarness.Section("Type Members");
@@ -153,7 +153,7 @@ namespace RigiCompiler.Tests
             TestHarness.Blank();
         }
 
-        // ===== 8. 继承与接�?=====
+        // ===== 8. 继承与接�?=====
         public static void TestInheritance()
         {
             TestHarness.Section("Inheritance / Interfaces");
@@ -169,7 +169,7 @@ namespace RigiCompiler.Tests
             TestHarness.Blank();
         }
 
-        // ===== 9. 嵌套类型（递归复用本层，与顶层同一路径�?====
+        // ===== 9. 嵌套类型（递归复用本层，与顶层同一路径�?====
         public static void TestNestedTypes()
         {
             TestHarness.Section("Nested Types");
@@ -189,7 +189,7 @@ namespace RigiCompiler.Tests
             TestHarness.Blank();
         }
 
-        // ===== 10. 声明上的泛型参数（复�?GenericParametersParserLayer，SYNTAX §3.6�?====
+        // ===== 10. 声明上的泛型参数（复�?GenericParametersParserLayer，SYNTAX §3.6�?====
         public static void TestDeclarationGenericParameters()
         {
             TestHarness.Section("Generic Parameters on Declarations");
@@ -208,7 +208,7 @@ namespace RigiCompiler.Tests
             TestDecl("wrapper Logged\\<T> {}",
                 "wrapper Logged\\<T>");
 
-            // 泛型 + 继承 + implements（泛型列表在继承子句之前�?
+            // 泛型 + 继承 + implements（泛型列表在继承子句之前�?
             TestDecl("class MyList\\<TElement> : List implements Iterable {}",
                 "class MyList\\<TElement> : List implements Iterable");
 
@@ -220,7 +220,7 @@ namespace RigiCompiler.Tests
             TestDecl("struct V { pub operator plus\\<TAnother extends Addable>(another: TAnother): V {} }",
                 "struct V {pub operator plus\\<TAnother, TAnother extends Addable>(another: TAnother): V {}}");
 
-            // 约束子句（extends/supers/with；Target 裸标识符即隐含的泛型参数，双注册�?Parameters�?
+            // 约束子句（extends/supers/with；Target 裸标识符即隐含的泛型参数，双注册�?Parameters�?
             TestDecl("func process\\<TItem extends Comparable, Serializable supers BaseType>(item: TItem): TItem {}",
                 "func process\\<TItem, Serializable, TItem extends Comparable, Serializable supers BaseType>(item: TItem): TItem {}");
             TestDecl("func dump\\<TItem with Serializable>(item: TItem) {}",
@@ -239,12 +239,12 @@ namespace RigiCompiler.Tests
             TestHarness.Blank();
         }
 
-        // ===== 11. enum struct �?[case 列表]（SYNTAX §12�?====
+        // ===== 11. enum struct �?[case 列表]（SYNTAX §12�?====
         public static void TestEnumCases()
         {
             TestHarness.Section("Enum Struct Case List");
 
-            // 固定 case（规�?Direction 示例形态）
+            // 固定 case（规�?Direction 示例形态）
             TestDecl(
                 "pub enum struct Direction {\n" +
                 "    pub const degrees: i32\n" +
@@ -258,7 +258,7 @@ namespace RigiCompiler.Tests
                 "pub enum struct Direction {pub const degrees: i32, priv init(degrees: i32)}" +
                 "[North(Int(0,I32)), South(Int(180,I32)), East(Int(90,I32)), West(Int(270,I32))]");
 
-            // 参数�?case：_ 参数�?+ 具名实参
+            // 参数�?case：_ 参数�?+ 具名实参
             TestDecl(
                 "pub enum struct RequestResult {\n" +
                 "    pub const errorCode: i32\n" +
@@ -268,13 +268,13 @@ namespace RigiCompiler.Tests
                 "    Failed(errorCode = _)\n" +
                 "]",
                 "pub enum struct RequestResult {pub const errorCode: i32, pub init(code: i32)}" +
-                "[Success(Unary(- Int(1,I32))), Failed(errorCode:Path(_, []))]");
+                "[Success(Int(-1,I32)), Failed(errorCode:Path(_, []))]");
 
             // 无实参的固定 case
             TestDecl("enum struct Color {}[Red, Green, Blue]",
                 "enum struct Color[Red, Green, Blue]");
 
-            // 显式判别值（§12.4�?
+            // 显式判别值（§12.4�?
             TestDecl(
                 "pub enum struct SteadyABIEnum {}[\n" +
                 "    First -> 0,\n" +
@@ -283,7 +283,7 @@ namespace RigiCompiler.Tests
                 "]",
                 "pub enum struct SteadyABIEnum[First -> 0, Second -> 2, Third -> 1]");
 
-            // 参数�?case + 显式判别�?
+            // 参数�?case + 显式判别�?
             TestDecl(
                 "pub enum struct StableRequestResult {\n" +
                 "    pub const errorCode: i32\n" +
@@ -293,12 +293,12 @@ namespace RigiCompiler.Tests
                 "    Failed(errorCode = _) -> 1\n" +
                 "]",
                 "pub enum struct StableRequestResult {pub const errorCode: i32, pub init(code: i32)}" +
-                "[Success(Unary(- Int(1,I32))) -> 0, Failed(errorCode:Path(_, [])) -> 1]");
+                "[Success(Int(-1,I32)) -> 0, Failed(errorCode:Path(_, [])) -> 1]");
 
-            // �?case 列表（允许缺省，等价于空列表�?
+            // �?case 列表（允许缺省，等价于空列表�?
             TestDecl("pub enum struct Empty {}", "pub enum struct Empty");
 
-            // 错误用例（消息片段见 DeclarationParserLayer �?case 列表收尾校验�?
+            // 错误用例（消息片段见 DeclarationParserLayer �?case 列表收尾校验�?
             TestError("enum struct E {}[A, A]", "Duplicate enum case name");
             TestError("enum struct E {}[A -> 0, B -> 0]", "Duplicate enum discriminant value");
             TestError("enum struct E {}[A -> 0, B]", "all have explicit discriminants");
@@ -307,12 +307,12 @@ namespace RigiCompiler.Tests
             TestHarness.Blank();
         }
 
-        // ===== 12. init 参数映射（_ -> field，SYNTAX §9.3�?====
+        // ===== 12. init 参数映射（_ -> field，SYNTAX §9.3�?====
         public static void TestInitParameterMapping()
         {
             TestHarness.Section("Init Parameter Mapping");
 
-            // 规范 §9.3 示例形态：_ 映射 / 带默认�?/ 显式参数�?
+            // 规范 §9.3 示例形态：_ 映射 / 带默认�?/ 显式参数�?
             TestDecl(
                 "pub class Point {\n" +
                 "    pub var x: i32\n" +
@@ -326,7 +326,7 @@ namespace RigiCompiler.Tests
                 "pub init(_ -> x = Int(0,I32),_ -> y = Int(0,I32)), " +
                 "pub init(horizontal: i32 -> x,vertical: i32 -> y)}");
 
-            // 混合：映射参�?+ 普通参数（带体�?
+            // 混合：映射参�?+ 普通参数（带体�?
             TestDecl(
                 "pub class P {\n" +
                 "    pub var x: i32\n" +
@@ -334,7 +334,7 @@ namespace RigiCompiler.Tests
                 "}",
                 "pub class P {pub var x: i32, pub init(_ -> x,label: String) {}}");
 
-            // struct �?init 映射（�?0 Vector2 风格�?
+            // struct �?init 映射（�?0 Vector2 风格�?
             TestDecl(
                 "pub struct Vector2 {\n" +
                 "    pub var x: float\n" +
@@ -343,7 +343,7 @@ namespace RigiCompiler.Tests
                 "}",
                 "pub struct Vector2 {pub var x: float, pub var y: float, pub init(_ -> x,_ -> y)}");
 
-            // enum struct 规范示例（�?2 Direction：case 列表 + init 映射会师�?
+            // enum struct 规范示例（�?2 Direction：case 列表 + init 映射会师�?
             TestDecl(
                 "pub enum struct Direction {\n" +
                 "    pub const degrees: i32\n" +
@@ -355,34 +355,34 @@ namespace RigiCompiler.Tests
                 "pub enum struct Direction {pub const degrees: i32, priv init(_ -> degrees)}" +
                 "[North(Int(0,I32)), South(Int(180,I32))]");
 
-            // 错误：非 init 的形参列表不允许映射（allowMapping=false �?-> 无去处）
+            // 错误：非 init 的形参列表不允许映射（allowMapping=false �?-> 无去处）
             TestError("func f(x: i32 -> y) {}", "after parameter type");
             TestError("class A { func g(_ -> x) {} }", "Expected ':' after parameter name");
 
-            // 错误�?> 后缺字段�?
+            // 错误�?> 后缺字段�?
             TestError("class A { init(_ -> ) }", "Expected field name after '->' in init parameter mapping");
 
             TestHarness.Blank();
         }
 
-        // ===== 13. like 委托（�?.6）与 ext 扩展成员（�?.4�?====
+        // ===== 13. like 委托（�?.6）与 ext 扩展成员（�?.4�?====
         public static void TestLikeAndExtension()
         {
             TestHarness.Section("like Delegation / ext Extension");
 
-            // like 委托（规�?§9.6 示例形态）
+            // like 委托（规�?§9.6 示例形态）
             TestDecl(
                 "pub class Apple : Fruit like pear {\n" +
                 "    pub var pear: Pear = Pear()\n" +
                 "}",
                 "pub class Apple : Fruit like pear {pub var pear: Pear = Path(Pear(), [])}");
 
-            // like 跟在 implements 之后 / 无基类直�?like（解析层允许，语义待查）
+            // like 跟在 implements 之后 / 无基类直�?like（解析层允许，语义待查）
             TestDecl("class A implements Drawable like d {}",
                 "class A implements Drawable like d");
             TestDecl("class A like x {}", "class A like x");
 
-            // 错误：非 class 不允�?like；like 后缺字段�?
+            // 错误：非 class 不允�?like；like 后缺字段�?
             TestError("struct S like x {}", "Only class declarations can use 'like' delegation");
             TestError("class A like {}", "Expected field name after 'like'");
 
@@ -393,7 +393,7 @@ namespace RigiCompiler.Tests
                 "pub ext var String.isEmpty: bool { get(_: _) { return (this.length == 0) } }",
                 "pub ext var String.isEmpty: bool {get(_){}}");
 
-            // 错误：限定名必须�?ext 修饰（全局函数与全局变量均拒绝）
+            // 错误：限定名必须�?ext 修饰（全局函数与全局变量均拒绝）
             TestError("func String.reversed(): String {}", "Expected '(' in declaration");
             TestError("var a.b: i32", "Expected ':', '=' or line break after variable name");
 
@@ -404,17 +404,17 @@ namespace RigiCompiler.Tests
             TestHarness.Blank();
         }
 
-        // ===== 14. @ 注解（wrapper 应用，SYNTAX §14.5，P5�?====
+        // ===== 14. @ 注解（wrapper 应用，SYNTAX §14.5，P5�?====
         public static void TestAnnotations()
         {
             TestHarness.Section("@ Annotations (Wrapper Applications)");
 
-            // 编译器内�?wrapper：wrapper 类型标识（�?4.2/14.3/14.4�?
+            // 编译器内�?wrapper：wrapper 类型标识（�?4.2/14.3/14.4�?
             TestDecl("@WrapperTarget(.Entity)\npub wrapper Logged {}",
                 "@WrapperTarget(EnumCase(.Entity)) pub wrapper Logged");
             TestDecl("@WrapperTarget(.Value)\npub wrapper Clamped {}",
                 "@WrapperTarget(EnumCase(.Value)) pub wrapper Clamped");
-            // 用户 wrapper 应用：类�?/ 函数 / 全局变量
+            // 用户 wrapper 应用：类�?/ 函数 / 全局变量
             TestDecl("@Logged(\"DEBUG\")\npub class MyService {}",
                 "@Logged(Str(\"DEBUG\")) pub class MyService");
             TestDecl("@Timed()\npub func heavyComputation() {}",
@@ -424,19 +424,19 @@ namespace RigiCompiler.Tests
             // 多注解叠加（§14.5 示例形态）
             TestDecl("@Logged(\"DEBUG\")\n@Serializable()\npub class MyService {}",
                 "@Logged(Str(\"DEBUG\")) @Serializable() pub class MyService");
-            // 注解名可为路�?
+            // 注解名可为路�?
             TestDecl("@core.WrapperTarget(.Method)\npub wrapper Timed {}",
                 "@core.WrapperTarget(EnumCase(.Method)) pub wrapper Timed");
 
             TestHarness.Blank();
         }
 
-        // ===== 14b. native 函数（SYNTAX §4.6，M43�?====
+        // ===== 14b. native 函数（SYNTAX §4.6，M43�?====
         public static void TestNativeFunction()
         {
             TestHarness.Section("Native Functions");
 
-            // 顶层 native 函数：无体声明（换行收尾�?
+            // 顶层 native 函数：无体声明（换行收尾�?
             TestDecl("pub native func fflush(): i32",
                 "pub native func fflush(): i32");
 
@@ -451,18 +451,18 @@ namespace RigiCompiler.Tests
             TestHarness.Blank();
         }
 
-        // ===== 15. wrapper proxy 成员�?proxy.*，SYNTAX §14.2/§14.6，P5�?====
+        // ===== 15. wrapper proxy 成员�?proxy.*，SYNTAX §14.2/§14.6，P5�?====
         public static void TestWrapperProxy()
         {
             TestHarness.Section("Wrapper Proxy Members");
 
-            // specific 方法代理（�?4.2 示例形态）
+            // specific 方法代理（�?4.2 示例形态）
             TestDecl(
                 "pub wrapper Logged {\n" +
                 "    operator .proxy.doSomething(arg: i32): String {}\n" +
                 "}",
                 "pub wrapper Logged {operator .proxy.doSomething(arg: i32): String {}}");
-            // specific 运算符代�?/ getter 代理（带泛型�?
+            // specific 运算符代�?/ getter 代理（带泛型�?
             TestDecl(
                 "wrapper W {\n" +
                 "    operator .proxy.opr.plus(another: TTarget): TTarget {}\n" +
@@ -483,7 +483,7 @@ namespace RigiCompiler.Tests
                 "operator .proxy.get.*\\<TValue>(symbol: String,value: TValue): TValue {}, " +
                 "operator .proxy.set.*\\<TValue>(symbol: String,value: TValue) {}, " +
                 "operator .proxy.opr.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(symbol: String): TReturn {}}");
-            // value wrapper（�?4.3）与 method wrapper（�?4.4）的 proxy 形�?
+            // value wrapper（�?4.3）与 method wrapper（�?4.4）的 proxy 形�?
             TestDecl(
                 "@WrapperTarget(.Value)\n" +
                 "pub wrapper Clamped {\n" +
@@ -504,7 +504,7 @@ namespace RigiCompiler.Tests
                 "}",
                 "@WrapperTarget(EnumCase(.Method)) pub wrapper Timed {pub init(), " +
                 "operator .proxy.call\\<TReturn, TReturn extends Object>(): TReturn {}}");
-            // method wrapper canonical 保留参数�?.name（�?4.4 示例形态）：前导点原样入参数名
+            // method wrapper canonical 保留参数�?.name（�?4.4 示例形态）：前导点原样入参数名
             TestDecl(
                 "wrapper W {\n" +
                 "    operator .proxy.call(.name: String, args: named Any...): Any {\n" +
@@ -518,14 +518,14 @@ namespace RigiCompiler.Tests
             TestError("operator .proxy.f() {}", "Expected declaration name");
             // 错误：proxy 名首段必须是 proxy
             TestError("wrapper W { operator .foo.f() {} }", "must start with '.proxy.'");
-            // 错误：同�?wildcard 重复（�?4.6�?
+            // 错误：同�?wildcard 重复（�?4.6�?
             TestError(
                 "wrapper W {\n" +
                 "    operator .proxy.*\\<T>(symbol: String) {}\n" +
                 "    operator .proxy.*\\<T>(symbol: String) {}\n" +
                 "}",
                 "Duplicate wildcard proxy of the same category");
-            // 错误：wildcard �?* 必须收尾�? 后再遇点按「期�?(」拒绝）
+            // 错误：wildcard �?* 必须收尾�? 后再遇点按「期�?(」拒绝）
             TestError("wrapper W { operator .proxy.*.f() {} }", "Expected '(' in declaration");
 
             TestHarness.Blank();
@@ -533,7 +533,7 @@ namespace RigiCompiler.Tests
 
         // ===== 辅助 =====
 
-        // 辅助：全管线解析并比对整�?Root �?AST 描述�?
+        // 辅助：全管线解析并比对整�?Root �?AST 描述�?
         private static void TestDecl(string code, string expectedDesc)
         {
             try
@@ -547,13 +547,13 @@ namespace RigiCompiler.Tests
             }
         }
 
-        // 辅助：期望解析失败（ParserException/LexerException，消息含片段�?
+        // 辅助：期望解析失败（ParserException/LexerException，消息含片段�?
         private static void TestError(string code, string expectedMessagePart)
         {
             TestHarness.CheckParseError(Label(code), () => TestHarness.ParseRoot(code), expectedMessagePart);
         }
 
-        // 多行源码�?label 转义显示
+        // 多行源码�?label 转义显示
         private static string Label(string code) => code.Replace("\n", "\\n");
 
         // ===== 入口 =====

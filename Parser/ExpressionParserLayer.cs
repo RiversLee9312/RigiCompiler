@@ -64,11 +64,20 @@ namespace RigiCompiler
             GenericArgParsed,     // 一个泛型实参已解析，等待 , 或 >
             TypeOperatorSeen,     // 类型操作符 is/as/supers/with 已读，等待右侧类型
             IfNullFallbackSeen,   // 中缀 if 已读，等待 ? 组成 if?（S7f 空值回退）
+            MinusCandidate,       // 前缀 - 已读（负号折叠候选）：等待紧随的 token 判别
+            MinusIntCandidate,    // - 与整数词已读：等待下一 token 确认非浮点（非 . ）
             Completed             // 完成
         }
 
         private State state = State.Initial;
         private string? pendingOperator = null;
+
+        // 负号折叠候选暂存（SYNTAX §3.3）：前缀 - 的位置与紧随的整数词
+        private CharPosition pendingMinusStart;
+        private WordToken? pendingMinusWord = null;
+        // 种子数字词（负号折叠的浮点回退：-3.14 的 - 与 3 已被外层消费）：
+        // 首 token 处理前先把种子注入字面量层，当前 token 走正常 Replay
+        internal string? seedNumericWord = null;
         // pending 运算符末 token 的 End 位置（重组相邻性校验）：> 系列重组与
         // 复合赋值 op+= 重组要求两 token span 相邻——Lexer 合并的 << <= 天然
         // 相邻，拆 token 的 > 与 = 系列可能夹空白（`a > = b` 不得重组为 >=）
@@ -171,6 +180,20 @@ namespace RigiCompiler
                 return HandleEndOfFile(context);
             }
 
+            // 种子数字词注入（负号折叠的浮点回退）：- 与整数部分已被外层消费，
+            // 直接委托带种子的字面量层；当前 token（. 等）经 Replay 正常流入
+            if (seedNumericWord != null)
+            {
+                var seed = seedNumericWord;
+                seedNumericWord = null;
+                var seedLiteral = new LiteralExpressionASTNode();
+                currentExpression = seedLiteral;
+                state = State.PrimaryParsed;
+                return new ParserLayerResult.PushLayer(
+                    new LiteralParserLayer(seedLiteral, seed) { allowBareReturn = allowBareReturn },
+                    TokenDisposition.Replay);
+            }
+
             // 括号语境下的换行透明化（M31，SYNTAX §1.1：() / [] 未闭合时换行按空白处理）：
             // 结构等待态遇换行直接跳过；后缀装配态（成员名/泛型/类型操作等）不在豁免内
             if (insideParens && currentToken is LineBreakToken && IsLineBreakTransparentState(state))
@@ -209,6 +232,12 @@ namespace RigiCompiler
 
                 case State.IfNullFallbackSeen:
                     return HandleIfNullFallbackSeen(currentToken, context);
+
+                case State.MinusCandidate:
+                    return HandleMinusCandidate(currentToken, context);
+
+                case State.MinusIntCandidate:
+                    return HandleMinusIntCandidate(currentToken, context);
 
                 case State.Completed:
                     return HandleCompleted(currentToken, context);
@@ -295,6 +324,15 @@ namespace RigiCompiler
             // 4. 一元前缀运算符
             if (IsPrefixUnaryOperator(currentToken))
             {
+                // 负号折叠（SYNTAX §3.3）：前缀 - 直接作用于整数字面量时并入
+                // 字面量（-2147483648 可达 i32 下界），先进入候选状态判别；
+                // 其他一元运算符（!/not/await）维持既有路径
+                if (currentToken is NotationToken minus && minus.Content == "-")
+                {
+                    pendingMinusStart = currentToken.CharRange.Start;
+                    state = State.MinusCandidate;
+                    return ParserLayerResult.Continue.Instance;
+                }
                 if (!allowPrefixUnary)
                 {
                     context.RaiseError(
@@ -470,6 +508,120 @@ namespace RigiCompiler
             };
 
             return new ParserLayerResult.PushLayer(operandLayer, TokenDisposition.Consume);
+        }
+
+        // ===== 负号折叠（SYNTAX §3.3）=====
+        // 前缀 - 直接作用于整数字面量时折叠进字面量：AST 得负值 IntLiteral，
+        // 不产生 Opposite 一元节点；范围检查按目标类型完整有符号区间
+        // （-2147483648 合法、2147483648 超上限报错、-1U 不能为负）。
+        // 不折叠情形（维持 Opposite 现状）：作用对象非整数字面量
+        // （-x、-(5)、-1.5、-2e3 等）、二元减号（不经本路径）。
+
+        // - 已读：判别紧随 token——整数词进入折叠确认，其余回退普通一元负路径
+        private ParserLayerResult HandleMinusCandidate(Token currentToken, ParserLayerContext context)
+        {
+            if (currentToken is WordToken word && NumericLiteral.IsNumericWord(word.Content)
+                && !IsScientificWord(word.Content))
+            {
+                pendingMinusWord = word;
+                state = State.MinusIntCandidate;
+                return ParserLayerResult.Continue.Instance;
+            }
+
+            return DelegateMinusUnary(context, TokenDisposition.Replay);
+        }
+
+        // - 与整数词已读：遇 . 说明是浮点（-3.14，Lexer 把浮点切成多 token），
+        // 回退普通一元负路径并把已消费的整数词作为种子还给字面量层；
+        // 其余 token 确认整数，折叠后以新状态重派当前 token
+        private ParserLayerResult HandleMinusIntCandidate(Token currentToken, ParserLayerContext context)
+        {
+            if (currentToken is NotationToken dot && dot.Content == ".")
+            {
+                var seed = pendingMinusWord!.Content;
+                pendingMinusWord = null;
+                return DelegateMinusUnary(context, TokenDisposition.Replay, seed);
+            }
+
+            FoldPendingMinus(context);
+            return ParseToken(currentToken, context);
+        }
+
+        // 折叠施工：负号并入已读整数词，产出负值 IntLiteral 作为当前主表达式
+        private void FoldPendingMinus(ParserLayerContext context)
+        {
+            var word = pendingMinusWord!;
+            pendingMinusWord = null;
+            if (!NumericLiteral.TryParseInt(word.Content, out var value, out var intType,
+                    out var numBase, out var error, negative: true))
+            {
+                context.RaiseError(error!);
+            }
+
+            // span 覆盖负号到数字词全文
+            var literalExpr = new LiteralExpressionASTNode();
+            var intNode = new IntLiteralASTNode(literalExpr)
+            {
+                Value = value,
+                IntType = intType,
+                Base = numBase
+            };
+            literalExpr.AttachLiteral(intNode);
+            literalExpr.Span = new CharRange
+            {
+                Start = pendingMinusStart,
+                End = word.CharRange.End,
+                sourceName = word.CharRange.sourceName
+            };
+            intNode.Span = literalExpr.Span;
+            currentExpression = literalExpr;
+            state = State.PrimaryParsed;
+        }
+
+        // 普通一元负（Opposite）路径：创建一元节点并下钻操作数层。
+        // seed 为负号折叠浮点回退时已被本层消费的整数词（如 -3.14 的 3）
+        private ParserLayerResult DelegateMinusUnary(
+            ParserLayerContext context, TokenDisposition disposition, string? seed = null)
+        {
+            // 操作数非整数字面量时负号仍是一元运算符：连续一元限制在此生效
+            // （- -5 内层是折叠字面量不受影响；- -x 保持报错）
+            if (!allowPrefixUnary)
+            {
+                context.RaiseError(
+                    "连续的一元运算符必须用括号明确嵌套关系，如 not (not x)");
+            }
+
+            var unaryExpr = new UnaryExpressionASTNode()
+            {
+                Operator = "-",
+                IsPrefix = true
+            };
+            StartSpan(unaryExpr, pendingMinusStart, context);
+            currentExpression = unaryExpr;
+            state = State.PrimaryParsed;
+
+            // 一元结果不能再直接接二元运算符（-x + y 非法，须写 (-x) + y）
+            allowBinaryOperator = false;
+
+            // 递归解析操作数：操作数内禁止二元运算符与连续一元运算符
+            var operandLayer = new ExpressionParserLayer(unaryExpr.Operand)
+            {
+                allowBinaryOperator = false,
+                allowPrefixUnary = false,
+                insideParens = insideParens,
+                allowBareReturn = allowBareReturn,
+                seedNumericWord = seed
+            };
+
+            return new ParserLayerResult.PushLayer(operandLayer, disposition);
+        }
+
+        // 科学计数法词判定（折叠候选排除）：无进制前缀且含 e/E 的词按浮点
+        // 现状路径处理（2e3 完整指数、2e 待吸收指数；-2e3 不折叠）
+        private static bool IsScientificWord(string content)
+        {
+            return !NumericLiteral.HasBasePrefix(content) &&
+                   (content.Contains('e') || content.Contains('E'));
         }
 
         // ===== 路径后缀链施工（M42）=====
@@ -1003,6 +1155,13 @@ namespace RigiCompiler
         // EOF 处理：表达式可以自然结束的状态挂载并弹栈、上交 EOF；其余状态为不完整结构
         private ParserLayerResult HandleEndOfFile(ParserLayerContext context)
         {
+            // 负号折叠候选在 EOF 处确认（- 与整数词后无更多 token）：折叠后按完成收尾
+            if (state == State.MinusIntCandidate)
+            {
+                FoldPendingMinus(context);
+                return CompleteExpression(context, TokenDisposition.Replay);
+            }
+
             bool canComplete =
                 state == State.Completed ||
                 (state == State.PrimaryParsed && !expectClosingParen);
@@ -1113,12 +1272,15 @@ namespace RigiCompiler
         }
 
         // 括号语境下换行透明的状态：等待主表达式、主表达式已解析（可能接运算符或 )）、
-        // 等待右操作数、二元表达式已完成（可能接 ) 或犯错报优先级）
+        // 等待右操作数、二元表达式已完成（可能接 ) 或犯错报优先级）；
+        // 负号折叠候选（MinusCandidate/MinusIntCandidate）与 Initial 同性质，一并豁免
         private static bool IsLineBreakTransparentState(State state)
         {
             return state == State.Initial ||
                    state == State.PrimaryParsed ||
                    state == State.OperatorSeen ||
+                   state == State.MinusCandidate ||
+                   state == State.MinusIntCandidate ||
                    state == State.Completed;
         }
     }

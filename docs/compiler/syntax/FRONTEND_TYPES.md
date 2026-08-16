@@ -53,7 +53,9 @@ ASTIntegrityValidator 校验父子指针一致性与 Span 合法性，
 
 ### 3.2 字面量（`AST/LiteralNodes.cs`）
 - **IntLiteralASTNode**（Value（decimal，128 位十进制，可精确覆盖 u64 全范围）、IntType、Base；IntType 枚举：I32/I64/I16/I8/U32/U64/U16/U8；
-  Base 为 LiteralIntBase 枚举（替代 IsHex 布尔）：Decimal/Hex/Binary/Octal，对应 0x/0b/0o 前缀）
+  Base 为 LiteralIntBase 枚举（替代 IsHex 布尔）：Decimal/Hex/Binary/Octal，对应 0x/0b/0o 前缀；
+  负号折叠（SYNTAX §3.3）：一元 `-` 直接作用于整数字面量时 Value 即负值（不产生 Unary 节点），
+  解析期范围检查按目标类型完整有符号区间（`NumericLiteral.TryParseInt` 的 negative 语境））
 - **FloatLiteralASTNode**（Value、IsFloat）
 - **StringLiteralASTNode**（Value、HasInterpolation）
 - **CharLiteralASTNode**（Value；SYNTAX §3.3：单引号内恰好一个字符或一个转义序列）

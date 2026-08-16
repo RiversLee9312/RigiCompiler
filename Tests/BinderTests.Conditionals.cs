@@ -42,7 +42,7 @@ namespace RigiCompiler.Tests
                 "Body(g, [], [If(Binary(CmpGt, Param(a,i32), Int(0,i32), bool), " +
                 "[Return(Int(1,i32))], " +
                 "[If(Binary(CmpEq, Param(a,i32), Int(0,i32), bool), " +
-                "[Return(Int(0,i32))], [Return(Unary(Opposite, Int(1,i32), i32))])])])");
+                "[Return(Int(0,i32))], [Return(Int(-1,i32))])])])");
 
             // 结构性事实：else if 包装块是单语句 BoundBlock，且语句即 BoundIfStatement
             var outerIf = (BoundIfStatement)BodyOf(bodies2, "g").Body.Statements[0];
