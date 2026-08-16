@@ -109,7 +109,13 @@ Bil/
 - 槽按归一化签名键匹配（名称 + 参数类型序列 + 返回类型；泛型参数按出现序
   归一为位置占位，参数名不参与）；有体成员替换全部同签名槽的实现（含继承
   来的接口段槽）。abstract/init/ext 成员与除 `$$call` 外的运算符不进 vtable
-  （callable 协议例外，SYNTAX §9.2.1）。
+  （callable 协议例外，SYNTAX §9.2.1）。泛型基类/接口（`D : B<i32>`、
+  `C : IFace<i32>`）的槽匹配按 extends/implements 实参代入——克隆基类槽
+  与构建接口段时把槽的签名源按 `{T_i → arg_i}` 代入再重新归一化（
+  `m(x:#0)` → `m(x:.i32)`；转发形态 `D<T2> : B<T2>` 代入后归一化不变），
+  子类 `override m(x: i32)` 因而同 key 替换而非追加新槽；`SlotSymbol`/
+  `ImplSymbol` 与 `OffsetBySymbol` 键保持声明级原样。多级链每跳各按直接
+  extends 构造代入（`E : D<i32>` ← `D<X> : B<X>` 逐跳 T→X→i32）。
 - iMap（`InterfaceBase`）记录接口声明 key → 接口段基址；接口派发 = 段基址 +
   接口内相对 offset（§8）。owner 是预定义根（core::Exception 等不进符号段）
   时按签名在 receiver 实际类型槽防御扫描（getMessage 多态路径）。
@@ -148,6 +154,17 @@ Bil/
 
 - `VmTask` 的终态转换与 waiter 列表用同一把锁保护；锁的释放/获取天然建立
   §18.3 要求的「终止前写入对 await 返回后可见」。
+- **协程执行单所有者**：`Execute` 的「`Runnable→Running` 转换 +
+  `SettleAfterResume` + Step 循环」整体在该协程的 `SyncRoot` 锁内；锁外
+  只做状态发布（CAS + 入队）。handoff 因此被串行化——持锁 worker 的循环
+  退出条件 `State != Running` 只可能由它自己的挂起动作造成（唯一能置
+  Running 的转换在锁内），结构上消灭「旧 worker 尚未退出、新 worker 已
+  接手」的双执行窗口。`lock` 同线程可重入，Step 内的嵌套 Step 循环
+  （isReady 探测、singleton init、proxy 链同步推进）自然安全。
+- 锁序单向无环：协程锁内可取 `VmTask._gate`（`TryAwait`/`Observe`）与
+  executor 的 `_liveLock`（`NotifyTerminal`）；反向唤醒路径（task/alarm
+  完成线程的 `ResumeWaiters→PublishWakeup→Publish`、eager spawn 的
+  `Publish(child)`）只 CAS + 入队，不取任何协程锁。
 - 唤醒发布统一走 `PublishWakeup`（携带唤醒纪元）：全部挂起点经 `TrySuspend`
   原子递增纪元，唤醒方（Task/EventAlarm waiter、轮询 timer）登记时捕获；
   发布失败且协程仍 Suspended、纪元未变 ⇒ 判定调度器丢失唤醒，立即 `Fail`

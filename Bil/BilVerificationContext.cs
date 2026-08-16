@@ -422,6 +422,11 @@ namespace RigiCompiler.Bil
         private bool IsNominalAssignable(string actual, string expected, HashSet<string> visited)
         {
             if (NormalizeTypeRef(actual) == NormalizeTypeRef(expected)) return true;
+            // 构造形态 → 自身开放宿主恒可赋值（擦除方向的 cast：B<.i32> → B；
+            // 实参信息多于目标，声明级名义包含即成立——实例方法 receiver 的
+            // 擦除 cast（BIL §7）沿 extends 链命中构造基类时经此放行）
+            if (TypeArgumentsOf(actual) != null
+                && StripTypeArguments(actual) == NormalizeTypeRef(expected)) return true;
             if (!visited.Add(DeclarationKeyOf(actual))) return false;
             if (!TryGetTypeDeclaration(actual, out var declaration)) return false;
             if (declaration.ExtendsType != null

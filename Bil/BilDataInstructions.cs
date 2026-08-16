@@ -1245,7 +1245,10 @@ namespace RigiCompiler.Bil
             {
                 return;
             }
-            if (context.TryResolveNative(methodSymbol, out var library, out var nativeSymbol))
+            // native hook 只钩默认本体（RUNTIME §7 的自然推论）：receiver
+            // 实际类型 override 了该 native 方法时让位给正常虚派发
+            if (context.TryResolveNative(methodSymbol, out var library, out var nativeSymbol)
+                && !NativeHasDispatchOverride(context, methodSymbol, args))
             {
                 var result = context.Hooks.Invoke(context, library, nativeSymbol, args);
                 if (resultSlot != null)
@@ -1281,6 +1284,27 @@ namespace RigiCompiler.Bil
             InvokeResolved(context, coroutine, methodSymbol, args, resultSlot);
         }
 
+        // native hook 的派发感知（RUNTIME §7 自然推论）：hook 只应钩住
+        // Any/Object 上的默认 toString 本体——vtable 派发后槽位 impl 仍是
+        // 静态符号自身（未 override，含多级继承原样继承 native 默认实现）
+        // 才触发 hook；receiver 实际类型 override 了它（impl 符号 ≠ 静态
+        // 符号）则让位，控制流继续走 wrapper 链 → InvokeResolved 正常派发。
+        // 仅带 receiver 的实例方法需要判定（static/全局/无参符号无法派发，
+        // 维持现状）；探测失败（内建精确类型无 sheet 等）同样维持 hook
+        private static bool NativeHasDispatchOverride(VmContext context, string methodSymbol,
+            IReadOnlyList<VmValue> args)
+        {
+            if (args.Count == 0
+                || !BilVerificationContext.TryParseMethodSymbol(methodSymbol,
+                    out _, out var isStatic, out _, out _)
+                || isStatic)
+            {
+                return false;
+            }
+            return context.TryResolveDispatch(methodSymbol, args[0], out var impl)
+                && impl!.Symbol != methodSymbol;
+        }
+
         // 跳过 wrapper 派发/原生/hook 的普通 fn 解析与压帧（方法派发链末的
         // 原始 fn 落点复用；统一走逻辑 TypeSheet 虚派发 ResolveDispatch）
         internal static void InvokeResolved(VmContext context, VmCoroutine coroutine,
@@ -1291,6 +1315,22 @@ namespace RigiCompiler.Bil
             if (function == null)
             {
                 throw new VmException("找不到 fn 定义：" + methodSymbol);
+            }
+            // .any 胖值 receiver 的实例方法派发：方法体在负载上执行
+            //（.this = payload；与 VmWrapperDispatch 的 receiver 解包同口径）。
+            // 仅限实例方法符号——全局 fn 的首个实参可能是合法的 .any 值
+            if (args.Count > 0 && args[0] is VmAny boxed
+                && BilVerificationContext.TryParseMethodSymbol(methodSymbol,
+                    out _, out var receiverStatic, out _, out _)
+                && !receiverStatic)
+            {
+                var unboxed = new VmValue[args.Count];
+                unboxed[0] = boxed.Payload;
+                for (var i = 1; i < args.Count; i++)
+                {
+                    unboxed[i] = args[i];
+                }
+                args = unboxed;
             }
             if (context.IsAsyncMethod(function.Symbol) || context.IsAsyncMethod(methodSymbol))
             {
@@ -1343,6 +1383,10 @@ namespace RigiCompiler.Bil
             var impl = baseSheet.Slots[offset].ImplSymbol
                 ?? VmTypeSheetBuilder.FindCompatibleImpl(baseSheet.Slots, current.Symbol)
                 ?? throw new VmException("直接基类该签名无实现，无法 super：" + current.Symbol);
+            // super 目标天然不会是 native 无体符号：sheet 槽 ImplSymbol 仅
+            // 在 fn 体存在时落地（VmTypeSheetBuilder.Build），内建类型的
+            // native 默认实现（Any/Object$toString）不进任何 sheet——
+            // 此处 FindFunction 的 null 分支只防御异常模块形态，无需 hook 路由
             var target = context.FindFunction(impl)
                 ?? throw new VmException("super 目标实现缺少 fn 定义：" + impl);
             PushSuperFrame(context, coroutine, target, args, resultSlot);

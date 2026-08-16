@@ -29,6 +29,7 @@ namespace RigiCompiler.Tests
             TestTaskWakeupPath();
             TestAlarmWakeupPath();
             TestEndToEndWakeupPaths();
+            TestFailDisposesPollTimer();
 
             return TestHarness.Summary("BilVmWakeup");
         }
@@ -263,7 +264,25 @@ namespace RigiCompiler.Tests
                 second.State == VmCoroutineState.Running, "状态 " + second.State);
         }
 
-        // 端到端回归：sleep(EventAlarm) + fork/join(await Task) 双唤醒通道
+        // 终态释放轮询 timer：挂起协程持有 SchedulePoll 的在途 timer，
+        // Fail 后经终态 choke point（NotifyTerminal）释放，不持有到触发
+        private static void TestFailDisposesPollTimer()
+        {
+            var executor = NewExecutor();
+            var coroutine = NewCoroutine(executor);
+            MakeRunning(coroutine);
+            TestHarness.CheckTrue("挂起成功", coroutine.TrySuspend(), "状态 " + coroutine.State);
+            executor.SchedulePoll(coroutine);
+            TestHarness.CheckTrue("SchedulePoll 后有在途 timer", coroutine.HasPollTimer,
+                "timer 未挂入");
+            coroutine.Fail(new VmException("单元测试失败注入"));
+            TestHarness.CheckTrue("Fail 后 timer 已释放", !coroutine.HasPollTimer,
+                "timer 仍持有");
+            TestHarness.CheckTrue("协程转 Failed", coroutine.State == VmCoroutineState.Failed,
+                "状态 " + coroutine.State);
+        }
+
+
         private static void TestEndToEndWakeupPaths()
         {
             var result = Run(

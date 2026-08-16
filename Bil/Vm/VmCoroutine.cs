@@ -160,6 +160,10 @@ namespace RigiCompiler.Bil.Vm
 
         public VmExecutor BoundExecutor { get; }
         public VmTask Task { get; }
+        // 执行所有权锁：Execute 的「Runnable→Running 转换 + Settle + Step
+        // 循环」整体在此锁内，保证任一时刻至多一个 worker 执行本协程
+        // （handoff 单所有者，见 VmExecutor.Execute 与 BIL_VM_DESIGN §4.2）
+        internal object SyncRoot { get; } = new object();
         public Stack<VmCallFrame> CallStack { get; }
         // wrapper 派发上下文栈：invoke fn(..inner) 在执行期解析「下一环」
         // （BIL §15.4 / SYNTAX §14.3：set 链 outer→inner 的下一环落点）
@@ -362,6 +366,20 @@ namespace RigiCompiler.Bil.Vm
             _pollTimer = timer;
             previous?.Dispose();
         }
+
+        // 终态统一释放轮询 timer（AttachTimer 的对偶，由 executor
+        // NotifyTerminal 这一终态 choke point 调用）。timer 回调可能正在
+        // 执行：只用 Dispose()、不用 Dispose(WaitHandle) 阻塞版；置 null
+        // 保证幂等并供测试断言
+        internal void DisposePollTimer()
+        {
+            var timer = _pollTimer;
+            _pollTimer = null;
+            timer?.Dispose();
+        }
+
+        // 是否有在途轮询 timer（测试断言用）
+        internal bool HasPollTimer => _pollTimer != null;
 
         public void PushBlock(BilBlock block)
         {

@@ -54,6 +54,7 @@ namespace RigiCompiler.Tests
             TestGlobalConstWrappedField();
             TestSingletonInitOrderIndependence();
             TestSingletonCycleDetection();
+            TestCoroutineHandoffRaceRegression();
 
             return TestHarness.Summary("BilVmStress");
         }
@@ -1093,6 +1094,91 @@ namespace RigiCompiler.Tests
                 && cycle?.Message.Contains("A") == true
                 && cycle?.Message.Contains("B") == true,
                 cycle?.Message ?? "<null>");
+        }
+
+        // ===== 并发 handoff 竞态回归（VmExecutor.Execute 协程锁）=====
+
+        // 定向放大「协程挂起 → 唤醒方重发布 → 旧 worker 复查 Step 循环条件」
+        // 的双 worker 并发执行窗口（修复前 BilVm 套件循环跑约 5% 复现
+        // 「未初始化变量 $.t1」/ catch 返回 <null>）。两份 module 各只编译
+        // 一次，逐轮新建 VM 运行（VmContext 只读 module 建索引，共享安全）：
+        // ① async throw + await + try/catch/finally ×200 轮
+        // ② 密集 bare yield fork/join ×200 轮
+        private static void TestCoroutineHandoffRaceRegression()
+        {
+            var (boomUnit, boomModule, _) = BilTestHarness.EmitBilUnit(
+                "async func boom(): i32 {\n" +
+                "    yield\n" +
+                "    throw new core.RuntimeException(\"x\")\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    try {\n" +
+                "        await boom()\n" +
+                "        return 0\n" +
+                "    } catch (_: core.RuntimeException) {\n" +
+                "        return 2\n" +
+                "    } finally(_) {\n" +
+                "        core.io.Console.println(\"fin\")\n" +
+                "    }\n" +
+                "}\n");
+            TestHarness.CheckTrue("竞态回归 boom 编译无诊断", !boomUnit.Diagnostics.HasErrors,
+                string.Join("; ", boomUnit.Diagnostics.Diagnostics.Select(
+                    d => $"{d.Phase}: {d.Message}")));
+            var boomFailedRound = -1;
+            var boomDetail = "";
+            for (var round = 0; round < 200 && boomFailedRound < 0; round++)
+            {
+                var result = BilVm.Run(boomModule);
+                if (result.Exception != null || result.Stdout != "fin\n"
+                    || result.ReturnValue is not VmI32 boomValue || boomValue.Value != 2)
+                {
+                    boomFailedRound = round;
+                    boomDetail = (result.Exception?.ToString() ?? "<noex>") + " | stdout="
+                        + result.Stdout.Replace("\n", "\\n") + " | ret="
+                        + (result.ReturnValue?.ToStandardText() ?? "<null>");
+                }
+            }
+            TestHarness.CheckTrue("await throw+finally 200 轮全绿", boomFailedRound < 0,
+                "第 " + boomFailedRound + " 轮失败：" + boomDetail);
+
+            var (yieldUnit, yieldModule, _) = BilTestHarness.EmitBilUnit(
+                "async func spin(n: i32): i32 {\n" +
+                "    var i = 0\n" +
+                "    while (i < n) {\n" +
+                "        yield\n" +
+                "        i = (i + 1)\n" +
+                "    }\n" +
+                "    return i\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = spin(3)\n" +
+                "    var b = spin(3)\n" +
+                "    var c = spin(3)\n" +
+                "    var d = spin(3)\n" +
+                "    var x = await a\n" +
+                "    var y = await b\n" +
+                "    var z = await c\n" +
+                "    var w = await d\n" +
+                "    return (((x + y) + z) + w)\n" +
+                "}\n");
+            TestHarness.CheckTrue("竞态回归 yield 编译无诊断", !yieldUnit.Diagnostics.HasErrors,
+                string.Join("; ", yieldUnit.Diagnostics.Diagnostics.Select(
+                    d => $"{d.Phase}: {d.Message}")));
+            var yieldFailedRound = -1;
+            var yieldDetail = "";
+            for (var round = 0; round < 200 && yieldFailedRound < 0; round++)
+            {
+                var result = BilVm.Run(yieldModule);
+                if (result.Exception != null
+                    || result.ReturnValue is not VmI32 sum || sum.Value != 12)
+                {
+                    yieldFailedRound = round;
+                    yieldDetail = (result.Exception?.ToString() ?? "<noex>") + " | ret="
+                        + (result.ReturnValue?.ToStandardText() ?? "<null>");
+                }
+            }
+            TestHarness.CheckTrue("bare yield fork/join 200 轮全绿", yieldFailedRound < 0,
+                "第 " + yieldFailedRound + " 轮失败：" + yieldDetail);
         }
     }
 }

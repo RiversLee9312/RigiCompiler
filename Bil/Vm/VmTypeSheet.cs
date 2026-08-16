@@ -14,14 +14,19 @@ namespace RigiCompiler.Bil.Vm
     {
         // 归一化签名（名称 + 参数类型序列 + 返回类型；访问器 .get.名@T/.set.名@T）
         public string SignatureKey { get; }
-        // 基类链最根源声明符号（诊断用）
+        // 当前 sheet 宿主视角的代入形态符号（构造泛型基类/接口的实参已代入；
+        // 仅供派生 sheet 克隆时再代入重算 SignatureKey，不参与派发寻址）
+        public string SubstitutedSymbol { get; }
+        // 基类链最根源声明符号（诊断用；恒为声明级原样，不做实参代入）
         public string SlotSymbol { get; }
         // 本类型视角下该槽的实现 fn 符号；null = 无体抽象（调用时才报错）
         public string? ImplSymbol { get; set; }
 
-        public VmSlot(string signatureKey, string slotSymbol, string? implSymbol)
+        public VmSlot(string signatureKey, string substitutedSymbol, string slotSymbol,
+            string? implSymbol)
         {
             SignatureKey = signatureKey;
+            SubstitutedSymbol = substitutedSymbol;
             SlotSymbol = slotSymbol;
             ImplSymbol = implSymbol;
         }
@@ -100,17 +105,25 @@ namespace RigiCompiler.Bil.Vm
             }
             var sheet = new VmTypeSheet();
             // 1. 继承槽：以基类 sheet 的克隆起步（§7 offset 不变量 + §9 拍平；
-            //    基声明缺失（core::Exception 等预定义根不进符号段）按空基降级）
+            //    基声明缺失（core::Exception 等预定义根不进符号段）按空基降级）。
+            //    构造泛型基类（D : B<.i32>，含转发形态 D<T2> : B<T2>）：克隆时
+            //    把基类槽的代入源按 extends 实参映射 {T_i → arg_i} 代入再重新
+            //    归一化 SignatureKey（m(x:#0) → m(x:.i32)），D 里 override
+            //    m(x: i32) 才能匹配替换而非追加新槽；SlotSymbol/ImplSymbol 与
+            //    OffsetBySymbol 键保持声明级原样（派发时静态符号恒为声明级）
             if (type.ExtendsType != null)
             {
                 var baseDeclaration = context.FindType(type.ExtendsType);
                 if (baseDeclaration != null)
                 {
                     var baseSheet = Build(context, baseDeclaration, building);
+                    var substitution = BuildSubstitution(type.ExtendsType, baseDeclaration);
                     foreach (var slot in baseSheet.Slots)
                     {
-                        sheet.Slots.Add(new VmSlot(slot.SignatureKey, slot.SlotSymbol,
-                            slot.ImplSymbol));
+                        var source = SubstituteGenericArguments(slot.SubstitutedSymbol,
+                            substitution);
+                        sheet.Slots.Add(new VmSlot(SignatureKeyOf(source), source,
+                            slot.SlotSymbol, slot.ImplSymbol));
                     }
                     foreach (var pair in baseSheet.OffsetBySymbol)
                     {
@@ -153,7 +166,8 @@ namespace RigiCompiler.Bil.Vm
                 }
                 if (offset < 0)
                 {
-                    sheet.Slots.Add(new VmSlot(signatureKey, simple.Symbol, impl));
+                    sheet.Slots.Add(new VmSlot(signatureKey, simple.Symbol, simple.Symbol,
+                        impl));
                     offset = sheet.Slots.Count - 1;
                 }
                 sheet.OffsetBySymbol[simple.Symbol] = offset;
@@ -174,6 +188,11 @@ namespace RigiCompiler.Bil.Vm
                     continue;
                 }
                 sheet.InterfaceBase[interfaceKey] = sheet.Slots.Count;
+                // 构造泛型接口（C : IFace<.i32>）：接口成员签名按 implements
+                // 实参代入后再与类侧方法匹配（I<T>.m(x: T) → m(x:.i32)，
+                // 与类侧 override 同 key 直中，不再依赖名字兼容回退）
+                var interfaceSubstitution = BuildSubstitution(interfaceRef,
+                    interfaceDeclaration);
                 foreach (var member in interfaceDeclaration.Members)
                 {
                     if (member is not BilSimpleMemberDeclaration simple
@@ -181,12 +200,14 @@ namespace RigiCompiler.Bil.Vm
                     {
                         continue;
                     }
-                    var signatureKey = SignatureKeyOf(simple.Symbol);
+                    var source = SubstituteGenericArguments(simple.Symbol,
+                        interfaceSubstitution);
+                    var signatureKey = SignatureKeyOf(source);
                     var impl = FindImplBySignature(sheet.Slots, signatureKey)
                         ?? FindCompatibleImpl(sheet.Slots, simple.Symbol)
                         ?? (context.FindFunction(simple.Symbol) != null
                             ? simple.Symbol : null);
-                    sheet.Slots.Add(new VmSlot(signatureKey, simple.Symbol, impl));
+                    sheet.Slots.Add(new VmSlot(signatureKey, source, simple.Symbol, impl));
                     sheet.OffsetBySymbol[simple.Symbol] = sheet.Slots.Count - 1;
                 }
             }
@@ -223,6 +244,56 @@ namespace RigiCompiler.Bil.Vm
                 return rest.StartsWith("$call(", StringComparison.Ordinal);
             }
             return true;
+        }
+
+        // extends/implements 构造形态 → 代入映射 {泛型参数名 → 实参文本}
+        // （B<.i32> + B 的 GenericParameters[0]="T" → {T → .i32}；转发形态
+        // D<T2> : B<T2> 的实参是 .generic<$.generic.T2>，代入后经归一化仍
+        // 归一为同序占位）。非构造形态/元数不齐（异常模块）返回 null
+        private static Dictionary<string, string>? BuildSubstitution(string typeRef,
+            BilTypeDeclaration declaration)
+        {
+            var angle = typeRef.IndexOf('<');
+            if (angle < 0 || !typeRef.EndsWith(">", StringComparison.Ordinal)
+                || declaration.GenericParameters.Count == 0)
+            {
+                return null;
+            }
+            var arguments = BilVerificationContext.SplitTopLevel(
+                typeRef.Substring(angle + 1, typeRef.Length - angle - 2));
+            if (arguments.Count != declaration.GenericParameters.Count)
+            {
+                return null;
+            }
+            var map = new Dictionary<string, string>(StringComparer.Ordinal);
+            for (var i = 0; i < arguments.Count; i++)
+            {
+                map[declaration.GenericParameters[i]] = arguments[i];
+            }
+            return map;
+        }
+
+        // 符号文本按映射代入泛型占位（.generic<$.generic.T>/.generic<T> →
+        // 实参文本）；null 映射原样返回。替换串以 '>' 收尾，参数名互为前缀
+        // （T 与 T2）不会误伤；嵌套实参（.array<.i32>）按文本落入，归一化
+        // 由 SignatureKeyOf 的 NormalizeSegment 完成
+        private static string SubstituteGenericArguments(string symbol,
+            Dictionary<string, string>? substitution)
+        {
+            if (substitution == null
+                || !symbol.Contains(".generic<", StringComparison.Ordinal))
+            {
+                return symbol;
+            }
+            var result = symbol;
+            foreach (var pair in substitution)
+            {
+                result = result.Replace(".generic<$.generic." + pair.Key + ">",
+                    pair.Value, StringComparison.Ordinal);
+                result = result.Replace(".generic<" + pair.Key + ">",
+                    pair.Value, StringComparison.Ordinal);
+            }
+            return result;
         }
 
         // 同签名且已有实现的槽（类侧最派生实现）

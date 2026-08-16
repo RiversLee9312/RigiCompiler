@@ -58,6 +58,9 @@ namespace RigiCompiler.Bil.Vm
 
         public void NotifyTerminal(VmCoroutine coroutine)
         {
+            // 协程进入终态的统一 choke point：释放在途轮询 timer
+            // （失败/取消协程不得持有 timer 到触发/进程退出）
+            coroutine.DisposePollTimer();
             lock (_liveLock)
             {
                 _live.Remove(coroutine);
@@ -154,17 +157,38 @@ namespace RigiCompiler.Bil.Vm
         {
             try
             {
-                if (!coroutine.TryTransition(VmCoroutineState.Runnable, VmCoroutineState.Running))
+                // 协程锁串行化 handoff（单所有者不变量）：转换 + settle +
+                // Step 循环整体在锁内。此前循环继续条件 while (State == Running)
+                // 读共享可变状态，存在窗口：本 worker 刚把协程挂起（await/yield）、
+                // 尚未退出 Step 复查条件时，唤醒方（VmTask.ResumeWaiters /
+                // VmEventAlarm.Signal / SchedulePoll timer）已把协程重发布为
+                // Runnable，另一 worker 抢先 Runnable→Running 并开始执行；
+                // 本 worker 复查条件又读到 Running 继续 Step —— 双 worker 并发
+                // 执行同一协程的帧/块栈。入锁后：新 worker 持锁前无法转换状态，
+                // 持锁 worker 的循环退出只可能由它自己的挂起动作造成（唯一能
+                // 设 Running 的 Runnable→Running 转换在锁内），双执行从结构上
+                // 消灭。C# lock 同线程可重入：Step 内的嵌套 Step 循环
+                // （ProbePolling 跑 isReady、BilDataExecution.New 的 singleton
+                // init、BilComputeExecution.StepToDepth 的 proxy 链、
+                // VmWrapperDispatch.RunToResult）在同一线程上自然安全。
+                // 锁序：协程锁内会取 VmTask._gate（TryAwait/Observe）与
+                // _liveLock（NotifyTerminal）；反向路径（task 完成线程的
+                // ResumeWaiters→PublishWakeup→Publish、EagerSpawn 的
+                // Publish(child)）只 CAS + 入队，不取协程锁——无环。
+                lock (coroutine.SyncRoot)
                 {
-                    return;
-                }
-                if (!coroutine.SettleAfterResume(Context))
-                {
-                    return;
-                }
-                while (coroutine.State == VmCoroutineState.Running)
-                {
-                    coroutine.Step(Context);
+                    if (!coroutine.TryTransition(VmCoroutineState.Runnable, VmCoroutineState.Running))
+                    {
+                        return;
+                    }
+                    if (!coroutine.SettleAfterResume(Context))
+                    {
+                        return;
+                    }
+                    while (coroutine.State == VmCoroutineState.Running)
+                    {
+                        coroutine.Step(Context);
+                    }
                 }
             }
             catch (Exception exception)
