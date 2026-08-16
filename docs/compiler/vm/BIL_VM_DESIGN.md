@@ -43,7 +43,7 @@ Bil/
     ├── VmTask.cs                 # Task 句柄：终态 + waiter 列表（shared 内建对象）
     ├── VmAlarm.cs                # PollingAlarm / EventAlarm 的 VM 表示与注册
     ├── VmException.cs            # 语言级异常的 VM 承载（包装异常对象 VmValue）
-    ├── VmHooks.cs                # §22.5 hook 表：rigi_rt print/printErr/toString + core::Any$call???
+    ├── VmHooks.cs                # §22.5 hook 表：rigi_rt print/printErr/any_to_string + core::Any$call???
     ├── VmTypeSheet.cs            # 逻辑 TypeSheet：拍平 vtable+iMap 与统一方法派发（§3.4）
     └── Values/
         ├── VmValue.cs            # 抽象基类 + 精确标量子类型（见 §3）
@@ -223,7 +223,7 @@ indirect 是表达正常 Rigi 程序（泛型、lambda、运行时类型驱动�
 |---|---|
 | `rigi_rt` / `print` | 写 stdout（加锁，单次调用原子） |
 | `rigi_rt` / `printErr` | 写 stderr（同上） |
-| `rigi_rt` / `toString` | §3.8 标准文本；未覆写者为 canonical 类型名 |
+| `rigi_rt` / `any_to_string` | §3.8 标准文本；未覆写者为 canonical 类型名（toString 成员方法不再直接 hook——其默认实现是编译器合成 fn，经 .bootstrap.rg 的 priv 全局 native `any_to_string` 触达本 hook） |
 | `rigi_rt` / `alloc_array` | 零值初始化 `.array<T>`；T 为 enum struct 按宿主错误（§14.3） |
 | `rigi_rt` / `make_sleep_alarm` | 粘滞 EventAlarm，单调时钟到期 signal（RUNTIME §19.4） |
 | （方法 hook）`core::Any$call???` | 按 symbol 路由；无路由抛 `core::NoSuchMethodException` |

@@ -85,9 +85,10 @@ namespace RigiCompiler.Tests
             var root = roots[0];
 
             // lambda 对象模型（SYNTAX §5.2）：Func/Action/AsyncFunc/AsyncAction
-            // 各 33 个元数变种 + Cell/ReadonlyCell，共 134 个 class 声明
-            TestHarness.CheckTrue("顶层恰好 137 个声明（namespace + ext operator + Pair + 134 callable/Cell）",
-                root.Declarations.Count == 137, $"实际 {root.Declarations.Count}");
+            // 各 33 个元数变种 + Cell/ReadonlyCell，共 134 个 class 声明；
+            // 末尾 any_to_string（§3.8 toString 机制的 priv 全局 native 触达点）
+            TestHarness.CheckTrue("顶层恰好 138 个声明（namespace + ext operator + Pair + 134 callable/Cell + any_to_string）",
+                root.Declarations.Count == 138, $"实际 {root.Declarations.Count}");
             TestHarness.CheckTrue("首声明是 namespace core",
                 root.Declarations.Count > 0
                 && root.Declarations[0] is NamespaceDeclarationASTNode,
@@ -143,6 +144,18 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("Func 非 shared（abstract class）",
                 func != null && !func.Modifiers.Contains(Keywords.SHARED)
                     && func.Modifiers.Contains(Keywords.ABSTRACT));
+
+            // any_to_string（§3.8 toString 机制修订）：末尾声明，priv 全局
+            // native（@NativeLibrary/@NativeSymbol 双注解、无体、参数 Any）
+            var anyToString = root.Declarations[root.Declarations.Count - 1]
+                as CallableDeclarationASTNode;
+            TestHarness.CheckTrue("末声明是 any_to_string（priv native 全局）",
+                anyToString != null && anyToString.Name == "any_to_string"
+                && anyToString.Modifiers.Contains(Keywords.PRIV)
+                && anyToString.Modifiers.Contains(Keywords.NATIVE)
+                && anyToString.Body == null
+                && anyToString.Annotations.Count == 2,
+                anyToString == null ? "<none>" : anyToString.Name);
 
             TestHarness.Blank();
         }

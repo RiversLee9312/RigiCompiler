@@ -566,3 +566,11 @@ pub abstract class Cell\<T> {
 pub abstract class ReadonlyCell\<T> {
     pub abstract func getValue(): T
 }
+
+// toString 机制的 native 触达点（SYNTAX §3.8，用户裁定）：Any/Object 的
+// toString 不再是 native 成员——它们的默认实现体由编译器合成为调用本
+// 函数的小 fn。文件级私有全局形态把用户挡在访问控制外（§16.1），只经
+// 合成体触达；VM hook（BIL §22.5）对任意胖值取标准文本。
+@NativeLibrary("rigi_rt")
+@NativeSymbol("any_to_string")
+priv native func any_to_string(value: Any): String

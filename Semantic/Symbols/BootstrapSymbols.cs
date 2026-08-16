@@ -126,28 +126,32 @@ namespace RigiCompiler
                 intrinsicOps: Ops(BilIntrinsicOp.CmpEq, BilIntrinsicOp.CmpNe,
                     BilIntrinsicOp.Add));
 
-            // toString 机制（S7f，SYNTAX §3.8）：Any 承载全类型承诺——直接
-            // 声明为 native（rigi_rt/toString，§22.5 内建 hook，基元标准文本、
-            // 未覆写对象返回类型 canonical 名）；Object 提供 open native 默认
-            // 实现（同 hook）。二者都被发射进 BIL LocalSymbols（见
-            // EmitBuiltinNativeMembers），使 VM 的 TryResolveNative 能把
-            // invoke core::Any$toString()@.string / core::Object$toString()
-            // 路由到 hook；用户类型 override 后经虚派发执行自身实现，
+            // toString 机制（S7f，SYNTAX §3.8，用户裁定修订）：Any 承载全类型
+            // 承诺——open、可被 override、自带实现（不再是 native 成员）；Object
+            // 提供 open override 默认实现（override 关系使 SymbolLookup 遮蔽
+            // 生效，o.toString() 唯一解析到 Object 版本，消除 Any/Object 双
+            // 候选歧义）。二者均不发 BIL native 成员声明；fn 体由发射阶段合成
+            // （EmitBuiltinNativeMethods）：.this → invoke any_to_string → ret。
+            // any_to_string 是 .bootstrap.rg 的 priv 全局 native（rigi_rt/
+            // any_to_string，§22.5 内建 hook：基元标准文本、未覆写对象返回
+            // 类型 canonical 名）；用户类型 override 后经虚派发执行自身实现，
             // 不再命中原生面
             Any.Methods.Add(new MethodSymbol("toString", MethodKind.Regular,
-                owner: Any, isNative: true, returnType: String)
+                owner: Any, returnType: String)
             {
-                NativeLibrary = "rigi_rt",
-                NativeSymbol = "toString",
-                Accessibility = Accessibility.Public,
-            });
-            Object.Methods.Add(new MethodSymbol("toString", MethodKind.Regular,
-                owner: Object, isNative: true, returnType: String)
-            {
-                NativeLibrary = "rigi_rt",
-                NativeSymbol = "toString",
                 Accessibility = Accessibility.Public,
                 IsOpen = true,
+                // 自带实现（体由发射阶段合成）——OverrideChecker.FindImplementation
+                // 据此认定 toString 承诺已被默认实现满足
+                HasBody = true,
+            });
+            Object.Methods.Add(new MethodSymbol("toString", MethodKind.Regular,
+                owner: Object, returnType: String)
+            {
+                Accessibility = Accessibility.Public,
+                IsOpen = true,
+                IsOverride = true,
+                HasBody = true,
             });
 
             // 异常根 message 面（S10，SYNTAX §8.1；置于此处——String 已初始化）：
@@ -169,7 +173,8 @@ namespace RigiCompiler
 
             // Any.call??? 壳（M88）：参数类型在 EnsureCallWildcard 填（Array/
             // Pair 构造需 SymbolGraph）；此处先挂成员占位，签名参数列表在
-            // Ensure 时补齐。pub native 形态与 toString 先例一致
+            // Ensure 时补齐。pub native 形态（getMessage 抽象化后，call??? 是
+            // bootstrap 唯一 native 成员）
             CallWildcard = new MethodSymbol("call???", MethodKind.Regular,
                 owner: Any, isNative: true, returnType: Any)
             {

@@ -225,7 +225,7 @@ pub open class Exception { ... }   // 概念形态；实际声明在编译器 bo
 异常根携带：
 
 - `protected var message: String` 字段——异常的人类可读描述；
-- `pub func getMessage(): String` 方法——message 的唯一公共读取通道（native 形态，运行时提供实现；`toString` 不覆写，插值/打印仍走 `Object` 的默认实现）。
+- `pub func getMessage(): String` 方法——message 的唯一公共读取通道（abstract，由各具体异常子类 override 实现；`toString` 不覆写，插值/打印仍走 `Object` 的默认实现）。
 
 `throw` 操作数类型与 `catch` 子句类型必须是 `core.Exception` 或其子类（§3.1 层级兼容判定）。标准库在 `stdlib/core/exceptions.rg` 提供四个具体子类（均可继承，用户自定义异常以同样的 `: core.Exception` 声明）：
 

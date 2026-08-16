@@ -7,8 +7,9 @@ namespace RigiCompiler
     // 构造宿主（基类/接口带泛型实参）的成员签名按定义 → 构造代入实参后比较
     // （复用 ResolveEnvironment.Substitute——stdlib 双接口协议即依赖此路径）；
     // 嵌套泛型以外的精确性（泛型参数约束等）归 S9。
-    // 内建类型参与覆写关系（Object.toString open 默认实现是合法覆写目标），
-    // 但不产生待实现成员（Any.toString 承诺由 Object 默认实现满足）。
+    // 内建类型参与覆写关系（Any.toString open 承诺与 Object.toString open
+    // override 默认实现都是合法覆写目标），但不产生待实现成员（toString 承诺
+    // 由 Object 默认实现满足）。
     internal sealed class OverrideChecker : ResolverVisitor<OverrideChecker>
     {
         protected override void VisitCore(ResolveEnvironment env)
@@ -195,7 +196,7 @@ namespace RigiCompiler
             return false;
         }
 
-        // 继承命中集：基类链（含内建——Object.toString 是合法覆写目标）+
+        // 继承命中集：基类链（含内建——Any/Object.toString 是合法覆写目标）+
         // 接口闭包中与 method 同名同签名的成员
         private static List<InheritedMatch> FindInheritedMatches(TypeSymbol host,
             SignatureView method, ResolveEnvironment env)
@@ -269,8 +270,9 @@ namespace RigiCompiler
         // 待实现成员闭包：基类链的 abstract 方法 + 接口闭包的无体方法。
         // 内建类型成员的豁免仅限「自身有实现」者（native 或有方法体）——
         // 基类链循环只收 abstract，内建 abstract（Exception.getMessage）照收，
-        // 用户子类必须实现；Object/Any.toString 是 native 具体实现，天然不
-        // 在 abstract 之列，先例不破。有体接口成员隐式继承，不待实现。
+        // 用户子类必须实现；Any/Object.toString 是 open 具体方法（自带默认
+        // 实现，体由发射阶段合成），天然不在 abstract 之列，先例不破。
+        // 有体接口成员隐式继承，不待实现。
         private static List<SignatureView> FindRequiredMembers(TypeSymbol type,
             ResolveEnvironment env)
         {

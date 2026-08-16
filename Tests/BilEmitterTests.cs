@@ -153,6 +153,7 @@ namespace RigiCompiler.Tests
             TestGlobalWrappedFieldEmission();
             TestStaticMethodCompanionEmission();
             TestLambdaEmission();
+            TestBuiltinToStringEmission();
             TestUnsupportedNodes();
 
             return TestHarness.Summary("BilEmitter");

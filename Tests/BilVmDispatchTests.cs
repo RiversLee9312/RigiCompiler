@@ -26,6 +26,7 @@ namespace RigiCompiler.Tests
             TestNativeToStringOverrideYields();
             TestNativeToStringMultiLevelChain();
             TestPrimitiveInterpolationRegression();
+            TestExplicitToStringDispatch();
             TestGenericBaseOverrideDispatch();
             TestGenericBaseInheritedMethod();
             TestGenericForwardingOverride();
@@ -423,6 +424,40 @@ namespace RigiCompiler.Tests
             CheckOk("基元插值回归", result);
             TestHarness.Check("i32/bool 标准文本", result.Stdout, "n=41 flag=true\n");
             CheckI32("返回值", result, 42);
+        }
+
+        // 显式 toString 端到端（SYNTAX §3.8 修订后）：Object 静态类型的
+        // o.toString() 经 override 遮蔽唯一解析（Any/Object 双候选歧义消除）；
+        // Any 静态类型同理；未 override 走合成默认体（canonical 名），已
+        // override 经虚派发执行用户实现；i32 显式接收者走 Any 承诺 +
+        // 装箱 cast + any_to_string hook 全链路
+        private static void TestExplicitToStringDispatch()
+        {
+            var result = Run(
+                "pub class Point {\n" +
+                "    pub init() {}\n" +
+                "    pub override func toString(): String { return \"PT\" }\n" +
+                "}\n" +
+                "pub class Plain {\n" +
+                "    pub init() {}\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var o: Object = new Point()\n" +
+                "    core.io.Console.println(o.toString())\n" +
+                "    var a: Any = new Point()\n" +
+                "    core.io.Console.println(a.toString())\n" +
+                "    var p: Object = new Plain()\n" +
+                "    core.io.Console.println(p.toString())\n" +
+                "    var n: i32 = 41\n" +
+                "    core.io.Console.println(n.toString())\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckOk("显式 toString 派发", result);
+            TestHarness.Check("Object/Any 静态类型 + 基元接收者", result.Stdout,
+                "PT\n" +
+                "PT\n" +
+                "Plain\n" +
+                "41\n");
         }
 
         private static BilVmResult Run(string source)

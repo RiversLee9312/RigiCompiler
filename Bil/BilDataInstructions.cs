@@ -1245,10 +1245,12 @@ namespace RigiCompiler.Bil
             {
                 return;
             }
-            // native hook 只钩默认本体（RUNTIME §7 的自然推论）：receiver
-            // 实际类型 override 了该 native 方法时让位给正常虚派发
-            if (context.TryResolveNative(methodSymbol, out var library, out var nativeSymbol)
-                && !NativeHasDispatchOverride(context, methodSymbol, args))
+            // native hook（§22.5）：hook 天然挂在实现上——可被 override 的
+            // toString 默认实现已是合成 fn 体（调 any_to_string），native
+            // 符号不再带 receiver 派发语义；NativeDeclarationChecker 强制
+            // native 类型成员必须 static，非 static native 实例方法不可能
+            // 存在，无需「hook 给 override 让位」特判
+            if (context.TryResolveNative(methodSymbol, out var library, out var nativeSymbol))
             {
                 var result = context.Hooks.Invoke(context, library, nativeSymbol, args);
                 if (resultSlot != null)
@@ -1282,27 +1284,6 @@ namespace RigiCompiler.Bil
                 return;
             }
             InvokeResolved(context, coroutine, methodSymbol, args, resultSlot);
-        }
-
-        // native hook 的派发感知（RUNTIME §7 自然推论）：hook 只应钩住
-        // Any/Object 上的默认 toString 本体——vtable 派发后槽位 impl 仍是
-        // 静态符号自身（未 override，含多级继承原样继承 native 默认实现）
-        // 才触发 hook；receiver 实际类型 override 了它（impl 符号 ≠ 静态
-        // 符号）则让位，控制流继续走 wrapper 链 → InvokeResolved 正常派发。
-        // 仅带 receiver 的实例方法需要判定（static/全局/无参符号无法派发，
-        // 维持现状）；探测失败（内建精确类型无 sheet 等）同样维持 hook
-        private static bool NativeHasDispatchOverride(VmContext context, string methodSymbol,
-            IReadOnlyList<VmValue> args)
-        {
-            if (args.Count == 0
-                || !BilVerificationContext.TryParseMethodSymbol(methodSymbol,
-                    out _, out var isStatic, out _, out _)
-                || isStatic)
-            {
-                return false;
-            }
-            return context.TryResolveDispatch(methodSymbol, args[0], out var impl)
-                && impl!.Symbol != methodSymbol;
         }
 
         // 跳过 wrapper 派发/原生/hook 的普通 fn 解析与压帧（方法派发链末的
@@ -1385,7 +1366,7 @@ namespace RigiCompiler.Bil
                 ?? throw new VmException("直接基类该签名无实现，无法 super：" + current.Symbol);
             // super 目标天然不会是 native 无体符号：sheet 槽 ImplSymbol 仅
             // 在 fn 体存在时落地（VmTypeSheetBuilder.Build），内建类型的
-            // native 默认实现（Any/Object$toString）不进任何 sheet——
+            // 默认实现（Any/Object$toString 合成体）不进任何 sheet——
             // 此处 FindFunction 的 null 分支只防御异常模块形态，无需 hook 路由
             var target = context.FindFunction(impl)
                 ?? throw new VmException("super 目标实现缺少 fn 定义：" + impl);

@@ -304,5 +304,48 @@ namespace RigiCompiler.Tests
             // 坏函数体跳过后产出的模块仍应过验证器
             BilTestHarness.CheckBilValid("验证器零错误（未覆盖节点跳过坏函数体）", module);
         }
+
+        // ===== toString 机制（SYNTAX §3.8 修订）：合成默认体 + any_to_string =====
+        private static void TestBuiltinToStringEmission()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(HelloWorldSource);
+            CheckNoErrors("全管线无诊断（toString 合成体）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（toString 合成体）", module);
+
+            // Any/Object 的 toString 不再是 native 成员——无任何 toString
+            // 成员声明落地（内建宿主不进符号段；native 三件套不再发射）
+            TestHarness.CheckTrue("Any/Object 无 toString 成员声明",
+                !module.LocalSymbols.OfType<BilSimpleMemberDeclaration>().Any(d =>
+                    d.Symbol.StartsWith("core::Any$toString")
+                    || d.Symbol.StartsWith("core::Object$toString")));
+
+            // any_to_string 以 priv native 全局声明落地（native 三件套；
+            // 全局函数 canonical 带 $ 名段，同 $main 形态）
+            var anyToString = module.LocalSymbols.OfType<BilSimpleMemberDeclaration>()
+                .FirstOrDefault(d => d.Symbol == "core::$any_to_string(value:.any)@.string");
+            TestHarness.CheckTrue("any_to_string 以 priv native 全局声明落地",
+                anyToString != null
+                && anyToString.Modifiers.OfType<BilAccessibilityModifier>()
+                    .First().Accessibility == BilAccessibility.Private
+                && anyToString.Modifiers.OfType<BilKeywordModifier>()
+                    .Any(m => m.Keyword == BilKeyword.Native)
+                && anyToString.Modifiers.OfType<BilNativeSymbolModifier>()
+                    .First().Symbol == "any_to_string"
+                && anyToString.Modifiers.OfType<BilNativeLibraryModifier>()
+                    .First().Library == "rigi_rt");
+
+            // 两个合成默认体（Any 的 .this 即 .any 直传；Object 先装箱 cast）
+            BilTestHarness.CheckFnShape("Any.toString 合成体", module,
+                "core::Any$toString()@.string",
+                ".vars { .string .t0 }\n" +
+                "invoke fn(core::$any_to_string(value:.any)@.string) $.t0 [$.this]\n" +
+                "ret $.t0\n");
+            BilTestHarness.CheckFnShape("Object.toString 合成体（.this 先装箱 .any）", module,
+                "core::Object$toString()@.string",
+                ".vars { .any .t0, .string .t1 }\n" +
+                "cast $.this $.t0 type(.any)\n" +
+                "invoke fn(core::$any_to_string(value:.any)@.string) $.t1 [$.t0]\n" +
+                "ret $.t1\n");
+        }
     }
 }

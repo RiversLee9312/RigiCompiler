@@ -188,7 +188,7 @@ pub class Console {
 - `native` 仅适用于函数；native 函数**不得**书写函数体；
 - 作为类型成员声明时必须同时是 `static`；不得用于 `init`、`operator`、getter/setter；
 - 不得与 `async` 组合；同一容器内不得与同名函数构成重载；允许声明泛型参数列表（generic native：hidden typeid 按 `RUNTIME.md` §10 传参形态物化，首例 `alloc_array`，`BIL_STANDARD.md` §22.5）；
-- 参数类型仅限 §3.2 基本类型中的整数、浮点、`bool`、`char` 与 `String`；不允许 Object、泛型参数、用户声明类型，也不允许可变参数；
+- 参数类型仅限 §3.2 基本类型中的整数、浮点、`bool`、`char` 与 `String`，另放行 `Any`（统一胖值槽，VM 直传任意值——首例 `.bootstrap.rg` 的 `any_to_string(value: Any)`，§3.8）；不允许 Object、泛型参数、用户声明类型，也不允许可变参数；
 - **返回类型**：允许 §3.2 基本类型中的整数、浮点、`bool`、`char` 与 `String`，也允许用户声明的**引用类型**（class/interface，如 `core.coroutine.make_sleep_alarm(...): EventAlarm`）；不允许值类型、泛型参数与可变参数。native 只负责声明运行时原生方法面的形状，FFI 参数/返回值 ABI 与 `rigi_rt` 的转换细节在 Middleware 阶段定稿（`RUNTIME.md` §26），编译器不做形状之外的检查；
 - `@NativeLibrary("...")` 必填，给出原生库标识；`@NativeSymbol("...")` 可省，缺省时取函数名；两个注解的实参必须各为一个字符串字面量；
 - `@NativeLibrary` / `@NativeSymbol` 是编译器内建注解，只允许出现在 native 函数声明上；它们不属于 wrapper 体系（§14），不产生 wrapper 组合链。

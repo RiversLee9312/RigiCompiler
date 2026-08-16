@@ -148,6 +148,14 @@ namespace RigiCompiler.Tests
                 "pub ext func Host.leak(): i32 { return this.secret }\n");
             TestHarness.CheckSemanticError("ext 体不获目标 priv 成员特权", unit15.Diagnostics,
                 "'secret' is inaccessible due to its accessibility level");
+
+            // any_to_string（.bootstrap.rg 的 priv 全局 native，§3.8 toString
+            // 机制的唯一 native 触达点）：用户源码经限定名直接调用被文件级
+            // 私有挡住
+            var (unit16, _) = BindUnitWithStdlib(
+                "pub func f(): String { return core.any_to_string(\"x\") }\n");
+            TestHarness.CheckSemanticError("any_to_string 用户不可直达", unit16.Diagnostics,
+                "'any_to_string' is inaccessible due to its accessibility level");
         }
 
         // ===== 访问器绑定（S8e，SYNTAX §9.4/§9.4.1）=====

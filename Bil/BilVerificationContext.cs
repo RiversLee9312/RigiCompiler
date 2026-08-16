@@ -95,8 +95,10 @@ namespace RigiCompiler.Bil
 
         private static readonly string[] PredefinedMethods =
         {
-            // toString 机制（SYNTAX §3.8）：Any 接口承诺 + Object open native
-            // 默认实现（RUNTIME §26/BIL §22.5 内建 hook）
+            // toString 机制（SYNTAX §3.8 修订）：Any open 承诺 + Object
+            // open override 默认实现——均非 native 成员，默认体是编译器合成
+            // fn（调 .bootstrap.rg 的 priv 全局 native any_to_string，
+            // RUNTIME §26/BIL §22.5 内建 hook 经该全局函数触达）
             "core::Any$toString()@.string",
             "core::Object$toString()@.string",
             // 异常根 getMessage（S10，SYNTAX §8.1）：bootstrap 抽象方法不

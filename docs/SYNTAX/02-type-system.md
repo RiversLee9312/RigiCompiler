@@ -393,10 +393,11 @@ if (obj with Serializable) { ... }
 
 ### 3.8 字符串转换（`toString`）与字符串插值
 
-每个类型都拥有 `toString(): String`（承诺挂在类型层级根 `Any` 上），可直接调用，也可经 `override` 覆写以定制文本表示：
+每个类型都拥有 `toString(): String`（承诺挂在类型层级根 `Any` 上——`Any.toString` 是 open、可被 override、自带实现的普通方法），可直接调用，也可经 `override` 覆写以定制文本表示：
 
 - **内建基本类型**（数值 / `bool` / `char` / `String`）的 `toString` 由内建实现提供：`String` 即自身；数值为标准十进制文本；`bool` 为 `"true"` / `"false"`；`char` 为单字符字符串。
-- **未覆写的类型**由默认实现提供（`Object` 上的 open 方法，内建提供），返回该类型的 canonical 名（如 `"com.example::User"`）。
+- **未覆写的类型**由默认实现提供（`Object` 上的 open `override` 方法——它 override `Any.toString`，内建提供），返回该类型的 canonical 名（如 `"com.example::User"`）。
+- `Any`/`Object` 的默认实现体是编译器合成的小函数：把接收者装箱为 `Any` 后调用 `any_to_string`。`any_to_string` 是标准库 `.bootstrap.rg` 里的文件级私有（`priv`）全局 `native` 函数（`@NativeLibrary("rigi_rt")` / `@NativeSymbol("any_to_string")`），是 toString 机制唯一的 native 触达点——用户代码不可直接调用它。
 - 值类型调用 `toString` 时按 `RUNTIME.md` §4 装箱后进行虚派发；装箱与派发是 `BIL_STANDARD.md` §22 划给 VM/Middleware 的实现细节，源码层只需知道调用承诺成立。
 
 字符串插值（§3.3）以 `toString` 定义：`${}` 内表达式的静态类型不是 `String` 时，先调用其 `toString()` 再参与拼接；拼接即 `String` 的内建 `+` 运算，按源码顺序从左到右结合。每个插值段只求值一次。
@@ -408,6 +409,6 @@ var text = "count: ${count}, ok: ${(count > 0)}"   // "count: 3, ok: true"
 
 插值表达式的词法规则：`${` 后表达式按普通 Rigi 词法解析，可以包含任意字面量（字符串/字符）、嵌套 `{}`（lambda 体、seq 块）与注释，括号配平由词法层完成；表达式跨行遵循与源文件一致的续行规则（括号未闭合时换行透明，§1.1）。嵌套字符串字面量在两态宿主中均可直接使用（`"a${"b"}c"` 合法）；未闭合的嵌套字面量按词法错误就近报告。
 
-基元与默认实现均为内建行为：BIL VM 经 `BIL_STANDARD.md` §22.5 内建 hook 执行，原生环境经 `RUNTIME.md` §26 的 `rigi_rt.toString` 路由。
+基元与默认实现均为内建行为：BIL VM 经 `BIL_STANDARD.md` §22.5 内建 hook（`rigi_rt` / `any_to_string`）执行，原生环境经 `RUNTIME.md` §26 的 `rigi_rt.any_to_string` 路由。
 
 ---

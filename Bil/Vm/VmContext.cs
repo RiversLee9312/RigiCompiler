@@ -173,25 +173,6 @@ namespace RigiCompiler.Bil.Vm
             return FindFunction(staticSymbol);
         }
 
-        // ResolveDispatch 的非抛出包装（native hook 的派发感知探测用，
-        // BilInvokeExecution.InvokeValues）：sheet 缺失、OffsetBySymbol
-        // 未命中、槽无实现、impl 无 fn 体等一切异常路径一律返回 false
-        // 而不是抛——探测失败按「无法证明有 override」处理，调用方维持原行为
-        internal bool TryResolveDispatch(string staticSymbol, VmValue? receiver,
-            out BilFunction? impl)
-        {
-            impl = null;
-            try
-            {
-                impl = ResolveDispatch(staticSymbol, receiver);
-            }
-            catch (VmException)
-            {
-                impl = null;
-            }
-            return impl != null;
-        }
-
         // 槽 offset → 实现 fn（泛型代入形态的实现经名字兼容回退；抽象/接口
         // 方法无实现抛清晰 VmException）
         private BilFunction ResolveSlot(VmTypeSheet sheet, int offset, string staticSymbol,

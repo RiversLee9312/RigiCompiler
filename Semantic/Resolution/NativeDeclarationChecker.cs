@@ -106,10 +106,13 @@ namespace RigiCompiler
                     env.Error(entry.Node.Span, $"Native function '{method.Name}' cannot be overloaded");
                 }
             }
-            // 参数类型白名单（ErrorType 毒化静默）——参数仍限基本类型（§4.6）
+            // 参数类型白名单（ErrorType 毒化静默）——参数仍限基本类型（§4.6）；
+            // 例外：Any 胖值槽（VM 统一 ABI 直传任意 VmValue——.bootstrap.rg
+            // 的 any_to_string(value: Any) 落地形态，§3.8 toString 机制）
             foreach (var parameter in method.Parameters)
             {
                 if (parameter.Type is null or ErrorTypeSymbol) continue;    // 毒化静默
+                if (ReferenceEquals(parameter.Type, env.Unit.Symbols.Bootstrap.Any)) continue;
                 if (!compatibleTypes.Contains(parameter.Type))
                 {
                     env.Error(entry.Node.Span,

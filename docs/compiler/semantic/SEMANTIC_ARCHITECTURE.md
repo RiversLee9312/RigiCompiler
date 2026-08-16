@@ -254,7 +254,7 @@ SemanticSymbol
       `value` 字段上（同 `WrapperApplication` 实例）。
     - **未声明方法降级判定**保留：candidates 空 + wrapper 链含
       `.proxy.*` → 产物改 `invoke core::Any$call???`（bootstrap
-      声明 + VM hook，toString 先例）；`IsDowngradeCallResult`
+      声明 + VM hook）；`IsDowngradeCallResult`
       五位置豁免保留，判定改为引用相等 bootstrap `Any.call???`。
   - **P4**：发射 wrapper 类型的 proxy 成员为带
     `wrapper-proxy(specific|wildcard)` 修饰符的**模板 fn**

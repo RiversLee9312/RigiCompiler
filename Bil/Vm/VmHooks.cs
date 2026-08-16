@@ -1,9 +1,13 @@
 namespace RigiCompiler.Bil.Vm
 {
     // §22.5 native hook 表（BIL_VM_DESIGN §7 / RUNTIME.md §26）：
-    // (lib, symbol) 表：rigi_rt print / printErr / toString / alloc_array /
+    // (lib, symbol) 表：rigi_rt print / printErr / any_to_string / alloc_array /
     // make_sleep_alarm，表外拒绝执行；单次 print 调用加锁原子写入。
     // 方法 hook 表：core::Any$call??? 按方法符号命中（无 (lib, symbol) 对）。
+    // toString 机制（SYNTAX §3.8 修订）：Any/Object 的 toString 成员方法不再
+    // 直接 hook——它们的编译器合成实现体调用 .bootstrap.rg 的 priv 全局
+    // native any_to_string，hook 天然挂在实现上（override 经虚派发执行
+    // 用户实现，不触达 hook）。
 
     public sealed class VmHooks
     {
@@ -59,7 +63,7 @@ namespace RigiCompiler.Bil.Vm
             var hooks = new VmHooks();
             hooks.Register("rigi_rt", "print", Print);
             hooks.Register("rigi_rt", "printErr", PrintErr);
-            hooks.Register("rigi_rt", "toString", ToStringHook);
+            hooks.Register("rigi_rt", "any_to_string", ToStringHook);
             hooks.Register("rigi_rt", "alloc_array", AllocArray);
             hooks.Register("rigi_rt", "make_sleep_alarm", MakeSleepAlarm);
             hooks.RegisterMethod("core::Any$call???", CallWildcard);
@@ -78,11 +82,13 @@ namespace RigiCompiler.Bil.Vm
             return VmVoid.Instance;
         }
 
+        // any_to_string（§3.8）：任意胖值取标准文本——基元标准文本、
+        // 未覆写 toString 的对象为类型 canonical 名（覆写者不经此 hook）
         private static VmValue ToStringHook(VmContext context, IReadOnlyList<VmValue> arguments)
         {
             if (arguments.Count != 1)
             {
-                throw new VmException("toString 需要恰好 1 个参数");
+                throw new VmException("any_to_string 需要恰好 1 个参数");
             }
             return new VmString(arguments[0].ToStandardText());
         }

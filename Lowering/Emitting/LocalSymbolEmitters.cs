@@ -90,15 +90,15 @@ namespace RigiCompiler
             }
         }
 
-        // 内建类型的 native 方法声明（toString 机制）：内建类型自身不声明
-        // （EmitTypeTree 跳过 IsBuiltin），但其 native 方法（Any.toString /
-        // Object.toString）需要 BIL 声明才能让 VM 的 TryResolveNative 经
-        // §22.5 rigi_rt hook 路由（BIL §8.4 native symbol/lib 三件套）。
-        // call??? 除外：它经方法 hook 表（VmHooks.RegisterMethod）按符号
-        // 命中，不走 (lib, symbol) 表——若声明进 LocalSymbols 会抢在方法
-        // hook 之前被 TryResolveNative 路由到不存在的 rigi_rt/call???。
-        // Exception.getMessage 已抽象化（用户裁定）——不再是 native，本循环
-        // 只发射 IsNative 成员，抽象方法不落地；具体子类的 override 经
+        // 内建类型的 native 方法声明 + toString 合成体（SYNTAX §3.8 修订）。
+        // 内建类型自身不声明（EmitTypeTree 跳过 IsBuiltin——基元经 BIL 别名
+        // 投影而非符号引用）。
+        // native 成员声明循环：bootstrap 已无 native 实例成员（toString 机制
+        // 修订后 Any/Object.toString 改合成体，Exception.getMessage 抽象化），
+        // 仅防御保留；call??? 排除逻辑不变——它经方法 hook 表
+        // （VmHooks.RegisterMethod）按符号命中，不走 (lib, symbol) 表——若
+        // 声明进 LocalSymbols 会抢在方法 hook 之前被 TryResolveNative 路由到
+        // 不存在的 rigi_rt/call???。抽象方法不落地；具体子类的 override 经
         // EmitTypeTree 正常发射 fn 定义，调用点 invoke 指向子类 override 或
         // 抽象根符号（后者由 VM ResolveDispatch 按逻辑 TypeSheet 多态派发）。
         public static void EmitBuiltinNativeMethods(EmitEnvironment env)
@@ -115,6 +115,56 @@ namespace RigiCompiler
                     env.Module.LocalSymbols.Add(EmitMethodDeclaration(method));
                 }
             }
+            // toString 合成体：Any/Object 的 toString 是 open 普通方法（非
+            // native 成员），默认实现体在此合成——.this 直传 any_to_string
+            //（.bootstrap.rg 的 priv 全局 native；经符号图取 canonical）。
+            // fn 无对应符号段声明（内建宿主不进 LocalSymbols），§21.2 对应
+            // 检查由内建宿主豁免承担（IsPredefinedTypeHost，同 Any.call???
+            // 先例）；用户 override 经 VM ResolveDispatch 防御扫描命中实际
+            // 类型槽，未 override 时回退 FindFunction 命中本合成体。
+            // 无 stdlib 的夹具编译（符号图无 any_to_string）跳过合成
+            if (env.Unit.Symbols.Bootstrap.Core.Methods.FirstOrDefault(
+                    m => m.Name == "any_to_string") is { } anyToString)
+            {
+                EmitSynthesizedToStringBody(env, env.Unit.Symbols.Bootstrap.Any, anyToString);
+                EmitSynthesizedToStringBody(env, env.Unit.Symbols.Bootstrap.Object, anyToString);
+            }
+        }
+
+        // 单个 toString 默认实现体：
+        //   fn(core::Any$toString()@.string) / fn(core::Object$toString()@.string)
+        //   .args = .return:.string + .this:宿主投影；
+        //   entry：.this 非 .any 时先 cast 装箱（§12.1，§21.3 实参精确匹配），
+        //          invoke fn(core::$any_to_string(value:.any)@.string)，ret 结果
+        //          （全局函数 canonical 带 $ 名段，同 $main 形态）
+        private static void EmitSynthesizedToStringBody(EmitEnvironment env, TypeSymbol owner,
+            MethodSymbol anyToString)
+        {
+            var toString = owner.Methods.First(m => m.Name == "toString");
+            var function = new BilFunction(CanonicalSymbolPrinter.PrintMethod(toString));
+            function.Args.Add(new BilArgDeclaration(".return",
+                CanonicalSymbolPrinter.PrintTypeReference(toString.ReturnType)));
+            var thisType = CanonicalSymbolPrinter.PrintType(owner);
+            function.Args.Add(new BilArgDeclaration(".this", thisType));
+            var entry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            BilVariableOperand receiver = BilOp.Var(".this");
+            var tempCount = 0;
+            if (thisType != ".any")
+            {
+                function.Vars.Add(new BilVarDeclaration(".any", ".t0"));
+                entry.Instructions.Add(new CastInstruction(receiver, BilOp.Var(".t0"),
+                    BilOp.Type(".any"), isSafe: false));
+                receiver = BilOp.Var(".t0");
+                tempCount = 1;
+            }
+            var resultName = ".t" + tempCount;
+            function.Vars.Add(new BilVarDeclaration(".string", resultName));
+            entry.Instructions.Add(new InvokeInstruction(
+                BilOp.Fn(CanonicalSymbolPrinter.PrintMethod(anyToString)),
+                BilOp.Var(resultName), new[] { receiver }));
+            entry.Instructions.Add(new RetInstruction(BilOp.Var(resultName)));
+            function.Blocks.Add(entry);
+            env.Module.Functions.Add(function);
         }
 
         private static void EmitTypeTree(TypeSymbol type, EmitEnvironment env)

@@ -79,7 +79,7 @@ call???<TResult, named TNamedArgs..., TUnnamedArgs...>(
 ): TResult
 ```
 
-- `call???` 是 bootstrap 内建方法（与 `Any.toString` 同先例）：bootstrap 声明 + VM 内建 hook 实现（`BIL_STANDARD.md` §22.5）。默认实现（请求未被任何 wrapper 路由时）由该 hook 提供，直接抛 `core.NoSuchMethodException`，含可按配置启用的 log 代码——**不是**编译器生成的 body。
+- `call???` 是 bootstrap 内建方法：bootstrap 声明 + VM 内建 hook 实现（`BIL_STANDARD.md` §22.5 方法 hook，按方法符号命中）。默认实现（请求未被任何 wrapper 路由时）由该 hook 提供，直接抛 `core.NoSuchMethodException`，含可按配置启用的 log 代码——**不是**编译器生成的 body。
 - 方法、getter、setter、operator 在 lowering 后本质上都是方法请求。运行时只保留这一个 slot；对已有声明成员的命中烘焙，以及 `call???` 按 canonical `symbol` 判定类别并转入 `.proxy.*`、`.proxy.get.*`、`.proxy.set.*` 或 `.proxy.opr.*` 的类别路由体，均由 Middleware 合成，不另外设置 `get???`、`set???`、`opr???`。类别路由作为 Middleware 插入点的架构预留（`SYNTAX.md` §14.7 末条语义不变，执行主体为 Middleware）。
 - 跨模块编译调用方时，若被调用成员已有普通实现则走正常 vtable slot；需要 fallback 时交给 `call???`，而 `call???` 自身仍经 vtable 解决继承。
 - 给已有方法增加 specific proxy 后，只需重编译被修饰模块并由 Middleware 重新烘焙，使原 vtable slot 指向新的 wrapped body；调用方无需因 wrapper 变化而重编译。

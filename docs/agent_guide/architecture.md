@@ -243,8 +243,8 @@ RigiCompiler/
 │                                #   TypeSymbol 回挂兼识别标记））、
 │                                #   SymbolGraph 构造泛型驻留 + Freeze + Substitute
 │                                #   单源与构造类型 BaseType 创建即代入/统一回填、BootstrapSymbols
-│                                #   （String.Add intrinsic、Any.toString 接口承诺
-│                                #   + Object open native 默认实现；统一 Public；
+│                                #   （String.Add intrinsic、Any.toString open 承诺
+│                                #   + Object open override 默认实现；统一 Public；
 │                                #   Array\<T\> getAtIndex/setAtIndex operator——索引绑定
 │                                #   内建目标，P4b 直发 §13.6 不走 invoke；删
 │                                #   DowngradeRouter/DowngradeChain/ProxySpecialization
