@@ -939,7 +939,9 @@ namespace RigiCompiler.Bil
             {
                 values[i] = coroutine.ReadVar(arguments[i].Name);
             }
-            var symbol = context.FindCallOperator(receiver.TypeRef, values);
+            // callable 协议（§15.3）：对 receiver 实际类型虚派发其 $$call 实现
+            //（逻辑 TypeSheet 槽匹配，lambda 隐藏类经继承槽 + 自有 override 命中）
+            var symbol = context.FindCallTarget(VmTypeOps.ActualType(receiver), values);
             if (symbol == null)
             {
                 throw context.NoSuchMethod("没有匹配的 $$call：" + receiver.TypeRef);
@@ -1233,7 +1235,8 @@ namespace RigiCompiler.Bil
             }
             if (methodSymbol == BilSpellings.SuperReservedFunction)
             {
-                throw new VmException("invoke fn(..super) 未实现（Middleware 边界）");
+                ResolveSuper(context, coroutine, args, resultSlot);
+                return;
             }
             // §14.2/§14.3 call??? 降级路由：在方法 hook 默认抛之前拦截，按
             // receiver 类型 wrapper 链找能路由的 proxy；无路由时落回 hook 默认
@@ -1279,11 +1282,12 @@ namespace RigiCompiler.Bil
         }
 
         // 跳过 wrapper 派发/原生/hook 的普通 fn 解析与压帧（方法派发链末的
-        // 原始 fn 落点复用；逻辑虚派发 FindVirtualFunction）
+        // 原始 fn 落点复用；统一走逻辑 TypeSheet 虚派发 ResolveDispatch）
         internal static void InvokeResolved(VmContext context, VmCoroutine coroutine,
             string methodSymbol, IReadOnlyList<VmValue> args, string? resultSlot)
         {
-            var function = context.FindVirtualFunction(methodSymbol, args);
+            var function = context.ResolveDispatch(methodSymbol,
+                args.Count > 0 ? args[0] : null);
             if (function == null)
             {
                 throw new VmException("找不到 fn 定义：" + methodSymbol);
@@ -1294,6 +1298,171 @@ namespace RigiCompiler.Bil
                 return;
             }
             coroutine.PushFrame(function, args, resultSlot);
+        }
+
+        // §15.5 fn(..super)：解析为直接基类的原始实现并压帧——super 非虚、
+        // 绕过 wrapper 派发链、不再二次派发；实参（$.this + 隐藏泛型 + 普通
+        // 实参）原样压入。仅 override / init fn 体内合法（frontend 保证）。
+        private static void ResolveSuper(VmContext context, VmCoroutine coroutine,
+            IReadOnlyList<VmValue> args, string? resultSlot)
+        {
+            var current = coroutine.CurrentFrame.Function;
+            if (!BilVerificationContext.TryParseMethodSymbol(current.Symbol,
+                    out var owner, out _, out _, out _)
+                || context.FindType(owner) is not { } ownerDeclaration
+                || ownerDeclaration.ExtendsType is not { } baseRef)
+            {
+                throw new VmException("fn(..super) 所在 fn 无直接基类：" + current.Symbol);
+            }
+            if (context.IsInitMethod(current.Symbol))
+            {
+                ResolveSuperInit(context, coroutine, baseRef, args);
+                return;
+            }
+            var baseSheet = context.SheetOf(baseRef)
+                ?? throw new VmException("基类声明缺失，无法解析 super：" + baseRef);
+            var signatureKey = VmTypeSheetBuilder.SignatureKeyOf(current.Symbol);
+            var offset = -1;
+            for (var i = 0; i < baseSheet.Slots.Count; i++)
+            {
+                if (baseSheet.Slots[i].SignatureKey == signatureKey)
+                {
+                    offset = i;
+                    break;
+                }
+            }
+            if (offset < 0)
+            {
+                var fallback = FindUniqueBaseFunction(context, baseRef, current, args)
+                    ?? throw new VmException("super 未在直接基类命中同名方法："
+                        + current.Symbol);
+                PushSuperFrame(context, coroutine, fallback, args, resultSlot);
+                return;
+            }
+            // 基类该槽无实现（抽象声明）也是错误：super 必须落到具体实现
+            var impl = baseSheet.Slots[offset].ImplSymbol
+                ?? VmTypeSheetBuilder.FindCompatibleImpl(baseSheet.Slots, current.Symbol)
+                ?? throw new VmException("直接基类该签名无实现，无法 super：" + current.Symbol);
+            var target = context.FindFunction(impl)
+                ?? throw new VmException("super 目标实现缺少 fn 定义：" + impl);
+            PushSuperFrame(context, coroutine, target, args, resultSlot);
+        }
+
+        private static void PushSuperFrame(VmContext context, VmCoroutine coroutine,
+            BilFunction target, IReadOnlyList<VmValue> args, string? resultSlot)
+        {
+            if (context.IsAsyncMethod(target.Symbol))
+            {
+                EagerSpawn(coroutine, target, args, resultSlot);
+                return;
+            }
+            coroutine.PushFrame(target, args, resultSlot);
+        }
+
+        // super init（§9.2.2）：候选仅为直接基类 init 重载；实参 ABI 已含
+        // $.this + 隐藏泛型前缀（§15.5），剥除后按声明参数比对；init 必为
+        // noret（resultSlot 丢弃），$.this 透传（语义同 invoke.noret）
+        private static void ResolveSuperInit(VmContext context, VmCoroutine coroutine,
+            string baseRef, IReadOnlyList<VmValue> args)
+        {
+            var baseDeclaration = context.FindType(baseRef)
+                ?? throw new VmException("基类声明缺失，无法解析 super init：" + baseRef);
+            foreach (var member in baseDeclaration.Members)
+            {
+                if (member is not BilSimpleMemberDeclaration simple
+                    || !context.IsInitMethod(simple.Symbol))
+                {
+                    continue;
+                }
+                var function = context.FindFunction(simple.Symbol);
+                if (function == null
+                    || !BilVerificationContext.TryParseMethodSymbol(simple.Symbol,
+                        out _, out _, out var parameters, out _)
+                    || !SuperInitArgsMatch(function, parameters, args))
+                {
+                    continue;
+                }
+                coroutine.PushFrame(function, args, resultSlot: null);
+                return;
+            }
+            throw new VmException("super(...) 实参不匹配直接基类任何 init：" + baseRef);
+        }
+
+        // super init 实参匹配：args = [.this, 隐藏泛型..., 声明参数...]，
+        // 隐藏泛型个数取自 fn .args 的 .generic.* 条目
+        private static bool SuperInitArgsMatch(BilFunction function,
+            List<(string Name, string TypeRef)> parameters, IReadOnlyList<VmValue> args)
+        {
+            var genericHidden = 0;
+            foreach (var arg in function.Args)
+            {
+                if (arg.Name.StartsWith(".generic.", StringComparison.Ordinal))
+                {
+                    genericHidden++;
+                }
+            }
+            if (args.Count != 1 + genericHidden + parameters.Count)
+            {
+                return false;
+            }
+            for (var i = 0; i < parameters.Count; i++)
+            {
+                if (!VmContext.TypesEqual(parameters[i].TypeRef,
+                        args[1 + genericHidden + i].TypeRef))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        // 基类存在同名不同签名重载时的精确选择需要调用点静态类型，BIL 不
+        // 泄露（§15.5 "BIL 不泄露 base canonical 名"）——VM 以同签名优先、
+        // 唯一按实参个数匹配兜底
+        private static BilFunction? FindUniqueBaseFunction(VmContext context, string baseRef,
+            BilFunction current, IReadOnlyList<VmValue> args)
+        {
+            var baseDeclaration = context.FindType(baseRef);
+            if (baseDeclaration == null)
+            {
+                return null;
+            }
+            var name = VmContext.MethodNameOf(current.Symbol);
+            BilFunction? unique = null;
+            foreach (var member in baseDeclaration.Members)
+            {
+                if (member is not BilSimpleMemberDeclaration simple
+                    || simple.Kind != BilMemberKind.Method
+                    || context.IsInitMethod(simple.Symbol)
+                    || VmContext.MethodNameOf(simple.Symbol) != name)
+                {
+                    continue;
+                }
+                var function = context.FindFunction(simple.Symbol);
+                if (function == null || CountFrameParams(function) != args.Count)
+                {
+                    continue;
+                }
+                if (unique != null)
+                {
+                    return null;
+                }
+                unique = function;
+            }
+            return unique;
+        }
+
+        private static int CountFrameParams(BilFunction function)
+        {
+            var count = 0;
+            foreach (var arg in function.Args)
+            {
+                if (arg.Name != ".return")
+                {
+                    count++;
+                }
+            }
+            return count;
         }
 
         // call??? 符号判定（core::Any$call??? 前缀，签名段之前）

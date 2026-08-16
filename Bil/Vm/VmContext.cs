@@ -22,6 +22,11 @@ namespace RigiCompiler.Bil.Vm
         private readonly Dictionary<string, string> _setters;
         private readonly Dictionary<string, VmValue> _statics = new Dictionary<string, VmValue>();
         private readonly object _staticLock = new object();
+        // 逻辑 TypeSheet 缓存（声明 key → 拍平 sheet；可重入锁——Build 沿
+        // extends 递归会重入 SheetOf，VM 多 Worker 并发触发）
+        private readonly Dictionary<string, VmTypeSheet> _sheets =
+            new Dictionary<string, VmTypeSheet>(StringComparer.Ordinal);
+        private readonly object _sheetLock = new object();
         private readonly Dictionary<string, VmValue> _singletons = new Dictionary<string, VmValue>();
         private readonly object _singletonLock = new object();
         // singleton 构造在途栈（BIL §8.7，裁定 2）：正在初始化（init 尚未跑完）
@@ -86,79 +91,148 @@ namespace RigiCompiler.Bil.Vm
             return _functions.TryGetValue(symbol, out var function) ? function : null;
         }
 
-        // 接口/基类符号无 fn 体时，按接收者运行时类型沿 extends 链
-        // 找最派生的同名实例方法（逻辑虚派发，不模拟 vtable）。
-        public BilFunction? FindVirtualFunction(string methodSymbol, IReadOnlyList<VmValue> arguments)
+        // ===== 逻辑 TypeSheet（RUNTIME §6–§9 拍平等价物，VmTypeSheet.cs）=====
+
+        // 声明 → 拍平 sheet（缓存 + 可重入锁：VM 多 Worker 并发触发构建）；
+        // 声明缺失返回 null（构造类型剥实参后按其声明）
+        internal VmTypeSheet? SheetOf(string typeRef)
         {
-            var direct = FindFunction(methodSymbol);
-            if (direct != null)
-            {
-                return direct;
-            }
-            if (arguments.Count == 0 || !TryMethodName(methodSymbol, out var methodName))
+            var declaration = FindType(typeRef);
+            if (declaration == null)
             {
                 return null;
             }
-            var current = VmTypeOps.ActualType(arguments[0]);
-            var visited = new HashSet<string>(StringComparer.Ordinal);
-            while (visited.Add(StripTypeArguments(current)))
+            var key = VmTypeSheetBuilder.TypeKeyOf(declaration);
+            lock (_sheetLock)
             {
-                foreach (var function in _functions.Values)
+                if (_sheets.TryGetValue(key, out var cached))
                 {
-                    if (!TryMethodName(function.Symbol, out var candidateName)
-                        || candidateName != methodName)
-                    {
-                        continue;
-                    }
-                    if (!BilVerificationContext.TryParseMethodSymbol(function.Symbol,
-                            out var owner, out var isStatic, out _, out _))
-                    {
-                        continue;
-                    }
-                    if (isStatic)
-                    {
-                        continue;
-                    }
-                    if (TypesEqual(owner, current)
-                        || StripTypeArguments(owner) == StripTypeArguments(current))
-                    {
-                        return function;
-                    }
+                    return cached;
                 }
-                var declaration = FindType(current);
-                if (declaration?.ExtendsType == null)
-                {
-                    break;
-                }
-                current = declaration.ExtendsType;
+                var sheet = VmTypeSheetBuilder.Build(this, declaration,
+                    new HashSet<string>(StringComparer.Ordinal));
+                _sheets[key] = sheet;
+                return sheet;
             }
-            return null;
         }
 
-        private static bool TryMethodName(string symbol, out string name)
+        // 统一方法派发入口（替换旧的按名线性扫描）：静态符号经 owner 声明
+        // sheet 换算 offset，再取 receiver 实际类型 sheet 的槽实现（虚派发）；
+        // owner 是接口时 offset = iMap 段基址 + 接口内相对 offset（§8）。
+        // 不可派发（无 receiver/static/全局符号）退回 FindFunction 直查；
+        // owner 无声明（core::Exception 等预定义根）时按签名在实际类型槽
+        // 防御扫描（等价旧名匹配路径，如 getMessage 多态）。
+        internal BilFunction? ResolveDispatch(string staticSymbol, VmValue? receiver)
         {
-            name = "";
-            var dollar = symbol.IndexOf('$');
-            if (dollar < 0)
+            if (receiver == null
+                || !BilVerificationContext.TryParseMethodSymbol(staticSymbol,
+                    out var owner, out var isStatic, out _, out _)
+                || isStatic
+                || owner.Length == 0)
             {
-                return false;
+                return FindFunction(staticSymbol);
             }
-            var rest = symbol.Substring(dollar + 1);
-            if (rest.StartsWith("$", StringComparison.Ordinal))
+            var actualType = VmTypeOps.ActualType(receiver);
+            var actualSheet = SheetOf(actualType);
+            var ownerDeclaration = FindType(owner);
+            if (ownerDeclaration != null && actualSheet != null)
             {
-                rest = rest.Substring(1);
+                var ownerSheet = SheetOf(ownerDeclaration.Symbol);
+                if (ownerSheet != null
+                    && ownerSheet.OffsetBySymbol.TryGetValue(staticSymbol, out var offset))
+                {
+                    if (ownerDeclaration.Kind == BilTypeKind.Interface)
+                    {
+                        // 接口派发（§8）：接口内相对 offset + iMap 段基址；iMap
+                        // 未命中（异常模块形态）按接口成员签名防御扫描
+                        if (actualSheet.InterfaceBase.TryGetValue(
+                                VmTypeSheetBuilder.TypeKeyOf(ownerDeclaration), out var baseOffset))
+                        {
+                            offset += baseOffset;
+                        }
+                        else
+                        {
+                            offset = FindSlotBySignature(actualSheet, staticSymbol);
+                            if (offset < 0)
+                            {
+                                return FindFunction(staticSymbol);
+                            }
+                        }
+                    }
+                    return ResolveSlot(actualSheet, offset, staticSymbol, actualType);
+                }
             }
-            if (rest.StartsWith(".static.", StringComparison.Ordinal))
+            if (owner.Length > 0 && actualSheet != null)
             {
-                rest = rest.Substring(".static.".Length);
+                var offset = FindSlotBySignature(actualSheet, staticSymbol);
+                if (offset >= 0)
+                {
+                    return ResolveSlot(actualSheet, offset, staticSymbol, actualType);
+                }
             }
-            var open = rest.IndexOf('(');
-            if (open <= 0)
+            return FindFunction(staticSymbol);
+        }
+
+        // 槽 offset → 实现 fn（泛型代入形态的实现经名字兼容回退；抽象/接口
+        // 方法无实现抛清晰 VmException）
+        private BilFunction ResolveSlot(VmTypeSheet sheet, int offset, string staticSymbol,
+            string actualType)
+        {
+            var impl = sheet.Slots[offset].ImplSymbol
+                ?? VmTypeSheetBuilder.FindCompatibleImpl(sheet.Slots, staticSymbol);
+            if (impl == null)
             {
-                return false;
+                throw new VmException("抽象/接口方法无实现：" + staticSymbol
+                    + "（receiver 实际类型 " + actualType + "）");
             }
-            name = rest.Substring(0, open);
-            return name.Length > 0;
+            return FindFunction(impl)
+                ?? throw new VmException("派发到的实现缺少 fn 定义：" + impl);
+        }
+
+        private static int FindSlotBySignature(VmTypeSheet sheet, string staticSymbol)
+        {
+            var signatureKey = VmTypeSheetBuilder.SignatureKeyOf(staticSymbol);
+            for (var i = 0; i < sheet.Slots.Count; i++)
+            {
+                if (sheet.Slots[i].SignatureKey == signatureKey)
+                {
+                    return i;
+                }
+            }
+            return -1;
+        }
+
+        // callable 协议（§15.3）：receiver 实际类型 sheet 中参数与实参值匹配的
+        // $$call 槽（搜索空间 = 拍平槽列表，含继承；sheet 不可用时退回声明链
+        // 扫描兜底）
+        internal string? FindCallTarget(string receiverType, IReadOnlyList<VmValue> valueArguments)
+        {
+            var sheet = SheetOf(receiverType);
+            if (sheet != null)
+            {
+                for (var i = 0; i < sheet.Slots.Count; i++)
+                {
+                    var slot = sheet.Slots[i];
+                    if (slot.ImplSymbol == null
+                        || !slot.SignatureKey.StartsWith("$call(", StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+                    if (OperatorParamsMatch(slot.ImplSymbol, valueArguments))
+                    {
+                        return slot.ImplSymbol;
+                    }
+                }
+                return null;
+            }
+            return FindOperatorMember(receiverType, "call", valueArguments, callOnly: true);
+        }
+
+        // 符号是否 init 声明（成员带 Init 关键字修饰）
+        internal bool IsInitMethod(string methodSymbol)
+        {
+            return _members.TryGetValue(methodSymbol, out var member)
+                && HasKeyword(member, BilKeyword.Init);
         }
 
         public BilFunction FindEntrypoint()
@@ -894,11 +968,6 @@ namespace RigiCompiler.Bil.Vm
             return FindOperatorMember(ownerType, operatorName, valueArguments, callOnly: false);
         }
 
-        public string? FindCallOperator(string ownerType, IReadOnlyList<VmValue> valueArguments)
-        {
-            return FindOperatorMember(ownerType, "call", valueArguments, callOnly: true);
-        }
-
         private string? FindOperatorMember(string ownerType, string operatorName,
             IReadOnlyList<VmValue> valueArguments, bool callOnly)
         {
@@ -1237,7 +1306,7 @@ namespace RigiCompiler.Bil.Vm
             return rest.Substring(0, end);
         }
 
-        private static bool HasKeyword(BilSimpleMemberDeclaration member, BilKeyword keyword)
+        internal static bool HasKeyword(BilSimpleMemberDeclaration member, BilKeyword keyword)
         {
             foreach (var modifier in member.Modifiers)
             {

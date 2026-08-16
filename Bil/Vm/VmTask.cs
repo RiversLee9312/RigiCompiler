@@ -15,8 +15,23 @@ namespace RigiCompiler.Bil.Vm
 
     public sealed class VmTask : VmValue
     {
+        // waiter 登记项：协程 + 登记时的唤醒纪元（TrySuspend 成功后、
+        // 锁内读取，即本次挂起纪元）；发布失败时以此区分唤醒丢失与
+        // benign 竞态（见 VmExecutor.PublishWakeup）。
+        private readonly struct WaiterEntry
+        {
+            public VmCoroutine Coroutine { get; }
+            public long Epoch { get; }
+
+            public WaiterEntry(VmCoroutine coroutine, long epoch)
+            {
+                Coroutine = coroutine;
+                Epoch = epoch;
+            }
+        }
+
         private readonly object _gate = new object();
-        private readonly List<VmCoroutine> _waiters = new List<VmCoroutine>();
+        private readonly List<WaiterEntry> _waiters = new List<WaiterEntry>();
         private VmTaskState _state = VmTaskState.Pending;
         private VmValue? _result;
         private VmException? _exception;
@@ -67,7 +82,7 @@ namespace RigiCompiler.Bil.Vm
 
         public void Complete(VmValue result)
         {
-            List<VmCoroutine>? waiters = null;
+            List<WaiterEntry>? waiters = null;
             lock (_gate)
             {
                 if (_state != VmTaskState.Pending)
@@ -83,7 +98,7 @@ namespace RigiCompiler.Bil.Vm
 
         public void Fail(VmException exception)
         {
-            List<VmCoroutine>? waiters = null;
+            List<WaiterEntry>? waiters = null;
             lock (_gate)
             {
                 if (_state != VmTaskState.Pending)
@@ -99,7 +114,7 @@ namespace RigiCompiler.Bil.Vm
 
         public void Cancel()
         {
-            List<VmCoroutine>? waiters = null;
+            List<WaiterEntry>? waiters = null;
             lock (_gate)
             {
                 if (_state != VmTaskState.Pending)
@@ -113,7 +128,8 @@ namespace RigiCompiler.Bil.Vm
         }
 
         // 已终态返回 false 并写出终态（调用方立即取值，不得挂起）。
-        // 未终态：在同一把锁下转 Suspended 并登记 waiter，返回 true。
+        // 未终态：在同一把锁下转 Suspended（TrySuspend，纪元 +1）并连同
+        // 当前纪元登记 waiter，返回 true。
         public bool TryAwait(VmCoroutine waiter, out VmTaskState state, out VmValue? result,
             out VmException? exception)
         {
@@ -127,11 +143,11 @@ namespace RigiCompiler.Bil.Vm
                     exception = _exception;
                     return false;
                 }
-                if (!waiter.TryTransition(VmCoroutineState.Running, VmCoroutineState.Suspended))
+                if (!waiter.TrySuspend())
                 {
                     throw new VmException("await 时协程不在 Running");
                 }
-                _waiters.Add(waiter);
+                _waiters.Add(new WaiterEntry(waiter, waiter.WakeupEpoch));
                 state = VmTaskState.Pending;
                 result = null;
                 exception = null;
@@ -149,14 +165,14 @@ namespace RigiCompiler.Bil.Vm
             }
         }
 
-        private List<VmCoroutine> DrainWaiters()
+        private List<WaiterEntry> DrainWaiters()
         {
-            var waiters = new List<VmCoroutine>(_waiters);
+            var waiters = new List<WaiterEntry>(_waiters);
             _waiters.Clear();
             return waiters;
         }
 
-        private static void ResumeWaiters(List<VmCoroutine>? waiters)
+        private static void ResumeWaiters(List<WaiterEntry>? waiters)
         {
             if (waiters == null)
             {
@@ -164,13 +180,8 @@ namespace RigiCompiler.Bil.Vm
             }
             foreach (var waiter in waiters)
             {
-                try
-                {
-                    waiter.BoundExecutor.Publish(waiter);
-                }
-                catch (VmException)
-                {
-                }
+                waiter.Coroutine.BoundExecutor.PublishWakeup(
+                    waiter.Coroutine, waiter.Epoch, "VmTask.ResumeWaiters");
             }
         }
     }

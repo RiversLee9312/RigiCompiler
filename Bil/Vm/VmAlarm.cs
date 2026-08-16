@@ -7,8 +7,22 @@ namespace RigiCompiler.Bil.Vm
 
     public sealed class VmEventAlarm : VmValue
     {
+        // waiter 登记项（纪元语义同 VmTask.WaiterEntry）：
+        // 发布失败时以此区分唤醒丢失与 benign 竞态。
+        private readonly struct WaiterEntry
+        {
+            public VmCoroutine Coroutine { get; }
+            public long Epoch { get; }
+
+            public WaiterEntry(VmCoroutine coroutine, long epoch)
+            {
+                Coroutine = coroutine;
+                Epoch = epoch;
+            }
+        }
+
         private readonly object _gate = new object();
-        private readonly List<VmCoroutine> _waiters = new List<VmCoroutine>();
+        private readonly List<WaiterEntry> _waiters = new List<WaiterEntry>();
         private bool _signaled;
         private Timer? _timer;
 
@@ -35,7 +49,7 @@ namespace RigiCompiler.Bil.Vm
             _timer = new Timer(_ => Signal(), null, milliseconds, Timeout.Infinite);
         }
 
-        // 未触发：登记 waiter、转 Suspended，返回 true。
+        // 未触发：登记 waiter（连同唤醒纪元）、转 Suspended，返回 true。
         // 已触发：返回 false（调用方仍须结束当前执行段并重新发布）。
         public bool TryAwait(VmCoroutine waiter)
         {
@@ -45,22 +59,22 @@ namespace RigiCompiler.Bil.Vm
                 {
                     return false;
                 }
-                if (!waiter.TryTransition(VmCoroutineState.Running, VmCoroutineState.Suspended))
+                if (!waiter.TrySuspend())
                 {
                     throw new VmException("yield EventAlarm 时协程不在 Running");
                 }
-                _waiters.Add(waiter);
+                _waiters.Add(new WaiterEntry(waiter, waiter.WakeupEpoch));
                 return true;
             }
         }
 
         public void Signal()
         {
-            List<VmCoroutine>? waiters = null;
+            List<WaiterEntry>? waiters = null;
             lock (_gate)
             {
                 _signaled = true;
-                waiters = new List<VmCoroutine>(_waiters);
+                waiters = new List<WaiterEntry>(_waiters);
                 _waiters.Clear();
                 var timer = _timer;
                 _timer = null;
@@ -72,13 +86,8 @@ namespace RigiCompiler.Bil.Vm
             }
             foreach (var waiter in waiters)
             {
-                try
-                {
-                    waiter.BoundExecutor.Publish(waiter);
-                }
-                catch (VmException)
-                {
-                }
+                waiter.Coroutine.BoundExecutor.PublishWakeup(
+                    waiter.Coroutine, waiter.Epoch, "VmEventAlarm.Signal");
             }
         }
     }

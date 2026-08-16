@@ -57,6 +57,8 @@ namespace RigiCompiler.Tests
             ("SemanticsFuzz", SemanticsFuzzTests.RunAll, SemanticsFuzzTests.RunWithArgs),
             ("DispatchExplainer", DispatchExplainerTests.RunAll, null),
             ("BilVm", BilVmTests.RunAll, null),
+            ("BilVmDispatch", BilVmDispatchTests.RunAll, null),
+            ("BilVmWakeup", BilVmWakeupTests.RunAll, null),
             ("BilReader", BilReaderTests.RunAll, null),
             ("BilVmStress", BilVmStressTests.RunAll, null),
         };

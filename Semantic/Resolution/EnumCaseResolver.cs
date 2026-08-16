@@ -60,15 +60,20 @@ namespace RigiCompiler
 
         private static void ResolveDiscriminants(ResolveEnvironment env, EnumStructDeclarationASTNode enumNode)
         {
-            var seen = new HashSet<long>();
+            var seen = new HashSet<decimal>();
             foreach (var caseNode in enumNode.Cases)
             {
                 // auto（无 -> N）：符号保持 null，编号归发射侧按声明序推导（§12.4）
                 if (caseNode.DiscriminantValue is not { } value) continue;
-                // 防御复核（Parser 已拦：非负、同 enum 内唯一）
+                // 防御复核（Parser 已拦：非负、i32 范围内、同 enum 内唯一——
+                // 判别值发射为 i32 标量资源，§19.1）
                 if (value < 0)
                 {
                     env.Error(caseNode.Span, "Enum discriminant value must be non-negative");
+                }
+                else if (value > int.MaxValue)
+                {
+                    env.Error(caseNode.Span, "Enum discriminant value must fit in i32 range");
                 }
                 else if (!seen.Add(value))
                 {

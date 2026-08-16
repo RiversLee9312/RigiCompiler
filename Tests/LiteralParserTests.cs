@@ -78,6 +78,73 @@ namespace RigiCompiler.Tests
             TestHarness.Blank();
         }
 
+        // 整数 F 后缀报错（Bug B）：f/F 是浮点后缀（SYNTAX §3.3），
+        // 出现在整数上属规范外形态，按「未定义即错误」必须报错
+        public static void TestIntSuffixErrors()
+        {
+            TestHarness.Section("Integer F Suffix Errors (expect ParserException)");
+
+            TestHarness.CheckParseError("1F",
+                () => TestHarness.ParseFirstDecl("1F"), "Invalid integer literal suffix: 'F'");
+            TestHarness.CheckParseError("1f",
+                () => TestHarness.ParseFirstDecl("1f"), "Invalid integer literal suffix: 'F'");
+
+            TestHarness.Blank();
+        }
+
+        // u64 全范围边界（Bug A：decimal 装载）：上界正例值精确、越界报错
+        public static void TestUInt64Boundaries()
+        {
+            TestHarness.Section("UInt64 Boundaries");
+
+            TestLit("18446744073709551615UL", "Int(18446744073709551615,U64)");
+            TestLit("0xFFFFFFFFFFFFFFFFUL", "Int(18446744073709551615,U64,hex)");
+            TestHarness.CheckParseError("18446744073709551616UL",
+                () => TestHarness.ParseFirstDecl("18446744073709551616UL"), "out of range for u64");
+            TestHarness.CheckParseError("0x10000000000000000UL",
+                () => TestHarness.ParseFirstDecl("0x10000000000000000UL"), "out of range for u64");
+
+            TestHarness.Blank();
+        }
+
+        // 后缀类型范围检查（加固 C：转换前拦截，不再漏到 VM 装载）：
+        // 各整数类型的上界（字面量无符号，下界天然满足）
+        public static void TestIntRangeChecks()
+        {
+            TestHarness.Section("Integer Range Checks");
+
+            // i8（B）
+            TestLit("127B", "Int(127,I8)");
+            TestHarness.CheckParseError("128B",
+                () => TestHarness.ParseFirstDecl("128B"), "out of range for i8");
+            // i16（S）
+            TestLit("32767S", "Int(32767,I16)");
+            TestHarness.CheckParseError("32768S",
+                () => TestHarness.ParseFirstDecl("32768S"), "out of range for i16");
+            // i32（默认）
+            TestLit("2147483647", "Int(2147483647,I32)");
+            TestHarness.CheckParseError("2147483648",
+                () => TestHarness.ParseFirstDecl("2147483648"), "out of range for i32");
+            // u32（U）
+            TestLit("4294967295U", "Int(4294967295,U32)");
+            TestHarness.CheckParseError("4294967296U",
+                () => TestHarness.ParseFirstDecl("4294967296U"), "out of range for u32");
+            // u16（US）
+            TestLit("65535US", "Int(65535,U16)");
+            TestHarness.CheckParseError("65536US",
+                () => TestHarness.ParseFirstDecl("65536US"), "out of range for u16");
+            // u8（UB）
+            TestLit("255UB", "Int(255,U8)");
+            TestHarness.CheckParseError("256UB",
+                () => TestHarness.ParseFirstDecl("256UB"), "out of range for u8");
+            // i64（L）
+            TestLit("9223372036854775807L", "Int(9223372036854775807,I64)");
+            TestHarness.CheckParseError("9223372036854775808L",
+                () => TestHarness.ParseFirstDecl("9223372036854775808L"), "out of range for i64");
+
+            TestHarness.Blank();
+        }
+
         public static void TestFloatLiterals()
         {
             TestHarness.Section("Float Literals");
@@ -374,6 +441,9 @@ namespace RigiCompiler.Tests
 
             TestIntLiterals();
             TestIntBasePrefixes();
+            TestIntSuffixErrors();
+            TestUInt64Boundaries();
+            TestIntRangeChecks();
             TestUnderscoreSeparators();
             TestFloatLiterals();
             TestScientificNotationLiterals();

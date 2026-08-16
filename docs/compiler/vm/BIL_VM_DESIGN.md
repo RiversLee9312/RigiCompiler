@@ -10,8 +10,10 @@
 
 本 VM 是 BIL 文本/模型的抽象解释器：
 
-- 不模拟 §22.1 列出的任何物理机制（胖引用位布局、对齐、TypeSheet、
-  vtable/iMap、Box 裸块、ARC/GC、LLVM calling convention）。
+- 不模拟 §22.1 列出的任何物理机制（胖引用位布局、对齐、Box 裸块、ARC/GC、
+  LLVM calling convention）；TypeSheet/vtable/iMap 不模拟其**物理位布局**，
+  但方法派发统一建立在逻辑等价的 VmTypeSheet（拍平 vtable+iMap）抽象上
+  （见 §3.4）。
 - 不做 source-level overload ranking（§22.3）；运算实现查询键恒为
   `opcode + 精确操作数类型 + 精确结果类型`。
 - 不把 `get.field` / `set.field` / `get.array` / `set.array` 改写为普通调用
@@ -42,6 +44,7 @@ Bil/
     ├── VmAlarm.cs                # PollingAlarm / EventAlarm 的 VM 表示与注册
     ├── VmException.cs            # 语言级异常的 VM 承载（包装异常对象 VmValue）
     ├── VmHooks.cs                # §22.5 hook 表：rigi_rt print/printErr/toString + core::Any$call???
+    ├── VmTypeSheet.cs            # 逻辑 TypeSheet：拍平 vtable+iMap 与统一方法派发（§3.4）
     └── Values/
         ├── VmValue.cs            # 抽象基类 + 精确标量子类型（见 §3）
         ├── VmObject.cs           # 引用类型实例：运行时类型引用 + 字段字典
@@ -93,6 +96,34 @@ Bil/
 - 操作数为用户类型 → 按精确类型解析到对应 operator fn，以普通调用语义执行
   （复用调用基建，不改变指令语义）。
 
+### 3.4 方法派发：逻辑 TypeSheet（拍平 vtable + iMap）
+
+方法派发（虚方法 / 接口方法 / callable `$$call` / `fn(..super)`）统一建立在
+`Bil/Vm/VmTypeSheet.cs` 的逻辑 TypeSheet 抽象上——`RUNTIME.md` §6–§9 的
+加载期拍平等价物：
+
+- 每个类型声明一张 sheet（按声明 key 记忆化，可重入锁保护，多 Worker 并发
+  构建）；槽序 = 继承槽 → 自有槽 → 各接口段。克隆式构建天然保证「继承中
+  相同方法保持相同 vtable offset」（§7 不变量），派生 sheet 自带继承槽与
+  iMap（§9 拍平，调用期不上溯）。
+- 槽按归一化签名键匹配（名称 + 参数类型序列 + 返回类型；泛型参数按出现序
+  归一为位置占位，参数名不参与）；有体成员替换全部同签名槽的实现（含继承
+  来的接口段槽）。abstract/init/ext 成员与除 `$$call` 外的运算符不进 vtable
+  （callable 协议例外，SYNTAX §9.2.1）。
+- iMap（`InterfaceBase`）记录接口声明 key → 接口段基址；接口派发 = 段基址 +
+  接口内相对 offset（§8）。owner 是预定义根（core::Exception 等不进符号段）
+  时按签名在 receiver 实际类型槽防御扫描（getMessage 多态路径）。
+- 统一入口 `VmContext.ResolveDispatch(staticSymbol, receiver)`：静态符号经
+  owner 声明 sheet 换算 offset，再取 receiver 实际类型 sheet 的槽实现 fn；
+  不可派发（无 receiver/static/全局符号）退回直查。`invoke.indirect` 的
+  `$$call` 同样按 receiver 实际类型的 sheet 槽匹配实参后经 `InvokeValues`
+  落地（保持 Method wrapper 链与 receiver 首参 ABI）。
+- `fn(..super)`（BIL §15.5）在直接基类 sheet 上按同签名槽取实现后**直接压帧**
+  ——super 非虚、绕过 wrapper 派发链与二次派发；init 内 super 按基类 init
+  重载选目标（实参剥 `$.this` 与隐藏泛型前缀后比对）。基类存在同名不同签名
+  重载时的精确选择需要调用点静态类型（BIL 不泄露 base canonical 名），VM 以
+  同签名优先、唯一按实参个数匹配兜底。
+
 ## 4. 执行模型（RUNTIME §17–§19）
 
 ### 4.1 显式 Step 循环，真并发 Executor
@@ -117,6 +148,11 @@ Bil/
 
 - `VmTask` 的终态转换与 waiter 列表用同一把锁保护；锁的释放/获取天然建立
   §18.3 要求的「终止前写入对 await 返回后可见」。
+- 唤醒发布统一走 `PublishWakeup`（携带唤醒纪元）：全部挂起点经 `TrySuspend`
+  原子递增纪元，唤醒方（Task/EventAlarm waiter、轮询 timer）登记时捕获；
+  发布失败且协程仍 Suspended、纪元未变 ⇒ 判定调度器丢失唤醒，立即 `Fail`
+  留证（否则协程永久 Suspended、quiescence 死锁且无证据）；其余失败均为
+  benign 竞态（stale 唤醒 / 取消 / 已就绪），静默容忍。
 - 静态字段存储、hook 表 stdout/stderr 写入各自加锁；单次 `print` 调用原子。
 - 跨协程的输出交错顺序是真实非确定性，VM 不做任何排序保证。
 

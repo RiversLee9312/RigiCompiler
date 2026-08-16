@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace RigiCompiler
 {
     // ===== 子任务 7a：wrapper 声明的 @WrapperTarget 解析 =====
@@ -460,7 +462,7 @@ namespace RigiCompiler
 
         private static string LiteralKey(LiteralASTNode literal) => literal switch
         {
-            IntLiteralASTNode i => $"i:{i.IntType}:{i.Value}",
+            IntLiteralASTNode i => $"i:{i.IntType}:{i.Value.ToString(CultureInfo.InvariantCulture)}",
             FloatLiteralASTNode f => $"f:{f.IsFloat}:{f.Value:R}",
             StringLiteralASTNode s => "s:" + s.Value,
             CharLiteralASTNode c => "c:" + c.Value,

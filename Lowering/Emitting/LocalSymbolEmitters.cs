@@ -100,7 +100,7 @@ namespace RigiCompiler
         // Exception.getMessage 已抽象化（用户裁定）——不再是 native，本循环
         // 只发射 IsNative 成员，抽象方法不落地；具体子类的 override 经
         // EmitTypeTree 正常发射 fn 定义，调用点 invoke 指向子类 override 或
-        // 抽象根符号（后者由 VM FindVirtualFunction 沿 extends 链多态派发）。
+        // 抽象根符号（后者由 VM ResolveDispatch 按逻辑 TypeSheet 多态派发）。
         public static void EmitBuiltinNativeMethods(EmitEnvironment env)
         {
             foreach (var property in typeof(BootstrapSymbols).GetProperties(
@@ -208,7 +208,7 @@ namespace RigiCompiler
                     .Select(hole => new BilCaseParameter(hole.Name,
                         CanonicalSymbolPrinter.PrintType(hole.Type)))
                     .ToArray();
-                var discriminantResource = enumCase.Discriminant is long discriminant
+                var discriminantResource = enumCase.Discriminant is decimal discriminant
                     ? EmittingFacility.RegisterScalarResource(BilScalarType.I32,
                         discriminant.ToString(CultureInfo.InvariantCulture), env).Name
                     : null;

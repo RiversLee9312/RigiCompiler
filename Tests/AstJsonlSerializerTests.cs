@@ -47,7 +47,7 @@ namespace RigiCompiler.Tests
                 TestHarness.CheckTrue("IntLiteralASTNode fields：Value=42, IntType=I32（enum 渲染为名字）",
                     literal.Count == 1 &&
                     literal[0].GetProperty("fields").TryGetProperty("Value", out var valueEl) &&
-                    valueEl.GetInt64() == 42 &&
+                    valueEl.GetDecimal() == 42 &&
                     FieldString(literal[0], "IntType") == "I32");
 
                 TestHarness.CheckTrue("private 字段下钻：字面量经 via=literal 挂载",

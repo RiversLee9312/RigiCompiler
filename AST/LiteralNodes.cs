@@ -36,7 +36,8 @@ namespace RigiCompiler
     // 整数字面量 AST 节点
     public class IntLiteralASTNode : LiteralASTNode
     {
-        public long Value;
+        // 值一律以 decimal 装载（128 位十进制，可精确覆盖 u64 全范围）
+        public decimal Value;
         public IntType IntType;
         public LiteralIntBase Base = LiteralIntBase.Decimal;  // 进制（0x/0b/0o 前缀）
 

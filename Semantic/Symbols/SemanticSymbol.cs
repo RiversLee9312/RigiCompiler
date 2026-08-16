@@ -560,9 +560,10 @@ namespace RigiCompiler
     {
         // 宿主 enum 类型（构造即定；canonical 投影见 PrintCase：{Owner}.{Name}，BIL §8.5）
         public TypeSymbol Owner { get; }
-        // 显式判别值（-> N；P2 落定，null = auto）。auto 编号按声明序从 0
-        // （§12.4），发射侧按宿主 Cases 表序推导，符号上不另存
-        public long? Discriminant { get; internal set; }
+        // 显式判别值（-> N；P2 落定，null = auto；decimal 装载，发射侧
+        // 收窄为 i32 标量资源）。auto 编号按声明序从 0（§12.4），发射侧按
+        // 宿主 Cases 表序推导，符号上不另存
+        public decimal? Discriminant { get; internal set; }
         // init 调用模板绑定产物（§12.1，P3 声明点落定，本阶段只开槽）：
         // ResolvedInit = 选中的 init；HoleParameters = 参数洞签名列表
         // （null = 未绑定；空列表 = 固定 case）。固定实参表达式的绑定产物

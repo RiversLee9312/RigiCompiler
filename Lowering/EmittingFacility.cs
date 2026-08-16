@@ -234,7 +234,10 @@ namespace RigiCompiler
                 case StringLiteralASTNode s:
                     return (BilScalarType.String, "\"" + Escape(s.Value) + "\"");
                 case IntLiteralASTNode i:
-                    return (IntScalarType(i.IntType), i.Value.ToString());
+                    // decimal 值统一走不变文化（整数值无小数点，文本与
+                    // long 时代一致，如 "42"）
+                    return (IntScalarType(i.IntType),
+                        i.Value.ToString(CultureInfo.InvariantCulture));
                 case BoolLiteralASTNode b:
                     return (BilScalarType.Bool, b.Value ? "true" : "false");
                 case CharLiteralASTNode c:

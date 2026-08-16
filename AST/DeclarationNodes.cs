@@ -288,7 +288,7 @@ namespace RigiCompiler
     {
         public string CaseName;
         [ChildAstNode] public List<ArgumentASTNode> Arguments;        // case 的参数（可能包含 _ 占位符）
-        public long? DiscriminantValue;                // 可选的显式判别值（-> N，M31 起 long：支持 u32 范围）
+        public decimal? DiscriminantValue;            // 可选的显式判别值（-> N；decimal 装载，发射侧为 i32 标量）
 
         public EnumCaseASTNode(ASTNode? parent) : base(parent)
         {

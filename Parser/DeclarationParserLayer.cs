@@ -763,14 +763,15 @@ namespace RigiCompiler
         }
 
         // -> 已读：判别值只接受非负整数字面量（§12.4 编译期整数常量；
-        // M31：支持 0x 等进制与更大范围，统一走 NumericLiteral）
+        // M31：支持 0x 等进制，统一走 NumericLiteral）。判别值发射为
+        // i32 标量资源（§19.1），上限同样按 i32 拦截
         private ParserLayerResult OnEnumDiscriminant(Token t, ParserLayerContext context)
         {
             if (t is LineBreakToken) return ParserLayerResult.Continue.Instance;
 
             if (t is WordToken w &&
                 NumericLiteral.TryParseInt(w.Content, out var value, out _, out _, out _) &&
-                value >= 0)
+                value >= 0 && value <= int.MaxValue)
             {
                 currentCase!.DiscriminantValue = value;
                 state = State.EnumAfterCase;

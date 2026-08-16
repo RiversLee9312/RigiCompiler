@@ -152,6 +152,11 @@ namespace RigiCompiler.Bil.Vm
         private VmValue? _pollingAlarm;
         private int _pollBackoffMs = 1;
         private Timer? _pollTimer;
+        // 唤醒纪元：每次成功挂起（Running→Suspended）递增一次，
+        // 标识「第几次挂起」。唤醒方登记时捕获当前纪元，发布失败时以
+        // 「仍 Suspended 且纪元未变」区分唤醒丢失与 benign 竞态
+        // （见 VmExecutor.PublishWakeup）。
+        private long _wakeupEpoch;
 
         public VmExecutor BoundExecutor { get; }
         public VmTask Task { get; }
@@ -164,6 +169,9 @@ namespace RigiCompiler.Bil.Vm
         public VmException? Failure { get; private set; }
 
         public VmCoroutineState State => (VmCoroutineState)Volatile.Read(ref _state);
+
+        // 当前唤醒纪元（只读视图；递增只发生在 TrySuspend 内）
+        public long WakeupEpoch => Volatile.Read(ref _wakeupEpoch);
 
         public bool HasAbruptCompletion => _pending != null && _pending.IsAbrupt;
 
@@ -179,6 +187,20 @@ namespace RigiCompiler.Bil.Vm
         public bool TryTransition(VmCoroutineState expected, VmCoroutineState next)
         {
             return Interlocked.CompareExchange(ref _state, (int)next, (int)expected) == (int)expected;
+        }
+
+        // 统一挂起点：CAS Running→Suspended，成功后递增唤醒纪元。
+        // 全部进入 Suspended 的转换必须走此方法（VmTask/VmEventAlarm 的
+        // TryAwait 锁内 CAS、ProbePolling 轮询挂起），保证「纪元」与
+        // 「挂起次数」严格一一对应，唤醒丢失判定才有依据。
+        public bool TrySuspend()
+        {
+            if (!TryTransition(VmCoroutineState.Running, VmCoroutineState.Suspended))
+            {
+                return false;
+            }
+            Interlocked.Increment(ref _wakeupEpoch);
+            return true;
         }
 
         public VmValue ReadVar(string name)
@@ -372,7 +394,7 @@ namespace RigiCompiler.Bil.Vm
         {
             var alarm = _pollingAlarm
                 ?? throw new VmException("PollingAlarm 探测缺少对象");
-            var function = context.FindVirtualFunction(VmPolling.IsReadySymbol, new[] { alarm });
+            var function = context.ResolveDispatch(VmPolling.IsReadySymbol, alarm);
             if (function == null)
             {
                 throw new VmException("PollingAlarm 没有 isReady");
@@ -398,7 +420,7 @@ namespace RigiCompiler.Bil.Vm
                 _pollingAlarm = null;
                 return true;
             }
-            if (!TryTransition(VmCoroutineState.Running, VmCoroutineState.Suspended))
+            if (!TrySuspend())
             {
                 throw new VmException("PollingAlarm 未就绪时无法挂起");
             }

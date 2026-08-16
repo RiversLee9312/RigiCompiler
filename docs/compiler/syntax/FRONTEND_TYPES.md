@@ -52,7 +52,7 @@ ASTIntegrityValidator 校验父子指针一致性与 Span 合法性，
 - 符号结构：**Symbol**（`elements: SymbolElementSet`）→ **SymbolElement**（`name` + `generics: SymbolSet`）
 
 ### 3.2 字面量（`AST/LiteralNodes.cs`）
-- **IntLiteralASTNode**（Value、IntType、Base；IntType 枚举：I32/I64/I16/I8/U32/U64/U16/U8；
+- **IntLiteralASTNode**（Value（decimal，128 位十进制，可精确覆盖 u64 全范围）、IntType、Base；IntType 枚举：I32/I64/I16/I8/U32/U64/U16/U8；
   Base 为 LiteralIntBase 枚举（替代 IsHex 布尔）：Decimal/Hex/Binary/Octal，对应 0x/0b/0o 前缀）
 - **FloatLiteralASTNode**（Value、IsFloat）
 - **StringLiteralASTNode**（Value、HasInterpolation）

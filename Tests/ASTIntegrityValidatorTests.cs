@@ -217,8 +217,9 @@ namespace RigiCompiler.Tests
 
         // ===== 测试辅助 =====
 
-        // 构造一个未挂载的整数字面量表达式（字面量节点的 Parent 即包装节点）
-        private static LiteralExpressionASTNode MakeIntLiteral(long value)
+        // 构造一个未挂载的整数字面量表达式（字面量节点的 Parent 即包装节点；
+        // 值类型随 IntLiteralASTNode.Value 为 decimal，int 实参隐式收窄入参）
+        private static LiteralExpressionASTNode MakeIntLiteral(decimal value)
         {
             var litExpr = new LiteralExpressionASTNode();
             litExpr.AttachLiteral(new IntLiteralASTNode(litExpr) { Value = value });
