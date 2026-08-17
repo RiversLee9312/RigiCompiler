@@ -69,8 +69,10 @@ namespace RigiCompiler
         }
     }
 
-    // void 调用语句：实参降级 + 实例 receiver 降级与调用点 cast 物化
-    // （S7c-2，BIL §6.5）
+    // void 调用语句：receiver 降级 + 实参降级 + 调用点 cast 物化
+    // （S7c-2，BIL §6.5）。兄弟求值序保护（EvalOrderGuard）：降级顺序
+    // 为 receiver 先、实参后（与 P4b CallStatementEmitter 发射序一致）；
+    // 实参产前置语句时 receiver 物化合成局部插回前置流首位
     internal sealed class CallStatementRewriter
         : LoweredVisitor<CallStatementRewriter, LoweredStatement, LowerContext>
     {
@@ -78,9 +80,7 @@ namespace RigiCompiler
             LowerEnvironment env)
         {
             var call = (BoundCallStatement)node;
-            var arguments = LoweringFacility.LowerArguments(call.Arguments, call.Method.Parameters,
-                ctx, env);
-            if (arguments == null) return null;
+            var guard = new EvalOrderGuard(ctx);
             LoweredExpression? callReceiver = null;
             if (call.Receiver != null)
             {
@@ -100,7 +100,11 @@ namespace RigiCompiler
                     }
                 }
                 if (callReceiver == null) return null;
+                guard.Track(call.Receiver, callReceiver);
             }
+            var arguments = LoweringFacility.LowerArguments(call.Arguments, call.Method.Parameters,
+                ctx, env, guard);
+            if (arguments == null) return null;
             // S9d-2：泛型包无值子节点，恒等透传（打包归 P4b）
             var genericPack = call.GenericPack == null ? null
                 : new LoweredGenericVarArgsArgument(call.GenericPack, call.GenericPack.IsNamed,
@@ -109,10 +113,17 @@ namespace RigiCompiler
             LoweredExpression? indirectTarget = null;
             if (call.IsIndirect)
             {
-                indirectTarget = LowerExpressionDispatcher.Visit(call.IndirectTarget!, ctx, env);
+                indirectTarget = guard.Lower(call.IndirectTarget!, env);
                 if (indirectTarget == null) return null;
             }
-            return new LoweredCallStatement(call, call.Method, arguments, callReceiver,
+            var sealedSlots = guard.Seal();
+            var slotIndex = 0;
+            if (call.Receiver != null) callReceiver = sealedSlots[slotIndex++];
+            var sealedArguments = new List<LoweredExpression>(call.Arguments.Count);
+            for (var i = 0; i < call.Arguments.Count; i++)
+                sealedArguments.Add(sealedSlots[slotIndex++]);
+            if (call.IsIndirect) indirectTarget = sealedSlots[slotIndex];
+            return new LoweredCallStatement(call, call.Method, sealedArguments, callReceiver,
                 call.TypeArguments, genericPack, indirectTarget);
         }
     }
@@ -374,21 +385,30 @@ namespace RigiCompiler
 
     // M109b-1：cell 构造点 wrapper 前缀实参降级。无参 → null（普通 new）；
     // 有参 → 非 null 列表（new.wrapped）。共享于 LocalDeclaration/Loop/TrySeq/
-    // ClosureStoragePlan 四构造点
+    // ClosureStoragePlan 四构造点。
+    // guard：兄弟求值序保护（EvalOrderGuard）——未传时自建并在返回前
+    // Seal（语义同 LoweringFacility.LowerArguments）；传入外部 guard 时
+    // 只 Track 不 Seal（外层统一 Seal），此时返回值是未封口形态，外层
+    // 调用方须改用 Seal 结果
     internal static class CellWrappedNew
     {
         public static IReadOnlyList<LoweredExpression>? LowerWrapperInitArgs(
-            BoundNode origin, CellStorageInfo storage, LowerContext ctx, LowerEnvironment env)
+            BoundNode origin, CellStorageInfo storage, LowerContext ctx, LowerEnvironment env,
+            EvalOrderGuard? guard = null)
         {
             if (storage.InitWrapper == null || storage.InitWrapper.Parameters.Count == 0)
                 return null;
+            var own = guard == null;
+            guard ??= new EvalOrderGuard(ctx);
             var result = new List<LoweredExpression>();
             foreach (var bound in storage.WrapperInitArguments)
             {
                 var lowered = LowerExpressionDispatcher.Visit(bound, ctx, env);
                 if (lowered == null) return null;
+                guard.Track(bound, lowered);
                 result.Add(lowered);
             }
+            if (own) return new List<LoweredExpression>(guard.Seal());
             return result;
         }
     }
@@ -401,13 +421,15 @@ namespace RigiCompiler
             LowerEnvironment env)
         {
             var stmt = (BoundNewWrapperStatement)node;
-            var args = new List<LoweredExpression>();
+            // 兄弟求值序保护（EvalOrderGuard）：实参逐一登记后统一 Seal
+            var guard = new EvalOrderGuard(ctx);
             foreach (var argument in stmt.Arguments)
             {
-                var lowered = LowerExpressionDispatcher.Visit(argument, ctx, env);
-                if (lowered == null) return null;
-                args.Add(lowered);
+                if (guard.Lower(argument, env) == null) return null;
             }
+            var sealedSlots = guard.Seal();
+            var args = new List<LoweredExpression>(stmt.Arguments.Count);
+            for (var i = 0; i < sealedSlots.Count; i++) args.Add(sealedSlots[i]);
             return new LoweredNewWrapperStatement(stmt, stmt.Kind, stmt.WrapperType, stmt.Target,
                 args);
         }

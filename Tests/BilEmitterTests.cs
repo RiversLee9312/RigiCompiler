@@ -119,6 +119,7 @@ namespace RigiCompiler.Tests
             TestExtCompoundAssignmentEmission();
             TestConstFieldModifierEmission();
             TestSmartCastCompoundAssignmentEmission();
+            TestEvalOrderGuardEmission();
             TestEnumCaseEmission();
             TestWrapperEntityReadEmission();
             TestWrapperEntityWriteEmission();

@@ -7,11 +7,17 @@ namespace RigiCompiler
         // 实参降级：逐实参递归降级 + 按形参类型的 cast 物化
         // （parameters 为 null = 无显式 init 的零参构造等无形参场景）。
         // S9d：可变参数包实参（BoundVarArgsArgument）直通不 cast——
-        // 打包与装箱归 P4b（包是隐藏参数形态，元素类型不是形参类型）
+        // 打包与装箱归 P4b（包是隐藏参数形态，元素类型不是形参类型）。
+        // guard：兄弟求值序保护（EvalOrderGuard）——未传时自建并在返回前
+        // Seal（实参间自动获得保护）；传入外部 guard 时只 Track 不 Seal
+        //（外层统一 Seal），此时返回值是未封口形态，外层调用方须改用
+        // Seal 结果。Track 的必须是最终形态（EnsureDeclaredType 之后）
         public static List<LoweredExpression>? LowerArguments(
             IReadOnlyList<BoundExpression> arguments, IReadOnlyList<ParameterSymbol>? parameters,
-            LowerContext ctx, LowerEnvironment env)
+            LowerContext ctx, LowerEnvironment env, EvalOrderGuard? guard = null)
         {
+            var own = guard == null;
+            guard ??= new EvalOrderGuard(ctx);
             var result = new List<LoweredExpression>();
             for (int i = 0; i < arguments.Count; i++)
             {
@@ -19,11 +25,15 @@ namespace RigiCompiler
                 if (lowered == null) return null;
                 if (lowered is LoweredVarArgsArgument)
                 {
+                    guard.Track(arguments[i], lowered);
                     result.Add(lowered);
                     continue;
                 }
-                result.Add(EnsureDeclaredType(arguments[i], lowered, parameters?[i].Type));
+                lowered = EnsureDeclaredType(arguments[i], lowered, parameters?[i].Type);
+                guard.Track(arguments[i], lowered);
+                result.Add(lowered);
             }
+            if (own) return new List<LoweredExpression>(guard.Seal());
             return result;
         }
 

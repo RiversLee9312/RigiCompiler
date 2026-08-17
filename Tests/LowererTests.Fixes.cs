@@ -30,26 +30,31 @@ namespace RigiCompiler.Tests
                 "    return u?.M((a and b))\n" +
                 "}\n");
             CheckNoErrors("无诊断（?. Access 前置收块）", unit);
+            // 求值序保护（EvalOrderGuard）：实参 (a and b) 产短路前置，
+            // receiver 的 cast 物化为 .s3（先于短路 if 执行）
             TestHarness.Check("?. Access 短路前置在 then 块内",
                 LoweredDescribe.Body(BodyOf(lowered, "f")),
-                "Body(f, [.s0: User?, .s1: bool?, .s2: bool], [" +
+                "Body(f, [.s0: User?, .s1: bool?, .s2: bool, .s3: User], [" +
                 "Assign(Local(.s0,User?), Param(u,User?)); " +
                 "Assign(Local(.s1,bool?), Const(null,bool?)); " +
                 "If(Binary(CmpNe, Local(.s0,User?), Const(null,User?), bool), " +
-                "[If(Param(a,bool), [Assign(Local(.s2,bool), Param(b,bool))], " +
+                "[Assign(Local(.s3,User), Cast(Local(.s0,User?), User, User)); " +
+                "If(Param(a,bool), [Assign(Local(.s2,bool), Param(b,bool))], " +
                 "[Assign(Local(.s2,bool), Const(False,bool))]); " +
                 "Assign(Local(.s1,bool?), " +
-                "Cast(InstCall(M, Cast(Local(.s0,User?), User, User), " +
+                "Cast(InstCall(M, Local(.s3,User), " +
                 "[Local(.s2,bool)], bool), bool?, bool?))]); " +
                 "Return(Local(.s1,bool?))])");
 
-            // 结构性事实：null 检查的 then 块首语句即短路展开的 if（前置
-            // 语句未泄漏到 If 之前——属主块在 If 前只有 receiver/result 两条）
+            // 结构性事实：null 检查的 then 块 = receiver 物化 + 短路展开的
+            // if + 结果写回（前置语句未泄漏到 If 之前——属主块在 If 前只有
+            // receiver/result 两条）
             var body = BodyOf(lowered, "f").Body.Statements;
             var nullCheck = (LoweredIfStatement)body[2];
-            TestHarness.CheckTrue("then 块首语句是短路 if（前置收块结构断言）",
-                nullCheck.TrueBlock.Statements.Count == 2
-                && nullCheck.TrueBlock.Statements[0] is LoweredIfStatement
+            TestHarness.CheckTrue("then 块首两条 = receiver 物化 + 短路 if（前置收块结构断言）",
+                nullCheck.TrueBlock.Statements.Count == 3
+                && nullCheck.TrueBlock.Statements[0] is LoweredAssignmentStatement
+                && nullCheck.TrueBlock.Statements[1] is LoweredIfStatement
                 && body.Take(2).All(s => s is LoweredAssignmentStatement));
         }
 

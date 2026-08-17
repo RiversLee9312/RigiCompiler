@@ -15,6 +15,9 @@ namespace RigiCompiler.Tests
     // - ext 字段声明带 ext 修饰符（§8.3）
     // - const/var 字段修饰符发射（§8.3 表序）+ init 内写 const 字段
     //   端到端（§21.8 init 豁免配套）
+    // - 兄弟求值序保护（EvalOrderGuard）：receiver/左操作数等先求值槽位
+    //   在后求值兄弟产前置语句时物化合成局部（修复前后置兄弟的短路前置
+    //   先于前置兄弟执行——funcC 先于 funcA）
     public static partial class BilEmitterTests
     {
         // ===== Nullable\<T\>（T 泛型参数）null 资源 §7.5 投影 =====
@@ -261,6 +264,66 @@ namespace RigiCompiler.Tests
                 fn.Blocks.SelectMany(b => b.Instructions)
                     .OfType<SetVarInstruction>()
                     .Any(i => i.Target.Name == "s"));
+        }
+
+        // ===== 兄弟求值序保护（EvalOrderGuard）端到端 =====
+        private static void TestEvalOrderGuardEmission()
+        {
+            // receiver 先于带 and 短路的实参前置（修复前 funcC 先于 funcA
+            // 执行——后置兄弟的前置语句插在 receiver 降级产物之前）
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "class A {\n" +
+                "    pub func methodB(x: bool): i32 { return 1 }\n" +
+                "}\n" +
+                "func funcA(): A { return new A() }\n" +
+                "func funcC(): bool { return true }\n" +
+                "func funcD(): bool { return true }\n" +
+                "pub func main() {\n" +
+                "    funcA().methodB(funcC() and funcD())\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（receiver/短路实参求值序）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（receiver/短路实参求值序）", module);
+            // 模型断言：entry 块内 funcA（receiver）→ funcC（实参前置）→
+            // methodB 调用（then 块在 BIL 文本中排于 entry 之后，跨块顺序
+            // 不能用文本 IndexOf 断言——funcD 单独断言在 then 块内）
+            var mainFn = module.Functions.Single(f => f.Symbol == "$main()@.void");
+            var entryInvokes = mainFn.Blocks[0].Instructions
+                .OfType<InvokeInstruction>().Select(i => i.Method.Symbol).ToList();
+            var funcAAt = entryInvokes.IndexOf("$funcA()@A");
+            var funcCAt = entryInvokes.IndexOf("$funcC()@.bool");
+            var methodBAt = entryInvokes.IndexOf("A$methodB(x:.bool)@.i32");
+            TestHarness.CheckTrue("求值序：funcA（receiver）先于 funcC（实参前置）",
+                funcAAt >= 0 && funcCAt > funcAAt);
+            TestHarness.CheckTrue("求值序：funcC 先于 methodB 调用",
+                funcCAt >= 0 && methodBAt > funcCAt);
+            TestHarness.CheckTrue("funcD 在短路 then 块内（entry 块无 funcD）",
+                !entryInvokes.Contains("$funcD()@.bool")
+                && mainFn.Blocks.Skip(1).Any(b => b.Instructions
+                    .OfType<InvokeInstruction>()
+                    .Any(i => i.Method.Symbol == "$funcD()@.bool")));
+
+            // 二元运算左操作数先于右操作数的短路前置
+            var (unit2, module2, _) = BilTestHarness.EmitBilUnit(
+                "func left(): bool { return true }\n" +
+                "func rightA(): bool { return true }\n" +
+                "func rightB(): bool { return true }\n" +
+                "pub func main() {\n" +
+                "    var r = (left() == (rightA() and rightB()))\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（二元左操作数求值序）", unit2);
+            BilTestHarness.CheckBilValid("验证器零错误（二元左操作数求值序）", module2);
+            var mainFn2 = module2.Functions.Single(f => f.Symbol == "$main()@.void");
+            var entryInvokes2 = mainFn2.Blocks[0].Instructions
+                .OfType<InvokeInstruction>().Select(i => i.Method.Symbol).ToList();
+            var leftAt = entryInvokes2.IndexOf("$left()@.bool");
+            var rightAAt = entryInvokes2.IndexOf("$rightA()@.bool");
+            TestHarness.CheckTrue("求值序：左操作数 left() 先于短路前置 rightA()",
+                leftAt >= 0 && rightAAt > leftAt);
+            TestHarness.CheckTrue("rightB() 在短路 then 块内（entry 块无 rightB）",
+                !entryInvokes2.Contains("$rightB()@.bool")
+                && mainFn2.Blocks.Skip(1).Any(b => b.Instructions
+                    .OfType<InvokeInstruction>()
+                    .Any(i => i.Method.Symbol == "$rightB()@.bool")));
         }
     }
 }
