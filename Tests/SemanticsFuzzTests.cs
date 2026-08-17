@@ -241,8 +241,11 @@ namespace RigiCompiler.Tests
             string assemblyPath;
             try
             {
+                // 单文件发布下 Location 为空字符串属预期，下方有分支处理
+#pragma warning disable IL3000
                 assemblyPath = Assembly.GetEntryAssembly()?.Location
                     ?? throw new InvalidOperationException("GetEntryAssembly() 为 null");
+#pragma warning restore IL3000
             }
             catch (Exception ex)
             {
@@ -250,11 +253,19 @@ namespace RigiCompiler.Tests
                 return child;
             }
 
+            // 单文件发布时 Assembly.Location 为空，直接以自身 exe 起子进程
+            var runViaDotnetExec = assemblyPath.Length > 0;
+            if (!runViaDotnetExec)
+            {
+                assemblyPath = Environment.ProcessPath
+                    ?? throw new InvalidOperationException("ProcessPath 为 null");
+            }
+
             try
             {
                 var startInfo = new ProcessStartInfo
                 {
-                    FileName = "dotnet",
+                    FileName = runViaDotnetExec ? "dotnet" : assemblyPath,
                     WorkingDirectory = Directory.GetCurrentDirectory(),
                     UseShellExecute = false,
                     RedirectStandardOutput = true,
@@ -262,8 +273,11 @@ namespace RigiCompiler.Tests
                     CreateNoWindow = true,
                 };
                 // ArgumentList 自动处理参数转义
-                startInfo.ArgumentList.Add("exec");
-                startInfo.ArgumentList.Add(assemblyPath);
+                if (runViaDotnetExec)
+                {
+                    startInfo.ArgumentList.Add("exec");
+                    startInfo.ArgumentList.Add(assemblyPath);
+                }
                 startInfo.ArgumentList.Add("test");
                 startInfo.ArgumentList.Add("--run");
                 startInfo.ArgumentList.Add(suiteNumber.ToString());

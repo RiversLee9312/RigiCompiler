@@ -8,6 +8,21 @@
     <AssemblyName>rigic</AssemblyName>
   </PropertyGroup>
 
+  <!-- Release 发布：自包含（免 dotnet 运行时）+ 单文件压缩。
+       不做 PublishTrimmed / NativeAOT：AstJsonlDeserializer 等大量使用
+       Assembly.GetTypes() / Activator.CreateInstance 反射，裁剪会破坏功能。 -->
+  <PropertyGroup Condition="'$(Configuration)'=='Release'">
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <PublishTrimmed>false</PublishTrimmed>
+    <PublishAot>false</PublishAot>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
   <!-- stdlib 内嵌源（M43）：LogicalName 保持路径形态（stdlib/core/Console.rg），
        StdlibSources 据此反推 sourceName -->
   <ItemGroup>
