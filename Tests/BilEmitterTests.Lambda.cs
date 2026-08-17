@@ -328,7 +328,6 @@ namespace RigiCompiler.Tests
                 "mul $.t1 $.t2 $.t3\n" +
                 "set.var $.t3 $d\n" +
                 "set.var $d $.s0\n" +
-                "break $.b0\n" +
                 "}\n");
         }
 

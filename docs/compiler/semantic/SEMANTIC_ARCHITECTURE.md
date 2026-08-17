@@ -320,6 +320,14 @@ SemanticSymbol
 > register allocation / coalescing 问题，按职责边界归 Middleware
 > （BIL §23），frontend 不做。因此这不是技术债；改动此决策须重新
 > 评估上述安全论证。
+>
+> 同 region 尾位 exit 省略冗余 break：exit 已处所属 region 末尾
+> 位置（仅隔透明 LoweredBlock）时落尾与 break 落点完全相同，
+> StructuredExitRouting 只写结果局部、不再发 break（tail-position
+> 分析，isTail 随递归下传）；finally 块除外——finally 内 exit 必须
+> 以 abrupt completion（break）覆盖 SavedCompletion，递归进
+> FinallyBlock 时强制 isTail=false（落尾 Normal 会让 VM 恢复 body
+> 的原 completion，语义错误）。
 
 > **wrapper 烘焙的 pass 归属**：详见 §5.2
 > 整段。摘要——P1 符号壳；P2 只形状校验 + 应用登记（Freeze 前零

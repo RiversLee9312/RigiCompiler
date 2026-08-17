@@ -3331,6 +3331,33 @@ namespace RigiCompiler.Tests
                 && thrown.TypeRef.Contains("RuntimeException"),
                 overrideThrow.Exception?.ToString() ?? "<null>");
 
+            // (f2) finally 内尾位 return@ 必须以 abrupt completion（break）
+            // 覆盖 SavedCompletion（同 region 尾位 break 省略的 finally
+            // 例外回归）：body return@outer、finally return@middle——
+            // 若 finally 的 break 被省略（落尾 Normal），VM 恢复 body 的
+            // return@outer，afterMiddle/afterOuter 均被跳过；正确行为
+            // 命中 middle——afterMiddle/afterOuter 都执行
+            var finallyOverrideNamed = Run(
+                "pub func main(): i32 {\n" +
+                "    seq named outer {\n" +
+                "        seq named middle {\n" +
+                "            try {\n" +
+                "                return@outer\n" +
+                "            } finally(_) {\n" +
+                "                return@middle\n" +
+                "            }\n" +
+                "            core.io.Console.println(\"afterTry\")\n" +
+                "        }\n" +
+                "        core.io.Console.println(\"afterMiddle\")\n" +
+                "    }\n" +
+                "    core.io.Console.println(\"afterOuter\")\n" +
+                "    return 1\n" +
+                "}\n");
+            CheckOk("finally return@middle 覆盖 body return@outer", finallyOverrideNamed);
+            TestHarness.Check("命中 middle（afterTry 跳过、afterMiddle/afterOuter 执行）",
+                finallyOverrideNamed.Stdout, "afterMiddle\nafterOuter\n");
+            CheckI32("middle 路径返回", finallyOverrideNamed, 1);
+
             // (g) 语句 seq return@name（无 result）执行
             var stmtSeq = Run(
                 "pub func main(): i32 {\n" +

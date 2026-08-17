@@ -62,8 +62,8 @@ namespace RigiCompiler.Tests
                 LoweredDescribe.Body(BodyOf(lowered, "f")),
                 "Body(f, [r: i32, .s0: i32, .b0: .breakid], " +
                 "[If(Binary(CmpGt, Param(x,i32), Int(0,i32), bool), " +
-                "[Assign(Local(.s0,i32), Int(1,i32)); Break(.b0)], " +
-                "[Assign(Local(.s0,i32), Int(2,i32)); Break(.b0)], .b0); " +
+                "[Assign(Local(.s0,i32), Int(1,i32))], " +
+                "[Assign(Local(.s0,i32), Int(2,i32))], .b0); " +
                 "Decl(r, i32, = Local(.s0,i32)); Return(Local(r,i32))])");
             TestHarness.Check("隐式取值值块写结果局部",
                 LoweredDescribe.Body(BodyOf(lowered, "g")),
@@ -164,8 +164,8 @@ namespace RigiCompiler.Tests
                 "If(Binary(CmpGt, Param(x,i32), Int(1,i32), bool), " +
                 "[Assign(Local(.s0,i32), Int(2,i32)); Assign(Local(.s1,i32), Const(1,i32)); Break(.b1)], .b1); " +
                 "If(Binary(CmpEq, Local(.s1,i32), Const(1,i32), bool), [Break(.b0)], .b2); " +
-                "Assign(Local(.s0,i32), Int(1,i32)); Break(.b0)], " +
-                "[Assign(Local(.s0,i32), Int(0,i32)); Break(.b0)], .b0); " +
+                "Assign(Local(.s0,i32), Int(1,i32))], " +
+                "[Assign(Local(.s0,i32), Int(0,i32))], .b0); " +
                 "Decl(r, i32, = Local(.s0,i32)); Return(Local(r,i32))])");
 
             // 双分支都产标记 → if 之后语句为静死代码（routing 不移动
@@ -191,8 +191,8 @@ namespace RigiCompiler.Tests
                 "[Assign(Local(.s0,i32), Int(1,i32)); Assign(Local(.s1,i32), Const(1,i32)); Break(.b1)], " +
                 "[Assign(Local(.s0,i32), Int(2,i32)); Assign(Local(.s1,i32), Const(1,i32)); Break(.b1)], .b1); " +
                 "If(Binary(CmpEq, Local(.s1,i32), Const(1,i32), bool), [Break(.b0)], .b2); " +
-                "Decl(y, i32, = Int(3,i32)); Assign(Local(.s0,i32), Local(y,i32)); Break(.b0)], " +
-                "[Assign(Local(.s0,i32), Int(0,i32)); Break(.b0)], .b0); " +
+                "Decl(y, i32, = Int(3,i32)); Assign(Local(.s0,i32), Local(y,i32))], " +
+                "[Assign(Local(.s0,i32), Int(0,i32))], .b0); " +
                 "Decl(r, i32, = Local(.s0,i32)); Return(Local(r,i32))])");
         }
 
@@ -284,7 +284,8 @@ namespace RigiCompiler.Tests
                 "Assign(Local(.s0,bool), Local(.s1,bool))], .s0, [], .b0)])");
 
             // 值块内 break 穿透：直接发 BIL 跳转（无展开、无 routing
-            // 介入）；else 分支的 return@_ 同 region 展开（写结果+break）
+            // 介入）；else 分支的 return@_ 同 region 尾位展开（只写结果、
+            // 省略冗余 break）
             var (unit5, _, lowered5) = LowerUnit(
                 "func f(x: i32): i32 {\n" +
                 "    var r = 0\n" +
@@ -301,7 +302,7 @@ namespace RigiCompiler.Tests
                 "[Decl(r, i32, = Int(0,i32)); " +
                 "Loop([Assign(Local(.s0,bool), Binary(CmpGt, Param(x,i32), Int(0,i32), bool))], .s0, " +
                 "[If(Binary(CmpEq, Param(x,i32), Int(5,i32), bool), [Break(.b0)], " +
-                "[Assign(Local(.s1,i32), Int(1,i32)); Break(.b1)], .b1); " +
+                "[Assign(Local(.s1,i32), Int(1,i32))], .b1); " +
                 "Assign(Local(r,i32), Local(.s1,i32)); " +
                 "Assign(Param(x,i32), Binary(Sub, Param(x,i32), Int(1,i32), i32))], .b0); " +
                 "Return(Local(r,i32))])");
@@ -497,7 +498,7 @@ namespace RigiCompiler.Tests
                 "If(Binary(CmpEq, Local(.s2,i32), Const(1,i32), bool), " +
                 "[Assign(Local(.s1,i32), Const(1,i32)); Break(.b2)], .b3)], .b2); " +
                 "If(Binary(CmpEq, Local(.s1,i32), Const(1,i32), bool), [Break(.b0)], .b4); " +
-                "Assign(Local(x,i32), Int(3,i32)); Assign(Local(.s0,i32), Local(x,i32)); Break(.b0)], " +
+                "Assign(Local(x,i32), Int(3,i32)); Assign(Local(.s0,i32), Local(x,i32))], " +
                 "[Assign(Local(.s0,i32), Int(0,i32))], .b0); " +
                 "Decl(r, i32, = Local(.s0,i32)); Return(Local(r,i32))])");
         }

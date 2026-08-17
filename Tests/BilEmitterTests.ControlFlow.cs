@@ -103,12 +103,10 @@ namespace RigiCompiler.Tests
                 ".block if0-then {\n" +
                 "load res(#0) $.t3\n" +
                 "set.var $.t3 $.s0\n" +
-                "break $.b0\n" +
                 "}\n" +
                 ".block if0-else {\n" +
                 "load res(#2) $.t4\n" +
                 "set.var $.t4 $.s0\n" +
-                "break $.b0\n" +
                 "}\n");
         }
 

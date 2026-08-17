@@ -8,7 +8,10 @@ namespace RigiCompiler
     // LoweredStructuredExit 标记展开为「写结果局部（如有）+ 写 route
     // 局部（仅跨 region 时）+ break 当前 region」，并在需要 multiplex
     // 的 region 后生成 dispatcher（读 route → 写 parent route +
-    // break parent）。pass 后树中不得残留 LoweredStructuredExit。
+    // break parent）。同 region 尾位 exit（落尾与 break 同落点）省略
+    // 冗余 break——isTail 随递归下传，进 FinallyBlock 强制 false
+    // （finally 内 exit 必须以 abrupt completion 覆盖 SavedCompletion）。
+    // pass 后树中不得残留 LoweredStructuredExit。
     //
     // region = BIL 结构化指令对应的 Lowered 节点（各自携带 .breakid
     // region-exit capability，§16.5）：LoweredIfStatement（True/False
@@ -76,33 +79,41 @@ namespace RigiCompiler
             }
         }
 
-        // pass 入口：body 为函数体根块（根块透明，region 栈空起步）
+        // pass 入口：body 为函数体根块（根块透明，region 栈空起步——
+        // 根块内 exit 即不变量破坏，isTail 无意义传 false）
         public static LoweredBlock? Run(LoweredBlock body, LowerContext ctx,
             LowerEnvironment env)
         {
             return new LoweredBlock(body.Origin,
-                ProcessStatements(body.Statements, null, ctx, env));
+                ProcessStatements(body.Statements, null, ctx, env, false));
         }
 
         // 语句序列递归处理（region 压栈点见类注释）；遇
         // LoweredStructuredExit 展开并截断同块内其后语句（静死——break
-        // 当前 region 后本序列不可达）
+        // 当前 region 后本序列不可达）。isTail = 本序列是否处于所属
+        // region 末尾位置；块内仅末条语句以 isTail 继续下传（透明
+        // LoweredBlock 透传；region 节点子块对子 region 而言尾位重新
+        // 从 true 起步——try 的 FinallyBlock 例外强制 false：finally
+        // 内 exit 必须以 abrupt completion（break）覆盖
+        // SavedCompletion，落尾 Normal 会让 VM 恢复 body 原 completion）
         private static List<LoweredStatement> ProcessStatements(
             IReadOnlyList<LoweredStatement> statements, ExitRoutingRegion? current,
-            LowerContext ctx, LowerEnvironment env)
+            LowerContext ctx, LowerEnvironment env, bool isTail)
         {
             var output = new List<LoweredStatement>();
-            foreach (var statement in statements)
+            for (var i = 0; i < statements.Count; i++)
             {
+                var statement = statements[i];
+                var atTail = isTail && i == statements.Count - 1;
                 switch (statement)
                 {
                     case LoweredStructuredExit exit:
-                        ExpandExit(exit, current, output, ctx, env);
+                        ExpandExit(exit, current, output, ctx, env, atTail);
                         return output;
                     case LoweredBlock block:
-                        // LoweredBlock 透明不压栈
+                        // LoweredBlock 透明不压栈（尾位透传）
                         output.Add(new LoweredBlock(block.Origin,
-                            ProcessStatements(block.Statements, current, ctx, env)));
+                            ProcessStatements(block.Statements, current, ctx, env, atTail)));
                         break;
                     case LoweredIfStatement ifStatement:
                     {
@@ -110,9 +121,9 @@ namespace RigiCompiler
                             ifStatement.BreakId, current);
                         var node = new LoweredIfStatement(ifStatement.Origin,
                             ifStatement.Condition,
-                            ProcessBlock(ifStatement.TrueBlock, region, ctx, env),
+                            ProcessBlock(ifStatement.TrueBlock, region, ctx, env, true),
                             ifStatement.FalseBlock == null ? null
-                                : ProcessBlock(ifStatement.FalseBlock, region, ctx, env),
+                                : ProcessBlock(ifStatement.FalseBlock, region, ctx, env, true),
                             ifStatement.BreakId);
                         output.AddRange(FinishRegion(region, node, ctx, env));
                         break;
@@ -121,8 +132,8 @@ namespace RigiCompiler
                     {
                         var region = new ExitRoutingRegion(loop.Origin, loop.BreakId, current);
                         var node = new LoweredLoop((BoundLoop)loop.Origin, loop.IsRev,
-                            ProcessBlock(loop.Judge, region, ctx, env), loop.Condition,
-                            ProcessBlock(loop.Body, region, ctx, env), loop.BreakId);
+                            ProcessBlock(loop.Judge, region, ctx, env, true), loop.Condition,
+                            ProcessBlock(loop.Body, region, ctx, env, true), loop.BreakId);
                         output.AddRange(FinishRegion(region, node, ctx, env));
                         break;
                     }
@@ -134,11 +145,11 @@ namespace RigiCompiler
                         foreach (var switchCase in switchStatement.Cases)
                         {
                             cases.Add(new LoweredSwitchCase(switchCase.Origin, switchCase.Value,
-                                ProcessBlock(switchCase.Body, region, ctx, env)));
+                                ProcessBlock(switchCase.Body, region, ctx, env, true)));
                         }
                         var node = new LoweredSwitch(switchStatement.Origin,
                             switchStatement.Selector, cases,
-                            ProcessBlock(switchStatement.DefaultBody, region, ctx, env),
+                            ProcessBlock(switchStatement.DefaultBody, region, ctx, env, true),
                             switchStatement.BreakId);
                         output.AddRange(FinishRegion(region, node, ctx, env));
                         break;
@@ -152,12 +163,13 @@ namespace RigiCompiler
                         {
                             catches.Add(new LoweredTryCatch(tryCatch.Origin, tryCatch.Variable,
                                 tryCatch.ExceptionType,
-                                ProcessBlock(tryCatch.Body, region, ctx, env)));
+                                ProcessBlock(tryCatch.Body, region, ctx, env, true)));
                         }
                         var node = new LoweredTryStatement(tryStatement.Origin,
-                            ProcessBlock(tryStatement.TryBlock, region, ctx, env), catches,
+                            ProcessBlock(tryStatement.TryBlock, region, ctx, env, true), catches,
                             tryStatement.FinallyBlock == null ? null
-                                : ProcessBlock(tryStatement.FinallyBlock, region, ctx, env),
+                                // finally 例外：块内 exit 永不省略 break
+                                : ProcessBlock(tryStatement.FinallyBlock, region, ctx, env, false),
                             tryStatement.ExceptionSlot, tryStatement.BreakId);
                         output.AddRange(FinishRegion(region, node, ctx, env));
                         break;
@@ -167,7 +179,7 @@ namespace RigiCompiler
                         var region = new ExitRoutingRegion(seqBlock.Origin, seqBlock.BreakId,
                             current);
                         var node = new LoweredSeqBlock(seqBlock.Origin,
-                            ProcessBlock(seqBlock.Body, region, ctx, env), seqBlock.IsVolatile,
+                            ProcessBlock(seqBlock.Body, region, ctx, env, true), seqBlock.IsVolatile,
                             seqBlock.BreakId);
                         output.AddRange(FinishRegion(region, node, ctx, env));
                         break;
@@ -181,17 +193,20 @@ namespace RigiCompiler
         }
 
         private static LoweredBlock ProcessBlock(LoweredBlock block, ExitRoutingRegion region,
-            LowerContext ctx, LowerEnvironment env)
+            LowerContext ctx, LowerEnvironment env, bool isTail)
         {
             return new LoweredBlock(block.Origin,
-                ProcessStatements(block.Statements, region, ctx, env));
+                ProcessStatements(block.Statements, region, ctx, env, isTail));
         }
 
         // exit 标记展开：写结果局部（return@语句seq 无值跳过）→
-        // 同 region 直 break 目标 breakId；跨 region 写本 region 的
-        // route 局部后 break 本 region（dispatcher 链向上 relay）
+        // 同 region 直 break 目标 breakId（尾位 exit 省略——落尾与
+        // break 落点相同；finally 块经 isTail=false 强制保留 break，
+        // 必须以 abrupt completion 覆盖 SavedCompletion）；跨 region
+        // 写本 region 的 route 局部后 break 本 region（dispatcher 链
+        // 向上 relay）
         private static void ExpandExit(LoweredStructuredExit exit, ExitRoutingRegion? current,
-            List<LoweredStatement> output, LowerContext ctx, LowerEnvironment env)
+            List<LoweredStatement> output, LowerContext ctx, LowerEnvironment env, bool isTail)
         {
             var (resultLocal, targetBreakId) = ctx.ExitTargets.Find(exit.Target);
             if (exit.Value != null)
@@ -209,7 +224,12 @@ namespace RigiCompiler
             }
             if (ReferenceEquals(current.BreakId, targetBreakId))
             {
-                output.Add(new LoweredBreakStatement(exit.Origin, targetBreakId));
+                // 同 region 尾位 exit：落尾与 break 落点完全相同，
+                // 省略冗余 break（finally 块经 isTail=false 强制保留）
+                if (!isTail)
+                {
+                    output.Add(new LoweredBreakStatement(exit.Origin, targetBreakId));
+                }
                 return;
             }
             var tag = current.EnsureRoute(targetBreakId, ctx, env);

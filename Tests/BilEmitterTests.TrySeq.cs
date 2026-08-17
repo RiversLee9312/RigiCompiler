@@ -127,7 +127,6 @@ namespace RigiCompiler.Tests
                 ".block seq0 {\n" +
                 "load res(#0) $.t0\n" +
                 "set.var $.t0 $.s0\n" +
-                "break $.b0\n" +
                 "}\n");
             BilTestHarness.CheckFnShape("volatile seq 表达式多 block 文本", module2, "$sv()@.i32",
                 ".vars { .i32 .s0, .breakid .b0, .i32 .t0 }\n" +

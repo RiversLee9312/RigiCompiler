@@ -63,6 +63,7 @@ namespace RigiCompiler.Tests
             TestUsingLowering();
             TestTryWeaving();
             TestStructuredExitRoutingForms();
+            TestSameRegionTailExitElision();
             TestInterpolationLowering();
             TestSafeAccessLowering();
             TestNullFallbackLowering();
