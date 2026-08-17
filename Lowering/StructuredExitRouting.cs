@@ -95,10 +95,18 @@ namespace RigiCompiler
         // LoweredBlock 透传；region 节点子块对子 region 而言尾位重新
         // 从 true 起步——try 的 FinallyBlock 例外强制 false：finally
         // 内 exit 必须以 abrupt completion（break）覆盖
-        // SavedCompletion，落尾 Normal 会让 VM 恢复 body 原 completion）
+        // SavedCompletion，落尾 Normal 会让 VM 恢复 body 原 completion）。
+        // isLoopJudge = 本序列是循环 Judge 协议块（S7c-1 脱糖产物：
+        // 条件求值前置 + 条件写回）——逃逸型 seq/if/switch 表达式落在
+        // 循环条件位时其 region 前置物化在 Judge 内，同块后续是条件写回
+        // 等循环协议指令（结构性指令，非用户死代码），截断会砍掉协议
+        // 产出坏 BIL；逃逸路径根本走不到写回（hint/终止指令已让
+        // verifier 知晓续点不可达），故仅抑制「逃逸 region 截断」，
+        // throw/exit 的截断不受影响（它们本身就是终止）
         private static List<LoweredStatement> ProcessStatements(
             IReadOnlyList<LoweredStatement> statements, ExitRoutingRegion? current,
-            LowerContext ctx, LowerEnvironment env, bool isTail)
+            LowerContext ctx, LowerEnvironment env, bool isTail,
+            bool isLoopJudge = false)
         {
             var output = new List<LoweredStatement>();
             for (var i = 0; i < statements.Count; i++)
@@ -120,9 +128,11 @@ namespace RigiCompiler
                         output.Add(statement);
                         return output;
                     case LoweredBlock block:
-                        // LoweredBlock 透明不压栈（尾位透传）
+                        // LoweredBlock 透明不压栈（尾位透传；Judge 协议标记
+                        // 同样透传——协议前置可能在透明块内再嵌一层）
                         output.Add(new LoweredBlock(block.Origin,
-                            ProcessStatements(block.Statements, current, ctx, env, atTail)));
+                            ProcessStatements(block.Statements, current, ctx, env, atTail,
+                                isLoopJudge)));
                         break;
                     case LoweredIfStatement ifStatement:
                     {
@@ -136,8 +146,9 @@ namespace RigiCompiler
                             ifStatement.BreakId);
                         output.AddRange(FinishRegion(region, node, ctx, env));
                         // 逃逸型 if 表达式（全分支向外逃逸）：同逃逸型 seq
-                        // 的截断哲学（详见下方 EscapesOnAllPaths 注释）
-                        if (ifStatement.Origin is BoundIfExpression ifExpression
+                        // 的截断哲学（详见下方 EscapesOnAllPaths 注释）；
+                        // Judge 协议块内不截断（后续是条件写回等协议指令）
+                        if (!isLoopJudge && ifStatement.Origin is BoundIfExpression ifExpression
                             && EscapesOnAllPaths(ifExpression))
                         {
                             return output;
@@ -147,8 +158,11 @@ namespace RigiCompiler
                     case LoweredLoop loop:
                     {
                         var region = new ExitRoutingRegion(loop.Origin, loop.BreakId, current);
+                        // Judge 是循环协议块（条件写回是结构性指令）：
+                        // 以 isLoopJudge=true 处理，抑制逃逸 region 截断
                         var node = new LoweredLoop((BoundLoop)loop.Origin, loop.IsRev,
-                            ProcessBlock(loop.Judge, region, ctx, env, true), loop.Condition,
+                            ProcessBlock(loop.Judge, region, ctx, env, true, isLoopJudge: true),
+                            loop.Condition,
                             ProcessBlock(loop.Body, region, ctx, env, true), loop.BreakId);
                         output.AddRange(FinishRegion(region, node, ctx, env));
                         break;
@@ -169,8 +183,8 @@ namespace RigiCompiler
                             switchStatement.BreakId);
                         output.AddRange(FinishRegion(region, node, ctx, env));
                         // 逃逸型 switch 表达式（全值路径产物）：同逃逸型
-                        // seq 的截断哲学
-                        if (switchStatement.Origin is BoundSwitchExpression switchExpression
+                        // seq 的截断哲学；Judge 协议块内不截断
+                        if (!isLoopJudge && switchStatement.Origin is BoundSwitchExpression switchExpression
                             && EscapesOnAllPaths(switchExpression))
                         {
                             return output;
@@ -213,10 +227,14 @@ namespace RigiCompiler
                         // 语句（含消费者对该局部的读取）动态不可达——按
                         // throw 同款哲学截断不发射，消除验证器 §21.4 静态
                         // 可见的死读（route==0 的 fall-through 臂保留但
-                        // 只落到块尾，不再触及任何读）
-                        if (seqBlock.Origin is BoundSeqExpression { Body.ValueType: null }
+                        // 只落到块尾，不再触及任何读）；Judge 协议块内
+                        // 不截断——循环条件位的逃逸型 seq 后续是条件写回
+                        // 协议指令，砍了即坏 BIL（写回动态不可达由 hint /
+                        // 终止指令向 verifier 证明，保留零代价）
+                        if (!isLoopJudge
+                            && (seqBlock.Origin is BoundSeqExpression { Body.ValueType: null }
                             || (seqBlock.Origin is BoundSwitchExpression patternSwitch
-                                && EscapesOnAllPaths(patternSwitch)))
+                                && EscapesOnAllPaths(patternSwitch))))
                         {
                             return output;
                         }
@@ -231,10 +249,10 @@ namespace RigiCompiler
         }
 
         private static LoweredBlock ProcessBlock(LoweredBlock block, ExitRoutingRegion region,
-            LowerContext ctx, LowerEnvironment env, bool isTail)
+            LowerContext ctx, LowerEnvironment env, bool isTail, bool isLoopJudge = false)
         {
             return new LoweredBlock(block.Origin,
-                ProcessStatements(block.Statements, region, ctx, env, isTail));
+                ProcessStatements(block.Statements, region, ctx, env, isTail, isLoopJudge));
         }
 
         // exit 标记展开：写结果局部（return@语句seq 无值跳过）→
@@ -314,9 +332,12 @@ namespace RigiCompiler
             // §18.1 rigi.seq-route hint：seq/if/switch region 的标准 route
             // dispatcher 在尾链首链节上打标记（发射期在汇聚边着陆点之后、
             // 第一条 cmp 之前补 hint 指令，供 verifier §21.4 分组消费）。
-            // try/finally 拦截路径的 dispatcher 形状不同、loop region 无
-            // route（P3 拦截隔循环 return@）——均不发；不发 hint 的模块
-            // 行为与现状逐位一致（verifier 对无 hint 尾链退回保守合并）
+            // try/finally 拦截路径的 dispatcher 形状不同不发；loop region
+            // 的 route 只可能来自条件位逃逸（P3 拦截体内的隔循环 return@，
+            // 但条件在循环深度压栈前绑定、脱糖后才物化进 Judge）——loop
+            // dispatcher 不发 hint，verifier 退回保守合并（续点静态可达、
+            // DA 照常成立，行为正确性不依赖 hint）。不发 hint 的模块
+            // 行为与现状逐位一致
             if (node is LoweredSeqBlock or LoweredIfStatement or LoweredSwitch
                 && chain is LoweredIfStatement chainHead)
             {

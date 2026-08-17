@@ -50,6 +50,24 @@ namespace RigiCompiler
             var judge = ExpressionFacility.LowerAssignInNewBlock(loop, loop.Condition!, condition,
                 ctx, env);
             if (judge == null) return null;
+            // 逃逸型条件（逃逸型 seq/if/switch 表达式在条件位——P3 已证
+            // 求值绝不落穿）：条件写回动态不可达，但其右操作数是本永不
+            // 赋值的结果局部，原样保留会让 verifier §21.4 报死读；改写为
+            // false 字面量——写回本身是循环协议的结构部件（Judge 落尾后
+            // loop 指令读条件局部），必须存在但值任意（逃逸路径根本走
+            // 不到；StructuredExitRouting 对 Judge 块也已抑制逃逸 region
+            // 截断，写回不会被砍掉）
+            if (BoundAnalysis.NestedValueBlockEscapes(loop.Condition!))
+            {
+                var writeBack = (LoweredAssignmentStatement)
+                    judge.Statements[judge.Statements.Count - 1];
+                var rewritten = new List<LoweredStatement>(judge.Statements);
+                rewritten[rewritten.Count - 1] = new LoweredAssignmentStatement(writeBack.Origin,
+                    writeBack.Target,
+                    new LoweredConstantExpression(writeBack.Origin, false,
+                        (SemanticSymbol)condition.Type!));
+                judge = new LoweredBlock(judge.Origin, rewritten);
+            }
             var body = LowerBlockVisitor.Visit(loop.Body, ctx, env);
             if (body == null) return null;
             return new LoweredLoop(loop, loop.Kind == LoopKind.DoWhile,

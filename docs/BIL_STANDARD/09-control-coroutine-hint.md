@@ -290,4 +290,6 @@ JSON schema：
 
 消费规则：见 §21.4。任何一条校验失败 → 忽略本 hint，DA 退回保守合并（与不携带 hint 行为一致）。
 
+覆盖范围（v1 现状）：frontend 仅为 seq/if/switch 表达式 region 的标准 route dispatcher 发射本 hint；loop region 的 dispatcher 与 try/finally 拦截路径不标注（形状不同），verifier 对其退回保守合并——正确性不依赖 hint，仅损失该处 DA 精度（混合形态经 loop dispatcher 时不可验证）。未来版本可扩展覆盖，按 §18 消费方规则向后兼容。
+
 ---

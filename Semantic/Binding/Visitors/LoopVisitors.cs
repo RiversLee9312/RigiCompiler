@@ -24,7 +24,11 @@ namespace RigiCompiler
             if (loop.Kind == LoopKind.While)
             {
                 var before = ctx.Flow.Snapshot();
-                var condition = ExpressionDispatcher.Visit(loop.Condition.Expression, scope, ctx, env);
+                // 条件恒 bool：以 bool 为期望类型绑定（逃逸型 seq/if/switch
+                // 表达式在条件位据此定型——体全路径向外逃逸、自身不产值，
+                // 类型取期望类型兜底，同变量初始化位的类型标注机制）
+                var condition = ExpressionDispatcher.Visit(loop.Condition.Expression, scope, ctx,
+                    env, env.B.Bool);
                 Conditions.CheckBool(loop.Condition, loop.Span, condition, "loop", env);
                 // while 体入口收窄（S8b，SYNTAX §3.5）：条件真边事实
                 // + before 中「体内不赋值」的键——先剔除体赋值根再覆盖真边；
@@ -67,7 +71,9 @@ namespace RigiCompiler
                 ctx.Flow.ClearRoot(root);
             }
             var bodyAssigned = ctx.Flow.Snapshot();
-            var revCondition = ExpressionDispatcher.Visit(loop.Condition.Expression, scope, ctx, env);
+            // 同 while：条件恒 bool，以 bool 为期望类型绑定（逃逸型表达式定型）
+            var revCondition = ExpressionDispatcher.Visit(loop.Condition.Expression, scope, ctx,
+                env, env.B.Bool);
             Conditions.CheckBool(loop.Condition, loop.Span, revCondition, "loop", env);
             ctx.Flow.Restore(bodyAssigned);
             if (revCondition == null) return null;

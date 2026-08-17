@@ -79,8 +79,11 @@ namespace RigiCompiler
         // 关键正确性约束：绝不下钻 lambda 体——lambda 内的 exit 只在
         // 被调用时发生，不能算作外层路径终止（ChildExpressions 对
         // BoundLambdaExpression 会穿透体语句携带表达式，此处必须显式
-        // 拦截）
-        private static bool NestedValueBlockEscapes(BoundExpression expression)
+        // 拦截）。
+        // public：P4 循环降级复用——条件表达式「绝不落穿」时（逃逸型
+        // seq/if/switch 在条件位）条件写回动态不可达，改写为 false
+        // 字面量（LoopRewriter），避免读取永不赋值的结果局部
+        public static bool NestedValueBlockEscapes(BoundExpression expression)
         {
             switch (expression)
             {

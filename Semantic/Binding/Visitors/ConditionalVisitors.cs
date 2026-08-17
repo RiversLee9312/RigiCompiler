@@ -33,7 +33,10 @@ namespace RigiCompiler
             BindEnvironment env)
         {
             var ifNode = (IfStatementASTNode)node;
-            var condition = ExpressionDispatcher.Visit(ifNode.Condition.Expression, scope, ctx, env);
+            // 条件恒 bool：以 bool 为期望类型绑定（逃逸型 seq/if/switch
+            // 表达式在条件位据此定型，同循环条件位）
+            var condition = ExpressionDispatcher.Visit(ifNode.Condition.Expression, scope, ctx, env,
+                env.B.Bool);
             Conditions.CheckBool(ifNode.Condition, ifNode.Span, condition, "if", env);
             var facts = ConditionFactsExtractor.Extract(condition, ctx.Frame);
             var before = ctx.Flow.Snapshot();
@@ -134,7 +137,9 @@ namespace RigiCompiler
             BindEnvironment env, TypeSymbol? expectedType)
         {
             var ifNode = (IfExpressionASTNode)node;
-            var condition = ExpressionDispatcher.Visit(ifNode.Condition.Expression, scope, ctx, env);
+            // 条件恒 bool：以 bool 为期望类型绑定（同 if 语句条件位）
+            var condition = ExpressionDispatcher.Visit(ifNode.Condition.Expression, scope, ctx, env,
+                env.B.Bool);
             Conditions.CheckBool(ifNode.Condition, ifNode.Span, condition, "if", env);
             var facts = ConditionFactsExtractor.Extract(condition, ctx.Frame);
             var label = ifNode.Label ?? "_";

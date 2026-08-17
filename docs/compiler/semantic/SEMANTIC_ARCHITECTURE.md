@@ -329,6 +329,21 @@ SemanticSymbol
 > FinallyBlock 时强制 isTail=false（落尾 Normal 会让 VM 恢复 body
 > 的原 completion，语义错误）。
 
+> **逃逸型/混合形态值块表达式的可用位置（现状记录）**：「体全路径
+> 向外逃逸、自身不产值」的 seq/if/switch 表达式（逃逸型）与「产值
+> 与逃逸并存」（混合型）现已端到端贯通（P3 定型取期望类型 +
+> StructuredExitRouting 逃逸截断 + BIL §18.1 hint 供 verifier DA
+> 分组）。可用位置：变量初始化、赋值右值、return@/return 值、调用
+> 实参、条件位（while/do-while/if——条件恒 bool，以 bool 为期望类型
+> 定型；逃逸条件的 judge 写回改写 false 字面量——写回是 loop 协议
+> 结构部件必须存在、动态不可达故值任意；StructuredExitRouting 对
+> Judge 块抑制逃逸 region 截断，写回不会被砍）。**仍拒绝的位置**
+> （P3 诊断 `a type annotation is required`，清晰可操作）：for
+> iterable 位、switch selector 位、二元运算操作数位、字符串插值段
+> ——这些位置的类型取自表达式自身（鸡生蛋，无期望类型可传），解除
+> 需要类型系统层的期望推导（如显式标注语法），属后续里程碑候选而
+> 非缺陷。
+
 > **wrapper 烘焙的 pass 归属**：详见 §5.2
 > 整段。摘要——P1 符号壳；P2 只形状校验 + 应用登记（Freeze 前零
 > 合成符号）；P3 proxy 模板态绑定 + 使用点 place/降级判定；P4 发射
