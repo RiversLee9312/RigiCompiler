@@ -311,6 +311,17 @@ namespace RigiCompiler
                     ctx.Synth.NewBreakIdLocal());
             }
             output.Add(chain!);
+            // §18.1 rigi.seq-route hint：seq/if/switch region 的标准 route
+            // dispatcher 在尾链首链节上打标记（发射期在汇聚边着陆点之后、
+            // 第一条 cmp 之前补 hint 指令，供 verifier §21.4 分组消费）。
+            // try/finally 拦截路径的 dispatcher 形状不同、loop region 无
+            // route（P3 拦截隔循环 return@）——均不发；不发 hint 的模块
+            // 行为与现状逐位一致（verifier 对无 hint 尾链退回保守合并）
+            if (node is LoweredSeqBlock or LoweredIfStatement or LoweredSwitch
+                && chain is LoweredIfStatement chainHead)
+            {
+                chainHead.SeqRouteHintRoute = region.RouteLocal;
+            }
             return output;
         }
 

@@ -247,6 +247,19 @@ namespace RigiCompiler
             EmitEnvironment env)
         {
             var ifStatement = (LoweredIfStatement)node;
+            // §18.1 rigi.seq-route hint：标准 route dispatcher 尾链首链节
+            // 带标记（StructuredExitRouting 设置）——在汇聚边着陆点之后、
+            // 第一条 cmp 之前补一条 hint（JSON 经 string 资源承载；标量
+            // 资源按（类型, 原文）去重，同 route 名的多个 region 共享）
+            if (ifStatement.SeqRouteHintRoute != null)
+            {
+                var hintJson = "{\"kind\":\"rigi.seq-route\",\"version\":1,\"route\":\"$"
+                    + ifStatement.SeqRouteHintRoute.Name + "\"}";
+                var hintResource = EmittingFacility.RegisterScalarResource(
+                    BilScalarType.String, "\"" + EmittingFacility.Escape(hintJson) + "\"", env);
+                target.Instructions.Add(new HintInstruction(hintResource)
+                { Origin = ifStatement });
+            }
             var conditionValue = EmitValueDispatcher.Visit(ifStatement.Condition, target, ctx, env);
             var id = "if" + ctx.BlockIds.NextIf();
             var thenBlock = new BilBlock(id + "-then");

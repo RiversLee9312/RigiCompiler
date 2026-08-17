@@ -253,7 +253,7 @@ hint res(RESOURCE_ID)
 - `hint` 只能出现在 block 内；
 - RESOURCE_ID 必须引用本模块已声明的 `string` 资源；
 - 本标准不定义 JSON 内容的 schema，由生产方（frontend）与消费方（backend）另行约定；
-- `hint` 无结果变量，不读写任何变量，不参与 definite assignment，不是终结指令，不影响控制流与异常传播；
+- `hint` 无结果变量，不读写任何变量，不是终结指令，不影响控制流与异常传播；默认不参与 definite assignment——但 §18.1 登记的 schema 可由 verifier 按 §21.4 消费（见该节）；
 - `hint` 仅是指令流中的位置标记，不附着于任何特定指令、block 或符号，位置含义由消费方按 JSON 内容自行解释。
 
 **从模块中删除全部 `hint` 指令后，程序的 §22.2 可观察行为必须完全不变。**
@@ -261,5 +261,33 @@ hint res(RESOURCE_ID)
 VM 执行 `hint` 为 no-op。
 
 Middleware 可以依据 `hint` 内容改进代码生成或产出附加元数据（如调试信息），也可以整体忽略；`hint` 内容不得影响可观察语义。`hint` 内容无法解析或不符合消费方预期时，消费方必须忽略该条 `hint`，不得因此拒绝编译。
+
+**`hint` 与可证明性**：verifier 是 `hint` 的合法消费方；§18.1 登记的 schema 可携带 verifier 可用的结构信息。`hint` 只影响**可证明性**（provability）——带 hint 的模块可能通过验证，删除同一 hint 后 §22.2 可观察行为不变、但模块可能因信息丢失而不再通过验证。verifier 消费 hint 前必须按 §18.1 对该 schema 的校验规则做结构验证；校验失败、内容无法解析或不符合预期时**必须忽略该条 hint**（退回不消费 hint 的保守分析），不得因此拒绝编译，且绝不得在未经结构验证的情况下依据 hint 放宽任何检查。
+
+### 18.1 已登记 hint schema
+
+#### rigi.seq-route v1：region route dispatcher 标注
+
+用途：标注某 region 的 route dispatcher 尾链起点，使 verifier DA 能将尾链各出口的前驱边按 route 值分组（混合产值/逃逸形态的 seq/if/switch 表达式结果局部在 fall-through 路径的精确 DA）。
+
+位置：紧贴在汇聚边着陆点之后、dispatcher 比较链第一条指令之前（即产生该组边的 if/switch/call blk 指令之后）。
+
+JSON schema：
+
+```json
+{ "kind": "rigi.seq-route", "version": 1, "route": "$.s2" }
+```
+
+`route`：本 fn 内声明的 `.i32` route 局部名。除本字段外的一切信息由 verifier 从代码推导并校验（最小 schema 原则：hint 只声明「此处按此局部分组」，不声明任何不可独立验证的事实）。
+
+结构校验（全部通过才可消费，否则忽略）：
+
+- V0：JSON 合法；kind/version 匹配；`route` 是本 fn 已声明 `.i32` 局部。
+- V1：fn 内对 `route` 的每次写入都是常量写入（值可解析为整数常量资源）；据此收集各写入常量。
+- V2：hint 前一条指令是 if/switch/call blk，其绑定的 break token 的着陆点恰为 hint 位置。
+- V3：hint 之后是 dispatcher 链——一或多条同构链节，每节为「load 常量 → cmp.eq route → if」三指令；链节 if 位于其所在块末尾：非末链节的 else 边是指向下一链节块的 blk，末链节的 else 边是 none；末链节之后（同块内后续指令，或经块尾回到 region 块结束）是 0 组落尾续点（可为空指令序列）。链上每个比较常量与 V1 收集的非常量写入值一一对应。
+- V4：每条前驱边可分类：该边 break 前对 `route` 的最后一次常量写入值即其组号（未写过 = 0 组）。
+
+消费规则：见 §21.4。任何一条校验失败 → 忽略本 hint，DA 退回保守合并（与不携带 hint 行为一致）。
 
 ---

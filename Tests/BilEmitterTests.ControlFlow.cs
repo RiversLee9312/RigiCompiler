@@ -448,21 +448,22 @@ namespace RigiCompiler.Tests
                 "load res(#2) $.t2\n" +
                 "cmp.gt $.s1 $.t2 $.t3\n" +
                 "if $.t3 blk(if0-then) blk(if0-else) $.b1\n" +
-                "load res(#3) $.t8\n" +
+                "hint res(#3)\n" +
+                "load res(#4) $.t8\n" +
                 "cmp.eq $.s2 $.t8 $.t9\n" +
                 "if $.t9 blk(if1-then) none $.b2\n" +
                 "}\n" +
                 ".block if0-then {\n" +
-                "load res(#3) $.t4\n" +
+                "load res(#4) $.t4\n" +
                 "set.var $.t4 $.s0\n" +
-                "load res(#3) $.t5\n" +
+                "load res(#4) $.t5\n" +
                 "set.var $.t5 $.s2\n" +
                 "break $.b1\n" +
                 "}\n" +
                 ".block if0-else {\n" +
                 "load res(#1) $.t6\n" +
                 "set.var $.t6 $.s0\n" +
-                "load res(#3) $.t7\n" +
+                "load res(#4) $.t7\n" +
                 "set.var $.t7 $.s2\n" +
                 "break $.b1\n" +
                 "}\n" +

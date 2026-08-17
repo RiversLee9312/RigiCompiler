@@ -171,6 +171,12 @@ Bil/
   留证（否则协程永久 Suspended、quiescence 死锁且无证据）；其余失败均为
   benign 竞态（stale 唤醒 / 取消 / 已就绪），静默容忍。
 - 静态字段存储、hook 表 stdout/stderr 写入各自加锁；单次 `print` 调用原子。
+- 原子性契约仅到「单次 native print 调用」为止：需要行级原子的包装
+  （如 stdlib `Console.println`）必须在 Rigi 层先拼好整行、只发一次
+  native print——两次 print 之间 VM 不提供任何不交错保证。另注：VM
+  调度是确定性的（eager spawn、无挂起点即跑完），测试无法真实触发
+  交错，故行原子性的回归防护以「lowering 后只含一次 native print」
+  的 BIL 形状断言为主、双协程实跑「每行完整」为辅。
 - 跨协程的输出交错顺序是真实非确定性，VM 不做任何排序保证。
 
 ### 4.3 try/throw/using

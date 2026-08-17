@@ -63,6 +63,7 @@ namespace RigiCompiler.Tests
             ("BilVmStress", BilVmStressTests.RunAll, null),
             ("EscapingSeqExpr", EscapingSeqExprTests.RunAll, null),
             ("EscapingValueBlock", EscapingValueBlockTests.RunAll, null),
+            ("SeqRouteHint", SeqRouteHintTests.RunAll, null),
         };
 
         // 套件数量（对外编号 1..SuiteCount，即注册表顺序）

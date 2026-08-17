@@ -138,6 +138,12 @@ namespace RigiCompiler
         public LoweredBlock? FalseBlock { get; }
         public LocalSymbol BreakId { get; }
 
+        // §18.1 rigi.seq-route hint 标记（StructuredExitRouting 的 region
+        // 收尾在标准 route dispatcher 尾链首链节上设置 = 本 region 的
+        // route 局部）：发射期在链首（汇聚边着陆点之后、第一条 cmp 之前）
+        // 补一条 hint 指令；非 dispatcher 的普通 if 恒为 null
+        public LocalSymbol? SeqRouteHintRoute { get; set; }
+
         public LoweredIfStatement(BoundNode origin, LoweredExpression condition,
             LoweredBlock trueBlock, LoweredBlock? falseBlock, LocalSymbol breakId)
             : base(origin)
