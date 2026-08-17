@@ -127,6 +127,9 @@ namespace RigiCompiler
                 SwitchStatementVisitor.ApplyCaseNarrowing(match, ctx.Frame, ctx.Flow);
                 var shell = new ValueBlockShell(new BoundValueBlock(caseNode.Body, label),
                     "switch expression");
+                // 外部期望类型回填（同 if/seq 表达式机制——return@ 值
+                // 表达式据其做上下文定型）
+                shell.Block.ExpectedType = expectedType;
                 ValueBlockVisitor.VisitInto(caseNode.Body, scope, shell, ctx, env);
                 branchTails.Add(ctx.Flow.Snapshot());
                 narrowedTails.Add(ctx.Flow.SnapshotNarrowed());
@@ -140,6 +143,7 @@ namespace RigiCompiler
             var defaultBody = SwitchStatementVisitor.RequireDefault(switchNode.DefaultBody);
             var defaultShell = new ValueBlockShell(new BoundValueBlock(defaultBody, label),
                 "switch expression");
+            defaultShell.Block.ExpectedType = expectedType;
             ValueBlockVisitor.VisitInto(defaultBody, scope, defaultShell, ctx, env);
             branchTails.Add(ctx.Flow.Snapshot());
             narrowedTails.Add(ctx.Flow.SnapshotNarrowed());
@@ -169,6 +173,22 @@ namespace RigiCompiler
             }
             if (type == null)
             {
+                // 全部分支（含 default）全路径向外逃逸（各自无本块产值
+                // 且路径全终止——体内每条 return@ 都穿透外层）：表达式
+                // 永不落穿，合法；类型取外部期望类型兜底。无期望类型
+                // 则无法定型，维持报错（同 seq 口径）
+                if (cases.Select(c => c.Body).Append(defaultShell.Block)
+                    .All(BoundAnalysis.ValueBlockEscapes))
+                {
+                    if (expectedType != null)
+                    {
+                        return new BoundSwitchExpression(node, selector, cases,
+                            defaultShell.Block, expectedType);
+                    }
+                    env.Error(switchNode.Span, "switch expression escapes on all paths " +
+                        "without producing a value (a type annotation is required to type it)");
+                    return null;
+                }
                 env.Error(switchNode.Span, "switch expression must produce a value " +
                     "(at least one branch must return@ a value)");
                 return null;

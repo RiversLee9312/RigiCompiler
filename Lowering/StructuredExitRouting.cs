@@ -135,6 +135,13 @@ namespace RigiCompiler
                                 : ProcessBlock(ifStatement.FalseBlock, region, ctx, env, true),
                             ifStatement.BreakId);
                         output.AddRange(FinishRegion(region, node, ctx, env));
+                        // 逃逸型 if 表达式（全分支向外逃逸）：同逃逸型 seq
+                        // 的截断哲学（详见下方 EscapesOnAllPaths 注释）
+                        if (ifStatement.Origin is BoundIfExpression ifExpression
+                            && EscapesOnAllPaths(ifExpression))
+                        {
+                            return output;
+                        }
                         break;
                     }
                     case LoweredLoop loop:
@@ -161,6 +168,13 @@ namespace RigiCompiler
                             ProcessBlock(switchStatement.DefaultBody, region, ctx, env, true),
                             switchStatement.BreakId);
                         output.AddRange(FinishRegion(region, node, ctx, env));
+                        // 逃逸型 switch 表达式（全值路径产物）：同逃逸型
+                        // seq 的截断哲学
+                        if (switchStatement.Origin is BoundSwitchExpression switchExpression
+                            && EscapesOnAllPaths(switchExpression))
+                        {
+                            return output;
+                        }
                         break;
                     }
                     case LoweredTryStatement tryStatement:
@@ -191,6 +205,21 @@ namespace RigiCompiler
                             ProcessBlock(seqBlock.Body, region, ctx, env, true), seqBlock.IsVolatile,
                             seqBlock.BreakId);
                         output.AddRange(FinishRegion(region, node, ctx, env));
+                        // 逃逸型值块表达式（seq 表达式体全路径向外逃逸，
+                        // 或 pattern 路径的 switch 表达式——其 if 链外包的
+                        // seq region Origin 即 BoundSwitchExpression）：
+                        // P3 已证全路径向外逃逸，本 region 不存在「正常
+                        // 完成」，结果局部在任何路径上都不会被写，其后同块
+                        // 语句（含消费者对该局部的读取）动态不可达——按
+                        // throw 同款哲学截断不发射，消除验证器 §21.4 静态
+                        // 可见的死读（route==0 的 fall-through 臂保留但
+                        // 只落到块尾，不再触及任何读）
+                        if (seqBlock.Origin is BoundSeqExpression { Body.ValueType: null }
+                            || (seqBlock.Origin is BoundSwitchExpression patternSwitch
+                                && EscapesOnAllPaths(patternSwitch)))
+                        {
+                            return output;
+                        }
                         break;
                     }
                     default:
@@ -303,6 +332,22 @@ namespace RigiCompiler
             }
             relay.Add(new LoweredBreakStatement(region.Origin, parent.BreakId));
             return relay;
+        }
+
+        // 逃逸型 if/switch 表达式判定：全部分支值块 ValueType == null
+        //（P3 已证各自全路径向外逃逸、表达式已按 ExpectedType 定型）——
+        // 结果局部任何路径都不写，其后同块语句静态死，按 throw 同款
+        // 哲学截断（与逃逸型 seq 表达式同口径）
+        private static bool EscapesOnAllPaths(BoundIfExpression expression)
+        {
+            return expression.TrueBranch.ValueType == null
+                && expression.FalseBranch.ValueType == null;
+        }
+
+        private static bool EscapesOnAllPaths(BoundSwitchExpression expression)
+        {
+            return expression.Cases.All(c => c.Body.ValueType == null)
+                && expression.DefaultBody.ValueType == null;
         }
 
         // i32 合成常量（route tag / 初始化 0；LoweredConstantExpression

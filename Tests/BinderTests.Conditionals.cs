@@ -191,15 +191,27 @@ namespace RigiCompiler.Tests
             TestHarness.CheckSemanticError("同块 return@ 类型不一致", unit9.Diagnostics,
                 "if expression branch produces different types ('String' and 'i32')");
 
-            // 两分支纯穿透 → if 表达式无产值
+            // 两分支落穿无产值 → if 表达式无产值（旧口径：非全逃逸形态
+            // 维持 must produce a value）
             var (unit10, _) = BindUnit(
                 "func f(x: i32): i32 {\n" +
-                "    return if (x > 0) named o {\n" +
+                "    var r = if (x > 0) { var y = 1\ny = 2 } else { var z = 3\nz = 4 }\n" +
+                "    return r\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("两分支落穿无产值", unit10.Diagnostics,
+                "if expression must produce a value");
+
+            // 两分支全逃逸但无期望类型（var 无标注 → expectedType 缺失）：
+            // 逃逸形态的新报错口径（与 seq 对齐）
+            var (unit10b, _) = BindUnit(
+                "func f(x: i32): i32 {\n" +
+                "    var r = if (x > 0) named o {\n" +
                 "        return@o if (x > 1) { return@o 1 } else { return@o 2 }\n" +
                 "    } else { 0 }\n" +
+                "    return r\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("两分支纯穿透无产值", unit10.Diagnostics,
-                "if expression must produce a value");
+            TestHarness.CheckSemanticError("全逃逸无期望类型", unit10b.Diagnostics,
+                "if expression escapes on all paths without producing a value");
 
             var (unit11, _) = BindUnit(
                 "func f(x: i32): i32 {\n" +

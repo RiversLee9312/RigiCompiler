@@ -493,7 +493,11 @@
                     env.Error(ret.Span, $"return@{ret.Label} requires a value");
                     return null;
                 }
-                var labelValue = ExpressionDispatcher.Visit(ret.Value.Expression, scope, ctx, env);
+                // 值表达式按目标值块的外部期望类型做上下文定型
+                // （BoundValueBlock.ExpectedType——enum shorthand 等
+                // 期望类型驱动推断在 return@ 位置同样可用）
+                var labelValue = ExpressionDispatcher.Visit(ret.Value.Expression, scope, ctx, env,
+                    target.ExpectedType as TypeSymbol);
                 if (labelValue == null) return null;
                 return new BoundReturnValueStatement(node, target, labelValue);
             }

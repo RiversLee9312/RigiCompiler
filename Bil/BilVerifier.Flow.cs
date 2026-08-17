@@ -7,10 +7,11 @@ namespace RigiCompiler.Bil
     // 全路径写入由本文件 VerifyEnumStructInstanceFields 在 DA 之后执行。
     //
     // DA 为保守流分析（零误报优先，漏报可接受）：参数入口已赋值；线性
-    // 读前赋值；if 分支独立分析、合并取交集；loop/switch/try 子块入口
-    // 取进入态、出口保守取进入态；call blk 出口 = 块分析出口（块内赋值
-    // 对调用点可见，§16.1）。loop.rev 的 condition 首次读取在 body 之后，
-    // 不查进入时已赋值（§16.4）。
+    // 读前赋值；if 分支独立分析、合并取交集；switch 全分支（含 default）
+    // 独立分析、出口取全分支交集（恒执行且仅执行一个分支）；loop/try
+    // 子块入口取进入态、出口保守取进入态；call blk 出口 = 块分析出口
+    //（块内赋值对调用点可见，§16.1）。loop.rev 的 condition 首次读取在
+    // body 之后，不查进入时已赋值（§16.4）。
     //
     // §21.8 enum struct 实例字段（§14.3「enum 无零值」）：宿主每个 init 的
     // 全部完成路径须对该字段发 set.field（OBJECT 为 $.this）；get.field
@@ -279,14 +280,39 @@ namespace RigiCompiler.Bil
                         {
                             var caseTokens = new List<(string, bool)>(tokens)
                                 { (switchInstruction.BreakId.Name, false) };
+                            // 出口合并：switch 恒执行且仅执行一个分支
+                            //（default 恒在）——全部分支出口交集即出口态
+                            //（与 if 双分支合并同规则、与 §21.8「switch
+                            // 全分支交」一致），分支臂内的写入对 switch
+                            // 之后的读取可见
+                            HashSet<string>? merged = null;
                             foreach (var itemBlock in switchInstruction.ItemBlocks)
                             {
-                                AnalyzeBlock(context, itemBlock, new HashSet<string>(assigned),
-                                    caseTokens, stack, errors, reported);
+                                var itemExit = AnalyzeBlock(context, itemBlock,
+                                    new HashSet<string>(assigned), caseTokens, stack, errors,
+                                    reported);
+                                if (merged == null)
+                                {
+                                    merged = itemExit;
+                                }
+                                else
+                                {
+                                    merged.IntersectWith(itemExit);
+                                }
                             }
-                            AnalyzeBlock(context, switchInstruction.DefaultBlock,
-                                new HashSet<string>(assigned), caseTokens, stack, errors, reported);
-                            break;   // 出口保守：保持进入态
+                            var defaultExit = AnalyzeBlock(context,
+                                switchInstruction.DefaultBlock, new HashSet<string>(assigned),
+                                caseTokens, stack, errors, reported);
+                            if (merged == null)
+                            {
+                                merged = defaultExit;
+                            }
+                            else
+                            {
+                                merged.IntersectWith(defaultExit);
+                            }
+                            assigned = merged;
+                            break;
                         }
                         case CallBlockInstruction call:
                             // §16.1：块落尾返回续 call 的下一条——块内赋值对调用点可见；

@@ -36,7 +36,8 @@ namespace RigiCompiler
         // （GuaranteesValueReturn 视其为路径终止）、throw、裸 return
         // （SYNTAX §6.1：裸 return 始终穿透值块、直接结束外层函数——
         // 以 return 终止的路径不落到块尾，不要求 return@）；复合结构
-        // 递归同 GuaranteesReturn，另含 seq 语句体（S7e）
+        // 递归同 GuaranteesReturn，另含 seq 语句体（S7e）与末语句携带
+        // 表达式内「绝不落穿」的嵌套值块（NestedValueBlockEscapes）
         public static bool GuaranteesValueReturn(BoundBlock block)
         {
             return block.Statements.Count > 0 && block.Statements[^1] switch
@@ -58,8 +59,58 @@ namespace RigiCompiler
                         && tryStatement.Catches.All(c => GuaranteesValueReturn(c.Body))),
                 BoundSeqStatement seqStatement => GuaranteesValueReturn(seqStatement.Body),
                 BoundBlock nested => GuaranteesValueReturn(nested),
-                _ => false,
+                // 末语句携带表达式内的嵌套值块逃逸（如
+                // `var t = seq { if (c) { return@outer a } else { return@outer b } }`）：
+                // 内层值块全路径向外逃逸（不命中自身产值、不落穿）时，
+                // 表达式求值永不完成，本路径同样终止
+                var last => StatementCarriedExpressions(last).Any(NestedValueBlockEscapes),
             };
+        }
+
+        // 嵌套值块逃逸判定（GuaranteesValueReturn 的表达式下钻，返回
+        // bool 而非枚举）：表达式求值是否「绝不落穿」。
+        // - seq 表达式：ValueType == null（无命中自身的 return@ ⇒ 体内
+        //   每条 return@ 都向外逃逸）且体全路径终止；
+        // - if/switch 表达式：全部分支值块同口径逃逸（if 表达式前端
+        //   保证双分支；switch 含 default）；
+        // - 条件求值位置不算：and/or 右侧、?? 右侧、?. 访问体仅在特定
+        //   条件下求值，其逃逸不代表整体不落穿——只看无条件求值侧；
+        // - 其余表达式透明穿透子表达式（ChildExpressions）。
+        // 关键正确性约束：绝不下钻 lambda 体——lambda 内的 exit 只在
+        // 被调用时发生，不能算作外层路径终止（ChildExpressions 对
+        // BoundLambdaExpression 会穿透体语句携带表达式，此处必须显式
+        // 拦截）
+        private static bool NestedValueBlockEscapes(BoundExpression expression)
+        {
+            switch (expression)
+            {
+                case BoundLambdaExpression:
+                    return false;
+                case BoundSeqExpression seqExpression:
+                    return ValueBlockEscapes(seqExpression.Body);
+                case BoundIfExpression ifExpression:
+                    return ValueBlockEscapes(ifExpression.TrueBranch)
+                        && ValueBlockEscapes(ifExpression.FalseBranch);
+                case BoundSwitchExpression switchExpression:
+                    return switchExpression.Cases.All(c => ValueBlockEscapes(c.Body))
+                        && ValueBlockEscapes(switchExpression.DefaultBody);
+                case BoundBinaryExpression { Op: BilIntrinsicOp.And or BilIntrinsicOp.Or } logical:
+                    return NestedValueBlockEscapes(logical.Left);
+                case BoundNullFallbackExpression nullFallback:
+                    return NestedValueBlockEscapes(nullFallback.Left);
+                case BoundSafeAccessExpression safeAccess:
+                    return NestedValueBlockEscapes(safeAccess.Receiver);
+                default:
+                    return ChildExpressions(expression).Any(NestedValueBlockEscapes);
+            }
+        }
+
+        // 分支值块逃逸 = 自身无产值（ValueType null ⇒ 体内 return@ 全部
+        // 命中外层块）且全路径终止（if/switch 表达式「全分支逃逸」
+        // 判定复用——NestedValueBlockEscapes 与各表达式 visitor 共用）
+        public static bool ValueBlockEscapes(BoundValueBlock branch)
+        {
+            return branch.ValueType == null && GuaranteesValueReturn(branch.Block);
         }
 
         // 收集分支块内命中本块的 return@ 值类型（递归嵌套块、if 分支与

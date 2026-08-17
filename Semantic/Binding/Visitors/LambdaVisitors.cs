@@ -154,6 +154,9 @@ namespace RigiCompiler
                     var shell = new ValueBlockShell(
                         new BoundValueBlock(lambda.BlockBody, lambda.Label ?? "_"),
                         "lambda expression", allowImplicitValue: false);
+                    // 声明返回类型即值块的外部期望类型（同一机制——return@
+                    // 值表达式据其做上下文定型）
+                    shell.Block.ExpectedType = returnType as TypeSymbol;
                     ValueBlockVisitor.VisitInto(lambda.BlockBody, lambdaScope, shell, lambdaCtx, env);
                     if (shell.Block.ValueType != null)
                     {

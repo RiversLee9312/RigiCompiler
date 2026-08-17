@@ -193,10 +193,28 @@ namespace RigiCompiler
             var usingBindings = UsingBindingBinder.Bind(seq.UsingBindings, usingScope, ctx, env);
             var shell = new ValueBlockShell(new BoundValueBlock(seq.Body, seq.Label ?? "_"),
                 "seq expression");
+            // 外部期望类型回填值块（绑定前就绪）——体内 return@ 值表达式
+            // 据其做上下文定型（同一机制同 if/switch 表达式分支）
+            shell.Block.ExpectedType = expectedType;
             ValueBlockVisitor.VisitInto(seq.Body, usingScope, shell, ctx, env);
             shell.Block.IsVolatile = seq.IsVolatile;
             if (shell.Block.ValueType == null)
             {
+                // 体全路径向外逃逸（无命中自身的 return@——体内每条
+                // return@ 都穿透到外层块——且路径全终止）：表达式永不
+                // 落穿，合法；类型取外部期望类型兜底（表达式位引用只落
+                // 在不可达死代码里）。无期望类型则无法定型，维持报错
+                if (BoundAnalysis.GuaranteesValueReturn(shell.Block.Block))
+                {
+                    if (expectedType != null)
+                    {
+                        return new BoundSeqExpression(node, shell.Block, expectedType,
+                            usingBindings);
+                    }
+                    env.Error(seq.Span, "seq expression escapes on all paths without " +
+                        "producing a value (a type annotation is required to type it)");
+                    return null;
+                }
                 env.Error(seq.Span, "seq expression must produce a value " +
                     "(at least one path must return@ a value)");
                 return null;

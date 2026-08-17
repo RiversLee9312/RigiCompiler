@@ -13,8 +13,9 @@ pub class Console {
     @NativeSymbol("printErr")
     priv static native func printErr(text: String)
 
+    // 先拼换行再单次 native print：VM 只保证单次 print 原子，
+    // 两次调用在协程并发下会交错（行原子性要求一次调用完成）
     pub static func println(text: String) {
-        print(text)
-        print("\n")
+        print(text + "\n")
     }
 }

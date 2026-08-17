@@ -143,13 +143,13 @@ namespace RigiCompiler
             // 分支入口收窄（S8b）：真/假边事实；表达式无「后续语句」区域，
             // 无 guard——合并恒为纯交集
             ctx.Flow.ApplyNarrow(facts.True);
-            var trueBranch = BindBranch(ifNode.ThenBody, label, scope, ctx, env);
+            var trueBranch = BindBranch(ifNode.ThenBody, label, scope, ctx, env, expectedType);
             var trueAssigned = ctx.Flow.Snapshot();
             var trueNarrowed = ctx.Flow.SnapshotNarrowed();
             ctx.Flow.Restore(before);
             ctx.Flow.RestoreNarrowed(beforeNarrowed);
             ctx.Flow.ApplyNarrow(facts.False);
-            var falseBranch = BindBranch(ifNode.ElseBody, label, scope, ctx, env);
+            var falseBranch = BindBranch(ifNode.ElseBody, label, scope, ctx, env, expectedType);
             var falseAssigned = ctx.Flow.Snapshot();
             var falseNarrowed = ctx.Flow.SnapshotNarrowed();
             ctx.Flow.MergeIfBranches(before, trueAssigned, falseAssigned);
@@ -159,6 +159,22 @@ namespace RigiCompiler
             var type = trueBranch.ValueType ?? falseBranch.ValueType;
             if (type == null)
             {
+                // 两分支全路径向外逃逸（各自无本块产值且路径全终止——
+                // 体内每条 return@ 都穿透外层）：表达式永不落穿，合法；
+                // 类型取外部期望类型兜底（表达式位引用只落在不可达死
+                // 代码里）。无期望类型则无法定型，维持报错（同 seq 口径）
+                if (BoundAnalysis.ValueBlockEscapes(trueBranch)
+                    && BoundAnalysis.ValueBlockEscapes(falseBranch))
+                {
+                    if (expectedType != null)
+                    {
+                        return new BoundIfExpression(node, condition, trueBranch, falseBranch,
+                            expectedType);
+                    }
+                    env.Error(ifNode.Span, "if expression escapes on all paths without " +
+                        "producing a value (a type annotation is required to type it)");
+                    return null;
+                }
                 env.Error(ifNode.Span, "if expression must produce a value " +
                     "(at least one branch must return@ a value)");
                 return null;
@@ -178,9 +194,12 @@ namespace RigiCompiler
         }
 
         private static BoundValueBlock BindBranch(CodeBlockASTNode node, string label, Scope scope,
-            BindContext ctx, BindEnvironment env)
+            BindContext ctx, BindEnvironment env, TypeSymbol? expectedType)
         {
             var shell = new ValueBlockShell(new BoundValueBlock(node, label), "if expression");
+            // 外部期望类型回填（与 seq 表达式同一机制——return@ 值表达式
+            // 据其做上下文定型）
+            shell.Block.ExpectedType = expectedType;
             ValueBlockVisitor.VisitInto(node, scope, shell, ctx, env);
             return shell.Block;
         }

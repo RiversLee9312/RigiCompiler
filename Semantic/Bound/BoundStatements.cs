@@ -166,6 +166,13 @@ namespace RigiCompiler
         public bool IsImplicitValue { get; internal set; }
         // 产值类型；分支纯穿透终止（无本块产值）时为 null
         public SemanticSymbol? ValueType { get; internal set; }
+        // 外部上下文期望类型（声明类型标注/函数返回类型等，由创建值块的
+        // visitor 在拿到 expectedType 时回填，绑定前就绪）：return@ 值
+        // 表达式的绑定用它做上下文定型（如 enum shorthand `.Failed`
+        // 的推断，§12 期望类型上下文）。只影响绑定上下文——表达式节点
+        // 的最终类型仍由 ValueType（自底向上统一）决定，声明处
+        // CheckAssignable 照旧兜底
+        public SemanticSymbol? ExpectedType { get; internal set; }
         // volatile 修饰（仅 seq 表达式置位，S7e；BIL §9.6 block 修饰符）
         public bool IsVolatile { get; internal set; }
 
