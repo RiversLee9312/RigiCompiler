@@ -107,8 +107,9 @@ continuation 后注册 PollingAlarm/EventAlarm 等待；即使 Alarm 已就绪�
 无参 `dispose` 符号和初始化器，P4a 为每个成功初始化的资源建立逆序清理结构，并用
 嵌套 `try/finally` 编织初始化异常前缀、正常落尾、`return`、`throw`、`break` 与
 `continue` 路径。using 资源槽不可重赋值，async/open/abstract dispose 暂时拒绝，避免
-fire-and-forget 或动态派发绕过清理完成语义。表达式 using 与 `return@`/seq-exit 的
-部分终止编织不在本节范围。
+fire-and-forget 或动态派发绕过清理完成语义。`return@`/seq-exit 穿越 using 清理路径
+已不再依赖 continuation 编织（Stage B：StructuredExitRouting 的 route local +
+dispatcher relay 天然穿越 try/finally，原「表达式 using 与部分终止编织」限制消除）。
 
 普通 `dispose()` 内部可含 BIL `await`/`yield`。当前每个资源独立的 finally 结构把挂起点
 留在对应清理块内；Middleware 必须保存当前 dispose 调用和清理进度，外层 return、

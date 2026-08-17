@@ -151,7 +151,8 @@ namespace RigiCompiler
             {
                 return null;
             }
-            return new LoweredIfStatement(ifStatement, condition, trueBlock, falseBlock);
+            return new LoweredIfStatement(ifStatement, condition, trueBlock, falseBlock,
+                ctx.Synth.NewBreakIdLocal());
         }
     }
 }

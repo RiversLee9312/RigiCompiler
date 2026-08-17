@@ -110,8 +110,8 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("无诊断（is .Case 降级）", unit5);
             TestHarness.Check("is .Case 降级形态", LoweredDescribe.Body(BodyOf(lowered5, "f")),
-                "Body(f, [], [If(IsCase(Param(result,RequestResult), RequestResult.Failed), " +
-                "[CallStmt(consume, [Param(result,RequestResult)])]); Return(Int(0,i32))])");
+                "Body(f, [.b0: .breakid], [If(IsCase(Param(result,RequestResult), RequestResult.Failed), " +
+                "[CallStmt(consume, [Param(result,RequestResult)])], .b0); Return(Int(0,i32))])");
             var boundIsCase = (BoundTypeCheckExpression)((BoundIfStatement)
                 bound5.Single(b => b.Method.Name == "f").Body.Statements[0]).Condition;
             var loweredIsCase = (LoweredTypeCheckExpression)((LoweredIfStatement)
@@ -134,10 +134,10 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断（switch pattern is .Case 降级）", unit6);
             TestHarness.Check("switch pattern is .Case 降级形态",
                 LoweredDescribe.Body(BodyOf(lowered6, "f")),
-                "Body(f, [.s0: RequestResult], " +
+                "Body(f, [.s0: RequestResult, .b0: .breakid], " +
                 "[Assign(Local(.s0,RequestResult), Param(result,RequestResult)); " +
                 "[If(IsCase(Local(.s0,RequestResult), RequestResult.Success), " +
-                "[Return(Int(1,i32))], [Return(Int(0,i32))])]])");
+                "[Return(Int(1,i32))], [Return(Int(0,i32))], .b0)]])");
         }
     }
 }

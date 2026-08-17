@@ -18,8 +18,12 @@ namespace RigiCompiler
     //   .sN + 嵌套 if 链）+ throw 恒等；同批修复 M46 值块编织缺陷
     //   （TransformStatements → continuation 编织）。
     // S7e：cast 恒等、try（ExceptionSlot 合成 + 有名 catch 体头 cast 编织）、
-    //   seq 双形态汇合 LoweredSeqBlock；值块编织扩展（seq 透明、
-    //   try-finally 部分终止拦截——transformFailed）。
+    //   seq 双形态汇合 LoweredSeqBlock。
+    // Stage B：return@/Value-Block Structured Exit 重构——continuation
+    //   编织（ValueBlockFacility）删除，return@ 降级为
+    //   LoweredStructuredExit 标记，P4a 末尾 StructuredExitRouting
+    //   normalization pass 展开为 route local + break/dispatcher 形态；
+    //   LoweredLoopControl 拆分为 LoweredBreak/ContinueStatement。
     // S7f：?. / if? 脱糖（receiver 物化 + null 检查 + unwrap/wrap cast）；
     //   解构（物化 pair + 逐字段读取）。
     // S8a：is/supers/with 与 typeOf 恒等降级（BIL §12.3/§12.5 直接对应）。

@@ -44,12 +44,12 @@ namespace RigiCompiler.Tests
             // 与 type.is.case（§12.3 VALUE/case/RESULT，结果 .bool）
             BilTestHarness.CheckFnShape("固定 case main 形状（new.case/type.is.case）",
                 module, "$main()@.i32",
-                ".vars { Outcome r, Outcome .t0, .bool .t1, .i32 .t2, .i32 .t3 }\n" +
+                ".vars { Outcome r, .breakid .b0, Outcome .t0, .bool .t1, .i32 .t2, .i32 .t3 }\n" +
                 ".block entry entrypoint {\n" +
                 "new.case type(Outcome) case(Outcome.Ok) $.t0 []\n" +
                 "set.var $.t0 $r\n" +
                 "type.is.case $r case(Outcome.Failed) $.t1\n" +
-                "if $.t1 blk(if0-then) none\n" +
+                "if $.t1 blk(if0-then) none $.b0\n" +
                 "load res(#0) $.t3\n" +
                 "ret $.t3\n" +
                 "}\n" +
@@ -115,8 +115,8 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckFnShape("参数化 case main 形状（含 pattern 降级）",
                 module, "$main()@.i32",
                 ".vars { RequestResult failed, RequestResult named, RequestResult .s0, " +
-                ".i32 .t0, RequestResult .t1, .i32 .t2, RequestResult .t3, .bool .t4, " +
-                ".i32 .t5, .i32 .t6 }\n" +
+                ".breakid .b0, .i32 .t0, RequestResult .t1, .i32 .t2, RequestResult .t3, " +
+                ".bool .t4, .i32 .t5, .i32 .t6 }\n" +
                 ".block entry entrypoint {\n" +
                 "load res(#0) $.t0\n" +
                 "new.case type(RequestResult) case(RequestResult.Failed) $.t1 [$.t0]\n" +
@@ -126,7 +126,7 @@ namespace RigiCompiler.Tests
                 "set.var $.t3 $named\n" +
                 "set.var $failed $.s0\n" +
                 "type.is.case $.s0 case(RequestResult.Success) $.t4\n" +
-                "if $.t4 blk(if0-then) blk(if0-else)\n" +
+                "if $.t4 blk(if0-then) blk(if0-else) $.b0\n" +
                 "}\n" +
                 ".block if0-then {\n" +
                 "load res(#1) $.t5\n" +

@@ -34,16 +34,16 @@ namespace RigiCompiler.Tests
             // receiver 的 cast 物化为 .s3（先于短路 if 执行）
             TestHarness.Check("?. Access 短路前置在 then 块内",
                 LoweredDescribe.Body(BodyOf(lowered, "f")),
-                "Body(f, [.s0: User?, .s1: bool?, .s2: bool, .s3: User], [" +
+                "Body(f, [.s0: User?, .s1: bool?, .s2: bool, .b0: .breakid, .s3: User, .b1: .breakid], [" +
                 "Assign(Local(.s0,User?), Param(u,User?)); " +
                 "Assign(Local(.s1,bool?), Const(null,bool?)); " +
                 "If(Binary(CmpNe, Local(.s0,User?), Const(null,User?), bool), " +
                 "[Assign(Local(.s3,User), Cast(Local(.s0,User?), User, User)); " +
                 "If(Param(a,bool), [Assign(Local(.s2,bool), Param(b,bool))], " +
-                "[Assign(Local(.s2,bool), Const(False,bool))]); " +
+                "[Assign(Local(.s2,bool), Const(False,bool))], .b0); " +
                 "Assign(Local(.s1,bool?), " +
                 "Cast(InstCall(M, Local(.s3,User), " +
-                "[Local(.s2,bool)], bool), bool?, bool?))]); " +
+                "[Local(.s2,bool)], bool), bool?, bool?))], .b1); " +
                 "Return(Local(.s1,bool?))])");
 
             // 结构性事实：null 检查的 then 块 = receiver 物化 + 短路展开的

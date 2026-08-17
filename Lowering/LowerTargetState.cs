@@ -1,27 +1,14 @@
 namespace RigiCompiler
 {
     // 降级目标状态（M65 Lowering 侧组件化拆分，自 LowerContext 迁出）：
-    // 值块/循环/switch 占位/语句 seq/安全访问占位五条映射栈的统一家
-    // （引用相等查找，嵌套逐层向内命中）。裸 Stack 与栈条目不外泄——
-    // 压弹与查找一律经本类语义方法；本类只返回查找结果，不落诊断
-    // （未命中的内部错误抛出/P4 诊断落袋都在调用方 Rewriter 处，
-    // 文本与位置逐字保持）。
+    // 循环/switch 占位/安全访问占位三条映射栈的统一家（引用相等查找，
+    // 嵌套逐层向内命中）。裸 Stack 与栈条目不外泄——压弹与查找一律经
+    // 本类语义方法；本类只返回查找结果，不落诊断（未命中的内部错误
+    // 抛出/P4 诊断落袋都在调用方 Rewriter 处，文本与位置逐字保持）。
+    // （Stage B：值块与语句 seq 两映射栈随 continuation 编织一并删除，
+    // return@ 目标解析改由 StructuredExitTargetTable 承担）
     internal sealed class LowerTargetState
     {
-        // 值块目标映射栈条目：BoundValueBlock → 写入局部
-        internal readonly struct ValueBlockEntry
-        {
-            public ValueBlockEntry(BoundValueBlock block, LocalSymbol target)
-            {
-                Block = block;
-                Target = target;
-            }
-
-            public BoundValueBlock Block { get; }
-
-            public LocalSymbol Target { get; }
-        }
-
         // 循环映射栈条目（S7c-1）：BoundLoop → 合成 .breakid 局部
         internal readonly struct LoopEntry
         {
@@ -71,10 +58,6 @@ namespace RigiCompiler
             public SemanticSymbol UnwrapType { get; }
         }
 
-        // 值块目标映射栈：BoundValueBlock → 写入局部（引用相等查找），供嵌套
-        // return@（穿透外层值块）命中外层映射
-        private readonly Stack<ValueBlockEntry> valueBlocks = new Stack<ValueBlockEntry>();
-
         // 循环映射栈（S7c-1）：BoundLoop → 合成 .breakid 局部（引用相等
         // 查找），进循环压栈、出循环弹栈；BoundLoopControl 经 Target
         // 引用查映射得 BreakId
@@ -85,51 +68,10 @@ namespace RigiCompiler
         // 逐层向内命中）
         private readonly Stack<SwitchTempEntry> switchTemps = new Stack<SwitchTempEntry>();
 
-        // 语句 seq 降级目标栈（M61）：named 语句 seq 降级体期间压入
-        // （BoundSeqStatement 施工节点，引用相等即身份）；LoweredSeqExit
-        // 标记经栈顶比对归属——命中本层消费、命中外层保留向上传播
-        private readonly Stack<BoundSeqStatement> seqTargets = new Stack<BoundSeqStatement>();
-
         // 安全访问占位映射栈（S7f）：BoundSafeAccessReceiverExpression 实例 →
         // （物化 receiver 局部, unwrap 目标类型）——引用相等查找，嵌套安全
         // 访问（a?.b?.c）逐层向内命中；占位降级为 unwrap cast（§12.1）
         private readonly Stack<SafeReceiverEntry> safeReceivers = new Stack<SafeReceiverEntry>();
-
-        // ===== 值块目标映射栈（S7b）=====
-
-        // 降级值块期间压栈（施工节点 + 写入局部）
-        public void PushValueBlock(BoundValueBlock block, LocalSymbol target)
-        {
-            valueBlocks.Push(new ValueBlockEntry(block, target));
-        }
-
-        public void PopValueBlock()
-        {
-            valueBlocks.Pop();
-        }
-
-        // return@ 目标值块映射查找（引用相等）；未命中返回 null——P3 已
-        // 保证 return@ 只在值块内，调用方按内部错误抛出
-        public LocalSymbol? FindValueBlockTarget(BoundValueBlock valueBlock)
-        {
-            foreach (var entry in valueBlocks)
-            {
-                if (ReferenceEquals(entry.Block, valueBlock)) return entry.Target;
-            }
-            return null;
-        }
-
-        // 「符号是某值块的写入目标局部」判定（值块写入 = 终止路径的编织
-        // 闸门）：合成局部 .sN 只被值块写入与短路/if/switch 表达式结果
-        // 使用——后两者不在映射栈上，互不混淆
-        public bool IsValueBlockTarget(SemanticSymbol symbol)
-        {
-            foreach (var entry in valueBlocks)
-            {
-                if (ReferenceEquals(symbol, entry.Target)) return true;
-            }
-            return false;
-        }
 
         // ===== 循环映射栈（S7c-1）=====
 
@@ -180,28 +122,6 @@ namespace RigiCompiler
                 if (ReferenceEquals(entry.Selector, selector)) return entry.Temp;
             }
             return null;
-        }
-
-        // ===== 语句 seq 降级目标栈（M61）=====
-
-        // 语句 seq 降级体期间压栈。所有 seq 降级都压栈（含无名）——exit
-        // 归属比对按引用命中「本层」；无名 seq 不压栈会让栈顶指向外层
-        // seq，导致外层目标被内层误消费（其后语句漏截断）
-        public void PushSeqTarget(BoundSeqStatement seq)
-        {
-            seqTargets.Push(seq);
-        }
-
-        public void PopSeqTarget()
-        {
-            seqTargets.Pop();
-        }
-
-        // return@语句seq 归属判定（栈顶比对）：栈非空且栈顶引用相等即
-        // 命中本层（消费）；命中外层保留标记向上传播
-        public bool IsCurrentSeqTarget(BoundSeqStatement target)
-        {
-            return seqTargets.Count > 0 && ReferenceEquals(seqTargets.Peek(), target);
         }
 
         // ===== 安全访问占位映射栈（S7f）=====

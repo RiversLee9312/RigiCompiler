@@ -3,8 +3,8 @@ using System.Linq;
 
 namespace RigiCompiler.Tests
 {
-    // LowererTests 控制流组：bool 短路/if 表达式/复合赋值/值块 if 转换/
-    // 循环降级/for 脱糖/switch/throw/else-if 链 continuation 编织。
+    // LowererTests 控制流组：bool 短路/if 表达式/复合赋值/值块 route 展开/
+    // 循环降级/for 脱糖/switch/throw/else-if 链 route 展开（Stage B）。
 
     public static partial class LowererTests
     {
@@ -17,14 +17,14 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断（短路展开）", unit);
             TestHarness.Check("a and b ⇒ if a { s = b } else { s = false }",
                 LoweredDescribe.Body(BodyOf(lowered, "f")),
-                "Body(f, [.s0: bool], " +
+                "Body(f, [.s0: bool, .b0: .breakid], " +
                 "[If(Param(a,bool), [Assign(Local(.s0,bool), Param(b,bool))], " +
-                "[Assign(Local(.s0,bool), Const(False,bool))]); Return(Local(.s0,bool))])");
+                "[Assign(Local(.s0,bool), Const(False,bool))], .b0); Return(Local(.s0,bool))])");
             TestHarness.Check("a or b ⇒ if a { s = true } else { s = b }",
                 LoweredDescribe.Body(BodyOf(lowered, "o")),
-                "Body(o, [.s0: bool], " +
+                "Body(o, [.s0: bool, .b0: .breakid], " +
                 "[If(Param(a,bool), [Assign(Local(.s0,bool), Const(True,bool))], " +
-                "[Assign(Local(.s0,bool), Param(b,bool))]); Return(Local(.s0,bool))])");
+                "[Assign(Local(.s0,bool), Param(b,bool))], .b0); Return(Local(.s0,bool))])");
 
             // 结构性事实：合成局部进 Locals（引用相等）；常量节点 Origin
             // 回指 and/or 表达式的 Bound 节点（最近的语法来源约定）
@@ -60,16 +60,17 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断（if 表达式降级）", unit);
             TestHarness.Check("显式 return@ 值块写结果局部",
                 LoweredDescribe.Body(BodyOf(lowered, "f")),
-                "Body(f, [r: i32, .s0: i32], " +
+                "Body(f, [r: i32, .s0: i32, .b0: .breakid], " +
                 "[If(Binary(CmpGt, Param(x,i32), Int(0,i32), bool), " +
-                "[Assign(Local(.s0,i32), Int(1,i32))], [Assign(Local(.s0,i32), Int(2,i32))]); " +
+                "[Assign(Local(.s0,i32), Int(1,i32)); Break(.b0)], " +
+                "[Assign(Local(.s0,i32), Int(2,i32)); Break(.b0)], .b0); " +
                 "Decl(r, i32, = Local(.s0,i32)); Return(Local(r,i32))])");
             TestHarness.Check("隐式取值值块写结果局部",
                 LoweredDescribe.Body(BodyOf(lowered, "g")),
-                "Body(g, [.s0: i32], " +
+                "Body(g, [.s0: i32, .b0: .breakid], " +
                 "[If(Binary(CmpGt, Param(x,i32), Int(0,i32), bool), " +
                 "[Assign(Local(.s0,i32), Param(x,i32))], " +
-                "[Assign(Local(.s0,i32), Unary(Opposite, Param(x,i32), i32))]); " +
+                "[Assign(Local(.s0,i32), Unary(Opposite, Param(x,i32), i32))], .b0); " +
                 "Return(Local(.s0,i32))])");
         }
 
@@ -139,10 +140,11 @@ namespace RigiCompiler.Tests
                 "Return(Local(z,i32))])");
         }
 
-        // ===== S7b：值块 if 转换（后续语句移入 else / 双终止丢弃）=====
+        // ===== Stage B：值块 return@ 的 route 展开（StructuredExitRouting）=====
         private static void TestValueBlockIfTransform()
         {
-            // 中间 return@（if 单分支终止）→ 后续语句移入新建 else 块
+            // 中间 return@（跨 region：嵌套 if → 外层 if 表达式 region）→
+            // route 局部 + dispatcher relay，其后语句静死保留原位
             var (unit, _, lowered) = LowerUnit(
                 "func f(x: i32): i32 {\n" +
                 "    var r = if (x > 0) {\n" +
@@ -153,17 +155,21 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "    return r\n" +
                 "}\n");
-            CheckNoErrors("无诊断（值块 if 转换）", unit);
-            TestHarness.Check("后续语句移入新建 else 块",
+            CheckNoErrors("无诊断（值块 route 展开）", unit);
+            TestHarness.Check("跨 region return@（route + dispatcher）",
                 LoweredDescribe.Body(BodyOf(lowered, "f")),
-                "Body(f, [r: i32, .s0: i32], " +
+                "Body(f, [r: i32, .s0: i32, .b0: .breakid, .b1: .breakid, .s1: i32, .b2: .breakid], " +
                 "[If(Binary(CmpGt, Param(x,i32), Int(0,i32), bool), " +
-                "[If(Binary(CmpGt, Param(x,i32), Int(1,i32), bool), " +
-                "[Assign(Local(.s0,i32), Int(2,i32))], [Assign(Local(.s0,i32), Int(1,i32))])], " +
-                "[Assign(Local(.s0,i32), Int(0,i32))]); " +
+                "[Assign(Local(.s1,i32), Const(0,i32)); " +
+                "If(Binary(CmpGt, Param(x,i32), Int(1,i32), bool), " +
+                "[Assign(Local(.s0,i32), Int(2,i32)); Assign(Local(.s1,i32), Const(1,i32)); Break(.b1)], .b1); " +
+                "If(Binary(CmpEq, Local(.s1,i32), Const(1,i32), bool), [Break(.b0)], .b2); " +
+                "Assign(Local(.s0,i32), Int(1,i32)); Break(.b0)], " +
+                "[Assign(Local(.s0,i32), Int(0,i32)); Break(.b0)], .b0); " +
                 "Decl(r, i32, = Local(.s0,i32)); Return(Local(r,i32))])");
 
-            // 双分支都终止 → if 之后语句全丢弃（不可达死代码）
+            // 双分支都产标记 → if 之后语句为静死代码（routing 不移动
+            // continuation——region 收尾展开后自然不可达，原地保留）
             var (unit2, _, lowered2) = LowerUnit(
                 "func f(x: i32): i32 {\n" +
                 "    var r = if (x > 0) {\n" +
@@ -175,15 +181,18 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "    return r\n" +
                 "}\n");
-            CheckNoErrors("无诊断（双终止丢弃）", unit2);
-            // 丢弃的 Decl(y) 语句不产出指令，但 LocalSymbol 仍在 Locals 全量平铺
-            TestHarness.Check("双分支终止后语句全丢弃",
+            CheckNoErrors("无诊断（双终止静死保留）", unit2);
+            TestHarness.Check("双分支终止后语句静死保留",
                 LoweredDescribe.Body(BodyOf(lowered2, "f")),
-                "Body(f, [y: i32, r: i32, .s0: i32], " +
+                "Body(f, [y: i32, r: i32, .s0: i32, .b0: .breakid, .b1: .breakid, .s1: i32, .b2: .breakid], " +
                 "[If(Binary(CmpGt, Param(x,i32), Int(0,i32), bool), " +
-                "[If(Binary(CmpGt, Param(x,i32), Int(1,i32), bool), " +
-                "[Assign(Local(.s0,i32), Int(1,i32))], [Assign(Local(.s0,i32), Int(2,i32))])], " +
-                "[Assign(Local(.s0,i32), Int(0,i32))]); " +
+                "[Assign(Local(.s1,i32), Const(0,i32)); " +
+                "If(Binary(CmpGt, Param(x,i32), Int(1,i32), bool), " +
+                "[Assign(Local(.s0,i32), Int(1,i32)); Assign(Local(.s1,i32), Const(1,i32)); Break(.b1)], " +
+                "[Assign(Local(.s0,i32), Int(2,i32)); Assign(Local(.s1,i32), Const(1,i32)); Break(.b1)], .b1); " +
+                "If(Binary(CmpEq, Local(.s1,i32), Const(1,i32), bool), [Break(.b0)], .b2); " +
+                "Decl(y, i32, = Int(3,i32)); Assign(Local(.s0,i32), Local(y,i32)); Break(.b0)], " +
+                "[Assign(Local(.s0,i32), Int(0,i32)); Break(.b0)], .b0); " +
                 "Decl(r, i32, = Local(.s0,i32)); Return(Local(r,i32))])");
         }
 
@@ -255,10 +264,10 @@ namespace RigiCompiler.Tests
             var outer = (LoweredLoop)BodyOf(lowered3, "f").Body.Statements[0];
             var inner = (LoweredLoop)outer.Body.Statements[0];
             TestHarness.CheckTrue("break@outer 携外层 BreakId（引用相等）",
-                ReferenceEquals(((LoweredLoopControl)inner.Body.Statements[0]).BreakId,
+                ReferenceEquals(((LoweredBreakStatement)inner.Body.Statements[0]).BreakId,
                     outer.BreakId));
             TestHarness.CheckTrue("continue 携内层 BreakId（引用相等）",
-                ReferenceEquals(((LoweredLoopControl)inner.Body.Statements[1]).BreakId,
+                ReferenceEquals(((LoweredContinueStatement)inner.Body.Statements[1]).BreakId,
                     inner.BreakId));
 
             // 条件内短路展开：前置语句落在 Judge 块（不污染循环前块）
@@ -269,12 +278,13 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("无诊断（条件内短路）", unit4);
             TestHarness.Check("短路展开进 Judge 块", LoweredDescribe.Body(BodyOf(lowered4, "f")),
-                "Body(f, [.s0: bool, .b0: .breakid, .s1: bool], " +
+                "Body(f, [.s0: bool, .b0: .breakid, .s1: bool, .b1: .breakid], " +
                 "[Loop([If(Param(a,bool), [Assign(Local(.s1,bool), Param(b,bool))], " +
-                "[Assign(Local(.s1,bool), Const(False,bool))]); " +
+                "[Assign(Local(.s1,bool), Const(False,bool))], .b1); " +
                 "Assign(Local(.s0,bool), Local(.s1,bool))], .s0, [], .b0)])");
 
-            // 值块内 break 穿透：直接发 BIL 跳转（无展开、无 if 转换介入）
+            // 值块内 break 穿透：直接发 BIL 跳转（无展开、无 routing
+            // 介入）；else 分支的 return@_ 同 region 展开（写结果+break）
             var (unit5, _, lowered5) = LowerUnit(
                 "func f(x: i32): i32 {\n" +
                 "    var r = 0\n" +
@@ -287,11 +297,11 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断（值块内 break 穿透降级）", unit5);
             TestHarness.Check("值块内 break 穿透 Lowered 形态",
                 LoweredDescribe.Body(BodyOf(lowered5, "f")),
-                "Body(f, [r: i32, .s0: bool, .b0: .breakid, .s1: i32], " +
+                "Body(f, [r: i32, .s0: bool, .b0: .breakid, .s1: i32, .b1: .breakid], " +
                 "[Decl(r, i32, = Int(0,i32)); " +
                 "Loop([Assign(Local(.s0,bool), Binary(CmpGt, Param(x,i32), Int(0,i32), bool))], .s0, " +
                 "[If(Binary(CmpEq, Param(x,i32), Int(5,i32), bool), [Break(.b0)], " +
-                "[Assign(Local(.s1,i32), Int(1,i32))]); " +
+                "[Assign(Local(.s1,i32), Int(1,i32)); Break(.b1)], .b1); " +
                 "Assign(Local(r,i32), Local(.s1,i32)); " +
                 "Assign(Param(x,i32), Binary(Sub, Param(x,i32), Int(1,i32), i32))], .b0); " +
                 "Return(Local(r,i32))])");
@@ -393,10 +403,11 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断（pattern switch）", unit2);
             var described2 = LoweredDescribe.Body(BodyOf(lowered2, "f"));
             TestHarness.Check("pattern switch if 链降级", described2,
-                "Body(f, [.s0: i32], [Assign(Local(.s0,i32), Param(x,i32)); " +
+                "Body(f, [.s0: i32, .b0: .breakid, .b1: .breakid], " +
+                "[Assign(Local(.s0,i32), Param(x,i32)); " +
                 "[If(Binary(CmpEq, Local(.s0,i32), Int(1,i32), bool), [Return(Int(1,i32))], " +
                 "[If(Binary(CmpGt, Local(.s0,i32), Int(10,i32), bool), [Return(Int(2,i32))], " +
-                "[Return(Int(0,i32))])])]])");
+                "[Return(Int(0,i32))], .b0)], .b1)]])");
             TestHarness.CheckTrue("selector 全 switch 只求值一次",
                 described2.Split("Param(x").Length - 1 == 1);
             var chainAssign = (LoweredAssignmentStatement)BodyOf(lowered2, "f").Body.Statements[0];
@@ -448,15 +459,17 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("无诊断（值块内 throw）", unit2);
             TestHarness.Check("值块内 throw 终止", LoweredDescribe.Body(BodyOf(lowered2, "f")),
-                "Body(f, [.s0: i32], [If(Binary(CmpGt, Param(x,i32), Int(0,i32), bool), " +
-                "[Throw(New(MyException, []))], [Assign(Local(.s0,i32), Int(0,i32))]); " +
+                "Body(f, [.s0: i32, .b0: .breakid], [If(Binary(CmpGt, Param(x,i32), Int(0,i32), bool), " +
+                "[Throw(New(MyException, []))], [Assign(Local(.s0,i32), Int(0,i32))], .b0); " +
                 "Return(Local(.s0,i32))])");
         }
 
-        // ===== M46 修复回归：else-if 链混合终止的 continuation 编织 =====
+        // ===== M46 回归（Stage B 形态）：else-if 链混合终止的 route 展开 =====
         private static void TestElseIfChainTransform()
         {
-            // c2 命中路径产值必须留在结果局部（修复前被后续语句覆盖为 3）
+            // c2 命中路径产值必须留在结果局部（M46 修复前被后续语句覆盖
+            // 为 3）；Stage B：跨 region return@ 经 route 局部 + dispatcher
+            // relay 跳出，其后 x = 3 / return@_ x 为静死代码原位保留
             var (unit, _, lowered) = LowerUnit(
                 "func f(c0: bool, c1: bool, c2: bool): i32 {\n" +
                 "    var x = 0\n" +
@@ -467,15 +480,25 @@ namespace RigiCompiler.Tests
                 "    } else { 0 }\n" +
                 "    return r\n" +
                 "}\n");
-            CheckNoErrors("无诊断（else-if 链编织）", unit);
-            TestHarness.Check("else-if 链混合终止编织", LoweredDescribe.Body(BodyOf(lowered, "f")),
-                "Body(f, [x: i32, r: i32, .s0: i32], [Decl(x, i32, = Int(0,i32)); " +
+            CheckNoErrors("无诊断（else-if 链 route 展开）", unit);
+            TestHarness.Check("else-if 链混合终止 route 展开",
+                LoweredDescribe.Body(BodyOf(lowered, "f")),
+                "Body(f, [x: i32, r: i32, .s0: i32, .b0: .breakid, .b1: .breakid, .b2: .breakid, " +
+                ".s1: i32, .s2: i32, .b3: .breakid, .b4: .breakid], " +
+                "[Decl(x, i32, = Int(0,i32)); " +
                 "If(Param(c0,bool), " +
-                "[If(Param(c1,bool), [Assign(Local(.s0,i32), Int(1,i32))], " +
-                "[If(Param(c2,bool), [Assign(Local(.s0,i32), Int(2,i32))], " +
-                "[Assign(Local(x,i32), Int(2,i32)); Assign(Local(x,i32), Int(3,i32)); " +
-                "Assign(Local(.s0,i32), Local(x,i32))])])], " +
-                "[Assign(Local(.s0,i32), Int(0,i32))]); " +
+                "[Assign(Local(.s1,i32), Const(0,i32)); " +
+                "If(Param(c1,bool), " +
+                "[Assign(Local(.s0,i32), Int(1,i32)); Assign(Local(.s1,i32), Const(1,i32)); Break(.b2)], " +
+                "[Assign(Local(.s2,i32), Const(0,i32)); " +
+                "If(Param(c2,bool), " +
+                "[Assign(Local(.s0,i32), Int(2,i32)); Assign(Local(.s2,i32), Const(1,i32)); Break(.b1)], " +
+                "[Assign(Local(x,i32), Int(2,i32))], .b1); " +
+                "If(Binary(CmpEq, Local(.s2,i32), Const(1,i32), bool), " +
+                "[Assign(Local(.s1,i32), Const(1,i32)); Break(.b2)], .b3)], .b2); " +
+                "If(Binary(CmpEq, Local(.s1,i32), Const(1,i32), bool), [Break(.b0)], .b4); " +
+                "Assign(Local(x,i32), Int(3,i32)); Assign(Local(.s0,i32), Local(x,i32)); Break(.b0)], " +
+                "[Assign(Local(.s0,i32), Int(0,i32))], .b0); " +
                 "Decl(r, i32, = Local(.s0,i32)); Return(Local(r,i32))])");
         }
     }

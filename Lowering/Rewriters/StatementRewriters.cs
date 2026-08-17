@@ -248,11 +248,13 @@ namespace RigiCompiler
         }
     }
 
-    // seq 语句降级（S7e，BIL §3.4 独立 block + call 化）；M61 起 named
-    // seq 降级体期间压 seq 目标栈（return@语句seq 的归属比对），
-    // 体含 exit 标记时跑 continuation 编织（消费命中本层者、截断传播
-    // 外层者；无 exit 直通——零行为变化）。手动压栈收集（输出栈元素即
-    // 可变 List——编织就地变换需要，仿 SwitchRewriters 先例）
+    // seq 语句降级（S7e，BIL §3.4 独立 block + call 化；Stage B：
+    // continuation 编织闸门删除——return@语句seq 降级为
+    // LoweredStructuredExit 标记，展开归 StructuredExitRouting pass）。
+    // named seq 注册目标映射表（breakId 创建后、降级体前）；降级循环
+    // 遇命中本层的 BoundSeqExitStatement 截断后续语句（静死——routing
+    // 展开标记时同样截断，此处提前收口不降级死代码）。手动压栈收集
+    // （输出栈元素即可变 List，仿 SwitchRewriters 先例）
     internal sealed class SeqStatementRewriter
         : LoweredVisitor<SeqStatementRewriter, LoweredStatement, LowerContext>
     {
@@ -260,10 +262,13 @@ namespace RigiCompiler
             LowerEnvironment env)
         {
             var seqStatement = (BoundSeqStatement)node;
-            // 所有 seq 降级都压栈（含无名）——exit 归属比对按引用命中
-            // 「本层」；无名 seq 不压栈会让栈顶指向外层 seq，导致外层
-            // 目标被内层误消费（其后语句漏截断）
-            ctx.Targets.PushSeqTarget(seqStatement);
+            var seqBreakId = ctx.Synth.NewBreakIdLocal();
+            // named seq 可作 return@ 目标（SYNTAX §6.1，M61）：注册目标
+            // 映射表（无结果局部）；无名 seq 无人引用，不注册
+            if (seqStatement.Label != null)
+            {
+                ctx.ExitTargets.Register(seqStatement, seqBreakId);
+            }
             var statements = new List<LoweredStatement>();
             ctx.Output.Push(statements);
             try
@@ -273,11 +278,13 @@ namespace RigiCompiler
                     var lowered = LowerStatementDispatcher.Visit(statement, ctx, env);
                     if (lowered == null) return null;
                     statements.Add(lowered);
-                }
-                if (ValueBlockFacility.ContainsSeqExit(statements))
-                {
-                    ValueBlockFacility.TransformStatements(statements, ctx, env);
-                    if (ctx.TransformFailed) return null;
+                    // return@本层 seq 终止本路径：其后语句不可达（静死），
+                    // 截断不降级；目标为外层 seq 时不截断（routing 展开）
+                    if (statement is BoundSeqExitStatement exit
+                        && ReferenceEquals(exit.Target, seqStatement))
+                    {
+                        break;
+                    }
                 }
                 // 初始化器按源码顺序降级；每个声明置于自己的 finally 之外，
                 // 因而初始化失败不会释放尚未成功建立的资源。
@@ -324,21 +331,22 @@ namespace RigiCompiler
                                 Array.Empty<LoweredTryCatch>(),
                                  new LoweredBlock(binding, finallyStatements),
                                  ctx.Synth.NewSynthLocal(env.Unit.Symbols.GetNullable(
-                                     env.Unit.Symbols.Bootstrap.Exception)))
+                                     env.Unit.Symbols.Bootstrap.Exception)),
+                                 ctx.Synth.NewBreakIdLocal())
                         }).ToList());
                 }
-                return new LoweredSeqBlock(seqStatement, protectedBody, seqStatement.IsVolatile);
+                return new LoweredSeqBlock(seqStatement, protectedBody, seqStatement.IsVolatile,
+                    seqBreakId);
             }
             finally
             {
                 ctx.Output.Pop();
-                ctx.Targets.PopSeqTarget();
             }
         }
     }
 
-    // return@语句seq 降级（M61，SYNTAX §6.1）：纯控制流标记节点——
-    // 不产指令；目标 seq 降级层经 continuation 编织消费
+    // return@语句seq 降级（M61，SYNTAX §6.1；Stage B）：产
+    // LoweredStructuredExit 标记（无值），展开归 StructuredExitRouting pass
     internal sealed class SeqExitRewriter
         : LoweredVisitor<SeqExitRewriter, LoweredStatement, LowerContext>
     {
@@ -346,13 +354,14 @@ namespace RigiCompiler
             LowerEnvironment env)
         {
             var exit = (BoundSeqExitStatement)node;
-            return new LoweredSeqExitStatement(exit, exit.Target);
+            return new LoweredStructuredExit(exit, exit.Target, null);
         }
     }
 
-    // return@ 脱糖为「写目标值块局部」；目标沿值块映射栈查找（穿透外层
-    // 时命中外层值块）。同块其后语句的截断由值块降级循环处理。普通块
-    // （非值块降级上下文）出现即内部错误——P3 已保证 return@ 只在值块内
+    // return@值块降级（Stage B）：产值先行降级（前置语句落当前流——
+    // 保证值在 cleanup 前已求值），产 LoweredStructuredExit 标记
+    // （结果局部写入与 region 跳出由 StructuredExitRouting 展开；
+    // 目标解析归 StructuredExitTargetTable）
     internal sealed class ReturnValueRewriter
         : LoweredVisitor<ReturnValueRewriter, LoweredStatement, LowerContext>
     {
@@ -360,17 +369,15 @@ namespace RigiCompiler
             LowerEnvironment env)
         {
             var returnValue = (BoundReturnValueStatement)node;
-            var writeTarget = ValueBlockFacility.FindTarget(returnValue.Target, ctx);
-            var written = LowerExpressionDispatcher.Visit(returnValue.Value, ctx, env);
-            if (written == null) return null;
-            return new LoweredAssignmentStatement(returnValue,
-                SynthLocalFactory.ReferenceTo(returnValue, writeTarget), written);
+            var value = LowerExpressionDispatcher.Visit(returnValue.Value, ctx, env);
+            if (value == null) return null;
+            return new LoweredStructuredExit(returnValue, returnValue.Target, value);
         }
     }
 
     // break/continue 是 BIL 真跳转（S7c-1，§16.5），直接携带目标循环的
     // breakid——穿透值块/嵌套块无需任何展开；其后语句在 BIL 块内自然
-    // 不可达（无需 if 转换介入）
+    // 不可达（无需 routing 介入）。Stage B 起按 IsBreak 分产两节点
     internal sealed class LoopControlRewriter
         : LoweredVisitor<LoopControlRewriter, LoweredStatement, LowerContext>
     {
@@ -378,8 +385,10 @@ namespace RigiCompiler
             LowerEnvironment env)
         {
             var loopControl = (BoundLoopControl)node;
-            return new LoweredLoopControl(loopControl, loopControl.IsBreak,
-                LoopFacility.FindBreakId(loopControl.Target, ctx));
+            var breakId = LoopFacility.FindBreakId(loopControl.Target, ctx);
+            return loopControl.IsBreak
+                ? (LoweredStatement)new LoweredBreakStatement(loopControl, breakId)
+                : new LoweredContinueStatement(loopControl, breakId);
         }
     }
 

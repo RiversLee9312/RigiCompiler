@@ -280,13 +280,15 @@ namespace RigiCompiler
                 ? (assignRight, assignConstant)
                 : (assignConstant, assignRight);
             ctx.Output.Add(new LoweredIfStatement(binary, condition,
-                trueBlock, falseBlock));
+                trueBlock, falseBlock, ctx.Synth.NewBreakIdLocal()));
             return SynthLocalFactory.ReferenceTo(binary, s);
         }
     }
 
     // if 表达式脱糖：合成结果局部 v；前置 LoweredIfStatement（两分支
-    // 值块降级产物，写 v）；表达式位 v 引用
+    // 值块降级产物，写 v）；表达式位 v 引用。Stage B：breakId 预建并
+    // 注册两分支值块的目标映射（降级 body 前）——分支内 return@ 由
+    // StructuredExitRouting 展开为「写 v + break 本 if region」
     internal sealed class IfExpressionRewriter
         : LoweredVisitor<IfExpressionRewriter, LoweredExpression, LowerContext>
     {
@@ -295,6 +297,9 @@ namespace RigiCompiler
         {
             var ifExpression = (BoundIfExpression)node;
             var result = ctx.Synth.NewSynthLocal(ifExpression.Type);
+            var ifBreakId = ctx.Synth.NewBreakIdLocal();
+            ctx.ExitTargets.Register(ifExpression.TrueBranch, result, ifBreakId);
+            ctx.ExitTargets.Register(ifExpression.FalseBranch, result, ifBreakId);
             var condition = LowerExpressionDispatcher.Visit(ifExpression.Condition, ctx, env);
             if (condition == null) return null;
             var trueBranch = ValueBlockRewriter.Visit(ifExpression.TrueBranch,
@@ -303,13 +308,16 @@ namespace RigiCompiler
                 new ValueBlockContext(ctx, result), env);
             if (trueBranch == null || falseBranch == null) return null;
             ctx.Output.Add(new LoweredIfStatement(ifExpression, condition,
-                trueBranch, falseBranch));
+                trueBranch, falseBranch, ifBreakId));
             return SynthLocalFactory.ReferenceTo(ifExpression, result);
         }
     }
 
-    // switch 表达式：合成结果局部；各分支值块降级写结果局部（复用
-    // 值块映射栈与 if 转换）；前置 switch/if 链语句，表达式位结果局部引用
+    // switch 表达式：合成结果局部；各分支值块降级写结果局部；前置
+    // switch/if 链语句，表达式位结果局部引用。Stage B：switchBreakId
+    // 预建并注册全部分支值块（降级 body 前）——全值路径产物即
+    // LoweredSwitch（region = switch 自身）；pattern 路径产物 if 链
+    // 无总 region，外包一层 LoweredSeqBlock 承载 switchBreakId
     internal sealed class SwitchExpressionRewriter
         : LoweredVisitor<SwitchExpressionRewriter, LoweredExpression, LowerContext>
     {
@@ -318,6 +326,13 @@ namespace RigiCompiler
         {
             var switchExpression = (BoundSwitchExpression)node;
             var result = ctx.Synth.NewSynthLocal(switchExpression.Type);
+            var switchBreakId = ctx.Synth.NewBreakIdLocal();
+            var isPattern = switchExpression.Cases.Any(c => c.IsPattern);
+            foreach (var boundCase in switchExpression.Cases)
+            {
+                ctx.ExitTargets.Register(boundCase.Body, result, switchBreakId);
+            }
+            ctx.ExitTargets.Register(switchExpression.DefaultBody, result, switchBreakId);
             var cases = new List<(BoundNode Origin, BoundExpression Match, bool IsPattern,
                 LoweredBlock Body)>();
             foreach (var boundCase in switchExpression.Cases)
@@ -331,9 +346,14 @@ namespace RigiCompiler
                 new ValueBlockContext(ctx, result), env);
             if (defaultBody == null) return null;
             var statement = SwitchFacility.LowerCore(switchExpression, switchExpression.Selector,
-                cases, defaultBody, ctx, env);
+                cases, defaultBody, ctx, env, switchBreakId);
             if (statement == null) return null;
-            ctx.Output.Add(statement);
+            // pattern 路径：if 链外包 seq region 承载 switchBreakId
+            // （分支内 return@ 跨 if 层经 dispatcher relay 至此）
+            ctx.Output.Add(isPattern
+                ? new LoweredSeqBlock(switchExpression, (LoweredBlock)statement,
+                    isVolatile: false, switchBreakId)
+                : statement);
             return SynthLocalFactory.ReferenceTo(switchExpression, result);
         }
     }

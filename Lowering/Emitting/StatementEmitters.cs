@@ -237,8 +237,9 @@ namespace RigiCompiler
     }
 
     // 结构化条件（§16.2）：条件物化到临时变量 →
-    // if $c blk(then) blk(else)（无 else 用 none 操作数——模型为可空
-    // ElseBlock）；
+    // if $c blk(then) blk(else)|none $breakid（无 else 用 none 操作数——
+    // 模型为可空 ElseBlock；breakid 为 §16.5 推广的末尾 region-exit
+    // capability 操作数，与 loop/switch 同位）；
     // 分支 block 加入函数并递归发射，落尾自然返回（§9.4）
     internal sealed class IfEmitter : EmitVisitor<IfEmitter, Unit>
     {
@@ -251,7 +252,8 @@ namespace RigiCompiler
             var thenBlock = new BilBlock(id + "-then");
             var elseBlock = ifStatement.FalseBlock != null
                 ? new BilBlock(id + "-else") : null;
-            target.Instructions.Add(new IfInstruction(conditionValue, thenBlock, elseBlock)
+            target.Instructions.Add(new IfInstruction(conditionValue, thenBlock, elseBlock,
+                BilOp.Var(ifStatement.BreakId.Name))
             { Origin = ifStatement });
             ctx.Function.Blocks.Add(thenBlock);
             EmitBlockVisitor.Visit(ifStatement.TrueBlock, thenBlock, ctx, env);
@@ -290,17 +292,30 @@ namespace RigiCompiler
         }
     }
 
-    // break/continue（§16.5）：直接引用目标循环的 breakid
-    internal sealed class LoopControlEmitter : EmitVisitor<LoopControlEmitter, Unit>
+    // break（§16.5）：直接引用目标 region 的 breakid（Stage B 拆分；
+    // StructuredExitRouting 的 region 收尾/dispatcher relay 同走本发射）
+    internal sealed class BreakEmitter : EmitVisitor<BreakEmitter, Unit>
     {
         protected override Unit VisitCore(LoweredNode node, BilBlock target, EmitContext ctx,
             EmitEnvironment env)
         {
-            var loopControl = (LoweredLoopControl)node;
-            target.Instructions.Add(loopControl.IsBreak
-                ? (BilInstruction)new BreakInstruction(BilOp.Var(loopControl.BreakId.Name))
-                : new ContinueInstruction(BilOp.Var(loopControl.BreakId.Name))
-            { Origin = loopControl });
+            var breakStatement = (LoweredBreakStatement)node;
+            target.Instructions.Add(new BreakInstruction(BilOp.Var(breakStatement.BreakId.Name))
+            { Origin = breakStatement });
+            return Unit.Value;
+        }
+    }
+
+    // continue（§16.5）：直接引用目标循环的 breakid（Stage B 拆分）
+    internal sealed class ContinueEmitter : EmitVisitor<ContinueEmitter, Unit>
+    {
+        protected override Unit VisitCore(LoweredNode node, BilBlock target, EmitContext ctx,
+            EmitEnvironment env)
+        {
+            var continueStatement = (LoweredContinueStatement)node;
+            target.Instructions.Add(
+                new ContinueInstruction(BilOp.Var(continueStatement.BreakId.Name))
+                { Origin = continueStatement });
             return Unit.Value;
         }
     }
@@ -354,8 +369,9 @@ namespace RigiCompiler
         }
     }
 
-    // seq 块（S7e，§3.4/§16.1）：独立 block + call blk(seqN)
-    // （call 不建栈帧，block 落尾自然返回续call 的下一条）；
+    // seq 块（S7e，§3.4/§16.1）：独立 block + call blk(seqN) $breakid
+    // （call 不建栈帧，block 落尾自然返回续call 的下一条；breakid 为
+    // §16.5 推广的末尾 region-exit capability 操作数）；
     // volatile → §9.6 block 修饰符
     internal sealed class SeqBlockEmitter : EmitVisitor<SeqBlockEmitter, Unit>
     {
@@ -367,7 +383,8 @@ namespace RigiCompiler
             var seqBilBlock = seqBlock.IsVolatile
                 ? new BilBlock(seqId, BilBlockModifier.Volatile)
                 : new BilBlock(seqId);
-            target.Instructions.Add(new CallBlockInstruction(seqBilBlock)
+            target.Instructions.Add(new CallBlockInstruction(seqBilBlock,
+                BilOp.Var(seqBlock.BreakId.Name))
             { Origin = seqBlock });
             ctx.Function.Blocks.Add(seqBilBlock);
             EmitBlockVisitor.Visit(seqBlock.Body, seqBilBlock, ctx, env);
@@ -375,8 +392,9 @@ namespace RigiCompiler
         }
     }
 
-    // try（S7e，§16.7 四操作数）：blk(tryN-body) $slot
-    // res(catch-table) blk(tryN-finally)|none；catch 表 =
+    // try（S7e，§16.7 五操作数）：blk(tryN-body) $slot
+    // res(catch-table) blk(tryN-finally)|none $breakid（breakid 为
+    // §16.5 推广的末尾 region-exit capability 操作数）；catch 表 =
     // §19.5 多行资源（元素 type(T) -> blk(tryN-catchI)，
     // 保序——表序即匹配序）；body/catch/finally block 加入
     // 函数并递归发射，落尾自然返回（§9.4 同 if 分支块）
@@ -398,7 +416,7 @@ namespace RigiCompiler
                 ? new BilBlock(tryId + "-finally") : null;
             target.Instructions.Add(new TryInstruction(
                 tryBodyBlock, BilOp.Var(tryStatement.ExceptionSlot.Name),
-                catchTable, finallyBilBlock)
+                catchTable, finallyBilBlock, BilOp.Var(tryStatement.BreakId.Name))
             { Origin = tryStatement });
             ctx.Function.Blocks.Add(tryBodyBlock);
             EmitBlockVisitor.Visit(tryStatement.TryBlock, tryBodyBlock, ctx, env);

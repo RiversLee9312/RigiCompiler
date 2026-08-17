@@ -82,12 +82,12 @@ namespace RigiCompiler.Tests
             // 物化 receiver + null 检查 + 非空分支 unwrap/成员/wrap
             TestHarness.Check("?. 脱糖形态（字段）",
                 LoweredDescribe.Body(BodyOf(lowered, "f")),
-                "Body(f, [.s0: User?, .s1: String?], [" +
+                "Body(f, [.s0: User?, .s1: String?, .b0: .breakid], [" +
                 "Assign(Local(.s0,User?), Param(u,User?)); " +
                 "Assign(Local(.s1,String?), Const(null,String?)); " +
                 "If(Binary(CmpNe, Local(.s0,User?), Const(null,User?), bool), " +
                 "[Assign(Local(.s1,String?), " +
-                "Cast(InstField(name, Cast(Local(.s0,User?), User, User), String), String?, String?))]); " +
+                "Cast(InstField(name, Cast(Local(.s0,User?), User, User), String), String?, String?))], .b0); " +
                 "Return(Local(.s1,String?))])");
 
             // 链式：a?.b?.c——内层安全访问的 receiver 是外层占位（unwrap cast 复用）
@@ -98,17 +98,17 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断（链式 ?. 降级）", unit2);
             TestHarness.Check("链式 ?. 脱糖形态",
                 LoweredDescribe.Body(BodyOf(lowered2, "f")),
-                "Body(f, [.s0: A?, .s1: B?, .s2: B?, .s3: String?], [" +
+                "Body(f, [.s0: A?, .s1: B?, .b0: .breakid, .s2: B?, .s3: String?, .b1: .breakid], [" +
                 "Assign(Local(.s0,A?), Param(a,A?)); " +
                 "Assign(Local(.s1,B?), Const(null,B?)); " +
                 "If(Binary(CmpNe, Local(.s0,A?), Const(null,A?), bool), " +
                 "[Assign(Local(.s1,B?), " +
-                "Cast(InstField(b, Cast(Local(.s0,A?), A, A), B), B?, B?))]); " +
+                "Cast(InstField(b, Cast(Local(.s0,A?), A, A), B), B?, B?))], .b0); " +
                 "Assign(Local(.s2,B?), Local(.s1,B?)); " +
                 "Assign(Local(.s3,String?), Const(null,String?)); " +
                 "If(Binary(CmpNe, Local(.s2,B?), Const(null,B?), bool), " +
                 "[Assign(Local(.s3,String?), " +
-                "Cast(InstField(c, Cast(Local(.s2,B?), B, B), String), String?, String?))]); " +
+                "Cast(InstField(c, Cast(Local(.s2,B?), B, B), String), String?, String?))], .b1); " +
                 "Return(Local(.s3,String?))])");
         }
 
@@ -122,11 +122,11 @@ namespace RigiCompiler.Tests
             // 非空分支 unwrap，空分支求回退值（延迟求值由 if 结构保证）
             TestHarness.Check("if? 脱糖形态",
                 LoweredDescribe.Body(BodyOf(lowered, "f")),
-                "Body(f, [.s0: User?, .s1: User], [" +
+                "Body(f, [.s0: User?, .s1: User, .b0: .breakid], [" +
                 "Assign(Local(.s0,User?), Param(u,User?)); " +
                 "If(Binary(CmpNe, Local(.s0,User?), Const(null,User?), bool), " +
                 "[Assign(Local(.s1,User), Cast(Local(.s0,User?), User, User))], " +
-                "[Assign(Local(.s1,User), New(User, init, [Str(\"anon\",String)]))]); " +
+                "[Assign(Local(.s1,User), New(User, init, [Str(\"anon\",String)]))], .b0); " +
                 "Return(Local(.s1,User))])");
         }
 

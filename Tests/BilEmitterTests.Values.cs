@@ -85,7 +85,8 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckBilValid("验证器零错误（?.）", module);
             BilTestHarness.CheckFnShape("f 指令与 .vars（?. 发射）",
                 module, "$f(u:.nullable<User>)@.nullable<.string>",
-                ".vars { .nullable<User> .s0, .nullable<.string> .s1, .nullable<.string> .t0, " +
+                ".vars { .nullable<User> .s0, .nullable<.string> .s1, .breakid .b0, " +
+                ".nullable<.string> .t0, " +
                 ".nullable<User> .t1, .bool .t2, User .t3, .string .t4, .nullable<.string> .t5 }\n" +
                 ".block entry entrypoint {\n" +
                 "set.var $u $.s0\n" +
@@ -93,7 +94,7 @@ namespace RigiCompiler.Tests
                 "set.var $.t0 $.s1\n" +
                 "load res(#1) $.t1\n" +
                 "cmp.ne $.s0 $.t1 $.t2\n" +
-                "if $.t2 blk(if0-then) none\n" +
+                "if $.t2 blk(if0-then) none $.b0\n" +
                 "ret $.s1\n" +
                 "}\n" +
                 ".block if0-then {\n" +
@@ -120,13 +121,13 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckBilValid("验证器零错误（if?）", module);
             BilTestHarness.CheckFnShape("g 指令与 .vars（if? 发射）",
                 module, "$g(u:.nullable<User>)@User",
-                ".vars { .nullable<User> .s0, User .s1, .nullable<User> .t0, .bool .t1, " +
+                ".vars { .nullable<User> .s0, User .s1, .breakid .b0, .nullable<User> .t0, .bool .t1, " +
                 "User .t2, .string .t3, User .t4 }\n" +
                 ".block entry entrypoint {\n" +
                 "set.var $u $.s0\n" +
                 "load res(#0) $.t0\n" +
                 "cmp.ne $.s0 $.t0 $.t1\n" +
-                "if $.t1 blk(if0-then) blk(if0-else)\n" +
+                "if $.t1 blk(if0-then) blk(if0-else) $.b0\n" +
                 "ret $.s1\n" +
                 "}\n" +
                 ".block if0-then {\n" +

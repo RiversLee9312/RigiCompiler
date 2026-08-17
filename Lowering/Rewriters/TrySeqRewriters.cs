@@ -84,14 +84,17 @@ namespace RigiCompiler
                 }
             }
             return new LoweredTryStatement(tryStatement, tryBlock, catches, finallyBlock,
-                exceptionSlot);
+                exceptionSlot, ctx.Synth.NewBreakIdLocal());
         }
     }
 
     // seq 表达式脱糖（S7e，BIL §3.4 call 化）：合成结果局部 v；
     // 前置 LoweredSeqBlock（值块降级产物写 v，volatile 随值块置位）；
     // 表达式位 v 引用——与 if 表达式同构，差异仅在 seq 块发射形态
-    // （独立 block + call 指令）
+    // （独立 block + call 指令）。Stage B：seqBreakId 预建并注册值块
+    // 目标映射（降级 body 前）——体内 return@ 由 StructuredExitRouting
+    // 展开（写 v + break 本 seq region；using 的 try/finally 穿越经
+    // route local + dispatcher relay）
     internal sealed class SeqExpressionRewriter
         : LoweredVisitor<SeqExpressionRewriter, LoweredExpression, LowerContext>
     {
@@ -100,8 +103,8 @@ namespace RigiCompiler
         {
             var seqExpression = (BoundSeqExpression)node;
             var result = ctx.Synth.NewSynthLocal(seqExpression.Type);
-            // 复杂外层值块 continuation 穿越 using 生成的 try/finally 仍由
-            // ValueBlockRewriter 的 S7e 拦截负责；不要为表达式 using 放宽该边界。
+            var seqBreakId = ctx.Synth.NewBreakIdLocal();
+            ctx.ExitTargets.Register(seqExpression.Body, result, seqBreakId);
             var body = ValueBlockRewriter.Visit(seqExpression.Body,
                 new ValueBlockContext(ctx, result), env);
             if (body == null) return null;
@@ -148,11 +151,12 @@ namespace RigiCompiler
                             Array.Empty<LoweredTryCatch>(),
                             new LoweredBlock(binding, finallyStatements),
                             ctx.Synth.NewSynthLocal(env.Unit.Symbols.GetNullable(
-                                env.Unit.Symbols.Bootstrap.Exception)))
+                                env.Unit.Symbols.Bootstrap.Exception)),
+                            ctx.Synth.NewBreakIdLocal())
                     }).ToList());
             }
             ctx.Output.Add(new LoweredSeqBlock(seqExpression, protectedBody,
-                seqExpression.Body.IsVolatile));
+                seqExpression.Body.IsVolatile, seqBreakId));
             return SynthLocalFactory.ReferenceTo(seqExpression, result);
         }
     }

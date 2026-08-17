@@ -36,10 +36,12 @@ namespace RigiCompiler
             return result;
         }
 
-        // 逐体降级入口：值块 lambda 的 $$call 体走值块协议（return@ 目标
-        // 局部映射 + continuation 编织，ValueBlockRewriter 唯一入口），
-        // 产物末尾补 ret 结果局部；其余体（含 init 体/void lambda/单表达式
-        // lambda）按普通函数体块降级
+        // 逐体降级入口：值块 lambda 的 $$call 体走值块协议（结果局部 +
+        // 目标映射注册 + LoweredSeqBlock 包装承载 region breakId，
+        // ValueBlockRewriter 唯一入口），产物末尾补 ret 结果局部；其余体
+        // （含 init 体/void lambda/单表达式 lambda）按普通函数体块降级。
+        // 两路径产物统一过 StructuredExitRouting normalization pass
+        // （Stage B：return@ 标记展开为 route/break 形态）
         private static LoweredBlock? LowerBody(BoundFunctionBody body, LowerContext ctx,
             LowerEnvironment env)
         {
@@ -48,16 +50,25 @@ namespace RigiCompiler
                 && closure.ValueBlock != null)
             {
                 var result = ctx.Synth.NewSynthLocal(closure.Call.ReturnType!);
+                var bodyBreakId = ctx.Synth.NewBreakIdLocal();
+                ctx.ExitTargets.Register(closure.ValueBlock, result, bodyBreakId);
                 var valueBlock = ValueBlockRewriter.Visit(closure.ValueBlock,
                     new ValueBlockContext(ctx, result), env);
                 if (valueBlock == null) return null;
-                var statements = valueBlock.Statements.ToList();
-                statements.Add(new LoweredReturnStatement(
-                    new BoundReturnStatement(closure.ValueBlock.Syntax, null),
-                    SynthLocalFactory.ReferenceTo(closure.ValueBlock, result)));
-                return new LoweredBlock(body.Body, statements);
+                var statements = new List<LoweredStatement>
+                {
+                    new LoweredSeqBlock(closure.ValueBlock, valueBlock, isVolatile: false,
+                        bodyBreakId),
+                    new LoweredReturnStatement(
+                        new BoundReturnStatement(closure.ValueBlock.Syntax, null),
+                        SynthLocalFactory.ReferenceTo(closure.ValueBlock, result)),
+                };
+                return StructuredExitRouting.Run(
+                    new LoweredBlock(body.Body, statements), ctx, env);
             }
-            return LowerBlockVisitor.Visit(body.Body, ctx, env);
+            var lowered = LowerBlockVisitor.Visit(body.Body, ctx, env);
+            if (lowered == null) return null;
+            return StructuredExitRouting.Run(lowered, ctx, env);
         }
     }
 }

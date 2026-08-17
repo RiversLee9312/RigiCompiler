@@ -20,9 +20,11 @@ namespace RigiCompiler
         }
     }
 
-    // 编译期常量（P4a 合成节点，S7b）：bool 短路展开（BIL §11.3）的 true/false
-    // 是唯一来源，S7b 仅 bool。Origin 约定 = 最近的语法来源（and/or 表达式本身
-    // 的 Bound 节点）；Type 自带（语义上常量类型由自身携带，不走 Origin 透传）
+    // 编译期常量（P4a 合成节点，S7b）：bool 短路展开（BIL §11.3）的
+    // true/false、S7f null（安全访问/空值回退脱糖产物）与 Stage B int
+    // （StructuredExitRouting 的 route tag / 0 初始化）。Origin 约定 =
+    // 最近的语法来源；Type 自带（语义上常量类型由自身携带，不走
+    // Origin 透传）
     public sealed class LoweredConstantExpression : LoweredExpression
     {
         public object Value { get; }
@@ -51,7 +53,7 @@ namespace RigiCompiler
         public override SemanticSymbol Type => Symbol switch
         {
             // .breakid 局部（Type null）不作值引用——capability 不可读
-            // （BIL §9.3），LoweredLoop/LoweredLoopControl 直接持有符号
+            // （BIL §9.3），LoweredLoop/LoweredBreak/LoweredContinueStatement 直接持有符号
             LocalSymbol local => local.Type ?? throw new CompilerInternalException(
                 ".breakid 局部不能作值引用: " + local.Name),
             ParameterSymbol parameter => Origin is BoundExpression boundExpression

@@ -32,6 +32,10 @@ namespace RigiCompiler
             var constantResource = constant.Value is bool boolValue
                 ? EmittingFacility.RegisterScalarResource(BilScalarType.Bool,
                     boolValue ? "true" : "false", env)
+                : constant.Value is int intValue
+                    // Stage B：route tag / 0 初始化常量（StructuredExitRouting）
+                    ? EmittingFacility.RegisterScalarResource(BilScalarType.I32,
+                        intValue.ToString(System.Globalization.CultureInfo.InvariantCulture), env)
                 : constant.Value is null
                     ? EmittingFacility.RegisterNullResource(constant.Type,
                         constant.Origin.Syntax.Span, env)

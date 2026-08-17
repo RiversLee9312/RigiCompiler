@@ -23,16 +23,17 @@ namespace RigiCompiler.Tests
     ///   EnumCase(RequestResult.Success, [])  EnumCase(RequestResult.Failed, [args])（S11）
     /// 格式约定（语句）：
     ///   Decl(x, i32, = init)  ExprStmt(e)  CallStmt(name, [args])  Assign(t, v)  Return(v)  Return
-    ///   If(c, [真], [假])  If(c, [真])
+    ///   If(c, [真], [假], .bN)  If(c, [真], .bN)
     ///   Loop([judge], .s0, [body], .b0)（do-while 带 rev 标记：Loop(rev, ...)）
-    ///   Break(.b0)  Continue(.b0)（breakid 取目标循环的合成 .breakid 局部名）
+    ///   Break(.b0)  Continue(.b0)（breakid 取目标循环/region 的合成 .breakid 局部名）
+    ///   StructuredExit(@label, v?)（Stage B：return@ 标记，routing 后不得残留）
     ///   InstCallStmt(name, receiver, [args])（void 实例调用语句，S7c-2）
     ///   Switch(sel, [Case(v, [体]); ...], [default], .b0)（S7d，全值匹配形态）
     ///   Throw(e)（S7d）
-    ///   Try([try], [Catch(e, T, [体]); Catch(T, [体])], Finally([体]), slot)（S7e；
+    ///   Try([try], [Catch(e, T, [体]); Catch(T, [体])], Finally([体]), slot, .bN)（S7e；
     ///   无变量 catch 省变量名，无 finally 省第三参；slot 恒显式——合成 .sN 或
-    ///   finally 变量名）
-    ///   Seq([体])  SeqVolatile([体])（S7e 两形态汇合）
+    ///   finally 变量名；breakid 为 §16.5 推广的合成 .breakid 局部，恒显式）
+    ///   Seq([体], .bN)  SeqVolatile([体], .bN)（S7e 两形态汇合）
     ///   块：[s1; s2]；函数体：Body(name, [x: i32, ...], [块])
     /// </summary>
     public static class LoweredDescribe
@@ -68,22 +69,31 @@ namespace RigiCompiler.Tests
                     ret.Value != null ? $"Return({Expr(ret.Value)})" : "Return",
                 LoweredIfStatement ifStmt => ifStmt.FalseBlock != null
                     ? $"If({Expr(ifStmt.Condition)}, {Block(ifStmt.TrueBlock)}, " +
-                        $"{Block(ifStmt.FalseBlock)})"
-                    : $"If({Expr(ifStmt.Condition)}, {Block(ifStmt.TrueBlock)})",
+                        $"{Block(ifStmt.FalseBlock)}, {ifStmt.BreakId.Name})"
+                    : $"If({Expr(ifStmt.Condition)}, {Block(ifStmt.TrueBlock)}, " +
+                        $"{ifStmt.BreakId.Name})",
                 LoweredLoop loop =>
                     $"Loop({(loop.IsRev ? "rev, " : "")}{Block(loop.Judge)}, " +
                     $"{loop.Condition.Name}, {Block(loop.Body)}, {loop.BreakId.Name})",
-                LoweredLoopControl loopControl =>
-                    $"{(loopControl.IsBreak ? "Break" : "Continue")}({loopControl.BreakId.Name})",
+                LoweredBreakStatement breakStatement => $"Break({breakStatement.BreakId.Name})",
+                LoweredContinueStatement continueStatement =>
+                    $"Continue({continueStatement.BreakId.Name})",
                 LoweredSwitch switchStmt =>
                     $"Switch({Expr(switchStmt.Selector)}, [{string.Join("; ", switchStmt.Cases.Select(c => $"Case({Expr(c.Value)}, {Block(c.Body)})"))}], {Block(switchStmt.DefaultBody)}, {switchStmt.BreakId.Name})",
                 LoweredThrowStatement throwStmt => $"Throw({Expr(throwStmt.Exception)})",
                 LoweredTryStatement tryStmt => Try(tryStmt),
                 LoweredSeqBlock seqBlock =>
-                    $"{(seqBlock.IsVolatile ? "SeqVolatile" : "Seq")}({Block(seqBlock.Body)})",
-                // M61：return@语句seq 标记（编织后命中本层者被消费删除——
-                // 仅传播中的外层目标可见）
-                LoweredSeqExitStatement seqExit => $"SeqExit(@{seqExit.Target.Label})",
+                    $"{(seqBlock.IsVolatile ? "SeqVolatile" : "Seq")}({Block(seqBlock.Body)}, " +
+                    $"{seqBlock.BreakId.Name})",
+                // Stage B：source-level exit 标记（调试兜底——
+                // StructuredExitRouting pass 后不得残留；硬不变量测试
+                // 断言快照全文不含本串）
+                LoweredStructuredExit exit => $"StructuredExit(@{exit.Target switch
+                {
+                    BoundValueBlock valueBlock => valueBlock.Label,
+                    BoundSeqStatement seq => seq.Label ?? "<unnamed>",
+                    _ => "<unknown>",
+                }}{(exit.Value != null ? ", " + Expr(exit.Value) : "")})",
                 LoweredNewWrapperStatement nw =>
                     $"NewWrapper({nw.Kind}, {nw.WrapperType.Name}" +
                     $"{(nw.Target != null ? ", " + nw.Target.Name : "")}, " +
@@ -92,8 +102,8 @@ namespace RigiCompiler.Tests
             };
         }
 
-        // try：Try([try], [Catch(e, T, [体]); Catch(T, [体])], Finally([体]), slot)；
-        // 无变量 catch 省变量名，无 finally 省第三参，slot 恒显式（S7e）
+        // try：Try([try], [Catch(e, T, [体]); Catch(T, [体])], Finally([体]), slot, .bN)；
+        // 无变量 catch 省变量名，无 finally 省第三参，slot/breakid 恒显式（S7e）
         private static string Try(LoweredTryStatement tryStmt)
         {
             var catches = string.Join("; ", tryStmt.Catches.Select(c =>
@@ -104,7 +114,7 @@ namespace RigiCompiler.Tests
                 ? $", Finally({Block(tryStmt.FinallyBlock)})"
                 : "";
             return $"Try({Block(tryStmt.TryBlock)}, [{catches}]{finallyPart}, " +
-                $"{tryStmt.ExceptionSlot.Name})";
+                $"{tryStmt.ExceptionSlot.Name}, {tryStmt.BreakId.Name})";
         }
 
         public static string Expr(LoweredExpression? expr)
@@ -113,10 +123,12 @@ namespace RigiCompiler.Tests
             {
                 null => "<null>",
                 LoweredLiteralExpression literal => Literal(literal),
-                // P4a 合成常量（S7b bool；S7f null——安全访问/空值回退脱糖产物）
+                // P4a 合成常量（S7b bool；S7f null——安全访问/空值回退脱糖产物；
+                // Stage B int——StructuredExitRouting 的 route tag / 0 初始化）
                 LoweredConstantExpression constant => constant.Value switch
                 {
                     bool b => $"Const({b},{TypeShort.Of(constant.Type)})",
+                    int i => $"Const({i},{TypeShort.Of(constant.Type)})",
                     null => $"Const(null,{TypeShort.Of(constant.Type)})",
                     var other => $"<Const {other}>",
                 },

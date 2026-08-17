@@ -29,13 +29,13 @@ namespace RigiCompiler.Tests
                 "#0 = string \"\\n\"\n#1 = bool false\n#2 = i32 1\n" +
                 "#3 = bool true\n#4 = i32 0\n#5 = i32 2");
             BilTestHarness.CheckFnShape("if 语句多 block 文本", module, "$main()@.i32",
-                ".vars { .i32 x, .i32 .t0, .i32 .t1, .bool .t2, .i32 .t3, .i32 .t4 }\n" +
+                ".vars { .i32 x, .breakid .b0, .i32 .t0, .i32 .t1, .bool .t2, .i32 .t3, .i32 .t4 }\n" +
                 ".block entry entrypoint {\n" +
                 "load res(#0) $.t0\n" +
                 "set.var $.t0 $x\n" +
                 "load res(#0) $.t1\n" +
                 "cmp.eq $x $.t1 $.t2\n" +
-                "if $.t2 blk(if0-then) blk(if0-else)\n" +
+                "if $.t2 blk(if0-then) blk(if0-else) $.b0\n" +
                 "ret $x\n" +
                 "}\n" +
                 ".block if0-then {\n" +
@@ -64,7 +64,7 @@ namespace RigiCompiler.Tests
             var ifInstruction = module2.Functions.Single(f => f.Symbol == "$main()@.i32").Blocks
                 .SelectMany(b => b.Instructions).Single(i => i is IfInstruction);
             TestHarness.CheckTrue("无 else 用 none 操作数",
-                ifInstruction.Operands.Count == 3
+                ifInstruction.Operands.Count == 4
                 && ifInstruction.Operands[2] is BilNoneOperand
                 && ifInstruction.Operands[1].Render() == "blk(if0-then)");
             TestHarness.CheckTrue("无 else 不产 else block",
@@ -89,24 +89,26 @@ namespace RigiCompiler.Tests
                 "#0 = string \"\\n\"\n#1 = bool false\n#2 = i32 1\n" +
                 "#3 = bool true\n#4 = i32 0\n#5 = i32 2");
             BilTestHarness.CheckFnShape("if 表达式多 block 文本", module, "$main()@.i32",
-                ".vars { .i32 x, .i32 r, .i32 .s0, .i32 .t0, .i32 .t1, .bool .t2, " +
+                ".vars { .i32 x, .i32 r, .i32 .s0, .breakid .b0, .i32 .t0, .i32 .t1, .bool .t2, " +
                 ".i32 .t3, .i32 .t4 }\n" +
                 ".block entry entrypoint {\n" +
                 "load res(#0) $.t0\n" +
                 "set.var $.t0 $x\n" +
                 "load res(#1) $.t1\n" +
                 "cmp.gt $x $.t1 $.t2\n" +
-                "if $.t2 blk(if0-then) blk(if0-else)\n" +
+                "if $.t2 blk(if0-then) blk(if0-else) $.b0\n" +
                 "set.var $.s0 $r\n" +
                 "ret $r\n" +
                 "}\n" +
                 ".block if0-then {\n" +
                 "load res(#0) $.t3\n" +
                 "set.var $.t3 $.s0\n" +
+                "break $.b0\n" +
                 "}\n" +
                 ".block if0-else {\n" +
                 "load res(#2) $.t4\n" +
                 "set.var $.t4 $.s0\n" +
+                "break $.b0\n" +
                 "}\n");
         }
 
@@ -136,16 +138,17 @@ namespace RigiCompiler.Tests
                 "#0 = string \"\\n\"\n#1 = bool false\n#2 = i32 1\n" +
                 "#3 = bool true\n#4 = i32 0");
             BilTestHarness.CheckFnShape("短路 and/or 多 block 文本", module, "$main()@.i32",
-                ".vars { .bool a, .bool b, .bool c, .bool d, .bool .s0, .bool .s1, " +
+                ".vars { .bool a, .bool b, .bool c, .bool d, .bool .s0, .breakid .b0, " +
+                ".bool .s1, .breakid .b1, " +
                 ".bool .t0, .bool .t1, .bool .t2, .bool .t3, .i32 .t4 }\n" +
                 ".block entry entrypoint {\n" +
                 "load res(#0) $.t0\n" +
                 "set.var $.t0 $a\n" +
                 "load res(#1) $.t1\n" +
                 "set.var $.t1 $b\n" +
-                "if $a blk(if0-then) blk(if0-else)\n" +
+                "if $a blk(if0-then) blk(if0-else) $.b0\n" +
                 "set.var $.s0 $c\n" +
-                "if $a blk(if1-then) blk(if1-else)\n" +
+                "if $a blk(if1-then) blk(if1-else) $.b1\n" +
                 "set.var $.s1 $d\n" +
                 "load res(#2) $.t4\n" +
                 "ret $.t4\n" +
@@ -260,8 +263,8 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("continue → $.b1（内层 breakid）",
                 continueInstruction.Operands.Count == 1
                 && continueInstruction.Operands[0].Render() == "$.b1");
-            TestHarness.CheckTrue(".vars 含两个 .breakid 条目",
-                nestedFn.Vars.Count(v => v.TypeRef == ".breakid") == 2);
+            TestHarness.CheckTrue(".vars 含三个 .breakid 条目（双循环 + if）",
+                nestedFn.Vars.Count(v => v.TypeRef == ".breakid") == 3);
             TestHarness.CheckTrue("嵌套循环 block id 递增（loop0/loop1）",
                 nestedFn.Blocks.Any(b => b.Id == "loop1-body")
                 && nestedFn.Blocks.Any(b => b.Id == "loop1-judge"));
@@ -425,27 +428,48 @@ namespace RigiCompiler.Tests
                 && main.Blocks.SelectMany(b => b.Instructions).Any(i => i is IfInstruction));
             TestHarness.CheckTrue("无 switch-table 资源",
                 module.Resources.All(r => r is not BilSwitchTableResource));
-            // selector 物化一次（.s1），pattern 条件引用它而非重复求值
+            // selector 物化一次（.s1），pattern 条件引用它而非重复求值；
+            // Stage B：if 链外包 seq region（.b0）承载 switch 表达式
+            // breakId，分支 return@_ 展开为「写结果 + 写 route + break
+            // if region」，seq 尾 dispatcher relay 出 region
             BilTestHarness.CheckFnShape("pattern 链多 block 文本", module, "$main()@.i32",
-                ".vars { .i32 x, .i32 label, .i32 .s0, .i32 .s1, .i32 .t0, .i32 .t1, " +
-                ".bool .t2, .i32 .t3, .i32 .t4 }\n" +
+                ".vars { .i32 x, .i32 label, .i32 .s0, .breakid .b0, .i32 .s1, .breakid .b1, " +
+                ".i32 .s2, .breakid .b2, .i32 .t0, .i32 .t1, .i32 .t2, .bool .t3, .i32 .t4, " +
+                ".i32 .t5, .i32 .t6, .i32 .t7, .i32 .t8, .bool .t9 }\n" +
                 ".block entry entrypoint {\n" +
                 "load res(#0) $.t0\n" +
                 "set.var $.t0 $x\n" +
                 "set.var $x $.s1\n" +
-                "load res(#1) $.t1\n" +
-                "cmp.gt $.s1 $.t1 $.t2\n" +
-                "if $.t2 blk(if0-then) blk(if0-else)\n" +
+                "call blk(seq0) $.b0\n" +
                 "set.var $.s0 $label\n" +
                 "ret $label\n" +
                 "}\n" +
-                ".block if0-then {\n" +
-                "load res(#2) $.t3\n" +
-                "set.var $.t3 $.s0\n" +
+                ".block seq0 {\n" +
+                "load res(#1) $.t1\n" +
+                "set.var $.t1 $.s2\n" +
+                "load res(#2) $.t2\n" +
+                "cmp.gt $.s1 $.t2 $.t3\n" +
+                "if $.t3 blk(if0-then) blk(if0-else) $.b1\n" +
+                "load res(#3) $.t8\n" +
+                "cmp.eq $.s2 $.t8 $.t9\n" +
+                "if $.t9 blk(if1-then) none $.b2\n" +
                 "}\n" +
-                ".block if0-else {\n" +
+                ".block if0-then {\n" +
                 "load res(#3) $.t4\n" +
                 "set.var $.t4 $.s0\n" +
+                "load res(#3) $.t5\n" +
+                "set.var $.t5 $.s2\n" +
+                "break $.b1\n" +
+                "}\n" +
+                ".block if0-else {\n" +
+                "load res(#1) $.t6\n" +
+                "set.var $.t6 $.s0\n" +
+                "load res(#3) $.t7\n" +
+                "set.var $.t7 $.s2\n" +
+                "break $.b1\n" +
+                "}\n" +
+                ".block if1-then {\n" +
+                "break $.b0\n" +
                 "}\n");
         }
 

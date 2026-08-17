@@ -312,16 +312,24 @@ namespace RigiCompiler.Tests
             AssertLambdaClass(module, "块体", "core::Func<.i32>", hasCaptureField: true,
                 captureTypeFragment: "..cell..");
             var callFn = module.Functions.First(f => f.Symbol.Contains("$$call"));
+            // Stage B：$$call 值块体包 LoweredSeqBlock（region breakId
+            // 承载 return@ 目标），entry 仅 call + ret
             BilTestHarness.CheckFnShape("块体 lambda $$call 含 ret（值块降级）", module,
                 callFn.Symbol,
-                ".vars { .i32 d, .i32 .s0, ..cell..UUID .t0, .i32 .t1, .i32 .t2, .i32 .t3 }\n" +
+                ".vars { .i32 d, .i32 .s0, .breakid .b0, ..cell..UUID .t0, .i32 .t1, .i32 .t2, .i32 .t3 }\n" +
+                ".block entry entrypoint {\n" +
+                "call blk(seq0) $.b0\n" +
+                "ret $.s0\n" +
+                "}\n" +
+                ".block seq0 {\n" +
                 "get.field $.this $.t0 field(..lambda..UUID#.capture.x@..cell..UUID)\n" +
                 "invoke fn(core::Cell$getValue()@.generic<$.generic.T>) $.t1 [$.t0]\n" +
                 "load res(#0) $.t2\n" +
                 "mul $.t1 $.t2 $.t3\n" +
                 "set.var $.t3 $d\n" +
                 "set.var $d $.s0\n" +
-                "ret $.s0\n");
+                "break $.b0\n" +
+                "}\n");
         }
 
         // 复合赋值捕获写回：getValue → 运算 → setValue（.s0 承载运算结果）

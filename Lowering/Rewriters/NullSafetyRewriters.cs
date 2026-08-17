@@ -63,7 +63,7 @@ namespace RigiCompiler
             }
             if (access == null) return null;
             ctx.Output.Add(new LoweredIfStatement(safeAccess, condition,
-                new LoweredBlock(safeAccess, thenStatements), null));
+                new LoweredBlock(safeAccess, thenStatements), null, ctx.Synth.NewBreakIdLocal()));
             return SynthLocalFactory.ReferenceTo(safeAccess, result);
         }
     }
@@ -121,7 +121,7 @@ namespace RigiCompiler
                 nullFallback.Right, result, ctx, env);
             if (elseBlock == null) return null;
             ctx.Output.Add(new LoweredIfStatement(nullFallback, condition,
-                thenBlock, elseBlock));
+                thenBlock, elseBlock, ctx.Synth.NewBreakIdLocal()));
             return SynthLocalFactory.ReferenceTo(nullFallback, result);
         }
     }

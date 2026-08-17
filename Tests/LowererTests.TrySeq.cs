@@ -1,10 +1,11 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Linq;
 
 namespace RigiCompiler.Tests
 {
     // LowererTests try/seq 组：try-catch-finally 降级、seq 语句/表达式
-    // 双形态、值块编织扩展（seq 透明 / try 规则 / finally 拦截）。
+    // 双形态、Stage B route 展开（return@ 标记 → route local + break /
+    // dispatcher relay）。
 
     public static partial class LowererTests
     {
@@ -27,11 +28,11 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("无诊断（try-catch）", unit);
             TestHarness.Check("有名 catch 合成 cast", LoweredDescribe.Body(BodyOf(lowered, "f")),
-                "Body(f, [e: MyException, .s0: Exception?], " +
+                "Body(f, [e: MyException, .s0: Exception?, .b0: .breakid], " +
                 "[Try([Throw(New(MyException, []))], " +
                 "[Catch(e, MyException, [Assign(Local(e,MyException), " +
                 "Cast(Local(.s0,Exception?), MyException, MyException)); " +
-                "CallStmt(handle, [Local(e,MyException)])])], .s0)])");
+                "CallStmt(handle, [Local(e,MyException)])])], .s0, .b0)])");
             var tryStmt = (LoweredTryStatement)BodyOf(lowered, "f").Body.Statements[0];
             TestHarness.CheckTrue("slot 类型 Nullable<Exception>",
                 tryStmt.ExceptionSlot.Type!.Name == "Nullable");
@@ -55,8 +56,8 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("无诊断（finally(e)）", unit2);
             TestHarness.Check("finally 变量即 slot", LoweredDescribe.Body(BodyOf(lowered2, "h")),
-                "Body(h, [e: Exception?], [Try([CallStmt(log, [])], [], " +
-                "Finally([CallStmt(log, [])]), e)])");
+                "Body(h, [e: Exception?, .b0: .breakid], [Try([CallStmt(log, [])], [], " +
+                "Finally([CallStmt(log, [])]), e, .b0)])");
 
             // _: 无变量 catch——体头无合成 cast
             var (unit3, _, lowered3) = LowerUnit(
@@ -74,8 +75,8 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("无诊断（_: catch）", unit3);
             TestHarness.Check("_: catch 无合成 cast", LoweredDescribe.Body(BodyOf(lowered3, "g")),
-                "Body(g, [.s0: Exception?], [Try([CallStmt(log, [])], " +
-                "[Catch(MyException, [CallStmt(log, [])])], .s0)])");
+                "Body(g, [.s0: Exception?, .b0: .breakid], [Try([CallStmt(log, [])], " +
+                "[Catch(MyException, [CallStmt(log, [])])], .s0, .b0)])");
         }
 
         // ===== seq 降级（S7e，BIL §3.4 call 化）=====
@@ -90,7 +91,7 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("无诊断（seq 语句）", unit);
             TestHarness.Check("seq 语句降级", LoweredDescribe.Body(BodyOf(lowered, "s")),
-                "Body(s, [x: i32], [Seq([Decl(x, i32, = Int(1,i32))])])");
+                "Body(s, [x: i32, .b0: .breakid], [Seq([Decl(x, i32, = Int(1,i32))], .b0)])");
 
             // volatile 语句形态
             var (unit2, _, lowered2) = LowerUnit(
@@ -103,7 +104,7 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("无诊断（volatile seq）", unit2);
             TestHarness.Check("volatile seq 降级", LoweredDescribe.Body(BodyOf(lowered2, "s2")),
-                "Body(s2, [], [SeqVolatile([CallStmt(work, [])])])");
+                "Body(s2, [.b0: .breakid], [SeqVolatile([CallStmt(work, [])], .b0)])");
 
             // 表达式形态脱糖：合成结果局部 + 前置 seq 块（值块降级写结果局部）
             var (unit3, _, lowered3) = LowerUnit(
@@ -112,8 +113,8 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("无诊断（seq 表达式）", unit3);
             TestHarness.Check("seq 表达式脱糖", LoweredDescribe.Body(BodyOf(lowered3, "se")),
-                "Body(se, [.s0: i32], [Seq([Assign(Local(.s0,i32), Int(42,i32))]); " +
-                "Return(Local(.s0,i32))])");
+                "Body(se, [.s0: i32, .b0: .breakid], [Seq([Assign(Local(.s0,i32), Int(42,i32)); " +
+                "Break(.b0)], .b0); Return(Local(.s0,i32))])");
 
             // volatile 表达式形态
             var (unit4, _, lowered4) = LowerUnit(
@@ -123,11 +124,13 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断（volatile seq 表达式）", unit4);
             TestHarness.Check("volatile seq 表达式脱糖",
                 LoweredDescribe.Body(BodyOf(lowered4, "sv")),
-                "Body(sv, [.s0: i32], [SeqVolatile([Assign(Local(.s0,i32), Int(1,i32))]); " +
+                "Body(sv, [.s0: i32, .b0: .breakid], [SeqVolatile([Assign(Local(.s0,i32), Int(1,i32))], .b0); " +
                 "Return(Local(.s0,i32))])");
 
-            // return@语句seq（M61）：命中本层消费——then 分支 exit 删除，
-            // 其后语句 x = 99 织入 else
+            // return@语句seq（M61；Stage B route 形态）：跨 region exit
+            // （if → seq）写 route 局部后 break if region，if 后
+            // dispatcher relay（route==1 → break seq region），
+            // 其后语句 x = 99 静死保留原位（break 后不可达）
             var (unit5, _, lowered5) = LowerUnit(
                 "func f(x: i32): i32 {\n" +
                 "    seq named outer {\n" +
@@ -138,14 +141,18 @@ namespace RigiCompiler.Tests
                 "    return x\n" +
                 "}\n");
             CheckNoErrors("无诊断（return@语句seq 降级）", unit5);
-            TestHarness.Check("return@outer 编织（x=99 织入 else）",
+            TestHarness.Check("return@outer route 展开（x=99 静死保留）",
                 LoweredDescribe.Body(BodyOf(lowered5, "f")),
-                "Body(f, [], [Seq([Assign(Param(x,i32), Int(1,i32)); " +
-                "If(Binary(CmpGt, Param(x,i32), Int(0,i32), bool), [], " +
-                "[Assign(Param(x,i32), Int(99,i32))])]); Return(Param(x,i32))])");
+                "Body(f, [.b0: .breakid, .b1: .breakid, .s0: i32, .b2: .breakid], " +
+                "[Seq([Assign(Param(x,i32), Int(1,i32)); Assign(Local(.s0,i32), Const(0,i32)); " +
+                "If(Binary(CmpGt, Param(x,i32), Int(0,i32), bool), " +
+                "[Assign(Local(.s0,i32), Const(1,i32)); Break(.b1)], .b1); " +
+                "If(Binary(CmpEq, Local(.s0,i32), Const(1,i32), bool), [Break(.b0)], .b2); " +
+                "Assign(Param(x,i32), Int(99,i32))], .b0); Return(Param(x,i32))])");
 
-            // 嵌套无名 seq 传播（M61）：内层 exit 目标外层——内层截断
-            // x = 5 并传播，外层消费并截断 x = 9
+            // 嵌套无名 seq 传播（M61；Stage B）：内层 exit 目标外层——
+            // 内层 seq 与外层各一条 route/dispatcher 链 relay；
+            // x = 5 / x = 9 均为静死保留
             var (unit6, _, lowered6) = LowerUnit(
                 "func g(x: i32): i32 {\n" +
                 "    seq named outer {\n" +
@@ -158,11 +165,19 @@ namespace RigiCompiler.Tests
                 "    return x\n" +
                 "}\n");
             CheckNoErrors("无诊断（嵌套 seq exit 传播）", unit6);
-            TestHarness.Check("exit 穿透无名内层 seq（两级截断）",
+            TestHarness.Check("exit 穿透无名内层 seq（两级 relay）",
                 LoweredDescribe.Body(BodyOf(lowered6, "g")),
-                "Body(g, [], [Seq([Seq([If(Binary(CmpGt, Param(x,i32), Int(0,i32), bool), [], " +
-                "[Assign(Param(x,i32), Int(5,i32)); Assign(Param(x,i32), Int(9,i32))])])]); " +
-                "Return(Param(x,i32))])");
+                "Body(g, [.b0: .breakid, .b1: .breakid, .b2: .breakid, .s0: i32, .s1: i32, " +
+                ".b3: .breakid, .b4: .breakid], " +
+                "[Seq([Assign(Local(.s1,i32), Const(0,i32)); " +
+                "Seq([Assign(Local(.s0,i32), Const(0,i32)); " +
+                "If(Binary(CmpGt, Param(x,i32), Int(0,i32), bool), " +
+                "[Assign(Local(.s0,i32), Const(1,i32)); Break(.b2)], .b2); " +
+                "If(Binary(CmpEq, Local(.s0,i32), Const(1,i32), bool), " +
+                "[Assign(Local(.s1,i32), Const(1,i32)); Break(.b1)], .b3); " +
+                "Assign(Param(x,i32), Int(5,i32))], .b1); " +
+                "If(Binary(CmpEq, Local(.s1,i32), Const(1,i32), bool), [Break(.b0)], .b4); " +
+                "Assign(Param(x,i32), Int(9,i32))], .b0); Return(Param(x,i32))])");
         }
 
         // ===== using 降级（S10：初始化顺序 + nested try/finally）=====
@@ -180,8 +195,10 @@ namespace RigiCompiler.Tests
             CheckNoErrors("using 单资源降级无诊断", unit);
             TestHarness.Check("using 单资源 nested try/finally",
                 LoweredDescribe.Body(BodyOf(lowered, "single")),
-                "Body(single, [r: Resource, .s0: Exception?], [Seq([Decl(r, Resource, = Call(acquire, [], Resource)); " +
-                "Try([[CallStmt(use, [Local(r,Resource)])]], [], Finally([InstCallStmt(dispose, Local(r,Resource), [])]), .s0)])])");
+                "Body(single, [r: Resource, .b0: .breakid, .s0: Exception?, .b1: .breakid], " +
+                "[Seq([Decl(r, Resource, = Call(acquire, [], Resource)); " +
+                "Try([[CallStmt(use, [Local(r,Resource)])]], [], " +
+                "Finally([InstCallStmt(dispose, Local(r,Resource), [])]), .s0, .b1)], .b0)])");
 
             var (unit2, _, lowered2) = LowerUnitWithStdlib(
                 "class Resource2 implements core.IDisposable {\n" +
@@ -220,20 +237,31 @@ namespace RigiCompiler.Tests
             CheckNoErrors("表达式 using 降级无诊断", unit3);
             var exprBody = BodyOf(lowered3, "exprUsing");
             var exprSeq = (LoweredSeqBlock)exprBody.Body.Statements[0];
-            var exprOuter = (LoweredTryStatement)exprSeq.Body.Statements[1];
+            // Stage B route 形态：return@_ 穿两层 using try/finally——
+            // 每层 try region 各一条 route 局部（进入前初始化 0）+
+            // region 后 dispatcher relay；dispose finally 在 relay 前执行
+            var exprOuter = (LoweredTryStatement)exprSeq.Body.Statements[2];
             var exprInnerBody = (LoweredBlock)exprOuter.TryBlock.Statements[0];
-            var exprInner = (LoweredTryStatement)exprInnerBody.Statements[1];
+            var exprInner = (LoweredTryStatement)exprInnerBody.Statements[2];
             TestHarness.Check("表达式 using 完整 Lowered 形状", LoweredDescribe.Body(exprBody),
-                "Body(exprUsing, [a: ExprResource, b: ExprResource, .s0: ExprResource, .s1: Exception?, .s2: Exception?], " +
+                "Body(exprUsing, [a: ExprResource, b: ExprResource, .s0: ExprResource, .b0: .breakid, " +
+                ".s1: Exception?, .b1: .breakid, .s2: Exception?, .b2: .breakid, .s3: i32, .s4: i32, " +
+                ".b3: .breakid, .b4: .breakid], " +
                 "[Seq([Decl(a, ExprResource, = Call(acquireExpr, [], ExprResource)); " +
+                "Assign(Local(.s4,i32), Const(0,i32)); " +
                 "Try([[Decl(b, ExprResource, = Local(a,ExprResource)); " +
-                "Try([[Assign(Local(.s0,ExprResource), Local(b,ExprResource))]], [], " +
-                "Finally([InstCallStmt(dispose, Local(b,ExprResource), [])]), .s1)]], [], " +
-                "Finally([InstCallStmt(dispose, Local(a,ExprResource), [])]), .s2)]); " +
+                "Assign(Local(.s3,i32), Const(0,i32)); " +
+                "Try([[Assign(Local(.s0,ExprResource), Local(b,ExprResource)); " +
+                "Assign(Local(.s3,i32), Const(1,i32)); Break(.b1)]], [], " +
+                "Finally([InstCallStmt(dispose, Local(b,ExprResource), [])]), .s1, .b1); " +
+                "If(Binary(CmpEq, Local(.s3,i32), Const(1,i32), bool), " +
+                "[Assign(Local(.s4,i32), Const(1,i32)); Break(.b2)], .b3)]], [], " +
+                "Finally([InstCallStmt(dispose, Local(a,ExprResource), [])]), .s2, .b2); " +
+                "If(Binary(CmpEq, Local(.s4,i32), Const(1,i32), bool), [Break(.b0)], .b4)], .b0); " +
                 "Return(Local(.s0,ExprResource))])");
             TestHarness.CheckTrue("表达式 using 结果局部来自值块",
                 exprInner.TryBlock.Statements[0] is LoweredBlock
-                && exprSeq.Body.Statements.Count == 2
+                && exprSeq.Body.Statements.Count == 4
                 && exprBody.Body.Statements[1] is LoweredReturnStatement);
             TestHarness.CheckTrue("表达式 using dispose 逆序",
                 ((LoweredValueReferenceExpression)((LoweredCallStatement)
@@ -242,10 +270,13 @@ namespace RigiCompiler.Tests
                     exprOuter.FinallyBlock!.Statements[0]).Receiver!).Symbol.Name == "a");
         }
 
-        // ===== 值块编织扩展（S7e：seq 透明 / try 规则 / finally 拦截）=====
+        // ===== Stage B route 展开（StructuredExitRouting）=====
+        // 旧 continuation 编织（S7e）用例全部改写为 route 形态快照；
+        // 原「try-finally 部分终止 P4 拦截」负例转为正例（新机制天然支持）
         private static void TestTryWeaving()
         {
-            // seq 与 LoweredBlock 同构透明：continuation 织入体内 if 的 else
+            // seq 透明：内层 seq 不注册（无名），exit 目标外层值块——
+            // if → 内层 seq → 外层 seq 两级 relay
             var (unit, _, lowered) = LowerUnit(
                 "func f(c: bool): i32 {\n" +
                 "    return seq {\n" +
@@ -255,13 +286,13 @@ namespace RigiCompiler.Tests
                 "        return@_ 2\n" +
                 "    }\n" +
                 "}\n");
-            CheckNoErrors("无诊断（seq 编织）", unit);
-            TestHarness.Check("seq 透明编织", LoweredDescribe.Body(BodyOf(lowered, "f")),
-                "Body(f, [.s0: i32], [Seq([Seq([If(Param(c,bool), " +
-                "[Assign(Local(.s0,i32), Int(1,i32))], " +
-                "[Assign(Local(.s0,i32), Int(2,i32))])])]); Return(Local(.s0,i32))])");
+            CheckNoErrors("无诊断（seq route）", unit);
+            var described = LoweredDescribe.Body(BodyOf(lowered, "f"));
+            TestHarness.Check("seq 两级 relay", described, "Body(f, [.s0: i32, .b0: .breakid, .b1: .breakid, .b2: .breakid, .s1: i32, .s2: i32, .b3: .breakid, .b4: .breakid], [Seq([Assign(Local(.s2,i32), Const(0,i32)); Seq([Assign(Local(.s1,i32), Const(0,i32)); If(Param(c,bool), [Assign(Local(.s0,i32), Int(1,i32)); Assign(Local(.s1,i32), Const(1,i32)); Break(.b2)], .b2); If(Binary(CmpEq, Local(.s1,i32), Const(1,i32), bool), [Assign(Local(.s2,i32), Const(1,i32)); Break(.b1)], .b3)], .b1); If(Binary(CmpEq, Local(.s2,i32), Const(1,i32), bool), [Break(.b0)], .b4); Assign(Local(.s0,i32), Int(2,i32)); Break(.b0)], .b0); Return(Local(.s0,i32))])");
+            TestHarness.CheckTrue("routing 后无 StructuredExit 残留",
+                !described.Contains("StructuredExit"), described);
 
-            // try 无 finally：同 if 规则编织（continuation 织入不终止分支末端）
+            // try 无 finally：exit 穿 try region（if → try → seq 两级 relay）
             var (unit2, _, lowered2) = LowerUnit(
                 "func g(c: bool): i32 {\n" +
                 "    return seq {\n" +
@@ -272,15 +303,14 @@ namespace RigiCompiler.Tests
                 "        return@_ 2\n" +
                 "    }\n" +
                 "}\n");
-            CheckNoErrors("无诊断（try 编织）", unit2);
-            TestHarness.Check("try 无 finally 编织", LoweredDescribe.Body(BodyOf(lowered2, "g")),
-                "Body(g, [.s0: i32, .s1: Exception?], [Seq([Try(" +
-                "[If(Param(c,bool), [Assign(Local(.s0,i32), Int(1,i32))], " +
-                "[Assign(Local(.s0,i32), Int(2,i32))])], " +
-                "[Catch(Exception, [Assign(Local(.s0,i32), Int(2,i32))])], .s1)]); " +
-                "Return(Local(.s0,i32))])");
+            CheckNoErrors("无诊断（try route）", unit2);
+            var described2 = LoweredDescribe.Body(BodyOf(lowered2, "g"));
+            TestHarness.Check("try 无 finally route", described2, "Body(g, [.s0: i32, .b0: .breakid, .s1: Exception?, .b1: .breakid, .b2: .breakid, .s2: i32, .s3: i32, .b3: .breakid, .b4: .breakid], [Seq([Assign(Local(.s3,i32), Const(0,i32)); Try([Assign(Local(.s2,i32), Const(0,i32)); If(Param(c,bool), [Assign(Local(.s0,i32), Int(1,i32)); Assign(Local(.s2,i32), Const(1,i32)); Break(.b1)], .b1); If(Binary(CmpEq, Local(.s2,i32), Const(1,i32), bool), [Assign(Local(.s3,i32), Const(1,i32)); Break(.b2)], .b3)], [Catch(Exception, [])], .s1, .b2); If(Binary(CmpEq, Local(.s3,i32), Const(1,i32), bool), [Break(.b0)], .b4); Assign(Local(.s0,i32), Int(2,i32)); Break(.b0)], .b0); Return(Local(.s0,i32))])");
+            TestHarness.CheckTrue("routing 后无 StructuredExit 残留（try）",
+                !described2.Contains("StructuredExit"), described2);
 
-            // finally 自身终止（值块写入）：continuation 全丢弃
+            // finally 自身含 return@（终止覆盖）：finally 与 try 同 region，
+            // route 局部覆写——其后 return@_ 2 静死保留
             var (unit3, _, lowered3) = LowerUnit(
                 "func h(): i32 {\n" +
                 "    return seq {\n" +
@@ -293,18 +323,14 @@ namespace RigiCompiler.Tests
                 "        return@_ 2\n" +
                 "    }\n" +
                 "}\n");
-            CheckNoErrors("无诊断（finally 终止覆盖）", unit3);
-            TestHarness.Check("finally 终止丢弃 continuation",
-                LoweredDescribe.Body(BodyOf(lowered3, "h")),
-                "Body(h, [dummy: i32, f: Exception?, .s0: i32], [Seq(" +
-                "[Decl(dummy, i32, = Int(0,i32)); " +
-                "Try([Assign(Local(dummy,i32), Int(1,i32))], [], " +
-                "Finally([Assign(Local(.s0,i32), Int(3,i32))]), f)]); " +
-                "Return(Local(.s0,i32))])");
+            CheckNoErrors("无诊断（finally 覆盖）", unit3);
+            TestHarness.Check("finally 内 return@ route",
+                LoweredDescribe.Body(BodyOf(lowered3, "h")), "Body(h, [dummy: i32, f: Exception?, .s0: i32, .b0: .breakid, .b1: .breakid, .s1: i32, .b2: .breakid], [Seq([Decl(dummy, i32, = Int(0,i32)); Assign(Local(.s1,i32), Const(0,i32)); Try([Assign(Local(dummy,i32), Int(1,i32))], [], Finally([Assign(Local(.s0,i32), Int(3,i32)); Assign(Local(.s1,i32), Const(1,i32)); Break(.b1)]), f, .b1); If(Binary(CmpEq, Local(.s1,i32), Const(1,i32), bool), [Break(.b0)], .b2); Assign(Local(.s0,i32), Int(2,i32)); Break(.b0)], .b0); Return(Local(.s0,i32))])");
 
-            // 拦截：有 finally + 部分分支终止 + continuation 非空 → P4 Error
+            // 原 S7e 拦截负例转正（Stage B 新机制天然支持）：
+            // 有 finally + 部分分支终止 + continuation 非空 → 正常降级
             var (unit4, _, lowered4) = LowerUnit(
-                "func bad(c: bool): i32 {\n" +
+                "func ok(c: bool): i32 {\n" +
                 "    return seq {\n" +
                 "        try {\n" +
                 "            if (c) { return@_ 1 }\n" +
@@ -313,25 +339,88 @@ namespace RigiCompiler.Tests
                 "        return@_ 2\n" +
                 "    }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("try-finally 部分终止编织拦截", unit4.Diagnostics,
-                "P4: value block weaving across try-finally with partial termination " +
-                "is not supported yet (S7e)");
-            TestHarness.CheckTrue("拦截后跳过该函数体",
-                !lowered4.Any(b => b.Method.Name == "bad"));
+            CheckNoErrors("无诊断（try-finally 部分终止转正）", unit4);
+            var described4 = LoweredDescribe.Body(BodyOf(lowered4, "ok"));
+            TestHarness.Check("try-finally 部分终止 route（原拦截转正）", described4,
+                "Body(ok, [f: Exception?, .s0: i32, .b0: .breakid, .b1: .breakid, .b2: .breakid, .s1: i32, .s2: i32, .b3: .breakid, .b4: .breakid], [Seq([Assign(Local(.s2,i32), Const(0,i32)); Try([Assign(Local(.s1,i32), Const(0,i32)); If(Param(c,bool), [Assign(Local(.s0,i32), Int(1,i32)); Assign(Local(.s1,i32), Const(1,i32)); Break(.b1)], .b1); If(Binary(CmpEq, Local(.s1,i32), Const(1,i32), bool), [Assign(Local(.s2,i32), Const(1,i32)); Break(.b2)], .b3)], [], Finally([]), f, .b2); If(Binary(CmpEq, Local(.s2,i32), Const(1,i32), bool), [Break(.b0)], .b4); Assign(Local(.s0,i32), Int(2,i32)); Break(.b0)], .b0); Return(Local(.s0,i32))])");
+            TestHarness.CheckTrue("routing 后无 StructuredExit 残留（try-finally）",
+                !described4.Contains("StructuredExit"), described4);
 
-            // 已知边界：复杂外层值块 continuation 穿越 using 的 try/finally
-            // 仍必须由 S7e P4 拦截，不能因表达式 using 的正常降级而放宽。
+            // 原「using 外层 continuation 已知边界」转正：外层值块 exit
+            // 穿越 using 的 try/finally——route relay 经两层 try region
             var (unit5, _, lowered5) = LowerUnitWithStdlib(
                 "class BoundaryResource implements core.IDisposable { pub override func dispose() { } }\n" +
                 "func acquireBoundary(): BoundaryResource { return new BoundaryResource() }\n" +
                 "func boundary(c: bool): i32 { return seq { " +
                 "seq using(const r = acquireBoundary()) { if (c) { return@_ 1 } } " +
                 "return@_ 2 } }\n");
-            TestHarness.CheckSemanticError("using 外层 continuation 已知边界拦截", unit5.Diagnostics,
-                "P4: value block weaving across try-finally with partial termination " +
-                "is not supported yet (S7e)");
-            TestHarness.CheckTrue("using 外层 continuation 拦截后跳过函数体",
-                !lowered5.Any(b => b.Method.Name == "boundary"));
+            CheckNoErrors("无诊断（using 边界转正）", unit5);
+            var described5 = LoweredDescribe.Body(BodyOf(lowered5, "boundary"));
+            TestHarness.Check("using 外层 exit route（原拦截转正）", described5, "Body(boundary, [r: BoundaryResource, .s0: i32, .b0: .breakid, .b1: .breakid, .b2: .breakid, .s1: Exception?, .b3: .breakid, .s2: i32, .s3: i32, .s4: i32, .b4: .breakid, .b5: .breakid, .b6: .breakid], [Seq([Assign(Local(.s4,i32), Const(0,i32)); Seq([Decl(r, BoundaryResource, = Call(acquireBoundary, [], BoundaryResource)); Assign(Local(.s3,i32), Const(0,i32)); Try([[Assign(Local(.s2,i32), Const(0,i32)); If(Param(c,bool), [Assign(Local(.s0,i32), Int(1,i32)); Assign(Local(.s2,i32), Const(1,i32)); Break(.b2)], .b2); If(Binary(CmpEq, Local(.s2,i32), Const(1,i32), bool), [Assign(Local(.s3,i32), Const(1,i32)); Break(.b3)], .b4)]], [], Finally([InstCallStmt(dispose, Local(r,BoundaryResource), [])]), .s1, .b3); If(Binary(CmpEq, Local(.s3,i32), Const(1,i32), bool), [Assign(Local(.s4,i32), Const(1,i32)); Break(.b1)], .b5)], .b1); If(Binary(CmpEq, Local(.s4,i32), Const(1,i32), bool), [Break(.b0)], .b6); Assign(Local(.s0,i32), Int(2,i32)); Break(.b0)], .b0); Return(Local(.s0,i32))])");
+            TestHarness.CheckTrue("routing 后无 StructuredExit 残留（using）",
+                !described5.Contains("StructuredExit"), described5);
+        }
+        // ===== Stage B：StructuredExitRouting 形态专项 =====
+        // （嵌套 return@外层的 route 初始化 + dispatcher + relay 形态见
+        // ControlFlow.TestValueBlockIfTransform 第一例）
+        private static void TestStructuredExitRoutingForms()
+        {
+            // 简单值块早退（同 region）：写结果 + break 目标 breakId，
+            // 无 route local、无 dispatcher
+            var (unit, _, lowered) = LowerUnit(
+                "func f(c: bool): i32 {\n" +
+                "    return if (c) { return@_ 1 } else { return@_ 2 }\n" +
+                "}\n");
+            CheckNoErrors("无诊断（同 region 早退）", unit);
+            var described = LoweredDescribe.Body(BodyOf(lowered, "f"));
+            TestHarness.Check("同 region 早退（无 route/dispatcher）", described,
+                "Body(f, [.s0: i32, .b0: .breakid], [If(Param(c,bool), " +
+                "[Assign(Local(.s0,i32), Int(1,i32)); Break(.b0)], " +
+                "[Assign(Local(.s0,i32), Int(2,i32)); Break(.b0)], .b0); Return(Local(.s0,i32))])");
+            TestHarness.CheckTrue("无 route 局部（无 i32 合成常量）",
+                !described.Contains("Const(0,i32)") && !described.Contains("Const(1,i32)"),
+                described);
+            TestHarness.CheckTrue("routing 后无 StructuredExit 残留（同 region）",
+                !described.Contains("StructuredExit"), described);
+
+            // dispatcher else-if 链：同一 region（if(a)）内两个不同外层
+            // 目标的 exit——return@_ 1（外层 seq 表达式值块）与
+            // return@inner（内层 named seq）各登一条 route，region 收尾
+            // 生成两分支 else-if 链
+            var (unit2, _, lowered2) = LowerUnit(
+                "func h(a: bool, b: bool): i32 {\n" +
+                "    return seq {\n" +
+                "        seq named inner {\n" +
+                "            if (a) {\n" +
+                "                if (b) { return@_ 1 }\n" +
+                "                return@inner\n" +
+                "            }\n" +
+                "        }\n" +
+                "        return@_ 2\n" +
+                "    }\n" +
+                "}\n");
+            CheckNoErrors("无诊断（dispatcher 链）", unit2);
+            var described2 = LoweredDescribe.Body(BodyOf(lowered2, "h"));
+            TestHarness.Check("dispatcher else-if 链（两目标）", described2,
+                "Body(h, [.s0: i32, .b0: .breakid, .b1: .breakid, .b2: .breakid, .b3: .breakid, " +
+                ".s1: i32, .s2: i32, .s3: i32, .b4: .breakid, .b5: .breakid, .b6: .breakid, " +
+                ".b7: .breakid], " +
+                "[Seq([Assign(Local(.s3,i32), Const(0,i32)); " +
+                "Seq([Assign(Local(.s2,i32), Const(0,i32)); " +
+                "If(Param(a,bool), " +
+                "[Assign(Local(.s1,i32), Const(0,i32)); " +
+                "If(Param(b,bool), [Assign(Local(.s0,i32), Int(1,i32)); " +
+                "Assign(Local(.s1,i32), Const(1,i32)); Break(.b2)], .b2); " +
+                "If(Binary(CmpEq, Local(.s1,i32), Const(1,i32), bool), " +
+                "[Assign(Local(.s2,i32), Const(1,i32)); Break(.b3)], .b4); " +
+                "Assign(Local(.s2,i32), Const(2,i32)); Break(.b3)], .b3); " +
+                "If(Binary(CmpEq, Local(.s2,i32), Const(1,i32), bool), " +
+                "[Assign(Local(.s3,i32), Const(1,i32)); Break(.b1)], " +
+                "[If(Binary(CmpEq, Local(.s2,i32), Const(2,i32), bool), [Break(.b1)], .b5)], .b6)], .b1); " +
+                "If(Binary(CmpEq, Local(.s3,i32), Const(1,i32), bool), [Break(.b0)], .b7); " +
+                "Assign(Local(.s0,i32), Int(2,i32)); Break(.b0)], .b0); Return(Local(.s0,i32))])");
+            TestHarness.CheckTrue("routing 后无 StructuredExit 残留（链）",
+                !described2.Contains("StructuredExit"), described2);
         }
     }
 }

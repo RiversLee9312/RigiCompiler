@@ -31,8 +31,10 @@ namespace RigiCompiler
                     return IfEmitter.Visit(statement, target, ctx, env);
                 case LoweredLoop:
                     return LoopEmitter.Visit(statement, target, ctx, env);
-                case LoweredLoopControl:
-                    return LoopControlEmitter.Visit(statement, target, ctx, env);
+                case LoweredBreakStatement:
+                    return BreakEmitter.Visit(statement, target, ctx, env);
+                case LoweredContinueStatement:
+                    return ContinueEmitter.Visit(statement, target, ctx, env);
                 case LoweredSwitch:
                     return SwitchEmitter.Visit(statement, target, ctx, env);
                 case LoweredThrowStatement:
@@ -43,6 +45,10 @@ namespace RigiCompiler
                     return TryEmitter.Visit(statement, target, ctx, env);
                 case LoweredNewWrapperStatement:
                     return NewWrapperEmitter.Visit(statement, target, ctx, env);
+                case LoweredStructuredExit:
+                    // Stage B：StructuredExitRouting pass 后不得残留
+                    throw new CompilerInternalException(
+                        "LoweredStructuredExit 残留到 P4b（StructuredExitRouting 未消费）");
                 default:
                     env.Error(statement.Origin.Syntax.Span,
                         $"P4: lowered statement kind not supported by minimal emission: " +

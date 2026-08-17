@@ -30,7 +30,8 @@ namespace RigiCompiler
     //   （if0-then/if0-else，字符集限 A-Za-z0-9_- §5.1，无点号）。
     // S7c-1：LoweredLoop → loop/loop.rev（§16.3/§16.4：条件即合成局部
     //   引用，操作数序 cond/body/none/judge/breakid，块 id
-    //   loop0-body/loop0-judge）+ LoweredLoopControl → break/continue
+    //   loop0-body/loop0-judge）+ LoweredBreak/ContinueStatement →
+    //   break/continue
     //   （§16.5）+ .vars 的 .breakid 条目（§9.3：Type null 的合成局部
     //   投影 .breakid 别名）。
     // S7c-2：实例方法 fn 定义（.args 首条 .return 后插 .this =

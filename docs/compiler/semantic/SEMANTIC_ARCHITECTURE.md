@@ -290,7 +290,7 @@ SemanticSymbol
 | source-level 子类型赋值 / 传参 | 显式 `cast`（BIL §6.5） |
 | 内建 `bool` 短路 `and` / `or` | 条件结构 + 临时变量（BIL §11.3） |
 | 复合赋值（`+=` 等 10 种） | 读取 + 基础运算 + 写回 |
-| `seq` 与 `return@` | 结构化 block + 结果临时变量 |
+| `seq` 与 `return@` | 结构化 block（region + `.breakid`）+ 结果临时变量 + `LoweredStructuredExit` 标记；P4a 末尾 StructuredExitRouting pass 展开为「写结果局部 + route 局部（i32，仅跨 region）+ break 当前 region」，需要 multiplex 的 region 后生成 dispatcher（读 route → relay 父 region） |
 | pattern switch（含 `_` 分支） | 常量表 switch / 嵌套条件（BIL §16.6） |
 | 解构声明 | 精确字段/索引读取 |
 | `using` | 初始化 + 清理记录 + try/finally 路径（RUNTIME §25.1） |
@@ -303,6 +303,23 @@ SemanticSymbol
 
 降级**不得改变** `SYNTAX.md` / `RUNTIME.md` 规定的可观察语义
 （求值顺序、getter/setter/operator/wrapper 调用顺序、异常路径）。
+
+> **route local 不做活跃性复用是有意设计（安全性取舍）**：
+> StructuredExitRouting 为每个确实需要 multiplex non-local exit 的
+> structural region 独立合成一个普通 i32 route 局部（`.sN`），进入
+> region 前初始化 `0`，post-region dispatcher 之后其逻辑生命周期即
+> 结束；route tag 各 region 私有、从 `1` 起编号、无函数级含义。
+> **有意不做**跨 region 的活跃性分析与局部复用，理由：
+> ① route 局部的全部含义只存在于「本 region 入口 → 本 region
+> dispatcher」之间，复用必须证明两块 life range 不相交且 tag 命名
+> 空间不混淆——而 region 结构会被后续 lowering 继续改变（using 包
+> try、短路/安全访问合成 if），证明负担随之一再重估；一旦误判，
+> 失败形态是 dispatcher 读到陈旧 tag、控制流走错目标，属于最恶劣
+> 的静默语义错误。② BIL 的虚拟可变寄存器数量无限，多几个 `.sN`
+> 对正确性与可读性零成本；`.vars` 体积与寄存器合并是 DCE /
+> register allocation / coalescing 问题，按职责边界归 Middleware
+> （BIL §23），frontend 不做。因此这不是技术债；改动此决策须重新
+> 评估上述安全论证。
 
 > **wrapper 烘焙的 pass 归属**：详见 §5.2
 > 整段。摘要——P1 符号壳；P2 只形状校验 + 应用登记（Freeze 前零

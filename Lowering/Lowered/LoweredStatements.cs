@@ -109,8 +109,9 @@ namespace RigiCompiler
     }
 
     // 赋值（Target 限 LoweredValueReferenceExpression / LoweredFieldReferenceExpression
-    // 这类 place——Bound 侧已强制；S7b 起也承载值块写入（return@ 脱糖产物，
-    // Origin 为 BoundReturnValueStatement/BoundExpressionStatement）与复合赋值写回）
+    // 这类 place——Bound 侧已强制；S7b 起也承载值块结果写入（return@ 脱糖产物，
+    // Origin 为 BoundReturnValueStatement/BoundExpressionStatement；Stage B 起另承载
+    // StructuredExitRouting 的 route 局部写入）与复合赋值写回）
     public sealed class LoweredAssignmentStatement : LoweredStatement
     {
         public LoweredExpression Target { get; }
@@ -126,19 +127,25 @@ namespace RigiCompiler
 
     // if（S7b；BIL §16.2 结构化条件的直接对应）：FalseBlock 为 null = 无 else
     // （发射期 none 操作数）。来源两途：BoundIfStatement 恒等降级；短路 and/or
-    // 与 if 表达式的脱糖产物（Origin 指 and/or 表达式 / if 表达式的 Bound 节点）
+    // 与 if 表达式的脱糖产物（Origin 指 and/or 表达式 / if 表达式的 Bound 节点）。
+    // BreakId 是合成 .breakid 局部（.bN 命名，约定同 LoweredLoop；§16.5 推广的
+    // region-exit capability——Stage B 起是 if 表达式分支值块 return@ 的目标
+    // region id，被 StructuredExitRouting 展开的 break/dispatcher 引用）
     public sealed class LoweredIfStatement : LoweredStatement
     {
         public LoweredExpression Condition { get; }
         public LoweredBlock TrueBlock { get; }
         public LoweredBlock? FalseBlock { get; }
+        public LocalSymbol BreakId { get; }
 
         public LoweredIfStatement(BoundNode origin, LoweredExpression condition,
-            LoweredBlock trueBlock, LoweredBlock? falseBlock) : base(origin)
+            LoweredBlock trueBlock, LoweredBlock? falseBlock, LocalSymbol breakId)
+            : base(origin)
         {
             Condition = condition;
             TrueBlock = trueBlock;
             FalseBlock = falseBlock;
+            BreakId = breakId;
         }
     }
 
@@ -170,17 +177,48 @@ namespace RigiCompiler
 
     // break/continue（S7c-1；BIL §16.5）：BreakId 经 BoundLoop → 合成
     // .breakid 局部的映射命中（穿透值块/嵌套块时属外层循环——BIL 动态
-    // 结构作用域合法，降级不做任何展开，直接发 break/continue 指令）
-    public sealed class LoweredLoopControl : LoweredStatement
+    // 结构作用域合法，降级不做任何展开，直接发 break/continue 指令）。
+    // Stage B 起拆分为两节点（原 LoweredLoopControl 合并形态删除）；
+    // LoweredBreakStatement 的 origin 放宽为 BoundNode——StructuredExitRouting
+    // pass 的 region 收尾 / dispatcher relay 也合成 break（无逐一对应的
+    // Bound 节点，Origin 按 ARCH §5.1 约定指最近的语法来源）
+    public sealed class LoweredBreakStatement : LoweredStatement
     {
-        public bool IsBreak { get; }
         public LocalSymbol BreakId { get; }
 
-        public LoweredLoopControl(BoundLoopControl origin, bool isBreak,
-            LocalSymbol breakId) : base(origin)
+        public LoweredBreakStatement(BoundNode origin, LocalSymbol breakId) : base(origin)
         {
-            IsBreak = isBreak;
             BreakId = breakId;
+        }
+    }
+
+    public sealed class LoweredContinueStatement : LoweredStatement
+    {
+        public LocalSymbol BreakId { get; }
+
+        public LoweredContinueStatement(BoundLoopControl origin, LocalSymbol breakId)
+            : base(origin)
+        {
+            BreakId = breakId;
+        }
+    }
+
+    // source-level exit 标记（Stage B，return@ 重构）：return@值块 /
+    // return@语句seq 的 ordinary lowering 产物——Target 为 BoundValueBlock
+    // 或 BoundSeqStatement（引用相等身份），Value 为已降级的产值
+    // （return@语句seq 恒 null）。待 StructuredExitRouting pass 处理
+    // （展开为「写结果局部 + 写 route 局部（仅跨 region）+ break 当前
+    // region」），pass 后树中不得残留（EmitDispatchers 兜底抛内部错误）
+    public sealed class LoweredStructuredExit : LoweredStatement
+    {
+        public BoundNode Target { get; }
+        public LoweredExpression? Value { get; }
+
+        public LoweredStructuredExit(BoundNode origin, BoundNode target,
+            LoweredExpression? value) : base(origin)
+        {
+            Target = target;
+            Value = value;
         }
     }
 
@@ -188,8 +226,10 @@ namespace RigiCompiler
     // 到达本节点——含 pattern 的 switch 已在 P4a 降级为嵌套
     // LoweredIfStatement（§16.6：含 _ 的 pattern 分支不能进常量表）。
     // Cases 保序（表序 = 匹配序）；DefaultBody 恒存在（P3/Parser 强制）。
-    // BreakId 是合成 .breakid 局部（.bN 命名，约定同 LoweredLoop；Rigi 层
-    // break 不指向 switch——规范未登记，该 id 仅满足指令形态要求，无人引用）
+    // BreakId 是合成 .breakid 局部（.bN 命名，约定同 LoweredLoop；§16.5 推广的
+    // region-exit capability——Stage B 起 switch 表达式全值路径的 id 是分支值块
+    // return@ 的目标 region id，被 StructuredExitRouting 展开的
+    // break/dispatcher 引用；switch 语句路径仍无人引用，仅满足形态要求）
     public sealed class LoweredSwitch : LoweredStatement
     {
         public LoweredExpression Selector { get; }
@@ -240,22 +280,27 @@ namespace RigiCompiler
     // ExceptionSlot = try 指令 $slot 操作数的承载局部（Nullable<core.Exception>）：
     // finally(e) 的 e 非空时即该局部（指令直写），否则为合成 .sN——有名
     // catch 的变量由 P4a 在体头合成「变量 = cast slot」赋值填充（BIL §12.1
-    // 显式收窄，P3 已查兼容）
+    // 显式收窄，P3 已查兼容）。BreakId 是合成 .breakid 局部（.bN 命名，
+    // 约定同 LoweredLoop；§16.5 推广的 region-exit capability——Stage B 起
+    // 可被 StructuredExitRouting 展开的 break/dispatcher 引用（return@ 穿
+    // try/finally 的中继 region））
     public sealed class LoweredTryStatement : LoweredStatement
     {
         public LoweredBlock TryBlock { get; }
         public IReadOnlyList<LoweredTryCatch> Catches { get; }
         public LoweredBlock? FinallyBlock { get; }
         public LocalSymbol ExceptionSlot { get; }
+        public LocalSymbol BreakId { get; }
 
         public LoweredTryStatement(BoundNode origin, LoweredBlock tryBlock,
             IReadOnlyList<LoweredTryCatch> catches, LoweredBlock? finallyBlock,
-            LocalSymbol exceptionSlot) : base(origin)
+            LocalSymbol exceptionSlot, LocalSymbol breakId) : base(origin)
         {
             TryBlock = tryBlock;
             Catches = catches;
             FinallyBlock = finallyBlock;
             ExceptionSlot = exceptionSlot;
+            BreakId = breakId;
         }
     }
 
@@ -280,33 +325,23 @@ namespace RigiCompiler
     // seq 块（S7e，SYNTAX §10；BIL §3.4 独立 block + call 化的直接对应）：
     // 两形态汇合——语句形态为恒等降级（Body = 体降级）；表达式形态为
     // P4a 脱糖产物（Body = 值块降级写结果局部，Origin 指 BoundSeqExpression）。
-    // IsVolatile → §9.6 block 修饰符
+    // IsVolatile → §9.6 block 修饰符。BreakId 是合成 .breakid 局部（.bN
+    // 命名，约定同 LoweredLoop；§16.5 推广的 region-exit capability——
+    // Stage B 起是 seq 表达式值块 / named 语句 seq 的 return@ 目标 region
+    // id，被 StructuredExitRouting 展开的 break/dispatcher 引用；另承载
+    // 值块 lambda $$call 体与 pattern switch 表达式 if 链的包装 region）
     public sealed class LoweredSeqBlock : LoweredStatement
     {
         public LoweredBlock Body { get; }
         public bool IsVolatile { get; }
+        public LocalSymbol BreakId { get; }
 
-        public LoweredSeqBlock(BoundNode origin, LoweredBlock body, bool isVolatile)
-            : base(origin)
+        public LoweredSeqBlock(BoundNode origin, LoweredBlock body, bool isVolatile,
+            LocalSymbol breakId) : base(origin)
         {
             Body = body;
             IsVolatile = isVolatile;
-        }
-    }
-
-    // return@语句seq 降级标记（M61，SYNTAX §6.1）：纯控制流标记——不产
-    // 任何指令；continuation 编织（ValueBlockFacility）在目标 seq 的
-    // 降级层消费：命中本层即删除（其后语句截断），命中外层则保留向上
-    // 传播。Target 回指 Bound 施工节点（引用相等即身份，经 LowerTargetState
-    // 的 seq 目标栈比对归属）
-    public sealed class LoweredSeqExitStatement : LoweredStatement
-    {
-        public BoundSeqStatement Target { get; }
-
-        public LoweredSeqExitStatement(BoundSeqExitStatement origin, BoundSeqStatement target)
-            : base(origin)
-        {
-            Target = target;
+            BreakId = breakId;
         }
     }
 

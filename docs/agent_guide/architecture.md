@@ -259,7 +259,8 @@ RigiCompiler/
 │   │                            #   （Type 透传）/块/局部声明/表达式语句/void 调用/赋值/return/
 │   │                            #   字面量/值引用/字段引用/二元/一元/带返回值调用/new + LoweredFunctionBody；
 │   │                            #   增补 LoweredIfStatement/LoweredConstantExpression（脱糖合成节点，
-│   │                            #   Origin 指最近语法来源）；增补 LoweredLoop/LoweredLoopControl
+│   │                            #   Origin 指最近语法来源）；增补 LoweredLoop/
+│   │                            #   LoweredBreak/LoweredContinueStatement
 │   │                            #   （Judge 块 + 合成 .breakid 局部 .bN——Type null 特例）；
 │   │                            #   增补 LoweredThis/LoweredInstanceCall（Type 自带）/
 │   │                            #   LoweredFieldAccess；增补 LoweredSwitch/
@@ -271,8 +272,9 @@ RigiCompiler/
 │   │                            #   LoweredTypeOfExpression（Type 自带，恒等重写）；
 │   │                            #   增补 LoweredIndexExpression（Receiver/Index，
 │   │                            #   Type 透传，不携带 Operator）；增补
-│   │                            #   LoweredSeqExitStatement（return@语句seq 纯控制流
-│   │                            #   标记，编织消费不产指令）；增补
+│   │                            #   LoweredStructuredExit（return@ source-level
+│   │                            #   exit 标记，StructuredExitRouting pass 消费，
+│   │                            #   pass 后不得残留）；增补
 │   │                            #   LoweredEnumCaseExpression（Case/规范序洞实参，
 │   │                            #   cast 物化按洞签名）与 LoweredTypeCheckExpression
 │   │                            #   Case 槽（IsCase）；增补
@@ -284,14 +286,19 @@ RigiCompiler/
 │   ├── Lowerer.cs               # P4a 瘦入口
 │   ├── LoweredVisitor.cs        # P4a CRTP 基类（同 Binder 协议，无 scope/expectedType）
 │   ├── LowerEnvironment.cs      # 只读环境（unit/诊断）
-│   ├── LowerContext.cs          # 函数级状态组合根（Method/TransformFailed
-│   │                            #   + Synth/Output/Targets 三组件）
+│   ├── LowerContext.cs          # 函数级状态组合根（Method
+│   │                            #   + Synth/Output/Targets/ExitTargets 四组件）
 │   ├── SynthLocalFactory.cs     # 合成局部工厂（.sN/.breakid .bN 独立计数统一
 │   │                            #   登记——顺序即 .vars 发射顺序 + ReferenceTo）
 │   ├── LowerOutputState.cs      # 前置语句机制（输出列表栈封装：Push 双形态/
 │   │                            #   Pop/Current/Add）
-│   ├── LowerTargetState.cs      # 降级目标映射栈集（值块/循环/switch 占位/
-│   │                            #   seq/安全访问五栈封装 + 命中查找）
+│   ├── LowerTargetState.cs      # 降级目标映射栈集（循环/switch 占位/
+│   │                            #   安全访问三栈封装 + 命中查找）
+│   ├── StructuredExitTargetTable.cs # return@ 目标映射表（Stage B：值块/语句
+│   │                            #   seq 目标 → 结果局部 + 目标 region breakId）
+│   ├── StructuredExitRouting.cs # P4a 末尾 normalization pass（Stage B）：
+│   │                            #   LoweredStructuredExit 展开为 route local
+│   │                            #   + break/dispatcher else-if 链
 │   ├── LowerDispatchers.cs      # 类别分派唯一 switch + LowerBlockVisitor（输出列表压弹）
 │   ├── LoweringDriver.cs        # 逐函数体启动（合成局部收尾进 Locals）
 │   ├── LoweringFacility.cs      # LowerArguments/EnsureDeclaredType（BIL §6.5 cast 物化）
@@ -299,7 +306,7 @@ RigiCompiler/
 │   │                            #   kwargs → Pair\<String, Any\>，读拆箱写装箱）
 │   ├── Rewriters/               # 结构 visitor 簇（Statement/Loop（Judge 块）/Switch
 │   │                            #   （常量表恒等 + pattern 链降级）/TrySeq/ValueBlock
-│   │                            #   （continuation 编织——ValueBlockFacility 静态设施）/
+│   │                            #   （值块降级——return@ 产 StructuredExit 标记）/
 │   │                            #   Expression（短路/if 表达式/复合赋值脱糖）/NullSafety
 │   │                            #   （?. if? unwrap/wrap）/Destructuring）+
 │   │                            #   WrapperPlaceLowering（wrapper place

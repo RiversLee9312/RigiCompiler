@@ -1,0 +1,287 @@
+using System.Collections.Generic;
+
+namespace RigiCompiler
+{
+    // StructuredExitRouting normalization pass（Stage B，return@/Value-Block
+    // Structured Exit 重构）：P4a 末尾跑在 LoweringDriver.LowerBody 产出的
+    // LoweredTree 上（两路径：值块 lambda $$call 体与普通体），把
+    // LoweredStructuredExit 标记展开为「写结果局部（如有）+ 写 route
+    // 局部（仅跨 region 时）+ break 当前 region」，并在需要 multiplex
+    // 的 region 后生成 dispatcher（读 route → 写 parent route +
+    // break parent）。pass 后树中不得残留 LoweredStructuredExit。
+    //
+    // region = BIL 结构化指令对应的 Lowered 节点（各自携带 .breakid
+    // region-exit capability，§16.5）：LoweredIfStatement（True/False
+    // 同 region）、LoweredLoop（Judge/Body 同 region）、LoweredSwitch
+    // （全部 case/default 同 region）、LoweredTryStatement
+    // （TryBlock/全部 Catches/FinallyBlock 同 region）、LoweredSeqBlock
+    // （Body 同 region）。LoweredBlock 透明不压栈。
+    //
+    // route local：每 region 独立、普通 i32 合成局部（.sN），首个跨
+    // region exit 时懒建；进入 region 前初始化 0，退出 dispatcher 后
+    // 即死。exit 的目标解析查 StructuredExitTargetTable（ordinary
+    // lowering 期注册）；P3 已拦截隔循环/隔值块的 return@，故 region
+    // 链上必能走到目标 region，走不到即内部不变量破坏。
+    internal static class StructuredExitRouting
+    {
+        // region 帧（pass 期压栈）：BreakId = region 节点的 .breakid
+        // 局部；RouteMap = 本 region 内 exit 的目标 breakId → tag
+        // （引用相等键，保序——dispatcher 分支序）；RouteLocal 懒建
+        private sealed class ExitRoutingRegion
+        {
+            public ExitRoutingRegion(BoundNode origin, LocalSymbol breakId,
+                ExitRoutingRegion? parent)
+            {
+                Origin = origin;
+                BreakId = breakId;
+                Parent = parent;
+            }
+
+            public BoundNode Origin { get; }
+
+            public LocalSymbol BreakId { get; }
+
+            public ExitRoutingRegion? Parent { get; }
+
+            public LocalSymbol? RouteLocal { get; private set; }
+
+            public List<(LocalSymbol Target, int Tag)> Routes { get; } =
+                new List<(LocalSymbol, int)>();
+
+            public int NextTag = 1;
+
+            // 目标 breakId 的 route tag（命中直返；未命中懒建 RouteLocal
+            // 并登记，再沿 region 链递归保证父链各 region 都有 relay 条目——
+            // 父链走不到目标即内部不变量破坏）
+            public int EnsureRoute(LocalSymbol targetBreakId, LowerContext ctx,
+                LowerEnvironment env)
+            {
+                foreach (var (target, tag) in Routes)
+                {
+                    if (ReferenceEquals(target, targetBreakId)) return tag;
+                }
+                RouteLocal ??= ctx.Synth.NewSynthLocal(env.Unit.Symbols.Bootstrap.Int32);
+                var newTag = NextTag++;
+                Routes.Add((targetBreakId, newTag));
+                if (Parent == null)
+                {
+                    throw new CompilerInternalException(
+                        "return@ 目标 region 不在 region 链上（P3 不变量破坏）");
+                }
+                if (!ReferenceEquals(Parent.BreakId, targetBreakId))
+                {
+                    Parent.EnsureRoute(targetBreakId, ctx, env);
+                }
+                return newTag;
+            }
+        }
+
+        // pass 入口：body 为函数体根块（根块透明，region 栈空起步）
+        public static LoweredBlock? Run(LoweredBlock body, LowerContext ctx,
+            LowerEnvironment env)
+        {
+            return new LoweredBlock(body.Origin,
+                ProcessStatements(body.Statements, null, ctx, env));
+        }
+
+        // 语句序列递归处理（region 压栈点见类注释）；遇
+        // LoweredStructuredExit 展开并截断同块内其后语句（静死——break
+        // 当前 region 后本序列不可达）
+        private static List<LoweredStatement> ProcessStatements(
+            IReadOnlyList<LoweredStatement> statements, ExitRoutingRegion? current,
+            LowerContext ctx, LowerEnvironment env)
+        {
+            var output = new List<LoweredStatement>();
+            foreach (var statement in statements)
+            {
+                switch (statement)
+                {
+                    case LoweredStructuredExit exit:
+                        ExpandExit(exit, current, output, ctx, env);
+                        return output;
+                    case LoweredBlock block:
+                        // LoweredBlock 透明不压栈
+                        output.Add(new LoweredBlock(block.Origin,
+                            ProcessStatements(block.Statements, current, ctx, env)));
+                        break;
+                    case LoweredIfStatement ifStatement:
+                    {
+                        var region = new ExitRoutingRegion(ifStatement.Origin,
+                            ifStatement.BreakId, current);
+                        var node = new LoweredIfStatement(ifStatement.Origin,
+                            ifStatement.Condition,
+                            ProcessBlock(ifStatement.TrueBlock, region, ctx, env),
+                            ifStatement.FalseBlock == null ? null
+                                : ProcessBlock(ifStatement.FalseBlock, region, ctx, env),
+                            ifStatement.BreakId);
+                        output.AddRange(FinishRegion(region, node, ctx, env));
+                        break;
+                    }
+                    case LoweredLoop loop:
+                    {
+                        var region = new ExitRoutingRegion(loop.Origin, loop.BreakId, current);
+                        var node = new LoweredLoop((BoundLoop)loop.Origin, loop.IsRev,
+                            ProcessBlock(loop.Judge, region, ctx, env), loop.Condition,
+                            ProcessBlock(loop.Body, region, ctx, env), loop.BreakId);
+                        output.AddRange(FinishRegion(region, node, ctx, env));
+                        break;
+                    }
+                    case LoweredSwitch switchStatement:
+                    {
+                        var region = new ExitRoutingRegion(switchStatement.Origin,
+                            switchStatement.BreakId, current);
+                        var cases = new List<LoweredSwitchCase>();
+                        foreach (var switchCase in switchStatement.Cases)
+                        {
+                            cases.Add(new LoweredSwitchCase(switchCase.Origin, switchCase.Value,
+                                ProcessBlock(switchCase.Body, region, ctx, env)));
+                        }
+                        var node = new LoweredSwitch(switchStatement.Origin,
+                            switchStatement.Selector, cases,
+                            ProcessBlock(switchStatement.DefaultBody, region, ctx, env),
+                            switchStatement.BreakId);
+                        output.AddRange(FinishRegion(region, node, ctx, env));
+                        break;
+                    }
+                    case LoweredTryStatement tryStatement:
+                    {
+                        var region = new ExitRoutingRegion(tryStatement.Origin,
+                            tryStatement.BreakId, current);
+                        var catches = new List<LoweredTryCatch>();
+                        foreach (var tryCatch in tryStatement.Catches)
+                        {
+                            catches.Add(new LoweredTryCatch(tryCatch.Origin, tryCatch.Variable,
+                                tryCatch.ExceptionType,
+                                ProcessBlock(tryCatch.Body, region, ctx, env)));
+                        }
+                        var node = new LoweredTryStatement(tryStatement.Origin,
+                            ProcessBlock(tryStatement.TryBlock, region, ctx, env), catches,
+                            tryStatement.FinallyBlock == null ? null
+                                : ProcessBlock(tryStatement.FinallyBlock, region, ctx, env),
+                            tryStatement.ExceptionSlot, tryStatement.BreakId);
+                        output.AddRange(FinishRegion(region, node, ctx, env));
+                        break;
+                    }
+                    case LoweredSeqBlock seqBlock:
+                    {
+                        var region = new ExitRoutingRegion(seqBlock.Origin, seqBlock.BreakId,
+                            current);
+                        var node = new LoweredSeqBlock(seqBlock.Origin,
+                            ProcessBlock(seqBlock.Body, region, ctx, env), seqBlock.IsVolatile,
+                            seqBlock.BreakId);
+                        output.AddRange(FinishRegion(region, node, ctx, env));
+                        break;
+                    }
+                    default:
+                        output.Add(statement);
+                        break;
+                }
+            }
+            return output;
+        }
+
+        private static LoweredBlock ProcessBlock(LoweredBlock block, ExitRoutingRegion region,
+            LowerContext ctx, LowerEnvironment env)
+        {
+            return new LoweredBlock(block.Origin,
+                ProcessStatements(block.Statements, region, ctx, env));
+        }
+
+        // exit 标记展开：写结果局部（return@语句seq 无值跳过）→
+        // 同 region 直 break 目标 breakId；跨 region 写本 region 的
+        // route 局部后 break 本 region（dispatcher 链向上 relay）
+        private static void ExpandExit(LoweredStructuredExit exit, ExitRoutingRegion? current,
+            List<LoweredStatement> output, LowerContext ctx, LowerEnvironment env)
+        {
+            var (resultLocal, targetBreakId) = ctx.ExitTargets.Find(exit.Target);
+            if (exit.Value != null)
+            {
+                output.Add(new LoweredAssignmentStatement(exit.Origin,
+                    SynthLocalFactory.ReferenceTo(exit.Origin,
+                        resultLocal ?? throw new CompilerInternalException(
+                            "return@值块目标缺结果局部（注册不变量破坏）")),
+                    exit.Value));
+            }
+            if (current == null)
+            {
+                throw new CompilerInternalException(
+                    "return@ 标记不在任何 region 内（P3/P4a 不变量破坏）");
+            }
+            if (ReferenceEquals(current.BreakId, targetBreakId))
+            {
+                output.Add(new LoweredBreakStatement(exit.Origin, targetBreakId));
+                return;
+            }
+            var tag = current.EnsureRoute(targetBreakId, ctx, env);
+            output.Add(new LoweredAssignmentStatement(exit.Origin,
+                SynthLocalFactory.ReferenceTo(exit.Origin, current.RouteLocal!),
+                IntConstant(exit.Origin, tag, env)));
+            output.Add(new LoweredBreakStatement(exit.Origin, current.BreakId));
+        }
+
+        // region 收尾（children 处理完）：无 route 直通；有 route 把
+        // region 节点原位展开为三条——route = 0、原 region 节点、
+        // dispatcher（else-if 链：route == tag → relay；无 else，
+        // 0/未匹配 fallthrough）
+        private static List<LoweredStatement> FinishRegion(ExitRoutingRegion region,
+            LoweredStatement node, LowerContext ctx, LowerEnvironment env)
+        {
+            if (region.RouteLocal == null)
+            {
+                return new List<LoweredStatement> { node };
+            }
+            var output = new List<LoweredStatement>
+            {
+                new LoweredAssignmentStatement(region.Origin,
+                    SynthLocalFactory.ReferenceTo(region.Origin, region.RouteLocal),
+                    IntConstant(region.Origin, 0, env)),
+                node,
+            };
+            // dispatcher else-if 链：自末条 route 向内包（最内层无 else）
+            LoweredStatement? chain = null;
+            for (var i = region.Routes.Count - 1; i >= 0; i--)
+            {
+                var (target, tag) = region.Routes[i];
+                var condition = new LoweredBinaryExpression(region.Origin, BilIntrinsicOp.CmpEq,
+                    SynthLocalFactory.ReferenceTo(region.Origin, region.RouteLocal),
+                    IntConstant(region.Origin, tag, env), env.Unit.Symbols.Bootstrap.Bool);
+                chain = new LoweredIfStatement(region.Origin, condition,
+                    new LoweredBlock(region.Origin, BuildRelay(region, target, ctx, env)),
+                    chain == null ? null
+                        : new LoweredBlock(region.Origin,
+                            new List<LoweredStatement> { chain }),
+                    ctx.Synth.NewBreakIdLocal());
+            }
+            output.Add(chain!);
+            return output;
+        }
+
+        // dispatcher 分支体（relay）：目标是父 region 直 break 父
+        // breakId；否则写父 route 局部（父链 tag 经 EnsureRoute 登记）
+        // 再 break 父 breakId
+        private static List<LoweredStatement> BuildRelay(ExitRoutingRegion region,
+            LocalSymbol targetBreakId, LowerContext ctx, LowerEnvironment env)
+        {
+            var parent = region.Parent ?? throw new CompilerInternalException(
+                "route region 缺父 region（region 链不变量破坏）");
+            var relay = new List<LoweredStatement>();
+            if (!ReferenceEquals(parent.BreakId, targetBreakId))
+            {
+                var parentTag = parent.EnsureRoute(targetBreakId, ctx, env);
+                relay.Add(new LoweredAssignmentStatement(region.Origin,
+                    SynthLocalFactory.ReferenceTo(region.Origin, parent.RouteLocal!),
+                    IntConstant(region.Origin, parentTag, env)));
+            }
+            relay.Add(new LoweredBreakStatement(region.Origin, parent.BreakId));
+            return relay;
+        }
+
+        // i32 合成常量（route tag / 初始化 0；LoweredConstantExpression
+        // Stage B 起支持 int——ConstantEmitter 同步扩展）
+        private static LoweredConstantExpression IntConstant(BoundNode origin, int value,
+            LowerEnvironment env)
+        {
+            return new LoweredConstantExpression(origin, value, env.Unit.Symbols.Bootstrap.Int32);
+        }
+    }
+}

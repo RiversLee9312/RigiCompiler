@@ -30,13 +30,18 @@ namespace RigiCompiler
     // switch 降级共用核心（语句/表达式两形态汇合）：分支体已按形态预先
     // 降级。全值匹配 → LoweredSwitch（§16.6 指令 + 常量表；selector 只
     // 求值一次——发射期经临时变量物化）；任一 case 为 pattern →
-    // 嵌套 if 链（§16.6：含 _ 的 pattern 分支不能进常量表）
+    // 嵌套 if 链（§16.6：含 _ 的 pattern 分支不能进常量表）。
+    // breakId（Stage B 可选）：switch 表达式全值路径的外部预建
+    // .breakid（return@ 目标映射已登记该 id）；不传则维持语句路径
+    // 现状自创建；pattern 路径忽略（if 链无总 region，表达式形态由
+    // 调用方外包 LoweredSeqBlock）
     internal static class SwitchFacility
     {
         public static LoweredStatement? LowerCore(BoundNode origin, BoundExpression selector,
             IReadOnlyList<(BoundNode Origin, BoundExpression Match, bool IsPattern,
                 LoweredBlock Body)> cases,
-            LoweredBlock defaultBody, LowerContext ctx, LowerEnvironment env)
+            LoweredBlock defaultBody, LowerContext ctx, LowerEnvironment env,
+            LocalSymbol? breakId = null)
         {
             if (cases.Any(c => c.IsPattern))
             {
@@ -44,7 +49,7 @@ namespace RigiCompiler
             }
             var loweredSelector = LowerExpressionDispatcher.Visit(selector, ctx, env);
             if (loweredSelector == null) return null;
-            var breakId = ctx.Synth.NewBreakIdLocal();
+            breakId ??= ctx.Synth.NewBreakIdLocal();
             var loweredCases = new List<LoweredSwitchCase>();
             foreach (var (caseOrigin, match, _, body) in cases)
             {
@@ -124,7 +129,8 @@ namespace RigiCompiler
                 {
                     elseBlock = defaultBody;
                 }
-                statements.Add(new LoweredIfStatement(caseOrigin, condition, body, elseBlock));
+                statements.Add(new LoweredIfStatement(caseOrigin, condition, body, elseBlock,
+                    ctx.Synth.NewBreakIdLocal()));
                 return new LoweredBlock(origin, statements);
             }
             finally

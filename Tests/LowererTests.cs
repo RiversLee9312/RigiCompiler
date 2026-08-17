@@ -9,15 +9,18 @@ namespace RigiCompiler.Tests
     /// （Origin 回指引用相等、字段符号引用相等）+ 未覆盖节点负例
     /// （测试私有 Bound 子类注入 → P4 Error + 跳过该函数体）。
     /// S7b 新增脱糖断言：bool 短路 and/or（BIL §11.3 if + 合成局部展开）、
-    /// if 表达式（结果局部 + 值块降级）、复合赋值（前置赋值脱糖）、
-    /// 值块 if 转换（后续语句移入 else / 双终止丢弃）。
+    /// if 表达式（结果局部 + 值块降级）、复合赋值（前置赋值脱糖）。
     /// S7c-1 新增循环降级断言：Judge 块（条件求值移入、条件内短路展开
     /// 随块走）、合成 bool 条件局部 .sN 与 .breakid 局部 .bN（Type null）、
     /// do-while rev、BoundLoop → BreakId 映射命中（嵌套标签/值块穿透）。
     /// S7e 新增：cast 恒等降级（as/as? + Origin 回指）、try 降级（ExceptionSlot
     /// 复用 finally 变量或合成 .sN、有名 catch 体头合成 cast）、seq 双形态
-    /// （语句恒等 / 表达式脱糖结果局部）、值块编织扩展（seq 透明、try 无
-    /// finally 同 if 规则、finally 终止覆盖、try-finally 部分终止拦截）。
+    /// （语句恒等 / 表达式脱糖结果局部）。
+    /// Stage B（return@/Value-Block Structured Exit 重构）：return@ 降级为
+    /// LoweredStructuredExit 标记 + StructuredExitRouting route 展开断言
+    /// （同 region 直 break / 跨 region route 局部 + dispatcher else-if 链 /
+    /// 静死语句原位保留 / 原 S7e try-finally 拦截负例转正），硬不变量——
+    /// routing 后 LoweredDescribe 全文不含 "StructuredExit"。
     /// S8c 新增：索引访问恒等降级（读/写/复合三形态共用 LoweredIndexExpression，
     /// 读写指令选择归 P4b）。
     /// 驱动仿 BinderTests.BindUnit：全管线 P1–P3 后直接进 Lowerer（不带 stdlib）。
@@ -59,6 +62,7 @@ namespace RigiCompiler.Tests
             TestSeqLowering();
             TestUsingLowering();
             TestTryWeaving();
+            TestStructuredExitRoutingForms();
             TestInterpolationLowering();
             TestSafeAccessLowering();
             TestNullFallbackLowering();
