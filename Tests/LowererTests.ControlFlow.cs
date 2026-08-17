@@ -463,6 +463,23 @@ namespace RigiCompiler.Tests
                 "Body(f, [.s0: i32, .b0: .breakid], [If(Binary(CmpGt, Param(x,i32), Int(0,i32), bool), " +
                 "[Throw(New(MyException, []))], [Assign(Local(.s0,i32), Int(0,i32))], .b0); " +
                 "Return(Local(.s0,i32))])");
+
+            // throw 同块其后语句：静态不可达，StructuredExitRouting 截断
+            // 不发射（Rigi 无 goto/label，死代码不存在被跳入复活的可能）
+            var (unit3, _, lowered3) = LowerUnit(
+                "class MyException : core.Exception {\n" +
+                "    pub override func getMessage(): String { return message }\n" +
+                "}\n" +
+                "func g(): i32 { return 1 }\n" +
+                "func f() {\n" +
+                "    throw new MyException()\n" +
+                "    var dead = g()\n" +
+                "}\n");
+            CheckNoErrors("无诊断（throw 后死代码）", unit3);
+            // 语句被截断；dead 的「声明」是 P3 产物（Locals 归 P3 所有），
+            // 仅作为从未赋值的局部留在 .vars——与未使用的普通声明同处置
+            TestHarness.Check("throw 后同块语句截断", LoweredDescribe.Body(BodyOf(lowered3, "f")),
+                "Body(f, [dead: i32], [Throw(New(MyException, []))])");
         }
 
         // ===== M46 回归（Stage B 形态）：else-if 链混合终止的 route 展开 =====

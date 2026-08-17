@@ -110,6 +110,15 @@ namespace RigiCompiler
                     case LoweredStructuredExit exit:
                         ExpandExit(exit, current, output, ctx, env, atTail);
                         return output;
+                    case LoweredThrowStatement:
+                        // throw 是无条件终止：同块其后语句静态不可达，截断
+                        // 不发射（与旧 weaving 的 BlockTerminates 对齐；
+                        // 主流编译器同策略——Roslyn 连 Debug 也删、GCC 的
+                        // cleanup_cfg 在 -O0 也删、Clang IR gen 在
+                        // terminator 后根本不发射；Rigi 无 goto/label，
+                        // 死代码不存在被跳入复活的可能）
+                        output.Add(statement);
+                        return output;
                     case LoweredBlock block:
                         // LoweredBlock 透明不压栈（尾位透传）
                         output.Add(new LoweredBlock(block.Origin,
