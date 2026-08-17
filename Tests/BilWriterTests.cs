@@ -405,7 +405,8 @@ namespace RigiCompiler.Tests
                 BilOp.Var("r"), new[] { BilOp.Var("a") }));
             body.Instructions.Add(new InvokeIndirectNoResultInstruction(BilOp.Var("fn"),
                 new[] { BilOp.Var("a") }));
-            body.Instructions.Add(new IfInstruction(BilOp.Var("cond"), new BilBlock("then"), null));
+            body.Instructions.Add(new IfInstruction(BilOp.Var("cond"), new BilBlock("then"), null,
+                BilOp.Var("brk")));
             body.Instructions.Add(new LoopInstruction(BilOp.Var("cond"), new BilBlock("body"),
                 null, new BilBlock("judge"), BilOp.Var("brk"), isRev: false));
             body.Instructions.Add(new LoopInstruction(BilOp.Var("cond"), new BilBlock("body"),
@@ -416,9 +417,10 @@ namespace RigiCompiler.Tests
                 new[] { new BilBlock("case0"), new BilBlock("case1") },
                 new BilBlock("default"), BilOp.Var("brk")));
             body.Instructions.Add(new TryInstruction(new BilBlock("body"), BilOp.Var("ex"),
-                tryCatchTable, null));
+                tryCatchTable, null, BilOp.Var("brk")));
             body.Instructions.Add(new ThrowInstruction(BilOp.Var("ex")));
-            body.Instructions.Add(new CallBlockInstruction(new BilBlock("helper")));
+            body.Instructions.Add(new CallBlockInstruction(new BilBlock("helper"),
+                BilOp.Var("brk")));
             body.Instructions.Add(new RetInstruction());
             fn.Blocks.Add(body);
             instModule.Functions.Add(fn);
@@ -486,7 +488,7 @@ namespace RigiCompiler.Tests
                 "        invoke fn(com.example::Service$load(id:.i64)@com.example::User) $r [$a, $b]",
                 "        invoke.indirect $fn $r [$a]",
                 "        invoke.indirect.noret $fn [$a]",
-                "        if $cond blk(then) none",
+                "        if $cond blk(then) none $brk",
                 "        loop $cond blk(body) none blk(judge) $brk",
                 "        loop.rev $cond blk(body) blk(enum) blk(judge) $brk",
                 "        break $brk",
@@ -499,8 +501,9 @@ namespace RigiCompiler.Tests
                 "            $ex",
                 "            res(R_Catches)",
                 "            none",
+                "            $brk",
                 "        throw $ex",
-                "        call blk(helper)",
+                "        call blk(helper) $brk",
                 "        ret",
                 "    }",
                 "}"));

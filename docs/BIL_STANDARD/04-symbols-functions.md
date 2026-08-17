@@ -358,7 +358,7 @@ fn(com.example::Owner$method(value:.i32)@.void) {
 - 局部变量在当前函数内唯一；
 - 参数和局部变量使用同一 `$name` 引用形式；
 - 普通局部变量在首次读取前必须被明确赋值；
-- `.breakid` 只能由 `loop`、`loop.rev` 或 `switch` 绑定；
+- `.breakid` 只能由 `loop`、`loop.rev`、`switch`、`call`、`if` 或 `try` 绑定（§16.5：所有结构化 child-region 指令的 region-exit capability）；
 - `.breakid` 不得由 `load`、`set.var`、参数传入、字段写入、数组写入或普通方法返回产生。
 
 > **注记**：局部变量上的 wrapper 应用标记（源码 `@W(...)` 注解于局部声明）由 cell 隐藏子类的 `value` 字段 `wrapped(W)` 承载（`.vars` 无新语法；统一 cell 存储见 `SYNTAX.md` §5.2 / §14.3 与 §8.3.1）。应用 init 实参见 §9.7 / §14.4 / §14.5。

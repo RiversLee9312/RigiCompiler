@@ -71,8 +71,8 @@
 - block 均在当前函数；
 - entry block 不正常落到末尾；
 - `ret` 类型正确；
-- break/continue token 来源与作用域正确；
-- continue 不引用 switch token；
+- break/continue token 来源与作用域正确（token 可源自 loop/loop.rev/switch/call/if/try，见 §16.5）；
+- continue 只引用 loop/loop.rev token（不引用 switch/call/if/try token）；
 - catch/finally table 合法；
 - 递归 block call 若被允许，必须能够由实现安全执行；实现可以选择拒绝无法证明有界的直接结构递归。
 
@@ -82,7 +82,7 @@
 
 `.breakid`：
 
-- 只能由 loop/loop.rev/switch 绑定；
+- 只能由 loop/loop.rev/switch/call/if/try 绑定（§16.5 推广的 region-exit capability）；
 - 每次绑定产生唯一 token；
 - 对应变量不得被二次普通赋值；
 - 不得复制；
@@ -154,7 +154,10 @@ VM 与 Native 实现必须在以下方面一致：
 - 字段、数组和变量的可观察读写；
 - getter/setter/operator/wrapper 的调用顺序；
 - short-circuit 行为；
-- try/catch/finally completion；
+- try/catch/finally completion（含 `finally(e)`：进入 finally 时仅 Throw
+  completion 把异常对象写入 EXCEPTION_VAR，Normal/Return/Break/Continue 等
+  一切非 Throw completion 一律写 null，见 §16.7；以及 try BREAK_ID 的
+  matching break 在 finally 完成后于 try 边界消费）；
 - async eager spawn；
 - await/yield 的逻辑状态变化；
 - enum case 身份与 payload；

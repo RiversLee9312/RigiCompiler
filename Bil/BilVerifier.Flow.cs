@@ -79,12 +79,16 @@ namespace RigiCompiler.Bil
                             $"block 引用越权：\"{referenced.Id}\" 不属于当前函数"));
                     }
                 }
-                // loop/switch 的 breakid 绑定位：必须声明为 .breakid 变量，
-                // 且全 fn 唯一绑定一次（§9.3/§21.6）
+                // 结构化 region 指令的 breakid 绑定位（§16.5 推广：
+                // loop/loop.rev/switch/if/call/try）：必须声明为
+                // .breakid 变量，且全 fn 唯一绑定一次（§9.3/§21.6）
                 string? boundBreakId = instruction switch
                 {
                     LoopInstruction loop => loop.BreakId.Name,
                     SwitchInstruction switchInstruction => switchInstruction.BreakId.Name,
+                    IfInstruction ifInstruction => ifInstruction.BreakId.Name,
+                    CallBlockInstruction call => call.BreakId.Name,
+                    TryInstruction tryInstruction => tryInstruction.BreakId.Name,
                     _ => null,
                 };
                 if (boundBreakId != null)
@@ -97,7 +101,7 @@ namespace RigiCompiler.Bil
                     else if (!context.BreakIdVariables.Contains(boundBreakId))
                     {
                         errors.Add(new BilVerificationError("21.6", location,
-                            $"loop/switch 只能绑定 .breakid 类型变量，\"${boundBreakId}\" " +
+                            $"结构化 region 指令只能绑定 .breakid 类型变量，\"${boundBreakId}\" " +
                             $"声明类型为 \"{context.VariableTypes[boundBreakId]}\""));
                     }
                     if (breakIdBindings.TryGetValue(boundBreakId, out var firstLocation))
@@ -184,8 +188,9 @@ namespace RigiCompiler.Bil
         }
 
         // 块分析：沿结构化指令递归。assigned 为进入态（就地演进），返回出口态；
-        // tokens 为活跃 breakid 结构栈（来源指令种类区分 loop/switch）；
-        // stack 为分析路径块栈（环检测）；reported 按 (位置, 变量) 去重 DA 错误
+        // tokens 为活跃 breakid 结构栈（来源指令种类区分 loop 与非 loop——
+        // continue 仅允许 loop token）；stack 为分析路径块栈（环检测）；
+        // reported 按 (位置, 变量) 去重 DA 错误
         private static HashSet<string> AnalyzeBlock(BilFunctionContext context, BilBlock block,
             HashSet<string> assigned, List<(string Name, bool IsLoop)> tokens,
             HashSet<BilBlock> stack, List<BilVerificationError> errors,
@@ -252,11 +257,14 @@ namespace RigiCompiler.Bil
                             break;
                         case IfInstruction ifInstruction:
                         {
+                            // if 的 breakid token 在双分支内活跃（§16.5 推广）
+                            var ifTokens = new List<(string, bool)>(tokens)
+                                { (ifInstruction.BreakId.Name, false) };
                             var thenExit = AnalyzeBlock(context, ifInstruction.ThenBlock,
-                                new HashSet<string>(assigned), tokens, stack, errors, reported);
+                                new HashSet<string>(assigned), ifTokens, stack, errors, reported);
                             var elseExit = ifInstruction.ElseBlock != null
                                 ? AnalyzeBlock(context, ifInstruction.ElseBlock,
-                                    new HashSet<string>(assigned), tokens, stack, errors, reported)
+                                    new HashSet<string>(assigned), ifTokens, stack, errors, reported)
                                 : new HashSet<string>(assigned);
                             // 结构化路径合并：两分支都赋值的变量才算已赋值
                             thenExit.IntersectWith(elseExit);
@@ -281,13 +289,20 @@ namespace RigiCompiler.Bil
                             break;   // 出口保守：保持进入态
                         }
                         case CallBlockInstruction call:
-                            // §16.1：块落尾返回续 call 的下一条——块内赋值对调用点可见
-                            assigned = AnalyzeBlock(context, call.Block, assigned, tokens,
+                            // §16.1：块落尾返回续 call 的下一条——块内赋值对调用点可见；
+                            // call 的 breakid token 在被调块内活跃（§16.5 推广）
+                            var callTokens = new List<(string, bool)>(tokens)
+                                { (call.BreakId.Name, false) };
+                            assigned = AnalyzeBlock(context, call.Block, assigned, callTokens,
                                 stack, errors, reported);
                             break;
                         case TryInstruction tryInstruction:
+                            // try 的 breakid token 在 body/各 handler/finally
+                            // 内活跃（§16.5 推广；finally 内允许 break tryId）
+                            var tryTokens = new List<(string, bool)>(tokens)
+                                { (tryInstruction.BreakId.Name, false) };
                             var tryExit = AnalyzeBlock(context, tryInstruction.Body,
-                                new HashSet<string>(assigned), tokens, stack, errors, reported);
+                                new HashSet<string>(assigned), tryTokens, stack, errors, reported);
                             if (tryInstruction.CatchTable is BilCatchTableResource catchTable)
                             {
                                 var catchExit = new HashSet<string>(tryExit);
@@ -296,7 +311,7 @@ namespace RigiCompiler.Bil
                                     // 异常槽在 handler 内视为已赋值（§16.7）
                                     var handlerAssigned = new HashSet<string>(assigned)
                                         { tryInstruction.ExceptionSlot.Name };
-                                    var handlerExit = AnalyzeBlock(context, entry.Handler, handlerAssigned, tokens,
+                                    var handlerExit = AnalyzeBlock(context, entry.Handler, handlerAssigned, tryTokens,
                                         stack, errors, reported);
                                     catchExit.IntersectWith(handlerExit);
                                 }
@@ -316,7 +331,7 @@ namespace RigiCompiler.Bil
                                 var finallyAssigned = new HashSet<string>(assigned)
                                     { tryInstruction.ExceptionSlot.Name };
                                 assigned = AnalyzeBlock(context, tryInstruction.FinallyBlock,
-                                    finallyAssigned, tokens, stack, errors, reported);
+                                    finallyAssigned, tryTokens, stack, errors, reported);
                             }
                             break;
                     }
@@ -393,7 +408,8 @@ namespace RigiCompiler.Bil
         }
 
         // break/continue 的 token：必须声明为 .breakid 变量，且在活跃结构
-        // 作用域内（§21.5）；continue 不得引用 switch token（§16.5）
+        // 作用域内（§21.5）；continue 不得引用非 loop token（§16.5——
+        // switch/if/call/try 的 breakid 均 AllowsContinue=false）
         private static void VerifyBreakToken(BilFunctionContext context,
             BilVariableOperand token, List<(string Name, bool IsLoop)> tokens,
             bool isContinue, string location, List<BilVerificationError> errors)
@@ -418,7 +434,7 @@ namespace RigiCompiler.Bil
                     if (isContinue && !isLoop)
                     {
                         errors.Add(new BilVerificationError("21.5", location,
-                            $"continue 不得引用 switch 的 breakid \"${token.Name}\""));
+                            $"continue 不得引用非 loop 的 breakid \"${token.Name}\""));
                     }
                     return;
                 }

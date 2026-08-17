@@ -7,29 +7,32 @@
 ### 16.1 block 调用
 
 ```bil
-call blk(BLOCK_ID)
+call blk(BLOCK_ID) BREAK_ID_VAR
 ```
 
 语义：
 
-1. 执行目标 block；
-2. 目标 block 正常到达末尾后返回；
-3. 从 `call` 的下一条指令继续。
+1. 绑定唯一 BREAK_ID 到 BREAK_ID_VAR（region-exit capability，见 §16.5）；
+2. 执行目标 block；
+3. 目标 block 正常到达末尾后返回；
+4. 从 `call` 的下一条指令继续。
 
-`call` 不创建函数调用栈帧，不涉及调用 ABI。目标 block 可以通过 `ret` 返回整个函数、通过 `throw` 传播异常，或执行合法的结构化退出。
+`call` 不创建函数调用栈帧，不涉及调用 ABI。目标 block 可以通过 `ret` 返回整个函数、通过 `throw` 传播异常、通过 `break BREAK_ID_VAR` 提前退出该 call region，或执行合法的结构化退出。
 
 ### 16.2 条件
 
 ```bil
-if CONDITION blk(TRUE_BLOCK) blk(FALSE_BLOCK)
+if CONDITION blk(TRUE_BLOCK) blk(FALSE_BLOCK) BREAK_ID_VAR
 ```
 
 规则：
 
 - CONDITION 必须为 `.bool`；
+- 进入 if 时绑定唯一 BREAK_ID 到 BREAK_ID_VAR（region-exit capability，见 §16.5）；
 - 只执行一个分支 block；
 - 分支 block 正常结束后，从 `if` 的下一条指令继续；
-- `FALSE_BLOCK` 可以写 `none`，表示条件为 false 时无操作。
+- `FALSE_BLOCK` 可以写 `none`，表示条件为 false 时无操作；
+- 分支内 `break BREAK_ID_VAR` 提前退出该 if region，续 `if` 的下一条指令。
 
 ### 16.3 正向循环
 
@@ -78,8 +81,13 @@ continue BREAK_ID_VAR
 
 规则：
 
-- `break` 可以引用 loop、loop.rev 或 switch 创建的 BREAK_ID；
-- `continue` 只能引用 loop/loop.rev 创建的 BREAK_ID；
+- `break` 可以引用 loop、loop.rev、switch、call、if 或 try 创建的 BREAK_ID——
+  每条结构化 child-region 指令都在进入时把自己的 BREAK_ID 绑定为指向其
+  region 帧的 region-exit capability；`break` 命中（matching，按 region 帧
+  引用相等）时在目标 region 边界消费：弹出该 region 并续其下一条指令；
+  未命中（nonmatching）的 abrupt completion 原样向外传播；
+- `continue` 只能引用 loop/loop.rev 创建的 BREAK_ID（其余 region 的
+  BREAK_ID 均不允许 continue）；
 - token 必须在当前动态结构作用域内有效；
 - BREAK_ID 不得跨函数、存入字段/数组、传给普通方法或从资源加载；
 - `continue` 正向循环跳到 ENUMERATOR_BLOCK，然后 JUDGE_BLOCK；
@@ -116,25 +124,35 @@ try blk(TRY_BLOCK)
     EXCEPTION_VAR
     res(CATCH_TABLE)
     blk(FINALLY_BLOCK)
+    BREAK_ID_VAR
 ```
 
 其中：
 
 - EXCEPTION_VAR 必须是可容纳异常或 null 的类型；
 - CATCH_TABLE 是按源码顺序排列的 `{ exception-type → block }` 表；
-- FINALLY_BLOCK 可以为 `none`。
+- FINALLY_BLOCK 可以为 `none`；
+- BREAK_ID_VAR 是进入 try 时绑定的 region-exit capability（见 §16.5）。
 
 语义：
 
-1. 执行 TRY_BLOCK；
-2. 正常完成时，将 EXCEPTION_VAR 置为 null；
-3. 抛出异常时，按顺序选择第一个兼容 catch 类型；
-4. 命中时把异常写入 EXCEPTION_VAR 并执行 catch block；
-5. catch 正常完成后，当前逃逸异常变为 null；
-6. 未命中或 catch 再次抛出时，EXCEPTION_VAR 保存当前逃逸异常；
-7. 执行 FINALLY_BLOCK；
-8. finally 正常完成后，有逃逸异常则继续抛出，否则继续 try 后下一条指令；
-9. finally 自身的 abrupt completion 覆盖此前待继续的 completion。
+1. 绑定唯一 BREAK_ID 到 BREAK_ID_VAR；
+2. 执行 TRY_BLOCK；
+3. 进入 finally 前恒写 EXCEPTION_VAR：仅当待处理 completion 为 Throw
+   （带异常对象）时写入该异常对象；Normal/Return/Break/Continue 等一切
+   非 Throw completion 一律显式写 null（不得遗留旧值）；
+4. 抛出异常时，按顺序选择第一个兼容 catch 类型；
+5. 命中时把异常写入 EXCEPTION_VAR 并执行 catch block；
+6. catch 正常完成后，当前逃逸异常变为 null；
+7. 未命中或 catch 再次抛出时，EXCEPTION_VAR 保存当前逃逸异常；
+8. 执行 FINALLY_BLOCK；
+9. finally 正常完成后，有逃逸异常则继续抛出，否则继续 try 后下一条指令；
+10. finally 自身的 abrupt completion 覆盖此前待继续的 completion。
+
+`break BREAK_ID_VAR`（try 的 BREAK_ID）在 try 边界消费：无论 break 源自
+TRY_BLOCK、某个 catch handler 还是 FINALLY_BLOCK，都先完成必要的 finally
+执行，再在 region 弹出时消费并续 try 后下一条指令。`break` 的 completion
+不是 Throw，绝不参与 catch 类型匹配。
 
 finally block 可读取 EXCEPTION_VAR，从而实现 `finally(e)` 中“无异常时为 null”的语义。
 

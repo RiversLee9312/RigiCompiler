@@ -914,9 +914,10 @@ namespace RigiCompiler.Bil
                     if (ops.Count == 1) return new RetInstruction(Var(ops[0], opcode));
                     throw Error("ret 操作数过多");
                 case "if":
-                    Count(opcode, ops, 3);
+                    Count(opcode, ops, 4);
                     return new IfInstruction(Var(ops[0], opcode), Block(ops[1], opcode),
-                        ops[2] is BilNoneOperand ? null : Block(ops[2], opcode));
+                        ops[2] is BilNoneOperand ? null : Block(ops[2], opcode),
+                        Var(ops[3], opcode));
                 case "loop": case "loop.rev":
                     Count(opcode, ops, 5);
                     return new LoopInstruction(Var(ops[0], opcode), Block(ops[1], opcode),
@@ -933,12 +934,13 @@ namespace RigiCompiler.Bil
                     return new SwitchInstruction(Var(ops[0], opcode), Res(ops[1], opcode),
                         Blocks(ops[2], opcode), Block(ops[3], opcode), Var(ops[4], opcode));
                 case "call":
-                    Count(opcode, ops, 1);
-                    return new CallBlockInstruction(Block(ops[0], opcode));
+                    Count(opcode, ops, 2);
+                    return new CallBlockInstruction(Block(ops[0], opcode), Var(ops[1], opcode));
                 case "try":
-                    Count(opcode, ops, 4);
+                    Count(opcode, ops, 5);
                     return new TryInstruction(Block(ops[0], opcode), Var(ops[1], opcode),
-                        Res(ops[2], opcode), ops[3] is BilNoneOperand ? null : Block(ops[3], opcode));
+                        Res(ops[2], opcode), ops[3] is BilNoneOperand ? null : Block(ops[3], opcode),
+                        Var(ops[4], opcode));
                 case "throw":
                     Count(opcode, ops, 1);
                     return new ThrowInstruction(Var(ops[0], opcode));

@@ -30,19 +30,23 @@ namespace RigiCompiler.Bil
         }
     }
 
-    // §16.2 条件：if COND blk(THEN) blk(ELSE)|none
+    // §16.2 条件：if COND blk(THEN) blk(ELSE)|none BREAKID——BREAKID
+    // 为 region-exit capability（§16.5 推广：任何结构化 child-region
+    // 指令均可被 break 命中），末尾操作数与 loop/switch 同位
     public sealed class IfInstruction : BilInstruction
     {
         public BilVariableOperand Condition { get; }
         public BilBlock ThenBlock { get; }
         public BilBlock? ElseBlock { get; }
+        public BilVariableOperand BreakId { get; }
 
         public IfInstruction(BilVariableOperand condition, BilBlock thenBlock,
-            BilBlock? elseBlock)
+            BilBlock? elseBlock, BilVariableOperand breakId)
         {
             Condition = condition;
             ThenBlock = thenBlock;
             ElseBlock = elseBlock;
+            BreakId = breakId;
         }
 
         internal override string Opcode => "if";
@@ -51,6 +55,7 @@ namespace RigiCompiler.Bil
             {
                 Condition, new BilBlockOperand(ThenBlock),
                 ElseBlock != null ? new BilBlockOperand(ElseBlock) : BilNoneOperand.Instance,
+                BreakId,
             };
 
         internal override void Execute(VmContext context, VmCoroutine coroutine)
@@ -60,15 +65,7 @@ namespace RigiCompiler.Bil
             {
                 throw new VmException("if 条件不是 .bool：" + condition.TypeRef);
             }
-            if (flag.Value)
-            {
-                coroutine.PushBlock(ThenBlock);
-                return;
-            }
-            if (ElseBlock != null)
-            {
-                coroutine.PushBlock(ElseBlock);
-            }
+            coroutine.EnterIf(this, flag.Value);
         }
     }
 
@@ -158,7 +155,7 @@ namespace RigiCompiler.Bil
             }
             if (!breakId.AllowsContinue)
             {
-                throw new VmException("continue 不能引用 switch 的 .breakid");
+                throw new VmException("continue 不能引用非 loop 的 .breakid");
             }
             coroutine.Complete(VmCompletion.Continue(breakId));
         }
@@ -240,44 +237,51 @@ namespace RigiCompiler.Bil
         }
     }
 
-    // §16.1 block 调用：call blk(BLOCK)（不建栈帧，block 落尾自然
-    // 返回续 call 的下一条）
+    // §16.1 block 调用：call blk(BLOCK) BREAKID（不建栈帧，block 落尾
+    // 自然返回续 call 的下一条）；BREAKID 为 region-exit capability
+    // （§16.5 推广），末尾操作数与 loop/switch 同位
     public sealed class CallBlockInstruction : BilInstruction
     {
         public BilBlock Block { get; }
+        public BilVariableOperand BreakId { get; }
 
-        public CallBlockInstruction(BilBlock block)
+        public CallBlockInstruction(BilBlock block, BilVariableOperand breakId)
         {
             Block = block;
+            BreakId = breakId;
         }
 
         internal override string Opcode => "call";
         internal override IReadOnlyList<BilOperand> Operands =>
-            new BilOperand[] { new BilBlockOperand(Block) };
+            new BilOperand[] { new BilBlockOperand(Block), BreakId };
 
         internal override void Execute(VmContext context, VmCoroutine coroutine)
         {
-            coroutine.PushBlock(Block);
+            coroutine.EnterCall(this);
         }
     }
 
     // §16.7 try/catch/finally：try blk(BODY) SLOT res(CATCH_TABLE)
-    // blk(FINALLY)|none——规范排版：首行 try block，其后异常变量 /
-    // catch 表 / finally 各占一行
+    // blk(FINALLY)|none BREAKID——规范排版：首行 try block，其后异常
+    // 变量 / catch 表 / finally / breakid 各占一行；BREAKID 为
+    // region-exit capability（§16.5 推广，break 命中 tryId 在 try
+    // 边界消费、不进 catch matching）
     public sealed class TryInstruction : BilInstruction
     {
         public BilBlock Body { get; }
         public BilVariableOperand ExceptionSlot { get; }
         public BilResource CatchTable { get; }
         public BilBlock? FinallyBlock { get; }
+        public BilVariableOperand BreakId { get; }
 
         public TryInstruction(BilBlock body, BilVariableOperand exceptionSlot,
-            BilResource catchTable, BilBlock? finallyBlock)
+            BilResource catchTable, BilBlock? finallyBlock, BilVariableOperand breakId)
         {
             Body = body;
             ExceptionSlot = exceptionSlot;
             CatchTable = catchTable;
             FinallyBlock = finallyBlock;
+            BreakId = breakId;
         }
 
         internal override string Opcode => "try";
@@ -288,6 +292,7 @@ namespace RigiCompiler.Bil
                 new BilBlockOperand(Body), ExceptionSlot, new BilResourceOperand(CatchTable),
                 FinallyBlock != null ? new BilBlockOperand(FinallyBlock)
                     : BilNoneOperand.Instance,
+                BreakId,
             };
 
         internal override void Execute(VmContext context, VmCoroutine coroutine)

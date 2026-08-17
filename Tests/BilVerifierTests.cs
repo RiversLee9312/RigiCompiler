@@ -341,6 +341,7 @@ namespace RigiCompiler.Tests
 
             // ===== 负例：非法模块按规则命中 =====
             NegativeCases();
+            TestRegionBreakIdBinding();
             TestEnumStructInstanceFieldInit();
 
             return TestHarness.Summary("BilVerifier");
@@ -1090,8 +1091,9 @@ namespace RigiCompiler.Tests
                 new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
             m.Functions.Add(otherFn);
             m.Functions[0].Vars.Add(new BilVarDeclaration(".bool", "c"));
+            m.Functions[0].Vars.Add(new BilVarDeclaration(".breakid", "bk0"));
             m.Functions[0].Blocks[0].Instructions.Insert(1, new IfInstruction(
-                BilOp.Var("c"), otherBlock, null));
+                BilOp.Var("c"), otherBlock, null, BilOp.Var("bk0")));
             BilTestHarness.CheckBilInvalid("跨函数 block 引用", m, "不属于当前函数");
 
             // §21.2：未声明变量
@@ -1201,9 +1203,11 @@ namespace RigiCompiler.Tests
 
             // §21.3：if 条件非 .bool
             m = MinimalModule(out _, out entryBlock);
+            m.Functions[0].Vars.Add(new BilVarDeclaration(".breakid", "bk1"));
             var thenBlock = new BilBlock("then");
             m.Functions[0].Blocks.Add(thenBlock);
-            entryBlock.Instructions.Insert(1, new IfInstruction(BilOp.Var("x"), thenBlock, null));
+            entryBlock.Instructions.Insert(1, new IfInstruction(BilOp.Var("x"), thenBlock, null,
+                BilOp.Var("bk1")));
             BilTestHarness.CheckBilInvalid("if 条件非 bool", m, "if 条件");
 
             // §21.3：ret 返回值类型不符
@@ -1227,12 +1231,13 @@ namespace RigiCompiler.Tests
                 BilOp.Var("x"), table, new List<BilBlock> { caseBlock }, defaultBlock,
                 BilOp.Var("sw")));
             BilTestHarness.CheckBilInvalid("continue 引用 switch token", m,
-                "continue 不得引用 switch");
+                "continue 不得引用非 loop");
 
             // §21.4：if 分支合并后读取（then 内赋值的变量，合并后视为未赋值）
             m = MinimalModule(out _, out entryBlock);
             m.Functions[0].Vars.Add(new BilVarDeclaration(".bool", "cond3"));
             m.Functions[0].Vars.Add(new BilVarDeclaration(".i32", "y"));
+            m.Functions[0].Vars.Add(new BilVarDeclaration(".breakid", "bk3"));
             var trueRes = new BilScalarResource("R_T3", BilScalarType.Bool, "true");
             m.Resources.Add(trueRes);
             var thenAssign = new BilBlock("then-assign");
@@ -1240,7 +1245,7 @@ namespace RigiCompiler.Tests
             m.Functions[0].Blocks.Add(thenAssign);
             entryBlock.Instructions.Insert(1, new LoadInstruction(trueRes, BilOp.Var("cond3")));
             entryBlock.Instructions.Insert(2, new IfInstruction(
-                BilOp.Var("cond3"), thenAssign, null));
+                BilOp.Var("cond3"), thenAssign, null, BilOp.Var("bk3")));
             entryBlock.Instructions.Insert(3, new SetVarInstruction(BilOp.Var("y"), BilOp.Var("x")));
             // y 只在 then 分支赋值，if 落尾后读取 y —— 合并取交集，报未赋值；
             // 同时 then 内 set.var $x $y 读取未赋值的 y 也报（同变量去重后各一条）
@@ -1765,10 +1770,11 @@ namespace RigiCompiler.Tests
                 new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
             m.Functions.Add(foreignFn);
             m.Functions[0].Vars.Add(new BilVarDeclaration(".bool", "cf"));
+            m.Functions[0].Vars.Add(new BilVarDeclaration(".breakid", "bkf"));
             m.Functions[0].Blocks[0].Instructions.Insert(1,
                 new LoadInstruction(boolResCf, BilOp.Var("cf")));
             m.Functions[0].Blocks[0].Instructions.Insert(2, new IfInstruction(
-                BilOp.Var("cf"), foreignBlock, null));
+                BilOp.Var("cf"), foreignBlock, null, BilOp.Var("bkf")));
             var cascadeErrors = BilVerifier.Verify(m);
             TestHarness.CheckTrue("越权块类型错误不级联（越权一条 + 所属 fn 一条）",
                 cascadeErrors.Count == 2
@@ -2101,6 +2107,89 @@ namespace RigiCompiler.Tests
             return module;
         }
 
+        // ===== §16.5 推广：if/call/try 的 breakid 绑定与 token 作用域 =====
+        private static void TestRegionBreakIdBinding()
+        {
+            TestHarness.Section("BilVerifier §16.5 region breakid（if/call/try）");
+
+            foreach (var kind in new[] { "if", "call", "try" })
+            {
+                // 正例：合法绑定 + child 内 break 命中自身 token
+                BilTestHarness.CheckBilValid(kind + " breakid 绑定与区域内 break（正例）",
+                    RegionModule(kind, ".breakid",
+                        child => child.Instructions.Add(new BreakInstruction(BilOp.Var("bk")))));
+
+                // §21.2：breakid 未声明
+                BilTestHarness.CheckBilInvalid(kind + " 的 breakid 未声明",
+                    RegionModule(kind, null, _ => { }), "未声明");
+
+                // §21.6：绑定非 .breakid 类型变量
+                BilTestHarness.CheckBilInvalid(kind + " 绑定非 .breakid 变量",
+                    RegionModule(kind, ".i32", _ => { }), "只能绑定 .breakid 类型变量");
+
+                // §21.5：token 作用域外 break
+                BilTestHarness.CheckBilInvalid(kind + " token 作用域外 break",
+                    RegionModule(kind, ".breakid", _ => { },
+                        entry => entry.Instructions.Insert(2,
+                            new BreakInstruction(BilOp.Var("bk")))),
+                    "不在当前活跃结构作用域内");
+
+                // §16.5：continue 不得引用非 loop token
+                BilTestHarness.CheckBilInvalid("continue 引用 " + kind + " token",
+                    RegionModule(kind, ".breakid",
+                        child => child.Instructions.Add(new ContinueInstruction(BilOp.Var("bk")))),
+                    "continue 不得引用非 loop");
+            }
+
+            // §21.6：同一 .breakid 被两条 region 指令二次绑定
+            var dup = RegionModule("if", ".breakid", _ => { });
+            var secondChild = new BilBlock("if-child2");
+            dup.Functions[0].Blocks.Add(secondChild);
+            dup.Functions[0].Blocks[0].Instructions.Insert(3, new IfInstruction(
+                BilOp.Var("c"), secondChild, null, BilOp.Var("bk")));
+            BilTestHarness.CheckBilInvalid("region breakid 二次绑定", dup, "二次绑定");
+        }
+
+        // if/call/try region 模块骨架（MinimalModule 改造）：声明 breakid
+        // 变量 bk（breakIdType 为 null = 不声明，模拟未声明负例）、bool
+        // 变量 c（if 条件）与 try 异常槽 ex；entry 依次 load c → region
+        // 指令（child 为唯一子块，breakid = $bk）；fillEntry 可向 entry
+        // 追加指令
+        private static BilModule RegionModule(string kind, string? breakIdType,
+            Action<BilBlock> fillChild, Action<BilBlock>? fillEntry = null)
+        {
+            var m = MinimalModule(out _, out var entry);
+            m.Resources.Add(new BilScalarResource("R_BT", BilScalarType.Bool, "true"));
+            if (breakIdType != null)
+            {
+                m.Functions[0].Vars.Add(new BilVarDeclaration(breakIdType, "bk"));
+            }
+            m.Functions[0].Vars.Add(new BilVarDeclaration(".bool", "c"));
+            m.Functions[0].Vars.Add(new BilVarDeclaration(".nullable<core::Exception>", "ex"));
+            var child = new BilBlock(kind + "-child");
+            fillChild(child);
+            m.Functions[0].Blocks.Add(child);
+            BilInstruction instruction = kind switch
+            {
+                "if" => new IfInstruction(BilOp.Var("c"), child, null, BilOp.Var("bk")),
+                "call" => new CallBlockInstruction(child, BilOp.Var("bk")),
+                _ => new TryInstruction(child, BilOp.Var("ex"), EmptyRegionCatchTable(m), null,
+                    BilOp.Var("bk")),
+            };
+            entry.Instructions.Insert(1,
+                new LoadInstruction(m.Resources[m.Resources.Count - 1], BilOp.Var("c")));
+            entry.Instructions.Insert(2, instruction);
+            fillEntry?.Invoke(entry);
+            return m;
+        }
+
+        private static BilCatchTableResource EmptyRegionCatchTable(BilModule module)
+        {
+            var table = new BilCatchTableResource("R_CT", Array.Empty<BilCatchEntry>());
+            module.Resources.Add(table);
+            return table;
+        }
+
         private static void TestAwaitInstructions()
         {
             TestHarness.Section("BilVerifier await");
@@ -2376,7 +2465,7 @@ namespace RigiCompiler.Tests
                     entry.Instructions.Add(new LoadInstruction(
                         (BilScalarResource)module.Resources[1], BilOp.Var("cond")));
                     entry.Instructions.Add(new IfInstruction(
-                        BilOp.Var("cond"), thenBlock, elseBlock));
+                        BilOp.Var("cond"), thenBlock, elseBlock, BilOp.Var("brk")));
                     entry.Instructions.Add(new RetInstruction());
                 }));
 
@@ -2409,7 +2498,7 @@ namespace RigiCompiler.Tests
                     init.Blocks.Add(tryBody);
                     init.Blocks.Add(finallyBlock);
                     entry.Instructions.Add(new TryInstruction(tryBody, BilOp.Var("ex"),
-                        catchTable, finallyBlock));
+                        catchTable, finallyBlock, BilOp.Var("brk")));
                     entry.Instructions.Add(new RetInstruction());
                 }));
 
@@ -2434,7 +2523,7 @@ namespace RigiCompiler.Tests
                     entry.Instructions.Add(new LoadInstruction(
                         (BilScalarResource)module.Resources[1], BilOp.Var("cond")));
                     entry.Instructions.Add(new IfInstruction(
-                        BilOp.Var("cond"), thenBlock, elseBlock));
+                        BilOp.Var("cond"), thenBlock, elseBlock, BilOp.Var("brk")));
                     entry.Instructions.Add(new RetInstruction());
                 }), "全部执行路径");
 

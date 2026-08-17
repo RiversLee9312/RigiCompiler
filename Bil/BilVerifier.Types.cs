@@ -10,8 +10,9 @@ namespace RigiCompiler.Bil
     // M64 增补：§18 hint 指令（资源归属本模块 §21.2 + string 标量限定 §21.3）。
     //
     // ClassifyVariables 是指令读/写变量位置的唯一分类表（DA 与 breakid
-    // 检查共用）；绑定/特殊位（loop/switch 的 breakid、break/continue 的
-    // token、try 的异常槽）不进普通读/写，由 Flow.cs 按 capability 规则处理。
+    // 检查共用）；绑定/特殊位（loop/switch/if/call/try 的 breakid、
+    // break/continue 的 token、try 的异常槽）不进普通读/写，由 Flow.cs
+    // 按 capability 规则处理。
     // 两个 switch 的 default 都报「验证器未覆盖指令类型」——Bil 新增指令
     // 子类时必须同步扩展验证器（防腐化，惯例同 ASTIntegrityValidator）。
 
@@ -57,7 +58,7 @@ namespace RigiCompiler.Bil
             {
                 errors.Add(new BilVerificationError("21.6", location,
                     $".breakid 变量 \"${variable.Name}\" 不得被普通读写（只允许 " +
-                    "loop/loop.rev/switch 绑定与 break/continue 引用）"));
+                    "loop/loop.rev/switch/if/call/try 绑定与 break/continue 引用）"));
             }
         }
 
@@ -258,8 +259,10 @@ namespace RigiCompiler.Bil
                 case ThrowInstruction throwInstruction:
                     reads.Add(throwInstruction.Exception);
                     return true;
-                // break/continue 的 token、loop/switch 的 breakid 绑定位、try 的
-                // 异常槽：capability/特殊位，不进普通读写（Flow.cs 处理）
+                // break/continue 的 token、结构化 region 指令的 breakid
+                // 绑定位、try 的异常槽：capability/特殊位，不进普通读写
+                //（Flow.cs 处理）——If 的 Condition 是普通读位已在上处理，
+                // 其 BreakId 绑定位随本组豁免
                 case BreakInstruction:
                 case ContinueInstruction:
                 case CallBlockInstruction:

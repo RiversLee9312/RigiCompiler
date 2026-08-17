@@ -301,6 +301,13 @@ namespace RigiCompiler.Tests
             var text2 = BilWriter.Write(parsed);
             TestHarness.CheckTrue("手工 BilModule round-trip 文本一致", text1 == text2,
                 FirstDiff(text1, text2));
+            // §16.5 推广：if/call/try 携带末尾 breakid 操作数的往返
+            TestHarness.CheckTrue("if/call/try 带 breakid 往返",
+                text1.Contains("if $flag blk(if0-then) blk(if0-else) $.b1")
+                && text1.Contains("call blk(seq0) $.b3")
+                && text2.Contains("if $flag blk(if0-then) blk(if0-else) $.b1")
+                && text2.Contains("call blk(seq0) $.b3")
+                && text2.Contains("$.b2"));
         }
 
         private static BilModule FullFamilyModule()
@@ -358,7 +365,8 @@ namespace RigiCompiler.Tests
                 (".fieldid<Box, .i32, static>", "sfid"), (".bool", "flag"),
                 (".any", "anyv"), ("Box", "obj"), ("Wrap", "w"), (".typeid<Wrap>", "wid"),
                 (".i32", "r"), (".breakid", ".b0"), (".array<.i32>", "arr"),
-                (".i32", "e"),
+                (".i32", "e"), (".breakid", ".b1"), (".breakid", ".b2"),
+                (".breakid", ".b3"),
             })
             {
                 main.Vars.Add(new BilVarDeclaration(v.Item1, v.Item2));
@@ -439,7 +447,7 @@ namespace RigiCompiler.Tests
             entry.Instructions.Add(new InvokeIndirectNoResultInstruction(BilOp.Var("obj"),
                 Array.Empty<BilVariableOperand>()));
             entry.Instructions.Add(new IfInstruction(BilOp.Var("flag"),
-                new BilBlock("if0-then"), new BilBlock("if0-else")));
+                new BilBlock("if0-then"), new BilBlock("if0-else"), BilOp.Var(".b1")));
             entry.Instructions.Add(new LoopInstruction(BilOp.Var("flag"), new BilBlock("loop0-body"),
                 null, new BilBlock("loop0-judge"), BilOp.Var(".b0"), isRev: false));
             entry.Instructions.Add(new LoopInstruction(BilOp.Var("flag"), new BilBlock("loop1-body"),
@@ -448,8 +456,10 @@ namespace RigiCompiler.Tests
                 new[] { new BilBlock("switch0-item0") }, new BilBlock("switch0-default"),
                 BilOp.Var(".b0")));
             entry.Instructions.Add(new TryInstruction(new BilBlock("try0-body"),
-                BilOp.Var("anyv"), module.Resources[3], new BilBlock("try0-finally")));
-            entry.Instructions.Add(new CallBlockInstruction(new BilBlock("seq0")));
+                BilOp.Var("anyv"), module.Resources[3], new BilBlock("try0-finally"),
+                BilOp.Var(".b2")));
+            entry.Instructions.Add(new CallBlockInstruction(new BilBlock("seq0"),
+                BilOp.Var(".b3")));
             entry.Instructions.Add(new AwaitInstruction(BilOp.Var("obj"), BilOp.Var("x")));
             entry.Instructions.Add(new YieldInstruction(BilOp.Var("obj")));
             entry.Instructions.Add(new ThrowInstruction(BilOp.Var("obj")));

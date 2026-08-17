@@ -22,6 +22,8 @@ namespace RigiCompiler.Bil.Vm
         Loop,
         Switch,
         Try,
+        If,
+        Call,
     }
 
     public enum VmLoopPhase
@@ -91,6 +93,8 @@ namespace RigiCompiler.Bil.Vm
         public SwitchInstruction? Switch { get; private set; }
         public TryInstruction? Try { get; private set; }
         public VmTryPhase TryPhase { get; set; }
+        public IfInstruction? If { get; private set; }
+        public CallBlockInstruction? Call { get; private set; }
         public VmCompletion? SavedCompletion { get; set; }
         public VmBreakId? BreakId { get; set; }
 
@@ -123,6 +127,16 @@ namespace RigiCompiler.Bil.Vm
                 Try = instruction,
                 TryPhase = VmTryPhase.Body,
             };
+        }
+
+        public static VmBlockFrame IfRegion(IfInstruction instruction)
+        {
+            return new VmBlockFrame(null, VmRegionKind.If) { If = instruction };
+        }
+
+        public static VmBlockFrame CallRegion(CallBlockInstruction instruction)
+        {
+            return new VmBlockFrame(null, VmRegionKind.Call) { Call = instruction };
         }
     }
 
@@ -510,12 +524,21 @@ namespace RigiCompiler.Bil.Vm
             }
         }
 
+        // 结构化 region 的 breakid 统一绑定（§16.5 推广：loop/switch/
+        // try/if/call 共用）：创建 VmBreakId 句柄回挂 region 帧，并写入
+        // 指令声明的 .breakid 变量
+        private void BindRegionBreakId(VmBlockFrame region, BilVariableOperand breakIdOperand,
+            bool allowsContinue)
+        {
+            var breakId = new VmBreakId(region, allowsContinue);
+            region.BreakId = breakId;
+            WriteVar(breakIdOperand.Name, breakId);
+        }
+
         public void EnterLoop(LoopInstruction instruction)
         {
             var region = VmBlockFrame.LoopRegion(instruction);
-            var breakId = new VmBreakId(region, allowsContinue: true);
-            region.BreakId = breakId;
-            WriteVar(instruction.BreakId.Name, breakId);
+            BindRegionBreakId(region, instruction.BreakId, allowsContinue: true);
             CurrentFrame.BlockStack.Push(region);
             region.LoopPhase = instruction.IsRev ? VmLoopPhase.Body : VmLoopPhase.Judge;
             PushLoopPhase(region);
@@ -524,9 +547,7 @@ namespace RigiCompiler.Bil.Vm
         public void EnterSwitch(SwitchInstruction instruction, int itemIndex)
         {
             var region = VmBlockFrame.SwitchRegion(instruction);
-            var breakId = new VmBreakId(region, allowsContinue: false);
-            region.BreakId = breakId;
-            WriteVar(instruction.BreakId.Name, breakId);
+            BindRegionBreakId(region, instruction.BreakId, allowsContinue: false);
             CurrentFrame.BlockStack.Push(region);
             var target = itemIndex >= 0
                 ? instruction.ItemBlocks[itemIndex]
@@ -537,8 +558,35 @@ namespace RigiCompiler.Bil.Vm
         public void EnterTry(TryInstruction instruction)
         {
             var region = VmBlockFrame.TryRegion(instruction);
+            BindRegionBreakId(region, instruction.BreakId, allowsContinue: false);
             CurrentFrame.BlockStack.Push(region);
             PushBlock(instruction.Body);
+        }
+
+        public void EnterIf(IfInstruction instruction, bool condition)
+        {
+            var region = VmBlockFrame.IfRegion(instruction);
+            BindRegionBreakId(region, instruction.BreakId, allowsContinue: false);
+            CurrentFrame.BlockStack.Push(region);
+            // false 且无 else：不压 child——region 裸顶由 Step 的
+            // IsRegion 分支 Normal 结束
+            if (condition)
+            {
+                PushBlock(instruction.ThenBlock);
+                return;
+            }
+            if (instruction.ElseBlock != null)
+            {
+                PushBlock(instruction.ElseBlock);
+            }
+        }
+
+        public void EnterCall(CallBlockInstruction instruction)
+        {
+            var region = VmBlockFrame.CallRegion(instruction);
+            BindRegionBreakId(region, instruction.BreakId, allowsContinue: false);
+            CurrentFrame.BlockStack.Push(region);
+            PushBlock(instruction.Block);
         }
 
         private void Unwind()
@@ -566,9 +614,10 @@ namespace RigiCompiler.Bil.Vm
                     HandleLoopRegion(top);
                     continue;
                 }
-                if (top.Kind == VmRegionKind.Switch)
+                if (top.Kind == VmRegionKind.Switch || top.Kind == VmRegionKind.If
+                    || top.Kind == VmRegionKind.Call)
                 {
-                    HandleSwitchRegion(top);
+                    HandleBreakableRegion(top);
                     continue;
                 }
                 frame.BlockStack.Pop();
@@ -613,8 +662,10 @@ namespace RigiCompiler.Bil.Vm
                 var completion = pending.IsAbrupt
                     ? pending
                     : (region.SavedCompletion ?? VmCompletion.Normal);
+                // matching Break 在 finally 完成后于 try 边界消费（finally
+                // 自身的 abrupt 覆盖 SavedCompletion，同样参与匹配）
                 CurrentFrame.BlockStack.Pop();
-                _pending = completion.IsAbrupt ? completion : null;
+                _pending = PropagateAfterRegionPop(region, completion);
                 return;
             }
 
@@ -625,14 +676,14 @@ namespace RigiCompiler.Bil.Vm
                 return;
             }
 
-            if (pending.Kind == VmCompletionKind.Throw && pending.Value != null)
-            {
-                WriteVar(instruction.ExceptionSlot.Name, pending.Value);
-            }
-            else if (pending.Kind == VmCompletionKind.Normal)
-            {
-                WriteVar(instruction.ExceptionSlot.Name, VmNull.Instance);
-            }
+            // §16.7 finally(e) 基础语义：进入 finally 前恒写异常槽——仅
+            // pending 为 Throw（带异常对象）时写异常值；Normal/Return/
+            // Break/Continue 等一切非 Throw completion 一律写 null
+            // （不得遗留上一次的旧值）
+            WriteVar(instruction.ExceptionSlot.Name,
+                pending.Kind == VmCompletionKind.Throw && pending.Value != null
+                    ? pending.Value
+                    : VmNull.Instance);
 
             if (instruction.FinallyBlock != null)
             {
@@ -643,8 +694,27 @@ namespace RigiCompiler.Bil.Vm
                 return;
             }
 
+            // 无 finally 直通：matching Break 在 try 边界消费，不匹配则
+            // 原样传播（Break 绝不进入 catch matching——上面的绑定条件
+            // 限定 Throw）
             CurrentFrame.BlockStack.Pop();
-            _pending = pending.IsAbrupt ? pending : null;
+            _pending = PropagateAfterRegionPop(region, pending);
+        }
+
+        // region 弹出后的 completion 结算（§16.5 推广）：Break 命中本
+        // region 的 breakid → 消费（返回 null，续 region 后下一条）；
+        // Normal → 清 pending；其他 abrupt 原样传播。Continue/Return/
+        // Throw 不被非 loop region 消费（Continue 不可能匹配——这些
+        // region 的 breakid AllowsContinue=false；Return/Throw 无
+        // BreakId）
+        private VmCompletion? PropagateAfterRegionPop(VmBlockFrame region, VmCompletion completion)
+        {
+            if (completion.Kind == VmCompletionKind.Break
+                && completion.BreakId != null && completion.BreakId.Region == region)
+            {
+                return null;
+            }
+            return completion.IsAbrupt ? completion : null;
         }
 
         private bool TryBindCatch(VmBlockFrame region, VmValue exception)
@@ -755,23 +825,14 @@ namespace RigiCompiler.Bil.Vm
             PushBlock(block);
         }
 
-        private void HandleSwitchRegion(VmBlockFrame region)
+        // switch/if/call region 的展开骨架（§16.5 推广后三者同构）：
+        // pop 后经 PropagateAfterRegionPop 结算——matching Break 消费、
+        // Normal 清、其他 abrupt 传播
+        private void HandleBreakableRegion(VmBlockFrame region)
         {
             var pending = _pending ?? VmCompletion.Normal;
-            if (pending.Kind == VmCompletionKind.Break
-                && pending.BreakId != null && pending.BreakId.Region == region)
-            {
-                CurrentFrame.BlockStack.Pop();
-                _pending = null;
-                return;
-            }
-            if (pending.Kind == VmCompletionKind.Normal)
-            {
-                CurrentFrame.BlockStack.Pop();
-                _pending = null;
-                return;
-            }
             CurrentFrame.BlockStack.Pop();
+            _pending = PropagateAfterRegionPop(region, pending);
         }
 
         private static BilBlock FindEntrypointBlock(BilFunction function)
