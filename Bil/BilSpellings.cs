@@ -13,6 +13,9 @@ namespace RigiCompiler.Bil
         // §9.7：实体 wrapper 初始化方法保留名（方法简单名精确匹配）
         public const string InitWrapperMethodName = "..init.wrapper";
 
+        // §13.3：setter 体内直读直写 backing 的保留字段名（不绕 wrapper 链）
+        public const string BackingValueFieldName = "..value";
+
         // §8.7：静态 companion 类型名（声明类的嵌套类，无 UUID；canonical
         // 形态为「命名空间::外层...companion」）
         public const string CompanionTypeName = "..companion";

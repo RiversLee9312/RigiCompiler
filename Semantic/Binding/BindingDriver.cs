@@ -687,6 +687,8 @@ namespace RigiCompiler
         {
             var field = env.Declarations.SymbolOf(node) as FieldSymbol
                 ?? throw new CompilerInternalException("P1 未登记字段符号: " + node.Name);
+            // 静态/全局 wrapped 字段的访问器体已由 cell getValue/setValue 接管
+            if (field.CellStorage != null) return;
             if (node.Getter != null && field.Getter != null)
             {
                 BindAccessorBody(node.Getter, field.Getter, field, isSetter: false, fileCtx, owner);
@@ -729,7 +731,7 @@ namespace RigiCompiler
                 {
                     statements.Add(new BoundReturnStatement(accessorNode,
                         PathFacility.MakeBackingFieldReference(accessorNode, field, getterType,
-                            ctx.Frame)));
+                            ctx.Frame, forSetter: false)));
                 }
                 body = new BoundBlock(accessorNode, statements);
             }
@@ -740,7 +742,7 @@ namespace RigiCompiler
             {
                 var implicitAssign = new BoundAssignmentStatement(accessorNode,
                     PathFacility.MakeBackingFieldReference(accessorNode, field, backingType,
-                        ctx.Frame),
+                        ctx.Frame, forSetter: true),
                     new BoundValueReferenceExpression(accessorNode, symbol.Parameters[0],
                         backingType));
                 body = new BoundBlock(body.Syntax,

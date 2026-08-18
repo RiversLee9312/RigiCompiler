@@ -230,7 +230,7 @@ namespace RigiCompiler.Tests
             var itemSetter = bodies18.Single(b => b.Method.Kind == MethodKind.Setter
                 && b.Method.Name == "item");
             TestHarness.CheckTrue("setter 体 value 赋值到 backing",
-                BoundDescribe.Body(itemSetter).Contains("InstField(item, This(Box), T)"));
+                BoundDescribe.Body(itemSetter).Contains("InstField(..value, This(Box), T)"));
 
             // ===== const 字段收窄区域内赋值（诊断归位：const 检查优先于
             // place 形态）=====

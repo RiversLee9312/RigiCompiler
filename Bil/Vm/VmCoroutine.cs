@@ -183,6 +183,37 @@ namespace RigiCompiler.Bil.Vm
         // （BIL §15.4 / SYNTAX §14.3：set 链 outer→inner 的下一环落点）
         internal Stack<VmWrapperDispatchFrame> WrapperDispatch { get; } =
             new Stack<VmWrapperDispatchFrame>();
+        // wrapper get 链延续：getter 返回后把结果过链再写真实目标
+        // （§13.3 读路径序：backing → getter → wrapper 链）
+        internal sealed class PendingGetChain
+        {
+            public string TempSlot { get; }
+            public string? TargetSlot { get; }
+            public VmValue Host { get; }
+            public string FieldSymbol { get; }
+            public string ElementType { get; }
+            public IReadOnlyList<string> Wrappers { get; }
+            public IReadOnlyList<string> EntityWrappers { get; }
+            public int Depth { get; }
+
+            public PendingGetChain(string tempSlot, string? targetSlot, VmValue host,
+                string fieldSymbol, string elementType, IReadOnlyList<string> wrappers,
+                IReadOnlyList<string> entityWrappers, int depth)
+            {
+                TempSlot = tempSlot;
+                TargetSlot = targetSlot;
+                Host = host;
+                FieldSymbol = fieldSymbol;
+                ElementType = elementType;
+                Wrappers = wrappers;
+                EntityWrappers = entityWrappers;
+                Depth = depth;
+            }
+        }
+
+        private readonly List<PendingGetChain> _pendingGetChains = new List<PendingGetChain>();
+        private int _getChainCounter;
+
         public VmValue? Result { get; private set; }
         public VmException? Failure { get; private set; }
 
@@ -263,7 +294,25 @@ namespace RigiCompiler.Bil.Vm
             CallStack.Push(frame);
         }
 
-        public void ReturnFromFrame(VmValue? value)
+        // 注册 getter 返回后过 wrapper 链的延续；Depth = getter 帧压入前的
+        // 调用栈深度；返回临时结果槽名
+        internal string RegisterPendingGetChain(string? targetSlot, VmValue host,
+            string fieldSymbol, string elementType, IReadOnlyList<string> wrappers,
+            IReadOnlyList<string> entityWrappers)
+        {
+            var temp = ".getchain." + (_getChainCounter++);
+            _pendingGetChains.Add(new PendingGetChain(temp, targetSlot, host, fieldSymbol,
+                elementType, wrappers, entityWrappers, CallStack.Count));
+            return temp;
+        }
+
+        private void DiscardStalePendingGetChains()
+        {
+            var depth = CallStack.Count;
+            _pendingGetChains.RemoveAll(pending => pending.Depth >= depth);
+        }
+
+        public void ReturnFromFrame(VmContext? context, VmValue? value)
         {
             if (CallStack.Count == 0)
             {
@@ -284,8 +333,68 @@ namespace RigiCompiler.Bil.Vm
             }
             if (frame.ResultSlot != null)
             {
+                if (context != null
+                    && TryCompletePendingGetChain(context, frame.ResultSlot, result.Copy()))
+                {
+                    return;
+                }
                 WriteVar(frame.ResultSlot, result.Copy());
             }
+        }
+
+        private bool TryCompletePendingGetChain(VmContext context, string resultSlot,
+            VmValue result)
+        {
+            PendingGetChain? pending = null;
+            var index = -1;
+            for (var i = 0; i < _pendingGetChains.Count; i++)
+            {
+                if (_pendingGetChains[i].TempSlot == resultSlot
+                    && _pendingGetChains[i].Depth == CallStack.Count)
+                {
+                    pending = _pendingGetChains[i];
+                    index = i;
+                    break;
+                }
+            }
+            if (pending == null)
+            {
+                return false;
+            }
+            _pendingGetChains.RemoveAt(index);
+            if (pending.Wrappers.Count > 0)
+            {
+                if (!VmWrapperDispatch.ApplyGetChain(context, this, pending.Host,
+                        pending.FieldSymbol, pending.ElementType, pending.Wrappers, result,
+                        out var final))
+                {
+                    return true;
+                }
+                if (pending.TargetSlot != null)
+                {
+                    WriteVar(pending.TargetSlot, final);
+                }
+                return true;
+            }
+            if (pending.EntityWrappers.Count > 0)
+            {
+                if (!VmWrapperDispatch.ApplyEntityGetChain(context, this, pending.Host,
+                        pending.FieldSymbol, pending.ElementType, pending.EntityWrappers,
+                        result, out var entityFinal))
+                {
+                    return true;
+                }
+                if (pending.TargetSlot != null)
+                {
+                    WriteVar(pending.TargetSlot, entityFinal);
+                }
+                return true;
+            }
+            if (pending.TargetSlot != null)
+            {
+                WriteVar(pending.TargetSlot, result);
+            }
+            return true;
         }
 
         public void Fail(Exception exception)
@@ -600,7 +709,7 @@ namespace RigiCompiler.Bil.Vm
                 var frame = CurrentFrame;
                 if (frame.BlockStack.Count == 0)
                 {
-                    ExitCallFrame();
+                    ExitCallFrame(_context);
                     continue;
                 }
                 var top = frame.BlockStack.Peek();
@@ -624,23 +733,26 @@ namespace RigiCompiler.Bil.Vm
             }
         }
 
-        private void ExitCallFrame()
+        private void ExitCallFrame(VmContext? context)
         {
             var pending = _pending ?? VmCompletion.Normal;
             if (pending.Kind == VmCompletionKind.Return)
             {
-                ReturnFromFrame(pending.Value);
+                // 先清 pending，再写回结果（可能同步推进 get 链 proxy）
                 _pending = null;
+                ReturnFromFrame(context, pending.Value);
                 return;
             }
             if (pending.Kind == VmCompletionKind.Throw)
             {
                 if (CallStack.Count <= 1)
                 {
+                    _pendingGetChains.Clear();
                     Fail(pending.Failure ?? new VmException("未捕获异常", pending.Value));
                     return;
                 }
                 CallStack.Pop();
+                DiscardStalePendingGetChains();
                 return;
             }
             if (pending.Kind is VmCompletionKind.Break or VmCompletionKind.Continue)

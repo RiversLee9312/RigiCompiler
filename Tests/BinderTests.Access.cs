@@ -201,7 +201,7 @@ namespace RigiCompiler.Tests
                 && b.Method.Name == "value");
             TestHarness.Check("backing setter 体首隐含赋值合成",
                 BoundDescribe.Body(setterBody),
-                "Body(value, [], [Assign(InstField(value, This(Counter), i32), " +
+                "Body(value, [], [Assign(InstField(..value, This(Counter), i32), " +
                 "Param(value,i32))])");
             // 结构性事实：访问器符号挂字段三槽，读写绑定与声明同一字段符号
             var valueField = counterType.Fields.Single(f => f.Name == "value");
@@ -243,7 +243,7 @@ namespace RigiCompiler.Tests
                 && b.Method.Name == "height");
             TestHarness.Check("自动 setter 合成体（仅隐含赋值）",
                 BoundDescribe.Body(autoSetter),
-                "Body(height, [], [Assign(Field(height,i32), Param(value,i32))])");
+                "Body(height, [], [Assign(Field(..value,i32), Param(value,i32))])");
 
             // 仅 get 字段写 → has no setter
             var (unit3, _) = BindUnit(

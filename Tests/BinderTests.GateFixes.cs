@@ -91,7 +91,7 @@ namespace RigiCompiler.Tests
                 && b.Method.Name == "item");
             TestHarness.Check("自动 setter 合成体（隐含赋值，T）",
                 BoundDescribe.Body(setterBody),
-                "Body(item, [], [Assign(InstField(item, This(Box), T), Param(value,T))])");
+                "Body(item, [], [Assign(InstField(..value, This(Box), T), Param(value,T))])");
 
             // 反例：返回类型为泛型参数 T 的空体 computed getter（(_: _)
             // 形态）→ 全路径 return 检查（修复前 ReturnType is TypeSymbol

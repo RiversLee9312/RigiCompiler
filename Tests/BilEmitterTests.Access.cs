@@ -137,7 +137,7 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckFnShape("backing setter fn（体首隐含 backing = value）",
                 module, "app::Counter$.set.value@.i32",
                 ".vars {  }\n" +
-                "set.field $value $.this field(app::Counter#value@.i32)\n" +
+                "set.field $value $.this field(app::Counter#..value@.i32)\n" +
                 "ret\n");
             // fn 形状黄金：全局自动访问器（§13.4 静态投影 get/set.field.static）
             BilTestHarness.CheckFnShape("全局自动 getter fn（合成 return value）",
@@ -148,7 +148,7 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckFnShape("全局自动 setter fn（仅隐含赋值）",
                 module, "app::$.set.height@.i32",
                 ".vars {  }\n" +
-                "set.field.static $value type(app) field(app::#height@.i32)\n" +
+                "set.field.static $value type(app) field(app::#..value@.i32)\n" +
                 "ret\n");
             // 读写使用点发射引用逻辑字段（§8.3：get.field/set.field 始终引用
             // 逻辑字段，表达式/语句发射零改动）

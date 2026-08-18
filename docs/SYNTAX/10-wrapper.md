@@ -87,11 +87,12 @@ pub wrapper Logged\<TTarget> {
 - 四类 wildcard 的泛型与参数形状是编译器规定的 canonical shape，不能通过额外约束或部分参数 pattern 把它缩窄为只吃某些签名。需要特殊处理某个已知成员时使用 specific proxy；需要在 universal fallback 内进一步分类时显式检查 `symbol`。
 - Entity wrapper 至多声明一个泛型参数（恰一个时即 `TTarget` 角色、`self` 的类型来源；零个时 proxy 体内引用 `self` 是编译错误）；Value/Method wrapper 不得声明 wrapper 级泛型参数（proxy 方法自身的泛型参数不受此限）。
 - specific proxy 的形状（参数名/参数类型/返回类型）必须与被代理成员**全等**（wrapper 泛型参数代入后判定；`.proxy.get.<名>`/`.proxy.set.<名>` 的 `value` 参数类型 = 字段类型）；形状不匹配的 specific proxy 是编译错误。四类 wildcard 按上例的 canonical shape 逐参数校验。
+- **get 类别代理不得调用 `inner(...)`。** `.proxy.get.<名>` / `.proxy.get.*` 的 `value` 参数**就是**内层已经算好的结果。get 链是值从内向外的只读变换管线：backing →（用户 getter）→ 内层 `proxy.get` → 外层 `proxy.get` → 使用点；每一环基于 `value` 返回（可能变换后的）新值，不存在「向内传参继续求值」的 inner。这与 set/call/operator 类别不同（它们的 `inner(...)` 是向内的下一环调用）。此禁令是读取路径只读性的设计保证，不是实现缺陷——get 代理因此无法借 inner 向内层发起额外调用或触发写操作，读取路径除 proxy 自身日志类副作用外不改变被读对象状态。BIL 层 `invoke fn(..inner)` 出现在 get 派发上下文中非法（VM 抛异常）。
 - wrapper 实例由 `@W(...)` 应用在**宿主创建时**安装：frontend 为宿主合成 `..init.wrapper`（体内 `new.wrapper.*`，应用实参经该方法参数 / `new.wrapped` 前缀传入；见 `BIL_STANDARD.md` §9.7 / §14.4 / §14.5），Middleware/VM 在实体 init 之前自动调用之，结果写入宿主的 Middleware 合成隐藏存储（命名约定 `BIL_STANDARD.md` §5.3）；此后不可替换（§14.5）。
 
 ### 14.3 值修饰器（Value Wrapper）
 
-修饰字段或栈上变量（`var`/`const`）。修饰实例字段时，wrapper 存放在宿主类型的 Middleware 合成隐藏存储中，因此宿主必须能够内嵌 rich struct（见 §14.9）；修饰栈上变量与静态/全局字段时，值统一由编译器合成的 cell 隐藏子类盛装（§5.2 同一机制），wrapper 应用标记挂在子类的 `value` 字段上（BIL `wrapped(W)`）；**静态字段**的 cell 存储落地在声明类的 companion singleton 实例上（与静态 Method wrapper 同一 companion，见 §14.4），cell 构造与 wrapper 安装由 companion 的 `init` 完成、VM/Middleware 在 main 前急切初始化；**局部** cell 在声明点构造；**全局**字段的 cell 隐藏子类即 singleton（cell 自身为共享单例，字段初值表达式在 cell 单例的 `init` 里求值），与静态字段同由 VM/Middleware 在 main 前急切初始化。对变量类型没有额外的宿主内嵌要求。
+修饰字段或栈上变量（`var`/`const`）。修饰实例字段时，wrapper 存放在宿主类型的 Middleware 合成隐藏存储中，因此宿主必须能够内嵌 rich struct（见 §14.9）；修饰栈上变量与静态/全局字段时，值统一由编译器合成的 cell 隐藏子类盛装（§5.2 同一机制），wrapper 应用标记挂在子类的 `value` 字段上（BIL `wrapped(W)`）；**静态字段**的 cell 存储落地在声明类的 companion singleton 实例上（与静态 Method wrapper 同一 companion，见 §14.4），cell 构造与 wrapper 安装由 companion 的 `init` 完成、VM/Middleware 在 main 前急切初始化；**局部** cell 在声明点构造；**全局**字段的 cell 隐藏子类即 singleton（cell 自身为共享单例，字段初值表达式在 cell 单例的 `init` 里求值），与静态字段同由 VM/Middleware 在 main 前急切初始化。对变量类型没有额外的宿主内嵌要求。字段同时带 Value wrapper 与用户 getter/setter 时，使用点写路径为 wrapper set 链（outer→inner）→ setter → backing（setter 体内 `value` 在 BIL 中为保留字段 `..value`，直写 backing）；读路径为 backing → getter → wrapper get 链（inner→outer）。构造期 init 体内写不绕 wrapper 链，但带 setter 时仍经 setter 应用（§9.4.1）。
 
 ```rigi
 @WrapperTarget(.Value)
@@ -117,6 +118,8 @@ pub wrapper Clamped {
 @Clamped(0, 100)
 var health: i32 = 50
 ```
+
+**`.proxy.get` 不得调用 `inner(...)`。** `value` 参数即内层已算好的结果（读路径：backing → 用户 getter → 内层 `proxy.get` → 外层 `proxy.get` → 使用点）；get 链上没有「向内传参继续求值」的 inner。这是读取路径只读性的设计保证（与 §14.2 Entity get 代理同一条约束），不是实现缺陷——get 代理因此无法借 inner 向内层发起额外调用或触发写操作。违反时 BIL `invoke fn(..inner)` 非法（VM 抛异常；见 `BIL_STANDARD.md` §15.4）。
 
 ### 14.4 方法修饰器（Method Wrapper）
 
@@ -200,7 +203,7 @@ wrapper place 的接收者来源有三：字段/局部变量的应用（`@W` 标
 - **跨 wrapper**：按声明顺序从外到内（outer → inner）嵌套。
 - **同一 wrapper 内**：匹配的 specific proxy 优先于对应类别的 wildcard proxy；二者是择一关系，不会在同一 wrapper 层同时执行。
 - **同一 wrapper 内**：普通方法、getter、setter、operator 四个类别分别最多存在一个 wildcard proxy，因此不存在同类别 wildcard 的重叠、排序或 priority。
-- specific proxy 或 wildcard proxy 调用 `inner(...)` 后，下一层 wrapper 独立重复同一套 specific → wildcard → 实体成员/下一层的选择。
+- specific proxy 或 wildcard proxy 调用 `inner(...)` 后，下一层 wrapper 独立重复同一套 specific → wildcard → 实体成员/下一层的选择。字段读写时该「实体成员」是访问器：写链末为 setter（无 setter 时直写 backing），读链头为 getter（getter 返回后再过 get 链）。get 类别代理（Entity 的 `.proxy.get.<名>` / `.proxy.get.*` 与 Value 的 `.proxy.get`）不得调用 `inner(...)`：get 链的值经 `value` 参数流入，没有向内的下一环（§14.2 / §14.3）。
 - **`inner(...)` 的调用形状 = proxy 函数自身的参数形状**。specific proxy 的参数列表本身与被代理成员全等，inner 写全部值实参（含对 vargs/kwargs 包参数的具名/位置转发）；wildcard proxy 的保留首参（Entity 为 `symbol`，Method wrapper 为 `.name`）同样必须显式出现在 inner 实参中。模板 fn 上的可变泛型包（`TNamedArgs...` / `TUnnamedArgs...` 等）由编译器在 Bound/Lowered 层显式携带，并在 BIL `invoke fn(..inner)` 中按 §7.2 序**前置**为 `.generic.<Pack>` 操作数（保留首参与值包随后）；包解包与下一环烘焙归 Middleware（见 `BIL_STANDARD.md` §15.4）。固定泛型参数不出现在该调用操作数列表中。
 
 `@ProxyPriority` 不再存在；编译器不进行 wildcard pattern 重叠分析，也不维护任何用户指定的数值优先级。

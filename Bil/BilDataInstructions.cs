@@ -743,9 +743,45 @@ namespace RigiCompiler.Bil
         internal static void GetField(VmContext context, VmCoroutine coroutine,
             BilVariableOperand objectVar, BilVariableOperand target, string fieldSymbol)
         {
-            if (context.TryFindAccessor(fieldSymbol, BilAccessorKind.Getter,
-                    coroutine.CurrentFrame.Function.Symbol, out var getter))
+            var currentFn = coroutine.CurrentFrame.Function.Symbol;
+            // 0) setter 体内 ..value：直读 backing
+            if (context.TryResolveBackingValue(fieldSymbol, currentFn, out var backing))
             {
+                var host = coroutine.ReadVar(objectVar.Name);
+                coroutine.WriteVar(target.Name, ReadInstanceField(host, backing).Copy());
+                return;
+            }
+            // 1) getter 体内读自身字段：直读 backing（不再绕 wrapper）
+            if (context.IsGetterOf(currentFn, fieldSymbol))
+            {
+                var host = coroutine.ReadVar(objectVar.Name);
+                coroutine.WriteVar(target.Name, ReadInstanceField(host, fieldSymbol).Copy());
+                return;
+            }
+            // 2) 使用点 getter：结果在返回后过 wrapper 链
+            if (context.TryFindAccessor(fieldSymbol, BilAccessorKind.Getter,
+                    currentFn, out var getter))
+            {
+                var wrappers = context.CollectWrappedWrappers(fieldSymbol);
+                if (wrappers.Count > 0)
+                {
+                    var host = coroutine.ReadVar(objectVar.Name);
+                    var temp = coroutine.RegisterPendingGetChain(target.Name, host, fieldSymbol,
+                        FieldType(fieldSymbol), wrappers, Array.Empty<string>());
+                    BilInvokeExecution.Invoke(context, coroutine, getter,
+                        new[] { objectVar }, temp);
+                    return;
+                }
+                var entityWrappers = context.CollectEntityWrappers(FieldOwner(fieldSymbol));
+                if (entityWrappers.Count > 0)
+                {
+                    var host = coroutine.ReadVar(objectVar.Name);
+                    var temp = coroutine.RegisterPendingGetChain(target.Name, host, fieldSymbol,
+                        FieldType(fieldSymbol), Array.Empty<string>(), entityWrappers);
+                    BilInvokeExecution.Invoke(context, coroutine, getter,
+                        new[] { objectVar }, temp);
+                    return;
+                }
                 BilInvokeExecution.Invoke(context, coroutine, getter,
                     new[] { objectVar }, target.Name);
                 return;
@@ -765,8 +801,8 @@ namespace RigiCompiler.Bil
                 return;
             }
             var raw = ReadInstanceField(instance, fieldSymbol).Copy();
-            var wrappers = context.CollectWrappedWrappers(fieldSymbol);
-            if (wrappers.Count == 0)
+            var fieldWrappers = context.CollectWrappedWrappers(fieldSymbol);
+            if (fieldWrappers.Count == 0)
             {
                 // 字段自身无 wrapped 标记、但宿主类型带 wrapped 标记 → Entity
                 // getter 类别（.proxy.get.<名> / .proxy.get.*）
@@ -785,7 +821,7 @@ namespace RigiCompiler.Bil
                 return;
             }
             if (VmWrapperDispatch.ApplyGetChain(context, coroutine, instance, fieldSymbol,
-                    FieldType(fieldSymbol), wrappers, raw, out var final))
+                    FieldType(fieldSymbol), fieldWrappers, raw, out var final))
             {
                 coroutine.WriteVar(target.Name, final);
             }
@@ -794,52 +830,76 @@ namespace RigiCompiler.Bil
         internal static void SetField(VmContext context, VmCoroutine coroutine,
             BilVariableOperand source, BilVariableOperand objectVar, string fieldSymbol)
         {
-            if (context.TryFindAccessor(fieldSymbol, BilAccessorKind.Setter,
-                    coroutine.CurrentFrame.Function.Symbol, out var setter))
+            var currentFn = coroutine.CurrentFrame.Function.Symbol;
+            // 0) setter 体内 ..value：直写 backing
+            if (context.TryResolveBackingValue(fieldSymbol, currentFn, out var backing))
             {
-                BilInvokeExecution.Invoke(context, coroutine, setter,
-                    new[] { objectVar, source }, resultSlot: null);
+                var host = coroutine.ReadVar(objectVar.Name);
+                WriteInstanceField(host, backing, coroutine.ReadVar(source.Name).Copy());
                 return;
             }
-            var instance = coroutine.ReadVar(objectVar.Name);
-            var value = coroutine.ReadVar(source.Name).Copy();
-            var isInit = context.IsInitFunctionOf(coroutine.CurrentFrame.Function.Symbol,
-                FieldOwner(fieldSymbol));
+            var isInit = context.IsInitFunctionOf(currentFn, FieldOwner(fieldSymbol));
+            // 1) 构造期：不绕 wrapper 链；有 setter 则调，否则直写
+            if (isInit)
+            {
+                if (context.TryFindAccessor(fieldSymbol, BilAccessorKind.Setter,
+                        currentFn, out var initSetter))
+                {
+                    BilInvokeExecution.Invoke(context, coroutine, initSetter,
+                        new[] { objectVar, source }, resultSlot: null);
+                    return;
+                }
+                var host = coroutine.ReadVar(objectVar.Name);
+                WriteInstanceField(host, fieldSymbol, coroutine.ReadVar(source.Name).Copy());
+                return;
+            }
+            // 2) Value wrapper 链（链末改调 setter）
             var wrappers = context.CollectWrappedWrappers(fieldSymbol);
             if (wrappers.Count > 0)
             {
-                if (!isInit)
-                {
-                    VmWrapperDispatch.ApplySetChain(context, coroutine, instance, fieldSymbol,
-                        FieldType(fieldSymbol), wrappers, value);
-                }
-                else
-                {
-                    WriteInstanceField(instance, fieldSymbol, value);
-                }
+                var host = coroutine.ReadVar(objectVar.Name);
+                var value = coroutine.ReadVar(source.Name).Copy();
+                VmWrapperDispatch.ApplySetChain(context, coroutine, host, fieldSymbol,
+                    FieldType(fieldSymbol), wrappers, value);
                 return;
             }
-            // 字段自身无 wrapped 标记、但宿主类型带 wrapped 标记 → Entity
-            // setter 类别（.proxy.set.<名> / .proxy.set.*）；构造期豁免同 Value
-            if (!isInit)
+            // 3) Entity wrapper
+            var entityWrappers = context.CollectEntityWrappers(FieldOwner(fieldSymbol));
+            if (entityWrappers.Count > 0)
             {
-                var entityWrappers = context.CollectEntityWrappers(FieldOwner(fieldSymbol));
-                if (entityWrappers.Count > 0
-                    && VmWrapperDispatch.TryStartEntitySetChain(context, coroutine, instance,
+                var host = coroutine.ReadVar(objectVar.Name);
+                var value = coroutine.ReadVar(source.Name).Copy();
+                if (VmWrapperDispatch.TryStartEntitySetChain(context, coroutine, host,
                         fieldSymbol, FieldType(fieldSymbol), entityWrappers, value,
                         resultSlot: null))
                 {
                     return;
                 }
             }
-            WriteInstanceField(instance, fieldSymbol, value);
+            // 4) setter
+            if (context.TryFindAccessor(fieldSymbol, BilAccessorKind.Setter,
+                    currentFn, out var setter))
+            {
+                BilInvokeExecution.Invoke(context, coroutine, setter,
+                    new[] { objectVar, source }, resultSlot: null);
+                return;
+            }
+            // 5) 直写
+            WriteInstanceField(coroutine.ReadVar(objectVar.Name), fieldSymbol,
+                coroutine.ReadVar(source.Name).Copy());
         }
 
         internal static void GetFieldStatic(VmContext context, VmCoroutine coroutine,
             BilVariableOperand target, string fieldSymbol)
         {
+            var currentFn = coroutine.CurrentFrame.Function.Symbol;
+            if (context.TryResolveBackingValue(fieldSymbol, currentFn, out var backing))
+            {
+                coroutine.WriteVar(target.Name, context.ReadStaticField(backing).Copy());
+                return;
+            }
             if (context.TryFindAccessor(fieldSymbol, BilAccessorKind.Getter,
-                    coroutine.CurrentFrame.Function.Symbol, out var getter))
+                    currentFn, out var getter))
             {
                 BilInvokeExecution.Invoke(context, coroutine, getter,
                     Array.Empty<BilVariableOperand>(), target.Name);
@@ -851,8 +911,14 @@ namespace RigiCompiler.Bil
         internal static void SetFieldStatic(VmContext context, VmCoroutine coroutine,
             BilVariableOperand source, string fieldSymbol)
         {
+            var currentFn = coroutine.CurrentFrame.Function.Symbol;
+            if (context.TryResolveBackingValue(fieldSymbol, currentFn, out var backing))
+            {
+                context.WriteStaticField(backing, coroutine.ReadVar(source.Name).Copy());
+                return;
+            }
             if (context.TryFindAccessor(fieldSymbol, BilAccessorKind.Setter,
-                    coroutine.CurrentFrame.Function.Symbol, out var setter))
+                    currentFn, out var setter))
             {
                 BilInvokeExecution.Invoke(context, coroutine, setter,
                     new[] { source }, resultSlot: null);
@@ -1292,6 +1358,12 @@ namespace RigiCompiler.Bil
             // （frontend 在宿主 ..init.wrapper 内发 new.wrapper.method，静态方法经
             // companion 实例）；查 receiver 实例的 method 隐藏存储，命中则建链。
             if (VmWrapperDispatch.TryStartMethodWrapperChain(context, coroutine, methodSymbol,
+                    args, resultSlot))
+            {
+                return;
+            }
+            // wrapped cell 的 getValue/setValue 派发：wrapper 链在访问器外侧
+            if (VmWrapperDispatch.TryStartCellAccessorChain(context, coroutine, methodSymbol,
                     args, resultSlot))
             {
                 return;

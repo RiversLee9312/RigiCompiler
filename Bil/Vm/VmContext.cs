@@ -510,6 +510,121 @@ namespace RigiCompiler.Bil.Vm
             return true;
         }
 
+        // 直查 getter/setter 表，不排除当前 fn（链末落点调 setter）
+        public bool TryFindAccessorDirect(string fieldSymbol, BilAccessorKind kind,
+            out string methodSymbol)
+        {
+            methodSymbol = "";
+            var table = kind == BilAccessorKind.Getter ? _getters : _setters;
+            if (!table.TryGetValue(fieldSymbol, out var found))
+            {
+                return false;
+            }
+            methodSymbol = found;
+            return true;
+        }
+
+        // 当前 fn 是否为 fieldSymbol 的 getter（含 cell getValue 回退）
+        public bool IsGetterOf(string currentFunction, string fieldSymbol)
+        {
+            var member = FindMember(currentFunction);
+            if (member != null)
+            {
+                foreach (var modifier in member.Modifiers)
+                {
+                    if (modifier is BilAccessorModifier accessor
+                        && accessor.Kind == BilAccessorKind.Getter
+                        && accessor.FieldSymbol == fieldSymbol)
+                    {
+                        return true;
+                    }
+                }
+            }
+            if (!BilVerificationContext.TryParseMethodSymbol(currentFunction,
+                    out var owner, out _, out _, out _))
+            {
+                return false;
+            }
+            if (MethodNameOf(currentFunction) != "getValue" || !IsCellTypeRef(owner))
+            {
+                return false;
+            }
+            if (!BilVerificationContext.TryParseFieldSymbol(fieldSymbol,
+                    out _, out _, out var fieldType))
+            {
+                return false;
+            }
+            return fieldSymbol == owner + "#value@" + fieldType;
+        }
+
+        // ..value → 真实 backing 字段。非 ..value 返回 false；是 ..value 但
+        // 不在 setter 上下文则抛
+        public bool TryResolveBackingValue(string fieldSymbol, string currentFunction,
+            out string backingField)
+        {
+            backingField = "";
+            if (FieldSimpleName(fieldSymbol) != BilSpellings.BackingValueFieldName)
+            {
+                return false;
+            }
+            if (!BilVerificationContext.TryParseFieldSymbol(fieldSymbol,
+                    out var owner, out var isStatic, out var fieldType))
+            {
+                throw new VmException("..value 字段符号不可解析：" + fieldSymbol);
+            }
+            var member = FindMember(currentFunction);
+            if (member != null)
+            {
+                foreach (var modifier in member.Modifiers)
+                {
+                    if (modifier is not BilAccessorModifier accessor
+                        || accessor.Kind != BilAccessorKind.Setter)
+                    {
+                        continue;
+                    }
+                    if (!BilVerificationContext.TryParseFieldSymbol(accessor.FieldSymbol,
+                            out var fieldOwner, out var fieldStatic, out var declaredType))
+                    {
+                        continue;
+                    }
+                    if (TypesEqual(fieldOwner, owner) && fieldStatic == isStatic
+                        && TypesEqual(declaredType, fieldType))
+                    {
+                        backingField = accessor.FieldSymbol;
+                        return true;
+                    }
+                }
+            }
+            if (BilVerificationContext.TryParseMethodSymbol(currentFunction,
+                    out var fnOwner, out _, out _, out _))
+            {
+                var name = MethodNameOf(currentFunction);
+                if ((name == "setValue" || name == "getValue") && IsCellTypeRef(fnOwner))
+                {
+                    backingField = fnOwner + "#value@" + fieldType;
+                    return true;
+                }
+            }
+            throw new VmException("..value 只能出现在 setter 上下文：" + fieldSymbol);
+        }
+
+        // 类型名（去命名空间 / 泛型实参）是否为 cell 隐藏子类
+        internal static bool IsCellTypeRef(string typeRef)
+        {
+            var name = typeRef;
+            var generic = name.IndexOf('<');
+            if (generic >= 0)
+            {
+                name = name.Substring(0, generic);
+            }
+            var sep = name.LastIndexOf("::", StringComparison.Ordinal);
+            if (sep >= 0)
+            {
+                name = name.Substring(sep + 2);
+            }
+            return name.StartsWith("..cell..", StringComparison.Ordinal);
+        }
+
         // 字段声明上的 wrapped(W) 应用标记，按声明序 outer→inner 收集
         // （§8.3.1：可重复出现，顺序即派发链嵌套序；无标记返回空列表）
         public IReadOnlyList<string> CollectWrappedWrappers(string fieldSymbol)

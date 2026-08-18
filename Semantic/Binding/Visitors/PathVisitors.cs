@@ -356,7 +356,7 @@
                         return null;
                     }
                     headValue = MakeBackingFieldReference(node, ctx.Accessor.Field, backingType,
-                        ctx.Frame);
+                        ctx.Frame, ctx.Accessor.IsSetter);
                 }
                 else
                 {
@@ -883,19 +883,33 @@
             return true;
         }
 
+        // setter 体内 backing 访问改指保留字段 ..value（§13.3：VM 见此
+        // 即直读直写 backing，不再绕 wrapper 链）；getter 仍用原逻辑字段
+        public static FieldSymbol BackingStorageField(FieldSymbol field, bool forSetter)
+        {
+            if (!forSetter)
+            {
+                return field;
+            }
+            return new FieldSymbol(RigiCompiler.Bil.BilSpellings.BackingValueFieldName,
+                owner: field.Owner, ns: field.Namespace, isStatic: field.IsStatic,
+                fieldType: field.FieldType);
+        }
+
         // backing 字段直达节点（S8e，SYNTAX §9.4.1）：访问器体内 value
         // 别名与驱动合成（隐含赋值/自动访问器体）共用——实例补 this，
         // 静态/全局直引；不接名称解析、不走访问器/访问控制检查
         // （backing 直达是编译器机制内部路径）
         public static BoundExpression MakeBackingFieldReference(ASTNode node, FieldSymbol field,
-            SemanticSymbol fieldType, BindFunctionFrame frame)
+            SemanticSymbol fieldType, BindFunctionFrame frame, bool forSetter)
         {
-            if (field.Owner != null && !field.IsStatic)
+            var target = BackingStorageField(field, forSetter);
+            if (target.Owner != null && !target.IsStatic)
             {
                 return new BoundFieldAccessExpression(node,
-                    new BoundThisExpression(node, frame.Method.Owner!), field, fieldType);
+                    new BoundThisExpression(node, frame.Method.Owner!), target, fieldType);
             }
-            return new BoundFieldReferenceExpression(node, field, fieldType);
+            return new BoundFieldReferenceExpression(node, target, fieldType);
         }
 
         // this 路径（S7c-2，SYNTAX §9）：值位置 this（Type = 宿主类型，

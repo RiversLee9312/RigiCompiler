@@ -114,7 +114,7 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckFnShape("ext setter fn（隐含 backing = value）",
                 module, "Meter$.set.km@.i32",
                 ".vars {  }\n" +
-                "set.field $value $.this field(Meter#km@.i32)\n" +
+                "set.field $value $.this field(Meter#..value@.i32)\n" +
                 "ret\n");
             // 使用点读写 = get.field/set.field（访问器派发是 BIL §13.3 语义）
             BilTestHarness.CheckFnShape("ext 访问器使用点（main 指令）",

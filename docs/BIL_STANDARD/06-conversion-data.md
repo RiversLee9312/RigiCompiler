@@ -189,15 +189,15 @@ set.field SOURCE OBJECT field(FIELD_SYMBOL)
 - `set.field` 要求字段可写；
 - 访问权限必须合法。
 
-`get.field` / `set.field` 不预先降为 `invoke`。Middleware 根据精确 owner 类型、字段符号和访问类别选择：
+`get.field` / `set.field` 不预先降为 `invoke`。Middleware / VM 按以下顺序执行字段读写语义：
 
-- 直接字段 load/store；
-- getter/setter；
-- interface 字段访问器；
-- extension field；
-- wrapper specific/wildcard proxy；
-- runtime dynamic fallback；
-- GC/ARC 屏障与共享域操作。
+- **写**（`set.field F`）：字段带 wrapper 时先走 wrapper set 链（outer→inner）；链末落点是调用 setter（无 setter 时才直接写存储）。setter 体内 `get.field` / `set.field` 引用 `..value` 时直接读写当前 setter 对应字段的 backing 存储——不查访问器、不绕 wrapper 链。
+- **读**（`get.field F`）：先调 getter，getter 返回结果再在使用点过 wrapper get 链（inner→outer 逐环 proxy.get）写目标槽。getter 体内对自身字段的 `get.field`（当前 fn 是该字段的 getter）直读 backing，不绕 wrapper 链。
+- **构造期豁免**：init 体内对带 wrapper 字段的写不绕 wrapper 链（wrapper 尚未安装），但带 setter 时仍调 setter（初始化器经 setter 应用，`SYNTAX.md` §9.4.1）；setter 体内 `..value` 直写 backing。
+- **`..value` 合法性**：引用 `..value` 仅在 setter 上下文合法——当前 fn 带 `setter(F)` 且 owner/类型/static 匹配，或当前 fn 是 cell 隐藏子类的 `getValue` / `setValue`。之外出现是验证错误。
+- 其余实现选择仍按精确 owner 类型、字段符号和访问类别：直接 load/store、interface 字段访问器、extension field、runtime dynamic fallback、GC/ARC 屏障与共享域操作。
+
+局部变量统一 cell 存储同理：cell 的 setValue 体（含默认透传体）用 `..value` 直写；cell 的 getValue 体不变；wrapped cell 的使用点读写（invoke getValue/setValue）由 VM 识别并把 wrapper 链外置（写：链末调 setValue；读：getValue 返回后过 get 链）。cell 的 init 体仍引用真实 `value` 字段直写。
 
 wrapper 隐藏存储写后门（对应 `obj:Wrapper.field` 写入、proxy 体内
 `this.field` 原地写；**读取**一律走 §12.4 值拷贝 + 普通 `get.field`，
@@ -254,6 +254,8 @@ set.field.static SOURCE type(OWNER_TYPE) field(FIELD_SYMBOL)
 ```
 
 FIELD_SYMBOL 必须表示 OWNER_TYPE 的 static 字段，值类型必须严格匹配。
+
+§13.3 的 `..value` 约定与读写链顺序同样适用于本指令：setter 体内 `get.field.static` / `set.field.static` 引用 `Owner#.static...value@.T`（或全局 `ns::#..value@.T`）直达 backing。
 
 Singleton 的实例字段不得因为 owner 为 singleton 而使用 static 指令；是否 static 由字段声明决定。
 

@@ -46,10 +46,12 @@ namespace RigiCompiler.Tests
             TestEnumExplicitDiscriminant();
             TestGenericInstanceMethodCall();
             TestStaticWrappedFieldProxyChain();
+            TestStaticWrappedFieldWithUserAccessors();
             TestStaticMethodAndFieldSharedCompanion();
             TestNestedClassStaticWrappedField();
             TestStaticWrappedFieldInitializer();
             TestGlobalWrappedFieldProxyChain();
+            TestGlobalWrappedFieldWithUserAccessors();
             TestGlobalWrappedFieldInitializerBeforeMain();
             TestGlobalConstWrappedField();
             TestSingletonInitOrderIndependence();
@@ -774,6 +776,48 @@ namespace RigiCompiler.Tests
             CheckI32("写 21 读回 21", result, 21);
         }
 
+        // 静态 wrapped 字段 + 用户 get/set：访问器体进 cell getValue/setValue，
+        // wrapper 链外置（写：wrapper.set → user.set；读：user.get → wrapper.get）
+        private static void TestStaticWrappedFieldWithUserAccessors()
+        {
+            var result = Run(
+                "@WrapperTarget(.Value)\n" +
+                "pub shared wrapper Shift {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.get\\<TValue>(value: TValue): TValue {\n" +
+                "        core.io.Console.println(\"wrapper.get\")\n" +
+                "        var v = (value as i32)\n" +
+                "        return ((v + 1) as TValue)\n" +
+                "    }\n" +
+                "    operator .proxy.set\\<TValue>(value: TValue) {\n" +
+                "        core.io.Console.println(\"wrapper.set\")\n" +
+                "        var v = (value as i32)\n" +
+                "        inner(((v + 10) as TValue))\n" +
+                "    }\n" +
+                "}\n" +
+                "pub class Holder {\n" +
+                "    @Shift()\n" +
+                "    pub static var x: i32 {\n" +
+                "        pub get(value: _) {\n" +
+                "            core.io.Console.println(\"user.get\")\n" +
+                "            return value * 2\n" +
+                "        }\n" +
+                "        pub set(value: _) {\n" +
+                "            core.io.Console.println(\"user.set\")\n" +
+                "            value = value * 2\n" +
+                "        }\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    Holder.x = 5\n" +
+                "    return Holder.x\n" +
+                "}\n");
+            CheckOk("静态 wrapper+访问器外置序", result);
+            TestHarness.Check("静态写读打印序", result.Stdout,
+                "wrapper.set\nuser.set\nuser.get\nwrapper.get\n");
+            CheckI32("静态 5→15→30 读 60→61", result, 61);
+        }
+
         // 同一类一个静态 Method wrapper 方法 + 一个静态 Value wrapper 字段：
         // BIL 只一个 companion，VM 行为都正确
         private static void TestStaticMethodAndFieldSharedCompanion()
@@ -899,6 +943,45 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckOk("全局 Value wrapper 字段 proxy 链", result);
             CheckI32("41+41 + gets(2) + sets(1)", result, 85);
+        }
+
+        // 全局 wrapped 变量 + 用户 get/set：同静态——cell 接管访问器，wrapper 外置
+        private static void TestGlobalWrappedFieldWithUserAccessors()
+        {
+            var result = Run(
+                "@WrapperTarget(.Value)\n" +
+                "pub shared wrapper Shift {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.get\\<TValue>(value: TValue): TValue {\n" +
+                "        core.io.Console.println(\"wrapper.get\")\n" +
+                "        var v = (value as i32)\n" +
+                "        return ((v + 1) as TValue)\n" +
+                "    }\n" +
+                "    operator .proxy.set\\<TValue>(value: TValue) {\n" +
+                "        core.io.Console.println(\"wrapper.set\")\n" +
+                "        var v = (value as i32)\n" +
+                "        inner(((v + 10) as TValue))\n" +
+                "    }\n" +
+                "}\n" +
+                "@Shift()\n" +
+                "pub var x: i32 {\n" +
+                "    pub get(value: _) {\n" +
+                "        core.io.Console.println(\"user.get\")\n" +
+                "        return value * 2\n" +
+                "    }\n" +
+                "    pub set(value: _) {\n" +
+                "        core.io.Console.println(\"user.set\")\n" +
+                "        value = value * 2\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    x = 5\n" +
+                "    return x\n" +
+                "}\n");
+            CheckOk("全局 wrapper+访问器外置序", result);
+            TestHarness.Check("全局写读打印序", result.Stdout,
+                "wrapper.set\nuser.set\nuser.get\nwrapper.get\n");
+            CheckI32("全局 5→15→30 读 60→61", result, 61);
         }
 
         // 全局 wrapped 字段初值表达式在 main 前就绪（main 首句直接读回）

@@ -126,13 +126,103 @@ namespace RigiCompiler.Bil.Vm
         }
 
         // set 链入口：最外层 wrapper 的 .proxy.set 先行，inner 逐环向内，
-        // 链末落点为原始字段写入（§14.3 / §15.4）
+        // 链末落点为 setter（无则直写 backing）（§13.3 / §14.3 / §15.4）
         internal static void ApplySetChain(VmContext context, VmCoroutine coroutine,
             VmValue host, string fieldSymbol, string elementType,
             IReadOnlyList<string> wrappers, VmValue value)
         {
             ApplySetChainAt(context, coroutine, host, fieldSymbol, elementType,
                 wrappers, 0, value);
+        }
+
+        // wrapped cell 的 getValue/setValue 派发：wrapper 链在访问器外侧。
+        // 使用点 invoke 的是基类 core::Cell$getValue/setValue，须先虚派发
+        // 到 ..cell.. 子类 override，再用子类 owner 拼 value 字段。
+        internal static bool TryStartCellAccessorChain(VmContext context, VmCoroutine coroutine,
+            string methodSymbol, IReadOnlyList<VmValue> args, string? resultSlot)
+        {
+            if (!BilVerificationContext.TryParseMethodSymbol(methodSymbol,
+                    out _, out var isStatic, out _, out _)
+                || isStatic)
+            {
+                return false;
+            }
+            var name = VmContext.MethodNameOf(methodSymbol);
+            if (name != "getValue" && name != "setValue")
+            {
+                return false;
+            }
+            if (args.Count == 0)
+            {
+                return false;
+            }
+            var resolved = context.ResolveDispatch(methodSymbol, args[0]);
+            if (resolved == null
+                || !BilVerificationContext.TryParseMethodSymbol(resolved.Symbol,
+                    out var owner, out _, out var parameters, out var returnType)
+                || !VmContext.IsCellTypeRef(owner))
+            {
+                return false;
+            }
+            var elementType = name == "getValue"
+                ? returnType
+                : (parameters.Count > 0 ? parameters[0].TypeRef : "");
+            if (string.IsNullOrEmpty(elementType) || elementType == ".void")
+            {
+                return false;
+            }
+            var valueFieldSymbol = owner + "#value@" + elementType;
+            var wrappers = context.CollectWrappedWrappers(valueFieldSymbol);
+            if (wrappers.Count == 0)
+            {
+                return false;
+            }
+            if (name == "setValue")
+            {
+                if (args.Count < 2)
+                {
+                    return false;
+                }
+                ApplySetChain(context, coroutine, args[0], valueFieldSymbol, elementType,
+                    wrappers, args[1]);
+                return true;
+            }
+            var temp = coroutine.RegisterPendingGetChain(resultSlot, args[0], valueFieldSymbol,
+                elementType, wrappers, Array.Empty<string>());
+            // 链已外置，直调 getValue 体，避免再次拦截
+            BilInvokeExecution.InvokeResolved(context, coroutine, methodSymbol, args, temp);
+            return true;
+        }
+
+        // 链末：先调 setter（含 cell setValue），否则直写 backing
+        private static void FinishSetToBacking(VmContext context, VmCoroutine coroutine,
+            VmValue host, string fieldSymbol, VmValue value, string? resultSlot)
+        {
+            if (context.TryFindAccessorDirect(fieldSymbol, BilAccessorKind.Setter,
+                    out var setter))
+            {
+                BilInvokeExecution.InvokeValues(context, coroutine, setter,
+                    new[] { host, value }, resultSlot);
+                return;
+            }
+            if (BilVerificationContext.TryParseFieldSymbol(fieldSymbol,
+                    out var owner, out _, out var fieldType)
+                && VmContext.IsCellTypeRef(owner))
+            {
+                var setValue = owner + "$setValue(value:" + fieldType + ")@.void";
+                if (context.FindFunction(setValue) != null)
+                {
+                    // 跳过 TryStartCellAccessorChain，以免链末再入 set 链
+                    BilInvokeExecution.InvokeResolved(context, coroutine, setValue,
+                        new[] { host, value }, resultSlot);
+                    return;
+                }
+            }
+            WriteRawField(host, fieldSymbol, value.Copy());
+            if (resultSlot != null)
+            {
+                coroutine.WriteVar(resultSlot, VmVoid.Instance);
+            }
         }
 
         // value wrapper set 链逐环推进：index 处 wrapper 的 .proxy.set 先行，
@@ -143,7 +233,8 @@ namespace RigiCompiler.Bil.Vm
         {
             if (index >= wrappers.Count)
             {
-                WriteRawField(host, fieldSymbol, value.Copy());
+                FinishSetToBacking(context, coroutine, host, fieldSymbol, value,
+                    resultSlot: null);
                 return;
             }
             var wrapper = wrappers[index];
@@ -601,11 +692,8 @@ namespace RigiCompiler.Bil.Vm
                     // wildcard 全形状 inner 的 value 是声明序最后一个值实参
                     // （specific 只有 value 一个值实参，二者同形取末位）。
                     var value = innerArgs.Count > 0 ? innerArgs[innerArgs.Count - 1] : VmNull.Instance;
-                    WriteRawField(frame.Host, frame.FieldSymbol!, value.Copy());
-                    if (resultSlot != null)
-                    {
-                        coroutine.WriteVar(resultSlot, VmVoid.Instance);
-                    }
+                    FinishSetToBacking(context, coroutine, frame.Host, frame.FieldSymbol!,
+                        value, resultSlot);
                     return;
                 case VmWrapperDispatchKind.Method:
                     // 实体方法链末：Method wrapper 作为更内层仍可再绕（.proxy.call）

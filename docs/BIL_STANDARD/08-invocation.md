@@ -89,6 +89,7 @@ invoke.noret fn(..inner) [ARG_0, ARG_1, ...]
 - 源码语法：`inner(...)` 的调用形状 = proxy 函数自身的参数形状（wildcard 保留首参必须显式写出）；泛型包由 frontend 在 Bound/Lowered 层显式携带并在调用前置物化，Middleware 消费解包/烘焙；
 - 带返回的模板用 `invoke fn(..inner)`，RESULT 类型必须严格等于该模板 fn 的声明返回类型；void 模板用 `invoke.noret fn(..inner)`；
 - 值实参个数与类型必须与模板 fn 声明的（经源码 `inner` 规则过滤后的）显式实参一致；前置 `.generic.*` 操作数必须可解析为当前 fn `.args` 中已声明的同名隐藏参数。
+- **get 派发上下文中不存在 inner。** get 链是值从内向外的只读变换管线：backing →（用户 getter）→ 内层 proxy.get → 外层 proxy.get → 使用点；每一环 proxy 的 `value` 参数**就是**内层已经算好的结果，proxy 基于它返回（可能变换后的）新值。不存在「向内传参继续求值」的 inner——这与 set/call/operator 类别不同（它们的 inner 是向内的下一环调用）。get 类别 proxy 模板体内出现 `invoke fn(..inner)` / `invoke.noret fn(..inner)` **非法**（VM 抛异常）。这是读取路径只读性的设计保证：get 代理无法借 inner 向内层发起额外调用或触发写操作。
 
 ### 15.5 直接基类调用
 

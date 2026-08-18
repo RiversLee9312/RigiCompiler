@@ -138,7 +138,7 @@ pub func example() {
 #### 9.4.1 绑定语义
 
 - 访问器上的修饰符允许访问级别以及 `open`/`override`；访问器的可见性 = 访问器显式修饰 ?? 字段声明的访问级别 ?? private。`open` 与 `override` 互斥，getter/setter 分别检查继承目标。接口不能声明字段或属性访问器。
-- **backing 形态**（`value: _`）：编译器生成隐藏 backing 存储（永为私有，用户不可直接访问）；访问器体内 `value` 是 backing 的别名——getter 体内只读、setter 体内可读写。setter 语义 = 进入时隐含 `backing = value`（`value` 即新值），随后执行体；体可改写 `value`（即改写 backing），用于钳制、通知等场景。
+- **backing 形态**（`value: _`）：编译器生成隐藏 backing 存储（永为私有，用户不可直接访问）；访问器体内 `value` 是 backing 的别名——getter 体内只读、setter 体内可读写。setter 语义 = 进入时隐含 `backing = value`（`value` 即新值），随后执行体；体可改写 `value`（即改写 backing），用于钳制、通知等场景。BIL 表现：setter 体内对 `value` 的多次读写统一引用保留字段符号 `..value`（VM/Middleware 据此直写 backing，不再绕 wrapper）；getter 体内 `value` 只读，引用逻辑字段。
 - **自动访问器**（无体，如 `pub get` / `priv set`）：编译器合成实现——getter 为 `return value`，setter 为空体（隐式 `backing = value` 已足）。无体 + 计算形态（无 backing）是编译错误（编译器无法生成计算实现）。
 - `const` 字段不得声明 setter。仅声明 get 的字段不可写、仅声明 set 的字段不可读；访问器自身的可见性在读写使用点分别检查。
 - 带访问器的实例字段，声明处初始化器**经 setter 应用**（默认构造合成普通的 `this.field = 初始化器` 赋值，读写一律经访问器的规则不变）——setter 语义（钳制、通知等）自初始化起生效；setter 进入时隐含 `backing = value`、体内可改写 `value`（即改写 backing），初始化同样走这条路径（backing 形态）。仅 get 无 set 的字段不得携带初始化器（无法经 setter 应用，编译错误；`const` 字段本就不得声明 setter，故 `const` + 仅 get + 初始化器同样被拒）。

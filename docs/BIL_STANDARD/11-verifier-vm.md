@@ -30,6 +30,7 @@
 - proxy 模板 fn（名以 `.proxy.` 开头，§5.1）必须声明在 wrapper 类型内，且与 `wrapper-proxy` 修饰符双向一致（见 §21.8）；
 - `..init.wrapper`（§9.7）：每 owner 至多一个；返回 `.void`；实例方法；必须 `priv` + `compiler-generated`；
 - `..companion` 类型（§8.7）：必须是 `class` 且带 `singleton` + `shared`；类型名保留名（声明类的嵌套类）；
+- 保留字段 `..value`（§5.1 / §8.3）不得作为用户 `.field` 声明出现；`get.field` / `set.field`（含 `.static` 变体）引用 `..value` 仅当当前 fn 带 `setter(F)` 且 owner/类型/static 匹配，或当前 fn 是 cell 隐藏子类的 `getValue` / `setValue`；之外拒绝；
 - entrypoint 唯一且签名符合 `SYNTAX.md`。
 
 ### 21.3 类型验证
@@ -194,7 +195,14 @@ opcode + exact operand type(s) + exact result type
 
 ### 22.4 字段与索引
 
-VM 必须把 `get.field`、`set.field`、`get.array`、`set.array` 视为独立语义操作，并根据精确类型与符号元数据执行 getter/setter/operator/wrapper 行为。
+VM 必须把 `get.field`、`set.field`、`get.array`、`set.array` 视为独立语义操作，并根据精确类型与符号元数据执行 getter/setter/operator/wrapper 行为。字段读写顺序必须与 §13.3 一致：
+
+- `get.field` / `set.field` 引用 `..value`：直接读写当前 setter 对应字段的 backing 存储——不查访问器、不绕 wrapper 链；setter 上下文之外出现 `..value` 必须拒绝；
+- getter 体内对自身字段的 `get.field`：直读 backing，不绕 wrapper 链；
+- 使用点写：`set.field F` → 字段带 wrapper 时先走 wrapper set 链（outer→inner），链末调用 setter（无 setter 时直写存储）；setter 体内 `..value` 直写 backing；
+- 使用点读：`get.field F` → 先调 getter，返回结果再过 wrapper get 链（inner→outer）写目标槽；
+- 构造期豁免：init 体内对带 wrapper 字段的写不绕 wrapper 链，但带 setter 时仍调 setter；
+- wrapped cell 的使用点 `invoke` getValue/setValue：wrapper 链外置（写：链末调 setValue；读：getValue 返回后过 get 链）。
 
 不得为了实现方便而在 BIL 语义层把它们改写成与规范不同的普通调用顺序。
 

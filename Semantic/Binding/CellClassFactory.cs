@@ -68,9 +68,38 @@ namespace RigiCompiler
                 initializer = WrapperInitSynthesis.BindFieldInitializer(field, variable,
                     fileCtx, env);
             }
+            // 带用户访问器：getValue/setValue override 接管用户体（不再绑
+            // 独立访问器 fn）；init 元数仍走 Create 既有静态/全局规则
+            if (variable.Getter != null || variable.Setter != null)
+            {
+                return field.CellStorage = CreateForFieldWithAccessors(field, variable,
+                    fileCtx, env, genericParameters, initializer, isSingleton: isGlobal);
+            }
             return field.CellStorage = Create(fileCtx.Namespace, genericParameters,
                 field.FieldType!, field.IsConst, field.AppliedWrappers, variable, env,
                 isSingleton: isGlobal, initializer: initializer);
+        }
+
+        // 静态/全局 wrapped 字段带用户访问器：复用 Create 的 cell 壳与 init
+        // 元数，绑定语境为合成静态宿主（无 this / 无外层局部，不捕获）
+        private static CellStorageInfo? CreateForFieldWithAccessors(FieldSymbol field,
+            VariableDeclarationASTNode variable, FileContext fileCtx, BindEnvironment env,
+            IReadOnlyList<GenericParameterSymbol> genericParameters,
+            BoundExpression? initializer, bool isSingleton)
+        {
+            var host = new MethodSymbol(".field.accessor.bind", MethodKind.Regular,
+                owner: field.Owner, ns: field.Namespace, isStatic: true)
+            {
+                HasBody = false,
+                IsSynthetic = true,
+            };
+            var accessorOuterCtx = new BindContext(host, fileCtx, field.Owner);
+            return Create(fileCtx.Namespace, genericParameters,
+                field.FieldType!, field.IsConst, field.AppliedWrappers, variable, env,
+                isSingleton: isSingleton, initializer: initializer,
+                getterNode: variable.Getter, setterNode: variable.Setter,
+                hasBacking: field.HasBackingStorage,
+                accessorOuterCtx: accessorOuterCtx);
         }
 
         // 局部访问器 cell 化（M107 路线 C，SYNTAX §9.4）：getValue/setValue
@@ -181,7 +210,8 @@ namespace RigiCompiler
                         new BoundBlock(syntax, new BoundStatement[]
                         {
                             AssignValue(syntax, cellClass, valueField, elementType,
-                                new BoundValueReferenceExpression(syntax, parameter, elementType)),
+                                new BoundValueReferenceExpression(syntax, parameter, elementType),
+                                forSetter: true),
                         }));
                 }
             }
@@ -217,7 +247,7 @@ namespace RigiCompiler
             {
                 AssignValue(syntax, cellClass, valueField, elementType,
                     new BoundValueReferenceExpression(syntax, valueInit.Parameters[0],
-                        elementType)),
+                        elementType), forSetter: false),
             };
             valueInitStmts.AddRange(CaptureAssignStatements(syntax, cellClass, valueInit,
                 captures, valueParamOffset: 1));
@@ -233,6 +263,39 @@ namespace RigiCompiler
             // M109b-1：value 字段 wrapped(W) → cell 子类 ..init.wrapper
             WrapperInitSynthesis.SynthesizeForCell(info, syntax, env);
             return info;
+        }
+
+        // 字段访问器体或默认透传：有用户体则走 cell 版 BindAccessorBody
+        //（捕获丢弃——静态/全局无 this/外层局部）；否则 get 读真实 value、
+        // set 写 ..value
+        private static BoundFunctionBody BindFieldAccessorOrDefault(
+            PropertyAccessorASTNode? accessorNode, MethodSymbol method, FieldSymbol valueField,
+            bool hasBacking, bool isSetter, SemanticSymbol elementType, ASTNode syntax,
+            TypeSymbol cellClass, BindEnvironment env, BindContext? accessorOuterCtx)
+        {
+            if (accessorNode != null && accessorOuterCtx != null)
+            {
+                var (block, bodyLocals, _) = BindAccessorBody(accessorNode, method, valueField,
+                    hasBacking, isSetter, elementType, new Scope(null), accessorOuterCtx, env);
+                return new BoundFunctionBody(method, bodyLocals, block);
+            }
+            if (isSetter)
+            {
+                var parameter = method.Parameters[0];
+                return new BoundFunctionBody(method, Array.Empty<LocalSymbol>(),
+                    new BoundBlock(syntax, new BoundStatement[]
+                    {
+                        AssignValue(syntax, cellClass, valueField, elementType,
+                            new BoundValueReferenceExpression(syntax, parameter, elementType),
+                            forSetter: true),
+                    }));
+            }
+            return new BoundFunctionBody(method, Array.Empty<LocalSymbol>(),
+                new BoundBlock(syntax, new BoundStatement[]
+                {
+                    new BoundReturnStatement(syntax, new BoundFieldAccessExpression(syntax,
+                        new BoundThisExpression(syntax, cellClass), valueField, elementType)),
+                }));
         }
 
         // 单访问器体绑定：独立 BindContext（Frame.Method = getValue/setValue，
@@ -277,7 +340,7 @@ namespace RigiCompiler
                 {
                     statements.Add(new BoundReturnStatement(accessorNode,
                         PathFacility.MakeBackingFieldReference(accessorNode, valueField,
-                            elementType, accessorCtx.Frame)));
+                            elementType, accessorCtx.Frame, forSetter: false)));
                 }
                 body = new BoundBlock(accessorNode, statements);
             }
@@ -286,7 +349,7 @@ namespace RigiCompiler
             {
                 var implicitAssign = new BoundAssignmentStatement(accessorNode,
                     PathFacility.MakeBackingFieldReference(accessorNode, valueField, elementType,
-                        accessorCtx.Frame),
+                        accessorCtx.Frame, forSetter: true),
                     new BoundValueReferenceExpression(accessorNode, method.Parameters[0],
                         elementType));
                 body = new BoundBlock(body.Syntax,
@@ -396,7 +459,9 @@ namespace RigiCompiler
         private static CellStorageInfo? Create(NamespaceSymbol ns,
             IReadOnlyList<GenericParameterSymbol> genericParameters, SemanticSymbol elementType,
             bool readOnly, IReadOnlyList<WrapperApplication> wrappers, ASTNode syntax,
-            BindEnvironment env, bool isSingleton = false, BoundExpression? initializer = null)
+            BindEnvironment env, bool isSingleton = false, BoundExpression? initializer = null,
+            PropertyAccessorASTNode? getterNode = null, PropertyAccessorASTNode? setterNode = null,
+            bool hasBacking = false, BindContext? accessorOuterCtx = null)
         {
             var unit = env.Unit;
             // 毒化静默（类型解析失败的诊断已在前序落袋，不合成残缺子类）
@@ -465,7 +530,7 @@ namespace RigiCompiler
                 if (initializer != null)
                 {
                     initStatements.Add(AssignValue(syntax, cellClass, valueField, elementType,
-                        initializer));
+                        initializer, forSetter: false));
                 }
                 defaultInit = method;
                 methods.Add((method, new BoundFunctionBody(method,
@@ -493,31 +558,26 @@ namespace RigiCompiler
                     {
                         AssignValue(syntax, cellClass, valueField, elementType,
                             new BoundValueReferenceExpression(syntax, initParameter,
-                                elementType)),
+                                elementType), forSetter: false),
                     }))));
             }
-            // override getValue：return this.value
+            // override getValue：用户 getter 体入壳；缺侧默认透传读真实 value
+            // 字段（VM 识别直读）。field.Getter 符号保持原样，不改指本方法
             var getValue = NewMethod("getValue", MethodKind.Regular, cellClass, elementType,
                 isOverride: true);
-            methods.Add((getValue, new BoundFunctionBody(getValue,
-                Array.Empty<LocalSymbol>(), new BoundBlock(syntax, new BoundStatement[]
-                {
-                    new BoundReturnStatement(syntax, new BoundFieldAccessExpression(syntax,
-                        new BoundThisExpression(syntax, cellClass), valueField, elementType)),
-                }))));
-            // override setValue：this.value = value（仅 Cell 风味）
+            methods.Add((getValue, BindFieldAccessorOrDefault(getterNode, getValue, valueField,
+                hasBacking, isSetter: false, elementType, syntax, cellClass, env,
+                accessorOuterCtx)));
+            // override setValue：用户 setter 体入壳；缺侧默认透传写 ..value
+            // （仅 Cell 风味；const/ReadonlyCell 无 setValue）
             if (!readOnly)
             {
                 var setValue = NewMethod("setValue", MethodKind.Regular, cellClass, null,
                     isOverride: true);
-                var parameter = new ParameterSymbol("value", elementType);
-                setValue.Parameters.Add(parameter);
-                methods.Add((setValue, new BoundFunctionBody(setValue,
-                    Array.Empty<LocalSymbol>(), new BoundBlock(syntax, new BoundStatement[]
-                    {
-                        AssignValue(syntax, cellClass, valueField, elementType,
-                            new BoundValueReferenceExpression(syntax, parameter, elementType)),
-                    }))));
+                setValue.Parameters.Add(new ParameterSymbol("value", elementType));
+                methods.Add((setValue, BindFieldAccessorOrDefault(setterNode, setValue,
+                    valueField, hasBacking, isSetter: true, elementType, syntax, cellClass,
+                    env, accessorOuterCtx)));
             }
             foreach (var (method, _) in methods) cellClass.Methods.Add(method);
             var info = new CellStorageInfo(cellClass, cellType, readOnly, valueField,
@@ -564,13 +624,15 @@ namespace RigiCompiler
             };
         }
 
-        // this.value = <value>
+        // this.value = <value>；setValue 体改指 ..value，init 体保持真实 value 字段
         private static BoundAssignmentStatement AssignValue(ASTNode syntax, TypeSymbol cellClass,
-            FieldSymbol valueField, SemanticSymbol elementType, BoundExpression value)
+            FieldSymbol valueField, SemanticSymbol elementType, BoundExpression value,
+            bool forSetter)
         {
+            var target = PathFacility.BackingStorageField(valueField, forSetter);
             return new BoundAssignmentStatement(syntax,
                 new BoundFieldAccessExpression(syntax,
-                    new BoundThisExpression(syntax, cellClass), valueField, elementType),
+                    new BoundThisExpression(syntax, cellClass), target, elementType),
                 value);
         }
 

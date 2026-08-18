@@ -135,7 +135,7 @@ wrapped(WRAPPER_TYPE_REF)
 - extension field；
 - wrapper getter/setter 链。
 
-BIL 的 `get.field` / `set.field` 始终引用逻辑字段 canonical symbol，不引用 Native offset。
+BIL 的 `get.field` / `set.field` 在使用点始终引用逻辑字段 canonical symbol，不引用 Native offset。setter 体内对 backing 的一切读写（进入时隐含 `backing = value`、自动 setter 体、体内对 `value` 的多次读/写）统一引用保留字段符号 `..value`——实例 `Hero#..value@.i32`、静态 `Config#.static...value@.i32`（`.static.` 标记保留，名字段为 `..value`）、全局 `app::#..value@.i32`、cell 隐藏子类 `..cell..UUID#..value@.i32`。`..value` 是「当前 setter 所服务字段的 backing 存储」的约定别名（§5.1）；frontend 不为它发 `.field` 声明。getter 体保持引用原逻辑字段符号（如 `Hero#hp@.i32`）——只读性由此保证。
 
 #### 8.3.1 wrapper 应用标记
 
@@ -209,7 +209,7 @@ wrapper-proxy(PROXY_KIND)
 
 `call???` 是 `core::Any` 的 native 内建方法（§22.5 hook），frontend 不为其产 fn 定义（内建无 body 先例，同 `native`）；降级调用点见 §15.5。
 
-运算符、getter、setter 和 enum case 的实现可以拥有 method body，但其调用点在 BIL 中仍使用对应的语义指令；只有普通显式方法调用或规范要求的动态 fallback 使用 `invoke`。
+运算符、getter、setter 和 enum case 的实现可以拥有 method body，但其调用点在 BIL 中仍使用对应的语义指令；只有普通显式方法调用或规范要求的动态 fallback 使用 `invoke`。`getter(FIELD_SYMBOL)` / `setter(FIELD_SYMBOL)` 把该方法标为指定逻辑字段的访问器：setter 体内 backing 读写引用保留字段 `..value`（§8.3 / §13.3）；getter 体仍引用 `FIELD_SYMBOL` 本身。
 
 `native` 方法声明由运行时原生方法面提供实现（`SYNTAX.md` §4.6、`RUNTIME.md` §26）：
 

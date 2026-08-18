@@ -56,7 +56,8 @@ operator .proxy.opr.*<named TNamedArgs..., TUnnamedArgs..., TReturn>(
 
 wildcard 体内 `inner(...)` 必须写**全形状**（保留首参在 inner 中显式传递，不在 ABI 隐式承担）：
 - `.proxy.*` / `.proxy.opr.*`：`inner(symbol=symbol, namedArgs=namedArgs, unnamedArgs=unnamedArgs)`；
-- `.proxy.get.*` / `.proxy.set.*`：`inner(symbol=symbol, value=value)`。
+- `.proxy.set.*`：`inner(symbol=symbol, value=value)`。
+get 类别（`.proxy.get.*`、specific `.proxy.get.<名>`、Value 的 `.proxy.get`）不得调用 `inner(...)`：get 链的值经 `value` 参数流入，没有向内的下一环；这是读取路径只读性的设计保证（`SYNTAX.md` §14.2 / `BIL_STANDARD.md` §15.4）。
 
 这些 wildcard 不是可重复声明并按泛型 pattern 竞争的 overload，而是四个操作类别各自唯一的 fallback handler。其参数和泛型形状由编译器固定；同一 wrapper 内重复实现同类别 wildcard 是编译错误。
 
@@ -66,6 +67,7 @@ wildcard 体内 `inner(...)` 必须写**全形状**（保留首参在 inner 中�
 - 同 wrapper 内：匹配 specific proxy 时使用 specific，否则使用对应类别的唯一 wildcard；
 - specific 与同层 wildcard 是择一关系；调用 `inner(...)` 后，下一层独立重复该选择；
 - 不存在 wildcard 重叠、pattern specificity 或 `@ProxyPriority`。
+- 字段读写链（Value wrapper 与访问器并存）：写路径 wrapper → setter → backing（wrapper set 链 outer→inner，链末调 setter；无 setter 时直写存储）；读路径 backing → getter → wrapper（先调 getter，返回结果再过 wrapper get 链 inner→outer）。
 
 ### 14.2 单一 `call???` slot
 

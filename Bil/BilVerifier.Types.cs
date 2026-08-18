@@ -2187,9 +2187,103 @@ namespace RigiCompiler.Bil
             return true;
         }
 
+        private static bool IsBackingValueFieldSymbol(string fieldSymbol)
+        {
+            var hash = fieldSymbol.IndexOf('#');
+            var at = fieldSymbol.LastIndexOf('@');
+            if (hash < 0 || at <= hash)
+            {
+                return false;
+            }
+            var name = fieldSymbol.Substring(hash + 1, at - hash - 1);
+            if (name.StartsWith(".static.", StringComparison.Ordinal))
+            {
+                name = name.Substring(".static.".Length);
+            }
+            return name == BilSpellings.BackingValueFieldName;
+        }
+
+        private static bool IsCellTypeName(string typeRef)
+        {
+            var name = typeRef;
+            var generic = name.IndexOf('<');
+            if (generic >= 0)
+            {
+                name = name.Substring(0, generic);
+            }
+            var sep = name.LastIndexOf("::", StringComparison.Ordinal);
+            if (sep >= 0)
+            {
+                name = name.Substring(sep + 2);
+            }
+            return name.StartsWith("..cell..", StringComparison.Ordinal);
+        }
+
+        // ..value 仅允许出现在 setter(F) 体或 cell 的 getValue/setValue 体
+        private static bool IsValidBackingValueContext(BilFunctionContext context,
+            string fieldSymbol)
+        {
+            if (!BilVerificationContext.TryParseFieldSymbol(fieldSymbol,
+                    out var owner, out var isStatic, out var fieldType))
+            {
+                return false;
+            }
+            if (context.Module.MethodDeclarations.TryGetValue(context.Function.Symbol,
+                    out var declaration))
+            {
+                foreach (var modifier in declaration.Modifiers)
+                {
+                    if (modifier is not BilAccessorModifier accessor
+                        || accessor.Kind != BilAccessorKind.Setter)
+                    {
+                        continue;
+                    }
+                    if (!BilVerificationContext.TryParseFieldSymbol(accessor.FieldSymbol,
+                            out var fieldOwner, out var fieldStatic, out var declaredType))
+                    {
+                        continue;
+                    }
+                    if (fieldOwner == owner && fieldStatic == isStatic
+                        && declaredType == fieldType)
+                    {
+                        return true;
+                    }
+                }
+            }
+            if (!BilVerificationContext.TryParseMethodSymbol(context.Function.Symbol,
+                    out var fnOwner, out _, out _, out _)
+                || !IsCellTypeName(fnOwner))
+            {
+                return false;
+            }
+            var name = MethodNameSegment(context.Function.Symbol);
+            if (name != "getValue" && name != "setValue")
+            {
+                return false;
+            }
+            return context.Module.FieldSymbols.Contains(owner + "#value@" + fieldType)
+                || context.Module.FieldSymbols.Contains(fnOwner + "#value@" + fieldType);
+        }
+
         private static void VerifyInstanceField(BilFunctionContext context, string fieldSymbol,
             string? objectType, string location, List<BilVerificationError> errors)
         {
+            if (IsBackingValueFieldSymbol(fieldSymbol))
+            {
+                if (!IsValidBackingValueContext(context, fieldSymbol))
+                {
+                    errors.Add(new BilVerificationError("21.2", location,
+                        $"保留字段 \"{fieldSymbol}\" 只能出现在 setter 上下文"));
+                    return;
+                }
+                if (BilVerificationContext.TryParseFieldSymbol(fieldSymbol,
+                        out var backingOwner, out _, out _))
+                {
+                    CheckHostAssignable(context, objectType, backingOwner, location,
+                        "字段访问的宿主对象", errors);
+                }
+                return;
+            }
             if (!context.Module.FieldSymbols.Contains(fieldSymbol))
             {
                 errors.Add(new BilVerificationError("21.2", location,
@@ -2222,7 +2316,16 @@ namespace RigiCompiler.Bil
         private static void VerifyStaticField(BilFunctionContext context, string fieldSymbol,
             string ownerTypeRef, string location, List<BilVerificationError> errors)
         {
-            if (!context.Module.FieldSymbols.Contains(fieldSymbol))
+            if (IsBackingValueFieldSymbol(fieldSymbol))
+            {
+                if (!IsValidBackingValueContext(context, fieldSymbol))
+                {
+                    errors.Add(new BilVerificationError("21.2", location,
+                        $"保留字段 \"{fieldSymbol}\" 只能出现在 setter 上下文"));
+                    return;
+                }
+            }
+            else if (!context.Module.FieldSymbols.Contains(fieldSymbol))
             {
                 errors.Add(new BilVerificationError("21.2", location,
                     $"字段符号不可解析 \"{fieldSymbol}\""));
