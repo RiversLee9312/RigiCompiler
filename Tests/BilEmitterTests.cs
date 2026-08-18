@@ -73,6 +73,7 @@ namespace RigiCompiler.Tests
             TestStaticFieldReadWrite();
             TestIfStatementEmission();
             TestIfExpressionEmission();
+            TestIfExpressionSubtypeEmission();
             TestShortCircuitEmission();
             TestLoopEmission();
             TestInstanceEmission();

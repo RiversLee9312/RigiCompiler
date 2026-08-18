@@ -361,6 +361,41 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("全形 case 续链结构事实（receiver 是 case 构造）",
                 chainAccess.Field.Name == "errorCode"
                 && chainAccess.Receiver is BoundEnumCaseExpression { Case.Name: "Failed" });
+
+            // 语句语境：全形参数化 case 作独立表达式语句（产值被丢弃）
+            var (unit5, bodies5) = BindUnit(RequestResultSource +
+                "func f(): i32 {\n" +
+                "    RequestResult.Failed(1)\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckNoErrors("全形参数化 case 语句无诊断", unit5);
+            TestHarness.Check("全形参数化 case 语句形态（值丢弃）",
+                BoundDescribe.Body(BodyOf(bodies5, "f")),
+                "Body(f, [], [ExprStmt(EnumCase(RequestResult.Failed, [Int(1,i32)])); " +
+                "Return(Int(0,i32))])");
+            // 结构事实：语句语境与表达式语境共用 TryBindSpecialPathCall，
+            // 绑定产物 Syntax 恒为调用的 path 节点
+            var caseStmt = (BoundEnumCaseExpression)((BoundExpressionStatement)
+                BodyOf(bodies5, "f").Body.Statements[0]).Expression;
+            var casePath = (PathExpressionASTNode)((ExpressionStatementASTNode)
+                unit5.SourceFiles[0].Declarations
+                    .OfType<CallableDeclarationASTNode>().Single(c => c.Name == "f")
+                .Body!.Statements[0]).Expression.Expression;
+            TestHarness.CheckTrue("全形 case 语句 Syntax = 调用 path 节点",
+                ReferenceEquals(caseStmt.Syntax, casePath));
+
+            // 命名空间限定全形 case 语句（跨文件；§16.1 跨文件引用需 pub）
+            var (unit6, bodies6) = BindUnit(
+                "namespace app\n" + RequestResultSource,
+                "func f(): i32 {\n" +
+                "    app.RequestResult.Failed(1)\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckNoErrors("命名空间限定 enum case 语句无诊断", unit6);
+            TestHarness.Check("命名空间限定 enum case 语句形态（值丢弃）",
+                BoundDescribe.Body(BodyOf(bodies6, "f")),
+                "Body(f, [], [ExprStmt(EnumCase(RequestResult.Failed, [Int(1,i32)])); " +
+                "Return(Int(0,i32))])");
         }
 
         // ===== 负例矩阵 =====
@@ -599,6 +634,15 @@ namespace RigiCompiler.Tests
                 "}\n");
             TestHarness.CheckSemanticError("全形固定 case 带实参拒绝", e24.Diagnostics,
                 "Case 'Success' takes no arguments");
+
+            // 对照：语句语境真正未定义函数仍走普通调用诊断
+            var (e25, _) = BindUnit(RequestResultSource +
+                "func f(): i32 {\n" +
+                "    nosuch()\n" +
+                "    return 0\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("语句语境未定义函数仍拒绝", e25.Diagnostics,
+                "Undefined function: 'nosuch'");
         }
     }
 }

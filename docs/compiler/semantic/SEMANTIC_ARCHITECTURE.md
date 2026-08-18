@@ -97,7 +97,7 @@ BIL 文本
 | 访问控制检查（使用点） | P3 | |
 | definite assignment / 所有路径显式返回 | P3 | BIL §21.4 要求 frontend 保证 |
 | async 边界共享安全检查 | P3 | SYNTAX §4.5 五项闸门：receiver / 参数 / TResult / 捕获 / 泛型实参 |
-| 值块隐式取值 | P3 | 「块内恰好一条 ExpressionStatement」判定为取值形态 |
+| 值块隐式取值 | P3 | seq/if/switch 值块：「块内恰好一条非赋值 ExpressionStatement」即隐式值 |
 | 语法糖规范化（全部脱糖） | P4a | 清单见 §6.1 |
 | 短路展开、smart cast / 子类型赋值的显式 `cast` 插入 | P4a | BIL §3.1/§6.5/§11.3 |
 | async/await/yield 物化、using 物化 | P4a | 深度 lowering，见 §7 |
@@ -210,10 +210,12 @@ SemanticSymbol
 
 ### 5.2 P3 必须落实的语义规则（易漏清单）
 
-- **值块隐式取值**：if/switch 表达式分支体与部分求值
-  位置的代码块，「块内恰好一条 ExpressionStatement」即隐式取值；
-  多语句块须有 `return@_` / `return@标签`。判定在 P3 完成并显式记录在
-  bound 节点上（P4 不再看语法形态）。
+- **值块隐式取值**：if/switch 表达式分支体、表达式形态 `seq`、以及
+  部分求值位置的代码块，统一规则——「块内恰好一条非赋值
+  ExpressionStatement」即隐式取值（如 `var x: i32 = seq { 7 }`、
+  `var e: E = seq { .A(3) }`）；多语句块须有 `return@_` /
+  `return@标签`。判定在 P3 完成并显式记录在 bound 节点上
+  （P4 不再看语法形态）。
 - **无运算符优先级**是前端已保证的事实：`BinaryExpression` 树无需
   也不得再平衡。
 - smart cast：P3 只做**分析与标记**（某表达式在某区域内可视为窄化类型），

@@ -311,8 +311,8 @@ namespace RigiCompiler
                             new TypeOfExpressionParserLayer(typeOfNode) { allowBareReturn = allowBareReturn });
                     case Keywords.SEQ:
                     case Keywords.VOLATILE:
-                        // seq 块可以作为表达式使用（通过 return@_/return@标签 返回值，
-                        // 匿名默认标签为 _，SYNTAX §6.1）
+                        // seq 块可以作为表达式使用（单表达式隐式值，或多语句
+                        // return@_/return@标签；匿名默认标签为 _，SYNTAX §6.1）
                         // 保留当前 token，因为 SeqBlockParserLayer 需要重新读取它
                         var seqNode = new SeqBlockExpressionASTNode();
                         return DelegateStructuredParsing(

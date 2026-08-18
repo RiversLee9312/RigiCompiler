@@ -156,16 +156,126 @@ namespace RigiCompiler.Tests
             TestHarness.CheckSemanticError("DA：单分支赋值合并后仍报未赋值", unit10.Diagnostics,
                 "Use of unassigned local variable 'y'");
 
-            // 诊断：switch 表达式产值类型不一致
+            // 诊断：无期望类型时 switch 表达式产值类型严格不一致
             var (unit11, _) = BindUnit(
+                "func f(x: i32): i32 {\n" +
+                "    var r = switch (x) {\n" +
+                "        (1) -> { 1 }\n" +
+                "        default -> { \"s\" }\n" +
+                "    }\n" +
+                "    return r\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("switch 表达式产值类型不一致", unit11.Diagnostics,
+                "switch expression branches produce different types ('i32' and 'String')");
+
+            TestSwitchExpressionExpectedTypes();
+        }
+
+        private static void TestSwitchExpressionExpectedTypes()
+        {
+            TestHarness.Section("P3 Switch Expression Expected Types");
+
+            const string enumSource =
+                "pub enum struct E {\n" +
+                "    pub const v: i32\n" +
+                "    pub init(_ -> v)\n" +
+                "}[\n" +
+                "    A(v = _),\n" +
+                "    B(0)\n" +
+                "]\n";
+            const string animalSource =
+                "open class Animal { }\n" +
+                "class Dog : Animal { }\n" +
+                "class Cat : Animal { }\n";
+
+            var (enumUnit, enumBodies) = BindUnit(enumSource +
+                "func f(): E {\n" +
+                "    return switch (0) {\n" +
+                "        (0) -> { .A(1) }\n" +
+                "        default -> { .B }\n" +
+                "    }\n" +
+                "}\n");
+            CheckNoErrors("隐式 enum case 有返回语境（switch）", enumUnit);
+            TestHarness.Check("隐式 enum switch 形态",
+                BoundDescribe.Body(BodyOf(enumBodies, "f")),
+                "Body(f, [], [Return(SwitchExpr(Int(0,i32), " +
+                "[Case(Int(0,i32), ValueBlock(_, E, implicit, " +
+                "[ExprStmt(EnumCase(E.A, [Int(1,i32)]))]))], " +
+                "ValueBlock(_, E, implicit, [ExprStmt(EnumCase(E.B, []))]), E))])");
+
+            var (nullUnit, nullBodies) = BindUnit(
+                "func f(): String? {\n" +
+                "    return switch (0) {\n" +
+                "        (0) -> { null }\n" +
+                "        default -> { \"x\" }\n" +
+                "    }\n" +
+                "}\n");
+            CheckNoErrors("隐式 null 有可空返回语境（switch）", nullUnit);
+            TestHarness.Check("隐式 null switch 形态",
+                BoundDescribe.Body(BodyOf(nullBodies, "f")),
+                "Body(f, [], [Return(SwitchExpr(Int(0,i32), " +
+                "[Case(Int(0,i32), ValueBlock(_, String?, implicit, [ExprStmt(Null(String?))]))], " +
+                "ValueBlock(_, String, implicit, [ExprStmt(Str(\"x\",String))]), String?))])");
+
+            var (argUnit, argBodies) = BindUnit(enumSource +
+                "func take(e: E) { }\n" +
+                "func f() {\n" +
+                "    take(switch (0) {\n" +
+                "        (0) -> { .A(7) }\n" +
+                "        default -> { .B }\n" +
+                "    })\n" +
+                "}\n");
+            CheckNoErrors("实参语境传入 switch 隐式分支", argUnit);
+            TestHarness.Check("实参语境 switch 形态",
+                BoundDescribe.Body(BodyOf(argBodies, "f")),
+                "Body(f, [], [CallStmt(take, [SwitchExpr(Int(0,i32), " +
+                "[Case(Int(0,i32), ValueBlock(_, E, implicit, " +
+                "[ExprStmt(EnumCase(E.A, [Int(7,i32)]))]))], " +
+                "ValueBlock(_, E, implicit, [ExprStmt(EnumCase(E.B, []))]), E)])])");
+
+            var (explicitUnit, _) = BindUnit(animalSource +
+                "func pick(flag: bool): Animal {\n" +
+                "    return switch (flag) {\n" +
+                "        (true) -> { return@_ new Dog() }\n" +
+                "        default -> { return@_ new Cat() }\n" +
+                "    }\n" +
+                "}\n");
+            CheckNoErrors("公共基类显式 return@（switch）", explicitUnit);
+
+            var (implicitUnit, implicitBodies) = BindUnit(animalSource +
+                "func pick(flag: bool): Animal {\n" +
+                "    return switch (flag) {\n" +
+                "        (true) -> { new Dog() }\n" +
+                "        default -> { new Cat() }\n" +
+                "    }\n" +
+                "}\n");
+            CheckNoErrors("公共基类隐式分支（switch）", implicitUnit);
+            TestHarness.Check("公共基类隐式 switch 形态",
+                BoundDescribe.Body(BodyOf(implicitBodies, "pick")),
+                "Body(pick, [], [Return(SwitchExpr(Param(flag,bool), " +
+                "[Case(Bool(True,bool), ValueBlock(_, Dog, implicit, [ExprStmt(New(Dog, []))]))], " +
+                "ValueBlock(_, Cat, implicit, [ExprStmt(New(Cat, []))]), Animal))])");
+
+            var (noExpected, _) = BindUnit(animalSource +
+                "func f(flag: bool) {\n" +
+                "    var x = switch (flag) {\n" +
+                "        (true) -> { new Dog() }\n" +
+                "        default -> { new Cat() }\n" +
+                "    }\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("无期望类型 switch 仍严格同型", noExpected.Diagnostics,
+                "switch expression branches produce different types ('Dog' and 'Cat')");
+
+            var (incompatible, _) = BindUnit(
                 "func f(x: i32): i32 {\n" +
                 "    return switch (x) {\n" +
                 "        (1) -> { 1 }\n" +
                 "        default -> { \"s\" }\n" +
                 "    }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("switch 表达式产值类型不一致", unit11.Diagnostics,
-                "switch expression branches produce different types ('i32' and 'String')");
+            TestHarness.CheckSemanticError("有期望类型但不兼容报可赋性（switch）",
+                incompatible.Diagnostics,
+                "switch expression branch type 'String' is not assignable to expected type 'i32'");
         }
 
         // ===== throw（S7d，SYNTAX §8；异常根 core.Exception 进 bootstrap）=====

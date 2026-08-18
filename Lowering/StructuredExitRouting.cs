@@ -267,11 +267,14 @@ namespace RigiCompiler
             var (resultLocal, targetBreakId) = ctx.ExitTargets.Find(exit.Target);
             if (exit.Value != null)
             {
+                var assignedLocal = resultLocal ?? throw new CompilerInternalException(
+                    "return@值块目标缺结果局部（注册不变量破坏）");
+                // 写入值块结果局部须物化声明类型视图（与隐式取值路径
+                // ValueBlockRewriter 同口径——Dog→Animal 等子型）
+                var assigned = LoweringFacility.EnsureDeclaredType(exit.Origin, exit.Value,
+                    assignedLocal.Type);
                 output.Add(new LoweredAssignmentStatement(exit.Origin,
-                    SynthLocalFactory.ReferenceTo(exit.Origin,
-                        resultLocal ?? throw new CompilerInternalException(
-                            "return@值块目标缺结果局部（注册不变量破坏）")),
-                    exit.Value));
+                    SynthLocalFactory.ReferenceTo(exit.Origin, assignedLocal), assigned));
             }
             if (current == null)
             {

@@ -90,6 +90,7 @@ namespace RigiCompiler.Tests
             TestForRangeAndBreakContinue();
             TestNamedBreakContinue();
             TestSwitchStatementAndExpression();
+            TestConditionalExpectedTypeMaterialization();
             TestTryCatchFinally();
             TestThrowAcrossFunction();
             TestRetBreakContinueThroughFinally();
@@ -2670,6 +2671,66 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckOk("switch pattern", pattern);
             CheckI32("pattern _ > 10", pattern, 2);
+        }
+
+        private static void TestConditionalExpectedTypeMaterialization()
+        {
+            var implicitPick = Run(
+                "pub open class Animal { pub init() {} }\n" +
+                "pub class Dog : Animal { pub init() {} }\n" +
+                "pub class Cat : Animal { pub init() {} }\n" +
+                "pub func pick(flag: bool): Animal {\n" +
+                "    return if (flag) { new Dog() } else { new Cat() }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = pick(true)\n" +
+                "    if (a is Dog) { return 1 } else { return 2 }\n" +
+                "}\n");
+            CheckOk("隐式 if 公共基类", implicitPick);
+            CheckI32("隐式 if 命中 Dog", implicitPick, 1);
+            var explicitPick = Run(
+                "pub open class Animal { pub init() {} }\n" +
+                "pub class Dog : Animal { pub init() {} }\n" +
+                "pub class Cat : Animal { pub init() {} }\n" +
+                "pub func pick(flag: bool): Animal {\n" +
+                "    return if (flag) { return@_ new Dog() } else { return@_ new Cat() }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = pick(false)\n" +
+                "    if (a is Cat) { return 3 } else { return 4 }\n" +
+                "}\n");
+            CheckOk("显式 return@ if 公共基类", explicitPick);
+            CheckI32("显式 if 命中 Cat", explicitPick, 3);
+            var switchPick = Run(
+                "pub open class Animal { pub init() {} }\n" +
+                "pub class Dog : Animal { pub init() {} }\n" +
+                "pub class Cat : Animal { pub init() {} }\n" +
+                "pub func pick(flag: bool): Animal {\n" +
+                "    return switch (flag) {\n" +
+                "        (true) -> { new Dog() }\n" +
+                "        default -> { new Cat() }\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = pick(true)\n" +
+                "    if (a is Dog) { return 5 } else { return 6 }\n" +
+                "}\n");
+            CheckOk("隐式 switch 公共基类", switchPick);
+            CheckI32("隐式 switch 命中 Dog", switchPick, 5);
+            var nullable = Run(
+                "pub func pick(flag: bool): String? {\n" +
+                "    return if (flag) { null } else { \"x\" }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = pick(true)\n" +
+                "    var b = pick(false)\n" +
+                "    if (a == null) {\n" +
+                "        if (b == null) { return 0 } else { return 8 }\n" +
+                "    }\n" +
+                "    return 9\n" +
+                "}\n");
+            CheckOk("隐式 if 可空", nullable);
+            CheckI32("null / \"x\" 物化", nullable, 8);
         }
 
         private static void TestTryCatchFinally()

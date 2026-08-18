@@ -402,7 +402,8 @@ namespace RigiCompiler
 
     // seq 块表达式（SYNTAX.md §6）：
     // [volatile] seq [using(...)]* [named label] { ... }
-    // 可作为语句（不产生值）或表达式（通过 return@_/return@标签 产生值，匿名默认标签为 _）
+    // 可作为语句（不产生值）或表达式（单表达式隐式值，或多语句
+    // return@_/return@标签 产生值；匿名默认标签为 _）
     // 注：继承自 ExpressionASTNode，因此可以在表达式位置使用；
     //     在代码块中单独成行时，作为表达式语句（构造时传入块父节点）
     public class SeqBlockExpressionASTNode : ExpressionASTNode

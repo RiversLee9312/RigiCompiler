@@ -110,6 +110,27 @@ namespace RigiCompiler.Tests
                 "}\n");
         }
 
+        // 公共基类/可空隐式值块：结果局部按期望类型物化，验证器须接受
+        private static void TestIfExpressionSubtypeEmission()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "pub open class Animal { pub init() {} }\n" +
+                "pub class Dog : Animal { pub init() {} }\n" +
+                "pub class Cat : Animal { pub init() {} }\n" +
+                "pub func pick(flag: bool): Animal {\n" +
+                "    return if (flag) { new Dog() } else { new Cat() }\n" +
+                "}\n" +
+                "pub func pickExplicit(flag: bool): Animal {\n" +
+                "    return if (flag) { return@_ new Dog() } else { return@_ new Cat() }\n" +
+                "}\n" +
+                "pub func pickNull(flag: bool): String? {\n" +
+                "    return if (flag) { null } else { \"x\" }\n" +
+                "}\n" +
+                "pub func main(): i32 { return 0 }\n");
+            CheckNoErrors("全管线无诊断（if 子型物化）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（if 子型物化）", module);
+        }
+
         // ===== S7b：短路 and/or → §11.3 if 展开（无裸 and/or 指令）=====
         private static void TestShortCircuitEmission()
         {

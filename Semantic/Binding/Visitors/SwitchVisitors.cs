@@ -120,9 +120,10 @@ namespace RigiCompiler
     }
 
     // switch 表达式：分支体（含 default）各绑一个值块（标签同源
-    // Label ?? "_"——return@ 命中规则同 if 表达式），产值类型全分支
-    // 统一（纯穿透分支不参与；全穿透即无产值；引用不等且非 ErrorType
-    // 报不一致）；DA 合并同语句形态
+    // Label ?? "_"——return@ 命中规则同 if 表达式）。产值类型统一
+    // 同 if 表达式：无 expectedType 时严格同型（纯穿透不参与；引用
+    // 不等且非 ErrorType 报不一致）；有 expectedType T 时各产值
+    // 分支只需可赋给 T，表达式类型 = T。DA 合并同语句形态
     internal sealed class SwitchExpressionVisitor
         : ExpressionVisitor<SwitchExpressionVisitor, BindContext>
     {
@@ -178,26 +179,11 @@ namespace RigiCompiler
             ctx.Flow.MergeBranches(before, branchTails);
             ctx.Flow.MergeNarrowedBranches(narrowedTails);
             if (selector == null) return null;
-            // 产值类型统一（规则同 if 表达式）：纯穿透分支（ValueType null）
-            // 不参与；有产值分支符号须引用相等（ErrorType 毒化静默）
-            SemanticSymbol? type = null;
-            foreach (var branch in cases.Select(c => c.Body).Append(defaultShell.Block))
+            var valueBranches = cases.Select(c => c.Body).Append(defaultShell.Block);
+            if (!Conditions.TryUnifyConditionalBranches(valueBranches, expectedType,
+                switchNode.Span, "switch expression", env, out var type))
             {
-                if (branch.ValueType == null) continue;
-                if (type == null)
-                {
-                    type = branch.ValueType;
-                    continue;
-                }
-                if (!ReferenceEquals(type, branch.ValueType)
-                    && type is not ErrorTypeSymbol && branch.ValueType is not ErrorTypeSymbol)
-                {
-                    env.Error(switchNode.Span,
-                        $"switch expression branches produce different types " +
-                        $"('{BoundAnalysis.TypeDisplay(type)}' and " +
-                        $"'{BoundAnalysis.TypeDisplay(branch.ValueType)}')");
-                    return null;
-                }
+                return null;
             }
             if (type == null)
             {

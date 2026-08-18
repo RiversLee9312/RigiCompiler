@@ -127,10 +127,11 @@ namespace RigiCompiler
     }
 
     // if 表达式（S7b，SYNTAX §7.1）：必须有 else（前端保证）；两分支各绑
-    // 一个值块（标签同源——if 表达式的 named 标签或缺省 "_"），产值类型
-    // 统一（符号 ==；ErrorType 毒化静默），纯穿透分支（ValueType null）
-    // 不参与统一；definite assignment 合并规则同 if 语句。
-    // 自旧 BindSession.BindIfExpression 迁移，行为不变。
+    // 一个值块（标签同源——if 表达式的 named 标签或缺省 "_"）。产值类型
+    // 统一：无 expectedType 时严格同型（符号 ==；ErrorType 毒化静默；
+    // 纯穿透分支 ValueType null 不参与）；有 expectedType T 时各产值
+    // 分支只需可赋给 T，表达式类型 = T。definite assignment 合并规则
+    // 同 if 语句。自旧 BindSession.BindIfExpression 迁移。
     internal sealed class IfExpressionVisitor : ExpressionVisitor<IfExpressionVisitor, BindContext>
     {
         protected override BoundExpression? VisitCore(ASTNode node, Scope scope, BindContext ctx,
@@ -160,8 +161,12 @@ namespace RigiCompiler
             ctx.Flow.MergeIfBranches(before, trueAssigned, falseAssigned);
             ctx.Flow.MergeNarrowed(trueNarrowed, falseNarrowed);
             if (condition == null) return null;
-            // 产值类型统一：纯穿透分支（null）不参与；两分支都穿透即无产值
-            var type = trueBranch.ValueType ?? falseBranch.ValueType;
+            if (!Conditions.TryUnifyConditionalBranches(
+                new[] { trueBranch, falseBranch }, expectedType, ifNode.Span,
+                "if expression", env, out var type))
+            {
+                return null;
+            }
             if (type == null)
             {
                 // 两分支全路径向外逃逸（各自无本块产值且路径全终止——
@@ -184,17 +189,6 @@ namespace RigiCompiler
                     "(at least one branch must return@ a value)");
                 return null;
             }
-            if (trueBranch.ValueType != null && falseBranch.ValueType != null
-                && !ReferenceEquals(trueBranch.ValueType, falseBranch.ValueType)
-                && trueBranch.ValueType is not ErrorTypeSymbol
-                && falseBranch.ValueType is not ErrorTypeSymbol)
-            {
-                env.Error(ifNode.Span,
-                    $"if expression branches produce different types " +
-                    $"('{BoundAnalysis.TypeDisplay(trueBranch.ValueType)}' and " +
-                    $"'{BoundAnalysis.TypeDisplay(falseBranch.ValueType)}')");
-                return null;
-            }
             return new BoundIfExpression(node, condition, trueBranch, falseBranch, type);
         }
 
@@ -213,12 +207,14 @@ namespace RigiCompiler
     // 值块绑定（S7b，SYNTAX §6.1；壳填充协议首验）：
     // - 施工壳先于分支体绑定创建并由调用方传入，Enter 压入值块标签栈
     //   （分支体内的 return@标签 经栈命中），Exit 弹栈（finally 配对）；
-    // - 语法上恰好一条纯表达式语句（赋值语句不算）→ 隐式取值，
-    //   ValueType = 该表达式类型；
+    // - 语法上恰好一条纯表达式语句（赋值语句不算）→ 隐式取值：在
+    //   BlockDispatcher 之前按语法分类，经 ExpressionDispatcher 带
+    //   ExpectedType 绑定（enum shorthand / null 等语境定型），包装为
+    //   BoundExpressionStatement/BoundBlock；ValueType = 该表达式类型；
     // - 否则所有执行路径必须显式 return@（GuaranteesValueReturn 检查，
     //   穿透终止也算路径终止），ValueType = 命中本块的 return@ 值类型
     //   统一结果；无本块产值（纯穿透）→ ValueType = null。
-    // 自旧 BindSession.BindValueBlock 迁移，行为不变。
+    // 自旧 BindSession.BindValueBlock 迁移。
     internal sealed class ValueBlockVisitor
         : BinderShellVisitor<ValueBlockVisitor, ValueBlockShell, BindContext>
     {
@@ -238,34 +234,17 @@ namespace RigiCompiler
             BindContext ctx, BindEnvironment env)
         {
             var blockNode = (CodeBlockASTNode)node;
-            var block = BlockDispatcher.Visit(blockNode, scope, ctx, env);
-            shell.Block.Block = block;
-            // M33 判定：语法上恰好一条纯表达式语句
+            // 隐式取值：语法分类必须在 BlockDispatcher 之前——普通语句
+            // 绑定不带 ExpectedType，会丢掉 enum/null 等语境定型
             if (shell.AllowImplicitValue && blockNode.Statements.Count == 1
-                && blockNode.Statements[0] is ExpressionStatementASTNode { AssignValue: null })
+                && blockNode.Statements[0] is ExpressionStatementASTNode
+                { AssignValue: null } statement)
             {
-                shell.Block.IsImplicitValue = true;
-                // 绑定失败（产物缺失）时诊断已发，静默留 null ValueType；
-                // void 调用落成 BoundCallStatement——无值可取
-                if (block.Statements.Count == 1
-                    && block.Statements[0] is BoundExpressionStatement expressionStatement)
-                {
-                    if (expressionStatement.Expression is BoundAwaitExpression { HasResult: false })
-                    {
-                        env.Error(node.Span, $"{shell.Construct} branch must produce a value " +
-                            "(an await of core.coroutine.Task has no result)");
-                        return;
-                    }
-                    shell.Block.ValueType = expressionStatement.Expression.Type;
-                }
-                else if (block.Statements.Count == 1
-                    && block.Statements[0] is BoundCallStatement)
-                {
-                    env.Error(node.Span, $"{shell.Construct} branch must produce a value " +
-                        "(a void call has no result)");
-                }
+                BindImplicitValue(blockNode, statement, scope, shell, ctx, env);
                 return;
             }
+            var block = BlockDispatcher.Visit(blockNode, scope, ctx, env);
+            shell.Block.Block = block;
             if (!BoundAnalysis.GuaranteesValueReturn(block))
             {
                 var article = "aeiou".Contains(shell.Construct[0]) ? "an" : "a";
@@ -274,6 +253,44 @@ namespace RigiCompiler
             }
             shell.Block.ValueType = BoundAnalysis.CollectBranchValueType(block, shell.Block,
                 shell.Construct, env);
+        }
+
+        // 单表达式隐式值：带 ExpectedType 绑定，包装成 lowering 期望的
+        // BoundExpressionStatement/BoundBlock。await 走语句形态以便保留
+        // 「无结果 Task」诊断；void 调用经 ExpressionDispatcher 报无值，
+        // 不静默接受。不回走 BindNonAssignment（会再丢语境）。
+        private static void BindImplicitValue(CodeBlockASTNode blockNode,
+            ExpressionStatementASTNode statement, Scope scope, ValueBlockShell shell,
+            BindContext ctx, BindEnvironment env)
+        {
+            shell.Block.IsImplicitValue = true;
+            var expressionAst = statement.Expression.Expression;
+            BoundExpression? expression;
+            if (UnaryVisitor.IsAwait(expressionAst, out var awaitNode))
+            {
+                expression = UnaryVisitor.BindStatementAwait(awaitNode, scope, ctx, env);
+            }
+            else
+            {
+                expression = ExpressionDispatcher.Visit(expressionAst, scope, ctx, env,
+                    shell.Block.ExpectedType as TypeSymbol);
+            }
+            if (expression == null)
+            {
+                shell.Block.Block = new BoundBlock(blockNode, Array.Empty<BoundStatement>());
+                return;
+            }
+            if (expression is BoundAwaitExpression { HasResult: false })
+            {
+                env.Error(blockNode.Span, $"{shell.Construct} branch must produce a value " +
+                    "(an await of core.coroutine.Task has no result)");
+                shell.Block.Block = new BoundBlock(blockNode,
+                    new BoundStatement[] { new BoundExpressionStatement(statement, expression) });
+                return;
+            }
+            shell.Block.Block = new BoundBlock(blockNode,
+                new BoundStatement[] { new BoundExpressionStatement(statement, expression) });
+            shell.Block.ValueType = expression.Type;
         }
     }
 
@@ -291,6 +308,62 @@ namespace RigiCompiler
                     $"{construct} condition must be bool " +
                     $"(got '{BoundAnalysis.TypeDisplay(condition.Type)}')");
             }
+        }
+
+        // if/switch 表达式分支产值统一。expectedType 为 null：严格同型
+        // （符号 ==；ErrorType 毒化静默；ValueType null 的纯逃逸不参与；
+        // 不做 LUB）。expectedType 为 T：各产值分支（非 ErrorType）只需
+        // 可赋给 T，整体类型 = T。无产值分支时 type 仍为 null，由调用方
+        // 走全逃逸 / must-produce 既有口径。返回 false = 已发不一致诊断。
+        public static bool TryUnifyConditionalBranches(
+            IEnumerable<BoundValueBlock> branches, TypeSymbol? expectedType,
+            CharRange? span, string construct, BindEnvironment env,
+            out SemanticSymbol? type)
+        {
+            type = null;
+            if (expectedType != null)
+            {
+                var anyValue = false;
+                foreach (var branch in branches)
+                {
+                    if (branch.ValueType == null) continue;
+                    anyValue = true;
+                    if (branch.ValueType is ErrorTypeSymbol) continue;
+                    if (!SymbolLookup.IsAssignable(branch.ValueType, expectedType, env))
+                    {
+                        env.Error(span,
+                            $"{construct} branch type " +
+                            $"'{BoundAnalysis.TypeDisplay(branch.ValueType)}' is not " +
+                            $"assignable to expected type " +
+                            $"'{BoundAnalysis.TypeDisplay(expectedType)}'");
+                        type = null;
+                        return false;
+                    }
+                }
+                if (anyValue) type = expectedType;
+                return true;
+            }
+            foreach (var branch in branches)
+            {
+                if (branch.ValueType == null) continue;
+                if (type == null)
+                {
+                    type = branch.ValueType;
+                    continue;
+                }
+                if (!ReferenceEquals(type, branch.ValueType)
+                    && type is not ErrorTypeSymbol
+                    && branch.ValueType is not ErrorTypeSymbol)
+                {
+                    env.Error(span,
+                        $"{construct} branches produce different types " +
+                        $"('{BoundAnalysis.TypeDisplay(type)}' and " +
+                        $"'{BoundAnalysis.TypeDisplay(branch.ValueType)}')");
+                    type = null;
+                    return false;
+                }
+            }
+            return true;
         }
     }
 }

@@ -305,16 +305,15 @@
                 && CallForm.TryGet(path, out var calleeSegments, out var callArguments,
                     out var genericArguments))
             {
-                // 具化泛型构造（SYNTAX §3.6/§3.7）：语句位置 `TResult()` 同
-                // 归口 typeid 构造（产值被丢弃，与非常规调用表达式语句一致）
-                var reifiedHandled = false;
-                if (calleeSegments.Count == 1 && genericArguments == null)
+                // 特殊 CallForm（enum-case / 具化构造）先于普通函数调用；
+                // 产值被丢弃，与非常规调用表达式语句一致
+                var special = PathFacility.TryBindSpecialPathCall(path, calleeSegments,
+                    callArguments!, genericArguments, scope, ctx, env, forAssignment: false,
+                    out var specialHandled);
+                if (specialHandled)
                 {
-                    var reified = CallFacility.TryBindReifiedConstruction(syntax,
-                        calleeSegments[0], callArguments!, scope, ctx, env, out reifiedHandled);
-                    if (reified != null) return new BoundExpressionStatement(syntax, reified);
+                    return special == null ? null : new BoundExpressionStatement(syntax, special);
                 }
-                if (reifiedHandled) return null;    // 归口后绑定失败（诊断已落袋）
                 var binding = CallFacility.BindCall(syntax, calleeSegments, callArguments!, scope,
                     ctx, env, genericArguments);
                 if (binding == null) return null;

@@ -16,6 +16,7 @@ namespace RigiCompiler.Tests
             TestEnumCaseFixedPayloadEmission();
             TestEnumCaseParameterizedEmission();
             TestEnumCaseExplicitDiscriminant();
+            TestEnumCaseDiscardedStatementEmission();
         }
 
         // ===== 固定 case 端到端：构造/赋值/is .Case =====
@@ -209,6 +210,32 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckResShape("资源（判别值登记 + 同键去重）", module,
                 "#0 = i32 0\n#1 = i32 2\n#2 = i32 1\n#3 = string \"\\n\"\n" +
                 "#4 = bool false\n#5 = bool true");
+        }
+
+        // ===== 丢弃式全形 case 构造：语句语境 E.A(1) 发 new.case 后丢弃 =====
+        private static void TestEnumCaseDiscardedStatementEmission()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "pub enum struct E {\n" +
+                "    pub const x: i32\n" +
+                "    pub init(_ -> x)\n" +
+                "}[\n" +
+                "    A(x = _),\n" +
+                "    B(0)\n" +
+                "]\n" +
+                "pub func main(): i32 {\n" +
+                "    E.A(1)\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（丢弃式 enum case 语句）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（丢弃式 enum case 语句）", module);
+            BilTestHarness.CheckFnShape("丢弃式 enum case 语句 main 形状（new.case 后丢弃）",
+                module, "$main()@.i32",
+                ".vars { .i32 .t0, E .t1, .i32 .t2 }\n" +
+                "load res(#0) $.t0\n" +
+                "new.case type(E) case(E.A) $.t1 [$.t0]\n" +
+                "load res(#1) $.t2\n" +
+                "ret $.t2\n");
         }
     }
 }

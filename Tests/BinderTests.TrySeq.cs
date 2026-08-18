@@ -332,6 +332,50 @@ namespace RigiCompiler.Tests
             TestHarness.CheckSemanticError("无产值拒绝", unit9.Diagnostics,
                 "seq expression must produce a value (at least one path must return@ a value)");
 
+            var (unitInit, bodiesInit) = BindUnit(
+                "func siv() {\n" +
+                "    var x: i32 = seq { 7 }\n" +
+                "}\n");
+            CheckNoErrors("var x: i32 = seq { 7 } 无诊断", unitInit);
+            TestHarness.Check("var 初始化隐式取值形态",
+                BoundDescribe.Body(BodyOf(bodiesInit, "siv")),
+                "Body(siv, [x: i32], [Decl(x, i32, = SeqExpr([], ValueBlock(_, i32, implicit, " +
+                "[ExprStmt(Int(7,i32))])))])");
+
+            var (unitFall, _) = BindUnit(
+                "func sb3() {\n" +
+                "    var x: i32 = seq { var a = 1\n a + 1 }\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("多语句无 return@ 仍拒绝", unitFall.Diagnostics,
+                "seq expression must produce a value (at least one path must return@ a value)");
+
+            var (seqEnum, seqEnumBodies) = BindUnit(
+                "pub enum struct E {\n" +
+                "    pub const v: i32\n" +
+                "    pub init(_ -> v)\n" +
+                "}[\n" +
+                "    A(v = _),\n" +
+                "    B(0)\n" +
+                "]\n" +
+                "func f(): E {\n" +
+                "    return seq { .A(1) }\n" +
+                "}\n");
+            CheckNoErrors("seq 隐式 enum 有返回语境", seqEnum);
+            TestHarness.Check("seq 隐式 enum 形态",
+                BoundDescribe.Body(BodyOf(seqEnumBodies, "f")),
+                "Body(f, [], [Return(SeqExpr([], ValueBlock(_, E, implicit, " +
+                "[ExprStmt(EnumCase(E.A, [Int(1,i32)]))])))])");
+
+            var (seqNull, seqNullBodies) = BindUnit(
+                "func f(): String? {\n" +
+                "    return seq { null }\n" +
+                "}\n");
+            CheckNoErrors("seq 隐式 null 有可空返回语境", seqNull);
+            TestHarness.Check("seq 隐式 null 形态",
+                BoundDescribe.Body(BodyOf(seqNullBodies, "f")),
+                "Body(f, [], [Return(SeqExpr([], ValueBlock(_, String?, implicit, " +
+                "[ExprStmt(Null(String?))])))])");
+
             // 语句形态 using：逐项绑定、资源类型与 dispose 符号落定
             var (unit10, bodies10) = BindUnitWithStdlib(
                 "class UsingResource implements core.IDisposable {\n" +

@@ -14,7 +14,8 @@ namespace RigiCompiler
     /// - 代码块：标准代码块，委托 CodeBlockParserLayer
     ///
     /// seq 可作为语句或表达式使用：
-    /// - 作为表达式时，必须通过 return@_ 或 return@标签 返回值（匿名默认标签为 _，§6.1）
+    /// - 作为表达式时，取值规则同值块（§6.1）：恰好一条非赋值表达式语句即隐式值；
+    ///   多语句须通过 return@_ 或 return@标签 返回值（匿名默认标签为 _）
     /// - 作为语句时，可以不返回值
     ///
     /// 施工协议（大扫除后）：构造函数接收父层创建好的 SeqBlockExpressionASTNode

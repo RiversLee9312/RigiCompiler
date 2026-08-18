@@ -526,9 +526,19 @@ namespace RigiCompiler.Tests
                 && reified.Arguments.Count == 0);
 
             // 2. 语句位置具化构造（产值被丢弃）
-            var (unit1b, _) = BindUnit(
+            var (unit1b, bodies1b) = BindUnit(
                 "func makeIt\\<TResult>(): TResult { TResult()\nreturn TResult() }\n");
             CheckNoErrors("无诊断（语句位置具化构造）", unit1b);
+            // 结构事实：语句位置与表达式语境同一特殊形态通道——绑定产物
+            // Syntax 恒为调用的 path 节点（TryBindSpecialPathCall 归一并对齐）
+            var stmtReified = (BoundDynamicNewExpression)((BoundExpressionStatement)
+                BodyOf(bodies1b, "makeIt").Body.Statements[0]).Expression;
+            var stmtPath = (PathExpressionASTNode)((ExpressionStatementASTNode)
+                unit1b.SourceFiles[0].Declarations
+                    .OfType<CallableDeclarationASTNode>().Single(c => c.Name == "makeIt")
+                .Body!.Statements[0]).Expression.Expression;
+            TestHarness.CheckTrue("语句位置具化构造 Syntax = 调用 path 节点",
+                ReferenceEquals(stmtReified.Syntax, stmtPath));
 
             // 3. 动态 new：目标为 Type\<T\> 值，结果静态类型 = T
             var (unit2, bodies2) = BindUnit(

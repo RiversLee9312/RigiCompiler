@@ -60,6 +60,10 @@ namespace RigiCompiler
                 }
                 var value = LowerExpressionDispatcher.Visit(expressionStatement.Expression, ctx, env);
                 if (value == null) return null;
+                // 写入值块结果局部须物化声明类型视图（BIL §6.5：Dog→Animal
+                // 等子型赋值不能直接 set.var）
+                value = LoweringFacility.EnsureDeclaredType(expressionStatement, value,
+                    valueCtx.Target.Type);
                 statements.Add(new LoweredAssignmentStatement(expressionStatement,
                     SynthLocalFactory.ReferenceTo(expressionStatement, valueCtx.Target), value));
             }

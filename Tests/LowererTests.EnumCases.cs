@@ -139,6 +139,18 @@ namespace RigiCompiler.Tests
                 "[Assign(Local(.s0,RequestResult), Param(result,RequestResult)); " +
                 "[If(IsCase(Local(.s0,RequestResult), RequestResult.Success), " +
                 "[Return(Int(1,i32))], [Return(Int(0,i32))], .b0)]])");
+
+            // ===== 丢弃式全形 case 构造（语句语境产值被丢弃）=====
+            var (unit7, _, lowered7) = LowerUnit(EnumRequestResultSource +
+                "func f(): i32 {\n" +
+                "    RequestResult.Failed(1)\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckNoErrors("无诊断（丢弃式全形 case 降级）", unit7);
+            TestHarness.Check("丢弃式全形 case 降级形态",
+                LoweredDescribe.Body(BodyOf(lowered7, "f")),
+                "Body(f, [], [ExprStmt(EnumCase(RequestResult.Failed, [Int(1,i32)])); " +
+                "Return(Int(0,i32))])");
         }
     }
 }

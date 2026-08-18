@@ -253,23 +253,10 @@
             if (CallForm.TryGet(node, out var calleeSegments, out var callArguments,
                 out var genericArguments))
             {
-                // §12 全形 enum case 调用（`EnumType.Case(args)`，含命名
-                // 空间限定形态）：前缀解析为 enum struct 且末段命中
-                // case 时走 case 构造通道（与 `.Case(args)` 省略形式
-                // 同一 new.case）；未命中交下方既有调用解析
-                var caseCall = TryBindEnumCasePath(node, scope, ctx, env, forAssignment,
-                    out var caseCallHandled);
-                if (caseCallHandled) return caseCall;
-                // 具化泛型构造（SYNTAX §3.6/§3.7）：`TResult()` 的被调名命中
-                // 泛型参数时归口 typeid 构造（与动态 new 同一机制）
-                var reifiedHandled = false;
-                if (calleeSegments.Count == 1 && genericArguments == null)
-                {
-                    var reified = CallFacility.TryBindReifiedConstruction(node, calleeSegments[0],
-                        callArguments!, scope, ctx, env, out reifiedHandled);
-                    if (reified != null) return reified;
-                }
-                if (reifiedHandled) return null;    // 归口后绑定失败（诊断已落袋）
+                // 特殊 CallForm（enum-case / 具化构造）先于普通函数调用
+                var special = TryBindSpecialPathCall(node, calleeSegments, callArguments!,
+                    genericArguments, scope, ctx, env, forAssignment, out var specialHandled);
+                if (specialHandled) return special;
                 var binding = CallFacility.BindCall(node, calleeSegments, callArguments!, scope,
                     ctx, env, genericArguments);
                 if (binding == null) return null;
@@ -591,6 +578,37 @@
                 default:
                     return ErrorAndNull(env, node.Span, $"'{pathText}' cannot be used as a value");
             }
+        }
+
+        // CallForm 特殊形态分类（普通函数调用绑定前）：enum-case 路径/
+        // 调用（`EnumType.Case(args)`，含命名空间限定）与具化泛型构造
+        // （`TResult()`）。handled=true 时返回绑定产物（null = 失败，
+        // 诊断已落袋）；handled=false 表示非特殊形态，调用方走
+        // CallFacility.BindCall。普通表达式路径绑定与表达式语句绑定
+        // 共用——enum case 识别只有一个事实来源。绑定产物的 Syntax 恒为
+        // 调用所在的 path 节点（node）：表达式语境历来如此，语句语境
+        // 自分类集中起与之对齐（此前具化构造语句挂语句节点；下游只经
+        // .Syntax.Span 取位置，path 节点位置更精确）。
+        public static BoundExpression? TryBindSpecialPathCall(PathExpressionASTNode node,
+            List<string> calleeSegments, List<ArgumentASTNode> callArguments,
+            List<TypeReferenceASTNode>? genericArguments, Scope scope, BindContext ctx,
+            BindEnvironment env, bool forAssignment, out bool handled)
+        {
+            var caseCall = TryBindEnumCasePath(node, scope, ctx, env, forAssignment,
+                out var caseCallHandled);
+            if (caseCallHandled)
+            {
+                handled = true;
+                return caseCall;
+            }
+            if (calleeSegments.Count == 1 && genericArguments == null)
+            {
+                var reified = CallFacility.TryBindReifiedConstruction(node, calleeSegments[0],
+                    callArguments, scope, ctx, env, out handled);
+                if (handled) return reified;
+            }
+            handled = false;
+            return null;
         }
 
         // §12 `EnumType.Case` 全形路径探测（值位置）：沿段序列找

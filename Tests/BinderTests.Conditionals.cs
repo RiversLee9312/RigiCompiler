@@ -229,7 +229,86 @@ namespace RigiCompiler.Tests
                 "    return r\n" +
                 "}\n");
             TestHarness.CheckSemanticError("void 调用分支无产值", unit12.Diagnostics,
-                "if expression branch must produce a value");
+                "has no result");
+
+            TestIfExpressionExpectedTypes();
+        }
+
+        // expectedType 传入隐式值块 + 有语境时按可赋性统一分支
+        private static void TestIfExpressionExpectedTypes()
+        {
+            TestHarness.Section("P3 If Expression Expected Types");
+
+            const string enumSource =
+                "pub enum struct E {\n" +
+                "    pub const v: i32\n" +
+                "    pub init(_ -> v)\n" +
+                "}[\n" +
+                "    A(v = _),\n" +
+                "    B(0)\n" +
+                "]\n";
+            const string animalSource =
+                "open class Animal { }\n" +
+                "class Dog : Animal { }\n" +
+                "class Cat : Animal { }\n";
+
+            var (enumUnit, enumBodies) = BindUnit(enumSource +
+                "func f(flag: bool): E {\n" +
+                "    return if (flag) { .A(1) } else { .B }\n" +
+                "}\n");
+            CheckNoErrors("隐式 enum case 有返回语境", enumUnit);
+            TestHarness.Check("隐式 enum if 形态",
+                BoundDescribe.Body(BodyOf(enumBodies, "f")),
+                "Body(f, [], [Return(IfExpr(Param(flag,bool), " +
+                "ValueBlock(_, E, implicit, [ExprStmt(EnumCase(E.A, [Int(1,i32)]))]), " +
+                "ValueBlock(_, E, implicit, [ExprStmt(EnumCase(E.B, []))]), E))])");
+
+            var (nullUnit, nullBodies) = BindUnit(
+                "func f(flag: bool): String? {\n" +
+                "    return if (flag) { null } else { \"x\" }\n" +
+                "}\n");
+            CheckNoErrors("隐式 null 有可空返回语境", nullUnit);
+            TestHarness.Check("隐式 null if 形态",
+                BoundDescribe.Body(BodyOf(nullBodies, "f")),
+                "Body(f, [], [Return(IfExpr(Param(flag,bool), " +
+                "ValueBlock(_, String?, implicit, [ExprStmt(Null(String?))]), " +
+                "ValueBlock(_, String, implicit, [ExprStmt(Str(\"x\",String))]), String?))])");
+
+            var (explicitUnit, explicitBodies) = BindUnit(animalSource +
+                "func pick(flag: bool): Animal {\n" +
+                "    return if (flag) { return@_ new Dog() } else { return@_ new Cat() }\n" +
+                "}\n");
+            CheckNoErrors("公共基类显式 return@", explicitUnit);
+            TestHarness.Check("公共基类显式 if 形态",
+                BoundDescribe.Body(BodyOf(explicitBodies, "pick")),
+                "Body(pick, [], [Return(IfExpr(Param(flag,bool), " +
+                "ValueBlock(_, Dog, [ReturnValue(_, New(Dog, []))]), " +
+                "ValueBlock(_, Cat, [ReturnValue(_, New(Cat, []))]), Animal))])");
+
+            var (implicitUnit, implicitBodies) = BindUnit(animalSource +
+                "func pick(flag: bool): Animal {\n" +
+                "    return if (flag) { new Dog() } else { new Cat() }\n" +
+                "}\n");
+            CheckNoErrors("公共基类隐式分支", implicitUnit);
+            TestHarness.Check("公共基类隐式 if 形态",
+                BoundDescribe.Body(BodyOf(implicitBodies, "pick")),
+                "Body(pick, [], [Return(IfExpr(Param(flag,bool), " +
+                "ValueBlock(_, Dog, implicit, [ExprStmt(New(Dog, []))]), " +
+                "ValueBlock(_, Cat, implicit, [ExprStmt(New(Cat, []))]), Animal))])");
+
+            var (noExpected, _) = BindUnit(animalSource +
+                "func f(flag: bool) {\n" +
+                "    var x = if (flag) { new Dog() } else { new Cat() }\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("无期望类型仍严格同型", noExpected.Diagnostics,
+                "if expression branches produce different types ('Dog' and 'Cat')");
+
+            var (incompatible, _) = BindUnit(
+                "func f(flag: bool): i32 {\n" +
+                "    return if (flag) { 1 } else { \"s\" }\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("有期望类型但不兼容报可赋性", incompatible.Diagnostics,
+                "if expression branch type 'String' is not assignable to expected type 'i32'");
         }
 
         // ===== definite assignment 分支合并（S7b：before ∪ (setT ∩ setF)）=====

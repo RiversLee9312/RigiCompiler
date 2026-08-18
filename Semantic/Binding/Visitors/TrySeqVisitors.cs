@@ -178,10 +178,10 @@ namespace RigiCompiler
         }
     }
 
-    // seq 表达式（S7e，SYNTAX §10.2）：体即值块（标签同源 Label ?? "_"，
-    // 取值规则同 if 表达式分支体）；using initializer/body 可见前序资源；
-    // 必须产值（至少一条路径
-    // return@——无产值的 seq 块应写语句形态）
+    // seq 表达式（S7e，SYNTAX §6.1）：体即值块（标签同源 Label ?? "_"，
+    // 取值规则同 if 表达式分支体：恰好一条非赋值表达式语句即隐式值；
+    // 多语句须显式 return@）；using initializer/body 可见前序资源；
+    // 无本块产值且路径未全逃逸则报错（无产值的 seq 应写语句形态）
     internal sealed class SeqExpressionVisitor
         : ExpressionVisitor<SeqExpressionVisitor, BindContext>
     {
