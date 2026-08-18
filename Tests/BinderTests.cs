@@ -72,6 +72,7 @@ namespace RigiCompiler.Tests
             TestLocalAccessors();
             TestOverride();
             TestSuperCalls();
+            TestDefaultConstructorSynthesis();
             TestConversionOperators();
             TestAsyncGates();
             TestYieldBinding();
@@ -82,6 +83,7 @@ namespace RigiCompiler.Tests
             TestGenericVarArgs();
             TestOperatorNameCalls();
             TestGenericFunctionBody();
+            TestDynamicNew();
             TestGenericBaseClassMemberLookup();
             TestGenericVarianceAssignability();
             TestCallFixes();
@@ -95,6 +97,7 @@ namespace RigiCompiler.Tests
             TestStaticMethodCompanionBinding();
             TestWrapperInitArgBinding();
             TestWrapperPlaceErrors();
+            TestValueWrapperGetOnlyLocal();
             TestWrapperPlaceLowering();
             TestProxyBodyBinding();
             TestProxyGenericParamTypeRefs();
@@ -102,6 +105,7 @@ namespace RigiCompiler.Tests
             TestGenericParamWithWrapperPlace();
             TestDowngradeBinding();
             TestLambdaBinding();
+            TestVoidLambdaExpressionBodyStatementSemantics();
             return TestHarness.Summary("Binder");
         }
 

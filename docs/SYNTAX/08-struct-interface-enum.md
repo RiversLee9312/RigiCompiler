@@ -14,7 +14,7 @@ pub struct Vector2 {
     pub init(_ -> x, _ -> y)
 
     pub operator plus(another: Vector2): Vector2 {
-        return Vector2(x=(this.x + another.x), y=(this.y + another.y))
+        return new Vector2(x=(this.x + another.x), y=(this.y + another.y))
     }
 }
 ```
@@ -115,6 +115,8 @@ pub enum struct Direction {
 - 枚举 case 在类型声明后的 `[]` 中定义；每个 case 都绑定到一个编译期已解析的 init 调用模板。
 - case 名称在同一个 enum 中必须唯一。
 - 省略 enum 类型名的 `.CaseName` 必须拥有一个已经确定 enum 静态类型的 receiver/期望类型上下文；编译器不会单凭 case 名反向猜测 enum 类型。
+- switch 的 selector 静态类型为 enum struct 时，其分支体内（表达式与语句形态，含嵌套）的 `.CaseName` 以 selector 类型为解析上下文（§7.2）；这只是解析上下文的贡献，分支产值类型仍按既有统一规则推导。
+- case 亦可以 `EnumType.Case` 全形引用（参数化 case 为 `EnumType.Case(args)` 调用形态，位置/具名实参规则与省略形式相同）；全形自带类型上下文，不依赖 receiver/期望类型，与 `.Case` 省略形式走同一条 case 构造通道。
 
 ```rigi
 // 正确：赋值 receiver 已显式指定为 RequestResult
@@ -150,6 +152,7 @@ pub enum struct RequestResult {
 const success: RequestResult = .Success
 const failed: RequestResult = .Failed(404)
 const failedNamed: RequestResult = .Failed(errorCode = 404)
+const failedFull = RequestResult.Failed(404)   // 全形引用，与上一行同语义
 ```
 
 - `Success(-1)` 没有参数洞，因此 `.Success` 是固定 case。

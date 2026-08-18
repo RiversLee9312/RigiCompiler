@@ -171,6 +171,17 @@
                         : $"Method wrapper '{wrapperType.Name}' can only be applied to methods");
                     continue;
                 }
+                // §14.3：只实现 get 的 Value wrapper 只适用于只读变量——var
+                // 上应用 get-only wrapper 即编译错误（写入失败检查前移，
+                // 不再推迟到运行期；诊断只带声明名，不泄漏 cell 合成符号）
+                if (!decl.IsConst && ProxyMatching.IsGetOnlyValueWrapper(wrapperType))
+                {
+                    env.Error(annotation.Span ?? decl.Span,
+                        $"Value wrapper '{wrapperType.Name}' does not implement .proxy.set; " +
+                        $"get-only wrappers cannot be applied to mutable variable '{decl.Name}' " +
+                        "(§14.3: only read-only variables)");
+                    continue;
+                }
                 var app = new WrapperApplication(wrapperType, annotation);
                 // M109b-1：cell 场景实参在声明点词法作用域绑定（外层局部/参数）
                 WrapperInitSynthesis.BindInitArgsInScope(app, scope, ctx, env, decl);
@@ -273,25 +284,45 @@
             {
                 return BindAssignment(stmt, scope, ctx, env);
             }
-            if (UnaryVisitor.IsAwait(stmt.Expression.Expression, out var awaitNode))
+            return BindNonAssignment(stmt, stmt.Expression.Expression, scope, ctx, env);
+        }
+
+        // 非赋值表达式语句的语句语境绑定：await 语句形态、void 调用落
+        // BoundCallStatement（不报「无结果」）、非 void 调用/其它表达式包
+        // BoundExpressionStatement（值被丢弃）。void lambda 单表达式体
+        //（SYNTAX §5.1：与把该表达式写成一条语句完全等价）复用本分流。
+        public static BoundStatement? BindNonAssignment(ASTNode syntax,
+            ExpressionASTNode expression, Scope scope, BindContext ctx, BindEnvironment env)
+        {
+            if (UnaryVisitor.IsAwait(expression, out var awaitNode))
             {
                 var awaitExpression = UnaryVisitor.BindStatementAwait(awaitNode, scope, ctx, env);
-                return awaitExpression == null ? null : new BoundExpressionStatement(stmt,
+                return awaitExpression == null ? null : new BoundExpressionStatement(syntax,
                     awaitExpression);
             }
             // void 调用落成 BoundCallStatement，非 void 调用仍是表达式语句
-            if (stmt.Expression.Expression is PathExpressionASTNode path
+            if (expression is PathExpressionASTNode path
                 && CallForm.TryGet(path, out var calleeSegments, out var callArguments,
                     out var genericArguments))
             {
-                var binding = CallFacility.BindCall(stmt, calleeSegments, callArguments!, scope,
+                // 具化泛型构造（SYNTAX §3.6/§3.7）：语句位置 `TResult()` 同
+                // 归口 typeid 构造（产值被丢弃，与非常规调用表达式语句一致）
+                var reifiedHandled = false;
+                if (calleeSegments.Count == 1 && genericArguments == null)
+                {
+                    var reified = CallFacility.TryBindReifiedConstruction(syntax,
+                        calleeSegments[0], callArguments!, scope, ctx, env, out reifiedHandled);
+                    if (reified != null) return new BoundExpressionStatement(syntax, reified);
+                }
+                if (reifiedHandled) return null;    // 归口后绑定失败（诊断已落袋）
+                var binding = CallFacility.BindCall(syntax, calleeSegments, callArguments!, scope,
                     ctx, env, genericArguments);
                 if (binding == null) return null;
                 // M88：inner(...) 语句位置（含 void）；#27⑦ 携带泛型包透传
                 if (binding.IsInnerCall)
                 {
                     var innerType = binding.ResultType ?? env.B.Any;
-                    return new BoundExpressionStatement(stmt,
+                    return new BoundExpressionStatement(syntax,
                         new BoundInnerCallExpression(path, binding.Arguments, innerType,
                             isVoid: binding.IsVoid,
                             forwardedGenericPacks: binding.ForwardedGenericPacks));
@@ -299,25 +330,25 @@
                 if (binding.IsSuperCall)
                 {
                     var superType = binding.ResultType ?? env.B.Any;
-                    return new BoundExpressionStatement(stmt,
+                    return new BoundExpressionStatement(syntax,
                         new BoundSuperCallExpression(path, binding.Method, binding.Arguments,
                             superType, binding.TypeArguments, binding.GenericPack,
                             isVoid: binding.IsVoid));
                 }
                 if (binding.IsVoid)
                 {
-                    return new BoundCallStatement(stmt, binding.Method, binding.Arguments,
+                    return new BoundCallStatement(syntax, binding.Method, binding.Arguments,
                         binding.Receiver, binding.TypeArguments, binding.GenericPack,
                         binding.IsIndirect, binding.IndirectTarget);
                 }
                 if (binding.Receiver != null)
                 {
-                    return new BoundExpressionStatement(stmt,
+                    return new BoundExpressionStatement(syntax,
                         new BoundInstanceCallExpression(path, binding.Receiver,
                             binding.Method, binding.Arguments, binding.ResultType!,
                             binding.TypeArguments, binding.GenericPack));
                 }
-                return new BoundExpressionStatement(stmt, new BoundCallExpression(path,
+                return new BoundExpressionStatement(syntax, new BoundCallExpression(path,
                     binding.Method, binding.Arguments, binding.ResultType!,
                     binding.TypeArguments, binding.GenericPack, binding.IsIndirect,
                     binding.IndirectTarget));
@@ -326,7 +357,7 @@
             // `handlers[0]()` 等值上的 void 间接调用在语句位置落 BoundCallStatement
             //（invoke.indirect.noret）；不可调回退通用兜底保诊断文本；非 void
             // 产值调用包表达式语句（与 FoldSuffixes 一致，避免重复绑定）
-            if (stmt.Expression.Expression is PathExpressionASTNode trailPath
+            if (expression is PathExpressionASTNode trailPath
                 && PathFacility.TryBindReceiverBeforeTrailingValueCall(trailPath, scope, ctx, env,
                     out var trailReceiver, out var trailCall))
             {
@@ -340,12 +371,12 @@
                     if (trailBinding == null) return null;
                     if (trailBinding.ResultType == null)
                     {
-                        return new BoundCallStatement(stmt, trailBinding.Method,
+                        return new BoundCallStatement(syntax, trailBinding.Method,
                             trailBinding.Arguments, trailBinding.Receiver,
                             trailBinding.TypeArguments, trailBinding.GenericPack,
                             isIndirect: true, indirectTarget: trailReceiver);
                     }
-                    return new BoundExpressionStatement(stmt,
+                    return new BoundExpressionStatement(syntax,
                         new BoundCallExpression(trailCall, trailBinding.Method,
                             trailBinding.Arguments, trailBinding.ResultType!,
                             trailBinding.TypeArguments, trailBinding.GenericPack,
@@ -353,8 +384,8 @@
                 }
                 // 不可调：落入下方通用兜底，由 FoldSuffixes 报原诊断
             }
-            var expr = ExpressionDispatcher.Visit(stmt.Expression.Expression, scope, ctx, env);
-            return expr == null ? null : new BoundExpressionStatement(stmt, expr);
+            var expr = ExpressionDispatcher.Visit(expression, scope, ctx, env);
+            return expr == null ? null : new BoundExpressionStatement(syntax, expr);
         }
 
         private static BoundStatement? BindAssignment(ExpressionStatementASTNode node, Scope scope,
@@ -500,6 +531,16 @@
                     target.ExpectedType as TypeSymbol);
                 if (labelValue == null) return null;
                 return new BoundReturnValueStatement(node, target, labelValue);
+            }
+            // 裸 return 不得穿透值块（SYNTAX §6.1）：裸 return 语义恒为结束外层
+            // 函数，值块（含其内任意嵌套语句块）内的一切裸 return 必然穿透值块
+            // 边界，一律编译错误；lambda 体内的裸 return 由解析层另行拦截（§5.1）
+            if (ctx.Labels.ValueBlockDepth > 0)
+            {
+                env.Error(ret.Span, "Bare 'return' cannot cross a value block boundary " +
+                    "(a bare return always ends the enclosing function); use 'return@label' " +
+                    "to produce a value from the value block instead (SYNTAX §6.1)");
+                return null;
             }
             if (ret.Value == null)
             {

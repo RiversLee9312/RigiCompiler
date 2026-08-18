@@ -756,6 +756,14 @@ namespace RigiCompiler.Bil
                 coroutine.WriteVar(target.Name, new VmI32(array.Length));
                 return;
             }
+            // String.length（.bootstrap.rg 的 pub ext const 声明，无 backing
+            // 存储）：与 Array.length 同一 VM 直读通道——按宿主字符串实际
+            // 长度求值（裁定 i64）
+            if (instance is VmString text && fieldSymbol == VmString.LengthFieldSymbol)
+            {
+                coroutine.WriteVar(target.Name, new VmI64(text.Value.Length));
+                return;
+            }
             var raw = ReadInstanceField(instance, fieldSymbol).Copy();
             var wrappers = context.CollectWrappedWrappers(fieldSymbol);
             if (wrappers.Count == 0)
@@ -955,6 +963,11 @@ namespace RigiCompiler.Bil
             BilVariableOperand target, IReadOnlyList<BilVariableOperand> initArguments,
             IReadOnlyList<BilVariableOperand>? wrapperArguments)
         {
+            // 泛型函数体内的直达构造（new type(T<.generic<$.generic.X>,...>)）：
+            // 先按当前帧 hidden typeid 绑定把构造实参解析成具体类型
+            //（VmTypeOps.ResolveTypeRef，cast/is 同一通道），init 匹配与实例
+            // TypeRef 一律以具体形态落地
+            typeRef = VmTypeOps.ResolveTypeRef(context, coroutine, typeRef);
             // 编译器打包形态（vargs/kwargs）：实参即元素。已拆除 V2
             // 「单 i32 = 长度」特权——用户构造只经 alloc_array / arrayOf。
             if (VmContext.IsArrayType(typeRef, out var elementType))
@@ -1392,6 +1405,10 @@ namespace RigiCompiler.Bil
         {
             var baseDeclaration = context.FindType(baseRef)
                 ?? throw new VmException("基类声明缺失，无法解析 super init：" + baseRef);
+            // 构造泛型基类（Entry : Pair<String, i32> 的 super(k, v)）：定义级
+            // init 签名的 .generic 占位按 extends 实参代入后再比对——与
+            // VmContext.TryFindInit 同一代入机制
+            var substitution = VmTypeSheetBuilder.BuildSubstitution(baseRef, baseDeclaration);
             foreach (var member in baseDeclaration.Members)
             {
                 if (member is not BilSimpleMemberDeclaration simple
@@ -1402,8 +1419,17 @@ namespace RigiCompiler.Bil
                 var function = context.FindFunction(simple.Symbol);
                 if (function == null
                     || !BilVerificationContext.TryParseMethodSymbol(simple.Symbol,
-                        out _, out _, out var parameters, out _)
-                    || !SuperInitArgsMatch(function, parameters, args))
+                        out _, out _, out var parameters, out _))
+                {
+                    continue;
+                }
+                if (substitution != null)
+                {
+                    parameters = parameters.ConvertAll(p =>
+                        (p.Name, VmTypeSheetBuilder.SubstituteGenericArguments(
+                            p.TypeRef, substitution)));
+                }
+                if (!SuperInitArgsMatch(function, parameters, args))
                 {
                     continue;
                 }

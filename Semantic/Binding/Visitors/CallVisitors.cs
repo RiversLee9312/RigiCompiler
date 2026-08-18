@@ -246,6 +246,52 @@ namespace RigiCompiler
             };
         }
 
+        // 具化泛型构造（SYNTAX §3.6/§3.7，BIL §14.2）：单段纯调用的被调名
+        // 命中当前声明的泛型参数时，`TResult()` 是 typeid 构造——与动态
+        // new 同一机制（运行期按 typeid 解析 init；抽象/enum struct/无匹配
+        // init 抛 core.NoSuchMethodException）。返回非 null = 绑定产物；
+        // handled = 已归口（含绑定失败——诊断已落袋，调用方直接放弃）
+        public static BoundExpression? TryBindReifiedConstruction(ASTNode node, string name,
+            List<ArgumentASTNode> arguments, Scope scope, BindContext ctx, BindEnvironment env,
+            out bool handled)
+        {
+            handled = false;
+            var head = new Symbol();
+            head.elements.Add(new SymbolElement { name = name });
+            var probed = env.Names.ResolveSymbolPath(head, ctx.Frame.FileCtx,
+                ctx.Frame.DeclaringType, ctx.Frame.Method, allowImports: true,
+                reportErrors: false, span: null);
+            if (probed is not GenericParameterSymbol genericParameter) return null;
+            handled = true;
+            var boundArguments = BindDynamicNewArguments(node, arguments, scope, ctx, env);
+            if (boundArguments == null) return null;
+            return new BoundDynamicNewExpression(node, null, genericParameter, boundArguments,
+                genericParameter);
+        }
+
+        // 动态构造的实参绑定（new 动态形态与具化泛型构造共用）：无静态
+        // init 形参可对位（init 重载解析在运行期），按书写序绑定；具名
+        // 实参无法随 BIL 实参表携带名字（运行期按位置匹配），编译错误
+        public static List<BoundExpression>? BindDynamicNewArguments(ASTNode node,
+            List<ArgumentASTNode> arguments, Scope scope, BindContext ctx, BindEnvironment env)
+        {
+            var bound = new List<BoundExpression>(arguments.Count);
+            foreach (var argument in arguments)
+            {
+                if (argument.Name != null)
+                {
+                    env.Error(argument.Span,
+                        $"P3: named argument '{argument.Name}' is not supported in dynamic " +
+                        "construction (runtime init resolution is positional)");
+                    return null;
+                }
+                var value = ExpressionDispatcher.Visit(argument.Value.Expression, scope, ctx, env);
+                if (value == null) return null;
+                bound.Add(value);
+            }
+            return bound;
+        }
+
         // 间接调用的重载落定（callable 协议共享落点：局部/参数值、callable
         // 字段、任意值表达式的调用后缀）：operator call 候选经
         // OverloadResolution 判定（默认参数/具名实参/显式泛型/泛型可变包
@@ -925,13 +971,25 @@ namespace RigiCompiler
     // new 构造（S5）：类型引用解析（ErrorType 毒化直通；泛型参数已诊断）；
     // 泛型定义不可构造；Class/Struct 可构造，Interface/Wrapper 各自归口
     // 诊断，EnumStruct 永久拒绝（§12.2：enum 值只能经具名 case 入口产生）；
-    // init 匹配（无显式 init 时零参默认构造；多匹配归 S8d ranking）
+    // init 匹配（无显式 init 时零参默认构造；多匹配归 S8d ranking）。
+    // §3.7 动态形态：操作数未命中类型时按值绑定（Type\<T\> 值），走
+    // new.indirect typeid 构造（与具化泛型 TResult() 同一机制）
     internal sealed class NewVisitor : ExpressionVisitor<NewVisitor, BindContext>
     {
         protected override BoundExpression? VisitCore(ASTNode node, Scope scope, BindContext ctx,
             BindEnvironment env, TypeSymbol? expectedType)
         {
             var newNode = (NewExpressionASTNode)node;
+            // 形态探测（不落袋，与 is/supers/with 右侧同口径）：未命中类型
+            //（含命中命名空间等非类型符号）才尝试动态形态；命中类型/泛型
+            // 参数走下方静态路径（诊断口径不变）
+            var probed = env.Names.ResolveSymbolPath(newNode.Type.TypeSymbol.symbol,
+                ctx.Frame.FileCtx, ctx.Frame.DeclaringType, ctx.Frame.Method,
+                allowImports: true, reportErrors: false, span: null);
+            if (probed is ErrorTypeSymbol || probed is not (TypeSymbol or GenericParameterSymbol))
+            {
+                return BindDynamic(newNode, scope, ctx, env);
+            }
             var type = TypeReferences.Resolve(newNode.Type, newNode.Type.Span ?? newNode.Span,
                 ctx.Frame, env);
             if (type is ErrorTypeSymbol) return null;
@@ -963,7 +1021,8 @@ namespace RigiCompiler
                     // §12.2 永久规则：enum 值只能经具名 case 入口产生——
                     // 无论 init 是否 pub，直接构造一律非法（对
                     // Type\<Enum\> 值 new / 泛型 T() 运行时解析到 enum
-                    // 同为非法构造，两路径尚未落地，落地时同措辞）
+                    // 同为非法构造——两动态路径已落地，运行期由 VM 的
+                    // new.indirect 拒绝，抛 core.NoSuchMethodException）
                     env.Error(newNode.Type.Span ?? newNode.Span,
                         $"Cannot construct enum struct '{type.Name}' directly; " +
                         "use its named cases");
@@ -1010,6 +1069,49 @@ namespace RigiCompiler
             if (resolved == null) return null;
             return new BoundNewExpression(node, typeSymbol, resolved.Value.Method,
                 resolved.Value.Arguments);
+        }
+
+        // 动态形态（SYNTAX §3.7，BIL §14.2 new.indirect）：new 的操作数是
+        // Type\<T\> 值——按值绑定（与 is/supers/with 动态右侧同一轮子），
+        // 结果静态类型 = Type\<T\> 的 T；init 重载解析在运行期按 typeid
+        // 完成（抽象/enum struct/无匹配 init 抛 core.NoSuchMethodException）。
+        // 值未命中回落类型引用解析报原「未解析/不是类型」诊断
+        private static BoundExpression? BindDynamic(NewExpressionASTNode newNode, Scope scope,
+            BindContext ctx, BindEnvironment env)
+        {
+            var typeValue = PathFacility.BindTypeSlotValue(newNode, newNode.Type, scope, ctx, env,
+                out var valueFound);
+            if (typeValue == null)
+            {
+                // 值命中但绑定失败时诊断已落袋；未命中回落静态诊断口径
+                if (valueFound) return null;
+                _ = TypeReferences.Resolve(newNode.Type, newNode.Type.Span ?? newNode.Span,
+                    ctx.Frame, env);
+                return null;
+            }
+            // 值必须承载 Type\<T\>（new.indirect 的 TYPEID_VAR 操作数）；
+            // ErrorType 毒化静默（结果沿用 ErrorType）
+            SemanticSymbol resultType;
+            if (typeValue.Type is ErrorTypeSymbol errorType)
+            {
+                resultType = errorType;
+            }
+            else if (typeValue.Type is TypeSymbol { ConstructedFrom: { } typeDefinition }
+                valueType && ReferenceEquals(typeDefinition, env.B.TypeDefinition))
+            {
+                resultType = valueType.TypeArguments![0];
+            }
+            else
+            {
+                env.Error(newNode.Type.Span ?? newNode.Span,
+                    "operand of 'new' must be a type or a Type\\<T\\> value: " +
+                    $"'{NameResolver.PathText(newNode.Type.TypeSymbol.symbol)}'");
+                return null;
+            }
+            var arguments = CallFacility.BindDynamicNewArguments(newNode, newNode.Arguments,
+                scope, ctx, env);
+            if (arguments == null) return null;
+            return new BoundDynamicNewExpression(newNode, typeValue, null, arguments, resultType);
         }
     }
 }

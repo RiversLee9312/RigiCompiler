@@ -158,72 +158,16 @@ namespace RigiCompiler
         }
 
         // 动态形态右侧的值绑定（不落袋纯查找，命中后正常构造值引用 bound
-        // 节点）：单段名 = 局部 → 参数 → 字段（FindField 全链）；多段路径 =
-        // 容器（前 N-1 段静默解析）+ 末段字段。S9f 解开 #18②：值路径元素
-        // 带泛型实参不再按未命中处理——实参先经 NameResolver 静默解析
-        // （M69 使用侧泛型已落地），成功即正常绑定值（值路径无类型实参
-        // 消费点，实参本身不参与绑定）；失败返回 null（落统一目标诊断）。
+        // 节点）：实现已提取为 PathFacility.BindTypeSlotValue（与 new 动态
+        // 目标共用），此处仅保留调用方语义注释——单段名 = 局部 → 参数 →
+        // 字段（FindField 全链）；多段路径 = 容器 + 末段字段。
         // valueFound = 是否有值符号命中（命中但绑定失败时诊断已落袋，
         // 调用方不再重复报）
         private static BoundExpression? BindTargetValue(TypeCheckExpressionASTNode node,
             TypeReferenceASTNode typeRef, Scope scope, BindContext ctx, BindEnvironment env,
             out bool valueFound)
         {
-            valueFound = false;
-            var elements = typeRef.TypeSymbol.symbol.elements;
-            foreach (var element in elements)
-            {
-                foreach (var generic in element.generics)
-                {
-                    var resolved = env.Names.ResolveSymbolPath(generic, ctx.Frame.FileCtx,
-                        ctx.Frame.DeclaringType, ctx.Frame.Method, allowImports: true,
-                        reportErrors: false, span: null);
-                    if (resolved == null || resolved is ErrorTypeSymbol) return null;
-                }
-            }
-            var span = typeRef.Span ?? node.Span;
-            if (elements.Count == 1)
-            {
-                var name = elements[0].name;
-                var symbol = scope.LookupSymbol(name);
-                if (symbol is LocalSymbol local)
-                {
-                    valueFound = true;
-                    if (!ctx.Flow.IsAssigned(local))
-                    {
-                        env.Error(span, $"Use of unassigned local variable '{name}'");
-                    }
-                    // 源码局部 Type 恒非空（同路径绑定单段分支）
-                    return new BoundValueReferenceExpression(typeRef, local, local.Type!);
-                }
-                var parameter = symbol as ParameterSymbol
-                    ?? ctx.Frame.Method.Parameters.FirstOrDefault(p => p.Name == name);
-                if (parameter != null)
-                {
-                    valueFound = true;
-                    if (ctx.IsLambda && !ctx.LambdaParameters.Contains(parameter))
-                        ctx.CapturedSymbols.Add(parameter);
-                    // S9a 放行：参数类型可为泛型参数（引用相等身份）
-                    return new BoundValueReferenceExpression(typeRef, parameter,
-                        parameter.Type!);
-                }
-                var field = MemberLookup.FindField(name, ctx.Frame, env);
-                if (field == null) return null;
-                valueFound = true;
-                return PathFacility.BindFieldReference(typeRef, field, ctx, env);
-            }
-            // 多段：前 N-1 段解析为容器（静默——失败由调用方统一诊断；
-            // ResolveContainer 契约是传全段、内部取前 N-1 段），
-            // 末段查字段成员（实例字段命中由 BindFieldReference 补 this）
-            var container = MemberLookup.ResolveContainer(
-                elements.Select(e => e.name).ToList(), null, ctx.Frame, env, reportErrors: false);
-            if (container == null) return null;
-            if (MemberLookup.FindMember(container, elements[^1].name) is not FieldSymbol memberField)
-            {
-                return null;
-            }
-            valueFound = true;
-            return PathFacility.BindFieldReference(typeRef, memberField, ctx, env);
+            return PathFacility.BindTypeSlotValue(node, typeRef, scope, ctx, env, out valueFound);
         }
 
         // 动态形态失败（非类型也非 Type\<T\> 值）的统一诊断消息（附路径原文）

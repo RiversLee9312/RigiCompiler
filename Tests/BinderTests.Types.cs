@@ -500,5 +500,78 @@ namespace RigiCompiler.Tests
             TestHarness.CheckSemanticError("泛型参数 new 归 S9c", unit4.Diagnostics,
                 "P3: constructing a generic type parameter is not supported yet (S9)");
         }
+
+        // ===== 动态 new 与具化泛型构造（SYNTAX §3.7/§3.6，BIL §14.2
+        // new.indirect）：`new t(...)`（Type\<T\> 值目标）与 `TResult()`
+        //（泛型参数直接调用）归口同一套 typeid 构造机制 =====
+        private static void TestDynamicNew()
+        {
+            TestHarness.Section("P3 Dynamic New / Reified Construction");
+
+            // 1. 具化泛型构造：`TResult()` 归口 typeid 构造（值位置）
+            var (unit, bodies) = BindUnit(
+                "func makeIt\\<TResult>(): TResult { return TResult() }\n");
+            CheckNoErrors("无诊断（具化泛型构造）", unit);
+            TestHarness.Check("具化泛型构造绑定形态",
+                BoundDescribe.Body(BodyOf(bodies, "makeIt")),
+                "Body(makeIt, [], [Return(DynamicNew(generic TResult, [], TResult))])");
+            var makeIt = bodies.Single(b => b.Method.Name == "makeIt").Method;
+            var tResult = makeIt.GenericParameters.Single(p => p.Name == "TResult");
+            var reified = (BoundDynamicNewExpression)((BoundReturnStatement)
+                BodyOf(bodies, "makeIt").Body.Statements[0]).Value!;
+            TestHarness.CheckTrue("具化泛型构造结构事实",
+                reified.TypeValue == null
+                && ReferenceEquals(reified.GenericParameter, tResult)
+                && ReferenceEquals(reified.Type, tResult)
+                && reified.Arguments.Count == 0);
+
+            // 2. 语句位置具化构造（产值被丢弃）
+            var (unit1b, _) = BindUnit(
+                "func makeIt\\<TResult>(): TResult { TResult()\nreturn TResult() }\n");
+            CheckNoErrors("无诊断（语句位置具化构造）", unit1b);
+
+            // 3. 动态 new：目标为 Type\<T\> 值，结果静态类型 = T
+            var (unit2, bodies2) = BindUnit(
+                "pub class Box {\n    pub var size: i32\n    pub init(_ -> size)\n}\n" +
+                "func m(): i32 {\n" +
+                "    var b = new Box(12)\n" +
+                "    var t = typeOf(b)\n" +
+                "    var b2 = new t(24)\n" +
+                "    return b2.size\n" +
+                "}\n");
+            CheckNoErrors("无诊断（动态 new）", unit2);
+            TestHarness.Check("动态 new 绑定形态",
+                BoundDescribe.Body(BodyOf(bodies2, "m")),
+                "Body(m, [b: Box, t: Type<Box>, b2: Box], " +
+                "[Decl(b, Box, = New(Box, init, [Int(12,i32)])); " +
+                "Decl(t, Type<Box>, = TypeOf(Local(b,Box), Type<Box>)); " +
+                "Decl(b2, Box, = DynamicNew(dyn Local(t,Type<Box>), [Int(24,i32)], Box)); " +
+                "Return(InstField(size, Local(b2,Box), i32))])");
+            var dynamicNew = (BoundDynamicNewExpression)((BoundLocalDeclarationStatement)
+                BodyOf(bodies2, "m").Body.Statements[2]).Initializer!;
+            TestHarness.CheckTrue("动态 new 结构事实",
+                dynamicNew.GenericParameter == null
+                && dynamicNew.TypeValue is BoundValueReferenceExpression
+                { Symbol: LocalSymbol { Name: "t" } }
+                && dynamicNew.Arguments.Count == 1);
+
+            // 4. new 目标为值但不是 Type\<T\>：专用诊断
+            var (unit3, _) = BindUnit("func m() { var x = 1\nvar y = new x() }\n");
+            TestHarness.CheckSemanticError("new 目标非 Type 值拒绝", unit3.Diagnostics,
+                "operand of 'new' must be a type or a Type\\<T\\> value: 'x'");
+
+            // 5. new 目标值/类型两不沾：保持原「未解析」诊断
+            var (unit4, _) = BindUnit("func m() { var y = new noSuch() }\n");
+            TestHarness.CheckSemanticError("new 目标未解析保持原诊断", unit4.Diagnostics,
+                "Unresolved type or namespace: 'noSuch'");
+
+            // 6. 动态构造具名实参拒绝（运行期按位置匹配，名字无法随实参表携带）
+            var (unit5, _) = BindUnit(
+                "pub class Box {\n    pub var size: i32\n    pub init(_ -> size)\n}\n" +
+                "func m() {\n    var b = new Box(1)\n    var t = typeOf(b)\n" +
+                "    var c = new t(size = 2)\n}\n");
+            TestHarness.CheckSemanticError("动态构造具名实参拒绝", unit5.Diagnostics,
+                "P3: named argument 'size' is not supported in dynamic construction");
+        }
     }
 }

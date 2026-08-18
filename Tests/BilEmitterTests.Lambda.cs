@@ -392,7 +392,7 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("构造点 type 操作数转发 typeid",
                 text.Contains("new type(..lambda..UUID<.generic<$.generic.T>>)"));
             BilTestHarness.CheckFnShape("泛型上下文 wrap 形状", module,
-                "$wrap(x:.generic<$.generic.T>)@core::Func<.generic<$.generic.T>, .generic<$.generic.T>>",
+                "$wrap(x:.generic<$.generic.T>)@core::Func<.generic<$.generic.T>,.generic<$.generic.T>>",
                 ".vars { ..lambda..UUID<.generic<$.generic.T>> id, " +
                 "..lambda..UUID<.generic<$.generic.T>> .t0, " +
                 "core::Func<.generic<$.generic.T>, .generic<$.generic.T>> .t1 }\n" +

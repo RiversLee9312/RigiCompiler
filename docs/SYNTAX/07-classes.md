@@ -13,7 +13,7 @@ pub open class Animal {
 
     pub init(_ -> name, _ -> age)
 
-    pub func speak(): String {
+    pub open func speak(): String {
         return "..."
     }
 }
@@ -100,6 +100,8 @@ pub class Point {
 
 **默认构造**：未声明任何显式 `init` 的类型隐含一个零参公有构造函数（默认构造），`new T()` 经它完成构造——全部字段初始化为其默认值：声明处带初始化器的取初始化器，否则取该类型的零值。一旦声明任意显式 `init`，默认构造不再隐含，零参构造必须显式书写。
 
+**默认构造的链式**：隐式/合成零参构造恒先完成基类初始化再应用本类字段初始化器——直接基类有零参 `init`（含基类被合成的情形）时，构造体头部先 `super()`，再按声明序应用本类字段初始化器；`C : B : A` 链上按 A→B→C 顺序全部生效。显式 `init` 里的 `super(...)` 维持可选显式调用（§9.2.2）。
+
 ### 9.4 属性（getter/setter）
 
 getter/setter 可以在以下所有位置定义：类/struct 的字段、全局变量、栈上的 `var` 和 `const`。
@@ -139,6 +141,7 @@ pub func example() {
 - **backing 形态**（`value: _`）：编译器生成隐藏 backing 存储（永为私有，用户不可直接访问）；访问器体内 `value` 是 backing 的别名——getter 体内只读、setter 体内可读写。setter 语义 = 进入时隐含 `backing = value`（`value` 即新值），随后执行体；体可改写 `value`（即改写 backing），用于钳制、通知等场景。
 - **自动访问器**（无体，如 `pub get` / `priv set`）：编译器合成实现——getter 为 `return value`，setter 为空体（隐式 `backing = value` 已足）。无体 + 计算形态（无 backing）是编译错误（编译器无法生成计算实现）。
 - `const` 字段不得声明 setter。仅声明 get 的字段不可写、仅声明 set 的字段不可读；访问器自身的可见性在读写使用点分别检查。
+- 带访问器的实例字段，声明处初始化器**经 setter 应用**（默认构造合成普通的 `this.field = 初始化器` 赋值，读写一律经访问器的规则不变）——setter 语义（钳制、通知等）自初始化起生效；setter 进入时隐含 `backing = value`、体内可改写 `value`（即改写 backing），初始化同样走这条路径（backing 形态）。仅 get 无 set 的字段不得携带初始化器（无法经 setter 应用，编译错误；`const` 字段本就不得声明 setter，故 `const` + 仅 get + 初始化器同样被拒）。
 - 带访问器的字段，外部读写一律经访问器；其读取结果不参与 smart cast 收窄（§3.5）。
 - **栈上局部变量/常量的访问器**（路线 C，与闭包 cell 共用机制）：
   - 带访问器的局部声明在绑定期立即 cell 化（无论是否被捕获）：合成 `Cell`/`ReadonlyCell` 隐藏子类，`override getValue` 体 = 用户 getter 体、`override setValue` 体 = 用户 setter 体。
@@ -163,7 +166,7 @@ pub class Outer {
 
 ```rigi
 pub class Apple : Fruit like pear {
-    pub var pear: Pear = Pear()
+    pub var pear: Pear = new Pear()
     // 将 Fruit 接口的实现委托给 pear 字段
 }
 ```

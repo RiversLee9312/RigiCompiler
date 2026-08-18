@@ -15,6 +15,23 @@ namespace RigiCompiler
 
     internal static class ProxyMatching
     {
+        // Value wrapper 的 get-only 判定（§14.3「只实现 get 则只适用于只读
+        // 变量」——P2 字段应用点与 P3 栈上变量应用点共用）：实现了
+        // .proxy.get 但未实现 .proxy.set。不带任何 proxy 的 wrapper 是合法
+        // 的纯状态修饰器（无拦截链，不参与本判定）
+        public static bool IsGetOnlyValueWrapper(TypeSymbol wrapperType)
+        {
+            var getter = false;
+            var setter = false;
+            foreach (var method in wrapperType.Methods)
+            {
+                if (method.ProxyTemplate == null) continue;
+                if (method.Name == ".proxy.get") getter = true;
+                if (method.Name == ".proxy.set") setter = true;
+            }
+            return getter && !setter;
+        }
+
         // 单应用 × 单成员命中结果（不落诊断；形状不符 → None，由 Check 阶段诊断）
         public static ProxyMatchKind Match(TypeSymbol host, MethodSymbol member,
             WrapperApplication application, ResolveEnvironment env,

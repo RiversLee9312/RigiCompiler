@@ -186,6 +186,26 @@ namespace RigiCompiler
         }
     }
 
+    // 动态 new（SYNTAX §3.7；BIL §14.2 new.indirect）：TypeValue 与
+    // GenericParameter 恰一非空（Type\<T\> 值 / 泛型参数——后者发射时经
+    // MaterializeTypeId 零指令引用 .generic.T 隐藏 typeid 实参）。
+    // Arguments 已按书写序降级；Type 走 Origin 透传（Bound 侧已定型）
+    public sealed class LoweredDynamicNewExpression : LoweredExpression
+    {
+        public LoweredExpression? TypeValue { get; }
+        public GenericParameterSymbol? GenericParameter { get; }
+        public IReadOnlyList<LoweredExpression> Arguments { get; }
+
+        public LoweredDynamicNewExpression(BoundNode origin, LoweredExpression? typeValue,
+            GenericParameterSymbol? genericParameter, IReadOnlyList<LoweredExpression> arguments)
+            : base(origin)
+        {
+            TypeValue = typeValue;
+            GenericParameter = genericParameter;
+            Arguments = arguments;
+        }
+    }
+
     // this 引用（S7c-2；emitter 映射 $.this 变量操作数，零指令）；
     // 合成路径显式类型（lambda 构造的 this 捕获实参——Origin 是 lambda
     // 节点，透传类型是隐藏类而非外层 this 类型，§5.2）
@@ -533,14 +553,14 @@ namespace RigiCompiler
 
     // enum case 构造（S11，SYNTAX §12.1；BIL §14.3 new.case 直接对应，
     // 无脱糖）：Case 为 case 符号（宿主 enum 为定义级符号——泛型 enum
-    // 的 case 已归口，P4 不会遇到）；Arguments = 洞实参（规范序 = 洞
-    // 签名序，固定 case 为空）。Type 走 Origin 透传（Bound 侧 Type =
-    // Case.Owner）。固定实参不进 BIL（§8.5/§14.3 不携带——case 入口的
-    // init 调用语义归 VM/Middleware），本节点只携带调用点洞实参
+    // 的 case 已归口，P4 不会遇到）；Arguments = 组合实参（init 参数
+    // 序——声明点固定实参 + 调用点洞实参，RUNTIME §16 case 入口组
+    // 成语义；模板信息缺失时退化为仅洞实参）。Type 走 Origin 透传
+    //（Bound 侧 Type = Case.Owner）
     public sealed class LoweredEnumCaseExpression : LoweredExpression
     {
         public EnumCaseSymbol Case { get; }
-        // 洞实参（规范序；固定 case 为空列表）
+        // 组合实参（init 参数序；退化形态为洞签名序洞实参）
         public IReadOnlyList<LoweredExpression> Arguments { get; }
 
         public LoweredEnumCaseExpression(BoundEnumCaseExpression origin,

@@ -297,7 +297,7 @@ SemanticSymbol
 | wrapper place 成员访问（`obj:W.f`、`obj:W.m()`） | **全部读取**统一值拷贝 + 普通指令：Entity = `get.wrapper` + `get.field`/`invoke`/`get.array`；字段-Value = `get.wrapper.field` + 普通指令；嵌套链逐层物化（BIL §12.4）。成员写（直接字段）= `set.wrapper.field`（Entity = `wrapper(W)`；字段-Value = `field(HOST_FIELD)+wrapper(W)`）；深层纯字段写穿 `place.a.b...` = P4a 多 get/set（正向 get + 叶写 + 反向 set；值类型中间写回，引用中间停止；最外层必要写回复用 `set.wrapper.field`，普通值中间反向写回仍发 `set.field`，**不新增**专用深写 opcode）；**局部/静态存储 = cell 根**（统一 cell 存储：读 = `get.wrapper.field $cell field(value) type(W)`，写 = `set.wrapper.field` 链 `field(value)+wrapper(W)`，复合赋值读写分离；静态字段值读写 = `get.field.static` 取 cell + getValue/setValue）；索引写仍归口 |
 | 未声明方法的 wrapper 降级（SYNTAX §14.7） | `invoke core::Any$call???`（胖值 ABI；BIL §15.5） |
 | 字符串插值 | 拼接/格式化调用链 |
-| trailing lambda、`TypeName(...)` 简写等 | 规范调用形态 |
+| trailing lambda 等 | 规范调用形态 |
 | async/await/yield | 直接发 BIL §17；状态机由 Middleware 降级（§7，专项设计） |
 | 隐藏参数（`.generic.*` / `.vargs.*` / `.kwargs.*`） | 按 BIL §7 规范签名显式化 |
 

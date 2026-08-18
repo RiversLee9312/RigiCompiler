@@ -128,6 +128,30 @@ namespace RigiCompiler
         }
     }
 
+    // 动态 new（SYNTAX §3.7；BIL §14.2 new.indirect）：目标为 Type\<T\> 值
+    //（`new t(...)`，TypeValue 非空）或泛型参数（具化构造 `TResult()`，
+    // GenericParameter 非空）——两者恰一非空，共用同一套 typeid 构造机制：
+    // init 重载解析在运行期按 typeid 完成，目标为抽象类型/enum struct/无
+    // 匹配 init 时抛 core.NoSuchMethodException。Arguments 按书写序绑定
+    //（无静态 init 形参可对位）；Type = 结果静态类型（Type\<T\> 的 T 或
+    // 泛型参数自身）
+    public sealed class BoundDynamicNewExpression : BoundExpression
+    {
+        public BoundExpression? TypeValue { get; }
+        public GenericParameterSymbol? GenericParameter { get; }
+        public IReadOnlyList<BoundExpression> Arguments { get; }
+
+        public BoundDynamicNewExpression(ASTNode syntax, BoundExpression? typeValue,
+            GenericParameterSymbol? genericParameter, IReadOnlyList<BoundExpression> arguments,
+            SemanticSymbol resultType)
+            : base(syntax, resultType)
+        {
+            TypeValue = typeValue;
+            GenericParameter = genericParameter;
+            Arguments = arguments;
+        }
+    }
+
     // if 表达式（SYNTAX §7.1）：必须有 else 分支；分支体是值块（取值规则在 P3
     // 绑定值块时判定）。Type = 两分支共同产值类型（P3 统一检查）
     public sealed class BoundIfExpression : BoundExpression
@@ -240,20 +264,26 @@ namespace RigiCompiler
     // enum case 构造（S11，SYNTAX §12.1）：固定 case（Arguments 空）与参数化
     // case（Arguments = 洞实参，规范序 = 洞签名序 = init 参数序——调用点乱序
     // 具名实参已按洞名归位）。Type = 宿主 enum（定义级符号——泛型 enum 的
-    // case 本阶段归口，无构造形态）。固定实参在声明点模板绑定时已定
-    //（BindEnvironment 缓存），本节点只携带调用点洞实参；P4b 发射
-    // §8.5 case 构造与判别比较（§12.3 type.is.case）消费
+    // case 本阶段归口，无构造形态）。FixedArguments = 声明点模板绑定的
+    // 固定实参缓存（BindEnvironment，init 参数序、洞位置 null 占位；
+    // null = 模板信息缺失）——P4a 按 init 参数序组合「固定实参 + 洞实参」
+    // 发 new.case（BIL §14.3），P4b 发射 §8.5 case 构造与判别比较
+    //（§12.3 type.is.case）消费
     public sealed class BoundEnumCaseExpression : BoundExpression
     {
         public EnumCaseSymbol Case { get; }
         // 洞实参（规范序；固定 case 为空列表）
         public IReadOnlyList<BoundExpression> Arguments { get; }
+        // 声明点模板固定实参（init 参数序，洞位置 null 占位；null = 缺失）
+        public IReadOnlyList<BoundExpression?>? FixedArguments { get; }
 
         public BoundEnumCaseExpression(ASTNode syntax, EnumCaseSymbol caseSymbol,
-            IReadOnlyList<BoundExpression> arguments) : base(syntax, caseSymbol.Owner)
+            IReadOnlyList<BoundExpression> arguments,
+            IReadOnlyList<BoundExpression?>? fixedArguments = null) : base(syntax, caseSymbol.Owner)
         {
             Case = caseSymbol;
             Arguments = arguments;
+            FixedArguments = fixedArguments;
         }
     }
 

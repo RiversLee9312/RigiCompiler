@@ -1,7 +1,8 @@
 namespace RigiCompiler.Bil.Vm
 {
     // enum case 身份 + payload（BIL_VM_DESIGN §3.2 / BIL_STANDARD §22.2 / §14.3）：
-    // 身份按 case 符号引用相等；payload 为 case 洞实参。
+    // 身份按 case 符号引用相等；payload 为 case 组合实参（固定实参 + 洞实参，
+    // init 参数序）。
     // enum-struct 是值类型，Copy 深拷贝字段与 payload。
 
     public sealed class VmEnum : VmValue, IVmFieldHost

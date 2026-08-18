@@ -90,6 +90,7 @@ namespace RigiCompiler.Tests
             TestSeqEmission();
             TestTypeCheckEmission();
             TestTypeOfEmission();
+            TestDynamicNewEmission();
             TestIndexEmission();
             TestContainerCallSuffixChainEmission();
             TestAccessorEmission();
@@ -116,10 +117,13 @@ namespace RigiCompiler.Tests
             TestExtAccessorEmission();
             TestExtBuiltinAccessorEmission();
             TestExtStaticEmission();
+            TestStringLengthFieldEmission();
             TestExtCompoundAssignmentEmission();
             TestConstFieldModifierEmission();
             TestSmartCastCompoundAssignmentEmission();
             TestEvalOrderGuardEmission();
+            TestSiblingScopeLocalUniquification();
+            TestCrossFunctionCatchTablePrivate();
             TestEnumCaseEmission();
             TestWrapperEntityReadEmission();
             TestWrapperEntityWriteEmission();

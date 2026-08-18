@@ -53,6 +53,7 @@ namespace RigiCompiler.Tests
             TestStaticOperatorDeclaration();
             TestNamedImportResolution();
             TestEnumCaseStructure();
+            TestLikeDelegation();
             TestFreeze();
             return TestHarness.Summary("DeclarationResolver");
         }
@@ -668,6 +669,26 @@ namespace RigiCompiler.Tests
             TestHarness.CheckSemanticError("Bound 未解析", u6.Diagnostics, "Unresolved type or namespace: 'Missing'");
             var gp = u6.Symbols.GlobalNamespace.Methods.Single(m => m.Name == "f").GenericParameters[0];
             TestHarness.CheckTrue("Bound 失败约束不填充（毒化）", gp.Constraints.Count == 0);
+
+            // 约束边界引用同一声明泛型参数列表中的参数（§3.6 明文禁止）——
+            // 专门诊断替代「Unresolved type」通用报错；类型声明（本声明参数
+            // 对边界解析不可见）与函数声明（可见）两路径同禁
+            var (u7, _) = ResolveUnit("class C\\<T1 extends T2, T2> { }\n");
+            TestHarness.CheckSemanticError("约束边界引用同列表参数（类型）", u7.Diagnostics,
+                "Constraint bound of 'T1' cannot reference generic parameter 'T2' of the same declaration");
+            var (u8, _) = ResolveUnit("func f\\<T1 extends T2, T2>(x: T1) { }\n");
+            TestHarness.CheckSemanticError("约束边界引用同列表参数（函数）", u8.Diagnostics,
+                "Constraint bound of 'T1' cannot reference generic parameter 'T2' of the same declaration");
+            // 嵌套泛型实参位置同禁
+            var (u9, _) = ResolveUnit(
+                "interface Comparable\\<T> { }\n" +
+                "class C\\<T1 extends Comparable\\<T2>, T2> { }\n");
+            TestHarness.CheckSemanticError("约束边界嵌套引用同列表参数", u9.Diagnostics,
+                "Constraint bound of 'T1' cannot reference generic parameter 'T2' of the same declaration");
+            // 外层作用域的泛型参数作边界合法（宿主类型的 T 不在本声明参数
+            // 列表——方法约束引用宿主泛型参数）
+            var (u10, _) = ResolveUnit("class Outer\\<T> { func m\\<U extends T>(x: U) { } }\n");
+            CheckNoErrors("外层泛型参数作约束边界合法", u10);
         }
 
         // ===== 子任务 7b：ext 成员注册 =====
@@ -872,6 +893,22 @@ namespace RigiCompiler.Tests
                 "cannot wrap field 'f' of shared type 'C2'");
             var (ok4, _) = ResolveUnit(WrapperPrelude + "class C { @ValueW\nvar f: i32 }\n");
             CheckNoErrors("矩阵 B 合法（非 shared 目标实例字段）", ok4);
+
+            // §14.3 只读适用性（字段应用点）：只实现 get 的 Value wrapper
+            // 修饰 var 字段即编译错误；const 字段合法
+            const string getOnlyPrelude =
+                "@WrapperTarget(.Value)\n" +
+                "wrapper GetOnlyW {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.get\\<TValue>(value: TValue): TValue { return value }\n" +
+                "}\n";
+            var (u15b, _) = ResolveUnit(getOnlyPrelude +
+                "class C { @GetOnlyW\nvar f: i32 }\n");
+            TestHarness.CheckSemanticError("get-only Value wrapper 挂 var 字段", u15b.Diagnostics,
+                "Value wrapper 'GetOnlyW' does not implement .proxy.set");
+            var (ok4b, _) = ResolveUnit(getOnlyPrelude +
+                "class C { @GetOnlyW\nconst f: i32 = 0 }\n");
+            CheckNoErrors("get-only Value wrapper 挂 const 字段合法", ok4b);
 
             // interface 实现者传染（§14.9：在实现者声明处检查）
             var (u16, _) = ResolveUnit(WrapperPrelude +
@@ -1424,6 +1461,73 @@ namespace RigiCompiler.Tests
             CheckP2Error("P2 判别值非负复核", unit6, "Enum discriminant value must be non-negative");
 
             TestHarness.Blank();
+        }
+
+        // ===== like 委托（SYNTAX §9.6）：待实现成员豁免与诊断口径 =====
+        private static void TestLikeDelegation()
+        {
+            TestHarness.Section("P2 like 委托（§9.6）");
+
+            // 委托字段类型提供同签名实现：豁免「未实现」诊断
+            var (ok, _) = ResolveUnit(
+                "pub interface Fruit { func taste(): String\n }\n" +
+                "pub class Pear implements Fruit {\n" +
+                "    pub override func taste(): String { return \"pear-ish\" }\n" +
+                "}\n" +
+                "pub class Apple implements Fruit like pear {\n" +
+                "    pub var pear: Pear = new Pear()\n" +
+                "}\n");
+            CheckNoErrors("委托成员视为已实现", ok);
+
+            // 委托类型缺失成员：仍报未实现（签名必须匹配的最保守口径）
+            var (missing, _) = ResolveUnit(
+                "pub interface Fruit {\n" +
+                "    func taste(): String\n" +
+                "    func color(): String\n" +
+                "}\n" +
+                "pub class Pear implements Fruit {\n" +
+                "    pub override func taste(): String { return \"pear-ish\" }\n" +
+                "    pub override func color(): String { return \"green\" }\n" +
+                "}\n" +
+                "pub class Crab implements Fruit like pear {\n" +
+                "    pub var pear: Pear = new Pear()\n" +
+                "}\n" +
+                "pub interface HasWeight { func weight(): i32\n }\n" +
+                "pub class Stone implements HasWeight like pear {\n" +
+                "    pub var pear: Pear = new Pear()\n" +
+                "}\n");
+            CheckP2Error("委托类型缺失成员仍报未实现", missing,
+                "does not implement abstract member 'weight'");
+
+            // like 目标不是本类实例字段：专项诊断 + 成员仍按未实现报
+            var (badTarget, _) = ResolveUnit(
+                "pub interface Fruit { func taste(): String\n }\n" +
+                "pub class Pear implements Fruit {\n" +
+                "    pub override func taste(): String { return \"pear-ish\" }\n" +
+                "}\n" +
+                "pub class Apple implements Fruit like banana {\n" +
+                "    pub var pear: Pear = new Pear()\n" +
+                "}\n");
+            CheckP2Error("like 目标非实例字段专项诊断", badTarget,
+                "'Apple': like delegation target 'banana' is not an instance field");
+            CheckP2Error("like 目标缺失时成员仍报未实现", badTarget,
+                "does not implement abstract member 'taste'");
+
+            // 显式实现优先于委托：两成员各自落定，无诊断
+            var (explicitFirst, _) = ResolveUnit(
+                "pub interface Fruit {\n" +
+                "    func taste(): String\n" +
+                "    func color(): String\n" +
+                "}\n" +
+                "pub class Pear implements Fruit {\n" +
+                "    pub override func taste(): String { return \"pear-ish\" }\n" +
+                "    pub override func color(): String { return \"green\" }\n" +
+                "}\n" +
+                "pub class Apple implements Fruit like pear {\n" +
+                "    pub var pear: Pear = new Pear()\n" +
+                "    pub override func taste(): String { return \"apple-ish\" }\n" +
+                "}\n");
+            CheckNoErrors("显式实现优先于委托", explicitFirst);
         }
 
         private static void TestFreeze()

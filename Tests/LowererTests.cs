@@ -70,6 +70,7 @@ namespace RigiCompiler.Tests
             TestDestructuringLowering();
             TestTypeCheckLowering();
             TestTypeOfLowering();
+            TestDynamicNewLowering();
             TestIndexLowering();
             TestSafeAccessPrefixInThenBlock();
             TestCompoundAssignmentIndexMaterialization();

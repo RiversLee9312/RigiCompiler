@@ -443,6 +443,9 @@ namespace RigiCompiler.Tests
         }
 
         // lambda 捕获 wrapped 局部：读取经 cell → get proxy
+        //（var + wrapper 需同时实现 .proxy.set——§14.3 只读适用性检查前移
+        // 后 get-only 修饰 var 是编译错误；直通 set 保持读取经 get proxy 的
+        // 被测语义不变）
         private static void TestWrappedLocalCapturedByLambda()
         {
             var result = Run(
@@ -451,6 +454,9 @@ namespace RigiCompiler.Tests
                 "    pub init()\n" +
                 "    operator .proxy.get\\<TValue>(value: TValue): TValue {\n" +
                 "        return (((value as i32) + 1) as TValue)\n" +
+                "    }\n" +
+                "    operator .proxy.set\\<TValue>(value: TValue) {\n" +
+                "        inner(value)\n" +
                 "    }\n" +
                 "}\n" +
                 "pub func main(): i32 {\n" +

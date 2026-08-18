@@ -44,6 +44,8 @@ namespace RigiCompiler.Tests
             TestEnumCaseParameterizedForms();
             TestEnumCaseIsCase();
             TestEnumCaseTemplateBinding();
+            TestEnumCaseSwitchBranchContext();
+            TestEnumCaseFullNameForms();
             TestEnumCaseErrors();
         }
 
@@ -240,6 +242,125 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("priv init 固定 case 模板落定",
                 tokenKind.Cases.All(c => c.ResolvedInit != null
                     && c.HoleParameters is { Count: 0 }));
+        }
+
+        // ===== switch 分支体 `.Case` 解析上下文（§7.2/§12：selector
+        // 静态类型为 enum struct 时，分支体内省略形式以 selector 类型
+        // 为解析上下文；仅上下文贡献，不钉死分支期望类型）=====
+        private static void TestEnumCaseSwitchBranchContext()
+        {
+            // 表达式形态：单表达式分支的 `.Failed(1)` 无期望类型可依赖
+            // （隐式取值不经期望类型定型），纯靠 selector 上下文解析
+            var (unit, bodies) = BindUnit(RequestResultSource +
+                "func f(result: RequestResult): RequestResult {\n" +
+                "    return switch(result) {\n" +
+                "        (_ is .Success) -> { .Failed(1) }\n" +
+                "        default -> { result }\n" +
+                "    }\n" +
+                "}\n");
+            CheckNoErrors("switch 表达式分支体 .Case 无诊断", unit);
+            TestHarness.Check("switch 表达式分支体 .Case 形态",
+                BoundDescribe.Body(BodyOf(bodies, "f")),
+                "Body(f, [], [Return(SwitchExpr(Param(result,RequestResult), " +
+                "[CaseP(IsCase(Placeholder(RequestResult), RequestResult.Success), " +
+                "ValueBlock(_, RequestResult, implicit, " +
+                "[ExprStmt(EnumCase(RequestResult.Failed, [Int(1,i32)]))]))], " +
+                "ValueBlock(_, RequestResult, implicit, [ExprStmt(Param(result,RequestResult))]), " +
+                "RequestResult))])");
+
+            // 语句形态：分支体内无标注 const 的 `.Case`（含嵌套 if 块）
+            // 同样以 selector 类型解析
+            var (unit2, bodies2) = BindUnit(RequestResultSource +
+                "func f(result: RequestResult): i32 {\n" +
+                "    switch (result) {\n" +
+                "        (_ is .Success) -> {\n" +
+                "            if ((result.errorCode > 0)) {\n" +
+                "                const x = .Failed(2)\n" +
+                "                return x.errorCode\n" +
+                "            }\n" +
+                "            return 1\n" +
+                "        }\n" +
+                "        default -> { return 0 }\n" +
+                "    }\n" +
+                "}\n");
+            CheckNoErrors("switch 语句分支体（嵌套）.Case 无诊断", unit2);
+            TestHarness.CheckTrue("switch 语句分支体（嵌套）.Case 解析为 selector 类型",
+                BoundDescribe.Body(BodyOf(bodies2, "f"))
+                    .Contains("EnumCase(RequestResult.Failed, [Int(2,i32)])"));
+
+            // 异质分支不受影响（负对照）：i32 selector 的 String 分支
+            // 照既有统一规则推导，不引入任何 enum 上下文
+            var (unit3, bodies3) = BindUnit(
+                "func f(x: i32): String {\n" +
+                "    return switch(x) {\n" +
+                "        (1) -> { \"one\" }\n" +
+                "        default -> { \"?\" }\n" +
+                "    }\n" +
+                "}\n");
+            CheckNoErrors("异质分支不受影响（i32 selector / String 分支）", unit3);
+            TestHarness.CheckTrue("异质分支产值类型仍为 String",
+                BoundDescribe.Body(BodyOf(bodies3, "f")).Contains(", String))])"));
+
+            // 负对照：非 enum selector 的分支体内 `.Case` 维持既有拒绝
+            var (e1, _) = BindUnit(RequestResultSource +
+                "func f(x: i32): i32 {\n" +
+                "    switch (x) {\n" +
+                "        (1) -> { const y = .Success\nreturn 1 }\n" +
+                "        default -> { return 0 }\n" +
+                "    }\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("非 enum selector 分支体 .Case 仍拒绝",
+                e1.Diagnostics, "Cannot infer the enum type of '.Success' from context");
+        }
+
+        // ===== `EnumType.Case` 全形（§12：case 亦可以全形引用；与
+        // `.Case` 省略形式同一 case 构造通道）=====
+        private static void TestEnumCaseFullNameForms()
+        {
+            // 固定 case 全形（无类型标注——全形自带类型上下文）
+            var (unit, bodies) = BindUnit(RequestResultSource +
+                "func f() {\n" +
+                "    const result = RequestResult.Success\n" +
+                "}\n");
+            CheckNoErrors("全形固定 case 无诊断", unit);
+            TestHarness.Check("全形固定 case 形态",
+                BoundDescribe.Body(BodyOf(bodies, "f")),
+                "Body(f, [result: RequestResult], " +
+                "[Decl(result, RequestResult, = EnumCase(RequestResult.Success, []))])");
+
+            // 参数化全形：位置实参
+            var (unit2, bodies2) = BindUnit(RequestResultSource +
+                "func f() {\n" +
+                "    const failed = RequestResult.Failed(404)\n" +
+                "}\n");
+            CheckNoErrors("全形参数化 case 位置实参无诊断", unit2);
+            TestHarness.Check("全形参数化 case 位置实参形态",
+                BoundDescribe.Body(BodyOf(bodies2, "f")),
+                "Body(f, [failed: RequestResult], " +
+                "[Decl(failed, RequestResult, = EnumCase(RequestResult.Failed, [Int(404,i32)]))])");
+
+            // 参数化全形：具名实参（与省略形式同一归位通道）
+            var (unit3, bodies3) = BindUnit(RequestResultSource +
+                "func f() {\n" +
+                "    const failed = RequestResult.Failed(errorCode = 404)\n" +
+                "}\n");
+            CheckNoErrors("全形参数化 case 具名实参无诊断", unit3);
+            TestHarness.Check("全形参数化 case 具名实参形态",
+                BoundDescribe.Body(BodyOf(bodies3, "f")),
+                "Body(f, [failed: RequestResult], " +
+                "[Decl(failed, RequestResult, = EnumCase(RequestResult.Failed, [Int(404,i32)]))])");
+
+            // 全形 case 值作 receiver 续链（`EnumType.Case.member`）
+            var (unit4, bodies4) = BindUnit(RequestResultSource +
+                "func f(): i32 {\n" +
+                "    return RequestResult.Failed(7).errorCode\n" +
+                "}\n");
+            CheckNoErrors("全形 case 续链无诊断", unit4);
+            var chainAccess = (BoundFieldAccessExpression)((BoundReturnStatement)
+                ((BoundBlock)BodyOf(bodies4, "f").Body).Statements[0]).Value!;
+            TestHarness.CheckTrue("全形 case 续链结构事实（receiver 是 case 构造）",
+                chainAccess.Field.Name == "errorCode"
+                && chainAccess.Receiver is BoundEnumCaseExpression { Case.Name: "Failed" });
         }
 
         // ===== 负例矩阵 =====
@@ -454,6 +575,30 @@ namespace RigiCompiler.Tests
                 "}\n");
             TestHarness.CheckSemanticError("is .Case 未知 case 拒绝", e21.Diagnostics,
                 "Undefined case 'NoSuch' on 'RequestResult'");
+
+            // 全形未知 case 名
+            var (e22, _) = BindUnit(RequestResultSource +
+                "func f() {\n" +
+                "    const x = RequestResult.NoSuch\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("全形未知 case 名拒绝", e22.Diagnostics,
+                "Undefined case 'NoSuch' on 'RequestResult'");
+
+            // 全形参数化 case 裸引用（缺洞实参）
+            var (e23, _) = BindUnit(RequestResultSource +
+                "func f() {\n" +
+                "    const x = RequestResult.Failed\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("全形参数化裸引用拒绝", e23.Diagnostics,
+                "Case 'Failed' requires 1 argument(s)");
+
+            // 全形固定 case 带实参
+            var (e24, _) = BindUnit(RequestResultSource +
+                "func f(): i32 {\n" +
+                "    return RequestResult.Success(1)\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("全形固定 case 带实参拒绝", e24.Diagnostics,
+                "Case 'Success' takes no arguments");
         }
     }
 }

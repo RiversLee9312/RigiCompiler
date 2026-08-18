@@ -33,7 +33,7 @@ namespace RigiCompiler.Tests
 
         private static void TestEnumCaseLowering()
         {
-            // ===== 固定 case 恒等降级 =====
+            // ===== 固定 case 降级：声明点固定实参按 init 参数序组合 =====
             var (unit, bound, lowered) = LowerUnit(EnumRequestResultSource +
                 "func f() {\n" +
                 "    const result: RequestResult = .Success\n" +
@@ -41,15 +41,16 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断（固定 case 降级）", unit);
             TestHarness.Check("固定 case 降级形态", LoweredDescribe.Body(BodyOf(lowered, "f")),
                 "Body(f, [result: RequestResult], " +
-                "[Decl(result, RequestResult, = EnumCase(RequestResult.Success, []))])");
+                "[Decl(result, RequestResult, = EnumCase(RequestResult.Success, [Int(-1,i32)]))])");
             var boundCase = (BoundEnumCaseExpression)((BoundLocalDeclarationStatement)
                 bound.Single(b => b.Method.Name == "f").Body.Statements[0]).Initializer!;
             var loweredCase = (LoweredEnumCaseExpression)((LoweredLocalDeclarationStatement)
                 BodyOf(lowered, "f").Body.Statements[0]).Initializer!;
-            TestHarness.CheckTrue("enum case Origin 回指 + Case 符号引用相等 + 空实参",
+            TestHarness.CheckTrue("enum case Origin 回指 + Case 符号引用相等 + 固定实参组合",
                 ReferenceEquals(loweredCase.Origin, boundCase)
                 && ReferenceEquals(loweredCase.Case, boundCase.Case)
-                && loweredCase.Arguments.Count == 0);
+                && loweredCase.Arguments.Count == 1
+                && ReferenceEquals(loweredCase.Arguments[0].Origin, boundCase.FixedArguments![0]));
 
             // ===== 参数化 case 位置实参：洞实参逐条降级 =====
             var (unit2, bound2, lowered2) = LowerUnit(EnumRequestResultSource +

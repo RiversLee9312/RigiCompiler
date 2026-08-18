@@ -42,9 +42,8 @@ new.case type(ENUM_TYPE) case(ENUM_TYPE.CaseName) RESULT [ARG_0, ARG_1, ...]
 
 - ENUM_TYPE 必须是 enum struct；
 - case 符号必须以 ENUM_TYPE 为 owner；
-- 参数类型必须严格匹配 case 入口；
+- 实参为 case 入口的**组合实参**（RUNTIME §16）：case 模板的固定实参与调用点洞实参按 init 参数序组成，参数类型必须严格匹配 case 绑定 init 的签名；模板无固定实参时组合实参即洞实参（§8.5 洞签名序）；
 - RESULT 必须严格为 ENUM_TYPE；
-- 固定 case 使用空参数列表；
 - 该指令是 enum 值的唯一标准构造形式。
 
 enum struct **没有零值**。enum 类型的存储位置（`.vars` 条目、字段、数组

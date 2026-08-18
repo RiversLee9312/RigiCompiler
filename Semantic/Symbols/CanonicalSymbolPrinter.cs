@@ -20,19 +20,21 @@ namespace RigiCompiler
         };
 
         // BIL 类型引用投影（§6.1）：固定内建别名 > 标准类型构造 > canonical/闭合泛型；
-        // S9 放宽为 SemanticSymbol——泛型参数走 §7.5 的 .generic<$.generic.T> 形态
-        public static string PrintType(SemanticSymbol type)
+        // S9 放宽为 SemanticSymbol——泛型参数走 §7.5 的 .generic<$.generic.T> 形态。
+        // compact：符号内嵌形态（§5.2 canonical symbol 是成员声明行的单个词，
+        // BilReader 按首个空白切分符号与修饰符）——闭合泛型实参分隔不得含空白
+        public static string PrintType(SemanticSymbol type, bool compact = false)
         {
             return type switch
             {
                 GenericParameterSymbol generic => $".generic<$.generic.{generic.Name}>",
-                TypeSymbol symbol => PrintTypeSymbol(symbol),
+                TypeSymbol symbol => PrintTypeSymbol(symbol, compact),
                 _ => throw new CompilerInternalException(
                     $"非法类型引用符号: {type.GetType().Name}"),
             };
         }
 
-        private static string PrintTypeSymbol(TypeSymbol type)
+        private static string PrintTypeSymbol(TypeSymbol type, bool compact)
         {
             if (type.BilAlias != null)
             {
@@ -40,7 +42,7 @@ namespace RigiCompiler
             }
             if (type.ConstructedFrom is { } definition)
             {
-                var args = PrintTypeArguments(type.TypeArguments!);
+                var args = PrintTypeArguments(type.TypeArguments!, compact);
                 // 标准类型构造（§6.3：.nullable<T> / .typeid<T> / .array<T> …）
                 if (definition.BilStandardConstructor != null)
                 {
@@ -54,9 +56,9 @@ namespace RigiCompiler
 
         // 返回类型等可空位置：null 即 .void（§6.2：只能作无结果方法的返回类型）；
         // SemanticSymbol：TypeSymbol 走 PrintType，泛型参数走 §7.5 的 .generic 形态
-        public static string PrintTypeReference(SemanticSymbol? type)
+        public static string PrintTypeReference(SemanticSymbol? type, bool compact = false)
         {
-            return type == null ? ".void" : Print(type);
+            return type == null ? ".void" : PrintType(type, compact);
         }
 
         // 字段 / 全局变量 / 全局常量（§5.2）：命名空间::[类名...]#[.static.]名称@字段类型。
@@ -67,8 +69,8 @@ namespace RigiCompiler
             var prefix = OwnerPrefix(field.Owner, field.Namespace);
             var staticMark = field.IsStatic ? ".static." : "";
             var fieldType = field.CellStorage is { } storage
-                ? PrintType(storage.CellType)
-                : PrintTypeReference(field.FieldType);
+                ? PrintType(storage.CellType, compact: true)
+                : PrintTypeReference(field.FieldType, compact: true);
             return $"{prefix}#{staticMark}{field.Name}@{fieldType}";
         }
 
@@ -80,15 +82,15 @@ namespace RigiCompiler
             switch (method.Kind)
             {
                 case MethodKind.Getter:
-                    return $"{prefix}${(method.IsStatic ? ".static" : "")}.get.{method.Name}@{PrintTypeReference(method.ReturnType)}";
+                    return $"{prefix}${(method.IsStatic ? ".static" : "")}.get.{method.Name}@{PrintTypeReference(method.ReturnType, compact: true)}";
                 case MethodKind.Setter:
                     var valueType = method.Parameters.Count > 0 ? method.Parameters[0].Type : null;
-                    return $"{prefix}${(method.IsStatic ? ".static" : "")}.set.{method.Name}@{PrintTypeReference(valueType)}";
+                    return $"{prefix}${(method.IsStatic ? ".static" : "")}.set.{method.Name}@{PrintTypeReference(valueType, compact: true)}";
                 case MethodKind.Operator:
-                    return $"{prefix}$${method.Name}({PrintParameters(method)})@{PrintTypeReference(method.ReturnType)}";
+                    return $"{prefix}$${method.Name}({PrintParameters(method)})@{PrintTypeReference(method.ReturnType, compact: true)}";
                 default:
                     var staticMark = method.IsStatic ? ".static." : "";
-                    return $"{prefix}${staticMark}{method.Name}({PrintParameters(method, includeNativeGenericHidden: method.IsNative)})@{PrintTypeReference(method.ReturnType)}";
+                    return $"{prefix}${staticMark}{method.Name}({PrintParameters(method, includeNativeGenericHidden: method.IsNative)})@{PrintTypeReference(method.ReturnType, compact: true)}";
             }
         }
 
@@ -96,7 +98,7 @@ namespace RigiCompiler
         // （com.example::RequestResult.Failed）
         public static string PrintCase(EnumCaseSymbol enumCase)
         {
-            return $"{PrintType(enumCase.Owner)}.{enumCase.Name}";
+            return $"{PrintType(enumCase.Owner, compact: true)}.{enumCase.Name}";
         }
 
         // S11e 降级请求 canonical symbol（SYNTAX §14.7/§14.8 落地形态）：未声明
@@ -119,7 +121,7 @@ namespace RigiCompiler
             var owner = CanonicalTypeName(receiverType.ConstructedFrom ?? receiverType);
             var genericPart = typeArguments.Count == 0
                 ? ""
-                : $"<{string.Join(",", typeArguments.Select(PrintTypeReference))}>";
+                : $"<{string.Join(",", typeArguments.Select(t => PrintTypeReference(t)))}>";
             return $"{owner}${name}{genericPart}({string.Join(",", parts)})@.any";
         }
 
@@ -156,7 +158,7 @@ namespace RigiCompiler
             foreach (var p in method.Parameters)
             {
                 if (p.IsVariadic || p.IsNamedVariadic) continue;
-                parts.Add($"{p.Name}:{PrintTypeReference(p.Type)}");
+                parts.Add($"{p.Name}:{PrintTypeReference(p.Type, compact: true)}");
             }
             return string.Join(",", parts);
         }
@@ -175,19 +177,22 @@ namespace RigiCompiler
             return (ns is { Length: > 0 } ? ns + "::" : "") + string.Join(".", segments);
         }
 
-        private static string PrintTypeArguments(IReadOnlyList<SemanticSymbol> arguments)
+        private static string PrintTypeArguments(IReadOnlyList<SemanticSymbol> arguments,
+            bool compact = false)
         {
             var parts = new List<string>();
             foreach (var arg in arguments)
             {
-                parts.Add(PrintTypeArgument(arg));
+                parts.Add(PrintTypeArgument(arg, compact));
             }
-            return string.Join(", ", parts);
+            // compact（canonical 符号内嵌）：分隔符不得含空白（见 PrintType 注）
+            return string.Join(compact ? "," : ", ", parts);
         }
 
-        private static string PrintTypeArgument(SemanticSymbol argument) => argument switch
+        private static string PrintTypeArgument(SemanticSymbol argument,
+            bool compact = false) => argument switch
         {
-            TypeSymbol type => PrintType(type),
+            TypeSymbol type => PrintType(type, compact),
             // §7.5：函数体中泛型参数的值类型引用形态
             GenericParameterSymbol generic => $".generic<$.generic.{generic.Name}>",
             _ => throw new CompilerInternalException($"非法泛型实参符号: {argument.GetType().Name}"),

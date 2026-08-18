@@ -237,6 +237,15 @@ namespace RigiCompiler
                     CheckValueMethodTarget(wrapperType, span, host: field.Owner,
                         isGlobalOrStatic: field.Owner == null || field.IsStatic,
                         targetDescription: $"field '{field.Name}'", env);
+                    // §14.3：只实现 get 的 Value wrapper 只适用于只读变量——
+                    // var 字段/全局变量应用 get-only wrapper 即编译错误
+                    if (!field.IsConst && ProxyMatching.IsGetOnlyValueWrapper(wrapperType))
+                    {
+                        env.Error(span,
+                            $"Value wrapper '{wrapperType.Name}' does not implement .proxy.set; " +
+                            $"get-only wrappers cannot be applied to mutable field " +
+                            $"'{field.Name}' (§14.3: only read-only variables)");
+                    }
                     return;
                 case WrapperTargetKind.Method:
                     if (entry.Symbol is not MethodSymbol method)
@@ -324,7 +333,7 @@ namespace RigiCompiler
                 if (entry.Symbol is MethodSymbol { Kind: MethodKind.Regular, IsOverride: true } method)
                 {
                     var inherited = OverrideChecker.InheritedMethodsForWrapper(
-                        entry.DeclaringType, method, env)
+                        entry.DeclaringType, method, env.Unit.Symbols)
                         .SelectMany(m => m.AppliedWrappers);
                     CheckList(entry, method.AppliedWrappers, inherited, "Method", env);
                 }
@@ -335,13 +344,13 @@ namespace RigiCompiler
                     if (field.Getter?.IsOverride == true)
                     {
                         inherited.AddRange(OverrideChecker.InheritedFieldsForAccessor(
-                            entry.DeclaringType, field.Getter, env)
+                            entry.DeclaringType, field.Getter, env.Unit.Symbols)
                             .SelectMany(f => f.AppliedWrappers));
                     }
                     if (field.Setter?.IsOverride == true)
                     {
                         inherited.AddRange(OverrideChecker.InheritedFieldsForAccessor(
-                            entry.DeclaringType, field.Setter, env)
+                            entry.DeclaringType, field.Setter, env.Unit.Symbols)
                             .SelectMany(f => f.AppliedWrappers));
                     }
                     if (inherited.Count > 0)

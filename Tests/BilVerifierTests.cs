@@ -1405,6 +1405,31 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckBilInvalid("is.case 结果非 bool", m,
                 "type.is.case 结果");
 
+            // ===== §14.3 new.case 组合实参校验（固定实参 + 洞实参按 init
+            // 参数序组合，匹配宿主 enum 的 init 签名；历史 bug 前按 case
+            // 洞签名校验，固定实参无通道进 BIL）=====
+            m = EnumCaseInitModule(new NewCaseInstruction(BilOp.Type("E"),
+                BilOp.Case("E.Param"), BilOp.Var(".t0"), new[] { BilOp.Var("x") }));
+            BilTestHarness.CheckBilValid("new.case 洞实参匹配 init（正例）", m);
+            // 固定 case 的组合实参（声明点固定实参）同样匹配 init
+            m = EnumCaseInitModule(new NewCaseInstruction(BilOp.Type("E"),
+                BilOp.Case("E.Fixed"), BilOp.Var(".t0"), new[] { BilOp.Var("x") }));
+            BilTestHarness.CheckBilValid("new.case 固定 case 组合实参（正例）", m);
+            // 组合实参类型不匹配任何 init
+            m = EnumCaseInitModule(new NewCaseInstruction(BilOp.Type("E"),
+                BilOp.Case("E.Param"), BilOp.Var(".t0"), new[] { BilOp.Var("s") }));
+            BilTestHarness.CheckBilInvalid("new.case 组合实参不匹配 init", m,
+                "不匹配 enum-struct \"E\" 的任何 init 签名");
+            // 无 init 声明的 enum 带参数构造
+            m = EnumCaseInitModule(new NewCaseInstruction(BilOp.Type("E2"),
+                BilOp.Case("E2.Lone"), BilOp.Var(".t1"), new[] { BilOp.Var("x") }));
+            BilTestHarness.CheckBilInvalid("new.case 无 init 带参数", m,
+                "没有 init 声明，new.case 不得带参数");
+            m = EnumCaseInitModule(new NewCaseInstruction(BilOp.Type("E2"),
+                BilOp.Case("E2.Lone"), BilOp.Var(".t1"),
+                new List<BilVariableOperand>()));
+            BilTestHarness.CheckBilValid("new.case 无 init 零参数（正例）", m);
+
             // §21.2：case 声明宿主不是 enum-struct（声明侧）
             m = MinimalModule(out _, out _);
             var classWithCase = new BilTypeDeclaration("com.example::Service",
@@ -1943,6 +1968,73 @@ namespace RigiCompiler.Tests
                 (BilScalarResource)module.Resources[1], BilOp.Var("x")));
             entry.Instructions.Add(new LoadInstruction(
                 (BilScalarResource)module.Resources[2], BilOp.Var("lv")));
+            entry.Instructions.AddRange(body);
+            entry.Instructions.Add(new RetInstruction(BilOp.Var("x")));
+            main.Blocks.Add(entry);
+            module.Functions.Add(main);
+            return module;
+        }
+
+        // §14.3 new.case 校验模块：enum-struct E 含 init(v:.i32)（字段 v +
+        // 映射赋值 fn 定义）与 Fixed（空洞）/Param（单洞）两 case；E2 无
+        // init 声明。main(x i32=42, s string) + .t0/.t1 enum 临时
+        private static BilModule EnumCaseInitModule(params BilInstruction[] body)
+        {
+            var module = new BilModule();
+            module.Resources.Add(new BilScalarResource("R_42", BilScalarType.I32, "42"));
+            module.Resources.Add(new BilScalarResource("R_S", BilScalarType.String, "x"));
+
+            var e = new BilTypeDeclaration("E", BilTypeKind.EnumStruct,
+                new BilAccessibilityModifier(BilAccessibility.Public));
+            e.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field, "E#v@.i32",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilKeywordModifier(BilKeyword.Const),
+                }));
+            e.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "E$init(v:.i32)@.void",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilKeywordModifier(BilKeyword.Init),
+                }));
+            e.Members.Add(new BilCaseDeclaration("E.Fixed"));
+            e.Members.Add(new BilCaseDeclaration("E.Param",
+                new[] { new BilCaseParameter("v", ".i32") }));
+            module.LocalSymbols.Add(e);
+
+            var e2 = new BilTypeDeclaration("E2", BilTypeKind.EnumStruct,
+                new BilAccessibilityModifier(BilAccessibility.Public));
+            e2.Members.Add(new BilCaseDeclaration("E2.Lone"));
+            module.LocalSymbols.Add(e2);
+
+            // init fn 定义（映射赋值体；§21.8 const 实例字段 init 豁免）
+            var init = new BilFunction("E$init(v:.i32)@.void");
+            init.Args.Add(new BilArgDeclaration(".return", ".void"));
+            init.Args.Add(new BilArgDeclaration(".this", "E"));
+            init.Args.Add(new BilArgDeclaration("v", ".i32"));
+            var initEntry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            initEntry.Instructions.Add(new SetFieldInstruction(BilOp.Var("v"),
+                BilOp.Var(".this"), BilOp.Field("E#v@.i32")));
+            initEntry.Instructions.Add(new RetInstruction());
+            init.Blocks.Add(initEntry);
+            module.Functions.Add(init);
+
+            module.LocalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "$main()@.i32", new BilModifier[]
+                { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            var main = new BilFunction("$main()@.i32");
+            main.Args.Add(new BilArgDeclaration(".return", ".i32"));
+            main.Vars.Add(new BilVarDeclaration(".i32", "x"));
+            main.Vars.Add(new BilVarDeclaration(".string", "s"));
+            main.Vars.Add(new BilVarDeclaration("E", ".t0"));
+            main.Vars.Add(new BilVarDeclaration("E2", ".t1"));
+            var entry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            entry.Instructions.Add(new LoadInstruction(
+                (BilScalarResource)module.Resources[0], BilOp.Var("x")));
+            entry.Instructions.Add(new LoadInstruction(
+                (BilScalarResource)module.Resources[1], BilOp.Var("s")));
             entry.Instructions.AddRange(body);
             entry.Instructions.Add(new RetInstruction(BilOp.Var("x")));
             main.Blocks.Add(entry);

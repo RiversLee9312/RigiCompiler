@@ -127,6 +127,29 @@ namespace RigiCompiler
         public BoundExpression? CurrentSelector =>
             switchSelectors.Count > 0 ? switchSelectors.Peek() : null;
 
+        // ===== switch 分支体 enum case 解析上下文栈（§7.2/§12）=====
+        // 绑定 switch 分支体（表达式/语句两形态，含 default）期间压入
+        // enum struct selector 的静态类型；分支体内 `.Case` 省略形式
+        // 缺乏期望类型时以最近一层为解析上下文。仅贡献解析上下文——
+        // 分支期望类型不钉死为 selector 类型，分支产出与 selector
+        // 异质的用法不受影响
+        private readonly Stack<TypeSymbol> enumCaseContexts = new Stack<TypeSymbol>();
+
+        public void PushEnumCaseContext(TypeSymbol selectorType)
+        {
+            enumCaseContexts.Push(selectorType);
+        }
+
+        public void PopEnumCaseContext()
+        {
+            enumCaseContexts.Pop();
+        }
+
+        // 最近的 enum switch selector 上下文（栈空 = 不在 enum switch
+        // 分支体内，返回 null）
+        public TypeSymbol? CurrentEnumCaseContext =>
+            enumCaseContexts.Count > 0 ? enumCaseContexts.Peek() : null;
+
         // ===== 语句 seq 标签栈（M61，SYNTAX §6.1）=====
         // 绑定 named 语句 seq 体期间压入（自记当时循环/值块深度；
         // 仅显式 named 的语句 seq 可作 return@ 目标——`_` 默认标签

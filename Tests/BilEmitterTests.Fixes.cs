@@ -1,5 +1,6 @@
 using System.Linq;
 using RigiCompiler.Bil;
+using RigiCompiler.Bil.Vm;
 
 namespace RigiCompiler.Tests
 {
@@ -149,7 +150,8 @@ namespace RigiCompiler.Tests
                 "ret $.t3\n");
 
             // vargs 复合赋值：读侧 get.array .any + 拆箱 cast 参与运算、
-            // 写侧结果装箱 cast 到 .any 后 set.array（单次求值脱糖贯通）
+            // 写回值装箱 cast 到 .any 物化 .s0 后 set.array——§13.2 单次
+            // 求值，表达式位取 .s0 的拆箱 cast，不再二次 get.array
             var (unit3, module3, _) = BilTestHarness.EmitBilUnit(
                 "func bump(nums: i32...) {\n" +
                 "    nums[0] += 1\n" +
@@ -158,19 +160,18 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckBilValid("验证器零错误（vargs 索引复合赋值）", module3);
             BilTestHarness.CheckFnShape("vargs 索引复合赋值（读拆箱/写装箱）",
                 module3, "$bump()@.void",
-                ".vars { .i32 .t0, .i32 .t1, .any .t2, .i32 .t3, .i32 .t4, " +
-                ".i32 .t5, .any .t6, .i32 .t7, .any .t8, .i32 .t9 }\n" +
+                ".vars { .any .s0, .i32 .t0, .any .t1, .i32 .t2, .i32 .t3, " +
+                ".i32 .t4, .any .t5, .i32 .t6, .i32 .t7 }\n" +
                 "load res(#0) $.t0\n" +
-                "load res(#0) $.t1\n" +
-                "get.array $.vargs.nums $.t1 $.t2\n" +
-                "cast $.t2 $.t3 type(.i32)\n" +
-                "load res(#1) $.t4\n" +
-                "add $.t3 $.t4 $.t5\n" +
-                "cast $.t5 $.t6 type(.any)\n" +
-                "set.array $.vargs.nums $.t0 $.t6\n" +
-                "load res(#0) $.t7\n" +
-                "get.array $.vargs.nums $.t7 $.t8\n" +
-                "cast $.t8 $.t9 type(.i32)\n" +
+                "get.array $.vargs.nums $.t0 $.t1\n" +
+                "cast $.t1 $.t2 type(.i32)\n" +
+                "load res(#1) $.t3\n" +
+                "add $.t2 $.t3 $.t4\n" +
+                "cast $.t4 $.t5 type(.any)\n" +
+                "set.var $.t5 $.s0\n" +
+                "load res(#0) $.t6\n" +
+                "set.array $.vargs.nums $.t6 $.s0\n" +
+                "cast $.s0 $.t7 type(.i32)\n" +
                 "ret\n");
 
             // 模型断言：get.array 结果临时按 ABI 元素类型登记（.vars）
@@ -324,6 +325,113 @@ namespace RigiCompiler.Tests
                 && mainFn2.Blocks.Skip(1).Any(b => b.Instructions
                     .OfType<InvokeInstruction>()
                     .Any(i => i.Method.Symbol == "$rightB()@.bool")));
+        }
+
+        // ===== 兄弟作用域同名局部唯一化（BIL §9.3 .vars 函数内唯一）=====
+        private static void TestSiblingScopeLocalUniquification()
+        {
+            // 源码合法（SYNTAX §6：seq 即作用域）——修复前 .vars 按源码名
+            // 平铺撞名，BilVerifier §21.1 误报「变量名重复 "v"」
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "pub func main(): i32 {\n" +
+                "    seq { const v = 1 }\n" +
+                "    seq { const v = 2 }\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（兄弟 seq 同名局部）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（兄弟 seq 同名局部）", module);
+            var mainFn = module.Functions.Single(f => f.Symbol == "$main()@.i32");
+            TestHarness.CheckTrue("撞名局部改名「名_N」（.vars 含 v 与 v_1）",
+                mainFn.Vars.Any(v => v.Name == "v")
+                && mainFn.Vars.Any(v => v.Name == "v_1"));
+            // 端到端 VM：改名后声明/引用一致，正常运行返回 0
+            var runResult = BilVm.Run(module);
+            TestHarness.CheckTrue("VM 运行无异常（兄弟 seq 同名局部）",
+                runResult.Exception == null, runResult.Exception?.ToString() ?? "");
+            TestHarness.CheckTrue("VM 返回值 0（兄弟 seq 同名局部）",
+                runResult.ReturnValue is VmI32 n && n.Value == 0,
+                runResult.ReturnValue?.ToStandardText() ?? "<null>");
+
+            // 同一函数两个 catch 子句的同名异常变量（e）——修复前同样
+            // §21.1 误报；第二个 catch 必须绑定自己的 e（打印 B 而非 A）
+            var (unit2, module2, _) = BilTestHarness.EmitBilUnit(
+                "import core.io.Console\n" +
+                "class ErrorA : core.RuntimeException {\n" +
+                "    pub override func getMessage(): String { return \"A\" }\n" +
+                "}\n" +
+                "class ErrorB : core.RuntimeException {\n" +
+                "    pub override func getMessage(): String { return \"B\" }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    try {\n" +
+                "        throw new ErrorB()\n" +
+                "    } catch (e: ErrorA) {\n" +
+                "        Console.println(e.getMessage())\n" +
+                "        return 1\n" +
+                "    } catch (e: ErrorB) {\n" +
+                "        Console.println(e.getMessage())\n" +
+                "        return 0\n" +
+                "    }\n" +
+                "    return 3\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（双 catch 同名异常变量）", unit2);
+            BilTestHarness.CheckBilValid("验证器零错误（双 catch 同名异常变量）", module2);
+            var mainFn2 = module2.Functions.Single(f => f.Symbol == "$main()@.i32");
+            TestHarness.CheckTrue("双 catch 同名异常变量改名（.vars 含 e 与 e_1）",
+                mainFn2.Vars.Any(v => v.Name == "e")
+                && mainFn2.Vars.Any(v => v.Name == "e_1"));
+            var runResult2 = BilVm.Run(module2);
+            TestHarness.CheckTrue("VM 运行无异常（双 catch 同名异常变量）",
+                runResult2.Exception == null, runResult2.Exception?.ToString() ?? "");
+            TestHarness.CheckTrue("VM 第二 catch 绑定自身 e（stdout=B）",
+                runResult2.Stdout == "B\n", runResult2.Stdout);
+            TestHarness.CheckTrue("VM 返回值 0（双 catch 同名异常变量）",
+                runResult2.ReturnValue is VmI32 n2 && n2.Value == 0,
+                runResult2.ReturnValue?.ToStandardText() ?? "<null>");
+        }
+
+        // ===== 跨函数同形 try/catch 的 catch-table 按函数私有（§19.5/§21.5）=====
+        private static void TestCrossFunctionCatchTablePrivate()
+        {
+            // 两函数各含 try/catch：block id 按函数独立编号（均 try0），
+            // 修复前 catch-table 跨 fn 按元素文本去重撞键——后一函数的
+            // try 指令共享前一函数的表（持别函数 block 对象），BilVerifier
+            // §21.5 误报「block 引用越权："try0-catch0" 不属于当前函数」
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "import core.io.Console\n" +
+                "func helper(): i32 {\n" +
+                "    try { return 1 } catch (e: core.RuntimeException) { return 2 }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    try { Console.println(\"a\") }" +
+                " catch (e: core.RuntimeException) { Console.println(\"b\") }\n" +
+                "    return helper()\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（跨函数同形 try/catch）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（跨函数同形 try/catch）", module);
+            // 模型断言：两函数各持独立 catch-table 资源，条目 block 属本 fn
+            var tables = module.Resources.OfType<BilCatchTableResource>().ToList();
+            TestHarness.CheckTrue("两函数各登记独立 catch-table（跨函数不去重）",
+                tables.Count == 2, "实际 " + tables.Count);
+            foreach (var function in module.Functions.Where(
+                f => f.Symbol == "$helper()@.i32" || f.Symbol == "$main()@.i32"))
+            {
+                var tryInstruction = function.Blocks
+                    .SelectMany(b => b.Instructions)
+                    .OfType<TryInstruction>().Single();
+                var table = (BilCatchTableResource)tryInstruction.CatchTable!;
+                TestHarness.CheckTrue("catch-table 条目 block 属本 fn（" + function.Symbol + "）",
+                    table.Entries.All(e => function.Blocks.Contains(e.Handler)));
+            }
+            // 端到端 VM：正常路径打印 a、helper 返回 1
+            var runResult = BilVm.Run(module);
+            TestHarness.CheckTrue("VM 运行无异常（跨函数同形 try/catch）",
+                runResult.Exception == null, runResult.Exception?.ToString() ?? "");
+            TestHarness.CheckTrue("VM stdout=a（跨函数同形 try/catch）",
+                runResult.Stdout == "a\n", runResult.Stdout);
+            TestHarness.CheckTrue("VM 返回值 1（helper 正常路径）",
+                runResult.ReturnValue is VmI32 n && n.Value == 1,
+                runResult.ReturnValue?.ToStandardText() ?? "<null>");
         }
     }
 }

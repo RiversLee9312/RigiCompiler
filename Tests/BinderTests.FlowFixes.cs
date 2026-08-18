@@ -241,19 +241,16 @@ namespace RigiCompiler.Tests
         {
             TestHarness.Section("P3 FlowFixes: 值块裸 return");
 
-            // 以 return 终止的分支路径不落到块尾——不要求 return@（修复前误报）
-            var (unit, bodies) = BindUnit(
+            // §6.1 裁决：裸 return 不得穿透值块边界——值块（含 if/switch
+            // 表达式分支体）内一切裸 return 均为编译错误（原「以 return
+            // 终止的分支路径不落到块尾」形态自此非法）
+            var (unit, _) = BindUnit(
                 "func f(c: bool): i32 {\n" +
                 "    var r = if (c) { return 5 } else { 1 }\n" +
                 "    return r\n" +
                 "}\n");
-            CheckNoErrors("无诊断（裸 return 终止分支）", unit);
-            TestHarness.Check("裸 return 分支为纯穿透值块",
-                BoundDescribe.Body(BodyOf(bodies, "f")),
-                "Body(f, [r: i32], [Decl(r, i32, = IfExpr(Param(c,bool), " +
-                "ValueBlock(_, -, [Return(Int(5,i32))]), " +
-                "ValueBlock(_, i32, implicit, [ExprStmt(Int(1,i32))]), i32)); " +
-                "Return(Local(r,i32))])");
+            TestHarness.CheckSemanticError("裸 return 穿透值块拒绝", unit.Diagnostics,
+                "Bare 'return' cannot cross a value block boundary");
         }
 
         // ===== 6. 嵌套值块 return@ 参与外层类型统一 =====

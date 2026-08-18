@@ -28,7 +28,7 @@ namespace RigiCompiler
                 var view = SignatureView.Raw(method);
                 if (view.HasErrorType) continue;
 
-                var matches = FindInheritedMatches(host, view, env);
+                var matches = FindInheritedMatches(host, view, env.Unit.Symbols);
                 if (method.IsOverride)
                 {
                     if (matches.Count == 0)
@@ -85,7 +85,10 @@ namespace RigiCompiler
             }
 
             // 三、具体类必须实现继承链全部 abstract 成员与无体接口成员（§9.2.1；
-            // 有默认实现的接口成员隐式继承——显式委托语法归后续，§11）
+            // 有默认实现的接口成员隐式继承）。like 委托（§9.6）：委托字段类型
+            // 提供同签名具体实现的待实现成员视为已实现（转发成员由 P3
+            // BindingDriver 合成，LikeDelegationFacility 同口径）；like 目标
+            // 不是本类实例字段时专项诊断
             foreach (var entry in env.TypeEntries)
             {
                 if (!entry.InGraph ||
@@ -94,12 +97,23 @@ namespace RigiCompiler
                 {
                     continue;
                 }
+                if (type.LikeTarget != null
+                    && LikeDelegationFacility.FindLikeField(type) == null)
+                {
+                    env.Error(entry.Node.Span,
+                        $"'{type.Name}': like delegation target '{type.LikeTarget}' " +
+                        "is not an instance field");
+                }
+                var delegatedKeys = new HashSet<string>(
+                    LikeDelegationFacility.CollectDelegatedMembers(type, env.Unit.Symbols)
+                        .Select(d => d.Key));
                 var reported = new HashSet<string>();
-                foreach (var required in FindRequiredMembers(type, env))
+                foreach (var required in FindRequiredMembers(type, env.Unit.Symbols))
                 {
                     // 同签名多源（多接口/继承交叠）只报一次
                     if (!reported.Add(required.Key)) continue;
-                    if (FindImplementation(type, required, env) == null)
+                    if (FindImplementation(type, required, env.Unit.Symbols) == null
+                        && !delegatedKeys.Contains(required.Key))
                     {
                         env.Error(entry.Node.Span,
                             $"'{type.Name}' does not implement abstract member '{required.Symbol.Name}'");
@@ -121,7 +135,7 @@ namespace RigiCompiler
                 return;
             }
 
-            var matches = FindInheritedAccessorMatches(host, field, accessor, env);
+            var matches = FindInheritedAccessorMatches(host, field, accessor, env.Unit.Symbols);
             if (accessor.IsOverride)
             {
                 if (matches.Count == 0)
@@ -143,22 +157,22 @@ namespace RigiCompiler
         }
 
         private static List<InheritedMatch> FindInheritedAccessorMatches(TypeSymbol host,
-            FieldSymbol field, MethodSymbol accessor, ResolveEnvironment env)
+            FieldSymbol field, MethodSymbol accessor, SymbolGraph symbols)
         {
             var result = new List<InheritedMatch>();
             for (var type = host.BaseType; type != null; type = type.BaseType)
             {
-                AddAccessorMatches(result, type, field.Name, accessor, env);
+                AddAccessorMatches(result, type, field.Name, accessor, symbols);
             }
-            foreach (var iface in InterfaceClosure(host, env))
+            foreach (var iface in InterfaceClosure(host, symbols))
             {
-                AddAccessorMatches(result, iface, field.Name, accessor, env);
+                AddAccessorMatches(result, iface, field.Name, accessor, symbols);
             }
             return result;
         }
 
         private static void AddAccessorMatches(List<InheritedMatch> result, TypeSymbol constructed,
-            string fieldName, MethodSymbol accessor, ResolveEnvironment env)
+            string fieldName, MethodSymbol accessor, SymbolGraph symbols)
         {
             var definition = constructed.ConstructedFrom ?? constructed;
             var field = definition.Fields.FirstOrDefault(f => f.Name == fieldName);
@@ -173,7 +187,7 @@ namespace RigiCompiler
                 : accessor.Parameters.FirstOrDefault()?.Type;
             if (ReferenceEquals(definition, constructed)
                 ? EquivalentAccessorType(candidateType, currentType)
-                : EquivalentAccessorType(env.Substitute(candidateType, definition, constructed), currentType))
+                : EquivalentAccessorType(symbols.Substitute(candidateType, definition, constructed), currentType))
             {
                 result.Add(new InheritedMatch(candidate,
                     candidate.IsOpen || candidate.IsAbstract || definition.Kind == TypeKind.Interface));
@@ -199,7 +213,7 @@ namespace RigiCompiler
         // 继承命中集：基类链（含内建——Any/Object.toString 是合法覆写目标）+
         // 接口闭包中与 method 同名同签名的成员
         private static List<InheritedMatch> FindInheritedMatches(TypeSymbol host,
-            SignatureView method, ResolveEnvironment env)
+            SignatureView method, SymbolGraph symbols)
         {
             var result = new List<InheritedMatch>();
             for (var t = host.BaseType; t != null; t = t.BaseType)
@@ -207,7 +221,7 @@ namespace RigiCompiler
                 var def = t.ConstructedFrom ?? t;
                 foreach (var candidate in def.Methods)
                 {
-                    var view = SignatureView.Of(candidate, def, t, env);
+                    var view = SignatureView.Of(candidate, def, t, symbols);
                     if (!view.HasErrorType && view.Matches(method))
                     {
                         // 接口成员天然可覆写（§9.2.1；Any 在基类链末端亦为接口）
@@ -217,12 +231,12 @@ namespace RigiCompiler
                     }
                 }
             }
-            foreach (var iface in InterfaceClosure(host, env))
+            foreach (var iface in InterfaceClosure(host, symbols))
             {
                 var def = iface.ConstructedFrom ?? iface;
                 foreach (var candidate in def.Methods)
                 {
-                    var view = SignatureView.Of(candidate, def, iface, env);
+                    var view = SignatureView.Of(candidate, def, iface, symbols);
                     if (!view.HasErrorType && view.Matches(method))
                     {
                         result.Add(new InheritedMatch(candidate, true));
@@ -233,23 +247,23 @@ namespace RigiCompiler
         }
 
         internal static IEnumerable<MethodSymbol> InheritedMethodsForWrapper(TypeSymbol host,
-            MethodSymbol method, ResolveEnvironment env)
+            MethodSymbol method, SymbolGraph symbols)
         {
-            return FindInheritedMatches(host, SignatureView.Raw(method), env)
+            return FindInheritedMatches(host, SignatureView.Raw(method), symbols)
                 .Where(match => match.IsOverridable)
                 .Select(match => match.Method)
                 .Distinct();
         }
 
         internal static IEnumerable<FieldSymbol> InheritedFieldsForAccessor(TypeSymbol host,
-            MethodSymbol accessor, ResolveEnvironment env)
+            MethodSymbol accessor, SymbolGraph symbols)
         {
             var result = new List<FieldSymbol>();
             for (var type = host.BaseType; type != null; type = type.BaseType)
             {
                 AddInheritedField(result, type, accessor);
             }
-            foreach (var iface in InterfaceClosure(host, env))
+            foreach (var iface in InterfaceClosure(host, symbols))
             {
                 AddInheritedField(result, iface, accessor);
             }
@@ -273,8 +287,9 @@ namespace RigiCompiler
         // 用户子类必须实现；Any/Object.toString 是 open 具体方法（自带默认
         // 实现，体由发射阶段合成），天然不在 abstract 之列，先例不破。
         // 有体接口成员隐式继承，不待实现。
-        private static List<SignatureView> FindRequiredMembers(TypeSymbol type,
-            ResolveEnvironment env)
+        // internal：like 委托设施（§9.6，LikeDelegationFacility）同口径复用
+        internal static List<SignatureView> FindRequiredMembers(TypeSymbol type,
+            SymbolGraph symbols)
         {
             var result = new List<SignatureView>();
             for (var t = type.BaseType; t != null; t = t.BaseType)
@@ -284,11 +299,11 @@ namespace RigiCompiler
                 {
                     if (m.IsAbstract)
                     {
-                        result.Add(SignatureView.Of(m, def, t, env));
+                        result.Add(SignatureView.Of(m, def, t, symbols));
                     }
                 }
             }
-            foreach (var iface in InterfaceClosure(type, env))
+            foreach (var iface in InterfaceClosure(type, symbols))
             {
                 var def = iface.ConstructedFrom ?? iface;
                 if (def.IsBuiltin) continue;
@@ -296,7 +311,7 @@ namespace RigiCompiler
                 {
                     if (!m.HasBody)
                     {
-                        result.Add(SignatureView.Of(m, def, iface, env));
+                        result.Add(SignatureView.Of(m, def, iface, symbols));
                     }
                 }
             }
@@ -304,15 +319,16 @@ namespace RigiCompiler
         }
 
         // 沿宿主向上找签名匹配的具体实现；命中 abstract 或无体非 native 视为未实现
-        private static MethodSymbol? FindImplementation(TypeSymbol type, SignatureView required,
-            ResolveEnvironment env)
+        // internal：like 委托设施（§9.6，LikeDelegationFacility）同口径复用
+        internal static MethodSymbol? FindImplementation(TypeSymbol type, SignatureView required,
+            SymbolGraph symbols)
         {
             for (var t = type; t != null; t = t.BaseType)
             {
                 var def = t.ConstructedFrom ?? t;
                 foreach (var candidate in def.Methods)
                 {
-                    var view = SignatureView.Of(candidate, def, t, env);
+                    var view = SignatureView.Of(candidate, def, t, symbols);
                     if (view.Matches(required))
                     {
                         return !candidate.IsAbstract && (candidate.HasBody || candidate.IsNative)
@@ -329,7 +345,7 @@ namespace RigiCompiler
         // implements IEnumerator\<T\>`），闭包遍历沿宿主链把接口实参代入
         // 构造实参（IEnumerator\<T\> → IEnumerator\<i32\>——签名匹配按
         // 代入后形态比较）
-        internal static List<TypeSymbol> InterfaceClosure(TypeSymbol host, ResolveEnvironment env)
+        internal static List<TypeSymbol> InterfaceClosure(TypeSymbol host, SymbolGraph symbols)
         {
             var result = new List<TypeSymbol>();
             var visited = new HashSet<TypeSymbol>();
@@ -341,7 +357,7 @@ namespace RigiCompiler
                 {
                     stack.Push(ReferenceEquals(def, t)
                         ? iface
-                        : (TypeSymbol)(env.Substitute(iface, def, t) ?? iface));
+                        : (TypeSymbol)(symbols.Substitute(iface, def, t) ?? iface));
                 }
             }
             while (stack.Count > 0)
@@ -354,15 +370,16 @@ namespace RigiCompiler
                 {
                     stack.Push(ReferenceEquals(def, iface)
                         ? next
-                        : (TypeSymbol)(env.Substitute(next, def, iface) ?? next));
+                        : (TypeSymbol)(symbols.Substitute(next, def, iface) ?? next));
                 }
             }
             return result;
         }
 
         // 候选成员的签名视图：构造宿主场景下按定义 → 构造代入实参后的
-        // 参数/返回类型序列（Substitute 对非构造宿主原样返回）
-        private sealed class SignatureView
+        // 参数/返回类型序列（Substitute 对非构造宿主原样返回）。
+        // internal：like 委托设施（§9.6，LikeDelegationFacility）同口径复用
+        internal sealed class SignatureView
         {
             public MethodSymbol Symbol { get; }
             private readonly SemanticSymbol?[] _paramTypes;
@@ -384,13 +401,13 @@ namespace RigiCompiler
             }
 
             public static SignatureView Of(MethodSymbol symbol, TypeSymbol definition,
-                TypeSymbol constructed, ResolveEnvironment env)
+                TypeSymbol constructed, SymbolGraph symbols)
             {
                 if (ReferenceEquals(definition, constructed)) return Raw(symbol);
                 return new SignatureView(symbol,
-                    symbol.Parameters.Select(p => env.Substitute(p.Type, definition, constructed))
+                    symbol.Parameters.Select(p => symbols.Substitute(p.Type, definition, constructed))
                         .ToArray(),
-                    env.Substitute(symbol.ReturnType, definition, constructed));
+                    symbols.Substitute(symbol.ReturnType, definition, constructed));
             }
 
             public bool HasErrorType =>

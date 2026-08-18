@@ -254,6 +254,34 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("seq 赋值直通", unit3);
 
+            // 返回保证分析透视语句位置 seq（含嵌套）：裸 return 直达外层
+            // 函数；循环（零迭代）与逃逸型 return@seq 不透视
+            var (unitRet, _) = BindUnit(
+                "func sr(): i32 {\n" +
+                "    seq { return 7 }\n" +
+                "}\n");
+            CheckNoErrors("seq 末位 return 透视", unitRet);
+            var (unitRet2, _) = BindUnit(
+                "func sr2(): i32 {\n" +
+                "    seq { seq { return 7 } }\n" +
+                "}\n");
+            CheckNoErrors("嵌套 seq return 透视", unitRet2);
+            var (unitLoop, _) = BindUnit(
+                "func sr3(c: bool): i32 {\n" +
+                "    while (c) { return 7 }\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("循环唯一路径仍报缺失", unitLoop.Diagnostics,
+                "Function 'sr3' must return a value on all code paths");
+            var (unitEsc, _) = BindUnit(
+                "func sr4(c: bool): i32 {\n" +
+                "    seq named foo {\n" +
+                "        if (c) { return@foo }\n" +
+                "        return 7\n" +
+                "    }\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("return@seq 逃逸不透视", unitEsc.Diagnostics,
+                "Function 'sr4' must return a value on all code paths");
+
             // 表达式形态：显式 return@_
             var (unit4, bodies4) = BindUnit(
                 "func se(): i32 {\n" +
@@ -459,6 +487,34 @@ namespace RigiCompiler.Tests
                 "}\n");
             TestHarness.CheckSemanticError("语句 seq 无标签", unit11.Diagnostics,
                 "Undefined value block label: '_'");
+
+            // 裸 return 不得穿透值块（SYNTAX §6.1 裁决）：值块内（含其嵌套
+            // 语句块）一切裸 return 均为编译错误；语句位置 seq 不受影响
+            var (unitBareInValue, _) = BindUnit(
+                "func bv(): i32 {\n" +
+                "    const v: i32 = seq { return 7 }\n" +
+                "    return v\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("裸 return 穿透值块拒绝", unitBareInValue.Diagnostics,
+                "Bare 'return' cannot cross a value block boundary");
+
+            // 值块内嵌套语句 seq 中的裸 return 同样穿透值块边界，一并拒绝
+            var (unitBareNested, _) = BindUnit(
+                "func bn(): i32 {\n" +
+                "    const v: i32 = seq { seq { return 7 }\nreturn@_ 1 }\n" +
+                "    return v\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("值块内嵌套语句块的裸 return 拒绝",
+                unitBareNested.Diagnostics,
+                "Bare 'return' cannot cross a value block boundary");
+
+            // 语句位置 seq 内的裸 return 结束外层函数（canonical 形态保留）
+            var (unitBareStmt, _) = BindUnit(
+                "func bs(): i32 {\n" +
+                "    seq { return 7 }\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckNoErrors("语句 seq 内裸 return 合法", unitBareStmt);
 
             // return@ 穿透语句 seq 命中外层值块（末语句为 seq → 体穿透判定）
             var (unit12, bodies12) = BindUnit(

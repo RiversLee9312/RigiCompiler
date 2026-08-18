@@ -259,5 +259,39 @@ namespace RigiCompiler.Tests
                 "get.field $c $.t6 field(Counter#extra@.i32)\n" +
                 "ret $.t6\n");
         }
+
+        // ===== String.length 内建字段（bug17，.bootstrap.rg ext const i64）=====
+        private static void TestStringLengthFieldEmission()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "pub func main(): i32 {\n" +
+                "    var n = \"hello\".length\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（String.length）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（String.length）", module);
+
+            // 内建 String 不进符号段，ext 字段按 §8.4.1 裸条目落地：
+            // core::String#length@.i64 + pub/const/ext；无 backing 存储、
+            // 无访问器（值由 VM get.field 直读，同 Array.length 通道）
+            TestHarness.CheckTrue("String.length 裸条目（pub const ext i64）",
+                module.LocalSymbols.OfType<BilSimpleMemberDeclaration>().Any(d =>
+                    d.Kind == BilMemberKind.Field && d.Symbol == "core::String#length@.i64"
+                    && d.Modifiers.Any(m => m is BilKeywordModifier { Keyword: BilKeyword.Const })
+                    && d.Modifiers.Any(m => m is BilKeywordModifier { Keyword: BilKeyword.Ext })));
+            TestHarness.CheckTrue("String.length 无访问器随迁",
+                !module.LocalSymbols.OfType<BilSimpleMemberDeclaration>().Any(d =>
+                    d.Symbol.Contains("length") && d.Symbol.Contains("$.get.")
+                    && d.Symbol.StartsWith("core::String", StringComparison.Ordinal)));
+            // 读取点 = 普通 get.field（§22.4 独立语义操作）
+            BilTestHarness.CheckFnShape("String.length 读取点（main 指令）",
+                module, "$main()@.i32",
+                ".vars { .i64 n, .string .t0, .i64 .t1, .i32 .t2 }\n" +
+                "load res(#0) $.t0\n" +
+                "get.field $.t0 $.t1 field(core::String#length@.i64)\n" +
+                "set.var $.t1 $n\n" +
+                "load res(#1) $.t2\n" +
+                "ret $.t2\n");
+        }
     }
 }

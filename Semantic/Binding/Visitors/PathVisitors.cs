@@ -47,6 +47,75 @@
             return ApplyNarrowing(node, bound, key, flow);
         }
 
+        // 类型槽位的值绑定（is/supers/with 动态右侧与 new 动态目标共用，
+        // SYNTAX §3.5/§3.7）：不落袋纯查找，命中后正常构造值引用 bound
+        // 节点——单段名 = 局部 → 参数 → 字段（FindField 全链）；多段路径 =
+        // 容器（前 N-1 段静默解析）+ 末段字段。S9f：值路径元素带泛型实参
+        // 不再按未命中处理——实参先经 NameResolver 静默解析（值路径无类型
+        // 实参消费点，实参本身不参与绑定）；失败返回 null（由调用方统一
+        // 诊断）。valueFound = 是否有值符号命中（命中但绑定失败时诊断已
+        // 落袋，调用方不再重复报）
+        public static BoundExpression? BindTypeSlotValue(ASTNode node,
+            TypeReferenceASTNode typeRef, Scope scope, BindContext ctx, BindEnvironment env,
+            out bool valueFound)
+        {
+            valueFound = false;
+            var elements = typeRef.TypeSymbol.symbol.elements;
+            foreach (var element in elements)
+            {
+                foreach (var generic in element.generics)
+                {
+                    var resolved = env.Names.ResolveSymbolPath(generic, ctx.Frame.FileCtx,
+                        ctx.Frame.DeclaringType, ctx.Frame.Method, allowImports: true,
+                        reportErrors: false, span: null);
+                    if (resolved == null || resolved is ErrorTypeSymbol) return null;
+                }
+            }
+            var span = typeRef.Span ?? node.Span;
+            if (elements.Count == 1)
+            {
+                var name = elements[0].name;
+                var symbol = scope.LookupSymbol(name);
+                if (symbol is LocalSymbol local)
+                {
+                    valueFound = true;
+                    if (!ctx.Flow.IsAssigned(local))
+                    {
+                        env.Error(span, $"Use of unassigned local variable '{name}'");
+                    }
+                    // 源码局部 Type 恒非空（同路径绑定单段分支）
+                    return new BoundValueReferenceExpression(typeRef, local, local.Type!);
+                }
+                var parameter = symbol as ParameterSymbol
+                    ?? ctx.Frame.Method.Parameters.FirstOrDefault(p => p.Name == name);
+                if (parameter != null)
+                {
+                    valueFound = true;
+                    if (ctx.IsLambda && !ctx.LambdaParameters.Contains(parameter))
+                        ctx.CapturedSymbols.Add(parameter);
+                    // S9a 放行：参数类型可为泛型参数（引用相等身份）
+                    return new BoundValueReferenceExpression(typeRef, parameter,
+                        parameter.Type!);
+                }
+                var field = MemberLookup.FindField(name, ctx.Frame, env);
+                if (field == null) return null;
+                valueFound = true;
+                return BindFieldReference(typeRef, field, ctx, env);
+            }
+            // 多段：前 N-1 段解析为容器（静默——失败由调用方统一诊断；
+            // ResolveContainer 契约是传全段、内部取前 N-1 段），
+            // 末段查字段成员（实例字段命中由 BindFieldReference 补 this）
+            var container = MemberLookup.ResolveContainer(
+                elements.Select(e => e.name).ToList(), null, ctx.Frame, env, reportErrors: false);
+            if (container == null) return null;
+            if (MemberLookup.FindMember(container, elements[^1].name) is not FieldSymbol memberField)
+            {
+                return null;
+            }
+            valueFound = true;
+            return BindFieldReference(typeRef, memberField, ctx, env);
+        }
+
         // 可变参数体内视角类型（S9d 修正，BIL §7.1；PathVisitors 首段参数
         // 与 CallVisitors 调用链头共用同一包装）：位置包 = Array\<元素类型\>
         // （与 .array<.any> 装箱往返自洽）；具名包 =
@@ -115,6 +184,13 @@
                 {
                     return false;
                 }
+                // 前导点 enum case 底座 + Call 后缀（`.Failed(404)`，
+                // §12.1）= 参数化 case 调用形态，归 enum case 通道
+                //（BindExpressionBasePath 特判），不作尾 Call 分流
+                if (node.Head.Expression?.Expression is EnumCaseExpressionASTNode)
+                {
+                    return false;
+                }
                 suffixList = node.Head.Suffixes;
                 callIndex = suffixList.Count - 1;
             }
@@ -177,6 +253,23 @@
             if (CallForm.TryGet(node, out var calleeSegments, out var callArguments,
                 out var genericArguments))
             {
+                // §12 全形 enum case 调用（`EnumType.Case(args)`，含命名
+                // 空间限定形态）：前缀解析为 enum struct 且末段命中
+                // case 时走 case 构造通道（与 `.Case(args)` 省略形式
+                // 同一 new.case）；未命中交下方既有调用解析
+                var caseCall = TryBindEnumCasePath(node, scope, ctx, env, forAssignment,
+                    out var caseCallHandled);
+                if (caseCallHandled) return caseCall;
+                // 具化泛型构造（SYNTAX §3.6/§3.7）：`TResult()` 的被调名命中
+                // 泛型参数时归口 typeid 构造（与动态 new 同一机制）
+                var reifiedHandled = false;
+                if (calleeSegments.Count == 1 && genericArguments == null)
+                {
+                    var reified = CallFacility.TryBindReifiedConstruction(node, calleeSegments[0],
+                        callArguments!, scope, ctx, env, out reifiedHandled);
+                    if (reified != null) return reified;
+                }
+                if (reifiedHandled) return null;    // 归口后绑定失败（诊断已落袋）
                 var binding = CallFacility.BindCall(node, calleeSegments, callArguments!, scope,
                     ctx, env, genericArguments);
                 if (binding == null) return null;
@@ -405,6 +498,13 @@
                 env.Error(node.Span, $"Undefined name: '{headName}'");
                 return null;
             }
+            // §12 全形 enum case 路径（`EnumType.Case` 及链上续段
+            // `EnumType.Case.member` / `EnumType.Case(args).member`）：
+            // 前缀为 enum struct 且段名命中 case 时按 case 值绑定，
+            // 未命中交下方既有容器路径
+            var casePath = TryBindEnumCasePath(node, scope, ctx, env, forAssignment,
+                out var casePathHandled);
+            if (casePathHandled) return casePath;
             // 容器路径（多段）：S11 起 Colon 段切分——容器只消费到首个
             // Colon 段之前（Type.staticField:W 形态的静态字段宿主），
             // Colon 起剩余段交实例链（wrapper place 绑定与只读禁令同
@@ -491,6 +591,115 @@
                 default:
                     return ErrorAndNull(env, node.Span, $"'{pathText}' cannot be used as a value");
             }
+        }
+
+        // §12 `EnumType.Case` 全形路径探测（值位置）：沿段序列找
+        // 「enum struct 前缀 + case 段」——前缀（首段 + 前 j 段，可无
+        // 命名空间限定）静默解析为定义级 enum struct，第 j 段名命中
+        // case（真实成员优先——FindMember 命中即退出，交既有流程，
+        // 解析优先级与可见性同既有成员解析惯例）。命中后该段首 Call
+        // 后缀为参数化调用（与 `.Case(args)` 省略形式同一通道），无
+        // 后缀为固定 case 值；该段剩余后缀折叠、后续段交实例链。
+        // handled=false 表示非 case 路径（诊断交既有流程）；handled=true
+        // 时返回值为绑定结果（null = 失败，诊断已落袋）。forAssignment
+        // 不介入（case 不是赋值目标，交既有「Undefined name」诊断）
+        private static BoundExpression? TryBindEnumCasePath(PathExpressionASTNode node,
+            Scope scope, BindContext ctx, BindEnvironment env, bool forAssignment,
+            out bool handled)
+        {
+            handled = false;
+            if (forAssignment) return null;
+            if (node.Head.Name == null || node.Head.Expression != null) return null;
+            if (node.Head.Suffixes.Count > 0 || node.Head.GenericArguments.Count > 0) return null;
+            // 值优先级（同既有调用/路径解析惯例）：首段命中局部/参数/
+            // 字段时全形 case 路径不介入
+            var headName = node.Head.Name;
+            if (scope.LookupSymbol(headName) != null) return null;
+            if (!ctx.Frame.IsDefaultValueContext
+                && ctx.Frame.Method.Parameters.Any(p => p.Name == headName))
+            {
+                return null;
+            }
+            if (MemberLookup.FindField(headName, ctx.Frame, env) != null) return null;
+            for (int j = 0; j < node.Segments.Count; j++)
+            {
+                var segment = node.Segments[j];
+                if (segment.Connector != PathConnector.Dot || segment.GenericArguments.Count > 0)
+                {
+                    break;
+                }
+                // 前缀各段（命名空间限定链）必须无后缀
+                if (j > 0 && node.Segments[j - 1].Suffixes.Count > 0) break;
+                var prefix = new List<string> { headName };
+                for (int k = 0; k < j; k++) prefix.Add(node.Segments[k].Name);
+                var container = ResolvePathSilently(prefix, ctx.Frame, env);
+                // 前缀不可解析（更长前缀亦然）或普通类型：交既有流程；
+                // 命名空间：继续深入一段
+                if (container == null) break;
+                if (container is not TypeSymbol containerType) continue;
+                var definition = containerType.ConstructedFrom ?? containerType;
+                if (definition.Kind != TypeKind.EnumStruct) break;
+                // 真实成员优先（FindMember 命中由既有容器路径处理）
+                if (MemberLookup.FindMember(definition, segment.Name) != null) break;
+                handled = true;
+                // 泛型构造 enum 归口（与省略形式同一口径）
+                if (containerType.ConstructedFrom != null)
+                {
+                    env.Error(segment.Span ?? node.Span,
+                        "P3: generic enum cases are not supported yet (S11)");
+                    return null;
+                }
+                var caseSymbol = EnumCaseFacility.FindCase(definition, segment.Name,
+                    segment.Span ?? node.Span, env);
+                if (caseSymbol == null) return null;
+                // 模板绑定失败（HoleParameters 未落定）——静默（声明点已诊断）
+                if (caseSymbol.HoleParameters == null) return null;
+                BoundExpression? caseValue;
+                var suffixStart = 0;
+                if (segment.Suffixes.Count > 0
+                    && segment.Suffixes[0].Kind == PathSuffixKind.Call)
+                {
+                    caseValue = EnumCaseFacility.BindParameterizedCall(node, segment.Name,
+                        segment.Span ?? node.Span, segment.Suffixes[0].Arguments!, definition,
+                        scope, ctx, env);
+                    suffixStart = 1;
+                }
+                else if (caseSymbol.HoleParameters.Count > 0)
+                {
+                    env.Error(segment.Span ?? node.Span, $"Case '{caseSymbol.Name}' requires " +
+                        $"{caseSymbol.HoleParameters.Count} argument(s)");
+                    return null;
+                }
+                else
+                {
+                    caseValue = new BoundEnumCaseExpression(node, caseSymbol,
+                        Array.Empty<BoundExpression>(),
+                        env.GetEnumCaseFixedArguments(caseSymbol));
+                }
+                if (caseValue == null) return null;
+                var folded = FoldSuffixes(node, caseValue, segment.Suffixes, suffixStart,
+                    forAssignment && j == node.Segments.Count - 1, scope, ctx, env);
+                if (folded == null) return null;
+                return BindInstanceChain(node, folded, node.Segments.Skip(j + 1).ToList(),
+                    scope, ctx, env, forAssignment);
+            }
+            return null;
+        }
+
+        // 段名序列静默解析（§12 全形 case 路径探测的前缀解析）：形态
+        // 同 MemberLookup.ResolveContainer 但消费全段；失败或
+        // ErrorType 返回 null（不落诊断——未命中由调用方走既有流程）
+        private static SemanticSymbol? ResolvePathSilently(IReadOnlyList<string> names,
+            BindFunctionFrame frame, BindEnvironment env)
+        {
+            var path = new Symbol();
+            foreach (var name in names)
+            {
+                path.elements.Add(new SymbolElement { name = name });
+            }
+            var resolved = env.Names.ResolveSymbolPath(path, frame.FileCtx, frame.DeclaringType,
+                frame.Method, allowImports: true, reportErrors: false, span: null);
+            return resolved is ErrorTypeSymbol ? null : resolved;
         }
 
         // 容器路径上成员段 Call 后缀（#20②）：`ns.make().field` /

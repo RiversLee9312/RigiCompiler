@@ -13,6 +13,7 @@ namespace RigiCompiler.Tests
         private static void TestEnumCaseEmission()
         {
             TestEnumCaseFixedEmission();
+            TestEnumCaseFixedPayloadEmission();
             TestEnumCaseParameterizedEmission();
             TestEnumCaseExplicitDiscriminant();
         }
@@ -57,6 +58,36 @@ namespace RigiCompiler.Tests
                 "load res(#1) $.t2\n" +
                 "ret $.t2\n" +
                 "}\n");
+        }
+
+        // ===== 固定 case 组合实参（§12.1/§14.3 回归：声明点固定实参
+        // 按 init 参数序写入 new.case——历史 bug 丢弃固定实参，运行时
+        // 字段读出零值）=====
+        private static void TestEnumCaseFixedPayloadEmission()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "pub enum struct E {\n" +
+                "    pub const v: i32\n" +
+                "    pub init(_ -> v)\n" +
+                "}[\n" +
+                "    Fixed(42),\n" +
+                "    Param(v = _)\n" +
+                "]\n" +
+                "pub func main(): i32 {\n" +
+                "    const f: E = .Fixed\n" +
+                "    return f.v\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（固定 case 组合实参）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（固定 case 组合实参）", module);
+            // fn 形状黄金：.Fixed 构造发声明点固定实参 42（init 参数序组合）
+            BilTestHarness.CheckFnShape("固定 case 组合实参 main 形状",
+                module, "$main()@.i32",
+                ".vars { E f, .i32 .t0, E .t1, .i32 .t2 }\n" +
+                "load res(#0) $.t0\n" +
+                "new.case type(E) case(E.Fixed) $.t1 [$.t0]\n" +
+                "set.var $.t1 $f\n" +
+                "get.field $f $.t2 field(E#v@.i32)\n" +
+                "ret $.t2\n");
         }
 
         // ===== 参数化 case 端到端：位置/具名实参 + switch pattern 降级 =====

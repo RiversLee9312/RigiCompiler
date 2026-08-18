@@ -247,6 +247,8 @@ case 使用源码类型限定形式：
 
 case 名称在其 enum 内唯一。`case(...)` 引用中必须包含完整 enum 类型符号，不能仅写 `.Failed`；源码中的省略类型写法已经由 frontend 解析完成。
 
+声明的参数表是 case 的**洞签名**（参数洞的调用方契约——参数化 case 的源码调用点按它传参）；固定 case 没有参数洞，参数表为空。case 模板中的固定实参不在声明中携带——`new.case`（§14.3）的实参是「固定实参 + 洞实参」按 init 参数序的组合，运行时按组合实参匹配 case 绑定的 init。
+
 `enum-struct` 的普通 `init` 不得作为 `new` 目标。所有 enum 值必须通过 `new.case` 创建。
 
 判别值：`discriminant` 的资源必须是整数标量资源
@@ -374,7 +376,7 @@ BIL block 是结构化代码 region，不是 LLVM basic block。
 - block 不能接受独立参数；
 - block 共享函数的参数和局部变量；
 - block 正常执行到末尾时，返回到引用它的结构化指令；
-- entrypoint block 不得正常落到末尾，必须显式 `ret` 或以异常/其他终止流程结束。
+- entrypoint block 不得正常落到末尾，必须显式 `ret` 或以异常/其他终止流程结束。终止判定按结构化指令递归：`ret`/`throw` 终止；`if` 要求双分支都在且全终止；`switch` 要求 item 与 default 全终止；`try` 要求 body 与全部 catch handler 终止；`loop` 可能零次执行，不算终止；`call blk` 仅当被调块自身终止且 region 无外向逃逸（region 内 `break`/`continue` 的目标 breakid 全为该 region 内部结构指令所建——命中被调块自身或更外层 breakid 的路径会落回 `call` 续点）才算终止。
 
 ### 9.5 block 引用限制
 

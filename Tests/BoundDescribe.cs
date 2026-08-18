@@ -178,6 +178,14 @@ namespace RigiCompiler.Tests
                 BoundNewExpression newExpr =>
                     $"New({TypeShort.Of(newExpr.Type)}{(newExpr.Init != null ? ", init" : "")}, " +
                     $"[{string.Join(", ", newExpr.Arguments.Select(Expr))}])",
+                // 动态 new（§3.7）：目标带 dyn 前缀（Type\<T\> 值）或
+                // generic 前缀（泛型参数具化构造），与 TypeCheck 动态形态同风
+                BoundDynamicNewExpression dynamicNew =>
+                    $"DynamicNew({(dynamicNew.GenericParameter != null
+                        ? "generic " + dynamicNew.GenericParameter.Name
+                        : "dyn " + Expr(dynamicNew.TypeValue!))}, " +
+                    $"[{string.Join(", ", dynamicNew.Arguments.Select(Expr))}], " +
+                    $"{TypeShort.Of(dynamicNew.Type)})",
                 BoundIfExpression ifExpr =>
                     $"IfExpr({Expr(ifExpr.Condition)}, {ValueBlock(ifExpr.TrueBranch)}, " +
                     $"{ValueBlock(ifExpr.FalseBranch)}, {TypeShort.Of(ifExpr.Type)})",

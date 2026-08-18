@@ -39,7 +39,7 @@ import 即进入编译单元（与用户源同走语义全流程）：
   非泛型声明，带实参引用解析到泛型声明）；
 - `core` 命名空间内的异常具体子类（`stdlib/core/exceptions.rg`）：
   `RuntimeException` / `IOException` / `CastException` /
-  `NoSuchMethodException`（§8.1）；
+  `NoSuchMethodException` / `DividedByZeroException`（§8.1）；
 - `core` 命名空间内的 `IDisposable`（`stdlib/core/disposable.rg`，
   §6.2 确定性资源管理协议）；
 - `.bootstrap.rg`：**基元类型自举辅助成员**——内建数值类型

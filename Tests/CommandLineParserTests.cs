@@ -297,6 +297,15 @@ namespace RigiCompiler.Tests
                 var div = RunVm("vm", "--file", divPath);
                 Check("vm 异常退出码 1", div.Code == 1);
                 Check("vm 异常信息含除零", div.Err.Contains("除以零"));
+
+                // bug13②：运行期无匹配 init（new.indirect，§14.2 运行期解析）
+                // → 错误信息走 stderr、退出码非零（不得静默中止退出码 0）
+                var noInitPath = Path.Combine(dir, "noinit.bil");
+                File.WriteAllText(noInitPath, NoMatchingInitBil, new UTF8Encoding(false));
+                var noInit = RunVm("vm", "--file", noInitPath);
+                Check("运行期无匹配 init 退出码非零", noInit.Code == 1);
+                Check("无匹配 init 错误走 stderr", noInit.Err.Contains("不匹配任何 init"));
+                Check("无匹配 init 不污染 stdout", noInit.Out.Length == 0);
             }
             finally
             {
@@ -304,6 +313,62 @@ namespace RigiCompiler.Tests
             }
             Console.WriteLine();
         }
+
+        // 运行期无匹配 init 的手写模块（bug13② 负例）：OnlyI64 仅有
+        // init(x: .i64)，new.indirect 以 i32 实参构造——§14.2 运行期
+        // init 表解析失败，经 NoSuchMethod 通道中止
+        private const string NoMatchingInitBil =
+            "BIL \"1.1\"\n" +
+            "\n" +
+            "Metadata {\n" +
+            "    module = string \"noinit\"\n" +
+            "}\n" +
+            "\n" +
+            "Resources {\n" +
+            "    R_Arg = i32 7\n" +
+            "}\n" +
+            "\n" +
+            "LocalSymbols {\n" +
+            "    .type OnlyI64 = class pub {\n" +
+            "        .field OnlyI64#x@.i64 pub var\n" +
+            "        .method OnlyI64$init(x:.i64)@.void pub init\n" +
+            "    }\n" +
+            "    .method $main()@.i32 pub entrypoint\n" +
+            "}\n" +
+            "\n" +
+            "ExternalSymbols {\n" +
+            "}\n" +
+            "\n" +
+            "fn(OnlyI64$init(x:.i64)@.void) {\n" +
+            "    .args {\n" +
+            "        .return = .void,\n" +
+            "        .this = OnlyI64,\n" +
+            "        x = .i64\n" +
+            "    }\n" +
+            "    .vars {\n" +
+            "    }\n" +
+            "    .block entry entrypoint {\n" +
+            "        set.field $x $.this field(OnlyI64#x@.i64)\n" +
+            "        ret\n" +
+            "    }\n" +
+            "}\n" +
+            "\n" +
+            "fn($main()@.i32) {\n" +
+            "    .args {\n" +
+            "        .return = .i32\n" +
+            "    }\n" +
+            "    .vars {\n" +
+            "        .typeid<OnlyI64> tid,\n" +
+            "        .i32 a,\n" +
+            "        OnlyI64 o\n" +
+            "    }\n" +
+            "    .block entry entrypoint {\n" +
+            "        getid.type type(OnlyI64) $tid\n" +
+            "        load res(R_Arg) $a\n" +
+            "        new.indirect $tid $o [$a]\n" +
+            "        ret $a\n" +
+            "    }\n" +
+            "}\n";
 
         // 驱动 vm COMMAND 端到端，捕获 stdout/stderr
         private static (int Code, string Out, string Err) RunVm(params string[] args)

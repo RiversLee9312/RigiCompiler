@@ -32,7 +32,8 @@ namespace RigiCompiler
                 }
             }
             var caseSymbol = EnumCaseFacility.ResolveCase(caseNode.CaseName,
-                caseNode.Span ?? node.Span, expectedType, env);
+                caseNode.Span ?? node.Span, expectedType, env,
+                ctx.Labels.CurrentEnumCaseContext);
             if (caseSymbol == null) return null;
             // 参数化 case 裸引用（HoleParameters 已由 ResolveCase 保证落定）
             if (caseSymbol.HoleParameters!.Count > 0)
@@ -41,7 +42,8 @@ namespace RigiCompiler
                     $"{caseSymbol.HoleParameters.Count} argument(s)");
                 return null;
             }
-            return new BoundEnumCaseExpression(node, caseSymbol, Array.Empty<BoundExpression>());
+            return new BoundEnumCaseExpression(node, caseSymbol, Array.Empty<BoundExpression>(),
+                env.GetEnumCaseFixedArguments(caseSymbol));
         }
     }
 
@@ -49,12 +51,16 @@ namespace RigiCompiler
     {
         // case 解析（裸引用/参数化调用/is .Case 共用前半）：expectedType
         // 的定义级必须是 enum struct（§12 期望类型上下文；缺失或非
-        // enum → 无法推断）；泛型构造 enum 归口（S11 范围决策——声明侧
-        // 模板绑定同步跳过）。命中后模板绑定未落定（失败）的静默返回
-        // null；落定保证（HoleParameters 非 null）由返回非 null 承载
+        // enum → 无法推断）；contextType 是期望类型缺失时的补充解析
+        // 上下文（§7.2——enum switch 分支体内以 selector 静态类型为
+        // 上下文；仅期望类型为 null 时生效，不改变任何定型规则）。
+        // 泛型构造 enum 归口（S11 范围决策——声明侧模板绑定同步跳
+        // 过）。命中后模板绑定未落定（失败）的静默返回 null；落定保
+        // 证（HoleParameters 非 null）由返回非 null 承载
         public static EnumCaseSymbol? ResolveCase(string caseName, CharRange? span,
-            TypeSymbol? expectedType, BindEnvironment env)
+            TypeSymbol? expectedType, BindEnvironment env, TypeSymbol? contextType = null)
         {
+            expectedType ??= contextType;
             var definition = expectedType?.ConstructedFrom ?? expectedType;
             if (definition != null && definition.Kind == TypeKind.EnumStruct
                 && expectedType!.ConstructedFrom != null)
@@ -98,8 +104,18 @@ namespace RigiCompiler
             EnumCaseExpressionASTNode caseNode, List<ArgumentASTNode> arguments,
             TypeSymbol? expectedType, Scope scope, BindContext ctx, BindEnvironment env)
         {
-            var caseSymbol = ResolveCase(caseNode.CaseName, caseNode.Span ?? node.Span,
-                expectedType, env);
+            return BindParameterizedCall(node, caseNode.CaseName, caseNode.Span ?? node.Span,
+                arguments, expectedType, scope, ctx, env);
+        }
+
+        // 参数化调用核心（省略形式底座与 `EnumType.Case(args)` 全形
+        // 路径共用，§12/§12.1；实参归位与诊断口径同省略形式）
+        public static BoundExpression? BindParameterizedCall(ASTNode node, string caseName,
+            CharRange? caseSpan, List<ArgumentASTNode> arguments, TypeSymbol? expectedType,
+            Scope scope, BindContext ctx, BindEnvironment env)
+        {
+            var caseSymbol = ResolveCase(caseName, caseSpan, expectedType, env,
+                ctx.Labels.CurrentEnumCaseContext);
             if (caseSymbol == null) return null;
             var holes = caseSymbol.HoleParameters!;
             if (holes.Count == 0)
@@ -173,7 +189,8 @@ namespace RigiCompiler
                 failed = true;
             }
             return failed ? null
-                : new BoundEnumCaseExpression(node, caseSymbol, bound.Select(b => b!).ToList());
+                : new BoundEnumCaseExpression(node, caseSymbol, bound.Select(b => b!).ToList(),
+                    env.GetEnumCaseFixedArguments(caseSymbol));
         }
     }
 }

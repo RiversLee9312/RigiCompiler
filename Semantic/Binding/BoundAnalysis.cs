@@ -7,6 +7,9 @@ namespace RigiCompiler
         // 所有路径显式返回（SYNTAX §4.1 无隐式返回）：
         // 末语句 return/throw、双分支 if 均保证、switch 全分支（含 default）保证、
         // try（finally 终止覆盖全路径；否则 try 与全 catch 保证）、嵌套块递归；
+        // 语句位置的 seq 块透视（GuaranteesValueReturn/EnumerateStatements 同口径——
+        // seq 语句体的裸 return 直达外层函数）；值块（BoundValueBlock）语义不同，
+        // 不在此列；
         // 循环保守 false（S7c-1：体可能零次执行的一般情形无法判定，S7c 技术债）；
         // BoundLoopControl/Break 终止循环路径、BoundReturnValueStatement 终止值块
         // 路径，均不算函数返回。
@@ -27,15 +30,32 @@ namespace RigiCompiler
                         && GuaranteesReturn(tryStatement.FinallyBlock))
                     || (GuaranteesReturn(tryStatement.TryBlock)
                         && tryStatement.Catches.All(c => GuaranteesReturn(c.Body))),
+                BoundSeqStatement seqStatement => GuaranteesReturn(seqStatement.Body)
+                    && !HasEscapingSeqExit(seqStatement),
                 BoundBlock nested => GuaranteesReturn(nested),
                 _ => false,
             };
         }
 
+        // seq 语句透视前提：体内无逃逸型 return@seq——命中本 seq 或更外层
+        // seq 的 BoundSeqExitStatement（该路径落出 seq 边界继续执行，不算
+        // 本路径终止）。命中内层 seq 的 exit 不出本边界，不拦截
+        //（EnumerateStatements 已下钻嵌套 seq 体，收集即传递闭包）
+        private static bool HasEscapingSeqExit(BoundSeqStatement seq)
+        {
+            var nested = new HashSet<BoundSeqStatement>(
+                EnumerateStatements(seq.Body).OfType<BoundSeqStatement>(),
+                ReferenceEqualityComparer.Instance);
+            return EnumerateStatements(seq.Body)
+                .OfType<BoundSeqExitStatement>()
+                .Any(exit => !nested.Contains(exit.Target));
+        }
+
         // 值块视角的路径终止（S7b）：return@ 命中、break/continue 穿透
         // （GuaranteesValueReturn 视其为路径终止）、throw、裸 return
-        // （SYNTAX §6.1：裸 return 始终穿透值块、直接结束外层函数——
-        // 以 return 终止的路径不落到块尾，不要求 return@）；复合结构
+        // （SYNTAX §6.1 裁决起裸 return 不得穿透值块——绑定期已拦截，
+        // 此处仅为防御性兜底：以 return 终止的路径不落到块尾，不要求
+        // return@）；复合结构
         // 递归同 GuaranteesReturn，另含 seq 语句体（S7e）与末语句携带
         // 表达式内「绝不落穿」的嵌套值块（NestedValueBlockEscapes）
         public static bool GuaranteesValueReturn(BoundBlock block)
@@ -57,7 +77,8 @@ namespace RigiCompiler
                         && GuaranteesValueReturn(tryStatement.FinallyBlock))
                     || (GuaranteesValueReturn(tryStatement.TryBlock)
                         && tryStatement.Catches.All(c => GuaranteesValueReturn(c.Body))),
-                BoundSeqStatement seqStatement => GuaranteesValueReturn(seqStatement.Body),
+                BoundSeqStatement seqStatement => GuaranteesValueReturn(seqStatement.Body)
+                    && !HasEscapingSeqExit(seqStatement),
                 BoundBlock nested => GuaranteesValueReturn(nested),
                 // 末语句携带表达式内的嵌套值块逃逸（如
                 // `var t = seq { if (c) { return@outer a } else { return@outer b } }`）：
@@ -327,6 +348,10 @@ namespace RigiCompiler
                     break;
                 case BoundNewExpression newExpression:
                     foreach (var argument in newExpression.Arguments) yield return argument;
+                    break;
+                case BoundDynamicNewExpression dynamicNew:
+                    if (dynamicNew.TypeValue != null) yield return dynamicNew.TypeValue;
+                    foreach (var argument in dynamicNew.Arguments) yield return argument;
                     break;
                 case BoundCompoundAssignmentExpression compound:
                     yield return compound.Target;

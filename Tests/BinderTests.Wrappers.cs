@@ -390,6 +390,64 @@ namespace RigiCompiler.Tests
                 health.CellStorage?.InitWrapper is { Parameters.Count: 1 });
         }
 
+        // ===== §14.3 只读适用性（P3 栈上变量应用点）：var + 只实现 get 的
+        // Value wrapper 即编译错误（检查前移，不再推迟到 VM 且诊断不带合成
+        // 符号）；const + get-only 合法 =====
+        private static void TestValueWrapperGetOnlyLocal()
+        {
+            TestHarness.Section("P3 Value Wrapper Get-Only (§14.3)");
+
+            const string getOnly =
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper Doubled {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.get\\<TValue>(value: TValue): TValue {\n" +
+                "        return (((value as i32) * 2) as TValue)\n" +
+                "    }\n" +
+                "}\n";
+
+            // var + get-only wrapper：编译错误（规范字面「只适用于只读变量」——
+            // 无需等到写入发生）
+            var (unit, _) = BindUnitWithStdlib(getOnly +
+                "pub func main(): i32 {\n" +
+                "    @Doubled()\n" +
+                "    var x: i32 = 10\n" +
+                "    x = 20\n" +
+                "    return x\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("var + get-only wrapper 编译错误", unit.Diagnostics,
+                "Value wrapper 'Doubled' does not implement .proxy.set");
+            // 诊断不得泄漏合成符号（..cell..UUID 归编译器内部）
+            TestHarness.CheckTrue("诊断不含 cell 合成符号",
+                unit.Diagnostics.Diagnostics.All(d => !d.Message.Contains("..cell..")),
+                string.Join("; ", unit.Diagnostics.Diagnostics.Select(d => d.Message)));
+
+            // const + get-only wrapper：合法（只读变量）
+            var (unit2, _) = BindUnitWithStdlib(getOnly +
+                "pub func main(): i32 {\n" +
+                "    @Doubled()\n" +
+                "    const x: i32 = 10\n" +
+                "    return x\n" +
+                "}\n");
+            CheckNoErrors("const + get-only wrapper 合法", unit2);
+
+            // 不带任何 proxy 的纯状态修饰器：var 合法（无拦截链，不受
+            // 只读适用性约束）
+            var (unit3, _) = BindUnitWithStdlib(
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper Tag {\n" +
+                "    pub var label: i32\n" +
+                "    pub init() { label = 0 }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    @Tag()\n" +
+                "    var x: i32 = 10\n" +
+                "    x = 20\n" +
+                "    return x\n" +
+                "}\n");
+            CheckNoErrors("纯状态修饰器 var 合法", unit3);
+        }
+
         // ===== wrapper place 绑定负例（查找/宿主/登记检查）=====
         private static void TestWrapperPlaceErrors()
         {

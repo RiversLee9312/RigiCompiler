@@ -90,20 +90,15 @@ namespace RigiCompiler
         // 字段宿主投影（§13.4 type(OWNER_TYPE)）：static 字段 = 宿主类型
         // canonical；命名空间全局字段 = 命名空间全名（§13.4 未规定全局字段的
         // 宿主形态，以命名空间全名投影，verifier（S12）阶段再核）；
-        // 根全局命名空间的字段无宿主可投影——规范空白，报 P4 Error 而不发明语法
+        // 根命名空间全局字段 = 空串（字段符号无宿主前缀——`#name@type`，
+        // 宿主操作数同形为空投影 `type()`，verifier 归一后两侧全等放行）
         public static string? FieldOwnerRef(FieldSymbol field, EmitEnvironment env)
         {
             if (field.Owner != null)
             {
                 return CanonicalSymbolPrinter.PrintType(field.Owner);
             }
-            if (field.Namespace is { FullName: { Length: > 0 } fullName })
-            {
-                return fullName;
-            }
-            env.Error(null, $"P4: global field '{field.Name}' in the root namespace has no " +
-                "owner to project for get/set.field.static (BIL §13.4)");
-            return null;
+            return field.Namespace is { FullName: { } fullName } ? fullName : "";
         }
 
         // 字面量 → 资源：同（类型, 原文）去重，名按首次出现 R_0/R_1... 编号
@@ -192,10 +187,13 @@ namespace RigiCompiler
 
         // catch 表资源（S7e，§19.5）：元素 = type(EXCEPTION_TYPE) ->
         // blk(CATCH_BLOCK)，保序（表序即匹配序，不能重排）。多行形态；
-        // 空 catch 列表出空表。同元素序列去重（元素含 block id，
-        // 实际去重仅在同序列重复登记时命中——与 switch-table 同机制）
+        // 空 catch 列表出空表。函数级同元素序列去重（元素含 block id，
+        // tryN 函数内唯一——同键命中仅在同一函数内，与 switch-table
+        // 同机制；去重表挂 EmitContext，跨函数不共享——条目持 fn 局部
+        // block 对象引用，跨 fn 共享会把别函数 block 引进本 fn，§21.5
+        // 判 block 引用越权）
         public static BilResource RegisterCatchTable(LoweredTryStatement tryStatement,
-            IReadOnlyList<BilBlock> catchBlocks, EmitEnvironment env)
+            IReadOnlyList<BilBlock> catchBlocks, EmitContext ctx, EmitEnvironment env)
         {
             var entries = new List<BilCatchEntry>();
             for (var i = 0; i < tryStatement.Catches.Count; i++)
@@ -211,11 +209,11 @@ namespace RigiCompiler
                 keyParts.Add(entry.ExceptionType.TypeRef + "->" + entry.Handler.Id);
             }
             var key = string.Join(",", keyParts);
-            if (!env.CatchTableKeys.TryGetValue(key, out var resource))
+            if (!ctx.CatchTableKeys.TryGetValue(key, out var resource))
             {
                 resource = new BilCatchTableResource("R_" + env.Module.Resources.Count, entries);
                 env.Module.Resources.Add(resource);
-                env.CatchTableKeys.Add(key, resource);
+                ctx.CatchTableKeys.Add(key, resource);
             }
             return resource;
         }

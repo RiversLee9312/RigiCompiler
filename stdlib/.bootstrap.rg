@@ -567,6 +567,12 @@ pub abstract class ReadonlyCell\<T> {
     pub abstract func getValue(): T
 }
 
+// String.length（与 Array\<T\>.length 同一内建通道，用户裁定 i64）：
+// 声明只给符号与类型，无 backing 存储、无编译期初值——运行期按实例求值；
+// BIL VM 的 get.field 对 core::String#length@.i64 直读宿主字符串长度
+//（core::Array#length@.i32 的 VM 直读先例）。const 保证不可写入。
+pub ext const String.length: i64
+
 // toString 机制的 native 触达点（SYNTAX §3.8，用户裁定）：Any/Object 的
 // toString 不再是 native 成员——它们的默认实现体由编译器合成为调用本
 // 函数的小 fn。文件级私有全局形态把用户挡在访问控制外（§16.1），只经

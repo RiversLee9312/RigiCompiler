@@ -167,6 +167,9 @@ namespace RigiCompiler
             // seq 块随 LoweredSeqBlock 发射追加（§16.1）、try 的
             // body/catch/finally block 随 LoweredTryStatement 发射追加（§16.7）
             var ctx = new EmitContext(function);
+            // 同名局部唯一化（BIL §9.3 .vars 函数内唯一；兄弟作用域
+            // 同名局部改名）——须在指令发射前建表，引用侧同表解析
+            ctx.BuildLocalRenames(body.Locals);
             var entry = new BilBlock("entry", BilBlockModifier.Entrypoint);
             function.Blocks.Add(entry);
             EmitBlockVisitor.Visit(body.Body, entry, ctx, env);
@@ -188,7 +191,7 @@ namespace RigiCompiler
                 function.Vars.Add(new BilVarDeclaration(
                     local.Type == null
                         ? ".breakid"
-                        : LocalStorageTypeRef(local), local.Name));
+                        : LocalStorageTypeRef(local), ctx.VariableNameOf(local)));
             }
             function.Vars.AddRange(ctx.Temps.TempVars);
             return function;

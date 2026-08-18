@@ -125,6 +125,10 @@ namespace RigiCompiler.Bil.Vm
 
     public sealed class VmString : VmValue
     {
+        // length 是 .bootstrap.rg 的 ext const 内建字段（core::String#length@.i64），
+        // VM 直读（同 VmArray.LengthFieldSymbol 先例）
+        internal const string LengthFieldSymbol = "core::String#length@.i64";
+
         public string Value { get; }
         public VmString(string value) { Value = value; }
         public override string TypeRef => ".string";

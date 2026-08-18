@@ -51,14 +51,15 @@ namespace RigiCompiler
     // 值引用（局部/参数）：名字即操作数，零指令。
     // S9d：可变参数引用映射到隐藏包变量（.vargs.<名>/.kwargs.<名>，
     // §7.1——源码参数名是包变量，BIL 以保留名承载）；映射与写入侧
-    // （AssignmentEmitter set.var）共用 EmittingFacility.ValueVariableName
+    // （AssignmentEmitter set.var）共用 ctx.VariableNameOf →
+    // EmittingFacility.ValueVariableName（同名局部唯一化改名同表命中）
     internal sealed class ValueReferenceEmitter : EmitVisitor<ValueReferenceEmitter, BilVariableOperand>
     {
         protected override BilVariableOperand VisitCore(LoweredNode node, BilBlock target,
             EmitContext ctx, EmitEnvironment env)
         {
             var valueReference = (LoweredValueReferenceExpression)node;
-            return BilOp.Var(EmittingFacility.ValueVariableName(valueReference.Symbol));
+            return BilOp.Var(ctx.VariableNameOf(valueReference.Symbol));
         }
     }
 
@@ -189,6 +190,31 @@ namespace RigiCompiler
                 { Origin = newExpression });
             }
             return newResult;
+        }
+    }
+
+    // 动态 new（SYNTAX §3.7，§14.2 new.indirect）：TYPEID_VAR = Type\<T\>
+    // 值的发射结果，或泛型参数经 MaterializeTypeId 零指令引用 .generic.T
+    // 隐藏 typeid 实参（§7.2）；运行期按 typeid 解析 init
+    internal sealed class DynamicNewEmitter : EmitVisitor<DynamicNewEmitter, BilVariableOperand>
+    {
+        protected override BilVariableOperand VisitCore(LoweredNode node, BilBlock target,
+            EmitContext ctx, EmitEnvironment env)
+        {
+            var dynamicNew = (LoweredDynamicNewExpression)node;
+            var typeId = dynamicNew.GenericParameter != null
+                ? EmittingFacility.MaterializeTypeId(dynamicNew.GenericParameter, dynamicNew,
+                    target, ctx, env)
+                : EmitValueDispatcher.Visit(dynamicNew.TypeValue!, target, ctx, env);
+            var arguments = new List<BilVariableOperand>(dynamicNew.Arguments.Count);
+            foreach (var argument in dynamicNew.Arguments)
+            {
+                arguments.Add(EmitValueDispatcher.Visit(argument, target, ctx, env));
+            }
+            var result = ctx.Temps.NewTemp(dynamicNew.Type);
+            target.Instructions.Add(new NewIndirectInstruction(typeId, result, arguments)
+            { Origin = dynamicNew });
+            return result;
         }
     }
 
@@ -455,7 +481,7 @@ namespace RigiCompiler
             EmitContext ctx, EmitEnvironment env)
         {
             var cellReference = (LoweredCellReferenceExpression)node;
-            return BilOp.Var(cellReference.Symbol.Name);
+            return BilOp.Var(ctx.VariableNameOf(cellReference.Symbol));
         }
     }
 

@@ -99,6 +99,8 @@ namespace RigiCompiler
                 case ClassDeclarationASTNode c:
                     CollectType(unit, c.ClassName, TypeKind.Class, unit.Symbols.Bootstrap.Object,
                         c.Modifiers, c.GenericParameters, c.Members, node, ns, declaringType, scope, result);
+                    // like 委托目标字段名（§9.6）入符号，供 P2/P3 消费
+                    ((TypeSymbol)result.SymbolOf(node)!).LikeTarget = c.LikeTarget;
                     break;
                 case InterfaceDeclarationASTNode i:
                     // 接口无基类（BaseInterfaces 解析归 P2，不进 BaseType 链）

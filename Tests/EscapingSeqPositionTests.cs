@@ -13,7 +13,8 @@ namespace RigiCompiler.Tests
     /// region 同块后续截断」（条件写回是结构性指令，砍了即坏 BIL），
     /// LoopRewriter 把逃逸条件的写回改写为 false 字面量（写回动态不可
     /// 达、值任意，原样保留会读永不赋值的结果局部、§21.4 死读）。
-    /// 覆盖：while 条件位三种逃逸方式（return@外层值块/裸 return/throw）、
+    /// 覆盖：while 条件位逃逸方式（return@外层值块/throw——裸 return
+    /// 穿透值块已按 §6.1 裁决禁止，钉负例）、
     /// do-while 条件位、多路径逃逸 seq 条件（route 经 loop region relay）、
     /// 逃逸 if 表达式条件位、if 语句条件位、混合 seq 条件位（hint 回归）。
     ///
@@ -33,7 +34,6 @@ namespace RigiCompiler.Tests
             TestHarness.Reset();
             // ===== 4a 正例：条件位逃逸端到端 =====
             TestWhileConditionReturnAtLabel();
-            TestWhileConditionBareReturn();
             TestWhileConditionThrow();
             TestDoWhileConditionEscape();
             TestWhileConditionMultiPathEscape();
@@ -41,6 +41,7 @@ namespace RigiCompiler.Tests
             TestIfStatementConditionEscape();
             TestWhileConditionMixedSeq();
             // ===== 4a 负例：无期望类型可传，诊断保持清晰 =====
+            TestWhileConditionBareReturnRejected();
             TestForIterableEscapeRejected();
             TestSwitchSelectorEscapeRejected();
             TestBinaryOperandEscapeRejected();
@@ -76,23 +77,19 @@ namespace RigiCompiler.Tests
             CheckEndToEnd("while 条件位 return@", source, "escaped\n");
         }
 
-        // while 条件位逃逸型 seq（裸 return 出函数）：seq 块内 ret 直接
-        // 结束函数，body 与其后代码均不执行
-        private static void TestWhileConditionBareReturn()
+        // while 条件位裸 return 逃逸（SYNTAX §6.1 裁决）：裸 return 不得
+        // 穿透值块边界——P3 专门诊断（要离开函数请改用 return@标签 或 throw）
+        private static void TestWhileConditionBareReturnRejected()
         {
-            TestHarness.Section("4a：while 条件位逃逸（裸 return）");
-            var source =
-                "pub func pick(): String {\n" +
+            TestHarness.Section("4a 负例：while 条件位裸 return 穿透值块拒绝");
+            var (unit, _) = BindUnit(
+                "func pick(): String {\n" +
                 "    while (seq { return \"escaped\" }) {\n" +
-                "        core.io.Console.println(\"body\")\n" +
                 "    }\n" +
                 "    return \"after\"\n" +
-                "}\n" +
-                "pub func main(): i32 {\n" +
-                "    core.io.Console.println(pick())\n" +
-                "    return 0\n" +
-                "}\n";
-            CheckEndToEnd("while 条件位裸 return", source, "escaped\n");
+                "}\n");
+            TestHarness.CheckSemanticError("while 条件位裸 return 穿透值块拒绝",
+                unit.Diagnostics, "Bare 'return' cannot cross a value block boundary");
         }
 
         // while 条件位逃逸型 seq（throw）：异常穿透 loop region 被外层

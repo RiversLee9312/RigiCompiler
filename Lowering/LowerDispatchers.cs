@@ -59,6 +59,7 @@ namespace RigiCompiler
                 BoundAwaitExpression => AwaitRewriter.Visit(expression, ctx, env),
                 BoundCallExpression => CallExpressionRewriter.Visit(expression, ctx, env),
                 BoundNewExpression => NewExpressionRewriter.Visit(expression, ctx, env),
+                BoundDynamicNewExpression => DynamicNewRewriter.Visit(expression, ctx, env),
                 BoundVarArgsArgument => VarArgsRewriter.Visit(expression, ctx, env),
                 BoundIfExpression => IfExpressionRewriter.Visit(expression, ctx, env),
                 BoundSwitchExpression => SwitchExpressionRewriter.Visit(expression, ctx, env),

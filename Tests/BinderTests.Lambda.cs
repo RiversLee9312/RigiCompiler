@@ -1,4 +1,4 @@
-﻿namespace RigiCompiler.Tests
+namespace RigiCompiler.Tests
 {
     public static partial class BinderTests
     {
@@ -444,6 +444,54 @@
             TestHarness.CheckTrue("泛型参数 T 元素 cell 子类非 shared",
                 genericYLocal.CellStorage is { } genericStorage
                 && !genericStorage.CellClass.IsShared);
+        }
+
+        // void lambda 单表达式体 = 与把该表达式写成一条语句完全等价（SYNTAX §5.1
+        // 裁决）：走语句语境绑定——void 调用落 BoundCallStatement 不报「无结果」、
+        // 赋值表达式合法、非 void 调用产值被丢弃
+        private static void TestVoidLambdaExpressionBodyStatementSemantics()
+        {
+            TestHarness.Section("P3 void lambda 单表达式体（语句语境，§5.1）");
+
+            // void 调用体：落 BoundCallStatement（修复前误报
+            // "Method 'sink' has no result (void) and cannot be used as a value"）
+            var voidCall = BindUnitWithStdlib(
+                "func sink(x: i32) { }\n" +
+                "func f() {\n" +
+                "    var act = func{(x: i32) -> sink(x)}\n" +
+                "    act(1)\n" +
+                "}\n");
+            CheckNoErrors("void lambda void 调用体无诊断", voidCall.Unit);
+            var voidCallLambda = (BoundLambdaExpression)BodyOf(voidCall.Bodies, "f")
+                .Body.Statements.OfType<BoundLocalDeclarationStatement>()
+                .Single(s => s.Local.Name == "act").Initializer!;
+            TestHarness.CheckTrue("void 调用体落 BoundCallStatement",
+                voidCallLambda.CallBody.Body.Statements.Count == 1
+                && voidCallLambda.CallBody.Body.Statements[0] is BoundCallStatement);
+
+            // 赋值表达式体（复合赋值是表达式，§13.2）
+            var assignment = BindUnitWithStdlib(
+                "func f() {\n" +
+                "    var n = 0\n" +
+                "    var inc = func{() -> (n += 1)}\n" +
+                "    inc()\n" +
+                "}\n");
+            CheckNoErrors("void lambda 赋值表达式体无诊断", assignment.Unit);
+
+            // 非 void 调用体：产值被丢弃（包 BoundExpressionStatement）
+            var dropValue = BindUnitWithStdlib(
+                "func compute(): i32 { return 42 }\n" +
+                "func f() {\n" +
+                "    var g = func{() -> compute()}\n" +
+                "    g()\n" +
+                "}\n");
+            CheckNoErrors("void lambda 非 void 调用丢值无诊断", dropValue.Unit);
+            var dropLambda = (BoundLambdaExpression)BodyOf(dropValue.Bodies, "f")
+                .Body.Statements.OfType<BoundLocalDeclarationStatement>()
+                .Single(s => s.Local.Name == "g").Initializer!;
+            TestHarness.CheckTrue("非 void 调用体包 BoundExpressionStatement（值被丢弃）",
+                dropLambda.CallBody.Body.Statements.Count == 1
+                && dropLambda.CallBody.Body.Statements[0] is BoundExpressionStatement);
         }
     }
 }

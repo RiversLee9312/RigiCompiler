@@ -80,6 +80,10 @@ opposite OPR RESULT
 无符号类型同例。VM 参考实现（§22）必须逐字复现该行为。浮点类型遵循
 IEEE 754（产生 inf/NaN，不抛异常）。
 
+内建整数 `div` 右操作数为零时抛语言级异常 `core::DividedByZeroException`
+（SYNTAX §8.1；可被 `try`/`catch` 捕获，未捕获按未捕获异常终止），有符号与
+无符号各宽度同例；浮点 `div` 除零遵循 IEEE 754（产生 inf/NaN），不抛异常。
+
 `add` 作用于两个 `.string` 操作数时是**内建字符串拼接**（Rigi `String` 的 `+`）：按值语义产出一个新字符串，VM 内建执行，不属于 `rigi_rt` 原生方法面（RUNTIME §26）。
 
 ### 11.3 逻辑运算

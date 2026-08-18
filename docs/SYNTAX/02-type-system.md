@@ -319,7 +319,7 @@ func dump\<TItem with Serializable>(item: TItem) { ... }
 - `T extends B`：实参 `A` 满足 ⟺ `A` 可赋给 `B`（子类型/实现关系，`IsAssignable`）；`B` 是基本类型层级特权关系时同样适用（如 `Box\<i32>` 满足 `T extends ValueType`）。
 - `T supers B`：实参 `A` 满足 ⟺ `B` 可赋给 `A`（反向）。
 - `T with W`：实参 `A` 满足 ⟺ `W` 在 `A` 的 wrapper 应用集合中（编译期查类型的 `AppliedWrappers`，含 interface 传染结果；构造类型随定义传播）。`with` 约束在函数体内等价于一次 wrapper 应用：带 `with W` 约束的泛型参数 `param` 上写 `param:W` 是合法的 wrapper place（§14.5），只读禁令与应用语义同直接应用一致；wrapper 存储在实参宿主的隐藏存储中，编译器不为泛型参数合成任何存储。
-- 约束边界自身含未替换泛型参数时（如 `class C\<T1 extends T2, T2>`，边界是外层泛型参数），使用侧检查**跳过**（不做静态拒绝，由外层调用代入后自然满足）；实参为 `ErrorType` 时静默放行（毒化传播）。
+- 约束边界不得引用同一声明泛型参数列表中的参数（含嵌套泛型实参位置）——`class C\<T1 extends T2, T2>` 是编译错误（声明侧专门诊断）。引用外层可见作用域的泛型参数（如泛型宿主类型的方法约束引用宿主的 `T`）不在此列：此时边界含未替换泛型参数，使用侧检查**跳过**（不做静态拒绝，由外层调用代入后自然满足）。实参为 `ErrorType` 时静默放行（毒化传播）。
 
 ```rigi
 // 型变（同 Kotlin 的 in/out）
@@ -357,11 +357,11 @@ func create\<TResult>(): TResult {
 - **类型形态**：操作数无法绑定为值、且可解析为类型引用时，返回该类型的 `Type\<T>`。
 
 ```rigi
-var box = Box(12, 12, 24)
+var box = new Box(12, 12, 24)
 var t = typeOf(box)              // t: Type\<Box>
 ```
 
-**`new`**：显式发起一次普通类型构造。其目标可以是静态类型符号，也可以是一个 `Type\<T>` 值；静态类型也可以继续使用 `TypeName(...)` 作为简写。
+**`new`**：显式发起一次普通类型构造。其目标可以是静态类型符号，也可以是一个 `Type\<T>` 值。
 
 ```rigi
 const file = new File("./mydoc")
@@ -370,7 +370,7 @@ var t = typeOf(box)
 var another = new t(12, 12, 24)  // 按 t 所指类型的 init 构造
 ```
 
-- 对静态普通类型，`new TypeName(...)` 与 `TypeName(...)` 具有相同构造语义；对运行时 `Type\<T>` 值必须使用 `new value(...)`。
+- 普通类型的构造必须经 `new` 发起，`TypeName(...)` 不构成构造调用；对运行时 `Type\<T>` 值必须使用 `new value(...)`。
 - 泛型参数仍可直接写作 `TResult()`，其底层与动态 `new` 使用同一套 typeid 构造机制。
 - `enum struct` 是明确例外：无论 init 的可见性如何，都不能通过 `EnumType(...)`、`new EnumType(...)`、`new enumTypeValue(...)` 或泛型 `T()` 直接构造；只能使用其具名 case 入口（见 §12）。
 - 当目标类型非静态具体时，init 的重载解析在运行期完成；若目标为抽象类型、enum struct 或找不到匹配的 init，抛出 `core.NoSuchMethodException`。

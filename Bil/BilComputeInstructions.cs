@@ -460,7 +460,7 @@ namespace RigiCompiler.Bil
             if (VmTypeOps.IsPrimitiveOperand(left) && VmTypeOps.IsPrimitiveOperand(right))
             {
                 coroutine.WriteVar(instruction.Target.Name,
-                    EvalBinary(instruction.Op, left, right));
+                    EvalBinary(instruction.Op, left, right, context));
                 return;
             }
             DispatchUserBinary(instruction, context, coroutine, left, right);
@@ -561,7 +561,8 @@ namespace RigiCompiler.Bil
             }
         }
 
-        internal static VmValue EvalBinary(BilBinaryOp op, VmValue left, VmValue right)
+        internal static VmValue EvalBinary(BilBinaryOp op, VmValue left, VmValue right,
+            VmContext context)
         {
             if (left.TypeRef != right.TypeRef)
             {
@@ -569,7 +570,7 @@ namespace RigiCompiler.Bil
             }
             if (TryAsInt(left, out var leftInt) && TryAsInt(right, out var rightInt))
             {
-                return EvalIntBinary(op, leftInt, rightInt);
+                return EvalIntBinary(op, leftInt, rightInt, context);
             }
             if (left is VmF32 leftF32 && right is VmF32 rightF32)
             {
@@ -620,7 +621,8 @@ namespace RigiCompiler.Bil
             throw new VmException("未实现的内建一元运算 " + op + "：" + operand.TypeRef);
         }
 
-        private static VmValue EvalIntBinary(BilBinaryOp op, IntBits left, IntBits right)
+        private static VmValue EvalIntBinary(BilBinaryOp op, IntBits left, IntBits right,
+            VmContext context)
         {
             var width = left.Width;
             var shift = ShiftAmount(right, width);
@@ -633,7 +635,7 @@ namespace RigiCompiler.Bil
                 case BilBinaryOp.Mul:
                     return BoxInt(unchecked(left.Bits * right.Bits), left);
                 case BilBinaryOp.Div:
-                    return BoxInt(DivInt(left, right), left);
+                    return BoxInt(DivInt(left, right, context), left);
                 case BilBinaryOp.BinAnd:
                     return BoxInt(left.Bits & right.Bits, left);
                 case BilBinaryOp.BinOr:
@@ -829,11 +831,14 @@ namespace RigiCompiler.Bil
             return count & (width - 1);
         }
 
-        private static ulong DivInt(IntBits left, IntBits right)
+        // 整数除零是语言级异常（§11.2 / SYNTAX §8.1）：抛
+        // core::DividedByZeroException 对象，可被用户 try/catch 捕获；
+        // 浮点除零不走此路径（IEEE 754 产 inf/NaN，见 EvalFloatBinary）
+        private static ulong DivInt(IntBits left, IntBits right, VmContext context)
         {
             if (right.Bits == 0)
             {
-                throw new VmException("整数除以零");
+                throw context.DividedByZero("整数除以零");
             }
             if (left.Signed)
             {

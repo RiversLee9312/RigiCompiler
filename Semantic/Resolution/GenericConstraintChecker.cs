@@ -32,6 +32,17 @@ namespace RigiCompiler
                             "Constraint target must be a generic parameter of this declaration");
                         continue;
                     }
+                    // 约束边界不得引用同一声明泛型参数列表中的参数
+                    // （§3.6 明文禁止，含嵌套泛型实参位置）——在边界解析前
+                    // 拦截，替代「Unresolved type or namespace」通用报错
+                    if (BoundReferencesOwnParameter(constraint.Bound.TypeSymbol.symbol,
+                        parameters!, out var referenced))
+                    {
+                        env.Error(constraint.Bound.Span ?? constraint.Span ?? entry.Node.Span,
+                            $"Constraint bound of '{parameter.Name}' cannot reference generic " +
+                            $"parameter '{referenced}' of the same declaration (§3.6)");
+                        continue;
+                    }
                     var bound = env.ResolveTypeReference(constraint.Bound, entry);
                     if (bound is ErrorTypeSymbol) continue;    // 毒化静默
                     // 声明侧访问控制（§16，S8e）：约束边界引用即使用点
@@ -53,6 +64,32 @@ namespace RigiCompiler
                     parameter.Constraints.Add(new GenericConstraintInfo(constraint.Kind, bound));
                 }
             }
+        }
+
+        // 边界符号路径是否引用参数列表中的泛型参数：单段裸名命中即引用
+        //（与 NameResolver 的泛型参数查找口径一致——仅单段裸名）；嵌套
+        // 泛型实参递归（List\<T2\> 的 T2 同禁）
+        private static bool BoundReferencesOwnParameter(Symbol symbol,
+            IReadOnlyList<GenericParameterSymbol> parameters, out string referenced)
+        {
+            referenced = "";
+            if (symbol.elements.Count == 1
+                && parameters.Any(p => p.Name == symbol.elements[0].name))
+            {
+                referenced = symbol.elements[0].name;
+                return true;
+            }
+            foreach (var element in symbol.elements)
+            {
+                foreach (var generic in element.generics)
+                {
+                    if (BoundReferencesOwnParameter(generic, parameters, out referenced))
+                    {
+                        return true;
+                    }
+                }
+            }
+            return false;
         }
     }
 }

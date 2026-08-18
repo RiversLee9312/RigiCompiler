@@ -33,6 +33,13 @@ namespace RigiCompiler
         {
             var switchNode = (SwitchStatementASTNode)node;
             var selector = ExpressionDispatcher.Visit(switchNode.Selector.Expression, scope, ctx, env);
+            // §7.2/§12：selector 为定义级 enum struct 时，分支体内
+            // `.Case` 省略形式以 selector 类型为解析上下文（仅上下文
+            // 贡献，分支体期望类型不受影响）；finally 配对弹栈
+            var enumContext = EnumCaseContextOf(selector);
+            if (enumContext != null) ctx.Labels.PushEnumCaseContext(enumContext);
+            try
+            {
             var before = ctx.Flow.Snapshot();
             var beforeNarrowed = ctx.Flow.SnapshotNarrowed();
             var cases = new List<BoundSwitchCase>();
@@ -67,6 +74,20 @@ namespace RigiCompiler
             ctx.Flow.MergeNarrowedBranches(narrowedTails);
             if (selector == null) return null;
             return new BoundSwitchStatement(node, selector, cases, defaultBody);
+            }
+            finally
+            {
+                if (enumContext != null) ctx.Labels.PopEnumCaseContext();
+            }
+        }
+
+        // §7.2/§12 enum case 解析上下文：selector 静态类型为定义级
+        // enum struct 时返回之（分支体内 `.Case` 省略形式的解析上下文）；
+        // 否则 null（泛型构造 enum 同使用侧归口口径，不贡献上下文）
+        internal static TypeSymbol? EnumCaseContextOf(BoundExpression? selector)
+        {
+            return selector?.Type is TypeSymbol { ConstructedFrom: null } type
+                && type.Kind == TypeKind.EnumStruct ? type : null;
         }
 
         // `(_ is T)` 分支体收窄：match 剥 SmartCast 壳（外层收窄可能已包装
@@ -110,6 +131,13 @@ namespace RigiCompiler
         {
             var switchNode = (SwitchExpressionASTNode)node;
             var selector = ExpressionDispatcher.Visit(switchNode.Selector.Expression, scope, ctx, env);
+            // §7.2/§12：enum struct selector 的分支体 `.Case` 解析
+            // 上下文（同语句形态；仅上下文贡献，分支产值类型仍按
+            // 既有全分支统一规则推导）
+            var enumContext = SwitchStatementVisitor.EnumCaseContextOf(selector);
+            if (enumContext != null) ctx.Labels.PushEnumCaseContext(enumContext);
+            try
+            {
             var label = switchNode.Label ?? "_";
             var before = ctx.Flow.Snapshot();
             var beforeNarrowed = ctx.Flow.SnapshotNarrowed();
@@ -194,6 +222,11 @@ namespace RigiCompiler
                 return null;
             }
             return new BoundSwitchExpression(node, selector, cases, defaultShell.Block, type);
+            }
+            finally
+            {
+                if (enumContext != null) ctx.Labels.PopEnumCaseContext();
+            }
         }
     }
 

@@ -249,8 +249,10 @@ namespace RigiCompiler.Bil.Vm
         // extends/implements 构造形态 → 代入映射 {泛型参数名 → 实参文本}
         // （B<.i32> + B 的 GenericParameters[0]="T" → {T → .i32}；转发形态
         // D<T2> : B<T2> 的实参是 .generic<$.generic.T2>，代入后经归一化仍
-        // 归一为同序占位）。非构造形态/元数不齐（异常模块）返回 null
-        private static Dictionary<string, string>? BuildSubstitution(string typeRef,
+        // 归一为同序占位）。非构造形态/元数不齐（异常模块）返回 null。
+        // internal：TryFindInit / super init 的运行期 init 匹配复用同一
+        // 代入机制（定义级 init 签名 + 构造实参代入）
+        internal static Dictionary<string, string>? BuildSubstitution(string typeRef,
             BilTypeDeclaration declaration)
         {
             var angle = typeRef.IndexOf('<');
@@ -276,8 +278,9 @@ namespace RigiCompiler.Bil.Vm
         // 符号文本按映射代入泛型占位（.generic<$.generic.T>/.generic<T> →
         // 实参文本）；null 映射原样返回。替换串以 '>' 收尾，参数名互为前缀
         // （T 与 T2）不会误伤；嵌套实参（.array<.i32>）按文本落入，归一化
-        // 由 SignatureKeyOf 的 NormalizeSegment 完成
-        private static string SubstituteGenericArguments(string symbol,
+        // 由 SignatureKeyOf 的 NormalizeSegment 完成。
+        // internal：与 BuildSubstitution 同为运行期 init 匹配的复用点
+        internal static string SubstituteGenericArguments(string symbol,
             Dictionary<string, string>? substitution)
         {
             if (substitution == null

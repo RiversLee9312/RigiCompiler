@@ -17,8 +17,10 @@ namespace RigiCompiler
     //      .proxy.set；Method 仅 .proxy.call。不带任何 proxy 的 wrapper 是
     //      合法的纯状态修饰器（§14.5 用法：`obj:W.member` 读写状态），
     //      不强制实现 get/call（§14.3「必须至少实现 get」是拦截能力的
-    //      适用性说明而非声明义务；「只实现 get 只适用于只读变量」归
-    //      Value 链计算时判定——Value/Method 烘焙归后续里程碑）。
+    //      适用性说明而非声明义务；「只实现 get 只适用于只读变量」在应用
+    //      点判定——字段归 WrapperCheckers（P2）、栈上变量归
+    //      LocalDeclarationVisitor（P3），共用 ProxyMatching.
+    //      IsGetOnlyValueWrapper）。
     //   3. wildcard canonical shape（编译器固定，逐参数校验——参数名是
     //      canonical ABI 的一部分，泛型参数名不校验）：
     //        .proxy.* / .proxy.opr.*：

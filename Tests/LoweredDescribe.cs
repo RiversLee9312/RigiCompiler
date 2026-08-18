@@ -155,6 +155,13 @@ namespace RigiCompiler.Tests
                     $"[{string.Join(", ", newExpr.Arguments.Select(Expr))}]" +
                     $"{(newExpr.WrapperArguments != null ?
                         ", wrapped=[" + string.Join(", ", newExpr.WrapperArguments.Select(Expr)) + "]" : "")})",
+                // 动态 new（§3.7）：与 Bound 侧同风（dyn / generic 前缀）
+                LoweredDynamicNewExpression dynamicNew =>
+                    $"DynamicNew({(dynamicNew.GenericParameter != null
+                        ? "generic " + dynamicNew.GenericParameter.Name
+                        : "dyn " + Expr(dynamicNew.TypeValue!))}, " +
+                    $"[{string.Join(", ", dynamicNew.Arguments.Select(Expr))}], " +
+                    $"{TypeShort.Of(dynamicNew.Type)})",
                 // SYNTAX §5.2：cell 对象引用（捕获局部/参数的 cell 变量本身）
                 LoweredCellReferenceExpression cellRef =>
                     $"CellRef({cellRef.Symbol.Name},{TypeShort.Of(cellRef.Type)})",

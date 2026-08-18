@@ -329,6 +329,42 @@ namespace RigiCompiler.Tests
                 BoundDescribe.Body(BodyOf(bodies7, "use2")).Contains(
                     "SmartCast(InstField(plain, This(Box), String?), String)"));
 
+            // 带初始化器的 backing 访问器字段 → 合成默认构造按普通赋值
+            // 形态应用（§9.4.1：发射侧 set.field 自动经 setter；P3 节点
+            // 形态不变）
+            var (unit8, bodies8) = BindUnit(
+                "pub class Meter {\n" +
+                "    pub var value: i32 {\n" +
+                "        pub get(value: _) { return value }\n" +
+                "        pub set(value: _) { }\n" +
+                "    } = 150\n" +
+                "}\n");
+            CheckNoErrors("无诊断（backing 访问器字段初始化器）", unit8);
+            var meterInit = bodies8.Single(b => b.Method.Kind == MethodKind.Init
+                && b.Method.Owner?.Name == "Meter");
+            TestHarness.Check("合成默认构造赋值形态（经 setter 应用）",
+                BoundDescribe.Body(meterInit),
+                "Body(init, [], [Assign(InstField(value, This(Meter), i32), Int(150,i32))])");
+
+            // 仅 get 实例字段携带初始化器 → 无法经 setter 应用（§9.4.1）；
+            // const+get-only 同此（const 本就不得声明 setter）
+            var (unit9, _) = BindUnit(
+                "pub class Box {\n" +
+                "    pub var ro: i32 {\n" +
+                "        pub get(value: _) { return value }\n" +
+                "    } = 1\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("仅 get 字段带初始化器", unit9.Diagnostics,
+                "Field 'ro' has an initializer but no setter");
+            var (unit10, _) = BindUnit(
+                "pub class Box {\n" +
+                "    pub const ro: i32 {\n" +
+                "        pub get(value: _) { return value }\n" +
+                "    } = 1\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("const 仅 get 字段带初始化器", unit10.Diagnostics,
+                "Field 'ro' has an initializer but no setter");
+
             // 局部访问器（M107 路线 C）：正例见 TestLocalAccessors
         }
 

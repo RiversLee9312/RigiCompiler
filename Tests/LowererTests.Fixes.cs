@@ -190,7 +190,8 @@ namespace RigiCompiler.Tests
                 "String))])");
 
             // vargs 复合赋值：读侧拆箱 cast 参与运算、写回值装箱 cast
-            // 到 Any（脱糖后 place 剥壳物化贯通——包回壳形态不变）
+            // 到 Any 物化 .s0 后写回（§13.2 单次求值——表达式位取 .s0 的
+            // 拆箱 cast，不再二次读索引；写侧 place 剥壳按 ABI 类型装箱）
             var (unit3, _, lowered3) = LowerUnitWithStdlib(
                 "func bump(nums: i32...) {\n" +
                 "    nums[0] += 1\n" +
@@ -198,14 +199,15 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断（vargs 索引复合赋值降级）", unit3);
             TestHarness.Check("vargs 索引复合赋值（读拆箱/写装箱）",
                 LoweredDescribe.Body(BodyOf(lowered3, "bump")),
-                "Body(bump, [], [" +
-                "Assign(" +
-                "Cast(Index(Param(nums,Array<i32>), Int(0,i32), Any), i32, i32), " +
+                "Body(bump, [.s0: Any], [" +
+                "Assign(Local(.s0,Any), " +
                 "Cast(Binary(Add, " +
                 "Cast(Index(Param(nums,Array<i32>), Int(0,i32), Any), i32, i32), " +
                 "Int(1,i32), i32), Any, Any)); " +
-                "ExprStmt(" +
-                "Cast(Index(Param(nums,Array<i32>), Int(0,i32), Any), i32, i32))])");
+                "Assign(" +
+                "Cast(Index(Param(nums,Array<i32>), Int(0,i32), Any), i32, i32), " +
+                "Local(.s0,Any)); " +
+                "ExprStmt(Cast(Local(.s0,Any), i32, i32))])");
         }
     }
 }

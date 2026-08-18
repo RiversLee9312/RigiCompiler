@@ -123,12 +123,13 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断（复合赋值单次求值）", unit2);
             TestHarness.Check("索引复合物化（receiver/index 各一次）",
                 LoweredDescribe.Body(BodyOf(lowered2, "bump")),
-                "Body(bump, [y: i32, .s0: Bag, .s1: i32], " +
+                "Body(bump, [y: i32, .s0: Bag, .s1: i32, .s2: i32], " +
                 "[Assign(Local(.s0,Bag), Call(getBag, [], Bag)); " +
                 "Assign(Local(.s1,i32), Call(getI, [], i32)); " +
-                "Assign(Index(Local(.s0,Bag), Local(.s1,i32), i32), " +
+                "Assign(Local(.s2,i32), " +
                 "Binary(Add, Index(Local(.s0,Bag), Local(.s1,i32), i32), Int(2,i32), i32)); " +
-                "Decl(y, i32, = Index(Local(.s0,Bag), Local(.s1,i32), i32)); " +
+                "Assign(Index(Local(.s0,Bag), Local(.s1,i32), i32), Local(.s2,i32)); " +
+                "Decl(y, i32, = Local(.s2,i32)); " +
                 "Return(Local(y,i32))])");
             TestHarness.Check("字段复合物化（receiver 一次）",
                 LoweredDescribe.Body(BodyOf(lowered2, "bumpField")),

@@ -86,6 +86,8 @@ namespace RigiCompiler
                     return CellReferenceEmitter.Visit(expression, target, ctx, env);
                 case LoweredNewExpression:
                     return NewExpressionEmitter.Visit(expression, target, ctx, env);
+                case LoweredDynamicNewExpression:
+                    return DynamicNewEmitter.Visit(expression, target, ctx, env);
                 case LoweredEnumCaseExpression:
                     return EnumCaseEmitter.Visit(expression, target, ctx, env);
                 case LoweredThisExpression:

@@ -28,6 +28,17 @@ namespace RigiCompiler
                     env.Error(v.Setter!.Span ?? v.Span,
                         $"Const field '{field.Name}' cannot declare a setter");
                 }
+                // 仅 get 无 set 的实例字段不得携带初始化器（§9.4.1：声明处
+                // 初始化器经 setter 应用，无 setter 即无处可应用）。
+                // const+get-only 同此拦截（const 本就不得声明 setter，
+                // 初始化器同样无法应用）
+                if (field.Setter == null && v.Initializer != null
+                    && field.Owner != null && !field.IsStatic)
+                {
+                    env.Error(v.Initializer.Span ?? v.Span,
+                        $"Field '{field.Name}' has an initializer but no setter " +
+                        "(declaration initializers are applied through the setter)");
+                }
                 // 无体 + 计算形态：编译器无法生成计算实现（§9.4.1；自动访问器
                 // 仅限 backing 形态，体合成归 P3）
                 if (v.Getter is { Body: null } && !field.HasBackingStorage)

@@ -97,6 +97,10 @@ namespace RigiCompiler
         // implements 图（class）与 BaseInterfaces（interface；P2 解析填充）；
         // struct 不得 implements（P2 诊断），enum struct/wrapper 恒为空
         public List<TypeSymbol> Interfaces { get; } = new List<TypeSymbol>();
+        // like 委托目标字段名（SYNTAX §9.6；P1 由 class 声明写入，非 class
+        // 或无 like 子句恒 null）——P2 待实现成员豁免与 P3 转发成员合成
+        // 共用（LikeDelegationFacility）
+        public string? LikeTarget { get; internal set; }
         // wrapper 目标类别（@WrapperTarget(.X)，P2 解析；非 wrapper 声明为 null）
         public WrapperTargetKind? WrapperTarget { get; internal set; }
         // 挂载的 wrapper 应用（声明顺序，外层在前；P2 解析填充）

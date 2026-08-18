@@ -22,16 +22,16 @@ namespace RigiCompiler
         // 资源去重表（模块级，跨 fn 共享——§19.4 switch-table 等同元素
         // 序列资源跨 fn 去重；M57 起按资源种类分表，值为资源对象）：
         // 标量键 = (类型, 字面量原文)；null 键 = 元素类型 canonical；
-        // switch-table 键 = selector 类型引用 + 元素序列；
-        // catch-table 键 = 元素文本序列（含 block id）
+        // switch-table 键 = selector 类型引用 + 元素序列。
+        // catch-table 不在此（条目持 fn 局部 block 对象引用，去重表
+        // 为函数级、挂 EmitContext——跨 fn 共享会引入别函数 block，
+        // §21.5 越权）
         public Dictionary<(BilScalarType Type, string LiteralText), BilScalarResource> ScalarKeys
             { get; } = new Dictionary<(BilScalarType, string), BilScalarResource>();
         public Dictionary<string, BilNullResource> NullKeys { get; } =
             new Dictionary<string, BilNullResource>();
         public Dictionary<string, BilSwitchTableResource> SwitchTableKeys { get; } =
             new Dictionary<string, BilSwitchTableResource>();
-        public Dictionary<string, BilCatchTableResource> CatchTableKeys { get; } =
-            new Dictionary<string, BilCatchTableResource>();
 
         public void Error(CharRange? span, string message)
         {

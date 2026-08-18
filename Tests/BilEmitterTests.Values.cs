@@ -261,6 +261,54 @@ namespace RigiCompiler.Tests
                 && getIdVar.Operands.All(o => o is BilVariableOperand));
         }
 
+        // ===== 动态 new 发射（SYNTAX §3.7，§14.2 new.indirect；黄金文本经
+        // --emit-bil 冒烟核定）=====
+        private static void TestDynamicNewEmission()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "func makeIt\\<TResult>(): TResult { return TResult() }\n" +
+                "pub class Box {\n    pub var size: i32\n    pub init(_ -> size)\n}\n" +
+                "pub func m(): i32 {\n" +
+                "    var b = new Box(12)\n" +
+                "    var t = typeOf(b)\n" +
+                "    var b2 = new t(24)\n" +
+                "    return b2.size\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（动态 new 发射）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（动态 new 发射）", module);
+            // 具化泛型构造：泛型参数经 MaterializeTypeId 零指令引用
+            // .generic.TResult 隐藏 typeid 实参（§7.2），结果槽 = §7.5 投影
+            BilTestHarness.CheckFnShape("具化构造 new.indirect（hidden typeid 直引）",
+                module, "$makeIt()@.generic<$.generic.TResult>",
+                ".vars { .generic<$.generic.TResult> .t0 }\n" +
+                "new.indirect $.generic.TResult $.t0 []\n" +
+                "ret $.t0\n");
+            // 动态 new：Type\<T\> 值作 TYPEID_VAR，结果静态类型 = T（边界
+            // 与 TYPEID_VAR 的 .typeid<Box> 一致，§21.3 边界检查依据）
+            BilTestHarness.CheckFnShape("动态 new.indirect（Type 值目标）",
+                module, "$m()@.i32",
+                ".vars { Box b, .typeid<Box> t, Box b2, .i32 .t0, Box .t1, " +
+                ".typeid<Box> .t2, .i32 .t3, Box .t4, .i32 .t5 }\n" +
+                "load res(#0) $.t0\n" +
+                "new type(Box) $.t1 [$.t0]\n" +
+                "set.var $.t1 $b\n" +
+                "getid.var $b $.t2\n" +
+                "set.var $.t2 $t\n" +
+                "load res(#1) $.t3\n" +
+                "new.indirect $t $.t4 [$.t3]\n" +
+                "set.var $.t4 $b2\n" +
+                "get.field $b2 $.t5 field(Box#size@.i32)\n" +
+                "ret $.t5\n");
+            // 结构性事实：§14.2 new.indirect 三操作数（TYPEID_VAR RESULT [ARGS]）
+            var indirect = module.Functions.Single(f => f.Symbol == "$m()@.i32")
+                .Blocks[0].Instructions.Single(i => i is NewIndirectInstruction);
+            TestHarness.CheckTrue("new.indirect 三操作数（§14.2）",
+                indirect.Operands.Count == 3
+                && indirect.Operands[0] is BilVariableOperand
+                && indirect.Operands[1] is BilVariableOperand
+                && indirect.Operands[2] is BilOperandList);
+        }
+
         // ===== S9e：泛型隐藏参数物化（§7.2 调用序 + §12.5 getid.type +
         // §8.2 generic(...) 子句）=====
         // ===== M108：invoke.indirect 泛型 ABI（typeid 前缀与 direct 同构）=====

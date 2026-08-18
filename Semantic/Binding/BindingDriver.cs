@@ -44,6 +44,13 @@ namespace RigiCompiler
             // 阶段 1.7（M109b，BIL §9.7/§8.7）：类型级 ..init.wrapper 合成
             // + 静态 Method wrapper companion 合成
             WrapperInitSynthesis.SynthesizeForTypes(env);
+            // 阶段 1.8（SYNTAX §9.3）：默认构造合成——无显式 init 的
+            // class/struct 且（含声明处初始化器的实例字段或基类需要初始化
+            // 链）时合成零参 init（基类初始化先行，再跑本类初始化器）
+            SynthesizeDefaultConstructors();
+            // 阶段 1.9（SYNTAX §9.6）：like 委托转发成员合成——委托字段类型
+            // 提供同签名具体实现的待实现成员，合成本类 override 转发方法
+            SynthesizeLikeDelegations();
             // 阶段 2：逐函数体绑定（含字段访问器体 + proxy 模板态，M88）
             WalkSkeleton((fn, symbol, fileCtx, owner) =>
             {
@@ -347,6 +354,274 @@ namespace RigiCompiler
             {
                 WrapperInitSynthesis.BindInitArgsInScope(app, scope, ctx, env, variable);
             }
+        }
+
+        // ===== 阶段 1.8：默认构造合成（SYNTAX §9.3）=====
+
+        // 未声明显式 init 的 class/struct 隐含零参公有默认构造。合成条件：
+        // 本类有声明处初始化器的实例字段，**或直接基类需要初始化链**（基类
+        // 有零参 init——含基类被合成的情形；链式递归由不动点判定兜底，
+        // 声明序无关）。合成体 = 先 super()（基类有零参 init 时——基类
+        // 字段初始化器由基类构造负责，§9.2.2），再按声明序 this.field =
+        // 初始化器（声明点静态语境绑定，复用 BindFieldInitializer）。
+        // 带自定义访问器的实例字段同此纳入：BIL get.field/set.field 本就
+        // 强制走访问器（§9.4），普通赋值形态发射侧自动经 setter 应用
+        // （钳制/通知自初始化起生效）；仅 get 无 set 的字段无法经 setter
+        // 应用，P2 AccessorChecker 已诊断，此处防御性跳过。
+        // enum struct 不在此列（§12：值只能经 case 入口产生）
+        private void SynthesizeDefaultConstructors()
+        {
+            var candidates = new List<(ASTNode Node, TypeSymbol Type,
+                List<(FieldSymbol Field, VariableDeclarationASTNode Variable)> Fields,
+                FileContext FileCtx)>();
+            foreach (var file in env.Unit.SourceFiles)
+            {
+                var fileCtx = env.Declarations.FileContextOf(file);
+                foreach (var decl in file.Declarations)
+                {
+                    CollectDefaultConstructorType(decl, fileCtx, candidates);
+                }
+            }
+            // 合成判定（不动点）：有字段初始化器必合成；基类需要初始化链
+            // （基类定义有零参 init，或基类自身被合成）同样合成——C:B:A
+            // 链上各环逐一入册，A→B→C 顺序由逐环 super() 保证
+            var synthesizing = new HashSet<TypeSymbol>();
+            foreach (var candidate in candidates)
+            {
+                if (candidate.Fields.Count > 0) synthesizing.Add(candidate.Type);
+            }
+            var settled = false;
+            while (!settled)
+            {
+                settled = true;
+                foreach (var candidate in candidates)
+                {
+                    if (!synthesizing.Contains(candidate.Type)
+                        && BaseNeedsInitChain(candidate.Type, synthesizing))
+                    {
+                        synthesizing.Add(candidate.Type);
+                        settled = false;
+                    }
+                }
+            }
+            var pending = candidates
+                .Where(c => synthesizing.Contains(c.Type))
+                .Select(c => (c.Node, c.Type, Init: new MethodSymbol("init", MethodKind.Init,
+                    owner: c.Type, returnType: null)
+                {
+                    Accessibility = Accessibility.Public,
+                    HasBody = true,
+                    IsSynthetic = true,
+                }, c.Fields, c.FileCtx))
+                .ToList();
+            // 符号先入表（派生类型的 super() 决策可见基类合成产物），再合成体
+            foreach (var entry in pending)
+            {
+                entry.Type.Methods.Add(entry.Init);
+            }
+            foreach (var (node, type, init, fields, fileCtx) in pending)
+            {
+                bodies.Add(SynthesizeDefaultConstructorBody(node, type, init, fields, fileCtx));
+            }
+        }
+
+        // 基类初始化链需求判定：直接基类定义有零参 init（显式），或基类
+        // 自身在合成在册（其合成体同样先跑基类初始化）。构造类型归定义
+        //（构造壳不挂方法表）；毒化基类静默
+        private static bool BaseNeedsInitChain(TypeSymbol type, HashSet<TypeSymbol> synthesizing)
+        {
+            var baseType = type.BaseType;
+            if (baseType == null || baseType is ErrorTypeSymbol) return false;
+            var baseDefinition = baseType.ConstructedFrom ?? baseType;
+            return synthesizing.Contains(baseDefinition)
+                || baseDefinition.Methods.Any(m => m.Kind == MethodKind.Init
+                    && m.Parameters.Count == 0);
+        }
+
+        private void CollectDefaultConstructorType(ASTNode node, FileContext fileCtx,
+            List<(ASTNode Node, TypeSymbol Type,
+                List<(FieldSymbol Field, VariableDeclarationASTNode Variable)> Fields,
+                FileContext FileCtx)> candidates)
+        {
+            switch (node)
+            {
+                case ClassDeclarationASTNode or StructDeclarationASTNode:
+                    var type = env.Declarations.SymbolOf(node) as TypeSymbol
+                        ?? throw new CompilerInternalException("P1 未登记类型符号");
+                    // 已声明任意显式 init 的类型默认构造不再隐含（§9.3）
+                    if (!type.Methods.Any(m => m.Kind == MethodKind.Init))
+                    {
+                        var fields = new List<(FieldSymbol, VariableDeclarationASTNode)>();
+                        foreach (var member in MembersOf(node))
+                        {
+                            if (member is VariableDeclarationASTNode { Initializer: not null }
+                                    variable
+                                && env.Declarations.SymbolOf(variable) is FieldSymbol field
+                                && !field.IsStatic && ReferenceEquals(field.Owner, type)
+                                // 仅 get 无 set：无法经 setter 应用（P2 已诊断，防御跳过）
+                                && !(field.Getter != null && field.Setter == null))
+                            {
+                                fields.Add((field, variable));
+                            }
+                        }
+                        candidates.Add((node, type, fields, fileCtx));
+                    }
+                    foreach (var member in MembersOf(node))
+                    {
+                        CollectDefaultConstructorType(member, fileCtx, candidates);
+                    }
+                    return;
+                case InterfaceDeclarationASTNode or EnumStructDeclarationASTNode
+                    or WrapperDeclarationASTNode:
+                    foreach (var member in MembersOf(node))
+                    {
+                        CollectDefaultConstructorType(member, fileCtx, candidates);
+                    }
+                    return;
+            }
+        }
+
+        // 默认构造体合成：super()（直接基类有零参 init 时）+ 逐字段初始化器
+        // 赋值。直接构造 bound 节点（SynthesizeBodilessInitBody 先例——合成
+        // 代码无 DA/return 问题）；语法回指类型声明节点；locals 空
+        // （BindFieldInitializer 拒绝含局部声明的初始化器）。
+        // 基类为构造类型时归定义查 init（构造壳不挂方法表）；super 隐藏
+        // 实参与显式 super(...) 绑定同一口径（BindSuperCall）——转发当前
+        // init 自身泛型参数（合成 init 无自身泛型参数，恒空；非空时
+        // MaterializeTypeId 按 $.generic.T 零指令引用物化）。基类零参
+        // init 的可见性不按使用点过滤（§9.2.2：super 不参与访问控制）
+        private BoundFunctionBody SynthesizeDefaultConstructorBody(ASTNode node,
+            TypeSymbol type, MethodSymbol init,
+            List<(FieldSymbol Field, VariableDeclarationASTNode Variable)> fields,
+            FileContext fileCtx)
+        {
+            var statements = new List<BoundStatement>();
+            var baseType = type.BaseType;
+            if (baseType != null && baseType is not ErrorTypeSymbol)
+            {
+                var baseDefinition = baseType.ConstructedFrom ?? baseType;
+                var baseInit = baseDefinition.Methods.FirstOrDefault(
+                    m => m.Kind == MethodKind.Init && m.Parameters.Count == 0);
+                if (baseInit != null)
+                {
+                    statements.Add(new BoundExpressionStatement(node,
+                        new BoundSuperCallExpression(node, baseInit,
+                            Array.Empty<BoundExpression>(), env.B.Any,
+                            init.GenericParameters.Cast<SemanticSymbol>().ToList(),
+                            null, isVoid: true)));
+                }
+            }
+            foreach (var (field, variable) in fields)
+            {
+                var value = WrapperInitSynthesis.BindFieldInitializer(field, variable,
+                    fileCtx, env);
+                if (value == null) continue;    // 绑定失败（诊断已报）/泛型参数类型跳过
+                if (field.FieldType is not { } fieldType || fieldType is ErrorTypeSymbol)
+                {
+                    continue;   // 毒化静默
+                }
+                // 带访问器字段同形态：set.field 发射/VM 侧自动经 setter 应用
+                statements.Add(new BoundAssignmentStatement(variable,
+                    new BoundFieldAccessExpression(variable,
+                        new BoundThisExpression(variable, type), field, fieldType),
+                    value));
+            }
+            return new BoundFunctionBody(init, Array.Empty<LocalSymbol>(),
+                new BoundBlock(node, statements));
+        }
+
+        // ===== like 委托转发合成（SYNTAX §9.6）=====
+
+        // 逐 class 声明（含嵌套）把可委托的待实现成员合成本类 override
+        // 转发方法：符号入 type.Methods（默认构造合成同先例——P3 调用点
+        // 绑定与 P4 声明/函数体发射同见）+ 直接构造转发体（自动访问器体
+        // 合成先例——合成代码无 DA/return 问题）。委托成员发现与 P2
+        // 豁免共用 LikeDelegationFacility，口径一致
+        private void SynthesizeLikeDelegations()
+        {
+            foreach (var file in env.Unit.SourceFiles)
+            {
+                var fileCtx = env.Declarations.FileContextOf(file);
+                foreach (var decl in file.Declarations)
+                {
+                    SynthesizeLikeDelegationsIn(decl);
+                }
+            }
+        }
+
+        private void SynthesizeLikeDelegationsIn(ASTNode node)
+        {
+            switch (node)
+            {
+                case ClassDeclarationASTNode classDecl:
+                    var type = env.Declarations.SymbolOf(classDecl) as TypeSymbol
+                        ?? throw new CompilerInternalException("P1 未登记类型符号");
+                    if (type.LikeTarget != null
+                        && LikeDelegationFacility.FindLikeField(type) is { } likeField
+                        && likeField.FieldType != null)
+                    {
+                        foreach (var delegated in LikeDelegationFacility
+                            .CollectDelegatedMembers(type, env.Unit.Symbols))
+                        {
+                            SynthesizeLikeForwarder(classDecl, type, likeField, delegated);
+                        }
+                    }
+                    foreach (var member in classDecl.Members)
+                    {
+                        SynthesizeLikeDelegationsIn(member);
+                    }
+                    return;
+                case StructDeclarationASTNode or InterfaceDeclarationASTNode
+                    or EnumStructDeclarationASTNode or WrapperDeclarationASTNode:
+                    foreach (var member in MembersOf(node))
+                    {
+                        SynthesizeLikeDelegationsIn(member);
+                    }
+                    return;
+            }
+        }
+
+        // 单转发方法合成：形参镜像待实现成员签名（新 ParameterSymbol——
+        // 体合成按名转发），体 = 有返回值 return this.<like 字段>.<目标>
+        // (实参...)、void 走 BoundCallStatement；语法一律回指类声明节点；
+        // locals 空。IsOverride 置位（委托成员即接口/基类成员的实现，
+        // §9.2.1 显式 override 同形）
+        private void SynthesizeLikeForwarder(ASTNode syntax, TypeSymbol type,
+            FieldSymbol likeField, LikeDelegationFacility.DelegatedMember delegated)
+        {
+            var required = delegated.Required;
+            var forwarder = new MethodSymbol(required.Name, MethodKind.Regular,
+                owner: type, returnType: required.ReturnType)
+            {
+                Accessibility = Accessibility.Public,
+                HasBody = true,
+                IsOverride = true,
+                IsSynthetic = true,
+            };
+            var args = new List<BoundExpression>();
+            foreach (var parameter in required.Parameters)
+            {
+                var forwarded = new ParameterSymbol(parameter.Name, parameter.Type);
+                forwarder.Parameters.Add(forwarded);
+                args.Add(new BoundValueReferenceExpression(syntax, forwarded,
+                    parameter.Type ?? env.Unit.Symbols.ErrorType));
+            }
+            type.Methods.Add(forwarder);
+            var receiver = new BoundFieldAccessExpression(syntax,
+                new BoundThisExpression(syntax, type), likeField, likeField.FieldType!);
+            var statements = new List<BoundStatement>();
+            if (required.ReturnType == null)
+            {
+                statements.Add(new BoundCallStatement(syntax, delegated.Target, args, receiver));
+            }
+            else
+            {
+                statements.Add(new BoundReturnStatement(syntax,
+                    new BoundInstanceCallExpression(syntax, receiver, delegated.Target, args,
+                        required.ReturnType)));
+            }
+            bodies.Add(new BoundFunctionBody(forwarder, Array.Empty<LocalSymbol>(),
+                new BoundBlock(syntax, statements)));
         }
 
         // ===== init 参数映射赋值合成（SYNTAX §9.3）=====

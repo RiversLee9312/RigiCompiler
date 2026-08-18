@@ -209,16 +209,17 @@ namespace RigiCompiler.Tests
 
             // §13.6：写（set.array COLLECTION INDEX ELEMENT——COLLECTION/INDEX
             // 先物化，再 ELEMENT（与复合赋值同求值序）；操作数序仍按规范）、
-            // 读（get.array）、复合（读+写+表达式位丢弃读）、链式
+            // 读（get.array）、复合（读一次 + 写回值物化 .s0 后写——§13.2
+            // 单次求值，表达式位不再二次 get）、链式
             // （cb[0].value = get.array → get.field；makeBag()[9] = invoke →
             // get.array）
             BilTestHarness.CheckFnShape("main 指令（索引读写/复合/链式）",
                 module, "$main()@.i32",
-                ".vars { Bag b, .i32 x, CounterBag cb, .i32 y, .i32 z, Bag .t0, .i32 .t1, " +
-                ".i32 .t2, .i32 .t3, .i32 .t4, .i32 .t5, .i32 .t6, .i32 .t7, .i32 .t8, " +
-                ".i32 .t9, .i32 .t10, .i32 .t11, .i32 .t12, Counter .t13, CounterBag .t14, " +
-                ".i32 .t15, Counter .t16, .i32 .t17, Bag .t18, .i32 .t19, .i32 .t20, " +
-                ".i32 .t21, .i32 .t22, .i32 .t23, .i32 .t24, .i32 .t25 }\n" +
+                ".vars { Bag b, .i32 x, CounterBag cb, .i32 y, .i32 z, .i32 .s0, Bag .t0, " +
+                ".i32 .t1, .i32 .t2, .i32 .t3, .i32 .t4, .i32 .t5, .i32 .t6, .i32 .t7, " +
+                ".i32 .t8, .i32 .t9, .i32 .t10, Counter .t11, CounterBag .t12, .i32 .t13, " +
+                "Counter .t14, .i32 .t15, Bag .t16, .i32 .t17, .i32 .t18, .i32 .t19, " +
+                ".i32 .t20, .i32 .t21, .i32 .t22, .i32 .t23 }\n" +
                 "new type(Bag) $.t0 []\n" +
                 "set.var $.t0 $b\n" +
                 "load res(#0) $.t1\n" +
@@ -228,31 +229,30 @@ namespace RigiCompiler.Tests
                 "get.array $b $.t3 $.t4\n" +
                 "set.var $.t4 $x\n" +
                 "load res(#3) $.t5\n" +
-                "load res(#3) $.t6\n" +
-                "get.array $b $.t6 $.t7\n" +
-                "load res(#4) $.t8\n" +
-                "add $.t7 $.t8 $.t9\n" +
-                "set.array $b $.t5 $.t9\n" +
-                "load res(#3) $.t10\n" +
-                "get.array $b $.t10 $.t11\n" +
-                "load res(#5) $.t12\n" +
-                "new type(Counter) $.t13 [$.t12]\n" +
-                "new type(CounterBag) $.t14 [$.t13]\n" +
-                "set.var $.t14 $cb\n" +
-                "load res(#0) $.t15\n" +
-                "get.array $cb $.t15 $.t16\n" +
-                "get.field $.t16 $.t17 field(Counter#value@.i32)\n" +
-                "set.var $.t17 $y\n" +
-                "invoke fn($makeBag()@Bag) $.t18 []\n" +
-                "load res(#6) $.t19\n" +
-                "get.array $.t18 $.t19 $.t20\n" +
-                "set.var $.t20 $z\n" +
-                "add $x $y $.t21\n" +
-                "add $.t21 $z $.t22\n" +
-                "load res(#0) $.t23\n" +
-                "get.array $b $.t23 $.t24\n" +
-                "add $.t22 $.t24 $.t25\n" +
-                "ret $.t25\n");
+                "get.array $b $.t5 $.t6\n" +
+                "load res(#4) $.t7\n" +
+                "add $.t6 $.t7 $.t8\n" +
+                "set.var $.t8 $.s0\n" +
+                "load res(#3) $.t9\n" +
+                "set.array $b $.t9 $.s0\n" +
+                "load res(#5) $.t10\n" +
+                "new type(Counter) $.t11 [$.t10]\n" +
+                "new type(CounterBag) $.t12 [$.t11]\n" +
+                "set.var $.t12 $cb\n" +
+                "load res(#0) $.t13\n" +
+                "get.array $cb $.t13 $.t14\n" +
+                "get.field $.t14 $.t15 field(Counter#value@.i32)\n" +
+                "set.var $.t15 $y\n" +
+                "invoke fn($makeBag()@Bag) $.t16 []\n" +
+                "load res(#6) $.t17\n" +
+                "get.array $.t16 $.t17 $.t18\n" +
+                "set.var $.t18 $z\n" +
+                "add $x $y $.t19\n" +
+                "add $.t19 $z $.t20\n" +
+                "load res(#0) $.t21\n" +
+                "get.array $b $.t21 $.t22\n" +
+                "add $.t20 $.t22 $.t23\n" +
+                "ret $.t23\n");
         }
 
         // ===== #20②：容器成员 Call 后缀后实例链端到端（Factory.make().field）=====

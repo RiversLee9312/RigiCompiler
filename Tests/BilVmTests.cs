@@ -29,10 +29,18 @@ namespace RigiCompiler.Tests
             TestScalarLocals();
             TestClassInstanceFields();
             TestFieldZeroDefault();
+            TestDefaultConstructorFieldInitializer();
+            TestAccessorFieldInitializerViaSetter();
+            TestDefaultConstructorChaining();
+            TestSeqStatementReturnTransparency();
             TestStaticFields();
+            TestRootNamespaceGlobalField();
+            TestLikeDelegationForwarding();
             TestStructDeepCopy();
             TestArrayIndexOperators();
+            TestCompoundAssignmentIndexSingleRead();
             TestEnumCasePayload();
+            TestEnumCaseFixedPayload();
             TestEnumCaseIdentity();
             TestGetterSetterOrder();
             TestInstanceMethodReceiver();
@@ -75,6 +83,7 @@ namespace RigiCompiler.Tests
             TestMethodWrapperGetSelfDirectModule();
             TestMethodWrapperNotEqualsViaOprEqualsDirectModule();
             TestExceptionGetMessage();
+            TestIntegerDivisionByZero();
             TestLambdaMethodWrapperEndToEnd();
             TestIfElse();
             TestWhileAndDoWhile();
@@ -96,6 +105,10 @@ namespace RigiCompiler.Tests
             TestConcurrentPrintLines();
             TestAwaitThroughTryFinally();
             TestCoroutineStressForkJoin();
+            TestGenericConstructedNewInit();
+            TestDestructuringSuperGenericInit();
+            TestClosedGenericParamSymbolEndToEnd();
+            TestStringLength();
 
             return TestHarness.Summary("BilVm");
         }
@@ -225,6 +238,121 @@ namespace RigiCompiler.Tests
             CheckI32("未初始化 i32 为零", result, 0);
         }
 
+        // SYNTAX §9.3 回归：默认构造应用声明处字段初始化器（含泛型类）
+        //（历史 bug：初始化器被丢弃，字段读出零值）
+        private static void TestDefaultConstructorFieldInitializer()
+        {
+            var result = Run(
+                "pub class Plain {\n" +
+                "    pub var count: i32 = 41\n" +
+                "    pub var other: i32\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const p = new Plain()\n" +
+                "    return (p.count * 100) + p.other\n" +
+                "}\n");
+            CheckOk("默认构造字段初始化器", result);
+            CheckI32("带初始化器取初始化器、无初始化器取零值", result, 4100);
+            var generic = Run(
+                "class Box\\<T> {\n" +
+                "    pub var item: i32 = 5\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var b = new Box\\<i32>()\n" +
+                "    return b.item\n" +
+                "}\n");
+            CheckOk("泛型类默认构造字段初始化器", generic);
+            CheckI32("new Box<i32>().item = 5", generic, 5);
+        }
+
+        // SYNTAX §9.4.1 回归：带自定义访问器的实例字段，声明处初始化器
+        // 经 setter 应用（BIL set.field 本就强制走 setter——backing 钳制
+        // 自初始化起生效；计算形态同经 setter）
+        private static void TestAccessorFieldInitializerViaSetter()
+        {
+            var backing = Run(
+                "pub class Meter {\n" +
+                "    pub var value: i32 {\n" +
+                "        pub get(value: _) { return value }\n" +
+                "        pub set(value: _) { if (value > 100) { value = 100 } }\n" +
+                "    } = 150\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    return new Meter().value\n" +
+                "}\n");
+            CheckOk("backing 访问器初始化器经 setter", backing);
+            CheckI32("setter 钳制 150→100", backing, 100);
+
+            var computed = Run(
+                "pub class Therm {\n" +
+                "    pub var celsius: i32\n" +
+                "    pub var display: i32 {\n" +
+                "        pub get(_: _) { return celsius }\n" +
+                "        pub set(_: _) { celsius = value }\n" +
+                "    } = 33\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    return new Therm().celsius\n" +
+                "}\n");
+            CheckOk("计算访问器初始化器经 setter", computed);
+            CheckI32("计算形态 setter 写底层字段", computed, 33);
+        }
+
+        // SYNTAX §9.3 回归：默认构造链式——隐式/合成零参构造先完成基类
+        // 初始化再应用本类字段初始化器（A→B→C 逐环；无本类初始化器的
+        // 派生类同样合成；泛型基类 super 照 extends 代入转发）
+        private static void TestDefaultConstructorChaining()
+        {
+            var chain = Run(
+                "pub open class A { pub var x: i32 = 41 }\n" +
+                "pub open class B : A { pub var y: i32 = 7 }\n" +
+                "pub class C : B { pub var z: i32 = 9 }\n" +
+                "pub func main(): i32 {\n" +
+                "    const c = new C()\n" +
+                "    return ((c.x * 100) + (c.y * 10)) + c.z\n" +
+                "}\n");
+            CheckOk("A→B→C 链式默认构造", chain);
+            CheckI32("x=41 y=7 z=9 全部生效", chain, 4179);
+
+            var derivedOnly = Run(
+                "pub open class B { pub var y: i32 = 7 }\n" +
+                "pub class C : B { }\n" +
+                "pub func main(): i32 {\n" +
+                "    return new C().y\n" +
+                "}\n");
+            CheckOk("无本类初始化器的派生合成", derivedOnly);
+            CheckI32("基类初始化经合成 super 生效", derivedOnly, 7);
+
+            var generic = Run(
+                "pub open class B\\<T> { pub var v: i32 = 41 }\n" +
+                "pub class C\\<T> : B\\<T> { pub var w: i32 = 7 }\n" +
+                "pub func main(): i32 {\n" +
+                "    const c = new C\\<i32>()\n" +
+                "    return (c.v * 100) + c.w\n" +
+                "}\n");
+            CheckOk("泛型基类链式默认构造", generic);
+            CheckI32("泛型基类 super 照 extends 代入", generic, 4107);
+        }
+
+        // 返回保证分析透视语句位置 seq 块（含嵌套；裸 return 直达外层
+        // 函数，BIL §9.4 call blk 终止判定同口径透视）
+        private static void TestSeqStatementReturnTransparency()
+        {
+            var single = Run(
+                "pub func main(): i32 {\n" +
+                "    seq { return 7 }\n" +
+                "}\n");
+            CheckOk("seq 末位 return 透视", single);
+            CheckI32("seq { return 7 }", single, 7);
+
+            var nested = Run(
+                "pub func main(): i32 {\n" +
+                "    seq { seq { return 7 } }\n" +
+                "}\n");
+            CheckOk("嵌套 seq return 透视", nested);
+            CheckI32("seq { seq { return 7 } }", nested, 7);
+        }
+
         private static void TestStaticFields()
         {
             var result = Run(
@@ -235,6 +363,55 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckOk("静态字段", result);
             CheckI32("静态字段 42", result, 42);
+        }
+
+        // 回归（历史 bug：根命名空间全局字段 P4 报 "has no owner to
+        // project"）：无 namespace 声明文件的顶层 var 读写端到端——宿主
+        // 投影为空形态 type()，验证器归一放行，VM 按字段符号寻址
+        private static void TestRootNamespaceGlobalField()
+        {
+            var result = Run(
+                "var counter: i32 = 0\n" +
+                "pub func main(): i32 {\n" +
+                "    counter = (counter + 1)\n" +
+                "    counter = (counter + 1)\n" +
+                "    return counter\n" +
+                "}\n");
+            CheckOk("根命名空间全局字段", result);
+            CheckI32("两次自增后读出 2", result, 2);
+        }
+
+        // like 委托（SYNTAX §9.6）端到端：委托字段类型提供同签名实现的
+        // 接口成员由合成转发方法承担；显式实现优先于委托；接口类型接收者
+        // 虚调用同样命中（含显式与转发两路）
+        private static void TestLikeDelegationForwarding()
+        {
+            var result = Run(
+                "import core.io.Console\n" +
+                "pub interface Fruit {\n" +
+                "    func taste(): String\n" +
+                "    func color(): String\n" +
+                "}\n" +
+                "pub class Pear implements Fruit {\n" +
+                "    pub override func taste(): String { return \"pear-ish\" }\n" +
+                "    pub override func color(): String { return \"green\" }\n" +
+                "}\n" +
+                "pub class Apple implements Fruit like pear {\n" +
+                "    pub var pear: Pear = new Pear()\n" +
+                "    pub override func taste(): String { return \"apple-ish\" }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const a = new Apple()\n" +
+                "    Console.println(a.taste())\n" +
+                "    Console.println(a.color())\n" +
+                "    const f: Fruit = a\n" +
+                "    Console.println(f.taste())\n" +
+                "    Console.println(f.color())\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckOk("like 委托转发", result);
+            TestHarness.Check("显式优先 + 委托转发 + 接口虚调用",
+                result.Stdout, "apple-ish\ngreen\napple-ish\ngreen\n");
         }
 
         private static void TestStructDeepCopy()
@@ -276,6 +453,27 @@ namespace RigiCompiler.Tests
             CheckI32("get/set.array", result, 21);
         }
 
+        // §13.2 单次求值回归：a[i] op= x 中 getAtIndex 只读一次
+        //（历史 bug：表达式位重读 place 导致 get→set→get 三次调用）
+        private static void TestCompoundAssignmentIndexSingleRead()
+        {
+            var result = Run(
+                "pub class Bag {\n" +
+                "    pub var item: i32\n" +
+                "    pub var reads: i32\n" +
+                "    pub init() { item = 10\nreads = 0 }\n" +
+                "    pub operator getAtIndex(index: i32): i32 { reads += 1\nreturn item }\n" +
+                "    pub operator setAtIndex(index: i32, element: i32) { item = element }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var b = new Bag()\n" +
+                "    b[0] += 5\n" +
+                "    return (b.reads * 1000) + b.item\n" +
+                "}\n");
+            CheckOk("索引复合赋值", result);
+            CheckI32("getAtIndex 恰好一次 + 写回值正确", result, 1015);
+        }
+
         private static void TestEnumCasePayload()
         {
             var result = Run(
@@ -292,6 +490,41 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckOk("enum payload", result);
             CheckI32("Failed(404).errorCode", result, 404);
+        }
+
+        // SYNTAX §12.1 回归：固定 case 的声明点固定实参写入载荷
+        //（历史 bug：固定实参被丢弃，字段读出零值）
+        private static void TestEnumCaseFixedPayload()
+        {
+            var result = Run(
+                "pub enum struct E {\n" +
+                "    pub const v: i32\n" +
+                "    pub init(_ -> v)\n" +
+                "}[\n" +
+                "    Fixed(42),\n" +
+                "    Param(v = _)\n" +
+                "]\n" +
+                "pub func main(): i32 {\n" +
+                "    const f: E = .Fixed\n" +
+                "    const p: E = .Param(7)\n" +
+                "    return (f.v * 100) + p.v\n" +
+                "}\n");
+            CheckOk("enum 固定 case payload", result);
+            CheckI32("Fixed(42).v = 42、Param(7).v = 7", result, 4207);
+            var negative = Run(
+                "pub enum struct RequestResult {\n" +
+                "    pub const errorCode: i32\n" +
+                "    pub init(_ -> errorCode)\n" +
+                "}[\n" +
+                "    Success(-1),\n" +
+                "    Failed(errorCode = _)\n" +
+                "]\n" +
+                "pub func main(): i32 {\n" +
+                "    const ok: RequestResult = .Success\n" +
+                "    return ok.errorCode\n" +
+                "}\n");
+            CheckOk("enum 固定 case 负值 payload", negative);
+            CheckI32("Success(-1).errorCode", negative, -1);
         }
 
         private static void TestEnumCaseIdentity()
@@ -1039,31 +1272,11 @@ namespace RigiCompiler.Tests
                 "A.get\n");
         }
 
-        // Value 派发 c)：只带 get proxy 的 wrapper 修饰可变 var——非 init 写入
-        // 在 VM 抛 VmException（含 wrapper 名与 .proxy.set）；const 场景读经
-        // proxy 生效。
+        // Value 派发 c)：只带 get proxy 的 wrapper 修饰只读 const——读取经
+        // proxy 生效。（var + get-only wrapper 自 §14.3 只读适用性检查前移
+        // 后是 P3 编译错误，不再到 VM——回归用例在 Binder 套件）
         private static void TestValueWrapperGetOnlyProxy()
         {
-            var mutable = Run(
-                "@WrapperTarget(.Value)\n" +
-                "pub wrapper ReadOnly {\n" +
-                "    pub init()\n" +
-                "    operator .proxy.get\\<TValue>(value: TValue): TValue {\n" +
-                "        return (((value as i32) + 1) as TValue)\n" +
-                "    }\n" +
-                "}\n" +
-                "pub func main(): i32 {\n" +
-                "    @ReadOnly\n" +
-                "    var x: i32 = 1\n" +
-                "    x = 2\n" +
-                "    return 0\n" +
-                "}\n");
-            TestHarness.CheckTrue("get-only wrapper 非 init 写入抛 VmException",
-                mutable.Exception != null
-                && mutable.Exception.Message.Contains("ReadOnly")
-                && mutable.Exception.Message.Contains(".proxy.set"),
-                mutable.Exception?.ToString() ?? "<null>");
-
             var readOnly = Run(
                 "@WrapperTarget(.Value)\n" +
                 "pub wrapper ReadOnly {\n" +
@@ -1548,6 +1761,76 @@ namespace RigiCompiler.Tests
             CheckOk("用户异常 override getMessage 被 catch", custom);
             TestHarness.Check("多态 getMessage stdout", custom.Stdout, "custom-message\n");
             CheckI32("用户异常 catch 返回 7", custom, 7);
+        }
+
+        // 整数除零（SYNTAX §8.1 / BIL §11.2）：抛语言级
+        // core.DividedByZeroException——try/catch 可捕获并读 getMessage；
+        // 未捕获则异常对象沿帧链传播；u64 同例；float/double 除零保持
+        // IEEE 754（inf/NaN），不抛。
+        private static void TestIntegerDivisionByZero()
+        {
+            var caught = Run(
+                "pub func main(): i32 {\n" +
+                "    try {\n" +
+                "        var a: i32 = 10\n" +
+                "        var b: i32 = 0\n" +
+                "        var c = (a / b)\n" +
+                "        return 0\n" +
+                "    } catch (e: core.DividedByZeroException) {\n" +
+                "        core.io.Console.println(e.getMessage())\n" +
+                "        return 7\n" +
+                "    }\n" +
+                "}\n");
+            CheckOk("i32 除零被 catch", caught);
+            CheckI32("除零 catch 返回 7", caught, 7);
+            TestHarness.Check("除零 getMessage stdout", caught.Stdout, "整数除以零\n");
+
+            var uncaught = Run(
+                "pub func main(): i32 {\n" +
+                "    var a: i32 = 10\n" +
+                "    var b: i32 = 0\n" +
+                "    return (a / b)\n" +
+                "}\n");
+            TestHarness.CheckTrue("未捕获除零抛 DividedByZeroException",
+                uncaught.Exception?.ExceptionObject is VmObject divObj
+                && divObj.TypeRef.Contains("DividedByZeroException")
+                && uncaught.Exception.Message.Contains("整数除以零"),
+                uncaught.Exception?.ToString() ?? "<null>");
+
+            var u64 = Run(
+                "pub func main(): i32 {\n" +
+                "    try {\n" +
+                "        var a: u64 = 10UL\n" +
+                "        var b: u64 = 0UL\n" +
+                "        var c = (a / b)\n" +
+                "        return 0\n" +
+                "    } catch (e: core.DividedByZeroException) {\n" +
+                "        return 9\n" +
+                "    }\n" +
+                "}\n");
+            CheckOk("u64 除零被 catch", u64);
+            CheckI32("u64 除零 catch 返回 9", u64, 9);
+
+            var f64 = Run(
+                "pub func main(): double {\n" +
+                "    var a: double = 1.0\n" +
+                "    var b: double = 0.0\n" +
+                "    return (a / b)\n" +
+                "}\n");
+            CheckOk("double 除零不抛", f64);
+            TestHarness.CheckTrue("double 除零得 +Inf",
+                f64.ReturnValue is VmF64 inf && double.IsPositiveInfinity(inf.Value),
+                f64.ReturnValue?.ToStandardText() ?? "<null>");
+            var nan = Run(
+                "pub func main(): double {\n" +
+                "    var a: double = 0.0\n" +
+                "    var b: double = 0.0\n" +
+                "    return (a / b)\n" +
+                "}\n");
+            CheckOk("double 零除零不抛", nan);
+            TestHarness.CheckTrue("double 零除零得 NaN",
+                nan.ReturnValue is VmF64 n && double.IsNaN(n.Value),
+                nan.ReturnValue?.ToStandardText() ?? "<null>");
         }
 
         // lambda Method wrapper VM 端到端：specific 环绕 + 改返回值；状态
@@ -3399,6 +3682,105 @@ namespace RigiCompiler.Tests
             CheckOk("using 穿越 relay", usingRelay);
             TestHarness.Check("逆序 dispose（db,da 后 dc）", usingRelay.Stdout, "db\nda\ndc\n");
             CheckI32("using 穿越产值 7 + 3", usingRelay, 10);
+        }
+
+        // bug13①：泛型构造类型的运行期 init 匹配——定义级 init 签名的
+        // .generic 占位按构造实参代入后比对（dist repro_bug2 与牵连用例）：
+        // new core.Pair<String, i32>(...) / 用户泛型类带参构造 / kwargs 打包
+        private static void TestGenericConstructedNewInit()
+        {
+            var result = Run(
+                "class Container\\<T> {\n" +
+                "    pub const item: T\n" +
+                "    pub init(_ -> item) { }\n" +
+                "}\n" +
+                "func config(options: named Any...) {\n" +
+                "    core.io.Console.println(\"kwargs-ok\")\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var p = new core.Pair\\<String, i32>(\"age\", 3)\n" +
+                "    core.io.Console.println(\"${p.key}:${p.value}\")\n" +
+                "    var c = new Container\\<i32>(1)\n" +
+                "    core.io.Console.println(\"${c.item}\")\n" +
+                "    config(isDark = true, level = 3)\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckOk("泛型构造类型 init 匹配", result);
+            TestHarness.Check("泛型构造 stdout", result.Stdout,
+                "age:3\n1\nkwargs-ok\n");
+            CheckI32("main 返回 0", result, 0);
+        }
+
+        // bug13① 牵连：解构用 Pair 子类的 super(k, v)——extends 构造实参
+        // 代入基类定义级 init 签名后匹配（dist 12_destructure 形态）
+        private static void TestDestructuringSuperGenericInit()
+        {
+            var result = Run(
+                "pub class Entry : core.Pair\\<String, i32> {\n" +
+                "    pub init(k: String, v: i32) {\n" +
+                "        super(k, v)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var (k, v) = new Entry(\"age\", 3)\n" +
+                "    core.io.Console.println(\"${k}:${v}\")\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckOk("Pair 子类 super 调用 + 解构", result);
+            TestHarness.Check("解构 stdout", result.Stdout, "age:3\n");
+            CheckI32("main 返回 0", result, 0);
+        }
+
+        // bug14：方法符号内嵌闭合泛型类型引用——canonical 符号是成员声明行
+        // 的单个词（§5.2），实参分隔不得含空白；发射紧凑形态后 BilReader/
+        // 验证器/VM 全链路可消化（dist _repro_func2param 形态扩展为实调）
+        private static void TestClosedGenericParamSymbolEndToEnd()
+        {
+            var (unit, module, text) = BilTestHarness.EmitBilUnit(
+                "pub func take2(f: core.Func\\<i32, i32>): i32 {\n" +
+                "    return f(1)\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var f = func{(x: i32): i32 -> (x + 41)}\n" +
+                "    return take2(f)\n" +
+                "}\n");
+            TestHarness.CheckTrue("全管线无诊断", !unit.Diagnostics.HasErrors,
+                string.Join("; ", unit.Diagnostics.Diagnostics.Select(
+                    d => $"{d.Phase}: {d.Message}")));
+            // 签名形态回归锁：符号内闭合泛型紧凑无空白
+            TestHarness.CheckTrue("方法符号内嵌闭合泛型紧凑形态",
+                module.LocalSymbols.OfType<BilSimpleMemberDeclaration>().Any(d =>
+                    d.Symbol == "$take2(f:core::Func<.i32,.i32>)@.i32"),
+                string.Join(", ", module.LocalSymbols.OfType<BilSimpleMemberDeclaration>()
+                    .Select(d => d.Symbol)));
+            // BilWriter 文本经 BilReader 回读 + 验证器零错误（VM 装载前置）
+            var reparsed = BilReader.Read(text);
+            BilTestHarness.CheckBilValid("回读模块验证器零错误", reparsed);
+            var result = BilVm.Run(reparsed);
+            CheckOk("回读模块 VM 运行", result);
+            CheckI32("take2(lambda) = 42", result, 42);
+        }
+
+        // bug17：String.length 内建 const i64（.bootstrap.rg ext 声明，
+        // VM get.field 直读，同 Array.length 通道）——字面量/多行/插值串
+        private static void TestStringLength()
+        {
+            var result = Run(
+                "pub func main(): i32 {\n" +
+                "    var s = \"hello\"\n" +
+                "    core.io.Console.println(\"${s.length}\")\n" +
+                "    var multi = \"\"\"\n" +
+                "line1\n" +
+                "line2\n" +
+                "\"\"\"\n" +
+                "    core.io.Console.println(\"${multi.length}\")\n" +
+                "    var name = \"world\"\n" +
+                "    core.io.Console.println(\"${\"hi ${name}\".length}\")\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckOk("String.length", result);
+            TestHarness.Check("length stdout", result.Stdout, "5\n11\n8\n");
+            CheckI32("main 返回 0", result, 0);
         }
 
         private static BilVmResult RunPrepared(BilModule module, string functionSymbol,

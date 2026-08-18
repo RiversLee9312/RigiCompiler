@@ -127,10 +127,10 @@ namespace RigiCompiler
             BoundValueBlock? valueBlock = null;
             if (lambda.Body != null)
             {
-                var expressionBody = ExpressionDispatcher.Visit(lambda.Body.Expression,
-                    lambdaScope, lambdaCtx, env, returnType as TypeSymbol);
                 if (returnType != null)
                 {
+                    var expressionBody = ExpressionDispatcher.Visit(lambda.Body.Expression,
+                        lambdaScope, lambdaCtx, env, returnType as TypeSymbol);
                     CheckReturnType(expressionBody, returnType, lambda, env);
                     syntheticBlock = new BoundBlock(lambda, expressionBody == null
                         ? Array.Empty<BoundStatement>()
@@ -138,13 +138,14 @@ namespace RigiCompiler
                 }
                 else
                 {
-                    // void lambda 单表达式体：表达式语句语义（值被丢弃）
-                    syntheticBlock = new BoundBlock(lambda, expressionBody == null
+                    // void lambda 单表达式体（SYNTAX §5.1）：与把该表达式写成一条
+                    // 语句完全等价——走语句语境绑定（复用表达式语句分流：void 调用
+                    // 落 BoundCallStatement 不报「无结果」，非 void 调用值被丢弃）
+                    var statement = ExpressionStatementVisitor.BindNonAssignment(lambda,
+                        lambda.Body.Expression, lambdaScope, lambdaCtx, env);
+                    syntheticBlock = new BoundBlock(lambda, statement == null
                         ? Array.Empty<BoundStatement>()
-                        : new BoundStatement[]
-                        {
-                            new BoundExpressionStatement(lambda, expressionBody)
-                        });
+                        : new BoundStatement[] { statement });
                 }
             }
             else if (lambda.BlockBody != null)

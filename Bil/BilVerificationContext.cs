@@ -114,7 +114,7 @@ namespace RigiCompiler.Bil
             // symbol + 具名包 Array<Pair<String, Any>> + 位置包 Array<Any>
             // → Any），与 SynthesizeFatSymbol 发射形态逐字符一致
             "core::Any$call???(symbol:.string," +
-                "namedArgs:.array<core::Pair<.string, .any>>," +
+                "namedArgs:.array<core::Pair<.string,.any>>," +
                 "unnamedArgs:.array<.any>)@.any",
         };
 

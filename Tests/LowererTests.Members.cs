@@ -59,13 +59,15 @@ namespace RigiCompiler.Tests
             TestHarness.Check("索引写降级",
                 LoweredDescribe.Body(BodyOf(lowered, "write")),
                 "Body(write, [], [Assign(Index(Param(b,Bag), Int(0,i32), i32), Int(42,i32))])");
-            // 索引复合：读/写/表达式位三处各自降级（receiver/index 重复求值，
-            // 与字段复合既有行为一致）
+            // 索引复合：读/写分离——写回值物化 .s0（§13.2 单次求值，
+            // 表达式位取 .s0 不再二次读索引）
             TestHarness.Check("索引复合赋值降级",
                 LoweredDescribe.Body(BodyOf(lowered, "bump")),
-                "Body(bump, [], [Assign(Index(Param(b,Bag), Int(1,i32), i32), " +
+                "Body(bump, [.s0: i32], " +
+                "[Assign(Local(.s0,i32), " +
                 "Binary(Add, Index(Param(b,Bag), Int(1,i32), i32), Int(2,i32), i32)); " +
-                "ExprStmt(Index(Param(b,Bag), Int(1,i32), i32))])");
+                "Assign(Index(Param(b,Bag), Int(1,i32), i32), Local(.s0,i32)); " +
+                "ExprStmt(Local(.s0,i32))])");
 
             // 结构性事实：Origin 回指引用相等 + Type 透传（读 = getAtIndex
             // 返回类型；写 = setAtIndex 元素形参类型——同型同源此处皆 i32）

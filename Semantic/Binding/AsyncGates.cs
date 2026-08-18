@@ -160,6 +160,13 @@ namespace RigiCompiler
                         WalkExpression(argument, env);
                     }
                     break;
+                case BoundDynamicNewExpression dynamicNew:
+                    if (dynamicNew.TypeValue != null) WalkExpression(dynamicNew.TypeValue, env);
+                    foreach (var argument in dynamicNew.Arguments)
+                    {
+                        WalkExpression(argument, env);
+                    }
+                    break;
                 case BoundIfExpression ifExpression:
                     WalkExpression(ifExpression.Condition, env);
                     WalkBlock(ifExpression.TrueBranch.Block, env);

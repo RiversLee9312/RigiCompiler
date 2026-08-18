@@ -21,7 +21,7 @@ namespace RigiCompiler
             {
                 var initValue = EmitValueDispatcher.Visit(decl.Initializer, target, ctx, env);
                 target.Instructions.Add(new SetVarInstruction(
-                    initValue, BilOp.Var(decl.Local.Name))
+                    initValue, BilOp.Var(ctx.VariableNameOf(decl.Local)))
                 { Origin = decl });
             }
             return Unit.Value;
@@ -74,11 +74,12 @@ namespace RigiCompiler
             {
                 case LoweredValueReferenceExpression localTarget:
                     // S9d：可变参数写入同样映射隐藏包变量（与读侧共用
-                    // EmittingFacility.ValueVariableName——.args 只声明
-                    // .vargs./.kwargs. 保留名，写原名即引用未声明变量）
+                    // ctx.VariableNameOf → EmittingFacility.ValueVariableName
+                    // ——.args 只声明 .vargs./.kwargs. 保留名，写原名即
+                    // 引用未声明变量）；同名局部唯一化改名同表命中
                     target.Instructions.Add(new SetVarInstruction(
                         assignedValue, BilOp.Var(
-                            EmittingFacility.ValueVariableName(localTarget.Symbol)))
+                            ctx.VariableNameOf(localTarget.Symbol)))
                     { Origin = assignment });
                     break;
                 case LoweredFieldReferenceExpression fieldTarget:
@@ -424,11 +425,12 @@ namespace RigiCompiler
             {
                 catchBlocks.Add(new BilBlock(tryId + "-catch" + i));
             }
-            var catchTable = EmittingFacility.RegisterCatchTable(tryStatement, catchBlocks, env);
+            var catchTable = EmittingFacility.RegisterCatchTable(tryStatement, catchBlocks,
+                ctx, env);
             var finallyBilBlock = tryStatement.FinallyBlock != null
                 ? new BilBlock(tryId + "-finally") : null;
             target.Instructions.Add(new TryInstruction(
-                tryBodyBlock, BilOp.Var(tryStatement.ExceptionSlot.Name),
+                tryBodyBlock, BilOp.Var(ctx.VariableNameOf(tryStatement.ExceptionSlot)),
                 catchTable, finallyBilBlock, BilOp.Var(tryStatement.BreakId.Name))
             { Origin = tryStatement });
             ctx.Function.Blocks.Add(tryBodyBlock);

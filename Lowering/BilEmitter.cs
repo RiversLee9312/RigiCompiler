@@ -53,7 +53,7 @@ namespace RigiCompiler
     //   （§16.7 四操作数：blk(tryN-body)/$slot/res(catch-table)/
     //   blk(tryN-finally)|none；§19.5 catch-table 多行资源，元素
     //   type(T) -> blk(tryN-catchI)，空 catch 列表出空表——资源经
-    //   resourceKeys 同元素序列去重）。
+    //   函数级去重表同元素序列去重）。
     // S8a：is/supers/with（§12.3 静态 type.X 与 .indirect 动态三形态）+
     //   typeOf（§12.5 getid.var/getid.type）。
     //

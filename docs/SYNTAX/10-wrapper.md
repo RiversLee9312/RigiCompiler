@@ -167,7 +167,7 @@ pub class MyService {
 }
 
 // 访问 wrapper：obj:Logged 是宿主持有的那份 wrapper 的只读 place
-var service = MyService()
+var service = new MyService()
 service:Logged.level = "TRACE"       // ✅ 成员访问：原地作用于宿主那份
 service:Logged.dump()                // ✅ 方法调用：receiver 是宿主那份
 

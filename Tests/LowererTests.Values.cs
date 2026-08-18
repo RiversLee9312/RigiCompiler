@@ -235,5 +235,55 @@ namespace RigiCompiler.Tests
                 && ReferenceEquals(loweredTypeForm.TargetType, boundTypeForm.TargetType)
                 && loweredTypeForm.Operand == null);
         }
+
+        // ===== 动态 new 降级（SYNTAX §3.7，BIL §14.2 new.indirect）=====
+        private static void TestDynamicNewLowering()
+        {
+            // 具化泛型构造：GenericParameter 透传（发射侧 MaterializeTypeId
+            // 零指令引用 .generic.T 隐藏 typeid 实参）+ Origin 回指
+            var (unit, bound, lowered) = LowerUnit(
+                "func makeIt\\<TResult>(): TResult { return TResult() }\n");
+            CheckNoErrors("无诊断（具化构造降级）", unit);
+            TestHarness.Check("具化构造降级形态",
+                LoweredDescribe.Body(BodyOf(lowered, "makeIt")),
+                "Body(makeIt, [], [Return(DynamicNew(generic TResult, [], TResult))])");
+            var boundReified = (BoundDynamicNewExpression)((BoundReturnStatement)
+                bound.Single(b => b.Method.Name == "makeIt").Body.Statements[0]).Value!;
+            var loweredReified = (LoweredDynamicNewExpression)((LoweredReturnStatement)
+                BodyOf(lowered, "makeIt").Body.Statements[0]).Value!;
+            TestHarness.CheckTrue("具化构造降级 Origin 回指 + 泛型参数透传",
+                ReferenceEquals(loweredReified.Origin, boundReified)
+                && ReferenceEquals(loweredReified.GenericParameter, boundReified.GenericParameter)
+                && loweredReified.TypeValue == null
+                && loweredReified.Arguments.Count == 0);
+
+            // 动态 new（Type\<T\> 值目标）：TypeValue 递归降级 + 实参随行
+            var (unit2, bound2, lowered2) = LowerUnit(
+                "pub class Box {\n    pub var size: i32\n    pub init(_ -> size)\n}\n" +
+                "func m(): i32 {\n" +
+                "    var b = new Box(12)\n" +
+                "    var t = typeOf(b)\n" +
+                "    var b2 = new t(24)\n" +
+                "    return b2.size\n" +
+                "}\n");
+            CheckNoErrors("无诊断（动态 new 降级）", unit2);
+            TestHarness.Check("动态 new 降级形态",
+                LoweredDescribe.Body(BodyOf(lowered2, "m")),
+                "Body(m, [b: Box, t: Type<Box>, b2: Box], " +
+                "[Decl(b, Box, = New(Box, init, [Int(12,i32)])); " +
+                "Decl(t, Type<Box>, = TypeOf(Local(b,Box), Type<Box>)); " +
+                "Decl(b2, Box, = DynamicNew(dyn Local(t,Type<Box>), [Int(24,i32)], Box)); " +
+                "Return(InstField(size, Local(b2,Box), i32))])");
+            var boundDynamic = (BoundDynamicNewExpression)((BoundLocalDeclarationStatement)
+                bound2.Single(b => b.Method.Name == "m").Body.Statements[2]).Initializer!;
+            var loweredDynamic = (LoweredDynamicNewExpression)((LoweredLocalDeclarationStatement)
+                BodyOf(lowered2, "m").Body.Statements[2]).Initializer!;
+            TestHarness.CheckTrue("动态 new 降级 Origin 回指 + TypeValue 递归降级",
+                ReferenceEquals(loweredDynamic.Origin, boundDynamic)
+                && loweredDynamic.GenericParameter == null
+                && loweredDynamic.TypeValue != null
+                && ReferenceEquals(loweredDynamic.TypeValue!.Origin, boundDynamic.TypeValue!)
+                && loweredDynamic.Arguments.Count == 1);
+        }
     }
 }

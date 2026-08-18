@@ -154,6 +154,62 @@ namespace RigiCompiler.Tests
                 "super(...) is only available in an instance member body");
         }
 
+        // ===== 默认构造合成（BindingDriver 阶段 1.8，SYNTAX §9.3）=====
+        private static void TestDefaultConstructorSynthesis()
+        {
+            TestHarness.Section("P3 Default Constructor Synthesis");
+
+            // 链式：无本类初始化器的派生类，基类需要初始化链 → 同样合成
+            //（super-only 体）；有本类初始化器的派生合成体 super 先行
+            var (unit, bodies) = BindUnit(
+                "open class A { pub var x: i32 = 41 }\n" +
+                "open class B : A { }\n" +
+                "class C : B { pub var z: i32 = 9 }\n");
+            CheckNoErrors("链式合成无诊断", unit);
+            var bInit = bodies.Single(b => b.Method.Kind == MethodKind.Init
+                && b.Method.Owner?.Name == "B");
+            TestHarness.Check("无本类初始化器的派生合成 super-only 体",
+                BoundDescribe.Body(bInit),
+                "Body(init, [], [ExprStmt(SuperCall(init, [], void))])");
+            var cInit = bodies.Single(b => b.Method.Kind == MethodKind.Init
+                && b.Method.Owner?.Name == "C");
+            TestHarness.Check("派生合成体 super 先行、初始化器随后",
+                BoundDescribe.Body(cInit),
+                "Body(init, [], [ExprStmt(SuperCall(init, [], void)); " +
+                "Assign(InstField(z, This(C), i32), Int(9,i32))])");
+            // super 命中直接基类的合成 init（符号引用相等）
+            var bType = unit.Symbols.GlobalNamespace.Types.Single(t => t.Name == "B");
+            var cSuper = (BoundExpressionStatement)cInit.Body.Statements[0];
+            TestHarness.CheckTrue("super 命中直接基类合成 init（引用相等）",
+                cSuper.Expression is BoundSuperCallExpression super
+                && ReferenceEquals(super.Method,
+                    bType.Methods.Single(m => m.Kind == MethodKind.Init)));
+
+            // 无可链时不合成：无初始化器且基类无零参 init
+            var (unit2, bodies2) = BindUnit(
+                "open class P { pub var n: i32 }\n" +
+                "class Q : P { }\n");
+            CheckNoErrors("无可链无诊断", unit2);
+            TestHarness.CheckTrue("无可链时不合成 init",
+                !unit2.Symbols.GlobalNamespace.Types
+                    .Where(t => t.Name == "P" || t.Name == "Q")
+                    .SelectMany(t => t.Methods).Any(m => m.Kind == MethodKind.Init)
+                && !bodies2.Any(b => b.Method.Kind == MethodKind.Init));
+
+            // 泛型基类：基类定义查零参 init（构造壳不挂方法表），合成体
+            // super 先行——隐藏实参与显式 super(...) 同口径（合成 init 无
+            // 自身泛型参数，恒空）
+            var (unit3, bodies3) = BindUnit(
+                "open class B\\<T> { pub var v: i32 = 41 }\n" +
+                "class C\\<T> : B\\<T> { pub var w: i32 = 7 }\n");
+            CheckNoErrors("泛型基类链式无诊断", unit3);
+            var cInit3 = bodies3.Single(b => b.Method.Kind == MethodKind.Init
+                && b.Method.Owner?.Name == "C");
+            TestHarness.CheckTrue("泛型基类合成体 super 先行",
+                cInit3.Body.Statements[0] is BoundExpressionStatement
+                { Expression: BoundSuperCallExpression { Method.Owner.Name: "B" } });
+        }
+
         // ===== 索引访问（S8c，SYNTAX §13.2：getAtIndex/setAtIndex 绑定、
         // 表达式底座路径、赋值 place 扩展）=====
         private static void TestIndexAccess()

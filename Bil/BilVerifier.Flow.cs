@@ -150,7 +150,10 @@ namespace RigiCompiler.Bil
         // 结构化终止判定（§9.4）：块末指令是否保证不以落尾结束。
         // ret/throw 终止；switch 要求 item 与 default 全终止；if 要求双分支
         // 都在且全终止；try 要求 body 与全部 catch handler 终止；loop 可能
-        // 零次执行、call blk 落尾返回——均不算终止。环与越权块保守为否
+        // 零次执行——不算终止；call blk 仅当被调块自身终止且 region 无
+        // 外向逃逸（region 内 break/continue 的目标 breakid 全为 region
+        // 内部结构指令所建——命中自身/外层 breakid 的路径会落回 call
+        // 续点或更外）才算终止。环与越权块保守为否
         private static bool BlockTerminates(BilFunctionContext context, BilBlock block,
             HashSet<BilBlock> visited)
         {
@@ -193,9 +196,85 @@ namespace RigiCompiler.Bil
                         }
                     }
                     return true;
+                case CallBlockInstruction callBlock:
+                    return BlockTerminates(context, callBlock.Block, visited)
+                        && RegionExitsStayWithin(callBlock.Block);
                 default:
                     return false;
             }
+        }
+
+        // region 内聚检查（call blk 终止判定的辅助）：块及其结构子块
+        // （传递闭包）内的 break/continue 目标 breakid 全部为本 region
+        // 内结构指令（loop/switch/if/call/try）所建。被调块自身 breakid
+        // 由 call 点在 region 外创建——命中它即逃逸回落 call 续点，
+        // 不在「内建」集合中自然被拒
+        private static bool RegionExitsStayWithin(BilBlock entryBlock)
+        {
+            var created = new HashSet<string>();
+            var exits = new List<string>();
+            var visited = new HashSet<BilBlock>(ReferenceEqualityComparer.Instance);
+            var pending = new Stack<BilBlock>();
+            pending.Push(entryBlock);
+            while (pending.Count > 0)
+            {
+                var block = pending.Pop();
+                if (!visited.Add(block)) continue;
+                foreach (var instruction in block.Instructions)
+                {
+                    switch (instruction)
+                    {
+                        case BreakInstruction breakInstruction:
+                            exits.Add(breakInstruction.BreakId.Name);
+                            break;
+                        case ContinueInstruction continueInstruction:
+                            exits.Add(continueInstruction.BreakId.Name);
+                            break;
+                        case LoopInstruction loop:
+                            created.Add(loop.BreakId.Name);
+                            pending.Push(loop.Body);
+                            pending.Push(loop.Judge);
+                            if (loop.EnumBlock != null) pending.Push(loop.EnumBlock);
+                            break;
+                        case SwitchInstruction switchInstruction:
+                            created.Add(switchInstruction.BreakId.Name);
+                            foreach (var itemBlock in switchInstruction.ItemBlocks)
+                            {
+                                pending.Push(itemBlock);
+                            }
+                            pending.Push(switchInstruction.DefaultBlock);
+                            break;
+                        case IfInstruction ifInstruction:
+                            created.Add(ifInstruction.BreakId.Name);
+                            pending.Push(ifInstruction.ThenBlock);
+                            if (ifInstruction.ElseBlock != null)
+                            {
+                                pending.Push(ifInstruction.ElseBlock);
+                            }
+                            break;
+                        case TryInstruction tryInstruction:
+                            created.Add(tryInstruction.BreakId.Name);
+                            pending.Push(tryInstruction.Body);
+                            if (tryInstruction.FinallyBlock != null)
+                            {
+                                pending.Push(tryInstruction.FinallyBlock);
+                            }
+                            if (tryInstruction.CatchTable is BilCatchTableResource catchTable)
+                            {
+                                foreach (var entry in catchTable.Entries)
+                                {
+                                    pending.Push(entry.Handler);
+                                }
+                            }
+                            break;
+                        case CallBlockInstruction callBlock:
+                            created.Add(callBlock.BreakId.Name);
+                            pending.Push(callBlock.Block);
+                            break;
+                    }
+                }
+            }
+            return exits.All(created.Contains);
         }
 
         // 块分析：沿结构化指令递归。assigned 为进入态（就地演进），返回出口态；

@@ -435,12 +435,23 @@ namespace RigiCompiler.Bil.Vm
             {
                 return arguments.Count == 0;
             }
+            // 构造泛型宿主（§14.1 严格匹配的 VM 侧落地）：init 声明在定义级
+            // 符号上，参数类型含 .generic<$.generic.T> 占位——按构造实参代入
+            // 后再与实参值比对（与 VmTypeSheetBuilder 的 extends/implements
+            // 槽代入同一机制）
+            var substitution = VmTypeSheetBuilder.BuildSubstitution(typeRef, declaration);
             foreach (var init in inits)
             {
                 if (!BilVerificationContext.TryParseMethodSymbol(init.Symbol,
                         out _, out _, out var parameters, out _))
                 {
                     continue;
+                }
+                if (substitution != null)
+                {
+                    parameters = parameters.ConvertAll(p =>
+                        (p.Name, VmTypeSheetBuilder.SubstituteGenericArguments(
+                            p.TypeRef, substitution)));
                 }
                 if (ParametersMatch(parameters, arguments))
                 {
@@ -953,6 +964,11 @@ namespace RigiCompiler.Bil.Vm
         public VmException NoSuchMethod(string message)
         {
             return LanguageException("core::NoSuchMethodException", message);
+        }
+
+        public VmException DividedByZero(string message)
+        {
+            return LanguageException("core::DividedByZeroException", message);
         }
 
         public VmException LanguageException(string typeRef, string message)

@@ -1496,15 +1496,27 @@ namespace RigiCompiler.Bil
                     $"{opcode} 的 case 符号不可解析 \"{caseQualifiedName}\""));
                 return;
             }
-            var expected = new List<(string Name, string TypeRef)>();
-            foreach (var p in caseDecl.Parameters)
+            // §14.3：组合实参（固定 + 洞，init 参数序）匹配宿主 enum 的
+            // init 签名（case 声明参数表是洞签名，不作校验依据）
+            if (!context.Module.TryGetTypeDeclaration(enumTypeRef, out var declaration))
             {
-                expected.Add((p.Name, p.TypeRef));
+                return;   // 查不到声明（external 不完整）降级
             }
-            if (!SignatureMatches(context, expected, arguments))
+            if (!MatchAnyInit(context, declaration, enumTypeRef, arguments))
             {
-                errors.Add(new BilVerificationError("21.3", location,
-                    $"{opcode} 的 case 实参不匹配 case 洞签名"));
+                if (CollectInits(declaration).Count == 0)
+                {
+                    if (arguments.Count > 0)
+                    {
+                        errors.Add(new BilVerificationError("21.3", location,
+                            $"enum-struct \"{enumTypeRef}\" 没有 init 声明，{opcode} 不得带参数"));
+                    }
+                }
+                else
+                {
+                    errors.Add(new BilVerificationError("21.3", location,
+                        $"{opcode} 的组合实参不匹配 enum-struct \"{enumTypeRef}\" 的任何 init 签名"));
+                }
             }
         }
 
@@ -1663,23 +1675,34 @@ namespace RigiCompiler.Bil
                 errors.Add(new BilVerificationError("21.3", location,
                     $"new.case 的 case \"{newCase.Case.QualifiedName}\" 不属于类型 \"{typeRef}\""));
             }
-            if (!context.Module.CaseDeclarations.TryGetValue(newCase.Case.QualifiedName, out var caseDeclaration))
+            if (!context.Module.CaseDeclarations.TryGetValue(newCase.Case.QualifiedName, out _))
             {
                 errors.Add(new BilVerificationError("21.2", location,
                     $"new.case 的 case 符号不可解析 \"{newCase.Case.QualifiedName}\""));
                 return;
             }
-            // case 参数签名匹配
-            if (caseDeclaration.Parameters.Count != newCase.Arguments.Count)
+            // §14.3：组合实参（声明点固定实参 + 调用点洞实参，init 参数
+            // 序）必须匹配宿主 enum 的某个 init 签名——case 声明的参数表
+            // 是洞签名（调用方契约），不作为 new.case 实参校验依据
+            if (declaration == null)
             {
-                errors.Add(new BilVerificationError("21.3", location,
-                    $"new.case 实参个数与 case 声明参数个数不一致"));
-                return;
+                return;   // 查不到声明（external 不完整）降级
             }
-            for (var i = 0; i < caseDeclaration.Parameters.Count; i++)
+            if (!MatchAnyInit(context, declaration, typeRef, newCase.Arguments))
             {
-                CheckType(context, VarType(context, newCase.Arguments[i]),
-                    caseDeclaration.Parameters[i].TypeRef, location, $"new.case 实参 {i}", errors);
+                if (CollectInits(declaration).Count == 0)
+                {
+                    if (newCase.Arguments.Count > 0)
+                    {
+                        errors.Add(new BilVerificationError("21.3", location,
+                            $"enum-struct \"{typeRef}\" 没有 init 声明，new.case 不得带参数"));
+                    }
+                }
+                else
+                {
+                    errors.Add(new BilVerificationError("21.3", location,
+                        $"new.case 的组合实参不匹配 enum-struct \"{typeRef}\" 的任何 init 签名"));
+                }
             }
         }
 
@@ -2210,7 +2233,8 @@ namespace RigiCompiler.Bil
             {
                 // 命名空间全局字段（§13.4 未规定宿主形态）：符号 owner 段是
                 // 带 "::" 的命名空间前缀，指令宿主操作数投影命名空间全名
-                // （EmittingFacility.FieldOwnerRef 约定）——归一后比对
+                // （EmittingFacility.FieldOwnerRef 约定）——归一后比对；
+                // 根命名空间全局字段两侧均为空投影（type()），全等直通
                 if (owner.EndsWith("::"))
                 {
                     owner = owner.Substring(0, owner.Length - 2);

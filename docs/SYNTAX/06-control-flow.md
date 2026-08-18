@@ -37,6 +37,7 @@ if 表达式规则：
 - 必须有 `else` 分支
 - 分支体为单表达式时，该表达式即分支值（隐式取值，无需 `return@`）
 - 分支体含多条语句时，所有执行路径都必须显式 `return@_`（匿名）或 `return@标签`（`if (cond) named 标签` 命名后）产出值——规则同 §6.1；落到块尾而没有 `return@` 是编译错误
+- 分支体是值块：其内（含嵌套语句块）一切裸 `return` 均为编译错误（裸 `return` 不得穿透值块边界，见 §6.1）
 
 ### 7.2 switch
 
@@ -64,7 +65,7 @@ switch(expr) {
 
 // 表达式形态：多语句分支体用 return@ 显式产出分支值；named 命名后可用 return@标签
 var result = switch(expr) named match {
-    (1) -> { return@_ "one" }
+    (1) -> { return@match "one" }
     (_ > 10) -> {
         logBig(expr)
         return@match "big"
@@ -77,8 +78,9 @@ var result = switch(expr) named match {
 - 不含 `_` 的分支为值匹配（value match），要求为编译期常量
 - 含 `_` 的分支为模式匹配（pattern match），`_` 代表被检查的表达式的值，最终结果必须为 `bool`
 - 两种形态都必须有 `default` 分支
+- selector 的静态类型为 enum struct 时，分支体内（表达式与语句形态，含嵌套）的 `.Case` 省略形式以 selector 类型为解析上下文（§12）；这只是解析上下文的贡献，分支结果类型仍按既有统一规则推导，分支产出与 selector 异质的用法不受影响
 - 语句形态的分支体是完整代码块，可写多条语句
-- 表达式形态的分支体取值规则同 if 表达式（§7.1）：单表达式分支隐式取值；多语句分支体必须显式 `return@_`（匿名）或 `return@标签`（`switch (expr) named 标签` 命名后）产出值，落到块尾而没有 `return@` 是编译错误
+- 表达式形态的分支体取值规则同 if 表达式（§7.1）：单表达式分支隐式取值；多语句分支体必须显式 `return@_`（匿名）或 `return@标签`（`switch (expr) named 标签` 命名后）产出值，落到块尾而没有 `return@` 是编译错误；分支体是值块，其内一切裸 `return` 均为编译错误（见 §6.1）
 
 ### 7.3 循环
 
@@ -206,7 +208,8 @@ try {
 } catch (_: RuntimeException) {
     // 丢弃异常变量
 } finally(e) {
-    // e 为 try/catch 中抛出的异常，无异常时为 null
+    // e 为仍在向外传播的异常（无匹配 catch 捕获、异常穿出本 try）；
+    // 被本 try 的 catch 捕获的异常不会出现在 e 中（此时 e 为 null），无异常时亦为 null
     cleanup()
 }
 ```
@@ -227,7 +230,7 @@ pub open class Exception { ... }   // 概念形态；实际声明在编译器 bo
 - `protected var message: String` 字段——异常的人类可读描述；
 - `pub func getMessage(): String` 方法——message 的唯一公共读取通道（abstract，由各具体异常子类 override 实现；`toString` 不覆写，插值/打印仍走 `Object` 的默认实现）。
 
-`throw` 操作数类型与 `catch` 子句类型必须是 `core.Exception` 或其子类（§3.1 层级兼容判定）。标准库在 `stdlib/core/exceptions.rg` 提供四个具体子类（均可继承，用户自定义异常以同样的 `: core.Exception` 声明）：
+`throw` 操作数类型与 `catch` 子句类型必须是 `core.Exception` 或其子类（§3.1 层级兼容判定）。标准库在 `stdlib/core/exceptions.rg` 提供五个具体子类（均可继承，用户自定义异常以同样的 `: core.Exception` 声明）：
 
 | 类型 | 含义 |
 |------|------|
@@ -235,6 +238,7 @@ pub open class Exception { ... }   // 概念形态；实际声明在编译器 bo
 | `core.IOException` | I/O 相关异常 |
 | `core.CastException` | `as`/`as?`/nullable 展开等类型转换失败（BIL §12.1） |
 | `core.NoSuchMethodException` | 运行期 init 重载解析失败与 wrapper 派发失败（§10/§14.6） |
+| `core.DividedByZeroException` | 整数除法除零（BIL §11.2；float/double 除零按 IEEE 754 产 inf/NaN，不抛） |
 
 每个子类**自持**显式 init（异常根不写 init；需要时 init 体可选调用 `super(...)`，字段也可直接赋值继承字段）：
 

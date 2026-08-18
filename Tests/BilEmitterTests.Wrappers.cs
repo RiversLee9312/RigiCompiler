@@ -1,4 +1,4 @@
-﻿using System.Linq;
+using System.Linq;
 using RigiCompiler.Bil;
 
 namespace RigiCompiler.Tests
@@ -1674,7 +1674,7 @@ namespace RigiCompiler.Tests
                 "cast $.t3 $.t4 type(.any)\n" +
                 "new type(.array<.any>) $.t5 [$.t4]\n" +
                 "invoke fn(core::Any$call???(symbol:.string," +
-                "namedArgs:.array<core::Pair<.string, .any>>," +
+                "namedArgs:.array<core::Pair<.string,.any>>," +
                 "unnamedArgs:.array<.any>)@.any) $.t6 [$.t0, $.t1, $.t2, $.t5]\n" +
                 "ret $.t6\n");
         }
@@ -1714,7 +1714,7 @@ namespace RigiCompiler.Tests
                 "new type(.array<core::Pair<.string, .any>>) $.t2 []\n" +
                 "new type(.array<.any>) $.t3 []\n" +
                 "invoke fn(core::Any$call???(symbol:.string," +
-                "namedArgs:.array<core::Pair<.string, .any>>," +
+                "namedArgs:.array<core::Pair<.string,.any>>," +
                 "unnamedArgs:.array<.any>)@.any) $.t4 [$.t0, $.t1, $.t2, $.t3]\n" +
                 "cast $.t4 $.t5 type(User)\n" +
                 "set.var $.t5 $u\n" +
@@ -1750,7 +1750,7 @@ namespace RigiCompiler.Tests
                 "new type(.array<core::Pair<.string, .any>>) $.t2 []\n" +
                 "new type(.array<.any>) $.t3 []\n" +
                 "invoke fn(core::Any$call???(symbol:.string," +
-                "namedArgs:.array<core::Pair<.string, .any>>," +
+                "namedArgs:.array<core::Pair<.string,.any>>," +
                 "unnamedArgs:.array<.any>)@.any) $.t4 [$.t0, $.t1, $.t2, $.t3]\n" +
                 "ret\n");
         }

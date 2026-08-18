@@ -221,6 +221,37 @@ namespace RigiCompiler
         }
     }
 
+    // 动态 new（SYNTAX §3.7，BIL §14.2 new.indirect）：TypeValue 与实参
+    // 共用一次求值序保护（目标值先、实参后——与源文书写序一致）；
+    // 实参无静态 init 形参（运行期重载解析），声明类型代入直通
+    internal sealed class DynamicNewRewriter
+        : LoweredVisitor<DynamicNewRewriter, LoweredExpression, LowerContext>
+    {
+        protected override LoweredExpression? VisitCore(BoundNode node, LowerContext ctx,
+            LowerEnvironment env)
+        {
+            var dynamicNew = (BoundDynamicNewExpression)node;
+            var guard = new EvalOrderGuard(ctx);
+            LoweredExpression? typeValue = null;
+            if (dynamicNew.TypeValue != null)
+            {
+                typeValue = guard.Lower(dynamicNew.TypeValue, env);
+                if (typeValue == null) return null;
+            }
+            var arguments = LoweringFacility.LowerArguments(dynamicNew.Arguments, null, ctx, env,
+                guard);
+            if (arguments == null) return null;
+            var sealedSlots = guard.Seal();
+            var sealedIndex = 0;
+            if (typeValue != null) typeValue = sealedSlots[sealedIndex++];
+            var sealedArguments = new List<LoweredExpression>(dynamicNew.Arguments.Count);
+            for (var i = sealedIndex; i < sealedSlots.Count; i++)
+                sealedArguments.Add(sealedSlots[i]);
+            return new LoweredDynamicNewExpression(dynamicNew, typeValue,
+                dynamicNew.GenericParameter, sealedArguments);
+        }
+    }
+
     // 可变参数包实参（S9d）：元素递归降级透传（恒等重写——打包归 P4b）
     internal sealed class VarArgsRewriter
         : LoweredVisitor<VarArgsRewriter, LoweredExpression, LowerContext>
@@ -374,7 +405,9 @@ namespace RigiCompiler
     }
 
     // 复合赋值脱糖（SYNTAX §13.2 通用规则——M60 定稿单次求值）：前置
-    // 「Target = Target op Value」赋值，表达式位 Target 引用（写回后值）。
+    // 「Target = Target op Value」赋值，表达式位为写回后值（纯读取目标
+    // 直取 Target 重读；非纯读取目标——索引/带 getter 字段——取写回值
+    // 物化的合成局部，避免表达式位二次触发 getAtIndex/getter）。
     // 含副作用的目标子表达式（实例字段 receiver / 索引 receiver+index）
     // 先物化合成局部（前置赋值，求值序先于右值），赋值左/运算左/表达式
     // 位三处共用同一物化目标——节点复用安全（Lowered 节点无父链不可变，
@@ -478,6 +511,23 @@ namespace RigiCompiler
                     ? smartCast.Operand.Type
                     : compound.Target.Type);
             binary = LoweringFacility.EnsureDeclaredType(compound, binary, declaredTargetType);
+            // §13.2 单次求值：非纯读取目标（索引/带 getter 字段）在表达式位
+            // 重读会再次触发 getAtIndex/getter 调用——写回值先物化合成局部，
+            // 写回与表达式位共用该局部（与 wrapper place/cell 路径同构）；
+            // 纯读取目标（局部/参数/静态字段/backing 字段）重读无副作用且
+            // 值恒等于写回值，保持直通零物化
+            if (!IsSideEffectFree(target))
+            {
+                var result = ctx.Synth.NewSynthLocal(declaredTargetType);
+                ctx.Output.Add(new LoweredAssignmentStatement(compound,
+                    SynthLocalFactory.ReferenceTo(compound, result), binary));
+                ctx.Output.Add(new LoweredAssignmentStatement(compound, target,
+                    SynthLocalFactory.ReferenceTo(compound, result)));
+                // 写回类型与表达式类型不同（variadic 索引装箱/SmartCast）时
+                // 表达式位补回 P3 类型 cast——读的是合成局部，纯读取
+                return LoweringFacility.EnsureDeclaredType(compound,
+                    SynthLocalFactory.ReferenceTo(compound, result), compound.Target.Type);
+            }
             ctx.Output.Add(new LoweredAssignmentStatement(compound, target, binary));
             return target;
         }
@@ -839,11 +889,13 @@ namespace RigiCompiler
         }
     }
 
-    // enum case 构造恒等降级（S11，BIL §14.3 new.case 直接对应）：洞实参
-    // 逐条递归降级 + 按洞签名类型物化 cast（§14.3 ARG 类型严格匹配 case
-    // 入口——P3 已 IsAssignable 兼容，BIL 侧严格相等；与 LowerArguments
-    // 按形参类型物化同先例）。HoleParameters null（模板绑定失败，P3 已
-    // 诊断静默）时跳过 cast 物化直通
+    // enum case 构造降级（S11，BIL §14.3 new.case 直接对应）：实参按
+    // init 参数序组合「声明点固定实参 + 调用点洞实参」（RUNTIME §16：
+    // case 入口按模板固定参数与参数洞组成实参调用已解析 init），逐条
+    // 递归降级 + 按 init 形参类型物化 cast（§14.3 严格匹配；与
+    // LowerArguments 按形参类型物化同先例）。模板信息缺失（HoleParameters
+    // null——绑定失败 P3 已诊断静默；或无显式 init 的零参 case）时
+    // 退化为仅洞实参直通
     internal sealed class EnumCaseRewriter
         : LoweredVisitor<EnumCaseRewriter, LoweredExpression, LowerContext>
     {
@@ -852,8 +904,58 @@ namespace RigiCompiler
         {
             var enumCase = (BoundEnumCaseExpression)node;
             var holes = enumCase.Case.HoleParameters;
-            // 兄弟求值序保护（EvalOrderGuard）：洞实参逐条登记（Track 的
-            // 必须是 EnsureDeclaredType 包装后的最终形态）后统一 Seal
+            var fixedArgs = enumCase.FixedArguments;
+            var init = enumCase.Case.ResolvedInit;
+            if (fixedArgs == null || init == null || holes == null
+                || fixedArgs.Count != init.Parameters.Count)
+            {
+                return LowerHoleArgumentsOnly(enumCase, holes, ctx, env);
+            }
+            // 组合实参（init 参数序）：固定位置取声明点模板实参，洞位置
+            // 经 InitParameterIndex 回指调用点洞实参（洞签名序）
+            var guard = new EvalOrderGuard(ctx);
+            for (var i = 0; i < init.Parameters.Count; i++)
+            {
+                BoundExpression source;
+                if (fixedArgs[i] is { } fixedArg)
+                {
+                    source = fixedArg;
+                }
+                else
+                {
+                    var holeIndex = -1;
+                    for (var h = 0; h < holes.Count; h++)
+                    {
+                        if (holes[h].InitParameterIndex == i) { holeIndex = h; break; }
+                    }
+                    if (holeIndex < 0)
+                    {
+                        // 结构不齐（模板绑定保证洞全覆盖——防御，不该到达）
+                        env.Error(node.Syntax.Span,
+                            $"P4: enum case '{enumCase.Case.Name}' template hole mapping " +
+                            "is incomplete");
+                        return null;
+                    }
+                    source = enumCase.Arguments[holeIndex];
+                }
+                var lowered = LowerExpressionDispatcher.Visit(source, ctx, env);
+                if (lowered == null) return null;
+                guard.Track(source, LoweringFacility.EnsureDeclaredType(source, lowered,
+                    init.Parameters[i].Type));
+            }
+            var sealedSlots = guard.Seal();
+            var arguments = new List<LoweredExpression>(sealedSlots.Count);
+            for (var i = 0; i < sealedSlots.Count; i++) arguments.Add(sealedSlots[i]);
+            return new LoweredEnumCaseExpression(enumCase, enumCase.Case, arguments);
+        }
+
+        // 旧形态：仅调用点洞实参（规范序 = 洞签名序；固定 case 为空）。
+        // 兄弟求值序保护（EvalOrderGuard）：洞实参逐条登记（Track 的
+        // 必须是 EnsureDeclaredType 包装后的最终形态）后统一 Seal
+        private static LoweredExpression? LowerHoleArgumentsOnly(
+            BoundEnumCaseExpression enumCase, IReadOnlyList<EnumCaseHoleParameter>? holes,
+            LowerContext ctx, LowerEnvironment env)
+        {
             var guard = new EvalOrderGuard(ctx);
             for (var i = 0; i < enumCase.Arguments.Count; i++)
             {
