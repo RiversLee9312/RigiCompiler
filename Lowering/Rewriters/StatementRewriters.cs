@@ -5,8 +5,9 @@ namespace RigiCompiler
 
     // 局部声明：初始化表达式降级 + cast 物化（BIL §6.5）；
     // cell 化局部（统一 cell 存储，SYNTAX §5.2/§14.3）：存储是 cell——
-    // 声明处构造隐藏子类实例（有初始化器 = init(value)，无初始化器 =
-    // init() 空构造）
+    // 声明处构造隐藏子类实例。可变 Value wrapper 局部带初始化器时
+    // 两步：空构造（装 wrapper）+ setValue（经 proxy.set，§9.4.1）；
+    // const / 无 wrapper 仍直接 init(value)；无初始化器 = init() 空构造
     internal sealed class LocalDeclarationRewriter
         : LoweredVisitor<LocalDeclarationRewriter, LoweredStatement, LowerContext>
     {
@@ -25,14 +26,32 @@ namespace RigiCompiler
             }
             if (decl.Local.CellStorage is { } storage)
             {
+                // 可变 wrapper cell 带初始化器：先 DefaultInit 空构造（保留
+                // new.wrapped 前缀，wrapper 装到 cell 上），再 setValue 走
+                // proxy.set。无 .proxy.set 的纯状态修饰器 / const 保持
+                // ValueInit——VM set 链要求每环都有 .proxy.set。
+                var viaSet = initializer != null
+                    && !storage.IsReadOnly
+                    && storage.DefaultInit != null
+                    && HasSetProxyChain(storage);
+                LoweredStatement? writeAfter = null;
+                if (viaSet)
+                {
+                    writeAfter = ctx.Closure.TryRewriteCellWrite(decl,
+                        new BoundValueReferenceExpression(decl.Syntax, decl.Local,
+                            decl.Local.Type!), initializer!);
+                    if (writeAfter == null) viaSet = false;
+                }
                 // 无初始化器的 const 局部不存在（P3：const 必须初始化）——
                 // ReadonlyCell 风味无空构造（DefaultInit 恒 null）
-                var init = initializer != null ? storage.ValueInit
+                var init = viaSet
+                    ? storage.DefaultInit!
+                    : initializer != null ? storage.ValueInit
                     : storage.DefaultInit ?? throw new CompilerInternalException(
                         "ReadonlyCell 局部缺初始化器: " + decl.Local.Name);
                 // M107：局部访问器自由变量捕获实参接在值参之后（同 lambda init）
                 var args = new List<LoweredExpression>();
-                if (initializer != null) args.Add(initializer);
+                if (initializer != null && !viaSet) args.Add(initializer);
                 foreach (var capture in storage.AccessorCaptures)
                 {
                     if (capture.IsThis)
@@ -50,8 +69,33 @@ namespace RigiCompiler
                 var wrapperArgs = CellWrappedNew.LowerWrapperInitArgs(decl, storage, ctx, env);
                 initializer = new LoweredNewExpression(decl, init, args, storage.CellType,
                     wrapperArgs);
+                var declaration = new LoweredLocalDeclarationStatement(decl, decl.Local,
+                    initializer);
+                if (writeAfter == null) return declaration;
+                return new LoweredBlock(decl, new List<LoweredStatement>
+                {
+                    declaration, writeAfter
+                });
             }
             return new LoweredLocalDeclarationStatement(decl, decl.Local, initializer);
+        }
+
+        // 值字段上每一环 Value wrapper 都实现了 .proxy.set 才走 set 链；
+        // 纯状态修饰器（无 proxy）或残缺应用不得 setValue
+        private static bool HasSetProxyChain(CellStorageInfo storage)
+        {
+            var wrappers = storage.ValueField.AppliedWrappers;
+            if (wrappers.Count == 0) return false;
+            foreach (var app in wrappers)
+            {
+                var found = false;
+                foreach (var method in app.WrapperDefinition.Methods)
+                {
+                    if (method.Name == ".proxy.set") { found = true; break; }
+                }
+                if (!found) return false;
+            }
+            return true;
         }
     }
 

@@ -113,6 +113,7 @@ namespace RigiCompiler.Tests
             TestWrapperPlaceVoidStatement();
             TestGetProxyInnerForbidden();
             TestSubclassWrapperInheritedShape();
+            TestMethodWrapperSpecificCallShape();
             TestLambdaBinding();
             TestVoidLambdaExpressionBodyStatementSemantics();
             return TestHarness.Summary("Binder");

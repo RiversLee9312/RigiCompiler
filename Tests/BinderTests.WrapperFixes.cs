@@ -3,7 +3,8 @@ using System.Linq;
 namespace RigiCompiler.Tests
 {
     // Wrapper 簇修复：§14.5 语句位 void 调用、§14.2/§14.3 get 禁 inner、
-    // §14.2 子类 wrapper 对继承成员的形状校验。
+    // §14.2 子类 wrapper 对继承成员的形状校验、§14.4 Method wrapper
+    // specific `.proxy.call` 形状全等。
     public static partial class BinderTests
     {
         private static void TestWrapperPlaceVoidStatement()
@@ -188,6 +189,82 @@ namespace RigiCompiler.Tests
                 "@Logged\n" +
                 "pub class Child : Base { pub init() }\n");
             CheckNoErrors("specific + wildcard 共存且覆盖继承成员", unitBoth);
+        }
+
+        private static void TestMethodWrapperSpecificCallShape()
+        {
+            TestHarness.Section("P3 Method Wrapper Specific .proxy.call Shape (§14.4)");
+
+            var (unitBad, _) = BindUnitWithStdlib(
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Trace {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call\\<TReturn>(): TReturn {\n" +
+                "        const r = inner()\n" +
+                "        return r\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const f = func{ @Trace (x: i32): i32 -> (x * x) }\n" +
+                "    return f(6)\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("lambda specific .proxy.call 形状不符",
+                unitBad.Diagnostics, "does not match the shape");
+
+            var (unitOk, _) = BindUnitWithStdlib(
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Trace {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call\\<TReturn>(x: i32): TReturn {\n" +
+                "        return inner(x)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const f = func{ @Trace (x: i32): i32 -> (x * x) }\n" +
+                "    return f(6)\n" +
+                "}\n");
+            CheckNoErrors("lambda specific .proxy.call 形状匹配", unitOk);
+
+            var (unitWild, _) = BindUnitWithStdlib(
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Trace {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call(.name: String, args: named Any...): Any {\n" +
+                "        return inner(.name, args)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const f = func{ @Trace (x: i32): i32 -> (x * x) }\n" +
+                "    return f(6)\n" +
+                "}\n");
+            CheckNoErrors("lambda wildcard .proxy.call 任意形状合法", unitWild);
+
+            var (unitMethBad, _) = BindUnit(
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Trace {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call\\<TReturn>(): TReturn { return inner() }\n" +
+                "}\n" +
+                "pub class Host {\n" +
+                "    pub init()\n" +
+                "    @Trace\n" +
+                "    pub func f(x: i32): i32 { return x }\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("声明方法 specific .proxy.call 形状不符",
+                unitMethBad.Diagnostics, "does not match the shape");
+
+            var (unitMethOk, _) = BindUnit(
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Trace {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call\\<TReturn>(x: i32): TReturn { return inner(x) }\n" +
+                "}\n" +
+                "pub class Host {\n" +
+                "    pub init()\n" +
+                "    @Trace\n" +
+                "    pub func f(x: i32): i32 { return x }\n" +
+                "}\n");
+            CheckNoErrors("声明方法 specific .proxy.call 形状匹配", unitMethOk);
         }
     }
 }

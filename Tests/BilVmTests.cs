@@ -30,6 +30,7 @@ namespace RigiCompiler.Tests
             TestClassInstanceFields();
             TestFieldZeroDefault();
             TestDefaultConstructorFieldInitializer();
+            TestExplicitInitFieldInitializer();
             TestAccessorFieldInitializerViaSetter();
             TestDefaultConstructorChaining();
             TestSeqStatementReturnTransparency();
@@ -281,6 +282,90 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckOk("泛型类默认构造字段初始化器", generic);
             CheckI32("new Box<i32>().item = 5", generic, 5);
+        }
+
+        // SYNTAX §9.3 回归：显式 init（无体 / 空体）同样应用声明处
+        // 实例字段初始化器（历史 bug：仅默认构造合成路径拼初始化器）
+        private static void TestExplicitInitFieldInitializer()
+        {
+            var plain = Run(
+                "pub class Plain {\n" +
+                "    pub var n: i32 = 100\n" +
+                "    pub init()\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    return new Plain().n\n" +
+                "}\n");
+            CheckOk("无体显式 init 字段初始化器", plain);
+            CheckI32("new Plain().n = 100", plain, 100);
+
+            var withProp = Run(
+                "pub class WithProp {\n" +
+                "    pub var n: i32 {\n" +
+                "        pub get\n" +
+                "        pub set\n" +
+                "    } = 100\n" +
+                "    pub init()\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    return new WithProp().n\n" +
+                "}\n");
+            CheckOk("自动访问器 + 显式 init 初始化器", withProp);
+            CheckI32("new WithProp().n = 100", withProp, 100);
+
+            var withBacking = Run(
+                "pub class WithBackingProp {\n" +
+                "    pub var n: i32 {\n" +
+                "        pub get(value: _) { return value }\n" +
+                "        pub set(value: _) { }\n" +
+                "    } = 100\n" +
+                "    pub init()\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    return new WithBackingProp().n\n" +
+                "}\n");
+            CheckOk("backing 访问器 + 显式 init 初始化器", withBacking);
+            CheckI32("new WithBackingProp().n = 100", withBacking, 100);
+
+            var multi = Run(
+                "pub class Multi {\n" +
+                "    pub var a: i32 = 1\n" +
+                "    pub var b: i32 = 2\n" +
+                "    pub init() { }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const m = new Multi()\n" +
+                "    return m.a + m.b\n" +
+                "}\n");
+            CheckOk("空体显式 init 多字段初始化器", multi);
+            CheckI32("a+b=3", multi, 3);
+
+            var clamped = Run(
+                "pub class Meter {\n" +
+                "    pub var value: i32 {\n" +
+                "        pub get(value: _) { return value }\n" +
+                "        pub set(value: _) { if (value > 100) { value = 100 } }\n" +
+                "    } = 150\n" +
+                "    pub init()\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    return new Meter().value\n" +
+                "}\n");
+            CheckOk("显式 init 初始化器经 setter 钳制", clamped);
+            CheckI32("setter 钳制 150→100", clamped, 100);
+
+            var mapped = Run(
+                "pub class M {\n" +
+                "    pub var x: i32 = 10\n" +
+                "    pub var y: i32\n" +
+                "    pub init(_ -> y)\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const m = new M(7)\n" +
+                "    return (m.x * 100) + m.y\n" +
+                "}\n");
+            CheckOk("显式 init 初始化器 + 参数映射", mapped);
+            CheckI32("x=10 y=7", mapped, 1007);
         }
 
         // SYNTAX §9.4.1 回归：带自定义访问器的实例字段，声明处初始化器
@@ -1384,6 +1469,8 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckOk("双层 Value wrapper 读序内层先/写序外层先", result);
             TestHarness.Check("双层 Value wrapper 顺序 stdout", result.Stdout,
+                "A.set\n" +
+                "B.set\n" +
                 "A.set\n" +
                 "B.set\n" +
                 "B.get\n" +
@@ -4722,7 +4809,7 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckOk("局部 wrapper+访问器外置序", result);
             TestHarness.Check("局部写读打印序", result.Stdout,
-                "wrapper.set\nuser.set\nuser.get\nwrapper.get\n");
+                "wrapper.set\nuser.set\nwrapper.set\nuser.set\nuser.get\nwrapper.get\n");
             CheckI32("局部 5→15→30 读 60→61", result, 61);
         }
 

@@ -302,6 +302,15 @@ namespace RigiCompiler
                 // 实参在 lambda 表达式求值语境（外层函数作用域）绑定
                 WrapperInitSynthesis.BindInitArgsInScope(app, scope, ctx, env, lambda);
                 call.AppliedWrappers.Add(app);
+                // §14.4：specific `.proxy.call` 形状必须与 lambda $$call 全等
+                // （TReturn 吸收实际返回类型；wildcard 不参与本检查）
+                if (ProxyMatching.MethodWrapperSpecificShapeMismatch(wrapperType, call,
+                        out var mismatchedProxy))
+                {
+                    env.Error(annotation.Span ?? lambda.Span,
+                        $"Specific proxy '{mismatchedProxy!.Name}' on wrapper '{wrapperType.Name}' " +
+                        "does not match the shape of lambda call (§14.4)");
+                }
             }
         }
 

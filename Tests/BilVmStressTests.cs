@@ -25,6 +25,7 @@ namespace RigiCompiler.Tests
             TestEntityWrapperInitArgExpression();
             TestValueWrapperStringField();
             TestValueWrapperCompoundAssignment();
+            TestValueWrapperLocalInitGoesThroughSet();
             TestValueWrapperPlaceWrite();
             TestValueWrapperArrayField();
             TestRichStructEntityWrapper();
@@ -223,8 +224,40 @@ namespace RigiCompiler.Tests
                 "    return x\n" +
                 "}\n");
             CheckOk("Value wrapper 复合赋值", result);
-            // 1 → +=2：set(1+2=3) 翻倍 6 → +=3：set(6+3=9) 翻倍 18
-            CheckI32("(1+2)*2=6 → (6+3)*2=18", result, 18);
+            // init 1 经 set 翻倍 2 → +=2：set(2+2=4) 翻倍 8 → +=3：set(8+3=11) 翻倍 22
+            CheckI32("init set*2=2 → (2+2)*2=8 → (8+3)*2=22", result, 22);
+        }
+
+        // 局部 Value wrapper 声明初始化器经 proxy.set（不得直接
+        // new cell(value) 绕过 set 链）
+        private static void TestValueWrapperLocalInitGoesThroughSet()
+        {
+            var result = Run(
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper Log {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.get\\<TValue>(value: TValue): TValue {\n" +
+                "        core.io.Console.println(\"[get] ${value}\")\n" +
+                "        return value\n" +
+                "    }\n" +
+                "    operator .proxy.set\\<TValue>(value: TValue) {\n" +
+                "        core.io.Console.println(\"[set] ${value}\")\n" +
+                "        inner(value)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    @Log()\n" +
+                "    var hp: i32 = 50\n" +
+                "    hp = 42\n" +
+                "    core.io.Console.println(\"${hp}\")\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckOk("局部 Value wrapper 声明初始化经 set", result);
+            TestHarness.Check("初始化+赋值+读取 stdout", result.Stdout,
+                "[set] 50\n" +
+                "[set] 42\n" +
+                "[get] 42\n" +
+                "42\n");
         }
 
         // place 写：wrapped 局部的 wrapper 字段经 set.wrapper.field 原地写

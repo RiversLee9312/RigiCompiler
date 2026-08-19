@@ -159,6 +159,70 @@ namespace RigiCompiler
                 SubstituteViaApplication(proxy.ReturnType, application, env), member.ReturnType);
         }
 
+        // §14.4：Method wrapper 的 specific `.proxy.call`——名是 `.proxy.call`
+        // 且无 `.` 前缀首参（带 `.name` 首参的是 wildcard 形态）
+        public static bool IsSpecificCallProxy(MethodSymbol method)
+        {
+            if (method.Name != ".proxy.call" || method.ProxyTemplate == null) return false;
+            return method.Parameters.Count == 0
+                || !method.Parameters[0].Name.StartsWith('.');
+        }
+
+        public static MethodSymbol? FindSpecificCallProxy(TypeSymbol wrapperType)
+        {
+            return wrapperType.Methods.FirstOrDefault(IsSpecificCallProxy);
+        }
+
+        // Method wrapper specific 形状全等（§14.4）：参数名/类型/可变形态与
+        // 目标方法一致。TReturn（proxy 唯一泛型参数）吸收目标实际返回类型
+        // ——SubstituteViaApplication 只服务 Entity 的 TTarget，此处不能复用
+        public static bool SpecificShapeMatchesForMethodWrapper(MethodSymbol proxy,
+            MethodSymbol member)
+        {
+            if (proxy.Parameters.Count != member.Parameters.Count) return false;
+            var tReturn = proxy.GenericParameters.Count == 1
+                ? proxy.GenericParameters[0]
+                : null;
+            for (var i = 0; i < proxy.Parameters.Count; i++)
+            {
+                var proxyParam = proxy.Parameters[i];
+                var memberParam = member.Parameters[i];
+                if (proxyParam.Name != memberParam.Name) return false;
+                if (proxyParam.IsVariadic != memberParam.IsVariadic) return false;
+                if (proxyParam.IsNamedVariadic != memberParam.IsNamedVariadic) return false;
+                if (!ReferenceEquals(
+                        SubstituteMethodWrapperTReturn(proxyParam.Type, tReturn, member),
+                        memberParam.Type))
+                {
+                    return false;
+                }
+            }
+            return ReferenceEquals(
+                SubstituteMethodWrapperTReturn(proxy.ReturnType, tReturn, member),
+                member.ReturnType);
+        }
+
+        // specific `.proxy.call` 名中但形状不符（供 P2 声明方法 / P3 lambda）
+        public static bool MethodWrapperSpecificShapeMismatch(TypeSymbol wrapperType,
+            MethodSymbol member, out MethodSymbol? mismatchedProxy)
+        {
+            mismatchedProxy = null;
+            if (ContainsErrorType(member)) return false;
+            var proxy = FindSpecificCallProxy(wrapperType);
+            if (proxy == null || ContainsErrorType(proxy)) return false;
+            if (SpecificShapeMatchesForMethodWrapper(proxy, member)) return false;
+            mismatchedProxy = proxy;
+            return true;
+        }
+
+        private static SemanticSymbol? SubstituteMethodWrapperTReturn(SemanticSymbol? type,
+            GenericParameterSymbol? tReturn, MethodSymbol member)
+        {
+            return tReturn != null && ReferenceEquals(type, tReturn)
+                ? member.ReturnType
+                : type;
+        }
+
         public static SemanticSymbol? SubstituteViaApplication(SemanticSymbol? type,
             WrapperApplication application, ResolveEnvironment env)
         {
@@ -209,6 +273,27 @@ namespace RigiCompiler
                     {
                         CheckMember(env, host, setter, ".proxy.set." + field.Name);
                     }
+                }
+            }
+            // §14.4：Method wrapper 应用到声明方法时，specific `.proxy.call`
+            // 必须与目标方法形状全等（lambda 场景在 P3 CollectLambdaWrapperApplications）
+            foreach (var entry in env.Entries)
+            {
+                if (!entry.InGraph) continue;
+                if (entry.Symbol is not MethodSymbol method) continue;
+                if (method.AppliedWrappers.Count == 0) continue;
+                foreach (var application in method.AppliedWrappers)
+                {
+                    var wrapperDef = application.WrapperDefinition;
+                    if (wrapperDef.WrapperTarget != WrapperTargetKind.Method) continue;
+                    if (!ProxyMatching.MethodWrapperSpecificShapeMismatch(wrapperDef, method,
+                            out var mismatchedProxy))
+                    {
+                        continue;
+                    }
+                    env.Error(application.Syntax?.Span ?? entry.Node.Span,
+                        $"Specific proxy '{mismatchedProxy!.Name}' on wrapper '{wrapperDef.Name}' " +
+                        $"does not match the shape of method '{method.Name}' (§14.4)");
                 }
             }
         }
