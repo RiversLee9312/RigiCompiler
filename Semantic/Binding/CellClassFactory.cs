@@ -311,7 +311,7 @@ namespace RigiCompiler
                 outerCtx.Frame.DeclaringType, isLambda: true, thisSymbol: outerCtx.This,
                 lambdaThisType: outerCtx.IsLambda
                     ? outerCtx.LambdaThisType
-                    : (outerCtx.Frame.HasThis ? outerCtx.Frame.Method.Owner : null),
+                    : PathFacility.EffectiveThisType(outerCtx, env),
                 lookupHost: outerCtx.Frame.LookupHost);
             accessorCtx.Flow.InheritAssignedFrom(outerCtx.Flow);
             if (hasBacking) accessorCtx.Accessor.Set(valueField, isSetter);
@@ -340,7 +340,7 @@ namespace RigiCompiler
                 {
                     statements.Add(new BoundReturnStatement(accessorNode,
                         PathFacility.MakeBackingFieldReference(accessorNode, valueField,
-                            elementType, accessorCtx.Frame, forSetter: false)));
+                            elementType, accessorCtx.Frame, forSetter: false, env.Unit.Symbols)));
                 }
                 body = new BoundBlock(accessorNode, statements);
             }
@@ -349,7 +349,7 @@ namespace RigiCompiler
             {
                 var implicitAssign = new BoundAssignmentStatement(accessorNode,
                     PathFacility.MakeBackingFieldReference(accessorNode, valueField, elementType,
-                        accessorCtx.Frame, forSetter: true),
+                        accessorCtx.Frame, forSetter: true, env.Unit.Symbols),
                     new BoundValueReferenceExpression(accessorNode, method.Parameters[0],
                         elementType));
                 body = new BoundBlock(body.Syntax,
@@ -384,11 +384,9 @@ namespace RigiCompiler
                     case ThisSymbol:
                         {
                             var field = new FieldSymbol(".capture.this", owner: cellClass,
-                                fieldType: outerCtx.IsLambda
+                                fieldType: (outerCtx.IsLambda
                                     ? outerCtx.LambdaThisType
-                                    : (outerCtx.Frame.HasThis
-                                        ? outerCtx.Frame.Method.Owner
-                                        : env.Unit.Symbols.ErrorType)
+                                    : PathFacility.EffectiveThisType(outerCtx, env))
                                     ?? env.Unit.Symbols.ErrorType);
                             cellClass.Fields.Add(field);
                             captures.Add(new LambdaCaptureEntry(symbol, field,

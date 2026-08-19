@@ -11,7 +11,7 @@ namespace RigiCompiler.Tests
     /// 经实际类型 sheet）、fn(..super)（override 体 + init 体）、open getter
     /// 多态。harness 同 BilVmTests：源码 → 编译 → BIL → 运行。
     /// </summary>
-    public static class BilVmDispatchTests
+    public static partial class BilVmDispatchTests
     {
         public static int RunAll()
         {
@@ -33,6 +33,16 @@ namespace RigiCompiler.Tests
             TestGenericInterfaceDispatch();
             TestGenericMultiLevelChain();
             TestGenericNestedArgumentDispatch();
+            TestInitOverloadAssignability();
+            TestInitRejectsUnrelatedType();
+            TestSubclassWrapperInterceptsInherited();
+            TestSubclassWrapperWildcardInherited();
+            TestStackedWrappersOnInherited();
+            TestBaseAndSubclassWrapperStack();
+            TestSpecificBeatsWildcardOnInherited();
+            TestPolymorphicInheritedWrapper();
+            TestWrapperPlaceVoidRuns();
+            TestOverrideStillIntercepted();
 
             return TestHarness.Summary("BilVmDispatch");
         }

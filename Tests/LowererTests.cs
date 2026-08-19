@@ -78,6 +78,7 @@ namespace RigiCompiler.Tests
             TestCompoundAssignmentGetterMaterialization();
             TestVarArgsParameterType();
             TestVarArgsIndexLowering();
+            TestClassGenericCallTypeArguments();
             TestEnumCaseLowering();
             TestAwaitLowering();
             TestYieldLowering();

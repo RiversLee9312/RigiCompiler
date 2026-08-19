@@ -13,7 +13,7 @@ namespace RigiCompiler.Tests
     /// V5 协程（eager spawn / await / yield 三形态 / quiescence）。
     /// frontend 不可达形态用直接构造的 BilModule。
     /// </summary>
-    public static class BilVmTests
+    public static partial class BilVmTests
     {
         public static int RunAll()
         {
@@ -122,6 +122,11 @@ namespace RigiCompiler.Tests
             TestWrapperAccessorInitializerNoCrash();
             TestSetterBodyMultipleValueAccess();
             TestWrapperAccessorLocalOrder();
+            TestGenericIndexOperator();
+            TestClassGenericParamInMethodFrame();
+            TestReifiedConstructZeroValue();
+            TestNestedClassNullableInit();
+            TestInitMatchByAssignability();
 
             return TestHarness.Summary("BilVm");
         }

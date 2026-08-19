@@ -104,10 +104,13 @@ namespace RigiCompiler
             // 泛型隐藏参数（S9e/S9d-2，§7.1/§7.2 序：固定泛型 → 泛型可变包）：
             // 固定 .generic.T = .typeid；位置包 .generic.TArgs = .array<.typeid>
             // （.typeid 无边界 ≡ .typeid<.any>，投影即 .array<.typeid<.any>>）；
-            // 具名包 .generic.TValues = .map<.string, .typeid>（§6.3 标准构造）
+            // 具名包 .generic.TValues = .map<.string, .typeid>（§6.3 标准构造）。
+            // 类/外层嵌套类型的泛型参数也打进方法帧（BIL §7.2 / RUNTIME §10）：
+            // 方法体里 arrayOf\<TItem\> / T() 等要引用 $.generic.TItem；调用点
+            // 可省略这些 typeid，VM 从 .this 构造形态注入。
             var typeIdType = env.Unit.Symbols.GetConstructedType(
                 env.Unit.Symbols.Bootstrap.TypeDefinition, env.Unit.Symbols.Bootstrap.Any);
-            foreach (var genericParameter in method.GenericParameters)
+            foreach (var genericParameter in CollectFrameGenericParameters(method))
             {
                 if (genericParameter.IsNamedVariadic)
                 {
@@ -206,6 +209,41 @@ namespace RigiCompiler
                 return CanonicalSymbolPrinter.PrintType(storage.CellType);
             }
             return CanonicalSymbolPrinter.PrintType(local.Type!);
+        }
+
+        // 方法帧可见的固定/可变泛型参数：外层类型（含嵌套声明链）在前，
+        // 方法自有参数在后；同名由方法级遮蔽（不重复打进 .args）。
+        private static List<GenericParameterSymbol> CollectFrameGenericParameters(
+            MethodSymbol method)
+        {
+            var methodNames = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var genericParameter in method.GenericParameters)
+            {
+                methodNames.Add(genericParameter.Name);
+            }
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            var result = new List<GenericParameterSymbol>();
+            var owners = new List<TypeSymbol>();
+            for (var owner = method.Owner; owner != null; owner = owner.DeclaringType)
+            {
+                owners.Add(owner);
+            }
+            for (var i = owners.Count - 1; i >= 0; i--)
+            {
+                foreach (var genericParameter in owners[i].GenericParameters)
+                {
+                    if (methodNames.Contains(genericParameter.Name))
+                    {
+                        continue;
+                    }
+                    if (seen.Add(genericParameter.Name))
+                    {
+                        result.Add(genericParameter);
+                    }
+                }
+            }
+            result.AddRange(method.GenericParameters);
+            return result;
         }
     }
 }

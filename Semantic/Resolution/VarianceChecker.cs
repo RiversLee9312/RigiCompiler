@@ -100,10 +100,17 @@ namespace RigiCompiler
 
             foreach (var method in owner.Methods)
             {
-                foreach (var parameterSymbol in method.Parameters)
+                // init 构造参数豁免型变检查（SYNTAX §3.6「同 Kotlin 的
+                // in/out」：构造不产生只读接口上的写入暴露，Kotlin 豁免
+                // 构造参数；规范禁止列表写的是「方法参数」，init 是构造
+                // 函数而非方法）。仍检查返回类型（init 通常为 void）。
+                if (method.Kind != MethodKind.Init)
                 {
-                    Check(parameterSymbol.Type, Polarity.Contravariant,
-                        $"parameter '{parameterSymbol.Name}' of method '{method.Name}'");
+                    foreach (var parameterSymbol in method.Parameters)
+                    {
+                        Check(parameterSymbol.Type, Polarity.Contravariant,
+                            $"parameter '{parameterSymbol.Name}' of method '{method.Name}'");
+                    }
                 }
                 Check(method.ReturnType, Polarity.Covariant,
                     $"return type of method '{method.Name}'");

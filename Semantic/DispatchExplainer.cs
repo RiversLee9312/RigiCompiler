@@ -95,19 +95,13 @@ namespace RigiCompiler
         private static IEnumerable<MethodSymbol> EnumerateMembers(TypeSymbol host)
         {
             var members = new List<MethodSymbol>();
-            foreach (var m in host.Methods)
+            // §14.2：子类 wrapper 拦截继承成员，报告须覆盖 BaseType 链
+            foreach (var m in ProxyMatchChecker.EnumerateOwnAndInheritedMethods(host))
             {
-                // proxy 模板成员（仅 wrapper 可声明）不进宿主成员报告；
-                // 点前缀名仅为编译器合成，不会出现于 wrapper 宿主类型
-                if (m.ProxyTemplate != null) continue;
-                if (m.Kind is MethodKind.Regular or MethodKind.Operator)
-                {
-                    if (!m.IsStatic && m.HasBody) members.Add(m);
-                }
+                members.Add(m);
             }
-            foreach (var f in host.Fields)
+            foreach (var f in ProxyMatchChecker.EnumerateOwnAndInheritedFields(host))
             {
-                if (f.IsStatic) continue;
                 if (f.Getter != null) members.Add(f.Getter);
                 if (f.Setter != null) members.Add(f.Setter);
             }

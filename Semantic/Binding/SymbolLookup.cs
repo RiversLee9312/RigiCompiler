@@ -6,36 +6,41 @@ namespace RigiCompiler
     // 全部为无副作用纯查询，各簇 visitor 共用。
     internal static class SymbolLookup
     {
-        // 构造类型的泛型字段最小替换（M52，S9 前置；S9a 放宽返回
-        // SemanticSymbol）：字段声明类型是泛型参数时，沿 receiver 类型的
-        // BaseType 链找到泛型定义构造，按形参索引取实参替换——实参可为
-        // 具体类型或外层泛型参数（引用相等身份，`Box<T>` 内 T 即外层 T）；
-        // receiver 是定义级（泛型函数体内 this）或链上无匹配构造时返回
-        // 声明类型原样（宿主泛型参数身份保留，P4 按 §7.5 投影）。
-        // 非泛型字段直通声明类型。receiverType 为 null（静态上下文）时同直通。
-        // 调用方保证 field.FieldType 非 null（未标注字段已先行诊断）——
-        // 返回值恒非空
+        // 字段声明类型按 receiver 宿主代入：声明类型中出现的宿主泛型
+        // 参数（裸 T 或嵌套构造 Array\<T\> / Node\<T\>?）沿 receiver
+        // BaseType 链找到 field.Owner 所在层，经 SubstituteHost 整树替换。
+        // 定义级 receiver（泛型类体内 this 提升前，或链上无匹配构造）
+        // 原样返回（宿主泛型参数身份保留）。receiverType 为 null 时直通。
+        // 调用方保证 field.FieldType 非 null——返回值恒非空
         public static SemanticSymbol SubstituteFieldType(FieldSymbol field,
-            TypeSymbol? receiverType)
+            TypeSymbol? receiverType, SymbolGraph symbols)
         {
-            if (field.FieldType is not GenericParameterSymbol param)
-            {
-                return field.FieldType!;
-            }
+            if (receiverType == null || field.Owner == null) return field.FieldType!;
             for (var t = receiverType; t != null; t = t.BaseType)
             {
-                if (t.ConstructedFrom == null || field.Owner == null
-                    || !ReferenceEquals(t.ConstructedFrom, field.Owner))
-                {
-                    continue;
-                }
-                var index = t.ConstructedFrom.GenericParameters.IndexOf(param);
-                if (index >= 0 && index < t.TypeArguments!.Count)
-                {
-                    return t.TypeArguments[index];
-                }
+                var owner = t.ConstructedFrom ?? t;
+                if (!ReferenceEquals(owner, field.Owner)) continue;
+                return SubstituteHost(field.FieldType!, owner, t, symbols);
             }
             return field.FieldType!;
+        }
+
+        // 泛型定义作为 this/receiver 时提升为「自身具化」构造类型：
+        // Box → Box\<T\>（T 即定义自身的泛型参数）。已是构造类型或
+        // 非泛型原样返回。null 透传。
+        public static TypeSymbol? AsSelfConstructed(TypeSymbol? type, SymbolGraph symbols)
+        {
+            if (type == null || type.ConstructedFrom != null
+                || type.GenericParameters.Count == 0)
+            {
+                return type;
+            }
+            var args = new SemanticSymbol[type.GenericParameters.Count];
+            for (int i = 0; i < args.Length; i++)
+            {
+                args[i] = type.GenericParameters[i];
+            }
+            return symbols.GetConstructedType(type, args);
         }
 
         // 方法签名类型的宿主代入（不走 OverloadResolution 的特判路径：
@@ -54,6 +59,14 @@ namespace RigiCompiler
                 var owner = t.ConstructedFrom ?? t;
                 if (!ReferenceEquals(owner, method.Owner)) continue;
                 return SubstituteHost(type, owner, t, symbols);
+            }
+            // class 实现 IBox\<i32\> 时方法宿主是接口定义，BaseType 链
+            // 到不了 IBox\<i32\>——沿接口闭包再找一层代入
+            foreach (var iface in OverrideChecker.InterfaceClosure(receiverType, symbols))
+            {
+                var owner = iface.ConstructedFrom ?? iface;
+                if (!ReferenceEquals(owner, method.Owner)) continue;
+                return SubstituteHost(type, owner, iface, symbols);
             }
             return type;
         }
@@ -119,9 +132,10 @@ namespace RigiCompiler
         // override 遮蔽（S8e，§9.2.1）：override 在分派语义上替换继承
         // 成员——派生层已收集的 override 与基类层候选签名严格相等时
         // 基类候选不进重载候选池（否则同签名候选歧义）。
-        // 接口闭包：lookup 类型本身是 interface 时另走 InterfaceClosure
-        // （与接口类型变量调基接口成员同一口径；class 不走——实现已在
-        // 类成员表，再收接口声明会与具体实现双候选）
+        // 接口闭包：lookup 类型本身是 interface 时收全部闭包成员（与接口
+        // 类型变量调基接口成员同一口径）；class/struct 只并入有体默认实现
+        // （SYNTAX §11 / §9.2.1：带默认实现的接口成员由实现类隐式继承；
+        // 无体成员必须已在类成员表，再收会与 override 双候选）
         public static List<MethodSymbol> FindInstanceMethods(TypeSymbol type, string name,
             SymbolGraph? symbols = null)
         {
@@ -159,19 +173,50 @@ namespace RigiCompiler
             }
         }
 
-        // 接口 lookup 才收闭包：IChild : IBase 上的基接口成员与「接口类型
-        // 变量调方法」同一口径。class 实现已在自身成员表，再收接口声明
-        // 会与具体实现双候选。
+        // 接口 lookup 收全部闭包成员；class/struct 只收有体默认实现
+        // （已由类/基类覆盖的签名跳过，避免与 override 双候选）
         private static void AppendInterfaceMembers(List<MethodSymbol> result, TypeSymbol type,
             string name, SymbolGraph? symbols, bool operatorsOnly, int parameterCount)
         {
             if (symbols == null) return;
             var definition = type.ConstructedFrom ?? type;
-            if (definition.Kind != TypeKind.Interface) return;
+            if (definition.Kind == TypeKind.Interface)
+            {
+                foreach (var iface in OverrideChecker.InterfaceClosure(type, symbols))
+                {
+                    CollectMethodsFromOwner(result, iface.ConstructedFrom ?? iface, name,
+                        operatorsOnly, parameterCount);
+                }
+                return;
+            }
             foreach (var iface in OverrideChecker.InterfaceClosure(type, symbols))
             {
-                CollectMethodsFromOwner(result, iface.ConstructedFrom ?? iface, name,
-                    operatorsOnly, parameterCount);
+                AppendInheritedDefaultMethods(result, iface, name, symbols, operatorsOnly,
+                    parameterCount);
+            }
+        }
+
+        // 实现类隐式继承接口默认方法：只收 HasBody，且类/基类尚未覆盖
+        // 该签名（代入后比较）。两接口同签名默认实现都进池，交重载解析
+        private static void AppendInheritedDefaultMethods(List<MethodSymbol> result,
+            TypeSymbol iface, string name, SymbolGraph symbols, bool operatorsOnly,
+            int parameterCount)
+        {
+            var owner = iface.ConstructedFrom ?? iface;
+            foreach (var method in owner.Methods.Where(m => m.Name == name && !m.IsStatic
+                && m.HasBody
+                && (operatorsOnly
+                    ? m.Kind == MethodKind.Operator && m.Parameters.Count == parameterCount
+                    : m.Kind is MethodKind.Regular or MethodKind.Operator)))
+            {
+                if (result.Any(existing => ReferenceEquals(existing, method))) continue;
+                var view = OverrideChecker.SignatureView.Of(method, owner, iface, symbols);
+                if (result.Any(existing => existing.Owner?.Kind != TypeKind.Interface
+                    && OverrideChecker.SignatureView.Raw(existing).Matches(view)))
+                {
+                    continue;
+                }
+                result.Add(method);
             }
         }
 

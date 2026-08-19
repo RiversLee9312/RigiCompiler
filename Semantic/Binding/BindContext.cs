@@ -54,5 +54,9 @@ namespace RigiCompiler
         // $$call，但源码层 this 指向外层声明位置的实例——此槽承载外层有效 this 类型，
         // 捕获后 P4 经 .capture.this 字段物化）；非 lambda 上下文恒 null
         public TypeSymbol? LambdaThisType { get; }
+
+        // 语句位路径绑定：允许链末 void 实例调用（§14.5 wrapper place 上调
+        // void 方法）。仅 BindNonAssignment 短暂置位，值位置恒 false。
+        public bool AllowVoidCall { get; set; }
     }
 }

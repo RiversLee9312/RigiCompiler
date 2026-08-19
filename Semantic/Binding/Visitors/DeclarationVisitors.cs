@@ -386,6 +386,28 @@
                 }
                 // 不可调：落入下方通用兜底，由 FoldSuffixes 报原诊断
             }
+            // §14.5：`obj:W.m()` 含 Colon，CallForm 不认。语句位 void 调用
+            // 合法——短暂打开 AllowVoidCall，void 实例调用收口 BoundCallStatement。
+            if (expression is PathExpressionASTNode stmtPath)
+            {
+                ctx.AllowVoidCall = true;
+                BoundExpression? bound;
+                try
+                {
+                    bound = PathFacility.BindPath(stmtPath, scope, ctx, env, forAssignment: false);
+                }
+                finally
+                {
+                    ctx.AllowVoidCall = false;
+                }
+                if (bound == null) return null;
+                if (bound is BoundInstanceCallExpression inst && inst.Method.ReturnType == null)
+                {
+                    return new BoundCallStatement(syntax, inst.Method, inst.Arguments,
+                        inst.Receiver, inst.TypeArguments, inst.GenericPack);
+                }
+                return new BoundExpressionStatement(syntax, bound);
+            }
             var expr = ExpressionDispatcher.Visit(expression, scope, ctx, env);
             return expr == null ? null : new BoundExpressionStatement(syntax, expr);
         }

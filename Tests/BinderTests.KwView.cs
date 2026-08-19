@@ -47,9 +47,11 @@ namespace RigiCompiler.Tests
             var valueField = SymbolLookup.FindInstanceField(element, "value");
             TestHarness.CheckTrue("元素 key/value 字段解析（宿主代入 → String）",
                 keyField != null && valueField != null
-                && ReferenceEquals(SymbolLookup.SubstituteFieldType(keyField, element),
+                && ReferenceEquals(SymbolLookup.SubstituteFieldType(keyField, element,
+                    unit.Symbols),
                     unit.Symbols.Bootstrap.String)
-                && ReferenceEquals(SymbolLookup.SubstituteFieldType(valueField, element),
+                && ReferenceEquals(SymbolLookup.SubstituteFieldType(valueField, element,
+                    unit.Symbols),
                     unit.Symbols.Bootstrap.String));
 
             // ===== 3. 调用链头同款包装（CallVisitors.BindInstanceCallForm）：

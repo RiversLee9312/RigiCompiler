@@ -6,7 +6,7 @@ namespace RigiCompiler.Tests
     /// S11f 派发链诊断工具测试（RUNTIME §15；M88：仅应用登记 + 降级资格）。
     /// 完整黄金重建归 M88b-3。
     /// </summary>
-    public static class DispatchExplainerTests
+    public static partial class DispatchExplainerTests
     {
         public static int RunAll()
         {
@@ -14,6 +14,7 @@ namespace RigiCompiler.Tests
             TestEmptyReport();
             TestAppliedReport();
             TestVariadicMemberWildcardPreview();
+            TestInheritedMemberPreview();
             TestCliFlag();
             return TestHarness.Summary("DispatchExplainer");
         }

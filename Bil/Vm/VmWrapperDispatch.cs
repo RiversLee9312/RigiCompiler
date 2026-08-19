@@ -320,11 +320,14 @@ namespace RigiCompiler.Bil.Vm
                 return false;
             }
             if (!BilVerificationContext.TryParseMethodSymbol(methodSymbol,
-                    out var owner, out var isStatic, out _, out _) || isStatic)
+                    out _, out var isStatic, out _, out _) || isStatic)
             {
                 return false;
             }
-            var wrappers = context.CollectEntityWrappers(owner);
+            // §14.2 Entity wrapper 绑在实体实例上：子类声明的 wrapper 须拦截
+            // 从基类继承的方法。方法符号 owner 是声明型，漏掉子类应用；
+            // 取 receiver 实际类型（§14.9 重申后子类列表已含继承闭包）。
+            var wrappers = context.CollectEntityWrappers(VmTypeOps.ActualType(args[0]));
             if (wrappers.Count == 0)
             {
                 return false;
@@ -356,11 +359,12 @@ namespace RigiCompiler.Bil.Vm
             string? resultSlot)
         {
             if (!BilVerificationContext.TryParseMethodSymbol(operatorSymbol,
-                    out var owner, out var isStatic, out _, out _) || isStatic)
+                    out _, out var isStatic, out _, out _) || isStatic)
             {
                 return false;
             }
-            var wrappers = context.CollectEntityWrappers(owner);
+            // 与方法链同口径：运算符也按 receiver 实际类型收集 Entity wrapper
+            var wrappers = context.CollectEntityWrappers(VmTypeOps.ActualType(receiver));
             if (wrappers.Count == 0)
             {
                 return false;

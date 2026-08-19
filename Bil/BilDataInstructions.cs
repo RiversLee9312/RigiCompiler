@@ -763,19 +763,19 @@ namespace RigiCompiler.Bil
                     currentFn, out var getter))
             {
                 var wrappers = context.CollectWrappedWrappers(fieldSymbol);
+                var host = coroutine.ReadVar(objectVar.Name);
                 if (wrappers.Count > 0)
                 {
-                    var host = coroutine.ReadVar(objectVar.Name);
                     var temp = coroutine.RegisterPendingGetChain(target.Name, host, fieldSymbol,
                         FieldType(fieldSymbol), wrappers, Array.Empty<string>());
                     BilInvokeExecution.Invoke(context, coroutine, getter,
                         new[] { objectVar }, temp);
                     return;
                 }
-                var entityWrappers = context.CollectEntityWrappers(FieldOwner(fieldSymbol));
+                // 与方法链同口径：子类 Entity wrapper 拦截继承字段
+                var entityWrappers = context.CollectEntityWrappers(VmTypeOps.ActualType(host));
                 if (entityWrappers.Count > 0)
                 {
-                    var host = coroutine.ReadVar(objectVar.Name);
                     var temp = coroutine.RegisterPendingGetChain(target.Name, host, fieldSymbol,
                         FieldType(fieldSymbol), Array.Empty<string>(), entityWrappers);
                     BilInvokeExecution.Invoke(context, coroutine, getter,
@@ -805,8 +805,9 @@ namespace RigiCompiler.Bil
             if (fieldWrappers.Count == 0)
             {
                 // 字段自身无 wrapped 标记、但宿主类型带 wrapped 标记 → Entity
-                // getter 类别（.proxy.get.<名> / .proxy.get.*）
-                var entityWrappers = context.CollectEntityWrappers(FieldOwner(fieldSymbol));
+                // getter 类别（.proxy.get.<名> / .proxy.get.*）；按实例实际类型
+                // 收集，使子类 wrapper 拦截继承字段
+                var entityWrappers = context.CollectEntityWrappers(VmTypeOps.ActualType(instance));
                 if (entityWrappers.Count > 0)
                 {
                     if (VmWrapperDispatch.ApplyEntityGetChain(context, coroutine, instance,
@@ -863,13 +864,13 @@ namespace RigiCompiler.Bil
                     FieldType(fieldSymbol), wrappers, value);
                 return;
             }
-            // 3) Entity wrapper
-            var entityWrappers = context.CollectEntityWrappers(FieldOwner(fieldSymbol));
+            // 3) Entity wrapper（按实例实际类型，子类 wrapper 拦截继承字段）
+            var entityHost = coroutine.ReadVar(objectVar.Name);
+            var entityWrappers = context.CollectEntityWrappers(VmTypeOps.ActualType(entityHost));
             if (entityWrappers.Count > 0)
             {
-                var host = coroutine.ReadVar(objectVar.Name);
                 var value = coroutine.ReadVar(source.Name).Copy();
-                if (VmWrapperDispatch.TryStartEntitySetChain(context, coroutine, host,
+                if (VmWrapperDispatch.TryStartEntitySetChain(context, coroutine, entityHost,
                         fieldSymbol, FieldType(fieldSymbol), entityWrappers, value,
                         resultSlot: null))
                 {
@@ -1034,6 +1035,18 @@ namespace RigiCompiler.Bil
             //（VmTypeOps.ResolveTypeRef，cast/is 同一通道），init 匹配与实例
             // TypeRef 一律以具体形态落地
             typeRef = VmTypeOps.ResolveTypeRef(context, coroutine, typeRef);
+            // 具化构造 T() / new.indirect：内建标量与 String 无用户 init，
+            // 产出该类型零值（SYNTAX §3.6/§3.7，i32 → 0）。不得 AllocateObject
+            // 出 VmObject（打印成 ".i32" 且没有 plus）。
+            if (IsPrimitiveZeroConstructible(typeRef))
+            {
+                if (initArguments.Count > 0)
+                {
+                    throw new VmException("new 实参不匹配任何 init：" + typeRef);
+                }
+                coroutine.WriteVar(target.Name, context.ZeroOf(typeRef));
+                return;
+            }
             // 编译器打包形态（vargs/kwargs）：实参即元素。已拆除 V2
             // 「单 i32 = 长度」特权——用户构造只经 alloc_array / arrayOf。
             if (VmContext.IsArrayType(typeRef, out var elementType))
@@ -1204,6 +1217,17 @@ namespace RigiCompiler.Bil
                 BilInvokeExecution.InvokeValues(context, coroutine, initSymbol, initCall,
                     resultSlot: null);
             }
+        }
+
+        private static bool IsPrimitiveZeroConstructible(string typeRef)
+        {
+            return typeRef is ".i8" or ".i16" or ".i32" or ".i64"
+                or ".u8" or ".u16" or ".u32" or ".u64"
+                or ".f32" or ".f64" or ".bool" or ".char"
+                or ".string" or "core::String"
+                or "core::i8" or "core::i16" or "core::i32" or "core::i64"
+                or "core::u8" or "core::u16" or "core::u32" or "core::u64"
+                or "core::float" or "core::double" or "core::bool" or "core::char";
         }
 
         private static VmValue[] ReadArgs(VmCoroutine coroutine,
@@ -1524,14 +1548,18 @@ namespace RigiCompiler.Bil
                     genericHidden++;
                 }
             }
-            if (args.Count != 1 + genericHidden + parameters.Count)
+            // 类级 .generic.* 可由 PushFrame 从 .this 注入，super(...) 允许省略
+            var minCount = 1 + parameters.Count;
+            var maxCount = 1 + genericHidden + parameters.Count;
+            if (args.Count < minCount || args.Count > maxCount)
             {
                 return false;
             }
+            var passedHidden = args.Count - minCount;
             for (var i = 0; i < parameters.Count; i++)
             {
                 if (!VmContext.TypesEqual(parameters[i].TypeRef,
-                        args[1 + genericHidden + i].TypeRef))
+                        args[1 + passedHidden + i].TypeRef))
                 {
                     return false;
                 }

@@ -523,7 +523,9 @@ namespace RigiCompiler
                 // 带访问器字段同形态：set.field 发射/VM 侧自动经 setter 应用
                 statements.Add(new BoundAssignmentStatement(variable,
                     new BoundFieldAccessExpression(variable,
-                        new BoundThisExpression(variable, type), field, fieldType),
+                        new BoundThisExpression(variable,
+                            SymbolLookup.AsSelfConstructed(type, env.Unit.Symbols)!),
+                        field, fieldType),
                     value));
             }
             return new BoundFunctionBody(init, Array.Empty<LocalSymbol>(),
@@ -608,7 +610,9 @@ namespace RigiCompiler
             }
             type.Methods.Add(forwarder);
             var receiver = new BoundFieldAccessExpression(syntax,
-                new BoundThisExpression(syntax, type), likeField, likeField.FieldType!);
+                new BoundThisExpression(syntax,
+                    SymbolLookup.AsSelfConstructed(type, env.Unit.Symbols)!),
+                likeField, likeField.FieldType!);
             var statements = new List<BoundStatement>();
             if (required.ReturnType == null)
             {
@@ -644,7 +648,7 @@ namespace RigiCompiler
         // 即字段类型或显式标注）。毒化跳过（参数/字段类型缺失或
         // ErrorType——P2 诊断已报）；无 this 上下文（static/全局 init
         // 映射实例字段——P2 未拦的历史怪胎）同样跳过，不合成崩溃形状
-        private static List<BoundStatement> SynthesizeInitMappingAssignments(
+        private List<BoundStatement> SynthesizeInitMappingAssignments(
             CallableDeclarationASTNode fn, MethodSymbol symbol)
         {
             var statements = new List<BoundStatement>();
@@ -665,7 +669,9 @@ namespace RigiCompiler
                 {
                     if (symbol.Owner == null || symbol.IsStatic) continue;
                     target = new BoundFieldAccessExpression(fn,
-                        new BoundThisExpression(fn, symbol.Owner), field, fieldType);
+                        new BoundThisExpression(fn,
+                            SymbolLookup.AsSelfConstructed(symbol.Owner, env.Unit.Symbols)!),
+                        field, fieldType);
                 }
                 else
                 {
@@ -731,7 +737,7 @@ namespace RigiCompiler
                 {
                     statements.Add(new BoundReturnStatement(accessorNode,
                         PathFacility.MakeBackingFieldReference(accessorNode, field, getterType,
-                            ctx.Frame, forSetter: false)));
+                            ctx.Frame, forSetter: false, env.Unit.Symbols)));
                 }
                 body = new BoundBlock(accessorNode, statements);
             }
@@ -742,7 +748,7 @@ namespace RigiCompiler
             {
                 var implicitAssign = new BoundAssignmentStatement(accessorNode,
                     PathFacility.MakeBackingFieldReference(accessorNode, field, backingType,
-                        ctx.Frame, forSetter: true),
+                        ctx.Frame, forSetter: true, env.Unit.Symbols),
                     new BoundValueReferenceExpression(accessorNode, symbol.Parameters[0],
                         backingType));
                 body = new BoundBlock(body.Syntax,

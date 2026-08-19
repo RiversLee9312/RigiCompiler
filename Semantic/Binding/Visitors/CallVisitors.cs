@@ -184,10 +184,13 @@ namespace RigiCompiler
                     }
                 }
             }
-            // 多段首段为值（局部/参数）→ 实例调用形态（S7c-2）
+            // 多段首段为值（局部/参数/裸字段）→ 实例调用形态（S7c-2）。
+            // 裸字段必须先于容器路径：`c.inc()` 的 c 是实例字段时不得
+            // 当成类型/命名空间（同名字段与类型共存时字段优先）
             if (calleeSegments.Count > 1
                 && (scope.LookupSymbol(calleeSegments[0]) != null
-                    || ctx.Frame.Method.Parameters.Any(p => p.Name == calleeSegments[0])))
+                    || ctx.Frame.Method.Parameters.Any(p => p.Name == calleeSegments[0])
+                    || MemberLookup.FindField(calleeSegments[0], ctx.Frame, env) != null))
             {
                 return BindInstanceCallForm(node, calleeSegments, arguments, scope, ctx, env,
                     genericArguments);
@@ -220,8 +223,7 @@ namespace RigiCompiler
                 // receiver）；静态上下文（含默认值表达式）→ 诊断。
                 // lambda 语境（§5.2）：Frame.Method 是隐藏类 $$call（恒实例），
                 // 有效 this 类型与可用性取 LambdaThisType（外层 this）
-                var thisOwner = ctx.IsLambda ? ctx.LambdaThisType
-                    : (ctx.Frame.HasThis ? ctx.Frame.Method.Owner : null);
+                var thisOwner = PathFacility.EffectiveThisType(ctx, env);
                 if (thisOwner != null
                     && IsOnThisChain(thisOwner, calleeMethod.Owner))
                 {
@@ -491,9 +493,9 @@ namespace RigiCompiler
             return accessible;
         }
 
-        // 实例调用形态（首段为值的多段纯调用）：首段绑 receiver，中间段
-        // 沿 receiver 类型上色（CallForm.TryGet 保证中间段无后缀，只能是
-        // 字段），末段实例方法查找匹配
+        // 实例调用形态（首段为值的多段纯调用）：首段绑 receiver（局部/
+        // 参数/裸字段），中间段沿 receiver 类型上色（CallForm.TryGet
+        // 保证中间段无后缀，只能是字段），末段实例方法查找匹配
         private static CallBinding? BindInstanceCallForm(ASTNode node, List<string> calleeSegments,
             List<ArgumentASTNode> arguments, Scope scope, BindContext ctx, BindEnvironment env,
             List<TypeReferenceASTNode>? genericArguments = null)
@@ -514,7 +516,8 @@ namespace RigiCompiler
                 receiver = PathFacility.ApplyNarrowingPublic(node, receiver,
                     NarrowKey.ForSymbol(headLocal), ctx.Flow);
             }
-            else
+            else if (headSymbol is ParameterSymbol
+                || ctx.Frame.Method.Parameters.Any(p => p.Name == calleeSegments[0]))
             {
                 var headParameter = headSymbol as ParameterSymbol
                     ?? ctx.Frame.Method.Parameters.First(p => p.Name == calleeSegments[0]);
@@ -530,6 +533,15 @@ namespace RigiCompiler
                     ctx.CapturedSymbols.Add(headParameter);
                 receiver = PathFacility.ApplyNarrowingPublic(node, receiver,
                     NarrowKey.ForSymbol(headParameter), ctx.Flow);
+            }
+            else
+            {
+                // 裸字段作调用接收者（与路径绑定同口径，含 this 补全/收窄）
+                var headField = MemberLookup.FindField(calleeSegments[0], ctx.Frame, env);
+                if (headField == null) return null;
+                var fieldReceiver = PathFacility.BindFieldReference(node, headField, ctx, env);
+                if (fieldReceiver == null) return null;
+                receiver = fieldReceiver;
             }
             for (int i = 1; i < calleeSegments.Count - 1; i++)
             {
@@ -560,7 +572,8 @@ namespace RigiCompiler
                 // 否则保持既有 "is not a method" 诊断（行为不变）
                 if (SymbolLookup.FindInstanceField(receiverType, name) is { } callableField)
                 {
-                    var fieldType = SymbolLookup.SubstituteFieldType(callableField, receiverType);
+                    var fieldType = SymbolLookup.SubstituteFieldType(callableField, receiverType,
+                        env.Unit.Symbols);
                     if (fieldType is not ErrorTypeSymbol)
                     {
                         var callableFieldType = SymbolLookup.EffectiveMemberType(fieldType, env);
@@ -618,6 +631,13 @@ namespace RigiCompiler
             };
         }
 
+        // §14.2 / §14.3 get 类：Value `.proxy.get`、Entity `.proxy.get.*` /
+        // `.proxy.get.<名>`。`.proxy.getFoo`（specific 方法）不命中。
+        internal static bool IsGetCategoryProxy(string proxyName)
+        {
+            return proxyName == ".proxy.get" || proxyName.StartsWith(".proxy.get.", StringComparison.Ordinal);
+        }
+
         // M88：proxy 体 inner(...) 模板占位绑定
         private static CallBinding? BindInnerCall(ASTNode node, List<ArgumentASTNode> arguments,
             Scope scope, BindContext ctx, BindEnvironment env)
@@ -629,6 +649,14 @@ namespace RigiCompiler
                 return null;
             }
             var proxy = ctx.Frame.Method;
+            // §14.2 / §14.3：get 类 proxy 不得调用 inner——value 参数即内层
+            // 已算好的结果，get 链没有向内的下一环。
+            if (IsGetCategoryProxy(proxy.Name))
+            {
+                env.Error(node.Span,
+                    $"P3: get-category proxy '{proxy.Name}' cannot call inner(...) (§14.2/§14.3)");
+                return null;
+            }
             // 实参无目标类型预绑
             var boundArgs = new List<BoundExpression>();
             for (int i = 0; i < arguments.Count; i++)

@@ -1130,18 +1130,23 @@ namespace RigiCompiler.Bil
                     "invoke receiver(.this)", errors);
                 argumentIndex = 1;
             }
-            if (arguments.Count - argumentIndex - genericHiddenCount
-                != expected.Count + packArguments.Count)
+            // 类级 .generic.* 可由 VM 从 .this 构造形态注入，调用点允许省略
+            // （传 0..genericHiddenCount 个 typeid）；方法自有泛型仍由调用点物化。
+            var passedAfterReceiver = arguments.Count - argumentIndex;
+            var minRequired = expected.Count + packArguments.Count;
+            var maxRequired = minRequired + genericHiddenCount;
+            if (passedAfterReceiver < minRequired || passedAfterReceiver > maxRequired)
             {
                 errors.Add(new BilVerificationError("21.3", location,
-                    $"invoke 实参个数 {arguments.Count - argumentIndex} 与方法 \"{methodSymbol}\" " +
-                    $"签名参数个数 {expected.Count}（含 {genericHiddenCount} 个泛型隐藏参数与 " +
+                    $"invoke 实参个数 {passedAfterReceiver} 与方法 \"{methodSymbol}\" " +
+                    $"签名参数个数 {expected.Count}（含最多 {genericHiddenCount} 个泛型隐藏参数与 " +
                     $"{packArguments.Count} 个值包）不一致"));
                 return;
             }
+            var passedHidden = passedAfterReceiver - minRequired;
             for (var i = 0; i < expected.Count; i++)
             {
-                CheckType(context, VarType(context, arguments[argumentIndex + genericHiddenCount + i]),
+                CheckType(context, VarType(context, arguments[argumentIndex + passedHidden + i]),
                     expected[i].TypeRef, location, $"invoke 实参 {i}", errors);
             }
             // 末尾值包逐条比对（§7.1 类型形态以 fn 定义声明为准：
@@ -1150,7 +1155,7 @@ namespace RigiCompiler.Bil
             {
                 CheckType(context,
                     VarType(context,
-                        arguments[argumentIndex + genericHiddenCount + expected.Count + i]),
+                        arguments[argumentIndex + passedHidden + expected.Count + i]),
                     packArguments[i].TypeRef, location,
                     $"invoke 值包 \"{packArguments[i].Name}\"", errors);
             }
@@ -1585,7 +1590,10 @@ namespace RigiCompiler.Bil
                 current = baseDeclaration;
             }
             // 候选：宿主 ∈ extends 链、名匹配（$$名 运算符 canonical）、
-            // 参数个数恰为 arity（§13.2 签名固定单 TIndex）
+            // 参数个数恰为 arity（§13.2 签名固定单 TIndex）。
+            // 构造类型 Box<.i32> 的声明键是 Box<1>、符号是 Box——宿主归属
+            // 按定义级比较（IsAssignableTo / HostMatches），不能用
+            // TypesCompatible 的严格全等（Box ≠ Box<1> 会漏掉泛型类运算符）。
             var candidates = new List<(List<(string Name, string TypeRef)> Parameters,
                 string ReturnType)>();
             foreach (var (ownerType, member, _) in context.Module.MemberEntries)
@@ -1604,7 +1612,9 @@ namespace RigiCompiler.Bil
                 var hostInChain = false;
                 foreach (var chainType in chain)
                 {
-                    if (BilVerificationContext.TypesCompatible(chainType, host))
+                    // 只认「collection 是 host 或其派生」：反向会让任何
+                    // 类经 Object 命中其它类的 getAtIndex（多实现误报）。
+                    if (context.Module.IsAssignableTo(chainType, host))
                     {
                         hostInChain = true;
                         break;

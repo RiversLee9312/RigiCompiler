@@ -1248,6 +1248,101 @@ namespace RigiCompiler.Bil.Vm
             return false;
         }
 
+        // 类级 .generic.* 未出现在 invoke 实参时，按 .this 构造形态的实参
+        // 位序补齐（与 EmitFunction 外层类型参数在前、方法自有在后一致）。
+        public static IReadOnlyList<VmValue> AlignGenericHiddenArgs(BilFunction function,
+            IReadOnlyList<VmValue> arguments)
+        {
+            var slots = new List<BilArgDeclaration>();
+            foreach (var arg in function.Args)
+            {
+                if (arg.Name != ".return") slots.Add(arg);
+            }
+            if (arguments.Count == slots.Count) return arguments;
+
+            var genericSlots = new List<BilArgDeclaration>();
+            var hasThis = false;
+            var ordinaryCount = 0;
+            foreach (var slot in slots)
+            {
+                if (slot.Name == ".this")
+                {
+                    hasThis = true;
+                    continue;
+                }
+                if (slot.Name.StartsWith(".generic.", StringComparison.Ordinal))
+                {
+                    genericSlots.Add(slot);
+                    continue;
+                }
+                ordinaryCount++;
+            }
+            if (genericSlots.Count == 0) return arguments;
+
+            var thisOffset = hasThis ? 1 : 0;
+            if (arguments.Count < thisOffset) return arguments;
+            var restCount = arguments.Count - thisOffset;
+            if (restCount < ordinaryCount) return arguments;
+            var passedHidden = restCount - ordinaryCount;
+            if (passedHidden < 0 || passedHidden > genericSlots.Count) return arguments;
+
+            var inferred = new List<string>();
+            if (hasThis && arguments.Count > 0)
+            {
+                var typeArgs = TypeArgsOf(arguments[0].TypeRef);
+                if (typeArgs != null) inferred.AddRange(typeArgs);
+            }
+
+            var result = new List<VmValue>(slots.Count);
+            var restIndex = thisOffset;
+            var inferredIndex = 0;
+            var hiddenConsumed = 0;
+            foreach (var slot in slots)
+            {
+                if (slot.Name == ".this")
+                {
+                    result.Add(arguments[0]);
+                    continue;
+                }
+                if (slot.Name.StartsWith(".generic.", StringComparison.Ordinal))
+                {
+                    if (passedHidden == genericSlots.Count)
+                    {
+                        result.Add(arguments[restIndex++]);
+                    }
+                    else if (inferredIndex < inferred.Count
+                        && hiddenConsumed < genericSlots.Count - passedHidden)
+                    {
+                        result.Add(new VmTypeId(inferred[inferredIndex++]));
+                    }
+                    else if (restIndex < arguments.Count
+                        && arguments[restIndex] is VmTypeId)
+                    {
+                        result.Add(arguments[restIndex++]);
+                    }
+                    else if (inferredIndex < inferred.Count)
+                    {
+                        result.Add(new VmTypeId(inferred[inferredIndex++]));
+                    }
+                    else
+                    {
+                        result.Add(new VmTypeId(".any"));
+                    }
+                    hiddenConsumed++;
+                    continue;
+                }
+                if (restIndex < arguments.Count)
+                {
+                    result.Add(arguments[restIndex++]);
+                }
+                else
+                {
+                    return arguments;
+                }
+            }
+            return result;
+        }
+
         // 按 fn .args 序在 .this 之后插入推断的 .generic.* typeid，
         // 使 PushFrame 实参个数与泛型 operator 签名对齐。
         public IReadOnlyList<VmValue> InjectOperatorTypeIds(string methodSymbol,
@@ -1482,7 +1577,7 @@ namespace RigiCompiler.Bil.Vm
             }
         }
 
-        private static bool ParametersMatch(List<(string Name, string TypeRef)> parameters,
+        private bool ParametersMatch(List<(string Name, string TypeRef)> parameters,
             IReadOnlyList<VmValue> arguments)
         {
             if (parameters.Count != arguments.Count)
@@ -1491,7 +1586,9 @@ namespace RigiCompiler.Bil.Vm
             }
             for (var i = 0; i < parameters.Count; i++)
             {
-                if (!TypesEqual(parameters[i].TypeRef, arguments[i].TypeRef))
+                // init 重载按可赋值性选择（RUNTIME §11：运行期 init 表；
+                // Savings → Account、.null → T?），不是实参精确 typeid
+                if (!Types.TypesAssignable(arguments[i].TypeRef, parameters[i].TypeRef))
                 {
                     return false;
                 }

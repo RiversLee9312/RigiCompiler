@@ -72,8 +72,9 @@
 
         // 方法查找序：宿主类型成员（method.Owner 沿 BaseType 链——ext
         // 方法 Owner = 目标类型，先于命名空间全局函数；实例方法命中后
-        // 由被调用方绑定补 this 或静态性检查拦截）→ 命名空间链 →
-        // 通配 import 容器方法
+        // 由被调用方绑定补 this 或静态性检查拦截）→ 接口默认实现
+        // （SYNTAX §11 隐式继承，裸名 greet() 与 d.greet() 同口径）
+        // → 命名空间链 → 通配 import 容器方法
         public static List<MethodSymbol> FindMethods(string name, BindFunctionFrame frame,
             BindEnvironment env)
         {
@@ -82,6 +83,17 @@
             {
                 var owner = host.ConstructedFrom ?? host;
                 result.AddRange(owner.Methods.Where(m => m.Name == name));
+            }
+            if (frame.LookupHost != null)
+            {
+                foreach (var method in SymbolLookup.FindInstanceMethods(
+                    frame.LookupHost, name, env.Unit.Symbols))
+                {
+                    if (!result.Any(existing => ReferenceEquals(existing, method)))
+                    {
+                        result.Add(method);
+                    }
+                }
             }
             for (var ns = frame.FileCtx.Namespace; ns != null; ns = ns.Parent)
             {

@@ -272,9 +272,10 @@ namespace RigiCompiler
 
         // for-each 协议判定：type 实现 core.collections::IEnumerable\<TItem\>
         // ——type 自身即该定义的构造（迭代源的静态类型就是接口，如
-        // EnumerateInRange 的返回类型），或沿自身与 BaseType 链的接口
-        // 表找该定义的构造；取实参 TItem（S9a 放行：实参可为泛型参数，
-        // 引用相等身份——泛型函数体内 for 遍历）；未实现即诊断
+        // EnumerateInRange 的返回类型），或经 InterfaceClosure 取代入后
+        // 的接口闭包（构造类型 Interfaces 表为空，必须走定义 + Substitute，
+        // 与 IsAssignable 同口径；Bag\<i32\> → IEnumerable\<i32\>）。
+        // 取实参 TItem（S9a 放行：实参可为泛型参数）；未实现即诊断
         private static SemanticSymbol? ResolveEnumerableElement(TypeSymbol type,
             TypeSymbol enumerableDef, CharRange? span, BindEnvironment env)
         {
@@ -282,13 +283,10 @@ namespace RigiCompiler
             {
                 return type.TypeArguments![0];
             }
-            for (var t = type; t != null; t = t.BaseType)
+            foreach (var iface in OverrideChecker.InterfaceClosure(type, env.Unit.Symbols))
             {
-                foreach (var iface in t.Interfaces)
-                {
-                    if (!ReferenceEquals(iface.ConstructedFrom, enumerableDef)) continue;
-                    return iface.TypeArguments![0];
-                }
+                if (!ReferenceEquals(iface.ConstructedFrom, enumerableDef)) continue;
+                return iface.TypeArguments![0];
             }
             env.Error(span, $"Type '{BoundAnalysis.TypeDisplay(type)}' does not implement " +
                 "core.collections.IEnumerable<T> (required by for loop)");

@@ -191,29 +191,16 @@ namespace RigiCompiler
                 var host = (TypeSymbol)entry.Symbol;
                 if (host.IsBuiltin || host.ConstructedFrom != null) continue;
                 if (host.AppliedWrappers.Count == 0) continue;
-                foreach (var member in host.Methods)
+                // §14.2：子类 Entity wrapper 拦截继承成员——形状校验须覆盖
+                // BaseType 链（override 遮蔽后只查最派生版本）
+                foreach (var member in EnumerateOwnAndInheritedMethods(host))
                 {
-                    if (member.Kind != MethodKind.Regular && member.Kind != MethodKind.Operator)
-                    {
-                        continue;
-                    }
-                    // proxy 模板成员（SYNTAX §14.2，仅 wrapper 可声明——P2 已
-                    // 校验）不参与命中；点前缀名仅为编译器合成（lambda 捕获
-                    // 字段等），不会出现于 wrapper 宿主类型
-                    if (member.ProxyTemplate != null || member.IsStatic || member.IsNative
-                        || member.IsAbstract || !member.HasBody)
-                    {
-                        continue;
-                    }
-                    // #27⑦：不再跳过可变值参数成员——wildcard 可命中；
-                    // specific 经 SpecificShapeMatches 比 variadic 形状
                     var isOperator = member.Kind == MethodKind.Operator;
                     var specificName = (isOperator ? ".proxy.opr." : ".proxy.") + member.Name;
                     CheckMember(env, host, member, specificName);
                 }
-                foreach (var field in host.Fields)
+                foreach (var field in EnumerateOwnAndInheritedFields(host))
                 {
-                    if (field.IsStatic) continue;
                     if (field.Getter is { } getter)
                     {
                         CheckMember(env, host, getter, ".proxy.get." + field.Name);
@@ -226,10 +213,59 @@ namespace RigiCompiler
             }
         }
 
+        // 自身 + BaseType 链上可拦截的实例方法（regular/operator；跳过
+        // proxy 模板/static/native/abstract/无体/init）。同名同形参名由派生遮蔽。
+        internal static IEnumerable<MethodSymbol> EnumerateOwnAndInheritedMethods(TypeSymbol host)
+        {
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            for (var t = host; t != null; t = t.BaseType)
+            {
+                var def = t.ConstructedFrom ?? t;
+                if (def.IsBuiltin) break;
+                foreach (var member in def.Methods)
+                {
+                    if (member.Kind != MethodKind.Regular && member.Kind != MethodKind.Operator)
+                    {
+                        continue;
+                    }
+                    if (member.ProxyTemplate != null || member.IsStatic || member.IsNative
+                        || member.IsAbstract || !member.HasBody)
+                    {
+                        continue;
+                    }
+                    if (member.Kind == MethodKind.Init || member.Name == "init")
+                    {
+                        continue;
+                    }
+                    var key = member.Kind + ":" + member.Name + "(" +
+                        string.Join(",", member.Parameters.Select(p => p.Name)) + ")";
+                    if (!seen.Add(key)) continue;
+                    yield return member;
+                }
+            }
+        }
+
+        internal static IEnumerable<FieldSymbol> EnumerateOwnAndInheritedFields(TypeSymbol host)
+        {
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            for (var t = host; t != null; t = t.BaseType)
+            {
+                var def = t.ConstructedFrom ?? t;
+                if (def.IsBuiltin) break;
+                foreach (var field in def.Fields)
+                {
+                    if (field.IsStatic) continue;
+                    if (!seen.Add(field.Name)) continue;
+                    yield return field;
+                }
+            }
+        }
+
         private static void CheckMember(ResolveEnvironment env, TypeSymbol host,
             MethodSymbol member, string specificName)
         {
             if (ProxyMatching.ContainsErrorType(member)) return;
+            if (!env.EntryOfSymbol.ContainsKey(member)) return;
             foreach (var application in host.AppliedWrappers)
             {
                 if (!ProxyMatching.SpecificShapeMismatch(host, member, application, env,

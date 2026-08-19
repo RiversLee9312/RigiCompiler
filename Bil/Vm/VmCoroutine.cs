@@ -277,6 +277,11 @@ namespace RigiCompiler.Bil.Vm
                     parameters.Add(arg);
                 }
             }
+            // 类级 .generic.* 未出现在 invoke 实参时，从 .this 构造形态注入
+            if (arguments.Count != parameters.Count)
+            {
+                arguments = VmContext.AlignGenericHiddenArgs(function, arguments);
+            }
             if (parameters.Count != arguments.Count)
             {
                 throw new VmException("实参个数不匹配：" + function.Symbol

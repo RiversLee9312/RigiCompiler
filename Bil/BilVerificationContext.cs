@@ -387,6 +387,17 @@ namespace RigiCompiler.Bil
             var normalizedActual = NormalizeTypeRef(actual);
             var normalizedExpected = NormalizeTypeRef(expected);
             if (normalizedActual == normalizedExpected) return true;
+            // 运行期精确类型 → 声明类型：.null / T 均可赋给 .nullable<T>
+            // （new 实参匹配 init 按可赋值性，不是按值的精确 typeid）
+            if (normalizedActual == ".null" && IsNullableType(normalizedExpected, out _))
+            {
+                return true;
+            }
+            if (IsNullableType(normalizedExpected, out var nullableInner)
+                && TypesAssignable(normalizedActual, nullableInner))
+            {
+                return true;
+            }
 
             var actualArguments = TypeArgumentsOf(normalizedActual);
             var expectedArguments = TypeArgumentsOf(normalizedExpected);
@@ -441,6 +452,19 @@ namespace RigiCompiler.Bil
             var angle = typeRef.IndexOf('<');
             if (angle < 0 || !typeRef.EndsWith(">")) return null;
             return SplitTopLevel(typeRef.Substring(angle + 1, typeRef.Length - angle - 2));
+        }
+
+        // 归一化后的 .nullable<T> / core::Nullable<T>
+        private static bool IsNullableType(string normalized, out string inner)
+        {
+            const string alias = "core::Nullable<";
+            if (normalized.StartsWith(alias, StringComparison.Ordinal) && normalized.EndsWith(">"))
+            {
+                inner = normalized.Substring(alias.Length, normalized.Length - alias.Length - 1);
+                return true;
+            }
+            inner = "";
+            return false;
         }
 
         // 资源的值类型（§19；无法判定的形态返回 null——调用方跳过严格匹配）：

@@ -99,6 +99,26 @@ namespace RigiCompiler.Tests
                 "func f\\<out T>(): T { return default }\n");
             TestHarness.CheckSemanticError("函数泛型参数不接受型变", badFunction.Diagnostics,
                 "variance is only allowed on type declarations");
+
+            // init 构造参数豁免（§3.6 同 Kotlin：构造不产生只读接口写入暴露）
+            var (initOk, _) = ResolveUnit(
+                "class Box\\<out T> {\n" +
+                "    pub const item: T\n" +
+                "    pub init(_ -> item)\n" +
+                "}\n");
+            CheckNoErrors("out T 可用于 init 构造参数", initOk);
+
+            var (initBodyOk, _) = ResolveUnit(
+                "class Box\\<out T> {\n" +
+                "    pub const item: T\n" +
+                "    pub init(item: T) { this.item = item }\n" +
+                "}\n");
+            CheckNoErrors("out T 可用于显式 init 形参", initBodyOk);
+
+            var (stillBad, _) = ResolveUnit(
+                "class Box\\<out T> { pub var item: T\n    pub init(_ -> item)\n}\n");
+            TestHarness.CheckSemanticError("out T 仍不可用于可变字段", stillBad.Diagnostics,
+                "covariant parameter 'T' cannot be used in field 'item'");
         }
 
         // 无诊断断言（失败时附带诊断袋内容）

@@ -92,7 +92,9 @@ namespace RigiCompiler.Tests
             TestGenericVarianceAssignability();
             TestCallFixes();
             TestGateFixes();
+            TestGenericTypeFixes();
             TestFlowFixes();
+            TestMemberLookupFixes();
             TestEnumCases();
             TestDiagnosticsAccumulation();
             TestKwArgsBodyView();
@@ -108,6 +110,9 @@ namespace RigiCompiler.Tests
             TestInnerCallGenericPackForwarding();
             TestGenericParamWithWrapperPlace();
             TestDowngradeBinding();
+            TestWrapperPlaceVoidStatement();
+            TestGetProxyInnerForbidden();
+            TestSubclassWrapperInheritedShape();
             TestLambdaBinding();
             TestVoidLambdaExpressionBodyStatementSemantics();
             return TestHarness.Summary("Binder");

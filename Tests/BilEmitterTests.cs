@@ -158,11 +158,14 @@ namespace RigiCompiler.Tests
             TestDowngradeExemptionPositions();
             TestInitWrapperTypeLevelEmission();
             TestInitWrapperCellArgsEmission();
+            TestWrapperPlaceVoidCallEmission();
             TestGlobalWrappedFieldEmission();
             TestStaticMethodCompanionEmission();
             TestLambdaEmission();
             TestBuiltinToStringEmission();
             TestUnsupportedNodes();
+            TestGenericIndexOperatorEmission();
+            TestClassGenericParamFrameEmission();
 
             return TestHarness.Summary("BilEmitter");
         }

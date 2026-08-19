@@ -108,7 +108,7 @@ namespace RigiCompiler
                 isLambda: true, thisSymbol: ctx.This,
                 lambdaThisType: ctx.IsLambda
                     ? ctx.LambdaThisType
-                    : (ctx.Frame.HasThis ? ctx.Frame.Method.Owner : null),
+                    : PathFacility.EffectiveThisType(ctx, env),
                 // 成员查找宿主逐层传播（隐藏类不是词法宿主——外层类型的成员
                 // 在 lambda 体内词法可见，同外层上下文）
                 lookupHost: ctx.Frame.LookupHost);

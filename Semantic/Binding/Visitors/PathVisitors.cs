@@ -47,6 +47,15 @@
             return ApplyNarrowing(node, bound, key, flow);
         }
 
+        // 源码层有效 this 类型：lambda 取外层；实例方法取宿主自身具化
+        // （泛型定义 Box → Box\<T\>）；静态上下文 null
+        public static TypeSymbol? EffectiveThisType(BindContext ctx, BindEnvironment env)
+        {
+            if (ctx.IsLambda) return ctx.LambdaThisType;
+            if (!ctx.Frame.HasThis) return null;
+            return SymbolLookup.AsSelfConstructed(ctx.Frame.Method.Owner, env.Unit.Symbols);
+        }
+
         // 类型槽位的值绑定（is/supers/with 动态右侧与 new 动态目标共用，
         // SYNTAX §3.5/§3.7）：不落袋纯查找，命中后正常构造值引用 bound
         // 节点——单段名 = 局部 → 参数 → 字段（FindField 全链）；多段路径 =
@@ -316,10 +325,13 @@
                 return null;
             }
             // ===== S8c 泛化链折叠：首段按值解析 → 首段后缀折叠 → 实例链 =====
-            // 首段按值解析（switch 占位/局部/参数/裸名字段——单段与多段共用；
-            // 局部/参数的 unassigned 检查与收窄包装仅在读语义（!forAssignment）
-            // ——赋值目标位置是定义而非读取）
+            // 首段按值解析（switch 占位/局部/参数/裸名字段——单段与多段共用）。
+            // 整条路径就是该符号本身（无段无后缀）才是赋值 place：跳过
+            // unassigned/收窄（定义而非读取）。有段/后缀时首段是接收者，
+            // 与读路径同等享受 smart cast（SYNTAX §3.5：`t.v = 2` 的 t）
             var headName = node.Head.Name!;
+            var headIsWritePlace = forAssignment && node.Segments.Count == 0
+                && node.Head.Suffixes.Count == 0;
             BoundExpression? headValue = null;
             if (headName == "_" && ctx.Labels.CurrentSelector is { } placeholderSelector)
             {
@@ -356,7 +368,7 @@
                         return null;
                     }
                     headValue = MakeBackingFieldReference(node, ctx.Accessor.Field, backingType,
-                        ctx.Frame, ctx.Accessor.IsSetter);
+                        ctx.Frame, ctx.Accessor.IsSetter, env.Unit.Symbols);
                 }
                 else
                 {
@@ -364,7 +376,7 @@
                     if (headSymbol != null)
                     {
                         if (headSymbol is LocalSymbol headLocal
-                            && !forAssignment && !ctx.Flow.IsAssigned(headLocal))
+                            && !headIsWritePlace && !ctx.Flow.IsAssigned(headLocal))
                         {
                             env.Error(node.Span, $"Use of unassigned local variable '{headName}'");
                         }
@@ -381,8 +393,9 @@
                             env.Error(node.Span, $"Undefined value '{headName}'");
                             return null;
                         }
-                        // 局部访问器读检查（M107，§9.4.1）：仅 set 不可读
-                        if (!forAssignment
+                        // 局部访问器读检查（M107，§9.4.1）：仅 set 不可读。
+                        // 作赋值接收者（t.v = 1）同样是读 t
+                        if (!headIsWritePlace
                             && headSymbol is LocalSymbol accessorLocal
                             && (accessorLocal.Getter != null || accessorLocal.Setter != null)
                             && accessorLocal.Getter == null)
@@ -394,8 +407,8 @@
                             && (headSymbol is not LocalSymbol local || !ctx.Locals.Contains(local)))
                             ctx.CapturedSymbols.Add(headSymbol);
                         headValue = new BoundValueReferenceExpression(node, headSymbol, headType);
-                        // S8b：收窄区域内包 SmartCast
-                        if (!forAssignment)
+                        // 接收者位置与读路径同收窄；赋值 place 本身不包
+                        if (!headIsWritePlace)
                         {
                             headValue = ApplyNarrowing(node, headValue,
                                 NarrowKey.ForSymbol(headSymbol), ctx.Flow);
@@ -416,7 +429,7 @@
                             var paramType = VariadicParameterViewType(headParameter, env);
                             headValue = new BoundValueReferenceExpression(node, headParameter,
                                 paramType);
-                            if (!forAssignment)
+                            if (!headIsWritePlace)
                             {
                                 headValue = ApplyNarrowing(node, headValue,
                                     NarrowKey.ForSymbol(headParameter), ctx.Flow);
@@ -826,11 +839,9 @@
             // lambda 语境（§5.2）：有效 this 类型取 LambdaThisType（外层 this），
             // Frame.Method 是隐藏类 $$call（恒实例）——代入宿主与 this 上色
             // 都必须用外层有效 this 类型，且裸字段访问即 this 捕获
-            var effectiveThis = ctx.IsLambda
-                ? ctx.LambdaThisType
-                : (ctx.Frame.HasThis ? ctx.Frame.Method.Owner : null);
+            var effectiveThis = EffectiveThisType(ctx, env);
             var fieldType = SymbolLookup.SubstituteFieldType(field, effectiveThis
-                ?? ctx.Frame.Method.Owner);
+                ?? ctx.Frame.Method.Owner, env.Unit.Symbols);
             if (field.Owner != null && !field.IsStatic)
             {
                 // 实例字段（S7c-2）：当前上下文有 this（实例方法/ext 方法
@@ -901,13 +912,16 @@
         // 静态/全局直引；不接名称解析、不走访问器/访问控制检查
         // （backing 直达是编译器机制内部路径）
         public static BoundExpression MakeBackingFieldReference(ASTNode node, FieldSymbol field,
-            SemanticSymbol fieldType, BindFunctionFrame frame, bool forSetter)
+            SemanticSymbol fieldType, BindFunctionFrame frame, bool forSetter,
+            SymbolGraph symbols)
         {
             var target = BackingStorageField(field, forSetter);
             if (target.Owner != null && !target.IsStatic)
             {
                 return new BoundFieldAccessExpression(node,
-                    new BoundThisExpression(node, frame.Method.Owner!), target, fieldType);
+                    new BoundThisExpression(node,
+                        SymbolLookup.AsSelfConstructed(frame.Method.Owner, symbols)!),
+                    target, fieldType);
             }
             return new BoundFieldReferenceExpression(node, target, fieldType);
         }
@@ -923,9 +937,7 @@
             // lambda 语境（SYNTAX §5.2）：函数级宿主是隐藏类的 $$call（实例方法，
             // Frame.HasThis 恒真），但源码层 this 指向外层声明位置的实例——
             // 有效 this 类型取 LambdaThisType（外层静态上下文中的 lambda 为 null）
-            var thisType = ctx.IsLambda
-                ? ctx.LambdaThisType
-                : (ctx.Frame.HasThis ? ctx.Frame.Method.Owner : null);
+            var thisType = EffectiveThisType(ctx, env);
             if (thisType == null)
             {
                 env.Error(node.Span, "P3: 'this' is not available in a static context");
@@ -1169,6 +1181,14 @@
                 // S10：async 无结果调用有 Task 值（同 BindCall 值位置口径）
                 if (call.ResultType == null)
                 {
+                    // §14.5：语句位允许 wrapper place 上调 void 方法；仅链末
+                    // 纯 Call（无后续后缀）收口，其余仍作值拒绝。
+                    if (ctx.AllowVoidCall && segment.Suffixes.Count == 1)
+                    {
+                        return new BoundInstanceCallExpression(segment, receiver,
+                            call.Method, call.Arguments, env.B.Any, call.TypeArguments,
+                            call.GenericPack);
+                    }
                     env.Error(segment.Span, $"Method '{call.Method.Name}' has no result " +
                         "(void) and cannot be used as a value");
                     return null;
@@ -1419,7 +1439,8 @@
             // 参数时按 receiver 链上的构造类型取实参；receiver 定义级时
             // 原样保留（S9a 放行——引用相等身份）；返回值恒非空
             // （FieldType 非 null 上面已查，SymbolLookup 契约）
-            var fieldType = SymbolLookup.SubstituteFieldType(field, receiverType);
+            var fieldType = SymbolLookup.SubstituteFieldType(field, receiverType,
+                env.Unit.Symbols);
             var access = new BoundFieldAccessExpression(node, receiver, field, fieldType);
             // S8b：const 字段稳定链收窄（TryFromFieldAccess 含 IsNarrowable
             // 判定；不稳定链返回 null 直通）；赋值 place（forAssignment）

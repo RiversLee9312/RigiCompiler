@@ -727,6 +727,21 @@ namespace RigiCompiler
                         break;
                     }
                 }
+                // class 实现 IBox\<i32\> 时方法宿主是接口定义，BaseType
+                // 链到不了构造接口——沿闭包再取一层构造实参
+                if (hostArgs == null)
+                {
+                    foreach (var iface in OverrideChecker.InterfaceClosure(receiverType,
+                        env.Unit.Symbols))
+                    {
+                        if (ReferenceEquals(iface.ConstructedFrom, method.Owner)
+                            && iface.TypeArguments != null)
+                        {
+                            hostArgs = iface.TypeArguments.ToList();
+                            break;
+                        }
+                    }
+                }
             }
             var generics = method.GenericParameters;
             var args = typeArgs ?? Array.Empty<SemanticSymbol>();
