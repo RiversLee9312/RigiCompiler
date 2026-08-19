@@ -48,9 +48,15 @@ namespace RigiCompiler.Tests
             // `\` 后必须跟 `<`（SYNTAX §3.6）
             TestHarness.CheckParseError("List\\i32",
                 () => ParseType("List\\i32"), "Expected '<' after '\\'");
+            // 闭括号写成 `\>`（旧式残留）
+            TestHarness.CheckParseError("List\\<i32\\>",
+                () => ParseType("List\\<i32\\>"), "close with '>', not '\\>'");
             // 多余的闭合 `>`：TestRootParserLayer 只接受 EOF，漏消费即失败
             TestHarness.CheckParseError("List\\<i32>>",
                 () => ParseType("List\\<i32>>"), "unconsumed token");
+            // 逗号后悬空实参不得被 '>' 吞掉
+            TestHarness.CheckParseError("List\\<i32,>",
+                () => ParseType("List\\<i32,>"), "Expected type argument before '>'");
 
             TestHarness.Blank();
         }

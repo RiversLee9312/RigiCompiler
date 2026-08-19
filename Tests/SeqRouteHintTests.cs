@@ -11,12 +11,13 @@ namespace RigiCompiler.Tests
     /// 表达式结果局部在 fall-through 路径的精确 DA——修复前 verifier
     /// §21.4 以全臂交集保守拒绝（动态上路 ≠0 时该读不可达），修复后
     /// emitter 在每条标准 route dispatcher 尾链首发 hint、verifier 按
-    /// V0–V4 校验并分组消费。
+    /// V0–V4 校验并分组消费。loop/loop.rev dispatcher 同款覆盖。
     /// 覆盖：混合 seq/if/switch 三形态端到端（过验证器 + VM 两路径输出）、
-    /// 手工 BIL 正例（带正确 hint 过验证器；同模块无 hint 必报 §21.4）、
-    /// 手工 BIL 负例（畸形 JSON / route 名不存在 / route 非 .i32 / 比较
-    /// 常量与写入不匹配——均静默忽略 hint、退回保守、§21.4 照报，且不
-    /// 产生任何 hint 相关新诊断）。
+    /// loop dispatcher 发射正/负例、混合 while 端到端、手工 BIL 正例
+    /// （带正确 hint 过验证器；同模块无 hint 必报 §21.4）、手工 BIL
+    /// 负例（畸形 JSON / route 名不存在 / route 非 .i32 / 比较常量与
+    /// 写入不匹配——均静默忽略 hint、退回保守、§21.4 照报，且不产生
+    /// 任何 hint 相关新诊断）。
     /// </summary>
     public static class SeqRouteHintTests
     {
@@ -26,12 +27,18 @@ namespace RigiCompiler.Tests
             TestMixedSeqExpressionEndToEnd();
             TestMixedIfExpressionEndToEnd();
             TestMixedSwitchExpressionEndToEnd();
+            TestLoopDispatcherHintEmission();
+            TestLoopNoDispatcherNoHint();
+            TestMixedWhileExpressionEndToEnd();
             TestHandModuleWithHintPasses();
             TestHandModuleWithoutHintRejected();
             TestMalformedHintJsonIgnored();
             TestUnknownRouteNameIgnored();
             TestNonI32RouteIgnored();
             TestMismatchedChainConstantIgnored();
+            TestLoopHandModuleWithHintPasses();
+            TestLoopHandModuleWithoutHintRejected();
+            TestLoopMalformedHintIgnored();
             return TestHarness.Summary("SeqRouteHint");
         }
 
@@ -113,6 +120,103 @@ namespace RigiCompiler.Tests
             CheckMixedEndToEnd("混合 switch", source, "normal\nescaped\nnormal\n");
         }
 
+        // ===== loop dispatcher 发射与混合 while 端到端 =====
+
+        // while / do-while / for 体内 return@、while 条件位逃逸：均有
+        // loop dispatcher，hint 紧贴 loop/loop.rev 之后
+        private static void TestLoopDispatcherHintEmission()
+        {
+            TestHarness.Section("loop dispatcher 发 hint");
+            CheckLoopHintAfter("while 体 return@",
+                "pub func f(x: i32): i32 {\n" +
+                "    return seq {\n" +
+                "        while ((x > 1)) { return@_ 1 }\n" +
+                "        return@_ 2\n" +
+                "    }\n" +
+                "}\n",
+                expectRev: false);
+            CheckLoopHintAfter("do-while 体 return@",
+                "pub func f(): i32 {\n" +
+                "    return seq {\n" +
+                "        do { return@_ 8 } while (false)\n" +
+                "    }\n" +
+                "}\n",
+                expectRev: true);
+            CheckLoopHintAfter("for 体 return@",
+                "pub func f(): i32 {\n" +
+                "    return seq {\n" +
+                "        for (i in 0 to 5) {\n" +
+                "            if ((i == 2)) { return@_ 15 }\n" +
+                "        }\n" +
+                "        return@_ 0\n" +
+                "    }\n" +
+                "}\n",
+                expectRev: false);
+            CheckLoopHintAfter("while 条件位逃逸",
+                "pub func f(): String {\n" +
+                "    return seq named decide {\n" +
+                "        while (seq { return@decide \"escaped\" }) { }\n" +
+                "        return@decide \"after\"\n" +
+                "    }\n" +
+                "}\n",
+                expectRev: false);
+        }
+
+        private static void CheckLoopHintAfter(string label, string source, bool expectRev)
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(source);
+            CheckNoErrors(label + " 无诊断", unit);
+            BilTestHarness.CheckBilValid(label + " BIL 过验证器", module);
+            TestHarness.CheckTrue(label + " loop 后紧跟 seq-route hint",
+                HasSeqRouteHintAfterLoop(module, expectRev),
+                "未找到 loop/loop.rev 后的 rigi.seq-route hint");
+        }
+
+        // 无跨 region exit 的普通循环不建 route、不发 dispatcher、不发 hint
+        private static void TestLoopNoDispatcherNoHint()
+        {
+            TestHarness.Section("无 dispatcher 不发 loop hint");
+            var source =
+                "pub func main(): i32 {\n" +
+                "    var x: i32 = 0\n" +
+                "    while ((x < 3)) { x = (x + 1) }\n" +
+                "    do { x = (x - 1) } while ((x > 0))\n" +
+                "    return x\n" +
+                "}\n";
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(source);
+            CheckNoErrors("普通循环无诊断", unit);
+            BilTestHarness.CheckBilValid("普通循环 BIL 过验证器", module);
+            TestHarness.CheckTrue("普通 while/do-while 后无 seq-route hint",
+                !HasSeqRouteHintAfterLoop(module, expectRev: false)
+                && !HasSeqRouteHintAfterLoop(module, expectRev: true));
+        }
+
+        // 混合 while：体内 return@_ 产值、循环后 return@ 逃逸——读结果
+        // 局部只在 0 组（未进循环 / 循环正常结束）之后发生
+        private static void TestMixedWhileExpressionEndToEnd()
+        {
+            TestHarness.Section("混合 while 表达式端到端");
+            var source =
+                "pub func pick(flag: bool): String {\n" +
+                "    var result: String = seq named decide {\n" +
+                "        var t: i32 = seq {\n" +
+                "            while (flag) {\n" +
+                "                return@_ 1\n" +
+                "            }\n" +
+                "            return@decide \"escaped\"\n" +
+                "        }\n" +
+                "        return@decide \"normal\"\n" +
+                "    }\n" +
+                "    return result\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    core.io.Console.println(pick(true))\n" +
+                "    core.io.Console.println(pick(false))\n" +
+                "    return 0\n" +
+                "}\n";
+            CheckMixedEndToEnd("混合 while", source, "normal\nescaped\n");
+        }
+
         private static void CheckMixedEndToEnd(string label, string source, string expectedStdout)
         {
             var (unit, module, _) = BilTestHarness.EmitBilUnit(source);
@@ -175,6 +279,30 @@ namespace RigiCompiler.Tests
                 "\"{\\\"kind\\\":\\\"rigi.seq-route\\\",\\\"version\\\":1," +
                 "\\\"route\\\":\\\"$flag\\\"}\"");
             CheckRejectedWithConservativeFallback("route 非 .i32 局部", module);
+        }
+
+        // loop 手工模块：带正确 hint 过验证器（DA 按组精确，读 $.s1 合法）
+        private static void TestLoopHandModuleWithHintPasses()
+        {
+            TestHarness.Section("rigi.seq-route hint：loop 手工模块正例");
+            var (module, _, _, _) = LoopSeqRouteModule(out _, out _, out _);
+            BilTestHarness.CheckBilValid("带正确 loop hint 的混合形态模块过验证器", module);
+        }
+
+        // 对照：去掉 loop 后的 hint 必报 §21.4（保守合并拒绝混合形态）
+        private static void TestLoopHandModuleWithoutHintRejected()
+        {
+            var (module, _, seq1, _) = LoopSeqRouteModule(out _, out _, out _);
+            RemoveHints(seq1);
+            CheckRejectedWithConservativeFallback("无 loop hint 同模块", module);
+        }
+
+        // 弄坏 loop hint JSON：静默忽略，§21.4 照报
+        private static void TestLoopMalformedHintIgnored()
+        {
+            var (module, _, seq1, _) = LoopSeqRouteModule(out _, out _, out _);
+            ReplaceHintResource(module, seq1, "\"not a json\"");
+            CheckRejectedWithConservativeFallback("畸形 loop hint JSON", module);
         }
 
         // 负例：尾链比较常量与 route 写入常量不匹配（写 0/1/2 比 3）——
@@ -353,6 +481,148 @@ namespace RigiCompiler.Tests
             main.Blocks.Add(if3Then);
             module.Functions.Add(main);
             return (module, seq0, seq1, three);
+        }
+
+        // 混合形态手工模块（loop 版）：seq0 调 seq1；seq1 内 loop $flag
+        // 带 hint（route $.s2，写 0/1/2）——body 产值写 $.s1 + route=1
+        // break loop；0 组（未进循环）写 $.s0 逃逸 + 写 $.s3=1 break seq1；
+        // 1 组 relay break seq1。seq0 续点读 $.s1：带 hint 过验证器。
+        private static (BilModule Module, BilBlock Seq0, BilBlock Seq1,
+            BilScalarResource Three) LoopSeqRouteModule(out BilScalarResource zero,
+                out BilScalarResource one, out BilScalarResource two)
+        {
+            var module = new BilModule();
+            zero = new BilScalarResource("R_Zero", BilScalarType.I32, "0");
+            one = new BilScalarResource("R_One", BilScalarType.I32, "1");
+            two = new BilScalarResource("R_Two", BilScalarType.I32, "2");
+            var three = new BilScalarResource("R_Three", BilScalarType.I32, "3");
+            var seven = new BilScalarResource("R_Seven", BilScalarType.I32, "7");
+            var trueResource = new BilScalarResource("R_True", BilScalarType.Bool, "true");
+            var hintS2 = new BilScalarResource("R_HintS2", BilScalarType.String,
+                "\"{\\\"kind\\\":\\\"rigi.seq-route\\\",\\\"version\\\":1," +
+                "\\\"route\\\":\\\"$.s2\\\"}\"");
+            var hintS3 = new BilScalarResource("R_HintS3", BilScalarType.String,
+                "\"{\\\"kind\\\":\\\"rigi.seq-route\\\",\\\"version\\\":1," +
+                "\\\"route\\\":\\\"$.s3\\\"}\"");
+            module.Resources.Add(zero);
+            module.Resources.Add(one);
+            module.Resources.Add(two);
+            module.Resources.Add(three);
+            module.Resources.Add(seven);
+            module.Resources.Add(trueResource);
+            module.Resources.Add(hintS2);
+            module.Resources.Add(hintS3);
+            module.LocalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "$main()@.i32",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            var main = new BilFunction("$main()@.i32");
+            main.Args.Add(new BilArgDeclaration(".return", ".i32"));
+            foreach (var (type, name) in new[]
+            {
+                (".bool", "flag"), (".i32", "t"), (".i32", "result"),
+                (".i32", ".s0"), (".breakid", ".b0"), (".i32", ".s1"),
+                (".breakid", ".b1"), (".breakid", ".b2"), (".i32", ".s2"),
+                (".i32", ".s3"), (".breakid", ".b3"), (".breakid", ".b4"),
+                (".i32", ".t0"), (".i32", ".t1"), (".i32", ".t2"),
+                (".i32", ".t3"), (".i32", ".t4"), (".bool", ".t5"),
+                (".i32", ".t6"), (".bool", ".t7"), (".i32", ".t8"),
+                (".i32", ".t9"), (".bool", ".c0"), (".bool", ".f0"),
+            })
+            {
+                main.Vars.Add(new BilVarDeclaration(type, name));
+            }
+
+            var entry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            var seq0 = new BilBlock("seq0");
+            var seq1 = new BilBlock("seq1");
+            var loopBody = new BilBlock("loop0-body");
+            var loopJudge = new BilBlock("loop0-judge");
+            var if1Then = new BilBlock("if1-then");
+            var if2Then = new BilBlock("if2-then");
+
+            entry.Instructions.Add(new LoadInstruction(trueResource, BilOp.Var(".f0")));
+            entry.Instructions.Add(new SetVarInstruction(BilOp.Var(".f0"), BilOp.Var("flag")));
+            entry.Instructions.Add(new CallBlockInstruction(seq0, BilOp.Var(".b0")));
+            entry.Instructions.Add(new SetVarInstruction(BilOp.Var(".s0"), BilOp.Var("result")));
+            entry.Instructions.Add(new RetInstruction(BilOp.Var("result")));
+
+            seq0.Instructions.Add(new LoadInstruction(zero, BilOp.Var(".t0")));
+            seq0.Instructions.Add(new SetVarInstruction(BilOp.Var(".t0"), BilOp.Var(".s3")));
+            seq0.Instructions.Add(new CallBlockInstruction(seq1, BilOp.Var(".b1")));
+            seq0.Instructions.Add(new HintInstruction(hintS3));
+            seq0.Instructions.Add(new LoadInstruction(one, BilOp.Var(".t6")));
+            seq0.Instructions.Add(new BinaryIntrinsicInstruction(BilBinaryOp.CmpEq,
+                BilOp.Var(".s3"), BilOp.Var(".t6"), BilOp.Var(".t7")));
+            seq0.Instructions.Add(new IfInstruction(BilOp.Var(".t7"), if2Then, null,
+                BilOp.Var(".b4")));
+            seq0.Instructions.Add(new SetVarInstruction(BilOp.Var(".s1"), BilOp.Var("t")));
+            seq0.Instructions.Add(new LoadInstruction(seven, BilOp.Var(".t8")));
+            seq0.Instructions.Add(new SetVarInstruction(BilOp.Var(".t8"), BilOp.Var(".s0")));
+
+            seq1.Instructions.Add(new LoadInstruction(zero, BilOp.Var(".t1")));
+            seq1.Instructions.Add(new SetVarInstruction(BilOp.Var(".t1"), BilOp.Var(".s2")));
+            seq1.Instructions.Add(new LoopInstruction(BilOp.Var(".c0"), loopBody, null,
+                loopJudge, BilOp.Var(".b2"), isRev: false));
+            seq1.Instructions.Add(new HintInstruction(hintS2));
+            seq1.Instructions.Add(new LoadInstruction(one, BilOp.Var(".t2")));
+            seq1.Instructions.Add(new BinaryIntrinsicInstruction(BilBinaryOp.CmpEq,
+                BilOp.Var(".s2"), BilOp.Var(".t2"), BilOp.Var(".t5")));
+            seq1.Instructions.Add(new IfInstruction(BilOp.Var(".t5"), if1Then, null,
+                BilOp.Var(".b3")));
+            seq1.Instructions.Add(new LoadInstruction(seven, BilOp.Var(".t3")));
+            seq1.Instructions.Add(new SetVarInstruction(BilOp.Var(".t3"), BilOp.Var(".s0")));
+            seq1.Instructions.Add(new LoadInstruction(one, BilOp.Var(".t4")));
+            seq1.Instructions.Add(new SetVarInstruction(BilOp.Var(".t4"), BilOp.Var(".s3")));
+            seq1.Instructions.Add(new BreakInstruction(BilOp.Var(".b1")));
+
+            loopBody.Instructions.Add(new LoadInstruction(one, BilOp.Var(".t9")));
+            loopBody.Instructions.Add(new SetVarInstruction(BilOp.Var(".t9"), BilOp.Var(".s1")));
+            loopBody.Instructions.Add(new LoadInstruction(one, BilOp.Var(".t2")));
+            loopBody.Instructions.Add(new SetVarInstruction(BilOp.Var(".t2"), BilOp.Var(".s2")));
+            loopBody.Instructions.Add(new BreakInstruction(BilOp.Var(".b2")));
+
+            loopJudge.Instructions.Add(new SetVarInstruction(BilOp.Var("flag"),
+                BilOp.Var(".c0")));
+
+            if1Then.Instructions.Add(new BreakInstruction(BilOp.Var(".b1")));
+
+            if2Then.Instructions.Add(new BreakInstruction(BilOp.Var(".b0")));
+
+            main.Blocks.Add(entry);
+            main.Blocks.Add(seq0);
+            main.Blocks.Add(seq1);
+            main.Blocks.Add(loopBody);
+            main.Blocks.Add(loopJudge);
+            main.Blocks.Add(if1Then);
+            main.Blocks.Add(if2Then);
+            module.Functions.Add(main);
+            return (module, seq0, seq1, three);
+        }
+
+        private static bool HasSeqRouteHintAfterLoop(BilModule module, bool expectRev)
+        {
+            foreach (var function in module.Functions)
+            {
+                foreach (var block in function.Blocks)
+                {
+                    var instructions = block.Instructions;
+                    for (var i = 0; i < instructions.Count - 1; i++)
+                    {
+                        if (instructions[i] is not LoopInstruction loop
+                            || loop.IsRev != expectRev
+                            || instructions[i + 1] is not HintInstruction hint
+                            || hint.Resource is not BilScalarResource scalar)
+                        {
+                            continue;
+                        }
+                        if (scalar.LiteralText.Contains("rigi.seq-route"))
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+            return false;
         }
 
         private static void CheckNoErrors(string label, CompilationUnit unit)

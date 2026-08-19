@@ -168,6 +168,34 @@ namespace RigiCompiler.Tests
                 "ret $.t0\n");
         }
 
+        // ===== 用户类型算术/比较/一元仍发 intrinsic 指令（VM 运行时派发）=====
+        private static void TestUserOperatorPlusEmission()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "class Vec {\n" +
+                "    pub operator plus(other: Vec): Vec { return this }\n" +
+                "    pub operator compareTo(other: Vec): i32 { return 0 }\n" +
+                "    pub operator opposite(): Vec { return this }\n" +
+                "}\n" +
+                "pub func add(a: Vec, b: Vec): Vec { return a + b }\n" +
+                "pub func lt(a: Vec, b: Vec): bool { return a < b }\n" +
+                "pub func neg(a: Vec): Vec { return -a }\n");
+            CheckNoErrors("全管线无诊断（用户 plus/compareTo/opposite 发射）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（用户 operator 发射）", module);
+            BilTestHarness.CheckFnShape("用户 + 仍发 add", module, "$add(a:Vec,b:Vec)@Vec",
+                ".vars { Vec .t0 }\n" +
+                "add $a $b $.t0\n" +
+                "ret $.t0\n");
+            BilTestHarness.CheckFnShape("用户 < 仍发 cmp.lt", module, "$lt(a:Vec,b:Vec)@.bool",
+                ".vars { .bool .t0 }\n" +
+                "cmp.lt $a $b $.t0\n" +
+                "ret $.t0\n");
+            BilTestHarness.CheckFnShape("用户 - 仍发 opposite", module, "$neg(a:Vec)@Vec",
+                ".vars { Vec .t0 }\n" +
+                "opposite $a $.t0\n" +
+                "ret $.t0\n");
+        }
+
         // ===== 带返回值 invoke（§15.1）与表达式语句（结果物化后丢弃）=====
         private static void TestInvokeWithResult()
         {

@@ -4,13 +4,19 @@ namespace RigiCompiler
     // （BIL §3.3——之后各层不再 ranking）。三步：结构过滤（静默）→
     // 类型适用性（静默）→ 最具体胜出；前两步不产生诊断，唯一落定后
     // 实参已是规范参数序（ARCH §2）。
-    // S9b 增补泛型方法（SYNTAX §4.2 定稿）：调用带显式泛型实参时候选池
-    // 仅泛型方法（实参个数与**固定**泛型参数个数匹配——§4.2「泛型可变
-    // 参数除外」/§4.3 包实参不显式书写；混合 `f\<T, TArgs...>` 按固定
-    // 元数匹配，包由值实参推导进 GenericPack），不带时泛型方法不参与
-    // 候选（仅剩泛型候选时诊断「需要显式泛型实参」；全可变包候选无显式
-    // 时仍参与——包推导是固有形态）；泛型候选按实参代入后的签名参与
-    // 三步（SubstituteType 视图，符号身份不变）。
+    // 泛型方法（SYNTAX §4.2）：调用带显式泛型实参时候选池仅泛型方法
+    // （实参个数与**固定**泛型参数个数匹配——§4.3 包实参不显式书写；
+    // 混合 `f\<T, TArgs...>` 按固定元数匹配，包由值实参推导进 GenericPack）。
+    // 不带显式实参时：非泛型 + 全可变包 + **固定泛型（由值实参结构推断）**
+    // 同台；推断失败的固定泛型候选排除，池空则诊断「无法从实参推断泛型
+    // 实参」。推断规则：裸 T 绑定实参静态类型；构造模式（Array\<T>、
+    // Pair\<K,V>、T?、Func\<...>、用户泛型等）递归下钻；同一参数多处
+    // 绑定必须一致；未出现在任何值形参 / 仅 null 字面量 / 结构不匹配
+    // 即失败。推断成功后过约束检查，代入视图参与三步 ranking。
+    // CallBinding.TypeArguments 收固定实参（显式或推断，形态相同——
+    // P4 物化 typeid，BIL §7 无单态化）。全可变包行为不变；混合形态
+    // 固定部分可推断、包照旧推导。类型级构造器（new List\<i32>()
+    // 省略实参）不做推断。
     // 可变参数方法不参与调用绑定，归口诊断。
     //
     // 单候选（含结构过滤后唯一）走 CallFacility.BindArguments 快路径——
@@ -26,27 +32,33 @@ namespace RigiCompiler
             public MethodSymbol Method { get; }
             public IReadOnlyList<SemanticSymbol> ParameterTypes { get; }
             public SemanticSymbol? ReturnType { get; }
+            // 固定泛型实参（显式或推断；非泛型 / 全可变包为空——P4 发射依据）
+            public IReadOnlyList<SemanticSymbol> TypeArguments { get; }
 
             public CandidateView(MethodSymbol method, IReadOnlyList<SemanticSymbol> parameterTypes,
-                SemanticSymbol? returnType)
+                SemanticSymbol? returnType, IReadOnlyList<SemanticSymbol>? typeArguments = null)
             {
                 Method = method;
                 ParameterTypes = parameterTypes;
                 ReturnType = returnType;
+                TypeArguments = typeArguments ?? Array.Empty<SemanticSymbol>();
             }
         }
 
         // 主入口：候选集 + 实参 → (胜者, 规范序实参, 代入后返回类型,
-        // 泛型可变包推导产物)；失败落诊断返回 null。返回类型为胜者视图的
-        // ReturnType（泛型候选已代入显式实参 + 宿主构造实参；非泛型候选
-        // 即声明返回类型）——调用方据此定型 Bound 节点（定义级
-        // Method.ReturnType 在泛型下是未代入的 T）。
-        // explicitTypeArgs：显式泛型实参（null = 未提供；S9b 仅固定泛型
-        // 参数，可变泛型参数包归 S9d——不显式书写，由值实参推导）。
+        // 泛型可变包推导产物, 固定泛型实参)；失败落诊断返回 null。
+        // 返回类型为胜者视图的 ReturnType（泛型候选已代入显式/推断实参
+        // + 宿主构造实参；非泛型候选即声明返回类型）——调用方据此定型
+        // Bound 节点（定义级 Method.ReturnType 在泛型下是未代入的 T）。
+        // TypeArguments 为胜者的固定泛型实参（显式或推断，须进入
+        // CallBinding 车道抵达发射层）。
+        // explicitTypeArgs：显式泛型实参（null = 未提供；仅固定泛型
+        // 参数，可变泛型参数包不显式书写，由值实参推导）。
         // receiverType：调用点 receiver 静态类型（null = 静态/全局调用或
         // this 上下文）——实例方法签名中的宿主泛型参数沿链取构造实参代入
         public static (MethodSymbol Method, List<BoundExpression> Arguments,
-            SemanticSymbol? ReturnType, BoundGenericVarArgsArgument? GenericPack)? Resolve(
+            SemanticSymbol? ReturnType, BoundGenericVarArgsArgument? GenericPack,
+            IReadOnlyList<SemanticSymbol> TypeArguments)? Resolve(
             ASTNode node, List<MethodSymbol> candidates, List<ArgumentASTNode> arguments,
             Scope scope, BindContext ctx, BindEnvironment env,
             IReadOnlyList<SemanticSymbol>? explicitTypeArgs = null,
@@ -57,18 +69,17 @@ namespace RigiCompiler
             // 实参推导需要实参静态类型（SYNTAX §4.3 ⑤）；多候选路径复用
             // 同一结果。任一实参失败即整体失败——表达式自身诊断已报，不
             // 级联误诊
-            var needPrebind = candidates.Any(HasVariadicGenericPack);
+            var needPrebind = candidates.Any(HasVariadicGenericPack)
+                || (explicitTypeArgs == null && candidates.Any(m => FixedGenericCount(m) > 0));
             BoundExpression?[]? prebound = null;
             if (needPrebind)
             {
                 prebound = PrebindArguments(node, arguments, scope, ctx, env);
                 if (prebound == null) return null;
             }
-            // 候选池过滤（SYNTAX §4.2/§4.3 S9 定稿 + #25①）：显式实参 →
-            // 仅泛型方法，元数按**固定**泛型参数个数匹配（包除外、不显式
-            // 书写）；不带 → 非泛型方法 + 泛型参数全为可变的泛型方法
-            // （S9d-2 放宽：包推导是可变泛型参数的固有形态，与「固定泛型
-            // 参数必须显式实参」不冲突——包实参永不显式书写）
+            // 候选池过滤（SYNTAX §4.2/§4.3）：显式实参 → 仅泛型方法，
+            // 元数按**固定**泛型参数个数匹配（包除外、不显式书写）；
+            // 不带 → 非泛型 + 全可变包 + 固定泛型（值实参结构推断）
             List<CandidateView> pool;
             // 泛型包候选的推导产物（视图 → 包）：胜者落定后取回随结果返回
             var packByView = new Dictionary<CandidateView, BoundGenericVarArgsArgument>();
@@ -132,7 +143,7 @@ namespace RigiCompiler
                 }
                 // 混合候选：固定显式实参 + 包由值实参推导；代入视图用
                 // 「固定实参 ∪ 包类型」完整序列，GenericPack 单独携带推导
-                // 产物；CallBinding.TypeArguments 仍只收固定显式（调用方传入）
+                // 产物；TypeArguments 只收固定实参（显式或推断，形态相同）
                 pool = new List<CandidateView>(eligible.Count);
                 foreach (var method in eligible)
                 {
@@ -142,13 +153,14 @@ namespace RigiCompiler
                         if (pack == null) return null;
                         var combined = BuildSubstitutionArgs(method, explicitTypeArgs,
                             pack.Value.PackType);
-                        var view = ViewOf(method, combined, receiverType, env);
+                        var view = ViewOf(method, combined, receiverType, env, explicitTypeArgs);
                         pool.Add(view);
                         packByView.Add(view, pack.Value.Pack);
                     }
                     else
                     {
-                        pool.Add(ViewOf(method, explicitTypeArgs, receiverType, env));
+                        pool.Add(ViewOf(method, explicitTypeArgs, receiverType, env,
+                            explicitTypeArgs));
                     }
                 }
             }
@@ -165,15 +177,52 @@ namespace RigiCompiler
                 {
                     var pack = DerivePack(candidate, arguments, prebound!, node, env);
                     if (pack == null) return null;
-                    // 可空元组无提升元素访问，先解包再取（pack 已判非空）
                     var view = ViewOf(candidate, new[] { pack.Value.PackType }, receiverType, env);
                     pool.Add(view);
                     packByView.Add(view, pack.Value.Pack);
                 }
+                // 固定泛型（含固定+包混合）：值实参结构推断；失败排除
+                var constraintFailed = false;
+                MethodSymbol? constraintWitness = null;
+                IReadOnlyList<SemanticSymbol>? constraintArgs = null;
+                foreach (var candidate in candidates.Where(m => FixedGenericCount(m) > 0))
+                {
+                    var inferred = TryInferFixedTypeArgs(candidate, arguments, prebound!,
+                        receiverType, env);
+                    if (inferred == null) continue;
+                    if (!SatisfiesConstraints(inferred, candidate, env))
+                    {
+                        constraintFailed = true;
+                        constraintWitness ??= candidate;
+                        constraintArgs ??= inferred;
+                        continue;
+                    }
+                    if (HasVariadicGenericPack(candidate))
+                    {
+                        var pack = DerivePack(candidate, arguments, prebound!, node, env);
+                        if (pack == null) return null;
+                        var combined = BuildSubstitutionArgs(candidate, inferred, pack.Value.PackType);
+                        var view = ViewOf(candidate, combined, receiverType, env, inferred);
+                        pool.Add(view);
+                        packByView.Add(view, pack.Value.Pack);
+                    }
+                    else
+                    {
+                        pool.Add(ViewOf(candidate, inferred, receiverType, env, inferred));
+                    }
+                }
                 if (pool.Count == 0 && candidates.Any(m => m.GenericParameters.Count > 0))
                 {
-                    env.Error(node.Span, $"'{candidates[0].Name}' is a generic method; " +
-                        "provide explicit type arguments");
+                    if (constraintFailed && constraintWitness != null && constraintArgs != null)
+                    {
+                        GenericConstraints.CheckArguments(constraintArgs,
+                            FixedGenericParameters(constraintWitness), node.Span, env);
+                    }
+                    else
+                    {
+                        env.Error(node.Span, $"'{candidates[0].Name}': cannot infer type " +
+                            "arguments from the given arguments");
+                    }
                     return null;
                 }
             }
@@ -191,7 +240,7 @@ namespace RigiCompiler
                 var single = CallFacility.BindArguments(pool[0].Method, arguments, scope, node.Span,
                     ctx, env, pool[0].ParameterTypes);
                 return single == null ? null : (pool[0].Method, single, pool[0].ReturnType,
-                    packByView.GetValueOrDefault(pool[0]));
+                    packByView.GetValueOrDefault(pool[0]), pool[0].TypeArguments);
             }
             // 第一步：结构过滤（静默）——实参→形参映射（名字存在/不重复/
             // 个数适配默认值）
@@ -212,7 +261,8 @@ namespace RigiCompiler
                 var only = CallFacility.BindArguments(mapped[0].View.Method, arguments, scope,
                     node.Span, ctx, env, mapped[0].View.ParameterTypes);
                 return only == null ? null : (mapped[0].View.Method, only,
-                    mapped[0].View.ReturnType, packByView.GetValueOrDefault(mapped[0].View));
+                    mapped[0].View.ReturnType, packByView.GetValueOrDefault(mapped[0].View),
+                    mapped[0].View.TypeArguments);
             }
             // 实参预绑定（无目标类型；null 字面量占位待胜者形参类型定型）。
             // 任一实参失败即整体失败——表达式自身诊断已报，不再级联误诊；
@@ -268,8 +318,102 @@ namespace RigiCompiler
             return Materialize(winner.View, winner.Mapping, boundArgs, arguments, scope,
                 node.Span, ctx, env) is { } finalArgs
                 ? (winner.View.Method, finalArgs, winner.View.ReturnType,
-                    packByView.GetValueOrDefault(winner.View))
+                    packByView.GetValueOrDefault(winner.View), winner.View.TypeArguments)
                 : null;
+        }
+
+        // 已绑定实参的重载解析（运算符位置：不重绑，避免 DA/收窄二次访问）。
+        // 无显式泛型实参——固定泛型 operator 由值实参结构推断后入池。
+        // 空池落诊断：约束失败回放约束检查；否则（推断全败）报无法推断。
+        // 返回 TypeArguments 供调用方写入 Bound 节点（泛型 operator 发射）。
+        public static (MethodSymbol Method, SemanticSymbol? ReturnType,
+            IReadOnlyList<SemanticSymbol> TypeArguments)? ResolveBound(
+            ASTNode node, List<MethodSymbol> candidates,
+            IReadOnlyList<BoundExpression> boundArgs,
+            BindEnvironment env, TypeSymbol? receiverType)
+        {
+            var pool = candidates.Where(m => m.GenericParameters.Count == 0)
+                .Select(m => ViewOf(m, null, receiverType, env))
+                .ToList();
+            var constraintFailed = false;
+            MethodSymbol? constraintWitness = null;
+            IReadOnlyList<SemanticSymbol>? constraintArgs = null;
+            foreach (var candidate in candidates.Where(m => FixedGenericCount(m) > 0))
+            {
+                var inferred = TryInferFromBoundArgs(candidate, boundArgs, receiverType, env);
+                if (inferred == null) continue;
+                if (!SatisfiesConstraints(inferred, candidate, env))
+                {
+                    constraintFailed = true;
+                    constraintWitness ??= candidate;
+                    constraintArgs ??= inferred;
+                    continue;
+                }
+                pool.Add(ViewOf(candidate, inferred, receiverType, env, inferred));
+            }
+            if (pool.Count == 0)
+            {
+                if (constraintFailed && constraintWitness != null && constraintArgs != null)
+                {
+                    GenericConstraints.CheckArguments(constraintArgs,
+                        FixedGenericParameters(constraintWitness), node.Span, env);
+                }
+                else if (candidates.Any(m => m.GenericParameters.Count > 0))
+                {
+                    env.Error(node.Span, $"'{candidates[0].Name}': cannot infer type " +
+                        "arguments from the given arguments");
+                }
+                return null;
+            }
+
+            var boxed = new BoundExpression?[boundArgs.Count];
+            for (int i = 0; i < boundArgs.Count; i++) boxed[i] = boundArgs[i];
+            var mapping = new int[boundArgs.Count];
+            for (int i = 0; i < mapping.Length; i++) mapping[i] = i;
+
+            var applicable = new List<(CandidateView View, int[] Mapping)>();
+            foreach (var view in pool)
+            {
+                if (view.ParameterTypes.Count != boundArgs.Count) continue;
+                if (IsApplicable(view, mapping, boxed, env))
+                {
+                    applicable.Add((view, mapping));
+                }
+            }
+            if (applicable.Count == 0)
+            {
+                env.Error(node.Span, $"No applicable overload of '{pool[0].Method.Name}' for the " +
+                    $"given arguments ({pool.Count} candidates)");
+                return null;
+            }
+            if (applicable.Count == 1)
+            {
+                return (applicable[0].View.Method, applicable[0].View.ReturnType,
+                    applicable[0].View.TypeArguments);
+            }
+
+            var winners = new List<(CandidateView View, int[] Mapping)>();
+            for (int i = 0; i < applicable.Count; i++)
+            {
+                var dominated = false;
+                for (int j = 0; j < applicable.Count; j++)
+                {
+                    if (i != j && IsBetter(applicable[j], applicable[i], boxed, env))
+                    {
+                        dominated = true;
+                        break;
+                    }
+                }
+                if (!dominated) winners.Add(applicable[i]);
+            }
+            if (winners.Count != 1)
+            {
+                var sigs = string.Join(", ", winners.Select(x => SignatureOf(x.View.Method)));
+                env.Error(node.Span, $"Call to '{pool[0].Method.Name}' is ambiguous between: {sigs}");
+                return null;
+            }
+            return (winners[0].View.Method, winners[0].View.ReturnType,
+                winners[0].View.TypeArguments);
         }
 
         // 实参预绑定（无目标类型；null 字面量占位）：任一实参绑定失败返回
@@ -287,6 +431,143 @@ namespace RigiCompiler
                 if (boundArgs[i] == null) return null;
             }
             return boundArgs;
+        }
+
+        // 固定泛型结构推断（调用路径）：以值实参静态类型对形参模式逐位
+        // 匹配。返回声明序固定实参；失败（未绑定 / 冲突 / 结构不匹配）
+        // 返回 null。null 字面量不参与绑定。包实参跳过（由 DerivePack 推导）。
+        private static IReadOnlyList<SemanticSymbol>? TryInferFixedTypeArgs(
+            MethodSymbol method, List<ArgumentASTNode> arguments, BoundExpression?[] boundArgs,
+            TypeSymbol? receiverType, BindEnvironment env)
+        {
+            var fixedGenerics = FixedGenericParameters(method);
+            if (fixedGenerics.Count == 0) return Array.Empty<SemanticSymbol>();
+            var hostView = ViewOf(method, null, receiverType, env);
+            var bindings = new Dictionary<GenericParameterSymbol, SemanticSymbol>();
+            var fixedParameters = method.Parameters
+                .Where(p => !p.IsVariadic && !p.IsNamedVariadic).ToList();
+            var hasValuePack = method.Parameters.Count > 0
+                && (method.Parameters[^1].IsVariadic || method.Parameters[^1].IsNamedVariadic);
+            var isNamedPack = hasValuePack && method.Parameters[^1].IsNamedVariadic;
+            var nextPositional = 0;
+            for (int i = 0; i < arguments.Count; i++)
+            {
+                var argument = arguments[i];
+                int paramIndex;
+                if (argument.Name == null)
+                {
+                    var inPack = nextPositional >= fixedParameters.Count && hasValuePack
+                        && !isNamedPack;
+                    if (inPack) continue;
+                    if (nextPositional >= fixedParameters.Count) return null;
+                    paramIndex = method.Parameters.IndexOf(fixedParameters[nextPositional]);
+                    nextPositional++;
+                }
+                else
+                {
+                    paramIndex = -1;
+                    for (int p = 0; p < method.Parameters.Count; p++)
+                    {
+                        if (method.Parameters[p].Name == argument.Name) { paramIndex = p; break; }
+                    }
+                    var inPack = paramIndex < 0 && hasValuePack && isNamedPack;
+                    if (inPack) continue;
+                    if (paramIndex < 0) return null;
+                    if (method.Parameters[paramIndex].IsVariadic
+                        || method.Parameters[paramIndex].IsNamedVariadic)
+                    {
+                        continue;
+                    }
+                }
+                if (!TryUnify(hostView.ParameterTypes[paramIndex], boundArgs[i]?.Type,
+                    bindings, fixedGenerics))
+                {
+                    return null;
+                }
+            }
+            return CollectBindings(fixedGenerics, bindings);
+        }
+
+        // 固定泛型结构推断（已绑定实参：运算符位置）。形参与实参按位置对齐。
+        private static IReadOnlyList<SemanticSymbol>? TryInferFromBoundArgs(
+            MethodSymbol method, IReadOnlyList<BoundExpression> boundArgs,
+            TypeSymbol? receiverType, BindEnvironment env)
+        {
+            var fixedGenerics = FixedGenericParameters(method);
+            if (fixedGenerics.Count == 0) return Array.Empty<SemanticSymbol>();
+            var hostView = ViewOf(method, null, receiverType, env);
+            if (hostView.ParameterTypes.Count != boundArgs.Count) return null;
+            var bindings = new Dictionary<GenericParameterSymbol, SemanticSymbol>();
+            for (int i = 0; i < boundArgs.Count; i++)
+            {
+                if (!TryUnify(hostView.ParameterTypes[i], boundArgs[i].Type, bindings,
+                    fixedGenerics))
+                {
+                    return null;
+                }
+            }
+            return CollectBindings(fixedGenerics, bindings);
+        }
+
+        // 收集声明序绑定；任一固定参数未绑定则失败
+        private static IReadOnlyList<SemanticSymbol>? CollectBindings(
+            List<GenericParameterSymbol> fixedGenerics,
+            Dictionary<GenericParameterSymbol, SemanticSymbol> bindings)
+        {
+            var result = new SemanticSymbol[fixedGenerics.Count];
+            for (int i = 0; i < fixedGenerics.Count; i++)
+            {
+                if (!bindings.TryGetValue(fixedGenerics[i], out var bound)) return null;
+                result[i] = bound;
+            }
+            return result;
+        }
+
+        // 结构统一：裸方法泛型参数绑定实参类型；构造模式递归下钻
+        // （含沿 BaseType 找同定义构造——lambda 隐藏类 : Func\<...>）；
+        // 同一参数再绑定必须引用相等。actual == null 为 null 字面量，跳过。
+        private static bool TryUnify(SemanticSymbol pattern, SemanticSymbol? actual,
+            Dictionary<GenericParameterSymbol, SemanticSymbol> bindings,
+            List<GenericParameterSymbol> methodFixed)
+        {
+            if (actual == null) return true;
+            if (actual is ErrorTypeSymbol) return false;
+            if (pattern is GenericParameterSymbol parameter
+                && methodFixed.Contains(parameter))
+            {
+                if (bindings.TryGetValue(parameter, out var existing))
+                {
+                    return ReferenceEquals(existing, actual);
+                }
+                bindings[parameter] = actual;
+                return true;
+            }
+            if (pattern is TypeSymbol { ConstructedFrom: not null, TypeArguments: { } patternArgs }
+                constructed)
+            {
+                TypeSymbol? match = null;
+                for (var t = actual as TypeSymbol; t != null; t = t.BaseType)
+                {
+                    if (t.ConstructedFrom != null
+                        && ReferenceEquals(t.ConstructedFrom, constructed.ConstructedFrom)
+                        && t.TypeArguments != null
+                        && t.TypeArguments.Count == patternArgs.Count)
+                    {
+                        match = t;
+                        break;
+                    }
+                }
+                if (match == null) return false;
+                for (int i = 0; i < patternArgs.Count; i++)
+                {
+                    if (!TryUnify(patternArgs[i], match.TypeArguments![i], bindings, methodFixed))
+                    {
+                        return false;
+                    }
+                }
+                return true;
+            }
+            return true;
         }
 
         // 固定泛型参数个数（§4.2：显式实参元数口径——可变包除外）
@@ -308,9 +589,8 @@ namespace RigiCompiler
             return method.GenericParameters.Any(p => p.IsVariadic || p.IsNamedVariadic);
         }
 
-        // 泛型包候选判定（S9d-2）：泛型参数全为可变的泛型方法——包类型
-        // 实参由值实参推导（§4.3 ⑤），与「固定泛型参数必须显式实参」不冲突；
-        // 无显式实参路径仅此类参与候选（混合形态仍须固定显式实参）
+        // 泛型包候选判定：泛型参数全为可变的泛型方法——包类型实参由值
+        // 实参推导（§4.3），与固定泛型推断分道；无显式实参路径此类仍参与
         private static bool IsGenericPackCandidate(MethodSymbol method)
         {
             return method.GenericParameters.Count > 0
@@ -423,14 +703,16 @@ namespace RigiCompiler
             return (pack, packType);
         }
 
-        // 泛型候选代入视图：显式实参按泛型参数序代入参数/返回类型；
+        // 泛型候选代入视图：显式/推断实参按泛型参数序代入参数/返回类型；
         // 实例方法另作宿主代入——receiver 静态类型沿 BaseType 链找
         // method.Owner 的构造，宿主泛型参数按构造实参替换（`Box<i32>` 上
         // get\<U> 的返回 T → i32）；receiver 为定义级/静态时宿主参数保留
-        // 身份（this 上下文、ext 成员等）。代入失败（仅防御）回退声明类型
+        // 身份（this 上下文、ext 成员等）。代入失败（仅防御）回退声明类型。
+        // storedTypeArgs：写入视图的固定泛型实参（显式或推断；全可变包/
+        // 非泛型为空）。substitution 用 typeArgs（混合形态含包容器类型）。
         private static CandidateView ViewOf(MethodSymbol method,
             IReadOnlyList<SemanticSymbol>? typeArgs, TypeSymbol? receiverType,
-            BindEnvironment env)
+            BindEnvironment env, IReadOnlyList<SemanticSymbol>? storedTypeArgs = null)
         {
             List<SemanticSymbol>? hostArgs = null;
             if (method.Owner != null && receiverType != null
@@ -459,7 +741,7 @@ namespace RigiCompiler
                 ? null
                 : SubstituteAll(method.ReturnType, generics, args, hostGenerics, hostArgs, env)
                     ?? method.ReturnType;
-            return new CandidateView(method, parameterTypes, returnType);
+            return new CandidateView(method, parameterTypes, returnType, storedTypeArgs);
         }
 
         // 双层代入：方法泛型参数（显式实参 / 混合形态的包容器类型）→
@@ -595,21 +877,22 @@ namespace RigiCompiler
         }
 
         // 类型适用性（静默）：每个实参类型可赋给对应形参类型（视图的
-        // 代入后类型）；null 字面量实参要求形参为 Nullable\<T\>；形参类型
-        // 不可判（泛型参数 / ErrorType 毒化）的候选保守剔除
+        // 代入后类型）；null 字面量实参要求形参为 Nullable\<T\>；
+        // 形参为泛型参数时走 IsAssignable（同参直通；T extends B 可赋给 B）
         private static bool IsApplicable(CandidateView view, int[] mapping,
             BoundExpression?[] boundArgs, BindEnvironment env)
         {
             for (int i = 0; i < mapping.Length; i++)
             {
-                if (view.ParameterTypes[mapping[i]] is not TypeSymbol paramType
-                    || paramType is ErrorTypeSymbol)
-                {
-                    return false;
-                }
+                var paramType = view.ParameterTypes[mapping[i]];
+                if (paramType == null || paramType is ErrorTypeSymbol) return false;
                 if (boundArgs[i] == null)
                 {
-                    if (paramType.ConstructedFrom != env.B.NullableDefinition) return false;
+                    if (paramType is not TypeSymbol ts
+                        || ts.ConstructedFrom != env.B.NullableDefinition)
+                    {
+                        return false;
+                    }
                     continue;
                 }
                 // S11e：降级调用结果 Any 可作任意形参实参（运行时 cast 兜底）
@@ -630,8 +913,9 @@ namespace RigiCompiler
             for (int i = 0; i < boundArgs.Length; i++)
             {
                 if (boundArgs[i] == null) continue;
-                var pa = (TypeSymbol)a.View.ParameterTypes[a.Mapping[i]];
-                var pb = (TypeSymbol)b.View.ParameterTypes[b.Mapping[i]];
+                var pa = a.View.ParameterTypes[a.Mapping[i]];
+                var pb = b.View.ParameterTypes[b.Mapping[i]];
+                if (pa == null || pb == null) return false;
                 if (!SymbolLookup.IsAssignable(pa, pb, env)) return false;
                 if (!SymbolLookup.IsAssignable(pb, pa, env)) strict = true;
             }

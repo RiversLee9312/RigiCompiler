@@ -67,6 +67,7 @@ namespace RigiCompiler.Tests
             TestLocalDeclarationAndAssignment();
             TestUnaryAndComparison();
             TestUserOperatorEqualsEmission();
+            TestUserOperatorPlusEmission();
             TestInvokeWithResult();
             TestNew();
             TestLiteralResources();
@@ -77,6 +78,7 @@ namespace RigiCompiler.Tests
             TestShortCircuitEmission();
             TestLoopEmission();
             TestInstanceEmission();
+            TestGenericParamMemberEmission();
             TestInitMappingEmission();
             TestForLoopEmission();
             TestSwitchEmission();

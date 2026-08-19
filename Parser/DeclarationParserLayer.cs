@@ -272,8 +272,11 @@ namespace RigiCompiler
         private ParserLayerResult OnCallableName(Token t, ParserLayerContext context)
         {
             if (t is LineBreakToken) return ParserLayerResult.Continue.Instance;
-            // 声明名必须是合法标识符（M31：数字词/保留字此前被静默接受）
-            if (t is WordToken w && Keywords.IsIdentifier(w.Content))
+            // 声明名必须是合法标识符（M31：数字词/保留字此前被静默接受）。
+            // SYNTAX §13.2：and/or/not 既是运算符关键字也是固定 operator 名，
+            // 仅 operator 声明名位放行（func and 仍非法）。
+            if (t is WordToken w && (Keywords.IsIdentifier(w.Content)
+                || (callable!.Kind == CallableKind.Operator && IsOperatorKeywordName(w.Content))))
             {
                 callable!.Name = w.Content;
                 state = State.ParamsExpected;
@@ -291,6 +294,12 @@ namespace RigiCompiler
                 return ParserLayerResult.Continue.Instance;
             }
             throw context.RaiseError($"Expected declaration name, got: {t}");
+        }
+
+        // SYNTAX §13.2 固定运算符名中的关键字（and/or/not）
+        private static bool IsOperatorKeywordName(string word)
+        {
+            return word == Keywords.AND || word == Keywords.OR || word == Keywords.NOT;
         }
 
         // ext/proxy 限定名的段间点已读：拼接下一段

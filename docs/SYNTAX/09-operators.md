@@ -79,10 +79,19 @@ pub operator plus\<TAnother extends Addable>(another: TAnother): MyType { ... }
 
 | 运算符 | 名称 | 签名 |
 |--------|------|------|
-| `to`（仅 for 头，§7.3） | `EnumerateInRange` | `operator EnumerateInRange(end: T): core.collections.IEnumerable\<T\>` |
+| `to`（仅 for 头，§7.3） | `EnumerateInRange` | `operator EnumerateInRange(end: TEnd): core.collections.IEnumerable\<T>`（恰好 1 个形参，类型由实现自定） |
 
-- `a to b` 为半开区间 `[a, b)`；`this` 即区间起点（start），`end` 为终点（不含）。
-- 返回的 `IEnumerable\<T\>` 随即按 for-each 协议迭代（§7.3）。
+- `for (i in a to b)` **始终按左操作数 `a` 的类型派发**其实例
+  `operator EnumerateInRange`，等价于 `for (i in a.EnumerateInRange(b))`。
+  **区间开闭、步长、`a >= b` 的行为由该 operator 的实现自定义，不是
+  语言的通用语义。**
+- 右操作数 `b` 按 §4.2 重载解析绑定到该 operator 的唯一形参（含隐式
+  推断与泛型约束），**不必与 `a` 同型**；形参类型由实现自定。返回类型
+  必须是 `core.collections.IEnumerable\<T>` 构造；循环变量类型为 `T`
+  （`T` 由返回的可枚举元素类型决定，不必等于 `Self` 或形参类型）。
+- 内建整数系列类型的 SDK 实现是半开区间 `[a, b)`、步长 +1、`a >= b`
+  零次迭代（§15.3）。
+- 返回的 `IEnumerable\<T>` 随即按 for-each 协议迭代（§7.3）。
 
 #### 调用运算符（callable 协议）
 
@@ -91,7 +100,7 @@ pub operator plus\<TAnother extends Addable>(another: TAnother): MyType { ... }
 | 值调用 `expr(args)` | `call` | `operator call(...): TRet` 或 void（省略返回类型） |
 
 - 任何声明了 `operator call` 的类型的值都可以像函数一样被调用（§5.2）；这是通用 callable 协议，不是 lambda 特例。
-- `operator call` 可 `abstract`/`override`/`async`（§9.2.1 例外）；async 时调用点结果为 `Task\<TRet\>` / `Task`（§4.5）。
+- `operator call` 可 `abstract`/`override`/`async`（§9.2.1 例外）；async 时调用点结果为 `Task\<TRet>` / `Task`（§4.5）。
 
 #### 通用规则
 
@@ -99,5 +108,26 @@ pub operator plus\<TAnother extends Addable>(another: TAnother): MyType { ... }
 - 不可自定义新运算符名称
 - **复合赋值的目标表达式只求值一次**：无论目标是字段链还是索引，接收者/容器/索引等含副作用的子表达式均在读取前物化为临时变量——`recv.f op= x` 等价于 `{ var __r = recv; __r.f = (__r.f op x) }`，`a[i] op= x` 等价于 `{ var __c = a; var __i = i; __c[__i] = (__c[__i] op x) }`；求值序为接收者（含容器/索引）→ 右值。局部变量与参数目标天然单次求值，无需物化。
 - **赋值的求值顺序不可依赖**：编译器当前按「接收者（含容器/索引）先求值、右值后求值」落地（简单赋值与复合赋值同规则），但使用者不应假设该求值顺序——依赖赋值两侧求值顺序的行为是未定义行为，编译器可在不另行通知的情况下改变求值顺序。
+
+### 13.3 泛型参数操作数
+
+泛型参数 `T` 上的成员解析（普通方法、operator 名字调用、运算符位置、字段、索引）走**有效成员类型**，不因 `T` 不是具体 `TypeSymbol` 而一律拒绝：
+
+- `T extends B`：按 `B` 解析成员。`B` 的 `BaseType` 链与接口闭包一并可见（与「`B` 类型变量调成员」同一口径）。构造界（如 `T extends IEnumerable\<i32>`）按已代入的构造类型查找；界含外层宿主泛型参数时保留参数身份（`U extends SomeBound\<T>` 内 `U` 的成员按 `SomeBound\<T>` 解析）。
+- `T` 无约束，或只有 `supers` / `with`：按 `Any` 解析（stdlib 承诺成员，如 `toString`）。`supers` 是下界，不提供成员保证；`with` 只提供 wrapper place（`param:W`），不提供普通成员。在运算符位置对仅有 `supers`/`with` 的 `T` 使用未承诺运算符时，诊断会标明该约束不提供成员。
+
+**结果定型**按约束签名（宿主代入后）给出，不是 `T` 本身：`T extends Addable` 且 `Addable.plus` 返回 `Addable` 时，`a + b` 与 `a.plus(b)` 的类型都是 `Addable`。把它赋回 `: T` 是编译错误；赋给 `: Addable` 合法。`F-bounded`（`T extends Addable\<T>`）仍非法，见 §3.6。
+
+**运行时**是「静态签名 + 动态实现」：编译期按约束解析签名；运算符位置仍发 intrinsic 指令，VM 按操作数实际 typeid 沿派生链派发到最具体实现；方法调用复用接口/虚调用既有发射路径（`T` receiver 的 BIL invoke 目标与 `B` 类型变量调用同一成员符号）。左操作数决定派发（`T` 作右操作数时查左操作数类型上的 operator）。
+
+```rigi
+func add\<T extends Addable>(a: T, b: T): Addable {
+    return a + b          // 类型 Addable，不是 T
+}
+
+func show\<T>(x: T): String {
+    return x.toString()   // 无约束 T 经 Any 承诺
+}
+```
 
 ---

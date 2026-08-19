@@ -75,7 +75,11 @@ namespace RigiCompiler
             LowerEnvironment env)
         {
             var binary = (BoundBinaryExpression)node;
-            if (binary.Op is BilIntrinsicOp.And or BilIntrinsicOp.Or)
+            // 短路仅内建 bool（SYNTAX §13.2：用户类型 and/or 两侧求值后
+            // 调 operator，发普通 and/or 指令由 VM 派发）
+            if (binary.Op is BilIntrinsicOp.And or BilIntrinsicOp.Or
+                && binary.Left.Type is TypeSymbol leftLogic
+                && leftLogic.IntrinsicOps.Contains(binary.Op))
             {
                 return ShortCircuitRewriter.Lower(binary, ctx, env);
             }

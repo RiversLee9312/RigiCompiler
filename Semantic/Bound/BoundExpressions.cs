@@ -81,7 +81,7 @@ namespace RigiCompiler
     // 直接函数调用（无重载，S8 才做 ranking）。实参已是绑定后的规范顺序
     // （具名实参已按形参名归位；默认参数填充属 S8）。
     // 仅用于有返回值的调用；void 调用作语句见 BoundCallStatement。
-    // S9b 增补 TypeArguments：显式泛型实参（非泛型调用为空——P4 发射
+    // TypeArguments：固定泛型实参（显式或推断；非泛型调用为空——P4 发射
     // .generic.T 隐藏实参的依据，§7.2）
     // S9d-2 增补 GenericPack：泛型可变参数包推导产物（null = 无——非
     // 泛型或固定泛型方法；P4 发射在 TypeArguments 之后、普通实参之前，§7.2）

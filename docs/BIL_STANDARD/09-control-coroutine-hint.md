@@ -268,9 +268,9 @@ Middleware 可以依据 `hint` 内容改进代码生成或产出附加元数据�
 
 #### rigi.seq-route v1：region route dispatcher 标注
 
-用途：标注某 region 的 route dispatcher 尾链起点，使 verifier DA 能将尾链各出口的前驱边按 route 值分组（混合产值/逃逸形态的 seq/if/switch 表达式结果局部在 fall-through 路径的精确 DA）。
+用途：标注某 region 的 route dispatcher 尾链起点，使 verifier DA 能将尾链各出口的前驱边按 route 值分组（混合产值/逃逸形态的 seq/if/switch 表达式结果局部在 fall-through 路径的精确 DA；loop/loop.rev region 的 dispatcher 同款——循环体内 return@ 外层值块与条件位逃逸经 loop 汇聚）。
 
-位置：紧贴在汇聚边着陆点之后、dispatcher 比较链第一条指令之前（即产生该组边的 if/switch/call blk 指令之后）。
+位置：紧贴在汇聚边着陆点之后、dispatcher 比较链第一条指令之前（即产生该组边的 if/switch/call blk/loop/loop.rev 指令之后）。route=0 初始化在对应 region 指令之前，不在 hint 标注范围内。
 
 JSON schema：
 
@@ -284,12 +284,12 @@ JSON schema：
 
 - V0：JSON 合法；kind/version 匹配；`route` 是本 fn 已声明 `.i32` 局部。
 - V1：fn 内对 `route` 的每次写入都是常量写入（值可解析为整数常量资源）；据此收集各写入常量。
-- V2：hint 前一条指令是 if/switch/call blk，其绑定的 break token 的着陆点恰为 hint 位置。
+- V2：hint 前一条指令是 if/switch/call blk/loop/loop.rev，其绑定的 break token 的着陆点恰为 hint 位置。
 - V3：hint 之后是 dispatcher 链——一或多条同构链节，每节为「load 常量 → cmp.eq route → if」三指令；链节 if 位于其所在块末尾：非末链节的 else 边是指向下一链节块的 blk，末链节的 else 边是 none；末链节之后（同块内后续指令，或经块尾回到 region 块结束）是 0 组落尾续点（可为空指令序列）。链上每个比较常量与 V1 收集的非常量写入值一一对应。
 - V4：每条前驱边可分类：该边 break 前对 `route` 的最后一次常量写入值即其组号（未写过 = 0 组）。
 
 消费规则：见 §21.4。任何一条校验失败 → 忽略本 hint，DA 退回保守合并（与不携带 hint 行为一致）。
 
-覆盖范围（v1 现状）：frontend 仅为 seq/if/switch 表达式 region 的标准 route dispatcher 发射本 hint；loop region 的 dispatcher 与 try/finally 拦截路径不标注（形状不同），verifier 对其退回保守合并——正确性不依赖 hint，仅损失该处 DA 精度（混合形态经 loop dispatcher 时不可验证）。未来版本可扩展覆盖，按 §18 消费方规则向后兼容。
+覆盖范围（v1）：frontend 为 seq/if/switch 表达式 region 与 loop/loop.rev region 的标准 route dispatcher 发射本 hint；try/finally 拦截路径不标注（形状不同），verifier 对其退回保守合并——正确性不依赖 hint，仅损失该处 DA 精度。无 hint 或校验失败的模块按 §18 消费方规则退回保守合并，向后兼容。
 
 ---

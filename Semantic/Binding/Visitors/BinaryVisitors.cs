@@ -32,7 +32,11 @@ namespace RigiCompiler
             // and 右侧以左真边、or 右侧以左假边为收窄上下文
             // （`(x is String) and (x.length > 0)` 中右侧在收窄后类型上解析）
             BoundExpression? right;
-            if (left != null && binary.Operator is "and" or "or")
+            // 短路收窄仅作用于内建 bool 的 and/or（SYNTAX §13.2：用户
+            // 类型重载 and/or 两侧都求值，不当作控制流连接词）
+            if (left != null && binary.Operator is "and" or "or"
+                && left.Type is TypeSymbol leftLogic
+                && leftLogic.IntrinsicOps.Contains(op))
             {
                 var leftFacts = ConditionFactsExtractor.Extract(left, ctx.Frame);
                 var narrowedSnapshot = ctx.Flow.SnapshotNarrowed();
@@ -52,6 +56,42 @@ namespace RigiCompiler
             if (left == null || right == null) return null;
             // 毒化静默：操作数已失败时不再报次生错误
             if (left.Type is ErrorTypeSymbol || right.Type is ErrorTypeSymbol) return null;
+            // 内建：同型 + intrinsic 表命中
+            if (left.Type is TypeSymbol intrinsicType
+                && intrinsicType.IntrinsicOps.Contains(op)
+                && ReferenceEquals(left.Type, right.Type))
+            {
+                var intrinsicResult = IntrinsicMapping.IsComparison(op) ? env.B.Bool : left.Type;
+                return new BoundBinaryExpression(node, op, left, right, intrinsicResult);
+            }
+            // ==/!= 用户类型（SYNTAX §13.2）：映射到 operator equals；
+            // != 由 equals 取反自动推导。只查存在性（含泛型 equals），
+            // 结果恒 bool——与其它运算符的重载解析路径分离，既有行为不变。
+            // 泛型参数按有效成员类型查 equals（左右皆 T 视为同型）。
+            if (binary.Operator is "==" or "!=")
+            {
+                var leftLookup = SymbolLookup.EffectiveMemberType(left.Type, env);
+                if (ReferenceEquals(left.Type, right.Type)
+                    && SymbolLookup.FindInstanceOperators(leftLookup, "equals", 1,
+                        env.Unit.Symbols).Count > 0)
+                {
+                    return new BoundBinaryExpression(node, op, left, right, env.B.Bool);
+                }
+                if (!ReferenceEquals(left.Type, right.Type))
+                {
+                    env.Error(binary.Span, $"Binary operator '{binary.Operator}' requires operands " +
+                        $"of the same type (got '{BoundAnalysis.TypeDisplay(left.Type)}' and " +
+                        $"'{BoundAnalysis.TypeDisplay(right.Type)}')");
+                    return null;
+                }
+                env.Error(binary.Span, SymbolLookup.OperatorNotDefinedMessage(binary.Operator, left.Type));
+                return null;
+            }
+            // 用户 operator：左操作数类型决定派发 + 重载解析（右操作数可不同型）
+            if (TryBindUserBinary(node, binary.Operator, op, left, right, ctx, env, out var userBound))
+            {
+                return userBound;
+            }
             if (!ReferenceEquals(left.Type, right.Type))
             {
                 env.Error(binary.Span, $"Binary operator '{binary.Operator}' requires operands " +
@@ -59,27 +99,47 @@ namespace RigiCompiler
                     $"'{BoundAnalysis.TypeDisplay(right.Type)}')");
                 return null;
             }
-            // intrinsic 存在检查（S9：泛型参数无 intrinsic 表，判型后自然不命中）
-            if (left.Type is not TypeSymbol leftType || !leftType.IntrinsicOps.Contains(op))
+            env.Error(binary.Span, SymbolLookup.OperatorNotDefinedMessage(binary.Operator, left.Type));
+            return null;
+        }
+
+        // 用户二元 operator：FindInstanceOperators + ResolveBound。
+        // 返回 true = 已处理（成功产出或已落诊断）；false = 无候选，调用方继续。
+        // 左操作数按有效成员类型派发（T extends B 查 B 上的 operator）。
+        private static bool TryBindUserBinary(ASTNode node, string token, BilIntrinsicOp op,
+            BoundExpression left, BoundExpression right, BindContext ctx, BindEnvironment env,
+            out BoundExpression? result)
+        {
+            result = null;
+            var name = IntrinsicMapping.UserOperatorName(op);
+            if (name == null || left.Type is ErrorTypeSymbol) return false;
+            var leftType = SymbolLookup.EffectiveMemberType(left.Type, env);
+            var candidates = SymbolLookup.FindInstanceOperators(leftType, name, 1,
+                env.Unit.Symbols);
+            if (candidates.Count == 0) return false;
+            var accessible = candidates.Where(ctx.Frame.CanAccess).ToList();
+            if (accessible.Count == 0)
             {
-                // ==/!= 用户类型（SYNTAX §13.2）：映射到 operator equals；
-                // != 由 equals 取反自动推导。VM §22.3 对 cmp.eq/cmp.ne 按
-                // 精确类型派发用户 equals（经 wrapper operator 链），cmp.ne
-                // 再取反——前端只需确认 equals 存在即放行；未定义 equals
-                // 的用户类型保持编译错误（文档无默认身份/结构相等语义）。
-                if (binary.Operator is "==" or "!="
-                    && left.Type is TypeSymbol userType
-                    && SymbolLookup.FindInstanceOperators(userType, "equals", 1).Count > 0)
-                {
-                    return new BoundBinaryExpression(node, op, left, right, env.B.Bool);
-                }
-                env.Error(binary.Span, $"Operator '{binary.Operator}' is not defined for type " +
-                    $"'{BoundAnalysis.TypeDisplay(left.Type)}'");
-                return null;
+                env.Error(node.Span, AccessChecker.InaccessibleMessage(candidates[0]));
+                return true;
             }
-            // BIL §11：比较结果 bool；算术/位/逻辑结果同操作数类型
-            var resultType = IntrinsicMapping.IsComparison(op) ? env.B.Bool : left.Type;
-            return new BoundBinaryExpression(node, op, left, right, resultType);
+            var resolved = OverloadResolution.ResolveBound(node, accessible, new[] { right },
+                env, leftType);
+            if (resolved == null)
+            {
+                // 已落诊断（不适用/二义/推断失败/约束）
+                return true;
+            }
+            if (resolved.Value.ReturnType == null)
+            {
+                env.Error(node.Span, $"Operator '{token}' has no result (void) " +
+                    "and cannot be used as a value");
+                return true;
+            }
+            var resultType = IntrinsicMapping.IsOrderCompare(op)
+                ? env.B.Bool : resolved.Value.ReturnType;
+            result = new BoundBinaryExpression(node, op, left, right, resultType);
+            return true;
         }
 
         // if? 空值回退（S7f，SYNTAX §3.4）：左操作数必须 Nullable<T>，
@@ -262,14 +322,52 @@ namespace RigiCompiler
             if (operand == null) return null;
             if (operand.Type is ErrorTypeSymbol) return null;
             // intrinsic 存在检查（S9：泛型参数无 intrinsic 表，判型后不命中）
-            if (operand.Type is not TypeSymbol operandType
-                || !operandType.IntrinsicOps.Contains(op))
+            if (operand.Type is TypeSymbol operandType && operandType.IntrinsicOps.Contains(op))
             {
-                env.Error(node.Span, $"Operator '{unary.Operator}' is not defined for type " +
-                    $"'{BoundAnalysis.TypeDisplay(operand.Type)}'");
-                return null;
+                return new BoundUnaryExpression(node, op, operand, operand.Type);
             }
-            return new BoundUnaryExpression(node, op, operand, operand.Type);
+            if (TryBindUserUnary(node, unary.Operator, op, operand, ctx, env, out var userBound))
+            {
+                return userBound;
+            }
+            env.Error(node.Span, SymbolLookup.OperatorNotDefinedMessage(unary.Operator, operand.Type));
+            return null;
+        }
+
+        // 用户一元 operator：0 参 opposite/not/bitwiseNot。
+        // 返回 true = 已处理；false = 无候选。
+        private static bool TryBindUserUnary(ASTNode node, string token, BilIntrinsicOp op,
+            BoundExpression operand, BindContext ctx, BindEnvironment env,
+            out BoundExpression? result)
+        {
+            result = null;
+            var name = IntrinsicMapping.UserOperatorName(op);
+            if (name == null || operand.Type is ErrorTypeSymbol) return false;
+            var operandType = SymbolLookup.EffectiveMemberType(operand.Type, env);
+            var candidates = SymbolLookup.FindInstanceOperators(operandType, name, 0,
+                env.Unit.Symbols);
+            if (candidates.Count == 0) return false;
+            var accessible = candidates.Where(ctx.Frame.CanAccess).ToList();
+            if (accessible.Count == 0)
+            {
+                env.Error(node.Span, AccessChecker.InaccessibleMessage(candidates[0]));
+                return true;
+            }
+            var resolved = OverloadResolution.ResolveBound(node, accessible,
+                Array.Empty<BoundExpression>(), env, operandType);
+            if (resolved == null)
+            {
+                // 已落诊断（不适用/二义/推断失败/约束）
+                return true;
+            }
+            if (resolved.Value.ReturnType == null)
+            {
+                env.Error(node.Span, $"Operator '{token}' has no result (void) " +
+                    "and cannot be used as a value");
+                return true;
+            }
+            result = new BoundUnaryExpression(node, op, operand, resolved.Value.ReturnType);
+            return true;
         }
 
         private static bool TryGetAwaitResult(TypeSymbol taskType, BindEnvironment env,
@@ -374,11 +472,12 @@ namespace RigiCompiler
                     // 能力）。receiver/index 的读-写双重求值与字段复合
                     // 既有行为一致（P4a 展开时处理）
                     {
-                        // S9：泛型参数 receiver 无索引运算符（判型后集合为空）
-                        var setters = indexTarget.Receiver.Type is TypeSymbol receiverType
-                            ? SymbolLookup.FindInstanceOperators(
-                                receiverType, "setAtIndex", 2)
-                            : new List<MethodSymbol>();
+                        var setterLookup = SymbolLookup.EffectiveMemberType(
+                            indexTarget.Receiver.Type, env);
+                        var setters = indexTarget.Receiver.Type is ErrorTypeSymbol
+                            ? new List<MethodSymbol>()
+                            : SymbolLookup.FindInstanceOperators(
+                                setterLookup, "setAtIndex", 2, env.Unit.Symbols);
                         if (setters.Count == 0)
                         {
                             env.Error(node.Span, $"Type " +
@@ -398,11 +497,8 @@ namespace RigiCompiler
                         // P3 放行由 BilVerifier §13.6 兜底
                         var setOperator = setters[0];
                         var elementType = setOperator.Parameters[1].Type!;
-                        if (indexTarget.Receiver.Type is TypeSymbol writeReceiver)
-                        {
-                            elementType = SymbolLookup.SubstituteForReceiver(elementType,
-                                setOperator, writeReceiver, env.Unit.Symbols);
-                        }
+                        elementType = SymbolLookup.SubstituteForReceiver(elementType,
+                            setOperator, setterLookup, env.Unit.Symbols);
                         if (!SymbolLookup.IsAssignable(target.Type, elementType, env))
                         {
                             env.Error(node.Span,
@@ -419,8 +515,20 @@ namespace RigiCompiler
             }
             // 毒化静默：任一侧已失败时不再报次生错误
             if (target.Type is ErrorTypeSymbol || value.Type is ErrorTypeSymbol) return null;
-            // #28④：降级调用结果 Any 可作复合赋值 RHS（P4a 先 cast 到
-            // place 类型再参与运算——§11 要求同型操作数）
+            // 内建：同型（或降级 Any）+ intrinsic 表命中
+            if (target.Type is TypeSymbol intrinsicTarget
+                && intrinsicTarget.IntrinsicOps.Contains(op)
+                && (ReferenceEquals(target.Type, value.Type)
+                    || BoundAnalysis.IsDowngradeCallResult(value, env)))
+            {
+                return new BoundCompoundAssignmentExpression(node, target, op, value, target.Type);
+            }
+            // 用户 operator：由对应二元运算符推导；结果须可赋回目标
+            if (TryBindUserCompound(node, compound.Operator, op, target, value, ctx, env,
+                    out var userBound))
+            {
+                return userBound;
+            }
             if (!ReferenceEquals(target.Type, value.Type)
                 && !BoundAnalysis.IsDowngradeCallResult(value, env))
             {
@@ -429,14 +537,51 @@ namespace RigiCompiler
                     $"'{BoundAnalysis.TypeDisplay(value.Type)}')");
                 return null;
             }
-            // intrinsic 存在检查（S9：泛型参数无 intrinsic 表，判型后不命中）
-            if (target.Type is not TypeSymbol targetType || !targetType.IntrinsicOps.Contains(op))
+            env.Error(node.Span, SymbolLookup.OperatorNotDefinedMessage(compound.Operator + "=",
+                target.Type));
+            return null;
+        }
+
+        // 用户复合赋值：解析对应二元 operator，返回类型须可赋回目标。
+        private static bool TryBindUserCompound(ASTNode node, string token, BilIntrinsicOp op,
+            BoundExpression target, BoundExpression value, BindContext ctx, BindEnvironment env,
+            out BoundExpression? result)
+        {
+            result = null;
+            var name = IntrinsicMapping.UserOperatorName(op);
+            if (name == null || target.Type is ErrorTypeSymbol) return false;
+            var targetType = SymbolLookup.EffectiveMemberType(target.Type, env);
+            var candidates = SymbolLookup.FindInstanceOperators(targetType, name, 1,
+                env.Unit.Symbols);
+            if (candidates.Count == 0) return false;
+            var accessible = candidates.Where(ctx.Frame.CanAccess).ToList();
+            if (accessible.Count == 0)
             {
-                env.Error(node.Span, $"Operator '{compound.Operator}=' is not defined for type " +
-                    $"'{BoundAnalysis.TypeDisplay(target.Type)}'");
-                return null;
+                env.Error(node.Span, AccessChecker.InaccessibleMessage(candidates[0]));
+                return true;
             }
-            return new BoundCompoundAssignmentExpression(node, target, op, value, target.Type);
+            var resolved = OverloadResolution.ResolveBound(node, accessible, new[] { value },
+                env, targetType);
+            if (resolved == null)
+            {
+                // 已落诊断（不适用/二义/推断失败/约束）
+                return true;
+            }
+            if (resolved.Value.ReturnType == null)
+            {
+                env.Error(node.Span, $"Operator '{token}' has no result (void) " +
+                    "and cannot be used as a value");
+                return true;
+            }
+            if (!SymbolLookup.IsAssignable(resolved.Value.ReturnType, target.Type, env))
+            {
+                env.Error(node.Span,
+                    $"Cannot assign '{BoundAnalysis.TypeDisplay(resolved.Value.ReturnType)}' to " +
+                    $"'{BoundAnalysis.TypeDisplay(target.Type)}'");
+                return true;
+            }
+            result = new BoundCompoundAssignmentExpression(node, target, op, value, target.Type);
+            return true;
         }
     }
 
@@ -447,6 +592,38 @@ namespace RigiCompiler
         {
             return op is BilIntrinsicOp.CmpEq or BilIntrinsicOp.CmpNe or BilIntrinsicOp.CmpLt
                 or BilIntrinsicOp.CmpLe or BilIntrinsicOp.CmpGt or BilIntrinsicOp.CmpGe;
+        }
+
+        public static bool IsOrderCompare(BilIntrinsicOp op)
+        {
+            return op is BilIntrinsicOp.CmpLt or BilIntrinsicOp.CmpLe
+                or BilIntrinsicOp.CmpGt or BilIntrinsicOp.CmpGe;
+        }
+
+        // SYNTAX §13.2 运算符位置 → 用户 operator 名（==/!= 走独立 equals 路径）
+        public static string? UserOperatorName(BilIntrinsicOp op)
+        {
+            return op switch
+            {
+                BilIntrinsicOp.Add => "plus",
+                BilIntrinsicOp.Sub => "minus",
+                BilIntrinsicOp.Mul => "times",
+                BilIntrinsicOp.Div => "div",
+                BilIntrinsicOp.And => "and",
+                BilIntrinsicOp.Or => "or",
+                BilIntrinsicOp.BinAnd => "bitwiseAnd",
+                BilIntrinsicOp.BinOr => "bitwiseOr",
+                BilIntrinsicOp.BinXor => "bitwiseXor",
+                BilIntrinsicOp.ShiftLeft => "leftShift",
+                BilIntrinsicOp.ShiftRight => "rightShift",
+                BilIntrinsicOp.ShiftRightUnsigned => "unsignedRightShift",
+                BilIntrinsicOp.CmpLt or BilIntrinsicOp.CmpLe
+                    or BilIntrinsicOp.CmpGt or BilIntrinsicOp.CmpGe => "compareTo",
+                BilIntrinsicOp.Opposite => "opposite",
+                BilIntrinsicOp.Not => "not",
+                BilIntrinsicOp.BinNot => "bitwiseNot",
+                _ => null,
+            };
         }
 
         public static BilIntrinsicOp MapBinary(string token)

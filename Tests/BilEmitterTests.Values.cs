@@ -396,6 +396,22 @@ namespace RigiCompiler.Tests
                 "set.var $.t2 $v\n" +
                 "ret\n");
 
+            // 推断实参与显式实参 BIL 形态一致
+            var (unitInf, moduleInf, _) = BilTestHarness.EmitBilUnit(
+                "func identity\\<T>(x: T): T { return x }\n" +
+                "func main() {\n" +
+                "    var v = identity(1)\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（推断泛型实参发射）", unitInf);
+            BilTestHarness.CheckBilValid("验证器零错误（推断泛型实参发射）", moduleInf);
+            BilTestHarness.CheckFnShape("推断泛型实参物化与显式一致（main）", moduleInf, "$main()@.void",
+                ".vars { .i32 v, .typeid .t0, .i32 .t1, .i32 .t2 }\n" +
+                "getid.type type(.i32) $.t0\n" +
+                "load res(#0) $.t1\n" +
+                "invoke fn($identity(x:.generic<$.generic.T>)@.generic<$.generic.T>) $.t2 [$.t0, $.t1]\n" +
+                "set.var $.t2 $v\n" +
+                "ret\n");
+
             // 嵌套泛型调用：转发接收的 .generic.T 隐藏参数（零指令，无 getid.type；
             // .args 顺序已由上面的 fn .args 结构断言覆盖）
             BilTestHarness.CheckFnShape("嵌套泛型调用转发（pass）", module,

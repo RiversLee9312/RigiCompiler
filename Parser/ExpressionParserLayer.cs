@@ -98,6 +98,9 @@ namespace RigiCompiler
         // 不属于本路径的 token 处封 End）
         private ASTNode? currentPathTail = null;
         private readonly List<TypeReferenceASTNode> pendingGenericArgs = new();
+        // 刚闭合泛型实参列表：下一 token 若是紧邻的多余 '>'，不得当成比较/移位运算符
+        private bool justClosedGenericArgs = false;
+        private CharPosition genericCloseEnd;
 
         // Span 施工（M28）：前导 `.`（enum case 引用）的 token 起点；
         // trailing lambda 的实参节点（lambda 弹栈后与当前表达式一并封口）
@@ -697,6 +700,20 @@ namespace RigiCompiler
                 return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
             }
 
+            // 泛型实参列表刚闭合：紧邻的多余 '>' 是畸形闭合，不是比较/移位运算符
+            // （foo\<i32>>(...) 不得静默解析为 foo\<i32> > (...)；
+            // 合法比较须与闭合符隔开空白：foo\<i32> > x）
+            if (justClosedGenericArgs)
+            {
+                justClosedGenericArgs = false;
+                if (currentToken is NotationToken extraClose && extraClose.Content == ">" &&
+                    extraClose.CharRange.Start.offset == genericCloseEnd.offset)
+                {
+                    context.RaiseError("Unexpected extra '>' after generic argument list");
+                    return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
+                }
+            }
+
             // 路径后缀链（SYNTAX.md §1.4：路径表达式在运算符之前整体形成；
             // M42：一条完整路径链恰一个 PathExpressionASTNode）
             if (currentToken is NotationToken suffix)
@@ -1086,6 +1103,8 @@ namespace RigiCompiler
                 if (nt.Content == ">")
                 {
                     AttachGenericArguments(context);
+                    justClosedGenericArgs = true;
+                    genericCloseEnd = context.GetLocation().End;
                     state = State.PrimaryParsed;
                     return ParserLayerResult.Continue.Instance;
                 }

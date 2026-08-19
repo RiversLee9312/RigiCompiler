@@ -41,7 +41,9 @@ namespace RigiCompiler.Bil.Vm
 
         // .generic< 是 typeid 占位（§14.3 / SYNTAX §14.8），执行期类型操作必须
         // 先按当前调用帧的泛型绑定（hidden .generic.X typeid 实参）解析成具体
-        // typeid 再继续；解析不到抛 VmException（绝不恒等放行）。
+        // typeid 再继续。顶层裸 .generic<T> 未绑定抛 VmException（绝不恒等
+        // 放行）；构造类型内嵌占位（.array<.generic<T>>）未绑定时原样保留，
+        // 由 TypesCompatible / TypesEqual 降级——调用点帧通常未绑 callee 的槽。
         internal static string ResolveTypeRef(VmContext context, VmCoroutine coroutine,
             string typeRef)
         {
@@ -49,11 +51,11 @@ namespace RigiCompiler.Bil.Vm
             {
                 return typeRef;
             }
-            return ResolveTypeRefImpl(context, coroutine, typeRef);
+            return ResolveTypeRefImpl(context, coroutine, typeRef, requireBound: true);
         }
 
         private static string ResolveTypeRefImpl(VmContext context, VmCoroutine coroutine,
-            string typeRef)
+            string typeRef, bool requireBound)
         {
             var angle = typeRef.IndexOf('<');
             if (angle > 0 && typeRef.EndsWith(">"))
@@ -62,13 +64,23 @@ namespace RigiCompiler.Bil.Vm
                 var inner = typeRef.Substring(angle + 1, typeRef.Length - angle - 2);
                 if (head == ".generic")
                 {
-                    return ResolveGenericPlaceholder(context, coroutine, inner);
+                    if (TryResolveGenericPlaceholder(coroutine, inner, out var bound))
+                    {
+                        return bound;
+                    }
+                    if (requireBound)
+                    {
+                        throw new VmException("无法解析泛型占位 .generic<" + inner
+                            + ">：当前调用帧未绑定该 typeid");
+                    }
+                    return typeRef;
                 }
                 var arguments = BilVerificationContext.SplitTopLevel(inner);
                 var resolved = new List<string>(arguments.Count);
                 foreach (var argument in arguments)
                 {
-                    resolved.Add(ResolveTypeRefImpl(context, coroutine, argument));
+                    resolved.Add(ResolveTypeRefImpl(context, coroutine, argument,
+                        requireBound: false));
                 }
                 return head + "<" + string.Join(", ", resolved) + ">";
             }
@@ -76,18 +88,19 @@ namespace RigiCompiler.Bil.Vm
         }
 
         // 占位内文形如 $.generic.NAME（$ 为引用标记），映射到当前帧同名 hidden
-        // typeid 实参；未绑定（直接构造模块等语境）抛清晰 VmException。
-        private static string ResolveGenericPlaceholder(VmContext context, VmCoroutine coroutine,
-            string inner)
+        // typeid 实参。
+        private static bool TryResolveGenericPlaceholder(VmCoroutine coroutine, string inner,
+            out string bound)
         {
             var name = inner.StartsWith("$", StringComparison.Ordinal) ? inner.Substring(1) : inner;
             var frame = coroutine.CurrentFrame;
             if (frame.Slots.TryGetValue(name, out var value) && value is VmTypeId typeId)
             {
-                return typeId.TypeSymbol;
+                bound = typeId.TypeSymbol;
+                return true;
             }
-            throw new VmException("无法解析泛型占位 .generic<" + inner
-                + ">：当前调用帧未绑定该 typeid");
+            bound = "";
+            return false;
         }
 
         internal static bool Is(VmContext context, VmCoroutine coroutine, VmValue value,

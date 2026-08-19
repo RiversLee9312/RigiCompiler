@@ -57,7 +57,9 @@ namespace RigiCompiler
         // 此处仅为防御性兜底：以 return 终止的路径不落到块尾，不要求
         // return@）；复合结构
         // 递归同 GuaranteesReturn，另含 seq 语句体（S7e）与末语句携带
-        // 表达式内「绝不落穿」的嵌套值块（NestedValueBlockEscapes）
+        // 表达式内「绝不落穿」的嵌套值块（NestedValueBlockEscapes）。
+        // 循环：do-while 至少执行一次，体保证产值即本路径保证；while/for
+        // 可零次执行仍保守 false（条件位逃逸另由 NestedValueBlockEscapes 覆盖）
         public static bool GuaranteesValueReturn(BoundBlock block)
         {
             return block.Statements.Count > 0 && block.Statements[^1] switch
@@ -80,6 +82,9 @@ namespace RigiCompiler
                 BoundSeqStatement seqStatement => GuaranteesValueReturn(seqStatement.Body)
                     && !HasEscapingSeqExit(seqStatement),
                 BoundBlock nested => GuaranteesValueReturn(nested),
+                BoundLoop loop =>
+                    (loop.Kind == LoopKind.DoWhile && GuaranteesValueReturn(loop.Body))
+                    || StatementCarriedExpressions(loop).Any(NestedValueBlockEscapes),
                 // 末语句携带表达式内的嵌套值块逃逸（如
                 // `var t = seq { if (c) { return@outer a } else { return@outer b } }`）：
                 // 内层值块全路径向外逃逸（不命中自身产值、不落穿）时，
@@ -170,10 +175,13 @@ namespace RigiCompiler
 
         // 块内语句的平铺枚举（递归嵌套 BoundBlock、BoundIfStatement 两分支、
         // BoundSwitchStatement 全部分支体（S7d：switch 体内 return@ 可穿透
-        // 命中外层值块，收集/终止判定须看得到）、BoundTryStatement 三个块与
-        // BoundSeqStatement 体（S7e：同理穿透可见））；并下钻语句携带表达式
-        // 内部的嵌套值块——return@ 可藏在表达式位置的 if/switch/seq 表达式
-        // 分支体里（如 `return@outer if (c) { return@outer v } else { ... }`、
+        // 命中外层值块，收集/终止判定须看得到）、BoundTryStatement 三个块、
+        // BoundSeqStatement 体（S7e：同理穿透可见）与 BoundLoop 体（值块
+        // 目标跨循环放行后，CollectBranchValueType 须看到体内 return@；
+        // 按 ReferenceEquals 精确过滤目标块，不下钻即误判「不产值」））；
+        // 并下钻语句携带表达式内部的嵌套值块——return@ 可藏在表达式位置
+        // 的 if/switch/seq 表达式分支体里（如
+        // `return@outer if (c) { return@outer v } else { ... }`、
         // `var x = if (c) { return@outer v } else { ... }`），其值类型同样
         // 参与外层统一
         public static IEnumerable<BoundStatement> EnumerateStatements(BoundBlock block)
@@ -225,6 +233,10 @@ namespace RigiCompiler
                         break;
                     case BoundSeqStatement seqStatement:
                         foreach (var s in EnumerateStatements(seqStatement.Body))
+                            yield return s;
+                        break;
+                    case BoundLoop loop:
+                        foreach (var s in EnumerateStatements(loop.Body))
                             yield return s;
                         break;
                 }

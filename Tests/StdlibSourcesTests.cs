@@ -13,8 +13,8 @@ namespace RigiCompiler.Tests
     /// core/exceptions.rg，按逻辑名 Ordinal 排序）：
     /// 1. ParseAll() 返回恰好六棵 RootASTNode，Span.sourceName 为逻辑名
     ///    映射形（&lt;stdlib&gt;/ 前缀，含点开头文件名的反推）
-    /// 2. 结构断言：.bootstrap 顶层 139 个声明（namespace core +
-    ///    ext operator callable + core.Pair 泛型类 + lambda 对象模型
+    /// 2. 结构断言：.bootstrap 顶层 140 个声明（namespace core +
+    ///    ext operator callable + core.Pair 泛型类 + ComparisonResult + lambda 对象模型
     ///    四家族 132 个 abstract class + Cell/ReadonlyCell，SYNTAX §5.2）；
     ///    Console（namespace core.io + pub class + 3 callable 成员，
     ///    native 双注解）；collections（namespace core.collections +
@@ -88,8 +88,8 @@ namespace RigiCompiler.Tests
             // 各 33 个元数变种 + Cell/ReadonlyCell，共 134 个 class 声明；
             // 末尾 any_to_string（§3.8 toString 机制的 priv 全局 native 触达点）；
             // String.length ext const 内建字段（VM 直读，同 Array.length 通道）
-            TestHarness.CheckTrue("顶层恰好 139 个声明（namespace + ext operator + Pair + 134 callable/Cell + String.length + any_to_string）",
-                root.Declarations.Count == 139, $"实际 {root.Declarations.Count}");
+            TestHarness.CheckTrue("顶层恰好 140 个声明（namespace + ext operator + Pair + ComparisonResult + 134 callable/Cell + String.length + any_to_string）",
+                root.Declarations.Count == 140, $"实际 {root.Declarations.Count}");
             TestHarness.CheckTrue("首声明是 namespace core",
                 root.Declarations.Count > 0
                 && root.Declarations[0] is NamespaceDeclarationASTNode,

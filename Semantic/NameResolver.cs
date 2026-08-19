@@ -51,9 +51,9 @@ namespace RigiCompiler
         }
 
         // 符号路径解析：首段按查找序定位，后续逐段下钻，末段应用泛型实参。
-        // allowBareGenericDefinition（S11a wrapper 注解专用）：裸名命中泛型
-        // 定义时返回定义本身而非元数错误——wrapper 应用的 TTarget 角色代入
-        // 与元数校验由 P2 proxy 阶段（ProxyShapeChecker）负责
+        // allowBareGenericDefinition：裸名命中泛型定义时返回定义本身而非
+        // 元数错误。用于 import 验证/消费（导入目标即定义，实参在使用处
+        // 书写）以及 S11a wrapper 注解（TTarget 代入与元数校验归 P2 proxy）
         public SemanticSymbol ResolveSymbolPath(Symbol path, FileContext ctx,
             TypeSymbol? declaringType, MethodSymbol? declaringMethod,
             bool allowImports, bool reportErrors, CharRange? span,
@@ -236,7 +236,8 @@ namespace RigiCompiler
                     {
                         if (namedHit != null) continue;
                         var container = ResolveSymbolPath(importPath, ctx, declaringType: null,
-                            declaringMethod: null, allowImports: false, reportErrors: false, span: null);
+                            declaringMethod: null, allowImports: false, reportErrors: false, span: null,
+                            allowBareGenericDefinition: true);
                         SemanticSymbol? hit = container switch
                         {
                             NamespaceSymbol ns => FindTypeIn(ns.Types, name, arity),
@@ -248,7 +249,8 @@ namespace RigiCompiler
                     else if (importPath.elements.Count > 0 && importPath.elements[^1].name == name)
                     {
                         var resolved = ResolveSymbolPath(importPath, ctx, declaringType: null,
-                            declaringMethod: null, allowImports: false, reportErrors: false, span: null);
+                            declaringMethod: null, allowImports: false, reportErrors: false, span: null,
+                            allowBareGenericDefinition: true);
                         if (resolved is ErrorTypeSymbol)
                         {
                             // 失效条目跳过；全部同名条目均失效时保持 true，

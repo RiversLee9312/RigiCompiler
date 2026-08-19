@@ -50,6 +50,9 @@ namespace RigiCompiler.Tests
             TestExpr("var gp = Span.alloc\\<f32>", "Path(Span, [.alloc<f32>])");
             // 同一行内泛型与小于号共存
             TestExpr("var cmp = x < y", "Binary(Path(x, []) < Path(y, []))");
+            // 泛型闭合与比较运算符以空白隔开：仍是比较，不是多余闭合
+            TestExpr("var gt = foo\\<i32> > x", "Binary(Path(foo<i32>, []) > Path(x, []))");
+            TestExpr("var ge = foo\\<i32> >= x", "Binary(Path(foo<i32>, []) >= Path(x, []))");
 
             TestHarness.Blank();
         }
@@ -102,6 +105,31 @@ namespace RigiCompiler.Tests
             TestHarness.CheckParseError("var w = a \\ b",
                 () => TestHarness.ParseRoot("var w = a \\ b"),
                 "Expected '<' after '\\'");
+
+            // 全管线负例：类型引用位置多一个 `>`
+            TestHarness.CheckParseError("var x: List\\<i32>> = null",
+                () => TestHarness.ParseRoot("var x: List\\<i32>> = null"),
+                "Expected '=' or line break after type annotation");
+            // 全管线负例：类型引用位置闭括号写成 `\>`
+            TestHarness.CheckParseError("var x: List\\<i32\\> = null",
+                () => TestHarness.ParseRoot("var x: List\\<i32\\> = null"),
+                "close with '>', not '\\>'");
+            // 全管线负例：表达式泛型调用多一个 `>`（不得静默解析为比较）
+            TestHarness.CheckParseError("var x = foo\\<i32>>(1)",
+                () => TestHarness.ParseRoot("var x = foo\\<i32>>(1)"),
+                "Unexpected extra '>' after generic argument list");
+            // 全管线负例：表达式泛型调用闭括号写成 `\>`
+            TestHarness.CheckParseError("var x = foo\\<i32\\>(1)",
+                () => TestHarness.ParseRoot("var x = foo\\<i32\\>(1)"),
+                "close with '>', not '\\>'");
+            // 全管线负例：约束位置多一个 `>`
+            TestHarness.CheckParseError("class A\\<T extends List\\<i32>>> {}",
+                () => TestHarness.ParseRoot("class A\\<T extends List\\<i32>>> {}"),
+                "Unexpected token after type name");
+            // 约束位置闭括号写成 `\>`
+            TestHarness.CheckParseError("class A\\<T extends List\\<i32\\>> {}",
+                () => TestHarness.ParseRoot("class A\\<T extends List\\<i32\\>> {}"),
+                "close with '>', not '\\>'");
 
             TestHarness.Blank();
         }

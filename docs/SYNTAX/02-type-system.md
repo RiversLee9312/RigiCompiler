@@ -321,6 +321,13 @@ func dump\<TItem with Serializable>(item: TItem) { ... }
 - `T with W`：实参 `A` 满足 ⟺ `W` 在 `A` 的 wrapper 应用集合中（编译期查类型的 `AppliedWrappers`，含 interface 传染结果；构造类型随定义传播）。`with` 约束在函数体内等价于一次 wrapper 应用：带 `with W` 约束的泛型参数 `param` 上写 `param:W` 是合法的 wrapper place（§14.5），只读禁令与应用语义同直接应用一致；wrapper 存储在实参宿主的隐藏存储中，编译器不为泛型参数合成任何存储。
 - 约束边界不得引用同一声明泛型参数列表中的参数（含嵌套泛型实参位置）——`class C\<T1 extends T2, T2>` 是编译错误（声明侧专门诊断）。引用外层可见作用域的泛型参数（如泛型宿主类型的方法约束引用宿主的 `T`）不在此列：此时边界含未替换泛型参数，使用侧检查**跳过**（不做静态拒绝，由外层调用代入后自然满足）。实参为 `ErrorType` 时静默放行（毒化传播）。
 
+**泛型参数的成员解析**：函数体内对类型为 `T` 的值做成员访问（方法、operator 名字调用、运算符位置、字段、索引）按**有效成员类型**进行，与 §13.3 交叉引用——
+
+- `T extends B`：按 `B`（含 `B` 的基类链与接口闭包；构造界按已代入形态，界含外层宿主泛型参数时保留参数身份）。
+- 无约束或只有 `supers` / `with`：按 `Any`（§3.8 承诺成员如 `toString` 可用）。`supers`/`with` 不提供普通成员保证。
+
+结果类型按约束签名（宿主代入后）定型，不是 `T`：`T extends Addable` 时 `a + b` 的类型是 `Addable`，赋回 `: T` 报错。`T` 有 `extends B` 时，`T` 的值可赋给 `B`（及 `B` 的上界）；反向（`B` 赋给 `T`）一律不可。
+
 ```rigi
 // 型变（同 Kotlin 的 in/out）
 class Producer\<out TElement> { ... }
@@ -353,7 +360,7 @@ func create\<TResult>(): TResult {
 
 **`typeOf`**：取得某个值或类型的运行时类型，返回 `Type\<T>`。操作数按两种形态解析：
 
-- **值形态（常态）**：操作数先按值绑定，取值的运行时实际类型，返回 `Type\<T静态\>`——`T` 是类型边界（`BIL_STANDARD.md` §6.3 `.typeid<TBound>` 语义），实际类型为其子类型亦属该边界。
+- **值形态（常态）**：操作数先按值绑定，取值的运行时实际类型，返回 `Type\<T静态>`——`T` 是类型边界（`BIL_STANDARD.md` §6.3 `.typeid<TBound>` 语义），实际类型为其子类型亦属该边界。
 - **类型形态**：操作数无法绑定为值、且可解析为类型引用时，返回该类型的 `Type\<T>`。
 
 ```rigi
@@ -393,7 +400,7 @@ if (obj with Serializable) { ... }
 
 ### 3.8 字符串转换（`toString`）与字符串插值
 
-每个类型都拥有 `toString(): String`（承诺挂在类型层级根 `Any` 上——`Any.toString` 是 open、可被 override、自带实现的普通方法），可直接调用，也可经 `override` 覆写以定制文本表示：
+每个类型都拥有 `toString(): String`（承诺挂在类型层级根 `Any` 上——`Any.toString` 是 open、可被 override、自带实现的普通方法），可直接调用，也可经 `override` 覆写以定制文本表示。**泛型参数可经 Any 承诺访问 `toString`**：无约束或仅 `supers`/`with` 时有效成员类型就是 `Any`；字符串插值对非 `String` 段（含泛型参数）一律走该承诺（见 §3.6 成员解析与 §13.3）：
 
 - **内建基本类型**（数值 / `bool` / `char` / `String`）的 `toString` 由内建实现提供：`String` 即自身；数值为标准十进制文本；`bool` 为 `"true"` / `"false"`；`char` 为单字符字符串。
 - **未覆写的类型**由默认实现提供（`Object` 上的 open `override` 方法——它 override `Any.toString`，内建提供），返回该类型的 canonical 名（如 `"com.example::User"`）。

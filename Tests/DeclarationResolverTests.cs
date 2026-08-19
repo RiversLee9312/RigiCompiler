@@ -39,6 +39,8 @@ namespace RigiCompiler.Tests
             TestOverrideModifiers();
             TestDeclarationSiteAccess();
             TestConversionOperators();
+            TestEnumerateInRangeShape();
+            TestOperatorNameWhitelist();
             TestAsyncDeclarationGates();
             TestConstructedBaseTypeBackfill();
             TestExtDuplicateDetection();
@@ -52,6 +54,7 @@ namespace RigiCompiler.Tests
             TestDuplicateInterfaceImplementation();
             TestStaticOperatorDeclaration();
             TestNamedImportResolution();
+            TestNamedGenericImport();
             TestEnumCaseStructure();
             TestLikeDelegation();
             TestFreeze();
@@ -1813,6 +1816,92 @@ namespace RigiCompiler.Tests
             CheckNoErrors("普通函数同名无诊断", u6);
         }
 
+        // ===== EnumerateInRange 声明形状（SYNTAX §7.3/§13.2）=====
+        private static void TestEnumerateInRangeShape()
+        {
+            TestHarness.Section("P2 EnumerateInRange Shape (§13.2)");
+
+            var (ok, _) = ResolveUnitWithStdlib(
+                "class Step {\n" +
+                "    operator EnumerateInRange(end: i32): core.collections.IEnumerable\\<i32> { }\n" +
+                "}\n");
+            CheckNoErrors("合法 EnumerateInRange 声明无诊断", ok);
+
+            var (okExt, _) = ResolveUnitWithStdlib(
+                "class Host { }\n" +
+                "ext operator Host.EnumerateInRange(end: i32): " +
+                "core.collections.IEnumerable\\<i32> { }\n");
+            CheckNoErrors("合法 ext EnumerateInRange 无诊断", okExt);
+
+            var (u0, _) = ResolveUnitWithStdlib(
+                "class Step {\n" +
+                "    operator EnumerateInRange(): core.collections.IEnumerable\\<i32> { }\n" +
+                "}\n");
+            CheckP2Error("EnumerateInRange 零参数", u0,
+                "Operator 'EnumerateInRange' must have exactly one parameter (got 0)");
+
+            var (u2, _) = ResolveUnitWithStdlib(
+                "class Step {\n" +
+                "    operator EnumerateInRange(a: i32, b: i32): " +
+                "core.collections.IEnumerable\\<i32> { }\n" +
+                "}\n");
+            CheckP2Error("EnumerateInRange 两参数", u2,
+                "Operator 'EnumerateInRange' must have exactly one parameter (got 2)");
+
+            var (uRet, _) = ResolveUnitWithStdlib(
+                "class Step { operator EnumerateInRange(end: i32): i32 { } }\n");
+            CheckP2Error("EnumerateInRange 返回 i32", uRet,
+                "Operator 'EnumerateInRange' must return core.collections.IEnumerable<T>");
+
+            var (uVoid, _) = ResolveUnitWithStdlib(
+                "class Step { operator EnumerateInRange(end: i32) { } }\n");
+            CheckP2Error("EnumerateInRange void 返回", uVoid,
+                "Operator 'EnumerateInRange' must return core.collections.IEnumerable<T>");
+
+            var (uExt0, _) = ResolveUnitWithStdlib(
+                "class Host { }\n" +
+                "ext operator Host.EnumerateInRange(): core.collections.IEnumerable\\<i32> { }\n");
+            CheckP2Error("ext EnumerateInRange 零参数", uExt0,
+                "Operator 'EnumerateInRange' must have exactly one parameter (got 0)");
+
+            var (uExt2, _) = ResolveUnitWithStdlib(
+                "class Host { }\n" +
+                "ext operator Host.EnumerateInRange(a: i32, b: i32): " +
+                "core.collections.IEnumerable\\<i32> { }\n");
+            CheckP2Error("ext EnumerateInRange 两参数", uExt2,
+                "Operator 'EnumerateInRange' must have exactly one parameter (got 2)");
+
+            var (uExtRet, _) = ResolveUnitWithStdlib(
+                "class Host { }\n" +
+                "ext operator Host.EnumerateInRange(end: i32): i32 { }\n");
+            CheckP2Error("ext EnumerateInRange 返回 i32", uExtRet,
+                "Operator 'EnumerateInRange' must return core.collections.IEnumerable<T>");
+        }
+
+        // ===== SYNTAX §13.2：不可自定义新运算符名称 =====
+        private static void TestOperatorNameWhitelist()
+        {
+            TestHarness.Section("P2 Operator Name Whitelist (§13.2)");
+
+            var (ok, _) = ResolveUnit(
+                "class V {\n" +
+                "    operator plus(o: V): V { }\n" +
+                "    operator compareTo(o: V): i32 { }\n" +
+                "    operator call() { }\n" +
+                "    operator castTo(): i32 { }\n" +
+                "    operator getAtIndex(i: i32): i32 { }\n" +
+                "}\n");
+            CheckNoErrors("白名单内 operator 无诊断", ok);
+
+            var (proxy, _) = ResolveUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "wrapper W { operator .proxy.fetch(x: i32): i32 { return 0 } }\n");
+            CheckNoErrors(".proxy.* 前缀不误伤", proxy);
+
+            var (bad, _) = ResolveUnit("class V { operator foo(o: V): V { } }\n");
+            CheckP2Error("非法 operator 名", bad, "'foo' is not a recognized operator name");
+        }
+
         // ===== S8f：async 声明侧闸门 2/3/5 + async 仅函数（SYNTAX §4.5）=====
         private static void TestAsyncDeclarationGates()
         {
@@ -2239,6 +2328,147 @@ namespace RigiCompiler.Tests
                 ReferenceEquals(
                     GlobalType(ok, "C").Fields.Single(f => f.Name == "f").FieldType,
                     NsOf(ok, "a").Types.Single(t => t.Name == "Foo")));
+        }
+
+        // 具名导入泛型类型定义（§15.2）：导入的是定义本身，实参在使用处书写
+        private static void TestNamedGenericImport()
+        {
+            TestHarness.Section("P2 Named Generic Import (§15.2)");
+
+            var lib =
+                "namespace lib\n" +
+                "pub class Box\\<T> { pub var item: T }\n" +
+                "pub interface ISeq\\<T> { pub func head(): T }\n" +
+                "pub class Task { }\n" +
+                "pub class Task\\<TResult> { }\n";
+
+            var (cls, _) = ResolveUnit(lib,
+                "import lib.Box\n" +
+                "class C { var f: Box\\<i32> }\n");
+            CheckNoErrors("具名导入泛型 class", cls);
+            var boxDef = NsOf(cls, "lib").Types.Single(t => t.Name == "Box");
+            var boxField = (TypeSymbol)GlobalType(cls, "C").Fields.Single(f => f.Name == "f").FieldType!;
+            TestHarness.CheckTrue("导入后构造 Box\\<i32>",
+                ReferenceEquals(boxField.ConstructedFrom, boxDef)
+                && ReferenceEquals(boxField.TypeArguments![0], cls.Symbols.Bootstrap.Int32));
+
+            var (iface, _) = ResolveUnit(lib,
+                "import lib.ISeq\n" +
+                "func take(s: ISeq\\<i32>): i32 { return 0 }\n");
+            CheckNoErrors("具名导入泛型 interface", iface);
+            var iseqDef = NsOf(iface, "lib").Types.Single(t => t.Name == "ISeq");
+            var takeParam = iface.Symbols.GlobalNamespace.Methods.Single(m => m.Name == "take")
+                .Parameters[0].Type as TypeSymbol;
+            TestHarness.CheckTrue("导入后作参数类型 ISeq\\<i32>",
+                takeParam != null && ReferenceEquals(takeParam.ConstructedFrom, iseqDef));
+
+            var (list, _) = ResolveUnit(lib,
+                "import lib.{Box, ISeq}\n" +
+                "class C {\n" +
+                "    var a: Box\\<String>\n" +
+                "    var b: ISeq\\<i32>\n" +
+                "}\n");
+            CheckNoErrors("{} 列表导入泛型", list);
+            TestHarness.CheckTrue("{} 列表两项均可构造",
+                GlobalType(list, "C").Fields.Single(f => f.Name == "a").FieldType is TypeSymbol aType
+                && aType.ConstructedFrom?.Name == "Box"
+                && GlobalType(list, "C").Fields.Single(f => f.Name == "b").FieldType is TypeSymbol bType
+                && bType.ConstructedFrom?.Name == "ISeq");
+
+            var (bound, _) = ResolveUnit(lib,
+                "import lib.Box\n" +
+                "func g\\<T extends Box\\<i32>>(x: T) { }\n");
+            CheckNoErrors("导入后作约束界", bound);
+            var gMethod = bound.Symbols.GlobalNamespace.Methods.Single(m => m.Name == "g");
+            var gBound = gMethod.GenericParameters[0].Constraints
+                .Single(c => c.Kind == GenericConstraintKind.Extends).Bound as TypeSymbol;
+            TestHarness.CheckTrue("约束界为导入的 Box\\<i32>",
+                gBound != null && gBound.ConstructedFrom?.Name == "Box"
+                && ReferenceEquals(gBound.TypeArguments![0], bound.Symbols.Bootstrap.Int32));
+
+            var (ret, _) = ResolveUnit(lib,
+                "import lib.Box\n" +
+                "func h(): Box\\<String> { return new Box\\<String>() }\n");
+            CheckNoErrors("导入后作返回类型", ret);
+            var hRet = ret.Symbols.GlobalNamespace.Methods.Single(m => m.Name == "h").ReturnType
+                as TypeSymbol;
+            TestHarness.CheckTrue("返回类型为导入的 Box\\<String>",
+                hRet != null && hRet.ConstructedFrom?.Name == "Box"
+                && ReferenceEquals(hRet.TypeArguments![0], ret.Symbols.Bootstrap.String));
+
+            // 同名不同元数：具名裸名命中非泛型兄弟
+            var (arity, _) = ResolveUnit(lib,
+                "import lib.Task\n" +
+                "func f(a: Task) { }\n");
+            CheckNoErrors("具名导入裸名命中非泛型 Task", arity);
+            TestHarness.CheckTrue("Task 裸名 = 非泛型声明",
+                ReferenceEquals(
+                    arity.Symbols.GlobalNamespace.Methods.Single(m => m.Name == "f")
+                        .Parameters[0].Type,
+                    NsOf(arity, "lib").Types.Single(t => t.Name == "Task"
+                        && t.GenericParameters.Count == 0)));
+
+            var (arityNeg, _) = ResolveUnit(lib,
+                "import lib.Task\n" +
+                "func f(b: Task\\<i32>) { }\n");
+            TestHarness.CheckSemanticError("具名导入裸名后带实参仍走非泛型",
+                arityNeg.Diagnostics, "'Task' expects 0 type argument(s), got 1");
+
+            var (wild, _) = ResolveUnit(lib,
+                "import lib.*\n" +
+                "func f(b: Task\\<i32>) { }\n");
+            CheckNoErrors("通配导入可达泛型兄弟", wild);
+            TestHarness.CheckTrue("通配 Task\\<i32> 命中泛型声明",
+                wild.Symbols.GlobalNamespace.Methods.Single(m => m.Name == "f")
+                    .Parameters[0].Type is TypeSymbol wildTask
+                && wildTask.ConstructedFrom != null
+                && wildTask.ConstructedFrom.GenericParameters.Count == 1);
+
+            var (fqn, _) = ResolveUnit(lib,
+                "import lib.Task\n" +
+                "func f(b: lib.Task\\<i32>) { }\n");
+            CheckNoErrors("全限定名可达泛型兄弟", fqn);
+            TestHarness.CheckTrue("FQN Task\\<i32> 命中泛型声明",
+                fqn.Symbols.GlobalNamespace.Methods.Single(m => m.Name == "f")
+                    .Parameters[0].Type is TypeSymbol fqnTask
+                && fqnTask.ConstructedFrom != null
+                && fqnTask.ConstructedFrom.GenericParameters.Count == 1);
+
+            var (missing, _) = ResolveUnit("import no.such.Thing\nvar x: i32\n");
+            TestHarness.CheckSemanticError("导入不存在名字仍报 Unresolved import",
+                missing.Diagnostics, "Unresolved import: 'no.such.Thing'");
+
+            var (pair, _) = ResolveUnitWithStdlib(
+                "import core.Pair\n" +
+                "func f(p: Pair\\<i32, String>) { }\n");
+            CheckNoErrors("具名导入 core.Pair", pair);
+            TestHarness.CheckTrue("Pair\\<i32, String> 构造",
+                pair.Symbols.GlobalNamespace.Methods.Single(m => m.Name == "f")
+                    .Parameters[0].Type is TypeSymbol pairType
+                && pairType.ConstructedFrom?.Name == "Pair"
+                && pairType.TypeArguments!.Count == 2);
+
+            var (ienum, _) = ResolveUnitWithStdlib(
+                "import core.collections.IEnumerable\n" +
+                "func f(e: IEnumerable\\<i32>) { }\n");
+            CheckNoErrors("具名导入 IEnumerable", ienum);
+
+            var (brace, _) = ResolveUnitWithStdlib(
+                "import core.collections.{IEnumerable, RangeEnumerator}\n" +
+                "func f(e: IEnumerable\\<i32>, r: RangeEnumerator\\<i32>) { }\n");
+            CheckNoErrors("{} 列表导入 stdlib 泛型", brace);
+        }
+
+        private static (CompilationUnit Unit, DeclarationCollection Decls)
+            ResolveUnitWithStdlib(params string[] sources)
+        {
+            var roots = new List<RootASTNode>();
+            roots.AddRange(StdlibSources.ParseAll());
+            roots.AddRange(sources.Select(TestHarness.ParseRoot));
+            var unit = new CompilationUnit(roots.ToArray());
+            var decls = DeclarationCollector.Collect(unit);
+            DeclarationResolver.Resolve(unit, decls);
+            return (unit, decls);
         }
     }
 }

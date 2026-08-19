@@ -309,6 +309,90 @@ namespace RigiCompiler.Tests
                 "Return(Local(r,i32))])");
         }
 
+        // ===== 循环 region 的 return@ route + dispatcher =====
+        private static void TestLoopStructuredExitRouting()
+        {
+            // while 体 return@_ 外层 seq：loop region 写 route + break，
+            // 后随 dispatcher relay 出 seq
+            var (unit, _, lowered) = LowerUnit(
+                "func f(x: i32): i32 {\n" +
+                "    return seq {\n" +
+                "        while (x > 1) { return@_ 1 }\n" +
+                "        return@_ 2\n" +
+                "    }\n" +
+                "}\n");
+            CheckNoErrors("无诊断（循环 region route）", unit);
+            var described = LoweredDescribe.Body(BodyOf(lowered, "f"));
+            TestHarness.Check("while 体 return@ → loop route + dispatcher", described,
+                "Body(f, [.s0: i32, .b0: .breakid, .s1: bool, .b1: .breakid, .s2: i32, .b2: .breakid], " +
+                "[Seq([Assign(Local(.s2,i32), Const(0,i32)); " +
+                "Loop([Assign(Local(.s1,bool), Binary(CmpGt, Param(x,i32), Int(1,i32), bool))], .s1, " +
+                "[Assign(Local(.s0,i32), Int(1,i32)); Assign(Local(.s2,i32), Const(1,i32)); Break(.b1)], .b1); " +
+                "If(Binary(CmpEq, Local(.s2,i32), Const(1,i32), bool), [Break(.b0)], .b2); " +
+                "Assign(Local(.s0,i32), Int(2,i32))], .b0); Return(Local(.s0,i32))])");
+            TestHarness.CheckTrue("routing 后无 StructuredExit 残留（loop）",
+                !described.Contains("StructuredExit"), described);
+            var seqBlock = (LoweredSeqBlock)BodyOf(lowered, "f").Body.Statements[0];
+            var loopDispatcher = seqBlock.Body.Statements.OfType<LoweredIfStatement>()
+                .Single(s => s.SeqRouteHintRoute != null);
+            TestHarness.CheckTrue("loop dispatcher 打了 seq-route hint",
+                loopDispatcher.SeqRouteHintRoute != null
+                && loopDispatcher.SeqRouteHintRoute.Name == ".s2");
+
+            // 嵌套循环：内层 return@ 穿两层 loop relay
+            var (unit2, _, lowered2) = LowerUnit(
+                "func g(): i32 {\n" +
+                "    return seq {\n" +
+                "        while (true) {\n" +
+                "            while (true) { return@_ 21 }\n" +
+                "            return@_ 0\n" +
+                "        }\n" +
+                "        return@_ 1\n" +
+                "    }\n" +
+                "}\n");
+            CheckNoErrors("无诊断（嵌套循环 relay）", unit2);
+            var described2 = LoweredDescribe.Body(BodyOf(lowered2, "g"));
+            TestHarness.Check("嵌套循环两级 route + dispatcher", described2,
+                "Body(g, [.s0: i32, .b0: .breakid, .s1: bool, .b1: .breakid, .s2: bool, .b2: .breakid, " +
+                ".s3: i32, .s4: i32, .b3: .breakid, .b4: .breakid], " +
+                "[Seq([Assign(Local(.s4,i32), Const(0,i32)); " +
+                "Loop([Assign(Local(.s1,bool), Bool(True,bool))], .s1, " +
+                "[Assign(Local(.s3,i32), Const(0,i32)); " +
+                "Loop([Assign(Local(.s2,bool), Bool(True,bool))], .s2, " +
+                "[Assign(Local(.s0,i32), Int(21,i32)); Assign(Local(.s3,i32), Const(1,i32)); Break(.b2)], .b2); " +
+                "If(Binary(CmpEq, Local(.s3,i32), Const(1,i32), bool), " +
+                "[Assign(Local(.s4,i32), Const(1,i32)); Break(.b1)], .b3); " +
+                "Assign(Local(.s0,i32), Int(0,i32)); Assign(Local(.s4,i32), Const(1,i32)); Break(.b1)], .b1); " +
+                "If(Binary(CmpEq, Local(.s4,i32), Const(1,i32), bool), [Break(.b0)], .b4); " +
+                "Assign(Local(.s0,i32), Int(1,i32))], .b0); Return(Local(.s0,i32))])");
+            TestHarness.CheckTrue("routing 后无 StructuredExit 残留（嵌套 loop）",
+                !described2.Contains("StructuredExit"), described2);
+
+            // break 不写 route：dispatcher fall-through 落到循环后 return@
+            var (unit3, _, lowered3) = LowerUnit(
+                "func h(x: i32): i32 {\n" +
+                "    return seq {\n" +
+                "        while (x > 0) {\n" +
+                "            if (x == 1) { break }\n" +
+                "            return@_ 1\n" +
+                "        }\n" +
+                "        return@_ 2\n" +
+                "    }\n" +
+                "}\n");
+            CheckNoErrors("无诊断（break 与 return@ 共存）", unit3);
+            var described3 = LoweredDescribe.Body(BodyOf(lowered3, "h"));
+            TestHarness.Check("break 不写 route、return@ 写 route", described3,
+                "Body(h, [.s0: i32, .b0: .breakid, .s1: bool, .b1: .breakid, .b2: .breakid, .s2: i32, .b3: .breakid], " +
+                "[Seq([Assign(Local(.s2,i32), Const(0,i32)); " +
+                "Loop([Assign(Local(.s1,bool), Binary(CmpGt, Param(x,i32), Int(0,i32), bool))], .s1, " +
+                "[If(Binary(CmpEq, Param(x,i32), Int(1,i32), bool), [Break(.b1)], .b2); " +
+                "Assign(Local(.s0,i32), Int(1,i32)); Assign(Local(.s2,i32), Const(1,i32)); Break(.b1)], .b1); " +
+                "If(Binary(CmpEq, Local(.s2,i32), Const(1,i32), bool), [Break(.b0)], .b3); " +
+                "Assign(Local(.s0,i32), Int(2,i32))], .b0); Return(Local(.s0,i32))])");
+            TestHarness.CheckTrue("routing 后无 StructuredExit 残留（break 共存）",
+                !described3.Contains("StructuredExit"), described3);
+        }
+
         // ===== S7c-2：for 脱糖（前置 iterate + LoweredLoop 三件套）=====
         private static void TestForLoopLowering()
         {

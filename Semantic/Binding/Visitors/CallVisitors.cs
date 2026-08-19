@@ -18,7 +18,7 @@ namespace RigiCompiler
         public IReadOnlyList<BoundExpression> Arguments = null!;
         public bool IsVoid;
         public BoundExpression? Receiver;
-        // S9b：显式泛型实参（非泛型调用为空列表；P4 发射 .generic.T 依据）
+        // 固定泛型实参（显式或推断；非泛型调用为空列表；P4 发射 .generic.T 依据）
         public IReadOnlyList<SemanticSymbol> TypeArguments = Array.Empty<SemanticSymbol>();
         // S9d-2：泛型可变参数包推导产物（null = 无；P4 发射 .generic.TArgs 依据）
         public BoundGenericVarArgsArgument? GenericPack;
@@ -155,11 +155,15 @@ namespace RigiCompiler
                 if (headSymbol is LocalSymbol or ParameterSymbol)
                 {
                     var callableReceiver = BindCallableReceiver(node, headSymbol, ctx, env);
-                    if (callableReceiver?.Type is TypeSymbol callableType
-                        && FindCallOperators(callableType).Count > 0)
+                    if (callableReceiver != null && callableReceiver.Type is not ErrorTypeSymbol)
                     {
-                        return BindIndirectCallOverload(node, callableReceiver, callableType,
-                            arguments, genericArguments, scope, ctx, env);
+                        var callableType = SymbolLookup.EffectiveMemberType(callableReceiver.Type,
+                            env);
+                        if (FindCallOperators(callableType, env.Unit.Symbols).Count > 0)
+                        {
+                            return BindIndirectCallOverload(node, callableReceiver, callableType,
+                                arguments, genericArguments, scope, ctx, env);
+                        }
                     }
                 }
                 if (headSymbol == null
@@ -168,11 +172,15 @@ namespace RigiCompiler
                     // 裸名字段（宿主类型的 callable 字段补 this）——与普通
                     // 字段引用同路径绑定（含访问控制/收窄/this 捕获记录）
                     var fieldReceiver = PathFacility.BindFieldReference(node, bareField, ctx, env);
-                    if (fieldReceiver?.Type is TypeSymbol fieldCallableType
-                        && FindCallOperators(fieldCallableType).Count > 0)
+                    if (fieldReceiver != null && fieldReceiver.Type is not ErrorTypeSymbol)
                     {
-                        return BindIndirectCallOverload(node, fieldReceiver, fieldCallableType,
-                            arguments, genericArguments, scope, ctx, env);
+                        var fieldCallableType = SymbolLookup.EffectiveMemberType(fieldReceiver.Type,
+                            env);
+                        if (FindCallOperators(fieldCallableType, env.Unit.Symbols).Count > 0)
+                        {
+                            return BindIndirectCallOverload(node, fieldReceiver, fieldCallableType,
+                                arguments, genericArguments, scope, ctx, env);
+                        }
                     }
                 }
             }
@@ -201,7 +209,8 @@ namespace RigiCompiler
             {
                 return null;
             }
-            var (calleeMethod, boundArguments, calleeResultType, genericPack) = resolved.Value;
+            var (calleeMethod, boundArguments, calleeResultType, genericPack, resolvedTypeArgs) =
+                resolved.Value;
             BoundExpression? receiver = null;
             if (calleeMethod.Owner != null && !calleeMethod.IsStatic)
             {
@@ -239,7 +248,7 @@ namespace RigiCompiler
                 Arguments = boundArguments,
                 IsVoid = calleeMethod.ReturnType == null,
                 Receiver = receiver,
-                TypeArguments = typeArgs ?? Array.Empty<SemanticSymbol>(),
+                TypeArguments = resolvedTypeArgs,
                 GenericPack = genericPack,
                 // S10：async 调用表达式类型改写为 Task\<T\>/Task（SYNTAX §4.5）
                 ResultType = AsyncResultType(calleeMethod, calleeResultType, env),
@@ -305,17 +314,18 @@ namespace RigiCompiler
                 ? null
                 : ResolveGenericArguments(genericArguments, node, ctx, env);
             if (genericArguments != null && typeArgs == null) return null;
-            var callOperators = FindCallOperators(callableType);
+            var callOperators = FindCallOperators(callableType, env.Unit.Symbols);
             var resolvedCall = OverloadResolution.Resolve(node, callOperators,
                 arguments, scope, ctx, env, typeArgs, receiverType: callableType);
             if (resolvedCall == null) return null;
-            var (callOperator, callArguments, callResultType, callPack) = resolvedCall.Value;
+            var (callOperator, callArguments, callResultType, callPack, callTypeArgs) =
+                resolvedCall.Value;
             return new CallBinding
             {
                 Method = callOperator,
                 Arguments = callArguments,
                 IsVoid = callOperator.ReturnType == null,
-                TypeArguments = typeArgs ?? Array.Empty<SemanticSymbol>(),
+                TypeArguments = callTypeArgs,
                 GenericPack = callPack,
                 ResultType = AsyncResultType(callOperator, callResultType, env),
                 IsIndirect = true,
@@ -325,16 +335,18 @@ namespace RigiCompiler
 
         // 类型是否声明 operator call（M105 语句位置尾 Call 分流：不可调时
         // 回退通用兜底，让 FoldSuffixes 报原「not callable」诊断）
-        public static bool HasCallOperator(TypeSymbol type)
+        public static bool HasCallOperator(TypeSymbol type, SymbolGraph? symbols = null)
         {
-            return FindCallOperators(type).Count > 0;
+            return FindCallOperators(type, symbols).Count > 0;
         }
 
         // callable 协议的 operator call 收集（沿 BaseType 链，定义级回退；
         // 不预过滤参数个数——默认参数/具名实参由 OverloadResolution 判定）：
         // 首个声明了 call 的层级即停——派生覆写遮蔽基类抽象 call（override
-        // 语义），否则 lambda 隐藏类的 override 与基类 abstract 会双候选歧义
-        private static List<MethodSymbol> FindCallOperators(TypeSymbol type)
+        // 语义），否则 lambda 隐藏类的 override 与基类 abstract 会双候选歧义。
+        // 接口 lookup 另走闭包（与 FindInstanceMethods 同一口径）。
+        private static List<MethodSymbol> FindCallOperators(TypeSymbol type,
+            SymbolGraph? symbols = null)
         {
             for (var t = type; t != null; t = t.BaseType)
             {
@@ -342,6 +354,17 @@ namespace RigiCompiler
                 var found = owner.Methods.Where(m => m.Kind == MethodKind.Operator
                     && m.Name == "call" && !m.IsStatic).ToList();
                 if (found.Count > 0) return found;
+            }
+            var definition = type.ConstructedFrom ?? type;
+            if (symbols != null && definition.Kind == TypeKind.Interface)
+            {
+                foreach (var iface in OverrideChecker.InterfaceClosure(type, symbols))
+                {
+                    var owner = iface.ConstructedFrom ?? iface;
+                    var found = owner.Methods.Where(m => m.Kind == MethodKind.Operator
+                        && m.Name == "call" && !m.IsStatic).ToList();
+                    if (found.Count > 0) return found;
+                }
             }
             return new List<MethodSymbol>();
         }
@@ -519,22 +542,17 @@ namespace RigiCompiler
                 ctx, env, genericArguments);
         }
 
-        // 实例方法调用：receiver 静态类型沿 BaseType 链查找（接口
-        // receiver 查接口自身成员；ext 注册成员同路径；S8e 起不可见
-        // 候选经访问控制过滤）。值位置 void 检查由调用方做。
-        // S9a：泛型参数 receiver 无成员表（判型后报未定义成员）。
+        // 实例方法调用：receiver 按有效成员类型查找（泛型参数 T extends B
+        // 按 B；无约束/supers/with 按 Any）。Bound receiver 保持原类型。
         // S9b：genericArguments 显式泛型实参（null = 未提供）
         public static CallBinding? BindInstanceMethodCall(ASTNode node, BoundExpression receiver,
             string name, List<ArgumentASTNode> arguments, Scope scope, BindContext ctx,
             BindEnvironment env, List<TypeReferenceASTNode>? genericArguments = null)
         {
-            if (receiver.Type is not TypeSymbol receiverType)
-            {
-                env.Error(node.Span, $"Undefined member '{name}' on type " +
-                    $"'{BoundAnalysis.TypeDisplay(receiver.Type)}'");
-                return null;
-            }
-            var candidates = SymbolLookup.FindInstanceMethods(receiverType, name);
+            if (receiver.Type is ErrorTypeSymbol) return null;
+            var receiverType = SymbolLookup.EffectiveMemberType(receiver.Type, env);
+            var candidates = SymbolLookup.FindInstanceMethods(receiverType, name,
+                env.Unit.Symbols);
             if (candidates.Count == 0)
             {
                 // 同名字段存在：字段类型声明了 operator call → callable 协议
@@ -543,13 +561,16 @@ namespace RigiCompiler
                 if (SymbolLookup.FindInstanceField(receiverType, name) is { } callableField)
                 {
                     var fieldType = SymbolLookup.SubstituteFieldType(callableField, receiverType);
-                    if (fieldType is TypeSymbol callableFieldType
-                        && FindCallOperators(callableFieldType).Count > 0)
+                    if (fieldType is not ErrorTypeSymbol)
                     {
-                        var fieldTarget = new BoundFieldAccessExpression(node, receiver,
-                            callableField, fieldType);
-                        return BindIndirectCallOverload(node, fieldTarget, callableFieldType,
-                            arguments, genericArguments, scope, ctx, env);
+                        var callableFieldType = SymbolLookup.EffectiveMemberType(fieldType, env);
+                        if (FindCallOperators(callableFieldType, env.Unit.Symbols).Count > 0)
+                        {
+                            var fieldTarget = new BoundFieldAccessExpression(node, receiver,
+                                callableField, fieldType);
+                            return BindIndirectCallOverload(node, fieldTarget, callableFieldType,
+                                arguments, genericArguments, scope, ctx, env);
+                        }
                     }
                     env.Error(node.Span, $"'{name}' on type '{BoundAnalysis.TypeDisplay(receiver.Type)}' is not a method");
                     return null;
@@ -581,7 +602,8 @@ namespace RigiCompiler
             var resolved = OverloadResolution.Resolve(node, accessible, arguments, scope, ctx, env,
                 typeArgs, receiverType);
             if (resolved == null) return null;
-            var (selected, boundArguments, selectedResultType, genericPack) = resolved.Value;
+            var (selected, boundArguments, selectedResultType, genericPack, selectedTypeArgs) =
+                resolved.Value;
             // S9a 放行：返回类型含泛型参数（引用相等身份透传，P4 §7.5 投影）
             return new CallBinding
             {
@@ -589,7 +611,7 @@ namespace RigiCompiler
                 Arguments = boundArguments,
                 IsVoid = selected.ReturnType == null,
                 Receiver = receiver,
-                TypeArguments = typeArgs ?? Array.Empty<SemanticSymbol>(),
+                TypeArguments = selectedTypeArgs,
                 GenericPack = genericPack,
                 // S10：async 调用表达式类型改写（同 BindCall 口径）
                 ResultType = AsyncResultType(selected, selectedResultType, env),

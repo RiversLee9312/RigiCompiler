@@ -501,6 +501,216 @@ namespace RigiCompiler.Tests
                 "P3: constructing a generic type parameter is not supported yet (S9)");
         }
 
+        // ===== 泛型参数有效成员类型（SYNTAX §3.6 / §13）=====
+        private static void TestGenericParamEffectiveMembers()
+        {
+            TestHarness.Section("P3 Generic Parameter Effective Member Type");
+
+            var opsHeader =
+                "pub interface Addable {\n" +
+                "    pub operator plus(other: Addable): Addable\n" +
+                "    pub operator minus(other: Addable): Addable\n" +
+                "    pub operator times(other: Addable): Addable\n" +
+                "    pub operator div(other: Addable): Addable\n" +
+                "    pub operator opposite(): Addable\n" +
+                "}\n" +
+                "pub interface Comparable {\n" +
+                "    pub operator compareTo(other: Comparable): i32\n" +
+                "}\n" +
+                "pub interface Equatable {\n" +
+                "    pub operator equals(other: Equatable): bool\n" +
+                "}\n";
+
+            var (uPlus, bPlus) = BindUnit(opsHeader +
+                "func add\\<T extends Addable>(a: T, b: T): Addable { return a + b }\n" +
+                "func addName\\<T extends Addable>(a: T, b: T): Addable { return a.plus(b) }\n" +
+                "func sub\\<T extends Addable>(a: T, b: T): Addable { return a - b }\n" +
+                "func mul\\<T extends Addable>(a: T, b: T): Addable { return a * b }\n" +
+                "func quot\\<T extends Addable>(a: T, b: T): Addable { return a / b }\n" +
+                "func neg\\<T extends Addable>(a: T): Addable { return -a }\n");
+            CheckNoErrors("T extends Addable 算术全家", uPlus);
+            TestHarness.Check("运算符 + 定型 Addable", BoundDescribe.Body(BodyOf(bPlus, "add")),
+                "Body(add, [], [Return(Binary(Add, Param(a,T), Param(b,T), Addable))])");
+            TestHarness.Check("名字调用 plus", BoundDescribe.Body(BodyOf(bPlus, "addName")),
+                "Body(addName, [], [Return(InstCall(plus, Param(a,T), [Param(b,T)], Addable))])");
+            TestHarness.Check("一元 opposite", BoundDescribe.Body(BodyOf(bPlus, "neg")),
+                "Body(neg, [], [Return(Unary(Opposite, Param(a,T), Addable))])");
+
+            var (uCmp, bCmp) = BindUnit(opsHeader +
+                "func lt\\<T extends Comparable>(a: T, b: T): bool { return a < b }\n" +
+                "func le\\<T extends Comparable>(a: T, b: T): bool { return a <= b }\n" +
+                "func gt\\<T extends Comparable>(a: T, b: T): bool { return a > b }\n" +
+                "func ge\\<T extends Comparable>(a: T, b: T): bool { return a >= b }\n" +
+                "func eq\\<T extends Equatable>(a: T, b: T): bool { return a == b }\n" +
+                "func ne\\<T extends Equatable>(a: T, b: T): bool { return a != b }\n");
+            CheckNoErrors("T extends 比较/相等", uCmp);
+            TestHarness.Check("compareTo < → bool", BoundDescribe.Body(BodyOf(bCmp, "lt")),
+                "Body(lt, [], [Return(Binary(CmpLt, Param(a,T), Param(b,T), bool))])");
+            TestHarness.Check("equals ==", BoundDescribe.Body(BodyOf(bCmp, "eq")),
+                "Body(eq, [], [Return(Binary(CmpEq, Param(a,T), Param(b,T), bool))])");
+
+            var (uClass, bClass) = BindUnit(
+                "pub open class Num {\n" +
+                "    pub operator plus(other: Num): Num { return this }\n" +
+                "}\n" +
+                "func add\\<T extends Num>(a: T, b: T): Num { return a + b }\n");
+            CheckNoErrors("T extends 具体 class 继承 operator", uClass);
+            TestHarness.Check("class 界 plus 定型 Num", BoundDescribe.Body(BodyOf(bClass, "add")),
+                "Body(add, [], [Return(Binary(Add, Param(a,T), Param(b,T), Num))])");
+
+            var (uIface, bIface) = BindUnit(
+                "pub interface IBase {\n" +
+                "    pub operator plus(other: IBase): IBase\n" +
+                "}\n" +
+                "pub interface IChild : IBase { }\n" +
+                "func add\\<T extends IChild>(a: T, b: T): IBase { return a + b }\n" +
+                "func addVar(a: IChild, b: IChild): IBase { return a + b }\n");
+            CheckNoErrors("接口继承链 operator", uIface);
+            TestHarness.Check("T extends IChild 命中基接口 plus",
+                BoundDescribe.Body(BodyOf(bIface, "add")),
+                "Body(add, [], [Return(Binary(Add, Param(a,T), Param(b,T), IBase))])");
+            TestHarness.Check("接口变量同样命中基接口 plus",
+                BoundDescribe.Body(BodyOf(bIface, "addVar")),
+                "Body(addVar, [], [Return(Binary(Add, Param(a,IChild), Param(b,IChild), IBase))])");
+
+            var (uHost, bHost) = BindUnit(
+                "pub interface SomeBound\\<TItem> { pub func take(): TItem }\n" +
+                "pub class C\\<T> {\n" +
+                "    pub func m\\<U extends SomeBound\\<T>>(x: U): T { return x.take() }\n" +
+                "}\n");
+            CheckNoErrors("约束界引用宿主泛型参数", uHost);
+            TestHarness.Check("U extends SomeBound<T> 成员返回 T",
+                BoundDescribe.Body(BodyOf(bHost, "m")),
+                "Body(m, [], [Return(InstCall(take, Param(x,U), [], T))])");
+
+            var (uEnum, bEnum) = BindUnit(
+                "pub interface Box\\<TItem> { pub func take(): TItem }\n" +
+                "func first\\<T extends Box\\<i32>>(x: T): i32 { return x.take() }\n");
+            CheckNoErrors("构造界 T extends Box<i32>", uEnum);
+            TestHarness.Check("take 经构造界代入 i32", BoundDescribe.Body(BodyOf(bEnum, "first")),
+                "Body(first, [], [Return(InstCall(take, Param(x,T), [], i32))])");
+
+            var (uNeg, _) = BindUnit(opsHeader +
+                "func bad\\<T extends Addable>(a: T, b: T): Addable {\n" +
+                "    var x: T = a + b\n" +
+                "    return a\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("a+b 赋给 T 拒绝", uNeg.Diagnostics,
+                "Cannot assign");
+            var (uPos, bPos) = BindUnit(opsHeader +
+                "func ok\\<T extends Addable>(a: T, b: T): Addable { return a + b }\n");
+            CheckNoErrors("a+b 赋给 Addable", uPos);
+
+            var (uAny, bAny) = BindUnit(
+                "func show\\<T>(x: T): String { return x.toString() }\n");
+            CheckNoErrors("无约束 T 可用 Any.toString", uAny);
+            TestHarness.Check("无约束 toString", BoundDescribe.Body(BodyOf(bAny, "show")),
+                "Body(show, [], [Return(InstCall(toString, Param(x,T), [], String))])");
+            var (uAnyBad, _) = BindUnit(
+                "func bad\\<T>(x: T): i32 { return x.nope() }\n");
+            TestHarness.CheckSemanticError("无约束 T 未承诺成员", uAnyBad.Diagnostics,
+                "Undefined member 'nope'");
+
+            var (uSup, _) = BindUnit(
+                "open class Base { }\n" +
+                "func bad\\<T supers Base>(a: T, b: T): T { return a + b }\n");
+            TestHarness.CheckSemanticError("supers 不提供 operator", uSup.Diagnostics,
+                "supers constraint does not provide members");
+            var (uWith, _) = BindUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Mark { }\n" +
+                "func bad\\<T with Mark>(a: T, b: T): T { return a + b }\n");
+            TestHarness.CheckSemanticError("with 不提供 operator", uWith.Diagnostics,
+                "with constraint does not provide members");
+
+            var (uMix, bMix) = BindUnit(opsHeader +
+                "func leftT\\<T extends Addable>(a: T, b: Addable): Addable { return a + b }\n" +
+                "func rightT\\<T extends Addable>(a: Addable, b: T): Addable { return a + b }\n" +
+                "func bothT\\<T extends Addable>(a: T, b: T): Addable { return a + b }\n");
+            CheckNoErrors("左右 T / 混合运算", uMix);
+            TestHarness.Check("左 T 右 Addable", BoundDescribe.Body(BodyOf(bMix, "leftT")),
+                "Body(leftT, [], [Return(Binary(Add, Param(a,T), Param(b,Addable), Addable))])");
+            TestHarness.Check("左 Addable 右 T", BoundDescribe.Body(BodyOf(bMix, "rightT")),
+                "Body(rightT, [], [Return(Binary(Add, Param(a,Addable), Param(b,T), Addable))])");
+
+            var (uInf, bInf) = BindUnit(
+                "pub interface Flex {\n" +
+                "    pub operator plus\\<U extends Flex>(other: U): Flex\n" +
+                "}\n" +
+                "func add\\<T extends Flex>(a: T, b: T): Flex { return a + b }\n");
+            CheckNoErrors("约束上泛型 operator + 隐式推断", uInf);
+            TestHarness.Check("泛型 plus 运算符位置", BoundDescribe.Body(BodyOf(bInf, "add")),
+                "Body(add, [], [Return(Binary(Add, Param(a,T), Param(b,T), Flex))])");
+
+            var (uIdx, bIdx) = BindUnit(
+                "pub interface Indexed {\n" +
+                "    pub operator getAtIndex(index: i32): i32\n" +
+                "}\n" +
+                "func at\\<T extends Indexed>(xs: T, i: i32): i32 { return xs[i] }\n");
+            CheckNoErrors("索引经约束", uIdx);
+            TestHarness.Check("getAtIndex 经有效类型", BoundDescribe.Body(BodyOf(bIdx, "at")),
+                "Body(at, [], [Return(Index(Param(xs,T), Param(i,i32), i32))])");
+
+            var (uFor, bFor) = BindUnitWithStdlib(
+                "func walk\\<T extends core.collections.IEnumerable\\<i32>>(xs: T): i32 {\n" +
+                "    var n = 0\n" +
+                "    for (x in xs) { n = (n + x) }\n" +
+                "    return n\n" +
+                "}\n");
+            CheckNoErrors("for-each 经 IEnumerable 约束", uFor);
+
+            var (uPriv, _) = BindUnit(
+                "pub open class Hidden {\n" +
+                "    operator plus(other: Hidden): Hidden { return this }\n" +
+                "}\n" +
+                "func add\\<T extends Hidden>(a: T, b: T): Hidden { return a + b }\n");
+            TestHarness.CheckSemanticError("约束上 private operator 不可访问", uPriv.Diagnostics,
+                "is inaccessible");
+
+            var (uNest, bNest) = BindUnit(
+                "pub interface Flex {\n" +
+                "    pub operator plus\\<U extends Flex>(other: U): Flex\n" +
+                "}\n" +
+                "pub interface Nested {\n" +
+                "    pub operator plus\\<U extends Flex>(other: U): Nested\n" +
+                "}\n" +
+                "func add\\<T extends Nested>(a: T, b: Flex): Nested { return a + b }\n");
+            CheckNoErrors("约束界泛型 operator 带约束", uNest);
+
+            var (uField, bField) = BindUnit(
+                "pub open class Box {\n" +
+                "    pub var n: i32\n" +
+                "}\n" +
+                "func read\\<T extends Box>(x: T): i32 { return x.n }\n");
+            CheckNoErrors("约束上字段访问", uField);
+            TestHarness.Check("字段经有效类型", BoundDescribe.Body(BodyOf(bField, "read")),
+                "Body(read, [], [Return(InstField(n, Param(x,T), i32))])");
+
+            var (uCmpd, _) = BindUnit(opsHeader +
+                "func acc\\<T extends Addable>(a: T, b: T): T { a += b\nreturn a }\n");
+            TestHarness.CheckSemanticError("复合赋值结果 Addable 不能写回 T", uCmpd.Diagnostics,
+                "Cannot assign");
+        }
+
+        // 具名导入泛型定义后的 P3 使用（§15.2）：实例化 / 约束界 / 返回类型
+        private static void TestNamedGenericImportUsage()
+        {
+            TestHarness.Section("P3 Named Generic Import Usage");
+
+            var (unit, bodies) = BindUnitWithStdlib(
+                "import core.Pair\n" +
+                "pub func make(): Pair\\<i32, String> {\n" +
+                "    return new Pair\\<i32, String>(1, \"x\")\n" +
+                "}\n" +
+                "pub func wrap\\<T extends Pair\\<i32, String>>(p: T): Pair\\<i32, String> {\n" +
+                "    return p\n" +
+                "}\n");
+            CheckNoErrors("具名导入 Pair 后实例化/约束/返回", unit);
+            TestHarness.Check("new Pair\\<i32, String> 绑定形态",
+                BoundDescribe.Body(BodyOf(bodies, "make")),
+                "Body(make, [], [Return(New(Pair<i32, String>, init, [Int(1,i32), Str(\"x\",String)]))])");
+        }
+
         // ===== 动态 new 与具化泛型构造（SYNTAX §3.7/§3.6，BIL §14.2
         // new.indirect）：`new t(...)`（Type\<T\> 值目标）与 `TResult()`
         //（泛型参数直接调用）归口同一套 typeid 构造机制 =====

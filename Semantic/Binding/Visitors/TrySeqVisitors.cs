@@ -257,7 +257,8 @@ namespace RigiCompiler
                         "must be assignable to 'core.IDisposable'");
                     continue;
                 }
-                var dispose = SymbolLookup.FindInstanceMethods(type, "dispose")
+                var dispose = SymbolLookup.FindInstanceMethods(
+                    SymbolLookup.EffectiveMemberType(type, env), "dispose", env.Unit.Symbols)
                     .FirstOrDefault(m => m.Parameters.Count == 0 && m.ReturnType == null
                         && ctx.Frame.CanAccess(m));
                 if (dispose == null)

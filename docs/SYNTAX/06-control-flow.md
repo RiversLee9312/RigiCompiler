@@ -111,15 +111,22 @@ do {
 循环语义：
 
 - **for-each**：`for (item in collection)` 要求 `collection` 的类型实现
-  `core.collections.IEnumerable\<T\>`；循环变量 `item` 的类型为 `T`。
-  循环等价于：先调用 `iterate()` 取得 `IEnumerator\<T\>`；每轮迭代先调用
+  `core.collections.IEnumerable\<T>`；循环变量 `item` 的类型为 `T`。
+  循环等价于：先调用 `iterate()` 取得 `IEnumerator\<T>`；每轮迭代先调用
   `moveNext()`，返回 `false` 时结束循环，否则以 `current()` 的值作为本轮
-  的 `item` 执行循环体。`IEnumerable\<T\>` / `IEnumerator\<T\>` 是双接口
+  的 `item` 执行循环体。`IEnumerable\<T>` / `IEnumerator\<T>` 是双接口
   （可重入，每次 `iterate()` 产生独立枚举器），属标准库 `core.collections`。
-- **范围循环**：`for (i in a to b)` 为**半开区间 `[a, b)`**，步长恒 +1；
-  `a >= b` 时零次迭代。它就是对枚举运算符结果的 for-each：
-  等价于 `for (i in a.EnumerateInRange(b))`（见 §13.2 枚举运算符）。
-  `to` 是 for 头专用语法，不是通用表达式。
+- **范围循环**：`for (i in a to b)` 的核心语义是**让类型以自己的方式
+  从 `a` 枚举到 `b`**——**始终按左操作数 `a` 的类型派发**其
+  `operator EnumerateInRange`，等价于 `for (i in a.EnumerateInRange(b))`
+  （见 §13.2 枚举运算符）。**区间开闭、步长、`a >= b` 的行为都是该
+  operator 的实现自由，不是语言的通用语义。**右操作数 `b` 按 §4.2
+  重载解析绑定到该 operator 的形参（含隐式推断与泛型约束），**不必与
+  `a` 同型**；`a` 的类型上必须存在返回
+  `core.collections.IEnumerable\<T>` 的 `EnumerateInRange` operator；
+  循环变量类型为 `T`。内建整数系列类型的 SDK 实现是半开区间
+  `[a, b)`、步长 +1、`a >= b` 零次迭代（§15.3）。`to` 是 for 头专用
+  语法，不是通用表达式。
 - 基元数值类型的 `EnumerateInRange` 实现由 SDK 自举源提供（见 §15.3）。
 - 循环变量是只读的（`const`）：循环体内不可对其赋值或复合赋值；
   每轮迭代是一个新的绑定。被 lambda 捕获时每迭代构造新 cell，各 lambda

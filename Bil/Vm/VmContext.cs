@@ -1203,30 +1203,208 @@ namespace RigiCompiler.Bil.Vm
                 }
                 ordinary.Add(parameter);
             }
-            var genericHidden = 0;
-            var function = FindFunction(methodSymbol);
-            if (function != null)
-            {
-                foreach (var arg in function.Args)
-                {
-                    if (arg.Name.StartsWith(".generic.", StringComparison.Ordinal))
-                    {
-                        genericHidden++;
-                    }
-                }
-            }
-            if (valueArguments.Count != genericHidden + ordinary.Count)
+            // 运算符/间接调用传入的是值实参，不含 hidden typeid。
+            // 泛型占位由 TypesEqual 的 .generic< 降级匹配；typeid 在
+            // 命中后由 InjectOperatorTypeIds 从实参类型结构推断补入。
+            if (valueArguments.Count != ordinary.Count)
             {
                 return false;
             }
             for (var i = 0; i < ordinary.Count; i++)
             {
-                if (!TypesEqual(ordinary[i].TypeRef, valueArguments[genericHidden + i].TypeRef))
+                if (!TypeAssignable(valueArguments[i].TypeRef, ordinary[i].TypeRef))
                 {
                     return false;
                 }
             }
             return true;
+        }
+
+        // 运算符实参：实际 typeid 可赋给形参类型（精确相等、.generic 占位、
+        // 或沿 extends/implements 闭包命中——A 实现 Addable 时 plus(Addable) 可派发）
+        private bool TypeAssignable(string from, string to)
+        {
+            if (TypesEqual(from, to)) return true;
+            if (to is ".any" or "core::Any") return true;
+            var visited = new HashSet<string>(StringComparer.Ordinal);
+            return TypeAssignableWalk(from, to, visited);
+        }
+
+        private bool TypeAssignableWalk(string current, string to, HashSet<string> visited)
+        {
+            if (!visited.Add(StripTypeArguments(current) + "\0" + current)) return false;
+            if (TypesEqual(current, to)) return true;
+            var declaration = FindType(current);
+            if (declaration == null) return false;
+            if (declaration.ExtendsType != null
+                && TypeAssignableWalk(declaration.ExtendsType, to, visited))
+            {
+                return true;
+            }
+            foreach (var iface in declaration.ImplementsTypes)
+            {
+                if (TypeAssignableWalk(iface, to, visited)) return true;
+            }
+            return false;
+        }
+
+        // 按 fn .args 序在 .this 之后插入推断的 .generic.* typeid，
+        // 使 PushFrame 实参个数与泛型 operator 签名对齐。
+        public IReadOnlyList<VmValue> InjectOperatorTypeIds(string methodSymbol,
+            IReadOnlyList<VmValue> args)
+        {
+            var function = FindFunction(methodSymbol);
+            if (function == null) return args;
+            var slots = new List<BilArgDeclaration>();
+            foreach (var arg in function.Args)
+            {
+                if (arg.Name != ".return") slots.Add(arg);
+            }
+            var genericCount = 0;
+            foreach (var slot in slots)
+            {
+                if (slot.Name.StartsWith(".generic.", StringComparison.Ordinal))
+                {
+                    genericCount++;
+                }
+            }
+            if (genericCount == 0) return args;
+
+            var thisCount = 0;
+            foreach (var slot in slots)
+            {
+                if (slot.Name == ".this") thisCount++;
+            }
+            var ordinaryArgs = new List<VmValue>();
+            for (var i = thisCount; i < args.Count; i++)
+            {
+                ordinaryArgs.Add(args[i]);
+            }
+            var bindings = InferGenericBindings(function, ordinaryArgs);
+            var result = new List<VmValue>(slots.Count);
+            var ordinaryIndex = 0;
+            var thisIndex = 0;
+            foreach (var slot in slots)
+            {
+                if (slot.Name == ".this")
+                {
+                    result.Add(thisIndex < args.Count ? args[thisIndex++] : VmNull.Instance);
+                    continue;
+                }
+                if (slot.Name.StartsWith(".generic.", StringComparison.Ordinal))
+                {
+                    var name = slot.Name.Substring(".generic.".Length);
+                    result.Add(new VmTypeId(bindings.TryGetValue(name, out var typeRef)
+                        ? typeRef : ".any"));
+                    continue;
+                }
+                if (slot.Name.StartsWith(".vargs.", StringComparison.Ordinal)
+                    || slot.Name.StartsWith(".kwargs.", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+                result.Add(ordinaryIndex < ordinaryArgs.Count
+                    ? ordinaryArgs[ordinaryIndex++] : VmNull.Instance);
+            }
+            return result;
+        }
+
+        private static Dictionary<string, string> InferGenericBindings(BilFunction function,
+            IReadOnlyList<VmValue> ordinaryArgs)
+        {
+            var bindings = new Dictionary<string, string>(StringComparer.Ordinal);
+            var ordinary = new List<BilArgDeclaration>();
+            foreach (var arg in function.Args)
+            {
+                if (arg.Name == ".return" || arg.Name == ".this"
+                    || arg.Name.StartsWith(".generic.", StringComparison.Ordinal)
+                    || arg.Name.StartsWith(".vargs.", StringComparison.Ordinal)
+                    || arg.Name.StartsWith(".kwargs.", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+                ordinary.Add(arg);
+            }
+            for (var i = 0; i < ordinary.Count && i < ordinaryArgs.Count; i++)
+            {
+                UnifyTypeRef(ordinary[i].TypeRef, ordinaryArgs[i].TypeRef, bindings);
+            }
+            return bindings;
+        }
+
+        private static void UnifyTypeRef(string pattern, string actual,
+            Dictionary<string, string> bindings)
+        {
+            if (TryParseGenericPlaceholder(pattern, out var name))
+            {
+                if (!bindings.ContainsKey(name)) bindings[name] = actual;
+                return;
+            }
+            var patternArgs = TypeArgsOf(pattern);
+            var actualArgs = TypeArgsOf(actual);
+            if (patternArgs == null || actualArgs == null
+                || patternArgs.Count != actualArgs.Count)
+            {
+                return;
+            }
+            var patternHead = BilVerificationContext.NormalizeTypeRef(
+                BilVerificationContext.StripTypeArguments(pattern));
+            var actualHead = BilVerificationContext.NormalizeTypeRef(
+                BilVerificationContext.StripTypeArguments(actual));
+            if (patternHead != actualHead) return;
+            for (var i = 0; i < patternArgs.Count; i++)
+            {
+                UnifyTypeRef(patternArgs[i], actualArgs[i], bindings);
+            }
+        }
+
+        private static bool TryParseGenericPlaceholder(string typeRef, out string name)
+        {
+            name = "";
+            const string hidden = ".generic<$.generic.";
+            if (typeRef.StartsWith(hidden, StringComparison.Ordinal) && typeRef.EndsWith(">"))
+            {
+                name = typeRef.Substring(hidden.Length, typeRef.Length - hidden.Length - 1);
+                return name.Length > 0 && name.IndexOf('<') < 0;
+            }
+            const string shortForm = ".generic<";
+            if (typeRef.StartsWith(shortForm, StringComparison.Ordinal) && typeRef.EndsWith(">"))
+            {
+                name = typeRef.Substring(shortForm.Length, typeRef.Length - shortForm.Length - 1);
+                return name.Length > 0 && name.IndexOf('<') < 0 && !name.StartsWith("$");
+            }
+            return false;
+        }
+
+        private static List<string>? TypeArgsOf(string typeRef)
+        {
+            var angle = typeRef.IndexOf('<');
+            if (angle < 0 || !typeRef.EndsWith(">")) return null;
+            return SplitTopLevelArgs(typeRef.Substring(angle + 1, typeRef.Length - angle - 2));
+        }
+
+        private static List<string> SplitTopLevelArgs(string inner)
+        {
+            var parts = new List<string>();
+            var depth = 0;
+            var start = 0;
+            for (var i = 0; i < inner.Length; i++)
+            {
+                var c = inner[i];
+                if (c == '<') depth++;
+                else if (c == '>') depth--;
+                else if (c == ',' && depth == 0)
+                {
+                    parts.Add(inner.Substring(start, i - start).Trim());
+                    start = i + 1;
+                }
+            }
+            if (start <= inner.Length)
+            {
+                var last = inner.Substring(start).Trim();
+                if (last.Length > 0) parts.Add(last);
+            }
+            return parts;
         }
 
         public static int RequireIndex(VmValue index)
@@ -1321,10 +1499,20 @@ namespace RigiCompiler.Bil.Vm
             return true;
         }
 
+        // 任一侧含 .generic<（函数泛型占位，无法静态判定）降级通过
+        // ——与 BilVerificationContext.TypesCompatible 一致
         internal static bool TypesEqual(string left, string right)
         {
-            return left == right
-                || NormalizeType(left) == NormalizeType(right);
+            if (left == right)
+            {
+                return true;
+            }
+            if (left.Contains(".generic<", StringComparison.Ordinal)
+                || right.Contains(".generic<", StringComparison.Ordinal))
+            {
+                return true;
+            }
+            return NormalizeType(left) == NormalizeType(right);
         }
 
         private static string NormalizeType(string typeRef)

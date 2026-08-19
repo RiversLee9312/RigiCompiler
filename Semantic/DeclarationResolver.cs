@@ -66,6 +66,8 @@ namespace RigiCompiler
             OverrideChecker.Visit(env);
             NativeDeclarationChecker.Visit(env);
             ConversionOperatorChecker.Visit(env);
+            EnumerateInRangeOperatorChecker.Visit(env);
+            OperatorNameChecker.Visit(env);
             ContagionChecker.Visit(env);
             FieldClosureChecker.Visit(env);
             SharedSafetyGateChecker.Visit(env);

@@ -88,7 +88,7 @@ call???<TResult, named TNamedArgs..., TUnnamedArgs...>(
 
 **未声明普通方法的降级规则**（对应 `SYNTAX.md` §14.7）：静态类型无匹配声明方法且 wrapper 链中存在 `.proxy.*` 时，frontend 发射对 `core::Any$call???` 的普通 `invoke`（携带 canonical symbol）；实参按统一胖值 ABI 传递，返回值在调用点按期望类型转换，不符抛 `core.CastException`。frontend **不**合成任何 router / 降级链符号。
 
-上文的 `call???` 泛型签名是**逻辑签名**——`call???` 的规范签名实质化为非泛型胖值签名 `(symbol: String, namedArgs: Array\<Pair\<String, Any\>\>, unnamedArgs: Array\<Any\>): Any`（`BIL_STANDARD.md` §15.4）。泛型 typeid 包不单独传递：每个 `Any` 胖值自描述 typeid（§2），wildcard proxy 体可在包元素上直接做 `is`/`as` 检查；`TResult` 的角色由调用点的 cast 物化承担（`BIL_STANDARD.md` §12.1，不符抛 `core.CastException`）。frontend 降级调用点发射 `invoke core::Any$call???`；被 wrapper 命中的宿主上的类别路由体由 Middleware 按 vtable 语义合成（链末落到 `Any.call???` 的 VM hook 默认实现）。
+上文的 `call???` 泛型签名是**逻辑签名**——`call???` 的规范签名实质化为非泛型胖值签名 `(symbol: String, namedArgs: Array\<Pair\<String, Any>>, unnamedArgs: Array\<Any>): Any`（`BIL_STANDARD.md` §15.4）。泛型 typeid 包不单独传递：每个 `Any` 胖值自描述 typeid（§2），wildcard proxy 体可在包元素上直接做 `is`/`as` 检查；`TResult` 的角色由调用点的 cast 物化承担（`BIL_STANDARD.md` §12.1，不符抛 `core.CastException`）。frontend 降级调用点发射 `invoke core::Any$call???`；被 wrapper 命中的宿主上的类别路由体由 Middleware 按 vtable 语义合成（链末落到 `Any.call???` 的 VM hook 默认实现）。
 
 ### 14.3 canonical symbol ABI
 

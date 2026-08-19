@@ -17,11 +17,11 @@ namespace RigiCompiler.Bil
     // body 之后，不查进入时已赋值（§16.4）。
     //
     // §18.1 rigi.seq-route hint（§21.4 route dispatcher 分组）：region
-    // 指令（if/switch/call blk）后紧跟经 V0–V4 结构校验的 hint 时，DA
-    // 为每条汇聚前驱边维护独立出口态并按 route 写入常量标注组号，尾链
-    // 逐条剥离（本组边合并态精确送入 relay 目标块），块尾落尾仅由 0 组
-    // 边流入（0 组为空则落尾静态不可达，不给续点送状态）。校验失败或
-    // 无 hint 的模块退回保守全合并——与旧版行为逐位一致。
+    // 指令（if/switch/call blk/loop/loop.rev）后紧跟经 V0–V4 结构校验
+    // 的 hint 时，DA 为每条汇聚前驱边维护独立出口态并按 route 写入常量
+    // 标注组号，尾链逐条剥离（本组边合并态精确送入 relay 目标块），块
+    // 尾落尾仅由 0 组边流入（0 组为空则落尾静态不可达，不给续点送状态）。
+    // 校验失败或无 hint 的模块退回保守全合并——与旧版行为逐位一致。
     //
     // §21.8 enum struct 实例字段（§14.3「enum 无零值」）：宿主每个 init 的
     // 全部完成路径须对该字段发 set.field（OBJECT 为 $.this）；get.field
@@ -333,6 +333,13 @@ namespace RigiCompiler.Bil
                 writes.Clear();
                 ClassifyVariables(instruction, reads, writes);
 
+                // loop 结构性检查必须在 hint 消费之前跑：消费成功会跳过
+                // 下方 VerifyLoop，不得漏检 condition 声明 / judge 写入
+                if (instruction is LoopInstruction loopForStruct)
+                {
+                    VerifyLoopStructure(context, loopForStruct, location, errors);
+                }
+
                 // §21.4：读前已赋值
                 foreach (var variable in reads)
                 {
@@ -345,11 +352,12 @@ namespace RigiCompiler.Bil
                     }
                 }
 
-                // §18.1/§21.4：region 指令（if/switch/call blk）后紧跟
-                // rigi.seq-route hint → route dispatcher 分组消费（逐边
-                // 状态 + 尾链剥离）；V0–V4 任一校验失败静默忽略（退回保守
-                // 全合并，行为同无 hint）
+                // §18.1/§21.4：region 指令（if/switch/call blk/loop/loop.rev）
+                // 后紧跟 rigi.seq-route hint → route dispatcher 分组消费
+                // （逐边状态 + 尾链剥离）；V0–V4 任一校验失败静默忽略
+                // （退回保守全合并，行为同无 hint）
                 if (instruction is IfInstruction or SwitchInstruction or CallBlockInstruction
+                        or LoopInstruction
                     && i + 1 < instructions.Count
                     && instructions[i + 1] is HintInstruction hint
                     && TryConsumeSeqRouteHint(context, block, i, instruction, hint, assigned,
@@ -443,7 +451,7 @@ namespace RigiCompiler.Bil
                     case LoopInstruction loop:
                     {
                         var loopExit = VerifyLoop(context, loop, assigned, tokens, stack,
-                            errors, reported, location, collectors, flow);
+                            errors, reported, collectors, flow);
                         if (loopExit == null)
                         {
                             return null;
@@ -610,11 +618,10 @@ namespace RigiCompiler.Bil
             return assigned;
         }
 
-        private static HashSet<string>? VerifyLoop(BilFunctionContext context, LoopInstruction loop,
-            HashSet<string> assigned, List<(string Name, bool IsLoop)> tokens,
-            HashSet<BilBlock> stack, List<BilVerificationError> errors,
-            HashSet<(string Location, string Name)> reported, string location,
-            List<SeqRouteCollector>? collectors, SeqRouteFlow? flow)
+        // loop 结构性检查（与 DA 分组无关）：hint 消费成功会跳过
+        // VerifyLoop，故在主循环对每条 loop 指令先跑一遍
+        private static void VerifyLoopStructure(BilFunctionContext context, LoopInstruction loop,
+            string location, List<BilVerificationError> errors)
         {
             // condition 变量必须已声明。§21.4：loop condition 在每次读取前
             // 由 judge block 赋值——进入循环时不要求已赋值（judge 在首次
@@ -633,7 +640,14 @@ namespace RigiCompiler.Bil
                     $"loop 的 judge block \"{loop.Judge.Id}\" 未对条件变量 " +
                     $"\"${loop.Condition.Name}\" 赋值"));
             }
+        }
 
+        private static HashSet<string>? VerifyLoop(BilFunctionContext context, LoopInstruction loop,
+            HashSet<string> assigned, List<(string Name, bool IsLoop)> tokens,
+            HashSet<BilBlock> stack, List<BilVerificationError> errors,
+            HashSet<(string Location, string Name)> reported,
+            List<SeqRouteCollector>? collectors, SeqRouteFlow? flow)
+        {
             var loopTokens = new List<(string, bool)>(tokens) { (loop.BreakId.Name, true) };
             if (loop.IsRev)
             {
@@ -1147,12 +1161,14 @@ namespace RigiCompiler.Bil
                 return false;
             }
             // V2 由调用点的前置模式匹配承载（hint 前一条 = if/switch/call
-            // blk，其 break token 的着陆点即 hint 位置——结构化语义保证）
+            // blk/loop/loop.rev，其 break token 的着陆点即 hint 位置——
+            // 结构化语义保证）
             var token = regionInstruction switch
             {
                 IfInstruction ifInstruction => ifInstruction.BreakId.Name,
                 SwitchInstruction switchInstruction => switchInstruction.BreakId.Name,
                 CallBlockInstruction call => call.BreakId.Name,
+                LoopInstruction loop => loop.BreakId.Name,
                 _ => "",
             };
             var collector = new SeqRouteCollector(token, route);
@@ -1335,6 +1351,70 @@ namespace RigiCompiler.Bil
                     {
                         collector.Edges.Add(new SeqRouteEdge(
                             SeqRouteGroupOf(entryFlow, route), exit, entryFlow));
+                    }
+                    break;
+                }
+                case LoopInstruction loop:
+                {
+                    // loop 汇聚边：break 本 region token（体内 return@ /
+                    // 条件位逃逸 / 用户 break）由主循环在收集器活跃时记录；
+                    // 另补「条件为 false 正常结束」的 0 组边——仅当能走到
+                    // condition 读取时存在。DA 口径对齐 VerifyLoop：正向
+                    // 出口取进入态，loop.rev 出口取 body 出口态。
+                    var loopTokens = new List<(string, bool)>(tokens)
+                        { (loop.BreakId.Name, true) };
+                    if (loop.IsRev)
+                    {
+                        var bodyFlow = entryFlow.Clone();
+                        var bodyExit = AnalyzeBlock(context, loop.Body,
+                            new HashSet<string>(assigned), loopTokens, stack, errors, reported,
+                            subCollectors, bodyFlow);
+                        if (bodyExit == null)
+                        {
+                            break;
+                        }
+                        var judgeEntry = bodyExit;
+                        var judgeFlow = bodyFlow.Clone();
+                        if (loop.EnumBlock != null)
+                        {
+                            var enumFlow = bodyFlow.Clone();
+                            var enumExit = AnalyzeBlock(context, loop.EnumBlock,
+                                new HashSet<string>(bodyExit), loopTokens, stack, errors,
+                                reported, subCollectors, enumFlow);
+                            if (enumExit == null)
+                            {
+                                break;
+                            }
+                            judgeEntry = enumExit;
+                            judgeFlow = enumFlow;
+                        }
+                        var judgeExit = AnalyzeBlock(context, loop.Judge,
+                            new HashSet<string>(judgeEntry), loopTokens, stack, errors,
+                            reported, subCollectors, judgeFlow);
+                        if (judgeExit != null)
+                        {
+                            collector.Edges.Add(new SeqRouteEdge(
+                                SeqRouteGroupOf(bodyFlow, route), bodyExit, bodyFlow));
+                        }
+                        break;
+                    }
+                    if (loop.EnumBlock != null)
+                    {
+                        AnalyzeBlock(context, loop.EnumBlock, new HashSet<string>(assigned),
+                            loopTokens, stack, errors, reported, subCollectors,
+                            entryFlow.Clone());
+                    }
+                    AnalyzeBlock(context, loop.Body, new HashSet<string>(assigned),
+                        loopTokens, stack, errors, reported, subCollectors, entryFlow.Clone());
+                    var forwardJudgeFlow = entryFlow.Clone();
+                    var forwardJudgeExit = AnalyzeBlock(context, loop.Judge,
+                        new HashSet<string>(assigned), loopTokens, stack, errors, reported,
+                        subCollectors, forwardJudgeFlow);
+                    if (forwardJudgeExit != null)
+                    {
+                        collector.Edges.Add(new SeqRouteEdge(
+                            SeqRouteGroupOf(entryFlow, route), new HashSet<string>(assigned),
+                            entryFlow.Clone()));
                     }
                     break;
                 }

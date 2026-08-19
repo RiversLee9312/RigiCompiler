@@ -413,7 +413,8 @@ namespace RigiCompiler.Bil
 
         internal override void Execute(VmContext context, VmCoroutine coroutine)
         {
-            coroutine.WriteVar(Target.Name, new VmTypeId(TargetType.TypeRef));
+            var resolved = VmTypeOps.ResolveTypeRef(context, coroutine, TargetType.TypeRef);
+            coroutine.WriteVar(Target.Name, new VmTypeId(resolved));
         }
     }
 
@@ -492,7 +493,8 @@ namespace RigiCompiler.Bil
                 return;
             }
             BilInvokeExecution.InvokeValues(context, coroutine, symbol,
-                new[] { operand }, instruction.Target.Name);
+                context.InjectOperatorTypeIds(symbol, new[] { operand }),
+                instruction.Target.Name);
         }
 
         private static void DispatchUserBinary(BinaryIntrinsicInstruction instruction,
@@ -504,11 +506,11 @@ namespace RigiCompiler.Bil
             {
                 throw new VmException("没有用户 operator " + name + "：" + left.TypeRef);
             }
-            if (instruction.Op == BilBinaryOp.CmpNe)
+            if (instruction.Op == BilBinaryOp.CmpNe
+                || VmTypeOps.IsOrderCompare(instruction.Op))
             {
-                // != 由 equals 取反推导（SYNTAX §13.2：`!=` 无独立用户 operator，
-                // 恒为 equals 取反）。内部 equals 调用必须经过 wrapper operator 链
-                // （.proxy.opr.equals / .proxy.opr.*），取反逻辑不变。
+                // != 由 equals 取反；< > <= >= 由 compareTo 的 ComparisonResult
+                // 推导（SYNTAX §13.2）。内部调用必须经过 wrapper operator 链。
                 var depth = coroutine.CallStack.Count;
                 if (VmWrapperDispatch.TryStartOperatorChain(context, coroutine, symbol, left,
                         new[] { right }, instruction.Target.Name))
@@ -517,7 +519,8 @@ namespace RigiCompiler.Bil
                 }
                 else
                 {
-                    InvokeSync(context, coroutine, symbol, new[] { left, right },
+                    InvokeSync(context, coroutine, symbol,
+                        context.InjectOperatorTypeIds(symbol, new[] { left, right }),
                         instruction.Target.Name);
                 }
                 if (coroutine.HasAbruptCompletion
@@ -525,11 +528,17 @@ namespace RigiCompiler.Bil
                 {
                     return;
                 }
-                var equals = coroutine.ReadVar(instruction.Target.Name);
-                if (equals is VmBool flag)
+                var raw = coroutine.ReadVar(instruction.Target.Name);
+                if (instruction.Op == BilBinaryOp.CmpNe)
                 {
-                    coroutine.WriteVar(instruction.Target.Name, new VmBool(!flag.Value));
+                    if (raw is VmBool flag)
+                    {
+                        coroutine.WriteVar(instruction.Target.Name, new VmBool(!flag.Value));
+                    }
+                    return;
                 }
+                coroutine.WriteVar(instruction.Target.Name,
+                    new VmBool(OrderCompare(instruction.Op, raw)));
                 return;
             }
             // Entity operator 派发（§14.2）：命中带 wrapped 宿主时走 .proxy.opr.*
@@ -539,7 +548,37 @@ namespace RigiCompiler.Bil
                 return;
             }
             BilInvokeExecution.InvokeValues(context, coroutine, symbol,
-                new[] { left, right }, instruction.Target.Name);
+                context.InjectOperatorTypeIds(symbol, new[] { left, right }),
+                instruction.Target.Name);
+        }
+
+        // compareTo 返回 core.ComparisonResult（.LesserThanAnother / .Equal /
+        // .GreaterThanAnother）；按 case 名后缀映射为 bool。
+        private static bool OrderCompare(BilBinaryOp op, VmValue raw)
+        {
+            if (raw is not VmEnum enumValue)
+            {
+                throw new VmException("compareTo 必须返回 enum（core.ComparisonResult），得到 "
+                    + raw.TypeRef);
+            }
+            var symbol = enumValue.CaseSymbol;
+            var dot = symbol.LastIndexOf('.');
+            var caseName = dot >= 0 ? symbol[(dot + 1)..] : symbol;
+            var lesser = caseName == "LesserThanAnother";
+            var equal = caseName == "Equal";
+            var greater = caseName == "GreaterThanAnother";
+            if (!lesser && !equal && !greater)
+            {
+                throw new VmException("compareTo 返回未知 ComparisonResult case：" + symbol);
+            }
+            return op switch
+            {
+                BilBinaryOp.CmpLt => lesser,
+                BilBinaryOp.CmpLe => lesser || equal,
+                BilBinaryOp.CmpGt => greater,
+                BilBinaryOp.CmpGe => greater || equal,
+                _ => throw new VmException("非排序比较：" + op),
+            };
         }
 
         private static void InvokeSync(VmContext context, VmCoroutine coroutine, string symbol,

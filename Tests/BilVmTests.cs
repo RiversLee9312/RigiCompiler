@@ -59,6 +59,7 @@ namespace RigiCompiler.Tests
             TestGetWrapperDirectModule();
             TestIndirectFieldAndNew();
             TestUserOperatorAdd();
+            TestUserOperatorSourceDispatch();
             TestDowngradeCallWildcard();
             TestMethodWrapperWildcardInnerFullShape();
             TestLambdaMethodWrapperWildcardInner();
@@ -88,6 +89,8 @@ namespace RigiCompiler.Tests
             TestIfElse();
             TestWhileAndDoWhile();
             TestForRangeAndBreakContinue();
+            TestForRangeConstraintDispatch();
+            TestNamedImportGenericType();
             TestNamedBreakContinue();
             TestSwitchStatementAndExpression();
             TestConditionalExpectedTypeMaterialization();
@@ -109,6 +112,10 @@ namespace RigiCompiler.Tests
             TestGenericConstructedNewInit();
             TestDestructuringSuperGenericInit();
             TestClosedGenericParamSymbolEndToEnd();
+            TestGenericFunctionConstructedParams();
+            TestGenericInferenceEndToEnd();
+            TestGenericParamConstraintDispatch();
+            TestGetIdTypeResolvesNestedGeneric();
             TestStringLength();
             TestWrapperOutsideSetterWriteOrder();
             TestWrapperOutsideGetterReadOrder();
@@ -1007,13 +1014,113 @@ namespace RigiCompiler.Tests
             CheckI32("new.indirect + set/get.field.indirect", result, 7);
         }
 
-        // frontend 的 `+` 不查用户 operator；直接发 add 测 §22.3 分派。
+        // 直构 BIL：add 指令按精确类型派发用户 plus（§22.3）。
         private static void TestUserOperatorAdd()
         {
             var module = VectorPlusModule();
             var result = BilVm.Run(module);
             CheckOk("用户 operator plus", result);
             CheckI32("Vector2 add.x", result, 4);
+        }
+
+        // 源码运算符位置：用户 plus / compareTo 四比较 / 一元 / 复合赋值 /
+        // and 两侧求值 / 运算结果参与后续表达式
+        private static void TestUserOperatorSourceDispatch()
+        {
+            var plus = Run(
+                "class Vec {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(_ -> x) { }\n" +
+                "    pub operator plus(another: Vec): Vec { return new Vec((x + another.x)) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = new Vec(1)\n" +
+                "    var b = new Vec(2)\n" +
+                "    var c = a + b\n" +
+                "    return ((c.x + 1))\n" +
+                "}\n");
+            CheckOk("源码 plus", plus);
+            CheckI32("1+2 再 +1 = 4", plus, 4);
+
+            var compare = Run(
+                "class Vec {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(_ -> x) { }\n" +
+                "    pub operator compareTo(another: Vec): ComparisonResult {\n" +
+                "        if ((x < another.x)) { return .LesserThanAnother }\n" +
+                "        if ((x > another.x)) { return .GreaterThanAnother }\n" +
+                "        return .Equal\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = new Vec(1)\n" +
+                "    var b = new Vec(2)\n" +
+                "    var c = new Vec(1)\n" +
+                "    var n = 0\n" +
+                "    if ((a < b)) { n = (n + 1) }\n" +
+                "    if ((a <= c)) { n = (n + 1) }\n" +
+                "    if ((b > a)) { n = (n + 1) }\n" +
+                "    if ((c >= a)) { n = (n + 1) }\n" +
+                "    if ((b < a)) { n = (n + 10) }\n" +
+                "    return n\n" +
+                "}\n");
+            CheckOk("源码 compareTo", compare);
+            CheckI32("< <= > >= 四真一假", compare, 4);
+
+            var unary = Run(
+                "class Bits {\n" +
+                "    pub var v: i32\n" +
+                "    pub init(_ -> v) { }\n" +
+                "    pub operator opposite(): Bits { return new Bits((0 - v)) }\n" +
+                "    pub operator not(): Bits { return new Bits(if ((v == 0)) { return@_ 1 } else { return@_ 0 }) }\n" +
+                "    pub operator bitwiseNot(): Bits { return new Bits(!v) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = new Bits(3)\n" +
+                "    var z = new Bits(0)\n" +
+                "    var n = 0\n" +
+                "    if (((-a).v == (0 - 3))) { n = (n + 1) }\n" +
+                "    if (((not z).v == 1)) { n = (n + 1) }\n" +
+                "    if (((!a).v == (!3))) { n = (n + 1) }\n" +
+                "    return n\n" +
+                "}\n");
+            CheckOk("源码一元 opposite/not/bitwiseNot", unary);
+            CheckI32("三元均命中", unary, 3);
+
+            var compound = Run(
+                "class Vec {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(_ -> x) { }\n" +
+                "    pub operator plus(another: Vec): Vec { return new Vec((x + another.x)) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = new Vec(10)\n" +
+                "    var b = new Vec(5)\n" +
+                "    a += b\n" +
+                "    return a.x\n" +
+                "}\n");
+            CheckOk("源码复合赋值 +=", compound);
+            CheckI32("10 += 5 → 15", compound, 15);
+
+            var bothSides = Run(
+                "class Flag {\n" +
+                "    pub var n: i32\n" +
+                "    pub init(_ -> n) { }\n" +
+                "    pub operator and(other: Flag): Flag { return other }\n" +
+                "}\n" +
+                "var hits: i32\n" +
+                "func bump(): Flag {\n" +
+                "    hits = (hits + 1)\n" +
+                "    return new Flag(1)\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    hits = 0\n" +
+                "    var a = new Flag(0)\n" +
+                "    var b = a and bump()\n" +
+                "    return (hits + b.n)\n" +
+                "}\n");
+            CheckOk("用户 and 两侧求值", bothSides);
+            CheckI32("hits=1 且取右侧 n=1", bothSides, 2);
         }
 
         // §22.5 方法 hook core::Any$call???：烘焙归 Middleware，VM 行为参考
@@ -2599,6 +2706,136 @@ namespace RigiCompiler.Tests
             CheckI32("continue 跳过 2", cont, 8);
         }
 
+        // 范围循环经约束：动态派发命中类型自己的 EnumerateInRange
+        private static void TestForRangeConstraintDispatch()
+        {
+            var viaI32 = Run(
+                "pub func sum\\<T extends i32>(a: T, b: T): i32 {\n" +
+                "    var total = 0\n" +
+                "    for (i in a to b) {\n" +
+                "        total = (total + i)\n" +
+                "    }\n" +
+                "    return total\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    return sum(1, 5)\n" +
+                "}\n");
+            CheckOk("T extends i32 范围循环", viaI32);
+            CheckI32("sum(1,5)=10（[1,5)）", viaI32, 10);
+
+            var viaStep = Run(
+                "pub open class Step {\n" +
+                "    pub const v: i32\n" +
+                "    pub init(_ -> v)\n" +
+                "    pub operator EnumerateInRange(end: Step): core.collections.IEnumerable\\<i32> {\n" +
+                "        return new core.collections.RangeI32(this.v, (end.v * 2))\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func count\\<T extends Step>(a: T, b: T): i32 {\n" +
+                "    var total = 0\n" +
+                "    for (i in a to b) {\n" +
+                "        total = (total + i)\n" +
+                "    }\n" +
+                "    return total\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    return count(new Step(1), new Step(3))\n" +
+                "}\n");
+            CheckOk("T extends Step 自定义枚举", viaStep);
+            CheckI32("count(Step(1),Step(3))=15（[1,6)）", viaStep, 15);
+
+            var direct = Run(
+                "pub open class Step {\n" +
+                "    pub const v: i32\n" +
+                "    pub init(_ -> v)\n" +
+                "    pub operator EnumerateInRange(end: Step): core.collections.IEnumerable\\<i32> {\n" +
+                "        return new core.collections.RangeI32(this.v, (end.v * 2))\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var total = 0\n" +
+                "    for (i in new Step(1) to new Step(3)) {\n" +
+                "        total = (total + i)\n" +
+                "    }\n" +
+                "    return total\n" +
+                "}\n");
+            CheckOk("直接自定义类型范围循环", direct);
+            CheckI32("Step [1,6) 求和 15", direct, 15);
+
+            var stepToI32 = Run(
+                "pub open class Step {\n" +
+                "    pub const v: i32\n" +
+                "    pub init(_ -> v)\n" +
+                "    pub operator EnumerateInRange(end: i32): core.collections.IEnumerable\\<i32> {\n" +
+                "        return new core.collections.RangeI32(this.v, end)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var total = 0\n" +
+                "    for (i in new Step(1) to 5) {\n" +
+                "        total = (total + i)\n" +
+                "    }\n" +
+                "    return total\n" +
+                "}\n");
+            CheckOk("Step to i32 不同型两端", stepToI32);
+            CheckI32("Step(1) to 5 = 10（[1,5)）", stepToI32, 10);
+
+            var overloadI32 = Run(
+                "pub open class Step {\n" +
+                "    pub const v: i32\n" +
+                "    pub init(_ -> v)\n" +
+                "    pub operator EnumerateInRange(end: i32): core.collections.IEnumerable\\<i32> {\n" +
+                "        return new core.collections.RangeI32(this.v, end)\n" +
+                "    }\n" +
+                "    pub operator EnumerateInRange(end: Step): core.collections.IEnumerable\\<i32> {\n" +
+                "        return new core.collections.RangeI32(this.v, (end.v * 2))\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var total = 0\n" +
+                "    for (i in new Step(1) to 5) {\n" +
+                "        total = (total + i)\n" +
+                "    }\n" +
+                "    return total\n" +
+                "}\n");
+            CheckOk("重载选 end: i32", overloadI32);
+            CheckI32("Step(1) to 5 走 i32 重载 = 10", overloadI32, 10);
+
+            var overloadStep = Run(
+                "pub open class Step {\n" +
+                "    pub const v: i32\n" +
+                "    pub init(_ -> v)\n" +
+                "    pub operator EnumerateInRange(end: i32): core.collections.IEnumerable\\<i32> {\n" +
+                "        return new core.collections.RangeI32(this.v, end)\n" +
+                "    }\n" +
+                "    pub operator EnumerateInRange(end: Step): core.collections.IEnumerable\\<i32> {\n" +
+                "        return new core.collections.RangeI32(this.v, (end.v * 2))\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var total = 0\n" +
+                "    for (i in new Step(1) to new Step(3)) {\n" +
+                "        total = (total + i)\n" +
+                "    }\n" +
+                "    return total\n" +
+                "}\n");
+            CheckOk("重载选 end: Step", overloadStep);
+            CheckI32("Step(1) to Step(3) 走 Step 重载 = 15", overloadStep, 15);
+        }
+
+        // 具名导入泛型类型定义后实例化（§15.2）
+        private static void TestNamedImportGenericType()
+        {
+            var result = Run(
+                "import core.Pair\n" +
+                "pub func main(): i32 {\n" +
+                "    var p = new Pair\\<i32, String>(7, \"ok\")\n" +
+                "    return p.key\n" +
+                "}\n");
+            CheckOk("import core.Pair 后实例化", result);
+            CheckI32("Pair.key == 7", result, 7);
+        }
+
         private static void TestNamedBreakContinue()
         {
             var namedBreak = Run(
@@ -3748,6 +3985,155 @@ namespace RigiCompiler.Tests
             CheckOk("using 穿越 relay", usingRelay);
             TestHarness.Check("逆序 dispose（db,da 后 dc）", usingRelay.Stdout, "db\nda\ndc\n");
             CheckI32("using 穿越产值 7 + 3", usingRelay, 10);
+
+            // (i) 循环体 return@ 外层值块（while / do-while / for）
+            var whileExit = Run(
+                "pub func main(): i32 {\n" +
+                "    var r = seq {\n" +
+                "        var x: i32 = 3\n" +
+                "        while ((x > 1)) {\n" +
+                "            return@_ 42\n" +
+                "        }\n" +
+                "        return@_ 0\n" +
+                "    }\n" +
+                "    return r\n" +
+                "}\n");
+            CheckOk("while 体 return@ 外层值块", whileExit);
+            CheckI32("while 体产值 42", whileExit, 42);
+            var doWhileExit = Run(
+                "pub func main(): i32 {\n" +
+                "    var r = seq {\n" +
+                "        do { return@_ 8 } while (false)\n" +
+                "    }\n" +
+                "    return r\n" +
+                "}\n");
+            CheckOk("do-while 体 return@ 外层值块", doWhileExit);
+            CheckI32("do-while 体产值 8", doWhileExit, 8);
+            var forExit = Run(
+                "pub func main(): i32 {\n" +
+                "    var r = seq {\n" +
+                "        for (i in 0 to 5) {\n" +
+                "            if ((i == 2)) { return@_ 15 }\n" +
+                "        }\n" +
+                "        return@_ 0\n" +
+                "    }\n" +
+                "    return r\n" +
+                "}\n");
+            CheckOk("for 体 return@ 外层值块", forExit);
+            CheckI32("for 体产值 15", forExit, 15);
+
+            // (j) 嵌套循环多级 relay
+            var nestedLoop = Run(
+                "pub func main(): i32 {\n" +
+                "    var r = seq named outer {\n" +
+                "        while (true) {\n" +
+                "            while (true) {\n" +
+                "                return@outer 21\n" +
+                "            }\n" +
+                "            return@outer 0\n" +
+                "        }\n" +
+                "        return@outer 1\n" +
+                "    }\n" +
+                "    return r\n" +
+                "}\n");
+            CheckOk("嵌套循环多级 relay", nestedLoop);
+            CheckI32("内层 return@ 穿两层 loop 产值 21", nestedLoop, 21);
+
+            // (j2) 循环体内 return@ + 嵌套 relay：混合形态（内层产值 /
+            // 外层逃逸）经两层 loop dispatcher；hint 不得影响 VM 结果
+            var mixedNested = Run(
+                "pub func pick(flag: bool): i32 {\n" +
+                "    var r: i32 = seq named outer {\n" +
+                "        var t: i32 = seq {\n" +
+                "            while (true) {\n" +
+                "                while (flag) {\n" +
+                "                    return@_ 21\n" +
+                "                }\n" +
+                "                return@outer 0\n" +
+                "            }\n" +
+                "            return@_ 1\n" +
+                "        }\n" +
+                "        return@outer t\n" +
+                "    }\n" +
+                "    return r\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    return (pick(true) + pick(false))\n" +
+                "}\n");
+            CheckOk("混合形态嵌套 loop relay", mixedNested);
+            CheckI32("true→21 + false→0", mixedNested, 21);
+
+            // (k) 循环内 break/continue 与 return@ 共存：break/continue
+            // 不写 route，dispatcher fall-through 落到循环后 return@
+            var mixBreak = Run(
+                "pub func main(): i32 {\n" +
+                "    var r = seq {\n" +
+                "        var x: i32 = 5\n" +
+                "        var acc: i32 = 0\n" +
+                "        while ((x > 0)) {\n" +
+                "            if ((x == 5)) { x = (x - 1)\ncontinue }\n" +
+                "            if ((x == 1)) { break }\n" +
+                "            if ((x == 99)) { return@_ 99 }\n" +
+                "            acc = (acc + x)\n" +
+                "            x = (x - 1)\n" +
+                "        }\n" +
+                "        return@_ acc\n" +
+                "    }\n" +
+                "    return r\n" +
+                "}\n");
+            CheckOk("break/continue 与 return@ 共存（break 路径）", mixBreak);
+            CheckI32("continue 跳过 5、break 于 1，acc=4+3+2", mixBreak, 9);
+            var mixReturn = Run(
+                "pub func main(): i32 {\n" +
+                "    var r = seq {\n" +
+                "        var x: i32 = 5\n" +
+                "        while ((x > 0)) {\n" +
+                "            if ((x == 3)) { return@_ 77 }\n" +
+                "            if ((x == 1)) { break }\n" +
+                "            x = (x - 1)\n" +
+                "        }\n" +
+                "        return@_ 0\n" +
+                "    }\n" +
+                "    return r\n" +
+                "}\n");
+            CheckOk("break/continue 与 return@ 共存（return@ 路径）", mixReturn);
+            CheckI32("x==3 时 return@ 77", mixReturn, 77);
+
+            // (l) 循环内 return@ 穿 try/finally：finally 执行且可覆盖
+            var loopThroughTry = Run(
+                "pub func main(): i32 {\n" +
+                "    var r = seq {\n" +
+                "        var x: i32 = 1\n" +
+                "        while ((x > 0)) {\n" +
+                "            try {\n" +
+                "                return@_ 5\n" +
+                "            } finally(_) {\n" +
+                "                core.io.Console.println(\"fin\")\n" +
+                "            }\n" +
+                "        }\n" +
+                "        return@_ 6\n" +
+                "    }\n" +
+                "    return r\n" +
+                "}\n");
+            CheckOk("循环内 return@ 穿 try/finally", loopThroughTry);
+            TestHarness.Check("finally 执行", loopThroughTry.Stdout, "fin\n");
+            CheckI32("穿 try 产值 5", loopThroughTry, 5);
+            var loopFinallyOverride = Run(
+                "pub func main(): i32 {\n" +
+                "    var r = seq {\n" +
+                "        while (true) {\n" +
+                "            try {\n" +
+                "                return@_ 1\n" +
+                "            } finally(_) {\n" +
+                "                return@_ 2\n" +
+                "            }\n" +
+                "        }\n" +
+                "        return@_ 3\n" +
+                "    }\n" +
+                "    return r\n" +
+                "}\n");
+            CheckOk("循环内 finally return@ 覆盖", loopFinallyOverride);
+            CheckI32("finally 产值 2 覆盖 1", loopFinallyOverride, 2);
         }
 
         // bug13①：泛型构造类型的运行期 init 匹配——定义级 init 签名的
@@ -3825,6 +4211,349 @@ namespace RigiCompiler.Tests
             var result = BilVm.Run(reparsed);
             CheckOk("回读模块 VM 运行", result);
             CheckI32("take2(lambda) = 42", result, 42);
+        }
+
+        // 用户泛型函数形参含函数泛型参数的构造类型（.array<.generic<T>> /
+        // .nullable<.generic<T>>）：调用点帧未绑 .generic.T，cast 不得抛
+        // 「无法解析泛型占位」；纯 .generic<T> 形参作对照。
+        private static void TestGenericFunctionConstructedParams()
+        {
+            var firstI32 = Run(
+                "import core.collections.*\n" +
+                "pub func firstOf\\<T>(arr: Array\\<T>): T { return arr[0] }\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = arrayOf\\<i32>(3)\n" +
+                "    a[0] = 42\n" +
+                "    a[1] = 1\n" +
+                "    a[2] = 2\n" +
+                "    return firstOf\\<i32>(a)\n" +
+                "}\n");
+            CheckOk("firstOf<i32>", firstI32);
+            CheckI32("firstOf<i32> = 42", firstI32, 42);
+
+            var firstString = Run(
+                "import core.collections.*\n" +
+                "pub func firstOf\\<T>(arr: Array\\<T>): T { return arr[0] }\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = arrayOfElements\\<String>(\"ok\", \"no\")\n" +
+                "    core.io.Console.println(firstOf\\<String>(a))\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckOk("firstOf<String>", firstString);
+            TestHarness.Check("firstOf<String> stdout", firstString.Stdout, "ok\n");
+            CheckI32("firstOf<String> 返回 0", firstString, 0);
+
+            var nested = Run(
+                "import core.collections.*\n" +
+                "pub func firstNested\\<T>(arr: Array\\<Array\\<T>>): Array\\<T> {\n" +
+                "    return arr[0]\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var row = arrayOf\\<i32>(2)\n" +
+                "    row[0] = 7\n" +
+                "    row[1] = 8\n" +
+                "    var outer = arrayOf\\<Array\\<i32>>(1)\n" +
+                "    outer[0] = row\n" +
+                "    var got = firstNested\\<i32>(outer)\n" +
+                "    return got[0]\n" +
+                "}\n");
+            CheckOk("嵌套 Array<Array<T>> 形参", nested);
+            CheckI32("firstNested = 7", nested, 7);
+
+            var nullable = Run(
+                "pub func unwrapOr\\<T>(v: T?, fallback: T): T {\n" +
+                "    if (v == null) {\n" +
+                "        return fallback\n" +
+                "    }\n" +
+                "    return v\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var n: i32? = 9\n" +
+                "    core.io.Console.println(\"${unwrapOr\\<i32>(n, 0)}\")\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckOk("nullable<T> 形参", nullable);
+            TestHarness.Check("unwrapOr(9, 0) 打印", nullable.Stdout, "9\n");
+            CheckI32("nullable main 返回 0", nullable, 0);
+
+            var id = Run(
+                "pub func id\\<T>(x: T): T { return x }\n" +
+                "pub func main(): i32 { return id\\<i32>(42) }\n");
+            CheckOk("纯 .generic<T> 形参对照", id);
+            CheckI32("id<i32>(42) = 42", id, 42);
+
+            var typeOfT = Run(
+                "pub func matchesT\\<T>(x: T): bool {\n" +
+                "    var t = typeOf(T)\n" +
+                "    return (x is t)\n" +
+                "}\n" +
+                "pub func main(): bool {\n" +
+                "    return matchesT\\<i32>(1)\n" +
+                "}\n");
+            CheckOk("typeOf(T) 绑定帧 getid.type 解析", typeOfT);
+            CheckBool("1 is typeOf(T)", typeOfT, true);
+        }
+
+        // 固定泛型推断端到端：无显式实参调用 + 泛型 operator 运算符位置
+        private static void TestGenericInferenceEndToEnd()
+        {
+            var first = Run(
+                "import core.collections.*\n" +
+                "pub func firstOf\\<T>(arr: Array\\<T>): T { return arr[0] }\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = arrayOf\\<i32>(3)\n" +
+                "    a[0] = 42\n" +
+                "    a[1] = 1\n" +
+                "    a[2] = 2\n" +
+                "    return firstOf(a)\n" +
+                "}\n");
+            CheckOk("firstOf 推断+运行", first);
+            CheckI32("firstOf(a) = 42", first, 42);
+
+            var plus = Run(
+                "class Vec {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(_ -> x) { }\n" +
+                "    pub operator plus\\<TAnother>(another: TAnother): Vec {\n" +
+                "        var w = another as Vec\n" +
+                "        return new Vec((x + w.x))\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = new Vec(1)\n" +
+                "    var b = new Vec(2)\n" +
+                "    var c = a + b\n" +
+                "    return c.x\n" +
+                "}\n");
+            CheckOk("泛型 plus 运算符位置", plus);
+            CheckI32("1+2 = 3", plus, 3);
+
+            var compare = Run(
+                "class Vec {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(_ -> x) { }\n" +
+                "    pub operator compareTo\\<TAnother>(another: TAnother): ComparisonResult {\n" +
+                "        var w = another as Vec\n" +
+                "        if ((x < w.x)) { return .LesserThanAnother }\n" +
+                "        if ((x > w.x)) { return .GreaterThanAnother }\n" +
+                "        return .Equal\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = new Vec(1)\n" +
+                "    var b = new Vec(2)\n" +
+                "    if ((a < b)) { return 1 }\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckOk("泛型 compareTo 运算符位置", compare);
+            CheckI32("1 < 2", compare, 1);
+
+            var compound = Run(
+                "class Vec {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(_ -> x) { }\n" +
+                "    pub operator plus\\<TAnother>(another: TAnother): Vec {\n" +
+                "        var w = another as Vec\n" +
+                "        return new Vec((x + w.x))\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = new Vec(10)\n" +
+                "    var b = new Vec(5)\n" +
+                "    a += b\n" +
+                "    return a.x\n" +
+                "}\n");
+            CheckOk("泛型 plus 复合赋值", compound);
+            CheckI32("10+=5 = 15", compound, 15);
+
+            var unary = Run(
+                "class Bits {\n" +
+                "    pub var v: i32\n" +
+                "    pub init(_ -> v) { }\n" +
+                "    pub operator opposite(): Bits { return new Bits((0 - v)) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = new Bits(3)\n" +
+                "    return (-a).v\n" +
+                "}\n");
+            CheckOk("非泛型一元对照", unary);
+            CheckI32("-3", unary, -3);
+
+            var dispatch = Run(
+                "class Box {\n" +
+                "    pub var tag: i32\n" +
+                "    pub init(_ -> tag) { }\n" +
+                "    pub operator plus\\<TAnother>(another: TAnother): i32 {\n" +
+                "        if ((another is i32)) { return (tag + (another as i32)) }\n" +
+                "        if ((another is String)) { return (tag + 100) }\n" +
+                "        return tag\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var b = new Box(1)\n" +
+                "    var a = b + 2\n" +
+                "    var c = b + \"x\"\n" +
+                "    return (a + c)\n" +
+                "}\n");
+            CheckOk("推断类型运行时派发", dispatch);
+            CheckI32("1+2 与 1+String → 3+101 = 104", dispatch, 104);
+        }
+
+        // 泛型参数经约束的成员/运算符：静态按界定型，运行时按实际 typeid 派发
+        private static void TestGenericParamConstraintDispatch()
+        {
+            var sum = Run(
+                "pub interface Addable { pub operator plus(other: Addable): Addable }\n" +
+                "pub class A implements Addable {\n" +
+                "    pub var n: i32\n" +
+                "    pub init(_ -> n) { }\n" +
+                "    pub operator plus(other: Addable): Addable {\n" +
+                "        return new A((n + ((other as A).n)))\n" +
+                "    }\n" +
+                "}\n" +
+                "pub class B implements Addable {\n" +
+                "    pub var n: i32\n" +
+                "    pub init(_ -> n) { }\n" +
+                "    pub operator plus(other: Addable): Addable {\n" +
+                "        return new B(((n + ((other as B).n)) + 100))\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func sum\\<T extends Addable>(a: T, b: T): Addable { return a + b }\n" +
+                "pub func main(): i32 {\n" +
+                "    var x = (sum\\<A>(new A(1), new A(2)) as A).n\n" +
+                "    var y = (sum\\<B>(new B(3), new B(4)) as B).n\n" +
+                "    return (x + y)\n" +
+                "}\n");
+            CheckOk("sum<T extends Addable> 动态派发", sum);
+            CheckI32("A:1+2=3 与 B:3+4+100=107 → 110", sum, 110);
+
+            var cmp = Run(
+                "pub interface Ordered { pub operator compareTo(other: Ordered): ComparisonResult }\n" +
+                "pub class N implements Ordered {\n" +
+                "    pub var v: i32\n" +
+                "    pub init(_ -> v) { }\n" +
+                "    pub operator compareTo(other: Ordered): ComparisonResult {\n" +
+                "        var w = (other as N).v\n" +
+                "        if ((v < w)) { return .LesserThanAnother }\n" +
+                "        if ((v > w)) { return .GreaterThanAnother }\n" +
+                "        return .Equal\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func clamp\\<T extends Ordered>(x: T, lo: T, hi: T): T {\n" +
+                "    if ((x < lo)) { return lo }\n" +
+                "    if ((x > hi)) { return hi }\n" +
+                "    return x\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = new N(0)\n" +
+                "    var b = new N(5)\n" +
+                "    var c = new N(10)\n" +
+                "    var r = clamp\\<N>(a, b, c)\n" +
+                "    return r.v\n" +
+                "}\n");
+            CheckOk("clamp 经 compareTo 约束", cmp);
+            CheckI32("clamp(0,5,10)=5", cmp, 5);
+
+            var eq = Run(
+                "pub interface Equatable { pub operator equals(other: Equatable): bool }\n" +
+                "pub class Tag implements Equatable {\n" +
+                "    pub var id: i32\n" +
+                "    pub init(_ -> id) { }\n" +
+                "    pub operator equals(other: Equatable): bool {\n" +
+                "        return (id == ((other as Tag).id))\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func same\\<T extends Equatable>(a: T, b: T): bool { return a == b }\n" +
+                "pub func main(): i32 {\n" +
+                "    if (same\\<Tag>(new Tag(7), new Tag(7))) { return 1 }\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckOk("== 经 equals 约束", eq);
+            CheckI32("same Tag(7)", eq, 1);
+
+            var sumAll = Run(
+                "import core.collections.*\n" +
+                "pub interface Addable { pub operator plus(other: Addable): Addable }\n" +
+                "pub class N implements Addable {\n" +
+                "    pub var v: i32\n" +
+                "    pub init(_ -> v) { }\n" +
+                "    pub operator plus(other: Addable): Addable {\n" +
+                "        return new N((v + ((other as N).v)))\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func sumAll\\<T extends Addable>(arr: Array\\<T>): Addable {\n" +
+                "    var acc: Addable = arr[0]\n" +
+                "    var i = 1\n" +
+                "    while ((i < arr.length)) {\n" +
+                "        acc = (acc + arr[i])\n" +
+                "        i = (i + 1)\n" +
+                "    }\n" +
+                "    return acc\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = arrayOf\\<N>(3)\n" +
+                "    a[0] = new N(10)\n" +
+                "    a[1] = new N(20)\n" +
+                "    a[2] = new N(12)\n" +
+                "    return ((sumAll\\<N>(a) as N).v)\n" +
+                "}\n");
+            CheckOk("sumAll Array<T> 循环累加", sumAll);
+            CheckI32("10+20+12=42", sumAll, 42);
+
+            var ts = Run(
+                "pub func show\\<T>(x: T): String { return x.toString() }\n" +
+                "pub func main(): i32 {\n" +
+                "    core.io.Console.println(show\\<i32>(42))\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckOk("无约束 T toString 端到端", ts);
+            TestHarness.Check("toString(42)", ts.Stdout, "42\n");
+
+            var pair = Run(
+                "pub interface Addable { pub operator plus(other: Addable): Addable }\n" +
+                "pub class N implements Addable {\n" +
+                "    pub var v: i32\n" +
+                "    pub init(_ -> v) { }\n" +
+                "    pub operator plus(other: Addable): Addable {\n" +
+                "        return new N((v + ((other as N).v)))\n" +
+                "    }\n" +
+                "}\n" +
+                "pub class Pair\\<T extends Addable> {\n" +
+                "    pub var a: T\n" +
+                "    pub var b: T\n" +
+                "    pub init(_ -> a, _ -> b) { }\n" +
+                "    pub func add(): Addable { return a + b }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var p = new Pair\\<N>(new N(3), new N(4))\n" +
+                "    return ((p.add() as N).v)\n" +
+                "}\n");
+            CheckOk("Pair<T extends Addable> 内 +", pair);
+            CheckI32("3+4=7", pair, 7);
+        }
+
+        // getid.type 对含 .generic< 的构造类型走 ResolveTypeRef：绑定帧
+        // 把 .array<.generic<$.generic.T>> 物化为 .array<.i32>
+        private static void TestGetIdTypeResolvesNestedGeneric()
+        {
+            var module = new BilModule();
+            var probe = new BilFunction("$probe()@.typeid");
+            probe.Args.Add(new BilArgDeclaration(".return", ".typeid"));
+            probe.Args.Add(new BilArgDeclaration(".generic.T", ".typeid"));
+            probe.Vars.Add(new BilVarDeclaration(".typeid", "t"));
+            var entry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            entry.Instructions.Add(new GetIdTypeInstruction(
+                BilOp.Type(".array<.generic<$.generic.T>>"), BilOp.Var("t")));
+            entry.Instructions.Add(new RetInstruction(BilOp.Var("t")));
+            probe.Blocks.Add(entry);
+            module.Functions.Add(probe);
+
+            var result = RunPrepared(module, "$probe()@.typeid",
+                new[] { new VmTypeId(".i32") });
+            CheckOk("getid.type 解析嵌套泛型占位", result);
+            TestHarness.CheckTrue("物化为 .array<.i32>",
+                result.ReturnValue is VmTypeId id && id.TypeSymbol == ".array<.i32>",
+                result.ReturnValue?.ToStandardText() ?? "<null>");
         }
 
         // bug17：String.length 内建 const i64（.bootstrap.rg ext 声明，

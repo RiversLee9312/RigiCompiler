@@ -157,6 +157,34 @@ namespace RigiCompiler.Tests
                 "ret $.t3\n");
         }
 
+        // T receiver 接口调用与接口变量调用 BIL 形态一致；运算符位置仍发 intrinsic
+        private static void TestGenericParamMemberEmission()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "pub interface Sized { pub func size(): i32 }\n" +
+                "pub func viaIface(s: Sized): i32 { return s.size() }\n" +
+                "pub func viaParam\\<T extends Sized>(s: T): i32 { return s.size() }\n" +
+                "pub interface Addable { pub operator plus(other: Addable): Addable }\n" +
+                "pub func addT\\<T extends Addable>(a: T, b: T): Addable { return a + b }\n");
+            CheckNoErrors("全管线无诊断（T 有效成员发射）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（T 有效成员发射）", module);
+            var ifaceFn = module.Functions.Single(f => f.Symbol == "$viaIface(s:Sized)@.i32");
+            var paramFn = module.Functions.Single(f =>
+                f.Symbol == "$viaParam(s:.generic<$.generic.T>)@.i32");
+            var ifaceInvoke = ifaceFn.Blocks[0].Instructions
+                .OfType<InvokeInstruction>().Single();
+            var paramInvoke = paramFn.Blocks[0].Instructions
+                .OfType<InvokeInstruction>().Single();
+            TestHarness.CheckTrue("T receiver 与接口变量 invoke 同一方法符号",
+                ifaceInvoke.Method.Symbol == paramInvoke.Method.Symbol
+                && ifaceInvoke.Method.Symbol == "Sized$size()@.i32");
+            BilTestHarness.CheckFnShape("运算符位置仍发 add", module,
+                "$addT(a:.generic<$.generic.T>,b:.generic<$.generic.T>)@Addable",
+                ".vars { Addable .t0 }\n" +
+                "add $a $b $.t0\n" +
+                "ret $.t0\n");
+        }
+
         // ===== S8c：索引访问发射（§13.6 get.array/set.array + operator
         // §8.4 声明）=====
         private static void TestIndexEmission()

@@ -23,8 +23,9 @@ namespace RigiCompiler
     // route local：每 region 独立、普通 i32 合成局部（.sN），首个跨
     // region exit 时懒建；进入 region 前初始化 0，退出 dispatcher 后
     // 即死。exit 的目标解析查 StructuredExitTargetTable（ordinary
-    // lowering 期注册）；P3 已拦截隔循环/隔值块的 return@，故 region
-    // 链上必能走到目标 region，走不到即内部不变量破坏。
+    // lowering 期注册）；P3 拦截「语句 seq 目标隔循环 / 隔值块」
+    // （SYNTAX §6.1）；值块目标跨循环由本 pass 展开。region 链上必能
+    // 走到目标 region，走不到即内部不变量破坏。
     internal static class StructuredExitRouting
     {
         // region 帧（pass 期压栈）：BreakId = region 节点的 .breakid
@@ -332,16 +333,15 @@ namespace RigiCompiler
                     ctx.Synth.NewBreakIdLocal());
             }
             output.Add(chain!);
-            // §18.1 rigi.seq-route hint：seq/if/switch region 的标准 route
-            // dispatcher 在尾链首链节上打标记（发射期在汇聚边着陆点之后、
-            // 第一条 cmp 之前补 hint 指令，供 verifier §21.4 分组消费）。
-            // try/finally 拦截路径的 dispatcher 形状不同不发；loop region
-            // 的 route 只可能来自条件位逃逸（P3 拦截体内的隔循环 return@，
-            // 但条件在循环深度压栈前绑定、脱糖后才物化进 Judge）——loop
-            // dispatcher 不发 hint，verifier 退回保守合并（续点静态可达、
-            // DA 照常成立，行为正确性不依赖 hint）。不发 hint 的模块
-            // 行为与现状逐位一致
+            // §18.1 rigi.seq-route hint：seq/if/switch/loop region 的标准
+            // route dispatcher 在尾链首链节上打标记（发射期在汇聚边着陆
+            // 点之后、第一条 cmp 之前补 hint 指令，供 verifier §21.4
+            // 分组消费）。loop 的 dispatcher 紧随 loop/loop.rev 指令
+            // （route=0 初始化在 loop 之前），与 seq/if/switch 同构——
+            // 体内 return@ 外层值块与条件位逃逸都走这条尾链。
+            // try/finally 拦截路径的 dispatcher 形状不同不发。
             if (node is LoweredSeqBlock or LoweredIfStatement or LoweredSwitch
+                    or LoweredLoop
                 && chain is LoweredIfStatement chainHead)
             {
                 chainHead.SeqRouteHintRoute = region.RouteLocal;

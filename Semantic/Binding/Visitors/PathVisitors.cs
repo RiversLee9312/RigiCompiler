@@ -1201,16 +1201,17 @@
                 var suffix = suffixes[i];
                 if (suffix.Kind == PathSuffixKind.Call)
                 {
-                    if (receiver.Type is not TypeSymbol callableType
-                        || CallFacility.BindIndirectCallOverload(suffix, receiver, callableType,
-                            suffix.Arguments!, null, scope, ctx, env) is not { } valueCall)
-                    {
-                        env.Error(suffix.Span,
-                            "P3: value of type " +
-                            $"'{BoundAnalysis.TypeDisplay(receiver.Type)}' is not callable " +
-                            "(no operator call)");
-                        return null;
-                    }
+                var callableLookup = SymbolLookup.EffectiveMemberType(receiver.Type, env);
+                if (receiver.Type is ErrorTypeSymbol
+                    || CallFacility.BindIndirectCallOverload(suffix, receiver, callableLookup,
+                        suffix.Arguments!, null, scope, ctx, env) is not { } valueCall)
+                {
+                    env.Error(suffix.Span,
+                        "P3: value of type " +
+                        $"'{BoundAnalysis.TypeDisplay(receiver.Type)}' is not callable " +
+                        "(no operator call)");
+                    return null;
+                }
                     // S10：async 无结果调用有 Task 值——仅真 void 拒绝作值
                     //（语句位置的 void 间接调用归 CallForm 直写形态 f(args)）
                     if (valueCall.ResultType == null)
@@ -1253,9 +1254,11 @@
                 return null;
             }
             var name = forWrite ? "setAtIndex" : "getAtIndex";
-            var candidates = receiver.Type is TypeSymbol indexReceiver
-                ? SymbolLookup.FindInstanceOperators(indexReceiver, name, forWrite ? 2 : 1)
-                : new List<MethodSymbol>();
+            var lookupType = SymbolLookup.EffectiveMemberType(receiver.Type, env);
+            var candidates = receiver.Type is ErrorTypeSymbol
+                ? new List<MethodSymbol>()
+                : SymbolLookup.FindInstanceOperators(lookupType, name, forWrite ? 2 : 1,
+                    env.Unit.Symbols);
             if (candidates.Count == 0)
             {
                 env.Error(node.Span,
@@ -1277,9 +1280,9 @@
                 // ranking）——实参绑定、多参数/具名/缺失诊断自然产生。
                 // receiverType = receiver 静态类型（索引 operator 宿主代入）
                 var resolved = OverloadResolution.Resolve(node, candidates, suffix.Arguments,
-                    scope, ctx, env, receiverType: receiver.Type as TypeSymbol);
+                    scope, ctx, env, receiverType: lookupType);
                 if (resolved == null) return null;
-                var (op, boundArguments, opResultType, _) = resolved.Value;
+                var (op, boundArguments, opResultType, _, _) = resolved.Value;
                 if (opResultType == null)
                 {
                     env.Error(node.Span, $"Method '{op.Name}' has no result (void) " +
@@ -1304,7 +1307,7 @@
             // Box\<T\>.setAtIndex(index, element: T) 在 Box\<i32\> 上
             // element → i32）；candidates 非空 ⇒ receiver.Type 必为
             // TypeSymbol（上方 FindInstanceOperators 判型查询）
-            var writeReceiver = (TypeSymbol)receiver.Type;
+            var writeReceiver = lookupType;
             // 写模式：恰一个索引实参（多参数索引非法的定稿诊断）
             if (suffix.Arguments.Count != 1)
             {
@@ -1376,24 +1379,19 @@
                 resultType);
         }
 
-        // 实例字段访问：receiver 静态类型沿 BaseType 链查找（接口无
-        // 实例字段；ext 注册字段同路径）。S8e 使用点检查同
-        // BindFieldReference 口径（访问器读侧/字段可见性）
+        // 实例字段访问：receiver 按有效成员类型查找（T extends B 按 B）。
+        // S8e 使用点检查同 BindFieldReference 口径（访问器读侧/字段可见性）
         public static BoundExpression? BindInstanceFieldAccess(ASTNode node,
             BoundExpression receiver, string name, BindEnvironment env, BindContext ctx,
             bool forAssignment = false)
         {
-            // S9a：泛型参数 receiver 无成员表（判型后自然报未定义成员）
-            if (receiver.Type is not TypeSymbol receiverType)
-            {
-                env.Error(node.Span, $"Undefined member '{name}' on type " +
-                    $"'{BoundAnalysis.TypeDisplay(receiver.Type)}'");
-                return null;
-            }
+            if (receiver.Type is ErrorTypeSymbol) return null;
+            var receiverType = SymbolLookup.EffectiveMemberType(receiver.Type, env);
             var field = SymbolLookup.FindInstanceField(receiverType, name);
             if (field == null)
             {
-                env.Error(node.Span, SymbolLookup.FindInstanceMethods(receiverType, name).Count > 0
+                env.Error(node.Span, SymbolLookup.FindInstanceMethods(receiverType, name,
+                    env.Unit.Symbols).Count > 0
                     ? $"'{name}' on type '{BoundAnalysis.TypeDisplay(receiver.Type)}' is not a field"
                     : $"Undefined member '{name}' on type " +
                         $"'{BoundAnalysis.TypeDisplay(receiver.Type)}'");

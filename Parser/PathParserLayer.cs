@@ -47,6 +47,12 @@ namespace RigiCompiler
                 // \ 之后必须紧跟 < ，否则不是合法的泛型开启
                 if (backslashSeen && !(currentToken is NotationToken bn && bn.Content == "<"))
                 {
+                    // 闭括号写成 \> 是旧式残留：给出针对性诊断，避免被读成「少了 <」
+                    if (currentToken is NotationToken close && close.Content == ">")
+                    {
+                        throw context.RaiseError(
+                            "Expected '<' after '\\' to open generic list (generic lists close with '>', not '\\>')");
+                    }
                     throw context.RaiseError($"Expected '<' after '\\' in generic list, got: {currentToken}");
                 }
                 switch (currentToken)
@@ -135,11 +141,23 @@ namespace RigiCompiler
                             case Notations.R_ANGLE:
                                 if (isParsingGeneric)
                                 {
+                                    // 本层确实在解析泛型实参：逗号后的悬空实参不得被 '>' 吞掉
+                                    if (currentElement.generics.Count > 0)
+                                    {
+                                        var last = currentElement.generics[currentElement.generics.Count - 1];
+                                        if (last.elements.Count == 0 ||
+                                            string.IsNullOrEmpty(last.elements[0].name))
+                                        {
+                                            throw context.RaiseError(
+                                                "Expected type argument before '>' in generic list");
+                                        }
+                                    }
                                     isParsingGeneric = false;
                                     return ParserLayerResult.Continue.Instance;
                                 }
                                 else
                                 {
+                                    // 本层未开启 \< ：把 '>' 交还父层（嵌套闭合 / 多余闭合）
                                     return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
                                 }
                             case Notations.COMMA:

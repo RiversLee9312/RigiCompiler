@@ -7,20 +7,16 @@ namespace RigiCompiler
     // visitor 处落袋，判定口径与原 BindContext 注释一致）。
     internal sealed class BindLabelState
     {
-        // 值块标签栈条目（S7b）：施工壳 + 值块创建时的循环栈深度
-        // （S7c-1——return@ 命中时若当前循环更深，说明隔着循环边界，
-        // P4a 脱糖无法表达「跳出中间循环」，P3 拦截为诊断，S7c 技术债）
+        // 值块标签栈条目（S7b）：施工壳。值块目标跨循环由
+        // StructuredExitRouting 展开，不再记循环深度
         internal readonly struct ValueBlockEntry
         {
-            public ValueBlockEntry(BoundValueBlock block, int loopDepth)
+            public ValueBlockEntry(BoundValueBlock block)
             {
                 Block = block;
-                LoopDepth = loopDepth;
             }
 
             public BoundValueBlock Block { get; }
-
-            public int LoopDepth { get; }
         }
 
         // 语句 seq 标签栈条目（M61，SYNTAX §6.1）：施工壳 + 压栈时刻的
@@ -49,20 +45,19 @@ namespace RigiCompiler
 
         private readonly Stack<SeqLabelEntry> seqLabels = new Stack<SeqLabelEntry>();
 
-        // 当前循环栈深度（return@ 隔循环拦截的比较基准）
+        // 当前循环栈深度（语句 seq 目标隔循环拦截的比较基准）
         public int LoopDepth => loops.Count;
 
         // 当前值块栈深度（return@语句seq 隔值块拦截的比较基准）
         public int ValueBlockDepth => valueBlocks.Count;
 
         // ===== 值块标签栈（S7b，SYNTAX §6.1）=====
-        // 绑定值块分支体时压入施工壳（自记当时循环深度），return@标签
-        // 沿栈从内向外查找命中（Label 字符串相等；条目 Block 引用相等
-        // 即身份）
+        // 绑定值块分支体时压入施工壳，return@标签沿栈从内向外查找命中
+        // （Label 字符串相等；条目 Block 引用相等即身份）
 
         public void PushValueBlock(BoundValueBlock block)
         {
-            valueBlocks.Push(new ValueBlockEntry(block, loops.Count));
+            valueBlocks.Push(new ValueBlockEntry(block));
         }
 
         public void PopValueBlock()

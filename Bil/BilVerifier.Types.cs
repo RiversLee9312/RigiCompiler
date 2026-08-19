@@ -319,24 +319,41 @@ namespace RigiCompiler.Bil
                     break;
 
                 case BinaryIntrinsicInstruction binary:
-                    // §11.1：两操作数严格相同；§11.5：cmp 结果为 .bool
-                    CheckType(context, VarType(context, binary.Right),
-                        VarType(context, binary.Left), location, "二元运算两操作数", errors);
-                    if (binary.Op is >= BilBinaryOp.CmpEq and <= BilBinaryOp.CmpGe)
+                    // 内建标量：§11.1 两操作数严格相同；§11.5 cmp 结果 .bool，
+                    // 其余结果同左。用户类型走 operator 派发——右操作数可不同型、
+                    // 非比较结果可为 operator 返回类型。
                     {
-                        CheckType(context, VarType(context, binary.Target), ".bool", location,
-                            "cmp 结果", errors);
-                    }
-                    else
-                    {
-                        CheckType(context, VarType(context, binary.Target),
-                            VarType(context, binary.Left), location, "二元运算结果", errors);
+                        var leftType = VarType(context, binary.Left);
+                        var isBuiltin = leftType != null
+                            && leftType.StartsWith(".", StringComparison.Ordinal);
+                        if (isBuiltin)
+                        {
+                            CheckType(context, VarType(context, binary.Right),
+                                leftType, location, "二元运算两操作数", errors);
+                        }
+                        if (binary.Op is >= BilBinaryOp.CmpEq and <= BilBinaryOp.CmpGe)
+                        {
+                            CheckType(context, VarType(context, binary.Target), ".bool", location,
+                                "cmp 结果", errors);
+                        }
+                        else if (isBuiltin)
+                        {
+                            CheckType(context, VarType(context, binary.Target),
+                                leftType, location, "二元运算结果", errors);
+                        }
                     }
                     break;
 
                 case UnaryIntrinsicInstruction unary:
-                    CheckType(context, VarType(context, unary.Target),
-                        VarType(context, unary.Operand), location, "一元运算结果", errors);
+                    {
+                        var operandType = VarType(context, unary.Operand);
+                        if (operandType != null
+                            && operandType.StartsWith(".", StringComparison.Ordinal))
+                        {
+                            CheckType(context, VarType(context, unary.Target),
+                                operandType, location, "一元运算结果", errors);
+                        }
+                    }
                     break;
 
                 case YieldInstruction yieldInstruction:

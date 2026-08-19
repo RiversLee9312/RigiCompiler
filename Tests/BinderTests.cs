@@ -81,8 +81,12 @@ namespace RigiCompiler.Tests
             TestGenericCalls();
             TestIndirectGenericCalls();
             TestGenericVarArgs();
+            TestGenericInference();
             TestOperatorNameCalls();
+            TestUserOperatorPositions();
             TestGenericFunctionBody();
+            TestGenericParamEffectiveMembers();
+            TestNamedGenericImportUsage();
             TestDynamicNew();
             TestGenericBaseClassMemberLookup();
             TestGenericVarianceAssignability();

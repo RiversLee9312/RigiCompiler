@@ -15,8 +15,10 @@ namespace RigiCompiler
                     var path = item.symbolNode.symbol;
                     // import 路径自身不带泛型实参；解析失败统一在此报一次
                     // （名字解析消费 import 时一律静默，避免二次噪音）
+                    // 导入目标是定义本身（可含未构造泛型定义）；实参在使用处书写
                     var resolved = env.Names.ResolveSymbolPath(path, ctx, declaringType: null,
-                        declaringMethod: null, allowImports: false, reportErrors: false, span: null);
+                        declaringMethod: null, allowImports: false, reportErrors: false, span: null,
+                        allowBareGenericDefinition: true);
                     if (resolved is ErrorTypeSymbol)
                     {
                         env.Error(item.symbolNode.Span ?? file.Span,

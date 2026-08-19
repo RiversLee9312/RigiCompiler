@@ -20,21 +20,22 @@ import core.collections.*                // 全部导入
 
 规则：
 - `{}` 列表项只能是单标识符，不允许带路径——`import core.collections.{a.List}` 是编译错误。需要导入不同子路径的符号时写多条 `import` 语句。
+- 具名导入的目标可以是泛型类型定义（导入的是定义本身，实参在使用处书写，如 `import core.Pair` 后写 `Pair\<i32, String>`）。同名不同元数共存时，具名导入的裸名按使用处同一规则命中非泛型声明；泛型兄弟经通配导入或全限定名可达。
 
 ### 15.3 SDK 自举源
 
 编译器自带的标准库 Rigi 源（`stdlib/`）随每次编译**默认参与编译**，无需
 import 即进入编译单元（与用户源同走语义全流程）：
 
-- `core.collections`：`IEnumerable\<T\>` / `IEnumerator\<T\>` 迭代协议
+- `core.collections`：`IEnumerable\<T>` / `IEnumerator\<T>` 迭代协议
   （§7.3）与容器接口、实现；
 - `core.io`：`Console` 等 I/O 表层；
-- `core.coroutine`：`Task` / `Task\<TResult\>` / `Executor` 家族 /
-  `PollingAlarm` / `EventAlarm` / `CoroutineLocal\<TValue\>` 类型面与最小
+- `core.coroutine`：`Task` / `Task\<TResult>` / `Executor` 家族 /
+  `PollingAlarm` / `EventAlarm` / `CoroutineLocal\<TValue>` 类型面与最小
   native API 面（§4.5/§7.5、`RUNTIME.md` §17–§20）——协程运行时机制是
   语言内建（async/await/yield lowering 见 §4.5/§7.5，BIL VM 提供
   执行），stdlib 只声明类型与 `sleep`/`isReady` 等运行时函数的形状；
-  `Task`（无结果）与 `Task\<TResult\>`（泛型）是**同名不同元数**的合法
+  `Task`（无结果）与 `Task\<TResult>`（泛型）是**同名不同元数**的合法
   共存类型（类型名唯一性按「名 + 泛型参数个数」判定；裸名引用解析到
   非泛型声明，带实参引用解析到泛型声明）；
 - `core` 命名空间内的异常具体子类（`stdlib/core/exceptions.rg`）：
@@ -46,10 +47,10 @@ import 即进入编译单元（与用户源同走语义全流程）：
   （`i32` 等）无法在自己的声明处携带这些实现，经 `ext` 以 Rigi 自举
   （如 `EnumerateInRange`，§13.2），以及解构协议根 `core.Pair`（§18）；
   另含 callable / 闭包运行时面（§5.2）：
-  - `core.Func\<TRet, T0…\>` / `core.Action\<T0…\>` /
-    `core.AsyncFunc\<TRet, T0…\>` / `core.AsyncAction\<T0…\>`（各 0–32 元数变种，
+  - `core.Func\<TRet, T0…>` / `core.Action\<T0…>` /
+    `core.AsyncFunc\<TRet, T0…>` / `core.AsyncAction\<T0…>`（各 0–32 元数变种，
     abstract class + abstract `operator call`；Async 族为 `shared class`）；
-  - `core.Cell\<T\>` / `core.ReadonlyCell\<T\>`——**抽象基类**（抽象
+  - `core.Cell\<T>` / `core.ReadonlyCell\<T>`——**抽象基类**（抽象
     `getValue`/`setValue`——ReadonlyCell 无 `setValue`；无 `value` 字段、
     无显式 init）；实际实例恒为编译器合成的隐藏子类 `..cell..UUID`
     （统一 cell 存储，§5.2 / §14.3）；BIL 特权拼写 `.cell<T>`/

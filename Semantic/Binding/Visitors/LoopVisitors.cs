@@ -123,10 +123,12 @@ namespace RigiCompiler
             }
         }
 
-        // - 范围循环 `for (i in a to b)`（RangeTo 非 null）：a、b 类型
-        //   一致后在 a 的类型上解析实例 operator EnumerateInRange（含
-        //   ext 注册——P2 已挂目标类型成员表），Iterable =
-        //   BoundInstanceCallExpression{a, op, [b]}；
+        // - 范围循环 `for (i in a to b)`（RangeTo 非 null）：始终按 a 的
+        //   有效成员类型派发实例 operator EnumerateInRange（含约束界 /
+        //   ext 注册——P2 已挂目标类型成员表），右操作数 b 走 §4.2
+        //   ResolveBound（不必与 a 同型）；Iterable =
+        //   BoundInstanceCallExpression{a, op, [b]}；区间开闭/步长由该
+        //   operator 实现自定义，此处不做整数特化；
         // - for-each `for (item in collection)`：Iterable = 集合表达式；
         // 两形态汇合于 for-each 协议判定：Iterable 类型实现
         // core.collections::IEnumerable\<TItem\>（沿接口表找该定义的
@@ -154,19 +156,10 @@ namespace RigiCompiler
                     ctx.Flow.Restore(before);
                     return null;
                 }
-                if (!ReferenceEquals(from.Type, to.Type))
-                {
-                    env.Error(node.RangeTo.Span ?? node.Span,
-                        $"Range bounds must have the same type " +
-                        $"(got '{BoundAnalysis.TypeDisplay(from.Type)}' and " +
-                        $"'{BoundAnalysis.TypeDisplay(to.Type)}')");
-                    ctx.Flow.Restore(before);
-                    return null;
-                }
-                // S9a：泛型参数判型后自然无 EnumerateInRange（报 operator 缺失）
-                var op = from.Type is TypeSymbol fromType
-                    ? SymbolLookup.FindInstanceOperator(fromType, "EnumerateInRange") : null;
-                if (op == null)
+                var rangeLookup = SymbolLookup.EffectiveMemberType(from.Type, env);
+                var candidates = SymbolLookup.FindInstanceOperators(rangeLookup,
+                    "EnumerateInRange", 1, env.Unit.Symbols);
+                if (candidates.Count == 0)
                 {
                     env.Error(node.Span,
                         $"Type '{BoundAnalysis.TypeDisplay(from.Type)}' has no " +
@@ -174,7 +167,21 @@ namespace RigiCompiler
                     ctx.Flow.Restore(before);
                     return null;
                 }
-                if (op.ReturnType is not TypeSymbol enumerableType)
+                var accessible = candidates.Where(ctx.Frame.CanAccess).ToList();
+                if (accessible.Count == 0)
+                {
+                    env.Error(node.Span, AccessChecker.InaccessibleMessage(candidates[0]));
+                    ctx.Flow.Restore(before);
+                    return null;
+                }
+                var resolved = OverloadResolution.ResolveBound(node, accessible,
+                    new[] { to }, env, rangeLookup);
+                if (resolved == null)
+                {
+                    ctx.Flow.Restore(before);
+                    return null;
+                }
+                if (resolved.Value.ReturnType is not TypeSymbol enumerableType)
                 {
                     env.Error(node.Span,
                         "range for loop requires a concrete enumerable type " +
@@ -182,8 +189,9 @@ namespace RigiCompiler
                     ctx.Flow.Restore(before);
                     return null;
                 }
-                iterable = new BoundInstanceCallExpression(node.Iterable, from, op,
-                    new List<BoundExpression> { to }, enumerableType);
+                iterable = new BoundInstanceCallExpression(node.Iterable, from,
+                    resolved.Value.Method, new List<BoundExpression> { to },
+                    enumerableType, resolved.Value.TypeArguments);
             }
             else
             {
@@ -199,14 +207,12 @@ namespace RigiCompiler
                 ctx.Flow.Restore(before);
                 return null;
             }
-            // S9a：泛型参数 iterable 判型后走「未实现 IEnumerable」诊断
-            if (iterable.Type is not TypeSymbol iterableType)
+            if (iterable.Type is ErrorTypeSymbol)
             {
-                env.Error(node.Span, $"Type '{BoundAnalysis.TypeDisplay(iterable.Type)}' " +
-                    "does not implement core.collections.IEnumerable<T> (required by for loop)");
                 ctx.Flow.Restore(before);
                 return null;
             }
+            var iterableType = SymbolLookup.EffectiveMemberType(iterable.Type, env);
             var itemType = ResolveEnumerableElement(iterableType, enumerableDef, node.Span, env);
             if (itemType == null) { ctx.Flow.Restore(before); return null; }
             var iterate = enumerableDef.Methods.FirstOrDefault(m => m.Name == "iterate");

@@ -346,12 +346,17 @@ namespace RigiCompiler.Tests
             TestHarness.CheckSemanticError("泛型实参个数不匹配", unit3.Diagnostics,
                 "'identity' expects 1 type argument(s), got 2");
 
-            // 4. 泛型方法缺显式实参（零推导——一切显式）
-            var (unit4, _) = BindUnit(
+            // 4. 无显式实参：从值实参推断 T = i32
+            var (unit4, bodies4) = BindUnit(
                 "func identity\\<T>(x: T): T { return x }\n" +
                 "func main() { var v = identity(1) }\n");
-            TestHarness.CheckSemanticError("泛型方法需要显式实参", unit4.Diagnostics,
-                "'identity' is a generic method; provide explicit type arguments");
+            CheckNoErrors("无诊断（推断 T = i32）", unit4);
+            var decl4 = (BoundLocalDeclarationStatement)BodyOf(bodies4, "main").Body.Statements[0];
+            var call4 = (BoundCallExpression)decl4.Initializer!;
+            TestHarness.CheckTrue("推断调用 TypeArguments 携带 i32",
+                call4.TypeArguments.Count == 1
+                && ReferenceEquals(call4.TypeArguments[0], unit4.Symbols.Bootstrap.Int32)
+                && ReferenceEquals(call4.Type, unit4.Symbols.Bootstrap.Int32));
 
             // 5. 显式实参与非泛型方法共存：带实参时仅泛型候选（不匹配即拒绝）
             var (unit5, bodies5) = BindUnit(
@@ -475,8 +480,8 @@ namespace RigiCompiler.Tests
                 && ReferenceEquals(packCall.GenericPack.TypeArguments[1],
                     unit3.Symbols.Bootstrap.String));
 
-            // 4. 缺显式实参仍诊断（固定泛型 call 零推导）
-            var (unit4, _) = BindUnit(
+            // 4. 缺显式实参：间接调用同样推断 T = i32
+            var (unit4, bodies4) = BindUnit(
                 "pub class Mapper {\n" +
                 "    pub operator call\\<T>(x: T): T { return x }\n" +
                 "}\n" +
@@ -484,8 +489,13 @@ namespace RigiCompiler.Tests
                 "    var f = new Mapper()\n" +
                 "    var v = f(1)\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("间接调用缺显式泛型实参", unit4.Diagnostics,
-                "'call' is a generic method; provide explicit type arguments");
+            CheckNoErrors("无诊断（间接调用推断）", unit4);
+            var inferCall = (BoundCallExpression)
+                ((BoundLocalDeclarationStatement)BodyOf(bodies4, "main").Body.Statements[1])
+                .Initializer!;
+            TestHarness.CheckTrue("间接调用推断 TypeArguments",
+                inferCall.IsIndirect && inferCall.TypeArguments.Count == 1
+                && ReferenceEquals(inferCall.TypeArguments[0], unit4.Symbols.Bootstrap.Int32));
         }
 
         // ===== 泛型可变参数包（S9d-2，SYNTAX §4.3 定稿⑤：类型实参由
@@ -546,12 +556,17 @@ namespace RigiCompiler.Tests
             TestHarness.CheckSemanticError("非泛型与泛型包共存多候选归口", unit4.Diagnostics,
                 "P3: overload resolution with variadic parameters is not supported yet");
 
-            // 5. 固定泛型参数仍须显式实参（包推导不豁免固定参数）
-            var (unit5, _) = BindUnit(
+            // 5. 固定泛型参数可由值实参推断（包推导不独占推断通道）
+            var (unit5, bodies5) = BindUnit(
                 "func gf\\<T>(x: T): T { return x }\n" +
                 "func main() { var v = gf(1) }\n");
-            TestHarness.CheckSemanticError("固定泛型参数仍需显式实参", unit5.Diagnostics,
-                "'gf' is a generic method; provide explicit type arguments");
+            CheckNoErrors("无诊断（固定泛型推断）", unit5);
+            var gfCall = (BoundCallExpression)
+                ((BoundLocalDeclarationStatement)BodyOf(bodies5, "main").Body.Statements[0])
+                .Initializer!;
+            TestHarness.CheckTrue("gf 推断 T = i32",
+                gfCall.TypeArguments.Count == 1
+                && ReferenceEquals(gfCall.TypeArguments[0], unit5.Symbols.Bootstrap.Int32));
 
             // 6. 约束违反：逐推导类型做约束检查（extends ValueType，定位到实参）
             var (unit6, _) = BindUnit(
@@ -638,12 +653,20 @@ namespace RigiCompiler.Tests
             TestHarness.CheckSemanticError("混合形态固定数量不足", unit13.Diagnostics,
                 "'mix' expects 2 type argument(s), got 1");
 
-            // 14. 混合缺显式：仍须提供固定实参（不走全可变包路径）
-            var (unit14, _) = BindUnit(
+            // 14. 混合缺显式：固定 T 从 seed 推断，包仍由值实参推导
+            var (unit14, bodies14) = BindUnit(
                 "func mix\\<T, TArgs...>(seed: T, xs: TArgs...): T { return seed }\n" +
                 "func main() { var v = mix(1, \"a\") }\n");
-            TestHarness.CheckSemanticError("混合形态缺显式仍报需要显式实参", unit14.Diagnostics,
-                "'mix' is a generic method; provide explicit type arguments");
+            CheckNoErrors("无诊断（混合形态固定部分推断）", unit14);
+            var mixCall = (BoundCallExpression)
+                ((BoundLocalDeclarationStatement)BodyOf(bodies14, "main").Body.Statements[0])
+                .Initializer!;
+            TestHarness.CheckTrue("混合推断 TypeArguments/GenericPack",
+                mixCall.TypeArguments.Count == 1
+                && ReferenceEquals(mixCall.TypeArguments[0], unit14.Symbols.Bootstrap.Int32)
+                && mixCall.GenericPack is { IsNamed: false } mixPack
+                && mixPack.TypeArguments.Count == 1
+                && ReferenceEquals(mixPack.TypeArguments[0], unit14.Symbols.Bootstrap.String));
 
             // 15. 具名包混合：固定显式 + named 包推导
             var (unit15, bodies15) = BindUnit(
@@ -696,13 +719,388 @@ namespace RigiCompiler.Tests
                 && ReferenceEquals(genericPlus.TypeArguments[0],
                     unit2.Symbols.Bootstrap.String));
 
-            // 3. 运算符位置不参与：a + b 仍走 intrinsic 判定（用户类型无
-            //    intrinsic 表 → 报未定义，不查 operator plus）
-            var (unit3, _) = BindUnit(
+            // 3. 运算符位置派发：a + b 查 operator plus，Bound 仍为 intrinsic Add
+            var (unit3, bodies3) = BindUnit(
                 "class Vec { pub operator plus(other: Vec): Vec { return this } }\n" +
                 "func f(a: Vec, b: Vec): Vec { return a + b }\n");
-            TestHarness.CheckSemanticError("运算符位置不参与", unit3.Diagnostics,
-                "Operator '+' is not defined for type 'Vec'");
+            CheckNoErrors("无诊断（运算符位置 plus）", unit3);
+            TestHarness.Check("运算符位置 plus 绑 Add", BoundDescribe.Body(BodyOf(bodies3, "f")),
+                "Body(f, [], [Return(Binary(Add, Param(a,Vec), Param(b,Vec), Vec))])");
+        }
+
+        // ===== 用户 operator 运算符位置（SYNTAX §13.2）=====
+        private static void TestUserOperatorPositions()
+        {
+            TestHarness.Section("P3 User Operator Positions (§13.2)");
+
+            var header =
+                "class Vec {\n" +
+                "    pub operator plus(other: Vec): Vec { return this }\n" +
+                "    pub operator minus(other: Vec): Vec { return this }\n" +
+                "    pub operator times(other: Vec): Vec { return this }\n" +
+                "    pub operator div(other: Vec): Vec { return this }\n" +
+                "    pub operator bitwiseAnd(other: Vec): Vec { return this }\n" +
+                "    pub operator bitwiseOr(other: Vec): Vec { return this }\n" +
+                "    pub operator bitwiseXor(other: Vec): Vec { return this }\n" +
+                "    pub operator leftShift(bits: i32): Vec { return this }\n" +
+                "    pub operator rightShift(bits: i32): Vec { return this }\n" +
+                "    pub operator unsignedRightShift(bits: i32): Vec { return this }\n" +
+                "    pub operator compareTo(other: Vec): i32 { return 0 }\n" +
+                "    pub operator and(other: Vec): Vec { return this }\n" +
+                "    pub operator or(other: Vec): Vec { return this }\n" +
+                "    pub operator opposite(): Vec { return this }\n" +
+                "    pub operator not(): Vec { return this }\n" +
+                "    pub operator bitwiseNot(): Vec { return this }\n" +
+                "}\n";
+
+            var (unit, bodies) = BindUnit(header +
+                "func add(a: Vec, b: Vec): Vec { return a + b }\n" +
+                "func sub(a: Vec, b: Vec): Vec { return a - b }\n" +
+                "func mul(a: Vec, b: Vec): Vec { return a * b }\n" +
+                "func quot(a: Vec, b: Vec): Vec { return a / b }\n" +
+                "func band(a: Vec, b: Vec): Vec { return a & b }\n" +
+                "func bor(a: Vec, b: Vec): Vec { return a | b }\n" +
+                "func bxor(a: Vec, b: Vec): Vec { return a ^ b }\n" +
+                "func shl(a: Vec, n: i32): Vec { return a << n }\n" +
+                "func shr(a: Vec, n: i32): Vec { return a >> n }\n" +
+                "func shru(a: Vec, n: i32): Vec { return a >>> n }\n" +
+                "func lt(a: Vec, b: Vec): bool { return a < b }\n" +
+                "func le(a: Vec, b: Vec): bool { return a <= b }\n" +
+                "func gt(a: Vec, b: Vec): bool { return a > b }\n" +
+                "func ge(a: Vec, b: Vec): bool { return a >= b }\n" +
+                "func andalso(a: Vec, b: Vec): Vec { return a and b }\n" +
+                "func orelse(a: Vec, b: Vec): Vec { return a or b }\n" +
+                "func neg(a: Vec): Vec { return -a }\n" +
+                "func lnot(a: Vec): Vec { return not a }\n" +
+                "func bnot(a: Vec): Vec { return !a }\n" +
+                "func addEq(a: Vec, b: Vec): Vec { a += b\nreturn a }\n");
+            CheckNoErrors("无诊断（用户运算符位置全家）", unit);
+            TestHarness.Check("plus", BoundDescribe.Body(BodyOf(bodies, "add")),
+                "Body(add, [], [Return(Binary(Add, Param(a,Vec), Param(b,Vec), Vec))])");
+            TestHarness.Check("minus", BoundDescribe.Body(BodyOf(bodies, "sub")),
+                "Body(sub, [], [Return(Binary(Sub, Param(a,Vec), Param(b,Vec), Vec))])");
+            TestHarness.Check("times", BoundDescribe.Body(BodyOf(bodies, "mul")),
+                "Body(mul, [], [Return(Binary(Mul, Param(a,Vec), Param(b,Vec), Vec))])");
+            TestHarness.Check("div", BoundDescribe.Body(BodyOf(bodies, "quot")),
+                "Body(quot, [], [Return(Binary(Div, Param(a,Vec), Param(b,Vec), Vec))])");
+            TestHarness.Check("bitwiseAnd", BoundDescribe.Body(BodyOf(bodies, "band")),
+                "Body(band, [], [Return(Binary(BinAnd, Param(a,Vec), Param(b,Vec), Vec))])");
+            TestHarness.Check("bitwiseOr", BoundDescribe.Body(BodyOf(bodies, "bor")),
+                "Body(bor, [], [Return(Binary(BinOr, Param(a,Vec), Param(b,Vec), Vec))])");
+            TestHarness.Check("bitwiseXor", BoundDescribe.Body(BodyOf(bodies, "bxor")),
+                "Body(bxor, [], [Return(Binary(BinXor, Param(a,Vec), Param(b,Vec), Vec))])");
+            TestHarness.Check("leftShift", BoundDescribe.Body(BodyOf(bodies, "shl")),
+                "Body(shl, [], [Return(Binary(ShiftLeft, Param(a,Vec), Param(n,i32), Vec))])");
+            TestHarness.Check("rightShift", BoundDescribe.Body(BodyOf(bodies, "shr")),
+                "Body(shr, [], [Return(Binary(ShiftRight, Param(a,Vec), Param(n,i32), Vec))])");
+            TestHarness.Check("unsignedRightShift", BoundDescribe.Body(BodyOf(bodies, "shru")),
+                "Body(shru, [], [Return(Binary(ShiftRightUnsigned, Param(a,Vec), Param(n,i32), Vec))])");
+            TestHarness.Check("compareTo < 结果 bool", BoundDescribe.Body(BodyOf(bodies, "lt")),
+                "Body(lt, [], [Return(Binary(CmpLt, Param(a,Vec), Param(b,Vec), bool))])");
+            TestHarness.Check("compareTo <=", BoundDescribe.Body(BodyOf(bodies, "le")),
+                "Body(le, [], [Return(Binary(CmpLe, Param(a,Vec), Param(b,Vec), bool))])");
+            TestHarness.Check("compareTo >", BoundDescribe.Body(BodyOf(bodies, "gt")),
+                "Body(gt, [], [Return(Binary(CmpGt, Param(a,Vec), Param(b,Vec), bool))])");
+            TestHarness.Check("compareTo >=", BoundDescribe.Body(BodyOf(bodies, "ge")),
+                "Body(ge, [], [Return(Binary(CmpGe, Param(a,Vec), Param(b,Vec), bool))])");
+            TestHarness.Check("and 不短路（Binary 节点）", BoundDescribe.Body(BodyOf(bodies, "andalso")),
+                "Body(andalso, [], [Return(Binary(And, Param(a,Vec), Param(b,Vec), Vec))])");
+            TestHarness.Check("or 不短路（Binary 节点）", BoundDescribe.Body(BodyOf(bodies, "orelse")),
+                "Body(orelse, [], [Return(Binary(Or, Param(a,Vec), Param(b,Vec), Vec))])");
+            TestHarness.Check("opposite", BoundDescribe.Body(BodyOf(bodies, "neg")),
+                "Body(neg, [], [Return(Unary(Opposite, Param(a,Vec), Vec))])");
+            TestHarness.Check("not", BoundDescribe.Body(BodyOf(bodies, "lnot")),
+                "Body(lnot, [], [Return(Unary(Not, Param(a,Vec), Vec))])");
+            TestHarness.Check("bitwiseNot", BoundDescribe.Body(BodyOf(bodies, "bnot")),
+                "Body(bnot, [], [Return(Unary(BinNot, Param(a,Vec), Vec))])");
+            TestHarness.Check("复合赋值 +=", BoundDescribe.Body(BodyOf(bodies, "addEq")),
+                "Body(addEq, [], [ExprStmt(CompoundAssign(Add, Param(a,Vec), Param(b,Vec), Vec)); " +
+                "Return(Param(a,Vec))])");
+
+            // 负例：未定义 operator
+            var (unit2, _) = BindUnit(
+                "class Plain { }\nfunc f(a: Plain, b: Plain): Plain { return a + b }\n");
+            TestHarness.CheckSemanticError("未定义 plus", unit2.Diagnostics,
+                "Operator '+' is not defined for type 'Plain'");
+            var (unit3, _) = BindUnit(
+                "class Plain { }\nfunc f(a: Plain): Plain { return -a }\n");
+            TestHarness.CheckSemanticError("未定义 opposite", unit3.Diagnostics,
+                "Operator '-' is not defined for type 'Plain'");
+            var (unit4, _) = BindUnit(
+                "class Plain { }\nfunc f(a: Plain, b: Plain): bool { return a < b }\n");
+            TestHarness.CheckSemanticError("未定义 compareTo", unit4.Diagnostics,
+                "Operator '<' is not defined for type 'Plain'");
+            var (unit5, _) = BindUnit(
+                "class Plain { }\nfunc f(a: Plain, b: Plain) { a += b }\n");
+            TestHarness.CheckSemanticError("未定义复合赋值 plus", unit5.Diagnostics,
+                "Operator '+=' is not defined for type 'Plain'");
+
+            // and/or 不短路：右侧类型错误仍报（两侧都绑定）
+            var (unit6, _) = BindUnit(
+                "class Flag { pub operator and(other: Flag): Flag { return this } }\n" +
+                "func f(a: Flag): Flag { return a and 1 }\n");
+            TestHarness.CheckSemanticError("用户 and 右侧仍绑定", unit6.Diagnostics,
+                "No applicable overload of 'and'");
+
+            // 泛型 operator 运算符位置：从右操作数推断
+            var (unit7, bodies7) = BindUnit(
+                "class Vec {\n" +
+                "    pub operator plus\\<TAnother>(other: TAnother): Vec { return this }\n" +
+                "}\n" +
+                "func f(a: Vec): Vec { return a + \"s\" }\n");
+            CheckNoErrors("无诊断（泛型 plus 运算符位置推断）", unit7);
+            TestHarness.Check("运算符位置推断 plus 绑 Add",
+                BoundDescribe.Body(BodyOf(bodies7, "f")),
+                "Body(f, [], [Return(Binary(Add, Param(a,Vec), Str(\"s\",String), Vec))])");
+        }
+
+        // ===== 固定泛型参数推断（SYNTAX §4.2 修订）=====
+        private static void TestGenericInference()
+        {
+            TestHarness.Section("P3 Generic Inference (§4.2)");
+
+            // 单参数：i32 / String / 用户类型
+            var (uI32, bI32) = BindUnit(
+                "func id\\<T>(x: T): T { return x }\n" +
+                "func main() { var v = id(1) }\n");
+            CheckNoErrors("单参推断 i32", uI32);
+            var cI32 = (BoundCallExpression)((BoundLocalDeclarationStatement)
+                BodyOf(bI32, "main").Body.Statements[0]).Initializer!;
+            TestHarness.CheckTrue("id(1) → T=i32",
+                cI32.TypeArguments.Count == 1
+                && ReferenceEquals(cI32.TypeArguments[0], uI32.Symbols.Bootstrap.Int32));
+
+            var (uStr, bStr) = BindUnit(
+                "func id\\<T>(x: T): T { return x }\n" +
+                "func main() { var v = id(\"hi\") }\n");
+            CheckNoErrors("单参推断 String", uStr);
+            var cStr = (BoundCallExpression)((BoundLocalDeclarationStatement)
+                BodyOf(bStr, "main").Body.Statements[0]).Initializer!;
+            TestHarness.CheckTrue("id(\"hi\") → T=String",
+                ReferenceEquals(cStr.TypeArguments[0], uStr.Symbols.Bootstrap.String));
+
+            var (uUser, bUser) = BindUnit(
+                "class Spot { }\n" +
+                "func id\\<T>(x: T): T { return x }\n" +
+                "func main() { var v = id(new Spot()) }\n");
+            CheckNoErrors("单参推断用户类型", uUser);
+            var cUser = (BoundCallExpression)((BoundLocalDeclarationStatement)
+                BodyOf(bUser, "main").Body.Statements[0]).Initializer!;
+            TestHarness.CheckTrue("id(new Spot()) → T=Spot",
+                cUser.TypeArguments[0] is TypeSymbol { Name: "Spot" });
+
+            // 构造模式：Array\<T>、Map\<K,V>、嵌套、T?
+            var (uArr, bArr) = BindUnit(
+                "func firstOf\\<T>(arr: Array\\<T>): T { return arr[0] }\n" +
+                "func main(a: Array\\<i32>): i32 { return firstOf(a) }\n");
+            CheckNoErrors("Array<T> 推断", uArr);
+            var cArr = (BoundCallExpression)((BoundReturnStatement)
+                BodyOf(bArr, "main").Body.Statements[0]).Value!;
+            TestHarness.CheckTrue("firstOf(Array<i32>) → T=i32",
+                cArr.TypeArguments.Count == 1
+                && ReferenceEquals(cArr.TypeArguments[0], uArr.Symbols.Bootstrap.Int32));
+
+            var (uMap, bMap) = BindUnit(
+                "func keys\\<K, V>(m: Map\\<K, V>): i32 { return 0 }\n" +
+                "func main(m: Map\\<String, i32>): i32 { return keys(m) }\n");
+            CheckNoErrors("Map<K,V> 推断", uMap);
+            var cMap = (BoundCallExpression)((BoundReturnStatement)
+                BodyOf(bMap, "main").Body.Statements[0]).Value!;
+            TestHarness.CheckTrue("keys(Map<String,i32>) → K=String V=i32",
+                cMap.TypeArguments.Count == 2
+                && ReferenceEquals(cMap.TypeArguments[0], uMap.Symbols.Bootstrap.String)
+                && ReferenceEquals(cMap.TypeArguments[1], uMap.Symbols.Bootstrap.Int32));
+
+            var (uNest, bNest) = BindUnit(
+                "func firstNested\\<T>(a: Array\\<Array\\<T>>): Array\\<T> { return a[0] }\n" +
+                "func main(a: Array\\<Array\\<i32>>): Array\\<i32> { return firstNested(a) }\n");
+            CheckNoErrors("嵌套 Array<Array<T>> 推断", uNest);
+            var cNest = (BoundCallExpression)((BoundReturnStatement)
+                BodyOf(bNest, "main").Body.Statements[0]).Value!;
+            TestHarness.CheckTrue("firstNested(Array<Array<i32>>) → T=i32",
+                ReferenceEquals(cNest.TypeArguments[0], uNest.Symbols.Bootstrap.Int32));
+
+            var (uNull, bNull) = BindUnit(
+                "func wrap\\<T>(v: T?): T? { return v }\n" +
+                "func main(n: i32?): i32? { return wrap(n) }\n");
+            CheckNoErrors("T? 推断", uNull);
+            var cNull = (BoundCallExpression)((BoundReturnStatement)
+                BodyOf(bNull, "main").Body.Statements[0]).Value!;
+            TestHarness.CheckTrue("wrap(i32?) → T=i32",
+                ReferenceEquals(cNull.TypeArguments[0], uNull.Symbols.Bootstrap.Int32));
+
+            // 双参数各绑一参
+            var (uPair, bPair) = BindUnit(
+                "func pair\\<A, B>(x: A, y: B): A { return x }\n" +
+                "func main() { var v = pair(1, \"s\") }\n");
+            CheckNoErrors("双参各绑一参", uPair);
+            var cPair = (BoundCallExpression)((BoundLocalDeclarationStatement)
+                BodyOf(bPair, "main").Body.Statements[0]).Initializer!;
+            TestHarness.CheckTrue("pair(i32, String) → A=i32 B=String",
+                cPair.TypeArguments.Count == 2
+                && ReferenceEquals(cPair.TypeArguments[0], uPair.Symbols.Bootstrap.Int32)
+                && ReferenceEquals(cPair.TypeArguments[1], uPair.Symbols.Bootstrap.String));
+
+            // 冲突绑定
+            var (uConf, _) = BindUnit(
+                "func same\\<T>(x: T, y: T): T { return x }\n" +
+                "func main() { var v = same(1, \"s\") }\n");
+            TestHarness.CheckSemanticError("冲突绑定报错", uConf.Diagnostics,
+                "cannot infer type arguments from the given arguments");
+
+            // 推断实参违反约束
+            var (uCst, _) = BindUnit(
+                "open class Animal { }\n" +
+                "func only\\<T extends Animal>(x: T): T { return x }\n" +
+                "func main() { var v = only(1) }\n");
+            TestHarness.CheckSemanticError("推断违反约束", uCst.Diagnostics,
+                "Type argument 'i32' does not satisfy the 'Extends Animal' constraint of 'T'");
+
+            // 返回独占 T
+            var (uRet, _) = BindUnit(
+                "func make\\<T>(): T { return make\\<T>() }\n" +
+                "func main() { var v = make() }\n");
+            TestHarness.CheckSemanticError("返回独占 T 无法推断", uRet.Diagnostics,
+                "cannot infer type arguments from the given arguments");
+
+            // null 唯一绑定源
+            var (uN1, _) = BindUnit(
+                "func id\\<T>(x: T): T { return x }\n" +
+                "func main() { var v = id(null) }\n");
+            TestHarness.CheckSemanticError("null 唯一绑定源", uN1.Diagnostics,
+                "cannot infer type arguments from the given arguments");
+
+            // 多处绑定中 null 不参与，另一处成功（null 落在 T? 槽）
+            var (uN2, bN2) = BindUnit(
+                "func same\\<T>(x: T?, y: T): T { return y }\n" +
+                "func main() { var v = same(null, 1) }\n");
+            CheckNoErrors("null 不参与、另一处成功", uN2);
+            var cN2 = (BoundCallExpression)((BoundLocalDeclarationStatement)
+                BodyOf(bN2, "main").Body.Statements[0]).Initializer!;
+            TestHarness.CheckTrue("same(null, 1) → T=i32",
+                ReferenceEquals(cN2.TypeArguments[0], uN2.Symbols.Bootstrap.Int32));
+
+            // 非泛型 vs 推断泛型同台 ranking
+            // show(Any) vs show\<T>(T)：推断后 T=String 更具体 → 泛型胜
+            var (uRank1, bRank1) = BindUnit(
+                "func show(x: Any): i32 { return 1 }\n" +
+                "func show\\<T>(x: T): i32 { return 2 }\n" +
+                "func main() { var v = show(\"hi\") }\n");
+            CheckNoErrors("非泛型 Any vs 推断 String：泛型胜", uRank1);
+            var cRank1 = (BoundCallExpression)((BoundLocalDeclarationStatement)
+                BodyOf(bRank1, "main").Body.Statements[0]).Initializer!;
+            TestHarness.CheckTrue("更具体的推断泛型胜出",
+                cRank1.Method.GenericParameters.Count == 1
+                && cRank1.TypeArguments.Count == 1
+                && ReferenceEquals(cRank1.TypeArguments[0], uRank1.Symbols.Bootstrap.String));
+
+            // show(String) vs show\<T>(T)：推断后两签名同等具体 → 二义
+            var (uRank2, _) = BindUnit(
+                "func show(x: String): i32 { return 1 }\n" +
+                "func show\\<T>(x: T): i32 { return 2 }\n" +
+                "func main() { var v = show(\"hi\") }\n");
+            TestHarness.CheckSemanticError("同等具体：非泛型与推断泛型二义", uRank2.Diagnostics,
+                "is ambiguous between");
+
+            // 显式实参优先且不混推：带 \\<String> 只走泛型，非泛型不入池
+            var (uExp, bExp) = BindUnit(
+                "func foo(x: i32): i32 { return x }\n" +
+                "func foo\\<T>(x: T): T { return x }\n" +
+                "func main() { var v = foo\\<String>(\"s\") }\n");
+            CheckNoErrors("显式实参只走泛型", uExp);
+            var cExp = (BoundCallExpression)((BoundLocalDeclarationStatement)
+                BodyOf(bExp, "main").Body.Statements[0]).Initializer!;
+            TestHarness.CheckTrue("显式 String 命中泛型",
+                cExp.TypeArguments.Count == 1
+                && ReferenceEquals(cExp.TypeArguments[0], uExp.Symbols.Bootstrap.String));
+
+            // 显式元数不符仍报错
+            var (uArity, _) = BindUnit(
+                "func id\\<T>(x: T): T { return x }\n" +
+                "func main() { var v = id\\<i32, i64>(1) }\n");
+            TestHarness.CheckSemanticError("显式元数不符", uArity.Diagnostics,
+                "'id' expects 1 type argument(s), got 2");
+
+            // 宿主泛型代入：Box\<T> 内方法推断 U
+            var (uHost, bHost) = BindUnit(
+                "pub open class Box\\<T> {\n" +
+                "    pub var item: T\n" +
+                "    pub init(_ -> item) { }\n" +
+                "    pub func get\\<U>(u: U): T { return item }\n" +
+                "}\n" +
+                "func main() {\n" +
+                "    var box = new Box\\<i32>(1)\n" +
+                "    var v = box.get(\"s\")\n" +
+                "}\n");
+            CheckNoErrors("宿主代入 + 方法推断", uHost);
+            var cHost = (BoundInstanceCallExpression)
+                ((BoundLocalDeclarationStatement)BodyOf(bHost, "main").Body.Statements[1])
+                .Initializer!;
+            TestHarness.CheckTrue("box.get(\"s\") → U=String，返回宿主 T=i32",
+                cHost.TypeArguments.Count == 1
+                && ReferenceEquals(cHost.TypeArguments[0], uHost.Symbols.Bootstrap.String)
+                && ReferenceEquals(cHost.Type, uHost.Symbols.Bootstrap.Int32));
+
+            // ext 方法推断
+            var (uExt, bExt) = BindUnit(
+                "pub ext func String.wrap\\<T>(x: T): T { return x }\n" +
+                "func main() { var v = \"s\".wrap(1) }\n");
+            CheckNoErrors("ext 方法推断", uExt);
+            var cExt = (BoundInstanceCallExpression)
+                ((BoundLocalDeclarationStatement)BodyOf(bExt, "main").Body.Statements[0])
+                .Initializer!;
+            TestHarness.CheckTrue("\"s\".wrap(1) → T=i32",
+                cExt.TypeArguments.Count == 1
+                && ReferenceEquals(cExt.TypeArguments[0], uExt.Symbols.Bootstrap.Int32));
+
+            // 推断结果的 shared 安全检查仍生效
+            var (uShare, _) = BindUnit(
+                "class LocalUser { }\n" +
+                "async func pass\\<T>(x: T): T { return x }\n" +
+                "func f() { var v = pass(new LocalUser()) }\n");
+            TestHarness.CheckSemanticError("推断实参仍走闸门 5", uShare.Diagnostics,
+                "type argument of async function 'pass' must be a shared-safe type: 'LocalUser'");
+
+            // 用户泛型类型构造模式
+            var (uBox, bBox) = BindUnit(
+                "pub open class Box\\<T> {\n" +
+                "    pub var item: T\n" +
+                "    pub init(_ -> item) { }\n" +
+                "}\n" +
+                "func take\\<T>(b: Box\\<T>): T { return b.item }\n" +
+                "func main() {\n" +
+                "    var box = new Box\\<String>(\"s\")\n" +
+                "    var v = take(box)\n" +
+                "}\n");
+            CheckNoErrors("用户泛型类型构造模式", uBox);
+            var cBox = (BoundCallExpression)
+                ((BoundLocalDeclarationStatement)BodyOf(bBox, "main").Body.Statements[1])
+                .Initializer!;
+            TestHarness.CheckTrue("take(Box<String>) → T=String",
+                ReferenceEquals(cBox.TypeArguments[0], uBox.Symbols.Bootstrap.String));
+
+            // 类型级构造器不推断（回归：new Box 仍报元数）
+            var (uNew, _) = BindUnit(
+                "pub open class Box\\<T> { pub init() { } }\n" +
+                "func main() { var box = new Box() }\n");
+            TestHarness.CheckSemanticError("类型级构造器不推断", uNew.Diagnostics,
+                "'Box' expects 1 type argument(s), got 0");
+
+            // wrapper 方法推断（place 作 InstCall receiver）
+            var (uWrap, bWrap) = BindUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Logged {\n" +
+                "    pub func wrap\\<T>(x: T): T { return x }\n" +
+                "}\n" +
+                "@Logged\n" +
+                "pub class Service { pub init() }\n" +
+                "func main(s: Service): i32 { return s:Logged.wrap(1) }\n");
+            CheckNoErrors("wrapper 方法推断", uWrap);
+            var cWrap = (BoundInstanceCallExpression)((BoundReturnStatement)
+                BodyOf(bWrap, "main").Body.Statements[0]).Value!;
+            TestHarness.CheckTrue("s:Logged.wrap(1) → T=i32",
+                cWrap.TypeArguments.Count == 1
+                && ReferenceEquals(cWrap.TypeArguments[0], uWrap.Symbols.Bootstrap.Int32));
         }
     }
 }

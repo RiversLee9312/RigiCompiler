@@ -52,6 +52,7 @@ namespace RigiCompiler.Tests
             TestCompoundAssignmentLowering();
             TestValueBlockIfTransform();
             TestLoopLowering();
+            TestLoopStructuredExitRouting();
             TestInstanceLowering();
             TestForLoopLowering();
             TestSwitchLowering();

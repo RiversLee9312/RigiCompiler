@@ -143,6 +143,8 @@ namespace RigiCompiler.Tests
 
             TestDecl("struct V { pub operator plus(o: V): V {} }",
                 "struct V {pub operator plus(o: V): V {}}");
+            TestDecl("struct F { pub operator and(o: F): F {} pub operator not(): F {} }",
+                "struct F {pub operator and(o: F): F {}, pub operator not(): F {}}");
 
             TestDecl("interface D { func draw(c: Canvas) }",
                 "interface D {func draw(c: Canvas)}");

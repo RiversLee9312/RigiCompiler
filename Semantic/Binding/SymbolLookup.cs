@@ -1,8 +1,8 @@
 namespace RigiCompiler
 {
-    // 共享符号查询设施（自旧 BindSession 静态/实例辅助原样迁移，行为不变）：
-    // 实例成员沿 BaseType 链查找、泛型字段最小替换（S7f/M52，S9 前置）、
-    // 实例 operator 按名与参数个数查找（S8c 索引访问）、可赋值性判定。
+    // 共享符号查询设施：实例成员沿 BaseType 链查找、泛型字段最小替换、
+    // 实例 operator 按名与参数个数查找、可赋值性判定、泛型参数有效成员类型
+    // （SYNTAX §3.6 / §13.3）。接口 lookup 另走 InterfaceClosure。
     // 全部为无副作用纯查询，各簇 visitor 共用。
     internal static class SymbolLookup
     {
@@ -58,6 +58,55 @@ namespace RigiCompiler
             return type;
         }
 
+        // 有效成员类型（SYNTAX §3.6 / §13 泛型参数操作数）：
+        // TypeSymbol → 自身；GenericParameterSymbol 有 extends B 时 → B
+        // （构造界已是代入/保留宿主参数身份的 TypeSymbol；界本身是外层
+        // 泛型参数时递归取其有效类型）；无约束 / 仅 supers / 仅 with → Any。
+        // 成员解析（方法、operator、字段、索引）统一按本类型查找。
+        public static TypeSymbol EffectiveMemberType(SemanticSymbol type, BindEnvironment env)
+        {
+            if (type is TypeSymbol typeSymbol) return typeSymbol;
+            if (type is GenericParameterSymbol parameter)
+            {
+                foreach (var constraint in parameter.Constraints)
+                {
+                    if (constraint.Kind != GenericConstraintKind.Extends) continue;
+                    if (constraint.Bound is TypeSymbol bound) return bound;
+                    if (constraint.Bound is GenericParameterSymbol outer)
+                    {
+                        return EffectiveMemberType(outer, env);
+                    }
+                }
+                return env.B.Any;
+            }
+            return env.B.Any;
+        }
+
+        // 泛型参数是否仅有 supers/with（无 extends）——运算符诊断用
+        public static bool HasOnlyNonMemberConstraint(SemanticSymbol type)
+        {
+            if (type is not GenericParameterSymbol parameter
+                || parameter.Constraints.Count == 0)
+            {
+                return false;
+            }
+            return parameter.Constraints.All(c =>
+                c.Kind is GenericConstraintKind.Supers or GenericConstraintKind.With);
+        }
+
+        public static string OperatorNotDefinedMessage(string token, SemanticSymbol type)
+        {
+            var display = BoundAnalysis.TypeDisplay(type);
+            if (HasOnlyNonMemberConstraint(type) && type is GenericParameterSymbol parameter)
+            {
+                var kind = parameter.Constraints[0].Kind == GenericConstraintKind.Supers
+                    ? "supers" : "with";
+                return $"Operator '{token}' is not defined for type '{display}' " +
+                    $"({kind} constraint does not provide members)";
+            }
+            return $"Operator '{token}' is not defined for type '{display}'";
+        }
+
         // 实例方法查找：receiver 静态类型沿 BaseType 链（接口 receiver
         // 即查接口自身，BaseType 为 null 自然终止；ext 注册成员已在目标
         // 类型成员表）。Regular 实例方法 + operator（S9f 复核 M69 注记：
@@ -69,25 +118,61 @@ namespace RigiCompiler
         // S7f 起经 ConstructedFrom 回退——实参替换在使用侧特判）。
         // override 遮蔽（S8e，§9.2.1）：override 在分派语义上替换继承
         // 成员——派生层已收集的 override 与基类层候选签名严格相等时
-        // 基类候选不进重载候选池（否则同签名候选歧义）
-        public static List<MethodSymbol> FindInstanceMethods(TypeSymbol type, string name)
+        // 基类候选不进重载候选池（否则同签名候选歧义）。
+        // 接口闭包：lookup 类型本身是 interface 时另走 InterfaceClosure
+        // （与接口类型变量调基接口成员同一口径；class 不走——实现已在
+        // 类成员表，再收接口声明会与具体实现双候选）
+        public static List<MethodSymbol> FindInstanceMethods(TypeSymbol type, string name,
+            SymbolGraph? symbols = null)
         {
             var result = new List<MethodSymbol>();
+            CollectInstanceMethods(result, type, name);
+            AppendInterfaceMembers(result, type, name, symbols, operatorsOnly: false,
+                parameterCount: -1);
+            return result;
+        }
+
+        private static void CollectInstanceMethods(List<MethodSymbol> result, TypeSymbol type,
+            string name)
+        {
             for (var t = type; t != null; t = t.BaseType)
             {
-                var owner = t.ConstructedFrom ?? t;
-                foreach (var method in owner.Methods.Where(m => m.Name == name
-                    && !m.IsStatic && m.Kind is MethodKind.Regular or MethodKind.Operator))
-                {
-                    if (result.Any(derived => derived.IsOverride
-                        && SignaturesEqual(derived, method)))
-                    {
-                        continue;
-                    }
-                    result.Add(method);
-                }
+                CollectMethodsFromOwner(result, t.ConstructedFrom ?? t, name,
+                    operatorsOnly: false, parameterCount: -1);
             }
-            return result;
+        }
+
+        private static void CollectMethodsFromOwner(List<MethodSymbol> result, TypeSymbol owner,
+            string name, bool operatorsOnly, int parameterCount)
+        {
+            foreach (var method in owner.Methods.Where(m => m.Name == name && !m.IsStatic
+                && (operatorsOnly
+                    ? m.Kind == MethodKind.Operator && m.Parameters.Count == parameterCount
+                    : m.Kind is MethodKind.Regular or MethodKind.Operator)))
+            {
+                if (result.Any(derived => derived.IsOverride && SignaturesEqual(derived, method)))
+                {
+                    continue;
+                }
+                if (result.Any(existing => ReferenceEquals(existing, method))) continue;
+                result.Add(method);
+            }
+        }
+
+        // 接口 lookup 才收闭包：IChild : IBase 上的基接口成员与「接口类型
+        // 变量调方法」同一口径。class 实现已在自身成员表，再收接口声明
+        // 会与具体实现双候选。
+        private static void AppendInterfaceMembers(List<MethodSymbol> result, TypeSymbol type,
+            string name, SymbolGraph? symbols, bool operatorsOnly, int parameterCount)
+        {
+            if (symbols == null) return;
+            var definition = type.ConstructedFrom ?? type;
+            if (definition.Kind != TypeKind.Interface) return;
+            foreach (var iface in OverrideChecker.InterfaceClosure(type, symbols))
+            {
+                CollectMethodsFromOwner(result, iface.ConstructedFrom ?? iface, name,
+                    operatorsOnly, parameterCount);
+            }
         }
 
         // 签名严格相等（参数类型序列 + 返回类型，引用相等——OverrideChecker
@@ -125,21 +210,21 @@ namespace RigiCompiler
         // 静态类型沿 BaseType 链按名字与参数个数过滤（ext 注册 operator 已在
         // 目标类型成员表；构造类型回退泛型定义，同 FindInstanceMethods）
         public static List<MethodSymbol> FindInstanceOperators(TypeSymbol type, string name,
-            int parameterCount)
+            int parameterCount, SymbolGraph? symbols = null)
         {
             var result = new List<MethodSymbol>();
             for (var t = type; t != null; t = t.BaseType)
             {
-                var owner = t.ConstructedFrom ?? t;
-                result.AddRange(owner.Methods.Where(m => m.Name == name
-                    && !m.IsStatic && m.Kind == MethodKind.Operator
-                    && m.Parameters.Count == parameterCount));
+                CollectMethodsFromOwner(result, t.ConstructedFrom ?? t, name,
+                    operatorsOnly: true, parameterCount);
             }
+            AppendInterfaceMembers(result, type, name, symbols, operatorsOnly: true,
+                parameterCount);
             return result;
         }
 
-        // 实例 operator 查找（for 头专用）：首个 1 参数命中
-        // （经 FindInstanceOperators 实现，行为不变）
+        // 实例 operator 查找：首个 1 参数命中（范围循环已改走
+        // FindInstanceOperators + ResolveBound，本入口仅遗留调用方）
         public static MethodSymbol? FindInstanceOperator(TypeSymbol type, string name)
         {
             return FindInstanceOperators(type, name, 1).FirstOrDefault();
@@ -275,8 +360,9 @@ namespace RigiCompiler
 
         // 可赋值性：同符号（驻留引用相等）直通；ErrorType 毒化静默放行；
         // T → Nullable\<T\> 装箱视图（M52）；沿 BaseType 链与接口表命中。
-        // S9 放宽为 SemanticSymbol：泛型参数参与判定——同参数引用相等直通
-        // （已先行），与具体类型或异参数比较一律不可赋（false，不落诊断）。
+        // 泛型参数：同参数引用相等直通（已先行）；from 为 T 时按有效成员
+        // 类型判定（T extends B ⟹ T 可赋给 B 及 B 的上界；无约束 T 可赋给
+        // Any）；to 为异参数一律不可赋。
         // S9f：沿 BaseType 链的接口判定——接口可声明在泛型基类上
         // （RangeEnumerator\<T\> implements IEnumerator\<T\>），构造宿主
         // RangeEnumerator\<i32\> 的接口实参沿链代入后比较
@@ -285,8 +371,12 @@ namespace RigiCompiler
         {
             if (ReferenceEquals(from, to)) return true;
             if (from is ErrorTypeSymbol || to is ErrorTypeSymbol) return true;
-            // 泛型参数 vs 具体类型：不可赋（ErrorType 已先行放行）
-            if (from is GenericParameterSymbol || to is GenericParameterSymbol) return false;
+            if (from is GenericParameterSymbol)
+            {
+                return to is not GenericParameterSymbol
+                    && IsAssignable(EffectiveMemberType(from, env), to, env);
+            }
+            if (to is GenericParameterSymbol) return false;
             var fromType = (TypeSymbol)from;
             var toType = (TypeSymbol)to;
             if (ReferenceEquals(toType.ConstructedFrom, env.B.NullableDefinition)

@@ -92,9 +92,12 @@ namespace RigiCompiler
                         // Any 恒在 BaseType 链顶，查找不可能落空；S9a：
                         // 泛型参数段在 Object 上查找——共享代码体运行时按
                         // typeid 分派实际 toString）
-                        var toString = (value.Type is TypeSymbol valueType
-                                ? SymbolLookup.FindInstanceMethods(valueType, "toString")
-                                : SymbolLookup.FindInstanceMethods(env.B.Object, "toString"))
+                        var toStringLookup = SymbolLookup.EffectiveMemberType(value.Type, env);
+                        var toString = SymbolLookup.FindInstanceMethods(toStringLookup, "toString",
+                                env.Unit.Symbols)
+                            .FirstOrDefault(m => m.Parameters.Count == 0)
+                            ?? SymbolLookup.FindInstanceMethods(env.B.Any, "toString",
+                                env.Unit.Symbols)
                             .FirstOrDefault(m => m.Parameters.Count == 0);
                         if (toString == null)
                         {

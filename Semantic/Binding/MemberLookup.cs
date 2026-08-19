@@ -107,7 +107,8 @@
                 if (!item.importAll) continue;
                 var container = env.Names.ResolveSymbolPath(item.symbolNode.symbol, frame.FileCtx,
                     declaringType: null, declaringMethod: null,
-                    allowImports: false, reportErrors: false, span: null);
+                    allowImports: false, reportErrors: false, span: null,
+                    allowBareGenericDefinition: true);
                 if (container is not ErrorTypeSymbol) yield return container;
             }
         }

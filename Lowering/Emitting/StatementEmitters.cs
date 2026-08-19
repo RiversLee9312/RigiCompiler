@@ -249,9 +249,11 @@ namespace RigiCompiler
         {
             var ifStatement = (LoweredIfStatement)node;
             // §18.1 rigi.seq-route hint：标准 route dispatcher 尾链首链节
-            // 带标记（StructuredExitRouting 设置）——在汇聚边着陆点之后、
-            // 第一条 cmp 之前补一条 hint（JSON 经 string 资源承载；标量
-            // 资源按（类型, 原文）去重，同 route 名的多个 region 共享）
+            // 带标记（StructuredExitRouting 设置，seq/if/switch/loop 同款）
+            // ——在汇聚边着陆点之后、第一条 cmp 之前补一条 hint（JSON
+            // 经 string 资源承载；标量资源按（类型, 原文）去重，同 route
+            // 名的多个 region 共享）。loop/loop.rev 的 dispatcher 是本
+            // if 链，hint 自然落在 loop 指令之后
             if (ifStatement.SeqRouteHintRoute != null)
             {
                 var hintJson = "{\"kind\":\"rigi.seq-route\",\"version\":1,\"route\":\"$"
@@ -284,7 +286,9 @@ namespace RigiCompiler
     // loop $c blk(body) none blk(judge) $breakid（IsRev → loop.rev；
     // 枚举器块恒 none——for 的枚举器在 S7c-2 已脱糖为前置 iterate +
     // Judge/Body 协议调用，不走枚举器块形态）；body/judge
-    // block 加入函数并递归发射，落尾自然返回（§9.4 同 if 分支块）
+    // block 加入函数并递归发射，落尾自然返回（§9.4 同 if 分支块）。
+    // 有 route dispatcher 时 hint 由随后的 IfEmitter 发射（紧贴本
+    // loop/loop.rev 指令之后，§18.1）
     internal sealed class LoopEmitter : EmitVisitor<LoopEmitter, Unit>
     {
         protected override Unit VisitCore(LoweredNode node, BilBlock target, EmitContext ctx,

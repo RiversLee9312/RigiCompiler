@@ -200,7 +200,7 @@ RigiCompiler/
 │   │                            #   （含 BoundValueBlock.IsVolatile）；增补
 │   │                            #   BoundTypeCheckExpression（Kind 三态 + TargetType/
 │   │                            #   TargetValue 互斥双槽）/BoundTypeOfExpression
-│   │                            #   （Operand/TargetType 互斥，Type = Type\<T\> 构造）；
+│   │                            #   （Operand/TargetType 互斥，Type = Type\<T> 构造）；
 │   │                            #   增补 BoundSmartCastExpression（smart cast
 │   │                            #   标记：Operand + NarrowedType，Type = 收窄类型，
 │   │                            #   P4a 物化为显式 cast）；增补
@@ -245,7 +245,7 @@ RigiCompiler/
 │                                #   单源与构造类型 BaseType 创建即代入/统一回填、BootstrapSymbols
 │                                #   （String.Add intrinsic、Any.toString open 承诺
 │                                #   + Object open override 默认实现；统一 Public；
-│                                #   Array\<T\> getAtIndex/setAtIndex operator——索引绑定
+│                                #   Array\<T> getAtIndex/setAtIndex operator——索引绑定
 │                                #   内建目标，P4b 直发 §13.6 不走 invoke；删
 │                                #   DowngradeRouter/DowngradeChain/ProxySpecialization
 │                                #   等合成槽；BootstrapSymbols.CallWildcard =
@@ -303,7 +303,7 @@ RigiCompiler/
 │   ├── LoweringDriver.cs        # 逐函数体启动（合成局部收尾进 Locals）
 │   ├── LoweringFacility.cs      # LowerArguments/EnsureDeclaredType（BIL §6.5 cast 物化）
 │   │                            #   + variadic 索引 ABI 元素类型设施组（vargs → Any/
-│   │                            #   kwargs → Pair\<String, Any\>，读拆箱写装箱）
+│   │                            #   kwargs → Pair\<String, Any>，读拆箱写装箱）
 │   ├── Rewriters/               # 结构 visitor 簇（Statement/Loop（Judge 块）/Switch
 │   │                            #   （常量表恒等 + pattern 链降级）/TrySeq/ValueBlock
 │   │                            #   （值块降级——return@ 产 StructuredExit 标记）/
@@ -383,14 +383,14 @@ RigiCompiler/
 │                                #   VmTypeOps + Values/ 值模型
 ├── stdlib/                   # 编译器自携标准库源（EmbeddedResource 内嵌，见 StdlibSources；
 │                             #   六源，与用户源同走 P1–P4）
-│   ├── .bootstrap.rg         # 基元自举源（EnumerateInRange + core.Pair\<TKey, TValue\>
+│   ├── .bootstrap.rg         # 基元自举源（EnumerateInRange + core.Pair\<TKey, TValue>
 │   │                            #   解构协议根，SYNTAX §18/§15.3）
 │   └── core/                    # Console.rg（core.io::Console）+ collections.rg
 │                                #   （IEnumerable/IEnumerator 双接口 + RangeI32/
-│                                #   RangeEnumeratorI32；RangeEnumerator\<T\> 抽象基类）
+│                                #   RangeEnumeratorI32；RangeEnumerator\<T> 抽象基类）
 │                                #   + coroutine.rg（core.coroutine 类型面——Task/
-│                                #   Task\<TResult\>/Executor 家族/PollingAlarm/EventAlarm/
-│                                #   CoroutineLocal\<TValue\> 全 shared abstract + sleep native，
+│                                #   Task\<TResult>/Executor 家族/PollingAlarm/EventAlarm/
+│                                #   CoroutineLocal\<TValue> 全 shared abstract + sleep native，
 │                                #   SYNTAX §15.3）+ disposable.rg（core.IDisposable，
 │                                #   §6.2）+ exceptions.rg（RuntimeException/IOException/
 │                                #   CastException/NoSuchMethodException 四异常子类，§8.1）

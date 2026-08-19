@@ -185,8 +185,8 @@ namespace RigiCompiler.Tests
                 ReferenceEquals(((BoundLoopControl)
                     ifExpr.TrueBranch.Block.Statements[0]).Target, outerWhile));
 
-            // return@ 隔循环边界拦截（S7c 技术债：脱糖无法表达跳出中间循环）
-            var (unit8, _) = BindUnit(
+            // return@ 值块目标跨循环：StructuredExitRouting 展开，P3 放行
+            var (unit8, bodies8) = BindUnit(
                 "func f(x: i32): i32 {\n" +
                 "    return if (x > 0) {\n" +
                 "        while (x > 1) { return@_ 1 }\n" +
@@ -195,8 +195,53 @@ namespace RigiCompiler.Tests
                 "        return@_ 0\n" +
                 "    }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("return@ 隔循环边界拦截", unit8.Diagnostics,
-                "across a loop boundary not supported yet (S7c)");
+            CheckNoErrors("无诊断（return@ 值块目标跨循环）", unit8);
+            TestHarness.Check("return@ 跨循环绑定形态", BoundDescribe.Body(BodyOf(bodies8, "f")),
+                "Body(f, [], [Return(IfExpr(Binary(CmpGt, Param(x,i32), Int(0,i32), bool), " +
+                "ValueBlock(_, i32, [Loop(while, Binary(CmpGt, Param(x,i32), Int(1,i32), bool), " +
+                "[ReturnValue(_, Int(1,i32))]); ReturnValue(_, Int(2,i32))]), " +
+                "ValueBlock(_, i32, [ReturnValue(_, Int(0,i32))]), i32))])");
+            var trueBranch = ((BoundIfExpression)((BoundReturnStatement)
+                BodyOf(bodies8, "f").Body.Statements[0]).Value!).TrueBranch;
+            var whileInBranch = (BoundLoop)trueBranch.Block.Statements[0];
+            TestHarness.CheckTrue("循环体内 return@ 命中外层值块",
+                ReferenceEquals(((BoundReturnValueStatement)
+                    whileInBranch.Body.Statements[0]).Target, trueBranch));
+
+            // do-while 至少一次：体保证产值即可作为值块唯一产值路径
+            var (unit9, bodies9) = BindUnit(
+                "func g(): i32 {\n" +
+                "    return seq {\n" +
+                "        do { return@_ 7 } while (false)\n" +
+                "    }\n" +
+                "}\n");
+            CheckNoErrors("无诊断（do-while 体保证产值）", unit9);
+            TestHarness.Check("do-while 唯一产值路径", BoundDescribe.Body(BodyOf(bodies9, "g")),
+                "Body(g, [], [Return(SeqExpr([], ValueBlock(_, i32, " +
+                "[Loop(do-while, Bool(False,bool), [ReturnValue(_, Int(7,i32))])])))])");
+
+            // 循环体内 return@ 类型参与外层统一（EnumerateStatements 下钻）
+            var (unit11, _) = BindUnit(
+                "func k(x: i32): i32 {\n" +
+                "    return if (x > 0) {\n" +
+                "        while (x > 1) { return@_ \"a\" }\n" +
+                "        return@_ 2\n" +
+                "    } else {\n" +
+                "        return@_ 0\n" +
+                "    }\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("循环体内 return@ 类型不一致", unit11.Diagnostics,
+                "produces different types");
+
+            // while 可零次执行：末语句是 while 仍不保证（保守）
+            var (unit10, _) = BindUnit(
+                "func h(): i32 {\n" +
+                "    return seq {\n" +
+                "        while (true) { return@_ 1 }\n" +
+                "    }\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("while 末语句不保证产值（保守）", unit10.Diagnostics,
+                "must explicitly return@ a value");
         }
 
         // ===== for 双形态（S7c-2：范围循环/for-each 协议，带 stdlib）=====
@@ -270,14 +315,14 @@ namespace RigiCompiler.Tests
             TestHarness.CheckSemanticError("迭代源未实现 IEnumerable", unit3.Diagnostics,
                 "does not implement core.collections.IEnumerable<T>");
 
-            // 诊断：范围两端类型不一致
+            // 诊断：右操作数无法绑定到左操作数类型的 EnumerateInRange 形参
             var (unit4, _) = BindUnitWithStdlib(
                 "pub func main(): i32 {\n" +
                 "    for (i in 0 to \"s\") { }\n" +
                 "    return 0\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("范围两端类型不一致", unit4.Diagnostics,
-                "Range bounds must have the same type (got 'i32' and 'String')");
+            TestHarness.CheckSemanticError("右操作数不匹配 EnumerateInRange 形参",
+                unit4.Diagnostics, "No applicable overload of 'EnumerateInRange'");
 
             // 诊断：循环变量 const 写入
             var (unit5, _) = BindUnitWithStdlib(
@@ -301,6 +346,250 @@ namespace RigiCompiler.Tests
                 "}\n");
             TestHarness.CheckSemanticError("DA：for 后仍报未赋值", unit6.Diagnostics,
                 "Use of unassigned local variable 'x'");
+
+            // 泛型参数经约束：T extends i32 走 i32 的 EnumerateInRange
+            var (unit7, bodies7) = BindUnitWithStdlib(
+                "pub func sum\\<T extends i32>(a: T, b: T): i32 {\n" +
+                "    var total = 0\n" +
+                "    for (i in a to b) {\n" +
+                "        total = (total + i)\n" +
+                "    }\n" +
+                "    return total\n" +
+                "}\n");
+            CheckNoErrors("无诊断（T extends i32 范围循环）", unit7);
+            TestHarness.Check("T extends i32 范围循环绑定形态",
+                BoundDescribe.Body(BodyOf(bodies7, "sum")),
+                "Body(sum, [total: i32, i: i32], [Decl(total, i32, = Int(0,i32)); " +
+                "For(i, InstCall(EnumerateInRange, Param(a,T), [Param(b,T)], IEnumerable<i32>), " +
+                "[Assign(Local(total,i32), Binary(Add, Local(total,i32), Local(i,i32), i32))]); " +
+                "Return(Local(total,i32))])");
+
+            // 自定义类型经约束：T extends Step，命中 Step 自己的 operator
+            var stepHeader =
+                "pub open class Step {\n" +
+                "    pub const v: i32\n" +
+                "    pub init(_ -> v)\n" +
+                "    pub operator EnumerateInRange(end: Step): core.collections.IEnumerable\\<i32> {\n" +
+                "        return new core.collections.RangeI32(this.v, (end.v * 2))\n" +
+                "    }\n" +
+                "}\n";
+            var (unit8, bodies8) = BindUnitWithStdlib(stepHeader +
+                "pub func count\\<T extends Step>(a: T, b: T): i32 {\n" +
+                "    var total = 0\n" +
+                "    for (i in a to b) {\n" +
+                "        total = (total + i)\n" +
+                "    }\n" +
+                "    return total\n" +
+                "}\n");
+            CheckNoErrors("无诊断（T extends Step 范围循环）", unit8);
+            TestHarness.Check("T extends Step 范围循环绑定形态",
+                BoundDescribe.Body(BodyOf(bodies8, "count")),
+                "Body(count, [total: i32, i: i32], [Decl(total, i32, = Int(0,i32)); " +
+                "For(i, InstCall(EnumerateInRange, Param(a,T), [Param(b,T)], IEnumerable<i32>), " +
+                "[Assign(Local(total,i32), Binary(Add, Local(total,i32), Local(i,i32), i32))]); " +
+                "Return(Local(total,i32))])");
+
+            // 直接（非泛型）自定义类型：有 operator 正常绑定
+            var (unit9, bodies9) = BindUnitWithStdlib(stepHeader +
+                "pub func walk(a: Step, b: Step): i32 {\n" +
+                "    var total = 0\n" +
+                "    for (i in a to b) {\n" +
+                "        total = (total + i)\n" +
+                "    }\n" +
+                "    return total\n" +
+                "}\n");
+            CheckNoErrors("无诊断（自定义类型范围循环）", unit9);
+            var customLoop = (BoundLoop)BodyOf(bodies9, "walk").Body.Statements[1];
+            var customCall = customLoop.Iterable as BoundInstanceCallExpression;
+            TestHarness.CheckTrue("自定义类型 Iterable = 本类型 EnumerateInRange",
+                customCall != null && customCall.Method.Kind == MethodKind.Operator
+                && customCall.Method.Name == "EnumerateInRange"
+                && customCall.Method.Owner is TypeSymbol owner && owner.Name == "Step");
+
+            // 负例：有 operator 但返回类型不是 IEnumerable
+            var (unit10, _) = BindUnitWithStdlib(
+                "pub class BadRet {\n" +
+                "    pub operator EnumerateInRange(end: BadRet): i32 { return 0 }\n" +
+                "}\n" +
+                "pub func main(a: BadRet, b: BadRet) {\n" +
+                "    for (i in a to b) { }\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("返回类型不是 IEnumerable", unit10.Diagnostics,
+                "does not implement core.collections.IEnumerable<T>");
+
+            // 负例：无 operator
+            var (unit11, _) = BindUnitWithStdlib(
+                "pub class NoOp { }\n" +
+                "pub func main(a: NoOp, b: NoOp) {\n" +
+                "    for (i in a to b) { }\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("自定义类型无 EnumerateInRange", unit11.Diagnostics,
+                "has no EnumerateInRange operator");
+
+            // 形参为 i32：两端不同型合法（此前类型洞场景，现因形参匹配而合法）
+            var stepToI32Header =
+                "pub open class StepI32 {\n" +
+                "    pub const v: i32\n" +
+                "    pub init(_ -> v)\n" +
+                "    pub operator EnumerateInRange(end: i32): " +
+                "core.collections.IEnumerable\\<i32> {\n" +
+                "        return new core.collections.RangeI32(this.v, end)\n" +
+                "    }\n" +
+                "}\n";
+            var (unit12, bodies12) = BindUnitWithStdlib(stepToI32Header +
+                "pub func walk(a: StepI32, b: i32): i32 {\n" +
+                "    var total = 0\n" +
+                "    for (i in a to b) {\n" +
+                "        total = (total + i)\n" +
+                "    }\n" +
+                "    return total\n" +
+                "}\n");
+            CheckNoErrors("无诊断（Step to i32，形参为 i32）", unit12);
+            var stepI32Loop = (BoundLoop)BodyOf(bodies12, "walk").Body.Statements[1];
+            var stepI32Call = stepI32Loop.Iterable as BoundInstanceCallExpression;
+            TestHarness.CheckTrue("Step to i32 命中本类型 EnumerateInRange",
+                stepI32Call != null && stepI32Call.Method.Name == "EnumerateInRange"
+                && stepI32Call.Method.Parameters[0].Type is TypeSymbol pI32
+                && pI32.Name == "i32");
+
+            // 形参为 Step：b: i32 不可赋
+            var (unit13, _) = BindUnitWithStdlib(stepHeader +
+                "pub func walk(a: Step): i32 {\n" +
+                "    for (i in a to 5) { }\n" +
+                "    return 0\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("Step 形参为 Step 时 b: i32 拒绝",
+                unit13.Diagnostics, "No applicable overload of 'EnumerateInRange'");
+
+            // 重载选择：end: i32 / end: Step 各选对
+            var overloadHeader =
+                "pub open class StepOv {\n" +
+                "    pub const v: i32\n" +
+                "    pub init(_ -> v)\n" +
+                "    pub operator EnumerateInRange(end: i32): " +
+                "core.collections.IEnumerable\\<i32> {\n" +
+                "        return new core.collections.RangeI32(this.v, end)\n" +
+                "    }\n" +
+                "    pub operator EnumerateInRange(end: StepOv): " +
+                "core.collections.IEnumerable\\<i32> {\n" +
+                "        return new core.collections.RangeI32(this.v, (end.v * 2))\n" +
+                "    }\n" +
+                "}\n";
+            var (unit14, bodies14) = BindUnitWithStdlib(overloadHeader +
+                "pub func byI32(a: StepOv): i32 {\n" +
+                "    var total = 0\n" +
+                "    for (i in a to 5) { total = (total + i) }\n" +
+                "    return total\n" +
+                "}\n" +
+                "pub func byStep(a: StepOv, b: StepOv): i32 {\n" +
+                "    var total = 0\n" +
+                "    for (i in a to b) { total = (total + i) }\n" +
+                "    return total\n" +
+                "}\n");
+            CheckNoErrors("无诊断（EnumerateInRange 重载选择）", unit14);
+            var ovI32 = ((BoundLoop)BodyOf(bodies14, "byI32").Body.Statements[1])
+                .Iterable as BoundInstanceCallExpression;
+            var ovStep = ((BoundLoop)BodyOf(bodies14, "byStep").Body.Statements[1])
+                .Iterable as BoundInstanceCallExpression;
+            TestHarness.CheckTrue("step to 5 选 end: i32",
+                ovI32 != null && ovI32.Method.Parameters[0].Type is TypeSymbol ovP0
+                && ovP0.Name == "i32");
+            TestHarness.CheckTrue("step to otherStep 选 end: StepOv",
+                ovStep != null && ovStep.Method.Parameters[0].Type is TypeSymbol ovP1
+                && ovP1.Name == "StepOv");
+
+            // 无可匹配重载
+            var (unit15, _) = BindUnitWithStdlib(overloadHeader +
+                "pub func bad(a: StepOv) {\n" +
+                "    for (i in a to \"s\") { }\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("无可匹配 EnumerateInRange 重载",
+                unit15.Diagnostics, "No applicable overload of 'EnumerateInRange'");
+
+            // 二义：两端接口均可赋且互不更具体
+            var (unit16, _) = BindUnitWithStdlib(
+                "pub interface ILeft { }\n" +
+                "pub interface IRight { }\n" +
+                "pub class Both implements ILeft, IRight { }\n" +
+                "pub class StepAmb {\n" +
+                "    pub operator EnumerateInRange(end: ILeft): " +
+                "core.collections.IEnumerable\\<i32> {\n" +
+                "        return new core.collections.RangeI32(0, 1)\n" +
+                "    }\n" +
+                "    pub operator EnumerateInRange(end: IRight): " +
+                "core.collections.IEnumerable\\<i32> {\n" +
+                "        return new core.collections.RangeI32(0, 1)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func walk(a: StepAmb, b: Both) {\n" +
+                "    for (i in a to b) { }\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("EnumerateInRange 重载二义",
+                unit16.Diagnostics, "Call to 'EnumerateInRange' is ambiguous");
+
+            // 泛型 operator：约束满足 / 违反 / 推断失败
+            var genericOpHeader =
+                "pub interface Marker { }\n" +
+                "pub class Good implements Marker { }\n" +
+                "pub class StepGen {\n" +
+                "    pub operator EnumerateInRange\\<U extends Marker>(end: U): " +
+                "core.collections.IEnumerable\\<i32> {\n" +
+                "        return new core.collections.RangeI32(0, 1)\n" +
+                "    }\n" +
+                "}\n";
+            var (unit17, bodies17) = BindUnitWithStdlib(genericOpHeader +
+                "pub func ok(a: StepGen, b: Good) {\n" +
+                "    for (i in a to b) { }\n" +
+                "}\n");
+            CheckNoErrors("无诊断（泛型 EnumerateInRange 约束满足）", unit17);
+            var genCall = ((BoundLoop)BodyOf(bodies17, "ok").Body.Statements[0])
+                .Iterable as BoundInstanceCallExpression;
+            TestHarness.CheckTrue("泛型 EnumerateInRange 推断 U=Good",
+                genCall != null && genCall.TypeArguments.Count == 1
+                && genCall.TypeArguments[0] is TypeSymbol genU
+                && genU.Name == "Good");
+
+            var (unit18, _) = BindUnitWithStdlib(genericOpHeader +
+                "pub func bad(a: StepGen) {\n" +
+                "    for (i in a to 5) { }\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("泛型 EnumerateInRange 违反约束",
+                unit18.Diagnostics,
+                "does not satisfy the 'Extends Marker' constraint");
+
+            var (unit19, _) = BindUnitWithStdlib(
+                "pub class StepInf {\n" +
+                "    pub operator EnumerateInRange\\<U>(end: Array\\<U>): " +
+                "core.collections.IEnumerable\\<i32> {\n" +
+                "        return new core.collections.RangeI32(0, 1)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func bad(a: StepInf) {\n" +
+                "    for (i in a to 5) { }\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("泛型 EnumerateInRange 推断失败",
+                unit19.Diagnostics, "cannot infer type arguments from the given arguments");
+
+            // T extends B，B 的形参为基类型、b 为 T（可赋）
+            var (unit20, bodies20) = BindUnitWithStdlib(
+                "pub open class BaseBound {\n" +
+                "    pub operator EnumerateInRange(end: BaseBound): " +
+                "core.collections.IEnumerable\\<i32> {\n" +
+                "        return new core.collections.RangeI32(0, 1)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func walk\\<T extends BaseBound>(a: T, b: T): i32 {\n" +
+                "    var n = 0\n" +
+                "    for (i in a to b) { n = (n + i) }\n" +
+                "    return n\n" +
+                "}\n");
+            CheckNoErrors("无诊断（T extends B，形参为 B，b: T 可赋）", unit20);
+            TestHarness.Check("T extends B 范围循环绑定形态",
+                BoundDescribe.Body(BodyOf(bodies20, "walk")),
+                "Body(walk, [n: i32, i: i32], [Decl(n, i32, = Int(0,i32)); " +
+                "For(i, InstCall(EnumerateInRange, Param(a,T), [Param(b,T)], IEnumerable<i32>), " +
+                "[Assign(Local(n,i32), Binary(Add, Local(n,i32), Local(i,i32), i32))]); " +
+                "Return(Local(n,i32))])");
         }
     }
 }

@@ -1,14 +1,14 @@
 // Rigi 标准库：core.collections 迭代协议（SYNTAX.md §7.3/§15.3）
-// 与 Array\<T\> 构造入口（RUNTIME.md §26）。
-// IEnumerable\<T\>/IEnumerator\<T\> 是 C# 风格双接口（可重入，每次
-// iterate() 产生独立枚举器）。RangeEnumerator\<T\> 是范围循环枚举器的
+// 与 Array\<T> 构造入口（RUNTIME.md §26）。
+// IEnumerable\<T>/IEnumerator\<T> 是 C# 风格双接口（可重入，每次
+// iterate() 产生独立枚举器）。RangeEnumerator\<T> 是范围循环枚举器的
 // 泛型抽象基类（S9f）：共享状态机骨架（value_/end_/started_ 字段与
 // current() 实现），比较/步进逻辑按具体类型实现（moveNext 抽象——
 // 运算指令由各具体类型在自身类型上下文中书写，Middleware 按 typeid
 // 选择精确实现；BIL §11.1 运算键与 source-level intrinsic 无关）。
-// RangeEnumeratorI32 是 i32 范围循环（半开区间 [start, end)、步长恒
-// +1，SYNTAX.md §7.3）的具体实现——class 形态（SYNTAX.md §10：
-// struct 不得实现接口）。
+// RangeEnumeratorI32 是内建 i32 的 EnumerateInRange 实现（半开区间
+// [start, end)、步长恒 +1，§15.3 / SDK 自举；语言通用语义见 §7.3）
+// ——class 形态（SYNTAX.md §10：struct 不得实现接口）。
 namespace core.collections
 
 pub interface IEnumerator\<T> {
@@ -74,10 +74,10 @@ pub class RangeI32 implements IEnumerable\<i32> {
     }
 }
 
-// Array\<T\> 合法构造入口（RUNTIME.md §26 / BIL_STANDARD.md §22.5）：
+// Array\<T> 合法构造入口（RUNTIME.md §26 / BIL_STANDARD.md §22.5）：
 // 用户代码只走 arrayOf / arrayOfElements；alloc_array 是私有 native，
 // 经泛型 hidden .generic.T 物化 typeid，VM hook 分配零值数组。
-// arrayOfElements 体内视角 elements 已是 Array\<T\>（M78）。
+// arrayOfElements 体内视角 elements 已是 Array\<T>（M78）。
 @NativeLibrary("rigi_rt")
 @NativeSymbol("alloc_array")
 priv native func alloc_array\<T>(size: i32): Array\<T>

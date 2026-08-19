@@ -361,25 +361,28 @@
                     out var trailReceiver, out var trailCall))
             {
                 if (trailReceiver == null) return null;
-                if (trailReceiver.Type is TypeSymbol trailCallable
-                    && CallFacility.HasCallOperator(trailCallable))
+                if (trailReceiver.Type is not ErrorTypeSymbol)
                 {
-                    var trailBinding = CallFacility.BindIndirectCallOverload(trailCall!,
-                        trailReceiver, trailCallable, trailCall!.Arguments!, null, scope, ctx,
-                        env);
-                    if (trailBinding == null) return null;
-                    if (trailBinding.ResultType == null)
+                    var trailCallable = SymbolLookup.EffectiveMemberType(trailReceiver.Type, env);
+                    if (CallFacility.HasCallOperator(trailCallable, env.Unit.Symbols))
                     {
-                        return new BoundCallStatement(syntax, trailBinding.Method,
-                            trailBinding.Arguments, trailBinding.Receiver,
-                            trailBinding.TypeArguments, trailBinding.GenericPack,
-                            isIndirect: true, indirectTarget: trailReceiver);
+                        var trailBinding = CallFacility.BindIndirectCallOverload(trailCall!,
+                            trailReceiver, trailCallable, trailCall!.Arguments!, null, scope, ctx,
+                            env);
+                        if (trailBinding == null) return null;
+                        if (trailBinding.ResultType == null)
+                        {
+                            return new BoundCallStatement(syntax, trailBinding.Method,
+                                trailBinding.Arguments, trailBinding.Receiver,
+                                trailBinding.TypeArguments, trailBinding.GenericPack,
+                                isIndirect: true, indirectTarget: trailReceiver);
+                        }
+                        return new BoundExpressionStatement(syntax,
+                            new BoundCallExpression(trailCall, trailBinding.Method,
+                                trailBinding.Arguments, trailBinding.ResultType!,
+                                trailBinding.TypeArguments, trailBinding.GenericPack,
+                                isIndirect: true, indirectTarget: trailReceiver));
                     }
-                    return new BoundExpressionStatement(syntax,
-                        new BoundCallExpression(trailCall, trailBinding.Method,
-                            trailBinding.Arguments, trailBinding.ResultType!,
-                            trailBinding.TypeArguments, trailBinding.GenericPack,
-                            isIndirect: true, indirectTarget: trailReceiver));
                 }
                 // 不可调：落入下方通用兜底，由 FoldSuffixes 报原诊断
             }
@@ -480,9 +483,11 @@
                 var target = valueBlockEntry?.Block;
                 if (target == null)
                 {
-                    // 语句 seq 目标（M61）：隔循环拦截（同值块——P4a 编织无法
-                    // 表达跳出中间循环）；隔值块拦截（值块 continuation 无法
-                    // 表达「跳到外层 seq」）；不携带值（语句 seq 无产值消费者）
+                    // 语句 seq 目标（M61，SYNTAX §6.1 明文禁止跨循环）：
+                    // 隔循环拦截必须保留；隔值块拦截（值块 continuation
+                    // 无法表达「跳到外层 seq」）；不携带值（语句 seq 无
+                    // 产值消费者）。值块目标跨循环不在此列——由
+                    // StructuredExitRouting 展开为 route + break + dispatcher
                     var seqEntry = ctx.Labels.FindSeqLabel(ret.Label);
                     if (seqEntry != null)
                     {
@@ -510,14 +515,9 @@
                     env.Error(ret.Span, $"Undefined value block label: '{ret.Label}'");
                     return null;
                 }
-                // return@ 隔循环边界（S7c-1 拦截，S7c 技术债）：脱糖产物
-                // 只是「写值块局部」，无法表达「跳出中间循环」，P3 拒绝
-                if (ctx.Labels.LoopDepth > valueBlockEntry!.Value.LoopDepth)
-                {
-                    env.Error(ret.Span, $"P3: return@{ret.Label} across a loop " +
-                        "boundary not supported yet (S7c)");
-                    return null;
-                }
+                // 值块目标跨循环由 StructuredExitRouting 展开（写结果局部
+                // + 跨 region 时写 route + break 当前 loop region + 后随
+                // dispatcher relay），P3 放行
                 if (ret.Value == null)
                 {
                     env.Error(ret.Span, $"return@{ret.Label} requires a value");
@@ -559,7 +559,9 @@
                     $"Void function '{ctx.Frame.Method.Name}' cannot return a value");
                 return null;
             }
-            // 返回类型为泛型参数时兼容判定归 S9；
+            // 返回类型为泛型参数时兼容判定归 S9（T? 收窄到 T 的 smart cast
+            // 表目前只存 TypeSymbol，null 守卫后 return v: T? 仍走此跳过）；
+            // 赋给标注 : T 的局部由声明/赋值路径用 IsAssignable 拦截。
             // S11e：降级调用结果 Any 可返回任意声明类型（P4a cast 物化兜底）
             if (ctx.Frame.Method.ReturnType is TypeSymbol returnType
                 && !SymbolLookup.IsAssignable(value.Type, returnType, env)
