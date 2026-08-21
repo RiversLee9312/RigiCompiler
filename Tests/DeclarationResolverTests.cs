@@ -25,6 +25,7 @@ namespace RigiCompiler.Tests
             TestInheritance();
             TestInheritanceF2();
             TestModifierLegality();
+            TestStaticGenericBans();
             TestContagion();
             TestFieldClosures();
             TestInstantiationFillIn();
@@ -477,13 +478,13 @@ namespace RigiCompiler.Tests
             CheckP2Error("V-C implements 子句显式约束", c5i,
                 "Type argument 'i32' does not satisfy the 'Extends Animal' constraint of 'T'");
 
-            // V-Cb：构造基类静态字段闸门（probe c5b）
+            // V-Cb：静态字段不得使用类级 T（§9.2.3 取代填入点 shared-safe 闸门）
             var (c5b, _) = ResolveUnit(
-                "open class SGate\\<T> { static var s: T? }\n" +
+                "open class SGate\\<T> { var v: T\n static var s: T? }\n" +
                 "class Local { }\n" +
                 "class DGate : SGate\\<Local> { }\n");
-            CheckP2Error("V-Cb 基类子句静态字段闸门", c5b,
-                "Global or static field 's' must have a shared-safe type");
+            CheckP2Error("V-Cb 静态字段不得使用类级 T", c5b,
+                "static members cannot use type parameter 'T'");
 
             // 合法对照：实参满足约束 / 实参含自身泛型参数跳过 / 非构造基类
             var (ok1, _) = ResolveUnit(
@@ -631,6 +632,59 @@ namespace RigiCompiler.Tests
                 "abstract class C2 { }\n" +
                 "async func f() { }\n");
             CheckNoErrors("合法修饰符组合无诊断", ok);
+        }
+
+        // W2：静态成员 × 类级泛型声明侧禁令（SYNTAX §9.2.3）
+        private static void TestStaticGenericBans()
+        {
+            TestHarness.Section("P2 Static Generic Bans");
+
+            var (sig, _) = ResolveUnit(
+                "pub class Box\\<T> {\n" +
+                "    pub var v: T\n" +
+                "    pub static func wrap(x: T): Box\\<T> { return new Box\\<T>(x) }\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("静态方法签名用 T", sig.Diagnostics,
+                "static members cannot use type parameter 'T' of enclosing type 'Box'");
+
+            var (field, _) = ResolveUnit(
+                "pub class Box\\<T> {\n" +
+                "    pub var v: T\n" +
+                "    pub static var zero: T\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("静态字段类型用 T", field.Diagnostics,
+                "static members cannot use type parameter 'T' of enclosing type 'Box'");
+
+            var (nested, _) = ResolveUnit(
+                "pub class Box\\<T> {\n" +
+                "    pub var v: T\n" +
+                "    pub static func id(x: Array\\<T>): i32 { return 0 }\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("静态方法形参嵌套 Array<T>", nested.Diagnostics,
+                "static members cannot use type parameter 'T' of enclosing type 'Box'");
+
+            var (singleton, _) = ResolveUnit(
+                "pub shared singleton class S\\<T> { pub var v: i32 }\n");
+            TestHarness.CheckSemanticError("singleton 不得声明类型参数", singleton.Diagnostics,
+                "singleton type 'S' cannot declare type parameters");
+
+            var (staticOnly, _) = ResolveUnit(
+                "pub class Util\\<T> {\n" +
+                "    pub static func count(): i32 { return 0 }\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("仅静态成员的泛型类型", staticOnly.Diagnostics,
+                "type 'Util' cannot declare type parameters because it has only static members");
+
+            var (ok, _) = ResolveUnit(
+                "pub class Box\\<T> {\n" +
+                "    pub var v: T\n" +
+                "    pub static func count(): i32 { return 0 }\n" +
+                "}\n" +
+                "pub class BoxFactory {\n" +
+                "    pub static func wrap\\<T>(x: T): Box\\<T> { return new Box\\<T>(x) }\n" +
+                "}\n" +
+                "pub shared singleton class S { pub var v: i32 }\n");
+            CheckNoErrors("实例泛型类型 + 不碰 T 的静态成员 + 方法级泛型 + 非泛型 singleton", ok);
         }
 
         // ===== 子任务 4a：rich/shared 单向传染 =====
@@ -798,18 +852,19 @@ namespace RigiCompiler.Tests
                 "Type argument 'LocalUser' does not satisfy the 'Extends ValueType' " +
                 "constraint of 'T'");
 
-            // c：静态字段 shared-safe 闸门（声明侧含 GP 跳过，填入点收口）
+            // c：静态字段不得使用类级 T（§9.2.3）；不碰 T 的静态字段仍受
+            // shared-safe 闸门（具体类型在声明侧即可判定）
             var (u6, _) = ResolveUnit(
                 "class LocalUser { }\n" +
-                "class SC\\<T> { static var s: T? }\n" +
+                "class SC\\<T> { var v: T\n static var s: T? }\n" +
                 "class H { var x: SC\\<LocalUser> }\n");
-            TestHarness.CheckSemanticError("静态字段闸门经实参收口", u6.Diagnostics,
-                "Global or static field 's' must have a shared-safe type");
+            TestHarness.CheckSemanticError("静态字段不得使用类级 T", u6.Diagnostics,
+                "static members cannot use type parameter 'T'");
             var (ok5, _) = ResolveUnit(
                 "shared class SharedUser { }\n" +
-                "class SC\\<T> { static var s: T? }\n" +
+                "class SC\\<T> { var v: T\n static var s: SharedUser? }\n" +
                 "class H { var x: SC\\<SharedUser> }\n");
-            CheckNoErrors("静态字段闸门填 shared 实参合法", ok5);
+            CheckNoErrors("静态字段不碰 T 且 shared-safe 合法", ok5);
 
             // d：async 闸门 2/3 经实参收口（声明侧 GP 跳过的部分）
             var (u7, _) = ResolveUnit(

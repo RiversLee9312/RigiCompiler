@@ -298,7 +298,13 @@ set.array: collection type + index type + element type
 ```
 
 必须存在唯一精确实现，且不得插入隐式转换（`get.array` 的 result ≡
-`getAtIndex` 返回类型——SYNTAX §13.2 要求该返回类型为 `T?` 构造）。
+该实现声明的 `getAtIndex` 返回类型）。
+
+**形状闸门只在源码 P2**（SYNTAX §13.2）：源码声明的 `getAtIndex` 必须返回
+`T?` 构造，违反即编译错误。**手写 BIL 模块中用户 `getAtIndex` 不被
+verifier 强制 `T?` 形状**——三元组按声明的返回类型精确匹配即可；
+verifier 不把「result ≡ `.nullable<T>`」升格为手写模块的硬约束。
+内建 `.array<T>` 形态仍按本条 RESULT ≡ `.nullable<T>` 检查。
 
 Middleware 可将其 lower 为：
 

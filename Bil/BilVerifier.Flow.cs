@@ -140,10 +140,12 @@ namespace RigiCompiler.Bil
                     assigned.Add(arg.Name);
                 }
             }
+            var jumps = new DaJumpCollector();
             AnalyzeBlock(context, entryBlock, assigned,
                 new List<(string Name, bool IsLoop)>(),
                 new HashSet<BilBlock>(ReferenceEqualityComparer.Instance),
-                errors, new HashSet<(string Location, string Name)>());
+                errors, new HashSet<(string Location, string Name)>(),
+                collectors: null, flow: null, jumps: jumps);
             VerifyEnumStructInstanceFields(context, entryBlock, errors);
         }
 
@@ -290,7 +292,8 @@ namespace RigiCompiler.Bil
             HashSet<string> assigned, List<(string Name, bool IsLoop)> tokens,
             HashSet<BilBlock> stack, List<BilVerificationError> errors,
             HashSet<(string Location, string Name)> reported,
-            List<SeqRouteCollector>? collectors = null, SeqRouteFlow? flow = null)
+            List<SeqRouteCollector>? collectors = null, SeqRouteFlow? flow = null,
+            DaJumpCollector? jumps = null)
         {
             if (!context.BlockSet.Contains(block))
             {
@@ -305,7 +308,7 @@ namespace RigiCompiler.Bil
             try
             {
                 return AnalyzeBlockInstructions(context, block, 0, assigned, tokens, stack,
-                    errors, reported, collectors, flow);
+                    errors, reported, collectors, flow, jumps);
             }
             finally
             {
@@ -320,7 +323,8 @@ namespace RigiCompiler.Bil
             List<(string Name, bool IsLoop)> tokens, HashSet<BilBlock> stack,
             List<BilVerificationError> errors,
             HashSet<(string Location, string Name)> reported,
-            List<SeqRouteCollector>? collectors, SeqRouteFlow? flow)
+            List<SeqRouteCollector>? collectors, SeqRouteFlow? flow,
+            DaJumpCollector? jumps)
         {
             var reads = new List<BilVariableOperand>();
             var writes = new List<BilVariableOperand>();
@@ -361,7 +365,7 @@ namespace RigiCompiler.Bil
                     && i + 1 < instructions.Count
                     && instructions[i + 1] is HintInstruction hint
                     && TryConsumeSeqRouteHint(context, block, i, instruction, hint, assigned,
-                        tokens, stack, errors, reported, collectors, flow,
+                        tokens, stack, errors, reported, collectors, flow, jumps,
                         out var resumed, out var resumedFlow, out var resumeIndex))
                 {
                     if (resumed == null)
@@ -379,6 +383,7 @@ namespace RigiCompiler.Bil
                     case BreakInstruction breakInstruction:
                         VerifyBreakToken(context, breakInstruction.BreakId, tokens,
                             isContinue: false, location, errors);
+                        jumps?.AddBreak(breakInstruction.BreakId.Name, assigned);
                         // hint 收集器活跃：break 命中收集的 region token →
                         // 记录一条汇聚前驱边，本路径不再落尾
                         if (TryRecordSeqRouteEdge(collectors, breakInstruction.BreakId.Name,
@@ -390,6 +395,7 @@ namespace RigiCompiler.Bil
                     case ContinueInstruction continueInstruction:
                         VerifyBreakToken(context, continueInstruction.BreakId, tokens,
                             isContinue: true, location, errors);
+                        jumps?.AddContinue(continueInstruction.BreakId.Name, assigned);
                         break;
                     case RetInstruction ret:
                         // §16.8：ret 形态与 .return 匹配
@@ -415,12 +421,12 @@ namespace RigiCompiler.Bil
                         var thenFlow = flow?.Clone();
                         var thenExit = AnalyzeBlock(context, ifInstruction.ThenBlock,
                             new HashSet<string>(assigned), ifTokens, stack, errors, reported,
-                            collectors, thenFlow);
+                            collectors, thenFlow, jumps);
                         var elseFlow = flow?.Clone();
                         var elseExit = ifInstruction.ElseBlock != null
                             ? AnalyzeBlock(context, ifInstruction.ElseBlock,
                                 new HashSet<string>(assigned), ifTokens, stack, errors, reported,
-                                collectors, elseFlow)
+                                collectors, elseFlow, jumps)
                             : new HashSet<string>(assigned);
                         // 单臂落尾不可达（hint 消费）：续点只由可达臂出口流入；
                         // 双臂均不可达则续点不可达。无 hint 时两臂恒可达，
@@ -451,7 +457,7 @@ namespace RigiCompiler.Bil
                     case LoopInstruction loop:
                     {
                         var loopExit = VerifyLoop(context, loop, assigned, tokens, stack,
-                            errors, reported, collectors, flow);
+                            errors, reported, collectors, flow, jumps);
                         if (loopExit == null)
                         {
                             return null;
@@ -476,7 +482,7 @@ namespace RigiCompiler.Bil
                             var itemFlow = flow?.Clone();
                             var itemExit = AnalyzeBlock(context, itemBlock,
                                 new HashSet<string>(assigned), caseTokens, stack, errors,
-                                reported, collectors, itemFlow);
+                                reported, collectors, itemFlow, jumps);
                             if (itemExit == null)
                             {
                                 continue;
@@ -495,7 +501,7 @@ namespace RigiCompiler.Bil
                         var defaultFlow = flow?.Clone();
                         var defaultExit = AnalyzeBlock(context,
                             switchInstruction.DefaultBlock, new HashSet<string>(assigned),
-                            caseTokens, stack, errors, reported, collectors, defaultFlow);
+                            caseTokens, stack, errors, reported, collectors, defaultFlow, jumps);
                         if (defaultExit != null)
                         {
                             if (merged == null)
@@ -524,7 +530,7 @@ namespace RigiCompiler.Bil
                         var callTokens = new List<(string, bool)>(tokens)
                             { (call.BreakId.Name, false) };
                         var callExit = AnalyzeBlock(context, call.Block, assigned, callTokens,
-                            stack, errors, reported, collectors, flow);
+                            stack, errors, reported, collectors, flow, jumps);
                         if (callExit == null)
                         {
                             return null;
@@ -541,7 +547,7 @@ namespace RigiCompiler.Bil
                         var bodyFlow = flow?.Clone();
                         var bodyExit = AnalyzeBlock(context, tryInstruction.Body,
                             new HashSet<string>(assigned), tryTokens, stack, errors, reported,
-                            collectors, bodyFlow);
+                            collectors, bodyFlow, jumps);
                         // 正常/捕获路径合并态（body 落尾不可达时不含正常路径）
                         HashSet<string>? merged = bodyExit;
                         SeqRouteFlow? mergedFlow = bodyFlow;
@@ -555,7 +561,7 @@ namespace RigiCompiler.Bil
                                     { tryInstruction.ExceptionSlot.Name };
                                 var handlerExit = AnalyzeBlock(context, entry.Handler,
                                     handlerAssigned, tryTokens, stack, errors, reported,
-                                    collectors, handlerFlow);
+                                    collectors, handlerFlow, jumps);
                                 if (handlerExit == null)
                                 {
                                     continue;
@@ -585,9 +591,15 @@ namespace RigiCompiler.Bil
                             var finallyFlow = merged != null ? mergedFlow : flow?.Clone();
                             var finallyAssigned = new HashSet<string>(merged ?? assigned)
                                 { tryInstruction.ExceptionSlot.Name };
+                            if (jumps != null)
+                            {
+                                DelayDaJumpsThroughFinally(jumps, context,
+                                    tryInstruction.FinallyBlock, tryTokens, stack, errors,
+                                    reported, collectors, flow);
+                            }
                             var finallyExit = AnalyzeBlock(context, tryInstruction.FinallyBlock,
                                 finallyAssigned, tryTokens, stack, errors, reported, collectors,
-                                finallyFlow);
+                                finallyFlow, jumps);
                             if (finallyExit == null || merged == null)
                             {
                                 return null;
@@ -642,58 +654,182 @@ namespace RigiCompiler.Bil
             }
         }
 
+
+        private sealed class DaJumpCollector
+        {
+            public Dictionary<string, List<HashSet<string>>> Breaks { get; } =
+                new Dictionary<string, List<HashSet<string>>>();
+            public Dictionary<string, List<HashSet<string>>> Continues { get; } =
+                new Dictionary<string, List<HashSet<string>>>();
+
+            public void AddBreak(string id, HashSet<string> assigned)
+            {
+                Add(Breaks, id, assigned);
+            }
+
+            public void AddContinue(string id, HashSet<string> assigned)
+            {
+                Add(Continues, id, assigned);
+            }
+
+            private static void Add(Dictionary<string, List<HashSet<string>>> map,
+                string id, HashSet<string> assigned)
+            {
+                if (!map.TryGetValue(id, out var list))
+                {
+                    list = new List<HashSet<string>>();
+                    map[id] = list;
+                }
+                list.Add(new HashSet<string>(assigned));
+            }
+
+            public List<HashSet<string>> TakeBreaks(string id)
+            {
+                return Breaks.Remove(id, out var list) ? list : new List<HashSet<string>>();
+            }
+
+            public List<HashSet<string>> TakeContinues(string id)
+            {
+                return Continues.Remove(id, out var list) ? list : new List<HashSet<string>>();
+            }
+
+            public Dictionary<string, List<HashSet<string>>> SnapshotBreaks()
+            {
+                return SnapshotMap(Breaks);
+            }
+
+            public Dictionary<string, List<HashSet<string>>> SnapshotContinues()
+            {
+                return SnapshotMap(Continues);
+            }
+
+            public void ReplaceBreaks(Dictionary<string, List<HashSet<string>>> map)
+            {
+                Breaks.Clear();
+                foreach (var pair in map) Breaks[pair.Key] = pair.Value;
+            }
+
+            public void ReplaceContinues(Dictionary<string, List<HashSet<string>>> map)
+            {
+                Continues.Clear();
+                foreach (var pair in map) Continues[pair.Key] = pair.Value;
+            }
+
+            private static Dictionary<string, List<HashSet<string>>> SnapshotMap(
+                Dictionary<string, List<HashSet<string>>> map)
+            {
+                var copy = new Dictionary<string, List<HashSet<string>>>();
+                foreach (var pair in map)
+                {
+                    copy[pair.Key] = new List<HashSet<string>>(pair.Value);
+                }
+                return copy;
+            }
+        }
+
+        private static void DelayDaJumpsThroughFinally(DaJumpCollector jumps,
+            BilFunctionContext context, BilBlock finallyBlock,
+            List<(string Name, bool IsLoop)> tokens, HashSet<BilBlock> stack,
+            List<BilVerificationError> errors,
+            HashSet<(string Location, string Name)> reported,
+            List<SeqRouteCollector>? collectors, SeqRouteFlow? flow)
+        {
+            DelayDaJumpMap(jumps.SnapshotBreaks(), finallyBlock, context, tokens, stack,
+                errors, reported, collectors, flow, jumps.ReplaceBreaks);
+            DelayDaJumpMap(jumps.SnapshotContinues(), finallyBlock, context, tokens, stack,
+                errors, reported, collectors, flow, jumps.ReplaceContinues);
+        }
+
+        private static void DelayDaJumpMap(
+            Dictionary<string, List<HashSet<string>>> map, BilBlock finallyBlock,
+            BilFunctionContext context, List<(string Name, bool IsLoop)> tokens,
+            HashSet<BilBlock> stack, List<BilVerificationError> errors,
+            HashSet<(string Location, string Name)> reported,
+            List<SeqRouteCollector>? collectors, SeqRouteFlow? flow,
+            Action<Dictionary<string, List<HashSet<string>>>> replace)
+        {
+            var delayed = new Dictionary<string, List<HashSet<string>>>();
+            foreach (var pair in map)
+            {
+                var list = new List<HashSet<string>>();
+                foreach (var snapshot in pair.Value)
+                {
+                    var exit = AnalyzeBlock(context, finallyBlock, new HashSet<string>(snapshot),
+                        tokens, stack, errors, reported, collectors, flow?.Clone());
+                    if (exit != null) list.Add(exit);
+                }
+                delayed[pair.Key] = list;
+            }
+            replace(delayed);
+        }
+
         private static HashSet<string>? VerifyLoop(BilFunctionContext context, LoopInstruction loop,
             HashSet<string> assigned, List<(string Name, bool IsLoop)> tokens,
             HashSet<BilBlock> stack, List<BilVerificationError> errors,
             HashSet<(string Location, string Name)> reported,
-            List<SeqRouteCollector>? collectors, SeqRouteFlow? flow)
+            List<SeqRouteCollector>? collectors, SeqRouteFlow? flow,
+            DaJumpCollector? jumps)
         {
             var loopTokens = new List<(string, bool)>(tokens) { (loop.BreakId.Name, true) };
             if (loop.IsRev)
             {
-                // §16.4 loop.rev：执行序 body → enum → judge → condition，
-                // body 保证至少执行一次——后续块以前块出口态分析（judge 读取
-                // body/enum 内赋值不算未赋值）；循环出口取 body 出口态
-                // （body 至少一次，其落尾赋值对循环后可见）
+                // §16.4 loop.rev：执行序 body → enum → judge → condition。
+                // 循环出口 = 体落尾与各 break 本 region 出环点及 continue 交集
                 var bodyFlow = flow?.Clone();
                 var bodyExit = AnalyzeBlock(context, loop.Body, new HashSet<string>(assigned),
-                    loopTokens, stack, errors, reported, collectors, bodyFlow);
-                // body 落尾不可达（hint 消费）：body 保证至少执行一次却永不
-                // 完成——enum/judge 与循环续点均静态不可达
-                if (bodyExit == null)
+                    loopTokens, stack, errors, reported, collectors, bodyFlow, jumps);
+                var breakExits = jumps?.TakeBreaks(loop.BreakId.Name)
+                    ?? new List<HashSet<string>>();
+                var continueExits = jumps?.TakeContinues(loop.BreakId.Name)
+                    ?? new List<HashSet<string>>();
+                if (bodyExit == null && breakExits.Count == 0 && continueExits.Count == 0)
                 {
                     return null;
                 }
-                var judgeEntry = bodyExit;
-                if (loop.EnumBlock != null)
+                var judgeEntry = bodyExit ?? assigned;
+                if (bodyExit != null && loop.EnumBlock != null)
                 {
                     var enumExit = AnalyzeBlock(context, loop.EnumBlock,
                         new HashSet<string>(bodyExit), loopTokens, stack, errors, reported,
-                        collectors, bodyFlow?.Clone());
+                        collectors, bodyFlow?.Clone(), jumps);
                     if (enumExit == null)
                     {
                         return null;
                     }
                     judgeEntry = enumExit;
                 }
-                AnalyzeBlock(context, loop.Judge, new HashSet<string>(judgeEntry),
-                    loopTokens, stack, errors, reported, collectors, bodyFlow?.Clone());
+                if (bodyExit != null)
+                {
+                    AnalyzeBlock(context, loop.Judge, new HashSet<string>(judgeEntry),
+                        loopTokens, stack, errors, reported, collectors, bodyFlow?.Clone(),
+                        jumps);
+                }
+                var exits = new List<HashSet<string>>();
+                if (bodyExit != null) exits.Add(bodyExit);
+                exits.AddRange(breakExits);
+                exits.AddRange(continueExits);
+                if (exits.Count == 0)
+                {
+                    return null;
+                }
+                var merged = new HashSet<string>(exits[0]);
+                for (var i = 1; i < exits.Count; i++) merged.IntersectWith(exits[i]);
                 assigned.Clear();
-                assigned.UnionWith(bodyExit);
+                assigned.UnionWith(merged);
                 CopySeqRouteFlow(flow, bodyFlow);
                 return assigned;
             }
             // §16.3 正向 loop：body 可能零次执行——三块都用进入态副本分析，
-            // 出口保守保持进入态（子块落尾不可达不改变零次路径的可达性）
+            // 出口保守保持进入态
             if (loop.EnumBlock != null)
             {
                 AnalyzeBlock(context, loop.EnumBlock, new HashSet<string>(assigned),
-                    loopTokens, stack, errors, reported, collectors, flow?.Clone());
+                    loopTokens, stack, errors, reported, collectors, flow?.Clone(), jumps);
             }
             AnalyzeBlock(context, loop.Body, new HashSet<string>(assigned),
-                loopTokens, stack, errors, reported, collectors, flow?.Clone());
+                loopTokens, stack, errors, reported, collectors, flow?.Clone(), jumps);
             AnalyzeBlock(context, loop.Judge, new HashSet<string>(assigned),
-                loopTokens, stack, errors, reported, collectors, flow?.Clone());
+                loopTokens, stack, errors, reported, collectors, flow?.Clone(), jumps);
             return assigned;
         }
 
@@ -1138,7 +1274,7 @@ namespace RigiCompiler.Bil
             HashSet<string> assigned, List<(string Name, bool IsLoop)> tokens,
             HashSet<BilBlock> stack, List<BilVerificationError> errors,
             HashSet<(string Location, string Name)> reported,
-            List<SeqRouteCollector>? collectors, SeqRouteFlow? flow,
+            List<SeqRouteCollector>? collectors, SeqRouteFlow? flow, DaJumpCollector? jumps,
             out HashSet<string>? resumed, out SeqRouteFlow? resumedFlow, out int resumeIndex)
         {
             resumed = null;
@@ -1181,7 +1317,7 @@ namespace RigiCompiler.Bil
                 // V4：逐边分析 region 子结构——每条前驱边标注组号（边
                 // break 前对 route 的最后一次常量写入值，未写 = 0）
                 CollectSeqRouteEdges(context, regionInstruction, assigned, tokens, stack,
-                    errors, reported, subCollectors, entryFlow, collector, route);
+                    errors, reported, subCollectors, entryFlow, collector, route, jumps);
 
                 // 尾链逐条剥离：每条链节把本组边从流中剥离、合并态（交集）
                 // 送入 relay 目标块（精确喂养——逃逸臂上写入的外层结果局部
@@ -1212,7 +1348,7 @@ namespace RigiCompiler.Bil
                         { (link.If.BreakId.Name, false) };
                     AnalyzeBlock(context, link.Relay, MergeSeqRouteAssigned(groupEdges),
                         relayTokens, stack, errors, reported, collectors,
-                        MergeSeqRouteFlows(groupEdges));
+                        MergeSeqRouteFlows(groupEdges), jumps);
                 }
 
                 // 块尾落尾（region 正常结束、回 call blk 续点）仅由 0 组边
@@ -1261,7 +1397,7 @@ namespace RigiCompiler.Bil
                 // 所在块——其出口经嵌套 else 即为本块出口
                 resumed = AnalyzeSeqRouteContinuation(context, lastLink.Container,
                     lastLink.IfIndex + 1, zeroAssigned, tokens, stack, errors, reported,
-                    collectors, zeroFlow);
+                    collectors, zeroFlow, jumps);
                 resumedFlow = zeroFlow;
                 resumeIndex = block.Instructions.Count - 1;
                 return true;
@@ -1283,7 +1419,7 @@ namespace RigiCompiler.Bil
             List<BilVerificationError> errors,
             HashSet<(string Location, string Name)> reported,
             List<SeqRouteCollector> subCollectors, SeqRouteFlow entryFlow,
-            SeqRouteCollector collector, string route)
+            SeqRouteCollector collector, string route, DaJumpCollector? jumps)
         {
             switch (regionInstruction)
             {
@@ -1294,7 +1430,7 @@ namespace RigiCompiler.Bil
                     var thenFlow = entryFlow.Clone();
                     var thenExit = AnalyzeBlock(context, ifInstruction.ThenBlock,
                         new HashSet<string>(assigned), ifTokens, stack, errors, reported,
-                        subCollectors, thenFlow);
+                        subCollectors, thenFlow, jumps);
                     if (thenExit != null)
                     {
                         collector.Edges.Add(new SeqRouteEdge(
@@ -1304,7 +1440,7 @@ namespace RigiCompiler.Bil
                     var elseExit = ifInstruction.ElseBlock != null
                         ? AnalyzeBlock(context, ifInstruction.ElseBlock,
                             new HashSet<string>(assigned), ifTokens, stack, errors, reported,
-                            subCollectors, elseFlow)
+                            subCollectors, elseFlow, jumps)
                         : new HashSet<string>(assigned);
                     if (elseExit != null)
                     {
@@ -1322,7 +1458,7 @@ namespace RigiCompiler.Bil
                         var itemFlow = entryFlow.Clone();
                         var itemExit = AnalyzeBlock(context, itemBlock,
                             new HashSet<string>(assigned), caseTokens, stack, errors, reported,
-                            subCollectors, itemFlow);
+                            subCollectors, itemFlow, jumps);
                         if (itemExit != null)
                         {
                             collector.Edges.Add(new SeqRouteEdge(
@@ -1332,7 +1468,7 @@ namespace RigiCompiler.Bil
                     var defaultFlow = entryFlow.Clone();
                     var defaultExit = AnalyzeBlock(context, switchInstruction.DefaultBlock,
                         new HashSet<string>(assigned), caseTokens, stack, errors, reported,
-                        subCollectors, defaultFlow);
+                        subCollectors, defaultFlow, jumps);
                     if (defaultExit != null)
                     {
                         collector.Edges.Add(new SeqRouteEdge(
@@ -1346,7 +1482,7 @@ namespace RigiCompiler.Bil
                         { (call.BreakId.Name, false) };
                     // 单一路径：进入态就地演进即可
                     var exit = AnalyzeBlock(context, call.Block, assigned, callTokens, stack,
-                        errors, reported, subCollectors, entryFlow);
+                        errors, reported, subCollectors, entryFlow, jumps);
                     if (exit != null)
                     {
                         collector.Edges.Add(new SeqRouteEdge(
@@ -1368,7 +1504,7 @@ namespace RigiCompiler.Bil
                         var bodyFlow = entryFlow.Clone();
                         var bodyExit = AnalyzeBlock(context, loop.Body,
                             new HashSet<string>(assigned), loopTokens, stack, errors, reported,
-                            subCollectors, bodyFlow);
+                            subCollectors, bodyFlow, jumps);
                         if (bodyExit == null)
                         {
                             break;
@@ -1380,7 +1516,7 @@ namespace RigiCompiler.Bil
                             var enumFlow = bodyFlow.Clone();
                             var enumExit = AnalyzeBlock(context, loop.EnumBlock,
                                 new HashSet<string>(bodyExit), loopTokens, stack, errors,
-                                reported, subCollectors, enumFlow);
+                                reported, subCollectors, enumFlow, jumps);
                             if (enumExit == null)
                             {
                                 break;
@@ -1390,7 +1526,7 @@ namespace RigiCompiler.Bil
                         }
                         var judgeExit = AnalyzeBlock(context, loop.Judge,
                             new HashSet<string>(judgeEntry), loopTokens, stack, errors,
-                            reported, subCollectors, judgeFlow);
+                            reported, subCollectors, judgeFlow, jumps);
                         if (judgeExit != null)
                         {
                             collector.Edges.Add(new SeqRouteEdge(
@@ -1402,14 +1538,15 @@ namespace RigiCompiler.Bil
                     {
                         AnalyzeBlock(context, loop.EnumBlock, new HashSet<string>(assigned),
                             loopTokens, stack, errors, reported, subCollectors,
-                            entryFlow.Clone());
+                            entryFlow.Clone(), jumps);
                     }
                     AnalyzeBlock(context, loop.Body, new HashSet<string>(assigned),
-                        loopTokens, stack, errors, reported, subCollectors, entryFlow.Clone());
+                        loopTokens, stack, errors, reported, subCollectors, entryFlow.Clone(),
+                        jumps);
                     var forwardJudgeFlow = entryFlow.Clone();
                     var forwardJudgeExit = AnalyzeBlock(context, loop.Judge,
                         new HashSet<string>(assigned), loopTokens, stack, errors, reported,
-                        subCollectors, forwardJudgeFlow);
+                        subCollectors, forwardJudgeFlow, jumps);
                     if (forwardJudgeExit != null)
                     {
                         collector.Edges.Add(new SeqRouteEdge(
@@ -1455,7 +1592,8 @@ namespace RigiCompiler.Bil
             List<(string Name, bool IsLoop)> tokens, HashSet<BilBlock> stack,
             List<BilVerificationError> errors,
             HashSet<(string Location, string Name)> reported,
-            List<SeqRouteCollector>? collectors, SeqRouteFlow? flow)
+            List<SeqRouteCollector>? collectors, SeqRouteFlow? flow,
+            DaJumpCollector? jumps)
         {
             if (!stack.Add(block))
             {
@@ -1466,7 +1604,7 @@ namespace RigiCompiler.Bil
             try
             {
                 return AnalyzeBlockInstructions(context, block, startIndex, assigned, tokens,
-                    stack, errors, reported, collectors, flow);
+                    stack, errors, reported, collectors, flow, jumps);
             }
             finally
             {
@@ -1639,8 +1777,9 @@ namespace RigiCompiler.Bil
                 return;
             }
             var tracked = new HashSet<string>(fieldSymbols);
+            var jumps = new EnumJumpCollector();
             var state = AnalyzeEnumFieldBlock(context, entryBlock, new EnumFieldInitState(),
-                tracked, new HashSet<BilBlock>(ReferenceEqualityComparer.Instance), 0);
+                tracked, new HashSet<BilBlock>(ReferenceEqualityComparer.Instance), 0, jumps);
             var initSymbol = context.Function.Symbol;
             foreach (var fieldSymbol in fieldSymbols)
             {
@@ -1762,9 +1901,50 @@ namespace RigiCompiler.Bil
             }
         }
 
+
+        private sealed class EnumJumpCollector
+        {
+            public Dictionary<string, List<EnumFieldInitState>> Breaks { get; } =
+                new Dictionary<string, List<EnumFieldInitState>>();
+            public Dictionary<string, List<EnumFieldInitState>> Continues { get; } =
+                new Dictionary<string, List<EnumFieldInitState>>();
+
+            public void AddBreak(string id, EnumFieldInitState state)
+            {
+                Add(Breaks, id, state);
+            }
+
+            public void AddContinue(string id, EnumFieldInitState state)
+            {
+                Add(Continues, id, state);
+            }
+
+            private static void Add(Dictionary<string, List<EnumFieldInitState>> map,
+                string id, EnumFieldInitState snapshot)
+            {
+                if (!map.TryGetValue(id, out var list))
+                {
+                    list = new List<EnumFieldInitState>();
+                    map[id] = list;
+                }
+                list.Add(snapshot);
+            }
+
+            public List<EnumFieldInitState> TakeBreaks(string id)
+            {
+                return Breaks.Remove(id, out var list) ? list : new List<EnumFieldInitState>();
+            }
+
+            public List<EnumFieldInitState> TakeContinues(string id)
+            {
+                return Continues.Remove(id, out var list)
+                    ? list : new List<EnumFieldInitState>();
+            }
+        }
+
         private static EnumFieldInitState AnalyzeEnumFieldBlock(BilFunctionContext context,
             BilBlock block, EnumFieldInitState state, HashSet<string> tracked,
-            HashSet<BilBlock> stack, int finallyDepth)
+            HashSet<BilBlock> stack, int finallyDepth, EnumJumpCollector jumps)
         {
             if (!context.BlockSet.Contains(block) || !stack.Add(block))
             {
@@ -1790,20 +1970,27 @@ namespace RigiCompiler.Bil
                     }
                     switch (instruction)
                     {
+                        case BreakInstruction breakInstruction:
+                            jumps.AddBreak(breakInstruction.BreakId.Name, state.Clone());
+                            break;
+                        case ContinueInstruction continueInstruction:
+                            jumps.AddContinue(continueInstruction.BreakId.Name, state.Clone());
+                            break;
                         case IfInstruction ifInstruction:
                         {
                             var thenExit = AnalyzeEnumFieldBlock(context, ifInstruction.ThenBlock,
-                                state.Clone(), tracked, stack, finallyDepth);
+                                state.Clone(), tracked, stack, finallyDepth, jumps);
                             var elseExit = ifInstruction.ElseBlock != null
                                 ? AnalyzeEnumFieldBlock(context, ifInstruction.ElseBlock,
-                                    state.Clone(), tracked, stack, finallyDepth)
+                                    state.Clone(), tracked, stack, finallyDepth, jumps)
                                 : state.Clone();
                             thenExit.IntersectAssignWith(elseExit);
                             state.CopyFrom(thenExit);
                             break;
                         }
                         case LoopInstruction loop:
-                            AnalyzeEnumFieldLoop(context, loop, state, tracked, stack, finallyDepth);
+                            AnalyzeEnumFieldLoop(context, loop, state, tracked, stack, finallyDepth,
+                                jumps);
                             break;
                         case SwitchInstruction switchInstruction:
                         {
@@ -1811,7 +1998,7 @@ namespace RigiCompiler.Bil
                             foreach (var itemBlock in switchInstruction.ItemBlocks)
                             {
                                 var itemExit = AnalyzeEnumFieldBlock(context, itemBlock,
-                                    state.Clone(), tracked, stack, finallyDepth);
+                                    state.Clone(), tracked, stack, finallyDepth, jumps);
                                 if (merged == null)
                                 {
                                     merged = itemExit;
@@ -1823,7 +2010,7 @@ namespace RigiCompiler.Bil
                             }
                             var defaultExit = AnalyzeEnumFieldBlock(context,
                                 switchInstruction.DefaultBlock, state.Clone(), tracked, stack,
-                                finallyDepth);
+                                finallyDepth, jumps);
                             if (merged == null)
                             {
                                 merged = defaultExit;
@@ -1837,11 +2024,11 @@ namespace RigiCompiler.Bil
                         }
                         case CallBlockInstruction call:
                             AnalyzeEnumFieldBlock(context, call.Block, state, tracked, stack,
-                                finallyDepth);
+                                finallyDepth, jumps);
                             break;
                         case TryInstruction tryInstruction:
                             AnalyzeEnumFieldTry(context, tryInstruction, state, tracked, stack,
-                                finallyDepth);
+                                finallyDepth, jumps);
                             break;
                     }
                     if (terminates)
@@ -1886,58 +2073,65 @@ namespace RigiCompiler.Bil
 
         private static void AnalyzeEnumFieldLoop(BilFunctionContext context, LoopInstruction loop,
             EnumFieldInitState state, HashSet<string> tracked, HashSet<BilBlock> stack,
-            int finallyDepth)
+            int finallyDepth, EnumJumpCollector jumps)
         {
             if (loop.IsRev)
             {
                 var bodyExit = AnalyzeEnumFieldBlock(context, loop.Body, state.Clone(),
-                    tracked, stack, finallyDepth);
+                    tracked, stack, finallyDepth, jumps);
                 var afterBody = bodyExit;
                 if (loop.EnumBlock != null)
                 {
                     afterBody = AnalyzeEnumFieldBlock(context, loop.EnumBlock, bodyExit.Clone(),
-                        tracked, stack, finallyDepth);
+                        tracked, stack, finallyDepth, jumps);
                     bodyExit.EarlyRead.UnionWith(afterBody.EarlyRead);
                     bodyExit.MissingOnExit.UnionWith(afterBody.MissingOnExit);
                 }
                 var judgeExit = AnalyzeEnumFieldBlock(context, loop.Judge, afterBody.Clone(),
-                    tracked, stack, finallyDepth);
+                    tracked, stack, finallyDepth, jumps);
                 bodyExit.EarlyRead.UnionWith(judgeExit.EarlyRead);
                 bodyExit.MissingOnExit.UnionWith(judgeExit.MissingOnExit);
+                foreach (var brk in jumps.TakeBreaks(loop.BreakId.Name))
+                {
+                    bodyExit.IntersectAssignWith(brk);
+                }
+                jumps.TakeContinues(loop.BreakId.Name);
                 state.CopyFrom(bodyExit);
                 return;
             }
             if (loop.EnumBlock != null)
             {
                 var enumExit = AnalyzeEnumFieldBlock(context, loop.EnumBlock, state.Clone(),
-                    tracked, stack, finallyDepth);
+                    tracked, stack, finallyDepth, jumps);
                 state.EarlyRead.UnionWith(enumExit.EarlyRead);
                 state.MissingOnExit.UnionWith(enumExit.MissingOnExit);
             }
             var bodyExitFwd = AnalyzeEnumFieldBlock(context, loop.Body, state.Clone(),
-                tracked, stack, finallyDepth);
+                tracked, stack, finallyDepth, jumps);
             state.EarlyRead.UnionWith(bodyExitFwd.EarlyRead);
             state.MissingOnExit.UnionWith(bodyExitFwd.MissingOnExit);
             var judgeExitFwd = AnalyzeEnumFieldBlock(context, loop.Judge, state.Clone(),
-                tracked, stack, finallyDepth);
+                tracked, stack, finallyDepth, jumps);
             state.EarlyRead.UnionWith(judgeExitFwd.EarlyRead);
             state.MissingOnExit.UnionWith(judgeExitFwd.MissingOnExit);
+            jumps.TakeContinues(loop.BreakId.Name);
+            jumps.TakeBreaks(loop.BreakId.Name);
         }
 
         private static void AnalyzeEnumFieldTry(BilFunctionContext context,
             TryInstruction tryInstruction, EnumFieldInitState state, HashSet<string> tracked,
-            HashSet<BilBlock> stack, int finallyDepth)
+            HashSet<BilBlock> stack, int finallyDepth, EnumJumpCollector jumps)
         {
             var innerDepth = tryInstruction.FinallyBlock != null ? finallyDepth + 1 : finallyDepth;
             var tryExit = AnalyzeEnumFieldBlock(context, tryInstruction.Body, state.Clone(),
-                tracked, stack, innerDepth);
+                tracked, stack, innerDepth, jumps);
             if (tryInstruction.CatchTable is BilCatchTableResource catchTable)
             {
                 var catchExit = tryExit.Clone();
                 foreach (var entry in catchTable.Entries)
                 {
                     var handlerExit = AnalyzeEnumFieldBlock(context, entry.Handler, state.Clone(),
-                        tracked, stack, innerDepth);
+                        tracked, stack, innerDepth, jumps);
                     catchExit.IntersectAssignWith(handlerExit);
                 }
                 tryExit = catchExit;
@@ -1945,7 +2139,7 @@ namespace RigiCompiler.Bil
             if (tryInstruction.FinallyBlock != null)
             {
                 tryExit = AnalyzeEnumFieldBlock(context, tryInstruction.FinallyBlock, tryExit,
-                    tracked, stack, finallyDepth);
+                    tracked, stack, finallyDepth, jumps);
             }
             state.CopyFrom(tryExit);
         }

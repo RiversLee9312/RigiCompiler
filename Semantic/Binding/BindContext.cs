@@ -17,10 +17,10 @@ namespace RigiCompiler
         public BindContext(MethodSymbol method, FileContext fileCtx, TypeSymbol? declaringType,
             bool isDefaultValueContext = false, bool isLambda = false,
             ThisSymbol? thisSymbol = null, TypeSymbol? lambdaThisType = null,
-            TypeSymbol? lookupHost = null)
+            TypeSymbol? lookupHost = null, bool banEnclosingTypeParameters = false)
         {
             Frame = new BindFunctionFrame(method, fileCtx, declaringType, isDefaultValueContext,
-                lookupHost);
+                lookupHost, banEnclosingTypeParameters);
             IsLambda = isLambda;
             This = thisSymbol ?? (Frame.HasThis && declaringType != null
                 ? new ThisSymbol(declaringType) : null);

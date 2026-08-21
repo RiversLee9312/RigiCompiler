@@ -61,8 +61,8 @@ namespace RigiCompiler.Tests
                 new[] { "--all", "--run", "--suite-args", "--verbose", "--log-to" }.All(testSubs.Contains));
             var vm = commands.First(c => c.Mask.Name == "vm");
             var vmSubs = vm.SubCommands.Select(s => s.Mask.Name).ToList();
-            Check("vm 子命令齐全（--file/--verbose/--log-to）",
-                new[] { "--file", "--verbose", "--log-to" }.All(vmSubs.Contains));
+            Check("vm 子命令齐全（--file/--max-steps/--verbose/--log-to）",
+                new[] { "--file", "--max-steps", "--verbose", "--log-to" }.All(vmSubs.Contains));
             Check("help 无子命令", help.SubCommands.Count == 0);
             Console.WriteLine();
         }
@@ -135,6 +135,9 @@ namespace RigiCompiler.Tests
             CheckParseError("help 两个裸参数报错（MaxArgs=1）", new[] { "help", "a", "b" }, "参数个数");
             CheckParseOk("--suite-args 任意个数（3 个）", new[] { "test", "--run", "1", "--suite-args", "a", "b", "c" },
                 r => r.Get("--suite-args")!.Count == 3);
+            CheckParseError("--max-steps 缺参数报错", new[] { "vm", "--file", "a.bil", "--max-steps" }, "参数个数");
+            CheckParseOk("--max-steps 一个参数", new[] { "vm", "--file", "a.bil", "--max-steps", "100" },
+                r => r.Get("--max-steps")!.Count == 1 && r.Get("--max-steps")![0] == "100");
             Console.WriteLine();
         }
 
@@ -306,6 +309,19 @@ namespace RigiCompiler.Tests
                 Check("运行期无匹配 init 退出码非零", noInit.Code == 1);
                 Check("无匹配 init 错误走 stderr", noInit.Err.Contains("不匹配任何 init"));
                 Check("无匹配 init 不污染 stdout", noInit.Out.Length == 0);
+
+                // --max-steps：非法 N → 退出码 2；过小上限 → 退出码 1 且消息含步数；足额上限不改变正常执行
+                var badZero = RunVm("vm", "--file", okPath, "--max-steps", "0");
+                Check("--max-steps 0 退出码 2", badZero.Code == 2);
+                Check("--max-steps 0 提示正整数", badZero.Err.Contains("正整数"));
+                var badTok = RunVm("vm", "--file", okPath, "--max-steps", "abc");
+                Check("--max-steps 非数字退出码 2", badTok.Code == 2);
+                var limited = RunVm("vm", "--file", okPath, "--max-steps", "1");
+                Check("--max-steps 1 退出码 1", limited.Code == 1);
+                Check("--max-steps 1 消息含步数上限", limited.Err.Contains("步数超过上限"));
+                var ample = RunVm("vm", "--file", okPath, "--max-steps", "1000000");
+                Check("--max-steps 足额退出码 0", ample.Code == 0);
+                Check("--max-steps 足额 stdout 不变", ample.Out == "vm ok\n");
             }
             finally
             {

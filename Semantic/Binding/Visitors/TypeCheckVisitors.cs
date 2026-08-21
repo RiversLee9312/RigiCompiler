@@ -114,6 +114,10 @@ namespace RigiCompiler
             // ——运行时按 T 的 typeid 判定；with 不做 wrapper 静态拒绝）
             if (probed is GenericParameterSymbol genericTarget)
             {
+                if (StaticGenericRules.CheckFrameUse(genericTarget, ctx.Frame, span, env.Error))
+                {
+                    return null;
+                }
                 if (operand == null) return null;
                 return new BoundTypeCheckExpression(node, kind, operand, genericTarget, null,
                     env.B.Bool);
@@ -179,6 +183,10 @@ namespace RigiCompiler
                 UseSiteAccessibility.NoteExplicitlyReported(inaccessible, ctx);
                 return false;
             }
+            if (StaticGenericRules.CheckFrameUse(targetType, ctx.Frame, span, env.Error))
+            {
+                return false;
+            }
             if (targetType.ConstructedFrom != null)
             {
                 GenericConstraints.CheckConstructedType(targetType, span, env,
@@ -241,6 +249,11 @@ namespace RigiCompiler
                     // S9a 放行：typeOf 类型形态命中泛型参数（T → Type\<T\> 构造）
                     if (probed is GenericParameterSymbol genericTarget)
                     {
+                        if (StaticGenericRules.CheckFrameUse(genericTarget, ctx.Frame,
+                            typeOf.Operand.Span ?? typeOf.Span, env.Error))
+                        {
+                            return null;
+                        }
                         return new BoundTypeOfExpression(node, null, genericTarget,
                             ResultType(genericTarget, env));
                     }

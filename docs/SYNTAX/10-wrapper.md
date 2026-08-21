@@ -139,9 +139,11 @@ pub wrapper Timed {
     }
 
     // 通配符 + 可变参数（"至少有前面这些参数的方法"）。
-    // .name 是编译器保留的带点参数名（用户无法伪造），运行时值为完整
-    // BIL 风格方法符号（普通方法如 Service$fetch(id:.i32)@.string；
-    // lambda 场景为 ..lambda..UUID$$call(x:.i32)@.i32）。
+    // .name 是编译器保留的带点参数名（用户无法伪造），运行时值为
+    // 实际执行的完整 BIL 方法符号（虚/接口派发后的实现槽，而非
+    // 调用点静态符号）：普通方法如 Service$fetch(id:.i32)@.string；
+    // 经 Base 静态类型调用 Child.work 时为 Child$work()@.i32；
+    // lambda 场景为 ..lambda..UUID$$call(x:.i32)@.i32。
     operator .proxy.call(.name: String, args: named Any...): Any {
         return inner(.name, args)
     }
@@ -159,6 +161,8 @@ var f = func{ @Timed() async (x: i32): i32 -> { ... }}
 @Timed
 var a = func{ async (x: i32): i32 -> { ... }}
 ```
+
+`.name` 的运行时值是**实际执行的方法**的完整 BIL 符号（编译器保留，用户无法伪造）。虚调用 / 接口调用落到 override 时为子类或实现类型的实现槽符号，而不是调用点静态类型上的声明符号；未 override 与非虚调用则与声明侧符号一致。详见 §14.8。
 
 ### 14.5 使用 Wrapper
 
@@ -259,6 +263,8 @@ setter：
 | 具名值可变参数 `named args...` | `.kwargs.args: Array\<Pair\<String, Any>>` |
 
 这些以 `.` 开头的名称由编译器保留，普通源码参数不能声明同名标识符。canonical symbol 连同 hidden arguments 完整描述本次调用的类别、声明位置、static 属性、参数类型、泛型实参和返回类型；具体 Native 路由见 `RUNTIME.md` §14。
+
+**已声明成员的 wildcard 保留首参（Method wrapper 的 `.name`、Entity/运算符 wildcard 的 `symbol`）填的是实际执行的方法符号**——即虚派发 / 接口派发落到的实现槽 canonical 符号，而不是调用点静态类型上的声明符号。经 `Base` 引用调用 `Child` 的 override 时，`.name` / `symbol` 为 `Child$work()@.i32`，不是 `Base$work()@.i32`；子类未 override 时为实现所在类型的符号（`Base$work()@.i32`）。非虚调用与调用点符号一致。lambda 的 `.name` 仍为隐藏类 `$$call` 合成符号。wildcard 经 `inner(.name, …)` / `inner(symbol=…)` 原样转发时下一环看到同一实现槽符号；proxy 体改写保留首参则按改写后的符号重路由，不再二次虚派发。未声明方法的降级请求（§14.7）仍由调用点按静态类型合成，不受本条约束。
 
 未声明方法的降级请求（§14.7）没有声明位置与参数名可编码，其 symbol 由调用点合成：宿主前缀取 receiver 静态类型的定义级 canonical 名；若调用点存在显式泛型实参，则按书写序以 canonical 类型引用编码在方法名后的 `<...>` 段，无显式泛型实参时省略该段；参数段按调用点书写序——位置实参只写静态类型、具名实参写 `名:类型`；返回段恒为 `.any`（胖值 ABI 返回 `Any`，向期望类型的转换在调用点由编译器插入一次 cast，不符抛 `core.CastException`，见 `RUNTIME.md` §14.2）。例如 `service.fetchUserById(42)`（`service` 静态类型 `myapp::Service`）的请求 symbol 为 `myapp::Service$fetchUserById(.i32)@.any`；`service.fetchUserById\<i32, String>(42)` 则为 `myapp::Service$fetchUserById<.i32,.string>(.i32)@.any`。
 

@@ -137,7 +137,7 @@ namespace RigiCompiler
             for (var i = 0; i < call.Arguments.Count; i++) sealedArguments.Add(sealedSlots[i]);
             if (call.IsIndirect) indirectTarget = sealedSlots[^1];
             return new LoweredCallExpression(call, call.Method, sealedArguments, call.TypeArguments,
-                genericPack, call.IsIndirect, indirectTarget, call.HostTypeArguments);
+                genericPack, call.IsIndirect, indirectTarget);
         }
     }
 
@@ -437,14 +437,8 @@ namespace RigiCompiler
                 return WrapperPlaceLowering.LowerDeepFieldCompound(compound, deepPlace, deepChain,
                     ctx, env);
             }
-            // M111：索引复合赋值 place[i] op= rhs / place.a.b[i] op= rhs
-            if (WrapperPlaceLowering.TryIndexWriteTarget(compound.Target,
-                    out var indexPlace, out var indexFields, out var indexExpr))
-            {
-                return WrapperPlaceLowering.LowerIndexCompound(compound, indexPlace, indexFields,
-                    indexExpr, ctx, env);
-            }
             // S1/g9：普通值类型中间链复合赋值 host.a.b... op= rhs（§13.2）
+            //（根含局部/参数/this/静态·全局字段）
             if (WrapperPlaceLowering.TryValueChainWriteTarget(compound.Target,
                     out var valueRoot, out var valueChain))
             {
@@ -798,7 +792,7 @@ namespace RigiCompiler
             ctx.Output.Add(new LoweredAssignmentStatement(instanceCall,
                 SynthLocalFactory.ReferenceTo(instanceCall, result), callExpression));
             var writebacks = WrapperPlaceLowering.BuildValueReceiverWritebacks(instanceCall,
-                intermediates, host!, ctx, env);
+                intermediates, host!, valueRoot, ctx, env);
             if (writebacks == null) return null;
             foreach (var writeback in writebacks)
             {

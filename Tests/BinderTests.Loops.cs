@@ -79,6 +79,61 @@ namespace RigiCompiler.Tests
                 "}\n");
             TestHarness.CheckSemanticError("循环内 return 不保证返回（保守）", unit7.Diagnostics,
                 "must return a value on all code paths");
+
+            // DA：do-while 体内 break 跳过赋值——出环点与体尾取交
+            var (unit8, _) = BindUnit(
+                "func f(b: bool): i32 {\n" +
+                "    var x: i32\n" +
+                "    do {\n" +
+                "        if (b) { break }\n" +
+                "        x = 1\n" +
+                "    } while (false)\n" +
+                "    return x\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("DA：do-while break 跳过赋值", unit8.Diagnostics,
+                "Use of unassigned local variable 'x'");
+
+            // DA：do-while 赋值后再 break——出环点已赋值
+            var (unit9, _) = BindUnit(
+                "func f(b: bool): i32 {\n" +
+                "    var x: i32\n" +
+                "    do {\n" +
+                "        x = 1\n" +
+                "        if (b) { break }\n" +
+                "    } while (false)\n" +
+                "    return x\n" +
+                "}\n");
+            CheckNoErrors("DA：do-while 赋值后 break 计入", unit9);
+
+            // DA：named break 穿透外层，内层体尾不计入外层出口
+            var (unit10, _) = BindUnit(
+                "func f(b: bool): i32 {\n" +
+                "    var x: i32\n" +
+                "    do named outer {\n" +
+                "        do {\n" +
+                "            if (b) { break@outer }\n" +
+                "            x = 1\n" +
+                "        } while (false)\n" +
+                "    } while (false)\n" +
+                "    return x\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("DA：named break 跨层不计入内层体尾", unit10.Diagnostics,
+                "Use of unassigned local variable 'x'");
+
+            // DA：finally 叠到 break 出环点
+            var (unit11, _) = BindUnit(
+                "func f(b: bool): i32 {\n" +
+                "    var x: i32\n" +
+                "    do {\n" +
+                "        try {\n" +
+                "            if (b) { break }\n" +
+                "        } finally(f) {\n" +
+                "            x = 1\n" +
+                "        }\n" +
+                "    } while (false)\n" +
+                "    return x\n" +
+                "}\n");
+            CheckNoErrors("DA：do-while break 路径叠 finally 赋值", unit11);
         }
 
         // ===== break/continue（S7c-1：标签栈解析、穿透值块、诊断）=====

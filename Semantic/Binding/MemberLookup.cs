@@ -18,7 +18,8 @@
         public static SemanticSymbol? ResolveContainer(IReadOnlyList<string> segments,
             CharRange? span, BindFunctionFrame frame, BindEnvironment env,
             bool reportErrors = true,
-            IReadOnlyList<IReadOnlyList<TypeReferenceASTNode>?>? segmentGenerics = null)
+            IReadOnlyList<IReadOnlyList<TypeReferenceASTNode>?>? segmentGenerics = null,
+            bool allowBareGenericDefinition = false)
         {
             var head = new Symbol();
             for (int i = 0; i < segments.Count - 1; i++)
@@ -31,8 +32,11 @@
                 }
                 head.elements.Add(element);
             }
+            // allowBareGenericDefinition：静态成员裸名容器（`Box.count()`）
+            // 必须解析到泛型定义本身，不得报元数错误（SYNTAX §9.2.3）
             var container = env.Names.ResolveSymbolPath(head, frame.FileCtx, frame.DeclaringType,
-                frame.Method, allowImports: true, reportErrors: reportErrors, span: span);
+                frame.Method, allowImports: true, reportErrors: reportErrors, span: span,
+                allowBareGenericDefinition: allowBareGenericDefinition);
             return container is ErrorTypeSymbol ? null : container;
         }
 

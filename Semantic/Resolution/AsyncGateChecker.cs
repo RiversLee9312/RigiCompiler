@@ -92,7 +92,8 @@ namespace RigiCompiler
         // 闸门 5（泛型实参，声明侧）：泛型参数的约束边界必须共享安全——
         // 具化泛型下 typeid 与实际值一同跨边界，类型实参必然落在约束界内，
         // 约束界非共享安全 ⇒ 一切调用都违反（早诊断）；无约束的泛型参数
-        // 由调用点实际实参检查兜底（归 S9）
+        // 由调用点实际实参检查兜底（归 S9）。界为外层 GP 时沿 extends
+        // 链递归（T extends U、U extends Local ⇒ 早诊断；U 无约束则仍跳过）
         private static void CheckGateTypeArguments(MethodSymbol method, DeclEntry entry,
             ResolveEnvironment env)
         {
@@ -100,16 +101,51 @@ namespace RigiCompiler
             {
                 foreach (var constraint in genericParameter.Constraints)
                 {
-                    if (constraint.Bound is not TypeSymbol bound
-                        || bound is ErrorTypeSymbol) continue;
-                    if (!bound.IsSharedSafe())
+                    if (constraint.Kind != GenericConstraintKind.Extends) continue;
+                    if (!TryFindNonSharedSafeExtendsBound(constraint.Bound,
+                        new HashSet<GenericParameterSymbol>(), out var found))
                     {
-                        env.Error(entry.Node.Span,
-                            $"Generic parameter '{genericParameter.Name}' of async " +
-                            $"function '{method.Name}' must have a shared-safe " +
-                            $"constraint bound: '{bound.Name}'");
+                        continue;
+                    }
+                    env.Error(entry.Node.Span,
+                        $"Generic parameter '{genericParameter.Name}' of async " +
+                        $"function '{method.Name}' must have a shared-safe " +
+                        $"constraint bound: '{found.Name}'");
+                }
+            }
+        }
+
+        // 沿 extends 界链是否触及非共享安全的 TypeSymbol。ErrorType 毒化跳过；
+        // 无约束 / 仅 supers/with / 环界 → false（无法静态判定，留给调用点）
+        private static bool TryFindNonSharedSafeExtendsBound(SemanticSymbol bound,
+            HashSet<GenericParameterSymbol> visiting, out TypeSymbol found)
+        {
+            found = null!;
+            if (bound is ErrorTypeSymbol) return false;
+            if (bound is TypeSymbol type)
+            {
+                if (type.IsSharedSafe()) return false;
+                found = type;
+                return true;
+            }
+            if (bound is not GenericParameterSymbol gp) return false;
+            if (!visiting.Add(gp)) return false;
+            try
+            {
+                foreach (var constraint in gp.Constraints)
+                {
+                    if (constraint.Kind != GenericConstraintKind.Extends) continue;
+                    if (TryFindNonSharedSafeExtendsBound(constraint.Bound, visiting,
+                        out found))
+                    {
+                        return true;
                     }
                 }
+                return false;
+            }
+            finally
+            {
+                visiting.Remove(gp);
             }
         }
     }

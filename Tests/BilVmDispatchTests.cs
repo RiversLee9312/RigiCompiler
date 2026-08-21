@@ -40,6 +40,9 @@ namespace RigiCompiler.Tests
             TestNoSuperBaseFieldInitializersRun();
             TestBaseInitSeesFieldInitializers();
             TestSuperInitSubtypeArgument();
+            TestSuperInitStrictMatchIgnoresDeclarationOrder();
+            TestNewInitStrictMatchIgnoresDeclarationOrder();
+            TestSuperInitExplicitCastToAny();
             TestFieldOverrideInitialValue();
             TestPropertyInitializerGoesThroughSetter();
             TestGlobalFieldInitializersRun();
@@ -54,6 +57,11 @@ namespace RigiCompiler.Tests
             TestMethodWrapperViaBaseStaticType();
             TestMethodWrapperViaInterfaceStaticType();
             TestMethodWrapperViaMidChainStaticType();
+            TestMethodWrapperWildcardNameViaBaseStaticType();
+            TestMethodWrapperWildcardNameViaInterface();
+            TestMethodWrapperWildcardNameNonVirtual();
+            TestMethodWrapperWildcardNameInheritedNoOverride();
+            TestEntityWildcardSymbolViaBaseStaticType();
             TestNoWrapperViaBaseStaticTypeRegression();
             TestSuperBypassesMethodWrapper();
             TestInheritedMethodWrapperInstalledOnChild();

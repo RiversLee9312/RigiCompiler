@@ -21,10 +21,13 @@ namespace RigiCompiler
     //   叶写 + 反向 set；值类型中间写回；引用中间停止；最外层必要
     //   写回复用 set.wrapper.field；普通值中间反向写回发 set.field）；
     // - 普通值类型中间链写穿（S1/g9，SYNTAX §10/§13.2）：深写机制泛化
-    //   到任意可写 place 根（局部/参数/this）的纯字段链——普通赋值
-    //   （LowerValueChainFieldWrite）、复合赋值（LowerValueChainFieldCompound）
-    //   与值类型 receiver 方法调用写回（MaterializeValueReceiver +
-    //   BuildValueReceiverWritebacks；rvalue 根/只读中间不写回）；
+    //   到任意可写 place 根（局部/参数/this/静态·全局字段）的纯字段链——
+    //   普通赋值（LowerValueChainFieldWrite）、复合赋值
+    //   （LowerValueChainFieldCompound）与值类型 receiver 方法调用写回
+    //   （MaterializeValueReceiver + BuildValueReceiverWritebacks；
+    //   rvalue 根/只读中间不写回）。静态/全局值类型根的 place 是
+    //   get.field.static / cell getValue 的值拷贝，链上 set.field 只打在
+    //   拷贝上——突变后须 set.field.static / cell setValue 写回槽位；
     // - 索引写 place[i]/place.a.b[i] = rhs（M111）：正向 get 物化到索引
     //   receiver + 叶 set.array/setAtIndex + 值类型中间反向写回（与深写
     //   同构）；place 直接作索引 receiver 时值拷贝后叶写、无需写回
@@ -543,46 +546,6 @@ namespace RigiCompiler
                 ctx, env);
         }
 
-        // 索引复合赋值 place[i] op= rhs / place.a.b[i] op= rhs
-        public static LoweredExpression? LowerIndexCompound(
-            BoundCompoundAssignmentExpression compound, BoundWrapperAccessExpression place,
-            List<BoundFieldAccessExpression> fieldChain, BoundIndexExpression indexExpr,
-            LowerContext ctx, LowerEnvironment env)
-        {
-            var host = LowerUltimateHostForWrite(place, ctx, env);
-            if (host == null) return null;
-
-            var (indexReceiver, intermediates) = MaterializeIndexReceiver(
-                compound, place, fieldChain, host, ctx, env);
-            if (indexReceiver == null) return null;
-
-            var indexValue = LowerExpressionDispatcher.Visit(indexExpr.Index, ctx, env);
-            if (indexValue == null) return null;
-            indexValue = MaterializeInto(indexExpr, indexValue, ctx);
-
-            var leafRead = new LoweredIndexExpression(indexExpr, indexReceiver, indexValue);
-            var value = LowerExpressionDispatcher.Visit(compound.Value, ctx, env);
-            if (value == null) return null;
-            value = LoweringFacility.EnsureDeclaredType(compound, value, indexExpr.Type);
-            LoweredExpression binary = new LoweredBinaryExpression(compound, compound.Op,
-                leafRead, value);
-            binary = LoweringFacility.EnsureDeclaredType(compound, binary, indexExpr.Type);
-            var result = ctx.Synth.NewSynthLocal(indexExpr.Type);
-            ctx.Output.Add(new LoweredAssignmentStatement(compound,
-                SynthLocalFactory.ReferenceTo(compound, result), binary));
-            var resultRef = SynthLocalFactory.ReferenceTo(compound, result);
-            ctx.Output.Add(new LoweredAssignmentStatement(compound,
-                new LoweredIndexExpression(indexExpr, indexReceiver, indexValue), resultRef));
-
-            if (!EmitWritebacksOnly(compound, intermediates,
-                    (access, field) => BuildWrapperFieldPlace(access, place, field, host, ctx,
-                        env), ctx, env))
-            {
-                return null;
-            }
-            return resultRef;
-        }
-
         // 正向物化索引 receiver：place 值拷贝 + 可选字段链；返回 (receiver, 字段中间层)
         private static (LoweredExpression? Receiver,
             List<(LoweredExpression Local, FieldSymbol Field, BoundFieldAccessExpression Access)>
@@ -782,10 +745,12 @@ namespace RigiCompiler
         // 类型 .Copy()，叶写打在拷贝上——与 wrapper 深写同构地物化中间
         // 值、叶写后逐层反向 set 写回（引用类型中间停止）。
 
-        // 写目标判定：纯字段链 host.f1.f2...（>=2 层），根是可写 place
-        //（局部/参数/this），且非叶中间含值类型环节（全引用链走普通
-        // 路径零开销）。wrapper 根/索引/call 等非字段节点垫底时不接管
-        //（归 wrapper 专用路径或普通路径）
+        // 写目标判定：纯字段链 host.f1.f2...，根是可写 place（局部/参数/
+        // this/静态·全局字段）。>=2 层且非叶中间含值类型环节才接管（全
+        // 引用链走普通路径零开销）；静态/全局值类型根的单层字段写
+        // （SomeStatic.origin = rhs）也须接管——根自身是值拷贝。wrapper
+        // 根/索引/call 等非字段节点垫底时不接管（归 wrapper 专用路径或
+        // 普通路径）
         public static bool TryValueChainWriteTarget(BoundExpression target,
             out BoundExpression root, out List<BoundFieldAccessExpression> chain)
         {
@@ -797,19 +762,28 @@ namespace RigiCompiler
                 chain.Add(fieldAccess);
                 current = fieldAccess.Receiver;
             }
-            if (chain.Count < 2 || !IsWritableValueChainRoot(current))
+            if (chain.Count == 0 || !IsWritableValueChainRoot(current))
             {
                 chain.Clear();
                 return false;
             }
             chain.Reverse();
-            for (var i = 0; i < chain.Count - 1; i++)
+            if (chain.Count >= 2)
             {
-                if (IsValueTypeIntermediate(chain[i].Type))
+                for (var i = 0; i < chain.Count - 1; i++)
                 {
-                    root = current;
-                    return true;
+                    if (IsValueTypeIntermediate(chain[i].Type))
+                    {
+                        root = current;
+                        return true;
+                    }
                 }
+            }
+            // 静态/全局值类型根：单层也须拷贝-改-写回槽位
+            if (IsValueTypeFieldRoot(current))
+            {
+                root = current;
+                return true;
             }
             chain.Clear();
             return false;
@@ -823,10 +797,17 @@ namespace RigiCompiler
         {
             var host = LowerValueChainRoot(root, ctx, env);
             if (host == null) return null;
-            return LowerDeepFieldWriteCore(origin, chain, rhsBound,
+            if (chain.Count == 1)
+            {
+                return LowerValueChainSingleFieldWrite(origin, root, host, chain[0],
+                    rhsBound, ctx, env);
+            }
+            var stmt = LowerDeepFieldWriteCore(origin, chain, rhsBound,
                 access => new LoweredFieldAccessExpression(access, host, access.Field),
                 (access, field) => new LoweredFieldAccessExpression(access, host, field),
                 ctx, env);
+            if (stmt == null) return null;
+            return FinishWithFieldRootWriteback(origin, root, host, stmt, ctx, env);
         }
 
         // 复合赋值 host.a.b... op= rhs：读叶 → 运算 → 叶写 → 同反向写回
@@ -836,20 +817,33 @@ namespace RigiCompiler
         {
             var host = LowerValueChainRoot(root, ctx, env);
             if (host == null) return null;
-            return LowerDeepFieldCompoundCore(compound, chain,
+            if (chain.Count == 1)
+            {
+                return LowerValueChainSingleFieldCompound(compound, root, host, chain[0],
+                    ctx, env);
+            }
+            var result = LowerDeepFieldCompoundCore(compound, chain,
                 access => new LoweredFieldAccessExpression(access, host, access.Field),
                 (access, field) => new LoweredFieldAccessExpression(access, host, field),
                 ctx, env);
+            if (result == null) return null;
+            if (!TryAppendFieldRootWriteback(compound, root, host, ctx, env))
+            {
+                return null;
+            }
+            return result;
         }
 
         // ===== 值类型 receiver 方法调用写回（§10：「只有以可写 place 为
         // receiver 的调用原地生效」；无 mut 标注分析——一律写回可写
         // place）=====
         // receiver 判定：方法宿主是值类型（wrapper 除外——走 wrapper
-        // 派发链）、receiver 是可写字段链 place（根 = 局部/参数/this）、
-        // 链每一环均可写回（无 setter 的访问器/const 中间 → 不写回，
-        // 落普通路径——只读 place 上的 this 修改按 §10 口径本就不生效）。
-        // rvalue 根（call/索引/new 等）不接管——修改无处写回，无意义
+        // 派发链）、receiver 是可写字段链 place（根 = 局部/参数/this/
+        // 静态·全局字段）、链每一环均可写回（无 setter 的访问器/const
+        // 中间 → 不写回，落普通路径——只读 place 上的 this 修改按 §10
+        // 口径本就不生效）。值类型静态/全局根若自身只读（const/无
+        // setter）亦不接管——写回无处落。rvalue 根（call/索引/new 等）
+        // 不接管——修改无处写回，无意义
         public static bool TryValueReceiverCallTarget(BoundExpression receiver,
             SemanticSymbol? methodOwner, out BoundExpression root,
             out List<BoundFieldAccessExpression> chain)
@@ -894,6 +888,23 @@ namespace RigiCompiler
                     return false;
                 }
             }
+            // 值类型静态/全局根须可写回槽位（const/getter-only 不接管，
+            // 与中间环节同口径——调用路径静默不写回）
+            if (IsValueTypeFieldRoot(current)
+                && current is BoundFieldReferenceExpression fieldRoot)
+            {
+                var field = fieldRoot.Field;
+                if ((field.Getter != null || field.Setter != null) && field.Setter == null)
+                {
+                    chain.Clear();
+                    return false;
+                }
+                if (field.IsConst)
+                {
+                    chain.Clear();
+                    return false;
+                }
+            }
             root = current;
             return true;
         }
@@ -924,19 +935,29 @@ namespace RigiCompiler
         }
 
         // receiver 写回语句构造（调用之后执行；null = 已诊断失败）：
-        // receiver 拷贝写回父 place 后按值类型边界逐层向外（引用中间停止）
+        // receiver 拷贝写回父 place 后按值类型边界逐层向外（引用中间停止）；
+        // 值类型静态/全局根额外把宿主拷贝写回槽位
         public static List<LoweredStatement>? BuildValueReceiverWritebacks(BoundNode origin,
             List<(LoweredExpression Local, FieldSymbol Field, BoundFieldAccessExpression Access)>
                 intermediates,
-            LoweredExpression host, LowerContext ctx, LowerEnvironment env)
+            LoweredExpression host, BoundExpression root, LowerContext ctx, LowerEnvironment env)
         {
-            return BuildWritebacks(origin, intermediates,
+            var writebacks = BuildWritebacks(origin, intermediates,
                 (access, field) => new LoweredFieldAccessExpression(access, host, field),
                 ctx, env);
+            if (writebacks == null) return null;
+            if (!TryBuildFieldRootWriteback(origin, root, host, ctx, env, out var extra))
+            {
+                return null;
+            }
+            if (extra != null) writebacks.Add(extra);
+            return writebacks;
         }
 
         // 链根单次求值共享（与 wrapper 写路径同口径：仅稳定局部/参数/
-        // this 直通，其余先落合成局部——RHS/实参不得引起根重评）
+        // this 直通，其余先落合成局部——RHS/实参不得引起根重评）。
+        // 静态/全局字段引用会落入合成局部（get.field.static / cell
+        // getValue 的值拷贝），写回由 TryBuildFieldRootWriteback 承担。
         private static LoweredExpression? LowerValueChainRoot(BoundExpression root,
             LowerContext ctx, LowerEnvironment env)
         {
@@ -946,10 +967,110 @@ namespace RigiCompiler
                 : MaterializeSharedWriteHost(root, hostValue, ctx);
         }
 
-        // 可写链根：局部/参数/this（静态字段根、索引/call 等 rvalue 根
-        // 暂不接管——保持原路径行为）
+        // 可写链根：局部/参数/this/静态·全局字段（索引/call 等 rvalue
+        // 根不接管——保持原路径行为）
         private static bool IsWritableValueChainRoot(BoundExpression root) =>
-            root is BoundValueReferenceExpression or BoundThisExpression;
+            root is BoundValueReferenceExpression or BoundThisExpression
+                or BoundFieldReferenceExpression;
+
+        // 静态/全局字段根且其声明类型是值分支（或不可解泛型参数）——
+        // get.field.static / cell getValue 得到值拷贝，必须写回槽位
+        private static bool IsValueTypeFieldRoot(BoundExpression root) =>
+            root is BoundFieldReferenceExpression
+            && root.Type is TypeSymbol { IsValueTypeBranch: true } or GenericParameterSymbol;
+
+        // 单层字段写 SomeStatic.origin = rhs：叶写打在宿主拷贝上，再写回槽位
+        private static LoweredStatement? LowerValueChainSingleFieldWrite(BoundNode origin,
+            BoundExpression root, LoweredExpression host, BoundFieldAccessExpression leafAccess,
+            BoundExpression rhsBound, LowerContext ctx, LowerEnvironment env)
+        {
+            var rhs = LowerExpressionDispatcher.Visit(rhsBound, ctx, env);
+            if (rhs == null) return null;
+            rhs = LoweringFacility.EnsureDeclaredType(origin, rhs, leafAccess.Type);
+            var leafPlace = new LoweredFieldAccessExpression(leafAccess, host, leafAccess.Field);
+            var leafWrite = new LoweredAssignmentStatement(origin, leafPlace, rhs);
+            return FinishWithFieldRootWriteback(origin, root, host, leafWrite, ctx, env);
+        }
+
+        // 单层复合赋值 SomeStatic.origin op= rhs
+        private static LoweredExpression? LowerValueChainSingleFieldCompound(
+            BoundCompoundAssignmentExpression compound, BoundExpression root,
+            LoweredExpression host, BoundFieldAccessExpression leafAccess,
+            LowerContext ctx, LowerEnvironment env)
+        {
+            var leafRead = new LoweredFieldAccessExpression(leafAccess, host, leafAccess.Field);
+            var value = LowerExpressionDispatcher.Visit(compound.Value, ctx, env);
+            if (value == null) return null;
+            value = LoweringFacility.EnsureDeclaredType(compound, value, leafAccess.Type);
+            LoweredExpression binary = new LoweredBinaryExpression(compound, compound.Op,
+                leafRead, value);
+            binary = LoweringFacility.EnsureDeclaredType(compound, binary, leafAccess.Type);
+            var result = ctx.Synth.NewSynthLocal(leafAccess.Type);
+            ctx.Output.Add(new LoweredAssignmentStatement(compound,
+                SynthLocalFactory.ReferenceTo(compound, result), binary));
+            var resultRef = SynthLocalFactory.ReferenceTo(compound, result);
+            ctx.Output.Add(new LoweredAssignmentStatement(compound,
+                new LoweredFieldAccessExpression(leafAccess, host, leafAccess.Field),
+                resultRef));
+            if (!TryAppendFieldRootWriteback(compound, root, host, ctx, env))
+            {
+                return null;
+            }
+            return resultRef;
+        }
+
+        // 深写返回句之后追加值类型静态/全局根写回（无则原句直通）
+        private static LoweredStatement? FinishWithFieldRootWriteback(BoundNode origin,
+            BoundExpression root, LoweredExpression host, LoweredStatement last,
+            LowerContext ctx, LowerEnvironment env)
+        {
+            if (!TryBuildFieldRootWriteback(origin, root, host, ctx, env, out var extra))
+            {
+                return null;
+            }
+            if (extra == null) return last;
+            ctx.Output.Add(last);
+            return extra;
+        }
+
+        // 复合/调用路径：值类型静态/全局根写回落入 Output（true = 成功）
+        private static bool TryAppendFieldRootWriteback(BoundNode origin, BoundExpression root,
+            LoweredExpression host, LowerContext ctx, LowerEnvironment env)
+        {
+            if (!TryBuildFieldRootWriteback(origin, root, host, ctx, env, out var extra))
+            {
+                return false;
+            }
+            if (extra != null) ctx.Output.Add(extra);
+            return true;
+        }
+
+        // 构造静态/全局值类型根写回：普通 = set.field.static；cell 化 =
+        // setValue。引用类型根无需写回槽位（对象字段突变已生效）。
+        // extra = null 且 true = 无需写回；false = 已诊断失败
+        private static bool TryBuildFieldRootWriteback(BoundNode origin, BoundExpression root,
+            LoweredExpression host, LowerContext ctx, LowerEnvironment env,
+            out LoweredStatement? extra)
+        {
+            extra = null;
+            if (!IsValueTypeFieldRoot(root)
+                || root is not BoundFieldReferenceExpression fieldRef)
+            {
+                return true;
+            }
+            if (!CheckWritebackWritable(fieldRef.Field, fieldRef.Syntax.Span, ctx, env))
+            {
+                return false;
+            }
+            if (fieldRef.Field.CellStorage != null)
+            {
+                extra = CellStorageLowering.TryRewriteStaticWrite(origin, root, host, env);
+                return extra != null;
+            }
+            extra = new LoweredAssignmentStatement(origin,
+                new LoweredFieldReferenceExpression(fieldRef, fieldRef.Field), host);
+            return true;
+        }
 
         // 值类型中间判定：TypeSymbol 值分支；泛型参数保守接管（写回
         // 分类归 ClassifyWritebackType——不可解时按既有口径诊断）

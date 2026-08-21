@@ -2196,6 +2196,8 @@ namespace RigiCompiler.Bil
             return true;
         }
 
+        // §14.1 严格匹配：实参静态类型与 init 形参 TypesCompatible（canonical
+        // 全等）。frontend 已把实参 cast 到声明类型；此处不按可赋值性放宽。
         private static bool SignatureMatches(BilFunctionContext context,
             List<(string Name, string TypeRef)> parameters,
             IReadOnlyList<BilVariableOperand> arguments)
@@ -2208,7 +2210,8 @@ namespace RigiCompiler.Bil
             {
                 var argumentType = VarType(context, arguments[i]);
                 if (argumentType != null
-                    && !context.Module.TypesAssignable(argumentType, parameters[i].TypeRef))
+                    && !BilVerificationContext.TypesCompatible(argumentType,
+                        parameters[i].TypeRef))
                 {
                     return false;
                 }

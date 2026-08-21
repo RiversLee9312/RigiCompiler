@@ -38,7 +38,7 @@ namespace RigiCompiler.Bil.Vm
         public string? ElementType { get; }              // get/set 场景字段元素类型
         public string? MethodSymbol { get; }             // method/operator/call 原始 fn 符号
         public string? MemberName { get; }               // 方法名 / 字段名 / 运算符名
-        public string? SymbolText { get; }               // wildcard/call 的 canonical symbol
+        public string? SymbolText { get; }               // wildcard .name/symbol = 实际执行的实现槽
         public string? ReturnType { get; }               // call 场景被代理方法返回类型（.generic.TReturn）
         public bool CurrentRingWildcard { get; }         // 当前环是否 wildcard（解析 inner 实参）
 
@@ -372,9 +372,12 @@ namespace RigiCompiler.Bil.Vm
             {
                 return false;
             }
+            // 虚/接口派发：wildcard 的 symbol 与链末原始 fn 都用实现槽符号
+            //（SYNTAX §14.4 / §14.8：.name / symbol = 实际执行的方法）
+            var dispatchSymbol = context.ResolveDispatchSymbol(methodSymbol, args[0]);
             var frame = new VmWrapperDispatchFrame(VmWrapperDispatchKind.Method, args[0],
                 wrappers, 0, valueWrapper: false, isCall: false, fieldSymbol: null,
-                elementType: null, methodSymbol, memberName, symbolText: methodSymbol,
+                elementType: null, dispatchSymbol, memberName, symbolText: dispatchSymbol,
                 returnType: null, currentRingWildcard: false);
             return StartRing(context, coroutine, frame, concrete, resultSlot);
         }
@@ -398,9 +401,11 @@ namespace RigiCompiler.Bil.Vm
                 return false;
             }
             var memberName = VmContext.MethodNameOf(operatorSymbol);
+            // 与方法链同口径：虚/接口派发下 symbol 填实现槽符号
+            var dispatchSymbol = context.ResolveDispatchSymbol(operatorSymbol, receiver);
             var frame = new VmWrapperDispatchFrame(VmWrapperDispatchKind.Operator, receiver,
                 wrappers, 0, valueWrapper: false, isCall: false, fieldSymbol: null,
-                elementType: null, operatorSymbol, memberName, symbolText: operatorSymbol,
+                elementType: null, dispatchSymbol, memberName, symbolText: dispatchSymbol,
                 returnType: null, currentRingWildcard: false);
             return StartRing(context, coroutine, frame, rhsArgs, resultSlot);
         }
@@ -457,12 +462,15 @@ namespace RigiCompiler.Bil.Vm
             {
                 concrete.Add(args[i]);
             }
-            // 帧内 MethodSymbol 用实现槽符号：环内 wrapper 实例原地读
-            //（HiddenMethodKey）与链末原始 fn 落点都与安装键同口径；
-            // SymbolText 保留调用点静态符号（wildcard .name 语义不变）
+            // 帧内 MethodSymbol 与 SymbolText 都用实现槽符号：环内 wrapper
+            // 实例原地读（HiddenMethodKey）、链末原始 fn 落点、wildcard
+            // .name 三者同口径——.name = 实际执行的方法（SYNTAX §14.4），
+            // 非虚时 ResolveDispatchSymbol 原样返回调用点符号，行为不变。
+            // inner 重路由若改写 .name，则以用户传入符号为准（见
+            // RerouteWildcardInner），不在此二次虚派发。
             var frame = new VmWrapperDispatchFrame(VmWrapperDispatchKind.Call, receiver,
                 wrappers, 0, valueWrapper: false, isCall: false, fieldSymbol: null,
-                elementType: null, dispatchSymbol, memberName, symbolText: methodSymbol,
+                elementType: null, dispatchSymbol, memberName, symbolText: dispatchSymbol,
                 returnType, currentRingWildcard: false);
             return StartRing(context, coroutine, frame, concrete, resultSlot);
         }
@@ -632,6 +640,8 @@ namespace RigiCompiler.Bil.Vm
             }
             // Method wrapper 的 .proxy.call 链类别保持 Call（下一环仍按 Method
             // wrapper 链查找 .proxy.call），但目标方法符号以传入 .name 为准。
+            // 用户原样转发时 .name 已是实现槽符号；此处不二次虚派发，
+            // 以便 wildcard 可改写 .name 重路由到不同方法。
             if (frame.Kind == VmWrapperDispatchKind.Call)
             {
                 return new VmWrapperDispatchFrame(frame.Kind, frame.Host, frame.Wrappers,

@@ -16,6 +16,8 @@ Rigi 泛型不擦除实际类型。实现采用**单份共享 Native 代码体 +
 
 编译器传参形态（与 `BIL_STANDARD.md` §7 一致）：泛型函数的 `.args` 以 `.generic.T = .typeid` 隐藏参数承载固定泛型参数、`.generic.TArgs` 承载可变泛型包（`.array<.typeid>` / `.map<.string, .typeid>`），按 §7.2 规范序排列；调用点静态类型实参以 `getid.type` 物化 typeid（BIL §12.5），嵌套泛型调用把接收到的 `.generic.T` 隐藏参数原样转发。以 `.` 开头的隐藏参数名由编译器保留，普通源码参数不得声明同名标识符。
 
+**类级 typeid 与静态成员**：类型声明的类型参数在构造时写入实例隐藏字段；静态成员没有实体，不能读该字段。因此静态方法/静态字段不得使用所属类型上的类型参数（签名与体内都算），也不得经构造类型访问静态成员（`Box\<i32>.wrap(8)` 为编译错误）。方法级泛型仍由调用点物化 typeid，是合法替代（`BoxFactory.zeroOf\<T>(): Box\<T>`）。语言规则见 SYNTAX.md §9.2.3 / §3.6。
+
 override 中的 `super(...)` 将当前固定泛型隐藏参数按声明序转发给 `fn(..super)`，并以 `$.this` 为首参。Middleware 将其解析为直接基类原始实现；frontend 不生成 `..create`，该符号只表示 Middleware/VM 的 create 生命周期阶段。
 
 - ValueType 进入统一泛型值槽时使用 §4 的 Box 特权表示：小值内联，大值由 unique 裸数据块承载；无论哪种情况，实际 typeid 都保留。
@@ -33,8 +35,8 @@ override 中的 `super(...)` 将当前固定泛型隐藏参数按声明序转发
 - **`Type\<T>`**：typeid 的封装，基本类型（`struct`）。
 - **`typeOf(x)`**：返回 `Type\<实际类型>`。
 - **`new a(...)`**：显式发起普通构造。`a` 可以是静态类型符号，也可以是 `Type\<T>` 值；普通类型的构造必须经 `new` 发起，`TypeName(...)` 不构成构造调用。泛型体内 `T()` 与动态 `new` 共用同一套 typeid 构造机制。
-  - 静态具体目标的 init 重载解析在编译期完成，运行期仅定位具体入口。
-  - `Type\<T>` 值或其他非静态具体目标的 init 重载解析在运行期用 `TypeSheet` 的 init 表完成。
+  - 静态具体目标的 init 重载解析在编译期完成，frontend 把实参 cast 到该 init 形参声明类型；运行期仅按实参**静态类型**与形参 TypesEqual 定位具体入口（不是按对象头 typeid 可赋值性再 ranking）。
+  - `Type\<T>` 值或其他非静态具体目标的 init 重载解析在运行期用 `TypeSheet` 的 init 表、同样按实参静态类型严格匹配完成。
   - 零参 `T()` 在编译期先按约束最大基类判定（SYNTAX §3.7）：界无可访问零参 init 直接编译错误；内建标量界由实现特判产零值（`i32` → 0），不查 init 表。只有标量界、带可访问零参 init 的 class 界与带实参形态能进入运行期路径。
   - `enum struct` 不进入普通构造路径：即使其 init 为 `pub`，`EnumType(...)`、`new EnumType(...)`、`new enumTypeValue(...)` 与解析到 enum 的泛型 `T()` 都必须失败；enum 只能调用编译器生成的具名 case 入口（§16）。
   - 目标为抽象类型、enum struct 或找不到匹配 init 时抛 `core.NoSuchMethodException`。

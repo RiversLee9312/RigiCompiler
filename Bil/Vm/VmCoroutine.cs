@@ -582,6 +582,7 @@ namespace RigiCompiler.Bil.Vm
 
         public void Step(VmContext context)
         {
+            context.AccountStep();
             _context = context;
             if (_pending != null)
             {

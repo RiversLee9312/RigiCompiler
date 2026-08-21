@@ -33,6 +33,7 @@ namespace RigiCompiler.Tests
             TestLiterals();
             TestLocalDeclarations();
             TestValueReferences();
+            TestGlobalFieldInitializerBan();
             TestBinaryOperators();
             TestUserEqualityOperators();
             TestUnaryOperators();

@@ -495,6 +495,19 @@ namespace RigiCompiler
         };
     }
 
+    /// <summary>vm：指令步数上限（正整数；缺省不限制）。超过时受控终止。</summary>
+    public class MaxStepsOption : ICommandLineOption
+    {
+        public CommandLineMask Mask { get; } = new()
+        {
+            Name = "--max-steps",
+            Description = "VM 指令步数上限（正整数；缺省不限制）。超过时以受控错误终止（VmStepLimitException，退出码 1）",
+            ArgsHint = "<N>",
+            MinArgs = 1,
+            MaxArgs = 1,
+        };
+    }
+
     /// <summary>vm：加载并执行 BIL 文件（多文件合并为一个模块后运行入口函数）。</summary>
     public class VmCommand : ICommandLineCommand
     {
@@ -507,6 +520,7 @@ namespace RigiCompiler
         public IReadOnlyList<ICommandLineOption> SubCommands { get; } = new ICommandLineOption[]
         {
             new BilFileOption(),
+            new MaxStepsOption(),
             new VerboseOption(),
             new LogToOption(),
         };
@@ -518,6 +532,17 @@ namespace RigiCompiler
             {
                 Console.Error.WriteLine(loggerError);
                 return 2;
+            }
+
+            long maxSteps = 0;
+            if (result.Has("--max-steps"))
+            {
+                string raw = result.Get("--max-steps")![0];
+                if (!long.TryParse(raw, out maxSteps) || maxSteps < 1)
+                {
+                    Console.Error.WriteLine("--max-steps 需要正整数，收到：" + raw);
+                    return 2;
+                }
             }
 
             var files = result.Get("--file");
@@ -595,11 +620,11 @@ namespace RigiCompiler
                 return 2;
             }
 
-            // 运行：VM stdout/stderr 原样写对应流；同步/异步异常 → stderr 退出码 1
+            // 运行：VM stdout/stderr 原样写对应流；同步/异步异常（含步数上限）→ stderr 退出码 1
             BilVmResult run;
             try
             {
-                run = BilVm.Run(module);
+                run = BilVm.Run(module, maxSteps);
             }
             catch (VmException ex)
             {

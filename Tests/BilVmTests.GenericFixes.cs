@@ -1,11 +1,12 @@
+using System.Linq;
 using RigiCompiler.Bil.Vm;
 
 namespace RigiCompiler.Tests
 {
     // VM / 具化泛型修复：泛型类索引、类级 typeid 帧、T() 零值、
-    // 内部类可空 init、init 按可赋值性匹配。
+    // 内部类可空 init、init 经编译期 cast 后按静态类型严格匹配。
     // S1/g9：嵌套 struct place 写穿（字段链/复合赋值/值类型 receiver
-    // 方法调用写回/class 内嵌 struct/三层混合边界）。
+    // 方法调用写回/class 内嵌 struct/三层混合边界/静态字段根）。
     public static partial class BilVmTests
     {
         private static void TestGenericIndexOperator()
@@ -155,6 +156,7 @@ namespace RigiCompiler.Tests
             CheckI32("非空 head 透传 value", linked, 9);
         }
 
+        // 4699a58 / W4：Savings → Account、null → Account? 由编译期 cast 达成严格匹配
         private static void TestInitMatchByAssignability()
         {
             var result = Run(
@@ -166,7 +168,7 @@ namespace RigiCompiler.Tests
                 "    const n = new Node(s)\n" +
                 "    return 0\n" +
                 "}\n");
-            CheckOk("init 按可赋值性匹配（Savings → Account）", result);
+            CheckOk("init 严格匹配（Savings 经 cast → Account）", result);
             CheckI32("构造成功", result, 0);
 
             var nullable = Run(
@@ -186,9 +188,7 @@ namespace RigiCompiler.Tests
             CheckI32("null 命中 Account? 且 Savings 也可赋", nullable, 1);
         }
 
-        // g1：泛型实参内嵌可空（T?）——类型注解与 new 表达式两处的
-        // g7：构造类型上的静态成员——静态方法（含方法自有泛型实参组合）
-        // 经宿主 typeid 显式传递解析 T；静态字段读写走 companion cell
+        // W2：方法级泛型工厂（BoxFactory.wrap/zeroOf）替代构造类型静态成员
         private static void TestConstructedTypeStaticMembers()
         {
             var result = Run(
@@ -196,23 +196,23 @@ namespace RigiCompiler.Tests
                 "pub class Box\\<T> {\n" +
                 "    pub var v: T\n" +
                 "    pub init(_ -> v)\n" +
-                "    pub static var zero: T\n" +
-                "    pub static func wrap(x: T): Box\\<T> { return new Box\\<T>(x) }\n" +
-                "    pub static func pick\\<U>(x: T, u: U): U { return u }\n" +
-                "    pub static func reset(x: T) { zero = x }\n" +
+                "    pub static func count(): i32 { return 7 }\n" +
+                "}\n" +
+                "pub class BoxFactory {\n" +
+                "    pub static func wrap\\<T>(x: T): Box\\<T> { return new Box\\<T>(x) }\n" +
+                "    pub static func zeroOf\\<T extends i32>(): Box\\<T> { return new Box\\<T>(T()) }\n" +
+                "    pub static func pick\\<U>(u: U): U { return u }\n" +
                 "}\n" +
                 "pub func main(): i32 {\n" +
-                "    Box\\<i32>.zero = 41\n" +
-                "    Box\\<i32>.reset(7)\n" +
-                "    const z = Box\\<i32>.zero\n" +
-                "    const b = Box\\<i32>.wrap(8)\n" +
-                "    const p = Box\\<i32>.pick\\<String>(5, \"hi\")\n" +
-                "    Console.println(\"${z}:${b.v}:${p}\")\n" +
+                "    const b = BoxFactory.wrap\\<i32>(8)\n" +
+                "    const z = BoxFactory.zeroOf\\<i32>()\n" +
+                "    const p = BoxFactory.pick\\<String>(\"hi\")\n" +
+                "    Console.println(\"${Box.count()}:${b.v}:${z.v}:${p}\")\n" +
                 "    return b.v\n" +
                 "}\n");
-            CheckOk("bug_g7：构造类型静态方法/静态字段读写", result);
-            TestHarness.Check("bug_g7 stdout 为 7:8:hi", result.Stdout, "7:8:hi\n");
-            CheckI32("bug_g7 返回 wrap 代入的 v", result, 8);
+            CheckOk("W2：BoxFactory 方法级泛型 + 裸名 count", result);
+            TestHarness.Check("W2 stdout 为 7:8:0:hi", result.Stdout, "7:8:0:hi\n");
+            CheckI32("W2 返回 wrap 的 v", result, 8);
         }
 
         // Holder\<i32?> 必须同解为 Holder<Nullable<i32>>（此前类型注解路径
@@ -314,6 +314,35 @@ namespace RigiCompiler.Tests
             TestHarness.Check("bug_g10 stdout 为 a=-1 / 7 / null",
                 g10.Stdout, "a=-1\n7\nnull\n");
             CheckI32("bug_g10 main 返回 a=-1", g10, -1);
+        }
+
+        // W8：T extends B → B? 装箱视图端到端；反例无约束 T → U? 全管线报错
+        private static void TestBoundNullableBoxingEndToEnd()
+        {
+            var ok = Run(
+                "pub open class Animal {\n" +
+                "    pub const id: i32\n" +
+                "    pub init(_ -> id)\n" +
+                "}\n" +
+                "pub class Dog : Animal {\n" +
+                "    pub init(_ -> id)\n" +
+                "}\n" +
+                "pub func wrapBound\\<T extends Animal>(x: T): Animal? { return x }\n" +
+                "pub func main(): i32 {\n" +
+                "    const v = wrapBound\\<Dog>(new Dog(7))\n" +
+                "    return (v if? new Animal(0)).id\n" +
+                "}\n");
+            CheckOk("W8：T extends Animal → Animal? return", ok);
+            CheckI32("W8 main 返回 7", ok, 7);
+
+            var (bad, _, _) = BilTestHarness.EmitBilUnit(
+                "pub func bad\\<T, U>(x: T): U? { return x }\n" +
+                "pub func main(): i32 { return 0 }\n");
+            TestHarness.CheckTrue("W8 反例：无约束 T → U? 全管线报错",
+                bad.Diagnostics.HasErrors
+                && bad.Diagnostics.Diagnostics.Any(d =>
+                    d.Message.Contains("Cannot return 'T' from function returning 'Nullable<U>'")),
+                string.Join("; ", bad.Diagnostics.Diagnostics.Select(d => d.Message)));
         }
 
         // ===== bug S1/g9：嵌套 struct place 写入丢失（§10/§13.2）=====
@@ -457,6 +486,83 @@ namespace RigiCompiler.Tests
             CheckOk("三层嵌套 + 混合边界字段写穿", result);
             TestHarness.Check("三层 42/50；class 中间停止写回 5",
                 result.Stdout, "42\n50\n5\n");
+        }
+
+        // W6：静态字段根嵌套 struct 链写穿——赋值 / 整字段替换 / 复合
+        // 赋值 / receiver 方法调用 / 全局字段根 全部写回槽位
+        private static void TestStaticFieldRootChainWrite()
+        {
+            var result = Run(
+                "pub struct Vec2 {\n" +
+                "    pub var x: i32\n" +
+                "    pub var y: i32\n" +
+                "    pub init(_ -> x, _ -> y)\n" +
+                "    pub func bumpX() { x = (x + 1) }\n" +
+                "}\n" +
+                "pub struct Rect {\n" +
+                "    pub var origin: Vec2\n" +
+                "    pub var size: Vec2\n" +
+                "    pub init(_ -> origin, _ -> size)\n" +
+                "}\n" +
+                "pub class Holder {\n" +
+                "    pub static var current: Rect = new Rect(new Vec2(1, 2), new Vec2(3, 4))\n" +
+                "}\n" +
+                "var g: Rect = new Rect(new Vec2(1, 2), new Vec2(3, 4))\n" +
+                "pub func main(): i32 {\n" +
+                "    Holder.current.origin.x = 7\n" +
+                "    core.io.Console.println(\"${Holder.current.origin.x}\")\n" +
+                "    Holder.current.origin = new Vec2(8, 2)\n" +
+                "    core.io.Console.println(\"${Holder.current.origin.x}\")\n" +
+                "    Holder.current.origin.x += 1\n" +
+                "    core.io.Console.println(\"${Holder.current.origin.x}\")\n" +
+                "    Holder.current.origin.bumpX()\n" +
+                "    core.io.Console.println(\"${Holder.current.origin.x}\")\n" +
+                "    g.origin.x = 11\n" +
+                "    core.io.Console.println(\"${g.origin.x}\")\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckOk("W6：静态/全局字段根嵌套 struct 链写穿", result);
+            TestHarness.Check("static 7/8/9/10；global 11",
+                result.Stdout, "7\n8\n9\n10\n11\n");
+        }
+
+        // W6：wrapped 静态字段根（cell getValue 拷贝 → 链写 → setValue）
+        private static void TestWrappedStaticFieldRootChainWrite()
+        {
+            var result = Run(
+                "@WrapperTarget(.Value)\n" +
+                "pub shared wrapper IdW {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.get\\<TValue>(value: TValue): TValue {\n" +
+                "        return value\n" +
+                "    }\n" +
+                "    operator .proxy.set\\<TValue>(value: TValue) {\n" +
+                "        inner(value)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub struct Vec2 {\n" +
+                "    pub var x: i32\n" +
+                "    pub var y: i32\n" +
+                "    pub init(_ -> x, _ -> y)\n" +
+                "}\n" +
+                "pub struct Rect {\n" +
+                "    pub var origin: Vec2\n" +
+                "    pub var size: Vec2\n" +
+                "    pub init(_ -> origin, _ -> size)\n" +
+                "}\n" +
+                "pub class Holder {\n" +
+                "    @IdW\n" +
+                "    pub static var current: Rect = new Rect(new Vec2(1, 2), new Vec2(3, 4))\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    Holder.current.origin.x = 7\n" +
+                "    core.io.Console.println(\"${Holder.current.origin.x}\")\n" +
+                "    Holder.current.origin.x += 1\n" +
+                "    core.io.Console.println(\"${Holder.current.origin.x}\")\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckOk("W6：wrapped 静态字段根链写穿", result);
+            TestHarness.Check("wrapped static 7/8", result.Stdout, "7\n8\n");
         }
     }
 }

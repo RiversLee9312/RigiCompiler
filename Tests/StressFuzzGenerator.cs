@@ -14,6 +14,8 @@ namespace RigiCompiler.Tests
         public required bool ExpectError { get; init; }
         public required string Domain { get; init; }
         public required string Template { get; init; }
+        // 软 miss：事先不断言合法/非法；驱动只要求不崩溃，编译过则 verifier+VM。
+        public bool SoftMiss { get; init; }
     }
 
     /// <summary>
@@ -25,12 +27,13 @@ namespace RigiCompiler.Tests
     /// Random(Seed 派生)，与区间起点无关，任意 from..to 可复现。
     ///
     /// 保守模式（约 1/3 用例）：只产合法程序，保证合法路径（零诊断 ⇒
-    /// verifier + VM）占比；其余用例按模块权重混入错误注入（应报 Error
-    /// 而非崩溃/挂起/非法 BIL）。
+    /// verifier + VM）占比；其余用例按模块权重混入错误注入：必然非法
+    /// （应报 Error）与软 miss（语义灰区，事先不断言合法/非法）。
     ///
     /// 模板取自 e2e 语料（Tests/e2e/rigi，已验证的正/负例）的参数化变体：
     /// 随机化名称后缀、字面量、子模板选择与可选成员，保持语法必然合法、
-    /// 负例必然触发诊断。
+    /// 负例必然触发诊断。W9 起合法路径在 generic-nullable / inherit-wrapper /
+    /// struct-write 三领域接入随机表达式树（FuzzExprTree），加深组合。
     /// </summary>
     internal static class StressFuzzGenerator
     {
@@ -62,7 +65,7 @@ namespace RigiCompiler.Tests
                 if (roll < acc) { domain = name; break; }
             }
 
-            return domain switch
+            var kase = domain switch
             {
                 "generic-nullable" => GenGenericNullable(rng, conservative),
                 "inherit-wrapper" => GenInheritWrapper(rng, conservative),
@@ -71,6 +74,32 @@ namespace RigiCompiler.Tests
                 "construction" => GenConstruction(rng, conservative),
                 "shared-async" => GenSharedAsync(rng, conservative),
                 _ => GenModuleAccess(rng, conservative),
+            };
+            if (!kase.ExpectError && !kase.SoftMiss
+                && domain is "generic-nullable" or "inherit-wrapper" or "struct-write")
+            {
+                return GraftTree(kase, rng);
+            }
+            return kase;
+        }
+
+        private static FuzzCase GraftTree(FuzzCase kase, Random rng)
+        {
+            string s = rng.Next(1000).ToString();
+            var files = new (string Name, string Source)[kase.Files.Length];
+            for (int i = 0; i < kase.Files.Length; i++)
+            {
+                var (name, src) = kase.Files[i];
+                files[i] = name == "main.rg"
+                    ? (name, WithMix(s, rng, src))
+                    : (name, src);
+            }
+            return new FuzzCase
+            {
+                Files = files,
+                ExpectError = false,
+                Domain = kase.Domain,
+                Template = kase.Template + "+tree",
             };
         }
 
@@ -106,18 +135,105 @@ namespace RigiCompiler.Tests
                 ExpectError = true, Domain = domain, Template = template,
             };
 
-        // 合法/注入选择：保守模式恒合法；否则 55% 合法 / 45% 错误注入
-        private static bool WantError(Random rng, bool conservative) =>
-            !conservative && rng.Next(100) >= 55;
+        private static FuzzCase Soft(string domain, string template, string source) =>
+            new()
+            {
+                Files = new[] { ("main.rg", source) },
+                ExpectError = false, SoftMiss = true, Domain = domain, Template = template,
+            };
+
+        // 合法/注入：保守恒合法；否则 50% 合法 / 28% 必然非法 / 22% 软 miss
+        // 0 = 合法，1 = 必然非法，2 = 软 miss
+        private static int PickKind(Random rng, bool conservative)
+        {
+            if (conservative) return 0;
+            int r = rng.Next(100);
+            if (r < 50) return 0;
+            if (r < 78) return 1;
+            return 2;
+        }
 
         private static int N(Random rng, int max = 50) => rng.Next(max);
+
+        // 顶层 i32 组合函数：表达式树体 + 供 main 调用（三领域合法路径接入）
+        private static string MixDecl(string s, Random rng)
+        {
+            string body = FuzzExprTree.I32(rng, new[] { "a", "b" }, rng.Next(2, 5));
+            return "pub func mix" + s + "(a: i32, b: i32): i32 { return " + body + " }\n";
+        }
+
+        private static string WithMix(string s, Random rng, string source)
+        {
+            string mix = MixDecl(s, rng);
+            const string needle = "pub func main(): i32 {";
+            int idx = source.IndexOf(needle, StringComparison.Ordinal);
+            if (idx < 0) return mix + source;
+            int brace = source.IndexOf('{', idx);
+            string inject = $"\n    var __m{s}: i32 = mix{s}(1, 2)\n" +
+                $"    __m{s} = (__m{s} + 0)\n";
+            return mix + source.Insert(brace + 1, inject);
+        }
+
+        // 软 miss：语法合法、语义灰区（可能合法也可能非法，事先不断言）
+        private static FuzzCase GenSoftMiss(string domain, Random rng, string s)
+        {
+            switch (rng.Next(8))
+            {
+                case 0:
+                    return Soft(domain, "soft-nullable-bare",
+                        "pub func main(): i32 {\n" +
+                        $"    var x: i32? = {N(rng)}\n" +
+                        "    return x\n}\n");
+                case 1:
+                    return Soft(domain, "soft-const-field-write",
+                        $"pub struct V{s} {{\n    pub var x: i32\n    pub init(_ -> x)\n}}\n" +
+                        "pub func main(): i32 {\n" +
+                        $"    const v = new V{s}(1)\n" +
+                        "    v.x = 2\n    return v.x\n}\n");
+                case 2:
+                    return Soft(domain, "soft-if-i32-cond",
+                        "pub func main(): i32 {\n" +
+                        "    var a: i32 = " + N(rng) + "\n" +
+                        "    return if (a) { 1 } else { 0 }\n}\n");
+                case 3:
+                    return Soft(domain, "soft-return-place-write",
+                        "pub struct V" + s + " {\n    pub var x: i32\n    pub init(_ -> x)\n}\n" +
+                        "pub func make" + s + "(): V" + s + " { return new V" + s + "(1) }\n" +
+                        "pub func main(): i32 {\n" +
+                        "    make" + s + "().x = 9\n    return 0\n}\n");
+                case 4:
+                    return Soft(domain, "soft-hide-no-override",
+                        "pub open class B" + s + " {\n    pub open func t(): i32 { return 1 }\n}\n" +
+                        "pub class C" + s + " : B" + s + " {\n    pub func t(): i32 { return 2 }\n}\n" +
+                        "pub func main(): i32 {\n" +
+                        "    return new C" + s + "().t()\n}\n");
+                case 5:
+                    return Soft(domain, "soft-unconstrained-member",
+                        $"pub func name{s}\\<T>(x: T): String {{ return x.toString() }}\n" +
+                        "pub func main(): i32 {\n" +
+                        $"    const t = name{s}\\<i32>({N(rng)})\n" +
+                        "    return 0\n}\n");
+                case 6:
+                    return Soft(domain, "soft-expr-tree",
+                        MixDecl(s, rng) +
+                        "pub func main(): i32 {\n" +
+                        "    return " + FuzzExprTree.I32Soft(rng, new[] { "mix" + s + "(1, 2)" },
+                            rng.Next(2, 4)) + "\n}\n");
+                default:
+                    return Soft(domain, "soft-generic-unwrap-skip",
+                        $"pub func take{s}\\<T>(x: T?): T {{ return x }}\n" +
+                        "pub func main(): i32 {\n" +
+                        $"    return take{s}\\<i32>(null)\n}}\n");
+            }
+        }
 
         // ===== a. 泛型×可空（g1/g4/g6/g7/g8/g10 + T? 实参与装箱视图）=====
 
         private static FuzzCase GenGenericNullable(Random rng, bool conservative)
         {
             string s = rng.Next(1000).ToString();
-            if (WantError(rng, conservative))
+            int kind = PickKind(rng, conservative);
+            if (kind == 1)
             {
                 switch (rng.Next(4))
                 {
@@ -149,6 +265,7 @@ namespace RigiCompiler.Tests
                             "    return 0\n}\n");
                 }
             }
+            if (kind == 2) return GenSoftMiss("generic-nullable", rng, s);
 
             switch (rng.Next(7))
             {
@@ -184,21 +301,18 @@ namespace RigiCompiler.Tests
                         "    return (h.v if? -1)\n}\n");
                 }
                 case 3:
-                {   // g7：构造类型上的静态成员
-                    int z = N(rng);
+                {   // W2：方法级泛型工厂替代构造类型静态成员
                     int w = N(rng);
-                    return Ok("generic-nullable", "constructed-static-members",
+                    return Ok("generic-nullable", "box-factory-method-generic",
                         $"pub class Box{s}\\<T> {{\n    pub var v: T\n" +
                         "    pub init(_ -> v)\n" +
-                        "    pub static var zero: T\n" +
-                        $"    pub static func wrap(x: T): Box{s}\\<T> " +
-                        $"{{ return new Box{s}\\<T>(x) }}\n" +
-                        "    pub static func reset(x: T) { zero = x }\n}\n" +
+                        $"    pub static func count(): i32 {{ return {w} }}\n}}\n" +
+                        $"pub class BoxFactory{s} {{\n" +
+                        $"    pub static func wrap\\<T>(x: T): Box{s}\\<T> " +
+                        $"{{ return new Box{s}\\<T>(x) }}\n}}\n" +
                         "pub func main(): i32 {\n" +
-                        $"    Box{s}\\<i32>.zero = {z}\n" +
-                        $"    Box{s}\\<i32>.reset({w})\n" +
-                        $"    const b = Box{s}\\<i32>.wrap({N(rng)})\n" +
-                        $"    return ((Box{s}\\<i32>.zero + b.v))\n}}\n");
+                        $"    const b = BoxFactory{s}.wrap\\<i32>({N(rng)})\n" +
+                        $"    return ((Box{s}.count() + b.v))\n}}\n");
                 }
                 case 4:
                 {   // g6 正例：标量界 T() 零值
@@ -239,7 +353,8 @@ namespace RigiCompiler.Tests
         private static FuzzCase GenInheritWrapper(Random rng, bool conservative)
         {
             string s = rng.Next(1000).ToString();
-            if (WantError(rng, conservative))
+            int kind = PickKind(rng, conservative);
+            if (kind == 1)
             {
                 switch (rng.Next(3))
                 {
@@ -259,6 +374,7 @@ namespace RigiCompiler.Tests
                             "pub func main(): i32 {\n    return 0\n}\n");
                 }
             }
+            if (kind == 2) return GenSoftMiss("inherit-wrapper", rng, s);
 
             switch (rng.Next(7))
             {
@@ -388,7 +504,8 @@ namespace RigiCompiler.Tests
         private static FuzzCase GenStructWrite(Random rng, bool conservative)
         {
             string s = rng.Next(1000).ToString();
-            if (WantError(rng, conservative))
+            int kind = PickKind(rng, conservative);
+            if (kind == 1)
             {
                 switch (rng.Next(3))
                 {
@@ -427,6 +544,7 @@ namespace RigiCompiler.Tests
                             "    r.origin.x = \"s\"\n    return 0\n}\n");
                 }
             }
+            if (kind == 2) return GenSoftMiss("struct-write", rng, s);
 
             int a = N(rng, 9) + 1;
             int b = N(rng, 9) + 1;
@@ -500,7 +618,8 @@ namespace RigiCompiler.Tests
         private static FuzzCase GenIfaceDiamond(Random rng, bool conservative)
         {
             string s = rng.Next(1000).ToString();
-            if (WantError(rng, conservative))
+            int kind = PickKind(rng, conservative);
+            if (kind == 1)
             {
                 if (rng.Next(2) == 0)
                 {   // s3 负例：两接口同签名默认方法冲突未显式 override
@@ -521,6 +640,7 @@ namespace RigiCompiler.Tests
                     "    pub override func run(x: i32): i32 { return (x + 1) }\n}\n" +
                     "pub func main(): i32 {\n    return 0\n}\n");
             }
+            if (kind == 2) return GenSoftMiss("iface-diamond", rng, s);
 
             switch (rng.Next(4))
             {
@@ -581,7 +701,8 @@ namespace RigiCompiler.Tests
         private static FuzzCase GenConstruction(Random rng, bool conservative)
         {
             string s = rng.Next(1000).ToString();
-            if (WantError(rng, conservative))
+            int kind = PickKind(rng, conservative);
+            if (kind == 1)
             {
                 switch (rng.Next(3))
                 {
@@ -600,6 +721,7 @@ namespace RigiCompiler.Tests
                             "pub func main(): i32 {\n    return 0\n}\n");
                 }
             }
+            if (kind == 2) return GenSoftMiss("construction", rng, s);
 
             int a = N(rng, 9) + 1;
             int b = N(rng, 9) + 1;
@@ -643,7 +765,8 @@ namespace RigiCompiler.Tests
         private static FuzzCase GenSharedAsync(Random rng, bool conservative)
         {
             string s = rng.Next(1000).ToString();
-            if (WantError(rng, conservative))
+            int kind = PickKind(rng, conservative);
+            if (kind == 1)
             {
                 switch (rng.Next(4))
                 {
@@ -670,6 +793,7 @@ namespace RigiCompiler.Tests
                             "pub func main(): i32 {\n    return 0\n}\n");
                 }
             }
+            if (kind == 2) return GenSoftMiss("shared-async", rng, s);
 
             switch (rng.Next(3))
             {
@@ -715,7 +839,8 @@ namespace RigiCompiler.Tests
                 $"pub func pick{s}(v: Vec{s}): String {{ return \"vec\" }}\n" +
                 $"pub func pick{s}(x: i32, y: i32): String {{ return \"xy\" }}\n";
 
-            if (WantError(rng, conservative))
+            int kind = PickKind(rng, conservative);
+            if (kind == 1)
             {
                 switch (rng.Next(3))
                 {
@@ -742,6 +867,7 @@ namespace RigiCompiler.Tests
                             "pub func main(): i32 {\n    return 0\n}\n");
                 }
             }
+            if (kind == 2) return GenSoftMiss("module-access", rng, s);
 
             switch (rng.Next(3))
             {

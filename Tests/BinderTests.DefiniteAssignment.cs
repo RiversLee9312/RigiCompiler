@@ -72,6 +72,24 @@ namespace RigiCompiler.Tests
                 "    pub init() { do { x = 1 } while (false) } }\n");
             CheckNoErrors("do-while 体尾计入", ok9);
 
+            // do-while 赋值后再 break：出环点已赋值，计入出口
+            var (okBreakAfter, _) = BindUnit(
+                "class MBreakAfter { pub var x: i32\n" +
+                "    pub init(b: bool) {\n" +
+                "        do { x = 1\n            if (b) { break } } while (false)\n" +
+                "    } }\n");
+            CheckNoErrors("do-while 赋值后 break 计入", okBreakAfter);
+
+            // try-finally 内 break：finally 必跑，其赋值在 break 路径生效
+            var (okFinallyBreak, _) = BindUnit(
+                "class MFinally { pub var x: i32\n" +
+                "    pub init(b: bool) {\n" +
+                "        do {\n" +
+                "            try { if (b) { break } } finally(_) { x = 1 }\n" +
+                "        } while (false)\n" +
+                "    } }\n");
+            CheckNoErrors("try-finally break 路径叠 finally 赋值", okFinallyBreak);
+
             // try/catch 双路都赋值（catch 类型用 bootstrap 根 core.Exception）
             var (ok10, _) = BindUnit(
                 "class N { pub var x: i32\n" +
@@ -115,6 +133,47 @@ namespace RigiCompiler.Tests
                 "    pub init() { while (false) { x = 1 } } }\n");
             TestHarness.CheckSemanticError("while 体赋值不计入", bad3.Diagnostics,
                 "Field 'x' of 'S' is not definitely assigned on all paths");
+
+            // do-while 体内 break 跳过赋值：出环点与体尾取交，x 未定值
+            var (badBreak, _) = BindUnit(
+                "class SBreak { pub var x: i32\n" +
+                "    pub init(b: bool) {\n" +
+                "        do { if (b) { break }\n            x = 1 } while (false)\n" +
+                "    } }\n");
+            TestHarness.CheckSemanticError("do-while break 跳过赋值", badBreak.Diagnostics,
+                "Field 'x' of 'SBreak' is not definitely assigned on all paths");
+
+            // named break 穿透外层：内层体尾赋值不计入 outer 出口
+            var (badNamed, _) = BindUnit(
+                "class SNamed { pub var x: i32\n" +
+                "    pub init(b: bool) {\n" +
+                "        do named outer {\n" +
+                "            do {\n" +
+                "                if (b) { break@outer }\n" +
+                "                x = 1\n" +
+                "            } while (false)\n" +
+                "        } while (false)\n" +
+                "    } }\n");
+            TestHarness.CheckSemanticError("named break 跨层不计入内层体尾", badNamed.Diagnostics,
+                "Field 'x' of 'SNamed' is not definitely assigned on all paths");
+
+            // while 体内 break 跳过赋值（零次路径已拒，break 路径同样未赋）
+            var (badWhileBreak, _) = BindUnit(
+                "class SWhileBreak { pub var x: i32\n" +
+                "    pub init(b: bool) {\n" +
+                "        while (true) { if (b) { break }\n            x = 1 }\n" +
+                "    } }\n");
+            TestHarness.CheckSemanticError("while break 跳过赋值", badWhileBreak.Diagnostics,
+                "Field 'x' of 'SWhileBreak' is not definitely assigned on all paths");
+
+            // for 体内 break 跳过赋值
+            var (badForBreak, _) = BindUnit(
+                "class SForBreak { pub var x: i32\n" +
+                "    pub init(b: bool) {\n" +
+                "        for (i in 0 to 1) { if (b) { break }\n            x = 1 }\n" +
+                "    } }\n");
+            TestHarness.CheckSemanticError("for break 跳过赋值", badForBreak.Diagnostics,
+                "Field 'x' of 'SForBreak' is not definitely assigned on all paths");
 
             // 不调 super 且基类有无初始值非空字段：诊断引导 super
             var (bad4, _) = BindUnit(

@@ -30,7 +30,7 @@
 - proxy 模板 fn（名以 `.proxy.` 开头，§5.1）必须声明在 wrapper 类型内，且与 `wrapper-proxy` 修饰符双向一致（见 §21.8）；
 - `..init.wrapper`（§9.7）：每 owner 至多一个；返回 `.void`；实例方法；必须 `priv` + `compiler-generated`；
 - `..init.field.<名>`（§9.7）：返回 `.void` 的零参实例方法；必须 `priv` + `compiler-generated`；与基类同族同名方法构成虚派发族（字段 override，见 `SYNTAX.md` §9.2.1）；
-- `..globals.init`（§8.4.1 / `SYNTAX.md` §9.3）：编译器合成的全局/静态字段初始值 fn；返回 `.void`、无参数、无 `.this`；必须带 `compiler-generated`；VM 在 singleton 初始化之后、main 之前同步执行；
+- `..globals.init`（§8.4.1 / `SYNTAX.md` §9.3）：编译器合成的全局/静态字段初始值 fn；返回 `.void`、无参数、无 `.this`；必须带 `compiler-generated`；VM 在 singleton 初始化之后、main 之前同步执行。源码层初值表达式不得直接引用其它全局/静态字段（frontend 编译期拒绝，`SYNTAX.md` §9.3）；函数调用属逃逸口，验证器不追踪；
 - `..companion` 类型（§8.7）：必须是 `class` 且带 `singleton` + `shared`；类型名保留名（声明类的嵌套类）；
 - 保留字段 `..value`（§5.1 / §8.3）不得作为用户 `.field` 声明出现；`get.field` / `set.field`（含 `.static` 变体）引用 `..value` 仅当当前 fn 带 `setter(F)` 且 owner/类型/static 匹配，或当前 fn 是 cell 隐藏子类的 `getValue` / `setValue`；之外拒绝；
 - entrypoint 唯一且签名符合 `SYNTAX.md`。
@@ -64,6 +64,9 @@
 - 所有结构化路径合并时满足读取条件；
 - loop condition 在每次读取前由 judge block 赋值；
 - 结果变量不会在失败路径上被错误认为已赋值。
+- **loop.rev 出口**（与 §21.8 同口径）：体正常落到底与各 `break` 本 region
+  出环点及 `continue` 至条件的交集——`break` 跳过的赋值不计入循环后；
+  有 finally 时出环点叠 finally 赋值。正向 loop 出口仍取进入态（body 可能零次）。
 
 分支合并口径：if 双分支独立分析、出口取交集；switch 恒执行且仅执行
 一个分支（default 恒在），出口取全分支（含 default）交集（与 §21.8
@@ -143,7 +146,7 @@ region 正常结束回到 call blk 续点）仅由 0 组边的合并态流入。
 - `wrapped(WRAPPER_TYPE_REF)`（§8.3.1）的 `WRAPPER_TYPE_REF` 必须是 wrapper 类型；可重复，顺序保留；
 - `..init.wrapper` 声明与 fn 定义满足 §9.7（唯一性 / void / priv + compiler-generated / 非 static）；`..init.field.*` 与 `..globals.init` 同（§9.7 / §8.4.1 形状条款）；
 - `..companion` 满足 §8.7（class + singleton + shared；壳体静态方法体形态由 frontend 保证，验证器检查 companion 类型结构）。
-- enum struct 类型的实例字段：宿主类型的每个 init 必须在全部执行路径上对该字段发 `set.field`（先于任何读路径），否则拒绝模块（§14.3「enum 无零值」）。**例外（新 init 原则，§9.7）**：带声明初始值的字段——其写入点在 `..init.field.<名>`（由 `..init.wrapper` 在任何 init 体之前调用），对 init 体而言「进入时已赋值」，不计入本条的全路径写入与早读检查。
+- enum struct 类型的实例字段：宿主类型的每个 init 必须在全部执行路径上对该字段发 `set.field`（先于任何读路径），否则拒绝模块（§14.3「enum 无零值」）。路径合并：if 双分支交、正向 loop 出口=进入态（body 可能零次）、`loop.rev` 出口=体正常落到底与各 `break` 本 region 出环点的交集（至少一次；`break` 跳过的 `set.field` 不计入）、switch 全分支交；`break` 是 region 机制（loop/if/switch/call/try 均可命中），出环点终止本块后续指令。有 finally 时体内 ret/throw/break 延后到 finally 之后才记离体（finally 赋值在 break 路径同样生效）。**例外（新 init 原则，§9.7）**：带声明初始值的字段——其写入点在 `..init.field.<名>`（由 `..init.wrapper` 在任何 init 体之前调用），对 init 体而言「进入时已赋值」，不计入本条的全路径写入与早读检查。
 
 ### 21.9 VM 可执行性验证
 

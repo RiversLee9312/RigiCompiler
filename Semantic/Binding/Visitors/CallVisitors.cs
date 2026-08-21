@@ -20,10 +20,6 @@ namespace RigiCompiler
         public BoundExpression? Receiver;
         // 固定泛型实参（显式或推断；非泛型调用为空列表；P4 发射 .generic.T 依据）
         public IReadOnlyList<SemanticSymbol> TypeArguments = Array.Empty<SemanticSymbol>();
-        // g7：构造类型宿主上的静态调用的宿主泛型实参（`Box\<i32>.wrap(8)`
-        // 的 i32；非该形态为空列表）。静态调用无 .this 可供 VM 注入宿主
-        // typeid（§7.2），调用点必须显式携带（宿主在前、方法自有在后）
-        public IReadOnlyList<SemanticSymbol> HostTypeArguments = Array.Empty<SemanticSymbol>();
         // S9d-2：泛型可变参数包推导产物（null = 无；P4 发射 .generic.TArgs 依据）
         public BoundGenericVarArgsArgument? GenericPack;
         // S9b：代入后返回类型（泛型候选视图产物；定义级 ReturnType 是 T）
@@ -43,11 +39,11 @@ namespace RigiCompiler
     // 调用形态判定：符号头 + 全 Dot 段（无中间后缀）+ 整条链恰好一个
     // Call 后缀且位于链尾（首段 Call 后缀要求无段——S8c 起 foo().c 形态
     // 归路径绑定的调用结果底座；段 Call 后缀同理须在末段）。
-    // 显式泛型实参（S9b/g7）分两处：
+    // 显式泛型实参（S9b）分两处：
     //   genericArguments = 方法泛型实参——单段时取头段（`foo\<T>(x)`），
-    //     多段时取末段（`a.foo\<T>(x)` / `Box\<i32>.wrap\<U>(8)` 的 U）；
+    //     多段时取末段（`a.foo\<T>(x)`）；
     //   containerTypeArguments = 容器类型构造实参——多段时头段实参是
-    //     类型构造实参（`Box\<i32>.wrap(8)` 的 i32，g7），单段恒 null。
+    //     类型构造实参；经构造类型访问静态成员一律非法（SYNTAX §9.2.3）。
     // 中间段带实参（嵌套构造类型容器）不判定为调用形态（落回路径绑定诊断）
     internal static class CallForm
     {
@@ -243,9 +239,25 @@ namespace RigiCompiler
                 return BindInstanceCallForm(node, calleeSegments, arguments, scope, ctx, env,
                     genericArguments);
             }
+            // Type.staticField.rest.method()：静态/全局字段作值 receiver，
+            // 中间段沿字段类型上色，末段实例方法（与路径绑定
+            // Holder.current.origin.x 同一切分）
+            if (calleeSegments.Count > 2)
+            {
+                var fieldCall = TryBindStaticFieldReceiverCall(node, calleeSegments, arguments,
+                    containerTypeArguments, genericArguments, scope, ctx, env);
+                if (fieldCall != null) return fieldCall;
+            }
             var candidates = ResolveCallee(node, calleeSegments, containerTypeArguments, scope,
                 ctx, env, out var staticReceiverType);
             if (candidates == null) return null;
+            var staticCandidate = candidates.FirstOrDefault(c => c.IsStatic);
+            if (staticCandidate != null
+                && StaticGenericRules.CheckConstructedStaticAccess(staticReceiverType,
+                    isStaticMember: true, staticCandidate.Name, node.Span, env.Error))
+            {
+                return null;
+            }
             var typeArgs = genericArguments == null
                 ? null
                 : ResolveGenericArguments(genericArguments, node, ctx, env);
@@ -303,33 +315,10 @@ namespace RigiCompiler
                 IsVoid = calleeMethod.ReturnType == null,
                 Receiver = receiver,
                 TypeArguments = resolvedTypeArgs,
-                // g7：构造类型宿主上的静态调用携带宿主泛型实参（无 .this
-                // 可供 VM 注入 .generic.* typeid，调用点显式物化，§7.2）
-                HostTypeArguments = StaticHostTypeArguments(calleeMethod, staticReceiverType),
                 GenericPack = genericPack,
                 // S10：async 调用表达式类型改写为 Task\<T\>/Task（SYNTAX §4.5）
                 ResultType = AsyncResultType(calleeMethod, calleeResultType, env),
             };
-        }
-
-        // g7：静态调用的宿主泛型实参（`Box\<i32>.wrap(8)` → [i32]）：沿容器
-        // 类型 BaseType 链找 method.Owner 的构造取实参（同 ViewOf 口径）；
-        // 非静态/非构造宿主/链上无匹配为空列表
-        private static IReadOnlyList<SemanticSymbol> StaticHostTypeArguments(MethodSymbol method,
-            TypeSymbol? containerType)
-        {
-            if (!method.IsStatic || method.Owner == null || containerType == null)
-            {
-                return Array.Empty<SemanticSymbol>();
-            }
-            for (var t = containerType; t != null; t = t.BaseType)
-            {
-                if (ReferenceEquals(t.ConstructedFrom, method.Owner) && t.TypeArguments != null)
-                {
-                    return t.TypeArguments;
-                }
-            }
-            return Array.Empty<SemanticSymbol>();
         }
 
         // 具化泛型构造（SYNTAX §3.6/§3.7，BIL §14.2）：单段纯调用的被调名
@@ -355,6 +344,10 @@ namespace RigiCompiler
                 reportErrors: false, span: null);
             if (probed is not GenericParameterSymbol genericParameter) return null;
             handled = true;
+            if (StaticGenericRules.CheckFrameUse(genericParameter, ctx.Frame, node.Span, env.Error))
+            {
+                return null;
+            }
             if (arguments.Count == 0
                 && !CheckReifiedZeroArgBound(node, genericParameter, ctx, env))
             {
@@ -628,7 +621,8 @@ namespace RigiCompiler
                 var container = MemberLookup.ResolveContainer(calleeSegments, node.Span, ctx.Frame,
                     env, segmentGenerics: containerTypeArguments == null
                         ? null
-                        : new IReadOnlyList<TypeReferenceASTNode>?[] { containerTypeArguments });
+                        : new IReadOnlyList<TypeReferenceASTNode>?[] { containerTypeArguments },
+                    allowBareGenericDefinition: true);
                 if (container == null) return null;
                 candidates = container switch
                 {
@@ -661,6 +655,52 @@ namespace RigiCompiler
                 return null;
             }
             return accessible;
+        }
+
+        // Type.staticField.mid.method()：从最短类型前缀切出静态/全局字段
+        // 作 receiver，其余段同 BindInstanceCallForm 中间/末段。未切到
+        // 字段返回 null（调用方走原容器方法解析）。
+        private static CallBinding? TryBindStaticFieldReceiverCall(ASTNode node,
+            List<string> calleeSegments, List<ArgumentASTNode> arguments,
+            List<TypeReferenceASTNode>? containerTypeArguments,
+            List<TypeReferenceASTNode>? genericArguments, Scope scope, BindContext ctx,
+            BindEnvironment env)
+        {
+            var segmentGenerics = containerTypeArguments == null
+                ? null
+                : new IReadOnlyList<TypeReferenceASTNode>?[] { containerTypeArguments };
+            for (var fieldAt = 1; fieldAt < calleeSegments.Count - 1; fieldAt++)
+            {
+                var trySegs = calleeSegments.Take(fieldAt + 1).ToList();
+                var tryContainer = MemberLookup.ResolveContainer(trySegs, node.Span, ctx.Frame,
+                    env, reportErrors: false, segmentGenerics: segmentGenerics,
+                    allowBareGenericDefinition: true);
+                if (tryContainer == null) continue;
+                if (MemberLookup.FindMember(tryContainer, trySegs[^1]) is not FieldSymbol field)
+                {
+                    continue;
+                }
+                if (StaticGenericRules.CheckConstructedStaticAccess(tryContainer, field.IsStatic,
+                    field.Name, node.Span, env.Error))
+                {
+                    return null;
+                }
+                var fieldReceiver = PathFacility.BindFieldReference(node, field, ctx, env,
+                    staticHostType: tryContainer as TypeSymbol);
+                if (fieldReceiver == null) return null;
+                BoundExpression receiver = fieldReceiver;
+                for (int i = fieldAt + 1; i < calleeSegments.Count - 1; i++)
+                {
+                    var next = PathFacility.BindInstanceFieldAccess(node, receiver,
+                        calleeSegments[i], env, ctx);
+                    if (next == null) return null;
+                    UseSiteAccessibility.CheckChainValue(next, ctx, env);
+                    receiver = next;
+                }
+                return BindInstanceMethodCall(node, receiver, calleeSegments[^1], arguments,
+                    scope, ctx, env, genericArguments);
+            }
+            return null;
         }
 
         // 实例调用形态（首段为值的多段纯调用）：首段绑 receiver（局部/
@@ -931,39 +971,16 @@ namespace RigiCompiler
             if (resolved == null) return null;
             var resolvedArguments = resolved.Value.Arguments;
             // §9.2.2：super init 实参在编译期 cast 到被解析 init 的形参声明
-            // 类型（精确符合——如 Leaf 实参 cast 到 Node 形参，落编译器生成
-            // 的 cast 指令）。ranking 只在语义期：重载解析已选定目标 init，
-            // VM 运行期重匹配（§15.5）按可赋值性进行，cast 把值类型窄化/
-            // 装箱/可空包装在调用点落定，引用类型 upcast 为恒成功的零开销
-            // 确认（VM 不改写运行期 typeid）
+            // 类型（严格一比一——想调 init(Node) 就必须 cast 到 Node，想调
+            // init(Any) 就必须 cast 到 Any）。ranking 只在语义期：重载解析
+            // 已选定唯一目标 init；VM 对 fn(..super) 按 cast 后静态类型
+            // TypesEqual 验证该目标（不是按运行期 typeid 再 ranking）。
+            // 引用类型 upcast 不改写对象头 typeid，值类型窄化/装箱由该
+            // cast 在调用点落定。
             if (current.Kind == MethodKind.Init)
             {
-                var targetInit = resolved.Value.Method;
-                for (var i = 0; i < resolvedArguments.Count
-                    && i < targetInit.Parameters.Count; i++)
-                {
-                    var parameterType = targetInit.Parameters[i].Type;
-                    var argument = resolvedArguments[i];
-                    if (parameterType == null || argument.Type == null
-                        || argument.Type is ErrorTypeSymbol)
-                    {
-                        continue;
-                    }
-                    // 构造泛型基类（Entry : Pair<String, i32> 的 super(k, v)）：
-                    // 定义级形参类型按 extends 实参代入后再作 cast 目标；
-                    // 代入后仍含泛型参数（泛型类内的 super）跳过——VM
-                    // 运行期匹配对泛型占位本就代入后再比对（§15.5）
-                    parameterType = env.Unit.Symbols.Substitute(parameterType,
-                        baseDefinition, baseType);
-                    if (parameterType == null || parameterType is ErrorTypeSymbol
-                        || SymbolLookup.ContainsGenericParameter(parameterType)
-                        || ReferenceEquals(argument.Type, parameterType))
-                    {
-                        continue;
-                    }
-                    resolvedArguments[i] = new BoundCastExpression(node, argument,
-                        parameterType, isSafe: false, type: parameterType);
-                }
+                CastArgumentsToDeclaredParameters(node, resolvedArguments,
+                    resolved.Value.Method, baseDefinition, baseType, env);
             }
             return new CallBinding
             {
@@ -976,6 +993,35 @@ namespace RigiCompiler
                 ResultType = resolved.Value.ReturnType,
                 IsSuperCall = true,
             };
+        }
+
+        // init 实参编译期 cast 到目标形参声明类型（§9.2.2 / §14.1）：
+        // 定义级形参按构造/extends 实参代入后再作 cast 目标；代入后仍含
+        // 泛型参数则跳过（VM TypesEqual 对 .generic< 占位本就放行）。
+        internal static void CastArgumentsToDeclaredParameters(ASTNode node,
+            List<BoundExpression> arguments, MethodSymbol targetInit,
+            TypeSymbol definition, TypeSymbol constructed, BindEnvironment env)
+        {
+            for (var i = 0; i < arguments.Count && i < targetInit.Parameters.Count; i++)
+            {
+                var parameterType = targetInit.Parameters[i].Type;
+                var argument = arguments[i];
+                if (parameterType == null || argument.Type == null
+                    || argument.Type is ErrorTypeSymbol)
+                {
+                    continue;
+                }
+                parameterType = env.Unit.Symbols.Substitute(parameterType,
+                    definition, constructed);
+                if (parameterType == null || parameterType is ErrorTypeSymbol
+                    || SymbolLookup.ContainsGenericParameter(parameterType)
+                    || ReferenceEquals(argument.Type, parameterType))
+                {
+                    continue;
+                }
+                arguments[i] = new BoundCastExpression(node, argument,
+                    parameterType, isSafe: false, type: parameterType);
+            }
         }
 
         // inner 实参形状：个数一致；具名按名归位；类型兼容（无目标预绑
@@ -1339,8 +1385,13 @@ namespace RigiCompiler
             var resolved = OverloadResolution.Resolve(newNode, accessibleInits, newNode.Arguments,
                 scope, ctx, env, receiverType: typeSymbol);
             if (resolved == null) return null;
-            return new BoundNewExpression(node, typeSymbol, resolved.Value.Method,
-                resolved.Value.Arguments);
+            // 与 super(...) 同模型：编译期已解析唯一 init，实参 cast 到该
+            // init 形参声明类型，VM 按静态类型 TypesEqual 验证（§14.1）。
+            var arguments = resolved.Value.Arguments;
+            CallFacility.CastArgumentsToDeclaredParameters(newNode, arguments,
+                resolved.Value.Method, typeSymbol.ConstructedFrom ?? typeSymbol,
+                typeSymbol, env);
+            return new BoundNewExpression(node, typeSymbol, resolved.Value.Method, arguments);
         }
 
         // 动态形态（SYNTAX §3.7，BIL §14.2 new.indirect）：new 的操作数是

@@ -1092,7 +1092,9 @@ namespace RigiCompiler.Bil
             var instance = context.AllocateObject(typeRef);
             coroutine.WriteVar(target.Name, instance);
             var initArgs = ReadArgs(coroutine, initArguments);
-            if (!context.TryFindInit(typeRef, initArgs, out var initSymbol)
+            var initStaticTypes = VmContext.ArgumentStaticTypes(
+                coroutine.CurrentFrame.Function, initArguments, initArgs);
+            if (!context.TryFindInit(typeRef, initArgs, initStaticTypes, out var initSymbol)
                 && initArguments.Count > 0)
             {
                 throw new VmException("new 实参不匹配任何 init：" + typeRef);
@@ -1144,7 +1146,9 @@ namespace RigiCompiler.Bil
             }
             coroutine.WriteVar(target.Name, instance);
             var initSymbol = "";
-            if (!context.TryFindInit(typeRef, payload, out initSymbol)
+            var caseStaticTypes = VmContext.ArgumentStaticTypes(
+                coroutine.CurrentFrame.Function, caseArguments, payload);
+            if (!context.TryFindInit(typeRef, payload, caseStaticTypes, out initSymbol)
                 && caseArguments.Count > 0)
             {
                 throw new VmException("new.case 实参不匹配任何 init：" + typeRef);
@@ -1165,9 +1169,12 @@ namespace RigiCompiler.Bil
             wrapper.Host = hostValue;
             host.WriteHidden(hiddenKey, wrapper);
             var initArgs = ReadArgs(coroutine, arguments);
+            var wrapperInitStaticTypes = VmContext.ArgumentStaticTypes(
+                coroutine.CurrentFrame.Function, arguments, initArgs);
             // TryFindInit 在「无 init 声明 + 零实参」时返回 true 且 initSymbol 为空：
             // 该形态表示安装即完成，不能拿空符号去 invoke
-            var hasInit = context.TryFindInit(wrapperType, initArgs, out var initSymbol)
+            var hasInit = context.TryFindInit(wrapperType, initArgs, wrapperInitStaticTypes,
+                    out var initSymbol)
                 && initSymbol.Length > 0;
             if (!hasInit && arguments.Count > 0)
             {
@@ -1344,11 +1351,20 @@ namespace RigiCompiler.Bil
             {
                 args[i] = coroutine.ReadVar(arguments[i].Name);
             }
-            InvokeValues(context, coroutine, methodSymbol, args, resultSlot);
+            var staticTypes = VmContext.ArgumentStaticTypes(
+                coroutine.CurrentFrame.Function, arguments, args);
+            InvokeValues(context, coroutine, methodSymbol, args, resultSlot, staticTypes);
         }
 
         internal static void InvokeValues(VmContext context, VmCoroutine coroutine,
             string methodSymbol, IReadOnlyList<VmValue> args, string? resultSlot)
+        {
+            InvokeValues(context, coroutine, methodSymbol, args, resultSlot, null);
+        }
+
+        internal static void InvokeValues(VmContext context, VmCoroutine coroutine,
+            string methodSymbol, IReadOnlyList<VmValue> args, string? resultSlot,
+            IReadOnlyList<string>? argumentStaticTypes)
         {
             // §15.4：invoke fn(..inner) 是 proxy 模板内的保留目标，由派发上下文
             // 在执行期解析「下一环」；上下文外出现抛清晰 VmException。
@@ -1359,7 +1375,7 @@ namespace RigiCompiler.Bil
             }
             if (methodSymbol == BilSpellings.SuperReservedFunction)
             {
-                ResolveSuper(context, coroutine, args, resultSlot);
+                ResolveSuper(context, coroutine, args, resultSlot, argumentStaticTypes);
                 return;
             }
             // §14.2/§14.3 call??? 降级路由：在方法 hook 默认抛之前拦截，按
@@ -1455,7 +1471,8 @@ namespace RigiCompiler.Bil
         // 绕过 wrapper 派发链、不再二次派发；实参（$.this + 隐藏泛型 + 普通
         // 实参）原样压入。仅 override / init fn 体内合法（frontend 保证）。
         private static void ResolveSuper(VmContext context, VmCoroutine coroutine,
-            IReadOnlyList<VmValue> args, string? resultSlot)
+            IReadOnlyList<VmValue> args, string? resultSlot,
+            IReadOnlyList<string>? argumentStaticTypes)
         {
             var current = coroutine.CurrentFrame.Function;
             if (!BilVerificationContext.TryParseMethodSymbol(current.Symbol,
@@ -1467,7 +1484,7 @@ namespace RigiCompiler.Bil
             }
             if (context.IsInitMethod(current.Symbol))
             {
-                ResolveSuperInit(context, coroutine, baseRef, args);
+                ResolveSuperInit(context, coroutine, baseRef, args, argumentStaticTypes);
                 return;
             }
             var baseSheet = context.SheetOf(baseRef)
@@ -1518,7 +1535,8 @@ namespace RigiCompiler.Bil
         // $.this + 隐藏泛型前缀（§15.5），剥除后按声明参数比对；init 必为
         // noret（resultSlot 丢弃），$.this 透传（语义同 invoke.noret）
         private static void ResolveSuperInit(VmContext context, VmCoroutine coroutine,
-            string baseRef, IReadOnlyList<VmValue> args)
+            string baseRef, IReadOnlyList<VmValue> args,
+            IReadOnlyList<string>? argumentStaticTypes)
         {
             var baseDeclaration = context.FindType(baseRef)
                 ?? throw new VmException("基类声明缺失，无法解析 super init：" + baseRef);
@@ -1546,7 +1564,7 @@ namespace RigiCompiler.Bil
                         (p.Name, VmTypeSheetBuilder.SubstituteGenericArguments(
                             p.TypeRef, substitution)));
                 }
-                if (!SuperInitArgsMatch(context, function, parameters, args))
+                if (!SuperInitArgsMatch(function, parameters, args, argumentStaticTypes))
                 {
                     continue;
                 }
@@ -1557,12 +1575,13 @@ namespace RigiCompiler.Bil
         }
 
         // super init 实参匹配：args = [.this, 隐藏泛型..., 声明参数...]，
-        // 隐藏泛型个数取自 fn .args 的 .generic.* 条目。实参比对按可赋值性
-        // （与 new 路径的 TryFindInit 同口径，RUNTIME §11：子类实参命中
-        // 基类形参——前端已对 super(...) 实参生成到形参声明类型的 cast，
-        // §9.2.2，引用类型 upcast 不改写运行期 typeid，此处按可赋值性接受）
-        private static bool SuperInitArgsMatch(VmContext context, BilFunction function,
-            List<(string Name, string TypeRef)> parameters, IReadOnlyList<VmValue> args)
+        // 隐藏泛型个数取自 fn .args 的 .generic.* 条目。比对 cast 后静态
+        // 类型与形参 TypesEqual（§9.2.2 / §15.5：编译期已选定唯一目标，
+        // 此处是验证不是 ranking；引用类型 upcast 不改对象头 typeid，故
+        // 不得用运行期 TypeRef）。缺静态类型时回落值 TypeRef（同口径）。
+        private static bool SuperInitArgsMatch(BilFunction function,
+            List<(string Name, string TypeRef)> parameters, IReadOnlyList<VmValue> args,
+            IReadOnlyList<string>? argumentStaticTypes)
         {
             var genericHidden = 0;
             foreach (var arg in function.Args)
@@ -1582,8 +1601,11 @@ namespace RigiCompiler.Bil
             var passedHidden = args.Count - minCount;
             for (var i = 0; i < parameters.Count; i++)
             {
-                if (!context.Types.TypesAssignable(args[1 + passedHidden + i].TypeRef,
-                        parameters[i].TypeRef))
+                var index = 1 + passedHidden + i;
+                var actual = argumentStaticTypes != null && index < argumentStaticTypes.Count
+                    ? argumentStaticTypes[index]
+                    : args[index].TypeRef;
+                if (!VmContext.TypesEqual(actual, parameters[i].TypeRef))
                 {
                     return false;
                 }

@@ -450,7 +450,261 @@ namespace RigiCompiler
                     $"'{BoundAnalysis.TypeDisplay(value.Type)}'");
                 return null;
             }
+            // W5（SYNTAX §9.3）：全局/静态字段初值不得直接引用其它全局/
+            // 静态字段（含 const、含自身）。frontend 不对 const 做编译期
+            // 折叠，口径一律禁止。函数/方法调用与 lambda 体是逃逸口，
+            // 不静态追踪。实例字段初值不在此列。
+            CheckStaticFieldInitializerReferences(field, value, env);
             return value;
+        }
+
+        // 全局（Owner == null）或 static 字段的初值表达式：扫到
+        // BoundFieldReferenceExpression 即直接引用，落诊断。lambda 体
+        // 不下行（与顶层函数同属逃逸口）。
+        private static void CheckStaticFieldInitializerReferences(FieldSymbol field,
+            BoundExpression value, BindEnvironment env)
+        {
+            if (field.Owner != null && !field.IsStatic) return;
+            ScanExpression(value, field, env);
+        }
+
+        private static void ScanExpression(BoundExpression expression, FieldSymbol initializing,
+            BindEnvironment env)
+        {
+            switch (expression)
+            {
+                case BoundFieldReferenceExpression fieldRef:
+                    env.Error(fieldRef.Syntax.Span,
+                        $"Initializer of global/static field '{FieldDisplay(initializing)}' " +
+                        $"cannot reference global/static field '{FieldDisplay(fieldRef.Field)}'");
+                    return;
+                case BoundLambdaExpression:
+                    return;
+                case BoundLiteralExpression:
+                case BoundValueReferenceExpression:
+                case BoundThisExpression:
+                case BoundSelfExpression:
+                case BoundSafeAccessReceiverExpression:
+                    return;
+                case BoundBinaryExpression binary:
+                    ScanExpression(binary.Left, initializing, env);
+                    ScanExpression(binary.Right, initializing, env);
+                    return;
+                case BoundUnaryExpression unary:
+                    ScanExpression(unary.Operand, initializing, env);
+                    return;
+                case BoundCallExpression call:
+                    foreach (var argument in call.Arguments)
+                        ScanExpression(argument, initializing, env);
+                    if (call.IndirectTarget != null)
+                        ScanExpression(call.IndirectTarget, initializing, env);
+                    return;
+                case BoundNewExpression newExpression:
+                    foreach (var argument in newExpression.Arguments)
+                        ScanExpression(argument, initializing, env);
+                    return;
+                case BoundDynamicNewExpression dynamicNew:
+                    if (dynamicNew.TypeValue != null)
+                        ScanExpression(dynamicNew.TypeValue, initializing, env);
+                    foreach (var argument in dynamicNew.Arguments)
+                        ScanExpression(argument, initializing, env);
+                    return;
+                case BoundIfExpression ifExpression:
+                    ScanExpression(ifExpression.Condition, initializing, env);
+                    ScanBlock(ifExpression.TrueBranch.Block, initializing, env);
+                    ScanBlock(ifExpression.FalseBranch.Block, initializing, env);
+                    return;
+                case BoundCompoundAssignmentExpression compound:
+                    ScanExpression(compound.Target, initializing, env);
+                    ScanExpression(compound.Value, initializing, env);
+                    return;
+                case BoundInstanceCallExpression instanceCall:
+                    ScanExpression(instanceCall.Receiver, initializing, env);
+                    foreach (var argument in instanceCall.Arguments)
+                        ScanExpression(argument, initializing, env);
+                    return;
+                case BoundFieldAccessExpression fieldAccess:
+                    ScanExpression(fieldAccess.Receiver, initializing, env);
+                    return;
+                case BoundIndexExpression index:
+                    ScanExpression(index.Receiver, initializing, env);
+                    ScanExpression(index.Index, initializing, env);
+                    return;
+                case BoundEnumCaseExpression enumCase:
+                    foreach (var argument in enumCase.Arguments)
+                        ScanExpression(argument, initializing, env);
+                    return;
+                case BoundWrapperAccessExpression wrapperAccess:
+                    ScanExpression(wrapperAccess.Receiver, initializing, env);
+                    return;
+                case BoundInnerCallExpression innerCall:
+                    foreach (var argument in innerCall.Arguments)
+                        ScanExpression(argument, initializing, env);
+                    return;
+                case BoundAwaitExpression awaitExpression:
+                    ScanExpression(awaitExpression.Operand, initializing, env);
+                    return;
+                case BoundSuperCallExpression superCall:
+                    foreach (var argument in superCall.Arguments)
+                        ScanExpression(argument, initializing, env);
+                    return;
+                case BoundSwitchExpression switchExpression:
+                    ScanExpression(switchExpression.Selector, initializing, env);
+                    foreach (var switchCase in switchExpression.Cases)
+                    {
+                        ScanExpression(switchCase.Match, initializing, env);
+                        ScanBlock(switchCase.Body.Block, initializing, env);
+                    }
+                    ScanBlock(switchExpression.DefaultBody.Block, initializing, env);
+                    return;
+                case BoundSwitchPlaceholderExpression placeholder:
+                    ScanExpression(placeholder.Selector, initializing, env);
+                    return;
+                case BoundCastExpression cast:
+                    ScanExpression(cast.Source, initializing, env);
+                    return;
+                case BoundSmartCastExpression smartCast:
+                    ScanExpression(smartCast.Operand, initializing, env);
+                    return;
+                case BoundSeqExpression seqExpression:
+                    foreach (var binding in seqExpression.UsingBindings)
+                        ScanExpression(binding.Initializer, initializing, env);
+                    ScanBlock(seqExpression.Body.Block, initializing, env);
+                    return;
+                case BoundSafeAccessExpression safeAccess:
+                    ScanExpression(safeAccess.Receiver, initializing, env);
+                    ScanExpression(safeAccess.Access, initializing, env);
+                    return;
+                case BoundNullFallbackExpression nullFallback:
+                    ScanExpression(nullFallback.Left, initializing, env);
+                    ScanExpression(nullFallback.Right, initializing, env);
+                    return;
+                case BoundTypeCheckExpression typeCheck:
+                    ScanExpression(typeCheck.Operand, initializing, env);
+                    if (typeCheck.TargetValue != null)
+                        ScanExpression(typeCheck.TargetValue, initializing, env);
+                    return;
+                case BoundTypeOfExpression typeOf:
+                    if (typeOf.Operand != null)
+                        ScanExpression(typeOf.Operand, initializing, env);
+                    return;
+                case BoundVarArgsArgument varArgs:
+                    foreach (var value in varArgs.Values)
+                        ScanExpression(value, initializing, env);
+                    foreach (var (_, named) in varArgs.NamedValues)
+                        ScanExpression(named, initializing, env);
+                    return;
+                default:
+                    throw new CompilerInternalException(
+                        "全局/静态字段初值禁令遍历遇未知 Bound 表达式节点: " +
+                        expression.GetType().Name);
+            }
+        }
+
+        private static void ScanBlock(BoundBlock? block, FieldSymbol initializing,
+            BindEnvironment env)
+        {
+            if (block == null) return;
+            foreach (var statement in block.Statements)
+                ScanStatement(statement, initializing, env);
+        }
+
+        private static void ScanStatement(BoundStatement statement, FieldSymbol initializing,
+            BindEnvironment env)
+        {
+            switch (statement)
+            {
+                case BoundBlock nested:
+                    ScanBlock(nested, initializing, env);
+                    return;
+                case BoundLocalDeclarationStatement declaration:
+                    if (declaration.Initializer != null)
+                        ScanExpression(declaration.Initializer, initializing, env);
+                    return;
+                case BoundDestructuringDeclarationStatement destructuring:
+                    ScanExpression(destructuring.Initializer, initializing, env);
+                    return;
+                case BoundExpressionStatement expressionStatement:
+                    ScanExpression(expressionStatement.Expression, initializing, env);
+                    return;
+                case BoundYieldStatement yield:
+                    if (yield.Alarm != null)
+                        ScanExpression(yield.Alarm, initializing, env);
+                    return;
+                case BoundCallStatement call:
+                    foreach (var argument in call.Arguments)
+                        ScanExpression(argument, initializing, env);
+                    if (call.Receiver != null)
+                        ScanExpression(call.Receiver, initializing, env);
+                    if (call.IndirectTarget != null)
+                        ScanExpression(call.IndirectTarget, initializing, env);
+                    return;
+                case BoundAssignmentStatement assignment:
+                    ScanExpression(assignment.Target, initializing, env);
+                    ScanExpression(assignment.Value, initializing, env);
+                    return;
+                case BoundReturnStatement returnStatement:
+                    if (returnStatement.Value != null)
+                        ScanExpression(returnStatement.Value, initializing, env);
+                    return;
+                case BoundIfStatement ifStatement:
+                    ScanExpression(ifStatement.Condition, initializing, env);
+                    ScanBlock(ifStatement.TrueBlock, initializing, env);
+                    if (ifStatement.FalseBlock != null)
+                        ScanBlock(ifStatement.FalseBlock, initializing, env);
+                    return;
+                case BoundReturnValueStatement returnValue:
+                    ScanExpression(returnValue.Value, initializing, env);
+                    return;
+                case BoundLoop loop:
+                    if (loop.Condition != null)
+                        ScanExpression(loop.Condition, initializing, env);
+                    if (loop.Iterable != null)
+                        ScanExpression(loop.Iterable, initializing, env);
+                    ScanBlock(loop.Body, initializing, env);
+                    return;
+                case BoundLoopControl:
+                    return;
+                case BoundSwitchStatement switchStatement:
+                    ScanExpression(switchStatement.Selector, initializing, env);
+                    foreach (var switchCase in switchStatement.Cases)
+                    {
+                        ScanExpression(switchCase.Match, initializing, env);
+                        ScanBlock(switchCase.Body, initializing, env);
+                    }
+                    ScanBlock(switchStatement.DefaultBody, initializing, env);
+                    return;
+                case BoundThrowStatement throwStatement:
+                    ScanExpression(throwStatement.Exception, initializing, env);
+                    return;
+                case BoundTryStatement tryStatement:
+                    ScanBlock(tryStatement.TryBlock, initializing, env);
+                    foreach (var catchClause in tryStatement.Catches)
+                        ScanBlock(catchClause.Body, initializing, env);
+                    if (tryStatement.FinallyBlock != null)
+                        ScanBlock(tryStatement.FinallyBlock, initializing, env);
+                    return;
+                case BoundSeqStatement seqStatement:
+                    foreach (var binding in seqStatement.UsingBindings)
+                        ScanExpression(binding.Initializer, initializing, env);
+                    ScanBlock(seqStatement.Body, initializing, env);
+                    return;
+                case BoundSeqExitStatement:
+                    return;
+                case BoundNewWrapperStatement newWrapper:
+                    foreach (var argument in newWrapper.Arguments)
+                        ScanExpression(argument, initializing, env);
+                    return;
+                default:
+                    throw new CompilerInternalException(
+                        "全局/静态字段初值禁令遍历遇未知 Bound 语句节点: " +
+                        statement.GetType().Name);
+            }
+        }
+
+        private static string FieldDisplay(FieldSymbol field)
+        {
+            return field.Owner != null ? field.Owner.Name + "." + field.Name : field.Name;
         }
 
         // companion 的 init：求值各静态字段初始化器并构造 cell（赋值到

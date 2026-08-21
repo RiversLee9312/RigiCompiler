@@ -219,16 +219,14 @@ namespace RigiCompiler
             // 非 rich ValueType（全部基元、String、Type\<T>、Span\<T>、非 rich struct/enum struct）
             if (!IsRich && IsValueTypeBranch) return true;
             // Nullable\<T\>/Cell\<T\>/ReadonlyCell\<T\> 按 T 推导（§3.1.2/§5.2 特权）；
-            // g8/g10 附带放宽：内层为泛型参数时按其 extends 界的共享安全性
-            // 推导（无约束 GP 安全性未知——保守 false，与调用点闸门口径一致）
+            // 内层为泛型参数时按其 extends 界链推导共享安全（界为外层 GP
+            // 则递归；无约束 / 环界保守 false，与调用点闸门口径一致）
             if (ConstructedFrom is { DerivesSharedSafetyFromTypeArgument: true })
             {
                 return TypeArguments![0] switch
                 {
                     TypeSymbol element => element.IsSharedSafe(),
-                    GenericParameterSymbol parameter => parameter.Constraints.Any(
-                        c => c.Kind == GenericConstraintKind.Extends
-                            && c.Bound is TypeSymbol bound && bound.IsSharedSafe()),
+                    GenericParameterSymbol parameter => parameter.IsSharedSafe(),
                     _ => false,
                 };
             }
@@ -676,6 +674,35 @@ namespace RigiCompiler
             Variance = variance;
             IsVariadic = isVariadic;
             IsNamedVariadic = isNamedVariadic;
+        }
+
+        // 按 extends 界链推导共享安全：界为 TypeSymbol 则问其 IsSharedSafe；
+        // 界为外层 GP 则递归。无约束 / 仅 supers/with / 环界 → false。
+        public bool IsSharedSafe() => IsSharedSafe(null);
+
+        internal bool IsSharedSafe(HashSet<GenericParameterSymbol>? visiting)
+        {
+            visiting ??= new HashSet<GenericParameterSymbol>();
+            if (!visiting.Add(this)) return false;
+            try
+            {
+                foreach (var constraint in Constraints)
+                {
+                    if (constraint.Kind != GenericConstraintKind.Extends) continue;
+                    switch (constraint.Bound)
+                    {
+                        case TypeSymbol bound when bound.IsSharedSafe():
+                            return true;
+                        case GenericParameterSymbol outer when outer.IsSharedSafe(visiting):
+                            return true;
+                    }
+                }
+                return false;
+            }
+            finally
+            {
+                visiting.Remove(this);
+            }
         }
     }
 

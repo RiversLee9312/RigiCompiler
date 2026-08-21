@@ -133,10 +133,13 @@ namespace RigiCompiler.Tests
             TestNullableGenericTypeArgument();
             TestConstructedTypeStaticMembers();
             TestGenericNullableEndToEnd();
+            TestBoundNullableBoxingEndToEnd();
             TestNestedStructFieldChainWrite();
             TestStructReceiverCallWriteback();
             TestClassEmbeddedStructFieldWrite();
             TestThreeLevelNestedStructWrite();
+            TestStaticFieldRootChainWrite();
+            TestWrappedStaticFieldRootChainWrite();
 
             return TestHarness.Summary("BilVm");
         }

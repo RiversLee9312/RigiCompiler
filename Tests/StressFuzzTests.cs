@@ -18,12 +18,14 @@ namespace RigiCompiler.Tests
     /// StressFuzzGenerator，模板源自 e2e 语料的参数化变体）。
     ///
     /// 驱动管线：parse（P1）→ 语义（P1–P3）→ emit BIL（P4）→ BilVerifier；
-    /// 合法程序再过 BilVm 执行（生成器不产循环/递归，无死循环风险）。
+    /// 合法程序再过 BilVm 执行（生成器不产循环/递归；VM 仍加步数上限兜底）。
     ///
     /// 逐用例不变量（任一违反即失败并落盘）：
     /// 1. 编译器永不崩溃——任何异常逃逸都是 bug（含 VM 托管异常）；
-    /// 2. 合法程序（ExpectError=false）必须零 Error、过 verifier、VM 无异常；
+    /// 2. 合法程序（ExpectError=false 且非软 miss）必须零 Error、过 verifier、VM 无异常；
     /// 3. 注入负例（ExpectError=true）必须报 Error 诊断而非崩溃/静默通过；
+    /// 3b. 软 miss（SoftMiss）：事先不断言合法/非法；只要求不崩溃，
+    ///     若编译通过则 verifier 过 + VM 不崩（步数上限受控终止算不崩）；
     /// 4. 诊断不重复刷屏——同 (阶段, 级别, 位置, 消息) 不得出现两次；
     /// 5. 诊断确定性——每 60 例抽 1 例编译两次，诊断序列逐字一致。
     ///
@@ -40,6 +42,7 @@ namespace RigiCompiler.Tests
     public static class StressFuzzTests
     {
         internal const int Seed = 20260821;
+        internal const long VmMaxSteps = 100_000;
         private const int DefaultCaseCount = 3000;
         private const int CiSmokeCaseCount = 600;  // CI 冒烟量（无 env 时）
         private const int DeterminismEvery = 60;
@@ -61,6 +64,8 @@ namespace RigiCompiler.Tests
         // 覆盖统计（证明合法/非法两路都充分命中）
         private static int cleanCases;         // 合法且零诊断
         private static int errorCases;         // 含 Error 诊断
+        private static int softMissCases;      // 软 miss 用例
+        private static int softMissCompiled;   // 软 miss 且编译通过
         private static readonly Dictionary<string, int> domainFrequency = new();
         private static readonly Dictionary<string, int> messageFrequency = new();
 
@@ -118,7 +123,7 @@ namespace RigiCompiler.Tests
             passCount = failCount = 0;
             crashes = parseFailures = verifierFailures = vmFailures = 0;
             legalRejected = injectionMissed = nondeterministic = duplicateDiagnostics = 0;
-            cleanCases = errorCases = 0;
+            cleanCases = errorCases = softMissCases = softMissCompiled = 0;
             domainFrequency.Clear();
             messageFrequency.Clear();
             failureLog.Clear();
@@ -148,7 +153,8 @@ namespace RigiCompiler.Tests
                 $"BIL 验证失败 {verifierFailures} / VM 异常 {vmFailures} / " +
                 $"合法被拒 {legalRejected} / 注入未报 {injectionMissed} / " +
                 $"诊断不确定 {nondeterministic} / 重复诊断 {duplicateDiagnostics}");
-            Console.WriteLine($"  覆盖：合法零诊断 {cleanCases} / 含 Error {errorCases}；领域分布：");
+            Console.WriteLine($"  覆盖：合法零诊断 {cleanCases} / 含 Error {errorCases} / " +
+                $"软miss {softMissCases}（其中编译通过 {softMissCompiled}）；领域分布：");
             foreach (var pair in domainFrequency.OrderByDescending(p => p.Value))
             {
                 Console.WriteLine($"      ×{pair.Value}  {pair.Key}");
@@ -446,8 +452,11 @@ namespace RigiCompiler.Tests
 
         private static void DumpSource(int index, FuzzCase kase)
         {
+            string expect = kase.SoftMiss
+                ? "软miss（不崩溃；通过则 verifier+VM）"
+                : (kase.ExpectError ? "Error" : "零诊断 + VM");
             Console.WriteLine($"  [dump] case#{index}（种子 {Seed}，领域 {kase.Domain}/{kase.Template}，" +
-                $"期望 {(kase.ExpectError ? "Error" : "零诊断 + VM")}）：");
+                $"期望 {expect}）：");
             foreach (var (name, source) in kase.Files)
             {
                 Console.WriteLine($"    --- {name} ---");
@@ -486,6 +495,7 @@ namespace RigiCompiler.Tests
         private static void RunCase(int index, FuzzCase kase)
         {
             domainFrequency[kase.Domain] = domainFrequency.GetValueOrDefault(kase.Domain) + 1;
+            if (kase.SoftMiss) softMissCases++;
             bool ok = true;   // 任一不变量违反即 false，出口统一计数
             CompilationUnit? unit = null;
             BilModule? module = null;
@@ -519,15 +529,15 @@ namespace RigiCompiler.Tests
                 }
             }
 
-            // 不变量 2/3：期望与诊断对齐
-            if (ok && kase.ExpectError && !unit!.Diagnostics.HasErrors)
+            // 不变量 2/3：期望与诊断对齐（软 miss 事先不断言合法/非法，跳过）
+            if (ok && !kase.SoftMiss && kase.ExpectError && !unit!.Diagnostics.HasErrors)
             {
                 // 注入负例静默通过——错误注入必然非法，漏报即编译器 bug
                 injectionMissed++;
                 Fail(index, kase, "错误注入未报任何 Error 诊断（应拒绝却通过）");
                 ok = false;
             }
-            if (ok && !kase.ExpectError && unit!.Diagnostics.HasErrors)
+            if (ok && !kase.SoftMiss && !kase.ExpectError && unit!.Diagnostics.HasErrors)
             {
                 legalRejected++;
                 Fail(index, kase, "合法程序被报 Error: " +
@@ -536,9 +546,10 @@ namespace RigiCompiler.Tests
                         .Select(d => $"{d.Phase}: {d.Message}")));
                 ok = false;
             }
+            if (ok && kase.SoftMiss && !unit!.Diagnostics.HasErrors) softMissCompiled++;
 
-            // 不变量 2 续：合法 ⇒ BIL 必须过 BilVerifier
-            if (ok && !kase.ExpectError)
+            // 不变量 2 续：合法或软 miss 编译通过 ⇒ BIL 必须过 BilVerifier
+            if (ok && !unit!.Diagnostics.HasErrors)
             {
                 IReadOnlyList<BilVerificationError> errors;
                 try
@@ -561,13 +572,13 @@ namespace RigiCompiler.Tests
                 }
             }
 
-            // 不变量 2 续：合法 ⇒ VM 执行不崩（生成器不产循环/递归，无挂死路径）
-            if (ok && !kase.ExpectError)
+            // 不变量 2 续：编译通过 ⇒ VM 执行（步数上限兜底；软 miss 受控终止不算崩）
+            if (ok && !unit!.Diagnostics.HasErrors)
             {
                 BilVmResult result;
                 try
                 {
-                    result = BilVm.Run(module!);
+                    result = BilVm.Run(module!, VmMaxSteps);
                 }
                 catch (Exception ex)
                 {
@@ -576,7 +587,7 @@ namespace RigiCompiler.Tests
                     result = new BilVmResult("", "", null, null);
                     ok = false;
                 }
-                if (ok && result.Exception != null)
+                if (ok && result.Exception != null && !kase.SoftMiss)
                 {
                     vmFailures++;
                     Fail(index, kase, "合法程序 VM 执行异常: " + result.Exception);
@@ -705,7 +716,7 @@ namespace RigiCompiler.Tests
                 File.WriteAllText(Path.Combine(dir, $"fail-case{index}.txt"),
                     $"case#{index} 种子 {Seed}\n" +
                     $"领域: {kase.Domain}/{kase.Template}\n" +
-                    $"期望: {(kase.ExpectError ? "Error 诊断" : "零诊断 + verifier + VM")}\n" +
+                    $"期望: {(kase.SoftMiss ? "软miss（不崩溃；通过则 verifier+VM）" : (kase.ExpectError ? "Error 诊断" : "零诊断 + verifier + VM"))}\n" +
                     $"问题: {problem}\n" +
                     $"复现: dotnet run -- test --run {suiteNumber} --suite-args {index} {index}\n");
                 dumpedFailures++;

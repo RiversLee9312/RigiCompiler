@@ -89,6 +89,7 @@ namespace RigiCompiler
             AsyncGateChecker.Visit(env);
             WrapperTargetResolver.Visit(env);
             ExtensionRegistrar.Visit(env);
+            StaticGenericBanChecker.Visit(env);
             VarianceChecker.Visit(env);
             WrapperApplicationChecker.Visit(env);
             WrapperInheritanceChecker.Visit(env);

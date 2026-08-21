@@ -2,10 +2,11 @@ using RigiCompiler.Bil.Vm;
 
 namespace RigiCompiler.Tests
 {
-    // init 运行期匹配：按可赋值性选择重载；精确类型不匹配但可赋给形参
-    // 时仍命中；无关类型拒绝。
+    // init 运行期匹配：编译期 cast 到声明类型后按静态类型 TypesEqual
+    // 验证目标（不是按运行期 typeid 可赋值性再 ranking）；无关类型拒绝。
     public static partial class BilVmDispatchTests
     {
+        // 4699a58 / W4：子类实参静态 new——编译器 cast 到声明类型后严格匹配
         private static void TestInitOverloadAssignability()
         {
             var result = Run(
@@ -87,8 +88,8 @@ namespace RigiCompiler.Tests
             CheckI32("基类 init 读到字段初值 11（不再是 0）", result, 11);
         }
 
-        // bug O6：super(...) 实参是形参声明类型的子类——前端生成到形参
-        // 类型的 cast（§9.2.2），VM 按可赋值性匹配，不再中止
+        // bug O6 / W4：super(...) 实参是形参声明类型的子类——前端生成到
+        // 形参类型的 cast（§9.2.2），VM 按 cast 后静态类型 TypesEqual 验证
         private static void TestSuperInitSubtypeArgument()
         {
             var result = Run(
@@ -107,6 +108,70 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckOk("super 子类实参不再中止", result);
             CheckI32("Node.init(n) 跑：tag=5+1=6", result, 6);
+        }
+
+        // W4：init(Any) 声明在 init(Node) 之前——编译期选更具体的 Node，
+        // 实参 cast 到 Node 后 VM TypesEqual 只命中 Node，不再按声明序
+        // 漂移到 Any。
+        private static void TestSuperInitStrictMatchIgnoresDeclarationOrder()
+        {
+            var result = Run(
+                "pub open class Node { pub init() {} }\n" +
+                "pub class Leaf : Node { pub init() {} }\n" +
+                "pub open class Box {\n" +
+                "    pub var tag: i32 = 0\n" +
+                "    pub init(a: Any) { tag = 1 }\n" +
+                "    pub init(n: Node) { tag = 2 }\n" +
+                "}\n" +
+                "pub class Child : Box {\n" +
+                "    pub init(x: Leaf) { super(x) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const c = new Child(new Leaf())\n" +
+                "    return c.tag\n" +
+                "}\n");
+            CheckOk("super 多可赋值重载不按声明序漂移", result);
+            CheckI32("编译期选 init(Node)，tag=2", result, 2);
+        }
+
+        private static void TestNewInitStrictMatchIgnoresDeclarationOrder()
+        {
+            var result = Run(
+                "pub open class Node { pub init() {} }\n" +
+                "pub class Leaf : Node { pub init() {} }\n" +
+                "pub class Box {\n" +
+                "    pub var tag: i32 = 0\n" +
+                "    pub init(a: Any) { tag = 1 }\n" +
+                "    pub init(n: Node) { tag = 2 }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const b = new Box(new Leaf())\n" +
+                "    return b.tag\n" +
+                "}\n");
+            CheckOk("new 多可赋值重载不按声明序漂移", result);
+            CheckI32("编译期选 init(Node)，tag=2", result, 2);
+        }
+
+        // 显式 cast 到 Any：编译期选 init(Any)，VM 严格匹配 Any 而非 Node
+        private static void TestSuperInitExplicitCastToAny()
+        {
+            var result = Run(
+                "pub open class Node { pub init() {} }\n" +
+                "pub class Leaf : Node { pub init() {} }\n" +
+                "pub open class Box {\n" +
+                "    pub var tag: i32 = 0\n" +
+                "    pub init(a: Any) { tag = 1 }\n" +
+                "    pub init(n: Node) { tag = 2 }\n" +
+                "}\n" +
+                "pub class Child : Box {\n" +
+                "    pub init(x: Leaf) { super(x as Any) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const c = new Child(new Leaf())\n" +
+                "    return c.tag\n" +
+                "}\n");
+            CheckOk("super 显式 cast 到 Any 命中 init(Any)", result);
+            CheckI32("编译期选 init(Any)，tag=1", result, 1);
         }
 
         // 字段 override（§9.2.1 字段覆写）：open 字段 + 子类 override

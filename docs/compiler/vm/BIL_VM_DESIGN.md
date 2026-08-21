@@ -149,6 +149,13 @@ Bil/
   绑定 Executor（首版唯一默认 Executor，字段保留 `BoundExecutor`）→
   转 Runnable 发布 → 返回 Task。**新 Coroutine 可能在 invoke 返回前已被
   另一 Worker 取走**——不以任何全局锁串行化执行。
+- **实现级步数上限**（非语言语义，Native 不必提供）：`BilVm.Run(module, maxSteps)`
+  与 CLI `vm --max-steps <N>`。缺省不限制（`maxSteps = 0` 或不传）。每执行
+  一条 BIL 指令计 1 步（`VmCoroutine.Step` 入口，含嵌套 Step 循环：proxy 链 /
+  singleton init / isReady 探测 / wrapper 派发）。超过时抛 `VmStepLimitException`
+  （`VmException` 子类，无 ExceptionObject），当前协程 Failed，CLI 将消息写
+  stderr 并以退出码 1 终止——受控错误，不是崩溃。非法 N（非正整数）为用法错误，
+  退出码 2。
 
 ### 4.2 同步与 happens-before
 

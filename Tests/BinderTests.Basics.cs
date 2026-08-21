@@ -146,6 +146,110 @@ namespace RigiCompiler.Tests
                 body4.Body.Statements[0].Syntax is ReturnStatementASTNode);
         }
 
+        // ===== W5：全局/静态字段初值不得直接引用其它全局/静态字段 =====
+        private static void TestGlobalFieldInitializerBan()
+        {
+            TestHarness.Section("P3 Global/Static Field Initializer Ban (§9.3 W5)");
+
+            var (ok, _) = BindUnit(
+                "var g: i32 = 42\n" +
+                "const cg: i32 = 1\n" +
+                "pub class Holder {\n" +
+                "    pub static var s: i32 = 100\n" +
+                "}\n" +
+                "func f(): i32 { return g }\n");
+            CheckNoErrors("合法字面量初值放行", ok);
+
+            var (viaFn, _) = BindUnit(
+                "var b: i32 = 1\n" +
+                "func readB(): i32 { return b }\n" +
+                "var a: i32 = readB()\n" +
+                "func f(): i32 { return a }\n");
+            CheckNoErrors("函数引用放行（逃逸口）", viaFn);
+
+            var (inst, _) = BindUnit(
+                "var g: i32 = 1\n" +
+                "class C {\n" +
+                "    pub var x: i32 = g\n" +
+                "    pub init()\n" +
+                "}\n" +
+                "func f(): i32 { return 0 }\n");
+            CheckNoErrors("实例字段初值引用全局放行", inst);
+
+            var (cross, _) = BindUnit(
+                "var a: i32 = (b + 1)\n" +
+                "var b: i32 = 1\n" +
+                "func f(): i32 { return a }\n");
+            TestHarness.CheckSemanticError("相互/后向引用报错", cross.Diagnostics,
+                "cannot reference global/static field 'b'");
+
+            var (fwd, _) = BindUnit(
+                "var a: i32 = 1\n" +
+                "var b: i32 = (a + 1)\n" +
+                "func f(): i32 { return b }\n");
+            TestHarness.CheckSemanticError("前向引用同样报错", fwd.Diagnostics,
+                "cannot reference global/static field 'a'");
+
+            var (self, _) = BindUnit(
+                "var a: i32 = a\n" +
+                "func f(): i32 { return a }\n");
+            TestHarness.CheckSemanticError("自引用报错", self.Diagnostics,
+                "cannot reference global/static field 'a'");
+
+            var (cst, _) = BindUnit(
+                "const c: i32 = 1\n" +
+                "var a: i32 = c\n" +
+                "func f(): i32 { return a }\n");
+            TestHarness.CheckSemanticError("引用 const 全局同样报错", cst.Diagnostics,
+                "cannot reference global/static field 'c'");
+
+            var (st, _) = BindUnit(
+                "pub class Holder {\n" +
+                "    pub static var s: i32 = 1\n" +
+                "    pub static var t: i32 = (s + 1)\n" +
+                "}\n" +
+                "func f(): i32 { return Holder.t }\n");
+            TestHarness.CheckSemanticError("静态字段互引报错", st.Diagnostics,
+                "cannot reference global/static field 'Holder.s'");
+
+            var (stG, _) = BindUnit(
+                "var g: i32 = 1\n" +
+                "pub class Holder {\n" +
+                "    pub static var s: i32 = g\n" +
+                "}\n" +
+                "func f(): i32 { return Holder.s }\n");
+            TestHarness.CheckSemanticError("静态初值引用全局报错", stG.Diagnostics,
+                "cannot reference global/static field 'g'");
+
+            var (wrapped, _) = BindUnitWithStdlib(
+                "@WrapperTarget(.Value)\n" +
+                "pub shared wrapper W {\n" +
+                "    pub init()\n" +
+                "}\n" +
+                "@W\n" +
+                "var wg: i32 = 1\n" +
+                "@W\n" +
+                "var wh: i32 = wg\n" +
+                "func f(): i32 { return wh }\n");
+            TestHarness.CheckSemanticError("wrapped 全局初值互引报错", wrapped.Diagnostics,
+                "cannot reference global/static field 'wg'");
+
+            var (companion, _) = BindUnitWithStdlib(
+                "@WrapperTarget(.Value)\n" +
+                "pub shared wrapper W {\n" +
+                "    pub init()\n" +
+                "}\n" +
+                "pub class Holder {\n" +
+                "    @W\n" +
+                "    pub static var s: i32 = 1\n" +
+                "    @W\n" +
+                "    pub static var t: i32 = s\n" +
+                "}\n" +
+                "func f(): i32 { return Holder.t }\n");
+            TestHarness.CheckSemanticError("companion 静态初值互引报错", companion.Diagnostics,
+                "cannot reference global/static field 'Holder.s'");
+        }
+
         // ===== 二元 intrinsic 运算（BIL §11 结果类型维度）=====
         private static void TestBinaryOperators()
         {

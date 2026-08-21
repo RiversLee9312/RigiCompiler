@@ -623,9 +623,9 @@ namespace RigiCompiler
         // 局部）。声明发射由 EmittingDriver 的合成体循环承担
         // （IsSynthetic 裸条目，§8.4.1），不进命名空间 Methods 表（防
         // §21.2 裸符号重复）。体直接构造 bound 节点（合成代码无
-        // DA/return 问题）。初始化器执行顺序 = 文件序 + 声明序；相互
-        // 引用未定义（读到的是尚未初始化的零值，与 §8.7 singleton 依赖
-        // 递归同型文档化）
+        // DA/return 问题）。初始化器执行顺序 = 文件序 + 声明序。
+        // W5：源码层初值不得直接引用其它全局/静态字段（BindFieldInitializer
+        // 编译期拒绝）；函数调用属逃逸口。
         private void SynthesizeGlobalFieldInitializers()
         {
             var statements = new List<BoundStatement>();

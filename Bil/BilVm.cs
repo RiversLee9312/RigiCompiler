@@ -31,17 +31,27 @@ namespace RigiCompiler.Bil
             Module = module;
         }
 
-        public BilVmResult Run()
+        // maxSteps：实现级指令步数上限；0（默认）= 不限制。超过抛
+        // VmStepLimitException 并记入 Result.Exception，不崩溃。
+        public BilVmResult Run(long maxSteps = 0)
         {
             var context = new VmContext(Module);
+            context.MaxSteps = maxSteps;
             var executor = new VmExecutor(context);
-            // §8.7：main 前急切初始化全部 singleton（companion 的 init 即完成
-            // 静态字段 cell 构造与 wrapper 安装）；运行期 new type(singleton)
-            // 返回同一份已初始化实例
-            context.InitializeSingletons(executor);
-            // N1（§8.4.1/§9.3）：全局/静态字段声明初始值（..globals.init），
-            // singleton 之后、main 之前
-            context.InvokeGlobalInitializers(executor);
+            try
+            {
+                // §8.7：main 前急切初始化全部 singleton（companion 的 init 即完成
+                // 静态字段 cell 构造与 wrapper 安装）；运行期 new type(singleton)
+                // 返回同一份已初始化实例
+                context.InitializeSingletons(executor);
+                // N1（§8.4.1/§9.3）：全局/静态字段声明初始值（..globals.init），
+                // singleton 之后、main 之前
+                context.InvokeGlobalInitializers(executor);
+            }
+            catch (VmStepLimitException ex)
+            {
+                return new BilVmResult(context.Stdout, context.Stderr, null, ex);
+            }
             var entry = context.FindEntrypoint();
             var main = executor.Spawn(entry, Array.Empty<VmValue>());
             executor.Publish(main);
@@ -50,6 +60,7 @@ namespace RigiCompiler.Bil
             return new BilVmResult(context.Stdout, context.Stderr, main.Result, exception);
         }
 
-        public static BilVmResult Run(BilModule module) => new BilVm(module).Run();
+        public static BilVmResult Run(BilModule module, long maxSteps = 0) =>
+            new BilVm(module).Run(maxSteps);
     }
 }

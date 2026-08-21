@@ -1,5 +1,5 @@
-// bug O6（正例）：super(...) 实参是形参声明类型的子类——前端生成到
-// 形参类型的 cast（§9.2.2），VM 按可赋值性匹配，不再中止。
+// bug O6 / W4（正例）：super(...) 实参是形参声明类型的子类——前端生成到
+// 形参类型的 cast（§9.2.2），VM 按 cast 后静态类型 TypesEqual 验证。
 // expect-exit: 6
 pub open class Node {
     pub var tag: i32 = 0

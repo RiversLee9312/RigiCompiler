@@ -339,6 +339,160 @@ namespace RigiCompiler.Tests
             CheckI32("末端体 3", result, 3);
         }
 
+        // bug W3：虚派发下 Method wrapper wildcard 的 .name 必须是实际执行
+        // 的实现槽符号（Child$work），不是调用点静态符号（Base$work）。
+        private static void TestMethodWrapperWildcardNameViaBaseStaticType()
+        {
+            var result = Run(
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Trace {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call(.name: String, args: named Any...): Any {\n" +
+                "        core.io.Console.println(.name)\n" +
+                "        return inner(.name, args)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub open class Base {\n" +
+                "    pub init()\n" +
+                "    @Trace()\n" +
+                "    pub open func work(): i32 { return 1 }\n" +
+                "}\n" +
+                "pub class Child : Base {\n" +
+                "    pub init()\n" +
+                "    @Trace()\n" +
+                "    pub override func work(): i32 { return 2 }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const b: Base = new Child()\n" +
+                "    return b.work()\n" +
+                "}\n");
+            CheckOk("虚调用 .name = 实现槽 Child$work", result);
+            TestHarness.Check(".name 为 Child$work 而非 Base$work",
+                result.Stdout, "Child$work()@.i32\n");
+            CheckI32("override 体 2", result, 2);
+        }
+
+        // bug W3 同构：接口静态类型调用，.name = Job$work 而非 Work$work
+        private static void TestMethodWrapperWildcardNameViaInterface()
+        {
+            var result = Run(
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Trace {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call(.name: String, args: named Any...): Any {\n" +
+                "        core.io.Console.println(.name)\n" +
+                "        return inner(.name, args)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub interface Work {\n" +
+                "    func work(): i32\n" +
+                "}\n" +
+                "pub class Job implements Work {\n" +
+                "    pub init()\n" +
+                "    @Trace()\n" +
+                "    pub override func work(): i32 { return 3 }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const w: Work = new Job()\n" +
+                "    return w.work()\n" +
+                "}\n");
+            CheckOk("接口调用 .name = 实现槽 Job$work", result);
+            TestHarness.Check(".name 为 Job$work 而非 Work$work",
+                result.Stdout, "Job$work()@.i32\n");
+            CheckI32("实现体 3", result, 3);
+        }
+
+        // 非虚回归：无继承时 .name 仍是声明侧完整 BIL 方法符号
+        private static void TestMethodWrapperWildcardNameNonVirtual()
+        {
+            var result = Run(
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Trace {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call(.name: String, args: named Any...): Any {\n" +
+                "        core.io.Console.println(.name)\n" +
+                "        return inner(.name, args)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    @Trace()\n" +
+                "    pub func fetch(x: i32): i32 { return (x + 1) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    return new Service().fetch(41)\n" +
+                "}\n");
+            CheckOk("非虚 .name = 声明符号", result);
+            TestHarness.Check(".name 为 Service$fetch",
+                result.Stdout, "Service$fetch(x:.i32)@.i32\n");
+            CheckI32("fetch 42", result, 42);
+        }
+
+        // 未 override：实际执行的仍是基类实现，.name = Base$work 而非 Child$work
+        private static void TestMethodWrapperWildcardNameInheritedNoOverride()
+        {
+            var result = Run(
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Trace {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call(.name: String, args: named Any...): Any {\n" +
+                "        core.io.Console.println(.name)\n" +
+                "        return inner(.name, args)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub open class Base {\n" +
+                "    pub init()\n" +
+                "    @Trace()\n" +
+                "    pub open func work(): i32 { return 1 }\n" +
+                "}\n" +
+                "pub class Child : Base {\n" +
+                "    pub init()\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const b: Base = new Child()\n" +
+                "    return b.work()\n" +
+                "}\n");
+            CheckOk("未 override .name = 基类实现槽", result);
+            TestHarness.Check(".name 为 Base$work（实际执行体）",
+                result.Stdout, "Base$work()@.i32\n");
+            CheckI32("基类体 1", result, 1);
+        }
+
+        // Entity wildcard 的 symbol 与 Method wrapper .name 同口径：
+        // 经基类静态类型调用 override 时为 Child$ping，不是 Base$ping
+        private static void TestEntityWildcardSymbolViaBaseStaticType()
+        {
+            var result = Run(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Logged {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., " +
+                "unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn {\n" +
+                "        core.io.Console.println(symbol)\n" +
+                "        return inner(symbol=symbol, namedArgs=namedArgs, unnamedArgs=unnamedArgs)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub open class Base {\n" +
+                "    pub init()\n" +
+                "    pub open func ping(): i32 { return 1 }\n" +
+                "}\n" +
+                "@Logged()\n" +
+                "pub class Child : Base {\n" +
+                "    pub init()\n" +
+                "    pub override func ping(): i32 { return 2 }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const b: Base = new Child()\n" +
+                "    return b.ping()\n" +
+                "}\n");
+            CheckOk("Entity wildcard symbol = 实现槽 Child$ping", result);
+            TestHarness.Check("symbol 为 Child$ping 而非 Base$ping",
+                result.Stdout, "Child$ping()@.i32\n");
+            CheckI32("override 体 2", result, 2);
+        }
+
         // 回归：override 未声明 wrapper 时经基类静态类型调用不绕链，
         // 虚派发仍到 override 体（修复不得给无 wrapper 方法凭空造链）
         private static void TestNoWrapperViaBaseStaticTypeRegression()

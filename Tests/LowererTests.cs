@@ -83,6 +83,11 @@ namespace RigiCompiler.Tests
             TestValueChainDeepWriteThisRoot();
             TestValueChainCompoundWrite();
             TestValueReceiverCallWriteback();
+            TestValueChainStaticRootWrite();
+            TestValueChainStaticRootCompound();
+            TestValueChainStaticRootReceiverCall();
+            TestValueChainStaticRootSingleFieldWrite();
+            TestValueChainWrappedStaticRootWrite();
             TestValueChainGetterOnlyIntermediateError();
             TestValueChainConstIntermediateError();
             TestIndexResultFieldWriteRejected();

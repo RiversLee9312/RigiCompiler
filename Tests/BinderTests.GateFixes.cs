@@ -24,6 +24,7 @@ namespace RigiCompiler.Tests
             TestAmbiguityWinnersAndPackSyntax();
             TestSharedInterfaceContagion();
             TestInstantiationFillInP3();
+            TestGenericBoundSharedSafeDerivation();
         }
 
         // ===== bug g4：泛型填入点隐式限制检查（P3 侧挂点）=====
@@ -345,6 +346,73 @@ namespace RigiCompiler.Tests
                 call2.GenericPack != null
                 && ReferenceEquals(call2.GenericPack.Syntax, call2.Syntax)
                 && call2.GenericPack.TypeArguments.Count == 0);
+        }
+
+        // ===== W8：IsSharedSafe 沿 GP extends 界链递归推导 =====
+        private static void TestGenericBoundSharedSafeDerivation()
+        {
+            TestHarness.Section("P3 GateFixes: GP 界链 shared-safe 推导（W8）");
+
+            // 正例：T extends U、U extends shared class → async 闸门通过
+            // （参数 T 走闸门 5 界链；参数 T? 走 Nullable\<GP\> 按界推导）
+            var (ok, _) = BindUnit(
+                "shared class Base { pub init() }\n" +
+                "class Host\\<U extends Base> {\n" +
+                "    pub async func send\\<T extends U>(x: T) { }\n" +
+                "    pub async func sendNull\\<T extends U>(x: T?) { }\n" +
+                "}\n");
+            CheckNoErrors("W8 多层 GP 界链 async 闸门通过", ok);
+
+            // 三层：T extends U、U extends V、V extends shared interface
+            var (ok3, _) = BindUnit(
+                "shared interface IShared { }\n" +
+                "class Outer\\<V extends IShared> {\n" +
+                "    class Inner\\<U extends V> {\n" +
+                "        pub async func send\\<T extends U>(x: T?) { }\n" +
+                "    }\n" +
+                "}\n");
+            CheckNoErrors("W8 三层 GP 界链 Nullable\\<T\\> async 闸门通过", ok3);
+
+            // 反例：非 shared 界链仍不过闸门
+            var (bad, _) = BindUnit(
+                "class Local { pub init() }\n" +
+                "class Host\\<U extends Local> {\n" +
+                "    pub async func send\\<T extends U>(x: T) { }\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("W8 反例：非 shared 界链闸门 5",
+                bad.Diagnostics,
+                "Generic parameter 'T' of async function 'send' must have a shared-safe " +
+                "constraint bound: 'Local'");
+
+            var (badNull, _) = BindUnit(
+                "class Local { pub init() }\n" +
+                "class Host\\<U extends Local> {\n" +
+                "    pub async func sendNull\\<T extends U>(x: T?) { }\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("W8 反例：Nullable\\<非 shared 界链\\> 闸门 2",
+                badNull.Diagnostics,
+                "Parameter 'x' of async function 'sendNull' must be a shared-safe type");
+
+            // 环界：直接构造符号，不经语法（同列表 T extends T 声明侧已拒）
+            var self = new GenericParameterSymbol("T");
+            self.Constraints.Add(new GenericConstraintInfo(
+                GenericConstraintKind.Extends, self));
+            TestHarness.CheckTrue("W8 环界 T extends T 不发散且非 shared-safe",
+                !self.IsSharedSafe());
+
+            var a = new GenericParameterSymbol("T");
+            var b = new GenericParameterSymbol("U");
+            a.Constraints.Add(new GenericConstraintInfo(GenericConstraintKind.Extends, b));
+            b.Constraints.Add(new GenericConstraintInfo(GenericConstraintKind.Extends, a));
+            TestHarness.CheckTrue("W8 环界 T extends U extends T 不发散",
+                !a.IsSharedSafe() && !b.IsSharedSafe());
+
+            // 语法侧 T extends T 报同列表引用，不挂起
+            var (cycleSyntax, _) = BindUnit(
+                "func loop\\<T extends T>(x: T): T { return x }\n");
+            TestHarness.CheckSemanticError("W8 语法环界 T extends T 报同列表引用",
+                cycleSyntax.Diagnostics,
+                "Constraint bound of 'T' cannot reference generic parameter 'T'");
         }
     }
 }

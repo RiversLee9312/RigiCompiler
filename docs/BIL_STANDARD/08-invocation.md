@@ -84,7 +84,7 @@ invoke.noret fn(..inner) [ARG_0, ARG_1, ...]
 
 - 必须出现在 `wrapper-proxy(specific|wildcard)` 标记的方法体内；出现在其他 fn 内非法；
 - `fn(..inner)` 是保留目标，不是 canonical 方法符号，不查 `MethodSymbols`，也**不携带 receiver**；
-- 操作数序对齐 §7.2 调用序子集：**先**模板 fn 声明中的**可变泛型包**隐藏参数（`.generic.<Pack>`，按声明序；固定泛型参数不出现在本列表——特化侧由 Middleware 自持），**再**源码层 `inner(...)` 的显式值实参（按声明序；wildcard 的保留首参 `symbol` / `.name` 显式携带，随后是 `.kwargs.*` / `.vargs.*` 包整体转发）。例如 wildcard 模板：
+- 操作数序对齐 §7.2 调用序子集：**先**模板 fn 声明中的**可变泛型包**隐藏参数（`.generic.<Pack>`，按声明序；固定泛型参数不出现在本列表——特化侧由 Middleware 自持），**再**源码层 `inner(...)` 的显式值实参（按声明序；wildcard 的保留首参 `symbol` / `.name` 显式携带，随后是 `.kwargs.*` / `.vargs.*` 包整体转发）。已声明成员上该保留首参的运行时值为实际执行的实现槽符号（虚/接口派发后，见 `SYNTAX.md` §14.4 / `RUNTIME.md` §14.3），不是调用点静态符号。例如 wildcard 模板：
   `invoke fn(..inner) $.t0 [$.generic.TNamedArgs, $.generic.TUnnamedArgs, $symbol, $.kwargs.namedArgs, $.vargs.unnamedArgs]`；
 - 源码语法：`inner(...)` 的调用形状 = proxy 函数自身的参数形状（wildcard 保留首参必须显式写出）；泛型包由 frontend 在 Bound/Lowered 层显式携带并在调用前置物化，Middleware 消费解包/烘焙；
 - 带返回的模板用 `invoke fn(..inner)`，RESULT 类型必须严格等于该模板 fn 的声明返回类型；void 模板用 `invoke.noret fn(..inner)`；
@@ -99,6 +99,8 @@ invoke.noret fn(..super) [$.this, HIDDEN_GENERIC_ARGS..., NORMAL_ARGS...]
 ```
 
 `fn(..super)` 是保留目标，不是 canonical 方法符号，也不得声明为普通 fn。它只可由 override 或 init fn 体发出，交 Middleware 解析为直接基类的原始实现并绕过 wrapper 派发链。首实参必须精确为 `$.this`；随后按 §7.2 的隐藏泛型参数、普通值参数顺序排列。init 必须使用 `invoke.noret`；override 的 invoke 形态与当前 fn 返回类型一致。frontend 不生成 `..create`：`..create` 仅是 Middleware/VM 的 create 生命周期阶段步骤，可与 super-init 和 init `_ -> inheritedField` 映射共存。
+
+**super init 匹配（与 SYNTAX §9.2.2 对齐）**：init 体内的 `invoke.noret fn(..super)` 由 Middleware 在直接基类 init 重载中定位入口。frontend 已把普通实参 cast 到被解析 init 的形参声明类型；VM 按这些实参的 **BIL 静态类型**（变量声明类型）与形参 **严格相等**（`TypesEqual` / canonical 全等）验证——不是按对象头运行期 typeid 的可赋值性再 ranking。引用类型 upcast 不改写对象头 typeid。多个可赋值 init 重载的选择只发生在语义期。
 
 ### 15.6 wrapper 动态 fallback
 

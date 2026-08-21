@@ -116,13 +116,19 @@
             // ResolveContainer 契约是传全段、内部取前 N-1 段），
             // 末段查字段成员（实例字段命中由 BindFieldReference 补 this）
             var container = MemberLookup.ResolveContainer(
-                elements.Select(e => e.name).ToList(), null, ctx.Frame, env, reportErrors: false);
+                elements.Select(e => e.name).ToList(), null, ctx.Frame, env, reportErrors: false,
+                allowBareGenericDefinition: true);
             if (container == null) return null;
             if (MemberLookup.FindMember(container, elements[^1].name) is not FieldSymbol memberField)
             {
                 return null;
             }
             valueFound = true;
+            if (StaticGenericRules.CheckConstructedStaticAccess(container,
+                memberField.IsStatic, memberField.Name, typeRef.Span, env.Error))
+            {
+                return null;
+            }
             return BindFieldReference(typeRef, memberField, ctx, env);
         }
 
@@ -310,7 +316,7 @@
                 }
                 return new BoundCallExpression(node, binding.Method, binding.Arguments,
                     binding.ResultType!, binding.TypeArguments, binding.GenericPack,
-                    binding.IsIndirect, binding.IndirectTarget, binding.HostTypeArguments);
+                    binding.IsIndirect, binding.IndirectTarget);
             }
             if (node.Head.Name == "super")
             {
@@ -576,32 +582,61 @@
             // g7：头段泛型实参随段名还原（Box\<i32>.zero → 容器 Box\<i32>）
             var segments = new List<string> { node.Head.Name! };
             segments.AddRange(node.Segments.Take(memberIndex + 1).Select(s => s.Name));
+            var segmentGenerics = headTypeArguments == null
+                ? null
+                : new IReadOnlyList<TypeReferenceASTNode>?[] { headTypeArguments };
+            // Type.staticField.rest：从最短类型前缀起把静态/全局字段切成
+            // 值宿主，剩余段交实例链（Holder.current.origin.x）。找不到
+            // 字段再按末段成员走原诊断。
+            FieldSymbol? splitField = null;
+            SemanticSymbol? splitContainer = null;
+            var splitMemberSeg = -1;
+            for (var i = 0; i <= memberIndex; i++)
+            {
+                var trySegments = new List<string> { node.Head.Name! };
+                trySegments.AddRange(node.Segments.Take(i + 1).Select(s => s.Name));
+                var tryContainer = MemberLookup.ResolveContainer(trySegments, node.Span,
+                    ctx.Frame, env, reportErrors: false, segmentGenerics: segmentGenerics,
+                    allowBareGenericDefinition: true);
+                if (tryContainer == null) continue;
+                if (MemberLookup.FindMember(tryContainer, trySegments[^1]) is FieldSymbol field)
+                {
+                    splitField = field;
+                    splitContainer = tryContainer;
+                    splitMemberSeg = i;
+                    break;
+                }
+            }
+            if (splitField != null)
+            {
+                if (StaticGenericRules.CheckConstructedStaticAccess(splitContainer!,
+                    splitField.IsStatic, splitField.Name, node.Span, env.Error))
+                {
+                    return null;
+                }
+                var restStart = splitMemberSeg + 1;
+                var fieldIsTerminal = restStart > memberIndex && colonIndex < 0
+                    && node.Segments[splitMemberSeg].Suffixes.Count == 0;
+                var fieldValue = BindFieldReference(node, splitField, ctx, env,
+                    forAssignment && fieldIsTerminal,
+                    staticHostType: splitContainer as TypeSymbol);
+                if (fieldValue == null) return null;
+                var foldedMember = FoldSuffixes(node, fieldValue,
+                    node.Segments[splitMemberSeg].Suffixes, 0,
+                    forAssignment && restStart > memberIndex && colonIndex < 0,
+                    scope, ctx, env);
+                if (foldedMember == null) return null;
+                if (restStart >= node.Segments.Count) return foldedMember;
+                return BindInstanceChain(node, foldedMember,
+                    node.Segments.Skip(restStart).ToList(), scope, ctx, env, forAssignment);
+            }
             var container = MemberLookup.ResolveContainer(segments, node.Span, ctx.Frame, env,
-                segmentGenerics: headTypeArguments == null
-                    ? null
-                    : new IReadOnlyList<TypeReferenceASTNode>?[] { headTypeArguments });
+                segmentGenerics: segmentGenerics, allowBareGenericDefinition: true);
             if (container == null) return null;
             var member = MemberLookup.FindMember(container, segments[^1]);
             var pathText = string.Join(".", segments);
             switch (member)
             {
-                case FieldSymbol memberField:
-                    // forAssignment 仅当字段是全路径最终 place（无 Colon 剩余段
-                    // 且成员段无后缀）——Colon 剩余段场景字段是宿主读取。
-                    // g7：构造类型容器（Box\<i32\>）作静态字段的代入宿主——
-                    // 声明类型中的宿主泛型参数按构造实参替换（zero: T → i32）
-                    var fieldValue = BindFieldReference(node, memberField, ctx, env,
-                        forAssignment && colonIndex < 0
-                            && node.Segments[memberIndex].Suffixes.Count == 0,
-                        staticHostType: container as TypeSymbol);
-                    if (fieldValue == null) return null;
-                    var foldedMember = FoldSuffixes(node, fieldValue,
-                        node.Segments[memberIndex].Suffixes, 0,
-                        forAssignment && colonIndex < 0, scope, ctx, env);
-                    if (foldedMember == null) return null;
-                    if (colonIndex < 0) return foldedMember;
-                    return BindInstanceChain(node, foldedMember,
-                        node.Segments.Skip(colonIndex).ToList(), scope, ctx, env, forAssignment);
                 case MethodSymbol:
                     return ErrorAndNull(env, node.Span,
                         $"Method '{pathText}' cannot be used as a value");

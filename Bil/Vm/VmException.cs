@@ -38,4 +38,17 @@ namespace RigiCompiler.Bil.Vm
             NativeSymbol = nativeSymbol;
         }
     }
+
+    // 实现级步数上限（非语言语义）：CLI `vm --max-steps N` / BilVm.Run(module, n)
+    // 缺省 0 = 不限制。超过时协程 Failed，不崩溃。
+    public sealed class VmStepLimitException : VmException
+    {
+        public long MaxSteps { get; }
+
+        public VmStepLimitException(long maxSteps)
+            : base("VM 步数超过上限 " + maxSteps + "（--max-steps；缺省不限制）")
+        {
+            MaxSteps = maxSteps;
+        }
+    }
 }

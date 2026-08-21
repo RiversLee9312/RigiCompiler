@@ -58,7 +58,7 @@ pub shared class SharedSession {
 #### 9.2.1 `override` 配套规则
 
 - `open`/`override` 也适用于非 static 成员 getter/setter，且 getter 与 setter 分别是独立的多态单元；字段本身（见下方字段覆写条款）、全局访问器和 static 访问器另有规则。`abstract` 仍仅适用于普通成员方法；`init` 与 `static` 方法不参与多态。**callable 协议例外**（SYNTAX §5.2）：`operator call` 可 `abstract`/`override`/`async`（`core.Func`/`Action`/`AsyncFunc`/`AsyncAction` 基类族与 lambda 隐藏类覆写依赖此例外）；其余 operator 仍不参与多态。
-- **字段覆写（`open`/`override` 字段）**：class/struct 的非 static 字段可标 `open`——允许子类以同名字段标 `override` 给出**不同的初始值**。语义：override 字段的类型必须与基类字段一致（构造基类按 `extends` 实参代入后比较）；**存储仍是基类槽**（不产生新字段槽，名称解析与 BIL 都落到基类字段）；override 只替换初始值——编译器为每个带声明初始值的实例字段生成可覆写的 `..init.field.<名>` 方法（§9.3/§9.7），子类 override 字段生成同族 override 版，虚派发自动选中最高派生实现。规则：override 字段必须给出新初始值（无新初始值=编译错误）；被 override 的基类字段必须标 `open`（非 open=编译错误）；override 字段不得携带 wrapper 应用与访问器（访问器覆写归基类字段上的访问器机制）；`open` 字段自身可以没有初始值（子类 override 补初始值合法）。带访问器的同名字段重声明归访问器 override 机制（getter/setter 各自带 `override`）；无访问器的同名字段当且仅当**双方都带声明初始值**时必须显式 `override`（否则静默 hiding 会让基类槽初值在子类构造中被同名 `..init.field` 族的虚派发吞掉，为编译错误）；单方带初始值的 hiding 沿用既有行为。
+- **字段覆写（`open`/`override` 字段）**：class/struct 的非 static 字段可标 `open`——允许子类以同名字段标 `override` 给出**不同的初始值**。语义：override 字段的类型必须与基类字段一致（构造基类按 `extends` 实参代入后比较）；**存储仍是基类槽**（不产生新字段槽，名称解析与 BIL 都落到基类字段）；override 只替换初始值——编译器为每个带声明初始值的实例字段生成可覆写的 `..init.field.<名>` 方法（§9.3/§9.7），子类 override 字段生成同族 override 版，虚派发自动选中最高派生实现。规则：override 字段必须给出新初始值（无新初始值=编译错误）；被 override 的基类字段必须标 `open`（非 open=编译错误）；override 字段不得携带 wrapper 应用与访问器（访问器覆写归基类字段上的访问器机制）；`open` 字段自身可以没有初始值（子类 override 补初始值合法）。带访问器的同名字段重声明归访问器 override 机制（getter/setter 各自带 `override`）；无访问器的同名字段当且仅当**双方都带声明初始值**时必须显式 `override`（否则静默 hiding 会让基类槽初值在子类构造中被同名 `..init.field` 族的虚派发吞掉，为编译错误）；单方带初始值的 hiding 沿用既有行为。**过满足边界（按名匹配，现状语义）**：`..init.field.<名>` 族按字段名（而非槽身份）匹配——单侧带初始值的 hiding 下，派生侧合成的 `..init.field.<名>` 会使同名基类槽在 DA 义务集中被按名豁免，即使两槽存储独立、基类槽并未被该初始化器写入。双侧带初始值已在声明点拒绝，本边界只作用于单侧 hiding。
 - `override` 必须在基类链或接口表中找到签名匹配（名称 + 参数类型序列 + 返回类型均严格相等，且 `async` 修饰符一致——sync 成员与 async 成员互不构成合法覆写目标，违反为专项编译错误）的 `open`/`abstract` 方法或接口成员；找不到、或目标非 `open`/`abstract`，均为编译错误。
 - 与继承成员同名同签名的成员必须显式 `override`（禁止静默隐藏）；仅 `async` 修饰符不同的同名同签名成员同样禁止（按 async 不一致专项诊断拦截）。
 - `abstract` 方法必须位于 `abstract` 类内；接口之外的无体方法必须标 `abstract` 或 `native`。
@@ -70,7 +70,36 @@ pub shared class SharedSession {
 
 override 方法的固定泛型参数按当前声明序隐式转发，源码调用点不写显式泛型；含泛型可变参数包的 super 转发为编译错误。`super` 绕过 wrapper 派发链，BIL 只生成 `fn(..super)`（§15.5）。
 
-**super init 实参的编译期 cast**：init 体内的 `super(...)` 经重载解析选定基类 init 后，前端对每个实参生成到该 init **形参声明类型**的 cast 指令（如 `Leaf` 实参 cast 到 `Node` 形参，落编译器生成的临时变量）再调用——构造重载的 ranking 只发生在语义期，运行期不再承担选择；VM 侧对 `fn(..super)` 的 init 重匹配按**可赋值性**进行（与 `new` 路径同口径：子类实参命中基类形参、`null` 命中可空形参），引用类型 upcast 不改写运行期 typeid，值类型窄化/装箱由该 cast 在调用点落定。
+**super init 实参的编译期 cast + 严格一致匹配**：init 体内的 `super(...)` 经重载解析选定基类 init 后，前端对每个实参生成到该 init **形参声明类型**的 cast 指令（严格一比一：想调 `init(Node)` 就必须 cast 到 `Node`，想调 `init(Any)` 就必须 cast 到 `Any`；如 `Leaf` 实参 cast 到 `Node` 形参，落编译器生成的临时变量）再调用——构造重载的 ranking 只发生在语义期。VM 对 `fn(..super)` 按 **cast 后的静态类型**（BIL 变量声明类型，不是对象头运行期 typeid）与目标 init 形参做 **TypesEqual 严格一致**验证：这是对编译期已解析唯一入口的确认，不是按可赋值性重新 ranking。因此 `init(Node)` 与 `init(Any)` 共存时，编译期选中哪个就调用哪个，不会按声明序漂移。引用类型 upcast 不改写对象头 typeid（RUNTIME §13 视图 typeid 与对象头分离）；值类型窄化/装箱由该 cast 在调用点落定。静态 `new` 同模型（BIL §14.1）。
+
+#### 9.2.3 静态成员与类级泛型
+
+Rigi 泛型靠 typeid 机制具化（RUNTIME.md §10）：类级类型参数的 typeid 在**构造时**写入实例上的编译器生成字段。静态成员没有实体，读不到该字段，因此：
+
+1. **静态成员不得使用所属类型上声明的类型参数**——签名（参数、返回、字段类型、自身的显式类型引用）与**体内**都算。方法级泛型仍由调用点传 typeid，不受本条约束。
+2. **禁止「静态-only 类型」声明为需要外部泛型**。Rigi 没有 `static class`；等价形态是：
+   - `singleton` 类型不得声明类型参数（单实例无法按实例化携带 typeid）；
+   - 仅含静态成员的 class/struct/enum struct/wrapper 不得声明类型参数。
+3. **经构造类型访问静态成员一律非法**：`Box\<i32>.zero`、`Box\<i32>.wrap(8)`、`Box\<i32>.count()` 都是编译错误。裸名访问不涉及 T 的静态成员保持合法：`Box.count()`。
+
+正确替代是方法级泛型工厂（调用点传 typeid）：
+
+```rigi
+pub class Box\<T> {
+    pub var v: T
+    pub init(_ -> v)
+    pub static func count(): i32 { return 0 }   // 不碰 T，裸名 Box.count() 合法
+}
+
+pub class BoxFactory {
+    pub static func wrap\<T>(x: T): Box\<T> { return new Box\<T>(x) }
+    pub static func zeroOf\<T extends i32>(): Box\<T> { return new Box\<T>(T()) }
+}
+
+const b = BoxFactory.wrap\<i32>(8)
+const z = BoxFactory.zeroOf\<i32>()
+const n = Box.count()
+```
 
 ### 9.3 构造函数（`init`）
 
@@ -109,9 +138,9 @@ pub class Point {
 2. 在 `init` 里被显式赋值（`init(_ -> x)` 参数映射算赋值；经 setter 的属性赋值同样算）；或
 3. 字段类型是 `Nullable\<T\>`（含 `T?`）。
 
-检查全部是**前端静态检查**（编译器不设 VM 哨兵），检查点覆盖每条构造路径：
+检查全部是**前端静态检查**（编译器不设 VM 哨兵；动态 `new typeValue(...)` / `T(args)` 运行期路径不做 DA 哨兵，见 §3.7 Q8），检查点覆盖每条构造路径：
 
-- **每个显式 init 重载的每条路径出口**——块尾与中途裸 `return` 都是出口；if/switch 取全分支交集，while/for 循环体可能零次执行（体内赋值不计入出口），do-while 取体尾，try/catch 取交集再叠 finally 并集。某条出口仍有未赋值的非空字段即编译错误。
+- **每个显式 init 重载的每条路径出口**——块尾与中途裸 `return` 都是出口；if/switch 取全分支交集，while/for 循环体可能零次执行（体内赋值不计入出口），do-while 取体尾，try/catch 取交集再叠 finally 并集。循环体赋值只在正常落到底计入；`break`/`break@label` 出环点状态与其它出口（含 while/for 的循环前态）取交集——named break 穿透外层时，内层体尾赋值不计入外层出口；do-while 无 break 仍取体尾。某条出口仍有未赋值的非空字段即编译错误。
 - **super 与继承字段**：init 体内显式调用了 `super(...)` 时，基类闭包字段由基类 init 担保（基类 init 自身已过检），本 init 只对本类声明的字段负责；**不调 `super` 时**，基类无初始值的非空字段计入本 init 的义务——子类可以直接给可见（`pub`/`protected`）的基类字段赋值来满足（RangeEnumerator/异常子类先例），无法满足时报编译错误并引导调 `super(...)`。新 init 原则下基类字段的**声明初始值**已由 `..init.wrapper` 缝合，与此正交。
 - **抽象类**自身不可构造，其未赋值非空字段不在声明点报错，义务转移给具体子类的 init（按上一条处理）。
 - **无 init 类型**（从未声明 init）：声明点不报错（仅声明/抽象使用合法），零参 `new T()` 使用点要求不存在无初始值非空字段，否则编译错误。
@@ -129,6 +158,8 @@ pub class Point {
 **默认构造的链式**：隐式/合成零参构造的构造体仅含 `super()`（直接基类有零参 `init`——含基类被合成的情形——时）——基类用户 init 体的链式调用仍由逐环 `super()` 保证（`C : B : A` 链上按 A→B→C 顺序）；字段初始值与 wrapper 安装不再依赖该链（由第 2 步一次性缝合）。显式 `init` 里的 `super(...)` 维持可选显式调用（§9.2.2）。
 
 **全局与静态字段初始值**：顶层全局字段（`var`/`const`）与类型的 `static` 字段的声明初始值由编译器合成的 `..globals.init` 全局 fn 承载（体内按文件序+声明序 `set.field.static`），VM 在 singleton 初始化（§8.7 companion/全局 cell）之后、`main` 之前同步执行。带 wrapper 的全局/静态字段不在此列——其初值随 cell/companion 的 `init` 求值（§14.3/§8.7）。
+
+**全局/静态字段初值禁令**：上述初始值表达式（含 wrapped 全局 cell 与 companion 静态初值）**不得直接引用**任何全局或静态字段（`var` 或 `const`，含自身）。违反即编译错误。前端不对 `const` 字段做编译期折叠，因此引用另一 `const` 字段同样禁止。字面量合法；函数体内的局部/参数不在初值表达式作用域。引用顶层函数或方法（调用）**不在禁令内**——函数/lambda 体内对全局/静态字段的间接读取无法在编译期静态追踪，属逃逸口：若该调用发生在 `main` 之后则字段已就绪；若嵌在另一字段初值里被调用，仍可能读到尚未初始化的零值。自引用（`var a = a`）由本禁令覆盖。实例字段的声明初始值不受本条约束（其求值发生在构造期，此时 `..globals.init` 已跑完）。
 
 ### 9.4 属性（getter/setter）
 
@@ -200,5 +231,7 @@ pub class Apple : Fruit like pear {
 ```
 
 委托目标字段的类型可以是类，也可以是接口；接口类型字段签名匹配即成立（允许抽象成员），转发调用在运行时对字段值虚派发。
+
+**合成转发器恒为 `pub`（现状语义，用户保留）**：like 合成的转发方法可见性固定为 `pub`，不继承被委托成员的 `protected`/`internal`/`priv`。对被委托的 `protected` 成员，这是一次可见性放宽——封装场景：like 一个不想暴露字段的内部实现，同时把该实现的受保护 API 提升为本类公开契约。泄漏面由继承可见性单调性在声明点收口（`pub` 类不得实现更低可见性的接口，见 §16.1）；合成转发器本身不再按来源成员可见性降级。
 
 ---

@@ -8,7 +8,8 @@ namespace RigiCompiler
     // 分叉/合并原语（迁移自旧 BindSession 的内联代码，语义不变）：
     //   before = Snapshot() → 绑定分支体 → tail = Snapshot() → Restore(before)
     //   if 双分支合并：tailT ∩ tailF ∪ before；switch 多分支：before ∪ (∩ 全尾)；
-    //   无 else：保守 Restore(before)；while 后 = before；do-while 后 = 体尾。
+    //   无 else：保守 Restore(before)；while/for 后 = before；do-while 出口 =
+    //   全部出环路径交集（体尾与 break 出环点取交，finally 叠加）。
     internal sealed class FlowState
     {
         // 已赋值局部变量集合（参数恒已赋值，不入集合——读检查只查局部声明）

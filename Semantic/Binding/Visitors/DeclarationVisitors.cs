@@ -353,7 +353,7 @@
                 {
                     return new BoundCallStatement(syntax, binding.Method, binding.Arguments,
                         binding.Receiver, binding.TypeArguments, binding.GenericPack,
-                        binding.IsIndirect, binding.IndirectTarget, binding.HostTypeArguments);
+                        binding.IsIndirect, binding.IndirectTarget);
                 }
                 if (binding.Receiver != null)
                 {
@@ -365,7 +365,7 @@
                 return new BoundExpressionStatement(syntax, new BoundCallExpression(path,
                     binding.Method, binding.Arguments, binding.ResultType!,
                     binding.TypeArguments, binding.GenericPack, binding.IsIndirect,
-                    binding.IndirectTarget, binding.HostTypeArguments));
+                    binding.IndirectTarget));
             }
             // M105：非 CallForm 尾 Call 分流——`(act)()` / `(getHandler())()` /
             // `handlers[0]()` 等值上的 void 间接调用在语句位置落 BoundCallStatement

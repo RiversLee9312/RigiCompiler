@@ -388,7 +388,7 @@ namespace RigiCompiler.Bil
             var normalizedExpected = NormalizeTypeRef(expected);
             if (normalizedActual == normalizedExpected) return true;
             // 运行期精确类型 → 声明类型：.null / T 均可赋给 .nullable<T>
-            // （new 实参匹配 init 按可赋值性，不是按值的精确 typeid）
+            // （is/supers 等可赋值性图；init 匹配已改为静态类型 TypesEqual）
             if (normalizedActual == ".null" && IsNullableType(normalizedExpected, out _))
             {
                 return true;

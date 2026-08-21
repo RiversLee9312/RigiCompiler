@@ -266,7 +266,7 @@ namespace RigiCompiler.Tests
         // ===== bug S1/g9：普通值类型中间链写穿（§13.2/§10）=====
         // VM get.field 对值类型 .Copy()——叶写打在拷贝上丢失；修复 =
         // 「正向 get 物化中间值 + 叶写 + 值类型中间反向 set 写回」
-        // （复用 wrapper place 深写设施，根 = 局部/参数/this 的可写 place）
+        // （复用 wrapper place 深写设施，根 = 局部/参数/this/静态·全局字段）
         private const string Vec2RectSources =
             "struct Vec2 {\n" +
             "    pub var x: i32\n" +
@@ -334,6 +334,117 @@ namespace RigiCompiler.Tests
                 "Assign(InstField(x, Local(.s0,Vec2), i32), Local(.s1,i32)); " +
                 "Assign(InstField(origin, Param(r,Rect), Vec2), Local(.s0,Vec2)); " +
                 "ExprStmt(Local(.s1,i32))])");
+        }
+
+        // 静态字段根：Holder.current.origin.x = 7——拷贝静态值 → 叶写 →
+        // 写回 origin → set.field.static 写回槽位
+        private static void TestValueChainStaticRootWrite()
+        {
+            var (unit, _, lowered) = LowerUnit(Vec2RectSources +
+                "class Holder {\n" +
+                "    pub static var current: Rect\n" +
+                "}\n" +
+                "func f() {\n" +
+                "    Holder.current.origin.x = 7\n" +
+                "}\n");
+            CheckNoErrors("无诊断（静态根值类型链深写）", unit);
+            TestHarness.Check("Holder.current.origin.x = 7 降级形态（含静态槽写回）",
+                LoweredDescribe.Body(BodyOf(lowered, "f")),
+                "Body(f, [.s0: Rect, .s1: Vec2], [" +
+                "Assign(Local(.s0,Rect), Field(current,Rect)); " +
+                "Assign(Local(.s1,Vec2), InstField(origin, Local(.s0,Rect), Vec2)); " +
+                "Assign(InstField(x, Local(.s1,Vec2), i32), Int(7,i32)); " +
+                "Assign(InstField(origin, Local(.s0,Rect), Vec2), Local(.s1,Vec2)); " +
+                "Assign(Field(current,Rect), Local(.s0,Rect))])");
+        }
+
+        // 静态根复合赋值 Holder.current.origin.x += 1
+        private static void TestValueChainStaticRootCompound()
+        {
+            var (unit, _, lowered) = LowerUnit(Vec2RectSources +
+                "class Holder {\n" +
+                "    pub static var current: Rect\n" +
+                "}\n" +
+                "func f() {\n" +
+                "    Holder.current.origin.x += 1\n" +
+                "}\n");
+            CheckNoErrors("无诊断（静态根值类型链复合赋值）", unit);
+            TestHarness.Check("Holder.current.origin.x += 1 降级形态（含静态槽写回）",
+                LoweredDescribe.Body(BodyOf(lowered, "f")),
+                "Body(f, [.s0: Rect, .s1: Vec2, .s2: i32], [" +
+                "Assign(Local(.s0,Rect), Field(current,Rect)); " +
+                "Assign(Local(.s1,Vec2), InstField(origin, Local(.s0,Rect), Vec2)); " +
+                "Assign(Local(.s2,i32), " +
+                "Binary(Add, InstField(x, Local(.s1,Vec2), i32), Int(1,i32), i32)); " +
+                "Assign(InstField(x, Local(.s1,Vec2), i32), Local(.s2,i32)); " +
+                "Assign(InstField(origin, Local(.s0,Rect), Vec2), Local(.s1,Vec2)); " +
+                "Assign(Field(current,Rect), Local(.s0,Rect)); " +
+                "ExprStmt(Local(.s2,i32))])");
+        }
+
+        // 静态根 receiver 方法调用 Holder.current.origin.bumpX()
+        private static void TestValueChainStaticRootReceiverCall()
+        {
+            var (unit, _, lowered) = LowerUnit(Vec2RectSources +
+                "class Holder {\n" +
+                "    pub static var current: Rect\n" +
+                "}\n" +
+                "func f() {\n" +
+                "    Holder.current.origin.bumpX()\n" +
+                "}\n");
+            CheckNoErrors("无诊断（静态根值类型 receiver 调用写回）", unit);
+            TestHarness.Check("Holder.current.origin.bumpX() 降级形态（含静态槽写回）",
+                LoweredDescribe.Body(BodyOf(lowered, "f")),
+                "Body(f, [.s0: Rect, .s1: Vec2], [" +
+                "Assign(Local(.s0,Rect), Field(current,Rect)); " +
+                "Assign(Local(.s1,Vec2), InstField(origin, Local(.s0,Rect), Vec2)); " +
+                "[InstCallStmt(bumpX, Local(.s1,Vec2), []); " +
+                "Assign(InstField(origin, Local(.s0,Rect), Vec2), Local(.s1,Vec2)); " +
+                "Assign(Field(current,Rect), Local(.s0,Rect))]])");
+        }
+
+        // 静态值类型根单层字段写 Holder.current.origin = ...
+        private static void TestValueChainStaticRootSingleFieldWrite()
+        {
+            var (unit, _, lowered) = LowerUnit(Vec2RectSources +
+                "class Holder {\n" +
+                "    pub static var current: Rect\n" +
+                "}\n" +
+                "func f() {\n" +
+                "    Holder.current.origin = new Vec2(8, 2)\n" +
+                "}\n");
+            CheckNoErrors("无诊断（静态根单层字段写）", unit);
+            TestHarness.Check("Holder.current.origin = new Vec2 降级形态（含静态槽写回）",
+                LoweredDescribe.Body(BodyOf(lowered, "f")),
+                "Body(f, [.s0: Rect], [" +
+                "Assign(Local(.s0,Rect), Field(current,Rect)); " +
+                "Assign(InstField(origin, Local(.s0,Rect), Vec2), " +
+                "New(Vec2, init, [Int(8,i32), Int(2,i32)])); " +
+                "Assign(Field(current,Rect), Local(.s0,Rect))])");
+        }
+
+        // wrapped 静态字段根（cell）：getValue 拷贝 → 链写 → setValue 写回
+        private static void TestValueChainWrappedStaticRootWrite()
+        {
+            var (unit, _, lowered) = LowerUnitWithStdlib(Vec2RectSources +
+                "@WrapperTarget(.Value)\n" +
+                "pub shared wrapper IdW {\n" +
+                "    pub init()\n" +
+                "}\n" +
+                "class Holder {\n" +
+                "    @IdW\n" +
+                "    pub static var current: Rect = new Rect(new Vec2(1, 2), new Vec2(3, 4))\n" +
+                "}\n" +
+                "func f() {\n" +
+                "    Holder.current.origin.x = 7\n" +
+                "}\n");
+            CheckNoErrors("无诊断（wrapped 静态根值类型链深写）", unit);
+            var desc = BilTestHarness.NormalizeLambdaUuids(
+                LoweredDescribe.Body(BodyOf(lowered, "f")));
+            TestHarness.CheckTrue("wrapped 静态根含 getValue 拷贝 + 叶写 + setValue 写回",
+                desc.Contains("InstCall(getValue, InstField(current, New(..companion, []), ..cell..UUID)")
+                && desc.Contains("InstField(x,")
+                && desc.Contains("InstCallStmt(setValue, InstField(current, New(..companion, []), ..cell..UUID)"));
         }
 
         // 值类型 receiver 方法调用写回（§10）：void 语句位 = 块

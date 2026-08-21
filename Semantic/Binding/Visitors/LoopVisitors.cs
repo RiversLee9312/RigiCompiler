@@ -64,18 +64,19 @@ namespace RigiCompiler
             {
                 ctx.Flow.ClearRoot(root);
             }
+            var doBefore = ctx.Flow.Snapshot();
             LoopBodyVisitor.VisitInto(loop.Body, scope, shell, ctx, env);
             ctx.Flow.RestoreNarrowed(doBeforeNarrowed);
             foreach (var root in doAssignedRoots)
             {
                 ctx.Flow.ClearRoot(root);
             }
-            var bodyAssigned = ctx.Flow.Snapshot();
             // 同 while：条件恒 bool，以 bool 为期望类型绑定（逃逸型表达式定型）
             var revCondition = ExpressionDispatcher.Visit(loop.Condition.Expression, scope, ctx,
                 env, env.B.Bool);
             Conditions.CheckBool(loop.Condition, loop.Span, revCondition, "loop", env);
-            ctx.Flow.Restore(bodyAssigned);
+            // 循环出口 = 全部出环路径交集（W7：do-while 体尾与 break 出环点取交）
+            ctx.Flow.Restore(LocalLoopDa.ExitAfter(shell, doBefore));
             if (revCondition == null) return null;
             shell.Condition = revCondition;
             return shell;

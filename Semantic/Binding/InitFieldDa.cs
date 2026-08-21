@@ -4,7 +4,9 @@ namespace RigiCompiler
     //（值类型与对象同规则）的实例字段声明后默认视为未赋值；非 Nullable
     // 字段必须三选一——声明初始值（编译器合成的 ..init.field.*，构造进入
     // 时已赋值）、init 内显式赋值（`init(_ -> x)` 映射算赋值）、字段类型
-    // 为 Nullable。检查全部是前端静态检查（无 VM 哨兵），检查点：
+    // 为 Nullable。循环出口取全部出环路径交集：体赋值只在正常落到底计入；
+    // break/break@label 出环点与其它出口（含 while/for 的循环前态）取交；
+    // do-while 无 break 仍取体尾。检查全部是前端静态检查（无 VM 哨兵），检查点：
     //   1. 每个显式 init（含有体/无体映射形态）的每条路径出口——块尾与
     //      中途裸 return；super(...) 被调用时基类闭包字段由基类 init 担保，
     //      义务收窄为本类声明字段；不调 super 时基类无初始值非空字段计入
@@ -94,10 +96,10 @@ namespace RigiCompiler
             if (obligations.Count == 0) return;
             var context = new CheckContext(init, ownerDef, obligations,
                 callsSuper, span, env);
-            var assigned = new HashSet<FieldSymbol>(ReferenceEqualityComparer.Instance);
-            AnalyzeBlock(body, assigned, context);
-            // 块尾出口（能落尾的 init 路径）
-            ReportMissing(assigned, context);
+            var path = new PathState(new HashSet<FieldSymbol>(ReferenceEqualityComparer.Instance));
+            AnalyzeBlock(body, path, context);
+            // 块尾出口（能落尾的 init 路径；中途 return 已在出口点报过）
+            if (path.FallsThrough) ReportMissing(path.Assigned, context);
         }
 
         private sealed class CheckContext
@@ -147,129 +149,310 @@ namespace RigiCompiler
             return new HashSet<FieldSymbol>(set, ReferenceEqualityComparer.Instance);
         }
 
-        private static void AnalyzeBlock(BoundBlock block, HashSet<FieldSymbol> assigned,
-            CheckContext context)
+        // 一条路径的 DA 态：已赋值集 + 是否还能顺序落尾 + 尚未被目标循环
+        // 消费的 break/continue 出环点快照。循环出口 = 全部出环路径交集：
+        //   do-while 无 break：体尾（至少一次，保持既有口径）；
+        //   while/for：循环前态（体可能零次）；
+        //   break/break@label：出环点态（与其它出口取交；named break 穿透
+        //   外层时内层体尾不计入外层出口）。
+        private sealed class PathState
         {
-            foreach (var statement in block.Statements)
+            public HashSet<FieldSymbol> Assigned { get; }
+            public bool FallsThrough { get; set; } = true;
+            public bool InitExited { get; set; }
+            public Dictionary<BoundLoop, List<HashSet<FieldSymbol>>> Breaks { get; } =
+                new Dictionary<BoundLoop, List<HashSet<FieldSymbol>>>();
+            public Dictionary<BoundLoop, List<HashSet<FieldSymbol>>> Continues { get; } =
+                new Dictionary<BoundLoop, List<HashSet<FieldSymbol>>>();
+
+            public PathState(HashSet<FieldSymbol> assigned)
             {
-                AnalyzeStatement(statement, assigned, context);
+                Assigned = assigned;
+            }
+
+            public PathState Fork()
+            {
+                return new PathState(CopyOf(Assigned));
             }
         }
 
+        private static void AnalyzeBlock(BoundBlock block, PathState path, CheckContext context)
+        {
+            foreach (var statement in block.Statements)
+            {
+                if (!path.FallsThrough) return;
+                AnalyzeStatement(statement, path, context);
+            }
+        }
+
+        private static HashSet<FieldSymbol> IntersectAll(List<HashSet<FieldSymbol>> sets)
+        {
+            var merged = CopyOf(sets[0]);
+            for (var i = 1; i < sets.Count; i++) merged.IntersectWith(sets[i]);
+            return merged;
+        }
+
+        private static void AbsorbJumps(PathState dest, PathState src)
+        {
+            AbsorbJumpMap(dest.Breaks, src.Breaks);
+            AbsorbJumpMap(dest.Continues, src.Continues);
+        }
+
+        private static void AbsorbJumpMap(
+            Dictionary<BoundLoop, List<HashSet<FieldSymbol>>> dest,
+            Dictionary<BoundLoop, List<HashSet<FieldSymbol>>> src)
+        {
+            foreach (var pair in src)
+            {
+                if (!dest.TryGetValue(pair.Key, out var list))
+                {
+                    dest[pair.Key] = new List<HashSet<FieldSymbol>>(pair.Value);
+                }
+                else
+                {
+                    list.AddRange(pair.Value);
+                }
+            }
+        }
+
+        private static List<HashSet<FieldSymbol>> TakeJumps(
+            Dictionary<BoundLoop, List<HashSet<FieldSymbol>>> map, BoundLoop loop)
+        {
+            return map.Remove(loop, out var list) ? list : new List<HashSet<FieldSymbol>>();
+        }
+
+        private static void RecordJump(
+            Dictionary<BoundLoop, List<HashSet<FieldSymbol>>> map, BoundLoop loop,
+            HashSet<FieldSymbol> assigned)
+        {
+            if (!map.TryGetValue(loop, out var list))
+            {
+                list = new List<HashSet<FieldSymbol>>();
+                map[loop] = list;
+            }
+            list.Add(CopyOf(assigned));
+        }
+
+        private static void DelayJumpsThroughFinally(PathState jumps, BoundBlock finallyBlock,
+            CheckContext context)
+        {
+            var extra = new PathState(new HashSet<FieldSymbol>(ReferenceEqualityComparer.Instance));
+            DelayJumpMap(jumps.Breaks, finallyBlock, context, extra);
+            DelayJumpMap(jumps.Continues, finallyBlock, context, extra);
+            AbsorbJumps(jumps, extra);
+        }
+
+        private static void DelayJumpMap(
+            Dictionary<BoundLoop, List<HashSet<FieldSymbol>>> map, BoundBlock finallyBlock,
+            CheckContext context, PathState extra)
+        {
+            foreach (var loop in map.Keys.ToList())
+            {
+                var delayed = new List<HashSet<FieldSymbol>>();
+                foreach (var snapshot in map[loop])
+                {
+                    var finallyPath = new PathState(CopyOf(snapshot));
+                    AnalyzeBlock(finallyBlock, finallyPath, context);
+                    if (finallyPath.FallsThrough) delayed.Add(CopyOf(finallyPath.Assigned));
+                    AbsorbJumps(extra, finallyPath);
+                }
+                map[loop] = delayed;
+            }
+        }
+
+        private static void MergeFallThrough(PathState path, List<HashSet<FieldSymbol>> falls)
+        {
+            if (falls.Count == 0)
+            {
+                path.FallsThrough = false;
+                return;
+            }
+            var merged = IntersectAll(falls);
+            path.Assigned.Clear();
+            path.Assigned.UnionWith(merged);
+        }
+
         private static void AnalyzeStatement(BoundStatement statement,
-            HashSet<FieldSymbol> assigned, CheckContext context)
+            PathState path, CheckContext context)
         {
             switch (statement)
             {
                 case BoundAssignmentStatement assignment:
-                    MarkTarget(assignment.Target, assigned, context);
-                    ScanExpression(assignment.Value, assigned, context);
+                    MarkTarget(assignment.Target, path.Assigned, context);
+                    ScanExpression(assignment.Value, path.Assigned, context);
                     break;
                 case BoundExpressionStatement expressionStatement:
-                    ScanExpression(expressionStatement.Expression, assigned, context);
+                    ScanExpression(expressionStatement.Expression, path.Assigned, context);
                     break;
                 case BoundIfStatement ifStatement:
-                    ScanExpression(ifStatement.Condition, assigned, context);
-                    var beforeIf = CopyOf(assigned);
-                    AnalyzeBlock(ifStatement.TrueBlock, assigned, context);
-                    var tailTrue = CopyOf(assigned);
-                    var tailFalse = CopyOf(beforeIf);
+                    ScanExpression(ifStatement.Condition, path.Assigned, context);
+                    var truePath = path.Fork();
+                    AnalyzeBlock(ifStatement.TrueBlock, truePath, context);
+                    var falsePath = path.Fork();
                     if (ifStatement.FalseBlock != null)
                     {
-                        AnalyzeBlock(ifStatement.FalseBlock, tailFalse, context);
+                        AnalyzeBlock(ifStatement.FalseBlock, falsePath, context);
                     }
-                    // 双分支合并：before ∪ (tailT ∩ tailF)
-                    assigned.Clear();
-                    tailTrue.IntersectWith(tailFalse);
-                    assigned.UnionWith(beforeIf);
-                    assigned.UnionWith(tailTrue);
+                    AbsorbJumps(path, truePath);
+                    AbsorbJumps(path, falsePath);
+                    if (truePath.InitExited) path.InitExited = true;
+                    if (falsePath.InitExited) path.InitExited = true;
+                    var ifFalls = new List<HashSet<FieldSymbol>>();
+                    if (truePath.FallsThrough) ifFalls.Add(truePath.Assigned);
+                    if (falsePath.FallsThrough) ifFalls.Add(falsePath.Assigned);
+                    MergeFallThrough(path, ifFalls);
                     break;
                 case BoundSwitchStatement switchStatement:
-                    ScanExpression(switchStatement.Selector, assigned, context);
-                    var beforeSwitch = CopyOf(assigned);
-                    var mergedSwitch = new HashSet<FieldSymbol>(
-                        ReferenceEqualityComparer.Instance);
-                    var first = true;
+                    ScanExpression(switchStatement.Selector, path.Assigned, context);
+                    var switchFalls = new List<HashSet<FieldSymbol>>();
                     foreach (var switchCase in switchStatement.Cases)
                     {
-                        var tail = CopyOf(beforeSwitch);
-                        AnalyzeBlock(switchCase.Body, tail, context);
-                        if (first) mergedSwitch.UnionWith(tail);
-                        else mergedSwitch.IntersectWith(tail);
-                        first = false;
+                        var casePath = path.Fork();
+                        AnalyzeBlock(switchCase.Body, casePath, context);
+                        AbsorbJumps(path, casePath);
+                        if (casePath.InitExited) path.InitExited = true;
+                        if (casePath.FallsThrough) switchFalls.Add(casePath.Assigned);
                     }
-                    var defaultTail = CopyOf(beforeSwitch);
-                    AnalyzeBlock(switchStatement.DefaultBody, defaultTail, context);
-                    if (first) mergedSwitch.UnionWith(defaultTail);
-                    else mergedSwitch.IntersectWith(defaultTail);
-                    assigned.Clear();
-                    assigned.UnionWith(beforeSwitch);
-                    assigned.UnionWith(mergedSwitch);
+                    var defaultPath = path.Fork();
+                    AnalyzeBlock(switchStatement.DefaultBody, defaultPath, context);
+                    AbsorbJumps(path, defaultPath);
+                    if (defaultPath.InitExited) path.InitExited = true;
+                    if (defaultPath.FallsThrough) switchFalls.Add(defaultPath.Assigned);
+                    MergeFallThrough(path, switchFalls);
                     break;
                 case BoundLoop loop:
-                    // while/for 体可能零次执行：体尾不计入出口，但体内 return
-                    // 出口仍须检查（以体入口态起评）；do-while 至少一次，取体尾
+                    var bodyPath = path.Fork();
+                    AnalyzeBlock(loop.Body, bodyPath, context);
+                    AbsorbJumps(path, bodyPath);
+                    if (bodyPath.InitExited) path.InitExited = true;
+                    var exits = new List<HashSet<FieldSymbol>>();
                     if (loop.Kind == LoopKind.DoWhile)
                     {
-                        AnalyzeBlock(loop.Body, assigned, context);
+                        // 正常落到底 / continue 至条件：体至少一次，赋值计入
+                        if (bodyPath.FallsThrough) exits.Add(CopyOf(bodyPath.Assigned));
+                        exits.AddRange(TakeJumps(path.Continues, loop));
                     }
                     else
                     {
-                        var bodyState = CopyOf(assigned);
-                        AnalyzeBlock(loop.Body, bodyState, context);
+                        // while/for：零次路径 = 循环前态；continue 不另开出口
+                        exits.Add(CopyOf(path.Assigned));
+                        TakeJumps(path.Continues, loop);
                     }
+                    // break/break@label 出环点与其它出口取交
+                    exits.AddRange(TakeJumps(path.Breaks, loop));
+                    MergeFallThrough(path, exits);
                     break;
                 case BoundTryStatement tryStatement:
-                    var tryTail = CopyOf(assigned);
-                    AnalyzeBlock(tryStatement.TryBlock, tryTail, context);
-                    var mergedTry = CopyOf(tryTail);
-                    if (tryStatement.Catches.Count > 0)
+                    var tryPath = path.Fork();
+                    AnalyzeBlock(tryStatement.TryBlock, tryPath, context);
+                    var tryFalls = new List<HashSet<FieldSymbol>>();
+                    if (tryPath.FallsThrough) tryFalls.Add(CopyOf(tryPath.Assigned));
+                    var tryJumps = new PathState(
+                        new HashSet<FieldSymbol>(ReferenceEqualityComparer.Instance));
+                    AbsorbJumps(tryJumps, tryPath);
+                    if (tryPath.InitExited) tryJumps.InitExited = true;
+                    foreach (var catchClause in tryStatement.Catches)
                     {
-                        foreach (var catchClause in tryStatement.Catches)
-                        {
-                            var catchTail = CopyOf(assigned);
-                            AnalyzeBlock(catchClause.Body, catchTail, context);
-                            mergedTry.IntersectWith(catchTail);
-                        }
+                        var catchPath = path.Fork();
+                        AnalyzeBlock(catchClause.Body, catchPath, context);
+                        if (catchPath.FallsThrough) tryFalls.Add(CopyOf(catchPath.Assigned));
+                        AbsorbJumps(tryJumps, catchPath);
+                        if (catchPath.InitExited) tryJumps.InitExited = true;
                     }
-                    assigned.Clear();
-                    assigned.UnionWith(mergedTry);
                     if (tryStatement.FinallyBlock != null)
                     {
-                        AnalyzeBlock(tryStatement.FinallyBlock, assigned, context);
+                        // finally 必跑：落尾路径与 break/continue 出环点都叠其赋值
+                        var finallyEntry = tryFalls.Count > 0
+                            ? IntersectAll(tryFalls)
+                            : CopyOf(path.Assigned);
+                        var finallyPath = new PathState(CopyOf(finallyEntry));
+                        AnalyzeBlock(tryStatement.FinallyBlock, finallyPath, context);
+                        AbsorbJumps(tryJumps, finallyPath);
+                        if (finallyPath.InitExited) tryJumps.InitExited = true;
+                        if (tryFalls.Count > 0 && finallyPath.FallsThrough)
+                        {
+                            path.Assigned.Clear();
+                            path.Assigned.UnionWith(finallyPath.Assigned);
+                        }
+                        else
+                        {
+                            path.FallsThrough = false;
+                        }
+                        DelayJumpsThroughFinally(tryJumps, tryStatement.FinallyBlock, context);
                     }
+                    else
+                    {
+                        MergeFallThrough(path, tryFalls);
+                    }
+                    AbsorbJumps(path, tryJumps);
+                    if (tryJumps.InitExited) path.InitExited = true;
                     break;
                 case BoundSeqStatement seqStatement:
-                    // 保守：return@ 可跳过体的尾部语句，体内赋值不向外传播；
-                    // 体内 return 出口仍须检查（以入口态起评）
-                    var seqState = CopyOf(assigned);
-                    AnalyzeBlock(seqStatement.Body, seqState, context);
+                    // 保守：seqexit/return@ 可跳过体尾，体内赋值不向外传播
+                    var seqPath = path.Fork();
+                    AnalyzeBlock(seqStatement.Body, seqPath, context);
+                    AbsorbJumps(path, seqPath);
+                    if (seqPath.InitExited)
+                    {
+                        path.InitExited = true;
+                        path.FallsThrough = false;
+                    }
+                    else if (!seqPath.FallsThrough
+                        && (seqPath.Breaks.Count > 0 || seqPath.Continues.Count > 0))
+                    {
+                        path.FallsThrough = false;
+                    }
                     break;
                 case BoundBlock nested:
-                    AnalyzeBlock(nested, assigned, context);
+                    AnalyzeBlock(nested, path, context);
                     break;
                 case BoundReturnStatement:
-                    // 中途裸 return 也是 init 的出口路径
-                    ReportMissing(assigned, context);
+                    ReportMissing(path.Assigned, context);
+                    path.FallsThrough = false;
+                    path.InitExited = true;
+                    break;
+                case BoundThrowStatement throwStatement:
+                    ScanExpression(throwStatement.Exception, path.Assigned, context);
+                    path.FallsThrough = false;
+                    path.InitExited = true;
+                    break;
+                case BoundLoopControl control:
+                    if (control.IsBreak) RecordJump(path.Breaks, control.Target, path.Assigned);
+                    else RecordJump(path.Continues, control.Target, path.Assigned);
+                    path.FallsThrough = false;
+                    break;
+                case BoundSeqExitStatement:
+                    path.FallsThrough = false;
                     break;
                 case BoundLocalDeclarationStatement declaration:
                     if (declaration.Initializer != null)
                     {
-                        ScanExpression(declaration.Initializer, assigned, context);
+                        ScanExpression(declaration.Initializer, path.Assigned, context);
                     }
                     break;
                 case BoundDestructuringDeclarationStatement destructuring:
-                    ScanExpression(destructuring.Initializer, assigned, context);
+                    ScanExpression(destructuring.Initializer, path.Assigned, context);
                     break;
                 case BoundCallStatement call:
-                    if (call.Receiver != null) ScanExpression(call.Receiver, assigned, context);
+                    if (call.Receiver != null)
+                    {
+                        ScanExpression(call.Receiver, path.Assigned, context);
+                    }
                     foreach (var argument in call.Arguments)
                     {
-                        ScanExpression(argument, assigned, context);
+                        ScanExpression(argument, path.Assigned, context);
                     }
                     break;
-                // throw/yield/break/continue/return@/seqexit/wrapper 安装：
-                // 不产生 this 字段的整体赋值
+                case BoundYieldStatement yieldStatement:
+                    if (yieldStatement.Alarm != null)
+                    {
+                        ScanExpression(yieldStatement.Alarm, path.Assigned, context);
+                    }
+                    break;
+                case BoundReturnValueStatement returnValue:
+                    ScanExpression(returnValue.Value, path.Assigned, context);
+                    path.FallsThrough = false;
+                    break;
             }
         }
 

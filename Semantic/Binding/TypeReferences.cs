@@ -17,6 +17,7 @@ namespace RigiCompiler
         {
             var resolved = env.Names.ResolveTypeReference(typeRef, frame.FileCtx,
                 frame.DeclaringType, frame.Method, span);
+            StaticGenericRules.CheckFrameUse(resolved, frame, span, env.Error);
             if (resolved is TypeSymbol type)
             {
                 var inaccessible = AccessChecker.FindInaccessibleType(type, frame.FileCtx.File,

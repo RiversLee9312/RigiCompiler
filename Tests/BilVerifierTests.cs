@@ -163,6 +163,18 @@ namespace RigiCompiler.Tests
                 "    var f = new Flag(.Red)\n" +
                 "    return 0\n" +
                 "}\n");
+            Positive("enum struct 实例字段 init loop.rev 赋值后 break（全管线）",
+                "pub enum struct Color {}[Red, Blue]\n" +
+                "pub class Flag {\n" +
+                "    pub var kind: Color\n" +
+                "    pub init(k: Color, skip: bool) {\n" +
+                "        do { kind = k\n            if (skip) { break } } while (false)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var f = new Flag(.Red, false)\n" +
+                "    return 0\n" +
+                "}\n");
             Positive("enum struct 实例字段 init try-finally set.field（全管线）",
                 "pub enum struct Color {}[Red, Blue]\n" +
                 "pub class Flag {\n" +
@@ -1105,6 +1117,32 @@ namespace RigiCompiler.Tests
             m = MinimalModule(out _, out entryBlock);
             entryBlock.Instructions.RemoveAt(0);   // 去掉 load，直接 ret $x
             BilTestHarness.CheckBilInvalid("读前未赋值", m, "在赋值前被读取");
+
+            // §21.4 loop.rev：body 内 break 跳过赋值，出口与出环点取交
+            m = MinimalModule(out _, out entryBlock);
+            m.Functions[0].Vars.Add(new BilVarDeclaration(".bool", "condRev"));
+            m.Functions[0].Vars.Add(new BilVarDeclaration(".i32", "yRev"));
+            m.Functions[0].Vars.Add(new BilVarDeclaration(".breakid", "lpRev"));
+            m.Functions[0].Vars.Add(new BilVarDeclaration(".breakid", "ifRev"));
+            var trueRev = new BilScalarResource("R_TRev", BilScalarType.Bool, "true");
+            m.Resources.Add(trueRev);
+            var thenRev = new BilBlock("then-rev");
+            thenRev.Instructions.Add(new BreakInstruction(BilOp.Var("lpRev")));
+            var bodyRev = new BilBlock("body-rev");
+            bodyRev.Instructions.Add(new IfInstruction(
+                BilOp.Var("condRev"), thenRev, null, BilOp.Var("ifRev")));
+            bodyRev.Instructions.Add(new SetVarInstruction(BilOp.Var("yRev"), BilOp.Var("x")));
+            var judgeRev = new BilBlock("judge-rev");
+            judgeRev.Instructions.Add(new LoadInstruction(trueRev, BilOp.Var("condRev")));
+            m.Functions[0].Blocks.Add(thenRev);
+            m.Functions[0].Blocks.Add(bodyRev);
+            m.Functions[0].Blocks.Add(judgeRev);
+            entryBlock.Instructions.Insert(1, new LoadInstruction(trueRev, BilOp.Var("condRev")));
+            entryBlock.Instructions.Insert(2, new LoopInstruction(
+                BilOp.Var("condRev"), bodyRev, null, judgeRev, BilOp.Var("lpRev"), isRev: true));
+            entryBlock.Instructions.Insert(3, new SetVarInstruction(BilOp.Var("x"), BilOp.Var("yRev")));
+            BilTestHarness.CheckBilInvalid("loop.rev body 内 break 跳过局部赋值", m,
+                "在赋值前被读取");
 
             // §21.3：set.var 两端类型不等
             m = MinimalModule(out _, out entryBlock);
@@ -2577,6 +2615,30 @@ namespace RigiCompiler.Tests
                     entry.Instructions.Add(new RetInstruction());
                 }));
 
+            BilTestHarness.CheckBilValid("loop.rev set.field 后再 break 本 region",
+                EnumFieldInitModule((module, init, entry) =>
+                {
+                    init.Vars.Add(new BilVarDeclaration(".breakid", "brkif"));
+                    var thenBlock = new BilBlock("then");
+                    thenBlock.Instructions.Add(new BreakInstruction(BilOp.Var("brk")));
+                    var body = new BilBlock("body");
+                    body.Instructions.Add(new SetFieldInstruction(BilOp.Var("c"),
+                        BilOp.Var(".this"), BilOp.Field(EnumKindField)));
+                    body.Instructions.Add(new LoadInstruction(
+                        (BilScalarResource)module.Resources[1], BilOp.Var("cond")));
+                    body.Instructions.Add(new IfInstruction(
+                        BilOp.Var("cond"), thenBlock, null, BilOp.Var("brkif")));
+                    var judge = new BilBlock("judge");
+                    judge.Instructions.Add(new LoadInstruction(
+                        (BilScalarResource)module.Resources[1], BilOp.Var("cond")));
+                    init.Blocks.Add(thenBlock);
+                    init.Blocks.Add(body);
+                    init.Blocks.Add(judge);
+                    entry.Instructions.Add(new LoopInstruction(
+                        BilOp.Var("cond"), body, null, judge, BilOp.Var("brk"), isRev: true));
+                    entry.Instructions.Add(new RetInstruction());
+                }));
+
             BilTestHarness.CheckBilValid("try-finally 在 finally set.field",
                 EnumFieldInitModule((module, init, entry) =>
                 {
@@ -2616,6 +2678,30 @@ namespace RigiCompiler.Tests
                         (BilScalarResource)module.Resources[1], BilOp.Var("cond")));
                     entry.Instructions.Add(new IfInstruction(
                         BilOp.Var("cond"), thenBlock, elseBlock, BilOp.Var("brk")));
+                    entry.Instructions.Add(new RetInstruction());
+                }), "全部执行路径");
+
+            BilTestHarness.CheckBilInvalid("loop.rev body 内 break 跳过 set.field",
+                EnumFieldInitModule((module, init, entry) =>
+                {
+                    init.Vars.Add(new BilVarDeclaration(".breakid", "brkif"));
+                    var thenBlock = new BilBlock("then");
+                    thenBlock.Instructions.Add(new BreakInstruction(BilOp.Var("brk")));
+                    var body = new BilBlock("body");
+                    body.Instructions.Add(new LoadInstruction(
+                        (BilScalarResource)module.Resources[1], BilOp.Var("cond")));
+                    body.Instructions.Add(new IfInstruction(
+                        BilOp.Var("cond"), thenBlock, null, BilOp.Var("brkif")));
+                    body.Instructions.Add(new SetFieldInstruction(BilOp.Var("c"),
+                        BilOp.Var(".this"), BilOp.Field(EnumKindField)));
+                    var judge = new BilBlock("judge");
+                    judge.Instructions.Add(new LoadInstruction(
+                        (BilScalarResource)module.Resources[1], BilOp.Var("cond")));
+                    init.Blocks.Add(thenBlock);
+                    init.Blocks.Add(body);
+                    init.Blocks.Add(judge);
+                    entry.Instructions.Add(new LoopInstruction(
+                        BilOp.Var("cond"), body, null, judge, BilOp.Var("brk"), isRev: true));
                     entry.Instructions.Add(new RetInstruction());
                 }), "全部执行路径");
 

@@ -177,7 +177,7 @@ namespace RigiCompiler
                 sealedArguments.Add(sealedSlots[slotIndex++]);
             if (call.IsIndirect) indirectTarget = sealedSlots[slotIndex];
             return new LoweredCallStatement(call, call.Method, sealedArguments, callReceiver,
-                call.TypeArguments, genericPack, indirectTarget, call.HostTypeArguments);
+                call.TypeArguments, genericPack, indirectTarget);
         }
 
         // 值类型 receiver 可写 place 链的 void 调用语句（S1/g9，§10）：
@@ -204,9 +204,9 @@ namespace RigiCompiler
             var sealedArguments = new List<LoweredExpression>(call.Arguments.Count);
             for (var i = 1; i < sealedSlots.Count; i++) sealedArguments.Add(sealedSlots[i]);
             var callStatement = new LoweredCallStatement(call, call.Method, sealedArguments,
-                sealedSlots[0], call.TypeArguments, genericPack, null, call.HostTypeArguments);
+                sealedSlots[0], call.TypeArguments, genericPack, null);
             var writebacks = WrapperPlaceLowering.BuildValueReceiverWritebacks(call,
-                intermediates, host!, ctx, env);
+                intermediates, host!, valueRoot, ctx, env);
             if (writebacks == null) return null;
             if (writebacks.Count == 0) return callStatement;
             var statements = new List<LoweredStatement> { callStatement };
@@ -258,6 +258,7 @@ namespace RigiCompiler
             }
             // S1/g9：普通值类型中间链写穿 host.a.b... = rhs（§13.2）——
             // 正向 get 物化中间值 + 叶写 + 值类型中间反向 set 写回
+            //（根含局部/参数/this/静态·全局字段）
             if (WrapperPlaceLowering.TryValueChainWriteTarget(assignment.Target,
                     out var valueRoot, out var valueChain))
             {

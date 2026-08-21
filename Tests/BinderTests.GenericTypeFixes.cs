@@ -102,18 +102,50 @@ namespace RigiCompiler.Tests
                 ((BoundReturnStatement)BodyOf(concreteBodies, "f").Body.Statements[1])
                 .Value is BoundNullFallbackExpression concreteFallback
                 && ReferenceEquals(concreteFallback.Type, concrete.Symbols.Bootstrap.Int32));
+
+            // 7. W8：T extends B → B?（先界代入再装箱）
+            var (boundBox, boundBoxBodies) = BindUnit(
+                "pub open class Animal { pub init() }\n" +
+                "pub func wrapBound\\<T extends Animal>(x: T): Animal? { return x }\n");
+            CheckNoErrors("W8 无诊断（T extends Animal → Animal?）", boundBox);
+            var boundBoxReturn = (BoundReturnStatement)
+                BodyOf(boundBoxBodies, "wrapBound").Body.Statements[0];
+            var boundBoxT = BodyOf(boundBoxBodies, "wrapBound").Method
+                .GenericParameters.Single(p => p.Name == "T");
+            TestHarness.CheckTrue("W8 return 值类型即 T",
+                ReferenceEquals(boundBoxReturn.Value!.Type, boundBoxT));
+
+            // 8. W8：T extends U（外层 GP）→ U? 保留 U 身份，不压扁到 Any
+            var (outerGp, outerGpBodies) = BindUnit(
+                "pub open class Animal { pub init() }\n" +
+                "class Host\\<U extends Animal> {\n" +
+                "    pub func wrap\\<T extends U>(x: T): U? { return x }\n" +
+                "}\n");
+            CheckNoErrors("W8 无诊断（T extends U → U?）", outerGp);
+            var outerWrap = BodyOf(outerGpBodies, "wrap");
+            TestHarness.CheckTrue("W8 外层 GP 界装箱返回 U?",
+                outerWrap.Method.ReturnType is TypeSymbol { ConstructedFrom: not null,
+                    TypeArguments: { } outerArgs }
+                && outerArgs[0] is GenericParameterSymbol { Name: "U" }
+                && ((BoundReturnStatement)outerWrap.Body.Statements[0]).Value!.Type
+                    is GenericParameterSymbol { Name: "T" });
+
+            // 9. 反例：T extends B → 无关类型 U? 不误放
+            var (badBound, _) = BindUnit(
+                "pub open class Animal { pub init() }\n" +
+                "pub func badBound\\<T extends Animal, U>(x: T): U? { return x }\n");
+            TestHarness.CheckSemanticError("W8 反例：T extends Animal → U? 仍报错",
+                badBound.Diagnostics,
+                "Cannot return 'T' from function returning 'Nullable<U>'");
         }
 
-        // ===== g7：构造类型上的静态成员绑定（Box\<i32>.wrap(8) / 静态字段
-        // 读写 / 方法自有泛型实参并存 / 宿主 T 代入成员签名）=====
+        // ===== W2：静态成员不得使用类级类型参数；经构造类型访问静态成员
+        // 非法；裸名访问不碰 T 的静态成员合法；BoxFactory 方法级泛型替代 =====
         private static void TestConstructedTypeStaticMembers()
         {
-            TestHarness.Section("P3 GenericTypeFixes: 构造类型静态成员（g7）");
+            TestHarness.Section("P3 GenericTypeFixes: 静态成员×类级泛型禁令（W2）");
 
-            // 1. 构造类型静态方法调用：头段实参是类型构造实参；宿主 T 代入
-            // 成员签名——wrap(x: T): Box\<T> 在 Box\<i32> 上 → x: i32、
-            // 返回 Box\<i32>（可续访 .v 得 i32）
-            var (unit, bodies) = BindUnit(
+            var (wrap, _) = BindUnit(
                 "pub class Box\\<T> {\n" +
                 "    pub var v: T\n" +
                 "    pub init(_ -> v)\n" +
@@ -123,51 +155,12 @@ namespace RigiCompiler.Tests
                 "    const b = Box\\<i32>.wrap(8)\n" +
                 "    return b.v\n" +
                 "}\n");
-            CheckNoErrors("g7 无诊断（Box\\<i32>.wrap(8)）", unit);
-            var wrapCall = (BoundCallExpression)
-                ((BoundLocalDeclarationStatement)BodyOf(bodies, "main").Body.Statements[0])
-                .Initializer!;
-            TestHarness.CheckTrue("g7 wrap 静态调用 + 宿主泛型实参 i32 + 返回 Box<i32>",
-                wrapCall.Method.Name == "wrap" && wrapCall.Method.IsStatic
-                && wrapCall.TypeArguments.Count == 0
-                && wrapCall.HostTypeArguments.Count == 1
-                && ReferenceEquals(wrapCall.HostTypeArguments[0], unit.Symbols.Bootstrap.Int32)
-                && wrapCall.Type is TypeSymbol { ConstructedFrom: not null } wrapType
-                && wrapType.ConstructedFrom.Name == "Box"
-                && ReferenceEquals(wrapType.TypeArguments![0], unit.Symbols.Bootstrap.Int32));
-            var returnV = (BoundReturnStatement)BodyOf(bodies, "main").Body.Statements[1];
-            TestHarness.CheckTrue("g7 wrap 返回值续访 .v 代入 i32",
-                returnV.Value is BoundFieldAccessExpression { Field.Name: "v" } vAccess
-                && ReferenceEquals(vAccess.Type, unit.Symbols.Bootstrap.Int32));
+            TestHarness.CheckSemanticError("W2 静态方法签名用 T", wrap.Diagnostics,
+                "static members cannot use type parameter 'T' of enclosing type 'Box'");
+            TestHarness.CheckSemanticError("W2 Box\\<i32>.wrap 经构造类型访问", wrap.Diagnostics,
+                "cannot access static member 'wrap' via constructed type 'Box<i32>'");
 
-            // 2. 类型构造实参与方法自有泛型实参并存：
-            // Box\<i32>.pick\<String>(5, "hi")——头段 i32 归容器、末段
-            // String 归方法，签名双层代入（x: T→i32，返回 U→String）
-            var (combo, comboBodies) = BindUnit(
-                "pub class Box\\<T> {\n" +
-                "    pub var v: T\n" +
-                "    pub init(_ -> v)\n" +
-                "    pub static func pick\\<U>(x: T, u: U): U { return u }\n" +
-                "}\n" +
-                "pub func main(): String {\n" +
-                "    return Box\\<i32>.pick\\<String>(5, \"hi\")\n" +
-                "}\n");
-            CheckNoErrors("g7 无诊断（Box\\<i32>.pick\\<String> 两处实参并存）", combo);
-            var pickCall = (BoundCallExpression)((BoundReturnStatement)
-                BodyOf(comboBodies, "main").Body.Statements[0]).Value!;
-            TestHarness.CheckTrue("g7 pick 宿主实参与方法实参分流",
-                pickCall.Method.Name == "pick"
-                && pickCall.HostTypeArguments.Count == 1
-                && ReferenceEquals(pickCall.HostTypeArguments[0],
-                    combo.Symbols.Bootstrap.Int32)
-                && pickCall.TypeArguments.Count == 1
-                && ReferenceEquals(pickCall.TypeArguments[0],
-                    combo.Symbols.Bootstrap.String)
-                && ReferenceEquals(pickCall.Type, combo.Symbols.Bootstrap.String));
-
-            // 3. 静态字段读写：Box\<i32>.zero 的声明类型 T 按容器构造实参
-            // 代入为 i32（写 place 与读路径同型）
-            var (fields, fieldBodies) = BindUnit(
+            var (zero, _) = BindUnit(
                 "pub class Box\\<T> {\n" +
                 "    pub var v: T\n" +
                 "    pub init(_ -> v)\n" +
@@ -177,52 +170,82 @@ namespace RigiCompiler.Tests
                 "    Box\\<i32>.zero = 41\n" +
                 "    return Box\\<i32>.zero\n" +
                 "}\n");
-            CheckNoErrors("g7 无诊断（Box\\<i32>.zero 读写）", fields);
-            var zeroAssign = (BoundAssignmentStatement)
-                BodyOf(fieldBodies, "main").Body.Statements[0];
-            var zeroReturn = (BoundReturnStatement)
-                BodyOf(fieldBodies, "main").Body.Statements[1];
-            TestHarness.CheckTrue("g7 静态字段写 place 类型代入 i32",
-                zeroAssign.Target is BoundFieldReferenceExpression { Field.Name: "zero" } zeroWrite
-                && zeroWrite.Field.IsStatic
-                && ReferenceEquals(zeroWrite.Type, fields.Symbols.Bootstrap.Int32));
-            TestHarness.CheckTrue("g7 静态字段读类型代入 i32",
-                zeroReturn.Value is BoundFieldReferenceExpression { Field.Name: "zero" } zeroRead
-                && ReferenceEquals(zeroRead.Type, fields.Symbols.Bootstrap.Int32));
+            TestHarness.CheckSemanticError("W2 静态字段类型用 T", zero.Diagnostics,
+                "static members cannot use type parameter 'T' of enclosing type 'Box'");
+            TestHarness.CheckSemanticError("W2 Box\\<i32>.zero 经构造类型访问", zero.Diagnostics,
+                "cannot access static member 'zero' via constructed type 'Box<i32>'");
 
-            // 4. 语句位置：void 静态调用落 BoundCallStatement 且携带宿主
-            // 泛型实参（P4 发射 .generic.T 依据）
-            var (stmt, stmtBodies) = BindUnit(
+            var (body, _) = BindUnit(
                 "pub class Box\\<T> {\n" +
                 "    pub var v: T\n" +
                 "    pub init(_ -> v)\n" +
-                "    pub static func touch(x: T) { }\n" +
-                "}\n" +
-                "pub func main() {\n" +
-                "    Box\\<i32>.touch(1)\n" +
+                "    pub static func mention(): i32 { var x: T? = null\n        return 0 }\n" +
                 "}\n");
-            CheckNoErrors("g7 无诊断（void 静态调用语句）", stmt);
-            TestHarness.CheckTrue("g7 语句位置 BoundCallStatement 带宿主实参",
-                BodyOf(stmtBodies, "main").Body.Statements[0] is BoundCallStatement touchStmt
-                && touchStmt.Method.Name == "touch"
-                && touchStmt.HostTypeArguments.Count == 1
-                && ReferenceEquals(touchStmt.HostTypeArguments[0],
-                    stmt.Symbols.Bootstrap.Int32));
+            TestHarness.CheckSemanticError("W2 静态方法体内用 T", body.Diagnostics,
+                "static members cannot use type parameter 'T' of enclosing type 'Box'");
 
-            // 5. 反例：末段实参仍按方法泛型实参口径——wrap 非泛型方法，
-            // Box.wrap\<i32>(8) 保持容器元数诊断（不落进方法实参曲解）
-            var (bad, _) = BindUnit(
+            var (nested, _) = BindUnit(
                 "pub class Box\\<T> {\n" +
                 "    pub var v: T\n" +
                 "    pub init(_ -> v)\n" +
-                "    pub static func wrap(x: T): Box\\<T> { return new Box\\<T>(x) }\n" +
+                "    pub static func nest(): i32 {\n" +
+                "        var f = func{(): i32 -> { var x: Box\\<T>? = null\n            return@_ 0 }}\n" +
+                "        return 0\n" +
+                "    }\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("W2 静态方法内 lambda 用 T", nested.Diagnostics,
+                "static members cannot use type parameter 'T' of enclosing type 'Box'");
+
+            var (countUnit, countBodies) = BindUnit(
+                "pub class Box\\<T> {\n" +
+                "    pub var v: T\n" +
+                "    pub init(_ -> v)\n" +
+                "    pub static func count(): i32 { return 0 }\n" +
+                "}\n" +
+                "pub func main(): i32 { return Box.count() }\n");
+            CheckNoErrors("W2 裸名 Box.count() 不碰 T 合法", countUnit);
+            TestHarness.CheckTrue("W2 Box.count 静态调用定型 i32",
+                ((BoundReturnStatement)BodyOf(countBodies, "main").Body.Statements[0])
+                .Value is BoundCallExpression countCall
+                && countCall.Method.Name == "count" && countCall.Method.IsStatic
+                && ReferenceEquals(countCall.Type, countUnit.Symbols.Bootstrap.Int32));
+
+            var (constructedCount, _) = BindUnit(
+                "pub class Box\\<T> {\n" +
+                "    pub var v: T\n" +
+                "    pub init(_ -> v)\n" +
+                "    pub static func count(): i32 { return 0 }\n" +
+                "}\n" +
+                "pub func main(): i32 { return Box\\<i32>.count() }\n");
+            TestHarness.CheckSemanticError("W2 Box\\<i32>.count 即使不碰 T 也禁",
+                constructedCount.Diagnostics,
+                "cannot access static member 'count' via constructed type 'Box<i32>'");
+
+            var (factory, factoryBodies) = BindUnit(
+                "pub class Box\\<T> {\n" +
+                "    pub var v: T\n" +
+                "    pub init(_ -> v)\n" +
+                "}\n" +
+                "pub class BoxFactory {\n" +
+                "    pub static func wrap\\<T>(x: T): Box\\<T> { return new Box\\<T>(x) }\n" +
+                "    pub static func zeroOf\\<T extends i32>(): Box\\<T> { return new Box\\<T>(T()) }\n" +
                 "}\n" +
                 "pub func main(): i32 {\n" +
-                "    const b = Box.wrap\\<i32>(8)\n" +
-                "    return b.v\n" +
+                "    const b = BoxFactory.wrap\\<i32>(8)\n" +
+                "    const z = BoxFactory.zeroOf\\<i32>()\n" +
+                "    return ((b.v + z.v))\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("g7 Box.wrap\\<i32>(8) 保持容器元数诊断",
-                bad.Diagnostics, "'Box' expects 1 type argument(s), got 0");
+            CheckNoErrors("W2 BoxFactory.wrap/zeroOf 方法级泛型合法", factory);
+            var wrapCall = (BoundCallExpression)
+                ((BoundLocalDeclarationStatement)BodyOf(factoryBodies, "main").Body.Statements[0])
+                .Initializer!;
+            TestHarness.CheckTrue("W2 BoxFactory.wrap 方法实参 i32 返回 Box<i32>",
+                wrapCall.Method.Name == "wrap" && wrapCall.Method.IsStatic
+                && wrapCall.TypeArguments.Count == 1
+                && ReferenceEquals(wrapCall.TypeArguments[0], factory.Symbols.Bootstrap.Int32)
+                && wrapCall.Type is TypeSymbol { ConstructedFrom: not null } wrapType
+                && wrapType.ConstructedFrom.Name == "Box"
+                && ReferenceEquals(wrapType.TypeArguments![0], factory.Symbols.Bootstrap.Int32));
         }
 
         // ===== A7：泛型类体内 this 定型为自身具化 Box\<T\> =====

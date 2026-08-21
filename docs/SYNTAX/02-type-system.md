@@ -94,7 +94,7 @@ pub shared rich struct SharedEntry {
 - shared class、shared interface；
 - shared rich struct、shared wrapper；
 - 非 rich ValueType（全部基元类型、`String`、`Type\<T>`、`Span\<T>`、非 rich struct 与非 rich enum struct）；
-- `Nullable\<T>`，且 `T` 本身是共享安全类型（见 §3.1.2）。
+- `Nullable\<T>`，且 `T` 本身是共享安全类型（见 §3.1.2）。`T` 为泛型参数时按其 `extends` 界链推导（界为外层型参则递归；环界保守视为非共享安全）。
 
 共享安全类型是「可以离开单个 Coroutine 的所有权域」的完整白名单。跨 Coroutine 传递时：
 
@@ -209,7 +209,7 @@ var text = """
 
 由于 `Nullable\<T>` 是 `Object` 子类，可空的值类型会被装箱；已经可空的值不会被再次装箱，语法上也不允许对 `Nullable\<T>` 再次施加 `?`（不存在 `T??`）。
 
-`Nullable\<T>` 的 shared 属性由 `T` 推导：`T` 是共享安全类型时 `Nullable\<T>` 也是，因此 `String?`、`SharedUser?` 可以出现在全局字段与 async 边界上，而 `LocalUser?` 不可以（见 §3.1.1、§3.1.2）。
+`Nullable\<T>` 的 shared 属性由 `T` 推导：`T` 是共享安全类型时 `Nullable\<T>` 也是，因此 `String?`、`SharedUser?` 可以出现在全局字段与 async 边界上，而 `LocalUser?` 不可以（见 §3.1.1、§3.1.2）。非空值可赋给对应可空类型（装箱视图：`i32 → i32?`、无约束 `T → T?`）；`T extends B` 时 `T` 也可赋给 `B?`（先按界代入再装箱），但无约束 `T` 不能赋给无关类型的 `U?`。
 
 ```rigi
 var name: String? = null
@@ -308,7 +308,9 @@ Span.alloc\<f32>(1000)
 
 闭合符保持单个 `>`：`\<` 已无歧义地开启了泛型语境，其后的 `>` 只可能是闭合符。嵌套泛型的连续闭合写作 `>>`，如 `List\<Map\<String, i32>>`。
 
-Rigi 的泛型在语义和运行时类型信息上都保持**具化（reified）**。实现采用单份共享 Native 代码体、隐式 typeid 传递与统一胖值槽，而不是为每组类型实参生成一份单态化机器码。共享代码体不等于类型擦除：实际泛型类型始终随 typeid 存在，可以直接用于 `TElement()`、`is`、`supers`、`with`、`typeOf` 与运行时构造（详见 RUNTIME.md）。ValueType 进入统一泛型/动态槽位时由系统特权 `Box` 表示按尺寸内联或间接保存。
+Rigi 的泛型在语义和运行时类型信息上都保持**具化（reified）**。实现采用单份共享 Native 代码体、隐式 typeid 传递与统一胖值槽，而不是为每组类型实参生成一份单态化机器码。共享代码体不等于类型擦除：实际泛型类型始终随 typeid 存在，可以直接用于 `TElement()`、`is`、`supers`、`with`、`typeOf` 与运行时构造（详见 RUNTIME.md §10）。ValueType 进入统一泛型/动态槽位时由系统特权 `Box` 表示按尺寸内联或间接保存。
+
+**类级 typeid 只在实例上**：类型声明的类型参数在构造时写入实例隐藏字段。因此静态成员（方法/字段）不得使用所属类型上的类型参数（签名与体内都算）；经构造类型访问静态成员（`Box\<i32>.count()`）一律非法；裸名访问不碰 T 的静态成员（`Box.count()`）合法。需要按 T 构造值时用方法级泛型工厂（`BoxFactory.zeroOf\<T>(): Box\<T>`）。Rigi 无 `static class`：`singleton` 与仅含静态成员的类型都不得声明类型参数。详见 §9.2.3。
 
 ```rigi
 // 类/struct 泛型
@@ -338,7 +340,7 @@ func dump\<TItem with Serializable>(item: TItem) { ... }
 - `T extends B`：按 `B`（含 `B` 的基类链与接口闭包；构造界按已代入形态，界含外层宿主泛型参数时保留参数身份）。
 - 无约束或只有 `supers` / `with`：按 `Any`（§3.8 承诺成员如 `toString` 可用）。`supers`/`with` 不提供普通成员保证。
 
-结果类型按约束签名（宿主代入后）定型，不是 `T`：`T extends Addable` 时 `a + b` 的类型是 `Addable`，赋回 `: T` 报错。`T` 有 `extends B` 时，`T` 的值可赋给 `B`（及 `B` 的上界）；反向（`B` 赋给 `T`）一律不可。`T` 的值可赋给 `T?`（Nullable 装箱视图，§3.4——与具体类型 `i32 → i32?` 同口径）；但无约束的 `T` 不能赋给另一型参的 `U?`。
+结果类型按约束签名（宿主代入后）定型，不是 `T`：`T extends Addable` 时 `a + b` 的类型是 `Addable`，赋回 `: T` 报错。`T` 有 `extends B` 时，`T` 的值可赋给 `B`（及 `B` 的上界）；反向（`B` 赋给 `T`）一律不可。`T` 的值可赋给 `T?`（Nullable 装箱视图，§3.4——与具体类型 `i32 → i32?` 同口径）；`T extends B` 时也可赋给 `B?`（先走界代入再装箱，界为外层型参时保留其身份）；但无约束的 `T` 不能赋给另一型参的 `U?`。
 
 ```rigi
 // 型变（同 Kotlin 的 in/out）
@@ -366,7 +368,7 @@ func create\<TResult>(): TResult {
 
 ### 3.7 运行时类型与反射（`typeOf` / `Type\<T>` / `new` / `with`）
 
-泛型机制在运行时始终携带 typeid（见 RUNTIME.md），因此以下反射能力对所有代码默认可用，无需特殊标注。
+泛型机制在运行时始终携带 typeid（见 RUNTIME.md §10），因此以下反射能力对所有代码默认可用，无需特殊标注。类级类型参数的 typeid 挂在实例上，静态成员读不到——`T()` / `is T` / `typeOf(T)` 等在静态成员里使用所属类型的 `T` 与在签名里使用同样是编译错误（§9.2.3）；方法级 `func zeroOf\<T>()` 的 `T()` 由调用点传 typeid，合法。
 
 **`Type\<T>`**：基本类型之一（`struct`），承载一个运行时类型（本质是对 typeid 的封装）。
 
@@ -397,6 +399,7 @@ var another = new t(12, 12, 24)  // 按 t 所指类型的 init 构造
   - 带实参形态 `T(args)` 不做静态判定，保持运行期解析。
 - `enum struct` 是明确例外：无论 init 的可见性如何，都不能通过 `EnumType(...)`、`new EnumType(...)`、`new enumTypeValue(...)` 或泛型 `T()` 直接构造；只能使用其具名 case 入口（见 §12）。
 - 动态 `new typeValue(...)`（对 `Type\<T>` 值构造）是唯一不受编译期界检查约束的形态，保持运行期解析（类比 wildcard proxy 的动态性）。当目标类型非静态具体时，init 的重载解析在运行期完成；若目标为抽象类型、enum struct 或找不到匹配的 init，抛出 `core.NoSuchMethodException`（编译期先按界检查，界没有可构造入口的在编译期直接报错，不会落到运行期）。
+- **运行期路径不做 DA 哨兵**（前端静态检查原则 Q8）：动态 `new typeValue(...)` 与带实参 `T(args)` 在 VM 内**不**复检目标类型的字段定值义务（§9.3 DA 只覆盖静态 `new T(...)` 与零参 `T()` 的前端路径）。运行期只按 init 表匹配入口，匹配失败由 `NoSuchMethodException` 兜底；不插入「未定值非空字段」类哨兵。
 
 **在 `is` / `supers` 中使用 `Type\<T>` 值**：`Type\<T>` 的值可当作类型出现在 `is` / `supers` 右侧。
 

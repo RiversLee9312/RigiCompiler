@@ -20,7 +20,7 @@ new type(TYPE_SYMBOL) RESULT [ARG_0, ARG_1, ...]
 - RESULT 类型必须严格等于构造结果类型；
 - abstract 类型和 enum struct 不得使用该指令。
 
-Middleware 根据目标类型和精确参数类型选择 init；不执行 source-level overload ranking。
+frontend 在发射前把实参 **cast 到命中 init 的形参声明类型**（与 `super(...)` 同模型，SYNTAX §9.2.2）。Middleware / VM 根据目标类型和实参 **静态类型**（BIL 变量声明类型，不是对象头运行期 typeid）与 init 形参 **TypesEqual** 定位入口；这是对编译期已解析入口的验证，不执行 source-level overload ranking。因此 `init(Node)` 与 `init(Any)` 共存时不会按声明序漂移。null / 可空 / 继承实参由编译器生成的 cast 达成严格匹配（`Savings` → `Account`、`null` 在可空上下文已定型为 `T?`）。
 
 ### 14.2 动态普通构造
 
@@ -28,11 +28,11 @@ Middleware 根据目标类型和精确参数类型选择 init；不执行 source
 new.indirect TYPEID_VAR RESULT [ARG_0, ARG_1, ...]
 ```
 
-语义对应 `new typeValue(...)` 和泛型 `T()`。运行时按实际 typeid 的 init 表解析严格匹配的构造入口。
+语义对应 `new typeValue(...)` 和泛型 `T()`。运行时按实际 typeid 的 init 表、以实参 **静态类型** 严格匹配构造入口（与 §14.1 同一 TypesEqual 口径；动态路径没有编译期选定的 init，调用点静态类型必须已经与目标形参一致——需要时由源码 `as` 显式 cast）。
 
 目标为 abstract 类型、enum struct 或无匹配 init 时抛出 `core.NoSuchMethodException`。
 
-编译期分工（SYNTAX §3.7）：frontend 对**零参 `T()`** 先按「约束最大基类」静态判定——界没有可访问零参 init 直接编译错误，不会落到本指令；内建标量界（整数/浮点/bool/char/String）由 VM 特判产零值（不查 init 表）；带实参形态与动态 `new typeValue(...)` 保持运行期解析，上面的 `NoSuchMethodException` 是它们的运行期兜底。
+编译期分工（SYNTAX §3.7）：frontend 对**零参 `T()`** 先按「约束最大基类」静态判定——界没有可访问零参 init 直接编译错误，不会落到本指令；内建标量界（整数/浮点/bool/char/String）由 VM 特判产零值（不查 init 表）；带实参形态与动态 `new typeValue(...)` 保持运行期解析，上面的 `NoSuchMethodException` 是它们的运行期兜底。运行期路径**不做 DA 哨兵**（前端静态检查原则 Q8）——不复检目标类型的字段定值义务。
 
 ### 14.3 enum case 构造
 

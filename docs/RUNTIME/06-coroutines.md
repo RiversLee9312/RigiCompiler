@@ -33,6 +33,8 @@ Coroutine 采用 run-to-suspension。一个 Worker 开始执行某个 Coroutine 
 
 普通函数和普通 lambda 在当前 Coroutine 内执行，并可以使当前 Coroutine `await` 或 `yield`；`async` 的意义是“调用时另建 Coroutine”，而不是“允许函数体挂起”。
 
+参考 VM（`BilVm`）额外提供**实现级**指令步数上限：CLI `vm --max-steps <N>`（正整数；缺省不限制）。每条 BIL 指令计 1 步，超过时以 `VmStepLimitException` 受控终止（退出码 1）。此上限不是语言语义，Native 实现不必提供。
+
 ### 17.3 状态机
 
 Coroutine 的公开语义状态为：

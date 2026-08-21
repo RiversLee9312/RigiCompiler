@@ -84,19 +84,35 @@ namespace RigiCompiler
         // BootstrapSymbols 版（P2 填入点检查无 BindEnvironment，g4 框架）
         public static TypeSymbol EffectiveMemberType(SemanticSymbol type, BootstrapSymbols b)
         {
+            return EffectiveMemberTypeCore(type, b, null);
+        }
+
+        // visiting 防 T extends T / 环界沿 GP 链发散（环则保守回落 Any）
+        private static TypeSymbol EffectiveMemberTypeCore(SemanticSymbol type, BootstrapSymbols b,
+            HashSet<GenericParameterSymbol>? visiting)
+        {
             if (type is TypeSymbol typeSymbol) return typeSymbol;
             if (type is GenericParameterSymbol parameter)
             {
-                foreach (var constraint in parameter.Constraints)
+                visiting ??= new HashSet<GenericParameterSymbol>();
+                if (!visiting.Add(parameter)) return b.Any;
+                try
                 {
-                    if (constraint.Kind != GenericConstraintKind.Extends) continue;
-                    if (constraint.Bound is TypeSymbol bound) return bound;
-                    if (constraint.Bound is GenericParameterSymbol outer)
+                    foreach (var constraint in parameter.Constraints)
                     {
-                        return EffectiveMemberType(outer, b);
+                        if (constraint.Kind != GenericConstraintKind.Extends) continue;
+                        if (constraint.Bound is TypeSymbol bound) return bound;
+                        if (constraint.Bound is GenericParameterSymbol outer)
+                        {
+                            return EffectiveMemberTypeCore(outer, b, visiting);
+                        }
                     }
+                    return b.Any;
                 }
-                return b.Any;
+                finally
+                {
+                    visiting.Remove(parameter);
+                }
             }
             return b.Any;
         }
@@ -436,9 +452,10 @@ namespace RigiCompiler
 
         // 可赋值性：同符号（驻留引用相等）直通；ErrorType 毒化静默放行；
         // T → Nullable\<T\> 装箱视图（M52）；沿 BaseType 链与接口表命中。
-        // 泛型参数：同参数引用相等直通（已先行）；from 为 T 时按有效成员
-        // 类型判定（T extends B ⟹ T 可赋给 B 及 B 的上界；无约束 T 可赋给
-        // Any）；to 为异参数一律不可赋。
+        // 泛型参数：同参数引用相等直通（已先行）；from 为 T 时先同型参装箱
+        // （T → T?），再按 extends 界代入后递归判定（T extends B ⟹ T 可赋
+        // 给 B 及 B 的上界，含再装箱 B → B?）；无约束 T 可赋给 Any；to 为
+        // 异参数一律不可赋。界链沿外层 GP 递归，visiting 防环界发散。
         // S9f：沿 BaseType 链的接口判定——接口可声明在泛型基类上
         // （RangeEnumerator\<T\> implements IEnumerator\<T\>），构造宿主
         // RangeEnumerator\<i32\> 的接口实参沿链代入后比较
@@ -452,22 +469,51 @@ namespace RigiCompiler
         public static bool IsAssignable(SemanticSymbol from, SemanticSymbol to,
             SymbolGraph symbols)
         {
+            return IsAssignableCore(from, to, symbols, null);
+        }
+
+        private static bool IsAssignableCore(SemanticSymbol from, SemanticSymbol to,
+            SymbolGraph symbols, HashSet<GenericParameterSymbol>? visiting)
+        {
             var b = symbols.Bootstrap;
             if (ReferenceEquals(from, to)) return true;
             if (from is ErrorTypeSymbol || to is ErrorTypeSymbol) return true;
-            if (from is GenericParameterSymbol)
+            if (from is GenericParameterSymbol fromGp)
             {
-                // g8：T → Nullable\<T\> 装箱视图优先判（to 为 Nullable 构造
-                // 且内层与 from 引用相等）——先于有效成员类型路径：无约束 T
-                // 的 EffectiveMemberType 是 Any，到不了 Nullable\<T\>；异
-                // 型参/异类型内层（U ≠ T）引用不等，落入下方界路径不误放
+                // g8：T → Nullable\<T\> 同型参装箱优先（to 为 Nullable 构造
+                // 且内层与 from 引用相等）——先于界路径：无约束 T 没有
+                // extends 界，到不了 Nullable\<T\>；异型参/异类型内层
+                // （U ≠ T）引用不等，落入下方界路径不误放
                 if (IsNullableType(to, b, out var nullableElement)
                     && ReferenceEquals(nullableElement, from))
                 {
                     return true;
                 }
-                return to is not GenericParameterSymbol
-                    && IsAssignable(EffectiveMemberType(from, b), to, symbols);
+                if (to is GenericParameterSymbol) return false;
+                // T extends B → 先界代入再判可赋（含再装箱：B → B?）。
+                // 不用 EffectiveMemberType 压扁：那会把外层 GP 界走到 Any，
+                // 丢掉 B 身份，误拒 T extends U → Nullable\<U\>
+                visiting ??= new HashSet<GenericParameterSymbol>();
+                if (!visiting.Add(fromGp)) return false;
+                try
+                {
+                    var hasExtends = false;
+                    foreach (var constraint in fromGp.Constraints)
+                    {
+                        if (constraint.Kind != GenericConstraintKind.Extends) continue;
+                        hasExtends = true;
+                        if (IsAssignableCore(constraint.Bound, to, symbols, visiting))
+                        {
+                            return true;
+                        }
+                    }
+                    return !hasExtends
+                        && IsAssignableCore(b.Any, to, symbols, visiting);
+                }
+                finally
+                {
+                    visiting.Remove(fromGp);
+                }
             }
             if (to is GenericParameterSymbol) return false;
             var fromType = (TypeSymbol)from;
@@ -475,20 +521,24 @@ namespace RigiCompiler
             // 装箱视图：内层比较放宽为 SemanticSymbol 口径（g8——内层为泛型
             // 参数时递归 IsAssignable 自然拒绝：TypeSymbol → GP 不可赋）
             if (ReferenceEquals(toType.ConstructedFrom, b.NullableDefinition)
-                && IsAssignable(fromType, toType.TypeArguments![0], symbols))
+                && IsAssignableCore(fromType, toType.TypeArguments![0], symbols, visiting))
             {
                 return true;
             }
             for (var t = fromType; t != null; t = t.BaseType)
             {
-                if (TypesAssignableWithVariance(t, toType, symbols)) return true;
+                if (TypesAssignableWithVariance(t, toType, symbols, visiting)) return true;
                 var def = t.ConstructedFrom ?? t;
                 foreach (var iface in def.Interfaces)
                 {
-                    if (TypesAssignableWithVariance(iface, toType, symbols)) return true;
+                    if (TypesAssignableWithVariance(iface, toType, symbols, visiting))
+                    {
+                        return true;
+                    }
                     if (t.ConstructedFrom != null
                         && TypesAssignableWithVariance(
-                            SubstituteHost(iface, def, t, symbols), toType, symbols))
+                            SubstituteHost(iface, def, t, symbols), toType, symbols,
+                            visiting))
                     {
                         return true;
                     }
@@ -498,7 +548,8 @@ namespace RigiCompiler
         }
 
         private static bool TypesAssignableWithVariance(SemanticSymbol? from,
-            SemanticSymbol to, SymbolGraph symbols)
+            SemanticSymbol to, SymbolGraph symbols,
+            HashSet<GenericParameterSymbol>? visiting)
         {
             if (ReferenceEquals(from, to)) return true;
             if (from is not TypeSymbol { ConstructedFrom: { } fromDefinition,
@@ -520,9 +571,14 @@ namespace RigiCompiler
                 }
                 else if (variance == GenericVariance.Out)
                 {
-                    if (!IsAssignable(fromArguments[i], toArguments[i], symbols)) return false;
+                    if (!IsAssignableCore(fromArguments[i], toArguments[i], symbols,
+                        visiting))
+                    {
+                        return false;
+                    }
                 }
-                else if (!IsAssignable(toArguments[i], fromArguments[i], symbols))
+                else if (!IsAssignableCore(toArguments[i], fromArguments[i], symbols,
+                    visiting))
                 {
                     return false;
                 }

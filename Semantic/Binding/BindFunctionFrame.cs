@@ -7,13 +7,17 @@ namespace RigiCompiler
     internal sealed class BindFunctionFrame
     {
         public BindFunctionFrame(MethodSymbol method, FileContext fileCtx, TypeSymbol? declaringType,
-            bool isDefaultValueContext, TypeSymbol? lookupHost = null)
+            bool isDefaultValueContext, TypeSymbol? lookupHost = null,
+            bool banEnclosingTypeParameters = false)
         {
             Method = method;
             FileCtx = fileCtx;
             DeclaringType = declaringType;
             IsDefaultValueContext = isDefaultValueContext;
             LookupHost = lookupHost ?? method.Owner;
+            BanEnclosingTypeParameters = banEnclosingTypeParameters
+                || method.IsStatic
+                || method.IsCompanionInstance;
         }
 
         // 当前函数上下文
@@ -42,6 +46,10 @@ namespace RigiCompiler
         // 外层查找宿主逐层传播（隐藏类 $$call 的 Owner 是隐藏类——词法上
         // 可见的宿主成员必须沿外层上下文解析，SYNTAX §5.2）
         public TypeSymbol? LookupHost { get; }
+
+        // 静态成员（及由其嵌套的 lambda）不得使用所属类型链上的类型参数
+        // （SYNTAX §9.2.3：类级 typeid 在实例上，静态体读不到）
+        public bool BanEnclosingTypeParameters { get; }
 
         // 使用点访问控制便捷入口（S8e，SYNTAX §16.1）：以本上下文的文件/
         // 命名空间/宿主类型（DeclaringType = 词法宿主）判定目标符号可见性

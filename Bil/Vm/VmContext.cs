@@ -12,6 +12,10 @@ namespace RigiCompiler.Bil.Vm
         public VmHooks Hooks { get; }
         internal BilVerificationContext Types { get; }
 
+        // 实现级指令步数上限：0 = 不限制（默认）。每条 Step 计 1（含嵌套）。
+        public long MaxSteps { get; set; }
+        private long _steps;
+
         private readonly Dictionary<string, BilFunction> _functions;
         private readonly Dictionary<string, BilSimpleMemberDeclaration> _members;
         private readonly Dictionary<string, BilTypeDeclaration> _types;
@@ -62,6 +66,17 @@ namespace RigiCompiler.Bil.Vm
             _accessorFields = new Dictionary<string, string>();
             IndexMembers(module.LocalSymbols);
             IndexMembers(module.ExternalSymbols);
+        }
+
+        // 每执行一条 BIL 指令调用一次；超限抛 VmStepLimitException（受控）。
+        internal void AccountStep()
+        {
+            if (MaxSteps <= 0) return;
+            long n = Interlocked.Increment(ref _steps);
+            if (n > MaxSteps)
+            {
+                throw new VmStepLimitException(MaxSteps);
+            }
         }
 
         public string Stdout
@@ -437,7 +452,7 @@ namespace RigiCompiler.Bil.Vm
         }
 
         public bool TryFindInit(string typeRef, IReadOnlyList<VmValue> arguments,
-            out string initSymbol)
+            IReadOnlyList<string> argumentStaticTypes, out string initSymbol)
         {
             initSymbol = "";
             var declaration = FindType(typeRef);
@@ -460,8 +475,8 @@ namespace RigiCompiler.Bil.Vm
             }
             // 构造泛型宿主（§14.1 严格匹配的 VM 侧落地）：init 声明在定义级
             // 符号上，参数类型含 .generic<$.generic.T> 占位——按构造实参代入
-            // 后再与实参值比对（与 VmTypeSheetBuilder 的 extends/implements
-            // 槽代入同一机制）
+            // 后再与实参**静态类型** TypesEqual（编译期已 cast 到声明类型；
+            // 不是按运行期 typeid 可赋值性再 ranking）
             var substitution = VmTypeSheetBuilder.BuildSubstitution(typeRef, declaration);
             foreach (var init in inits)
             {
@@ -476,7 +491,7 @@ namespace RigiCompiler.Bil.Vm
                         (p.Name, VmTypeSheetBuilder.SubstituteGenericArguments(
                             p.TypeRef, substitution)));
                 }
-                if (ParametersMatch(parameters, arguments))
+                if (ParametersMatch(parameters, arguments, argumentStaticTypes))
                 {
                     initSymbol = init.Symbol;
                     return true;
@@ -1657,22 +1672,56 @@ namespace RigiCompiler.Bil.Vm
         }
 
         private bool ParametersMatch(List<(string Name, string TypeRef)> parameters,
-            IReadOnlyList<VmValue> arguments)
+            IReadOnlyList<VmValue> arguments, IReadOnlyList<string> argumentStaticTypes)
         {
-            if (parameters.Count != arguments.Count)
+            if (parameters.Count != arguments.Count
+                || argumentStaticTypes.Count != arguments.Count)
             {
                 return false;
             }
             for (var i = 0; i < parameters.Count; i++)
             {
-                // init 重载按可赋值性选择（RUNTIME §11：运行期 init 表；
-                // Savings → Account、.null → T?），不是实参精确 typeid
-                if (!Types.TypesAssignable(arguments[i].TypeRef, parameters[i].TypeRef))
+                // §14.1 / RUNTIME §11：对编译期已解析入口的验证——cast 后
+                // 静态类型与形参 TypesEqual（不是运行期 typeid 可赋值性）
+                if (!TypesEqual(argumentStaticTypes[i], parameters[i].TypeRef))
                 {
                     return false;
                 }
             }
             return true;
+        }
+
+        // BIL 变量声明类型（.args / .vars）；查不到时回落运行期 TypeRef。
+        // init / super 匹配用静态类型，不用对象头 typeid。
+        internal static string LookupStaticType(BilFunction function, string name,
+            string fallback)
+        {
+            foreach (var arg in function.Args)
+            {
+                if (arg.Name == name)
+                {
+                    return arg.TypeRef;
+                }
+            }
+            foreach (var variable in function.Vars)
+            {
+                if (variable.Name == name)
+                {
+                    return variable.TypeRef;
+                }
+            }
+            return fallback;
+        }
+
+        internal static string[] ArgumentStaticTypes(BilFunction function,
+            IReadOnlyList<BilVariableOperand> operands, IReadOnlyList<VmValue> values)
+        {
+            var types = new string[operands.Count];
+            for (var i = 0; i < operands.Count; i++)
+            {
+                types[i] = LookupStaticType(function, operands[i].Name, values[i].TypeRef);
+            }
+            return types;
         }
 
         // 任一侧含 .generic<（函数泛型占位，无法静态判定）降级通过
