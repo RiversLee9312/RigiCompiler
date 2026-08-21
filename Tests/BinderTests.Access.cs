@@ -25,10 +25,11 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("pub 跨文件可见", unit);
 
-            // priv（默认）顶层类同文件可见
+            // priv（默认）顶层类同文件可见（函数同为默认 private——pub 签名
+            // 引用 priv 类型属签名泄漏，见「签名泄漏」分组）
             var (unit2, _) = BindUnit(
                 "class Hidden { }\n" +
-                "pub func mk(): Hidden { return new Hidden() }\n");
+                "func mk(): Hidden { return new Hidden() }\n");
             CheckNoErrors("priv 顶层类同文件可见", unit2);
 
             // priv 顶层类跨文件拒绝——函数体内类型引用（局部变量类型标注）
@@ -156,6 +157,339 @@ namespace RigiCompiler.Tests
                 "pub func f(): String { return core.any_to_string(\"x\") }\n");
             TestHarness.CheckSemanticError("any_to_string 用户不可直达", unit16.Diagnostics,
                 "'any_to_string' is inaccessible due to its accessibility level");
+
+            // ===== bug S5：priv 类型经 pub 返回值泄漏（推断路径）=====
+            // 跨文件：声明点（P2 签名泄漏，修复1）与推断点（P3 局部推断，
+            // 修复2）各报一次；下游成员访问只查成员可见性，不级联类型诊断
+            var (unit17, _) = BindUnit(
+                "class Hidden {\n" +
+                "    pub init()\n" +
+                "    pub func n(): i32 { return 1 }\n" +
+                "}\n" +
+                "pub func make(): Hidden { return new Hidden() }\n",
+                "pub func use(): i32 {\n" +
+                "    const h = make()\n" +
+                "    return h.n()\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("签名泄漏声明点拦截（P2）", unit17.Diagnostics,
+                "Inconsistent accessibility: return type 'Hidden' is less accessible " +
+                "than function 'make'");
+            TestHarness.CheckSemanticError("推断局部使用点拦截（P3）", unit17.Diagnostics,
+                "'Hidden' is inaccessible due to its accessibility level");
+
+            // 合法对照：同文件推断 priv 类型（make 同为默认 private，
+            // 无签名泄漏；推断类型同文件可见）
+            var (unit18, _) = BindUnit(
+                "class Hidden {\n" +
+                "    pub init()\n" +
+                "    pub func n(): i32 { return 1 }\n" +
+                "}\n" +
+                "func make(): Hidden { return new Hidden() }\n" +
+                "pub func use(): i32 {\n" +
+                "    const h = make()\n" +
+                "    return h.n()\n" +
+                "}\n");
+            CheckNoErrors("同文件推断 priv 类型合法", unit18);
+        }
+
+        // ===== F1：使用点类型可见性漏洞簇（V-A 构造实参递归 / V-B 表达式
+        // 直链收口 / V4 seq using / c6 诊断去重；SYNTAX §16.1）=====
+        // 统一口径：诊断报最深不可见类型（InaccessibleMessage 命名实参而非
+        // 可见容器）；同一泄漏链在函数体内只报一次（BindContext 驻留去重）
+        private static void TestUseSiteAccessibilityF1()
+        {
+            TestHarness.Section("P3 Use-Site Accessibility (F1)");
+
+            const string HiddenLib =
+                "class Hidden {\n" +
+                "    pub init()\n" +
+                "    pub func n(): i32 { return 1 }\n" +
+                "}\n";
+
+            // V-A：显式标注 `Hidden?` 递归构造实参（修复前只查顶层 Nullable）
+            var (va1, _) = BindUnit(
+                HiddenLib,
+                "pub func use(): i32 {\n" +
+                "    var h: Hidden? = null\n" +
+                "    return 0\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("V-A 标注 Nullable<Hidden> 递归", va1.Diagnostics,
+                "'Hidden' is inaccessible due to its accessibility level");
+
+            // V-A：推断类型 Box\<Hidden\> 递归实参（c6b；诊断命名 Hidden 而非 Box）
+            var (va2, _) = BindUnit(
+                HiddenLib +
+                "pub open class Box\\<T> {\n" +
+                "    pub var v: T\n" +
+                "    pub init(_ -> v)\n" +
+                "}\n" +
+                "pub class Holder {\n" +
+                "    pub init()\n" +
+                "    pub var bx: Box\\<Hidden> = new Box\\<Hidden>(new Hidden())\n" +
+                "}\n",
+                "pub func use(): i32 {\n" +
+                "    const h = new Holder()\n" +
+                "    const bx = h.bx\n" +
+                "    return 0\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("V-A 推断 Box<Hidden> 递归", va2.Diagnostics,
+                "'Hidden' is inaccessible due to its accessibility level");
+
+            // V-B：语句位直链 hd.h.n()（实例调用形态中间段；修复前无钩子）
+            var (vb1, _) = BindUnit(
+                HiddenLib +
+                "pub class DirectHolder {\n" +
+                "    pub init()\n" +
+                "    pub var h: Hidden = new Hidden()\n" +
+                "}\n",
+                "pub func use(): i32 {\n" +
+                "    const hd = new DirectHolder()\n" +
+                "    hd.h.n()\n" +
+                "    return 0\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("V-B 直链 hd.h.n()", vb1.Diagnostics,
+                "'Hidden' is inaccessible due to its accessibility level");
+            TestHarness.CheckTrue("V-B 直链只报一次", CountInaccessible(vb1) == 1,
+                $"实际 {CountInaccessible(vb1)} 条");
+
+            // V-B：具化调用结果 b.get().n()（路径链段级收口）
+            var (vb2, _) = BindUnit(
+                HiddenLib +
+                "pub open class Box\\<T> {\n" +
+                "    pub var v: T\n" +
+                "    pub init(_ -> v)\n" +
+                "    pub func get(): T { return v }\n" +
+                "}\n" +
+                "pub class HBox : Box\\<Hidden> {\n" +
+                "    pub init() { super(new Hidden()) }\n" +
+                "}\n",
+                "pub func use(): i32 {\n" +
+                "    const b = new HBox()\n" +
+                "    b.get().n()\n" +
+                "    return 0\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("V-B 具化 get() 结果", vb2.Diagnostics,
+                "'Hidden' is inaccessible due to its accessibility level");
+
+            // V-B：if? 回退合成结果 (c.hn if? c.h).n()
+            var (vb3, _) = BindUnit(
+                HiddenLib +
+                "pub class PairHolder {\n" +
+                "    pub init()\n" +
+                "    pub var hn: Hidden? = null\n" +
+                "    pub var h: Hidden = new Hidden()\n" +
+                "}\n",
+                "pub func use(): i32 {\n" +
+                "    const c = new PairHolder()\n" +
+                "    return (c.hn if? c.h).n()\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("V-B if? 合成结果", vb3.Diagnostics,
+                "'Hidden' is inaccessible due to its accessibility level");
+
+            // V-B：await 解包结果（Task\<HiddenS\> 经 pub 字段泄出）
+            var (vb4, _) = BindUnitWithStdlib(
+                "import core.coroutine.*\n" +
+                "shared class HiddenS {\n" +
+                "    pub init()\n" +
+                "    pub func n(): i32 { return 1 }\n" +
+                "}\n" +
+                "async func mkS(): HiddenS { return new HiddenS() }\n" +
+                "pub shared class TaskHolder {\n" +
+                "    pub init()\n" +
+                "    pub var t: Task\\<HiddenS> = mkS()\n" +
+                "}\n",
+                "pub func use(): i32 {\n" +
+                "    const c = new TaskHolder()\n" +
+                "    return (await c.t).n()\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("V-B await 解包结果", vb4.Diagnostics,
+                "'HiddenS' is inaccessible due to its accessibility level");
+
+            // V4：seq using 推断资源类型
+            var (v4, _) = BindUnitWithStdlib(
+                "class HiddenRes implements core.IDisposable {\n" +
+                "    pub init()\n" +
+                "    pub override func dispose() { }\n" +
+                "}\n" +
+                "pub class ResHolder {\n" +
+                "    pub init()\n" +
+                "    pub var hd: HiddenRes = new HiddenRes()\n" +
+                "}\n",
+                "pub func use(): i32 {\n" +
+                "    const c = new ResHolder()\n" +
+                "    seq using(const r = c.hd) { }\n" +
+                "    return 0\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("V4 seq using 推断资源", v4.Diagnostics,
+                "'HiddenRes' is inaccessible due to its accessibility level");
+
+            // c6：多步推断链同一泄漏只报一次（const a 报、const b 静默）
+            var (c6, _) = BindUnit(
+                HiddenLib +
+                "pub class ChainHolder {\n" +
+                "    pub init()\n" +
+                "    pub var hm: Hidden = new Hidden()\n" +
+                "}\n",
+                "pub func use(): i32 {\n" +
+                "    const hd = new ChainHolder()\n" +
+                "    const a = hd.hm\n" +
+                "    const b = a\n" +
+                "    return 0\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("c6 推断链报一次", c6.Diagnostics,
+                "'Hidden' is inaccessible due to its accessibility level");
+            TestHarness.CheckTrue("c6 推断链不重复报", CountInaccessible(c6) == 1,
+                $"实际 {CountInaccessible(c6)} 条");
+
+            // 显式泛型实参构造类型递归（f\<Box\<Hidden\>\> 写出点恒报）
+            var (ga, _) = BindUnit(
+                HiddenLib,
+                "pub open class Box\\<T> {\n" +
+                "    pub var v: T\n" +
+                "    pub init(_ -> v)\n" +
+                "}\n" +
+                "pub func id\\<T>(x: T): T { return x }\n" +
+                "pub func use(): i32 {\n" +
+                "    const b = id\\<Box\\<Hidden>>(null)\n" +
+                "    return 0\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("V-A 显式泛型实参递归", ga.Diagnostics,
+                "'Hidden' is inaccessible due to its accessibility level");
+
+            // 合法对照（c10）：priv 实现经 pub 视图动态派发——视图类型 pub，
+            // 使用点不提及不可见类型，不得误报
+            var (ok1, _) = BindUnit(
+                "pub open class Base {\n" +
+                "    pub init()\n" +
+                "    pub open func n(): i32 { return 0 }\n" +
+                "}\n" +
+                "class HiddenImpl : Base {\n" +
+                "    pub init() { super() }\n" +
+                "    pub override func n(): i32 { return 7 }\n" +
+                "}\n" +
+                "pub func mkView(): Base { return new HiddenImpl() }\n",
+                "pub func use(): i32 {\n" +
+                "    const b = mkView()\n" +
+                "    return b.n()\n" +
+                "}\n");
+            CheckNoErrors("c10 pub 视图派发合法", ok1);
+
+            // 合法对照：同文件构造实参 priv 类型（Box\<Hidden\> 同文件可见）
+            var (ok2, _) = BindUnit(
+                "class Hidden {\n" +
+                "    pub init()\n" +
+                "    pub func n(): i32 { return 1 }\n" +
+                "}\n" +
+                "pub open class Box\\<T> {\n" +
+                "    pub var v: T\n" +
+                "    pub init(_ -> v)\n" +
+                "}\n" +
+                "func use(): i32 {\n" +
+                "    const bx = new Box\\<Hidden>(new Hidden())\n" +
+                "    return bx.v.n()\n" +
+                "}\n");
+            CheckNoErrors("同文件 Box<Hidden> 推断合法", ok2);
+        }
+
+        // F1 去重断言辅助：当前编译单元中 inaccessible 级联诊断条数
+        private static int CountInaccessible(CompilationUnit unit)
+        {
+            return unit.Diagnostics.Diagnostics.Count(d =>
+                d.Severity == DiagnosticSeverity.Error && d.Message.Contains("inaccessible"));
+        }
+
+        // ===== F2/V3：is/supers/with 与 typeOf 试探命中补查 =====
+        //
+        // 静态形态试探（reportErrors: false）保持纯净，但命中即使用点：
+        // 只读补跑可见性与构造类型填入点检查（不落「无法解析」类诊断）。
+        private static void TestProbedTypeChecksF2()
+        {
+            TestHarness.Section("P3 Probed Type Checks (is/supers/with, F2/V3)");
+
+            const string HiddenLib =
+                "class Hidden {\n" +
+                "    pub init()\n" +
+                "    pub func n(): i32 { return 1 }\n" +
+                "}\n" +
+                "pub func mk(): Object { return new Hidden() }\n";
+
+            // p17c：is 试探命中私有类型（修复前零检查静默通过）
+            var (p17c, _) = BindUnit(
+                HiddenLib,
+                "pub func use(): i32 {\n" +
+                "    const a = mk()\n" +
+                "    if (a is Hidden) { return 1 }\n" +
+                "    return 0\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("V-D is 私有类型补查", p17c.Diagnostics,
+                "'Hidden' is inaccessible due to its accessibility level");
+            TestHarness.CheckTrue("V-D is 私有类型只报一次", CountInaccessible(p17c) == 1,
+                $"实际 {CountInaccessible(p17c)} 条");
+
+            // supers 试探同门
+            var (sup, _) = BindUnit(
+                HiddenLib,
+                "pub func use(): i32 {\n" +
+                "    const a = mk()\n" +
+                "    if (a supers Hidden) { return 1 }\n" +
+                "    return 0\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("V-D supers 私有类型补查", sup.Diagnostics,
+                "'Hidden' is inaccessible due to its accessibility level");
+
+            // typeOf 裸名类型形态同门
+            var (tof, _) = BindUnit(
+                HiddenLib,
+                "pub func use(): i32 {\n" +
+                "    const t = typeOf(Hidden)\n" +
+                "    return 0\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("V-D typeOf 私有类型补查", tof.Diagnostics,
+                "'Hidden' is inaccessible due to its accessibility level");
+
+            // p17e：is 试探命中布局违规构造 Wrap\<User>（修复前静默）
+            var (p17e, _) = BindUnit(
+                "class User { pub init()\n }\n" +
+                "struct Wrap\\<T> { pub var v: T\n pub init(_ -> v) }\n" +
+                "func check(a: Object): i32 {\n" +
+                "    if (a is Wrap\\<User>) { return 1 }\n" +
+                "    return 0\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("V3 is 布局违规构造补查", p17e.Diagnostics,
+                "Non-rich struct 'Wrap' cannot hold object field 'v' " +
+                "(via type argument of 'Wrap<User>')");
+
+            // is 试探命中显式约束违规构造（拒绝口径同 TypeReferences）
+            var (con, _) = BindUnit(
+                "open class Animal { pub init()\n }\n" +
+                "open class Cage\\<T extends Animal> { pub init()\n }\n" +
+                "func check(a: Object): i32 {\n" +
+                "    if (a is Cage\\<i32>) { return 1 }\n" +
+                "    return 0\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("V3 is 显式约束违规补查", con.Diagnostics,
+                "Type argument 'i32' does not satisfy the 'Extends Animal' constraint of 'T'");
+
+            // 合法对照：同文件私有类型 is/typeOf（同文件可见）+ 合法构造
+            var (ok1, _) = BindUnit(
+                "class Hidden { pub init()\n }\n" +
+                "struct Wrap\\<T> { pub var v: T\n pub init(_ -> v) }\n" +
+                "func check(a: Object): i32 {\n" +
+                "    if (a is Hidden) { return 1 }\n" +
+                "    if (a is Wrap\\<i32>) { return 2 }\n" +
+                "    const t = typeOf(Hidden)\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckNoErrors("同文件 is/typeOf/构造合法对照", ok1);
+
+            // 动态形态不受补查影响：右侧 Type\<T\> 值照常绑定
+            var (ok2, _) = BindUnit(
+                "class Hidden { pub init()\n }\n" +
+                "func check(a: Object, t: Type\\<Hidden>): i32 {\n" +
+                "    if (a is t) { return 1 }\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckNoErrors("动态形态 Type<T> 值不受影响", ok2);
         }
 
         // ===== 访问器绑定（S8e，SYNTAX §9.4/§9.4.1）=====
@@ -277,7 +611,7 @@ namespace RigiCompiler.Tests
                 "        pub get(value: _) { return value }\n" +
                 "        priv set(value: _) { }\n" +
                 "    }\n" +
-                "    pub init() { }\n" +
+                "    pub init() { v = 0 }\n" +
                 "}\n" +
                 "func h(b: Box): i32 {\n" +
                 "    b.v = 3\n" +
@@ -329,9 +663,9 @@ namespace RigiCompiler.Tests
                 BoundDescribe.Body(BodyOf(bodies7, "use2")).Contains(
                     "SmartCast(InstField(plain, This(Box), String?), String)"));
 
-            // 带初始化器的 backing 访问器字段 → 合成默认构造按普通赋值
-            // 形态应用（§9.4.1：发射侧 set.field 自动经 setter；P3 节点
-            // 形态不变）
+            // 带初始化器的 backing 访问器字段 → 初始值归合成的
+            // ..init.field.value（新 init 原则；发射侧 set.field 自动经
+            // setter 应用），默认构造体为空
             var (unit8, bodies8) = BindUnit(
                 "pub class Meter {\n" +
                 "    pub var value: i32 {\n" +
@@ -342,9 +676,14 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断（backing 访问器字段初始化器）", unit8);
             var meterInit = bodies8.Single(b => b.Method.Kind == MethodKind.Init
                 && b.Method.Owner?.Name == "Meter");
-            TestHarness.Check("合成默认构造赋值形态（经 setter 应用）",
+            TestHarness.Check("合成默认构造空体（初值在 ..init.field.*）",
                 BoundDescribe.Body(meterInit),
-                "Body(init, [], [Assign(InstField(value, This(Meter), i32), Int(150,i32))])");
+                "Body(init, [], [])");
+            var meterInitField = bodies8.Single(b => b.Method.Name == "..init.field.value"
+                && b.Method.Owner?.Name == "Meter");
+            TestHarness.Check("..init.field.value 赋值形态（经 setter 应用）",
+                BoundDescribe.Body(meterInitField),
+                "Body(..init.field.value, [], [Assign(InstField(value, This(Meter), i32), Int(150,i32))])");
 
             // 仅 get 实例字段携带初始化器 → 无法经 setter 应用（§9.4.1）；
             // const+get-only 同此（const 本就不得声明 setter）

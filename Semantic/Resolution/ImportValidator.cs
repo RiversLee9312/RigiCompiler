@@ -25,12 +25,15 @@ namespace RigiCompiler
                             $"Unresolved import: '{NameResolver.PathText(path)}'");
                     }
                     // §15.2 三种形态之外的裸命名空间导入（`import core.collections`）：
-                    // 具名导入（{} 已由 Parser 展开为多条）的目标必须是类型；
+                    // 具名导入（{} 已由 Parser 展开为多条）的目标是类型、命名空间
+                    // 顶层函数（同名重载随名字整体导入）或全局字段/const（S4）；
                     // 通配导入的容器保留命名空间/类型双合法
-                    else if (!item.importAll && resolved is not TypeSymbol)
+                    else if (!item.importAll && resolved is not (TypeSymbol or MethodSymbol
+                        or FieldSymbol))
                     {
                         env.Error(item.symbolNode.Span ?? file.Span,
-                            $"Import target '{NameResolver.PathText(path)}' is not a type (§15.2)");
+                            $"Import target '{NameResolver.PathText(path)}' is not a type, " +
+                            "function or field (§15.2)");
                     }
                 }
             }

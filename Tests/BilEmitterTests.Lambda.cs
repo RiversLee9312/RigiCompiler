@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
@@ -549,6 +549,7 @@ namespace RigiCompiler.Tests
         }
 
         // M105：handlers[0]() —— 索引后 void 间接调用
+        //（Q6：索引读出 Action?，先 if? 回退一个空 Action 再调用）
         private static void TestLambdaVoidIndirectCallIndexed()
         {
             var (unit, module, text) = BilTestHarness.EmitBilUnit(
@@ -556,11 +557,11 @@ namespace RigiCompiler.Tests
                 "class Handlers {\n" +
                 "    pub var h: core.Action\n" +
                 "    pub init(_ -> h)\n" +
-                "    pub operator getAtIndex(index: i32): core.Action { return h }\n" +
+                "    pub operator getAtIndex(index: i32): core.Action? { return h }\n" +
                 "}\n" +
                 "pub func main(): i32 {\n" +
                 "    var handlers = new Handlers(h = func{() -> { sink(0) }})\n" +
-                "    handlers[0]()\n" +
+                "    (handlers[0] if? func{() -> { }})()\n" +
                 "    return 1\n" +
                 "}\n");
             CheckNoErrors("handlers[0]() 语句位置全管线无诊断", unit);

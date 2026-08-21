@@ -1,4 +1,4 @@
-using System.Linq;
+﻿using System.Linq;
 
 namespace RigiCompiler.Tests
 {
@@ -184,16 +184,16 @@ namespace RigiCompiler.Tests
                 "pub wrapper Indexed {\n" +
                 "    pub var store: i32\n" +
                 "    pub init() { store = 0 }\n" +
-                "    pub operator getAtIndex(index: i32): i32 { return store }\n" +
+                "    pub operator getAtIndex(index: i32): i32? { return store }\n" +
                 "}\n" +
                 "@Indexed\n" +
                 "pub class Service { pub init() }\n" +
-                "pub func f(s: Service): i32 {\n" +
+                "pub func f(s: Service): i32? {\n" +
                 "    return s:Indexed[0]\n" +
                 "}\n");
             CheckNoErrors("wrapper place 索引后缀无诊断", unit8);
-            TestHarness.Check("wrapper place 索引后缀形态",
-                "Index(WrapperPlace(Param(s,Service), Indexed), Int(0,i32), i32)",
+            TestHarness.Check("wrapper place 索引后缀形态（Q6：Type = i32?）",
+                "Index(WrapperPlace(Param(s,Service), Indexed), Int(0,i32), i32?)",
                 BoundDescribe.Expr(
                     ((BoundReturnStatement)((BoundBlock)BodyOf(bodies8, "f").Body).Statements[0])
                     .Value));
@@ -1267,7 +1267,7 @@ namespace RigiCompiler.Tests
                 "pub class Bag {\n" +
                 "    pub var item: User\n" +
                 "    pub init(_ -> item)\n" +
-                "    pub operator getAtIndex(index: i32): User { return item }\n" +
+                "    pub operator getAtIndex(index: i32): User? { return item }\n" +
                 "    pub operator setAtIndex(index: i32, element: User) { item = element }\n" +
                 "}\n" +
                 "pub func fIdx(b: Bag, s: Svc) { b[0] = s.fetch() }\n");

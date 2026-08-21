@@ -71,6 +71,23 @@ namespace RigiCompiler
                     yield return found;
                 }
             }
+
+            // SymbolASTNode 特判（g1）：symbol 是纯数据、不经 [ChildAstNode] 标注，
+            // 但其泛型实参已是完整 TypeReferenceASTNode（AST 节点）——作为该
+            // SymbolASTNode 的子节点纳入遍历（Parent/Span/共享校验与表达式路径
+            // 同口径）。嵌套实参经由实参节点自身的 TypeSymbol 递归到达，无需在此下钻
+            if (node is SymbolASTNode symbolNode)
+            {
+                var elements = symbolNode.symbol.elements;
+                for (int i = 0; i < elements.Count; i++)
+                {
+                    var generics = elements[i].generics;
+                    for (int j = 0; j < generics.Count; j++)
+                    {
+                        yield return (generics[j], $"symbol.elements[{i}].generics[{j}]");
+                    }
+                }
+            }
         }
 
         // 子单元枚举（M32，JSONL v2 序列化专用）：与 EnumerateChildren 相同的

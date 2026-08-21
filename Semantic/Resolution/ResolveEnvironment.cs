@@ -31,6 +31,21 @@ namespace RigiCompiler
 
         public IReadOnlyDictionary<SemanticSymbol, DeclEntry> EntryOfSymbol => entryOfSymbol;
 
+        // 继承子句填入点登记表（F2/V-C）：InheritanceResolver 解析基类/
+        // 接口子句时登记（构造类型, 子句位置），InheritanceFillInChecker
+        // 在 GenericConstraintChecker 之后统一收口——彼时约束 Bound 与
+        // 被引用定义的字段/方法签名、rich/shared 传染均已就绪
+        private readonly List<(TypeSymbol Constructed, CharRange? Span)> inheritanceFillIns =
+            new List<(TypeSymbol, CharRange?)>();
+
+        public IReadOnlyList<(TypeSymbol Constructed, CharRange? Span)> InheritanceFillIns =>
+            inheritanceFillIns;
+
+        internal void RegisterInheritanceFillIn(TypeSymbol constructed, CharRange? span)
+        {
+            inheritanceFillIns.Add((constructed, span));
+        }
+
         // 收集期填充（EntryCollector 专用；收集结束后三表冻结，阶段只读）
         internal void RegisterEntry(DeclEntry entry)
         {

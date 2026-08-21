@@ -41,7 +41,7 @@ namespace RigiCompiler
             foreach (var parameter in lambda.Parameters.Parameters)
             {
                 var type = TypeReferences.Resolve(parameter.Type, parameter.Span ?? lambda.Span,
-                    ctx.Frame, env);
+                    ctx.Frame, env, ctx);
                 if (type == null) type = unit.Symbols.ErrorType;
                 if (type is not TypeSymbol && type is not GenericParameterSymbol)
                 {
@@ -57,7 +57,7 @@ namespace RigiCompiler
             if (lambda.ReturnType != null)
             {
                 returnType = TypeReferences.Resolve(lambda.ReturnType,
-                    lambda.ReturnType.Span ?? lambda.Span, ctx.Frame, env)
+                    lambda.ReturnType.Span ?? lambda.Span, ctx.Frame, env, ctx)
                     ?? unit.Symbols.ErrorType;
             }
 

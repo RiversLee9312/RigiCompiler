@@ -3,3 +3,5 @@ bin/
 obj/
 # 工具本地配置
 .claude/
+# fuzz 失败落盘（StressFuzz）
+Tests/fuzz-failures/

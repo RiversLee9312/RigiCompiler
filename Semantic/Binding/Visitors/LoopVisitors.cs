@@ -215,6 +215,10 @@ namespace RigiCompiler
             var iterableType = SymbolLookup.EffectiveMemberType(iterable.Type, env);
             var itemType = ResolveEnumerableElement(iterableType, enumerableDef, node.Span, env);
             if (itemType == null) { ctx.Flow.Restore(before); return null; }
+            // 推断元素类型使用点检查（§16.1，bug S5 修复2，同局部推断口径；
+            // F1 起递归口径 + 与统一收口驻留去重——iterable 表达式
+            // Array\<Hidden\> 经收口递归命中已报时本挂点静默）
+            UseSiteAccessibility.CheckInferredType(itemType, node.Span, ctx, env);
             var iterate = enumerableDef.Methods.FirstOrDefault(m => m.Name == "iterate");
             var moveNext = enumeratorDef.Methods.FirstOrDefault(m => m.Name == "moveNext");
             var current = enumeratorDef.Methods.FirstOrDefault(m => m.Name == "current");

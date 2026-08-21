@@ -21,7 +21,9 @@ namespace RigiCompiler.Tests
             TestOpenMethodVirtualDispatch();
             TestThreeLevelChainAndSuper();
             TestInterfaceDispatch();
+            TestInterfaceDefaultConflictDualViewDispatch();
             TestCallableProtocolDispatch();
+            TestCallableFieldChainedCall();
             TestOpenGetterVirtualDispatch();
             TestNativeToStringOverrideYields();
             TestNativeToStringMultiLevelChain();
@@ -35,6 +37,12 @@ namespace RigiCompiler.Tests
             TestGenericNestedArgumentDispatch();
             TestInitOverloadAssignability();
             TestInitRejectsUnrelatedType();
+            TestNoSuperBaseFieldInitializersRun();
+            TestBaseInitSeesFieldInitializers();
+            TestSuperInitSubtypeArgument();
+            TestFieldOverrideInitialValue();
+            TestPropertyInitializerGoesThroughSetter();
+            TestGlobalFieldInitializersRun();
             TestSubclassWrapperInterceptsInherited();
             TestSubclassWrapperWildcardInherited();
             TestStackedWrappersOnInherited();
@@ -43,6 +51,14 @@ namespace RigiCompiler.Tests
             TestPolymorphicInheritedWrapper();
             TestWrapperPlaceVoidRuns();
             TestOverrideStillIntercepted();
+            TestMethodWrapperViaBaseStaticType();
+            TestMethodWrapperViaInterfaceStaticType();
+            TestMethodWrapperViaMidChainStaticType();
+            TestNoWrapperViaBaseStaticTypeRegression();
+            TestSuperBypassesMethodWrapper();
+            TestInheritedMethodWrapperInstalledOnChild();
+            TestBaseInitReadsThroughInheritedEntityWrapper();
+            TestAccessorCallRerouteThroughEntityWildcard();
 
             return TestHarness.Summary("BilVmDispatch");
         }
@@ -254,10 +270,11 @@ namespace RigiCompiler.Tests
             // B.m = A.m(tag=2) + 10 = 12 → 1200*10 + 201 + 12 = 12213
             CheckI32("末端 override + super 逐级", result, 12213);
 
-            // init super 未跑时 tag 应为 1——对照：无 super 的 B 变体
+            // init super 未跑时 tag 保持声明初值——对照：无 super 的 B 变体
+            //（P18/S2：基类字段带声明初始值才允许子类 init 不调 super）
             var noSuper = Run(
                 "pub open class A {\n" +
-                "    pub var tag: i32\n" +
+                "    pub var tag: i32 = 0\n" +
                 "    pub init() { tag = 1 }\n" +
                 "}\n" +
                 "pub class B : A {\n" +
@@ -307,6 +324,40 @@ namespace RigiCompiler.Tests
             CheckI32("无体成员 → 类实现", result, 16);
         }
 
+        // bug S3 配套锁定（§11）：两接口同签名默认方法冲突在类声明点报错
+        // （DeclarationResolverTests.TestConflictingInterfaceDefaults）；类显式
+        // override 后 A/B 双视图都必须派发到类实现，不再出现「B 视图打到 A
+        // 默认体」的错乱
+        private static void TestInterfaceDefaultConflictDualViewDispatch()
+        {
+            var result = Run(
+                "pub interface A {\n" +
+                "    func id(): i32\n" +
+                "    func tag(): String { return \"A\" }\n" +
+                "}\n" +
+                "pub interface B {\n" +
+                "    func id(): i32\n" +
+                "    func tag(): String { return \"B\" }\n" +
+                "}\n" +
+                "pub class C implements A, B {\n" +
+                "    pub init()\n" +
+                "    pub override func id(): i32 { return 1 }\n" +
+                "    pub override func tag(): String { return \"C\" }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var a: A = new C()\n" +
+                "    var b: B = new C()\n" +
+                "    core.io.Console.println(a.tag())\n" +
+                "    core.io.Console.println(b.tag())\n" +
+                "    return (a.id() + b.id())\n" +
+                "}\n");
+            CheckOk("双接口冲突显式 override 后编译运行", result);
+            TestHarness.Check("A/B 双视图派发到类实现", result.Stdout,
+                "C\n" +
+                "C\n");
+            CheckI32("双视图无体成员 → 类实现", result, 2);
+        }
+
         // callable 协议（§15.3）：lambda 赋给 core::Func 类型变量后调用；
         // 用户类 operator call 经对象调用——均按 receiver 实际类型虚派发 $$call
         private static void TestCallableProtocolDispatch()
@@ -331,6 +382,53 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckOk("用户 operator call", user);
             CheckI32("adder(2)", user, 42);
+        }
+
+        // c7b 回归：callable 字段作链式中间段直接调用（`hd.f().n()`）——
+        // binder 曾把该调用落成对宿主 hd 的 $$call（cast Holder → core::Func
+        // 运行期 InvalidCast）；修复后应先取字段再 invoke.indirect 虚派发
+        // $$call，与「先取局部再调」语义一致
+        private static void TestCallableFieldChainedCall()
+        {
+            var lambda = Run(
+                "pub class Box {\n" +
+                "    pub var v: i32\n" +
+                "    pub init(x: i32) { v = x }\n" +
+                "    pub func n(): i32 { return v }\n" +
+                "}\n" +
+                "pub class Holder {\n" +
+                "    pub var f: Func\\<Box>\n" +
+                "    pub init(g: Func\\<Box>) { f = g }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var hd = new Holder(func{(): Box -> new Box(40)})\n" +
+                "    var g = hd.f\n" +
+                "    return ((hd.f().n() * 10) + g().n())\n" +
+                "}\n");
+            CheckOk("委托字段链式直调", lambda);
+            CheckI32("hd.f().n()*10 + g().n()", lambda, 440);
+
+            var user = Run(
+                "pub class Adder {\n" +
+                "    pub var base: i32\n" +
+                "    pub init(b: i32) { base = b }\n" +
+                "    pub operator call(x: i32): i32 { return (base + x) }\n" +
+                "}\n" +
+                "pub class Holder {\n" +
+                "    pub var adder: Adder\n" +
+                "    pub init(a: Adder) { adder = a }\n" +
+                "}\n" +
+                "pub class Box {\n" +
+                "    pub var v: i32\n" +
+                "    pub init(x: i32) { v = x }\n" +
+                "    pub func n(): i32 { return v }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var hd = new Holder(new Adder(40))\n" +
+                "    return new Box(hd.adder(2)).n()\n" +
+                "}\n");
+            CheckOk("用户 operator call 字段链式直调", user);
+            CheckI32("hd.adder(2)", user, 42);
         }
 
         // open getter 经基类引用访问命中 derived getter（getter/setter 是

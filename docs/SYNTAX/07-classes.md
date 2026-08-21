@@ -57,9 +57,10 @@ pub shared class SharedSession {
 
 #### 9.2.1 `override` 配套规则
 
-- `open`/`override` 也适用于非 static 成员 getter/setter，且 getter 与 setter 分别是独立的多态单元；字段本身、全局访问器和 static 访问器不接受这两个修饰符。`abstract` 仍仅适用于普通成员方法；`init` 与 `static` 方法不参与多态。**callable 协议例外**（SYNTAX §5.2）：`operator call` 可 `abstract`/`override`/`async`（`core.Func`/`Action`/`AsyncFunc`/`AsyncAction` 基类族与 lambda 隐藏类覆写依赖此例外）；其余 operator 仍不参与多态。
-- `override` 必须在基类链或接口表中找到签名匹配（名称 + 参数类型序列 + 返回类型均严格相等）的 `open`/`abstract` 方法或接口成员；找不到、或目标非 `open`/`abstract`，均为编译错误。
-- 与继承成员同名同签名的成员必须显式 `override`（禁止静默隐藏）。
+- `open`/`override` 也适用于非 static 成员 getter/setter，且 getter 与 setter 分别是独立的多态单元；字段本身（见下方字段覆写条款）、全局访问器和 static 访问器另有规则。`abstract` 仍仅适用于普通成员方法；`init` 与 `static` 方法不参与多态。**callable 协议例外**（SYNTAX §5.2）：`operator call` 可 `abstract`/`override`/`async`（`core.Func`/`Action`/`AsyncFunc`/`AsyncAction` 基类族与 lambda 隐藏类覆写依赖此例外）；其余 operator 仍不参与多态。
+- **字段覆写（`open`/`override` 字段）**：class/struct 的非 static 字段可标 `open`——允许子类以同名字段标 `override` 给出**不同的初始值**。语义：override 字段的类型必须与基类字段一致（构造基类按 `extends` 实参代入后比较）；**存储仍是基类槽**（不产生新字段槽，名称解析与 BIL 都落到基类字段）；override 只替换初始值——编译器为每个带声明初始值的实例字段生成可覆写的 `..init.field.<名>` 方法（§9.3/§9.7），子类 override 字段生成同族 override 版，虚派发自动选中最高派生实现。规则：override 字段必须给出新初始值（无新初始值=编译错误）；被 override 的基类字段必须标 `open`（非 open=编译错误）；override 字段不得携带 wrapper 应用与访问器（访问器覆写归基类字段上的访问器机制）；`open` 字段自身可以没有初始值（子类 override 补初始值合法）。带访问器的同名字段重声明归访问器 override 机制（getter/setter 各自带 `override`）；无访问器的同名字段当且仅当**双方都带声明初始值**时必须显式 `override`（否则静默 hiding 会让基类槽初值在子类构造中被同名 `..init.field` 族的虚派发吞掉，为编译错误）；单方带初始值的 hiding 沿用既有行为。
+- `override` 必须在基类链或接口表中找到签名匹配（名称 + 参数类型序列 + 返回类型均严格相等，且 `async` 修饰符一致——sync 成员与 async 成员互不构成合法覆写目标，违反为专项编译错误）的 `open`/`abstract` 方法或接口成员；找不到、或目标非 `open`/`abstract`，均为编译错误。
+- 与继承成员同名同签名的成员必须显式 `override`（禁止静默隐藏）；仅 `async` 修饰符不同的同名同签名成员同样禁止（按 async 不一致专项诊断拦截）。
 - `abstract` 方法必须位于 `abstract` 类内；接口之外的无体方法必须标 `abstract` 或 `native`。
 - 非 `abstract` 类必须实现继承链上全部 `abstract` 成员与无体接口成员（有默认实现的接口成员隐式继承；§11 的显式委托语法 `override func m() -> InterfaceName` 不支持）；`new` 一个 `abstract` 类是编译错误。
 
@@ -68,6 +69,8 @@ pub shared class SharedSession {
 `super(...)` 是保留调用名，只能写成调用，不能作为值、不能链式访问（没有 `super.run(...)`）。在 regular 方法中，它仅允许出现在当前 `override` 方法体内，并在**直接基类**的同名实例 regular 方法重载中按普通重载规则选择；不再次按可见性过滤候选。init 体也可选调用 `super(...)`，候选仅为直接基类 init 重载，不要求调用或限制调用次数。static/global/proxy 体及非 override regular 方法中均非法。
 
 override 方法的固定泛型参数按当前声明序隐式转发，源码调用点不写显式泛型；含泛型可变参数包的 super 转发为编译错误。`super` 绕过 wrapper 派发链，BIL 只生成 `fn(..super)`（§15.5）。
+
+**super init 实参的编译期 cast**：init 体内的 `super(...)` 经重载解析选定基类 init 后，前端对每个实参生成到该 init **形参声明类型**的 cast 指令（如 `Leaf` 实参 cast 到 `Node` 形参，落编译器生成的临时变量）再调用——构造重载的 ranking 只发生在语义期，运行期不再承担选择；VM 侧对 `fn(..super)` 的 init 重匹配按**可赋值性**进行（与 `new` 路径同口径：子类实参命中基类形参、`null` 命中可空形参），引用类型 upcast 不改写运行期 typeid，值类型窄化/装箱由该 cast 在调用点落定。
 
 ### 9.3 构造函数（`init`）
 
@@ -98,9 +101,34 @@ pub class Point {
 
 `init` 不能声明为 `async`（任何 init 都不允许是 async 的）。
 
-**默认构造**：未声明任何显式 `init` 的类型隐含一个零参公有构造函数（默认构造），`new T()` 经它完成构造——全部字段初始化为其默认值：声明处带初始化器的取初始化器，否则取该类型的零值。一旦声明任意显式 `init`，默认构造不再隐含，零参构造必须显式书写。
+**默认构造**：未声明任何显式 `init` 的类型隐含一个零参公有构造函数（默认构造），`new T()` 经它完成构造——字段取声明处初始化器。一旦声明任意显式 `init`，默认构造不再隐含，零参构造必须显式书写。默认构造（以及任何构造路径）同时受下面的字段定值赋值规则约束。
 
-**默认构造的链式**：隐式/合成零参构造恒先完成基类初始化再应用本类字段初始化器——直接基类有零参 `init`（含基类被合成的情形）时，构造体头部先 `super()`，再按声明序应用本类字段初始化器；`C : B : A` 链上按 A→B→C 顺序全部生效。显式 `init` 里的 `super(...)` 维持可选显式调用（§9.2.2）。
+**字段定值赋值（DA，P18/S2）**：所有实体（值类型与对象同规则）的实例字段在分配后语义上视为**未赋值**（不再有「无初始化器取零值」的兜底）。非 `Nullable` 的实例字段必须满足三选一：
+
+1. 带声明初始化器（编译器合成 `..init.field.<名>`，在任何 init 体之前由实际类型的 `..init.wrapper` 调用——构造进入 init 体时已赋值）；或
+2. 在 `init` 里被显式赋值（`init(_ -> x)` 参数映射算赋值；经 setter 的属性赋值同样算）；或
+3. 字段类型是 `Nullable\<T\>`（含 `T?`）。
+
+检查全部是**前端静态检查**（编译器不设 VM 哨兵），检查点覆盖每条构造路径：
+
+- **每个显式 init 重载的每条路径出口**——块尾与中途裸 `return` 都是出口；if/switch 取全分支交集，while/for 循环体可能零次执行（体内赋值不计入出口），do-while 取体尾，try/catch 取交集再叠 finally 并集。某条出口仍有未赋值的非空字段即编译错误。
+- **super 与继承字段**：init 体内显式调用了 `super(...)` 时，基类闭包字段由基类 init 担保（基类 init 自身已过检），本 init 只对本类声明的字段负责；**不调 `super` 时**，基类无初始值的非空字段计入本 init 的义务——子类可以直接给可见（`pub`/`protected`）的基类字段赋值来满足（RangeEnumerator/异常子类先例），无法满足时报编译错误并引导调 `super(...)`。新 init 原则下基类字段的**声明初始值**已由 `..init.wrapper` 缝合，与此正交。
+- **抽象类**自身不可构造，其未赋值非空字段不在声明点报错，义务转移给具体子类的 init（按上一条处理）。
+- **无 init 类型**（从未声明 init）：声明点不报错（仅声明/抽象使用合法），零参 `new T()` 使用点要求不存在无初始值非空字段，否则编译错误。
+- **无 init 的 enum struct**：固定 case 走默认零参构造，存在无初始值非空字段时在 case 声明点报错。
+- 边界（不做 DA，保持既定零值/空值语义）：数组元素（native 魔法，`getAtIndex` 返回 `T?`、越界读得 null）；`ext` 实例字段（模块化附加槽，宿主 init 不应被迫感知）；仅 `get` 无 `set` 的访问器字段（无写入通道，规范本就不允许其携带初始值）；内建类型声明的字段（如 `core.Exception.message`——子类 init 可直接赋值，不强制）；全局/静态字段（初始值由 `..globals.init` 承载，局部变量另有局部 DA）；标量零值（`ZeroOf`/`i32()` 等内建零值语义不变）。泛型参数类型的字段（`var v: T`）按**非空悲观**计入义务——要豁免须显式写 `T?`。
+
+**构造顺序（新 init 原则，§9.7 配套）**：`new T(...)` 的执行序固定为
+
+1. **分配**：实例存储分配并零填充（含继承闭包全部字段槽；override 字段不新增槽）；
+2. **`..init.wrapper`**：VM 只调用**实际类型**（分配类型）的 `..init.wrapper`，它由前端完成全部缝合——先安装继承闭包（基→本）的全部 wrapper（本类与基类的 Entity/Field/Method 应用，含基类未被 override 方法的 Method wrapper；§14.9 重申的同定义 Entity 应用按派生覆盖去重），再按基→本、声明序调用继承闭包全部 `..init.field.<名>`（每个带声明初始值的实例字段一个；字段 override 时虚派发选中最高派生实现，同一槽只写一次）。字段初始值因此**早于任何基类 init 体**落地；
+3. **init 链**：用户显式 `super(...)` + `init(_ -> x)` 参数映射（映射覆盖初始值）+ 用户 init 体。
+
+用户不调 `super()` 时基类**用户 init 体**不跑，但基类字段初始值与基类 wrapper 已被 `..init.wrapper` 缝合。此时基类**无初始值的非空字段**按 DA 规则计入子类 init 的义务（见上）：子类 init 必须自己给它们赋值，或调 `super(...)` 把义务交还基类 init。属性（带 setter 的字段）的初始值经 setter 应用（`..init.field.*` 内 `set.field` 自动走 setter；访问器被 override 时随虚派发）；仅 get 无 set 的字段无法携带初始值（编译错误）。基类 init 体读取字段时读到的是初始值而非零值；若该字段（或实体）带 wrapper，读取命中已安装的 wrapper 链。
+
+**默认构造的链式**：隐式/合成零参构造的构造体仅含 `super()`（直接基类有零参 `init`——含基类被合成的情形——时）——基类用户 init 体的链式调用仍由逐环 `super()` 保证（`C : B : A` 链上按 A→B→C 顺序）；字段初始值与 wrapper 安装不再依赖该链（由第 2 步一次性缝合）。显式 `init` 里的 `super(...)` 维持可选显式调用（§9.2.2）。
+
+**全局与静态字段初始值**：顶层全局字段（`var`/`const`）与类型的 `static` 字段的声明初始值由编译器合成的 `..globals.init` 全局 fn 承载（体内按文件序+声明序 `set.field.static`），VM 在 singleton 初始化（§8.7 companion/全局 cell）之后、`main` 之前同步执行。带 wrapper 的全局/静态字段不在此列——其初值随 cell/companion 的 `init` 求值（§14.3/§8.7）。
 
 ### 9.4 属性（getter/setter）
 
@@ -170,5 +198,7 @@ pub class Apple : Fruit like pear {
     // 将 Fruit 接口的实现委托给 pear 字段
 }
 ```
+
+委托目标字段的类型可以是类，也可以是接口；接口类型字段签名匹配即成立（允许抽象成员），转发调用在运行时对字段值虚派发。
 
 ---

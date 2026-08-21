@@ -222,7 +222,9 @@ namespace RigiCompiler
             // Array\<T\> 索引运算符（§13.2，S8c 索引绑定的内建目标——P3 读绑
             // getAtIndex/写绑 setAtIndex，P4b 直发 §13.6 get.array/set.array
             // 不走 invoke）：vargs/kwargs 体内视角（Array\<...\>）的元素访问
-            // 闭环（`nums[0]`/`options[0].key`）；无体——内建特权指令承载语义
+            // 闭环（`nums[0]`/`options[0].key`）；无体——内建特权指令承载语义。
+            // Q6：getAtIndex 返回类型此处先置 T 占位，SymbolGraph 构造末尾
+            // 回填为驻留的 Nullable\<T\>（索引读取一律返回 T?）
             var arrayElementT = ArrayDefinition.GenericParameters[0];
             var arrayGetAtIndex = new MethodSymbol("getAtIndex", MethodKind.Operator,
                 owner: ArrayDefinition, returnType: arrayElementT)

@@ -23,9 +23,11 @@ namespace RigiCompiler.Tests
             TestNameLookupContexts();
             TestInitMapping();
             TestInheritance();
+            TestInheritanceF2();
             TestModifierLegality();
             TestContagion();
             TestFieldClosures();
+            TestInstantiationFillIn();
             TestSharedSafetyGates();
             TestGenericConstraints();
             TestExtRegistration();
@@ -38,6 +40,8 @@ namespace RigiCompiler.Tests
             TestAccessorDeclarations();
             TestOverrideModifiers();
             TestDeclarationSiteAccess();
+            TestSignatureLeak();
+            TestSignatureLeakFields();
             TestConversionOperators();
             TestEnumerateInRangeShape();
             TestOperatorNameWhitelist();
@@ -52,11 +56,14 @@ namespace RigiCompiler.Tests
             TestNamespaceSegmentPriority();
             TestInterfaceFieldDeclaration();
             TestDuplicateInterfaceImplementation();
+            TestConflictingInterfaceDefaults();
             TestStaticOperatorDeclaration();
             TestNamedImportResolution();
+            TestNamedImportFunctionAndField();
             TestNamedGenericImport();
             TestEnumCaseStructure();
             TestLikeDelegation();
+            TestLayoutCycles();
             TestFreeze();
             return TestHarness.Summary("DeclarationResolver");
         }
@@ -448,6 +455,114 @@ namespace RigiCompiler.Tests
                 "Circular interface inheritance involving 'B'");
         }
 
+        // ===== F2：继承子句填入点（V-C）+ 继承可见性单调性（V5）=====
+        private static void TestInheritanceF2()
+        {
+            TestHarness.Section("P2 Inheritance Fill-In & Monotonicity (F2)");
+
+            // V-C：构造基类显式 extends 界（probe c5）——登记后延至
+            // GenericConstraintChecker 之后收口（用户约束 Bound 彼时就绪）
+            var (c5, _) = ResolveUnit(
+                "open class Animal { }\n" +
+                "open class Cage\\<T extends Animal> { }\n" +
+                "class BadCage : Cage\\<i32> { }\n");
+            CheckP2Error("V-C 基类子句显式约束", c5,
+                "Type argument 'i32' does not satisfy the 'Extends Animal' constraint of 'T'");
+
+            // V-C：implements 子句同门
+            var (c5i, _) = ResolveUnit(
+                "open class Animal { }\n" +
+                "interface IHold\\<T extends Animal> { }\n" +
+                "class Bad implements IHold\\<i32> { }\n");
+            CheckP2Error("V-C implements 子句显式约束", c5i,
+                "Type argument 'i32' does not satisfy the 'Extends Animal' constraint of 'T'");
+
+            // V-Cb：构造基类静态字段闸门（probe c5b）
+            var (c5b, _) = ResolveUnit(
+                "open class SGate\\<T> { static var s: T? }\n" +
+                "class Local { }\n" +
+                "class DGate : SGate\\<Local> { }\n");
+            CheckP2Error("V-Cb 基类子句静态字段闸门", c5b,
+                "Global or static field 's' must have a shared-safe type");
+
+            // 合法对照：实参满足约束 / 实参含自身泛型参数跳过 / 非构造基类
+            var (ok1, _) = ResolveUnit(
+                "open class Animal { }\n" +
+                "class Dog : Animal { }\n" +
+                "open class Cage\\<T extends Animal> { }\n" +
+                "class GoodCage : Cage\\<Dog> { }\n" +
+                "open class Sub\\<T extends Animal> : Cage\\<T> { }\n");
+            CheckNoErrors("构造基类实参合法（含 GP 实参跳过）", ok1);
+
+            // V5：pub 类继承私有 open 基类（probe p22c，CS0060 式）
+            var (v5a, _) = ResolveUnit(
+                "open class SecretBase { }\n" +
+                "pub class Exposed : SecretBase { }\n");
+            CheckP2Error("V5 pub 类继承私有基类", v5a,
+                "Inconsistent accessibility: base class 'SecretBase' is less accessible " +
+                "than class 'Exposed'");
+
+            // V5：pub 类 implements 私有接口（probe p22a 声明侧，CS0061 式）
+            var (v5b, _) = ResolveUnit(
+                "interface ITaste { func privTaste(): i32\n }\n" +
+                "pub class Cage implements ITaste { }\n");
+            CheckP2Error("V5 pub 类 implements 私有接口", v5b,
+                "Inconsistent accessibility: base interface 'ITaste' is less accessible " +
+                "than class 'Cage'");
+
+            // V5：接口继承私有接口同门
+            var (v5c, _) = ResolveUnit(
+                "interface PrivI { }\n" +
+                "pub interface IChild : PrivI { }\n");
+            CheckP2Error("V5 pub 接口继承私有接口", v5c,
+                "Inconsistent accessibility: base interface 'PrivI' is less accessible " +
+                "than interface 'IChild'");
+
+            // V5：internal 派生 + private 基类（internal 高于 private 同拦截）
+            var (v5d, _) = ResolveUnit(
+                "open class SecretBase { }\n" +
+                "internal class Exposed : SecretBase { }\n");
+            CheckP2Error("V5 internal 派生 private 基类", v5d,
+                "Inconsistent accessibility: base class 'SecretBase' is less accessible " +
+                "than class 'Exposed'");
+
+            // 合法对照：同文件私有基类 + 私有派生、pub + pub、internal 同级、
+            // 构造基类（实参可见性不管——泄漏点归签名/字段闸）
+            var (ok2, _) = ResolveUnit(
+                "open class PrivBase { }\n" +
+                "class PrivDerived : PrivBase { }\n" +
+                "pub open class PubBase { }\n" +
+                "pub class PubDerived : PubBase { }\n" +
+                "internal open class IntBase { }\n" +
+                "internal class IntDerived : IntBase { }\n");
+            CheckNoErrors("继承单调性合法对照", ok2);
+
+            // 复审 fx_inh_mono2：单调性递归构造基类实参（Box\<Hidden\>
+            // 的泄漏点是实参 Hidden，修复前只比定义级静默通过）
+            var (fx2, _) = ResolveUnit(
+                "pub open class Box\\<T> { pub var v: T\n pub init(_ -> v) }\n" +
+                "class Hidden { pub init()\n }\n" +
+                "pub class HBox : Box\\<Hidden> { pub init() { super(new Hidden()) } }\n");
+            CheckP2Error("V5 构造基类实参递归（fx_inh_mono2）", fx2,
+                "Inconsistent accessibility: base class 'Hidden' is less accessible " +
+                "than class 'HBox'");
+            // 实参含自身泛型参数不递归误报（Sub\<T\> : Box\<T\>）
+            var (fx2ok, _) = ResolveUnit(
+                "pub open class Box\\<T> { pub var v: T\n pub init(_ -> v) }\n" +
+                "pub open class Sub\\<T> : Box\\<T> { pub init() { super(default) } }\n");
+            CheckNoErrors("构造基类 GP 实参不误报", fx2ok);
+
+            // 单调性报错不拒绝：继承图照常填充（下游成员检查不级联误诊）
+            var (v5e, _) = ResolveUnit(
+                "open class SecretBase { pub init()\n pub open func n(): i32 { return 1 } }\n" +
+                "pub class Exposed : SecretBase { }\n");
+            TestHarness.CheckTrue("单调性违规基类仍入图",
+                ReferenceEquals(
+                    (GlobalType(v5e, "Exposed").BaseType!.ConstructedFrom
+                        ?? GlobalType(v5e, "Exposed").BaseType!),
+                    GlobalType(v5e, "SecretBase")));
+        }
+
         // ===== 子任务 3：修饰符合法性 =====
         private static void TestModifierLegality()
         {
@@ -462,8 +577,7 @@ namespace RigiCompiler.Tests
             TestHarness.CheckSemanticError("wrapper 显式 rich", u3.Diagnostics,
                 "'rich' is implied by the wrapper declaration and must not be written");
             var (u4, _) = ResolveUnit("shared interface I { }\n");
-            TestHarness.CheckSemanticError("shared interface", u4.Diagnostics,
-                "'shared' cannot be applied to interface");
+            CheckNoErrors("shared interface 合法（A2）", u4);
             var (u5, _) = ResolveUnit("shared struct S { }\n");
             TestHarness.CheckSemanticError("shared 非 rich struct", u5.Diagnostics,
                 "'shared' struct must also be 'rich'");
@@ -614,6 +728,121 @@ namespace RigiCompiler.Tests
                 "struct BadG { var p: Pair\\<LocalUser> }\n");
             TestHarness.CheckSemanticError("非 rich struct 泛型实参展开 local object", u11.Diagnostics,
                 "Non-rich struct 'BadG' cannot hold object field 'p' (via generic argument of 'Pair')");
+        }
+
+        // ===== 子任务 4c：泛型填入点隐式限制检查（g4「最悲观假设」框架）=====
+        //
+        // 每次填入泛型实参（此处：P2 字段/形参/返回类型标注），对构造类型
+        // 自身重跑声明侧因泛型参数而跳过的检查（GenericConstraints 同通道
+        // 设施）：a. 非 rich struct 字段闭包（g4 本体）；b. shared 持有者
+        // 闭包；c. 静态字段 shared-safe 闸门；d. async 闸门 2/3；连同 P2
+        // 此前不查的显式 extends 界一并收口。含未代入 GP 的构造仍跳过。
+        private static void TestInstantiationFillIn()
+        {
+            TestHarness.Section("P2 Instantiation Fill-In Limits (§3.1.1/§3.6, bug g4)");
+
+            const string prelude =
+                "class LocalUser { }\n" +
+                "shared class SharedUser { }\n" +
+                "struct Wrap\\<T> { var v: T }\n";
+
+            // g4 本体：非 rich struct 经实参持有 Object
+            var (u1, _) = ResolveUnit(prelude + "class H { var w: Wrap\\<LocalUser> }\n");
+            TestHarness.CheckSemanticError("非 rich struct 经实参持 Object", u1.Diagnostics,
+                "Non-rich struct 'Wrap' cannot hold object field 'v' " +
+                "(via type argument of 'Wrap<LocalUser>')");
+
+            // 反例不误报：值类型实参 / rich struct 持 Object
+            var (ok1, _) = ResolveUnit(prelude +
+                "rich struct RichWrap\\<T> { var v: T }\n" +
+                "class Ok { var a: Wrap\\<i32>\nvar b: RichWrap\\<LocalUser> }\n");
+            CheckNoErrors("值类型实参 / rich 持有者合法", ok1);
+
+            // 嵌套构造：被持有泛型构造自身的闭包违规同样拦截
+            var (u2, _) = ResolveUnit(prelude +
+                "class Outer\\<T> { var o: Wrap\\<T> }\n" +
+                "class H { var h: Outer\\<LocalUser> }\n");
+            TestHarness.CheckSemanticError("嵌套构造字段自身闭包", u2.Diagnostics,
+                "Non-rich struct 'Wrap' cannot hold object field 'v'");
+            var (ok2, _) = ResolveUnit(prelude +
+                "class Outer\\<T> { var o: Wrap\\<T> }\n" +
+                "class H { var h: Outer\\<i32> }\n");
+            CheckNoErrors("嵌套构造值类型实参合法", ok2);
+
+            // 内建构造透明：Box 实参递归到内层用户构造（Box<Wrap<i32>> 合法、
+            // Box<Wrap<LocalUser>> 报错）
+            var (ok3, _) = ResolveUnit(prelude + "class H { var b: Box\\<Wrap\\<i32>> }\n");
+            CheckNoErrors("Box\\<Wrap\\<i32>> 嵌套合法", ok3);
+            var (u3, _) = ResolveUnit(prelude + "class H { var b: Box\\<Wrap\\<LocalUser>> }\n");
+            TestHarness.CheckSemanticError("Box\\<Wrap\\<LocalUser>> 嵌套报错", u3.Diagnostics,
+                "Non-rich struct 'Wrap' cannot hold object field 'v'");
+
+            // b：shared 持有者经实参持 local 字段
+            var (u4, _) = ResolveUnit(
+                "class LocalUser { }\nshared class SharedUser { }\n" +
+                "shared class S\\<T> { var v: T }\n" +
+                "class H { var s: S\\<LocalUser> }\n");
+            TestHarness.CheckSemanticError("shared 持有者经实参持 local", u4.Diagnostics,
+                "'S' is shared and cannot hold local object field 'v' " +
+                "(via type argument of 'S<LocalUser>')");
+            var (ok4, _) = ResolveUnit(
+                "shared class SharedUser { }\n" +
+                "shared class S\\<T> { var v: T }\n" +
+                "class H { var s: S\\<SharedUser> }\n");
+            CheckNoErrors("shared 持有者填 shared 实参合法", ok4);
+
+            // P2 显式 extends 界补齐（此前 P2 不查）：Box\<T extends ValueType>
+            var (u5, _) = ResolveUnit(
+                "class LocalUser { }\nclass H { var b: Box\\<LocalUser> }\n");
+            TestHarness.CheckSemanticError("P2 显式 extends 界检查", u5.Diagnostics,
+                "Type argument 'LocalUser' does not satisfy the 'Extends ValueType' " +
+                "constraint of 'T'");
+
+            // c：静态字段 shared-safe 闸门（声明侧含 GP 跳过，填入点收口）
+            var (u6, _) = ResolveUnit(
+                "class LocalUser { }\n" +
+                "class SC\\<T> { static var s: T? }\n" +
+                "class H { var x: SC\\<LocalUser> }\n");
+            TestHarness.CheckSemanticError("静态字段闸门经实参收口", u6.Diagnostics,
+                "Global or static field 's' must have a shared-safe type");
+            var (ok5, _) = ResolveUnit(
+                "shared class SharedUser { }\n" +
+                "class SC\\<T> { static var s: T? }\n" +
+                "class H { var x: SC\\<SharedUser> }\n");
+            CheckNoErrors("静态字段闸门填 shared 实参合法", ok5);
+
+            // d：async 闸门 2/3 经实参收口（声明侧 GP 跳过的部分）
+            var (u7, _) = ResolveUnit(
+                "class LocalUser { }\n" +
+                "class AC\\<T> { async func f(x: T) { } }\n" +
+                "class H { var c: AC\\<LocalUser> }\n");
+            TestHarness.CheckSemanticError("async 闸门 2 经实参收口", u7.Diagnostics,
+                "Parameter 'x' of async function 'f' must be a shared-safe type: " +
+                "'LocalUser' (via instantiation 'AC<LocalUser>')");
+            var (u8, _) = ResolveUnit(
+                "class LocalUser { }\n" +
+                "class AR\\<T> { async func g(): T { } }\n" +
+                "class H { var c: AR\\<LocalUser> }\n");
+            TestHarness.CheckSemanticError("async 闸门 3 经实参收口", u8.Diagnostics,
+                "Return type 'LocalUser' of async function 'g' must be a shared-safe type");
+            var (ok6, _) = ResolveUnit(
+                "shared class SharedUser { }\n" +
+                "class AC\\<T> { async func f(x: T): T { } }\n" +
+                "class H { var c: AC\\<SharedUser> }\n");
+            CheckNoErrors("async 签名填 shared 实参合法", ok6);
+
+            // 含未代入 GP 的构造仍跳过（声明体内，外层代入后再查）
+            var (ok7, _) = ResolveUnit(prelude + "class G\\<T> { var w: Wrap\\<T> }\n");
+            CheckNoErrors("声明体内含 GP 构造跳过", ok7);
+
+            // (定义, 实参) 驻留对单次填入去重：两个同型字段只报一条
+            var (u9, _) = ResolveUnit(prelude +
+                "class Two\\<X> { var a: Wrap\\<X>\nvar b: Wrap\\<X> }\n" +
+                "class H { var t: Two\\<LocalUser> }\n");
+            var hits = u9.Diagnostics.Diagnostics.Count(d =>
+                d.Message.Contains("Non-rich struct 'Wrap' cannot hold object field 'v'"));
+            TestHarness.CheckTrue("同一 (定义, 实参) 对单次填入只报一条", hits == 1,
+                $"hits={hits}");
         }
 
         // ===== 子任务 5：共享安全闸门（§3.1.1 闸门 1）=====
@@ -1551,6 +1780,119 @@ namespace RigiCompiler.Tests
                 "    pub override func taste(): String { return \"apple-ish\" }\n" +
                 "}\n");
             CheckNoErrors("显式实现优先于委托", explicitFirst);
+
+            // ===== bug O3：like 目标字段为接口类型 =====
+
+            // 接口类型字段：签名匹配即委托（转发体调接口方法，运行时对字段值虚派发）
+            var (ifaceField, _) = ResolveUnit(
+                "pub interface Work { func run(x: i32): i32\n }\n" +
+                "pub class Impl implements Work {\n" +
+                "    pub override func run(x: i32): i32 { return (x + 1) }\n" +
+                "}\n" +
+                "pub class ViaIface implements Work like sink {\n" +
+                "    pub var sink: Work = new Impl()\n" +
+                "}\n");
+            CheckNoErrors("接口类型字段委托豁免未实现诊断", ifaceField);
+
+            // 显式 override 优先于接口字段 like 转发：无诊断
+            var (ifaceExplicit, _) = ResolveUnit(
+                "pub interface Work {\n" +
+                "    func run(x: i32): i32\n" +
+                "    func tag(): String\n" +
+                "}\n" +
+                "pub class Impl implements Work {\n" +
+                "    pub override func run(x: i32): i32 { return (x + 1) }\n" +
+                "    pub override func tag(): String { return \"impl\" }\n" +
+                "}\n" +
+                "pub class ViaIface implements Work like sink {\n" +
+                "    pub var sink: Work = new Impl()\n" +
+                "    pub override func run(x: i32): i32 { return (x - 1) }\n" +
+                "}\n");
+            CheckNoErrors("显式 override 优先于接口字段委托", ifaceExplicit);
+
+            // 接口默认方法场景：字段接口上的默认方法（HasBody）作委托目标合法
+            var (ifaceDefault, _) = ResolveUnit(
+                "pub interface Sink {\n" +
+                "    func greet(): String { return \"hi\" }\n" +
+                "}\n" +
+                "pub interface Greeter { func greet(): String\n }\n" +
+                "pub class Impl implements Sink { }\n" +
+                "pub class ViaDefault implements Greeter like sink {\n" +
+                "    pub var sink: Sink = new Impl()\n" +
+                "}\n");
+            CheckNoErrors("接口默认方法作委托目标", ifaceDefault);
+        }
+
+        // ===== 值类型布局环拒绝（P18/S2 配套，§10）=====
+        private static void TestLayoutCycles()
+        {
+            TestHarness.Section("P2 Value-Type Layout Cycles (§10)");
+
+            // 自包含：直接值字段回指自身
+            var (u1, _) = ResolveUnit(
+                "pub struct Box {\n    pub var next: Box\n    pub init(_ -> next)\n}\n");
+            CheckP2Error("自包含布局环", u1, "Value-type layout cycle: Box -> Box");
+
+            // 互包含：A↔B 只报一条（环路径规范化去重）
+            var (u2, _) = ResolveUnit(
+                "pub struct MutA {\n    pub var b: MutB\n    pub init(_ -> b)\n}\n" +
+                "pub struct MutB {\n    pub var a: MutA\n    pub init(_ -> a)\n}\n");
+            CheckP2Error("互包含布局环", u2, "Value-type layout cycle: MutA -> MutB -> MutA");
+            TestHarness.CheckTrue("同一环只报一条",
+                u2.Diagnostics.Diagnostics.Count(d => d.Severity == DiagnosticSeverity.Error
+                    && d.Message.Contains("Value-type layout cycle")) == 1,
+                string.Join("; ", u2.Diagnostics.Diagnostics.Select(d => d.Message)));
+
+            // 泛型自包含：Node\<T> 的 next: Node\<T>
+            var (u3, _) = ResolveUnit(
+                "pub struct Node\\<T> {\n    pub var next: Node\\<T>\n" +
+                "    pub init(_ -> next)\n}\n");
+            CheckP2Error("泛型自包含布局环", u3, "Value-type layout cycle: Node -> Node");
+
+            // 经泛型实参代入的环：A 内嵌 B\<A>、B\<T> 内嵌 T
+            var (u4, _) = ResolveUnit(
+                "pub struct A {\n    pub var b: B\\<A>\n    pub init(_ -> b)\n}\n" +
+                "pub struct B\\<T> {\n    pub var x: T\n    pub init(_ -> x)\n}\n");
+            CheckP2Error("泛型实参代入布局环", u4, "Value-type layout cycle: A -> B -> A");
+
+            // 三方环：A→B→C→A 只报一条
+            var (u5, _) = ResolveUnit(
+                "pub struct A3 {\n    pub var b: B3\n    pub init(_ -> b)\n}\n" +
+                "pub struct B3 {\n    pub var c: C3\n    pub init(_ -> c)\n}\n" +
+                "pub struct C3 {\n    pub var a: A3\n    pub init(_ -> a)\n}\n");
+            CheckP2Error("三方布局环", u5, "Value-type layout cycle: A3 -> B3 -> C3 -> A3");
+            TestHarness.CheckTrue("三方环只报一条",
+                u5.Diagnostics.Diagnostics.Count(d => d.Severity == DiagnosticSeverity.Error
+                    && d.Message.Contains("Value-type layout cycle")) == 1);
+
+            // enum struct 参与的环
+            var (u6, _) = ResolveUnit(
+                "pub struct S6 {\n    pub var e: E6\n    pub init(_ -> e)\n}\n" +
+                "pub enum struct E6 {\n    pub var s: S6\n    pub init(_ -> s)\n}[A6]\n");
+            CheckP2Error("enum struct 参与布局环", u6, "Value-type layout cycle: E6 -> S6 -> E6");
+
+            // 合法：Nullable 引用打断（rich struct 才能持 Object 分支）
+            var (ok1, _) = ResolveUnit(
+                "pub rich struct Node {\n    pub var next: Node?\n    pub init()\n}\n");
+            CheckNoErrors("Nullable 打断合法", ok1);
+
+            // 合法：class 引用打断
+            var (ok2, _) = ResolveUnit(
+                "pub rich struct S {\n    pub var c: C?\n    pub init()\n}\n" +
+                "pub class C {\n    pub var s: S?\n    pub init()\n}\n");
+            CheckNoErrors("class 引用打断合法", ok2);
+
+            // 合法：泛型实参是引用类型（B\<C\> 的 T=C 不内嵌值）
+            var (ok3, _) = ResolveUnit(
+                "pub rich struct A {\n    pub var b: B\\<C>\n    pub init(_ -> b)\n}\n" +
+                "pub rich struct B\\<T> {\n    pub var x: T?\n    pub init()\n}\n" +
+                "pub class C {\n    pub init()\n}\n");
+            CheckNoErrors("泛型实参为引用类型合法", ok3);
+
+            // 合法：class 自引用字段（引用类型无布局环概念）
+            var (ok4, _) = ResolveUnit(
+                "pub class Linked {\n    pub var next: Linked?\n    pub init()\n}\n");
+            CheckNoErrors("class 自引用合法", ok4);
         }
 
         private static void TestFreeze()
@@ -1725,13 +2067,14 @@ namespace RigiCompiler.Tests
         {
             TestHarness.Section("P2 Override Modifiers");
 
-            // 字段写 override：open/abstract/override 仅普通成员方法
+            // 字段写 override：§9.2.1 字段覆写开闸后归 OverrideChecker——
+            // 无继承同名字段时报「no inherited field to override」
             var (unit, _) = ResolveUnit(
                 "pub class C {\n" +
                 "    override var v: i32\n" +
                 "}\n");
             CheckP2Error("字段写 override", unit,
-                "'open'/'abstract'/'override' can only be applied to member methods");
+                "'v': no inherited field to override");
 
             // static 方法写 override（静态无多态）
             var (unit2, _) = ResolveUnit(
@@ -1794,6 +2137,213 @@ namespace RigiCompiler.Tests
                 "pub class C implements IHidden { }\n");
             CheckP2Error("priv 接口作 implements（跨文件）", unit3,
                 "'IHidden' is inaccessible due to its accessibility level");
+
+            // F1/V-A：构造类型递归——字段类型 Box\<Hidden\> 的实参 Hidden
+            // 跨文件不可见（修复前只查顶层 Box 放行；诊断命名最深不可见者）
+            var (unit4, _) = ResolveUnit(
+                "class Hidden { }\n",
+                "pub open class Box\\<T> {\n" +
+                "    pub var v: T\n" +
+                "}\n" +
+                "pub class C {\n" +
+                "    var b: Box\\<Hidden>\n" +
+                "}\n");
+            CheckP2Error("构造字段类型实参递归（跨文件）", unit4,
+                "'Hidden' is inaccessible due to its accessibility level");
+
+            // F1/V-A：泛型约束边界构造类型同口径递归
+            var (unit5c, _) = ResolveUnit(
+                "class Hidden { }\n",
+                "pub open class Box\\<T> {\n" +
+                "    pub var v: T\n" +
+                "}\n" +
+                "func f\\<T extends Box\\<Hidden>>() { }\n");
+            CheckP2Error("构造约束边界实参递归（跨文件）", unit5c,
+                "'Hidden' is inaccessible due to its accessibility level");
+        }
+
+        // ===== 声明点签名泄漏（bug S5 修复1，SYNTAX §16.1 签名可见性单调性）=====
+        private static void TestSignatureLeak()
+        {
+            TestHarness.Section("P2 Signature Leak");
+
+            // pub 顶层函数返回 priv 类型（同文件也报——泄漏面与是否同文件无关）
+            var (u1, _) = ResolveUnit(
+                "class Hidden { }\n" +
+                "pub func make(): Hidden { return new Hidden() }\n");
+            CheckP2Error("pub 返回 priv 类型（返回位置）", u1,
+                "Inconsistent accessibility: return type 'Hidden' is less accessible " +
+                "than function 'make'");
+
+            // pub 顶层函数参数 priv 类型（参数位置）
+            var (u2, _) = ResolveUnit(
+                "class Hidden { }\n" +
+                "pub func take(h: Hidden) { }\n");
+            CheckP2Error("pub 参数 priv 类型（参数位置）", u2,
+                "Inconsistent accessibility: parameter type 'Hidden' is less accessible " +
+                "than function 'take'");
+
+            // internal 签名出现 priv 类型同样报错
+            var (u3, _) = ResolveUnit(
+                "class Hidden { }\n" +
+                "internal func make(): Hidden { return new Hidden() }\n");
+            CheckP2Error("internal 返回 priv 类型", u3,
+                "Inconsistent accessibility: return type 'Hidden' is less accessible " +
+                "than function 'make'");
+
+            // pub 签名出现 internal 类型（§16.1 访问层级：internal 低于 pub）
+            var (u4, _) = ResolveUnit(
+                "internal class Mod { }\n" +
+                "pub func make(): Mod { return new Mod() }\n");
+            CheckP2Error("pub 返回 internal 类型", u4,
+                "Inconsistent accessibility: return type 'Mod' is less accessible " +
+                "than function 'make'");
+
+            // internal 一致性：internal 签名 + internal 类型合法
+            var (u5, _) = ResolveUnit(
+                "internal class Mod { }\n" +
+                "internal func make(): Mod { return new Mod() }\n");
+            CheckNoErrors("internal 签名 internal 类型合法", u5);
+
+            // priv 签名 + priv 类型合法（同文件私有，不越出文件）
+            var (u6, _) = ResolveUnit(
+                "class Hidden { }\n" +
+                "func make(): Hidden { return new Hidden() }\n");
+            CheckNoErrors("priv 签名 priv 类型合法", u6);
+
+            // pub 类内 pub 成员返回 priv 类型
+            var (u7, _) = ResolveUnit(
+                "class Hidden { }\n" +
+                "pub class C {\n" +
+                "    pub func make(): Hidden { return new Hidden() }\n" +
+                "}\n");
+            CheckP2Error("pub 类 pub 成员返回 priv 类型", u7,
+                "Inconsistent accessibility: return type 'Hidden' is less accessible " +
+                "than function 'make'");
+
+            // priv 类内 pub 成员：有效可见性随宿主为 priv，不检查
+            var (u8, _) = ResolveUnit(
+                "class Hidden { }\n" +
+                "class C {\n" +
+                "    pub func make(): Hidden { return new Hidden() }\n" +
+                "}\n");
+            CheckNoErrors("priv 宿主内 pub 成员不检查", u8);
+
+            // 构造类型实参泄漏（Box\<Hidden\> 报最深的 Hidden）
+            var (u9, _) = ResolveUnit(
+                "pub class Box\\<T> { }\n" +
+                "class Hidden { }\n" +
+                "pub func make(): Box\\<Hidden> { return new Box\\<Hidden>() }\n");
+            CheckP2Error("构造实参泄漏报实参类型", u9,
+                "Inconsistent accessibility: return type 'Hidden' is less accessible " +
+                "than function 'make'");
+
+            // 合法对照：pub 签名全 pub 类型
+            var (u10, _) = ResolveUnit(
+                "pub class Open { }\n" +
+                "pub func make(): Open { return new Open() }\n");
+            CheckNoErrors("pub 签名全 pub 类型合法", u10);
+        }
+
+        // ===== F2：字段/全局变量与属性访问器签名闸门 =====
+        private static void TestSignatureLeakFields()
+        {
+            TestHarness.Section("P2 Signature Leak (fields / accessors, F2)");
+
+            // pub 类内 pub 字段持 priv 类型（字段是泄漏源头门）
+            var (f1, _) = ResolveUnit(
+                "class Hidden { pub init()\n }\n" +
+                "pub class C {\n" +
+                "    pub init()\n" +
+                "    pub var x: Hidden = new Hidden()\n" +
+                "}\n");
+            CheckP2Error("pub 字段持 priv 类型", f1,
+                "Inconsistent accessibility: field type 'Hidden' is less accessible " +
+                "than field 'x'");
+
+            // pub 全局变量持 priv 类型（shared 变体避开闸门 1 噪音）
+            var (f2, _) = ResolveUnit(
+                "shared class HiddenS { pub init()\n }\n" +
+                "pub var g: HiddenS = new HiddenS()\n");
+            CheckP2Error("pub 全局变量持 priv 类型", f2,
+                "Inconsistent accessibility: field type 'HiddenS' is less accessible " +
+                "than field 'g'");
+
+            // internal 字段持 priv 类型同闸
+            var (f3, _) = ResolveUnit(
+                "class Hidden { pub init()\n }\n" +
+                "pub class C {\n" +
+                "    pub init()\n" +
+                "    internal var x: Hidden = new Hidden()\n" +
+                "}\n");
+            CheckP2Error("internal 字段持 priv 类型", f3,
+                "Inconsistent accessibility: field type 'Hidden' is less accessible " +
+                "than field 'x'");
+
+            // 构造字段类型递归（Box\<Hidden\> 报 Hidden）
+            var (f4, _) = ResolveUnit(
+                "pub class Box\\<T> { pub var v: T\n pub init(_ -> v) }\n" +
+                "class Hidden { pub init()\n }\n" +
+                "pub class C {\n" +
+                "    pub init()\n" +
+                "    pub var x: Box\\<Hidden> = new Box\\<Hidden>(new Hidden())\n" +
+                "}\n");
+            CheckP2Error("构造字段类型递归报实参", f4,
+                "Inconsistent accessibility: field type 'Hidden' is less accessible " +
+                "than field 'x'");
+
+            // 访问器：字段 priv 但 getter 显式 pub——getter 单独报错、字段不报
+            var (a1, _) = ResolveUnit(
+                "class Hidden { pub init()\n }\n" +
+                "pub class C {\n" +
+                "    pub init(_ -> x)\n" +
+                "    priv var x: Hidden {\n" +
+                "        pub get\n" +
+                "        pub set\n" +
+                "    }\n" +
+                "}\n");
+            CheckP2Error("priv 字段 pub getter 泄漏", a1,
+                "Inconsistent accessibility: return type 'Hidden' is less accessible " +
+                "than getter 'x'");
+            CheckP2Error("priv 字段 pub setter 泄漏", a1,
+                "Inconsistent accessibility: parameter type 'Hidden' is less accessible " +
+                "than setter 'x'");
+            TestHarness.CheckTrue("priv 字段自身不报字段闸",
+                !a1.Diagnostics.Diagnostics.Any(d =>
+                    d.Message.Contains("less accessible than field 'x'")));
+
+            // pub 字段 + 默认可见性访问器：字段闸与访问器闸各报一次
+            var (a2, _) = ResolveUnit(
+                "class Hidden { pub init()\n }\n" +
+                "pub class C {\n" +
+                "    pub init(_ -> x)\n" +
+                "    pub var x: Hidden {\n" +
+                "        pub get\n" +
+                "        pub set\n" +
+                "    }\n" +
+                "}\n");
+            CheckP2Error("pub 字段默认访问器：字段闸", a2,
+                "less accessible than field 'x'");
+            CheckP2Error("pub 字段默认访问器：getter 闸", a2,
+                "less accessible than getter 'x'");
+
+            // 合法对照：priv 字段持 priv 类型、priv 宿主内 pub 字段、
+            // pub 字段持 pub 类型、无标注字段（推断归 P3 不查）
+            var (ok1, _) = ResolveUnit(
+                "class Hidden { pub init()\n }\n" +
+                "pub class C {\n" +
+                "    pub init()\n" +
+                "    priv var x: Hidden = new Hidden()\n" +
+                "}\n" +
+                "class D {\n" +
+                "    pub init()\n" +
+                "    pub var y: Hidden = new Hidden()\n" +
+                "}\n" +
+                "pub class E {\n" +
+                "    pub init()\n" +
+                "    pub var z: i32 = 0\n" +
+                "}\n");
+            CheckNoErrors("字段闸合法对照", ok1);
         }
 
         // ===== S8f：castTo/castFrom 声明形状（SYNTAX §3.5）=====
@@ -1909,7 +2459,7 @@ namespace RigiCompiler.Tests
                 "    operator compareTo(o: V): i32 { }\n" +
                 "    operator call() { }\n" +
                 "    operator castTo(): i32 { }\n" +
-                "    operator getAtIndex(i: i32): i32 { }\n" +
+                "    operator getAtIndex(i: i32): i32? { }\n" +
                 "}\n");
             CheckNoErrors("白名单内 operator 无诊断", ok);
 
@@ -2104,14 +2654,14 @@ namespace RigiCompiler.Tests
                 "func g(): ns { }\n");
             CheckP2Error("单段命名空间作返回类型", u2, "'ns' is not a type");
 
-            // §15.2 三种形态之外：具名 import 的目标必须是类型
+            // §15.2 三种形态之外：具名 import 的目标必须是类型/顶层函数/全局字段
             var (u3, _) = ResolveUnit(
                 "namespace a.b\n" +
                 "pub class C { }\n",
                 "import a.b\n" +
                 "func h() { }\n");
             CheckP2Error("裸命名空间 import", u3,
-                "Import target 'a.b' is not a type (§15.2)");
+                "Import target 'a.b' is not a type, function or field (§15.2)");
 
             // 正例：具名 import 类型 / 通配 import 命名空间仍合法
             var (ok, _) = ResolveUnit(
@@ -2274,6 +2824,85 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("两接口都进表", GlobalType(ok, "C").Interfaces.Count == 2);
         }
 
+        // ===== bug S3：两接口同签名默认方法冲突（§11）——接口闭包中 ≥2 个
+        // 不同符号的同签名默认方法（HasBody）且类未提供自己的实现 → 类声明点
+        // 编译错误，强制显式 override；真菱形（同一符号经两条路径）放行 =====
+        private static void TestConflictingInterfaceDefaults()
+        {
+            TestHarness.Section("P2 Conflicting Interface Default Methods (bug S3)");
+
+            // 负例：bug S3 本体——A/B 同签名默认 tag()，C 不显式解决冲突
+            var (u1, _) = ResolveUnit(
+                "pub interface A {\n" +
+                "    func id(): i32\n" +
+                "    func tag(): String { return \"A\" }\n" +
+                "}\n" +
+                "pub interface B {\n" +
+                "    func id(): i32\n" +
+                "    func tag(): String { return \"B\" }\n" +
+                "}\n" +
+                "pub class C implements A, B {\n" +
+                "    pub init()\n" +
+                "    pub override func id(): i32 { return 1 }\n" +
+                "}\n");
+            CheckP2Error("双接口同签名默认冲突", u1,
+                "'C': interface default method 'tag' conflicts between 'B' and 'A'");
+
+            // 报错位置在类声明点（接口声明点报会误伤「两接口尚未被同一类
+            // 实现」的正常情况）；上方源码中 class C 声明在第 9 行
+            var span = u1.Diagnostics.Diagnostics.First(d => d.Message.Contains("conflicts between"));
+            TestHarness.CheckTrue("冲突诊断挂在类声明点",
+                span.Span.HasValue && span.Span.Value.Start.line == 9);
+
+            // 正例：接口各自声明同签名默认方法本身合法（未被同一类实现）
+            var (u2, _) = ResolveUnit(
+                "pub interface A { func tag(): String { return \"A\" } }\n" +
+                "pub interface B { func tag(): String { return \"B\" } }\n");
+            CheckNoErrors("未被同一类实现的两接口各自合法", u2);
+
+            // 正例：类显式 override 后通过（双视图派发锁定见
+            // BilVmDispatchTests.TestInterfaceDefaultConflictDualViewDispatch）
+            var (u3, _) = ResolveUnit(
+                "pub interface A { func tag(): String { return \"A\" } }\n" +
+                "pub interface B { func tag(): String { return \"B\" } }\n" +
+                "pub class C implements A, B {\n" +
+                "    pub init()\n" +
+                "    pub override func tag(): String { return \"C\" }\n" +
+                "}\n");
+            CheckNoErrors("显式 override 解决冲突", u3);
+
+            // 正例：真菱形——两条继承路径收到同一符号的默认方法（闭包去重
+            // 后只有一条），不算冲突
+            var (u4, _) = ResolveUnit(
+                "pub interface Base { func tag(): String { return \"base\" } }\n" +
+                "pub interface A : Base { }\n" +
+                "pub interface B : Base { }\n" +
+                "pub class C implements A, B {\n" +
+                "    pub init()\n" +
+                "}\n");
+            CheckNoErrors("真菱形同一默认方法放行", u4);
+
+            // 负例：多层接口继承下的冲突——D 继承 A 与 B（各自的默认方法
+            // 是不同符号），类实现 D 同样冲突
+            var (u5, _) = ResolveUnit(
+                "pub interface A { func tag(): String { return \"A\" } }\n" +
+                "pub interface B { func tag(): String { return \"B\" } }\n" +
+                "pub interface D : A, B { }\n" +
+                "pub class C implements D {\n" +
+                "    pub init()\n" +
+                "}\n");
+            CheckP2Error("多层接口继承下的冲突", u5,
+                "'C': interface default method 'tag' conflicts between 'B' and 'A'");
+
+            // 正例：单接口默认方法照常隐式继承（对照组回归）
+            var (u6, _) = ResolveUnit(
+                "pub interface A { func tag(): String { return \"A\" } }\n" +
+                "pub class C implements A {\n" +
+                "    pub init()\n" +
+                "}\n");
+            CheckNoErrors("单接口默认方法隐式继承", u6);
+        }
+
         // ===== static operator 禁止（静态无多态：使用侧 FindInstanceOperators/
         // FindConversionOperator 只查实例方法，static operator 纯死声明）=====
         private static void TestStaticOperatorDeclaration()
@@ -2348,6 +2977,52 @@ namespace RigiCompiler.Tests
                 ReferenceEquals(
                     GlobalType(ok, "C").Fields.Single(f => f.Name == "f").FieldType,
                     NsOf(ok, "a").Types.Single(t => t.Name == "Foo")));
+        }
+
+        // ===== S4：具名 import 顶层函数/全局字段——导入目标校验放行
+        //（函数同名重载随名字整体导入）；函数名用作类型引用仍拦截
+        // 「not a type」；不存在名字仍 Unresolved import =====
+        private static void TestNamedImportFunctionAndField()
+        {
+            TestHarness.Section("P2 Named Import Function/Field (S4)");
+
+            const string lib =
+                "namespace scene.geom\n" +
+                "pub class Vec2 { }\n" +
+                "pub const axisBoost: i32 = 10\n" +
+                "pub func pickAxis(v: Vec2): i32 { return 0 }\n" +
+                "pub func pickAxis(x: i32, y: i32): i32 { return x }\n";
+
+            // 具名导入顶层函数：校验放行
+            var (fn, _) = ResolveUnit(lib,
+                "import scene.geom.pickAxis\n" +
+                "func use(): i32 { return 0 }\n");
+            CheckNoErrors("具名导入顶层函数无诊断", fn);
+
+            // 具名导入全局 const：校验放行
+            var (cst, _) = ResolveUnit(lib,
+                "import scene.geom.axisBoost\n" +
+                "var x: i32\n");
+            CheckNoErrors("具名导入全局 const 无诊断", cst);
+
+            // {} 列表混合类型/函数/字段（Parser 展开为多条，逐条放行）
+            var (mix, _) = ResolveUnit(lib,
+                "import scene.geom.{Vec2, pickAxis, axisBoost}\n" +
+                "class C { var v: Vec2 }\n");
+            CheckNoErrors("{} 混合导入类型/函数/字段", mix);
+
+            // 函数名用作类型引用：NameResolver 统一拦截「not a type」
+            var (asType, _) = ResolveUnit(lib,
+                "import scene.geom.pickAxis\n" +
+                "var x: pickAxis\n");
+            CheckP2Error("导入函数作类型引用", asType, "'pickAxis' is not a type");
+
+            // 不存在的名字仍 Unresolved import
+            var (missing, _) = ResolveUnit(lib,
+                "import scene.geom.missing\n" +
+                "func use() { }\n");
+            CheckP2Error("导入不存在函数名", missing,
+                "Unresolved import: 'scene.geom.missing'");
         }
 
         // 具名导入泛型类型定义（§15.2）：导入的是定义本身，实参在使用处书写

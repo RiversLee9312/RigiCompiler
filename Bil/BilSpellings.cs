@@ -13,6 +13,16 @@ namespace RigiCompiler.Bil
         // §9.7：实体 wrapper 初始化方法保留名（方法简单名精确匹配）
         public const string InitWrapperMethodName = "..init.wrapper";
 
+        // §9.7：字段初始化器方法保留名族前缀（..init.field.<字段名>）——
+        // 每个带声明初始值的实例字段一个可覆写合成方法；子类同名字段
+        // override 时生成同族 override 版，虚派发选中最高派生实现
+        public const string InitFieldMethodPrefix = "..init.field.";
+
+        // §9.3/§8.4.1：全局（及静态）字段初始化器函数保留名——编译器合成
+        // 的无参 void 全局 fn，main 前由 VM 同步执行（参照 §8.7 companion
+        // 统一设计：静态初值的执行时机归 VM 启动序列）
+        public const string GlobalsInitFunctionName = "..globals.init";
+
         // §13.3：setter 体内直读直写 backing 的保留字段名（不绕 wrapper 链）
         public const string BackingValueFieldName = "..value";
 

@@ -532,14 +532,16 @@ namespace RigiCompiler.Bil
                     break;
 
                 case GetArrayInstruction getArray:
-                    // §13.6：.array<T> 内建形态 TARGET ≡ 元素类型 T；
+                    // §13.6（Q6）：.array<T> 内建形态 TARGET ≡ .nullable<T>
+                    // （索引读取语义上走 getAtIndex，返回 T?；越界得 null）；
                     // 非数组（用户索引运算符）走严格三元组查询
                     var arrayType = VarType(context, getArray.Array);
                     if (arrayType != null && arrayType.StartsWith(".array<"))
                     {
                         var elementType = arrayType.Substring(".array<".Length,
                             arrayType.Length - ".array<".Length - 1);
-                        CheckType(context, VarType(context, getArray.Target), elementType, location,
+                        CheckType(context, VarType(context, getArray.Target),
+                            ".nullable<" + elementType + ">", location,
                             "get.array 目标变量", errors);
                     }
                     else if (arrayType != null)
@@ -2384,9 +2386,13 @@ namespace RigiCompiler.Bil
         // SYNTAX §9.3 构造期一次性赋值）：init 方法（§8.4 以 init 修饰符
         // 标识）体内写实例 const 字段放行；P3 豁免不限字段宿主与函数宿主
         // 一致（init 体内写任意实例 const 字段均放行，含继承的基类字段），
-        // BIL 侧对齐；静态写入（set.field.static）不在豁免内——isInstanceWrite
-        // 由指令形态给出（set.wrapper.field 内层字段必为实例，§21.3 已拦截静态）。
-        // fn 声明查不到时模块已有 §21.2 错误（fn 无对应本地声明），不豁免
+        // BIL 侧对齐。新 init 原则（§9.7 修订）：编译器合成构造期写入方法族
+        // （..init.wrapper / ..init.field.*）体内写实例 const 字段同豁免；
+        // 静态写入（set.field.static）仅编译器合成的 ..globals.init（全局/
+        // 静态字段声明初始值，§8.4.1）豁免，其余静态写入不在豁免内——
+        // isInstanceWrite 由指令形态给出（set.wrapper.field 内层字段必为
+        // 实例，§21.3 已拦截静态）。fn 声明查不到时模块已有 §21.2 错误
+        //（fn 无对应本地声明），不豁免
         private static void VerifyFieldWritable(BilFunctionContext context, string fieldSymbol,
             bool isInstanceWrite, string location, List<BilVerificationError> errors)
         {
@@ -2395,12 +2401,27 @@ namespace RigiCompiler.Bil
             {
                 return;
             }
-            if (isInstanceWrite && IsInitFunction(context))
+            if (isInstanceWrite && (IsInitFunction(context) || IsConstructionWriter(context)))
+            {
+                return;
+            }
+            if (!isInstanceWrite && MethodNameSegment(context.Function.Symbol)
+                    == BilSpellings.GlobalsInitFunctionName)
             {
                 return;
             }
             errors.Add(new BilVerificationError("21.8", location,
                 $"const 字段 \"{fieldSymbol}\" 不得被写入"));
+        }
+
+        // 当前 fn 是否为编译器合成的构造期写入方法（..init.wrapper /
+        // ..init.field.<名>，§9.7）——构造期一次性赋值豁免与 init 同口径
+        private static bool IsConstructionWriter(BilFunctionContext context)
+        {
+            var name = MethodNameSegment(context.Function.Symbol);
+            return name == BilSpellings.InitWrapperMethodName
+                || (name != null && name.StartsWith(BilSpellings.InitFieldMethodPrefix,
+                    StringComparison.Ordinal));
         }
 
         // 当前 fn 是否 init 方法：§8.4 以声明的 init 修饰符标识（init 的

@@ -55,6 +55,7 @@ namespace RigiCompiler.Tests
             ("Lowerer", LowererTests.RunAll, null),
             ("SmartCast", SmartCastTests.RunAll, null),
             ("SemanticsFuzz", SemanticsFuzzTests.RunAll, SemanticsFuzzTests.RunWithArgs),
+            ("StressFuzz", StressFuzzTests.RunAll, StressFuzzTests.RunWithArgs),
             ("DispatchExplainer", DispatchExplainerTests.RunAll, null),
             ("BilVm", BilVmTests.RunAll, null),
             ("BilVmDispatch", BilVmDispatchTests.RunAll, null),
@@ -65,6 +66,7 @@ namespace RigiCompiler.Tests
             ("EscapingValueBlock", EscapingValueBlockTests.RunAll, null),
             ("SeqRouteHint", SeqRouteHintTests.RunAll, null),
             ("EscapingSeqPosition", EscapingSeqPositionTests.RunAll, null),
+            ("E2e", E2eCorpusTests.RunAll, E2eCorpusTests.RunWithArgs),
         };
 
         // 套件数量（对外编号 1..SuiteCount，即注册表顺序）

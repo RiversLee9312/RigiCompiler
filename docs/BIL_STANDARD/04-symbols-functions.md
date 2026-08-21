@@ -400,9 +400,9 @@ volatile
 
 `atomic[$lock]` 不是当前 Rigi 语法或 BIL 标准的一部分，不得出现在标准 BIL 中。
 
-### 9.7 `..init.wrapper`（实体 wrapper 初始化方法）
+### 9.7 `..init.wrapper`（实体 wrapper 初始化方法）与 `..init.field.*`（字段初始化器方法）
 
-编译器为「带有 wrapper 应用、需要在创建时安装 wrapper」的每个实体（class/struct/enum-struct/wrapper 类型本身，或 cell 隐藏子类等合成类型）至多生成**一个**实例方法，保留名：
+编译器为「带有 wrapper 应用、需要在创建时安装 wrapper」或「继承闭包（含自身）存在带声明初始值的实例字段」的每个实体（class/struct/enum-struct/wrapper 类型本身，或 cell 隐藏子类等合成类型）至多生成**一个**实例方法，保留名：
 
 ```text
 ..init.wrapper
@@ -436,11 +436,20 @@ fn(com.example::Service$..init.wrapper(level:.string)@.void) {
 - **可见性 / 修饰符**：`priv` + `compiler-generated`（仿合成 fn 惯例；验证器要求二者均在）；
 - **允许参数**：当 wrapper 应用带 init 实参、或 cell 子类需把字段/局部上 `@W(args)` 的实参传入时，这些值成为本方法的规范序参数；参数名由 frontend 分配（稳定、唯一）；无 init 实参时参数列表可为空；
 - **方法体**：仅允许普通数据/控制流指令，以及 §14.5 的三条 `new.wrapper.*` 指令（安装本实体相关 wrapper）；不得 `new` 本实体（防递归构造约定由 frontend 遵守）；
-- **调用时机（规范注记）**：本方法在实体 **init 之前**由 Middleware/VM **自动调用**；frontend **无法介入**调用时机，也不得在普通用户方法中显式 `invoke` 本方法（验证器可对非合成调用点给出诊断，Middleware 以自动调用为准）。有参时，调用方通过 §14.4 `new.wrapped` 把前缀实参传入构造路径，由运行时转交给本方法。
+- **闭包缝合（新 init 原则）**：类型级 `..init.wrapper` 的体内依次是 ① 继承闭包（基→本）全部 wrapper 安装（本类与基类的 Entity/Field/Method 应用；同 wrapper 定义的 Entity 应用按派生覆盖去重）② 闭包全部 `..init.field.<名>` 的调用（基→本、声明序；同名字段一族只调基类最早声明符号，虚派发选中最高派生实现）。**不生成对基类 `init` 的 super 调用**——基类字段初值与 wrapper 由本缝合覆盖，基类用户 init 体的链式调用仍由用户/合成 init 体内的 `super(...)` 决定（`SYNTAX.md` §9.3）；
+- **调用时机（规范注记）**：本方法在实体 **init 之前**由 Middleware/VM **自动调用**，且只调用**实际类型**（分配类型）的 `..init.wrapper`（不沿继承重找、不重复调用基类的）；frontend **无法介入**调用时机，也不得在普通用户方法中显式 `invoke` 本方法（验证器可对非合成调用点给出诊断，Middleware 以自动调用为准）。有参时，调用方通过 §14.4 `new.wrapped` 把前缀实参传入构造路径，由运行时转交给本方法。
+
+`..init.field.<名>`（字段初始化器方法，新 init 原则）：编译器为每个**带声明初始值的实例字段**（class/struct/enum-struct 同规则）在其声明类型上合成一个保留名族方法——子类字段 `override`（`SYNTAX.md` §9.2.1 字段覆写）时子类生成同族同名方法（写同一基类槽），与基类版本构成 BIL 虚派发族：
+
+```text
+..init.field.<字段名>
+```
+
+规则：返回 `.void` 的**零参实例方法**；`priv` + `compiler-generated`；方法体为该字段的初始值赋值（`set.field`——带 setter 的字段经 setter 应用，§9.4；const 字段的写入豁免见 §21.8）；用户源码不可声明；普通用户方法不得显式 `invoke`（调用点恒为 owner 闭包内各 `..init.wrapper`）。**写入点地位**：`..init.wrapper` / `..init.field.*` 是 §21.8 承认的构造期字段写入点——带声明初始值的字段在实体任何 init 体执行前已完成写入（对 init 体而言「进入时已赋值」）。
 
 **生成职责**：
 
-- 类型声明带 `wrapped(W)`（Entity）或成员字段带 `wrapped(W)`（字段-Value）时，在 owner 类型上合成 `..init.wrapper`，体内按 outer→inner 对每个应用发对应 `new.wrapper.entity` / `new.wrapper.field`；
+- 类型声明带 `wrapped(W)`（Entity）、成员字段带 `wrapped(W)`（字段-Value）、实例方法带 Method wrapper，或继承闭包（含自身）存在带声明初始值的实例字段时，在 owner 类型上合成 `..init.wrapper`；体内按「闭包缝合」条款发 `new.wrapper.*`（基→本、outer→inner）并调用闭包全部 `..init.field.*`；
 - 方法带 Method wrapper 时：静态方法走 §8.7 companion；实例方法在 owner 的 `..init.wrapper` 内发 `new.wrapper.method`（或按 Middleware 约定在方法首次绑定前安装——以 §14.5 指令语义为准，frontend 按应用表发射）；
 - cell 子类（非 singleton）：`value` 字段上每个 `wrapped(W)` 的应用实参提升为 cell 类型 `..init.wrapper` 的参数；`new ..cell..UUID(...)` / `new.wrapped` 在变量初始化点传入这些实参。
 - **cell 子类 init 元数约定**（编译器按「初值是否依赖外界」选择）：

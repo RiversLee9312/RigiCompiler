@@ -127,6 +127,7 @@ namespace RigiCompiler.Tests
             TestEvalOrderGuardEmission();
             TestSiblingScopeLocalUniquification();
             TestCrossFunctionCatchTablePrivate();
+            TestSafeAccessVoidCallEmission();
             TestEnumCaseEmission();
             TestWrapperEntityReadEmission();
             TestWrapperEntityWriteEmission();
@@ -157,6 +158,7 @@ namespace RigiCompiler.Tests
             TestDowngradeViaInterface();
             TestDowngradeExemptionPositions();
             TestInitWrapperTypeLevelEmission();
+            TestInitFieldSynthesisEmission();
             TestInitWrapperCellArgsEmission();
             TestWrapperPlaceVoidCallEmission();
             TestGlobalWrappedFieldEmission();

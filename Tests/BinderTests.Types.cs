@@ -1,4 +1,4 @@
-using System.Linq;
+﻿using System.Linq;
 
 namespace RigiCompiler.Tests
 {
@@ -644,12 +644,12 @@ namespace RigiCompiler.Tests
 
             var (uIdx, bIdx) = BindUnit(
                 "pub interface Indexed {\n" +
-                "    pub operator getAtIndex(index: i32): i32\n" +
+                "    pub operator getAtIndex(index: i32): i32?\n" +
                 "}\n" +
-                "func at\\<T extends Indexed>(xs: T, i: i32): i32 { return xs[i] }\n");
+                "func at\\<T extends Indexed>(xs: T, i: i32): i32? { return xs[i] }\n");
             CheckNoErrors("索引经约束", uIdx);
-            TestHarness.Check("getAtIndex 经有效类型", BoundDescribe.Body(BodyOf(bIdx, "at")),
-                "Body(at, [], [Return(Index(Param(xs,T), Param(i,i32), i32))])");
+            TestHarness.Check("getAtIndex 经有效类型（Q6：Type = i32?）", BoundDescribe.Body(BodyOf(bIdx, "at")),
+                "Body(at, [], [Return(Index(Param(xs,T), Param(i,i32), i32?))])");
 
             var (uFor, bFor) = BindUnitWithStdlib(
                 "func walk\\<T extends core.collections.IEnumerable\\<i32>>(xs: T): i32 {\n" +
@@ -718,9 +718,10 @@ namespace RigiCompiler.Tests
         {
             TestHarness.Section("P3 Dynamic New / Reified Construction");
 
-            // 1. 具化泛型构造：`TResult()` 归口 typeid 构造（值位置）
+            // 1. 具化泛型构造：`TResult()` 归口 typeid 构造（值位置）。
+            // g6（§3.7）：零参 T() 按约束界编译期判定——标量界例外放行
             var (unit, bodies) = BindUnit(
-                "func makeIt\\<TResult>(): TResult { return TResult() }\n");
+                "func makeIt\\<TResult extends i32>(): TResult { return TResult() }\n");
             CheckNoErrors("无诊断（具化泛型构造）", unit);
             TestHarness.Check("具化泛型构造绑定形态",
                 BoundDescribe.Body(BodyOf(bodies, "makeIt")),
@@ -737,7 +738,7 @@ namespace RigiCompiler.Tests
 
             // 2. 语句位置具化构造（产值被丢弃）
             var (unit1b, bodies1b) = BindUnit(
-                "func makeIt\\<TResult>(): TResult { TResult()\nreturn TResult() }\n");
+                "func makeIt\\<TResult extends i32>(): TResult { TResult()\nreturn TResult() }\n");
             CheckNoErrors("无诊断（语句位置具化构造）", unit1b);
             // 结构事实：语句位置与表达式语境同一特殊形态通道——绑定产物
             // Syntax 恒为调用的 path 节点（TryBindSpecialPathCall 归一并对齐）
@@ -792,6 +793,50 @@ namespace RigiCompiler.Tests
                 "    var c = new t(size = 2)\n}\n");
             TestHarness.CheckSemanticError("动态构造具名实参拒绝", unit5.Diagnostics,
                 "P3: named argument 'size' is not supported in dynamic construction");
+
+            // ===== g6（§3.7）：零参 T() 按约束界编译期判定 =====
+            // 7. 无约束 T()：最大基类 = Any，无零参 init → 编译错误
+            var (unit6, _) = BindUnit(
+                "func make\\<T>(): T { return T() }\n");
+            TestHarness.CheckSemanticError("无约束 T() 拒绝", unit6.Diagnostics,
+                "'T()' has no such method: unconstrained type parameter resolves to Any");
+
+            // 8. 值类型界不放行（悲观假设）
+            var (unit7, _) = BindUnit(
+                "pub struct Vec { pub var x: i32\n    pub init(_ -> x) }\n" +
+                "func make\\<T extends Vec>(): T { return T() }\n");
+            TestHarness.CheckSemanticError("值类型界 T() 拒绝", unit7.Diagnostics,
+                "'T()' has no such method: bound 'Vec' has no accessible zero-argument init");
+
+            // 9. class 界无零参 init → 编译错误
+            var (unit8, _) = BindUnit(
+                "pub class NC { pub init(x: i32) { } }\n" +
+                "func make\\<T extends NC>(): T { return T() }\n");
+            TestHarness.CheckSemanticError("界无零参 init 拒绝", unit8.Diagnostics,
+                "'T()' has no such method: bound 'NC' has no accessible zero-argument init");
+
+            // 10. abstract 界拒绝
+            var (unit9, _) = BindUnit(
+                "pub abstract class AB { pub init() { } }\n" +
+                "func make\\<T extends AB>(): T { return T() }\n");
+            TestHarness.CheckSemanticError("abstract 界拒绝", unit9.Diagnostics,
+                "'T()' has no such method: bound 'AB' is abstract");
+
+            // 11. 正例：class 界有可访问零参 init → 放行（标量界例外
+            // 由 BilVmTests.GenericFixes 的运行时用例覆盖）
+            var (unit10, bodies10) = BindUnit(
+                "pub class Foo { pub init() { } }\n" +
+                "func make\\<T extends Foo>(): T { return T() }\n");
+            CheckNoErrors("有零参 init 的 class 界放行", unit10);
+            TestHarness.CheckTrue("放行后仍归口 typeid 构造",
+                ((BoundReturnStatement)BodyOf(bodies10, "make").Body.Statements[0])
+                    .Value is BoundDynamicNewExpression { GenericParameter.Name: "T" });
+
+            // 12. 带实参形态不做静态判定（保持运行期解析）
+            var (unit11, _) = BindUnit(
+                "pub class Box2 { pub var size: i32\n    pub init(_ -> size) }\n" +
+                "func make\\<T extends Box2>(s: i32): T { return T(s) }\n");
+            CheckNoErrors("带实参 T(args) 保持运行期解析", unit11);
         }
     }
 }

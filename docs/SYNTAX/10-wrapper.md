@@ -88,7 +88,7 @@ pub wrapper Logged\<TTarget> {
 - Entity wrapper 至多声明一个泛型参数（恰一个时即 `TTarget` 角色、`self` 的类型来源；零个时 proxy 体内引用 `self` 是编译错误）；Value/Method wrapper 不得声明 wrapper 级泛型参数（proxy 方法自身的泛型参数不受此限）。
 - specific proxy 的形状（参数名/参数类型/返回类型）必须与被代理成员**全等**（wrapper 泛型参数代入后判定；`.proxy.get.<名>`/`.proxy.set.<名>` 的 `value` 参数类型 = 字段类型）；形状不匹配的 specific proxy 是编译错误。四类 wildcard 按上例的 canonical shape 逐参数校验。
 - **get 类别代理不得调用 `inner(...)`。** `.proxy.get.<名>` / `.proxy.get.*` 的 `value` 参数**就是**内层已经算好的结果。get 链是值从内向外的只读变换管线：backing →（用户 getter）→ 内层 `proxy.get` → 外层 `proxy.get` → 使用点；每一环基于 `value` 返回（可能变换后的）新值，不存在「向内传参继续求值」的 inner。这与 set/call/operator 类别不同（它们的 `inner(...)` 是向内的下一环调用）。此禁令是读取路径只读性的设计保证，不是实现缺陷——get 代理因此无法借 inner 向内层发起额外调用或触发写操作，读取路径除 proxy 自身日志类副作用外不改变被读对象状态。BIL 层 `invoke fn(..inner)` 出现在 get 派发上下文中非法（VM 抛异常）。
-- wrapper 实例由 `@W(...)` 应用在**宿主创建时**安装：frontend 为宿主合成 `..init.wrapper`（体内 `new.wrapper.*`，应用实参经该方法参数 / `new.wrapped` 前缀传入；见 `BIL_STANDARD.md` §9.7 / §14.4 / §14.5），Middleware/VM 在实体 init 之前自动调用之，结果写入宿主的 Middleware 合成隐藏存储（命名约定 `BIL_STANDARD.md` §5.3）；此后不可替换（§14.5）。
+- wrapper 实例由 `@W(...)` 应用在**宿主创建时**安装：frontend 为宿主合成 `..init.wrapper`（体内 `new.wrapper.*`，应用实参经该方法参数 / `new.wrapped` 前缀传入；见 `BIL_STANDARD.md` §9.7 / §14.4 / §14.5），Middleware/VM 在实体 init 之前自动调用之，结果写入宿主的 Middleware 合成隐藏存储（命名约定 `BIL_STANDARD.md` §5.3）；此后不可替换（§14.5）。**安装时机与闭包（新 init 原则，§9.3/§9.7 修订）**：VM 只调用**实际类型**的 `..init.wrapper`；它安装**继承闭包全部** wrapper——本类的 Entity/Field/Method 应用 + 基类继承来的全部应用（含基类未被 override 方法的 Method wrapper；§14.9 重申的同定义 Entity 应用按派生覆盖去重、只安装一次）——并在其后调用闭包全部 `..init.field.*`（字段初始值）；两者都**早于任何基类 init 体**。因此基类 init 体/字段初始值表达式里读写字段时，继承来的 wrapper 已安装、读链正常命中（不存在「init 时 wrapper 尚未安装」的窗口）。
 
 ### 14.3 值修饰器（Value Wrapper）
 

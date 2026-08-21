@@ -376,9 +376,13 @@ namespace RigiCompiler
             if (method.IsAsync) modifiers.Add(new BilKeywordModifier(BilKeyword.Async));
             if (method.Kind == MethodKind.Init) modifiers.Add(new BilKeywordModifier(BilKeyword.Init));
             if (method.Kind == MethodKind.Operator) modifiers.Add(new BilOperatorModifier(method.Name));
-            // M109b §9.7/§8.7：..init.wrapper / companion 实例方法 / 静态壳体
-            // 均 compiler-generated（priv/pub 由 Accessibility）
+            // M109b §9.7/§8.7：..init.wrapper / ..init.field.* / companion
+            // 实例方法 / 静态壳体 / ..globals.init 均 compiler-generated
+            // （priv/pub 由 Accessibility）
             if (method.Name == BilSpellings.InitWrapperMethodName
+                || method.Name.StartsWith(BilSpellings.InitFieldMethodPrefix,
+                    StringComparison.Ordinal)
+                || method.Name == BilSpellings.GlobalsInitFunctionName
                 || method.IsCompanionInstance
                 || method.Companion != null)
             {

@@ -33,6 +33,10 @@ namespace RigiCompiler.Tests
             TestType("var c: List\\<List\\<List\\<i32>>>", "List<List<List<i32>>>");
             // 嵌套 + 可空
             TestType("var d: List\\<Map\\<String, i32>>?", "List<Map<String,i32>>?");
+            // g1：实参内嵌可空（? 挂实参）与内外双可空
+            TestType("var f: Map\\<i32?, String?>", "Map<i32?,String?>");
+            TestType("var g: Holder\\<i32?>?", "Holder<i32?>?");
+            TestType("var h: List\\<Map\\<String, i32?>?>", "List<Map<String,i32?>?>");
             // 嵌套泛型 + 初始化表达式
             TestDecl("var e: List\\<List\\<i32>> = null", "List<List<i32>>", "Null");
 
@@ -148,10 +152,11 @@ namespace RigiCompiler.Tests
             var outerElem = decl.TypeAnnotation!.TypeSymbol.symbol.elements[0];
             TestHarness.CheckTrue("外层类型名是 List", outerElem.name == "List");
             TestHarness.CheckTrue("外层泛型实参数为 1", outerElem.generics.Count == 1);
-            var innerElem = outerElem.generics[0].elements[0];
+            var innerElem = outerElem.generics[0].TypeSymbol.symbol.elements[0];
             TestHarness.CheckTrue("内层类型名是 List", innerElem.name == "List");
             TestHarness.CheckTrue("内层泛型实参是 i32",
-                innerElem.generics.Count == 1 && innerElem.generics[0].elements[0].name == "i32");
+                innerElem.generics.Count == 1 &&
+                innerElem.generics[0].TypeSymbol.symbol.elements[0].name == "i32");
             TestHarness.CheckTrue("Initializer Root 存在且已填充",
                 decl.Initializer != null && decl.Initializer.IsAttached);
 

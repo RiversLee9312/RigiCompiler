@@ -1,4 +1,4 @@
-using System.Linq;
+﻿using System.Linq;
 
 namespace RigiCompiler.Tests
 {
@@ -173,10 +173,13 @@ namespace RigiCompiler.Tests
                 "Body(init, [], [ExprStmt(SuperCall(init, [], void))])");
             var cInit = bodies.Single(b => b.Method.Kind == MethodKind.Init
                 && b.Method.Owner?.Name == "C");
-            TestHarness.Check("派生合成体 super 先行、初始化器随后",
+            TestHarness.Check("派生合成体 super-only（初始值在 ..init.field.z）",
                 BoundDescribe.Body(cInit),
-                "Body(init, [], [ExprStmt(SuperCall(init, [], void)); " +
-                "Assign(InstField(z, This(C), i32), Int(9,i32))])");
+                "Body(init, [], [ExprStmt(SuperCall(init, [], void))])");
+            // 字段初始值合成方法（新 init 原则）：C 自带 ..init.field.z
+            TestHarness.CheckTrue("C 合成 ..init.field.z",
+                bodies.Any(b => b.Method.Name == "..init.field.z"
+                    && b.Method.Owner?.Name == "C"));
             // super 命中直接基类的合成 init（符号引用相等）
             var bType = unit.Symbols.GlobalNamespace.Types.Single(t => t.Name == "B");
             var cSuper = (BoundExpressionStatement)cInit.Body.Statements[0];
@@ -223,48 +226,42 @@ namespace RigiCompiler.Tests
                 "}\n" +
                 "class Bag {\n" +
                 "    pub var item: i32\n" +
-                "    pub operator getAtIndex(index: i32): i32 { return item }\n" +
+                "    pub init(_ -> item)\n" +
+                "    pub operator getAtIndex(index: i32): i32? { return item }\n" +
                 "    pub operator setAtIndex(index: i32, element: i32) { item = element }\n" +
                 "}\n" +
                 "class CounterBag {\n" +
                 "    pub var first: Counter\n" +
-                "    pub operator getAtIndex(index: i32): Counter { return first }\n" +
+                "    pub operator getAtIndex(index: i32): Counter? { return first }\n" +
                 "}\n" +
                 "class Matrix {\n" +
                 "    pub var row: Bag\n" +
-                "    pub operator getAtIndex(index: i32): Bag { return row }\n" +
+                "    pub operator getAtIndex(index: i32): Bag? { return row }\n" +
                 "}\n" +
                 "class Holder {\n" +
                 "    pub var bag: Bag\n" +
                 "}\n" +
-                "func make(): Bag { return new Bag() }\n" +
-                "func read(b: Bag, i: i32): i32 { return b[i] }\n" +
+                "func make(): Bag { return new Bag(0) }\n" +
+                "func read(b: Bag, i: i32): i32? { return b[i] }\n" +
                 "func write(b: Bag, i: i32, x: i32) { b[i] = x }\n" +
-                "func bump(b: Bag, i: i32, x: i32) { b[i] += x }\n" +
-                "func segment(h: Holder, i: i32): i32 { return h.bag[i] }\n" +
-                "func fieldAfter(cb: CounterBag): i32 { return cb[0].value }\n" +
-                "func callIndex(i: i32): i32 { return make()[i] }\n" +
-                "func twice(m: Matrix, i: i32, j: i32): i32 { return m[i][j] }\n");
+                "func segment(h: Holder, i: i32): i32? { return h.bag[i] }\n" +
+                "func fieldAfter(cb: CounterBag): i32? { return cb[0]?.value }\n" +
+                "func callIndex(i: i32): i32? { return make()[i] }\n");
             CheckNoErrors("无诊断（索引访问正例）", unit);
-            TestHarness.Check("a[i] 读形态", BoundDescribe.Body(BodyOf(bodies, "read")),
-                "Body(read, [], [Return(Index(Param(b,Bag), Param(i,i32), i32))])");
+            TestHarness.Check("a[i] 读形态（Q6：Type = i32?）", BoundDescribe.Body(BodyOf(bodies, "read")),
+                "Body(read, [], [Return(Index(Param(b,Bag), Param(i,i32), i32?))])");
             TestHarness.Check("a[i] = x 写形态", BoundDescribe.Body(BodyOf(bodies, "write")),
                 "Body(write, [], [Assign(Index(Param(b,Bag), Param(i,i32), i32), " +
                 "Param(x,i32))])");
-            TestHarness.Check("a[i] += x 复合形态", BoundDescribe.Body(BodyOf(bodies, "bump")),
-                "Body(bump, [], [ExprStmt(CompoundAssign(Add, " +
-                "Index(Param(b,Bag), Param(i,i32), i32), Param(x,i32), i32))])");
             TestHarness.Check("a.b[i] 段索引", BoundDescribe.Body(BodyOf(bodies, "segment")),
                 "Body(segment, [], [Return(Index(InstField(bag, Param(h,Holder), Bag), " +
-                "Param(i,i32), i32))])");
-            TestHarness.Check("a[i].b 索引后字段", BoundDescribe.Body(BodyOf(bodies, "fieldAfter")),
-                "Body(fieldAfter, [], [Return(InstField(value, " +
-                "Index(Param(cb,CounterBag), Int(0,i32), Counter), i32))])");
+                "Param(i,i32), i32?))])");
+            TestHarness.Check("a[i]?.b 索引后安全访问", BoundDescribe.Body(BodyOf(bodies, "fieldAfter")),
+                "Body(fieldAfter, [], [Return(SafeAccess(" +
+                "Index(Param(cb,CounterBag), Int(0,i32), Counter?), " +
+                "InstField(value, SafeReceiver(Counter), i32), i32?))])");
             TestHarness.Check("foo()[i] 调用后索引", BoundDescribe.Body(BodyOf(bodies, "callIndex")),
-                "Body(callIndex, [], [Return(Index(Call(make, [], Bag), Param(i,i32), i32))])");
-            TestHarness.Check("a[i][j] 双重索引", BoundDescribe.Body(BodyOf(bodies, "twice")),
-                "Body(twice, [], [Return(Index(Index(Param(m,Matrix), Param(i,i32), Bag), " +
-                "Param(j,i32), i32))])");
+                "Body(callIndex, [], [Return(Index(Call(make, [], Bag), Param(i,i32), i32?))])");
             // 结构性事实：读/写索引的 Operator 符号引用相等（符号图唯一实例）
             var bagType = unit.Symbols.GlobalNamespace.Types.Single(t => t.Name == "Bag");
             var readIndex = (BoundIndexExpression)((BoundReturnStatement)
@@ -278,15 +275,61 @@ namespace RigiCompiler.Tests
                 ReferenceEquals(writeIndex.Operator,
                     bagType.Methods.Single(m => m.Name == "setAtIndex")));
 
+            // Q6 负例（读侧 T? 的空安全后果）：
+            // a[i] += x ——读侧 i32? 无二元运算，复合赋值索引形态编译错误
+            var (unit1b, _) = BindUnit(
+                "class Bag {\n" +
+                "    pub var item: i32\n" +
+                "    pub operator getAtIndex(index: i32): i32? { return item }\n" +
+                "    pub operator setAtIndex(index: i32, element: i32) { item = element }\n" +
+                "}\n" +
+                "func bump(b: Bag, i: i32, x: i32) { b[i] += x }\n");
+            TestHarness.CheckSemanticError("Q6：a[i] += x 读侧可空拒绝", unit1b.Diagnostics,
+                "Cannot assign 'Nullable<i32>' to 'i32'");
+            // a[i].f ——读出的 T? 上直接成员访问编译错误（须 ?.）
+            var (unit1c, _) = BindUnit(
+                "class Counter { pub var value: i32 }\n" +
+                "class CounterBag {\n" +
+                "    pub var first: Counter\n" +
+                "    pub operator getAtIndex(index: i32): Counter? { return first }\n" +
+                "}\n" +
+                "func fieldAfter(cb: CounterBag): i32 { return cb[0].value }\n");
+            TestHarness.CheckSemanticError("Q6：a[i].f 读侧可空拒绝", unit1c.Diagnostics,
+                "cannot be accessed on nullable type");
+            // a[i].f = x ——T? 不是可写 place（同一 nullable 成员拒绝通道）
+            var (unit1d, _) = BindUnit(
+                "class Counter { pub var value: i32 }\n" +
+                "class CounterBag {\n" +
+                "    pub var first: Counter\n" +
+                "    pub operator getAtIndex(index: i32): Counter? { return first }\n" +
+                "}\n" +
+                "func writeField(cb: CounterBag) { cb[0].value = 1 }\n");
+            TestHarness.CheckSemanticError("Q6：a[i].f = x 非可写 place", unit1d.Diagnostics,
+                "cannot be accessed on nullable type");
+            // a[i][j] ——第一重读出 Bag?，第二重索引 nullable 拒绝
+            var (unit1e, _) = BindUnit(
+                "class Bag {\n" +
+                "    pub var item: i32\n" +
+                "    pub operator getAtIndex(index: i32): i32? { return item }\n" +
+                "}\n" +
+                "class Matrix {\n" +
+                "    pub var row: Bag\n" +
+                "    pub operator getAtIndex(index: i32): Bag? { return row }\n" +
+                "}\n" +
+                "func twice(m: Matrix, i: i32, j: i32): i32 { return m[i][j] }\n");
+            TestHarness.CheckSemanticError("Q6：a[i][j] 二重索引 nullable 拒绝", unit1e.Diagnostics,
+                "Cannot index nullable type");
+
             // 表达式底座与调用结果底座
             var (unit2, bodies2) = BindUnit(
                 "class Bag {\n" +
                 "    pub var item: i32\n" +
-                "    pub operator getAtIndex(index: i32): i32 { return item }\n" +
+                "    pub init(_ -> item)\n" +
+                "    pub operator getAtIndex(index: i32): i32? { return item }\n" +
                 "    pub operator setAtIndex(index: i32, element: i32) { item = element }\n" +
                 "}\n" +
                 "class Wrap {\n" +
-                "    pub var bag: Bag\n" +
+                "    pub var bag: Bag = new Bag(0)\n" +
                 "}\n" +
                 "func makeWrap(): Wrap { return new Wrap() }\n" +
                 "func grouped(a: i32, b: i32): String { return (a + b).toString() }\n" +
@@ -302,7 +345,7 @@ namespace RigiCompiler.Tests
                 "Body(callBase, [], [Return(InstField(bag, Call(makeWrap, [], Wrap), Bag))])");
             TestHarness.Check("new X().c 构造底座", BoundDescribe.Body(BodyOf(bodies2, "newBase")),
                 "Body(newBase, [], [Return(InstField(item, " +
-                "InstField(bag, New(Wrap, []), Bag), i32))])");
+                "InstField(bag, New(Wrap, init, []), Bag), i32))])");
             TestHarness.Check("foo()?.bar 调用后 SafeDot",
                 BoundDescribe.Body(BodyOf(bodies2, "safeBase")),
                 "Body(safeBase, [], [Return(SafeAccess(Call(maybeBag, [], Bag?), " +
@@ -312,14 +355,14 @@ namespace RigiCompiler.Tests
             var (unit3, bodies3) = BindUnit(
                 "class SelfIdx {\n" +
                 "    pub var v: i32\n" +
-                "    pub operator getAtIndex(index: i32): i32 { return v }\n" +
+                "    pub operator getAtIndex(index: i32): i32? { return v }\n" +
                 "    pub operator setAtIndex(index: i32, element: i32) { v = element }\n" +
-                "    pub func readThis(i: i32): i32 { return this[i] }\n" +
+                "    pub func readThis(i: i32): i32? { return this[i] }\n" +
                 "    pub func writeThis(i: i32, x: i32) { this[i] = x }\n" +
                 "}\n");
             CheckNoErrors("无诊断（this 索引）", unit3);
             TestHarness.Check("this[i] 读", BoundDescribe.Body(BodyOf(bodies3, "readThis")),
-                "Body(readThis, [], [Return(Index(This(SelfIdx), Param(i,i32), i32))])");
+                "Body(readThis, [], [Return(Index(This(SelfIdx), Param(i,i32), i32?))])");
             TestHarness.Check("this[i] = x 写", BoundDescribe.Body(BodyOf(bodies3, "writeThis")),
                 "Body(writeThis, [], [Assign(Index(This(SelfIdx), Param(i,i32), i32), " +
                 "Param(x,i32))])");
@@ -335,7 +378,7 @@ namespace RigiCompiler.Tests
             // 无 setAtIndex 写索引
             var (unit5, _) = BindUnit(
                 "class ReadOnly {\n" +
-                "    pub operator getAtIndex(index: i32): i32 { return 0 }\n" +
+                "    pub operator getAtIndex(index: i32): i32? { return 0 }\n" +
                 "}\n" +
                 "func g(r: ReadOnly) { r[0] = 1 }\n");
             TestHarness.CheckSemanticError("无 setAtIndex 写索引", unit5.Diagnostics,
@@ -344,7 +387,7 @@ namespace RigiCompiler.Tests
             // 多参数索引（§13.2 签名固定单 TIndex）：读形态经实参个数检查
             var (unit6, _) = BindUnit(
                 "class Bag {\n" +
-                "    pub operator getAtIndex(index: i32): i32 { return 0 }\n" +
+                "    pub operator getAtIndex(index: i32): i32? { return 0 }\n" +
                 "    pub operator setAtIndex(index: i32, element: i32) { }\n" +
                 "}\n" +
                 "func h(b: Bag, i: i32, j: i32): i32 { return b[i, j] }\n" +
@@ -357,7 +400,7 @@ namespace RigiCompiler.Tests
             // 具名索引实参名字不匹配
             var (unit7, _) = BindUnit(
                 "class Bag {\n" +
-                "    pub operator getAtIndex(index: i32): i32 { return 0 }\n" +
+                "    pub operator getAtIndex(index: i32): i32? { return 0 }\n" +
                 "}\n" +
                 "func k(b: Bag): i32 { return b[wrong = 1] }\n");
             TestHarness.CheckSemanticError("具名索引实参不匹配", unit7.Diagnostics,
@@ -366,7 +409,7 @@ namespace RigiCompiler.Tests
             // nullable receiver 索引
             var (unit8, _) = BindUnit(
                 "class Bag {\n" +
-                "    pub operator getAtIndex(index: i32): i32 { return 0 }\n" +
+                "    pub operator getAtIndex(index: i32): i32? { return 0 }\n" +
                 "}\n" +
                 "func n(b: Bag?): i32 { return b[0] }\n");
             TestHarness.CheckSemanticError("nullable receiver 索引", unit8.Diagnostics,
@@ -375,37 +418,37 @@ namespace RigiCompiler.Tests
             // 索引实参类型不匹配
             var (unit9, _) = BindUnit(
                 "class Bag {\n" +
-                "    pub operator getAtIndex(index: i32): i32 { return 0 }\n" +
+                "    pub operator getAtIndex(index: i32): i32? { return 0 }\n" +
                 "}\n" +
                 "func t(b: Bag, s: String): i32 { return b[s] }\n");
             TestHarness.CheckSemanticError("索引实参类型不匹配", unit9.Diagnostics,
                 "Cannot pass 'String' as 'i32'");
 
-            // void getAtIndex 读索引
+            // void getAtIndex（Q6：P2 声明形状校验拦截——返回必须 T?）
             var (unit10, _) = BindUnit(
                 "class VoidIdx {\n" +
                 "    pub operator getAtIndex(index: i32) { }\n" +
                 "}\n" +
                 "func v(vd: VoidIdx): i32 { return vd[0] }\n");
             TestHarness.CheckSemanticError("void getAtIndex", unit10.Diagnostics,
-                "Method 'getAtIndex' has no result (void) and cannot be used as a value");
+                "Operator 'getAtIndex' must return a nullable type");
 
             // 同参数个数 getAtIndex 重载（S8d）：按索引实参类型 ranking 命中——
             // 两版本返回类型不同，定型结果即命中版本的见证
             var (unit11, bodies11) = BindUnit(
                 "class Multi {\n" +
-                "    pub operator getAtIndex(index: i32): i32 { return 0 }\n" +
-                "    pub operator getAtIndex(index: String): String { return \"s\" }\n" +
+                "    pub operator getAtIndex(index: i32): i32? { return 0 }\n" +
+                "    pub operator getAtIndex(index: String): String? { return \"s\" }\n" +
                 "}\n" +
-                "func o(m: Multi): i32 { return m[0] }\n" +
-                "func p(m: Multi): String { return m[\"x\"] }\n");
+                "func o(m: Multi): i32? { return m[0] }\n" +
+                "func p(m: Multi): String? { return m[\"x\"] }\n");
             CheckNoErrors("getAtIndex 重载 ranking（S8d）", unit11);
             TestHarness.Check("i32 索引命中 i32 版",
                 BoundDescribe.Body(BodyOf(bodies11, "o")),
-                "Body(o, [], [Return(Index(Param(m,Multi), Int(0,i32), i32))])");
+                "Body(o, [], [Return(Index(Param(m,Multi), Int(0,i32), i32?))])");
             TestHarness.Check("String 索引命中 String 版",
                 BoundDescribe.Body(BodyOf(bodies11, "p")),
-                "Body(p, [], [Return(Index(Param(m,Multi), Str(\"x\",String), String))])");
+                "Body(p, [], [Return(Index(Param(m,Multi), Str(\"x\",String), String?))])");
 
             // 索引非值（命名空间）
             var (unit12, _) = BindUnit(
@@ -424,17 +467,17 @@ namespace RigiCompiler.Tests
 
             var (unit, bodies) = BindUnit(
                 "namespace ns\n" +
-                "class Box {\n" +
+                "pub class Box {\n" +
                 "    pub var field: i32\n" +
                 "    pub init() { field = 0 }\n" +
                 "}\n" +
-                "class Nested {\n" +
+                "pub class Nested {\n" +
                 "    pub var value: i32\n" +
                 "    pub init(v: i32) { value = v }\n" +
                 "}\n" +
-                "class Bag {\n" +
+                "pub class Bag {\n" +
                 "    pub var first: Nested\n" +
-                "    pub operator getAtIndex(index: i32): Nested { return first }\n" +
+                "    pub operator getAtIndex(index: i32): Nested? { return first }\n" +
                 "    pub init(n: Nested) { first = n }\n" +
                 "}\n" +
                 "pub func make(): Box { return new Box() }\n" +
@@ -444,17 +487,18 @@ namespace RigiCompiler.Tests
                 "    pub static func make(): Box { return new Box() }\n" +
                 "}\n",
                 "func fieldAfter(): i32 { return ns.make().field }\n" +
-                "func indexAfter(): i32 { return ns.makeBag()[0].value }\n" +
+                "func indexAfter(): i32? { return ns.makeBag()[0]?.value }\n" +
                 "func typeStatic(): i32 { return ns.Factory.make().field }\n" +
                 "func assignEnd() { ns.make().field = 9 }\n");
             CheckNoErrors("无诊断（容器 Call 后缀链）", unit);
             TestHarness.Check("ns.make().field 调用后字段",
                 BoundDescribe.Body(BodyOf(bodies, "fieldAfter")),
                 "Body(fieldAfter, [], [Return(InstField(field, Call(make, [], Box), i32))])");
-            TestHarness.Check("ns.makeBag()[0].value 调用后索引/字段",
+            TestHarness.Check("ns.makeBag()[0]?.value 调用后索引/安全访问",
                 BoundDescribe.Body(BodyOf(bodies, "indexAfter")),
-                "Body(indexAfter, [], [Return(InstField(value, " +
-                "Index(Call(makeBag, [], Bag), Int(0,i32), Nested), i32))])");
+                "Body(indexAfter, [], [Return(SafeAccess(" +
+                "Index(Call(makeBag, [], Bag), Int(0,i32), Nested?), " +
+                "InstField(value, SafeReceiver(Nested), i32), i32?))])");
             TestHarness.Check("ns.Factory.make().field 类型容器静态调用后字段",
                 BoundDescribe.Body(BodyOf(bodies, "typeStatic")),
                 "Body(typeStatic, [], [Return(InstField(field, Call(make, [], Box), i32))])");
@@ -475,21 +519,22 @@ namespace RigiCompiler.Tests
                 "}\n" +
                 "class Bag {\n" +
                 "    pub var first: Nested\n" +
-                "    pub operator getAtIndex(index: i32): Nested { return first }\n" +
+                "    pub operator getAtIndex(index: i32): Nested? { return first }\n" +
                 "    pub init(n: Nested) { first = n }\n" +
                 "}\n" +
                 "func make(): Box { return new Box() }\n" +
                 "func makeBag(): Bag { return new Bag(new Nested(1)) }\n" +
                 "func bareField(): i32 { return make().field }\n" +
-                "func bareIndex(): i32 { return makeBag()[0].value }\n");
+                "func bareIndex(): i32? { return makeBag()[0]?.value }\n");
             CheckNoErrors("无诊断（裸名调用底座保留）", unitBase);
             TestHarness.Check("make().field 底座保留",
                 BoundDescribe.Body(BodyOf(bodiesBase, "bareField")),
                 "Body(bareField, [], [Return(InstField(field, Call(make, [], Box), i32))])");
-            TestHarness.Check("makeBag()[0].value 底座保留",
+            TestHarness.Check("makeBag()[0]?.value 底座保留",
                 BoundDescribe.Body(BodyOf(bodiesBase, "bareIndex")),
-                "Body(bareIndex, [], [Return(InstField(value, " +
-                "Index(Call(makeBag, [], Bag), Int(0,i32), Nested), i32))])");
+                "Body(bareIndex, [], [Return(SafeAccess(" +
+                "Index(Call(makeBag, [], Bag), Int(0,i32), Nested?), " +
+                "InstField(value, SafeReceiver(Nested), i32), i32?))])");
 
             // ===== 负例 =====
             var (unitNeg1, _) = BindUnit(

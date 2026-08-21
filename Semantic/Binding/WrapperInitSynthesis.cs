@@ -6,7 +6,16 @@ using RigiCompiler.Bil;
 namespace RigiCompiler
 {
     // M109b：`..init.wrapper` 合成（BIL §9.7 / §14.5）+ 静态 companion
-    // （§8.7）。
+    // （§8.7）。新 init 原则（§9.3/§9.7 修订）：
+    // - 每个带声明初始值的实例字段合成一个可覆写的 `..init.field.<名>`
+    //   方法（class/struct/enum struct 同规则不退化）；子类同名字段
+    //   override 时生成同族 override 版（写同一基类槽），虚派发自动选中
+    //   最高派生实现。
+    // - `..init.wrapper` 本体 = 安装**继承闭包全部** wrapper（本类与基类
+    //   的 Entity/Field/Method 应用，含基类未被 override 方法的 Method
+    //   wrapper）+ 依次调用闭包全部 `..init.field.*`（基→本、声明序）。
+    //   不再生成对基类的 super(...)——前端完成全部缝合；VM 只调实际类型
+    //   的 ..init.wrapper。
     // 类型级：Entity/字段-Value/实例 Method 应用 → owner 上至多一个
     // priv+compiler-generated 实例 void 方法，体内按 outer→inner 发
     // new.wrapper.*；应用实参在本 fn 体内绑定（允许 this；无参）。
@@ -17,20 +26,29 @@ namespace RigiCompiler
     // Value wrapper 字段的 cell 存储挂 companion 实例（init 里构造）。
     internal static class WrapperInitSynthesis
     {
-        // 类型级合成入口（BindingDriver 阶段 1.7）：遍历用户类型声明
+        // 类型级合成入口（BindingDriver 阶段 1.7）：两阶段——先为全部类型
+        // 合成 ..init.field.*（基类先于派生类，闭包缝合与 wrapper 实参的
+        // 声明点绑定都依赖基类产物已就位），再逐类型合成 ..init.wrapper
         public static void SynthesizeForTypes(BindEnvironment env)
         {
+            var declarations = new Dictionary<TypeSymbol, (ASTNode Syntax, FileContext FileCtx)>();
             foreach (var file in env.Unit.SourceFiles)
             {
                 var fileCtx = env.Declarations.FileContextOf(file);
                 foreach (var decl in file.Declarations)
                 {
-                    WalkTypes(decl, fileCtx, env);
+                    CollectTypes(decl, fileCtx, env, declarations);
                 }
+            }
+            var processed = new HashSet<TypeSymbol>();
+            foreach (var type in declarations.Keys.ToList())
+            {
+                ProcessType(type, declarations, processed, env);
             }
         }
 
-        private static void WalkTypes(ASTNode node, FileContext fileCtx, BindEnvironment env)
+        private static void CollectTypes(ASTNode node, FileContext fileCtx, BindEnvironment env,
+            Dictionary<TypeSymbol, (ASTNode Syntax, FileContext FileCtx)> declarations)
         {
             switch (node)
             {
@@ -38,16 +56,38 @@ namespace RigiCompiler
                     or EnumStructDeclarationASTNode or WrapperDeclarationASTNode:
                     var type = env.Declarations.SymbolOf(node) as TypeSymbol
                         ?? throw new CompilerInternalException("P1 未登记类型符号");
-                    TrySynthesizeForType(type, node, fileCtx, env);
+                    declarations[type] = (node, fileCtx);
                     foreach (var member in MembersOf(node))
-                        WalkTypes(member, fileCtx, env);
+                        CollectTypes(member, fileCtx, env, declarations);
                     return;
                 case InterfaceDeclarationASTNode iface:
                     // interface 自身不合成实例 ..init.wrapper（无实例构造）
                     foreach (var member in iface.Members)
-                        WalkTypes(member, fileCtx, env);
+                        CollectTypes(member, fileCtx, env, declarations);
                     return;
             }
+        }
+
+        // 单类型处理（基类优先递归 + 幂等）：companion（§8.7）→ 阶段 A
+        // （..init.field.*）→ 阶段 B（..init.wrapper 闭包缝合）
+        private static void ProcessType(TypeSymbol type,
+            Dictionary<TypeSymbol, (ASTNode Syntax, FileContext FileCtx)> declarations,
+            HashSet<TypeSymbol> processed, BindEnvironment env)
+        {
+            if (!processed.Add(type)) return;
+            if (type.BaseType is { } baseType)
+            {
+                var baseDefinition = baseType.ConstructedFrom ?? baseType;
+                if (declarations.TryGetValue(baseDefinition, out _)
+                    && !processed.Contains(baseDefinition))
+                {
+                    ProcessType(baseDefinition, declarations, processed, env);
+                }
+            }
+            var (syntax, fileCtx) = declarations[type];
+            EnsureStaticCompanion(type, syntax, fileCtx, env, processed);
+            SynthesizeInitFieldMethods(type, syntax, fileCtx, env);
+            SynthesizeInitWrapper(type, syntax, fileCtx, env);
         }
 
         private static List<ASTNode> MembersOf(ASTNode node) => node switch
@@ -60,32 +100,112 @@ namespace RigiCompiler
             _ => throw new CompilerInternalException("非类型声明: " + node.GetType().Name),
         };
 
-        public static void TrySynthesizeForType(TypeSymbol type, ASTNode syntax,
+        // ===== 阶段 A：..init.field.<名> 合成（§9.7 字段初始化器方法）=====
+
+        // 本类型每个带声明初始值的实例字段一个 priv+compiler-generated
+        // 实例 void 方法，体 = this.<存储槽> = 初值（声明点静态语境绑定，
+        // 复用 BindFieldInitializer）。override 字段写基类槽
+        // （OverriddenField）；其余字段存储槽即自身。幂等
+        private static void SynthesizeInitFieldMethods(TypeSymbol type, ASTNode syntax,
             FileContext fileCtx, BindEnvironment env)
         {
-            // 静态成员 companion（§8.7；每类一个、嵌套、共享，先于本实体
-            // ..init.wrapper，以便 companion 上再合成其自身的 init/..init.wrapper）
-            EnsureStaticCompanion(type, syntax, fileCtx, env);
+            if (type.Methods.Any(m => m.Name.StartsWith(BilSpellings.InitFieldMethodPrefix,
+                    StringComparison.Ordinal)))
+            {
+                return;
+            }
+            foreach (var (field, variable) in CollectInstanceFieldsWithInitializers(
+                syntax, type, env))
+            {
+                var storage = field.OverriddenField ?? field;
+                if (storage.FieldType is not { } fieldType || fieldType is ErrorTypeSymbol)
+                {
+                    continue;   // 毒化静默
+                }
+                var value = BindFieldInitializer(field, variable, fileCtx, env);
+                if (value == null) continue;    // 绑定失败（诊断已报）/泛型参数类型跳过
+                var method = new MethodSymbol(
+                    BilSpellings.InitFieldMethodPrefix + field.Name, MethodKind.Regular,
+                    owner: type, returnType: null)
+                {
+                    Accessibility = Accessibility.Private,
+                    HasBody = true,
+                    IsSynthetic = true,
+                };
+                type.Methods.Add(method);
+                var assignment = new BoundAssignmentStatement(variable,
+                    new BoundFieldAccessExpression(variable,
+                        new BoundThisExpression(variable,
+                            SymbolLookup.AsSelfConstructed(type, env.Unit.Symbols)!),
+                        storage, fieldType),
+                    value);
+                env.SyntheticCellBodies.Add(new BoundFunctionBody(method,
+                    Array.Empty<LocalSymbol>(), new BoundBlock(variable,
+                        new List<BoundStatement> { assignment })));
+            }
+        }
 
+        // 当前类型声明处带初始化器的实例字段（声明序）。仅 get 无 set
+        // 无法经 setter 应用（P2 已诊断，防御跳过）。class/struct/
+        // enum struct 同规则；其余类型（interface/wrapper）空表。
+        // 自 BindingDriver 迁入（阶段 1.7/1.8 共用）
+        public static List<(FieldSymbol Field, VariableDeclarationASTNode Variable)>
+            CollectInstanceFieldsWithInitializers(ASTNode typeNode, TypeSymbol type,
+                BindEnvironment env)
+        {
+            var fields = new List<(FieldSymbol, VariableDeclarationASTNode)>();
+            if (typeNode is not (ClassDeclarationASTNode or StructDeclarationASTNode
+                or EnumStructDeclarationASTNode))
+            {
+                return fields;
+            }
+            foreach (var member in MembersOf(typeNode))
+            {
+                if (member is VariableDeclarationASTNode { Initializer: not null } variable
+                    && env.Declarations.SymbolOf(variable) is FieldSymbol field
+                    && !field.IsStatic && ReferenceEquals(field.Owner, type)
+                    && !(field.Getter != null && field.Setter == null))
+                {
+                    fields.Add((field, variable));
+                }
+            }
+            return fields;
+        }
+
+        // ===== 阶段 B：..init.wrapper 闭包缝合（§9.7 修订）=====
+
+        // 本体 = 继承闭包（基→本）全部 wrapper 安装（Entity 按定义去重、
+        // 派生应用覆盖同名基类应用——§14.9 重申同实参）+ 闭包全部
+        // ..init.field.* 调用（按字段名去重——同名字段只剩 override 一
+        // 族（双侧带初始值的 hiding 已被 P2 拒绝），调基类最早声明符号、
+        // 虚派发选中最高派生实现）。无 super(...)：基类字段初值与 wrapper
+        // 已由本缝合覆盖。闭包无任何工作时（无 wrapper、无字段初始值）
+        // 不合成。幂等
+        private static void SynthesizeInitWrapper(TypeSymbol type, ASTNode syntax,
+            FileContext fileCtx, BindEnvironment env)
+        {
             if (type.Methods.Any(m => m.Name == BilSpellings.InitWrapperMethodName))
                 return;
 
-            var hasEntityOrFieldOrInstance = type.AppliedWrappers.Count > 0
-                || type.Fields.Any(f => !f.IsStatic && f.AppliedWrappers.Count > 0)
-                || type.Methods.Any(m => !m.IsStatic && m.AppliedWrappers.Count > 0
-                    && m.Name != BilSpellings.InitWrapperMethodName);
-            if (!hasEntityOrFieldOrInstance) return;
-
-            // 类型级：..init.wrapper 无参数（实参在体内求值）
-            var initWrapper = NewInitWrapperMethod(type, Array.Empty<ParameterSymbol>());
-            type.Methods.Add(initWrapper);
-
-            var ctx = new BindContext(initWrapper, fileCtx, type);
-            var scope = new Scope(null);
+            var closure = InheritanceClosure(type);
             var statements = new List<BoundStatement>();
+            var scope = new Scope(null);
+            var initWrapper = NewInitWrapperMethod(type, Array.Empty<ParameterSymbol>());
+            var ctx = new BindContext(initWrapper, fileCtx, type);
 
-            // Entity 应用（outer → inner = 声明序）
-            foreach (var app in type.AppliedWrappers)
+            // Entity 应用（基→本；同 wrapper 定义去重，派生应用原位替换）
+            var entityApps = new List<WrapperApplication>();
+            foreach (var definition in closure)
+            {
+                foreach (var app in definition.AppliedWrappers)
+                {
+                    var existing = entityApps.FindIndex(a =>
+                        ReferenceEquals(a.WrapperDefinition, app.WrapperDefinition));
+                    if (existing >= 0) entityApps[existing] = app;
+                    else entityApps.Add(app);
+                }
+            }
+            foreach (var app in entityApps)
             {
                 var args = BindInitArgsInScope(app, scope, ctx, env, syntax);
                 if (args == null) continue;
@@ -93,42 +213,91 @@ namespace RigiCompiler
                     BoundNewWrapperKind.Entity, app.Wrapper, null, args));
             }
 
-            // 实例字段 Value 应用
-            foreach (var field in type.Fields)
+            foreach (var definition in closure)
             {
-                if (field.IsStatic) continue;
-                foreach (var app in field.AppliedWrappers)
+                // 实例字段 Value 应用
+                foreach (var field in definition.Fields)
                 {
-                    var args = BindInitArgsInScope(app, scope, ctx, env, syntax);
-                    if (args == null) continue;
-                    statements.Add(new BoundNewWrapperStatement(app.Syntax ?? syntax,
-                        BoundNewWrapperKind.Field, app.Wrapper, field, args));
+                    if (field.IsStatic) continue;
+                    foreach (var app in field.AppliedWrappers)
+                    {
+                        var args = BindInitArgsInScope(app, scope, ctx, env, syntax);
+                        if (args == null) continue;
+                        statements.Add(new BoundNewWrapperStatement(app.Syntax ?? syntax,
+                            BoundNewWrapperKind.Field, app.Wrapper, field, args));
+                    }
+                }
+
+                // 实例方法 Method 应用（含继承来的——基类未被 override 方法
+                // 的 wrapper 同样安装到子类实例；companion 实例方法不在本类
+                // Methods 表，由 companion 自身合成覆盖）
+                foreach (var m in definition.Methods)
+                {
+                    if (m.IsStatic || m.Name == BilSpellings.InitWrapperMethodName
+                        || m.Name.StartsWith(BilSpellings.InitFieldMethodPrefix,
+                            StringComparison.Ordinal)) continue;
+                    foreach (var app in m.AppliedWrappers)
+                    {
+                        var args = BindInitArgsInScope(app, scope, ctx, env, syntax);
+                        if (args == null) continue;
+                        statements.Add(new BoundNewWrapperStatement(app.Syntax ?? syntax,
+                            BoundNewWrapperKind.Method, app.Wrapper, m, args));
+                    }
                 }
             }
 
-            // 实例方法 Method 应用（含 companion 实例方法——其 Owner 为 companion，
-            // 不在本 type.Methods；本循环只覆盖原宿主实例方法）
-            foreach (var m in type.Methods)
+            // 字段初值（基→本）：按名字段去重、调基类最早声明的
+            // ..init.field.<名> 符号（虚派发选中最高派生 override）
+            var initFieldCalls = new Dictionary<string, MethodSymbol>();
+            foreach (var definition in closure)
             {
-                if (m.IsStatic || m.Name == BilSpellings.InitWrapperMethodName) continue;
-                foreach (var app in m.AppliedWrappers)
+                foreach (var m in definition.Methods)
                 {
-                    var args = BindInitArgsInScope(app, scope, ctx, env, syntax);
-                    if (args == null) continue;
-                    statements.Add(new BoundNewWrapperStatement(app.Syntax ?? syntax,
-                        BoundNewWrapperKind.Method, app.Wrapper, m, args));
+                    if (!m.Name.StartsWith(BilSpellings.InitFieldMethodPrefix,
+                            StringComparison.Ordinal)) continue;
+                    var fieldName = m.Name.Substring(BilSpellings.InitFieldMethodPrefix.Length);
+                    if (!initFieldCalls.ContainsKey(fieldName))
+                    {
+                        initFieldCalls[fieldName] = m;
+                    }
                 }
+            }
+            if (statements.Count == 0 && initFieldCalls.Count == 0) return;
+
+            type.Methods.Add(initWrapper);
+            foreach (var call in initFieldCalls.Values)
+            {
+                statements.Add(new BoundCallStatement(syntax, call,
+                    new List<BoundExpression>(),
+                    new BoundThisExpression(syntax,
+                        SymbolLookup.AsSelfConstructed(type, env.Unit.Symbols)!)));
             }
 
             env.SyntheticCellBodies.Add(new BoundFunctionBody(initWrapper,
                 Array.Empty<LocalSymbol>(), new BoundBlock(syntax, statements)));
         }
 
+        // 继承闭包（基→本，定义级；内建根/毒化环防御截断）
+        private static List<TypeSymbol> InheritanceClosure(TypeSymbol type)
+        {
+            var chain = new List<TypeSymbol>();
+            var seen = new HashSet<TypeSymbol>();
+            for (var t = type; t != null && t is not ErrorTypeSymbol; t = t.BaseType)
+            {
+                var definition = t.ConstructedFrom ?? t;
+                if (definition.IsBuiltin || !seen.Add(definition)) break;
+                chain.Add(definition);
+            }
+            chain.Reverse();
+            return chain;
+        }
+
         // §8.7：确保声明类有 companion（幂等）。含静态 Method wrapper 或
         // 静态 Value wrapper 字段时创建；迁入方法/字段并合成 companion 的
-        // init（cell 构造）与 ..init.wrapper（Method wrapper 安装）
+        // init（cell 构造）与 ..init.wrapper（Method wrapper 安装）。
+        // companion 自身即时走完阶段 A/B（无基类链、无字段初始值）
         private static void EnsureStaticCompanion(TypeSymbol host, ASTNode syntax,
-            FileContext fileCtx, BindEnvironment env)
+            FileContext fileCtx, BindEnvironment env, HashSet<TypeSymbol> processed)
         {
             var hasWrappedStaticMethod = host.Methods.Any(m => m.IsStatic
                 && m.AppliedWrappers.Count > 0 && m.Companion == null);
@@ -165,7 +334,11 @@ namespace RigiCompiler
 
             // companion 自身 init（cell 构造）与 ..init.wrapper（Method wrapper 安装）
             SynthesizeCompanionInit(info, syntax, env);
-            TrySynthesizeForType(companion, syntax, fileCtx, env);
+            if (processed.Add(companion))
+            {
+                SynthesizeInitFieldMethods(companion, syntax, fileCtx, env);
+                SynthesizeInitWrapper(companion, syntax, fileCtx, env);
+            }
         }
 
         // companion 类型：宿主类的嵌套类（canonical 命名空间::外层...companion），
@@ -504,6 +677,24 @@ namespace RigiCompiler
             }
             return new BoundFunctionBody(shell, Array.Empty<LocalSymbol>(),
                 new BoundBlock(syntax, statements));
+        }
+
+        // P18（字段定值赋值分析 DA）预留口径：字段是否带声明初始值 ==
+        // 其声明类型的 Methods 上存在 ..init.field.<名>（字段 override 时
+        // 沿继承闭包同族可查——最高派生实现即实际写入者）；
+        // ..init.wrapper 体内对 ..init.field.* 的调用即该字段在 wrapper
+        // 阶段（任何 init 体之前）的赋值点，DA 可据此把带初始值字段判定
+        // 为「构造进入时已赋值」
+        public static bool HasFieldInitializerMethod(TypeSymbol declaringType, string fieldName)
+        {
+            var wanted = BilSpellings.InitFieldMethodPrefix + fieldName;
+            for (var t = declaringType; t != null && t is not ErrorTypeSymbol; t = t.BaseType)
+            {
+                var definition = t.ConstructedFrom ?? t;
+                if (definition.IsBuiltin) break;
+                if (definition.Methods.Any(m => m.Name == wanted)) return true;
+            }
+            return false;
         }
 
         internal static MethodSymbol NewInitWrapperMethod(TypeSymbol owner,

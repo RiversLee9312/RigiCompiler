@@ -27,7 +27,7 @@
             if (decl.TypeAnnotation != null)
             {
                 declaredType = TypeReferences.Resolve(decl.TypeAnnotation, decl.Span, ctx.Frame,
-                    env);
+                    env, ctx);
             }
             // 初始化表达式先于变量入作用域绑定（var x = x 报未定义而非自引用）
             var init = decl.Initializer == null
@@ -40,6 +40,17 @@
                 env.Error(decl.Span,
                     $"Variable '{decl.Name}' requires a type annotation or an initializer");
                 return null;
+            }
+            // 推断类型使用点检查（SYNTAX §16.1，bug S5 修复2；F1/V-A 起
+            // 递归口径）：无标注 const/var 的推断类型同样是使用点——泄漏在
+            // 声明推断点报一次，下游成员访问不重复报（级联控制；显式标注
+            // 路径已由 TypeReferences.Resolve 检查——按语法上有无标注区分，
+            // 标注解析失败（毒化 null）落入推断时不得重报）。F1 起与
+            // ExpressionDispatcher 统一收口共用驻留去重：init 表达式经收口
+            // 已报时本挂点静默（兜底非 dispatcher 来源，不重复报）
+            if (decl.TypeAnnotation == null)
+            {
+                UseSiteAccessibility.CheckInferredType(type, decl.Span, ctx, env);
             }
             // 带访问器局部须显式类型标注（同字段规则——推断与访问器不共存）
             if ((decl.Getter != null || decl.Setter != null) && decl.TypeAnnotation == null)
@@ -238,6 +249,10 @@
             {
                 // 分量类型 = 构造实参（S9a 放行：实参可为泛型参数，引用相等身份）
                 var componentType = constructed.TypeArguments![i];
+                // 推断分量类型使用点检查（§16.1，bug S5 修复2，同局部推断
+                // 口径；F1 起递归口径 + 与统一收口驻留去重——init 表达式
+                // Pair\<Hidden, ...\> 经收口递归命中已报时本挂点静默）
+                UseSiteAccessibility.CheckInferredType(componentType, node.Span, ctx, env);
                 var name = node.DestructureNames[i];
                 if (scope.DeclaresHere(name))
                 {
@@ -303,7 +318,7 @@
             // void 调用落成 BoundCallStatement，非 void 调用仍是表达式语句
             if (expression is PathExpressionASTNode path
                 && CallForm.TryGet(path, out var calleeSegments, out var callArguments,
-                    out var genericArguments))
+                    out var genericArguments, out var containerTypeArguments))
             {
                 // 特殊 CallForm（enum-case / 具化构造）先于普通函数调用；
                 // 产值被丢弃，与非常规调用表达式语句一致
@@ -315,7 +330,7 @@
                     return special == null ? null : new BoundExpressionStatement(syntax, special);
                 }
                 var binding = CallFacility.BindCall(syntax, calleeSegments, callArguments!, scope,
-                    ctx, env, genericArguments);
+                    ctx, env, genericArguments, containerTypeArguments);
                 if (binding == null) return null;
                 // M88：inner(...) 语句位置（含 void）；#27⑦ 携带泛型包透传
                 if (binding.IsInnerCall)
@@ -338,7 +353,7 @@
                 {
                     return new BoundCallStatement(syntax, binding.Method, binding.Arguments,
                         binding.Receiver, binding.TypeArguments, binding.GenericPack,
-                        binding.IsIndirect, binding.IndirectTarget);
+                        binding.IsIndirect, binding.IndirectTarget, binding.HostTypeArguments);
                 }
                 if (binding.Receiver != null)
                 {
@@ -350,7 +365,7 @@
                 return new BoundExpressionStatement(syntax, new BoundCallExpression(path,
                     binding.Method, binding.Arguments, binding.ResultType!,
                     binding.TypeArguments, binding.GenericPack, binding.IsIndirect,
-                    binding.IndirectTarget));
+                    binding.IndirectTarget, binding.HostTypeArguments));
             }
             // M105：非 CallForm 尾 Call 分流——`(act)()` / `(getHandler())()` /
             // `handlers[0]()` 等值上的 void 间接调用在语句位置落 BoundCallStatement

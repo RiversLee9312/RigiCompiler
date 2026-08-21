@@ -74,9 +74,10 @@
             {
                 foreach (var generic in element.generics)
                 {
-                    var resolved = env.Names.ResolveSymbolPath(generic, ctx.Frame.FileCtx,
-                        ctx.Frame.DeclaringType, ctx.Frame.Method, allowImports: true,
-                        reportErrors: false, span: null);
+                    // 实参是完整类型引用（g1）：静默试探同走 ResolveTypeReference
+                    var resolved = env.Names.ResolveTypeReference(generic, ctx.Frame.FileCtx,
+                        ctx.Frame.DeclaringType, ctx.Frame.Method, span: null,
+                        reportErrors: false);
                     if (resolved == null || resolved is ErrorTypeSymbol) return null;
                 }
             }
@@ -258,16 +259,17 @@
                 return null;
             }
             // 纯调用形态 → 直接调用（静态/全局）或实例调用（首段为值）。
-            // S9b：显式泛型实参随调用形态提取（CallForm out 参数）
+            // S9b：显式泛型实参随调用形态提取（CallForm out 参数）；
+            // g7：多段头段实参为容器类型构造实参（containerTypeArguments）
             if (CallForm.TryGet(node, out var calleeSegments, out var callArguments,
-                out var genericArguments))
+                out var genericArguments, out var containerTypeArguments))
             {
                 // 特殊 CallForm（enum-case / 具化构造）先于普通函数调用
                 var special = TryBindSpecialPathCall(node, calleeSegments, callArguments!,
                     genericArguments, scope, ctx, env, forAssignment, out var specialHandled);
                 if (specialHandled) return special;
                 var binding = CallFacility.BindCall(node, calleeSegments, callArguments!, scope,
-                    ctx, env, genericArguments);
+                    ctx, env, genericArguments, containerTypeArguments);
                 if (binding == null) return null;
                 // M88：inner(...) 占位；#27⑦ 携带泛型包透传
                 if (binding.IsInnerCall)
@@ -308,21 +310,31 @@
                 }
                 return new BoundCallExpression(node, binding.Method, binding.Arguments,
                     binding.ResultType!, binding.TypeArguments, binding.GenericPack,
-                    binding.IsIndirect, binding.IndirectTarget);
+                    binding.IsIndirect, binding.IndirectTarget, binding.HostTypeArguments);
             }
             if (node.Head.Name == "super")
             {
                 env.Error(node.Span, "P3: 'super' must be used only as super(...)");
                 return null;
             }
-            // 非调用形态的泛型实参（`x\<T>` 无调用后缀/链上段带实参）——
-            // S9b 仍归口（调用实参已由调用形态消费；wrapper 段带显式泛型
-            // 实参同此拦截，泛型 wrapper 的实参代入归 proxy 烘焙）
-            if (node.Head.GenericArguments.Count > 0
-                || node.Segments.Any(s => s.GenericArguments.Count > 0))
+            // 非调用形态的泛型实参——g7 收窄：头段实参 + 多段 + 首段非值
+            // → 构造类型容器路径（`Box\<i32>.zero` / `Box\<i32>.wrap(8).v`），
+            // 交下方容器路径绑定；单段裸实参（`x\<T>` 无调用后缀）、值上的
+            // 头段实参与链中段实参仍归口（调用实参已由调用形态消费；
+            // wrapper 段带显式泛型实参同此拦截，泛型 wrapper 的实参代入归
+            // proxy 烘焙）
+            var headTypeArguments = node.Head.GenericArguments.Count > 0
+                ? node.Head.GenericArguments : null;
+            if (headTypeArguments != null || node.Segments.Any(s => s.GenericArguments.Count > 0))
             {
-                env.Error(node.Span, "P3: generic type arguments are not supported yet (S9)");
-                return null;
+                var headIsValue = headTypeArguments != null
+                    && IsValueHead(node.Head.Name!, scope, ctx, env);
+                if (node.Segments.Count == 0 || headIsValue
+                    || node.Segments.Any(s => s.GenericArguments.Count > 0))
+                {
+                    env.Error(node.Span, "P3: generic type arguments are not supported yet (S9)");
+                    return null;
+                }
             }
             // ===== S8c 泛化链折叠：首段按值解析 → 首段后缀折叠 → 实例链 =====
             // 首段按值解析（switch 占位/局部/参数/裸名字段——单段与多段共用）。
@@ -560,10 +572,14 @@
             {
                 return BindContainerCallChain(node, callSegIndex, scope, ctx, env, forAssignment);
             }
-            // 容器部分段名序列（首段名 + 成员前各段名；Colon 起段不属容器）
+            // 容器部分段名序列（首段名 + 成员前各段名；Colon 起段不属容器）；
+            // g7：头段泛型实参随段名还原（Box\<i32>.zero → 容器 Box\<i32>）
             var segments = new List<string> { node.Head.Name! };
             segments.AddRange(node.Segments.Take(memberIndex + 1).Select(s => s.Name));
-            var container = MemberLookup.ResolveContainer(segments, node.Span, ctx.Frame, env);
+            var container = MemberLookup.ResolveContainer(segments, node.Span, ctx.Frame, env,
+                segmentGenerics: headTypeArguments == null
+                    ? null
+                    : new IReadOnlyList<TypeReferenceASTNode>?[] { headTypeArguments });
             if (container == null) return null;
             var member = MemberLookup.FindMember(container, segments[^1]);
             var pathText = string.Join(".", segments);
@@ -571,10 +587,13 @@
             {
                 case FieldSymbol memberField:
                     // forAssignment 仅当字段是全路径最终 place（无 Colon 剩余段
-                    // 且成员段无后缀）——Colon 剩余段场景字段是宿主读取
+                    // 且成员段无后缀）——Colon 剩余段场景字段是宿主读取。
+                    // g7：构造类型容器（Box\<i32\>）作静态字段的代入宿主——
+                    // 声明类型中的宿主泛型参数按构造实参替换（zero: T → i32）
                     var fieldValue = BindFieldReference(node, memberField, ctx, env,
                         forAssignment && colonIndex < 0
-                            && node.Segments[memberIndex].Suffixes.Count == 0);
+                            && node.Segments[memberIndex].Suffixes.Count == 0,
+                        staticHostType: container as TypeSymbol);
                     if (fieldValue == null) return null;
                     var foldedMember = FoldSuffixes(node, fieldValue,
                         node.Segments[memberIndex].Suffixes, 0,
@@ -733,6 +752,22 @@
             return resolved is ErrorTypeSymbol ? null : resolved;
         }
 
+        // 首段是否值符号（g7 泛型实参分流的「首段非值」判定）：局部/参数/
+        // 裸名字段任一命中即为值——值上的头段泛型实参无构造落点，保持
+        // 「not supported yet」归口（与 TryBindEnumCasePath 的值优先
+        // 探测同序）
+        private static bool IsValueHead(string name, Scope scope, BindContext ctx,
+            BindEnvironment env)
+        {
+            if (scope.LookupSymbol(name) != null) return true;
+            if (!ctx.Frame.IsDefaultValueContext
+                && ctx.Frame.Method.Parameters.Any(p => p.Name == name))
+            {
+                return true;
+            }
+            return MemberLookup.FindField(name, ctx.Frame, env) != null;
+        }
+
         // 容器路径上成员段 Call 后缀（#20②）：`ns.make().field` /
         // `Type.factory()[0].x`——CallFacility 绑定调用（与纯调用形态同池），
         // 调用结果作 receiver，折叠该段剩余后缀后 BindInstanceChain 续链。
@@ -748,7 +783,9 @@
             }
             var binding = CallFacility.BindCall(node, calleeSegments, callSeg.Suffixes[0].Arguments!,
                 scope, ctx, env,
-                callSeg.GenericArguments.Count > 0 ? callSeg.GenericArguments : null);
+                callSeg.GenericArguments.Count > 0 ? callSeg.GenericArguments : null,
+                containerTypeArguments: node.Head.GenericArguments.Count > 0
+                    ? node.Head.GenericArguments : null);
             if (binding == null) return null;
             if (binding.IsInnerCall)
             {
@@ -809,12 +846,16 @@
         // 实例字段以宿主（method.Owner）为 receiver 链取构造实参；全局/
         // static 字段声明类型不含泛型参数，原样直通；实例字段在实例上下文
         // 补 this（静态上下文诊断）。
+        // g7：staticHostType 为构造类型容器路径（`Box\<i32>.zero`）的代入
+        // 宿主——静态字段声明类型中的宿主泛型参数按容器构造实参替换
+        // （zero: T → i32）；null = 旧行为（当前 this/宿主）。
         // S8e（SYNTAX §16.1/§9.4.1）：使用点访问控制——带访问器字段读需
         // getter 存在且可见（写由赋值侧检查 setter，forAssignment 直达时
         // 跳过读侧检查），字段自身可见性不再检查（由访问器承载）；
         // 无访问器字段读写字位均检查字段可见性
         public static BoundExpression? BindFieldReference(ASTNode node, FieldSymbol field,
-            BindContext ctx, BindEnvironment env, bool forAssignment = false)
+            BindContext ctx, BindEnvironment env, bool forAssignment = false,
+            TypeSymbol? staticHostType = null)
         {
             if (field.Getter != null || field.Setter != null)
             {
@@ -840,7 +881,7 @@
             // Frame.Method 是隐藏类 $$call（恒实例）——代入宿主与 this 上色
             // 都必须用外层有效 this 类型，且裸字段访问即 this 捕获
             var effectiveThis = EffectiveThisType(ctx, env);
-            var fieldType = SymbolLookup.SubstituteFieldType(field, effectiveThis
+            var fieldType = SymbolLookup.SubstituteFieldType(field, staticHostType ?? effectiveThis
                 ?? ctx.Frame.Method.Owner, env.Unit.Symbols);
             if (field.Owner != null && !field.IsStatic)
             {
@@ -1026,6 +1067,11 @@
             IReadOnlyList<PathSegmentASTNode> chainSegments, Scope scope, BindContext ctx,
             BindEnvironment env, bool forAssignment)
         {
+            // F1/V-B 段级收口：入口 receiver（名头段 + 头段后缀折叠产物，
+            // 如 arr[0] 的索引结果——不经 ExpressionDispatcher）与逐段
+            // 中间结果同门检查有效可见性；驻留类型去重保证已报的引入点
+            //（标注/推断/上游段/dispatcher 链末检查）不重复报
+            UseSiteAccessibility.CheckChainValue(receiver, ctx, env);
             for (int i = 0; i < chainSegments.Count; i++)
             {
                 var segment = chainSegments[i];
@@ -1062,6 +1108,7 @@
                 }
                 // SafeDot 段失败（BindSafeSegment 返回 null）在循环尾统一拦截
                 if (next == null) return null;
+                UseSiteAccessibility.CheckChainValue(next, ctx, env);
                 receiver = next;
             }
             return receiver;
@@ -1178,6 +1225,10 @@
                     segment.Suffixes[0].Arguments!, scope, ctx, env,
                     segment.GenericArguments.Count > 0 ? segment.GenericArguments : null);
                 if (call == null) return null;
+                // c7b 修复：同名字段 callable 协议（`hd.f()` 链式中间段）时
+                // call.IsIndirect=true 且 IndirectTarget=字段访问——必须落成
+                // BoundCallExpression（invoke.indirect），不得误用段 receiver
+                // 落 BoundInstanceCallExpression（会把宿主当委托 cast 崩溃）
                 // S10：async 无结果调用有 Task 值（同 BindCall 值位置口径）
                 if (call.ResultType == null)
                 {
@@ -1185,16 +1236,25 @@
                     // 纯 Call（无后续后缀）收口，其余仍作值拒绝。
                     if (ctx.AllowVoidCall && segment.Suffixes.Count == 1)
                     {
-                        return new BoundInstanceCallExpression(segment, receiver,
-                            call.Method, call.Arguments, env.B.Any, call.TypeArguments,
-                            call.GenericPack);
+                        return call.IsIndirect
+                            ? new BoundCallExpression(segment, call.Method, call.Arguments,
+                                env.B.Any, call.TypeArguments, call.GenericPack,
+                                isIndirect: true, indirectTarget: call.IndirectTarget)
+                            : new BoundInstanceCallExpression(segment, receiver,
+                                call.Method, call.Arguments, env.B.Any, call.TypeArguments,
+                                call.GenericPack);
                     }
                     env.Error(segment.Span, $"Method '{call.Method.Name}' has no result " +
                         "(void) and cannot be used as a value");
                     return null;
                 }
-                value = new BoundInstanceCallExpression(segment, receiver,
-                    call.Method, call.Arguments, call.ResultType!, call.TypeArguments);
+                value = call.IsIndirect
+                    ? new BoundCallExpression(segment, call.Method, call.Arguments,
+                        call.ResultType!, call.TypeArguments, call.GenericPack,
+                        isIndirect: true, indirectTarget: call.IndirectTarget)
+                    : new BoundInstanceCallExpression(segment, receiver,
+                        call.Method, call.Arguments, call.ResultType!, call.TypeArguments,
+                        call.GenericPack);
                 consumed = 1;
             }
             else
@@ -1367,15 +1427,13 @@
 
         // 安全访问段（S7f，SYNTAX §3.4）：receiver 必须 Nullable<T>；段在
         // 非空 T 上绑定（占位叶子承载 unwrap 后的 receiver，P4a 物化替换）；
-        // 结果类型：成员类型已可空则原样（不二次包装），否则包 Nullable
+        // 结果类型：成员类型已可空则原样（不二次包装），否则包 Nullable。
+        // g10：内层放宽为 SemanticSymbol——Nullable<T>（T 为泛型参数）
+        // 同样合法，占位叶子与结果类型均可持泛型参数
         private static BoundExpression? BindSafeSegment(PathSegmentASTNode segment,
             BoundExpression receiver, Scope scope, BindContext ctx, BindEnvironment env)
         {
-            // （S9a：泛型参数 receiver 判型后不命中 nullable 分支）
-            if (receiver.Type is not TypeSymbol nullableReceiver
-                || nullableReceiver.ConstructedFrom == null
-                || nullableReceiver.ConstructedFrom != env.B.NullableDefinition
-                || nullableReceiver.TypeArguments![0] is not TypeSymbol element)
+            if (!SymbolLookup.IsNullableType(receiver.Type, env, out var element))
             {
                 env.Error(segment.Span, $"Safe access '?.' requires a nullable receiver " +
                     $"(got '{BoundAnalysis.TypeDisplay(receiver.Type)}')");

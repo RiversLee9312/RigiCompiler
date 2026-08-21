@@ -10,7 +10,10 @@ namespace RigiCompiler.Tests
     //    setter 隐含赋值）与 getter 全路径 return 检查（口径 != null）；
     // 3. 显式泛型实参逐候选约束检查（§3.6——首拒次收调用成功、全部
     //    拒绝才诊断且不逐候选重复）；
-    // 4. 歧义诊断只列真正平局的 winners 子集 + 空泛型包 Syntax 非空契约。
+    // 4. 歧义诊断只列真正平局的 winners 子集 + 空泛型包 Syntax 非空契约；
+    // 5. bug A2：shared interface + 接口传染矩阵（§3.1.1/§4.5——接口可标
+    //    shared、含 async 成员的接口必须 shared、shared 接口沿 implements
+    //    与接口继承单向传染）。
     public static partial class BinderTests
     {
         private static void TestGateFixes()
@@ -19,6 +22,162 @@ namespace RigiCompiler.Tests
             TestGenericBackingAccessors();
             TestPerCandidateConstraints();
             TestAmbiguityWinnersAndPackSyntax();
+            TestSharedInterfaceContagion();
+            TestInstantiationFillInP3();
+        }
+
+        // ===== bug g4：泛型填入点隐式限制检查（P3 侧挂点）=====
+        //
+        // P3 两处填入点与 P2 同通道（GenericConstraints.CheckConstructedType）：
+        // 函数体内类型引用（TypeReferences.Resolve——new/标注/cast）与泛型
+        // 调用显式实参（CallFacility.ResolveGenericArguments）。隐式限制
+        // 违规只诊断不拒绝（可恢复模型，避免级联误诊）。
+        private static void TestInstantiationFillInP3()
+        {
+            TestHarness.Section("P3 Instantiation Fill-In Limits (§3.1.1/§3.6, bug g4)");
+
+            const string prelude =
+                "class LocalUser {\n" +
+                "    pub const name: String\n" +
+                "    pub init(_ -> name)\n" +
+                "}\n" +
+                "struct Wrap\\<T> {\n" +
+                "    pub var v: T\n" +
+                "    pub init(_ -> v)\n" +
+                "}\n";
+
+            // new 表达式填入点（g4 原始形态的函数体内等价）
+            var (u1, _) = BindUnit(prelude +
+                "func main() { const w = new Wrap\\<LocalUser>(new LocalUser(\"x\")) }\n");
+            TestHarness.CheckSemanticError("new 填入点非 rich struct 持 Object", u1.Diagnostics,
+                "Non-rich struct 'Wrap' cannot hold object field 'v' " +
+                "(via type argument of 'Wrap<LocalUser>')");
+
+            // 隐式限制违规不拒绝（可恢复）：同一函数体内后续语句正常绑定，
+            // 不产生「缺初始化器」级联误诊
+            TestHarness.CheckTrue("隐式限制违规无级联误诊",
+                !u1.Diagnostics.Diagnostics.Any(d =>
+                    d.Message.Contains("requires a type annotation or an initializer")));
+
+            // 反例：值类型实参与 rich 持有者经 new 填入正常
+            var (ok1, _) = BindUnit(prelude +
+                "rich struct RichWrap\\<T> {\n" +
+                "    pub var v: T\n" +
+                "    pub init(_ -> v)\n" +
+                "}\n" +
+                "func main() {\n" +
+                "    const a = new Wrap\\<i32>(8)\n" +
+                "    const b = new RichWrap\\<LocalUser>(new LocalUser(\"x\"))\n" +
+                "}\n");
+            CheckNoErrors("值类型实参 / rich 持有者 new 填入合法", ok1);
+
+            // 局部标注填入点（TypeReferences.Resolve 同通道）
+            var (u2, _) = BindUnit(prelude +
+                "func main() { var w: Wrap\\<LocalUser> }\n");
+            TestHarness.CheckSemanticError("局部标注填入点", u2.Diagnostics,
+                "Non-rich struct 'Wrap' cannot hold object field 'v'");
+
+            // 泛型调用显式实参填入点（CallFacility.ResolveGenericArguments）
+            var (u3, _) = BindUnit(prelude +
+                "func id\\<T>(x: T): T { return x }\n" +
+                "func main() {\n" +
+                "    const w = id\\<Wrap\\<LocalUser>>(new Wrap\\<LocalUser>(new LocalUser(\"x\")))\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("泛型调用显式实参填入点", u3.Diagnostics,
+                "Non-rich struct 'Wrap' cannot hold object field 'v'");
+
+            // 内建构造透明：Box 实参递归到内层用户构造
+            var (ok2, _) = BindUnit(prelude +
+                "func main() { var b: Box\\<Wrap\\<i32>> }\n");
+            CheckNoErrors("Box\\<Wrap\\<i32>> 嵌套合法", ok2);
+            var (u4, _) = BindUnit(prelude +
+                "func main() { var b: Box\\<Wrap\\<LocalUser>> }\n");
+            TestHarness.CheckSemanticError("Box\\<Wrap\\<LocalUser>> 嵌套报错", u4.Diagnostics,
+                "Non-rich struct 'Wrap' cannot hold object field 'v'");
+
+            // async 闸门 2/3 经实参收口（P3 标注填入点，stdlib Task 在场）
+            var (u5, _) = BindUnitWithStdlib(
+                "class LocalUser { }\n" +
+                "class AC\\<T> { async func f(x: T) { } }\n" +
+                "func main() { var c: AC\\<LocalUser> }\n");
+            TestHarness.CheckSemanticError("async 闸门 2 经实参收口（P3）", u5.Diagnostics,
+                "Parameter 'x' of async function 'f' must be a shared-safe type: " +
+                "'LocalUser' (via instantiation 'AC<LocalUser>')");
+        }
+
+
+        // ===== bug A2：shared interface 与接口传染矩阵（§3.1.1/§4.5）=====
+        private static void TestSharedInterfaceContagion()
+        {
+            TestHarness.Section("P2/P3 Shared Interface Contagion (§3.1.1/§4.5, bug A2)");
+
+            // 正例：shared interface 声明 async 成员 + 经接口类型 await 调用
+            // （修复前闸门 1 误拒：'Worker' 不在共享安全白名单）
+            var (unit, bodies) = BindUnitWithStdlib(
+                "pub shared interface Worker {\n" +
+                "    async func run(x: i32): i32\n" +
+                "}\n" +
+                "pub shared class W implements Worker {\n" +
+                "    pub init()\n" +
+                "    pub async override func run(x: i32): i32 { return (x + 1) }\n" +
+                "}\n" +
+                "func main() {\n" +
+                "    const w: Worker = new W()\n" +
+                "    const r = await w.run(10)\n" +
+                "}\n");
+            CheckNoErrors("shared interface 经接口 await 调用无诊断", unit);
+            var awaitDecl = (BoundLocalDeclarationStatement)BodyOf(bodies, "main").Body.Statements[1];
+            TestHarness.CheckTrue("await 结果类型 = i32（Task\\<i32> 解包）",
+                ReferenceEquals(awaitDecl.Local.Type, unit.Symbols.Bootstrap.Int32));
+            var ifaceCall = (BoundInstanceCallExpression)((BoundAwaitExpression)awaitDecl.Initializer!).Operand;
+            TestHarness.CheckTrue("经接口绑定 async 接口方法（Owner = Worker）",
+                ifaceCall.Method.IsAsync
+                && ifaceCall.Method.Owner is { Kind: TypeKind.Interface, Name: "Worker", IsShared: true });
+
+            // 负例：非 shared 接口声明 async 成员（声明点 fail-fast）
+            var (unit2, _) = BindUnit(
+                "pub interface Worker {\n" +
+                "    async func run(x: i32): i32\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("非 shared 接口含 async 成员", unit2.Diagnostics,
+                "'Worker': an interface declaring 'async' members must be 'shared'");
+
+            // 负例：非 shared class 实现 shared 接口
+            var (unit3, _) = BindUnit(
+                "pub shared interface Worker { func run(x: i32): i32\n }\n" +
+                "pub class W implements Worker {\n" +
+                "    pub override func run(x: i32): i32 { return (x + 1) }\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("非 shared class 实现 shared 接口", unit3.Diagnostics,
+                "'W': interface 'Worker' is 'shared', so the implementing type must also be 'shared'");
+
+            // 正例：shared class 实现非 shared 接口（反向收紧不管）
+            var (unit4, _) = BindUnit(
+                "pub interface Worker { func run(x: i32): i32\n }\n" +
+                "pub shared class W implements Worker {\n" +
+                "    pub override func run(x: i32): i32 { return (x + 1) }\n" +
+                "}\n");
+            CheckNoErrors("shared class 实现非 shared 接口无诊断", unit4);
+
+            // 负例：接口继承 shared 接口未标 shared
+            var (unit5, _) = BindUnit(
+                "pub shared interface IBase { }\n" +
+                "pub interface IChild : IBase { }\n");
+            TestHarness.CheckSemanticError("派生接口未标 shared", unit5.Diagnostics,
+                "'IChild': base interface 'IBase' is 'shared', so the derived interface must also be 'shared'");
+
+            // 链式传染：shared 沿接口继承链逐段传染 + 实现端收口
+            var (unit6, _) = BindUnit(
+                "pub shared interface IA { }\n" +
+                "pub shared interface IB : IA { }\n" +
+                "pub interface IC : IB { }\n");
+            TestHarness.CheckSemanticError("链式传染（IC 未标 shared）", unit6.Diagnostics,
+                "'IC': base interface 'IB' is 'shared', so the derived interface must also be 'shared'");
+            var (unit7, _) = BindUnit(
+                "pub shared interface IA { }\n" +
+                "pub shared interface IB : IA { }\n" +
+                "pub shared class Impl implements IB { }\n");
+            CheckNoErrors("链式全标 shared 无诊断", unit7);
         }
 
         // ===== async 闸门 2/5 可变参数包（§4.5）=====

@@ -82,7 +82,11 @@ namespace RigiCompiler
         }
 
         // 委托类型上的具体实现命中：沿基类链找签名匹配的非 abstract
-        // 有体/native 方法（FindImplementation 同口径，宿主换成字段类型）
+        // 有体/native 方法（FindImplementation 同口径，宿主换成字段类型）。
+        // 字段类型为接口时另走接口闭包：签名匹配即接受（允许 abstract/
+        // 无体）——转发体调接口方法，运行时对字段值虚派发；接口默认方法
+        // （HasBody）同命中，宿主显式 override 优先语义不变（由
+        // CollectDelegatedMembers 的 FindImplementation 检查保证）
         private static MethodSymbol? FindConcreteMatch(TypeSymbol fieldType,
             OverrideChecker.SignatureView required, SymbolGraph symbols)
         {
@@ -94,9 +98,30 @@ namespace RigiCompiler
                     var view = OverrideChecker.SignatureView.Of(candidate, def, t, symbols);
                     if (view.Matches(required))
                     {
+                        // 接口成员（abstract/无体或默认方法 HasBody）签名匹配即
+                        // 接受——转发体调接口方法，运行时对字段值虚派发
+                        if (def.Kind == TypeKind.Interface)
+                        {
+                            return candidate;
+                        }
                         return !candidate.IsAbstract && (candidate.HasBody || candidate.IsNative)
                             ? candidate
                             : null;
+                    }
+                }
+            }
+            if ((fieldType.ConstructedFrom ?? fieldType).Kind == TypeKind.Interface)
+            {
+                foreach (var iface in OverrideChecker.InterfaceClosure(fieldType, symbols))
+                {
+                    var def = iface.ConstructedFrom ?? iface;
+                    foreach (var candidate in def.Methods)
+                    {
+                        var view = OverrideChecker.SignatureView.Of(candidate, def, iface, symbols);
+                        if (view.Matches(required))
+                        {
+                            return candidate;
+                        }
                     }
                 }
             }

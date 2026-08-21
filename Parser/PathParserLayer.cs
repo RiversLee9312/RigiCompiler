@@ -11,17 +11,25 @@ namespace RigiCompiler
         private class SymbolLayer : IParserLayer
         {
             private Symbol targetSymbol;
+            // 持有目标符号的 AST 节点：泛型实参（完整 TypeReferenceASTNode，g1）
+            // 的父节点——实参子树经 AstStructureReflection 的 SymbolASTNode
+            // 特判纳入遍历校验，Parent 必须与之一致
+            private SymbolASTNode ownerNode;
             private bool lineBreakSensitive;
             // 是否允许把连续点的剩余部分交还上层（类型引用/参数列表语境的
             // 可变参数标记 ...，M31）；表达式符号引用语境为 false（foo..bar 报错）
             private bool allowVariadicDots;
-            public SymbolLayer(Symbol target, bool lineBreakSensitive, bool allowVariadicDots)
+            public SymbolLayer(SymbolASTNode owner, Symbol target, bool lineBreakSensitive, bool allowVariadicDots)
             {
+                ownerNode = owner;
                 targetSymbol = target;
                 this.lineBreakSensitive = lineBreakSensitive;
                 this.allowVariadicDots = allowVariadicDots;
             }
             private bool isParsingGeneric = false;
+            // 泛型列表内正在期待下一个实参（刚看到 \< 或 ,）——此时见到 > 即
+            // 悬空实参（List\<i32,>），见到 , 即空实参（List\<,i32>）
+            private bool expectingGenericArg = false;
             // 已看到 \ ，正在期待 < （泛型列表开启符 \< ，见 SYNTAX.md §3.6）
             private bool backslashSeen = false;
             private SymbolElement currentElement = new();
@@ -60,17 +68,28 @@ namespace RigiCompiler
                     case WordToken wt:
                         if (!string.IsNullOrEmpty(currentElement.name))
                         {
-                            if (isParsingGeneric) {
-                                var symbol = new Symbol();
-                                currentElement.generics.Add(symbol);
+                            if (isParsingGeneric)
+                            {
+                                // 泛型实参起点（g1）：委托 TypeReferenceParserLayer
+                                // 解析完整类型引用（可空 ?、嵌套泛型与外层同口径），
+                                // 与表达式路径 foo\<i32?>(x) 的实参解析一致
+                                if (!expectingGenericArg)
+                                {
+                                    throw context.RaiseError(
+                                        $"Expected ',' or '>' in generic list, got: {currentToken}");
+                                }
+                                expectingGenericArg = false;
+                                var argument = new TypeReferenceASTNode(ownerNode);
+                                currentElement.generics.Add(argument);
                                 return new ParserLayerResult.PushLayer(
-                                        new SymbolLayer(symbol, lineBreakSensitive, allowVariadicDots),
+                                        new TypeReferenceParserLayer(argument),
                                         TokenDisposition.Replay
                                     );
                             }
-                            else { 
+                            else
+                            {
                                 return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
-                            } 
+                            }
                         }
                         else
                         {
@@ -129,6 +148,7 @@ namespace RigiCompiler
                                 }
                                 backslashSeen = false;
                                 isParsingGeneric = true;
+                                expectingGenericArg = true;
                                 return ParserLayerResult.Continue.Instance;
                             case Notations.BACK_SLASH:
                                 // \< 是泛型列表的开启符：\ 必须跟在符号名之后、且不在泛型模式内
@@ -141,16 +161,11 @@ namespace RigiCompiler
                             case Notations.R_ANGLE:
                                 if (isParsingGeneric)
                                 {
-                                    // 本层确实在解析泛型实参：逗号后的悬空实参不得被 '>' 吞掉
-                                    if (currentElement.generics.Count > 0)
+                                    // 逗号后的悬空实参不得被 '>' 吞掉（List\<i32,>）
+                                    if (expectingGenericArg)
                                     {
-                                        var last = currentElement.generics[currentElement.generics.Count - 1];
-                                        if (last.elements.Count == 0 ||
-                                            string.IsNullOrEmpty(last.elements[0].name))
-                                        {
-                                            throw context.RaiseError(
-                                                "Expected type argument before '>' in generic list");
-                                        }
+                                        throw context.RaiseError(
+                                            "Expected type argument before '>' in generic list");
                                     }
                                     isParsingGeneric = false;
                                     return ParserLayerResult.Continue.Instance;
@@ -163,12 +178,14 @@ namespace RigiCompiler
                             case Notations.COMMA:
                                 if (isParsingGeneric)
                                 {
-                                    var symbol = new Symbol();
-                                    currentElement.generics.Add(symbol);
-                                    return new ParserLayerResult.PushLayer(
-                                            new SymbolLayer(symbol, lineBreakSensitive, allowVariadicDots),
-                                            TokenDisposition.Consume
-                                        );
+                                    // 空实参（List\<,i32> / List\<i32,,>）：期待实参时见到逗号
+                                    if (expectingGenericArg)
+                                    {
+                                        throw context.RaiseError(
+                                            "Expected type argument in generic list, got: ','");
+                                    }
+                                    expectingGenericArg = true;
+                                    return ParserLayerResult.Continue.Instance;
                                 }
                                 else
                                 {
@@ -177,6 +194,13 @@ namespace RigiCompiler
                                         );
                                 }
                             default:
+                                // 泛型列表内只接受实参与 , > 分隔符；? 已随实参由
+                                // TypeReferenceParserLayer 消费，到达这里即畸形
+                                if (isParsingGeneric)
+                                {
+                                    throw context.RaiseError(
+                                        $"Expected ',' or '>' in generic list, got: {currentToken}");
+                                }
                                 return new ParserLayerResult.PopLayer(
                                             TokenDisposition.Replay
                                         );
@@ -203,6 +227,13 @@ namespace RigiCompiler
                             return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
                         }
                             default:
+                        // 泛型列表期待实参时见到非标识符 token（List\<123> 等）：
+                        // 期待名字的是实参自身符号路径的首 token，诊断沿用标识符口径
+                        if (isParsingGeneric && expectingGenericArg)
+                        {
+                            throw context.RaiseError(
+                                $"Expected identifier in symbol path, got: {currentToken}");
+                        }
                         return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
                 }
             }
@@ -234,7 +265,7 @@ namespace RigiCompiler
             {
                 symbolParsed = true;
                 return new ParserLayerResult.PushLayer(
-                        new SymbolLayer(self.symbol, lineBreakSensitive, allowVariadicDots),
+                        new SymbolLayer(self, self.symbol, lineBreakSensitive, allowVariadicDots),
                         TokenDisposition.Replay);
             }
         }

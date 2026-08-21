@@ -119,6 +119,12 @@ namespace RigiCompiler
     {
         [ChildAstNode(Required = true)] private LiteralASTNode? literal;
 
+        // 整数字面量后紧跟成员访问的回退标记（SYNTAX §3.3，如 7.twice()）：
+        // 字面量层在 '.' 之后确认后继是标识符而非数字时，把已消费的 '.'
+        // 记在这里并弹栈交还标识符，外层表达式层据此按路径连接符处理
+        internal bool MemberAccessDotConsumed;
+        internal CharRange MemberAccessDotRange;
+
         public LiteralExpressionASTNode(ASTNode? parent = null) : base(parent)
         {
         }

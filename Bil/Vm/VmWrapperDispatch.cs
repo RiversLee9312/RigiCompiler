@@ -194,14 +194,40 @@ namespace RigiCompiler.Bil.Vm
             return true;
         }
 
-        // 链末：先调 setter（含 cell setValue），否则直写 backing
-        private static void FinishSetToBacking(VmContext context, VmCoroutine coroutine,
-            VmValue host, string fieldSymbol, VmValue value, string? resultSlot)
+        // Set 链末的写入值：常规字段 set 链（MethodSymbol 为空）的 wildcard
+        // 全形状 inner 末位值实参即 value（specific 只有 value 一个值实参，
+        // 二者同形取末位）；访问器调用被 .proxy.* 拦截后重路由而来的 Set 链
+        //（MethodSymbol 是 $.set. 访问器符号）inner 走胖值 ABI——末位是
+        // unnamed 包，写入值是包内最后一个元素（setter 的唯一位置参数；
+        // 空包防御落 null）
+        private static VmValue ValueOfSetInner(VmWrapperDispatchFrame frame,
+            IReadOnlyList<VmValue> innerArgs)
         {
+            var last = innerArgs.Count > 0 ? innerArgs[innerArgs.Count - 1] : VmNull.Instance;
+            if (frame.MethodSymbol != null && last is VmArray pack)
+            {
+                return pack.Length > 0 ? pack.GetAt(pack.Length - 1) : VmNull.Instance;
+            }
+            return last;
+        }
+
+        // 链末：先调 setter（含 cell setValue），否则直写 backing。
+        // 链末落点必须绕过 wrapper 派发链（InvokeResolved）——链已经跑完，
+        // setter 再经实体/方法链拦截会重入成环（同 cell setValue 的
+        // 「跳过 TryStartCellAccessorChain」先例）；构造期起自 setter
+        // 调用拦截的重路由链 FieldSymbol 可能恢复失败，给清晰 VmException
+        private static void FinishSetToBacking(VmContext context, VmCoroutine coroutine,
+            VmValue host, string? fieldSymbol, VmValue value, string? resultSlot)
+        {
+            if (fieldSymbol == null)
+            {
+                throw new VmException("set 链末缺少字段符号（访问器重路由未恢复）："
+                    + host.TypeRef);
+            }
             if (context.TryFindAccessorDirect(fieldSymbol, BilAccessorKind.Setter,
                     out var setter))
             {
-                BilInvokeExecution.InvokeValues(context, coroutine, setter,
+                BilInvokeExecution.InvokeResolved(context, coroutine, setter,
                     new[] { host, value }, resultSlot);
                 return;
             }
@@ -338,8 +364,10 @@ namespace RigiCompiler.Bil.Vm
                 concrete.Add(args[i]);
             }
             var memberName = VmContext.MethodNameOf(methodSymbol);
-            // 构造期方法（init / ..init.wrapper）不绕 wrapper 链：init 时 wrapper
-            // 尚未安装（PushConstructorTail 先 ..init.wrapper 后 init，§14）
+            // 构造期方法（init / ..init.wrapper）不绕 wrapper 链：对它们的调用
+            // 是构造协议自身的环节（PushConstructorTail 在新 init 原则下先执行
+            // 实际类型的 ..init.wrapper——含闭包 wrapper 安装与字段初值——再
+            // 进入 init 链，§9.7/§14.2）；wrapper 链只拦普通成员调用
             if (memberName == "init" || memberName == BilSpellings.InitWrapperMethodName)
             {
                 return false;
@@ -413,7 +441,13 @@ namespace RigiCompiler.Bil.Vm
                 return false;
             }
             var receiver = args[0];
-            var wrappers = CollectMethodWrappers(context, receiver, methodSymbol);
+            // bug O1：虚/接口派发下 invoke 带的是静态符号（Base$work /
+            // Work$work），而子类 override 按 §14.9 重复声明 wrapper 后
+            // 安装键是实现侧 canonical 符号（Child$work）。先按 receiver
+            // 实际类型做虚派发取实现槽符号，再以它为键收集 wrapper 链
+            //（RUNTIME §7 + §14.9）；super 路径不经此处，保持绕过。
+            var dispatchSymbol = context.ResolveDispatchSymbol(methodSymbol, receiver);
+            var wrappers = CollectMethodWrappers(context, receiver, dispatchSymbol);
             if (wrappers.Count == 0)
             {
                 return false;
@@ -423,9 +457,12 @@ namespace RigiCompiler.Bil.Vm
             {
                 concrete.Add(args[i]);
             }
+            // 帧内 MethodSymbol 用实现槽符号：环内 wrapper 实例原地读
+            //（HiddenMethodKey）与链末原始 fn 落点都与安装键同口径；
+            // SymbolText 保留调用点静态符号（wildcard .name 语义不变）
             var frame = new VmWrapperDispatchFrame(VmWrapperDispatchKind.Call, receiver,
                 wrappers, 0, valueWrapper: false, isCall: false, fieldSymbol: null,
-                elementType: null, methodSymbol, memberName, symbolText: methodSymbol,
+                elementType: null, dispatchSymbol, memberName, symbolText: methodSymbol,
                 returnType, currentRingWildcard: false);
             return StartRing(context, coroutine, frame, concrete, resultSlot);
         }
@@ -604,9 +641,19 @@ namespace RigiCompiler.Bil.Vm
             }
             // Entity wrapper 的 wildcard：按解析出的类别（普通方法 / $$ 运算符 /
             // $get / $set）重路由下一环。MethodSymbol 同步改为传入符号（链末
-            // Method/Operator 用）；Set 链末仍以 FieldSymbol 为准。
+            // Method/Operator/Get 用）；Get/Set 链末以字段符号为准——链可能
+            // 起自访问器方法调用的拦截（构造期 setter 调用等），FieldSymbol
+            // 原本为空，从访问器符号反查恢复（反查不到则保持空，链末落点
+            // 给清晰 VmException 而非裸 .NET 异常）
+            var routedField = frame.FieldSymbol;
+            if (routedField == null
+                && nextKind is VmWrapperDispatchKind.Get or VmWrapperDispatchKind.Set
+                && context.TryFindFieldForAccessor(symbolValue.Value, out var recovered))
+            {
+                routedField = recovered;
+            }
             return new VmWrapperDispatchFrame(nextKind, frame.Host, frame.Wrappers,
-                frame.Index, frame.ValueWrapper, frame.IsCall, frame.FieldSymbol,
+                frame.Index, frame.ValueWrapper, frame.IsCall, routedField,
                 frame.ElementType, symbolValue.Value, memberName, symbolValue.Value,
                 frame.ReturnType, frame.CurrentRingWildcard);
         }
@@ -682,7 +729,8 @@ namespace RigiCompiler.Bil.Vm
         }
 
         // 链末落点：set → 原始字段写；method → 原始 fn（仍可套 Method wrapper）；
-        // operator/call → 原始 fn；call??? 降级 → 抛
+        // operator/call → 原始 fn；get → getter 本体（访问器调用被 .proxy.*
+        // 拦截后重路由而来）；call??? 降级 → 抛
         private static void FinishChain(VmContext context, VmCoroutine coroutine,
             VmWrapperDispatchFrame frame, IReadOnlyList<VmValue> innerArgs, string? resultSlot)
         {
@@ -693,11 +741,16 @@ namespace RigiCompiler.Bil.Vm
             switch (frame.Kind)
             {
                 case VmWrapperDispatchKind.Set:
-                    // wildcard 全形状 inner 的 value 是声明序最后一个值实参
-                    // （specific 只有 value 一个值实参，二者同形取末位）。
-                    var value = innerArgs.Count > 0 ? innerArgs[innerArgs.Count - 1] : VmNull.Instance;
-                    FinishSetToBacking(context, coroutine, frame.Host, frame.FieldSymbol!,
-                        value, resultSlot);
+                    FinishSetToBacking(context, coroutine, frame.Host, frame.FieldSymbol,
+                        ValueOfSetInner(frame, innerArgs), resultSlot);
+                    return;
+                case VmWrapperDispatchKind.Get:
+                    // 访问器调用拦截的重路由（inner 符号 = $.get.<名>）：链末调
+                    // getter 本体——必须绕过 wrapper 派发链（InvokeResolved），
+                    // 否则 getter 调用被同一实体 wildcard 再拦截成环；读结果
+                    // 由使用点 pending get chain 继续过 .proxy.get.* 层（§14.2）
+                    BilInvokeExecution.InvokeResolved(context, coroutine, frame.MethodSymbol!,
+                        new[] { frame.Host }, resultSlot);
                     return;
                 case VmWrapperDispatchKind.Method:
                     // 实体方法链末：Method wrapper 作为更内层仍可再绕（.proxy.call）
@@ -741,8 +794,11 @@ namespace RigiCompiler.Bil.Vm
             if (frame.Kind is VmWrapperDispatchKind.Get or VmWrapperDispatchKind.Set)
             {
                 // wildcard 全形状 inner 的 value 是声明序最后一个值实参
-                // （specific 只有 value 一个值实参，二者同形取末位）。
-                var value = innerArgs.Count > 0 ? innerArgs[innerArgs.Count - 1] : VmNull.Instance;
+                // （specific 只有 value 一个值实参，二者同形取末位；访问器
+                // 调用重路由而来的 Set 链经 ValueOfSetInner 解胖值包）。
+                var value = frame.Kind == VmWrapperDispatchKind.Set
+                    ? ValueOfSetInner(frame, innerArgs)
+                    : (innerArgs.Count > 0 ? innerArgs[innerArgs.Count - 1] : VmNull.Instance);
                 return BuildProxyArgs(function, instance, frame.ElementType,
                     nextWildcard ? frame.FieldSymbol : null, new[] { value }, null, null);
             }

@@ -218,9 +218,20 @@ namespace RigiCompiler
             if (IsShared) return true;
             // 非 rich ValueType（全部基元、String、Type\<T>、Span\<T>、非 rich struct/enum struct）
             if (!IsRich && IsValueTypeBranch) return true;
-            // Nullable\<T\>/Cell\<T\>/ReadonlyCell\<T\> 按 T 推导（§3.1.2/§5.2 特权）
-            if (ConstructedFrom is { DerivesSharedSafetyFromTypeArgument: true }
-                && TypeArguments![0] is TypeSymbol element && element.IsSharedSafe()) return true;
+            // Nullable\<T\>/Cell\<T\>/ReadonlyCell\<T\> 按 T 推导（§3.1.2/§5.2 特权）；
+            // g8/g10 附带放宽：内层为泛型参数时按其 extends 界的共享安全性
+            // 推导（无约束 GP 安全性未知——保守 false，与调用点闸门口径一致）
+            if (ConstructedFrom is { DerivesSharedSafetyFromTypeArgument: true })
+            {
+                return TypeArguments![0] switch
+                {
+                    TypeSymbol element => element.IsSharedSafe(),
+                    GenericParameterSymbol parameter => parameter.Constraints.Any(
+                        c => c.Kind == GenericConstraintKind.Extends
+                            && c.Bound is TypeSymbol bound && bound.IsSharedSafe()),
+                    _ => false,
+                };
+            }
             return false;
         }
     }
@@ -534,6 +545,14 @@ namespace RigiCompiler
         // companion 上盛装 cell 的实例字段）；BIL 不再为宿主发静态字段
         // 声明，读写经「companion 单例 → 该实例字段（cell）→ getValue/setValue」
         public FieldSymbol? CompanionCellField { get; internal set; }
+        // 字段 open/override（SYNTAX §9.2.1 字段覆写）：open = 允许子类
+        // 以同名字段 override 替换初始值；override = 本声明覆写继承字段
+        // （存储仍是基类槽，OverriddenField 指向被覆写的基类字段符号，
+        // P2 OverrideChecker 校验通过后本字段从宿主 Fields 表移除——
+        // 名称解析自然落到基类槽，BIL 不再发新字段声明）
+        public bool IsOpen { get; internal set; }
+        public bool IsOverride { get; internal set; }
+        public FieldSymbol? OverriddenField { get; internal set; }
 
         public FieldSymbol(string name, TypeSymbol? owner = null, NamespaceSymbol? ns = null,
             bool isStatic = false, SemanticSymbol? fieldType = null, string? extTargetPath = null,

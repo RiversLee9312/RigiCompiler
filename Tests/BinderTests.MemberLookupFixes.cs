@@ -13,6 +13,7 @@ namespace RigiCompiler.Tests
             TestInterfaceDefaultOnConcrete();
             TestAssignmentLhsSmartCast();
             TestBareFieldCallReceiver();
+            TestUnqualifiedOverrideShadowing();
         }
 
         // ===== A2/C4：接口默认实现隐式继承，具体类上可直接调用 =====
@@ -329,6 +330,113 @@ namespace RigiCompiler.Tests
                 "}\n");
             TestHarness.CheckSemanticError("未定义字段接收者", missing.Diagnostics,
                 "Unresolved type or namespace: 'missing'");
+        }
+
+        // ===== O4：无限定调用 override 方法按最派生槽单候选（与 this.m() 同口径）=====
+        private static void TestUnqualifiedOverrideShadowing()
+        {
+            TestHarness.Section("P3 MemberLookupFixes: 无限定 override 遮蔽");
+
+            // bug O4 本体：裸名 show() 不再歧义，绑定子类 override
+            var (unit, bodies) = BindUnit(
+                "pub open class Base {\n" +
+                "    pub open func show(): String { return \"B\" }\n" +
+                "}\n" +
+                "pub class Child : Base {\n" +
+                "    pub override func show(): String { return \"C\" }\n" +
+                "    pub func own(): String { return show() }\n" +
+                "}\n");
+            CheckNoErrors("无诊断（裸名调 override 方法）", unit);
+            TestHarness.CheckTrue("裸名 show 补 this",
+                BoundDescribe.Body(BodyOf(bodies, "own")).Contains(
+                    "InstCall(show, This(Child), [], String)"));
+            var child = unit.Symbols.GlobalNamespace.Types.Single(t => t.Name == "Child");
+            var ownRet = (BoundReturnStatement)BodyOf(bodies, "own").Body.Statements[0];
+            TestHarness.CheckTrue("裸名 show 命中最派生槽（Child.show）",
+                ReferenceEquals(((BoundInstanceCallExpression)ownRet.Value!).Method,
+                    child.Methods.Single(m => m.Name == "show")));
+
+            // 多层继承链 A→B→C：中间层与叶层都 override，裸名命中 C 版
+            var (chain, chainBodies) = BindUnit(
+                "pub open class A {\n" +
+                "    pub open func tag(): String { return \"A\" }\n" +
+                "}\n" +
+                "pub open class B : A {\n" +
+                "    pub override func tag(): String { return \"B\" }\n" +
+                "}\n" +
+                "pub class C : B {\n" +
+                "    pub override func tag(): String { return \"C\" }\n" +
+                "    pub func own(): String { return tag() }\n" +
+                "}\n");
+            CheckNoErrors("无诊断（多层链裸名调用）", chain);
+            var cType = chain.Symbols.GlobalNamespace.Types.Single(t => t.Name == "C");
+            var chainRet = (BoundReturnStatement)BodyOf(chainBodies, "own").Body.Statements[0];
+            TestHarness.CheckTrue("多层链裸名命中 C 版",
+                ReferenceEquals(((BoundInstanceCallExpression)chainRet.Value!).Method,
+                    cType.Methods.Single(m => m.Name == "tag")));
+
+            // 多层链叶层不 override：裸名命中中间层 B 版（最派生槽）
+            var (mid, midBodies) = BindUnit(
+                "pub open class A {\n" +
+                "    pub open func tag(): String { return \"A\" }\n" +
+                "}\n" +
+                "pub open class B : A {\n" +
+                "    pub override func tag(): String { return \"B\" }\n" +
+                "}\n" +
+                "pub class C : B {\n" +
+                "    pub func own(): String { return tag() }\n" +
+                "}\n");
+            CheckNoErrors("无诊断（叶层不 override）", mid);
+            var bType = mid.Symbols.GlobalNamespace.Types.Single(t => t.Name == "B");
+            var midRet = (BoundReturnStatement)BodyOf(midBodies, "own").Body.Statements[0];
+            TestHarness.CheckTrue("叶层不 override 时命中 B 版",
+                ReferenceEquals(((BoundInstanceCallExpression)midRet.Value!).Method,
+                    bType.Methods.Single(m => m.Name == "tag")));
+
+            // 基类 open 方法未被 override：裸名仍命中基类版
+            var (noOver, noOverBodies) = BindUnit(
+                "pub open class Base {\n" +
+                "    pub open func show(): String { return \"B\" }\n" +
+                "}\n" +
+                "pub class Child : Base {\n" +
+                "    pub func own(): String { return show() }\n" +
+                "}\n");
+            CheckNoErrors("无诊断（未 override 继承方法）", noOver);
+            var baseType = noOver.Symbols.GlobalNamespace.Types.Single(t => t.Name == "Base");
+            var noOverRet = (BoundReturnStatement)BodyOf(noOverBodies, "own").Body.Statements[0];
+            TestHarness.CheckTrue("未 override 时命中基类版",
+                ReferenceEquals(((BoundInstanceCallExpression)noOverRet.Value!).Method,
+                    baseType.Methods.Single(m => m.Name == "show")));
+
+            // 重载共存回归：基类 show(i32) 重载与子类 show() 无冲突
+            var (ovl, ovlBodies) = BindUnit(
+                "pub open class Base {\n" +
+                "    pub open func show(): String { return \"B\" }\n" +
+                "    pub func show(x: i32): String { return \"Bx\" }\n" +
+                "}\n" +
+                "pub class Child : Base {\n" +
+                "    pub override func show(): String { return \"C\" }\n" +
+                "    pub func own(): String { return show() }\n" +
+                "    pub func ownArg(): String { return show(1) }\n" +
+                "}\n");
+            CheckNoErrors("无诊断（基类重载共存）", ovl);
+            TestHarness.CheckTrue("带参重载仍命中基类版本",
+                BoundDescribe.Body(BodyOf(ovlBodies, "ownArg")).Contains(
+                    "InstCall(show, This(Child), [Int(1,i32)], String)"));
+
+            // 基类 static 同名方法不受遮蔽改动影响
+            var (stat, statBodies) = BindUnit(
+                "pub open class Base {\n" +
+                "    pub static func make(): i32 { return 1 }\n" +
+                "    pub open func show(): String { return \"B\" }\n" +
+                "}\n" +
+                "pub class Child : Base {\n" +
+                "    pub override func show(): String { return \"C\" }\n" +
+                "    pub func own(): i32 { return make() }\n" +
+                "}\n");
+            CheckNoErrors("无诊断（基类静态裸名）", stat);
+            TestHarness.CheckTrue("基类静态方法裸名仍可命中",
+                BoundDescribe.Body(BodyOf(statBodies, "own")).Contains("Call(make, [], i32)"));
         }
     }
 }

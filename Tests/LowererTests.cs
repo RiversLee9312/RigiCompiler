@@ -74,10 +74,18 @@ namespace RigiCompiler.Tests
             TestDynamicNewLowering();
             TestIndexLowering();
             TestSafeAccessPrefixInThenBlock();
+            TestSafeAccessVoidCallStatement();
             TestCompoundAssignmentIndexMaterialization();
             TestCompoundAssignmentGetterMaterialization();
             TestVarArgsParameterType();
             TestVarArgsIndexLowering();
+            TestValueChainDeepWrite();
+            TestValueChainDeepWriteThisRoot();
+            TestValueChainCompoundWrite();
+            TestValueReceiverCallWriteback();
+            TestValueChainGetterOnlyIntermediateError();
+            TestValueChainConstIntermediateError();
+            TestIndexResultFieldWriteRejected();
             TestClassGenericCallTypeArguments();
             TestEnumCaseLowering();
             TestAwaitLowering();

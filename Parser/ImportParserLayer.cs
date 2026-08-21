@@ -145,9 +145,10 @@ namespace RigiCompiler
             {
                 var itemSymbol = new SymbolASTNode(self);
                 // 前缀元素深拷贝展开（M31：不再按引用共享可变的 SymbolElement，
-                // 防止语义阶段的原地规范化跨导入项交叉污染）
+                // 防止语义阶段的原地规范化跨导入项交叉污染）；
+                // 泛型实参是 AST 节点（g1），克隆时以新宿主 itemSymbol 重挂父指针
                 foreach (var el in pathSymbol!.symbol.elements)
-                    itemSymbol.symbol.elements.Add(el.DeepClone());
+                    itemSymbol.symbol.elements.Add(el.DeepClone(itemSymbol));
                 itemSymbol.symbol.elements.Add(new SymbolElement { name = w.Content });
                 // 列表项 span：标识符 token 自身的范围（M28）
                 var loc = context.GetLocation();

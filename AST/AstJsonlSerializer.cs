@@ -185,7 +185,7 @@ namespace RigiCompiler
                 return value;
             }
 
-            // Symbol → 点分字符串（如 "core.collections.List"；泛型参数递归渲染）
+            // Symbol → 点分字符串（如 "core.collections.List"；泛型实参递归渲染）
             private static string RenderSymbol(Symbol symbol)
             {
                 return string.Join(".", symbol.elements.Select(RenderElement));
@@ -197,7 +197,13 @@ namespace RigiCompiler
                 {
                     return element.name;
                 }
-                return element.name + "\\<" + string.Join(", ", element.generics.Select(RenderSymbol)) + ">";
+                return element.name + "\\<" + string.Join(", ", element.generics.Select(RenderTypeArgument)) + ">";
+            }
+
+            // 泛型实参是完整类型引用（g1）：可空后缀随实参渲染（Holder\<i32?>）
+            private static string RenderTypeArgument(TypeReferenceASTNode argument)
+            {
+                return RenderSymbol(argument.TypeSymbol.symbol) + (argument.IsNullable ? "?" : "");
             }
         }
     }

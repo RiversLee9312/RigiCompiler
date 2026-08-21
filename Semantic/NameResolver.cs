@@ -31,16 +31,20 @@ namespace RigiCompiler
         // 落袋前拦截非类型符号：路径解析可命中命名空间（如 `func m(): collections`），
         // 命名空间不是类型——诊断并毒化（统一在此拦截，各调用方静默消化 ErrorType）
         public SemanticSymbol ResolveTypeReference(TypeReferenceASTNode typeRef, FileContext ctx,
-            TypeSymbol? declaringType, MethodSymbol? declaringMethod, CharRange? span)
+            TypeSymbol? declaringType, MethodSymbol? declaringMethod, CharRange? span,
+            bool reportErrors = true)
         {
             var resolved = ResolveSymbolPath(typeRef.TypeSymbol.symbol, ctx,
                 declaringType, declaringMethod, allowImports: true,
-                reportErrors: true, span: span ?? typeRef.Span);
+                reportErrors: reportErrors, span: span ?? typeRef.Span);
             if (resolved is ErrorTypeSymbol) return resolved;
             if (resolved is not (TypeSymbol or GenericParameterSymbol))
             {
-                Error(span ?? typeRef.Span,
-                    $"'{PathText(typeRef.TypeSymbol.symbol)}' is not a type");
+                if (reportErrors)
+                {
+                    Error(span ?? typeRef.Span,
+                        $"'{PathText(typeRef.TypeSymbol.symbol)}' is not a type");
+                }
                 return unit.Symbols.ErrorType;
             }
             if (typeRef.IsNullable)
@@ -73,7 +77,8 @@ namespace RigiCompiler
                 if (current != null) return current;
             }
             current = ResolveFirstSegment(elements[0].name, ctx, declaringType, allowImports,
-                elements.Count == 1 ? elements[0].generics.Count : -1, span, out var importResolved);
+                elements.Count == 1 ? elements[0].generics.Count : -1, span,
+                includeNamespaceMembers: elements.Count == 1, out var importResolved);
             if (current == null)
             {
                 if (reportErrors && !importResolved)
@@ -82,14 +87,16 @@ namespace RigiCompiler
                 }
                 return unit.Symbols.ErrorType;
             }
-            // 逐段下钻（命名空间 → 子命名空间/类型；类型 → 嵌套类型）。
+            // 逐段下钻（命名空间 → 子命名空间/类型，S4 末段扩到顶层函数/全局字段；
+            // 类型 → 嵌套类型）。
             // 中间段不带泛型实参（-1 不筛元数）；末段按该段泛型实参个数分流
             // （S10：Task 与 Task\<T\> 同名共存——裸名优先非泛型、带实参优先
             // 精确元数，见 FindTypeIn）
             for (int i = 1; i < elements.Count; i++)
             {
                 var next = Descend(current, elements[i].name,
-                    i == elements.Count - 1 ? elements[^1].generics.Count : -1);
+                    i == elements.Count - 1 ? elements[^1].generics.Count : -1,
+                    includeNamespaceMembers: i == elements.Count - 1);
                 if (next == null)
                 {
                     if (reportErrors)
@@ -131,7 +138,8 @@ namespace RigiCompiler
             bool allowImports, bool reportErrors, CharRange? span)
         {
             var current = ResolveFirstSegment(segments[0], ctx, declaringType: null,
-                allowImports, arity: -1, span, out var importResolved);
+                allowImports, arity: -1, span, includeNamespaceMembers: false,
+                out var importResolved);
             if (current == null)
             {
                 if (reportErrors && !importResolved)
@@ -205,9 +213,12 @@ namespace RigiCompiler
         // importResolved：具名 import 同名条目全部失效（ImportValidator 已诊断），
         // 或双有效歧义（此处已诊断）时为 true——调用方静默毒化，不再报「未解析」。
         // arity：该段（单段路径即末段）的泛型实参个数；-1 = 容器下钻不筛元数。
+        // includeNamespaceMembers（S4）：单段路径（即末段）的命名空间查找扩到
+        // 顶层函数/全局字段——具名导入 `import scene.geom.pickAxis` 由此可解析；
+        // 类型引用位置由 ResolveTypeReference 统一拦截「not a type」
         private SemanticSymbol? ResolveFirstSegment(string name, FileContext ctx,
             TypeSymbol? declaringType, bool allowImports, int arity, CharRange? span,
-            out bool importResolved)
+            bool includeNamespaceMembers, out bool importResolved)
         {
             importResolved = false;
             for (var t = declaringType; t != null; t = t.DeclaringType)
@@ -218,7 +229,7 @@ namespace RigiCompiler
             // 文件命名空间及父链（链尾即全局命名空间，无需再显式查一次）
             for (var ns = ctx.Namespace; ns != null; ns = ns.Parent)
             {
-                var hit = FindInNamespace(ns, name, arity);
+                var hit = FindInNamespace(ns, name, arity, includeNamespaceMembers);
                 if (hit != null) return hit;
             }
             if (allowImports)
@@ -269,7 +280,8 @@ namespace RigiCompiler
                 }
                 if (namedHit != null) return namedHit;
             }
-            return FindInNamespace(unit.Symbols.Bootstrap.Core, name, arity);
+            return FindInNamespace(unit.Symbols.Bootstrap.Core, name, arity,
+                includeNamespaceMembers);
         }
 
         // 按「名 + 期望元数」在类型表中查找（S10，SYNTAX §15.3：同名不同
@@ -287,17 +299,28 @@ namespace RigiCompiler
             return types.FirstOrDefault(t => t.Name == name);
         }
 
-        private static SemanticSymbol? FindInNamespace(NamespaceSymbol ns, string name, int arity)
+        // includeNamespaceMembers（S4）：末段查找扩到命名空间顶层函数/全局字段
+        // （优先级最低——类型与子命名空间先行，保持既有路径语义）；仅
+        // ResolveSymbolPath 末段启用，ext 目标（ResolveDottedPath）保持类型/命名空间
+        private static SemanticSymbol? FindInNamespace(NamespaceSymbol ns, string name,
+            int arity, bool includeNamespaceMembers = false)
         {
-            return (SemanticSymbol?)FindTypeIn(ns.Types, name, arity)
+            var hit = (SemanticSymbol?)FindTypeIn(ns.Types, name, arity)
                 ?? ns.ChildNamespaces.FirstOrDefault(n => n.Name == name);
+            if (hit == null && includeNamespaceMembers)
+            {
+                hit = (SemanticSymbol?)ns.Methods.FirstOrDefault(m => m.Name == name)
+                    ?? ns.Fields.FirstOrDefault(f => f.Name == name);
+            }
+            return hit;
         }
 
-        // 中间段下钻优先级与首段 FindInNamespace 一致：Types 优先于 ChildNamespaces
-        private static SemanticSymbol? Descend(SemanticSymbol current, string name, int arity) => current switch
+        // 中间段下钻优先级与首段 FindInNamespace 一致：Types 优先于 ChildNamespaces；
+        // includeNamespaceMembers 仅末段为 true（S4 具名导入顶层函数/全局字段）
+        private static SemanticSymbol? Descend(SemanticSymbol current, string name, int arity,
+            bool includeNamespaceMembers = false) => current switch
         {
-            NamespaceSymbol ns => (SemanticSymbol?)FindTypeIn(ns.Types, name, arity)
-                ?? ns.ChildNamespaces.FirstOrDefault(n => n.Name == name),
+            NamespaceSymbol ns => FindInNamespace(ns, name, arity, includeNamespaceMembers),
             TypeSymbol t => FindTypeIn(t.NestedTypes, name, arity),
             _ => null,
         };
@@ -360,8 +383,10 @@ namespace RigiCompiler
             var args = new SemanticSymbol[last.generics.Count];
             for (int i = 0; i < args.Length; i++)
             {
-                args[i] = ResolveSymbolPath(last.generics[i], ctx, declaringType, declaringMethod,
-                    allowImports, reportErrors, span);
+                // 泛型实参是完整类型引用（g1：i32? 即 Nullable\<i32>）——
+                // 走 ResolveTypeReference 同口径解析，可空后缀在此生效
+                args[i] = ResolveTypeReference(last.generics[i], ctx, declaringType, declaringMethod,
+                    last.generics[i].Span ?? span, reportErrors);
             }
             // 实参毒化传播（实参自身的诊断已报，此处静默）
             if (args.Any(a => a is ErrorTypeSymbol)) return unit.Symbols.ErrorType;

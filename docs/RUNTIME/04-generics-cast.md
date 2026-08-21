@@ -35,6 +35,7 @@ override 中的 `super(...)` 将当前固定泛型隐藏参数按声明序转发
 - **`new a(...)`**：显式发起普通构造。`a` 可以是静态类型符号，也可以是 `Type\<T>` 值；普通类型的构造必须经 `new` 发起，`TypeName(...)` 不构成构造调用。泛型体内 `T()` 与动态 `new` 共用同一套 typeid 构造机制。
   - 静态具体目标的 init 重载解析在编译期完成，运行期仅定位具体入口。
   - `Type\<T>` 值或其他非静态具体目标的 init 重载解析在运行期用 `TypeSheet` 的 init 表完成。
+  - 零参 `T()` 在编译期先按约束最大基类判定（SYNTAX §3.7）：界无可访问零参 init 直接编译错误；内建标量界由实现特判产零值（`i32` → 0），不查 init 表。只有标量界、带可访问零参 init 的 class 界与带实参形态能进入运行期路径。
   - `enum struct` 不进入普通构造路径：即使其 init 为 `pub`，`EnumType(...)`、`new EnumType(...)`、`new enumTypeValue(...)` 与解析到 enum 的泛型 `T()` 都必须失败；enum 只能调用编译器生成的具名 case 入口（§16）。
   - 目标为抽象类型、enum struct 或找不到匹配 init 时抛 `core.NoSuchMethodException`。
 - `Type\<T>` 的值可作类型出现在 `is`/`supers` 右侧。

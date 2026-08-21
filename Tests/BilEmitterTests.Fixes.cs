@@ -18,9 +18,52 @@ namespace RigiCompiler.Tests
     //   端到端（§21.8 init 豁免配套）
     // - 兄弟求值序保护（EvalOrderGuard）：receiver/左操作数等先求值槽位
     //   在后求值兄弟产前置语句时物化合成局部（修复前后置兄弟的短路前置
+    // - 兄弟求值序保护（EvalOrderGuard）：receiver/左操作数等先求值槽位
+    //   在后求值兄弟产前置语句时物化合成局部（修复前后置兄弟的短路前置
     //   先于前置兄弟执行——funcC 先于 funcA）
+    // - bug O5：`?.` 调 void 方法（§3.4 + §15.1/§21.3）——then 块发
+    //   invoke.noret（修复前恒走赋值管线发 invoke，BilVerifier §21.3 拒）
     public static partial class BilEmitterTests
     {
+        // ===== bug O5：`?.` 调 void 方法 → invoke.noret =====
+        private static void TestSafeAccessVoidCallEmission()
+        {
+            // 语句位 h?.bang()：SafeAccessRewriter 特判 void 实例调用，
+            // then 块发 LoweredCallStatement（invoke.noret），s_result
+            // 保持 null；receiver 为 null 时整体不调用
+            var (unit, module, text) = BilTestHarness.EmitBilUnit(
+                "import core.io.Console\n" +
+                "pub interface Hit { func bang() }\n" +
+                "pub class Boom implements Hit {\n" +
+                "    pub init()\n" +
+                "    pub override func bang() { Console.println(\"bang\") }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var h: Hit? = new Boom()\n" +
+                "    h?.bang()\n" +
+                "    h = null\n" +
+                "    h?.bang()\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（?. 调 void 方法）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（?. 调 void 方法）", module);
+            // 结构性事实：两处调用均 invoke.noret，无带结果 invoke 形态
+            TestHarness.CheckTrue("两处 ?.void 调用均发 invoke.noret",
+                System.Text.RegularExpressions.Regex.Matches(text,
+                    System.Text.RegularExpressions.Regex.Escape(
+                        "invoke.noret fn(Hit$bang()@.void)")).Count == 2
+                && !text.Contains("invoke fn(Hit$bang"), text);
+            // 端到端 VM：非空调用一次，null 不调用——stdout 恰一行 bang
+            var runResult = BilVm.Run(module);
+            TestHarness.CheckTrue("VM 运行无异常（?. 调 void 方法）",
+                runResult.Exception == null, runResult.Exception?.ToString() ?? "");
+            TestHarness.CheckTrue("VM stdout=bang 恰一次（null 不调用）",
+                runResult.Stdout == "bang\n", runResult.Stdout);
+            TestHarness.CheckTrue("VM 返回值 0（?. 调 void 方法）",
+                runResult.ReturnValue is VmI32 n && n.Value == 0,
+                runResult.ReturnValue?.ToStandardText() ?? "<null>");
+        }
+
         // ===== Nullable\<T\>（T 泛型参数）null 资源 §7.5 投影 =====
         private static void TestGenericNullableNullResource()
         {
@@ -102,85 +145,157 @@ namespace RigiCompiler.Tests
         // ===== variadic 参数索引访问装箱/拆箱（BIL §7.1 ABI ↔ P3 视角）=====
         private static void TestVarArgsIndexBoxingEmission()
         {
-            // vargs 读+写：容器 .vargs.nums 声明 .array<.any>，P3 体内
-            // 元素类型 i32——读位置 get.array 结果临时 .any 后 cast 拆箱
-            // 到 .i32，写位置元素 cast 装箱到 .any 再 set.array
+            // vargs 读+写（Q6）：容器 .vargs.nums 声明 .array<.any>，
+            // get.array 结果临时 .nullable<.any>（内建数组读取恒可空），
+            // 拆箱 cast 到 .nullable<.i32> 后 if? 解包；写位置元素 cast
+            // 装箱到 .any 再 set.array
             var (unit, module, _) = BilTestHarness.EmitBilUnit(
                 "func sum(nums: i32...): i32 {\n" +
-                "    var first = nums[0]\n" +
+                "    var first = nums[0] if? 0\n" +
                 "    nums[1] = first\n" +
-                "    return nums[1]\n" +
+                "    return nums[1] if? 0\n" +
                 "}\n");
             CheckNoErrors("全管线无诊断（vargs 索引读写）", unit);
             BilTestHarness.CheckBilValid("验证器零错误（vargs 索引读写）", module);
-            BilTestHarness.CheckFnShape("vargs 索引读写（拆箱/装箱 cast）",
+            BilTestHarness.CheckFnShape("vargs 索引读写（Q6 拆箱/装箱 cast）",
                 module, "$sum()@.i32",
-                ".vars { .i32 first, .i32 .t0, .any .t1, .i32 .t2, .i32 .t3, " +
-                ".any .t4, .i32 .t5, .any .t6, .i32 .t7 }\n" +
+                ".vars { .i32 first, .nullable<.i32> .s0, .i32 .s1, .breakid .b0, " +
+                ".nullable<.i32> .s2, .i32 .s3, .breakid .b1, .i32 .t0, " +
+                ".nullable<.any> .t1, .nullable<.i32> .t2, .nullable<.i32> .t3, " +
+                ".bool .t4, .i32 .t5, .i32 .t6, .i32 .t7, .any .t8, .i32 .t9, " +
+                ".nullable<.any> .t10, .nullable<.i32> .t11, .nullable<.i32> .t12, " +
+                ".bool .t13, .i32 .t14, .i32 .t15 }\n" +
+                ".block entry entrypoint {\n" +
                 "load res(#0) $.t0\n" +
                 "get.array $.vargs.nums $.t0 $.t1\n" +
-                "cast $.t1 $.t2 type(.i32)\n" +
-                "set.var $.t2 $first\n" +
+                "cast $.t1 $.t2 type(.nullable<.i32>)\n" +
+                "set.var $.t2 $.s0\n" +
                 "load res(#1) $.t3\n" +
-                "cast $first $.t4 type(.any)\n" +
-                "set.array $.vargs.nums $.t3 $.t4\n" +
-                "load res(#1) $.t5\n" +
-                "get.array $.vargs.nums $.t5 $.t6\n" +
-                "cast $.t6 $.t7 type(.i32)\n" +
-                "ret $.t7\n");
+                "cmp.ne $.s0 $.t3 $.t4\n" +
+                "if $.t4 blk(if0-then) blk(if0-else) $.b0\n" +
+                "set.var $.s1 $first\n" +
+                "load res(#2) $.t7\n" +
+                "cast $first $.t8 type(.any)\n" +
+                "set.array $.vargs.nums $.t7 $.t8\n" +
+                "load res(#2) $.t9\n" +
+                "get.array $.vargs.nums $.t9 $.t10\n" +
+                "cast $.t10 $.t11 type(.nullable<.i32>)\n" +
+                "set.var $.t11 $.s2\n" +
+                "load res(#1) $.t12\n" +
+                "cmp.ne $.s2 $.t12 $.t13\n" +
+                "if $.t13 blk(if1-then) blk(if1-else) $.b1\n" +
+                "ret $.s3\n" +
+                "}\n" +
+                ".block if0-then {\n" +
+                "cast $.s0 $.t5 type(.i32)\n" +
+                "set.var $.t5 $.s1\n" +
+                "}\n" +
+                ".block if0-else {\n" +
+                "load res(#0) $.t6\n" +
+                "set.var $.t6 $.s1\n" +
+                "}\n" +
+                ".block if1-then {\n" +
+                "cast $.s2 $.t14 type(.i32)\n" +
+                "set.var $.t14 $.s3\n" +
+                "}\n" +
+                ".block if1-else {\n" +
+                "load res(#0) $.t15\n" +
+                "set.var $.t15 $.s3\n" +
+                "}\n");
 
-            // kwargs 读：.kwargs.options 元素 .pair<.string, .any>——
-            // get.array 结果临时 core::Pair<.string, .any>（canonical 投影，
-            // 别名与容器声明对齐）后 cast 拆箱到 P3 元素 Pair<String, String>，
-            // 再经 get.field 取 key
+            // kwargs 读（Q6）：get.array 结果 .nullable<Pair>，拆箱后
+            // ?. 取 key、if? 回退
             var (unit2, module2, _) = BilTestHarness.EmitBilUnit(
                 "func f(options: named String...): String {\n" +
-                "    return options[0].key\n" +
+                "    return options[0]?.key if? \"\"\n" +
                 "}\n");
             CheckNoErrors("全管线无诊断（kwargs 索引读）", unit2);
             BilTestHarness.CheckBilValid("验证器零错误（kwargs 索引读）", module2);
-            BilTestHarness.CheckFnShape("kwargs 索引读（Pair 拆箱 cast）",
+            BilTestHarness.CheckFnShape("kwargs 索引读（Q6 Pair 拆箱 cast）",
                 module2, "$f()@.string",
-                ".vars { .i32 .t0, core::Pair<.string, .any> .t1, " +
-                "core::Pair<.string, .string> .t2, .string .t3 }\n" +
+                ".vars { .nullable<core::Pair<.string, .string>> .s0, " +
+                ".nullable<.string> .s1, .breakid .b0, .nullable<.string> .s2, " +
+                ".string .s3, .breakid .b1, .i32 .t0, " +
+                ".nullable<core::Pair<.string, .any>> .t1, " +
+                ".nullable<core::Pair<.string, .string>> .t2, .nullable<.string> .t3, " +
+                ".nullable<core::Pair<.string, .string>> .t4, .bool .t5, " +
+                "core::Pair<.string, .string> .t6, .string .t7, .nullable<.string> .t8, " +
+                ".nullable<.string> .t9, .bool .t10, .string .t11, .string .t12 }\n" +
+                ".block entry entrypoint {\n" +
                 "load res(#0) $.t0\n" +
                 "get.array $.kwargs.options $.t0 $.t1\n" +
-                "cast $.t1 $.t2 type(core::Pair<.string, .string>)\n" +
-                "get.field $.t2 $.t3 field(core::Pair#key@.generic<$.generic.TKey>)\n" +
-                "ret $.t3\n");
+                "cast $.t1 $.t2 type(.nullable<core::Pair<.string, .string>>)\n" +
+                "set.var $.t2 $.s0\n" +
+                "load res(#1) $.t3\n" +
+                "set.var $.t3 $.s1\n" +
+                "load res(#2) $.t4\n" +
+                "cmp.ne $.s0 $.t4 $.t5\n" +
+                "if $.t5 blk(if0-then) none $.b0\n" +
+                "set.var $.s1 $.s2\n" +
+                "load res(#1) $.t9\n" +
+                "cmp.ne $.s2 $.t9 $.t10\n" +
+                "if $.t10 blk(if1-then) blk(if1-else) $.b1\n" +
+                "ret $.s3\n" +
+                "}\n" +
+                ".block if0-then {\n" +
+                "cast $.s0 $.t6 type(core::Pair<.string, .string>)\n" +
+                "get.field $.t6 $.t7 field(core::Pair#key@.generic<$.generic.TKey>)\n" +
+                "cast $.t7 $.t8 type(.nullable<.string>)\n" +
+                "set.var $.t8 $.s1\n" +
+                "}\n" +
+                ".block if1-then {\n" +
+                "cast $.s2 $.t11 type(.string)\n" +
+                "set.var $.t11 $.s3\n" +
+                "}\n" +
+                ".block if1-else {\n" +
+                "load res(#3) $.t12\n" +
+                "set.var $.t12 $.s3\n" +
+                "}\n");
 
-            // vargs 复合赋值：读侧 get.array .any + 拆箱 cast 参与运算、
-            // 写回值装箱 cast 到 .any 物化 .s0 后 set.array——§13.2 单次
-            // 求值，表达式位取 .s0 的拆箱 cast，不再二次 get.array
+            // vargs 显式读改写回（Q6 后复合赋值索引形态由显式形态替代）：
+            // 读侧拆箱 cast 参与运算、写回值装箱 cast 到 .any
             var (unit3, module3, _) = BilTestHarness.EmitBilUnit(
                 "func bump(nums: i32...) {\n" +
-                "    nums[0] += 1\n" +
+                "    nums[0] = ((nums[0] if? 0) + 1)\n" +
                 "}\n");
-            CheckNoErrors("全管线无诊断（vargs 索引复合赋值）", unit3);
-            BilTestHarness.CheckBilValid("验证器零错误（vargs 索引复合赋值）", module3);
-            BilTestHarness.CheckFnShape("vargs 索引复合赋值（读拆箱/写装箱）",
+            CheckNoErrors("全管线无诊断（vargs 索引显式读改写回）", unit3);
+            BilTestHarness.CheckBilValid("验证器零错误（vargs 索引显式读改写回）", module3);
+            BilTestHarness.CheckFnShape("vargs 索引显式读改写回（读拆箱/写装箱）",
                 module3, "$bump()@.void",
-                ".vars { .any .s0, .i32 .t0, .any .t1, .i32 .t2, .i32 .t3, " +
-                ".i32 .t4, .any .t5, .i32 .t6, .i32 .t7 }\n" +
+                ".vars { .nullable<.i32> .s0, .i32 .s1, .breakid .b0, .i32 .t0, " +
+                ".nullable<.any> .t1, .nullable<.i32> .t2, .nullable<.i32> .t3, " +
+                ".bool .t4, .i32 .t5, .i32 .t6, .i32 .t7, .i32 .t8, .i32 .t9, .any .t10 }\n" +
+                ".block entry entrypoint {\n" +
                 "load res(#0) $.t0\n" +
                 "get.array $.vargs.nums $.t0 $.t1\n" +
-                "cast $.t1 $.t2 type(.i32)\n" +
+                "cast $.t1 $.t2 type(.nullable<.i32>)\n" +
+                "set.var $.t2 $.s0\n" +
                 "load res(#1) $.t3\n" +
-                "add $.t2 $.t3 $.t4\n" +
-                "cast $.t4 $.t5 type(.any)\n" +
-                "set.var $.t5 $.s0\n" +
+                "cmp.ne $.s0 $.t3 $.t4\n" +
+                "if $.t4 blk(if0-then) blk(if0-else) $.b0\n" +
+                "load res(#0) $.t7\n" +
+                "load res(#2) $.t8\n" +
+                "add $.s1 $.t8 $.t9\n" +
+                "cast $.t9 $.t10 type(.any)\n" +
+                "set.array $.vargs.nums $.t7 $.t10\n" +
+                "ret\n" +
+                "}\n" +
+                ".block if0-then {\n" +
+                "cast $.s0 $.t5 type(.i32)\n" +
+                "set.var $.t5 $.s1\n" +
+                "}\n" +
+                ".block if0-else {\n" +
                 "load res(#0) $.t6\n" +
-                "set.array $.vargs.nums $.t6 $.s0\n" +
-                "cast $.s0 $.t7 type(.i32)\n" +
-                "ret\n");
+                "set.var $.t6 $.s1\n" +
+                "}\n");
 
-            // 模型断言：get.array 结果临时按 ABI 元素类型登记（.vars）
+            // 模型断言：get.array 结果临时按 .nullable<ABI 元素> 登记（.vars）
             var sumFn = module.Functions.Single(f => f.Symbol == "$sum()@.i32");
-            TestHarness.CheckTrue("vargs get.array 结果临时类型 .any",
-                sumFn.Vars.Any(v => v.TypeRef == ".any"));
+            TestHarness.CheckTrue("vargs get.array 结果临时类型 .nullable<.any>",
+                sumFn.Vars.Any(v => v.TypeRef == ".nullable<.any>"));
             var fFn = module2.Functions.Single(f => f.Symbol == "$f()@.string");
-            TestHarness.CheckTrue("kwargs get.array 结果临时类型 core::Pair<.string, .any>",
-                fFn.Vars.Any(v => v.TypeRef == "core::Pair<.string, .any>"));
+            TestHarness.CheckTrue("kwargs get.array 结果临时类型 .nullable<core::Pair<.string, .any>>",
+                fFn.Vars.Any(v => v.TypeRef == ".nullable<core::Pair<.string, .any>>"));
         }
 
         // ===== ext 字段声明带 ext 修饰符（§8.3）=====
@@ -211,7 +326,7 @@ namespace RigiCompiler.Tests
                 "class Config {\n" +
                 "    pub const name: String\n" +
                 "    pub var size: i32\n" +
-                "    pub init(n: String) {\n        name = n\n    }\n" +
+                "    pub init(n: String) {\n        name = n\n        size = 0\n    }\n" +
                 "}\n" +
                 "pub func main(): i32 { return 0 }\n");
             CheckNoErrors("全管线无诊断（const 字段 init 写入）", unit);

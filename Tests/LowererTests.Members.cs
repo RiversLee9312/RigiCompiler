@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Linq;
 
 namespace RigiCompiler.Tests
@@ -46,28 +46,29 @@ namespace RigiCompiler.Tests
             var (unit, bound, lowered) = LowerUnit(
                 "class Bag {\n" +
                 "    pub var item: i32\n" +
-                "    pub operator getAtIndex(index: i32): i32 { return item }\n" +
+                "    pub operator getAtIndex(index: i32): i32? { return item }\n" +
                 "    pub operator setAtIndex(index: i32, element: i32) { item = element }\n" +
                 "}\n" +
-                "func read(b: Bag, i: i32): i32 { return b[i] }\n" +
+                "func read(b: Bag, i: i32): i32? { return b[i] }\n" +
                 "func write(b: Bag) { b[0] = 42 }\n" +
-                "func bump(b: Bag) { b[1] += 2 }\n");
+                "func bump(b: Bag) { b[1] = ((b[1] if? 0) + 2) }\n");
             CheckNoErrors("无诊断（索引降级）", unit);
-            TestHarness.Check("索引读降级",
+            TestHarness.Check("索引读降级（Q6：Type = i32?）",
                 LoweredDescribe.Body(BodyOf(lowered, "read")),
-                "Body(read, [], [Return(Index(Param(b,Bag), Param(i,i32), i32))])");
+                "Body(read, [], [Return(Index(Param(b,Bag), Param(i,i32), i32?))])");
             TestHarness.Check("索引写降级",
                 LoweredDescribe.Body(BodyOf(lowered, "write")),
                 "Body(write, [], [Assign(Index(Param(b,Bag), Int(0,i32), i32), Int(42,i32))])");
-            // 索引复合：读/写分离——写回值物化 .s0（§13.2 单次求值，
-            // 表达式位取 .s0 不再二次读索引）
-            TestHarness.Check("索引复合赋值降级",
+            // 索引显式读改写回（Q6 后 a[i] op= 读侧为 T?，由显式形态替代）
+            TestHarness.Check("索引显式读改写回降级",
                 LoweredDescribe.Body(BodyOf(lowered, "bump")),
-                "Body(bump, [.s0: i32], " +
-                "[Assign(Local(.s0,i32), " +
-                "Binary(Add, Index(Param(b,Bag), Int(1,i32), i32), Int(2,i32), i32)); " +
-                "Assign(Index(Param(b,Bag), Int(1,i32), i32), Local(.s0,i32)); " +
-                "ExprStmt(Local(.s0,i32))])");
+                "Body(bump, [.s0: i32?, .s1: i32, .b0: .breakid], " +
+                "[Assign(Local(.s0,i32?), Index(Param(b,Bag), Int(1,i32), i32?)); " +
+                "If(Binary(CmpNe, Local(.s0,i32?), Const(null,i32?), bool), " +
+                "[Assign(Local(.s1,i32), Cast(Local(.s0,i32?), i32, i32))], " +
+                "[Assign(Local(.s1,i32), Int(0,i32))], .b0); " +
+                "Assign(Index(Param(b,Bag), Int(1,i32), i32), " +
+                "Binary(Add, Local(.s1,i32), Int(2,i32), i32))])");
 
             // 结构性事实：Origin 回指引用相等 + Type 透传（读 = getAtIndex
             // 返回类型；写 = setAtIndex 元素形参类型——同型同源此处皆 i32）

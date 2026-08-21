@@ -125,6 +125,13 @@ namespace RigiCompiler
         {
             var callExpression = (LoweredCallExpression)node;
             var callArguments = new List<BilVariableOperand>();
+            // g7：静态调用的宿主泛型实参先于方法自有实参物化（§7.2 序：
+            // 外层类型参数在前）——无 .this 可供 VM 注入 .generic.* typeid
+            foreach (var hostTypeArgument in callExpression.HostTypeArguments)
+            {
+                callArguments.Add(EmittingFacility.MaterializeTypeId(hostTypeArgument,
+                    callExpression, target, ctx, env));
+            }
             foreach (var typeArgument in callExpression.TypeArguments)
             {
                 callArguments.Add(EmittingFacility.MaterializeTypeId(typeArgument, callExpression,

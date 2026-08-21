@@ -14,7 +14,9 @@ namespace RigiCompiler
     //      可见性落定、const+set、无体 computed 拒绝）、override 配套检查
     //      （§9.2.1：覆写目标存在且 open/abstract、禁止静默隐藏、abstract
     //      位置与体、具体类待实现成员）、声明侧访问控制（§16：类型引用/
-    //      继承/约束命中处的使用点检查，AccessChecker 与 P3 共用）；
+    //      继承/约束命中处的使用点检查，AccessChecker 与 P3 共用）、
+    //      声明侧签名泄漏检查（§16.1，bug S5 修复1）：pub/protected/internal
+    //      签名的返回/参数类型有效可见性不得低于签名本身；
     //      随附 native 函数声明检查（§4.6：无体/成员必 static/禁 init/operator/
     //      async/重载、参数与返回类型基元白名单、@NativeLibrary 必填、
     //      @NativeSymbol 缺省取函数名、内建注解禁挂非 native 声明；
@@ -58,6 +60,9 @@ namespace RigiCompiler
             // Contagion/FieldClosure 等）之前
             unit.Symbols.BackfillConstructedBaseTypes();
             TypeReferenceResolver.Visit(env);
+            // 声明点签名泄漏检查（§16.1，bug S5 修复1）：紧随类型引用解析——
+            // 签名类型刚就绪，可见性在 EntryCollector 已落定
+            SignatureAccessibilityChecker.Visit(env);
             // enum case 结构级检查与判别值落定（S11，§12）：纯 AST 结构级，
             // 不依赖 init 参数类型解析（init 模板绑定归 P3 声明点）
             EnumCaseResolver.Visit(env);
@@ -67,11 +72,18 @@ namespace RigiCompiler
             NativeDeclarationChecker.Visit(env);
             ConversionOperatorChecker.Visit(env);
             EnumerateInRangeOperatorChecker.Visit(env);
+            // Q6：getAtIndex 声明形状（§13.2：恰 1 形参 + 返回 T?）
+            IndexOperatorChecker.Visit(env);
             OperatorNameChecker.Visit(env);
             ContagionChecker.Visit(env);
             FieldClosureChecker.Visit(env);
+            // 值类型布局环拒绝（P18/S2 配套，§10）：紧随字段闭包检查
+            LayoutCycleChecker.Visit(env);
             SharedSafetyGateChecker.Visit(env);
             GenericConstraintChecker.Visit(env);
+            // 继承子句填入点统一收口（F2/V-C）：用户约束 Bound 刚填充、
+            // 字段/方法签名与 rich/shared 传染均已就绪
+            InheritanceFillInChecker.Visit(env);
             // async 声明侧闸门（S8f，§4.5）依赖约束边界已解析（GenericConstraintChecker
             // 之后——闸门 5 检查约束界的共享安全），参数/返回类型同已就绪
             AsyncGateChecker.Visit(env);

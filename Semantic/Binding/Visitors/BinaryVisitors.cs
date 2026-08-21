@@ -144,24 +144,25 @@ namespace RigiCompiler
 
         // if? 空值回退（S7f，SYNTAX §3.4）：左操作数必须 Nullable<T>，
         // 右操作数（回退值）必须可赋值到 T，结果类型 T；右操作数延迟求值
-        // （P4a 以 if 结构保证）
+        // （P4a 以 if 结构保证）。g10：内层放宽为 SemanticSymbol——
+        // Nullable<T>（T 为泛型参数）同样合法
         private static BoundExpression? BindNullFallback(BinaryExpressionASTNode node, Scope scope,
             BindContext ctx, BindEnvironment env)
         {
             var left = ExpressionDispatcher.Visit(node.Left.Expression, scope, ctx, env);
             if (left == null) return null;
             if (left.Type is ErrorTypeSymbol) return null;
-            if (left.Type is not TypeSymbol leftType
-                || leftType.ConstructedFrom == null
-                || leftType.ConstructedFrom != env.B.NullableDefinition
-                || leftType.TypeArguments![0] is not TypeSymbol element)
+            if (!SymbolLookup.IsNullableType(left.Type, env, out var element))
             {
                 env.Error(node.Left.Span ?? node.Span,
                     $"Operator 'if?' requires a nullable left operand " +
                     $"(got '{BoundAnalysis.TypeDisplay(left.Type)}')");
                 return null;
             }
-            var right = ExpressionDispatcher.Visit(node.Right.Expression, scope, ctx, env, element);
+            // g10：元素为泛型参数时期望类型通道（TypeSymbol?）承载不了——
+            // 不下传期望，右操作数只靠下方 IsAssignable 校验
+            var right = ExpressionDispatcher.Visit(node.Right.Expression, scope, ctx, env,
+                element as TypeSymbol);
             if (right == null) return null;
             // 毒化静默：任一侧已失败时不再报次生错误
             if (right.Type is ErrorTypeSymbol) return null;

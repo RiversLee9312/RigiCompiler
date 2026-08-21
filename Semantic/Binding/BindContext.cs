@@ -58,5 +58,19 @@ namespace RigiCompiler
         // 语句位路径绑定：允许链末 void 实例调用（§14.5 wrapper place 上调
         // void 方法）。仅 BindNonAssignment 短暂置位，值位置恒 false。
         public bool AllowVoidCall { get; set; }
+
+        // F1 使用点类型可见性去重（V-B 统一收口 / c6 级联控制）：本函数体
+        // 内已做过可见性检查的语法点（同一 AST 节点重绑不重复查）与已报过
+        // 的不可见类型（引用相等驻留）——同一泄漏链（显式标注 → 推断声明
+        // → 直链/?. 链使用）只报一次，下游不级联。返回 false = 已登记
+        //（调用方据此跳过重复诊断）
+        private readonly HashSet<ASTNode> accessibilityCheckedNodes = new HashSet<ASTNode>();
+        private readonly HashSet<TypeSymbol> reportedInaccessibleTypes =
+            new HashSet<TypeSymbol>();
+
+        public bool NoteAccessibilityChecked(ASTNode node) => accessibilityCheckedNodes.Add(node);
+
+        public bool NoteInaccessibleTypeReported(TypeSymbol type) =>
+            reportedInaccessibleTypes.Add(type);
     }
 }

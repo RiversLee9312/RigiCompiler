@@ -417,7 +417,7 @@ namespace RigiCompiler.Tests
             return typeName;
         }
 
-        // 符号：a.b.c<T,U>（泛型实参递归）
+        // 符号：a.b.c<T,U>（泛型实参是完整类型引用，g1：递归含可空后缀）
         public static string Symbol(Symbol symbol)
         {
             var parts = new List<string>();
@@ -426,7 +426,7 @@ namespace RigiCompiler.Tests
                 string part = element.name;
                 if (element.generics.Count > 0)
                 {
-                    part += "<" + string.Join(",", element.generics.Select(g => Symbol(g))) + ">";
+                    part += "<" + string.Join(",", element.generics.Select(g => Type(g))) + ">";
                 }
                 parts.Add(part);
             }

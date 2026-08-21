@@ -282,18 +282,27 @@ set.array COLLECTION INDEX ELEMENT
 
 这些指令表示 Rigi 的 `getAtIndex` / `setAtIndex` 语义，不预先降为方法调用。
 
-验证器使用严格三元组查询：
+**内建 `.array<T>` 形态（Q6，对齐 SYNTAX §13.2「索引读取一律返回 T?」）**：
+
+- `get.array` 的 RESULT 类型 ≡ `.nullable<T>`：界内元素包成 `Nullable\<T\>`
+  （值类型存在位包装，引用类型沿用 `null` 引用表示）；**越界读取不 trap，
+  RESULT 得 `null`**——越界语义由本指令承载，发射层不生成显式边界检查。
+- `set.array` 的 ELEMENT 类型 ≡ `T`（写入仍收非空元素）；越界**写入**维持
+  运行时 trap。
+
+非数组（用户索引运算符）形态走严格三元组查询：
 
 ```text
 get.array: collection type + index type + result type
 set.array: collection type + index type + element type
 ```
 
-必须存在唯一精确实现，且不得插入隐式转换。
+必须存在唯一精确实现，且不得插入隐式转换（`get.array` 的 result ≡
+`getAtIndex` 返回类型——SYNTAX §13.2 要求该返回类型为 `T?` 构造）。
 
 Middleware 可将其 lower 为：
 
-- `Array\<T>` 统一胖值槽访问；
+- `Array\<T>` 统一胖值槽访问（含边界检查与 null 产物）；
 - `Span\<T>` 原生 stride 地址计算；
 - 用户索引运算符；
 - wrapper 运算符代理；

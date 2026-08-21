@@ -79,7 +79,7 @@ namespace RigiCompiler.Tests
         private static void TestSafeAccessEmission()
         {
             var (unit, module, _) = BilTestHarness.EmitBilUnit(
-                "class User { pub var name: String\n    pub init(_ -> name) { } }\n" +
+                "pub class User { pub var name: String\n    pub init(_ -> name) { } }\n" +
                 "pub func f(u: User?): String? { return u?.name }\n");
             CheckNoErrors("全管线无诊断（?.）", unit);
             BilTestHarness.CheckBilValid("验证器零错误（?.）", module);
@@ -115,7 +115,7 @@ namespace RigiCompiler.Tests
         private static void TestNullFallbackEmission()
         {
             var (unit, module, _) = BilTestHarness.EmitBilUnit(
-                "class User { pub var name: String\n    pub init(_ -> name) { } }\n" +
+                "pub class User { pub var name: String\n    pub init(_ -> name) { } }\n" +
                 "pub func g(u: User?): User { return u if? new User(\"anon\") }\n");
             CheckNoErrors("全管线无诊断（if?）", unit);
             BilTestHarness.CheckBilValid("验证器零错误（if?）", module);
@@ -180,8 +180,8 @@ namespace RigiCompiler.Tests
             var (unit, module, _) = BilTestHarness.EmitBilUnit(
                 "@WrapperTarget(.Entity)\n" +
                 "wrapper Serializable { }\n" +
-                "open class Animal { }\n" +
-                "class Dog : Animal { }\n" +
+                "pub open class Animal { }\n" +
+                "pub class Dog : Animal { }\n" +
                 "pub func f(d: Dog): bool {\n    return d is Animal\n}\n" +
                 "pub func g(d: Dog): bool {\n    return d supers Animal\n}\n" +
                 "pub func h(d: Dog): bool {\n    return d with Serializable\n}\n" +
@@ -230,8 +230,8 @@ namespace RigiCompiler.Tests
         private static void TestTypeOfEmission()
         {
             var (unit, module, _) = BilTestHarness.EmitBilUnit(
-                "open class Animal { }\n" +
-                "class Dog : Animal { }\n" +
+                "pub open class Animal { }\n" +
+                "pub class Dog : Animal { }\n" +
                 "pub func m(): Type\\<Animal> {\n    return typeOf(Animal)\n}\n" +
                 "pub func n(d: Dog): Type\\<Dog> {\n    return typeOf(d)\n}\n");
             CheckNoErrors("全管线无诊断（typeOf 发射）", unit);
@@ -266,7 +266,7 @@ namespace RigiCompiler.Tests
         private static void TestDynamicNewEmission()
         {
             var (unit, module, _) = BilTestHarness.EmitBilUnit(
-                "func makeIt\\<TResult>(): TResult { return TResult() }\n" +
+                "func makeIt\\<TResult extends i32>(): TResult { return TResult() }\n" +
                 "pub class Box {\n    pub var size: i32\n    pub init(_ -> size)\n}\n" +
                 "pub func m(): i32 {\n" +
                 "    var b = new Box(12)\n" +

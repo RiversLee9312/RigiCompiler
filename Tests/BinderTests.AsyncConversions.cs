@@ -1,4 +1,4 @@
-using System.Linq;
+﻿using System.Linq;
 
 namespace RigiCompiler.Tests
 {
@@ -376,7 +376,7 @@ namespace RigiCompiler.Tests
             var indexGuard = BindUnitWithStdlib(
                 "class Dog { }\n" +
                 "class Flags {\n" +
-                "    pub operator getAtIndex(index: i32): bool { return true }\n" +
+                "    pub operator getAtIndex(index: i32): bool? { return true }\n" +
                 "}\n" +
                 "async func nextIndex(): i32 { return 0 }\n" +
                 "func f(d: Dog?, flags: Flags): Dog {\n" +

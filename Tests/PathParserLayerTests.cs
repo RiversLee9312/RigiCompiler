@@ -76,11 +76,13 @@ namespace RigiCompiler.Tests
             var map = generic.symbol.elements[0];
             TestHarness.CheckTrue("Map\\<...>: 两个泛型实参", map.generics.Count == 2);
             // 泛型下钻深度：第二个实参是 List<i32>，其自身还有一个泛型实参 i32
+            // （g1：实参为完整 TypeReferenceASTNode，经其 TypeSymbol 下钻）
             TestHarness.CheckTrue("Map\\<...>: 嵌套泛型已下钻到 List<i32>",
-                map.generics[1].elements.Count == 1 &&
-                map.generics[1].elements[0].name == "List" &&
-                map.generics[1].elements[0].generics.Count == 1 &&
-                map.generics[1].elements[0].generics[0].elements[0].name == "i32");
+                map.generics[1].TypeSymbol.symbol.elements.Count == 1 &&
+                map.generics[1].TypeSymbol.symbol.elements[0].name == "List" &&
+                map.generics[1].TypeSymbol.symbol.elements[0].generics.Count == 1 &&
+                map.generics[1].TypeSymbol.symbol.elements[0].generics[0]
+                    .TypeSymbol.symbol.elements[0].name == "i32");
             TestHarness.CheckTrue("span 非空（ReceiveSpan 由主循环回填）", generic.Span != null);
 
             TestHarness.Blank();

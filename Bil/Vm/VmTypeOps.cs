@@ -290,7 +290,10 @@ namespace RigiCompiler.Bil.Vm
                 : VmNull.Instance;
         }
 
-        private static VmValue WrapNullable(VmValue inner, string innerType)
+        // T → Nullable\<T\> 包装（BIL §13.6 get.array 内建数组读取与
+        // cast 到可空目标共用）：值类型/枚举包 VmNullable 存在位；引用类型
+        // 与 .any 沿用 VmNull 表示直接透传；VmNull 原样
+        internal static VmValue WrapNullable(VmValue inner, string innerType)
         {
             if (inner is VmNull)
             {

@@ -85,7 +85,7 @@ namespace RigiCompiler.Tests
             // LowerArguments 同先例：P3 IsAssignable 兼容 → BIL 严格相等；
             // rich enum struct 才能持有 class 字段——§3.1.1 rich 规则）=====
             var (unit4, _, lowered4) = LowerUnit(
-                "open class Base { }\n" +
+                "pub open class Base { }\n" +
                 "class Derived : Base { }\n" +
                 "pub rich enum struct Wrapped {\n" +
                 "    pub const v: Base\n" +

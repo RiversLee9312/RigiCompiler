@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Linq;
 using RigiCompiler.Bil;
 
@@ -197,24 +197,24 @@ namespace RigiCompiler.Tests
                 "pub class Bag {\n" +
                 "    pub var item: i32\n" +
                 "    pub init() { item = 0 }\n" +
-                "    pub operator getAtIndex(index: i32): i32 { return item }\n" +
+                "    pub operator getAtIndex(index: i32): i32? { return item }\n" +
                 "    pub operator setAtIndex(index: i32, element: i32) { item = element }\n" +
                 "}\n" +
                 "pub class CounterBag {\n" +
                 "    pub var first: Counter\n" +
                 "    pub init(c: Counter) { first = c }\n" +
-                "    pub operator getAtIndex(index: i32): Counter { return first }\n" +
+                "    pub operator getAtIndex(index: i32): Counter? { return first }\n" +
                 "}\n" +
                 "pub func makeBag(): Bag { return new Bag() }\n" +
                 "pub func main(): i32 {\n" +
                 "    var b = new Bag()\n" +
                 "    b[0] = 7\n" +
-                "    var x = b[1]\n" +
-                "    b[2] += 3\n" +
+                "    var x = b[1] if? 0\n" +
+                "    b[2] = ((b[2] if? 0) + 3)\n" +
                 "    var cb = new CounterBag(new Counter(5))\n" +
-                "    var y = cb[0].value\n" +
-                "    var z = makeBag()[9]\n" +
-                "    return ((x + y) + z) + b[0]\n" +
+                "    var y = cb[0]?.value if? 0\n" +
+                "    var z = makeBag()[9] if? 0\n" +
+                "    return ((((x + y) + z) + (b[0] if? 0)))\n" +
                 "}\n");
             CheckNoErrors("全管线无诊断（索引发射）", unit);
             BilTestHarness.CheckBilValid("验证器零错误（索引发射）", module);
@@ -225,7 +225,7 @@ namespace RigiCompiler.Tests
                 module.LocalSymbols.OfType<BilTypeDeclaration>()
                     .Where(t => t.Symbol == "Bag")
                     .SelectMany(t => t.Members.OfType<BilSimpleMemberDeclaration>())
-                    .Any(d => d.Symbol == "Bag$$getAtIndex(index:.i32)@.i32"
+                    .Any(d => d.Symbol == "Bag$$getAtIndex(index:.i32)@.nullable<.i32>"
                         && d.Modifiers.Any(m => m is BilOperatorModifier op
                             && op.Name == "getAtIndex"))
                     && module.LocalSymbols.OfType<BilTypeDeclaration>()
@@ -241,13 +241,25 @@ namespace RigiCompiler.Tests
             // 单次求值，表达式位不再二次 get）、链式
             // （cb[0].value = get.array → get.field；makeBag()[9] = invoke →
             // get.array）
-            BilTestHarness.CheckFnShape("main 指令（索引读写/复合/链式）",
+            BilTestHarness.CheckFnShape("main 指令（索引读写/显式读改写回/链式，Q6）",
                 module, "$main()@.i32",
-                ".vars { Bag b, .i32 x, CounterBag cb, .i32 y, .i32 z, .i32 .s0, Bag .t0, " +
-                ".i32 .t1, .i32 .t2, .i32 .t3, .i32 .t4, .i32 .t5, .i32 .t6, .i32 .t7, " +
-                ".i32 .t8, .i32 .t9, .i32 .t10, Counter .t11, CounterBag .t12, .i32 .t13, " +
-                "Counter .t14, .i32 .t15, Bag .t16, .i32 .t17, .i32 .t18, .i32 .t19, " +
-                ".i32 .t20, .i32 .t21, .i32 .t22, .i32 .t23 }\n" +
+                ".vars { Bag b, .i32 x, CounterBag cb, .i32 y, .i32 z, .nullable<.i32> .s0, " +
+                ".i32 .s1, .breakid .b0, .nullable<.i32> .s2, .i32 .s3, .breakid .b1, " +
+                ".nullable<Counter> .s4, .nullable<.i32> .s5, .breakid .b2, " +
+                ".nullable<.i32> .s6, .i32 .s7, .breakid .b3, .nullable<.i32> .s8, " +
+                ".i32 .s9, .breakid .b4, .nullable<.i32> .s10, .i32 .s11, .breakid .b5, " +
+                ".i32 .s12, Bag .t0, .i32 .t1, .i32 .t2, .i32 .t3, .nullable<.i32> .t4, " +
+                ".nullable<.i32> .t5, .bool .t6, .i32 .t7, .i32 .t8, .i32 .t9, " +
+                ".nullable<.i32> .t10, .nullable<.i32> .t11, .bool .t12, .i32 .t13, " +
+                ".i32 .t14, .i32 .t15, .i32 .t16, .i32 .t17, .i32 .t18, Counter .t19, " +
+                "CounterBag .t20, .i32 .t21, .nullable<Counter> .t22, .nullable<.i32> .t23, " +
+                ".nullable<Counter> .t24, .bool .t25, Counter .t26, .i32 .t27, " +
+                ".nullable<.i32> .t28, .nullable<.i32> .t29, .bool .t30, .i32 .t31, " +
+                ".i32 .t32, Bag .t33, .i32 .t34, .nullable<.i32> .t35, .nullable<.i32> .t36, " +
+                ".bool .t37, .i32 .t38, .i32 .t39, .i32 .t40, .i32 .t41, .i32 .t42, " +
+                ".nullable<.i32> .t43, .nullable<.i32> .t44, .bool .t45, .i32 .t46, " +
+                ".i32 .t47, .i32 .t48 }\n" +
+                ".block entry entrypoint {\n" +
                 "new type(Bag) $.t0 []\n" +
                 "set.var $.t0 $b\n" +
                 "load res(#0) $.t1\n" +
@@ -255,32 +267,104 @@ namespace RigiCompiler.Tests
                 "set.array $b $.t1 $.t2\n" +
                 "load res(#2) $.t3\n" +
                 "get.array $b $.t3 $.t4\n" +
-                "set.var $.t4 $x\n" +
+                "set.var $.t4 $.s0\n" +
                 "load res(#3) $.t5\n" +
-                "get.array $b $.t5 $.t6\n" +
-                "load res(#4) $.t7\n" +
-                "add $.t6 $.t7 $.t8\n" +
-                "set.var $.t8 $.s0\n" +
-                "load res(#3) $.t9\n" +
-                "set.array $b $.t9 $.s0\n" +
-                "load res(#5) $.t10\n" +
-                "new type(Counter) $.t11 [$.t10]\n" +
-                "new type(CounterBag) $.t12 [$.t11]\n" +
-                "set.var $.t12 $cb\n" +
-                "load res(#0) $.t13\n" +
-                "get.array $cb $.t13 $.t14\n" +
-                "get.field $.t14 $.t15 field(Counter#value@.i32)\n" +
-                "set.var $.t15 $y\n" +
-                "invoke fn($makeBag()@Bag) $.t16 []\n" +
-                "load res(#6) $.t17\n" +
-                "get.array $.t16 $.t17 $.t18\n" +
-                "set.var $.t18 $z\n" +
-                "add $x $y $.t19\n" +
-                "add $.t19 $z $.t20\n" +
+                "cmp.ne $.s0 $.t5 $.t6\n" +
+                "if $.t6 blk(if0-then) blk(if0-else) $.b0\n" +
+                "set.var $.s1 $x\n" +
+                "load res(#4) $.t9\n" +
+                "get.array $b $.t9 $.t10\n" +
+                "set.var $.t10 $.s2\n" +
+                "load res(#3) $.t11\n" +
+                "cmp.ne $.s2 $.t11 $.t12\n" +
+                "if $.t12 blk(if1-then) blk(if1-else) $.b1\n" +
+                "load res(#4) $.t15\n" +
+                "load res(#5) $.t16\n" +
+                "add $.s3 $.t16 $.t17\n" +
+                "set.array $b $.t15 $.t17\n" +
+                "load res(#6) $.t18\n" +
+                "new type(Counter) $.t19 [$.t18]\n" +
+                "new type(CounterBag) $.t20 [$.t19]\n" +
+                "set.var $.t20 $cb\n" +
                 "load res(#0) $.t21\n" +
-                "get.array $b $.t21 $.t22\n" +
-                "add $.t20 $.t22 $.t23\n" +
-                "ret $.t23\n");
+                "get.array $cb $.t21 $.t22\n" +
+                "set.var $.t22 $.s4\n" +
+                "load res(#3) $.t23\n" +
+                "set.var $.t23 $.s5\n" +
+                "load res(#7) $.t24\n" +
+                "cmp.ne $.s4 $.t24 $.t25\n" +
+                "if $.t25 blk(if2-then) none $.b2\n" +
+                "set.var $.s5 $.s6\n" +
+                "load res(#3) $.t29\n" +
+                "cmp.ne $.s6 $.t29 $.t30\n" +
+                "if $.t30 blk(if3-then) blk(if3-else) $.b3\n" +
+                "set.var $.s7 $y\n" +
+                "invoke fn($makeBag()@Bag) $.t33 []\n" +
+                "load res(#8) $.t34\n" +
+                "get.array $.t33 $.t34 $.t35\n" +
+                "set.var $.t35 $.s8\n" +
+                "load res(#3) $.t36\n" +
+                "cmp.ne $.s8 $.t36 $.t37\n" +
+                "if $.t37 blk(if4-then) blk(if4-else) $.b4\n" +
+                "set.var $.s9 $z\n" +
+                "add $x $y $.t40\n" +
+                "add $.t40 $z $.t41\n" +
+                "set.var $.t41 $.s12\n" +
+                "load res(#0) $.t42\n" +
+                "get.array $b $.t42 $.t43\n" +
+                "set.var $.t43 $.s10\n" +
+                "load res(#3) $.t44\n" +
+                "cmp.ne $.s10 $.t44 $.t45\n" +
+                "if $.t45 blk(if5-then) blk(if5-else) $.b5\n" +
+                "add $.s12 $.s11 $.t48\n" +
+                "ret $.t48\n" +
+                "}\n" +
+                ".block if0-then {\n" +
+                "cast $.s0 $.t7 type(.i32)\n" +
+                "set.var $.t7 $.s1\n" +
+                "}\n" +
+                ".block if0-else {\n" +
+                "load res(#0) $.t8\n" +
+                "set.var $.t8 $.s1\n" +
+                "}\n" +
+                ".block if1-then {\n" +
+                "cast $.s2 $.t13 type(.i32)\n" +
+                "set.var $.t13 $.s3\n" +
+                "}\n" +
+                ".block if1-else {\n" +
+                "load res(#0) $.t14\n" +
+                "set.var $.t14 $.s3\n" +
+                "}\n" +
+                ".block if2-then {\n" +
+                "cast $.s4 $.t26 type(Counter)\n" +
+                "get.field $.t26 $.t27 field(Counter#value@.i32)\n" +
+                "cast $.t27 $.t28 type(.nullable<.i32>)\n" +
+                "set.var $.t28 $.s5\n" +
+                "}\n" +
+                ".block if3-then {\n" +
+                "cast $.s6 $.t31 type(.i32)\n" +
+                "set.var $.t31 $.s7\n" +
+                "}\n" +
+                ".block if3-else {\n" +
+                "load res(#0) $.t32\n" +
+                "set.var $.t32 $.s7\n" +
+                "}\n" +
+                ".block if4-then {\n" +
+                "cast $.s8 $.t38 type(.i32)\n" +
+                "set.var $.t38 $.s9\n" +
+                "}\n" +
+                ".block if4-else {\n" +
+                "load res(#0) $.t39\n" +
+                "set.var $.t39 $.s9\n" +
+                "}\n" +
+                ".block if5-then {\n" +
+                "cast $.s10 $.t46 type(.i32)\n" +
+                "set.var $.t46 $.s11\n" +
+                "}\n" +
+                ".block if5-else {\n" +
+                "load res(#0) $.t47\n" +
+                "set.var $.t47 $.s11\n" +
+                "}\n");
         }
 
         // ===== #20②：容器成员 Call 后缀后实例链端到端（Factory.make().field）=====

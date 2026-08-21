@@ -36,19 +36,55 @@ namespace RigiCompiler
                 if (!entry.InGraph) continue;
                 var type = (TypeSymbol)entry.Symbol;
                 var baseType = type.BaseType;
-                if (baseType == null || baseType.IsBuiltin) continue;
-                // 单向传染（§3.1.1）：基类 rich/shared ⇒ 子类必须同标；反向可收紧，
-                // 收紧后的合法性由字段闭包检查兜底（CheckFieldClosures 含继承字段）
-                var def = baseType.ConstructedFrom ?? baseType;
-                if (def.IsShared && !type.IsShared)
+                if (baseType != null && !baseType.IsBuiltin)
                 {
-                    env.Error(entry.Node.Span,
-                        $"'{type.Name}': base type '{def.Name}' is 'shared', so the derived type must also be 'shared'");
+                    // 单向传染（§3.1.1）：基类 rich/shared ⇒ 子类必须同标；反向可收紧，
+                    // 收紧后的合法性由字段闭包检查兜底（CheckFieldClosures 含继承字段）
+                    var def = baseType.ConstructedFrom ?? baseType;
+                    if (def.IsShared && !type.IsShared)
+                    {
+                        env.Error(entry.Node.Span,
+                            $"'{type.Name}': base type '{def.Name}' is 'shared', so the derived type must also be 'shared'");
+                    }
+                    if (def.IsRich && !type.IsRich)
+                    {
+                        env.Error(entry.Node.Span,
+                            $"'{type.Name}': base type '{def.Name}' is 'rich', so the derived type must also be 'rich'");
+                    }
                 }
-                if (def.IsRich && !type.IsRich)
+                CheckInterfaceContagion(type, entry, env);
+            }
+        }
+
+        // 接口侧传染矩阵（§3.1.1，A2；与基类传染同原则——单向、编译期拒绝）：
+        //   1. 声明了 async 成员的接口必须 shared（§4.5 闸门 1：async 调用
+        //      receiver 必须共享安全，接口类型即经接口调用时的 receiver 静态
+        //      类型——声明点 fail-fast，避免 async 接口形同虚设）；
+        //   2. 非 shared class 实现 shared 接口 ⇒ 禁止；
+        //   3. 接口继承 shared 接口 ⇒ 派生接口必须 shared；
+        // 反向（shared class 实现非 shared 接口）允许收紧，不查。
+        private static void CheckInterfaceContagion(TypeSymbol type, DeclEntry entry,
+            ResolveEnvironment env)
+        {
+            if (type.Kind == TypeKind.Interface && !type.IsShared
+                && type.Methods.Any(m => m.IsAsync))
+            {
+                env.Error(entry.Node.Span,
+                    $"'{type.Name}': an interface declaring 'async' members must be 'shared'");
+            }
+            foreach (var iface in type.Interfaces)
+            {
+                var def = iface.ConstructedFrom ?? iface;
+                if (!def.IsShared || type.IsShared) continue;
+                if (type.Kind == TypeKind.Interface)
                 {
                     env.Error(entry.Node.Span,
-                        $"'{type.Name}': base type '{def.Name}' is 'rich', so the derived type must also be 'rich'");
+                        $"'{type.Name}': base interface '{def.Name}' is 'shared', so the derived interface must also be 'shared'");
+                }
+                else
+                {
+                    env.Error(entry.Node.Span,
+                        $"'{type.Name}': interface '{def.Name}' is 'shared', so the implementing type must also be 'shared'");
                 }
             }
         }
@@ -71,7 +107,7 @@ namespace RigiCompiler
             if (holder == HolderCategory.None) return false;
             var before = env.Unit.Diagnostics.Diagnostics.Count;
             CheckClosureField(holder, targetType, field.Name, field.FieldType, span,
-                new HashSet<TypeSymbol>(), env);
+                new HashSet<TypeSymbol>(), env.Unit.Symbols, env.Error);
             return env.Unit.Diagnostics.Diagnostics.Count != before;
         }
 
@@ -84,14 +120,17 @@ namespace RigiCompiler
                 var holder = ClassifyHolder(type);
                 if (holder == HolderCategory.None) continue;
                 var visited = new HashSet<TypeSymbol>();
-                foreach (var (name, fieldType) in ClosureFieldsOf(type, env))
+                foreach (var (field, fieldType) in ClosureFieldsOf(type, env.Unit.Symbols))
                 {
-                    CheckClosureField(holder, type, name, fieldType, entry.Node.Span, visited, env);
+                    CheckClosureField(holder, type, field.Name, fieldType, entry.Node.Span,
+                        visited, env.Unit.Symbols, env.Error);
                 }
             }
         }
 
-        private static HolderCategory ClassifyHolder(TypeSymbol type)
+        // 持有者分类（§3.1.1 闭包表行；internal：g4 填入点检查复用——
+        // GenericConstraints.CheckConstructedType 对构造类型自身重跑同口径）
+        internal static HolderCategory ClassifyHolder(TypeSymbol type)
         {
             if (type.IsBuiltin) return HolderCategory.None;
             switch (type.Kind)
@@ -108,7 +147,8 @@ namespace RigiCompiler
             }
         }
 
-        private static FieldCategory ClassifyFieldType(SemanticSymbol? fieldType)
+        // 字段类型分类（internal：g4 填入点检查复用同口径）
+        internal static FieldCategory ClassifyFieldType(SemanticSymbol? fieldType)
         {
             if (fieldType is not TypeSymbol t) return FieldCategory.Unknown;
             if (t is ErrorTypeSymbol) return FieldCategory.Unknown;
@@ -126,13 +166,16 @@ namespace RigiCompiler
             return t.IsSharedSafe() ? FieldCategory.SharedObject : FieldCategory.LocalObject;
         }
 
-        // 直接字段（声明类型原样）+ 沿基类链的继承字段（按构造基类代入实参）
-        private static IEnumerable<(string Name, SemanticSymbol? FieldType)> ClosureFieldsOf(
-            TypeSymbol type, ResolveEnvironment env)
+        // 直接字段（声明类型原样；构造类型按定义字段代入实参——构造符号
+        // 自身的 Fields 表为空）+ 沿基类链的继承字段（按构造基类代入实参）。
+        // 携 FieldSymbol（g4 填入点检查需要 IsStatic 做静态字段闸门）
+        internal static IEnumerable<(FieldSymbol Field, SemanticSymbol? FieldType)> ClosureFieldsOf(
+            TypeSymbol type, SymbolGraph symbols)
         {
-            foreach (var f in type.Fields)
+            var ownDef = type.ConstructedFrom ?? type;
+            foreach (var f in ownDef.Fields)
             {
-                yield return (f.Name, f.FieldType);
+                yield return (f, symbols.Substitute(f.FieldType, ownDef, type));
             }
             for (var b = type.BaseType; b != null; b = b.BaseType)
             {
@@ -140,33 +183,38 @@ namespace RigiCompiler
                 if (def.IsBuiltin) yield break;
                 foreach (var f in def.Fields)
                 {
-                    yield return (f.Name, env.Substitute(f.FieldType, def, b));
+                    yield return (f, symbols.Substitute(f.FieldType, def, b));
                 }
             }
         }
 
         private static void CheckClosureField(HolderCategory holder, TypeSymbol holderType, string fieldName,
-            SemanticSymbol? fieldType, CharRange? span, HashSet<TypeSymbol> visited, ResolveEnvironment env)
+            SemanticSymbol? fieldType, CharRange? span, HashSet<TypeSymbol> visited,
+            SymbolGraph symbols, Action<CharRange?, string> error)
         {
             // 直接分类违规即报且不再展开（同一字段一处违规报一条，避免直接分类与
             // 实参展开对同一事实重复诊断）；直接分类放行时才需展开实参拦截
-            if (CheckDirectClosure(holder, holderType, fieldName, fieldType, span, env)) return;
+            if (CheckDirectClosure(holder, holderType, fieldName, fieldType, span, error)) return;
             // 泛型实参所展开的字段同样受限（§3.1.1）：用户构造类型字段代入实参递归查
             if (fieldType is TypeSymbol { ConstructedFrom: not null } constructed)
             {
-                ExpandConstructedField(holder, holderType, fieldName, constructed, span, visited, env);
+                ExpandConstructedField(holder, holderType, fieldName, constructed, span,
+                    visited, symbols, error);
             }
         }
 
         // 持有者行 × 字段类型分类的直接检查；违规报一条诊断并返回 true
-        private static bool CheckDirectClosure(HolderCategory holder, TypeSymbol holderType,
-            string fieldName, SemanticSymbol? fieldType, CharRange? span, ResolveEnvironment env)
+        internal static bool CheckDirectClosure(HolderCategory holder, TypeSymbol holderType,
+            string fieldName, SemanticSymbol? fieldType, CharRange? span,
+            Action<CharRange?, string> error)
         {
-            return CheckDirectClosure(holder, holderType, fieldName, ClassifyFieldType(fieldType), span, null, env);
+            return CheckDirectClosure(holder, holderType, fieldName,
+                ClassifyFieldType(fieldType), span, null, error);
         }
 
-        private static bool CheckDirectClosure(HolderCategory holder, TypeSymbol holderType, string fieldName,
-            FieldCategory category, CharRange? span, string? viaNote, ResolveEnvironment env)
+        internal static bool CheckDirectClosure(HolderCategory holder, TypeSymbol holderType,
+            string fieldName, FieldCategory category, CharRange? span, string? viaNote,
+            Action<CharRange?, string> error)
         {
             if (category == FieldCategory.Unknown) return false;
             switch (holder)
@@ -174,12 +222,12 @@ namespace RigiCompiler
                 case HolderCategory.PlainStruct:
                     if (category == FieldCategory.LocalObject || category == FieldCategory.SharedObject)
                     {
-                        env.Error(span, $"Non-rich struct '{holderType.Name}' cannot hold object field '{fieldName}'{viaNote}");
+                        error(span, $"Non-rich struct '{holderType.Name}' cannot hold object field '{fieldName}'{viaNote}");
                         return true;
                     }
                     if (category != FieldCategory.NonRichValue)
                     {
-                        env.Error(span, $"Non-rich struct '{holderType.Name}' cannot embed rich value type field '{fieldName}'{viaNote}");
+                        error(span, $"Non-rich struct '{holderType.Name}' cannot embed rich value type field '{fieldName}'{viaNote}");
                         return true;
                     }
                     return false;
@@ -188,12 +236,12 @@ namespace RigiCompiler
                 case HolderCategory.SharedWrapper:
                     if (category == FieldCategory.LocalObject)
                     {
-                        env.Error(span, $"'{holderType.Name}' is shared and cannot hold local object field '{fieldName}'{viaNote}");
+                        error(span, $"'{holderType.Name}' is shared and cannot hold local object field '{fieldName}'{viaNote}");
                         return true;
                     }
                     if (category == FieldCategory.LocalRichValue)
                     {
-                        env.Error(span, $"'{holderType.Name}' is shared and cannot embed non-shared rich value type field '{fieldName}'{viaNote}");
+                        error(span, $"'{holderType.Name}' is shared and cannot embed non-shared rich value type field '{fieldName}'{viaNote}");
                         return true;
                     }
                     return false;
@@ -204,7 +252,8 @@ namespace RigiCompiler
         }
 
         private static void ExpandConstructedField(HolderCategory holder, TypeSymbol holderType, string fieldName,
-            TypeSymbol constructed, CharRange? span, HashSet<TypeSymbol> visited, ResolveEnvironment env)
+            TypeSymbol constructed, CharRange? span, HashSet<TypeSymbol> visited,
+            SymbolGraph symbols, Action<CharRange?, string> error)
         {
             // 引用相等去重：Node\<T> 自嵌套等场景沿展开链收敛
             if (!visited.Add(constructed)) return;
@@ -214,16 +263,17 @@ namespace RigiCompiler
             if (def.IsBuiltin) return;
             foreach (var f in def.Fields)
             {
-                var fieldType = env.Substitute(f.FieldType, def, constructed);
+                var fieldType = symbols.Substitute(f.FieldType, def, constructed);
                 var category = ClassifyFieldType(fieldType);
                 if (CheckDirectClosure(holder, holderType, fieldName, category, span,
-                    $" (via generic argument of '{def.Name}')", env))
+                    $" (via generic argument of '{def.Name}')", error))
                 {
                     continue;
                 }
                 if (fieldType is TypeSymbol { ConstructedFrom: not null } inner)
                 {
-                    ExpandConstructedField(holder, holderType, fieldName, inner, span, visited, env);
+                    ExpandConstructedField(holder, holderType, fieldName, inner, span,
+                        visited, symbols, error);
                 }
             }
         }

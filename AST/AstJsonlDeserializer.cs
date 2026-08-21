@@ -518,7 +518,7 @@ namespace RigiCompiler
                 }
                 var memberType = member is FieldInfo field
                     ? field.FieldType : ((PropertyInfo)member).PropertyType;
-                var value = ConvertValue(memberType, jsonProp.Value, rec.LineNo, jsonProp.Name);
+                var value = ConvertValue(memberType, jsonProp.Value, rec.LineNo, jsonProp.Name, target);
 
                 if (member is PropertyInfo prop && !prop.CanWrite)
                 {
@@ -548,9 +548,11 @@ namespace RigiCompiler
         }
 
         // JSON 值 → 声明类型的 CLR 值：enum 名→Enum.Parse、数字→long/int 等、
-        // bool、string、List<string>、Symbol 点分串→Symbol 递归解析
+        // bool、string、List<string>、Symbol 点分串→Symbol 递归解析。
+        // target：字段所属对象——Symbol 的泛型实参是 AST 节点（g1），
+        // 需要宿主 SymbolASTNode 作为实参子树的父节点
         private static object? ConvertValue(Type memberType, JsonElement json,
-            int lineNo, string name)
+            int lineNo, string name, object target)
         {
             try
             {
@@ -583,7 +585,13 @@ namespace RigiCompiler
                 }
                 if (typeof(Symbol).IsAssignableFrom(memberType))
                 {
-                    return ParseSymbol(json.GetString()!, lineNo);
+                    if (target is not SymbolASTNode symbolHost)
+                    {
+                        throw Error(lineNo,
+                            $"field '{name}': Symbol value requires a SymbolASTNode host " +
+                            $"(generic arguments are AST nodes), got {target.GetType().Name}");
+                    }
+                    return ParseSymbol(json.GetString()!, lineNo, symbolHost);
                 }
             }
             catch (Exception ex) when (ex is InvalidOperationException or FormatException
@@ -626,12 +634,16 @@ namespace RigiCompiler
 
         // ===== Symbol 点分串解析（与 AstJsonlSerializer.RenderSymbol 互逆）=====
         //   symbol  := element ('.' element)*
-        //   element := name ('\<' symbol (', ' symbol)* '>')?
-        // 泛型实参递归解析；嵌套闭合 ">>" 由内外两层各自消费一个 '>'。
-        private static Symbol ParseSymbol(string text, int lineNo)
+        //   element := name ('\<' typeArg (', ' typeArg)* '>')?
+        //   typeArg := symbol '?'?
+        // 泛型实参是完整类型引用节点（g1）：可空后缀 ? 随实参解析；
+        // 嵌套闭合 ">>" 由内外两层各自消费一个 '>'。
+        // owner：持有本符号的 SymbolASTNode——实参节点以其为父（Validator 校验
+        // 父子指针一致），span 复用宿主 span（字符串形态不携带实参级 span）
+        private static Symbol ParseSymbol(string text, int lineNo, SymbolASTNode owner)
         {
             var pos = 0;
-            var symbol = ParseSymbolBody(text, ref pos, lineNo);
+            var symbol = ParseSymbolBody(text, ref pos, lineNo, owner);
             if (pos != text.Length)
             {
                 throw Error(lineNo,
@@ -641,12 +653,13 @@ namespace RigiCompiler
         }
 
         // 点分元素序列；在泛型实参列表内遇到 ',' 或 '>' 自然结束
-        private static Symbol ParseSymbolBody(string text, ref int pos, int lineNo)
+        private static Symbol ParseSymbolBody(string text, ref int pos, int lineNo,
+            SymbolASTNode owner)
         {
             var symbol = new Symbol();
             while (true)
             {
-                symbol.elements.Add(ParseSymbolElement(text, ref pos, lineNo));
+                symbol.elements.Add(ParseSymbolElement(text, ref pos, lineNo, owner));
                 if (pos < text.Length && text[pos] == '.')
                 {
                     pos++;
@@ -656,12 +669,13 @@ namespace RigiCompiler
             }
         }
 
-        private static SymbolElement ParseSymbolElement(string text, ref int pos, int lineNo)
+        private static SymbolElement ParseSymbolElement(string text, ref int pos, int lineNo,
+            SymbolASTNode owner)
         {
             SkipSpaces(text, ref pos);
             var start = pos;
             while (pos < text.Length && text[pos] != '.' && text[pos] != ',' &&
-                   text[pos] != '>' && text[pos] != '\\')
+                   text[pos] != '>' && text[pos] != '\\' && text[pos] != '?')
             {
                 pos++;
             }
@@ -678,7 +692,17 @@ namespace RigiCompiler
                 pos += 2;
                 while (true)
                 {
-                    element.generics.Add(ParseSymbolBody(text, ref pos, lineNo));
+                    var argument = new TypeReferenceASTNode(owner) { Span = owner.Span };
+                    argument.TypeSymbol.Span = owner.Span;
+                    argument.TypeSymbol.symbol = ParseSymbolBody(text, ref pos, lineNo,
+                        argument.TypeSymbol);
+                    // 实参可空后缀（g1：Holder\<i32?>）
+                    if (pos < text.Length && text[pos] == '?')
+                    {
+                        argument.IsNullable = true;
+                        pos++;
+                    }
+                    element.generics.Add(argument);
                     SkipSpaces(text, ref pos);
                     if (pos < text.Length && text[pos] == ',')
                     {

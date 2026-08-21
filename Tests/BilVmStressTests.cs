@@ -296,7 +296,7 @@ namespace RigiCompiler.Tests
                 "    a[0] = 4\n" +
                 "    a[1] = 20\n" +
                 "    a[2] = 18\n" +
-                "    return ((a[0] + a[1]) + a[2])\n" +
+                "    return (((a[0] if? 0) + (a[1] if? 0)) + (a[2] if? 0))\n" +
                 "}\n");
             CheckOk("Value wrapper Array 字段", result);
             CheckI32("Array 内容经 proxy 保留", result, 42);
@@ -366,7 +366,7 @@ namespace RigiCompiler.Tests
                 "}\n" +
                 "@Logged\n" +
                 "pub class Store\\<T> {\n" +
-                "    pub var item: T\n" +
+                "    pub var item: T?\n" +
                 "    pub init()\n" +
                 "    pub func fetch(id: i32): i32 { return id }\n" +
                 "}\n" +
@@ -714,7 +714,7 @@ namespace RigiCompiler.Tests
         private static void TestEntityWrapperEnumField()
         {
             var result = Run(
-                "enum struct Level { }[Low, High]\n" +
+                "pub enum struct Level { }[Low, High]\n" +
                 "@WrapperTarget(.Entity)\n" +
                 "pub wrapper L {\n" +
                 "    pub var level: Level\n" +
@@ -763,7 +763,7 @@ namespace RigiCompiler.Tests
         {
             var result = Run(
                 "pub class Store\\<T> {\n" +
-                "    pub var item: T\n" +
+                "    pub var item: T?\n" +
                 "    pub init()\n" +
                 "    pub func fetch(id: i32): i32 { return (id + 1) }\n" +
                 "}\n" +

@@ -377,8 +377,21 @@ namespace RigiCompiler
                 return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
             }
 
-            // 小数点后不是数字：报错（M31 起不再吞掉 . 伪装成员访问；
-            // `3.foo` 形态规范未定义，需要成员访问时请写 (3).foo）
+            // 小数点后是标识符起始词：不是浮点，而是整数字面量的成员访问
+            // （如 7.twice()，SYNTAX §3.3）。'.' 已被本层消费无法重放，
+            // 记在节点上由外层表达式层按路径连接符处理；标识符 Replay 上交
+            if (currentToken is WordToken memberWord &&
+                Keywords.IsIdentifierStart(memberWord.Content) &&
+                !NumericLiteral.IsNumericWord(memberWord.Content))
+            {
+                var intNode = ParseIntegerLiteral(integerPart, context);
+                AddLiteralToTarget(intNode);
+                targetNode.MemberAccessDotConsumed = true;
+                targetNode.MemberAccessDotRange = context.GetPreviousLocation();
+                return new ParserLayerResult.PopLayer(TokenDisposition.Replay);
+            }
+
+            // 小数点后不是数字也不是标识符：报错（`3.` 等残缺浮点）
             context.RaiseError("Expected digit after '.' in float literal");
             return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }

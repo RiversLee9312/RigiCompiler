@@ -891,7 +891,7 @@ namespace RigiCompiler.Tests
 
             // 构造模式：Array\<T>、Map\<K,V>、嵌套、T?
             var (uArr, bArr) = BindUnit(
-                "func firstOf\\<T>(arr: Array\\<T>): T { return arr[0] }\n" +
+                "func firstOf\\<T>(arr: Array\\<T>): T { return (arr[0] as T) }\n" +
                 "func main(a: Array\\<i32>): i32 { return firstOf(a) }\n");
             CheckNoErrors("Array<T> 推断", uArr);
             var cArr = (BoundCallExpression)((BoundReturnStatement)
@@ -912,7 +912,7 @@ namespace RigiCompiler.Tests
                 && ReferenceEquals(cMap.TypeArguments[1], uMap.Symbols.Bootstrap.Int32));
 
             var (uNest, bNest) = BindUnit(
-                "func firstNested\\<T>(a: Array\\<Array\\<T>>): Array\\<T> { return a[0] }\n" +
+                "func firstNested\\<T>(a: Array\\<Array\\<T>>): Array\\<T> { return (a[0] as Array\\<T>) }\n" +
                 "func main(a: Array\\<Array\\<i32>>): Array\\<i32> { return firstNested(a) }\n");
             CheckNoErrors("嵌套 Array<Array<T>> 推断", uNest);
             var cNest = (BoundCallExpression)((BoundReturnStatement)

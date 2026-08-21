@@ -66,10 +66,8 @@ namespace RigiCompiler
             {
                 env.Error(span, $"'{type.Name}': 'rich' is implied by the wrapper declaration and must not be written");
             }
-            if (modifiers.Contains(Keywords.SHARED) && type.Kind == TypeKind.Interface)
-            {
-                env.Error(span, $"'{type.Name}': 'shared' cannot be applied to interface");
-            }
+            // shared 可标 interface（§3.1.1，A2：接口 async 成员的 receiver 共享
+            // 安全前提）；shared 接口的传染检查归 ContagionChecker
             // shared struct 必 rich（§3.1.1）
             if (type.IsShared && !type.IsRich &&
                 (type.Kind == TypeKind.Struct || type.Kind == TypeKind.EnumStruct))
@@ -154,14 +152,35 @@ namespace RigiCompiler
             {
                 env.Error(entry.Node.Span, $"'{op.Name}': operators cannot be 'static'");
             }
-            // open/abstract/override 仅普通成员方法（§9.2.1）：字段/init/operator/
+            // open/abstract/override 仅普通成员方法（§9.2.1）：init/operator/
             // 全局函数/static 方法上使用即错误；静态无多态。
-            // 例外（§5.2 callable 协议）：operator call 参与多态——Func/Action/
+            // 例外一（§5.2 callable 协议）：operator call 参与多态——Func/Action/
             // AsyncFunc/AsyncAction 的 abstract call 与 lambda 隐藏类的 override
+            // 例外二（§9.2.1 字段覆写）：class/struct 的实例字段可 open/override
+            // （仅替换初始值，存储仍是基类槽；abstract 不适用）
             var open = modifiers.Contains(Keywords.OPEN);
             var abstractM = modifiers.Contains(Keywords.ABSTRACT);
             var overrideM = modifiers.Contains(Keywords.OVERRIDE);
-            if (open || abstractM || overrideM)
+            if (entry.Symbol is FieldSymbol fieldModifierTarget && (open || abstractM || overrideM))
+            {
+                if (abstractM)
+                {
+                    env.Error(entry.Node.Span,
+                        "'abstract' can only be applied to member methods");
+                }
+                else if (fieldModifierTarget.IsStatic || entry.DeclaringType == null)
+                {
+                    env.Error(entry.Node.Span,
+                        "'open'/'override' cannot be applied to static or global fields");
+                }
+                else if (entry.DeclaringType.Kind != TypeKind.Class
+                    && entry.DeclaringType.Kind != TypeKind.Struct)
+                {
+                    env.Error(entry.Node.Span,
+                        "'open'/'override' on fields requires a class or struct");
+                }
+            }
+            else if (open || abstractM || overrideM)
             {
                 if (entry.Symbol is not MethodSymbol inheritMethod ||
                     (inheritMethod.Kind != MethodKind.Regular

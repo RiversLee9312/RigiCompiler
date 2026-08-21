@@ -41,6 +41,7 @@ pub shared rich struct SharedEntry {
 
 - struct 是值类型（`ValueType` 子类），复制、参数传递和装箱继续遵守值语义。
 - struct 实例方法的 receiver（`this`）按**调用点 place 的引用**处理：方法体内对 `this` 字段的写入原地生效于该 place。这不改变值语义——赋值、参数传递与返回仍是深拷贝；只有以可写 place 为 receiver 的调用原地生效，对临时副本调用时修改随副本丢弃。
+- 嵌套字段链写穿：对可写 place 的深层字段写入（如 `r.origin.x = 7`、复合赋值 `r.origin.x += 1`）在语义上等价于正向逐字段读取并物化中间值、写叶、再对值类型中间层反向写回（遇引用类型中间层即停止；需要写回但中间层 const/无 setter 时是编译错误）。值类型 receiver 的方法调用（如 `r.origin.bumpX()`）同理：调用后对可写 place 逐层写回 `this`。
 - 非 rich struct 不得直接或间接持有 Object，也不得内嵌 rich struct；其 `refMap` 恒为空。
 - rich struct 可以持有 local/shared object 和任意 ValueType。
 - shared rich struct 只能持有 shared object、shared rich ValueType 和非 rich ValueType。
@@ -51,6 +52,7 @@ pub shared rich struct SharedEntry {
 - `enum struct` 是 struct 的封闭特例：不能标记为 `open`，不能继承用户声明的 struct，也不能被其他类型继承；其固定继承链为 `具体 enum → Enum → ValueType`。
 - class 不能继承 struct，struct 不能继承 class。
 - 非 rich struct 不能被任何 wrapper 修饰，其字段与实例方法也不能挂载 wrapper（见 §14.9）。
+- **值类型布局环拒绝（P18/S2 配套）**：struct/enum struct 的实例字段按值内嵌，布局必须有限。自包含（`struct Box { var next: Box }`）、互包含（A↔B 三方及以上同论），含**经泛型实参代入**形成的环（`struct A { var b: B\<A> }` 且 `struct B\<T> { var x: T }`），一律在声明点报编译错误（诊断给出环路径，如 `A -> B -> A`）。DA 单独堵不死布局无限大（`init(other: Box) { next = other }` 每条路径都赋值但布局仍无限），故布局环是独立于 DA 的结构检查。经引用类型或 `Nullable\<T>`（Object 分支）字段打断的环合法——`rich struct Node { var next: Node? }` 是合法的链表节点（非 rich struct 持 `Node?` 仍被 §3.1.1 闭包表拒绝，两规则正交）。泛型参数类型的字段不展开（`var x: T` 不贡献边）。
 
 ---
 
@@ -80,6 +82,10 @@ pub class Circle : Shape implements Drawable {
 - 显式指定使用哪个接口的默认实现：`override func method() -> InterfaceName`
 
 （显式委托语法 `-> InterfaceName` 不支持；带默认实现的接口成员由实现类隐式继承，无体接口成员必须显式实现。）
+
+**默认方法冲突**：实现类的接口闭包（含传递继承）中存在两个或更多**不同接口**各自提供的同签名默认方法时，隐式继承有歧义——类必须显式 `override` 该成员，否则在类声明点报编译错误（bug S3）。真菱形不构成冲突：两条继承路径最终指向**同一个**默认实现（同一符号）时照常隐式继承。接口各自声明同签名默认方法本身合法，冲突只在被同一具体类实现时才判定；`-> InterfaceName` 指定语法不支持。
+
+interface 可标记 `shared`；声明了 `async` 成员的接口必须标记 `shared`，`shared` 接口沿接口继承与 implements 单向传染（见 §3.1.1、§4.5）。
 
 ---
 

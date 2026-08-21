@@ -45,12 +45,15 @@ namespace RigiCompiler
                     }
                     var bound = env.ResolveTypeReference(constraint.Bound, entry);
                     if (bound is ErrorTypeSymbol) continue;    // 毒化静默
-                    // 声明侧访问控制（§16，S8e）：约束边界引用即使用点
-                    if (!AccessChecker.IsTypeAccessible(bound, entry.Context.File,
-                        entry.Context.Namespace, entry.DeclaringType))
+                    // 声明侧访问控制（§16，S8e；F1/V-A 起递归口径）：约束边界
+                    // 引用即使用点——构造边界（Box\<Hidden\>）递归实参，命中
+                    // 报最深不可见者
+                    var inaccessibleBound = AccessChecker.FindInaccessibleType(bound,
+                        entry.Context.File, entry.Context.Namespace, entry.DeclaringType);
+                    if (inaccessibleBound != null)
                     {
                         env.Error(constraint.Bound.Span ?? constraint.Span ?? entry.Node.Span,
-                            AccessChecker.InaccessibleMessage(bound));
+                            AccessChecker.InaccessibleMessage(inaccessibleBound));
                         continue;
                     }
                     // with 约束的边界必须是 wrapper 类型（§3.6）
@@ -83,7 +86,9 @@ namespace RigiCompiler
             {
                 foreach (var generic in element.generics)
                 {
-                    if (BoundReferencesOwnParameter(generic, parameters, out referenced))
+                    // 实参是完整类型引用（g1）：可空后缀不影响「引用裸名」判定，
+                    // 递归其符号路径即可（T? 的 T 同禁）
+                    if (BoundReferencesOwnParameter(generic.TypeSymbol.symbol, parameters, out referenced))
                     {
                         return true;
                     }

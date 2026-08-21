@@ -137,7 +137,7 @@ namespace RigiCompiler
             for (var i = 0; i < call.Arguments.Count; i++) sealedArguments.Add(sealedSlots[i]);
             if (call.IsIndirect) indirectTarget = sealedSlots[^1];
             return new LoweredCallExpression(call, call.Method, sealedArguments, call.TypeArguments,
-                genericPack, call.IsIndirect, indirectTarget);
+                genericPack, call.IsIndirect, indirectTarget, call.HostTypeArguments);
         }
     }
 
@@ -444,6 +444,13 @@ namespace RigiCompiler
                 return WrapperPlaceLowering.LowerIndexCompound(compound, indexPlace, indexFields,
                     indexExpr, ctx, env);
             }
+            // S1/g9：普通值类型中间链复合赋值 host.a.b... op= rhs（§13.2）
+            if (WrapperPlaceLowering.TryValueChainWriteTarget(compound.Target,
+                    out var valueRoot, out var valueChain))
+            {
+                return WrapperPlaceLowering.LowerValueChainFieldCompound(compound, valueRoot,
+                    valueChain, ctx, env);
+            }
             if (WrapperPlaceLowering.ContainsPlaceInTarget(compound.Target))
             {
                 WrapperPlaceLowering.UnsupportedWrite(compound.Target, env);
@@ -720,6 +727,14 @@ namespace RigiCompiler
             LowerEnvironment env)
         {
             var instanceCall = (BoundInstanceCallExpression)node;
+            // S1/g9：值类型 receiver 的可写 place 链（§10）——receiver
+            // 拷贝物化，调用结果物化后把 this 修改反向写回 place
+            if (instanceCall.Receiver is not BoundWrapperAccessExpression
+                && WrapperPlaceLowering.TryValueReceiverCallTarget(instanceCall.Receiver,
+                    instanceCall.Method.Owner, out var valueRoot, out var valueChain))
+            {
+                return RewriteValueReceiverCall(instanceCall, valueRoot, valueChain, ctx, env);
+            }
             // 兄弟求值序保护（EvalOrderGuard）：receiver 先于实参登记——
             // 实参产前置语句（如短路 and/or）时 receiver 物化合成局部，
             // 保证 receiver 先求值（BIL §10.2 从左到右）
@@ -750,6 +765,47 @@ namespace RigiCompiler
                 instanceCall.Method, sealedArguments, instanceCall.Type, instanceCall.TypeArguments,
                 genericPack);
         }
+
+        // 值类型 receiver 可写 place 链调用（S1/g9，§10）：正向 get 链
+        // 物化 receiver 拷贝（根单次求值共享）→ 调用 → 结果物化合成
+        // 局部 → this 修改经值类型中间逐层反向 set 写回 place；表达式
+        // 位读结果局部。调用与写回都落在前置流，求值序 = receiver 链 →
+        // 实参 → 调用 → 写回（guard 只管实参段，正向 get 先于 guard 定位）
+        private static LoweredExpression? RewriteValueReceiverCall(
+            BoundInstanceCallExpression instanceCall, BoundExpression valueRoot,
+            List<BoundFieldAccessExpression> valueChain, LowerContext ctx,
+            LowerEnvironment env)
+        {
+            var receiver = WrapperPlaceLowering.MaterializeValueReceiver(instanceCall,
+                valueRoot, valueChain, ctx, env, out var intermediates, out var host);
+            if (receiver == null) return null;
+            var guard = new EvalOrderGuard(ctx);
+            guard.Track(instanceCall.Receiver, receiver);
+            var arguments = LoweringFacility.LowerArguments(instanceCall.Arguments,
+                instanceCall.Method.Parameters, ctx, env, guard);
+            if (arguments == null) return null;
+            var genericPack = instanceCall.GenericPack == null ? null
+                : new LoweredGenericVarArgsArgument(instanceCall.GenericPack,
+                    instanceCall.GenericPack.IsNamed, instanceCall.GenericPack.TypeArguments,
+                    instanceCall.GenericPack.NamedTypes);
+            var sealedSlots = guard.Seal();
+            var sealedArguments = new List<LoweredExpression>(instanceCall.Arguments.Count);
+            for (var i = 1; i < sealedSlots.Count; i++) sealedArguments.Add(sealedSlots[i]);
+            var callExpression = new LoweredInstanceCallExpression(instanceCall, sealedSlots[0],
+                instanceCall.Method, sealedArguments, instanceCall.Type,
+                instanceCall.TypeArguments, genericPack);
+            var result = ctx.Synth.NewSynthLocal(instanceCall.Type);
+            ctx.Output.Add(new LoweredAssignmentStatement(instanceCall,
+                SynthLocalFactory.ReferenceTo(instanceCall, result), callExpression));
+            var writebacks = WrapperPlaceLowering.BuildValueReceiverWritebacks(instanceCall,
+                intermediates, host!, ctx, env);
+            if (writebacks == null) return null;
+            foreach (var writeback in writebacks)
+            {
+                ctx.Output.Add(writeback);
+            }
+            return SynthLocalFactory.ReferenceTo(instanceCall, result);
+        }
     }
 
     internal sealed class FieldAccessRewriter
@@ -774,8 +830,9 @@ namespace RigiCompiler
     // 索引访问降级（S8c，BIL §13.6 直接对应，无脱糖）：receiver/index
     // 递归降级；读/写共用节点，指令选择归 P4b 按所在位置。
     // variadic 参数索引（BIL §7.1 ABI ↔ P3 体内视角桥接）：节点 Type
-    // 改为容器 ABI 元素类型（与 .vargs./.kwargs. 声明对齐），并外包
-    // 拆箱 cast 回 P3 静态元素类型——读位置下游按 P3 类型消费零适配；
+    // 改为 .nullable<容器 ABI 元素类型>（与 .vargs./.kwargs. 声明对齐——
+    // Q6 后 get.array 内建形态结果恒为可空），并外包拆箱 cast 回 P3 静态
+    // 类型 Nullable\<元素\>——读位置下游按 P3 类型消费零适配；
     // 写位置由 AssignmentRewriter/CompoundAssignmentRewriter 剥壳后按
     // ABI 元素类型装箱（§6.5）
     internal sealed class IndexRewriter
@@ -809,8 +866,18 @@ namespace RigiCompiler
             index = sealedSlots[1];
             var result = new LoweredIndexExpression(indexAccess, receiver, index);
             if (!LoweringFacility.IsVariadicParameterIndex(result)) return result;
+            // 写形态（place，Operator = setAtIndex）：Type = ABI 元素类型
+            //（set.array 元素对齐，装箱 cast 目标）；读形态（Q6）：Type =
+            // .nullable<ABI 元素>（get.array 内建形态结果恒为可空），外包
+            // 拆箱 cast 回 P3 静态类型 Nullable\<元素\>
             var abiElementType = LoweringFacility.VariadicIndexElementType(result, env);
-            result = new LoweredIndexExpression(indexAccess, receiver, index, abiElementType);
+            if (indexAccess.Operator.Name == "setAtIndex")
+            {
+                return new LoweredIndexExpression(indexAccess, receiver, index,
+                    abiElementType);
+            }
+            var abiReadType = env.Unit.Symbols.GetNullable(abiElementType);
+            result = new LoweredIndexExpression(indexAccess, receiver, index, abiReadType);
             return new LoweredCastExpression(indexAccess, result,
                 indexAccess.Type, isSafe: false, indexAccess.Type);
         }

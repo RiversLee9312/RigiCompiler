@@ -20,6 +20,9 @@ namespace RigiCompiler.Bil.Vm
         private readonly Dictionary<string, BilCaseDeclaration> _cases;
         private readonly Dictionary<string, string> _getters;
         private readonly Dictionary<string, string> _setters;
+        // 访问器符号 → 字段符号逆向表（与 _getters/_setters 同建于
+        // IndexSimple；TryFindFieldForAccessor 用）
+        private readonly Dictionary<string, string> _accessorFields;
         private readonly Dictionary<string, VmValue> _statics = new Dictionary<string, VmValue>();
         private readonly object _staticLock = new object();
         // 逻辑 TypeSheet 缓存（声明 key → 拍平 sheet；可重入锁——Build 沿
@@ -56,6 +59,7 @@ namespace RigiCompiler.Bil.Vm
             _cases = new Dictionary<string, BilCaseDeclaration>();
             _getters = new Dictionary<string, string>();
             _setters = new Dictionary<string, string>();
+            _accessorFields = new Dictionary<string, string>();
             IndexMembers(module.LocalSymbols);
             IndexMembers(module.ExternalSymbols);
         }
@@ -124,13 +128,33 @@ namespace RigiCompiler.Bil.Vm
         // 防御扫描（等价旧名匹配路径，如 getMessage 多态）。
         internal BilFunction? ResolveDispatch(string staticSymbol, VmValue? receiver)
         {
+            var impl = ResolveDispatchSymbol(staticSymbol, receiver);
+            var function = FindFunction(impl);
+            // 槽解析成功但实现 fn 缺失时报实现符号；直查兜底（impl 即静态
+            // 符号）维持原语义返回 null，由调用方抛「找不到 fn 定义」
+            if (function == null
+                && !string.Equals(impl, staticSymbol, StringComparison.Ordinal))
+            {
+                throw new VmException("派发到的实现缺少 fn 定义：" + impl);
+            }
+            return function;
+        }
+
+        // 虚派发符号解析（bug O1）：与 ResolveDispatch 同一套 sheet 换算，
+        // 但只到「实际类型槽的实现符号」为止——Method wrapper 的隐藏存储键
+        // 按安装侧 canonical 是声明 override 的类型符号（Child$work），调用侧
+        // invoke 带的却是静态符号（Base$work / 接口符号），wrapper 链收集前
+        // 先经此换算对齐（RUNTIME §7 虚派发 + §14.9 override 重复声明）。
+        // 不可派发/兜底路径原样返回静态符号。
+        internal string ResolveDispatchSymbol(string staticSymbol, VmValue? receiver)
+        {
             if (receiver == null
                 || !BilVerificationContext.TryParseMethodSymbol(staticSymbol,
                     out var owner, out var isStatic, out _, out _)
                 || isStatic
                 || owner.Length == 0)
             {
-                return FindFunction(staticSymbol);
+                return staticSymbol;
             }
             var actualType = VmTypeOps.ActualType(receiver);
             var actualSheet = SheetOf(actualType);
@@ -155,11 +179,11 @@ namespace RigiCompiler.Bil.Vm
                             offset = FindSlotBySignature(actualSheet, staticSymbol);
                             if (offset < 0)
                             {
-                                return FindFunction(staticSymbol);
+                                return staticSymbol;
                             }
                         }
                     }
-                    return ResolveSlot(actualSheet, offset, staticSymbol, actualType);
+                    return ResolveSlotSymbol(actualSheet, offset, staticSymbol, actualType);
                 }
             }
             if (owner.Length > 0 && actualSheet != null)
@@ -167,15 +191,15 @@ namespace RigiCompiler.Bil.Vm
                 var offset = FindSlotBySignature(actualSheet, staticSymbol);
                 if (offset >= 0)
                 {
-                    return ResolveSlot(actualSheet, offset, staticSymbol, actualType);
+                    return ResolveSlotSymbol(actualSheet, offset, staticSymbol, actualType);
                 }
             }
-            return FindFunction(staticSymbol);
+            return staticSymbol;
         }
 
-        // 槽 offset → 实现 fn（泛型代入形态的实现经名字兼容回退；抽象/接口
+        // 槽 offset → 实现符号（泛型代入形态的实现经名字兼容回退；抽象/接口
         // 方法无实现抛清晰 VmException）
-        private BilFunction ResolveSlot(VmTypeSheet sheet, int offset, string staticSymbol,
+        private string ResolveSlotSymbol(VmTypeSheet sheet, int offset, string staticSymbol,
             string actualType)
         {
             var impl = sheet.Slots[offset].ImplSymbol
@@ -185,8 +209,7 @@ namespace RigiCompiler.Bil.Vm
                 throw new VmException("抽象/接口方法无实现：" + staticSymbol
                     + "（receiver 实际类型 " + actualType + "）");
             }
-            return FindFunction(impl)
-                ?? throw new VmException("派发到的实现缺少 fn 定义：" + impl);
+            return impl;
         }
 
         private static int FindSlotBySignature(VmTypeSheet sheet, string staticSymbol)
@@ -516,12 +539,27 @@ namespace RigiCompiler.Bil.Vm
         {
             methodSymbol = "";
             var table = kind == BilAccessorKind.Getter ? _getters : _setters;
-            if (!table.TryGetValue(fieldSymbol, out var found))
+            if (fieldSymbol.Length == 0 || !table.TryGetValue(fieldSymbol, out var found))
             {
                 return false;
             }
             methodSymbol = found;
             return true;
+        }
+
+        // 访问器符号 → 字段符号反查（getter(FIELD)/setter(FIELD) 修饰符正向
+        // 表的逆向）：Entity wildcard 环 inner 以 $get/$set 访问器符号重路由
+        // 为 Get/Set 链时恢复链末字段目标——链可能起自访问器方法调用的
+        // 拦截（如构造期 init/..init.field.* 走 setter），FieldSymbol 原本为空
+        public bool TryFindFieldForAccessor(string accessorSymbol, out string fieldSymbol)
+        {
+            if (_accessorFields.TryGetValue(accessorSymbol, out var found))
+            {
+                fieldSymbol = found;
+                return true;
+            }
+            fieldSymbol = "";
+            return false;
         }
 
         // 当前 fn 是否为 fieldSymbol 的 getter（含 cell getValue 回退）
@@ -717,13 +755,23 @@ namespace RigiCompiler.Bil.Vm
         // 当前 fn 是否为给定字段所属类型的 init（声明带 Init 关键字修饰）。
         // 构造期一次性赋值豁免 proxy 链（§14.3 / §21.8：cell 子类的
         // init(value) 会写带 wrapped 标记的 value 字段，只带 get proxy 的
-        // wrapper 也必须能初始化 const/ReadonlyCell）
+        // wrapper 也必须能初始化 const/ReadonlyCell）。
+        // 新 init 原则（§9.7 修订）：编译器合成的构造期写入方法族
+        // （..init.wrapper / ..init.field.*）同样豁免——子类合成方法写
+        // 继承字段（字段 owner 为基类）是缝合协议的常态，不按 owner 限定
         public bool IsInitFunctionOf(string functionSymbol, string fieldOwner)
         {
             if (!BilVerificationContext.TryParseMethodSymbol(functionSymbol,
                     out var owner, out _, out _, out _))
             {
                 return false;
+            }
+            var name = MethodNameOf(functionSymbol);
+            if (name == BilSpellings.InitWrapperMethodName
+                || name.StartsWith(BilSpellings.InitFieldMethodPrefix,
+                    StringComparison.Ordinal))
+            {
+                return true;
             }
             if (!TypesEqual(owner, fieldOwner)
                 && BilVerificationContext.StripTypeArguments(owner)
@@ -1015,6 +1063,36 @@ namespace RigiCompiler.Bil.Vm
             if (coroutine.State != VmCoroutineState.Running)
             {
                 throw coroutine.Failure ?? new VmException("singleton 初始化失败：" + typeRef);
+            }
+        }
+
+        // N1（§8.4.1/§9.3，新 init 原则）：全局/静态字段的声明初始值——
+        // 编译器为含初始值的模块合成 ..globals.init 全局 fn（体内按声明序
+        // set.field.static），本方法在 singleton 初始化之后、main 之前
+        // 同步驱动它跑完（参照 §8.7 companion 统一设计：静态初值的执行
+        // 时机归 VM 启动序列；多模块合并时逐 fn 各跑一次）
+        public void InvokeGlobalInitializers(VmExecutor executor)
+        {
+            foreach (var function in _functions.Values)
+            {
+                if (MethodNameOf(function.Symbol) != BilSpellings.GlobalsInitFunctionName)
+                {
+                    continue;
+                }
+                var coroutine = new VmCoroutine(executor, "core.coroutine::Task");
+                coroutine.TryTransition(VmCoroutineState.Created, VmCoroutineState.Running);
+                coroutine.PushFrame(function, Array.Empty<VmValue>(), null);
+                while (coroutine.CallStack.Count > 0
+                    && coroutine.State == VmCoroutineState.Running)
+                {
+                    coroutine.Step(this);
+                }
+                if (coroutine.State != VmCoroutineState.Running
+                    && coroutine.State != VmCoroutineState.Completed)
+                {
+                    throw coroutine.Failure
+                        ?? new VmException("全局字段初始化失败：" + function.Symbol);
+                }
             }
         }
 
@@ -1574,6 +1652,7 @@ namespace RigiCompiler.Bil.Vm
                 {
                     _setters[accessor.FieldSymbol] = member.Symbol;
                 }
+                _accessorFields[member.Symbol] = accessor.FieldSymbol;
             }
         }
 

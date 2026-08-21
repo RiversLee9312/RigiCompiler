@@ -1,4 +1,4 @@
-using System.Linq;
+﻿using System.Linq;
 using RigiCompiler.Bil;
 
 namespace RigiCompiler.Tests
@@ -13,11 +13,11 @@ namespace RigiCompiler.Tests
                 "pub class Box\\<T> {\n" +
                 "    pub var item: T\n" +
                 "    pub init(_ -> item)\n" +
-                "    pub operator getAtIndex(index: i32): T { return item }\n" +
+                "    pub operator getAtIndex(index: i32): T? { return item }\n" +
                 "}\n" +
                 "pub func main(): i32 {\n" +
                 "    var b = new Box\\<i32>(7)\n" +
-                "    return b[0]\n" +
+                "    return b[0] if? 0\n" +
                 "}\n");
             CheckNoErrors("全管线无诊断（泛型类 getAtIndex）", unit);
             BilTestHarness.CheckBilValid("验证器零错误（Box<.i32> 继承定义级 getAtIndex）", module);
@@ -58,7 +58,7 @@ namespace RigiCompiler.Tests
                 "    const r = new Repo\\<i32>()\n" +
                 "    const a = r.make(3)\n" +
                 "    a[0] = 7\n" +
-                "    return ((a[0] + r.mix\\<i32>(1, 2)))\n" +
+                "    return (((a[0] if? 0) + r.mix\\<i32>(1, 2)))\n" +
                 "}\n");
             CheckNoErrors("全管线无诊断（类泛型参数进方法帧）", unit);
             BilTestHarness.CheckBilValid("验证器零错误（$.generic.TItem 已声明）", module);

@@ -13,6 +13,216 @@ namespace RigiCompiler.Tests
             TestGenericFieldSubstitution();
             TestForEachConstructedInterface();
             TestCovariantInitUsage();
+            TestConstructedTypeStaticMembers();
+            TestGenericNullableFixes();
+        }
+
+        // ===== g8/g10：泛型参数可空（Nullable<T>，T 为型参）——T → T? 装箱
+        // 视图可赋值、if?/?. 认 Nullable<GP>、反例不误放 =====
+        private static void TestGenericNullableFixes()
+        {
+            TestHarness.Section("P3 GenericTypeFixes: 泛型参数可空（g8/g10）");
+
+            // 1. g8：T → T? return（无约束泛型参数的 Nullable 装箱视图）
+            var (wrap, wrapBodies) = BindUnit(
+                "pub func wrapNull\\<T>(x: T): T? { return x }\n");
+            CheckNoErrors("g8 无诊断（T → T? return）", wrap);
+            var wrapMethod = BodyOf(wrapBodies, "wrapNull").Method;
+            var wrapT = wrapMethod.GenericParameters.Single(p => p.Name == "T");
+            var wrapReturn = (BoundReturnStatement)
+                BodyOf(wrapBodies, "wrapNull").Body.Statements[0];
+            TestHarness.CheckTrue("g8 return 值类型即 T（引用相等）",
+                ReferenceEquals(wrapReturn.Value!.Type, wrapT));
+            TestHarness.CheckTrue("g8 返回类型 Nullable<T> 内层即 T（引用相等）",
+                wrapMethod.ReturnType is TypeSymbol { ConstructedFrom: not null,
+                    TypeArguments: { } wrapArgs }
+                && ReferenceEquals(wrapArgs[0], wrapT));
+
+            // 2. g10：if? 解包 GP 可空——左操作数 Nullable<T>（T 为型参），
+            //    结果类型 T
+            var (unwrap, unwrapBodies) = BindUnit(
+                "pub func unwrap\\<T>(x: T?, fallback: T): T { return (x if? fallback) }\n");
+            CheckNoErrors("g10 无诊断（if? 解包 GP 可空）", unwrap);
+            var unwrapT = BodyOf(unwrapBodies, "unwrap").Method
+                .GenericParameters.Single(p => p.Name == "T");
+            var fallbackReturn = (BoundReturnStatement)
+                BodyOf(unwrapBodies, "unwrap").Body.Statements[0];
+            TestHarness.CheckTrue("g10 if? 绑定形态与定型（Type = T）",
+                fallbackReturn.Value is BoundNullFallbackExpression nullFallback
+                && ReferenceEquals(nullFallback.Type, unwrapT)
+                && nullFallback.Left.Type is TypeSymbol { ConstructedFrom: not null,
+                    TypeArguments: { } fallbackArgs }
+                && ReferenceEquals(fallbackArgs[0], unwrapT));
+
+            // 3. g10：`?.` 于 GP 可空——段在非空 T 上绑定（有效成员类型
+            //    Any.toString），结果包 Nullable<String>
+            var (safe, safeBodies) = BindUnit(
+                "pub func nameOf\\<T>(x: T?): String? { return x?.toString() }\n");
+            CheckNoErrors("g10 无诊断（?. 于 GP 可空）", safe);
+            var safeT = BodyOf(safeBodies, "nameOf").Method
+                .GenericParameters.Single(p => p.Name == "T");
+            var safeReturn = (BoundReturnStatement)
+                BodyOf(safeBodies, "nameOf").Body.Statements[0];
+            TestHarness.CheckTrue("g10 ?. 绑定形态与定型（结果 String?）",
+                safeReturn.Value is BoundSafeAccessExpression safeAccess
+                && ReferenceEquals(safeAccess.Placeholder.Type, safeT)
+                && safeAccess.Type is TypeSymbol { ConstructedFrom: not null,
+                    TypeArguments: { } safeArgs }
+                && ReferenceEquals(safeArgs[0], safe.Symbols.Bootstrap.String));
+
+            // 4. 端到端 Binder 形态：unwrap\<i32>(null, -1)——null 实参定型
+            //    Nullable<i32>，返回 i32
+            var (e2e, e2eBodies) = BindUnit(
+                "pub func unwrap\\<T>(x: T?, fallback: T): T { return (x if? fallback) }\n" +
+                "pub func main(): i32 { return unwrap\\<i32>(null, -1) }\n");
+            CheckNoErrors("g8/g10 无诊断（unwrap\\<i32>(null, -1) 端到端）", e2e);
+            var mainReturn = (BoundReturnStatement)
+                BodyOf(e2eBodies, "main").Body.Statements[0];
+            TestHarness.CheckTrue("g8/g10 端到端调用定型 i32",
+                mainReturn.Value is BoundCallExpression call
+                && call.Method.Name == "unwrap"
+                && call.TypeArguments.Count == 1
+                && ReferenceEquals(call.TypeArguments[0], e2e.Symbols.Bootstrap.Int32)
+                && ReferenceEquals(call.Type, e2e.Symbols.Bootstrap.Int32));
+
+            // 5. 反例：无约束 T → Nullable<U>（U 是另一不同型参）不误放
+            var (bad, _) = BindUnit(
+                "pub func bad\\<T, U>(x: T): U? { return x }\n");
+            TestHarness.CheckSemanticError("g8 反例：无约束 T → Nullable\\<U\\> 仍报错",
+                bad.Diagnostics, "Cannot return 'T' from function returning 'Nullable<U>'");
+
+            // 6. 具体类型可空回归：i32 → i32? 装箱视图与 if? 依旧
+            var (concrete, concreteBodies) = BindUnit(
+                "pub func f(): i32 {\n" +
+                "    var x: i32? = 3\n" +
+                "    return (x if? -1)\n" +
+                "}\n");
+            CheckNoErrors("g8/g10 回归：具体类型可空行为不变", concrete);
+            TestHarness.CheckTrue("g8/g10 回归：if? 定型 i32",
+                ((BoundReturnStatement)BodyOf(concreteBodies, "f").Body.Statements[1])
+                .Value is BoundNullFallbackExpression concreteFallback
+                && ReferenceEquals(concreteFallback.Type, concrete.Symbols.Bootstrap.Int32));
+        }
+
+        // ===== g7：构造类型上的静态成员绑定（Box\<i32>.wrap(8) / 静态字段
+        // 读写 / 方法自有泛型实参并存 / 宿主 T 代入成员签名）=====
+        private static void TestConstructedTypeStaticMembers()
+        {
+            TestHarness.Section("P3 GenericTypeFixes: 构造类型静态成员（g7）");
+
+            // 1. 构造类型静态方法调用：头段实参是类型构造实参；宿主 T 代入
+            // 成员签名——wrap(x: T): Box\<T> 在 Box\<i32> 上 → x: i32、
+            // 返回 Box\<i32>（可续访 .v 得 i32）
+            var (unit, bodies) = BindUnit(
+                "pub class Box\\<T> {\n" +
+                "    pub var v: T\n" +
+                "    pub init(_ -> v)\n" +
+                "    pub static func wrap(x: T): Box\\<T> { return new Box\\<T>(x) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const b = Box\\<i32>.wrap(8)\n" +
+                "    return b.v\n" +
+                "}\n");
+            CheckNoErrors("g7 无诊断（Box\\<i32>.wrap(8)）", unit);
+            var wrapCall = (BoundCallExpression)
+                ((BoundLocalDeclarationStatement)BodyOf(bodies, "main").Body.Statements[0])
+                .Initializer!;
+            TestHarness.CheckTrue("g7 wrap 静态调用 + 宿主泛型实参 i32 + 返回 Box<i32>",
+                wrapCall.Method.Name == "wrap" && wrapCall.Method.IsStatic
+                && wrapCall.TypeArguments.Count == 0
+                && wrapCall.HostTypeArguments.Count == 1
+                && ReferenceEquals(wrapCall.HostTypeArguments[0], unit.Symbols.Bootstrap.Int32)
+                && wrapCall.Type is TypeSymbol { ConstructedFrom: not null } wrapType
+                && wrapType.ConstructedFrom.Name == "Box"
+                && ReferenceEquals(wrapType.TypeArguments![0], unit.Symbols.Bootstrap.Int32));
+            var returnV = (BoundReturnStatement)BodyOf(bodies, "main").Body.Statements[1];
+            TestHarness.CheckTrue("g7 wrap 返回值续访 .v 代入 i32",
+                returnV.Value is BoundFieldAccessExpression { Field.Name: "v" } vAccess
+                && ReferenceEquals(vAccess.Type, unit.Symbols.Bootstrap.Int32));
+
+            // 2. 类型构造实参与方法自有泛型实参并存：
+            // Box\<i32>.pick\<String>(5, "hi")——头段 i32 归容器、末段
+            // String 归方法，签名双层代入（x: T→i32，返回 U→String）
+            var (combo, comboBodies) = BindUnit(
+                "pub class Box\\<T> {\n" +
+                "    pub var v: T\n" +
+                "    pub init(_ -> v)\n" +
+                "    pub static func pick\\<U>(x: T, u: U): U { return u }\n" +
+                "}\n" +
+                "pub func main(): String {\n" +
+                "    return Box\\<i32>.pick\\<String>(5, \"hi\")\n" +
+                "}\n");
+            CheckNoErrors("g7 无诊断（Box\\<i32>.pick\\<String> 两处实参并存）", combo);
+            var pickCall = (BoundCallExpression)((BoundReturnStatement)
+                BodyOf(comboBodies, "main").Body.Statements[0]).Value!;
+            TestHarness.CheckTrue("g7 pick 宿主实参与方法实参分流",
+                pickCall.Method.Name == "pick"
+                && pickCall.HostTypeArguments.Count == 1
+                && ReferenceEquals(pickCall.HostTypeArguments[0],
+                    combo.Symbols.Bootstrap.Int32)
+                && pickCall.TypeArguments.Count == 1
+                && ReferenceEquals(pickCall.TypeArguments[0],
+                    combo.Symbols.Bootstrap.String)
+                && ReferenceEquals(pickCall.Type, combo.Symbols.Bootstrap.String));
+
+            // 3. 静态字段读写：Box\<i32>.zero 的声明类型 T 按容器构造实参
+            // 代入为 i32（写 place 与读路径同型）
+            var (fields, fieldBodies) = BindUnit(
+                "pub class Box\\<T> {\n" +
+                "    pub var v: T\n" +
+                "    pub init(_ -> v)\n" +
+                "    pub static var zero: T\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    Box\\<i32>.zero = 41\n" +
+                "    return Box\\<i32>.zero\n" +
+                "}\n");
+            CheckNoErrors("g7 无诊断（Box\\<i32>.zero 读写）", fields);
+            var zeroAssign = (BoundAssignmentStatement)
+                BodyOf(fieldBodies, "main").Body.Statements[0];
+            var zeroReturn = (BoundReturnStatement)
+                BodyOf(fieldBodies, "main").Body.Statements[1];
+            TestHarness.CheckTrue("g7 静态字段写 place 类型代入 i32",
+                zeroAssign.Target is BoundFieldReferenceExpression { Field.Name: "zero" } zeroWrite
+                && zeroWrite.Field.IsStatic
+                && ReferenceEquals(zeroWrite.Type, fields.Symbols.Bootstrap.Int32));
+            TestHarness.CheckTrue("g7 静态字段读类型代入 i32",
+                zeroReturn.Value is BoundFieldReferenceExpression { Field.Name: "zero" } zeroRead
+                && ReferenceEquals(zeroRead.Type, fields.Symbols.Bootstrap.Int32));
+
+            // 4. 语句位置：void 静态调用落 BoundCallStatement 且携带宿主
+            // 泛型实参（P4 发射 .generic.T 依据）
+            var (stmt, stmtBodies) = BindUnit(
+                "pub class Box\\<T> {\n" +
+                "    pub var v: T\n" +
+                "    pub init(_ -> v)\n" +
+                "    pub static func touch(x: T) { }\n" +
+                "}\n" +
+                "pub func main() {\n" +
+                "    Box\\<i32>.touch(1)\n" +
+                "}\n");
+            CheckNoErrors("g7 无诊断（void 静态调用语句）", stmt);
+            TestHarness.CheckTrue("g7 语句位置 BoundCallStatement 带宿主实参",
+                BodyOf(stmtBodies, "main").Body.Statements[0] is BoundCallStatement touchStmt
+                && touchStmt.Method.Name == "touch"
+                && touchStmt.HostTypeArguments.Count == 1
+                && ReferenceEquals(touchStmt.HostTypeArguments[0],
+                    stmt.Symbols.Bootstrap.Int32));
+
+            // 5. 反例：末段实参仍按方法泛型实参口径——wrap 非泛型方法，
+            // Box.wrap\<i32>(8) 保持容器元数诊断（不落进方法实参曲解）
+            var (bad, _) = BindUnit(
+                "pub class Box\\<T> {\n" +
+                "    pub var v: T\n" +
+                "    pub init(_ -> v)\n" +
+                "    pub static func wrap(x: T): Box\\<T> { return new Box\\<T>(x) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const b = Box.wrap\\<i32>(8)\n" +
+                "    return b.v\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("g7 Box.wrap\\<i32>(8) 保持容器元数诊断",
+                bad.Diagnostics, "'Box' expects 1 type argument(s), got 0");
         }
 
         // ===== A7：泛型类体内 this 定型为自身具化 Box\<T\> =====

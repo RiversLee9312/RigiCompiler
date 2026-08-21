@@ -67,13 +67,46 @@ pub operator plus\<TAnother extends Addable>(another: TAnother): MyType { ... }
 
 | 运算符 | 名称 | 签名 |
 |--------|------|------|
-| `[]` 读取 | `getAtIndex` | `operator getAtIndex\<TElement, TIndex>(index: TIndex): TElement` |
+| `[]` 读取 | `getAtIndex` | `operator getAtIndex\<TElement, TIndex>(index: TIndex): TElement?` |
 | `[]` 赋值 | `setAtIndex` | `operator setAtIndex\<TElement, TIndex>(index: TIndex, element: TElement)` |
 
+- **索引读取一律返回 `TElement?`（`Nullable\<TElement\>`）**。读取元素是可失败的
+  操作（越界、稀疏容器缺键等），调用方必须用空安全机制解包——`if?` 空值回退、
+  `?.` 安全访问、null 判等 smart cast 或显式 `as`（失败抛 `core.CastException`）：
+
+  ```rigi
+  var first = arr[0] if? -1        // 越界/空 → 回退 -1
+  const e = arr[0]
+  if (e != null) { use(e) }        // smart cast 收窄为 TElement
+  var name = users[0]?.name        // 安全访问成员
+  ```
+
+- `getAtIndex` 的声明形状由编译器在声明处校验：恰好 1 个形参（类型由实现自定），
+  返回类型必须是 `T?` 构造——返回非可空类型的 `getAtIndex` 是编译错误（死声明，
+  任何读取点都无法按空安全语义消费）。
+- **内建 `Array\<T\>` 的 `a[i]` 读取在语义上同样走 `getAtIndex` 运算符**（返回
+  `T?`），用户自定义索引容器与内建数组遵守同一套规则；差别只在实现——编译器
+  清楚内建数组的底细，直接 emit 对应的 BIL 特权指令（`BIL_STANDARD.md` §13.6
+  `get.array`），不经过普通方法调用。
+- **越界读取语义**：内建数组越界读取不 trap，按「读取失败」得 `null`（这正是
+  返回 `T?` 的意义——`arr[99] if? -1` 得 `-1`）。用户容器的「失败」语义由各自
+  `getAtIndex` 实现自定（返回 `null` 或抛异常均可）。
+- **索引写（`a[i] = v`）不在可空化范围**：`setAtIndex` 的 `element` 形参按声明
+  类型接收（内建数组仍收非空 `T`）；内建数组越界**写入**维持运行时 trap（写入
+  没有「返回 null」的退路，静默丢弃写入会掩盖 bug）。
+- 读出的 `T?` 不提供隐式成员访问与写入：`a[i].f`、`a[i].f = x`、`a[i][j]` 都是
+  编译错误（nullable 上无成员/非可写 place），须先解包（`a[i]?.f`、`const e =
+  a[i]; if (e != null) { e.f = x }`）。
+- 复合赋值（`a[i] += x`）按 §13.2 通用规则从读+写推导；由于读侧类型是 `T?`，
+  `T?` 上没有算术/位运算符，`a[i] op= x` 不再可用——写显式读改写形态
+  `a[i] = ((a[i] if? 0) + x)`。
+- **for-in 循环不经 `getAtIndex`**：`for (x in c)` 走 `core.collections.IEnumerable\<T\>`
+  协议（`iterate`/`moveNext`/`current`，§7.3），循环变量类型保持 `T`，不受本
+  规则影响。
 - 索引恰好接收一个实参——多参数索引 `a[i, j]` 是编译错误（签名固定单 `TIndex` 参数）。
 - 具名索引实参与普通调用同规则（按形参名归位）。
-- `a[i] = x` 映射 `setAtIndex`；复合赋值（`a[i] += x`）按 §13.2 通用规则自动推导。
-- **复合赋值的容器与索引表达式只求值一次**：脱糖时先物化为临时变量——`a[i] op= x` 等价于 `{ var __c = a; var __i = i; __c[__i] = (__c[__i] op x) }`，求值序为容器 → 索引 → 右值。
+- **复合赋值的目标表达式只求值一次**（适用于仍合法的字段链等形态）：脱糖时先物化
+  为临时变量——求值序为容器/接收者 → 索引 → 右值。
 
 #### 枚举运算符
 
@@ -106,7 +139,7 @@ pub operator plus\<TAnother extends Addable>(another: TAnother): MyType { ... }
 
 - `+=`/`-=`/`*=`/`/=`/`<<=`/`>>=`/`>>>=`/`&=`/`|=`/`^=` 从对应运算符自动推导
 - 不可自定义新运算符名称
-- **复合赋值的目标表达式只求值一次**：无论目标是字段链还是索引，接收者/容器/索引等含副作用的子表达式均在读取前物化为临时变量——`recv.f op= x` 等价于 `{ var __r = recv; __r.f = (__r.f op x) }`，`a[i] op= x` 等价于 `{ var __c = a; var __i = i; __c[__i] = (__c[__i] op x) }`；求值序为接收者（含容器/索引）→ 右值。局部变量与参数目标天然单次求值，无需物化。
+- **复合赋值的目标表达式只求值一次**：无论目标是字段链还是索引，接收者/容器/索引等含副作用的子表达式均在读取前物化为临时变量——`recv.f op= x` 等价于 `{ var __r = recv; __r.f = (__r.f op x) }`，`a[i] op= x` 等价于 `{ var __c = a; var __i = i; __c[__i] = (__c[__i] op x) }`；求值序为接收者（含容器/索引）→ 右值。局部变量与参数目标天然单次求值，无需物化。字段链中间层含值类型时，叶写后对值类型中间层反向写回（§10 嵌套字段链写穿）。
 - **赋值的求值顺序不可依赖**：编译器当前按「接收者（含容器/索引）先求值、右值后求值」落地（简单赋值与复合赋值同规则），但使用者不应假设该求值顺序——依赖赋值两侧求值顺序的行为是未定义行为，编译器可在不另行通知的情况下改变求值顺序。
 
 ### 13.3 泛型参数操作数

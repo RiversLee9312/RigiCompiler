@@ -242,7 +242,7 @@ namespace RigiCompiler.Tests
             // 具化泛型构造：GenericParameter 透传（发射侧 MaterializeTypeId
             // 零指令引用 .generic.T 隐藏 typeid 实参）+ Origin 回指
             var (unit, bound, lowered) = LowerUnit(
-                "func makeIt\\<TResult>(): TResult { return TResult() }\n");
+                "func makeIt\\<TResult extends i32>(): TResult { return TResult() }\n");
             CheckNoErrors("无诊断（具化构造降级）", unit);
             TestHarness.Check("具化构造降级形态",
                 LoweredDescribe.Body(BodyOf(lowered, "makeIt")),

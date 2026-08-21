@@ -238,5 +238,286 @@ namespace RigiCompiler.Tests
             TestHarness.Check("wrap 日志", result.Stdout, "wrap\n");
             CheckI32("override 体 101", result, 101);
         }
+
+        // bug O1：虚/接口派发丢 Method wrapper——override 已按 §14.9 重复
+        // 声明 @Trace，但经基类静态类型调用时 invoke 带静态符号 Base$work，
+        // 实例上只有实现侧键 Child$work；修复 = 收集 wrapper 链前先按
+        // receiver 实际类型虚派发取实现槽符号（RUNTIME §7 + §14.9）
+        private static void TestMethodWrapperViaBaseStaticType()
+        {
+            var result = Run(
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Trace {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call\\<TReturn>(): TReturn {\n" +
+                "        core.io.Console.println(\"trace\")\n" +
+                "        return inner()\n" +
+                "    }\n" +
+                "}\n" +
+                "pub open class Base {\n" +
+                "    pub init()\n" +
+                "    @Trace()\n" +
+                "    pub open func work(): i32 { return 1 }\n" +
+                "}\n" +
+                "pub class Child : Base {\n" +
+                "    pub init()\n" +
+                "    @Trace()\n" +
+                "    pub override func work(): i32 { return 2 }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const b: Base = new Child()\n" +
+                "    return b.work()\n" +
+                "}\n");
+            CheckOk("bug O1 基类静态类型 + 子类 @Trace override", result);
+            TestHarness.Check("经基类引用也有 trace", result.Stdout, "trace\n");
+            CheckI32("override 体 2", result, 2);
+        }
+
+        // bug O1 同构：接口静态类型调用（Work$work → Job$work）
+        private static void TestMethodWrapperViaInterfaceStaticType()
+        {
+            var result = Run(
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Trace {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call\\<TReturn>(): TReturn {\n" +
+                "        core.io.Console.println(\"trace\")\n" +
+                "        return inner()\n" +
+                "    }\n" +
+                "}\n" +
+                "pub interface Work {\n" +
+                "    func work(): i32\n" +
+                "}\n" +
+                "pub class Job implements Work {\n" +
+                "    pub init()\n" +
+                "    @Trace()\n" +
+                "    pub override func work(): i32 { return 3 }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const w: Work = new Job()\n" +
+                "    return w.work()\n" +
+                "}\n");
+            CheckOk("bug O1 接口静态类型 + 实现 @Trace", result);
+            TestHarness.Check("经接口引用也有 trace", result.Stdout, "trace\n");
+            CheckI32("实现体 3", result, 3);
+        }
+
+        // bug O1 多层链：经中间层静态类型引用末端实例，末端 override 的
+        // wrapper 仍命中（Mid$work → Leaf$work）
+        private static void TestMethodWrapperViaMidChainStaticType()
+        {
+            var result = Run(
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Trace {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call\\<TReturn>(): TReturn {\n" +
+                "        core.io.Console.println(\"trace\")\n" +
+                "        return inner()\n" +
+                "    }\n" +
+                "}\n" +
+                "pub open class Base {\n" +
+                "    pub init()\n" +
+                "    @Trace()\n" +
+                "    pub open func work(): i32 { return 1 }\n" +
+                "}\n" +
+                "pub open class Mid : Base {\n" +
+                "    pub init()\n" +
+                "    @Trace()\n" +
+                "    pub override func work(): i32 { return 2 }\n" +
+                "}\n" +
+                "pub class Leaf : Mid {\n" +
+                "    pub init()\n" +
+                "    @Trace()\n" +
+                "    pub override func work(): i32 { return 3 }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const m: Mid = new Leaf()\n" +
+                "    return m.work()\n" +
+                "}\n");
+            CheckOk("bug O1 多层链中间层静态类型", result);
+            TestHarness.Check("末端 override 的 trace", result.Stdout, "trace\n");
+            CheckI32("末端体 3", result, 3);
+        }
+
+        // 回归：override 未声明 wrapper 时经基类静态类型调用不绕链，
+        // 虚派发仍到 override 体（修复不得给无 wrapper 方法凭空造链）
+        private static void TestNoWrapperViaBaseStaticTypeRegression()
+        {
+            var result = Run(
+                "pub open class Base {\n" +
+                "    pub init()\n" +
+                "    pub open func work(): i32 { return 1 }\n" +
+                "}\n" +
+                "pub class Child : Base {\n" +
+                "    pub init()\n" +
+                "    pub override func work(): i32 { return 2 }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const b: Base = new Child()\n" +
+                "    return b.work()\n" +
+                "}\n");
+            CheckOk("无 wrapper 经基类静态类型回归", result);
+            TestHarness.Check("无 trace", result.Stdout, "");
+            CheckI32("override 体 2", result, 2);
+        }
+
+        // super 路径保持绕过全部 wrapper（ResolveSuper 直接压帧、非虚）：
+        // override 体内 super() 不得再触发基类方法键上的 wrapper
+        private static void TestSuperBypassesMethodWrapper()
+        {
+            var result = Run(
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Trace {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call\\<TReturn>(): TReturn {\n" +
+                "        core.io.Console.println(\"trace\")\n" +
+                "        return inner()\n" +
+                "    }\n" +
+                "}\n" +
+                "pub open class Base {\n" +
+                "    pub init()\n" +
+                "    @Trace()\n" +
+                "    pub open func work(): i32 { return 1 }\n" +
+                "}\n" +
+                "pub class Child : Base {\n" +
+                "    pub init()\n" +
+                "    @Trace()\n" +
+                "    pub override func work(): i32 { return (super() + 10) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    return new Child().work()\n" +
+                "}\n");
+            CheckOk("super 绕过 Method wrapper", result);
+            TestHarness.Check("仅外层一次 trace", result.Stdout, "trace\n");
+            CheckI32("super 1 + 10", result, 11);
+        }
+
+        // bug O2（§9.7 修订）：子类未 override 的基类方法，其 Method
+        // wrapper 由实际类型的 ..init.wrapper 经继承闭包缝合安装——
+        // new Child().work() 有 trace
+        private static void TestInheritedMethodWrapperInstalledOnChild()
+        {
+            var result = Run(
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Trace {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call\\<TReturn>(): TReturn {\n" +
+                "        core.io.Console.println(\"trace\")\n" +
+                "        return inner()\n" +
+                "    }\n" +
+                "}\n" +
+                "pub open class Base {\n" +
+                "    pub init()\n" +
+                "    @Trace()\n" +
+                "    pub open func work(): i32 { return 1 }\n" +
+                "}\n" +
+                "pub class Child : Base {\n" +
+                "    pub init()\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    return new Child().work()\n" +
+                "}\n");
+            CheckOk("bug O2 子类实例装基类方法 wrapper", result);
+            TestHarness.Check("未 override 也 trace", result.Stdout, "trace\n");
+            CheckI32("基类体 1", result, 1);
+        }
+
+        // bug O7（§9.7/§14.2 修订）：..init.wrapper 先于一切 init 体执行
+        // 且覆盖继承闭包——基类 init 体读取字段时，（重申到子类的）Entity
+        // wrapper 已安装，读命中 .proxy.get.* 链
+        private static void TestBaseInitReadsThroughInheritedEntityWrapper()
+        {
+            var result = Run(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Audit {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.get.*\\<TValue>(symbol: String, value: TValue): TValue {\n" +
+                "        core.io.Console.println(\"audit\")\n" +
+                "        return value\n" +
+                "    }\n" +
+                "}\n" +
+                "@Audit()\n" +
+                "pub open class Base {\n" +
+                "    pub var hp: i32 = 10\n" +
+                "    pub init() { hp = (this.hp + 1) }\n" +
+                "}\n" +
+                "@Audit()\n" +
+                "pub class Hero : Base {\n" +
+                "    pub init() { super() }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    return new Hero().hp\n" +
+                "}\n");
+            CheckOk("bug O7 基类 init 读命中继承 wrapper", result);
+            TestHarness.Check("init 读 + 主调读各 audit 一次",
+                result.Stdout, "audit\naudit\n");
+            CheckI32("字段初值 10 先于 init 体（10+1=11）", result, 11);
+        }
+
+        // bug O7 完整形态（P17 收尾）：Entity wrapper 同时带 .proxy.*/get.*/set.*
+        // 时，构造期 setter 调用被 .proxy.* 拦截后经 inner 重路由为 Set 链——
+        // 链起自方法调用（FieldSymbol 原本为空），链末须从访问器符号反查字段
+        // 并解胖值包取写入值；getter 调用重路由为 Get 链，链末调 getter 本体
+        //（绕过派发链防再入成环）
+        private static void TestAccessorCallRerouteThroughEntityWildcard()
+        {
+            var result = Run(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Audit {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., " +
+                "unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn {\n" +
+                "        core.io.Console.println(\"[Audit] ${symbol}\")\n" +
+                "        return inner(symbol=symbol, namedArgs=namedArgs, unnamedArgs=unnamedArgs)\n" +
+                "    }\n" +
+                "    operator .proxy.get.*\\<TValue>(symbol: String, value: TValue): TValue {\n" +
+                "        core.io.Console.println(\"[Audit] ${symbol}\")\n" +
+                "        return value\n" +
+                "    }\n" +
+                "    operator .proxy.set.*\\<TValue>(symbol: String, value: TValue) {\n" +
+                "        core.io.Console.println(\"[Audit] ${symbol}\")\n" +
+                "        inner(symbol=symbol, value=value)\n" +
+                "    }\n" +
+                "}\n" +
+                "@Audit()\n" +
+                "pub open class Entity {\n" +
+                "    pub var name: String = \"Ada\"\n" +
+                "    pub var hp: i32 {\n" +
+                "        pub get(value: _) { return value }\n" +
+                "        pub set(value: _) { }\n" +
+                "    } = 10\n" +
+                "    pub init() {\n" +
+                "        core.io.Console.println(\"Entity.init ${name} hp=${this.hp}\")\n" +
+                "    }\n" +
+                "}\n" +
+                "@Audit()\n" +
+                "pub class Hero : Entity {\n" +
+                "    pub init() {\n" +
+                "        super()\n" +
+                "        core.io.Console.println(\"Hero.init\")\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const h = new Hero()\n" +
+                "    core.io.Console.println(\"ok ${h.name}\")\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckOk("访问器调用经实体 wildcard 重路由不崩", result);
+            TestHarness.Check("完整输出（初值经 setter、init 读经 getter+get 链）",
+                result.Stdout,
+                "[Audit] Entity$..init.field.name()@.void\n" +
+                "[Audit] Entity$..init.field.hp()@.void\n" +
+                "[Audit] Entity$.set.hp@.i32\n" +
+                "[Audit] Entity#name@.string\n" +
+                "[Audit] Entity$.get.hp@.i32\n" +
+                "[Audit] Entity#hp@.i32\n" +
+                "Entity.init Ada hp=10\n" +
+                "Hero.init\n" +
+                "[Audit] Entity#name@.string\n" +
+                "ok Ada\n");
+            CheckI32("main 返回 0（hp=10 见 stdout）", result, 0);
+        }
     }
 }

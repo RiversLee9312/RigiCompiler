@@ -136,6 +136,9 @@ namespace RigiCompiler
         public MethodSymbol Method { get; }
         public IReadOnlyList<LoweredExpression> Arguments { get; }
         public IReadOnlyList<SemanticSymbol> TypeArguments { get; }
+        // g7：构造类型宿主上的静态调用的宿主泛型实参（P4b 在 TypeArguments
+        // 之前物化，§7.2 序）；非该形态为空
+        public IReadOnlyList<SemanticSymbol> HostTypeArguments { get; }
         public LoweredGenericVarArgsArgument? GenericPack { get; }
         // 间接调用（§15.3 callable 协议）：物化目标对象表达式后虚调用其
         // $$call；非间接调用为 null
@@ -146,11 +149,13 @@ namespace RigiCompiler
             IReadOnlyList<LoweredExpression> arguments,
             IReadOnlyList<SemanticSymbol>? typeArguments = null,
             LoweredGenericVarArgsArgument? genericPack = null, bool isIndirect = false,
-            LoweredExpression? indirectTarget = null) : base(origin)
+            LoweredExpression? indirectTarget = null,
+            IReadOnlyList<SemanticSymbol>? hostTypeArguments = null) : base(origin)
         {
             Method = method;
             Arguments = arguments;
             TypeArguments = typeArguments ?? Array.Empty<SemanticSymbol>();
+            HostTypeArguments = hostTypeArguments ?? Array.Empty<SemanticSymbol>();
             GenericPack = genericPack;
             IsIndirect = isIndirect;
             IndirectTarget = indirectTarget;

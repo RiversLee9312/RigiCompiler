@@ -1,4 +1,4 @@
-using System.Linq;
+﻿using System.Linq;
 
 namespace RigiCompiler.Tests
 {
@@ -46,7 +46,7 @@ namespace RigiCompiler.Tests
                 "class Box\\<T> {\n" +
                 "    pub var storage: T\n" +
                 "    pub init(_ -> storage) { }\n" +
-                "    pub operator getAtIndex(index: i32): T { return storage }\n" +
+                "    pub operator getAtIndex(index: i32): T? { return storage }\n" +
                 "    pub operator setAtIndex(index: i32, element: T) { storage = element }\n" +
                 "}\n" +
                 "func f() {\n" +
@@ -59,7 +59,7 @@ namespace RigiCompiler.Tests
                 "class Pair2\\<T> {\n" +
                 "    pub var storage: T\n" +
                 "    pub init(_ -> storage) { }\n" +
-                "    pub operator getAtIndex(index: T): T { return storage }\n" +
+                "    pub operator getAtIndex(index: T): T? { return storage }\n" +
                 "    pub operator setAtIndex(index: T, element: T) { storage = element }\n" +
                 "}\n" +
                 "func g() {\n" +
@@ -154,17 +154,20 @@ namespace RigiCompiler.Tests
                 && ReferenceEquals(rc.ConstructedFrom, unit13.Symbols.Bootstrap.ArrayDefinition));
 
             // ===== 索引复合赋值写回校验（S8c）：setAtIndex 元素形参 =====
+            // （Q6 后 a[i] op= x 的读侧为 T?，二元运算不可直接施加——
+            // 复合赋值索引形态由显式读改写替代，此处用显式形态锁定同一
+            // 写回校验义务）
             // 反例：写回类型与元素形参不一致——此前只查存在性放行
             var (unit14, _) = BindUnit(
                 "class Bag {\n" +
                 "    pub var storage: i32\n" +
                 "    pub init(_ -> storage) { }\n" +
-                "    pub operator getAtIndex(index: i32): i32 { return storage }\n" +
+                "    pub operator getAtIndex(index: i32): i32? { return storage }\n" +
                 "    pub operator setAtIndex(index: i32, element: String) { }\n" +
                 "}\n" +
                 "func f() {\n" +
                 "    var bag = new Bag(0)\n" +
-                "    bag[0] += 5\n" +
+                "    bag[0] = (bag[0] if? (0 + 5))\n" +
                 "}\n");
             TestHarness.CheckSemanticError("索引复合赋值写回类型校验", unit14.Diagnostics,
                 "Cannot assign 'i32' to 'String'");
@@ -173,14 +176,14 @@ namespace RigiCompiler.Tests
                 "class Bag {\n" +
                 "    pub var storage: i32\n" +
                 "    pub init(_ -> storage) { }\n" +
-                "    pub operator getAtIndex(index: i32): i32 { return storage }\n" +
+                "    pub operator getAtIndex(index: i32): i32? { return storage }\n" +
                 "    pub operator setAtIndex(index: i32, element: i32) { storage = element }\n" +
                 "}\n" +
                 "func f() {\n" +
                 "    var bag = new Bag(0)\n" +
-                "    bag[0] += 5\n" +
+                "    bag[0] = (bag[0] if? (0 + 5))\n" +
                 "}\n");
-            CheckNoErrors("无诊断（索引复合赋值读写一致）", unit15);
+            CheckNoErrors("无诊断（索引显式读改写回一致）", unit15);
             // 正例：元素形参宿主代入（校验与代入设施协同——只校验不代入
             // 则对 T 误报；读侧返回类型此处用具体类型，绕开
             // OverloadResolution 非显式路径的读侧代入缺口）
@@ -188,14 +191,14 @@ namespace RigiCompiler.Tests
                 "class Box\\<T> {\n" +
                 "    pub var storage: i32\n" +
                 "    pub init(_ -> storage) { }\n" +
-                "    pub operator getAtIndex(index: i32): i32 { return storage }\n" +
+                "    pub operator getAtIndex(index: i32): i32? { return storage }\n" +
                 "    pub operator setAtIndex(index: i32, element: T) { }\n" +
                 "}\n" +
                 "func f() {\n" +
                 "    var box = new Box\\<i32>(0)\n" +
-                "    box[0] += 5\n" +
+                "    box[0] = (box[0] if? (0 + 5))\n" +
                 "}\n");
-            CheckNoErrors("无诊断（索引复合赋值元素形参宿主代入）", unit16);
+            CheckNoErrors("无诊断（索引显式读改写回元素形参宿主代入）", unit16);
 
             // ===== 显式泛型实参访问控制（S8e，SYNTAX §16.1）=====
             var (unit17, _) = BindUnit(
@@ -283,19 +286,71 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("无诊断（非显式路径宿主代入：返回 T → i32）", unit22);
             // 读模式 getAtIndex 返回类型代入（同根因，OverloadResolution
-            // 非显式路径视图）
+            // 非显式路径视图；Q6：返回 T? → Nullable\<i32\> 代入）
             var (unit23, _) = BindUnit(
                 "class Box\\<T> {\n" +
                 "    pub var storage: T\n" +
                 "    pub init(_ -> storage) { }\n" +
-                "    pub operator getAtIndex(index: i32): T { return storage }\n" +
+                "    pub operator getAtIndex(index: i32): T? { return storage }\n" +
                 "}\n" +
                 "func f(): i32 {\n" +
                 "    var box = new Box\\<i32>(0)\n" +
-                "    var x: i32 = box[0]\n" +
+                "    var x: i32 = box[0] if? 0\n" +
                 "    return x\n" +
                 "}\n");
-            CheckNoErrors("无诊断（getAtIndex 返回 T → i32 代入）", unit23);
+            CheckNoErrors("无诊断（getAtIndex 返回 T? → Nullable<i32> 代入）", unit23);
+
+            // ===== Q6（§13.2）：索引读取一律返回 T? =====
+            // 内建 Array：读取得 T?——if? 回退/可空标注合法，写入仍收非空 T
+            var (unit24, _) = BindUnitWithStdlib(
+                "import core.collections.*\n" +
+                "func f(): i32 {\n" +
+                "    var a = arrayOf\\<i32>(3)\n" +
+                "    a[0] = 7\n" +
+                "    var x: i32 = a[0] if? -1\n" +
+                "    var y: i32? = a[1]\n" +
+                "    return x\n" +
+                "}\n");
+            CheckNoErrors("Q6：内建数组读取得 T?（if?/可空标注/写入合法）", unit24);
+            // 读直赋非空类型 → 报错（T? 不隐式拆包）
+            var (unit25, _) = BindUnitWithStdlib(
+                "import core.collections.*\n" +
+                "func f(a: Array\\<i32>): i32 { return a[0] }\n");
+            TestHarness.CheckSemanticError("Q6：T? 直赋非空拒绝", unit25.Diagnostics,
+                "Cannot return 'Nullable<i32>'");
+            // 声明形状：getAtIndex 返回非 T? → P2 拒绝
+            var (unit26, _) = BindUnit(
+                "class Bag {\n" +
+                "    pub operator getAtIndex(index: i32): i32 { return 0 }\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("Q6：getAtIndex 返回非 T? 形状拒绝", unit26.Diagnostics,
+                "Operator 'getAtIndex' must return a nullable type");
+            // 声明形状：getAtIndex 恰 1 形参
+            var (unit27, _) = BindUnit(
+                "class Bag {\n" +
+                "    pub operator getAtIndex(a: i32, b: i32): i32? { return 0 }\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("Q6：getAtIndex 恰一形参形状", unit27.Diagnostics,
+                "Operator 'getAtIndex' must have exactly one parameter");
+            // for-in 不经 getAtIndex（协议锁定）：实现 IEnumerable<T> 而无
+            // 索引运算符的类型照常 for-in，循环变量保持 T（非 T?）
+            var (unit28, bodies28) = BindUnitWithStdlib(
+                "pub class Enumr\\<T> implements core.collections.IEnumerator\\<T> {\n" +
+                "    pub override func moveNext(): bool { return false }\n" +
+                // g6（§3.7）：无约束 T() 已是编译错误——桩体改抛异常
+                "    pub override func current(): T { throw new RuntimeException(\"stub\") }\n" +
+                "}\n" +
+                "pub class Bag\\<T> implements core.collections.IEnumerable\\<T> {\n" +
+                "    pub override func iterate(): core.collections.IEnumerator\\<T> {\n" +
+                "        return new Enumr\\<T>()\n" +
+                "    }\n" +
+                "}\n" +
+                "func walk(b: Bag\\<i32>): i32 {\n" +
+                "    var n = 0\n" +
+                "    for (x in b) { n = (n + x) }\n" +
+                "    return n\n" +
+                "}\n");
+            CheckNoErrors("Q6：for-in 不经 getAtIndex（元素保持 T）", unit28);
         }
     }
 }

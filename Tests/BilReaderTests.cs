@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using RigiCompiler.Bil;
@@ -113,7 +113,7 @@ namespace RigiCompiler.Tests
                 "pub class Bag {\n" +
                 "    pub var item: i32\n" +
                 "    pub init() { item = 0 }\n" +
-                "    pub operator getAtIndex(index: i32): i32 { return item }\n" +
+                "    pub operator getAtIndex(index: i32): i32? { return item }\n" +
                 "    pub operator setAtIndex(index: i32, element: i32) { item = element }\n" +
                 "}\n" +
                 "pub func main(): i32 {\n" +
@@ -121,7 +121,7 @@ namespace RigiCompiler.Tests
                 "    a[0] = 10\n" +
                 "    var b = new Bag()\n" +
                 "    b[0] = 21\n" +
-                "    return ((a[0] + b[0]))\n" +
+                "    return (((a[0] if? 0) + (b[0] if? 0)))\n" +
                 "}\n");
         }
 
@@ -283,7 +283,7 @@ namespace RigiCompiler.Tests
         private static void TestRoundTripTypeOf()
         {
             RoundTrip("typeOf 与间接类型检查",
-                "pub class Box { pub var n: i32 }\n" +
+                "pub class Box { pub var n: i32 = 0 }\n" +
                 "pub func main(): bool {\n" +
                 "    var b = new Box()\n" +
                 "    var t = typeOf(b)\n" +

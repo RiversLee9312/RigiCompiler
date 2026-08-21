@@ -1,4 +1,4 @@
-using System.Linq;
+﻿using System.Linq;
 using RigiCompiler.Bil;
 
 namespace RigiCompiler.Tests
@@ -148,23 +148,39 @@ namespace RigiCompiler.Tests
                 "pub wrapper Indexed {\n" +
                 "    pub var store: i32\n" +
                 "    pub init() { store = 0 }\n" +
-                "    pub operator getAtIndex(index: i32): i32 { return store }\n" +
+                "    pub operator getAtIndex(index: i32): i32? { return store }\n" +
                 "}\n" +
                 "@Indexed\n" +
                 "pub class Service { pub init() }\n" +
                 "pub func f(s: Service): i32 {\n" +
-                "    return s:Indexed[0]\n" +
+                "    return s:Indexed[0] if? 0\n" +
                 "}\n");
             CheckNoErrors("全管线无诊断（Entity 索引读）", unit);
             BilTestHarness.CheckBilValid("验证器零错误（Entity 索引读）", module);
-            BilTestHarness.CheckFnShape("Entity 索引读（get.wrapper + get.array）",
+            BilTestHarness.CheckFnShape("Entity 索引读（get.wrapper + get.array，Q6）",
                 module, "$f(s:Service)@.i32",
-                ".vars { Indexed .s0, Indexed .t0, .i32 .t1, .i32 .t2 }\n" +
+                ".vars { Indexed .s0, .nullable<.i32> .s1, .i32 .s2, .breakid .b0, " +
+                "Indexed .t0, .i32 .t1, .nullable<.i32> .t2, .nullable<.i32> .t3, " +
+                ".bool .t4, .i32 .t5, .i32 .t6 }\n" +
+                ".block entry entrypoint {\n" +
                 "get.wrapper $s type(Indexed) $.t0\n" +
                 "set.var $.t0 $.s0\n" +
                 "load res(#0) $.t1\n" +
                 "get.array $.s0 $.t1 $.t2\n" +
-                "ret $.t2\n");
+                "set.var $.t2 $.s1\n" +
+                "load res(#1) $.t3\n" +
+                "cmp.ne $.s1 $.t3 $.t4\n" +
+                "if $.t4 blk(if0-then) blk(if0-else) $.b0\n" +
+                "ret $.s2\n" +
+                "}\n" +
+                ".block if0-then {\n" +
+                "cast $.s1 $.t5 type(.i32)\n" +
+                "set.var $.t5 $.s2\n" +
+                "}\n" +
+                ".block if0-else {\n" +
+                "load res(#0) $.t6\n" +
+                "set.var $.t6 $.s2\n" +
+                "}\n");
         }
 
         // ===== 字段-Value：get.wrapper.field + get.field + 字段 wrapped 标记 =====
@@ -650,7 +666,7 @@ namespace RigiCompiler.Tests
                 "pub wrapper Indexed {\n" +
                 "    pub var store: i32\n" +
                 "    pub init() { store = 0 }\n" +
-                "    pub operator getAtIndex(index: i32): i32 { return store }\n" +
+                "    pub operator getAtIndex(index: i32): i32? { return store }\n" +
                 "    pub operator setAtIndex(index: i32, value: i32) { store = value }\n" +
                 "}\n" +
                 "pub class Holder {\n" +
@@ -659,18 +675,34 @@ namespace RigiCompiler.Tests
                 "    pub init(v: i32) { slot = v }\n" +
                 "}\n" +
                 "pub func f(h: Holder): i32 {\n" +
-                "    return h.slot:Indexed[0]\n" +
+                "    return h.slot:Indexed[0] if? 0\n" +
                 "}\n");
             CheckNoErrors("全管线无诊断（字段-Value 索引读）", unit2);
             BilTestHarness.CheckBilValid("验证器零错误（字段-Value 索引读）", module2);
-            BilTestHarness.CheckFnShape("字段-Value 索引读（get.wrapper.field + get.array）",
+            BilTestHarness.CheckFnShape("字段-Value 索引读（get.wrapper.field + get.array，Q6）",
                 module2, "$f(h:Holder)@.i32",
-                ".vars { Indexed .s0, Indexed .t0, .i32 .t1, .i32 .t2 }\n" +
+                ".vars { Indexed .s0, .nullable<.i32> .s1, .i32 .s2, .breakid .b0, " +
+                "Indexed .t0, .i32 .t1, .nullable<.i32> .t2, .nullable<.i32> .t3, " +
+                ".bool .t4, .i32 .t5, .i32 .t6 }\n" +
+                ".block entry entrypoint {\n" +
                 "get.wrapper.field $h field(Holder#slot@.i32) type(Indexed) $.t0\n" +
                 "set.var $.t0 $.s0\n" +
                 "load res(#0) $.t1\n" +
                 "get.array $.s0 $.t1 $.t2\n" +
-                "ret $.t2\n");
+                "set.var $.t2 $.s1\n" +
+                "load res(#1) $.t3\n" +
+                "cmp.ne $.s1 $.t3 $.t4\n" +
+                "if $.t4 blk(if0-then) blk(if0-else) $.b0\n" +
+                "ret $.s2\n" +
+                "}\n" +
+                ".block if0-then {\n" +
+                "cast $.s1 $.t5 type(.i32)\n" +
+                "set.var $.t5 $.s2\n" +
+                "}\n" +
+                ".block if0-else {\n" +
+                "load res(#0) $.t6\n" +
+                "set.var $.t6 $.s2\n" +
+                "}\n");
 
         }
 
@@ -683,7 +715,7 @@ namespace RigiCompiler.Tests
                 "pub wrapper Indexed {\n" +
                 "    pub var store: i32\n" +
                 "    pub init() { store = 0 }\n" +
-                "    pub operator getAtIndex(index: i32): i32 { return store }\n" +
+                "    pub operator getAtIndex(index: i32): i32? { return store }\n" +
                 "    pub operator setAtIndex(index: i32, element: i32) { store = element }\n" +
                 "}\n" +
                 "@Indexed\n" +
@@ -710,7 +742,7 @@ namespace RigiCompiler.Tests
                 "pub wrapper Indexed {\n" +
                 "    pub var store: i32\n" +
                 "    pub init() { store = 0 }\n" +
-                "    pub operator getAtIndex(index: i32): i32 { return store }\n" +
+                "    pub operator getAtIndex(index: i32): i32? { return store }\n" +
                 "    pub operator setAtIndex(index: i32, element: i32) { store = element }\n" +
                 "}\n" +
                 "pub class Holder {\n" +
@@ -734,43 +766,61 @@ namespace RigiCompiler.Tests
                 "set.array $.s0 $.s1 $.t2\n" +
                 "ret\n");
 
-            // 复合赋值索引写
+            // 显式读改写回（Q6 后索引读侧为 T?，复合赋值形态由显式形态替代）
             var (unit3, module3, _) = BilTestHarness.EmitBilUnit(
                 "@WrapperTarget(.Entity)\n" +
                 "pub wrapper Indexed {\n" +
                 "    pub var store: i32\n" +
                 "    pub init() { store = 0 }\n" +
-                "    pub operator getAtIndex(index: i32): i32 { return store }\n" +
+                "    pub operator getAtIndex(index: i32): i32? { return store }\n" +
                 "    pub operator setAtIndex(index: i32, element: i32) { store = element }\n" +
                 "}\n" +
                 "@Indexed\n" +
                 "pub class Service { pub init() }\n" +
                 "pub func f(s: Service) {\n" +
-                "    s:Indexed[0] += 1\n" +
+                "    s:Indexed[0] = ((s:Indexed[0] if? 0) + 1)\n" +
                 "}\n");
-            CheckNoErrors("全管线无诊断（Entity 索引复合赋值）", unit3);
-            BilTestHarness.CheckBilValid("验证器零错误（Entity 索引复合赋值）", module3);
-            BilTestHarness.CheckFnShape("Entity 索引复合赋值（get.array + set.array）",
+            CheckNoErrors("全管线无诊断（Entity 索引显式读改写回）", unit3);
+            BilTestHarness.CheckBilValid("验证器零错误（Entity 索引显式读改写回）", module3);
+            BilTestHarness.CheckFnShape("Entity 索引显式读改写回（get.array + set.array）",
                 module3, "$f(s:Service)@.void",
-                ".vars { Indexed .s0, .i32 .s1, .i32 .s2, Indexed .t0, .i32 .t1, " +
-                ".i32 .t2, .i32 .t3, .i32 .t4 }\n" +
+                ".vars { Indexed .s0, .i32 .s1, Indexed .s2, .nullable<.i32> .s3, " +
+                ".i32 .s4, .breakid .b0, Indexed .t0, .i32 .t1, Indexed .t2, .i32 .t3, " +
+                ".nullable<.i32> .t4, .nullable<.i32> .t5, .bool .t6, .i32 .t7, " +
+                ".i32 .t8, .i32 .t9, .i32 .t10 }\n" +
+                ".block entry entrypoint {\n" +
                 "get.wrapper $s type(Indexed) $.t0\n" +
                 "set.var $.t0 $.s0\n" +
                 "load res(#0) $.t1\n" +
                 "set.var $.t1 $.s1\n" +
-                "get.array $.s0 $.s1 $.t2\n" +
-                "load res(#1) $.t3\n" +
-                "add $.t2 $.t3 $.t4\n" +
-                "set.var $.t4 $.s2\n" +
-                "set.array $.s0 $.s1 $.s2\n" +
-                "ret\n");
+                "get.wrapper $s type(Indexed) $.t2\n" +
+                "set.var $.t2 $.s2\n" +
+                "load res(#0) $.t3\n" +
+                "get.array $.s2 $.t3 $.t4\n" +
+                "set.var $.t4 $.s3\n" +
+                "load res(#1) $.t5\n" +
+                "cmp.ne $.s3 $.t5 $.t6\n" +
+                "if $.t6 blk(if0-then) blk(if0-else) $.b0\n" +
+                "load res(#2) $.t9\n" +
+                "add $.s4 $.t9 $.t10\n" +
+                "set.array $.s0 $.s1 $.t10\n" +
+                "ret\n" +
+                "}\n" +
+                ".block if0-then {\n" +
+                "cast $.s3 $.t7 type(.i32)\n" +
+                "set.var $.t7 $.s4\n" +
+                "}\n" +
+                ".block if0-else {\n" +
+                "load res(#0) $.t8\n" +
+                "set.var $.t8 $.s4\n" +
+                "}\n");
 
             // 值类型中间字段上的索引写：叶 set.array 后 set.wrapper.field 写回
             var (unit4, module4, _) = BilTestHarness.EmitBilUnit(
                 "pub struct SlotBag {\n" +
                 "    pub var item: i32\n" +
                 "    pub init() { item = 0 }\n" +
-                "    pub operator getAtIndex(index: i32): i32 { return item }\n" +
+                "    pub operator getAtIndex(index: i32): i32? { return item }\n" +
                 "    pub operator setAtIndex(index: i32, element: i32) { item = element }\n" +
                 "}\n" +
                 "@WrapperTarget(.Entity)\n" +
@@ -806,7 +856,7 @@ namespace RigiCompiler.Tests
                 "pub class RefBag {\n" +
                 "    pub var item: i32\n" +
                 "    pub init() { item = 0 }\n" +
-                "    pub operator getAtIndex(index: i32): i32 { return item }\n" +
+                "    pub operator getAtIndex(index: i32): i32? { return item }\n" +
                 "    pub operator setAtIndex(index: i32, element: i32) { item = element }\n" +
                 "}\n" +
                 "@WrapperTarget(.Entity)\n" +
@@ -840,7 +890,7 @@ namespace RigiCompiler.Tests
                 "pub struct SlotBag {\n" +
                 "    pub var item: i32\n" +
                 "    pub init() { item = 0 }\n" +
-                "    pub operator getAtIndex(index: i32): i32 { return item }\n" +
+                "    pub operator getAtIndex(index: i32): i32? { return item }\n" +
                 "    pub operator setAtIndex(index: i32, element: i32) { item = element }\n" +
                 "}\n" +
                 "@WrapperTarget(.Value)\n" +
@@ -874,7 +924,8 @@ namespace RigiCompiler.Tests
                 "field(Boxed#bag@SlotBag)\n" +
                 "ret\n");
 
-            // 链式 place[i].field = x 仍归口（索引在字段写中间）
+            // 链式 place[i].field = x（Q6：索引读出 Cell?——nullable 成员
+            // 访问在更早的 P3 通道即拒，归口诊断被其取代）
             var (unit7, _, _) = BilTestHarness.EmitBilUnit(
                 "pub class Cell {\n" +
                 "    pub var x: i32\n" +
@@ -884,7 +935,7 @@ namespace RigiCompiler.Tests
                 "pub wrapper Indexed {\n" +
                 "    pub var first: Cell\n" +
                 "    pub init() { first = new Cell(0) }\n" +
-                "    pub operator getAtIndex(index: i32): Cell { return first }\n" +
+                "    pub operator getAtIndex(index: i32): Cell? { return first }\n" +
                 "    pub operator setAtIndex(index: i32, element: Cell) { first = element }\n" +
                 "}\n" +
                 "@Indexed\n" +
@@ -892,8 +943,8 @@ namespace RigiCompiler.Tests
                 "pub func f(s: Service) {\n" +
                 "    s:Indexed[0].x = 1\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("place[i].field 写仍归口", unit7.Diagnostics,
-                "writes through wrapper place member or index chains");
+            TestHarness.CheckSemanticError("place[i].field 写（Q6：nullable 成员拒绝）",
+                unit7.Diagnostics, "cannot be accessed on nullable type");
 
             // 构造类型引用中间深写：Holder\<Node\>/Node 均为 class → 无写回
             var (unit8, module8, text8) = BilTestHarness.EmitBilUnit(
@@ -1937,7 +1988,7 @@ namespace RigiCompiler.Tests
                     "pub class Bag {\n" +
                     "    pub var item: User\n" +
                     "    pub init(_ -> item)\n" +
-                    "    pub operator getAtIndex(index: i32): User { return item }\n" +
+                    "    pub operator getAtIndex(index: i32): User? { return item }\n" +
                     "    pub operator setAtIndex(index: i32, element: User) { item = element }\n" +
                     "}\n" +
                     "pub func f(b: Bag, s: Service) { b[0] = s.fetch() }\n");
@@ -2221,6 +2272,59 @@ namespace RigiCompiler.Tests
                 .Single(d => d.Symbol == symbol);
             return declaration.Kind + "|" + declaration.Symbol + "|" + string.Join(",",
                 declaration.Modifiers.Select(m => m.Render()));
+        }
+
+        // ===== 新 init 原则（§9.7 修订）：..init.field.* 合成与闭包缝合 =====
+        private static void TestInitFieldSynthesisEmission()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "pub open class A {\n" +
+                "    pub open var x: i32 = 41\n" +
+                "    pub var y: i32 = 1\n" +
+                "    pub init()\n" +
+                "}\n" +
+                "pub class B : A {\n" +
+                "    pub override var x: i32 = 9\n" +
+                "    pub init()\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（..init.field 合成）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（..init.field 合成）", module);
+
+            // 声明形态：priv compiler-generated 实例方法；override 字段不发
+            // 新字段声明（存储仍是基类槽）
+            var aType = module.LocalSymbols.OfType<BilTypeDeclaration>()
+                .Single(t => t.Symbol == "A");
+            TestHarness.CheckTrue("A 声明 ..init.field.x（priv compiler-generated）",
+                RenderMember(aType, "A$..init.field.x()@.void")
+                    == "Method|A$..init.field.x()@.void|priv,compiler-generated");
+            var bType = module.LocalSymbols.OfType<BilTypeDeclaration>()
+                .Single(t => t.Symbol == "B");
+            TestHarness.CheckTrue("B 不发 override 字段新槽（仅 A#x）",
+                !bType.Members.OfType<BilSimpleMemberDeclaration>()
+                    .Any(d => d.Kind == BilMemberKind.Field));
+
+            BilTestHarness.CheckFnShape("A 的 ..init.field.x 写自身槽",
+                module, "A$..init.field.x()@.void",
+                ".vars { .i32 .t0 }\n" +
+                "load res(#0) $.t0\n" +
+                "set.field $.t0 $.this field(A#x@.i32)\n" +
+                "ret\n");
+            BilTestHarness.CheckFnShape("B 的 ..init.field.x 写基类槽（override 初值）",
+                module, "B$..init.field.x()@.void",
+                ".vars { .i32 .t0 }\n" +
+                "load res(#0) $.t0\n" +
+                "set.field $.t0 $.this field(A#x@.i32)\n" +
+                "ret\n");
+            // 闭包缝合：B 的 ..init.wrapper 调基类最早声明符号（虚派发选中
+            // B 的 override），x/y 各一次（无 super 调用）
+            BilTestHarness.CheckFnShape("B 的 ..init.wrapper 闭包缝合",
+                module, "B$..init.wrapper()@.void",
+                ".vars { A .t0, A .t1 }\n" +
+                "cast $.this $.t0 type(A)\n" +
+                "invoke.noret fn(A$..init.field.x()@.void) [$.t0]\n" +
+                "cast $.this $.t1 type(A)\n" +
+                "invoke.noret fn(A$..init.field.y()@.void) [$.t1]\n" +
+                "ret\n");
         }
     }
 }

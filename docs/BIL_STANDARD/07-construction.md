@@ -32,6 +32,8 @@ new.indirect TYPEID_VAR RESULT [ARG_0, ARG_1, ...]
 
 目标为 abstract 类型、enum struct 或无匹配 init 时抛出 `core.NoSuchMethodException`。
 
+编译期分工（SYNTAX §3.7）：frontend 对**零参 `T()`** 先按「约束最大基类」静态判定——界没有可访问零参 init 直接编译错误，不会落到本指令；内建标量界（整数/浮点/bool/char/String）由 VM 特判产零值（不查 init 表）；带实参形态与动态 `new typeValue(...)` 保持运行期解析，上面的 `NoSuchMethodException` 是它们的运行期兜底。
+
 ### 14.3 enum case 构造
 
 ```bil

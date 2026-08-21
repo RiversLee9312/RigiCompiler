@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Linq;
 using RigiCompiler.Bil;
 
@@ -124,13 +124,13 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             Positive("enum 局部变量 DA（读前已写）",
-                "enum struct Color {}[Red, Blue]\n" +
+                "pub enum struct Color {}[Red, Blue]\n" +
                 "pub func main(): i32 {\n" +
                 "    var c: Color = .Red\n" +
                 "    return 0\n" +
                 "}\n");
             Positive("enum struct 实例字段 init 单路径 set.field（全管线）",
-                "enum struct Color {}[Red, Blue]\n" +
+                "pub enum struct Color {}[Red, Blue]\n" +
                 "pub class Flag {\n" +
                 "    pub var kind: Color\n" +
                 "    pub init(k: Color) { kind = k }\n" +
@@ -140,7 +140,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             Positive("enum struct 实例字段 init if 双分支 set.field（全管线）",
-                "enum struct Color {}[Red, Blue]\n" +
+                "pub enum struct Color {}[Red, Blue]\n" +
                 "pub class Flag {\n" +
                 "    pub var kind: Color\n" +
                 "    pub init(k: Color, alt: Color, which: bool) {\n" +
@@ -152,7 +152,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             Positive("enum struct 实例字段 init loop.rev set.field（全管线）",
-                "enum struct Color {}[Red, Blue]\n" +
+                "pub enum struct Color {}[Red, Blue]\n" +
                 "pub class Flag {\n" +
                 "    pub var kind: Color\n" +
                 "    pub init(k: Color) {\n" +
@@ -164,7 +164,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             Positive("enum struct 实例字段 init try-finally set.field（全管线）",
-                "enum struct Color {}[Red, Blue]\n" +
+                "pub enum struct Color {}[Red, Blue]\n" +
                 "pub class Flag {\n" +
                 "    pub var kind: Color\n" +
                 "    pub init(k: Color) {\n" +
@@ -176,7 +176,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             Positive("派生 init 设置基类 enum struct 字段（全管线）",
-                "enum struct Color {}[Red, Blue]\n" +
+                "pub enum struct Color {}[Red, Blue]\n" +
                 "pub open class Base {\n" +
                 "    pub var kind: Color\n" +
                 "    pub init(k: Color) { kind = k }\n" +
@@ -193,7 +193,7 @@ namespace RigiCompiler.Tests
                 "}\n");
             Positive("非 enum 实例字段 init 不强制 set.field（回归）",
                 "pub class Box {\n" +
-                "    pub var n: i32\n" +
+                "    pub var n: i32 = 0\n" +
                 "    pub init() { }\n" +
                 "}\n" +
                 "pub func main(): i32 {\n" +
@@ -215,11 +215,11 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             Positive("?. 安全调用",
-                "class User { pub var name: String\n    pub init(_ -> name) { } }\n" +
+                "pub class User { pub var name: String\n    pub init(_ -> name) { } }\n" +
                 "pub func f(u: User?): String? { return u?.name }\n" +
                 "pub func main(): i32 { return 0 }\n");
             Positive("if? 空值回退",
-                "class User { pub var name: String\n    pub init(_ -> name) { } }\n" +
+                "pub class User { pub var name: String\n    pub init(_ -> name) { } }\n" +
                 "pub func g(u: User?): User { return u if? new User(\"anon\") }\n" +
                 "pub func main(): i32 { return 0 }\n");
             Positive("解构声明",
@@ -234,14 +234,14 @@ namespace RigiCompiler.Tests
                 "pub class Bag {\n" +
                 "    pub var item: i32\n" +
                 "    pub init() { item = 0 }\n" +
-                "    pub operator getAtIndex(index: i32): i32 { return item }\n" +
+                "    pub operator getAtIndex(index: i32): i32? { return item }\n" +
                 "    pub operator setAtIndex(index: i32, element: i32) { item = element }\n" +
                 "}\n" +
                 "pub func main(): i32 {\n" +
                 "    var b = new Bag()\n" +
                 "    b[0] = 7\n" +
-                "    b[1] += 2\n" +
-                "    return b[2]\n" +
+                "    b[1] = ((b[1] if? 0) + 2)\n" +
+                "    return b[2] if? 0\n" +
                 "}\n");
             Positive("访问器（backing/computed/全局自动，S8e）",
                 "namespace app\n" +

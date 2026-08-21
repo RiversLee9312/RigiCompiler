@@ -29,6 +29,8 @@
 - `core::Any$call???` 为预定义内建方法符号（§15.5 / §22.5）——无 LocalSymbols/ExternalSymbols 声明、无 fn 定义，可被 `invoke` 引用；
 - proxy 模板 fn（名以 `.proxy.` 开头，§5.1）必须声明在 wrapper 类型内，且与 `wrapper-proxy` 修饰符双向一致（见 §21.8）；
 - `..init.wrapper`（§9.7）：每 owner 至多一个；返回 `.void`；实例方法；必须 `priv` + `compiler-generated`；
+- `..init.field.<名>`（§9.7）：返回 `.void` 的零参实例方法；必须 `priv` + `compiler-generated`；与基类同族同名方法构成虚派发族（字段 override，见 `SYNTAX.md` §9.2.1）；
+- `..globals.init`（§8.4.1 / `SYNTAX.md` §9.3）：编译器合成的全局/静态字段初始值 fn；返回 `.void`、无参数、无 `.this`；必须带 `compiler-generated`；VM 在 singleton 初始化之后、main 之前同步执行；
 - `..companion` 类型（§8.7）：必须是 `class` 且带 `singleton` + `shared`；类型名保留名（声明类的嵌套类）；
 - 保留字段 `..value`（§5.1 / §8.3）不得作为用户 `.field` 声明出现；`get.field` / `set.field`（含 `.static` 变体）引用 `..value` 仅当当前 fn 带 `setter(F)` 且 owner/类型/static 匹配，或当前 fn 是 cell 隐藏子类的 `getValue` / `setValue`；之外拒绝；
 - entrypoint 唯一且签名符合 `SYNTAX.md`。
@@ -129,17 +131,19 @@ region 正常结束回到 call blk 续点）仅由 0 组边的合并态流入。
 
 - `pub`、`protected`、`internal`、`priv` 访问合法；
 - static/instance 指令形式正确；
-- const 不被写入（init 方法体内写实例 const 字段除外——构造期一次性赋值，
-  对齐 SYNTAX §9.3；静态字段写入不豁免）；
+- const 不被写入（构造期一次性赋值豁免——对齐 SYNTAX §9.3：init 方法体内写实例
+  const 字段，以及编译器合成构造期写入方法族 `..init.wrapper` / `..init.field.*`
+  体内写实例 const 字段均放行；静态字段写入仅编译器合成的 `..globals.init`
+  豁免，其余静态写入不豁免）；
 - abstract 不被构造；
 - enum struct 不走普通 new；
 - rich/shared 闭包与跨 Coroutine 规则合法（`.cell<T>` / `.readonly_cell<T>` 共享安全 passthrough：等同于 `T`，与 Box 同例，不按普通 class 闭包表）；
 - async 调用的 receiver/参数/结果满足 shared 边界；
 - `wrapper-proxy(PROXY_KIND)`（§8.4）只允许在 wrapper 类型内、名以 `.proxy.` 开头的方法上；此类方法必须带本修饰符；`PROXY_KIND` 仅 `specific` / `wildcard`，且与成员形状类别一致（specific ↔ 具名 proxy；wildcard ↔ `.*` 通配 proxy）；同一方法不得重复携带本修饰符；
 - `wrapped(WRAPPER_TYPE_REF)`（§8.3.1）的 `WRAPPER_TYPE_REF` 必须是 wrapper 类型；可重复，顺序保留；
-- `..init.wrapper` 声明与 fn 定义满足 §9.7（唯一性 / void / priv + compiler-generated / 非 static）；
+- `..init.wrapper` 声明与 fn 定义满足 §9.7（唯一性 / void / priv + compiler-generated / 非 static）；`..init.field.*` 与 `..globals.init` 同（§9.7 / §8.4.1 形状条款）；
 - `..companion` 满足 §8.7（class + singleton + shared；壳体静态方法体形态由 frontend 保证，验证器检查 companion 类型结构）。
-- enum struct 类型的实例字段：宿主类型的每个 init 必须在全部执行路径上对该字段发 `set.field`（先于任何读路径），否则拒绝模块（§14.3「enum 无零值」）。
+- enum struct 类型的实例字段：宿主类型的每个 init 必须在全部执行路径上对该字段发 `set.field`（先于任何读路径），否则拒绝模块（§14.3「enum 无零值」）。**例外（新 init 原则，§9.7）**：带声明初始值的字段——其写入点在 `..init.field.<名>`（由 `..init.wrapper` 在任何 init 体之前调用），对 init 体而言「进入时已赋值」，不计入本条的全路径写入与早读检查。
 
 ### 21.9 VM 可执行性验证
 

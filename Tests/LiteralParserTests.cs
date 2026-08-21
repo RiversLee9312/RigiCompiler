@@ -71,9 +71,8 @@ namespace RigiCompiler.Tests
             // 点后缺数字（M31 起不再静默吞点按整数收尾）
             TestHarness.CheckParseError("3.",
                 () => TestHarness.ParseFirstDecl("3."), "Expected digit after '.' in float literal");
-            // 点后非数字（成员访问请写 (3).foo）
-            TestHarness.CheckParseError("3.foo",
-                () => TestHarness.ParseFirstDecl("3.foo"), "Expected digit after '.' in float literal");
+            // 点后标识符（SYNTAX §3.3）：整数字面量的成员访问，等价 (3).foo
+            TestNeg("3.foo", "Path((Int(3,I32)), [.foo])");
 
             TestHarness.Blank();
         }

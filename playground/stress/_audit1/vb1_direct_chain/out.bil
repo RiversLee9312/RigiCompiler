@@ -1,0 +1,1113 @@
+BIL "1.1"
+
+Metadata {
+    module = string "lib"
+}
+
+Resources {
+    R_0 = string "\n",
+    R_1 = bool false,
+    R_2 = i32 1,
+    R_3 = bool true,
+    R_4 = i32 0
+}
+
+LocalSymbols {
+    .type Hidden = class priv {
+        .method Hidden$init()@.void pub init
+        .method Hidden$n()@.i32 pub
+    }
+    .type DirectHolder = class pub {
+        .field DirectHolder#h@Hidden pub var
+        .method DirectHolder$init()@.void pub init
+        .method DirectHolder$..init.field.h()@.void priv compiler-generated
+        .method DirectHolder$..init.wrapper()@.void priv compiler-generated
+    }
+    .type core::Pair = class generic(TKey, TValue) pub open {
+        .field core::Pair#key@.generic<$.generic.TKey> pub const
+        .field core::Pair#value@.generic<$.generic.TValue> pub const
+        .method core::Pair$init(key:.generic<$.generic.TKey>,value:.generic<$.generic.TValue>)@.void pub init
+    }
+    .type core::ComparisonResult = enum-struct pub {
+        .case core::ComparisonResult.Equal() discriminant auto
+        .case core::ComparisonResult.GreaterThanAnother() discriminant auto
+        .case core::ComparisonResult.LesserThanAnother() discriminant auto
+    }
+    .type core::Func = class generic(TRet) pub abstract {
+        .method core::Func$$call()@.generic<$.generic.TRet> pub abstract operator(call)
+    }
+    .type core::Func = class generic(TRet, T0) pub abstract {
+        .method core::Func$$call(arg0:.generic<$.generic.T0>)@.generic<$.generic.TRet> pub abstract operator(call)
+    }
+    .type core::Func = class generic(TRet, T0, T1) pub abstract {
+        .method core::Func$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>)@.generic<$.generic.TRet> pub abstract operator(call)
+    }
+    .type core::Func = class generic(TRet, T0, T1, T2) pub abstract {
+        .method core::Func$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>)@.generic<$.generic.TRet> pub abstract operator(call)
+    }
+    .type core::Func = class generic(TRet, T0, T1, T2, T3) pub abstract {
+        .method core::Func$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>)@.generic<$.generic.TRet> pub abstract operator(call)
+    }
+    .type core::Func = class generic(TRet, T0, T1, T2, T3, T4) pub abstract {
+        .method core::Func$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>)@.generic<$.generic.TRet> pub abstract operator(call)
+    }
+    .type core::Func = class generic(TRet, T0, T1, T2, T3, T4, T5) pub abstract {
+        .method core::Func$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>)@.generic<$.generic.TRet> pub abstract operator(call)
+    }
+    .type core::Func = class generic(TRet, T0, T1, T2, T3, T4, T5, T6) pub abstract {
+        .method core::Func$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>)@.generic<$.generic.TRet> pub abstract operator(call)
+    }
+    .type core::Func = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7) pub abstract {
+        .method core::Func$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>)@.generic<$.generic.TRet> pub abstract operator(call)
+    }
+    .type core::Func = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8) pub abstract {
+        .method core::Func$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>)@.generic<$.generic.TRet> pub abstract operator(call)
+    }
+    .type core::Func = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9) pub abstract {
+        .method core::Func$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>)@.generic<$.generic.TRet> pub abstract operator(call)
+    }
+    .type core::Func = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10) pub abstract {
+        .method core::Func$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>)@.generic<$.generic.TRet> pub abstract operator(call)
+    }
+    .type core::Func = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11) pub abstract {
+        .method core::Func$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>)@.generic<$.generic.TRet> pub abstract operator(call)
+    }
+    .type core::Func = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12) pub abstract {
+        .method core::Func$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>)@.generic<$.generic.TRet> pub abstract operator(call)
+    }
+    .type core::Func = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13) pub abstract {
+        .method core::Func$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>)@.generic<$.generic.TRet> pub abstract operator(call)
+    }
+    .type core::Func = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14) pub abstract {
+        .method core::Func$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>)@.generic<$.generic.TRet> pub abstract operator(call)
+    }
+    .type core::Func = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15) pub abstract {
+        .method core::Func$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>)@.generic<$.generic.TRet> pub abstract operator(call)
+    }
+    .type core::Func = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16) pub abstract {
+        .method core::Func$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>)@.generic<$.generic.TRet> pub abstract operator(call)
+    }
+    .type core::Func = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17) pub abstract {
+        .method core::Func$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>)@.generic<$.generic.TRet> pub abstract operator(call)
+    }
+    .type core::Func = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18) pub abstract {
+        .method core::Func$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>)@.generic<$.generic.TRet> pub abstract operator(call)
+    }
+    .type core::Func = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19) pub abstract {
+        .method core::Func$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>)@.generic<$.generic.TRet> pub abstract operator(call)
+    }
+    .type core::Func = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20) pub abstract {
+        .method core::Func$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>)@.generic<$.generic.TRet> pub abstract operator(call)
+    }
+    .type core::Func = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21) pub abstract {
+        .method core::Func$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>)@.generic<$.generic.TRet> pub abstract operator(call)
+    }
+    .type core::Func = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22) pub abstract {
+        .method core::Func$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>,arg22:.generic<$.generic.T22>)@.generic<$.generic.TRet> pub abstract operator(call)
+    }
+    .type core::Func = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23) pub abstract {
+        .method core::Func$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>,arg22:.generic<$.generic.T22>,arg23:.generic<$.generic.T23>)@.generic<$.generic.TRet> pub abstract operator(call)
+    }
+    .type core::Func = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24) pub abstract {
+        .method core::Func$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>,arg22:.generic<$.generic.T22>,arg23:.generic<$.generic.T23>,arg24:.generic<$.generic.T24>)@.generic<$.generic.TRet> pub abstract operator(call)
+    }
+    .type core::Func = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25) pub abstract {
+        .method core::Func$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>,arg22:.generic<$.generic.T22>,arg23:.generic<$.generic.T23>,arg24:.generic<$.generic.T24>,arg25:.generic<$.generic.T25>)@.generic<$.generic.TRet> pub abstract operator(call)
+    }
+    .type core::Func = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26) pub abstract {
+        .method core::Func$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>,arg22:.generic<$.generic.T22>,arg23:.generic<$.generic.T23>,arg24:.generic<$.generic.T24>,arg25:.generic<$.generic.T25>,arg26:.generic<$.generic.T26>)@.generic<$.generic.TRet> pub abstract operator(call)
+    }
+    .type core::Func = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27) pub abstract {
+        .method core::Func$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>,arg22:.generic<$.generic.T22>,arg23:.generic<$.generic.T23>,arg24:.generic<$.generic.T24>,arg25:.generic<$.generic.T25>,arg26:.generic<$.generic.T26>,arg27:.generic<$.generic.T27>)@.generic<$.generic.TRet> pub abstract operator(call)
+    }
+    .type core::Func = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27, T28) pub abstract {
+        .method core::Func$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>,arg22:.generic<$.generic.T22>,arg23:.generic<$.generic.T23>,arg24:.generic<$.generic.T24>,arg25:.generic<$.generic.T25>,arg26:.generic<$.generic.T26>,arg27:.generic<$.generic.T27>,arg28:.generic<$.generic.T28>)@.generic<$.generic.TRet> pub abstract operator(call)
+    }
+    .type core::Func = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27, T28, T29) pub abstract {
+        .method core::Func$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>,arg22:.generic<$.generic.T22>,arg23:.generic<$.generic.T23>,arg24:.generic<$.generic.T24>,arg25:.generic<$.generic.T25>,arg26:.generic<$.generic.T26>,arg27:.generic<$.generic.T27>,arg28:.generic<$.generic.T28>,arg29:.generic<$.generic.T29>)@.generic<$.generic.TRet> pub abstract operator(call)
+    }
+    .type core::Func = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27, T28, T29, T30) pub abstract {
+        .method core::Func$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>,arg22:.generic<$.generic.T22>,arg23:.generic<$.generic.T23>,arg24:.generic<$.generic.T24>,arg25:.generic<$.generic.T25>,arg26:.generic<$.generic.T26>,arg27:.generic<$.generic.T27>,arg28:.generic<$.generic.T28>,arg29:.generic<$.generic.T29>,arg30:.generic<$.generic.T30>)@.generic<$.generic.TRet> pub abstract operator(call)
+    }
+    .type core::Func = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27, T28, T29, T30, T31) pub abstract {
+        .method core::Func$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>,arg22:.generic<$.generic.T22>,arg23:.generic<$.generic.T23>,arg24:.generic<$.generic.T24>,arg25:.generic<$.generic.T25>,arg26:.generic<$.generic.T26>,arg27:.generic<$.generic.T27>,arg28:.generic<$.generic.T28>,arg29:.generic<$.generic.T29>,arg30:.generic<$.generic.T30>,arg31:.generic<$.generic.T31>)@.generic<$.generic.TRet> pub abstract operator(call)
+    }
+    .type core::Action = class pub abstract {
+        .method core::Action$$call()@.void pub abstract operator(call)
+    }
+    .type core::Action = class generic(T0) pub abstract {
+        .method core::Action$$call(arg0:.generic<$.generic.T0>)@.void pub abstract operator(call)
+    }
+    .type core::Action = class generic(T0, T1) pub abstract {
+        .method core::Action$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>)@.void pub abstract operator(call)
+    }
+    .type core::Action = class generic(T0, T1, T2) pub abstract {
+        .method core::Action$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>)@.void pub abstract operator(call)
+    }
+    .type core::Action = class generic(T0, T1, T2, T3) pub abstract {
+        .method core::Action$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>)@.void pub abstract operator(call)
+    }
+    .type core::Action = class generic(T0, T1, T2, T3, T4) pub abstract {
+        .method core::Action$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>)@.void pub abstract operator(call)
+    }
+    .type core::Action = class generic(T0, T1, T2, T3, T4, T5) pub abstract {
+        .method core::Action$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>)@.void pub abstract operator(call)
+    }
+    .type core::Action = class generic(T0, T1, T2, T3, T4, T5, T6) pub abstract {
+        .method core::Action$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>)@.void pub abstract operator(call)
+    }
+    .type core::Action = class generic(T0, T1, T2, T3, T4, T5, T6, T7) pub abstract {
+        .method core::Action$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>)@.void pub abstract operator(call)
+    }
+    .type core::Action = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8) pub abstract {
+        .method core::Action$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>)@.void pub abstract operator(call)
+    }
+    .type core::Action = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9) pub abstract {
+        .method core::Action$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>)@.void pub abstract operator(call)
+    }
+    .type core::Action = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10) pub abstract {
+        .method core::Action$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>)@.void pub abstract operator(call)
+    }
+    .type core::Action = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11) pub abstract {
+        .method core::Action$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>)@.void pub abstract operator(call)
+    }
+    .type core::Action = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12) pub abstract {
+        .method core::Action$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>)@.void pub abstract operator(call)
+    }
+    .type core::Action = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13) pub abstract {
+        .method core::Action$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>)@.void pub abstract operator(call)
+    }
+    .type core::Action = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14) pub abstract {
+        .method core::Action$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>)@.void pub abstract operator(call)
+    }
+    .type core::Action = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15) pub abstract {
+        .method core::Action$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>)@.void pub abstract operator(call)
+    }
+    .type core::Action = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16) pub abstract {
+        .method core::Action$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>)@.void pub abstract operator(call)
+    }
+    .type core::Action = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17) pub abstract {
+        .method core::Action$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>)@.void pub abstract operator(call)
+    }
+    .type core::Action = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18) pub abstract {
+        .method core::Action$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>)@.void pub abstract operator(call)
+    }
+    .type core::Action = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19) pub abstract {
+        .method core::Action$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>)@.void pub abstract operator(call)
+    }
+    .type core::Action = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20) pub abstract {
+        .method core::Action$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>)@.void pub abstract operator(call)
+    }
+    .type core::Action = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21) pub abstract {
+        .method core::Action$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>)@.void pub abstract operator(call)
+    }
+    .type core::Action = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22) pub abstract {
+        .method core::Action$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>,arg22:.generic<$.generic.T22>)@.void pub abstract operator(call)
+    }
+    .type core::Action = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23) pub abstract {
+        .method core::Action$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>,arg22:.generic<$.generic.T22>,arg23:.generic<$.generic.T23>)@.void pub abstract operator(call)
+    }
+    .type core::Action = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24) pub abstract {
+        .method core::Action$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>,arg22:.generic<$.generic.T22>,arg23:.generic<$.generic.T23>,arg24:.generic<$.generic.T24>)@.void pub abstract operator(call)
+    }
+    .type core::Action = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25) pub abstract {
+        .method core::Action$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>,arg22:.generic<$.generic.T22>,arg23:.generic<$.generic.T23>,arg24:.generic<$.generic.T24>,arg25:.generic<$.generic.T25>)@.void pub abstract operator(call)
+    }
+    .type core::Action = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26) pub abstract {
+        .method core::Action$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>,arg22:.generic<$.generic.T22>,arg23:.generic<$.generic.T23>,arg24:.generic<$.generic.T24>,arg25:.generic<$.generic.T25>,arg26:.generic<$.generic.T26>)@.void pub abstract operator(call)
+    }
+    .type core::Action = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27) pub abstract {
+        .method core::Action$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>,arg22:.generic<$.generic.T22>,arg23:.generic<$.generic.T23>,arg24:.generic<$.generic.T24>,arg25:.generic<$.generic.T25>,arg26:.generic<$.generic.T26>,arg27:.generic<$.generic.T27>)@.void pub abstract operator(call)
+    }
+    .type core::Action = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27, T28) pub abstract {
+        .method core::Action$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>,arg22:.generic<$.generic.T22>,arg23:.generic<$.generic.T23>,arg24:.generic<$.generic.T24>,arg25:.generic<$.generic.T25>,arg26:.generic<$.generic.T26>,arg27:.generic<$.generic.T27>,arg28:.generic<$.generic.T28>)@.void pub abstract operator(call)
+    }
+    .type core::Action = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27, T28, T29) pub abstract {
+        .method core::Action$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>,arg22:.generic<$.generic.T22>,arg23:.generic<$.generic.T23>,arg24:.generic<$.generic.T24>,arg25:.generic<$.generic.T25>,arg26:.generic<$.generic.T26>,arg27:.generic<$.generic.T27>,arg28:.generic<$.generic.T28>,arg29:.generic<$.generic.T29>)@.void pub abstract operator(call)
+    }
+    .type core::Action = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27, T28, T29, T30) pub abstract {
+        .method core::Action$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>,arg22:.generic<$.generic.T22>,arg23:.generic<$.generic.T23>,arg24:.generic<$.generic.T24>,arg25:.generic<$.generic.T25>,arg26:.generic<$.generic.T26>,arg27:.generic<$.generic.T27>,arg28:.generic<$.generic.T28>,arg29:.generic<$.generic.T29>,arg30:.generic<$.generic.T30>)@.void pub abstract operator(call)
+    }
+    .type core::Action = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27, T28, T29, T30, T31) pub abstract {
+        .method core::Action$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>,arg22:.generic<$.generic.T22>,arg23:.generic<$.generic.T23>,arg24:.generic<$.generic.T24>,arg25:.generic<$.generic.T25>,arg26:.generic<$.generic.T26>,arg27:.generic<$.generic.T27>,arg28:.generic<$.generic.T28>,arg29:.generic<$.generic.T29>,arg30:.generic<$.generic.T30>,arg31:.generic<$.generic.T31>)@.void pub abstract operator(call)
+    }
+    .type core::AsyncFunc = class generic(TRet) pub abstract shared {
+        .method core::AsyncFunc$$call()@.generic<$.generic.TRet> pub abstract async operator(call)
+    }
+    .type core::AsyncFunc = class generic(TRet, T0) pub abstract shared {
+        .method core::AsyncFunc$$call(arg0:.generic<$.generic.T0>)@.generic<$.generic.TRet> pub abstract async operator(call)
+    }
+    .type core::AsyncFunc = class generic(TRet, T0, T1) pub abstract shared {
+        .method core::AsyncFunc$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>)@.generic<$.generic.TRet> pub abstract async operator(call)
+    }
+    .type core::AsyncFunc = class generic(TRet, T0, T1, T2) pub abstract shared {
+        .method core::AsyncFunc$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>)@.generic<$.generic.TRet> pub abstract async operator(call)
+    }
+    .type core::AsyncFunc = class generic(TRet, T0, T1, T2, T3) pub abstract shared {
+        .method core::AsyncFunc$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>)@.generic<$.generic.TRet> pub abstract async operator(call)
+    }
+    .type core::AsyncFunc = class generic(TRet, T0, T1, T2, T3, T4) pub abstract shared {
+        .method core::AsyncFunc$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>)@.generic<$.generic.TRet> pub abstract async operator(call)
+    }
+    .type core::AsyncFunc = class generic(TRet, T0, T1, T2, T3, T4, T5) pub abstract shared {
+        .method core::AsyncFunc$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>)@.generic<$.generic.TRet> pub abstract async operator(call)
+    }
+    .type core::AsyncFunc = class generic(TRet, T0, T1, T2, T3, T4, T5, T6) pub abstract shared {
+        .method core::AsyncFunc$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>)@.generic<$.generic.TRet> pub abstract async operator(call)
+    }
+    .type core::AsyncFunc = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7) pub abstract shared {
+        .method core::AsyncFunc$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>)@.generic<$.generic.TRet> pub abstract async operator(call)
+    }
+    .type core::AsyncFunc = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8) pub abstract shared {
+        .method core::AsyncFunc$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>)@.generic<$.generic.TRet> pub abstract async operator(call)
+    }
+    .type core::AsyncFunc = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9) pub abstract shared {
+        .method core::AsyncFunc$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>)@.generic<$.generic.TRet> pub abstract async operator(call)
+    }
+    .type core::AsyncFunc = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10) pub abstract shared {
+        .method core::AsyncFunc$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>)@.generic<$.generic.TRet> pub abstract async operator(call)
+    }
+    .type core::AsyncFunc = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11) pub abstract shared {
+        .method core::AsyncFunc$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>)@.generic<$.generic.TRet> pub abstract async operator(call)
+    }
+    .type core::AsyncFunc = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12) pub abstract shared {
+        .method core::AsyncFunc$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>)@.generic<$.generic.TRet> pub abstract async operator(call)
+    }
+    .type core::AsyncFunc = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13) pub abstract shared {
+        .method core::AsyncFunc$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>)@.generic<$.generic.TRet> pub abstract async operator(call)
+    }
+    .type core::AsyncFunc = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14) pub abstract shared {
+        .method core::AsyncFunc$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>)@.generic<$.generic.TRet> pub abstract async operator(call)
+    }
+    .type core::AsyncFunc = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15) pub abstract shared {
+        .method core::AsyncFunc$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>)@.generic<$.generic.TRet> pub abstract async operator(call)
+    }
+    .type core::AsyncFunc = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16) pub abstract shared {
+        .method core::AsyncFunc$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>)@.generic<$.generic.TRet> pub abstract async operator(call)
+    }
+    .type core::AsyncFunc = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17) pub abstract shared {
+        .method core::AsyncFunc$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>)@.generic<$.generic.TRet> pub abstract async operator(call)
+    }
+    .type core::AsyncFunc = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18) pub abstract shared {
+        .method core::AsyncFunc$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>)@.generic<$.generic.TRet> pub abstract async operator(call)
+    }
+    .type core::AsyncFunc = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19) pub abstract shared {
+        .method core::AsyncFunc$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>)@.generic<$.generic.TRet> pub abstract async operator(call)
+    }
+    .type core::AsyncFunc = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20) pub abstract shared {
+        .method core::AsyncFunc$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>)@.generic<$.generic.TRet> pub abstract async operator(call)
+    }
+    .type core::AsyncFunc = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21) pub abstract shared {
+        .method core::AsyncFunc$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>)@.generic<$.generic.TRet> pub abstract async operator(call)
+    }
+    .type core::AsyncFunc = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22) pub abstract shared {
+        .method core::AsyncFunc$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>,arg22:.generic<$.generic.T22>)@.generic<$.generic.TRet> pub abstract async operator(call)
+    }
+    .type core::AsyncFunc = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23) pub abstract shared {
+        .method core::AsyncFunc$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>,arg22:.generic<$.generic.T22>,arg23:.generic<$.generic.T23>)@.generic<$.generic.TRet> pub abstract async operator(call)
+    }
+    .type core::AsyncFunc = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24) pub abstract shared {
+        .method core::AsyncFunc$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>,arg22:.generic<$.generic.T22>,arg23:.generic<$.generic.T23>,arg24:.generic<$.generic.T24>)@.generic<$.generic.TRet> pub abstract async operator(call)
+    }
+    .type core::AsyncFunc = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25) pub abstract shared {
+        .method core::AsyncFunc$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>,arg22:.generic<$.generic.T22>,arg23:.generic<$.generic.T23>,arg24:.generic<$.generic.T24>,arg25:.generic<$.generic.T25>)@.generic<$.generic.TRet> pub abstract async operator(call)
+    }
+    .type core::AsyncFunc = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26) pub abstract shared {
+        .method core::AsyncFunc$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>,arg22:.generic<$.generic.T22>,arg23:.generic<$.generic.T23>,arg24:.generic<$.generic.T24>,arg25:.generic<$.generic.T25>,arg26:.generic<$.generic.T26>)@.generic<$.generic.TRet> pub abstract async operator(call)
+    }
+    .type core::AsyncFunc = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27) pub abstract shared {
+        .method core::AsyncFunc$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>,arg22:.generic<$.generic.T22>,arg23:.generic<$.generic.T23>,arg24:.generic<$.generic.T24>,arg25:.generic<$.generic.T25>,arg26:.generic<$.generic.T26>,arg27:.generic<$.generic.T27>)@.generic<$.generic.TRet> pub abstract async operator(call)
+    }
+    .type core::AsyncFunc = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27, T28) pub abstract shared {
+        .method core::AsyncFunc$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>,arg22:.generic<$.generic.T22>,arg23:.generic<$.generic.T23>,arg24:.generic<$.generic.T24>,arg25:.generic<$.generic.T25>,arg26:.generic<$.generic.T26>,arg27:.generic<$.generic.T27>,arg28:.generic<$.generic.T28>)@.generic<$.generic.TRet> pub abstract async operator(call)
+    }
+    .type core::AsyncFunc = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27, T28, T29) pub abstract shared {
+        .method core::AsyncFunc$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>,arg22:.generic<$.generic.T22>,arg23:.generic<$.generic.T23>,arg24:.generic<$.generic.T24>,arg25:.generic<$.generic.T25>,arg26:.generic<$.generic.T26>,arg27:.generic<$.generic.T27>,arg28:.generic<$.generic.T28>,arg29:.generic<$.generic.T29>)@.generic<$.generic.TRet> pub abstract async operator(call)
+    }
+    .type core::AsyncFunc = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27, T28, T29, T30) pub abstract shared {
+        .method core::AsyncFunc$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>,arg22:.generic<$.generic.T22>,arg23:.generic<$.generic.T23>,arg24:.generic<$.generic.T24>,arg25:.generic<$.generic.T25>,arg26:.generic<$.generic.T26>,arg27:.generic<$.generic.T27>,arg28:.generic<$.generic.T28>,arg29:.generic<$.generic.T29>,arg30:.generic<$.generic.T30>)@.generic<$.generic.TRet> pub abstract async operator(call)
+    }
+    .type core::AsyncFunc = class generic(TRet, T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27, T28, T29, T30, T31) pub abstract shared {
+        .method core::AsyncFunc$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>,arg22:.generic<$.generic.T22>,arg23:.generic<$.generic.T23>,arg24:.generic<$.generic.T24>,arg25:.generic<$.generic.T25>,arg26:.generic<$.generic.T26>,arg27:.generic<$.generic.T27>,arg28:.generic<$.generic.T28>,arg29:.generic<$.generic.T29>,arg30:.generic<$.generic.T30>,arg31:.generic<$.generic.T31>)@.generic<$.generic.TRet> pub abstract async operator(call)
+    }
+    .type core::AsyncAction = class pub abstract shared {
+        .method core::AsyncAction$$call()@.void pub abstract async operator(call)
+    }
+    .type core::AsyncAction = class generic(T0) pub abstract shared {
+        .method core::AsyncAction$$call(arg0:.generic<$.generic.T0>)@.void pub abstract async operator(call)
+    }
+    .type core::AsyncAction = class generic(T0, T1) pub abstract shared {
+        .method core::AsyncAction$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>)@.void pub abstract async operator(call)
+    }
+    .type core::AsyncAction = class generic(T0, T1, T2) pub abstract shared {
+        .method core::AsyncAction$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>)@.void pub abstract async operator(call)
+    }
+    .type core::AsyncAction = class generic(T0, T1, T2, T3) pub abstract shared {
+        .method core::AsyncAction$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>)@.void pub abstract async operator(call)
+    }
+    .type core::AsyncAction = class generic(T0, T1, T2, T3, T4) pub abstract shared {
+        .method core::AsyncAction$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>)@.void pub abstract async operator(call)
+    }
+    .type core::AsyncAction = class generic(T0, T1, T2, T3, T4, T5) pub abstract shared {
+        .method core::AsyncAction$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>)@.void pub abstract async operator(call)
+    }
+    .type core::AsyncAction = class generic(T0, T1, T2, T3, T4, T5, T6) pub abstract shared {
+        .method core::AsyncAction$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>)@.void pub abstract async operator(call)
+    }
+    .type core::AsyncAction = class generic(T0, T1, T2, T3, T4, T5, T6, T7) pub abstract shared {
+        .method core::AsyncAction$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>)@.void pub abstract async operator(call)
+    }
+    .type core::AsyncAction = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8) pub abstract shared {
+        .method core::AsyncAction$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>)@.void pub abstract async operator(call)
+    }
+    .type core::AsyncAction = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9) pub abstract shared {
+        .method core::AsyncAction$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>)@.void pub abstract async operator(call)
+    }
+    .type core::AsyncAction = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10) pub abstract shared {
+        .method core::AsyncAction$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>)@.void pub abstract async operator(call)
+    }
+    .type core::AsyncAction = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11) pub abstract shared {
+        .method core::AsyncAction$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>)@.void pub abstract async operator(call)
+    }
+    .type core::AsyncAction = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12) pub abstract shared {
+        .method core::AsyncAction$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>)@.void pub abstract async operator(call)
+    }
+    .type core::AsyncAction = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13) pub abstract shared {
+        .method core::AsyncAction$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>)@.void pub abstract async operator(call)
+    }
+    .type core::AsyncAction = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14) pub abstract shared {
+        .method core::AsyncAction$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>)@.void pub abstract async operator(call)
+    }
+    .type core::AsyncAction = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15) pub abstract shared {
+        .method core::AsyncAction$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>)@.void pub abstract async operator(call)
+    }
+    .type core::AsyncAction = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16) pub abstract shared {
+        .method core::AsyncAction$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>)@.void pub abstract async operator(call)
+    }
+    .type core::AsyncAction = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17) pub abstract shared {
+        .method core::AsyncAction$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>)@.void pub abstract async operator(call)
+    }
+    .type core::AsyncAction = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18) pub abstract shared {
+        .method core::AsyncAction$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>)@.void pub abstract async operator(call)
+    }
+    .type core::AsyncAction = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19) pub abstract shared {
+        .method core::AsyncAction$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>)@.void pub abstract async operator(call)
+    }
+    .type core::AsyncAction = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20) pub abstract shared {
+        .method core::AsyncAction$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>)@.void pub abstract async operator(call)
+    }
+    .type core::AsyncAction = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21) pub abstract shared {
+        .method core::AsyncAction$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>)@.void pub abstract async operator(call)
+    }
+    .type core::AsyncAction = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22) pub abstract shared {
+        .method core::AsyncAction$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>,arg22:.generic<$.generic.T22>)@.void pub abstract async operator(call)
+    }
+    .type core::AsyncAction = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23) pub abstract shared {
+        .method core::AsyncAction$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>,arg22:.generic<$.generic.T22>,arg23:.generic<$.generic.T23>)@.void pub abstract async operator(call)
+    }
+    .type core::AsyncAction = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24) pub abstract shared {
+        .method core::AsyncAction$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>,arg22:.generic<$.generic.T22>,arg23:.generic<$.generic.T23>,arg24:.generic<$.generic.T24>)@.void pub abstract async operator(call)
+    }
+    .type core::AsyncAction = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25) pub abstract shared {
+        .method core::AsyncAction$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>,arg22:.generic<$.generic.T22>,arg23:.generic<$.generic.T23>,arg24:.generic<$.generic.T24>,arg25:.generic<$.generic.T25>)@.void pub abstract async operator(call)
+    }
+    .type core::AsyncAction = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26) pub abstract shared {
+        .method core::AsyncAction$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>,arg22:.generic<$.generic.T22>,arg23:.generic<$.generic.T23>,arg24:.generic<$.generic.T24>,arg25:.generic<$.generic.T25>,arg26:.generic<$.generic.T26>)@.void pub abstract async operator(call)
+    }
+    .type core::AsyncAction = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27) pub abstract shared {
+        .method core::AsyncAction$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>,arg22:.generic<$.generic.T22>,arg23:.generic<$.generic.T23>,arg24:.generic<$.generic.T24>,arg25:.generic<$.generic.T25>,arg26:.generic<$.generic.T26>,arg27:.generic<$.generic.T27>)@.void pub abstract async operator(call)
+    }
+    .type core::AsyncAction = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27, T28) pub abstract shared {
+        .method core::AsyncAction$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>,arg22:.generic<$.generic.T22>,arg23:.generic<$.generic.T23>,arg24:.generic<$.generic.T24>,arg25:.generic<$.generic.T25>,arg26:.generic<$.generic.T26>,arg27:.generic<$.generic.T27>,arg28:.generic<$.generic.T28>)@.void pub abstract async operator(call)
+    }
+    .type core::AsyncAction = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27, T28, T29) pub abstract shared {
+        .method core::AsyncAction$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>,arg22:.generic<$.generic.T22>,arg23:.generic<$.generic.T23>,arg24:.generic<$.generic.T24>,arg25:.generic<$.generic.T25>,arg26:.generic<$.generic.T26>,arg27:.generic<$.generic.T27>,arg28:.generic<$.generic.T28>,arg29:.generic<$.generic.T29>)@.void pub abstract async operator(call)
+    }
+    .type core::AsyncAction = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27, T28, T29, T30) pub abstract shared {
+        .method core::AsyncAction$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>,arg22:.generic<$.generic.T22>,arg23:.generic<$.generic.T23>,arg24:.generic<$.generic.T24>,arg25:.generic<$.generic.T25>,arg26:.generic<$.generic.T26>,arg27:.generic<$.generic.T27>,arg28:.generic<$.generic.T28>,arg29:.generic<$.generic.T29>,arg30:.generic<$.generic.T30>)@.void pub abstract async operator(call)
+    }
+    .type core::AsyncAction = class generic(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27, T28, T29, T30, T31) pub abstract shared {
+        .method core::AsyncAction$$call(arg0:.generic<$.generic.T0>,arg1:.generic<$.generic.T1>,arg2:.generic<$.generic.T2>,arg3:.generic<$.generic.T3>,arg4:.generic<$.generic.T4>,arg5:.generic<$.generic.T5>,arg6:.generic<$.generic.T6>,arg7:.generic<$.generic.T7>,arg8:.generic<$.generic.T8>,arg9:.generic<$.generic.T9>,arg10:.generic<$.generic.T10>,arg11:.generic<$.generic.T11>,arg12:.generic<$.generic.T12>,arg13:.generic<$.generic.T13>,arg14:.generic<$.generic.T14>,arg15:.generic<$.generic.T15>,arg16:.generic<$.generic.T16>,arg17:.generic<$.generic.T17>,arg18:.generic<$.generic.T18>,arg19:.generic<$.generic.T19>,arg20:.generic<$.generic.T20>,arg21:.generic<$.generic.T21>,arg22:.generic<$.generic.T22>,arg23:.generic<$.generic.T23>,arg24:.generic<$.generic.T24>,arg25:.generic<$.generic.T25>,arg26:.generic<$.generic.T26>,arg27:.generic<$.generic.T27>,arg28:.generic<$.generic.T28>,arg29:.generic<$.generic.T29>,arg30:.generic<$.generic.T30>,arg31:.generic<$.generic.T31>)@.void pub abstract async operator(call)
+    }
+    .type core::Cell = class generic(T) pub abstract {
+        .method core::Cell$getValue()@.generic<$.generic.T> pub abstract
+        .method core::Cell$setValue(v:.generic<$.generic.T>)@.void pub abstract
+    }
+    .type core::ReadonlyCell = class generic(T) pub abstract {
+        .method core::ReadonlyCell$getValue()@.generic<$.generic.T> pub abstract
+    }
+    .type core::IDisposable = interface pub {
+        .method core::IDisposable$dispose()@.void pub
+    }
+    .type core::RuntimeException = class
+        extends core::Exception
+        pub open {
+        .method core::RuntimeException$init(text:.string)@.void pub init
+        .method core::RuntimeException$getMessage()@.string pub override
+    }
+    .type core::IOException = class
+        extends core::RuntimeException
+        pub open {
+        .method core::IOException$init(text:.string)@.void pub init
+        .method core::IOException$getMessage()@.string pub override
+    }
+    .type core::CastException = class
+        extends core::RuntimeException
+        pub open {
+        .method core::CastException$init(text:.string)@.void pub init
+        .method core::CastException$getMessage()@.string pub override
+    }
+    .type core::NoSuchMethodException = class
+        extends core::RuntimeException
+        pub open {
+        .method core::NoSuchMethodException$init(text:.string)@.void pub init
+        .method core::NoSuchMethodException$getMessage()@.string pub override
+    }
+    .type core::DividedByZeroException = class
+        extends core::RuntimeException
+        pub open {
+        .method core::DividedByZeroException$init(text:.string)@.void pub init
+        .method core::DividedByZeroException$getMessage()@.string pub override
+    }
+    .type core.io::Console = class pub {
+        .static-method core.io::Console$.static.print(text:.string)@.void priv native symbol("print") lib("rigi_rt")
+        .static-method core.io::Console$.static.printErr(text:.string)@.void priv native symbol("printErr") lib("rigi_rt")
+        .static-method core.io::Console$.static.println(text:.string)@.void pub
+    }
+    .type core.collections::IEnumerator = interface generic(T) pub {
+        .method core.collections::IEnumerator$moveNext()@.bool pub
+        .method core.collections::IEnumerator$current()@.generic<$.generic.T> pub
+    }
+    .type core.collections::IEnumerable = interface generic(T) pub {
+        .method core.collections::IEnumerable$iterate()@core.collections::IEnumerator<.generic<$.generic.T>> pub
+    }
+    .type core.collections::RangeEnumerator = class generic(T)
+        implements core.collections::IEnumerator<.generic<$.generic.T>>
+        pub abstract {
+        .field core.collections::RangeEnumerator#value_@.generic<$.generic.T> protected var
+        .field core.collections::RangeEnumerator#end_@.generic<$.generic.T> protected var
+        .field core.collections::RangeEnumerator#started_@.bool protected var
+        .method core.collections::RangeEnumerator$current()@.generic<$.generic.T> pub override
+        .method core.collections::RangeEnumerator$moveNext()@.bool pub override abstract
+    }
+    .type core.collections::RangeEnumeratorI32 = class
+        extends core.collections::RangeEnumerator<.i32>
+        pub {
+        .field core.collections::RangeEnumeratorI32#start_@.i32 priv var
+        .method core.collections::RangeEnumeratorI32$init(start:.i32,end:.i32)@.void pub init
+        .method core.collections::RangeEnumeratorI32$moveNext()@.bool pub override
+    }
+    .type core.collections::RangeI32 = class
+        implements core.collections::IEnumerable<.i32>
+        pub {
+        .field core.collections::RangeI32#start_@.i32 priv var
+        .field core.collections::RangeI32#end_@.i32 priv var
+        .method core.collections::RangeI32$init(start:.i32,end:.i32)@.void pub init
+        .method core.collections::RangeI32$iterate()@core.collections::IEnumerator<.i32> pub override
+    }
+    .method core.collections::$alloc_array(.generic.T:.typeid,size:.i32)@.array<.generic<$.generic.T>> priv native symbol("alloc_array") lib("rigi_rt")
+    .method core.collections::$arrayOf(size:.i32)@.array<.generic<$.generic.T>> pub
+    .method core.collections::$arrayOfElements()@.array<.generic<$.generic.T>> pub
+    .type core.coroutine::Task = class generic(TResult) pub abstract shared {
+    }
+    .type core.coroutine::Task = class pub abstract shared {
+    }
+    .type core.coroutine::Executor = class pub abstract shared {
+    }
+    .type core.coroutine::MainExecutor = class
+        extends core.coroutine::Executor
+        pub abstract shared {
+    }
+    .type core.coroutine::ComputeExecutor = class
+        extends core.coroutine::Executor
+        pub abstract shared {
+    }
+    .type core.coroutine::IOExecutor = class
+        extends core.coroutine::Executor
+        pub abstract shared {
+    }
+    .type core.coroutine::PollingAlarm = class pub abstract shared {
+        .method core.coroutine::PollingAlarm$isReady()@.bool pub abstract
+    }
+    .type core.coroutine::EventAlarm = class pub abstract shared {
+    }
+    .type core.coroutine::CoroutineLocal = class generic(TValue) pub abstract shared {
+    }
+    .method core.coroutine::$make_sleep_alarm(milliseconds:.i64)@core.coroutine::EventAlarm priv native symbol("make_sleep_alarm") lib("rigi_rt")
+    .method core.coroutine::$sleep(milliseconds:.i32)@core.coroutine::EventAlarm pub
+    .method core::$any_to_string(value:.any)@.string priv native symbol("any_to_string") lib("rigi_rt")
+    .method $main()@.i32 pub entrypoint
+    .method core::i32$$EnumerateInRange(end:.i32)@core.collections::IEnumerable<.i32> pub ext operator(EnumerateInRange)
+    .field core::String#length@.i64 pub const ext
+    .method DirectHolder$..init.field.h()@.void priv compiler-generated
+    .method DirectHolder$..init.wrapper()@.void priv compiler-generated
+}
+
+ExternalSymbols {
+}
+
+fn(core::Any$toString()@.string) {
+    .args {
+        .return = .string,
+        .this = .any
+    }
+
+    .vars {
+        .string .t0
+    }
+
+    .block entry entrypoint {
+        invoke fn(core::$any_to_string(value:.any)@.string) $.t0 [$.this]
+        ret $.t0
+    }
+}
+
+fn(core::Object$toString()@.string) {
+    .args {
+        .return = .string,
+        .this = .object
+    }
+
+    .vars {
+        .any .t0,
+        .string .t1
+    }
+
+    .block entry entrypoint {
+        cast $.this $.t0 type(.any)
+        invoke fn(core::$any_to_string(value:.any)@.string) $.t1 [$.t0]
+        ret $.t1
+    }
+}
+
+fn(core::i32$$EnumerateInRange(end:.i32)@core.collections::IEnumerable<.i32>) {
+    .args {
+        .return = core.collections::IEnumerable<.i32>,
+        .this = .i32,
+        end = .i32
+    }
+
+    .vars {
+        core.collections::RangeI32 .t0,
+        core.collections::IEnumerable<.i32> .t1
+    }
+
+    .block entry entrypoint {
+        new type(core.collections::RangeI32) $.t0 [$.this, $end]
+        cast $.t0 $.t1 type(core.collections::IEnumerable<.i32>)
+        ret $.t1
+    }
+}
+
+fn(core::Pair$init(key:.generic<$.generic.TKey>,value:.generic<$.generic.TValue>)@.void) {
+    .args {
+        .return = .void,
+        .this = core::Pair,
+        .generic.TKey = .typeid,
+        .generic.TValue = .typeid,
+        key = .generic<$.generic.TKey>,
+        value = .generic<$.generic.TValue>
+    }
+
+    .vars {
+    }
+
+    .block entry entrypoint {
+        set.field $key $.this field(core::Pair#key@.generic<$.generic.TKey>)
+        set.field $value $.this field(core::Pair#value@.generic<$.generic.TValue>)
+        ret
+    }
+}
+
+fn(core.io::Console$.static.println(text:.string)@.void) {
+    .args {
+        .return = .void,
+        text = .string
+    }
+
+    .vars {
+        .string .t0,
+        .string .t1
+    }
+
+    .block entry entrypoint {
+        load res(R_0) $.t0
+        add $text $.t0 $.t1
+        invoke.noret fn(core.io::Console$.static.print(text:.string)@.void) [$.t1]
+        ret
+    }
+}
+
+fn(core.collections::RangeEnumerator$current()@.generic<$.generic.T>) {
+    .args {
+        .return = .generic<$.generic.T>,
+        .this = core.collections::RangeEnumerator,
+        .generic.T = .typeid
+    }
+
+    .vars {
+        .generic<$.generic.T> .t0
+    }
+
+    .block entry entrypoint {
+        get.field $.this $.t0 field(core.collections::RangeEnumerator#value_@.generic<$.generic.T>)
+        ret $.t0
+    }
+}
+
+fn(core.collections::RangeEnumeratorI32$init(start:.i32,end:.i32)@.void) {
+    .args {
+        .return = .void,
+        .this = core.collections::RangeEnumeratorI32,
+        start = .i32,
+        end = .i32
+    }
+
+    .vars {
+        .bool .t0
+    }
+
+    .block entry entrypoint {
+        set.field $start $.this field(core.collections::RangeEnumeratorI32#start_@.i32)
+        set.field $end $.this field(core.collections::RangeEnumerator#end_@.generic<$.generic.T>)
+        load res(R_1) $.t0
+        set.field $.t0 $.this field(core.collections::RangeEnumerator#started_@.bool)
+        set.field $start $.this field(core.collections::RangeEnumerator#value_@.generic<$.generic.T>)
+        ret
+    }
+}
+
+fn(core.collections::RangeEnumeratorI32$moveNext()@.bool) {
+    .args {
+        .return = .bool,
+        .this = core.collections::RangeEnumeratorI32
+    }
+
+    .vars {
+        .breakid .b0,
+        .bool .t0,
+        .i32 .t1,
+        .i32 .t2,
+        .i32 .t3,
+        .i32 .t4,
+        .i32 .t5,
+        .bool .t6,
+        .i32 .t7,
+        .i32 .t8,
+        .bool .t9
+    }
+
+    .block entry entrypoint {
+        get.field $.this $.t0 field(core.collections::RangeEnumerator#started_@.bool)
+        if $.t0 blk(if0-then) blk(if0-else) $.b0
+        get.field $.this $.t7 field(core.collections::RangeEnumerator#value_@.generic<$.generic.T>)
+        get.field $.this $.t8 field(core.collections::RangeEnumerator#end_@.generic<$.generic.T>)
+        cmp.lt $.t7 $.t8 $.t9
+        ret $.t9
+    }
+
+    .block if0-then {
+        get.field $.this $.t1 field(core.collections::RangeEnumerator#value_@.generic<$.generic.T>)
+        load res(R_2) $.t2
+        add $.t1 $.t2 $.t3
+        set.field $.t3 $.this field(core.collections::RangeEnumerator#value_@.generic<$.generic.T>)
+        get.field $.this $.t4 field(core.collections::RangeEnumerator#value_@.generic<$.generic.T>)
+    }
+
+    .block if0-else {
+        get.field $.this $.t5 field(core.collections::RangeEnumeratorI32#start_@.i32)
+        set.field $.t5 $.this field(core.collections::RangeEnumerator#value_@.generic<$.generic.T>)
+        load res(R_3) $.t6
+        set.field $.t6 $.this field(core.collections::RangeEnumerator#started_@.bool)
+    }
+}
+
+fn(core.collections::RangeI32$init(start:.i32,end:.i32)@.void) {
+    .args {
+        .return = .void,
+        .this = core.collections::RangeI32,
+        start = .i32,
+        end = .i32
+    }
+
+    .vars {
+    }
+
+    .block entry entrypoint {
+        set.field $start $.this field(core.collections::RangeI32#start_@.i32)
+        set.field $end $.this field(core.collections::RangeI32#end_@.i32)
+        ret
+    }
+}
+
+fn(core.collections::RangeI32$iterate()@core.collections::IEnumerator<.i32>) {
+    .args {
+        .return = core.collections::IEnumerator<.i32>,
+        .this = core.collections::RangeI32
+    }
+
+    .vars {
+        .i32 .t0,
+        .i32 .t1,
+        core.collections::RangeEnumeratorI32 .t2,
+        core.collections::IEnumerator<.i32> .t3
+    }
+
+    .block entry entrypoint {
+        get.field $.this $.t0 field(core.collections::RangeI32#start_@.i32)
+        get.field $.this $.t1 field(core.collections::RangeI32#end_@.i32)
+        new type(core.collections::RangeEnumeratorI32) $.t2 [$.t0, $.t1]
+        cast $.t2 $.t3 type(core.collections::IEnumerator<.i32>)
+        ret $.t3
+    }
+}
+
+fn(core.collections::$arrayOf(size:.i32)@.array<.generic<$.generic.T>>) {
+    .args {
+        .return = .array<.generic<$.generic.T>>,
+        .generic.T = .typeid,
+        size = .i32
+    }
+
+    .vars {
+        .array<.generic<$.generic.T>> .t0
+    }
+
+    .block entry entrypoint {
+        invoke fn(core.collections::$alloc_array(.generic.T:.typeid,size:.i32)@.array<.generic<$.generic.T>>) $.t0 [$.generic.T, $size]
+        ret $.t0
+    }
+}
+
+fn(core.collections::$arrayOfElements()@.array<.generic<$.generic.T>>) {
+    .args {
+        .return = .array<.generic<$.generic.T>>,
+        .generic.T = .typeid,
+        .vargs.elements = .array<.any>
+    }
+
+    .vars {
+        .array<.generic<$.generic.T>> result,
+        .i32 i,
+        .bool .s0,
+        .breakid .b0,
+        .i32 .t0,
+        .array<.generic<$.generic.T>> .t1,
+        .i32 .t2,
+        .i32 .t3,
+        .i32 .t4,
+        .nullable<.any> .t5,
+        .nullable<.generic<$.generic.T>> .t6,
+        .generic<$.generic.T> .t7,
+        .i32 .t8,
+        .i32 .t9,
+        .i32 .t10,
+        .bool .t11
+    }
+
+    .block entry entrypoint {
+        get.field $.vargs.elements $.t0 field(core::Array#length@.i32)
+        invoke fn(core.collections::$alloc_array(.generic.T:.typeid,size:.i32)@.array<.generic<$.generic.T>>) $.t1 [$.generic.T, $.t0]
+        set.var $.t1 $result
+        get.field $.vargs.elements $.t2 field(core::Array#length@.i32)
+        set.var $.t2 $i
+        get.field $.vargs.elements $.t3 field(core::Array#length@.i32)
+        sub $i $.t3 $.t4
+        set.var $.t4 $i
+        loop $.s0 blk(loop0-body) none blk(loop0-judge) $.b0
+        ret $result
+    }
+
+    .block loop0-body {
+        get.array $.vargs.elements $i $.t5
+        cast $.t5 $.t6 type(.nullable<.generic<$.generic.T>>)
+        cast $.t6 $.t7 type(.generic<$.generic.T>)
+        set.array $result $i $.t7
+        load res(R_2) $.t8
+        add $i $.t8 $.t9
+        set.var $.t9 $i
+    }
+
+    .block loop0-judge {
+        get.field $.vargs.elements $.t10 field(core::Array#length@.i32)
+        cmp.lt $i $.t10 $.t11
+        set.var $.t11 $.s0
+    }
+}
+
+fn(core.coroutine::$sleep(milliseconds:.i32)@core.coroutine::EventAlarm) {
+    .args {
+        .return = core.coroutine::EventAlarm,
+        milliseconds = .i32
+    }
+
+    .vars {
+        .i64 .t0,
+        core.coroutine::EventAlarm .t1
+    }
+
+    .block entry entrypoint {
+        cast $milliseconds $.t0 type(.i64)
+        invoke fn(core.coroutine::$make_sleep_alarm(milliseconds:.i64)@core.coroutine::EventAlarm) $.t1 [$.t0]
+        ret $.t1
+    }
+}
+
+fn(core::RuntimeException$init(text:.string)@.void) {
+    .args {
+        .return = .void,
+        .this = core::RuntimeException,
+        text = .string
+    }
+
+    .vars {
+    }
+
+    .block entry entrypoint {
+        set.field $text $.this field(core::Exception#message@.string)
+        ret
+    }
+}
+
+fn(core::RuntimeException$getMessage()@.string) {
+    .args {
+        .return = .string,
+        .this = core::RuntimeException
+    }
+
+    .vars {
+        .string .t0
+    }
+
+    .block entry entrypoint {
+        get.field $.this $.t0 field(core::Exception#message@.string)
+        ret $.t0
+    }
+}
+
+fn(core::IOException$init(text:.string)@.void) {
+    .args {
+        .return = .void,
+        .this = core::IOException,
+        text = .string
+    }
+
+    .vars {
+    }
+
+    .block entry entrypoint {
+        set.field $text $.this field(core::Exception#message@.string)
+        ret
+    }
+}
+
+fn(core::IOException$getMessage()@.string) {
+    .args {
+        .return = .string,
+        .this = core::IOException
+    }
+
+    .vars {
+        .string .t0
+    }
+
+    .block entry entrypoint {
+        get.field $.this $.t0 field(core::Exception#message@.string)
+        ret $.t0
+    }
+}
+
+fn(core::CastException$init(text:.string)@.void) {
+    .args {
+        .return = .void,
+        .this = core::CastException,
+        text = .string
+    }
+
+    .vars {
+    }
+
+    .block entry entrypoint {
+        set.field $text $.this field(core::Exception#message@.string)
+        ret
+    }
+}
+
+fn(core::CastException$getMessage()@.string) {
+    .args {
+        .return = .string,
+        .this = core::CastException
+    }
+
+    .vars {
+        .string .t0
+    }
+
+    .block entry entrypoint {
+        get.field $.this $.t0 field(core::Exception#message@.string)
+        ret $.t0
+    }
+}
+
+fn(core::NoSuchMethodException$init(text:.string)@.void) {
+    .args {
+        .return = .void,
+        .this = core::NoSuchMethodException,
+        text = .string
+    }
+
+    .vars {
+    }
+
+    .block entry entrypoint {
+        set.field $text $.this field(core::Exception#message@.string)
+        ret
+    }
+}
+
+fn(core::NoSuchMethodException$getMessage()@.string) {
+    .args {
+        .return = .string,
+        .this = core::NoSuchMethodException
+    }
+
+    .vars {
+        .string .t0
+    }
+
+    .block entry entrypoint {
+        get.field $.this $.t0 field(core::Exception#message@.string)
+        ret $.t0
+    }
+}
+
+fn(core::DividedByZeroException$init(text:.string)@.void) {
+    .args {
+        .return = .void,
+        .this = core::DividedByZeroException,
+        text = .string
+    }
+
+    .vars {
+    }
+
+    .block entry entrypoint {
+        set.field $text $.this field(core::Exception#message@.string)
+        ret
+    }
+}
+
+fn(core::DividedByZeroException$getMessage()@.string) {
+    .args {
+        .return = .string,
+        .this = core::DividedByZeroException
+    }
+
+    .vars {
+        .string .t0
+    }
+
+    .block entry entrypoint {
+        get.field $.this $.t0 field(core::Exception#message@.string)
+        ret $.t0
+    }
+}
+
+fn(Hidden$init()@.void) {
+    .args {
+        .return = .void,
+        .this = Hidden
+    }
+
+    .vars {
+    }
+
+    .block entry entrypoint {
+        ret
+    }
+}
+
+fn(Hidden$n()@.i32) {
+    .args {
+        .return = .i32,
+        .this = Hidden
+    }
+
+    .vars {
+        .i32 .t0
+    }
+
+    .block entry entrypoint {
+        load res(R_2) $.t0
+        ret $.t0
+    }
+}
+
+fn(DirectHolder$init()@.void) {
+    .args {
+        .return = .void,
+        .this = DirectHolder
+    }
+
+    .vars {
+    }
+
+    .block entry entrypoint {
+        ret
+    }
+}
+
+fn($main()@.i32) {
+    .args {
+        .return = .i32
+    }
+
+    .vars {
+        DirectHolder hd,
+        DirectHolder .t0,
+        Hidden .t1,
+        .i32 .t2,
+        .i32 .t3
+    }
+
+    .block entry entrypoint {
+        new type(DirectHolder) $.t0 []
+        set.var $.t0 $hd
+        get.field $hd $.t1 field(DirectHolder#h@Hidden)
+        invoke fn(Hidden$n()@.i32) $.t2 [$.t1]
+        load res(R_4) $.t3
+        ret $.t3
+    }
+}
+
+fn(DirectHolder$..init.field.h()@.void) {
+    .args {
+        .return = .void,
+        .this = DirectHolder
+    }
+
+    .vars {
+        Hidden .t0
+    }
+
+    .block entry entrypoint {
+        new type(Hidden) $.t0 []
+        set.field $.t0 $.this field(DirectHolder#h@Hidden)
+        ret
+    }
+}
+
+fn(DirectHolder$..init.wrapper()@.void) {
+    .args {
+        .return = .void,
+        .this = DirectHolder
+    }
+
+    .vars {
+    }
+
+    .block entry entrypoint {
+        invoke.noret fn(DirectHolder$..init.field.h()@.void) [$.this]
+        ret
+    }
+}

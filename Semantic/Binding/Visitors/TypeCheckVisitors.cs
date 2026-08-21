@@ -16,7 +16,8 @@ namespace RigiCompiler
         {
             var cast = (CastExpressionASTNode)node;
             var source = ExpressionDispatcher.Visit(cast.Object.Expression, scope, ctx, env);
-            var targetType = TypeReferences.Resolve(cast.TargetType, cast.Span, ctx.Frame, env);
+            var targetType = TypeReferences.Resolve(cast.TargetType, cast.Span, ctx.Frame, env,
+                ctx);
             if (source == null || targetType == null) return null;
             // S9a：目标为泛型参数时 as? 无静态 Nullable 构造——结果类型
             // 保守取 T 自身（运行时按 typeid 判定可空）
@@ -119,6 +120,10 @@ namespace RigiCompiler
             }
             if (probed is TypeSymbol targetType && probed is not ErrorTypeSymbol)
             {
+                // F2/V3 补查：试探命中即使用点——只读补跑可见性与填入点
+                // 检查（不落「无法解析」类诊断，只落约束/可见性诊断；
+                // 拒绝口径与 TypeReferences.Resolve 对齐）
+                if (!CheckProbedType(targetType, span, ctx, env)) return null;
                 if (typeRef.IsNullable)
                 {
                     targetType = env.Unit.Symbols.GetNullable(targetType);
@@ -157,8 +162,33 @@ namespace RigiCompiler
             return new BoundTypeCheckExpression(node, kind, operand, null, targetValue, env.B.Bool);
         }
 
-        // 动态形态右侧的值绑定（不落袋纯查找，命中后正常构造值引用 bound
-        // 节点）：实现已提取为 PathFacility.BindTypeSlotValue（与 new 动态
+        // F2/V3 试探命中补查（is/supers/with 与 typeOf 共用）：类型引用
+        // 试探（reportErrors: false）保持纯净，但命中即使用点——只读补跑
+        // 使用点可见性（与 TypeReferences 同口径，写出点恒报 + 函数体内
+        // 登记去重）与构造类型填入点检查（g4 框架；显式界不满足即拒绝
+        // 绑定，隐式限制违规只诊断不拒绝）。「无法解析」类诊断不在此落
+        // （试探失败的未解析形态仍归动态形态统一诊断）
+        internal static bool CheckProbedType(TypeSymbol targetType, CharRange? span,
+            BindContext ctx, BindEnvironment env)
+        {
+            var inaccessible = AccessChecker.FindInaccessibleType(targetType,
+                ctx.Frame.FileCtx.File, ctx.Frame.FileCtx.Namespace, ctx.Frame.DeclaringType);
+            if (inaccessible != null)
+            {
+                env.Error(span, AccessChecker.InaccessibleMessage(inaccessible));
+                UseSiteAccessibility.NoteExplicitlyReported(inaccessible, ctx);
+                return false;
+            }
+            if (targetType.ConstructedFrom != null)
+            {
+                GenericConstraints.CheckConstructedType(targetType, span, env,
+                    out var explicitConstraintsOk);
+                if (!explicitConstraintsOk) return false;
+            }
+            return true;
+        }
+
+        // 动态形态右侧的值绑定（不落袋纯查找，命中后正常构造值引用 bound        // 节点）：实现已提取为 PathFacility.BindTypeSlotValue（与 new 动态
         // 目标共用），此处仅保留调用方语义注释——单段名 = 局部 → 参数 →
         // 字段（FindField 全链）；多段路径 = 容器 + 末段字段。
         // valueFound = 是否有值符号命中（命中但绑定失败时诊断已落袋，
@@ -218,6 +248,13 @@ namespace RigiCompiler
                     // 显式排除才会落入下方路径绑定的「未解析」诊断）
                     if (probed is TypeSymbol targetType && probed is not ErrorTypeSymbol)
                     {
+                        // F2/V3 补查（与 is/supers/with 同门）：试探命中
+                        // 即使用点，只读补跑可见性/填入点检查
+                        if (!TypeCheckVisitor.CheckProbedType(targetType,
+                            typeOf.Operand.Span ?? typeOf.Span, ctx, env))
+                        {
+                            return null;
+                        }
                         return new BoundTypeOfExpression(node, null, targetType,
                             ResultType(targetType, env));
                     }

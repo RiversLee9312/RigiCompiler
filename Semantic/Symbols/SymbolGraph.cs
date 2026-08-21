@@ -30,6 +30,14 @@ namespace RigiCompiler
             GlobalNamespace = new NamespaceSymbol("");
             Bootstrap = new BootstrapSymbols(GlobalNamespace);
             ErrorType = new ErrorTypeSymbol();
+            // Q6（SYNTAX §13.2）：索引读取一律返回 T?——内建 Array\<T\>
+            // 的 getAtIndex 返回类型由 T 改为 Nullable\<T\>。bootstrap 构造
+            // 期拿不到本图的驻留设施（GetNullable 经 constructedTypes 驻留），
+            // 故在建图后即刻回填；此回填早于任何 P1–P4 消费，语义等同声明期
+            var arrayGetAtIndex = Bootstrap.ArrayDefinition.Methods
+                .First(m => m.Name == "getAtIndex");
+            arrayGetAtIndex.ReturnType = GetConstructedType(Bootstrap.NullableDefinition,
+                Bootstrap.ArrayDefinition.GenericParameters[0]);
         }
 
         public void Freeze()

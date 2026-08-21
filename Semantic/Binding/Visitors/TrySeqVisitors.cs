@@ -26,7 +26,7 @@ namespace RigiCompiler
                 ctx.Flow.Restore(before);
                 ctx.Flow.RestoreNarrowed(beforeNarrowed);
                 var exceptionType = TypeReferences.Resolve(catchNode.ExceptionType, catchNode.Span,
-                    ctx.Frame, env);
+                    ctx.Frame, env, ctx);
                 if (exceptionType != null
                     && !SymbolLookup.IsAssignable(exceptionType, env.B.Exception, env))
                 {
@@ -234,12 +234,19 @@ namespace RigiCompiler
             {
                 var declaredType = usingNode.Type == null
                     ? null
-                    : TypeReferences.Resolve(usingNode.Type, usingNode.Span, ctx.Frame, env);
+                    : TypeReferences.Resolve(usingNode.Type, usingNode.Span, ctx.Frame, env, ctx);
                 var initializer = ExpressionDispatcher.Visit(usingNode.Initializer.Expression,
                     scope, ctx, env, declaredType as TypeSymbol);
                 var resourceType = declaredType ?? initializer?.Type;
                 if (initializer == null || resourceType is not TypeSymbol type
                     || type is ErrorTypeSymbol) continue;
+                // 推断资源类型使用点检查（§16.1，F1/V4：seq using 漏列——
+                // 与同局部推断口径；初始化表达式经统一收口已报时按驻留
+                // 类型去重跳过；显式标注路径由 TypeReferences.Resolve 检查）
+                if (usingNode.Type == null)
+                {
+                    UseSiteAccessibility.CheckInferredType(type, usingNode.Span, ctx, env);
+                }
                 if (declaredType != null && !SymbolLookup.IsAssignable(initializer.Type,
                     declaredType, env)
                     && !BoundAnalysis.IsDowngradeCallResult(initializer, env))

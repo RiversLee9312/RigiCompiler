@@ -515,10 +515,11 @@ namespace RigiCompiler
             return symbol;
         }
 
-        // 开始约束子句：把 Target 的符号数据灌进 constraint 自带节点（其 Parent 已是
-        // constraint），再委托 TypeReferenceParserLayer 解析 Bound。
+        // 开始约束子句：把 Target 的符号数据深拷贝进 constraint 自带节点（其 Parent
+        // 已是 constraint），再委托 TypeReferenceParserLayer 解析 Bound。
         // 注意：禁止把外部已建成的 Target 节点挂进来——节点 Parent 在创建时即定、
-        // 禁止搬家；Symbol 是纯数据，可以安全转移。
+        // 禁止搬家；泛型实参已是 AST 节点（g1），symbol 数据也不再能直接转移，
+        // 必须深拷贝以 constraint 自带 TypeSymbol 为父重挂实参子树。
         // targetSpan：Target 原文的范围（M28）——TypeRef 路径即已解析类型的 span，
         // 前缀/可变参数路径即参数名 token 的范围
         private ParserLayerResult StartConstraint(
@@ -526,7 +527,7 @@ namespace RigiCompiler
             CharRange? targetSpan, ParserLayerContext context)
         {
             var constraint = new GenericConstraintASTNode(targetNode) { Kind = kind };
-            constraint.Target.TypeSymbol.symbol = targetSymbol;
+            constraint.Target.TypeSymbol.symbol = targetSymbol.DeepClone(constraint.Target.TypeSymbol);
             constraint.Target.IsNullable = targetNullable;
             // 自带 Target 节点未经解析层施工，span 需按原文范围显式设置（含其符号节点）
             constraint.Target.Span = targetSpan;

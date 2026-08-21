@@ -20,6 +20,11 @@ namespace RigiCompiler
     // - 深层纯字段写穿 place.a.b... = rhs：P4a 多 get/set（正向 get +
     //   叶写 + 反向 set；值类型中间写回；引用中间停止；最外层必要
     //   写回复用 set.wrapper.field；普通值中间反向写回发 set.field）；
+    // - 普通值类型中间链写穿（S1/g9，SYNTAX §10/§13.2）：深写机制泛化
+    //   到任意可写 place 根（局部/参数/this）的纯字段链——普通赋值
+    //   （LowerValueChainFieldWrite）、复合赋值（LowerValueChainFieldCompound）
+    //   与值类型 receiver 方法调用写回（MaterializeValueReceiver +
+    //   BuildValueReceiverWritebacks；rvalue 根/只读中间不写回）；
     // - 索引写 place[i]/place.a.b[i] = rhs（M111）：正向 get 物化到索引
     //   receiver + 叶 set.array/setAtIndex + 值类型中间反向写回（与深写
     //   同构）；place 直接作索引 receiver 时值拷贝后叶写、无需写回
@@ -377,24 +382,42 @@ namespace RigiCompiler
             return SynthLocalFactory.ReferenceTo(origin, hostLocal);
         }
 
+        // 链根写回 place 构造策略（深写/复合/索引写/receiver 写回共用）：
+        // wrapper 根 = set.wrapper.field 链（BuildWrapperFieldPlace）；
+        // 普通可写 place 根（S1/g9）= 共享宿主上的常规字段 place
+        private delegate LoweredExpression? RootWritePlaceBuilder(
+            BoundFieldAccessExpression access, FieldSymbol field);
+
         // ===== 深层纯字段写穿（P4a 展开：正向 get + 叶写 + 反向 set）=====
-        // 求值序：终极宿主 → 正向各字段 get（各一次）→ RHS → 叶写 → 反向写回。
-        // 返回完成的赋值语句（叶写）；写回作为前置语句落入 Output。
-        // 失败时已落诊断并返回 null。
+        // wrapper place 根入口：终极宿主单次求值后交共享核心
         public static LoweredStatement? LowerDeepFieldWrite(BoundNode origin,
             BoundWrapperAccessExpression place, List<BoundFieldAccessExpression> chain,
             BoundExpression rhsBound, LowerContext ctx, LowerEnvironment env)
         {
-            // 1. 终极宿主单次求值（cell 根直取 cell 对象引用；其余共享
-            //    写路径：字段宿主亦物化）
+            // 终极宿主单次求值（cell 根直取 cell 对象引用；其余共享
+            // 写路径：字段宿主亦物化）
             var host = LowerUltimateHostForWrite(place, ctx, env);
             if (host == null) return null;
+            return LowerDeepFieldWriteCore(origin, chain, rhsBound,
+                access => LowerFieldRead(access, place, host, ctx, env),
+                (access, field) => BuildWrapperFieldPlace(access, place, field, host, ctx, env),
+                ctx, env);
+        }
 
-            // 2. 正向：首字段经 LowerFieldRead；其后逐字段 get 并物化局部
+        // 深写共享核心（wrapper 根 / 普通值类型中间链根共用）。
+        // 求值序：终极宿主 → 正向各字段 get（各一次）→ RHS → 叶写 → 反向写回。
+        // 返回完成的赋值语句（叶写）；写回作为前置语句落入 Output。
+        // 失败时已落诊断并返回 null。
+        private static LoweredStatement? LowerDeepFieldWriteCore(BoundNode origin,
+            List<BoundFieldAccessExpression> chain, BoundExpression rhsBound,
+            Func<BoundFieldAccessExpression, LoweredExpression?> firstFieldRead,
+            RootWritePlaceBuilder rootWritePlace, LowerContext ctx, LowerEnvironment env)
+        {
+            // 正向：首字段经 firstFieldRead；其后逐字段 get 并物化局部
             var intermediates = new List<(LoweredExpression Local, FieldSymbol Field,
                 BoundFieldAccessExpression Access)>();
             var firstAccess = chain[0];
-            var firstRead = LowerFieldRead(firstAccess, place, host, ctx, env);
+            var firstRead = firstFieldRead(firstAccess);
             if (firstRead == null) return null;
             var firstLocal = MaterializeInto(firstAccess, firstRead, ctx);
             intermediates.Add((firstLocal, firstAccess.Field, firstAccess));
@@ -418,55 +441,38 @@ namespace RigiCompiler
             if (rhs == null) return null;
             rhs = LoweringFacility.EnsureDeclaredType(origin, rhs, leafAccess.Type);
 
-            // 4. 叶写 + 5. 反向写回（叶写必须先于写回；返回值由调用方
-            //    追加到 Output，故无写回时直接返回叶写，有写回时叶写先
-            //    Output.Add、末条写回作返回值——块收集序 = 前缀 + 返回）
+            // 叶写 + 反向写回（叶写必须先于写回；返回值由调用方
+            // 追加到 Output，故无写回时直接返回叶写，有写回时叶写先
+            // Output.Add、末条写回作返回值——块收集序 = 前缀 + 返回）
             var leafWrite = new LoweredAssignmentStatement(origin, leafPlace, rhs);
-            var writebacks = new List<LoweredStatement>();
-            for (var i = intermediates.Count - 1; i >= 0; i--)
-            {
-                var (local, field, access) = intermediates[i];
-                var valueKind = ClassifyWritebackType(local.Type, access.Syntax.Span, env);
-                if (valueKind == null) return null;
-                if (valueKind == false) break;
-                if (!CheckWritebackWritable(field, access.Syntax.Span, ctx, env))
-                {
-                    return null;
-                }
-                if (i == 0)
-                {
-                    var writePlace = BuildWrapperFieldPlace(access, place, field, host, ctx, env);
-                    if (writePlace == null) return null;
-                    writebacks.Add(new LoweredAssignmentStatement(origin, writePlace, local));
-                }
-                else
-                {
-                    var parentLocal = intermediates[i - 1].Local;
-                    var parentPlace = new LoweredFieldAccessExpression(access, parentLocal, field);
-                    writebacks.Add(new LoweredAssignmentStatement(origin, parentPlace, local));
-                }
-            }
-            if (writebacks.Count == 0) return leafWrite;
-            ctx.Output.Add(leafWrite);
-            for (var i = 0; i < writebacks.Count - 1; i++)
-            {
-                ctx.Output.Add(writebacks[i]);
-            }
-            return writebacks[writebacks.Count - 1];
+            return EmitLeafWriteWithWritebacks(origin, leafWrite, intermediates,
+                rootWritePlace, ctx, env);
         }
 
-        // 深层复合赋值 place.a.b op= rhs：读叶 → 运算 → 叶写 → 同反向写回
+        // 深层复合赋值 place.a.b op= rhs：wrapper 根入口，共享核心同深写
         public static LoweredExpression? LowerDeepFieldCompound(
             BoundCompoundAssignmentExpression compound, BoundWrapperAccessExpression place,
             List<BoundFieldAccessExpression> chain, LowerContext ctx, LowerEnvironment env)
         {
             var host = LowerUltimateHostForWrite(place, ctx, env);
             if (host == null) return null;
+            return LowerDeepFieldCompoundCore(compound, chain,
+                access => LowerFieldRead(access, place, host, ctx, env),
+                (access, field) => BuildWrapperFieldPlace(access, place, field, host, ctx, env),
+                ctx, env);
+        }
 
+        // 深层复合赋值共享核心：读叶 → 运算 → 叶写 → 同反向写回
+        private static LoweredExpression? LowerDeepFieldCompoundCore(
+            BoundCompoundAssignmentExpression compound,
+            List<BoundFieldAccessExpression> chain,
+            Func<BoundFieldAccessExpression, LoweredExpression?> firstFieldRead,
+            RootWritePlaceBuilder rootWritePlace, LowerContext ctx, LowerEnvironment env)
+        {
             var intermediates = new List<(LoweredExpression Local, FieldSymbol Field,
                 BoundFieldAccessExpression Access)>();
             var firstAccess = chain[0];
-            var firstRead = LowerFieldRead(firstAccess, place, host, ctx, env);
+            var firstRead = firstFieldRead(firstAccess);
             if (firstRead == null) return null;
             var firstLocal = MaterializeInto(firstAccess, firstRead, ctx);
             intermediates.Add((firstLocal, firstAccess.Field, firstAccess));
@@ -500,28 +506,9 @@ namespace RigiCompiler
                 new LoweredFieldAccessExpression(leafAccess, leafParent, leafAccess.Field),
                 resultRef));
 
-            for (var i = intermediates.Count - 1; i >= 0; i--)
+            if (!EmitWritebacksOnly(compound, intermediates, rootWritePlace, ctx, env))
             {
-                var (local, field, access) = intermediates[i];
-                var valueKind = ClassifyWritebackType(local.Type, access.Syntax.Span, env);
-                if (valueKind == null) return null;
-                if (valueKind == false) break;
-                if (!CheckWritebackWritable(field, access.Syntax.Span, ctx, env))
-                {
-                    return null;
-                }
-                if (i == 0)
-                {
-                    var writePlace = BuildWrapperFieldPlace(access, place, field, host, ctx, env);
-                    if (writePlace == null) return null;
-                    ctx.Output.Add(new LoweredAssignmentStatement(compound, writePlace, local));
-                }
-                else
-                {
-                    var parentLocal = intermediates[i - 1].Local;
-                    var parentPlace = new LoweredFieldAccessExpression(access, parentLocal, field);
-                    ctx.Output.Add(new LoweredAssignmentStatement(compound, parentPlace, local));
-                }
+                return null;
             }
             return resultRef;
         }
@@ -551,7 +538,8 @@ namespace RigiCompiler
 
             var leafPlace = new LoweredIndexExpression(indexExpr, indexReceiver, indexValue);
             var leafWrite = new LoweredAssignmentStatement(origin, leafPlace, rhs);
-            return EmitLeafWriteWithWritebacks(origin, leafWrite, intermediates, place, host,
+            return EmitLeafWriteWithWritebacks(origin, leafWrite, intermediates,
+                (access, field) => BuildWrapperFieldPlace(access, place, field, host, ctx, env),
                 ctx, env);
         }
 
@@ -586,7 +574,9 @@ namespace RigiCompiler
             ctx.Output.Add(new LoweredAssignmentStatement(compound,
                 new LoweredIndexExpression(indexExpr, indexReceiver, indexValue), resultRef));
 
-            if (!EmitWritebacksOnly(compound, intermediates, place, host, ctx, env))
+            if (!EmitWritebacksOnly(compound, intermediates,
+                    (access, field) => BuildWrapperFieldPlace(access, place, field, host, ctx,
+                        env), ctx, env))
             {
                 return null;
             }
@@ -631,10 +621,9 @@ namespace RigiCompiler
             LoweredStatement leafWrite,
             List<(LoweredExpression Local, FieldSymbol Field, BoundFieldAccessExpression Access)>
                 intermediates,
-            BoundWrapperAccessExpression place, LoweredExpression host,
-            LowerContext ctx, LowerEnvironment env)
+            RootWritePlaceBuilder rootWritePlace, LowerContext ctx, LowerEnvironment env)
         {
-            var writebacks = BuildWritebacks(origin, intermediates, place, host, ctx, env);
+            var writebacks = BuildWritebacks(origin, intermediates, rootWritePlace, ctx, env);
             if (writebacks == null) return null;
             if (writebacks.Count == 0) return leafWrite;
             ctx.Output.Add(leafWrite);
@@ -649,10 +638,9 @@ namespace RigiCompiler
         private static bool EmitWritebacksOnly(BoundNode origin,
             List<(LoweredExpression Local, FieldSymbol Field, BoundFieldAccessExpression Access)>
                 intermediates,
-            BoundWrapperAccessExpression place, LoweredExpression host,
-            LowerContext ctx, LowerEnvironment env)
+            RootWritePlaceBuilder rootWritePlace, LowerContext ctx, LowerEnvironment env)
         {
-            var writebacks = BuildWritebacks(origin, intermediates, place, host, ctx, env);
+            var writebacks = BuildWritebacks(origin, intermediates, rootWritePlace, ctx, env);
             if (writebacks == null) return false;
             foreach (var wb in writebacks)
             {
@@ -665,8 +653,7 @@ namespace RigiCompiler
         private static List<LoweredStatement>? BuildWritebacks(BoundNode origin,
             List<(LoweredExpression Local, FieldSymbol Field, BoundFieldAccessExpression Access)>
                 intermediates,
-            BoundWrapperAccessExpression place, LoweredExpression host,
-            LowerContext ctx, LowerEnvironment env)
+            RootWritePlaceBuilder rootWritePlace, LowerContext ctx, LowerEnvironment env)
         {
             var writebacks = new List<LoweredStatement>();
             for (var i = intermediates.Count - 1; i >= 0; i--)
@@ -681,7 +668,7 @@ namespace RigiCompiler
                 }
                 if (i == 0)
                 {
-                    var writePlace = BuildWrapperFieldPlace(access, place, field, host, ctx, env);
+                    var writePlace = rootWritePlace(access, field);
                     if (writePlace == null) return null;
                     writebacks.Add(new LoweredAssignmentStatement(origin, writePlace, local));
                 }
@@ -787,5 +774,186 @@ namespace RigiCompiler
         // 中间层物化直通判定：仅已是稳定局部/参数引用可跳过多余 .sN
         private static bool IsStableValueReference(LoweredExpression expr) =>
             expr is LoweredValueReferenceExpression;
+
+        // ===== 普通值类型中间链写穿（S1/g9，SYNTAX §10/§13.2 +
+        // SEMANTIC_ARCHITECTURE「正向 get + 叶写 + 反向 set；值类型中间
+        // 写回」）=====
+        // wrapper place 之外的任意可写 place 字段链：VM get.field 对值
+        // 类型 .Copy()，叶写打在拷贝上——与 wrapper 深写同构地物化中间
+        // 值、叶写后逐层反向 set 写回（引用类型中间停止）。
+
+        // 写目标判定：纯字段链 host.f1.f2...（>=2 层），根是可写 place
+        //（局部/参数/this），且非叶中间含值类型环节（全引用链走普通
+        // 路径零开销）。wrapper 根/索引/call 等非字段节点垫底时不接管
+        //（归 wrapper 专用路径或普通路径）
+        public static bool TryValueChainWriteTarget(BoundExpression target,
+            out BoundExpression root, out List<BoundFieldAccessExpression> chain)
+        {
+            root = null!;
+            chain = new List<BoundFieldAccessExpression>();
+            BoundExpression current = target;
+            while (current is BoundFieldAccessExpression fieldAccess)
+            {
+                chain.Add(fieldAccess);
+                current = fieldAccess.Receiver;
+            }
+            if (chain.Count < 2 || !IsWritableValueChainRoot(current))
+            {
+                chain.Clear();
+                return false;
+            }
+            chain.Reverse();
+            for (var i = 0; i < chain.Count - 1; i++)
+            {
+                if (IsValueTypeIntermediate(chain[i].Type))
+                {
+                    root = current;
+                    return true;
+                }
+            }
+            chain.Clear();
+            return false;
+        }
+
+        // 普通赋值 host.a.b... = rhs：正向 get 物化中间值 → 叶写 →
+        // 值类型中间反向 set 写回（求值序 = 根 → 正向 get → RHS → 叶写 → 写回）
+        public static LoweredStatement? LowerValueChainFieldWrite(BoundNode origin,
+            BoundExpression root, List<BoundFieldAccessExpression> chain,
+            BoundExpression rhsBound, LowerContext ctx, LowerEnvironment env)
+        {
+            var host = LowerValueChainRoot(root, ctx, env);
+            if (host == null) return null;
+            return LowerDeepFieldWriteCore(origin, chain, rhsBound,
+                access => new LoweredFieldAccessExpression(access, host, access.Field),
+                (access, field) => new LoweredFieldAccessExpression(access, host, field),
+                ctx, env);
+        }
+
+        // 复合赋值 host.a.b... op= rhs：读叶 → 运算 → 叶写 → 同反向写回
+        public static LoweredExpression? LowerValueChainFieldCompound(
+            BoundCompoundAssignmentExpression compound, BoundExpression root,
+            List<BoundFieldAccessExpression> chain, LowerContext ctx, LowerEnvironment env)
+        {
+            var host = LowerValueChainRoot(root, ctx, env);
+            if (host == null) return null;
+            return LowerDeepFieldCompoundCore(compound, chain,
+                access => new LoweredFieldAccessExpression(access, host, access.Field),
+                (access, field) => new LoweredFieldAccessExpression(access, host, field),
+                ctx, env);
+        }
+
+        // ===== 值类型 receiver 方法调用写回（§10：「只有以可写 place 为
+        // receiver 的调用原地生效」；无 mut 标注分析——一律写回可写
+        // place）=====
+        // receiver 判定：方法宿主是值类型（wrapper 除外——走 wrapper
+        // 派发链）、receiver 是可写字段链 place（根 = 局部/参数/this）、
+        // 链每一环均可写回（无 setter 的访问器/const 中间 → 不写回，
+        // 落普通路径——只读 place 上的 this 修改按 §10 口径本就不生效）。
+        // rvalue 根（call/索引/new 等）不接管——修改无处写回，无意义
+        public static bool TryValueReceiverCallTarget(BoundExpression receiver,
+            SemanticSymbol? methodOwner, out BoundExpression root,
+            out List<BoundFieldAccessExpression> chain)
+        {
+            root = null!;
+            chain = new List<BoundFieldAccessExpression>();
+            if (methodOwner is not TypeSymbol { IsValueTypeBranch: true } owner
+                || owner.Kind == TypeKind.Wrapper)
+            {
+                return false;
+            }
+            BoundExpression current = receiver;
+            while (current is BoundFieldAccessExpression fieldAccess)
+            {
+                chain.Add(fieldAccess);
+                current = fieldAccess.Receiver;
+            }
+            if (chain.Count == 0 || !IsWritableValueChainRoot(current))
+            {
+                chain.Clear();
+                return false;
+            }
+            chain.Reverse();
+            for (var i = 0; i < chain.Count; i++)
+            {
+                var field = chain[i].Field;
+                if ((field.Getter != null || field.Setter != null) && field.Setter == null)
+                {
+                    chain.Clear();
+                    return false;
+                }
+                if (field.IsConst)
+                {
+                    chain.Clear();
+                    return false;
+                }
+                // 中间层类型须可静态分类（泛型参数等不可解形态不接管——
+                // 避免 receiver 调用落新诊断；赋值路径诊断口径不变）
+                if (i < chain.Count - 1 && chain[i].Type is not TypeSymbol)
+                {
+                    chain.Clear();
+                    return false;
+                }
+            }
+            root = current;
+            return true;
+        }
+
+        // receiver 正向物化：根单次求值共享 → 逐字段 get 物化局部，
+        // 末层局部 = receiver 值拷贝（调用后由 BuildValueReceiverWritebacks
+        // 写回）。返回的 intermediates 含全部链环（末环 = receiver 自身）
+        public static LoweredExpression? MaterializeValueReceiver(BoundNode origin,
+            BoundExpression root, List<BoundFieldAccessExpression> chain,
+            LowerContext ctx, LowerEnvironment env,
+            out List<(LoweredExpression Local, FieldSymbol Field,
+                BoundFieldAccessExpression Access)> intermediates,
+            out LoweredExpression? host)
+        {
+            intermediates = new List<(LoweredExpression, FieldSymbol,
+                BoundFieldAccessExpression)>();
+            host = LowerValueChainRoot(root, ctx, env);
+            if (host == null) return null;
+            LoweredExpression current = host;
+            foreach (var access in chain)
+            {
+                var read = new LoweredFieldAccessExpression(access, current, access.Field);
+                var local = MaterializeInto(access, read, ctx);
+                intermediates.Add((local, access.Field, access));
+                current = local;
+            }
+            return current;
+        }
+
+        // receiver 写回语句构造（调用之后执行；null = 已诊断失败）：
+        // receiver 拷贝写回父 place 后按值类型边界逐层向外（引用中间停止）
+        public static List<LoweredStatement>? BuildValueReceiverWritebacks(BoundNode origin,
+            List<(LoweredExpression Local, FieldSymbol Field, BoundFieldAccessExpression Access)>
+                intermediates,
+            LoweredExpression host, LowerContext ctx, LowerEnvironment env)
+        {
+            return BuildWritebacks(origin, intermediates,
+                (access, field) => new LoweredFieldAccessExpression(access, host, field),
+                ctx, env);
+        }
+
+        // 链根单次求值共享（与 wrapper 写路径同口径：仅稳定局部/参数/
+        // this 直通，其余先落合成局部——RHS/实参不得引起根重评）
+        private static LoweredExpression? LowerValueChainRoot(BoundExpression root,
+            LowerContext ctx, LowerEnvironment env)
+        {
+            var hostValue = LowerExpressionDispatcher.Visit(root, ctx, env);
+            return hostValue == null
+                ? null
+                : MaterializeSharedWriteHost(root, hostValue, ctx);
+        }
+
+        // 可写链根：局部/参数/this（静态字段根、索引/call 等 rvalue 根
+        // 暂不接管——保持原路径行为）
+        private static bool IsWritableValueChainRoot(BoundExpression root) =>
+            root is BoundValueReferenceExpression or BoundThisExpression;
+
+        // 值类型中间判定：TypeSymbol 值分支；泛型参数保守接管（写回
+        // 分类归 ClassifyWritebackType——不可解时按既有口径诊断）
+        private static bool IsValueTypeIntermediate(SemanticSymbol? type) =>
+            type is TypeSymbol { IsValueTypeBranch: true } or GenericParameterSymbol;
     }
 }

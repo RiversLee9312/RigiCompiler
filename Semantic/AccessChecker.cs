@@ -21,12 +21,40 @@ namespace RigiCompiler
             };
         }
 
-        // 类型引用解析命中的检查便捷入口：非 TypeSymbol（泛型参数）与毒化跳过
+        // 类型引用解析命中的检查便捷入口：非 TypeSymbol（泛型参数）与毒化跳过；
+        // 递归口径同 FindInaccessibleType（F1/V-A：构造实参与嵌套宿主链参检）
         public static bool IsTypeAccessible(SemanticSymbol resolved, RootASTNode? useFile,
             NamespaceSymbol? useNamespace, TypeSymbol? useHost)
         {
-            return resolved is not TypeSymbol type || type is ErrorTypeSymbol ||
-                IsAccessible(type, useFile, useNamespace, useHost);
+            return FindInaccessibleType(resolved, useFile, useNamespace, useHost) == null;
+        }
+
+        // 递归使用点类型检查（F1/V-A，SYNTAX §16.1）：返回首个命中的不可见
+        // 类型，全部可见返回 null。检查次序：
+        //   1. 嵌套宿主链逐级（有效可见性 = 链上最小——pub 嵌套类型随 priv
+        //      宿主不可见，与 SignatureAccessibilityChecker 的有效可见性
+        //      口径一致；命中报该级，定位真正的泄漏点）；
+        //   2. 构造实参递归（Box\<Hidden\>/Task\<Hidden\>/Hidden? 的泄漏点
+        //      是实参 Hidden，报 Hidden 而非顶层容器——修复前 IsTypeAccessible
+        //      只查顶层，构造具化路径整体漏检）。
+        // 泛型参数（非 TypeSymbol）与毒化类型（ErrorType）跳过。
+        public static TypeSymbol? FindInaccessibleType(SemanticSymbol? resolved,
+            RootASTNode? useFile, NamespaceSymbol? useNamespace, TypeSymbol? useHost)
+        {
+            if (resolved is not TypeSymbol type || type is ErrorTypeSymbol) return null;
+            for (var host = type; host != null; host = host.DeclaringType)
+            {
+                if (!IsAccessible(host, useFile, useNamespace, useHost)) return host;
+            }
+            if (type.TypeArguments != null)
+            {
+                foreach (var argument in type.TypeArguments)
+                {
+                    var hit = FindInaccessibleType(argument, useFile, useNamespace, useHost);
+                    if (hit != null) return hit;
+                }
+            }
+            return null;
         }
 
         // private：顶层声明同文件可见；成员/嵌套类型在声明类型及其嵌套类型

@@ -686,6 +686,21 @@ namespace RigiCompiler
         // 主表达式已解析：检查后续操作
         private ParserLayerResult HandlePrimaryParsed(Token currentToken, ParserLayerContext context)
         {
+            // 整数字面量成员访问回退（SYNTAX §3.3）：字面量层已把 '7.' 的 '.'
+            // 记在节点上并交还标识符——视作路径连接符已读，直接按成员名处理
+            // （7.twice() ≡ (7).twice()）
+            if (currentExpression is LiteralExpressionASTNode literalWithDot &&
+                literalWithDot.MemberAccessDotConsumed &&
+                currentToken is WordToken)
+            {
+                literalWithDot.MemberAccessDotConsumed = false;
+                EnsurePathExpression(context);
+                pendingConnector = PathConnector.Dot;
+                pendingSuffixStart = literalWithDot.MemberAccessDotRange.Start;
+                state = State.MemberNameExpected;
+                return HandleMemberNameExpected(currentToken, context);
+            }
+
             // 等待分组右括号的情况：只接受 )
             if (expectClosingParen)
             {

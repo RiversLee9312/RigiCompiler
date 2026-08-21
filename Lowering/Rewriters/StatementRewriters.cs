@@ -124,6 +124,15 @@ namespace RigiCompiler
             LowerEnvironment env)
         {
             var call = (BoundCallStatement)node;
+            // S1/g9：值类型 receiver 的可写 place 链（§10）——receiver
+            // 拷贝物化，调用语句之后把 this 修改反向写回 place（块返回）
+            if (call.Receiver is not null and not BoundWrapperAccessExpression
+                && !call.IsIndirect
+                && WrapperPlaceLowering.TryValueReceiverCallTarget(call.Receiver,
+                    call.Method.Owner, out var valueRoot, out var valueChain))
+            {
+                return RewriteValueReceiverCallStatement(call, valueRoot, valueChain, ctx, env);
+            }
             var guard = new EvalOrderGuard(ctx);
             LoweredExpression? callReceiver = null;
             if (call.Receiver != null)
@@ -168,7 +177,41 @@ namespace RigiCompiler
                 sealedArguments.Add(sealedSlots[slotIndex++]);
             if (call.IsIndirect) indirectTarget = sealedSlots[slotIndex];
             return new LoweredCallStatement(call, call.Method, sealedArguments, callReceiver,
-                call.TypeArguments, genericPack, indirectTarget);
+                call.TypeArguments, genericPack, indirectTarget, call.HostTypeArguments);
+        }
+
+        // 值类型 receiver 可写 place 链的 void 调用语句（S1/g9，§10）：
+        // 正向 get 链物化 receiver 拷贝（根单次求值共享）→ 调用语句 →
+        // this 修改经值类型中间逐层反向 set 写回 place；返回块 =
+        // [调用, 写回...]（正向 get 前置已入 Output，guard 只管实参段）
+        private static LoweredStatement? RewriteValueReceiverCallStatement(
+            BoundCallStatement call, BoundExpression valueRoot,
+            List<BoundFieldAccessExpression> valueChain, LowerContext ctx,
+            LowerEnvironment env)
+        {
+            var receiver = WrapperPlaceLowering.MaterializeValueReceiver(call, valueRoot,
+                valueChain, ctx, env, out var intermediates, out var host);
+            if (receiver == null) return null;
+            var guard = new EvalOrderGuard(ctx);
+            guard.Track(call.Receiver!, receiver);
+            var arguments = LoweringFacility.LowerArguments(call.Arguments,
+                call.Method.Parameters, ctx, env, guard);
+            if (arguments == null) return null;
+            var genericPack = call.GenericPack == null ? null
+                : new LoweredGenericVarArgsArgument(call.GenericPack, call.GenericPack.IsNamed,
+                    call.GenericPack.TypeArguments, call.GenericPack.NamedTypes);
+            var sealedSlots = guard.Seal();
+            var sealedArguments = new List<LoweredExpression>(call.Arguments.Count);
+            for (var i = 1; i < sealedSlots.Count; i++) sealedArguments.Add(sealedSlots[i]);
+            var callStatement = new LoweredCallStatement(call, call.Method, sealedArguments,
+                sealedSlots[0], call.TypeArguments, genericPack, null, call.HostTypeArguments);
+            var writebacks = WrapperPlaceLowering.BuildValueReceiverWritebacks(call,
+                intermediates, host!, ctx, env);
+            if (writebacks == null) return null;
+            if (writebacks.Count == 0) return callStatement;
+            var statements = new List<LoweredStatement> { callStatement };
+            statements.AddRange(writebacks);
+            return new LoweredBlock(call, statements);
         }
     }
 
@@ -212,6 +255,14 @@ namespace RigiCompiler
             {
                 return WrapperPlaceLowering.LowerIndexWrite(assignment, indexPlace, indexFields,
                     indexExpr, assignment.Value, ctx, env);
+            }
+            // S1/g9：普通值类型中间链写穿 host.a.b... = rhs（§13.2）——
+            // 正向 get 物化中间值 + 叶写 + 值类型中间反向 set 写回
+            if (WrapperPlaceLowering.TryValueChainWriteTarget(assignment.Target,
+                    out var valueRoot, out var valueChain))
+            {
+                return WrapperPlaceLowering.LowerValueChainFieldWrite(assignment, valueRoot,
+                    valueChain, assignment.Value, ctx, env);
             }
             if (WrapperPlaceLowering.ContainsPlaceInTarget(assignment.Target))
             {

@@ -53,11 +53,11 @@ namespace RigiCompiler
         // ===== variadic 参数索引访问（BIL §7.1 ABI ↔ P3 体内视角桥接）=====
         // fn .args 的 .vargs.<名> = .array<.any>、.kwargs.<名> =
         // .array<.pair<.string, .any>>，而 P3 体内引用定型 Array\<元素\> /
-        // Array\<Pair\<String, T\>\>——容器元素类型两视角不一致：索引节点
-        // Type 取 ABI 元素类型（get.array/set.array 与容器声明对齐，
-        // §21.3 按容器声明推元素期望），读位置外包拆箱 cast 回 P3 静态
-        // 元素类型（下游零适配），写位置按 ABI 元素类型装箱 cast
-        // （§6.5——读写两形态与复合赋值共用本组设施）
+        // Array\<Pair\<String, T\>\>——容器元素类型两视角不一致：读形态索引
+        // 节点 Type 取 .nullable<ABI 元素>（Q6：get.array 内建形态结果恒
+        // 可空，§21.3 按容器声明推 .nullable<元素> 期望），读位置外包拆箱
+        // cast 回 P3 静态类型 Nullable\<元素\>（下游零适配）；写形态节点
+        // Type 取 ABI 元素类型，写值按 ABI 元素类型装箱 cast（§6.5）
 
         // 判定：receiver 为 variadic 参数引用（P4a 产物形态——参数引用
         // 降级为 LoweredValueReferenceExpression）

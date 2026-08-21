@@ -971,8 +971,18 @@ namespace RigiCompiler.Bil
             var collection = coroutine.ReadVar(collectionVar.Name);
             if (collection is VmArray array)
             {
+                // Q6（SYNTAX §13.2 / BIL §13.6）：内建数组的索引读取语义上
+                // 走 getAtIndex（返回 T?）——界内元素包成 Nullable\<T\>
+                // （值类型 VmNullable 存在位包装，引用类型沿用 VmNull 表示）；
+                // 越界读取不再 trap，得 null
+                var index = VmContext.RequireIndex(coroutine.ReadVar(indexVar.Name));
+                if (index < 0 || index >= array.Length)
+                {
+                    coroutine.WriteVar(target.Name, VmNull.Instance);
+                    return;
+                }
                 coroutine.WriteVar(target.Name,
-                    array.GetAt(VmContext.RequireIndex(coroutine.ReadVar(indexVar.Name))).Copy());
+                    VmTypeOps.WrapNullable(array.GetAt(index).Copy(), array.ElementType));
                 return;
             }
             var method = context.FindIndexOperator(collection.TypeRef, isGet: true);
@@ -1157,19 +1167,29 @@ namespace RigiCompiler.Bil
             var initArgs = ReadArgs(coroutine, arguments);
             // TryFindInit 在「无 init 声明 + 零实参」时返回 true 且 initSymbol 为空：
             // 该形态表示安装即完成，不能拿空符号去 invoke
-            if (!context.TryFindInit(wrapperType, initArgs, out var initSymbol)
-                || initSymbol.Length == 0)
+            var hasInit = context.TryFindInit(wrapperType, initArgs, out var initSymbol)
+                && initSymbol.Length > 0;
+            if (!hasInit && arguments.Count > 0)
             {
-                if (arguments.Count > 0)
-                {
-                    throw new VmException("wrapper init 实参不匹配：" + wrapperType);
-                }
-                return;
+                throw new VmException("wrapper init 实参不匹配：" + wrapperType);
             }
-            var values = new List<VmValue> { wrapper };
-            values.AddRange(initArgs);
-            BilInvokeExecution.InvokeValues(context, coroutine, initSymbol, values,
-                resultSlot: null);
+            if (hasInit)
+            {
+                var values = new List<VmValue> { wrapper };
+                values.AddRange(initArgs);
+                BilInvokeExecution.InvokeValues(context, coroutine, initSymbol, values,
+                    resultSlot: null);
+            }
+            // wrapper 类型自身的 ..init.wrapper（新 init 原则 §9.7：wrapper
+            // 类型成员的 wrapper 安装与字段初值）——类型级 ..init.wrapper 恒
+            // 无参。调用帧 LIFO：后压先执行——压在 init 帧之上 ⇒ 先于
+            // wrapper 的 init 体运行
+            if (context.TryFindInitWrapper(wrapperType, out var wrapperInitSymbol,
+                    out var wrapperInitArity) && wrapperInitArity == 0)
+            {
+                BilInvokeExecution.InvokeValues(context, coroutine, wrapperInitSymbol,
+                    new List<VmValue> { wrapper }, resultSlot: null);
+            }
         }
 
         private static void PushConstructorTail(VmContext context, VmCoroutine coroutine,
@@ -1206,15 +1226,16 @@ namespace RigiCompiler.Bil
                 throw new VmException("类型没有 ..init.wrapper：" + typeRef);
             }
             // §9.7/§14.4：..init.wrapper 在实体 init 之前自动调用（wrapper 先
-            // 安装、再跑 init）
-            if (wrapperCall != null)
-            {
-                BilInvokeExecution.InvokeValues(context, coroutine, wrapperSymbol, wrapperCall,
-                    resultSlot: null);
-            }
+            // 安装、字段初值先落、再跑 init 链）。调用帧是 LIFO 栈——先压
+            // init 帧、后压 ..init.wrapper 帧，执行序才是 wrapper → init
             if (initCall != null)
             {
                 BilInvokeExecution.InvokeValues(context, coroutine, initSymbol, initCall,
+                    resultSlot: null);
+            }
+            if (wrapperCall != null)
+            {
+                BilInvokeExecution.InvokeValues(context, coroutine, wrapperSymbol, wrapperCall,
                     resultSlot: null);
             }
         }
@@ -1525,7 +1546,7 @@ namespace RigiCompiler.Bil
                         (p.Name, VmTypeSheetBuilder.SubstituteGenericArguments(
                             p.TypeRef, substitution)));
                 }
-                if (!SuperInitArgsMatch(function, parameters, args))
+                if (!SuperInitArgsMatch(context, function, parameters, args))
                 {
                     continue;
                 }
@@ -1536,8 +1557,11 @@ namespace RigiCompiler.Bil
         }
 
         // super init 实参匹配：args = [.this, 隐藏泛型..., 声明参数...]，
-        // 隐藏泛型个数取自 fn .args 的 .generic.* 条目
-        private static bool SuperInitArgsMatch(BilFunction function,
+        // 隐藏泛型个数取自 fn .args 的 .generic.* 条目。实参比对按可赋值性
+        // （与 new 路径的 TryFindInit 同口径，RUNTIME §11：子类实参命中
+        // 基类形参——前端已对 super(...) 实参生成到形参声明类型的 cast，
+        // §9.2.2，引用类型 upcast 不改写运行期 typeid，此处按可赋值性接受）
+        private static bool SuperInitArgsMatch(VmContext context, BilFunction function,
             List<(string Name, string TypeRef)> parameters, IReadOnlyList<VmValue> args)
         {
             var genericHidden = 0;
@@ -1558,8 +1582,8 @@ namespace RigiCompiler.Bil
             var passedHidden = args.Count - minCount;
             for (var i = 0; i < parameters.Count; i++)
             {
-                if (!VmContext.TypesEqual(parameters[i].TypeRef,
-                        args[1 + passedHidden + i].TypeRef))
+                if (!context.Types.TypesAssignable(args[1 + passedHidden + i].TypeRef,
+                        parameters[i].TypeRef))
                 {
                     return false;
                 }

@@ -144,6 +144,8 @@ pub async func flushLogs() {
 | `async func f(): TResult` | `core.coroutine.Task\<TResult>` |
 | `async func f()` | `core.coroutine.Task` |
 
+`async` 是函数派发契约的一部分：override 签名匹配要求 `async` 修饰符一致（§9.2.1），sync 成员与 async 成员互不覆写、也不允许互相静默隐藏。
+
 ```rigi
 const userTask: core.coroutine.Task\<SharedUser> = loadUser(42)
 const flushTask: core.coroutine.Task = flushLogs()
@@ -158,7 +160,7 @@ const user = await loadUser(42)
 
 每个新协程在创建时永久绑定一个 `core.coroutine.Executor`。未显式指定时继承当前协程的 Executor；程序只能选择 Executor，不能选择其中的 Worker。Executor 的具体选择接口由 `core.coroutine` API 提供。
 
-async 调用会把一批值从当前协程送进新协程，因此以下**五处**的类型都必须是 §3.1.1 定义的共享安全类型（shared class、shared rich struct/wrapper、非 rich ValueType，以及 `T` 共享安全的 `Nullable\<T>`）：
+async 调用会把一批值从当前协程送进新协程，因此以下**五处**的类型都必须是 §3.1.1 定义的共享安全类型（shared class、shared interface、shared rich struct/wrapper、非 rich ValueType，以及 `T` 共享安全的 `Nullable\<T>`）：
 
 1. **receiver**：实例方法的 `this`，扩展方法的 `.this`；
 2. **参数**：全部形参，含默认参数、具名参数与可变参数展开后的每一个实参类型；
@@ -167,6 +169,8 @@ async 调用会把一批值从当前协程送进新协程，因此以下**五处
 5. **泛型实参**：async 函数/lambda 的每一个泛型实参——具化泛型下 typeid 与实际值一同跨越边界，因此同样受闸门约束。
 
 编译器在 async 声明处检查 2、3、5 的声明类型，在 async 调用点检查 1、2、5 的实际类型，在 async lambda 处检查 4。违反者为编译错误，不存在运行时补救。
+
+接口可以声明 `async` 成员；此时接口本身必须标记 `shared`（§3.1.1），否则经接口类型调用时 receiver 的静态类型无法通过闸门 1。
 
 ```rigi
 pub shared class SharedUser { pub const id: i64 }

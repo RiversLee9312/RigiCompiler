@@ -78,6 +78,12 @@ namespace RigiCompiler
         // 成员解析（方法、operator、字段、索引）统一按本类型查找。
         public static TypeSymbol EffectiveMemberType(SemanticSymbol type, BindEnvironment env)
         {
+            return EffectiveMemberType(type, env.B);
+        }
+
+        // BootstrapSymbols 版（P2 填入点检查无 BindEnvironment，g4 框架）
+        public static TypeSymbol EffectiveMemberType(SemanticSymbol type, BootstrapSymbols b)
+        {
             if (type is TypeSymbol typeSymbol) return typeSymbol;
             if (type is GenericParameterSymbol parameter)
             {
@@ -87,12 +93,12 @@ namespace RigiCompiler
                     if (constraint.Bound is TypeSymbol bound) return bound;
                     if (constraint.Bound is GenericParameterSymbol outer)
                     {
-                        return EffectiveMemberType(outer, env);
+                        return EffectiveMemberType(outer, b);
                     }
                 }
-                return env.B.Any;
+                return b.Any;
             }
-            return env.B.Any;
+            return b.Any;
         }
 
         // 泛型参数是否仅有 supers/with（无 extends）——运算符诊断用
@@ -403,6 +409,31 @@ namespace RigiCompiler
                 && arguments.Any(ContainsGenericParameter);
         }
 
+        // 可空类型判定（g8/g10 统一口径）：只认 Nullable 构造（ConstructedFrom
+        // == NullableDefinition），内层放宽为 SemanticSymbol——泛型参数 T 的
+        // T? 构造内层是 GenericParameterSymbol（NameResolver 经
+        // GetConstructedType 构造），不是 TypeSymbol。命中时 element 输出内层
+        public static bool IsNullableType(SemanticSymbol type, BindEnvironment env,
+            out SemanticSymbol element)
+        {
+            return IsNullableType(type, env.B, out element);
+        }
+
+        // BootstrapSymbols 版（P2 填入点检查无 BindEnvironment，g4 框架）
+        public static bool IsNullableType(SemanticSymbol type, BootstrapSymbols b,
+            out SemanticSymbol element)
+        {
+            if (type is TypeSymbol { ConstructedFrom: { } definition,
+                TypeArguments: { } arguments }
+                && ReferenceEquals(definition, b.NullableDefinition))
+            {
+                element = arguments[0];
+                return true;
+            }
+            element = type;
+            return false;
+        }
+
         // 可赋值性：同符号（驻留引用相等）直通；ErrorType 毒化静默放行；
         // T → Nullable\<T\> 装箱视图（M52）；沿 BaseType 链与接口表命中。
         // 泛型参数：同参数引用相等直通（已先行）；from 为 T 时按有效成员
@@ -414,32 +445,50 @@ namespace RigiCompiler
         public static bool IsAssignable(SemanticSymbol from, SemanticSymbol to,
             BindEnvironment env)
         {
+            return IsAssignable(from, to, env.Unit.Symbols);
+        }
+
+        // SymbolGraph 版（P2 填入点检查无 BindEnvironment，g4 框架）
+        public static bool IsAssignable(SemanticSymbol from, SemanticSymbol to,
+            SymbolGraph symbols)
+        {
+            var b = symbols.Bootstrap;
             if (ReferenceEquals(from, to)) return true;
             if (from is ErrorTypeSymbol || to is ErrorTypeSymbol) return true;
             if (from is GenericParameterSymbol)
             {
+                // g8：T → Nullable\<T\> 装箱视图优先判（to 为 Nullable 构造
+                // 且内层与 from 引用相等）——先于有效成员类型路径：无约束 T
+                // 的 EffectiveMemberType 是 Any，到不了 Nullable\<T\>；异
+                // 型参/异类型内层（U ≠ T）引用不等，落入下方界路径不误放
+                if (IsNullableType(to, b, out var nullableElement)
+                    && ReferenceEquals(nullableElement, from))
+                {
+                    return true;
+                }
                 return to is not GenericParameterSymbol
-                    && IsAssignable(EffectiveMemberType(from, env), to, env);
+                    && IsAssignable(EffectiveMemberType(from, b), to, symbols);
             }
             if (to is GenericParameterSymbol) return false;
             var fromType = (TypeSymbol)from;
             var toType = (TypeSymbol)to;
-            if (ReferenceEquals(toType.ConstructedFrom, env.B.NullableDefinition)
-                && toType.TypeArguments![0] is TypeSymbol element
-                && IsAssignable(fromType, element, env))
+            // 装箱视图：内层比较放宽为 SemanticSymbol 口径（g8——内层为泛型
+            // 参数时递归 IsAssignable 自然拒绝：TypeSymbol → GP 不可赋）
+            if (ReferenceEquals(toType.ConstructedFrom, b.NullableDefinition)
+                && IsAssignable(fromType, toType.TypeArguments![0], symbols))
             {
                 return true;
             }
             for (var t = fromType; t != null; t = t.BaseType)
             {
-                if (TypesAssignableWithVariance(t, toType, env)) return true;
+                if (TypesAssignableWithVariance(t, toType, symbols)) return true;
                 var def = t.ConstructedFrom ?? t;
                 foreach (var iface in def.Interfaces)
                 {
-                    if (TypesAssignableWithVariance(iface, toType, env)) return true;
+                    if (TypesAssignableWithVariance(iface, toType, symbols)) return true;
                     if (t.ConstructedFrom != null
                         && TypesAssignableWithVariance(
-                            SubstituteHost(iface, def, t, env.Unit.Symbols), toType, env))
+                            SubstituteHost(iface, def, t, symbols), toType, symbols))
                     {
                         return true;
                     }
@@ -449,7 +498,7 @@ namespace RigiCompiler
         }
 
         private static bool TypesAssignableWithVariance(SemanticSymbol? from,
-            SemanticSymbol to, BindEnvironment env)
+            SemanticSymbol to, SymbolGraph symbols)
         {
             if (ReferenceEquals(from, to)) return true;
             if (from is not TypeSymbol { ConstructedFrom: { } fromDefinition,
@@ -471,9 +520,9 @@ namespace RigiCompiler
                 }
                 else if (variance == GenericVariance.Out)
                 {
-                    if (!IsAssignable(fromArguments[i], toArguments[i], env)) return false;
+                    if (!IsAssignable(fromArguments[i], toArguments[i], symbols)) return false;
                 }
-                else if (!IsAssignable(toArguments[i], fromArguments[i], env))
+                else if (!IsAssignable(toArguments[i], fromArguments[i], symbols))
                 {
                     return false;
                 }

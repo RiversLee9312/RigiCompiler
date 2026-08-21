@@ -68,6 +68,11 @@ namespace RigiCompiler
                 env.Error(baseRef.Span ?? entry.Node.Span, AccessChecker.InaccessibleMessage(def));
                 return;
             }
+            // 继承可见性单调性（§16.1，F2/V5）：基类有效可见性不得低于
+            // 派生类型——报错但保留解析（基类本身合法，符号图照常填充，
+            // 避免下游成员检查级联误诊）
+            CheckBaseMonotonicity(type, baseType, "base class", "class",
+                baseRef.Span ?? entry.Node.Span, env);
             // 可继承性：基类必须 open/abstract；内建 Object 天然可继承
             if (!def.IsBuiltin && !def.IsOpen && !def.IsAbstract)
             {
@@ -81,6 +86,9 @@ namespace RigiCompiler
                     $"Circular inheritance involving '{type.Name}'");
                 return;
             }
+            // 基类子句是填入点（F2/V-C）：构造基类的实参须满足显式约束
+            // 与实例化隐式限制（g4 框架，与类型标注同通道）
+            CheckFillIn(baseType, baseRef.Span ?? entry.Node.Span, env);
             type.BaseType = baseType;
         }
 
@@ -112,6 +120,9 @@ namespace RigiCompiler
                 env.Error(baseRef.Span ?? entry.Node.Span, AccessChecker.InaccessibleMessage(def));
                 return;
             }
+            // 继承可见性单调性（§16.1，F2/V5）：同基类口径
+            CheckBaseMonotonicity(type, baseType, "base struct", "struct",
+                baseRef.Span ?? entry.Node.Span, env);
             if (!def.IsBuiltin && !(def.IsRich && def.IsOpen))
             {
                 env.Error(baseRef.Span ?? entry.Node.Span,
@@ -124,6 +135,8 @@ namespace RigiCompiler
                     $"Circular inheritance involving '{type.Name}'");
                 return;
             }
+            // 基 struct 子句是填入点（F2/V-C，同基类口径）
+            CheckFillIn(baseType, baseRef.Span ?? entry.Node.Span, env);
             type.BaseType = baseType;
         }
 
@@ -153,6 +166,11 @@ namespace RigiCompiler
                         AccessChecker.InaccessibleMessage(ifaceDef));
                     continue;
                 }
+                // 继承可见性单调性（§16.1，F2/V5）：接口有效可见性不得
+                // 低于派生类型（C# CS0061 式；覆盖 class implements 与
+                // interface 继承两形态）
+                CheckBaseMonotonicity(type, iface, "base interface", keyword,
+                    ifaceRef.Span ?? entry.Node.Span, env);
                 // 重复 implements 诊断（定义级判定：`I, I` 与 `I\<i32\>, I\<String\>`
                 // 同定义即重复——接口契约按定义派发，构造实参不产生新的实现
                 // 要求）；重复者不进 Interfaces 表（与重复声明惯例一致）
@@ -164,12 +182,48 @@ namespace RigiCompiler
                     continue;
                 }
                 type.Interfaces.Add(iface);
+                // implements 子句是填入点（F2/V-C，同基类口径）
+                CheckFillIn(iface, ifaceRef.Span ?? entry.Node.Span, env);
             }
             // interface 继承图的环：DFS 能回到自身即环（报错但保留图，
             // 后续消费 Interfaces 的遍历均为一层，不会死循环）
             if (type.Interfaces.Count > 0 && HasInterfaceCycle(type))
             {
                 env.Error(entry.Node.Span, $"Circular interface inheritance involving '{type.Name}'");
+            }
+        }
+
+        // 继承子句填入点登记（F2/V-C，SYNTAX §3.6/§3.1.1）：构造基类/
+        // 接口（Cage\<i32>、SGate\<Local>）登记后由 InheritanceFillInChecker
+        // 统一收口（彼时约束 Bound、字段/方法签名与 rich/shared 传染均
+        // 就绪——与 TypeReferenceResolver 的 pendingFillIns 延迟同思路）
+        private static void CheckFillIn(TypeSymbol baseType, CharRange? span,
+            ResolveEnvironment env)
+        {
+            if (baseType.ConstructedFrom != null)
+            {
+                env.RegisterInheritanceFillIn(baseType, span);
+            }
+        }
+
+        // 继承可见性单调性（F2/V5，SYNTAX §16.1，C# CS0060/CS0061 式）：
+        // 基类/基接口的有效可见性（自身与嵌套宿主链逐级最小，构造实参
+        // 递归——Box\<Hidden\> 的泄漏点是实参 Hidden，复审 fx_inh_mono2）
+        // 不得低于派生类型——否则私有/内部类型经继承链泄漏为更可见类型
+        // 的契约组成（含 like 合成转发器的来源接口，见 §9.6）。报错不
+        // 拒绝：继承图照常填充，避免下游成员/覆写检查级联误诊
+        private static void CheckBaseMonotonicity(TypeSymbol derived, TypeSymbol baseType,
+            string baseKind, string derivedKind, CharRange? span, ResolveEnvironment env)
+        {
+            var derivedEffective = SignatureAccessibilityChecker.EffectiveAccessibility(
+                derived.Accessibility, derived.DeclaringType);
+            var hit = SignatureAccessibilityChecker.FindLessAccessible(baseType,
+                derivedEffective);
+            if (hit != null)
+            {
+                env.Error(span,
+                    $"Inconsistent accessibility: {baseKind} '{hit.Name}' is less " +
+                    $"accessible than {derivedKind} '{derived.Name}'");
             }
         }
 
@@ -199,6 +253,25 @@ namespace RigiCompiler
                 }
             }
             return false;
+        }
+    }
+
+    // ===== 继承子句填入点统一收口（F2/V-C）=====
+    //
+    // InheritanceResolver 登记的构造基类/接口在 GenericConstraintChecker
+    // 之后统一跑 g4 填入点检查：彼时用户约束 Bound 已填充（P2 填入点
+    // 唯一晚于约束解析的挂点）、被引用定义的字段/方法签名与 rich/shared
+    // 传染均已就绪。隐式限制违规只诊断不拒绝（可恢复模型，同
+    // TypeReferenceResolver 收口口径）
+    internal sealed class InheritanceFillInChecker : ResolverVisitor<InheritanceFillInChecker>
+    {
+        protected override void VisitCore(ResolveEnvironment env)
+        {
+            foreach (var (constructed, span) in env.InheritanceFillIns)
+            {
+                GenericConstraints.CheckConstructedType(constructed, span,
+                    env.Unit.Symbols, env.Error);
+            }
         }
     }
 }

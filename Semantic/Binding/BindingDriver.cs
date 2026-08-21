@@ -1,3 +1,5 @@
+using RigiCompiler.Bil;
+
 namespace RigiCompiler
 {
     // P3 绑定驱动器（M55 visitor 化协议）：遍历编译单元的声明骨架，
@@ -51,6 +53,14 @@ namespace RigiCompiler
             // 阶段 1.9（SYNTAX §9.6）：like 委托转发成员合成——委托字段类型
             // 提供同签名具体实现的待实现成员，合成本类 override 转发方法
             SynthesizeLikeDelegations();
+            // 阶段 1.10（N1，SYNTAX §9.3/§11，新 init 原则）：全局与静态
+            // 字段的声明初始值——合成单一 ..globals.init 全局 fn
+            //（compiler-generated，体内按声明序 set.field.static），VM 在
+            // singleton 初始化之后、main 之前同步执行（参照 §8.7
+            // companion 统一设计）。wrapper cell 化的字段（CellStorage，
+            // 含 companion 落地）不在此列——其初值随 cell/companion init
+            // 求值；实例字段归 ..init.field.*（阶段 1.7）
+            SynthesizeGlobalFieldInitializers();
             // 阶段 2：逐函数体绑定（含字段访问器体 + proxy 模板态，M88）
             WalkSkeleton((fn, symbol, fileCtx, owner) =>
             {
@@ -267,22 +277,22 @@ namespace RigiCompiler
             {
                 env.Error(fn.Span, $"Function '{symbol.Name}' must return a value on all code paths");
             }
-            // init 前导合成（§9.3 / §9.4.1）：先保留领先 super()，再应用
-            // 声明处实例字段初始化器，再参数映射赋值，最后用户体。用户
-            // 体内再写同字段 = 覆盖，合法（init 内写字段自由）
+            // init 前导合成（§9.3 / §9.4.1，新 init 原则）：字段声明初始值
+            // 已迁入编译器合成的 ..init.field.*（由实际类型的
+            // ..init.wrapper 在任何 init 体之前调用，WrapperInitSynthesis
+            // 阶段 1.7），此处只保留参数映射赋值——顺序：领先 super() →
+            // 映射 → 用户体。用户体内再写同字段 = 覆盖，合法（init 内写
+            // 字段自由）
             if (symbol.Kind == MethodKind.Init)
             {
-                var preamble = new List<BoundStatement>();
-                if (owner != null && !symbol.IsStatic && fn.Parent != null)
-                {
-                    preamble.AddRange(SynthesizeFieldInitializerAssignments(
-                        fn.Parent, owner, fileCtx));
-                }
-                preamble.AddRange(SynthesizeInitMappingAssignments(fn, symbol));
+                var preamble = SynthesizeInitMappingAssignments(fn, symbol);
                 if (preamble.Count > 0)
                 {
                     body = PrependAfterLeadingSuper(body, preamble);
                 }
+                // P18/S2（§9.3 DA）：init 每条路径出口的非空字段定值
+                // 赋值检查（映射前导已并入体内，super 调用收窄义务）
+                InitFieldDa.CheckInitBody(symbol, body, fn.Span, env);
             }
             bodies.Add(new BoundFunctionBody(symbol, ctx.Locals.ToList(), body));
         }
@@ -366,13 +376,11 @@ namespace RigiCompiler
         // 未声明显式 init 的 class/struct 隐含零参公有默认构造。合成条件：
         // 本类有声明处初始化器的实例字段，**或直接基类需要初始化链**（基类
         // 有零参 init——含基类被合成的情形；链式递归由不动点判定兜底，
-        // 声明序无关）。合成体 = 先 super()（基类有零参 init 时——基类
-        // 字段初始化器由基类构造负责，§9.2.2），再按声明序 this.field =
-        // 初始化器（声明点静态语境绑定，复用 BindFieldInitializer）。
-        // 带自定义访问器的实例字段同此纳入：BIL get.field/set.field 本就
-        // 强制走访问器（§9.4），普通赋值形态发射侧自动经 setter 应用
-        // （钳制/通知自初始化起生效）；仅 get 无 set 的字段无法经 setter
-        // 应用，P2 AccessorChecker 已诊断，此处防御性跳过。
+        // 声明序无关）。合成体 = 仅 super()（基类有零参 init 时，§9.2.2）
+        // ——字段初始化器不在此（新 init 原则：字段初值归
+        // ..init.field.*，由实际类型的 ..init.wrapper 在任何 init 体之前
+        // 调用；带自定义访问器的字段初值经 set.field 自动走 setter，
+        // §9.4）。
         // enum struct 不在此列（§12：值只能经 case 入口产生）
         private void SynthesizeDefaultConstructors()
         {
@@ -424,9 +432,14 @@ namespace RigiCompiler
             {
                 entry.Type.Methods.Add(entry.Init);
             }
-            foreach (var (node, type, init, fields, fileCtx) in pending)
+            foreach (var (node, type, init, _, _) in pending)
             {
-                bodies.Add(SynthesizeDefaultConstructorBody(node, type, init, fields, fileCtx));
+                var body = SynthesizeDefaultConstructorBody(node, type, init);
+                // P18/S2（§9.3 DA）：合成默认构造同样受检——super-only
+                // 体不写字段，本类（或未调 super 时基类闭包）存在无初始值
+                // 非空字段即报（如 `var x: i32 = 0; var y: i32` 的 y）
+                InitFieldDa.CheckInitBody(init, body.Body, node.Span, env);
+                bodies.Add(body);
             }
         }
 
@@ -474,19 +487,18 @@ namespace RigiCompiler
             }
         }
 
-        // 默认构造体合成：super()（直接基类有零参 init 时）+ 逐字段初始化器
-        // 赋值。直接构造 bound 节点（SynthesizeBodilessInitBody 先例——合成
-        // 代码无 DA/return 问题）；语法回指类型声明节点；locals 空
-        // （BindFieldInitializer 拒绝含局部声明的初始化器）。
+        // 默认构造体合成：super()（直接基类有零参 init 时）。字段声明
+        // 初始值不在此（新 init 原则：归 ..init.field.*，基类字段初值由
+        // 实际类型的 ..init.wrapper 缝合，先于任何 init 体）。直接构造
+        // bound 节点（SynthesizeBodilessInitBody 先例——合成代码无
+        // DA/return 问题）；语法回指类型声明节点；locals 空。
         // 基类为构造类型时归定义查 init（构造壳不挂方法表）；super 隐藏
         // 实参与显式 super(...) 绑定同一口径（BindSuperCall）——转发当前
         // init 自身泛型参数（合成 init 无自身泛型参数，恒空；非空时
         // MaterializeTypeId 按 $.generic.T 零指令引用物化）。基类零参
         // init 的可见性不按使用点过滤（§9.2.2：super 不参与访问控制）
         private BoundFunctionBody SynthesizeDefaultConstructorBody(ASTNode node,
-            TypeSymbol type, MethodSymbol init,
-            List<(FieldSymbol Field, VariableDeclarationASTNode Variable)> fields,
-            FileContext fileCtx)
+            TypeSymbol type, MethodSymbol init)
         {
             var statements = new List<BoundStatement>();
             var baseType = type.BaseType;
@@ -504,7 +516,6 @@ namespace RigiCompiler
                             null, isVoid: true)));
                 }
             }
-            statements.AddRange(SynthesizeFieldInitializerAssignments(type, fileCtx, fields));
             return new BoundFunctionBody(init, Array.Empty<LocalSymbol>(),
                 new BoundBlock(node, statements));
         }
@@ -605,87 +616,118 @@ namespace RigiCompiler
                 new BoundBlock(syntax, statements)));
         }
 
+        // ===== 阶段 1.10：全局/静态字段初始值（N1，SYNTAX §9.3/§11）=====
+
+        // 全编译单元共享一个 ..globals.init：逐文件逐声明收集初始值赋值
+        // （声明点静态语境绑定，复用 BindFieldInitializer——无 this/无
+        // 局部）。声明发射由 EmittingDriver 的合成体循环承担
+        // （IsSynthetic 裸条目，§8.4.1），不进命名空间 Methods 表（防
+        // §21.2 裸符号重复）。体直接构造 bound 节点（合成代码无
+        // DA/return 问题）。初始化器执行顺序 = 文件序 + 声明序；相互
+        // 引用未定义（读到的是尚未初始化的零值，与 §8.7 singleton 依赖
+        // 递归同型文档化）
+        private void SynthesizeGlobalFieldInitializers()
+        {
+            var statements = new List<BoundStatement>();
+            foreach (var file in env.Unit.SourceFiles)
+            {
+                var fileCtx = env.Declarations.FileContextOf(file);
+                foreach (var decl in file.Declarations)
+                {
+                    CollectStaticFieldInitializerAssignments(decl, fileCtx, statements,
+                        isTypeMember: false);
+                }
+            }
+            if (statements.Count == 0) return;
+            var method = new MethodSymbol(BilSpellings.GlobalsInitFunctionName,
+                MethodKind.Regular, owner: null, ns: env.Unit.Symbols.GlobalNamespace)
+            {
+                Accessibility = Accessibility.Public,
+                HasBody = true,
+                IsSynthetic = true,
+            };
+            bodies.Add(new BoundFunctionBody(method, Array.Empty<LocalSymbol>(),
+                new BoundBlock(env.Unit.SourceFiles[0], statements)));
+        }
+
+        // 收集单个声明的静态/全局字段初始值赋值：顶层 Variable = 全局字段；
+        // 类型声明递归成员（仅 static 字段——实例字段归 ..init.field.*）。
+        // cell 化（含 companion 落地）/毒化/仅 get 无 set 的字段跳过
+        // （初值通道分别在 cell init / P2 诊断）
+        private void CollectStaticFieldInitializerAssignments(ASTNode node,
+            FileContext fileCtx, List<BoundStatement> statements, bool isTypeMember)
+        {
+            switch (node)
+            {
+                case VariableDeclarationASTNode variable:
+                    if (env.Declarations.SymbolOf(variable) is not FieldSymbol field)
+                    {
+                        throw new CompilerInternalException("P1 未登记字段符号: " + variable.Name);
+                    }
+                    if (variable.Initializer == null
+                        || (isTypeMember && !field.IsStatic)
+                        || field.CellStorage != null || field.CompanionCellField != null
+                        || (field.Getter != null && field.Setter == null))
+                    {
+                        return;
+                    }
+                    if (field.FieldType is not { } fieldType || fieldType is ErrorTypeSymbol)
+                    {
+                        return;   // 毒化静默
+                    }
+                    var value = WrapperInitSynthesis.BindFieldInitializer(field, variable,
+                        fileCtx, env);
+                    if (value == null) return;    // 绑定失败（诊断已报）
+                    statements.Add(new BoundAssignmentStatement(variable,
+                        new BoundFieldReferenceExpression(variable, field, fieldType), value));
+                    return;
+                case ClassDeclarationASTNode or StructDeclarationASTNode
+                    or InterfaceDeclarationASTNode or EnumStructDeclarationASTNode
+                    or WrapperDeclarationASTNode:
+                    foreach (var member in MembersOf(node))
+                    {
+                        CollectStaticFieldInitializerAssignments(member, fileCtx, statements,
+                            isTypeMember: true);
+                    }
+                    return;
+            }
+        }
+
         // ===== init 参数映射赋值合成（SYNTAX §9.3）=====
 
-        // 无体 init 的体合成：声明处实例字段初始化器 + 逐映射参数（声明
-        // 序）的赋值序列（无映射且无初始化器 = 空体——接收参数不做事，
-        // 合法；BilVerifier §21.2 要求非 native 本地方法有 fn 定义，
-        // enum case 模板 init 同此落地）。直接构造 bound 节点（自动访问
-        // 器体合成先例——合成代码无 DA/return 问题）；语法一律回指 init
-        // 声明节点；locals 空
+        // 无体 init 的体合成：逐映射参数（声明序）的赋值序列（无映射 =
+        // 空体——接收参数不做事，合法；BilVerifier §21.2 要求非 native
+        // 本地方法有 fn 定义，enum case 模板 init 同此落地）。字段声明
+        // 初始值不在此（新 init 原则：归 ..init.field.*，由
+        // ..init.wrapper 在任何 init 体之前调用）。直接构造 bound 节点
+        // （自动访问器体合成先例——合成代码无 DA/return 问题）；语法一律
+        // 回指 init 声明节点；locals 空
         private void SynthesizeBodilessInitBody(CallableDeclarationASTNode fn,
             MethodSymbol symbol, FileContext fileCtx)
         {
-            var statements = new List<BoundStatement>();
-            if (symbol.Owner != null && !symbol.IsStatic && fn.Parent != null)
-            {
-                statements.AddRange(SynthesizeFieldInitializerAssignments(
-                    fn.Parent, symbol.Owner, fileCtx));
-            }
-            statements.AddRange(SynthesizeInitMappingAssignments(fn, symbol));
+            var statements = SynthesizeInitMappingAssignments(fn, symbol);
             var body = new BoundBlock(fn, statements);
+            // P18/S2（§9.3 DA）：映射形态 init 同样检查（映射未覆盖的
+            // 非空字段即未赋值）
+            InitFieldDa.CheckInitBody(symbol, body, fn.Span, env);
             bodies.Add(new BoundFunctionBody(symbol, Array.Empty<LocalSymbol>(), body));
         }
 
-        // 当前类型声明处带初始化器的实例字段（声明序）。仅 get 无 set
-        // 无法经 setter 应用（P2 已诊断，防御跳过）。非 class/struct 空表
+        // 当前类型声明处带初始化器的实例字段（声明序）——实现已迁至
+        // WrapperInitSynthesis（阶段 1.7 ..init.field.* 合成共用），
+        // 此处仅保留默认构造触发判定的委托。enum struct 不参与默认构造
+        // 合成（§12：值只能经 case 入口产生），此处收窄回 class/struct
         private List<(FieldSymbol Field, VariableDeclarationASTNode Variable)>
             CollectInstanceFieldsWithInitializers(ASTNode typeNode, TypeSymbol type)
         {
-            var fields = new List<(FieldSymbol, VariableDeclarationASTNode)>();
-            if (typeNode is not (ClassDeclarationASTNode or StructDeclarationASTNode))
-            {
-                return fields;
-            }
-            foreach (var member in MembersOf(typeNode))
-            {
-                if (member is VariableDeclarationASTNode { Initializer: not null } variable
-                    && env.Declarations.SymbolOf(variable) is FieldSymbol field
-                    && !field.IsStatic && ReferenceEquals(field.Owner, type)
-                    && !(field.Getter != null && field.Setter == null))
-                {
-                    fields.Add((field, variable));
-                }
-            }
-            return fields;
-        }
-
-        // 实例字段声明初始化器 → this.field = 值（声明点静态语境绑定，
-        // 复用 BindFieldInitializer）。带访问器字段同形态：发射侧
-        // set.field 自动经 setter 应用。绑定失败/毒化静默跳过
-        private List<BoundStatement> SynthesizeFieldInitializerAssignments(
-            ASTNode typeNode, TypeSymbol type, FileContext fileCtx)
-        {
-            return SynthesizeFieldInitializerAssignments(type, fileCtx,
-                CollectInstanceFieldsWithInitializers(typeNode, type));
-        }
-
-        private List<BoundStatement> SynthesizeFieldInitializerAssignments(
-            TypeSymbol type, FileContext fileCtx,
-            List<(FieldSymbol Field, VariableDeclarationASTNode Variable)> fields)
-        {
-            var statements = new List<BoundStatement>();
-            foreach (var (field, variable) in fields)
-            {
-                var value = WrapperInitSynthesis.BindFieldInitializer(field, variable,
-                    fileCtx, env);
-                if (value == null) continue;    // 绑定失败（诊断已报）/泛型参数类型跳过
-                if (field.FieldType is not { } fieldType || fieldType is ErrorTypeSymbol)
-                {
-                    continue;   // 毒化静默
-                }
-                statements.Add(new BoundAssignmentStatement(variable,
-                    new BoundFieldAccessExpression(variable,
-                        new BoundThisExpression(variable,
-                            SymbolLookup.AsSelfConstructed(type, env.Unit.Symbols)!),
-                        field, fieldType),
-                    value));
-            }
-            return statements;
+            return typeNode is ClassDeclarationASTNode or StructDeclarationASTNode
+                ? WrapperInitSynthesis.CollectInstanceFieldsWithInitializers(typeNode, type, env)
+                : new List<(FieldSymbol, VariableDeclarationASTNode)>();
         }
 
         // 合成语句插到领先 super() 之后（用户体首条或默认构造已合成）；
-        // 无领先 super 则整段前插。顺序：super → 字段初始化器 → 映射 → 用户体
+        // 无领先 super 则整段前插。顺序：super → 映射 → 用户体（字段
+        // 初始值已归 ..init.field.*，新 init 原则）
         private static BoundBlock PrependAfterLeadingSuper(BoundBlock body,
             List<BoundStatement> preamble)
         {
@@ -716,6 +758,8 @@ namespace RigiCompiler
             {
                 var field = parameter.MappedField;
                 if (field == null) continue;
+                // 字段 override（§9.2.1）：存储仍是基类槽，映射写到被覆写字段
+                field = field.OverriddenField ?? field;
                 if (parameter.Type is not { } parameterType || parameterType is ErrorTypeSymbol)
                 {
                     continue;
@@ -913,6 +957,18 @@ namespace RigiCompiler
                 // 与 ResolvedInit 无交集歧义）
                 if (caseNode.Arguments.Count == 0 && inits.Count == 0)
                 {
+                    // P18/S2（§9.3 DA）：默认零参构造不写字段——enum 有
+                    // DA 义务字段时该构造路径无法担保，声明点拒绝
+                    var missing = InitFieldDa.RequiredFields(enumType, env);
+                    if (missing.Count > 0)
+                    {
+                        env.Error(caseNode.Span,
+                            $"Enum case '{caseNode.CaseName}' uses the default construction " +
+                            $"of '{enumType.Name}', which cannot assign non-nullable field " +
+                            $"'{missing[0].Name}' (§9.3: declare an init that assigns it, " +
+                            "add a declaration initializer, or make the field Nullable)");
+                        return;
+                    }
                     caseSymbol.HoleParameters = new List<EnumCaseHoleParameter>();
                     env.SetEnumCaseFixedArguments(caseSymbol, Array.Empty<BoundExpression?>());
                     return;

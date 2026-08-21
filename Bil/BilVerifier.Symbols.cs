@@ -277,6 +277,49 @@ namespace RigiCompiler.Bil
                         "..init.wrapper 必须带 priv 与 compiler-generated（§9.7）"));
                 }
             }
+            // §9.7：..init.field.<名> 保留名族——字段初始化器方法，与
+            // ..init.wrapper 同形状约束（返回 .void 的零参实例方法 +
+            // priv + compiler-generated）；子类 override 版同形
+            if (nameSegment != null && nameSegment.StartsWith(
+                    BilSpellings.InitFieldMethodPrefix, StringComparison.Ordinal))
+            {
+                if (!BilVerificationContext.TryParseMethodSymbol(symbol,
+                        out _, out var initFieldStatic, out var initFieldParams,
+                        out var initFieldRet)
+                    || initFieldStatic
+                    || initFieldParams.Count != 0
+                    || initFieldRet != ".void")
+                {
+                    errors.Add(new BilVerificationError("21.8", symbol,
+                        "..init.field.* 必须是返回 .void 的零参实例方法（§9.7）"));
+                }
+                if (!HasKeyword(declaration, BilKeyword.CompilerGenerated)
+                    || !HasAccessibility(declaration, BilAccessibility.Private))
+                {
+                    errors.Add(new BilVerificationError("21.8", symbol,
+                        "..init.field.* 必须带 priv 与 compiler-generated（§9.7）"));
+                }
+            }
+            // §8.4.1/§9.3（N1）：..globals.init——全局/静态字段初始值 fn，
+            // 返回 .void、无参数、无 .this（非实例方法）+ compiler-generated
+            if (nameSegment == BilSpellings.GlobalsInitFunctionName)
+            {
+                if (!BilVerificationContext.TryParseMethodSymbol(symbol,
+                        out var globalsInitOwner, out _, out var globalsInitParams,
+                        out var globalsInitRet)
+                    || globalsInitOwner.Length != 0
+                    || globalsInitParams.Count != 0
+                    || globalsInitRet != ".void")
+                {
+                    errors.Add(new BilVerificationError("21.8", symbol,
+                        "..globals.init 必须是返回 .void 的无参全局函数（§8.4.1）"));
+                }
+                if (!HasKeyword(declaration, BilKeyword.CompilerGenerated))
+                {
+                    errors.Add(new BilVerificationError("21.8", symbol,
+                        "..globals.init 必须带 compiler-generated（§8.4.1）"));
+                }
+            }
 
             // §8.4/§21.8 wrapper-proxy(PROXY_KIND)（M88）：只允许在 wrapper
             // 类型内、名以 `.proxy.` 开头的方法上；`.proxy.` 名 ↔ 修饰符

@@ -44,6 +44,9 @@ pub class RangeEnumeratorI32 : RangeEnumerator\<i32> {
         start_ = start
         end_ = end
         started_ = false
+        // P18/S2（§9.3 DA）：非空字段须全路径定值赋值——value_ 语义上
+        // 由 moveNext 首步覆写（started_ 门控），此处先赋哨兵满足 DA
+        value_ = start
     }
 
     pub override func moveNext(): bool {
@@ -91,7 +94,9 @@ pub func arrayOfElements\<T>(elements: T...): Array\<T> {
     var i: i32 = elements.length
     i = i - elements.length
     while (i < elements.length) {
-        result[i] = elements[i]
+        // Q6（§13.2）：索引读取得 T?；此下标恒在界内（非空），as 解包
+        // （泛型参数的 Nullable\<T\> 不参与 smart cast 收窄，§3.5/S9a）
+        result[i] = (elements[i] as T)
         i = i + 1
     }
     return result

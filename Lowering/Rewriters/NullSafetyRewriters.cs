@@ -43,17 +43,39 @@ namespace RigiCompiler
             // 不泄漏到 null 检查之前——与 NullFallbackRewriter else 分支的
             // LowerAssignInNewBlock 独立块上下文同一机制
             var thenStatements = new List<LoweredStatement>();
-            LoweredExpression? access;
+            LoweredExpression? access = null;
+            // bug O5（SYNTAX §3.4 + BIL §15.1/§21.3）：`?.` 调 void 方法
+            // （语句位 AllowVoidCall 产物，Access 为 Type=Any 的
+            // BoundInstanceCallExpression）——then 块发 LoweredCallStatement
+            // 走 CallStatementEmitter 的 invoke.noret 路径，s_result 保持
+            // null，不做赋值（赋值管线要结果槽，与 §15.1「void 必须
+            // invoke.noret」冲突）。async void 调用点类型已改写为 Task
+            // （§15.2，AsyncResultType），走常规表达式路径产 invoke，
+            // 不在此特判
+            var isVoidCall = safeAccess.Access is BoundInstanceCallExpression
+            {
+                Method.ReturnType: null, Method.IsAsync: false,
+            };
             ctx.Output.Push(thenStatements);
             try
             {
-                access = LowerExpressionDispatcher.Visit(safeAccess.Access, ctx, env);
-                if (access != null)
+                if (isVoidCall)
                 {
-                    var wrapped = LoweringFacility.EnsureDeclaredType(safeAccess, access,
-                        safeAccess.Type);
-                    thenStatements.Add(new LoweredAssignmentStatement(safeAccess,
-                        SynthLocalFactory.ReferenceTo(safeAccess, result), wrapped));
+                    var callStatement = LowerVoidInstanceCall(
+                        (BoundInstanceCallExpression)safeAccess.Access, ctx, env);
+                    if (callStatement == null) return null;
+                    thenStatements.Add(callStatement);
+                }
+                else
+                {
+                    access = LowerExpressionDispatcher.Visit(safeAccess.Access, ctx, env);
+                    if (access != null)
+                    {
+                        var wrapped = LoweringFacility.EnsureDeclaredType(safeAccess, access,
+                            safeAccess.Type);
+                        thenStatements.Add(new LoweredAssignmentStatement(safeAccess,
+                            SynthLocalFactory.ReferenceTo(safeAccess, result), wrapped));
+                    }
                 }
             }
             finally
@@ -61,10 +83,47 @@ namespace RigiCompiler
                 ctx.Output.Pop();
                 ctx.Targets.PopSafeReceiver();
             }
-            if (access == null) return null;
+            if (!isVoidCall && access == null) return null;
             ctx.Output.Add(new LoweredIfStatement(safeAccess, condition,
                 new LoweredBlock(safeAccess, thenStatements), null, ctx.Synth.NewBreakIdLocal()));
             return SynthLocalFactory.ReferenceTo(safeAccess, result);
+        }
+
+        // bug O5：void 实例调用降级为调用语句（invoke.noret 路径）——
+        // receiver/实参降级与 InstanceCallRewriter/CallStatementRewriter
+        // 同口径（wrapper place 物化、宿主 cast、EvalOrderGuard 求值序
+        // 保护）；占位叶子经 safeReceivers 栈映射为 unwrap cast
+        private static LoweredCallStatement? LowerVoidInstanceCall(
+            BoundInstanceCallExpression call, LowerContext ctx, LowerEnvironment env)
+        {
+            var guard = new EvalOrderGuard(ctx);
+            LoweredExpression? receiver;
+            if (call.Receiver is BoundWrapperAccessExpression place)
+            {
+                receiver = WrapperPlaceLowering.Materialize(place, null, ctx, env);
+            }
+            else
+            {
+                receiver = LowerExpressionDispatcher.Visit(call.Receiver, ctx, env);
+                if (receiver != null)
+                {
+                    receiver = LoweringFacility.EnsureDeclaredType(call, receiver,
+                        call.Method.Owner);
+                }
+            }
+            if (receiver == null) return null;
+            guard.Track(call.Receiver, receiver);
+            var arguments = LoweringFacility.LowerArguments(call.Arguments,
+                call.Method.Parameters, ctx, env, guard);
+            if (arguments == null) return null;
+            var genericPack = call.GenericPack == null ? null
+                : new LoweredGenericVarArgsArgument(call.GenericPack, call.GenericPack.IsNamed,
+                    call.GenericPack.TypeArguments, call.GenericPack.NamedTypes);
+            var sealedSlots = guard.Seal();
+            var sealedArguments = new List<LoweredExpression>(call.Arguments.Count);
+            for (var i = 1; i < sealedSlots.Count; i++) sealedArguments.Add(sealedSlots[i]);
+            return new LoweredCallStatement(call, call.Method, sealedArguments, sealedSlots[0],
+                call.TypeArguments, genericPack);
         }
     }
 

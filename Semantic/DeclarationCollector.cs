@@ -190,7 +190,11 @@ namespace RigiCompiler
                 ns: declaringType == null ? ns : null,
                 isStatic: node.Modifiers.Contains(Keywords.STATIC),
                 extTargetPath: extTarget,
-                isConst: node.IsConst);
+                isConst: node.IsConst)
+            {
+                IsOpen = node.Modifiers.Contains(Keywords.OPEN),
+                IsOverride = node.Modifiers.Contains(Keywords.OVERRIDE),
+            };
             result.Map(node, symbol);
             // 访问器壳（SYNTAX §9.4）：backing 一致性 Parser 已校验，取任一方即可
             if (node.Getter != null || node.Setter != null)
@@ -411,7 +415,9 @@ namespace RigiCompiler
                     for (int j = 0; j < element.generics.Count; j++)
                     {
                         if (j > 0) sb.Append(',');
-                        sb.Append(SymbolKey(element.generics[j]));
+                        // 实参是完整类型引用（g1）：可空后缀进键，
+                        // Holder\<i32> 与 Holder\<i32?> 不得同键
+                        sb.Append(TypeRefKey(element.generics[j]));
                     }
                     sb.Append('>');
                 }

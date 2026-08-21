@@ -88,7 +88,7 @@ namespace RigiCompiler.Tests
             // （单候选带目标类型绑定提供期望类型）；顺带覆盖无显式 init
             // 的零实参 case（默认零参构造成功路径）
             var (unit4, _) = BindUnit(
-                "enum struct Level { }[Low, High]\n" +
+                "pub enum struct Level { }[Low, High]\n" +
                 "pub enum struct Wrapped {\n" +
                 "    pub const level: Level\n" +
                 "    pub init(_ -> level)\n" +

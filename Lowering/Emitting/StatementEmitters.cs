@@ -148,6 +148,12 @@ namespace RigiCompiler
             {
                 arguments.Add(EmitValueDispatcher.Visit(call.Receiver, target, ctx, env));
             }
+            // g7：静态调用的宿主泛型实参先于方法自有实参物化（§7.2 序）
+            foreach (var hostTypeArgument in call.HostTypeArguments)
+            {
+                arguments.Add(EmittingFacility.MaterializeTypeId(hostTypeArgument, call,
+                    target, ctx, env));
+            }
             foreach (var typeArgument in call.TypeArguments)
             {
                 arguments.Add(EmittingFacility.MaterializeTypeId(typeArgument, call,

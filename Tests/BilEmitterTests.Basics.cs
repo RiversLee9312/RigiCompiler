@@ -153,7 +153,7 @@ namespace RigiCompiler.Tests
         private static void TestUserOperatorEqualsEmission()
         {
             var (unit, module, _) = BilTestHarness.EmitBilUnit(
-                "class Vec { pub operator equals(other: Vec): bool { return true } }\n" +
+                "pub class Vec { pub operator equals(other: Vec): bool { return true } }\n" +
                 "pub func eq(a: Vec, b: Vec): bool { return (a == b) }\n" +
                 "pub func ne(a: Vec, b: Vec): bool { return (a != b) }\n");
             CheckNoErrors("全管线无诊断（用户 ==/!= 发射）", unit);
@@ -172,7 +172,7 @@ namespace RigiCompiler.Tests
         private static void TestUserOperatorPlusEmission()
         {
             var (unit, module, _) = BilTestHarness.EmitBilUnit(
-                "class Vec {\n" +
+                "pub class Vec {\n" +
                 "    pub operator plus(other: Vec): Vec { return this }\n" +
                 "    pub operator compareTo(other: Vec): i32 { return 0 }\n" +
                 "    pub operator opposite(): Vec { return this }\n" +

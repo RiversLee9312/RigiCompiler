@@ -1626,6 +1626,14 @@ namespace RigiCompiler.Bil
                 return;
             }
             var fieldSymbols = context.Module.CollectEnumStructInstanceFields(owner);
+            // 新 init 原则（§9.7 修订）：带声明初始值的字段在 ..init.wrapper
+            // 阶段（任何 init 体之前）已由编译器合成的 ..init.field.<名>
+            // 写入——这些字段对 init 体而言「进入时已赋值」，不计入本规则的
+            // 全路径 set.field 要求与早读检查（..init.field.* 体内的写入即
+            // 该字段的合法写入点）
+            fieldSymbols = fieldSymbols
+                .Where(f => !HasInitFieldWriter(context, owner, InstanceFieldName(f)))
+                .ToList();
             if (fieldSymbols.Count == 0)
             {
                 return;
@@ -1665,6 +1673,38 @@ namespace RigiCompiler.Bil
             }
             var name = fieldSymbol.Substring(hash + 1, at - hash - 1);
             return name.StartsWith(".static.") ? name.Substring(".static.".Length) : name;
+        }
+
+        // 类型的继承闭包（含自身，沿 extends）是否声明了 ..init.field.<名>
+        // ——有 = 该字段带声明初始值，wrapper 阶段已写（§9.7 修订）
+        private static bool HasInitFieldWriter(BilFunctionContext context, string owner,
+            string fieldName)
+        {
+            var wanted = BilSpellings.InitFieldMethodPrefix + fieldName;
+            var visited = new HashSet<string>();
+            var current = owner;
+            while (visited.Add(current))
+            {
+                if (!context.Module.TryGetTypeDeclaration(current, out var declaration))
+                {
+                    break;
+                }
+                foreach (var member in declaration.Members)
+                {
+                    if (member is BilSimpleMemberDeclaration simple
+                        && simple.Kind == BilMemberKind.Method
+                        && MethodNameSegment(simple.Symbol) == wanted)
+                    {
+                        return true;
+                    }
+                }
+                if (declaration.ExtendsType == null)
+                {
+                    break;
+                }
+                current = declaration.ExtendsType;
+            }
+            return false;
         }
 
         private sealed class EnumFieldInitState

@@ -22,7 +22,7 @@ namespace RigiCompiler.Tests
     public static class EscapingValueBlockTests
     {
         private const string OutcomeSource =
-            "enum struct Outcome { }[\n" +
+            "pub enum struct Outcome { }[\n" +
             "    Ok,\n" +
             "    Failed\n" +
             "]\n";

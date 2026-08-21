@@ -1,4 +1,4 @@
-using System.Linq;
+﻿using System.Linq;
 using RigiCompiler.Bil;
 using RigiCompiler.Bil.Vm;
 
@@ -37,8 +37,10 @@ namespace RigiCompiler.Tests
             TestStaticFields();
             TestRootNamespaceGlobalField();
             TestLikeDelegationForwarding();
+            TestLikeDelegationInterfaceField();
             TestStructDeepCopy();
             TestArrayIndexOperators();
+            TestArrayIndexOutOfBoundsNull();
             TestCompoundAssignmentIndexSingleRead();
             TestEnumCasePayload();
             TestEnumCaseFixedPayload();
@@ -128,6 +130,13 @@ namespace RigiCompiler.Tests
             TestReifiedConstructZeroValue();
             TestNestedClassNullableInit();
             TestInitMatchByAssignability();
+            TestNullableGenericTypeArgument();
+            TestConstructedTypeStaticMembers();
+            TestGenericNullableEndToEnd();
+            TestNestedStructFieldChainWrite();
+            TestStructReceiverCallWriteback();
+            TestClassEmbeddedStructFieldWrite();
+            TestThreeLevelNestedStructWrite();
 
             return TestHarness.Summary("BilVm");
         }
@@ -247,14 +256,17 @@ namespace RigiCompiler.Tests
 
         private static void TestFieldZeroDefault()
         {
+            // P18/S2（§9.3 DA）：非空字段必须有声明初始值或 init 赋值——
+            // 声明初始值即落地值（VM 零填充仅为 BIL 层分配细节，前端不再
+            // 产生「无初始值裸字段」形态）
             var result = Run(
-                "pub class Box { pub var n: i32 }\n" +
+                "pub class Box { pub var n: i32 = 0 }\n" +
                 "pub func main(): i32 {\n" +
                 "    var b = new Box()\n" +
                 "    return b.n\n" +
                 "}\n");
             CheckOk("字段零值", result);
-            CheckI32("未初始化 i32 为零", result, 0);
+            CheckI32("声明初始值 0 落地", result, 0);
         }
 
         // SYNTAX §9.3 回归：默认构造应用声明处字段初始化器（含泛型类）
@@ -264,14 +276,14 @@ namespace RigiCompiler.Tests
             var result = Run(
                 "pub class Plain {\n" +
                 "    pub var count: i32 = 41\n" +
-                "    pub var other: i32\n" +
+                "    pub var other: i32 = 0\n" +
                 "}\n" +
                 "pub func main(): i32 {\n" +
                 "    const p = new Plain()\n" +
                 "    return (p.count * 100) + p.other\n" +
                 "}\n");
             CheckOk("默认构造字段初始化器", result);
-            CheckI32("带初始化器取初始化器、无初始化器取零值", result, 4100);
+            CheckI32("带初始化器取初始化器", result, 4100);
             var generic = Run(
                 "class Box\\<T> {\n" +
                 "    pub var item: i32 = 5\n" +
@@ -388,7 +400,9 @@ namespace RigiCompiler.Tests
 
             var computed = Run(
                 "pub class Therm {\n" +
-                "    pub var celsius: i32\n" +
+                // P18/S2（§9.3 DA）：底层字段给哨兵初始值（声明序先于
+                // display 的 setter 写入，终值不变）
+                "    pub var celsius: i32 = 0\n" +
                 "    pub var display: i32 {\n" +
                 "        pub get(_: _) { return celsius }\n" +
                 "        pub set(_: _) { celsius = value }\n" +
@@ -517,6 +531,77 @@ namespace RigiCompiler.Tests
                 result.Stdout, "apple-ish\ngreen\napple-ish\ngreen\n");
         }
 
+        // bug O3：like 目标字段为接口类型——转发体调接口方法，运行时对
+        // 字段值虚派发。含：基本委托运行正确、显式 override 优先于转发、
+        // 字段接口默认方法（HasBody）作委托目标
+        private static void TestLikeDelegationInterfaceField()
+        {
+            var result = Run(
+                "import core.io.Console\n" +
+                "pub interface Work { func run(x: i32): i32\n }\n" +
+                "pub class Impl implements Work {\n" +
+                "    pub override func run(x: i32): i32 { return (x + 1) }\n" +
+                "}\n" +
+                "pub class ViaIface implements Work like sink {\n" +
+                "    pub var sink: Work = new Impl()\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const b = new ViaIface()\n" +
+                "    Console.println(b.run(3).toString())\n" +
+                "    const w: Work = b\n" +
+                "    Console.println(w.run(4).toString())\n" +
+                "    return b.run(3)\n" +
+                "}\n");
+            CheckOk("接口字段 like 委托转发", result);
+            TestHarness.Check("接口字段委托运行输出",
+                result.Stdout, "4\n5\n");
+            CheckI32("接口字段委托返回值", result, 4);
+
+            // 显式 override 优先于接口字段 like 转发
+            var explicitFirst = Run(
+                "import core.io.Console\n" +
+                "pub interface Work {\n" +
+                "    func run(x: i32): i32\n" +
+                "    func tag(): String\n" +
+                "}\n" +
+                "pub class Impl implements Work {\n" +
+                "    pub override func run(x: i32): i32 { return (x + 1) }\n" +
+                "    pub override func tag(): String { return \"impl\" }\n" +
+                "}\n" +
+                "pub class ViaIface implements Work like sink {\n" +
+                "    pub var sink: Work = new Impl()\n" +
+                "    pub override func run(x: i32): i32 { return (x - 1) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const b = new ViaIface()\n" +
+                "    Console.println(b.run(10).toString())\n" +
+                "    Console.println(b.tag())\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckOk("显式 override 优先于接口字段转发", explicitFirst);
+            TestHarness.Check("显式优先输出",
+                explicitFirst.Stdout, "9\nimpl\n");
+
+            // 字段接口的默认方法（HasBody）作委托目标：虚派发到默认实现
+            var defaultMethod = Run(
+                "import core.io.Console\n" +
+                "pub interface Sink {\n" +
+                "    func greet(): String { return \"hi\" }\n" +
+                "}\n" +
+                "pub interface Greeter { func greet(): String\n }\n" +
+                "pub class Impl implements Sink { }\n" +
+                "pub class ViaDefault implements Greeter like sink {\n" +
+                "    pub var sink: Sink = new Impl()\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const v = new ViaDefault()\n" +
+                "    Console.println(v.greet())\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckOk("接口默认方法作委托目标", defaultMethod);
+            TestHarness.Check("默认方法转发输出", defaultMethod.Stdout, "hi\n");
+        }
+
         private static void TestStructDeepCopy()
         {
             var result = Run(
@@ -544,20 +629,42 @@ namespace RigiCompiler.Tests
                 "pub class Bag {\n" +
                 "    pub var item: i32\n" +
                 "    pub init() { item = 0 }\n" +
-                "    pub operator getAtIndex(index: i32): i32 { return item }\n" +
+                "    pub operator getAtIndex(index: i32): i32? { return item }\n" +
                 "    pub operator setAtIndex(index: i32, element: i32) { item = element }\n" +
                 "}\n" +
                 "pub func main(): i32 {\n" +
                 "    var b = new Bag()\n" +
                 "    b[0] = 21\n" +
-                "    return b[0]\n" +
+                "    return b[0] if? 0\n" +
                 "}\n");
             CheckOk("数组索引", result);
             CheckI32("get/set.array", result, 21);
         }
 
-        // §13.2 单次求值回归：a[i] op= x 中 getAtIndex 只读一次
-        //（历史 bug：表达式位重读 place 导致 get→set→get 三次调用）
+        // Q6（§13.2）：内建数组越界读取不 trap，按「读取失败」得 null
+        private static void TestArrayIndexOutOfBoundsNull()
+        {
+            var result = Run(
+                "import core.collections.*\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = arrayOf\\<i32>(2)\n" +
+                "    a[0] = 7\n" +
+                "    core.io.Console.println((a[5] if? -1).toString())\n" +
+                "    const neg = a[(0 - 1)]\n" +
+                "    if (neg == null) {\n" +
+                "        core.io.Console.println(\"null\")\n" +
+                "    }\n" +
+                "    return a[0] if? 0\n" +
+                "}\n");
+            CheckOk("Q6：越界读取得 null", result);
+            TestHarness.Check("越界/负下标 stdout", result.Stdout, "-1\nnull\n");
+            CheckI32("界内读回", result, 7);
+        }
+
+        // §13.2 单次求值回归：索引写回中 getAtIndex 只读一次
+        //（历史 bug：表达式位重读 place 导致 get→set→get 三次调用。
+        //  Q6 后 a[i] op= x 读侧为 T? 不再可写，改为显式读改写形态锁定
+        //  同一义务）
         private static void TestCompoundAssignmentIndexSingleRead()
         {
             var result = Run(
@@ -565,15 +672,15 @@ namespace RigiCompiler.Tests
                 "    pub var item: i32\n" +
                 "    pub var reads: i32\n" +
                 "    pub init() { item = 10\nreads = 0 }\n" +
-                "    pub operator getAtIndex(index: i32): i32 { reads += 1\nreturn item }\n" +
+                "    pub operator getAtIndex(index: i32): i32? { reads += 1\nreturn item }\n" +
                 "    pub operator setAtIndex(index: i32, element: i32) { item = element }\n" +
                 "}\n" +
                 "pub func main(): i32 {\n" +
                 "    var b = new Bag()\n" +
-                "    b[0] += 5\n" +
+                "    b[0] = ((b[0] if? 0) + 5)\n" +
                 "    return (b.reads * 1000) + b.item\n" +
                 "}\n");
-            CheckOk("索引复合赋值", result);
+            CheckOk("索引显式读改写回", result);
             CheckI32("getAtIndex 恰好一次 + 写回值正确", result, 1015);
         }
 
@@ -633,14 +740,14 @@ namespace RigiCompiler.Tests
         private static void TestEnumCaseIdentity()
         {
             var ok = Run(
-                "enum struct Outcome { }[Ok, Failed]\n" +
+                "pub enum struct Outcome { }[Ok, Failed]\n" +
                 "pub func main(): Outcome { return .Ok }\n");
             CheckOk("enum 身份 Ok", ok);
             TestHarness.CheckTrue("Ok case 符号",
                 ok.ReturnValue is VmEnum e && e.CaseSymbol == "Outcome.Ok",
                 ok.ReturnValue?.ToStandardText() ?? "<null>");
             var failed = Run(
-                "enum struct Outcome { }[Ok, Failed]\n" +
+                "pub enum struct Outcome { }[Ok, Failed]\n" +
                 "pub func main(): Outcome { return .Failed }\n");
             CheckOk("enum 身份 Failed", failed);
             TestHarness.CheckTrue("Failed 与 Ok 身份不同",
@@ -714,7 +821,8 @@ namespace RigiCompiler.Tests
             main.Vars.Add(new BilVarDeclaration(".i32", "n"));
             main.Vars.Add(new BilVarDeclaration(".i32", "z"));
             main.Vars.Add(new BilVarDeclaration(".array<.i32>", "a"));
-            main.Vars.Add(new BilVarDeclaration(".i32", "x"));
+            // Q6：get.array 结果 = .nullable<.i32>（索引读取恒可空）
+            main.Vars.Add(new BilVarDeclaration(".nullable<.i32>", "x"));
             var entry = new BilBlock("entry", BilBlockModifier.Entrypoint);
             entry.Instructions.Add(new LoadInstruction(module.Resources[0], BilOp.Var("n")));
             entry.Instructions.Add(new LoadInstruction(module.Resources[1], BilOp.Var("z")));
@@ -727,7 +835,8 @@ namespace RigiCompiler.Tests
             module.Functions.Add(main);
             var result = BilVm.Run(module);
             CheckOk("new .array 不再把单 i32 当长度", result);
-            CheckI32("元素是 2 不是零（长度特权已拆除）", result, 2);
+            TestHarness.CheckTrue("元素是 2 不是零（长度特权已拆除；Q6 包 Nullable）",
+                result.ReturnValue is VmNullable { HasValue: true, Value: VmI32 { Value: 2 } });
 
             var (unit, _, _) = BilTestHarness.EmitBilUnit(
                 "pub func main(): i32 {\n" +
@@ -751,7 +860,7 @@ namespace RigiCompiler.Tests
                 "    a[0] = 10\n" +
                 "    a[1] = 20\n" +
                 "    a[2] = 12\n" +
-                "    return ((a[0] + a[1]) + a[2])\n" +
+                "    return (((a[0] if? 0) + (a[1] if? 0)) + (a[2] if? 0))\n" +
                 "}\n");
             CheckOk("arrayOf<i32>", result);
             CheckI32("arrayOf 内容 10+20+12", result, 42);
@@ -763,7 +872,7 @@ namespace RigiCompiler.Tests
                 "import core.collections.*\n" +
                 "pub func main(): i32 {\n" +
                 "    var a = arrayOfElements\\<String>(\"Hello, \", \"world!\")\n" +
-                "    core.io.Console.println((a[0] + a[1]))\n" +
+                "    core.io.Console.println(((a[0] if? \"\") + (a[1] if? \"\")))\n" +
                 "    return a.length\n" +
                 "}\n");
             CheckOk("arrayOfElements<String>", result);
@@ -1042,7 +1151,7 @@ namespace RigiCompiler.Tests
         private static void TestTypeWithAndGetId()
         {
             var typeOf = Run(
-                "pub class Box { pub var n: i32 }\n" +
+                "pub class Box { pub var n: i32 = 0 }\n" +
                 "pub func main(): bool {\n" +
                 "    var b = new Box()\n" +
                 "    var t = typeOf(b)\n" +
@@ -1051,7 +1160,7 @@ namespace RigiCompiler.Tests
             CheckOk("getid.var + type.is.indirect", typeOf);
             CheckBool("b is typeOf(b)", typeOf, true);
             var typeId = Run(
-                "pub class Box { pub var n: i32 }\n" +
+                "pub class Box { pub var n: i32 = 0 }\n" +
                 "pub func main(): bool {\n" +
                 "    var b = new Box()\n" +
                 "    var t = typeOf(Box)\n" +
@@ -3724,7 +3833,7 @@ namespace RigiCompiler.Tests
             var poll = Run(
                 "import core.coroutine.*\n" +
                 "pub shared class Flip : PollingAlarm {\n" +
-                "    pub var ready: bool\n" +
+                "    pub var ready: bool = false\n" +
                 "    pub override func isReady(): bool { return ready }\n" +
                 "}\n" +
                 "async func arm(f: Flip) {\n" +
@@ -4312,7 +4421,7 @@ namespace RigiCompiler.Tests
         {
             var firstI32 = Run(
                 "import core.collections.*\n" +
-                "pub func firstOf\\<T>(arr: Array\\<T>): T { return arr[0] }\n" +
+                "pub func firstOf\\<T>(arr: Array\\<T>): T { return (arr[0] as T) }\n" +
                 "pub func main(): i32 {\n" +
                 "    var a = arrayOf\\<i32>(3)\n" +
                 "    a[0] = 42\n" +
@@ -4325,7 +4434,7 @@ namespace RigiCompiler.Tests
 
             var firstString = Run(
                 "import core.collections.*\n" +
-                "pub func firstOf\\<T>(arr: Array\\<T>): T { return arr[0] }\n" +
+                "pub func firstOf\\<T>(arr: Array\\<T>): T { return (arr[0] as T) }\n" +
                 "pub func main(): i32 {\n" +
                 "    var a = arrayOfElements\\<String>(\"ok\", \"no\")\n" +
                 "    core.io.Console.println(firstOf\\<String>(a))\n" +
@@ -4338,7 +4447,7 @@ namespace RigiCompiler.Tests
             var nested = Run(
                 "import core.collections.*\n" +
                 "pub func firstNested\\<T>(arr: Array\\<Array\\<T>>): Array\\<T> {\n" +
-                "    return arr[0]\n" +
+                "    return (arr[0] as Array\\<T>)\n" +
                 "}\n" +
                 "pub func main(): i32 {\n" +
                 "    var row = arrayOf\\<i32>(2)\n" +
@@ -4347,7 +4456,7 @@ namespace RigiCompiler.Tests
                 "    var outer = arrayOf\\<Array\\<i32>>(1)\n" +
                 "    outer[0] = row\n" +
                 "    var got = firstNested\\<i32>(outer)\n" +
-                "    return got[0]\n" +
+                "    return got[0] if? 0\n" +
                 "}\n");
             CheckOk("嵌套 Array<Array<T>> 形参", nested);
             CheckI32("firstNested = 7", nested, 7);
@@ -4391,7 +4500,7 @@ namespace RigiCompiler.Tests
         {
             var first = Run(
                 "import core.collections.*\n" +
-                "pub func firstOf\\<T>(arr: Array\\<T>): T { return arr[0] }\n" +
+                "pub func firstOf\\<T>(arr: Array\\<T>): T { return (arr[0] as T) }\n" +
                 "pub func main(): i32 {\n" +
                 "    var a = arrayOf\\<i32>(3)\n" +
                 "    a[0] = 42\n" +
@@ -4574,10 +4683,10 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n" +
                 "pub func sumAll\\<T extends Addable>(arr: Array\\<T>): Addable {\n" +
-                "    var acc: Addable = arr[0]\n" +
+                "    var acc: Addable = (arr[0] as T)\n" +
                 "    var i = 1\n" +
                 "    while ((i < arr.length)) {\n" +
-                "        acc = (acc + arr[i])\n" +
+                "        acc = (acc + (arr[i] as T))\n" +
                 "        i = (i + 1)\n" +
                 "    }\n" +
                 "    return acc\n" +
@@ -4689,7 +4798,7 @@ namespace RigiCompiler.Tests
                 "    pub var hp: i32 {\n" +
                 "        pub get(value: _) { return value }\n" +
                 "        pub set(value: _) { value = value * 2 }\n" +
-                "    }\n" +
+                "    } = 0\n" +
                 "}\n" +
                 "pub func main(): i32 {\n" +
                 "    var h = new Hero()\n" +
@@ -4763,7 +4872,7 @@ namespace RigiCompiler.Tests
                 "            var t = value\n" +
                 "            value = t + 1\n" +
                 "        }\n" +
-                "    }\n" +
+                "    } = 0\n" +
                 "}\n" +
                 "pub func main(): i32 {\n" +
                 "    var b = new Box()\n" +

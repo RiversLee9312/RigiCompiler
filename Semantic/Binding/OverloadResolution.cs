@@ -167,7 +167,7 @@ namespace RigiCompiler
             else
             {
                 // 非泛型方法同样经 ViewOf：宿主代入不可省——非泛型方法的
-                // 签名仍可能引用宿主泛型参数（`Box<T>.getAtIndex` 返回 T），
+                // 签名仍可能引用宿主泛型参数（`Box<T>.getAtIndex` 返回 T?），
                 // 裸名/实例调用沿 receiver 构造链代入（否则 T 不代入，
                 // IsApplicable 误判/返回类型漏代入）
                 pool = candidates.Where(m => m.GenericParameters.Count == 0)

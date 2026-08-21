@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Linq;
 
 namespace RigiCompiler.Tests
@@ -105,32 +105,46 @@ namespace RigiCompiler.Tests
                     ((LoweredLocalDeclarationStatement)loweredBody.Body.Statements[2])
                         .Initializer!.Origin, boundCompound.Target));
 
-            // M60 单次求值（SYNTAX §13.2 通用规则定稿）：副作用 receiver/index
-            // 物化合成局部——getBag()/getI()/getBox() 各求值一次；纯读取
-            // 目标（局部/参数/静态字段/字面量索引）直通零物化（上例锁定）
+            // M60 单次求值（SYNTAX §13.2 通用规则定稿）：副作用 receiver
+            // 物化合成局部——getBox() 求值一次；纯读取目标直通零物化
+            //（上例锁定）。Q6 后索引读侧为 T?，a[i] op= 形态由显式读改
+            // 写替代（receiver/index 由用户显式物化）
             var (unit2, _, lowered2) = LowerUnit(
                 "class Bag {\n" +
                 "    pub var item: i32\n" +
-                "    pub operator getAtIndex(index: i32): i32 { return item }\n" +
+                "    pub init(_ -> item)\n" +
+                "    pub operator getAtIndex(index: i32): i32? { return item }\n" +
                 "    pub operator setAtIndex(index: i32, element: i32) { item = element }\n" +
                 "}\n" +
-                "class Box { pub var f: i32 }\n" +
-                "func getBag(): Bag { return new Bag() }\n" +
-                "func getBox(): Box { return new Box() }\n" +
+                "class Box { pub var f: i32\n    pub init(_ -> f) }\n" +
+                "func getBag(): Bag { return new Bag(0) }\n" +
+                "func getBox(): Box { return new Box(0) }\n" +
                 "func getI(): i32 { return 1 }\n" +
-                "func bump(): i32 { var y = (getBag()[getI()] += 2)\nreturn y }\n" +
+                "func bump(): i32 {\n" +
+                "    const bag = getBag()\n" +
+                "    const i = getI()\n" +
+                "    bag[i] = ((bag[i] if? 0) + 2)\n" +
+                "    return bag[i] if? 0\n" +
+                "}\n" +
                 "func bumpField(): i32 { var z = (getBox().f += 3)\nreturn z }\n");
             CheckNoErrors("无诊断（复合赋值单次求值）", unit2);
-            TestHarness.Check("索引复合物化（receiver/index 各一次）",
+            TestHarness.Check("索引显式读改写回（Q6）",
                 LoweredDescribe.Body(BodyOf(lowered2, "bump")),
-                "Body(bump, [y: i32, .s0: Bag, .s1: i32, .s2: i32], " +
-                "[Assign(Local(.s0,Bag), Call(getBag, [], Bag)); " +
-                "Assign(Local(.s1,i32), Call(getI, [], i32)); " +
-                "Assign(Local(.s2,i32), " +
-                "Binary(Add, Index(Local(.s0,Bag), Local(.s1,i32), i32), Int(2,i32), i32)); " +
-                "Assign(Index(Local(.s0,Bag), Local(.s1,i32), i32), Local(.s2,i32)); " +
-                "Decl(y, i32, = Local(.s2,i32)); " +
-                "Return(Local(y,i32))])");
+                "Body(bump, [bag: Bag, i: i32, .s0: i32?, .s1: i32, .b0: .breakid, " +
+                ".s2: i32?, .s3: i32, .b1: .breakid], " +
+                "[Decl(bag, Bag, = Call(getBag, [], Bag)); " +
+                "Decl(i, i32, = Call(getI, [], i32)); " +
+                "Assign(Local(.s0,i32?), Index(Local(bag,Bag), Local(i,i32), i32?)); " +
+                "If(Binary(CmpNe, Local(.s0,i32?), Const(null,i32?), bool), " +
+                "[Assign(Local(.s1,i32), Cast(Local(.s0,i32?), i32, i32))], " +
+                "[Assign(Local(.s1,i32), Int(0,i32))], .b0); " +
+                "Assign(Index(Local(bag,Bag), Local(i,i32), i32), " +
+                "Binary(Add, Local(.s1,i32), Int(2,i32), i32)); " +
+                "Assign(Local(.s2,i32?), Index(Local(bag,Bag), Local(i,i32), i32?)); " +
+                "If(Binary(CmpNe, Local(.s2,i32?), Const(null,i32?), bool), " +
+                "[Assign(Local(.s3,i32), Cast(Local(.s2,i32?), i32, i32))], " +
+                "[Assign(Local(.s3,i32), Int(0,i32))], .b1); " +
+                "Return(Local(.s3,i32))])");
             TestHarness.Check("字段复合物化（receiver 一次）",
                 LoweredDescribe.Body(BodyOf(lowered2, "bumpField")),
                 "Body(bumpField, [z: i32, .s0: Box], " +

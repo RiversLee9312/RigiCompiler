@@ -298,6 +298,7 @@ SemanticSymbol
 | `using` | 初始化 + 清理记录 + try/finally 路径（RUNTIME §25.1） |
 | wrapper place 成员访问（`obj:W.f`、`obj:W.m()`） | **全部读取**统一值拷贝 + 普通指令：Entity = `get.wrapper` + `get.field`/`invoke`/`get.array`；字段-Value = `get.wrapper.field` + 普通指令；嵌套链逐层物化（BIL §12.4）。成员写（直接字段）= `set.wrapper.field`（Entity = `wrapper(W)`；字段-Value = `field(HOST_FIELD)+wrapper(W)`）；深层纯字段写穿 `place.a.b...` = P4a 多 get/set（正向 get + 叶写 + 反向 set；值类型中间写回，引用中间停止；最外层必要写回复用 `set.wrapper.field`，普通值中间反向写回仍发 `set.field`，**不新增**专用深写 opcode）；**局部/静态存储 = cell 根**（统一 cell 存储：读 = `get.wrapper.field $cell field(value) type(W)`，写 = `set.wrapper.field` 链 `field(value)+wrapper(W)`，复合赋值读写分离；静态字段值读写 = `get.field.static` 取 cell + getValue/setValue）；索引写仍归口 |
 | 未声明方法的 wrapper 降级（SYNTAX §14.7） | `invoke core::Any$call???`（胖值 ABI；BIL §15.5） |
+| 普通值类型中间链写穿（S1/g9，SYNTAX §10/§13.2） | 复用 wrapper 深写同一套 P4a 展开（正向 get + 叶写 + 反向 set；值类型中间写回、引用中间停止、不新增 opcode），链根泛化为任意可写 place（局部/参数/this）：字段链写 `r.origin.x = 7`、复合赋值 `r.origin.x += 1` 由 AssignmentRewriter/CompoundAssignmentRewriter 接管；值类型 receiver 方法调用（`r.origin.bumpX()`，含 struct 方法内 `this` 链）由 InstanceCallRewriter/CallStatementRewriter 物化 receiver 拷贝、调用后逐层写回可写 place（rvalue 根/只读中间不写回；写目标需写回但中间层 const/无 setter 时诊断） |
 | 字符串插值 | 拼接/格式化调用链 |
 | trailing lambda 等 | 规范调用形态 |
 | async/await/yield | 直接发 BIL §17；状态机由 Middleware 降级（§7，专项设计） |

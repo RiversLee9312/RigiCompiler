@@ -11,6 +11,17 @@ namespace RigiCompiler
         public static BoundExpression? Visit(ASTNode node, Scope scope, BindContext ctx,
             BindEnvironment env, TypeSymbol? expectedType = null)
         {
+            var bound = VisitCore(node, scope, ctx, env, expectedType);
+            // F1/V-B 统一收口：表达式定型后、成员消费前检查结果类型的有效
+            // 可见性（递归构造实参，UseSiteAccessibility 驻留去重）——成员
+            // 访问/await 解包/?./if? 链的中间结果与调用返回值同经此门
+            UseSiteAccessibility.CheckExpressionResult(bound, node, ctx, env);
+            return bound;
+        }
+
+        private static BoundExpression? VisitCore(ASTNode node, Scope scope, BindContext ctx,
+            BindEnvironment env, TypeSymbol? expectedType = null)
+        {
             return node switch
             {
                 LiteralExpressionASTNode => LiteralVisitor.Visit(node, scope, ctx, env, expectedType),

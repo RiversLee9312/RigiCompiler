@@ -39,6 +39,9 @@ namespace RigiCompiler.Bil
             // 静态字段 cell 构造与 wrapper 安装）；运行期 new type(singleton)
             // 返回同一份已初始化实例
             context.InitializeSingletons(executor);
+            // N1（§8.4.1/§9.3）：全局/静态字段声明初始值（..globals.init），
+            // singleton 之后、main 之前
+            context.InvokeGlobalInitializers(executor);
             var entry = context.FindEntrypoint();
             var main = executor.Spawn(entry, Array.Empty<VmValue>());
             executor.Publish(main);

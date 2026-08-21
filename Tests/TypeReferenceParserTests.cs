@@ -38,6 +38,12 @@ namespace RigiCompiler.Tests
             TestType("List\\<Map\\<String, i32>>", "List<Map<String,i32>>");
             TestType("List\\<i32>?", "List<i32>?");
 
+            // g1：泛型实参内嵌可空（? 归实参，不归外层类型）
+            TestType("Holder\\<i32?>", "Holder<i32?>");
+            TestType("Map\\<i32?, String?>", "Map<i32?,String?>");
+            TestType("Holder\\<i32?>?", "Holder<i32?>?");
+            TestType("List\\<Map\\<String, i32?>?>", "List<Map<String,i32?>?>");
+
             TestHarness.Blank();
         }
 
@@ -94,7 +100,19 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("符号只有一个元素", elements.Count == 1);
             TestHarness.CheckTrue("嵌套泛型已下钻",
                 elements[0].generics.Count == 1 &&
-                elements[0].generics[0].elements[0].generics.Count == 2);
+                elements[0].generics[0].TypeSymbol.symbol.elements[0].generics.Count == 2);
+
+            // g1：实参是完整 TypeReferenceASTNode——? 挂实参而非外层，
+            // 实参节点的 Parent 指向持有符号的 SymbolASTNode（Validator 同口径）
+            var nullable = ParseType("Holder\\<i32?>?");
+            TestHarness.CheckTrue("外层可空已置位", nullable.IsNullable);
+            var arg = nullable.TypeSymbol.symbol.elements[0].generics[0];
+            TestHarness.CheckTrue("实参可空已置位（i32?）", arg.IsNullable);
+            TestHarness.CheckTrue("实参符号名是 i32",
+                arg.TypeSymbol.symbol.elements[0].name == "i32");
+            TestHarness.CheckTrue("实参 Parent 是外层 SymbolASTNode",
+                ReferenceEquals(arg.Parent, nullable.TypeSymbol));
+            TestHarness.CheckTrue("实参 span 非空", arg.Span != null);
 
             TestHarness.Blank();
         }

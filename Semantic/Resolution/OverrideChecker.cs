@@ -29,13 +29,25 @@ namespace RigiCompiler
                 if (view.HasErrorType) continue;
 
                 var matches = FindInheritedMatches(host, view, env.Unit.Symbols);
+                // async 一致性（§9.2.1，bug A1）：IsAsync 不同的继承成员既不
+                // 是合法覆写目标，也不允许静默隐藏——否则 sync 签名被 async
+                // 实现「满足」，调用点静态类型 T 而运行期实得 Task\<T\>
+                // （ReturnType 存 T、调用点按被绑定方法的 IsAsync 改写）。
+                // 双 async / 双 sync 不受影响
+                var asyncConsistent = matches.Where(m => m.Method.IsAsync == method.IsAsync)
+                    .ToList();
                 if (method.IsOverride)
                 {
                     if (matches.Count == 0)
                     {
                         env.Error(fn.Span, $"'{method.Name}': no inherited member to override");
                     }
-                    else if (!matches.Exists(m => m.IsOverridable))
+                    else if (asyncConsistent.Count == 0)
+                    {
+                        env.Error(fn.Span,
+                            $"'{method.Name}': 'async' modifier does not match the inherited member");
+                    }
+                    else if (!asyncConsistent.Exists(m => m.IsOverridable))
                     {
                         env.Error(fn.Span,
                             $"'{method.Name}': inherited member is not 'open' or 'abstract'");
@@ -43,9 +55,17 @@ namespace RigiCompiler
                 }
                 else if (matches.Count > 0)
                 {
-                    // 禁止静默隐藏继承成员（§9.2.1：同名同签名必须显式 override）
-                    env.Error(fn.Span,
-                        $"'{method.Name}' hides an inherited member; declare it 'override'");
+                    if (asyncConsistent.Count == 0)
+                    {
+                        env.Error(fn.Span,
+                            $"'{method.Name}': 'async' modifier does not match the inherited member");
+                    }
+                    else
+                    {
+                        // 禁止静默隐藏继承成员（§9.2.1：同名同签名必须显式 override）
+                        env.Error(fn.Span,
+                            $"'{method.Name}' hides an inherited member; declare it 'override'");
+                    }
                 }
 
                 // abstract 位置与体（§9.2.1）
@@ -84,6 +104,25 @@ namespace RigiCompiler
                     declaration.Setter, env);
             }
 
+            // 二·五、字段 open/override（§9.2.1 字段覆写）：override 字段 =
+            // 同名继承 open 字段的初始值替换——类型一致、必须给出新初始值、
+            // 不得携带 wrapper 应用与访问器（存储仍是基类槽）。校验通过后
+            // 符号从宿主 Fields 表移除并挂 OverriddenField——名称解析与
+            // BIL 发射自然落到基类槽，本类只为它合成 override 版
+            // ..init.field.<名>。带访问器的重声明归第二节访问器机制；无访问器
+            // 的 hiding 沿用既有行为，仅双侧都带声明初始值时才拒绝（见
+            // CheckFieldOverride 注释）
+            foreach (var entry in env.Entries)
+            {
+                if (!entry.InGraph || entry.DeclaringType == null
+                    || entry.Symbol is not FieldSymbol field
+                    || entry.Node is not VariableDeclarationASTNode fieldDecl)
+                {
+                    continue;
+                }
+                CheckFieldOverride(entry.DeclaringType, field, fieldDecl, env);
+            }
+
             // 三、具体类必须实现继承链全部 abstract 成员与无体接口成员（§9.2.1；
             // 有默认实现的接口成员隐式继承）。like 委托（§9.6）：委托字段类型
             // 提供同签名具体实现的待实现成员视为已实现（转发成员由 P3
@@ -119,11 +158,135 @@ namespace RigiCompiler
                             $"'{type.Name}' does not implement abstract member '{required.Symbol.Name}'");
                     }
                 }
+
+                // bug S3（§11）：接口闭包中存在 ≥2 个不同符号的同签名默认
+                // 方法（HasBody）且类未提供自己的实现 → 类声明点编译错误，
+                // 强制显式 override（`-> InterfaceName` 委托语法不支持）。
+                // 真菱形放行：两条继承路径收到同一符号的默认方法（闭包按
+                // 定义去重后只有一条）不构成冲突；报错放在类声明点而非接口
+                // 声明点——两接口各自声明同签名默认方法本身合法，冲突只在
+                // 被同一具体类实现时成立。
+                foreach (var conflict in FindConflictingDefaultMethods(type, env.Unit.Symbols))
+                {
+                    var ownerA = (conflict.First.Owner?.ConstructedFrom ?? conflict.First.Owner)?.Name;
+                    var ownerB = (conflict.Second.Owner?.ConstructedFrom ?? conflict.Second.Owner)?.Name;
+                    env.Error(entry.Node.Span,
+                        $"'{type.Name}': interface default method '{conflict.First.Name}' " +
+                        $"conflicts between '{ownerA}' and '{ownerB}'; " +
+                        "declare an explicit 'override'");
+                }
             }
         }
 
         private static string AccessorText(MethodSymbol accessor) =>
             accessor.Kind == MethodKind.Getter ? "getter" : "setter";
+
+        // 字段 override 校验（§9.2.1 字段覆写）。最近基类同名字段为命中
+        // （构造基类归定义查成员表，类型比对按 extends 实参代入）。全部
+        // 校验通过才挂 OverriddenField 并移出宿主 Fields 表——任一失败
+        // 保留原 hiding 形态，避免次生崩溃（诊断已落袋）。
+        // 带访问器的重声明不在此管辖：访问器是独立 override 单元（第二节）；
+        // 无访问器的同名实例字段仅当双侧都带声明初始值时才构成非法
+        // hiding——..init.field.<名> 按名成族，静默隐藏会让基类槽初值在
+        // 子类构造中被虚派发吞掉（单侧有初始值时另一侧无 ..init.field
+        // 槽，无碰撞，沿用既有 hiding 行为）
+        private static void CheckFieldOverride(TypeSymbol host, FieldSymbol field,
+            VariableDeclarationASTNode declaration, ResolveEnvironment env)
+        {
+            if (field.IsStatic || field.FieldType is ErrorTypeSymbol)
+            {
+                return;
+            }
+            FieldSymbol? inherited = null;
+            TypeSymbol? inheritedConstructed = null;
+            for (var type = host.BaseType; type != null; type = type.BaseType)
+            {
+                var definition = type.ConstructedFrom ?? type;
+                var hit = definition.Fields.FirstOrDefault(f => f.Name == field.Name);
+                if (hit != null)
+                {
+                    inherited = hit;
+                    inheritedConstructed = type;
+                    break;
+                }
+            }
+            if (!field.IsOverride)
+            {
+                if (declaration.Getter != null || declaration.Setter != null)
+                {
+                    return; // 访问器覆写/隐藏归访问器检查（第二节）
+                }
+                if (declaration.Initializer != null && inherited != null
+                    && !inherited.IsStatic && HasDeclaredInitializer(inherited, env))
+                {
+                    env.Error(declaration.Span,
+                        $"'{field.Name}' hides an inherited field with an initial value; " +
+                        "declare it 'override'");
+                }
+                return;
+            }
+            if (inherited == null || inherited.IsStatic || inheritedConstructed == null)
+            {
+                env.Error(declaration.Span, $"'{field.Name}': no inherited field to override");
+                return;
+            }
+            if (!inherited.IsOpen)
+            {
+                env.Error(declaration.Span,
+                    $"'{field.Name}': inherited field is not 'open'");
+                return;
+            }
+            if (field.FieldType == null)
+            {
+                env.Error(declaration.Span,
+                    $"'{field.Name}': field override requires a type annotation");
+                return;
+            }
+            var inheritedDefinition = inheritedConstructed.ConstructedFrom ?? inheritedConstructed;
+            var inheritedType = ReferenceEquals(inheritedDefinition, inheritedConstructed)
+                ? inherited.FieldType
+                : env.Substitute(inherited.FieldType, inheritedDefinition, inheritedConstructed);
+            if (inheritedType != null && !EquivalentAccessorType(inheritedType, field.FieldType))
+            {
+                env.Error(declaration.Span,
+                    $"'{field.Name}': field type must match the overridden field");
+                return;
+            }
+            if (declaration.Initializer == null)
+            {
+                env.Error(declaration.Span,
+                    $"'{field.Name}': field override requires a new initial value");
+                return;
+            }
+            if (field.AppliedWrappers.Count > 0)
+            {
+                env.Error(declaration.Span,
+                    $"'{field.Name}': field override cannot declare wrappers");
+                return;
+            }
+            if (declaration.Getter != null || declaration.Setter != null)
+            {
+                env.Error(declaration.Span,
+                    $"'{field.Name}': field override cannot declare accessors");
+                return;
+            }
+            field.OverriddenField = inherited;
+            host.Fields.Remove(field);
+        }
+
+        // 字段符号是否有声明处初始值（按 P2 条目表反查声明节点；
+        // 合成/外部字段无条目 = 无初始值）
+        private static bool HasDeclaredInitializer(FieldSymbol field, ResolveEnvironment env)
+        {
+            foreach (var entry in env.Entries)
+            {
+                if (ReferenceEquals(entry.Symbol, field))
+                {
+                    return entry.Node is VariableDeclarationASTNode { Initializer: not null };
+                }
+            }
+            return false;
+        }
 
         private static void CheckAccessorOverride(TypeSymbol host, FieldSymbol field,
             MethodSymbol? accessor, PropertyAccessorASTNode? declaration,
@@ -340,6 +503,66 @@ namespace RigiCompiler
             return null;
         }
 
+        // bug S3 冲突检测：接口闭包中按签名分组收集 HasBody 的默认方法，
+        // 同组出现 ≥2 个不同符号且类/基类链未提供自己的实现 → 该签名冲突
+        // （返回首对冲突符号供诊断指名两个来源接口）。签名比较沿用
+        // SignatureView 口径（构造宿主代入实参后比较）；含 ErrorType 的
+        // 视图跳过（毒化签名抑制次生噪音）。仅收 Regular 实例方法——
+        // 访问器/operator 的默认实现冲突不在本 bug 范围。
+        private static List<DefaultMethodConflict> FindConflictingDefaultMethods(TypeSymbol type,
+            SymbolGraph symbols)
+        {
+            var result = new List<DefaultMethodConflict>();
+            var groups = new List<(SignatureView View, MethodSymbol Method)>();
+            foreach (var iface in InterfaceClosure(type, symbols))
+            {
+                var def = iface.ConstructedFrom ?? iface;
+                if (def.IsBuiltin) continue;
+                foreach (var m in def.Methods)
+                {
+                    if (!m.HasBody || m.IsStatic || m.Kind != MethodKind.Regular) continue;
+                    var view = SignatureView.Of(m, def, iface, symbols);
+                    if (view.HasErrorType) continue;
+                    groups.Add((view, m));
+                }
+            }
+            var reported = new HashSet<SignatureView>();
+            for (var i = 0; i < groups.Count; i++)
+            {
+                if (reported.Contains(groups[i].View)) continue;
+                MethodSymbol? other = null;
+                for (var j = i + 1; j < groups.Count; j++)
+                {
+                    if (ReferenceEquals(groups[j].Method, groups[i].Method)
+                        || !groups[j].View.Matches(groups[i].View))
+                    {
+                        continue;
+                    }
+                    other = groups[j].Method;
+                    break;
+                }
+                if (other == null) continue;
+                // 类已提供自己的实现（含基类链具体实现）→ 双视图都派发到
+                // 类实现，无歧义，放行
+                if (FindImplementation(type, groups[i].View, symbols) != null) continue;
+                reported.Add(groups[i].View);
+                result.Add(new DefaultMethodConflict(groups[i].Method, other));
+            }
+            return result;
+        }
+
+        private sealed class DefaultMethodConflict
+        {
+            public MethodSymbol First { get; }
+            public MethodSymbol Second { get; }
+
+            public DefaultMethodConflict(MethodSymbol first, MethodSymbol second)
+            {
+                First = first;
+                Second = second;
+            }
+        }
+
         // 接口闭包：宿主及基类链的 implements 传递闭包（定义级去重，保留
         // 构造形态）。S9f：接口可声明在泛型基类上（`RangeEnumerator\<T\>
         // implements IEnumerator\<T\>`），闭包遍历沿宿主链把接口实参代入
@@ -417,7 +640,11 @@ namespace RigiCompiler
             // 签名匹配：名 + 泛型元数 + 参数个数 + 参数类型同构 + 返回类型同构
             // （S9f 解开 #22⑥：泛型方法覆写——两侧各自的泛型参数是不同
             // 符号，按声明序对应比较而非引用相等；嵌套构造递归逐实参。
-            // 元数不同即不同派发契约，直接不匹配）
+            // 元数不同即不同派发契约，直接不匹配）。
+            // 注意：async 一致性（§9.2.1，bug A1）不在本口径内——由
+            // 成员级覆写检查在 Matches 命中集上按 IsAsync 分层判定并出
+            // 专项诊断；待实现闭包/实现查找沿用本口径（async 实现仍计为
+            // 「已实现」，避免与专项诊断重复的次生噪音）
             public bool Matches(SignatureView other)
             {
                 if (Symbol.Name != other.Symbol.Name
