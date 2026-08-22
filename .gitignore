@@ -5,3 +5,4 @@ obj/
 .claude/
 # fuzz 失败落盘（StressFuzz）
 Tests/fuzz-failures/
+publish/
