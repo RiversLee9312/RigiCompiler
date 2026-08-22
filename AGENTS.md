@@ -22,7 +22,7 @@ Rigi 源码 (.rg) → Frontend (Lexer + Parser) → 语义分析（P1–P3）→
 
 ```bash
 dotnet build                 # 须 0 错误 0 警告
-dotnet run -- test --all     # 全量测试（CI 入口；任意失败非零退出并列出失败套件名）
+dotnet run -- test --all     # 全量测试（提交前验证入口；CI 在 win-x64/linux-x64 双平台 NativeAOT 产物上跑同一命令）
 dotnet run -- test --run N   # 按编号跑单套件（编号见裸 dotnet run -- test 菜单）
 ```
 

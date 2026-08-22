@@ -1,4 +1,6 @@
-# 最简单的 CI：每次提交 / Pull Request 执行构建 + 全量测试（大扫除 §13.5）
+# CI：每次提交 / Pull Request 在 Windows/Linux 双平台（均 amd64 最新镜像）
+# 执行 NativeAOT 发布，并用发布产物跑全量测试（任意失败非零退出码，CI 即失败）。
+# 注意：NativeAOT 不支持跨 OS 交叉编译，故按平台分别发布（见 docs/agent_guide/development.md §2.3）。
 name: build-and-test
 
 on:
@@ -7,7 +9,20 @@ on:
 
 jobs:
   build-and-test:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest   # amd64 Windows 最新镜像（自带 VS C++ 工具链，AOT 前置满足）
+            rid: win-x64
+            exe: rigic.exe
+          - os: ubuntu-latest    # amd64 Ubuntu LTS 最新镜像
+            rid: linux-x64
+            exe: rigic
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash   # 双平台统一 bash（Windows 侧由 Git Bash 提供）
     steps:
       - uses: actions/checkout@v4
 
@@ -16,9 +31,14 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Build
-        run: dotnet build
+      # NativeAOT Linux 前置：clang + zlib 开发包（Windows 镜像自带 C++ 工具链，无需处理）
+      - name: Install NativeAOT prerequisites (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
 
-      # 全量测试入口：任意失败返回非零退出码，CI 即失败
-      - name: Run all tests
-        run: dotnet run -- test --all
+      - name: Publish NativeAOT (${{ matrix.rid }})
+        run: dotnet publish RigiCompiler.csproj -c Release -r ${{ matrix.rid }} -o publish
+
+      # 用 AOT 发布产物跑全量测试；E2e 语料路径由编译期 CallerFilePath 反推，CI 工作区内有效
+      - name: Run all tests (AOT binary)
+        run: ./publish/${{ matrix.exe }} test --all
