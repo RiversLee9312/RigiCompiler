@@ -37,6 +37,10 @@ namespace RigiCompiler.Tests
 
         private static int passCount;
         private static int failCount;
+        // 父进程等待每个并行子进程的超时（毫秒）；<=0 表示不限时（默认）。
+        // 由 --suite-args 的 child-timeout-ms=N 设置；NativeAOT 产物无 JIT
+        // 运行时优化，fuzz 速度约为 CoreCLR 的 1/3，按 JIT 校准的固定超时会误杀。
+        private static int childTimeoutMs;
         // 异常分类计数（crash = 编译器 bug；parseFailure = 生成器或前端 bug）
         private static int crashes;
         private static int parseFailures;
@@ -51,20 +55,42 @@ namespace RigiCompiler.Tests
 
         private static readonly List<string> failureLog = new();
 
-        // --suite-args <from> <to>：含两端的 case 序号区间（种子固定，区间可复现）
+        // --suite-args <from> <to> [child-timeout-ms=N]：
+        // from/to 为含两端的 case 序号区间（种子固定，区间可复现）；
+        // child-timeout-ms=N 为可选的父进程等待每个子进程的最大毫秒数（默认不限时）。
+        // 注意套件参数不能带 -- 前缀（会被命令行解析器当成 test 子命令），故用 key=value 形态。
         public static int RunWithArgs(IReadOnlyList<string> args)
         {
-            if (args.Count != 2
+            childTimeoutMs = 0;
+            // 前两参必须为区间；可选尾部只识别 child-timeout-ms=<正整数> 一种形态
+            if (args.Count < 2
                 || !int.TryParse(args[0], out int from)
                 || !int.TryParse(args[1], out int to)
                 || from < 0 || to < from)
             {
-                Console.Error.WriteLine(
-                    "SemanticsFuzz --suite-args 需要 <from> <to>（含两端的 case 序号，from>=0 且 to>=from）");
-                Console.Error.Flush();
+                PrintSuiteArgsUsage();
                 return 1;
             }
+            if (args.Count > 2)
+            {
+                const string prefix = "child-timeout-ms=";
+                if (args.Count != 3 || !args[2].StartsWith(prefix, StringComparison.Ordinal)
+                    || !int.TryParse(args[2][prefix.Length..], out int ms) || ms <= 0)
+                {
+                    PrintSuiteArgsUsage();
+                    return 1;
+                }
+                childTimeoutMs = ms;
+            }
             return RunRange(from, to);
+        }
+
+        private static void PrintSuiteArgsUsage()
+        {
+            Console.Error.WriteLine(
+                "SemanticsFuzz --suite-args 需要 <from> <to> [child-timeout-ms=N]" +
+                "（from>=0 且 to>=from；N 为正整数毫秒，缺省不限时）");
+            Console.Error.Flush();
         }
 
         public static int RunAll()
@@ -76,6 +102,7 @@ namespace RigiCompiler.Tests
             {
                 caseCount = overrideCount;
             }
+            childTimeoutMs = 0;   // 无参入口：不限时
             return RunRange(0, caseCount - 1);
         }
 
@@ -320,9 +347,9 @@ namespace RigiCompiler.Tests
             }
             child.StdoutTask = process.StandardOutput.ReadToEndAsync();
             child.StderrTask = process.StandardError.ReadToEndAsync();
-            int childCases = childTo - childFrom + 1;
-            // 超时按每例 500ms 估算（实测约 112ms/例，留 4 倍余量），下限 60s
-            child.TimeoutMs = Math.Max(60_000, childCases * 500);
+            // 默认不限时（TimeoutMs<=0）：NativeAOT 等慢速运行时下按固定预算会误杀；
+            // 需要时限时由 --suite-args 的 child-timeout-ms=N 显式给出
+            child.TimeoutMs = childTimeoutMs;
             return child;
         }
 
@@ -331,7 +358,17 @@ namespace RigiCompiler.Tests
             if (child.StartError != null || child.Process == null) return;
 
             var process = child.Process;
-            if (!process.WaitForExit(child.TimeoutMs))
+            bool exited;
+            if (child.TimeoutMs > 0)
+            {
+                exited = process.WaitForExit(child.TimeoutMs);
+            }
+            else
+            {
+                process.WaitForExit();   // 不限时：直等到退出
+                exited = true;
+            }
+            if (!exited)
             {
                 child.TimedOut = true;
                 try
@@ -414,7 +451,7 @@ namespace RigiCompiler.Tests
             public string Stdout = "";
             public string Stderr = "";
             public bool TimedOut;
-            public int TimeoutMs;
+            public int TimeoutMs;      // <=0 表示不限时（WaitChild 直等到子进程退出）
             public string? StartError;
             public Process? Process;
             public Task<string>? StdoutTask;

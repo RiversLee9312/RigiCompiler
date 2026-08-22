@@ -1,0 +1,7 @@
+<!-- NativeAOT/裁剪根描述符（ILLink 描述符格式，不是 UWP 的 rd.xml 格式）：
+     保住本程序集全部类型与成员的反射元数据，使 Assembly.GetTypes()、
+     Activator.CreateInstance、字段/属性反射在 AOT 产物中可用。
+     项目名 rigic（见 csproj AssemblyName）。 -->
+<linker>
+  <assembly fullname="rigic" preserve="all" />
+</linker>

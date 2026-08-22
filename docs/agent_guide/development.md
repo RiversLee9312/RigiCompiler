@@ -39,6 +39,19 @@ dotnet run -- test --all --verbose      # 控制台输出 verbose 级日志（�
 dotnet run -- test --all --log-to run.jsonl   # 全量日志（含 verbose）以 JSONL 落盘
 ```
 
+### 2.3 发布（Release = NativeAOT）
+
+Release 配置发布为 **NativeAOT 原生单文件**（约 16 MB，免 dotnet 运行时）：
+
+```bash
+dotnet publish -c Release -r linux-x64 -o publish/linux-x64   # 产物：publish/linux-x64/rigic
+dotnet publish -c Release -r win-x64 -o publish/win-x64
+```
+
+- **不支持跨 OS 交叉编译**：linux-x64 产物必须在 Linux（如 WSL）上构建；Linux 侧需 `dotnet-sdk-8.0` + `clang` + `zlib1g-dev`。
+- **反射靠两份配置保住**：`ILLink.Roots.xml`（`preserve="all"`，保整程序集类型/成员元数据，供 `Assembly.GetTypes()`、`Activator.CreateInstance`、字段/属性反射使用）+ `JsonSerializerIsReflectionEnabledByDefault=true`（强开 STJ 反射序列化，AOT 下默认禁用）。AstJsonl 序列化/反序列化（`--dump-ast`/`--parse-only`）与 ASTIntegrityValidator 依赖它们，删掉会导致 AOT 产物运行时崩溃或静默丢数据。
+- **性能注意**：AOT 无 JIT 的运行时优化（去虚拟化/PGO），重接口分派路径比 CoreCLR 慢约 3 倍——fuzz 类套件在 AOT 产物上明显更慢，全量测试建议仍用普通构建跑。
+
 ---
 
 ## 测试策略
@@ -50,6 +63,7 @@ dotnet run -- test --all --log-to run.jsonl   # 全量日志（含 verbose）以
 - **AST 结构断言**：表达式类测试除描述串快照外，还应断言结构性事实（Root 是否存在/已填充、Expression 的具体类型、Parent 链、子 Root 填充、无节点共享）——快照不能作为唯一验证方式。
 - **独立 Layer 测试**：经 `Parser.Parse(tokens, new TestRootParserLayer(), entryLayer)` 驱动（`TestHarness.ParseWithLayer` 封装）。`TestRootParserLayer` 只接受 EOF——被测 Layer 提前结束或漏消费普通 token 会立即失败，能发现 Layer 边界问题。
 - **约定：每新增一个 ParserLayer，必须在 `Tests/` 添加对应测试类，并在 `TestRunner` 注册表注册（`test` 菜单与 `test --run N` 的编号即注册表顺序）。**
+- **fuzz 并行子进程超时**：`SemanticsFuzz` 区间 >100 例时切多子进程并行，父进程默认**不限时**等待（NativeAOT 产物比 CoreCLR 慢约 3 倍，固定预算会误杀）；需要时限时用 `--suite-args <from> <to> child-timeout-ms=<毫秒>` 显式给出（套件参数不能带 `--` 前缀，会被解析成 test 子命令）。
 - 测试数量与通过状态等易变数字不写入文档，以实际运行为准。
 
 ### e2e 语料通道（`E2e` 套件）
