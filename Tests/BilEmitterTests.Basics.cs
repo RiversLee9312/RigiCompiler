@@ -69,6 +69,94 @@ namespace RigiCompiler.Tests
                 load.Origin?.GetType().Name ?? "<null>");
         }
 
+        // ===== §17.1 @EntryPoint 发射：注解驱动 entrypoint 修饰符 =====
+        private static void TestEntryPointAnnotationEmission()
+        {
+            // 命名空间静态方法 + @EntryPoint → entrypoint 修饰符；
+            // 裸 main 约定保留（无注解也带 entrypoint）
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "namespace app\n" +
+                "@EntryPoint\n" +
+                "pub func main(): i32 { return 0 }\n" +
+                "pub class App {\n" +
+                "    @EntryPoint\n" +
+                "    pub static func run(): i32 { return 0 }\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（@EntryPoint 发射）", unit);
+            BilTestHarness.CheckBilValid("验证器零错误（@EntryPoint 双入口合法）", module);
+            TestHarness.CheckTrue("命名空间 main 带 entrypoint 修饰符",
+                module.LocalSymbols.OfType<BilSimpleMemberDeclaration>().Any(d =>
+                    d.Symbol == "app::$main()@.i32"
+                    && d.Modifiers.Any(m => m is BilKeywordModifier k
+                        && k.Keyword == BilKeyword.Entrypoint)));
+            TestHarness.CheckTrue("静态成员 run 带 entrypoint 修饰符",
+                module.LocalSymbols.OfType<BilTypeDeclaration>()
+                    .Where(t => t.Symbol == "app::App")
+                    .SelectMany(t => t.Members.OfType<BilSimpleMemberDeclaration>())
+                    .Any(d => d.Symbol == "app::App$.static.run()@.i32"
+                        && d.Modifiers.Any(m => m is BilKeywordModifier k
+                            && k.Keyword == BilKeyword.Entrypoint)));
+
+            var (unit2, module2, _) = BilTestHarness.EmitBilUnit(
+                "pub func main(): i32 { return 0 }\n");
+            CheckNoErrors("全管线无诊断（裸 main 约定保留）", unit2);
+            TestHarness.CheckTrue("裸 main 约定仍投影 entrypoint",
+                module2.LocalSymbols.OfType<BilSimpleMemberDeclaration>().Any(d =>
+                    d.Symbol == "$main()@.i32"
+                    && d.Modifiers.Any(m => m is BilKeywordModifier k
+                        && k.Keyword == BilKeyword.Entrypoint)));
+        }
+
+        // ===== §17.2 命名空间切片：EmitWithSlices 路由与资源回填 =====
+        private static void TestNamespaceSliceEmission()
+        {
+            var (unit, result) = BilTestHarness.EmitBilSlices(
+                "namespace app\n" +
+                "@EntryPoint\n" +
+                "pub func main(): i32 {\n" +
+                "    core.io.Console.println(\"sliced\")\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckNoErrors("全管线无诊断（切片发射）", unit);
+            BilTestHarness.CheckBilValid("merged 验证器零错误", result.Merged);
+
+            var slices = result.Slices;
+            TestHarness.CheckTrue("切片含 app 命名空间",
+                slices.Any(s => s.Key == "app"));
+            TestHarness.CheckTrue("切片含 core.io 命名空间",
+                slices.Any(s => s.Key == "core.io"));
+            var appSlice = slices.Single(s => s.Key == "app").Value;
+            TestHarness.CheckTrue("app 切片含 app::main 声明与 fn",
+                appSlice.LocalSymbols.OfType<BilSimpleMemberDeclaration>()
+                    .Any(d => d.Symbol == "app::$main()@.i32")
+                && appSlice.Functions.Any(f => f.Symbol == "app::$main()@.i32"));
+            TestHarness.CheckTrue("app 切片模块名带命名空间后缀",
+                appSlice.Metadata.Any(m => m.Key == "module"
+                    && m.LiteralText == "\"hello.app\""));
+            // app::main 引用了 "sliced" 字符串资源（跨切片共享回填：
+            // 切片单文件自足——BilReader 要求 res 在本文件可解析）
+            TestHarness.CheckTrue("app 切片回填了引用的字符串资源",
+                appSlice.Resources.Any(r => r is BilScalarResource s
+                    && s.Type == BilScalarType.String && s.LiteralText == "\"sliced\""));
+            // 合并语义：各切片符号/fn 之和 == merged（切片是 partition）
+            var sliceSymbolCount = slices.Sum(s => s.Value.LocalSymbols.Count);
+            var sliceFunctionCount = slices.Sum(s => s.Value.Functions.Count);
+            TestHarness.CheckTrue("切片符号数之和 == merged 符号数",
+                sliceSymbolCount == result.Merged.LocalSymbols.Count,
+                $"{sliceSymbolCount} != {result.Merged.LocalSymbols.Count}");
+            TestHarness.CheckTrue("切片 fn 数之和 == merged fn 数",
+                sliceFunctionCount == result.Merged.Functions.Count,
+                $"{sliceFunctionCount} != {result.Merged.Functions.Count}");
+            // 切片序列化 → BilReader 单文件可解析（自足性端到端）
+            foreach (var (ns, slice) in slices)
+            {
+                if (slice.LocalSymbols.Count == 0 && slice.Functions.Count == 0) continue;
+                var roundtrip = BilReader.Read(BilWriter.Write(slice));
+                TestHarness.CheckTrue($"切片 {ns} 序列化往返 fn 数一致",
+                    roundtrip.Functions.Count == slice.Functions.Count);
+            }
+        }
+
         // ===== 资源去重：同（类型, 原文）字面量只登记一次 =====
         private static void TestResourceDeduplication()
         {

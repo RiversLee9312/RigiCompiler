@@ -67,7 +67,33 @@ namespace RigiCompiler
         public static BilModule Emit(CompilationUnit unit,
             IReadOnlyList<LoweredFunctionBody> bodies, string moduleName)
         {
-            return new EmittingDriver(new EmitEnvironment(unit, moduleName), bodies).Run();
+            return EmitWithSlices(unit, bodies, moduleName).Merged;
+        }
+
+        // §17 命名空间切分：merged 与 Emit 同物（验证器/测试消费）；
+        // Slices 为按命名空间切分的 merge 兼容子集（compile --emit-bil
+        // 写盘用——全局命名空间一片、其余每命名空间一片，创建序稳定）
+        public static BilEmitResult EmitWithSlices(CompilationUnit unit,
+            IReadOnlyList<LoweredFunctionBody> bodies, string moduleName)
+        {
+            var env = new EmitEnvironment(unit, moduleName);
+            var merged = new EmittingDriver(env, bodies).Run();
+            return new BilEmitResult(merged, env.Slices);
+        }
+    }
+
+    // EmitWithSlices 产物（§17）：Merged = 完整模块；Slices = (命名空间
+    // FullName, 切片模块)，"" = 全局命名空间切片
+    public sealed class BilEmitResult
+    {
+        public BilModule Merged { get; }
+        public IReadOnlyList<KeyValuePair<string, BilModule>> Slices { get; }
+
+        public BilEmitResult(BilModule merged,
+            IReadOnlyList<KeyValuePair<string, BilModule>> slices)
+        {
+            Merged = merged;
+            Slices = slices;
         }
     }
 }

@@ -273,24 +273,38 @@ namespace RigiCompiler.Bil.Vm
                 && HasKeyword(member, BilKeyword.Init);
         }
 
-        public BilFunction FindEntrypoint()
+        // 定位入口 fn（§17）：preferredSymbol 非空 = --entry-point 显式指定
+        // （必须命中带 entrypoint 修饰的成员）；缺省自动查找——恰一个选中，
+        // 零个/多个分别报错（多入口报文列出候选并提示 --entry-point）
+        public BilFunction FindEntrypoint(string? preferredSymbol = null)
         {
-            BilSimpleMemberDeclaration? entry = null;
+            var entries = new List<BilSimpleMemberDeclaration>();
             foreach (var member in _members.Values)
             {
-                if (!HasKeyword(member, BilKeyword.Entrypoint))
+                if (HasKeyword(member, BilKeyword.Entrypoint))
                 {
-                    continue;
+                    entries.Add(member);
                 }
-                if (entry != null)
-                {
-                    throw new VmException("模块存在多个 entrypoint fn");
-                }
-                entry = member;
             }
-            if (entry == null)
+            BilSimpleMemberDeclaration? entry;
+            if (preferredSymbol != null)
+            {
+                entry = entries.Find(m => m.Symbol == preferredSymbol)
+                    ?? throw new VmException("--entry-point 指定的符号不是 entrypoint 方法: "
+                        + preferredSymbol);
+            }
+            else if (entries.Count == 0)
             {
                 throw new VmException("模块没有 entrypoint fn");
+            }
+            else if (entries.Count > 1)
+            {
+                throw new VmException("模块存在多个 entrypoint fn（用 --entry-point <符号> 显式指定）："
+                    + string.Join("、", entries.ConvertAll(m => m.Symbol)));
+            }
+            else
+            {
+                entry = entries[0];
             }
             if (!_functions.TryGetValue(entry.Symbol, out var function))
             {

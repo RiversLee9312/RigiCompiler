@@ -19,6 +19,12 @@ namespace RigiCompiler.Bil
         public HashSet<BilResource> ResourceSet { get; } =
             new HashSet<BilResource>(ReferenceEqualityComparer.Instance);
 
+        // 资源成员资格（§21.2）：对象引用命中，或同名命中——§17 命名空间
+        // 切分文件经 vm 合并时同名同内容资源被去重为另一对象，操作数仍持
+        // 原对象引用（BIL 以名为资源身份；同名不同内容已由重复名规则拒绝）
+        public bool IsModuleResource(BilResource resource) =>
+            ResourceSet.Contains(resource) || ResourcesByName.ContainsKey(resource.Name);
+
         // 类型声明（§8.2，local + external）：符号集合 + 声明反查
         public HashSet<string> TypeSymbols { get; } = new HashSet<string>();
         public Dictionary<string, BilTypeDeclaration> TypeDeclarations { get; } =

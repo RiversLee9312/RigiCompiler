@@ -284,7 +284,7 @@ namespace RigiCompiler.Bil
             {
                 case LoadInstruction load:
                     // §13.1：资源类型 ≡ TARGET；资源必须属于本模块（§21.2）
-                    if (!context.Module.ResourceSet.Contains(load.Resource))
+                    if (!context.Module.IsModuleResource(load.Resource))
                     {
                         errors.Add(new BilVerificationError("21.2", location,
                             $"load 引用的资源 \"{load.Resource.Name}\" 不属于本模块"));
@@ -296,7 +296,7 @@ namespace RigiCompiler.Bil
 
                 case HintInstruction hint:
                     // §18：资源必须属于本模块（§21.2）且为 string 标量资源
-                    if (!context.Module.ResourceSet.Contains(hint.Resource))
+                    if (!context.Module.IsModuleResource(hint.Resource))
                     {
                         errors.Add(new BilVerificationError("21.2", location,
                             $"hint 引用的资源 \"{hint.Resource.Name}\" 不属于本模块"));
@@ -641,7 +641,7 @@ namespace RigiCompiler.Bil
                 case SwitchInstruction switchInstruction:
                     // §16.6/§19.4：表必须是 switch-table 资源、属于本模块、
                     // selector 类型 ≡ 表元素类型、表项数与 block 表一致
-                    if (!context.Module.ResourceSet.Contains(switchInstruction.Table))
+                    if (!context.Module.IsModuleResource(switchInstruction.Table))
                     {
                         errors.Add(new BilVerificationError("21.2", location,
                             $"switch 引用的资源 \"{switchInstruction.Table.Name}\" 不属于本模块"));
@@ -667,7 +667,7 @@ namespace RigiCompiler.Bil
                 case TryInstruction tryInstruction:
                     // §16.7/§19.5：表必须是 catch-table 资源、属于本模块、
                     // 条目异常类型可解析且兼容 core::Exception
-                    if (!context.Module.ResourceSet.Contains(tryInstruction.CatchTable))
+                    if (!context.Module.IsModuleResource(tryInstruction.CatchTable))
                     {
                         errors.Add(new BilVerificationError("21.2", location,
                             $"try 引用的资源 \"{tryInstruction.CatchTable.Name}\" 不属于本模块"));

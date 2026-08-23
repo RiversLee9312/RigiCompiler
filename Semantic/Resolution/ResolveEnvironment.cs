@@ -140,6 +140,14 @@ namespace RigiCompiler
             return last == "NativeLibrary" || last == "NativeSymbol" ? last : null;
         }
 
+        // 内建入口注解（§17 @EntryPoint）按末段名识别——同 @NativeLibrary 先例：
+        // 编译器内建，不属于 wrapper 体系（wrapper 应用检查经此豁免）
+        public static bool IsEntryPointAnnotation(AnnotationASTNode annotation)
+        {
+            var elements = annotation.Name.symbol.elements;
+            return elements.Count > 0 && elements[^1].name == "EntryPoint";
+        }
+
         // 内建注解实参校验：必须恰好一个字符串字面量（§4.6）；非法报错并返回 null
         public string? NativeAnnotationStringArgument(AnnotationASTNode annotation, DeclEntry entry)
         {

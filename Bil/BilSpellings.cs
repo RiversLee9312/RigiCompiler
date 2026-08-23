@@ -30,6 +30,11 @@ namespace RigiCompiler.Bil
         // 形态为「命名空间::外层...companion」）
         public const string CompanionTypeName = "..companion";
 
+        // §14.4：全局函数 Method wrapper 的宿主 singleton 类型名（顶层合成
+        // 类，每命名空间一个，无 UUID；canonical 形态为「命名空间::..globals.host」
+        // ——全局函数无宿主类型可嵌套 companion，故提升为命名空间级 singleton）
+        public const string GlobalMethodHostTypeName = "..globals.host";
+
         // §11 运算 opcode（§5.6：不带前导点）
         public static string Of(BilBinaryOp op)
         {

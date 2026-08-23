@@ -464,6 +464,9 @@ namespace RigiCompiler
         // NativeSymbol = @NativeSymbol 实参（缺省取函数名）；NativeLibrary = @NativeLibrary 实参
         public string? NativeSymbol { get; internal set; }
         public string? NativeLibrary { get; internal set; }
+        // 程序入口标记（§17 内建注解 @EntryPoint，P2 EntryPointChecker 落定；
+        // 裸 main 命名约定不经此标记——P4 发射侧两条件取或）
+        public bool IsEntryPoint { get; internal set; }
         // 挂载的 wrapper 应用（声明顺序，外层在前；P2 解析填充）
         public List<WrapperApplication> AppliedWrappers { get; } = new List<WrapperApplication>();
         // 静态 Method wrapper 壳体（M109b-2）：仅原静态方法置位，指向

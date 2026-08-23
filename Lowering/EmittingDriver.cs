@@ -27,7 +27,8 @@ namespace RigiCompiler
             LocalSymbolEmitters.EmitBuiltinNativeMethods(env);
             foreach (var body in bodies.Where(b => b.Method.IsSynthetic))
             {
-                env.Module.LocalSymbols.Add(
+                env.CurrentSliceNs = LocalSymbolEmitters.SliceNsOf(body.Method);
+                env.AddLocalSymbol(
                     LocalSymbolEmitters.EmitSyntheticMethodDeclaration(body.Method));
             }
             // lambda 隐藏类声明（SYNTAX §5.2）：合成类型不进符号图（避免污染
@@ -41,7 +42,8 @@ namespace RigiCompiler
                 .Distinct()
                 .Cast<TypeSymbol>())
             {
-                env.Module.LocalSymbols.Add(
+                env.CurrentSliceNs = LocalSymbolEmitters.RootNsOf(hiddenClass);
+                env.AddLocalSymbol(
                     LocalSymbolEmitters.EmitSyntheticTypeDeclaration(hiddenClass, env));
             }
             // cell 隐藏子类声明（统一 cell 存储，SYNTAX §5.2/§14.3）：同
@@ -52,7 +54,8 @@ namespace RigiCompiler
                 .Distinct()
                 .Cast<TypeSymbol>())
             {
-                env.Module.LocalSymbols.Add(
+                env.CurrentSliceNs = LocalSymbolEmitters.RootNsOf(cellClass);
+                env.AddLocalSymbol(
                     LocalSymbolEmitters.EmitSyntheticTypeDeclaration(cellClass, env));
             }
             // 静态 Method wrapper companion singleton（M109b-2，BIL §8.7）：
@@ -65,15 +68,19 @@ namespace RigiCompiler
                 .Distinct()
                 .Cast<TypeSymbol>())
             {
-                env.Module.LocalSymbols.Add(
+                env.CurrentSliceNs = LocalSymbolEmitters.RootNsOf(companion);
+                env.AddLocalSymbol(
                     LocalSymbolEmitters.EmitSyntheticTypeDeclaration(companion, env));
             }
             // Resources 在函数发射中按（bodies 顺序 + 树内先序）登记
             foreach (var body in bodies)
             {
+                env.CurrentSliceNs = LocalSymbolEmitters.SliceNsOf(body.Method);
                 var function = EmitFunction(body);
-                if (function != null) env.Module.Functions.Add(function);
+                if (function != null) env.AddFunction(function);
             }
+            // §17 切片收尾：回填各切片实际引用的共享资源（单文件自足）
+            env.FinalizeSlices();
             return env.Module;
         }
 

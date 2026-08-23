@@ -124,6 +124,45 @@ pub func main() {
 
 运行时从 `main` 开始就创建根协程，并默认将其绑定到 `core.coroutine.MainExecutor`。因此 `main` 以及由它同步调用的普通函数可以直接使用 `await` 和 `yield`，不需要给 `main` 添加 `async` 修饰符。
 
+### 17.1 @EntryPoint 注解
+
+`@EntryPoint` 是编译器内建注解（与 §4.6 `@NativeLibrary`/`@NativeSymbol`
+同族——不属于 wrapper 体系，不产生组合链），修饰一个**静态方法**即把
+它登记为程序入口；任意命名空间的静态方法都可以，不再受「裸 `main`
+必须在全局命名空间」的命名约定限制：
+
+```rigi
+namespace myapp
+
+@EntryPoint
+pub func main(): i32 {          // myapp::main 成为入口
+    return 0
+}
+
+// 静态成员方法同样合法
+pub class App {
+    @EntryPoint
+    pub static func run(): i32 { return 0 }
+}
+```
+
+规则：
+
+- 只允许修饰普通 `func`（不能是 `init`/`operator`/`native`）；类型成员必须同时是 `static`；不接受实参。
+- 全局命名空间的裸 `main` 命名约定仍然有效（不写注解也是入口）。
+- 一次编译/合并后的 BIL 中允许存在**多个**入口（多个 `@EntryPoint` 或与裸 `main` 并存）；此时运行前必须显式选择：
+
+```bash
+rigic vm --file app.bil ... --entry-point "myapp::$main()@.i32"
+```
+
+缺省（恰一个入口）自动选中；零个或多个入口都是运行前错误。
+入口签名仍按本节上面的三种形态；VM 以零实参启动入口 fn。
+
+### 17.2 BIL 按命名空间切分
+
+`compile --emit-bil <路径>` 默认把一次编译的 BIL 按**命名空间**切分为多个文件：全局命名空间写入指定路径，其余每个命名空间写入同目录的 `<基名>.<命名空间><扩展名>`（如 `app.core.bil`、`app.core.collections.bil`）。切片是 merge 兼容的：资源全局统一编号、每个符号/fn 恰好归属一个切片，`vm --file` 传入全部切片即还原完整模块。
+
 ---
 
 ## 18. 解构声明

@@ -26,6 +26,64 @@ namespace RigiCompiler
     // Value wrapper 字段的 cell 存储挂 companion 实例（init 里构造）。
     internal static class WrapperInitSynthesis
     {
+        // ===== 全局函数 Method wrapper（§14.4/§14.9，bug 修复）=====
+
+        // 全局函数（Owner == null）无宿主类型，此前 P3 不为它们合成任何
+        // wrapper 安装——@W 被 P2 登记后静默忽略。修复与静态方法同一机制
+        //（§8.7 companion）：每命名空间合成一个顶层 singleton 宿主类
+        //（..globals.host——全局函数无宿主类可嵌套，CompanionInfo 自指，
+        // 形态对齐 companion），带 wrapper 的全局函数迁移为宿主实例方法
+        // （wrapper 应用随迁），原符号降壳体（P3 阶段 2 经 symbol.Companion
+        // 统一走壳体绑定）；安装在宿主自身的 ..init.wrapper 里，由 VM 在
+        // main 前的 singleton 急切初始化完成。native/无体函数防御跳过
+        // （旧行为同为忽略；壳体需要可迁的源体）
+        public static void SynthesizeForGlobalFunctions(BindEnvironment env)
+        {
+            var hosts = new Dictionary<NamespaceSymbol,
+                (TypeSymbol Host, ASTNode Syntax, FileContext FileCtx)>();
+            foreach (var file in env.Unit.SourceFiles)
+            {
+                var fileCtx = env.Declarations.FileContextOf(file);
+                foreach (var decl in file.Declarations)
+                {
+                    if (decl is not CallableDeclarationASTNode fn) continue;
+                    if (env.Declarations.SymbolOf(fn) is not MethodSymbol method) continue;
+                    if (method.Owner != null || method.AppliedWrappers.Count == 0
+                        || method.Companion != null || method.IsNative || fn.Body == null)
+                    {
+                        continue;
+                    }
+                    if (!hosts.TryGetValue(fileCtx.Namespace, out var hostEntry))
+                    {
+                        hostEntry = (CreateGlobalMethodHost(fileCtx.Namespace, env), fn, fileCtx);
+                        hosts.Add(fileCtx.Namespace, hostEntry);
+                    }
+                    SynthesizeCompanionMethod(hostEntry.Host.CompanionInfo!, method);
+                }
+            }
+            // 宿主的 ..init.wrapper：安装迁入实例方法的 Method wrapper
+            //（companion 自身即走 SynthesizeInitWrapper 同一路径）
+            foreach (var (host, syntax, fileCtx) in hosts.Values)
+            {
+                SynthesizeInitWrapper(host, syntax, fileCtx, env);
+            }
+        }
+
+        // 全局函数 wrapper 的宿主 singleton：顶层合成类（每命名空间一个），
+        // singleton+shared；CompanionInfo 自指——P4b 的 companion 声明收集
+        // 与 compiler-generated 投影与静态 companion 同通道
+        private static TypeSymbol CreateGlobalMethodHost(NamespaceSymbol ns, BindEnvironment env)
+        {
+            var host = new TypeSymbol(BilSpellings.GlobalMethodHostTypeName, TypeKind.Class,
+                ns: ns, baseType: env.Unit.Symbols.Bootstrap.Object, isShared: true)
+            {
+                Accessibility = Accessibility.Public,
+                IsSingleton = true,
+            };
+            host.CompanionInfo = new StaticCompanionInfo(host);
+            return host;
+        }
+
         // 类型级合成入口（BindingDriver 阶段 1.7）：两阶段——先为全部类型
         // 合成 ..init.field.*（基类先于派生类，闭包缝合与 wrapper 实参的
         // 声明点绑定都依赖基类产物已就位），再逐类型合成 ..init.wrapper

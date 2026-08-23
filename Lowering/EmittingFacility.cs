@@ -134,7 +134,7 @@ namespace RigiCompiler
                 if (!env.NullKeys.TryGetValue(key, out var resource))
                 {
                     resource = new BilNullResource("R_" + env.Module.Resources.Count, key);
-                    env.Module.Resources.Add(resource);
+                    env.AddResource(resource);
                     env.NullKeys.Add(key, resource);
                 }
                 return resource;
@@ -153,7 +153,7 @@ namespace RigiCompiler
             {
                 resource = new BilScalarResource("R_" + env.Module.Resources.Count,
                     type, literalText);
-                env.Module.Resources.Add(resource);
+                env.AddResource(resource);
                 env.ScalarKeys.Add((type, literalText), resource);
             }
             return resource;
@@ -179,7 +179,7 @@ namespace RigiCompiler
             {
                 resource = new BilSwitchTableResource("R_" + env.Module.Resources.Count,
                     selectorTypeRef, elements);
-                env.Module.Resources.Add(resource);
+                env.AddResource(resource);
                 env.SwitchTableKeys.Add(key, resource);
             }
             return resource;
@@ -212,7 +212,7 @@ namespace RigiCompiler
             if (!ctx.CatchTableKeys.TryGetValue(key, out var resource))
             {
                 resource = new BilCatchTableResource("R_" + env.Module.Resources.Count, entries);
-                env.Module.Resources.Add(resource);
+                env.AddResource(resource);
                 ctx.CatchTableKeys.Add(key, resource);
             }
             return resource;

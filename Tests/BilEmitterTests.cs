@@ -168,6 +168,8 @@ namespace RigiCompiler.Tests
             TestUnsupportedNodes();
             TestGenericIndexOperatorEmission();
             TestClassGenericParamFrameEmission();
+            TestEntryPointAnnotationEmission();
+            TestNamespaceSliceEmission();
 
             return TestHarness.Summary("BilEmitter");
         }

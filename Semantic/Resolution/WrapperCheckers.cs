@@ -170,6 +170,8 @@ namespace RigiCompiler
                     // @NativeLibrary/@NativeSymbol 是编译器内建注解（§4.6），不属于
                     // wrapper 体系；合法性已在 CheckNativeDeclarations 处理
                     if (ResolveEnvironment.NativeAnnotationNameOf(annotation) != null) continue;
+                    // @EntryPoint 同为内建注解（§17），目标校验归 EntryPointChecker
+                    if (ResolveEnvironment.IsEntryPointAnnotation(annotation)) continue;
                     var resolved = env.Names.ResolveSymbolPath(annotation.Name.symbol, entry.Context,
                         entry.DeclaringType, declaringMethod: null,
                         allowImports: true, reportErrors: true,

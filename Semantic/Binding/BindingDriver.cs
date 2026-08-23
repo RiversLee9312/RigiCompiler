@@ -46,6 +46,10 @@ namespace RigiCompiler
             // 阶段 1.7（M109b，BIL §9.7/§8.7）：类型级 ..init.wrapper 合成
             // + 静态 Method wrapper companion 合成
             WrapperInitSynthesis.SynthesizeForTypes(env);
+            // 阶段 1.7b（§14.4 修复）：全局函数的 Method wrapper——无宿主
+            // 类型，合成每命名空间 singleton 宿主（..globals.host）迁实例
+            // 方法 + 壳体，与静态方法 companion 同机制
+            WrapperInitSynthesis.SynthesizeForGlobalFunctions(env);
             // 阶段 1.8（SYNTAX §9.3）：默认构造合成——无显式 init 的
             // class/struct 且（含声明处初始化器的实例字段或基类需要初始化
             // 链）时合成零参 init（基类初始化先行，再跑本类初始化器）

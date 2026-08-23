@@ -37,6 +37,7 @@ namespace RigiCompiler.Tests
             TestProxyDispatchChains();
             TestDowngradeChains();
             TestNativeDeclarations();
+            TestEntryPointAnnotations();
             TestAccessibility();
             TestAccessorDeclarations();
             TestOverrideModifiers();
@@ -1635,6 +1636,79 @@ namespace RigiCompiler.Tests
             TestHarness.Check("全局函数 NativeSymbol 缺省", conv.NativeSymbol ?? "", "conv");
             var poke = ok3.Symbols.GlobalNamespace.Methods.Single(m => m.Name == "poke");
             TestHarness.Check("路径形态注解同样生效", poke.NativeLibrary ?? "", "rt");
+        }
+
+        // ===== @EntryPoint 内建注解（SYNTAX §17.1 程序入口）=====
+        private static void TestEntryPointAnnotations()
+        {
+            TestHarness.Section("P2 @EntryPoint (§17.1)");
+
+            // 正例：任意命名空间的静态方法——全局函数 / 命名空间函数 /
+            // 静态成员方法均可登记（IsEntryPoint 标记位）
+            var (ok1, _) = ResolveUnit(
+                "namespace app\n" +
+                "@EntryPoint\n" +
+                "pub func main(): i32 { return 0 }\n");
+            CheckNoErrors("命名空间内 @EntryPoint main 无诊断", ok1);
+            var nsMain = NsOf(ok1, "app").Methods.Single(m => m.Name == "main");
+            TestHarness.CheckTrue("命名空间 main 的 IsEntryPoint 标记位", nsMain.IsEntryPoint);
+
+            var (ok2, _) = ResolveUnit(
+                "pub class App {\n" +
+                "    @EntryPoint\n" +
+                "    pub static func run(): i32 { return 0 }\n" +
+                "}\n");
+            CheckNoErrors("静态成员方法 @EntryPoint 无诊断", ok2);
+            TestHarness.CheckTrue("静态成员 IsEntryPoint 标记位",
+                GlobalType(ok2, "App").Methods.Single(m => m.Name == "run").IsEntryPoint);
+
+            // 多入口合法（P2 不限个数——运行前经 --entry-point 选择）
+            var (ok3, _) = ResolveUnit(
+                "@EntryPoint\n" +
+                "pub func main(): i32 { return 0 }\n" +
+                "@EntryPoint\n" +
+                "pub func other(): i32 { return 1 }\n");
+            CheckNoErrors("多 @EntryPoint 并存无诊断", ok3);
+
+            // 负例：实例方法 / init / operator / 实参 / 非函数目标 / native
+            var (bad1, _) = ResolveUnit(
+                "class C {\n" +
+                "    @EntryPoint\n" +
+                "    func f(): i32 { return 0 }\n" +
+                "}\n");
+            CheckP2Error("实例方法拒绝", bad1,
+                "@EntryPoint member function 'f' must be 'static'");
+
+            var (bad2, _) = ResolveUnit(
+                "class C {\n" +
+                "    @EntryPoint\n" +
+                "    init() { }\n" +
+                "}\n");
+            CheckP2Error("init 拒绝", bad2,
+                "@EntryPoint can only be applied to functions (not init/operator)");
+
+            var (bad3, _) = ResolveUnit("@EntryPoint()\npub func f(): i32 { return 0 }\n");
+            CheckP2Error("实参拒绝", bad3, "@EntryPoint does not take arguments");
+
+            var (bad4, _) = ResolveUnit("@EntryPoint\nvar x: i32\n");
+            CheckP2Error("字段拒绝", bad4, "@EntryPoint can only be applied to functions");
+
+            var (bad5, _) = ResolveUnit("@EntryPoint\nclass C { }\n");
+            CheckP2Error("类型拒绝", bad5, "@EntryPoint can only be applied to functions");
+
+            var (bad6, _) = ResolveUnit(
+                "@EntryPoint\n" +
+                "@NativeLibrary(\"rt\")\n" +
+                "native func f(): i32\n");
+            CheckP2Error("native 拒绝", bad6,
+                "@EntryPoint cannot be applied to native functions");
+
+            // 不是 wrapper 体系：wrapper 应用检查不得误报 'EntryPoint' is not
+            // a wrapper type（豁免通道）；此处无其余诊断即证明
+            var (ok4, _) = ResolveUnit("@EntryPoint\npub func main(): i32 { return 0 }\n");
+            CheckNoErrors("全局 main + @EntryPoint 无诊断（不进 wrapper 检查）", ok4);
+            TestHarness.CheckTrue("全局 main 的 IsEntryPoint 标记位",
+                ok4.Symbols.GlobalNamespace.Methods.Single(m => m.Name == "main").IsEntryPoint);
         }
 
         // ===== P2 收尾：符号图冻结 =====

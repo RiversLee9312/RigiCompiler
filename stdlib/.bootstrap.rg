@@ -587,3 +587,10 @@ pub ext const String.length: i64
 @NativeLibrary("rigi_rt")
 @NativeSymbol("any_to_string")
 priv native func any_to_string(value: Any): String
+
+// @EntryPoint（SYNTAX §17.1 程序入口）：编译器内建方法注解，与上面的
+// @NativeLibrary/@NativeSymbol 同族——按末段名硬编码识别、不属于 wrapper
+// 体系、不产生组合链，因此无需也无法在本文件以源码声明（内建注解没有
+// 声明形态，本注释仅作登记锚点）。修饰任意命名空间的一个静态方法即把它
+// 登记为程序入口（BIL entrypoint 修饰符）；多入口并存时运行前经
+// vm --entry-point <符号> 显式指定。

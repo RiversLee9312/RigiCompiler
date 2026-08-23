@@ -14,9 +14,12 @@ namespace RigiCompiler
     internal static class LocalSymbolEmitters
     {
         // 命名空间平铺：本空间类型（含 NestedTypes 递归）→ 子命名空间递归 →
-        // 本空间全局字段/函数裸条目（§8.4.1：不包裹在 .type 中）
+        // 本空间全局字段/函数裸条目（§8.4.1：不包裹在 .type 中）。
+        // §17 切分：进入每个命名空间时把 env.CurrentSliceNs 切到本空间，
+        // 全部声明经 env.AddLocalSymbol 同步记录进 merged 与对应切片
         public static void EmitNamespace(NamespaceSymbol ns, EmitEnvironment env)
         {
+            env.CurrentSliceNs = ns.FullName;
             foreach (var type in ns.Types)
             {
                 EmitTypeTree(type, env);
@@ -24,22 +27,40 @@ namespace RigiCompiler
             foreach (var child in ns.ChildNamespaces)
             {
                 EmitNamespace(child, env);
+                // 子空间递归会改切 CurrentSliceNs——回到本空间
+                env.CurrentSliceNs = ns.FullName;
             }
             foreach (var field in ns.Fields)
             {
                 // 全局 wrapped 字段（裁定 1）：cell 子类即 singleton，BIL 不再
                 // 发全局字段声明（访问经 cell 单例 getValue/setValue）
                 if (field.CellStorage != null && field.Owner == null) continue;
-                env.Module.LocalSymbols.Add(EmitFieldDeclaration(field));
+                env.AddLocalSymbol(EmitFieldDeclaration(field));
                 foreach (var accessor in EmitFieldAccessorDeclarations(field))
                 {
-                    env.Module.LocalSymbols.Add(accessor);
+                    env.AddLocalSymbol(accessor);
                 }
             }
             foreach (var method in ns.Methods)
             {
-                env.Module.LocalSymbols.Add(EmitMethodDeclaration(method));
+                env.AddLocalSymbol(EmitMethodDeclaration(method));
             }
+        }
+
+        // 切片归属命名空间（§17 切分）：全局符号取自身 Namespace；成员取
+        // 宿主类型根（嵌套链顶端）的命名空间；ext 成员（Namespace 已被 P2
+        // AttachToExtTarget 清空）同归宿主类型根——内建类型上的 ext 成员
+        // 因此落 core 切片（声明点命名空间在符号上无存；对合并运行无影响）
+        internal static string SliceNsOf(MethodSymbol method) =>
+            method.Namespace?.FullName ?? RootNsOf(method.Owner);
+
+        internal static string SliceNsOf(FieldSymbol field) =>
+            field.Namespace?.FullName ?? RootNsOf(field.Owner);
+
+        internal static string RootNsOf(TypeSymbol? type)
+        {
+            while (type?.DeclaringType != null) type = type.DeclaringType;
+            return type?.Namespace?.FullName ?? "";
         }
 
         public static BilSimpleMemberDeclaration EmitSyntheticMethodDeclaration(MethodSymbol method)
@@ -73,19 +94,21 @@ namespace RigiCompiler
                 foreach (var field in builtinType.Fields)
                 {
                     if (field.ExtTargetPath == null) continue;
-                    env.Module.LocalSymbols.Add(EmitFieldDeclaration(field));
+                    env.CurrentSliceNs = RootNsOf(builtinType);
+                    env.AddLocalSymbol(EmitFieldDeclaration(field));
                     // 访问器声明随字段槽驱动（同 EmitNamespace/EmitTypeDeclaration
                     // 形态）——缺了它访问器 fn 定义将被 §21.2 拒绝（M80 修复：
                     // SYNTAX §4.4 的 ext var + get/set 示例形态端到端必挂）
                     foreach (var accessor in EmitFieldAccessorDeclarations(field))
                     {
-                        env.Module.LocalSymbols.Add(accessor);
+                        env.AddLocalSymbol(accessor);
                     }
                 }
                 foreach (var method in builtinType.Methods)
                 {
                     if (method.ExtTargetPath == null) continue;
-                    env.Module.LocalSymbols.Add(EmitMethodDeclaration(method));
+                    env.CurrentSliceNs = RootNsOf(builtinType);
+                    env.AddLocalSymbol(EmitMethodDeclaration(method));
                 }
             }
         }
@@ -112,7 +135,8 @@ namespace RigiCompiler
                 {
                     if (!method.IsNative) continue;
                     if (ReferenceEquals(method, env.Unit.Symbols.Bootstrap.CallWildcard)) continue;
-                    env.Module.LocalSymbols.Add(EmitMethodDeclaration(method));
+                    env.CurrentSliceNs = RootNsOf(builtinType);
+                    env.AddLocalSymbol(EmitMethodDeclaration(method));
                 }
             }
             // toString 合成体：Any/Object 的 toString 是 open 普通方法（非
@@ -164,7 +188,8 @@ namespace RigiCompiler
                 BilOp.Var(resultName), new[] { receiver }));
             entry.Instructions.Add(new RetInstruction(BilOp.Var(resultName)));
             function.Blocks.Add(entry);
-            env.Module.Functions.Add(function);
+            env.CurrentSliceNs = RootNsOf(owner);
+            env.AddFunction(function);
         }
 
         private static void EmitTypeTree(TypeSymbol type, EmitEnvironment env)
@@ -172,7 +197,7 @@ namespace RigiCompiler
             // 内建 bootstrap 符号（基元/层级根）不声明：经 BIL 别名投影引用；
             // ErrorType 是毒化单例，同样不进符号段
             if (type.IsBuiltin || type is ErrorTypeSymbol) return;
-            env.Module.LocalSymbols.Add(EmitTypeDeclaration(type, env));
+            env.AddLocalSymbol(EmitTypeDeclaration(type, env));
             foreach (var nested in type.NestedTypes)
             {
                 EmitTypeTree(nested, env);
@@ -395,9 +420,11 @@ namespace RigiCompiler
                 modifiers.Add(new BilNativeSymbolModifier(method.NativeSymbol!));
                 modifiers.Add(new BilNativeLibraryModifier(method.NativeLibrary!));
             }
-            // entrypoint：全局命名空间的裸 main（SYNTAX 程序入口）
-            if (method.Owner == null && method.Namespace is { FullName: "" }
-                && method.Name == "main")
+            // entrypoint（SYNTAX §17）：@EntryPoint 内建注解标记的静态方法
+            // （任意命名空间），或全局命名空间的裸 main 命名约定
+            if (method.IsEntryPoint
+                || (method.Owner == null && method.Namespace is { FullName: "" }
+                    && method.Name == "main"))
             {
                 modifiers.Add(new BilKeywordModifier(BilKeyword.Entrypoint));
             }

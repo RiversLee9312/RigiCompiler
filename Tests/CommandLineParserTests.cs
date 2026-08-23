@@ -61,8 +61,8 @@ namespace RigiCompiler.Tests
                 new[] { "--all", "--run", "--suite-args", "--verbose", "--log-to" }.All(testSubs.Contains));
             var vm = commands.First(c => c.Mask.Name == "vm");
             var vmSubs = vm.SubCommands.Select(s => s.Mask.Name).ToList();
-            Check("vm 子命令齐全（--file/--max-steps/--verbose/--log-to）",
-                new[] { "--file", "--max-steps", "--verbose", "--log-to" }.All(vmSubs.Contains));
+            Check("vm 子命令齐全（--file/--max-steps/--entry-point/--verbose/--log-to）",
+                new[] { "--file", "--max-steps", "--entry-point", "--verbose", "--log-to" }.All(vmSubs.Contains));
             Check("help 无子命令", help.SubCommands.Count == 0);
             Console.WriteLine();
         }
@@ -115,6 +115,12 @@ namespace RigiCompiler.Tests
                     && f[0] == "a.bil" && f[1] == "b.bil");
             CheckParseOk("vm --file= 形态", new[] { "vm", "--file=a.bil" },
                 r => r.Get("--file") is { Count: 1 } f && f[0] == "a.bil");
+            CheckParseOk("vm --entry-point 空格形态", new[] { "vm", "--file", "a.bil",
+                    "--entry-point", "app::$main()@.i32" },
+                r => r.Get("--entry-point") is { Count: 1 } e && e[0] == "app::$main()@.i32");
+            CheckParseOk("vm --entry-point= 形态", new[] { "vm", "--file=a.bil",
+                    "--entry-point=$main()@.i32" },
+                r => r.Get("--entry-point") is { Count: 1 } e && e[0] == "$main()@.i32");
             CheckParseError("未知子命令报错", new[] { "test", "--bogus" }, "未知子命令");
             CheckParseError("重复子命令报错", new[] { "compile", "--file", "a", "--file", "b" }, "重复");
             Console.WriteLine();
@@ -330,6 +336,73 @@ namespace RigiCompiler.Tests
             Console.WriteLine();
         }
 
+        // ===== §17：BIL 命名空间切分写盘 + --entry-point 端到端 =====
+        public static void TestEmitBilSlicesAndEntryPoint()
+        {
+            Console.WriteLine("=== Testing §17 命名空间切分与 --entry-point 端到端 ===");
+
+            var dir = Path.Combine(Path.GetTempPath(), $"rigi_slice_test_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(dir);
+            try
+            {
+                // 单入口命名空间源：compile --emit-bil 按命名空间切分多文件——
+                // 全局命名空间无内容时不写 base.bil；stdlib 各命名空间成独立切片
+                var src = Path.Combine(dir, "app.rg");
+                File.WriteAllText(src,
+                    "namespace app\n" +
+                    "@EntryPoint\n" +
+                    "pub func main(): i32 {\n" +
+                    "    core.io.Console.println(\"ns entry\")\n" +
+                    "    return 0\n" +
+                    "}\n");
+                var outBase = Path.Combine(dir, "app.bil");
+                Check("切分编译退出码 0", RunCompile("compile", "--file", src,
+                    "--emit-bil", outBase) == 0);
+                Check("命名空间切片已写盘", File.Exists(Path.Combine(dir, "app.app.bil")));
+                Check("core 切片已写盘", File.Exists(Path.Combine(dir, "app.core.bil")));
+                Check("core.io 切片已写盘", File.Exists(Path.Combine(dir, "app.core.io.bil")));
+                Check("空全局切片不落盘", !File.Exists(outBase));
+
+                // 全部切片合并执行：@EntryPoint 命名空间 main 自动选中
+                var slices = Directory.GetFiles(dir, "app*.bil");
+                var run = RunVm(new[] { "vm", "--file" }.Concat(slices).ToArray());
+                Check("切片合并执行退出码 0", run.Code == 0);
+                Check("切片合并执行 stdout", run.Out == "ns entry\n");
+
+                // 双入口（命名空间 @EntryPoint + 全局裸 main 约定）：
+                // 缺省退出码 2 且提示 --entry-point；显式指定后正常运行
+                var src2 = Path.Combine(dir, "global.rg");
+                File.WriteAllText(src2,
+                    "pub func main(): i32 {\n" +
+                    "    core.io.Console.println(\"global main\")\n" +
+                    "    return 0\n" +
+                    "}\n");
+                var outBase2 = Path.Combine(dir, "multi.bil");
+                Check("双入口编译退出码 0", RunCompile("compile", "--file", src, src2,
+                    "--emit-bil", outBase2) == 0);
+                Check("双入口全局切片已写盘", File.Exists(outBase2));
+                var multiSlices = Directory.GetFiles(dir, "multi*.bil");
+                var blocked = RunVm(new[] { "vm", "--file" }.Concat(multiSlices).ToArray());
+                Check("多入口缺省退出码 2", blocked.Code == 2);
+                Check("多入口报文提示 --entry-point", blocked.Err.Contains("--entry-point"));
+                Check("多入口报文列出候选", blocked.Err.Contains("app::$main()@.i32")
+                    && blocked.Err.Contains("$main()@.i32"));
+                var picked = RunVm(new[] { "vm", "--file" }.Concat(multiSlices)
+                    .Concat(new[] { "--entry-point", "app::$main()@.i32" }).ToArray());
+                Check("--entry-point 选中执行退出码 0", picked.Code == 0);
+                Check("--entry-point 选中 stdout", picked.Out == "ns entry\n");
+                var badPick = RunVm(new[] { "vm", "--file" }.Concat(multiSlices)
+                    .Concat(new[] { "--entry-point", "app::$nope()@.i32" }).ToArray());
+                Check("--entry-point 非入口符号退出码 2", badPick.Code == 2);
+                Check("--entry-point 非入口报文", badPick.Err.Contains("不是 entrypoint"));
+            }
+            finally
+            {
+                Directory.Delete(dir, recursive: true);
+            }
+            Console.WriteLine();
+        }
+
         // 运行期无匹配 init 的手写模块（bug13② 负例）：OnlyI64 仅有
         // init(x: .i64)，new.indirect 以 i32 实参构造——§14.2 运行期
         // init 表解析失败，经 NoSuchMethod 通道中止
@@ -429,6 +502,7 @@ namespace RigiCompiler.Tests
             TestStrayArgs();
             TestOutputPathErrors();
             TestVmCommand();
+            TestEmitBilSlicesAndEntryPoint();
 
             Console.WriteLine($"=== CommandLineParser Tests Complete: {passCount} passed, {failCount} failed ===");
             return failCount;

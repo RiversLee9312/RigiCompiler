@@ -268,6 +268,13 @@ namespace RigiCompiler
                         $"@{builtinName} can only be applied to native functions");
                     continue;
                 }
+                // @EntryPoint 内建注解（§17）只修饰静态方法，lambda 上非法
+                if (ResolveEnvironment.IsEntryPointAnnotation(annotation))
+                {
+                    env.Error(annotation.Span ?? lambda.Span,
+                        "@EntryPoint can only be applied to static methods");
+                    continue;
+                }
                 var resolved = env.Names.ResolveSymbolPath(annotation.Name.symbol,
                     ctx.Frame.FileCtx, ctx.Frame.DeclaringType, ctx.Frame.Method,
                     allowImports: true, reportErrors: true,

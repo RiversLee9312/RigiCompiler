@@ -54,6 +54,21 @@ namespace RigiCompiler.Tests
             return (unit, module, NormalizeLambdaUuids(BilWriter.Write(module)));
         }
 
+        // §17 命名空间切分形态：与 EmitBilUnit 同管线，产出 merged + 切片
+        public static (CompilationUnit Unit, BilEmitResult Result) EmitBilSlices(
+            string userSource, string moduleName = "hello")
+        {
+            var roots = new List<RootASTNode>();
+            roots.AddRange(StdlibSources.ParseAll());
+            roots.Add(TestHarness.ParseRoot(userSource, UserSourceName));
+            var unit = new CompilationUnit(roots.ToArray());
+            var declarations = DeclarationCollector.Collect(unit);
+            DeclarationResolver.Resolve(unit, declarations);
+            var bodies = Binder.Bind(unit, declarations);
+            var lowered = Lowerer.Lower(unit, bodies);
+            return (unit, BilEmitter.EmitWithSlices(unit, lowered, moduleName));
+        }
+
         // ===== 验证器断言 =====
 
         // 期望验证器零错误（合法产出）

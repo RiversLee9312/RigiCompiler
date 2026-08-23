@@ -94,13 +94,13 @@ namespace RigiCompiler
         };
     }
 
-    /// <summary>--emit-bil：语义分析通过后把 BIL 文本写入指定文件。与 --parse-only/--sema-only/--explain-dispatch 互斥。</summary>
+    /// <summary>--emit-bil：语义分析通过后把 BIL 文本写入指定文件（按命名空间切分多文件）。与 --parse-only/--sema-only/--explain-dispatch 互斥。</summary>
     public class EmitBilOption : ICommandLineOption
     {
         public CommandLineMask Mask { get; } = new()
         {
             Name = "--emit-bil",
-            Description = "语义分析通过后把 BIL 文本写入指定文件（与 --parse-only/--sema-only/--explain-dispatch 互斥）",
+            Description = "语义分析通过后发射 BIL：按命名空间切分多文件——全局命名空间写入指定路径，其余命名空间追加 .<ns> 后缀（与 --parse-only/--sema-only/--explain-dispatch 互斥）",
             ArgsHint = "<路径>",
             MinArgs = 1,
             MaxArgs = 1,
@@ -355,12 +355,14 @@ namespace RigiCompiler
                 // P4 也会产生诊断（如未覆盖节点）：发射后只输出新增部分，有 Error 不落盘
                 int emitted = unit.Diagnostics.Diagnostics.Count;
                 var lowered = Lowerer.Lower(unit, bodies);
-                var module = BilEmitter.Emit(unit, lowered, Path.GetFileNameWithoutExtension(firstFile));
+                var emitResult = BilEmitter.EmitWithSlices(unit, lowered,
+                    Path.GetFileNameWithoutExtension(firstFile));
                 EmitDiagnostics(unit.Diagnostics, emitted);
                 if (unit.Diagnostics.HasErrors) return 1;
                 // BIL 验证器（M58，§21）：产出非法即编译器 bug——响亮失败，
-                // 逐条输出验证错误，不落盘
-                var verificationErrors = BilVerifier.Verify(module);
+                // 逐条输出验证错误，不落盘。验证对象是 merged 模块（切片仅
+                // 作写盘打包——跨切片引用合并后才可解析，§17）
+                var verificationErrors = BilVerifier.Verify(emitResult.Merged);
                 if (verificationErrors.Count > 0)
                 {
                     foreach (var error in verificationErrors)
@@ -369,18 +371,31 @@ namespace RigiCompiler
                     }
                     return 1;
                 }
-                // BIL 输出路径不可写（目录不存在/权限不足等）属环境错误：
-                // 对齐 --log-to 的措辞风格友好报错，退出码 2（此前无保护直接崩溃）
-                try
+                // §17 命名空间切分写盘：全局命名空间切片写 --emit-bil 指定
+                // 路径；其余切片同目录追加 .<命名空间> 后缀。空切片（无声明
+                // 无 fn）不写。BIL 输出路径不可写（目录不存在/权限不足等）
+                // 属环境错误：对齐 --log-to 的措辞风格友好报错，退出码 2
+                var extension = Path.GetExtension(emitBilPath);
+                if (extension.Length == 0) extension = ".bil";
+                var directory = Path.GetDirectoryName(emitBilPath) ?? "";
+                var baseName = Path.GetFileNameWithoutExtension(emitBilPath);
+                foreach (var (ns, slice) in emitResult.Slices)
                 {
-                    File.WriteAllText(emitBilPath, BilWriter.Write(module), new UTF8Encoding(false));
+                    if (slice.LocalSymbols.Count == 0 && slice.Functions.Count == 0) continue;
+                    var path = ns.Length == 0
+                        ? emitBilPath
+                        : Path.Combine(directory, baseName + "." + ns + extension);
+                    try
+                    {
+                        File.WriteAllText(path, BilWriter.Write(slice), new UTF8Encoding(false));
+                    }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                    {
+                        Logger.Error("Compile", $"无法写入 BIL 输出文件 {path}: {ex.Message}");
+                        return 2;
+                    }
+                    Console.WriteLine($"BIL emitted to {path}");
                 }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-                {
-                    Logger.Error("Compile", $"无法写入 BIL 输出文件 {emitBilPath}: {ex.Message}");
-                    return 2;
-                }
-                Console.WriteLine($"BIL emitted to {emitBilPath}");
             }
             return 0;
         }
@@ -508,6 +523,19 @@ namespace RigiCompiler
         };
     }
 
+    /// <summary>vm：--entry-point：模块存在多个 entrypoint fn 时显式指定入口（BIL 符号）。</summary>
+    public class EntryPointOption : ICommandLineOption
+    {
+        public CommandLineMask Mask { get; } = new()
+        {
+            Name = "--entry-point",
+            Description = "显式指定入口 fn 的 BIL 符号（模块存在多个 entrypoint fn 时必需；缺省恰一个才自动选中）",
+            ArgsHint = "<符号>",
+            MinArgs = 1,
+            MaxArgs = 1,
+        };
+    }
+
     /// <summary>vm：加载并执行 BIL 文件（多文件合并为一个模块后运行入口函数）。</summary>
     public class VmCommand : ICommandLineCommand
     {
@@ -521,6 +549,7 @@ namespace RigiCompiler
         {
             new BilFileOption(),
             new MaxStepsOption(),
+            new EntryPointOption(),
             new VerboseOption(),
             new LogToOption(),
         };
@@ -595,7 +624,10 @@ namespace RigiCompiler
                 return 1;
             }
 
-            // 恰一个 entrypoint fn：零个/多个分别报错退出码 2
+            // entrypoint 解析（§17）：--entry-point 显式指定时须在候选内；
+            // 缺省恰一个自动选中，零个/多个报错（多个时列出候选并提示
+            // --entry-point）——模块形状/用法错误归退出码 2
+            string? entryPoint = result.Get("--entry-point")?[0];
             var entrypoints = new List<BilSimpleMemberDeclaration>();
             foreach (var entry in module.LocalSymbols)
             {
@@ -605,14 +637,27 @@ namespace RigiCompiler
                     entrypoints.Add(member);
                 }
             }
-            if (entrypoints.Count == 0)
+            if (entryPoint != null)
+            {
+                if (!entrypoints.Exists(m => m.Symbol == entryPoint))
+                {
+                    Console.Error.WriteLine("--entry-point 指定的符号不是 entrypoint 方法: "
+                        + entryPoint);
+                    foreach (var entry in entrypoints)
+                    {
+                        Console.Error.WriteLine("  " + entry.Symbol);
+                    }
+                    return 2;
+                }
+            }
+            else if (entrypoints.Count == 0)
             {
                 Console.Error.WriteLine("找不到入口：模块没有 entrypoint fn");
                 return 2;
             }
-            if (entrypoints.Count > 1)
+            else if (entrypoints.Count > 1)
             {
-                Console.Error.WriteLine("模块存在多个 entrypoint fn：");
+                Console.Error.WriteLine("模块存在多个 entrypoint fn（用 --entry-point <符号> 显式指定）：");
                 foreach (var entry in entrypoints)
                 {
                     Console.Error.WriteLine("  " + entry.Symbol);
@@ -624,7 +669,7 @@ namespace RigiCompiler
             BilVmResult run;
             try
             {
-                run = BilVm.Run(module, maxSteps);
+                run = BilVm.Run(module, maxSteps, entryPoint);
             }
             catch (VmException ex)
             {
@@ -641,27 +686,31 @@ namespace RigiCompiler
             return 0;
         }
 
-        // 多文件合并：Resources/符号段/Functions 拼接；资源名/符号/函数名重复即失败
+        // 多文件合并：Resources/符号段/Functions 拼接；符号/函数名重复即失败。
+        // 资源例外（§17 命名空间切分）：同一次编译切出的多个切片可共享同一
+        // 资源（同名同内容）——按内容相同去重；同名不同内容才算真重复
         private static bool MergeModule(BilModule target, BilModule source, out string? duplicate)
         {
             duplicate = null;
             // 三个独立名字空间：资源名 / 符号段条目键（类型按元数、成员按符号）/
             // 函数符号——方法的声明与 fn 定义同符号但分属不同空间，不互为重复
-            var resourceNames = new HashSet<string>();
+            var resourceNames = new Dictionary<string, BilResource>();
             var symbolKeys = new HashSet<string>();
             var functionSymbols = new HashSet<string>();
-            foreach (var resource in target.Resources) resourceNames.Add(resource.Name);
+            foreach (var resource in target.Resources) resourceNames.Add(resource.Name, resource);
             foreach (var entry in target.LocalSymbols) CollectKeys(entry, symbolKeys);
             foreach (var entry in target.ExternalSymbols) CollectKeys(entry, symbolKeys);
             foreach (var function in target.Functions) functionSymbols.Add(function.Symbol);
 
             foreach (var resource in source.Resources)
             {
-                if (!resourceNames.Add(resource.Name))
+                if (resourceNames.TryGetValue(resource.Name, out var existing))
                 {
+                    if (SameResource(existing, resource)) continue;
                     duplicate = $"资源 \"{resource.Name}\"";
                     return false;
                 }
+                resourceNames.Add(resource.Name, resource);
                 target.Resources.Add(resource);
             }
             foreach (var entry in source.LocalSymbols)
@@ -712,6 +761,38 @@ namespace RigiCompiler
         private static void CollectKeys(BilSymbolSectionEntry entry, HashSet<string> keys)
         {
             foreach (var key in KeysOf(entry)) keys.Add(key);
+        }
+
+        // §17 切片共享资源的同内容判定：同对象恒真；否则按种类逐字段比较
+        //（catch-table 条目持 block 引用，按渲染文本比较）
+        private static bool SameResource(BilResource a, BilResource b)
+        {
+            if (ReferenceEquals(a, b)) return true;
+            if (a is BilScalarResource scalarA && b is BilScalarResource scalarB)
+            {
+                return scalarA.Type == scalarB.Type && scalarA.LiteralText == scalarB.LiteralText;
+            }
+            if (a is BilNullResource nullA && b is BilNullResource nullB)
+            {
+                return nullA.TypeRef == nullB.TypeRef;
+            }
+            if (a is BilCollectionResource collectionA && b is BilCollectionResource collectionB)
+            {
+                return collectionA.Header == collectionB.Header
+                    && collectionA.Elements.SequenceEqual(collectionB.Elements);
+            }
+            if (a is BilSwitchTableResource switchA && b is BilSwitchTableResource switchB)
+            {
+                return switchA.SelectorTypeRef == switchB.SelectorTypeRef
+                    && switchA.Elements.SequenceEqual(switchB.Elements);
+            }
+            if (a is BilCatchTableResource catchA && b is BilCatchTableResource catchB)
+            {
+                return catchA.Entries.Count == catchB.Entries.Count
+                    && catchA.Entries.Zip(catchB.Entries).All(pair =>
+                        pair.First.Render() == pair.Second.Render());
+            }
+            return false;
         }
 
         private static bool HasKeyword(BilSimpleMemberDeclaration member, BilKeyword keyword)

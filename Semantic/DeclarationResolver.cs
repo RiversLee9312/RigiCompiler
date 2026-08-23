@@ -70,6 +70,8 @@ namespace RigiCompiler
             AccessorChecker.Visit(env);
             OverrideChecker.Visit(env);
             NativeDeclarationChecker.Visit(env);
+            // §17 @EntryPoint 内建注解：紧随 native 注解检查（同族内建注解）
+            EntryPointChecker.Visit(env);
             ConversionOperatorChecker.Visit(env);
             EnumerateInRangeOperatorChecker.Visit(env);
             // Q6：getAtIndex 声明形状（§13.2：恰 1 形参 + 返回 T?）

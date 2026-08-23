@@ -372,6 +372,16 @@ namespace RigiCompiler.Tests
             TestHarness.CheckSemanticError("var 声明上的 @Timed 按 Value 目标报错",
                 onVar.Unit.Diagnostics, "Method wrapper 'Timed' can only be applied to methods");
 
+            // 负例：@EntryPoint 内建注解（§17.1）不适用于 lambda
+            var entryPointOnLambda = BindUnitWithStdlib(
+                "func f(): i32 {\n" +
+                "    var fn = func{ @EntryPoint (x: i32): i32 -> x }\n" +
+                "    return fn(1)\n" +
+                "}\n");
+            TestHarness.CheckSemanticError("@EntryPoint 不适用于 lambda",
+                entryPointOnLambda.Unit.Diagnostics,
+                "@EntryPoint can only be applied to static methods");
+
             // ===== cell 隐藏子类 shared 判定（用户裁定）=====
             // 仅元素类型**显式声明 shared**时 cell 子类才 shared；i32 等非
             // rich 内建值类型与未标 shared 的类型一律不 shared。

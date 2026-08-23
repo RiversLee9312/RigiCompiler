@@ -198,6 +198,8 @@ enum-case(CASE_SYMBOL)
 wrapper-proxy(PROXY_KIND)
 ```
 
+`entrypoint` 标记程序入口 fn（SYNTAX §17：源码侧为 `@EntryPoint` 内建注解或全局命名空间裸 `main` 约定）。同一模块允许**多个**方法带 `entrypoint`（多文件合并后尤其如此）；运行前选择规则：恰一个时自动选中，多个时必须经 `vm --entry-point <符号>` 显式指定（符号必须命中带 `entrypoint` 修饰的成员），零个即运行前错误。
+
 `wrapper-proxy(PROXY_KIND)` 标记 wrapper 类型声明内的 `.proxy.*` 成员 fn（**proxy 模板**：模板态绑定产物，体内可出现 `invoke fn(..inner)` / `get.self`）。`PROXY_KIND` 取两值之一：
 
 - `specific`：specific proxy 模板（命中成员名的特定代理）；

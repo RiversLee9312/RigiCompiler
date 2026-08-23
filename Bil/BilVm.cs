@@ -33,7 +33,9 @@ namespace RigiCompiler.Bil
 
         // maxSteps：实现级指令步数上限；0（默认）= 不限制。超过抛
         // VmStepLimitException 并记入 Result.Exception，不崩溃。
-        public BilVmResult Run(long maxSteps = 0)
+        // entryPoint：--entry-point 显式指定的入口符号（BIL canonical）；
+        // null = 自动查找（恰一个 entrypoint 才选中，否则抛 VmException）
+        public BilVmResult Run(long maxSteps = 0, string? entryPoint = null)
         {
             var context = new VmContext(Module);
             context.MaxSteps = maxSteps;
@@ -52,7 +54,7 @@ namespace RigiCompiler.Bil
             {
                 return new BilVmResult(context.Stdout, context.Stderr, null, ex);
             }
-            var entry = context.FindEntrypoint();
+            var entry = context.FindEntrypoint(entryPoint);
             var main = executor.Spawn(entry, Array.Empty<VmValue>());
             executor.Publish(main);
             executor.WaitQuiescence();
@@ -60,7 +62,8 @@ namespace RigiCompiler.Bil
             return new BilVmResult(context.Stdout, context.Stderr, main.Result, exception);
         }
 
-        public static BilVmResult Run(BilModule module, long maxSteps = 0) =>
-            new BilVm(module).Run(maxSteps);
+        public static BilVmResult Run(BilModule module, long maxSteps = 0,
+            string? entryPoint = null) =>
+            new BilVm(module).Run(maxSteps, entryPoint);
     }
 }

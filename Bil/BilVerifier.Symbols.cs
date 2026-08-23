@@ -81,20 +81,13 @@ namespace RigiCompiler.Bil
                 }
             }
 
-            // 成员声明规则（native/static 一致性/修饰符重复/fn 一一对应）
-            var entrypointCount = 0;
+            // 成员声明规则（native/static 一致性/修饰符重复/fn 一一对应）。
+            // entrypoint 方法允许并存多个（§8.4/§17 修订：运行前由
+            // --entry-point <符号> 显式指定；缺省恰一个才自动选中——
+            // 零/多入口的运行前诊断归 vm 命令与 VM FindEntrypoint）
             foreach (var (ownerType, declaration, isLocal) in context.MemberEntries)
             {
                 VerifyMemberDeclaration(context, ownerType, declaration, isLocal, errors);
-                if (isLocal && HasKeyword(declaration, BilKeyword.Entrypoint))
-                {
-                    entrypointCount++;
-                }
-            }
-            if (entrypointCount > 1)
-            {
-                errors.Add(new BilVerificationError("21.2", "LocalSymbols",
-                    $"entrypoint 方法必须唯一（实际 {entrypointCount}）"));
             }
 
             // 类型声明（§8.2 修饰符矩阵 + 继承类型可解析）
