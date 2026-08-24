@@ -4,7 +4,7 @@
 > 本文件只放核心要求与指路；架构与开发细节见 `docs/agent_guide/`，语言/BIL/运行时规范见 `docs/` 索引。
 
 **项目名**: RigiCompiler
-**语言**: C#（.NET 10.0，控制台程序，`Nullable` 与 `ImplicitUsings` 已启用，纯 BCL 无第三方依赖）
+**语言**: C#（.NET 10.0，控制台程序，`Nullable` 与 `ImplicitUsings` 已启用；原则上纯 BCL 无第三方依赖，唯一豁免是 Middleware 的 LLVMSharp + libLLVM，见 `docs/agent_guide/development.md` 依赖纪律）
 **版本控制**: Git（`main` 分支；CI 见 `.github/workflows/ci.yml`）
 
 ⚠️ **仓库根在内层 `RigiCompiler/RigiCompiler/`（`.git` 在此）**，外层目录只放 `RigiCompiler.sln`，不是仓库；`dotnet build`/`dotnet run`/git 等工作目录同样是内层。
@@ -34,6 +34,7 @@ dotnet run -- test --run N   # 按编号跑单套件（编号见裸 dotnet run -
 - **语言**：注释与文档一律中文，关键逻辑必须注释；思考也用中文；向子代理下达任务时必须明确要求它也用中文思考。
 - **日志**：编译器内部日志一律走 `Core/Logger`，禁止直接 `Console.WriteLine`（测试报告输出除外）；控制台日志走 stderr，不污染 stdout 数据流。
 - **简洁优先**：新增代码前自问三问——真的有必要存在吗？有没有更简洁优雅的方法？可不可以复用已有的轮子？新代码模仿相邻文件风格；项目无 linter/格式化工具配置。
+- **复用优先**：尽量复用现有的、高质量且久经验证的轮子——仓库内设施（如 `Bil/` 生态、`TestHarness`/`BilTestHarness`）优先，确需外部能力时选成熟可靠的外部库（如 Middleware 的 LLVMSharp），不重复造轮子；新增第三方依赖属纪律变更，先讨论并同步文档。
 - **测试**：不使用任何测试框架；新 ParserLayer 必须在 `Tests/` 添加测试类并在 `TestRunner` 注册；三树新节点必须同步 BoundDescribe/LoweredDescribe 与三套件用例。
 - **禁止 AskUserQuestion**（harness 为 Kimi Code 时）：该工具有显示 bug，用户看不到第一个问题之后的后续问题。需要用户决策时把问题整理好在回复正文中一次问完，然后停下来等待回答。
 - **文档维护**：进度现状以代码与 git 历史为准，不在文档里记录里程碑/进度/易变测试数字；历史档案在 `docs/legacy/`（不再更新）；不新建单点完成报告/实现总结类文档。
@@ -68,8 +69,9 @@ dotnet run -- test --run N   # 按编号跑单套件（编号见裸 dotnet run -
 Lexer/ Parser/ AST/          # 前端（层栈 + 状态机 + 施工目标协议）
 Semantic/                    # 中端 P1–P3：诊断/符号图/声明收集与解析/Binder（visitor 化）
 Lowering/                    # 中端 P4：P4a 恒等重写 + P4b BIL 发射
-Bil/                         # BIL 生态（对中端零依赖）：模型/Writer/Verifier/VM（Vm/）
-Core/                        # CLI 内核与插件（compile/test/help）+ Logger
+Bil/                         # BIL 生态（对中端零依赖）：模型/Reader/Writer/Verifier/Merger/VM（Vm/）
+Middleware/                  # BIL → 原生（Gate/Symbols/Emit/Cli；架构见 docs/compiler/middleware/）
+Core/                        # CLI 内核与插件（compile/test/vm/native/help）+ Logger
 Tests/                       # 自研控制台测试（TestRunner 注册表驱动）
 stdlib/                      # 编译器自携标准库源（EmbeddedResource 内嵌，同走 P1–P4）
 docs/                        # 规范与设计文档（全部为权威参考）

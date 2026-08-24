@@ -67,6 +67,7 @@ namespace RigiCompiler.Tests
             ("SeqRouteHint", SeqRouteHintTests.RunAll, null),
             ("EscapingSeqPosition", EscapingSeqPositionTests.RunAll, null),
             ("E2e", E2eCorpusTests.RunAll, E2eCorpusTests.RunWithArgs),
+            ("Middleware", MiddlewareTests.RunAll, null),
         };
 
         // 套件数量（对外编号 1..SuiteCount，即注册表顺序）

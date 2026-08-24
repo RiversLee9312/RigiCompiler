@@ -11,7 +11,7 @@ dotnet build        # 在项目根目录执行；当前 0 错误、0 警告
 dotnet clean
 ```
 
-唯一配置文件是 `RigiCompiler.csproj`（无 NuGet 第三方依赖，纯 BCL）。另有 `RigiCompiler.sln`。
+唯一配置文件是 `RigiCompiler.csproj`。依赖纪律：原则上纯 BCL、无第三方依赖——**唯一豁免是 Middleware 的 LLVMSharp.Interop + libLLVM（锁定 LLVM 20）**（选型裁决见 `docs/compiler/middleware/MIDDLEWARE_ARCHITECTURE.md` §2）。注意：libLLVM 原生资产经 runtime.json 传递、只在带 RID 时解析，csproj 已显式引用 win-x64/linux-x64 两个 runtime 包以支持无 RID 的 `dotnet build`/`dotnet run` 开发回路。新增依赖前必须先讨论并同步本文档；**优先复用现有的、高质量且久经验证的轮子（仓库内设施优先，外部库须成熟可靠），不重复造轮子**。另有 `RigiCompiler.sln`。
 
 ### 2.2 运行
 

@@ -9,7 +9,7 @@ namespace RigiCompiler.Tests
 {
     /// <summary>
     /// 命令行解析器测试：
-    /// - 注册表完整性（三个 COMMAND、名字唯一、子命令唯一、Mask 字段合法、互斥引用存在）；
+    /// - 注册表完整性（五个 COMMAND、名字唯一、子命令唯一、Mask 字段合法、互斥引用存在）；
     /// - COMMAND 匹配与未知 COMMAND；
     /// - 子命令匹配（--x v 与 --x=v 两形态）、参数个数校验（含任意个数）、
     ///   互斥检测、游离参数、重复子命令、未知子命令、--run 零参数合法、
@@ -28,13 +28,13 @@ namespace RigiCompiler.Tests
             Console.WriteLine("=== Testing registry integrity ===");
 
             var commands = CommandLineRegistry.Commands;
-            Check("注册表恰好四个 COMMAND", commands.Length == 4);
+            Check("注册表恰好五个 COMMAND", commands.Length == 5);
 
             var names = commands.Select(c => c.Mask.Name).ToList();
             Check("COMMAND 名字唯一", names.Distinct().Count() == names.Count);
-            Check("包含 compile/test/vm/help",
+            Check("包含 compile/test/vm/native/help",
                 names.Contains("compile") && names.Contains("test")
-                && names.Contains("vm") && names.Contains("help"));
+                && names.Contains("vm") && names.Contains("native") && names.Contains("help"));
             Check("COMMAND 名字不带 -- 前缀", commands.All(c => !c.Mask.Name.StartsWith("--")));
 
             foreach (var cmd in commands)
@@ -63,6 +63,10 @@ namespace RigiCompiler.Tests
             var vmSubs = vm.SubCommands.Select(s => s.Mask.Name).ToList();
             Check("vm 子命令齐全（--file/--max-steps/--entry-point/--verbose/--log-to）",
                 new[] { "--file", "--max-steps", "--entry-point", "--verbose", "--log-to" }.All(vmSubs.Contains));
+            var native = commands.First(c => c.Mask.Name == "native");
+            var nativeSubs = native.SubCommands.Select(s => s.Mask.Name).ToList();
+            Check("native 子命令齐全（--file/--out/--verbose/--log-to）",
+                new[] { "--file", "--out", "--verbose", "--log-to" }.All(nativeSubs.Contains));
             Check("help 无子命令", help.SubCommands.Count == 0);
             Console.WriteLine();
         }

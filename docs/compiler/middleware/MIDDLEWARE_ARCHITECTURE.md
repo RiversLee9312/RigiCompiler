@@ -60,10 +60,11 @@ BilModule（BIL 内存对象模型）
 
 | 部件 | 选型 | 理由 / 备选 |
 |---|---|---|
-| LLVM 集成 | **LLVMSharp 进程内**（绑定 20.1.x + libLLVM 20 NuGet runtime 包）；**锁定 LLVM 20** | 无 GC 设施需求使 C API 天花板不咬人（§4.1）；绑定与原生包同大版本对齐。Ubiquity.NET 排除（仅 win-x64） |
-| 链接器 | 捆绑 **lld**，外部进程 | 编译产物为 .o；链接是唯一保留的外部步骤 |
+| LLVM 集成 | **LLVMSharp 进程内**（绑定 20.1.x + libLLVM 20 NuGet runtime 包）；**锁定 LLVM 20** | 无 GC 设施需求使 C API 天花板不咬人（§4.1）；绑定与原生包同大版本对齐。Ubiquity.NET 排除（仅 win-x64）。注：runtime 包仅含 libLLVM 共享库；无 RID 的 `dotnet build`/`dotnet run` 开发回路需显式引用 runtime 包（csproj 已办） |
+| 链接器 | **lld**，外部进程；获取链 MW1 定稿（NuGet 无 lld 分发已核实，候选：LLVM 官方 release 二进制随仓库工具链按 RID 分发） | 编译产物为 .o；链接是唯一保留的外部步骤；届时同步 `.github/workflows/ci.yml` |
 | GC 引擎底座 | 教学级 Bacon-Rajan C 模板改造 | 候选底座 `rjungemann/turmeric` gc.c（MIT，纯 C、可剥离）；教学参照 `fitzgen/bacon-rajan-cc`（Rust，注释最全）；语义对照 Nim `lib/system/orc.nim`（位打包、rootIdx、自适应阈值）。论文并发版（Red/Orange/transfer buffer）无限期推迟 |
 | 分配器 | 首版用 CRT malloc；mimalloc（MIT）为后续可选替换 | GC 主堆自研；分配器层与 GC 解耦，可后换 |
+| rigi_rt 编译 | **clang 现场编译**（MW1 起；驱动定位/发现 clang 的获取链与 lld 同批定稿，NuGet 无 clang 编译器分发已核实；CI 需安装 clang，届时同步 `.github/workflows/ci.yml`） | 预编译 .lib/.a 入库排除（双平台二进制漂移与审查成本）；源码即真相，与本仓库同纪律 |
 | 事件/定时底座 | **libuv**（MIT，静态链接） | 跨平台事件循环 + 定时器 + 线程池 + 同步原语一体；win-x64（IOCP）/linux-x64（epoll）均一等公民；每 Worker 一个 loop，EventAlarm/sleep 以其为底座；Worker 唤醒走 `uv_async_send` |
 | 协程降级 | **自做状态机**，不用 `llvm.coro.*` | llvm.coro 跨版本 ABI 不保证兼容；frame 内精确根映射不可控（Rust 弃用先例）；RUNTIME §21 要求精确活跃引用映射 |
 | native FFI | 编译期直接生成调用，**不用 libffi** | ABI 编译期已知；libffi 只服务运行时动态签名场景 |

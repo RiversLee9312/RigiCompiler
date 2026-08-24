@@ -84,7 +84,7 @@ RigiCompiler/
 │   ├── Exceptions.cs            # LexerException / ParserException（用户源码错误）
 │   ├── CommandLine.cs           # CLI 内核：CommandLineMask（选项自描述元数据）、数据驱动解析器、
 │   │                            #   注册表、帮助文本程序生成
-│   ├── Commands.cs              # CLI 插件：compile/test/help 三个 COMMAND 及其 --sub-cmd
+│   ├── Commands.cs              # CLI 插件：compile/test/vm/native/help 五个 COMMAND 及其 --sub-cmd
 │   └── Logger.cs                # 唯一日志出口：Verbose/Warning/Error 分级；verbose 默认关闭，
 │                                #   --verbose 开控制台 verbose，--log-to 全量 JSONL 落盘
 ├── Semantic/                 # 中端 P1–P3 + 符号图 + 诊断
@@ -377,10 +377,23 @@ RigiCompiler/
 │   ├── BilVerifier.Types.cs     # §21.3 类型（指令读写分类唯一表 + 逐指令 switch；
 │   │                            #   §13.6 索引严格三元组查询）
 │   ├── BilVerifier.Flow.cs      # §21.4 保守 DA + §21.5 控制流 + §21.6 breakid
+│   ├── BilModuleMerger.cs       # 多文件模块合并（§17 切片消费侧：符号/函数重复即失败，
+│   │                            #   同名同内容资源去重；vm 与 Middleware Gate 共用）
 │   ├── BilVm.cs                 # VM 入口
 │   └── Vm/                      # VM 执行器（行为参考实现）：VmContext/VmExecutor/
 │                                #   VmCoroutine/VmTask/VmAlarm/VmException/VmHooks/
 │                                #   VmTypeOps + Values/ 值模型
+├── Middleware/               # BIL → 原生可执行（架构 docs/compiler/middleware/
+│                             #   MIDDLEWARE_ARCHITECTURE.md；依赖方向 Middleware → Bil 单向，
+│                             #   唯一豁免第三方依赖：LLVMSharp + libLLVM 锁 LLVM 20）
+│   ├── MwContext.cs             # 会话中枢（每模块一个，贯穿各层，逐层挂载产物）
+│   ├── Gate/BilGate.cs          # MW0 门禁：BilReader 接线 + BilVerifier 全规则
+│   │                            #   （BIL §23：类型非法 BIL 必拒；多文件经 BilModuleMerger 合并）
+│   ├── Symbols/                 # MW1 驻留符号表（canonical 字符串 intern 为对象，
+│   │                            #   引用相等即身份相等；MwSymbol/MwSymbolTable）
+│   ├── Emit/                    # MW6 骨架：LlvmHost（LLVM 一次性初始化 + 宿主
+│   │                            #   TargetMachine）+ ObjectEmitter（进程内验证/发射 .o）
+│   └── Cli/NativeCommand.cs     # native COMMAND（BIL → 原生目标文件驱动）
 ├── stdlib/                   # 编译器自携标准库源（EmbeddedResource 内嵌，见 StdlibSources；
 │                             #   六源，与用户源同走 P1–P4）
 │   ├── .bootstrap.rg         # 基元自举源（EnumerateInRange + core.Pair\<TKey, TValue>

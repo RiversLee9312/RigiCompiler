@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using RigiCompiler.Middleware;
 
 namespace RigiCompiler
 {
@@ -180,6 +181,7 @@ namespace RigiCompiler
             new CompileCommand(),
             new TestCommand(),
             new VmCommand(),
+            new NativeCommand(),
             new HelpCommand(),
         };
     }
