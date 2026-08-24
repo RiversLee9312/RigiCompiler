@@ -64,6 +64,11 @@ namespace RigiCompiler
             IReadOnlyList<SemanticSymbol>? explicitTypeArgs = null,
             TypeSymbol? receiverType = null)
         {
+            // 空候选集防护：对无 operator call 的类型（如未解包的
+            // Nullable<callable>——索引读恒返回 T?，§13.2）间接调用会
+            // 带入空列表。静默回退 null，由调用方按上下文落诊断
+            // （FoldSuffixes 报 not callable），此处无候选名可引述
+            if (candidates.Count == 0) return null;
             // 实参预绑定（无目标类型；null 字面量占位待胜者形参类型定型）：
             // 存在任意可变泛型包（全可变或固定+包混合）时必须先做——包类型
             // 实参推导需要实参静态类型（SYNTAX §4.3 ⑤）；多候选路径复用

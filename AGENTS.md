@@ -4,7 +4,7 @@
 > 本文件只放核心要求与指路；架构与开发细节见 `docs/agent_guide/`，语言/BIL/运行时规范见 `docs/` 索引。
 
 **项目名**: RigiCompiler
-**语言**: C#（.NET 8.0，控制台程序，`Nullable` 与 `ImplicitUsings` 已启用，纯 BCL 无第三方依赖）
+**语言**: C#（.NET 10.0，控制台程序，`Nullable` 与 `ImplicitUsings` 已启用，纯 BCL 无第三方依赖）
 **版本控制**: Git（`main` 分支；CI 见 `.github/workflows/ci.yml`）
 
 ⚠️ **仓库根在内层 `RigiCompiler/RigiCompiler/`（`.git` 在此）**，外层目录只放 `RigiCompiler.sln`，不是仓库；`dotnet build`/`dotnet run`/git 等工作目录同样是内层。

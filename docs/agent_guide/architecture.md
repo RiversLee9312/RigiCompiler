@@ -32,7 +32,7 @@ BIL VM 已是仓库的一部分（`Bil/Vm`，行为参考实现）。
 ```
 RigiCompiler/
 ├── Program.cs                # 薄入口：命令行解析 → 分发 → 退出码
-├── RigiCompiler.csproj      # net8.0，Exe，Nullable enable
+├── RigiCompiler.csproj      # net10.0，Exe，Nullable enable
 ├── AST/                      # AST 节点定义（按类别分文件）
 │   ├── ASTNode.cs               # AST 节点基类 + RootASTNode
 │   ├── SymbolNodes.cs           # 符号结构（Symbol/SymbolElement/SymbolASTNode）

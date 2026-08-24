@@ -15,7 +15,7 @@ dotnet clean
 
 ### 2.2 运行
 
-CLI 结构为 `<COMMAND> [--sub-cmd [args...]...]`，顶层 COMMAND 三个：`compile` / `test` / `help`。裸 `dotnet run` 等价于 `help`。
+CLI 结构为 `<COMMAND> [--sub-cmd [args...]...]`，顶层 COMMAND 四个：`compile` / `test` / `vm` / `help`。裸 `dotnet run` 等价于 `help`。
 
 ```bash
 dotnet run -- test --all                 # 全量测试（提交前验证入口；任意失败非零退出码并列出失败套件名）
@@ -25,8 +25,11 @@ dotnet run -- compile --file a.rg                    # 编译（语义分析 P1�
 dotnet run -- compile --file a.rg --parse-only       # 只解析，AST 以 JSONL 输出到 stdout
 dotnet run -- compile --file a.rg --parse-only --dump-ast ast.jsonl   # AST JSONL 写文件
 dotnet run -- compile --file a.rg --sema-only        # 只跑语义分析（P1–P3），输出诊断后结束
-dotnet run -- compile --file a.rg --emit-bil a.bil   # 语义通过后发射 BIL 文本写文件（先经 BilVerifier 验证，非法即报错不落盘）
+dotnet run -- compile --file a.rg --emit-bil a.bil   # 语义通过后发射 BIL（先经 BilVerifier 验证）；
+                                                     #   §17.2 按命名空间切分：全局写 a.bil，其余写 a.<ns>.bil
 dotnet run -- compile --file a.rg --explain-dispatch # 派发链诊断报告（烘焙链 + 降级路由，RUNTIME §15）
+dotnet run -- vm --file a.bil a.core.bil ...         # 加载执行 BIL（§17.2：须传入全部切片还原完整模块）
+dotnet run -- vm --file a.bil a.core.bil --entry-point <符号>   # 多 entrypoint 时显式选入口
 dotnet run -- help                       # 全部 COMMAND 与子命令概览（文本由注册表程序生成）
 dotnet run -- help compile               # 单个 COMMAND 详情
 dotnet run -- help compile.file          # 单个子命令详情（子命令名不带 -- 前缀）
@@ -48,7 +51,7 @@ dotnet publish -c Release -r linux-x64 -o publish/linux-x64   # 产物：publish
 dotnet publish -c Release -r win-x64 -o publish/win-x64
 ```
 
-- **不支持跨 OS 交叉编译**：linux-x64 产物必须在 Linux（如 WSL）上构建；Linux 侧需 `dotnet-sdk-8.0` + `clang` + `zlib1g-dev`。
+- **不支持跨 OS 交叉编译**：linux-x64 产物必须在 Linux（如 WSL）上构建；Linux 侧需 `dotnet-sdk-10.0` + `clang` + `zlib1g-dev`。
 - **反射靠两份配置保住**：`ILLink.Roots.xml`（`preserve="all"`，保整程序集类型/成员元数据，供 `Assembly.GetTypes()`、`Activator.CreateInstance`、字段/属性反射使用）+ `JsonSerializerIsReflectionEnabledByDefault=true`（强开 STJ 反射序列化，AOT 下默认禁用）。AstJsonl 序列化/反序列化（`--dump-ast`/`--parse-only`）与 ASTIntegrityValidator 依赖它们，删掉会导致 AOT 产物运行时崩溃或静默丢数据。
 - **性能注意**：AOT 无 JIT 的运行时优化（去虚拟化/PGO），重接口分派路径比 CoreCLR 慢约 3 倍——fuzz 类套件在 AOT 产物上明显更慢，日常全量测试建议仍用普通构建跑。
 - **CI**：`.github/workflows/ci.yml` 按上述流程在 `windows-latest`（win-x64）与 `ubuntu-latest`（linux-x64，均为 amd64）双平台分别发布 AOT 产物并用产物跑全量测试（AOT 不支持跨 OS 交叉编译，只能按平台分别构建）。
