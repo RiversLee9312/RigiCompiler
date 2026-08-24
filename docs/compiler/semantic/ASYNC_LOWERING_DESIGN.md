@@ -75,8 +75,7 @@ continuation 后注册 PollingAlarm/EventAlarm 等待；即使 Alarm 已就绪�
 
 把值写入 Coroutine frame、Task 终态、waiter 链、closure 环境或 using 清理记录均可能
 建立/移除托管引用。Middleware 必须把引用槽写入、对应 acquire/release 与候选元数据更新
-放在 `RUNTIME.md` §23 定义的同一个 ownership region 中；16 字节原子胖引用写入不能替代
-该 fence。
+放在 `RUNTIME.md` §23 定义的同一个 ownership region 中。
 
 顺序要求：
 

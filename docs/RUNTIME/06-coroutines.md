@@ -216,7 +216,7 @@ CoroutineLocal 是「每协程一个实例」的**唯一**机制。`singleton` c
 
 本节协程语义不规定实现采用 stackful 栈、分段栈或 stackless continuation；无论采用何种表示，都必须提供精确的活跃引用映射，并与 `TypeSheet`/`refMap` 对 Object 和 rich Box 内容的扫描协同工作。
 
-§3 的 128-bit 原子读写只保证胖引用不撕裂；对象生命周期由 §22 的 ARC 和 §23 的 macroGC fence 保证。以下运行时边界至少建立 happens-before：
+胖引用读写非原子，并发竞争同一引用槽属用户数据竞争（§3）；对象生命周期由 §22 的 ARC 和 §23 的 macroGC fence 保证。以下运行时边界至少建立 happens-before：
 
 - async Coroutine 发布前的调用参数/捕获初始化 → 新 Coroutine 开始执行；
 - Task 对应 Coroutine 的终止前写入 → waiter 的 await 成功恢复；

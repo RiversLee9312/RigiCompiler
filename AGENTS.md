@@ -15,7 +15,7 @@ Rigi 是一门现代的、类型安全的编程语言（完全具化泛型、原
 
 ```
 Rigi 源码 (.rg) → Frontend (Lexer + Parser) → 语义分析（P1–P3）→ Lowering（P4）
-              → BIL →（Middleware → LLVM，不在本仓库）
+              → BIL → Middleware → LLVM → 原生可执行
 ```
 
 ## 2. 构建与验证（动手前后必跑）
@@ -55,6 +55,7 @@ dotnet run -- test --run N   # 按编号跑单套件（编号见裸 dotnet run -
 | `docs/agent_guide/architecture.md` | 代码库结构 + 核心设计决策（**改动代码前必读**）⭐⭐⭐ |
 | `docs/agent_guide/development.md` | 构建/CLI/测试策略/开发约定/新功能标准流程 ⭐⭐ |
 | `docs/compiler/semantic/SEMANTIC_ARCHITECTURE.md` | 中端（语义分析 + Lowering）架构 ⭐⭐⭐ |
+| `docs/compiler/middleware/MIDDLEWARE_ARCHITECTURE.md` | Middleware（BIL → 原生）架构 ⭐⭐⭐ |
 | `docs/compiler/vm/BIL_VM_DESIGN.md` | BIL VM 设计（值模型/执行模型/hook 表）⭐⭐ |
 | `docs/compiler/syntax/EXPRESSION_ARCHITECTURE.md` | 表达式层架构专项 ⭐⭐ |
 | `docs/compiler/syntax/FRONTEND_TYPES.md` | 前端数据类型（Token/AST/Span）⭐⭐ |

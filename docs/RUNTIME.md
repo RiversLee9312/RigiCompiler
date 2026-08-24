@@ -11,7 +11,7 @@
 
 | § | 章节 | 文件 |
 |---|---|---|
-| §1–§3 | 设计总览与取舍 / 胖引用（128-bit）/ 引用写入原子性与并发 | [RUNTIME/01-overview-fat-reference.md](RUNTIME/01-overview-fat-reference.md) |
+| §1–§3 | 设计总览与取舍 / 胖引用（128-bit）/ 引用读写的并发语义 | [RUNTIME/01-overview-fat-reference.md](RUNTIME/01-overview-fat-reference.md) |
 | §4–§5 | Box（统一泛型值槽）/ `Span\<T>` | [RUNTIME/02-box-span.md](RUNTIME/02-box-span.md) |
 | §6–§9 | TypeSheet / vtable 模型 / iMap、refMap 与 GC 追踪 / 加载期扁平化 | [RUNTIME/03-type-metadata.md](RUNTIME/03-type-metadata.md) |
 | §10–§13 | 泛型的运行时实现 / `Type\<T>`·typeOf·new / is·supers·with / cast | [RUNTIME/04-generics-cast.md](RUNTIME/04-generics-cast.md) |
