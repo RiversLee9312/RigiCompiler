@@ -8,10 +8,13 @@ using RigiCompiler.Middleware;
 namespace RigiCompiler.Tests
 {
     /// <summary>
-    /// Middleware MW0 套件：
+    /// Middleware 套件：
     /// - Gate 门禁（BIL §23：解析错误与验证错误的 BIL 必须被拒，错误人类可读）；
     /// - 驻留符号表（类型/成员登记、外部引用、驻留=引用相等）；
-    /// - 空模块 .o 发射（LLVMSharp 进程内管线冒烟，工具链契约）；
+    /// - MIR 构造（BIL → CFG 直译形状、MwContext 挂载）；
+    /// - 实现绑定（类型驱动操作的唯一实现查询：primitive/运行时面/native/直接调用）；
+    /// - LLVM 模块构建与 .o 发射（LLVMSharp 进程内管线、.ll 黄金锚点）；
+    /// - 受控失败（合法但超出现阶段的 BIL → MwNotSupportedException，非崩溃）；
     /// - native CLI 端到端（参数校验、拒绝路径、发射落盘、stdout 纯净）。
     /// </summary>
     public static class MiddlewareTests
@@ -83,6 +86,50 @@ namespace RigiCompiler.Tests
             "    }\n" +
             "}\n";
 
+        // hello world + 字符串拼接的手写模块（.ll 黄金锚点用例）
+        private const string HelloConcatBil =
+            "BIL \"1.1\"\n" +
+            "\n" +
+            "Metadata {\n" +
+            "    module = string \"hello\"\n" +
+            "}\n" +
+            "\n" +
+            "Resources {\n" +
+            "    R_Hello = string \"Hello, \",\n" +
+            "    R_World = string \"world!\\n\",\n" +
+            "    R_Zero = i32 0\n" +
+            "}\n" +
+            "\n" +
+            "LocalSymbols {\n" +
+            "    .method $main()@.i32 pub entrypoint\n" +
+            "}\n" +
+            "\n" +
+            "ExternalSymbols {\n" +
+            "    .type core.io::Console = class pub {\n" +
+            "        .static-method core.io::Console$.static.print(value:.string)@.void priv native symbol(\"print\") lib(\"rigi_rt\")\n" +
+            "    }\n" +
+            "}\n" +
+            "\n" +
+            "fn($main()@.i32) {\n" +
+            "    .args {\n" +
+            "        .return = .i32\n" +
+            "    }\n" +
+            "    .vars {\n" +
+            "        .string .t0,\n" +
+            "        .string .t1,\n" +
+            "        .string .t2,\n" +
+            "        .i32 result\n" +
+            "    }\n" +
+            "    .block entry entrypoint {\n" +
+            "        load res(R_Hello) $.t0\n" +
+            "        load res(R_World) $.t1\n" +
+            "        add $.t0 $.t1 $.t2\n" +
+            "        invoke.noret fn(core.io::Console$.static.print(value:.string)@.void) [$.t2]\n" +
+            "        load res(R_Zero) $result\n" +
+            "        ret $result\n" +
+            "    }\n" +
+            "}\n";
+
         public static int RunAll()
         {
             TestHarness.Reset();
@@ -92,8 +139,16 @@ namespace RigiCompiler.Tests
             TestGateAcceptsValidModule();
             TestHarness.Section("Middleware 驻留符号表");
             TestSymbolTable();
-            TestHarness.Section("Middleware 空模块 .o 发射");
+            TestHarness.Section("Middleware MIR 构造");
+            TestMirConstruction();
+            TestHarness.Section("Middleware 实现绑定");
+            TestBinding();
+            TestHarness.Section("Middleware 目标文件发射");
             TestObjectEmission();
+            TestHarness.Section("Middleware .ll 黄金锚点");
+            TestLlGoldenAnchors();
+            TestHarness.Section("Middleware 受控失败");
+            TestNotSupported();
             TestHarness.Section("native CLI 端到端");
             TestNativeCli();
             return TestHarness.Summary("Middleware");
@@ -171,6 +226,204 @@ namespace RigiCompiler.Tests
                 symbols.FindType("Nope") == null && symbols.FindMember("Nope$f()@.void") == null);
         }
 
+        // ===== MIR 构造 =====
+
+        private static void TestMirConstruction()
+        {
+            // 编译器真实产物（println 全链）经文本往返 + 门禁后进 MIR
+            var (_, _, text) = BilTestHarness.EmitBilUnit(
+                "import core.io.Console\n" +
+                "pub func main(): i32 {\n" +
+                "    Console.println(\"hello\")\n" +
+                "    return 0\n" +
+                "}\n");
+            var gate = BilGate.Accept(text, "mir.bil");
+            TestHarness.CheckTrue("MIR 输入门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            var context = new MwContext(gate.Module!);
+            var mir = MirBuilder.Build(context);
+
+            TestHarness.CheckTrue("MwContext 挂载 MIR", ReferenceEquals(context.Mir, mir));
+            TestHarness.CheckTrue("MIR 函数数（main + println）", mir.Functions.Count == 2,
+                string.Join(", ", mir.Functions.Select(f => f.Symbol.Canonical)));
+
+            var main = mir.Functions.First(f => f.Symbol.Canonical == "$main()@.i32");
+            TestHarness.CheckTrue("main 是入口", main.IsEntrypoint);
+            TestHarness.CheckTrue("main 返回 .i32", main.ReturnType.Key == "i32");
+            TestHarness.CheckTrue("main 单 block", main.Blocks.Count == 1);
+            TestHarness.CheckTrue("main 终结符是带值 MirRet",
+                main.Blocks[0].Terminator is MirRet { Value: not null });
+            TestHarness.CheckTrue("main 首指令是资源物化",
+                main.Blocks[0].Instructions[0] is MirLoadResource);
+            var printlnCall = main.Blocks[0].Instructions.OfType<MirCall>().FirstOrDefault();
+            TestHarness.CheckTrue("main 含调用", printlnCall != null);
+            TestHarness.CheckTrue("调用目标是 println 驻留符号",
+                printlnCall!.Target.Canonical.Contains("println"));
+            TestHarness.CheckTrue("void 调用无结果槽", printlnCall.Result == null);
+            TestHarness.CheckTrue("调用目标与符号表同一对象（驻留）",
+                ReferenceEquals(printlnCall.Target,
+                    context.Symbols.FindMember(printlnCall.Target.Canonical)));
+
+            var println = mir.Functions.First(f => f.Symbol.Canonical.Contains("println"));
+            TestHarness.CheckTrue("println 非入口", !println.IsEntrypoint);
+            TestHarness.CheckTrue("println 返回 .void", println.ReturnType.IsVoid);
+            TestHarness.CheckTrue("println 单 string 参数",
+                println.Parameters.Count == 1 && println.Parameters[0].Type.IsString);
+            TestHarness.CheckTrue("println 体内含 string 拼接运算",
+                println.Blocks[0].Instructions.OfType<MirBinaryIntrinsic>().Any(
+                    b => b.Op == Bil.BilBinaryOp.Add && b.LeftType.IsString));
+            TestHarness.CheckTrue("局部查找可用", println.FindLocal(println.Parameters[0].Name)
+                .Type.IsString);
+        }
+
+        // ===== 实现绑定 =====
+
+        private static void TestBinding()
+        {
+            // string + 是 op 级内建 → 运行时面；别名 core::String 与 .string 同键
+            var concat = ImplBinder.BindBinary(Bil.BilBinaryOp.Add,
+                MirType.Of(".string"), MirType.Of("core::String"), MirType.Of(".string"));
+            TestHarness.CheckTrue("string + → rigi_string_concat 运行时面",
+                concat is RuntimeFaceBinding { FaceSymbol: RuntimeFaces.StringConcat });
+
+            TestHarness.CheckTrue("i32 + → IntAdd 指令选择",
+                ImplBinder.BindBinary(Bil.BilBinaryOp.Add,
+                    MirType.Of(".i32"), MirType.Of(".i32"), MirType.Of(".i32"))
+                    is PrimitiveOpBinding { Kind: PrimitiveOpKind.IntAdd });
+            TestHarness.CheckTrue("u64 / → IntUDiv",
+                ImplBinder.BindBinary(Bil.BilBinaryOp.Div,
+                    MirType.Of(".u64"), MirType.Of(".u64"), MirType.Of(".u64"))
+                    is PrimitiveOpBinding { Kind: PrimitiveOpKind.IntUDiv });
+            TestHarness.CheckTrue("i64 / → IntSDiv",
+                ImplBinder.BindBinary(Bil.BilBinaryOp.Div,
+                    MirType.Of(".i64"), MirType.Of(".i64"), MirType.Of(".i64"))
+                    is PrimitiveOpBinding { Kind: PrimitiveOpKind.IntSDiv });
+            TestHarness.CheckTrue("f64 >= → FloatCmpGe",
+                ImplBinder.BindBinary(Bil.BilBinaryOp.CmpGe,
+                    MirType.Of(".f64"), MirType.Of(".f64"), MirType.Of(".bool"))
+                    is PrimitiveOpBinding { Kind: PrimitiveOpKind.FloatCmpGe });
+            TestHarness.CheckTrue("bool and → LogicAnd",
+                ImplBinder.BindBinary(Bil.BilBinaryOp.And,
+                    MirType.Of(".bool"), MirType.Of(".bool"), MirType.Of(".bool"))
+                    is PrimitiveOpBinding { Kind: PrimitiveOpKind.LogicAnd });
+            TestHarness.CheckTrue("i32 取负 → IntNeg",
+                ImplBinder.BindUnary(Bil.BilUnaryOp.Opposite,
+                    MirType.Of(".i32"), MirType.Of(".i32"))
+                    is PrimitiveOpBinding { Kind: PrimitiveOpKind.IntNeg });
+            TestHarness.CheckTrue("bool not → LogicNot",
+                ImplBinder.BindUnary(Bil.BilUnaryOp.Not,
+                    MirType.Of(".bool"), MirType.Of(".bool"))
+                    is PrimitiveOpBinding { Kind: PrimitiveOpKind.LogicNot });
+
+            // 不支持组合 → MwNotSupportedException（受控失败，非崩溃）
+            var unsupported = false;
+            try
+            {
+                ImplBinder.BindBinary(Bil.BilBinaryOp.Add,
+                    MirType.Of(".string"), MirType.Of(".i32"), MirType.Of(".string"));
+            }
+            catch (MwNotSupportedException)
+            {
+                unsupported = true;
+            }
+            TestHarness.CheckTrue("string + i32 受控拒绝", unsupported);
+
+            // 调用绑定：native 声明 → NativeDirectBinding；本地 fn → DirectCallBinding
+            var gate = BilGate.Accept(HelloConcatBil, "bind.bil");
+            var context = new MwContext(gate.Module!);
+            var nativePrint = context.Symbols.FindMember(
+                "core.io::Console$.static.print(value:.string)@.void");
+            TestHarness.CheckTrue("native print → NativeDirectBinding(rigi_rt, print)",
+                ImplBinder.BindCall(nativePrint!) is NativeDirectBinding
+                { Library: "rigi_rt", Symbol: "print" });
+            var main = context.Symbols.FindMember("$main()@.i32");
+            TestHarness.CheckTrue("本地 fn → DirectCallBinding",
+                ImplBinder.BindCall(main!) is DirectCallBinding);
+
+            // canonical 签名解析（native 声明无 fn 体，签名从符号文本解析）
+            var signature = CanonicalSignature.Parse(
+                "core.io::Console$.static.print(value:.string)@.void");
+            TestHarness.CheckTrue("签名解析：参数 名:类型",
+                signature.Parameters.Count == 1 && signature.Parameters[0].Name == "value"
+                && signature.Parameters[0].TypeRef == ".string");
+            TestHarness.CheckTrue("签名解析：返回类型", signature.ReturnTypeRef == ".void");
+            var nested = CanonicalSignature.Parse("f(m:.map<.string, .i64>, x:.i32)@.void");
+            TestHarness.CheckTrue("签名解析：嵌套泛型逗号不分割",
+                nested.Parameters.Count == 2
+                && nested.Parameters[0].TypeRef == ".map<.string, .i64>");
+        }
+
+        // ===== .ll 黄金锚点 =====
+
+        private static void TestLlGoldenAnchors()
+        {
+            var gate = BilGate.Accept(HelloConcatBil, "golden.bil");
+            TestHarness.CheckTrue("黄金用例门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            var context = new MwContext(gate.Module!);
+            var mir = MirBuilder.Build(context);
+            using var module = ModuleBuilder.Build(context, mir);
+            var ll = module.PrintToString();
+
+            // 黄金快照的 MW1 形态：锚定关键行（全文黄金比对随 .ll 快照基建落地）
+            TestHarness.CheckTrue("模块名来自 Metadata", ll.Contains("; ModuleID = 'hello'"), ll);
+            TestHarness.CheckTrue("字符串字面量进内部全局",
+                ll.Contains("@str.R_Hello = internal constant [7 x i8] c\"Hello, \""), ll);
+            TestHarness.CheckTrue("转义换行进字节常量",
+                ll.Contains("c\"world!\\0A\""), ll);
+            TestHarness.CheckTrue("入口发射为 rigi_entry",
+                ll.Contains("define i32 @rigi_entry()"), ll);
+            TestHarness.CheckTrue("string + → rigi_string_concat 调用",
+                ll.Contains("call void @rigi_string_concat(ptr"), ll);
+            TestHarness.CheckTrue("native print → rigi_print 声明",
+                ll.Contains("declare void @rigi_print(ptr)"), ll);
+            TestHarness.CheckTrue("返回装载 i32 0",
+                ll.Contains("ret i32"), ll);
+        }
+
+        // ===== 受控失败 =====
+
+        private static void TestNotSupported()
+        {
+            // 合法 BIL（控制流 if 已过门禁）超出现阶段 MIR 面 → MwNotSupportedException
+            var (_, _, text) = BilTestHarness.EmitBilUnit(
+                "pub func main(): i32 {\n" +
+                "    if (1 < 2) { return 1 }\n" +
+                "    return 0\n" +
+                "}\n");
+            var gate = BilGate.Accept(text, "if.bil");
+            TestHarness.CheckTrue("if 模块门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            var caught = false;
+            try
+            {
+                MirBuilder.Build(new MwContext(gate.Module!));
+            }
+            catch (MwNotSupportedException)
+            {
+                caught = true;
+            }
+            TestHarness.CheckTrue("多 block 函数 MIR 构造受控拒绝", caught);
+
+            // CLI 路径：受控失败转退出码 2 而非崩溃
+            var dir = Path.Combine(Path.GetTempPath(), $"rigi_mw_unsupported_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(dir);
+            try
+            {
+                var bilPath = Path.Combine(dir, "if.bil");
+                File.WriteAllText(bilPath, text, new UTF8Encoding(false));
+                var result = RunNative("native", "--file", bilPath,
+                    "--emit-obj", Path.Combine(dir, "if.o"));
+                TestHarness.CheckTrue("不支持形态 CLI 退出码 2", result.Code == 2);
+                TestHarness.CheckTrue("不支持形态错误走 stderr", result.Err.Contains("MW1"),
+                    result.Err);
+            }
+            finally
+            {
+                Directory.Delete(dir, recursive: true);
+            }
+        }
+
         // ===== 空模块 .o 发射 =====
 
         private static void TestObjectEmission()
@@ -181,9 +434,11 @@ namespace RigiCompiler.Tests
             {
                 var gate = BilGate.Accept(MinimalValidBil, "ok.bil");
                 var context = new MwContext(gate.Module!);
+                var mir = MirBuilder.Build(context);
+                using var module = ModuleBuilder.Build(context, mir);
                 var objPath = Path.Combine(dir, "symtest.o");
 
-                var ok = ObjectEmitter.TryEmitObject(context, objPath, out var error);
+                var ok = ObjectEmitter.TryEmitObject(module, objPath, out var error);
                 TestHarness.CheckTrue("空模块 .o 发射成功", ok, error);
                 TestHarness.CheckTrue(".o 已落盘且非空",
                     File.Exists(objPath) && new FileInfo(objPath).Length > 0);
@@ -206,7 +461,7 @@ namespace RigiCompiler.Tests
 
                 // 失败路径：不存在目录下的输出路径 → false + 可读错误（不抛崩）
                 var badPath = Path.Combine(dir, "no_such_dir", "x.o");
-                var fail = ObjectEmitter.TryEmitObject(context, badPath, out var failError);
+                var fail = ObjectEmitter.TryEmitObject(module, badPath, out var failError);
                 TestHarness.CheckTrue("不可写路径发射返回 false", !fail);
                 TestHarness.CheckTrue("不可写路径错误可读", failError.Length > 0);
             }
@@ -242,7 +497,7 @@ namespace RigiCompiler.Tests
                 var okPath = Path.Combine(dir, "ok.bil");
                 File.WriteAllText(okPath, MinimalValidBil, new UTF8Encoding(false));
                 var objPath = Path.Combine(dir, "app.o");
-                var accepted = RunNative("native", "--file", okPath, "--out", objPath);
+                var accepted = RunNative("native", "--file", okPath, "--emit-obj", objPath);
                 TestHarness.CheckTrue("native 合法 BIL 退出码 0", accepted.Code == 0, accepted.Err);
                 TestHarness.CheckTrue("native 发射 .o 落盘",
                     File.Exists(objPath) && new FileInfo(objPath).Length > 0);

@@ -14,7 +14,7 @@
 ## 1. 定位与总体管线
 
 Middleware 的输入是符合 `BIL_STANDARD.md` 的 BIL 模块，输出是经 LLVM 工具链与
-`rigi_rt` 静态库链接的原生可执行文件。Middleware 与 `rigi_rt` 均为**本仓库**的
+`rigi_rt`（C，bitcode 合并 + 链接）的原生可执行文件。Middleware 与 `rigi_rt` 均为**本仓库**的
 顶层组成部分。
 
 ```text
@@ -28,7 +28,9 @@ BilModule（BIL 内存对象模型）
     ↓ MW4 MIR pass 群（wrapper 烘焙 / ARC 注入 / 协程状态机 / cell 消除 / devirt）
     ↓ MW5 布局与 ABI（TypeSheet/vtable/iMap/refMap 发射计划、字段偏移、调用约定）
     ↓ MW6 LLVM 模块构建（LLVMSharp 进程内）
-    ↓ 进程内 verify / 优化 / 目标文件发射；lld（外部进程）链接 rigi_rt（C 静态库）
+    ↓ 进程内 verify / 优化 / 目标文件发射；rigi_rt 经 clang 编成 LLVM bitcode，
+       进程内合并进模块参与统一优化
+    ↓ clang 驱动（-fuse-ld=lld）链接 CRT
 原生可执行文件
 ```
 
@@ -40,7 +42,8 @@ BilModule（BIL 内存对象模型）
 2. **经 LLVMSharp 进程内构建 LLVM 模块，锁定 LLVM 20**。绑定层最新跟随上游
    20.1.x，libLLVM 原生库经 NuGet runtime 包按 RID 分发（win-x64/linux-x64
    均有），免工具链安装；校验、新 PM 优化管线、目标文件发射全部进程内完成，
-   唯一保留的外部进程是 lld 链接。.ll 文本仍由 PrintModule 产出，作调试与黄金
+   保留的外部进程只有 clang（rigi_rt 现场编译 + 驱动 lld 链接）。.ll 文本仍由
+   PrintModule 产出，作调试与黄金
    快照产物。代价：绑定滞后上游（当前 22）——以锁版换绑定可用性；NativeAOT
    发布形态为「AOT exe + libLLVM 边车」。
 3. **语言语义 pass 自做，通用优化全交 LLVM**。类型驱动操作绑定、wrapper 烘焙、
@@ -51,8 +54,10 @@ BilModule（BIL 内存对象模型）
    生成的 ARC acquire/release 调用保证；macroGC 是候选驱动的循环收集器
    （Bacon-Rajan），从 release 路径登记的候选出发做图染色，从不枚举栈/全局根
    （§4）。
-5. **运行时逻辑沉在 C 静态库 `rigi_rt`**：ARC、macroGC、协程/Executor/Alarm、
-   native shim。Middleware 生成的 .ll 只发射对这些运行时面的调用。
+5. **运行时逻辑沉在 C 库 `rigi_rt`**：ARC、macroGC、协程/Executor/Alarm、
+   native shim。Middleware 生成的 .ll 只发射对这些运行时面的调用；rigi_rt
+   经 clang 编成 LLVM bitcode 进程内合并进模块（§2），运行时面随统一优化
+   管线内联。
 
 ---
 
@@ -61,10 +66,10 @@ BilModule（BIL 内存对象模型）
 | 部件 | 选型 | 理由 / 备选 |
 |---|---|---|
 | LLVM 集成 | **LLVMSharp 进程内**（绑定 20.1.x + libLLVM 20 NuGet runtime 包）；**锁定 LLVM 20** | 无 GC 设施需求使 C API 天花板不咬人（§4.1）；绑定与原生包同大版本对齐。Ubiquity.NET 排除（仅 win-x64）。注：runtime 包仅含 libLLVM 共享库；无 RID 的 `dotnet build`/`dotnet run` 开发回路需显式引用 runtime 包（csproj 已办） |
-| 链接器 | **lld**，外部进程；获取链定稿：CI 用 GitHub runner 预装（windows-latest: `C:\Program Files\LLVM`，ubuntu-latest: `/usr/bin/ld.lld`），不耗额外 action 额度；开发机 PATH 优先，缺则 `tools/Fetch-LlvmToolchain.ps1` 下载官方 20.1.2 选择性部件缓存 `tools/.llvm/`（gitignored，SHA256 钉版校验） | 编译产物为 .o；链接是唯一保留的外部步骤；runner 预装版本漂移可容忍（lld 只链接自产 .o 与 rigi_rt）；native 驱动解析顺序 `--toolchain` → `RIGI_LLVM` → `tools/.llvm/` → PATH |
+| 链接器 | **lld，经 clang 驱动（-fuse-ld=lld）；CRT 发现交 clang**；获取链定稿：CI 用 GitHub runner 预装（windows-latest: `C:\Program Files\LLVM`，ubuntu-latest: `/usr/bin/ld.lld`），不耗额外 action 额度；开发机 PATH 优先，缺则 `tools/Fetch-LlvmToolchain.ps1` 下载官方 20.1.2 选择性部件缓存 `tools/.llvm/`（gitignored，SHA256 钉版校验） | 编译产物为 .o；链接是唯一保留的外部步骤之一；runner 预装版本漂移可容忍（lld 只链接自产 .o 与 rigi_rt）；native 驱动解析顺序 `--toolchain` → `RIGI_LLVM` → `tools/.llvm/` → PATH |
 | GC 引擎底座 | 教学级 Bacon-Rajan C 模板改造 | 候选底座 `rjungemann/turmeric` gc.c（MIT，纯 C、可剥离）；教学参照 `fitzgen/bacon-rajan-cc`（Rust，注释最全）；语义对照 Nim `lib/system/orc.nim`（位打包、rootIdx、自适应阈值）。论文并发版（Red/Orange/transfer buffer）无限期推迟 |
 | 分配器 | 首版用 CRT malloc；mimalloc（MIT）为后续可选替换 | GC 主堆自研；分配器层与 GC 解耦，可后换 |
-| rigi_rt 编译 | **clang 现场编译**（MW1 起；获取链与 lld 同：CI 用 runner 预装 clang，开发机 PATH 优先、缺则 Fetch-LlvmToolchain.ps1 钉版缓存） | 预编译 .lib/.a 入库排除（双平台二进制漂移与审查成本）；源码即真相，与本仓库同纪律；clang 编 .c 需 CRT 头文件——Windows 自动探测已装 VS/SDK，Linux 用系统 glibc 头文件 |
+| rigi_rt 编译 | **clang 现场编译**（MW1 起；获取链与 lld 同：CI 用 runner 预装 clang，开发机 PATH 优先、缺则 Fetch-LlvmToolchain.ps1 钉版缓存）。产物形态：LLVM bitcode（`-emit-llvm -c`，unity build）+ EmbeddedResource 内嵌源 + 内容哈希缓存；Emit 阶段 `LLVMLinkModules2` 进程内合并进模块，运行时面经统一优化管线内联——C 写的 access helper 由此获得零成本内联 | 预编译 .lib/.a 入库排除（双平台二进制漂移与审查成本）；源码即真相，与本仓库同纪律；clang 编 .c 需 CRT 头文件——Windows 自动探测已装 VS/SDK，Linux 用系统 glibc 头文件 |
 | 事件/定时底座 | **libuv**（MIT，静态链接） | 跨平台事件循环 + 定时器 + 线程池 + 同步原语一体；win-x64（IOCP）/linux-x64（epoll）均一等公民；每 Worker 一个 loop，EventAlarm/sleep 以其为底座；Worker 唤醒走 `uv_async_send` |
 | 协程降级 | **自做状态机**，不用 `llvm.coro.*` | llvm.coro 跨版本 ABI 不保证兼容；frame 内精确根映射不可控（Rust 弃用先例）；RUNTIME §21 要求精确活跃引用映射 |
 | native FFI | 编译期直接生成调用，**不用 libffi** | ABI 编译期已知；libffi 只服务运行时动态签名场景 |
@@ -228,6 +233,9 @@ rigi_rt 导出（命名待定，形态固定）：
 | 协程七项保留面 | 见 `ASYNC_LOWERING_DESIGN.md` §7 表（coroutine.spawn / task.await / coroutine.yield / coroutine.complete/fail/cancel / coroutine.frame / gc.ownership-region / alarm.poll/event） |
 | GC Alarm 族 | GCAlarm 与 GC 唤醒 Alarm 的创建与触发 |
 
+注：运行时面一律经 bitcode 合并进模块参与优化；频繁调用的面（如胖引用 access
+helper）由优化管线内联，必要时以 `noinline` 标注例外。
+
 ### 4.9 对象头与 refMap
 
 对象头：typeid（→TypeSheet）+ RC 计数 + 颜色/候选索引位（位打包）。rich
@@ -270,6 +278,12 @@ M88 边界：frontend 只携带标记，烘焙全归 Middleware。
 - `invoke.indirect` → callable 协议（`$$call` 虚调用）；
 - native 函数：直接生成对 `rigi_rt` shim 的调用；返回用户引用类型的 FFI ABI
   在此定稿（SYNTAX §4.6 / RUNTIME §26 的留白）。
+
+**String 过渡 ABI（MW1 定稿）**：String 的过渡表示为 `{ i8* data, i64 len }`
+UTF-8，按值语义。Rigi 内部调用按值传 `{i8*, i64}`；C 边界（native 面与运行时
+面）一律经 `rigi_string*` 传递（StringOut 出参置首参），规避 16 字节 struct
+按值传递的 win-x64/SysV ABI 分歧。MW7 胖值化时统一迁移，迁移点集中在
+Layout 与 RuntimeFaces 两处。
 
 ## 8. 异常机制
 
@@ -323,22 +337,26 @@ BIL §16.7 的 try（catch-table 形式）在 MW3 展开为 EH 边与 pad 块，
 ## 11. 代码组织
 
 ```text
-Middleware/                 # 本仓库顶层目录（C#，.NET 10 LTS，纯 BCL）
-├── Gate/                   # BilReader 接线 + BilVerifier 门禁
-├── Symbols/                # MW 符号图 / 类型表（驻留）
-├── Binding/                # 实现绑定（唯一实现查询 / devirt 知识）
-├── Mir/                    # MIR 模型 + 结构化块 → CFG 构造（含 EH 边）
-├── Passes/                 # WrapperBaking / RcInjection / CoroutineSplit / CellElim / Devirt
-├── Layout/                 # 布局与 ABI 决策、元数据发射计划
-├── Emit/                   # LLVMSharp 模块构建 / .ll 打印 / 目标文件发射
-└── Cli/                    # 驱动（输入 .bil，进程内 LLVM 管线，调 lld 链接 rigi_rt）
+Middleware/                 # 本仓库顶层目录（C#，.NET 10 LTS）
+├── MwContext.cs            # 会话中枢（每模块一个，贯穿各层，逐层挂载产物）
+├── MwNotSupportedException.cs # 未覆盖功能的统一内部异常
+├── Gate/                   # BilReader 接线 + BilVerifier 门禁（多文件经 BilModuleMerger 合并）
+├── Symbols/                # MW 符号图 / 类型表（canonical intern 驻留）
+├── Binding/                # 实现绑定（ImplBinding 记录族 + ImplBinder 唯一实现查询）
+├── Mir/                    # MIR 模型 + MirBuilder（BIL 结构化块 → CFG 直译，从入口出发按 invoke 边可达性构建）
+├── Passes/                 # MIR pass 群（WrapperBaking / RcInjection / CoroutineSplit / CellElim / Devirt；随 MW4 起）
+├── Layout/                 # TypeLayout：canonical → LLVM 类型唯一映射点（引用槽按 RUNTIME §2 胖引用 128-bit/16 字节对齐建模）
+├── Emit/                   # ModuleBuilder（MIR → LLVM 模块）/ LlvmBitcode（unsafe 编组封装：bitcode 解析、LLVMLinkModules2 进程内合并、新 PM default<O2> 管线）/ RuntimeFaces（rigi_rt 面表）/ ObjectEmitter（.o 发射）
+├── Toolchain/              # ToolchainResolver（--toolchain → RIGI_LLVM → tools/.llvm/<rid> → PATH）/ ExternalProcess 外部进程封装
+├── Runtime/                # RigiRtBuilder：rigi_rt 源 EmbeddedResource 内嵌 → 内容哈希缓存 → clang -emit-llvm -c 编成 bitcode（unity build）
+└── Cli/                    # native 驱动（--file/--out/--emit-obj/--emit-ll/--toolchain）
 
-rigi_rt/                    # 本仓库顶层目录（C 静态库）
-├── arc.c/.h                # microGC / microSGC、region 协议、对象头
-├── macrogc.c/.h            # Bacon-Rajan 收集器（模板改造）、候选账本、GC 协程实体
-├── coroutine.c/.h          # Coroutine / Executor / Worker / Alarm（含内置 GC Executor）
-├── eh.c/.h                 # raise 与 unwind 交互（Itanium / SEH）
-└── shim.c                  # libc 风格原生方法面（RUNTIME §26），libuv 底座
+rigi_rt/                    # 本仓库顶层目录（C，EmbeddedResource 内嵌，clang 现场编 bitcode 合并进模块）
+├── shim.c                  # MW1 最小面：rigi_string {data,len} UTF-8 / rigi_print / rigi_print_err / rigi_string_concat / main → rigi_entry
+├── arc.c/.h                # （随后续阶段）microGC / microSGC、region 协议、对象头
+├── macrogc.c/.h            # （随后续阶段）Bacon-Rajan 收集器、候选账本、GC 协程实体
+├── coroutine.c/.h          # （随后续阶段）Coroutine / Executor / Worker / Alarm（含内置 GC Executor）
+└── eh.c/.h                 # （随后续阶段）raise 与 unwind 交互（Itanium / SEH）
 ```
 
 ## 12. 阶段划分
@@ -351,10 +369,10 @@ rigi_rt/                    # 本仓库顶层目录（C 静态库）
 | MW1 | 最小垂直切片：标量 + String（内建 `+` → `string_concat` 面）+ native print + main → LLVM 模块 → .o → lld 链接最小 rigi_rt | hello world 与字符串拼接；VM 对拍打通 |
 | MW2 | 标量与运算全量（BIL §11/§12、Resources 常量池） | 对拍套件 |
 | MW3 | 控制流（if/loop/switch → CFG；alloca + mem2reg） | 对拍套件 |
-| MW4 | 对象系统 I：布局、字段、new、static | |
+| MW4 | 对象系统 I：布局（含胖引用槽与 access helper 面——C 编写、bitcode 合并、LLVM 内联）、字段、new、static | |
 | MW5 | 调用与 ABI：invoke 族、typeid 隐藏参数、vargs/kwargs、FFI | |
 | MW6 | 元数据与派发：TypeSheet/vtable/iMap/refMap、虚调用、interface | |
-| MW7 | 值语义运行时 + ARC：Box/Span/胖引用、RcInjection、region 协议发射 | ASAN 全绿 |
+| MW7 | 值语义运行时 + ARC：Box/Span 物化路径、RcInjection、region 协议发射 | ASAN 全绿 |
 | MW8 | 泛型运行时：`Type\<T\>`/typeOf/new、is/supers/with/cast | |
 | MW9 | 异常：try/catch/finally → landing pad（linux-x64）/ SEH（win-x64） | 异常对拍套件 |
 | MW10 | wrapper 烘焙全链（specific/wildcard/call???） | |

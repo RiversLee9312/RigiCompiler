@@ -378,7 +378,10 @@ RigiCompiler/
 │   │                            #   §13.6 索引严格三元组查询）
 │   ├── BilVerifier.Flow.cs      # §21.4 保守 DA + §21.5 控制流 + §21.6 breakid
 │   ├── BilModuleMerger.cs       # 多文件模块合并（§17 切片消费侧：符号/函数重复即失败，
-│   │                            #   同名同内容资源去重；vm 与 Middleware Gate 共用）
+│   │                            #   同名同内容资源去重；Metadata 同键去重；
+│   │                            #   vm 与 Middleware Gate 共用）
+│   ├── BilScalarLiteral.cs      # §19.1 标量资源字面量唯一解码点（转义/整族解析；
+│   │                            #   VM 与 Middleware Emit 共用）
 │   ├── BilVm.cs                 # VM 入口
 │   └── Vm/                      # VM 执行器（行为参考实现）：VmContext/VmExecutor/
 │                                #   VmCoroutine/VmTask/VmAlarm/VmException/VmHooks/
@@ -387,13 +390,36 @@ RigiCompiler/
 │                             #   MIDDLEWARE_ARCHITECTURE.md；依赖方向 Middleware → Bil 单向，
 │                             #   唯一豁免第三方依赖：LLVMSharp + libLLVM 锁 LLVM 20）
 │   ├── MwContext.cs             # 会话中枢（每模块一个，贯穿各层，逐层挂载产物）
+│   ├── MwNotSupportedException.cs # 合法 BIL 超出现阶段实现面的受控失败（CLI 转退出码 2，
+│   │                            #   与 CompilerInternalException 严格区分）
 │   ├── Gate/BilGate.cs          # MW0 门禁：BilReader 接线 + BilVerifier 全规则
 │   │                            #   （BIL §23：类型非法 BIL 必拒；多文件经 BilModuleMerger 合并）
 │   ├── Symbols/                 # MW1 驻留符号表（canonical 字符串 intern 为对象，
-│   │                            #   引用相等即身份相等；MwSymbol/MwSymbolTable）
-│   ├── Emit/                    # MW6 骨架：LlvmHost（LLVM 一次性初始化 + 宿主
-│   │                            #   TargetMachine）+ ObjectEmitter（进程内验证/发射 .o）
-│   └── Cli/NativeCommand.cs     # native COMMAND（BIL → 原生目标文件驱动）
+│   │                            #   引用相等即身份相等；MwSymbol/MwSymbolTable +
+│   │                            #   CanonicalSignature）
+│   ├── Binding/                 # 实现绑定：ImplBinding 记录族 + ImplBinder 唯一实现查询
+│   ├── Mir/                     # MIR 模型（MirFunction/MirInst/MirType）+ MirBuilder
+│   │                            #   （BIL 结构化块 → CFG 直译，从入口出发按 invoke 边
+│   │                            #   可达性构建）
+│   ├── Layout/TypeLayout.cs     # canonical → LLVM 类型唯一映射点（引用槽按
+│   │                            #   RUNTIME §2 胖引用 128-bit/16 字节对齐建模）
+│   ├── Emit/                    # LlvmHost（LLVM 一次性初始化 + 宿主 TargetMachine）+
+│   │                            #   ModuleBuilder（MIR → LLVM 模块）+ LlvmBitcode
+│   │                            #   （unsafe 编组封装：bitcode 解析 + LLVMLinkModules2
+│   │                            #   进程内合并 + 新 PM default<O2> 管线）+ RuntimeFaces
+│   │                            #   （rigi_rt 面表）+ ObjectEmitter（进程内验证/发射 .o）
+│   ├── Toolchain/               # ToolchainResolver（--toolchain → RIGI_LLVM →
+│   │                            #   tools/.llvm/<rid> → PATH）+ ExternalProcess
+│   │                            #   外部进程封装
+│   ├── Runtime/RigiRtBuilder.cs # rigi_rt 源 EmbeddedResource 内嵌 → 内容哈希缓存 →
+│   │                            #   clang -emit-llvm -c 编成 bitcode（unity build）
+│   └── Cli/NativeCommand.cs     # native COMMAND（--file/--out/--emit-obj/--emit-ll/
+│                                #   --toolchain）
+├── rigi_rt/                  # 运行时 shim 库（C，EmbeddedResource 内嵌，clang 现场编
+│                             #   bitcode 合并进模块；架构同上文档）
+│   └── shim.c                   # MW1 最小面：rigi_string {data,len} UTF-8 / rigi_print /
+│                                #   rigi_print_err / rigi_string_concat / main → rigi_entry
+│                                #   （arc/macrogc/coroutine/eh 随后续阶段）
 ├── tools/                    # 开发工具链脚本（不入 CI 主流程）：
 │   ├── Fetch-LlvmToolchain.ps1  # 开发机 LLVM 工具链获取（钉 20.1.2 + SHA256 校验，
 │   │                            #   选择性提取 clang/lld/内建头文件 → tools/.llvm/ 缓存，

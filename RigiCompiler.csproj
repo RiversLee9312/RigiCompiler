@@ -6,6 +6,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyName>rigic</AssemblyName>
+    <!-- LLVMSharp 的 bitcode 解析/模块合并/新 PM 管线入口只暴露指针签名，
+         unsafe 仅限 Middleware/Emit/LlvmBitcode.cs 的编组封装内使用 -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <!-- Release 发布：NativeAOT 原生单文件（注意：不支持跨 OS 交叉编译，
@@ -33,6 +36,12 @@
        StdlibSources 据此反推 sourceName -->
   <ItemGroup>
     <EmbeddedResource Include="stdlib/**/*.rg" LogicalName="stdlib/%(RecursiveDir)%(FileName)%(Extension)" />
+  </ItemGroup>
+
+  <!-- rigi_rt 内嵌源（MW1）：shim 库 C 源以 EmbeddedResource 内嵌进程序集，
+       RigiRtBuilder 现场用 clang 编成 LLVM bitcode（MIDDLEWARE_ARCHITECTURE §4.8） -->
+  <ItemGroup>
+    <EmbeddedResource Include="rigi_rt/**/*.c" LogicalName="rigi_rt/%(RecursiveDir)%(FileName)%(Extension)" />
   </ItemGroup>
 
   <!-- Middleware（BIL → 原生）唯一第三方依赖豁免（MIDDLEWARE_ARCHITECTURE §2）：

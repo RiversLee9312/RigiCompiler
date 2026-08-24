@@ -7,7 +7,8 @@ namespace RigiCompiler.Bil
     /// 多文件 BIL 模块合并器（§17 命名空间切分的消费侧）：把若干切片/文件
     /// 合并为单个 BilModule。Resources/符号段/Functions 拼接；符号/函数名
     /// 重复即失败。资源例外：同一次编译切出的多个切片可共享同一资源
-    ///（同名同内容）——按内容相同去重；同名不同内容才算真重复。
+    ///（同名同内容）——按内容相同去重；同名不同内容才算真重复。Metadata
+    /// 同键去重（冲突保留先见者），非重复判定名字空间。
     /// 调用方：vm 命令（合并执行）与 Middleware Gate（多文件门禁）。
     /// </summary>
     public static class BilModuleMerger
@@ -60,6 +61,24 @@ namespace RigiCompiler.Bil
                     return false;
                 }
                 target.Functions.Add(function);
+            }
+            // Metadata（§4.1 程序集级信息，非符号名字空间）：同键同值去重，
+            // 冲突保留先见者——同名切片共享同一 module 键是常态
+            foreach (var entry in source.Metadata)
+            {
+                var exists = false;
+                foreach (var existing in target.Metadata)
+                {
+                    if (existing.Key == entry.Key)
+                    {
+                        exists = true;
+                        break;
+                    }
+                }
+                if (!exists)
+                {
+                    target.Metadata.Add(entry);
+                }
             }
             return true;
         }

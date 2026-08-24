@@ -17,14 +17,53 @@ namespace RigiCompiler.Middleware
         };
     }
 
-    /// <summary>native --out：输出的原生目标文件路径。</summary>
+    /// <summary>native --out：输出的原生可执行文件路径（clang 驱动 lld 链接 rigi_rt）。</summary>
     public class NativeOutOption : ICommandLineOption
     {
         public CommandLineMask Mask { get; } = new()
         {
             Name = "--out",
-            Description = "输出的原生目标文件路径（.o/.obj）",
+            Description = "输出的原生可执行文件路径（win-x64 需自带 .exe 后缀）",
             ArgsHint = "<路径>",
+            MinArgs = 1,
+            MaxArgs = 1,
+        };
+    }
+
+    /// <summary>native --emit-obj：只发射目标文件到指定路径（不链接，无需工具链）。</summary>
+    public class NativeEmitObjOption : ICommandLineOption
+    {
+        public CommandLineMask Mask { get; } = new()
+        {
+            Name = "--emit-obj",
+            Description = "只发射原生目标文件到指定路径（不链接；rigi_rt 引用为未解析外部符号）",
+            ArgsHint = "<路径>",
+            MinArgs = 1,
+            MaxArgs = 1,
+        };
+    }
+
+    /// <summary>native --emit-ll：把合并 rigi_rt 前的 LLVM IR 文本写到指定路径（黄金快照产物）。</summary>
+    public class NativeEmitLlOption : ICommandLineOption
+    {
+        public CommandLineMask Mask { get; } = new()
+        {
+            Name = "--emit-ll",
+            Description = "把合并 rigi_rt 前的 LLVM IR 文本写到指定路径（调试/黄金快照）",
+            ArgsHint = "<路径>",
+            MinArgs = 1,
+            MaxArgs = 1,
+        };
+    }
+
+    /// <summary>native --toolchain：显式指定 LLVM 工具链目录（解析顺序最优先）。</summary>
+    public class NativeToolchainOption : ICommandLineOption
+    {
+        public CommandLineMask Mask { get; } = new()
+        {
+            Name = "--toolchain",
+            Description = "显式指定 LLVM 工具链目录（解析顺序：--toolchain → RIGI_LLVM → tools/.llvm → PATH）",
+            ArgsHint = "<目录>",
             MinArgs = 1,
             MaxArgs = 1,
         };
@@ -32,22 +71,24 @@ namespace RigiCompiler.Middleware
 
     /// <summary>
     /// native：Middleware 驱动（MIDDLEWARE_ARCHITECTURE §11 Cli/）——BIL 文本经
-    /// Gate 门禁 → MwContext（驻留符号表）→ 进程内 LLVM 管线发射原生目标文件。
-    /// MW0 骨架：函数体尚未 lowering（MW3 起），产物为空模块 .o；lld 链接
-    /// rigi_rt 随 MW1 接入。
+    /// Gate 门禁 → MwContext（符号表 + MIR）→ 进程内 LLVM 管线（模块构建 →
+    /// rigi_rt bitcode 合并 → 优化 → .o）→ clang 驱动 lld 链接可执行文件。
     /// </summary>
     public class NativeCommand : ICommandLineCommand
     {
         public CommandLineMask Mask { get; } = new()
         {
             Name = "native",
-            Description = "Middleware：BIL → 原生目标文件（进程内 LLVM 管线；lld 链接随 MW1 接入）",
+            Description = "Middleware：BIL → 原生可执行文件（进程内 LLVM 管线 + clang/lld 链接 rigi_rt）",
         };
 
         public IReadOnlyList<ICommandLineOption> SubCommands { get; } = new ICommandLineOption[]
         {
             new NativeFileOption(),
             new NativeOutOption(),
+            new NativeEmitObjOption(),
+            new NativeEmitLlOption(),
+            new NativeToolchainOption(),
             new VerboseOption(),
             new LogToOption(),
         };
@@ -68,9 +109,11 @@ namespace RigiCompiler.Middleware
                 return 2;
             }
             var outPath = result.Get("--out")?[0];
-            if (outPath == null)
+            var emitObjPath = result.Get("--emit-obj")?[0];
+            var emitLlPath = result.Get("--emit-ll")?[0];
+            if (outPath == null && emitObjPath == null && emitLlPath == null)
             {
-                Console.Error.WriteLine("native 需要 --out <路径> 指定目标文件输出路径");
+                Console.Error.WriteLine("native 需要 --out <路径> 或 --emit-obj <路径> 或 --emit-ll <路径> 指定产物");
                 return 2;
             }
 
@@ -105,15 +148,111 @@ namespace RigiCompiler.Middleware
             Logger.Verbose("Middleware",
                 $"门禁通过：{gate.Module!.Functions.Count} fn，符号段 {gate.Module.LocalSymbols.Count} 本地条目");
 
-            // MW0：符号表驻留于 MwContext；空模块 .o 发射（函数体 lowering 随 MW3 起）
-            var context = new MwContext(gate.Module!);
-            if (!ObjectEmitter.TryEmitObject(context, outPath, out var emitError))
+            try
             {
-                Console.Error.WriteLine($"目标文件发射失败 {outPath}: {emitError}");
+                return EmitAndLink(gate.Module!, outPath, emitObjPath, emitLlPath,
+                    result.Get("--toolchain")?[0]);
+            }
+            catch (MwNotSupportedException ex)
+            {
+                Console.Error.WriteLine("native: " + ex.Message);
                 return 2;
             }
-            Logger.Verbose("Middleware", $"已发射目标文件 {outPath}");
-            return 0;
+        }
+
+        private static int EmitAndLink(Bil.BilModule module, string? outPath,
+            string? emitObjPath, string? emitLlPath, string? toolchainDir)
+        {
+            var context = new MwContext(module);
+            var mir = MirBuilder.Build(context);
+            using var llvmModule = ModuleBuilder.Build(context, mir);
+
+            // .ll 黄金快照：合并 rigi_rt 前的模块文本（稳定、可读）
+            if (emitLlPath != null)
+            {
+                File.WriteAllText(emitLlPath, llvmModule.PrintToString());
+                Logger.Verbose("Middleware", $"已写出 LLVM IR {emitLlPath}");
+            }
+
+            // --emit-obj：合并/优化前的中间产物（调试用，无需工具链）
+            if (emitObjPath != null)
+            {
+                if (!ObjectEmitter.TryEmitObject(llvmModule, emitObjPath, out var objError))
+                {
+                    Console.Error.WriteLine($"目标文件发射失败 {emitObjPath}: {objError}");
+                    return 2;
+                }
+                Logger.Verbose("Middleware", $"已发射目标文件 {emitObjPath}");
+            }
+
+            if (outPath == null)
+            {
+                return 0;
+            }
+
+            // 链接路径：恰一个 entrypoint（rigi_entry 由 rigi_rt 的 main 调用）
+            var entrypoints = 0;
+            foreach (var fn in mir.Functions)
+            {
+                if (fn.IsEntrypoint)
+                {
+                    entrypoints++;
+                }
+            }
+            if (entrypoints != 1)
+            {
+                Console.Error.WriteLine($"native --out 需要恰一个 entrypoint fn（当前 {entrypoints} 个）");
+                return 2;
+            }
+
+            var clang = ToolchainResolver.ResolveClang(toolchainDir);
+            if (clang == null)
+            {
+                Console.Error.WriteLine("找不到 clang。解析顺序：" + ToolchainResolver.DescribeSearchOrder());
+                return 2;
+            }
+            Logger.Verbose("Middleware", $"工具链 clang: {clang}");
+
+            // rigi_rt 现场编译为 bitcode（内容哈希缓存）→ 进程内合并 → 统一优化
+            string bitcode;
+            try
+            {
+                bitcode = RigiRtBuilder.EnsureBitcode(clang, out _);
+            }
+            catch (InvalidOperationException ex)
+            {
+                Console.Error.WriteLine("rigi_rt 编译失败: " + ex.Message);
+                return 2;
+            }
+            LlvmBitcode.MergeBitcodeFileInto(llvmModule, bitcode);
+            LlvmBitcode.RunDefaultOptimization(llvmModule);
+
+            var tempObject = Path.Combine(Path.GetTempPath(),
+                "rigi_" + Guid.NewGuid().ToString("N") + ".o");
+            try
+            {
+                if (!ObjectEmitter.TryEmitObject(llvmModule, tempObject, out var emitError))
+                {
+                    Console.Error.WriteLine($"目标文件发射失败: {emitError}");
+                    return 2;
+                }
+                // clang 驱动 lld 链接（-fuse-ld=lld；CRT 发现交 clang）
+                var linkExit = ExternalProcess.Run(clang,
+                    new[] { tempObject, "-o", outPath, "-fuse-ld=lld" },
+                    out _, out var linkStderr);
+                if (linkExit != 0)
+                {
+                    Console.Error.WriteLine($"链接失败（clang 退出码 {linkExit}）:\n{linkStderr}");
+                    return 2;
+                }
+                Logger.Verbose("Middleware", $"已链接可执行文件 {outPath}");
+                return 0;
+            }
+            finally
+            {
+                try { if (File.Exists(tempObject)) { File.Delete(tempObject); } }
+                catch (IOException) { /* 临时文件清理失败不致命 */ }
+            }
         }
     }
 }

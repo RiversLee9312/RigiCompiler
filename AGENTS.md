@@ -70,7 +70,8 @@ Lexer/ Parser/ AST/          # 前端（层栈 + 状态机 + 施工目标协议�
 Semantic/                    # 中端 P1–P3：诊断/符号图/声明收集与解析/Binder（visitor 化）
 Lowering/                    # 中端 P4：P4a 恒等重写 + P4b BIL 发射
 Bil/                         # BIL 生态（对中端零依赖）：模型/Reader/Writer/Verifier/Merger/VM（Vm/）
-Middleware/                  # BIL → 原生（Gate/Symbols/Emit/Cli；架构见 docs/compiler/middleware/）
+Middleware/                  # BIL → 原生（Gate/Symbols/Binding/Mir/Layout/Emit/Toolchain/Runtime/Cli；架构见 docs/compiler/middleware/）
+rigi_rt/                     # 运行时 shim 库（C，EmbeddedResource 内嵌，clang 现场编 bitcode 合并进模块；MW1 最小面）
 tools/                       # 开发工具链脚本（Fetch-LlvmToolchain.ps1；缓存 tools/.llvm/ 不入库）
 Core/                        # CLI 内核与插件（compile/test/vm/native/help）+ Logger
 Tests/                       # 自研控制台测试（TestRunner 注册表驱动）

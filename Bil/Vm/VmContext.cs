@@ -1879,95 +1879,47 @@ namespace RigiCompiler.Bil.Vm
 
         private static VmValue LoadScalar(BilScalarResource resource)
         {
+            // 字面量词法解码唯一归口 BilScalarLiteral（§19.1），此处只包装异常
             var text = resource.LiteralText;
-            switch (resource.Type)
+            try
             {
-                case BilScalarType.String:
-                    return new VmString(DecodeStringLiteral(text));
-                case BilScalarType.Bool:
-                    return new VmBool(text == "true");
-                case BilScalarType.Char:
-                    return new VmChar(DecodeCharLiteral(text));
-                case BilScalarType.I8:
-                    return new VmI8(sbyte.Parse(text, CultureInfo.InvariantCulture));
-                case BilScalarType.I16:
-                    return new VmI16(short.Parse(text, CultureInfo.InvariantCulture));
-                case BilScalarType.I32:
-                    return new VmI32(int.Parse(text, CultureInfo.InvariantCulture));
-                case BilScalarType.I64:
-                    return new VmI64(long.Parse(text, CultureInfo.InvariantCulture));
-                case BilScalarType.U8:
-                    return new VmU8(byte.Parse(text, CultureInfo.InvariantCulture));
-                case BilScalarType.U16:
-                    return new VmU16(ushort.Parse(text, CultureInfo.InvariantCulture));
-                case BilScalarType.U32:
-                    return new VmU32(uint.Parse(text, CultureInfo.InvariantCulture));
-                case BilScalarType.U64:
-                    return new VmU64(ulong.Parse(text, CultureInfo.InvariantCulture));
-                case BilScalarType.F32:
-                    return new VmF32(float.Parse(text, CultureInfo.InvariantCulture));
-                case BilScalarType.F64:
-                    return new VmF64(double.Parse(text, CultureInfo.InvariantCulture));
-                default:
-                    throw new VmException("不支持的标量资源类型：" + resource.Type);
-            }
-        }
-
-        private static string DecodeStringLiteral(string literalText)
-        {
-            if (literalText.Length < 2 || literalText[0] != '"' || literalText[^1] != '"')
-            {
-                throw new VmException("非法字符串资源字面量：" + literalText);
-            }
-            return Unescape(literalText.Substring(1, literalText.Length - 2));
-        }
-
-        private static char DecodeCharLiteral(string literalText)
-        {
-            if (literalText.Length < 2 || literalText[0] != '\'' || literalText[^1] != '\'')
-            {
-                throw new VmException("非法字符资源字面量：" + literalText);
-            }
-            var inner = Unescape(literalText.Substring(1, literalText.Length - 2));
-            if (inner.Length != 1)
-            {
-                throw new VmException("字符资源不是单字符：" + literalText);
-            }
-            return inner[0];
-        }
-
-        private static string Unescape(string escaped)
-        {
-            var sb = new StringBuilder();
-            for (var i = 0; i < escaped.Length; i++)
-            {
-                if (escaped[i] != '\\')
+                switch (resource.Type)
                 {
-                    sb.Append(escaped[i]);
-                    continue;
+                    case BilScalarType.String:
+                        return new VmString(BilScalarLiteral.DecodeString(text));
+                    case BilScalarType.Bool:
+                        return new VmBool(text == "true");
+                    case BilScalarType.Char:
+                        return new VmChar(BilScalarLiteral.DecodeChar(text));
+                    case BilScalarType.I8:
+                        return new VmI8(sbyte.Parse(text, CultureInfo.InvariantCulture));
+                    case BilScalarType.I16:
+                        return new VmI16(short.Parse(text, CultureInfo.InvariantCulture));
+                    case BilScalarType.I32:
+                        return new VmI32(int.Parse(text, CultureInfo.InvariantCulture));
+                    case BilScalarType.I64:
+                        return new VmI64(long.Parse(text, CultureInfo.InvariantCulture));
+                    case BilScalarType.U8:
+                        return new VmU8(byte.Parse(text, CultureInfo.InvariantCulture));
+                    case BilScalarType.U16:
+                        return new VmU16(ushort.Parse(text, CultureInfo.InvariantCulture));
+                    case BilScalarType.U32:
+                        return new VmU32(uint.Parse(text, CultureInfo.InvariantCulture));
+                    case BilScalarType.U64:
+                        return new VmU64(BilScalarLiteral.ParseUnsigned(text));
+                    case BilScalarType.F32:
+                        return new VmF32(float.Parse(text, CultureInfo.InvariantCulture));
+                    case BilScalarType.F64:
+                        return new VmF64(double.Parse(text, CultureInfo.InvariantCulture));
+                    default:
+                        throw new VmException("不支持的标量资源类型：" + resource.Type);
                 }
-                if (i + 1 >= escaped.Length)
-                {
-                    throw new VmException("字符串资源转义不完整");
-                }
-                i++;
-                sb.Append(escaped[i] switch
-                {
-                    '\\' => '\\',
-                    '"' => '"',
-                    '\'' => '\'',
-                    '$' => '$',
-                    'a' => '\a',
-                    'b' => '\b',
-                    't' => '\t',
-                    'n' => '\n',
-                    'v' => '\v',
-                    'f' => '\f',
-                    'r' => '\r',
-                    _ => throw new VmException("未知转义 \\" + escaped[i]),
-                });
             }
-            return sb.ToString();
+            catch (FormatException ex)
+            {
+                throw new VmException(ex.Message);
+            }
         }
+
     }
 }

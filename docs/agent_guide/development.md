@@ -11,13 +11,13 @@ dotnet build        # 在项目根目录执行；当前 0 错误、0 警告
 dotnet clean
 ```
 
-唯一配置文件是 `RigiCompiler.csproj`。依赖纪律：原则上纯 BCL、无第三方依赖——**唯一豁免是 Middleware 的 LLVMSharp.Interop + libLLVM（锁定 LLVM 20）**（选型裁决见 `docs/compiler/middleware/MIDDLEWARE_ARCHITECTURE.md` §2）。注意：libLLVM 原生资产经 runtime.json 传递、只在带 RID 时解析，csproj 已显式引用 win-x64/linux-x64 两个 runtime 包以支持无 RID 的 `dotnet build`/`dotnet run` 开发回路。新增依赖前必须先讨论并同步本文档；**优先复用现有的、高质量且久经验证的轮子（仓库内设施优先，外部库须成熟可靠），不重复造轮子**。另有 `RigiCompiler.sln`。
+唯一配置文件是 `RigiCompiler.csproj`。依赖纪律：原则上纯 BCL、无第三方依赖——**唯一豁免是 Middleware 的 LLVMSharp.Interop + libLLVM（锁定 LLVM 20）**（选型裁决见 `docs/compiler/middleware/MIDDLEWARE_ARCHITECTURE.md` §2）。注意：libLLVM 原生资产经 runtime.json 传递、只在带 RID 时解析，csproj 已显式引用 win-x64/linux-x64 两个 runtime 包以支持无 RID 的 `dotnet build`/`dotnet run` 开发回路。csproj 另开 `AllowUnsafeBlocks`，仅限 `Middleware/Emit/LlvmBitcode.cs` 的 libLLVM 指针编组封装使用。新增依赖前必须先讨论并同步本文档；**优先复用现有的、高质量且久经验证的轮子（仓库内设施优先，外部库须成熟可靠），不重复造轮子**。另有 `RigiCompiler.sln`。
 
-Middleware 的 C 工具链（MW1 起编译 rigi_rt 与 lld 链接所需）：CI 用 runner 预装 clang/lld；开发机 PATH 优先，缺则跑 `pwsh tools/Fetch-LlvmToolchain.ps1`（钉版官方 20.1.2 选择性部件，缓存 `tools/.llvm/`，gitignored）。详见 `MIDDLEWARE_ARCHITECTURE.md` §2 链接器/rigi_rt 编译行。
+Middleware 的 C 工具链（MW1 起编译 rigi_rt 与 lld 链接所需）：CI 用 runner 预装 clang/lld；开发机 PATH 优先，缺则跑 `pwsh tools/Fetch-LlvmToolchain.ps1`（钉版官方 20.1.2 选择性部件，缓存 `tools/.llvm/`，gitignored）。详见 `MIDDLEWARE_ARCHITECTURE.md` §2 链接器/rigi_rt 编译行。`native --out` 走全链：clang 驱动（`-fuse-ld=lld`）链接 CRT 出可执行文件；`--emit-obj`/`--emit-ll` 免工具链（中间产物与合并 rigi_rt 前的黄金快照）。rigi_rt 源改动经内容哈希缓存自动重编，无需手工清理。
 
 ### 2.2 运行
 
-CLI 结构为 `<COMMAND> [--sub-cmd [args...]...]`，顶层 COMMAND 四个：`compile` / `test` / `vm` / `help`。裸 `dotnet run` 等价于 `help`。
+CLI 结构为 `<COMMAND> [--sub-cmd [args...]...]`，顶层 COMMAND 五个：`compile` / `test` / `vm` / `native` / `help`。裸 `dotnet run` 等价于 `help`。
 
 ```bash
 dotnet run -- test --all                 # 全量测试（提交前验证入口；任意失败非零退出码并列出失败套件名）
@@ -32,6 +32,9 @@ dotnet run -- compile --file a.rg --emit-bil a.bil   # 语义通过后发射 BIL
 dotnet run -- compile --file a.rg --explain-dispatch # 派发链诊断报告（烘焙链 + 降级路由，RUNTIME §15）
 dotnet run -- vm --file a.bil a.core.bil ...         # 加载执行 BIL（§17.2：须传入全部切片还原完整模块）
 dotnet run -- vm --file a.bil a.core.bil --entry-point <符号>   # 多 entrypoint 时显式选入口
+dotnet run -- native --file a.bil --out app.exe        # BIL → 原生可执行（clang 驱动 lld 链接 CRT，需 C 工具链）
+dotnet run -- native --file a.bil --emit-obj a.o       # 免工具链：进程内发射目标文件
+dotnet run -- native --file a.bil --emit-ll a.ll       # 免工具链：合并 rigi_rt 前的 .ll 黄金快照
 dotnet run -- help                       # 全部 COMMAND 与子命令概览（文本由注册表程序生成）
 dotnet run -- help compile               # 单个 COMMAND 详情
 dotnet run -- help compile.file          # 单个子命令详情（子命令名不带 -- 前缀）
