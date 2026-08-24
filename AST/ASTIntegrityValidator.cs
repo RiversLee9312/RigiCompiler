@@ -4,13 +4,6 @@ using System.Reflection;
 
 namespace RigiCompiler
 {
-    // 内部编译器错误：AST 完整性验证失败等「不可能发生」的编译器内部状态错误。
-    // 与 ParserException（用户语法错误）严格区分——抛出它即编译器自身有 bug。
-    public class CompilerInternalException : Exception
-    {
-        public CompilerInternalException(string message) : base(message) { }
-    }
-
     /// <summary>
     /// AST 完整性验证器（大扫除 §12；M28 基于 ASTVisitor 统一遍历重写）
     ///

@@ -66,8 +66,8 @@ namespace RigiCompiler.Middleware
         }
     }
 
-    // CFG 基本块：顺序指令 + 终结符（BIL 结构化块在本层拍平；
-    // MW1 仅单 block + MirRet，Br/Switch 随控制流里程碑进入）
+    // CFG 基本块：顺序指令 + 终结符（BIL 结构化块在本层拍平为 Br/CondBr/
+    // Switch/Ret/Unreachable 终结的基本块图，天然 reducible）
     public sealed class MirBlock
     {
         public string Id { get; }

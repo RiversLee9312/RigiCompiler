@@ -127,7 +127,7 @@ ASTIntegrityValidator 校验父子指针一致性与 Span 合法性，
 ## 4. 异常类
 
 - **LexerException**、**ParserException**（`Core/Exceptions.cs`）——用户源码的词法/语法错误
-- **CompilerInternalException**（`AST/ASTIntegrityValidator.cs`）——编译器内部错误
+- **CompilerInternalException**（`Core/Exceptions.cs`）——编译器内部错误
   （AST 完整性校验失败等「不可能发生」的状态，与用户语法错误严格区分）
 
 ## 5. 使用流程

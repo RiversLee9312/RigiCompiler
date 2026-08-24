@@ -1,5 +1,4 @@
 using System.Collections.Generic;
-using System.Text;
 using LLVMSharp.Interop;
 using RigiCompiler.Bil;
 
@@ -121,10 +120,15 @@ namespace RigiCompiler.Middleware
             private void EmitBody(LLVMBuilderRef builder, EmittedFunction emitted)
             {
                 var fn = emitted.Mir;
-                var entry = emitted.Value.AppendBasicBlock(fn.Blocks[0].Id);
-                builder.PositionAtEnd(entry);
+                // 先建全部基本块（终结符按 id 引用，可前向引用），再逐块发射
+                var blockRefs = new Dictionary<string, LLVMBasicBlockRef>(System.StringComparer.Ordinal);
+                foreach (var block in fn.Blocks)
+                {
+                    blockRefs.Add(block.Id, emitted.Value.AppendBasicBlock(block.Id));
+                }
 
-                // 具名局部 → alloca 槽（含参数落槽）
+                // 具名局部 → alloca 槽（entry 块开头，mem2reg 友好；含参数落槽）
+                builder.PositionAtEnd(blockRefs[fn.Blocks[0].Id]);
                 var slots = new Dictionary<string, (LLVMValueRef Slot, MirLocal Local)>(System.StringComparer.Ordinal);
                 foreach (var local in fn.Locals)
                 {
@@ -136,11 +140,15 @@ namespace RigiCompiler.Middleware
                     builder.BuildStore(emitted.Value.GetParam((uint)i), slots[fn.Parameters[i].Name].Slot);
                 }
 
-                foreach (var inst in fn.Blocks[0].Instructions)
+                foreach (var block in fn.Blocks)
                 {
-                    EmitInst(builder, slots, inst);
+                    builder.PositionAtEnd(blockRefs[block.Id]);
+                    foreach (var inst in block.Instructions)
+                    {
+                        EmitInst(builder, slots, inst);
+                    }
+                    EmitTerminator(builder, slots, blockRefs, fn, block.Terminator);
                 }
-                EmitTerminator(builder, slots, fn, fn.Blocks[0].Terminator);
             }
 
             private void EmitInst(LLVMBuilderRef builder,
@@ -171,6 +179,7 @@ namespace RigiCompiler.Middleware
 
             private void EmitTerminator(LLVMBuilderRef builder,
                 Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
+                Dictionary<string, LLVMBasicBlockRef> blockRefs,
                 MirFunction fn, MirTerminator terminator)
             {
                 switch (terminator)
@@ -192,8 +201,68 @@ namespace RigiCompiler.Middleware
                             builder.BuildRet(LoadLocal(builder, slots, ret.Value));
                         }
                         break;
+                    case MirBranch branch:
+                        builder.BuildBr(blockRefs[branch.Target]);
+                        break;
+                    case MirCondBranch condBranch:
+                        builder.BuildCondBr(LoadLocal(builder, slots, condBranch.Condition),
+                            blockRefs[condBranch.ThenTarget], blockRefs[condBranch.ElseTarget]);
+                        break;
+                    case MirSwitch sw:
+                        EmitSwitch(builder, slots, blockRefs, sw);
+                        break;
+                    case MirUnreachable:
+                        builder.BuildUnreachable();
+                        break;
                     default:
                         throw new CompilerInternalException($"未覆盖的 MIR 终结符: {terminator.GetType().Name}");
+                }
+            }
+
+            // switch → LLVM switch 指令（整数族/bool/char selector 直接
+            // 对应；float/double/string 的非常量指令匹配待比较链降级）
+            private void EmitSwitch(LLVMBuilderRef builder,
+                Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
+                Dictionary<string, LLVMBasicBlockRef> blockRefs, MirSwitch sw)
+            {
+                var selectorType = MirType.Of(sw.Table.SelectorTypeRef);
+                var key = selectorType.Key;
+                var isBool = key == "bool";
+                var isChar = key == "char";
+                var isSigned = key is "i8" or "i16" or "i32" or "i64";
+                var isUnsigned = key is "u8" or "u16" or "u32" or "u64";
+                if (!isBool && !isChar && !isSigned && !isUnsigned)
+                {
+                    throw new MwNotSupportedException(
+                        $"MW3 switch 暂支持整数族/bool/char selector: {sw.Table.SelectorTypeRef}");
+                }
+                var llvmType = TypeLayout.MapType(_context, selectorType);
+                var selector = LoadLocal(builder, slots, sw.Selector);
+                var switchInst = builder.BuildSwitch(selector, blockRefs[sw.DefaultTarget],
+                    (uint)sw.ItemTargets.Count);
+                for (var i = 0; i < sw.ItemTargets.Count; i++)
+                {
+                    var text = sw.Table.Elements[i];
+                    LLVMValueRef caseValue;
+                    if (isBool)
+                    {
+                        caseValue = LLVMValueRef.CreateConstInt(llvmType, text == "true" ? 1u : 0u, false);
+                    }
+                    else if (isChar)
+                    {
+                        caseValue = LLVMValueRef.CreateConstInt(llvmType, BilScalarLiteral.DecodeChar(text), false);
+                    }
+                    else if (isSigned)
+                    {
+                        caseValue = LLVMValueRef.CreateConstInt(llvmType,
+                            unchecked((ulong)BilScalarLiteral.ParseSigned(text)), true);
+                    }
+                    else
+                    {
+                        caseValue = LLVMValueRef.CreateConstInt(llvmType,
+                            BilScalarLiteral.ParseUnsigned(text), false);
+                    }
+                    switchInst.AddCase(caseValue, blockRefs[sw.ItemTargets[i]]);
                 }
             }
 
@@ -204,7 +273,7 @@ namespace RigiCompiler.Middleware
             {
                 var left = LoadLocal(builder, slots, inst.Left);
                 var right = LoadLocal(builder, slots, inst.Right);
-                switch (ImplBinder.BindBinary(inst.Op, inst.LeftType, inst.RightType, inst.ResultType))
+                switch (ImplBinder.BindBinary(inst.Op, inst.LeftType.Canonical, inst.RightType.Canonical, inst.ResultType.Canonical))
                 {
                     case PrimitiveOpBinding primitive:
                         return SelectPrimitive(builder, primitive.Kind, left, right);
@@ -219,7 +288,7 @@ namespace RigiCompiler.Middleware
                 Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirUnaryIntrinsic inst)
             {
                 var operand = LoadLocal(builder, slots, inst.Operand);
-                if (ImplBinder.BindUnary(inst.Op, inst.OperandType, inst.ResultType) is not PrimitiveOpBinding primitive)
+                if (ImplBinder.BindUnary(inst.Op, inst.OperandType.Canonical, inst.ResultType.Canonical) is not PrimitiveOpBinding primitive)
                 {
                     throw new CompilerInternalException("一元运算的非预期绑定形态");
                 }
@@ -292,7 +361,7 @@ namespace RigiCompiler.Middleware
                 {
                     if (param == RuntimeFaceParam.StringOut)
                     {
-                        outSlot = builder.BuildAlloca(TypeLayout.StringType(_context), "face.out");
+                        outSlot = builder.BuildAlloca(StringAbi.ValueType(_context), "face.out");
                         args.Add(outSlot.Value);
                     }
                     else
@@ -305,7 +374,7 @@ namespace RigiCompiler.Middleware
                 {
                     throw new CompilerInternalException($"运行时面 {faceSymbol} 无出参却被求值");
                 }
-                return builder.BuildLoad2(TypeLayout.StringType(_context), outSlot.Value, "face.result");
+                return builder.BuildLoad2(StringAbi.ValueType(_context), outSlot.Value, "face.result");
             }
 
             // ===== 声明登记 =====
@@ -320,7 +389,7 @@ namespace RigiCompiler.Middleware
                 var paramTypes = new LLVMTypeRef[shape.Count];
                 for (var i = 0; i < shape.Count; i++)
                 {
-                    paramTypes[i] = LLVMTypeRef.CreatePointer(TypeLayout.StringType(_context), 0);
+                    paramTypes[i] = StringAbi.PointerType(_context);
                 }
                 var type = LLVMTypeRef.CreateFunction(LLVMTypeRef.Void, paramTypes, false);
                 var fn = _module.AddFunction(faceSymbol, type);
@@ -340,7 +409,7 @@ namespace RigiCompiler.Middleware
                 {
                     var paramType = MirType.Of(signature.Parameters[i].TypeRef);
                     paramTypes[i] = paramType.IsString
-                        ? LLVMTypeRef.CreatePointer(TypeLayout.StringType(_context), 0)
+                        ? StringAbi.PointerType(_context)
                         : TypeLayout.MapType(_context, paramType);
                 }
                 var returnType = MirType.Of(signature.ReturnTypeRef);
@@ -384,7 +453,7 @@ namespace RigiCompiler.Middleware
                 switch (scalar.Type)
                 {
                     case BilScalarType.String:
-                        return BuildStringConstant(BilScalarLiteral.DecodeString(text), resource.Name);
+                        return StringAbi.BuildConstant(_module, BilScalarLiteral.DecodeString(text), resource.Name);
                     case BilScalarType.Bool:
                         return LLVMValueRef.CreateConstInt(LLVMTypeRef.Int1, text == "true" ? 1u : 0u, false);
                     case BilScalarType.Char:
@@ -402,35 +471,6 @@ namespace RigiCompiler.Middleware
                     default:
                         throw new MwNotSupportedException($"MW1 不支持资源类型 {scalar.Type}: {resource.Name}");
                 }
-            }
-
-            // { i8* data, i64 len } 常量：字节入内部全局，指针经 ConstGEP 取
-            private LLVMValueRef BuildStringConstant(string text, string resourceName)
-            {
-                var bytes = Encoding.UTF8.GetBytes(text);
-                var bytePtrType = LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0);
-                LLVMValueRef dataPointer;
-                if (bytes.Length == 0)
-                {
-                    dataPointer = LLVMValueRef.CreateConstPointerNull(bytePtrType);
-                }
-                else
-                {
-                    var arrayType = LLVMTypeRef.CreateArray(LLVMTypeRef.Int8, (uint)bytes.Length);
-                    var elements = new LLVMValueRef[bytes.Length];
-                    for (var i = 0; i < bytes.Length; i++)
-                    {
-                        elements[i] = LLVMValueRef.CreateConstInt(LLVMTypeRef.Int8, bytes[i], false);
-                    }
-                    var global = _module.AddGlobal(arrayType, "str." + resourceName);
-                    global.Linkage = LLVMLinkage.LLVMInternalLinkage;
-                    global.IsGlobalConstant = true;
-                    global.Initializer = LLVMValueRef.CreateConstArray(LLVMTypeRef.Int8, elements);
-                    var zero = LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, 0, false);
-                    dataPointer = LLVMValueRef.CreateConstInBoundsGEP2(arrayType, global, new[] { zero, zero });
-                }
-                var length = LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, (ulong)bytes.Length, false);
-                return _context.GetConstStruct(new[] { dataPointer, length }, false);
             }
 
             private static LLVMValueRef SelectPrimitive(LLVMBuilderRef builder, PrimitiveOpKind kind,

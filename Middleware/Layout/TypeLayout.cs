@@ -15,24 +15,14 @@ namespace RigiCompiler.Middleware
         public const int ReferenceSlotSize = 16;
         public const int ReferenceSlotAlignment = 16;
 
-        // String 的 MW1 过渡表示（RUNTIME §4 留白由本层定稿）：
-        // { i8* data, i64 len } UTF-8 裸缓冲区，按值语义；MW7 胖值化时迁移
-        public static LLVMTypeRef StringType(LLVMContextRef context)
-        {
-            return context.GetStructType(new[]
-            {
-                LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0),
-                LLVMTypeRef.Int64,
-            }, false);
-        }
-
         public static LLVMTypeRef FatReferenceType(LLVMContextRef context)
         {
             return context.GetStructType(new[] { LLVMTypeRef.Int64, LLVMTypeRef.Int64 }, false);
         }
 
         // BIL 类型 → LLVM 类型。用户引用类型一律胖引用槽；用户值类型（struct/
-        // enum struct）的展开布局随 MW4 对象系统落地
+        // enum struct）的展开布局随 MW4 对象系统落地。String 的过渡表示归
+        // StringAbi（唯一事实源），此处仅映射
         public static LLVMTypeRef MapType(LLVMContextRef context, MirType type)
         {
             switch (type.Key)
@@ -46,7 +36,7 @@ namespace RigiCompiler.Middleware
                 case "i64": case "u64": return LLVMTypeRef.Int64;
                 case "float": return LLVMTypeRef.Float;
                 case "double": return LLVMTypeRef.Double;
-                case "String": return StringType(context);
+                case "String": return StringAbi.ValueType(context);
                 default:
                     if (type.Canonical.Contains('<'))
                     {

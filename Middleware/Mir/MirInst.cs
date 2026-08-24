@@ -121,7 +121,7 @@ namespace RigiCompiler.Middleware
     {
     }
 
-    // ret / ret $value（MW1 唯一终结符）
+    // ret / ret $value
     public sealed class MirRet : MirTerminator
     {
         public MirOperand? Value { get; }
@@ -129,6 +129,59 @@ namespace RigiCompiler.Middleware
         internal MirRet(MirOperand? value)
         {
             Value = value;
+        }
+    }
+
+    // 无条件跳转（BIL 结构化 region 的边界/落出边）
+    public sealed class MirBranch : MirTerminator
+    {
+        public string Target { get; }
+
+        internal MirBranch(string target)
+        {
+            Target = target;
+        }
+    }
+
+    // 条件跳转（if 双分支、loop 的 judge 出口）
+    public sealed class MirCondBranch : MirTerminator
+    {
+        public MirOperand Condition { get; }
+        public string ThenTarget { get; }
+        public string ElseTarget { get; }
+
+        internal MirCondBranch(MirOperand condition, string thenTarget, string elseTarget)
+        {
+            Condition = condition;
+            ThenTarget = thenTarget;
+            ElseTarget = elseTarget;
+        }
+    }
+
+    // switch：常量表匹配（§16.6）。表元素序与 ItemTargets 一一对应；
+    // 匹配语义按表序首个 cmp.eq 命中（VM 同口径），无穿透
+    public sealed class MirSwitch : MirTerminator
+    {
+        public MirOperand Selector { get; }
+        public BilSwitchTableResource Table { get; }
+        public IReadOnlyList<string> ItemTargets { get; }
+        public string DefaultTarget { get; }
+
+        internal MirSwitch(MirOperand selector, BilSwitchTableResource table,
+            IReadOnlyList<string> itemTargets, string defaultTarget)
+        {
+            Selector = selector;
+            Table = table;
+            ItemTargets = itemTargets;
+            DefaultTarget = defaultTarget;
+        }
+    }
+
+    // 不可达块收尾（双分支均终结的汇聚块、ret/break 后的死块）
+    public sealed class MirUnreachable : MirTerminator
+    {
+        internal MirUnreachable()
+        {
         }
     }
 }

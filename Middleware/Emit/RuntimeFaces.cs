@@ -4,12 +4,8 @@ namespace RigiCompiler.Middleware
 {
     // rigi_rt 运行时面的 C 符号与调用形状（MIDDLEWARE_ARCHITECTURE §4.8）。
     // 面表是 Emit 对 rigi_rt ABI 的唯一知识点；形状与 rigi_rt/*.c 逐一对应，
-    // 新增面时两侧同步。
-    //
-    // String 的 C 边界传递约定（MW1 过渡 ABI，MW7 胖值化时迁移）：
-    // 值一律经 rigi_string* 传递（StringIn = const rigi_string*，
-    // StringOut = rigi_string* 出参，置于首参），避免 16 字节 struct 按值
-    // 传递的 win-x64/SysV ABI 分歧；返回值 MW1 恒为 void。
+    // 新增面时两侧同步。String 的 C 边界传递约定（rigi_string* 出入参）由
+    // Layout/StringAbi 定稿（唯一事实源），本表只描述参数位形态。
     public enum RuntimeFaceParam
     {
         StringIn,

@@ -53,6 +53,82 @@ namespace RigiCompiler.Tests
                 "pub func main(): i32 {\n" +
                 "    return (6 * 7)\n" +
                 "}\n");
+            RunCase("if/else 分支",
+                "pub func main(): i32 {\n" +
+                "    var x = 10\n" +
+                "    if (x > 5) { x = 1 } else { x = 2 }\n" +
+                "    return x\n" +
+                "}\n");
+            RunCase("while 求和",
+                "pub func main(): i32 {\n" +
+                "    var sum = 0\n" +
+                "    var i = 1\n" +
+                "    while (i <= 10) {\n" +
+                "        sum = sum + i\n" +
+                "        i = i + 1\n" +
+                "    }\n" +
+                "    return sum\n" +
+                "}\n");
+            RunCase("do-while 先执行",
+                "pub func main(): i32 {\n" +
+                "    var x = 0\n" +
+                "    do {\n" +
+                "        x = x + 1\n" +
+                "    } while (x < 5)\n" +
+                "    return x\n" +
+                "}\n");
+            RunCase("break/continue",
+                "pub func main(): i32 {\n" +
+                "    var sum = 0\n" +
+                "    var i = 0\n" +
+                "    while (i < 10) {\n" +
+                "        i = i + 1\n" +
+                "        if (i == 3) { continue }\n" +
+                "        if (i > 7) { break }\n" +
+                "        sum = sum + i\n" +
+                "    }\n" +
+                "    return sum\n" +
+                "}\n");
+            RunCase("嵌套标签 break@outer",
+                "pub func main(): i32 {\n" +
+                "    var x = 0\n" +
+                "    while (x < 10) named outer {\n" +
+                "        while (x < 5) {\n" +
+                "            x = x + 1\n" +
+                "            if (x == 3) { break@outer }\n" +
+                "            continue\n" +
+                "        }\n" +
+                "        x = x + 2\n" +
+                "    }\n" +
+                "    return x\n" +
+                "}\n");
+            RunCase("短路求值降 if 块",
+                "pub func main(): i32 {\n" +
+                "    var a = true\n" +
+                "    var b = false\n" +
+                "    if ((a and b) or (a and (not b))) { return 7 }\n" +
+                "    return 0\n" +
+                "}\n");
+            RunCase("switch 常量表",
+                "pub func classify(x: i32): i32 {\n" +
+                "    switch (x) {\n" +
+                "        (1) -> { return 10 }\n" +
+                "        (2) -> { return 20 }\n" +
+                "        default -> { return 0 }\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    return classify(2)\n" +
+                "}\n");
+            RunCase("pattern switch 降级链（call blk）",
+                "pub func main(): i32 {\n" +
+                "    var x = 5\n" +
+                "    var label = switch (x) {\n" +
+                "        (_ > 10) -> { return@_ 1 }\n" +
+                "        default -> { return@_ 0 }\n" +
+                "    }\n" +
+                "    return label\n" +
+                "}\n");
             return TestHarness.Summary("NativeE2E");
         }
 

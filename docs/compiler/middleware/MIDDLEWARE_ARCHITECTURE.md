@@ -343,7 +343,8 @@ Middleware/                 # 本仓库顶层目录（C#，.NET 10 LTS）
 ├── Gate/                   # BilReader 接线 + BilVerifier 门禁（多文件经 BilModuleMerger 合并）
 ├── Symbols/                # MW 符号图 / 类型表（canonical intern 驻留）
 ├── Binding/                # 实现绑定（ImplBinding 记录族 + ImplBinder 唯一实现查询）
-├── Mir/                    # MIR 模型 + MirBuilder（BIL 结构化块 → CFG 直译，从入口出发按 invoke 边可达性构建）
+├── Mir/                    # MIR 模型 + MirBuilder（BIL 结构化块 → CFG 直译）+ MirReachability（invoke 边可达闭包）
+├── Pipeline/               # IMwStage + MwPipeline 驱动器（线性阶段序，仿前端层栈纪律；MW4 pass 群在此登记）
 ├── Passes/                 # MIR pass 群（WrapperBaking / RcInjection / CoroutineSplit / CellElim / Devirt；随 MW4 起）
 ├── Layout/                 # TypeLayout：canonical → LLVM 类型唯一映射点（引用槽按 RUNTIME §2 胖引用 128-bit/16 字节对齐建模）
 ├── Emit/                   # ModuleBuilder（MIR → LLVM 模块）/ LlvmBitcode（unsafe 编组封装：bitcode 解析、LLVMLinkModules2 进程内合并、新 PM default<O2> 管线）/ RuntimeFaces（rigi_rt 面表）/ ObjectEmitter（.o 发射）

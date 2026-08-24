@@ -7,18 +7,23 @@ namespace RigiCompiler.Middleware
     /// 类型 + 结果严格类型 + 已解析符号身份 → 唯一实现形态。不含隐式转换、
     /// 候选排序或最佳匹配（source-level overload ranking 已在 frontend 完成，
     /// BIL §3.3）。MW1 覆盖：标量/string 内建运算 + native/直接调用分流。
+    /// 查询键为 BIL 类型引用（任意别名形态，内部经 MwTypeKey 归一），
+    /// 本层不依赖 MIR——MIR 保留类型身份（MirType），调用方以其 Canonical
+    /// 或原始 typeRef 入查均可。
     /// </summary>
     public static class ImplBinder
     {
-        public static ImplBinding BindBinary(BilBinaryOp op, MirType left, MirType right, MirType result)
+        public static ImplBinding BindBinary(BilBinaryOp op, string leftType, string rightType, string resultType)
         {
+            var left = MwTypeKey.Normalize(leftType);
+            var right = MwTypeKey.Normalize(rightType);
             // 内建字符串拼接（BIL §11.2：op 级内建，非 invoke 路径）
-            if (left.IsString && right.IsString && op == BilBinaryOp.Add)
+            if (MwTypeKey.IsString(left) && MwTypeKey.IsString(right) && op == BilBinaryOp.Add)
             {
                 return new RuntimeFaceBinding(RuntimeFaces.StringConcat);
             }
 
-            var key = left.Key;
+            var key = MwTypeKey.Of(left);
             var isFloat = key is "float" or "double";
             var isBool = key == "bool";
             var isUnsigned = key is "u8" or "u16" or "u32" or "u64";
@@ -61,14 +66,14 @@ namespace RigiCompiler.Middleware
                 BilBinaryOp.CmpGt when isFloat => PrimitiveOpKind.FloatCmpGt,
                 BilBinaryOp.CmpGe when isFloat => PrimitiveOpKind.FloatCmpGe,
                 _ => throw new MwNotSupportedException(
-                    $"MW1 不支持二元运算 {op} 作用于 {left.Canonical} × {right.Canonical}"),
+                    $"MW1 不支持二元运算 {op} 作用于 {leftType} × {rightType}"),
             };
             return new PrimitiveOpBinding(kind);
         }
 
-        public static ImplBinding BindUnary(BilUnaryOp op, MirType operand, MirType result)
+        public static ImplBinding BindUnary(BilUnaryOp op, string operandType, string resultType)
         {
-            var key = operand.Key;
+            var key = MwTypeKey.Of(MwTypeKey.Normalize(operandType));
             var isFloat = key is "float" or "double";
             var isBool = key == "bool";
             var isInt = key is "i8" or "i16" or "i32" or "i64" or "u8" or "u16" or "u32" or "u64" or "char";
@@ -80,7 +85,7 @@ namespace RigiCompiler.Middleware
                 BilUnaryOp.Not when isBool => PrimitiveOpKind.LogicNot,
                 BilUnaryOp.BinNot when isInt => PrimitiveOpKind.BitNot,
                 _ => throw new MwNotSupportedException(
-                    $"MW1 不支持一元运算 {op} 作用于 {operand.Canonical}"),
+                    $"MW1 不支持一元运算 {op} 作用于 {operandType}"),
             };
             return new PrimitiveOpBinding(kind);
         }

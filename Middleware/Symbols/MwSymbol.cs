@@ -58,5 +58,18 @@ namespace RigiCompiler.Middleware
             Owner = owner;
             IsExternal = isExternal;
         }
+
+        // 声明修饰符查询（entrypoint/native 等关键字修饰符的存在性判定）
+        public bool HasKeyword(BilKeyword keyword)
+        {
+            foreach (var modifier in Declaration.Modifiers)
+            {
+                if (modifier is BilKeywordModifier keywordModifier && keywordModifier.Keyword == keyword)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
     }
 }

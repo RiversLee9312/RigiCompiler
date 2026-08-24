@@ -141,6 +141,8 @@ namespace RigiCompiler.Tests
             TestSymbolTable();
             TestHarness.Section("Middleware MIR 构造");
             TestMirConstruction();
+            TestHarness.Section("Middleware MIR 控制流直译");
+            TestMirControlFlow();
             TestHarness.Section("Middleware 实现绑定");
             TestBinding();
             TestHarness.Section("Middleware 目标文件发射");
@@ -276,43 +278,171 @@ namespace RigiCompiler.Tests
                 .Type.IsString);
         }
 
+        // ===== MIR 控制流直译（MW3）=====
+
+        private static void TestMirControlFlow()
+        {
+            // if/else → CondBranch + 双分支 ret + 不可达汇聚块 unreachable 收尾
+            var (_, _, ifText) = BilTestHarness.EmitBilUnit(
+                "pub func main(): i32 {\n" +
+                "    if (1 < 2) { return 1 } else { return 2 }\n" +
+                "}\n");
+            var gate = BilGate.Accept(ifText, "if.bil");
+            TestHarness.CheckTrue("if 模块门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            var context = new MwContext(gate.Module!);
+            var mir = MirBuilder.Build(context);
+            var main = mir.Functions.Single(f => f.IsEntrypoint);
+            TestHarness.CheckTrue("if：entry 终结符是条件跳转",
+                main.Blocks[0].Terminator is MirCondBranch);
+            var condBranch = (MirCondBranch)main.Blocks[0].Terminator;
+            TestHarness.CheckTrue("if：双分支各自 ret",
+                main.Blocks.Single(b => b.Id == condBranch.ThenTarget).Terminator is MirRet
+                && main.Blocks.Single(b => b.Id == condBranch.ElseTarget).Terminator is MirRet);
+            var merge = main.Blocks.Single(
+                b => b.Id.StartsWith("mw.if.end.", StringComparison.Ordinal));
+            TestHarness.CheckTrue("if：双分支均终结，汇聚块不可达收尾 unreachable",
+                merge.Terminator is MirUnreachable);
+
+            // while → entry Br(judge)；judge CondBranch(cond, body, exit)；body Br(judge)
+            var (_, _, loopText) = BilTestHarness.EmitBilUnit(
+                "pub func main(): i32 {\n" +
+                "    var x = 0\n" +
+                "    while (x < 3) { x = x + 1 }\n" +
+                "    return x\n" +
+                "}\n");
+            gate = BilGate.Accept(loopText, "loop.bil");
+            TestHarness.CheckTrue("while 模块门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            context = new MwContext(gate.Module!);
+            mir = MirBuilder.Build(context);
+            main = mir.Functions.Single(f => f.IsEntrypoint);
+            TestHarness.CheckTrue("while：entry 终结符跳 judge",
+                main.Blocks[0].Terminator is MirBranch { Target: "loop0-judge" });
+            TestHarness.CheckTrue("while：judge 条件跳转（true body / false exit）",
+                main.Blocks.Single(b => b.Id == "loop0-judge").Terminator is MirCondBranch cond
+                && cond.ThenTarget == "loop0-body"
+                && cond.ElseTarget.StartsWith("mw.loop.end.", StringComparison.Ordinal));
+            TestHarness.CheckTrue("while：body 落出回 judge（enum 为 none）",
+                main.Blocks.Single(b => b.Id == "loop0-body").Terminator
+                    is MirBranch { Target: "loop0-judge" });
+            TestHarness.CheckTrue("while：exit 块含带值 ret",
+                main.Blocks.Single(b => b.Id.StartsWith("mw.loop.end.", StringComparison.Ordinal))
+                    .Terminator is MirRet { Value: not null });
+
+            // do-while → loop.rev：entry Br(body)；judge CondBranch(cond, body, exit)
+            var (_, _, revText) = BilTestHarness.EmitBilUnit(
+                "pub func main(): i32 {\n" +
+                "    var x = 0\n" +
+                "    do {\n" +
+                "        x = x + 1\n" +
+                "    } while (x < 3)\n" +
+                "    return x\n" +
+                "}\n");
+            gate = BilGate.Accept(revText, "rev.bil");
+            TestHarness.CheckTrue("do-while 模块门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            context = new MwContext(gate.Module!);
+            mir = MirBuilder.Build(context);
+            main = mir.Functions.Single(f => f.IsEntrypoint);
+            TestHarness.CheckTrue("do-while：entry 终结符跳 body（先执行）",
+                main.Blocks[0].Terminator is MirBranch { Target: "loop0-body" });
+            TestHarness.CheckTrue("do-while：judge 条件跳转回 body",
+                main.Blocks.Single(b => b.Id == "loop0-judge").Terminator is MirCondBranch rev
+                && rev.ThenTarget == "loop0-body"
+                && rev.ElseTarget.StartsWith("mw.loop.end.", StringComparison.Ordinal));
+
+            // switch → MirSwitch + item/default 各自成块
+            var (_, _, switchText) = BilTestHarness.EmitBilUnit(
+                "pub func classify(x: i32): i32 {\n" +
+                "    switch (x) {\n" +
+                "        (1) -> { return 1 }\n" +
+                "        (2) -> { return 2 }\n" +
+                "        default -> { return 0 }\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    return classify(1)\n" +
+                "}\n");
+            gate = BilGate.Accept(switchText, "switch.bil");
+            TestHarness.CheckTrue("switch 模块门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            context = new MwContext(gate.Module!);
+            mir = MirBuilder.Build(context);
+            var classify = mir.Functions.Single(f => f.Symbol.Canonical.Contains("classify"));
+            TestHarness.CheckTrue("switch：entry 终结符是 MirSwitch",
+                classify.Blocks[0].Terminator is MirSwitch);
+            var sw = (MirSwitch)classify.Blocks[0].Terminator;
+            TestHarness.CheckTrue("switch：两 item + 常量表两元素 + default 目标",
+                sw.ItemTargets.Count == 2 && sw.Table.Elements.Count == 2
+                && sw.DefaultTarget == "switch0-default");
+            TestHarness.CheckTrue("switch：item 块各自 ret",
+                classify.Blocks.Single(b => b.Id == sw.ItemTargets[0]).Terminator is MirRet
+                && classify.Blocks.Single(b => b.Id == sw.ItemTargets[1]).Terminator is MirRet);
+
+            // break@outer → MirBranch 指向外层 loop 出口；continue → 内层 judge
+            var (_, _, breakText) = BilTestHarness.EmitBilUnit(
+                "pub func main(): i32 {\n" +
+                "    var x = 0\n" +
+                "    while (x < 10) named outer {\n" +
+                "        while (x < 5) {\n" +
+                "            x = x + 1\n" +
+                "            if (x == 3) { break@outer }\n" +
+                "            continue\n" +
+                "        }\n" +
+                "        x = x + 2\n" +
+                "    }\n" +
+                "    return x\n" +
+                "}\n");
+            gate = BilGate.Accept(breakText, "break.bil");
+            TestHarness.CheckTrue("嵌套标签循环门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            context = new MwContext(gate.Module!);
+            mir = MirBuilder.Build(context);
+            main = mir.Functions.Single(f => f.IsEntrypoint);
+            TestHarness.CheckTrue("break@outer 解析到外层出口块（mw.loop.end.0）",
+                main.Blocks.Any(b => b.Terminator is MirBranch { Target: "mw.loop.end.0" }));
+            TestHarness.CheckTrue("continue 解析到内层 judge（loop1-judge）",
+                main.Blocks.Any(b => b.Terminator is MirBranch { Target: "loop1-judge" }));
+        }
+
         // ===== 实现绑定 =====
 
         private static void TestBinding()
         {
             // string + 是 op 级内建 → 运行时面；别名 core::String 与 .string 同键
             var concat = ImplBinder.BindBinary(Bil.BilBinaryOp.Add,
-                MirType.Of(".string"), MirType.Of("core::String"), MirType.Of(".string"));
+                ".string", "core::String", ".string");
             TestHarness.CheckTrue("string + → rigi_string_concat 运行时面",
                 concat is RuntimeFaceBinding { FaceSymbol: RuntimeFaces.StringConcat });
 
             TestHarness.CheckTrue("i32 + → IntAdd 指令选择",
                 ImplBinder.BindBinary(Bil.BilBinaryOp.Add,
-                    MirType.Of(".i32"), MirType.Of(".i32"), MirType.Of(".i32"))
+                    ".i32", ".i32", ".i32")
                     is PrimitiveOpBinding { Kind: PrimitiveOpKind.IntAdd });
             TestHarness.CheckTrue("u64 / → IntUDiv",
                 ImplBinder.BindBinary(Bil.BilBinaryOp.Div,
-                    MirType.Of(".u64"), MirType.Of(".u64"), MirType.Of(".u64"))
+                    ".u64", ".u64", ".u64")
                     is PrimitiveOpBinding { Kind: PrimitiveOpKind.IntUDiv });
             TestHarness.CheckTrue("i64 / → IntSDiv",
                 ImplBinder.BindBinary(Bil.BilBinaryOp.Div,
-                    MirType.Of(".i64"), MirType.Of(".i64"), MirType.Of(".i64"))
+                    ".i64", ".i64", ".i64")
                     is PrimitiveOpBinding { Kind: PrimitiveOpKind.IntSDiv });
             TestHarness.CheckTrue("f64 >= → FloatCmpGe",
                 ImplBinder.BindBinary(Bil.BilBinaryOp.CmpGe,
-                    MirType.Of(".f64"), MirType.Of(".f64"), MirType.Of(".bool"))
+                    ".f64", ".f64", ".bool")
                     is PrimitiveOpBinding { Kind: PrimitiveOpKind.FloatCmpGe });
             TestHarness.CheckTrue("bool and → LogicAnd",
                 ImplBinder.BindBinary(Bil.BilBinaryOp.And,
-                    MirType.Of(".bool"), MirType.Of(".bool"), MirType.Of(".bool"))
+                    ".bool", ".bool", ".bool")
                     is PrimitiveOpBinding { Kind: PrimitiveOpKind.LogicAnd });
             TestHarness.CheckTrue("i32 取负 → IntNeg",
                 ImplBinder.BindUnary(Bil.BilUnaryOp.Opposite,
-                    MirType.Of(".i32"), MirType.Of(".i32"))
+                    ".i32", ".i32")
                     is PrimitiveOpBinding { Kind: PrimitiveOpKind.IntNeg });
             TestHarness.CheckTrue("bool not → LogicNot",
                 ImplBinder.BindUnary(Bil.BilUnaryOp.Not,
-                    MirType.Of(".bool"), MirType.Of(".bool"))
+                    ".bool", ".bool")
                     is PrimitiveOpBinding { Kind: PrimitiveOpKind.LogicNot });
 
             // 不支持组合 → MwNotSupportedException（受控失败，非崩溃）
@@ -320,7 +450,7 @@ namespace RigiCompiler.Tests
             try
             {
                 ImplBinder.BindBinary(Bil.BilBinaryOp.Add,
-                    MirType.Of(".string"), MirType.Of(".i32"), MirType.Of(".string"));
+                    ".string", ".i32", ".string");
             }
             catch (MwNotSupportedException)
             {
@@ -385,14 +515,14 @@ namespace RigiCompiler.Tests
 
         private static void TestNotSupported()
         {
-            // 合法 BIL（控制流 if 已过门禁）超出现阶段 MIR 面 → MwNotSupportedException
+            // 合法 BIL（try 已过门禁）超出现阶段 MIR 面 → MwNotSupportedException
+            //（异常机制随 MW9 落地）
             var (_, _, text) = BilTestHarness.EmitBilUnit(
                 "pub func main(): i32 {\n" +
-                "    if (1 < 2) { return 1 }\n" +
-                "    return 0\n" +
+                "    try { return 1 } catch (e: core.RuntimeException) { return 2 }\n" +
                 "}\n");
-            var gate = BilGate.Accept(text, "if.bil");
-            TestHarness.CheckTrue("if 模块门禁放行", gate.IsAccepted,
+            var gate = BilGate.Accept(text, "try.bil");
+            TestHarness.CheckTrue("try 模块门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
             var caught = false;
             try
@@ -403,19 +533,19 @@ namespace RigiCompiler.Tests
             {
                 caught = true;
             }
-            TestHarness.CheckTrue("多 block 函数 MIR 构造受控拒绝", caught);
+            TestHarness.CheckTrue("try MIR 构造受控拒绝（随 MW9）", caught);
 
             // CLI 路径：受控失败转退出码 2 而非崩溃
             var dir = Path.Combine(Path.GetTempPath(), $"rigi_mw_unsupported_{Guid.NewGuid():N}");
             Directory.CreateDirectory(dir);
             try
             {
-                var bilPath = Path.Combine(dir, "if.bil");
+                var bilPath = Path.Combine(dir, "try.bil");
                 File.WriteAllText(bilPath, text, new UTF8Encoding(false));
                 var result = RunNative("native", "--file", bilPath,
-                    "--emit-obj", Path.Combine(dir, "if.o"));
+                    "--emit-obj", Path.Combine(dir, "try.o"));
                 TestHarness.CheckTrue("不支持形态 CLI 退出码 2", result.Code == 2);
-                TestHarness.CheckTrue("不支持形态错误走 stderr", result.Err.Contains("MW1"),
+                TestHarness.CheckTrue("不支持形态错误走 stderr", result.Err.Contains("MW3"),
                     result.Err);
             }
             finally

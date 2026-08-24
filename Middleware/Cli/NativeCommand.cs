@@ -164,7 +164,8 @@ namespace RigiCompiler.Middleware
             string? emitObjPath, string? emitLlPath, string? toolchainDir)
         {
             var context = new MwContext(module);
-            var mir = MirBuilder.Build(context);
+            MwPipeline.CreateDefault().Run(context);
+            var mir = context.Mir!;
             using var llvmModule = ModuleBuilder.Build(context, mir);
 
             // .ll 黄金快照：合并 rigi_rt 前的模块文本（稳定、可读）
