@@ -3,6 +3,8 @@ bin/
 obj/
 # 工具本地配置
 .claude/
+# LLVM 工具链本地缓存（tools/Fetch-LlvmToolchain.ps1 现场下载提取，不入库）
+tools/.llvm/
 # fuzz 失败落盘（StressFuzz）
 Tests/fuzz-failures/
 publish/

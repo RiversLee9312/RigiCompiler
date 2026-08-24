@@ -13,6 +13,8 @@ dotnet clean
 
 唯一配置文件是 `RigiCompiler.csproj`。依赖纪律：原则上纯 BCL、无第三方依赖——**唯一豁免是 Middleware 的 LLVMSharp.Interop + libLLVM（锁定 LLVM 20）**（选型裁决见 `docs/compiler/middleware/MIDDLEWARE_ARCHITECTURE.md` §2）。注意：libLLVM 原生资产经 runtime.json 传递、只在带 RID 时解析，csproj 已显式引用 win-x64/linux-x64 两个 runtime 包以支持无 RID 的 `dotnet build`/`dotnet run` 开发回路。新增依赖前必须先讨论并同步本文档；**优先复用现有的、高质量且久经验证的轮子（仓库内设施优先，外部库须成熟可靠），不重复造轮子**。另有 `RigiCompiler.sln`。
 
+Middleware 的 C 工具链（MW1 起编译 rigi_rt 与 lld 链接所需）：CI 用 runner 预装 clang/lld；开发机 PATH 优先，缺则跑 `pwsh tools/Fetch-LlvmToolchain.ps1`（钉版官方 20.1.2 选择性部件，缓存 `tools/.llvm/`，gitignored）。详见 `MIDDLEWARE_ARCHITECTURE.md` §2 链接器/rigi_rt 编译行。
+
 ### 2.2 运行
 
 CLI 结构为 `<COMMAND> [--sub-cmd [args...]...]`，顶层 COMMAND 四个：`compile` / `test` / `vm` / `help`。裸 `dotnet run` 等价于 `help`。

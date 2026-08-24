@@ -394,6 +394,11 @@ RigiCompiler/
 │   ├── Emit/                    # MW6 骨架：LlvmHost（LLVM 一次性初始化 + 宿主
 │   │                            #   TargetMachine）+ ObjectEmitter（进程内验证/发射 .o）
 │   └── Cli/NativeCommand.cs     # native COMMAND（BIL → 原生目标文件驱动）
+├── tools/                    # 开发工具链脚本（不入 CI 主流程）：
+│   ├── Fetch-LlvmToolchain.ps1  # 开发机 LLVM 工具链获取（钉 20.1.2 + SHA256 校验，
+│   │                            #   选择性提取 clang/lld/内建头文件 → tools/.llvm/ 缓存，
+│   │                            #   gitignored；CI 用 runner 预装 clang/lld 不跑本脚本，
+│   │                            #   见 MIDDLEWARE_ARCHITECTURE §2 链接器/rigi_rt 编译行）
 ├── stdlib/                   # 编译器自携标准库源（EmbeddedResource 内嵌，见 StdlibSources；
 │                             #   六源，与用户源同走 P1–P4）
 │   ├── .bootstrap.rg         # 基元自举源（EnumerateInRange + core.Pair\<TKey, TValue>
