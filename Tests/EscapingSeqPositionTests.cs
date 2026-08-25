@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using System.Linq;
 using RigiCompiler.Bil;
 using RigiCompiler.Bil.Vm;
@@ -29,29 +31,32 @@ namespace RigiCompiler.Tests
     /// </summary>
     public static class EscapingSeqPositionTests
     {
-        public static int RunAll()
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
+
+        public static int RunWithArgs(IReadOnlyList<string> args) =>
+            ParallelSuiteRunner.RunWithArgs(Spec, args);
+
+        private static ParallelSuiteRunner.SuiteSpec Spec => new(
+            "EscapingSeqPosition", Cases, sectionTitle: "EscapingSeqPosition");
+
+        private static readonly (string Label, Action Run)[] Cases =
         {
-            TestHarness.Reset();
-            // ===== 4a 正例：条件位逃逸端到端 =====
-            TestWhileConditionReturnAtLabel();
-            TestWhileConditionThrow();
-            TestDoWhileConditionEscape();
-            TestWhileConditionMultiPathEscape();
-            TestWhileConditionEscapingIfExpression();
-            TestIfStatementConditionEscape();
-            TestWhileConditionMixedSeq();
-            // ===== 4a 负例：无期望类型可传，诊断保持清晰 =====
-            TestWhileConditionBareReturnRejected();
-            TestForIterableEscapeRejected();
-            TestSwitchSelectorEscapeRejected();
-            TestBinaryOperandEscapeRejected();
-            TestInterpolationEscapeRejected();
-            // ===== 4b 刁难：截断边界外的静态死后续 =====
-            TestDeadFollowUpsAcrossInnerBlock();
-            TestDeadFollowUpsMultiLayerNesting();
-            TestDeadFollowUpsWithSideEffects();
-            return TestHarness.Summary("EscapingSeqPosition");
-        }
+            ("TestWhileConditionReturnAtLabel", TestWhileConditionReturnAtLabel),
+            ("TestWhileConditionThrow", TestWhileConditionThrow),
+            ("TestDoWhileConditionEscape", TestDoWhileConditionEscape),
+            ("TestWhileConditionMultiPathEscape", TestWhileConditionMultiPathEscape),
+            ("TestWhileConditionEscapingIfExpression", TestWhileConditionEscapingIfExpression),
+            ("TestIfStatementConditionEscape", TestIfStatementConditionEscape),
+            ("TestWhileConditionMixedSeq", TestWhileConditionMixedSeq),
+            ("TestWhileConditionBareReturnRejected", TestWhileConditionBareReturnRejected),
+            ("TestForIterableEscapeRejected", TestForIterableEscapeRejected),
+            ("TestSwitchSelectorEscapeRejected", TestSwitchSelectorEscapeRejected),
+            ("TestBinaryOperandEscapeRejected", TestBinaryOperandEscapeRejected),
+            ("TestInterpolationEscapeRejected", TestInterpolationEscapeRejected),
+            ("TestDeadFollowUpsAcrossInnerBlock", TestDeadFollowUpsAcrossInnerBlock),
+            ("TestDeadFollowUpsMultiLayerNesting", TestDeadFollowUpsMultiLayerNesting),
+            ("TestDeadFollowUpsWithSideEffects", TestDeadFollowUpsWithSideEffects),
+        };
 
         // ===== 4a 正例 =====
 

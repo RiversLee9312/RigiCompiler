@@ -40,37 +40,71 @@ namespace RigiCompiler.Tests
             public bool IsNegative => ExpectErrors.Count > 0;
         }
 
-        public static int RunAll() => RunFiltered(null);
+        public static int RunAll()
+        {
+            if (Discover().Count == 0)
+            {
+                return FailNoCases();
+            }
+            return ParallelSuiteRunner.RunAll(Spec);
+        }
 
-        // --suite-args：任一子串命中用例名（不区分大小写）即入选
-        public static int RunWithArgs(IReadOnlyList<string> args) => RunFiltered(args);
+        // --suite-args 双模：两个非负整数且 from<=to → 数值区间（基座可并行）；
+        // 否则按用例名子串过滤（恒进程内，单例调试语义）
+        public static int RunWithArgs(IReadOnlyList<string> args)
+        {
+            if (args.Count >= 2
+                && int.TryParse(args[0], out var from)
+                && int.TryParse(args[1], out var to)
+                && from >= 0 && to >= from)
+            {
+                return ParallelSuiteRunner.RunWithArgs(Spec, args);
+            }
+            return RunNameFilter(args);
+        }
 
-        private static int RunFiltered(IReadOnlyList<string>? filters)
+        private static ParallelSuiteRunner.SuiteSpec Spec
+        {
+            get
+            {
+                var cases = new List<(string Label, Action Run)>();
+                foreach (var kase in Discover())
+                {
+                    var captured = kase;
+                    cases.Add((captured.Name, () => RunCase(captured)));
+                }
+                return new ParallelSuiteRunner.SuiteSpec("E2e", cases, sectionTitle: "E2e");
+            }
+        }
+
+        private static int RunNameFilter(IReadOnlyList<string> filters)
         {
             TestHarness.Reset();
             TestHarness.Section("E2e");
-
             var stopwatch = Stopwatch.StartNew();
-            var cases = Discover();
-            if (filters is { Count: > 0 })
-            {
-                cases = cases.Where(c => filters.Any(f =>
-                    c.Name.Contains(f, StringComparison.OrdinalIgnoreCase))).ToList();
-            }
+            var cases = Discover().Where(c => filters.Any(f =>
+                c.Name.Contains(f, StringComparison.OrdinalIgnoreCase))).ToList();
             if (cases.Count == 0)
             {
                 TestHarness.CheckTrue("语料发现", false,
                     $"未找到任何用例（语料根: {CorpusRoot()}）");
                 return TestHarness.Summary("E2e");
             }
-
             foreach (var kase in cases)
             {
                 RunCase(kase);
             }
-
             stopwatch.Stop();
             Console.WriteLine($"  （e2e 语料 {cases.Count} 条，耗时 {stopwatch.ElapsedMilliseconds} ms）");
+            return TestHarness.Summary("E2e");
+        }
+
+        private static int FailNoCases()
+        {
+            TestHarness.Reset();
+            TestHarness.Section("E2e");
+            TestHarness.CheckTrue("语料发现", false,
+                $"未找到任何用例（语料根: {CorpusRoot()}）");
             return TestHarness.Summary("E2e");
         }
 

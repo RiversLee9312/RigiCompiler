@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using System.Linq;
 using RigiCompiler.Bil;
 using RigiCompiler.Bil.Vm;
@@ -13,63 +15,66 @@ namespace RigiCompiler.Tests
     /// </summary>
     public static partial class BilVmDispatchTests
     {
-        public static int RunAll()
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
+
+        public static int RunWithArgs(IReadOnlyList<string> args) =>
+            ParallelSuiteRunner.RunWithArgs(Spec, args);
+
+        private static ParallelSuiteRunner.SuiteSpec Spec => new(
+            "BilVmDispatch", Cases, sectionTitle: "BilVmDispatch");
+
+        private static readonly (string Label, Action Run)[] Cases =
         {
-            TestHarness.Reset();
-            TestHarness.Section("BilVmDispatch");
-
-            TestOpenMethodVirtualDispatch();
-            TestThreeLevelChainAndSuper();
-            TestInterfaceDispatch();
-            TestInterfaceDefaultConflictDualViewDispatch();
-            TestCallableProtocolDispatch();
-            TestCallableFieldChainedCall();
-            TestOpenGetterVirtualDispatch();
-            TestNativeToStringOverrideYields();
-            TestNativeToStringMultiLevelChain();
-            TestPrimitiveInterpolationRegression();
-            TestExplicitToStringDispatch();
-            TestGenericBaseOverrideDispatch();
-            TestGenericBaseInheritedMethod();
-            TestGenericForwardingOverride();
-            TestGenericInterfaceDispatch();
-            TestGenericMultiLevelChain();
-            TestGenericNestedArgumentDispatch();
-            TestInitOverloadAssignability();
-            TestInitRejectsUnrelatedType();
-            TestNoSuperBaseFieldInitializersRun();
-            TestBaseInitSeesFieldInitializers();
-            TestSuperInitSubtypeArgument();
-            TestSuperInitStrictMatchIgnoresDeclarationOrder();
-            TestNewInitStrictMatchIgnoresDeclarationOrder();
-            TestSuperInitExplicitCastToAny();
-            TestFieldOverrideInitialValue();
-            TestPropertyInitializerGoesThroughSetter();
-            TestGlobalFieldInitializersRun();
-            TestSubclassWrapperInterceptsInherited();
-            TestSubclassWrapperWildcardInherited();
-            TestStackedWrappersOnInherited();
-            TestBaseAndSubclassWrapperStack();
-            TestSpecificBeatsWildcardOnInherited();
-            TestPolymorphicInheritedWrapper();
-            TestWrapperPlaceVoidRuns();
-            TestOverrideStillIntercepted();
-            TestMethodWrapperViaBaseStaticType();
-            TestMethodWrapperViaInterfaceStaticType();
-            TestMethodWrapperViaMidChainStaticType();
-            TestMethodWrapperWildcardNameViaBaseStaticType();
-            TestMethodWrapperWildcardNameViaInterface();
-            TestMethodWrapperWildcardNameNonVirtual();
-            TestMethodWrapperWildcardNameInheritedNoOverride();
-            TestEntityWildcardSymbolViaBaseStaticType();
-            TestNoWrapperViaBaseStaticTypeRegression();
-            TestSuperBypassesMethodWrapper();
-            TestInheritedMethodWrapperInstalledOnChild();
-            TestBaseInitReadsThroughInheritedEntityWrapper();
-            TestAccessorCallRerouteThroughEntityWildcard();
-
-            return TestHarness.Summary("BilVmDispatch");
-        }
+            ("TestOpenMethodVirtualDispatch", TestOpenMethodVirtualDispatch),
+            ("TestThreeLevelChainAndSuper", TestThreeLevelChainAndSuper),
+            ("TestInterfaceDispatch", TestInterfaceDispatch),
+            ("TestInterfaceDefaultConflictDualViewDispatch", TestInterfaceDefaultConflictDualViewDispatch),
+            ("TestCallableProtocolDispatch", TestCallableProtocolDispatch),
+            ("TestCallableFieldChainedCall", TestCallableFieldChainedCall),
+            ("TestOpenGetterVirtualDispatch", TestOpenGetterVirtualDispatch),
+            ("TestNativeToStringOverrideYields", TestNativeToStringOverrideYields),
+            ("TestNativeToStringMultiLevelChain", TestNativeToStringMultiLevelChain),
+            ("TestPrimitiveInterpolationRegression", TestPrimitiveInterpolationRegression),
+            ("TestExplicitToStringDispatch", TestExplicitToStringDispatch),
+            ("TestGenericBaseOverrideDispatch", TestGenericBaseOverrideDispatch),
+            ("TestGenericBaseInheritedMethod", TestGenericBaseInheritedMethod),
+            ("TestGenericForwardingOverride", TestGenericForwardingOverride),
+            ("TestGenericInterfaceDispatch", TestGenericInterfaceDispatch),
+            ("TestGenericMultiLevelChain", TestGenericMultiLevelChain),
+            ("TestGenericNestedArgumentDispatch", TestGenericNestedArgumentDispatch),
+            ("TestInitOverloadAssignability", TestInitOverloadAssignability),
+            ("TestInitRejectsUnrelatedType", TestInitRejectsUnrelatedType),
+            ("TestNoSuperBaseFieldInitializersRun", TestNoSuperBaseFieldInitializersRun),
+            ("TestBaseInitSeesFieldInitializers", TestBaseInitSeesFieldInitializers),
+            ("TestSuperInitSubtypeArgument", TestSuperInitSubtypeArgument),
+            ("TestSuperInitStrictMatchIgnoresDeclarationOrder", TestSuperInitStrictMatchIgnoresDeclarationOrder),
+            ("TestNewInitStrictMatchIgnoresDeclarationOrder", TestNewInitStrictMatchIgnoresDeclarationOrder),
+            ("TestSuperInitExplicitCastToAny", TestSuperInitExplicitCastToAny),
+            ("TestFieldOverrideInitialValue", TestFieldOverrideInitialValue),
+            ("TestPropertyInitializerGoesThroughSetter", TestPropertyInitializerGoesThroughSetter),
+            ("TestGlobalFieldInitializersRun", TestGlobalFieldInitializersRun),
+            ("TestSubclassWrapperInterceptsInherited", TestSubclassWrapperInterceptsInherited),
+            ("TestSubclassWrapperWildcardInherited", TestSubclassWrapperWildcardInherited),
+            ("TestStackedWrappersOnInherited", TestStackedWrappersOnInherited),
+            ("TestBaseAndSubclassWrapperStack", TestBaseAndSubclassWrapperStack),
+            ("TestSpecificBeatsWildcardOnInherited", TestSpecificBeatsWildcardOnInherited),
+            ("TestPolymorphicInheritedWrapper", TestPolymorphicInheritedWrapper),
+            ("TestWrapperPlaceVoidRuns", TestWrapperPlaceVoidRuns),
+            ("TestOverrideStillIntercepted", TestOverrideStillIntercepted),
+            ("TestMethodWrapperViaBaseStaticType", TestMethodWrapperViaBaseStaticType),
+            ("TestMethodWrapperViaInterfaceStaticType", TestMethodWrapperViaInterfaceStaticType),
+            ("TestMethodWrapperViaMidChainStaticType", TestMethodWrapperViaMidChainStaticType),
+            ("TestMethodWrapperWildcardNameViaBaseStaticType", TestMethodWrapperWildcardNameViaBaseStaticType),
+            ("TestMethodWrapperWildcardNameViaInterface", TestMethodWrapperWildcardNameViaInterface),
+            ("TestMethodWrapperWildcardNameNonVirtual", TestMethodWrapperWildcardNameNonVirtual),
+            ("TestMethodWrapperWildcardNameInheritedNoOverride", TestMethodWrapperWildcardNameInheritedNoOverride),
+            ("TestEntityWildcardSymbolViaBaseStaticType", TestEntityWildcardSymbolViaBaseStaticType),
+            ("TestNoWrapperViaBaseStaticTypeRegression", TestNoWrapperViaBaseStaticTypeRegression),
+            ("TestSuperBypassesMethodWrapper", TestSuperBypassesMethodWrapper),
+            ("TestInheritedMethodWrapperInstalledOnChild", TestInheritedMethodWrapperInstalledOnChild),
+            ("TestBaseInitReadsThroughInheritedEntityWrapper", TestBaseInitReadsThroughInheritedEntityWrapper),
+            ("TestAccessorCallRerouteThroughEntityWildcard", TestAccessorCallRerouteThroughEntityWildcard),
+        };
 
         // 非泛型类继承构造泛型基类：D : B\<i32> 里 override m(x: i32) 必须
         // 按 extends 实参代入后匹配基类槽 m(x: T)——经基类静态符号的派发

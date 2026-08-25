@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using RigiCompiler.Bil;
@@ -21,26 +22,32 @@ namespace RigiCompiler.Tests
     /// </summary>
     public static class SeqRouteHintTests
     {
-        public static int RunAll()
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
+
+        public static int RunWithArgs(IReadOnlyList<string> args) =>
+            ParallelSuiteRunner.RunWithArgs(Spec, args);
+
+        private static ParallelSuiteRunner.SuiteSpec Spec => new(
+            "SeqRouteHint", Cases, sectionTitle: "SeqRouteHint");
+
+        private static readonly (string Label, Action Run)[] Cases =
         {
-            TestHarness.Reset();
-            TestMixedSeqExpressionEndToEnd();
-            TestMixedIfExpressionEndToEnd();
-            TestMixedSwitchExpressionEndToEnd();
-            TestLoopDispatcherHintEmission();
-            TestLoopNoDispatcherNoHint();
-            TestMixedWhileExpressionEndToEnd();
-            TestHandModuleWithHintPasses();
-            TestHandModuleWithoutHintRejected();
-            TestMalformedHintJsonIgnored();
-            TestUnknownRouteNameIgnored();
-            TestNonI32RouteIgnored();
-            TestMismatchedChainConstantIgnored();
-            TestLoopHandModuleWithHintPasses();
-            TestLoopHandModuleWithoutHintRejected();
-            TestLoopMalformedHintIgnored();
-            return TestHarness.Summary("SeqRouteHint");
-        }
+            ("TestMixedSeqExpressionEndToEnd", TestMixedSeqExpressionEndToEnd),
+            ("TestMixedIfExpressionEndToEnd", TestMixedIfExpressionEndToEnd),
+            ("TestMixedSwitchExpressionEndToEnd", TestMixedSwitchExpressionEndToEnd),
+            ("TestLoopDispatcherHintEmission", TestLoopDispatcherHintEmission),
+            ("TestLoopNoDispatcherNoHint", TestLoopNoDispatcherNoHint),
+            ("TestMixedWhileExpressionEndToEnd", TestMixedWhileExpressionEndToEnd),
+            ("TestHandModuleWithHintPasses", TestHandModuleWithHintPasses),
+            ("TestHandModuleWithoutHintRejected", TestHandModuleWithoutHintRejected),
+            ("TestMalformedHintJsonIgnored", TestMalformedHintJsonIgnored),
+            ("TestUnknownRouteNameIgnored", TestUnknownRouteNameIgnored),
+            ("TestNonI32RouteIgnored", TestNonI32RouteIgnored),
+            ("TestMismatchedChainConstantIgnored", TestMismatchedChainConstantIgnored),
+            ("TestLoopHandModuleWithHintPasses", TestLoopHandModuleWithHintPasses),
+            ("TestLoopHandModuleWithoutHintRejected", TestLoopHandModuleWithoutHintRejected),
+            ("TestLoopMalformedHintIgnored", TestLoopMalformedHintIgnored),
+        };
 
         // ===== 端到端：混合形态三兄弟（产值臂 + 逃逸臂并存）=====
 

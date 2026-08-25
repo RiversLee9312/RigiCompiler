@@ -12,24 +12,27 @@ namespace RigiCompiler.Tests
     /// </summary>
     public static class BilReaderTests
     {
-        public static int RunAll()
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
+
+        public static int RunWithArgs(IReadOnlyList<string> args) =>
+            ParallelSuiteRunner.RunWithArgs(Spec, args);
+
+        private static ParallelSuiteRunner.SuiteSpec Spec => new(
+            "BilReader", Cases, sectionTitle: "BilReader");
+
+        private static readonly (string Label, Action Run)[] Cases =
         {
-            TestHarness.Reset();
-            TestHarness.Section("BilReader");
-
-            TestRoundTripBasics();
-            TestRoundTripControlFlow();
-            TestRoundTripEnum();
-            TestRoundTripLambda();
-            TestRoundTripWrapper();
-            TestRoundTripCoroutine();
-            TestRoundTripInterpolation();
-            TestRoundTripTypeOf();
-            TestRoundTripDirectModule();
-            TestParseError();
-
-            return TestHarness.Summary("BilReader");
-        }
+            ("TestRoundTripBasics", TestRoundTripBasics),
+            ("TestRoundTripControlFlow", TestRoundTripControlFlow),
+            ("TestRoundTripEnum", TestRoundTripEnum),
+            ("TestRoundTripLambda", TestRoundTripLambda),
+            ("TestRoundTripWrapper", TestRoundTripWrapper),
+            ("TestRoundTripCoroutine", TestRoundTripCoroutine),
+            ("TestRoundTripInterpolation", TestRoundTripInterpolation),
+            ("TestRoundTripTypeOf", TestRoundTripTypeOf),
+            ("TestRoundTripDirectModule", TestRoundTripDirectModule),
+            ("TestParseError", TestParseError),
+        };
 
         // EmitBilUnit 编译源码并发射 BIL，Writer/Reader 往返后文本一致
         private static void RoundTrip(string label, string source)

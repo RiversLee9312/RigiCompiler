@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using System.Linq;
 using RigiCompiler.Bil;
 using RigiCompiler.Bil.Vm;
@@ -27,32 +29,35 @@ namespace RigiCompiler.Tests
             "    Failed\n" +
             "]\n";
 
-        public static int RunAll()
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
+
+        public static int RunWithArgs(IReadOnlyList<string> args) =>
+            ParallelSuiteRunner.RunWithArgs(Spec, args);
+
+        private static ParallelSuiteRunner.SuiteSpec Spec => new(
+            "EscapingValueBlock", Cases, sectionTitle: "EscapingValueBlock");
+
+        private static readonly (string Label, Action Run)[] Cases =
         {
-            TestHarness.Reset();
-            // bug1：ExpectedType 传播
-            TestReturnAtEnumShorthandSeq();
-            TestReturnAtEnumShorthandIfBranch();
-            TestReturnAtEnumShorthandSwitchBranch();
-            TestReturnAtEnumShorthandLambdaBody();
-            TestReturnAtEnumShorthandReturnPosition();
-            TestReturnAtEnumShorthandNestedSeq();
-            TestReturnAtEnumShorthandPayloadCase();
-            TestUnannotatedShorthandStillRejected();
-            TestWrongEnumCaseStillRejected();
-            // bug2：逃逸终止分析
-            TestStatementSeqFormEndToEnd();
-            TestEscapingIfExpressionEndToEnd();
-            TestEscapingSwitchExpressionEndToEnd();
-            TestEscapingSwitchWithoutAnnotation();
-            TestLambdaBodyDoesNotTerminateOuter();
-            TestConditionalEvaluationSideDoesNotTerminate();
-            TestEscapingFinallySideEffectEndToEnd();
-            TestBreakAtValueBlockStillRejected();
-            // bug3：println 原子性
-            TestPrintlnAtomicity();
-            return TestHarness.Summary("EscapingValueBlock");
-        }
+            ("TestReturnAtEnumShorthandSeq", TestReturnAtEnumShorthandSeq),
+            ("TestReturnAtEnumShorthandIfBranch", TestReturnAtEnumShorthandIfBranch),
+            ("TestReturnAtEnumShorthandSwitchBranch", TestReturnAtEnumShorthandSwitchBranch),
+            ("TestReturnAtEnumShorthandLambdaBody", TestReturnAtEnumShorthandLambdaBody),
+            ("TestReturnAtEnumShorthandReturnPosition", TestReturnAtEnumShorthandReturnPosition),
+            ("TestReturnAtEnumShorthandNestedSeq", TestReturnAtEnumShorthandNestedSeq),
+            ("TestReturnAtEnumShorthandPayloadCase", TestReturnAtEnumShorthandPayloadCase),
+            ("TestUnannotatedShorthandStillRejected", TestUnannotatedShorthandStillRejected),
+            ("TestWrongEnumCaseStillRejected", TestWrongEnumCaseStillRejected),
+            ("TestStatementSeqFormEndToEnd", TestStatementSeqFormEndToEnd),
+            ("TestEscapingIfExpressionEndToEnd", TestEscapingIfExpressionEndToEnd),
+            ("TestEscapingSwitchExpressionEndToEnd", TestEscapingSwitchExpressionEndToEnd),
+            ("TestEscapingSwitchWithoutAnnotation", TestEscapingSwitchWithoutAnnotation),
+            ("TestLambdaBodyDoesNotTerminateOuter", TestLambdaBodyDoesNotTerminateOuter),
+            ("TestConditionalEvaluationSideDoesNotTerminate", TestConditionalEvaluationSideDoesNotTerminate),
+            ("TestEscapingFinallySideEffectEndToEnd", TestEscapingFinallySideEffectEndToEnd),
+            ("TestBreakAtValueBlockStillRejected", TestBreakAtValueBlockStillRejected),
+            ("TestPrintlnAtomicity", TestPrintlnAtomicity),
+        };
 
         // ===== bug1：ExpectedType 传播 =====
 

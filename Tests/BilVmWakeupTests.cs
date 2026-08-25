@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using RigiCompiler.Bil;
 using RigiCompiler.Bil.Vm;
@@ -15,24 +16,27 @@ namespace RigiCompiler.Tests
     /// </summary>
     public static class BilVmWakeupTests
     {
-        public static int RunAll()
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
+
+        public static int RunWithArgs(IReadOnlyList<string> args) =>
+            ParallelSuiteRunner.RunWithArgs(Spec, args);
+
+        private static ParallelSuiteRunner.SuiteSpec Spec => new(
+            "BilVmWakeup", Cases, sectionTitle: "BilVmWakeup");
+
+        private static readonly (string Label, Action Run)[] Cases =
         {
-            TestHarness.Reset();
-            TestHarness.Section("BilVmWakeup");
-
-            TestTrySuspendBumpsEpoch();
-            TestIsWakeupLostDecision();
-            TestWakeupLostFailsCoroutine();
-            TestBenignTerminalNoOp();
-            TestBenignRunnableNoOp();
-            TestBenignStaleEpochNoOp();
-            TestTaskWakeupPath();
-            TestAlarmWakeupPath();
-            TestEndToEndWakeupPaths();
-            TestFailDisposesPollTimer();
-
-            return TestHarness.Summary("BilVmWakeup");
-        }
+            ("TestTrySuspendBumpsEpoch", TestTrySuspendBumpsEpoch),
+            ("TestIsWakeupLostDecision", TestIsWakeupLostDecision),
+            ("TestWakeupLostFailsCoroutine", TestWakeupLostFailsCoroutine),
+            ("TestBenignTerminalNoOp", TestBenignTerminalNoOp),
+            ("TestBenignRunnableNoOp", TestBenignRunnableNoOp),
+            ("TestBenignStaleEpochNoOp", TestBenignStaleEpochNoOp),
+            ("TestTaskWakeupPath", TestTaskWakeupPath),
+            ("TestAlarmWakeupPath", TestAlarmWakeupPath),
+            ("TestEndToEndWakeupPaths", TestEndToEndWakeupPaths),
+            ("TestFailDisposesPollTimer", TestFailDisposesPollTimer),
+        };
 
         // ===== 辅助（Tests 与 Bil 同程序集，internal 入口可直调） =====
 

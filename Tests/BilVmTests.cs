@@ -1,4 +1,6 @@
-﻿using System.Linq;
+﻿using System;
+using System.Collections.Generic;
+using System.Linq;
 using RigiCompiler.Bil;
 using RigiCompiler.Bil.Vm;
 
@@ -15,140 +17,143 @@ namespace RigiCompiler.Tests
     /// </summary>
     public static partial class BilVmTests
     {
-        public static int RunAll()
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
+
+        public static int RunWithArgs(IReadOnlyList<string> args) =>
+            ParallelSuiteRunner.RunWithArgs(Spec, args);
+
+        private static ParallelSuiteRunner.SuiteSpec Spec => new(
+            "BilVm", Cases, sectionTitle: "BilVm");
+
+        private static readonly (string Label, Action Run)[] Cases =
         {
-            TestHarness.Reset();
-            TestHarness.Section("BilVm");
-
-            TestHelloWorld();
-            TestLocalArithmetic();
-            TestUnaryNegation();
-            TestNegativeLiteralFolding();
-            TestInvokeWithResult();
-            TestStringConcat();
-            TestScalarLocals();
-            TestClassInstanceFields();
-            TestFieldZeroDefault();
-            TestDefaultConstructorFieldInitializer();
-            TestExplicitInitFieldInitializer();
-            TestAccessorFieldInitializerViaSetter();
-            TestDefaultConstructorChaining();
-            TestSeqStatementReturnTransparency();
-            TestStaticFields();
-            TestRootNamespaceGlobalField();
-            TestLikeDelegationForwarding();
-            TestLikeDelegationInterfaceField();
-            TestStructDeepCopy();
-            TestArrayIndexOperators();
-            TestArrayIndexOutOfBoundsNull();
-            TestCompoundAssignmentIndexSingleRead();
-            TestEnumCasePayload();
-            TestEnumCaseFixedPayload();
-            TestEnumCaseIdentity();
-            TestGetterSetterOrder();
-            TestInstanceMethodReceiver();
-            TestBuiltinArrayDirectModule();
-            TestArrayOfI32();
-            TestArrayOfElementsString();
-            TestWrapperInstallDirectModule();
-            TestGetSelfDirectModule();
-            TestNumericCasts();
-            TestReferenceCasts();
-            TestCastFailureAndSafe();
-            TestAnyBoxUnbox();
-            TestTypeIsSupersCase();
-            TestTypeWithAndGetId();
-            TestLambdaInvokeIndirect();
-            TestGetWrapperDirectModule();
-            TestIndirectFieldAndNew();
-            TestUserOperatorAdd();
-            TestUserOperatorSourceDispatch();
-            TestDowngradeCallWildcard();
-            TestMethodWrapperWildcardInnerFullShape();
-            TestLambdaMethodWrapperWildcardInner();
-            TestWildcardInnerMiddleOfWrapperChain();
-            TestWrapperValueGetProxyInitArg();
-            TestValueWrapperClampedMutableVar();
-            TestValueWrapperTwoLayerOrder();
-            TestValueWrapperGetOnlyProxy();
-            TestStringInterpolationToString();
-            TestEntitySpecificMethodProxySurrounds();
-            TestEntityWildcardMethodProxyBothDirections();
-            TestEntityGetterSetterProxyCounts();
-            TestEntityOperatorProxyWildcardDirectModule();
-            TestEntityProxyStatePersists();
-            TestEntityProxySelfReadsHostField();
-            TestEntityGenericCastUnboundDirectModule();
-            TestMethodWrapperCallSpecificSurrounds();
-            TestMethodWrapperStaticViaCompanion();
-            TestMethodWrapperDoubleLayerOrder();
-            TestMethodWrapperStatePersists();
-            TestMethodWrapperArgPassThrough();
-            TestEntryPointNamespaceMain();
-            TestEntryPointStaticMember();
-            TestEntryPointMultipleAndExplicitSelection();
-            TestGlobalMethodWrapperEndToEnd();
-            TestGlobalMethodWrapperDoubleLayerOrder();
-            TestGlobalMethodWrapperInNamespace();
-            TestMethodWrapperGetSelfDirectModule();
-            TestMethodWrapperNotEqualsViaOprEqualsDirectModule();
-            TestExceptionGetMessage();
-            TestIntegerDivisionByZero();
-            TestLambdaMethodWrapperEndToEnd();
-            TestIfElse();
-            TestWhileAndDoWhile();
-            TestForRangeAndBreakContinue();
-            TestForRangeConstraintDispatch();
-            TestNamedImportGenericType();
-            TestNamedBreakContinue();
-            TestSwitchStatementAndExpression();
-            TestConditionalExpectedTypeMaterialization();
-            TestTryCatchFinally();
-            TestThrowAcrossFunction();
-            TestRetBreakContinueThroughFinally();
-            TestRegionBreakIdConsumption();
-            TestStructuredExitRouting();
-            TestFinallyExceptionSlotSemantics();
-            TestUsingDisposeOrder();
-            TestLoopEnumeratorDirectModule();
-            TestAsyncAwaitResult();
-            TestAwaitExceptionAndCompleted();
-            TestForkJoinAndFireAndForget();
-            TestYieldForms();
-            TestConcurrentPrintLines();
-            TestAwaitThroughTryFinally();
-            TestCoroutineStressForkJoin();
-            TestGenericConstructedNewInit();
-            TestDestructuringSuperGenericInit();
-            TestClosedGenericParamSymbolEndToEnd();
-            TestGenericFunctionConstructedParams();
-            TestGenericInferenceEndToEnd();
-            TestGenericParamConstraintDispatch();
-            TestGetIdTypeResolvesNestedGeneric();
-            TestStringLength();
-            TestWrapperOutsideSetterWriteOrder();
-            TestWrapperOutsideGetterReadOrder();
-            TestWrapperAccessorInitializerNoCrash();
-            TestSetterBodyMultipleValueAccess();
-            TestWrapperAccessorLocalOrder();
-            TestGenericIndexOperator();
-            TestClassGenericParamInMethodFrame();
-            TestReifiedConstructZeroValue();
-            TestNestedClassNullableInit();
-            TestInitMatchByAssignability();
-            TestNullableGenericTypeArgument();
-            TestConstructedTypeStaticMembers();
-            TestGenericNullableEndToEnd();
-            TestBoundNullableBoxingEndToEnd();
-            TestNestedStructFieldChainWrite();
-            TestStructReceiverCallWriteback();
-            TestClassEmbeddedStructFieldWrite();
-            TestThreeLevelNestedStructWrite();
-            TestStaticFieldRootChainWrite();
-            TestWrappedStaticFieldRootChainWrite();
-
-            return TestHarness.Summary("BilVm");
-        }
+            ("TestHelloWorld", TestHelloWorld),
+            ("TestLocalArithmetic", TestLocalArithmetic),
+            ("TestUnaryNegation", TestUnaryNegation),
+            ("TestNegativeLiteralFolding", TestNegativeLiteralFolding),
+            ("TestInvokeWithResult", TestInvokeWithResult),
+            ("TestStringConcat", TestStringConcat),
+            ("TestScalarLocals", TestScalarLocals),
+            ("TestClassInstanceFields", TestClassInstanceFields),
+            ("TestFieldZeroDefault", TestFieldZeroDefault),
+            ("TestDefaultConstructorFieldInitializer", TestDefaultConstructorFieldInitializer),
+            ("TestExplicitInitFieldInitializer", TestExplicitInitFieldInitializer),
+            ("TestAccessorFieldInitializerViaSetter", TestAccessorFieldInitializerViaSetter),
+            ("TestDefaultConstructorChaining", TestDefaultConstructorChaining),
+            ("TestSeqStatementReturnTransparency", TestSeqStatementReturnTransparency),
+            ("TestStaticFields", TestStaticFields),
+            ("TestRootNamespaceGlobalField", TestRootNamespaceGlobalField),
+            ("TestLikeDelegationForwarding", TestLikeDelegationForwarding),
+            ("TestLikeDelegationInterfaceField", TestLikeDelegationInterfaceField),
+            ("TestStructDeepCopy", TestStructDeepCopy),
+            ("TestArrayIndexOperators", TestArrayIndexOperators),
+            ("TestArrayIndexOutOfBoundsNull", TestArrayIndexOutOfBoundsNull),
+            ("TestCompoundAssignmentIndexSingleRead", TestCompoundAssignmentIndexSingleRead),
+            ("TestEnumCasePayload", TestEnumCasePayload),
+            ("TestEnumCaseFixedPayload", TestEnumCaseFixedPayload),
+            ("TestEnumCaseIdentity", TestEnumCaseIdentity),
+            ("TestGetterSetterOrder", TestGetterSetterOrder),
+            ("TestInstanceMethodReceiver", TestInstanceMethodReceiver),
+            ("TestBuiltinArrayDirectModule", TestBuiltinArrayDirectModule),
+            ("TestArrayOfI32", TestArrayOfI32),
+            ("TestArrayOfElementsString", TestArrayOfElementsString),
+            ("TestWrapperInstallDirectModule", TestWrapperInstallDirectModule),
+            ("TestGetSelfDirectModule", TestGetSelfDirectModule),
+            ("TestNumericCasts", TestNumericCasts),
+            ("TestReferenceCasts", TestReferenceCasts),
+            ("TestCastFailureAndSafe", TestCastFailureAndSafe),
+            ("TestAnyBoxUnbox", TestAnyBoxUnbox),
+            ("TestTypeIsSupersCase", TestTypeIsSupersCase),
+            ("TestTypeWithAndGetId", TestTypeWithAndGetId),
+            ("TestLambdaInvokeIndirect", TestLambdaInvokeIndirect),
+            ("TestGetWrapperDirectModule", TestGetWrapperDirectModule),
+            ("TestIndirectFieldAndNew", TestIndirectFieldAndNew),
+            ("TestUserOperatorAdd", TestUserOperatorAdd),
+            ("TestUserOperatorSourceDispatch", TestUserOperatorSourceDispatch),
+            ("TestDowngradeCallWildcard", TestDowngradeCallWildcard),
+            ("TestMethodWrapperWildcardInnerFullShape", TestMethodWrapperWildcardInnerFullShape),
+            ("TestLambdaMethodWrapperWildcardInner", TestLambdaMethodWrapperWildcardInner),
+            ("TestWildcardInnerMiddleOfWrapperChain", TestWildcardInnerMiddleOfWrapperChain),
+            ("TestWrapperValueGetProxyInitArg", TestWrapperValueGetProxyInitArg),
+            ("TestValueWrapperClampedMutableVar", TestValueWrapperClampedMutableVar),
+            ("TestValueWrapperTwoLayerOrder", TestValueWrapperTwoLayerOrder),
+            ("TestValueWrapperGetOnlyProxy", TestValueWrapperGetOnlyProxy),
+            ("TestStringInterpolationToString", TestStringInterpolationToString),
+            ("TestEntitySpecificMethodProxySurrounds", TestEntitySpecificMethodProxySurrounds),
+            ("TestEntityWildcardMethodProxyBothDirections", TestEntityWildcardMethodProxyBothDirections),
+            ("TestEntityGetterSetterProxyCounts", TestEntityGetterSetterProxyCounts),
+            ("TestEntityOperatorProxyWildcardDirectModule", TestEntityOperatorProxyWildcardDirectModule),
+            ("TestEntityProxyStatePersists", TestEntityProxyStatePersists),
+            ("TestEntityProxySelfReadsHostField", TestEntityProxySelfReadsHostField),
+            ("TestEntityGenericCastUnboundDirectModule", TestEntityGenericCastUnboundDirectModule),
+            ("TestMethodWrapperCallSpecificSurrounds", TestMethodWrapperCallSpecificSurrounds),
+            ("TestMethodWrapperStaticViaCompanion", TestMethodWrapperStaticViaCompanion),
+            ("TestMethodWrapperDoubleLayerOrder", TestMethodWrapperDoubleLayerOrder),
+            ("TestMethodWrapperStatePersists", TestMethodWrapperStatePersists),
+            ("TestMethodWrapperArgPassThrough", TestMethodWrapperArgPassThrough),
+            ("TestEntryPointNamespaceMain", TestEntryPointNamespaceMain),
+            ("TestEntryPointStaticMember", TestEntryPointStaticMember),
+            ("TestEntryPointMultipleAndExplicitSelection", TestEntryPointMultipleAndExplicitSelection),
+            ("TestGlobalMethodWrapperEndToEnd", TestGlobalMethodWrapperEndToEnd),
+            ("TestGlobalMethodWrapperDoubleLayerOrder", TestGlobalMethodWrapperDoubleLayerOrder),
+            ("TestGlobalMethodWrapperInNamespace", TestGlobalMethodWrapperInNamespace),
+            ("TestMethodWrapperGetSelfDirectModule", TestMethodWrapperGetSelfDirectModule),
+            ("TestMethodWrapperNotEqualsViaOprEqualsDirectModule", TestMethodWrapperNotEqualsViaOprEqualsDirectModule),
+            ("TestExceptionGetMessage", TestExceptionGetMessage),
+            ("TestIntegerDivisionByZero", TestIntegerDivisionByZero),
+            ("TestLambdaMethodWrapperEndToEnd", TestLambdaMethodWrapperEndToEnd),
+            ("TestIfElse", TestIfElse),
+            ("TestWhileAndDoWhile", TestWhileAndDoWhile),
+            ("TestForRangeAndBreakContinue", TestForRangeAndBreakContinue),
+            ("TestForRangeConstraintDispatch", TestForRangeConstraintDispatch),
+            ("TestNamedImportGenericType", TestNamedImportGenericType),
+            ("TestNamedBreakContinue", TestNamedBreakContinue),
+            ("TestSwitchStatementAndExpression", TestSwitchStatementAndExpression),
+            ("TestConditionalExpectedTypeMaterialization", TestConditionalExpectedTypeMaterialization),
+            ("TestTryCatchFinally", TestTryCatchFinally),
+            ("TestThrowAcrossFunction", TestThrowAcrossFunction),
+            ("TestRetBreakContinueThroughFinally", TestRetBreakContinueThroughFinally),
+            ("TestRegionBreakIdConsumption", TestRegionBreakIdConsumption),
+            ("TestStructuredExitRouting", TestStructuredExitRouting),
+            ("TestFinallyExceptionSlotSemantics", TestFinallyExceptionSlotSemantics),
+            ("TestUsingDisposeOrder", TestUsingDisposeOrder),
+            ("TestLoopEnumeratorDirectModule", TestLoopEnumeratorDirectModule),
+            ("TestAsyncAwaitResult", TestAsyncAwaitResult),
+            ("TestAwaitExceptionAndCompleted", TestAwaitExceptionAndCompleted),
+            ("TestForkJoinAndFireAndForget", TestForkJoinAndFireAndForget),
+            ("TestYieldForms", TestYieldForms),
+            ("TestConcurrentPrintLines", TestConcurrentPrintLines),
+            ("TestAwaitThroughTryFinally", TestAwaitThroughTryFinally),
+            ("TestCoroutineStressForkJoin", TestCoroutineStressForkJoin),
+            ("TestGenericConstructedNewInit", TestGenericConstructedNewInit),
+            ("TestDestructuringSuperGenericInit", TestDestructuringSuperGenericInit),
+            ("TestClosedGenericParamSymbolEndToEnd", TestClosedGenericParamSymbolEndToEnd),
+            ("TestGenericFunctionConstructedParams", TestGenericFunctionConstructedParams),
+            ("TestGenericInferenceEndToEnd", TestGenericInferenceEndToEnd),
+            ("TestGenericParamConstraintDispatch", TestGenericParamConstraintDispatch),
+            ("TestGetIdTypeResolvesNestedGeneric", TestGetIdTypeResolvesNestedGeneric),
+            ("TestStringLength", TestStringLength),
+            ("TestWrapperOutsideSetterWriteOrder", TestWrapperOutsideSetterWriteOrder),
+            ("TestWrapperOutsideGetterReadOrder", TestWrapperOutsideGetterReadOrder),
+            ("TestWrapperAccessorInitializerNoCrash", TestWrapperAccessorInitializerNoCrash),
+            ("TestSetterBodyMultipleValueAccess", TestSetterBodyMultipleValueAccess),
+            ("TestWrapperAccessorLocalOrder", TestWrapperAccessorLocalOrder),
+            ("TestGenericIndexOperator", TestGenericIndexOperator),
+            ("TestClassGenericParamInMethodFrame", TestClassGenericParamInMethodFrame),
+            ("TestReifiedConstructZeroValue", TestReifiedConstructZeroValue),
+            ("TestNestedClassNullableInit", TestNestedClassNullableInit),
+            ("TestInitMatchByAssignability", TestInitMatchByAssignability),
+            ("TestNullableGenericTypeArgument", TestNullableGenericTypeArgument),
+            ("TestConstructedTypeStaticMembers", TestConstructedTypeStaticMembers),
+            ("TestGenericNullableEndToEnd", TestGenericNullableEndToEnd),
+            ("TestBoundNullableBoxingEndToEnd", TestBoundNullableBoxingEndToEnd),
+            ("TestNestedStructFieldChainWrite", TestNestedStructFieldChainWrite),
+            ("TestStructReceiverCallWriteback", TestStructReceiverCallWriteback),
+            ("TestClassEmbeddedStructFieldWrite", TestClassEmbeddedStructFieldWrite),
+            ("TestThreeLevelNestedStructWrite", TestThreeLevelNestedStructWrite),
+            ("TestStaticFieldRootChainWrite", TestStaticFieldRootChainWrite),
+            ("TestWrappedStaticFieldRootChainWrite", TestWrappedStaticFieldRootChainWrite),
+        };
 
         private static void TestHelloWorld()
         {

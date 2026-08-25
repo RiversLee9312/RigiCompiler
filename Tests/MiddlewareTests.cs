@@ -1,4 +1,6 @@
 using System;
+using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -137,47 +139,37 @@ namespace RigiCompiler.Tests
             "    }\n" +
             "}\n";
 
-        public static int RunAll()
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
+
+        public static int RunWithArgs(IReadOnlyList<string> args) =>
+            ParallelSuiteRunner.RunWithArgs(Spec, args);
+
+        private static ParallelSuiteRunner.SuiteSpec Spec => new(
+            "Middleware", Cases, sectionTitle: "Middleware");
+
+        private static readonly (string Label, Action Run)[] Cases =
         {
-            TestHarness.Reset();
-            TestHarness.Section("Middleware Gate 门禁");
-            TestGateRejectsParseError();
-            TestGateRejectsVerifierError();
-            TestGateRejectsBoolBitwise();
-            TestGateAcceptsValidModule();
-            TestHarness.Section("Middleware 驻留符号表");
-            TestSymbolTable();
-            TestHarness.Section("Middleware MIR 构造");
-            TestMirConstruction();
-            TestHarness.Section("Middleware MIR 控制流直译");
-            TestMirControlFlow();
-            TestHarness.Section("Middleware 实现绑定");
-            TestBinding();
-            TestHarness.Section("Middleware 目标文件发射");
-            TestObjectEmission();
-            TestHarness.Section("Middleware .ll 黄金锚点");
-            TestLlGoldenAnchors();
-            TestHarness.Section("Middleware null 资源发射");
-            TestNullResourceEmission();
-            TestHarness.Section("Middleware 除零 guard 发射");
-            TestDivGuardEmission();
-            TestHarness.Section("Middleware 布局与 TypeSheet");
-            TestLayoutPlans();
-            TestTypeSheetEmission();
-            TestHarness.Section("Middleware 对象路径发射");
-            TestObjectPathEmission();
-            TestHarness.Section("Middleware 值类型路径发射");
-            TestValuePathEmission();
-            TestHarness.Section("Middleware 静态字段与入口 stub");
-            TestStaticEmission();
-            TestHarness.Section("Middleware 数组路径发射");
-            TestArrayPathEmission();
-            TestHarness.Section("Middleware 受控失败");
-            TestNotSupported();
-            TestHarness.Section("native CLI 端到端");
-            TestNativeCli();
-            return TestHarness.Summary("Middleware");
-        }
+            ("TestGateRejectsParseError", TestGateRejectsParseError),
+            ("TestGateRejectsVerifierError", TestGateRejectsVerifierError),
+            ("TestGateRejectsBoolBitwise", TestGateRejectsBoolBitwise),
+            ("TestGateAcceptsValidModule", TestGateAcceptsValidModule),
+            ("TestSymbolTable", TestSymbolTable),
+            ("TestMirConstruction", TestMirConstruction),
+            ("TestMirControlFlow", TestMirControlFlow),
+            ("TestBinding", TestBinding),
+            ("TestObjectEmission", TestObjectEmission),
+            ("TestLlGoldenAnchors", TestLlGoldenAnchors),
+            ("TestNullResourceEmission", TestNullResourceEmission),
+            ("TestDivGuardEmission", TestDivGuardEmission),
+            ("TestLayoutPlans", TestLayoutPlans),
+            ("TestTypeSheetEmission", TestTypeSheetEmission),
+            ("TestObjectPathEmission", TestObjectPathEmission),
+            ("TestValuePathEmission", TestValuePathEmission),
+            ("TestStaticEmission", TestStaticEmission),
+            ("TestArrayPathEmission", TestArrayPathEmission),
+            ("TestNotSupported", TestNotSupported),
+            ("TestNativeCli", TestNativeCli),
+        };
 
         // ===== Gate 门禁 =====
 

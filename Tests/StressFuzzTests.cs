@@ -343,9 +343,10 @@ namespace RigiCompiler.Tests
             }
             child.StdoutTask = process.StandardOutput.ReadToEndAsync();
             child.StderrTask = process.StandardError.ReadToEndAsync();
-            int childCases = childTo - childFrom + 1;
-            // 超时按每例 1s 估算（编译 + VM 实测约 250ms/例，留 4 倍余量），下限 120s
-            child.TimeoutMs = Math.Max(120_000, childCases * 1000);
+            // 子进程不限时（TimeoutMs<=0）：GH Actions 容器与 NativeAOT 产物
+            // 无 JIT 运行时优化（fuzz 速度约 CoreCLR 的 1/3），任何按本机
+            // 性能校准的固定超时都会误杀（与 SemanticsFuzz 同口径）
+            child.TimeoutMs = 0;
             return child;
         }
 
@@ -354,7 +355,12 @@ namespace RigiCompiler.Tests
             if (child.StartError != null || child.Process == null) return;
 
             var process = child.Process;
-            if (!process.WaitForExit(child.TimeoutMs))
+            // 不限时（TimeoutMs<=0）直等到退出；>0 时超时终止（保留人工排查通道）
+            if (child.TimeoutMs <= 0)
+            {
+                process.WaitForExit();
+            }
+            else if (!process.WaitForExit(child.TimeoutMs))
             {
                 child.TimedOut = true;
                 try

@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using System.Linq;
 using RigiCompiler.Bil;
 using RigiCompiler.Bil.Vm;
@@ -15,52 +17,55 @@ namespace RigiCompiler.Tests
     /// </summary>
     public static class BilVmStressTests
     {
-        public static int RunAll()
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
+
+        public static int RunWithArgs(IReadOnlyList<string> args) =>
+            ParallelSuiteRunner.RunWithArgs(Spec, args);
+
+        private static ParallelSuiteRunner.SuiteSpec Spec => new(
+            "BilVmStress", Cases, sectionTitle: "BilVmStress");
+
+        private static readonly (string Label, Action Run)[] Cases =
         {
-            TestHarness.Reset();
-            TestHarness.Section("BilVmStress");
-
-            TestEntityWrapperInitArgsMulti();
-            TestEntityWrapperInitArgString();
-            TestEntityWrapperInitArgExpression();
-            TestValueWrapperStringField();
-            TestValueWrapperCompoundAssignment();
-            TestValueWrapperLocalInitGoesThroughSet();
-            TestValueWrapperPlaceWrite();
-            TestValueWrapperArrayField();
-            TestRichStructEntityWrapper();
-            TestRichStructFieldValueWrapper();
-            TestEntityWrapperGenericHost();
-            TestEntityWrapperTwoLayersWithArgs();
-            TestProxyBodyThrowPropagates();
-            TestProxyBodyTryCatchInternal();
-            TestWrappedLocalCapturedByLambda();
-            TestEnumSwitchExpression();
-            TestStringInterpolationScalars();
-            TestThrowThroughNestedFinally();
-            TestTypeWithCheck();
-            TestEntityWrapperGetterSetterBothOrder();
-            TestEntityGetterWildcardProxy();
-            TestEntitySetterWildcardProxy();
-            TestEntityProxySelfSource();
-            TestEntityWrapperEnumField();
-            TestEnumExplicitDiscriminant();
-            TestGenericInstanceMethodCall();
-            TestStaticWrappedFieldProxyChain();
-            TestStaticWrappedFieldWithUserAccessors();
-            TestStaticMethodAndFieldSharedCompanion();
-            TestNestedClassStaticWrappedField();
-            TestStaticWrappedFieldInitializer();
-            TestGlobalWrappedFieldProxyChain();
-            TestGlobalWrappedFieldWithUserAccessors();
-            TestGlobalWrappedFieldInitializerBeforeMain();
-            TestGlobalConstWrappedField();
-            TestSingletonInitOrderIndependence();
-            TestSingletonCycleDetection();
-            TestCoroutineHandoffRaceRegression();
-
-            return TestHarness.Summary("BilVmStress");
-        }
+            ("TestEntityWrapperInitArgsMulti", TestEntityWrapperInitArgsMulti),
+            ("TestEntityWrapperInitArgString", TestEntityWrapperInitArgString),
+            ("TestEntityWrapperInitArgExpression", TestEntityWrapperInitArgExpression),
+            ("TestValueWrapperStringField", TestValueWrapperStringField),
+            ("TestValueWrapperCompoundAssignment", TestValueWrapperCompoundAssignment),
+            ("TestValueWrapperLocalInitGoesThroughSet", TestValueWrapperLocalInitGoesThroughSet),
+            ("TestValueWrapperPlaceWrite", TestValueWrapperPlaceWrite),
+            ("TestValueWrapperArrayField", TestValueWrapperArrayField),
+            ("TestRichStructEntityWrapper", TestRichStructEntityWrapper),
+            ("TestRichStructFieldValueWrapper", TestRichStructFieldValueWrapper),
+            ("TestEntityWrapperGenericHost", TestEntityWrapperGenericHost),
+            ("TestEntityWrapperTwoLayersWithArgs", TestEntityWrapperTwoLayersWithArgs),
+            ("TestProxyBodyThrowPropagates", TestProxyBodyThrowPropagates),
+            ("TestProxyBodyTryCatchInternal", TestProxyBodyTryCatchInternal),
+            ("TestWrappedLocalCapturedByLambda", TestWrappedLocalCapturedByLambda),
+            ("TestEnumSwitchExpression", TestEnumSwitchExpression),
+            ("TestStringInterpolationScalars", TestStringInterpolationScalars),
+            ("TestThrowThroughNestedFinally", TestThrowThroughNestedFinally),
+            ("TestTypeWithCheck", TestTypeWithCheck),
+            ("TestEntityWrapperGetterSetterBothOrder", TestEntityWrapperGetterSetterBothOrder),
+            ("TestEntityGetterWildcardProxy", TestEntityGetterWildcardProxy),
+            ("TestEntitySetterWildcardProxy", TestEntitySetterWildcardProxy),
+            ("TestEntityProxySelfSource", TestEntityProxySelfSource),
+            ("TestEntityWrapperEnumField", TestEntityWrapperEnumField),
+            ("TestEnumExplicitDiscriminant", TestEnumExplicitDiscriminant),
+            ("TestGenericInstanceMethodCall", TestGenericInstanceMethodCall),
+            ("TestStaticWrappedFieldProxyChain", TestStaticWrappedFieldProxyChain),
+            ("TestStaticWrappedFieldWithUserAccessors", TestStaticWrappedFieldWithUserAccessors),
+            ("TestStaticMethodAndFieldSharedCompanion", TestStaticMethodAndFieldSharedCompanion),
+            ("TestNestedClassStaticWrappedField", TestNestedClassStaticWrappedField),
+            ("TestStaticWrappedFieldInitializer", TestStaticWrappedFieldInitializer),
+            ("TestGlobalWrappedFieldProxyChain", TestGlobalWrappedFieldProxyChain),
+            ("TestGlobalWrappedFieldWithUserAccessors", TestGlobalWrappedFieldWithUserAccessors),
+            ("TestGlobalWrappedFieldInitializerBeforeMain", TestGlobalWrappedFieldInitializerBeforeMain),
+            ("TestGlobalConstWrappedField", TestGlobalConstWrappedField),
+            ("TestSingletonInitOrderIndependence", TestSingletonInitOrderIndependence),
+            ("TestSingletonCycleDetection", TestSingletonCycleDetection),
+            ("TestCoroutineHandoffRaceRegression", TestCoroutineHandoffRaceRegression),
+        };
 
         // ===== 辅助 =====
 

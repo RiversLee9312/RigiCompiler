@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using System.Linq;
 using RigiCompiler.Bil;
 using RigiCompiler.Bil.Vm;
@@ -14,15 +16,21 @@ namespace RigiCompiler.Tests
     /// </summary>
     public static class EscapingSeqExprTests
     {
-        public static int RunAll()
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
+
+        public static int RunWithArgs(IReadOnlyList<string> args) =>
+            ParallelSuiteRunner.RunWithArgs(Spec, args);
+
+        private static ParallelSuiteRunner.SuiteSpec Spec => new(
+            "EscapingSeqExpr", Cases, sectionTitle: "EscapingSeqExpr");
+
+        private static readonly (string Label, Action Run)[] Cases =
         {
-            TestHarness.Reset();
-            TestEscapingSeqVarInitEndToEnd();
-            TestEscapingSeqAcrossTwoValueBlocks();
-            TestEscapingSeqRequiresTypeAnnotation();
-            TestFallThroughSeqStillRejected();
-            return TestHarness.Summary("EscapingSeqExpr");
-        }
+            ("TestEscapingSeqVarInitEndToEnd", TestEscapingSeqVarInitEndToEnd),
+            ("TestEscapingSeqAcrossTwoValueBlocks", TestEscapingSeqAcrossTwoValueBlocks),
+            ("TestEscapingSeqRequiresTypeAnnotation", TestEscapingSeqRequiresTypeAnnotation),
+            ("TestFallThroughSeqStillRejected", TestFallThroughSeqStillRejected),
+        };
 
         // 正例：逃逸型 seq 表达式初始化变量（var t: i32 = seq { 全路径
         // return@decide }），外层 named seq 产值——修复前 BIL verifier

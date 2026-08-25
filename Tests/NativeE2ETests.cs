@@ -1,10 +1,13 @@
 using System;
+using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using RigiCompiler.Bil;
 using RigiCompiler.Bil.Vm;
 using RigiCompiler.Middleware.Cli;
+using RigiCompiler.Middleware.Runtime;
 using RigiCompiler.Middleware.Toolchain;
 
 namespace RigiCompiler.Tests
@@ -20,47 +23,84 @@ namespace RigiCompiler.Tests
     {
         public static int RunAll()
         {
+            return TrySkipEntireSuite() ?? ParallelSuiteRunner.RunAll(Spec);
+        }
+
+        public static int RunWithArgs(IReadOnlyList<string> args)
+        {
+            return TrySkipEntireSuite() ?? ParallelSuiteRunner.RunWithArgs(Spec, args);
+        }
+
+        private static int? TrySkipEntireSuite()
+        {
+            if (ToolchainResolver.ResolveClang(null) != null)
+            {
+                return null;
+            }
             TestHarness.Reset();
             TestHarness.Section("native 对拍（VM vs 原生可执行）");
-            var clang = ToolchainResolver.ResolveClang(null);
-            if (clang == null)
-            {
-                Console.WriteLine("  （跳过：未找到 clang 工具链；" +
-                    "开发机跑 tools/Fetch-LlvmToolchain.ps1 后本套件生效）");
-                return TestHarness.Summary("NativeE2E");
-            }
+            Console.WriteLine("  （跳过：未找到 clang 工具链；" +
+                "开发机跑 tools/Fetch-LlvmToolchain.ps1 后本套件生效）");
+            return TestHarness.Summary("NativeE2E");
+        }
 
-            RunCase("hello world",
+        private static ParallelSuiteRunner.SuiteSpec Spec => new(
+            "NativeE2E",
+            Cases,
+            sectionTitle: "native 对拍（VM vs 原生可执行）",
+            beforeSpawn: PreheatRigiRt);
+
+        private static void PreheatRigiRt()
+        {
+            var clang = ToolchainResolver.ResolveClang(null);
+            if (clang != null)
+            {
+                RigiRtBuilder.EnsureBitcode(clang, out _);
+            }
+        }
+
+        private static (string Label, Action Run) Case(string label, string source) =>
+            (label, () => RunCase(label, source));
+
+        private static (string Label, Action Run) BilCase(string label, string bil) =>
+            (label, () => RunBilCase(label, bil));
+
+        private static (string Label, Action Run) FailCase(string label, string source, string needle) =>
+            (label, () => RunFailCase(label, source, needle));
+
+        private static readonly (string Label, Action Run)[] Cases =
+        {
+            Case("hello world",
                 "import core.io.Console\n" +
                 "pub func main(): i32 {\n" +
                 "    Console.println(\"Hello, world!\")\n" +
                 "    return 0\n" +
-                "}\n");
-            RunCase("字符串拼接",
+                "}\n"),
+            Case("字符串拼接",
                 "import core.io.Console\n" +
                 "pub func main(): i32 {\n" +
                 "    var greeting = \"Hello, \" + \"rigi\"\n" +
                 "    Console.println(greeting + \"!\")\n" +
                 "    return 0\n" +
-                "}\n");
-            RunCase("print 无换行原样输出",
+                "}\n"),
+            Case("print 无换行原样输出",
                 "import core.io.Console\n" +
                 "pub func main(): i32 {\n" +
                 "    Console.print(\"ab\")\n" +
                 "    Console.print(\"cd\")\n" +
                 "    return 0\n" +
-                "}\n");
-            RunCase("标量退出码",
+                "}\n"),
+            Case("标量退出码",
                 "pub func main(): i32 {\n" +
                 "    return (6 * 7)\n" +
-                "}\n");
-            RunCase("if/else 分支",
+                "}\n"),
+            Case("if/else 分支",
                 "pub func main(): i32 {\n" +
                 "    var x = 10\n" +
                 "    if (x > 5) { x = 1 } else { x = 2 }\n" +
                 "    return x\n" +
-                "}\n");
-            RunCase("while 求和",
+                "}\n"),
+            Case("while 求和",
                 "pub func main(): i32 {\n" +
                 "    var sum = 0\n" +
                 "    var i = 1\n" +
@@ -69,16 +109,16 @@ namespace RigiCompiler.Tests
                 "        i = i + 1\n" +
                 "    }\n" +
                 "    return sum\n" +
-                "}\n");
-            RunCase("do-while 先执行",
+                "}\n"),
+            Case("do-while 先执行",
                 "pub func main(): i32 {\n" +
                 "    var x = 0\n" +
                 "    do {\n" +
                 "        x = x + 1\n" +
                 "    } while (x < 5)\n" +
                 "    return x\n" +
-                "}\n");
-            RunCase("break/continue",
+                "}\n"),
+            Case("break/continue",
                 "pub func main(): i32 {\n" +
                 "    var sum = 0\n" +
                 "    var i = 0\n" +
@@ -89,8 +129,8 @@ namespace RigiCompiler.Tests
                 "        sum = sum + i\n" +
                 "    }\n" +
                 "    return sum\n" +
-                "}\n");
-            RunCase("嵌套标签 break@outer",
+                "}\n"),
+            Case("嵌套标签 break@outer",
                 "pub func main(): i32 {\n" +
                 "    var x = 0\n" +
                 "    while (x < 10) named outer {\n" +
@@ -102,15 +142,15 @@ namespace RigiCompiler.Tests
                 "        x = x + 2\n" +
                 "    }\n" +
                 "    return x\n" +
-                "}\n");
-            RunCase("短路求值降 if 块",
+                "}\n"),
+            Case("短路求值降 if 块",
                 "pub func main(): i32 {\n" +
                 "    var a = true\n" +
                 "    var b = false\n" +
                 "    if ((a and b) or (a and (not b))) { return 7 }\n" +
                 "    return 0\n" +
-                "}\n");
-            RunCase("switch 常量表",
+                "}\n"),
+            Case("switch 常量表",
                 "pub func classify(x: i32): i32 {\n" +
                 "    switch (x) {\n" +
                 "        (1) -> { return 10 }\n" +
@@ -120,8 +160,8 @@ namespace RigiCompiler.Tests
                 "}\n" +
                 "pub func main(): i32 {\n" +
                 "    return classify(2)\n" +
-                "}\n");
-            RunCase("pattern switch 降级链（call blk）",
+                "}\n"),
+            Case("pattern switch 降级链（call blk）",
                 "pub func main(): i32 {\n" +
                 "    var x = 5\n" +
                 "    var label = switch (x) {\n" +
@@ -129,8 +169,8 @@ namespace RigiCompiler.Tests
                 "        default -> { return@_ 0 }\n" +
                 "    }\n" +
                 "    return label\n" +
-                "}\n");
-            RunCase("浮点四则与比较",
+                "}\n"),
+            Case("浮点四则与比较",
                 "import core.io.Console\n" +
                 "pub func main(): i32 {\n" +
                 "    var x = 1.5\n" +
@@ -145,8 +185,8 @@ namespace RigiCompiler.Tests
                 "    if ((p + q) == 2.0f) { Console.println(\"f32 add ok\") }\n" +
                 "    if (p < q) { Console.println(\"f32 lt ok\") }\n" +
                 "    return 0\n" +
-                "}\n");
-            RunCase("位运算与按位取反",
+                "}\n"),
+            Case("位运算与按位取反",
                 "import core.io.Console\n" +
                 "pub func main(): i32 {\n" +
                 "    var a = 60\n" +
@@ -156,8 +196,8 @@ namespace RigiCompiler.Tests
                 "    if ((a ^ b) == 49) { Console.println(\"xor ok\") }\n" +
                 "    if ((!a) == -61) { Console.println(\"not ok\") }\n" +
                 "    return 0\n" +
-                "}\n");
-            RunCase("三种移位",
+                "}\n"),
+            Case("三种移位",
                 "import core.io.Console\n" +
                 "pub func main(): i32 {\n" +
                 "    var a = 60\n" +
@@ -167,8 +207,8 @@ namespace RigiCompiler.Tests
                 "    if ((n >> 2) == -4) { Console.println(\"ashr ok\") }\n" +
                 "    if ((n >>> 2) == 1073741820) { Console.println(\"lshr ok\") }\n" +
                 "    return 0\n" +
-                "}\n");
-            RunCase("移位量按位宽掩码（overshift 对齐 VM）",
+                "}\n"),
+            Case("移位量按位宽掩码（overshift 对齐 VM）",
                 "import core.io.Console\n" +
                 "pub func main(): i32 {\n" +
                 "    var s = 1B\n" +
@@ -176,8 +216,8 @@ namespace RigiCompiler.Tests
                 "    var w = 1\n" +
                 "    if ((w << 33) == 2) { Console.println(\"i32 overshift masked\") }\n" +
                 "    return 0\n" +
-                "}\n");
-            RunCase("无符号比较与除法",
+                "}\n"),
+            Case("无符号比较与除法",
                 "import core.io.Console\n" +
                 "pub func main(): i32 {\n" +
                 "    var u = 4000000000U\n" +
@@ -185,8 +225,8 @@ namespace RigiCompiler.Tests
                 "    if (u > v) { Console.println(\"u cmp ok\") }\n" +
                 "    if ((u / 7U) == 571428571U) { Console.println(\"u div ok\") }\n" +
                 "    return 0\n" +
-                "}\n");
-            RunCase("窄宽度 i8/u8/i16/u16 运算",
+                "}\n"),
+            Case("窄宽度 i8/u8/i16/u16 运算",
                 "import core.io.Console\n" +
                 "pub func main(): i32 {\n" +
                 "    var a = 100B\n" +
@@ -204,8 +244,8 @@ namespace RigiCompiler.Tests
                 "    var h = 1234US\n" +
                 "    if ((g - h) == 48766US) { Console.println(\"u16 sub ok\") }\n" +
                 "    return 0\n" +
-                "}\n");
-            RunCase("窄宽度回绕与移位",
+                "}\n"),
+            Case("窄宽度回绕与移位",
                 "import core.io.Console\n" +
                 "pub func main(): i32 {\n" +
                 "    var a = 100B\n" +
@@ -216,8 +256,8 @@ namespace RigiCompiler.Tests
                 "    if ((t >> 2B) == -4B) { Console.println(\"i8 ashr ok\") }\n" +
                 "    if ((t >>> 2B) == 60B) { Console.println(\"i8 lshr ok\") }\n" +
                 "    return 0\n" +
-                "}\n");
-            RunCase("char 比较（含高位码元）",
+                "}\n"),
+            Case("char 比较（含高位码元）",
                 "import core.io.Console\n" +
                 "pub func main(): i32 {\n" +
                 "    var x = 'a'\n" +
@@ -228,8 +268,8 @@ namespace RigiCompiler.Tests
                 "    var lo = '中'\n" +
                 "    if (hi > lo) { Console.println(\"char high gt\") }\n" +
                 "    return 0\n" +
-                "}\n");
-            RunCase("string eq/ne",
+                "}\n"),
+            Case("string eq/ne",
                 "import core.io.Console\n" +
                 "pub func main(): i32 {\n" +
                 "    var a = \"abc\"\n" +
@@ -239,11 +279,11 @@ namespace RigiCompiler.Tests
                 "    if (a != b) { Console.println(\"str ne ok\") }\n" +
                 "    if (a == b) { Console.println(\"BAD\") }\n" +
                 "    return 0\n" +
-                "}\n");
+                "}\n"),
             // string 排序比较：前端 P3 暂未放行 String 的 < 运算符（BIL §11.5
             // 内建形态合法，VM 支持），故以手写 BIL 直接对拍
-            RunBilCase("string 排序比较（BIL 内建形态）", StringOrderBil);
-            RunCase("null 资源与 nullable 检查",
+            BilCase("string 排序比较（BIL 内建形态）", StringOrderBil),
+            Case("null 资源与 nullable 检查",
                 "import core.io.Console\n" +
                 "pub func main(): i32 {\n" +
                 "    var s: String? = null\n" +
@@ -253,12 +293,12 @@ namespace RigiCompiler.Tests
                 "    if (n != null) { Console.println(\"BAD\") }\n" +
                 "    if (s != null) { Console.println(\"BAD2\") }\n" +
                 "    return 0\n" +
-                "}\n");
+                "}\n"),
             // nullable 双空互比：前端 P3 只放行 nullable 与 null 字面量的
             // 比较（两个 nullable 变量互比报 operator 未定义），BIL §11.5
             // 内建形态合法，故以手写 BIL 对拍
-            RunBilCase("nullable 双空引用恒等（BIL 内建形态）", NullBothBil);
-            RunCase("i8/i16/i32 MIN/-1 回绕",
+            BilCase("nullable 双空引用恒等（BIL 内建形态）", NullBothBil),
+            Case("i8/i16/i32 MIN/-1 回绕",
                 "import core.io.Console\n" +
                 "pub func main(): i32 {\n" +
                 "    var a = -128B\n" +
@@ -271,8 +311,8 @@ namespace RigiCompiler.Tests
                 "    var f = -1\n" +
                 "    if ((e / f) == -2147483648) { Console.println(\"i32 min/-1 wrap\") }\n" +
                 "    return 0\n" +
-                "}\n");
-            RunCase("浮点除零 IEEE（Inf/NaN）",
+                "}\n"),
+            Case("浮点除零 IEEE（Inf/NaN）",
                 "import core.io.Console\n" +
                 "pub func main(): i32 {\n" +
                 "    var z = 0.0\n" +
@@ -284,36 +324,36 @@ namespace RigiCompiler.Tests
                 "    var bigf = 1.0f\n" +
                 "    if ((bigf / zf) > 3e38f) { Console.println(\"f32 inf\") }\n" +
                 "    return 0\n" +
-                "}\n");
-            RunFailCase("整数除零",
+                "}\n"),
+            FailCase("整数除零",
                 "pub func main(): i32 {\n" +
                 "    var x = 42\n" +
                 "    var z = 0\n" +
                 "    return (x / z)\n" +
-                "}\n", "整数除以零");
-            RunFailCase("无符号除零",
+                "}\n", "整数除以零"),
+            FailCase("无符号除零",
                 "pub func main(): i32 {\n" +
                 "    var x = 42UL\n" +
                 "    var z = 0UL\n" +
                 "    if ((x / z) == 0UL) { return 1 }\n" +
                 "    return 0\n" +
-                "}\n", "整数除以零");
-            RunFailCase("窄宽度除零",
+                "}\n", "整数除以零"),
+            FailCase("窄宽度除零",
                 "import core.io.Console\n" +
                 "pub func main(): i32 {\n" +
                 "    var a = 42B\n" +
                 "    var z = (1B - 1B)\n" +
                 "    if ((a / z) == 1B) { Console.println(\"x\") }\n" +
                 "    return 0\n" +
-                "}\n", "整数除以零");
-            RunFailCase("i64 MIN/-1 溢出",
+                "}\n", "整数除以零"),
+            FailCase("i64 MIN/-1 溢出",
                 "pub func main(): i32 {\n" +
                 "    var e = -9223372036854775808L\n" +
                 "    var f = -1L\n" +
                 "    if ((e / f) == 0L) { return 1 }\n" +
                 "    return 0\n" +
-                "}\n", "overflow");
-            RunCase("class new 与字段读写（含零值）",
+                "}\n", "overflow"),
+            Case("class new 与字段读写（含零值）",
                 "import core.io.Console\n" +
                 "pub class Counter {\n" +
                 "    pub var count: i32\n" +
@@ -327,8 +367,8 @@ namespace RigiCompiler.Tests
                 "    c.count = 41\n" +
                 "    if (c.count == 41) { Console.println(\"rw ok\") }\n" +
                 "    return (c.bump())\n" +
-                "}\n");
-            RunCase("init 参数映射（_ -> x）",
+                "}\n"),
+            Case("init 参数映射（_ -> x）",
                 "pub class Point {\n" +
                 "    pub var x: i32\n" +
                 "    pub var y: i32\n" +
@@ -337,8 +377,8 @@ namespace RigiCompiler.Tests
                 "pub func main(): i32 {\n" +
                 "    var p = new Point(3, 4)\n" +
                 "    return ((p.x * 10) + p.y)\n" +
-                "}\n");
-            RunCase("字段声明初始值与 null 字段（..init.wrapper 缝合）",
+                "}\n"),
+            Case("字段声明初始值与 null 字段（..init.wrapper 缝合）",
                 "import core.io.Console\n" +
                 "pub class Link {\n" +
                 "    pub var a: i32 = 7\n" +
@@ -350,8 +390,8 @@ namespace RigiCompiler.Tests
                 "    if (l.a == 7) { Console.println(\"init value ok\") }\n" +
                 "    if (l.p == null) { Console.println(\"null field ok\") }\n" +
                 "    return l.a\n" +
-                "}\n");
-            RunCase("继承字段与 super init/方法",
+                "}\n"),
+            Case("继承字段与 super init/方法",
                 "import core.io.Console\n" +
                 "pub open class Base {\n" +
                 "    pub var x: i32\n" +
@@ -366,8 +406,8 @@ namespace RigiCompiler.Tests
                 "    var d = new Derived(41)\n" +
                 "    if (d.x == 41) { Console.println(\"super init ok\") }\n" +
                 "    return (d.who())\n" +
-                "}\n");
-            RunCase("虚派发（基类槽变量装派生实例）",
+                "}\n"),
+            Case("虚派发（基类槽变量装派生实例）",
                 "import core.io.Console\n" +
                 "pub open class Animal {\n" +
                 "    pub init() { }\n" +
@@ -386,8 +426,8 @@ namespace RigiCompiler.Tests
                 "    var a: Animal = d\n" +
                 "    describe(a)\n" +
                 "    return 0\n" +
-                "}\n");
-            RunCase("interface 派发",
+                "}\n"),
+            Case("interface 派发",
                 "import core.io.Console\n" +
                 "pub interface Named {\n" +
                 "    func name(): String\n" +
@@ -405,8 +445,8 @@ namespace RigiCompiler.Tests
                 "    var n: Named = d\n" +
                 "    callName(n)\n" +
                 "    return 0\n" +
-                "}\n");
-            RunCase("computed getter/setter",
+                "}\n"),
+            Case("computed getter/setter",
                 "import core.io.Console\n" +
                 "pub class Counter {\n" +
                 "    pub var count: i32 { pub get(value: _) { return value } priv set(value: _) { count = value } } = 0\n" +
@@ -417,8 +457,8 @@ namespace RigiCompiler.Tests
                 "    var c = new Counter()\n" +
                 "    if (c.bump() == 1) { Console.println(\"computed ok\") }\n" +
                 "    return (c.bump())\n" +
-                "}\n");
-            RunCase("String 字段读写",
+                "}\n"),
+            Case("String 字段读写",
                 "import core.io.Console\n" +
                 "pub class Bag {\n" +
                 "    pub var text: String\n" +
@@ -428,8 +468,8 @@ namespace RigiCompiler.Tests
                 "    var b = new Bag(\"hi\")\n" +
                 "    Console.println(b.text)\n" +
                 "    return 0\n" +
-                "}\n");
-            RunCase("struct new 与字段读写",
+                "}\n"),
+            Case("struct new 与字段读写",
                 "import core.io.Console\n" +
                 "pub struct Point {\n" +
                 "    pub var x: i32\n" +
@@ -442,8 +482,8 @@ namespace RigiCompiler.Tests
                 "    p.y = 40\n" +
                 "    if (p.y == 40) { Console.println(\"write ok\") }\n" +
                 "    return ((p.x * 10) + p.y)\n" +
-                "}\n");
-            RunCase("struct 深拷贝（赋值互不影响）",
+                "}\n"),
+            Case("struct 深拷贝（赋值互不影响）",
                 "import core.io.Console\n" +
                 "pub struct Vec {\n" +
                 "    pub var x: i32\n" +
@@ -456,8 +496,8 @@ namespace RigiCompiler.Tests
                 "    if (a.x == 1001) { Console.println(\"deep copy ok\") }\n" +
                 "    if (b.x == 99) { Console.println(\"copy independent\") }\n" +
                 "    return 0\n" +
-                "}\n");
-            RunCase("struct 方法原地修改（this 别名）",
+                "}\n"),
+            Case("struct 方法原地修改（this 别名）",
                 "import core.io.Console\n" +
                 "pub struct Vec {\n" +
                 "    pub var x: i32\n" +
@@ -470,8 +510,8 @@ namespace RigiCompiler.Tests
                 "    v.move(10)\n" +
                 "    if (v.x == 11) { Console.println(\"this alias ok\") }\n" +
                 "    return v.x\n" +
-                "}\n");
-            RunCase("struct 参数深拷贝隔离",
+                "}\n"),
+            Case("struct 参数深拷贝隔离",
                 "import core.io.Console\n" +
                 "pub struct Vec {\n" +
                 "    pub var x: i32\n" +
@@ -484,8 +524,8 @@ namespace RigiCompiler.Tests
                 "    mutate(v)\n" +
                 "    if (v.x == 1) { Console.println(\"param isolated\") }\n" +
                 "    return 0\n" +
-                "}\n");
-            RunCase("struct 返回",
+                "}\n"),
+            Case("struct 返回",
                 "import core.io.Console\n" +
                 "pub struct Vec {\n" +
                 "    pub var x: i32\n" +
@@ -498,8 +538,8 @@ namespace RigiCompiler.Tests
                 "    var m = makeVec(7)\n" +
                 "    if (m.x == 7) { Console.println(\"return ok\") }\n" +
                 "    return m.x\n" +
-                "}\n");
-            RunCase("嵌套 struct 链写",
+                "}\n"),
+            Case("嵌套 struct 链写",
                 "import core.io.Console\n" +
                 "pub struct Vec {\n" +
                 "    pub var x: i32\n" +
@@ -515,8 +555,8 @@ namespace RigiCompiler.Tests
                 "    p.a.x = 5\n" +
                 "    if (p.a.x == 5) { Console.println(\"chain ok\") }\n" +
                 "    return p.b\n" +
-                "}\n");
-            RunCase("class 内嵌 struct 字段",
+                "}\n"),
+            Case("class 内嵌 struct 字段",
                 "import core.io.Console\n" +
                 "pub struct Vec {\n" +
                 "    pub var x: i32\n" +
@@ -532,8 +572,8 @@ namespace RigiCompiler.Tests
                 "    b.v.x = 8\n" +
                 "    if (b.v.x == 8) { Console.println(\"embedded write ok\") }\n" +
                 "    return 0\n" +
-                "}\n");
-            RunCase("enum 构造与 is .Case",
+                "}\n"),
+            Case("enum 构造与 is .Case",
                 "import core.io.Console\n" +
                 "pub enum struct Direction {\n" +
                 "    pub const degrees: i32\n" +
@@ -547,22 +587,25 @@ namespace RigiCompiler.Tests
                 "    var d = Direction.East\n" +
                 "    if (d is .East) { Console.println(\"is case ok\") }\n" +
                 "    return d.degrees\n" +
-                "}\n");
-            RunCase("带洞 enum（Failed(404).errorCode）",
-                "import core.io.Console\n" +
-                "pub enum struct RequestResult {\n" +
-                "    pub const errorCode: i32\n" +
-                "    pub init(_ -> errorCode)\n" +
-                "}[\n" +
-                "    Success(-1),\n" +
-                "    Failed(errorCode = _)\n" +
-                "]\n" +
-                "pub func main(): i32 {\n" +
-                "    var r = RequestResult.Failed(404)\n" +
-                "    if (r.errorCode == 404) { Console.println(\"hole ok\") }\n" +
-                "    return r.errorCode\n" +
-                "}\n");
-            RunCase("enum 判别恒等（两枚同 case 值）",
+                "}\n"),
+             Case("带洞 enum（Failed(404).errorCode）",
+                  "import core.io.Console\n" +
+                  "pub enum struct RequestResult {\n" +
+                  "    pub const errorCode: i32\n" +
+                  "    pub init(_ -> errorCode)\n" +
+                  "}[\n" +
+                  "    Success(-1),\n" +
+                  "    Failed(errorCode = _)\n" +
+                  "]\n" +
+                  "pub func main(): i32 {\n" +
+                  "    var r = RequestResult.Failed(404)\n" +
+                  "    if (r.errorCode == 404) { Console.println(\"hole ok\") }\n" +
+                  // 返回值须 <256：linux 进程退出码 8-bit 截断（404→148），
+                  // 对拍断言的是跨平台可观察一致
+                  "    if (r.errorCode == 404) { return 42 }\n" +
+                  "    return 0\n" +
+                  "}\n"),
+            Case("enum 判别恒等（两枚同 case 值）",
                 "import core.io.Console\n" +
                 "pub enum struct Direction {\n" +
                 "    pub const degrees: i32\n" +
@@ -579,8 +622,8 @@ namespace RigiCompiler.Tests
                 "    if (b is .East) { Console.println(\"b east\") }\n" +
                 "    if (b is .West) { Console.println(\"BAD\") }\n" +
                 "    return 0\n" +
-                "}\n");
-            RunCase("enum switch 表达式（pattern is.case 链）",
+                "}\n"),
+            Case("enum switch 表达式（pattern is.case 链）",
                 "import core.io.Console\n" +
                 "pub enum struct Direction {\n" +
                 "    pub const degrees: i32\n" +
@@ -599,8 +642,8 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "    if (label == 90) { Console.println(\"enum switch ok\") }\n" +
                 "    return label\n" +
-                "}\n");
-            RunCase("static 字段读写与初值（..globals.init）",
+                "}\n"),
+            Case("static 字段读写与初值（..globals.init）",
                 "import core.io.Console\n" +
                 "pub var gCounter: i32 = 41\n" +
                 "pub var gName: String = \"g\"\n" +
@@ -613,8 +656,8 @@ namespace RigiCompiler.Tests
                 "    if (Config.level == 3) { Console.println(\"static init ok\") }\n" +
                 "    Console.println(gName)\n" +
                 "    return gCounter\n" +
-                "}\n");
-            RunCase("多 static 初值声明序",
+                "}\n"),
+            Case("多 static 初值声明序",
                 "import core.io.Console\n" +
                 "pub var a: i32 = 1\n" +
                 "pub var b: i32 = 2\n" +
@@ -622,8 +665,8 @@ namespace RigiCompiler.Tests
                 "pub func main(): i32 {\n" +
                 "    if (((a + b) + c) == 6) { Console.println(\"multi init ok\") }\n" +
                 "    return (((a * 100) + (b * 10)) + c)\n" +
-                "}\n");
-            RunCase("数组创建/读写/长度",
+                "}\n"),
+            Case("数组创建/读写/长度",
                 "import core.collections.*\n" +
                 "import core.io.Console\n" +
                 "pub func main(): i32 {\n" +
@@ -633,8 +676,8 @@ namespace RigiCompiler.Tests
                 "    a[2] = 12\n" +
                 "    if (a.length == 3) { Console.println(\"len ok\") }\n" +
                 "    return (((a[0] if? 0) + (a[1] if? 0)) + (a[2] if? 0))\n" +
-                "}\n");
-            RunCase("数组越界读取得 null",
+                "}\n"),
+            Case("数组越界读取得 null",
                 "import core.collections.*\n" +
                 "import core.io.Console\n" +
                 "pub func main(): i32 {\n" +
@@ -645,8 +688,8 @@ namespace RigiCompiler.Tests
                 "    if (miss == -1) { Console.println(\"oob ok\") }\n" +
                 "    if (neg == -2) { Console.println(\"neg ok\") }\n" +
                 "    return a[0] if? 0\n" +
-                "}\n");
-            RunCase("数组引用元素",
+                "}\n"),
+            Case("数组引用元素",
                 "import core.collections.*\n" +
                 "import core.io.Console\n" +
                 "pub class Box {\n" +
@@ -660,8 +703,8 @@ namespace RigiCompiler.Tests
                 "    var y = a[1]?.n if? -1\n" +
                 "    if (y == -1) { Console.println(\"ref null ok\") }\n" +
                 "    return (x + y)\n" +
-                "}\n");
-            RunCase("数组 struct 元素内联",
+                "}\n"),
+            Case("数组 struct 元素内联",
                 "import core.collections.*\n" +
                 "import core.io.Console\n" +
                 "pub struct Point {\n" +
@@ -676,8 +719,8 @@ namespace RigiCompiler.Tests
                 "    var miss = a[9] if? new Point(8, 1)\n" +
                 "    if ((p.x + p.y) == 7) { Console.println(\"struct elem ok\") }\n" +
                 "    return ((p.x + p.y) + (miss.x + miss.y))\n" +
-                "}\n");
-            RunCase("用户索引运算符（get/set.array 降调用）",
+                "}\n"),
+            Case("用户索引运算符（get/set.array 降调用）",
                 "import core.io.Console\n" +
                 "pub class Bag {\n" +
                 "    pub var item: i32\n" +
@@ -689,8 +732,8 @@ namespace RigiCompiler.Tests
                 "    var b = new Bag()\n" +
                 "    b[0] = 21\n" +
                 "    return b[0] if? 0\n" +
-                "}\n");
-            RunCase("static computed 属性（访问器路径）",
+                "}\n"),
+            Case("static computed 属性（访问器路径）",
                 "import core.io.Console\n" +
                 "pub var setCalls: i32 = 0\n" +
                 "pub class Config {\n" +
@@ -701,9 +744,8 @@ namespace RigiCompiler.Tests
                 "    if (Config.level == 7) { Console.println(\"static computed get ok\") }\n" +
                 "    if (setCalls == 1) { Console.println(\"static computed set ok\") }\n" +
                 "    return Config.level\n" +
-                "}\n");
-            return TestHarness.Summary("NativeE2E");
-        }
+                "}\n"),
+        };
 
         // 单用例：源 → 中端全管线 → BIL 文本 → VM 执行 + native 编译执行，
         // 比 stdout（行尾归一）与退出码（main 的 i32 返回）

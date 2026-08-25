@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using System.Linq;
 
 namespace RigiCompiler.Tests
@@ -8,16 +10,22 @@ namespace RigiCompiler.Tests
     /// </summary>
     public static partial class DispatchExplainerTests
     {
-        public static int RunAll()
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
+
+        public static int RunWithArgs(IReadOnlyList<string> args) =>
+            ParallelSuiteRunner.RunWithArgs(Spec, args);
+
+        private static ParallelSuiteRunner.SuiteSpec Spec => new(
+            "DispatchExplainer", Cases, sectionTitle: "DispatchExplainer");
+
+        private static readonly (string Label, Action Run)[] Cases =
         {
-            TestHarness.Reset();
-            TestEmptyReport();
-            TestAppliedReport();
-            TestVariadicMemberWildcardPreview();
-            TestInheritedMemberPreview();
-            TestCliFlag();
-            return TestHarness.Summary("DispatchExplainer");
-        }
+            ("TestEmptyReport", TestEmptyReport),
+            ("TestAppliedReport", TestAppliedReport),
+            ("TestVariadicMemberWildcardPreview", TestVariadicMemberWildcardPreview),
+            ("TestInheritedMemberPreview", TestInheritedMemberPreview),
+            ("TestCliFlag", TestCliFlag),
+        };
 
         private static void TestEmptyReport()
         {
