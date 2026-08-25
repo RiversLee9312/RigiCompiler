@@ -1,4 +1,6 @@
-namespace RigiCompiler.Middleware
+using RigiCompiler.Middleware.Symbols;
+
+namespace RigiCompiler.Middleware.Binding
 {
     // MW2 实现绑定（MIDDLEWARE_ARCHITECTURE §3）：类型驱动操作的唯一实现查询。
     // 查询结果是与 LLVM 无关的实现形态描述（指令选择归 Emit）；本层不知道
@@ -21,15 +23,29 @@ namespace RigiCompiler.Middleware
         IntCmpULt, IntCmpULe, IntCmpUGt, IntCmpUGe,
         FloatCmpEq, FloatCmpNe, FloatCmpLt, FloatCmpLe, FloatCmpGt, FloatCmpGe,
         IntNeg, FloatNeg,
+        RefCmpEq, RefCmpNe,
     }
 
     // 内建运行时面调用（如 add(.string,.string) → rigi_string_concat）；
-    // 面的 C 符号与调用形状由 Emit 的 RuntimeFaces 表描述
+    // 面的 C 符号与调用形状由 Runtime 的 RuntimeFaces 表描述
     public sealed record RuntimeFaceBinding(string FaceSymbol) : ImplBinding;
+
+    // string 排序/相等比较（§11.5：eq/ne 内容相等 equals 语义，排序为
+    // compareTo 三态语义）→ rigi_string_compare 面；六种比较对 i32 三态
+    // 结果的次序判定归 Emit（ScalarEmitter 以运算种类选谓词）
+    public sealed record StringCompareBinding : ImplBinding;
 
     // native 声明 → 对 (lib, symbol) 的直接 C 调用（RUNTIME §26）
     public sealed record NativeDirectBinding(string Library, string Symbol) : ImplBinding;
 
     // 本地普通 fn → 模块内直接调用
     public sealed record DirectCallBinding(MwMemberSymbol Target) : ImplBinding;
+
+    // class 实例方法（VM 同口径：全部实例方法经 vtable 派发）→ 对象头
+    // 实际 TypeSheet → vTable[slot] 间接调用；slot 由 Layout 计划回答
+    public sealed record VirtualCallBinding(MwMemberSymbol Target) : ImplBinding;
+
+    // interface 实例方法 → iMap 查 base offset + 接口内槽序间接调用
+    //（接口符号无 fn 体，fn 类型由 canonical 签名合成）
+    public sealed record InterfaceCallBinding(MwMemberSymbol Target) : ImplBinding;
 }

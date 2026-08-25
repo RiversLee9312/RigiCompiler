@@ -1,4 +1,6 @@
-namespace RigiCompiler.Middleware
+using RigiCompiler.Middleware.Mir;
+
+namespace RigiCompiler.Middleware.Pipeline
 {
     /// <summary>
     /// MIR 构建阶段（MW3）。读：Module + Symbols（可达序经 MirReachability）；

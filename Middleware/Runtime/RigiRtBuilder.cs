@@ -4,8 +4,9 @@ using System.IO;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
+using RigiCompiler.Middleware.Toolchain;
 
-namespace RigiCompiler.Middleware
+namespace RigiCompiler.Middleware.Runtime
 {
     /// <summary>
     /// rigi_rt 现场编译为 LLVM bitcode（MIDDLEWARE_ARCHITECTURE §4.8 MW1 定稿）：
@@ -25,7 +26,8 @@ namespace RigiCompiler.Middleware
         /// </summary>
         public static string EnsureBitcode(string clangPath, out bool rebuilt)
         {
-            // ① 读出全部 rigi_rt/*.c 文本（逻辑名序保证可重现）
+            // ① 读出全部 rigi_rt 源文本（逻辑名序保证可重现）；.c 是编译
+            //    单元，.h 仅解出供 #include（MW4 arc.h 起）
             var assembly = Assembly.GetExecutingAssembly();
             var names = new List<string>(assembly.GetManifestResourceNames());
             names.Sort(StringComparer.Ordinal);
@@ -33,7 +35,8 @@ namespace RigiCompiler.Middleware
             foreach (var name in names)
             {
                 if (!name.StartsWith(ResourcePrefix, StringComparison.Ordinal) ||
-                    !name.EndsWith(".c", StringComparison.Ordinal))
+                    (!name.EndsWith(".c", StringComparison.Ordinal) &&
+                     !name.EndsWith(".h", StringComparison.Ordinal)))
                 {
                     continue;
                 }
@@ -46,7 +49,7 @@ namespace RigiCompiler.Middleware
             {
                 // 与 StdlibSources 同纪律：零匹配 = EmbeddedResource 配置失效，响亮失败
                 throw new InvalidOperationException(
-                    "rigi_rt 内嵌源缺失：程序集中未找到任何 rigi_rt/**/*.c 资源（EmbeddedResource 配置失效）");
+                    "rigi_rt 内嵌源缺失：程序集中未找到任何 rigi_rt/**/*.{c,h} 资源（EmbeddedResource 配置失效）");
             }
 
             // ② 全部源拼接的 SHA256（按逻辑名序拼接，可重现）
@@ -82,11 +85,14 @@ namespace RigiCompiler.Middleware
 
             // unity build 决策（MW1 定稿）：工具链无 llvm-link，多 .c 逐个编成
             // .bc 后无法合并；-c 配多文件又禁止 -o。故生成 unity.c 逐文件
-            // #include 聚合（MW1 实际只有 shim.c），只编 unity.c → rigi_rt.bc
+            // #include 聚合（仅 .c 编译单元；.h 已由上文解出到同目录）
             var unity = new StringBuilder();
             foreach (var (fileName, _) in sources)
             {
-                unity.Append("#include \"").Append(fileName).Append("\"\n");
+                if (fileName.EndsWith(".c", StringComparison.Ordinal))
+                {
+                    unity.Append("#include \"").Append(fileName).Append("\"\n");
+                }
             }
             var unityPath = Path.Combine(cacheDir, "unity.c");
             File.WriteAllText(unityPath, unity.ToString());

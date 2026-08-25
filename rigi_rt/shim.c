@@ -54,6 +54,51 @@ void rigi_string_concat(rigi_string *out, const rigi_string *a, const rigi_strin
     out->len = data != NULL ? len : 0;
 }
 
+/* 三态字符串比较：UTF-8 字节序字典序（memcmp 按无符号字节）。eq/ne 即内容
+ * 相等——UTF-8 编码唯一，字节序列相等当且仅当串相等；BMP 内字典序与 BIL VM
+ * 基准（string.CompareOrdinal，UTF-16 码元序）一致；astral 平面（代理对）
+ * 的码元序与码点序分歧随 MW7 胖值化定稿 */
+int32_t rigi_string_compare(const rigi_string *a, const rigi_string *b)
+{
+    int64_t shared = a->len < b->len ? a->len : b->len;
+    int cmp = shared > 0 ? memcmp(a->data, b->data, (size_t)shared) : 0;
+    if (cmp != 0)
+    {
+        return cmp < 0 ? -1 : 1;
+    }
+    if (a->len < b->len)
+    {
+        return -1;
+    }
+    if (a->len > b->len)
+    {
+        return 1;
+    }
+    return 0;
+}
+
+/* MW2 占位检查面（BIL §11.2 的 DividedByZeroException 在 MW9 异常机制
+ * 落地前的占位语义）：stderr 文本与 BIL VM 的未捕获异常消息逐字节一致，
+ * 退出码对齐 vm 命令的未捕获异常出口（1）。MW9 换真异常时由 Emit 的
+ * 标量检查策略注入点单点替换，本面随之退役 */
+_Noreturn void rigi_abort_divided_by_zero(void)
+{
+    static const char message[] = "整数除以零\n";
+    fwrite(message, 1, sizeof(message) - 1, stderr);
+    fflush(stderr);
+    exit(1);
+}
+
+/* i64 MIN/-1 的 VM 基准行为是基础设施溢出失败（.NET OverflowException
+ * 经 VM 包装后的消息原文），i8/i16/i32 则回绕（不走本面） */
+_Noreturn void rigi_abort_arithmetic_overflow(void)
+{
+    static const char message[] = "Arithmetic operation resulted in an overflow.\n";
+    fwrite(message, 1, sizeof(message) - 1, stderr);
+    fflush(stderr);
+    exit(1);
+}
+
 /* 由编译器发射（BIL entrypoint fn） */
 extern int32_t rigi_entry(void);
 

@@ -353,6 +353,7 @@ namespace RigiCompiler.Tests
 
             // ===== 负例：非法模块按规则命中 =====
             NegativeCases();
+            TestBitwiseTypeRestriction();
             TestRegionBreakIdBinding();
             TestEnumStructInstanceFieldInit();
 
@@ -1050,6 +1051,78 @@ namespace RigiCompiler.Tests
                     new BilAccessibilityModifier(BilAccessibility.Public),
                     new BilOperatorModifier(name),
                 });
+        }
+
+        // ===== §11.4：位运算的内建标量操作数仅整数族（§21.3 门禁）=====
+        private static void TestBitwiseTypeRestriction()
+        {
+            // 正例：整数族（.i8 代表）bin.and/shift.left/bin.not 放行（防误伤）
+            var m = MinimalModule(out _, out var entryBlock);
+            var i8Resource = new BilScalarResource("R_I8", BilScalarType.I8, "1");
+            m.Resources.Add(i8Resource);
+            m.Functions[0].Vars.Add(new BilVarDeclaration(".i8", "i8a"));
+            m.Functions[0].Vars.Add(new BilVarDeclaration(".i8", "i8b"));
+            m.Functions[0].Vars.Add(new BilVarDeclaration(".i8", "i8r"));
+            var at = entryBlock.Instructions.Count - 1;
+            entryBlock.Instructions.Insert(at, new LoadInstruction(i8Resource, BilOp.Var("i8a")));
+            entryBlock.Instructions.Insert(at + 1, new LoadInstruction(i8Resource, BilOp.Var("i8b")));
+            entryBlock.Instructions.Insert(at + 2, new BinaryIntrinsicInstruction(
+                BilBinaryOp.BinAnd, BilOp.Var("i8a"), BilOp.Var("i8b"), BilOp.Var("i8r")));
+            entryBlock.Instructions.Insert(at + 3, new BinaryIntrinsicInstruction(
+                BilBinaryOp.ShiftLeft, BilOp.Var("i8a"), BilOp.Var("i8b"), BilOp.Var("i8r")));
+            entryBlock.Instructions.Insert(at + 4, new UnaryIntrinsicInstruction(
+                BilUnaryOp.BinNot, BilOp.Var("i8a"), BilOp.Var("i8r")));
+            BilTestHarness.CheckBilValid("整数族位运算放行（防误伤）", m);
+
+            // 负例：.bool/.char/.f64 的 bin.and 拒绝（消息含 opcode 与类型）
+            foreach (var (typeRef, scalarType, literal) in new[]
+            {
+                (".bool", BilScalarType.Bool, "true"),
+                (".char", BilScalarType.Char, "'a'"),
+                (".f64", BilScalarType.F64, "1.5"),
+            })
+            {
+                m = MinimalModule(out _, out entryBlock);
+                var resource = new BilScalarResource("R_N", scalarType, literal);
+                m.Resources.Add(resource);
+                m.Functions[0].Vars.Add(new BilVarDeclaration(typeRef, "na"));
+                m.Functions[0].Vars.Add(new BilVarDeclaration(typeRef, "nb"));
+                m.Functions[0].Vars.Add(new BilVarDeclaration(typeRef, "nr"));
+                at = entryBlock.Instructions.Count - 1;
+                entryBlock.Instructions.Insert(at, new LoadInstruction(resource, BilOp.Var("na")));
+                entryBlock.Instructions.Insert(at + 1, new LoadInstruction(resource, BilOp.Var("nb")));
+                entryBlock.Instructions.Insert(at + 2, new BinaryIntrinsicInstruction(
+                    BilBinaryOp.BinAnd, BilOp.Var("na"), BilOp.Var("nb"), BilOp.Var("nr")));
+                BilTestHarness.CheckBilInvalid($"{typeRef} bin.and 拒绝", m,
+                    $"bin.and 的操作数类型非法：\"{typeRef}\"");
+            }
+
+            // 负例代表：.bool shift.left、.char bin.not
+            m = MinimalModule(out _, out entryBlock);
+            var trueResource = new BilScalarResource("R_T", BilScalarType.Bool, "true");
+            m.Resources.Add(trueResource);
+            m.Functions[0].Vars.Add(new BilVarDeclaration(".bool", "sa"));
+            m.Functions[0].Vars.Add(new BilVarDeclaration(".bool", "sb"));
+            m.Functions[0].Vars.Add(new BilVarDeclaration(".bool", "sr"));
+            at = entryBlock.Instructions.Count - 1;
+            entryBlock.Instructions.Insert(at, new LoadInstruction(trueResource, BilOp.Var("sa")));
+            entryBlock.Instructions.Insert(at + 1, new LoadInstruction(trueResource, BilOp.Var("sb")));
+            entryBlock.Instructions.Insert(at + 2, new BinaryIntrinsicInstruction(
+                BilBinaryOp.ShiftLeft, BilOp.Var("sa"), BilOp.Var("sb"), BilOp.Var("sr")));
+            BilTestHarness.CheckBilInvalid(".bool shift.left 拒绝", m,
+                "shift.left 的操作数类型非法：\".bool\"");
+
+            m = MinimalModule(out _, out entryBlock);
+            var charResource = new BilScalarResource("R_C", BilScalarType.Char, "'a'");
+            m.Resources.Add(charResource);
+            m.Functions[0].Vars.Add(new BilVarDeclaration(".char", "ca"));
+            m.Functions[0].Vars.Add(new BilVarDeclaration(".char", "cr"));
+            at = entryBlock.Instructions.Count - 1;
+            entryBlock.Instructions.Insert(at, new LoadInstruction(charResource, BilOp.Var("ca")));
+            entryBlock.Instructions.Insert(at + 1, new UnaryIntrinsicInstruction(
+                BilUnaryOp.BinNot, BilOp.Var("ca"), BilOp.Var("cr")));
+            BilTestHarness.CheckBilInvalid(".char bin.not 拒绝", m,
+                "bin.not 的操作数类型非法：\".char\"");
         }
 
         private static void NegativeCases()

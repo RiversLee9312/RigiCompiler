@@ -1,4 +1,4 @@
-namespace RigiCompiler.Middleware
+namespace RigiCompiler.Middleware.Pipeline
 {
     /// <summary>
     /// Middleware 流水线阶段（仿前端层栈纪律的线性化变体，MIDDLEWARE_ARCHITECTURE

@@ -1,8 +1,10 @@
 using System.Collections.Generic;
 using LLVMSharp.Interop;
 using RigiCompiler.Bil;
+using RigiCompiler.Middleware.Layout;
+using RigiCompiler.Middleware.Mir;
 
-namespace RigiCompiler.Middleware
+namespace RigiCompiler.Middleware.Emit
 {
     /// <summary>
     /// LLVM 模块构建（MIDDLEWARE_ARCHITECTURE §3 MW6 层，MW1 最小落地）：
@@ -10,6 +12,10 @@ namespace RigiCompiler.Middleware
     /// 具名局部落 alloca 槽，SSA 提升交 mem2reg；指令选择是 ImplBinding
     /// 到 LLVM builder 调用的机械映射。运行时面（rigi_rt）声明在此按需
     /// 登记，定义由 bitcode 合并（LlvmBitcode）带入。
+    /// 本类是唯一公开入口与发射骨架（声明登记 + 逐块驱动）；各发射分面
+    /// 归内部静态类：ResourceEmitter（资源物化）、ScalarEmitter（标量指令
+    /// 选择）、CallEmitter（调用与运行时面）、TerminatorEmitter（块终结符），
+    /// 共享状态与求值辅助全部经 Session 传递。
     /// </summary>
     public static class ModuleBuilder
     {
@@ -22,7 +28,7 @@ namespace RigiCompiler.Middleware
             try
             {
                 module.Target = LlvmHost.HostTriple;
-                new Session(module, mir).EmitAll();
+                new Session(module, mir, context.Layout, context.Symbols).EmitAll();
                 return module;
             }
             catch
@@ -46,36 +52,189 @@ namespace RigiCompiler.Middleware
             return "rigi.module";
         }
 
-        // 发射会话：一次模块构建的共享状态
-        private sealed class Session
+        // 发射会话：一次模块构建的共享状态，各分面发射器的唯一上下文
+        internal sealed class Session
         {
-            private readonly LLVMModuleRef _module;
-            private readonly LLVMContextRef _context;
             private readonly Dictionary<string, EmittedFunction> _functions = new(System.StringComparer.Ordinal);
             private readonly Dictionary<string, (LLVMValueRef Fn, LLVMTypeRef Type)> _faces = new(System.StringComparer.Ordinal);
 
-            internal Session(LLVMModuleRef module, MirModule mir)
+            internal Session(LLVMModuleRef module, MirModule mir,
+                Layout.LayoutPlanTable? layout, Symbols.MwSymbolTable symbols)
             {
-                _module = module;
-                _context = module.Context;
+                Module = module;
+                Context = module.Context;
                 Mir = mir;
+                Layout = layout;
+                Symbols = symbols;
             }
 
-            private MirModule Mir { get; }
+            internal LLVMModuleRef Module { get; }
+            internal LLVMContextRef Context { get; }
+            internal MirModule Mir { get; }
+            // MW4 布局计划表（LayoutStage 产物；为 null 时跳过 TypeSheet 发射）
+            internal Layout.LayoutPlanTable? Layout { get; }
+            // MW1 驻留符号表（静态字段槽发射的枚举源）
+            internal Symbols.MwSymbolTable Symbols { get; }
 
-            private sealed record EmittedFunction(LLVMValueRef Value, LLVMTypeRef Type, MirFunction Mir);
+            // 标量运行时检查策略（MW2 默认 abort 占位实现；MW9 异常机制
+            // 落地时在此换抛语言级异常的实现——唯一替换点）
+            internal IScalarCheckPolicy Checks { get; } = new AbortScalarCheckPolicy();
+
+            // 当前发射中的函数（EmitBody 逐函数置位；检查策略的 guard 块
+            // 追加需要宿主函数）
+            internal LLVMValueRef CurrentFunction { get; private set; }
+
+            internal sealed record EmittedFunction(LLVMValueRef Value, LLVMTypeRef Type, MirFunction Mir);
+
+            // ===== 函数值映射（DeclareFunction 登记，CallEmitter 直接调用查） =====
+
+            internal EmittedFunction FunctionOf(string canonical) => _functions[canonical];
+
+            internal bool TryGetFunction(string canonical, out EmittedFunction emitted) =>
+                _functions.TryGetValue(canonical, out emitted!);
+
+            // ===== TypeSheet 全局注册表（TypeSheetEmitter 登记；new 指令与
+            // interface 派发的 iface sheet 引用查） =====
+
+            private readonly Dictionary<string, LLVMValueRef> _typeSheets = new(System.StringComparer.Ordinal);
+
+            internal void RegisterTypeSheet(string canonical, LLVMValueRef global) =>
+                _typeSheets.Add(canonical, global);
+
+            internal LLVMValueRef TypeSheetFor(string canonical) => _typeSheets[canonical];
+
+            internal bool TryGetTypeSheet(string canonical, out LLVMValueRef global) =>
+                _typeSheets.TryGetValue(canonical, out global);
+
+            // ===== 静态字段槽注册表（StaticFieldEmitter 登记/读写查） =====
+
+            private readonly Dictionary<string, LLVMValueRef> _staticFields = new(System.StringComparer.Ordinal);
+
+            internal void RegisterStaticField(string canonical, LLVMValueRef global) =>
+                _staticFields.Add(canonical, global);
+
+            internal LLVMValueRef StaticFieldFor(string canonical) => _staticFields[canonical];
+
+            // ===== 面声明缓存（CallEmitter 的运行时面/native 面登记查重） =====
+
+            internal bool TryGetFace(string symbol, out (LLVMValueRef Fn, LLVMTypeRef Type) face) =>
+                _faces.TryGetValue(symbol, out face);
+
+            internal void AddFace(string symbol, LLVMValueRef fn, LLVMTypeRef type) =>
+                _faces.Add(symbol, (fn, type));
+
+            // ===== 值类型存储分类（MW4 批 3） =====
+
+            // 本地 struct/enum → 内联 alloca（[size x i8]，对齐 = 计划
+            // 对齐，不装箱不上堆）；其余 → TypeLayout.MapType
+            internal bool IsInlineValueType(MirType type,
+                out Layout.TypeLayoutPlan plan)
+            {
+                plan = null!;
+                if (Layout?.Find(type.Canonical) is { } found
+                    && found.Kind is RigiCompiler.Middleware.Layout.TypeLayoutKind.Struct
+                        or RigiCompiler.Middleware.Layout.TypeLayoutKind.Enum)
+                {
+                    plan = found;
+                    return true;
+                }
+                return false;
+            }
+
+            internal static LLVMTypeRef BytePointer() =>
+                LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0);
+
+            // memcpy/memset 内部函数（值语义深拷贝 / VM ZeroOf 物化用）
+            internal void EmitMemCopy(LLVMBuilderRef builder, LLVMValueRef dest,
+                LLVMValueRef src, int size)
+            {
+                var (fn, fnType) = DeclareIntrinsic("llvm.memcpy.p0.p0.i64", LLVMTypeRef.Void,
+                    new[] { BytePointer(), BytePointer(), LLVMTypeRef.Int64, LLVMTypeRef.Int1 });
+                builder.BuildCall2(fnType, fn, new[]
+                {
+                    dest, src,
+                    LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, (ulong)size, false),
+                    LLVMValueRef.CreateConstInt(LLVMTypeRef.Int1, 0, false),
+                }, "");
+            }
+
+            internal void EmitMemSetZero(LLVMBuilderRef builder, LLVMValueRef dest, int size)
+            {
+                var (fn, fnType) = DeclareIntrinsic("llvm.memset.p0.i64", LLVMTypeRef.Void,
+                    new[] { BytePointer(), LLVMTypeRef.Int8, LLVMTypeRef.Int64, LLVMTypeRef.Int1 });
+                builder.BuildCall2(fnType, fn, new[]
+                {
+                    dest,
+                    LLVMValueRef.CreateConstInt(LLVMTypeRef.Int8, 0, false),
+                    LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, (ulong)size, false),
+                    LLVMValueRef.CreateConstInt(LLVMTypeRef.Int1, 0, false),
+                }, "");
+            }
+
+            private (LLVMValueRef Fn, LLVMTypeRef Type) DeclareIntrinsic(string symbol,
+                LLVMTypeRef returnType, LLVMTypeRef[] paramTypes)
+            {
+                if (TryGetFace(symbol, out var cached))
+                {
+                    return cached;
+                }
+                var type = LLVMTypeRef.CreateFunction(returnType, paramTypes, false);
+                var fn = Module.AddFunction(symbol, type);
+                AddFace(symbol, fn, type);
+                return (fn, type);
+            }
+
+            // ===== 跨分面复用的求值辅助 =====
+
+            // 具名局部槽 → 当前值装载（操作数求值的唯一形态：$name）
+            internal LLVMValueRef LoadLocal(LLVMBuilderRef builder,
+                Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirOperand operand)
+            {
+                if (operand is not MirLocalOperand local)
+                {
+                    throw new CompilerInternalException($"未覆盖的操作数形态: {operand.GetType().Name}");
+                }
+                var (slot, localInfo) = slots[local.Name];
+                return builder.BuildLoad2(TypeLayout.MapType(Context, localInfo.Type), slot, local.Name);
+            }
+
+            // 值落临时 alloca 槽取指针（String 的 C 边界传参形态）
+            internal LLVMValueRef StoreToTemp(LLVMBuilderRef builder, LLVMValueRef value)
+            {
+                var slot = builder.BuildAlloca(value.TypeOf, "tmp");
+                builder.BuildStore(value, slot);
+                return slot;
+            }
+
+            // ===== 发射骨架：声明登记 + 逐块驱动 =====
 
             internal void EmitAll()
             {
-                // 两遍：先声明全部 fn（内部调用可前向引用），再逐一定义函数体
+                // 先声明全部 fn（内部调用可前向引用）；TypeSheet 全局依赖
+                // fn 声明值；静态槽与 fn 体随后；rigi_entry 合成 stub 收尾
                 foreach (var fn in Mir.Functions)
                 {
                     DeclareFunction(fn);
                 }
-                var builder = _context.CreateBuilder();
+                if (Layout != null)
+                {
+                    TypeSheetEmitter.EmitAll(this, Layout);
+                }
+                StaticFieldEmitter.EmitAll(this);
+                var builder = Context.CreateBuilder();
+                EmittedFunction? entrypoint = null;
                 foreach (var fn in Mir.Functions)
                 {
-                    EmitBody(builder, _functions[fn.Symbol.Canonical]);
+                    var emitted = _functions[fn.Symbol.Canonical];
+                    if (fn.IsEntrypoint)
+                    {
+                        entrypoint = emitted;
+                    }
+                    EmitBody(builder, emitted);
+                }
+                if (entrypoint != null)
+                {
+                    EmitEntryStub(builder, entrypoint);
                 }
             }
 
@@ -85,7 +244,8 @@ namespace RigiCompiler.Middleware
                 string name;
                 if (fn.IsEntrypoint)
                 {
-                    // 入口对外形态：i32 rigi_entry(void)（.void 返回由发射包装为 0）
+                    // 入口约束（MW1 定稿保持）：无参数、返回 .i32/.void；
+                    // fn 以 canonical 名发射，rigi_entry 为合成 stub
                     if (fn.Parameters.Count != 0)
                     {
                         throw new MwNotSupportedException($"入口函数不得有参数: {fn.Symbol.Canonical}");
@@ -95,31 +255,67 @@ namespace RigiCompiler.Middleware
                         throw new MwNotSupportedException(
                             $"MW1 入口函数返回类型仅支持 .i32/.void: {fn.Symbol.Canonical}");
                     }
-                    type = LLVMTypeRef.CreateFunction(LLVMTypeRef.Int32, System.Array.Empty<LLVMTypeRef>(), false);
-                    name = EntrySymbol;
+                }
+                {
+                    // 值类型返回 → 隐藏 out 首参（调用方供槽，callee
+                    // memcpy 结果，ret void；内部 ABI，C 边界不涉及）
+                    var hasOut = IsInlineValueType(fn.ReturnType, out _);
+                    var paramTypes = new LLVMTypeRef[fn.Parameters.Count + (hasOut ? 1 : 0)];
+                    if (hasOut)
+                    {
+                        paramTypes[0] = Session.BytePointer();
+                    }
+                    for (var i = 0; i < fn.Parameters.Count; i++)
+                    {
+                        // 值类型参数（含值类型宿主的 .this）→ 传指针
+                        paramTypes[i + (hasOut ? 1 : 0)] =
+                            IsInlineValueType(fn.Parameters[i].Type, out _)
+                                ? Session.BytePointer()
+                                : TypeLayout.MapType(Context, fn.Parameters[i].Type);
+                    }
+                    type = LLVMTypeRef.CreateFunction(
+                        hasOut ? LLVMTypeRef.Void : TypeLayout.MapType(Context, fn.ReturnType),
+                        paramTypes, false);
+                    name = fn.Symbol.Canonical;
+                }
+                var value = Module.AddFunction(name, type);
+                // 模块内符号（含入口 main 的 canonical fn）不出 .o（合并
+                // rigi_rt 后由优化管线内联/裁减）；rigi_entry stub 保持外部
+                value.Linkage = LLVMLinkage.LLVMInternalLinkage;
+                _functions.Add(fn.Symbol.Canonical, new EmittedFunction(value, type, fn));
+            }
+
+            // rigi_entry 合成 stub（MW4 批 4 定稿）：先调 ..globals.init
+            //（静态字段初值，存在时）再调用户 main、返回其 i32（.void 包装 0）
+            private void EmitEntryStub(LLVMBuilderRef builder, EmittedFunction entrypoint)
+            {
+                var stubType = LLVMTypeRef.CreateFunction(LLVMTypeRef.Int32,
+                    System.Array.Empty<LLVMTypeRef>(), false);
+                var stub = Module.AddFunction(EntrySymbol, stubType);
+                builder.PositionAtEnd(stub.AppendBasicBlock("entry"));
+                if (TryGetFunction("$..globals.init()@.void", out var globalsInit))
+                {
+                    builder.BuildCall2(globalsInit.Type, globalsInit.Value,
+                        System.Array.Empty<LLVMValueRef>(), "");
+                }
+                if (entrypoint.Mir.ReturnType.IsVoid)
+                {
+                    builder.BuildCall2(entrypoint.Type, entrypoint.Value,
+                        System.Array.Empty<LLVMValueRef>(), "");
+                    builder.BuildRet(LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, 0, false));
                 }
                 else
                 {
-                    var paramTypes = new LLVMTypeRef[fn.Parameters.Count];
-                    for (var i = 0; i < fn.Parameters.Count; i++)
-                    {
-                        paramTypes[i] = TypeLayout.MapType(_context, fn.Parameters[i].Type);
-                    }
-                    type = LLVMTypeRef.CreateFunction(TypeLayout.MapType(_context, fn.ReturnType), paramTypes, false);
-                    name = fn.Symbol.Canonical;
+                    var result = builder.BuildCall2(entrypoint.Type, entrypoint.Value,
+                        System.Array.Empty<LLVMValueRef>(), "main.result");
+                    builder.BuildRet(result);
                 }
-                var value = _module.AddFunction(name, type);
-                if (!fn.IsEntrypoint)
-                {
-                    // 模块内符号不出 .o（合并 rigi_rt 后由优化管线内联/裁减）
-                    value.Linkage = LLVMLinkage.LLVMInternalLinkage;
-                }
-                _functions.Add(fn.Symbol.Canonical, new EmittedFunction(value, type, fn));
             }
 
             private void EmitBody(LLVMBuilderRef builder, EmittedFunction emitted)
             {
                 var fn = emitted.Mir;
+                CurrentFunction = emitted.Value;
                 // 先建全部基本块（终结符按 id 引用，可前向引用），再逐块发射
                 var blockRefs = new Dictionary<string, LLVMBasicBlockRef>(System.StringComparer.Ordinal);
                 foreach (var block in fn.Blocks)
@@ -127,17 +323,51 @@ namespace RigiCompiler.Middleware
                     blockRefs.Add(block.Id, emitted.Value.AppendBasicBlock(block.Id));
                 }
 
-                // 具名局部 → alloca 槽（entry 块开头，mem2reg 友好；含参数落槽）
+                // 具名局部 → alloca 槽（entry 块开头，mem2reg 友好；含参数落槽）。
+                // 值类型局部 = 计划尺寸的内联槽；值类型宿主的 .this 不开槽——
+                // 槽即传入指针别名（SYNTAX §10 this 别名：字段写原地生效）
                 builder.PositionAtEnd(blockRefs[fn.Blocks[0].Id]);
                 var slots = new Dictionary<string, (LLVMValueRef Slot, MirLocal Local)>(System.StringComparer.Ordinal);
+                var valueThis = fn.Symbol.Owner is { Declaration.Kind:
+                    Bil.BilTypeKind.Struct or Bil.BilTypeKind.EnumStruct };
                 foreach (var local in fn.Locals)
                 {
-                    var slot = builder.BuildAlloca(TypeLayout.MapType(_context, local.Type), local.Name);
+                    if (valueThis && local.Name == ".this")
+                    {
+                        continue;
+                    }
+                    LLVMValueRef slot;
+                    if (IsInlineValueType(local.Type, out var localPlan))
+                    {
+                        slot = builder.BuildAlloca(
+                            LLVMTypeRef.CreateArray(LLVMTypeRef.Int8, (uint)localPlan.Size), local.Name);
+                        slot.Alignment = (uint)localPlan.Alignment;
+                    }
+                    else
+                    {
+                        slot = builder.BuildAlloca(TypeLayout.MapType(Context, local.Type), local.Name);
+                    }
                     slots.Add(local.Name, (slot, local));
                 }
+                var outShift = IsInlineValueType(fn.ReturnType, out _) ? 1 : 0;
                 for (var i = 0; i < fn.Parameters.Count; i++)
                 {
-                    builder.BuildStore(emitted.Value.GetParam((uint)i), slots[fn.Parameters[i].Name].Slot);
+                    var parameter = fn.Parameters[i];
+                    var llvmParam = emitted.Value.GetParam((uint)(i + outShift));
+                    if (valueThis && parameter.Name == ".this")
+                    {
+                        slots.Add(parameter.Name, (llvmParam, parameter));
+                    }
+                    else if (IsInlineValueType(parameter.Type, out var paramPlan))
+                    {
+                        // 值类型参数深拷贝隔离（callee 改参数不影响调用方，
+                        // VM Copy 同口径）
+                        EmitMemCopy(builder, slots[parameter.Name].Slot, llvmParam, paramPlan.Size);
+                    }
+                    else
+                    {
+                        builder.BuildStore(llvmParam, slots[parameter.Name].Slot);
+                    }
                 }
 
                 foreach (var block in fn.Blocks)
@@ -147,372 +377,96 @@ namespace RigiCompiler.Middleware
                     {
                         EmitInst(builder, slots, inst);
                     }
-                    EmitTerminator(builder, slots, blockRefs, fn, block.Terminator);
+                    TerminatorEmitter.Emit(this, builder, slots, blockRefs, emitted.Value, fn, block.Terminator);
                 }
             }
 
+            // 局部拷贝：值类型 = memcpy 深拷贝（VM Copy 同口径）；
+            // 标量/胖引用 = 装载转存
+            private void EmitCopyLocal(LLVMBuilderRef builder,
+                Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirCopyLocal copy)
+            {
+                if (copy.Source is MirLocalOperand source
+                    && IsInlineValueType(slots[source.Name].Local.Type, out var plan))
+                {
+                    EmitMemCopy(builder, slots[copy.Target].Slot, slots[source.Name].Slot, plan.Size);
+                    return;
+                }
+                builder.BuildStore(LoadLocal(builder, slots, copy.Source), slots[copy.Target].Slot);
+            }
+
+            // 顺序指令分派：资源物化归 ResourceEmitter，标量运算归
+            // ScalarEmitter，调用归 CallEmitter；局部拷贝是槽间搬运，留骨架
             private void EmitInst(LLVMBuilderRef builder,
                 Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirInst inst)
             {
                 switch (inst)
                 {
                     case MirLoadResource load:
-                        builder.BuildStore(BuildResourceValue(load.Resource, slots[load.Target].Local.Type),
-                            slots[load.Target].Slot);
+                        ResourceEmitter.EmitLoad(this, builder, slots, load);
                         break;
                     case MirCopyLocal copy:
-                        builder.BuildStore(LoadLocal(builder, slots, copy.Source), slots[copy.Target].Slot);
+                        EmitCopyLocal(builder, slots, copy);
                         break;
                     case MirBinaryIntrinsic binary:
-                        builder.BuildStore(EmitBinary(builder, slots, binary), slots[binary.Target].Slot);
+                        builder.BuildStore(ScalarEmitter.EmitBinary(this, builder, slots, binary),
+                            slots[binary.Target].Slot);
                         break;
                     case MirUnaryIntrinsic unary:
-                        builder.BuildStore(EmitUnary(builder, slots, unary), slots[unary.Target].Slot);
+                        builder.BuildStore(ScalarEmitter.EmitUnary(this, builder, slots, unary),
+                            slots[unary.Target].Slot);
                         break;
                     case MirCall call:
-                        EmitCall(builder, slots, call);
+                        CallEmitter.EmitCall(this, builder, slots, call);
+                        break;
+                    case MirSuperCall superCall:
+                        CallEmitter.EmitSuperCall(this, builder, slots, superCall);
+                        break;
+                    case MirNewObject newObject:
+                        CallEmitter.EmitNew(this, builder, slots, newObject);
+                        break;
+                    case MirNewValue newValue:
+                        CallEmitter.EmitNewValue(this, builder, slots, newValue);
+                        break;
+                    case MirNewCase newCase:
+                        EnumEmitter.EmitNewCase(this, builder, slots, newCase);
+                        break;
+                    case MirIsCase isCase:
+                        EnumEmitter.EmitIsCase(this, builder, slots, isCase);
+                        break;
+                    case MirGetField getField:
+                        FieldEmitter.EmitGet(this, builder, slots, getField);
+                        break;
+                    case MirSetField setField:
+                        FieldEmitter.EmitSet(this, builder, slots, setField);
+                        break;
+                    case MirGetStatic getStatic:
+                        StaticFieldEmitter.EmitGet(this, builder, slots, getStatic);
+                        break;
+                    case MirSetStatic setStatic:
+                        StaticFieldEmitter.EmitSet(this, builder, slots, setStatic);
+                        break;
+                    case MirGetArray getArray:
+                        ArrayEmitter.EmitGet(this, builder, slots, getArray);
+                        break;
+                    case MirSetArray setArray:
+                        ArrayEmitter.EmitSet(this, builder, slots, setArray);
+                        break;
+                    case MirNewArray newArray:
+                        ArrayEmitter.EmitNew(this, builder, slots, newArray);
+                        break;
+                    case MirGetTypeId getTypeId:
+                        ArrayEmitter.EmitGetTypeId(this, builder, slots, getTypeId);
+                        break;
+                    case MirWrapNullable wrap:
+                        ArrayEmitter.EmitWrap(this, builder, slots, wrap);
+                        break;
+                    case MirUnwrapNullable unwrap:
+                        ArrayEmitter.EmitUnwrap(this, builder, slots, unwrap);
                         break;
                     default:
                         throw new CompilerInternalException($"未覆盖的 MIR 指令: {inst.GetType().Name}");
                 }
-            }
-
-            private void EmitTerminator(LLVMBuilderRef builder,
-                Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
-                Dictionary<string, LLVMBasicBlockRef> blockRefs,
-                MirFunction fn, MirTerminator terminator)
-            {
-                switch (terminator)
-                {
-                    case MirRet ret:
-                        if (fn.IsEntrypoint)
-                        {
-                            // 对外 i32 返回：.void 包装为 0
-                            builder.BuildRet(ret.Value == null
-                                ? LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, 0, false)
-                                : LoadLocal(builder, slots, ret.Value));
-                        }
-                        else if (ret.Value == null)
-                        {
-                            builder.BuildRetVoid();
-                        }
-                        else
-                        {
-                            builder.BuildRet(LoadLocal(builder, slots, ret.Value));
-                        }
-                        break;
-                    case MirBranch branch:
-                        builder.BuildBr(blockRefs[branch.Target]);
-                        break;
-                    case MirCondBranch condBranch:
-                        builder.BuildCondBr(LoadLocal(builder, slots, condBranch.Condition),
-                            blockRefs[condBranch.ThenTarget], blockRefs[condBranch.ElseTarget]);
-                        break;
-                    case MirSwitch sw:
-                        EmitSwitch(builder, slots, blockRefs, sw);
-                        break;
-                    case MirUnreachable:
-                        builder.BuildUnreachable();
-                        break;
-                    default:
-                        throw new CompilerInternalException($"未覆盖的 MIR 终结符: {terminator.GetType().Name}");
-                }
-            }
-
-            // switch → LLVM switch 指令（整数族/bool/char selector 直接
-            // 对应；float/double/string 的非常量指令匹配待比较链降级）
-            private void EmitSwitch(LLVMBuilderRef builder,
-                Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
-                Dictionary<string, LLVMBasicBlockRef> blockRefs, MirSwitch sw)
-            {
-                var selectorType = MirType.Of(sw.Table.SelectorTypeRef);
-                var key = selectorType.Key;
-                var isBool = key == "bool";
-                var isChar = key == "char";
-                var isSigned = key is "i8" or "i16" or "i32" or "i64";
-                var isUnsigned = key is "u8" or "u16" or "u32" or "u64";
-                if (!isBool && !isChar && !isSigned && !isUnsigned)
-                {
-                    throw new MwNotSupportedException(
-                        $"MW3 switch 暂支持整数族/bool/char selector: {sw.Table.SelectorTypeRef}");
-                }
-                var llvmType = TypeLayout.MapType(_context, selectorType);
-                var selector = LoadLocal(builder, slots, sw.Selector);
-                var switchInst = builder.BuildSwitch(selector, blockRefs[sw.DefaultTarget],
-                    (uint)sw.ItemTargets.Count);
-                for (var i = 0; i < sw.ItemTargets.Count; i++)
-                {
-                    var text = sw.Table.Elements[i];
-                    LLVMValueRef caseValue;
-                    if (isBool)
-                    {
-                        caseValue = LLVMValueRef.CreateConstInt(llvmType, text == "true" ? 1u : 0u, false);
-                    }
-                    else if (isChar)
-                    {
-                        caseValue = LLVMValueRef.CreateConstInt(llvmType, BilScalarLiteral.DecodeChar(text), false);
-                    }
-                    else if (isSigned)
-                    {
-                        caseValue = LLVMValueRef.CreateConstInt(llvmType,
-                            unchecked((ulong)BilScalarLiteral.ParseSigned(text)), true);
-                    }
-                    else
-                    {
-                        caseValue = LLVMValueRef.CreateConstInt(llvmType,
-                            BilScalarLiteral.ParseUnsigned(text), false);
-                    }
-                    switchInst.AddCase(caseValue, blockRefs[sw.ItemTargets[i]]);
-                }
-            }
-
-            // ===== 指令子发射 =====
-
-            private LLVMValueRef EmitBinary(LLVMBuilderRef builder,
-                Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirBinaryIntrinsic inst)
-            {
-                var left = LoadLocal(builder, slots, inst.Left);
-                var right = LoadLocal(builder, slots, inst.Right);
-                switch (ImplBinder.BindBinary(inst.Op, inst.LeftType.Canonical, inst.RightType.Canonical, inst.ResultType.Canonical))
-                {
-                    case PrimitiveOpBinding primitive:
-                        return SelectPrimitive(builder, primitive.Kind, left, right);
-                    case RuntimeFaceBinding face:
-                        return EmitFaceCall(builder, face.FaceSymbol, new[] { left, right });
-                    default:
-                        throw new CompilerInternalException("二元运算的非预期绑定形态");
-                }
-            }
-
-            private LLVMValueRef EmitUnary(LLVMBuilderRef builder,
-                Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirUnaryIntrinsic inst)
-            {
-                var operand = LoadLocal(builder, slots, inst.Operand);
-                if (ImplBinder.BindUnary(inst.Op, inst.OperandType.Canonical, inst.ResultType.Canonical) is not PrimitiveOpBinding primitive)
-                {
-                    throw new CompilerInternalException("一元运算的非预期绑定形态");
-                }
-                return primitive.Kind switch
-                {
-                    PrimitiveOpKind.IntNeg => builder.BuildNeg(operand, "neg"),
-                    PrimitiveOpKind.FloatNeg => builder.BuildFNeg(operand, "fneg"),
-                    PrimitiveOpKind.LogicNot => builder.BuildNot(operand, "not"),
-                    PrimitiveOpKind.BitNot => builder.BuildNot(operand, "binnot"),
-                    _ => throw new CompilerInternalException($"未覆盖的一元指令选择: {primitive.Kind}"),
-                };
-            }
-
-            private void EmitCall(LLVMBuilderRef builder,
-                Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirCall call)
-            {
-                switch (ImplBinder.BindCall(call.Target))
-                {
-                    case NativeDirectBinding native:
-                    {
-                        var signature = CanonicalSignature.Parse(call.Target.Canonical);
-                        var cSymbol = RuntimeFaces.MapNativeSymbol(native.Library, native.Symbol);
-                        var (fn, fnType) = DeclareNativeFace(cSymbol, signature);
-                        var args = new LLVMValueRef[call.Args.Count];
-                        for (var i = 0; i < call.Args.Count; i++)
-                        {
-                            var argValue = LoadLocal(builder, slots, call.Args[i]);
-                            var paramType = MirType.Of(signature.Parameters[i].TypeRef);
-                            // String 的 C 边界传递约定：rigi_string*（见 RuntimeFaces 注释）
-                            args[i] = paramType.IsString ? StoreToTemp(builder, argValue) : argValue;
-                        }
-                        var result = builder.BuildCall2(fnType, fn, args, "");
-                        if (call.Result != null)
-                        {
-                            builder.BuildStore(result, slots[call.Result].Slot);
-                        }
-                        break;
-                    }
-                    case DirectCallBinding direct:
-                    {
-                        var callee = _functions[direct.Target.Canonical];
-                        var args = new LLVMValueRef[call.Args.Count];
-                        for (var i = 0; i < call.Args.Count; i++)
-                        {
-                            args[i] = LoadLocal(builder, slots, call.Args[i]);
-                        }
-                        var result = builder.BuildCall2(callee.Type, callee.Value, args, "");
-                        if (call.Result != null)
-                        {
-                            builder.BuildStore(result, slots[call.Result].Slot);
-                        }
-                        break;
-                    }
-                    default:
-                        throw new CompilerInternalException("调用的非预期绑定形态");
-                }
-            }
-
-            // 运行时面调用：StringIn 取下一个输入值存临时槽传指针，
-            // StringOut 开出参槽、调用后读回为结果值（MW1 面恒 void 返回）
-            private LLVMValueRef EmitFaceCall(LLVMBuilderRef builder, string faceSymbol,
-                IReadOnlyList<LLVMValueRef> inputs)
-            {
-                var shape = RuntimeFaces.ShapeOf(faceSymbol);
-                var (fn, fnType) = DeclareFace(faceSymbol, shape);
-                var args = new List<LLVMValueRef>(shape.Count);
-                var inputIndex = 0;
-                LLVMValueRef? outSlot = null;
-                foreach (var param in shape)
-                {
-                    if (param == RuntimeFaceParam.StringOut)
-                    {
-                        outSlot = builder.BuildAlloca(StringAbi.ValueType(_context), "face.out");
-                        args.Add(outSlot.Value);
-                    }
-                    else
-                    {
-                        args.Add(StoreToTemp(builder, inputs[inputIndex++]));
-                    }
-                }
-                builder.BuildCall2(fnType, fn, args.ToArray(), "");
-                if (outSlot == null)
-                {
-                    throw new CompilerInternalException($"运行时面 {faceSymbol} 无出参却被求值");
-                }
-                return builder.BuildLoad2(StringAbi.ValueType(_context), outSlot.Value, "face.result");
-            }
-
-            // ===== 声明登记 =====
-
-            private (LLVMValueRef Fn, LLVMTypeRef Type) DeclareFace(string faceSymbol,
-                IReadOnlyList<RuntimeFaceParam> shape)
-            {
-                if (_faces.TryGetValue(faceSymbol, out var cached))
-                {
-                    return cached;
-                }
-                var paramTypes = new LLVMTypeRef[shape.Count];
-                for (var i = 0; i < shape.Count; i++)
-                {
-                    paramTypes[i] = StringAbi.PointerType(_context);
-                }
-                var type = LLVMTypeRef.CreateFunction(LLVMTypeRef.Void, paramTypes, false);
-                var fn = _module.AddFunction(faceSymbol, type);
-                _faces.Add(faceSymbol, (fn, type));
-                return (fn, type);
-            }
-
-            private (LLVMValueRef Fn, LLVMTypeRef Type) DeclareNativeFace(string cSymbol,
-                CanonicalSignature signature)
-            {
-                if (_faces.TryGetValue(cSymbol, out var cached))
-                {
-                    return cached;
-                }
-                var paramTypes = new LLVMTypeRef[signature.Parameters.Count];
-                for (var i = 0; i < signature.Parameters.Count; i++)
-                {
-                    var paramType = MirType.Of(signature.Parameters[i].TypeRef);
-                    paramTypes[i] = paramType.IsString
-                        ? StringAbi.PointerType(_context)
-                        : TypeLayout.MapType(_context, paramType);
-                }
-                var returnType = MirType.Of(signature.ReturnTypeRef);
-                if (returnType.IsString)
-                {
-                    throw new MwNotSupportedException($"MW1 不支持 native 返回 .string: {cSymbol}");
-                }
-                var type = LLVMTypeRef.CreateFunction(TypeLayout.MapType(_context, returnType), paramTypes, false);
-                var fn = _module.AddFunction(cSymbol, type);
-                _faces.Add(cSymbol, (fn, type));
-                return (fn, type);
-            }
-
-            // ===== 值与资源 =====
-
-            private LLVMValueRef LoadLocal(LLVMBuilderRef builder,
-                Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirOperand operand)
-            {
-                if (operand is not MirLocalOperand local)
-                {
-                    throw new CompilerInternalException($"未覆盖的操作数形态: {operand.GetType().Name}");
-                }
-                var (slot, localInfo) = slots[local.Name];
-                return builder.BuildLoad2(TypeLayout.MapType(_context, localInfo.Type), slot, local.Name);
-            }
-
-            private LLVMValueRef StoreToTemp(LLVMBuilderRef builder, LLVMValueRef value)
-            {
-                var slot = builder.BuildAlloca(value.TypeOf, "tmp");
-                builder.BuildStore(value, slot);
-                return slot;
-            }
-
-            private LLVMValueRef BuildResourceValue(BilResource resource, MirType targetType)
-            {
-                if (resource is not BilScalarResource scalar)
-                {
-                    throw new MwNotSupportedException($"MW1 仅支持标量资源: {resource.Name}");
-                }
-                var text = scalar.LiteralText;
-                switch (scalar.Type)
-                {
-                    case BilScalarType.String:
-                        return StringAbi.BuildConstant(_module, BilScalarLiteral.DecodeString(text), resource.Name);
-                    case BilScalarType.Bool:
-                        return LLVMValueRef.CreateConstInt(LLVMTypeRef.Int1, text == "true" ? 1u : 0u, false);
-                    case BilScalarType.Char:
-                        return LLVMValueRef.CreateConstInt(LLVMTypeRef.Int16, BilScalarLiteral.DecodeChar(text), false);
-                    case BilScalarType.I8 or BilScalarType.I16 or BilScalarType.I32 or BilScalarType.I64:
-                        return LLVMValueRef.CreateConstInt(TypeLayout.MapType(_context, targetType),
-                            unchecked((ulong)BilScalarLiteral.ParseSigned(text)), true);
-                    case BilScalarType.U8 or BilScalarType.U16 or BilScalarType.U32 or BilScalarType.U64:
-                        return LLVMValueRef.CreateConstInt(TypeLayout.MapType(_context, targetType),
-                            BilScalarLiteral.ParseUnsigned(text), false);
-                    case BilScalarType.F32:
-                        return LLVMValueRef.CreateConstRealOfStringAndSize(LLVMTypeRef.Float, text, (uint)text.Length);
-                    case BilScalarType.F64:
-                        return LLVMValueRef.CreateConstRealOfStringAndSize(LLVMTypeRef.Double, text, (uint)text.Length);
-                    default:
-                        throw new MwNotSupportedException($"MW1 不支持资源类型 {scalar.Type}: {resource.Name}");
-                }
-            }
-
-            private static LLVMValueRef SelectPrimitive(LLVMBuilderRef builder, PrimitiveOpKind kind,
-                LLVMValueRef left, LLVMValueRef right)
-            {
-                return kind switch
-                {
-                    PrimitiveOpKind.IntAdd => builder.BuildAdd(left, right, "add"),
-                    PrimitiveOpKind.IntSub => builder.BuildSub(left, right, "sub"),
-                    PrimitiveOpKind.IntMul => builder.BuildMul(left, right, "mul"),
-                    PrimitiveOpKind.IntSDiv => builder.BuildSDiv(left, right, "sdiv"),
-                    PrimitiveOpKind.IntUDiv => builder.BuildUDiv(left, right, "udiv"),
-                    PrimitiveOpKind.FloatAdd => builder.BuildFAdd(left, right, "fadd"),
-                    PrimitiveOpKind.FloatSub => builder.BuildFSub(left, right, "fsub"),
-                    PrimitiveOpKind.FloatMul => builder.BuildFMul(left, right, "fmul"),
-                    PrimitiveOpKind.FloatDiv => builder.BuildFDiv(left, right, "fdiv"),
-                    PrimitiveOpKind.LogicAnd => builder.BuildAnd(left, right, "and"),
-                    PrimitiveOpKind.LogicOr => builder.BuildOr(left, right, "or"),
-                    PrimitiveOpKind.BitAnd => builder.BuildAnd(left, right, "bitand"),
-                    PrimitiveOpKind.BitOr => builder.BuildOr(left, right, "bitor"),
-                    PrimitiveOpKind.BitXor => builder.BuildXor(left, right, "bitxor"),
-                    PrimitiveOpKind.ShiftLeft => builder.BuildShl(left, right, "shl"),
-                    PrimitiveOpKind.ShiftRightSigned => builder.BuildAShr(left, right, "ashr"),
-                    PrimitiveOpKind.ShiftRightUnsigned => builder.BuildLShr(left, right, "lshr"),
-                    PrimitiveOpKind.IntCmpEq => builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, left, right, "eq"),
-                    PrimitiveOpKind.IntCmpNe => builder.BuildICmp(LLVMIntPredicate.LLVMIntNE, left, right, "ne"),
-                    PrimitiveOpKind.IntCmpSLt => builder.BuildICmp(LLVMIntPredicate.LLVMIntSLT, left, right, "slt"),
-                    PrimitiveOpKind.IntCmpSLe => builder.BuildICmp(LLVMIntPredicate.LLVMIntSLE, left, right, "sle"),
-                    PrimitiveOpKind.IntCmpSGt => builder.BuildICmp(LLVMIntPredicate.LLVMIntSGT, left, right, "sgt"),
-                    PrimitiveOpKind.IntCmpSGe => builder.BuildICmp(LLVMIntPredicate.LLVMIntSGE, left, right, "sge"),
-                    PrimitiveOpKind.IntCmpULt => builder.BuildICmp(LLVMIntPredicate.LLVMIntULT, left, right, "ult"),
-                    PrimitiveOpKind.IntCmpULe => builder.BuildICmp(LLVMIntPredicate.LLVMIntULE, left, right, "ule"),
-                    PrimitiveOpKind.IntCmpUGt => builder.BuildICmp(LLVMIntPredicate.LLVMIntUGT, left, right, "ugt"),
-                    PrimitiveOpKind.IntCmpUGe => builder.BuildICmp(LLVMIntPredicate.LLVMIntUGE, left, right, "uge"),
-                    PrimitiveOpKind.FloatCmpEq => builder.BuildFCmp(LLVMRealPredicate.LLVMRealOEQ, left, right, "feq"),
-                    PrimitiveOpKind.FloatCmpNe => builder.BuildFCmp(LLVMRealPredicate.LLVMRealONE, left, right, "fne"),
-                    PrimitiveOpKind.FloatCmpLt => builder.BuildFCmp(LLVMRealPredicate.LLVMRealOLT, left, right, "flt"),
-                    PrimitiveOpKind.FloatCmpLe => builder.BuildFCmp(LLVMRealPredicate.LLVMRealOLE, left, right, "fle"),
-                    PrimitiveOpKind.FloatCmpGt => builder.BuildFCmp(LLVMRealPredicate.LLVMRealOGT, left, right, "fgt"),
-                    PrimitiveOpKind.FloatCmpGe => builder.BuildFCmp(LLVMRealPredicate.LLVMRealOGE, left, right, "fge"),
-                    _ => throw new CompilerInternalException($"未覆盖的二元指令选择: {kind}"),
-                };
             }
         }
     }

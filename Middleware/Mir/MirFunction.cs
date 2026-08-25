@@ -1,7 +1,8 @@
 using System.Collections.Generic;
 using RigiCompiler.Bil;
+using RigiCompiler.Middleware.Symbols;
 
-namespace RigiCompiler.Middleware
+namespace RigiCompiler.Middleware.Mir
 {
     // MIR 函数与模块（MIDDLEWARE_ARCHITECTURE §3 MW3：BIL 结构化块 → CFG
     // 基本块的确定性直译；具名局部 → alloca 槽，SSA 提升交给 LLVM mem2reg）。

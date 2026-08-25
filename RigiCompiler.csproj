@@ -39,9 +39,12 @@
   </ItemGroup>
 
   <!-- rigi_rt 内嵌源（MW1）：shim 库 C 源以 EmbeddedResource 内嵌进程序集，
-       RigiRtBuilder 现场用 clang 编成 LLVM bitcode（MIDDLEWARE_ARCHITECTURE §4.8） -->
+       RigiRtBuilder 现场用 clang 编成 LLVM bitcode（MIDDLEWARE_ARCHITECTURE §4.8）。
+       .h 头文件随 MW4 arc.h 纳入：解出到缓存目录供 .c #include，本身不进
+       unity 编译单元（RigiRtBuilder 按扩展名区分） -->
   <ItemGroup>
     <EmbeddedResource Include="rigi_rt/**/*.c" LogicalName="rigi_rt/%(RecursiveDir)%(FileName)%(Extension)" />
+    <EmbeddedResource Include="rigi_rt/**/*.h" LogicalName="rigi_rt/%(RecursiveDir)%(FileName)%(Extension)" />
   </ItemGroup>
 
   <!-- Middleware（BIL → 原生）唯一第三方依赖豁免（MIDDLEWARE_ARCHITECTURE §2）：

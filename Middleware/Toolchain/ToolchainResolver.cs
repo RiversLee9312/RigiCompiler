@@ -2,7 +2,7 @@ using System;
 using System.IO;
 using System.Runtime.InteropServices;
 
-namespace RigiCompiler.Middleware
+namespace RigiCompiler.Middleware.Toolchain
 {
     /// <summary>
     /// C 工具链（clang）解析（MIDDLEWARE_ARCHITECTURE §2 定稿的解析顺序）：

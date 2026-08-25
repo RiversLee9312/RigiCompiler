@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-namespace RigiCompiler.Middleware
+namespace RigiCompiler.Middleware.Symbols
 {
     // BIL canonical 成员符号的签名解析（§5/§8.1）：
     //   NAME(PARAM_0, ...)@RETURN，参数为 名:类型引用 逗号列表，

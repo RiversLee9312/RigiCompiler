@@ -1,6 +1,6 @@
 using RigiCompiler.Bil;
 
-namespace RigiCompiler.Middleware
+namespace RigiCompiler.Middleware.Symbols
 {
     /// <summary>
     /// canonical 类型引用的查询键（Binding 唯一实现查询的判别基；Mir/Layout

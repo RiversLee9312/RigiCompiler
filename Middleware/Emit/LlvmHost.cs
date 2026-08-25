@@ -1,6 +1,6 @@
 using LLVMSharp.Interop;
 
-namespace RigiCompiler.Middleware
+namespace RigiCompiler.Middleware.Emit
 {
     /// <summary>
     /// LLVM 进程内宿主（MIDDLEWARE_ARCHITECTURE §2）：目标注册表一次性初始化

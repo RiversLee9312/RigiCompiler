@@ -44,6 +44,7 @@
 - 指令源/目标类型严格满足规则；
 - 不存在隐式数值提升或子类型赋值；
 - 运算实现按精确类型唯一；
+- 位运算（`bin.and`/`bin.or`/`bin.xor`/`bin.not`/`shift.*`）的内建标量操作数仅允许整数族（§11.4）；
 - getter/setter/index 实现按精确类型唯一；
 - direct invoke 签名完全匹配；`invoke.indirect` / `invoke.indirect.noret` 按 §15.3：`OBJECT_VAR` 静态类型恰有一个与实参/返回形态严格匹配的 `$$call`（含 async 时结果为 `Task\<TResult>` / `Task`；泛型 `$$call` 的 typeid/包前缀与 §15.1 同构校验）；
 - cast 目标合法；

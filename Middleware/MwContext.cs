@@ -1,4 +1,7 @@
 using RigiCompiler.Bil;
+using RigiCompiler.Middleware.Layout;
+using RigiCompiler.Middleware.Mir;
+using RigiCompiler.Middleware.Symbols;
 
 namespace RigiCompiler.Middleware
 {
@@ -19,6 +22,12 @@ namespace RigiCompiler.Middleware
 
         // MW3 产物：由 MirBuilder.Build 挂载（构建前为 null）
         public MirModule? Mir { get; internal set; }
+
+        // MW4 产物：布局计划表（LayoutStage 挂载；只依赖符号表，不依赖 MIR）
+        public LayoutPlanTable? Layout { get; internal set; }
+
+        // 派发闭包查询（Layout 实现、Mir 消费；Layout 未挂载时为 null）
+        public IMwDispatchQuery? DispatchQuery => Layout;
 
         public MwContext(BilModule module)
         {

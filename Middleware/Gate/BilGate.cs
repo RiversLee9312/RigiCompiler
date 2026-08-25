@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using RigiCompiler.Bil;
 
-namespace RigiCompiler.Middleware
+namespace RigiCompiler.Middleware.Gate
 {
     /// <summary>
     /// MW Gate（Middleware 唯一入口门禁，MIDDLEWARE_ARCHITECTURE §1/§10）：

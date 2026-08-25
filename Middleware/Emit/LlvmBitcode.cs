@@ -1,7 +1,7 @@
 using System.Text;
 using LLVMSharp.Interop;
 
-namespace RigiCompiler.Middleware
+namespace RigiCompiler.Middleware.Emit
 {
     /// <summary>
     /// libLLVM 指针 API 的编组封装（仓库唯一 unsafe 点）：rigi_rt bitcode 的

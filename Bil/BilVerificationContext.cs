@@ -625,7 +625,9 @@ namespace RigiCompiler.Bil
             if (rest.StartsWith(".static."))
             {
                 isStatic = true;
-                rest = rest.Substring(".static.".Length);
+                // 只剥 ".static" 保留引导点：访问器形态 $.static.get.名@T
+                // 中 .get./.set. 段的前导点是形态判定的一部分（§5.2）
+                rest = rest.Substring(".static".Length);
             }
             var openParen = rest.IndexOf('(');
             if (openParen < 0)
@@ -765,7 +767,8 @@ namespace RigiCompiler.Bil
             var rest = symbol.Substring(dollar + 1);
             if (rest.StartsWith(".static."))
             {
-                rest = rest.Substring(".static.".Length);
+                // 只剥 ".static" 保留引导点（$.static.get.名 的 .get. 段，§5.2）
+                rest = rest.Substring(".static".Length);
             }
             if (rest.StartsWith(".set."))
             {

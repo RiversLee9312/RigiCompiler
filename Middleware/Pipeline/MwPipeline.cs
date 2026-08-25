@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-namespace RigiCompiler.Middleware
+namespace RigiCompiler.Middleware.Pipeline
 {
     /// <summary>
     /// 流水线驱动器（单一调度器）：持线性阶段序，依次把 MwContext 交给各
@@ -11,10 +11,11 @@ namespace RigiCompiler.Middleware
     /// </summary>
     public sealed class MwPipeline
     {
-        // 标准编译管线：BIL（已过门禁）→ MIR 构建 →（MW4 pass 群在此登记）
+        // 标准编译管线：BIL（已过门禁）→ 布局（只依赖符号表，先行——
+        // MirReachability 的派发闭包要查 vtable 计划）→ MIR 构建
         public static MwPipeline CreateDefault()
         {
-            return new MwPipeline().Add(new MirBuildStage());
+            return new MwPipeline().Add(new LayoutStage()).Add(new MirBuildStage());
         }
 
         private readonly List<IMwStage> _stages = new();

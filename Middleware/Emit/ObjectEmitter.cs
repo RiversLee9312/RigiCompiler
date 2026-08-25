@@ -1,6 +1,6 @@
 using LLVMSharp.Interop;
 
-namespace RigiCompiler.Middleware
+namespace RigiCompiler.Middleware.Emit
 {
     /// <summary>
     /// 目标文件发射（MW6）：已构建的 LLVM 模块 → 进程内验证 → 宿主目标机出

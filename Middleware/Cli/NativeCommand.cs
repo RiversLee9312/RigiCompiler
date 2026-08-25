@@ -1,8 +1,13 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using RigiCompiler.Middleware.Emit;
+using RigiCompiler.Middleware.Gate;
+using RigiCompiler.Middleware.Pipeline;
+using RigiCompiler.Middleware.Runtime;
+using RigiCompiler.Middleware.Toolchain;
 
-namespace RigiCompiler.Middleware
+namespace RigiCompiler.Middleware.Cli
 {
     /// <summary>native --file：输入的 BIL 文件（1 个或多个，合并为一个模块过门禁）。</summary>
     public class NativeFileOption : ICommandLineOption

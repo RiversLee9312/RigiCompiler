@@ -291,6 +291,22 @@ namespace RigiCompiler.Tests
             TestHarness.CheckSemanticError("i32 无 and 运算", unit4.Diagnostics,
                 "Operator 'and' is not defined for type 'i32'");
 
+            // §13.2 收紧：内建位运算仅整数族（bool/char/double 拒绝；
+            // 整数族正面用例见上方"位运算"/"移位"定型断言）
+            var (unitBit1, _) = BindUnit("func f(a: bool, b: bool): bool { return (a & b) }\n");
+            TestHarness.CheckSemanticError("bool 无位运算", unitBit1.Diagnostics,
+                "Operator '&' is not defined for type 'bool'");
+            var (unitBit2, _) = BindUnit("func f(a: char, b: char): char { return (a & b) }\n");
+            TestHarness.CheckSemanticError("char 无位运算", unitBit2.Diagnostics,
+                "Operator '&' is not defined for type 'char'");
+            var (unitBit3, _) = BindUnit(
+                "func f(a: double, b: double): double { return (a & b) }\n");
+            TestHarness.CheckSemanticError("double 无位运算", unitBit3.Diagnostics,
+                "Operator '&' is not defined for type 'double'");
+            var (unitBit4, _) = BindUnit("func f(a: bool): bool { return (!a) }\n");
+            TestHarness.CheckSemanticError("bool 无一元位取反", unitBit4.Diagnostics,
+                "Operator '!' is not defined for type 'bool'");
+
             // == 对内建 String（仅有 CmpEq/CmpNe 键）
             var (unit5, bodies5) = BindUnit(
                 "func f(a: String, b: String): bool { return (a == b) }\n");

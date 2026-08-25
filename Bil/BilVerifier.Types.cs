@@ -341,6 +341,14 @@ namespace RigiCompiler.Bil
                             CheckType(context, VarType(context, binary.Target),
                                 leftType, location, "二元运算结果", errors);
                         }
+                        // §11.4：位运算 opcode 的内建标量操作数仅整数族
+                        //（用户类型走 operator 派发，不在此拦截）
+                        if (isBuiltin && IsBitwiseOp(binary.Op) && !IsIntegerFamily(leftType!))
+                        {
+                            errors.Add(new BilVerificationError("21.3", location,
+                                $"位运算 {BilSpellings.Of(binary.Op)} 的操作数类型非法：" +
+                                $"\"{leftType}\"（内建标量仅整数族支持位运算）"));
+                        }
                     }
                     break;
 
@@ -352,6 +360,13 @@ namespace RigiCompiler.Bil
                         {
                             CheckType(context, VarType(context, unary.Target),
                                 operandType, location, "一元运算结果", errors);
+                            // §11.4：bin.not 与二元位运算同规则
+                            if (unary.Op == BilUnaryOp.BinNot && !IsIntegerFamily(operandType))
+                            {
+                                errors.Add(new BilVerificationError("21.3", location,
+                                    $"位运算 bin.not 的操作数类型非法：" +
+                                    $"\"{operandType}\"（内建标量仅整数族支持位运算）"));
+                            }
                         }
                     }
                     break;
@@ -2658,6 +2673,24 @@ namespace RigiCompiler.Bil
         private static string? VarType(BilFunctionContext context, BilVariableOperand variable)
         {
             return context.VariableTypes.TryGetValue(variable.Name, out var type) ? type : null;
+        }
+
+        // §11.4 位运算 opcode 集
+        private static bool IsBitwiseOp(BilBinaryOp op) =>
+            op is BilBinaryOp.BinAnd or BilBinaryOp.BinOr or BilBinaryOp.BinXor
+                or BilBinaryOp.ShiftLeft or BilBinaryOp.ShiftRight
+                or BilBinaryOp.ShiftRightUnsigned;
+
+        // 整数族内建标量（别名归一后判定：.i32 ↔ core::i32 同口径）
+        private static bool IsIntegerFamily(string typeRef)
+        {
+            var normalized = BilVerificationContext.NormalizeTypeRef(typeRef);
+            const string corePrefix = "core::";
+            var name = normalized.StartsWith(corePrefix, StringComparison.Ordinal)
+                ? normalized.Substring(corePrefix.Length)
+                : normalized;
+            return name is "i8" or "i16" or "i32" or "i64"
+                or "u8" or "u16" or "u32" or "u64";
         }
 
         // expected 为 null 表示上游已报错（符号 malformed/变量未声明），跳过；

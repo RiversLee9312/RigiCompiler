@@ -1,7 +1,7 @@
 using System.Text;
 using LLVMSharp.Interop;
 
-namespace RigiCompiler.Middleware
+namespace RigiCompiler.Middleware.Layout
 {
     /// <summary>
     /// String 的 MW1 过渡 ABI（RUNTIME §4 留白由 Layout 层定稿）：

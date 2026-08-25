@@ -1,10 +1,11 @@
 using System.Collections.Generic;
+using RigiCompiler.Middleware.Symbols;
 
-namespace RigiCompiler.Middleware
+namespace RigiCompiler.Middleware.Mir
 {
     // MIR 类型（MIDDLEWARE_ARCHITECTURE §3 MW3：MIR 保留 BIL 类型与符号身份，
     // 直到 MW6 发射前不做类型擦除）。此处仅是 BIL canonical 类型引用的
-    // 驻留包装；归一与查询键投影归 MwTypeKey（Binding 层），结构化类型
+    // 驻留包装；归一与查询键投影归 MwTypeKey（Symbols 层），结构化类型
     // 知识（布局/ABI）归 Layout 层。
     public sealed class MirType
     {

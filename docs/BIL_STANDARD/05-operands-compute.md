@@ -117,6 +117,8 @@ shift.right.unsigned VALUE BITS RESULT
 
 标准 BIL 仍要求 `VALUE` 与 `BITS` 的类型严格相同。若源码运算符声明接受不同的 `TBits`，frontend 必须先规范化为满足 BIL 规则的类型，或在无法等价规范化时使用已解析的普通方法调用表示该显式实现。
 
+这些 opcode 的操作数类型在内建标量中仅允许 `.i8`/`.i16`/`.i32`/`.i64`/`.u8`/`.u16`/`.u32`/`.u64`；作用于其他内建标量（`.bool`/`.char`/`.f32`/`.f64`/`.string`）属类型非法，验证器必须按 §23 拒绝（§21.3）。用户类型的位运算经 operator 声明以普通 invoke 表达，不适用本规则。
+
 legacy opcode：
 
 ```text

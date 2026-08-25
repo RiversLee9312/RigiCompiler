@@ -4,7 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Threading.Tasks;
 
-namespace RigiCompiler.Middleware
+namespace RigiCompiler.Middleware.Toolchain
 {
     /// <summary>
     /// 通用外部进程封装：UseShellExecute=false + 重定向 stdout/stderr，
