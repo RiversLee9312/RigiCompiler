@@ -267,7 +267,58 @@ namespace RigiCompiler.Bil.Vm
                 return true;
             }
 
+            // 同定义构造类型视图转换（BIL §12.1）：对应类型实参可赋值
+            // （String→Any 等）则改写视图、无数据移动；数组元素同规则。
+            if (ConstructedViewAssignable(context, actualType, requested)
+                || ConstructedViewAssignable(context, actualType, normalizedTarget))
+            {
+                result = source.Copy();
+                return true;
+            }
+
             return false;
+        }
+
+        // 同定义构造类型：头全等且逐实参视图可赋值（含 T→Any、递归构造）。
+        private static bool ConstructedViewAssignable(VmContext context, string actual,
+            string expected)
+        {
+            var actualNorm = BilVerificationContext.NormalizeTypeRef(actual);
+            var expectedNorm = BilVerificationContext.NormalizeTypeRef(expected);
+            if (actualNorm == expectedNorm) return true;
+            // Any 作类型实参时双向视图（named String... ABI Pair<,Any>
+            // ↔ P3 视角 Pair<,String>；装箱与拆箱同规则）
+            if (IsAny(expectedNorm) || IsAny(actualNorm)) return true;
+            if (context.Types.TypesAssignable(actualNorm, expectedNorm)) return true;
+
+            var actualArgs = TypeArgsOf(actualNorm);
+            var expectedArgs = TypeArgsOf(expectedNorm);
+            if (actualArgs == null || expectedArgs == null
+                || actualArgs.Count != expectedArgs.Count)
+            {
+                return false;
+            }
+            if (BilVerificationContext.StripTypeArguments(actualNorm)
+                != BilVerificationContext.StripTypeArguments(expectedNorm))
+            {
+                return false;
+            }
+            for (var i = 0; i < actualArgs.Count; i++)
+            {
+                if (!ConstructedViewAssignable(context, actualArgs[i], expectedArgs[i]))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private static List<string>? TypeArgsOf(string typeRef)
+        {
+            var angle = typeRef.IndexOf('<');
+            if (angle < 0 || !typeRef.EndsWith(">")) return null;
+            return BilVerificationContext.SplitTopLevel(
+                typeRef.Substring(angle + 1, typeRef.Length - angle - 2));
         }
 
         internal static VmValue CastOrThrow(VmContext context, VmCoroutine coroutine,

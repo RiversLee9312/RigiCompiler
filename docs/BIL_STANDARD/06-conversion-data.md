@@ -21,6 +21,7 @@ cast.indirect SOURCE RESULT TYPEID_VAR
 
 - 值类型到 `Object`/`Any` 分支的装箱视图（`RUNTIME.md` §4）；
 - 派生类到基类/接口的视图改写（无数据移动）；
+- 同定义构造类型之间的视图改写：对应类型实参可赋值（含 `T`↔`Any`、数组元素同规则）时放行，无数据移动（如 `.array<core::Pair<.string,.string>>` ↔ `.array<core::Pair<.string,.any>>`）；
 - `T` 到 `.nullable<T>` 的装箱视图，以及 `.nullable<T>` 到 `T` 的展开——后者在源为 `null` 时抛 `core.CastException`（Rigi 层 `nullableVar as T` 即此语义）。
 
 优先级与失败行为必须与 `SYNTAX.md` 一致。失败抛出 `core.CastException`。

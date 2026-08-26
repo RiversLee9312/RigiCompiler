@@ -18,6 +18,11 @@ namespace RigiCompiler.Middleware.Symbols
             ReturnTypeRef = returnTypeRef;
         }
 
+        // 宿主泛型代入后的签名（invoke.indirect：Func\<TRet, T0\> 的 $$call 模板 → 具化）
+        internal static CanonicalSignature Create(
+            IReadOnlyList<(string, string)> parameters, string returnTypeRef) =>
+            new(parameters, returnTypeRef);
+
         public static CanonicalSignature Parse(string canonical)
         {
             var open = canonical.IndexOf('(');

@@ -22,6 +22,9 @@ namespace RigiCompiler.Middleware.Mir
 
         public bool IsVoid => MwTypeKey.IsVoid(Canonical);
         public bool IsString => MwTypeKey.IsString(Canonical);
+        public bool IsAny => MwTypeKey.IsAny(Canonical);
+        public bool IsObject => MwTypeKey.IsObject(Canonical);
+        public bool IsAnyOrObject => IsAny || IsObject;
 
         private static readonly Dictionary<string, MirType> Interned = new(System.StringComparer.Ordinal);
 

@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using LLVMSharp.Interop;
+using RigiCompiler.Bil;
 using RigiCompiler.Middleware.Binding;
 using RigiCompiler.Middleware.Layout;
 using RigiCompiler.Middleware.Mir;
@@ -10,7 +11,7 @@ namespace RigiCompiler.Middleware.Emit
 {
     /// <summary>
     /// 调用发射（Emit 分面）：MirCall 经 ImplBinder 绑定的三种形态——
-    /// NativeDirectBinding（native 面声明 + String 的 rigi_string* 边界
+    /// NativeDirectBinding（native 面声明 + String/胖引用 C 边界 out 首参
     /// 编组）、DirectCallBinding（模块内直接调用）、RuntimeFaceBinding
     /// （rigi_rt 运行时面调用，StringIn/StringOut 形状由 RuntimeFaces
     /// 回答）。面声明按需登记并经 Session 面缓存查重。
@@ -31,18 +32,35 @@ namespace RigiCompiler.Middleware.Emit
                     var signature = CanonicalSignature.Parse(call.Target.Canonical);
                     var cSymbol = RuntimeFaces.MapNativeSymbol(native.Library, native.Symbol);
                     var (fn, fnType) = DeclareNativeFace(session, cSymbol, signature);
-                    var args = new LLVMValueRef[call.Args.Count];
+                    var returnType = MirType.Of(signature.ReturnTypeRef);
+                    var hasOut = TryNativeOutSlot(session, returnType, out var outType,
+                        out var outName, out var outAlign);
+                    var args = new LLVMValueRef[call.Args.Count + (hasOut ? 1 : 0)];
+                    LLVMValueRef? outSlot = null;
+                    if (hasOut)
+                    {
+                        var slot = builder.BuildAlloca(outType, outName);
+                        if (outAlign != 0)
+                        {
+                            slot.Alignment = outAlign;
+                        }
+                        outSlot = slot;
+                        args[0] = slot;
+                    }
                     for (var i = 0; i < call.Args.Count; i++)
                     {
                         var argValue = session.LoadLocal(builder, slots, call.Args[i]);
                         var paramType = MirType.Of(signature.Parameters[i].TypeRef);
-                        // String 的 C 边界传递约定：rigi_string*（见 RuntimeFaces 注释）
-                        args[i] = paramType.IsString ? session.StoreToTemp(builder, argValue) : argValue;
+                        args[i + (hasOut ? 1 : 0)] =
+                            MarshalNativeArg(session, builder, argValue, paramType);
                     }
                     var result = builder.BuildCall2(fnType, fn, args, "");
                     if (call.Result != null)
                     {
-                        builder.BuildStore(result, slots[call.Result].Slot);
+                        var value = outSlot != null
+                            ? builder.BuildLoad2(outType, outSlot.Value, "native.result")
+                            : result;
+                        builder.BuildStore(value, slots[call.Result].Slot);
                     }
                     break;
                 }
@@ -62,8 +80,39 @@ namespace RigiCompiler.Middleware.Emit
                     EmitInterfaceCall(session, builder, slots, call, interfaceCall.Target);
                     break;
                 }
+                case IndirectCallBinding:
+                    throw new CompilerInternalException("IndirectCallBinding 须经 EmitIndirectInvoke");
                 default:
                     throw new CompilerInternalException("调用的非预期绑定形态");
+            }
+        }
+
+        // invoke.indirect：发射期 BindIndirectCall → EmitIndirectCall
+        internal static void EmitIndirectInvoke(ModuleBuilder.Session session, LLVMBuilderRef builder,
+            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirInvokeIndirect inst)
+        {
+            var argTypes = new List<string>(inst.Args.Count);
+            foreach (var arg in inst.Args)
+            {
+                if (arg is not MirLocalOperand local)
+                {
+                    throw new CompilerInternalException("invoke.indirect 实参非局部");
+                }
+                argTypes.Add(slots[local.Name].Local.Type.Canonical);
+            }
+            string? resultType = null;
+            if (inst.Result != null)
+            {
+                resultType = slots[inst.Result].Local.Type.Canonical;
+            }
+            switch (ImplBinder.BindIndirectCall(session.Symbols, inst.CallTargetType.Canonical,
+                argTypes, resultType, session.BilFunctions))
+            {
+                case IndirectCallBinding indirect:
+                    EmitIndirectCall(session, builder, slots, inst, indirect.CallOperator);
+                    break;
+                default:
+                    throw new CompilerInternalException("invoke.indirect 的非预期绑定形态");
             }
         }
 
@@ -86,17 +135,23 @@ namespace RigiCompiler.Middleware.Emit
                 PointerType(), new[] { PointerType() });
             var obj = builder.BuildCall2(allocType, allocFn, new[] { sheet }, "new.obj");
             var fat = BuildFatReference(session, builder, sheet, obj);
+            // 类级 typeid 写入实例隐藏字段（不进 init 实参；BIL new 不含此前缀）
+            WriteHiddenTypeIds(session, builder, slots, obj, inst.Type.Canonical);
             if (inst.InitWrapper != null)
             {
                 var wrapper = session.FunctionOf(inst.InitWrapper.Canonical);
                 builder.BuildCall2(wrapper.Type, wrapper.Value, new[] { fat }, "");
             }
             var init = session.FunctionOf(inst.Init.Canonical);
+            var expected = ExpectedCallParams(init.Mir);
+            // expected[0] = .this（已用 fat）；其余对用户实参
             var initArgs = new LLVMValueRef[inst.Args.Count + 1];
             initArgs[0] = fat;
             for (var i = 0; i < inst.Args.Count; i++)
             {
-                initArgs[i + 1] = MarshalArg(session, builder, slots, inst.Args[i], aliasThis: false);
+                var expectType = i + 1 < expected.Count ? expected[i + 1].Type : null;
+                initArgs[i + 1] = CoerceArg(session, builder, slots, inst.Args[i],
+                    expectType, aliasThis: false);
             }
             builder.BuildCall2(init.Type, init.Value, initArgs, "");
             builder.BuildStore(fat, slots[inst.Target].Slot);
@@ -112,7 +167,7 @@ namespace RigiCompiler.Middleware.Emit
         {
             var callArgs = MarshalArgs(session, builder, slots, callee.Mir, args, result);
             var callResult = builder.BuildCall2(callee.Type, callee.Value, callArgs, "");
-            StoreScalarResult(session, builder, slots, callee.Mir.ReturnType, callResult, result);
+            StoreCoercedResult(session, builder, slots, callee.Mir.ReturnType, callResult, result);
         }
 
         // 标量/String/胖引用结果回存（值类型返回经 out 槽直写，无需回存）
@@ -125,6 +180,24 @@ namespace RigiCompiler.Middleware.Emit
             {
                 builder.BuildStore(callResult, slots[result].Slot);
             }
+        }
+
+        private static void StoreCoercedResult(ModuleBuilder.Session session,
+            LLVMBuilderRef builder,
+            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
+            MirType returnType, LLVMValueRef callResult, string? result)
+        {
+            if (result == null || session.IsInlineValueType(returnType, out _))
+            {
+                return;
+            }
+            var actual = slots[result].Local.Type;
+            if (BoxEmitter.NeedsUnbox(session, returnType, actual))
+            {
+                BoxEmitter.UnboxToLocal(session, builder, slots, callResult, actual, result);
+                return;
+            }
+            builder.BuildStore(callResult, slots[result].Slot);
         }
 
         // new type(V)（struct/enum）：目标局部的内联槽物化——整槽清零
@@ -166,7 +239,7 @@ namespace RigiCompiler.Middleware.Emit
                         LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, (uint)slot, false) });
             var callResult = builder.BuildCall2(callee.Type, entry,
                 MarshalArgs(session, builder, slots, callee.Mir, call.Args, call.Result), "");
-            StoreScalarResult(session, builder, slots, callee.Mir.ReturnType,
+            StoreCoercedResult(session, builder, slots, callee.Mir.ReturnType,
                 callResult, call.Result);
         }
 
@@ -178,7 +251,7 @@ namespace RigiCompiler.Middleware.Emit
             MirCall call, MwMemberSymbol target)
         {
             var slot = InterfaceSlotOf(session, target);
-            var ifaceSheet = session.TypeSheetFor(target.Owner!.Canonical);
+            var ifaceSheet = InterfaceSheetOf(session, target, slots, call.Args[0]);
             var signature = CanonicalSignature.Parse(target.Canonical);
             var fnType = MethodFunctionTypeOf(session, target, signature);
             var entry = EmitVTableEntry(session, builder, "rigi_imap_entry",
@@ -188,6 +261,61 @@ namespace RigiCompiler.Middleware.Emit
                 MarshalArgs(session, builder, slots, signature, call.Args, call.Result), "");
             StoreScalarResult(session, builder, slots, MirType.Of(signature.ReturnTypeRef),
                 callResult, call.Result);
+        }
+
+        // callable 协议：对 CallTarget 虚调用 $$call（实参列表不含 receiver，此处补上）
+        private static void EmitIndirectCall(ModuleBuilder.Session session, LLVMBuilderRef builder,
+            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
+            MirInvokeIndirect inst, MwMemberSymbol callOperator)
+        {
+            var owner = callOperator.Owner
+                ?? throw new CompilerInternalException($"$$call 无宿主: {callOperator.Canonical}");
+            if (owner.Declaration.Kind is not (BilTypeKind.Class or BilTypeKind.Interface))
+            {
+                throw new MwNotSupportedException(
+                    $"invoke.indirect 宿主仅支持 class/interface: {owner.Canonical}");
+            }
+            var callArgs = new MirOperand[inst.Args.Count + 1];
+            callArgs[0] = inst.CallTarget;
+            for (var i = 0; i < inst.Args.Count; i++)
+            {
+                callArgs[i + 1] = inst.Args[i];
+            }
+            // fn 类型按调用点实参/返回合成（$$call 在 Func 上 abstract 无 fn 体；
+            // 泛型 typeid 前缀已平铺在实参列表，与普通实参同法编组）
+            var siteParams = new (string, string)[inst.Args.Count];
+            for (var i = 0; i < inst.Args.Count; i++)
+            {
+                if (inst.Args[i] is not MirLocalOperand argLocal)
+                {
+                    throw new CompilerInternalException("invoke.indirect 实参非局部");
+                }
+                siteParams[i] = ("a" + i, slots[argLocal.Name].Local.Type.Canonical);
+            }
+            var siteReturn = inst.Result != null
+                ? slots[inst.Result].Local.Type.Canonical
+                : ".void";
+            var signature = CanonicalSignature.Create(siteParams, siteReturn);
+            var fnType = MethodFunctionTypeOf(session, callOperator, signature);
+            var slot = VirtualSlotOf(session, callOperator);
+            LLVMValueRef entry;
+            if (owner.Declaration.Kind == BilTypeKind.Interface)
+            {
+                var ifaceSheet = InterfaceSheetOf(session, callOperator, slots, inst.CallTarget);
+                entry = EmitVTableEntry(session, builder, "rigi_imap_entry",
+                    new[] { ObjectPointer(session, builder, slots, inst.CallTarget), ifaceSheet,
+                            LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, (uint)slot, false) });
+            }
+            else
+            {
+                entry = EmitVTableEntry(session, builder, "rigi_vtable_entry",
+                    new[] { ObjectPointer(session, builder, slots, inst.CallTarget),
+                            LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, (uint)slot, false) });
+            }
+            var callResult = builder.BuildCall2(fnType, entry,
+                MarshalArgs(session, builder, slots, signature, callArgs, inst.Result), "");
+            StoreScalarResult(session, builder, slots, MirType.Of(signature.ReturnTypeRef),
+                callResult, inst.Result);
         }
 
         // ===== 调用辅助 =====
@@ -204,7 +332,22 @@ namespace RigiCompiler.Middleware.Emit
             var hasOut = session.IsInlineValueType(calleeMir.ReturnType, out var outPlan);
             var thisAliases = calleeMir.Parameters.Count > 0
                 && calleeMir.Parameters[0].Name == ".this";
-            return MarshalArgsCore(session, builder, slots, args, result, hasOut, outPlan, thisAliases);
+            var expected = ExpectedCallParams(calleeMir);
+            var values = new LLVMValueRef[args.Count + (hasOut ? 1 : 0)];
+            if (hasOut)
+            {
+                values[0] = result != null
+                    ? slots[result].Slot
+                    : builder.BuildAlloca(
+                        LLVMTypeRef.CreateArray(LLVMTypeRef.Int8, (uint)outPlan.Size), "call.out");
+            }
+            for (var i = 0; i < args.Count; i++)
+            {
+                var expectType = i < expected.Count ? expected[i].Type : null;
+                values[i + (hasOut ? 1 : 0)] = CoerceArg(session, builder, slots, args[i],
+                    expectType, thisAliases && i == 0);
+            }
+            return values;
         }
 
         // canonical 签名形态（interface 调用：无 fn 体，按签名编组；接收
@@ -241,6 +384,36 @@ namespace RigiCompiler.Middleware.Emit
             return values;
         }
 
+        // 类级 typeid 已从 LLVM 调用约定剔除；实参列表与 BIL 调用点同形
+        private static List<MirLocal> ExpectedCallParams(MirFunction callee)
+        {
+            var list = new List<MirLocal>();
+            foreach (var parameter in callee.Parameters)
+            {
+                if (!GenericAbi.IsClassLevelTypeId(callee.Symbol, parameter.Name))
+                {
+                    list.Add(parameter);
+                }
+            }
+            return list;
+        }
+
+        private static LLVMValueRef CoerceArg(ModuleBuilder.Session session,
+            LLVMBuilderRef builder,
+            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
+            MirOperand arg, MirType? expected, bool aliasThis)
+        {
+            if (arg is MirLocalOperand local && expected != null)
+            {
+                var actual = slots[local.Name].Local.Type;
+                if (BoxEmitter.NeedsBox(session, actual, expected))
+                {
+                    return BoxEmitter.BoxFromLocal(session, builder, slots, local.Name);
+                }
+            }
+            return MarshalArg(session, builder, slots, arg, aliasThis);
+        }
+
         // 单实参编组（值类型 → memcpy 副本传指针；aliasThis = 值类型
         // .this 别名传槽地址；其余装载求值）。init/new 的实参加工共用
         internal static LLVMValueRef MarshalArg(ModuleBuilder.Session session,
@@ -263,6 +436,67 @@ namespace RigiCompiler.Middleware.Emit
             temp.Alignment = (uint)plan.Alignment;
             session.EmitMemCopy(builder, temp, slot, plan.Size);
             return temp;
+        }
+
+        // 类级 typeid 写入隐藏字段（闭合构造经 TypeSheetFor；外层泛型参数
+        // 取当前 fn 的 .generic.* 局部——与 prologue 自取对偶）
+        private static void WriteHiddenTypeIds(ModuleBuilder.Session session,
+            LLVMBuilderRef builder,
+            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
+            LLVMValueRef obj, string typeRef)
+        {
+            var plan = session.Layout?.Find(typeRef);
+            if (plan == null)
+            {
+                return;
+            }
+            WriteHiddenTypeIds(session, builder, slots, obj, plan, typeRef);
+        }
+
+        private static void WriteHiddenTypeIds(ModuleBuilder.Session session,
+            LLVMBuilderRef builder,
+            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
+            LLVMValueRef obj, TypeLayoutPlan plan, string typeRef)
+        {
+            var template = session.Symbols.FindTypeByRef(typeRef);
+            if (plan.BasePlan != null && template?.Declaration.ExtendsType is { } baseRef)
+            {
+                var substBase = ConstructedTypeCollector.BuildSubstitution(typeRef,
+                    template.Declaration);
+                var substituted = MwTypeKey.Normalize(
+                    ConstructedTypeCollector.Substitute(baseRef, substBase));
+                WriteHiddenTypeIds(session, builder, slots, obj, plan.BasePlan, substituted);
+            }
+            var substitution = template != null
+                ? ConstructedTypeCollector.BuildSubstitution(typeRef, template.Declaration)
+                : null;
+            foreach (var (paramName, offset) in plan.HiddenTypeIdSlots)
+            {
+                LLVMValueRef sheetPtr;
+                if (substitution != null
+                    && substitution.TryGetValue(paramName, out var arg)
+                    && GenericAbi.TryPlaceholderName(arg, out var placeholder)
+                    && slots.ContainsKey(".generic." + placeholder))
+                {
+                    sheetPtr = session.LoadLocal(builder, slots,
+                        new MirLocalOperand(".generic." + placeholder));
+                }
+                else if (substitution != null && substitution.TryGetValue(paramName, out arg))
+                {
+                    var sheet = session.TypeSheetFor(arg);
+                    sheetPtr = builder.BuildBitCast(sheet,
+                        LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0), "tid.sheet");
+                }
+                else
+                {
+                    continue;
+                }
+                var bits = builder.BuildPtrToInt(sheetPtr, LLVMTypeRef.Int64, "tid.store");
+                var gep = builder.BuildGEP2(LLVMTypeRef.Int8, obj,
+                    new[] { LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, (ulong)offset, false) },
+                    "tid.wgep");
+                builder.BuildStore(bits, gep);
+            }
         }
 
         // 接收者胖引用 → 对象指针（payload 段）
@@ -289,39 +523,71 @@ namespace RigiCompiler.Middleware.Emit
             return builder.BuildCall2(fnType, fn, faceArgs, "dispatch.entry");
         }
 
-        // class 对象胖引用：{typeid = ptrtoint(sheet) | tag<<56, payload}
+        // class 对象胖引用：tag 编码归 BoxEmitter（消双实现漂移）
         internal static LLVMValueRef BuildFatReference(ModuleBuilder.Session session,
             LLVMBuilderRef builder, LLVMValueRef typeSheet, LLVMValueRef objectPointer)
         {
-            const ulong classTag = 2UL;
-            var typeId = builder.BuildPtrToInt(typeSheet, LLVMTypeRef.Int64, "new.typeid");
-            var tagged = builder.BuildOr(typeId,
-                LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, classTag << 56, false), "new.tagged");
-            var payload = builder.BuildPtrToInt(objectPointer, LLVMTypeRef.Int64, "new.payload");
-            // 两段均被覆写，零常量起手即可（LLVMValueRef.GetUndef 的静态
-            // 形式是裸指针 API，安全上下文不可用）
-            var fat = LLVMValueRef.CreateConstNull(TypeLayout.FatReferenceType(session.Context));
-            fat = builder.BuildInsertValue(fat, tagged, 0, "new.t0");
-            return builder.BuildInsertValue(fat, payload, 1, "new.ref");
+            return BoxEmitter.PackObject(session, builder, typeSheet, objectPointer);
         }
 
         private static LLVMTypeRef PointerType() =>
             LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0);
 
         // 虚槽序号（Layout 计划的宿主 vtable 内索引；同偏移不变量保证
-        // 基类槽位在派生类同位）
+        // 基类槽位在派生类同位）。构造类型具化后计划必在；声明序回退已移除
         private static int VirtualSlotOf(ModuleBuilder.Session session, MwMemberSymbol target)
         {
-            var plan = session.Layout?.Find(target.Owner!.Canonical)
-                ?? throw new CompilerInternalException($"虚调用宿主无布局计划: {target.Canonical}");
-            for (var i = 0; i < plan.VTableSlots.Count; i++)
+            var plan = session.Layout?.Find(GenericAbi.PlanKey(target.Owner!));
+            if (plan != null)
             {
-                if (plan.VTableSlots[i] == target.Canonical)
+                for (var i = 0; i < plan.VTableSlots.Count; i++)
                 {
-                    return i;
+                    if (plan.VTableSlots[i] == target.Canonical)
+                    {
+                        return i;
+                    }
+                }
+                // 同槽签名键回退（泛型宿主模板符号与计划槽 canonical 可能不一致）
+                var key = target.SignatureKey;
+                for (var i = 0; i < plan.VTableSlots.Count; i++)
+                {
+                    if (session.Symbols.FindMember(plan.VTableSlots[i])?.SignatureKey == key)
+                    {
+                        return i;
+                    }
                 }
             }
             throw new CompilerInternalException($"虚槽缺失: {target.Canonical}");
+        }
+
+        // 接口 TypeSheet：构造接口用具化空壳（与 iMap 键同地址）；否则本类
+        private static LLVMValueRef InterfaceSheetOf(ModuleBuilder.Session session,
+            MwMemberSymbol target, Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
+            MirOperand receiver)
+        {
+            var owner = target.Owner!;
+            if (receiver is MirLocalOperand local)
+            {
+                var recv = MwTypeKey.Normalize(slots[local.Name].Local.Type.Canonical);
+                if (session.TryGetTypeSheet(recv, out var sheet)
+                    && session.Symbols.FindTypeByRef(recv) == owner)
+                {
+                    return sheet;
+                }
+                var plan = session.Layout?.Find(recv);
+                if (plan != null)
+                {
+                    foreach (var (iface, _) in plan.IMap)
+                    {
+                        if ((iface == owner.Canonical || session.Symbols.FindTypeByRef(iface) == owner)
+                            && session.TryGetTypeSheet(iface, out sheet))
+                        {
+                            return sheet;
+                        }
+                    }
+                }
+            }
+            return session.TypeSheetFor(owner.Canonical);
         }
 
         // 接口内槽序（接口计划的 VTableSlots = 接口虚成员序）
@@ -484,23 +750,96 @@ namespace RigiCompiler.Middleware.Emit
             {
                 return cached;
             }
-            var paramTypes = new LLVMTypeRef[signature.Parameters.Count];
+            var returnType = MirType.Of(signature.ReturnTypeRef);
+            var hasOut = TryNativeOutSlot(session, returnType, out var outType, out _, out _);
+            var paramTypes = new LLVMTypeRef[signature.Parameters.Count + (hasOut ? 1 : 0)];
+            var index = 0;
+            if (hasOut)
+            {
+                paramTypes[index++] = LLVMTypeRef.CreatePointer(outType, 0);
+            }
             for (var i = 0; i < signature.Parameters.Count; i++)
             {
                 var paramType = MirType.Of(signature.Parameters[i].TypeRef);
-                paramTypes[i] = paramType.IsString
-                    ? StringAbi.PointerType(session.Context)
-                    : TypeLayout.MapType(session.Context, paramType);
+                paramTypes[index++] = MapNativeParamType(session, paramType);
             }
-            var returnType = MirType.Of(signature.ReturnTypeRef);
-            if (returnType.IsString)
-            {
-                throw new MwNotSupportedException($"MW1 不支持 native 返回 .string: {cSymbol}");
-            }
-            var type = LLVMTypeRef.CreateFunction(TypeLayout.MapType(session.Context, returnType), paramTypes, false);
+            var type = LLVMTypeRef.CreateFunction(
+                hasOut ? LLVMTypeRef.Void : TypeLayout.MapType(session.Context, returnType),
+                paramTypes, false);
             var fn = session.Module.AddFunction(cSymbol, type);
             session.AddFace(cSymbol, fn, type);
             return (fn, type);
+        }
+
+        // C 边界 out 首参：String → rigi_string*；用户引用 → 16B 对齐胖引用槽指针。
+        // 形状描述复用 StringAbi / TypeLayout（唯一事实源）。
+        private static bool TryNativeOutSlot(ModuleBuilder.Session session, MirType returnType,
+            out LLVMTypeRef slotType, out string slotName, out uint alignment)
+        {
+            if (returnType.IsString)
+            {
+                slotType = StringAbi.ValueType(session.Context);
+                slotName = "native.out";
+                alignment = 0;
+                return true;
+            }
+            if (returnType.IsVoid || IsNativeByValue(returnType) || TypeLayout.IsTypeId(returnType))
+            {
+                slotType = default;
+                slotName = "";
+                alignment = 0;
+                return false;
+            }
+            slotType = TypeLayout.FatReferenceType(session.Context);
+            slotName = "native.ref.out";
+            alignment = (uint)TypeLayout.ReferenceSlotAlignment;
+            return true;
+        }
+
+        private static bool IsNativeByValue(MirType type) => type.Key is
+            "bool" or "char" or "i8" or "u8" or "i16" or "u16"
+            or "i32" or "u32" or "i64" or "u64" or "float" or "double";
+
+        // String → rigi_string*；Any → 16B 对齐胖引用槽指针（D6：C 边界
+        // 16B 胖值一律指针）；bool → i8（C _Bool/int8 槽，调用点 zext i1）
+        private static LLVMTypeRef MapNativeParamType(ModuleBuilder.Session session, MirType paramType)
+        {
+            if (paramType.IsString)
+            {
+                return StringAbi.PointerType(session.Context);
+            }
+            if (paramType.IsAny)
+            {
+                return LLVMTypeRef.CreatePointer(
+                    TypeLayout.FatReferenceType(session.Context), 0);
+            }
+            if (paramType.Key == "bool")
+            {
+                return LLVMTypeRef.Int8;
+            }
+            return TypeLayout.MapType(session.Context, paramType);
+        }
+
+        private static LLVMValueRef MarshalNativeArg(ModuleBuilder.Session session,
+            LLVMBuilderRef builder, LLVMValueRef argValue, MirType paramType)
+        {
+            if (paramType.IsString)
+            {
+                return session.StoreToTemp(builder, argValue);
+            }
+            if (paramType.IsAny)
+            {
+                var slot = builder.BuildAlloca(TypeLayout.FatReferenceType(session.Context),
+                    "native.any");
+                slot.Alignment = (uint)TypeLayout.ReferenceSlotAlignment;
+                builder.BuildStore(argValue, slot);
+                return slot;
+            }
+            if (paramType.Key == "bool")
+            {
+                return builder.BuildZExt(argValue, LLVMTypeRef.Int8, "native.bool");
+            }
+            return argValue;
         }
     }
 }

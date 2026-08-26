@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using RigiCompiler.Bil;
 using RigiCompiler.Middleware.Runtime;
 using RigiCompiler.Middleware.Symbols;
@@ -160,6 +161,195 @@ namespace RigiCompiler.Middleware.Binding
                 };
             }
             return new DirectCallBinding(target);
+        }
+
+        // §15.3 callable 协议：沿 extends 链解析唯一匹配的 $$call
+        //（宿主泛型代入 + §6.4 全等比对，参照 BilVerifier.TryFindCallOperator）。
+        // 查不到属 Gate 漏检。functions 用于读取泛型 $$call 的 .generic.* / 值包隐藏前缀。
+        public static IndirectCallBinding BindIndirectCall(
+            MwSymbolTable symbols, string objectStaticType,
+            IReadOnlyList<string> argTypes, string? resultType,
+            IReadOnlyList<BilFunction>? functions = null)
+        {
+            if (BilVerificationContext.IsBuiltinType(objectStaticType))
+            {
+                throw new CompilerInternalException(
+                    $"invoke.indirect 目标是内建类型: {objectStaticType}");
+            }
+            var current = MwTypeKey.Normalize(objectStaticType);
+            var visited = new HashSet<string>(System.StringComparer.Ordinal);
+            while (visited.Add(current))
+            {
+                var type = symbols.FindTypeByRef(current);
+                if (type == null)
+                {
+                    throw new CompilerInternalException(
+                        $"invoke.indirect 静态类型不可解析: {current}");
+                }
+                foreach (var member in type.Members)
+                {
+                    if (!IsCallOperator(member))
+                    {
+                        continue;
+                    }
+                    if (!TryMatchCallOperator(member, type.Declaration, current, argTypes,
+                            resultType, functions, out var isAsync))
+                    {
+                        continue;
+                    }
+                    if (isAsync)
+                    {
+                        throw new MwNotSupportedException(
+                            $"invoke.indirect async $$call 随 MW11: {member.Canonical}");
+                    }
+                    return new IndirectCallBinding(member);
+                }
+                if (type.Declaration.ExtendsType == null)
+                {
+                    break;
+                }
+                current = MwTypeKey.Normalize(type.Declaration.ExtendsType);
+            }
+            throw new CompilerInternalException(
+                $"invoke.indirect 无匹配 $$call: {objectStaticType}");
+        }
+
+        private static bool IsCallOperator(MwMemberSymbol member)
+        {
+            if (member.Declaration.Kind != BilMemberKind.Method)
+            {
+                return false;
+            }
+            foreach (var modifier in member.Declaration.Modifiers)
+            {
+                if (modifier is BilOperatorModifier { Name: "call" })
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static bool TryMatchCallOperator(MwMemberSymbol member,
+            BilTypeDeclaration declaration, string hostTypeRef,
+            IReadOnlyList<string> argTypes, string? resultType,
+            IReadOnlyList<BilFunction>? functions, out bool isAsync)
+        {
+            isAsync = member.HasKeyword(BilKeyword.Async);
+            if (!BilVerificationContext.TryParseMethodSymbol(member.Canonical,
+                    out _, out _, out var parameters, out var candidateReturn))
+            {
+                return false;
+            }
+            var ordinary = new List<(string Name, string TypeRef)>();
+            foreach (var parameter in parameters)
+            {
+                if (parameter.Name.StartsWith(".generic.", System.StringComparison.Ordinal)
+                    || parameter.Name.StartsWith(".vargs.", System.StringComparison.Ordinal)
+                    || parameter.Name.StartsWith(".kwargs.", System.StringComparison.Ordinal))
+                {
+                    continue;
+                }
+                ordinary.Add(parameter);
+            }
+            var genericHidden = new List<BilArgDeclaration>();
+            var packArguments = new List<BilArgDeclaration>();
+            if (functions != null)
+            {
+                foreach (var fn in functions)
+                {
+                    if (fn.Symbol != member.Canonical)
+                    {
+                        continue;
+                    }
+                    foreach (var arg in fn.Args)
+                    {
+                        if (arg.Name.StartsWith(".generic.", System.StringComparison.Ordinal))
+                        {
+                            genericHidden.Add(arg);
+                        }
+                        else if (arg.Name.StartsWith(".vargs.", System.StringComparison.Ordinal)
+                            || arg.Name.StartsWith(".kwargs.", System.StringComparison.Ordinal))
+                        {
+                            packArguments.Add(arg);
+                        }
+                    }
+                    break;
+                }
+            }
+            var expectedCount = genericHidden.Count + ordinary.Count + packArguments.Count;
+            if (argTypes.Count != expectedCount)
+            {
+                return false;
+            }
+            for (var i = 0; i < genericHidden.Count; i++)
+            {
+                if (!BilVerificationContext.TypesCompatible(argTypes[i], genericHidden[i].TypeRef))
+                {
+                    return false;
+                }
+            }
+            var valueStart = genericHidden.Count;
+            for (var i = 0; i < ordinary.Count; i++)
+            {
+                var expected = SubstituteHostGenerics(ordinary[i].TypeRef, declaration, hostTypeRef);
+                if (!BilVerificationContext.TypesCompatible(argTypes[valueStart + i], expected))
+                {
+                    return false;
+                }
+            }
+            for (var i = 0; i < packArguments.Count; i++)
+            {
+                var packIndex = valueStart + ordinary.Count + i;
+                if (!BilVerificationContext.TypesCompatible(argTypes[packIndex],
+                        packArguments[i].TypeRef))
+                {
+                    return false;
+                }
+            }
+            var returnType = SubstituteHostGenerics(candidateReturn, declaration, hostTypeRef);
+            if (isAsync)
+            {
+                returnType = returnType == ".void" || MwTypeKey.IsVoid(MwTypeKey.Normalize(returnType))
+                    ? "core.coroutine::Task"
+                    : $"core.coroutine::Task<{returnType}>";
+            }
+            if (resultType == null)
+            {
+                return (returnType == ".void" || MwTypeKey.IsVoid(MwTypeKey.Normalize(returnType)))
+                    && !isAsync;
+            }
+            return BilVerificationContext.TypesCompatible(resultType, returnType);
+        }
+
+        // 宿主泛型代入（与 BilVerifier.SubstituteHostGenerics 同口径）
+        internal static string SubstituteHostGenerics(string typeRef,
+            BilTypeDeclaration declaration, string hostTypeRef)
+        {
+            if (declaration.GenericParameters.Count == 0
+                || !typeRef.Contains(".generic<", System.StringComparison.Ordinal))
+            {
+                return typeRef;
+            }
+            var angle = hostTypeRef.IndexOf('<');
+            if (angle < 0 || !hostTypeRef.EndsWith(">", System.StringComparison.Ordinal))
+            {
+                return typeRef;
+            }
+            var arguments = BilVerificationContext.SplitTopLevel(hostTypeRef.Substring(
+                angle + 1, hostTypeRef.Length - angle - 2));
+            if (arguments.Count != declaration.GenericParameters.Count)
+            {
+                return typeRef;
+            }
+            var result = typeRef;
+            for (var i = 0; i < arguments.Count; i++)
+            {
+                result = result.Replace(
+                    ".generic<$.generic." + declaration.GenericParameters[i] + ">",
+                    arguments[i], System.StringComparison.Ordinal);
+            }
+            return result;
         }
     }
 }

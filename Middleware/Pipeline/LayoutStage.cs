@@ -14,7 +14,14 @@ namespace RigiCompiler.Middleware.Pipeline
 
         public void Run(MwContext context)
         {
-            context.Layout = LayoutEngine.Build(context.Symbols);
+            var constructed = ConstructedTypeCollector.Collect(context);
+            var bodies = new System.Collections.Generic.HashSet<string>(
+                System.StringComparer.Ordinal);
+            foreach (var function in context.Module.Functions)
+            {
+                bodies.Add(function.Symbol);
+            }
+            context.Layout = LayoutEngine.Build(context.Symbols, constructed, bodies);
         }
     }
 }

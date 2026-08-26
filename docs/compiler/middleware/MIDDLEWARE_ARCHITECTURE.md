@@ -92,7 +92,7 @@ BIL §3.2 类型驱动操作的**唯一实现查询**：操作类别 + 操作数
 
 - primitive 运算 → LLVM 指令选择；
 - 用户 operator/getter/setter/索引 → 精确目标 fn（含 vtable 槽选择、interface
-  派发）；
+  派发；VirtualSlotOf 精确命中布局计划的 canonical 或 SignatureKey，声明序回退已随构造类型具化计划移除）；
 - 可静态消除者（不可观察 copy/Box/temp）→ 标记消除。
 
 不重跑 source-level overload ranking（§3.3）；查询不含隐式转换、候选排序或
@@ -228,7 +228,13 @@ rigi_rt 导出（命名待定，形态固定）：
 | `acquire(p)` / `release(p) → bool` | RC 增减；release 归零返真（调用方据此析构），减至非零时完成候选登记 + 债务累计 + 阈值检查 + 通知（§4.6） |
 | `region_enter/region_exit` | RUNTIME §23.3 cFlag 协议（含双重检查与 GCAlarm 挂起路径） |
 | `string_concat` 等内建面 | String 内建 `+` 等特权操作的实现（String 字符数据是特权裸缓冲区，非托管引用，RUNTIME §4） |
+| `i64_to_string` / `u64_to_string` / `f64_to_string` / `f32_to_string` / `bool_to_string` / `char_to_string` | 标量标准文本（StringOut 首参；any_to_string 的格式化底座；窄整数在 any_to_string 内按符号性 widen 到 i64/u64；f64/f32 为 Ryu 最短往返 + .NET 默认呈现） |
+| `any_to_string` | 任意胖值标准文本（StringOut 首参 + Any 槽指针）：内建标量走对应 to_string 面；`core::String`（tag1）拷贝裸块；其余（tag2 对象 / 大 struct 等）取 TypeInfo.name。不虚调 toString（防默认体递归；override 经方法虚派发，不经本面） |
 | `box_*` / `span_*` | Box/Span 运行时面 |
+| `rigi_abort_invalid_cast` | 拆箱类型不符占位 abort（`void(TypeSheet*)`；stderr 前缀对齐 VM CastException「无法将 .any 转换为」+ TypeInfo.name，exit 1；MW9 换真异常） |
+| `rigi_type_is` / `rigi_type_is_indirect` | 胖引用实际类型是否为目标或其子类（协变）；tag2 取对象头 sheet，tag0/tag1 掩码 typeid；接口走 TypeInfo.ifaceClosure |
+| `rigi_type_supers` / `rigi_type_supers_indirect` | 实际类型是否为目标的基类（逆变）；沿 target.baseTypeId 链，并查 target.TypeInfo.ifaceClosure（多 implements 父接口） |
+| `rigi_type_with` / `rigi_type_with_indirect` | 实际类型（及基类/接口闭包）的 TypeInfo.wrappers 是否含目标 wrapper sheet |
 | `throw_raise` / unwind 面 | 异常抛出与 unwind 库交互（§8） |
 | 协程七项保留面 | 见 `ASYNC_LOWERING_DESIGN.md` §7 表（coroutine.spawn / task.await / coroutine.yield / coroutine.complete/fail/cancel / coroutine.frame / gc.ownership-region / alarm.poll/event） |
 | GC Alarm 族 | GCAlarm 与 GC 唤醒 Alarm 的创建与触发 |
@@ -272,7 +278,8 @@ M88 边界：frontend 只携带标记，烘焙全归 Middleware。
 
 - reified 泛型：共享代码体 + typeid 隐藏参数（RUNTIME §1 既定取舍：不提供泛型
   热路径的单态化特化 pass）；typeid 参数的传递位置与求值顺序在 ABI 定稿；
-- vargs/kwargs：规范化参数包的解包与 shim；
+- vargs/kwargs：包 = 单值胖引用，按 §7.2 序按位传递，无 shim——frontend
+  打包（逐元素 BoxToAny），Middleware 直译；
 - `invoke fn(..super)` → 直接基类原始实现；`..create` 仅属 Middleware/VM 生命
   周期阶段；
 - `invoke.indirect` → callable 协议（`$$call` 虚调用）；
@@ -284,6 +291,42 @@ UTF-8，按值语义。Rigi 内部调用按值传 `{i8*, i64}`；C 边界（nati
 面）一律经 `rigi_string*` 传递（StringOut 出参置首参），规避 16 字节 struct
 按值传递的 win-x64/SysV ABI 分歧。MW7 胖值化时统一迁移，迁移点集中在
 Layout 与 RuntimeFaces 两处。
+
+**typeid 与 C 边界胖引用**：BIL §7.2 六段序（`.this` → 固定泛型 typeid → 泛型包
+→ 普通参数 → 值包 → 具名包）即泛型调用约定；typeid 的 LLVM 表示 = TypeSheet
+指针（`getid.type` 物化）。String 与 16 字节胖引用的 C 边界一律 out 首参（Rigi
+内部按值）：String 经 `rigi_string*`，用户引用经 16 字节对齐的胖引用槽指针。
+RUNTIME §26 的调用约定留白在 x64 双平台上天然唯一（Win x64 / SysV AMD64）——
+clang 编 `rigi_rt` 与 LLVM 生成代码各自 lowering 一致，无需显式 fastcall 标注。
+
+**构造类型具化计划**：从模块收集闭合构造类型（new / fn .vars.args / getid.type
+与 cast 目标 / 数组元素 / 代入后的 extends·implements / 内层构造实参；
+MwTypeKey.Normalize 归一，环保护）。具化计划独立入表：字段复用模板
+canonical（`.generic` → 16B 胖值槽入 refMap，具体类型照旧）；vtable 槽 =
+模板 fn canonical；基类链沿代入后的构造基类递归。iMap 按代入后的构造接口具化生成（接口 sheet 引用具化接口空壳 sheet）。
+
+**类级 typeid ABI（被调方自取）**：泛型类在 16B 对象头之后、用户字段之前
+为每个类级类型参数留 i64 TypeSheet 指针槽（继承时基类隐藏字段在前；
+typeid 不是托管引用，不进 refMap）。`new` 站在 rigi_alloc 之后把构造实参
+的 TypeSheet（或当前 fn 的 `.generic.*` 局部）写入隐藏字段，再调
+`..init.wrapper` / init——init 实参不传类级 typeid。实例方法（含 init）
+的 LLVM 调用约定剔除类级 `.generic.X`；entry prologue 从 `.this` 隐藏字段
+装入该局部。方法级 typeid 仍由调用点按 §7.2 序物化传递。
+
+**TypeSheet 全局名**：无角括号的既有名保持不变；构造 canonical 的 `<,>`
+转义为 `$` / `.`（空格删除），避免跨工具链引号差异。
+
+**is / supers / with（MW5 c3）**：MIR 直译 `type.is` / `type.supers` / `type.with`（含 `.indirect`）为 `MirTypeCheck`；发射调 `rigi_type_*` helper（typeid+payload 两枚 i64 + 目标 TypeSheet*，返 i32 0/1）。实际类型：tag2 取对象头 TypeSheet，tag0/tag1 掩码胖引用 typeid。TypeInfo 形态 `{name: rigi_string, sheet*, wrappers**, wrapperCount, ifaceClosure**, ifaceClosureCount}` 与 TypeSheet 成对发射，`typeInfoId` 回指；wrappers 来自声明 `BilWrappedModifier`；ifaceClosure 为传递 implements 闭包（含接口的父接口）。泛型占位目标（`.generic<$.generic.T>`）降为 typeid 局部（与 `.indirect` 同 helper）。接口默认方法（有 fn 体）进入实现类 iMap 槽（未 override 时指向接口方法）；MirReachability 补默认方法可达边。
+
+**Any/Box ABI（RUNTIME §2/§4 定稿）**：胖引用 128-bit = `{typeid: i64（最高字节
+tag）, payload: i64}`，16B 对齐。tag0（ValueType ≤8B）payload 内联值；tag1
+（ValueType >8B，含 string 的 `{i8*,i64}` 与大 struct）payload = `rigi_malloc`
++ memcpy 的 unique 裸数据块（无对象头、无块内 typeid）；tag2（Object）payload =
+对象指针。装箱 = `cast` 值类型 → `.any`/`.object`；拆箱检查 tag 与掩码后
+TypeSheet 指针，不符调 `rigi_abort_invalid_cast`。native `.any` 参数/返回经
+16B 对齐槽指针传递（D6：C 边界 16B 胖值一律指针）。`any_to_string` 经该槽指针
+读 `{typeid, payload}` 分派（标量面 / String 拷贝 / TypeInfo.name）。Box 复制的
+acquire/release 不在此发射（E4：内存正确性 MW7 RcInjection 统一收口）。
 
 ## 8. 异常机制
 
@@ -345,7 +388,7 @@ Middleware/                 # 本仓库顶层目录（C#，.NET 10 LTS）
 ├── Binding/                # 实现绑定（ImplBinding 记录族 + ImplBinder 唯一实现查询）
 ├── Mir/                    # MIR 模型 + MirBuilder（BIL 结构化块 → CFG 直译）+ MirReachability（invoke 边可达闭包）
 ├── Pipeline/               # IMwStage + MwPipeline 驱动器（线性阶段序，仿前端层栈纪律；MW4 pass 群在此登记）
-├── Passes/                 # MIR pass 群（WrapperBaking / RcInjection / CoroutineSplit / CellElim / Devirt；随 MW4 起）
+├── Passes/                 # MIR pass 群（已建立：IndexOperatorLowering / AccessorLowering 为既有改写迁移；WrapperBaking / RcInjection / CoroutineSplit / CellElim / Devirt 仍随各自阶段）
 ├── Layout/                 # TypeLayout：canonical → LLVM 类型唯一映射点（引用槽按 RUNTIME §2 胖引用 128-bit/16 字节对齐建模）
 ├── Emit/                   # ModuleBuilder（MIR → LLVM 模块）/ LlvmBitcode（unsafe 编组封装：bitcode 解析、LLVMLinkModules2 进程内合并、新 PM default<O2> 管线）/ RuntimeFaces（rigi_rt 面表）/ ObjectEmitter（.o 发射）
 ├── Toolchain/              # ToolchainResolver（--toolchain → RIGI_LLVM → tools/.llvm/<rid> → PATH）/ ExternalProcess 外部进程封装

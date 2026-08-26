@@ -17,6 +17,8 @@ namespace RigiCompiler.Middleware.Symbols
     public sealed class MwSymbolTable
     {
         private readonly Dictionary<string, MwTypeSymbol> _types = new(StringComparer.Ordinal);
+        // 同名不同元数（Func\<TRet> / Func\<TRet, T0>）：DeclarationKey 索引
+        private readonly Dictionary<string, MwTypeSymbol> _typesByDeclKey = new(StringComparer.Ordinal);
         private readonly Dictionary<string, MwMemberSymbol> _members = new(StringComparer.Ordinal);
 
         public IReadOnlyCollection<MwTypeSymbol> Types => _types.Values;
@@ -27,6 +29,18 @@ namespace RigiCompiler.Middleware.Symbols
 
         public MwTypeSymbol? FindType(string canonical) =>
             _types.TryGetValue(canonical, out var symbol) ? symbol : null;
+
+        // 构造类型 / 同名不同元数反查（DeclarationKey = 符号 + 顶层实参个数）
+        public MwTypeSymbol? FindTypeByRef(string typeRef)
+        {
+            var normalized = MwTypeKey.Normalize(typeRef);
+            if (_typesByDeclKey.TryGetValue(
+                    BilVerificationContext.DeclarationKeyOf(normalized), out var byKey))
+            {
+                return byKey;
+            }
+            return FindType(normalized);
+        }
 
         public MwMemberSymbol? FindMember(string canonical) =>
             _members.TryGetValue(canonical, out var symbol) ? symbol : null;
@@ -57,12 +71,21 @@ namespace RigiCompiler.Middleware.Symbols
                 switch (entry)
                 {
                     case BilTypeDeclaration type:
-                        // 同名类型已登记（本地定义优先）：外部引用归一为同一驻留对象
-                        if (_types.ContainsKey(type.Symbol)) break;
+                        // 反查键 = 符号 + 泛型元数（同名不同元数合法共存）；
+                        // 本地定义优先，外部段同键只补缺
+                        var declKey = type.GenericParameters.Count == 0
+                            ? type.Symbol
+                            : type.Symbol + "<" + type.GenericParameters.Count + ">";
+                        if (_typesByDeclKey.ContainsKey(declKey)) break;
                         var members = new List<MwMemberSymbol>();
                         var cases = new List<MwCaseSymbol>();
                         var typeSymbol = new MwTypeSymbol(type, isExternal, members, cases);
-                        _types.Add(type.Symbol, typeSymbol);
+                        _typesByDeclKey.Add(declKey, typeSymbol);
+                        // 裸符号表保留首个元数（FindType 旧口径）；其余元数只走 FindTypeByRef
+                        if (!_types.ContainsKey(type.Symbol))
+                        {
+                            _types.Add(type.Symbol, typeSymbol);
+                        }
                         foreach (var memberDecl in type.Members.OfType<BilSimpleMemberDeclaration>())
                         {
                             if (_members.ContainsKey(memberDecl.Symbol)) continue;

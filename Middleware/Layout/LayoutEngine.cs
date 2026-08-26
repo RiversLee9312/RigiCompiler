@@ -28,23 +28,37 @@ namespace RigiCompiler.Middleware.Layout
         // 胖引用槽 16B/16B（与 TypeLayout.ReferenceSlotSize 同值）
         public const int ReferenceSlotSize = 16;
 
-        public static LayoutPlanTable Build(MwSymbolTable symbols)
+        public static LayoutPlanTable Build(MwSymbolTable symbols) =>
+            Build(symbols, System.Array.Empty<string>(), null);
+
+        public static LayoutPlanTable Build(MwSymbolTable symbols,
+            IReadOnlyList<string> constructed) =>
+            Build(symbols, constructed, null);
+
+        public static LayoutPlanTable Build(MwSymbolTable symbols,
+            IReadOnlyList<string> constructed, IReadOnlySet<string>? functionsWithBody)
         {
             var table = new LayoutPlanTable();
             foreach (var type in symbols.Types)
             {
                 if (!type.IsExternal)
                 {
-                    Resolve(type, symbols, table, new HashSet<string>(System.StringComparer.Ordinal));
+                    Resolve(type, symbols, table, new HashSet<string>(System.StringComparer.Ordinal),
+                        functionsWithBody);
                 }
+            }
+            foreach (var typeRef in constructed)
+            {
+                ResolveConstructed(typeRef, symbols, table,
+                    new HashSet<string>(System.StringComparer.Ordinal), functionsWithBody);
             }
             return table;
         }
 
         private static TypeLayoutPlan? Resolve(MwTypeSymbol type, MwSymbolTable symbols,
-            LayoutPlanTable table, HashSet<string> visiting)
+            LayoutPlanTable table, HashSet<string> visiting, IReadOnlySet<string>? bodies)
         {
-            if (table.Find(type.Canonical) is { } existing)
+            if (table.Find(GenericAbi.PlanKey(type)) is { } existing)
             {
                 return existing;
             }
@@ -55,10 +69,11 @@ namespace RigiCompiler.Middleware.Layout
             }
             TypeLayoutPlan? plan = type.Declaration.Kind switch
             {
-                BilTypeKind.Class => LayoutClass(type, symbols, table, visiting),
+                BilTypeKind.Class => LayoutClass(type, symbols, table, visiting, bodies),
                 BilTypeKind.Struct => LayoutValueType(type, symbols, table, visiting, isEnum: false),
                 BilTypeKind.EnumStruct => LayoutValueType(type, symbols, table, visiting, isEnum: true),
-                BilTypeKind.Interface => LayoutInterfaceShell(type),
+                BilTypeKind.Interface => LayoutInterfaceShell(type, symbols),
+                BilTypeKind.Wrapper => LayoutWrapperShell(type),
                 _ => null,
             };
             visiting.Remove(type.Canonical);
@@ -72,15 +87,16 @@ namespace RigiCompiler.Middleware.Layout
         // ===== class =====
 
         private static TypeLayoutPlan LayoutClass(MwTypeSymbol type, MwSymbolTable symbols,
-            LayoutPlanTable table, HashSet<string> visiting)
+            LayoutPlanTable table, HashSet<string> visiting, IReadOnlySet<string>? bodies)
         {
-            // 基类计划（本地 class 基类可解析时；内建/外部基类无字段布局）
+            // 基类计划（本地 class 基类可解析时；内建/外部基类无字段布局）。
+            // 泛型继承 extends B<T> 经 FindTypeByRef 命中模板 B
             TypeLayoutPlan? basePlan = null;
             if (type.Declaration.ExtendsType is { } baseRef
-                && symbols.FindType(baseRef) is { IsExternal: false } baseType
+                && symbols.FindTypeByRef(baseRef) is { IsExternal: false } baseType
                 && baseType.Declaration.Kind == BilTypeKind.Class)
             {
-                basePlan = Resolve(baseType, symbols, table, visiting);
+                basePlan = Resolve(baseType, symbols, table, visiting, bodies);
             }
 
             // 字段：基类字段在前，本类字段从基类 Size（含头、已 16 对齐）续排
@@ -90,6 +106,17 @@ namespace RigiCompiler.Middleware.Layout
             {
                 fields.AddRange(basePlan.Fields);
                 offset = basePlan.Size;
+            }
+            // 类级隐藏 typeid：紧随对象头/基类之后、用户字段之前；不进 refMap
+            var hiddenSlots = new List<(string, int)>();
+            foreach (var param in type.Declaration.GenericParameters)
+            {
+                offset = AlignUp(offset, GenericAbi.TypeIdSlotAlign);
+                fields.Add(new FieldPlan(GenericAbi.HiddenFieldSymbol(type.Canonical, param),
+                    offset, GenericAbi.TypeIdSlotSize, GenericAbi.TypeIdSlotAlign,
+                    isReferenceSlot: false, embeddedPlan: null, isHiddenTypeId: true));
+                hiddenSlots.Add((param, offset));
+                offset += GenericAbi.TypeIdSlotSize;
             }
             var refEntries = new List<RefSite>();
             foreach (var member in InstanceFields(type))
@@ -121,7 +148,7 @@ namespace RigiCompiler.Middleware.Layout
             foreach (var member in InstanceMethods(type))
             {
                 var key = member.SignatureKey;
-                var inherited = slots.FindIndex(s => KeyOf(symbols, s) == key);
+                var inherited = slots.FindIndex(s => CompatibleSignature(symbols, s, key));
                 if (inherited >= 0 && member.HasKeyword(BilKeyword.Override))
                 {
                     slots[inherited] = member.Canonical;
@@ -134,35 +161,110 @@ namespace RigiCompiler.Middleware.Layout
             var iMap = new List<(string, int)>();
             foreach (var ifaceRef in type.Declaration.ImplementsTypes)
             {
-                // 外部/泛型构造接口：其 TypeSheet 随 stdlib sheet 实体化与
-                // 泛型具化后补；本批只为可解析的本地非泛型接口生成 iMap 段
-                if (ifaceRef.Contains('<')
-                    || symbols.FindType(ifaceRef) is not { IsExternal: false } ifaceType
-                    || ifaceType.Declaration.Kind != BilTypeKind.Interface)
-                {
-                    continue;
-                }
-                var baseOffset = slots.Count;
-                foreach (var ifaceMethod in InstanceMethods(ifaceType))
-                {
-                    var key = ifaceMethod.SignatureKey;
-                    var impl = slots.Find(s => KeyOf(symbols, s) == key)
-                        ?? throw new MwNotSupportedException(
-                            $"MW4 接口方法未实现: {ifaceMethod.Canonical}（{type.Canonical}）");
-                    slots.Add(impl);
-                }
-                iMap.Add((ifaceType.Canonical, baseOffset));
+                AppendInterfaceSegment(slots, iMap, ifaceRef, symbols, table, type.Canonical,
+                    bodies);
             }
 
             return new TypeLayoutPlan(type, TypeLayoutKind.Class, size, ReferenceSlotSize,
                 TypeFlagsOf(type), fields, slots, iMap,
                 BuildRefMap(fields, refEntries, ObjectHeaderSize),
-                System.Array.Empty<(MwCaseSymbol, uint)>(), basePlan);
+                System.Array.Empty<(MwCaseSymbol, uint)>(), basePlan, hiddenSlots,
+                CollectIfaceClosure(type.Canonical, type, symbols));
+        }
+
+        // 闭合构造类型具化计划：字段/vtable 前缀/refMap 复用模板；iMap 按
+        // 代入后的构造接口重生；Symbol 与基类链按构造 canonical 独立入表
+        private static TypeLayoutPlan? ResolveConstructed(string typeRef, MwSymbolTable symbols,
+            LayoutPlanTable table, HashSet<string> visiting, IReadOnlySet<string>? bodies)
+        {
+            var canonical = MwTypeKey.Normalize(typeRef);
+            if (table.Find(canonical) is { } existing)
+            {
+                return existing;
+            }
+            if (!GenericAbi.IsClosedConstructed(canonical)
+                || symbols.FindTypeByRef(canonical) is not { } template
+                || !GenericAbi.ShouldMaterialize(template))
+            {
+                return null;
+            }
+            if (!visiting.Add(canonical))
+            {
+                return null;
+            }
+            var templatePlan = Resolve(template, symbols, table,
+                new HashSet<string>(System.StringComparer.Ordinal), bodies);
+            if (templatePlan == null)
+            {
+                visiting.Remove(canonical);
+                return null;
+            }
+            if (templatePlan.Kind == TypeLayoutKind.Interface)
+            {
+                visiting.Remove(canonical);
+                var shell = new TypeLayoutPlan(new MwTypeSymbol(canonical, template),
+                    TypeLayoutKind.Interface, 0, 1, templatePlan.TypeFlags,
+                    templatePlan.Fields, templatePlan.VTableSlots,
+                    System.Array.Empty<(string, int)>(), System.Array.Empty<ushort>(),
+                    templatePlan.EnumCases, null, ifaceClosure:
+                    CollectIfaceClosure(canonical, template, symbols));
+                table.Add(shell);
+                return shell;
+            }
+            if (templatePlan.Kind != TypeLayoutKind.Class)
+            {
+                visiting.Remove(canonical);
+                return null;
+            }
+            TypeLayoutPlan? basePlan = templatePlan.BasePlan;
+            var subst = ConstructedTypeCollector.BuildSubstitution(canonical, template.Declaration);
+            if (template.Declaration.ExtendsType is { } baseRef)
+            {
+                var substituted = MwTypeKey.Normalize(
+                    ConstructedTypeCollector.Substitute(baseRef, subst));
+                if (GenericAbi.IsClosedConstructed(substituted))
+                {
+                    basePlan = ResolveConstructed(substituted, symbols, table, visiting, bodies)
+                        ?? basePlan;
+                }
+                else if (symbols.FindTypeByRef(substituted) is { IsExternal: false } baseType
+                    && baseType.Declaration.Kind == BilTypeKind.Class)
+                {
+                    basePlan = Resolve(baseType, symbols, table,
+                        new HashSet<string>(System.StringComparer.Ordinal), bodies) ?? basePlan;
+                }
+            }
+            var classSlotCount = templatePlan.IMap.Count > 0
+                ? templatePlan.IMap[0].BaseOffset
+                : templatePlan.VTableSlots.Count;
+            var slots = new List<string>(classSlotCount);
+            for (var i = 0; i < classSlotCount; i++)
+            {
+                slots.Add(templatePlan.VTableSlots[i]);
+            }
+            var iMap = new List<(string, int)>();
+            foreach (var ifaceRef in template.Declaration.ImplementsTypes)
+            {
+                var substituted = MwTypeKey.Normalize(
+                    ConstructedTypeCollector.Substitute(ifaceRef, subst));
+                AppendInterfaceSegment(slots, iMap, substituted, symbols, table, canonical,
+                    bodies);
+            }
+            visiting.Remove(canonical);
+            var constructed = new MwTypeSymbol(canonical, template);
+            var plan = new TypeLayoutPlan(constructed,
+                TypeLayoutKind.Class, templatePlan.Size, templatePlan.Alignment,
+                templatePlan.TypeFlags, templatePlan.Fields, slots,
+                iMap, templatePlan.RefMap, templatePlan.EnumCases,
+                basePlan, templatePlan.HiddenTypeIdSlots,
+                CollectIfaceClosure(canonical, constructed, symbols));
+            table.Add(plan);
+            return plan;
         }
 
         // ===== interface（空壳：iMap 键地址 + 接口内槽序表） =====
 
-        private static TypeLayoutPlan LayoutInterfaceShell(MwTypeSymbol type)
+        private static TypeLayoutPlan LayoutInterfaceShell(MwTypeSymbol type, MwSymbolTable symbols)
         {
             var slots = new List<string>();
             foreach (var member in InstanceMethods(type))
@@ -172,7 +274,18 @@ namespace RigiCompiler.Middleware.Layout
             return new TypeLayoutPlan(type, TypeLayoutKind.Interface, 0, 1,
                 TypeFlagsOf(type), System.Array.Empty<FieldPlan>(), slots,
                 System.Array.Empty<(string, int)>(), System.Array.Empty<ushort>(),
-                System.Array.Empty<(MwCaseSymbol, uint)>(), null);
+                System.Array.Empty<(MwCaseSymbol, uint)>(), null,
+                ifaceClosure: CollectIfaceClosure(type.Canonical, type, symbols));
+        }
+
+        // wrapper 空壳：仅 TypeSheet 地址身份（type.with / TypeInfo.wrappers）
+        private static TypeLayoutPlan LayoutWrapperShell(MwTypeSymbol type)
+        {
+            return new TypeLayoutPlan(type, TypeLayoutKind.Wrapper, 0, 1,
+                TypeFlagsOf(type), System.Array.Empty<FieldPlan>(),
+                System.Array.Empty<string>(), System.Array.Empty<(string, int)>(),
+                System.Array.Empty<ushort>(), System.Array.Empty<(MwCaseSymbol, uint)>(),
+                null);
         }
 
         // ===== struct / enum-struct =====
@@ -221,7 +334,8 @@ namespace RigiCompiler.Middleware.Layout
                 size, alignment, TypeFlagsOf(type), fields,
                 System.Array.Empty<string>(), System.Array.Empty<(string, int)>(),
                 rich ? BuildRefMap(fields, refEntries, 0) : System.Array.Empty<ushort>(),
-                enumCases, null);
+                enumCases, null,
+                ifaceClosure: CollectIfaceClosure(type.Canonical, type, symbols));
         }
 
         // ===== 字段类型归类 =====
@@ -260,7 +374,7 @@ namespace RigiCompiler.Middleware.Layout
             if (symbols.FindType(type.Canonical) is { IsExternal: false } local
                 && local.Declaration.Kind is BilTypeKind.Struct or BilTypeKind.EnumStruct)
             {
-                var plan = Resolve(local, symbols, table, visiting)!;
+                var plan = Resolve(local, symbols, table, visiting, null)!;
                 return new FieldTypeInfo(plan.Size, plan.Alignment, false, plan);
             }
             // 其余一律胖引用槽：class/interface 引用、nullable、外部/构造
@@ -311,6 +425,204 @@ namespace RigiCompiler.Middleware.Layout
 
         // ===== 辅助 =====
 
+        // 构造/非构造接口 iMap 段：闭合构造以具化 canonical 为键并确保
+        // 接口空壳计划入表；开放构造（模板上的 I<T>）仍跳过
+        private static void AppendInterfaceSegment(List<string> slots, List<(string, int)> iMap,
+            string ifaceRef, MwSymbolTable symbols, LayoutPlanTable table, string ownerCanonical,
+            IReadOnlySet<string>? bodies)
+        {
+            var normalized = MwTypeKey.Normalize(ifaceRef);
+            if (ConstructedTypeCollector.IsConstructed(normalized)
+                && !GenericAbi.IsClosedConstructed(normalized))
+            {
+                return;
+            }
+            if (symbols.FindTypeByRef(normalized) is not { IsExternal: false } ifaceType
+                || ifaceType.Declaration.Kind != BilTypeKind.Interface)
+            {
+                return;
+            }
+            var imapKey = GenericAbi.IsClosedConstructed(normalized)
+                ? normalized
+                : ifaceType.Canonical;
+            if (GenericAbi.IsClosedConstructed(normalized))
+            {
+                EnsureConstructedInterfacePlan(normalized, ifaceType, symbols, table);
+            }
+            var subst = ConstructedTypeCollector.BuildSubstitution(normalized, ifaceType.Declaration);
+            var baseOffset = slots.Count;
+            foreach (var ifaceMethod in InstanceMethods(ifaceType))
+            {
+                var impl = FindInterfaceImpl(slots, symbols, ifaceMethod, subst)
+                    ?? DefaultMethodOf(ifaceMethod, bodies)
+                    ?? throw new MwNotSupportedException(
+                        $"MW4 接口方法未实现: {ifaceMethod.Canonical}（{ownerCanonical}）");
+                slots.Add(impl);
+            }
+            iMap.Add((imapKey, baseOffset));
+            // 前端 invoke 常把 I<i32> 擦成模板 I；补模板键别名使
+            // TypeSheetFor(I) 与具化键同槽（VM 亦按声明键而非具化键）
+            if (imapKey != ifaceType.Canonical)
+            {
+                iMap.Add((ifaceType.Canonical, baseOffset));
+            }
+        }
+
+        private static void EnsureConstructedInterfacePlan(string canonical, MwTypeSymbol template,
+            MwSymbolTable symbols, LayoutPlanTable table)
+        {
+            if (table.Find(canonical) != null)
+            {
+                return;
+            }
+            var templatePlan = table.Find(GenericAbi.PlanKey(template));
+            if (templatePlan == null || templatePlan.Kind != TypeLayoutKind.Interface)
+            {
+                return;
+            }
+            table.Add(new TypeLayoutPlan(new MwTypeSymbol(canonical, template),
+                TypeLayoutKind.Interface, 0, 1, templatePlan.TypeFlags,
+                templatePlan.Fields, templatePlan.VTableSlots,
+                System.Array.Empty<(string, int)>(), System.Array.Empty<ushort>(),
+                templatePlan.EnumCases, null, ifaceClosure:
+                CollectIfaceClosure(canonical, template, symbols)));
+        }
+
+        // 接口默认方法：模块内有 fn 体则 iMap 槽指向接口方法自身（VM 同口径）
+        private static string? DefaultMethodOf(MwMemberSymbol ifaceMethod,
+            IReadOnlySet<string>? bodies) =>
+            bodies != null && bodies.Contains(ifaceMethod.Canonical)
+                ? ifaceMethod.Canonical
+                : null;
+
+        // 传递 implements 闭包（前端 OverrideChecker.InterfaceClosure 同口径）：
+        // 沿宿主/基类链收 implements，再沿接口 ExtendsType+ImplementsTypes 展开。
+        // 开放构造（I<T>）跳过；闭合构造保留具化键。
+        private static IReadOnlyList<string> CollectIfaceClosure(string typeRef,
+            MwTypeSymbol type, MwSymbolTable symbols)
+        {
+            var result = new List<string>();
+            var visited = new HashSet<string>(System.StringComparer.Ordinal);
+            var stack = new Stack<(string Ref, MwTypeSymbol Type)>();
+            ConsiderHosts(typeRef, type, symbols, visited, result, stack);
+            while (stack.Count > 0)
+            {
+                var (ifaceRef, ifaceType) = stack.Pop();
+                var subst = ConstructedTypeCollector.BuildSubstitution(ifaceRef,
+                    ifaceType.Declaration);
+                if (ifaceType.Declaration.ExtendsType is { } extends)
+                {
+                    ConsiderIface(ConstructedTypeCollector.Substitute(extends, subst),
+                        symbols, visited, result, stack);
+                }
+                foreach (var parent in ifaceType.Declaration.ImplementsTypes)
+                {
+                    ConsiderIface(ConstructedTypeCollector.Substitute(parent, subst),
+                        symbols, visited, result, stack);
+                }
+            }
+            return result;
+        }
+
+        private static void ConsiderHosts(string typeRef, MwTypeSymbol type,
+            MwSymbolTable symbols, HashSet<string> visited, List<string> result,
+            Stack<(string, MwTypeSymbol)> stack)
+        {
+            var currentRef = typeRef;
+            var current = type;
+            var seen = new HashSet<string>(System.StringComparer.Ordinal);
+            while (current != null && seen.Add(MwTypeKey.Normalize(currentRef)))
+            {
+                var subst = ConstructedTypeCollector.BuildSubstitution(currentRef,
+                    current.Declaration);
+                if (current.Declaration.Kind == BilTypeKind.Interface
+                    && current.Declaration.ExtendsType is { } selfExtends)
+                {
+                    ConsiderIface(ConstructedTypeCollector.Substitute(selfExtends, subst),
+                        symbols, visited, result, stack);
+                }
+                foreach (var iface in current.Declaration.ImplementsTypes)
+                {
+                    ConsiderIface(ConstructedTypeCollector.Substitute(iface, subst),
+                        symbols, visited, result, stack);
+                }
+                if (current.Declaration.Kind == BilTypeKind.Interface
+                    || current.Declaration.ExtendsType is not { } baseRef)
+                {
+                    break;
+                }
+                currentRef = MwTypeKey.Normalize(
+                    ConstructedTypeCollector.Substitute(baseRef, subst));
+                current = symbols.FindTypeByRef(currentRef);
+            }
+        }
+
+        private static void ConsiderIface(string typeRef, MwSymbolTable symbols,
+            HashSet<string> visited, List<string> result,
+            Stack<(string, MwTypeSymbol)> stack)
+        {
+            var normalized = MwTypeKey.Normalize(typeRef);
+            if (ConstructedTypeCollector.IsConstructed(normalized)
+                && !GenericAbi.IsClosedConstructed(normalized))
+            {
+                return;
+            }
+            if (symbols.FindTypeByRef(normalized) is not { } ifaceType
+                || ifaceType.Declaration.Kind != BilTypeKind.Interface)
+            {
+                return;
+            }
+            var key = GenericAbi.IsClosedConstructed(normalized)
+                ? normalized
+                : ifaceType.Canonical;
+            if (!visited.Add(key))
+            {
+                return;
+            }
+            result.Add(key);
+            stack.Push((key, ifaceType));
+        }
+
+        // 先模板签名直中（G<T>:I<T> 槽仍是 .generic 占位）；再代入+归一
+        // （C:I<i32> 的 pick(x:.i32) 对 I.pick(x:T)）
+        private static string? FindInterfaceImpl(List<string> slots, MwSymbolTable symbols,
+            MwMemberSymbol ifaceMethod, Dictionary<string, string>? subst)
+        {
+            var raw = ifaceMethod.SignatureKey;
+            var exact = slots.Find(s => KeyOf(symbols, s) == raw);
+            if (exact != null)
+            {
+                return exact;
+            }
+            var want = NormalizeSignatureKey(ConstructedTypeCollector.Substitute(raw, subst));
+            return slots.Find(s => NormalizeSignatureKey(KeyOf(symbols, s)) == want);
+        }
+
+        private static string NormalizeSignatureKey(string key)
+        {
+            var open = key.IndexOf('(');
+            var close = key.LastIndexOf(')');
+            if (open < 0 || close <= open)
+            {
+                return key;
+            }
+            var inner = key.Substring(open + 1, close - open - 1);
+            if (inner.Length == 0)
+            {
+                return key;
+            }
+            var parts = BilVerificationContext.SplitTopLevel(inner);
+            for (var i = 0; i < parts.Count; i++)
+            {
+                var part = parts[i];
+                var colon = part.IndexOf(':');
+                parts[i] = colon < 0
+                    ? MwTypeKey.Normalize(part)
+                    : part.Substring(0, colon + 1) + MwTypeKey.Normalize(part.Substring(colon + 1));
+            }
+            return key.Substring(0, open + 1) + string.Join(",", parts) + key.Substring(close);
+        }
+
         private static IEnumerable<MwMemberSymbol> InstanceFields(MwTypeSymbol type)
         {
             foreach (var member in type.Members)
@@ -347,6 +659,38 @@ namespace RigiCompiler.Middleware.Layout
         // 槽内 canonical 的签名键（经符号表成员反查；槽内符号恒已登记）
         private static string KeyOf(MwSymbolTable symbols, string canonical) =>
             symbols.FindMember(canonical)!.SignatureKey;
+
+        // override 匹配：精确签名键，或名+顶层参数个数（具化 $$call(x:.i32)
+        // 对 Func$$call(arg0:.generic<T0>)）
+        private static bool CompatibleSignature(MwSymbolTable symbols, string slotCanonical,
+            string memberKey)
+        {
+            var slotKey = KeyOf(symbols, slotCanonical);
+            if (slotKey == memberKey)
+            {
+                return true;
+            }
+            var slotParen = slotKey.IndexOf('(');
+            var memParen = memberKey.IndexOf('(');
+            if (slotParen < 0 || memParen < 0
+                || slotKey.Substring(0, slotParen) != memberKey.Substring(0, memParen))
+            {
+                return false;
+            }
+            return ParameterCount(slotKey) == ParameterCount(memberKey);
+        }
+
+        private static int ParameterCount(string signatureKey)
+        {
+            var open = signatureKey.IndexOf('(');
+            var close = signatureKey.LastIndexOf(')');
+            if (open < 0 || close <= open + 1)
+            {
+                return 0;
+            }
+            return BilVerificationContext.SplitTopLevel(
+                signatureKey.Substring(open + 1, close - open - 1)).Count;
+        }
 
         private static bool HasKeyword(MwTypeSymbol type, BilKeyword keyword)
         {

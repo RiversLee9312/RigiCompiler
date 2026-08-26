@@ -41,6 +41,16 @@ namespace RigiCompiler.Middleware.Symbols
             Members = members;
             Cases = cases;
         }
+
+        // 构造类型计划的独立符号（canonical = 闭合构造形态；成员/声明复用模板）
+        internal MwTypeSymbol(string constructedCanonical, MwTypeSymbol template)
+            : base(constructedCanonical)
+        {
+            Declaration = template.Declaration;
+            IsExternal = template.IsExternal;
+            Members = template.Members;
+            Cases = template.Cases;
+        }
     }
 
     /// <summary>

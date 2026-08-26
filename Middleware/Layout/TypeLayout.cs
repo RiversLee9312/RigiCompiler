@@ -64,11 +64,8 @@ namespace RigiCompiler.Middleware.Layout
                     {
                         return FatReferenceType(context);
                     }
-                    if (type.Canonical.Contains('<'))
-                    {
-                        throw new MwNotSupportedException($"MW1 不支持构造类型: {type.Canonical}");
-                    }
-                    // 任意引用类型（class/interface/Any/Object…）→ 胖引用槽
+                    // 构造引用类型（Func\<TRet, T0\> 等）按胖引用槽；值类型
+                    // 泛型具化未单独建布局计划，与 LayoutEngine 字段口径一致
                     return FatReferenceType(context);
             }
         }
@@ -164,6 +161,7 @@ namespace RigiCompiler.Middleware.Layout
                 "core::i32" or "core::u32" or "core::float" => (4, TypeLayoutPlan.FlagInlineValue),
                 "core::i64" or "core::u64" or "core::double" => (8, TypeLayoutPlan.FlagInlineValue),
                 "core::String" => (16, TypeLayoutPlan.FlagInlineValue),
+                "core::Any" or "core::Object" => (ReferenceSlotSize, 0u),
                 ArrayTypeCanonical => (ArrayPrefixSize, 0u),
                 _ => (0, 0u),
             };
@@ -175,6 +173,7 @@ namespace RigiCompiler.Middleware.Layout
             "core::i8", "core::u8", "core::i16", "core::u16",
             "core::i32", "core::u32", "core::i64", "core::u64",
             "core::float", "core::double", "core::String",
+            "core::Any", "core::Object",
             ArrayTypeCanonical,
         };
 

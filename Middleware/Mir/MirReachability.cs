@@ -128,6 +128,16 @@ namespace RigiCompiler.Middleware.Mir
                             AddIndexOperatorEdge(context, localTypes, setArray.Collection.Name,
                                 isGet: false, edges);
                             break;
+                        case InvokeIndirectInstruction invokeIndirect:
+                            AddIndirectCallEdges(context, localTypes[invokeIndirect.CallTarget.Name],
+                                ArgTypesOf(invokeIndirect.Arguments, localTypes),
+                                localTypes[invokeIndirect.Target.Name], edges);
+                            break;
+                        case InvokeIndirectNoResultInstruction invokeIndirectNoResult:
+                            AddIndirectCallEdges(context, localTypes[invokeIndirectNoResult.CallTarget.Name],
+                                ArgTypesOf(invokeIndirectNoResult.Arguments, localTypes),
+                                null, edges);
+                            break;
                     }
                 }
             }
@@ -165,6 +175,28 @@ namespace RigiCompiler.Middleware.Mir
             }
         }
 
+        // invoke.indirect：按静态类型解析 $$call，再按宿主 Kind 走虚/接口闭包
+        private static void AddIndirectCallEdges(MwContext context, string objectStaticType,
+            List<string> argTypes, string? resultType, List<string> edges)
+        {
+            var binding = ImplBinder.BindIndirectCall(context.Symbols, objectStaticType,
+                argTypes, resultType, context.Module.Functions);
+            var callOperator = binding.CallOperator;
+            if (callOperator.Owner == null)
+            {
+                return;
+            }
+            switch (callOperator.Owner.Declaration.Kind)
+            {
+                case BilTypeKind.Class:
+                    AddVirtualEdges(context, callOperator, edges);
+                    break;
+                case BilTypeKind.Interface:
+                    AddInterfaceEdges(context, callOperator, edges);
+                    break;
+            }
+        }
+
         // 虚调用边：静态目标 + 全部 override 后代（同槽实现；vtable 完整性）
         private static void AddVirtualEdges(MwContext context, MwMemberSymbol target,
             List<string> edges)
@@ -195,10 +227,14 @@ namespace RigiCompiler.Middleware.Mir
             }
         }
 
-        // interface 调用边：各实现类 iMap 段内实现（接口符号无 fn 体，本身不是边）
+        // interface 调用边：默认方法自身有 fn 体则入闭包；各实现类 iMap 段内实现
         private static void AddInterfaceEdges(MwContext context, MwMemberSymbol target,
             List<string> edges)
         {
+            if (HasFunctionBody(context, target.Canonical))
+            {
+                edges.Add(target.Canonical);
+            }
             var query = context.DispatchQuery;
             var ifaceSlots = query?.GetVTableSlots(target.Owner!.Canonical);
             if (ifaceSlots == null)
@@ -220,7 +256,8 @@ namespace RigiCompiler.Middleware.Mir
                 }
                 foreach (var (ifaceType, baseOffset) in imap)
                 {
-                    if (ifaceType == target.Owner!.Canonical)
+                    if (ifaceType == target.Owner!.Canonical
+                        || context.Symbols.FindTypeByRef(ifaceType) == target.Owner)
                     {
                         edges.Add(slots[baseOffset + slot]);
                     }
@@ -235,7 +272,7 @@ namespace RigiCompiler.Middleware.Mir
             IReadOnlyList<BilVariableOperand> arguments,
             Dictionary<string, string> localTypes, List<string> edges)
         {
-            if (context.Symbols.FindType(typeRef) is not { } type
+            if (context.Symbols.FindTypeByRef(typeRef) is not { } type
                 || type.Declaration.Kind is not (BilTypeKind.Class
                     or BilTypeKind.Struct or BilTypeKind.EnumStruct))
             {
@@ -243,16 +280,21 @@ namespace RigiCompiler.Middleware.Mir
                 return;
             }
             edges.Add(MirBuilder.ResolveInit(context.Symbols, type,
-                ArgTypesOf(arguments, localTypes), skipReceiver: 0).Canonical);
+                ArgTypesOf(arguments, localTypes), skipReceiver: 0,
+                constructedTypeRef: typeRef).Canonical);
             var initWrapper = context.Symbols.FindMember(type.Canonical + "$..init.wrapper()@.void");
             if (initWrapper != null)
             {
                 edges.Add(initWrapper.Canonical);
             }
-            if (type.Declaration.Kind == BilTypeKind.Class
-                && context.DispatchQuery?.GetVTableSlots(type.Canonical) is { } slots)
+            if (type.Declaration.Kind == BilTypeKind.Class)
             {
-                edges.AddRange(slots);
+                var slots = context.DispatchQuery?.GetVTableSlots(MwTypeKey.Normalize(typeRef))
+                    ?? context.DispatchQuery?.GetVTableSlots(type.Canonical);
+                if (slots != null)
+                {
+                    edges.AddRange(slots);
+                }
             }
         }
 
@@ -288,6 +330,18 @@ namespace RigiCompiler.Middleware.Mir
             {
                 edges.Add(method.Canonical);
             }
+        }
+
+        private static bool HasFunctionBody(MwContext context, string symbol)
+        {
+            foreach (var function in context.Module.Functions)
+            {
+                if (function.Symbol == symbol)
+                {
+                    return true;
+                }
+            }
+            return false;
         }
 
         private static int IndexOfSlot(IReadOnlyList<string> slots, string canonical)

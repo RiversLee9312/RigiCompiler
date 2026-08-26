@@ -1,19 +1,15 @@
 using System.Collections.Generic;
 using LLVMSharp.Interop;
 using RigiCompiler.Middleware.Layout;
+using RigiCompiler.Middleware.Symbols;
 
 namespace RigiCompiler.Middleware.Emit
 {
     /// <summary>
-    /// TypeSheet 发射（MW4 批 1，RUNTIME §6 原样）：每非 External 类型
-    /// 四个全局——vtable（fnptr 数组）/iMap（{iface sheet, u32 base offset}
-    /// 对数组）/refMap（u16 跳数数组）/TypeSheet 结构体（internal 链接、
-    /// 常量）。typeInfoId 恒 null（MW8 TypeInfo 定稿）；baseTypeId 指向
-    /// 基类 TypeSheet 全局（无/不可解析为 null；struct/enum 的 ValueType
-    /// 内建 sheet 随 stdlib 实体化后补）；vTable 条目引用对应 LLVM fn，
-    /// 未进 MIR 的方法（不可达/abstract）本批为 null（MW5 调用 ABI 的
-    /// 可达性扩编兜底）；iMap 按声明序（加载期按地址排序的语义待首个
-    /// 消费者批定稿）。
+    /// TypeSheet 发射（RUNTIME §6 原样）：每非 External 类型四个全局——
+    /// vtable / iMap / refMap / TypeSheet。typeInfoId 指向 TypeInfo 全局
+    ///（TypeInfoEmitter）；baseTypeId 指向基类 TypeSheet（interface/wrapper
+    /// 取 ExtendsType）；vTable 未进 MIR 的方法为 null。
     /// </summary>
     internal static class TypeSheetEmitter
     {
@@ -24,23 +20,27 @@ namespace RigiCompiler.Middleware.Emit
             var pointer = LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0);
             var i32 = LLVMTypeRef.Int32;
             var i16 = LLVMTypeRef.Int16;
-            // §6 字段序：typeInfoId / baseTypeId / typeSize / typeFlags /
-            // vTableSize / vTable / iMapSize / iMap / refMapSize / refMap
             var sheetType = context.GetStructType(new[]
             {
                 pointer, pointer, i32, i32, i32, pointer, i32, pointer, i32, pointer,
             }, false);
             var nullPointer = LLVMValueRef.CreateConstPointerNull(pointer);
 
-            // 先建全部 TypeSheet 全局（baseTypeId 交叉引用可前向），再回填
             var sheetGlobals = new Dictionary<string, LLVMValueRef>(System.StringComparer.Ordinal);
             foreach (var plan in layout.Plans)
             {
-                var global = module.AddGlobal(sheetType, "typesheet." + plan.Symbol.Canonical);
+                var key = GenericAbi.PlanKey(plan.Symbol);
+                var global = module.AddGlobal(sheetType,
+                    GenericAbi.EscapeGlobalName("typesheet.", key));
                 global.Linkage = LLVMLinkage.LLVMInternalLinkage;
                 global.IsGlobalConstant = true;
-                sheetGlobals.Add(plan.Symbol.Canonical, global);
-                session.RegisterTypeSheet(plan.Symbol.Canonical, global);
+                sheetGlobals.Add(key, global);
+                session.RegisterTypeSheet(key, global);
+                if (key != plan.Symbol.Canonical && !sheetGlobals.ContainsKey(plan.Symbol.Canonical))
+                {
+                    sheetGlobals.Add(plan.Symbol.Canonical, global);
+                    session.RegisterTypeSheet(plan.Symbol.Canonical, global);
+                }
             }
 
             foreach (var canonical in TypeLayout.BuiltinSheetCanonicals)
@@ -52,37 +52,31 @@ namespace RigiCompiler.Middleware.Emit
                 var global = module.AddGlobal(sheetType, "typesheet." + canonical);
                 global.Linkage = LLVMLinkage.LLVMInternalLinkage;
                 global.IsGlobalConstant = true;
-                var (size, flags) = TypeLayout.BuiltinSheetLayout(canonical);
-                global.Initializer = context.GetConstStruct(new[]
-                {
-                    nullPointer, nullPointer,
-                    LLVMValueRef.CreateConstInt(i32, (uint)size, false),
-                    LLVMValueRef.CreateConstInt(i32, flags, false),
-                    LLVMValueRef.CreateConstInt(i32, 0, false), nullPointer,
-                    LLVMValueRef.CreateConstInt(i32, 0, false), nullPointer,
-                    LLVMValueRef.CreateConstInt(i32, 0, false), nullPointer,
-                }, false);
                 sheetGlobals.Add(canonical, global);
                 session.RegisterTypeSheet(canonical, global);
             }
+
+            TypeInfoEmitter.EmitAll(session, layout);
+
+            foreach (var canonical in TypeLayout.BuiltinSheetCanonicals)
+            {
+                var (size, flags) = TypeLayout.BuiltinSheetLayout(canonical);
+                var builtinSheet = sheetGlobals[canonical];
+                builtinSheet.Initializer = BuildSheetConst(context, i32,
+                    session.TypeInfoFor(canonical), nullPointer, size, flags,
+                    0, nullPointer, 0, nullPointer, 0, nullPointer);
+            }
             foreach (var plan in layout.Plans)
             {
-                // interface 空壳：只有地址身份（iMap 键）有意义，内容全零
-                if (plan.Kind == TypeLayoutKind.Interface)
+                var info = session.TypeInfoFor(GenericAbi.PlanKey(plan.Symbol));
+                var baseSheet = ResolveBaseSheet(plan, sheetGlobals, nullPointer);
+                if (plan.Kind is TypeLayoutKind.Interface or TypeLayoutKind.Wrapper)
                 {
-                    var shell = sheetGlobals[plan.Symbol.Canonical];
-                    shell.Initializer = context.GetConstStruct(new[]
-                    {
-                        nullPointer, nullPointer,
-                        LLVMValueRef.CreateConstInt(i32, 0, false),
-                        LLVMValueRef.CreateConstInt(i32, plan.TypeFlags, false),
-                        LLVMValueRef.CreateConstInt(i32, 0, false), nullPointer,
-                        LLVMValueRef.CreateConstInt(i32, 0, false), nullPointer,
-                        LLVMValueRef.CreateConstInt(i32, 0, false), nullPointer,
-                    }, false);
+                    var shell = sheetGlobals[GenericAbi.PlanKey(plan.Symbol)];
+                    shell.Initializer = BuildSheetConst(context, i32, info, baseSheet,
+                        0, plan.TypeFlags, 0, nullPointer, 0, nullPointer, 0, nullPointer);
                     continue;
                 }
-                // vtable 全局（fnptr 数组；未进 MIR 的方法为 null）
                 var vTable = nullPointer;
                 if (plan.VTableSlots.Count > 0)
                 {
@@ -95,11 +89,10 @@ namespace RigiCompiler.Middleware.Emit
                     }
                     vTable = AddConstantGlobal(module,
                         LLVMTypeRef.CreateArray(pointer, (uint)entries.Length),
-                        "typesheet.vtable." + plan.Symbol.Canonical,
+                        GenericAbi.EscapeGlobalName("typesheet.vtable.", GenericAbi.PlanKey(plan.Symbol)),
                         LLVMValueRef.CreateConstArray(pointer, entries));
                 }
 
-                // iMap 全局（{iface TypeSheet*, u32 base offset} 对数组）
                 var iMap = nullPointer;
                 if (plan.IMap.Count > 0)
                 {
@@ -118,11 +111,10 @@ namespace RigiCompiler.Middleware.Emit
                     }
                     iMap = AddConstantGlobal(module,
                         LLVMTypeRef.CreateArray(pairType, (uint)entries.Length),
-                        "typesheet.imap." + plan.Symbol.Canonical,
+                        GenericAbi.EscapeGlobalName("typesheet.imap.", GenericAbi.PlanKey(plan.Symbol)),
                         LLVMValueRef.CreateConstArray(pairType, entries));
                 }
 
-                // refMap 全局（u16 跳数数组）
                 var refMap = nullPointer;
                 if (plan.RefMap.Length > 0)
                 {
@@ -133,28 +125,58 @@ namespace RigiCompiler.Middleware.Emit
                     }
                     refMap = AddConstantGlobal(module,
                         LLVMTypeRef.CreateArray(i16, (uint)entries.Length),
-                        "typesheet.refmap." + plan.Symbol.Canonical,
+                        GenericAbi.EscapeGlobalName("typesheet.refmap.", GenericAbi.PlanKey(plan.Symbol)),
                         LLVMValueRef.CreateConstArray(i16, entries));
                 }
 
-                var baseSheet = plan.BasePlan != null
-                    ? sheetGlobals[plan.BasePlan.Symbol.Canonical]
-                    : nullPointer;
-                var sheet = sheetGlobals[plan.Symbol.Canonical];
-                sheet.Initializer = context.GetConstStruct(new[]
-                {
-                    nullPointer,   // typeInfoId（MW8 前恒 null 占位）
-                    baseSheet,
-                    LLVMValueRef.CreateConstInt(i32, (uint)plan.Size, false),
-                    LLVMValueRef.CreateConstInt(i32, plan.TypeFlags, false),
-                    LLVMValueRef.CreateConstInt(i32, (uint)plan.VTableSlots.Count, false),
-                    vTable,
-                    LLVMValueRef.CreateConstInt(i32, (uint)plan.IMap.Count, false),
-                    iMap,
-                    LLVMValueRef.CreateConstInt(i32, (uint)plan.RefMap.Length, false),
-                    refMap,
-                }, false);
+                var sheet = sheetGlobals[GenericAbi.PlanKey(plan.Symbol)];
+                sheet.Initializer = BuildSheetConst(context, i32, info, baseSheet,
+                    plan.Size, plan.TypeFlags,
+                    plan.VTableSlots.Count, vTable,
+                    plan.IMap.Count, iMap,
+                    plan.RefMap.Length, refMap);
             }
+        }
+
+        private static LLVMValueRef ResolveBaseSheet(TypeLayoutPlan plan,
+            Dictionary<string, LLVMValueRef> sheetGlobals, LLVMValueRef nullPointer)
+        {
+            if (plan.BasePlan != null)
+            {
+                return sheetGlobals[GenericAbi.PlanKey(plan.BasePlan.Symbol)];
+            }
+            var extends = plan.Symbol.Declaration.ExtendsType;
+            if (string.IsNullOrEmpty(extends))
+            {
+                return nullPointer;
+            }
+            var normalized = MwTypeKey.Normalize(extends);
+            if (sheetGlobals.TryGetValue(normalized, out var sheet)
+                || sheetGlobals.TryGetValue(extends, out sheet))
+            {
+                return sheet;
+            }
+            return nullPointer;
+        }
+
+        private static LLVMValueRef BuildSheetConst(LLVMContextRef context, LLVMTypeRef i32,
+            LLVMValueRef typeInfo, LLVMValueRef baseSheet, int size, uint flags,
+            int vTableSize, LLVMValueRef vTable, int iMapSize, LLVMValueRef iMap,
+            int refMapSize, LLVMValueRef refMap)
+        {
+            return context.GetConstStruct(new[]
+            {
+                typeInfo,
+                baseSheet,
+                LLVMValueRef.CreateConstInt(i32, (uint)size, false),
+                LLVMValueRef.CreateConstInt(i32, flags, false),
+                LLVMValueRef.CreateConstInt(i32, (uint)vTableSize, false),
+                vTable,
+                LLVMValueRef.CreateConstInt(i32, (uint)iMapSize, false),
+                iMap,
+                LLVMValueRef.CreateConstInt(i32, (uint)refMapSize, false),
+                refMap,
+            }, false);
         }
 
         private static LLVMValueRef AddConstantGlobal(LLVMModuleRef module, LLVMTypeRef type,

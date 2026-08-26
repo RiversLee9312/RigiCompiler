@@ -9,8 +9,9 @@ namespace RigiCompiler.Middleware
     /// Middleware 会话中枢：每个已过门禁的 BilModule 一个实例，贯穿
     /// Symbols → Binding → MIR → Passes → Layout → Emit 各层，逐层挂载各自
     /// 产物（参照 VM 侧 VmContext 模式），也是流水线阶段（IMwStage）之间
-    /// 唯一的产物交换物。当前挂载：符号表（构造时）+ MIR（MirBuildStage）；
-    /// Binding 缓存、布局计划等随后续阶段在此扩展。
+    /// 唯一的产物交换物。当前挂载：符号表（构造时）+ 布局（LayoutStage）+
+    /// MIR（MirBuildStage 挂载，随后 Passes/ 原地改写指令列表）；Binding
+    /// 缓存等随后续阶段在此扩展。
     /// </summary>
     public sealed class MwContext
     {

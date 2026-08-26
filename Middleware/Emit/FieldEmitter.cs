@@ -35,6 +35,13 @@ namespace RigiCompiler.Middleware.Emit
                 return;
             }
             var value = builder.BuildLoad2(FieldType(session, inst.FieldSymbol), pointer, "field.get");
+            var fieldType = FieldMirType(inst.FieldSymbol);
+            var targetType = slots[inst.Target].Local.Type;
+            if (BoxEmitter.NeedsUnbox(session, fieldType, targetType))
+            {
+                BoxEmitter.UnboxToLocal(session, builder, slots, value, targetType, inst.Target);
+                return;
+            }
             builder.BuildStore(value, slots[inst.Target].Slot);
         }
 
@@ -56,7 +63,17 @@ namespace RigiCompiler.Middleware.Emit
                     field.EmbeddedPlan.Size);
                 return;
             }
-            var value = session.LoadLocal(builder, slots, inst.Source);
+            var fieldType = FieldMirType(inst.FieldSymbol);
+            LLVMValueRef value;
+            if (inst.Source is MirLocalOperand sourceLocal
+                && BoxEmitter.NeedsBox(session, slots[sourceLocal.Name].Local.Type, fieldType))
+            {
+                value = BoxEmitter.BoxFromLocal(session, builder, slots, sourceLocal.Name);
+            }
+            else
+            {
+                value = session.LoadLocal(builder, slots, inst.Source);
+            }
             builder.BuildStore(value, pointer);
         }
 
@@ -109,12 +126,17 @@ namespace RigiCompiler.Middleware.Emit
         // 字段符号的类型段（X#f@.i32 → .i32）→ LLVM 类型
         private static LLVMTypeRef FieldType(ModuleBuilder.Session session, string fieldSymbol)
         {
+            return TypeLayout.MapType(session.Context, FieldMirType(fieldSymbol));
+        }
+
+        private static MirType FieldMirType(string fieldSymbol)
+        {
             var at = fieldSymbol.IndexOf('@');
             if (at < 0)
             {
                 throw new CompilerInternalException($"字段符号缺类型段: {fieldSymbol}");
             }
-            return TypeLayout.MapType(session.Context, MirType.Of(fieldSymbol.Substring(at + 1)));
+            return MirType.Of(fieldSymbol.Substring(at + 1));
         }
     }
 }

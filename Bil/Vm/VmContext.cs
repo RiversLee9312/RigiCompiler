@@ -256,7 +256,8 @@ namespace RigiCompiler.Bil.Vm
                     {
                         continue;
                     }
-                    if (OperatorParamsMatch(slot.ImplSymbol, valueArguments))
+                    if (OperatorParamsMatch(slot.ImplSymbol, valueArguments,
+                            skipGenericPrefix: true))
                     {
                         return slot.ImplSymbol;
                     }
@@ -1218,7 +1219,8 @@ namespace RigiCompiler.Bil.Vm
                 {
                     break;
                 }
-                var found = MatchOperatorOn(declaration, operatorName, valueArguments);
+                var found = MatchOperatorOn(declaration, operatorName, valueArguments,
+                    skipGenericPrefix: callOnly);
                 if (found != null)
                 {
                     return found;
@@ -1253,7 +1255,8 @@ namespace RigiCompiler.Bil.Vm
                 {
                     continue;
                 }
-                if (OperatorParamsMatch(member.Symbol, valueArguments))
+                if (OperatorParamsMatch(member.Symbol, valueArguments,
+                        skipGenericPrefix: callOnly))
                 {
                     return member.Symbol;
                 }
@@ -1262,7 +1265,7 @@ namespace RigiCompiler.Bil.Vm
         }
 
         private string? MatchOperatorOn(BilTypeDeclaration declaration, string operatorName,
-            IReadOnlyList<VmValue> valueArguments)
+            IReadOnlyList<VmValue> valueArguments, bool skipGenericPrefix)
         {
             foreach (var member in declaration.Members)
             {
@@ -1284,7 +1287,7 @@ namespace RigiCompiler.Bil.Vm
                 {
                     continue;
                 }
-                if (OperatorParamsMatch(simple.Symbol, valueArguments))
+                if (OperatorParamsMatch(simple.Symbol, valueArguments, skipGenericPrefix))
                 {
                     return simple.Symbol;
                 }
@@ -1292,7 +1295,8 @@ namespace RigiCompiler.Bil.Vm
             return null;
         }
 
-        private bool OperatorParamsMatch(string methodSymbol, IReadOnlyList<VmValue> valueArguments)
+        private bool OperatorParamsMatch(string methodSymbol, IReadOnlyList<VmValue> valueArguments,
+            bool skipGenericPrefix = false)
         {
             if (!BilVerificationContext.TryParseMethodSymbol(methodSymbol,
                     out _, out _, out var parameters, out _))
@@ -1310,9 +1314,57 @@ namespace RigiCompiler.Bil.Vm
                 }
                 ordinary.Add(parameter);
             }
-            // 运算符/间接调用传入的是值实参，不含 hidden typeid。
-            // 泛型占位由 TypesEqual 的 .generic< 降级匹配；typeid 在
-            // 命中后由 InjectOperatorTypeIds 从实参类型结构推断补入。
+            if (skipGenericPrefix)
+            {
+                // §15.3：泛型 $$call 调用点前部平铺 typeid/包前缀；按 fn
+                // 定义侧 .generic.* / 值包 hidden 条目数跳过后再逐值比对
+                // （对齐 BilVerifier.TryFindCallOperator）。
+                var genericHidden = new List<BilArgDeclaration>();
+                var packArguments = new List<BilArgDeclaration>();
+                var callee = FindFunction(methodSymbol);
+                if (callee != null)
+                {
+                    foreach (var arg in callee.Args)
+                    {
+                        if (arg.Name.StartsWith(".generic.", StringComparison.Ordinal))
+                        {
+                            genericHidden.Add(arg);
+                        }
+                        else if (arg.Name.StartsWith(".vargs.", StringComparison.Ordinal)
+                            || arg.Name.StartsWith(".kwargs.", StringComparison.Ordinal))
+                        {
+                            packArguments.Add(arg);
+                        }
+                    }
+                }
+                var expectedCount = genericHidden.Count + ordinary.Count + packArguments.Count;
+                if (valueArguments.Count != expectedCount)
+                {
+                    return false;
+                }
+                var valueStart = genericHidden.Count;
+                for (var i = 0; i < ordinary.Count; i++)
+                {
+                    if (!TypeAssignable(valueArguments[valueStart + i].TypeRef,
+                            ordinary[i].TypeRef))
+                    {
+                        return false;
+                    }
+                }
+                for (var i = 0; i < packArguments.Count; i++)
+                {
+                    if (!TypeAssignable(
+                            valueArguments[valueStart + ordinary.Count + i].TypeRef,
+                            packArguments[i].TypeRef))
+                    {
+                        return false;
+                    }
+                }
+                return true;
+            }
+            // 运算符：值实参不含 hidden typeid；泛型占位由 TypesEqual
+            // 的 .generic< 降级匹配；typeid 在命中后由 InjectOperatorTypeIds
+            // 从实参类型结构推断补入。
             if (valueArguments.Count != ordinary.Count)
             {
                 return false;

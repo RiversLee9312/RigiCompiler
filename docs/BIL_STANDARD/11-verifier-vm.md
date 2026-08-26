@@ -226,6 +226,11 @@ VM 执行到对 `native` 方法声明的 `invoke` / `invoke.noret` 时，不寻�
 | `rigi_rt` | `alloc_array` | 泛型 hidden `.typeid`（经 `.generic.T` 物化）+ `size: .i32` | 分配并返回元素零值初始化的 `.array<T>`；T 为 enum struct 按宿主错误（§14.3 无零值）。仅供 stdlib `arrayOf`/`arrayOfElements` 系列的私有 native 声明调用，用户代码不可直达 |
 | `rigi_rt` | `make_sleep_alarm` | `milliseconds: .i64` | 创建并返回 `core.coroutine::EventAlarm`：基于单调时钟、到期转 ready 的粘滞事件 Alarm（`RUNTIME.md` §19.3/§19.4），配合 §17 `yield ALARM` 实现非阻塞睡眠。仅供 stdlib `sleep` 的私有 native 声明调用，用户代码不可直达 |
 | `rigi_rt` | `any_to_string` | `value: .any` | 返回值的字符串表示（`SYNTAX.md` §3.8）：内建数值/`bool`/`char` 为标准文本；未覆写 `toString` 的对象为其类型 canonical 名。仅供 stdlib `.bootstrap.rg` 的私有 native 全局声明调用，用户代码不可直达 |
+| `rigi_rt` | `i64_to_string` | `value: .i64` | 标量标准文本（StringOut）；`any_to_string` 的格式化底座 |
+| `rigi_rt` | `f64_to_string` | `value: .f64` | 同上（Ryu 最短往返 + .NET 默认呈现） |
+| `rigi_rt` | `f32_to_string` | `value: .f32` | 同上 |
+| `rigi_rt` | `bool_to_string` | `value: .bool` | 同上（`true`/`false`） |
+| `rigi_rt` | `char_to_string` | `value: .char` | 同上（UTF-16 码元文本） |
 | （方法 hook） | `core::Any$call???` | 见 §15.5 胖值签名 | 按 `symbol` 路由 wrapper 请求；无路由命中抛 `core::NoSuchMethodException` |
 
 `String` 的 `toString` 即值自身，不产生 native 调用。`toString` 成员方法（`core::Any$toString` / `core::Object$toString`）不再直接 hook：它们是 open 普通方法，默认实现体由编译器合成为「装箱接收者后 `invoke` `.bootstrap.rg` 的 `priv` 全局 native `any_to_string`」的小 fn——hook 经该全局函数触达；覆写了 `toString` 的类型经虚派发执行自身实现，不命中本表。`call???` 按方法符号命中本表（无 `(lib, symbol)` 对），无 BIL fn 定义。命中表之外的 `(lib, symbol)` 组合 VM 无法解释，必须拒绝执行并报错。该表只随 BIL 标准修订扩充；Middleware 的原生链接不受此表约束。

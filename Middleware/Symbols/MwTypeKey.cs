@@ -40,5 +40,9 @@ namespace RigiCompiler.Middleware.Symbols
         public static bool IsVoid(string canonical) => Of(canonical) == "void";
 
         public static bool IsString(string canonical) => Of(canonical) == "String";
+
+        public static bool IsAny(string canonical) => Of(canonical) == "Any";
+
+        public static bool IsObject(string canonical) => Of(canonical) == "Object";
     }
 }

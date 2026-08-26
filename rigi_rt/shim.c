@@ -10,8 +10,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* 字符串过渡表示（MIDDLEWARE MW1：{data,len} UTF-8；MW7 胖值化时迁移） */
-typedef struct { const char *data; int64_t len; } rigi_string;
+#include "arc.h"
+#include "rigi_string.h"
 
 /* 写 stdout + fflush：fwrite 直接按 len 输出，不依赖 NUL 结尾 */
 void rigi_print(const rigi_string *text)
@@ -95,6 +95,28 @@ _Noreturn void rigi_abort_arithmetic_overflow(void)
 {
     static const char message[] = "Arithmetic operation resulted in an overflow.\n";
     fwrite(message, 1, sizeof(message) - 1, stderr);
+    fflush(stderr);
+    exit(1);
+}
+
+/* 拆箱类型不符（MW5 Box）：VM 抛 CastException「无法将 .any 转换为 T」，
+ * 本面在 MW9 真异常落地前占位——前缀对齐 VM 口径，目标名取 TypeInfo.name */
+_Noreturn void rigi_abort_invalid_cast(const RigiTypeSheet *target)
+{
+    static const char prefix[] = "无法将 .any 转换为 ";
+    static const char fallback[] = "目标值类型";
+    const RigiTypeInfo *info;
+    fwrite(prefix, 1, sizeof(prefix) - 1, stderr);
+    info = target != NULL ? target->typeInfoId : NULL;
+    if (info != NULL && info->name.data != NULL && info->name.len > 0)
+    {
+        fwrite(info->name.data, 1, (size_t)info->name.len, stderr);
+    }
+    else
+    {
+        fwrite(fallback, 1, sizeof(fallback) - 1, stderr);
+    }
+    fwrite("\n", 1, 1, stderr);
     fflush(stderr);
     exit(1);
 }

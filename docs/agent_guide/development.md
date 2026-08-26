@@ -109,6 +109,24 @@ dotnet run -- test --all    # 全量；或：dotnet run -- test --run 5（单个
 - 命名空间：主代码 `RigiCompiler`，测试 `RigiCompiler.Tests`。
 - **日志**：Lexer/Parser 等编译器内部的日志一律走 `Core/Logger`（Verbose/Warning/Error），禁止直接 `Console.WriteLine`；verbose 默认关闭（`--verbose` 子命令打开控制台输出），`--log-to PATH` 把全量日志以 JSONL 落盘。控制台日志输出走 **stderr**——诊断不污染 stdout 的数据流（如 `compile --parse-only` 的 AST JSONL）。测试的报告输出（`[PASS]`/`[FAIL]` 等）不受此限。
 
+### 子代理（subagent）委派规范
+
+**git stash 备份（主代理职责）**：工作区常有大量未提交变更（子代理产出同样暂不提交），一旦被子代理误删/误改，未跟踪文件无法用 git restore 恢复（playground/stress/ 误删事故已有先例，幸为跟踪文件得以恢复）。委派实施型任务前主代理必须先做快照：
+
+```bash
+git stash push -u -m "backup: <任务说明>" && git stash apply
+```
+
+stash 条目留存为恢复点，`apply` 把工作区原样恢复，`-u` 含未跟踪新文件；任务验收全绿后可 drop 更旧的备份，保留最近一份。**子代理一律禁止执行任何 git 变更操作**（commit/stash/restore/clean/checkout/reset 等）——备份与恢复只归主代理。实施型子代理**串行**委派（共享工作区，并发构建互相干扰）；只读调研型子代理可并行。
+
+**实施型任务提示词风格**（缺第 1 块曾致子代理陷入权限幻觉、空转整个上下文零产出）：
+
+1. 开头「操作须知」块逐条写明：① 你拥有完整的文件读写/编辑/搜索/shell 工具，可直接修改仓库内任何文件，不要怀疑权限，直接动手；② 环境事实——Windows，无 cat/heredoc/tail/grep/wc，创建文件用写文件工具、搜索用搜索工具、管道收尾用 `| powershell -Command "$input | Select-Object -Last 5"`；③ 临时探测文件写到 playground/ 下，用完即删，且只删自己创建的文件，严禁批量删除 playground/ 下任何既有内容；④ shell 偶发网络/证书错误属抖动，直接重试。
+2. 任务分阶段，每阶段写完立即 `dotnet build` 验证（0 错误 0 警告），不得一口气写完全部代码再编译；上下文宝贵，避免长篇内心独白，直接执行。
+3. 给出明确的验证命令与基线断言数（`dotnet run -- test --run N` + `test --all`），断言数只增不减。
+4. 报告要求简洁：改动文件清单、关键决策、验证输出、意外与处理。
+5. 明确要求：用中文思考、注释中文、严禁 git commit。
+
 ### 添加新 Parser 功能的标准流程
 
 1. 阅读 `docs/SYNTAX.md` 相关章节，理解规范与示例

@@ -5,8 +5,10 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
+using RigiCompiler.Bil;
 using RigiCompiler.Middleware;
 using RigiCompiler.Middleware.Binding;
+using RigiCompiler.Middleware.Layout;
 using RigiCompiler.Middleware.Cli;
 using RigiCompiler.Middleware.Emit;
 using RigiCompiler.Middleware.Gate;
@@ -163,10 +165,18 @@ namespace RigiCompiler.Tests
             ("TestDivGuardEmission", TestDivGuardEmission),
             ("TestLayoutPlans", TestLayoutPlans),
             ("TestTypeSheetEmission", TestTypeSheetEmission),
+            ("TestTypeCheckEmission", TestTypeCheckEmission),
             ("TestObjectPathEmission", TestObjectPathEmission),
             ("TestValuePathEmission", TestValuePathEmission),
             ("TestStaticEmission", TestStaticEmission),
             ("TestArrayPathEmission", TestArrayPathEmission),
+            ("TestInvokeIndirect", TestInvokeIndirect),
+            ("TestNativeFfiAbi", TestNativeFfiAbi),
+            ("TestBoxAnyEmission", TestBoxAnyEmission),
+            ("TestInterfaceDefaultMethods", TestInterfaceDefaultMethods),
+            ("TestConstructedTypes", TestConstructedTypes),
+            ("TestConstructedDispatch", TestConstructedDispatch),
+            ("TestVargsKwargs", TestVargsKwargs),
             ("TestNotSupported", TestNotSupported),
             ("TestNativeCli", TestNativeCli),
         };
@@ -291,6 +301,8 @@ namespace RigiCompiler.Tests
         }
 
         // ===== MIR 构造 =====
+        // 本节直调 MirBuilder.Build：断言未改写的原始 MIR（访问器/数组
+        // 降级归 Passes/，由 CreateDefault 管线用例覆盖）
 
         private static void TestMirConstruction()
         {
@@ -341,6 +353,7 @@ namespace RigiCompiler.Tests
         }
 
         // ===== MIR 控制流直译（MW3）=====
+        // 直调 MirBuilder.Build：CFG 形状与访问器/数组降级无关
 
         private static void TestMirControlFlow()
         {
@@ -673,6 +686,7 @@ namespace RigiCompiler.Tests
         }
 
         // ===== .ll 黄金锚点 =====
+        // 直调 MirBuilder.Build 后发射：与访问器/数组降级无关
 
         private static void TestLlGoldenAnchors()
         {
@@ -961,18 +975,103 @@ namespace RigiCompiler.Tests
             using var module = ModuleBuilder.Build(context, context.Mir!);
             var ll = module.PrintToString();
 
-            // §6 结构：typeInfoId 恒 null、baseTypeId null、typeSize 48
+            // §6 结构：typeInfoId 指向 TypeInfo、baseTypeId null、typeSize 48
             //（头 16 + i32@16 + 引用槽@32）、vTableSize 1（init 不进表）
             TestHarness.CheckTrue("TypeSheet 全局锚点",
                 ll.Contains("@typesheet.Node = internal constant { ptr, ptr, i32, i32, i32, ptr, i32, ptr, i32, ptr } " +
-                    "{ ptr null, ptr null, i32 48, i32 0, i32 1, ptr @typesheet.vtable.Node, " +
+                    "{ ptr @typeinfo.Node, ptr null, i32 48, i32 0, i32 1, ptr @typesheet.vtable.Node, " +
                     "i32 0, ptr null, i32 1, ptr @typesheet.refmap.Node }"), ll);
+            TestHarness.CheckTrue("TypeInfo 回指 sheet",
+                ll.Contains("@typeinfo.Node =") && ll.Contains("ptr @typesheet.Node"), ll);
+            TestHarness.CheckTrue("TypeInfo typeInfoId 非 null",
+                !ll.Contains("@typesheet.Node = internal constant { ptr, ptr, i32, i32, i32, ptr, i32, ptr, i32, ptr } " +
+                    "{ ptr null,"), ll);
             // vtable 条目标 null（get 不可达未进 MIR；MW5 可达性扩编兜底）
             TestHarness.CheckTrue("vtable 全局锚点",
                 ll.Contains("@typesheet.vtable.Node = internal constant [1 x ptr] zeroinitializer"), ll);
             // refMap：next 槽@32 → 跳数 (32-16)/16 = 1
             TestHarness.CheckTrue("refMap 全局锚点",
                 ll.Contains("@typesheet.refmap.Node = internal constant [1 x i16] [i16 1]"), ll);
+        }
+
+        // ===== is/supers/with + TypeInfo（MW5 c3）=====
+
+        private static void TestTypeCheckEmission()
+        {
+            var (_, _, text) = BilTestHarness.EmitBilUnit(
+                "pub open class Animal {\n" +
+                "    pub init() { }\n" +
+                "}\n" +
+                "pub class Dog : Animal {\n" +
+                "    pub init() { }\n" +
+                "}\n" +
+                "pub interface Named {\n" +
+                "    func name(): String\n" +
+                "}\n" +
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Mark {\n" +
+                "    pub init()\n" +
+                "}\n" +
+                "@Mark\n" +
+                "pub class Tagged implements Named {\n" +
+                "    pub init() { }\n" +
+                "    pub override func name(): String { return \"t\" }\n" +
+                "}\n" +
+                "pub func isDog(a: Animal): bool { return a is Dog }\n" +
+                "pub func isNamed(t: Tagged): bool { return t is Named }\n" +
+                "pub func supersDog(a: Animal): bool { return a supers Dog }\n" +
+                "pub func withMark(t: Tagged): bool { return t with Mark }\n" +
+                "pub func isIndirect\\<T>(a: Animal): bool { return a is T }\n" +
+                "pub func main(): i32 {\n" +
+                "    var d: Animal = new Dog()\n" +
+                "    var t = new Tagged()\n" +
+                "    if (isDog(d)) { }\n" +
+                "    if (isNamed(t)) { }\n" +
+                "    if (supersDog(d)) { }\n" +
+                "    if (withMark(t)) { }\n" +
+                "    if (isIndirect\\<Dog>(d)) { }\n" +
+                "    return 0\n" +
+                "}\n");
+            var gate = BilGate.Accept(text, "typeck.bil");
+            TestHarness.CheckTrue("type.check 用例门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            var context = new MwContext(gate.Module!);
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+            var allInsts = context.Mir!.Functions.SelectMany(f => f.Blocks)
+                .SelectMany(b => b.Instructions).ToList();
+            TestHarness.CheckTrue("MIR 含 type.is",
+                allInsts.OfType<MirTypeCheck>().Any(c =>
+                    c.Kind == MirTypeCheckKind.Is && !c.IsIndirect));
+            TestHarness.CheckTrue("MIR 含 type.supers",
+                allInsts.OfType<MirTypeCheck>().Any(c =>
+                    c.Kind == MirTypeCheckKind.Supers && !c.IsIndirect));
+            TestHarness.CheckTrue("MIR 含 type.with",
+                allInsts.OfType<MirTypeCheck>().Any(c =>
+                    c.Kind == MirTypeCheckKind.With && !c.IsIndirect));
+            TestHarness.CheckTrue("MIR 含 type.is.indirect",
+                allInsts.OfType<MirTypeCheck>().Any(c =>
+                    c.Kind == MirTypeCheckKind.Is && c.IsIndirect));
+
+            using var module = ModuleBuilder.Build(context, context.Mir!);
+            var ll = module.PrintToString();
+            TestHarness.CheckTrue("TypeInfo 全局名字符串",
+                ll.Contains("@typeinfo.Tagged") && ll.Contains("ptr @typesheet.Tagged"), ll);
+            TestHarness.CheckTrue("TypeInfo wrappers 数组",
+                ll.Contains("typeinfo.wrappers.Tagged") && ll.Contains("@typesheet.Mark"), ll);
+            TestHarness.CheckTrue("TypeInfo ifaceClosure",
+                ll.Contains("typeinfo.ifaces.Tagged") && ll.Contains("@typesheet.Named"), ll);
+            TestHarness.CheckTrue("TypeSheet typeInfoId 非 null",
+                ll.Contains("ptr @typeinfo.Tagged") && !ll.Contains(
+                    "@typesheet.Tagged = internal constant { ptr, ptr, i32, i32, i32, ptr, i32, ptr, i32, ptr } { ptr null,"),
+                ll);
+            TestHarness.CheckTrue("helper type.is",
+                ll.Contains("call i32 @rigi_type_is("), ll);
+            TestHarness.CheckTrue("helper type.supers",
+                ll.Contains("call i32 @rigi_type_supers("), ll);
+            TestHarness.CheckTrue("helper type.with",
+                ll.Contains("call i32 @rigi_type_with("), ll);
+            TestHarness.CheckTrue("helper type.is.indirect",
+                ll.Contains("call i32 @rigi_type_is_indirect("), ll);
         }
 
         // ===== 对象路径发射（MW4 批 2：new/字段/虚派发/.this 形态）=====
@@ -1222,6 +1321,703 @@ namespace RigiCompiler.Tests
                 rawLl.Contains("@raw.R_Data") && rawLl.Contains("c\"/\\F23\\1C\""), rawLl);
             TestHarness.CheckTrue("raw 走 alloc_array",
                 rawLl.Contains("call ptr @rigi_alloc_array(ptr"), rawLl);
+        }
+
+        // ===== invoke.indirect（§15.3 callable 协议）=====
+
+        private static void TestInvokeIndirect()
+        {
+            // MIR 直译：lambda 经变量调用 → MirInvokeIndirect 字段齐全
+            var (_, _, lambdaText) = BilTestHarness.EmitBilUnit(
+                "pub func main(): i32 {\n" +
+                "    var fn = func{(x: i32): i32 -> (x + 1)}\n" +
+                "    return fn(41)\n" +
+                "}\n");
+            var lambdaGate = BilGate.Accept(lambdaText, "ind.lambda.bil");
+            TestHarness.CheckTrue("lambda 间接调用门禁放行", lambdaGate.IsAccepted,
+                string.Join("; ", lambdaGate.Errors));
+            var lambdaContext = new MwContext(lambdaGate.Module!);
+            var lambdaMir = MirBuilder.Build(lambdaContext);
+            var lambdaInst = lambdaMir.Functions
+                .SelectMany(f => f.Blocks).SelectMany(b => b.Instructions)
+                .OfType<MirInvokeIndirect>().FirstOrDefault();
+            TestHarness.CheckTrue("MIR 含 MirInvokeIndirect", lambdaInst != null);
+            TestHarness.CheckTrue("有结果槽", lambdaInst is { Result: not null });
+            TestHarness.CheckTrue("实参不含 receiver", lambdaInst is { Args.Count: 1 });
+            TestHarness.CheckTrue("静态类型已附带",
+                lambdaInst != null && lambdaInst.CallTargetType.Canonical.Length > 0);
+
+            // noret：Action 语句调用 Result=null
+            var (_, _, actionText) = BilTestHarness.EmitBilUnit(
+                "pub func sink(v: i32) { }\n" +
+                "pub func main(): i32 {\n" +
+                "    var act = func{() -> { sink(1) }}\n" +
+                "    act()\n" +
+                "    return 0\n" +
+                "}\n");
+            var actionGate = BilGate.Accept(actionText, "ind.action.bil");
+            TestHarness.CheckTrue("Action noret 门禁放行", actionGate.IsAccepted,
+                string.Join("; ", actionGate.Errors));
+            var actionMir = MirBuilder.Build(new MwContext(actionGate.Module!));
+            var noret = actionMir.Functions
+                .SelectMany(f => f.Blocks).SelectMany(b => b.Instructions)
+                .OfType<MirInvokeIndirect>().FirstOrDefault();
+            TestHarness.CheckTrue("noret Result=null", noret is { Result: null });
+
+            // 绑定分流：用户类 operator call → IndirectCallBinding.CallOperator
+            var (_, _, userText) = BilTestHarness.EmitBilUnit(
+                "pub class Doubler {\n" +
+                "    pub init() { }\n" +
+                "    pub operator call(x: i32): i32 { return (x * 2) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var d = new Doubler()\n" +
+                "    return d(21)\n" +
+                "}\n");
+            var userGate = BilGate.Accept(userText, "ind.user.bil");
+            TestHarness.CheckTrue("用户 operator call 门禁放行", userGate.IsAccepted,
+                string.Join("; ", userGate.Errors));
+            var userContext = new MwContext(userGate.Module!);
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(userContext);
+            var userMir = userContext.Mir!;
+            var userInst = userMir.Functions
+                .SelectMany(f => f.Blocks).SelectMany(b => b.Instructions)
+                .OfType<MirInvokeIndirect>().First();
+            var binding = ImplBinder.BindIndirectCall(userContext.Symbols,
+                userInst.CallTargetType.Canonical, new[] { "core::i32" }, "core::i32",
+                userContext.Module.Functions);
+            TestHarness.CheckTrue("绑定为 IndirectCallBinding", binding is IndirectCallBinding);
+            TestHarness.CheckTrue("CallOperator 是 Doubler$$call",
+                binding.CallOperator.Canonical.Contains("Doubler$$call")
+                && binding.CallOperator.Canonical.Contains(".i32"));
+
+            using var userModule = ModuleBuilder.Build(userContext, userMir);
+            var ll = userModule.PrintToString();
+            TestHarness.CheckTrue("间接调用经 rigi_vtable_entry",
+                ll.Contains("call ptr @rigi_vtable_entry(ptr"), ll);
+            TestHarness.CheckTrue("虚槽常量为 i32 0",
+                ll.Contains("i32 0") && ll.Contains("rigi_vtable_entry"), ll);
+
+            // 泛型 $$call：typeid 前缀平铺在实参前部（VM FindCallTarget 尚未
+            // 吃此前缀，E2E 对拍降级；Middleware 绑定/发射覆盖）
+            var (_, _, genText) = BilTestHarness.EmitBilUnit(
+                "pub class Mapper {\n" +
+                "    pub init() { }\n" +
+                "    pub operator call\\<T>(x: T): T { return x }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var f = new Mapper()\n" +
+                "    return f\\<i32>(42)\n" +
+                "}\n");
+            var genGate = BilGate.Accept(genText, "ind.generic.bil");
+            TestHarness.CheckTrue("泛型 $$call 门禁放行", genGate.IsAccepted,
+                string.Join("; ", genGate.Errors));
+            var genContext = new MwContext(genGate.Module!);
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(genContext);
+            var genInst = genContext.Mir!.Functions
+                .SelectMany(f => f.Blocks).SelectMany(b => b.Instructions)
+                .OfType<MirInvokeIndirect>().FirstOrDefault();
+            TestHarness.CheckTrue("泛型 $$call MIR 含间接调用", genInst != null);
+            TestHarness.CheckTrue("泛型 $$call 实参含 typeid 前缀",
+                genInst is { Args.Count: 2 });
+            var mainFn = genContext.Mir!.Functions.First(f => f.IsEntrypoint);
+            var genArgTypes = new List<string>();
+            foreach (var arg in genInst!.Args)
+            {
+                genArgTypes.Add(mainFn.FindLocal(((MirLocalOperand)arg).Name).Type.Canonical);
+            }
+            var genBind = ImplBinder.BindIndirectCall(genContext.Symbols,
+                genInst.CallTargetType.Canonical, genArgTypes,
+                mainFn.FindLocal(genInst.Result!).Type.Canonical,
+                genContext.Module.Functions);
+            TestHarness.CheckTrue("泛型 $$call 绑定命中 Mapper$$call",
+                genBind.CallOperator.Canonical.Contains("Mapper$$call"));
+            using var genModule = ModuleBuilder.Build(genContext, genContext.Mir!);
+            TestHarness.CheckTrue("泛型 $$call 发射 vtable 入口",
+                genModule.PrintToString().Contains("rigi_vtable_entry"));
+        }
+
+        // ===== native FFI ABI（MW5 切片 b：String/胖引用 out 首参、Any 拒绝、typeid）=====
+
+        private static void TestNativeFfiAbi()
+        {
+            var stringLl = EmitLlFromSource(
+                "@NativeLibrary(\"rigi_rt\")\n" +
+                "@NativeSymbol(\"i64_to_string\")\n" +
+                "native func i64_to_string(value: i64): String\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = i64_to_string(42L)\n" +
+                "    return 0\n" +
+                "}\n", "ffi.string.bil");
+            TestHarness.CheckTrue("String 返回 fn 类型：void + rigi_string* 首参",
+                stringLl.Contains("declare void @rigi_i64_to_string(ptr, i64)"), stringLl);
+            TestHarness.CheckTrue("String 返回调用点 alloca rigi_string",
+                stringLl.Contains("alloca { ptr, i64 }"), stringLl);
+
+            var u64Ll = EmitLlFromSource(
+                "@NativeLibrary(\"rigi_rt\")\n" +
+                "@NativeSymbol(\"u64_to_string\")\n" +
+                "native func u64_to_string(value: u64): String\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = u64_to_string(1UL)\n" +
+                "    return 0\n" +
+                "}\n", "ffi.u64.bil");
+            TestHarness.CheckTrue("u64 面 fn 类型：void + rigi_string* 首参 + i64",
+                u64Ll.Contains("declare void @rigi_u64_to_string(ptr, i64)"), u64Ll);
+
+            var anyToStrLl = EmitLlFromSource(
+                "@NativeLibrary(\"rigi_rt\")\n" +
+                "@NativeSymbol(\"any_to_string\")\n" +
+                "native func any_to_string(value: Any): String\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = any_to_string((42 as Any))\n" +
+                "    return 0\n" +
+                "}\n", "ffi.any_to_string.bil");
+            TestHarness.CheckTrue("any_to_string 面：String out 首参 + Any 槽指针",
+                anyToStrLl.Contains("declare void @rigi_any_to_string(ptr, ptr)"), anyToStrLl);
+            TestHarness.CheckTrue("any_to_string 调用形状",
+                anyToStrLl.Contains("call void @rigi_any_to_string(ptr"), anyToStrLl);
+
+            var f32Ll = EmitLlFromSource(
+                "@NativeLibrary(\"rigi_rt\")\n" +
+                "@NativeSymbol(\"f32_to_string\")\n" +
+                "native func f32_to_string(value: float): String\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = f32_to_string(1.0f)\n" +
+                "    return 0\n" +
+                "}\n", "ffi.f32.bil");
+            TestHarness.CheckTrue("f32 面 fn 类型：void + rigi_string* 首参 + float",
+                f32Ll.Contains("declare void @rigi_f32_to_string(ptr, float)"), f32Ll);
+
+            var refLl = EmitLlFromSource(
+                "pub class User {\n" +
+                "    pub init() { }\n" +
+                "}\n" +
+                "@NativeLibrary(\"rigi_rt\")\n" +
+                "@NativeSymbol(\"make_user\")\n" +
+                "native func make_user(): User\n" +
+                "pub func main(): i32 {\n" +
+                "    var u = make_user()\n" +
+                "    return 0\n" +
+                "}\n", "ffi.ref.bil");
+            TestHarness.CheckTrue("用户引用返回 fn 类型：void + 槽指针首参",
+                refLl.Contains("declare void @rigi_make_user(ptr)"), refLl);
+            TestHarness.CheckTrue("用户引用返回调用点 alloca 16B 对齐槽",
+                refLl.Contains("alloca { i64, i64 }") && refLl.Contains("align 16"), refLl);
+
+            var anyLl = EmitLlFromSource(
+                "@NativeLibrary(\"rigi_rt\")\n" +
+                "@NativeSymbol(\"box_any\")\n" +
+                "native func box_any(value: Any): String\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = box_any((1 as Any))\n" +
+                "    return 0\n" +
+                "}\n", "ffi.any.bil");
+            TestHarness.CheckTrue("Any 参数 fn 类型：String out 首参 + Any 槽指针",
+                anyLl.Contains("declare void @rigi_box_any(ptr, ptr)"), anyLl);
+
+            var anyRetLl = EmitLlFromSource(
+                "@NativeLibrary(\"rigi_rt\")\n" +
+                "@NativeSymbol(\"make_any\")\n" +
+                "native func make_any(): Any\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = make_any()\n" +
+                "    return 0\n" +
+                "}\n", "ffi.anyret.bil");
+            TestHarness.CheckTrue("Any 返回 fn 类型：void + 槽指针首参",
+                anyRetLl.Contains("declare void @rigi_make_any(ptr)"), anyRetLl);
+            TestHarness.CheckTrue("Any 返回调用点 alloca 16B 对齐槽",
+                anyRetLl.Contains("alloca { i64, i64 }") && anyRetLl.Contains("align 16"),
+                anyRetLl);
+
+            ExpectMwNotSupportedFromSource(
+                "@NativeLibrary(\"libc\")\n" +
+                "@NativeSymbol(\"abs\")\n" +
+                "native func abs(x: i32): i32\n" +
+                "pub func main(): i32 {\n" +
+                "    return abs(-1)\n" +
+                "}\n",
+                "MW1 不支持 native 库: libc",
+                "非 rigi_rt 库拒绝消息");
+
+            var typeIdLl = EmitLlFromSource(
+                "pub class Holder {\n" +
+                "    pub init() { }\n" +
+                "    pub func tag\\<T>(n: i32): i32 { return n }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var h = new Holder()\n" +
+                "    return h.tag\\<i32>(1)\n" +
+                "}\n", "ffi.typeid.bil");
+            TestHarness.CheckTrue("typeid ABI：.this 胖引用 → typeid ptr → 普通 i32（§7.2）",
+                typeIdLl.Contains(
+                    "define internal i32 @\"Holder$tag(n:.i32)@.i32\"({ i64, i64 } %0, ptr %1, i32 %2)"),
+                typeIdLl);
+            TestHarness.CheckTrue("typeid LLVM 表示 = TypeSheet 指针（getid.type 物化）",
+                typeIdLl.Contains("store ptr @\"typesheet.core::i32\""), typeIdLl);
+        }
+
+        // ===== Any/Box 物化（MW5 切片 c1：MirBoxAny/MirUnboxAny + tag 编码）=====
+
+        private static void TestBoxAnyEmission()
+        {
+            var (_, _, text) = BilTestHarness.EmitBilUnit(
+                "pub func main(): i32 {\n" +
+                "    var x = 42\n" +
+                "    var a = x as Any\n" +
+                "    var y = a as i32\n" +
+                "    var s = \"hi\"\n" +
+                "    var b = s as Any\n" +
+                "    var t = b as String\n" +
+                "    if (t == \"hi\") { return y }\n" +
+                "    return 0\n" +
+                "}\n");
+            var gate = BilGate.Accept(text, "box.any.bil");
+            TestHarness.CheckTrue("Box Any 用例门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            var context = new MwContext(gate.Module!);
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+            var allInsts = context.Mir!.Functions.SelectMany(f => f.Blocks)
+                .SelectMany(b => b.Instructions).ToList();
+            TestHarness.CheckTrue("MIR 含 MirBoxAny", allInsts.OfType<MirBoxAny>().Any());
+            TestHarness.CheckTrue("MIR 含 MirUnboxAny", allInsts.OfType<MirUnboxAny>().Any());
+
+            using var module = ModuleBuilder.Build(context, context.Mir!);
+            var ll = module.PrintToString();
+            TestHarness.CheckTrue("tag0 pack：or + insertvalue",
+                ll.Contains("or i64") && ll.Contains("insertvalue { i64, i64 }"), ll);
+            TestHarness.CheckTrue("tag1：rigi_malloc + memcpy",
+                ll.Contains("call ptr @rigi_malloc(i32")
+                && ll.Contains("call void @llvm.memcpy.p0.p0.i64"), ll);
+            TestHarness.CheckTrue("unbox 类型检查（lshr tag + and sheet）",
+                ll.Contains("lshr i64") && ll.Contains("and i64"), ll);
+            TestHarness.CheckTrue("unbox 调 rigi_abort_invalid_cast",
+                ll.Contains("call void @rigi_abort_invalid_cast(ptr")
+                && ll.Contains("typesheet."), ll);
+            TestHarness.CheckTrue("abort 面已声明",
+                ll.Contains("declare void @rigi_abort_invalid_cast(ptr)"), ll);
+
+            ExpectMwNotSupportedFromSource(
+                "pub func main(): i32 {\n" +
+                "    var x = 1\n" +
+                "    var y = x as i64\n" +
+                "    return 0\n" +
+                "}\n",
+                "cast 数值/String 转换随 §12 转换批",
+                "数值转换拒绝消息");
+            ExpectMwNotSupportedFromSource(
+                "pub struct A {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(_ -> x)\n" +
+                "}\n" +
+                "pub struct B {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(_ -> x)\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = new A(1)\n" +
+                "    var b = a as B\n" +
+                "    return 0\n" +
+                "}\n",
+                "cast 值类型转换随 MW4 批 3",
+                "struct 值转换拒绝消息");
+        }
+
+        private static string EmitLlFromSource(string source, string label)
+        {
+            var (_, _, text) = BilTestHarness.EmitBilUnit(source);
+            var gate = BilGate.Accept(text, label);
+            TestHarness.CheckTrue(label + " 门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            var context = new MwContext(gate.Module!);
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+            using var module = ModuleBuilder.Build(context, context.Mir!);
+            return module.PrintToString();
+        }
+
+        private static void ExpectMwNotSupportedFromSource(string source, string needle, string label)
+        {
+            var (_, _, text) = BilTestHarness.EmitBilUnit(source);
+            var gate = BilGate.Accept(text, label);
+            TestHarness.CheckTrue(label + " 门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            var caught = false;
+            var message = "";
+            try
+            {
+                var context = new MwContext(gate.Module!);
+                RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+                using var module = ModuleBuilder.Build(context, context.Mir!);
+            }
+            catch (MwNotSupportedException ex)
+            {
+                caught = ex.Message.Contains(needle);
+                message = ex.Message;
+            }
+            TestHarness.CheckTrue(label, caught, message);
+        }
+
+        // ===== 接口默认方法布局（iMap 槽指向接口 fn）=====
+
+        private static void TestInterfaceDefaultMethods()
+        {
+            var ll = EmitLlFromSource(
+                "pub interface Shape {\n" +
+                "    pub func area(): i32\n" +
+                "    pub func describe(): String { return \"d\" }\n" +
+                "}\n" +
+                "pub class Sq implements Shape {\n" +
+                "    pub var s: i32\n" +
+                "    pub init(n: i32) { s = n }\n" +
+                "    pub override func area(): i32 { return (s * s) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var sh: Shape = new Sq(3)\n" +
+                "    return sh.area()\n" +
+                "}\n",
+                "iface.default.bil");
+            TestHarness.CheckTrue("默认方法未抛未实现",
+                !ll.Contains("MW4 接口方法未实现"), ll);
+            TestHarness.CheckTrue("vtable 含接口默认方法",
+                ll.Contains("Shape$describe") || ll.Contains("@\"Shape$describe"), ll);
+
+            var genLl = EmitLlFromSource(
+                "pub interface IBox\\<T> {\n" +
+                "    func get(): T\n" +
+                "    func tag(): i32 { return 7 }\n" +
+                "}\n" +
+                "pub class Box3\\<T> implements IBox\\<T> {\n" +
+                "    pub var v: T\n" +
+                "    pub init(v: T) { this.v = v }\n" +
+                "    pub override func get(): T { return this.v }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var b: IBox\\<i32> = new Box3\\<i32>(41)\n" +
+                "    return b.tag()\n" +
+                "}\n",
+                "iface.generic.default.bil");
+            TestHarness.CheckTrue("泛型接口默认方法未抛未实现",
+                !genLl.Contains("MW4 接口方法未实现"), genLl);
+            TestHarness.CheckTrue("泛型接口默认方法入表",
+                genLl.Contains("IBox$tag") || genLl.Contains("@\"IBox$tag"), genLl);
+        }
+
+        // ===== 构造类型具化（MW5 c2-a）=====
+
+        private static void TestConstructedTypes()
+        {
+            // 收集闭包：嵌套构造 + 环保护（A<T>:B<T>:A<T> 手写 BIL，不经门禁）
+            var cycleBil =
+                "BIL \"1.1\"\n\nMetadata {\n}\n\nResources {\n}\n\n" +
+                "LocalSymbols {\n" +
+                "    .type Box = class generic(T) pub {\n" +
+                "        .field Box#v@.generic<$.generic.T> pub var\n" +
+                "        .method Box$init(v:.generic<$.generic.T>)@.void pub init\n" +
+                "    }\n" +
+                "    .type A = class generic(T)\n" +
+                "        extends B<.generic<$.generic.T>>\n" +
+                "        pub {\n" +
+                "        .method A$init()@.void pub init\n" +
+                "    }\n" +
+                "    .type B = class generic(T)\n" +
+                "        extends A<.generic<$.generic.T>>\n" +
+                "        pub {\n" +
+                "        .method B$init()@.void pub init\n" +
+                "    }\n" +
+                "    .method $main()@.i32 pub entrypoint\n" +
+                "}\n\nExternalSymbols {\n}\n\n" +
+                "fn($main()@.i32) {\n" +
+                "    .args {\n" +
+                "        .return = .i32\n" +
+                "    }\n" +
+                "    .vars {\n" +
+                "        Box<.i32> b,\n" +
+                "        Box<Box<.i32>> n,\n" +
+                "        A<.i32> a\n" +
+                "    }\n" +
+                "    .block entry entrypoint {\n" +
+                "        ret\n" +
+                "    }\n" +
+                "}\n";
+            var cycleModule = BilReader.Read(cycleBil);
+            var cycleCtx = new MwContext(cycleModule);
+            var collected = ConstructedTypeCollector.Collect(cycleCtx);
+            TestHarness.CheckTrue("收集含 Box<i32>",
+                collected.Contains("Box<core::i32>"));
+            TestHarness.CheckTrue("收集含嵌套 Box<Box<i32>>",
+                collected.Contains("Box<Box<core::i32>>"));
+            TestHarness.CheckTrue("收集含环上 A<i32>/B<i32>",
+                collected.Contains("A<core::i32>") && collected.Contains("B<core::i32>"));
+            TestHarness.CheckTrue("环保护不重复入表",
+                collected.Count(c => c == "A<core::i32>") == 1);
+
+            // 具化计划：隐藏 typeid + 胖值槽 + vtable=模板 fn
+            var (_, _, srcText) = BilTestHarness.EmitBilUnit(
+                "pub class Box2\\<T> {\n" +
+                "    pub var v: T\n" +
+                "    pub init(v: T) { this.v = v }\n" +
+                "    pub func get(): T { return this.v }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var b = new Box2\\<i32>(7)\n" +
+                "    return b.get()\n" +
+                "}\n");
+            var gate = BilGate.Accept(srcText, "c2a.bil");
+            TestHarness.CheckTrue("构造类型源门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            var context = new MwContext(gate.Module!);
+            var closed = ConstructedTypeCollector.Collect(context);
+            TestHarness.CheckTrue("前端路径收集 Box2<i32>",
+                closed.Any(c => c.Contains("Box2") && c.Contains("i32")));
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+            var plan = context.Layout!.Find("Box2<core::i32>");
+            TestHarness.CheckTrue("构造计划已入表", plan != null);
+            TestHarness.CheckTrue("隐藏 typeid 槽@16",
+                plan!.HiddenTypeIdSlots.Count == 1
+                && plan.HiddenTypeIdSlots[0].ParamName == "T"
+                && plan.HiddenTypeIdSlots[0].Offset == 16);
+            var vField = FieldOf(plan, "#v@");
+            TestHarness.CheckTrue("字段复用模板 canonical 且为胖值槽",
+                vField != null && vField.IsReferenceSlot && vField.Offset == 32
+                && vField.Symbol.StartsWith("Box2#"));
+            TestHarness.CheckTrue("Size/refMap（头+typeid+胖槽）",
+                plan.Size == 48 && plan.RefMap.Length == 1 && plan.RefMap[0] == 1);
+            TestHarness.CheckTrue("vtable 槽=模板 fn",
+                plan.VTableSlots.Any(s => s.Contains("Box2$get(")));
+
+            using var llvm = ModuleBuilder.Build(context, context.Mir!);
+            var ll = llvm.PrintToString();
+            TestHarness.CheckTrue("构造 sheet 全局（转义名）",
+                ll.Contains("typesheet.Box2$core::i32$"), ll);
+            TestHarness.CheckTrue("tag2 pack 指向构造 sheet",
+                ll.Contains("typesheet.Box2$core::i32$")
+                && (ll.Contains("shl i64 2, 56") || ll.Contains("shl i64 2, i64 56")
+                    || ll.Contains("or i64")), ll);
+            TestHarness.CheckTrue("new 站 typeid 常量 store",
+                ll.Contains("typesheet.core::i32") && ll.Contains("store i64"), ll);
+            TestHarness.CheckTrue("prologue 从隐藏字段 load 类级 typeid",
+                ll.Contains("tid.bits") || ll.Contains("load i64"), ll);
+
+            ExpectMwNotSupportedFromSource(
+                "pub struct Wrap\\<T> {\n" +
+                "    pub var v: T\n" +
+                "    pub init(_ -> v)\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var w = new Wrap\\<i32>(1)\n" +
+                "    return w.v\n" +
+                "}\n",
+                "泛型值类型构造",
+                "泛型 struct 构造拒绝消息");
+        }
+
+        // ===== 构造接口 iMap + VirtualSlotOf 精确化（MW5 c2-b）=====
+
+        private static void TestConstructedDispatch()
+        {
+            var (_, _, ifaceSrc) = BilTestHarness.EmitBilUnit(
+                "pub interface IBox\\<T> {\n" +
+                "    func get(): T\n" +
+                "    func tag(): i32\n" +
+                "}\n" +
+                "pub class Box3\\<T> implements IBox\\<T> {\n" +
+                "    pub var v: T\n" +
+                "    pub init(v: T) { this.v = v }\n" +
+                "    pub override func get(): T { return this.v }\n" +
+                "    pub override func tag(): i32 { return 7 }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var b: IBox\\<i32> = new Box3\\<i32>(1)\n" +
+                "    return b.tag()\n" +
+                "}\n");
+            var ifaceGate = BilGate.Accept(ifaceSrc, "c2b.imap.bil");
+            TestHarness.CheckTrue("构造接口源门禁放行", ifaceGate.IsAccepted,
+                string.Join("; ", ifaceGate.Errors));
+            var ifaceCtx = new MwContext(ifaceGate.Module!);
+            var collected = ConstructedTypeCollector.Collect(ifaceCtx);
+            TestHarness.CheckTrue("收集含 IBox<i32>",
+                collected.Any(c => c.Contains("IBox") && c.Contains("i32")));
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(ifaceCtx);
+            var boxPlan = ifaceCtx.Layout!.Find("Box3<core::i32>");
+            TestHarness.CheckTrue("Box3<i32> 计划已入表", boxPlan != null);
+            TestHarness.CheckTrue("构造接口 iMap 段键与槽基址",
+                boxPlan!.IMap.Count >= 1
+                && boxPlan.IMap.Any(e => e.InterfaceType == "IBox<core::i32>"
+                    && e.BaseOffset == 2),
+                boxPlan == null ? "" : string.Join(",", boxPlan.IMap));
+            TestHarness.CheckTrue("iMap 槽序复用本类 get/tag",
+                boxPlan!.VTableSlots.Count == 4
+                && boxPlan.VTableSlots[2] == boxPlan.VTableSlots[0]
+                && boxPlan.VTableSlots[3] == boxPlan.VTableSlots[1]);
+            var ifacePlan = ifaceCtx.Layout.Find("IBox<core::i32>");
+            TestHarness.CheckTrue("IBox<i32> 空壳 sheet 计划",
+                ifacePlan != null
+                && ifacePlan.Kind == TypeLayoutKind.Interface
+                && ifacePlan.VTableSlots.Count == 2);
+            using var ifaceLlvm = ModuleBuilder.Build(ifaceCtx, ifaceCtx.Mir!);
+            var ifaceLl = ifaceLlvm.PrintToString();
+            TestHarness.CheckTrue("构造接口 sheet 全局",
+                ifaceLl.Contains("typesheet.IBox$core::i32$"), ifaceLl);
+            TestHarness.CheckTrue("imap 引用具化接口 sheet",
+                ifaceLl.Contains("typesheet.imap.Box3$core::i32$")
+                && ifaceLl.Contains("typesheet.IBox$core::i32$"), ifaceLl);
+
+            var (_, _, virtSrc) = BilTestHarness.EmitBilUnit(
+                "pub open class PairV\\<T> {\n" +
+                "    pub init() { }\n" +
+                "    pub open func foo(): i32 { return 1 }\n" +
+                "    pub open func bar(): i32 { return 2 }\n" +
+                "}\n" +
+                "pub class PairD\\<T> : PairV\\<T> {\n" +
+                "    pub init() { }\n" +
+                "    pub override func foo(): i32 { return 10 }\n" +
+                "    pub override func bar(): i32 { return 20 }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var x: PairV\\<i32> = new PairD\\<i32>()\n" +
+                "    return (x.foo() + x.bar())\n" +
+                "}\n");
+            var virtGate = BilGate.Accept(virtSrc, "c2b.virt.bil");
+            TestHarness.CheckTrue("双虚泛型类门禁放行", virtGate.IsAccepted,
+                string.Join("; ", virtGate.Errors));
+            var virtCtx = new MwContext(virtGate.Module!);
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(virtCtx);
+            var hostPlan = virtCtx.Layout!.Find("PairV<core::i32>");
+            TestHarness.CheckTrue("PairV<i32> 构造计划双虚槽",
+                hostPlan != null && hostPlan.VTableSlots.Count >= 2
+                && hostPlan.VTableSlots[0].Contains("$foo(")
+                && hostPlan.VTableSlots[1].Contains("$bar("),
+                hostPlan == null ? "" : string.Join(",", hostPlan.VTableSlots));
+            var derivedPlan = virtCtx.Layout.Find("PairD<core::i32>");
+            TestHarness.CheckTrue("PairD<i32> override 复用基槽",
+                derivedPlan != null && derivedPlan.VTableSlots.Count >= 2
+                && derivedPlan.VTableSlots[0].Contains("PairD$foo(")
+                && derivedPlan.VTableSlots[1].Contains("PairD$bar("));
+            using var virtLlvm = ModuleBuilder.Build(virtCtx, virtCtx.Mir!);
+            var virtLl = virtLlvm.PrintToString();
+            TestHarness.CheckTrue("VirtualSlotOf 命中槽 0 与 1",
+                virtLl.Contains("call ptr @rigi_vtable_entry(ptr")
+                && virtLl.Contains("i32 0") && virtLl.Contains("i32 1"), virtLl);
+
+            var opLl = EmitLlFromSource(
+                "pub class Doubler {\n" +
+                "    pub init() { }\n" +
+                "    pub operator call(x: i32): i32 { return (x * 2) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var d = new Doubler()\n" +
+                "    return d(21)\n" +
+                "}\n", "c2b.op.bil");
+            TestHarness.CheckTrue("operator call 虚槽仍为 0",
+                opLl.Contains("call ptr @rigi_vtable_entry(ptr")
+                && opLl.Contains("i32 0"), opLl);
+            var lambdaLl = EmitLlFromSource(
+                "pub func main(): i32 {\n" +
+                "    var fn = func{(x: i32): i32 -> (x + 1)}\n" +
+                "    return fn(41)\n" +
+                "}\n", "c2b.lambda.bil");
+            TestHarness.CheckTrue("lambda 间接调用虚槽仍为 0",
+                lambdaLl.Contains("call ptr @rigi_vtable_entry(ptr")
+                && lambdaLl.Contains("i32 0"), lambdaLl);
+        }
+
+        // ===== vargs/kwargs 包（MW5 d）：签名放行 + 直译按位 =====
+
+        private static void TestVargsKwargs()
+        {
+            var (_, _, text) = BilTestHarness.EmitBilUnit(
+                "func sum(nums: i32...): i32 { return nums.length }\n" +
+                "func show(opts: named String...): i32 { return opts.length }\n" +
+                "func collect\\<TArgs...>(values: TArgs...): i32 { return values.length }\n" +
+                "pub func main(): i32 {\n" +
+                "    return ((sum(1, 2) + show(a = \"x\")) + collect(1, \"s\"))\n" +
+                "}\n");
+            var gate = BilGate.Accept(text, "vargs.bil");
+            TestHarness.CheckTrue("包签名用例门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            var context = new MwContext(gate.Module!);
+            var mir = MirBuilder.Build(context);
+
+            var sum = mir.Functions.Single(f => f.Symbol.Canonical == "$sum()@.i32");
+            TestHarness.CheckTrue("vargs 登记为普通参数",
+                sum.Parameters.Count == 1 && sum.Parameters[0].Name == ".vargs.nums");
+            TestHarness.CheckTrue("vargs 槽类型 = Array<Any>",
+                TypeLayout.IsArray(sum.Parameters[0].Type)
+                && sum.Parameters[0].Type.Canonical.Contains("Any"));
+
+            var show = mir.Functions.Single(f => f.Symbol.Canonical == "$show()@.i32");
+            TestHarness.CheckTrue("kwargs 登记为普通参数",
+                show.Parameters.Count == 1 && show.Parameters[0].Name == ".kwargs.opts");
+            TestHarness.CheckTrue("kwargs 槽类型 = Array<Pair>",
+                TypeLayout.IsArray(show.Parameters[0].Type)
+                && show.Parameters[0].Type.Canonical.Contains("Pair"));
+
+            var collect = mir.Functions.Single(f => f.Symbol.Canonical == "$collect()@.i32");
+            TestHarness.CheckTrue("泛型包+值包按 §7.2 序",
+                collect.Parameters.Count == 2
+                && collect.Parameters[0].Name == ".generic.TArgs"
+                && collect.Parameters[1].Name == ".vargs.values");
+            TestHarness.CheckTrue("泛型位置包 TypeRef = array（非 typeid）",
+                TypeLayout.IsArray(collect.Parameters[0].Type)
+                && !TypeLayout.IsTypeId(collect.Parameters[0].Type));
+            TestHarness.CheckTrue("值包 TypeRef = Array<Any>",
+                TypeLayout.IsArray(collect.Parameters[1].Type));
+
+            var main = mir.Functions.Single(f => f.IsEntrypoint);
+            var sumCall = main.Blocks.SelectMany(b => b.Instructions).OfType<MirCall>()
+                .First(c => c.Target.Canonical == "$sum()@.i32");
+            TestHarness.CheckTrue("调用点包为单实参", sumCall.Args.Count == 1);
+            TestHarness.CheckTrue("调用点实参类型 = 包类型",
+                sumCall.Args[0] is MirLocalOperand packArg
+                && TypeLayout.IsArray(main.FindLocal(packArg.Name).Type));
+
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+            using var module = ModuleBuilder.Build(context, context.Mir!);
+            var ll = module.PrintToString();
+            TestHarness.CheckTrue("Any TypeSheet 供 Pair<,Any> 具化",
+                ll.Contains("@\"typesheet.core::Any\""), ll);
+            TestHarness.CheckTrue("sum LLVM 形参 = 胖引用",
+                ll.Contains("define internal i32 @\"$sum()@.i32\"({ i64, i64 }"), ll);
+            TestHarness.CheckTrue("show LLVM 形参 = 胖引用",
+                ll.Contains("define internal i32 @\"$show()@.i32\"({ i64, i64 }"), ll);
+            TestHarness.CheckTrue("collect LLVM 两包均胖引用",
+                ll.Contains("define internal i32 @\"$collect()@.i32\"({ i64, i64 }")
+                && ll.Contains("{ i64, i64 } %0, { i64, i64 } %1)"), ll);
+
+            // 包转发：前端 take(nums) 会再打包；手改 invoke 整包转发后直译
+            var (_, fwdModule, _) = BilTestHarness.EmitBilUnit(
+                "func take(nums: i32...): i32 { return nums.length }\n" +
+                "func wrap(nums: i32...): i32 { return take(nums) }\n" +
+                "pub func main(): i32 { return wrap(1, 2, 3) }\n");
+            RewriteWrapForward(fwdModule);
+            var fwdText = BilWriter.Write(fwdModule);
+            var fwdGate = BilGate.Accept(fwdText, "fwd.bil");
+            TestHarness.CheckTrue("整包转发门禁放行", fwdGate.IsAccepted,
+                string.Join("; ", fwdGate.Errors));
+            var fwdCtx = new MwContext(fwdGate.Module!);
+            var fwdMir = MirBuilder.Build(fwdCtx);
+            var wrap = fwdMir.Functions.Single(f => f.Symbol.Canonical == "$wrap()@.i32");
+            var fwdCall = wrap.Blocks.SelectMany(b => b.Instructions).OfType<MirCall>()
+                .Single(c => c.Target.Canonical == "$take()@.i32");
+            TestHarness.CheckTrue("整包转发实参 = $.vargs.nums",
+                fwdCall.Args.Count == 1
+                && fwdCall.Args[0] is MirLocalOperand { Name: ".vargs.nums" });
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(fwdCtx);
+            using var fwdLl = ModuleBuilder.Build(fwdCtx, fwdCtx.Mir!);
+            TestHarness.CheckTrue("整包转发 LLVM 发射",
+                fwdLl.PrintToString().Contains("@\"$take()@.i32\""),
+                fwdLl.PrintToString());
+        }
+
+        private static void RewriteWrapForward(BilModule module)
+        {
+            var wrap = module.Functions.Single(f => f.Symbol == "$wrap()@.i32");
+            var entry = wrap.Blocks.Single(b => b.Modifiers.Contains(BilBlockModifier.Entrypoint));
+            var invoke = entry.Instructions.OfType<InvokeInstruction>().Single();
+            entry.Instructions.Clear();
+            entry.Instructions.Add(new InvokeInstruction(invoke.Method, invoke.Target,
+                new[] { new BilVariableOperand(".vargs.nums") }));
+            entry.Instructions.Add(new RetInstruction(invoke.Target));
         }
 
         // ===== 受控失败 =====

@@ -1924,18 +1924,33 @@ namespace RigiCompiler.Bil
                 errors.Add(new BilVerificationError("21.3", location,
                     "invoke fn(..super) 的首实参必须精确为 $.this"));
             }
+            // 类级 .generic.*（所属类型的类型参数）可由实现从 $.this
+            // 注入（VM AlignGenericHiddenArgs），fn(..super) 允许省略；
+            // 若写出则须紧随 $.this。方法级固定泛型仍须按 .args 声明序转发。
+            var classLevel = ClassLevelGenericNames(context);
             var expectedHidden = context.Function.Args
-                .Where(argument => argument.Name.StartsWith(".generic."))
+                .Where(argument => argument.Name.StartsWith(".generic.")
+                    && !classLevel.Contains(
+                        argument.Name.Substring(".generic.".Length)))
                 .ToList();
+            var position = 1;
+            while (position < arguments.Count
+                && arguments[position].Name.StartsWith(".generic.")
+                && classLevel.Contains(
+                    arguments[position].Name.Substring(".generic.".Length)))
+            {
+                position++;
+            }
             for (var i = 0; i < expectedHidden.Count; i++)
             {
-                var position = i + 1;
-                if (position >= arguments.Count || arguments[position].Name != expectedHidden[i].Name)
+                if (position >= arguments.Count
+                    || arguments[position].Name != expectedHidden[i].Name)
                 {
                     errors.Add(new BilVerificationError("21.3", location,
                         $"invoke fn(..super) 泛型隐藏实参 {i} 应为 " +
                         $"\"${expectedHidden[i].Name}\"（紧随 $.this 且按 .args 声明序）"));
                 }
+                position++;
             }
             var isInit = declaration != null && HasKeyword(declaration, BilKeyword.Init);
             if (isInit && target != null)
@@ -1961,6 +1976,28 @@ namespace RigiCompiler.Bil
                         "invoke fn(..super) 结果", errors);
                 }
             }
+        }
+
+        // 当前 fn 所属类型声明上的类型参数名（类级 typeid，super 可省略）。
+        // 泛型类型反查键带元数（A<1>），方法符号宿主段是裸名 A，故按
+        // Symbol 扫描而非 TryGetTypeDeclaration(owner)。
+        private static HashSet<string> ClassLevelGenericNames(BilFunctionContext context)
+        {
+            var names = new HashSet<string>(StringComparer.Ordinal);
+            if (!BilVerificationContext.TryParseMethodSymbol(context.Function.Symbol,
+                    out var owner, out _, out _, out _))
+            {
+                return names;
+            }
+            foreach (var declaration in context.Module.TypeDeclarations.Values)
+            {
+                if (declaration.Symbol != owner) continue;
+                foreach (var parameter in declaration.GenericParameters)
+                {
+                    names.Add(parameter);
+                }
+            }
+            return names;
         }
 
         private static bool IsGenericPackType(string typeRef)

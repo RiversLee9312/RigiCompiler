@@ -39,8 +39,10 @@ namespace RigiCompiler.Middleware.Mir
                 ?? throw new MwNotSupportedException(
                     $"MW1 不支持无符号段声明的 fn（预定义合成体）: {bilFn.Symbol}");
 
-            // .args：.return 在前，其后普通参数；实例方法/init 的 .this
-            // 隐藏首参按声明类型落参数表首位（MW4）；其余隐藏参数形态拒绝
+            // .args：.return 在前，其后按 §7.2 序登记——.this / 固定泛型
+            // .generic.T（.typeid）/ 泛型包 .generic.<Pack>（.array/.map）/
+            // 普通参数 / .vargs. / .kwargs.。包与固定泛型同走声明 TypeRef
+            // 落槽（包 = 胖引用）；其余未知隐藏参数形态拒绝
             MirType? returnType = null;
             var parameters = new List<MirLocal>();
             var locals = new List<MirLocal>();
@@ -63,7 +65,7 @@ namespace RigiCompiler.Middleware.Mir
                     AddLocal(parameters, locals, seen, arg.Name, arg.TypeRef, bilFn.Symbol);
                     continue;
                 }
-                if (arg.Name.StartsWith(".generic.", System.StringComparison.Ordinal))
+                if (IsAdmittedHiddenArg(arg.Name))
                 {
                     AddLocal(parameters, locals, seen, arg.Name, arg.TypeRef, bilFn.Symbol);
                     continue;
@@ -71,7 +73,7 @@ namespace RigiCompiler.Middleware.Mir
                 if (arg.Name.StartsWith('.'))
                 {
                     throw new MwNotSupportedException(
-                        $"MW4 不支持隐藏参数 {arg.Name}（fn {bilFn.Symbol}）");
+                        $"MW5 不支持隐藏参数 {arg.Name}（fn {bilFn.Symbol}）");
                 }
                 AddLocal(parameters, locals, seen, arg.Name, arg.TypeRef, bilFn.Symbol);
             }
@@ -129,12 +131,13 @@ namespace RigiCompiler.Middleware.Mir
                 ?? throw new CompilerInternalException($"super 所在 fn 无符号: {currentFnSymbol}");
             var baseRef = current.Owner?.Declaration.ExtendsType
                 ?? throw new MwNotSupportedException($"super 所在 fn 无直接基类: {currentFnSymbol}");
-            var baseType = context.Symbols.FindType(baseRef)
+            var baseType = context.Symbols.FindTypeByRef(baseRef)
                 ?? throw new MwNotSupportedException($"super 基类声明缺失: {baseRef}");
             if (current.HasKeyword(BilKeyword.Init))
             {
                 // argTypeRefs 首位是 .this 接收者，重载匹配跳过
-                return ResolveInit(context.Symbols, baseType, argTypeRefs, skipReceiver: 1);
+                return ResolveInit(context.Symbols, baseType, argTypeRefs, skipReceiver: 1,
+                    constructedTypeRef: baseRef);
             }
             var key = current.SignatureKey;
             for (var type = baseType; type != null; type = BaseOf(context.Symbols, type))
@@ -153,8 +156,11 @@ namespace RigiCompiler.Middleware.Mir
         // init 重载匹配（BIL §14.1/§9.2.2：实参静态类型精确一致、唯一
         // 命中；skipReceiver=1 时 argTypeRefs 首位是 .this 接收者）
         internal static MwMemberSymbol ResolveInit(MwSymbolTable symbols, MwTypeSymbol type,
-            IReadOnlyList<string> argTypeRefs, int skipReceiver)
+            IReadOnlyList<string> argTypeRefs, int skipReceiver, string? constructedTypeRef = null)
         {
+            var substitution = constructedTypeRef != null
+                ? Layout.ConstructedTypeCollector.BuildSubstitution(constructedTypeRef, type.Declaration)
+                : null;
             MwMemberSymbol? match = null;
             foreach (var member in type.Members)
             {
@@ -170,7 +176,9 @@ namespace RigiCompiler.Middleware.Mir
                 var all = true;
                 for (var i = 0; i < signature.Parameters.Count; i++)
                 {
-                    if (MwTypeKey.Normalize(signature.Parameters[i].TypeRef)
+                    var expected = Layout.ConstructedTypeCollector.Substitute(
+                        signature.Parameters[i].TypeRef, substitution);
+                    if (MwTypeKey.Normalize(expected)
                         != MwTypeKey.Normalize(argTypeRefs[i + skipReceiver]))
                     {
                         all = false;
@@ -265,7 +273,15 @@ namespace RigiCompiler.Middleware.Mir
         }
 
         private static MwTypeSymbol? BaseOf(MwSymbolTable symbols, MwTypeSymbol type) =>
-            type.Declaration.ExtendsType is { } baseRef ? symbols.FindType(baseRef) : null;
+            type.Declaration.ExtendsType is { } baseRef ? symbols.FindTypeByRef(baseRef) : null;
+
+        // §7.1 放行：固定泛型 .generic.T、泛型包 .generic.<Pack>、
+        // 位置值包 .vargs.<名>、具名值包 .kwargs.<名>。固定/包靠 TypeRef
+        // 区分（.typeid vs .array/.map），此处只认前缀
+        private static bool IsAdmittedHiddenArg(string name) =>
+            name.StartsWith(".generic.", System.StringComparison.Ordinal)
+            || name.StartsWith(".vargs.", System.StringComparison.Ordinal)
+            || name.StartsWith(".kwargs.", System.StringComparison.Ordinal);
 
         private static void AddLocal(List<MirLocal>? parameters, List<MirLocal> locals,
             HashSet<string> seen, string name, string typeRef, string fnSymbol)
@@ -511,6 +527,17 @@ namespace RigiCompiler.Middleware.Mir
                         _currentInsts.Add(EmitCallOrSuper(invokeNoResult.Method.Symbol,
                             Locals(invokeNoResult.Arguments), null));
                         break;
+                    case InvokeIndirectInstruction invokeIndirect:
+                        _currentInsts.Add(new MirInvokeIndirect(
+                            Local(invokeIndirect.CallTarget), Locals(invokeIndirect.Arguments),
+                            invokeIndirect.Target.Name, TypeOf(invokeIndirect.CallTarget.Name)));
+                        break;
+                    case InvokeIndirectNoResultInstruction invokeIndirectNoResult:
+                        _currentInsts.Add(new MirInvokeIndirect(
+                            Local(invokeIndirectNoResult.CallTarget),
+                            Locals(invokeIndirectNoResult.Arguments),
+                            null, TypeOf(invokeIndirectNoResult.CallTarget.Name)));
+                        break;
                     case GetFieldInstruction getField:
                         EmitGetField(getField);
                         break;
@@ -532,6 +559,17 @@ namespace RigiCompiler.Middleware.Mir
                     case GetIdTypeInstruction getIdType:
                         _currentInsts.Add(new MirGetTypeId(getIdType.TargetType.TypeRef,
                             getIdType.Target.Name));
+                        break;
+                    case DirectTypeCheckInstruction directCheck:
+                        EmitTypeCheck(directCheck.Kind, Local(directCheck.Value),
+                            directCheck.TargetType.TypeRef, null, directCheck.Target.Name);
+                        break;
+                    case IndirectTypeCheckInstruction indirectCheck:
+                        EmitTypeCheck(indirectCheck.Kind, Local(indirectCheck.Value),
+                            null, Local(indirectCheck.TypeId), indirectCheck.Target.Name);
+                        break;
+                    case NewWrapperEntityInstruction:
+                        // wrapper 实例安装随 MW10；type.with 只查 TypeInfo.wrappers
                         break;
                     case NewInstruction newInst:
                         EmitNew(newInst);
@@ -644,44 +682,20 @@ namespace RigiCompiler.Middleware.Mir
                 return new MirCall(ResolveTarget(symbol), args, result);
             }
 
-            // get.array：内建 Array\<T\> 直译；用户类型降为 getAtIndex 调用
+            // get.array：恒直译 MirGetArray（内建与用户类型同形态；用户
+            // 类型降级归 IndexOperatorLoweringPass）
             private void EmitGetArray(GetArrayInstruction inst)
             {
-                var collectionType = TypeOf(inst.Array.Name);
-                if (TypeLayout.IsArray(collectionType))
-                {
-                    _currentInsts.Add(new MirGetArray(Local(inst.Array), Local(inst.Index),
-                        collectionType, inst.Target.Name));
-                    return;
-                }
-                var method = MirBuilder.FindIndexOperator(_context.Symbols, collectionType,
-                    isGet: true)
-                    ?? throw new MwNotSupportedException(
-                        $"没有 getAtIndex：{collectionType.Canonical}");
-                _currentInsts.Add(new MirCall(method,
-                    new List<MirOperand> { Local(inst.Array), Local(inst.Index) },
-                    inst.Target.Name));
+                _currentInsts.Add(new MirGetArray(Local(inst.Array), Local(inst.Index),
+                    TypeOf(inst.Array.Name), inst.Target.Name));
             }
 
-            // set.array：内建 Array\<T\> 直译；用户类型降为 setAtIndex 调用
+            // set.array：恒直译 MirSetArray（内建与用户类型同形态；用户
+            // 类型降级归 IndexOperatorLoweringPass）
             private void EmitSetArray(SetArrayInstruction inst)
             {
-                var collectionType = TypeOf(inst.Collection.Name);
-                if (TypeLayout.IsArray(collectionType))
-                {
-                    _currentInsts.Add(new MirSetArray(Local(inst.Collection), Local(inst.Index),
-                        Local(inst.Element), collectionType));
-                    return;
-                }
-                var method = MirBuilder.FindIndexOperator(_context.Symbols, collectionType,
-                    isGet: false)
-                    ?? throw new MwNotSupportedException(
-                        $"没有 setAtIndex：{collectionType.Canonical}");
-                _currentInsts.Add(new MirCall(method,
-                    new List<MirOperand>
-                    {
-                        Local(inst.Collection), Local(inst.Index), Local(inst.Element),
-                    }, null));
+                _currentInsts.Add(new MirSetArray(Local(inst.Collection), Local(inst.Index),
+                    Local(inst.Element), TypeOf(inst.Collection.Name)));
             }
 
             // new type(T)：init 按实参静态类型精确匹配（BIL §14.1）；
@@ -695,26 +709,44 @@ namespace RigiCompiler.Middleware.Mir
                         inst.Target.Name));
                     return;
                 }
-                var type = _context.Symbols.FindType(inst.Type.TypeRef)
-                    ?? throw new MwNotSupportedException($"MW4 new 的类型不可解析: {inst.Type.TypeRef}");
-                var init = MirBuilder.ResolveInit(_context.Symbols, type,
-                    ArgTypes(inst.Arguments), skipReceiver: 0);
-                // 字段初始值缝合方法（VM「new 先装 ..init.wrapper 再调 init」）
+                var typeRef = inst.Type.TypeRef;
+                var template = _context.Symbols.FindTypeByRef(typeRef)
+                    ?? throw new MwNotSupportedException($"MW4 new 的类型不可解析: {typeRef}");
+                if (ConstructedTypeCollector.IsConstructed(typeRef)
+                    && template.Declaration.Kind is BilTypeKind.Struct or BilTypeKind.EnumStruct)
+                {
+                    throw new MwNotSupportedException($"MW5 暂不支持泛型值类型构造: {typeRef}");
+                }
+                if (ConstructedTypeCollector.IsConstructed(typeRef)
+                    && template.Declaration.Kind != BilTypeKind.Class)
+                {
+                    throw new MwNotSupportedException($"MW5 暂不支持的构造类型形态: {typeRef}");
+                }
+                var init = MirBuilder.ResolveInit(_context.Symbols, template,
+                    ArgTypes(inst.Arguments), skipReceiver: 0, constructedTypeRef: typeRef);
+                // 字段初始值缝合方法（VM「new 先装 ..init.wrapper 再调 init」）；
+                // 查找维持模板 canonical
                 var initWrapper = _context.Symbols.FindMember(
-                    type.Canonical + "$..init.wrapper()@.void");
-                if (type.Declaration.Kind == BilTypeKind.Class)
+                    template.Canonical + "$..init.wrapper()@.void");
+                var sheetCanonical = GenericAbi.IsClosedConstructed(typeRef)
+                    ? MwTypeKey.Normalize(typeRef)
+                    : template.Canonical;
+                var type = sheetCanonical == template.Canonical
+                    ? template
+                    : new MwTypeSymbol(sheetCanonical, template);
+                if (template.Declaration.Kind == BilTypeKind.Class)
                 {
                     _currentInsts.Add(new MirNewObject(type, initWrapper, init,
                         Locals(inst.Arguments), inst.Target.Name));
                     return;
                 }
-                if (type.Declaration.Kind is BilTypeKind.Struct or BilTypeKind.EnumStruct)
+                if (template.Declaration.Kind is BilTypeKind.Struct or BilTypeKind.EnumStruct)
                 {
                     _currentInsts.Add(new MirNewValue(type, initWrapper, init,
                         Locals(inst.Arguments), inst.Target.Name));
                     return;
                 }
-                throw new MwNotSupportedException($"MW4 new 暂不支持类型形态: {inst.Type.TypeRef}");
+                throw new MwNotSupportedException($"MW4 new 暂不支持类型形态: {typeRef}");
             }
 
             // new.case：enum 构造（判别常量 + init；init 按实参静态类型
@@ -728,6 +760,29 @@ namespace RigiCompiler.Middleware.Mir
                     Locals(inst.Arguments), inst.Target.Name));
             }
 
+            // type.is / type.supers / type.with（含 .indirect 与泛型占位）
+            private void EmitTypeCheck(BilTypeCheckKind kind, MirOperand value,
+                string? targetTypeRef, MirOperand? targetTypeId, string target)
+            {
+                if (targetTypeRef != null
+                    && GenericAbi.TryPlaceholderName(targetTypeRef, out var name))
+                {
+                    targetTypeId = new MirLocalOperand(".generic." + name);
+                    targetTypeRef = null;
+                }
+                _currentInsts.Add(new MirTypeCheck(MapTypeCheckKind(kind), value,
+                    targetTypeRef, targetTypeId, target));
+            }
+
+            private static MirTypeCheckKind MapTypeCheckKind(BilTypeCheckKind kind) =>
+                kind switch
+                {
+                    BilTypeCheckKind.Is => MirTypeCheckKind.Is,
+                    BilTypeCheckKind.Supers => MirTypeCheckKind.Supers,
+                    BilTypeCheckKind.With => MirTypeCheckKind.With,
+                    _ => throw new CompilerInternalException("未知 BilTypeCheckKind: " + kind),
+                };
+
             // type.is.case：判别整数比较（enum struct 限定）
             private void EmitIsCase(IsCaseInstruction inst)
             {
@@ -740,8 +795,12 @@ namespace RigiCompiler.Middleware.Mir
             private (MwTypeSymbol Type, MwCaseSymbol Case) ResolveCase(string typeRef,
                 string qualifiedName)
             {
-                var type = _context.Symbols.FindType(typeRef)
+                var type = _context.Symbols.FindTypeByRef(typeRef)
                     ?? throw new MwNotSupportedException($"MW4 enum 类型不可解析: {typeRef}");
+                if (Layout.ConstructedTypeCollector.IsConstructed(typeRef))
+                {
+                    throw new MwNotSupportedException($"MW5 暂不支持泛型值类型构造: {typeRef}");
+                }
                 if (type.Declaration.Kind != BilTypeKind.EnumStruct)
                 {
                     throw new MwNotSupportedException($"MW4 new.case/type.is.case 仅限 enum struct: {typeRef}");
@@ -765,116 +824,20 @@ namespace RigiCompiler.Middleware.Mir
                     : qualifiedName.Substring(0, dot);
             }
 
-            // get.field（VM 分支序子集）：setter/getter 体内的伪字段
-            // #..value@ 与自身 backing → 直读；computed getter → 访问器调用
-            //（经 BindCall 正常派发）；wrapper 标记随 MW10
+            // get.field：恒直译 MirGetField（含 computed 与 accessor 体内
+            // backing 伪字段；访问器改写 / wrapper 拒绝归 AccessorLoweringPass）
             private void EmitGetField(GetFieldInstruction inst)
             {
-                var fieldSymbol = inst.Field.Symbol;
-                // setter/getter 体内的伪字段 #..value@ → 自身 backing（VM 分支 0）
-                if (fieldSymbol.Contains("#..value@", System.StringComparison.Ordinal))
-                {
-                    fieldSymbol = CurrentAccessorField();
-                }
-                else if (TypeLayout.IsLengthField(fieldSymbol))
-                {
-                    _currentInsts.Add(new MirGetField(Local(inst.Object), fieldSymbol, inst.Target.Name));
-                    return;
-                }
-                else
-                {
-                    RejectIfWrappedField(fieldSymbol);
-                    if (!IsCurrentAccessorOf(fieldSymbol)
-                        && MirBuilder.FindAccessor(_context.Symbols, fieldSymbol,
-                            BilAccessorKind.Getter, _fnSymbol) is { } getter)
-                    {
-                        _currentInsts.Add(new MirCall(getter,
-                            new List<MirOperand> { Local(inst.Object) }, inst.Target.Name));
-                        return;
-                    }
-                }
-                _currentInsts.Add(new MirGetField(Local(inst.Object), fieldSymbol, inst.Target.Name));
+                _currentInsts.Add(new MirGetField(Local(inst.Object), inst.Field.Symbol,
+                    inst.Target.Name));
             }
 
-            // set.field（VM 分支序子集）：setter 体内伪字段/自身 backing →
-            // 直写；init 期与非 init 期的 computed setter → 访问器调用；
-            // wrapper 链随 MW10；ARC 注入属 MW7（本批不注入）
+            // set.field：恒直译 MirSetField（含 computed 与 accessor 体内
+            // backing 伪字段；访问器改写 / wrapper 拒绝归 AccessorLoweringPass）
             private void EmitSetField(SetFieldInstruction inst)
             {
-                var fieldSymbol = inst.Field.Symbol;
-                // setter 体内伪字段 #..value@ → 自身 backing 直写（VM 分支 0）
-                if (fieldSymbol.Contains("#..value@", System.StringComparison.Ordinal))
-                {
-                    _currentInsts.Add(new MirSetField(Local(inst.Source), Local(inst.Object),
-                        CurrentAccessorField()));
-                    return;
-                }
-                RejectIfWrappedField(fieldSymbol);
-                if (!IsCurrentAccessorOf(fieldSymbol)
-                    && MirBuilder.FindAccessor(_context.Symbols, fieldSymbol,
-                        BilAccessorKind.Setter, _fnSymbol) is { } setter)
-                {
-                    _currentInsts.Add(new MirCall(setter,
-                        new List<MirOperand> { Local(inst.Object), Local(inst.Source) }, null));
-                    return;
-                }
-                _currentInsts.Add(new MirSetField(Local(inst.Source), Local(inst.Object), fieldSymbol));
-            }
-
-            // 当前 fn 即该字段的访问器（getter/setter 体内直访 backing）
-            private bool IsCurrentAccessorOf(string fieldSymbol) =>
-                CurrentAccessorFieldOrNull() == fieldSymbol;
-
-            // 当前 fn 的访问器修饰符指向的字段（非访问器 fn 为 null）
-            private string? CurrentAccessorFieldOrNull()
-            {
-                var current = _context.Symbols.FindMember(_fnSymbol);
-                if (current == null)
-                {
-                    return null;
-                }
-                foreach (var modifier in current.Declaration.Modifiers)
-                {
-                    if (modifier is BilAccessorModifier accessor)
-                    {
-                        return accessor.FieldSymbol;
-                    }
-                }
-                return null;
-            }
-
-            private string CurrentAccessorField() =>
-                CurrentAccessorFieldOrNull()
-                ?? throw new CompilerInternalException(
-                    $"#..value@ 伪字段出现在非访问器 fn: {_fnSymbol}");
-
-            // wrapper 标记字段/宿主（链语义随 MW10；此处受控拒绝）
-            private void RejectIfWrappedField(string fieldSymbol)
-            {
-                var field = _context.Symbols.FindMember(fieldSymbol);
-                if (field == null)
-                {
-                    throw new MwNotSupportedException(
-                        $"MW4 暂不支持的字段访问（外部/特殊字段）: {fieldSymbol}");
-                }
-                foreach (var modifier in field.Declaration.Modifiers)
-                {
-                    if (modifier is BilWrappedModifier)
-                    {
-                        throw new MwNotSupportedException($"wrapper 字段访问随 MW10: {fieldSymbol}");
-                    }
-                }
-                if (field.Owner != null)
-                {
-                    foreach (var modifier in field.Owner.Declaration.Modifiers)
-                    {
-                        if (modifier is BilWrappedModifier)
-                        {
-                            throw new MwNotSupportedException(
-                                $"wrapper 宿主字段访问随 MW10: {fieldSymbol}");
-                        }
-                    }
-                }
+                _currentInsts.Add(new MirSetField(Local(inst.Source), Local(inst.Object),
+                    inst.Field.Symbol));
             }
 
             private List<string> ArgTypes(IReadOnlyList<MirOperand> args)
@@ -897,41 +860,36 @@ namespace RigiCompiler.Middleware.Mir
                 return types;
             }
 
-            // get.field.static（MW4 批 4）：静态槽读取；computed 静态属性
-            // → 访问器调用（无接收者实参，VM GetFieldStatic 同口径）
+            // get.field.static：恒直译 MirGetStatic（computed / wrapper
+            // 拒绝归 AccessorLoweringPass）
             private void EmitGetStatic(GetFieldStaticInstruction inst)
             {
-                var fieldSymbol = inst.Field.Symbol;
-                RejectIfWrappedField(fieldSymbol);
-                if (MirBuilder.FindAccessor(_context.Symbols, fieldSymbol,
-                    BilAccessorKind.Getter, _fnSymbol) is { } getter)
-                {
-                    _currentInsts.Add(new MirCall(getter,
-                        new List<MirOperand>(), inst.Target.Name));
-                    return;
-                }
-                _currentInsts.Add(new MirGetStatic(fieldSymbol, inst.Target.Name));
+                RejectConstructedStatic(inst.Field.Symbol);
+                _currentInsts.Add(new MirGetStatic(inst.Field.Symbol, inst.Target.Name));
             }
 
-            // set.field.static（MW4 批 4）：静态槽写入；computed setter →
-            // 访问器调用（实参仅源值）；ARC 注入属 MW7（本批不注入）
+            // set.field.static：恒直译 MirSetStatic（computed / wrapper
+            // 拒绝归 AccessorLoweringPass）
             private void EmitSetStatic(SetFieldStaticInstruction inst)
             {
-                var fieldSymbol = inst.Field.Symbol;
-                RejectIfWrappedField(fieldSymbol);
-                if (MirBuilder.FindAccessor(_context.Symbols, fieldSymbol,
-                    BilAccessorKind.Setter, _fnSymbol) is { } setter)
-                {
-                    _currentInsts.Add(new MirCall(setter,
-                        new List<MirOperand> { Local(inst.Source) }, null));
-                    return;
-                }
-                _currentInsts.Add(new MirSetStatic(Local(inst.Source), fieldSymbol));
+                RejectConstructedStatic(inst.Field.Symbol);
+                _currentInsts.Add(new MirSetStatic(Local(inst.Source), inst.Field.Symbol));
             }
 
-            // cast（§12 子集，MW4 批 2）：引用上下转（class↔class/interface/
-            // nullable/Any）是恒等拷贝——胖引用表示不变、对象头 typeid 不
-            // 改写（RUNTIME §13）；数值转换与装拆箱随 §12 转换批
+            private static void RejectConstructedStatic(string symbol)
+            {
+                var cut = symbol.IndexOfAny(new[] { '$', '#' });
+                var host = cut < 0 ? symbol : symbol.Substring(0, cut);
+                if (host.Contains('<'))
+                {
+                    throw new MwNotSupportedException(
+                        $"MW5 暂不支持经构造类型访问静态成员: {symbol}");
+                }
+            }
+
+            // cast（§12 子集）：nullable 装拆 → Box/Unbox（值类型↔.any/.object）
+            // → 数值/String 转换拒绝（§12 转换批）→ struct↔struct 拒绝 →
+            // 引用恒等拷贝（class↔class/interface/Any，含 any→class 留白）
             private void EmitCast(CastInstruction inst)
             {
                 var sourceType = TypeOf(inst.Source.Name);
@@ -950,6 +908,16 @@ namespace RigiCompiler.Middleware.Mir
                         inst.Target.Name));
                     return;
                 }
+                if (IsBoxableValueType(sourceType) && targetType.IsAnyOrObject)
+                {
+                    _currentInsts.Add(new MirBoxAny(Local(inst.Source), inst.Target.Name));
+                    return;
+                }
+                if (sourceType.IsAnyOrObject && IsBoxableValueType(targetType))
+                {
+                    _currentInsts.Add(new MirUnboxAny(Local(inst.Source), inst.Target.Name));
+                    return;
+                }
                 if (MirBuilder.IsScalarOrString(sourceType) || MirBuilder.IsScalarOrString(targetType))
                 {
                     throw new MwNotSupportedException(
@@ -964,6 +932,16 @@ namespace RigiCompiler.Middleware.Mir
                         $"cast 值类型转换随 MW4 批 3: {sourceType.Canonical} → {targetType.Canonical}");
                 }
                 _currentInsts.Add(new MirCopyLocal(Local(inst.Source), inst.Target.Name));
+            }
+
+            private bool IsBoxableValueType(MirType type)
+            {
+                if (MirBuilder.IsScalarOrString(type))
+                {
+                    return true;
+                }
+                return _context.Symbols.FindType(type.Canonical) is { Declaration.Kind:
+                    BilTypeKind.Struct or BilTypeKind.EnumStruct };
             }
 
             // ===== 操作数与目标解析 =====

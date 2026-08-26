@@ -48,4 +48,9 @@ namespace RigiCompiler.Middleware.Binding
     // interface 实例方法 → iMap 查 base offset + 接口内槽序间接调用
     //（接口符号无 fn 体，fn 类型由 canonical 签名合成）
     public sealed record InterfaceCallBinding(MwMemberSymbol Target) : ImplBinding;
+
+    // invoke.indirect（§15.3 callable 协议）：静态类型上唯一匹配的 $$call
+    // 虚成员。与 Virtual/Interface 并列——语义独立、来源不同（BindIndirectCall
+    // 沿 extends 链解析，而非 BindCall 的已解析符号分流）
+    public sealed record IndirectCallBinding(MwMemberSymbol CallOperator) : ImplBinding;
 }

@@ -2,7 +2,8 @@ namespace RigiCompiler.Bil.Vm
 {
     // §22.5 native hook 表（BIL_VM_DESIGN §7 / RUNTIME.md §26）：
     // (lib, symbol) 表：rigi_rt print / printErr / any_to_string / alloc_array /
-    // make_sleep_alarm，表外拒绝执行；单次 print 调用加锁原子写入。
+    // make_sleep_alarm / i64|u64|f32|f64|bool|char_to_string，表外拒绝执行；单次 print
+    // 调用加锁原子写入。
     // 方法 hook 表：core::Any$call??? 按方法符号命中（无 (lib, symbol) 对）。
     // toString 机制（SYNTAX §3.8 修订）：Any/Object 的 toString 成员方法不再
     // 直接 hook——它们的编译器合成实现体调用 .bootstrap.rg 的 priv 全局
@@ -66,6 +67,12 @@ namespace RigiCompiler.Bil.Vm
             hooks.Register("rigi_rt", "any_to_string", ToStringHook);
             hooks.Register("rigi_rt", "alloc_array", AllocArray);
             hooks.Register("rigi_rt", "make_sleep_alarm", MakeSleepAlarm);
+            hooks.Register("rigi_rt", "i64_to_string", I64ToString);
+            hooks.Register("rigi_rt", "u64_to_string", U64ToString);
+            hooks.Register("rigi_rt", "f32_to_string", F32ToString);
+            hooks.Register("rigi_rt", "f64_to_string", F64ToString);
+            hooks.Register("rigi_rt", "bool_to_string", BoolToString);
+            hooks.Register("rigi_rt", "char_to_string", CharToString);
             hooks.RegisterMethod("core::Any$call???", CallWildcard);
             return hooks;
         }
@@ -80,6 +87,61 @@ namespace RigiCompiler.Bil.Vm
         {
             context.WriteStderr(RequireString("printErr", arguments));
             return VmVoid.Instance;
+        }
+
+        // to_string 面族：native 已对齐 .NET ToString(InvariantCulture)，直接复用 ToStandardText
+        private static VmValue I64ToString(VmContext context, IReadOnlyList<VmValue> arguments)
+        {
+            if (arguments.Count != 1 || arguments[0] is not VmI64)
+            {
+                throw new VmException("i64_to_string 需要恰好 1 个 i64 参数");
+            }
+            return new VmString(arguments[0].ToStandardText());
+        }
+
+        private static VmValue U64ToString(VmContext context, IReadOnlyList<VmValue> arguments)
+        {
+            if (arguments.Count != 1 || arguments[0] is not VmU64)
+            {
+                throw new VmException("u64_to_string 需要恰好 1 个 u64 参数");
+            }
+            return new VmString(arguments[0].ToStandardText());
+        }
+
+        private static VmValue F32ToString(VmContext context, IReadOnlyList<VmValue> arguments)
+        {
+            if (arguments.Count != 1 || arguments[0] is not VmF32)
+            {
+                throw new VmException("f32_to_string 需要恰好 1 个 f32 参数");
+            }
+            return new VmString(arguments[0].ToStandardText());
+        }
+
+        private static VmValue F64ToString(VmContext context, IReadOnlyList<VmValue> arguments)
+        {
+            if (arguments.Count != 1 || arguments[0] is not VmF64)
+            {
+                throw new VmException("f64_to_string 需要恰好 1 个 f64 参数");
+            }
+            return new VmString(arguments[0].ToStandardText());
+        }
+
+        private static VmValue BoolToString(VmContext context, IReadOnlyList<VmValue> arguments)
+        {
+            if (arguments.Count != 1 || arguments[0] is not VmBool)
+            {
+                throw new VmException("bool_to_string 需要恰好 1 个 bool 参数");
+            }
+            return new VmString(arguments[0].ToStandardText());
+        }
+
+        private static VmValue CharToString(VmContext context, IReadOnlyList<VmValue> arguments)
+        {
+            if (arguments.Count != 1 || arguments[0] is not VmChar)
+            {
+                throw new VmException("char_to_string 需要恰好 1 个 char 参数");
+            }
+            return new VmString(arguments[0].ToStandardText());
         }
 
         // any_to_string（§3.8）：任意胖值取标准文本——基元标准文本、

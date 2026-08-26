@@ -98,7 +98,7 @@ invoke fn(..super) RESULT [$.this, HIDDEN_GENERIC_ARGS..., NORMAL_ARGS...]
 invoke.noret fn(..super) [$.this, HIDDEN_GENERIC_ARGS..., NORMAL_ARGS...]
 ```
 
-`fn(..super)` 是保留目标，不是 canonical 方法符号，也不得声明为普通 fn。它只可由 override 或 init fn 体发出，交 Middleware 解析为直接基类的原始实现并绕过 wrapper 派发链。首实参必须精确为 `$.this`；随后按 §7.2 的隐藏泛型参数、普通值参数顺序排列。init 必须使用 `invoke.noret`；override 的 invoke 形态与当前 fn 返回类型一致。frontend 不生成 `..create`：`..create` 仅是 Middleware/VM 的 create 生命周期阶段步骤，可与 super-init 和 init `_ -> inheritedField` 映射共存。
+`fn(..super)` 是保留目标，不是 canonical 方法符号，也不得声明为普通 fn。它只可由 override 或 init fn 体发出，交 Middleware 解析为直接基类的原始实现并绕过 wrapper 派发链。首实参必须精确为 `$.this`；随后按 §7.2 的隐藏泛型参数、普通值参数顺序排列。**类级** `.generic.*`（所属类型的类型参数）可由实现从 `$.this` 注入，调用点允许省略；方法级固定泛型仍须按声明序转发。init 必须使用 `invoke.noret`；override 的 invoke 形态与当前 fn 返回类型一致。frontend 不生成 `..create`：`..create` 仅是 Middleware/VM 的 create 生命周期阶段步骤，可与 super-init 和 init `_ -> inheritedField` 映射共存。
 
 **super init 匹配（与 SYNTAX §9.2.2 对齐）**：init 体内的 `invoke.noret fn(..super)` 由 Middleware 在直接基类 init 重载中定位入口。frontend 已把普通实参 cast 到被解析 init 的形参声明类型；VM 按这些实参的 **BIL 静态类型**（变量声明类型）与形参 **严格相等**（`TypesEqual` / canonical 全等）验证——不是按对象头运行期 typeid 的可赋值性再 ranking。引用类型 upcast 不改写对象头 typeid。多个可赋值 init 重载的选择只发生在语义期。
 

@@ -16,6 +16,8 @@ namespace RigiCompiler.Middleware.Layout
         // 空壳计划（MW4 批 2）：无实例布局，仅为 TypeSheet 地址身份
         //（iMap 键）与接口内槽序表（VTableSlots = 接口虚成员序）
         Interface,
+        // wrapper 空壳（MW5 c3）：TypeInfo.wrappers / type.with 的地址身份
+        Wrapper,
     }
 
     // 字段计划：canonical 字段符号 → 字节偏移与类型形态
@@ -30,9 +32,11 @@ namespace RigiCompiler.Middleware.Layout
         // 内联值类型字段的内层计划（struct/enum 内联时非空；其 rich 时
         // refMap 条目折算拼入外层）
         public TypeLayoutPlan? EmbeddedPlan { get; }
+        // 类级隐藏 typeid（i64 TypeSheet*，不进 refMap）
+        public bool IsHiddenTypeId { get; }
 
         internal FieldPlan(string symbol, int offset, int size, int alignment,
-            bool isReferenceSlot, TypeLayoutPlan? embeddedPlan)
+            bool isReferenceSlot, TypeLayoutPlan? embeddedPlan, bool isHiddenTypeId = false)
         {
             Symbol = symbol;
             Offset = offset;
@@ -40,6 +44,7 @@ namespace RigiCompiler.Middleware.Layout
             Alignment = alignment;
             IsReferenceSlot = isReferenceSlot;
             EmbeddedPlan = embeddedPlan;
+            IsHiddenTypeId = isHiddenTypeId;
         }
     }
 
@@ -73,12 +78,18 @@ namespace RigiCompiler.Middleware.Layout
         public IReadOnlyList<(MwCaseSymbol Case, uint Discriminant)> EnumCases { get; }
         // 基类计划（本地 class 基类可解析时；否则 null）
         public TypeLayoutPlan? BasePlan { get; }
+        // 本类自有类级隐藏 typeid（不含基类；参数名 → 字节偏移）
+        public IReadOnlyList<(string ParamName, int Offset)> HiddenTypeIdSlots { get; }
+        // 传递 implements 闭包（含接口的父接口；TypeInfo.ifaceClosure）
+        public IReadOnlyList<string> IfaceClosure { get; }
 
         internal TypeLayoutPlan(MwTypeSymbol symbol, TypeLayoutKind kind, int size,
             int alignment, uint typeFlags, IReadOnlyList<FieldPlan> fields,
             IReadOnlyList<string> vTableSlots,
             IReadOnlyList<(string, int)> iMap, ushort[] refMap,
-            IReadOnlyList<(MwCaseSymbol, uint)> enumCases, TypeLayoutPlan? basePlan)
+            IReadOnlyList<(MwCaseSymbol, uint)> enumCases, TypeLayoutPlan? basePlan,
+            IReadOnlyList<(string, int)>? hiddenTypeIdSlots = null,
+            IReadOnlyList<string>? ifaceClosure = null)
         {
             Symbol = symbol;
             Kind = kind;
@@ -91,6 +102,8 @@ namespace RigiCompiler.Middleware.Layout
             RefMap = refMap;
             EnumCases = enumCases;
             BasePlan = basePlan;
+            HiddenTypeIdSlots = hiddenTypeIdSlots ?? System.Array.Empty<(string, int)>();
+            IfaceClosure = ifaceClosure ?? System.Array.Empty<string>();
         }
     }
 
@@ -102,12 +115,26 @@ namespace RigiCompiler.Middleware.Layout
 
         public IReadOnlyList<TypeLayoutPlan> Plans => _order;
 
-        public TypeLayoutPlan? Find(string canonical) =>
-            _plans.TryGetValue(canonical, out var plan) ? plan : null;
+        public TypeLayoutPlan? Find(string canonical)
+        {
+            if (_plans.TryGetValue(canonical, out var plan))
+            {
+                return plan;
+            }
+            var normalized = MwTypeKey.Normalize(canonical);
+            return normalized != canonical && _plans.TryGetValue(normalized, out plan)
+                ? plan
+                : null;
+        }
 
         internal void Add(TypeLayoutPlan plan)
         {
-            _plans.Add(plan.Symbol.Canonical, plan);
+            var key = GenericAbi.PlanKey(plan.Symbol);
+            _plans.Add(key, plan);
+            if (key != plan.Symbol.Canonical && !_plans.ContainsKey(plan.Symbol.Canonical))
+            {
+                _plans.Add(plan.Symbol.Canonical, plan);
+            }
             _order.Add(plan);
         }
 

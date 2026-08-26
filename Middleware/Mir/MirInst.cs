@@ -101,6 +101,27 @@ namespace RigiCompiler.Middleware.Mir
         }
     }
 
+    // invoke.indirect / invoke.indirect.noret（BIL §15.3 callable 协议）：
+    // 对 CallTarget 虚调用其 $$call；实参不含 receiver；CallTargetType
+    // 为直译时从局部类型表附上的静态类型（参照 MirGetArray.CollectionType）
+    public sealed class MirInvokeIndirect : MirInst
+    {
+        public MirOperand CallTarget { get; }
+        public IReadOnlyList<MirOperand> Args { get; }
+        // null = invoke.indirect.noret（无结果槽）
+        public string? Result { get; }
+        public MirType CallTargetType { get; }
+
+        internal MirInvokeIndirect(MirOperand callTarget, IReadOnlyList<MirOperand> args,
+            string? result, MirType callTargetType)
+        {
+            CallTarget = callTarget;
+            Args = args;
+            Result = result;
+            CallTargetType = callTargetType;
+        }
+    }
+
     // invoke / invoke.noret：目标为驻留成员符号（含 native 声明；
     // 派发形态——native 面/直接调用/虚调用/interface 调用——由
     // Binding.BindCall 回答）
@@ -198,6 +219,36 @@ namespace RigiCompiler.Middleware.Mir
         }
     }
 
+    // type.is / type.supers / type.with（MW5 c3）：经 rigi_type_* helper
+    public enum MirTypeCheckKind
+    {
+        Is,
+        Supers,
+        With,
+    }
+
+    public sealed class MirTypeCheck : MirInst
+    {
+        public MirTypeCheckKind Kind { get; }
+        public MirOperand Value { get; }
+        // 静态目标 canonical；indirect / 泛型占位时为 null
+        public string? TargetTypeRef { get; }
+        // .indirect 或泛型占位：typeid 局部（TypeSheet*）
+        public MirOperand? TargetTypeId { get; }
+        public string Target { get; }
+        public bool IsIndirect => TargetTypeId != null;
+
+        internal MirTypeCheck(MirTypeCheckKind kind, MirOperand value,
+            string? targetTypeRef, MirOperand? targetTypeId, string target)
+        {
+            Kind = kind;
+            Value = value;
+            TargetTypeRef = targetTypeRef;
+            TargetTypeId = targetTypeId;
+            Target = target;
+        }
+    }
+
     // type.is.case（MW4 批 3）：读隐藏判别 u32（偏移 0）+ icmp eq 判别
     // 常量；非子类型检查、不比较 payload
     public sealed class MirIsCase : MirInst
@@ -214,8 +265,8 @@ namespace RigiCompiler.Middleware.Mir
         }
     }
 
-    // get.field：实例字段直读（computed 属性已在 MIR 构建期改写为访问器
-    // 调用；字段符号自足——宿主段/类型段在符号文本内）
+    // get.field 直译（含 computed 与 accessor 体内 backing；访问器改写
+    // 归 AccessorLoweringPass；字段符号自足——宿主段/类型段在符号文本内）
     public sealed class MirGetField : MirInst
     {
         public MirOperand Object { get; }
@@ -258,8 +309,8 @@ namespace RigiCompiler.Middleware.Mir
         }
     }
 
-    // set.field：实例字段直写（ARC 注入属 MW7，本批不注入；rich 值
-    // 类型字段的写随 MW7，值类型字段读写随 MW4 批 3）
+    // set.field 直译（含 computed 与 accessor 体内 backing；访问器改写
+    // 归 AccessorLoweringPass；ARC 注入属 MW7）
     public sealed class MirSetField : MirInst
     {
         public MirOperand Source { get; }
@@ -274,7 +325,8 @@ namespace RigiCompiler.Middleware.Mir
         }
     }
 
-    // get.array（内建 Array\<T\>）：越界读得 null，界内按 T? 包装
+    // get.array 直译（内建与用户类型同形态；用户类型由
+    // IndexOperatorLoweringPass 降为 $$getAtIndex 调用）
     public sealed class MirGetArray : MirInst
     {
         public MirOperand Collection { get; }
@@ -292,7 +344,8 @@ namespace RigiCompiler.Middleware.Mir
         }
     }
 
-    // set.array（内建 Array\<T\>）：越界写 trap
+    // set.array 直译（内建与用户类型同形态；用户类型由
+    // IndexOperatorLoweringPass 降为 $$setAtIndex 调用）
     public sealed class MirSetArray : MirInst
     {
         public MirOperand Collection { get; }
@@ -364,6 +417,32 @@ namespace RigiCompiler.Middleware.Mir
         {
             Source = source;
             InnerType = innerType;
+            Target = target;
+        }
+    }
+
+    // 值类型 → .any/.object 装箱（RUNTIME §2/§4：tag0 内联 / tag1 裸块）
+    public sealed class MirBoxAny : MirInst
+    {
+        public MirOperand Source { get; }
+        public string Target { get; }
+
+        internal MirBoxAny(MirOperand source, string target)
+        {
+            Source = source;
+            Target = target;
+        }
+    }
+
+    // .any/.object → 具体值类型拆箱（目标类型由结果局部携带）
+    public sealed class MirUnboxAny : MirInst
+    {
+        public MirOperand Source { get; }
+        public string Target { get; }
+
+        internal MirUnboxAny(MirOperand source, string target)
+        {
+            Source = source;
             Target = target;
         }
     }

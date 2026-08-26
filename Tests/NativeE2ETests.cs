@@ -2,6 +2,7 @@ using System;
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using RigiCompiler.Bil;
@@ -283,6 +284,7 @@ namespace RigiCompiler.Tests
             // string 排序比较：前端 P3 暂未放行 String 的 < 运算符（BIL §11.5
             // 内建形态合法，VM 支持），故以手写 BIL 直接对拍
             BilCase("string 排序比较（BIL 内建形态）", StringOrderBil),
+            BilCase("to_string 面族（手写 BIL）", ToStringFacesBil),
             Case("null 资源与 nullable 检查",
                 "import core.io.Console\n" +
                 "pub func main(): i32 {\n" +
@@ -745,6 +747,498 @@ namespace RigiCompiler.Tests
                 "    if (setCalls == 1) { Console.println(\"static computed set ok\") }\n" +
                 "    return Config.level\n" +
                 "}\n"),
+            Case("lambda 赋值后经变量调用",
+                "pub func main(): i32 {\n" +
+                "    var fn = func{(x: i32): i32 -> (x + 1)}\n" +
+                "    return fn(41)\n" +
+                "}\n"),
+            Case("Action noret 间接调用",
+                "import core.io.Console\n" +
+                "pub func main(): i32 {\n" +
+                "    var act = func{() -> { Console.println(\"act\") }}\n" +
+                "    act()\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("用户类自定义 operator call",
+                "pub class Doubler {\n" +
+                "    pub init() { }\n" +
+                "    pub operator call(x: i32): i32 { return (x * 2) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var d = new Doubler()\n" +
+                "    return d(21)\n" +
+                "}\n"),
+            Case("泛型 $$call Mapper",
+                "pub class Mapper {\n" +
+                "    pub init() { }\n" +
+                "    pub operator call\\<T>(x: T): T { return x }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var f = new Mapper()\n" +
+                "    return f\\<i32>(42)\n" +
+                "}\n"),
+            Case("Func 多态两次间接调用",
+                "pub func main(): i32 {\n" +
+                "    var f: Func\\<i32, i32> = func{(x: i32): i32 -> (x + 1)}\n" +
+                "    var a = f(10)\n" +
+                "    f = func{(x: i32): i32 -> (x * 2)}\n" +
+                "    var b = f(10)\n" +
+                "    return (a + b)\n" +
+                "}\n"),
+            Case("Any 标量 round trip",
+                "import core.io.Console\n" +
+                "pub func main(): i32 {\n" +
+                "    var ai = 42 as Any\n" +
+                "    var ni = ai as i32\n" +
+                "    var au = 7UL as Any\n" +
+                "    var nu = au as u64\n" +
+                "    var af = 1.5 as Any\n" +
+                "    var nf = af as double\n" +
+                "    var ab = true as Any\n" +
+                "    var nb = ab as bool\n" +
+                "    var ac = 'A' as Any\n" +
+                "    var nc = ac as char\n" +
+                "    if (ni == 42) { Console.println(\"i32 ok\") }\n" +
+                "    if (nu == 7UL) { Console.println(\"u64 ok\") }\n" +
+                "    if (nf == 1.5) { Console.println(\"f64 ok\") }\n" +
+                "    if (nb) { Console.println(\"bool ok\") }\n" +
+                "    if (nc == 'A') { Console.println(\"char ok\") }\n" +
+                "    return ni\n" +
+                "}\n"),
+            Case("Any string round trip",
+                "import core.io.Console\n" +
+                "pub func main(): i32 {\n" +
+                "    var boxed = \"hello\" as Any\n" +
+                "    var s = boxed as String\n" +
+                "    Console.println(s)\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("Any 大 struct round trip",
+                "import core.io.Console\n" +
+                "pub struct Pair {\n" +
+                "    pub var a: i64\n" +
+                "    pub var b: i64\n" +
+                "    pub init(_ -> a, _ -> b)\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var boxed = (new Pair(11L, 22L) as Any)\n" +
+                "    var p = boxed as Pair\n" +
+                "    if (p.a == 11L) { Console.println(\"a ok\") }\n" +
+                "    if (p.b == 22L) { Console.println(\"b ok\") }\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("Any 小 struct tag0 round trip",
+                "import core.io.Console\n" +
+                "pub struct Point {\n" +
+                "    pub var x: i32\n" +
+                "    pub var y: i32\n" +
+                "    pub init(_ -> x, _ -> y)\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var boxed = (new Point(3, 4) as Any)\n" +
+                "    var p = boxed as Point\n" +
+                "    if (p.x == 3) { Console.println(\"x ok\") }\n" +
+                "    if (p.y == 4) { Console.println(\"y ok\") }\n" +
+                "    return ((p.x * 10) + p.y)\n" +
+                "}\n"),
+            Case("Any enum round trip",
+                "import core.io.Console\n" +
+                "pub enum struct Color {\n" +
+                "    pub const code: i32\n" +
+                "    pub init(_ -> code)\n" +
+                "}[\n" +
+                "    Red(1),\n" +
+                "    Blue(2)\n" +
+                "]\n" +
+                "pub func main(): i32 {\n" +
+                "    var boxed = (Color.Red as Any)\n" +
+                "    var e = boxed as Color\n" +
+                "    if (e is .Red) { Console.println(\"enum ok\") }\n" +
+                "    return e.code\n" +
+                "}\n"),
+            Case("Any 经函数参数 identity",
+                "import core.io.Console\n" +
+                "pub func identity(a: Any): Any { return a }\n" +
+                "pub func main(): i32 {\n" +
+                "    var boxed = identity((41 as Any))\n" +
+                "    var x = boxed as i32\n" +
+                "    if (x == 41) { Console.println(\"identity ok\") }\n" +
+                "    return x\n" +
+                "}\n"),
+            FailCase("Any 拆箱类型不符",
+                "pub func main(): i32 {\n" +
+                "    var a = 42 as Any\n" +
+                "    var s = a as String\n" +
+                "    return 0\n" +
+                "}\n", "无法将 .any 转换为"),
+            Case("Any toString 标量族",
+                "import core.io.Console\n" +
+                "@NativeLibrary(\"rigi_rt\")\n" +
+                "@NativeSymbol(\"any_to_string\")\n" +
+                "native func any_to_string(value: Any): String\n" +
+                "pub func main(): i32 {\n" +
+                "    Console.println(any_to_string((42 as Any)))\n" +
+                "    Console.println(any_to_string((-7 as Any)))\n" +
+                "    Console.println(any_to_string((18446744073709551615UL as Any)))\n" +
+                "    Console.println(any_to_string((1.5 as Any)))\n" +
+                "    Console.println(any_to_string((1.0f as Any)))\n" +
+                "    Console.println(any_to_string((true as Any)))\n" +
+                "    Console.println(any_to_string(('A' as Any)))\n" +
+                "    Console.println(any_to_string((\"hi\" as Any)))\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("Any toString 大 struct",
+                "import core.io.Console\n" +
+                "@NativeLibrary(\"rigi_rt\")\n" +
+                "@NativeSymbol(\"any_to_string\")\n" +
+                "native func any_to_string(value: Any): String\n" +
+                "pub struct Pair {\n" +
+                "    pub var a: i64\n" +
+                "    pub var b: i64\n" +
+                "    pub init(_ -> a, _ -> b)\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    Console.println(any_to_string((new Pair(11L, 22L) as Any)))\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("Any toString 对象默认",
+                "import core.io.Console\n" +
+                "@NativeLibrary(\"rigi_rt\")\n" +
+                "@NativeSymbol(\"any_to_string\")\n" +
+                "native func any_to_string(value: Any): String\n" +
+                "pub class Plain {\n" +
+                "    pub init() { }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var a: Any = new Plain()\n" +
+                "    Console.println(any_to_string(a))\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("toString override 具体类型",
+                "import core.io.Console\n" +
+                "pub class Point {\n" +
+                "    pub init() { }\n" +
+                "    pub override func toString(): String { return \"PT\" }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var p = new Point()\n" +
+                "    Console.println(p.toString())\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("泛型类字段与方法（i32）",
+                "pub class Box2\\<T> {\n" +
+                "    pub var v: T\n" +
+                "    pub init(v: T) { this.v = v }\n" +
+                "    pub func get(): T { return this.v }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var b = new Box2\\<i32>(7)\n" +
+                "    if (b.v == 7) { b.v = 8 }\n" +
+                "    return b.get()\n" +
+                "}\n"),
+            Case("泛型类字段与方法（string）",
+                "import core.io.Console\n" +
+                "pub class Box2\\<T> {\n" +
+                "    pub var v: T\n" +
+                "    pub init(v: T) { this.v = v }\n" +
+                "    pub func get(): T { return this.v }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var b = new Box2\\<String>(\"ok\")\n" +
+                "    Console.println(b.get())\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("Box2<i32> 与 Box2<string> 共存",
+                "import core.io.Console\n" +
+                "pub class Box2\\<T> {\n" +
+                "    pub var v: T\n" +
+                "    pub init(v: T) { this.v = v }\n" +
+                "    pub func get(): T { return this.v }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var ni = new Box2\\<i32>(41)\n" +
+                "    var ns = new Box2\\<String>(\"x\")\n" +
+                "    Console.println(ns.get())\n" +
+                "    return ni.get()\n" +
+                "}\n"),
+            Case("stdlib Pair 使用",
+                "pub func main(): i32 {\n" +
+                "    var p = new Pair\\<i32, i32>(6, 7)\n" +
+                "    return (p.key + p.value)\n" +
+                "}\n"),
+            Case("嵌套构造 Box2<Box2<i32>>",
+                "pub class Box2\\<T> {\n" +
+                "    pub var v: T\n" +
+                "    pub init(v: T) { this.v = v }\n" +
+                "    pub func get(): T { return this.v }\n" +
+                "}\n" +
+                "pub func wrap\\<T>(x: T): Box2\\<T> { return new Box2\\<T>(x) }\n" +
+                "pub func main(): i32 {\n" +
+                "    var first = wrap\\<i32>(9)\n" +
+                "    var nest = wrap\\<Box2\\<i32> >(first)\n" +
+                "    var mid = nest.get()\n" +
+                "    return mid.get()\n" +
+                "}\n"),
+            Case("泛型方法 typeid 转发链",
+                "pub func id\\<T>(x: T): T { return x }\n" +
+                "pub func pass\\<T>(x: T): T { return id\\<T>(x) }\n" +
+                "pub func main(): i32 {\n" +
+                "    return pass\\<i32>(42)\n" +
+                "}\n"),
+            Case("泛型类经构造基类多虚派发",
+                "pub open class PairV\\<T> {\n" +
+                "    pub init() { }\n" +
+                "    pub open func foo(): i32 { return 1 }\n" +
+                "    pub open func bar(): i32 { return 2 }\n" +
+                "}\n" +
+                "pub class PairD\\<T> : PairV\\<T> {\n" +
+                "    pub init() { }\n" +
+                "    pub override func foo(): i32 { return 10 }\n" +
+                "    pub override func bar(): i32 { return 20 }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var x: PairV\\<i32> = new PairD\\<i32>()\n" +
+                "    return (x.foo() + x.bar())\n" +
+                "}\n"),
+            Case("泛型类实现泛型接口",
+                "pub interface IBox\\<T> {\n" +
+                "    func get(): T\n" +
+                "    func tag(): i32\n" +
+                "    func extra(): i32\n" +
+                "}\n" +
+                "pub class Box3\\<T> implements IBox\\<T> {\n" +
+                "    pub var v: T\n" +
+                "    pub init(v: T) { this.v = v }\n" +
+                "    pub override func get(): T { return this.v }\n" +
+                "    pub override func tag(): i32 { return 7 }\n" +
+                "    pub override func extra(): i32 { return 2 }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var c = new Box3\\<i32>(41)\n" +
+                "    var b: IBox\\<i32> = c\n" +
+                "    return ((c.get() * 100) + ((b.tag() * 10) + b.extra()))\n" +
+                "}\n"),
+            Case("is 类继承命中/不命中",
+                "import core.io.Console\n" +
+                "pub open class Animal { pub init() { } }\n" +
+                "pub class Dog : Animal { pub init() { } }\n" +
+                "pub class Cat : Animal { pub init() { } }\n" +
+                "pub func main(): i32 {\n" +
+                "    var d: Animal = new Dog()\n" +
+                "    var c: Animal = new Cat()\n" +
+                "    if (d is Dog) { Console.println(\"dog hit\") }\n" +
+                "    if (d is Animal) { Console.println(\"animal hit\") }\n" +
+                "    if (d is Cat) { Console.println(\"BAD cat\") }\n" +
+                "    if (c is Cat) { Console.println(\"cat hit\") }\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("is 接口判定",
+                "import core.io.Console\n" +
+                "pub interface Named { func name(): String }\n" +
+                "pub class Dog implements Named {\n" +
+                "    pub init() { }\n" +
+                "    pub override func name(): String { return \"d\" }\n" +
+                "}\n" +
+                "pub class Plain { pub init() { } }\n" +
+                "pub func main(): i32 {\n" +
+                "    var d = new Dog()\n" +
+                "    var p = new Plain()\n" +
+                "    if (d is Named) { Console.println(\"iface hit\") }\n" +
+                "    if (p is Named) { Console.println(\"BAD iface\") }\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("is 对 Any 装箱值",
+                "import core.io.Console\n" +
+                "pub func main(): i32 {\n" +
+                "    var a: Any = 42\n" +
+                "    if (a is i32) { Console.println(\"i32 hit\") }\n" +
+                "    if (a is String) { Console.println(\"BAD str\") }\n" +
+                "    var s: Any = \"hi\"\n" +
+                "    if (s is String) { Console.println(\"str hit\") }\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("is.indirect 泛型体内",
+                "import core.io.Console\n" +
+                "pub open class Animal { pub init() { } }\n" +
+                "pub class Dog : Animal { pub init() { } }\n" +
+                "pub func check\\<T>(x: Animal): bool { return x is T }\n" +
+                "pub func main(): i32 {\n" +
+                "    var d: Animal = new Dog()\n" +
+                "    if (check\\<Dog>(d)) { Console.println(\"gen dog\") }\n" +
+                "    if (check\\<Animal>(d)) { Console.println(\"gen animal\") }\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("supers 类继承逆变",
+                "import core.io.Console\n" +
+                "pub open class Animal { pub init() { } }\n" +
+                "pub class Dog : Animal { pub init() { } }\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = new Animal()\n" +
+                "    var d = new Dog()\n" +
+                "    if (a supers Dog) { Console.println(\"animal supers dog\") }\n" +
+                "    if (d supers Animal) { Console.println(\"BAD dog supers animal\") }\n" +
+                "    if (a supers Animal) { Console.println(\"animal supers animal\") }\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("is/supers 多 implements 接口闭包",
+                "import core.io.Console\n" +
+                "pub interface IA { }\n" +
+                "pub interface IB { }\n" +
+                "pub interface IC implements IA, IB { }\n" +
+                "pub class C implements IC { pub init() }\n" +
+                "pub class Plain { pub init() }\n" +
+                "pub func main(): i32 {\n" +
+                "    var c = new C()\n" +
+                "    var p = new Plain()\n" +
+                "    if (c is IA) { Console.println(\"c is IA\") }\n" +
+                "    if (c is IB) { Console.println(\"c is IB\") }\n" +
+                "    if (c is IC) { Console.println(\"c is IC\") }\n" +
+                "    if (p is IA) { Console.println(\"BAD p is IA\") }\n" +
+                "    var ia: IA = c\n" +
+                "    if (ia supers C) { Console.println(\"ia supers C\") }\n" +
+                "    if (ia supers Plain) { Console.println(\"BAD ia supers Plain\") }\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("接口默认方法未 override",
+                "import core.io.Console\n" +
+                "pub interface Shape {\n" +
+                "    pub func area(): i32\n" +
+                "    pub func describe(): String { return \"default\" }\n" +
+                "}\n" +
+                "pub class Sq implements Shape {\n" +
+                "    pub var s: i32\n" +
+                "    pub init(n: i32) { s = n }\n" +
+                "    pub override func area(): i32 { return (s * s) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var sh: Shape = new Sq(3)\n" +
+                "    Console.println(sh.describe())\n" +
+                "    return sh.area()\n" +
+                "}\n"),
+            Case("泛型接口默认方法",
+                "import core.io.Console\n" +
+                "pub interface IBox\\<T> {\n" +
+                "    func get(): T\n" +
+                "    func tag(): i32 { return 7 }\n" +
+                "}\n" +
+                "pub class Box3\\<T> implements IBox\\<T> {\n" +
+                "    pub var v: T\n" +
+                "    pub init(v: T) { this.v = v }\n" +
+                "    pub override func get(): T { return this.v }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var c = new Box3\\<i32>(41)\n" +
+                "    var b: IBox\\<i32> = c\n" +
+                "    if (b.tag() == 7) { Console.println(\"tag 7\") }\n" +
+                "    return ((c.get() * 100) + b.tag())\n" +
+                "}\n"),
+            Case("接口默认方法类 override",
+                "import core.io.Console\n" +
+                "pub interface Shape {\n" +
+                "    pub func area(): i32\n" +
+                "    pub func describe(): String { return \"default\" }\n" +
+                "}\n" +
+                "pub class Lbl implements Shape {\n" +
+                "    pub var label: String\n" +
+                "    pub init() { label = \"L\" }\n" +
+                "    pub override func area(): i32 { return 7 }\n" +
+                "    pub override func describe(): String { return label }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var sh: Shape = new Lbl()\n" +
+                "    Console.println(sh.describe())\n" +
+                "    return sh.area()\n" +
+                "}\n"),
+            Case("with wrapper 修饰",
+                "import core.io.Console\n" +
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Mark {\n" +
+                "    pub init()\n" +
+                "}\n" +
+                "@Mark\n" +
+                "pub class Tagged { pub init() }\n" +
+                "pub class Plain { pub init() }\n" +
+                "pub func main(): i32 {\n" +
+                "    var t = new Tagged()\n" +
+                "    var p = new Plain()\n" +
+                "    if (t with Mark) { Console.println(\"with hit\") }\n" +
+                "    if (p with Mark) { Console.println(\"BAD with\") }\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("位置值包 0/1/3 实参",
+                "import core.io.Console\n" +
+                "func sum(nums: i32...): i32 {\n" +
+                "    var total = 0\n" +
+                "    var i = 0\n" +
+                "    while (i < nums.length) {\n" +
+                "        total = total + (nums[i] if? 0)\n" +
+                "        i = i + 1\n" +
+                "    }\n" +
+                "    return total\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    if (sum() == 0) { Console.println(\"empty\") }\n" +
+                "    if (sum(7) == 7) { Console.println(\"one\") }\n" +
+                "    if (sum(1, 2, 3) == 6) { Console.println(\"three\") }\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("具名值包 named 实参",
+                "import core.io.Console\n" +
+                "func keys(opts: named Any...): i32 {\n" +
+                "    Console.println(opts[0]?.key if? \"\")\n" +
+                "    Console.println(opts[1]?.key if? \"\")\n" +
+                "    return opts.length\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    return keys(name = \"rigi\", city = \"nyc\")\n" +
+                "}\n"),
+            Case("具名值包 named String...",
+                "import core.io.Console\n" +
+                "func keys(opts: named String...): i32 {\n" +
+                "    Console.println(opts[0]?.key if? \"\")\n" +
+                "    Console.println(opts[1]?.key if? \"\")\n" +
+                "    return opts.length\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    return keys(name = \"rigi\", city = \"nyc\")\n" +
+                "}\n"),
+            Case("泛型继承合成 super A<T>:B<T>",
+                "pub open class B\\<T> {\n" +
+                "    pub var v: i32 = 41\n" +
+                "}\n" +
+                "pub class A\\<T> : B\\<T> {\n" +
+                "    pub var w: i32 = 7\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const c = new A\\<i32>()\n" +
+                "    return (c.v + c.w)\n" +
+                "}\n"),
+            Case("泛型位置包 TArgs",
+                "import core.io.Console\n" +
+                "pub func count\\<TArgs...>(values: TArgs...): i32 {\n" +
+                "    return values.length\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    if (count() == 0) { Console.println(\"empty\") }\n" +
+                "    if (count(1, 2, 3) == 3) { Console.println(\"three\") }\n" +
+                "    return 0\n" +
+                "}\n"),
+            ("包转发（整包）", RunPackForwardCase),
+            Case("kwargs 遍历 Pair 拆箱",
+                "import core.io.Console\n" +
+                "func show(opts: named Any...): i32 {\n" +
+                "    var i = 0\n" +
+                "    while (i < opts.length) {\n" +
+                "        var p = opts[i] if? new Pair\\<String, Any>(\"\", (\"\" as Any))\n" +
+                "        Console.println(p.key)\n" +
+                "        Console.println((p.value) as String)\n" +
+                "        i = i + 1\n" +
+                "    }\n" +
+                "    return 0\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    return show(name = \"rigi\", city = \"nyc\")\n" +
+                "}\n"),
         };
 
         // 单用例：源 → 中端全管线 → BIL 文本 → VM 执行 + native 编译执行，
@@ -791,6 +1285,184 @@ namespace RigiCompiler.Tests
 
         // Windows CRT stdout 文本模式把 \n 翻成 \r\n；比对面统一归一
         private static string NormalizeNewlines(string text) => text.Replace("\r\n", "\n");
+
+        // to_string 面族：手写 BIL 声明 native fn（不走 stdlib），VM hook 与
+        // native 产物 stdout 对拍。f64/f32 走 Ryu 最短往返 + .NET 默认呈现。
+        private const string ToStringFacesBil =
+            "BIL \"1.1\"\n" +
+            "\n" +
+            "Metadata {\n" +
+            "    module = string \"strfmt\"\n" +
+            "}\n" +
+            "\n" +
+            "Resources {\n" +
+            "    R_I0 = i64 0,\n" +
+            "    R_Ineg = i64 -42,\n" +
+            "    R_F0 = f64 0,\n" +
+            "    R_Fneg = f64 -2.5,\n" +
+            "    R_F01 = f64 0.1,\n" +
+            "    R_F02 = f64 0.2,\n" +
+            "    R_F05 = f64 0.5,\n" +
+            "    R_F1 = f64 1,\n" +
+            "    R_F3 = f64 3,\n" +
+            "    R_F4 = f64 4,\n" +
+            "    R_F4n = f64 -4,\n" +
+            "    R_F10 = f64 10,\n" +
+            "    R_F1em5 = f64 1e-5,\n" +
+            "    R_F1e15 = f64 1e15,\n" +
+            "    R_F1e16 = f64 1e16,\n" +
+            "    R_F1e17 = f64 1e17,\n" +
+            "    R_F1e20 = f64 1e20,\n" +
+            "    R_F1e308 = f64 1e308,\n" +
+            "    R_Fmax = f64 1.7976931348623157e308,\n" +
+            "    R_Fmin = f64 2.2250738585072014E-308,\n" +
+            "    R_Fs1 = f32 1,\n" +
+            "    R_Fs3 = f32 3,\n" +
+            "    R_True = bool true,\n" +
+            "    R_False = bool false,\n" +
+            "    R_A = char 'A',\n" +
+            "    R_Nl = string \"\\n\",\n" +
+            "    R_Zero = i32 0\n" +
+            "}\n" +
+            "\n" +
+            "LocalSymbols {\n" +
+            "    .method $print(text:.string)@.void priv native symbol(\"print\") lib(\"rigi_rt\")\n" +
+            "    .method $i64_to_string(value:.i64)@.string priv native symbol(\"i64_to_string\") lib(\"rigi_rt\")\n" +
+            "    .method $f32_to_string(value:.f32)@.string priv native symbol(\"f32_to_string\") lib(\"rigi_rt\")\n" +
+            "    .method $f64_to_string(value:.f64)@.string priv native symbol(\"f64_to_string\") lib(\"rigi_rt\")\n" +
+            "    .method $bool_to_string(value:.bool)@.string priv native symbol(\"bool_to_string\") lib(\"rigi_rt\")\n" +
+            "    .method $char_to_string(value:.char)@.string priv native symbol(\"char_to_string\") lib(\"rigi_rt\")\n" +
+            "    .method $main()@.i32 pub entrypoint\n" +
+            "}\n" +
+            "\n" +
+            "ExternalSymbols {\n" +
+            "}\n" +
+            "\n" +
+            "fn($main()@.i32) {\n" +
+            "    .args {\n" +
+            "        .return = .i32\n" +
+            "    }\n" +
+            "    .vars {\n" +
+            "        .i64 i,\n" +
+            "        .f64 f,\n" +
+            "        .f64 x,\n" +
+            "        .f64 y,\n" +
+            "        .f32 fs,\n" +
+            "        .f32 xs,\n" +
+            "        .f32 ys,\n" +
+            "        .bool b,\n" +
+            "        .char c,\n" +
+            "        .string s,\n" +
+            "        .string nl,\n" +
+            "        .i32 r\n" +
+            "    }\n" +
+            "    .block entry entrypoint {\n" +
+            "        load res(R_Nl) $nl\n" +
+            "        load res(R_I0) $i\n" +
+            "        invoke fn($i64_to_string(value:.i64)@.string) $s [$i]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$s]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$nl]\n" +
+            "        load res(R_Ineg) $i\n" +
+            "        invoke fn($i64_to_string(value:.i64)@.string) $s [$i]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$s]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$nl]\n" +
+            "        load res(R_F0) $f\n" +
+            "        invoke fn($f64_to_string(value:.f64)@.string) $s [$f]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$s]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$nl]\n" +
+            "        load res(R_Fneg) $f\n" +
+            "        invoke fn($f64_to_string(value:.f64)@.string) $s [$f]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$s]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$nl]\n" +
+            "        load res(R_F01) $f\n" +
+            "        invoke fn($f64_to_string(value:.f64)@.string) $s [$f]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$s]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$nl]\n" +
+            "        load res(R_F05) $f\n" +
+            "        invoke fn($f64_to_string(value:.f64)@.string) $s [$f]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$s]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$nl]\n" +
+            "        load res(R_F4) $f\n" +
+            "        invoke fn($f64_to_string(value:.f64)@.string) $s [$f]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$s]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$nl]\n" +
+            "        load res(R_F4n) $f\n" +
+            "        invoke fn($f64_to_string(value:.f64)@.string) $s [$f]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$s]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$nl]\n" +
+            "        load res(R_F1) $x\n" +
+            "        load res(R_F3) $y\n" +
+            "        div $x $y $f\n" +
+            "        invoke fn($f64_to_string(value:.f64)@.string) $s [$f]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$s]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$nl]\n" +
+            "        load res(R_F01) $x\n" +
+            "        load res(R_F02) $y\n" +
+            "        add $x $y $f\n" +
+            "        invoke fn($f64_to_string(value:.f64)@.string) $s [$f]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$s]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$nl]\n" +
+            "        load res(R_F1e20) $f\n" +
+            "        invoke fn($f64_to_string(value:.f64)@.string) $s [$f]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$s]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$nl]\n" +
+            "        load res(R_F1em5) $f\n" +
+            "        invoke fn($f64_to_string(value:.f64)@.string) $s [$f]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$s]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$nl]\n" +
+            "        load res(R_F1e15) $f\n" +
+            "        invoke fn($f64_to_string(value:.f64)@.string) $s [$f]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$s]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$nl]\n" +
+            "        load res(R_F1e16) $f\n" +
+            "        invoke fn($f64_to_string(value:.f64)@.string) $s [$f]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$s]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$nl]\n" +
+            "        load res(R_F1e17) $f\n" +
+            "        invoke fn($f64_to_string(value:.f64)@.string) $s [$f]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$s]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$nl]\n" +
+            "        load res(R_F0) $f\n" +
+            "        opposite $f $f\n" +
+            "        invoke fn($f64_to_string(value:.f64)@.string) $s [$f]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$s]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$nl]\n" +
+            "        load res(R_F1e308) $x\n" +
+            "        load res(R_F10) $y\n" +
+            "        mul $x $y $f\n" +
+            "        invoke fn($f64_to_string(value:.f64)@.string) $s [$f]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$s]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$nl]\n" +
+            "        load res(R_Fmax) $f\n" +
+            "        invoke fn($f64_to_string(value:.f64)@.string) $s [$f]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$s]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$nl]\n" +
+            "        load res(R_Fmin) $f\n" +
+            "        invoke fn($f64_to_string(value:.f64)@.string) $s [$f]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$s]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$nl]\n" +
+            "        load res(R_Fs1) $xs\n" +
+            "        load res(R_Fs3) $ys\n" +
+            "        div $xs $ys $fs\n" +
+            "        invoke fn($f32_to_string(value:.f32)@.string) $s [$fs]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$s]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$nl]\n" +
+            "        load res(R_True) $b\n" +
+            "        invoke fn($bool_to_string(value:.bool)@.string) $s [$b]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$s]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$nl]\n" +
+            "        load res(R_False) $b\n" +
+            "        invoke fn($bool_to_string(value:.bool)@.string) $s [$b]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$s]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$nl]\n" +
+            "        load res(R_A) $c\n" +
+            "        invoke fn($char_to_string(value:.char)@.string) $s [$c]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$s]\n" +
+            "        invoke.noret fn($print(text:.string)@.void) [$nl]\n" +
+            "        load res(R_Zero) $r\n" +
+            "        ret $r\n" +
+            "    }\n" +
+            "}\n";
 
         // string 排序比较的手写 BIL（前端 P3 未放行 String 的 < 运算符，
         // §11.5 内建形态合法）：cmp.lt/gt/le 三形态 + native print 面输出。
@@ -972,6 +1644,27 @@ namespace RigiCompiler.Tests
             {
                 Directory.Delete(dir, recursive: true);
             }
+        }
+
+        // 前端 take(nums) 会把包再装箱成单元素；手改 invoke 整包转发后对拍
+        private static void RunPackForwardCase()
+        {
+            var (_, module, _) = BilTestHarness.EmitBilUnit(
+                "import core.io.Console\n" +
+                "func take(nums: i32...): i32 { return nums.length }\n" +
+                "func wrap(nums: i32...): i32 { return take(nums) }\n" +
+                "pub func main(): i32 {\n" +
+                "    if (wrap(1, 2, 3) == 3) { Console.println(\"fwd\") }\n" +
+                "    return 0\n" +
+                "}\n");
+            var wrap = module.Functions.Single(f => f.Symbol == "$wrap()@.i32");
+            var entry = wrap.Blocks.Single(b => b.Modifiers.Contains(BilBlockModifier.Entrypoint));
+            var invoke = entry.Instructions.OfType<InvokeInstruction>().Single();
+            entry.Instructions.Clear();
+            entry.Instructions.Add(new InvokeInstruction(invoke.Method, invoke.Target,
+                new[] { new BilVariableOperand(".vargs.nums") }));
+            entry.Instructions.Add(new RetInstruction(invoke.Target));
+            RunBilCase("包转发（整包）", BilWriter.Write(module));
         }
 
         // BIL 级对拍（前端尚未降级的合法内建形态）：手写 BIL 直接驱 VM 与

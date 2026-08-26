@@ -27,6 +27,8 @@ namespace RigiCompiler.Middleware.Runtime
         // 时由标量检查策略注入点整体替换
         public const string AbortDividedByZero = "rigi_abort_divided_by_zero";
         public const string AbortArithmeticOverflow = "rigi_abort_arithmetic_overflow";
+        // 拆箱不符：void(TypeSheet*) noreturn，消息含目标 TypeInfo.name
+        public const string AbortInvalidCast = "rigi_abort_invalid_cast";
         public const string AllocArray = "rigi_alloc_array";
         public const string AbortArrayOob = "rigi_abort_array_oob";
         public const string AbortArrayNegativeLength = "rigi_abort_array_negative_length";
@@ -39,7 +41,8 @@ namespace RigiCompiler.Middleware.Runtime
                 Print or PrintErr => new[] { RuntimeFaceParam.StringIn },
                 StringConcat => new[] { RuntimeFaceParam.StringOut, RuntimeFaceParam.StringIn, RuntimeFaceParam.StringIn },
                 StringCompare => new[] { RuntimeFaceParam.StringIn, RuntimeFaceParam.StringIn },
-                AbortDividedByZero or AbortArithmeticOverflow or AbortArrayNegativeLength =>
+                AbortDividedByZero or AbortArithmeticOverflow or AbortArrayNegativeLength
+                    or AbortInvalidCast =>
                     System.Array.Empty<RuntimeFaceParam>(),
                 _ => throw new MwNotSupportedException($"未知 rigi_rt 运行时面: {faceSymbol}"),
             };

@@ -8,6 +8,7 @@
 #define RIGI_ARC_H
 
 #include <stdint.h>
+#include "rigi_string.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -19,10 +20,18 @@ extern "C" {
 #define RIGI_TYPE_DISPOSABLE   0x4u
 #define RIGI_TYPE_INLINE_VALUE 0x8u
 
+/* 胖引用 typeid 最高字节 tag（RUNTIME §2）与 sheet 地址掩码 */
+#define RIGI_TAG_INLINE      0u
+#define RIGI_TAG_HEAP_VALUE  1u
+#define RIGI_TAG_OBJECT      2u
+#define RIGI_TAG_SHIFT       56
+#define RIGI_SHEET_MASK      UINT64_C(0x00FFFFFFFFFFFFFF)
+
+typedef struct RigiTypeInfo RigiTypeInfo;
 typedef struct RigiTypeSheet RigiTypeSheet;
 struct RigiTypeSheet
 {
-    void *typeInfoId;                /* 64 bit：TypeInfo 对象（MW8 前恒 NULL） */
+    const RigiTypeInfo *typeInfoId;  /* 64 bit：TypeInfo（诊断名 / wrapper 表） */
     const RigiTypeSheet *baseTypeId; /* 基类 TypeSheet；仅 Any 为 NULL */
     uint32_t typeSize;               /* 含对象头的对象尺寸（字节） */
     uint32_t typeFlags;              /* RICH/SHARED/DISPOSABLE 位 */
@@ -32,6 +41,18 @@ struct RigiTypeSheet
     const void *iMap;                /* {iface TypeSheet*, u32 base offset} 对数组 */
     uint32_t refMapSize;             /* refMap 条目数量 */
     const uint16_t *refMap;          /* 128-bit 槽粒度跳数序列 */
+};
+
+/* TypeInfo：诊断名 + 回指 sheet + wrapper 清单 + 接口闭包。
+ * ifaceClosure = 该类型传递 implements 的全部接口 sheet（含父接口）。 */
+struct RigiTypeInfo
+{
+    rigi_string name;
+    const RigiTypeSheet *sheet;
+    const RigiTypeSheet *const *wrappers;
+    int32_t wrapperCount;
+    const RigiTypeSheet *const *ifaceClosure;
+    int32_t ifaceClosureCount;
 };
 
 /* 对象头 16B：[0..8) TypeSheet* + [8..12) RC u32 + [12..16) 位打包域
@@ -67,6 +88,20 @@ typedef struct
  * TypeSheet 裸指针（无 tag）；bitcode 合并后由优化管线内联 */
 void *rigi_vtable_entry(void *object, uint32_t slot);
 void *rigi_imap_entry(void *object, const RigiTypeSheet *iface, uint32_t slot);
+
+/* 类型检查 helper（MW5 c3，typecheck.c）：胖引用拆成 typeid/payload
+ * 两枚 i64 传入，规避 16B struct 按值的 win-x64/SysV 分歧；返回 i32 0/1 */
+int32_t rigi_type_is(uint64_t type_id, uint64_t payload, const RigiTypeSheet *target);
+int32_t rigi_type_is_indirect(uint64_t type_id, uint64_t payload,
+    const RigiTypeSheet *target);
+int32_t rigi_type_supers(uint64_t type_id, uint64_t payload,
+    const RigiTypeSheet *target);
+int32_t rigi_type_supers_indirect(uint64_t type_id, uint64_t payload,
+    const RigiTypeSheet *target);
+int32_t rigi_type_with(uint64_t type_id, uint64_t payload,
+    const RigiTypeSheet *wrapper);
+int32_t rigi_type_with_indirect(uint64_t type_id, uint64_t payload,
+    const RigiTypeSheet *wrapper);
 
 #ifdef __cplusplus
 }

@@ -24,7 +24,7 @@ namespace RigiCompiler.Middleware.Mir
         public MwMemberSymbol Symbol { get; }
         // 返回类型（.args 的 .return 条目）
         public MirType ReturnType { get; }
-        // 普通参数（保序，不含 .return；MW1 拒绝 .this/泛型隐藏参数/可变包）
+        // 参数（保序，不含 .return；含 .this / .generic.* / .vargs.* / .kwargs.*）
         public IReadOnlyList<MirLocal> Parameters { get; }
         // 全部具名局部（参数 + .vars），名称唯一
         public IReadOnlyList<MirLocal> Locals { get; }
@@ -72,13 +72,16 @@ namespace RigiCompiler.Middleware.Mir
     public sealed class MirBlock
     {
         public string Id { get; }
-        public IReadOnlyList<MirInst> Instructions { get; }
+        // 仅 MirBuilder 构建期与 Passes/ 改写期可写，Emit 只读消费
+        private readonly List<MirInst> _instructions;
+        public IReadOnlyList<MirInst> Instructions => _instructions;
+        internal List<MirInst> InstructionList => _instructions;
         public MirTerminator Terminator { get; }
 
-        internal MirBlock(string id, IReadOnlyList<MirInst> instructions, MirTerminator terminator)
+        internal MirBlock(string id, List<MirInst> instructions, MirTerminator terminator)
         {
             Id = id;
-            Instructions = instructions;
+            _instructions = instructions;
             Terminator = terminator;
         }
     }
