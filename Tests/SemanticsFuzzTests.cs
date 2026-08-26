@@ -300,6 +300,10 @@ namespace RigiCompiler.Tests
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
                     CreateNoWindow = true,
+                    // 子进程固定 UTF-8（对齐 ParallelSuiteRunner）：防 Windows
+                    // 控制台代码页（en-US 为 CP437）把中文输出解码成乱码
+                    StandardOutputEncoding = Encoding.UTF8,
+                    StandardErrorEncoding = Encoding.UTF8,
                 };
                 // ArgumentList 自动处理参数转义
                 if (runViaDotnetExec)

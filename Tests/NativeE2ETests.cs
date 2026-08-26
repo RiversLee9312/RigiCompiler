@@ -1016,7 +1016,10 @@ namespace RigiCompiler.Tests
                 "pub func main(): i32 {\n" +
                 "    var c = new Box3\\<i32>(41)\n" +
                 "    var b: IBox\\<i32> = c\n" +
-                "    return ((c.get() * 100) + ((b.tag() * 10) + b.extra()))\n" +
+                // 返回值须 <256：linux 进程退出码 8-bit 截断，对拍断言的是
+                // 跨平台可观察一致（4172 在 linux 只剩 76）
+                "    if (((c.get() * 100) + ((b.tag() * 10) + b.extra())) == 4172) { return 42 }\n" +
+                "    return 0\n" +
                 "}\n"),
             Case("is 类继承命中/不命中",
                 "import core.io.Console\n" +
@@ -1130,7 +1133,10 @@ namespace RigiCompiler.Tests
                 "    var c = new Box3\\<i32>(41)\n" +
                 "    var b: IBox\\<i32> = c\n" +
                 "    if (b.tag() == 7) { Console.println(\"tag 7\") }\n" +
-                "    return ((c.get() * 100) + b.tag())\n" +
+                // 返回值须 <256：linux 进程退出码 8-bit 截断，对拍断言的是
+                // 跨平台可观察一致（4107 在 linux 只剩 11）
+                "    if (((c.get() * 100) + b.tag()) == 4107) { return 42 }\n" +
+                "    return 0\n" +
                 "}\n"),
             Case("接口默认方法类 override",
                 "import core.io.Console\n" +

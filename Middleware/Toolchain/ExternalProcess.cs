@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Text;
 using System.Threading.Tasks;
 
 namespace RigiCompiler.Middleware.Toolchain
@@ -28,6 +29,10 @@ namespace RigiCompiler.Middleware.Toolchain
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
+                // 子进程（clang/lld、rigi 产物）一律 UTF-8 交互：不设时 .NET 回退
+                // 控制台代码页（Windows en-US 为 CP437），中文 stderr 会解码成乱码
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8,
             };
             foreach (var arg in args)
             {

@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Text;
 using System.Threading.Tasks;
 
 namespace RigiCompiler.Tests
@@ -196,6 +197,10 @@ namespace RigiCompiler.Tests
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
                     CreateNoWindow = true,
+                    // 子进程（rigic 自身）固定 UTF-8：不设时 .NET 回退控制台代码页
+                    // （Windows en-US 为 CP437），中文用例名会解码成乱码
+                    StandardOutputEncoding = Encoding.UTF8,
+                    StandardErrorEncoding = Encoding.UTF8,
                 };
                 if (runViaDotnetExec)
                 {
