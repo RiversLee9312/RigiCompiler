@@ -216,7 +216,7 @@ namespace RigiCompiler
         {
             // shared class / shared rich struct / shared wrapper
             if (IsShared) return true;
-            // 非 rich ValueType（全部基元、String、Type\<T>、Span\<T>、非 rich struct/enum struct）
+            // 非 rich ValueType（全部基元、String、Type\<T>、非 rich struct/enum struct）
             if (!IsRich && IsValueTypeBranch) return true;
             // Nullable\<T\>/Cell\<T\>/ReadonlyCell\<T\> 按 T 推导（§3.1.2/§5.2 特权）；
             // 内层为泛型参数时按其 extends 界链推导共享安全（界为外层 GP

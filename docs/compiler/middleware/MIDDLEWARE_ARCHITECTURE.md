@@ -168,6 +168,16 @@ Rigi 运行时不存在传统意义的 GC roots：
 第一版不做 last-use/move 优化（保守全计数）；move 语义与 cursor 式非拥有引用
 作为后续优化项，pass 架构预留。
 
+**MW7a 落地形态**：不变量——每个托管槽在每个 CFG 出口恰好配对 acquire/release，
+region 面内自包含（内部无挂起点、无可抛 Rigi 异常的调用）。决策层只插入两条
+MIR 指令 `MirAcquireSlot` / `MirReleaseSlot`；发射层按槽分类落到
+ref/value/string 面。四规则：（1）入口对胖引用/String 参数 acquire（值类型
+`.this` 豁免，其 +1 由落槽建立，避免与本规则双计）；（2）托管 `CopyLocal`
+展开为 Release–Copy–Acquire 三段式，dst==src 删除；（3）产出类指令前置
+Release 目标槽；（4）ret 块将返回值迁入合成局部 `$mw.ret` 后按登记序
+Release 其余托管槽（出口序列不含 `$mw.ret`）。region 协议由运行时面自身
+enter/exit，pass 不另插 region 指令。
+
 ### 4.3 两级 ARC
 
 - **microGC**（local Object）：非原子计数。同一 Coroutine 任意时刻最多一个
@@ -226,11 +236,16 @@ rigi_rt 导出（命名待定，形态固定）：
 |---|---|
 | `alloc(desc)` | 按 TypeSheet 描述符分配对象头 + payload |
 | `acquire(p)` / `release(p) → bool` | RC 增减；release 归零返真（调用方据此析构），减至非零时完成候选登记 + 债务累计 + 阈值检查 + 通知（§4.6） |
-| `region_enter/region_exit` | RUNTIME §23.3 cFlag 协议（含双重检查与 GCAlarm 挂起路径） |
+| `rigi_ref_acquire` / `rigi_ref_release` | 值语义四面族·胖引用槽：按 tag 分派对象/堆值/内联；生成代码只见此对 |
+| `rigi_value_acquire` / `rigi_value_release` | 值语义四面族·值类型：按 TypeSheet.refMap 走查内部胖引用/String 槽 |
+| `rigi_string_acquire` / `rigi_string_release` / `rigi_string_new` | String 槽 ARC（块头 `{atomic u32 rc, u32 reserved}`，data=块+8；字面量 rc=`0xFFFFFFFF` 永生） |
+| `region_enter/region_exit` | RUNTIME §23.3 cFlag 协议（含双重检查与 GCAlarm 挂起路径）；面内自包含 |
+| `rigi_track_malloc` / `rigi_track_free` / `rigi_mem_report` | 台账三面：`RIGI_RT_MEMTRACK=1` 时跟踪堆块，进程退出未清零即 stderr + exit 1 |
 | `string_concat` 等内建面 | String 内建 `+` 等特权操作的实现（String 字符数据是特权裸缓冲区，非托管引用，RUNTIME §4） |
 | `i64_to_string` / `u64_to_string` / `f64_to_string` / `f32_to_string` / `bool_to_string` / `char_to_string` | 标量标准文本（StringOut 首参；any_to_string 的格式化底座；窄整数在 any_to_string 内按符号性 widen 到 i64/u64；f64/f32 为 Ryu 最短往返 + .NET 默认呈现） |
 | `any_to_string` | 任意胖值标准文本（StringOut 首参 + Any 槽指针）：内建标量走对应 to_string 面；`core::String`（tag1）拷贝裸块；其余（tag2 对象 / 大 struct 等）取 TypeInfo.name。不虚调 toString（防默认体递归；override 经方法虚派发，不经本面） |
-| `box_*` / `span_*` | Box/Span 运行时面 |
+| `box_*` | Box 运行时面 |
+| `rigi_span_alloc` | Span/SharedSpan 分配（与数组同构：32B 前缀 + 原生 stride 内联元素；TypeSheet 区分 Span vs SharedSpan）。元素访问内联无独立面；析构复用数组走查（`RIGI_TYPE_ARRAY`） |
 | `rigi_abort_invalid_cast` | 拆箱类型不符占位 abort（`void(TypeSheet*)`；stderr 前缀对齐 VM CastException「无法将 .any 转换为」+ TypeInfo.name，exit 1；MW9 换真异常） |
 | `rigi_type_is` / `rigi_type_is_indirect` | 胖引用实际类型是否为目标或其子类（协变）；tag2 取对象头 sheet，tag0/tag1 掩码 typeid；接口走 TypeInfo.ifaceClosure |
 | `rigi_type_supers` / `rigi_type_supers_indirect` | 实际类型是否为目标的基类（逆变）；沿 target.baseTypeId 链，并查 target.TypeInfo.ifaceClosure（多 implements 父接口） |
@@ -286,11 +301,14 @@ M88 边界：frontend 只携带标记，烘焙全归 Middleware。
 - native 函数：直接生成对 `rigi_rt` shim 的调用；返回用户引用类型的 FFI ABI
   在此定稿（SYNTAX §4.6 / RUNTIME §26 的留白）。
 
-**String 过渡 ABI（MW1 定稿）**：String 的过渡表示为 `{ i8* data, i64 len }`
-UTF-8，按值语义。Rigi 内部调用按值传 `{i8*, i64}`；C 边界（native 面与运行时
-面）一律经 `rigi_string*` 传递（StringOut 出参置首参），规避 16 字节 struct
-按值传递的 win-x64/SysV ABI 分歧。MW7 胖值化时统一迁移，迁移点集中在
-Layout 与 RuntimeFaces 两处。
+**String ABI（MW7 定稿）**：不可变值类型，槽仍为 `{ i8* data, i64 len }` UTF-8。
+字符数据是 ARC 计数缓冲：堆块 `{ atomic u32 rc, u32 reserved, data[] }`，槽内
+`data` = 块基址 + 8；字面量永生 `rc = 0xFFFFFFFF`（acquire/release 均跳过）。
+可观察语义仍为按值深拷贝；native 计数对用户不可见。Rigi 内部按值传
+`{i8*, i64}`；C 边界（native 面与运行时面）一律经 `rigi_string*` 传递
+（StringOut 出参置首参），规避 16 字节 struct 按值传递的 win-x64/SysV ABI
+分歧。Nullable 统一 tag0（内联空/值）/ tag1（堆值）分派，与其它值类型同一套
+胖引用槽，不另开 String 特例。
 
 **typeid 与 C 边界胖引用**：BIL §7.2 六段序（`.this` → 固定泛型 typeid → 泛型包
 → 普通参数 → 值包 → 具名包）即泛型调用约定；typeid 的 LLVM 表示 = TypeSheet
@@ -372,7 +390,8 @@ BIL §16.7 的 try（catch-table 形式）在 MW3 展开为 EH 边与 pad 块，
    行为一致（stdout/异常/退出码）。仓库已有测试资产直接复用。
 3. **RC 正确性**（VM 对拍覆盖不到的领域）：native 产物挂 ASAN/Valgrind 跑全量
    套件；引用图压力与模糊测试；RcInjection 结构化自检（每 region、每 CFG 出口
-   恰好配对）。
+   恰好配对）。rigi_rt 内置台账（`RIGI_RT_MEMTRACK=1`）为跨平台零泄漏口径，
+   NativeE2E 全用例开启（泄漏即产物进程 exit 1）。
 4. **黄金 .ll 快照**：黄金 BIL 用例的 PrintModule 产物快照比对，防发射回归。
 5. **工具链契约测试**：LLVMSharp 绑定与 libLLVM 20 原生包的版本对齐冒烟、
    lld 链接冒烟，随 CI 跑（win-x64/linux-x64）。
@@ -388,16 +407,19 @@ Middleware/                 # 本仓库顶层目录（C#，.NET 10 LTS）
 ├── Binding/                # 实现绑定（ImplBinding 记录族 + ImplBinder 唯一实现查询）
 ├── Mir/                    # MIR 模型 + MirBuilder（BIL 结构化块 → CFG 直译）+ MirReachability（invoke 边可达闭包）
 ├── Pipeline/               # IMwStage + MwPipeline 驱动器（线性阶段序，仿前端层栈纪律；MW4 pass 群在此登记）
-├── Passes/                 # MIR pass 群（已建立：IndexOperatorLowering / AccessorLowering 为既有改写迁移；WrapperBaking / RcInjection / CoroutineSplit / CellElim / Devirt 仍随各自阶段）
+├── Passes/                 # MIR pass 群（已建立：IndexOperatorLowering / AccessorLowering / RcInjectionPass.cs；WrapperBaking / CoroutineSplit / CellElim / Devirt 仍随各自阶段）
 ├── Layout/                 # TypeLayout：canonical → LLVM 类型唯一映射点（引用槽按 RUNTIME §2 胖引用 128-bit/16 字节对齐建模）
-├── Emit/                   # ModuleBuilder（MIR → LLVM 模块）/ LlvmBitcode（unsafe 编组封装：bitcode 解析、LLVMLinkModules2 进程内合并、新 PM default<O2> 管线）/ RuntimeFaces（rigi_rt 面表）/ ObjectEmitter（.o 发射）
+├── Emit/                   # ModuleBuilder / ArcEmitter.cs（MirAcquireSlot/MirReleaseSlot → ref/value/string 面）/ LlvmBitcode（unsafe 编组封装：bitcode 解析、LLVMLinkModules2 进程内合并、新 PM default<O2> 管线）/ RuntimeFaces（rigi_rt 面表）/ ObjectEmitter（.o 发射）
 ├── Toolchain/              # ToolchainResolver（--toolchain → RIGI_LLVM → tools/.llvm/<rid> → PATH）/ ExternalProcess 外部进程封装
 ├── Runtime/                # RigiRtBuilder：rigi_rt 源 EmbeddedResource 内嵌 → 内容哈希缓存 → clang -emit-llvm -c 编成 bitcode（unity build）
 └── Cli/                    # native 驱动（--file/--out/--emit-obj/--emit-ll/--toolchain）
 
 rigi_rt/                    # 本仓库顶层目录（C，EmbeddedResource 内嵌，clang 现场编 bitcode 合并进模块）
 ├── shim.c                  # MW1 最小面：rigi_string {data,len} UTF-8 / rigi_print / rigi_print_err / rigi_string_concat / main → rigi_entry
-├── arc.c/.h                # （随后续阶段）microGC / microSGC、region 协议、对象头
+├── string_rc.c             # String ARC：块头 rc + data=块+8、IMMORTAL 字面量、region 自包含
+├── span.c                  # MW7b：rigi_span_alloc，复用 alloc_contiguous（数组同构布局）
+├── memtrack.c              # 台账：RIGI_RT_MEMTRACK=1 时跟踪 malloc/free，退出未清零 exit 1
+├── arc.c/.h                # microGC / microSGC、值语义四面族、region 协议、对象头
 ├── macrogc.c/.h            # （随后续阶段）Bacon-Rajan 收集器、候选账本、GC 协程实体
 ├── coroutine.c/.h          # （随后续阶段）Coroutine / Executor / Worker / Alarm（含内置 GC Executor）
 └── eh.c/.h                 # （随后续阶段）raise 与 unwind 交互（Itanium / SEH）
@@ -416,7 +438,7 @@ rigi_rt/                    # 本仓库顶层目录（C，EmbeddedResource 内�
 | MW4 | 对象系统 I：布局（含胖引用槽与 access helper 面——C 编写、bitcode 合并、LLVM 内联）、字段、new、static | |
 | MW5 | 调用与 ABI：invoke 族、typeid 隐藏参数、vargs/kwargs、FFI | |
 | MW6 | 元数据与派发：TypeSheet/vtable/iMap/refMap、虚调用、interface | |
-| MW7 | 值语义运行时 + ARC：Box/Span 物化路径、RcInjection、region 协议发射 | ASAN 全绿 |
+| MW7 | 值语义运行时 + ARC：Box 物化、RcInjection、region 协议发射（**MW7a 已收口**）；Span 物化（**MW7b 已收口**：Span=内建 class 定稿） | MW7a/MW7b：NativeE2E 全绿且台账零泄漏 |
 | MW8 | 泛型运行时：`Type\<T\>`/typeOf/new、is/supers/with/cast | |
 | MW9 | 异常：try/catch/finally → landing pad（linux-x64）/ SEH（win-x64） | 异常对拍套件 |
 | MW10 | wrapper 烘焙全链（specific/wildcard/call???） | |

@@ -153,8 +153,7 @@ namespace RigiCompiler.Tests
             foreach (var child in failedChildren)
             {
                 Console.WriteLine($"  [FAIL] case#{child.From}..{child.To}：{DescribeChildFailure(child)}");
-                PrintChildTail("stdout", child.Stdout);
-                PrintChildTail("stderr", child.Stderr);
+                PrintChildFailureOutput(child);
             }
 
             Console.WriteLine(
@@ -309,6 +308,48 @@ namespace RigiCompiler.Tests
                 return $"子进程退出码 {child.ExitCode}";
             }
             return "子进程输出缺失完成统计";
+        }
+
+        // 失败展示纪律：失败子进程的 stdout 全量回显（仅滤 [PASS] 行与空
+        // 行）——[FAIL] 块、多行黄金文本细节、=== 段标题与完成统计全保留，
+        // 失败用例永远不得省略；stderr 保留末尾 15 行作崩溃上下文。
+        private static void PrintChildFailureOutput(ChildResult child)
+        {
+            PrintFailureOutput(child.Stdout);
+            PrintChildTail("stderr", child.Stderr);
+        }
+
+        // stdout 全量回显（滤 [PASS] 后带计数头）——自有并行的 fuzz
+        // 两套件复用本面，保证三处口径一致
+        public static void PrintFailureOutput(string stdout)
+        {
+            var lines = FailureOutputLines(stdout);
+            if (lines.Count == 0)
+            {
+                return;
+            }
+            Console.WriteLine($"    [stdout 全量（滤 [PASS]）共 {lines.Count} 行]");
+            foreach (var line in lines)
+            {
+                Console.WriteLine("      | " + line);
+            }
+        }
+
+        // 失败相关 stdout 行提取（滤掉 [PASS] 与空行，其余一律保留）
+        public static IReadOnlyList<string> FailureOutputLines(string stdout)
+        {
+            var result = new List<string>();
+            foreach (var raw in stdout.Replace("\r", "").Split('\n'))
+            {
+                var line = raw.TrimEnd();
+                if (line.Length == 0
+                    || line.StartsWith("  [PASS] ", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+                result.Add(line);
+            }
+            return result;
         }
 
         private static void PrintChildTail(string streamName, string output)

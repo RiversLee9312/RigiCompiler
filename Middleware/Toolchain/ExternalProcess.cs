@@ -19,7 +19,8 @@ namespace RigiCompiler.Middleware.Toolchain
         /// 带 exe 路径与建议（跑 tools/Fetch-LlvmToolchain.ps1）。
         /// </summary>
         public static int Run(string exe, IReadOnlyList<string> args,
-            out string stdout, out string stderr, string? workingDirectory = null)
+            out string stdout, out string stderr, string? workingDirectory = null,
+            IReadOnlyDictionary<string, string>? environment = null)
         {
             var startInfo = new ProcessStartInfo
             {
@@ -35,6 +36,13 @@ namespace RigiCompiler.Middleware.Toolchain
             if (workingDirectory != null)
             {
                 startInfo.WorkingDirectory = workingDirectory;
+            }
+            if (environment != null)
+            {
+                foreach (var pair in environment)
+                {
+                    startInfo.Environment[pair.Key] = pair.Value;
+                }
             }
 
             Process process;

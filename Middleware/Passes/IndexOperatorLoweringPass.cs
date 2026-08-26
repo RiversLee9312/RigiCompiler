@@ -7,8 +7,9 @@ namespace RigiCompiler.Middleware.Passes
 {
     /// <summary>
     /// 数组运算符降级（MW4）：用户类型的 MirGetArray/MirSetArray 改写为
-    /// MirCall($$getAtIndex/$$setAtIndex)；内建 Array 保留原指令。读：Mir
-    /// + Symbols + Layout；写：原地改写 Mir 指令列表。
+    /// MirCall($$getAtIndex/$$setAtIndex）；内建连续缓冲区（Array / Span /
+    /// SharedSpan）保留原指令。读：Mir + Symbols + Layout；写：原地改写
+    /// Mir 指令列表。
     /// </summary>
     public sealed class IndexOperatorLoweringPass : IMwStage
     {
@@ -34,7 +35,7 @@ namespace RigiCompiler.Middleware.Passes
             {
                 switch (insts[i])
                 {
-                    case MirGetArray get when !TypeLayout.IsArray(get.CollectionType):
+                    case MirGetArray get when !TypeLayout.IsContiguousBuffer(get.CollectionType):
                     {
                         var method = MirBuilder.FindIndexOperator(context.Symbols,
                             get.CollectionType, isGet: true)
@@ -45,7 +46,7 @@ namespace RigiCompiler.Middleware.Passes
                             get.Target);
                         break;
                     }
-                    case MirSetArray set when !TypeLayout.IsArray(set.CollectionType):
+                    case MirSetArray set when !TypeLayout.IsContiguousBuffer(set.CollectionType):
                     {
                         var method = MirBuilder.FindIndexOperator(context.Symbols,
                             set.CollectionType, isGet: false)

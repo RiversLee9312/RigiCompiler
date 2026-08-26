@@ -46,7 +46,11 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("Nullable\\<T> <: Object", ReferenceEquals(b.NullableDefinition.BaseType, b.Object));
             TestHarness.CheckTrue("Box\\<T> <: Object（内建事实）", ReferenceEquals(b.BoxDefinition.BaseType, b.Object));
             TestHarness.CheckTrue("Type\\<T> <: ValueType", ReferenceEquals(b.TypeDefinition.BaseType, b.ValueType));
-            TestHarness.CheckTrue("Span\\<T> <: ValueType", ReferenceEquals(b.SpanDefinition.BaseType, b.ValueType));
+            TestHarness.CheckTrue("Span\\<T> <: Object", ReferenceEquals(b.SpanDefinition.BaseType, b.Object));
+            TestHarness.CheckTrue("SharedSpan\\<T> <: Object", ReferenceEquals(b.SharedSpanDefinition.BaseType, b.Object));
+            TestHarness.CheckTrue("Span 是 class", b.SpanDefinition.Kind == TypeKind.Class);
+            TestHarness.CheckTrue("SharedSpan 是 shared class",
+                b.SharedSpanDefinition.Kind == TypeKind.Class && b.SharedSpanDefinition.IsShared);
 
             // ===== 分支与 rich/shared 标记 =====
             TestHarness.CheckTrue("i32 在 ValueType 分支", b.Int32.IsValueTypeBranch);
@@ -77,6 +81,11 @@ namespace RigiCompiler.Tests
                 && b.SpanDefinition.GenericParameters[0].Constraints.Count == 1
                 && b.SpanDefinition.GenericParameters[0].Constraints[0].Kind == GenericConstraintKind.Extends
                 && ReferenceEquals(b.SpanDefinition.GenericParameters[0].Constraints[0].Bound, b.ValueType));
+            TestHarness.CheckTrue("SharedSpan\\<T extends ValueType\\>",
+                b.SharedSpanDefinition.GenericParameters.Count == 1
+                && b.SharedSpanDefinition.GenericParameters[0].Constraints.Count == 1
+                && b.SharedSpanDefinition.GenericParameters[0].Constraints[0].Kind == GenericConstraintKind.Extends
+                && ReferenceEquals(b.SharedSpanDefinition.GenericParameters[0].Constraints[0].Bound, b.ValueType));
             TestHarness.CheckTrue("Box\\<T extends ValueType\\>",
                 b.BoxDefinition.GenericParameters.Count == 1
                 && b.BoxDefinition.GenericParameters[0].Constraints.Count == 1

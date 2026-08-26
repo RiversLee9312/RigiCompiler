@@ -25,17 +25,19 @@ namespace RigiCompiler.Middleware.Emit
                     {
                         builder.BuildRetVoid();
                     }
-                    else if (session.IsInlineValueType(fn.ReturnType, out var returnPlan))
+                    else if (session.IsInlineValueType(fn.ReturnType, out _))
                     {
-                        // 值类型返回：memcpy 结果到隐藏 out 首参（调用方供
-                        // 槽；内部 ABI），ret void
+                        // 值类型返回：InitRichValue 到隐藏 out 首参（调用方
+                        // 槽已零初始化）；归还 $mw.ret / 源槽的 +1
                         if (ret.Value is not MirLocalOperand returned)
                         {
                             throw new CompilerInternalException(
                                 $"未覆盖的返回值形态: {ret.Value.GetType().Name}");
                         }
-                        session.EmitMemCopy(builder, llvmFunction.GetParam(0),
-                            slots[returned.Name].Slot, returnPlan.Size);
+                        var src = slots[returned.Name].Slot;
+                        ArcEmitter.EmitInitRichValue(session, builder,
+                            llvmFunction.GetParam(0), src, fn.ReturnType);
+                        ArcEmitter.EmitDestroyRichValue(session, builder, src, fn.ReturnType);
                         builder.BuildRetVoid();
                     }
                     else

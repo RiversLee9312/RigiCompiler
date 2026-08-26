@@ -55,11 +55,12 @@ Object:          [view typeid   | object pointer]
 
 **`String` 的表示：**
 
-`String` 是非 rich ValueType，因此它的 `refMap` 恒为空，不参加 GC 引用图，也不需要任何 shared 标注即可跨越 Coroutine 边界。它的字符数据是一段由编译器与运行时管理的**特权裸缓冲区**——与 `Span\<T>` 同属 §1 所说的内建后门，不是托管引用，不是普通 Object 字段：
+`String` 是非 rich ValueType，因此它的 `refMap` 恒为空，不参加 GC 引用图，也不需要任何 shared 标注即可跨越 Coroutine 边界。它的字符数据是一段由编译器与运行时管理的**特权裸缓冲区**——同属 §1 所说的内建后门，不是托管引用，不是普通 Object 字段：
 
 - 短字符串可以完全内联进胖值 payload；超出内联预算时 payload 指向 unique 裸缓冲区，与 tag `1` 的大 ValueType 走同一条物化路径。
 - **可观察语义是按值深拷贝**：每次复制、传参、跨协程传递都产生一份独立的字符数据。
 - 实现**可以**引入用户完全不可观察的 copy-on-write、驻留（interning）或不可变共享缓冲区来消除实际拷贝，包括为共享缓冲区维护 native 侧引用计数——这类计数不进入 GC 引用图，不影响「非 rich ValueType 的 `refMap` 恒为空」这一不变量。
+- 实现注记（MW7a）：当前 native 采用不可变 + ARC 计数缓冲（块头 `{atomic u32 rc, u32 reserved}`，data = 块+8；字面量 `rc=0xFFFFFFFF` 永生）。此即本条允许的 native 侧计数优化，可观察语义仍为按值深拷贝。
 - 但**源码语义、编译器分析与用户代码一律不得假设这些优化存在**，正如 BIL 不得假设任何特定 GC 模型或 GC 行为。任何能让用户观察到缓冲区共享的行为都是实现缺陷。
 
 **固定成本：**
@@ -69,14 +70,15 @@ Object:          [view typeid   | object pointer]
 
 ---
 
-## 5. `Span\<T>`：无装箱的连续缓冲区
+## 5. `Span\<T>` 与 `SharedSpan\<T>`：无装箱的连续缓冲区对象
 
-`Span\<TElement extends ValueType>` 是内建的 ValueType（struct），为需要连续、非装箱原生存储的场景（缓冲区、数组等）提供 `Array` 的替代——它不走 §4 的泛型装箱路径，即便 `TElement` 尺寸 > 8 字节，元素也**不装箱**，一视同仁地连续内联存储。
+`Span\<TElement extends ValueType>` 是**内建 class（Object，引用语义）**，为需要连续、非装箱原生存储的场景（缓冲区、数值密集计算等）提供 `Array` 的替代——它不走 §4 的泛型装箱路径，即便 `TElement` 尺寸 > 8 字节，元素也**不装箱**，一视同仁地连续内联存储。复制与传参共享同一 buffer 对象，经别名写入互相可见（这是特性，与 `String` / struct 的值语义刻意区分）；生命周期由普通 ARC 管理（tag `2` 胖引用）。
 
-- **表示**：`Span\<T>` 自身是一个小 struct（基址 + 长度，概念上类似胖指针）；作为具体字段类型出现时（非再次泛型化）直接落布局，不触发装箱（同 §4 的非泛型字段规则）。
-- **元素访问**：`Span\<T>` 持有的单一 typeid（`T`）在运行期从 `TypeSheet.typeSize` 得到元素步长（stride），索引即 `基址 + i * stride` 的直接指针运算，不分配、不解引用装箱对象。
-- **定位**：这是"一视同仁地对所有 ValueType 开特例的 Array"，而不是给 `Array\<T>` 本身开特例——`Array\<T>` 保持普通泛型语义（装箱，见 §4）。缓冲区/数值密集场景应使用 `Span\<T>`。
-- **来源（"官方后门"）**：`Span\<T>` 的基址指向**独立分配的原生 buffer**（如 `Span.alloc(n)`），不经过 `Array\<T>`/`List\<T>` 装箱再借出。它是绕开普通泛型 16 字节胖值槽与 Box 间接表示、直接取得连续原生内存的官方手段，端到端按 `T` 的原生布局存储。
-- **GC 可见性**：若 `T` 为非 rich ValueType，`Span\<T>` 对 GC 完全透明（纯字节 buffer，无需扫描）。若 `T` 为 rich ValueType，`Span\<T>` 就不再是 GC 透明的——运行时需按 `TypeSheet.typeSize` 给出的 stride 逐元素遍历，并用 `T` 的 `refMap` 对内部引用执行 acquire/release 或 macroGC 扫描。共享存储中的元素必须为非 rich 或 shared rich ValueType。
+- **表示**：对象布局与数组完全同构——对象头（16B）+ elemSheet 指针（@16）+ length i32（@24）+ 元素内联连续存储（@32 起）。元素**不装箱**、按 `T` 原生布局排列；步长 = `T` 的 `TypeSheet.typeSize`（编译期已知，生成代码使用常量 stride）。
+- **元素访问**：索引即 `基址 + i × stride` 的直接指针运算，不分配、不解引用装箱对象。读越界返回 null（`.nullable<T>` 形态，与数组同约定）；写越界 abort（与数组同）。
+- **定位**：这是"一视同仁地对所有 ValueType 开特例的连续缓冲区"，而不是给 `Array\<T>` 本身开特例——`Array\<T>` 保持普通泛型语义（装箱，见 §4）。缓冲区/数值密集场景应使用 `Span\<T>`。
+- **来源（官方后门）**：`spanOf\<T>(n)`（stdlib 公共面，native `span_alloc` 实现）直接取得连续原生内存，不经过 `Array\<T>` / `List\<T>`。`T extends ValueType` 由泛型约束在编译期强制（`Span\<class>` 为编译错误）。
+- **GC 可见性**：`T` 非 rich 时，对象无引用图边（元素不含托管引用）。`T` 为 rich 时，析构按 `elemSheet × length × stride` 逐元素走查内部引用——与数组析构同一机制（`RIGI_TYPE_ARRAY` 标志；Span 的 TypeSheet 由 C# 侧发射时带上该位）。
+- **`SharedSpan\<T>`**：`Span\<T>` 的 shared class 变体，对象布局相同，`typeFlags` 含 `SHARED`（原子 rc，走 microSGC）。元素约束收紧为「非 rich 或 shared rich ValueType」（编译期检查）。Mutex 等同步原语与更完整的并发支持由未来版本接入；本期仅提供类型与原子生命周期。
 
 ---

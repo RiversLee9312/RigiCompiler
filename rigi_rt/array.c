@@ -1,8 +1,7 @@
 /*
- * 数组分配与越界/负长度 abort 面（MW4）：alloc_array 按元素 TypeSheet
- * 的 INLINE_VALUE 位选择步长（值类型 typeSize 内联，否则 16B 胖槽），
- * 对象头走传入的 Array TypeSheet；length 写在偏移 16。消息与 VM
- * VmException 原文对齐，退出码 1。
+ * 数组分配与越界/负长度 abort 面（MW4 / MW7a / MW7b）：alloc_contiguous
+ * 为数组与 Span 共用的同构分配体（INLINE_VALUE 选步长、32B 前缀），
+ * alloc_array 只是面函数。消息与 VM VmException 原文对齐，退出码 1。
  */
 #include "arc.h"
 
@@ -10,7 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define RIGI_ARRAY_PREFIX 24u
+#define RIGI_ARRAY_PREFIX 32u
 
 void *rigi_malloc(int32_t size)
 {
@@ -20,12 +19,7 @@ void *rigi_malloc(int32_t size)
         fprintf(stderr, "rigi_rt: malloc size < 0\n");
         abort();
     }
-    block = malloc((size_t)size);
-    if (block == NULL)
-    {
-        fprintf(stderr, "rigi_rt: out of memory (malloc %d)\n", size);
-        abort();
-    }
+    block = rigi_track_malloc((size_t)size);
     memset(block, 0, (size_t)size);
     return block;
 }
@@ -45,7 +39,7 @@ _Noreturn void rigi_abort_array_oob(int32_t index, int32_t length)
     exit(1);
 }
 
-void *rigi_alloc_array(const RigiTypeSheet *arraySheet, const RigiTypeSheet *elemSheet,
+void *rigi_alloc_contiguous(const RigiTypeSheet *sheet, const RigiTypeSheet *elemSheet,
     int32_t len)
 {
     int32_t stride;
@@ -66,15 +60,17 @@ void *rigi_alloc_array(const RigiTypeSheet *arraySheet, const RigiTypeSheet *ele
         stride = 16;
     }
     bytes = (size_t)RIGI_ARRAY_PREFIX + (size_t)len * (size_t)stride;
-    object = (RigiObjectHeader *)malloc(bytes);
-    if (object == NULL)
-    {
-        fprintf(stderr, "rigi_rt: out of memory (array len=%d stride=%d)\n", len, stride);
-        abort();
-    }
+    object = (RigiObjectHeader *)rigi_track_malloc(bytes);
     memset(object, 0, bytes);
-    object->typeId = arraySheet;
+    object->typeId = sheet;
     object->rc = 1;
-    memcpy((char *)object + 16, &len, sizeof(len));
+    *(const RigiTypeSheet **)((char *)object + 16) = elemSheet;
+    *(int32_t *)((char *)object + 24) = len;
     return object;
+}
+
+void *rigi_alloc_array(const RigiTypeSheet *arraySheet, const RigiTypeSheet *elemSheet,
+    int32_t len)
+{
+    return rigi_alloc_contiguous(arraySheet, elemSheet, len);
 }

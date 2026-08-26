@@ -58,7 +58,8 @@ namespace RigiCompiler
 
         // 泛型内建定义（SYNTAX §3.1.2 特权类型）
         public TypeSymbol TypeDefinition { get; }      // Type\<T>
-        public TypeSymbol SpanDefinition { get; }      // Span\<T extends ValueType>
+        public TypeSymbol SpanDefinition { get; }      // Span\<T extends ValueType>（Object 分支）
+        public TypeSymbol SharedSpanDefinition { get; } // SharedSpan\<T extends ValueType>（shared class）
         public TypeSymbol NullableDefinition { get; }  // Nullable\<T>（Object 分支）
         public TypeSymbol BoxDefinition { get; }       // Box\<T extends ValueType>（Object 分支）
         public TypeSymbol ArrayDefinition { get; }     // Array\<T>（Object 分支，.array<T>）
@@ -187,17 +188,29 @@ namespace RigiCompiler
             // 泛型内建（§3.1.2）：
             // Box\<T> <: Object 为内建事实（BaseType 链直接表达，不经 baseTypeId 证明）；
             // Nullable\<T> 属 Object 分支且 shared 按 T 推导（DerivesSharedSafetyFromTypeArgument）；
-            // Type\<T>/Span\<T> 在 ValueType 分支
+            // Type\<T> 在 ValueType 分支；Span\<T>/SharedSpan\<T> 在 Object 分支（RUNTIME §5）
             var typeParamT = new GenericParameterSymbol("T");
             TypeDefinition = new TypeSymbol("Type", TypeKind.Struct, Core,
                 baseType: ValueType, isBuiltin: true, bilStandardConstructor: ".typeid");
             TypeDefinition.GenericParameters.Add(typeParamT);
 
-            SpanDefinition = new TypeSymbol("Span", TypeKind.Struct, Core,
-                baseType: ValueType, isBuiltin: true);
+            // Span\<T extends ValueType\>（RUNTIME §5）：内建 class（Object，引用语义）；
+            // 连续无装箱缓冲区，复制共享同一 buffer；T 由泛型约束强制为 ValueType。
+            SpanDefinition = new TypeSymbol("Span", TypeKind.Class, Core,
+                baseType: Object, isBuiltin: true);
             SpanDefinition.GenericParameters.Add(new GenericParameterSymbol("T"));
             SpanDefinition.GenericParameters[0].Constraints.Add(
                 new GenericConstraintInfo(GenericConstraintKind.Extends, ValueType));
+            AddIndexOperatorsAndLength(SpanDefinition);
+
+            // SharedSpan\<T extends ValueType\>（RUNTIME §5）：Span 的 shared class 变体，
+            // 同布局；元素另由 GenericConstraints 收紧为「非 rich 或 shared rich ValueType」。
+            SharedSpanDefinition = new TypeSymbol("SharedSpan", TypeKind.Class, Core,
+                baseType: Object, isBuiltin: true, isShared: true);
+            SharedSpanDefinition.GenericParameters.Add(new GenericParameterSymbol("T"));
+            SharedSpanDefinition.GenericParameters[0].Constraints.Add(
+                new GenericConstraintInfo(GenericConstraintKind.Extends, ValueType));
+            AddIndexOperatorsAndLength(SharedSpanDefinition);
 
             NullableDefinition = new TypeSymbol("Nullable", TypeKind.Class, Core,
                 baseType: Object, isBuiltin: true,
@@ -269,7 +282,7 @@ namespace RigiCompiler
                 Any, Object, ValueType, Enum, Wrapper, Exception,
                 Int8, Int16, Int32, Int64, UInt8, UInt16, UInt32, UInt64,
                 Float, Double, Bool, Char, String,
-                TypeDefinition, SpanDefinition, NullableDefinition, BoxDefinition,
+                TypeDefinition, SpanDefinition, SharedSpanDefinition, NullableDefinition, BoxDefinition,
                 ArrayDefinition, MapDefinition,
             })
             {
@@ -278,6 +291,35 @@ namespace RigiCompiler
                 builtin.Accessibility = Accessibility.Public;
                 Core.Types.Add(builtin);
             }
+        }
+
+        // Array/Span/SharedSpan 同构：索引运算符（P3 读绑 getAtIndex / 写绑 setAtIndex，
+        // P4b 直发 §13.6 get.array/set.array）+ length 特权 const 字段（VM 直读，
+        // 无 backing 存储——不进对象字段表；RUNTIME §5 / §26）
+        private void AddIndexOperatorsAndLength(TypeSymbol definition)
+        {
+            var elementT = definition.GenericParameters[0];
+            var getAtIndex = new MethodSymbol("getAtIndex", MethodKind.Operator,
+                owner: definition, returnType: elementT)
+            {
+                Accessibility = Accessibility.Public,
+            };
+            getAtIndex.Parameters.Add(new ParameterSymbol("index", Int32));
+            definition.Methods.Add(getAtIndex);
+            var setAtIndex = new MethodSymbol("setAtIndex", MethodKind.Operator,
+                owner: definition)
+            {
+                Accessibility = Accessibility.Public,
+            };
+            setAtIndex.Parameters.Add(new ParameterSymbol("index", Int32));
+            setAtIndex.Parameters.Add(new ParameterSymbol("element", elementT));
+            definition.Methods.Add(setAtIndex);
+            var length = new FieldSymbol("length", owner: definition,
+                fieldType: Int32, isConst: true)
+            {
+                Accessibility = Accessibility.Public,
+            };
+            definition.Fields.Add(length);
         }
 
         // 内建基元直造（BaseType = ValueType 的 Struct + 固定别名 + intrinsic 集）

@@ -18,7 +18,8 @@ namespace RigiCompiler.Tests
     ///    四家族 132 个 abstract class + Cell/ReadonlyCell，SYNTAX §5.2）；
     ///    Console（namespace core.io + pub class + 3 callable 成员，
     ///    native 双注解）；collections（namespace core.collections +
-    ///    2 interface + 2 class + alloc_array/arrayOf/arrayOfElements）；
+    ///    2 interface + 2 class + alloc_array/arrayOf/arrayOfElements +
+    ///    span_alloc/spanOf/shared_span_alloc/sharedSpanOf）；
     ///    coroutine（namespace core.coroutine +
     ///    9 class + make_sleep_alarm native + sleep 包装）；disposable（namespace core +
     ///    IDisposable 接口）；exceptions（namespace core + 5 异常子类）
@@ -262,10 +263,11 @@ namespace RigiCompiler.Tests
             // 顶层：namespace + IEnumerator/IEnumerable 接口 +
             // RangeEnumerator\<T\> 抽象基类 + RangeEnumeratorI32/RangeI32
             // 具体类（共 6 个声明，S9f）
-            TestHarness.CheckTrue("顶层恰好 9 个声明（namespace + 2 interface + " +
-                "abstract 基类 + 2 class + alloc_array/arrayOf/arrayOfElements）",
-                root.Declarations.Count == 9, $"实际 {root.Declarations.Count}");
-            if (root.Declarations.Count < 9) { TestHarness.Blank(); return; }
+            TestHarness.CheckTrue("顶层恰好 13 个声明（namespace + 2 interface + " +
+                "abstract 基类 + 2 class + alloc_array/arrayOf/arrayOfElements + " +
+                "span_alloc/spanOf/shared_span_alloc/sharedSpanOf）",
+                root.Declarations.Count == 13, $"实际 {root.Declarations.Count}");
+            if (root.Declarations.Count < 13) { TestHarness.Blank(); return; }
 
             var ns = root.Declarations[0] as NamespaceDeclarationASTNode;
             TestHarness.CheckTrue("首声明是 namespace core.collections",
@@ -303,6 +305,28 @@ namespace RigiCompiler.Tests
                 && arrayOfElements.Name == "arrayOfElements"
                 && arrayOfElements.Body != null
                 && arrayOfElements.GenericParameters?.Parameters.Count == 1);
+            TestHarness.CheckTrue("声明[9] 是 span_alloc native",
+                root.Declarations[9] is CallableDeclarationASTNode spanAlloc
+                && spanAlloc.Name == "span_alloc"
+                && spanAlloc.Modifiers.Contains(Keywords.NATIVE)
+                && spanAlloc.Body == null
+                && spanAlloc.GenericParameters?.Parameters.Count == 1);
+            TestHarness.CheckTrue("声明[10] 是 spanOf",
+                root.Declarations[10] is CallableDeclarationASTNode spanOf
+                && spanOf.Name == "spanOf"
+                && spanOf.Body != null
+                && spanOf.GenericParameters?.Parameters.Count == 1);
+            TestHarness.CheckTrue("声明[11] 是 shared_span_alloc native",
+                root.Declarations[11] is CallableDeclarationASTNode sharedAlloc
+                && sharedAlloc.Name == "shared_span_alloc"
+                && sharedAlloc.Modifiers.Contains(Keywords.NATIVE)
+                && sharedAlloc.Body == null
+                && sharedAlloc.GenericParameters?.Parameters.Count == 1);
+            TestHarness.CheckTrue("声明[12] 是 sharedSpanOf",
+                root.Declarations[12] is CallableDeclarationASTNode sharedSpanOf
+                && sharedSpanOf.Name == "sharedSpanOf"
+                && sharedSpanOf.Body != null
+                && sharedSpanOf.GenericParameters?.Parameters.Count == 1);
 
             // 接口方法无体（§11）；抽象基类有 abstract 方法；实现类成员带 override
             if (root.Declarations[1] is InterfaceDeclarationASTNode enumerator)

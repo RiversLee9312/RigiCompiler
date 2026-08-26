@@ -447,6 +447,28 @@ namespace RigiCompiler.Middleware.Mir
         }
     }
 
+    // RcInjection 产物：就地 acquire（+1）/ release（-1）具名槽；类别由发射期
+    // ClassifySlot 决定（决策归 pass，机制归 ArcEmitter）
+    public sealed class MirAcquireSlot : MirInst
+    {
+        public string Local { get; }
+
+        internal MirAcquireSlot(string local)
+        {
+            Local = local;
+        }
+    }
+
+    public sealed class MirReleaseSlot : MirInst
+    {
+        public string Local { get; }
+
+        internal MirReleaseSlot(string local)
+        {
+            Local = local;
+        }
+    }
+
     public abstract class MirTerminator
     {
     }

@@ -511,6 +511,8 @@ namespace RigiCompiler.Bil.Vm
         {
             if (IsAny(normalized) || IsObject(normalized)
                 || normalized.StartsWith("core::Array<", StringComparison.Ordinal)
+                || normalized.StartsWith("core::Span<", StringComparison.Ordinal)
+                || normalized.StartsWith("core::SharedSpan<", StringComparison.Ordinal)
                 || normalized.StartsWith("core::Cell<", StringComparison.Ordinal)
                 || normalized.StartsWith("core::ReadonlyCell<", StringComparison.Ordinal))
             {

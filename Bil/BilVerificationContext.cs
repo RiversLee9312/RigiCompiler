@@ -96,7 +96,7 @@ namespace RigiCompiler.Bil
             "core::u8", "core::u16", "core::u32", "core::u64",
             "core::float", "core::double", "core::bool", "core::char", "core::String",
             // 泛型内建（§3.1.2 特权类型；BIL 多经 .typeid/.nullable 构造头引用）
-            "core::Type", "core::Span", "core::Nullable", "core::Box",
+            "core::Type", "core::Span", "core::SharedSpan", "core::Nullable", "core::Box",
         };
 
         private static readonly string[] PredefinedMethods =
@@ -132,6 +132,9 @@ namespace RigiCompiler.Bil
             // Array.length（V2.5，RUNTIME §26）：bootstrap const 字段，
             // 内建类型不进符号段，get.field 需要可解析
             "core::Array#length@.i32",
+            // Span/SharedSpan.length（RUNTIME §5）：与 Array.length 同构特权 const 字段
+            "core::Span#length@.i32",
+            "core::SharedSpan#length@.i32",
         };
 
         private void IndexSymbolSection(List<BilSymbolSectionEntry> section, bool isLocal)

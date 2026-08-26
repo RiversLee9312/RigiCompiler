@@ -45,7 +45,7 @@ namespace RigiCompiler.Middleware.Emit
                 {
                     global.Alignment = (uint)plan.Alignment;
                 }
-                session.RegisterStaticField(member.Canonical, global);
+                session.RegisterStaticField(member.Canonical, global, fieldType);
             }
         }
 
@@ -54,14 +54,25 @@ namespace RigiCompiler.Middleware.Emit
         {
             var global = session.StaticFieldFor(inst.FieldSymbol);
             var fieldType = MirType.Of(FieldTypeOf(inst.FieldSymbol));
-            if (session.IsInlineValueType(fieldType, out var plan))
+            if (session.IsInlineValueType(fieldType, out _))
             {
-                // 值类型静态槽：memcpy 读出（VM Copy 同口径）
-                session.EmitMemCopy(builder, slots[inst.Target].Slot, global, plan.Size);
+                ArcEmitter.EmitInitRichValue(session, builder, slots[inst.Target].Slot,
+                    global, fieldType);
                 return;
             }
             var value = builder.BuildLoad2(TypeLayout.MapType(session.Context, fieldType),
                 global, "static.get");
+            switch (TypeLayout.ClassifySlot(session.Layout, fieldType))
+            {
+                case ManagedSlotKind.FatReference:
+                    builder.BuildStore(ArcEmitter.ProduceFatValue(session, builder, value, "static.get"),
+                        slots[inst.Target].Slot);
+                    return;
+                case ManagedSlotKind.String:
+                    builder.BuildStore(ArcEmitter.ProduceStringValue(session, builder, value),
+                        slots[inst.Target].Slot);
+                    return;
+            }
             builder.BuildStore(value, slots[inst.Target].Slot);
         }
 
@@ -70,17 +81,27 @@ namespace RigiCompiler.Middleware.Emit
         {
             var global = session.StaticFieldFor(inst.FieldSymbol);
             var fieldType = MirType.Of(FieldTypeOf(inst.FieldSymbol));
-            if (session.IsInlineValueType(fieldType, out var plan))
+            if (session.IsInlineValueType(fieldType, out _))
             {
                 if (inst.Source is not MirLocalOperand source)
                 {
                     throw new CompilerInternalException(
                         $"未覆盖的 set.field.static 源形态: {inst.Source.GetType().Name}");
                 }
-                session.EmitMemCopy(builder, global, slots[source.Name].Slot, plan.Size);
+                ArcEmitter.EmitCopyRichValue(session, builder, global,
+                    slots[source.Name].Slot, fieldType);
                 return;
             }
             var value = session.LoadLocal(builder, slots, inst.Source);
+            switch (TypeLayout.ClassifySlot(session.Layout, fieldType))
+            {
+                case ManagedSlotKind.FatReference:
+                    ArcEmitter.AssignFatValue(session, builder, global, value);
+                    return;
+                case ManagedSlotKind.String:
+                    ArcEmitter.AssignStringValue(session, builder, global, value);
+                    return;
+            }
             builder.BuildStore(value, global);
         }
 

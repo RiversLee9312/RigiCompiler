@@ -26,12 +26,13 @@ namespace RigiCompiler.Middleware.Mir
         public MirType ReturnType { get; }
         // 参数（保序，不含 .return；含 .this / .generic.* / .vargs.* / .kwargs.*）
         public IReadOnlyList<MirLocal> Parameters { get; }
-        // 全部具名局部（参数 + .vars），名称唯一
-        public IReadOnlyList<MirLocal> Locals { get; }
+        // 全部具名局部（参数 + .vars + pass 合成槽），名称唯一
+        public IReadOnlyList<MirLocal> Locals => _locals;
         public IReadOnlyList<MirBlock> Blocks { get; }
         // 入口函数标记（§8.4 成员级 entrypoint 修饰符）
         public bool IsEntrypoint { get; }
 
+        private readonly List<MirLocal> _locals;
         private readonly Dictionary<string, MirLocal> _localMap;
 
         internal MirFunction(MwMemberSymbol symbol, MirType returnType,
@@ -41,17 +42,26 @@ namespace RigiCompiler.Middleware.Mir
             Symbol = symbol;
             ReturnType = returnType;
             Parameters = parameters;
-            Locals = locals;
+            _locals = locals as List<MirLocal> ?? new List<MirLocal>(locals);
             Blocks = blocks;
             IsEntrypoint = isEntrypoint;
             _localMap = new Dictionary<string, MirLocal>(System.StringComparer.Ordinal);
-            foreach (var local in locals)
+            foreach (var local in _locals)
             {
                 _localMap.Add(local.Name, local);
             }
         }
 
         public MirLocal FindLocal(string name) => _localMap[name];
+
+        internal bool TryFindLocal(string name, out MirLocal local) =>
+            _localMap.TryGetValue(name, out local!);
+
+        internal void AddLocal(MirLocal local)
+        {
+            _locals.Add(local);
+            _localMap.Add(local.Name, local);
+        }
     }
 
     // 具名局部（发射期落 alloca 槽）
@@ -76,7 +86,7 @@ namespace RigiCompiler.Middleware.Mir
         private readonly List<MirInst> _instructions;
         public IReadOnlyList<MirInst> Instructions => _instructions;
         internal List<MirInst> InstructionList => _instructions;
-        public MirTerminator Terminator { get; }
+        public MirTerminator Terminator { get; internal set; }
 
         internal MirBlock(string id, List<MirInst> instructions, MirTerminator terminator)
         {

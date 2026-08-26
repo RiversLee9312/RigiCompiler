@@ -27,6 +27,10 @@ namespace RigiCompiler.Middleware.Emit
                     when native.Library == "rigi_rt" && native.Symbol == "alloc_array":
                     ArrayEmitter.EmitAllocArrayCall(session, builder, slots, call);
                     break;
+                case NativeDirectBinding native
+                    when native.Library == "rigi_rt" && native.Symbol == "span_alloc":
+                    ArrayEmitter.EmitAllocSpanCall(session, builder, slots, call);
+                    break;
                 case NativeDirectBinding native:
                 {
                     var signature = CanonicalSignature.Parse(call.Target.Canonical);
@@ -144,6 +148,8 @@ namespace RigiCompiler.Middleware.Emit
             }
             var init = session.FunctionOf(inst.Init.Canonical);
             var expected = ExpectedCallParams(init.Mir);
+            var temps = new List<ArcEmitter.RichTemp>();
+            var boxed = new List<ArcEmitter.FatTemp>();
             // expected[0] = .this（已用 fat）；其余对用户实参
             var initArgs = new LLVMValueRef[inst.Args.Count + 1];
             initArgs[0] = fat;
@@ -151,9 +157,11 @@ namespace RigiCompiler.Middleware.Emit
             {
                 var expectType = i + 1 < expected.Count ? expected[i + 1].Type : null;
                 initArgs[i + 1] = CoerceArg(session, builder, slots, inst.Args[i],
-                    expectType, aliasThis: false);
+                    expectType, aliasThis: false, temps, boxed);
             }
             builder.BuildCall2(init.Type, init.Value, initArgs, "");
+            ArcEmitter.DestroyRichTemps(session, builder, temps);
+            ArcEmitter.DestroyFatTemps(session, builder, boxed);
             builder.BuildStore(fat, slots[inst.Target].Slot);
         }
 
@@ -165,8 +173,13 @@ namespace RigiCompiler.Middleware.Emit
             ModuleBuilder.Session.EmittedFunction callee,
             IReadOnlyList<MirOperand> args, string? result)
         {
-            var callArgs = MarshalArgs(session, builder, slots, callee.Mir, args, result);
+            var temps = new List<ArcEmitter.RichTemp>();
+            var boxed = new List<ArcEmitter.FatTemp>();
+            var callArgs = MarshalArgs(session, builder, slots, callee.Mir, args, result, temps,
+                boxed);
             var callResult = builder.BuildCall2(callee.Type, callee.Value, callArgs, "");
+            ArcEmitter.DestroyRichTemps(session, builder, temps);
+            ArcEmitter.DestroyFatTemps(session, builder, boxed);
             StoreCoercedResult(session, builder, slots, callee.Mir.ReturnType, callResult, result);
         }
 
@@ -195,6 +208,7 @@ namespace RigiCompiler.Middleware.Emit
             if (BoxEmitter.NeedsUnbox(session, returnType, actual))
             {
                 BoxEmitter.UnboxToLocal(session, builder, slots, callResult, actual, result);
+                ArcEmitter.EmitReleaseFatValue(session, builder, callResult);
                 return;
             }
             builder.BuildStore(callResult, slots[result].Slot);
@@ -216,13 +230,16 @@ namespace RigiCompiler.Middleware.Emit
                 builder.BuildCall2(wrapper.Type, wrapper.Value, new[] { slot }, "");
             }
             var init = session.FunctionOf(inst.Init.Canonical);
+            var temps = new List<ArcEmitter.RichTemp>();
             var initArgs = new LLVMValueRef[inst.Args.Count + 1];
             initArgs[0] = slot;
             for (var i = 0; i < inst.Args.Count; i++)
             {
-                initArgs[i + 1] = MarshalArg(session, builder, slots, inst.Args[i], aliasThis: false);
+                initArgs[i + 1] = MarshalArg(session, builder, slots, inst.Args[i],
+                    aliasThis: false, temps);
             }
             builder.BuildCall2(init.Type, init.Value, initArgs, "");
+            ArcEmitter.DestroyRichTemps(session, builder, temps);
         }
 
         // 虚调用：接收者胖引用 payload → 对象头 [0] 实际 TypeSheet →
@@ -237,8 +254,13 @@ namespace RigiCompiler.Middleware.Emit
             var entry = EmitVTableEntry(session, builder, "rigi_vtable_entry",
                 new[] { ObjectPointer(session, builder, slots, call.Args[0]),
                         LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, (uint)slot, false) });
+            var temps = new List<ArcEmitter.RichTemp>();
+            var boxed = new List<ArcEmitter.FatTemp>();
             var callResult = builder.BuildCall2(callee.Type, entry,
-                MarshalArgs(session, builder, slots, callee.Mir, call.Args, call.Result), "");
+                MarshalArgs(session, builder, slots, callee.Mir, call.Args, call.Result, temps,
+                    boxed), "");
+            ArcEmitter.DestroyRichTemps(session, builder, temps);
+            ArcEmitter.DestroyFatTemps(session, builder, boxed);
             StoreCoercedResult(session, builder, slots, callee.Mir.ReturnType,
                 callResult, call.Result);
         }
@@ -257,8 +279,13 @@ namespace RigiCompiler.Middleware.Emit
             var entry = EmitVTableEntry(session, builder, "rigi_imap_entry",
                 new[] { ObjectPointer(session, builder, slots, call.Args[0]), ifaceSheet,
                         LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, (uint)slot, false) });
+            var temps = new List<ArcEmitter.RichTemp>();
+            var boxed = new List<ArcEmitter.FatTemp>();
             var callResult = builder.BuildCall2(fnType, entry,
-                MarshalArgs(session, builder, slots, signature, call.Args, call.Result), "");
+                MarshalArgs(session, builder, slots, signature, call.Args, call.Result, temps,
+                    boxed), "");
+            ArcEmitter.DestroyRichTemps(session, builder, temps);
+            ArcEmitter.DestroyFatTemps(session, builder, boxed);
             StoreScalarResult(session, builder, slots, MirType.Of(signature.ReturnTypeRef),
                 callResult, call.Result);
         }
@@ -312,8 +339,13 @@ namespace RigiCompiler.Middleware.Emit
                     new[] { ObjectPointer(session, builder, slots, inst.CallTarget),
                             LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, (uint)slot, false) });
             }
+            var temps = new List<ArcEmitter.RichTemp>();
+            var boxed = new List<ArcEmitter.FatTemp>();
             var callResult = builder.BuildCall2(fnType, entry,
-                MarshalArgs(session, builder, slots, signature, callArgs, inst.Result), "");
+                MarshalArgs(session, builder, slots, signature, callArgs, inst.Result, temps,
+                    boxed), "");
+            ArcEmitter.DestroyRichTemps(session, builder, temps);
+            ArcEmitter.DestroyFatTemps(session, builder, boxed);
             StoreScalarResult(session, builder, slots, MirType.Of(signature.ReturnTypeRef),
                 callResult, inst.Result);
         }
@@ -327,7 +359,8 @@ namespace RigiCompiler.Middleware.Emit
         private static LLVMValueRef[] MarshalArgs(ModuleBuilder.Session session,
             LLVMBuilderRef builder,
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
-            MirFunction calleeMir, IReadOnlyList<MirOperand> args, string? result)
+            MirFunction calleeMir, IReadOnlyList<MirOperand> args, string? result,
+            List<ArcEmitter.RichTemp> temps, List<ArcEmitter.FatTemp> boxed)
         {
             var hasOut = session.IsInlineValueType(calleeMir.ReturnType, out var outPlan);
             var thisAliases = calleeMir.Parameters.Count > 0
@@ -340,12 +373,17 @@ namespace RigiCompiler.Middleware.Emit
                     ? slots[result].Slot
                     : builder.BuildAlloca(
                         LLVMTypeRef.CreateArray(LLVMTypeRef.Int8, (uint)outPlan.Size), "call.out");
+                if (result == null && outPlan.RefMapCount > 0)
+                {
+                    temps.Add(new ArcEmitter.RichTemp(values[0],
+                        ArcEmitter.SheetOf(session, calleeMir.ReturnType), outPlan.Size));
+                }
             }
             for (var i = 0; i < args.Count; i++)
             {
                 var expectType = i < expected.Count ? expected[i].Type : null;
                 values[i + (hasOut ? 1 : 0)] = CoerceArg(session, builder, slots, args[i],
-                    expectType, thisAliases && i == 0);
+                    expectType, thisAliases && i == 0, temps, boxed);
             }
             return values;
         }
@@ -355,18 +393,22 @@ namespace RigiCompiler.Middleware.Emit
         private static LLVMValueRef[] MarshalArgs(ModuleBuilder.Session session,
             LLVMBuilderRef builder,
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
-            CanonicalSignature signature, IReadOnlyList<MirOperand> args, string? result)
+            CanonicalSignature signature, IReadOnlyList<MirOperand> args, string? result,
+            List<ArcEmitter.RichTemp> temps, List<ArcEmitter.FatTemp> boxed)
         {
-            var hasOut = session.IsInlineValueType(MirType.Of(signature.ReturnTypeRef), out var outPlan);
+            var returnType = MirType.Of(signature.ReturnTypeRef);
+            var hasOut = session.IsInlineValueType(returnType, out var outPlan);
             return MarshalArgsCore(session, builder, slots, args, result, hasOut, outPlan,
-                thisAliases: false);
+                thisAliases: false, temps, boxed, returnType);
         }
 
         private static LLVMValueRef[] MarshalArgsCore(ModuleBuilder.Session session,
             LLVMBuilderRef builder,
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
             IReadOnlyList<MirOperand> args, string? result,
-            bool hasOut, Layout.TypeLayoutPlan outPlan, bool thisAliases)
+            bool hasOut, Layout.TypeLayoutPlan outPlan, bool thisAliases,
+            List<ArcEmitter.RichTemp> temps, List<ArcEmitter.FatTemp> boxed,
+            MirType returnType)
         {
             var values = new LLVMValueRef[args.Count + (hasOut ? 1 : 0)];
             if (hasOut)
@@ -375,11 +417,16 @@ namespace RigiCompiler.Middleware.Emit
                     ? slots[result].Slot
                     : builder.BuildAlloca(
                         LLVMTypeRef.CreateArray(LLVMTypeRef.Int8, (uint)outPlan.Size), "call.out");
+                if (result == null && outPlan.RefMapCount > 0)
+                {
+                    temps.Add(new ArcEmitter.RichTemp(values[0],
+                        ArcEmitter.SheetOf(session, returnType), outPlan.Size));
+                }
             }
             for (var i = 0; i < args.Count; i++)
             {
-                values[i + (hasOut ? 1 : 0)] = MarshalArg(session, builder, slots,
-                    args[i], thisAliases && i == 0);
+                values[i + (hasOut ? 1 : 0)] = CoerceArg(session, builder, slots, args[i],
+                    null, thisAliases && i == 0, temps, boxed);
             }
             return values;
         }
@@ -401,25 +448,30 @@ namespace RigiCompiler.Middleware.Emit
         private static LLVMValueRef CoerceArg(ModuleBuilder.Session session,
             LLVMBuilderRef builder,
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
-            MirOperand arg, MirType? expected, bool aliasThis)
+            MirOperand arg, MirType? expected, bool aliasThis,
+            List<ArcEmitter.RichTemp> temps, List<ArcEmitter.FatTemp> boxed)
         {
             if (arg is MirLocalOperand local && expected != null)
             {
                 var actual = slots[local.Name].Local.Type;
                 if (BoxEmitter.NeedsBox(session, actual, expected))
                 {
-                    return BoxEmitter.BoxFromLocal(session, builder, slots, local.Name);
+                    var fat = BoxEmitter.BoxFromLocal(session, builder, slots, local.Name);
+                    boxed.Add(new ArcEmitter.FatTemp(
+                        builder.BuildExtractValue(fat, 0, "boxarg.tid"),
+                        builder.BuildExtractValue(fat, 1, "boxarg.pl")));
+                    return fat;
                 }
             }
-            return MarshalArg(session, builder, slots, arg, aliasThis);
+            return MarshalArg(session, builder, slots, arg, aliasThis, temps);
         }
 
-        // 单实参编组（值类型 → memcpy 副本传指针；aliasThis = 值类型
+        // 单实参编组（值类型 → InitRichValue 副本传指针；aliasThis = 值类型
         // .this 别名传槽地址；其余装载求值）。init/new 的实参加工共用
         internal static LLVMValueRef MarshalArg(ModuleBuilder.Session session,
             LLVMBuilderRef builder,
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
-            MirOperand arg, bool aliasThis)
+            MirOperand arg, bool aliasThis, List<ArcEmitter.RichTemp>? temps = null)
         {
             if (arg is not MirLocalOperand local
                 || !session.IsInlineValueType(slots[local.Name].Local.Type, out var plan))
@@ -434,7 +486,13 @@ namespace RigiCompiler.Middleware.Emit
             var temp = builder.BuildAlloca(
                 LLVMTypeRef.CreateArray(LLVMTypeRef.Int8, (uint)plan.Size), "call.arg");
             temp.Alignment = (uint)plan.Alignment;
-            session.EmitMemCopy(builder, temp, slot, plan.Size);
+            var argType = slots[local.Name].Local.Type;
+            ArcEmitter.EmitInitRichValue(session, builder, temp, slot, argType);
+            if (plan.RefMapCount > 0)
+            {
+                temps?.Add(new ArcEmitter.RichTemp(temp, ArcEmitter.SheetOf(session, argType),
+                    plan.Size));
+            }
             return temp;
         }
 
@@ -644,6 +702,26 @@ namespace RigiCompiler.Middleware.Emit
             var fn = session.Module.AddFunction(symbol, type);
             session.AddFace(symbol, fn, type);
             return (fn, type);
+        }
+
+        // 值语义四面族 / String ARC 声明（裸 i64/指针，不走 StringIn/StringOut）
+        internal static (LLVMValueRef Fn, LLVMTypeRef Type) DeclareArcFace(
+            ModuleBuilder.Session session, string symbol)
+        {
+            return symbol switch
+            {
+                RuntimeFaces.RefAcquire => DeclareHelperFace(session, symbol, LLVMTypeRef.Int64,
+                    new[] { LLVMTypeRef.Int64, LLVMTypeRef.Int64 }),
+                RuntimeFaces.RefRelease => DeclareHelperFace(session, symbol, LLVMTypeRef.Void,
+                    new[] { LLVMTypeRef.Int64, LLVMTypeRef.Int64 }),
+                RuntimeFaces.ValueAcquire or RuntimeFaces.ValueRelease =>
+                    DeclareHelperFace(session, symbol, LLVMTypeRef.Void,
+                        new[] { PointerType(), PointerType() }),
+                RuntimeFaces.StringAcquire or RuntimeFaces.StringRelease =>
+                    DeclareHelperFace(session, symbol, LLVMTypeRef.Void,
+                        new[] { PointerType() }),
+                _ => throw new MwNotSupportedException($"未知 ARC 面: {symbol}"),
+            };
         }
 
         // 运行时面调用：StringIn 取下一个输入值存临时槽传指针，

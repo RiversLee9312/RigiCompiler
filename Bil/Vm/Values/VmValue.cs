@@ -5,7 +5,7 @@ namespace RigiCompiler.Bil.Vm
     // 抽象值模型（BIL_VM_DESIGN §3 / BIL_STANDARD §22.1 / §22.3）：
     // 每种内建精确类型独立子类，运算查询键依赖可分辨的精确类型。
     // V1 标量 + void + null；V2 增 VmObject / VmEnum / VmArray；
-    // V3 增 VmAny / VmNullable / VmFieldId。
+    // V3 增 VmAny / VmNullable / VmFieldId；MW7b 增 VmSpan。
     // 值语义拷贝由 Copy() 表达；标量不可变 Copy 返回自身。
 
     public abstract class VmValue

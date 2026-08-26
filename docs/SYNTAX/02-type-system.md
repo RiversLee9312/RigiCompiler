@@ -11,6 +11,8 @@ Any
 ├── Object
 │   ├── Nullable\<T>
 │   ├── Box\<T extends ValueType>   // 语法上属于 Object、Native 层无独立 Box TypeSheet 的系统特权载体，见 RUNTIME.md
+│   ├── Span\<T extends ValueType>  // 内建 class，引用语义，见 §3.1.2 / RUNTIME.md §5
+│   ├── SharedSpan\<T extends ValueType> // shared class 变体；元素须非 rich 或 shared rich
 │   └── ... (所有 class)
 └── ValueType
     ├── Enum
@@ -21,7 +23,6 @@ Any
     ├── bool, char
     ├── String                      // 非 rich 值类型，见 §3.1.2
     ├── Type\<T>
-    ├── Span\<T extends ValueType>
     ├── Wrapper                     // 所有 wrapper 的基类；wrapper 恒为 rich struct，见 §14.9
     │   └── ... (所有 wrapper)
     └── ... (所有 struct)
@@ -91,9 +92,9 @@ pub shared rich struct SharedEntry {
 
 **共享安全类型（shared-safe type）**：满足以下任一条件的类型是共享安全类型——
 
-- shared class、shared interface；
+- shared class、shared interface（含 `SharedSpan\<T>`）；
 - shared rich struct、shared wrapper；
-- 非 rich ValueType（全部基元类型、`String`、`Type\<T>`、`Span\<T>`、非 rich struct 与非 rich enum struct）；
+- 非 rich ValueType（全部基元类型、`String`、`Type\<T>`、非 rich struct 与非 rich enum struct）；
 - `Nullable\<T>`，且 `T` 本身是共享安全类型（见 §3.1.2）。`T` 为泛型参数时按其 `extends` 界链推导（界为外层型参则递归；环界保守视为非共享安全）。
 
 共享安全类型是「可以离开单个 Coroutine 的所有权域」的完整白名单。跨 Coroutine 传递时：
@@ -115,7 +116,8 @@ pub shared rich struct SharedEntry {
 Rigi 不要求每一个源码类型节点都一一对应一个普通 Native 对象类型或独立 `TypeSheet`。少数内建抽象由编译器与运行时共同提供特权 lowering；它们在语法、类型检查和泛型约束中表现为正常类型，但物理表示可以绕过普通用户类型的对象模型。
 
 - `Box\<T extends ValueType>` 在语法类型层级中属于 `Object`，可以进入 `Object`/`Any` 多态位置并满足相应约束；但它不是普通 class，不生成 Box 对象头、Box identity 或独立的 `Box\<T>` TypeSheet。Box 槽中的 typeid 始终是底层实际 ValueType `T` 的 typeid，Native 表示与复制/销毁规则见 `RUNTIME.md` §4。
-- `Span\<T extends ValueType>` 是编译器与运行时共同实现的连续原生缓冲区后门，不按普通泛型容器的 16 字节元素槽布局；其索引、步长与 GC 扫描均使用内建 lowering。
+- `Span\<T extends ValueType>` 是**内建 class**（Object 分支，引用语义）：连续原生缓冲区后门，不按普通泛型容器的 16 字节元素槽布局；复制与传参共享同一 buffer。索引、步长与 GC 扫描均使用内建 lowering（见 `RUNTIME.md` §5）。
+- `SharedSpan\<T>` 是 `Span\<T>` 的 shared class 变体，布局相同；元素约束收紧为「非 rich 或 shared rich ValueType」。Mutex 等同步原语由未来版本接入。
 - `String` 是**非 rich ValueType**：它不持有托管引用，`refMap` 恒为空，因此可以自由出现在全局/静态字段与 async 边界上（见 §3.1.1），无需任何 shared 标注。它的字符数据位于编译器与运行时管理的特权裸缓冲区中，不是普通 Object 字段。
   - **复制语义按值深拷贝**：`var b = a` 在语义上产生一份独立的字符数据。实现可以引入对用户完全透明的 copy-on-write 或不可变共享优化，但**源码语义、类型检查与用户代码一律不得假设这些优化存在**——正如 BIL 永远不得假设某种 GC 模型或 GC 行为。任何可观察到共享的行为都是实现缺陷，而不是可依赖的特性。
   - `String` 不可被继承，也不可被 wrapper 修饰（非 rich struct 的通用规则，见 §14.9）。
@@ -136,7 +138,8 @@ Rigi 不要求每一个源码类型节点都一一对应一个普通 Native 对�
 | `char` | 字符 | ValueType |
 | `String` | 字符串（非 rich 值类型，值语义深拷贝，见 §3.1.2） | ValueType |
 | `Type\<T>` | 运行时类型（typeid 的封装） | ValueType |
-| `Span\<T extends ValueType>` | 连续、无装箱的缓冲区视图（见 RUNTIME.md） | ValueType |
+| `Span\<T extends ValueType>` | 连续、无装箱的缓冲区对象（内建 class，引用语义，见 RUNTIME.md §5） | Object |
+| `SharedSpan\<T extends ValueType>` | Span 的 shared class 变体（元素须非 rich 或 shared rich；Mutex 未来） | Object |
 
 ### 3.3 字面量
 
@@ -297,7 +300,7 @@ func transform\<TInput, TResult>(input: TInput): TResult { ... }
 var list: List\<i32>
 var map: Map\<String, i32>
 var sorted = myList.sort\<i32>()
-Span.alloc\<f32>(1000)
+spanOf\<f32>(1000)
 ```
 
 `\<` 是两个独立字符（反斜杠 + 小于号），不是一个新符号。这样设计的原因：

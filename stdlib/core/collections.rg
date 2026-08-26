@@ -101,3 +101,25 @@ pub func arrayOfElements\<T>(elements: T...): Array\<T> {
     }
     return result
 }
+
+// Span\<T> / SharedSpan\<T> 合法构造入口（RUNTIME.md §5）：
+// 用户代码只走 spanOf / sharedSpanOf；span_alloc / shared_span_alloc 是
+// 私有 native。二者 @NativeSymbol 均为 "span_alloc"（同一 rigi 面；
+// TypeSheet 由隐藏 typeid 与 callee 返回类型区分 Span vs SharedSpan）。
+// 约束写法与 alloc_array 对齐：不在函数上写 T extends ValueType——
+// Span/SharedSpan 定义自身携带该约束，构造点强制。
+@NativeLibrary("rigi_rt")
+@NativeSymbol("span_alloc")
+priv native func span_alloc\<T>(size: i32): Span\<T>
+
+pub func spanOf\<T>(size: i32): Span\<T> {
+    return span_alloc\<T>(size)
+}
+
+@NativeLibrary("rigi_rt")
+@NativeSymbol("span_alloc")
+priv native func shared_span_alloc\<T>(size: i32): SharedSpan\<T>
+
+pub func sharedSpanOf\<T>(size: i32): SharedSpan\<T> {
+    return shared_span_alloc\<T>(size)
+}

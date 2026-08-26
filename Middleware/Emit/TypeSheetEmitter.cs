@@ -62,9 +62,22 @@ namespace RigiCompiler.Middleware.Emit
             {
                 var (size, flags) = TypeLayout.BuiltinSheetLayout(canonical);
                 var builtinSheet = sheetGlobals[canonical];
+                var refMap = nullPointer;
+                var refMapSize = 0;
+                if (canonical == "core::String")
+                {
+                    // kind1 | 跳数 0：String 槽自身偏移 0
+                    var entry = LLVMValueRef.CreateConstInt(i16,
+                        TypeLayout.EncodeRefMap(TypeLayout.RefMapKindString, 0), false);
+                    refMap = AddConstantGlobal(module,
+                        LLVMTypeRef.CreateArray(i16, 1),
+                        "typesheet.refmap.core::String",
+                        LLVMValueRef.CreateConstArray(i16, new[] { entry }));
+                    refMapSize = 1;
+                }
                 builtinSheet.Initializer = BuildSheetConst(context, i32,
                     session.TypeInfoFor(canonical), nullPointer, size, flags,
-                    0, nullPointer, 0, nullPointer, 0, nullPointer);
+                    0, nullPointer, 0, nullPointer, refMapSize, refMap);
             }
             foreach (var plan in layout.Plans)
             {

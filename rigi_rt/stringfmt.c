@@ -12,7 +12,9 @@
  * 特殊值：NaN → "NaN"；+Inf → "Infinity"；-Inf → "-Infinity"；-0.0 → "-0"。
  *
  * any_to_string：经槽指针读胖引用；内建标量走本面族（窄整数按符号性
- * widen）；core::String（tag1）拷贝裸块；其余取 TypeInfo.name。
+ * widen）；tag1 且 TypeSheet 带 RIGI_TYPE_STRING → acquire 块内
+ * {data,len} 后直接产出（不再 memcpy）；tag1 非 STRING（大 struct）
+ * 走 TypeInfo.name（与 tag2 同，行为修正）。
  * tag2 不虚调 toString——Any/Object 默认体即调本面，虚调会无限递归
  *（与 VM hook 只走 ToStandardText、override 经方法虚派发不触达本面一致）。
  */
@@ -33,13 +35,13 @@
 
 static void rigi_set_string(rigi_string *out, const char *src, int64_t len)
 {
-    char *data = (char *)malloc((size_t)len);
-    if (len > 0 && data != NULL)
+    char *data = rigi_string_new(len);
+    if (len > 0 && src != NULL)
     {
         memcpy(data, src, (size_t)len);
     }
     out->data = data;
-    out->len = data != NULL ? len : 0;
+    out->len = len;
 }
 
 static int rigi_u64_to_digits(uint64_t value, char *digits)
@@ -406,17 +408,27 @@ void rigi_any_to_string(rigi_string *out, const void *anySlot)
     {
         return;
     }
-    if (RIGI_SHEET_IS(sheet, "core::String"))
+    if (tag == RIGI_TAG_HEAP_VALUE)
     {
-        if (tag == RIGI_TAG_HEAP_VALUE && payload != 0)
+        /* 行为修正：STRING 堆块是 {data,len}，acquire 后直接产出，不再 memcpy；
+         * tag1 非 STRING（大 struct）走 TypeInfo.name，与 tag2 同。 */
+        if (sheet != NULL && (sheet->typeFlags & RIGI_TYPE_STRING) != 0)
         {
-            const rigi_string *block = (const rigi_string *)(uintptr_t)payload;
-            rigi_set_string(out, block->data, block->len);
+            if (payload != 0)
+            {
+                const rigi_string *block = (const rigi_string *)(uintptr_t)payload;
+                rigi_string_acquire(block->data);
+                out->data = block->data;
+                out->len = block->len;
+                return;
+            }
+            out->data = NULL;
+            out->len = 0;
             return;
         }
-        rigi_set_string(out, "", 0);
+        rigi_copy_type_name(out, sheet);
         return;
     }
-    /* tag0/tag1 非标量（小/大 struct、enum、数组等）：类型 canonical 名 */
+    /* tag0 非标量（小 struct、enum 等）：类型 canonical 名 */
     rigi_copy_type_name(out, sheet);
 }

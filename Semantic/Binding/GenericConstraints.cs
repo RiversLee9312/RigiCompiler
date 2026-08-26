@@ -16,8 +16,9 @@ namespace RigiCompiler
     //   d. 嵌套构造递归（Box\<Wrap\<User>> 内层同查）。
     // 跳过规则（§3.6 ④）：实参或边界含未替换泛型参数（声明体内，由
     // 外层代入后再查）、实参为 ErrorType（毒化静默）、内建构造
-    // （Nullable/Box/Span/Type/Array/Map——闭包属性由 §3.1.2 特权规则
-    // 覆盖）。诊断按 (定义, 实参) 驻留对去重：单次填入检查内同一驻留
+    // （Nullable/Box/Span/SharedSpan/Type/Array/Map——闭包属性由 §3.1.2
+    // 特权规则覆盖；SharedSpan 另查元素「非 rich 或 shared rich ValueType」）。
+    // 诊断按 (定义, 实参) 驻留对去重：单次填入检查内同一驻留
     // 对只查一次（引用相等 visited），不同填入点各自报告。
     // 挂点：P2 TypeReferenceResolver（字段/形参/返回类型标注，含显式
     // 界检查补齐）、P3 TypeReferences.Resolve（函数体内类型引用）、
@@ -149,11 +150,25 @@ namespace RigiCompiler
         {
             var def = type.ConstructedFrom!;
             var args = type.TypeArguments!;
-            // 内建构造的闭包属性由 §3.1.2 特权规则覆盖（嵌套实参仍由
-            // 调用方的实参递归检查）
-            if (def.IsBuiltin) return true;
             if (args.Any(a => a is ErrorTypeSymbol)) return true;
             if (args.Any(SymbolLookup.ContainsGenericParameter)) return true;
+            // SharedSpan\<T\> 特权（RUNTIME §5）：T 须非 rich 或 shared rich ValueType
+            // （IsSharedSafe：String/标量/非 rich struct 放行；含 local class 引用的 rich struct 拒绝）
+            if (ReferenceEquals(def, symbols.Bootstrap.SharedSpanDefinition))
+            {
+                if (args.Count > 0 && args[0] is TypeSymbol element && !element.IsSharedSafe())
+                {
+                    error(span,
+                        $"类型实参 '{BoundAnalysis.TypeDisplay(element)}' 不满足 " +
+                        $"SharedSpan 的元素约束（须为非 rich 或 shared rich ValueType）");
+                    state.ExplicitOk = false;
+                    return false;
+                }
+                return true;
+            }
+            // 其余内建构造的闭包属性由 §3.1.2 特权规则覆盖（嵌套实参仍由
+            // 调用方的实参递归检查）
+            if (def.IsBuiltin) return true;
             var ok = true;
             var holder = FieldClosureChecker.ClassifyHolder(def);
             foreach (var (field, fieldType) in FieldClosureChecker.ClosureFieldsOf(type, symbols))

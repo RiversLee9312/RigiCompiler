@@ -12,14 +12,14 @@ namespace RigiCompiler.Middleware.Layout
     /// - class：16B 对象头起排实例字段，基类字段在前；16B 对齐；
     /// - 值类型：偏移 0 起（enum 偏移 0 恒 u32 隐藏判别字段），字段
     ///   自然对齐，尾 padding 到最大对齐；
-    /// - 引用类型字段/nullable 占 16B 胖引用槽（进 refMap）；String 按
-    ///   过渡 ABI {i8*,i64} 16B 内联（非 rich，不进 refMap）；本地
-    ///   struct/enum 字段按自身布局内联（递归）；其余未解析/构造类型
+    /// - 引用类型字段/nullable 占 16B 胖引用槽（进 refMap kind0）；String
+    ///   按 {i8*,i64} 16B/16 对齐内联并进 refMap kind1；本地 struct/enum 字段按
+    ///   自身布局内联（递归，内层 refMap 折算拼入）；其余未解析/构造类型
     ///   一律按胖引用槽（泛型具化布局随 MW4 后续批）；
     /// - vtable：基类继承槽 → 本类自有槽 → 各 interface 实现段；
     ///   override（签名键命中）复用基槽；
-    /// - refMap：128-bit 槽粒度跳数；内嵌 rich 值类型字段的引用发射期
-    ///   折算拼入（§8 加载期扁平化的编译期等价）。
+    /// - refMap：u16 = (kind<<14)|hop，跳数单位 16B；内嵌值类型字段的
+    ///   引用/String 发射期折算拼入（§8 加载期扁平化的编译期等价）。
     /// </summary>
     public static class LayoutEngine
     {
@@ -124,16 +124,8 @@ namespace RigiCompiler.Middleware.Layout
                 var info = ClassifyFieldType(FieldTypeOf(member), symbols, table, visiting);
                 offset = AlignUp(offset, info.Alignment);
                 fields.Add(new FieldPlan(member.Canonical, offset, info.Size, info.Alignment,
-                    info.IsReferenceSlot, info.EmbeddedPlan));
-                if (info.IsReferenceSlot)
-                {
-                    refEntries.Add(new RefSite(offset, null));
-                }
-                else if (info.EmbeddedPlan is { TypeFlags: var flags } embedded
-                    && (flags & TypeLayoutPlan.FlagRich) != 0 && embedded.RefMap.Length > 0)
-                {
-                    refEntries.Add(new RefSite(offset, embedded));
-                }
+                    info.IsReferenceSlot, info.EmbeddedPlan, isStringSlot: info.IsStringSlot));
+                CollectRefSite(refEntries, info, offset);
                 offset += info.Size;
             }
             var size = AlignUp(offset, ReferenceSlotSize);
@@ -181,6 +173,15 @@ namespace RigiCompiler.Middleware.Layout
             if (table.Find(canonical) is { } existing)
             {
                 return existing;
+            }
+            // Span/SharedSpan 为内建 External class，无 BIL 字段可排；
+            // 按「类数组动态元素对象」特判合成（前缀 32B + FlagArray）
+            if (TypeLayout.IsSpanCanonical(canonical)
+                || TypeLayout.IsSharedSpanCanonical(canonical))
+            {
+                return GenericAbi.IsClosedConstructed(canonical)
+                    ? SynthesizeSpanPlan(canonical, table, visiting)
+                    : null;
             }
             if (!GenericAbi.IsClosedConstructed(canonical)
                 || symbols.FindTypeByRef(canonical) is not { } template
@@ -262,6 +263,42 @@ namespace RigiCompiler.Middleware.Layout
             return plan;
         }
 
+        // Span/SharedSpan 具化计划：无声明字段；前缀 32B；refMap 空
+        //（元素走查靠头内 elemSheet）；baseType 经 ExtendsType = Object
+        private static TypeLayoutPlan? SynthesizeSpanPlan(string canonical,
+            LayoutPlanTable table, HashSet<string> visiting)
+        {
+            if (!visiting.Add(canonical))
+            {
+                return null;
+            }
+            var shared = TypeLayout.IsSharedSpanCanonical(canonical);
+            var head = shared ? TypeLayout.SharedSpanTypeCanonical : TypeLayout.SpanTypeCanonical;
+            var declaration = new BilTypeDeclaration(head, BilTypeKind.Class);
+            declaration.ExtendsType = "core::Object";
+            declaration.GenericParameters.Add("T");
+            if (shared)
+            {
+                declaration.Modifiers.Add(new BilKeywordModifier(BilKeyword.Shared));
+            }
+            var template = new MwTypeSymbol(declaration, isExternal: true,
+                System.Array.Empty<MwMemberSymbol>(),
+                System.Array.Empty<MwCaseSymbol>());
+            var flags = TypeLayoutPlan.FlagArray;
+            if (shared)
+            {
+                flags |= TypeLayoutPlan.FlagShared;
+            }
+            var plan = new TypeLayoutPlan(new MwTypeSymbol(canonical, template),
+                TypeLayoutKind.Class, TypeLayout.ArrayPrefixSize, ReferenceSlotSize,
+                flags, System.Array.Empty<FieldPlan>(), System.Array.Empty<string>(),
+                System.Array.Empty<(string, int)>(), System.Array.Empty<ushort>(),
+                System.Array.Empty<(MwCaseSymbol, uint)>(), null);
+            table.Add(plan);
+            visiting.Remove(canonical);
+            return plan;
+        }
+
         // ===== interface（空壳：iMap 键地址 + 接口内槽序表） =====
 
         private static TypeLayoutPlan LayoutInterfaceShell(MwTypeSymbol type, MwSymbolTable symbols)
@@ -298,22 +335,13 @@ namespace RigiCompiler.Middleware.Layout
             var offset = isEnum ? 4 : 0;
             var alignment = isEnum ? 4 : 1;
             var refEntries = new List<RefSite>();
-            var rich = HasKeyword(type, BilKeyword.Rich);
             foreach (var member in InstanceFields(type))
             {
                 var info = ClassifyFieldType(FieldTypeOf(member), symbols, table, visiting);
                 offset = AlignUp(offset, info.Alignment);
                 fields.Add(new FieldPlan(member.Canonical, offset, info.Size, info.Alignment,
-                    info.IsReferenceSlot, info.EmbeddedPlan));
-                if (rich && info.IsReferenceSlot)
-                {
-                    refEntries.Add(new RefSite(offset, null));
-                }
-                else if (rich && info.EmbeddedPlan is { TypeFlags: var flags } embedded
-                    && (flags & TypeLayoutPlan.FlagRich) != 0 && embedded.RefMap.Length > 0)
-                {
-                    refEntries.Add(new RefSite(offset, embedded));
-                }
+                    info.IsReferenceSlot, info.EmbeddedPlan, isStringSlot: info.IsStringSlot));
+                CollectRefSite(refEntries, info, offset);
                 offset += info.Size;
                 if (info.Alignment > alignment)
                 {
@@ -333,7 +361,7 @@ namespace RigiCompiler.Middleware.Layout
             return new TypeLayoutPlan(type, isEnum ? TypeLayoutKind.Enum : TypeLayoutKind.Struct,
                 size, alignment, TypeFlagsOf(type), fields,
                 System.Array.Empty<string>(), System.Array.Empty<(string, int)>(),
-                rich ? BuildRefMap(fields, refEntries, 0) : System.Array.Empty<ushort>(),
+                BuildRefMap(fields, refEntries, 0),
                 enumCases, null,
                 ifaceClosure: CollectIfaceClosure(type.Canonical, type, symbols));
         }
@@ -345,15 +373,17 @@ namespace RigiCompiler.Middleware.Layout
             public int Size { get; }
             public int Alignment { get; }
             public bool IsReferenceSlot { get; }
+            public bool IsStringSlot { get; }
             public TypeLayoutPlan? EmbeddedPlan { get; }
 
             public FieldTypeInfo(int size, int alignment, bool isReferenceSlot,
-                TypeLayoutPlan? embeddedPlan)
+                TypeLayoutPlan? embeddedPlan, bool isStringSlot = false)
             {
                 Size = size;
                 Alignment = alignment;
                 IsReferenceSlot = isReferenceSlot;
                 EmbeddedPlan = embeddedPlan;
+                IsStringSlot = isStringSlot;
             }
         }
 
@@ -367,8 +397,9 @@ namespace RigiCompiler.Middleware.Layout
                 case "char" or "i16" or "u16": return new FieldTypeInfo(2, 2, false, null);
                 case "i32" or "u32" or "float": return new FieldTypeInfo(4, 4, false, null);
                 case "i64" or "u64" or "double": return new FieldTypeInfo(8, 8, false, null);
-                // String 过渡 ABI {i8*,i64} 内联（非 rich，不进 refMap）
-                case "String": return new FieldTypeInfo(16, 8, false, null);
+                // String 槽 {i8*,i64} 内联 16B/16 对齐，进 refMap kind1
+                //（跳数单位 16B，必须落在槽边界，避免 enum/i32 前缀把 data 扫到判别字）
+                case "String": return new FieldTypeInfo(16, 16, false, null, isStringSlot: true);
             }
             // 本地值类型（struct/enum）按自身布局内联（递归）
             if (symbols.FindType(type.Canonical) is { IsExternal: false } local
@@ -382,17 +413,35 @@ namespace RigiCompiler.Middleware.Layout
             return new FieldTypeInfo(ReferenceSlotSize, ReferenceSlotSize, true, null);
         }
 
-        // ===== refMap 构建（128-bit 槽粒度跳数；内嵌 rich 折算拼入） =====
+        // ===== refMap 构建（u16 = (kind<<14)|hop；内嵌值类型折算拼入） =====
 
         private readonly struct RefSite
         {
             public int Offset { get; }
+            public int Kind { get; }
             public TypeLayoutPlan? Embedded { get; }
 
-            public RefSite(int offset, TypeLayoutPlan? embedded)
+            public RefSite(int offset, int kind, TypeLayoutPlan? embedded)
             {
                 Offset = offset;
+                Kind = kind;
                 Embedded = embedded;
+            }
+        }
+
+        private static void CollectRefSite(List<RefSite> refEntries, FieldTypeInfo info, int offset)
+        {
+            if (info.IsReferenceSlot)
+            {
+                refEntries.Add(new RefSite(offset, TypeLayout.RefMapKindFatRef, null));
+            }
+            else if (info.IsStringSlot)
+            {
+                refEntries.Add(new RefSite(offset, TypeLayout.RefMapKindString, null));
+            }
+            else if (info.EmbeddedPlan is { } embedded && embedded.RefMap.Length > 0)
+            {
+                refEntries.Add(new RefSite(offset, 0, embedded));
             }
         }
 
@@ -405,17 +454,19 @@ namespace RigiCompiler.Middleware.Layout
             {
                 if (site.Embedded == null)
                 {
-                    map.Add(checked((ushort)((site.Offset - cursor) / ReferenceSlotSize)));
+                    var hop = checked((int)((site.Offset - cursor) / ReferenceSlotSize));
+                    map.Add(TypeLayout.EncodeRefMap(site.Kind, hop));
                     cursor = site.Offset + ReferenceSlotSize;
                     continue;
                 }
-                // 内嵌 rich 值类型：回放其 refMap 跳数，把每个内层引用
-                // 折算为外层槽距（值类型扫描起点 = 字段偏移）
+                // 内嵌值类型：回放其 refMap（保留 kind，重算外层 hop）
+                // 值类型扫描起点 = 字段偏移
                 long innerPos = site.Offset;
-                foreach (var skip in site.Embedded.RefMap)
+                foreach (var entry in site.Embedded.RefMap)
                 {
-                    innerPos += (long)skip * ReferenceSlotSize;
-                    map.Add(checked((ushort)((innerPos - cursor) / ReferenceSlotSize)));
+                    innerPos += (long)TypeLayout.RefMapHopOf(entry) * ReferenceSlotSize;
+                    var hop = checked((int)((innerPos - cursor) / ReferenceSlotSize));
+                    map.Add(TypeLayout.EncodeRefMap(TypeLayout.RefMapKindOf(entry), hop));
                     cursor = innerPos + ReferenceSlotSize;
                     innerPos += ReferenceSlotSize;
                 }

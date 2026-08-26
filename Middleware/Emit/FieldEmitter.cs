@@ -26,21 +26,30 @@ namespace RigiCompiler.Middleware.Emit
             }
             var field = Resolve(session, inst.FieldSymbol);
             var pointer = FieldPointer(session, builder, slots, inst.Object, field.Offset);
+            var fieldType = FieldMirType(inst.FieldSymbol);
             if (field.EmbeddedPlan != null)
             {
-                // 内联值类型字段：memcpy 读出到目标槽（值语义深拷贝；
-                // rich 的引用子字段暂不带 ARC——MW7 补齐）
-                session.EmitMemCopy(builder, slots[inst.Target].Slot, pointer,
-                    field.EmbeddedPlan.Size);
+                ArcEmitter.EmitInitRichValue(session, builder, slots[inst.Target].Slot,
+                    pointer, fieldType);
                 return;
             }
             var value = builder.BuildLoad2(FieldType(session, inst.FieldSymbol), pointer, "field.get");
-            var fieldType = FieldMirType(inst.FieldSymbol);
             var targetType = slots[inst.Target].Local.Type;
             if (BoxEmitter.NeedsUnbox(session, fieldType, targetType))
             {
                 BoxEmitter.UnboxToLocal(session, builder, slots, value, targetType, inst.Target);
                 return;
+            }
+            switch (TypeLayout.ClassifySlot(session.Layout, fieldType))
+            {
+                case ManagedSlotKind.FatReference:
+                    builder.BuildStore(ArcEmitter.ProduceFatValue(session, builder, value, "field.get"),
+                        slots[inst.Target].Slot);
+                    return;
+                case ManagedSlotKind.String:
+                    builder.BuildStore(ArcEmitter.ProduceStringValue(session, builder, value),
+                        slots[inst.Target].Slot);
+                    return;
             }
             builder.BuildStore(value, slots[inst.Target].Slot);
         }
@@ -50,29 +59,34 @@ namespace RigiCompiler.Middleware.Emit
         {
             var field = Resolve(session, inst.FieldSymbol);
             var pointer = FieldPointer(session, builder, slots, inst.Object, field.Offset);
+            var fieldType = FieldMirType(inst.FieldSymbol);
             if (field.EmbeddedPlan != null)
             {
-                // 内联值类型字段：memcpy 写入（rich 的引用子字段暂不带
-                // ARC——MW7 补齐）
                 if (inst.Source is not MirLocalOperand source)
                 {
                     throw new CompilerInternalException(
                         $"未覆盖的 set.field 源形态: {inst.Source.GetType().Name}");
                 }
-                session.EmitMemCopy(builder, pointer, slots[source.Name].Slot,
-                    field.EmbeddedPlan.Size);
+                ArcEmitter.EmitCopyRichValue(session, builder, pointer,
+                    slots[source.Name].Slot, fieldType);
                 return;
             }
-            var fieldType = FieldMirType(inst.FieldSymbol);
-            LLVMValueRef value;
             if (inst.Source is MirLocalOperand sourceLocal
                 && BoxEmitter.NeedsBox(session, slots[sourceLocal.Name].Local.Type, fieldType))
             {
-                value = BoxEmitter.BoxFromLocal(session, builder, slots, sourceLocal.Name);
+                ArcEmitter.MoveFatValue(session, builder, pointer,
+                    BoxEmitter.BoxFromLocal(session, builder, slots, sourceLocal.Name));
+                return;
             }
-            else
+            var value = session.LoadLocal(builder, slots, inst.Source);
+            switch (TypeLayout.ClassifySlot(session.Layout, fieldType))
             {
-                value = session.LoadLocal(builder, slots, inst.Source);
+                case ManagedSlotKind.FatReference:
+                    ArcEmitter.AssignFatValue(session, builder, pointer, value);
+                    return;
+                case ManagedSlotKind.String:
+                    ArcEmitter.AssignStringValue(session, builder, pointer, value);
+                    return;
             }
             builder.BuildStore(value, pointer);
         }

@@ -15,14 +15,15 @@ namespace RigiCompiler.Middleware.Pipeline
     {
         // 标准编译管线：BIL（已过门禁）→ 布局（只依赖符号表，先行——
         // MirReachability 的派发闭包要查 vtable 计划）→ MIR 构建 →
-        // IndexOperatorLowering → AccessorLowering
+        // IndexOperatorLowering → AccessorLowering → RcInjection
         public static MwPipeline CreateDefault()
         {
             return new MwPipeline()
                 .Add(new LayoutStage())
                 .Add(new MirBuildStage())
                 .Add(new IndexOperatorLoweringPass())
-                .Add(new AccessorLoweringPass());
+                .Add(new AccessorLoweringPass())
+                .Add(new RcInjectionPass());
         }
 
         private readonly List<IMwStage> _stages = new();

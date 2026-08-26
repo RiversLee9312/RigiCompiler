@@ -250,7 +250,9 @@ namespace RigiCompiler.Tests
             foreach (var child in failedChildren)
             {
                 Console.WriteLine($"  [FAIL] case#{child.From}..{child.To}：{DescribeChildFailure(child)}");
-                PrintChildTail("stdout", child.Stdout);
+                // 失败展示纪律：stdout 全量回显（ParallelSuiteRunner 统一面），
+                // 失败用例不得省略；stderr 末尾作崩溃上下文
+                ParallelSuiteRunner.PrintFailureOutput(child.Stdout);
                 PrintChildTail("stderr", child.Stderr);
             }
 

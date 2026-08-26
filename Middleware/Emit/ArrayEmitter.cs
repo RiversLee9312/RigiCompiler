@@ -7,9 +7,10 @@ using RigiCompiler.Middleware.Runtime;
 namespace RigiCompiler.Middleware.Emit
 {
     /// <summary>
-    /// 数组发射（MW4）：alloc_array / new type(.array) / get.array / set.array
-    /// / getid.type / Nullable 值类型装拆箱。布局见 TypeLayout 数组前缀与
-    /// 元素 ABI；越界读得 null、越界写/负长度走 abort 面对齐 VM。
+    /// 数组 / Span 发射（MW4/MW7b）：alloc_array / span_alloc /
+    /// new type(.array) / get.array / set.array / getid.type / Nullable
+    /// 值类型装拆箱。Array 与 Span/SharedSpan 元素访问共用同一套
+    /// stride/越界/wrap 路径。布局见 TypeLayout 前缀与元素 ABI。
     /// </summary>
     internal static class ArrayEmitter
     {
@@ -29,6 +30,31 @@ namespace RigiCompiler.Middleware.Emit
             var length = session.LoadLocal(builder, slots, call.Args[1]);
             var obj = EmitAlloc(session, builder, elemSheet, length);
             builder.BuildStore(WrapArrayRef(session, builder, obj), slots[call.Result].Slot);
+        }
+
+        // span_alloc / shared_span_alloc 同 NativeSymbol：由结果类型头
+        // 区分 Span vs SharedSpan。具化 sheet 优先；泛型包装体内按
+        // elemSheet 在已收集的闭合具化中选择。
+        internal static void EmitAllocSpanCall(ModuleBuilder.Session session,
+            LLVMBuilderRef builder,
+            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirCall call)
+        {
+            if (call.Args.Count != 2)
+            {
+                throw new CompilerInternalException("span_alloc 需要 typeid + size");
+            }
+            if (call.Result == null)
+            {
+                throw new CompilerInternalException("span_alloc 缺结果槽");
+            }
+            var elemSheet = session.LoadLocal(builder, slots, call.Args[0]);
+            var length = session.LoadLocal(builder, slots, call.Args[1]);
+            var resultType = slots[call.Result].Local.Type;
+            var spanSheet = ResolveSpanSheet(session, builder, resultType, elemSheet);
+            var obj = EmitSpanAlloc(session, builder, spanSheet, elemSheet, length);
+            builder.BuildStore(
+                CallEmitter.BuildFatReference(session, builder, spanSheet, obj),
+                slots[call.Result].Slot);
         }
 
         internal static void EmitNew(ModuleBuilder.Session session, LLVMBuilderRef builder,
@@ -55,7 +81,7 @@ namespace RigiCompiler.Middleware.Emit
         internal static void EmitGet(ModuleBuilder.Session session, LLVMBuilderRef builder,
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirGetArray inst)
         {
-            if (!TypeLayout.TryGetArrayElement(inst.CollectionType, out var elementType))
+            if (!TypeLayout.TryGetContiguousElement(inst.CollectionType, out var elementType))
             {
                 throw new CompilerInternalException($"get.array 缺元素类型: {inst.CollectionType.Canonical}");
             }
@@ -93,7 +119,7 @@ namespace RigiCompiler.Middleware.Emit
         internal static void EmitSet(ModuleBuilder.Session session, LLVMBuilderRef builder,
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirSetArray inst)
         {
-            if (!TypeLayout.TryGetArrayElement(inst.CollectionType, out var elementType))
+            if (!TypeLayout.TryGetContiguousElement(inst.CollectionType, out var elementType))
             {
                 throw new CompilerInternalException($"set.array 缺元素类型: {inst.CollectionType.Canonical}");
             }
@@ -180,6 +206,69 @@ namespace RigiCompiler.Middleware.Emit
                 session.TypeSheetFor(TypeLayout.ArrayTypeCanonical), objectPointer);
         }
 
+        private static LLVMValueRef EmitSpanAlloc(ModuleBuilder.Session session,
+            LLVMBuilderRef builder, LLVMValueRef spanSheet, LLVMValueRef elemSheet,
+            LLVMValueRef length)
+        {
+            var (fn, fnType) = CallEmitter.DeclareHelperFace(session, RuntimeFaces.SpanAlloc,
+                PointerType(), new[] { PointerType(), PointerType(), LLVMTypeRef.Int32 });
+            return builder.BuildCall2(fnType, fn,
+                new[] { spanSheet, elemSheet, length }, "span.obj");
+        }
+
+        // 闭合具化直接取全局；开放（spanOf 泛型体）按 elemSheet 在已
+        // 收集的同族具化中选择，无一则回退 Object sheet。
+        private static LLVMValueRef ResolveSpanSheet(ModuleBuilder.Session session,
+            LLVMBuilderRef builder, MirType resultType, LLVMValueRef elemSheet)
+        {
+            if (GenericAbi.IsClosedConstructed(resultType.Canonical)
+                && session.TryGetTypeSheet(resultType.Canonical, out var closed))
+            {
+                return CastToBytePtr(builder, closed);
+            }
+            var wantShared = TypeLayout.IsSharedSpan(resultType);
+            var fallback = CastToBytePtr(builder, session.TypeSheetFor("core::Object"));
+            var selected = fallback;
+            if (session.Layout == null)
+            {
+                return selected;
+            }
+            foreach (var plan in session.Layout.Plans)
+            {
+                var planType = MirType.Of(plan.Symbol.Canonical);
+                if (!TypeLayout.IsSpanLike(planType)
+                    || TypeLayout.IsSharedSpan(planType) != wantShared
+                    || !GenericAbi.IsClosedConstructed(plan.Symbol.Canonical)
+                    || !TypeLayout.TryGetContiguousElement(planType, out var element)
+                    || !TryTypeSheetPointer(session, builder, element, out var wantElem)
+                    || !session.TryGetTypeSheet(plan.Symbol.Canonical, out var planSheet))
+                {
+                    continue;
+                }
+                var candidate = CastToBytePtr(builder, planSheet);
+                var match = builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, elemSheet, wantElem,
+                    "span.elem.eq");
+                selected = builder.BuildSelect(match, candidate, selected, "span.sheet.sel");
+            }
+            return selected;
+        }
+
+        private static bool TryTypeSheetPointer(ModuleBuilder.Session session,
+            LLVMBuilderRef builder, MirType type, out LLVMValueRef pointer)
+        {
+            var key = TypeLayout.IsArray(type)
+                ? TypeLayout.ArrayTypeCanonical
+                : TypeLayout.BuiltinSheetCanonical(type);
+            if (session.TryGetTypeSheet(key, out var sheet)
+                || session.TryGetTypeSheet(type.Canonical, out sheet))
+            {
+                pointer = CastToBytePtr(builder, sheet);
+                return true;
+            }
+            pointer = default;
+            return false;
+        }
+
         // ===== 元素地址 / 读写 =====
 
         private static ArrayElementAbi ElementAbi(ModuleBuilder.Session session, MirType element) =>
@@ -200,13 +289,55 @@ namespace RigiCompiler.Middleware.Emit
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirOperand source,
             LLVMValueRef dest, ArrayElementAbi abi)
         {
-            if (abi.Kind is ArrayElementKind.InlineValue or ArrayElementKind.String)
+            if (abi.Kind == ArrayElementKind.Reference)
+            {
+                if (source is not MirLocalOperand srcLocal)
+                {
+                    throw new CompilerInternalException("数组元素写源必须是局部");
+                }
+                var srcType = slots[srcLocal.Name].Local.Type;
+                if (session.IsInlineValueType(srcType, out _))
+                {
+                    ArcEmitter.EmitCopyRichValue(session, builder, dest,
+                        slots[srcLocal.Name].Slot, srcType);
+                    return;
+                }
+                if (srcType.Key == "String")
+                {
+                    ArcEmitter.AssignStringFromSlot(session, builder, dest,
+                        slots[srcLocal.Name].Slot);
+                    return;
+                }
+                ArcEmitter.AssignFatFromSlot(session, builder, dest,
+                    slots[srcLocal.Name].Slot);
+                return;
+            }
+            if (abi.Kind == ArrayElementKind.String)
+            {
+                if (source is not MirLocalOperand strLocal)
+                {
+                    throw new CompilerInternalException("数组元素写源必须是局部");
+                }
+                ArcEmitter.AssignStringValue(session, builder, dest,
+                    session.LoadLocal(builder, slots, strLocal));
+                return;
+            }
+            if (abi.Kind == ArrayElementKind.InlineValue)
             {
                 if (source is not MirLocalOperand local)
                 {
                     throw new CompilerInternalException("数组元素写源必须是局部");
                 }
-                session.EmitMemCopy(builder, dest, slots[local.Name].Slot, abi.Stride);
+                var srcType = slots[local.Name].Local.Type;
+                if (abi.Plan is { RefMapCount: > 0 })
+                {
+                    ArcEmitter.EmitCopyRichValue(session, builder, dest,
+                        slots[local.Name].Slot, srcType);
+                }
+                else
+                {
+                    session.EmitMemCopy(builder, dest, slots[local.Name].Slot, abi.Stride);
+                }
                 return;
             }
             var value = session.LoadLocal(builder, slots, source);
@@ -230,19 +361,21 @@ namespace RigiCompiler.Middleware.Emit
         {
             if (IsReferenceElement(session, elementType))
             {
-                builder.BuildStore(loaded, slots[target].Slot);
+                builder.BuildStore(ArcEmitter.ProduceFatValue(session, builder, loaded, "arr.wrap"),
+                    slots[target].Slot);
                 return;
             }
             if (loaded.TypeOf.Kind == LLVMTypeKind.LLVMPointerTypeKind)
             {
-                builder.BuildStore(BoxPointer(session, builder, loaded), slots[target].Slot);
+                builder.BuildStore(WrapFromSlot(session, builder, loaded, elementType),
+                    slots[target].Slot);
                 return;
             }
-            builder.BuildStore(BoxScalar(session, builder, loaded, elementType),
+            builder.BuildStore(WrapScalar(session, builder, loaded, elementType),
                 slots[target].Slot);
         }
 
-        // ===== Nullable 装拆箱 =====
+        // ===== Nullable 装拆箱（typeid = sheet | tag<<56；废除哨兵 1）=====
 
         private static LLVMValueRef WrapValue(ModuleBuilder.Session session, LLVMBuilderRef builder,
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirOperand source,
@@ -250,20 +383,26 @@ namespace RigiCompiler.Middleware.Emit
         {
             if (IsReferenceElement(session, inner))
             {
-                return value;
+                return ArcEmitter.ProduceFatValue(session, builder, value, "opt.wrap");
             }
             var abi = ElementAbi(session, inner);
-            if (abi.Kind is ArrayElementKind.InlineValue or ArrayElementKind.String)
+            if (IsTag0Wrap(abi))
             {
-                if (source is not MirLocalOperand local)
+                if (abi.Kind == ArrayElementKind.InlineValue)
                 {
-                    throw new CompilerInternalException("Nullable 装箱源必须是局部");
+                    if (source is not MirLocalOperand local)
+                    {
+                        throw new CompilerInternalException("Nullable 装箱源必须是局部");
+                    }
+                    return WrapFromSlot(session, builder, slots[local.Name].Slot, inner);
                 }
-                var box = Malloc(session, builder, abi.Stride);
-                session.EmitMemCopy(builder, box, slots[local.Name].Slot, abi.Stride);
-                return BoxPointer(session, builder, box);
+                return WrapScalar(session, builder, value, inner);
             }
-            return BoxScalar(session, builder, value, inner);
+            if (source is not MirLocalOperand boxed)
+            {
+                throw new CompilerInternalException("Nullable 装箱源必须是局部");
+            }
+            return WrapFromSlot(session, builder, slots[boxed.Name].Slot, inner);
         }
 
         private static void UnwrapToSlot(ModuleBuilder.Session session, LLVMBuilderRef builder,
@@ -272,47 +411,94 @@ namespace RigiCompiler.Middleware.Emit
         {
             if (IsReferenceElement(session, inner))
             {
-                builder.BuildStore(fat, slots[target].Slot);
+                builder.BuildStore(ArcEmitter.ProduceFatValue(session, builder, fat, "opt.unwrap"),
+                    slots[target].Slot);
                 return;
             }
+            var typeId = builder.BuildExtractValue(fat, 0, "opt.typeid");
             var payload = builder.BuildExtractValue(fat, 1, "opt.payload");
+            var tag = builder.BuildLShr(typeId,
+                LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, BoxEmitter.TagShift, false),
+                "opt.tag");
+            var isTag0 = builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, tag,
+                LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, BoxEmitter.TagInline, false),
+                "opt.tag0");
+            var fn = session.CurrentFunction;
+            var tag0Block = fn.AppendBasicBlock("opt.tag0");
+            var tag1Block = fn.AppendBasicBlock("opt.tag1");
+            var joinBlock = fn.AppendBasicBlock("opt.join");
+            builder.BuildCondBr(isTag0, tag0Block, tag1Block);
+
             var abi = ElementAbi(session, inner);
+            builder.PositionAtEnd(tag0Block);
             if (abi.Kind is ArrayElementKind.InlineValue or ArrayElementKind.String)
             {
-                var box = builder.BuildIntToPtr(payload, PointerType(), "opt.box");
-                session.EmitMemCopy(builder, slots[target].Slot, box, abi.Stride);
-                return;
+                var tmp = builder.BuildAlloca(LLVMTypeRef.Int64, "opt.bits");
+                builder.BuildStore(payload, tmp);
+                session.EmitMemCopy(builder, slots[target].Slot, tmp,
+                    System.Math.Min(abi.Stride, 8));
             }
-            var bits = UnboxScalarBits(builder, payload, inner);
-            builder.BuildStore(bits, slots[target].Slot);
+            else
+            {
+                builder.BuildStore(UnboxScalarBits(builder, payload, inner),
+                    slots[target].Slot);
+            }
+            builder.BuildBr(joinBlock);
+
+            builder.PositionAtEnd(tag1Block);
+            var box = builder.BuildIntToPtr(payload, PointerType(), "opt.box");
+            session.EmitMemCopy(builder, slots[target].Slot, box, abi.Stride);
+            ArcEmitter.EmitValueAcquire(session, builder, slots[target].Slot, inner);
+            builder.BuildBr(joinBlock);
+
+            builder.PositionAtEnd(joinBlock);
         }
 
         private static bool IsReferenceElement(ModuleBuilder.Session session, MirType element) =>
             ElementAbi(session, element).Kind == ArrayElementKind.Reference;
 
-        private static LLVMValueRef BoxScalar(ModuleBuilder.Session session,
+        // 标量 / ≤8B 非 rich 内联值 → tag0；String / 大 struct / rich → tag1
+        private static bool IsTag0Wrap(ArrayElementAbi abi)
+        {
+            if (abi.Kind == ArrayElementKind.String)
+            {
+                return false;
+            }
+            if (abi.Kind == ArrayElementKind.InlineValue)
+            {
+                var rich = abi.Plan is { } plan
+                    && (plan.TypeFlags & TypeLayoutPlan.FlagRich) != 0;
+                return !rich && abi.Stride <= BoxEmitter.InlineLimit;
+            }
+            return abi.Kind == ArrayElementKind.Scalar;
+        }
+
+        private static LLVMValueRef WrapFromSlot(ModuleBuilder.Session session,
+            LLVMBuilderRef builder, LLVMValueRef slot, MirType inner)
+        {
+            var abi = ElementAbi(session, inner);
+            var sheet = BoxEmitter.TypeSheetOf(session, inner);
+            if (IsTag0Wrap(abi))
+            {
+                var bits = BoxEmitter.BitsFromSlot(session, builder, slot, abi.Stride);
+                return BoxEmitter.PackFat(session, builder, sheet, BoxEmitter.TagInline,
+                    bits, "opt");
+            }
+            var box = Malloc(session, builder, abi.Stride);
+            session.EmitMemCopy(builder, box, slot, abi.Stride);
+            ArcEmitter.EmitValueAcquire(session, builder, box, inner);
+            var payload = builder.BuildPtrToInt(box, LLVMTypeRef.Int64, "opt.box");
+            return BoxEmitter.PackFat(session, builder, sheet, BoxEmitter.TagHeapValue,
+                payload, "opt");
+        }
+
+        private static LLVMValueRef WrapScalar(ModuleBuilder.Session session,
             LLVMBuilderRef builder, LLVMValueRef value, MirType inner)
         {
+            var sheet = BoxEmitter.TypeSheetOf(session, inner);
             var bits = ScalarToI64(builder, value, inner);
-            return InsertFat(session, builder,
-                LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, TypeLayout.NullableSentinel, false),
-                bits);
-        }
-
-        private static LLVMValueRef BoxPointer(ModuleBuilder.Session session,
-            LLVMBuilderRef builder, LLVMValueRef pointer)
-        {
-            return InsertFat(session, builder,
-                LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, TypeLayout.NullableSentinel, false),
-                builder.BuildPtrToInt(pointer, LLVMTypeRef.Int64, "box.ptr"));
-        }
-
-        private static LLVMValueRef InsertFat(ModuleBuilder.Session session,
-            LLVMBuilderRef builder, LLVMValueRef typeId, LLVMValueRef payload)
-        {
-            var fat = LLVMValueRef.CreateConstNull(TypeLayout.FatReferenceType(session.Context));
-            fat = builder.BuildInsertValue(fat, typeId, 0, "opt.t");
-            return builder.BuildInsertValue(fat, payload, 1, "opt.v");
+            return BoxEmitter.PackFat(session, builder, sheet, BoxEmitter.TagInline,
+                bits, "opt");
         }
 
         private static LLVMValueRef ScalarToI64(LLVMBuilderRef builder, LLVMValueRef value,

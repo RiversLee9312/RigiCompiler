@@ -458,6 +458,15 @@ namespace RigiCompiler.Bil
                     new VmBool(instruction.Op == BilBinaryOp.CmpEq ? equal : !equal));
                 return;
             }
+            // Span/SharedSpan 是 class：相等为引用恒等（RUNTIME §5）
+            if (instruction.Op is BilBinaryOp.CmpEq or BilBinaryOp.CmpNe
+                && (left is VmSpan || right is VmSpan))
+            {
+                var equal = ReferenceEquals(left, right);
+                coroutine.WriteVar(instruction.Target.Name,
+                    new VmBool(instruction.Op == BilBinaryOp.CmpEq ? equal : !equal));
+                return;
+            }
             if (VmTypeOps.IsPrimitiveOperand(left) && VmTypeOps.IsPrimitiveOperand(right))
             {
                 coroutine.WriteVar(instruction.Target.Name,

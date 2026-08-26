@@ -21,14 +21,16 @@ namespace RigiCompiler.Middleware.Emit
                 LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, inst.Case.Discriminant, false),
                 slot);
             var init = session.FunctionOf(inst.Init.Canonical);
+            var temps = new List<ArcEmitter.RichTemp>();
             var initArgs = new LLVMValueRef[inst.Args.Count + 1];
             initArgs[0] = slot;
             for (var i = 0; i < inst.Args.Count; i++)
             {
                 initArgs[i + 1] = CallEmitter.MarshalArg(session, builder, slots,
-                    inst.Args[i], aliasThis: false);
+                    inst.Args[i], aliasThis: false, temps);
             }
             builder.BuildCall2(init.Type, init.Value, initArgs, "");
+            ArcEmitter.DestroyRichTemps(session, builder, temps);
         }
 
         internal static void EmitIsCase(ModuleBuilder.Session session, LLVMBuilderRef builder,

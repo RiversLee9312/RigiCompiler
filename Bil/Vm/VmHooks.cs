@@ -2,7 +2,7 @@ namespace RigiCompiler.Bil.Vm
 {
     // §22.5 native hook 表（BIL_VM_DESIGN §7 / RUNTIME.md §26）：
     // (lib, symbol) 表：rigi_rt print / printErr / any_to_string / alloc_array /
-    // make_sleep_alarm / i64|u64|f32|f64|bool|char_to_string，表外拒绝执行；单次 print
+    // span_alloc / make_sleep_alarm / i64|u64|f32|f64|bool|char_to_string，表外拒绝执行；单次 print
     // 调用加锁原子写入。
     // 方法 hook 表：core::Any$call??? 按方法符号命中（无 (lib, symbol) 对）。
     // toString 机制（SYNTAX §3.8 修订）：Any/Object 的 toString 成员方法不再
@@ -32,11 +32,16 @@ namespace RigiCompiler.Bil.Vm
         }
 
         public VmValue Invoke(VmContext context, string library, string symbol,
-            IReadOnlyList<VmValue> arguments)
+            IReadOnlyList<VmValue> arguments, string? calleeSymbol = null)
         {
             if (!_table.TryGetValue((library, symbol), out var hook))
             {
                 throw new VmNativeHookException(library, symbol);
+            }
+            // span_alloc 同一 rigi 面：Span / SharedSpan 由 callee 符号区分
+            if (symbol == "span_alloc")
+            {
+                return AllocSpan(context, arguments, IsSharedSpanAlloc(calleeSymbol));
             }
             return hook(context, arguments);
         }
@@ -66,6 +71,9 @@ namespace RigiCompiler.Bil.Vm
             hooks.Register("rigi_rt", "printErr", PrintErr);
             hooks.Register("rigi_rt", "any_to_string", ToStringHook);
             hooks.Register("rigi_rt", "alloc_array", AllocArray);
+            // span_alloc 与 shared_span_alloc 共用此键；Invoke 按 callee 分流
+            hooks.Register("rigi_rt", "span_alloc",
+                (ctx, args) => AllocSpan(ctx, args, shared: false));
             hooks.Register("rigi_rt", "make_sleep_alarm", MakeSleepAlarm);
             hooks.Register("rigi_rt", "i64_to_string", I64ToString);
             hooks.Register("rigi_rt", "u64_to_string", U64ToString);
@@ -153,6 +161,37 @@ namespace RigiCompiler.Bil.Vm
                 throw new VmException("any_to_string 需要恰好 1 个参数");
             }
             return new VmString(arguments[0].ToStandardText());
+        }
+
+        // §22.5 span_alloc：签名与 alloc_array 对照——hidden typeid（.generic.T 物化）+ size。
+        // 元素零值初始化（ZeroOf）；T 为 enum struct 按宿主错误（§14.3 无零值，与 alloc_array 同口径）。
+        // struct 元素走 ZeroOf → AllocateObject，VM 支持。
+        // shared_span_alloc 同 NativeSymbol，由 callee 符号分流 IsShared。
+        private static bool IsSharedSpanAlloc(string? calleeSymbol)
+        {
+            return calleeSymbol != null
+                && calleeSymbol.Contains("shared_span_alloc", StringComparison.Ordinal);
+        }
+
+        private static VmValue AllocSpan(VmContext context, IReadOnlyList<VmValue> arguments,
+            bool shared)
+        {
+            if (arguments.Count != 2 || arguments[0] is not VmTypeId typeId)
+            {
+                throw new VmException("span_alloc 需要 typeid + size");
+            }
+            var size = VmContext.RequireIndex(arguments[1]);
+            if (size < 0)
+            {
+                throw new VmException("Span 长度不能为负");
+            }
+            if (context.IsEnumStruct(typeId.TypeSymbol))
+            {
+                throw new VmException("enum struct 无零值，不能 span_alloc："
+                    + typeId.TypeSymbol);
+            }
+            return new VmSpan(typeId.TypeSymbol, size, context.ZeroOf(typeId.TypeSymbol),
+                shared);
         }
 
         // §22.5 alloc_array：hidden typeid（.generic.T 物化）+ size。

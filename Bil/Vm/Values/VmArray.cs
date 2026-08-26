@@ -4,7 +4,16 @@ namespace RigiCompiler.Bil.Vm
     // 元素精确类型 + VmValue[]；Array 是 class，Copy 返回自身。
     // length 是 bootstrap const 字段（core::Array#length@.i32），VM 直读。
 
-    public sealed class VmArray : VmValue
+    // 内建连续缓冲区（Array / Span / SharedSpan）的索引面：GetArray/SetArray 共用。
+    internal interface IVmIndexBuffer
+    {
+        int Length { get; }
+        string ElementType { get; }
+        VmValue GetAt(int index);
+        void SetAt(int index, VmValue value);
+    }
+
+    public sealed class VmArray : VmValue, IVmIndexBuffer
     {
         internal const string LengthFieldSymbol = "core::Array#length@.i32";
 

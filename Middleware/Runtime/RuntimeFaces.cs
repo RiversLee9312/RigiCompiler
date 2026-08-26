@@ -30,9 +30,17 @@ namespace RigiCompiler.Middleware.Runtime
         // 拆箱不符：void(TypeSheet*) noreturn，消息含目标 TypeInfo.name
         public const string AbortInvalidCast = "rigi_abort_invalid_cast";
         public const string AllocArray = "rigi_alloc_array";
+        public const string SpanAlloc = "rigi_span_alloc";
         public const string AbortArrayOob = "rigi_abort_array_oob";
         public const string AbortArrayNegativeLength = "rigi_abort_array_negative_length";
         public const string Malloc = "rigi_malloc";
+        // 值语义四面族 + String ARC（裸 i64/指针，不走 StringIn/StringOut）
+        public const string RefAcquire = "rigi_ref_acquire";
+        public const string RefRelease = "rigi_ref_release";
+        public const string ValueAcquire = "rigi_value_acquire";
+        public const string ValueRelease = "rigi_value_release";
+        public const string StringAcquire = "rigi_string_acquire";
+        public const string StringRelease = "rigi_string_release";
 
         public static IReadOnlyList<RuntimeFaceParam> ShapeOf(string faceSymbol)
         {

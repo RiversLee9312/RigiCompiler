@@ -15,6 +15,8 @@ dotnet clean
 
 Middleware 的 C 工具链（MW1 起编译 rigi_rt 与 lld 链接所需）：CI 用 runner 预装 clang/lld；开发机 PATH 优先，缺则跑 `pwsh tools/Fetch-LlvmToolchain.ps1`（钉版官方 20.1.2 选择性部件，缓存 `tools/.llvm/`，gitignored）。详见 `MIDDLEWARE_ARCHITECTURE.md` §2 链接器/rigi_rt 编译行。`native --out` 走全链：clang 驱动（`-fuse-ld=lld`）链接 CRT 出可执行文件；`--emit-obj`/`--emit-ll` 免工具链（中间产物与合并 rigi_rt 前的黄金快照）。rigi_rt 源改动经内容哈希缓存自动重编，无需手工清理。
 
+`RIGI_RT_MEMTRACK=1` 打开 rigi_rt 内置堆台账：进程退出时未释放块即 stderr 报告并以 exit 1 失败。NativeE2E 对拍跑产物进程时默认开启（泄漏即该用例失败）；日常 `native --out` 不设此变量。
+
 ### 2.2 运行
 
 CLI 结构为 `<COMMAND> [--sub-cmd [args...]...]`，顶层 COMMAND 五个：`compile` / `test` / `vm` / `native` / `help`。裸 `dotnet run` 等价于 `help`。
@@ -66,7 +68,7 @@ dotnet publish -c Release -r win-x64 -o publish/win-x64
 ## 测试策略
 
 - **不使用任何测试框架**。测试是 `Tests/` 下的静态类，每个类提供 `public static int RunAll()`（返回失败用例数），由 `Tests/TestRunner.cs` 统一驱动（`test` 命令入口）。
-- **全量入口**：`dotnet run -- test --all` 自动运行全部套件，任意失败返回非零退出码并列出失败套件名——这是提交前验证的标准方式；CI（`.github/workflows/ci.yml`）则在双平台 NativeAOT 发布产物上跑同一入口。
+- **全量入口**：`dotnet run -- test --all` 自动运行全部套件，任意失败返回非零退出码并列出失败套件名——这是提交前验证的标准方式；CI（`.github/workflows/ci.yml`）则在双平台 NativeAOT 发布产物上跑同一入口。NativeE2E 跑产物进程时设置 `RIGI_RT_MEMTRACK=1`，泄漏即 exit 1。
 - **统一基建**：`Tests/AstDescribe.cs` 是唯一的 AST 描述器（Expr/Stmt/Block/Decl/Root/Type/Symbol 等），`Tests/TestHarness.cs` 是唯一的驱动与断言（ParseRoot/ParseBlock/ParseWithLayer/ParseFirstDecl + Check/CheckTrue/CheckParseError/Summary）。禁止在套件里再写私有 Describe*/Format* 副本与计数样板。
 - **断言对象约定**：除查的就是命令行/日志/token 流/层协议行为的套件（Logger、CommandLineParser、LexerFuzz、TokenDisposition）外，一律断言 AST 树产物（AstDescribe 描述串 + 结构断言），不断言控制台输出文本。
 - **AST 结构断言**：表达式类测试除描述串快照外，还应断言结构性事实（Root 是否存在/已填充、Expression 的具体类型、Parent 链、子 Root 填充、无节点共享）——快照不能作为唯一验证方式。

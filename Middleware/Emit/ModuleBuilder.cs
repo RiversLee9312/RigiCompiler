@@ -3,6 +3,7 @@ using LLVMSharp.Interop;
 using RigiCompiler.Bil;
 using RigiCompiler.Middleware.Layout;
 using RigiCompiler.Middleware.Mir;
+using RigiCompiler.Middleware.Runtime;
 using RigiCompiler.Middleware.Symbols;
 
 namespace RigiCompiler.Middleware.Emit
@@ -155,9 +156,13 @@ namespace RigiCompiler.Middleware.Emit
             // ===== 静态字段槽注册表（StaticFieldEmitter 登记/读写查） =====
 
             private readonly Dictionary<string, LLVMValueRef> _staticFields = new(System.StringComparer.Ordinal);
+            private readonly List<(LLVMValueRef Global, MirType Type)> _staticSlots = new();
 
-            internal void RegisterStaticField(string canonical, LLVMValueRef global) =>
+            internal void RegisterStaticField(string canonical, LLVMValueRef global, MirType type)
+            {
                 _staticFields.Add(canonical, global);
+                _staticSlots.Add((global, type));
+            }
 
             internal LLVMValueRef StaticFieldFor(string canonical) => _staticFields[canonical];
 
@@ -252,6 +257,59 @@ namespace RigiCompiler.Middleware.Emit
                 return slot;
             }
 
+            // 非标量、非 String、非 typeid 的引用类局部 = 胖引用槽
+            private static bool IsFatReferenceLocal(MirType type)
+            {
+                if (type.IsVoid || type.Key == "String" || TypeLayout.IsTypeId(type))
+                {
+                    return false;
+                }
+                return type.Key is not ("bool" or "char"
+                    or "i8" or "i16" or "i32" or "i64"
+                    or "u8" or "u16" or "u32" or "u64"
+                    or "float" or "double");
+            }
+
+            // 进程退出前释放静态托管槽（shim.c atexit 调用）
+            private void EmitGlobalsCleanup(LLVMBuilderRef builder)
+            {
+                var fnType = LLVMTypeRef.CreateFunction(LLVMTypeRef.Void,
+                    System.Array.Empty<LLVMTypeRef>(), false);
+                var fn = Module.AddFunction("rigi_globals_cleanup", fnType);
+                builder.PositionAtEnd(fn.AppendBasicBlock("entry"));
+                foreach (var (global, fieldType) in _staticSlots)
+                {
+                    if (fieldType.Key == "String")
+                    {
+                        var value = builder.BuildLoad2(StringAbi.ValueType(Context), global,
+                            "cleanup.str");
+                        var data = builder.BuildExtractValue(value, 0, "cleanup.str.data");
+                        var (rel, relType) = CallEmitter.DeclareArcFace(this,
+                            RuntimeFaces.StringRelease);
+                        builder.BuildCall2(relType, rel, new[] { data }, "");
+                    }
+                    else if (IsInlineValueType(fieldType, out var plan)
+                        && (plan.TypeFlags & TypeLayoutPlan.FlagRich) != 0
+                        && TryGetTypeSheet(fieldType.Canonical, out var sheet))
+                    {
+                        var (rel, relType) = CallEmitter.DeclareArcFace(this,
+                            RuntimeFaces.ValueRelease);
+                        builder.BuildCall2(relType, rel, new[] { global, sheet }, "");
+                    }
+                    else if (IsFatReferenceLocal(fieldType))
+                    {
+                        var fat = builder.BuildLoad2(TypeLayout.FatReferenceType(Context),
+                            global, "cleanup.ref");
+                        var typeId = builder.BuildExtractValue(fat, 0, "cleanup.tid");
+                        var payload = builder.BuildExtractValue(fat, 1, "cleanup.pl");
+                        var (rel, relType) = CallEmitter.DeclareArcFace(this,
+                            RuntimeFaces.RefRelease);
+                        builder.BuildCall2(relType, rel, new[] { typeId, payload }, "");
+                    }
+                }
+                builder.BuildRetVoid();
+            }
+
             // ===== 发射骨架：声明登记 + 逐块驱动 =====
 
             internal void EmitAll()
@@ -268,6 +326,7 @@ namespace RigiCompiler.Middleware.Emit
                 }
                 StaticFieldEmitter.EmitAll(this);
                 var builder = Context.CreateBuilder();
+                EmitGlobalsCleanup(builder);
                 EmittedFunction? entrypoint = null;
                 foreach (var fn in Mir.Functions)
                 {
@@ -391,10 +450,16 @@ namespace RigiCompiler.Middleware.Emit
                         slot = builder.BuildAlloca(
                             LLVMTypeRef.CreateArray(LLVMTypeRef.Int8, (uint)localPlan.Size), local.Name);
                         slot.Alignment = (uint)localPlan.Alignment;
+                        EmitMemSetZero(builder, slot, localPlan.Size);
                     }
                     else
                     {
-                        slot = builder.BuildAlloca(TypeLayout.MapType(Context, local.Type), local.Name);
+                        var llvmType = TypeLayout.MapType(Context, local.Type);
+                        slot = builder.BuildAlloca(llvmType, local.Name);
+                        if (local.Type.Key == "String" || IsFatReferenceLocal(local.Type))
+                        {
+                            builder.BuildStore(LLVMValueRef.CreateConstNull(llvmType), slot);
+                        }
                     }
                     slots.Add(local.Name, (slot, local));
                 }
@@ -411,11 +476,11 @@ namespace RigiCompiler.Middleware.Emit
                     {
                         slots.Add(parameter.Name, (llvmParam, parameter));
                     }
-                    else if (IsInlineValueType(parameter.Type, out var paramPlan))
+                    else if (IsInlineValueType(parameter.Type, out _))
                     {
-                        // 值类型参数深拷贝隔离（callee 改参数不影响调用方，
-                        // VM Copy 同口径）
-                        EmitMemCopy(builder, slots[parameter.Name].Slot, llvmParam, paramPlan.Size);
+                        // 值类型参数：InitRichValue 对传入值 +1（非 rich 退化为 memcpy）
+                        ArcEmitter.EmitInitRichValue(this, builder,
+                            slots[parameter.Name].Slot, llvmParam, parameter.Type);
                     }
                     else
                     {
@@ -561,6 +626,12 @@ namespace RigiCompiler.Middleware.Emit
                         break;
                     case MirUnboxAny unbox:
                         BoxEmitter.EmitUnbox(this, builder, slots, unbox);
+                        break;
+                    case MirAcquireSlot acquire:
+                        ArcEmitter.EmitAcquireSlot(this, builder, slots, acquire.Local);
+                        break;
+                    case MirReleaseSlot release:
+                        ArcEmitter.EmitReleaseSlot(this, builder, slots, release.Local);
                         break;
                     default:
                         throw new CompilerInternalException($"未覆盖的 MIR 指令: {inst.GetType().Name}");

@@ -258,7 +258,7 @@ namespace RigiCompiler
             // 引用相等去重：Node\<T> 自嵌套等场景沿展开链收敛
             if (!visited.Add(constructed)) return;
             var def = constructed.ConstructedFrom!;
-            // 内建构造（Nullable/Box/Span/Type）的闭包属性由 §3.1.2 特权规则
+            // 内建构造（Nullable/Box/Span/SharedSpan/Type）的闭包属性由 §3.1.2 特权规则
             // 在 ClassifyFieldType/IsSharedSafe 覆盖，不展开
             if (def.IsBuiltin) return;
             foreach (var f in def.Fields)

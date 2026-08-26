@@ -17,21 +17,37 @@ namespace RigiCompiler.Middleware.Layout
         public const int ReferenceSlotSize = 16;
         public const int ReferenceSlotAlignment = 16;
 
-        // 数组对象固定前缀：头 16B + i32 length@16 + i32 填充@20（与 VM
-        // core::Array#length@.i32 直读偏移对齐）。元素从 24 起按元素
-        // ABI 步长排列——值类型（标量/String/本地 struct）按自身尺寸
-        // 内联；引用/nullable/数组元素为 16B 胖槽。RUNTIME 普通泛型
-        // 16B 胖值槽是长期 Array ABI；MW4 用元素原生步长对齐 VM 可观察
-        // 语义（get/set 值、越界、零值）。变长元素引用不进静态 refMap
-        //（MW7 扫描需按 length×stride 特判）。
-        public const int ArrayPrefixSize = 24;
-        public const int ArrayLengthOffset = 16;
+        // 数组对象固定前缀 32B：头 16B + elemSheet 指针@16 + i32 length@24
+        // + pad@28（与 VM core::Array#length@.i32 及 arc.h 对齐）。元素从
+        // 32 起按元素 ABI 步长排列——值类型（标量/String/本地 struct）按
+        // 自身尺寸内联；引用/nullable/数组元素为 16B 胖槽。RUNTIME 普通
+        // 泛型 16B 胖值槽是长期 Array ABI；MW4 用元素原生步长对齐 VM
+        // 可观察语义（get/set 值、越界、零值）。变长元素引用不进静态
+        // refMap（MW7 扫描需按 length×stride 特判）。
+        public const int ArrayPrefixSize = 32;
+        public const int ArrayLengthOffset = 24;
+        public const int ArrayElemSheetOffset = 16;
         public const string ArrayLengthField = "core::Array#length@.i32";
         public const string ArrayTypeCanonical = "core::Array";
+        // Span/SharedSpan：与数组同构的连续缓冲区 class（RUNTIME §5）。
+        // 具化构造类型各自出 sheet，不坍缩进 BuiltinSheetCanonicals。
+        public const string SpanTypeCanonical = "core::Span";
+        public const string SharedSpanTypeCanonical = "core::SharedSpan";
+        public const string SpanLengthField = "core::Span#length@.i32";
+        public const string SharedSpanLengthField = "core::SharedSpan#length@.i32";
 
-        // 值类型 Nullable 装箱的 typeid 哨兵（非对齐地址，不与 TypeSheet
-        // 指针碰撞）：payload 对标量是零扩展位型，对 String/struct 是堆盒指针
-        public const ulong NullableSentinel = 1UL;
+        // refMap 编码（与 arc.h RIGI_REFMAP_* 对齐）：高 2 位 kind | 低 14 位跳数
+        public const int RefMapKindShift = 14;
+        public const int RefMapHopMask = 0x3FFF;
+        public const int RefMapKindFatRef = 0;
+        public const int RefMapKindString = 1;
+
+        public static ushort EncodeRefMap(int kind, int hop) =>
+            checked((ushort)((kind << RefMapKindShift) | hop));
+
+        public static int RefMapKindOf(ushort entry) => entry >> RefMapKindShift;
+
+        public static int RefMapHopOf(ushort entry) => entry & RefMapHopMask;
 
         public static LLVMTypeRef FatReferenceType(LLVMContextRef context)
         {
@@ -60,7 +76,7 @@ namespace RigiCompiler.Middleware.Layout
                     {
                         return LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0);
                     }
-                    if (IsNullable(type) || IsArray(type))
+                    if (IsNullable(type) || IsArray(type) || IsSpanLike(type))
                     {
                         return FatReferenceType(context);
                     }
@@ -71,7 +87,26 @@ namespace RigiCompiler.Middleware.Layout
         }
 
         public static bool IsArray(MirType type) =>
-            BilVerificationContext.StripTypeArguments(type.Canonical) == ArrayTypeCanonical;
+            IsHead(type.Canonical, ArrayTypeCanonical);
+
+        public static bool IsSpan(MirType type) =>
+            IsHead(type.Canonical, SpanTypeCanonical);
+
+        public static bool IsSharedSpan(MirType type) =>
+            IsHead(type.Canonical, SharedSpanTypeCanonical);
+
+        public static bool IsSpanLike(MirType type) =>
+            IsSpan(type) || IsSharedSpan(type);
+
+        // 数组 / Span / SharedSpan：元素按原生 stride 连续存放，访问同构
+        public static bool IsContiguousBuffer(MirType type) =>
+            IsArray(type) || IsSpanLike(type);
+
+        public static bool IsSpanCanonical(string canonical) =>
+            IsHead(canonical, SpanTypeCanonical);
+
+        public static bool IsSharedSpanCanonical(string canonical) =>
+            IsHead(canonical, SharedSpanTypeCanonical);
 
         public static bool IsNullable(MirType type) =>
             BilVerificationContext.StripTypeArguments(type.Canonical) == "core::Nullable";
@@ -89,6 +124,13 @@ namespace RigiCompiler.Middleware.Layout
             return IsArray(type) && TryGetConstructorArgument(type.Canonical, 0, out element);
         }
 
+        public static bool TryGetContiguousElement(MirType type, out MirType element)
+        {
+            element = null!;
+            return IsContiguousBuffer(type)
+                && TryGetConstructorArgument(type.Canonical, 0, out element);
+        }
+
         public static bool TryGetNullableInner(MirType type, out MirType inner)
         {
             inner = null!;
@@ -97,8 +139,18 @@ namespace RigiCompiler.Middleware.Layout
 
         public static bool IsLengthField(string fieldSymbol) =>
             fieldSymbol == ArrayLengthField
-            || (fieldSymbol.StartsWith(ArrayTypeCanonical + "<", System.StringComparison.Ordinal)
-                && fieldSymbol.EndsWith("#length@.i32", System.StringComparison.Ordinal));
+            || fieldSymbol == SpanLengthField
+            || fieldSymbol == SharedSpanLengthField
+            || IsConstructedLengthField(fieldSymbol, ArrayTypeCanonical)
+            || IsConstructedLengthField(fieldSymbol, SpanTypeCanonical)
+            || IsConstructedLengthField(fieldSymbol, SharedSpanTypeCanonical);
+
+        private static bool IsConstructedLengthField(string fieldSymbol, string head) =>
+            fieldSymbol.StartsWith(head + "<", System.StringComparison.Ordinal)
+            && fieldSymbol.EndsWith("#length@.i32", System.StringComparison.Ordinal);
+
+        private static bool IsHead(string canonical, string head) =>
+            BilVerificationContext.StripTypeArguments(canonical) == head;
 
         public static ArrayElementAbi ClassifyElement(MirType element, TypeLayoutPlan? plan)
         {
@@ -152,6 +204,46 @@ namespace RigiCompiler.Middleware.Layout
             };
         }
 
+        // 托管槽分类（Layout 层单一知识点；pass 与 ArcEmitter 共用）
+        public static ManagedSlotKind ClassifySlot(MwContext context, MirType type) =>
+            ClassifySlot(context.Layout, type);
+
+        public static ManagedSlotKind ClassifySlot(LayoutPlanTable? layout, MirType type)
+        {
+            if (type.Key == "String")
+            {
+                return ManagedSlotKind.String;
+            }
+            if (type.IsVoid || IsTypeId(type))
+            {
+                return ManagedSlotKind.Unmanaged;
+            }
+            switch (type.Key)
+            {
+                case "bool" or "char"
+                    or "i8" or "u8" or "i16" or "u16"
+                    or "i32" or "u32" or "i64" or "u64"
+                    or "float" or "double":
+                    return ManagedSlotKind.Unmanaged;
+            }
+            if (layout?.Find(type.Canonical) is { Kind: TypeLayoutKind.Struct or TypeLayoutKind.Enum } plan)
+            {
+                return plan.RefMapCount > 0
+                    ? ManagedSlotKind.RichValue
+                    : ManagedSlotKind.Unmanaged;
+            }
+            return ManagedSlotKind.FatReference;
+        }
+
+        public static bool IsManagedSlot(ManagedSlotKind kind) =>
+            kind != ManagedSlotKind.Unmanaged;
+
+        public static bool IsManagedSlot(MwContext context, MirType type) =>
+            IsManagedSlot(ClassifySlot(context, type));
+
+        public static bool IsManagedSlot(LayoutPlanTable? layout, MirType type) =>
+            IsManagedSlot(ClassifySlot(layout, type));
+
         public static (int Size, uint Flags) BuiltinSheetLayout(string canonical)
         {
             return canonical switch
@@ -160,9 +252,9 @@ namespace RigiCompiler.Middleware.Layout
                 "core::char" or "core::i16" or "core::u16" => (2, TypeLayoutPlan.FlagInlineValue),
                 "core::i32" or "core::u32" or "core::float" => (4, TypeLayoutPlan.FlagInlineValue),
                 "core::i64" or "core::u64" or "core::double" => (8, TypeLayoutPlan.FlagInlineValue),
-                "core::String" => (16, TypeLayoutPlan.FlagInlineValue),
+                "core::String" => (16, TypeLayoutPlan.FlagInlineValue | TypeLayoutPlan.FlagString),
                 "core::Any" or "core::Object" => (ReferenceSlotSize, 0u),
-                ArrayTypeCanonical => (ArrayPrefixSize, 0u),
+                ArrayTypeCanonical => (ArrayPrefixSize, TypeLayoutPlan.FlagArray),
                 _ => (0, 0u),
             };
         }
@@ -194,6 +286,14 @@ namespace RigiCompiler.Middleware.Layout
             argument = MirType.Of(parts[index]);
             return true;
         }
+    }
+
+    public enum ManagedSlotKind
+    {
+        Unmanaged,
+        FatReference,
+        String,
+        RichValue,
     }
 
     public enum ArrayElementKind

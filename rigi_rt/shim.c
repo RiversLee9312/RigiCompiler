@@ -33,13 +33,12 @@ void rigi_print_err(const rigi_string *text)
     fflush(stderr);
 }
 
-/* malloc 新缓冲区拼接；len=0 的边界按 (size_t)0 处理，malloc(0) 返回的指针
- * 直接透传给调用方（生命周期归调用方 free） */
+/* 经 rigi_string_new 分配 rc=1 字符串块并拼接 */
 void rigi_string_concat(rigi_string *out, const rigi_string *a, const rigi_string *b)
 {
     int64_t len = a->len + b->len;
-    char *data = (char *)malloc((size_t)len);
-    if (len > 0 && data != NULL)
+    char *data = rigi_string_new(len);
+    if (len > 0)
     {
         if (a->len > 0)
         {
@@ -51,7 +50,7 @@ void rigi_string_concat(rigi_string *out, const rigi_string *a, const rigi_strin
         }
     }
     out->data = data;
-    out->len = data != NULL ? len : 0;
+    out->len = len;
 }
 
 /* 三态字符串比较：UTF-8 字节序字典序（memcmp 按无符号字节）。eq/ne 即内容
@@ -123,8 +122,11 @@ _Noreturn void rigi_abort_invalid_cast(const RigiTypeSheet *target)
 
 /* 由编译器发射（BIL entrypoint fn） */
 extern int32_t rigi_entry(void);
+extern void rigi_globals_cleanup(void);
 
 int main(void)
 {
+    atexit(rigi_mem_report);       /* 先注册后执行：报告最后跑 */
+    atexit(rigi_globals_cleanup);  /* LIFO：cleanup 先于 report 执行 */
     return rigi_entry();
 }

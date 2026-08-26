@@ -787,9 +787,11 @@ namespace RigiCompiler.Bil
                 return;
             }
             var instance = coroutine.ReadVar(objectVar.Name);
-            if (instance is VmArray array && fieldSymbol == VmArray.LengthFieldSymbol)
+            if (instance is IVmIndexBuffer buffer
+                && (fieldSymbol == VmArray.LengthFieldSymbol
+                    || VmSpan.IsLengthField(fieldSymbol)))
             {
-                coroutine.WriteVar(target.Name, new VmI32(array.Length));
+                coroutine.WriteVar(target.Name, new VmI32(buffer.Length));
                 return;
             }
             // String.length（.bootstrap.rg 的 pub ext const 声明，无 backing
@@ -969,20 +971,20 @@ namespace RigiCompiler.Bil
             BilVariableOperand target)
         {
             var collection = coroutine.ReadVar(collectionVar.Name);
-            if (collection is VmArray array)
+            if (collection is IVmIndexBuffer buffer)
             {
-                // Q6（SYNTAX §13.2 / BIL §13.6）：内建数组的索引读取语义上
+                // Q6（SYNTAX §13.2 / BIL §13.6）：内建 Array/Span 的索引读取语义上
                 // 走 getAtIndex（返回 T?）——界内元素包成 Nullable\<T\>
                 // （值类型 VmNullable 存在位包装，引用类型沿用 VmNull 表示）；
                 // 越界读取不再 trap，得 null
                 var index = VmContext.RequireIndex(coroutine.ReadVar(indexVar.Name));
-                if (index < 0 || index >= array.Length)
+                if (index < 0 || index >= buffer.Length)
                 {
                     coroutine.WriteVar(target.Name, VmNull.Instance);
                     return;
                 }
                 coroutine.WriteVar(target.Name,
-                    VmTypeOps.WrapNullable(array.GetAt(index).Copy(), array.ElementType));
+                    VmTypeOps.WrapNullable(buffer.GetAt(index).Copy(), buffer.ElementType));
                 return;
             }
             var method = context.FindIndexOperator(collection.TypeRef, isGet: true);
@@ -999,9 +1001,9 @@ namespace RigiCompiler.Bil
             BilVariableOperand elementVar)
         {
             var collection = coroutine.ReadVar(collectionVar.Name);
-            if (collection is VmArray array)
+            if (collection is IVmIndexBuffer buffer)
             {
-                array.SetAt(VmContext.RequireIndex(coroutine.ReadVar(indexVar.Name)),
+                buffer.SetAt(VmContext.RequireIndex(coroutine.ReadVar(indexVar.Name)),
                     coroutine.ReadVar(elementVar.Name).Copy());
                 return;
             }
@@ -1392,7 +1394,8 @@ namespace RigiCompiler.Bil
             // 存在，无需「hook 给 override 让位」特判
             if (context.TryResolveNative(methodSymbol, out var library, out var nativeSymbol))
             {
-                var result = context.Hooks.Invoke(context, library, nativeSymbol, args);
+                var result = context.Hooks.Invoke(context, library, nativeSymbol, args,
+                    methodSymbol);
                 if (resultSlot != null)
                 {
                     coroutine.WriteVar(resultSlot, result);

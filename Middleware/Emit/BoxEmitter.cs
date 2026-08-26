@@ -18,8 +18,8 @@ namespace RigiCompiler.Middleware.Emit
         internal const ulong TagHeapValue = 1UL;
         internal const ulong TagObject = 2UL;
         internal const int InlineLimit = 8;
-        private const int TagShift = 56;
-        private const ulong SheetMask = 0x00FFFFFFFFFFFFFFUL;
+        internal const int TagShift = 56;
+        internal const ulong SheetMask = 0x00FFFFFFFFFFFFFFUL;
 
         // class 对象胖引用：{typeid = ptrtoint(sheet) | tag2<<56, payload=对象指针}
         internal static LLVMValueRef PackObject(ModuleBuilder.Session session,
@@ -71,6 +71,7 @@ namespace RigiCompiler.Middleware.Emit
             {
                 var block = Malloc(session, builder, size);
                 session.EmitMemCopy(builder, block, slots[sourceName].Slot, size);
+                ArcEmitter.EmitValueAcquire(session, builder, block, sourceType);
                 payload = builder.BuildPtrToInt(block, LLVMTypeRef.Int64, "box.payload");
             }
             return PackFat(session, builder, sheet, tag, payload, "box");
@@ -114,6 +115,7 @@ namespace RigiCompiler.Middleware.Emit
             {
                 var block = builder.BuildIntToPtr(payload, PointerType(), "unbox.block");
                 session.EmitMemCopy(builder, slots[target].Slot, block, size);
+                ArcEmitter.EmitValueAcquire(session, builder, slots[target].Slot, targetType);
             }
         }
 
@@ -160,7 +162,7 @@ namespace RigiCompiler.Middleware.Emit
                 slots[target].Slot);
         }
 
-        private static LLVMValueRef BitsFromSlot(ModuleBuilder.Session session,
+        internal static LLVMValueRef BitsFromSlot(ModuleBuilder.Session session,
             LLVMBuilderRef builder, LLVMValueRef slot, int size)
         {
             var tmp = builder.BuildAlloca(LLVMTypeRef.Int64, "box.bits");
@@ -253,7 +255,7 @@ namespace RigiCompiler.Middleware.Emit
             return size;
         }
 
-        private static LLVMValueRef TypeSheetOf(ModuleBuilder.Session session, MirType type)
+        internal static LLVMValueRef TypeSheetOf(ModuleBuilder.Session session, MirType type)
         {
             var key = TypeLayout.BuiltinSheetCanonical(type);
             if (session.TryGetTypeSheet(key, out var sheet)

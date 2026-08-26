@@ -170,6 +170,7 @@ namespace RigiCompiler.Tests
             ("TestValuePathEmission", TestValuePathEmission),
             ("TestStaticEmission", TestStaticEmission),
             ("TestArrayPathEmission", TestArrayPathEmission),
+            ("TestSpanPathEmission", TestSpanPathEmission),
             ("TestInvokeIndirect", TestInvokeIndirect),
             ("TestNativeFfiAbi", TestNativeFfiAbi),
             ("TestBoxAnyEmission", TestBoxAnyEmission),
@@ -179,6 +180,8 @@ namespace RigiCompiler.Tests
             ("TestVargsKwargs", TestVargsKwargs),
             ("TestNotSupported", TestNotSupported),
             ("TestNativeCli", TestNativeCli),
+            ("TestRcInjection", TestRcInjection),
+            ("TestRefMapMw7a", TestRefMapMw7a),
         };
 
         // ===== Gate 门禁 =====
@@ -701,7 +704,13 @@ namespace RigiCompiler.Tests
             // 黄金快照的 MW1 形态：锚定关键行（全文黄金比对随 .ll 快照基建落地）
             TestHarness.CheckTrue("模块名来自 Metadata", ll.Contains("; ModuleID = 'hello'"), ll);
             TestHarness.CheckTrue("字符串字面量进内部全局",
-                ll.Contains("@str.R_Hello = internal constant [7 x i8] c\"Hello, \""), ll);
+                ll.Contains("@str.R_Hello = internal constant { i32, i32, [7 x i8] } { i32 -1, i32 0, [7 x i8] c\"Hello, \""), ll);
+            TestHarness.CheckTrue("字面量 data 指针 = 块+8",
+                ll.Contains("getelementptr inbounds (i8, ptr @str.R_Hello, i64 8)"), ll);
+            TestHarness.CheckTrue("String 槽零初始化",
+                ll.Contains("store { ptr, i64 } zeroinitializer"), ll);
+            TestHarness.CheckTrue("rigi_globals_cleanup 已发射",
+                ll.Contains("define void @rigi_globals_cleanup()"), ll);
             TestHarness.CheckTrue("转义换行进字节常量",
                 ll.Contains("c\"world!\\0A\""), ll);
             TestHarness.CheckTrue("入口发射为 rigi_entry",
@@ -852,7 +861,7 @@ namespace RigiCompiler.Tests
         {
             var layout = BuildLayout(LayoutSource);
 
-            // struct：自然对齐 + String 内联 16B（不进 refMap）
+            // struct：自然对齐 + String 内联 16B（进 refMap kind1）
             var point = layout.Find("Point");
             TestHarness.CheckTrue("Point 已布局", point != null);
             TestHarness.CheckTrue("Point 种类", point!.Kind ==
@@ -862,9 +871,11 @@ namespace RigiCompiler.Tests
                 && FieldOf(point, "#y@")!.Offset == 8
                 && FieldOf(point, "#tag@")!.Offset == 16);
             TestHarness.CheckTrue("Point 尺寸/对齐",
-                point.Size == 32 && point.Alignment == 8);
-            TestHarness.CheckTrue("Point refMap 为空（String 非引用槽）",
-                point.RefMap.Length == 0);
+                point.Size == 32 && point.Alignment == 16);
+            TestHarness.CheckTrue("Point refMap 含 String 槽 kind1",
+                point.RefMap.Length == 1
+                && FieldOf(point, "#tag@")!.IsStringSlot
+                && point.RefMap[0] == TypeLayout.EncodeRefMap(TypeLayout.RefMapKindString, 1));
 
             // class：对象头 16 起排、vtable 本类槽
             var animal = layout.Find("Animal");
@@ -989,9 +1000,15 @@ namespace RigiCompiler.Tests
             // vtable 条目标 null（get 不可达未进 MIR；MW5 可达性扩编兜底）
             TestHarness.CheckTrue("vtable 全局锚点",
                 ll.Contains("@typesheet.vtable.Node = internal constant [1 x ptr] zeroinitializer"), ll);
-            // refMap：next 槽@32 → 跳数 (32-16)/16 = 1
+            // refMap：next 槽@32 → 跳数 (32-16)/16 = 1（kind0）
             TestHarness.CheckTrue("refMap 全局锚点",
                 ll.Contains("@typesheet.refmap.Node = internal constant [1 x i16] [i16 1]"), ll);
+            TestHarness.CheckTrue("String 内建 sheet 含 kind1 refMap",
+                ll.Contains("@\"typesheet.refmap.core::String\" = internal constant [1 x i16] [i16 16384]"), ll);
+            TestHarness.CheckTrue("String 内建 sheet flags = INLINE|STRING",
+                ll.Contains("i32 16, i32 40") && ll.Contains("typesheet.core::String"), ll);
+            TestHarness.CheckTrue("Array 内建 sheet 前缀 32 + FlagArray",
+                ll.Contains("i32 32, i32 16") && ll.Contains("typesheet.core::Array"), ll);
         }
 
         // ===== is/supers/with + TypeInfo（MW5 c3）=====
@@ -1235,6 +1252,8 @@ namespace RigiCompiler.Tests
             // 用户 main 以 canonical 名发射（internal 链接）
             TestHarness.CheckTrue("main 以 canonical 名发射",
                 ll.Contains("define internal i32 @\"$main()@.i32\"()"), ll);
+            TestHarness.CheckTrue("静态用例发射 rigi_globals_cleanup",
+                ll.Contains("define void @rigi_globals_cleanup()"), ll);
         }
 
         // ===== 数组路径（MW4：alloc_array / get.array / set.array / length / raw）=====
@@ -1321,6 +1340,89 @@ namespace RigiCompiler.Tests
                 rawLl.Contains("@raw.R_Data") && rawLl.Contains("c\"/\\F23\\1C\""), rawLl);
             TestHarness.CheckTrue("raw 走 alloc_array",
                 rawLl.Contains("call ptr @rigi_alloc_array(ptr"), rawLl);
+        }
+
+        // ===== Span 路径（MW7b：span_alloc / 具化 sheet / stride 访问）=====
+
+        private static void TestSpanPathEmission()
+        {
+            var (_, _, text) = BilTestHarness.EmitBilUnit(
+                "import core.collections.*\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = spanOf\\<i32>(3)\n" +
+                "    a[0] = 7\n" +
+                "    var x = a[0] if? 0\n" +
+                "    return (x + a.length)\n" +
+                "}\n");
+            var gate = BilGate.Accept(text, "span.bil");
+            TestHarness.CheckTrue("Span 用例门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            var context = new MwContext(gate.Module!);
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+            var mir = context.Mir!;
+            var allInsts = mir.Functions.SelectMany(f => f.Blocks)
+                .SelectMany(b => b.Instructions).ToList();
+            TestHarness.CheckTrue("MIR 含 get.array（Span）",
+                allInsts.OfType<MirGetArray>().Any(g =>
+                    TypeLayout.IsSpan(g.CollectionType)));
+            TestHarness.CheckTrue("MIR 含 set.array（Span）",
+                allInsts.OfType<MirSetArray>().Any(s =>
+                    TypeLayout.IsSpan(s.CollectionType)));
+            TestHarness.CheckTrue("MIR 含 Span.length",
+                allInsts.OfType<MirGetField>().Any(f =>
+                    TypeLayout.IsLengthField(f.FieldSymbol)));
+            var spanPlan = context.Layout!.Find("core::Span<core::i32>");
+            TestHarness.CheckTrue("具化 Span<i32> 计划入表", spanPlan != null);
+            TestHarness.CheckTrue("Span 计划 FlagArray 且无 FlagShared",
+                spanPlan != null
+                && (spanPlan.TypeFlags & TypeLayoutPlan.FlagArray) != 0
+                && (spanPlan.TypeFlags & TypeLayoutPlan.FlagShared) == 0);
+
+            using var module = ModuleBuilder.Build(context, mir);
+            var ll = module.PrintToString();
+            TestHarness.CheckTrue("span_alloc 编组形状",
+                ll.Contains("call ptr @rigi_span_alloc(ptr"), ll);
+            TestHarness.CheckTrue("具化 Span<i32> TypeSheet",
+                ll.Contains("typesheet.core::Span$core::i32$"), ll);
+            TestHarness.CheckTrue("Span sheet FlagArray（size 32 + flags 16）",
+                SheetHasFlags(ll, "typesheet.core::Span$core::i32$", 32, 16), ll);
+            TestHarness.CheckTrue("i32 stride 常量 4",
+                ll.Contains("mul i64") && ll.Contains(", 4"), ll);
+
+            var sharedLl = EmitLlFromSource(
+                "import core.collections.*\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = sharedSpanOf\\<i32>(1)\n" +
+                "    return a.length\n" +
+                "}\n",
+                "span.shared.bil");
+            TestHarness.CheckTrue("具化 SharedSpan<i32> TypeSheet",
+                sharedLl.Contains("typesheet.core::SharedSpan$core::i32$"), sharedLl);
+            TestHarness.CheckTrue("SharedSpan sheet FlagArray|FlagShared（flags 18）",
+                SheetHasFlags(sharedLl, "typesheet.core::SharedSpan$core::i32$", 32, 18),
+                sharedLl);
+
+            var strLl = EmitLlFromSource(
+                "import core.collections.*\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = spanOf\\<String>(2)\n" +
+                "    a[0] = \"x\"\n" +
+                "    return a.length\n" +
+                "}\n",
+                "span.str.bil");
+            TestHarness.CheckTrue("String 元素 stride 常量 16",
+                strLl.Contains("mul i64") && strLl.Contains(", 16"), strLl);
+        }
+
+        private static bool SheetHasFlags(string ll, string sheetNeedle, int size, int flags)
+        {
+            var idx = ll.IndexOf(sheetNeedle, StringComparison.Ordinal);
+            if (idx < 0)
+            {
+                return false;
+            }
+            var slice = ll.Substring(idx, Math.Min(400, ll.Length - idx));
+            return slice.Contains($"i32 {size}, i32 {flags}");
         }
 
         // ===== invoke.indirect（§15.3 callable 协议）=====
@@ -2199,6 +2301,339 @@ namespace RigiCompiler.Tests
             {
                 Directory.Delete(dir, recursive: true);
             }
+        }
+
+        // ===== RcInjection（MW7a）=====
+
+        private static MwContext PipelineFromSource(string source, string file)
+        {
+            var (_, _, text) = BilTestHarness.EmitBilUnit(source);
+            var gate = BilGate.Accept(text, file);
+            TestHarness.CheckTrue(file + " 门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors.Take(3)));
+            var context = new MwContext(gate.Module!);
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+            return context;
+        }
+
+        private static MirFunction FnOf(MwContext context, string needle)
+        {
+            var found = context.Mir!.Functions.FirstOrDefault(f => f.Symbol.Canonical.Contains(needle));
+            TestHarness.CheckTrue("找到函数 " + needle, found != null,
+                string.Join(", ", context.Mir.Functions.Select(f => f.Symbol.Canonical)));
+            return found!;
+        }
+
+        private static void TestRcInjection()
+        {
+            // ① 入口参数 acquire 序列
+            var ctx = PipelineFromSource(
+                "pub class Node {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(v: i32) { x = v }\n" +
+                "}\n" +
+                "pub func take(n: Node): i32 { return n.x }\n" +
+                "pub func main(): i32 {\n" +
+                "    return take(new Node(1))\n" +
+                "}\n",
+                "rc.param.bil");
+            var take = FnOf(ctx, "$take(");
+            TestHarness.CheckTrue("① take 入口首条是参数 acquire",
+                take.Blocks[0].Instructions.Count > 0
+                && take.Blocks[0].Instructions[0] is MirAcquireSlot acq
+                && acq.Local == take.Parameters[0].Name,
+                take.Blocks[0].Instructions.FirstOrDefault()?.GetType().Name ?? "empty");
+
+            // ② CopyLocal 三段式与 dst==src 删除
+            ctx = PipelineFromSource(
+                "pub class Node {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(v: i32) { x = v }\n" +
+                "}\n" +
+                "pub func alias(n: Node): Node {\n" +
+                "    var m = n\n" +
+                "    return m\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var n = alias(new Node(1))\n" +
+                "    return n.x\n" +
+                "}\n",
+                "rc.copy.bil");
+            var alias = FnOf(ctx, "$alias(");
+            var copies = alias.Blocks.SelectMany(b => b.Instructions.Select((inst, i) => (b, i, inst)))
+                .Where(t => t.inst is MirCopyLocal)
+                .ToList();
+            TestHarness.CheckTrue("② 存在托管 CopyLocal", copies.Count > 0);
+            foreach (var (block, i, inst) in copies)
+            {
+                var copy = (MirCopyLocal)inst;
+                if (!TypeLayout.IsManagedSlot(ctx, alias.FindLocal(copy.Target).Type))
+                {
+                    continue;
+                }
+                TestHarness.CheckTrue("② 三段式前 Release",
+                    i > 0 && block.Instructions[i - 1] is MirReleaseSlot rel
+                    && rel.Local == copy.Target);
+                TestHarness.CheckTrue("② 三段式后 Acquire",
+                    i + 1 < block.Instructions.Count
+                    && block.Instructions[i + 1] is MirAcquireSlot a
+                    && a.Local == copy.Target);
+            }
+
+            // dst==src 删除：手写 BIL set.var $n $n
+            // 用最小手写模块覆盖自赋值删除
+            const string SelfCopyBil =
+                "BIL \"1.1\"\n" +
+                "\n" +
+                "Metadata {\n" +
+                "    module = string \"selfcopy\"\n" +
+                "}\n" +
+                "\n" +
+                "Resources {\n" +
+                "    R_Zero = i32 0,\n" +
+                "    R_Null = null type(Node)\n" +
+                "}\n" +
+                "\n" +
+                "LocalSymbols {\n" +
+                "    .type Node = class pub {\n" +
+                "        .field Node#x@.i32 pub var\n" +
+                "        .method Node$init(v:.i32)@.void pub\n" +
+                "    }\n" +
+                "    .method $id(n:Node)@.void pub\n" +
+                "    .method $main()@.i32 pub entrypoint\n" +
+                "}\n" +
+                "\n" +
+                "ExternalSymbols {\n" +
+                "}\n" +
+                "\n" +
+                "fn($id(n:Node)@.void) {\n" +
+                "    .args {\n" +
+                "        .return = .void,\n" +
+                "        n = Node\n" +
+                "    }\n" +
+                "    .vars {\n" +
+                "    }\n" +
+                "    .block entry entrypoint {\n" +
+                "        set.var $n $n\n" +
+                "        ret\n" +
+                "    }\n" +
+                "}\n" +
+                "\n" +
+                "fn(Node$init(v:.i32)@.void) {\n" +
+                "    .args {\n" +
+                "        .return = .void,\n" +
+                "        .this = Node,\n" +
+                "        v = .i32\n" +
+                "    }\n" +
+                "    .vars {\n" +
+                "    }\n" +
+                "    .block entry entrypoint {\n" +
+                "        ret\n" +
+                "    }\n" +
+                "}\n" +
+                "\n" +
+                "fn($main()@.i32) {\n" +
+                "    .args {\n" +
+                "        .return = .i32\n" +
+                "    }\n" +
+                "    .vars {\n" +
+                "        Node n,\n" +
+                "        .i32 z\n" +
+                "    }\n" +
+                "    .block entry entrypoint {\n" +
+                "        load res(R_Null) $n\n" +
+                "        invoke.noret fn($id(n:Node)@.void) [$n]\n" +
+                "        load res(R_Zero) $z\n" +
+                "        ret $z\n" +
+                "    }\n" +
+                "}\n";
+            var selfGate = BilGate.Accept(SelfCopyBil, "selfcopy.bil");
+            TestHarness.CheckTrue("② 自赋值模块门禁", selfGate.IsAccepted,
+                string.Join("; ", selfGate.Errors.Take(3)));
+            if (selfGate.IsAccepted)
+            {
+                var selfCtx = new MwContext(selfGate.Module!);
+                RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(selfCtx);
+                var idFn = FnOf(selfCtx, "$id(");
+                TestHarness.CheckTrue("② dst==src CopyLocal 已删除",
+                    !idFn.Blocks.SelectMany(b => b.Instructions).OfType<MirCopyLocal>().Any());
+            }
+
+            // ③ 产出类前置 release
+            ctx = PipelineFromSource(
+                "import core.io.Console\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = \"a\" + \"b\"\n" +
+                "    Console.println(s)\n" +
+                "    return 0\n" +
+                "}\n",
+                "rc.prod.bil");
+            var main = ctx.Mir!.Functions.First(f => f.IsEntrypoint);
+            var concat = main.Blocks.SelectMany(b => b.Instructions)
+                .Select((inst, i) => (inst, i))
+                .FirstOrDefault(t => t.inst is MirBinaryIntrinsic);
+            TestHarness.CheckTrue("③ 含 string concat", concat.inst != null);
+            if (concat.inst is MirBinaryIntrinsic bin)
+            {
+                var block = main.Blocks.First(b => b.Instructions.Contains(bin));
+                var idx = block.Instructions.ToList().IndexOf(bin);
+                TestHarness.CheckTrue("③ concat 前是 ReleaseSlot",
+                    idx > 0 && block.Instructions[idx - 1] is MirReleaseSlot pre
+                    && pre.Local == bin.Target);
+            }
+
+            // ④ ret 块 release 全覆盖 + $mw.ret 合成
+            ctx = PipelineFromSource(
+                "pub class Node {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(v: i32) { x = v }\n" +
+                "}\n" +
+                "pub func wrap(n: Node): Node { return n }\n" +
+                "pub func main(): i32 {\n" +
+                "    var n = wrap(new Node(1))\n" +
+                "    return n.x\n" +
+                "}\n",
+                "rc.ret.bil");
+            var wrap = FnOf(ctx, "$wrap(");
+            TestHarness.CheckTrue("④ $mw.ret 已登记",
+                wrap.Locals.Any(l => l.Name == RigiCompiler.Middleware.Passes.RcInjectionPass.RetLocalName));
+            var retBlock = wrap.Blocks.First(b => b.Terminator is MirRet);
+            TestHarness.CheckTrue("④ ret 操作数是 $mw.ret",
+                retBlock.Terminator is MirRet { Value: MirLocalOperand op }
+                && op.Name == RigiCompiler.Middleware.Passes.RcInjectionPass.RetLocalName);
+            TestHarness.CheckTrue("④ ret 块末尾是 ReleaseSlot",
+                retBlock.Instructions.Count > 0
+                && retBlock.Instructions[^1] is MirReleaseSlot);
+            TestHarness.CheckTrue("④ 出口 release 不含 $mw.ret",
+                !retBlock.Instructions.TakeLast(1).OfType<MirReleaseSlot>()
+                    .Any(r => r.Local == RigiCompiler.Middleware.Passes.RcInjectionPass.RetLocalName)
+                || wrap.Parameters.All(p => p.Name != RigiCompiler.Middleware.Passes.RcInjectionPass.RetLocalName));
+
+            // ⑤ class .this 管理、值类型 .this 豁免
+            ctx = PipelineFromSource(
+                "pub class C {\n" +
+                "    pub var x: i32\n" +
+                "    pub init() { x = 0 }\n" +
+                "    pub func get(): i32 { return x }\n" +
+                "}\n" +
+                "pub struct S {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(_ -> x)\n" +
+                "    pub func get(): i32 { return x }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var c = new C()\n" +
+                "    var s = new S(1)\n" +
+                "    return c.get() + s.get()\n" +
+                "}\n",
+                "rc.this.bil");
+            var classGet = FnOf(ctx, "C$get");
+            var structGet = FnOf(ctx, "S$get");
+            TestHarness.CheckTrue("⑤ class .this 入口 acquire",
+                classGet.Blocks[0].Instructions.OfType<MirAcquireSlot>()
+                    .Any(a => a.Local == ".this"));
+            TestHarness.CheckTrue("⑤ 值类型 .this 豁免 acquire",
+                !structGet.Blocks[0].Instructions.OfType<MirAcquireSlot>()
+                    .Any(a => a.Local == ".this"));
+            TestHarness.CheckTrue("⑤ 值类型 .this 豁免 release",
+                !structGet.Blocks.SelectMany(b => b.Instructions).OfType<MirReleaseSlot>()
+                    .Any(r => r.Local == ".this"));
+
+            // ⑥ void 函数也有局部 release
+            ctx = PipelineFromSource(
+                "pub class Node {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(v: i32) { x = v }\n" +
+                "}\n" +
+                "pub func drop(n: Node) { var m = n }\n" +
+                "pub func main(): i32 {\n" +
+                "    drop(new Node(1))\n" +
+                "    return 0\n" +
+                "}\n",
+                "rc.void.bil");
+            var drop = FnOf(ctx, "$drop(");
+            var dropRet = drop.Blocks.First(b => b.Terminator is MirRet);
+            TestHarness.CheckTrue("⑥ void 函数 ret 块含 ReleaseSlot",
+                dropRet.Instructions.OfType<MirReleaseSlot>().Any());
+
+            // .ll 黄金：含 ref 拷贝的函数出现 acquire/release 配对
+            ctx = PipelineFromSource(
+                "pub class Node {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(v: i32) { x = v }\n" +
+                "}\n" +
+                "pub func copy(n: Node): Node { return n }\n" +
+                "pub func main(): i32 {\n" +
+                "    var n = copy(new Node(1))\n" +
+                "    return n.x\n" +
+                "}\n",
+                "rc.ll.bil");
+            using var module = ModuleBuilder.Build(ctx, ctx.Mir!);
+            var ll = module.PrintToString();
+            TestHarness.CheckTrue(".ll 含 rigi_ref_acquire",
+                ll.Contains("call i64 @rigi_ref_acquire("), ll);
+            TestHarness.CheckTrue(".ll 含 rigi_ref_release",
+                ll.Contains("call void @rigi_ref_release("), ll);
+        }
+
+        // MW7a 边界：enum String payload / 嵌套 rich 折算序 / 非 rich 含 String 也产 refMap
+        private static void TestRefMapMw7a()
+        {
+            var layout = BuildLayout(
+                "pub class Node {\n" +
+                "    pub var x: i32 = 0\n" +
+                "}\n" +
+                "pub enum struct Note {\n" +
+                "    pub const text: String\n" +
+                "    pub init(_ -> text)\n" +
+                "}[\n" +
+                "    A(\"a\"),\n" +
+                "    B(text = _)\n" +
+                "]\n" +
+                "pub rich struct Inner {\n" +
+                "    pub var name: String\n" +
+                "    pub var node: Node?\n" +
+                "}\n" +
+                "pub rich struct Outer {\n" +
+                "    pub var kid: Inner\n" +
+                "    pub var tag: String\n" +
+                "}\n" +
+                "pub struct Tagged {\n" +
+                "    pub var n: i32\n" +
+                "    pub var label: String\n" +
+                "}\n" +
+                "pub func main(): i32 { return 0 }\n");
+
+            var note = layout.Find("Note");
+            TestHarness.CheckTrue("enum String payload 产 kind1",
+                note != null
+                && note.RefMap.Length == 1
+                && FieldOf(note, "#text@")!.Offset == 16
+                && note.RefMap[0] == TypeLayout.EncodeRefMap(TypeLayout.RefMapKindString, 1),
+                note == null ? "missing" : string.Join(",", note.RefMap));
+
+            var inner = layout.Find("Inner");
+            var outer = layout.Find("Outer");
+            TestHarness.CheckTrue("嵌套 rich 外层 refMap 序（kind1,kind0,kind1）",
+                inner != null && outer != null
+                && inner.RefMap.Length == 2
+                && inner.RefMap[0] == TypeLayout.EncodeRefMap(TypeLayout.RefMapKindString, 0)
+                && inner.RefMap[1] == TypeLayout.EncodeRefMap(TypeLayout.RefMapKindFatRef, 0)
+                && outer.RefMap.Length == 3
+                && outer.RefMap[0] == TypeLayout.EncodeRefMap(TypeLayout.RefMapKindString, 0)
+                && outer.RefMap[1] == TypeLayout.EncodeRefMap(TypeLayout.RefMapKindFatRef, 0)
+                && outer.RefMap[2] == TypeLayout.EncodeRefMap(TypeLayout.RefMapKindString, 0),
+                outer == null ? "missing" : string.Join(",", outer.RefMap));
+
+            var tagged = layout.Find("Tagged");
+            TestHarness.CheckTrue("非 rich 含 String 也产 refMap kind1",
+                tagged != null
+                && (tagged.TypeFlags & TypeLayoutPlan.FlagRich) == 0
+                && tagged.RefMap.Length == 1
+                && FieldOf(tagged, "#label@")!.IsStringSlot
+                && FieldOf(tagged, "#label@")!.Offset == 16
+                && tagged.RefMap[0] == TypeLayout.EncodeRefMap(TypeLayout.RefMapKindString, 1),
+                tagged == null ? "missing" : string.Join(",", tagged.RefMap));
         }
 
         // 驱动 native COMMAND 端到端，捕获 stdout/stderr（同 vm 套件模式）

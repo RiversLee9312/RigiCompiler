@@ -27,16 +27,19 @@ namespace RigiCompiler.Middleware.Layout
         public int Offset { get; }
         public int Size { get; }
         public int Alignment { get; }
-        // 16B 胖引用槽（class 引用/nullable/未解析引用类型字段；进 refMap）
+        // 16B 胖引用槽（class 引用/nullable/未解析引用类型字段；进 refMap kind0）
         public bool IsReferenceSlot { get; }
-        // 内联值类型字段的内层计划（struct/enum 内联时非空；其 rich 时
-        // refMap 条目折算拼入外层）
+        // String 槽（{i8* data, i64 len}；进 refMap kind1）
+        public bool IsStringSlot { get; }
+        // 内联值类型字段的内层计划（struct/enum 内联时非空；其 refMap
+        // 条目折算拼入外层）
         public TypeLayoutPlan? EmbeddedPlan { get; }
         // 类级隐藏 typeid（i64 TypeSheet*，不进 refMap）
         public bool IsHiddenTypeId { get; }
 
         internal FieldPlan(string symbol, int offset, int size, int alignment,
-            bool isReferenceSlot, TypeLayoutPlan? embeddedPlan, bool isHiddenTypeId = false)
+            bool isReferenceSlot, TypeLayoutPlan? embeddedPlan, bool isHiddenTypeId = false,
+            bool isStringSlot = false)
         {
             Symbol = symbol;
             Offset = offset;
@@ -45,6 +48,7 @@ namespace RigiCompiler.Middleware.Layout
             IsReferenceSlot = isReferenceSlot;
             EmbeddedPlan = embeddedPlan;
             IsHiddenTypeId = isHiddenTypeId;
+            IsStringSlot = isStringSlot;
         }
     }
 
@@ -58,6 +62,10 @@ namespace RigiCompiler.Middleware.Layout
         // 数组元素按 typeSize 内联（标量/String/struct/enum）；缺位则
         // 元素为 16B 胖引用槽（class/interface/nullable/array）
         public const uint FlagInlineValue = 0x8;
+        // 数组对象（前缀 32B + 变长元素；与 arc.h RIGI_TYPE_ARRAY 对齐）
+        public const uint FlagArray = 0x10u;
+        // String 值（槽内 data = ARC 块 + 8；与 arc.h RIGI_TYPE_STRING 对齐）
+        public const uint FlagString = 0x20u;
 
         public MwTypeSymbol Symbol { get; }
         public TypeLayoutKind Kind { get; }
@@ -72,8 +80,10 @@ namespace RigiCompiler.Middleware.Layout
         // iMap：接口 canonical → 本类 vtable 段 base offset（仅本类直接
         // implements 的接口；基类条目沿 baseTypeId 链上查，不复制）
         public IReadOnlyList<(string InterfaceType, int BaseOffset)> IMap { get; }
-        // refMap 跳数序列（128-bit 槽粒度；class 恒有，值类型仅 rich 有）
+        // refMap：u16 = (kind<<14)|hop；kind0 胖引用 / kind1 String；
+        // class 与值类型均计算（全标量则空）
         public ushort[] RefMap { get; }
+        public int RefMapCount => RefMap.Length;
         // enum 判别值表（case → u32；仅 enum 非空）
         public IReadOnlyList<(MwCaseSymbol Case, uint Discriminant)> EnumCases { get; }
         // 基类计划（本地 class 基类可解析时；否则 null）
