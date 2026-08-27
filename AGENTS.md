@@ -30,7 +30,7 @@ dotnet run -- test --run N   # 按编号跑单套件（编号见裸 dotnet run -
 
 - **文档驱动**：先读 `docs/SYNTAX.md` 相关章节再写代码，不凭其他语言的经验猜语法（项目已因此返工过）。
 - **Rigi 没有运算符优先级**：连续运算符必须括号化；实现表达式功能时不要引入优先级概念。
-- **git**：`git commit` 等变更操作先获得用户确认；提交前确保 build 通过且 `test --all` 无失败。**备份纪律（快照对）**：工作区常有大量未提交变更（误删/误改无法用 git restore 恢复），快照统一为「stash 对」——`git stash push -u -m "<说明>" && git stash apply`（push 后立即 apply 原样恢复工作区，stash 条目留存为恢复点）。主代理：委派实施型子代理**之前与完成之后**各做一次快照；验收全绿后可 drop 更旧备份，保留最近一份。实施型子代理：**每个小阶段验证通过后必须立即做一次快照对**（消息 `<任务>: <阶段说明>`），便于主代理分阶段回滚；除此之外严禁任何 git 变更操作（commit / stash apply（快照对之外）/ pop / drop / restore / clean / checkout / reset 等）——恢复只归主代理。
+- **git**：`git commit` 等变更操作先获得用户确认；提交前确保 build 通过且 `test --all` 无失败。**备份纪律（快照对）**：工作区常有大量未提交变更（误删/误改无法用 git restore 恢复），快照统一为「stash 对」——`git stash push -u -m "<说明>" && git stash apply`（push 后立即 apply 原样恢复工作区，stash 条目留存为恢复点）。主代理：委派实施型子代理**之前与完成之后**各做一次快照。实施型子代理：**每个小阶段验证通过后必须立即做一次快照对**（消息 `<任务>: <阶段说明>`），便于主代理分阶段回滚；除此之外严禁任何 git 变更操作（commit / stash apply（快照对之外）/ pop / drop / restore / clean / checkout / reset 等）——恢复只归主代理。**提交纪律**：提交前必须检查工作区无临时文件残留（`git status` 全量过一遍——playground/ 已入 .gitignore，但 `$null` 类 shell 误产文件与探测残留不得入库）；commit 完成后整条清理 stash 备份链（回滚由 commit 承担，stash 不再保留）。
 - **子代理委派**：实施型任务的提示词必须含「操作须知」块（权限确认/环境事实/临时文件纪律/分阶段验证），规范全文见 `docs/agent_guide/development.md`「子代理委派规范」——缺此块曾致子代理权限幻觉空转零产出。
 - **语言**：注释与文档一律中文，关键逻辑必须注释；思考也用中文；向子代理下达任务时必须明确要求它也用中文思考。
 - **日志**：编译器内部日志一律走 `Core/Logger`，禁止直接 `Console.WriteLine`（测试报告输出除外）；控制台日志走 stderr，不污染 stdout 数据流。
