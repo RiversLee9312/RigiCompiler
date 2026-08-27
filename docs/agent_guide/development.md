@@ -119,7 +119,7 @@ dotnet run -- test --all    # 全量；或：dotnet run -- test --run 5（单个
 git stash push -u -m "backup: <说明>" && git stash apply
 ```
 
-push 后立即 apply 把工作区原样恢复，stash 条目留存为恢复点，`-u` 含未跟踪新文件。**主代理**：委派实施型子代理**之前与完成之后**各做一次快照。**实施型子代理**：**每个小阶段验证通过后必须立即做一次快照对**（消息 `<任务>: <阶段说明>`），便于主代理分阶段回滚；除此之外严禁任何 git 变更操作（commit / stash apply（快照对之外）/ pop / drop / restore / clean / checkout / reset 等）——恢复只归主代理。**提交纪律**：提交前必须检查工作区无临时文件残留（`git status` 全量过一遍——playground/ 已入 .gitignore，但 `$null` 类 shell 误产文件与探测残留不得入库）；commit 完成后整条清理 stash 备份链（回滚由 commit 承担，stash 不再保留）。实施型子代理**串行**委派（共享工作区，并发构建互相干扰）；只读调研型子代理可并行。
+push 后立即 apply 把工作区原样恢复，stash 条目留存为恢复点，`-u` 含未跟踪新文件。**主代理**：委派实施型子代理**之前与完成之后**各做一次快照。**实施型子代理**：**每个小阶段验证通过后必须立即做一次快照对**（消息 `<任务>: <阶段说明>`），便于分阶段回滚；遇误删/误改等意外时允许 `git stash apply stash@{N}` 恢复**自己创建**的快照条目自救（按消息前缀识别；apply 后条目保留，不 pop 不 drop）；其余 git 变更操作仍严禁（commit / pop / drop / restore / clean / checkout / reset 等）。**提交纪律**：提交前必须检查工作区无临时文件残留（`git status` 全量过一遍——playground/ 已入 .gitignore，但 `$null` 类 shell 误产文件与探测残留不得入库）；commit 完成后整条清理 stash 备份链（回滚由 commit 承担，stash 不再保留）。实施型子代理**串行**委派（共享工作区，并发构建互相干扰）；只读调研型子代理可并行。
 
 **实施型任务提示词风格**（缺第 1 块曾致子代理陷入权限幻觉、空转整个上下文零产出）：
 
@@ -127,7 +127,7 @@ push 后立即 apply 把工作区原样恢复，stash 条目留存为恢复点�
 2. 任务分阶段，每阶段写完立即 `dotnet build` 验证（0 错误 0 警告），不得一口气写完全部代码再编译；上下文宝贵，避免长篇内心独白，直接执行。
 3. 给出明确的验证命令与基线断言数（`dotnet run -- test --run N` + `test --all`），断言数只增不减。
 4. 报告要求简洁：改动文件清单、关键决策、验证输出、意外与处理。
-5. 明确要求：用中文思考、注释中文、严禁 git 变更操作（唯一例外是按备份纪律在每个小阶段验证通过后执行快照对 `git stash push -u -m "<任务>: <阶段>" && git stash apply`）。
+5. 明确要求：用中文思考、注释中文、严禁 git 变更操作（仅两个例外：① 按备份纪律在每个小阶段验证通过后执行快照对 `git stash push -u -m "<任务>: <阶段>" && git stash apply`；② 遇误删/误改等意外时可 `git stash apply stash@{N}` 恢复自己创建的快照条目自救，apply 后条目保留）。
 
 ### 添加新 Parser 功能的标准流程
 
