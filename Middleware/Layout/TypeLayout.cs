@@ -171,9 +171,16 @@ namespace RigiCompiler.Middleware.Layout
                 throw new MwNotSupportedException(
                     $"泛型数组元素布局随单态化: {element.Canonical}");
             }
-            if (IsArray(element) || IsNullable(element) || IsTypeId(element))
+            if (IsArray(element) || IsNullable(element))
             {
                 return ArrayElementAbi.Reference();
+            }
+            if (IsTypeId(element))
+            {
+                // .typeid = 8B 内联 sheet 指针（sheet 定稿 FlagInlineValue +
+                // typeSize=8，与 BuiltinSheetLayout 一致）；rigi_alloc_array
+                // 按 sheet 算 stride=8，误按 16B 胖槽写会越出分配堆破坏
+                return ArrayElementAbi.Scalar(8, 8);
             }
             switch (element.Key)
             {

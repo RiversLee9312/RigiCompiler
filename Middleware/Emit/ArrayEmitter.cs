@@ -408,6 +408,14 @@ namespace RigiCompiler.Middleware.Emit
                     slots[target].Slot);
                 return;
             }
+            // typeid 元素加载后是 ptr 值（TypeSheet*），不是槽地址，不能走
+            // WrapFromSlot；位模式即 payload，tag0 内联包装
+            if (TypeLayout.IsTypeId(elementType))
+            {
+                builder.BuildStore(WrapScalar(session, builder, loaded, elementType),
+                    slots[target].Slot);
+                return;
+            }
             if (loaded.TypeOf.Kind == LLVMTypeKind.LLVMPointerTypeKind)
             {
                 builder.BuildStore(WrapFromSlot(session, builder, loaded, elementType),
@@ -547,6 +555,11 @@ namespace RigiCompiler.Middleware.Emit
         private static LLVMValueRef ScalarToI64(LLVMBuilderRef builder, LLVMValueRef value,
             MirType inner)
         {
+            // .typeid：TypeSheet* 位模式即 payload
+            if (value.TypeOf.Kind == LLVMTypeKind.LLVMPointerTypeKind)
+            {
+                return builder.BuildPtrToInt(value, LLVMTypeRef.Int64, "opt.tid");
+            }
             switch (inner.Key)
             {
                 case "float":
@@ -578,6 +591,10 @@ namespace RigiCompiler.Middleware.Emit
                 case "bool":
                     return builder.BuildTrunc(bits, LLVMTypeRef.Int1, "opt.b");
                 default:
+                    if (TypeLayout.IsTypeId(inner))
+                    {
+                        return builder.BuildIntToPtr(bits, PointerType(), "opt.tid");
+                    }
                     var width = inner.Key switch
                     {
                         "i8" or "u8" => LLVMTypeRef.Int8,

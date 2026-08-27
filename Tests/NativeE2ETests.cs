@@ -1230,6 +1230,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n"),
             ("包转发（整包）", RunPackForwardCase),
+            ("typeid 数组元素读取（BIL 级）", RunTypeIdArrayGetCase),
             Case("kwargs 遍历 Pair 拆箱",
                 "import core.io.Console\n" +
                 "func show(opts: named Any...): i32 {\n" +
@@ -2016,7 +2017,9 @@ namespace RigiCompiler.Tests
                 "    var d: u8 = (42 as u8)\n" +
                 "    var e: double = (a as double)\n" +
                 "    var f: i32 = ((e as i32) + (c as i32))\n" +
-                "    return ((f + (d as i32)) + (b as i32))\n" +
+                // 返回值须 <256：linux 进程退出码 8-bit 截断（3042 在 linux 只剩 226）
+                "    if (((f + (d as i32)) + (b as i32)) == 3042) { return 42 }\n" +
+                "    return 0\n" +
                 "}\n"),
             Case("数值 cast 符号截断",
                 "pub func main(): i32 {\n" +
@@ -2530,6 +2533,74 @@ namespace RigiCompiler.Tests
                 new[] { new BilVariableOperand(".vargs.nums") }));
             entry.Instructions.Add(new RetInstruction(invoke.Target));
             RunBilCase("包转发（整包）", BilWriter.Write(module));
+        }
+
+        // typeid 数组（泛型位置包 TArgs 的承载形态 .array<.typeid<.any>>）：
+        // 元素 = 8B 内联 sheet 指针（sheet FlagInlineValue/typeSize=8），非 16B
+        // 胖槽——回归 stride 双口径（发射 16B/分配 8B）导致的堆越界（linux glibc
+        // abort）。前端无 TArgs[i] 语法，BIL 级直驱 get.array + nullable 解包 +
+        // 间接 is 观测元素值正确性。
+        private static void RunTypeIdArrayGetCase()
+        {
+            RunBilCase("typeid 数组元素读取（BIL 级）",
+                "BIL \"1.1\"\n" +
+                "\n" +
+                "Metadata {\n" +
+                "    module = string \"tidarr\"\n" +
+                "}\n" +
+                "\n" +
+                "Resources {\n" +
+                "    R_0 = i32 0,\n" +
+                "    R_1 = i32 1,\n" +
+                "    R_42 = i32 42,\n" +
+                "    R_V = i64 7\n" +
+                "}\n" +
+                "\n" +
+                "LocalSymbols {\n" +
+                "    .method $main()@.i32 pub entrypoint\n" +
+                "}\n" +
+                "\n" +
+                "ExternalSymbols {\n" +
+                "}\n" +
+                "\n" +
+                "fn($main()@.i32) {\n" +
+                "    .args {\n" +
+                "        .return = .i32\n" +
+                "    }\n" +
+                "\n" +
+                "    .vars {\n" +
+                "        .breakid .b0,\n" +
+                "        .typeid .t0,\n" +
+                "        .typeid .t1,\n" +
+                "        .array<.typeid<.any>> .t2,\n" +
+                "        .i32 .t3,\n" +
+                "        .nullable<.typeid<.any>> .t4,\n" +
+                "        .typeid<.any> .t5,\n" +
+                "        .i64 .t6,\n" +
+                "        .bool .t7,\n" +
+                "        .i32 .t8,\n" +
+                "        .i32 .t9\n" +
+                "    }\n" +
+                "\n" +
+                "    .block entry entrypoint {\n" +
+                "        getid.type type(.i32) $.t0\n" +
+                "        getid.type type(.i64) $.t1\n" +
+                "        new type(.array<.typeid<.any>>) $.t2 [$.t0, $.t1]\n" +
+                "        load res(R_1) $.t3\n" +
+                "        get.array $.t2 $.t3 $.t4\n" +
+                "        cast $.t4 $.t5 type(.typeid<.any>)\n" +
+                "        load res(R_V) $.t6\n" +
+                "        type.is.indirect $.t6 $.t5 $.t7\n" +
+                "        if $.t7 blk(if0-then) none $.b0\n" +
+                "        load res(R_0) $.t8\n" +
+                "        ret $.t8\n" +
+                "    }\n" +
+                "\n" +
+                "    .block if0-then {\n" +
+                "        load res(R_42) $.t9\n" +
+                "        ret $.t9\n" +
+                "    }\n" +
+                "}\n");
         }
 
         // BIL 级对拍（前端尚未降级的合法内建形态）：手写 BIL 直接驱 VM 与
