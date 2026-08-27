@@ -23,11 +23,16 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("全管线无诊断（if 语句发射）", unit);
             BilTestHarness.CheckBilValid("验证器零错误（if 语句发射）", module);
-            // 两处 0 共用同一资源（stdlib 基线 4 条资源在前；2 新增一条，
-            // S9f collections 抽象基类移除 i32 0 字面量）
+            // 两处 0 共用同一资源（stdlib 基线 11 条资源在前：S9f 基线 4 条
+            // + MW9b 异常消息模板 7 条；2 新增一条）
             BilTestHarness.CheckResShape("资源（0 去重）", module,
                 "#0 = string \"\\n\"\n#1 = bool false\n#2 = i32 1\n" +
-                "#3 = bool true\n#4 = i32 0\n#5 = i32 2");
+                "#3 = bool true\n" +
+                "#4 = string \"无法将 \"\n#5 = string \" 转换为 \"\n" +
+                "#6 = string \"new.indirect 目标不可构造：不匹配任何 init：\"\n" +
+                "#7 = string \"整数除以零\"\n#8 = string \"数组下标越界：\"\n" +
+                "#9 = string \"（长度 \"\n#10 = string \"）\"\n" +
+                "#11 = i32 0\n#12 = i32 2");
             BilTestHarness.CheckFnShape("if 语句多 block 文本", module, "$main()@.i32",
                 ".vars { .i32 x, .breakid .b0, .i32 .t0, .i32 .t1, .bool .t2, .i32 .t3, .i32 .t4 }\n" +
                 ".block entry entrypoint {\n" +
@@ -87,7 +92,12 @@ namespace RigiCompiler.Tests
             // 0 新增一条（S9f collections 抽象基类移除 stdlib 的 i32 0）
             BilTestHarness.CheckResShape("资源（1 去重）", module,
                 "#0 = string \"\\n\"\n#1 = bool false\n#2 = i32 1\n" +
-                "#3 = bool true\n#4 = i32 0\n#5 = i32 2");
+                "#3 = bool true\n" +
+                "#4 = string \"无法将 \"\n#5 = string \" 转换为 \"\n" +
+                "#6 = string \"new.indirect 目标不可构造：不匹配任何 init：\"\n" +
+                "#7 = string \"整数除以零\"\n#8 = string \"数组下标越界：\"\n" +
+                "#9 = string \"（长度 \"\n#10 = string \"）\"\n" +
+                "#11 = i32 0\n#12 = i32 2");
             BilTestHarness.CheckFnShape("if 表达式多 block 文本", module, "$main()@.i32",
                 ".vars { .i32 x, .i32 r, .i32 .s0, .breakid .b0, .i32 .t0, .i32 .t1, .bool .t2, " +
                 ".i32 .t3, .i32 .t4 }\n" +
@@ -155,7 +165,11 @@ namespace RigiCompiler.Tests
             // 0 新增一条（S9f collections 抽象基类移除 stdlib 的 i32 0）
             BilTestHarness.CheckResShape("资源（true/false 去重）", module,
                 "#0 = string \"\\n\"\n#1 = bool false\n#2 = i32 1\n" +
-                "#3 = bool true\n#4 = i32 0");
+                "#3 = bool true\n" +
+                "#4 = string \"无法将 \"\n#5 = string \" 转换为 \"\n" +
+                "#6 = string \"new.indirect 目标不可构造：不匹配任何 init：\"\n" +
+                "#7 = string \"整数除以零\"\n#8 = string \"数组下标越界：\"\n" +
+                "#9 = string \"（长度 \"\n#10 = string \"）\"\n#11 = i32 0");
             BilTestHarness.CheckFnShape("短路 and/or 多 block 文本", module, "$main()@.i32",
                 ".vars { .bool a, .bool b, .bool c, .bool d, .bool .s0, .breakid .b0, " +
                 ".bool .s1, .breakid .b1, " +
@@ -205,7 +219,12 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckBilValid("验证器零错误（while 发射）", module);
             BilTestHarness.CheckResShape("资源（while）", module,
                 "#0 = string \"\\n\"\n#1 = bool false\n#2 = i32 1\n" +
-                "#3 = bool true\n#4 = i32 0\n#5 = i32 3");
+                "#3 = bool true\n" +
+                "#4 = string \"无法将 \"\n#5 = string \" 转换为 \"\n" +
+                "#6 = string \"new.indirect 目标不可构造：不匹配任何 init：\"\n" +
+                "#7 = string \"整数除以零\"\n#8 = string \"数组下标越界：\"\n" +
+                "#9 = string \"（长度 \"\n#10 = string \"）\"\n" +
+                "#11 = i32 0\n#12 = i32 3");
             BilTestHarness.CheckFnShape("while 多 block 文本", module, "$main()@.i32",
                 ".vars { .i32 x, .bool .s0, .breakid .b0, .i32 .t0, .i32 .t1, " +
                 ".i32 .t2, .i32 .t3, .bool .t4 }\n" +
@@ -304,7 +323,12 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckBilValid("验证器零错误（for 发射）", module);
             BilTestHarness.CheckResShape("资源（for）", module,
                 "#0 = string \"\\n\"\n#1 = bool false\n#2 = i32 1\n" +
-                "#3 = bool true\n#4 = i32 0\n#5 = i32 3");
+                "#3 = bool true\n" +
+                "#4 = string \"无法将 \"\n#5 = string \" 转换为 \"\n" +
+                "#6 = string \"new.indirect 目标不可构造：不匹配任何 init：\"\n" +
+                "#7 = string \"整数除以零\"\n#8 = string \"数组下标越界：\"\n" +
+                "#9 = string \"（长度 \"\n#10 = string \"）\"\n" +
+                "#11 = i32 0\n#12 = i32 3");
             BilTestHarness.CheckFnShape("for 多 block 文本", module, "$main()@.i32",
                 ".vars { .i32 sum, .i32 i, core.collections::IEnumerator<.i32> .s0, " +
                 ".bool .s1, .breakid .b0, .i32 .t0, .i32 .t1, .i32 .t2, " +
@@ -359,11 +383,16 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("全管线无诊断（switch 发射）", unit);
             BilTestHarness.CheckBilValid("验证器零错误（switch 发射）", module);
-            // 表元素只进表不产标量资源；#5 是 item1 分支体 return 2 的字面量；
-            // #6 = i32 0 是 main 的 classify(1) 场景外字面量（S9f 基线顺移）
+            // 表元素只进表不产标量资源；#12 是 item1 分支体 return 2 的字面量；
+            // #13 = i32 0 是 main 的 classify(1) 场景外字面量（MW9b 基线顺移）
             BilTestHarness.CheckResShape("资源（switch-table 单行形态）", module,
                 "#0 = string \"\\n\"\n#1 = bool false\n#2 = i32 1\n" +
-                "#3 = bool true\n#4 = switch-table<.i32> { 1, 2 }\n#5 = i32 2\n#6 = i32 0");
+                "#3 = bool true\n" +
+                "#4 = string \"无法将 \"\n#5 = string \" 转换为 \"\n" +
+                "#6 = string \"new.indirect 目标不可构造：不匹配任何 init：\"\n" +
+                "#7 = string \"整数除以零\"\n#8 = string \"数组下标越界：\"\n" +
+                "#9 = string \"（长度 \"\n#10 = string \"）\"\n" +
+                "#11 = switch-table<.i32> { 1, 2 }\n#12 = i32 2\n#13 = i32 0");
             BilTestHarness.CheckFnShape("switch 多 block 文本", module, "$classify(x:.i32)@.i32",
                 ".vars { .breakid .b0, .i32 .t0, .i32 .t1, .i32 .t2 }\n" +
                 ".block entry entrypoint {\n" +

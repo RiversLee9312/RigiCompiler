@@ -11,6 +11,10 @@ namespace RigiCompiler.Middleware.Emit
     /// </summary>
     internal static unsafe class LlvmBitcode
     {
+        // undef 常量（MW9a MirRetThrow 值返回出口：异常路径返回值无定义；
+        // 安全封装只暴露值句柄，指针编组收敛于本类）
+        public static LLVMValueRef UndefOf(LLVMTypeRef type) => LLVM.GetUndef(type);
+
         // 读取 bitcode 文件并合并进目标模块；失败抛 MwNotSupportedException
         //（rigi_rt 编译产物损坏属环境/工具链问题，非编译器 bug）
         public static void MergeBitcodeFileInto(LLVMModuleRef module, string bitcodePath)

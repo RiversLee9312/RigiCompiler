@@ -62,6 +62,9 @@ namespace RigiCompiler.Middleware.Mir
             _locals.Add(local);
             _localMap.Add(local.Name, local);
         }
+
+        // pass 合成块追加（RcInjection 传播垫；Blocks 底层即构建期 List）
+        internal void AddBlock(MirBlock block) => ((List<MirBlock>)Blocks).Add(block);
     }
 
     // 具名局部（发射期落 alloca 槽）

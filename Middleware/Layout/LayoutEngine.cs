@@ -124,6 +124,21 @@ namespace RigiCompiler.Middleware.Layout
                 offset += GenericAbi.TypeIdSlotSize;
             }
             var refEntries = new List<RefSite>();
+            // MW9b-G：基类托管位点一并回放进本类 refMap——rigi_destruct
+            // 只扫对象自身 sheet 的 refMap（不走 baseTypeId 链），继承的
+            // String/胖引用字段漏收会在析构时泄漏（core 异常子类继承
+            // Exception.message 是首个触发者）。基类 refMap 的内嵌值类型
+            // 已折算平坦，按绝对偏移重建位点即可
+            if (basePlan != null)
+            {
+                var basePos = (long)ObjectHeaderSize;
+                foreach (var entry in basePlan.RefMap)
+                {
+                    basePos += (long)TypeLayout.RefMapHopOf(entry) * ReferenceSlotSize;
+                    refEntries.Add(new RefSite((int)basePos, TypeLayout.RefMapKindOf(entry), null));
+                    basePos += ReferenceSlotSize;
+                }
+            }
             foreach (var member in InstanceFields(type))
             {
                 var info = ClassifyFieldType(FieldTypeOf(member), symbols, table, visiting);

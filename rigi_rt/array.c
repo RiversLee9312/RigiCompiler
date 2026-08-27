@@ -1,7 +1,9 @@
 /*
- * 数组分配与越界/负长度 abort 面（MW4 / MW7a / MW7b）：alloc_contiguous
+ * 数组分配与负长度 abort 面（MW4 / MW7a / MW7b）：alloc_contiguous
  * 为数组与 Span 共用的同构分配体（INLINE_VALUE 选步长、32B 前缀），
  * alloc_array 只是面函数。消息与 VM VmException 原文对齐，退出码 1。
+ * MW9b-G：写越界 abort 面 rigi_abort_array_oob 退场——越界写改抛可被
+ * try/catch 捕获的 core.OutOfBoundException（守卫由 Middleware 发射）。
  */
 #include "arc.h"
 
@@ -28,13 +30,6 @@ _Noreturn void rigi_abort_array_negative_length(void)
 {
     static const char message[] = "数组长度不能为负\n";
     fwrite(message, 1, sizeof(message) - 1, stderr);
-    fflush(stderr);
-    exit(1);
-}
-
-_Noreturn void rigi_abort_array_oob(int32_t index, int32_t length)
-{
-    fprintf(stderr, "数组下标越界：%d（长度 %d）\n", index, length);
     fflush(stderr);
     exit(1);
 }

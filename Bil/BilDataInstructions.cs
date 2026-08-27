@@ -430,7 +430,7 @@ namespace RigiCompiler.Bil
                 && (declaration.Kind == BilTypeKind.EnumStruct
                     || HasAbstract(declaration)))
             {
-                throw context.NoSuchMethod("new.indirect 目标不可构造：" + typeRef);
+                throw context.NoSuchMethodForType(coroutine, typeRef);
             }
             try
             {
@@ -439,7 +439,9 @@ namespace RigiCompiler.Bil
             }
             catch (VmException exception) when (exception.ExceptionObject == null)
             {
-                throw context.NoSuchMethod(exception.Message);
+                // MW9b：init 重载解析失败的模板串烘进 stdlib init(typeName)，
+                // 不再透传内层 VmException.Message
+                throw context.NoSuchMethodForType(coroutine, typeRef);
             }
         }
 
@@ -1003,8 +1005,14 @@ namespace RigiCompiler.Bil
             var collection = coroutine.ReadVar(collectionVar.Name);
             if (collection is IVmIndexBuffer buffer)
             {
-                buffer.SetAt(VmContext.RequireIndex(coroutine.ReadVar(indexVar.Name)),
-                    coroutine.ReadVar(elementVar.Name).Copy());
+                // MW9b：写越界抛可捕获 core::OutOfBoundException（读越界仍
+                // 按空安全得 null，见 GetArray）
+                var index = VmContext.RequireIndex(coroutine.ReadVar(indexVar.Name));
+                if (index < 0 || index >= buffer.Length)
+                {
+                    throw context.OutOfBounds(coroutine, index, buffer.Length);
+                }
+                buffer.SetAt(index, coroutine.ReadVar(elementVar.Name).Copy());
                 return;
             }
             var method = context.FindIndexOperator(collection.TypeRef, isGet: false);
@@ -1031,7 +1039,7 @@ namespace RigiCompiler.Bil
             var symbol = context.FindCallTarget(VmTypeOps.ActualType(receiver), values);
             if (symbol == null)
             {
-                throw context.NoSuchMethod("没有匹配的 $$call：" + receiver.TypeRef);
+                throw context.NoSuchMethod(coroutine, "没有匹配的 $$call：" + receiver.TypeRef);
             }
             var callArgs = new List<VmValue>(1 + values.Length) { receiver };
             callArgs.AddRange(values);

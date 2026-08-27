@@ -400,14 +400,17 @@ RigiCompiler/
 │   ├── Binding/                 # 实现绑定：ImplBinding 记录族 + ImplBinder 唯一实现查询
 │   ├── Mir/                     # MIR 模型（MirFunction/MirInst/MirType）+ MirBuilder
 │   │                            #   （BIL 结构化块 → CFG 直译，从入口出发按 invoke 边
-│   │                            #   可达性构建）
+│   │                            #   可达性构建）+ TryExpander.cs（BIL §16.7 try 十步
+│   │                            #   展开：派发垫 / finally 双入口 / completion 路由器）
 │   ├── Layout/TypeLayout.cs     # canonical → LLVM 类型唯一映射点（引用槽按
 │   │                            #   RUNTIME §2 胖引用 128-bit/16 字节对齐建模）
 │   ├── Emit/                    # LlvmHost（LLVM 一次性初始化 + 宿主 TargetMachine）+
 │   │                            #   ModuleBuilder（MIR → LLVM 模块）+ LlvmBitcode
 │   │                            #   （unsafe 编组封装：bitcode 解析 + LLVMLinkModules2
 │   │                            #   进程内合并 + 新 PM default<O2> 管线）+ RuntimeFaces
-│   │                            #   （rigi_rt 面表）+ ObjectEmitter（进程内验证/发射 .o）
+│   │                            #   （rigi_rt 面表）+ ExceptionEmitter.cs（MW9a：可抛调用
+│   │                            #   返回后 pending 检查 + rigi_entry 顶层 reporter）+
+│   │                            #   ObjectEmitter（进程内验证/发射 .o）
 │   ├── Toolchain/               # ToolchainResolver（--toolchain → RIGI_LLVM →
 │   │                            #   tools/.llvm/<rid> → PATH）+ ExternalProcess
 │   │                            #   外部进程封装
@@ -419,7 +422,10 @@ RigiCompiler/
 │                             #   bitcode 合并进模块；架构同上文档）
 │   └── shim.c                   # MW1 最小面：rigi_string {data,len} UTF-8 / rigi_print /
 │                                #   rigi_print_err / rigi_string_concat / main → rigi_entry
-│                                #   （arc/macrogc/coroutine/eh 随后续阶段）
+│                                #   （arc/macrogc/coroutine 随后续阶段）
+│   └── eh.c/.h                  # MW9a checked-flag 便携异常传输：TLS pending 槽三面
+│                                #   （rigi_exc_raise/pending/take）+ 顶层 reporter
+│                                #   （rigi_type_name_of/rigi_exc_halt）
 ├── tools/                    # 开发工具链脚本（不入 CI 主流程）：
 │   ├── Fetch-LlvmToolchain.ps1  # 开发机 LLVM 工具链获取（钉 20.1.2 + SHA256 校验，
 │   │                            #   选择性提取 clang/lld/内建头文件 → tools/.llvm/ 缓存，

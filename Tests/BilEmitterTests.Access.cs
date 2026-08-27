@@ -128,7 +128,11 @@ namespace RigiCompiler.Tests
             // S9f 后自 stdlib 基线移除，转为用户模块新增一条）
             BilTestHarness.CheckResShape("资源（访问器样例）", module,
                 "#0 = i32 200\n#1 = string \"\\n\"\n#2 = bool false\n#3 = i32 1\n" +
-                "#4 = bool true\n#5 = i32 0");
+                "#4 = bool true\n" +
+                "#5 = string \"无法将 \"\n#6 = string \" 转换为 \"\n" +
+                "#7 = string \"new.indirect 目标不可构造：不匹配任何 init：\"\n" +
+                "#8 = string \"整数除以零\"\n#9 = string \"数组下标越界：\"\n" +
+                "#10 = string \"（长度 \"\n#11 = string \"）\"\n#12 = i32 0");
 
             // fn 形状黄金：backing getter/setter（setter 体首隐含赋值合成）
             BilTestHarness.CheckFnShape("backing getter fn（value → get.field）",

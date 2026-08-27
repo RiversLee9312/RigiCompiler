@@ -37,7 +37,8 @@ namespace RigiCompiler.Middleware.Emit
             var targetType = slots[inst.Target].Local.Type;
             if (BoxEmitter.NeedsUnbox(session, fieldType, targetType))
             {
-                BoxEmitter.UnboxToLocal(session, builder, slots, value, targetType, inst.Target);
+                BoxEmitter.UnboxToLocal(session, builder, slots, value, targetType,
+                    inst.Target, fieldType, inst.ExcTarget);
                 return;
             }
             switch (TypeLayout.ClassifySlot(session.Layout, fieldType))

@@ -15,6 +15,19 @@ namespace RigiCompiler.Middleware.Emit
     /// </summary>
     internal static class TypeInfoEmitter
     {
+        // TypeInfo 结构类型（EmitOne 物化与 ExceptionEmitter 运行期读
+        // name 槽互指）：{name, sheet, wrappers, wrapperCount, ifaceClosure,
+        // ifaceClosureCount}
+        internal static LLVMTypeRef InfoStructType(LLVMContextRef context)
+        {
+            var pointer = LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0);
+            return context.GetStructType(new[]
+            {
+                StringAbi.ValueType(context), pointer, pointer, LLVMTypeRef.Int32,
+                pointer, LLVMTypeRef.Int32,
+            }, false);
+        }
+
         internal static void EmitAll(ModuleBuilder.Session session, LayoutPlanTable layout)
         {
             foreach (var plan in layout.Plans)
@@ -62,15 +75,7 @@ namespace RigiCompiler.Middleware.Emit
             }
             var nameValue = StringAbi.BuildConstant(session.Module, name,
                 "typeinfo.name." + GenericAbi.EscapeGlobalName("", key));
-            var infoType = session.Context.GetStructType(new[]
-            {
-                StringAbi.ValueType(session.Context),
-                LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0),
-                LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0),
-                LLVMTypeRef.Int32,
-                LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0),
-                LLVMTypeRef.Int32,
-            }, false);
+            var infoType = InfoStructType(session.Context);
             var global = session.Module.AddGlobal(infoType,
                 GenericAbi.EscapeGlobalName("typeinfo.", key));
             global.Linkage = LLVMLinkage.LLVMInternalLinkage;

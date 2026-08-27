@@ -48,6 +48,7 @@ namespace RigiCompiler.Tests
             ("TestStructDeepCopy", TestStructDeepCopy),
             ("TestArrayIndexOperators", TestArrayIndexOperators),
             ("TestArrayIndexOutOfBoundsNull", TestArrayIndexOutOfBoundsNull),
+            ("TestArrayIndexOutOfBoundsWriteThrows", TestArrayIndexOutOfBoundsWriteThrows),
             ("TestCompoundAssignmentIndexSingleRead", TestCompoundAssignmentIndexSingleRead),
             ("TestEnumCasePayload", TestEnumCasePayload),
             ("TestEnumCaseFixedPayload", TestEnumCaseFixedPayload),
@@ -674,6 +675,61 @@ namespace RigiCompiler.Tests
             CheckOk("Q6：越界读取得 null", result);
             TestHarness.Check("越界/负下标 stdout", result.Stdout, "-1\nnull\n");
             CheckI32("界内读回", result, 7);
+        }
+
+        // MW9b：内建数组/Span 越界**写入**抛可捕获 core.OutOfBoundException
+        //（读越界仍按空安全得 null，见上）；未捕获顶层格式对齐 native
+        // reporter「{类型全名}: {message}」
+        private static void TestArrayIndexOutOfBoundsWriteThrows()
+        {
+            var caught = Run(
+                "import core.collections.*\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = arrayOf\\<i32>(3)\n" +
+                "    try {\n" +
+                "        a[5] = 1\n" +
+                "        return 0\n" +
+                "    } catch (e: core.OutOfBoundException) {\n" +
+                "        core.io.Console.println(e.getMessage())\n" +
+                "        return 7\n" +
+                "    }\n" +
+                "}\n");
+            CheckOk("数组越界写被 catch", caught);
+            CheckI32("数组越界写 catch 返回 7", caught, 7);
+            TestHarness.Check("数组越界写 getMessage stdout", caught.Stdout,
+                "数组下标越界：5（长度 3）\n");
+
+            var spanCaught = Run(
+                "import core.collections.*\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = spanOf\\<i32>(3)\n" +
+                "    try {\n" +
+                "        s[(0 - 1)] = 1\n" +
+                "        return 0\n" +
+                "    } catch (e: core.OutOfBoundException) {\n" +
+                "        core.io.Console.println(e.getMessage())\n" +
+                "        return 8\n" +
+                "    }\n" +
+                "}\n");
+            CheckOk("Span 越界写被 catch", spanCaught);
+            CheckI32("Span 越界写 catch 返回 8", spanCaught, 8);
+            TestHarness.Check("Span 越界写 getMessage stdout", spanCaught.Stdout,
+                "数组下标越界：-1（长度 3）\n");
+
+            var uncaught = Run(
+                "import core.collections.*\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = arrayOf\\<i32>(3)\n" +
+                "    a[9] = 2\n" +
+                "    return 0\n" +
+                "}\n");
+            TestHarness.CheckTrue("未捕获越界写抛 OutOfBoundException",
+                uncaught.Exception?.ExceptionObject is VmObject oobObj
+                && oobObj.TypeRef.Contains("OutOfBoundException"),
+                uncaught.Exception?.ToString() ?? "<null>");
+            TestHarness.Check("未捕获越界写顶层格式",
+                uncaught.Exception?.Message ?? "",
+                "core::OutOfBoundException: 数组下标越界：9（长度 3）");
         }
 
         // §13.2 单次求值回归：索引写回中 getAtIndex 只读一次
@@ -2300,6 +2356,10 @@ namespace RigiCompiler.Tests
                 && divObj.TypeRef.Contains("DividedByZeroException")
                 && uncaught.Exception.Message.Contains("整数除以零"),
                 uncaught.Exception?.ToString() ?? "<null>");
+            // MW9b：顶层未捕获格式对齐 native reporter「{类型全名}: {message}」
+            TestHarness.Check("未捕获除零顶层格式",
+                uncaught.Exception?.Message ?? "",
+                "core::DividedByZeroException: 整数除以零");
 
             var u64 = Run(
                 "pub func main(): i32 {\n" +

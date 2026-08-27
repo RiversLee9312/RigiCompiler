@@ -329,7 +329,7 @@ namespace RigiCompiler.Bil.Vm
             {
                 return result;
             }
-            throw context.CastFailed("无法将 " + source.TypeRef + " 转换为 " + resolved);
+            throw context.CastFailed(coroutine, source.TypeRef, resolved);
         }
 
         internal static VmValue CastSafe(VmContext context, VmCoroutine coroutine,

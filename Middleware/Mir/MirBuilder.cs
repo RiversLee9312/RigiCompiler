@@ -117,7 +117,10 @@ namespace RigiCompiler.Middleware.Mir
             {
                 localMap.Add(local.Name, local);
             }
-            var blocks = new FlowBuilder(context, bilFn.Symbol, localMap).Build(entryBlock);
+            var flowBuilder = new FlowBuilder(context, bilFn.Symbol, localMap, returnType);
+            var blocks = flowBuilder.Build(entryBlock);
+            // try 展开期登记的合成局部（$mw.exc.N 等）并入 fn 局部表
+            locals.AddRange(flowBuilder.SyntheticLocals);
 
             var isEntrypoint = symbol.HasKeyword(BilKeyword.Entrypoint);
             return new MirFunction(symbol, returnType, parameters, locals, blocks, isEntrypoint);
@@ -313,34 +316,87 @@ namespace RigiCompiler.Middleware.Mir
             parameters?.Add(local);
         }
 
+        // region/try 作用域统一栈（MW9a）：break/continue/return/throw 的
+        // 穿越解析按词法嵌套序逐层走；TryScope 归 TryExpander
+        internal abstract class Scope
+        {
+        }
+
+        // break/continue 的宿 region：breakid 变量名 → 边界块 id
+        // （BreakTarget = region 后汇聚/出口块；ContinueTarget = loop 的
+        // enum 块（缺省 judge 块），非 loop region 为 null）
+        internal sealed class RegionScope : Scope
+        {
+            internal string BreakIdVar { get; }
+            internal string BreakTarget { get; }
+            internal string? ContinueTarget { get; }
+
+            internal RegionScope(string breakIdVar, string breakTarget, string? continueTarget)
+            {
+                BreakIdVar = breakIdVar;
+                BreakTarget = breakTarget;
+                ContinueTarget = continueTarget;
+            }
+        }
+
         // BIL 结构化块 → CFG 直译器：结构化 region 指令（if/loop/switch/
-        // call blk）递归展开为基本块图，break/continue 目标在展开期静态
+        // call blk/try）递归展开为基本块图，break/continue 目标在展开期静态
         // 解析（breakid 变量 → 宿 region 的合成块 id；§21.5/§21.6 保证
         // 绑定唯一、作用域正确、continue 只命中 loop）。
-        private sealed class FlowBuilder
+        internal sealed class FlowBuilder
         {
             private readonly MwContext _context;
             private readonly string _fnSymbol;
-            private readonly IReadOnlyDictionary<string, MirLocal> _localMap;
+            private readonly Dictionary<string, MirLocal> _localMap;
+            private readonly MirType _returnType;
+            private readonly TryExpander _tryExpander;
             private readonly List<MirBlock> _blocks = new();
-            private readonly List<RegionTarget> _regions = new();   // region 栈，顶在末尾
+            private readonly List<Scope> _scopes = new();   // 作用域栈，顶在末尾
             private string _currentId = "";
             private List<MirInst> _currentInsts = new();
             private MirTerminator? _terminator;
             private int _syntheticCounter;
 
-            // break/continue 的宿 region：breakid 变量名 → 边界块 id
-            // （BreakTarget = region 后汇聚/出口块；ContinueTarget = loop 的
-            // enum 块（缺省 judge 块），非 loop region 为 null）
-            private sealed record RegionTarget(string BreakIdVar, string BreakTarget, string? ContinueTarget);
-
             internal FlowBuilder(MwContext context, string fnSymbol,
-                IReadOnlyDictionary<string, MirLocal> localMap)
+                Dictionary<string, MirLocal> localMap, MirType returnType)
             {
                 _context = context;
                 _fnSymbol = fnSymbol;
                 _localMap = localMap;
+                _returnType = returnType;
+                _tryExpander = new TryExpander(this);
             }
+
+            // ===== TryExpander 钩子 =====
+
+            internal MwContext Context => _context;
+            internal string FnSymbol => _fnSymbol;
+            internal MirType ReturnType => _returnType;
+            internal List<MirInst> CurrentInsts => _currentInsts;
+            internal IReadOnlyList<Scope> Scopes => _scopes;
+            internal List<MirLocal> SyntheticLocals { get; } = new();
+
+            internal int NextSynthetic() => _syntheticCounter++;
+
+            // 合成局部登记：并入 fn 局部表（发射期开 alloca，RcInjection
+            // 按槽分类处理）
+            internal MirLocal RegisterSyntheticLocal(string name, MirType type)
+            {
+                var local = new MirLocal(name, type);
+                _localMap.Add(name, local);
+                SyntheticLocals.Add(local);
+                return local;
+            }
+
+            internal MirType TypeOf(string name) => _localMap[name].Type;
+
+            internal void PushScope(Scope scope) => _scopes.Add(scope);
+
+            internal void PopScope() => _scopes.RemoveAt(_scopes.Count - 1);
+
+            // 合成块直接追加（派发垫等；对象身份需在内容填充前建立——
+            // MirThrow/调用的 ExcTarget 持块引用）
+            internal void AppendBlock(MirBlock block) => _blocks.Add(block);
 
             internal IReadOnlyList<MirBlock> Build(BilBlock entryBlock)
             {
@@ -385,29 +441,25 @@ namespace RigiCompiler.Middleware.Mir
                         break;
                     case BreakInstruction brk:
                         EnsureOpen();
-                        Terminate(new MirBranch(FindRegion(brk.BreakId.Name).BreakTarget));
+                        Terminate(new MirBranch(_tryExpander.ResolveBreak(brk.BreakId.Name)));
                         break;
                     case ContinueInstruction cont:
                         EnsureOpen();
-                        var region = FindRegion(cont.BreakId.Name);
-                        if (region.ContinueTarget == null)
-                        {
-                            throw new CompilerInternalException(
-                                $"continue 命中非 loop region（fn {_fnSymbol}）");
-                        }
-                        Terminate(new MirBranch(region.ContinueTarget));
+                        Terminate(new MirBranch(_tryExpander.ResolveContinue(cont.BreakId.Name)));
                         break;
                     case RetInstruction ret:
                         EnsureOpen();
-                        Terminate(new MirRet(ret.Value == null ? null : Local(ret.Value)));
+                        _tryExpander.EmitReturn(ret.Value);
                         break;
                     case HintInstruction:
                         // §18 route dispatcher 标注，codegen 无语义
                         break;
-                    case TryInstruction:
-                    case ThrowInstruction:
-                        throw new MwNotSupportedException(
-                            $"MW3 暂不支持 {inst.Opcode}（随 MW9 异常机制落地）");
+                    case TryInstruction tryInst:
+                        _tryExpander.ExpandTry(tryInst);
+                        break;
+                    case ThrowInstruction throwInst:
+                        _tryExpander.EmitThrow(throwInst);
+                        break;
                     default:
                         EnsureOpen();
                         EmitSimple(inst);
@@ -422,13 +474,13 @@ namespace RigiCompiler.Middleware.Mir
                 var mergeId = SyntheticId("if.end");
                 Terminate(new MirCondBranch(Local(inst.Condition), inst.ThenBlock.Id,
                     inst.ElseBlock?.Id ?? mergeId));
-                PushRegion(inst.BreakId.Name, mergeId, null);
+                PushScope(new RegionScope(inst.BreakId.Name, mergeId, null));
                 EmitChildBlock(inst.ThenBlock, mergeId);
                 if (inst.ElseBlock != null)
                 {
                     EmitChildBlock(inst.ElseBlock, mergeId);
                 }
-                PopRegion();
+                PopScope();
                 SealAndStart(mergeId);
             }
 
@@ -440,7 +492,7 @@ namespace RigiCompiler.Middleware.Mir
                 EnsureOpen();
                 var exitId = SyntheticId("loop.end");
                 var continueId = inst.EnumBlock?.Id ?? inst.Judge.Id;
-                PushRegion(inst.BreakId.Name, exitId, continueId);
+                PushScope(new RegionScope(inst.BreakId.Name, exitId, continueId));
                 if (inst.IsRev)
                 {
                     Terminate(new MirBranch(inst.Body.Id));
@@ -469,7 +521,7 @@ namespace RigiCompiler.Middleware.Mir
                         EmitChildBlock(inst.EnumBlock, inst.Judge.Id);
                     }
                 }
-                PopRegion();
+                PopScope();
                 SealAndStart(exitId);
             }
 
@@ -489,13 +541,13 @@ namespace RigiCompiler.Middleware.Mir
                     itemTargets.Add(item.Id);
                 }
                 Terminate(new MirSwitch(Local(inst.Selector), table, itemTargets, inst.DefaultBlock.Id));
-                PushRegion(inst.BreakId.Name, mergeId, null);
+                PushScope(new RegionScope(inst.BreakId.Name, mergeId, null));
                 foreach (var item in inst.ItemBlocks)
                 {
                     EmitChildBlock(item, mergeId);
                 }
                 EmitChildBlock(inst.DefaultBlock, mergeId);
-                PopRegion();
+                PopScope();
                 SealAndStart(mergeId);
             }
 
@@ -505,9 +557,9 @@ namespace RigiCompiler.Middleware.Mir
                 EnsureOpen();
                 var mergeId = SyntheticId("call.end");
                 Terminate(new MirBranch(inst.Block.Id));
-                PushRegion(inst.BreakId.Name, mergeId, null);
+                PushScope(new RegionScope(inst.BreakId.Name, mergeId, null));
                 EmitChildBlock(inst.Block, mergeId);
-                PopRegion();
+                PopScope();
                 SealAndStart(mergeId);
             }
 
@@ -530,7 +582,8 @@ namespace RigiCompiler.Middleware.Mir
                         _currentInsts.Add(new MirBinaryIntrinsic(binary.Op,
                             Local(binary.Left), Local(binary.Right),
                             TypeOf(binary.Left.Name), TypeOf(binary.Right.Name),
-                            TypeOf(binary.Target.Name), binary.Target.Name));
+                            TypeOf(binary.Target.Name), binary.Target.Name,
+                            _tryExpander.CurrentExcTarget()));
                         break;
                     case UnaryIntrinsicInstruction unary:
                         _currentInsts.Add(new MirUnaryIntrinsic(unary.Op, Local(unary.Operand),
@@ -547,13 +600,15 @@ namespace RigiCompiler.Middleware.Mir
                     case InvokeIndirectInstruction invokeIndirect:
                         _currentInsts.Add(new MirInvokeIndirect(
                             Local(invokeIndirect.CallTarget), Locals(invokeIndirect.Arguments),
-                            invokeIndirect.Target.Name, TypeOf(invokeIndirect.CallTarget.Name)));
+                            invokeIndirect.Target.Name, TypeOf(invokeIndirect.CallTarget.Name),
+                            _tryExpander.CurrentExcTarget()));
                         break;
                     case InvokeIndirectNoResultInstruction invokeIndirectNoResult:
                         _currentInsts.Add(new MirInvokeIndirect(
                             Local(invokeIndirectNoResult.CallTarget),
                             Locals(invokeIndirectNoResult.Arguments),
-                            null, TypeOf(invokeIndirectNoResult.CallTarget.Name)));
+                            null, TypeOf(invokeIndirectNoResult.CallTarget.Name),
+                            _tryExpander.CurrentExcTarget()));
                         break;
                     case GetFieldInstruction getField:
                         EmitGetField(getField);
@@ -616,7 +671,7 @@ namespace RigiCompiler.Middleware.Mir
 
             // 当前块已被前一指令终结时，同块后续指令不可达（abrupt
             // completion 语义）：开死块继续直译（保持忠实，裁减交 LLVM）
-            private void EnsureOpen()
+            internal void EnsureOpen()
             {
                 if (_terminator != null)
                 {
@@ -626,7 +681,7 @@ namespace RigiCompiler.Middleware.Mir
             }
 
             // 子 region 块：译入后落出接 exitId 边
-            private void EmitChildBlock(BilBlock child, string exitId)
+            internal void EmitChildBlock(BilBlock child, string exitId)
             {
                 SealAndStart(child.Id);
                 if (EmitBlock(child))
@@ -641,19 +696,19 @@ namespace RigiCompiler.Middleware.Mir
                 StartNewBlock(id);
             }
 
-            private void StartNewBlock(string id)
+            internal void StartNewBlock(string id)
             {
                 _currentId = id;
                 _currentInsts = new List<MirInst>();
                 _terminator = null;
             }
 
-            private void Terminate(MirTerminator terminator)
+            internal void Terminate(MirTerminator terminator)
             {
                 _terminator = terminator;
             }
 
-            private void SealCurrentBlock()
+            internal void SealCurrentBlock()
             {
                 // 封存即基本块定型，必须有终结符；缺失即直译器自身 bug
                 if (_terminator == null)
@@ -668,43 +723,35 @@ namespace RigiCompiler.Middleware.Mir
                 return "mw." + kind + "." + _syntheticCounter++;
             }
 
-            private void PushRegion(string breakIdVar, string breakTarget, string? continueTarget)
-            {
-                _regions.Add(new RegionTarget(breakIdVar, breakTarget, continueTarget));
-            }
-
-            private void PopRegion()
-            {
-                _regions.RemoveAt(_regions.Count - 1);
-            }
-
-            private RegionTarget FindRegion(string breakIdVar)
-            {
-                for (var i = _regions.Count - 1; i >= 0; i--)
-                {
-                    if (_regions[i].BreakIdVar == breakIdVar)
-                    {
-                        return _regions[i];
-                    }
-                }
-                // verifier §21.5/§21.6 保证 token 作用域正确；防御
-                throw new CompilerInternalException($"break/continue token 无宿 region: {breakIdVar}（fn {_fnSymbol}）");
-            }
-
             // ===== 调用与对象路径（MW4 批 2） =====
 
             // invoke / invoke.noret：fn(..super) 解析为基类实现符号的
-            // MirSuperCall（直调）；其余为普通 MirCall
+            // MirSuperCall（直调）；其余为普通 MirCall。异常边目标取当前
+            // 词法上下文（try 内非空；try 外 null，留待 C 棒解析）
             private MirInst EmitCallOrSuper(string symbol, List<MirOperand> args, string? result)
             {
+                var excTarget = _tryExpander.CurrentExcTarget();
+                symbol = RedirectBuiltinToString(symbol);
                 if (symbol == BilSpellings.SuperReservedFunction)
                 {
                     return new MirSuperCall(
                         MirBuilder.ResolveSuperCall(_context, _fnSymbol, ArgTypes(args)),
-                        args, result);
+                        args, result, excTarget);
                 }
-                return new MirCall(ResolveTarget(symbol), args, result);
+                return new MirCall(ResolveTarget(symbol), args, result, excTarget);
             }
+
+            // MW9b-G：bootstrap 合成体 toString（Any/Object 默认实现，fn 体
+            // 无符号段声明、宿主不进 vtable）直降为全局 native any_to_string
+            // 直调——合成体本身即「.this（必要时先装箱 .any）直传
+            // any_to_string」，降口径与合成体逐字等价（VM 侧的用户 override
+            // 防御扫描不复现；插值场景接收者恒为装箱基元/String，无 override）
+            private static string RedirectBuiltinToString(string symbol) => symbol switch
+            {
+                "core::Any$toString()@.string" => "core::$any_to_string(value:.any)@.string",
+                "core::Object$toString()@.string" => "core::$any_to_string(value:.any)@.string",
+                _ => symbol,
+            };
 
             // get.array：恒直译 MirGetArray（内建与用户类型同形态；用户
             // 类型降级归 IndexOperatorLoweringPass）
@@ -715,20 +762,24 @@ namespace RigiCompiler.Middleware.Mir
             }
 
             // set.array：恒直译 MirSetArray（内建与用户类型同形态；用户
-            // 类型降级归 IndexOperatorLoweringPass）
+            // 类型降级归 IndexOperatorLoweringPass）。MW9b-G：写越界可抛，
+            // 异常边目标取当前词法上下文
             private void EmitSetArray(SetArrayInstruction inst)
             {
                 _currentInsts.Add(new MirSetArray(Local(inst.Collection), Local(inst.Index),
-                    Local(inst.Element), TypeOf(inst.Collection.Name)));
+                    Local(inst.Element), TypeOf(inst.Collection.Name),
+                    _tryExpander.CurrentExcTarget()));
             }
 
             // new.indirect：TYPEID 局部 + 实参列表直译。运行期目标不可
             // 静态知；方法级泛型 init 不可能由前端进入（语言无 init<T>），
-            // 分发器合成处若见到则 MwNotSupportedException。
+            // 分发器合成处若见到则 MwNotSupportedException。MW9b-G：无匹配
+            // init 可抛，异常边目标取当前词法上下文
             private void EmitNewIndirect(NewIndirectInstruction inst)
             {
                 _currentInsts.Add(new MirNewIndirect(Local(inst.TypeId),
-                    Locals(inst.Arguments), inst.Target.Name));
+                    Locals(inst.Arguments), inst.Target.Name,
+                    _tryExpander.CurrentExcTarget()));
             }
 
             // new type(T)：init 按实参静态类型精确匹配（BIL §14.1）；
@@ -862,7 +913,7 @@ namespace RigiCompiler.Middleware.Mir
             private void EmitGetField(GetFieldInstruction inst)
             {
                 _currentInsts.Add(new MirGetField(Local(inst.Object), inst.Field.Symbol,
-                    inst.Target.Name));
+                    inst.Target.Name, _tryExpander.CurrentExcTarget()));
             }
 
             // set.field：恒直译 MirSetField（含 computed 与 accessor 体内
@@ -928,6 +979,9 @@ namespace RigiCompiler.Middleware.Mir
                 var sourceType = TypeOf(inst.Source.Name);
                 var targetType = MirType.Of(inst.TargetType.TypeRef);
                 var resultType = TypeOf(inst.Target.Name);
+                // MW9b-G：强制转换失败可抛（CastException），异常边目标取
+                // 当前词法上下文（try 内指向派发垫；try 外 null 留待解析）
+                var excTarget = _tryExpander.CurrentExcTarget();
                 if (TypeLayout.TryGetNullableInner(sourceType, out var unwrapInner)
                     && unwrapInner.Canonical == targetType.Canonical)
                 {
@@ -949,21 +1003,23 @@ namespace RigiCompiler.Middleware.Mir
                 }
                 if (sourceType.IsAnyOrObject && IsBoxableValueType(targetType))
                 {
-                    _currentInsts.Add(new MirUnboxAny(Local(inst.Source), inst.Target.Name));
+                    _currentInsts.Add(new MirUnboxAny(Local(inst.Source), inst.Target.Name,
+                        excTarget));
                     return;
                 }
                 // 泛型占位目标：降为 typeid 局部，运行期 try_cast
                 if (GenericAbi.TryPlaceholderName(targetType.Canonical, out var phName))
                 {
                     _currentInsts.Add(new MirCast(Local(inst.Source), inst.Target.Name,
-                        inst.IsSafe, null, new MirLocalOperand(".generic." + phName)));
+                        inst.IsSafe, null, new MirLocalOperand(".generic." + phName),
+                        excTarget));
                     return;
                 }
                 // 占位源 → 静态目标：同样走运行期 try_cast
                 if (TypeLayout.IsGenericPlaceholder(sourceType))
                 {
                     _currentInsts.Add(new MirCast(Local(inst.Source), inst.Target.Name,
-                        inst.IsSafe, targetType.Canonical, null));
+                        inst.IsSafe, targetType.Canonical, null, excTarget));
                     return;
                 }
                 // 数值互转（含 char）；as? 结果槽为 Nullable 时仍走 MirCast 包装
@@ -986,7 +1042,7 @@ namespace RigiCompiler.Middleware.Mir
                         return;
                     }
                     _currentInsts.Add(new MirCast(Local(inst.Source), inst.Target.Name,
-                        inst.IsSafe, targetType.Canonical, null));
+                        inst.IsSafe, targetType.Canonical, null, excTarget));
                     return;
                 }
                 // 恒等（String / 同 struct / 同类）；as? 则包 Nullable
@@ -1002,14 +1058,14 @@ namespace RigiCompiler.Middleware.Mir
                     _currentInsts.Add(new MirCopyLocal(Local(inst.Source), inst.Target.Name));
                     return;
                 }
-                // 标量/String/typeid/struct 不相容：运行期 abort / as? 产 null
+                // 标量/String/typeid/struct 不相容：抛 CastException / as? 产 null
                 if (MirBuilder.IsScalarOrString(sourceType)
                     || MirBuilder.IsScalarOrString(targetType)
                     || TypeLayout.IsTypeId(sourceType) || TypeLayout.IsTypeId(targetType)
                     || IsUserValueType(sourceType) || IsUserValueType(targetType))
                 {
                     _currentInsts.Add(new MirCast(Local(inst.Source), inst.Target.Name,
-                        inst.IsSafe, targetType.Canonical, null));
+                        inst.IsSafe, targetType.Canonical, null, excTarget));
                     return;
                 }
                 _currentInsts.Add(new MirCopyLocal(Local(inst.Source), inst.Target.Name));
@@ -1032,8 +1088,6 @@ namespace RigiCompiler.Middleware.Mir
             // ===== 操作数与目标解析 =====
 
             private MirLocalOperand Local(BilVariableOperand operand) => new(operand.Name);
-
-            private MirType TypeOf(string name) => _localMap[name].Type;
 
             private MwMemberSymbol ResolveTarget(string symbol)
             {

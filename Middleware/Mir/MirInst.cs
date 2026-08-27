@@ -67,9 +67,13 @@ namespace RigiCompiler.Middleware.Mir
         public MirType RightType { get; }
         public MirType ResultType { get; }
         public string Target { get; }
+        // MW9b-G：整数除零守卫的异常边目标（同 MirInvokeIndirect.ExcTarget
+        // 口径）；非除法运算不抛，恒等占位随 RcInjection 一并解析
+        public MirBlock? ExcTarget { get; }
 
         internal MirBinaryIntrinsic(BilBinaryOp op, MirOperand left, MirOperand right,
-            MirType leftType, MirType rightType, MirType resultType, string target)
+            MirType leftType, MirType rightType, MirType resultType, string target,
+            MirBlock? excTarget = null)
         {
             Op = op;
             Left = left;
@@ -78,6 +82,7 @@ namespace RigiCompiler.Middleware.Mir
             RightType = rightType;
             ResultType = resultType;
             Target = target;
+            ExcTarget = excTarget;
         }
     }
 
@@ -111,14 +116,18 @@ namespace RigiCompiler.Middleware.Mir
         // null = invoke.indirect.noret（无结果槽）
         public string? Result { get; }
         public MirType CallTargetType { get; }
+        // MW9a：异常边目标（try 派发垫/逃逸垫，入口恒为 MirTakePending）；
+        // null = 未解析（留待 C 棒填 propagate 垫）
+        public MirBlock? ExcTarget { get; }
 
         internal MirInvokeIndirect(MirOperand callTarget, IReadOnlyList<MirOperand> args,
-            string? result, MirType callTargetType)
+            string? result, MirType callTargetType, MirBlock? excTarget = null)
         {
             CallTarget = callTarget;
             Args = args;
             Result = result;
             CallTargetType = callTargetType;
+            ExcTarget = excTarget;
         }
     }
 
@@ -131,12 +140,16 @@ namespace RigiCompiler.Middleware.Mir
         public IReadOnlyList<MirOperand> Args { get; }
         // null = invoke.noret（无结果槽）
         public string? Result { get; }
+        // MW9a：异常边目标（同 MirInvokeIndirect.ExcTarget 口径）
+        public MirBlock? ExcTarget { get; }
 
-        internal MirCall(MwMemberSymbol target, IReadOnlyList<MirOperand> args, string? result)
+        internal MirCall(MwMemberSymbol target, IReadOnlyList<MirOperand> args, string? result,
+            MirBlock? excTarget = null)
         {
             Target = target;
             Args = args;
             Result = result;
+            ExcTarget = excTarget;
         }
     }
 
@@ -148,12 +161,16 @@ namespace RigiCompiler.Middleware.Mir
         public MwMemberSymbol Target { get; }
         public IReadOnlyList<MirOperand> Args { get; }
         public string? Result { get; }
+        // MW9a：异常边目标（同 MirInvokeIndirect.ExcTarget 口径）
+        public MirBlock? ExcTarget { get; }
 
-        internal MirSuperCall(MwMemberSymbol target, IReadOnlyList<MirOperand> args, string? result)
+        internal MirSuperCall(MwMemberSymbol target, IReadOnlyList<MirOperand> args, string? result,
+            MirBlock? excTarget = null)
         {
             Target = target;
             Args = args;
             Result = result;
+            ExcTarget = excTarget;
         }
     }
 
@@ -186,12 +203,17 @@ namespace RigiCompiler.Middleware.Mir
         public MirOperand TypeId { get; }
         public IReadOnlyList<MirOperand> Args { get; }
         public string Target { get; }
+        // MW9b-G：无匹配 init 抛 NoSuchMethodException 的异常边目标
+        //（同 MirInvokeIndirect.ExcTarget 口径）
+        public MirBlock? ExcTarget { get; }
 
-        internal MirNewIndirect(MirOperand typeId, IReadOnlyList<MirOperand> args, string target)
+        internal MirNewIndirect(MirOperand typeId, IReadOnlyList<MirOperand> args,
+            string target, MirBlock? excTarget = null)
         {
             TypeId = typeId;
             Args = args;
             Target = target;
+            ExcTarget = excTarget;
         }
     }
 
@@ -289,12 +311,17 @@ namespace RigiCompiler.Middleware.Mir
         public MirOperand Object { get; }
         public string FieldSymbol { get; }
         public string Target { get; }
+        // MW9b-G：泛型占位字段读取的拆箱不符守卫抛 CastException 的异常
+        // 边目标（同 MirInvokeIndirect.ExcTarget 口径）
+        public MirBlock? ExcTarget { get; }
 
-        internal MirGetField(MirOperand objectOperand, string fieldSymbol, string target)
+        internal MirGetField(MirOperand objectOperand, string fieldSymbol, string target,
+            MirBlock? excTarget = null)
         {
             Object = objectOperand;
             FieldSymbol = fieldSymbol;
             Target = target;
+            ExcTarget = excTarget;
         }
     }
 
@@ -369,14 +396,18 @@ namespace RigiCompiler.Middleware.Mir
         public MirOperand Index { get; }
         public MirOperand Element { get; }
         public MirType CollectionType { get; }
+        // MW9b-G：写越界抛 OutOfBoundException 的异常边目标
+        //（同 MirInvokeIndirect.ExcTarget 口径；读越界不抛，MirGetArray 无此边）
+        public MirBlock? ExcTarget { get; }
 
         internal MirSetArray(MirOperand collection, MirOperand index, MirOperand element,
-            MirType collectionType)
+            MirType collectionType, MirBlock? excTarget = null)
         {
             Collection = collection;
             Index = index;
             Element = element;
             CollectionType = collectionType;
+            ExcTarget = excTarget;
         }
     }
 
@@ -469,11 +500,15 @@ namespace RigiCompiler.Middleware.Mir
     {
         public MirOperand Source { get; }
         public string Target { get; }
+        // MW9b-G：拆箱类型不符抛 CastException 的异常边目标
+        //（同 MirInvokeIndirect.ExcTarget 口径）
+        public MirBlock? ExcTarget { get; }
 
-        internal MirUnboxAny(MirOperand source, string target)
+        internal MirUnboxAny(MirOperand source, string target, MirBlock? excTarget = null)
         {
             Source = source;
             Target = target;
+            ExcTarget = excTarget;
         }
     }
 
@@ -487,15 +522,20 @@ namespace RigiCompiler.Middleware.Mir
         public string? TargetTypeRef { get; }
         public MirOperand? TargetTypeId { get; }
         public bool IsIndirect => TargetTypeId != null;
+        // MW9b-G：强制转换失败抛 CastException 的异常边目标（同
+        // MirInvokeIndirect.ExcTarget 口径；cast.safe 不抛，恒等占位随
+        // RcInjection 一并解析）
+        public MirBlock? ExcTarget { get; }
 
         internal MirCast(MirOperand source, string target, bool isSafe,
-            string? targetTypeRef, MirOperand? targetTypeId)
+            string? targetTypeRef, MirOperand? targetTypeId, MirBlock? excTarget = null)
         {
             Source = source;
             Target = target;
             IsSafe = isSafe;
             TargetTypeRef = targetTypeRef;
             TargetTypeId = targetTypeId;
+            ExcTarget = excTarget;
         }
     }
 
@@ -521,6 +561,36 @@ namespace RigiCompiler.Middleware.Mir
         }
     }
 
+    // throw 直译（MW9a，§16.9）：发射 = rigi_exc_raise(操作数)（内部
+    // acquire，TLS pending 槽持 +1；被抛槽位自身 +1 不动，照常由
+    // RcInjection 配平），随后沿异常边传播。ExcTarget = 本词法上下文的
+    // 异常入口块（try 派发垫/逃逸垫，入口恒为 MirTakePending）；
+    // null = 传播出函数（留待 C 棒解析）
+    public sealed class MirThrow : MirInst
+    {
+        public MirOperand Exception { get; }
+        public MirBlock? ExcTarget { get; }
+
+        internal MirThrow(MirOperand exception, MirBlock? excTarget)
+        {
+            Exception = exception;
+            ExcTarget = excTarget;
+        }
+    }
+
+    // try 派发垫/逃逸垫入口（MW9a）：把 TLS pending 移入目标槽
+    //（rigi_exc_take 移动语义：TLS 的 +1 转给接收槽，不另 acquire；
+    // 产出类指令，旧值由 RcInjection 前置 release）
+    public sealed class MirTakePending : MirInst
+    {
+        public string TargetLocal { get; }
+
+        internal MirTakePending(string targetLocal)
+        {
+            TargetLocal = targetLocal;
+        }
+    }
+
     public abstract class MirTerminator
     {
     }
@@ -533,6 +603,16 @@ namespace RigiCompiler.Middleware.Mir
         internal MirRet(MirOperand? value)
         {
             Value = value;
+        }
+    }
+
+    // 异常返回终结符（MW9a）：pending 已在 TLS，直接返回调用方
+    //（本棒仅由 MirThrow 的 ExcTarget==null 落点产生；release 填充与
+    // ExcTarget==null 的解析改写归 C 棒）
+    public sealed class MirRetThrow : MirTerminator
+    {
+        internal MirRetThrow()
+        {
         }
     }
 

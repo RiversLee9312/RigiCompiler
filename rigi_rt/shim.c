@@ -76,17 +76,12 @@ int32_t rigi_string_compare(const rigi_string *a, const rigi_string *b)
     return 0;
 }
 
-/* MW2 占位检查面（BIL §11.2 的 DividedByZeroException 在 MW9 异常机制
- * 落地前的占位语义）：stderr 文本与 BIL VM 的未捕获异常消息逐字节一致，
- * 退出码对齐 vm 命令的未捕获异常出口（1）。MW9 换真异常时由 Emit 的
- * 标量检查策略注入点单点替换，本面随之退役 */
-_Noreturn void rigi_abort_divided_by_zero(void)
-{
-    static const char message[] = "整数除以零\n";
-    fwrite(message, 1, sizeof(message) - 1, stderr);
-    fflush(stderr);
-    exit(1);
-}
+/* MW2 占位检查面 rigi_abort_divided_by_zero 已随 MW9b-G 退场（除零改抛
+ * 可被 try/catch 捕获的 core.DividedByZeroException，见 eh.c 三面与
+ * Middleware Emit/ExceptionEmitter）；同批退场的还有
+ * rigi_abort_invalid_cast / rigi_abort_no_such_method（cast/拆箱失败与
+ * 动态 new 无匹配 init 分别改抛 core.CastException /
+ * core.NoSuchMethodException） */
 
 /* i64 MIN/-1 的 VM 基准行为是基础设施溢出失败（.NET OverflowException
  * 经 VM 包装后的消息原文），i8/i16/i32 则回绕（不走本面） */
@@ -94,50 +89,6 @@ _Noreturn void rigi_abort_arithmetic_overflow(void)
 {
     static const char message[] = "Arithmetic operation resulted in an overflow.\n";
     fwrite(message, 1, sizeof(message) - 1, stderr);
-    fflush(stderr);
-    exit(1);
-}
-
-/* 拆箱类型不符（MW5 Box）：VM 抛 CastException「无法将 .any 转换为 T」，
- * 本面在 MW9 真异常落地前占位——前缀对齐 VM 口径，目标名取 TypeInfo.name */
-_Noreturn void rigi_abort_invalid_cast(const RigiTypeSheet *target)
-{
-    static const char prefix[] = "无法将 .any 转换为 ";
-    static const char fallback[] = "目标值类型";
-    const RigiTypeInfo *info;
-    fwrite(prefix, 1, sizeof(prefix) - 1, stderr);
-    info = target != NULL ? target->typeInfoId : NULL;
-    if (info != NULL && info->name.data != NULL && info->name.len > 0)
-    {
-        fwrite(info->name.data, 1, (size_t)info->name.len, stderr);
-    }
-    else
-    {
-        fwrite(fallback, 1, sizeof(fallback) - 1, stderr);
-    }
-    fwrite("\n", 1, 1, stderr);
-    fflush(stderr);
-    exit(1);
-}
-
-/* 动态 new 无匹配 init（MW8b）：VM 抛 NoSuchMethodException，本面在
- * MW9 真异常落地前占位——消息含 TypeInfo.name，exit 1 */
-_Noreturn void rigi_abort_no_such_method(const RigiTypeSheet *target)
-{
-    static const char prefix[] = "new.indirect 目标不可构造：不匹配任何 init：";
-    static const char fallback[] = "未知类型";
-    const RigiTypeInfo *info;
-    fwrite(prefix, 1, sizeof(prefix) - 1, stderr);
-    info = target != NULL ? target->typeInfoId : NULL;
-    if (info != NULL && info->name.data != NULL && info->name.len > 0)
-    {
-        fwrite(info->name.data, 1, (size_t)info->name.len, stderr);
-    }
-    else
-    {
-        fwrite(fallback, 1, sizeof(fallback) - 1, stderr);
-    }
-    fwrite("\n", 1, 1, stderr);
     fflush(stderr);
     exit(1);
 }

@@ -1,4 +1,4 @@
-// MW7b：越界读得 null；length 特权字段；越界写与数组同口径 trap（本用例只断言读）
+// MW7b：越界读得 null；length 特权字段；越界写 MW9b 起抛可捕获 core.OutOfBoundException（本用例只断言读）
 // expect-output: -1
 // expect-output: null
 // expect-exit: 3

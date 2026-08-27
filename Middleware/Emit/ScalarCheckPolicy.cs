@@ -1,38 +1,44 @@
 using LLVMSharp.Interop;
+using RigiCompiler.Middleware.Mir;
 using RigiCompiler.Middleware.Runtime;
 
 namespace RigiCompiler.Middleware.Emit
 {
     /// <summary>
-    /// 标量运行时检查的策略注入点（MW2 占位语义：整数除零 / i64 MIN/-1
-    /// → rigi_rt abort 面）。BIL §11.2 的语言级 DividedByZeroException
-    /// 随 MW9 异常机制落地——届时提供抛异常的策略实现替换 Session.Checks
-    /// 单例，ScalarEmitter 等 codegen 调用点不变（单点替换）。
+    /// 标量运行时检查的策略注入点。MW9b-G：整数除零 → 抛语言级
+    /// core.DividedByZeroException（与 VM 同型同消息，可被 try/catch
+    /// 捕获，沿 MIR 异常边传播）；i64 MIN/-1 的基础设施溢出失败仍走
+    /// rigi_rt abort 面（VM 基准为溢出失败，非语言级异常）。
     /// </summary>
     internal interface IScalarCheckPolicy
     {
-        // 整数除法前检查（VM 基准）：divisor==0 全宽度有/无符号同例；
-        // i64 MIN/-1 为基础设施溢出失败；i8/i16/i32 MIN/-1 回绕（不在此
-        // 拦截，由 ScalarEmitter 以取负选择消 UB）
+        // 整数除法前检查（VM 基准）：divisor==0 全宽度有/无符号同例抛
+        // DividedByZeroException；i64 MIN/-1 为基础设施溢出失败；
+        // i8/i16/i32 MIN/-1 回绕（不在此拦截，由 ScalarEmitter 以取负
+        // 选择消 UB）。excTarget = MIR 异常边目标（RcInjection 已解析）
         void EmitDivGuard(ModuleBuilder.Session session, LLVMBuilderRef builder,
-            LLVMValueRef dividend, LLVMValueRef divisor, bool isSigned);
+            LLVMValueRef dividend, LLVMValueRef divisor, bool isSigned,
+            MirBlock? excTarget);
     }
 
     /// <summary>
-    /// 默认策略：条件分支命中 → 调 rigi_rt abort 面（noreturn）→
-    /// unreachable；不命中落入续行块。abort/ok 块追加在当前函数尾，
-    /// 原块以条件跳转自然收尾，控制流等价。
+    /// 默认策略（MW9b-G）：条件分支命中 → 抛真异常（除零走
+    /// ExceptionEmitter 共享抛出辅助；溢出保留 abort 面 noreturn）→
+    /// 不命中落入续行块。throw/abort/ok 块追加在当前函数尾，原块以
+    /// 条件跳转自然收尾，控制流等价。
     /// </summary>
-    internal sealed class AbortScalarCheckPolicy : IScalarCheckPolicy
+    internal sealed class ThrowScalarCheckPolicy : IScalarCheckPolicy
     {
         public void EmitDivGuard(ModuleBuilder.Session session, LLVMBuilderRef builder,
-            LLVMValueRef dividend, LLVMValueRef divisor, bool isSigned)
+            LLVMValueRef dividend, LLVMValueRef divisor, bool isSigned,
+            MirBlock? excTarget)
         {
-            // divisor == 0 → abort（有/无符号、全宽度同例）
-            EmitAbortGuard(session, builder,
+            // divisor == 0 → 抛 core.DividedByZeroException（有/无符号、
+            // 全宽度同例）
+            EmitThrowGuard(session, builder,
                 builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, divisor,
                     LLVMValueRef.CreateConstNull(divisor.TypeOf), "div.zero"),
-                RuntimeFaces.AbortDividedByZero);
+                excTarget);
 
             // i64 有符号 MIN/-1：VM 基准为基础设施溢出失败 → abort；
             // 窄宽度回绕由 ScalarEmitter 的取负选择处理
@@ -49,8 +55,24 @@ namespace RigiCompiler.Middleware.Emit
             EmitAbortGuard(session, builder, isOverflow, RuntimeFaces.AbortArithmeticOverflow);
         }
 
-        // 条件命中 → 调 abort 面 → unreachable；否则落续行块（builder
-        // 最终定位在续行块尾，后续发射自然衔接）
+        // 条件命中 → 抛 DividedByZeroException（无参 init）→ 沿异常边
+        // br ExcTarget；否则落续行块（builder 最终定位在续行块尾，后续
+        // 发射自然衔接）
+        private static void EmitThrowGuard(ModuleBuilder.Session session,
+            LLVMBuilderRef builder, LLVMValueRef condition, MirBlock? excTarget)
+        {
+            var fn = session.CurrentFunction;
+            var throwBlock = fn.AppendBasicBlock("check.throw");
+            var okBlock = fn.AppendBasicBlock("check.ok");
+            builder.BuildCondBr(condition, throwBlock, okBlock);
+            builder.PositionAtEnd(throwBlock);
+            ExceptionEmitter.EmitThrowNewException(session, builder,
+                "core::DividedByZeroException", null,
+                System.Array.Empty<LLVMValueRef>(), excTarget);
+            builder.PositionAtEnd(okBlock);
+        }
+
+        // 条件命中 → 调 abort 面 → unreachable；否则落续行块
         private static void EmitAbortGuard(ModuleBuilder.Session session,
             LLVMBuilderRef builder, LLVMValueRef condition, string faceSymbol)
         {

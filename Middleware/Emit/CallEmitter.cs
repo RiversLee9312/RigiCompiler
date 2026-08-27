@@ -71,7 +71,8 @@ namespace RigiCompiler.Middleware.Emit
                 case DirectCallBinding direct:
                 {
                     EmitDirectCall(session, builder, slots,
-                        session.FunctionOf(direct.Target.Canonical), call.Args, call.Result);
+                        session.FunctionOf(direct.Target.Canonical), call.Args, call.Result,
+                        call.ExcTarget);
                     break;
                 }
                 case VirtualCallBinding virtualCall:
@@ -125,7 +126,7 @@ namespace RigiCompiler.Middleware.Emit
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirSuperCall call)
         {
             EmitDirectCall(session, builder, slots,
-                session.FunctionOf(call.Target.Canonical), call.Args, call.Result);
+                session.FunctionOf(call.Target.Canonical), call.Args, call.Result, call.ExcTarget);
         }
 
         // new type(T)（class）：rigi_alloc → 隐藏 typeid → wrapper → init
@@ -187,11 +188,13 @@ namespace RigiCompiler.Middleware.Emit
 
         // ===== 直接/虚/接口调用 =====
 
-        // 直接调用（含 init/super/struct 方法/全局 fn）
+        // 直接调用（含 init/super/struct 方法/全局 fn）。excTarget =
+        // MW9a 异常边（Rigi 调用全族带 pending 检查；EmitAllocAndInit 等
+        // 运行时面临时调用不经本路径）
         private static void EmitDirectCall(ModuleBuilder.Session session, LLVMBuilderRef builder,
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
             ModuleBuilder.Session.EmittedFunction callee,
-            IReadOnlyList<MirOperand> args, string? result)
+            IReadOnlyList<MirOperand> args, string? result, MirBlock? excTarget)
         {
             var temps = new List<ArcEmitter.RichTemp>();
             var boxed = new List<ArcEmitter.FatTemp>();
@@ -200,7 +203,9 @@ namespace RigiCompiler.Middleware.Emit
             var callResult = builder.BuildCall2(callee.Type, callee.Value, callArgs, "");
             ArcEmitter.DestroyRichTemps(session, builder, temps);
             ArcEmitter.DestroyFatTemps(session, builder, boxed);
-            StoreCoercedResult(session, builder, slots, callee.Mir.ReturnType, callResult, result);
+            ExceptionEmitter.EmitPendingCheck(session, builder, excTarget);
+            StoreCoercedResult(session, builder, slots, callee.Mir.ReturnType, callResult, result,
+                excTarget);
         }
 
         // 标量/String/胖引用结果回存（值类型返回经 out 槽直写，无需回存）
@@ -218,7 +223,7 @@ namespace RigiCompiler.Middleware.Emit
         private static void StoreCoercedResult(ModuleBuilder.Session session,
             LLVMBuilderRef builder,
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
-            MirType returnType, LLVMValueRef callResult, string? result)
+            MirType returnType, LLVMValueRef callResult, string? result, MirBlock? excTarget)
         {
             if (result == null || session.IsInlineValueType(returnType, out _))
             {
@@ -227,7 +232,10 @@ namespace RigiCompiler.Middleware.Emit
             var actual = slots[result].Local.Type;
             if (BoxEmitter.NeedsUnbox(session, returnType, actual))
             {
-                BoxEmitter.UnboxToLocal(session, builder, slots, callResult, actual, result);
+                // 拆箱不符守卫（MW9b-G 抛 CastException）：fromType 用
+                // 静态返回类型名（泛型占位 canonical）
+                BoxEmitter.UnboxToLocal(session, builder, slots, callResult, actual, result,
+                    returnType, excTarget);
                 ArcEmitter.EmitReleaseFatValue(session, builder, callResult);
                 return;
             }
@@ -286,26 +294,41 @@ namespace RigiCompiler.Middleware.Emit
         }
 
         // 虚调用：接收者胖引用 payload → 对象头 [0] 实际 TypeSheet →
-        // rigi_vtable_entry 取槽 fnptr 间接调用（fn 类型用静态目标的——
-        // 静态目标恒有 fn 体且恒可达）
+        // rigi_vtable_entry 取槽 fnptr 间接调用。fn 类型优先用静态目标的
+        // fn 体；抽象静态目标（如 core.Exception.getMessage）无 fn 体，
+        // 按 canonical 签名合成（与 interface 调用同法）
         private static void EmitVirtualCall(ModuleBuilder.Session session, LLVMBuilderRef builder,
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
             MirCall call, MwMemberSymbol target)
         {
             var slot = VirtualSlotOf(session, target);
-            var callee = session.FunctionOf(target.Canonical);
             var entry = EmitVTableEntry(session, builder, "rigi_vtable_entry",
                 new[] { ObjectPointer(session, builder, slots, call.Args[0]),
                         LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, (uint)slot, false) });
             var temps = new List<ArcEmitter.RichTemp>();
             var boxed = new List<ArcEmitter.FatTemp>();
-            var callResult = builder.BuildCall2(callee.Type, entry,
-                MarshalArgs(session, builder, slots, callee.Mir, call.Args, call.Result, temps,
+            if (session.TryGetFunction(target.Canonical, out var callee))
+            {
+                var callResult = builder.BuildCall2(callee.Type, entry,
+                    MarshalArgs(session, builder, slots, callee.Mir, call.Args, call.Result, temps,
+                        boxed), "");
+                ArcEmitter.DestroyRichTemps(session, builder, temps);
+                ArcEmitter.DestroyFatTemps(session, builder, boxed);
+                ExceptionEmitter.EmitPendingCheck(session, builder, call.ExcTarget);
+                StoreCoercedResult(session, builder, slots, callee.Mir.ReturnType,
+                    callResult, call.Result, call.ExcTarget);
+                return;
+            }
+            var signature = CanonicalSignature.Parse(target.Canonical);
+            var fnType = MethodFunctionTypeOf(session, target, signature);
+            var abstractResult = builder.BuildCall2(fnType, entry,
+                MarshalArgs(session, builder, slots, signature, call.Args, call.Result, temps,
                     boxed), "");
             ArcEmitter.DestroyRichTemps(session, builder, temps);
             ArcEmitter.DestroyFatTemps(session, builder, boxed);
-            StoreCoercedResult(session, builder, slots, callee.Mir.ReturnType,
-                callResult, call.Result);
+            ExceptionEmitter.EmitPendingCheck(session, builder, call.ExcTarget);
+            StoreScalarResult(session, builder, slots, MirType.Of(signature.ReturnTypeRef),
+                abstractResult, call.Result);
         }
 
         // interface 调用：rigi_imap_entry(obj, @typesheet.Iface, slot) 查
@@ -329,6 +352,7 @@ namespace RigiCompiler.Middleware.Emit
                     boxed), "");
             ArcEmitter.DestroyRichTemps(session, builder, temps);
             ArcEmitter.DestroyFatTemps(session, builder, boxed);
+            ExceptionEmitter.EmitPendingCheck(session, builder, call.ExcTarget);
             StoreScalarResult(session, builder, slots, MirType.Of(signature.ReturnTypeRef),
                 callResult, call.Result);
         }
@@ -389,6 +413,7 @@ namespace RigiCompiler.Middleware.Emit
                     boxed), "");
             ArcEmitter.DestroyRichTemps(session, builder, temps);
             ArcEmitter.DestroyFatTemps(session, builder, boxed);
+            ExceptionEmitter.EmitPendingCheck(session, builder, inst.ExcTarget);
             StoreScalarResult(session, builder, slots, MirType.Of(signature.ReturnTypeRef),
                 callResult, inst.Result);
         }
@@ -616,8 +641,8 @@ namespace RigiCompiler.Middleware.Emit
         }
 
         // 派发 helper 面调用（rigi_vtable_entry/rigi_imap_entry：返回
-        // fnptr；参数类型按实参推导）
-        private static LLVMValueRef EmitVTableEntry(ModuleBuilder.Session session,
+        // fnptr；参数类型按实参推导）。reporter 的 getMessage 虚派发同用
+        internal static LLVMValueRef EmitVTableEntry(ModuleBuilder.Session session,
             LLVMBuilderRef builder, string faceSymbol, LLVMValueRef[] faceArgs)
         {
             var paramTypes = new LLVMTypeRef[faceArgs.Length];
@@ -640,8 +665,9 @@ namespace RigiCompiler.Middleware.Emit
             LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0);
 
         // 虚槽序号（Layout 计划的宿主 vtable 内索引；同偏移不变量保证
-        // 基类槽位在派生类同位）。构造类型具化后计划必在；声明序回退已移除
-        private static int VirtualSlotOf(ModuleBuilder.Session session, MwMemberSymbol target)
+        // 基类槽位在派生类同位）。构造类型具化后计划必在；声明序回退已移除。
+        // reporter 的 getMessage 槽位查询同用
+        internal static int VirtualSlotOf(ModuleBuilder.Session session, MwMemberSymbol target)
         {
             var plan = session.Layout?.Find(GenericAbi.PlanKey(target.Owner!));
             if (plan != null)

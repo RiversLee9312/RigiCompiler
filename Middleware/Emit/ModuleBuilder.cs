@@ -82,15 +82,25 @@ namespace RigiCompiler.Middleware.Emit
             // BIL fn 定义（BindIndirectCall 读取泛型 $$call 的 hidden 前缀）
             internal System.Collections.Generic.IReadOnlyList<BilFunction>? BilFunctions { get; }
 
-            // 标量运行时检查策略（MW2 默认 abort 占位实现；MW9 异常机制
-            // 落地时在此换抛语言级异常的实现——唯一替换点）
-            internal IScalarCheckPolicy Checks { get; } = new AbortScalarCheckPolicy();
+            // 标量运行时检查策略（MW9b-G 抛真异常实现：除零 →
+            // DividedByZeroException 沿 MIR 异常边；i64 MIN/-1 溢出保留
+            // abort 面）
+            internal IScalarCheckPolicy Checks { get; } = new ThrowScalarCheckPolicy();
 
             // 当前发射中的函数（EmitBody 逐函数置位；检查策略的 guard 块
             // 追加需要宿主函数）
             internal LLVMValueRef CurrentFunction { get; private set; }
 
             internal void SetCurrentFunction(LLVMValueRef fn) => CurrentFunction = fn;
+
+            // 当前发射中函数的 MIR 块 → LLVM 块映射（EmitBody 置位/清位；
+            // MW9a 调用后 pending 检查的异常边目标查询用——继续块为内联
+            // 合成块不入本映射，MIR 块 1:1 映射不受影响）
+            internal IReadOnlyDictionary<string, LLVMBasicBlockRef>? CurrentBlocks
+            { get; private set; }
+
+            internal void SetCurrentBlocks(IReadOnlyDictionary<string, LLVMBasicBlockRef>? blocks) =>
+                CurrentBlocks = blocks;
 
             internal sealed record EmittedFunction(LLVMValueRef Value, LLVMTypeRef Type, MirFunction Mir);
 
@@ -218,6 +228,23 @@ namespace RigiCompiler.Middleware.Emit
 
             internal void AddFace(string symbol, LLVMValueRef fn, LLVMTypeRef type) =>
                 _faces.Add(symbol, (fn, type));
+
+            // MW9b-G：守卫抛出消息的静态类型名字符串常量（按文本查重，
+            // 避免同名全局冲突）
+            private readonly Dictionary<string, LLVMValueRef> _textConstants =
+                new(System.StringComparer.Ordinal);
+
+            internal LLVMValueRef InternStringConstant(string text)
+            {
+                if (_textConstants.TryGetValue(text, out var existing))
+                {
+                    return existing;
+                }
+                var value = StringAbi.BuildConstant(Module, text,
+                    "exc.txt." + _textConstants.Count);
+                _textConstants.Add(text, value);
+                return value;
+            }
 
             // ===== 值类型存储分类（MW4 批 3） =====
 
@@ -446,30 +473,155 @@ namespace RigiCompiler.Middleware.Emit
             }
 
             // rigi_entry 合成 stub（MW4 批 4 定稿）：先调 ..globals.init
-            //（静态字段初值，存在时）再调用户 main、返回其 i32（.void 包装 0）
+            //（静态字段初值，存在时）再调用户 main、返回其 i32（.void 包装 0）。
+            // MW9a 第 C 棒：两调用后各插 pending 检查，非空汇同一 reporter
+            // 块（未捕获："{类型全名}: {message}" 打印 stderr，exit 1）
             private void EmitEntryStub(LLVMBuilderRef builder, EmittedFunction entrypoint)
             {
                 var stubType = LLVMTypeRef.CreateFunction(LLVMTypeRef.Int32,
                     System.Array.Empty<LLVMTypeRef>(), false);
                 var stub = Module.AddFunction(EntrySymbol, stubType);
                 builder.PositionAtEnd(stub.AppendBasicBlock("entry"));
+                SetCurrentFunction(stub);
+                var reporterTarget = ResolveUncaughtReporterTarget(out var exceptionSheet);
+                LLVMBasicBlockRef? reporter = null;
                 if (TryGetFunction("$..globals.init()@.void", out var globalsInit))
                 {
                     builder.BuildCall2(globalsInit.Type, globalsInit.Value,
                         System.Array.Empty<LLVMValueRef>(), "");
+                    reporter = EmitEntryPendingCheck(builder, stub, reporterTarget != null, reporter);
                 }
                 if (entrypoint.Mir.ReturnType.IsVoid)
                 {
                     builder.BuildCall2(entrypoint.Type, entrypoint.Value,
                         System.Array.Empty<LLVMValueRef>(), "");
+                    reporter = EmitEntryPendingCheck(builder, stub, reporterTarget != null, reporter);
                     builder.BuildRet(LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, 0, false));
                 }
                 else
                 {
                     var result = builder.BuildCall2(entrypoint.Type, entrypoint.Value,
                         System.Array.Empty<LLVMValueRef>(), "main.result");
+                    reporter = EmitEntryPendingCheck(builder, stub, reporterTarget != null, reporter);
                     builder.BuildRet(result);
                 }
+                if (reporter != null)
+                {
+                    builder.PositionAtEnd(reporter.Value);
+                    EmitUncaughtReporterBody(builder, reporterTarget!, exceptionSheet);
+                }
+            }
+
+            // 入口调用后的 pending 检查：reporter 前提缺失（模块内无异常
+            // 类型可达 → 无 MirThrow → pending 恒空）时退回旧序不插检查
+            private LLVMBasicBlockRef? EmitEntryPendingCheck(LLVMBuilderRef builder,
+                LLVMValueRef stub, bool reporterAvailable, LLVMBasicBlockRef? reporter)
+            {
+                if (!reporterAvailable)
+                {
+                    return reporter;
+                }
+                reporter ??= stub.AppendBasicBlock("entry.uncaught");
+                var (pendFn, pendType) = CallEmitter.DeclareHelperFace(this,
+                    RuntimeFaces.ExcPending, BytePointer(), System.Array.Empty<LLVMTypeRef>());
+                var pending = builder.BuildCall2(pendType, pendFn,
+                    System.Array.Empty<LLVMValueRef>(), "entry.pending");
+                var hasPending = builder.BuildICmp(LLVMIntPredicate.LLVMIntNE, pending,
+                    LLVMValueRef.CreateConstNull(BytePointer()), "entry.has");
+                var cont = stub.AppendBasicBlock("entry.cont");
+                builder.BuildCondBr(hasPending, reporter.Value, cont);
+                builder.PositionAtEnd(cont);
+                return reporter;
+            }
+
+            // 未捕获 reporter 前提解析：core::Exception 类型 / getMessage
+            // 虚成员 / 布局计划 / TypeSheet 四件套齐备才可虚派发；任一缺失
+            // = 模块内无异常类型可达（pending 恒空），返回 null
+            private MwMemberSymbol? ResolveUncaughtReporterTarget(out LLVMValueRef exceptionSheet)
+            {
+                exceptionSheet = default;
+                var exceptionType = Symbols.FindTypeByRef("core::Exception");
+                if (exceptionType == null)
+                {
+                    return null;
+                }
+                MwMemberSymbol? getMessage = null;
+                foreach (var member in exceptionType.Members)
+                {
+                    if (member.Declaration.Kind == BilMemberKind.Method
+                        && member.SignatureKey == "getMessage()")
+                    {
+                        getMessage = member;
+                        break;
+                    }
+                }
+                if (getMessage == null
+                    || Layout?.Find(GenericAbi.PlanKey(exceptionType)) == null
+                    || !TryGetTypeSheet(exceptionType.Canonical, out var sheet))
+                {
+                    return null;
+                }
+                exceptionSheet = sheet;
+                return getMessage;
+            }
+
+            // reporter 体：take 移入合成槽 → 虚派发 getMessage()（静态
+            // 目标 core::Exception.getMessage，实际 override 由对象头
+            // vtable 解析；返回 String 值）→ rigi_type_name_of 取实际
+            // 类型全名 → rigi_print_err 逐段打印 → 释放异常胖引用与
+            // message 字符串 → rigi_exc_halt（exit 1，noreturn）
+            private void EmitUncaughtReporterBody(LLVMBuilderRef builder,
+                MwMemberSymbol getMessage, LLVMValueRef exceptionSheet)
+            {
+                var (takeFn, takeType) = CallEmitter.DeclareHelperFace(this,
+                    RuntimeFaces.ExcTake, BytePointer(), System.Array.Empty<LLVMTypeRef>());
+                var obj = builder.BuildCall2(takeType, takeFn,
+                    System.Array.Empty<LLVMValueRef>(), "uncaught.take");
+                var slot = builder.BuildAlloca(BytePointer(), "uncaught.slot");
+                builder.BuildStore(obj, slot);
+                var held = builder.BuildLoad2(BytePointer(), slot, "uncaught.obj");
+                // 接收者胖引用：typeid 半按槽静态类型（core::Exception
+                // sheet，tag2）；虚派发只读 payload 与对象头，实际实现
+                // 由运行期 vtable 解析
+                var fat = CallEmitter.BuildFatReference(this, builder, exceptionSheet, held);
+                var virtualSlot = CallEmitter.VirtualSlotOf(this, getMessage);
+                var entry = CallEmitter.EmitVTableEntry(this, builder, "rigi_vtable_entry", new[]
+                {
+                    held, LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, (uint)virtualSlot, false),
+                });
+                var messageType = LLVMTypeRef.CreateFunction(StringAbi.ValueType(Context),
+                    new[] { TypeLayout.FatReferenceType(Context) }, false);
+                var message = builder.BuildCall2(messageType, entry, new[] { fat }, "uncaught.msg");
+                // 实际类型全名（对象头 sheet → TypeInfo.name，借用拷出不释放）
+                var nameSlot = builder.BuildAlloca(StringAbi.ValueType(Context), "uncaught.nameslot");
+                var (nameFn, nameFnType) = CallEmitter.DeclareHelperFace(this,
+                    RuntimeFaces.TypeNameOf, LLVMTypeRef.Void,
+                    new[] { BytePointer(), StringAbi.PointerType(Context) });
+                builder.BuildCall2(nameFnType, nameFn, new[] { held, nameSlot }, "");
+                var name = builder.BuildLoad2(StringAbi.ValueType(Context), nameSlot,
+                    "uncaught.name");
+                EmitPrintErr(builder, name);
+                EmitPrintErr(builder, StringAbi.BuildConstant(Module, ": ", "uncaught.colon"));
+                EmitPrintErr(builder, message);
+                EmitPrintErr(builder, StringAbi.BuildConstant(Module, "\n", "uncaught.newline"));
+                // message 是 getMessage 的 owned 返回值，打印后归还
+                var (strRel, strRelType) = CallEmitter.DeclareArcFace(this,
+                    RuntimeFaces.StringRelease);
+                builder.BuildCall2(strRelType, strRel,
+                    new[] { builder.BuildExtractValue(message, 0, "uncaught.msgdata") }, "");
+                ArcEmitter.EmitReleaseFatValue(this, builder, fat);
+                var (haltFn, haltType) = CallEmitter.DeclareVoidFace(this, RuntimeFaces.ExcHalt);
+                builder.BuildCall2(haltType, haltFn, System.Array.Empty<LLVMValueRef>(), "");
+                builder.BuildUnreachable();
+            }
+
+            // rigi_print_err(rigi_string*)：{i8*,i64} 值经临时 alloca 中转
+            // 传指针（String ABI 的 C 边界形态，native print 调用点同法）
+            private void EmitPrintErr(LLVMBuilderRef builder, LLVMValueRef text)
+            {
+                var (fn, fnType) = CallEmitter.DeclareHelperFace(this, RuntimeFaces.PrintErr,
+                    LLVMTypeRef.Void, new[] { StringAbi.PointerType(Context) });
+                builder.BuildCall2(fnType, fn, new[] { StoreToTemp(builder, text) }, "");
             }
 
             private void EmitBody(LLVMBuilderRef builder, EmittedFunction emitted)
@@ -482,6 +634,7 @@ namespace RigiCompiler.Middleware.Emit
                 {
                     blockRefs.Add(block.Id, emitted.Value.AppendBasicBlock(block.Id));
                 }
+                SetCurrentBlocks(blockRefs);
 
                 // 具名局部 → alloca 槽（entry 块开头，mem2reg 友好；含参数落槽）。
                 // 值类型局部 = 计划尺寸的内联槽；值类型宿主的 .this 不开槽——
@@ -550,6 +703,7 @@ namespace RigiCompiler.Middleware.Emit
                     }
                     TerminatorEmitter.Emit(this, builder, slots, blockRefs, emitted.Value, fn, block.Terminator);
                 }
+                SetCurrentBlocks(null);
             }
 
             // 局部拷贝：值类型 = memcpy 深拷贝（VM Copy 同口径）；
@@ -693,6 +847,12 @@ namespace RigiCompiler.Middleware.Emit
                         break;
                     case MirReleaseSlot release:
                         ArcEmitter.EmitReleaseSlot(this, builder, slots, release.Local);
+                        break;
+                    case MirTakePending takePending:
+                        ExceptionEmitter.EmitTakePending(this, builder, slots, takePending);
+                        break;
+                    case MirThrow throwInst:
+                        ExceptionEmitter.EmitThrow(this, builder, slots, throwInst);
                         break;
                     default:
                         throw new CompilerInternalException($"未覆盖的 MIR 指令: {inst.GetType().Name}");

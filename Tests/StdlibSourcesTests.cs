@@ -474,7 +474,7 @@ namespace RigiCompiler.Tests
             TestHarness.Blank();
         }
 
-        // ===== 2f. exceptions 结构（namespace core + 5 异常子类）=====
+        // ===== 2f. exceptions 结构（namespace core + 6 异常子类）=====
         private static void TestExceptionsStructure()
         {
             TestHarness.Section("Structure: namespace core + 异常子类");
@@ -490,18 +490,18 @@ namespace RigiCompiler.Tests
             var root = roots[5];
 
             // 顶层：namespace + RuntimeException/IOException/CastException/
-            // NoSuchMethodException/DividedByZeroException 5 个 open class
-            //（共 6 个声明，S10）
-            TestHarness.CheckTrue("顶层恰好 7 个声明（namespace + Exception + 5 class）",
-                root.Declarations.Count == 7, $"实际 {root.Declarations.Count}");
-            if (root.Declarations.Count < 7) { TestHarness.Blank(); return; }
+            // NoSuchMethodException/DividedByZeroException/OutOfBoundException
+            // 6 个 open class（共 8 个声明；MW9b 增 OutOfBoundException）
+            TestHarness.CheckTrue("顶层恰好 8 个声明（namespace + Exception + 6 class）",
+                root.Declarations.Count == 8, $"实际 {root.Declarations.Count}");
+            if (root.Declarations.Count < 8) { TestHarness.Blank(); return; }
 
             var ns = root.Declarations[0] as NamespaceDeclarationASTNode;
             TestHarness.CheckTrue("首声明是 namespace core",
                 ns != null && AstDescribe.Symbol(ns.Name.symbol) == "core");
 
             string[] expected = { "Exception", "RuntimeException", "IOException", "CastException",
-                "NoSuchMethodException", "DividedByZeroException" };
+                "NoSuchMethodException", "DividedByZeroException", "OutOfBoundException" };
             for (int i = 0; i < expected.Length; i++)
             {
                 var index = i + 1;

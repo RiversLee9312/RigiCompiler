@@ -158,6 +158,7 @@ namespace RigiCompiler.Tests
             ("TestSymbolTable", TestSymbolTable),
             ("TestMirConstruction", TestMirConstruction),
             ("TestMirControlFlow", TestMirControlFlow),
+            ("TestMirTryExpand", TestMirTryExpand),
             ("TestBinding", TestBinding),
             ("TestObjectEmission", TestObjectEmission),
             ("TestLlGoldenAnchors", TestLlGoldenAnchors),
@@ -183,6 +184,8 @@ namespace RigiCompiler.Tests
             ("TestNotSupported", TestNotSupported),
             ("TestNativeCli", TestNativeCli),
             ("TestRcInjection", TestRcInjection),
+            ("TestRcPropagatePad", TestRcPropagatePad),
+            ("TestExceptionEmission", TestExceptionEmission),
             ("TestRefMapMw7a", TestRefMapMw7a),
             ("TestDynamicNew", TestDynamicNew),
         };
@@ -326,7 +329,15 @@ namespace RigiCompiler.Tests
             var mir = MirBuilder.Build(context);
 
             TestHarness.CheckTrue("MwContext 挂载 MIR", ReferenceEquals(context.Mir, mir));
-            TestHarness.CheckTrue("MIR 函数数（main + println）", mir.Functions.Count == 2,
+            // MW9b-G：core 异常类型 init 族 + getMessage 恒可达白名单
+            //（守卫点抛出是发射期引用），函数集必含 main + println + 白名单族
+            TestHarness.CheckTrue("MIR 函数含 main + println",
+                mir.Functions.Any(f => f.Symbol.Canonical == "$main()@.i32")
+                && mir.Functions.Any(f => f.Symbol.Canonical.Contains("println")),
+                string.Join(", ", mir.Functions.Select(f => f.Symbol.Canonical)));
+            TestHarness.CheckTrue("MIR 函数含异常白名单（除零 init）",
+                mir.Functions.Any(f => f.Symbol.Canonical
+                    == "core::DividedByZeroException$init()@.void"),
                 string.Join(", ", mir.Functions.Select(f => f.Symbol.Canonical)));
 
             var main = mir.Functions.First(f => f.Symbol.Canonical == "$main()@.i32");
@@ -485,6 +496,282 @@ namespace RigiCompiler.Tests
                 main.Blocks.Any(b => b.Terminator is MirBranch { Target: "mw.loop.end.0" }));
             TestHarness.CheckTrue("continue 解析到内层 judge（loop1-judge）",
                 main.Blocks.Any(b => b.Terminator is MirBranch { Target: "loop1-judge" }));
+        }
+
+        // ===== MIR try 展开（MW9a 第 B 棒）=====
+        // 直调 MirBuilder.Build：try/catch/finally 子图形状（checked-flag
+        // 便携模型；ExcTarget==null 的解析与发射归后续棒）
+
+        private static MirFunction BuildMainMir(string source, string fileName)
+        {
+            var (_, _, text) = BilTestHarness.EmitBilUnit(source);
+            var gate = BilGate.Accept(text, fileName);
+            TestHarness.CheckTrue(fileName + " 门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            var mir = MirBuilder.Build(new MwContext(gate.Module!));
+            return mir.Functions.Single(f => f.IsEntrypoint);
+        }
+
+        private static MirBlock BlockEnding(MirFunction fn, string suffix) =>
+            fn.Blocks.Single(b => b.Id.EndsWith(suffix, StringComparison.Ordinal));
+
+        private static string ExcVarOf(MirFunction fn) =>
+            fn.Locals.Single(l => l.Type.Canonical.Contains("Nullable")
+                && l.Type.Canonical.Contains("Exception")).Name;
+
+        private static void TestMirTryExpand()
+        {
+            // ----- try/catch：派发垫形状 + is 链表序 + throw 直译 -----
+            var main = BuildMainMir(
+                "class MyError : core.Exception {\n" +
+                "    pub init() { }\n" +
+                "}\n" +
+                "class OtherError : core.Exception {\n" +
+                "    pub init() { }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    try {\n" +
+                "        throw new MyError()\n" +
+                "    } catch (m: MyError) { return 1 }\n" +
+                "    catch (o: OtherError) { return 2 }\n" +
+                "    return 0\n" +
+                "}\n", "trycatch.bil");
+            var dispatch = BlockEnding(main, ".dispatch");
+            TestHarness.CheckTrue("try/catch：派发垫入口 MirTakePending",
+                dispatch.Instructions[0] is MirTakePending take0
+                && take0.TargetLocal.StartsWith("$mw.exc.", StringComparison.Ordinal));
+            var excLocal = ((MirTakePending)dispatch.Instructions[0]).TargetLocal;
+            TestHarness.CheckTrue("try/catch：$mw.exc.N 注册为 core::Exception 局部",
+                main.FindLocal(excLocal).Type.Canonical == "core::Exception");
+            TestHarness.CheckTrue("try/catch：派发垫首条 is 目标表项 0（MyError）",
+                dispatch.Instructions[1] is MirTypeCheck check0
+                && check0.Kind == MirTypeCheckKind.Is
+                && check0.Value is MirLocalOperand { Name: var v0 } && v0 == excLocal
+                && check0.TargetTypeRef == "MyError");
+            TestHarness.CheckTrue("try/catch：派发垫终结为条件跳转（命中垫/下一链节）",
+                dispatch.Terminator is MirCondBranch);
+            var chain1 = BlockEnding(main, ".dispatch.1");
+            TestHarness.CheckTrue("try/catch：链节 1 的 is 目标表项 1（OtherError，表序）",
+                chain1.Instructions[0] is MirTypeCheck check1
+                && check1.TargetTypeRef == "OtherError");
+            var excVar = ExcVarOf(main);
+            var catchPre0 = BlockEnding(main, ".catchpre.0");
+            TestHarness.CheckTrue("try/catch：命中前置垫写 EXC_VAR=$mw.exc.N 后进 catch 块",
+                catchPre0.Instructions[0] is MirCopyLocal pre0
+                && pre0.Source is MirLocalOperand { Name: var s0 } && s0 == excLocal
+                && pre0.Target == excVar
+                && catchPre0.Terminator is MirBranch { Target: "try0-catch0" });
+            var throwBlock = main.Blocks.First(
+                b => b.Instructions.OfType<MirThrow>().Any());
+            var bodyThrow = throwBlock.Instructions.OfType<MirThrow>().Single();
+            TestHarness.CheckTrue("throw 直译：ExcTarget=本 try 派发垫（对象身份）",
+                ReferenceEquals(bodyThrow.ExcTarget, dispatch));
+            TestHarness.CheckTrue("throw 直译：块终结跳派发垫",
+                throwBlock.Terminator is MirBranch br0 && br0.Target == dispatch.Id);
+            // 无 finally：未命中直接 MirThrow 外层（无外层 = 传播出函数）
+            var miss = BlockEnding(main, ".miss");
+            TestHarness.CheckTrue("try/catch 无 finally：未命中块 MirThrow",
+                miss.Instructions.OfType<MirThrow>().Count() == 1);
+            var missThrow = miss.Instructions.OfType<MirThrow>().Single();
+            TestHarness.CheckTrue("try/catch 无 finally：未命中 MirThrow 无外层（null）",
+                missThrow.ExcTarget == null
+                && missThrow.Exception is MirLocalOperand { Name: var m0 } && m0 == excLocal);
+            TestHarness.CheckTrue("try/catch 无 finally：未命中块 MirRetThrow 收尾",
+                miss.Terminator is MirRetThrow);
+
+            // ----- try/finally：单块双前置垫 + 路由器 + 逃逸垫 -----
+            main = BuildMainMir(
+                "func log() {\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    try {\n" +
+                "        log()\n" +
+                "    } finally(e) {\n" +
+                "        log()\n" +
+                "    }\n" +
+                "    return 0\n" +
+                "}\n", "tryfinally.bil");
+            excVar = ExcVarOf(main);
+            var finPreNormal = BlockEnding(main, ".fin.pre.normal");
+            TestHarness.CheckTrue("try/finally：正常前置垫首指令写 EXC_VAR=null",
+                finPreNormal.Instructions[0] is MirLoadResource nullLoad
+                && nullLoad.Resource is BilNullResource
+                && nullLoad.Target == excVar);
+            TestHarness.CheckTrue("try/finally：正常前置垫写 comp=0 后进 finally 单块",
+                finPreNormal.Instructions[1] is MirLoadResource compLoad0
+                && compLoad0.Resource is BilScalarResource { LiteralText: "0" }
+                && compLoad0.Target.StartsWith("$mw.comp.", StringComparison.Ordinal)
+                && finPreNormal.Terminator is MirBranch { Target: "try0-finally" });
+            var finPreExc = BlockEnding(main, ".fin.pre.exc");
+            TestHarness.CheckTrue("try/finally：异常前置垫写 EXC_VAR=异常对象",
+                finPreExc.Instructions[0] is MirCopyLocal excCopy
+                && excCopy.Source is MirLocalOperand { Name: var s1 }
+                && s1.StartsWith("$mw.exc.", StringComparison.Ordinal)
+                && excCopy.Target == excVar
+                && finPreExc.Terminator is MirBranch { Target: "try0-finally" });
+            var esc = BlockEnding(main, ".esc");
+            TestHarness.CheckTrue("try/finally：逃逸垫 take 后汇入异常前置垫",
+                esc.Instructions.Count == 1
+                && esc.Instructions[0] is MirTakePending
+                && esc.Terminator is MirBranch brEsc && brEsc.Target == finPreExc.Id);
+            var router = BlockEnding(main, ".route");
+            TestHarness.CheckTrue("try/finally：路由器 MirSwitch（default=after-try）",
+                router.Terminator is MirSwitch sw0
+                && sw0.Selector is MirLocalOperand { Name: var sel0 }
+                && sel0.StartsWith("$mw.comp.", StringComparison.Ordinal)
+                && sw0.DefaultTarget.EndsWith(".end", StringComparison.Ordinal));
+            var rethrow = BlockEnding(main, ".rethrow");
+            TestHarness.CheckTrue("try/finally：路由器 throw 分支 = 重抛块（无外层→出厂）",
+                ((MirSwitch)router.Terminator).ItemTargets.Contains(rethrow.Id)
+                && rethrow.Instructions[0] is MirThrow { ExcTarget: null }
+                && rethrow.Terminator is MirRetThrow);
+            var dispatchOnly = BlockEnding(main, ".dispatch");
+            TestHarness.CheckTrue("try/finally 无 catch：派发垫 take 后直落异常前置垫",
+                dispatchOnly.Instructions.Count == 1
+                && dispatchOnly.Instructions[0] is MirTakePending
+                && dispatchOnly.Terminator is MirBranch brD && brD.Target == finPreExc.Id);
+            var tryBody = main.Blocks.Single(b => b.Id == "try0-body");
+            TestHarness.CheckTrue("try/finally：try 体内调用 ExcTarget=派发垫",
+                tryBody.Instructions.OfType<MirCall>().Any()
+                && tryBody.Instructions.OfType<MirCall>().All(
+                    c => c.ExcTarget == dispatchOnly));
+            var finBody = main.Blocks.Single(b => b.Id == "try0-finally");
+            TestHarness.CheckTrue("try/finally：finally 体内调用 ExcTarget=外层（此处 null）",
+                finBody.Instructions.OfType<MirCall>().Any()
+                && finBody.Instructions.OfType<MirCall>().All(c => c.ExcTarget == null));
+
+            // ----- return 穿 finally：路由器 ret 分支 -----
+            main = BuildMainMir(
+                "func log() {\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    try {\n" +
+                "        return 1\n" +
+                "    } finally(e) {\n" +
+                "        log()\n" +
+                "    }\n" +
+                "    return 0\n" +
+                "}\n", "tryret.bil");
+            TestHarness.CheckTrue("return 穿 finally：$mw.retv 合成局部（i32）",
+                main.Locals.Any(l => l.Name == "$mw.retv" && l.Type.Key == "i32"));
+            var retBody = main.Blocks.Single(b => b.Id == "try0-body");
+            TestHarness.CheckTrue("return 穿 finally：值先存 $mw.retv 再跳 ret 前置垫",
+                retBody.Instructions.Last() is MirCopyLocal retvStore
+                && retvStore.Target == "$mw.retv"
+                && retBody.Terminator is MirBranch brR
+                && brR.Target.Contains(".fin.pre.ret"));
+            var retPad = main.Blocks.Single(b => b.Id == ((MirBranch)retBody.Terminator).Target);
+            TestHarness.CheckTrue("return 穿 finally：ret 前置垫写 null + comp",
+                retPad.Instructions[0] is MirLoadResource { Resource: BilNullResource }
+                && retPad.Instructions[1] is MirLoadResource
+                    { Resource: BilScalarResource { LiteralText: not "0" } }
+                && retPad.Terminator is MirBranch { Target: "try0-finally" });
+            var retBlock = BlockEnding(main, ".ret");
+            TestHarness.CheckTrue("return 穿 finally：ret 出口块 MirRet($mw.retv)",
+                retBlock.Terminator is MirRet
+                {
+                    Value: MirLocalOperand { Name: "$mw.retv" }
+                });
+            router = BlockEnding(main, ".route");
+            TestHarness.CheckTrue("return 穿 finally：路由器含 ret 分支",
+                ((MirSwitch)router.Terminator).ItemTargets.Contains(retBlock.Id));
+
+            // ----- break 穿 finally：路由器分支直落外层 loop 出口 -----
+            main = BuildMainMir(
+                "func log() {\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var x = 0\n" +
+                "    while (x < 3) {\n" +
+                "        try {\n" +
+                "            break\n" +
+                "        } finally(e) {\n" +
+                "            log()\n" +
+                "        }\n" +
+                "        x = x + 1\n" +
+                "    }\n" +
+                "    return x\n" +
+                "}\n", "trybreak.bil");
+            TestHarness.CheckTrue("break 穿 finally：brk 前置垫存在",
+                main.Blocks.Any(b => b.Id.Contains(".fin.pre.brk")));
+            router = BlockEnding(main, ".route");
+            TestHarness.CheckTrue("break 穿 finally：路由器分支落外层 loop 出口",
+                ((MirSwitch)router.Terminator).ItemTargets.Any(
+                    t => t.StartsWith("mw.loop.end.", StringComparison.Ordinal)));
+
+            // ----- finally 内 throw：直解析覆盖（不经路由器）-----
+            main = BuildMainMir(
+                "class MyError : core.Exception {\n" +
+                "    pub init() { }\n" +
+                "}\n" +
+                "func log() {\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    try {\n" +
+                "        log()\n" +
+                "    } finally(e) {\n" +
+                "        throw new MyError()\n" +
+                "    }\n" +
+                "    return 0\n" +
+                "}\n", "tryfinthrow.bil");
+            var finThrowBlock = main.Blocks.Single(b => b.Id == "try0-finally");
+            var finThrow = finThrowBlock.Instructions.OfType<MirThrow>().Single();
+            TestHarness.CheckTrue("finally 内 throw：直解析（ExcTarget=外层，此处 null）",
+                finThrow.ExcTarget == null);
+            TestHarness.CheckTrue("finally 内 throw：MirRetThrow 收尾（不经路由器）",
+                finThrowBlock.Terminator is MirRetThrow);
+
+            // ----- 嵌套 try：内层未命中进外层派发垫 -----
+            main = BuildMainMir(
+                "class MyError : core.Exception {\n" +
+                "    pub init() { }\n" +
+                "}\n" +
+                "class OtherError : core.Exception {\n" +
+                "    pub init() { }\n" +
+                "}\n" +
+                "func log() {\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    try {\n" +
+                "        try {\n" +
+                "            throw new MyError()\n" +
+                "        } catch (o: OtherError) {\n" +
+                "            log()\n" +
+                "        }\n" +
+                "    } catch (m: MyError) {\n" +
+                "        log()\n" +
+                "    }\n" +
+                "    return 0\n" +
+                "}\n", "trynested.bil");
+            var dispatches = main.Blocks
+                .Where(b => b.Id.EndsWith(".dispatch", StringComparison.Ordinal))
+                .OrderBy(b => b.Id, StringComparer.Ordinal)
+                .ToList();
+            TestHarness.CheckTrue("嵌套 try：两层派发垫", dispatches.Count == 2);
+            var outerDispatch = dispatches[0];
+            // 内层未命中 → 外层派发垫；外层未命中 → 出厂（ExcTarget null）
+            var missBlocks = main.Blocks
+                .Where(b => b.Id.EndsWith(".miss", StringComparison.Ordinal)).ToList();
+            TestHarness.CheckTrue("嵌套 try：两层各有未命中块", missBlocks.Count == 2);
+            var innerMiss = missBlocks.Single(
+                b => b.Instructions.OfType<MirThrow>().Single().ExcTarget != null);
+            var outerMiss = missBlocks.Single(
+                b => b.Instructions.OfType<MirThrow>().Single().ExcTarget == null);
+            TestHarness.CheckTrue("嵌套 try：外层未命中 MirThrow 出厂（MirRetThrow）",
+                outerMiss.Terminator is MirRetThrow);
+            var innerMissThrow = innerMiss.Instructions.OfType<MirThrow>().Single();
+            TestHarness.CheckTrue("嵌套 try：内层未命中 MirThrow→外层派发垫（对象身份）",
+                ReferenceEquals(innerMissThrow.ExcTarget, outerDispatch)
+                && innerMiss.Terminator is MirBranch brN && brN.Target == outerDispatch.Id);
+            var innerCatch = main.Blocks.Single(b => b.Id == "try1-catch0");
+            TestHarness.CheckTrue("嵌套 try：内层 catch 体内调用 ExcTarget=外层派发垫",
+                innerCatch.Instructions.OfType<MirCall>().Any()
+                && innerCatch.Instructions.OfType<MirCall>().All(
+                    c => c.ExcTarget == outerDispatch));
+            var outerCatch = main.Blocks.Single(b => b.Id == "try0-catch0");
+            TestHarness.CheckTrue("嵌套 try：外层 catch 体内调用 ExcTarget=null（出厂）",
+                outerCatch.Instructions.OfType<MirCall>().Any()
+                && outerCatch.Instructions.OfType<MirCall>().All(c => c.ExcTarget == null));
         }
 
         // ===== 实现绑定 =====
@@ -742,8 +1029,10 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("null 用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
             var context = new MwContext(gate.Module!);
-            var mir = MirBuilder.Build(context);
-            using var module = ModuleBuilder.Build(context, mir);
+            // MW9a 起发射要求 ExcTarget 已解析（RcInjection 传播垫）：
+            // 含 Rigi 直接调用（Console.println 包装 fn）的用例走完整管线
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+            using var module = ModuleBuilder.Build(context, context.Mir!);
             var ll = module.PrintToString();
 
             // null = 胖引用双段零（RUNTIME §3：Nullable 是 Object 子类）
@@ -754,12 +1043,13 @@ namespace RigiCompiler.Tests
                 ll.Contains("extractvalue { i64, i64 }"), ll);
         }
 
-        // ===== 除零 guard 发射（MW2 占位语义，策略注入点默认 abort 实现）=====
+        // ===== 除零 guard 发射（MW9b-G：抛 DividedByZeroException）=====
 
         private static void TestDivGuardEmission()
         {
-            // 真实前端路径：i32 除法 → divisor==0 条件分支 → abort 面 →
-            // unreachable；有符号窄宽度 MIN/-1 回绕的取负选择
+            // 真实前端全管线路径：i32 除法 → divisor==0 条件分支 →
+            // rigi_alloc + init() + rigi_exc_raise + br 传播垫；有符号窄
+            // 宽度 MIN/-1 回绕的取负选择
             var (_, _, text) = BilTestHarness.EmitBilUnit(
                 "pub func main(): i32 {\n" +
                 "    var x = 42\n" +
@@ -770,18 +1060,23 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("除零用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
             var context = new MwContext(gate.Module!);
-            var mir = MirBuilder.Build(context);
-            using var module = ModuleBuilder.Build(context, mir);
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+            using var module = ModuleBuilder.Build(context, context.Mir!);
             var ll = module.PrintToString();
 
-            TestHarness.CheckTrue("abort 面已登记声明",
-                ll.Contains("declare void @rigi_abort_divided_by_zero()"), ll);
-            TestHarness.CheckTrue("guard 调 abort 面",
-                ll.Contains("call void @rigi_abort_divided_by_zero()"), ll);
-            TestHarness.CheckTrue("abort 块 unreachable 收尾",
-                ll.Contains("unreachable"), ll);
+            TestHarness.CheckTrue("除零 abort 面已退场",
+                !ll.Contains("rigi_abort_divided_by_zero"), ll);
+            TestHarness.CheckTrue("guard 构造 DividedByZeroException",
+                ll.Contains("call ptr @rigi_alloc(")
+                && ll.Contains("DividedByZeroException"), ll);
+            TestHarness.CheckTrue("guard 调零参 init",
+                ll.Contains("DividedByZeroException$init()"), ll);
+            TestHarness.CheckTrue("guard 抛异常走 rigi_exc_raise",
+                ll.Contains("call void @rigi_exc_raise(ptr"), ll);
             TestHarness.CheckTrue("有符号 MIN/-1 回绕取负选择",
                 ll.Contains("sdiv.wrap"), ll);
+            TestHarness.CheckTrue("异常边指向传播垫",
+                ll.Contains("mw.propagate"), ll);
         }
 
         // ===== 布局引擎与 TypeSheet 发射（MW4 批 1）=====
@@ -1800,11 +2095,12 @@ namespace RigiCompiler.Tests
                 && ll.Contains("call void @llvm.memcpy.p0.p0.i64"), ll);
             TestHarness.CheckTrue("unbox 类型检查（lshr tag + and sheet）",
                 ll.Contains("lshr i64") && ll.Contains("and i64"), ll);
-            TestHarness.CheckTrue("unbox 调 rigi_abort_invalid_cast",
-                ll.Contains("call void @rigi_abort_invalid_cast(ptr")
-                && ll.Contains("typesheet."), ll);
-            TestHarness.CheckTrue("abort 面已声明",
-                ll.Contains("declare void @rigi_abort_invalid_cast(ptr)"), ll);
+            // MW9b-G：拆箱不符由 abort 改抛 CastException
+            TestHarness.CheckTrue("unbox 不符抛 CastException",
+                ll.Contains("call void @rigi_exc_raise(ptr")
+                && ll.Contains("CastException$init(fromType:"), ll);
+            TestHarness.CheckTrue("invalid_cast abort 面已退场",
+                !ll.Contains("rigi_abort_invalid_cast"), ll);
 
             var numLl = EmitLlFromSource(
                 "pub func main(): i32 {\n" +
@@ -1824,8 +2120,9 @@ namespace RigiCompiler.Tests
                 "}\n", "cast.ph.bil");
             TestHarness.CheckTrue("占位 cast 调 rigi_try_cast",
                 phLl.Contains("call i32 @rigi_try_cast("), phLl);
-            TestHarness.CheckTrue("占位 cast 失败走 abort",
-                phLl.Contains("call void @rigi_abort_invalid_cast(ptr"), phLl);
+            TestHarness.CheckTrue("占位 cast 失败抛 CastException",
+                phLl.Contains("call void @rigi_exc_raise(ptr")
+                && phLl.Contains("CastException$init(fromType:"), phLl);
 
             var stLl = EmitLlFromSource(
                 "pub struct A {\n" +
@@ -1841,8 +2138,9 @@ namespace RigiCompiler.Tests
                 "    var b = a as B\n" +
                 "    return 0\n" +
                 "}\n", "cast.struct.bil");
-            TestHarness.CheckTrue("struct 非恒等走 abort",
-                stLl.Contains("call void @rigi_abort_invalid_cast(ptr"), stLl);
+            TestHarness.CheckTrue("struct 非恒等抛 CastException",
+                stLl.Contains("call void @rigi_exc_raise(ptr")
+                && stLl.Contains("CastException$init(fromType:"), stLl);
         }
 
         private static string EmitLlFromSource(string source, string label)
@@ -2248,8 +2546,7 @@ namespace RigiCompiler.Tests
 
         private static void TestNotSupported()
         {
-            // 合法 BIL（try 已过门禁）超出现阶段 MIR 面 → MwNotSupportedException
-            //（异常机制随 MW9 落地）
+            // try 已过门禁且 MIR 面随 MW9a 落地：MirBuilder 展开不再受控拒绝
             var (_, _, text) = BilTestHarness.EmitBilUnit(
                 "pub func main(): i32 {\n" +
                 "    try { return 1 } catch (e: core.RuntimeException) { return 2 }\n" +
@@ -2257,16 +2554,9 @@ namespace RigiCompiler.Tests
             var gate = BilGate.Accept(text, "try.bil");
             TestHarness.CheckTrue("try 模块门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
-            var caught = false;
-            try
-            {
-                MirBuilder.Build(new MwContext(gate.Module!));
-            }
-            catch (MwNotSupportedException)
-            {
-                caught = true;
-            }
-            TestHarness.CheckTrue("try MIR 构造受控拒绝（随 MW9）", caught);
+            var tryMir = MirBuilder.Build(new MwContext(gate.Module!));
+            TestHarness.CheckTrue("try MIR 构造放行（MW9a）",
+                tryMir.Functions.Any(f => f.IsEntrypoint));
 
             // raw.hex/raw.bin：§19.3 未定 load 目标类型（array/Span 布局
             // 知识）→ 物化随 MW4 定稿；门禁放行（verifier 对 raw 跳过严格
@@ -2320,17 +2610,18 @@ namespace RigiCompiler.Tests
             }
             TestHarness.CheckTrue("raw 资源受控拒绝（非 .array<u8> 目标）", rawCaught);
 
-            // CLI 路径：受控失败转退出码 2 而非崩溃
+            // CLI 路径：受控失败转退出码 2 而非崩溃（try 已随 MW9a 落地，
+            // 受控失败样本改用 raw.hex 非 .array<u8> 目标）
             var dir = Path.Combine(Path.GetTempPath(), $"rigi_mw_unsupported_{Guid.NewGuid():N}");
             Directory.CreateDirectory(dir);
             try
             {
-                var bilPath = Path.Combine(dir, "try.bil");
-                File.WriteAllText(bilPath, text, new UTF8Encoding(false));
+                var bilPath = Path.Combine(dir, "raw.bil");
+                File.WriteAllText(bilPath, rawBil, new UTF8Encoding(false));
                 var result = RunNative("native", "--file", bilPath,
-                    "--emit-obj", Path.Combine(dir, "try.o"));
+                    "--emit-obj", Path.Combine(dir, "raw.o"));
                 TestHarness.CheckTrue("不支持形态 CLI 退出码 2", result.Code == 2);
-                TestHarness.CheckTrue("不支持形态错误走 stderr", result.Err.Contains("MW3"),
+                TestHarness.CheckTrue("不支持形态错误走 stderr", result.Err.Contains("array<u8>"),
                     result.Err);
             }
             finally
@@ -2698,6 +2989,138 @@ namespace RigiCompiler.Tests
                 ll.Contains("call void @rigi_ref_release("), ll);
         }
 
+        // ===== RcInjection 传播垫（MW9a 第 C 棒）=====
+
+        private static void TestRcPropagatePad()
+        {
+            const string PadId = RigiCompiler.Middleware.Passes.RcInjectionPass.PropagateBlockId;
+
+            // ① 含可抛调用的函数：垫存在、MirRetThrow 收尾、release 序与
+            // ret 出口尾部同口径、全部 ExcTarget 解析指向垫（对象身份）
+            var ctx = PipelineFromSource(
+                "pub class Node {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(v: i32) { x = v }\n" +
+                "}\n" +
+                "pub func wrap(n: Node): i32 { return n.x }\n" +
+                "pub func main(): i32 {\n" +
+                "    return wrap(new Node(1))\n" +
+                "}\n",
+                "rc.pad.bil");
+            var main = FnOf(ctx, "$main(");
+            var pad = main.Blocks.SingleOrDefault(b => b.Id == PadId);
+            TestHarness.CheckTrue("① 含可抛调用函数有传播垫", pad != null);
+            TestHarness.CheckTrue("① 垫 MirRetThrow 收尾",
+                pad != null && pad.Terminator is MirRetThrow);
+            TestHarness.CheckTrue("① 垫指令全 ReleaseSlot",
+                pad != null && pad.Instructions.Count > 0
+                && pad.Instructions.All(i => i is MirReleaseSlot));
+            var retBlock = main.Blocks.First(b => b.Terminator is MirRet);
+            var retInsts = retBlock.Instructions;
+            var retTail = new List<string>();
+            for (var i = retInsts.Count - 1; i >= 0 && retInsts[i] is MirReleaseSlot rel; i--)
+            {
+                retTail.Insert(0, rel.Local);
+            }
+            TestHarness.CheckTrue("① 垫 release 序与 ret 出口同口径",
+                pad != null
+                && pad.Instructions.OfType<MirReleaseSlot>().Select(r => r.Local)
+                    .SequenceEqual(retTail),
+                string.Join(",", retTail));
+            TestHarness.CheckTrue("① 可抛指令 ExcTarget 全解析指向垫",
+                pad != null && main.Blocks.SelectMany(b => b.Instructions).All(inst =>
+                    inst switch
+                    {
+                        MirCall call => ReferenceEquals(call.ExcTarget, pad),
+                        MirSuperCall superCall => ReferenceEquals(superCall.ExcTarget, pad),
+                        MirInvokeIndirect invoke => ReferenceEquals(invoke.ExcTarget, pad),
+                        MirThrow throwInst => ReferenceEquals(throwInst.ExcTarget, pad),
+                        _ => true,
+                    }));
+
+            // ② 无可抛/守卫指令函数（纯常量返回，无调用无 throw 无
+            // 守卫型指令——MW9b-G 起 get.field/二元运算/set.array 等
+            // 守卫指令也带异常边）：无垫
+            ctx = PipelineFromSource(
+                "pub func seven(): i32 { return 7 }\n" +
+                "pub func main(): i32 { return seven() }\n",
+                "rc.padfree.bil");
+            var seven = FnOf(ctx, "$seven(");
+            TestHarness.CheckTrue("② 无可抛/守卫指令函数无传播垫",
+                seven.Blocks.All(b => b.Id != PadId));
+
+            // ③ throw 直写出厂：ExcTarget 解析进垫、原 MirRetThrow 终结符
+            // 改道 MirBranch(垫)、全函数 MirRetThrow 仅垫一处
+            ctx = PipelineFromSource(
+                "class MyError : core.Exception {\n" +
+                "    pub init() { }\n" +
+                "}\n" +
+                "pub func boom(): i32 {\n" +
+                "    throw new MyError()\n" +
+                "}\n" +
+                "pub func main(): i32 { return boom() }\n",
+                "rc.throw.bil");
+            var boom = FnOf(ctx, "$boom(");
+            var boomPad = boom.Blocks.SingleOrDefault(b => b.Id == PadId);
+            TestHarness.CheckTrue("③ throw 出厂函数有传播垫", boomPad != null);
+            var throwInst = boom.Blocks.SelectMany(b => b.Instructions)
+                .OfType<MirThrow>().Single();
+            TestHarness.CheckTrue("③ MirThrow ExcTarget=垫（对象身份）",
+                boomPad != null && ReferenceEquals(throwInst.ExcTarget, boomPad));
+            var throwBlock = boom.Blocks.Single(b => b.Instructions.Contains(throwInst));
+            TestHarness.CheckTrue("③ throw 块终结符改道 MirBranch(垫)",
+                throwBlock.Terminator is MirBranch branch && branch.Target == PadId);
+            TestHarness.CheckTrue("③ MirRetThrow 仅传播垫一处",
+                boom.Blocks.Count(b => b.Terminator is MirRetThrow) == 1);
+        }
+
+        // ===== 异常指令发射（MW9a 第 C 棒，.ll 黄金锚点）=====
+
+        private static void TestExceptionEmission()
+        {
+            var ctx = PipelineFromSource(
+                "class MyError : core.RuntimeException {\n" +
+                "    pub init(text: String) { message = text }\n" +
+                "    pub override func getMessage(): String { return message }\n" +
+                "}\n" +
+                "pub func fail(): i32 {\n" +
+                "    throw new MyError(\"boom\")\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    try { return fail() } catch (e: core.RuntimeException) { return 1 }\n" +
+                "}\n",
+                "exc.emit.bil");
+            using var module = ModuleBuilder.Build(ctx, ctx.Mir!);
+            var ll = module.PrintToString();
+
+            TestHarness.CheckTrue("MirTakePending → rigi_exc_take",
+                ll.Contains("call ptr @rigi_exc_take()"), ll);
+            TestHarness.CheckTrue("MirThrow → rigi_exc_raise",
+                ll.Contains("call void @rigi_exc_raise(ptr"), ll);
+            TestHarness.CheckTrue("MirRetThrow → ret undef（值返回）",
+                ll.Contains("ret i32 undef"), ll);
+            TestHarness.CheckTrue("调用后 pending 检查",
+                ll.Contains("call ptr @rigi_exc_pending()"), ll);
+            TestHarness.CheckTrue("异常边跳传播垫",
+                ll.Contains("label %mw.propagate"), ll);
+            TestHarness.CheckTrue("正常边落内联继续块",
+                ll.Contains("exc.cont"), ll);
+            TestHarness.CheckTrue("派发垫胖引用落槽",
+                ll.Contains("store { i64, i64 }"), ll);
+            TestHarness.CheckTrue("reporter 块已发射",
+                ll.Contains("entry.uncaught:"), ll);
+            TestHarness.CheckTrue("reporter 取实际类型全名",
+                ll.Contains("@rigi_type_name_of("), ll);
+            TestHarness.CheckTrue("reporter 虚派发 getMessage",
+                ll.Contains("call ptr @rigi_vtable_entry(ptr"), ll);
+            TestHarness.CheckTrue("reporter 打印 stderr",
+                ll.Contains("call void @rigi_print_err(ptr"), ll);
+            TestHarness.CheckTrue("reporter 释放异常胖引用",
+                ll.Contains("call void @rigi_ref_release("), ll);
+            TestHarness.CheckTrue("reporter 出口 rigi_exc_halt",
+                ll.Contains("call void @rigi_exc_halt()"), ll);
+        }
+
         // MW7a 边界：enum String payload / 嵌套 rich 折算序 / 非 rich 含 String 也产 refMap
         private static void TestRefMapMw7a()
         {
@@ -2794,8 +3217,9 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("ctor thunk 序列 alloc",
                 ll.Contains("define internal { i64, i64 } @\"mw.init.ctor.Point#")
                 && ll.Contains("call ptr @rigi_alloc(ptr @typesheet.Point)"), ll);
-            TestHarness.CheckTrue("abort 面 declare",
-                ll.Contains("declare void @rigi_abort_no_such_method(ptr)"), ll);
+            TestHarness.CheckTrue("无匹配 init 抛 NoSuchMethodException",
+                ll.Contains("call void @rigi_exc_raise(ptr")
+                && ll.Contains("NoSuchMethodException$init(typeName:"), ll);
             TestHarness.CheckTrue("调用点读 vTable 字段",
                 ll.Contains("getelementptr") && ll.Contains("dynnew"), ll);
 

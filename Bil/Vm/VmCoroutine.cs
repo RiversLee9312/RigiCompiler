@@ -754,7 +754,8 @@ namespace RigiCompiler.Bil.Vm
                 if (CallStack.Count <= 1)
                 {
                     _pendingGetChains.Clear();
-                    Fail(pending.Failure ?? new VmException("未捕获异常", pending.Value));
+                    Fail(ComposeUncaughtFailure(context,
+                        pending.Failure ?? new VmException("未捕获异常", pending.Value)));
                     return;
                 }
                 CallStack.Pop();
@@ -767,6 +768,83 @@ namespace RigiCompiler.Bil.Vm
             }
             throw new VmException("fn " + CurrentFrame.Function.Symbol
                 + " 的 block 落到末尾且无 ret");
+        }
+
+        // MW9b：顶层未捕获格式对齐 native reporter——「{实际类型全名}:
+        // {message}」（如 core::DividedByZeroException: 整数除以零）。
+        // 此刻仍在执行循环内（协程未终态），对异常对象虚派发 getMessage()
+        // 取消息串（同 ProbePolling 的同步派发模式）；派发失败先兜底直读
+        // core::Exception#message@.string 字段，再兜底保留原 Message。
+        // 字段兜底与 native 的 override 语义有分歧留白：用户 override
+        // getMessage 且不返回 message 字段时，兜底文本以字段为准。
+        // ExceptionObject == null 的基础设施 abort 不走合成，保留原文。
+        private VmException ComposeUncaughtFailure(VmContext? context, VmException failure)
+        {
+            if (context == null || failure.ExceptionObject == null)
+            {
+                return failure;
+            }
+            var typeName = VmTypeOps.ActualType(failure.ExceptionObject);
+            var message = DispatchGetMessage(context, failure.ExceptionObject)
+                ?? ReadMessageField(failure.ExceptionObject);
+            if (message == null)
+            {
+                return failure;
+            }
+            return new VmException(typeName + ": " + message, failure.ExceptionObject);
+        }
+
+        private const string UncaughtGetMessageSlot = "$.uncaught.getMessage";
+
+        private string? DispatchGetMessage(VmContext context, VmValue exceptionValue)
+        {
+            if (State != VmCoroutineState.Running)
+            {
+                return null;
+            }
+            try
+            {
+                var function = context.ResolveDispatch(
+                    "core::Exception$getMessage()@.string", exceptionValue);
+                if (function == null)
+                {
+                    return null;
+                }
+                var depth = CallStack.Count;
+                // 清 Throw pending 让派发帧可执行；终态 Fail 会重置 _pending
+                _pending = null;
+                PushFrame(function, new[] { exceptionValue }, UncaughtGetMessageSlot);
+                while (CallStack.Count > depth
+                    && State == VmCoroutineState.Running
+                    && !HasAbruptCompletion)
+                {
+                    Step(context);
+                }
+                if (CallStack.Count != depth
+                    || State != VmCoroutineState.Running
+                    || HasAbruptCompletion)
+                {
+                    return null;
+                }
+                _pending = null;
+                return CurrentFrame.Slots.TryGetValue(UncaughtGetMessageSlot, out var value)
+                    && value is VmString text
+                    ? text.Value
+                    : null;
+            }
+            catch (VmException)
+            {
+                return null;
+            }
+        }
+
+        private static string? ReadMessageField(VmValue exceptionValue)
+        {
+            return exceptionValue is IVmFieldHost host
+                && host.TryReadField("core::Exception#message@.string", out var value)
+                && value is VmString text
+                ? text.Value
+                : null;
         }
 
         private void HandleTryRegion(VmBlockFrame region)

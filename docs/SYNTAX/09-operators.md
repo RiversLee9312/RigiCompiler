@@ -94,8 +94,9 @@ pub operator plus\<TAnother extends Addable>(another: TAnother): MyType { ... }
   返回 `T?` 的意义——`arr[99] if? -1` 得 `-1`）。用户容器的「失败」语义由各自
   `getAtIndex` 实现自定（返回 `null` 或抛异常均可）。
 - **索引写（`a[i] = v`）不在可空化范围**：`setAtIndex` 的 `element` 形参按声明
-  类型接收（内建数组仍收非空 `T`）；内建数组越界**写入**维持运行时 trap（写入
-  没有「返回 null」的退路，静默丢弃写入会掩盖 bug）。
+  类型接收（内建数组仍收非空 `T`）；内建数组/Span 越界**写入**抛可捕获的
+  `core.OutOfBoundException`（§8.1；写入没有「返回 null」的退路，静默丢弃写入
+  会掩盖 bug）。
 - 读出的 `T?` 不提供隐式成员访问与写入：`a[i].f`、`a[i].f = x`、`a[i][j]` 都是
   编译错误（nullable 上无成员/非可写 place），须先解包（`a[i]?.f`、`const e =
   a[i]; if (e != null) { e.f = x }`）。

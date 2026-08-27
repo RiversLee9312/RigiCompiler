@@ -20,8 +20,8 @@ namespace RigiCompiler.Tests
                 && module.Metadata[0].Key == "module"
                 && module.Metadata[0].Type == BilScalarType.String
                 && module.Metadata[0].LiteralText == "\"hello\"");
-            TestHarness.CheckTrue("Resources 恰 6 条且含 \"Hello, world!\" 标量资源",
-                module.Resources.Count == 6
+            TestHarness.CheckTrue("Resources 恰 13 条且含 \"Hello, world!\" 标量资源",
+                module.Resources.Count == 13
                 && module.Resources.Any(r => r is BilScalarResource s
                     && s.Type == BilScalarType.String
                     && s.LiteralText == "\"Hello, world!\""));
@@ -168,20 +168,20 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("全管线无诊断（资源去重）", unit);
             BilTestHarness.CheckBilValid("验证器零错误（资源去重）", module);
-            // stdlib 基线 R_0..R_3（"\n"/false/1/true，S9f collections 抽象
-            // 基类移除 i32 0）+ R_4 = "same"——"same" 不重复登记；
+            // stdlib 基线 R_0..R_10（"\n"/false/1/true + MW9b 异常消息模板
+            // 7 条字符串字面量）+ R_11 = "same"——"same" 不重复登记；
             // return 0 自 stdlib 移除后登记为新资源
             TestHarness.CheckTrue("相同字面量只登记一个资源",
-                module.Resources.Count == 6
+                module.Resources.Count == 13
                 && module.Resources.Count(r => r is BilScalarResource s
                     && s.LiteralText == "\"same\"") == 1,
                 string.Join(", ", module.Resources.Select(r => r.Name)));
             var main = module.Functions.Single(f => f.Symbol == "$main()@.i32");
             var loads = main.Blocks[0].Instructions.Where(i => i is LoadInstruction).ToList();
-            // main 共三条 load（两次 "same" + return 0），两条指向同一资源 R_4
-            TestHarness.CheckTrue("两处引用同一资源（R_4）",
+            // main 共三条 load（两次 "same" + return 0），两条指向同一资源 R_11
+            TestHarness.CheckTrue("两处引用同一资源（R_11）",
                 loads.Count == 3 && loads.Count(l => l.Operands[0] is BilResourceOperand ro
-                    && ro.Resource.Name == "R_4") == 2);
+                    && ro.Resource.Name == "R_11") == 2);
         }
 
         // ===== 局部声明 + 初始化器（set.var）与赋值 =====
@@ -219,11 +219,15 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("全管线无诊断（一元与比较）", unit);
             BilTestHarness.CheckBilValid("验证器零错误（一元与比较）", module);
-            // 两处 5 共用同一资源（stdlib 基线 4 条资源在前，S9f collections
-            // 抽象基类移除 i32 0 字面量）
+            // 两处 5 共用同一资源（stdlib 基线 11 条资源在前：S9f 基线 4 条
+            // + MW9b 异常消息模板 7 条字符串字面量）
             BilTestHarness.CheckResShape("资源（5 去重）", module,
                 "#0 = string \"\\n\"\n#1 = bool false\n#2 = i32 1\n" +
-                "#3 = bool true\n#4 = i32 5");
+                "#3 = bool true\n" +
+                "#4 = string \"无法将 \"\n#5 = string \" 转换为 \"\n" +
+                "#6 = string \"new.indirect 目标不可构造：不匹配任何 init：\"\n" +
+                "#7 = string \"整数除以零\"\n#8 = string \"数组下标越界：\"\n" +
+                "#9 = string \"（长度 \"\n#10 = string \"）\"\n#11 = i32 5");
             BilTestHarness.CheckFnShape("main 指令与 .vars", module, "$main()@.i32",
                 ".vars { .i32 a, .i32 n, .bool b, .i32 .t0, .i32 .t1, .i32 .t2, .bool .t3 }\n" +
                 "load res(#0) $.t0\n" +
@@ -348,11 +352,18 @@ namespace RigiCompiler.Tests
                 "#1 = bool false\n" +
                 "#2 = i32 1\n" +
                 "#3 = bool true\n" +
-                "#4 = f64 0.5\n" +
-                "#5 = f32 0.1\n" +
-                "#6 = char 'A'\n" +
-                "#7 = null type(.string)\n" +
-                "#8 = i32 0");
+                "#4 = string \"无法将 \"\n" +
+                "#5 = string \" 转换为 \"\n" +
+                "#6 = string \"new.indirect 目标不可构造：不匹配任何 init：\"\n" +
+                "#7 = string \"整数除以零\"\n" +
+                "#8 = string \"数组下标越界：\"\n" +
+                "#9 = string \"（长度 \"\n" +
+                "#10 = string \"）\"\n" +
+                "#11 = f64 0.5\n" +
+                "#12 = f32 0.1\n" +
+                "#13 = char 'A'\n" +
+                "#14 = null type(.string)\n" +
+                "#15 = i32 0");
             BilTestHarness.CheckFnShape("main 指令与 .vars", module, "$main()@.i32",
                 ".vars { .bool b, .f64 d, .f32 f, .char c, .nullable<.string> s, " +
                 ".bool .t0, .f64 .t1, .f32 .t2, .char .t3, .nullable<.string> .t4, .i32 .t5 }\n" +

@@ -9,6 +9,12 @@
 // 直接覆写）。
 // 层级：具体子类一律继承 RuntimeException（§8 示例 catch IOException
 // 与 catch RuntimeException 并列，说明二者兼容）。
+// MW9b：内置异常消息模板源码化——各子类在保留 init(text: String)
+// （用户代码直接抛用）之外新增便捷 init 重载，把消息模板烘进本源
+// 文件（动态部分作实参，字符串插值拼接，§3.3/§3.8）；VM 与
+// Middleware 两宿主构造内置异常时经真 init 派发，消息天然一致。
+// 模板关键字子串（整数除以零 / 无法将 … 转换为 / 不匹配任何 init /
+// 数组下标越界）为既有测试断言锚点，改动模板必须保留。
 namespace core
 
 pub abstract class Exception {
@@ -28,15 +34,34 @@ pub open class IOException : RuntimeException {
 
 pub open class CastException : RuntimeException {
     pub init(text: String) { message = text }
+    // 类型转换失败（as/nullable 展开）：源/目标类型全名作实参
+    pub init(fromType: String, toType: String) {
+        message = "无法将 ${fromType} 转换为 ${toType}"
+    }
     pub override func getMessage(): String { return message }
 }
 
 pub open class NoSuchMethodException : RuntimeException {
     pub init(text: String) { message = text }
+    // new.indirect 动态构造/run 期 init 重载解析失败：目标类型全名作实参
+    pub init(typeName: String) {
+        message = "new.indirect 目标不可构造：不匹配任何 init：${typeName}"
+    }
     pub override func getMessage(): String { return message }
 }
 
 pub open class DividedByZeroException : RuntimeException {
     pub init(text: String) { message = text }
+    // 整数除零（float/double 不抛，IEEE 754 产 inf/NaN）
+    pub init() { message = "整数除以零" }
+    pub override func getMessage(): String { return message }
+}
+
+// 数组/Span 写越界（MW9b 起可捕获；读越界仍按空安全得 null，不抛）
+pub open class OutOfBoundException : RuntimeException {
+    pub init(text: String) { message = text }
+    pub init(index: i64, length: i64) {
+        message = "数组下标越界：${index}（长度 ${length}）"
+    }
     pub override func getMessage(): String { return message }
 }

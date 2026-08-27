@@ -199,6 +199,17 @@ namespace RigiCompiler.Middleware.Layout
                     case DirectTypeCheckInstruction check:
                         Enqueue(check.TargetType.TypeRef, seen, order, queue);
                         break;
+                    case TryInstruction t:
+                        // MW9a：catch-table 表项类型是派发垫 is 链目标，
+                        // 构造类型须同样收 sheet
+                        if (t.CatchTable is BilCatchTableResource catchTable)
+                        {
+                            foreach (var entry in catchTable.Entries)
+                            {
+                                Enqueue(entry.ExceptionType.TypeRef, seen, order, queue);
+                            }
+                        }
+                        break;
                     case GetArrayInstruction g:
                         Enqueue(ElementTypeOf(locals, g.Array.Name), seen, order, queue);
                         Enqueue(Lookup(locals, g.Target.Name), seen, order, queue);

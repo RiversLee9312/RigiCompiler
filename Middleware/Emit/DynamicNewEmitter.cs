@@ -160,10 +160,13 @@ namespace RigiCompiler.Middleware.Emit
                 abortBlock, callThunk);
 
             builder.PositionAtEnd(abortBlock);
-            var (abortFn, abortTy) = CallEmitter.DeclareHelperFace(session,
-                RuntimeFaces.AbortNoSuchMethod, LLVMTypeRef.Void, new[] { ptr });
-            builder.BuildCall2(abortTy, abortFn, new[] { sheet }, "");
-            builder.BuildUnreachable();
+            // MW9b-G：vTable/分发器/匹配三连落空 → 抛可捕获
+            // core.NoSuchMethodException（typeName = 目标 sheet 运行期
+            // 显示名，对齐 VM 拼写），沿本指令异常边传播
+            var typeName = ExceptionEmitter.LoadTypeDisplayNameFromSheet(session, builder, sheet);
+            ExceptionEmitter.EmitThrowNewException(session, builder,
+                "core::NoSuchMethodException", "typeName", new[] { typeName },
+                inst.ExcTarget);
 
             builder.PositionAtEnd(callThunk);
             EmitThunkInvoke(session, builder, slots, inst, sheet, thunkPtr, packed, done);
@@ -285,6 +288,9 @@ namespace RigiCompiler.Middleware.Emit
                     args[i + 1] = packed[i];
                 }
                 builder.BuildCall2(StructThunkType(session, packed.Length), thunkPtr, args, "");
+                // MW9b-G：thunk 内部 miss 经 pending 接力（sret 落槽在
+                // 调用内发生，检查结果前不触碰）
+                ExceptionEmitter.EmitPendingCheck(session, builder, inst.ExcTarget);
                 builder.BuildBr(done);
                 return;
             }
@@ -306,6 +312,8 @@ namespace RigiCompiler.Middleware.Emit
             builder.PositionAtEnd(classPath);
             var fat = builder.BuildCall2(ThunkType(session, packed.Length), thunkPtr, packed,
                 "dynnew.obj");
+            // MW9b-G：thunk 内部 miss 经 pending 接力；须在结果落槽前检查
+            ExceptionEmitter.EmitPendingCheck(session, builder, inst.ExcTarget);
             builder.BuildStore(fat, slots[inst.Target].Slot);
             builder.BuildBr(done);
 
@@ -341,6 +349,8 @@ namespace RigiCompiler.Middleware.Emit
             session.EmitMemSetZero(builder, tmp, BoxEmitter.InlineLimit);
             var smallArgs = PrefixOut(tmp, packed);
             builder.BuildCall2(StructThunkType(session, packed.Length), thunkPtr, smallArgs, "");
+            // MW9b-G：thunk 内部 miss 经 pending 接力
+            ExceptionEmitter.EmitPendingCheck(session, builder, inst.ExcTarget);
             var bits = BoxEmitter.BitsFromSlot(session, builder, tmp, BoxEmitter.InlineLimit);
             builder.BuildStore(
                 BoxEmitter.PackFat(session, builder, sheet, BoxEmitter.TagInline, bits, "dynnew"),
@@ -351,6 +361,8 @@ namespace RigiCompiler.Middleware.Emit
             var block = Malloc(session, builder, typeSize);
             var largeArgs = PrefixOut(block, packed);
             builder.BuildCall2(StructThunkType(session, packed.Length), thunkPtr, largeArgs, "");
+            // MW9b-G：thunk 内部 miss 经 pending 接力
+            ExceptionEmitter.EmitPendingCheck(session, builder, inst.ExcTarget);
             var payload = builder.BuildPtrToInt(block, LLVMTypeRef.Int64, "dynnew.tag1.pl");
             builder.BuildStore(
                 BoxEmitter.PackFat(session, builder, sheet, BoxEmitter.TagHeapValue, payload,
@@ -522,12 +534,15 @@ namespace RigiCompiler.Middleware.Emit
             builder.PositionAtEnd(entry);
             if (!session.TryGetFunction(init.Member.Canonical, out _))
             {
-                var (abortFn, abortTy) = CallEmitter.DeclareHelperFace(session,
-                    RuntimeFaces.AbortNoSuchMethod, LLVMTypeRef.Void,
-                    new[] { PointerType() });
-                builder.BuildCall2(abortTy, abortFn,
-                    new[] { session.TypeSheetFor(GenericAbi.PlanKey(plan.Symbol)) }, "");
-                builder.BuildUnreachable();
+                // MW9b-G：thunk 内部 miss（init 族 MIR 试探性跳过产物）→
+                // 构造 NoSuchMethodException + ExcRaise + 按 thunk 返回
+                // 形态 ret undef/void；pending 由调用点 pending 检查接力。
+                // typeName = 计划静态名常量（thunk 按类型合成，名称发射
+                // 期已知；展示拼写对齐 VM 口径）
+                var nameConst = session.InternStringConstant(
+                    BilVerificationContext.DenormalizeTypeRef(plan.Symbol.Canonical));
+                ExceptionEmitter.EmitThrowNewException(session, builder,
+                    "core::NoSuchMethodException", "typeName", new[] { nameConst }, null);
                 return;
             }
             var emptySlots = new Dictionary<string, (LLVMValueRef Slot, MirLocal Local)>(

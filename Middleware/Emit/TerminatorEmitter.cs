@@ -58,6 +58,19 @@ namespace RigiCompiler.Middleware.Emit
                 case MirUnreachable:
                     builder.BuildUnreachable();
                     break;
+                case MirRetThrow:
+                    // 异常出口（MW9a）：pending 已在 TLS，直接返回调用方；
+                    // sret/void → ret void，值返回 → ret undef（值无定义）
+                    if (fn.ReturnType.IsVoid || session.IsInlineValueType(fn.ReturnType, out _))
+                    {
+                        builder.BuildRetVoid();
+                    }
+                    else
+                    {
+                        builder.BuildRet(LlvmBitcode.UndefOf(
+                            TypeLayout.MapType(session.Context, fn.ReturnType)));
+                    }
+                    break;
                 default:
                     throw new CompilerInternalException($"未覆盖的 MIR 终结符: {terminator.GetType().Name}");
             }

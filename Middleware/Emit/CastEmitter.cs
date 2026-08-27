@@ -8,7 +8,8 @@ namespace RigiCompiler.Middleware.Emit
 {
     /// <summary>
     /// cast / cast.safe 发射（MW8c-2）：静态数值走 LLVM 转换；占位目标
-    /// 走 rigi_try_cast；不相容则 abort 或产 null。
+    /// 走 rigi_try_cast；不相容则抛 core.CastException（MW9b-G，与 VM
+    /// 同型同消息）或产 null（cast.safe）。
     /// </summary>
     internal static class CastEmitter
     {
@@ -42,7 +43,7 @@ namespace RigiCompiler.Middleware.Emit
                     resultType);
                 return;
             }
-            EmitFail(session, builder, slots, inst, targetType, resultType);
+            EmitFail(session, builder, slots, inst, sourceType, targetType, resultType);
         }
 
         // 占位目标 / 占位源：源装箱为胖引用后 rigi_try_cast
@@ -82,8 +83,7 @@ namespace RigiCompiler.Middleware.Emit
             {
                 hitFat = ArcEmitter.ProduceFatValue(session, builder, hitFat, "cast.acq");
             }
-            StoreConverted(session, builder, slots, inst.Target, resultType, hitFat,
-                inst.TargetTypeRef);
+            StoreConverted(session, builder, slots, inst, sourceType, resultType, hitFat);
             builder.BuildBr(join);
 
             builder.PositionAtEnd(miss);
@@ -97,10 +97,9 @@ namespace RigiCompiler.Middleware.Emit
             }
             else
             {
-                var (face, faceType) = CallEmitter.DeclareHelperFace(session,
-                    RuntimeFaces.AbortInvalidCast, LLVMTypeRef.Void, new[] { PointerType() });
-                builder.BuildCall2(faceType, face, new[] { targetSheet }, "");
-                builder.BuildUnreachable();
+                // MW9b-G：try_cast 落空 → 抛 CastException（fromType =
+                // 静态源类型名常量，toType = 目标 sheet 的 TypeInfo.name）
+                EmitCastThrow(session, builder, inst, sourceType, targetSheet);
             }
 
             builder.PositionAtEnd(join);
@@ -124,15 +123,15 @@ namespace RigiCompiler.Middleware.Emit
 
         private static void EmitFail(ModuleBuilder.Session session, LLVMBuilderRef builder,
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirCast inst,
-            MirType targetType, MirType resultType)
+            MirType sourceType, MirType targetType, MirType resultType)
         {
             var sheet = TypeSheetOf(session, targetType);
-            EmitMiss(session, builder, slots, inst, sheet, resultType);
+            EmitMiss(session, builder, slots, inst, sourceType, sheet, resultType);
         }
 
         private static void EmitMiss(ModuleBuilder.Session session, LLVMBuilderRef builder,
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirCast inst,
-            LLVMValueRef targetSheet, MirType resultType)
+            MirType sourceType, LLVMValueRef targetSheet, MirType resultType)
         {
             if (inst.IsSafe)
             {
@@ -141,12 +140,23 @@ namespace RigiCompiler.Middleware.Emit
                     slots[inst.Target].Slot);
                 return;
             }
-            var (face, faceType) = CallEmitter.DeclareHelperFace(session,
-                RuntimeFaces.AbortInvalidCast, LLVMTypeRef.Void, new[] { PointerType() });
-            builder.BuildCall2(faceType, face, new[] { targetSheet }, "");
-            builder.BuildUnreachable();
-            // 后续 MIR 指令落到无前驱死块，避免 terminator 后再插指令
+            // MW9b-G：静态不相容 → 抛 CastException（fromType = 静态源
+            // 类型名常量，toType = 目标 sheet 的 TypeInfo.name）
+            EmitCastThrow(session, builder, inst, sourceType, targetSheet);
+            // 后续 MIR 指令落到无前驱死块，避免终结后再插指令
             builder.PositionAtEnd(session.CurrentFunction.AppendBasicBlock("cast.dead"));
+        }
+
+        // 抛 core.CastException(fromType, toType)：fromType = 发射期静态
+        // 源类型名字符串常量；toType = 目标 sheet 运行期显示名
+        private static void EmitCastThrow(ModuleBuilder.Session session, LLVMBuilderRef builder,
+            MirCast inst, MirType sourceType, LLVMValueRef targetSheet)
+        {
+            var fromName = ExceptionEmitter.StaticTypeName(session, sourceType);
+            var toName = ExceptionEmitter.LoadTypeDisplayNameFromSheet(session, builder,
+                targetSheet);
+            ExceptionEmitter.EmitThrowNewException(session, builder, "core::CastException",
+                "fromType", new[] { fromName, toName }, inst.ExcTarget);
         }
 
         private static LLVMValueRef ConvertNumeric(ModuleBuilder.Session session,
@@ -253,18 +263,21 @@ namespace RigiCompiler.Middleware.Emit
         }
 
         private static void StoreConverted(ModuleBuilder.Session session, LLVMBuilderRef builder,
-            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, string target,
-            MirType resultType, LLVMValueRef fat, string? targetTypeRef)
+            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirCast inst,
+            MirType sourceType, MirType resultType, LLVMValueRef fat)
         {
             if (IsFatResult(session, resultType))
             {
-                builder.BuildStore(fat, slots[target].Slot);
+                builder.BuildStore(fat, slots[inst.Target].Slot);
                 return;
             }
-            var inner = targetTypeRef != null
-                ? MirType.Of(targetTypeRef)
+            var inner = inst.TargetTypeRef != null
+                ? MirType.Of(inst.TargetTypeRef)
                 : resultType;
-            BoxEmitter.UnboxToLocal(session, builder, slots, fat, inner, target);
+            // try_cast 命中路径：sheet 已核验，拆箱不符理论上不可达；
+            // 守卫仍挂同一异常边（防御）
+            BoxEmitter.UnboxToLocal(session, builder, slots, fat, inner, inst.Target,
+                sourceType, inst.ExcTarget);
         }
 
         private static bool IsFatResult(ModuleBuilder.Session session, MirType type) =>

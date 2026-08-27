@@ -67,7 +67,13 @@ namespace RigiCompiler.Tests
             (label, () => RunBilCase(label, bil));
 
         private static (string Label, Action Run) FailCase(string label, string source, string needle) =>
-            (label, () => RunFailCase(label, source, needle));
+            (label, () => RunFailCase(label, source, needle, null));
+
+        // MW9b-G：native stderr 关键字可与 VM 消息关键字不同（reporter
+        // 新格式「{类型全名}: {message}」全名前缀 VM 消息没有）
+        private static (string Label, Action Run) FailCase(string label, string source,
+            string needle, string nativeNeedle) =>
+            (label, () => RunFailCase(label, source, needle, nativeNeedle));
 
         private static readonly (string Label, Action Run)[] Cases =
         {
@@ -865,12 +871,15 @@ namespace RigiCompiler.Tests
                 "    if (x == 41) { Console.println(\"identity ok\") }\n" +
                 "    return x\n" +
                 "}\n"),
+            // MW9b-G：native 由 abort 占位改抛真 CastException，类型名
+            // 取 canonical 形态（core::Any/core::String）；关键字取两侧
+            // 消息公共前缀
             FailCase("Any 拆箱类型不符",
                 "pub func main(): i32 {\n" +
                 "    var a = 42 as Any\n" +
                 "    var s = a as String\n" +
                 "    return 0\n" +
-                "}\n", "无法将 .any 转换为"),
+                "}\n", "无法将"),
             Case("Any toString 标量族",
                 "import core.io.Console\n" +
                 "@NativeLibrary(\"rigi_rt\")\n" +
@@ -1687,7 +1696,7 @@ namespace RigiCompiler.Tests
                 "    var a: Any = t\n" +
                 "    var bad = a as Type\\<String>\n" +
                 "    return 0\n" +
-                "}\n", "无法将 .any 转换为"),
+                "}\n", "无法将"),
             Case("typeOf(null) 打印 .null",
                 "import core.io.Console\n" +
                 "@NativeLibrary(\"rigi_rt\")\n" +
@@ -1993,7 +2002,7 @@ namespace RigiCompiler.Tests
                 "    if (s == \"\") { Console.println(\"str zero\") }\n" +
                 "    return 0\n" +
                 "}\n"),
-            FailCase("标量目标带实参 abort",
+            FailCase("标量目标带实参抛 NoSuchMethodException",
                 "pub func main(): i32 {\n" +
                 "    var t = typeOf(42)\n" +
                 "    var x: i32 = new t(1)\n" +
@@ -2068,11 +2077,11 @@ namespace RigiCompiler.Tests
                 "    if (miss == null) { Console.println(\"as? null\") }\n" +
                 "    return 0\n" +
                 "}\n"),
-            FailCase("占位 cast 失败 abort",
+            FailCase("占位 cast 失败抛 CastException",
                 "pub func conv\\<T>(x: Any): T { return x as T }\n" +
                 "pub func main(): i32 {\n" +
                 "    return conv\\<String>(42 as Any)\n" +
-                "}\n", "无法将 .any 转换为"),
+                "}\n", "无法将"),
             Case("struct 恒等 cast",
                 "pub struct Point {\n" +
                 "    pub var x: i32\n" +
@@ -2084,7 +2093,7 @@ namespace RigiCompiler.Tests
                 "    var b = a as Point\n" +
                 "    return ((b.x * 10) + b.y)\n" +
                 "}\n"),
-            FailCase("struct 非恒等 abort",
+            FailCase("struct 非恒等抛 CastException",
                 "pub struct A {\n" +
                 "    pub var x: i32\n" +
                 "    pub init(_ -> x)\n" +
@@ -2105,6 +2114,299 @@ namespace RigiCompiler.Tests
                 "    Console.println(s)\n" +
                 "    return 0\n" +
                 "}\n"),
+            // ===== MW9a 异常机制对拍：同一份 Rigi 源喂 VM 与 native，
+            // 比 stdout + 退出码（RIGI_RT_MEMTRACK=1 零泄漏口径）。
+            // 只覆盖「捕获」型路径——未捕获的顶层 stderr 格式 VM/native
+            // 对齐属 MW9b，此处不对拍 =====
+            Case("try/catch 捕获打印 getMessage",
+                "import core.io.Console\n" +
+                "pub func main(): i32 {\n" +
+                "    try {\n" +
+                "        throw new core.RuntimeException(\"boom\")\n" +
+                "        return 0\n" +
+                "    } catch (e: core.RuntimeException) {\n" +
+                "        Console.println(e.getMessage())\n" +
+                "        return 7\n" +
+                "    }\n" +
+                "}\n"),
+            Case("catch 顺序：子类先命中、基类兜底",
+                "import core.io.Console\n" +
+                "pub func main(): i32 {\n" +
+                "    try {\n" +
+                "        throw new core.IOException(\"io\")\n" +
+                "    } catch (e: core.IOException) {\n" +
+                "        Console.println(\"sub:\" + e.getMessage())\n" +
+                "    } catch (e: core.RuntimeException) {\n" +
+                "        Console.println(\"base\")\n" +
+                "    }\n" +
+                "    try {\n" +
+                "        throw new core.RuntimeException(\"rt\")\n" +
+                "    } catch (_: core.IOException) {\n" +
+                "        Console.println(\"no\")\n" +
+                "    } catch (e: core.RuntimeException) {\n" +
+                "        Console.println(\"base:\" + e.getMessage())\n" +
+                "    }\n" +
+                "    return 5\n" +
+                "}\n"),
+            Case("基类 catch 捕获子类异常（is 协变）",
+                "import core.io.Console\n" +
+                "pub func main(): i32 {\n" +
+                "    try {\n" +
+                "        throw new core.IOException(\"io\")\n" +
+                "        return 0\n" +
+                "    } catch (e: core.RuntimeException) {\n" +
+                "        Console.println(e.getMessage())\n" +
+                "        return 4\n" +
+                "    }\n" +
+                "}\n"),
+            Case("catch 未命中传播到外层 try",
+                "import core.io.Console\n" +
+                "pub func main(): i32 {\n" +
+                "    try {\n" +
+                "        try {\n" +
+                "            throw new core.CastException(\"cast\")\n" +
+                "        } catch (_: core.IOException) {\n" +
+                "            Console.println(\"no\")\n" +
+                "        }\n" +
+                "        Console.println(\"unreachable\")\n" +
+                "    } catch (e: core.RuntimeException) {\n" +
+                "        Console.println(\"outer:\" + e.getMessage())\n" +
+                "    }\n" +
+                "    return 2\n" +
+                "}\n"),
+            Case("finally 在正常路径执行",
+                "import core.io.Console\n" +
+                "pub func main(): i32 {\n" +
+                "    try {\n" +
+                "        Console.println(\"try\")\n" +
+                "    } finally(_) {\n" +
+                "        Console.println(\"fin\")\n" +
+                "    }\n" +
+                "    return 1\n" +
+                "}\n"),
+            Case("finally 在异常路径执行后外层捕获",
+                "import core.io.Console\n" +
+                "pub func main(): i32 {\n" +
+                "    try {\n" +
+                "        try {\n" +
+                "            throw new core.RuntimeException(\"x\")\n" +
+                "        } catch (_: core.IOException) {\n" +
+                "            Console.println(\"no\")\n" +
+                "        } finally(_) {\n" +
+                "            Console.println(\"fin\")\n" +
+                "        }\n" +
+                "    } catch (e: core.RuntimeException) {\n" +
+                "        Console.println(\"caught:\" + e.getMessage())\n" +
+                "    }\n" +
+                "    return 8\n" +
+                "}\n"),
+            Case("finally(e) 槽语义：无异常 null、异常非空",
+                "import core.io.Console\n" +
+                "pub func main(): i32 {\n" +
+                "    try {\n" +
+                "        Console.println(\"t1\")\n" +
+                "    } finally(e) {\n" +
+                "        if (e == null) { Console.println(\"null\") }\n" +
+                "        else { Console.println(\"exc\") }\n" +
+                "    }\n" +
+                "    try {\n" +
+                "        try {\n" +
+                "            throw new core.RuntimeException(\"boom\")\n" +
+                "        } finally(e) {\n" +
+                "            if (e == null) { Console.println(\"null2\") }\n" +
+                "            else { Console.println(\"exc:\" + e.getMessage()) }\n" +
+                "        }\n" +
+                "    } catch (_: core.Exception) {\n" +
+                "        Console.println(\"caught\")\n" +
+                "    }\n" +
+                "    return 3\n" +
+                "}\n"),
+            Case("catch 内 rethrow 被外层捕获",
+                "import core.io.Console\n" +
+                "pub func main(): i32 {\n" +
+                "    try {\n" +
+                "        try {\n" +
+                "            throw new core.IOException(\"inner\")\n" +
+                "        } catch (e: core.IOException) {\n" +
+                "            Console.println(\"c1:\" + e.getMessage())\n" +
+                "            throw new core.RuntimeException(\"re\")\n" +
+                "        }\n" +
+                "    } catch (e: core.RuntimeException) {\n" +
+                "        Console.println(\"c2:\" + e.getMessage())\n" +
+                "    }\n" +
+                "    return 6\n" +
+                "}\n"),
+            Case("break/continue 穿越 finally",
+                "import core.io.Console\n" +
+                "pub func main(): i32 {\n" +
+                "    var i: i32 = 0\n" +
+                "    while (i < 10) {\n" +
+                "        i = (i + 1)\n" +
+                "        try {\n" +
+                "            if (i == 2) { break }\n" +
+                "            continue\n" +
+                "        } finally(_) {\n" +
+                "            Console.println(\"f\")\n" +
+                "        }\n" +
+                "        Console.println(\"tail\")\n" +
+                "    }\n" +
+                "    return i\n" +
+                "}\n"),
+            Case("return 穿越 finally（退出码 42）",
+                "import core.io.Console\n" +
+                "pub func main(): i32 {\n" +
+                "    try {\n" +
+                "        return 42\n" +
+                "    } finally(_) {\n" +
+                "        Console.println(\"fin\")\n" +
+                "    }\n" +
+                "}\n"),
+            Case("throw 跨函数传播捕获",
+                "import core.io.Console\n" +
+                "pub func boom(): i32 {\n" +
+                "    throw new core.RuntimeException(\"x\")\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    try {\n" +
+                "        boom()\n" +
+                "        return 0\n" +
+                "    } catch (e: core.RuntimeException) {\n" +
+                "        Console.println(e.getMessage())\n" +
+                "        return 7\n" +
+                "    }\n" +
+                "}\n"),
+            Case("嵌套 try：内层未命中、外层类型命中",
+                "import core.io.Console\n" +
+                "pub func main(): i32 {\n" +
+                "    try {\n" +
+                "        try {\n" +
+                "            throw new core.IOException(\"io\")\n" +
+                "        } catch (_: core.CastException) {\n" +
+                "            Console.println(\"no\")\n" +
+                "        }\n" +
+                "        return 0\n" +
+                "    } catch (e: core.IOException) {\n" +
+                "        Console.println(\"io:\" + e.getMessage())\n" +
+                "        return 5\n" +
+                "    }\n" +
+                "}\n"),
+            Case("自定义异常类多态 getMessage",
+                "import core.io.Console\n" +
+                "pub open class MyException : core.RuntimeException {\n" +
+                "    pub init(text: String) { message = text }\n" +
+                "    pub override func getMessage(): String { return \"custom:\" + message }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    try {\n" +
+                "        throw new MyException(\"boom\")\n" +
+                "        return 0\n" +
+                "    } catch (e: core.RuntimeException) {\n" +
+                "        Console.println(e.getMessage())\n" +
+                "        return 9\n" +
+                "    }\n" +
+                "}\n"),
+            // ===== MW9b-G：native 守卫点抛真异常（与 VM 同型同消息，
+            // 可被 try/catch 捕获）对拍——除零/cast/拆箱/new.indirect/
+            // 数组·Span 越界写六守卫 + 未捕获 reporter 新格式 =====
+            Case("try/catch 捕获整数除零",
+                "import core.io.Console\n" +
+                "pub func main(): i32 {\n" +
+                "    var x = 42\n" +
+                "    var z = 0\n" +
+                "    try {\n" +
+                "        return (x / z)\n" +
+                "    } catch (e: core.DividedByZeroException) {\n" +
+                "        Console.println(e.getMessage())\n" +
+                "        return 7\n" +
+                "    }\n" +
+                "}\n"),
+            Case("try/catch 捕获 as 拆箱失败",
+                "import core.io.Console\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = 42 as Any\n" +
+                "    try {\n" +
+                "        var s = a as String\n" +
+                "        Console.println(s)\n" +
+                "        return 0\n" +
+                "    } catch (e: core.CastException) {\n" +
+                "        Console.println(e.getMessage())\n" +
+                "        return 8\n" +
+                "    }\n" +
+                "}\n"),
+            Case("try/catch 捕获占位 cast 失败",
+                "import core.io.Console\n" +
+                "pub func conv\\<T>(x: Any): T { return x as T }\n" +
+                "pub func main(): i32 {\n" +
+                "    try {\n" +
+                "        var s = conv\\<String>(42 as Any)\n" +
+                "        Console.println(s)\n" +
+                "        return 0\n" +
+                "    } catch (e: core.CastException) {\n" +
+                "        Console.println(e.getMessage())\n" +
+                "        return 6\n" +
+                "    }\n" +
+                "}\n"),
+            Case("try/catch 捕获 new.indirect 无匹配 init",
+                "import core.io.Console\n" +
+                "pub class OnlyI32 {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(v: i32) { x = v }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    try {\n" +
+                "        var t = typeOf(OnlyI32)\n" +
+                "        var o = new t(true)\n" +
+                "        return 0\n" +
+                "    } catch (e: core.NoSuchMethodException) {\n" +
+                "        Console.println(e.getMessage())\n" +
+                "        return 4\n" +
+                "    }\n" +
+                "}\n"),
+            Case("try/catch 捕获数组写越界",
+                "import core.collections.*\n" +
+                "import core.io.Console\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = arrayOf\\<i32>(3)\n" +
+                "    try {\n" +
+                "        a[5] = 1\n" +
+                "        return 0\n" +
+                "    } catch (e: core.OutOfBoundException) {\n" +
+                "        Console.println(e.getMessage())\n" +
+                "        return 7\n" +
+                "    }\n" +
+                "}\n"),
+            Case("try/catch 捕获 Span 写越界",
+                "import core.collections.*\n" +
+                "import core.io.Console\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = spanOf\\<i32>(3)\n" +
+                "    try {\n" +
+                "        s[(0 - 1)] = 1\n" +
+                "        return 0\n" +
+                "    } catch (e: core.OutOfBoundException) {\n" +
+                "        Console.println(e.getMessage())\n" +
+                "        return 8\n" +
+                "    }\n" +
+                "}\n"),
+            // 未捕获：两侧同为「{类型全名}: {message}」+ exit 1；
+            // nativeNeedle 断 reporter 新格式全名前缀
+            FailCase("用户 throw 未捕获顶层格式",
+                "pub func main(): i32 {\n" +
+                "    throw new core.RuntimeException(\"boom\")\n" +
+                "}\n", "boom", "core::RuntimeException: boom"),
+            FailCase("除零未捕获顶层格式",
+                "pub func main(): i32 {\n" +
+                "    var x = 42\n" +
+                "    var z = 0\n" +
+                "    return (x / z)\n" +
+                "}\n", "整数除以零", "core::DividedByZeroException: 整数除以零"),
+            FailCase("数组越界写未捕获顶层格式",
+                "import core.collections.*\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = arrayOf\\<i32>(3)\n" +
+                "    a[9] = 2\n" +
+                "    return 0\n" +
+                "}\n", "数组下标越界", "core::OutOfBoundException: 数组下标越界：9（长度 3）"),
         };
 
         // 单用例：源 → 中端全管线 → BIL 文本 → VM 执行 + native 编译执行，
@@ -2467,11 +2769,13 @@ namespace RigiCompiler.Tests
             "    }\n" +
             "}\n";
 
-        // 失败对拍（MW2 占位除零语义）：VM 抛语言级异常（消息含关键字）、
-        // native 走 abort 面——stderr 关键字对齐（abort 面文本与 VM 消息
-        // 逐字节一致）、native 退出码 1 对齐 vm 命令未捕获异常出口、
-        // stdout 一致
-        private static void RunFailCase(string label, string source, string keyword)
+        // 失败对拍（MW9b-G 起两侧同为真异常未捕获出口）：VM 抛语言级
+        // 异常（消息含关键字）、native 由顶层 reporter 打印
+        // 「{类型全名}: {message}」——stderr 关键字对齐（nativeNeedle 缺省
+        // 同 keyword；新格式全名前缀经 nativeNeedle 单断）、native 退出
+        // 码 1 对齐 vm 命令未捕获异常出口、stdout 一致
+        private static void RunFailCase(string label, string source, string keyword,
+            string? nativeNeedle)
         {
             var dir = Path.Combine(Path.GetTempPath(), $"rigi_e2e_{Guid.NewGuid():N}");
             Directory.CreateDirectory(dir);
@@ -2504,7 +2808,7 @@ namespace RigiCompiler.Tests
                 TestHarness.CheckTrue(label + "：native 退出码 1", runExit == 1,
                     $"exit={runExit}");
                 TestHarness.CheckTrue(label + "：native stderr 含关键字",
-                    nativeErr.Contains(keyword), nativeErr);
+                    nativeErr.Contains(nativeNeedle ?? keyword), nativeErr);
                 TestHarness.Check(label + "：stdout 一致",
                     NormalizeNewlines(nativeOut), NormalizeNewlines(vm.Stdout));
             }

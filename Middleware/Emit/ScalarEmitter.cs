@@ -21,12 +21,13 @@ namespace RigiCompiler.Middleware.Emit
             switch (ImplBinder.BindBinary(inst.Op, inst.LeftType.Canonical, inst.RightType.Canonical, inst.ResultType.Canonical))
             {
                 case PrimitiveOpBinding primitive:
-                    // 整数除法：先经策略注入点发射运行时检查（MW2 占位
-                    // abort；MW9 换真异常时策略单点替换，本调用点不变）
+                    // 整数除法：先经策略注入点发射运行时检查（MW9b-G 抛
+                    // DividedByZeroException；异常边 = 本指令 ExcTarget）
                     if (primitive.Kind is PrimitiveOpKind.IntSDiv or PrimitiveOpKind.IntUDiv)
                     {
                         session.Checks.EmitDivGuard(session, builder, left, right,
-                            isSigned: primitive.Kind == PrimitiveOpKind.IntSDiv);
+                            isSigned: primitive.Kind == PrimitiveOpKind.IntSDiv,
+                            inst.ExcTarget);
                     }
                     return SelectPrimitive(builder, primitive.Kind, left, right);
                 case RuntimeFaceBinding face:

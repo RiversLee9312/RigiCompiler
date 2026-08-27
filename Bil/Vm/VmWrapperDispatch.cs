@@ -746,7 +746,7 @@ namespace RigiCompiler.Bil.Vm
         {
             if (frame.IsCall)
             {
-                throw context.NoSuchMethod("未路由的降级请求：" + frame.SymbolText);
+                throw context.NoSuchMethod(coroutine, "未路由的降级请求：" + frame.SymbolText);
             }
             switch (frame.Kind)
             {

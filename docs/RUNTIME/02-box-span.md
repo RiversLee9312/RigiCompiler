@@ -75,7 +75,7 @@ Object:          [view typeid   | object pointer]
 `Span\<TElement extends ValueType>` 是**内建 class（Object，引用语义）**，为需要连续、非装箱原生存储的场景（缓冲区、数值密集计算等）提供 `Array` 的替代——它不走 §4 的泛型装箱路径，即便 `TElement` 尺寸 > 8 字节，元素也**不装箱**，一视同仁地连续内联存储。复制与传参共享同一 buffer 对象，经别名写入互相可见（这是特性，与 `String` / struct 的值语义刻意区分）；生命周期由普通 ARC 管理（tag `2` 胖引用）。
 
 - **表示**：对象布局与数组完全同构——对象头（16B）+ elemSheet 指针（@16）+ length i32（@24）+ 元素内联连续存储（@32 起）。元素**不装箱**、按 `T` 原生布局排列；步长 = `T` 的 `TypeSheet.typeSize`（编译期已知，生成代码使用常量 stride）。
-- **元素访问**：索引即 `基址 + i × stride` 的直接指针运算，不分配、不解引用装箱对象。读越界返回 null（`.nullable<T>` 形态，与数组同约定）；写越界 abort（与数组同）。
+- **元素访问**：索引即 `基址 + i × stride` 的直接指针运算，不分配、不解引用装箱对象。读越界返回 null（`.nullable<T>` 形态，与数组同约定）；写越界抛可捕获 `core.OutOfBoundException`（MW9b 起，与数组同；此前为 abort）。
 - **定位**：这是"一视同仁地对所有 ValueType 开特例的连续缓冲区"，而不是给 `Array\<T>` 本身开特例——`Array\<T>` 保持普通泛型语义（装箱，见 §4）。缓冲区/数值密集场景应使用 `Span\<T>`。
 - **来源（官方后门）**：`spanOf\<T>(n)`（stdlib 公共面，native `span_alloc` 实现）直接取得连续原生内存，不经过 `Array\<T>` / `List\<T>`。`T extends ValueType` 由泛型约束在编译期强制（`Span\<class>` 为编译错误）。
 - **GC 可见性**：`T` 非 rich 时，对象无引用图边（元素不含托管引用）。`T` 为 rich 时，析构按 `elemSheet × length × stride` 逐元素走查内部引用——与数组析构同一机制（`RIGI_TYPE_ARRAY` 标志；Span 的 TypeSheet 由 C# 侧发射时带上该位）。

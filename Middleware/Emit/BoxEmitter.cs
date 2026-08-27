@@ -89,12 +89,17 @@ namespace RigiCompiler.Middleware.Emit
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirUnboxAny inst)
         {
             UnboxToLocal(session, builder, slots, session.LoadLocal(builder, slots, inst.Source),
-                slots[inst.Target].Local.Type, inst.Target);
+                slots[inst.Target].Local.Type, inst.Target,
+                slots[((MirLocalOperand)inst.Source).Name].Local.Type, inst.ExcTarget);
         }
 
+        // MW9b-G：类型不符由 abort 改抛 core.CastException（fromType =
+        // 静态源类型名常量，toType = 目标 sheet 运行期 TypeInfo.name），
+        // 沿 excTarget 异常边传播（调用点 StoreCoercedResult 同穿）
         internal static void UnboxToLocal(ModuleBuilder.Session session, LLVMBuilderRef builder,
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
-            LLVMValueRef fat, MirType targetType, string target)
+            LLVMValueRef fat, MirType targetType, string target, MirType fromType,
+            MirBlock? excTarget)
         {
             var size = ValueByteSize(session, targetType);
             var expectedTag = size <= InlineLimit ? TagInline : TagHeapValue;
@@ -113,7 +118,7 @@ namespace RigiCompiler.Middleware.Emit
                 builder.BuildICmp(LLVMIntPredicate.LLVMIntNE, sheetBits, wantSheet,
                     "unbox.sheet.bad"),
                 "unbox.bad");
-            EmitAbortOnMismatch(session, builder, mismatch, sheet);
+            EmitThrowOnMismatch(session, builder, mismatch, sheet, fromType, excTarget);
 
             if (expectedTag == TagInline)
             {
@@ -306,19 +311,21 @@ namespace RigiCompiler.Middleware.Emit
 
         // ===== 检查 / 尺寸 / sheet =====
 
-        private static void EmitAbortOnMismatch(ModuleBuilder.Session session,
-            LLVMBuilderRef builder, LLVMValueRef mismatch, LLVMValueRef targetSheet)
+        // MW9b-G：不符抛 CastException（取代 rigi_abort_invalid_cast）
+        private static void EmitThrowOnMismatch(ModuleBuilder.Session session,
+            LLVMBuilderRef builder, LLVMValueRef mismatch, LLVMValueRef targetSheet,
+            MirType fromType, MirBlock? excTarget)
         {
             var fn = session.CurrentFunction;
-            var abortBlock = fn.AppendBasicBlock("unbox.abort");
+            var throwBlock = fn.AppendBasicBlock("unbox.throw");
             var okBlock = fn.AppendBasicBlock("unbox.ok");
-            builder.BuildCondBr(mismatch, abortBlock, okBlock);
-            builder.PositionAtEnd(abortBlock);
-            var (face, faceType) = CallEmitter.DeclareHelperFace(session,
-                RuntimeFaces.AbortInvalidCast, LLVMTypeRef.Void,
-                new[] { PointerType() });
-            builder.BuildCall2(faceType, face, new[] { targetSheet }, "");
-            builder.BuildUnreachable();
+            builder.BuildCondBr(mismatch, throwBlock, okBlock);
+            builder.PositionAtEnd(throwBlock);
+            var fromName = ExceptionEmitter.StaticTypeName(session, fromType);
+            var toName = ExceptionEmitter.LoadTypeDisplayNameFromSheet(session, builder,
+                targetSheet);
+            ExceptionEmitter.EmitThrowNewException(session, builder, "core::CastException",
+                "fromType", new[] { fromName, toName }, excTarget);
             builder.PositionAtEnd(okBlock);
         }
 

@@ -20,6 +20,19 @@ namespace RigiCompiler.Middleware.Mir
     /// </summary>
     public static class MirReachability
     {
+        // MW9b-G：恒可达白名单的 core 异常类型（stdlib core/exceptions.rg；
+        // 抽象 Exception 无 init/getMessage 体，列入仅为成员扫描完备）
+        private static readonly string[] CoreExceptionTypes =
+        {
+            "core::Exception",
+            "core::RuntimeException",
+            "core::IOException",
+            "core::CastException",
+            "core::NoSuchMethodException",
+            "core::DividedByZeroException",
+            "core::OutOfBoundException",
+        };
+
         // 可达 fn 的 canonical 序（入口优先，BFS 发现序）。
         // TentativeInitFamily = 仅经 new.indirect 保守边引入的 init 族，
         // MIR 构建失败时试探性跳过（其余 fn 仍响亮失败）。
@@ -51,6 +64,31 @@ namespace RigiCompiler.Middleware.Mir
                     || bilFn.Symbol.StartsWith("$..globals.init(", System.StringComparison.Ordinal))
                 {
                     queue.Enqueue((bilFn.Symbol, false));
+                }
+            }
+            // MW9b-G：core 异常类型的 init 族 + getMessage 恒可达——守卫点
+            // 抛出（除零/cast/拆箱/new.indirect/越界写）是发射期引用，BIL
+            // 级可达性收集看不到；顶层 reporter 的 getMessage 虚派发同理
+            foreach (var typeCanonical in CoreExceptionTypes)
+            {
+                var type = context.Symbols.FindTypeByRef(typeCanonical);
+                if (type == null)
+                {
+                    continue;
+                }
+                foreach (var member in type.Members)
+                {
+                    if (member.Declaration.Kind != BilMemberKind.Method)
+                    {
+                        continue;
+                    }
+                    if ((member.HasKeyword(BilKeyword.Init)
+                            || IsInitFamilyName(member.Canonical)
+                            || member.SignatureKey == "getMessage()")
+                        && bySymbol.ContainsKey(member.Canonical))
+                    {
+                        queue.Enqueue((member.Canonical, false));
+                    }
                 }
             }
             while (queue.Count > 0)

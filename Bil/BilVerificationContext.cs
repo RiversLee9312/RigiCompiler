@@ -340,6 +340,47 @@ namespace RigiCompiler.Bil
                 [".typeid"] = "core::Type",
             };
 
+        // NormalizeTypeRef 的逆投影表（canonical → BIL 展示拼写），懒构
+        private static Dictionary<string, string>? _builtinScalarDisplay;
+        private static Dictionary<string, string>? _constructorDisplay;
+
+        // canonical → BIL 展示拼写（逆投影：内建标量/标准构造头别名回原，
+        // 实参递归；用户 canonical 原样）。需与 VM 消息逐字一致的类型名
+        // 文本用（VM 异常消息的 typeRef 取 BIL 操作数拼写——内建恒点
+        // 拼写、用户类型恒 canonical）
+        public static string DenormalizeTypeRef(string canonical)
+        {
+            _builtinScalarDisplay ??= Reverse(BuiltinScalarAliases);
+            _constructorDisplay ??= Reverse(ConstructorAliases);
+            var angle = canonical.IndexOf('<');
+            if (angle < 0 || !canonical.EndsWith(">"))
+            {
+                return _builtinScalarDisplay.TryGetValue(canonical, out var alias)
+                    ? alias : canonical;
+            }
+            var head = canonical.Substring(0, angle);
+            var inner = canonical.Substring(angle + 1, canonical.Length - angle - 2);
+            var displayHead = _constructorDisplay.TryGetValue(head, out var ctor)
+                ? ctor : head;
+            var arguments = SplitTopLevel(inner);
+            var parts = new List<string>(arguments.Count);
+            foreach (var argument in arguments)
+            {
+                parts.Add(DenormalizeTypeRef(argument));
+            }
+            return displayHead + "<" + string.Join(", ", parts) + ">";
+        }
+
+        private static Dictionary<string, string> Reverse(Dictionary<string, string> forward)
+        {
+            var reversed = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var (alias, canonical) in forward)
+            {
+                reversed[canonical] = alias;
+            }
+            return reversed;
+        }
+
         // 类型引用归一化（TypesCompatible 的唯一比较基）：
         // 1. 内建标量别名 → canonical（.i32 → core::i32、.f32 → core::float 等）；
         // 2. 标准构造头 → canonical 泛型宿主，实参递归归一化（构造类型

@@ -209,7 +209,11 @@ namespace RigiCompiler.Tests
             // 判别值 1 与 stdlib 字面量 1、main 的 0 与判别值 0 同键去重
             BilTestHarness.CheckResShape("资源（判别值登记 + 同键去重）", module,
                 "#0 = i32 0\n#1 = i32 2\n#2 = i32 1\n#3 = string \"\\n\"\n" +
-                "#4 = bool false\n#5 = bool true");
+                "#4 = bool false\n#5 = bool true\n" +
+                "#6 = string \"无法将 \"\n#7 = string \" 转换为 \"\n" +
+                "#8 = string \"new.indirect 目标不可构造：不匹配任何 init：\"\n" +
+                "#9 = string \"整数除以零\"\n#10 = string \"数组下标越界：\"\n" +
+                "#11 = string \"（长度 \"\n#12 = string \"）\"");
         }
 
         // ===== 丢弃式全形 case 构造：语句语境 E.A(1) 发 new.case 后丢弃 =====

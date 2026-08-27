@@ -242,7 +242,7 @@ pub abstract class Exception { ... }   // 实际声明在 stdlib/core/exceptions
 - `protected var message: String` 字段——异常的人类可读描述；
 - `pub func getMessage(): String` 方法——message 的唯一公共读取通道（abstract，由各具体异常子类 override 实现；`toString` 不覆写，插值/打印仍走 `Object` 的默认实现）。
 
-`throw` 操作数类型与 `catch` 子句类型必须是 `core.Exception` 或其子类（§3.1 层级兼容判定）。标准库在 `stdlib/core/exceptions.rg` 提供五个具体子类（均可继承，用户自定义异常以同样的 `: core.Exception` 声明）：
+`throw` 操作数类型与 `catch` 子句类型必须是 `core.Exception` 或其子类（§3.1 层级兼容判定）。标准库在 `stdlib/core/exceptions.rg` 提供六个具体子类（均可继承，用户自定义异常以同样的 `: core.Exception` 声明）：
 
 | 类型 | 含义 |
 |------|------|
@@ -251,6 +251,9 @@ pub abstract class Exception { ... }   // 实际声明在 stdlib/core/exceptions
 | `core.CastException` | `as`/`as?`/nullable 展开等类型转换失败（BIL §12.1） |
 | `core.NoSuchMethodException` | 运行期 init 重载解析失败与 wrapper 派发失败（§10/§14.6） |
 | `core.DividedByZeroException` | 整数除法除零（BIL §11.2；float/double 除零按 IEEE 754 产 inf/NaN，不抛） |
+| `core.OutOfBoundException` | 内建数组/Span 越界**写入**抛出（可捕获；越界读取不抛，按空安全得 `null`，§13.2） |
+
+内置异常的消息模板烘在 stdlib 源码中——各子类在 `init(text: String)` 之外自持便捷 init 重载（如 `DividedByZeroException.init()`、`CastException.init(fromType, toType)`、`OutOfBoundException.init(index, length)`），两态宿主构造内置异常时经这些 init 派发，VM 与 native 的消息文本天然一致。
 
 每个子类**自持**显式 init（异常根不写 init；需要时 init 体可选调用 `super(...)`，字段也可直接赋值继承字段）：
 
@@ -261,5 +264,18 @@ pub open class IOException : core.Exception {
 ```
 
 `getMessage()` 返回 message 的当前值；未显式赋值时为 String 零值（空字符串）。`core.GlobalExceptionHandler` 与运行时内部类型（`GCAlarm` 等）不在 stdlib 声明，随 BIL VM 定稿。
+
+### 8.2 未捕获异常的进程行为
+
+异常沿调用链传播到入口函数仍未被任何 `catch` 捕获时，进程在 stderr 打印一行并以退出码 `1` 终止：
+
+```
+{类型全名}: {message}
+```
+
+- 类型全名取异常对象的实际类型（canonical 拼写，如 `core::DividedByZeroException`），message 恒经 `getMessage()` 虚派发取回（用户 override 生效）；
+- VM 与 native 两宿主同格式同退出码（native 由 `rigi_entry` 顶层 reporter 打印）；内置异常的消息文本两侧天然一致（模板烘在 stdlib init 中，见 §8.1）。
+
+示例：未捕获的整数除零打印 `core::DividedByZeroException: 整数除以零` 并退出码 1。
 
 ---

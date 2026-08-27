@@ -246,15 +246,14 @@ rigi_rt 导出（命名待定，形态固定）：
 | `any_to_string` | 任意胖值标准文本（StringOut 首参 + Any 槽指针）：内建标量走对应 to_string 面；`core::String`（tag1）拷贝裸块；其余（tag2 对象 / 大 struct 等）取 TypeInfo.name。不虚调 toString（防默认体递归；override 经方法虚派发，不经本面） |
 | `box_*` | Box 运行时面 |
 | `rigi_span_alloc` | Span/SharedSpan 分配（与数组同构：32B 前缀 + 原生 stride 内联元素；TypeSheet 区分 Span vs SharedSpan）。元素访问内联无独立面；析构复用数组走查（`RIGI_TYPE_ARRAY`） |
-| `rigi_abort_invalid_cast` | 拆箱类型不符占位 abort（`void(TypeSheet*)`；stderr 前缀对齐 VM CastException「无法将 .any 转换为」+ TypeInfo.name，exit 1；MW9 换真异常） |
 | `rigi_try_cast` | 动态 cast（占位目标）：胖引用 typeid+payload + 目标 TypeSheet* + 两枚 out i64；is 命中改写视图 typeid；数值互转对齐 VM；失败返 0 |
 | `rigi_cast_f64_to_int` | 浮点→整数（`i64(f64, i32 kind)`；NaN→0，溢出饱和到 32/64 位宽再截断；对齐 C# unchecked conv） |
-| `rigi_abort_no_such_method` | 动态 new 无匹配 init / 不可构造占位 abort（`void(TypeSheet*)`；stderr 含 TypeInfo.name，exit 1；MW9 换真异常 core.NoSuchMethodException） |
 | `rigi_type_is` / `rigi_type_is_indirect` | 胖引用实际类型是否为目标或其子类（协变）；tag2 取对象头 sheet，tag0/tag1 掩码 typeid；接口走 TypeInfo.ifaceClosure |
 | `rigi_type_supers` / `rigi_type_supers_indirect` | 实际类型是否为目标的基类（逆变）；沿 target.baseTypeId 链，并查 target.TypeInfo.ifaceClosure（多 implements 父接口） |
 | `rigi_type_with` / `rigi_type_with_indirect` | 实际类型（及基类/接口闭包）的 TypeInfo.wrappers 是否含目标 wrapper sheet |
 | `rigi_typeof` | 取胖引用实际 TypeSheet*（typeOf 值形态）；tag2 取对象头 sheet，tag0/tag1 掩码 typeid |
-| `throw_raise` / unwind 面 | 异常抛出与 unwind 库交互（§8） |
+| `rigi_exc_raise` / `rigi_exc_pending` / `rigi_exc_take` | checked-flag 异常传输三面（§8）：raise = 异常对象 acquire+1 写线程局部 pending 槽；pending = 借用查询（不动计数）；take = 取走并清槽（+1 所有权随返回值移交） |
+| `rigi_type_name_of` / `rigi_exc_halt` | 顶层未捕获 reporter（§8）：obj→对象头 typeId→TypeInfo.name 诊断名拷出（借用语义）+ exit(1) 收尾（noreturn） |
 | 协程七项保留面 | 见 `ASYNC_LOWERING_DESIGN.md` §7 表（coroutine.spawn / task.await / coroutine.yield / coroutine.complete/fail/cancel / coroutine.frame / gc.ownership-region / alarm.poll/event） |
 | GC Alarm 族 | GCAlarm 与 GC 唤醒 Alarm 的创建与触发 |
 
@@ -353,7 +352,10 @@ tag）, payload: i64}`，16B 对齐。tag0（ValueType ≤8B）payload 内联值
 （ValueType >8B，含 string 的 `{i8*,i64}` 与大 struct）payload = `rigi_malloc`
 + memcpy 的 unique 裸数据块（无对象头、无块内 typeid）；tag2（Object）payload =
 对象指针。装箱 = `cast` 值类型 → `.any`/`.object`；拆箱检查 tag 与掩码后
-TypeSheet 指针，不符调 `rigi_abort_invalid_cast`。native `.any` 参数/返回经
+TypeSheet 指针，不符抛 `core.CastException`（MW9b-G 换真异常，经
+ExceptionEmitter 共享抛出辅助：alloc + 真 init + `rigi_exc_raise` + 沿 MIR
+异常边传播；fromType = 发射期静态源类型名常量、toType = 目标 sheet 运行期
+显示名，拼写对齐 VM 消息口径）。native `.any` 参数/返回经
 16B 对齐槽指针传递（D6：C 边界 16B 胖值一律指针）。`any_to_string` 经该槽指针
 读 `{typeid, payload}` 分派（标量面 / String 拷贝 / TypeInfo.name）。Box 复制的
 acquire/release 不在此发射（E4：内存正确性 MW7 RcInjection 统一收口）。
@@ -361,29 +363,76 @@ acquire/release 不在此发射（E4：内存正确性 MW7 RcInjection 统一收
 **动态 new（MW8b/MW8c 定稿）**：vtable 槽 0 为 per-类型 `mw.init.dispatch`（if 链比 argc 与
 形参 TypeSheet*）；class thunk 胖返回（复用 EmitAllocAndInit）；struct thunk 为 sret
 `void(ptr %out, fat...)`（零初始化 → 可选 wrapper → init 原地生效；内联槽直传 result alloca，胖槽按 typeSize 走 tag0/tag1）；
-标量/String 零参 T() 在 vTable 查找前比对内建零值 sheet 直产零值（argc>0 落 abort）。
-落空走 `rigi_abort_no_such_method`。可达性对 `new.indirect` 保守收模块内全部 init 族（含 stdlib `core*`；经该保守边引入且 MIR 不可构建的 init 族试探性跳过，运行期 abort）。
+标量/String 零参 T() 在 vTable 查找前比对内建零值 sheet 直产零值（argc>0 落 miss）。
+vTable/分发器/匹配落空抛 `core.NoSuchMethodException`（MW9b-G 换真异常；thunk
+内部 miss 构造异常 + raise + ret undef，pending 由调用点检查接力）。可达性对 `new.indirect` 保守收模块内全部 init 族（含 stdlib `core*`；经该保守边引入且 MIR 不可构建的 init 族试探性跳过，运行期抛 NoSuchMethodException）。
+MW9b-G 起三占位 abort 面（`rigi_abort_divided_by_zero` / `rigi_abort_invalid_cast` /
+`rigi_abort_no_such_method`）与数组越界写 abort 面（`rigi_abort_array_oob`）已退场：
+除零/越界写分别改抛 `core.DividedByZeroException` / `core.OutOfBoundException`
+（守卫指令挂 MIR 异常边，core 异常类型 init 族 + getMessage 经
+MirReachability 恒可达白名单保证可发射）；保留 `rigi_abort_arithmetic_overflow`
+（i64 MIN/-1 基础设施溢出失败，VM 基准非语言级异常）与
+`rigi_abort_array_negative_length`（分配负长度）。
 
 ## 8. 异常机制
 
-BIL §16.7 的 try（catch-table 形式）在 MW3 展开为 EH 边与 pad 块，目标平台
-机制：
+**传输模型（MW9a 定稿）：checked-flag 便携异常传输，零平台 EH 指令。**
+throw 不触发任何 unwind：异常对象 acquire +1 后写入线程局部 pending 槽
+（`rigi_exc_raise`）；每个可抛调用返回后由生成代码查 pending
+（`rigi_exc_pending`），非空即沿 MIR 异常边（ExcTarget）跳传播路径；捕获
+点 `rigi_exc_take` 取走并清空槽（+1 所有权随返回值移交捕获方）。整条路径
+只是普通调用 + 分支 + TLS 槽读写，win-x64/linux-x64 同一份实现。
 
-- **linux-x64：Itanium 风格 landing pad**。`invoke` / `landingpad` / `resume`；
-  personality 采用 Itanium C++ ABI 系人格函数；throw 经 rigi_rt 的 raise 面进入
-  unwind 库。
-- **win-x64：SEH**。LLVM 的 Windows EH 构造（`catchswitch` / `catchpad` /
-  `cleanuppad`），personality `__CxxFrameHandler3`。
+**为何弃 landingpad/SEH（取舍记录）**：
 
-要点：
+- catch 匹配是 TypeSheet 的 `is` 判定（RUNTIME §12），不是 C++ RTTI 的
+  type_info 匹配——平台 EH 的 catch 选择器语义与本语言对不上，personality
+  里仍得自己跑 `is` 链，landingpad/SEH 只剩「找到 landing 点」一项职能；
+- Rigi 调用的 native 中间帧只有 FFI 叶调用（无外来帧回调再入 Rigi 的栈
+  形），unwind 无需穿越外来帧，平台 unwind 器的跨帧能力无消费方；
+- ARC 配对在 MIR 层显式化（RcInjection 传播垫按 ret 出口同口径 release
+  全部托管槽），异常路径的每次 acquire/release 可被 `RIGI_RT_MEMTRACK=1`
+  台账全路径验证；平台 EH 的 cleanup 路径绕开 MIR，台账口径对不齐；
+- 与协程挂起点天然统一：挂起/恢复点已是「调用返回后查标志位」形态，
+  pending 检查复用同一 codegen 骨架，不引入第二套控制流；
+- 双平台单实现：免去 Itanium landingpad 与 SEH catchswitch 两套发射与两
+  个人格函数，NativeE2E 对拍覆盖面不因平台分裂。
 
-- MIR 是 try 结构展开的单一事实源：finally 的正常路径副本与 unwind 路径
-  （cleanuppad / landing pad 清理路径）由同一结构生成，两份语义不得漂移；
-- catch 子句的异常类型匹配由 TypeSheet 的 `is` 判定支撑（RUNTIME §12）；
-- 抛出对象是 `core.Exception` 子类实例；throw 操作数与 unwind 上下文之间的
-  所有权移交、以及 catch 捕获后的归属，属 RcInjection 与 EH 的交互细节，随
-  MW9 定稿；
-- region 不含可抛出点（§4.2 不变量），unwind 不穿越 region。
+MIR 保持 ExcTarget 双目标抽象（正常后继 / 异常边），checked-flag 只是
+Emit 层的一种 lowering；未来若切原生 EH，改动封闭在 Emit（调用点改
+invoke、传播垫改 landingpad/catchswitch），MIR 与 RcInjection 不变。
+
+**MIR 构件（MW9a）**：
+
+- `MirThrow`（指令）：throw 语句本体——RcInjection 配平后 raise 并入
+  pending，随后沿异常边传播；
+- `MirTakePending`（指令）：派发垫首指令，`rigi_exc_take` 出异常对象写入
+  合成局部 `$mw.exc.N`；
+- `MirRetThrow`（终止符）：传播垫出口——release 配平后返回调用方，
+  pending 槽保持置位（checked-flag 跨帧传播的最后一棒）；
+- `ExcTarget`（MirCall / MirInvokeIndirect / MirThrow 的异常边字段）：本
+  词法上下文的异常落点，由 TryExpander 按 BIL §16.7 十步语义解析；为
+  null 时由 RcInjection 改写指向函数级共享传播垫 `mw.propagate`。
+  MW9b-G 扩面到守卫型可抛指令（MirBinaryIntrinsic 整数除零 /
+  MirCast / MirUnboxAny / MirGetField 拆箱守卫 / MirSetArray 越界写 /
+  MirNewIndirect 无匹配 init）——守卫命中由 ExceptionEmitter 共享抛出
+  辅助构造真异常（alloc + 真 init + `rigi_exc_raise`）后 br 进同一
+  异常边，与用户 throw 同路；
+- 派发垫 `mw.try.N.dispatch`：try 入口侧——TakePending 后按 catch 表序
+  走 `is` 链（表序即匹配序，保序语义），命中进 catch 前置垫，未命中走
+  finally/外层；
+- finally 单块双入口 + completion 路由器：一切离开 try 的 completion
+  （normal / return / break / continue / throw）经前置垫记路由码，finally
+  体执行后由路由器按码续解析落点；`finally(e)` 的 e 仅 Throw completion
+  时写入异常对象，其余 completion 一律见 null（BIL §16.7）。
+
+**顶层 reporter（MW9a 第 C 棒）**：`rigi_entry` 返回后 pending 非空即未捕
+获异常——`rigi_type_name_of` 取诊断名 + 虚派发 `getMessage()`，stderr 打
+印 `{类型全名}: {message}`，`rigi_exc_halt` 收尾 exit 1。
+
+**全局异常通道 carve-out**：RUNTIME §25.2 undisposed-resource 等不绑定用
+户调用栈的事件不经 checked-flag、不可 try/catch，走
+`core.GlobalExceptionHandler` API 通道，随 MW12 定稿。
 
 ## 9. 优化 pass 归属表
 
@@ -423,11 +472,11 @@ Middleware/                 # 本仓库顶层目录（C#，.NET 10 LTS）
 ├── Gate/                   # BilReader 接线 + BilVerifier 门禁（多文件经 BilModuleMerger 合并）
 ├── Symbols/                # MW 符号图 / 类型表（canonical intern 驻留）
 ├── Binding/                # 实现绑定（ImplBinding 记录族 + ImplBinder 唯一实现查询）
-├── Mir/                    # MIR 模型 + MirBuilder（BIL 结构化块 → CFG 直译）+ MirReachability（invoke 边可达闭包）
+├── Mir/                    # MIR 模型 + MirBuilder（BIL 结构化块 → CFG 直译）+ MirReachability（invoke 边可达闭包）+ TryExpander.cs（BIL §16.7 try 十步展开：派发垫 / finally 双入口 / completion 路由器）
 ├── Pipeline/               # IMwStage + MwPipeline 驱动器（线性阶段序，仿前端层栈纪律；MW4 pass 群在此登记）
 ├── Passes/                 # MIR pass 群（已建立：IndexOperatorLowering / AccessorLowering / RcInjectionPass.cs；WrapperBaking / CoroutineSplit / CellElim / Devirt 仍随各自阶段）
 ├── Layout/                 # TypeLayout：canonical → LLVM 类型唯一映射点（引用槽按 RUNTIME §2 胖引用 128-bit/16 字节对齐建模）
-├── Emit/                   # ModuleBuilder / ArcEmitter.cs（MirAcquireSlot/MirReleaseSlot → ref/value/string 面）/ DynamicNewEmitter.cs（new.indirect 调用点 + 分发器/thunk）/ LlvmBitcode（unsafe 编组封装：bitcode 解析、LLVMLinkModules2 进程内合并、新 PM default<O2> 管线）/ RuntimeFaces（rigi_rt 面表）/ ObjectEmitter（.o 发射）
+├── Emit/                   # ModuleBuilder / ArcEmitter.cs（MirAcquireSlot/MirReleaseSlot → ref/value/string 面）/ ExceptionEmitter.cs（可抛调用返回后 pending 检查 + rigi_entry 顶层 reporter）/ DynamicNewEmitter.cs（new.indirect 调用点 + 分发器/thunk）/ LlvmBitcode（unsafe 编组封装：bitcode 解析、LLVMLinkModules2 进程内合并、新 PM default<O2> 管线）/ RuntimeFaces（rigi_rt 面表）/ ObjectEmitter（.o 发射）
 ├── Toolchain/              # ToolchainResolver（--toolchain → RIGI_LLVM → tools/.llvm/<rid> → PATH）/ ExternalProcess 外部进程封装
 ├── Runtime/                # RigiRtBuilder：rigi_rt 源 EmbeddedResource 内嵌 → 内容哈希缓存 → clang -emit-llvm -c 编成 bitcode（unity build）
 └── Cli/                    # native 驱动（--file/--out/--emit-obj/--emit-ll/--toolchain）
@@ -440,7 +489,7 @@ rigi_rt/                    # 本仓库顶层目录（C，EmbeddedResource 内�
 ├── arc.c/.h                # microGC / microSGC、值语义四面族、region 协议、对象头
 ├── macrogc.c/.h            # （随后续阶段）Bacon-Rajan 收集器、候选账本、GC 协程实体
 ├── coroutine.c/.h          # （随后续阶段）Coroutine / Executor / Worker / Alarm（含内置 GC Executor）
-└── eh.c/.h                 # （随后续阶段）raise 与 unwind 交互（Itanium / SEH）
+└── eh.c/.h                 # MW9a checked-flag 便携异常传输：TLS pending 槽三面（rigi_exc_raise/pending/take）+ 顶层 reporter（rigi_type_name_of/rigi_exc_halt），不使用平台原生 EH
 ```
 
 ## 12. 阶段划分
@@ -458,7 +507,7 @@ rigi_rt/                    # 本仓库顶层目录（C，EmbeddedResource 内�
 | MW6 | 元数据与派发：TypeSheet/vtable/iMap/refMap、虚调用、interface | |
 | MW7 | 值语义运行时 + ARC：Box 物化、RcInjection、region 协议发射（**MW7a 已收口**）；Span 物化（**MW7b 已收口**：Span=内建 class 定稿） | MW7a/MW7b：NativeE2E 全绿且台账零泄漏 |
 | MW8 | 泛型运行时：`Type\<T\>`/typeOf/new、is/supers/with/cast（**MW8a/MW8b 已收口**；**MW8c 推进中**） | MW8a typeid 装箱；MW8b 动态 new 槽 0 分发器；MW8c-1 `.typeid<X>` 构造 sheet；MW8c-2 泛型占位 cast + 数值/String/struct 转换；MW8c-3 struct sret thunk + 标量零值 T() + VM 无匹配 init 必抛 |
-| MW9 | 异常：try/catch/finally → landing pad（linux-x64）/ SEH（win-x64） | 异常对拍套件 |
+| MW9 | 异常：try/catch/finally → checked-flag 便携传输（§8；**MW9a 已收口**：rigi_rt eh 三面 + reporter、MIR 构件（MirThrow/MirTakePending/MirRetThrow/ExcTarget）、TryExpander 十步展开、RcInjection 传播垫、Emit pending 检查、NativeE2E 捕获型对拍 13 例；**MW9b 已收口**：内置异常 message 模板源码化（stdlib init 重载）+ VM/native 构造全走真 init、VM 顶层格式对齐 `{类型全名}: {message}`、三占位 abort + 数组/Span 越界写 abort 全转真异常（守卫指令 ExcTarget 扩面 + ExceptionEmitter 共享抛出辅助 + core 异常恒可达白名单；除零策略换 Throw 实现）、SYNTAX §8.1 加第 6 异常类 `core.OutOfBoundException` + §8.2 未捕获进程行为） | 异常对拍套件 |
 | MW10 | wrapper 烘焙全链（specific/wildcard/call???） | |
 | MW11 | 协程：状态机、Executor/Worker、Alarm（libuv 底座）、Task、eager spawn | ASYNC §8 集成测试 |
 | MW12 | macroGC：收集器、候选账本、GC 协程与内置 Executor、fence 激活、§25 检查 | 循环回收与泄漏检查套件 |

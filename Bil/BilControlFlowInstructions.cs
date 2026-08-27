@@ -213,7 +213,7 @@ namespace RigiCompiler.Bil
             for (var i = 0; i < table.Elements.Count; i++)
             {
                 var key = context.LoadSwitchElement(table.SelectorTypeRef, table.Elements[i]);
-                if (ValuesEqual(selector, key, context))
+                if (ValuesEqual(selector, key, context, coroutine))
                 {
                     index = i;
                     break;
@@ -222,7 +222,8 @@ namespace RigiCompiler.Bil
             coroutine.EnterSwitch(this, index);
         }
 
-        private static bool ValuesEqual(VmValue left, VmValue right, VmContext context)
+        private static bool ValuesEqual(VmValue left, VmValue right, VmContext context,
+            VmCoroutine coroutine)
         {
             if (left is VmNull || right is VmNull)
             {
@@ -232,7 +233,8 @@ namespace RigiCompiler.Bil
             {
                 return false;
             }
-            var result = BilComputeExecution.EvalBinary(BilBinaryOp.CmpEq, left, right, context);
+            var result = BilComputeExecution.EvalBinary(BilBinaryOp.CmpEq, left, right,
+                context, coroutine);
             return result is VmBool flag && flag.Value;
         }
     }

@@ -133,7 +133,7 @@ namespace RigiCompiler.Middleware.Emit
                     LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, 0, true), "arr.neg"),
                 builder.BuildICmp(LLVMIntPredicate.LLVMIntSGE, index, length, "arr.hi"),
                 "arr.oob");
-            EmitAbortOob(session, builder, oob, index, length);
+            EmitThrowOob(session, builder, oob, index, length, inst.ExcTarget);
             StoreElement(session, builder, slots, inst.Element,
                 ElementPointer(builder, obj, abi, index), abi);
         }
@@ -653,19 +653,23 @@ namespace RigiCompiler.Middleware.Emit
                 "box.mem");
         }
 
-        private static void EmitAbortOob(ModuleBuilder.Session session, LLVMBuilderRef builder,
-            LLVMValueRef condition, LLVMValueRef index, LLVMValueRef length)
+        // MW9b-G：写越界抛可捕获 core.OutOfBoundException（取代
+        // rigi_abort_array_oob；读越界仍按空安全得 null，不抛）。
+        // init(index: i64, length: i64)：i32 槽值 sext 直传
+        private static void EmitThrowOob(ModuleBuilder.Session session, LLVMBuilderRef builder,
+            LLVMValueRef condition, LLVMValueRef index, LLVMValueRef length, MirBlock? excTarget)
         {
             var fn = session.CurrentFunction;
-            var abortBlock = fn.AppendBasicBlock("arr.set.oob");
+            var throwBlock = fn.AppendBasicBlock("arr.set.throw");
             var okBlock = fn.AppendBasicBlock("arr.set.ok");
-            builder.BuildCondBr(condition, abortBlock, okBlock);
-            builder.PositionAtEnd(abortBlock);
-            var (abortFn, abortType) = CallEmitter.DeclareHelperFace(session,
-                RuntimeFaces.AbortArrayOob, LLVMTypeRef.Void,
-                new[] { LLVMTypeRef.Int32, LLVMTypeRef.Int32 });
-            builder.BuildCall2(abortType, abortFn, new[] { index, length }, "");
-            builder.BuildUnreachable();
+            builder.BuildCondBr(condition, throwBlock, okBlock);
+            builder.PositionAtEnd(throwBlock);
+            ExceptionEmitter.EmitThrowNewException(session, builder, "core::OutOfBoundException",
+                "index", new[]
+                {
+                    builder.BuildSExt(index, LLVMTypeRef.Int64, "oob.idx64"),
+                    builder.BuildSExt(length, LLVMTypeRef.Int64, "oob.len64"),
+                }, excTarget);
             builder.PositionAtEnd(okBlock);
         }
 

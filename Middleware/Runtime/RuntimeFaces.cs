@@ -12,6 +12,8 @@ namespace RigiCompiler.Middleware.Runtime
     {
         StringIn,
         StringOut,
+        // 裸指针直传（无 String ABI 编组；MW9a 异常三面）
+        Ptr,
     }
 
     public static class RuntimeFaces
@@ -22,15 +24,11 @@ namespace RigiCompiler.Middleware.Runtime
         // 唯一带返回值的面：i32 三态结果（<0/0/>0）；不走 EmitFaceCall 的
         // 出参槽形态，调用与次序判定归 CallEmitter/ScalarEmitter 专线
         public const string StringCompare = "rigi_string_compare";
-        // MW2 占位检查面：void(void) noreturn（stderr 文本 + 退出码对齐
-        // VM 未捕获异常出口），调用方在调用后补 unreachable；MW9 换真异常
-        // 时由标量检查策略注入点整体替换
-        public const string AbortDividedByZero = "rigi_abort_divided_by_zero";
+        // i64 MIN/-1 基础设施溢出失败（VM 基准非语言级异常）：void(void)
+        // noreturn（stderr 文本 + 退出码对齐 VM 未捕获异常出口），调用方
+        // 在调用后补 unreachable。MW9b-G：除零/cast/拆箱/new.indirect/
+        // 越界写三占位 abort 面已退场（换抛真异常，ExceptionEmitter）
         public const string AbortArithmeticOverflow = "rigi_abort_arithmetic_overflow";
-        // 拆箱不符：void(TypeSheet*) noreturn，消息含目标 TypeInfo.name
-        public const string AbortInvalidCast = "rigi_abort_invalid_cast";
-        // 动态 new 无匹配 init：void(TypeSheet*) noreturn，消息含 TypeInfo.name
-        public const string AbortNoSuchMethod = "rigi_abort_no_such_method";
         // typeOf 值形态：胖引用 → 实际 TypeSheet*（tag2 对象头 / tag0·tag1 掩码）
         public const string TypeOf = "rigi_typeof";
         // 动态 cast（占位目标）：is 命中改写视图 typeid；数值互转；失败返 0
@@ -39,7 +37,6 @@ namespace RigiCompiler.Middleware.Runtime
         public const string CastF64ToInt = "rigi_cast_f64_to_int";
         public const string AllocArray = "rigi_alloc_array";
         public const string SpanAlloc = "rigi_span_alloc";
-        public const string AbortArrayOob = "rigi_abort_array_oob";
         public const string AbortArrayNegativeLength = "rigi_abort_array_negative_length";
         public const string Malloc = "rigi_malloc";
         // 值语义四面族 + String ARC（裸 i64/指针，不走 StringIn/StringOut）
@@ -49,6 +46,16 @@ namespace RigiCompiler.Middleware.Runtime
         public const string ValueRelease = "rigi_value_release";
         public const string StringAcquire = "rigi_string_acquire";
         public const string StringRelease = "rigi_string_release";
+        // MW9a 异常传输三面（线程局部 pending 槽）：raise void(ptr) 写槽，
+        // pending ptr() 借用查询，take ptr() 移动取走（归还形状不由 ShapeOf 表达）
+        public const string ExcRaise = "rigi_exc_raise";
+        public const string ExcPending = "rigi_exc_pending";
+        public const string ExcTake = "rigi_exc_take";
+        // MW9a 第 C 棒顶层 reporter 两面：诊断名取回 void(ptr, rigi_string*)
+        // （obj→sheet→TypeInfo.name 借用拷出）；未捕获出口 void(void)
+        // noreturn（exit 1，调用方补 unreachable）
+        public const string TypeNameOf = "rigi_type_name_of";
+        public const string ExcHalt = "rigi_exc_halt";
 
         public static IReadOnlyList<RuntimeFaceParam> ShapeOf(string faceSymbol)
         {
@@ -57,9 +64,12 @@ namespace RigiCompiler.Middleware.Runtime
                 Print or PrintErr => new[] { RuntimeFaceParam.StringIn },
                 StringConcat => new[] { RuntimeFaceParam.StringOut, RuntimeFaceParam.StringIn, RuntimeFaceParam.StringIn },
                 StringCompare => new[] { RuntimeFaceParam.StringIn, RuntimeFaceParam.StringIn },
-                AbortDividedByZero or AbortArithmeticOverflow or AbortArrayNegativeLength
-                    or AbortInvalidCast or AbortNoSuchMethod =>
+                AbortArithmeticOverflow or AbortArrayNegativeLength =>
                     System.Array.Empty<RuntimeFaceParam>(),
+                ExcRaise => new[] { RuntimeFaceParam.Ptr },
+                ExcPending or ExcTake => System.Array.Empty<RuntimeFaceParam>(),
+                TypeNameOf => new[] { RuntimeFaceParam.Ptr, RuntimeFaceParam.Ptr },
+                ExcHalt => System.Array.Empty<RuntimeFaceParam>(),
                 _ => throw new MwNotSupportedException($"未知 rigi_rt 运行时面: {faceSymbol}"),
             };
         }
