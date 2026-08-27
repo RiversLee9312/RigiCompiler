@@ -8,8 +8,8 @@ namespace RigiCompiler.Middleware.Emit
 {
     /// <summary>
     /// 数组 / Span 发射（MW4/MW7b）：alloc_array / span_alloc /
-    /// new type(.array) / get.array / set.array / getid.type / Nullable
-    /// 值类型装拆箱。Array 与 Span/SharedSpan 元素访问共用同一套
+    /// new type(.array) / get.array / set.array / getid.type / getid.var /
+    /// Nullable 值类型装拆箱。Array 与 Span/SharedSpan 元素访问共用同一套
     /// stride/越界/wrap 路径。布局见 TypeLayout 前缀与元素 ABI。
     /// </summary>
     internal static class ArrayEmitter
@@ -170,6 +170,49 @@ namespace RigiCompiler.Middleware.Emit
         {
             builder.BuildStore(TypeSheetPointer(session, builder, MirType.Of(inst.TypeRef)),
                 slots[inst.Target].Slot);
+        }
+
+        internal static void EmitGetTypeIdVar(ModuleBuilder.Session session, LLVMBuilderRef builder,
+            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirGetTypeIdVar inst)
+        {
+            if (inst.Value is not MirLocalOperand local)
+            {
+                throw new CompilerInternalException("getid.var 操作数必须是局部");
+            }
+            var type = slots[local.Name].Local.Type;
+            // 非开放值类型：静态类型即实际类型，直接 store TypeSheet*
+            if (IsClosedValueForTypeOf(session, type))
+            {
+                builder.BuildStore(TypeSheetPointer(session, builder, type),
+                    slots[inst.Target].Slot);
+                return;
+            }
+            // class / .any / 泛型占位胖槽：运行时取实际 sheet
+            var fat = session.LoadLocal(builder, slots, inst.Value);
+            var typeId = builder.BuildExtractValue(fat, 0, "typeof.typeid");
+            var payload = builder.BuildExtractValue(fat, 1, "typeof.payload");
+            var (fn, fnType) = CallEmitter.DeclareHelperFace(session, RuntimeFaces.TypeOf,
+                PointerType(), new[] { LLVMTypeRef.Int64, LLVMTypeRef.Int64 });
+            var sheet = builder.BuildCall2(fnType, fn, new[] { typeId, payload }, "typeof.raw");
+            // C 侧 null 胖引用仍返 NULL；内部链接的 .null sheet 在此替换
+            var nullSheet = CastToBytePtr(builder,
+                session.TypeSheetFor(TypeLayout.NullSheetCanonical));
+            var isNull = builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, sheet,
+                LLVMValueRef.CreateConstPointerNull(PointerType()), "typeof.isnull");
+            sheet = builder.BuildSelect(isNull, nullSheet, sheet, "typeof.sheet");
+            builder.BuildStore(sheet, slots[inst.Target].Slot);
+        }
+
+        // 标量 / String / struct / enum / .typeid：布局可得 sheet，零运行时开销
+        private static bool IsClosedValueForTypeOf(ModuleBuilder.Session session, MirType type)
+        {
+            if (TypeLayout.IsGenericPlaceholder(type))
+            {
+                return false;
+            }
+            return MirBuilder.IsScalarOrString(type)
+                || TypeLayout.IsTypeId(type)
+                || session.IsInlineValueType(type, out _);
         }
 
         internal static void EmitWrap(ModuleBuilder.Session session, LLVMBuilderRef builder,

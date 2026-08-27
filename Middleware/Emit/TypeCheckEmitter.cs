@@ -37,6 +37,14 @@ namespace RigiCompiler.Middleware.Emit
                 throw new CompilerInternalException("type.check 操作数必须是局部");
             }
             var type = slots[local.Name].Local.Type;
+            // .typeid：运行期视图 = Type<payload>，对齐 VM TypeRef 边界
+            if (TypeLayout.IsTypeId(type))
+            {
+                var described = session.LoadLocal(builder, slots, operand);
+                var view = BoxEmitter.ResolveTypeIdViewSheet(session, builder, described, type);
+                return BoxEmitter.PackFat(session, builder, view, BoxEmitter.TagInline,
+                    LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, 0, false), "ck.tid");
+            }
             if (MirBuilder.IsScalarOrString(type) || session.IsInlineValueType(type, out _))
             {
                 var sheet = TypeSheetOf(session, type);

@@ -139,7 +139,7 @@ namespace RigiCompiler.Bil.Vm
         // sheet 换算 offset，再取 receiver 实际类型 sheet 的槽实现（虚派发）；
         // owner 是接口时 offset = iMap 段基址 + 接口内相对 offset（§8）。
         // 不可派发（无 receiver/static/全局符号）退回 FindFunction 直查；
-        // owner 无声明（core::Exception 等预定义根）时按签名在实际类型槽
+        // owner 无声明（预定义根不进符号段）时按签名在实际类型槽
         // 防御扫描（等价旧名匹配路径，如 getMessage 多态）。
         internal BilFunction? ResolveDispatch(string staticSymbol, VmValue? receiver)
         {

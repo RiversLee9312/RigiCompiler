@@ -105,7 +105,7 @@ namespace RigiCompiler.Bil.Vm
             }
             var sheet = new VmTypeSheet();
             // 1. 继承槽：以基类 sheet 的克隆起步（§7 offset 不变量 + §9 拍平；
-            //    基声明缺失（core::Exception 等预定义根不进符号段）按空基降级）。
+            //    基声明缺失（预定义根不进符号段）按空基降级）。
             //    构造泛型基类（D : B<.i32>，含转发形态 D<T2> : B<T2>）：克隆时
             //    把基类槽的代入源按 extends 实参映射 {T_i → arg_i} 代入再重新
             //    归一化 SignatureKey（m(x:#0) → m(x:.i32)），D 里 override

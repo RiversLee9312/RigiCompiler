@@ -141,6 +141,7 @@ namespace RigiCompiler.Tests
             ("TestGenericIndexOperator", TestGenericIndexOperator),
             ("TestClassGenericParamInMethodFrame", TestClassGenericParamInMethodFrame),
             ("TestReifiedConstructZeroValue", TestReifiedConstructZeroValue),
+            ("TestDynamicNewMustThrowNoMatchingInit", TestDynamicNewMustThrowNoMatchingInit),
             ("TestNestedClassNullableInit", TestNestedClassNullableInit),
             ("TestInitMatchByAssignability", TestInitMatchByAssignability),
             ("TestNullableGenericTypeArgument", TestNullableGenericTypeArgument),

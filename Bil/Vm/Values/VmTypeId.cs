@@ -7,7 +7,8 @@ namespace RigiCompiler.Bil.Vm
     public sealed class VmTypeId : VmValue
     {
         public string TypeSymbol { get; }
-        public override string TypeRef => ".typeid";
+        // A(b)：值类型 .typeid<X>，X = 所指类型；is Type<X> 可判别边界
+        public override string TypeRef => ".typeid<" + TypeSymbol + ">";
 
         public VmTypeId(string typeSymbol)
         {

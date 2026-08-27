@@ -112,6 +112,13 @@ namespace RigiCompiler.Tests
             // if 语句体内的变量声明与赋值
             TestBlock("{ if (c) { var x = 1\n x = 2 } }",
                 "[IfStmt(Path(c, []), [var x = Int(1,I32), Assign(Path(x, []) = Int(2,I32))], <none>)]");
+            // 单链 / 括号化 and/or 条件合法
+            TestBlock("{ if (a and b) { f() } }",
+                "[IfStmt(Binary(Path(a, []) and Path(b, [])), [Path(f(), [])], <none>)]");
+            TestBlock("{ if (a and (b or c)) { f() } }",
+                "[IfStmt(Binary(Path(a, []) and Group(Binary(Path(b, []) or Path(c, [])))), [Path(f(), [])], <none>)]");
+            TestBlock("{ if ((a and b) or c) { f() } }",
+                "[IfStmt(Binary(Group(Binary(Path(a, []) and Path(b, []))) or Path(c, [])), [Path(f(), [])], <none>)]");
 
             TestHarness.Blank();
         }
@@ -131,6 +138,10 @@ namespace RigiCompiler.Tests
             TestError("{ return@ 1 }", "Expected label after 'return@'");
             // 块未闭合
             TestError("{ var x = 1", "Unexpected end of file");
+            // if 条件三连 and/or：无优先级，必须括号化（SYNTAX §1.3）
+            TestError("{ if (a and b and c) { f() } }", "没有运算符优先级");
+            TestError("{ if (a or b or c) { f() } }", "没有运算符优先级");
+            TestError("{ if (a and b or c) { f() } }", "没有运算符优先级");
 
             TestHarness.Blank();
         }

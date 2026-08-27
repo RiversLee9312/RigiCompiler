@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using System.Linq;
 
 namespace RigiCompiler.Tests
@@ -11,7 +11,7 @@ namespace RigiCompiler.Tests
         // ===== S7b：bool 短路 and/or（BIL §11.3：if + 合成局部展开）=====
         private static void TestShortCircuit()
         {
-            var (unit, bound, lowered) = LowerUnit(
+            var (unit, bound, lowered) = LowerUnitWithStdlib(
                 "func f(a: bool, b: bool): bool { return (a and b) }\n" +
                 "func o(a: bool, b: bool): bool { return (a or b) }\n");
             CheckNoErrors("无诊断（短路展开）", unit);
@@ -49,7 +49,7 @@ namespace RigiCompiler.Tests
         // ===== S7b：if 表达式 → 合成结果局部 + 前置 LoweredIfStatement =====
         private static void TestIfExpressionLowering()
         {
-            var (unit, _, lowered) = LowerUnit(
+            var (unit, _, lowered) = LowerUnitWithStdlib(
                 "func f(x: i32): i32 {\n" +
                 "    var r = if ((x > 0)) { return@_ 1 } else { return@_ 2 }\n" +
                 "    return r\n" +
@@ -77,7 +77,7 @@ namespace RigiCompiler.Tests
         // ===== S7b：复合赋值脱糖（前置赋值 + 表达式位 Target 引用）=====
         private static void TestCompoundAssignmentLowering()
         {
-            var (unit, bound, lowered) = LowerUnit(
+            var (unit, bound, lowered) = LowerUnitWithStdlib(
                 "func f(a: i32): i32 {\n" +
                 "    var x = a\n" +
                 "    var y = (x += 1)\n" +
@@ -109,7 +109,7 @@ namespace RigiCompiler.Tests
             // 物化合成局部——getBox() 求值一次；纯读取目标直通零物化
             //（上例锁定）。Q6 后索引读侧为 T?，a[i] op= 形态由显式读改
             // 写替代（receiver/index 由用户显式物化）
-            var (unit2, _, lowered2) = LowerUnit(
+            var (unit2, _, lowered2) = LowerUnitWithStdlib(
                 "class Bag {\n" +
                 "    pub var item: i32\n" +
                 "    pub init(_ -> item)\n" +
@@ -160,7 +160,7 @@ namespace RigiCompiler.Tests
         {
             // 中间 return@（跨 region：嵌套 if → 外层 if 表达式 region）→
             // route 局部 + dispatcher relay，其后语句静死保留原位
-            var (unit, _, lowered) = LowerUnit(
+            var (unit, _, lowered) = LowerUnitWithStdlib(
                 "func f(x: i32): i32 {\n" +
                 "    var r = if (x > 0) {\n" +
                 "        if (x > 1) { return@_ 2 }\n" +
@@ -185,7 +185,7 @@ namespace RigiCompiler.Tests
 
             // 双分支都产标记 → if 之后语句为静死代码（routing 不移动
             // continuation——region 收尾展开后自然不可达，原地保留）
-            var (unit2, _, lowered2) = LowerUnit(
+            var (unit2, _, lowered2) = LowerUnitWithStdlib(
                 "func f(x: i32): i32 {\n" +
                 "    var r = if (x > 0) {\n" +
                 "        if (x > 1) { return@_ 1 } else { return@_ 2 }\n" +
@@ -215,7 +215,7 @@ namespace RigiCompiler.Tests
         private static void TestLoopLowering()
         {
             // while：条件求值移入 Judge 块（末尾写合成条件局部 .s0）
-            var (unit, _, lowered) = LowerUnit(
+            var (unit, _, lowered) = LowerUnitWithStdlib(
                 "func f(a: i32) {\n" +
                 "    var x = 0\n" +
                 "    while (x < a) {\n" +
@@ -243,7 +243,7 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("while 非 rev", !whileLoop.IsRev);
 
             // do-while → loop.rev（IsRev）
-            var (unit2, _, lowered2) = LowerUnit(
+            var (unit2, _, lowered2) = LowerUnitWithStdlib(
                 "func f(a: i32) {\n" +
                 "    do {\n" +
                 "        a = a - 1\n" +
@@ -258,7 +258,7 @@ namespace RigiCompiler.Tests
                 "[Assign(Param(a,i32), Binary(Sub, Param(a,i32), Int(1,i32), i32))], .b0)])");
 
             // 嵌套标签循环：break@outer 映射命中外层 .b0、continue 命中内层 .b1
-            var (unit3, _, lowered3) = LowerUnit(
+            var (unit3, _, lowered3) = LowerUnitWithStdlib(
                 "func f(a: i32) {\n" +
                 "    while (a > 0) named outer {\n" +
                 "        while (a > 1) {\n" +
@@ -286,7 +286,7 @@ namespace RigiCompiler.Tests
                     inner.BreakId));
 
             // 条件内短路展开：前置语句落在 Judge 块（不污染循环前块）
-            var (unit4, _, lowered4) = LowerUnit(
+            var (unit4, _, lowered4) = LowerUnitWithStdlib(
                 "func f(a: bool, b: bool) {\n" +
                 "    while ((a and b)) {\n" +
                 "    }\n" +
@@ -301,7 +301,7 @@ namespace RigiCompiler.Tests
             // 值块内 break 穿透：直接发 BIL 跳转（无展开、无 routing
             // 介入）；else 分支的 return@_ 同 region 尾位展开（只写结果、
             // 省略冗余 break）
-            var (unit5, _, lowered5) = LowerUnit(
+            var (unit5, _, lowered5) = LowerUnitWithStdlib(
                 "func f(x: i32): i32 {\n" +
                 "    var r = 0\n" +
                 "    while (x > 0) {\n" +
@@ -328,7 +328,7 @@ namespace RigiCompiler.Tests
         {
             // while 体 return@_ 外层 seq：loop region 写 route + break，
             // 后随 dispatcher relay 出 seq
-            var (unit, _, lowered) = LowerUnit(
+            var (unit, _, lowered) = LowerUnitWithStdlib(
                 "func f(x: i32): i32 {\n" +
                 "    return seq {\n" +
                 "        while (x > 1) { return@_ 1 }\n" +
@@ -354,7 +354,7 @@ namespace RigiCompiler.Tests
                 && loopDispatcher.SeqRouteHintRoute.Name == ".s2");
 
             // 嵌套循环：内层 return@ 穿两层 loop relay
-            var (unit2, _, lowered2) = LowerUnit(
+            var (unit2, _, lowered2) = LowerUnitWithStdlib(
                 "func g(): i32 {\n" +
                 "    return seq {\n" +
                 "        while (true) {\n" +
@@ -383,7 +383,7 @@ namespace RigiCompiler.Tests
                 !described2.Contains("StructuredExit"), described2);
 
             // break 不写 route：dispatcher fall-through 落到循环后 return@
-            var (unit3, _, lowered3) = LowerUnit(
+            var (unit3, _, lowered3) = LowerUnitWithStdlib(
                 "func h(x: i32): i32 {\n" +
                 "    return seq {\n" +
                 "        while (x > 0) {\n" +
@@ -471,7 +471,7 @@ namespace RigiCompiler.Tests
         private static void TestSwitchLowering()
         {
             // 全值匹配语句形态：LoweredSwitch + 合成 .breakid（无人引用，仅满足形态）
-            var (unit, bound, lowered) = LowerUnit(
+            var (unit, bound, lowered) = LowerUnitWithStdlib(
                 "func f(x: i32): i32 {\n" +
                 "    switch (x) {\n" +
                 "        (1) -> { return 1 }\n" +
@@ -492,7 +492,7 @@ namespace RigiCompiler.Tests
                 && ReferenceEquals(switchStmt.BreakId, fBody.Locals[0]));
 
             // 混合形态：任一 pattern → selector 物化 .sN + 嵌套 if 链（保序）
-            var (unit2, _, lowered2) = LowerUnit(
+            var (unit2, _, lowered2) = LowerUnitWithStdlib(
                 "func f(x: i32): i32 {\n" +
                 "    switch (x) {\n" +
                 "        (1) -> { return 1 }\n" +
@@ -519,7 +519,7 @@ namespace RigiCompiler.Tests
                     ((LoweredBinaryExpression)outerIf.Condition).Left).Symbol, selectorTemp));
 
             // 表达式形态：结果局部 + 前置 switch（分支体写结果局部）
-            var (unit3, _, lowered3) = LowerUnit(
+            var (unit3, _, lowered3) = LowerUnitWithStdlib(
                 "func f(x: i32): i32 {\n" +
                 "    return switch (x) {\n" +
                 "        (1) -> { 10 }\n" +
@@ -536,7 +536,7 @@ namespace RigiCompiler.Tests
         // ===== throw 降级（S7d：恒等 + 值块终止口径）=====
         private static void TestThrowLowering()
         {
-            var (unit, _, lowered) = LowerUnit(
+            var (unit, _, lowered) = LowerUnitWithStdlib(
                 "class MyException : core.Exception {\n" +
                 "    pub override func getMessage(): String { return message }\n" +
                 "}\n" +
@@ -548,7 +548,7 @@ namespace RigiCompiler.Tests
                 "Body(f, [], [Throw(New(MyException, []))])");
 
             // 值块内 throw：路径终止（其后语句截断，if 转换不编织 continuation）
-            var (unit2, _, lowered2) = LowerUnit(
+            var (unit2, _, lowered2) = LowerUnitWithStdlib(
                 "class MyException : core.Exception {\n" +
                 "    pub override func getMessage(): String { return message }\n" +
                 "}\n" +
@@ -565,7 +565,7 @@ namespace RigiCompiler.Tests
 
             // throw 同块其后语句：静态不可达，StructuredExitRouting 截断
             // 不发射（Rigi 无 goto/label，死代码不存在被跳入复活的可能）
-            var (unit3, _, lowered3) = LowerUnit(
+            var (unit3, _, lowered3) = LowerUnitWithStdlib(
                 "class MyException : core.Exception {\n" +
                 "    pub override func getMessage(): String { return message }\n" +
                 "}\n" +
@@ -587,7 +587,7 @@ namespace RigiCompiler.Tests
             // c2 命中路径产值必须留在结果局部（M46 修复前被后续语句覆盖
             // 为 3）；Stage B：跨 region return@ 经 route 局部 + dispatcher
             // relay 跳出，其后 x = 3 / return@_ x 为静死代码原位保留
-            var (unit, _, lowered) = LowerUnit(
+            var (unit, _, lowered) = LowerUnitWithStdlib(
                 "func f(c0: bool, c1: bool, c2: bool): i32 {\n" +
                 "    var x = 0\n" +
                 "    var r = if (c0) {\n" +

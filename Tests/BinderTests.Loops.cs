@@ -121,7 +121,7 @@ namespace RigiCompiler.Tests
                 "Use of unassigned local variable 'x'");
 
             // DA：finally 叠到 break 出环点
-            var (unit11, _) = BindUnit(
+            var (unit11, _) = BindUnitWithStdlib(
                 "func f(b: bool): i32 {\n" +
                 "    var x: i32\n" +
                 "    do {\n" +

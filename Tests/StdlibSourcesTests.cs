@@ -492,30 +492,36 @@ namespace RigiCompiler.Tests
             // 顶层：namespace + RuntimeException/IOException/CastException/
             // NoSuchMethodException/DividedByZeroException 5 个 open class
             //（共 6 个声明，S10）
-            TestHarness.CheckTrue("顶层恰好 6 个声明（namespace + 5 class）",
-                root.Declarations.Count == 6, $"实际 {root.Declarations.Count}");
-            if (root.Declarations.Count < 6) { TestHarness.Blank(); return; }
+            TestHarness.CheckTrue("顶层恰好 7 个声明（namespace + Exception + 5 class）",
+                root.Declarations.Count == 7, $"实际 {root.Declarations.Count}");
+            if (root.Declarations.Count < 7) { TestHarness.Blank(); return; }
 
             var ns = root.Declarations[0] as NamespaceDeclarationASTNode;
             TestHarness.CheckTrue("首声明是 namespace core",
                 ns != null && AstDescribe.Symbol(ns.Name.symbol) == "core");
 
-            string[] expected = { "RuntimeException", "IOException", "CastException",
+            string[] expected = { "Exception", "RuntimeException", "IOException", "CastException",
                 "NoSuchMethodException", "DividedByZeroException" };
             for (int i = 0; i < expected.Length; i++)
             {
                 var index = i + 1;
                 if (root.Declarations[index] is ClassDeclarationASTNode exceptionClass)
                 {
-                    TestHarness.CheckTrue($"声明[{index}] 是 open class {expected[i]}",
+                    var wantAbstract = expected[i] == "Exception";
+                    var wantMod = wantAbstract ? Keywords.ABSTRACT : Keywords.OPEN;
+                    var kindLabel = wantAbstract ? "abstract" : "open";
+                    TestHarness.CheckTrue($"声明[{index}] 是 {kindLabel} class {expected[i]}",
                         exceptionClass.ClassName == expected[i]
-                        && exceptionClass.Modifiers.Contains(Keywords.OPEN));
-                    var init = exceptionClass.Members.OfType<CallableDeclarationASTNode>()
-                        .FirstOrDefault(m => m.Kind == CallableKind.Init);
-                    TestHarness.CheckTrue($"{expected[i]} 自持 init（单 String 参数）",
-                        init != null
-                        && init.Parameters.Parameters.Count == 1
-                        && init.Parameters.Parameters[0].Type != null);
+                        && exceptionClass.Modifiers.Contains(wantMod));
+                    if (!wantAbstract)
+                    {
+                        var init = exceptionClass.Members.OfType<CallableDeclarationASTNode>()
+                            .FirstOrDefault(m => m.Kind == CallableKind.Init);
+                        TestHarness.CheckTrue($"{expected[i]} 自持 init（单 String 参数）",
+                            init != null
+                            && init.Parameters.Parameters.Count == 1
+                            && init.Parameters.Parameters[0].Type != null);
+                    }
                 }
                 else
                 {

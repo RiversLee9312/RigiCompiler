@@ -231,10 +231,10 @@ try {
 
 ### 8.1 异常类型层级
 
-异常根 `core.Exception` 是语言级内建类型（进编译器 bootstrap，与 `Object`/`ValueType` 同列），open 可继承：
+异常根 `core.Exception` 由标准库源码声明（`stdlib/core/exceptions.rg`，namespace `core`），abstract 可继承：
 
 ```rigi
-pub open class Exception { ... }   // 概念形态；实际声明在编译器 bootstrap，不在 stdlib 源
+pub abstract class Exception { ... }   // 实际声明在 stdlib/core/exceptions.rg
 ```
 
 异常根携带：

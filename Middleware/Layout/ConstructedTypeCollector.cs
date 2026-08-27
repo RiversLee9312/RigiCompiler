@@ -8,9 +8,11 @@ namespace RigiCompiler.Middleware.Layout
     /// <summary>
     /// 构造类型收集（MW5 c2-a）：从已过门禁的 BilModule 收集需物化的
     /// 构造类型 canonical（MwTypeKey.Normalize 归一），传递闭包 + 环保护。
-    /// 来源：new/new.case/new.array 的 Type；fn .vars/.args；getid.type 与
-    /// cast 目标；get.array/set.array 元素类型；构造类型代入后的
-    /// extends/implements；构造实参内层递归。
+    /// 来源：new/new.case/new.array 的 Type；new.indirect 实参静态类型
+    ///（argSheets 物化需要 sheet）；fn .vars/.args；getid.type /
+    /// getid.var 操作数静态类型与结果类型、cast 目标、type.is/supers/with
+    /// 静态目标；get.array/set.array 元素类型；构造类型代入后的
+    /// extends/implements；构造实参内层递归。.typeid<X> 按构造收集（不擦除）。
     /// </summary>
     public static class ConstructedTypeCollector
     {
@@ -173,6 +175,12 @@ namespace RigiCompiler.Middleware.Layout
                     case NewInstruction n:
                         Enqueue(n.Type.TypeRef, seen, order, queue);
                         break;
+                    case NewIndirectInstruction n:
+                        foreach (var argument in n.Arguments)
+                        {
+                            Enqueue(Lookup(locals, argument.Name), seen, order, queue);
+                        }
+                        break;
                     case NewCaseInstruction n:
                         Enqueue(n.Type.TypeRef, seen, order, queue);
                         break;
@@ -182,8 +190,14 @@ namespace RigiCompiler.Middleware.Layout
                     case GetIdTypeInstruction g:
                         Enqueue(g.TargetType.TypeRef, seen, order, queue);
                         break;
+                    case GetIdVarInstruction g:
+                        Enqueue(Lookup(locals, g.Value.Name), seen, order, queue);
+                        break;
                     case CastInstruction c:
                         Enqueue(c.TargetType.TypeRef, seen, order, queue);
+                        break;
+                    case DirectTypeCheckInstruction check:
+                        Enqueue(check.TargetType.TypeRef, seen, order, queue);
                         break;
                     case GetArrayInstruction g:
                         Enqueue(ElementTypeOf(locals, g.Array.Name), seen, order, queue);

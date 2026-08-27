@@ -1,4 +1,4 @@
-﻿using System.Linq;
+using System.Linq;
 
 namespace RigiCompiler.Tests
 {
@@ -1253,7 +1253,7 @@ namespace RigiCompiler.Tests
             var (unitIf, _) = BindUnit(w +
                 "pub func fIf(u: User?, s: Svc): User { return u if? s.fetch() }\n");
             CheckNoErrors("#28④ if? 右操作数降级豁免", unitIf);
-            var (unitThrow, _) = BindUnit(w +
+            var (unitThrow, _) = BindUnitWithStdlib(w +
                 "pub func fThrow(s: Svc) { throw s.err() }\n");
             CheckNoErrors("#28④ throw 操作数降级豁免", unitThrow);
             var (unitComp, _) = BindUnit(w +
@@ -1278,7 +1278,7 @@ namespace RigiCompiler.Tests
                 "pub func gIf(u: User?, a: Any): User { return u if? a }\n");
             TestHarness.CheckSemanticError("普通 Any 不作 if? 回退",
                 unitPlainAny.Diagnostics, "Null fallback must be assignable");
-            var (unitPlainThrow, _) = BindUnit(
+            var (unitPlainThrow, _) = BindUnitWithStdlib(
                 "pub func gThrow(a: Any) { throw a }\n");
             TestHarness.CheckSemanticError("普通 Any 不可 throw",
                 unitPlainThrow.Diagnostics, "Cannot throw");

@@ -1603,6 +1603,505 @@ namespace RigiCompiler.Tests
                 "    Console.println(a[0] if? \"\")\n" +
                 "    return 0\n" +
                 "}\n"),
+            Case("typeOf 标量值",
+                "import core.io.Console\n" +
+                "@NativeLibrary(\"rigi_rt\")\n" +
+                "@NativeSymbol(\"any_to_string\")\n" +
+                "native func any_to_string(value: Any): String\n" +
+                "pub func main(): i32 {\n" +
+                "    var x = 42\n" +
+                "    var t = typeOf(x)\n" +
+                "    if (x is t) { Console.println(\"i32 hit\") }\n" +
+                "    Console.println(any_to_string((t as Any)))\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("typeOf 对象实际子类",
+                "import core.io.Console\n" +
+                "@NativeLibrary(\"rigi_rt\")\n" +
+                "@NativeSymbol(\"any_to_string\")\n" +
+                "native func any_to_string(value: Any): String\n" +
+                "pub open class Animal { pub init() { } }\n" +
+                "pub class Dog : Animal { pub init() { } }\n" +
+                "pub func main(): i32 {\n" +
+                "    var a: Animal = new Dog()\n" +
+                "    var t = typeOf(a)\n" +
+                "    if (a is t) { Console.println(\"actual hit\") }\n" +
+                "    if (a is Dog) { Console.println(\"dog hit\") }\n" +
+                "    Console.println(any_to_string((t as Any)))\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("typeOf Any 装箱值",
+                "import core.io.Console\n" +
+                "@NativeLibrary(\"rigi_rt\")\n" +
+                "@NativeSymbol(\"any_to_string\")\n" +
+                "native func any_to_string(value: Any): String\n" +
+                "pub func main(): i32 {\n" +
+                "    var a: Any = 42\n" +
+                "    var t = typeOf(a)\n" +
+                "    if (a is t) { Console.println(\"any hit\") }\n" +
+                "    Console.println(any_to_string((t as Any)))\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("泛型体内 typeOf(T 型值)",
+                "import core.io.Console\n" +
+                "pub func probe\\<T>(x: T): bool {\n" +
+                "    var t = typeOf(x)\n" +
+                "    return x is t\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    if (probe\\<i32>(7)) { Console.println(\"gen i32\") }\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("typeid 装箱 Any 拆回",
+                "import core.io.Console\n" +
+                "pub func main(): i32 {\n" +
+                "    var t = typeOf(42)\n" +
+                "    var a: Any = t\n" +
+                "    if (a is Type\\<Any>) { Console.println(\"is type\") }\n" +
+                "    var back = a as Type\\<i32>\n" +
+                "    if (42 is back) { Console.println(\"box back\") }\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("Type 构造边界 is",
+                "import core.io.Console\n" +
+                "pub func main(): i32 {\n" +
+                "    var t = typeOf(42)\n" +
+                "    if (t is Type\\<i32>) { Console.println(\"is i32\") }\n" +
+                "    if (t is Type\\<String>) { Console.println(\"is str\") }\n" +
+                "    if (t is Type\\<Any>) { Console.println(\"is any\") }\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("Type<i32> 装箱拆回",
+                "import core.io.Console\n" +
+                "pub func main(): i32 {\n" +
+                "    var t = typeOf(42)\n" +
+                "    var a: Any = t\n" +
+                "    var back = a as Type\\<i32>\n" +
+                "    if (42 is back) { Console.println(\"unbox i32\") }\n" +
+                "    return 0\n" +
+                "}\n"),
+            FailCase("Type<i32> 拆 Type<String>",
+                "pub func main(): i32 {\n" +
+                "    var t = typeOf(42)\n" +
+                "    var a: Any = t\n" +
+                "    var bad = a as Type\\<String>\n" +
+                "    return 0\n" +
+                "}\n", "无法将 .any 转换为"),
+            Case("typeOf(null) 打印 .null",
+                "import core.io.Console\n" +
+                "@NativeLibrary(\"rigi_rt\")\n" +
+                "@NativeSymbol(\"any_to_string\")\n" +
+                "native func any_to_string(value: Any): String\n" +
+                "pub func main(): i32 {\n" +
+                "    var x: String? = null\n" +
+                "    var t = typeOf(x)\n" +
+                "    Console.println(any_to_string((t as Any)))\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("typeOf 子类与 Type<基类> is",
+                "import core.io.Console\n" +
+                "pub open class Animal { pub init() { } }\n" +
+                "pub class Dog : Animal { pub init() { } }\n" +
+                "pub func main(): i32 {\n" +
+                "    var a: Animal = new Dog()\n" +
+                "    var t = typeOf(a)\n" +
+                "    if (t is Type\\<Dog>) { Console.println(\"tid dog\") }\n" +
+                "    if (t is Type\\<Animal>) { Console.println(\"tid animal\") }\n" +
+                "    if (a is Dog) { Console.println(\"a dog\") }\n" +
+                "    if (a is Animal) { Console.println(\"a animal\") }\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("动态 new 零参 T()",
+                "import core.io.Console\n" +
+                "pub class Point {\n" +
+                "    pub var x: i32\n" +
+                "    pub init() { x = 4 }\n" +
+                "}\n" +
+                "pub func make\\<T extends Point>(): T { return T() }\n" +
+                "pub func main(): i32 {\n" +
+                "    var p = make\\<Point>()\n" +
+                "    if (p.x == 4) { Console.println(\"zero ok\") }\n" +
+                "    return p.x\n" +
+                "}\n"),
+            Case("动态 new 带实参 T(args)",
+                "import core.io.Console\n" +
+                "pub class Point {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(v: i32) { x = v }\n" +
+                "}\n" +
+                "pub func make\\<T extends Point>(v: i32): T { return T(v) }\n" +
+                "pub func main(): i32 {\n" +
+                "    var p = make\\<Point>(9)\n" +
+                "    if (p.x == 9) { Console.println(\"args ok\") }\n" +
+                "    return p.x\n" +
+                "}\n"),
+            Case("动态 new typeOf 来源",
+                "import core.io.Console\n" +
+                "pub class Point {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(v: i32) { x = v }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var t = typeOf(Point)\n" +
+                "    var p = new t(6)\n" +
+                "    if (p.x == 6) { Console.println(\"typeof ok\") }\n" +
+                "    return p.x\n" +
+                "}\n"),
+            Case("动态 new Type<T> 参数来源",
+                "import core.io.Console\n" +
+                "pub class Point {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(v: i32) { x = v }\n" +
+                "}\n" +
+                "pub func make(tid: Type\\<Point>, v: i32): Point { return new tid(v) }\n" +
+                "pub func main(): i32 {\n" +
+                "    var p = make(typeOf(Point), 8)\n" +
+                "    if (p.x == 8) { Console.println(\"typeparam ok\") }\n" +
+                "    return p.x\n" +
+                "}\n"),
+            Case("动态 new 占位静态实参",
+                "import core.io.Console\n" +
+                "pub class Box\\<T> {\n" +
+                "    pub var v: T\n" +
+                "    pub init(v: T) { this.v = v }\n" +
+                "}\n" +
+                "pub func make\\<T, U extends Box\\<T>>(x: T): U { return U(x) }\n" +
+                "pub func main(): i32 {\n" +
+                "    var b = make\\<i32, Box\\<i32>>(11)\n" +
+                "    if (b.v == 11) { Console.println(\"ph arg ok\") }\n" +
+                "    return b.v\n" +
+                "}\n"),
+            Case("动态 new 泛型构造目标 Box<i32>",
+                "import core.io.Console\n" +
+                "pub class Box\\<T> {\n" +
+                "    pub var v: T\n" +
+                "    pub init(v: T) { this.v = v }\n" +
+                "}\n" +
+                "pub func make\\<T extends Box\\<i32>>(x: i32): T { return T(x) }\n" +
+                "pub func main(): i32 {\n" +
+                "    var b = make\\<Box\\<i32>>(13)\n" +
+                "    if (b.v == 13) { Console.println(\"box tid ok\") }\n" +
+                "    return b.v\n" +
+                "}\n"),
+            Case("动态 new 派生 typeid 命中派生 init",
+                "import core.io.Console\n" +
+                "pub open class Base {\n" +
+                "    pub var n: i32\n" +
+                "    pub init() { n = 1 }\n" +
+                "}\n" +
+                "pub class Derived : Base {\n" +
+                "    pub init() { n = 2 }\n" +
+                "}\n" +
+                "pub func make\\<T extends Base>(): T { return T() }\n" +
+                "pub func main(): i32 {\n" +
+                "    var d = make\\<Derived>()\n" +
+                "    if (d.n == 2) { Console.println(\"derived ok\") }\n" +
+                "    return d.n\n" +
+                "}\n"),
+            FailCase("动态 new 无匹配 init",
+                "pub class OnlyI32 {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(v: i32) { x = v }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var t = typeOf(OnlyI32)\n" +
+                "    var o = new t(true)\n" +
+                "    return 0\n" +
+                "}\n", "不匹配任何 init"),
+            Case("动态 new String 实参 T(v)",
+                "import core.io.Console\n" +
+                "pub class Named {\n" +
+                "    pub var s: String\n" +
+                "    pub init(s: String) { this.s = s }\n" +
+                "}\n" +
+                "pub func make\\<T extends Named>(s: String): T { return T(s) }\n" +
+                "pub func main(): i32 {\n" +
+                "    var n = make\\<Named>(\"hi\" + \"!\")\n" +
+                "    if (n.s == \"hi!\") { Console.println(\"str arg ok\") }\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("动态 new String 实参 typeOf",
+                "import core.io.Console\n" +
+                "pub class Named {\n" +
+                "    pub var s: String\n" +
+                "    pub init(s: String) { this.s = s }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var t = typeOf(Named)\n" +
+                "    var n = new t(\"hi\" + \"!\")\n" +
+                "    if (n.s == \"hi!\") { Console.println(\"str typeof ok\") }\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("动态 new rich struct 实参",
+                "import core.io.Console\n" +
+                "pub struct Pair2 {\n" +
+                "    pub var a: String\n" +
+                "    pub var b: String\n" +
+                "    pub init(_ -> a, _ -> b)\n" +
+                "}\n" +
+                "pub class Holder {\n" +
+                "    pub var p: Pair2\n" +
+                "    pub init(p: Pair2) { this.p = p }\n" +
+                "}\n" +
+                "pub func make\\<T extends Holder>(p: Pair2): T { return T(p) }\n" +
+                "pub func main(): i32 {\n" +
+                "    var h = make\\<Holder>(new Pair2(\"aa\", \"bb\"))\n" +
+                "    if ((h.p.a == \"aa\") and (h.p.b == \"bb\")) { Console.println(\"rich ok\") }\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("动态 new 多实参混合",
+                "import core.io.Console\n" +
+                "pub class Node {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(_ -> x)\n" +
+                "}\n" +
+                "pub class Mix {\n" +
+                "    pub var n: i32\n" +
+                "    pub var s: String\n" +
+                "    pub var p: Node\n" +
+                "    pub init(n: i32, s: String, p: Node) {\n" +
+                "        this.n = n\n" +
+                "        this.s = s\n" +
+                "        this.p = p\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func make\\<T extends Mix>(n: i32, s: String, p: Node): T {\n" +
+                "    return T(n, s, p)\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var m = make\\<Mix>(7, \"hi\" + \"!\", new Node(3))\n" +
+                "    if (m.n == 7) {\n" +
+                "        if (m.s == \"hi!\") {\n" +
+                "            if (m.p.x == 3) { Console.println(\"mix ok\") }\n" +
+                "        }\n" +
+                "    }\n" +
+                "    return m.n\n" +
+                "}\n"),
+            FailCase("动态 new abstract 目标",
+                "pub abstract class Abs {\n" +
+                "    pub init() { }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var t = typeOf(Abs)\n" +
+                "    var a = new t()\n" +
+                "    return 0\n" +
+                "}\n", "目标不可构造"),
+            Case("动态 new Pair typeOf 值",
+                "import core.io.Console\n" +
+                "pub func main(): i32 {\n" +
+                "    var sample = new Pair\\<String, i32>(\"a\", 1)\n" +
+                "    var t = typeOf(sample)\n" +
+                "    var p = new t(\"b\", 2)\n" +
+                "    if (p.key == \"b\") {\n" +
+                "        if (p.value == 2) { Console.println(\"pair ok\") }\n" +
+                "    }\n" +
+                "    return p.value\n" +
+                "}\n"),
+            Case("动态 new RuntimeException getMessage",
+                "import core.io.Console\n" +
+                "pub func main(): i32 {\n" +
+                "    var sample = new RuntimeException(\"x\")\n" +
+                "    var t = typeOf(sample)\n" +
+                "    var e = new t(\"hello\")\n" +
+                "    if (e.getMessage() == \"hello\") { Console.println(\"exn ok\") }\n" +
+                "    return 0\n" +
+                "}\n"),
+            FailCase("动态 new 抽象 Exception",
+                "pub func main(): i32 {\n" +
+                "    var t = typeOf(Exception)\n" +
+                "    var a = new t()\n" +
+                "    return 0\n" +
+                "}\n", "目标不可构造"),
+            Case("动态 new struct 目标字段落位",
+                "import core.io.Console\n" +
+                "pub struct Vec {\n" +
+                "    pub var x: i32\n" +
+                "    pub var y: i32\n" +
+                "    pub init(a: i32, b: i32) { x = a\n" +
+                "        y = b }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var t = typeOf(Vec)\n" +
+                "    var s = new t(3, 4)\n" +
+                "    if ((s.x == 3) and (s.y == 4)) { Console.println(\"struct ok\") }\n" +
+                "    return (s.x + s.y)\n" +
+                "}\n"),
+            Case("动态 new 泛型界 struct Pair2",
+                "import core.io.Console\n" +
+                "pub struct Pair2 {\n" +
+                "    pub var a: i32\n" +
+                "    pub var b: i32\n" +
+                "    pub init(_ -> a, _ -> b)\n" +
+                "}\n" +
+                "pub func make\\<T extends Pair2>(x: i32, y: i32): T { return T(x, y) }\n" +
+                "pub func main(): i32 {\n" +
+                "    var p = make\\<Pair2>(5, 6)\n" +
+                "    if ((p.a == 5) and (p.b == 6)) { Console.println(\"pair2 ok\") }\n" +
+                "    return (p.a + p.b)\n" +
+                "}\n"),
+            Case("动态 new 带实参 struct init",
+                "import core.io.Console\n" +
+                "pub struct Box {\n" +
+                "    pub var n: i32\n" +
+                "    pub init(v: i32) { n = v }\n" +
+                "}\n" +
+                "pub func fromType(tid: Type\\<Box>, v: i32): Box { return new tid(v) }\n" +
+                "pub func main(): i32 {\n" +
+                "    var b = fromType(typeOf(Box), 11)\n" +
+                "    if (b.n == 11) { Console.println(\"sret ok\") }\n" +
+                "    return b.n\n" +
+                "}\n"),
+            FailCase("动态 new enum 目标",
+                "pub enum struct Color {}[Red, Green]\n" +
+                "pub func main(): i32 {\n" +
+                "    var t = typeOf(Color)\n" +
+                "    var e = new t()\n" +
+                "    return 0\n" +
+                "}\n", "目标不可构造"),
+            FailCase("动态 new struct 无匹配 init",
+                "pub struct OnlyI32 {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(v: i32) { x = v }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var t = typeOf(OnlyI32)\n" +
+                "    var o = new t(true)\n" +
+                "    return 0\n" +
+                "}\n", "不匹配任何 init"),
+            Case("标量界零参 T()",
+                "import core.io.Console\n" +
+                "pub func make\\<T extends i32>(): T { return T() }\n" +
+                "pub func main(): i32 {\n" +
+                "    var x = make\\<i32>()\n" +
+                "    if (x == 0) { Console.println(\"i32 zero\") }\n" +
+                "    return x\n" +
+                "}\n"),
+            Case("标量目标零参 new typeValue()",
+                "import core.io.Console\n" +
+                "pub func main(): i32 {\n" +
+                "    var t = typeOf(42)\n" +
+                "    var x: i32 = new t()\n" +
+                "    if (x == 0) { Console.println(\"tv zero\") }\n" +
+                "    return x\n" +
+                "}\n"),
+            Case("String 界零参 T()",
+                "import core.io.Console\n" +
+                "pub func make\\<T extends String>(): T { return T() }\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = make\\<String>()\n" +
+                "    if (s == \"\") { Console.println(\"str zero\") }\n" +
+                "    return 0\n" +
+                "}\n"),
+            FailCase("标量目标带实参 abort",
+                "pub func main(): i32 {\n" +
+                "    var t = typeOf(42)\n" +
+                "    var x: i32 = new t(1)\n" +
+                "    return x\n" +
+                "}\n", "不匹配任何 init"),
+            FailCase("动态 new 零参无匹配 init",
+                "pub class OnlyI32 {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(v: i32) { x = v }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var t = typeOf(OnlyI32)\n" +
+                "    var o = new t()\n" +
+                "    return 0\n" +
+                "}\n", "不匹配任何 init"),
+            Case("数值 cast 宽化窄化",
+                "pub func main(): i32 {\n" +
+                "    var a: i32 = 1000\n" +
+                "    var b: i64 = (a as i64)\n" +
+                "    var c: i16 = (a as i16)\n" +
+                "    var d: u8 = (42 as u8)\n" +
+                "    var e: double = (a as double)\n" +
+                "    var f: i32 = ((e as i32) + (c as i32))\n" +
+                "    return ((f + (d as i32)) + (b as i32))\n" +
+                "}\n"),
+            Case("数值 cast 符号截断",
+                "pub func main(): i32 {\n" +
+                "    var n: i32 = -1\n" +
+                "    var u = n as u32\n" +
+                "    var back = u as i32\n" +
+                "    var w = (300 as i8) as i32\n" +
+                "    if (back == -1) { return w }\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("浮点 cast 截断与 NaN",
+                "pub func main(): i32 {\n" +
+                "    var z = 0.0\n" +
+                "    var nan = z / z\n" +
+                "    var n = nan as i32\n" +
+                "    var t = (1.9 as i32)\n" +
+                "    var neg = ((0.0 - 1.9) as i32)\n" +
+                "    return (((n * 100) + (t * 10)) + (0 - neg))\n" +
+                "}\n"),
+            Case("浮点 cast 溢出口径",
+                "pub func main(): i32 {\n" +
+                "    var big = 1e20\n" +
+                "    var hi = big as i32\n" +
+                "    var lo = ((0.0 - big) as i32)\n" +
+                "    if ((hi == 2147483647) and (lo < 0)) { return 1 }\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("占位 cast 命中",
+                "import core.io.Console\n" +
+                "pub func conv\\<T>(x: Any): T { return x as T }\n" +
+                "pub func main(): i32 {\n" +
+                "    var n = conv\\<i32>(42 as Any)\n" +
+                "    if (n == 42) { Console.println(\"ph hit\") }\n" +
+                "    return n\n" +
+                "}\n"),
+            Case("占位 as? 命中与 null",
+                "import core.io.Console\n" +
+                "pub open class Animal { pub init() { } }\n" +
+                "pub class Dog : Animal { pub init() { } }\n" +
+                "pub func safe\\<T>(a: Animal): T { return a as? T }\n" +
+                "pub func main(): i32 {\n" +
+                "    var d: Animal = new Dog()\n" +
+                "    var hit = safe\\<Dog>(d)\n" +
+                "    var miss = safe\\<Dog>(new Animal())\n" +
+                "    if (hit != null) { Console.println(\"as? hit\") }\n" +
+                "    if (miss == null) { Console.println(\"as? null\") }\n" +
+                "    return 0\n" +
+                "}\n"),
+            FailCase("占位 cast 失败 abort",
+                "pub func conv\\<T>(x: Any): T { return x as T }\n" +
+                "pub func main(): i32 {\n" +
+                "    return conv\\<String>(42 as Any)\n" +
+                "}\n", "无法将 .any 转换为"),
+            Case("struct 恒等 cast",
+                "pub struct Point {\n" +
+                "    pub var x: i32\n" +
+                "    pub var y: i32\n" +
+                "    pub init(_ -> x, _ -> y)\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = new Point(3, 4)\n" +
+                "    var b = a as Point\n" +
+                "    return ((b.x * 10) + b.y)\n" +
+                "}\n"),
+            FailCase("struct 非恒等 abort",
+                "pub struct A {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(_ -> x)\n" +
+                "}\n" +
+                "pub struct B {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(_ -> x)\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = new A(1)\n" +
+                "    var b = a as B\n" +
+                "    return 0\n" +
+                "}\n", "转换为"),
+            Case("String 恒等 cast",
+                "import core.io.Console\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = \"hi\" as String\n" +
+                "    Console.println(s)\n" +
+                "    return 0\n" +
+                "}\n"),
         };
 
         // 单用例：源 → 中端全管线 → BIL 文本 → VM 执行 + native 编译执行，

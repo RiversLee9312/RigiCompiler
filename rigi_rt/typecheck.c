@@ -7,6 +7,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 static const RigiTypeSheet *rigi_actual_sheet(uint64_t type_id, uint64_t payload)
 {
@@ -63,6 +64,13 @@ static int32_t rigi_sheet_is(const RigiTypeSheet *actual, const RigiTypeSheet *t
 int32_t rigi_type_is(uint64_t type_id, uint64_t payload, const RigiTypeSheet *target)
 {
     return rigi_sheet_is(rigi_actual_sheet(type_id, payload), target);
+}
+
+/* typeOf 值形态：返回实际 TypeSheet*。null 胖引用仍返 NULL，
+ * 生成代码替换为 @typesheet..null（C 看不到内部链接全局）。 */
+const RigiTypeSheet *rigi_typeof(uint64_t type_id, uint64_t payload)
+{
+    return rigi_actual_sheet(type_id, payload);
 }
 
 int32_t rigi_type_is_indirect(uint64_t type_id, uint64_t payload,
@@ -167,4 +175,253 @@ int32_t rigi_type_with_indirect(uint64_t type_id, uint64_t payload,
     const RigiTypeSheet *wrapper)
 {
     return rigi_type_with(type_id, payload, wrapper);
+}
+
+/* ===== MW8c-2 动态 cast / 浮点→整数 ===== */
+
+static int rigi_cast_sheet_name_eq(const RigiTypeSheet *sheet, const char *want,
+    int64_t want_len)
+{
+    const RigiTypeInfo *info;
+    if (sheet == NULL || (info = sheet->typeInfoId) == NULL)
+    {
+        return 0;
+    }
+    if (info->name.len != want_len || info->name.data == NULL)
+    {
+        return 0;
+    }
+    return memcmp(info->name.data, want, (size_t)want_len) == 0;
+}
+
+#define RIGI_CAST_SHEET_IS(sheet, lit) \
+    rigi_cast_sheet_name_eq((sheet), (lit), (int64_t)(sizeof(lit) - 1))
+
+enum
+{
+    RIGI_NK_NONE = 0,
+    RIGI_NK_I8,
+    RIGI_NK_U8,
+    RIGI_NK_I16,
+    RIGI_NK_U16,
+    RIGI_NK_I32,
+    RIGI_NK_U32,
+    RIGI_NK_I64,
+    RIGI_NK_U64,
+    RIGI_NK_F32,
+    RIGI_NK_F64,
+    RIGI_NK_CHAR
+};
+
+static int rigi_numeric_kind(const RigiTypeSheet *sheet)
+{
+    if (RIGI_CAST_SHEET_IS(sheet, "core::i8")) return RIGI_NK_I8;
+    if (RIGI_CAST_SHEET_IS(sheet, "core::u8")) return RIGI_NK_U8;
+    if (RIGI_CAST_SHEET_IS(sheet, "core::i16")) return RIGI_NK_I16;
+    if (RIGI_CAST_SHEET_IS(sheet, "core::u16")) return RIGI_NK_U16;
+    if (RIGI_CAST_SHEET_IS(sheet, "core::i32")) return RIGI_NK_I32;
+    if (RIGI_CAST_SHEET_IS(sheet, "core::u32")) return RIGI_NK_U32;
+    if (RIGI_CAST_SHEET_IS(sheet, "core::i64")) return RIGI_NK_I64;
+    if (RIGI_CAST_SHEET_IS(sheet, "core::u64")) return RIGI_NK_U64;
+    if (RIGI_CAST_SHEET_IS(sheet, "core::float")) return RIGI_NK_F32;
+    if (RIGI_CAST_SHEET_IS(sheet, "core::double")) return RIGI_NK_F64;
+    if (RIGI_CAST_SHEET_IS(sheet, "core::char")) return RIGI_NK_CHAR;
+    return RIGI_NK_NONE;
+}
+
+int64_t rigi_cast_f64_to_int(double v, int32_t kind)
+{
+    /* kind 0=i32 饱和（窄整数再截断）1=u32 饱和 2=i64 饱和 3=u64 饱和。
+     * 对齐 .NET 10 unchecked (T)double：NaN→0，溢出饱和。 */
+    if (v != v)
+    {
+        return 0;
+    }
+    if (kind == 1)
+    {
+        if (v >= 4294967295.0) return (int64_t)(uint32_t)4294967295u;
+        if (v <= 0.0) return 0;
+        return (int64_t)(uint32_t)v;
+    }
+    if (kind == 2)
+    {
+        if (v >= 9223372036854775808.0) return (int64_t)9223372036854775807LL;
+        if (v < -9223372036854775808.0) return (int64_t)((uint64_t)1 << 63);
+        return (int64_t)v;
+    }
+    if (kind == 3)
+    {
+        if (v <= 0.0) return 0;
+        if (v >= 18446744073709551616.0) return (int64_t)(~(uint64_t)0);
+        return (int64_t)(uint64_t)v;
+    }
+    if (v >= 2147483647.0) return 2147483647;
+    if (v <= -2147483648.0) return (int64_t)(-2147483647 - 1);
+    return (int64_t)(int32_t)v;
+}
+
+static uint64_t rigi_pack_int_payload(int kind, int64_t signed_v, uint64_t unsigned_v,
+    int src_signed)
+{
+    int64_t v = src_signed ? signed_v : (int64_t)unsigned_v;
+    uint64_t u = src_signed ? (uint64_t)signed_v : unsigned_v;
+    switch (kind)
+    {
+    case RIGI_NK_I8: return (uint64_t)(uint8_t)(int8_t)v;
+    case RIGI_NK_U8: return (uint64_t)(uint8_t)u;
+    case RIGI_NK_I16: return (uint64_t)(uint16_t)(int16_t)v;
+    case RIGI_NK_U16:
+    case RIGI_NK_CHAR: return (uint64_t)(uint16_t)u;
+    case RIGI_NK_I32: return (uint64_t)(uint32_t)(int32_t)v;
+    case RIGI_NK_U32: return (uint64_t)(uint32_t)u;
+    case RIGI_NK_I64: return (uint64_t)v;
+    case RIGI_NK_U64: return u;
+    default: return 0;
+    }
+}
+
+static int rigi_numeric_convert(int src_kind, uint64_t src_payload, int dst_kind,
+    uint64_t *out_payload)
+{
+    double as_f64;
+    int src_signed;
+    int64_t s;
+    uint64_t u;
+    float f32;
+    uint32_t fbits;
+    if (src_kind == RIGI_NK_NONE || dst_kind == RIGI_NK_NONE)
+    {
+        return 0;
+    }
+    if (src_kind == RIGI_NK_F32)
+    {
+        fbits = (uint32_t)src_payload;
+        memcpy(&f32, &fbits, sizeof(f32));
+        as_f64 = (double)f32;
+        goto from_float;
+    }
+    if (src_kind == RIGI_NK_F64)
+    {
+        memcpy(&as_f64, &src_payload, sizeof(as_f64));
+        goto from_float;
+    }
+    src_signed = src_kind == RIGI_NK_I8 || src_kind == RIGI_NK_I16
+        || src_kind == RIGI_NK_I32 || src_kind == RIGI_NK_I64;
+    switch (src_kind)
+    {
+    case RIGI_NK_I8: s = (int8_t)src_payload; u = (uint64_t)s; break;
+    case RIGI_NK_U8: u = (uint8_t)src_payload; s = (int64_t)u; break;
+    case RIGI_NK_I16: s = (int16_t)src_payload; u = (uint64_t)s; break;
+    case RIGI_NK_U16:
+    case RIGI_NK_CHAR: u = (uint16_t)src_payload; s = (int64_t)u; break;
+    case RIGI_NK_I32: s = (int32_t)src_payload; u = (uint64_t)s; break;
+    case RIGI_NK_U32: u = (uint32_t)src_payload; s = (int64_t)u; break;
+    case RIGI_NK_I64: s = (int64_t)src_payload; u = (uint64_t)s; break;
+    default: u = src_payload; s = (int64_t)u; break;
+    }
+    if (dst_kind == RIGI_NK_F32 || dst_kind == RIGI_NK_F64)
+    {
+        as_f64 = src_signed ? (double)s : (double)u;
+        if (dst_kind == RIGI_NK_F32)
+        {
+            f32 = (float)as_f64;
+            memcpy(&fbits, &f32, sizeof(f32));
+            *out_payload = (uint64_t)fbits;
+        }
+        else
+        {
+            memcpy(out_payload, &as_f64, sizeof(as_f64));
+        }
+        return 1;
+    }
+    *out_payload = rigi_pack_int_payload(dst_kind, s, u, src_signed);
+    return 1;
+
+from_float:
+    if (dst_kind == RIGI_NK_F32)
+    {
+        f32 = (float)as_f64;
+        memcpy(&fbits, &f32, sizeof(f32));
+        *out_payload = (uint64_t)fbits;
+        return 1;
+    }
+    if (dst_kind == RIGI_NK_F64)
+    {
+        memcpy(out_payload, &as_f64, sizeof(as_f64));
+        return 1;
+    }
+    {
+        int32_t kind = 0;
+        int64_t bits;
+        if (dst_kind == RIGI_NK_U32) kind = 1;
+        else if (dst_kind == RIGI_NK_I64) kind = 2;
+        else if (dst_kind == RIGI_NK_U64) kind = 3;
+        bits = rigi_cast_f64_to_int(as_f64, kind);
+        /* kind0：i32 饱和后再按位截断（u8(-1.5)=255）；其余已是目标位宽 */
+        if (kind == 0)
+        {
+            *out_payload = rigi_pack_int_payload(dst_kind, bits, (uint64_t)bits, 1);
+        }
+        else
+        {
+            *out_payload = (uint64_t)bits;
+        }
+        return 1;
+    }
+}
+
+static void rigi_rewrite_view(uint64_t src_tid, uint64_t src_pl,
+    const RigiTypeSheet *target, uint64_t *out_tid, uint64_t *out_pl)
+{
+    uint64_t tag = src_tid >> RIGI_TAG_SHIFT;
+    *out_tid = ((uint64_t)(uintptr_t)target & RIGI_SHEET_MASK)
+        | (tag << RIGI_TAG_SHIFT);
+    *out_pl = src_pl;
+}
+
+int32_t rigi_try_cast(uint64_t src_type_id, uint64_t src_payload,
+    const RigiTypeSheet *target, uint64_t *out_type_id, uint64_t *out_payload)
+{
+    const RigiTypeSheet *actual;
+    int src_kind;
+    int dst_kind;
+    uint64_t converted;
+    if (out_type_id == NULL || out_payload == NULL)
+    {
+        return 0;
+    }
+    /* null 胖引用：引用目标放行（零胖引用），值类型失败 */
+    if (src_type_id == 0 && src_payload == 0)
+    {
+        if (target != NULL && (target->typeFlags & RIGI_TYPE_INLINE_VALUE) == 0)
+        {
+            *out_type_id = 0;
+            *out_payload = 0;
+            return 1;
+        }
+        return 0;
+    }
+    actual = rigi_actual_sheet(src_type_id, src_payload);
+    if (rigi_sheet_is(actual, target))
+    {
+        rigi_rewrite_view(src_type_id, src_payload, target, out_type_id, out_payload);
+        return 1;
+    }
+    src_kind = rigi_numeric_kind(actual);
+    dst_kind = rigi_numeric_kind(target);
+    if (rigi_numeric_convert(src_kind, src_payload, dst_kind, &converted))
+    {
+        *out_type_id = (uint64_t)(uintptr_t)target & RIGI_SHEET_MASK;
+        *out_payload = converted;
+        return 1;
+    }
+    /* Any/Object 目标：保持原胖引用（实际 typeid 仍在 tag/sheet） */
+    if (RIGI_CAST_SHEET_IS(target, "core::Any")
+        || RIGI_CAST_SHEET_IS(target, "core::Object"))
+    {
+        *out_type_id = src_type_id;
+        *out_payload = src_payload;
+        return 1;
+    }
+    return 0;
 }

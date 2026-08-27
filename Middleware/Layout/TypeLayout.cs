@@ -29,6 +29,11 @@ namespace RigiCompiler.Middleware.Layout
         public const int ArrayElemSheetOffset = 16;
         public const string ArrayLengthField = "core::Array#length@.i32";
         public const string ArrayTypeCanonical = "core::Array";
+        // .typeid 构造族主键经 MwTypeKey.Normalize 为 core::Type<X>；
+        // 无界成员 ≡ core::Type<core::Any>。不再坍缩单键 ".typeid"。
+        public const string TypeIdUnboundedCanonical = "core::Type<core::Any>";
+        // typeOf(null) 实际类型 sheet（VM ActualType = ".null"）
+        public const string NullSheetCanonical = ".null";
         // Span/SharedSpan：与数组同构的连续缓冲区 class（RUNTIME §5）。
         // 具化构造类型各自出 sheet，不坍缩进 BuiltinSheetCanonicals。
         public const string SpanTypeCanonical = "core::Span";
@@ -112,7 +117,14 @@ namespace RigiCompiler.Middleware.Layout
             BilVerificationContext.StripTypeArguments(type.Canonical) == "core::Nullable";
 
         public static bool IsTypeId(MirType type) =>
-            BilVerificationContext.StripTypeArguments(type.Canonical) == "core::Type";
+            IsTypeIdCanonical(type.Canonical);
+
+        // 含无界 .typeid / core::Type / core::Type<X>
+        public static bool IsTypeIdCanonical(string canonical)
+        {
+            var stripped = BilVerificationContext.StripTypeArguments(canonical);
+            return stripped == "core::Type" || stripped == ".typeid";
+        }
 
         public static bool IsGenericPlaceholder(MirType type) =>
             type.Canonical.Contains(".generic<", System.StringComparison.Ordinal)
@@ -255,7 +267,10 @@ namespace RigiCompiler.Middleware.Layout
                 "core::String" => (16, TypeLayoutPlan.FlagInlineValue | TypeLayoutPlan.FlagString),
                 "core::Any" or "core::Object" => (ReferenceSlotSize, 0u),
                 ArrayTypeCanonical => (ArrayPrefixSize, TypeLayoutPlan.FlagArray),
-                _ => (0, 0u),
+                NullSheetCanonical => (0, 0u),
+                _ => IsTypeIdCanonical(canonical)
+                    ? (8, TypeLayoutPlan.FlagInlineValue)
+                    : (0, 0u),
             };
         }
 
@@ -267,6 +282,7 @@ namespace RigiCompiler.Middleware.Layout
             "core::float", "core::double", "core::String",
             "core::Any", "core::Object",
             ArrayTypeCanonical,
+            NullSheetCanonical,
         };
 
         private static bool TryGetConstructorArgument(string canonical, int index, out MirType argument)

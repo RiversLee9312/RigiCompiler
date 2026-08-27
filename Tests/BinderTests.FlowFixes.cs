@@ -115,7 +115,7 @@ namespace RigiCompiler.Tests
             TestHarness.Section("P3 FlowFixes: try 收窄");
 
             // try 体内 guard 收窄不泄入 catch 体（该路径上 x 恰恰可能是 null）
-            var (unit, bodies) = BindUnit(
+            var (unit, bodies) = BindUnitWithStdlib(
                 "open class E : core.Exception {\n" +
                 "    pub override func getMessage(): String { return message }\n" +
                 "}\n" +
@@ -137,7 +137,7 @@ namespace RigiCompiler.Tests
                 body.Contains("Decl(t, String?, = Param(x,String?))"));
 
             // try 体内 guard 收窄不活到 try 之后（catch 路径上不成立 → 交集剔除）
-            var (unit2, bodies2) = BindUnit(
+            var (unit2, bodies2) = BindUnitWithStdlib(
                 "open class E : core.Exception {\n" +
                 "    pub override func getMessage(): String { return message }\n" +
                 "}\n" +
@@ -158,7 +158,7 @@ namespace RigiCompiler.Tests
                 body2.Contains("Decl(t, String?, = Param(x,String?))"));
 
             // 正例：无 catch 时出口路径唯一（try 正常完成）——guard 收窄成立
-            var (unit3, bodies3) = BindUnit(
+            var (unit3, bodies3) = BindUnitWithStdlib(
                 "open class E : core.Exception {\n" +
                 "    pub override func getMessage(): String { return message }\n" +
                 "}\n" +
@@ -175,7 +175,7 @@ namespace RigiCompiler.Tests
                     "Return(SmartCast(Param(x,String?), String))"));
 
             // finally 恒执行：其体内赋值根的收窄在出口失效
-            var (unit4, bodies4) = BindUnit(
+            var (unit4, bodies4) = BindUnitWithStdlib(
                 "func k(x: String?): String? {\n" +
                 "    if (x != null) {\n" +
                 "        try {\n" +

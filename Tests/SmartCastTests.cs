@@ -39,6 +39,18 @@ namespace RigiCompiler.Tests
             return (unit, Binder.Bind(unit, decls));
         }
 
+
+        private static (CompilationUnit Unit, IReadOnlyList<BoundFunctionBody> Bodies)
+            BindUnitWithStdlib(params string[] sources)
+        {
+            var roots = new List<RootASTNode>();
+            roots.AddRange(StdlibSources.ParseAll());
+            roots.AddRange(sources.Select(TestHarness.ParseRoot));
+            var unit = new CompilationUnit(roots.ToArray());
+            var decls = DeclarationCollector.Collect(unit);
+            DeclarationResolver.Resolve(unit, decls);
+            return (unit, Binder.Bind(unit, decls));
+        }
         private static void CheckNoErrors(string label, CompilationUnit unit)
         {
             TestHarness.CheckTrue(label, !unit.Diagnostics.HasErrors,
@@ -120,7 +132,7 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("else 分支无 SmartCast", !ContainsSmartCast(ifStmt.FalseBlock!));
 
             // if 表达式分支收窄
-            var (unit2, bodies2) = BindUnit(
+            var (unit2, bodies2) = BindUnitWithStdlib(
                 "open class Animal { }\n" +
                 "class Dog : Animal {\n" +
                 "    pub func bark(): i32 { return 1 }\n" +
@@ -187,7 +199,7 @@ namespace RigiCompiler.Tests
                 BoundDescribe.Expr(ifStmt.Condition),
                 "Binary(CmpNe, Param(x,String?), Null(String?), bool)");
 
-            var (unit2, bodies2) = BindUnit(
+            var (unit2, bodies2) = BindUnitWithStdlib(
                 "func g(x: String?): String? {\n" +
                 "    if (x == null) { return null }\n" +
                 "    else { return x }\n" +
@@ -215,7 +227,7 @@ namespace RigiCompiler.Tests
                 "[Return(Str(\"\",String))]); Return(SmartCast(Param(x,String?), String))])");
 
             // throw 终止同效
-            var (unit2, bodies2) = BindUnit(
+            var (unit2, bodies2) = BindUnitWithStdlib(
                 "open class E : core.Exception {\n" +
                 "    pub override func getMessage(): String { return message }\n" +
                 "}\n" +
@@ -261,7 +273,7 @@ namespace RigiCompiler.Tests
                 "Int(1,i32), bool), bool)");
 
             // or 假边合取（guard）：两侧皆假时两者均收窄
-            var (unit2, bodies2) = BindUnit(
+            var (unit2, bodies2) = BindUnitWithStdlib(
                 "func g(x: String?, y: String?): String {\n" +
                 "    if ((x == null) or (y == null)) { return \"\" }\n" +
                 "    return x\n" +
@@ -335,7 +347,7 @@ namespace RigiCompiler.Tests
                 BoundDescribe.Body(BodyOf(bodies, "get")).Contains(
                     "SmartCast(InstField(item, This(Box), String?), String)"));
 
-            var (unit2, bodies2) = BindUnit(
+            var (unit2, bodies2) = BindUnitWithStdlib(
                 "class Box2 {\n" +
                 "    var item: String?\n" +
                 "    init(i: String?) { item = i }\n" +
@@ -369,7 +381,7 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("while 后收窄失效（return x 无 SmartCast）",
                 body.Contains("Return(Param(x,String?))"));
 
-            var (unit2, bodies2) = BindUnit(
+            var (unit2, bodies2) = BindUnitWithStdlib(
                 "func g(x: String?, c: bool): String? {\n" +
                 "    var s: String? = null\n" +
                 "    do {\n" +
@@ -421,7 +433,7 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("动态 is 不触发",
                 !ContainsSmartCast(BodyOf(bodies, "f").Body));
 
-            var (unit2, bodies2) = BindUnit(
+            var (unit2, bodies2) = BindUnitWithStdlib(
                 "open class Animal { }\n" +
                 "class Dog : Animal { }\n" +
                 "func g(a: Animal): bool {\n" +
@@ -450,7 +462,7 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("交集保留（return x 收窄）",
                 BoundDescribe.Body(BodyOf(bodies, "f")).Contains("Return(SmartCast(Param(x,String?), String))"));
 
-            var (unit2, bodies2) = BindUnit(
+            var (unit2, bodies2) = BindUnitWithStdlib(
                 "func g(x: String?, c: bool): String? {\n" +
                 "    if (c) {\n" +
                 "        if (x != null) { }\n" +

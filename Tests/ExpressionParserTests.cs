@@ -4,7 +4,7 @@ namespace RigiCompiler.Tests
 {
     // 表达式解析测试：全管线驱动，断言 AST 树产物
     // （AstDescribe 精确描述串 + 结构事实），不断言控制台文本。
-    // 覆盖：字面量/符号/一元/二元/括号分组与「无运算符优先级」错误、类型标注声明、
+    // 覆盖：字面量/符号/一元/二元/括号分组与「无运算符优先级」错误（含 and/or 链）、类型标注声明、
     // 调用/成员访问/索引/new/泛型调用与后缀错误、is/supers/with 与 as/as? 类型操作、
     // 前导点 enum case 引用（SYNTAX §12）、is 右侧 enum case（§12.3）、
     // wrapper 路径访问（SYNTAX §14.1）、位运算符（§13.2）、复合赋值（§13.2）、
@@ -57,6 +57,7 @@ namespace RigiCompiler.Tests
             TestExpr("var r = 1 + 2", "Binary(Int(1,I32) + Int(2,I32))");
             TestExpr("var c = a == b", "Binary(Path(a, []) == Path(b, []))");
             TestExpr("var lg = x and y", "Binary(Path(x, []) and Path(y, []))");
+            TestExpr("var lo = x or y", "Binary(Path(x, []) or Path(y, []))");
 
             TestHarness.Blank();
         }
@@ -73,6 +74,14 @@ namespace RigiCompiler.Tests
             TestExpr("var n2 = ((1 + 2) * 3)",
                 "Group(Binary(Group(Binary(Int(1,I32) + Int(2,I32))) * Int(3,I32)))");
             TestExpr("var u = -(x + y)", "Unary(- Group(Binary(Path(x, []) + Path(y, []))))");
+            TestExpr("var lg2 = a and (b and c)",
+                "Binary(Path(a, []) and Group(Binary(Path(b, []) and Path(c, []))))");
+            TestExpr("var lg3 = (a and b) or c",
+                "Binary(Group(Binary(Path(a, []) and Path(b, []))) or Path(c, []))");
+            TestExpr("var lg4 = a and (b or c)",
+                "Binary(Path(a, []) and Group(Binary(Path(b, []) or Path(c, []))))");
+            TestExpr("var lg5 = a and (b == c)",
+                "Binary(Path(a, []) and Group(Binary(Path(b, []) == Path(c, []))))");
 
             TestHarness.Blank();
         }
@@ -97,6 +106,17 @@ namespace RigiCompiler.Tests
             // 运算符后缺少右操作数
             TestHarness.CheckParseError("var e5 = 1 +",
                 () => TestHarness.ParseRoot("var e5 = 1 +"), "Unexpected end of file");
+            // and/or 链同样没有优先级（SYNTAX §1.3）：三连/混合必须括号化
+            TestHarness.CheckParseError("var e9 = a and b and c",
+                () => TestHarness.ParseRoot("var e9 = a and b and c"), "没有运算符优先级");
+            TestHarness.CheckParseError("var e10 = a or b or c",
+                () => TestHarness.ParseRoot("var e10 = a or b or c"), "没有运算符优先级");
+            TestHarness.CheckParseError("var e11 = a and b or c",
+                () => TestHarness.ParseRoot("var e11 = a and b or c"), "没有运算符优先级");
+            TestHarness.CheckParseError("var e12 = a or b and c",
+                () => TestHarness.ParseRoot("var e12 = a or b and c"), "没有运算符优先级");
+            TestHarness.CheckParseError("var e13 = a and b == c",
+                () => TestHarness.ParseRoot("var e13 = a and b == c"), "没有运算符优先级");
             // 一元 + 不接受（SYNTAX §13.2 固定运算符表只定义一元 - opposite）
             TestHarness.CheckParseError("var e6 = +x",
                 () => TestHarness.ParseRoot("var e6 = +x"), "Unexpected token at start of expression");

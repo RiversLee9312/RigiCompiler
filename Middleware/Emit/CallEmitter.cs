@@ -128,41 +128,61 @@ namespace RigiCompiler.Middleware.Emit
                 session.FunctionOf(call.Target.Canonical), call.Args, call.Result);
         }
 
-        // new type(T)（class）：rigi_alloc(@typesheet.T) → 胖引用（typeid
-        // 高字节 tag=2，payload=对象指针）→ 可选 ..init.wrapper（字段初始
-        // 值缝合，VM 同序）→ init（.this 首参胖引用）→ 结果入槽
+        // new type(T)（class）：rigi_alloc → 隐藏 typeid → wrapper → init
         internal static void EmitNew(ModuleBuilder.Session session, LLVMBuilderRef builder,
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirNewObject inst)
         {
-            var sheet = session.TypeSheetFor(inst.Type.Canonical);
-            var (allocFn, allocType) = DeclareHelperFace(session, "rigi_alloc",
-                PointerType(), new[] { PointerType() });
-            var obj = builder.BuildCall2(allocType, allocFn, new[] { sheet }, "new.obj");
-            var fat = BuildFatReference(session, builder, sheet, obj);
-            // 类级 typeid 写入实例隐藏字段（不进 init 实参；BIL new 不含此前缀）
-            WriteHiddenTypeIds(session, builder, slots, obj, inst.Type.Canonical);
-            if (inst.InitWrapper != null)
-            {
-                var wrapper = session.FunctionOf(inst.InitWrapper.Canonical);
-                builder.BuildCall2(wrapper.Type, wrapper.Value, new[] { fat }, "");
-            }
             var init = session.FunctionOf(inst.Init.Canonical);
             var expected = ExpectedCallParams(init.Mir);
             var temps = new List<ArcEmitter.RichTemp>();
             var boxed = new List<ArcEmitter.FatTemp>();
-            // expected[0] = .this（已用 fat）；其余对用户实参
-            var initArgs = new LLVMValueRef[inst.Args.Count + 1];
-            initArgs[0] = fat;
+            var userArgs = new LLVMValueRef[inst.Args.Count];
             for (var i = 0; i < inst.Args.Count; i++)
             {
                 var expectType = i + 1 < expected.Count ? expected[i + 1].Type : null;
-                initArgs[i + 1] = CoerceArg(session, builder, slots, inst.Args[i],
+                userArgs[i] = CoerceArg(session, builder, slots, inst.Args[i],
                     expectType, aliasThis: false, temps, boxed);
             }
-            builder.BuildCall2(init.Type, init.Value, initArgs, "");
+            var fat = EmitAllocAndInit(session, builder, slots, inst.Type.Canonical,
+                inst.InitWrapper, inst.Init, userArgs);
             ArcEmitter.DestroyRichTemps(session, builder, temps);
             ArcEmitter.DestroyFatTemps(session, builder, boxed);
             builder.BuildStore(fat, slots[inst.Target].Slot);
+        }
+
+        // 静态 new 与动态 ctor thunk 共用：alloc → 隐藏 typeid → wrapper → init
+        internal static LLVMValueRef EmitAllocAndInit(ModuleBuilder.Session session,
+            LLVMBuilderRef builder,
+            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
+            string typeCanonical, MwMemberSymbol? initWrapper, MwMemberSymbol init,
+            LLVMValueRef[] userArgs)
+        {
+            var sheet = session.TypeSheetFor(typeCanonical);
+            var (allocFn, allocType) = DeclareHelperFace(session, "rigi_alloc",
+                PointerType(), new[] { PointerType() });
+            var obj = builder.BuildCall2(allocType, allocFn, new[] { sheet }, "new.obj");
+            var fat = BuildFatReference(session, builder, sheet, obj);
+            WriteHiddenTypeIds(session, builder, slots, obj, typeCanonical);
+            if (initWrapper != null && session.TryGetFunction(initWrapper.Canonical, out var wrapper))
+            {
+                builder.BuildCall2(wrapper.Type, wrapper.Value, new[] { fat }, "");
+            }
+            var emitted = session.FunctionOf(init.Canonical);
+            var initArgs = new LLVMValueRef[userArgs.Length + 1];
+            initArgs[0] = fat;
+            for (var i = 0; i < userArgs.Length; i++)
+            {
+                initArgs[i + 1] = userArgs[i];
+            }
+            if (emitted.Value.ParamsCount != (uint)initArgs.Length)
+            {
+                throw new CompilerInternalException(
+                    $"ctor thunk 调 init 参数个数不符: {init.Canonical} " +
+                    $"llvm={emitted.Value.ParamsCount} 传入={initArgs.Length} " +
+                    $"sheet={typeCanonical}");
+            }
+            builder.BuildCall2(emitted.Type, emitted.Value, initArgs, "");
+            return fat;
         }
 
         // ===== 直接/虚/接口调用 =====
@@ -220,26 +240,49 @@ namespace RigiCompiler.Middleware.Emit
         internal static void EmitNewValue(ModuleBuilder.Session session, LLVMBuilderRef builder,
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirNewValue inst)
         {
-            var plan = session.Layout?.Find(inst.Type.Canonical)
-                ?? throw new CompilerInternalException($"值类型无布局计划: {inst.Type.Canonical}");
-            var slot = slots[inst.Target].Slot;
-            session.EmitMemSetZero(builder, slot, plan.Size);
-            if (inst.InitWrapper != null)
-            {
-                var wrapper = session.FunctionOf(inst.InitWrapper.Canonical);
-                builder.BuildCall2(wrapper.Type, wrapper.Value, new[] { slot }, "");
-            }
-            var init = session.FunctionOf(inst.Init.Canonical);
             var temps = new List<ArcEmitter.RichTemp>();
-            var initArgs = new LLVMValueRef[inst.Args.Count + 1];
-            initArgs[0] = slot;
+            var userArgs = new LLVMValueRef[inst.Args.Count];
             for (var i = 0; i < inst.Args.Count; i++)
             {
-                initArgs[i + 1] = MarshalArg(session, builder, slots, inst.Args[i],
+                userArgs[i] = MarshalArg(session, builder, slots, inst.Args[i],
                     aliasThis: false, temps);
             }
-            builder.BuildCall2(init.Type, init.Value, initArgs, "");
+            EmitInitValueOnSlot(session, builder, slots[inst.Target].Slot,
+                inst.Type.Canonical, inst.InitWrapper, inst.Init, userArgs);
             ArcEmitter.DestroyRichTemps(session, builder, temps);
+        }
+
+        // 静态 new 与动态 struct ctor thunk 共用：零初始化 → wrapper →
+        // init（.this = 槽地址原地生效）。泛型 struct 无对象头隐藏槽，
+        // 类级 typeid 按 GenericAbi 从 LLVM 约定剔除；闭合构造下 TypeSheet
+        // 即构造身份，thunk 侧以 TypeSheet 常量作为构造目标（init 不接收
+        // 类级 typeid，与 class「被调方自取」对偶）。
+        internal static void EmitInitValueOnSlot(ModuleBuilder.Session session,
+            LLVMBuilderRef builder, LLVMValueRef slot, string typeCanonical,
+            MwMemberSymbol? initWrapper, MwMemberSymbol init, LLVMValueRef[] userArgs)
+        {
+            var plan = session.Layout?.Find(typeCanonical)
+                ?? throw new CompilerInternalException($"值类型无布局计划: {typeCanonical}");
+            session.EmitMemSetZero(builder, slot, plan.Size);
+            if (initWrapper != null && session.TryGetFunction(initWrapper.Canonical, out var wrapper))
+            {
+                builder.BuildCall2(wrapper.Type, wrapper.Value, new[] { slot }, "");
+            }
+            var emitted = session.FunctionOf(init.Canonical);
+            var initArgs = new LLVMValueRef[userArgs.Length + 1];
+            initArgs[0] = slot;
+            for (var i = 0; i < userArgs.Length; i++)
+            {
+                initArgs[i + 1] = userArgs[i];
+            }
+            if (emitted.Value.ParamsCount != (uint)initArgs.Length)
+            {
+                throw new CompilerInternalException(
+                    $"struct ctor 调 init 参数个数不符: {init.Canonical} " +
+                    $"llvm={emitted.Value.ParamsCount} 传入={initArgs.Length} " +
+                    $"sheet={typeCanonical}");
+            }
+            builder.BuildCall2(emitted.Type, emitted.Value, initArgs, "");
         }
 
         // 虚调用：接收者胖引用 payload → 对象头 [0] 实际 TypeSheet →
@@ -432,7 +475,7 @@ namespace RigiCompiler.Middleware.Emit
         }
 
         // 类级 typeid 已从 LLVM 调用约定剔除；实参列表与 BIL 调用点同形
-        private static List<MirLocal> ExpectedCallParams(MirFunction callee)
+        internal static List<MirLocal> ExpectedCallParams(MirFunction callee)
         {
             var list = new List<MirLocal>();
             foreach (var parameter in callee.Parameters)
@@ -514,8 +557,12 @@ namespace RigiCompiler.Middleware.Emit
         private static void WriteHiddenTypeIds(ModuleBuilder.Session session,
             LLVMBuilderRef builder,
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
-            LLVMValueRef obj, TypeLayoutPlan plan, string typeRef)
+            LLVMValueRef obj, TypeLayoutPlan plan, string typeRef, int depth = 0)
         {
+            if (depth > 32)
+            {
+                throw new CompilerInternalException("WriteHiddenTypeIds 基类链过深: " + typeRef);
+            }
             var template = session.Symbols.FindTypeByRef(typeRef);
             if (plan.BasePlan != null && template?.Declaration.ExtendsType is { } baseRef)
             {
@@ -523,7 +570,8 @@ namespace RigiCompiler.Middleware.Emit
                     template.Declaration);
                 var substituted = MwTypeKey.Normalize(
                     ConstructedTypeCollector.Substitute(baseRef, substBase));
-                WriteHiddenTypeIds(session, builder, slots, obj, plan.BasePlan, substituted);
+                WriteHiddenTypeIds(session, builder, slots, obj, plan.BasePlan, substituted,
+                    depth + 1);
             }
             var substitution = template != null
                 ? ConstructedTypeCollector.BuildSubstitution(typeRef, template.Declaration)
@@ -542,8 +590,8 @@ namespace RigiCompiler.Middleware.Emit
                 else if (substitution != null && substitution.TryGetValue(paramName, out arg))
                 {
                     var sheet = session.TypeSheetFor(arg);
-                    sheetPtr = builder.BuildBitCast(sheet,
-                        LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0), "tid.sheet");
+                    sheetPtr = LLVMValueRef.CreateConstBitCast(sheet,
+                        LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0));
                 }
                 else
                 {

@@ -247,9 +247,13 @@ rigi_rt 导出（命名待定，形态固定）：
 | `box_*` | Box 运行时面 |
 | `rigi_span_alloc` | Span/SharedSpan 分配（与数组同构：32B 前缀 + 原生 stride 内联元素；TypeSheet 区分 Span vs SharedSpan）。元素访问内联无独立面；析构复用数组走查（`RIGI_TYPE_ARRAY`） |
 | `rigi_abort_invalid_cast` | 拆箱类型不符占位 abort（`void(TypeSheet*)`；stderr 前缀对齐 VM CastException「无法将 .any 转换为」+ TypeInfo.name，exit 1；MW9 换真异常） |
+| `rigi_try_cast` | 动态 cast（占位目标）：胖引用 typeid+payload + 目标 TypeSheet* + 两枚 out i64；is 命中改写视图 typeid；数值互转对齐 VM；失败返 0 |
+| `rigi_cast_f64_to_int` | 浮点→整数（`i64(f64, i32 kind)`；NaN→0，溢出饱和到 32/64 位宽再截断；对齐 C# unchecked conv） |
+| `rigi_abort_no_such_method` | 动态 new 无匹配 init / 不可构造占位 abort（`void(TypeSheet*)`；stderr 含 TypeInfo.name，exit 1；MW9 换真异常 core.NoSuchMethodException） |
 | `rigi_type_is` / `rigi_type_is_indirect` | 胖引用实际类型是否为目标或其子类（协变）；tag2 取对象头 sheet，tag0/tag1 掩码 typeid；接口走 TypeInfo.ifaceClosure |
 | `rigi_type_supers` / `rigi_type_supers_indirect` | 实际类型是否为目标的基类（逆变）；沿 target.baseTypeId 链，并查 target.TypeInfo.ifaceClosure（多 implements 父接口） |
 | `rigi_type_with` / `rigi_type_with_indirect` | 实际类型（及基类/接口闭包）的 TypeInfo.wrappers 是否含目标 wrapper sheet |
+| `rigi_typeof` | 取胖引用实际 TypeSheet*（typeOf 值形态）；tag2 取对象头 sheet，tag0/tag1 掩码 typeid |
 | `throw_raise` / unwind 面 | 异常抛出与 unwind 库交互（§8） |
 | 协程七项保留面 | 见 `ASYNC_LOWERING_DESIGN.md` §7 表（coroutine.spawn / task.await / coroutine.yield / coroutine.complete/fail/cancel / coroutine.frame / gc.ownership-region / alarm.poll/event） |
 | GC Alarm 族 | GCAlarm 与 GC 唤醒 Alarm 的创建与触发 |
@@ -310,6 +314,14 @@ M88 边界：frontend 只携带标记，烘焙全归 Middleware。
 分歧。Nullable 统一 tag0（内联空/值）/ tag1（堆值）分派，与其它值类型同一套
 胖引用槽，不另开 String 特例。
 
+**.typeid 构造 sheet（MW8c-1 定稿）**：`.typeid<X>` 是存储目标 TypeSheet* 的
+值类型（Rigi 投影 `Type<T>`），按构造 canonical（`core::Type<X>`，无界 =
+`core::Type<core::Any>`）各自出 TypeSheet/TypeInfo，不再擦除单键。形态：
+typeSize 8、FlagInlineValue、refMap/iMap/vTable/wrappers/ifaceClosure 皆空。
+收集点含 fn 局部、getid/cast、type.is 静态目标；core::Type 无 stdlib 声明，
+按 Span 先例合成。VM 对 `Type<X>`/`Type<Any>` 不变（无协变）→ `baseTypeId`
+不指向无界成员。另内建 `.null` sheet（typeOf(null) 实际类型，typeSize 0）。
+
 **typeid 与 C 边界胖引用**：BIL §7.2 六段序（`.this` → 固定泛型 typeid → 泛型包
 → 普通参数 → 值包 → 具名包）即泛型调用约定；typeid 的 LLVM 表示 = TypeSheet
 指针（`getid.type` 物化）。String 与 16 字节胖引用的 C 边界一律 out 首参（Rigi
@@ -345,6 +357,12 @@ TypeSheet 指针，不符调 `rigi_abort_invalid_cast`。native `.any` 参数/�
 16B 对齐槽指针传递（D6：C 边界 16B 胖值一律指针）。`any_to_string` 经该槽指针
 读 `{typeid, payload}` 分派（标量面 / String 拷贝 / TypeInfo.name）。Box 复制的
 acquire/release 不在此发射（E4：内存正确性 MW7 RcInjection 统一收口）。
+
+**动态 new（MW8b/MW8c 定稿）**：vtable 槽 0 为 per-类型 `mw.init.dispatch`（if 链比 argc 与
+形参 TypeSheet*）；class thunk 胖返回（复用 EmitAllocAndInit）；struct thunk 为 sret
+`void(ptr %out, fat...)`（零初始化 → 可选 wrapper → init 原地生效；内联槽直传 result alloca，胖槽按 typeSize 走 tag0/tag1）；
+标量/String 零参 T() 在 vTable 查找前比对内建零值 sheet 直产零值（argc>0 落 abort）。
+落空走 `rigi_abort_no_such_method`。可达性对 `new.indirect` 保守收模块内全部 init 族（含 stdlib `core*`；经该保守边引入且 MIR 不可构建的 init 族试探性跳过，运行期 abort）。
 
 ## 8. 异常机制
 
@@ -409,7 +427,7 @@ Middleware/                 # 本仓库顶层目录（C#，.NET 10 LTS）
 ├── Pipeline/               # IMwStage + MwPipeline 驱动器（线性阶段序，仿前端层栈纪律；MW4 pass 群在此登记）
 ├── Passes/                 # MIR pass 群（已建立：IndexOperatorLowering / AccessorLowering / RcInjectionPass.cs；WrapperBaking / CoroutineSplit / CellElim / Devirt 仍随各自阶段）
 ├── Layout/                 # TypeLayout：canonical → LLVM 类型唯一映射点（引用槽按 RUNTIME §2 胖引用 128-bit/16 字节对齐建模）
-├── Emit/                   # ModuleBuilder / ArcEmitter.cs（MirAcquireSlot/MirReleaseSlot → ref/value/string 面）/ LlvmBitcode（unsafe 编组封装：bitcode 解析、LLVMLinkModules2 进程内合并、新 PM default<O2> 管线）/ RuntimeFaces（rigi_rt 面表）/ ObjectEmitter（.o 发射）
+├── Emit/                   # ModuleBuilder / ArcEmitter.cs（MirAcquireSlot/MirReleaseSlot → ref/value/string 面）/ DynamicNewEmitter.cs（new.indirect 调用点 + 分发器/thunk）/ LlvmBitcode（unsafe 编组封装：bitcode 解析、LLVMLinkModules2 进程内合并、新 PM default<O2> 管线）/ RuntimeFaces（rigi_rt 面表）/ ObjectEmitter（.o 发射）
 ├── Toolchain/              # ToolchainResolver（--toolchain → RIGI_LLVM → tools/.llvm/<rid> → PATH）/ ExternalProcess 外部进程封装
 ├── Runtime/                # RigiRtBuilder：rigi_rt 源 EmbeddedResource 内嵌 → 内容哈希缓存 → clang -emit-llvm -c 编成 bitcode（unity build）
 └── Cli/                    # native 驱动（--file/--out/--emit-obj/--emit-ll/--toolchain）
@@ -439,7 +457,7 @@ rigi_rt/                    # 本仓库顶层目录（C，EmbeddedResource 内�
 | MW5 | 调用与 ABI：invoke 族、typeid 隐藏参数、vargs/kwargs、FFI | |
 | MW6 | 元数据与派发：TypeSheet/vtable/iMap/refMap、虚调用、interface | |
 | MW7 | 值语义运行时 + ARC：Box 物化、RcInjection、region 协议发射（**MW7a 已收口**）；Span 物化（**MW7b 已收口**：Span=内建 class 定稿） | MW7a/MW7b：NativeE2E 全绿且台账零泄漏 |
-| MW8 | 泛型运行时：`Type\<T\>`/typeOf/new、is/supers/with/cast | |
+| MW8 | 泛型运行时：`Type\<T\>`/typeOf/new、is/supers/with/cast（**MW8a/MW8b 已收口**；**MW8c 推进中**） | MW8a typeid 装箱；MW8b 动态 new 槽 0 分发器；MW8c-1 `.typeid<X>` 构造 sheet；MW8c-2 泛型占位 cast + 数值/String/struct 转换；MW8c-3 struct sret thunk + 标量零值 T() + VM 无匹配 init 必抛 |
 | MW9 | 异常：try/catch/finally → landing pad（linux-x64）/ SEH（win-x64） | 异常对拍套件 |
 | MW10 | wrapper 烘焙全链（specific/wildcard/call???） | |
 | MW11 | 协程：状态机、Executor/Worker、Alarm（libuv 底座）、Task、eager spawn | ASYNC §8 集成测试 |

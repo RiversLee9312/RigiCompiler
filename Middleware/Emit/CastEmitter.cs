@@ -1,0 +1,320 @@
+using System.Collections.Generic;
+using LLVMSharp.Interop;
+using RigiCompiler.Middleware.Layout;
+using RigiCompiler.Middleware.Mir;
+using RigiCompiler.Middleware.Runtime;
+
+namespace RigiCompiler.Middleware.Emit
+{
+    /// <summary>
+    /// cast / cast.safe 发射（MW8c-2）：静态数值走 LLVM 转换；占位目标
+    /// 走 rigi_try_cast；不相容则 abort 或产 null。
+    /// </summary>
+    internal static class CastEmitter
+    {
+        // 与 typecheck.c rigi_cast_f64_to_int 的 kind 对齐
+        private const int KindI32Sat = 0;
+        private const int KindU32Sat = 1;
+        private const int KindI64Sat = 2;
+        private const int KindU64Sat = 3;
+
+        internal static void Emit(ModuleBuilder.Session session, LLVMBuilderRef builder,
+            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirCast inst)
+        {
+            if (inst.Source is not MirLocalOperand source)
+            {
+                throw new CompilerInternalException("cast 源必须是局部");
+            }
+            var sourceType = slots[source.Name].Local.Type;
+            var resultType = slots[inst.Target].Local.Type;
+            if (inst.IsIndirect || TypeLayout.IsGenericPlaceholder(sourceType))
+            {
+                EmitDynamic(session, builder, slots, inst, source, sourceType, resultType);
+                return;
+            }
+            var targetType = inst.TargetTypeRef != null
+                ? MirType.Of(inst.TargetTypeRef)
+                : resultType;
+            if (MirBuilder.IsNumericScalar(sourceType)
+                && MirBuilder.IsNumericScalar(targetType))
+            {
+                EmitNumeric(session, builder, slots, inst, source, sourceType, targetType,
+                    resultType);
+                return;
+            }
+            EmitFail(session, builder, slots, inst, targetType, resultType);
+        }
+
+        // 占位目标 / 占位源：源装箱为胖引用后 rigi_try_cast
+        private static void EmitDynamic(ModuleBuilder.Session session, LLVMBuilderRef builder,
+            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirCast inst,
+            MirLocalOperand source, MirType sourceType, MirType resultType)
+        {
+            var fat = LoadSourceFat(session, builder, slots, source.Name, sourceType);
+            var typeId = builder.BuildExtractValue(fat, 0, "cast.tid");
+            var payload = builder.BuildExtractValue(fat, 1, "cast.pl");
+            var targetSheet = TargetSheet(session, builder, slots, inst);
+            var outTid = builder.BuildAlloca(LLVMTypeRef.Int64, "cast.otid");
+            var outPl = builder.BuildAlloca(LLVMTypeRef.Int64, "cast.opl");
+            var (fn, fnType) = CallEmitter.DeclareHelperFace(session, RuntimeFaces.TryCast,
+                LLVMTypeRef.Int32,
+                new[]
+                {
+                    LLVMTypeRef.Int64, LLVMTypeRef.Int64, PointerType(),
+                    PointerType(), PointerType(),
+                });
+            var raw = builder.BuildCall2(fnType, fn,
+                new[] { typeId, payload, targetSheet, outTid, outPl }, "cast.ok");
+            var ok = builder.BuildICmp(LLVMIntPredicate.LLVMIntNE, raw,
+                LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, 0, true), "cast.hit");
+            var current = session.CurrentFunction;
+            var hit = current.AppendBasicBlock("cast.hit");
+            var miss = current.AppendBasicBlock("cast.miss");
+            var join = current.AppendBasicBlock("cast.join");
+            builder.BuildCondBr(ok, hit, miss);
+
+            builder.PositionAtEnd(hit);
+            var hitTid = builder.BuildLoad2(LLVMTypeRef.Int64, outTid, "cast.htid");
+            var hitPl = builder.BuildLoad2(LLVMTypeRef.Int64, outPl, "cast.hpl");
+            var hitFat = PackBits(session, builder, hitTid, hitPl, "cast.hf");
+            // 已是胖引用的源：结果共享，需 acquire；值类型新装箱：唯一所有权
+            if (SourceIsFat(session, sourceType))
+            {
+                hitFat = ArcEmitter.ProduceFatValue(session, builder, hitFat, "cast.acq");
+            }
+            StoreConverted(session, builder, slots, inst.Target, resultType, hitFat,
+                inst.TargetTypeRef);
+            builder.BuildBr(join);
+
+            builder.PositionAtEnd(miss);
+            if (inst.IsSafe)
+            {
+                builder.BuildStore(
+                    LLVMValueRef.CreateConstNull(
+                        TypeLayout.MapType(session.Context, resultType)),
+                    slots[inst.Target].Slot);
+                builder.BuildBr(join);
+            }
+            else
+            {
+                var (face, faceType) = CallEmitter.DeclareHelperFace(session,
+                    RuntimeFaces.AbortInvalidCast, LLVMTypeRef.Void, new[] { PointerType() });
+                builder.BuildCall2(faceType, face, new[] { targetSheet }, "");
+                builder.BuildUnreachable();
+            }
+
+            builder.PositionAtEnd(join);
+        }
+
+        private static void EmitNumeric(ModuleBuilder.Session session, LLVMBuilderRef builder,
+            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirCast inst,
+            MirLocalOperand source, MirType sourceType, MirType targetType, MirType resultType)
+        {
+            var value = session.LoadLocal(builder, slots, source);
+            var converted = ConvertNumeric(session, builder, value, sourceType, targetType);
+            if (TypeLayout.TryGetNullableInner(resultType, out var inner)
+                && inner.Canonical == targetType.Canonical)
+            {
+                builder.BuildStore(WrapScalar(session, builder, converted, targetType),
+                    slots[inst.Target].Slot);
+                return;
+            }
+            builder.BuildStore(converted, slots[inst.Target].Slot);
+        }
+
+        private static void EmitFail(ModuleBuilder.Session session, LLVMBuilderRef builder,
+            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirCast inst,
+            MirType targetType, MirType resultType)
+        {
+            var sheet = TypeSheetOf(session, targetType);
+            EmitMiss(session, builder, slots, inst, sheet, resultType);
+        }
+
+        private static void EmitMiss(ModuleBuilder.Session session, LLVMBuilderRef builder,
+            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirCast inst,
+            LLVMValueRef targetSheet, MirType resultType)
+        {
+            if (inst.IsSafe)
+            {
+                builder.BuildStore(
+                    LLVMValueRef.CreateConstNull(TypeLayout.MapType(session.Context, resultType)),
+                    slots[inst.Target].Slot);
+                return;
+            }
+            var (face, faceType) = CallEmitter.DeclareHelperFace(session,
+                RuntimeFaces.AbortInvalidCast, LLVMTypeRef.Void, new[] { PointerType() });
+            builder.BuildCall2(faceType, face, new[] { targetSheet }, "");
+            builder.BuildUnreachable();
+            // 后续 MIR 指令落到无前驱死块，避免 terminator 后再插指令
+            builder.PositionAtEnd(session.CurrentFunction.AppendBasicBlock("cast.dead"));
+        }
+
+        private static LLVMValueRef ConvertNumeric(ModuleBuilder.Session session,
+            LLVMBuilderRef builder, LLVMValueRef value, MirType from, MirType to)
+        {
+            var destTy = TypeLayout.MapType(session.Context, to);
+            if (IsFloatKey(from.Key) && IsIntKey(to.Key))
+            {
+                return FloatToInt(session, builder, value, from, to, destTy);
+            }
+            if (IsIntKey(from.Key) && IsFloatKey(to.Key))
+            {
+                return IsSignedInt(from)
+                    ? builder.BuildSIToFP(value, destTy, "cast.sitofp")
+                    : builder.BuildUIToFP(value, destTy, "cast.uitofp");
+            }
+            if (IsFloatKey(from.Key) && IsFloatKey(to.Key))
+            {
+                if (from.Key == to.Key)
+                {
+                    return value;
+                }
+                return from.Key == "float"
+                    ? builder.BuildFPExt(value, destTy, "cast.fpext")
+                    : builder.BuildFPTrunc(value, destTy, "cast.fptrunc");
+            }
+            var srcWidth = value.TypeOf.IntWidth;
+            var dstWidth = destTy.IntWidth;
+            if (srcWidth < dstWidth)
+            {
+                return IsSignedInt(from)
+                    ? builder.BuildSExt(value, destTy, "cast.sext")
+                    : builder.BuildZExt(value, destTy, "cast.zext");
+            }
+            if (srcWidth > dstWidth)
+            {
+                return builder.BuildTrunc(value, destTy, "cast.trunc");
+            }
+            return value;
+        }
+
+        private static LLVMValueRef FloatToInt(ModuleBuilder.Session session,
+            LLVMBuilderRef builder, LLVMValueRef value, MirType from, MirType to,
+            LLVMTypeRef destTy)
+        {
+            var asF64 = from.Key == "float"
+                ? builder.BuildFPExt(value, LLVMTypeRef.Double, "cast.fpext")
+                : value;
+            var kind = FloatToIntKind(to.Key);
+            var (fn, fnType) = CallEmitter.DeclareHelperFace(session,
+                RuntimeFaces.CastF64ToInt, LLVMTypeRef.Int64,
+                new[] { LLVMTypeRef.Double, LLVMTypeRef.Int32 });
+            var bits = builder.BuildCall2(fnType, fn,
+                new[]
+                {
+                    asF64,
+                    LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, (ulong)kind, true),
+                }, "cast.f2i");
+            if (destTy.IntWidth == 64)
+            {
+                return bits;
+            }
+            return builder.BuildTrunc(bits, destTy, "cast.f2i.t");
+        }
+
+        private static int FloatToIntKind(string key) => key switch
+        {
+            "u32" => KindU32Sat,
+            "i64" => KindI64Sat,
+            "u64" => KindU64Sat,
+            _ => KindI32Sat,
+        };
+
+        private static LLVMValueRef LoadSourceFat(ModuleBuilder.Session session,
+            LLVMBuilderRef builder,
+            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
+            string sourceName, MirType sourceType)
+        {
+            if (SourceIsFat(session, sourceType))
+            {
+                return session.LoadLocal(builder, slots, new MirLocalOperand(sourceName));
+            }
+            return BoxEmitter.BoxFromLocal(session, builder, slots, sourceName);
+        }
+
+        private static bool SourceIsFat(ModuleBuilder.Session session, MirType type) =>
+            !MirBuilder.IsScalarOrString(type)
+            && !TypeLayout.IsTypeId(type)
+            && !session.IsInlineValueType(type, out _);
+
+        private static LLVMValueRef TargetSheet(ModuleBuilder.Session session,
+            LLVMBuilderRef builder,
+            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirCast inst)
+        {
+            if (inst.TargetTypeId != null)
+            {
+                return session.LoadLocal(builder, slots, inst.TargetTypeId);
+            }
+            if (inst.TargetTypeRef == null)
+            {
+                throw new CompilerInternalException("cast 缺目标类型");
+            }
+            return TypeSheetOf(session, MirType.Of(inst.TargetTypeRef));
+        }
+
+        private static void StoreConverted(ModuleBuilder.Session session, LLVMBuilderRef builder,
+            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, string target,
+            MirType resultType, LLVMValueRef fat, string? targetTypeRef)
+        {
+            if (IsFatResult(session, resultType))
+            {
+                builder.BuildStore(fat, slots[target].Slot);
+                return;
+            }
+            var inner = targetTypeRef != null
+                ? MirType.Of(targetTypeRef)
+                : resultType;
+            BoxEmitter.UnboxToLocal(session, builder, slots, fat, inner, target);
+        }
+
+        private static bool IsFatResult(ModuleBuilder.Session session, MirType type) =>
+            TypeLayout.IsGenericPlaceholder(type)
+            || TypeLayout.IsNullable(type)
+            || type.IsAny || type.IsObject
+            || (!MirBuilder.IsScalarOrString(type) && !TypeLayout.IsTypeId(type)
+                && !session.IsInlineValueType(type, out _));
+
+        private static LLVMValueRef WrapScalar(ModuleBuilder.Session session,
+            LLVMBuilderRef builder, LLVMValueRef value, MirType inner)
+        {
+            var tmp = builder.BuildAlloca(TypeLayout.MapType(session.Context, inner), "cast.nv");
+            builder.BuildStore(value, tmp);
+            var size = BoxEmitter.ValueByteSize(session, inner);
+            var bits = BoxEmitter.BitsFromSlot(session, builder, tmp, size);
+            var sheet = BoxEmitter.TypeSheetOf(session, inner);
+            return BoxEmitter.PackFat(session, builder, sheet, BoxEmitter.TagInline, bits,
+                "cast.nw");
+        }
+
+        private static LLVMValueRef PackBits(ModuleBuilder.Session session,
+            LLVMBuilderRef builder, LLVMValueRef typeId, LLVMValueRef payload, string prefix)
+        {
+            var fat = LLVMValueRef.CreateConstNull(TypeLayout.FatReferenceType(session.Context));
+            fat = builder.BuildInsertValue(fat, typeId, 0, prefix + ".t0");
+            return builder.BuildInsertValue(fat, payload, 1, prefix + ".pl");
+        }
+
+        private static LLVMValueRef TypeSheetOf(ModuleBuilder.Session session, MirType type)
+        {
+            var key = TypeLayout.BuiltinSheetCanonical(type);
+            if (session.TryGetTypeSheet(key, out var sheet)
+                || session.TryGetTypeSheet(type.Canonical, out sheet))
+            {
+                return sheet;
+            }
+            return session.TypeSheetFor(type.Canonical);
+        }
+
+        private static bool IsSignedInt(MirType type) =>
+            type.Key is "i8" or "i16" or "i32" or "i64";
+
+        private static bool IsIntKey(string key) =>
+            key is "char" or "i8" or "i16" or "i32" or "i64"
+                or "u8" or "u16" or "u32" or "u64";
+
+        private static bool IsFloatKey(string key) => key is "float" or "double";
+
+        private static LLVMTypeRef PointerType() =>
+            LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0);
+    }
+}

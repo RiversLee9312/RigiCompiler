@@ -1096,8 +1096,10 @@ namespace RigiCompiler.Bil
             var initArgs = ReadArgs(coroutine, initArguments);
             var initStaticTypes = VmContext.ArgumentStaticTypes(
                 coroutine.CurrentFrame.Function, initArguments, initArgs);
-            if (!context.TryFindInit(typeRef, initArgs, initStaticTypes, out var initSymbol)
-                && initArguments.Count > 0)
+            // BIL §14.2 / RUNTIME §11：有 init 但无一匹配（含 argc==0）一律抛。
+            // 无 init 声明 + 零实参仍构造：companion / ..globals.host 等合成
+            // 类型依赖此路径；用户 class 无显式 init 时前端恒合成默认零参 init。
+            if (!context.TryFindInit(typeRef, initArgs, initStaticTypes, out var initSymbol))
             {
                 throw new VmException("new 实参不匹配任何 init：" + typeRef);
             }

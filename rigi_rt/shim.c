@@ -120,6 +120,28 @@ _Noreturn void rigi_abort_invalid_cast(const RigiTypeSheet *target)
     exit(1);
 }
 
+/* 动态 new 无匹配 init（MW8b）：VM 抛 NoSuchMethodException，本面在
+ * MW9 真异常落地前占位——消息含 TypeInfo.name，exit 1 */
+_Noreturn void rigi_abort_no_such_method(const RigiTypeSheet *target)
+{
+    static const char prefix[] = "new.indirect 目标不可构造：不匹配任何 init：";
+    static const char fallback[] = "未知类型";
+    const RigiTypeInfo *info;
+    fwrite(prefix, 1, sizeof(prefix) - 1, stderr);
+    info = target != NULL ? target->typeInfoId : NULL;
+    if (info != NULL && info->name.data != NULL && info->name.len > 0)
+    {
+        fwrite(info->name.data, 1, (size_t)info->name.len, stderr);
+    }
+    else
+    {
+        fwrite(fallback, 1, sizeof(fallback) - 1, stderr);
+    }
+    fwrite("\n", 1, 1, stderr);
+    fflush(stderr);
+    exit(1);
+}
+
 /* 由编译器发射（BIL entrypoint fn） */
 extern int32_t rigi_entry(void);
 extern void rigi_globals_cleanup(void);

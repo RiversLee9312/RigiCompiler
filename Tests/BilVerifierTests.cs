@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using System.Linq;
 using RigiCompiler.Bil;
 
@@ -2157,6 +2157,9 @@ namespace RigiCompiler.Tests
         private static BilModule V3IndirectModule(params BilInstruction[] body)
         {
             var module = new BilModule();
+            module.LocalSymbols.Add(new BilTypeDeclaration("core::Exception", BilTypeKind.Class,
+                new BilAccessibilityModifier(BilAccessibility.Public),
+                new BilKeywordModifier(BilKeyword.Abstract)));
             module.Resources.Add(new BilScalarResource("R_0", BilScalarType.I32, "0"));
             var box = new BilTypeDeclaration("Box", BilTypeKind.Class,
                 new BilAccessibilityModifier(BilAccessibility.Public),
@@ -2362,6 +2365,9 @@ namespace RigiCompiler.Tests
             Action<BilBlock> fillChild, Action<BilBlock>? fillEntry = null)
         {
             var m = MinimalModule(out _, out var entry);
+            m.LocalSymbols.Add(new BilTypeDeclaration("core::Exception", BilTypeKind.Class,
+                new BilAccessibilityModifier(BilAccessibility.Public),
+                new BilKeywordModifier(BilKeyword.Abstract)));
             m.Resources.Add(new BilScalarResource("R_BT", BilScalarType.Bool, "true"));
             if (breakIdType != null)
             {
@@ -2609,6 +2615,9 @@ namespace RigiCompiler.Tests
             params BilTypeDeclaration[] extraTypes)
         {
             var module = new BilModule();
+            module.LocalSymbols.Add(new BilTypeDeclaration("core::Exception", BilTypeKind.Class,
+                new BilAccessibilityModifier(BilAccessibility.Public),
+                new BilKeywordModifier(BilKeyword.Abstract)));
             module.Resources.Add(new BilScalarResource("R_0", BilScalarType.I32, "0"));
             foreach (var type in extraTypes)
             {
@@ -2819,6 +2828,9 @@ namespace RigiCompiler.Tests
             Action<BilModule, BilFunction, BilBlock> fillInit)
         {
             var module = new BilModule();
+            module.LocalSymbols.Add(new BilTypeDeclaration("core::Exception", BilTypeKind.Class,
+                new BilAccessibilityModifier(BilAccessibility.Public),
+                new BilKeywordModifier(BilKeyword.Abstract)));
             module.Resources.Add(new BilScalarResource("R_0", BilScalarType.I32, "0"));
             module.Resources.Add(new BilScalarResource("R_T", BilScalarType.Bool, "true"));
             var color = new BilTypeDeclaration(EnumColorType, BilTypeKind.EnumStruct,

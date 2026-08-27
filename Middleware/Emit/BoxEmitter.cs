@@ -59,6 +59,14 @@ namespace RigiCompiler.Middleware.Emit
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, string sourceName)
         {
             var sourceType = slots[sourceName].Local.Type;
+            // TypeId 装箱视图 = Type<payload> 构造 sheet（运行期边界，对齐 VM TypeRef）
+            if (TypeLayout.IsTypeId(sourceType))
+            {
+                var described = session.LoadLocal(builder, slots, new MirLocalOperand(sourceName));
+                var view = ResolveTypeIdViewSheet(session, builder, described, sourceType);
+                var bits = builder.BuildPtrToInt(described, LLVMTypeRef.Int64, "box.tid");
+                return PackFat(session, builder, view, TagInline, bits, "box");
+            }
             var size = ValueByteSize(session, sourceType);
             var sheet = TypeSheetOf(session, sourceType);
             var tag = size <= InlineLimit ? TagInline : TagHeapValue;
@@ -134,7 +142,7 @@ namespace RigiCompiler.Middleware.Emit
             return builder.BuildInsertValue(fat, payload, 1, prefix + ".ref");
         }
 
-        private static LLVMValueRef PackInlinePayload(ModuleBuilder.Session session,
+        internal static LLVMValueRef PackInlinePayload(ModuleBuilder.Session session,
             LLVMBuilderRef builder,
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
             string sourceName, MirType sourceType, int size)
@@ -144,6 +152,11 @@ namespace RigiCompiler.Middleware.Emit
                 return BitsFromSlot(session, builder, slots[sourceName].Slot, size);
             }
             var value = session.LoadLocal(builder, slots, new MirLocalOperand(sourceName));
+            // .typeid 布局 = ptr；payload = TypeSheet* 位模式
+            if (TypeLayout.IsTypeId(sourceType))
+            {
+                return builder.BuildPtrToInt(value, LLVMTypeRef.Int64, "box.tid");
+            }
             return ScalarToI64(builder, value, sourceType);
         }
 
@@ -158,8 +171,76 @@ namespace RigiCompiler.Middleware.Emit
                 session.EmitMemCopy(builder, slots[target].Slot, tmp, size);
                 return;
             }
+            if (TypeLayout.IsTypeId(targetType))
+            {
+                builder.BuildStore(builder.BuildIntToPtr(payload, PointerType(), "unbox.tid"),
+                    slots[target].Slot);
+                return;
+            }
             builder.BuildStore(UnboxScalarBits(builder, payload, targetType),
                 slots[target].Slot);
+        }
+
+        // 动态 new 实参：引用/.any/占位走胖槽直通；值类型走 tag 编解码
+        internal static bool IsFatPassthrough(ModuleBuilder.Session session, MirType type)
+        {
+            if (TypeLayout.IsGenericPlaceholder(type) || type.IsAny || type.IsObject)
+            {
+                return true;
+            }
+            if (TypeLayout.IsNullable(type) || TypeLayout.IsArray(type)
+                || TypeLayout.IsSpanLike(type))
+            {
+                return true;
+            }
+            if (MirBuilder.IsScalarOrString(type) || TypeLayout.IsTypeId(type))
+            {
+                return false;
+            }
+            return !session.IsInlineValueType(type, out _);
+        }
+
+        // ctor thunk：按声明类型从胖槽拆出 init 实参（借来不 release）。
+        // 值类型 >8B：memcpy 自 payload（栈/堆指针对称）；静态 new 的
+        // CoerceArg 对 struct 亦是「副本指针交 init」，隔离由 callee 自取。
+        internal static LLVMValueRef UnpackCtorArg(ModuleBuilder.Session session,
+            LLVMBuilderRef builder, LLVMValueRef fat, MirType declared)
+        {
+            if (IsFatPassthrough(session, declared))
+            {
+                return fat;
+            }
+            var payload = builder.BuildExtractValue(fat, 1, "ctor.pl");
+            if (TypeLayout.IsTypeId(declared))
+            {
+                return builder.BuildIntToPtr(payload, PointerType(), "ctor.tid");
+            }
+            if (session.IsInlineValueType(declared, out var plan))
+            {
+                var tmp = builder.BuildAlloca(
+                    LLVMTypeRef.CreateArray(LLVMTypeRef.Int8, (uint)plan.Size), "ctor.val");
+                tmp.Alignment = (uint)plan.Alignment;
+                if (plan.Size <= InlineLimit)
+                {
+                    var bits = builder.BuildAlloca(LLVMTypeRef.Int64, "ctor.bits");
+                    builder.BuildStore(payload, bits);
+                    session.EmitMemCopy(builder, tmp, bits, plan.Size);
+                }
+                else
+                {
+                    var block = builder.BuildIntToPtr(payload, PointerType(), "ctor.block");
+                    session.EmitMemCopy(builder, tmp, block, plan.Size);
+                }
+                return tmp;
+            }
+            if (declared.IsString)
+            {
+                var tmp = builder.BuildAlloca(StringAbi.ValueType(session.Context), "ctor.str");
+                var block = builder.BuildIntToPtr(payload, PointerType(), "ctor.sblk");
+                session.EmitMemCopy(builder, tmp, block, 16);
+                return builder.BuildLoad2(StringAbi.ValueType(session.Context), tmp, "ctor.sld");
+            }
+            return UnboxScalarBits(builder, payload, declared);
         }
 
         internal static LLVMValueRef BitsFromSlot(ModuleBuilder.Session session,
@@ -241,7 +322,7 @@ namespace RigiCompiler.Middleware.Emit
             builder.PositionAtEnd(okBlock);
         }
 
-        private static int ValueByteSize(ModuleBuilder.Session session, MirType type)
+        internal static int ValueByteSize(ModuleBuilder.Session session, MirType type)
         {
             if (session.IsInlineValueType(type, out var plan))
             {
@@ -264,6 +345,50 @@ namespace RigiCompiler.Middleware.Emit
                 return sheet;
             }
             throw new CompilerInternalException($"Box 缺 TypeSheet: {key}");
+        }
+
+        // TypeId 运行期类型 = Type<payload>：按已收集的构造 sheet 选视图。
+        // VM TypeRef = .typeid<ActualType>，不变（无 Type 协变）。
+        internal static LLVMValueRef ResolveTypeIdViewSheet(ModuleBuilder.Session session,
+            LLVMBuilderRef builder, LLVMValueRef describedSheet, MirType staticType)
+        {
+            var selected = builder.BuildBitCast(TypeSheetOf(session, staticType),
+                PointerType(), "tid.view.fb");
+            var described = builder.BuildBitCast(describedSheet, PointerType(), "tid.desc");
+            if (session.Layout == null)
+            {
+                return selected;
+            }
+            foreach (var plan in session.Layout.Plans)
+            {
+                if (!TypeLayout.IsTypeIdCanonical(plan.Symbol.Canonical))
+                {
+                    continue;
+                }
+                var args = ConstructedTypeCollector.TypeArgumentsOf(plan.Symbol.Canonical);
+                if (args.Count != 1
+                    || !TryDescribedSheet(session, MirType.Of(args[0]), out var want)
+                    || !session.TryGetTypeSheet(plan.Symbol.Canonical, out var view))
+                {
+                    continue;
+                }
+                var wantPtr = builder.BuildBitCast(want, PointerType(), "tid.want");
+                var viewPtr = builder.BuildBitCast(view, PointerType(), "tid.view");
+                var match = builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, described, wantPtr,
+                    "tid.eq");
+                selected = builder.BuildSelect(match, viewPtr, selected, "tid.sel");
+            }
+            return selected;
+        }
+
+        private static bool TryDescribedSheet(ModuleBuilder.Session session, MirType type,
+            out LLVMValueRef sheet)
+        {
+            var key = TypeLayout.IsArray(type)
+                ? TypeLayout.ArrayTypeCanonical
+                : TypeLayout.BuiltinSheetCanonical(type);
+            return session.TryGetTypeSheet(key, out sheet)
+                || session.TryGetTypeSheet(type.Canonical, out sheet);
         }
 
         private static LLVMValueRef Malloc(ModuleBuilder.Session session, LLVMBuilderRef builder,

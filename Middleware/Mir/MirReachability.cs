@@ -14,13 +14,17 @@ namespace RigiCompiler.Middleware.Mir
     /// 虚调用到静态目标 + 全部 override 后代（vtable 完整性）；interface
     /// 调用到各实现类的段内实现；new type(X) 到匹配 init + ..init.wrapper
     /// + X 的全部 vtable 槽实现（消灭 null 槽，abstract 无体槽除外）；
+    /// new.indirect 保守收模块内全部 init 族（含 stdlib core*）；
     /// fn(..super) 到解析后的基类实现。派发闭包经 IMwDispatchQuery 查询
     ///（Layout 实现；LayoutStage 排在 MirBuild 之前）。
     /// </summary>
     public static class MirReachability
     {
-        // 可达 fn 的 canonical 序（入口优先，BFS 发现序）
-        public static IReadOnlyList<string> ResolveBuildOrder(MwContext context)
+        // 可达 fn 的 canonical 序（入口优先，BFS 发现序）。
+        // TentativeInitFamily = 仅经 new.indirect 保守边引入的 init 族，
+        // MIR 构建失败时试探性跳过（其余 fn 仍响亮失败）。
+        public static (IReadOnlyList<string> Order, IReadOnlySet<string> TentativeInitFamily)
+            ResolveBuildOrder(MwContext context)
         {
             var bySymbol = new Dictionary<string, BilFunction>(System.StringComparer.Ordinal);
             foreach (var bilFn in context.Module.Functions)
@@ -30,7 +34,8 @@ namespace RigiCompiler.Middleware.Mir
 
             var order = new List<string>();
             var seen = new HashSet<string>(System.StringComparer.Ordinal);
-            var queue = new Queue<string>();
+            var tentative = new HashSet<string>(System.StringComparer.Ordinal);
+            var queue = new Queue<(string Symbol, bool FromTentative)>();
             foreach (var bilFn in context.Module.Functions)
             {
                 // 无符号段声明的 fn 是预定义符号的合成体（§9.1 verifier 以
@@ -45,30 +50,41 @@ namespace RigiCompiler.Middleware.Mir
                     // stub 恒调用它（静态字段初值）：恒可达
                     || bilFn.Symbol.StartsWith("$..globals.init(", System.StringComparison.Ordinal))
                 {
-                    queue.Enqueue(bilFn.Symbol);
+                    queue.Enqueue((bilFn.Symbol, false));
                 }
             }
             while (queue.Count > 0)
             {
-                var symbol = queue.Dequeue();
+                var (symbol, fromTentative) = queue.Dequeue();
                 if (!seen.Add(symbol))
                 {
+                    // 先经保守边入队、后经普通边到达：取消试探标记
+                    if (!fromTentative)
+                    {
+                        tentative.Remove(symbol);
+                    }
                     continue;
                 }
                 order.Add(symbol);
-                foreach (var edge in CallEdges(context, bySymbol[symbol]))
+                if (fromTentative)
+                {
+                    tentative.Add(symbol);
+                }
+                var tentativeSink = new HashSet<string>(System.StringComparer.Ordinal);
+                foreach (var edge in CallEdges(context, bySymbol[symbol], tentativeSink))
                 {
                     if (bySymbol.ContainsKey(edge))
                     {
-                        queue.Enqueue(edge);
+                        queue.Enqueue((edge, tentativeSink.Contains(edge)));
                     }
                 }
             }
-            return order;
+            return (order, tentative);
         }
 
         // fn 体内的全部可达边（BIL 的 block 平铺在 fn 级，无需递归遍历）
-        private static IEnumerable<string> CallEdges(MwContext context, BilFunction fn)
+        private static IEnumerable<string> CallEdges(MwContext context, BilFunction fn,
+            HashSet<string> tentativeSink)
         {
             var edges = new List<string>();
             // fn 局部类型表（super/new 的实参静态类型解析用）
@@ -99,6 +115,18 @@ namespace RigiCompiler.Middleware.Mir
                         case NewInstruction newInst:
                             AddNewEdges(context, newInst.Type.TypeRef, newInst.Arguments,
                                 localTypes, edges);
+                            break;
+                        case NewIndirectInstruction:
+                            // 运行期目标不可静态知：保守把模块内全部类型的
+                            // init 族收入可达闭包（用户 init / 默认合成 init /
+                            // ..init.wrapper / ..init.field.*）；仅此边引入的
+                            // 记入 tentativeSink，供 MIR 试探性跳过
+                            var before = edges.Count;
+                            AddAllInitFamilyEdges(context, edges);
+                            for (var i = before; i < edges.Count; i++)
+                            {
+                                tentativeSink.Add(edges[i]);
+                            }
                             break;
                         case NewCaseInstruction newCase:
                             AddNewEdges(context, newCase.Type.TypeRef, newCase.Arguments,
@@ -263,6 +291,46 @@ namespace RigiCompiler.Middleware.Mir
                     }
                 }
             }
+        }
+
+        // new.indirect 保守边：模块内全部类型的 init 族（含 stdlib core*）。
+        // 运行期目标由 typeid 决定，静态无法收窄；宁可多留不可达 ctor。
+        // 不可构建的 init 族由 MirBuilder 试探性跳过。
+        private static void AddAllInitFamilyEdges(MwContext context, List<string> edges)
+        {
+            foreach (var type in context.Symbols.Types)
+            {
+                if (type.IsExternal
+                    || type.Declaration.Kind is not (BilTypeKind.Class
+                        or BilTypeKind.Struct or BilTypeKind.EnumStruct))
+                {
+                    continue;
+                }
+                foreach (var member in type.Members)
+                {
+                    if (member.Declaration.Kind != BilMemberKind.Method)
+                    {
+                        continue;
+                    }
+                    if (member.HasKeyword(BilKeyword.Init)
+                        || IsInitFamilyName(member.Canonical))
+                    {
+                        edges.Add(member.Canonical);
+                    }
+                }
+            }
+        }
+
+        private static bool IsInitFamilyName(string canonical)
+        {
+            var dollar = canonical.IndexOf('$');
+            if (dollar < 0)
+            {
+                return false;
+            }
+            var rest = canonical.Substring(dollar + 1);
+            return rest.StartsWith("..init.wrapper(", System.StringComparison.Ordinal)
+                || rest.StartsWith(BilSpellings.InitFieldMethodPrefix, System.StringComparison.Ordinal);
         }
 
         // new type(X) 边：匹配 init + ..init.wrapper（+ class 的全部

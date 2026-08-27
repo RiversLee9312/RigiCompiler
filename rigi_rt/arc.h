@@ -161,6 +161,14 @@ int32_t rigi_type_with(uint64_t type_id, uint64_t payload,
 int32_t rigi_type_with_indirect(uint64_t type_id, uint64_t payload,
     const RigiTypeSheet *wrapper);
 
+/* 动态 cast（MW8c-2）：成功写 out_* 返 1，失败返 0。
+ * is 命中改写视图 typeid（无数据移动）；数值互转对齐 VM TryNumericCast。 */
+int32_t rigi_try_cast(uint64_t src_type_id, uint64_t src_payload,
+    const RigiTypeSheet *target, uint64_t *out_type_id, uint64_t *out_payload);
+
+/* 浮点→整数：kind 0=i32 饱和（窄整数再截断）1=u32 饱和 2=i64 饱和 3=u64 饱和 */
+int64_t rigi_cast_f64_to_int(double v, int32_t kind);
+
 #ifdef __cplusplus
 }
 #endif

@@ -24,9 +24,19 @@ namespace RigiCompiler.Middleware.Mir
             }
 
             var order = new List<MirFunction>();
-            foreach (var symbol in MirReachability.ResolveBuildOrder(context))
+            var (buildOrder, tentativeInitFamily) = MirReachability.ResolveBuildOrder(context);
+            foreach (var symbol in buildOrder)
             {
-                order.Add(BuildFunction(context, bySymbol[symbol]));
+                try
+                {
+                    order.Add(BuildFunction(context, bySymbol[symbol]));
+                }
+                catch (MwNotSupportedException ex) when (tentativeInitFamily.Contains(symbol))
+                {
+                    Logger.Verbose("Middleware",
+                        "试探性跳过 init 族 fn（new.indirect 保守边）: "
+                        + symbol + ": " + ex.Message);
+                }
             }
             var module = new MirModule(order);
             context.Mir = module;
@@ -119,6 +129,13 @@ namespace RigiCompiler.Middleware.Mir
                 or "i8" or "i16" or "i32" or "i64"
                 or "u8" or "u16" or "u32" or "u64"
                 or "float" or "double" or "String";
+
+        // VM TryNumericCast 目标集（含 char；不含 bool）
+        internal static bool IsNumericScalar(MirType type) =>
+            type.Key is "char"
+                or "i8" or "i16" or "i32" or "i64"
+                or "u8" or "u16" or "u32" or "u64"
+                or "float" or "double";
 
         // ===== super/init/访问器解析（MirReachability 可达性共用） =====
 
@@ -560,6 +577,10 @@ namespace RigiCompiler.Middleware.Mir
                         _currentInsts.Add(new MirGetTypeId(getIdType.TargetType.TypeRef,
                             getIdType.Target.Name));
                         break;
+                    case GetIdVarInstruction getIdVar:
+                        _currentInsts.Add(new MirGetTypeIdVar(Local(getIdVar.Value),
+                            getIdVar.Target.Name));
+                        break;
                     case DirectTypeCheckInstruction directCheck:
                         EmitTypeCheck(directCheck.Kind, Local(directCheck.Value),
                             directCheck.TargetType.TypeRef, null, directCheck.Target.Name);
@@ -570,6 +591,9 @@ namespace RigiCompiler.Middleware.Mir
                         break;
                     case NewWrapperEntityInstruction:
                         // wrapper 实例安装随 MW10；type.with 只查 TypeInfo.wrappers
+                        break;
+                    case NewIndirectInstruction newIndirect:
+                        EmitNewIndirect(newIndirect);
                         break;
                     case NewInstruction newInst:
                         EmitNew(newInst);
@@ -696,6 +720,15 @@ namespace RigiCompiler.Middleware.Mir
             {
                 _currentInsts.Add(new MirSetArray(Local(inst.Collection), Local(inst.Index),
                     Local(inst.Element), TypeOf(inst.Collection.Name)));
+            }
+
+            // new.indirect：TYPEID 局部 + 实参列表直译。运行期目标不可
+            // 静态知；方法级泛型 init 不可能由前端进入（语言无 init<T>），
+            // 分发器合成处若见到则 MwNotSupportedException。
+            private void EmitNewIndirect(NewIndirectInstruction inst)
+            {
+                _currentInsts.Add(new MirNewIndirect(Local(inst.TypeId),
+                    Locals(inst.Arguments), inst.Target.Name));
             }
 
             // new type(T)：init 按实参静态类型精确匹配（BIL §14.1）；
@@ -887,13 +920,14 @@ namespace RigiCompiler.Middleware.Mir
                 }
             }
 
-            // cast（§12 子集）：nullable 装拆 → Box/Unbox（值类型↔.any/.object）
-            // → 数值/String 转换拒绝（§12 转换批）→ struct↔struct 拒绝 →
-            // 引用恒等拷贝（class↔class/interface/Any，含 any→class 留白）
+            // cast（§12）：nullable 装拆 → Box/Unbox → 占位目标 → 数值转换
+            // → 恒等拷贝 / as? 包装 → 标量·struct 不相容（MirCast 失败）
+            // → 引用恒等拷贝
             private void EmitCast(CastInstruction inst)
             {
                 var sourceType = TypeOf(inst.Source.Name);
                 var targetType = MirType.Of(inst.TargetType.TypeRef);
+                var resultType = TypeOf(inst.Target.Name);
                 if (TypeLayout.TryGetNullableInner(sourceType, out var unwrapInner)
                     && unwrapInner.Canonical == targetType.Canonical)
                 {
@@ -918,25 +952,76 @@ namespace RigiCompiler.Middleware.Mir
                     _currentInsts.Add(new MirUnboxAny(Local(inst.Source), inst.Target.Name));
                     return;
                 }
-                if (MirBuilder.IsScalarOrString(sourceType) || MirBuilder.IsScalarOrString(targetType))
+                // 泛型占位目标：降为 typeid 局部，运行期 try_cast
+                if (GenericAbi.TryPlaceholderName(targetType.Canonical, out var phName))
                 {
-                    throw new MwNotSupportedException(
-                        $"cast 数值/String 转换随 §12 转换批: {sourceType.Canonical} → {targetType.Canonical}");
+                    _currentInsts.Add(new MirCast(Local(inst.Source), inst.Target.Name,
+                        inst.IsSafe, null, new MirLocalOperand(".generic." + phName)));
+                    return;
                 }
-                if (_context.Symbols.FindType(sourceType.Canonical) is { Declaration.Kind:
-                    BilTypeKind.Struct or BilTypeKind.EnumStruct }
-                    || _context.Symbols.FindType(targetType.Canonical) is { Declaration.Kind:
-                    BilTypeKind.Struct or BilTypeKind.EnumStruct })
+                // 占位源 → 静态目标：同样走运行期 try_cast
+                if (TypeLayout.IsGenericPlaceholder(sourceType))
                 {
-                    throw new MwNotSupportedException(
-                        $"cast 值类型转换随 MW4 批 3: {sourceType.Canonical} → {targetType.Canonical}");
+                    _currentInsts.Add(new MirCast(Local(inst.Source), inst.Target.Name,
+                        inst.IsSafe, targetType.Canonical, null));
+                    return;
+                }
+                // 数值互转（含 char）；as? 结果槽为 Nullable 时仍走 MirCast 包装
+                if (MirBuilder.IsNumericScalar(sourceType)
+                    && MirBuilder.IsNumericScalar(targetType))
+                {
+                    if (sourceType.Key == targetType.Key
+                        && !TypeLayout.IsNullable(resultType))
+                    {
+                        _currentInsts.Add(new MirCopyLocal(Local(inst.Source),
+                            inst.Target.Name));
+                        return;
+                    }
+                    if (sourceType.Key == targetType.Key
+                        && TypeLayout.TryGetNullableInner(resultType, out var numInner)
+                        && numInner.Canonical == targetType.Canonical)
+                    {
+                        _currentInsts.Add(new MirWrapNullable(Local(inst.Source), numInner,
+                            inst.Target.Name));
+                        return;
+                    }
+                    _currentInsts.Add(new MirCast(Local(inst.Source), inst.Target.Name,
+                        inst.IsSafe, targetType.Canonical, null));
+                    return;
+                }
+                // 恒等（String / 同 struct / 同类）；as? 则包 Nullable
+                if (sourceType.Canonical == targetType.Canonical)
+                {
+                    if (TypeLayout.TryGetNullableInner(resultType, out var idInner)
+                        && idInner.Canonical == targetType.Canonical)
+                    {
+                        _currentInsts.Add(new MirWrapNullable(Local(inst.Source), idInner,
+                            inst.Target.Name));
+                        return;
+                    }
+                    _currentInsts.Add(new MirCopyLocal(Local(inst.Source), inst.Target.Name));
+                    return;
+                }
+                // 标量/String/typeid/struct 不相容：运行期 abort / as? 产 null
+                if (MirBuilder.IsScalarOrString(sourceType)
+                    || MirBuilder.IsScalarOrString(targetType)
+                    || TypeLayout.IsTypeId(sourceType) || TypeLayout.IsTypeId(targetType)
+                    || IsUserValueType(sourceType) || IsUserValueType(targetType))
+                {
+                    _currentInsts.Add(new MirCast(Local(inst.Source), inst.Target.Name,
+                        inst.IsSafe, targetType.Canonical, null));
+                    return;
                 }
                 _currentInsts.Add(new MirCopyLocal(Local(inst.Source), inst.Target.Name));
             }
 
+            private bool IsUserValueType(MirType type) =>
+                _context.Symbols.FindType(type.Canonical) is { Declaration.Kind:
+                    BilTypeKind.Struct or BilTypeKind.EnumStruct };
+
             private bool IsBoxableValueType(MirType type)
             {
-                if (MirBuilder.IsScalarOrString(type))
+                if (MirBuilder.IsScalarOrString(type) || TypeLayout.IsTypeId(type))
                 {
                     return true;
                 }

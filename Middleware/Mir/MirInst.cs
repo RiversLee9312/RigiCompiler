@@ -178,6 +178,23 @@ namespace RigiCompiler.Middleware.Mir
         }
     }
 
+    // new.indirect（MW8b）：运行期 TYPEID 选类型，vtable 槽 0 分发器
+    // 匹配 init。方法级泛型 init 语言层不存在；分发器合成处若见到则
+    // 受控拒绝。struct / 标量零值路径与 VM 有语义差，暂不实现。
+    public sealed class MirNewIndirect : MirInst
+    {
+        public MirOperand TypeId { get; }
+        public IReadOnlyList<MirOperand> Args { get; }
+        public string Target { get; }
+
+        internal MirNewIndirect(MirOperand typeId, IReadOnlyList<MirOperand> args, string target)
+        {
+            TypeId = typeId;
+            Args = args;
+            Target = target;
+        }
+    }
+
     // new type(V)（MW4 批 3，struct/enum）：目标局部的内联 alloca 槽物化
     //（零初始化对齐 VM ZeroOf）→ 可选 ..init.wrapper → init 直调
     //（.this 传槽地址，原地生效）；不装箱、不上堆
@@ -391,6 +408,19 @@ namespace RigiCompiler.Middleware.Mir
         }
     }
 
+    // getid.var VALUE：取操作数实际类型 TypeSheet*（.typeid）
+    public sealed class MirGetTypeIdVar : MirInst
+    {
+        public MirOperand Value { get; }
+        public string Target { get; }
+
+        internal MirGetTypeIdVar(MirOperand value, string target)
+        {
+            Value = value;
+            Target = target;
+        }
+    }
+
     // Nullable\<T\> 装箱（值类型 T → 胖引用；引用 T 为恒等）
     public sealed class MirWrapNullable : MirInst
     {
@@ -444,6 +474,28 @@ namespace RigiCompiler.Middleware.Mir
         {
             Source = source;
             Target = target;
+        }
+    }
+
+    // cast / cast.safe（MW8c-2）：数值转换、占位目标、不相容失败。
+    // 静态目标 = TargetTypeRef；泛型占位 = TargetTypeId（.generic.X 局部）。
+    public sealed class MirCast : MirInst
+    {
+        public MirOperand Source { get; }
+        public string Target { get; }
+        public bool IsSafe { get; }
+        public string? TargetTypeRef { get; }
+        public MirOperand? TargetTypeId { get; }
+        public bool IsIndirect => TargetTypeId != null;
+
+        internal MirCast(MirOperand source, string target, bool isSafe,
+            string? targetTypeRef, MirOperand? targetTypeId)
+        {
+            Source = source;
+            Target = target;
+            IsSafe = isSafe;
+            TargetTypeRef = targetTypeRef;
+            TargetTypeId = targetTypeId;
         }
     }
 

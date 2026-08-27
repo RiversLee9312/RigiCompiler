@@ -10,9 +10,33 @@ namespace RigiCompiler.Middleware.Emit
     /// vtable / iMap / refMap / TypeSheet。typeInfoId 指向 TypeInfo 全局
     ///（TypeInfoEmitter）；baseTypeId 指向基类 TypeSheet（interface/wrapper
     /// 取 ExtendsType）；vTable 未进 MIR 的方法为 null。
+    /// 字段序与 arc.h RigiTypeSheet 逐位镜像；DynamicNewEmitter 读槽 0
+    /// 分发器时按 FieldVTable 内联 GEP（互指锚点）。
     /// </summary>
     internal static class TypeSheetEmitter
     {
+        // TypeSheet 字段序（arc.h RigiTypeSheet / DynamicNewEmitter 互指）
+        internal const int FieldTypeInfoId = 0;
+        internal const int FieldBaseTypeId = 1;
+        internal const int FieldTypeSize = 2;
+        internal const int FieldTypeFlags = 3;
+        internal const int FieldVTableSize = 4;
+        internal const int FieldVTable = 5;
+        internal const int FieldIMapSize = 6;
+        internal const int FieldIMap = 7;
+        internal const int FieldRefMapSize = 8;
+        internal const int FieldRefMap = 9;
+
+        internal static LLVMTypeRef SheetStructType(LLVMContextRef context)
+        {
+            var pointer = LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0);
+            var i32 = LLVMTypeRef.Int32;
+            return context.GetStructType(new[]
+            {
+                pointer, pointer, i32, i32, i32, pointer, i32, pointer, i32, pointer,
+            }, false);
+        }
+
         internal static void EmitAll(ModuleBuilder.Session session, LayoutPlanTable layout)
         {
             var module = session.Module;
@@ -20,10 +44,7 @@ namespace RigiCompiler.Middleware.Emit
             var pointer = LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0);
             var i32 = LLVMTypeRef.Int32;
             var i16 = LLVMTypeRef.Int16;
-            var sheetType = context.GetStructType(new[]
-            {
-                pointer, pointer, i32, i32, i32, pointer, i32, pointer, i32, pointer,
-            }, false);
+            var sheetType = SheetStructType(context);
             var nullPointer = LLVMValueRef.CreateConstPointerNull(pointer);
 
             var sheetGlobals = new Dictionary<string, LLVMValueRef>(System.StringComparer.Ordinal);
@@ -55,7 +76,6 @@ namespace RigiCompiler.Middleware.Emit
                 sheetGlobals.Add(canonical, global);
                 session.RegisterTypeSheet(canonical, global);
             }
-
             TypeInfoEmitter.EmitAll(session, layout);
 
             foreach (var canonical in TypeLayout.BuiltinSheetCanonicals)
@@ -96,6 +116,14 @@ namespace RigiCompiler.Middleware.Emit
                     var entries = new LLVMValueRef[plan.VTableSlots.Count];
                     for (var i = 0; i < entries.Length; i++)
                     {
+                        if (plan.VTableSlots[i] == LayoutEngine.InitDispatchSlot)
+                        {
+                            entries[i] = session.TryGetSynthetic(
+                                DynamicNewEmitter.DispatcherName(plan), out var syn)
+                                ? syn.Fn
+                                : nullPointer;
+                            continue;
+                        }
                         entries[i] = session.TryGetFunction(plan.VTableSlots[i], out var emitted)
                             ? emitted.Value
                             : nullPointer;

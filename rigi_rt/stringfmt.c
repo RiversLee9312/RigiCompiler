@@ -282,6 +282,24 @@ static int rigi_sheet_name_eq(const RigiTypeSheet *sheet, const char *want, int6
 #define RIGI_SHEET_IS(sheet, lit) \
     rigi_sheet_name_eq((sheet), (lit), (int64_t)(sizeof(lit) - 1))
 
+/* .typeid 构造族：TypeInfo.name 为 canonical core::Type<...>。
+ * 不用 typeFlags 新位——arc.h 与发射无需同步；core:: 前缀用户类型不可达。 */
+static int rigi_sheet_is_typeid_family(const RigiTypeSheet *sheet)
+{
+    const RigiTypeInfo *info;
+    static const char prefix[] = "core::Type<";
+    if (sheet == NULL || (info = sheet->typeInfoId) == NULL
+        || info->name.data == NULL)
+    {
+        return 0;
+    }
+    if (info->name.len < (int64_t)(sizeof(prefix) - 1))
+    {
+        return 0;
+    }
+    return memcmp(info->name.data, prefix, sizeof(prefix) - 1) == 0;
+}
+
 static void rigi_copy_type_name(rigi_string *out, const RigiTypeSheet *sheet)
 {
     const RigiTypeInfo *info;
@@ -290,6 +308,45 @@ static void rigi_copy_type_name(rigi_string *out, const RigiTypeSheet *sheet)
         rigi_set_string(out, "", 0);
         return;
     }
+    rigi_set_string(out, info->name.data, info->name.len);
+}
+
+/* TypeInfo.name 是 canonical；VM TypeId.ToStandardText = BIL 别名（.i32 等） */
+static void rigi_copy_type_name_bil(rigi_string *out, const RigiTypeSheet *sheet)
+{
+    const RigiTypeInfo *info;
+    if (sheet == NULL || (info = sheet->typeInfoId) == NULL)
+    {
+        rigi_set_string(out, "", 0);
+        return;
+    }
+#define RIGI_BIL_ALIAS(canon, alias) \
+    do { \
+        if (info->name.len == (int64_t)(sizeof(canon) - 1) \
+            && info->name.data != NULL \
+            && memcmp(info->name.data, (canon), sizeof(canon) - 1) == 0) \
+        { \
+            rigi_set_string(out, (alias), (int64_t)(sizeof(alias) - 1)); \
+            return; \
+        } \
+    } while (0)
+    RIGI_BIL_ALIAS("core::i8", ".i8");
+    RIGI_BIL_ALIAS("core::i16", ".i16");
+    RIGI_BIL_ALIAS("core::i32", ".i32");
+    RIGI_BIL_ALIAS("core::i64", ".i64");
+    RIGI_BIL_ALIAS("core::u8", ".u8");
+    RIGI_BIL_ALIAS("core::u16", ".u16");
+    RIGI_BIL_ALIAS("core::u32", ".u32");
+    RIGI_BIL_ALIAS("core::u64", ".u64");
+    RIGI_BIL_ALIAS("core::float", ".f32");
+    RIGI_BIL_ALIAS("core::double", ".f64");
+    RIGI_BIL_ALIAS("core::bool", ".bool");
+    RIGI_BIL_ALIAS("core::char", ".char");
+    RIGI_BIL_ALIAS("core::String", ".string");
+    RIGI_BIL_ALIAS("core::Any", ".any");
+    RIGI_BIL_ALIAS("core::Object", ".object");
+    RIGI_BIL_ALIAS("core::ValueType", ".valuetype");
+#undef RIGI_BIL_ALIAS
     rigi_set_string(out, info->name.data, info->name.len);
 }
 
@@ -427,6 +484,13 @@ void rigi_any_to_string(rigi_string *out, const void *anySlot)
             return;
         }
         rigi_copy_type_name(out, sheet);
+        return;
+    }
+    /* tag0 Type 构造族：payload = 所指 TypeSheet*，文本对齐 VM TypeSymbol */
+    if (rigi_sheet_is_typeid_family(sheet))
+    {
+        rigi_copy_type_name_bil(out,
+            (const RigiTypeSheet *)(uintptr_t)payload);
         return;
     }
     /* tag0 非标量（小 struct、enum 等）：类型 canonical 名 */

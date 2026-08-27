@@ -8,7 +8,7 @@ namespace RigiCompiler.Tests
             TestHarness.Section("P3 Try-Catch-Finally");
 
             // 基本形态：catch 变量 const，命中即已赋值
-            var (unit, bodies) = BindUnit(
+            var (unit, bodies) = BindUnitWithStdlib(
                 "class MyException : core.Exception {\n" +
                 "    pub override func getMessage(): String { return message }\n" +
                 "}\n" +
@@ -30,7 +30,7 @@ namespace RigiCompiler.Tests
                 tryStmt.Catches[0].Variable != null && tryStmt.Catches[0].Variable!.IsConst);
 
             // _: 无变量形态
-            var (unit2, bodies2) = BindUnit(
+            var (unit2, bodies2) = BindUnitWithStdlib(
                 "class MyException : core.Exception {\n" +
                 "    pub override func getMessage(): String { return message }\n" +
                 "}\n" +
@@ -53,7 +53,7 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("_: 无 catch 变量", try2.Catches[0].Variable == null);
 
             // finally(e)：e 类型 = Nullable<core.Exception>，const
-            var (unit3, bodies3) = BindUnit(
+            var (unit3, bodies3) = BindUnitWithStdlib(
                 "func risky() {\n" +
                 "}\n" +
                 "func log() {\n" +
@@ -75,7 +75,7 @@ namespace RigiCompiler.Tests
                 && try3.FinallyVariable.Type!.Name == "Nullable");
 
             // 诊断：catch 类型与 Exception 不兼容
-            var (unit4, _) = BindUnit(
+            var (unit4, _) = BindUnitWithStdlib(
                 "func bad() {\n" +
                 "    try {\n" +
                 "    } catch (e: i32) {\n" +
@@ -85,7 +85,7 @@ namespace RigiCompiler.Tests
                 "catch type must be compatible with 'Exception' (got 'i32')");
 
             // 诊断：catch 变量 const 赋值拒绝
-            var (unit5, _) = BindUnit(
+            var (unit5, _) = BindUnitWithStdlib(
                 "class MyException : core.Exception {\n" +
                 "    pub override func getMessage(): String { return message }\n" +
                 "}\n" +
@@ -99,7 +99,7 @@ namespace RigiCompiler.Tests
                 "Cannot assign to const 'e'");
 
             // definite assignment：try/catch 交集——仅 try 赋值不够
-            var (unit6, _) = BindUnit(
+            var (unit6, _) = BindUnitWithStdlib(
                 "class MyException : core.Exception {\n" +
                 "    pub override func getMessage(): String { return message }\n" +
                 "}\n" +
@@ -115,7 +115,7 @@ namespace RigiCompiler.Tests
                 "Use of unassigned local variable 'x'");
 
             // definite assignment：try 与 catch 都赋值 → 交集成立
-            var (unit7, _) = BindUnit(
+            var (unit7, _) = BindUnitWithStdlib(
                 "class MyException : core.Exception {\n" +
                 "    pub override func getMessage(): String { return message }\n" +
                 "}\n" +
@@ -131,7 +131,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("try/catch 双赋值通过", unit7);
 
             // definite assignment：无 catch 时 try 直通（异常必穿透）
-            var (unit8, _) = BindUnit(
+            var (unit8, _) = BindUnitWithStdlib(
                 "func da3(): i32 {\n" +
                 "    var x: i32\n" +
                 "    try {\n" +
@@ -143,7 +143,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无 catch try 直通", unit8);
 
             // definite assignment：finally 恒执行并集
-            var (unit9, _) = BindUnit(
+            var (unit9, _) = BindUnitWithStdlib(
                 "class MyException : core.Exception {\n" +
                 "    pub override func getMessage(): String { return message }\n" +
                 "}\n" +
@@ -173,7 +173,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("finally 终止即保证返回", unit10);
 
             // GuaranteesReturn：try 与全部 catch 都返回
-            var (unit11, _) = BindUnit(
+            var (unit11, _) = BindUnitWithStdlib(
                 "class MyException : core.Exception {\n" +
                 "    pub override func getMessage(): String { return message }\n" +
                 "}\n" +
@@ -187,7 +187,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("全分支返回通过", unit11);
 
             // GuaranteesReturn：无 catch 时 try 单块判定（All 真空 true）
-            var (unit12, _) = BindUnit(
+            var (unit12, _) = BindUnitWithStdlib(
                 "func gr3(): i32 {\n" +
                 "    try {\n" +
                 "        return 1\n" +
@@ -197,7 +197,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无 catch try 返回通过", unit12);
 
             // 诊断：try 返回但 catch 不返回
-            var (unit13, _) = BindUnit(
+            var (unit13, _) = BindUnitWithStdlib(
                 "class MyException : core.Exception {\n" +
                 "    pub override func getMessage(): String { return message }\n" +
                 "}\n" +
@@ -220,7 +220,7 @@ namespace RigiCompiler.Tests
             TestHarness.Section("P3 Seq");
 
             // 语句形态：块级直通（作用域/assigned 语义同裸块）
-            var (unit, bodies) = BindUnit(
+            var (unit, bodies) = BindUnitWithStdlib(
                 "func s() {\n" +
                 "    seq {\n" +
                 "        var x = 1\n" +
@@ -231,7 +231,7 @@ namespace RigiCompiler.Tests
                 "Body(s, [x: i32], [Seq([Decl(x, i32, = Int(1,i32))])])");
 
             // volatile 语句形态
-            var (unit2, bodies2) = BindUnit(
+            var (unit2, bodies2) = BindUnitWithStdlib(
                 "func work() {\n" +
                 "}\n" +
                 "func s2() {\n" +
@@ -244,7 +244,7 @@ namespace RigiCompiler.Tests
                 "Body(s2, [], [SeqVolatile([CallStmt(work, [])])])");
 
             // definite assignment 直通：seq 内赋值对外可见
-            var (unit3, _) = BindUnit(
+            var (unit3, _) = BindUnitWithStdlib(
                 "func sd(): i32 {\n" +
                 "    var x: i32\n" +
                 "    seq {\n" +
@@ -256,23 +256,23 @@ namespace RigiCompiler.Tests
 
             // 返回保证分析透视语句位置 seq（含嵌套）：裸 return 直达外层
             // 函数；循环（零迭代）与逃逸型 return@seq 不透视
-            var (unitRet, _) = BindUnit(
+            var (unitRet, _) = BindUnitWithStdlib(
                 "func sr(): i32 {\n" +
                 "    seq { return 7 }\n" +
                 "}\n");
             CheckNoErrors("seq 末位 return 透视", unitRet);
-            var (unitRet2, _) = BindUnit(
+            var (unitRet2, _) = BindUnitWithStdlib(
                 "func sr2(): i32 {\n" +
                 "    seq { seq { return 7 } }\n" +
                 "}\n");
             CheckNoErrors("嵌套 seq return 透视", unitRet2);
-            var (unitLoop, _) = BindUnit(
+            var (unitLoop, _) = BindUnitWithStdlib(
                 "func sr3(c: bool): i32 {\n" +
                 "    while (c) { return 7 }\n" +
                 "}\n");
             TestHarness.CheckSemanticError("循环唯一路径仍报缺失", unitLoop.Diagnostics,
                 "Function 'sr3' must return a value on all code paths");
-            var (unitEsc, _) = BindUnit(
+            var (unitEsc, _) = BindUnitWithStdlib(
                 "func sr4(c: bool): i32 {\n" +
                 "    seq named foo {\n" +
                 "        if (c) { return@foo }\n" +
@@ -283,7 +283,7 @@ namespace RigiCompiler.Tests
                 "Function 'sr4' must return a value on all code paths");
 
             // 表达式形态：显式 return@_
-            var (unit4, bodies4) = BindUnit(
+            var (unit4, bodies4) = BindUnitWithStdlib(
                 "func se(): i32 {\n" +
                 "    return seq { return@_ 42 }\n" +
                 "}\n");
@@ -292,7 +292,7 @@ namespace RigiCompiler.Tests
                 "Body(se, [], [Return(SeqExpr([], ValueBlock(_, i32, [ReturnValue(_, Int(42,i32))])))])");
 
             // 表达式形态：隐式取值（单表达式语句）
-            var (unit5, bodies5) = BindUnit(
+            var (unit5, bodies5) = BindUnitWithStdlib(
                 "func si(): i32 {\n" +
                 "    return seq { 42 }\n" +
                 "}\n");
@@ -301,7 +301,7 @@ namespace RigiCompiler.Tests
                 "Body(si, [], [Return(SeqExpr([], ValueBlock(_, i32, implicit, [ExprStmt(Int(42,i32))])))])");
 
             // 表达式形态：named 标签
-            var (unit6, bodies6) = BindUnit(
+            var (unit6, bodies6) = BindUnitWithStdlib(
                 "func sn(): i32 {\n" +
                 "    return seq named calc { return@calc 7 }\n" +
                 "}\n");
@@ -310,7 +310,7 @@ namespace RigiCompiler.Tests
                 "Body(sn, [], [Return(SeqExpr([], ValueBlock(calc, i32, [ReturnValue(calc, Int(7,i32))])))])");
 
             // 表达式形态：volatile 置位到值块
-            var (unit7, bodies7) = BindUnit(
+            var (unit7, bodies7) = BindUnitWithStdlib(
                 "func sv(): i32 {\n" +
                 "    return volatile seq { 1 }\n" +
                 "}\n");
@@ -320,19 +320,19 @@ namespace RigiCompiler.Tests
                 "[ExprStmt(Int(1,i32))])))])");
 
             // 诊断：表达式形态无产值
-            var (unit8, _) = BindUnit(
+            var (unit8, _) = BindUnitWithStdlib(
                 "func sb(): i32 {\n" +
                 "    return seq { var x = 1\nreturn@_ x }\n" +
                 "}\n");
             CheckNoErrors("多语句显式 return@ 无诊断", unit8);
-            var (unit9, _) = BindUnit(
+            var (unit9, _) = BindUnitWithStdlib(
                 "func sb2(): i32 {\n" +
                 "    return seq { var x = 1 }\n" +
                 "}\n");
             TestHarness.CheckSemanticError("无产值拒绝", unit9.Diagnostics,
                 "seq expression must produce a value (at least one path must return@ a value)");
 
-            var (unitInit, bodiesInit) = BindUnit(
+            var (unitInit, bodiesInit) = BindUnitWithStdlib(
                 "func siv() {\n" +
                 "    var x: i32 = seq { 7 }\n" +
                 "}\n");
@@ -342,14 +342,14 @@ namespace RigiCompiler.Tests
                 "Body(siv, [x: i32], [Decl(x, i32, = SeqExpr([], ValueBlock(_, i32, implicit, " +
                 "[ExprStmt(Int(7,i32))])))])");
 
-            var (unitFall, _) = BindUnit(
+            var (unitFall, _) = BindUnitWithStdlib(
                 "func sb3() {\n" +
                 "    var x: i32 = seq { var a = 1\n a + 1 }\n" +
                 "}\n");
             TestHarness.CheckSemanticError("多语句无 return@ 仍拒绝", unitFall.Diagnostics,
                 "seq expression must produce a value (at least one path must return@ a value)");
 
-            var (seqEnum, seqEnumBodies) = BindUnit(
+            var (seqEnum, seqEnumBodies) = BindUnitWithStdlib(
                 "pub enum struct E {\n" +
                 "    pub const v: i32\n" +
                 "    pub init(_ -> v)\n" +
@@ -366,7 +366,7 @@ namespace RigiCompiler.Tests
                 "Body(f, [], [Return(SeqExpr([], ValueBlock(_, E, implicit, " +
                 "[ExprStmt(EnumCase(E.A, [Int(1,i32)]))])))])");
 
-            var (seqNull, seqNullBodies) = BindUnit(
+            var (seqNull, seqNullBodies) = BindUnitWithStdlib(
                 "func f(): String? {\n" +
                 "    return seq { null }\n" +
                 "}\n");
@@ -420,7 +420,7 @@ namespace RigiCompiler.Tests
             TestHarness.CheckSemanticError("async dispose using 拒绝", unitAsyncDispose.Diagnostics,
                 "has an unsupported dispose method (dispose must be synchronous, closed, and non-abstract)");
 
-            var (unitBadResource, _) = BindUnit(
+            var (unitBadResource, _) = BindUnitWithStdlib(
                 "func bad(): i32 { return 1 }\n" +
                 "func sbad() { seq using(var x = bad()) { } }\n");
             TestHarness.CheckSemanticError("非 IDisposable using 拒绝", unitBadResource.Diagnostics,
@@ -522,7 +522,7 @@ namespace RigiCompiler.Tests
                 "has an unsupported dispose method");
 
             // 诊断：语句 seq 不压值块栈——return@ 指向它报未定义标签
-            var (unit11, _) = BindUnit(
+            var (unit11, _) = BindUnitWithStdlib(
                 "func sl(): i32 {\n" +
                 "    seq {\n" +
                 "        return@_ 1\n" +
@@ -534,7 +534,7 @@ namespace RigiCompiler.Tests
 
             // 裸 return 不得穿透值块（SYNTAX §6.1 裁决）：值块内（含其嵌套
             // 语句块）一切裸 return 均为编译错误；语句位置 seq 不受影响
-            var (unitBareInValue, _) = BindUnit(
+            var (unitBareInValue, _) = BindUnitWithStdlib(
                 "func bv(): i32 {\n" +
                 "    const v: i32 = seq { return 7 }\n" +
                 "    return v\n" +
@@ -543,7 +543,7 @@ namespace RigiCompiler.Tests
                 "Bare 'return' cannot cross a value block boundary");
 
             // 值块内嵌套语句 seq 中的裸 return 同样穿透值块边界，一并拒绝
-            var (unitBareNested, _) = BindUnit(
+            var (unitBareNested, _) = BindUnitWithStdlib(
                 "func bn(): i32 {\n" +
                 "    const v: i32 = seq { seq { return 7 }\nreturn@_ 1 }\n" +
                 "    return v\n" +
@@ -553,7 +553,7 @@ namespace RigiCompiler.Tests
                 "Bare 'return' cannot cross a value block boundary");
 
             // 语句位置 seq 内的裸 return 结束外层函数（canonical 形态保留）
-            var (unitBareStmt, _) = BindUnit(
+            var (unitBareStmt, _) = BindUnitWithStdlib(
                 "func bs(): i32 {\n" +
                 "    seq { return 7 }\n" +
                 "    return 0\n" +
@@ -561,7 +561,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("语句 seq 内裸 return 合法", unitBareStmt);
 
             // return@ 穿透语句 seq 命中外层值块（末语句为 seq → 体穿透判定）
-            var (unit12, bodies12) = BindUnit(
+            var (unit12, bodies12) = BindUnitWithStdlib(
                 "func st(): i32 {\n" +
                 "    return seq {\n" +
                 "        var dummy = 0\n" +
@@ -575,7 +575,7 @@ namespace RigiCompiler.Tests
                 "Body(st, [dummy: i32], [Return(SeqExpr([], ValueBlock(_, i32, [Decl(dummy, i32, = Int(0,i32)); Seq([ReturnValue(_, Int(1,i32))])])))])");
 
             // return@ 穿透 try 命中外层值块（try 与全部 catch 终止）
-            var (unit13, _) = BindUnit(
+            var (unit13, _) = BindUnitWithStdlib(
                 "class MyException : core.Exception {\n" +
                 "    pub override func getMessage(): String { return message }\n" +
                 "}\n" +
@@ -592,7 +592,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("try 穿透无诊断", unit13);
 
             // return@ 穿透 try——finally 终止覆盖
-            var (unit14, _) = BindUnit(
+            var (unit14, _) = BindUnitWithStdlib(
                 "func tt2(): i32 {\n" +
                 "    return seq {\n" +
                 "        var dummy = 0\n" +
@@ -612,7 +612,7 @@ namespace RigiCompiler.Tests
             TestHarness.Section("P3 return@statement-seq (M61)");
 
             // 正例：命中即 BoundSeqExitStatement；嵌套块内穿透
-            var (unit, bodies) = BindUnit(
+            var (unit, bodies) = BindUnitWithStdlib(
                 "func f(x: i32): i32 {\n" +
                 "    seq named outer {\n" +
                 "        if (x > 0) { return@outer }\n" +
@@ -625,13 +625,13 @@ namespace RigiCompiler.Tests
                 "[SeqExit(@outer)])]); Return(Param(x,i32))])");
 
             // 负例：语句 seq 目标必须不携带值
-            var (unit2, _) = BindUnit(
+            var (unit2, _) = BindUnitWithStdlib(
                 "func f() {\n    seq named s {\n        return@s 1\n    }\n}\n");
             TestHarness.CheckSemanticError("语句 seq 不带值", unit2.Diagnostics,
                 "return@s cannot carry a value (target is a statement seq)");
 
             // 负例：隔循环拦截（seq 在循环外，return@ 在循环内）
-            var (unit3, _) = BindUnit(
+            var (unit3, _) = BindUnitWithStdlib(
                 "func f(x: i32) {\n" +
                 "    seq named s {\n" +
                 "        while (x > 0) { return@s }\n" +
@@ -641,7 +641,7 @@ namespace RigiCompiler.Tests
                 "return@s across a loop boundary not supported yet (S7c)");
 
             // 负例：隔值块拦截（return@seq 在值块内——continuation 无法表达）
-            var (unit4, _) = BindUnit(
+            var (unit4, _) = BindUnitWithStdlib(
                 "func f(c: bool): i32 {\n" +
                 "    seq named s {\n" +
                 "        var v = if (c) { return@s } else { return@_ 1 }\n" +
@@ -652,7 +652,7 @@ namespace RigiCompiler.Tests
                 "return@s across a value block boundary not supported yet");
 
             // 未 named 的语句 seq 不作目标（`_` 默认标签值块专属）
-            var (unit5, _) = BindUnit(
+            var (unit5, _) = BindUnitWithStdlib(
                 "func f() {\n    seq {\n        return@_\n    }\n}\n");
             TestHarness.CheckSemanticError("匿名语句 seq 非目标", unit5.Diagnostics,
                 "Undefined value block label: '_'");

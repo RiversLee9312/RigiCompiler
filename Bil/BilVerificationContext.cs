@@ -88,9 +88,9 @@ namespace RigiCompiler.Bil
 
         private static readonly string[] PredefinedTypes =
         {
-            // 类型层级根（SYNTAX §3.1，含异常根）
+            // 类型层级根（SYNTAX §3.1；Exception 已源码化，不在预定义集）
             "core::Any", "core::Object", "core::ValueType", "core::Enum",
-            "core::Wrapper", "core::Exception",
+            "core::Wrapper",
             // 基元类型 canonical（BIL 别名之外的引用形态，如 ext 方法宿主）
             "core::i8", "core::i16", "core::i32", "core::i64",
             "core::u8", "core::u16", "core::u32", "core::u64",
@@ -111,7 +111,7 @@ namespace RigiCompiler.Bil
             // 落地符号段（EmitTypeTree 跳过 IsBuiltin），但调用点若以
             // core::Exception 静态类型 invoke（catch 到 Exception 基类型）
             // 仍需要可解析；具体子类 override 已各自发射 fn 定义
-            "core::Exception$getMessage()@.string",
+
             // S11e（BIL §15.4）：Any.call??? 链末默认实现——bootstrap 内建
             // 宿主不进 LocalSymbols（EmitTypeTree 跳过 IsBuiltin），其合成
             // 成员 fn 定义已平铺发射（P3 阶段 2.6 绑体：throw new
@@ -124,11 +124,11 @@ namespace RigiCompiler.Bil
                 "unnamedArgs:.array<.any>)@.any",
         };
 
-        // 预定义字段（bootstrap 符号不声明的成员面，S10）：异常根 message
+        // 预定义字段（bootstrap 符号不声明的成员面；Exception.message 已源码化）
         // 字段——异常子类 init 体发射 set.field 引用它（SYNTAX §8.1）
         private static readonly string[] PredefinedFields =
         {
-            "core::Exception#message@.string",
+
             // Array.length（V2.5，RUNTIME §26）：bootstrap const 字段，
             // 内建类型不进符号段，get.field 需要可解析
             "core::Array#length@.i32",

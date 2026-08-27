@@ -29,6 +29,14 @@ namespace RigiCompiler.Middleware.Runtime
         public const string AbortArithmeticOverflow = "rigi_abort_arithmetic_overflow";
         // 拆箱不符：void(TypeSheet*) noreturn，消息含目标 TypeInfo.name
         public const string AbortInvalidCast = "rigi_abort_invalid_cast";
+        // 动态 new 无匹配 init：void(TypeSheet*) noreturn，消息含 TypeInfo.name
+        public const string AbortNoSuchMethod = "rigi_abort_no_such_method";
+        // typeOf 值形态：胖引用 → 实际 TypeSheet*（tag2 对象头 / tag0·tag1 掩码）
+        public const string TypeOf = "rigi_typeof";
+        // 动态 cast（占位目标）：is 命中改写视图 typeid；数值互转；失败返 0
+        public const string TryCast = "rigi_try_cast";
+        // 浮点→整数（NaN→0，溢出饱和到 32/64 位宽再截断；对齐 C# unchecked conv）
+        public const string CastF64ToInt = "rigi_cast_f64_to_int";
         public const string AllocArray = "rigi_alloc_array";
         public const string SpanAlloc = "rigi_span_alloc";
         public const string AbortArrayOob = "rigi_abort_array_oob";
@@ -50,7 +58,7 @@ namespace RigiCompiler.Middleware.Runtime
                 StringConcat => new[] { RuntimeFaceParam.StringOut, RuntimeFaceParam.StringIn, RuntimeFaceParam.StringIn },
                 StringCompare => new[] { RuntimeFaceParam.StringIn, RuntimeFaceParam.StringIn },
                 AbortDividedByZero or AbortArithmeticOverflow or AbortArrayNegativeLength
-                    or AbortInvalidCast =>
+                    or AbortInvalidCast or AbortNoSuchMethod =>
                     System.Array.Empty<RuntimeFaceParam>(),
                 _ => throw new MwNotSupportedException($"未知 rigi_rt 运行时面: {faceSymbol}"),
             };

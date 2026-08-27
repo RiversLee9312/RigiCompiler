@@ -26,6 +26,7 @@ namespace RigiCompiler
     //   String 与 Wrapper 都在 ValueType 分支下（String 非 rich、Wrapper 恒 rich）；
     //   Nullable\<T> 的 shared 属性由 T 推导而不是查声明修饰符；
     //   Wrapper 是全部 wrapper 声明的隐式基类。
+    // Exception 不在此直造：stdlib/core/exceptions.rg 源码声明，懒解析取参照点。
     public sealed class BootstrapSymbols
     {
         public NamespaceSymbol Core { get; }
@@ -37,9 +38,25 @@ namespace RigiCompiler
         public TypeSymbol Enum { get; }
         // 全部 wrapper 声明的隐式基类；wrapper 恒 rich struct（SYNTAX §14.9）
         public TypeSymbol Wrapper { get; }
-        // 异常根类型（S7d 定稿：根进 bootstrap——throw/catch 是语言级控制流，
-        // 兼容性检查需要常驻参照点；CastException 等具体子类归 S10 stdlib 源）
-        public TypeSymbol Exception { get; }
+        // 异常根（SYNTAX §8.1）：stdlib/core/exceptions.rg 源码声明；懒解析
+        // 仿 PairDefinition / CallWildcard（构造期 stdlib 未载入）
+        public TypeSymbol Exception
+        {
+            get
+            {
+                if (_exception != null) return _exception;
+                var found = Core.Types.FirstOrDefault(t => t.Name == "Exception"
+                    && t.GenericParameters.Count == 0);
+                if (found == null)
+                {
+                    throw new CompilerInternalException(
+                        "core::Exception 尚未载入（stdlib 未装载）");
+                }
+                _exception = found;
+                return found;
+            }
+        }
+        private TypeSymbol? _exception;
 
         // SYNTAX §3.2 基本类型（float/double 的 BIL 别名为 .f32/.f64，§6.2）
         public TypeSymbol Int8 { get; }
@@ -91,13 +108,7 @@ namespace RigiCompiler
                 baseType: ValueType, isBuiltin: true);
             Wrapper = new TypeSymbol("Wrapper", TypeKind.Wrapper, Core,
                 baseType: ValueType, isRich: true, isBuiltin: true);
-            // 异常根：Object 分支普通抽象 class（abstract 天然 open，供用户
-            // 异常类型继承；bootstrap 合成符号不经 ModifierChecker，互斥规则
-            // 不适用）。message 面（S10，SYNTAX §8.1：protected message 字段 +
-            // pub abstract getMessage()）在 String 初始化后添加（本文件末尾
-            // 附近）——构造顺序敏感：String 属性此处尚未初始化，取到 null
-            Exception = new TypeSymbol("Exception", TypeKind.Class, Core,
-                baseType: Object, isBuiltin: true) { IsAbstract = true };
+            // Exception 由 stdlib/core/exceptions.rg 源码声明，不在此直造
 
             // 数值类型：整数 = 算术 + 位运算 + 比较；浮点 = 算术 + 比较
             // （无符号不含 Opposite——一元负号对无符号无意义）
@@ -155,22 +166,7 @@ namespace RigiCompiler
                 HasBody = true,
             });
 
-            // 异常根 message 面（S10，SYNTAX §8.1；置于此处——String 已初始化）：
-            // protected message 字段 + pub abstract getMessage()——子类 init 直接
-            // 赋值继承字段（init 也可选 super(...)），getMessage 是 message 的
-            // 唯一公共读取通道，由各具体异常子类 override 各自实现（用户裁定：
-            // 不再走 native/hook）；toString 不覆写（插值/打印走 Object 默认实现，
-            // 返回类型 canonical 名）
-            Exception.Fields.Add(new FieldSymbol("message", owner: Exception, fieldType: String)
-            {
-                Accessibility = Accessibility.Protected,
-            });
-            Exception.Methods.Add(new MethodSymbol("getMessage", MethodKind.Regular,
-                owner: Exception, returnType: String)
-            {
-                IsAbstract = true,
-                Accessibility = Accessibility.Public,
-            });
+            // Exception.message / getMessage 随 stdlib 源码声明入图，不在此程序化添加
 
             // Any.call??? 壳（M88）：参数类型在 EnsureCallWildcard 填（Array/
             // Pair 构造需 SymbolGraph）；此处先挂成员占位，签名参数列表在
@@ -279,7 +275,7 @@ namespace RigiCompiler
             // 未入容器表，裸名 i32/String/Object 无法经路径解析找到）
             foreach (var builtin in new[]
             {
-                Any, Object, ValueType, Enum, Wrapper, Exception,
+                Any, Object, ValueType, Enum, Wrapper,
                 Int8, Int16, Int32, Int64, UInt8, UInt16, UInt32, UInt64,
                 Float, Double, Bool, Char, String,
                 TypeDefinition, SpanDefinition, SharedSpanDefinition, NullableDefinition, BoxDefinition,

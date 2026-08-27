@@ -74,8 +74,9 @@ namespace RigiCompiler.Middleware.Layout
         public uint TypeFlags { get; }
         // 全部实例字段（基类字段在前，保偏移序）
         public IReadOnlyList<FieldPlan> Fields { get; }
-        // vtable 槽序 → 方法 canonical（基类继承槽 → 本类自有槽 → 各
-        // interface 实现段；override 复用基槽、同方法同偏移不变量）
+        // vtable 槽序 → 方法 canonical（槽 0 = $mw.init.dispatch；其后
+        // 基类继承槽 → 本类自有槽 → 各 interface 实现段；override 复用
+        // 基槽、同方法同偏移不变量）
         public IReadOnlyList<string> VTableSlots { get; }
         // iMap：接口 canonical → 本类 vtable 段 base offset（仅本类直接
         // implements 的接口；基类条目沿 baseTypeId 链上查，不复制）

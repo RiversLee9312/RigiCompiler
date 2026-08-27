@@ -45,8 +45,18 @@ namespace RigiCompiler
             // 声明先于扩展存在，不应被迫感知；读出语义按分配零值（文档化
             // 边界，与数组元素同型）
             if (field.ExtTargetPath != null) return false;
-            // 内建宿主声明的字段（bootstrap Exception.message 等）不在义务集
             if (field.Owner is not { } owner || owner.IsBuiltin) return false;
+            // Exception.message：源码化后非 builtin，但 SYNTAX §8.1 规定未
+            // 赋值时为零值（空字符串）；用户自定义异常子类不赋值 message
+            // 仍合法，定点豁免本字段（不经 Bootstrap.Exception 懒解析，
+            // 避免无 stdlib 的 DA 路径误触内部异常）
+            if (field.Name == "message"
+                && owner.Name == "Exception"
+                && owner.GenericParameters.Count == 0
+                && ReferenceEquals(owner.Namespace, env.B.Core))
+            {
+                return false;
+            }
             // 计算属性无存储
             if ((field.Getter != null || field.Setter != null) && !field.HasBackingStorage)
             {

@@ -26,6 +26,10 @@ namespace RigiCompiler.Tests
                 "If(Binary(Path(x, []) > Int(0,I32)), [Path(x, [])], [Path(opposite(Path(x, [])), [])])");
             TestExpr("var r = if (flag) { 1 } else { 2 }",
                 "If(Path(flag, []), [Int(1,I32)], [Int(2,I32)])");
+            TestExpr("var r = if (a and b) { 1 } else { 0 }",
+                "If(Binary(Path(a, []) and Path(b, [])), [Int(1,I32)], [Int(0,I32)])");
+            TestExpr("var r = if (a and (b or c)) { 1 } else { 0 }",
+                "If(Binary(Path(a, []) and Group(Binary(Path(b, []) or Path(c, [])))), [Int(1,I32)], [Int(0,I32)])");
 
             TestHarness.Blank();
         }
@@ -111,6 +115,10 @@ namespace RigiCompiler.Tests
             TestHarness.CheckParseError("var r = if (c) named { 1 } else { 2 }",
                 () => TestHarness.ParseRoot("var r = if (c) named { 1 } else { 2 }"),
                 "Expected label name after 'named'");
+            // 条件位三连 and：无优先级，必须括号化（SYNTAX §1.3）
+            TestHarness.CheckParseError("var r = if (a and b and c) { 1 } else { 0 }",
+                () => TestHarness.ParseRoot("var r = if (a and b and c) { 1 } else { 0 }"),
+                "没有运算符优先级");
 
             TestHarness.Blank();
         }

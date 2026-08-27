@@ -16,8 +16,11 @@ namespace RigiCompiler.Middleware.Layout
     ///   按 {i8*,i64} 16B/16 对齐内联并进 refMap kind1；本地 struct/enum 字段按
     ///   自身布局内联（递归，内层 refMap 折算拼入）；其余未解析/构造类型
     ///   一律按胖引用槽（泛型具化布局随 MW4 后续批）；
-    /// - vtable：基类继承槽 → 本类自有槽 → 各 interface 实现段；
-    ///   override（签名键命中）复用基槽；
+    /// - vtable：槽 0 = $mw.init.dispatch（per-类型 init 分发器）→
+    ///   基类继承槽 → 本类自有槽 → 各 interface 实现段；
+    ///   override（签名键命中）复用基槽；构造类型复用模板槽序，槽 0
+    ///   内容按具化 canonical 各自填分发器（发射期）；
+    ///   struct（非 enum）同样挂槽 0 一元表、无 iMap；enum 不挂；
     /// - refMap：u16 = (kind<<14)|hop，跳数单位 16B；内嵌值类型字段的
     ///   引用/String 发射期折算拼入（§8 加载期扁平化的编译期等价）。
     /// </summary>
@@ -27,6 +30,8 @@ namespace RigiCompiler.Middleware.Layout
         public const int ObjectHeaderSize = 16;
         // 胖引用槽 16B/16B（与 TypeLayout.ReferenceSlotSize 同值）
         public const int ReferenceSlotSize = 16;
+        // vtable 槽 0 合成标记（TypeSheetEmitter 按类型填 mw.init.dispatch.*）
+        public const string InitDispatchSlot = "$mw.init.dispatch";
 
         public static LayoutPlanTable Build(MwSymbolTable symbols) =>
             Build(symbols, System.Array.Empty<string>(), null);
@@ -130,8 +135,8 @@ namespace RigiCompiler.Middleware.Layout
             }
             var size = AlignUp(offset, ReferenceSlotSize);
 
-            // vtable：基类槽继承（override 复用基槽）→ 本类自有槽 →
-            // interface 实现段
+            // vtable：槽 0 分发器 → 基类槽继承（override 复用基槽）→
+            // 本类自有槽 → interface 实现段
             var slots = new List<string>();
             if (basePlan != null)
             {
@@ -150,6 +155,7 @@ namespace RigiCompiler.Middleware.Layout
                     slots.Add(member.Canonical);
                 }
             }
+            EnsureInitDispatchSlot(slots);
             var iMap = new List<(string, int)>();
             foreach (var ifaceRef in type.Declaration.ImplementsTypes)
             {
@@ -181,6 +187,13 @@ namespace RigiCompiler.Middleware.Layout
             {
                 return GenericAbi.IsClosedConstructed(canonical)
                     ? SynthesizeSpanPlan(canonical, table, visiting)
+                    : null;
+            }
+            // core::Type 无 stdlib 声明：按 Span 先例合成值类型构造 sheet
+            if (TypeLayout.IsTypeIdCanonical(canonical))
+            {
+                return GenericAbi.IsClosedConstructed(canonical)
+                    ? SynthesizeTypeIdPlan(canonical, table, visiting)
                     : null;
             }
             if (!GenericAbi.IsClosedConstructed(canonical)
@@ -243,6 +256,8 @@ namespace RigiCompiler.Middleware.Layout
             {
                 slots.Add(templatePlan.VTableSlots[i]);
             }
+            // 槽 0 标记与模板相同；发射期按具化 canonical 填分发器
+            EnsureInitDispatchSlot(slots);
             var iMap = new List<(string, int)>();
             foreach (var ifaceRef in template.Declaration.ImplementsTypes)
             {
@@ -260,6 +275,32 @@ namespace RigiCompiler.Middleware.Layout
                 basePlan, templatePlan.HiddenTypeIdSlots,
                 CollectIfaceClosure(canonical, constructed, symbols));
             table.Add(plan);
+            return plan;
+        }
+
+        // .typeid<X> 构造 sheet：值类型、typeSize 8、FlagInlineValue、
+        // 各表空。VM TypesAssignable 对 Type<X>/Type<Any> 不变（无 core::Type
+        // 声明、无协变）→ baseTypeId 不指向无界成员。
+        private static TypeLayoutPlan? SynthesizeTypeIdPlan(string canonical,
+            LayoutPlanTable table, HashSet<string> visiting)
+        {
+            if (!visiting.Add(canonical))
+            {
+                return null;
+            }
+            var declaration = new BilTypeDeclaration("core::Type", BilTypeKind.Struct);
+            declaration.GenericParameters.Add("T");
+            var template = new MwTypeSymbol(declaration, isExternal: true,
+                System.Array.Empty<MwMemberSymbol>(),
+                System.Array.Empty<MwCaseSymbol>());
+            var plan = new TypeLayoutPlan(new MwTypeSymbol(canonical, template),
+                TypeLayoutKind.Struct, GenericAbi.TypeIdSlotSize, GenericAbi.TypeIdSlotAlign,
+                TypeLayoutPlan.FlagInlineValue, System.Array.Empty<FieldPlan>(),
+                System.Array.Empty<string>(),
+                System.Array.Empty<(string, int)>(), System.Array.Empty<ushort>(),
+                System.Array.Empty<(MwCaseSymbol, uint)>(), null);
+            table.Add(plan);
+            visiting.Remove(canonical);
             return plan;
         }
 
@@ -291,7 +332,8 @@ namespace RigiCompiler.Middleware.Layout
             }
             var plan = new TypeLayoutPlan(new MwTypeSymbol(canonical, template),
                 TypeLayoutKind.Class, TypeLayout.ArrayPrefixSize, ReferenceSlotSize,
-                flags, System.Array.Empty<FieldPlan>(), System.Array.Empty<string>(),
+                flags, System.Array.Empty<FieldPlan>(),
+                new[] { InitDispatchSlot },
                 System.Array.Empty<(string, int)>(), System.Array.Empty<ushort>(),
                 System.Array.Empty<(MwCaseSymbol, uint)>(), null);
             table.Add(plan);
@@ -358,9 +400,16 @@ namespace RigiCompiler.Middleware.Layout
                     enumCases.Add((caseSymbol, caseSymbol.Discriminant));
                 }
             }
+            // struct 挂 vtable 槽 0 = init 分发器（无继承、无 iMap，槽表
+            // 恒一元）；enum 不插槽 0——调用点 vTable null 兜底 abort
+            var slots = new List<string>();
+            if (!isEnum)
+            {
+                EnsureInitDispatchSlot(slots);
+            }
             return new TypeLayoutPlan(type, isEnum ? TypeLayoutKind.Enum : TypeLayoutKind.Struct,
                 size, alignment, TypeFlagsOf(type), fields,
-                System.Array.Empty<string>(), System.Array.Empty<(string, int)>(),
+                slots, System.Array.Empty<(string, int)>(),
                 BuildRefMap(fields, refEntries, 0),
                 enumCases, null,
                 ifaceClosure: CollectIfaceClosure(type.Canonical, type, symbols));
@@ -640,13 +689,14 @@ namespace RigiCompiler.Middleware.Layout
             MwMemberSymbol ifaceMethod, Dictionary<string, string>? subst)
         {
             var raw = ifaceMethod.SignatureKey;
-            var exact = slots.Find(s => KeyOf(symbols, s) == raw);
+            var exact = slots.Find(s => s != InitDispatchSlot && KeyOf(symbols, s) == raw);
             if (exact != null)
             {
                 return exact;
             }
             var want = NormalizeSignatureKey(ConstructedTypeCollector.Substitute(raw, subst));
-            return slots.Find(s => NormalizeSignatureKey(KeyOf(symbols, s)) == want);
+            return slots.Find(s => s != InitDispatchSlot
+                && NormalizeSignatureKey(KeyOf(symbols, s)) == want);
         }
 
         private static string NormalizeSignatureKey(string key)
@@ -707,6 +757,16 @@ namespace RigiCompiler.Middleware.Layout
                 : field.Canonical.Substring(at + 1);
         }
 
+        // 槽 0 插入合成标记；基类已带则不重复（发射期按本类型填分发器）
+        private static void EnsureInitDispatchSlot(List<string> slots)
+        {
+            if (slots.Count > 0 && slots[0] == InitDispatchSlot)
+            {
+                return;
+            }
+            slots.Insert(0, InitDispatchSlot);
+        }
+
         // 槽内 canonical 的签名键（经符号表成员反查；槽内符号恒已登记）
         private static string KeyOf(MwSymbolTable symbols, string canonical) =>
             symbols.FindMember(canonical)!.SignatureKey;
@@ -716,6 +776,10 @@ namespace RigiCompiler.Middleware.Layout
         private static bool CompatibleSignature(MwSymbolTable symbols, string slotCanonical,
             string memberKey)
         {
+            if (slotCanonical == InitDispatchSlot)
+            {
+                return false;
+            }
             var slotKey = KeyOf(symbols, slotCanonical);
             if (slotKey == memberKey)
             {

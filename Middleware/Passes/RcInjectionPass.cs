@@ -174,6 +174,7 @@ namespace RigiCompiler.Middleware.Passes
             MirCall call => call.Result,
             MirSuperCall superCall => superCall.Result,
             MirInvokeIndirect invoke => invoke.Result,
+            MirNewIndirect newIndirect => newIndirect.Target,
             MirNewObject newObject => newObject.Target,
             MirNewValue newValue => newValue.Target,
             MirNewCase newCase => newCase.Target,
@@ -184,6 +185,7 @@ namespace RigiCompiler.Middleware.Passes
             MirUnwrapNullable unwrap => unwrap.Target,
             MirBoxAny box => box.Target,
             MirUnboxAny unbox => unbox.Target,
+            MirCast cast => cast.Target,
             MirNewArray newArray => newArray.Target,
             _ => null,
         };

@@ -90,6 +90,8 @@ namespace RigiCompiler.Middleware.Emit
             // 追加需要宿主函数）
             internal LLVMValueRef CurrentFunction { get; private set; }
 
+            internal void SetCurrentFunction(LLVMValueRef fn) => CurrentFunction = fn;
+
             internal sealed record EmittedFunction(LLVMValueRef Value, LLVMTypeRef Type, MirFunction Mir);
 
             // ===== 函数值映射（DeclareFunction 登记，CallEmitter 直接调用查） =====
@@ -98,6 +100,49 @@ namespace RigiCompiler.Middleware.Emit
 
             internal bool TryGetFunction(string canonical, out EmittedFunction emitted) =>
                 _functions.TryGetValue(canonical, out emitted!);
+
+            // ===== 合成 fn（init 分发器 / ctor thunk；vtable 槽 0 填 ptr） =====
+
+            private readonly Dictionary<string, (LLVMValueRef Fn, LLVMTypeRef Type)> _synthetics =
+                new(System.StringComparer.Ordinal);
+            private readonly Dictionary<string, LLVMValueRef> _tokens =
+                new(System.StringComparer.Ordinal);
+
+            internal void RegisterSynthetic(string name, LLVMValueRef fn, LLVMTypeRef type) =>
+                _synthetics.Add(name, (fn, type));
+
+            internal bool TryGetSynthetic(string name, out (LLVMValueRef Fn, LLVMTypeRef Type) value) =>
+                _synthetics.TryGetValue(name, out value);
+
+            // 无运行期 sheet 的形参令牌（.nullable<...> 等）：模块内驻留
+            // canonical 串指针，调用点与分发器对称物化、指针等比较
+            internal LLVMValueRef InternCanonicalToken(string canonical)
+            {
+                if (_tokens.TryGetValue(canonical, out var existing))
+                {
+                    return existing;
+                }
+                var bytes = System.Text.Encoding.UTF8.GetBytes(canonical);
+                var elems = new LLVMValueRef[bytes.Length + 1];
+                for (var i = 0; i < bytes.Length; i++)
+                {
+                    elems[i] = LLVMValueRef.CreateConstInt(LLVMTypeRef.Int8, bytes[i], false);
+                }
+                elems[bytes.Length] = LLVMValueRef.CreateConstInt(LLVMTypeRef.Int8, 0, false);
+                var arrType = LLVMTypeRef.CreateArray(LLVMTypeRef.Int8, (uint)elems.Length);
+                var global = Module.AddGlobal(arrType,
+                    GenericAbi.EscapeGlobalName("mw.init.token.", canonical));
+                global.Linkage = LLVMLinkage.LLVMInternalLinkage;
+                global.IsGlobalConstant = true;
+                global.Initializer = LLVMValueRef.CreateConstArray(LLVMTypeRef.Int8, elems);
+                var ptr = LLVMValueRef.CreateConstInBoundsGEP2(arrType, global, new[]
+                {
+                    LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, 0, false),
+                    LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, 0, false),
+                });
+                _tokens.Add(canonical, ptr);
+                return ptr;
+            }
 
             // ===== TypeSheet 全局注册表（TypeSheetEmitter 登记；new 指令与
             // interface 派发的 iface sheet 引用查） =====
@@ -182,6 +227,11 @@ namespace RigiCompiler.Middleware.Emit
                 out Layout.TypeLayoutPlan plan)
             {
                 plan = null!;
+                // .typeid 合成 Struct 计划仅供 TypeSheet；LLVM 存储仍为 ptr
+                if (TypeLayout.IsTypeId(type))
+                {
+                    return false;
+                }
                 if (Layout?.Find(type.Canonical) is { } found
                     && found.Kind is RigiCompiler.Middleware.Layout.TypeLayoutKind.Struct
                         or RigiCompiler.Middleware.Layout.TypeLayoutKind.Enum)
@@ -320,6 +370,7 @@ namespace RigiCompiler.Middleware.Emit
                 {
                     DeclareFunction(fn);
                 }
+                DynamicNewEmitter.DeclareAll(this);
                 if (Layout != null)
                 {
                     TypeSheetEmitter.EmitAll(this, Layout);
@@ -337,6 +388,7 @@ namespace RigiCompiler.Middleware.Emit
                     }
                     EmitBody(builder, emitted);
                 }
+                DynamicNewEmitter.EmitAll(this, builder);
                 if (entrypoint != null)
                 {
                     EmitEntryStub(builder, entrypoint);
@@ -576,6 +628,9 @@ namespace RigiCompiler.Middleware.Emit
                     case MirSuperCall superCall:
                         CallEmitter.EmitSuperCall(this, builder, slots, superCall);
                         break;
+                    case MirNewIndirect newIndirect:
+                        DynamicNewEmitter.EmitCall(this, builder, slots, newIndirect);
+                        break;
                     case MirNewObject newObject:
                         CallEmitter.EmitNew(this, builder, slots, newObject);
                         break;
@@ -615,6 +670,9 @@ namespace RigiCompiler.Middleware.Emit
                     case MirGetTypeId getTypeId:
                         ArrayEmitter.EmitGetTypeId(this, builder, slots, getTypeId);
                         break;
+                    case MirGetTypeIdVar getTypeIdVar:
+                        ArrayEmitter.EmitGetTypeIdVar(this, builder, slots, getTypeIdVar);
+                        break;
                     case MirWrapNullable wrap:
                         ArrayEmitter.EmitWrap(this, builder, slots, wrap);
                         break;
@@ -626,6 +684,9 @@ namespace RigiCompiler.Middleware.Emit
                         break;
                     case MirUnboxAny unbox:
                         BoxEmitter.EmitUnbox(this, builder, slots, unbox);
+                        break;
+                    case MirCast cast:
+                        CastEmitter.Emit(this, builder, slots, cast);
                         break;
                     case MirAcquireSlot acquire:
                         ArcEmitter.EmitAcquireSlot(this, builder, slots, acquire.Local);

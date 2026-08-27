@@ -102,6 +102,40 @@ namespace RigiCompiler.Tests
             CheckI32("Point 初值 1+2", point, 3);
         }
 
+        // MW8c-3 E：动态 new 无匹配 init（含零参）必须抛 NoSuchMethodException
+        private static void TestDynamicNewMustThrowNoMatchingInit()
+        {
+            var zeroArg = Run(
+                "pub class OnlyI32 {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(v: i32) { x = v }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var t = typeOf(OnlyI32)\n" +
+                "    var o = new t()\n" +
+                "    return 0\n" +
+                "}\n");
+            TestHarness.CheckTrue("零参无匹配 init 抛异常",
+                zeroArg.Exception != null, zeroArg.Exception?.ToString() ?? "未抛");
+            TestHarness.CheckTrue("零参无匹配 init 消息",
+                zeroArg.Exception != null
+                && zeroArg.Exception.Message.Contains("不匹配任何 init"),
+                zeroArg.Exception?.Message ?? "");
+
+            var structDyn = Run(
+                "pub struct Vec {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(v: i32) { x = v }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var t = typeOf(Vec)\n" +
+                "    var s = new t(7)\n" +
+                "    return s.x\n" +
+                "}\n");
+            CheckOk("动态 new struct 目标", structDyn);
+            CheckI32("struct 字段落位", structDyn, 7);
+        }
+
         private static void TestNestedClassNullableInit()
         {
             var empty = Run(

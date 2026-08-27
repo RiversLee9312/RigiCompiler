@@ -30,6 +30,14 @@ var result = 1 + 2 * 3
 var result = 1 + (2 * 3)
 var result = (1 + 2) * 3
 
+// 编译错误：and/or 链同样没有优先级，必须括号化
+var ok = a and b and c
+var ok = a and b or c
+
+// 正确
+var ok = a and (b and c)
+var ok = (a and b) or c
+
 // 编译错误：连续的一元运算没有用括号声明嵌套关系
 var value = -await foo().bar[0]
 

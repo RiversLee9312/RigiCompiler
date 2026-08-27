@@ -81,7 +81,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("do-while 赋值后 break 计入", okBreakAfter);
 
             // try-finally 内 break：finally 必跑，其赋值在 break 路径生效
-            var (okFinallyBreak, _) = BindUnit(
+            var (okFinallyBreak, _) = BindUnitWithStdlib(
                 "class MFinally { pub var x: i32\n" +
                 "    pub init(b: bool) {\n" +
                 "        do {\n" +
@@ -91,7 +91,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("try-finally break 路径叠 finally 赋值", okFinallyBreak);
 
             // try/catch 双路都赋值（catch 类型用 bootstrap 根 core.Exception）
-            var (ok10, _) = BindUnit(
+            var (ok10, _) = BindUnitWithStdlib(
                 "class N { pub var x: i32\n" +
                 "    pub init() {\n" +
                 "        try { x = 1 } catch (e: Exception) { x = 2 }\n" +

@@ -2834,8 +2834,8 @@ namespace RigiCompiler.Tests
         {
             TestHarness.Section("P2 Init Mapping To Builtin Field");
 
-            var (ok, _) = ResolveUnit(
-                "pub class E : Exception {\n" +
+            var (ok, _) = ResolveUnitWithStdlib(
+                "pub class E : core.Exception {\n" +
                 "    pub init(_ -> message) { }\n" +
                 "    pub override func getMessage(): String { return message }\n" +
                 "}\n");

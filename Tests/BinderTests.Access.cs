@@ -128,7 +128,7 @@ namespace RigiCompiler.Tests
                 "'localHelp' is inaccessible due to its accessibility level");
 
             // pub ext 跨文件可见
-            var (unit13, _) = BindUnit(
+            var (unit13, _) = BindUnitWithStdlib(
                 "pub class Host { }\n" +
                 "pub ext func Host.pubHelp(): i32 { return 1 }\n",
                 "pub func use(h: Host): i32 { return h.pubHelp() }\n");
@@ -1040,7 +1040,7 @@ namespace RigiCompiler.Tests
                 "Cannot construct an instance of abstract type 'A'");
 
             // 异常根 core.Exception 已抽象化（用户裁定）：直接构造被拒
-            var (unit13, _) = BindUnit(
+            var (unit13, _) = BindUnitWithStdlib(
                 "pub func f(): core.Exception { return new core.Exception() }\n");
             TestHarness.CheckSemanticError("new core.Exception 拒绝", unit13.Diagnostics,
                 "Cannot construct an instance of abstract type 'Exception'");

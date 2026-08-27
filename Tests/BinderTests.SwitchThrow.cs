@@ -284,7 +284,7 @@ namespace RigiCompiler.Tests
             TestHarness.Section("P3 Throw");
 
             // throw 终止路径：函数仅 throw 即满足「所有路径显式返回」
-            var (unit, bodies) = BindUnit(
+            var (unit, bodies) = BindUnitWithStdlib(
                 "class MyException : core.Exception {\n" +
                 "    pub override func getMessage(): String { return message }\n" +
                 "}\n" +
@@ -299,7 +299,7 @@ namespace RigiCompiler.Tests
                 throwStmt.Exception.Type.Name == "MyException");
 
             // 异常根 core.Exception 已抽象化（用户裁定）：直接抛根本身被拒
-            var (unit2, _) = BindUnit(
+            var (unit2, _) = BindUnitWithStdlib(
                 "func g() {\n" +
                 "    throw new core.Exception()\n" +
                 "}\n");
@@ -307,7 +307,7 @@ namespace RigiCompiler.Tests
                 "Cannot construct an instance of abstract type 'Exception'");
 
             // 诊断：throw 非异常类型
-            var (unit3, _) = BindUnit(
+            var (unit3, _) = BindUnitWithStdlib(
                 "func f() {\n" +
                 "    throw 1\n" +
                 "}\n");

@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using System.Linq;
 
 namespace RigiCompiler.Tests
@@ -13,7 +13,7 @@ namespace RigiCompiler.Tests
         private static void TestTryLowering()
         {
             // 有名 catch：体头合成「变量 = cast slot」，slot 为合成 .sN
-            var (unit, bound, lowered) = LowerUnit(
+            var (unit, bound, lowered) = LowerUnitWithStdlib(
                 "class MyException : core.Exception {\n" +
                 "    pub override func getMessage(): String { return message }\n" +
                 "}\n" +
@@ -44,7 +44,7 @@ namespace RigiCompiler.Tests
                     boundTry.Catches[0]));
 
             // finally(e)：slot 即 finally 变量（不合成 .sN）
-            var (unit2, _, lowered2) = LowerUnit(
+            var (unit2, _, lowered2) = LowerUnitWithStdlib(
                 "func log() {\n" +
                 "}\n" +
                 "func h() {\n" +
@@ -60,7 +60,7 @@ namespace RigiCompiler.Tests
                 "Finally([CallStmt(log, [])]), e, .b0)])");
 
             // _: 无变量 catch——体头无合成 cast
-            var (unit3, _, lowered3) = LowerUnit(
+            var (unit3, _, lowered3) = LowerUnitWithStdlib(
                 "class MyException : core.Exception {\n" +
                 "    pub override func getMessage(): String { return message }\n" +
                 "}\n" +
@@ -83,7 +83,7 @@ namespace RigiCompiler.Tests
         private static void TestSeqLowering()
         {
             // 语句形态恒等降级
-            var (unit, _, lowered) = LowerUnit(
+            var (unit, _, lowered) = LowerUnitWithStdlib(
                 "func s() {\n" +
                 "    seq {\n" +
                 "        var x = 1\n" +
@@ -94,7 +94,7 @@ namespace RigiCompiler.Tests
                 "Body(s, [x: i32, .b0: .breakid], [Seq([Decl(x, i32, = Int(1,i32))], .b0)])");
 
             // volatile 语句形态
-            var (unit2, _, lowered2) = LowerUnit(
+            var (unit2, _, lowered2) = LowerUnitWithStdlib(
                 "func work() {\n" +
                 "}\n" +
                 "func s2() {\n" +
@@ -107,7 +107,7 @@ namespace RigiCompiler.Tests
                 "Body(s2, [.b0: .breakid], [SeqVolatile([CallStmt(work, [])], .b0)])");
 
             // 表达式形态脱糖：合成结果局部 + 前置 seq 块（值块降级写结果局部）
-            var (unit3, _, lowered3) = LowerUnit(
+            var (unit3, _, lowered3) = LowerUnitWithStdlib(
                 "func se(): i32 {\n" +
                 "    return seq { return@_ 42 }\n" +
                 "}\n");
@@ -116,7 +116,7 @@ namespace RigiCompiler.Tests
                 "Body(se, [.s0: i32, .b0: .breakid], [Seq([Assign(Local(.s0,i32), Int(42,i32))], .b0); Return(Local(.s0,i32))])");
 
             // volatile 表达式形态
-            var (unit4, _, lowered4) = LowerUnit(
+            var (unit4, _, lowered4) = LowerUnitWithStdlib(
                 "func sv(): i32 {\n" +
                 "    return volatile seq { 1 }\n" +
                 "}\n");
@@ -130,7 +130,7 @@ namespace RigiCompiler.Tests
             // （if → seq）写 route 局部后 break if region，if 后
             // dispatcher relay（route==1 → break seq region），
             // 其后语句 x = 99 静死保留原位（break 后不可达）
-            var (unit5, _, lowered5) = LowerUnit(
+            var (unit5, _, lowered5) = LowerUnitWithStdlib(
                 "func f(x: i32): i32 {\n" +
                 "    seq named outer {\n" +
                 "        x = 1\n" +
@@ -152,7 +152,7 @@ namespace RigiCompiler.Tests
             // 嵌套无名 seq 传播（M61；Stage B）：内层 exit 目标外层——
             // 内层 seq 与外层各一条 route/dispatcher 链 relay；
             // x = 5 / x = 9 均为静死保留
-            var (unit6, _, lowered6) = LowerUnit(
+            var (unit6, _, lowered6) = LowerUnitWithStdlib(
                 "func g(x: i32): i32 {\n" +
                 "    seq named outer {\n" +
                 "        seq {\n" +
@@ -276,7 +276,7 @@ namespace RigiCompiler.Tests
         {
             // seq 透明：内层 seq 不注册（无名），exit 目标外层值块——
             // if → 内层 seq → 外层 seq 两级 relay
-            var (unit, _, lowered) = LowerUnit(
+            var (unit, _, lowered) = LowerUnitWithStdlib(
                 "func f(c: bool): i32 {\n" +
                 "    return seq {\n" +
                 "        seq {\n" +
@@ -292,7 +292,7 @@ namespace RigiCompiler.Tests
                 !described.Contains("StructuredExit"), described);
 
             // try 无 finally：exit 穿 try region（if → try → seq 两级 relay）
-            var (unit2, _, lowered2) = LowerUnit(
+            var (unit2, _, lowered2) = LowerUnitWithStdlib(
                 "func g(c: bool): i32 {\n" +
                 "    return seq {\n" +
                 "        try {\n" +
@@ -310,7 +310,7 @@ namespace RigiCompiler.Tests
 
             // finally 自身含 return@（终止覆盖）：finally 与 try 同 region，
             // route 局部覆写——其后 return@_ 2 静死保留
-            var (unit3, _, lowered3) = LowerUnit(
+            var (unit3, _, lowered3) = LowerUnitWithStdlib(
                 "func h(): i32 {\n" +
                 "    return seq {\n" +
                 "        var dummy = 0\n" +
@@ -328,7 +328,7 @@ namespace RigiCompiler.Tests
 
             // 原 S7e 拦截负例转正（Stage B 新机制天然支持）：
             // 有 finally + 部分分支终止 + continuation 非空 → 正常降级
-            var (unit4, _, lowered4) = LowerUnit(
+            var (unit4, _, lowered4) = LowerUnitWithStdlib(
                 "func ok(c: bool): i32 {\n" +
                 "    return seq {\n" +
                 "        try {\n" +
@@ -367,7 +367,7 @@ namespace RigiCompiler.Tests
             // 简单值块早退（同 region）：写结果局部；exit 处 region 尾位
             // （落尾与 break 同落点）→ 冗余 break 省略，无 route local、
             // 无 dispatcher
-            var (unit, _, lowered) = LowerUnit(
+            var (unit, _, lowered) = LowerUnitWithStdlib(
                 "func f(c: bool): i32 {\n" +
                 "    return if (c) { return@_ 1 } else { return@_ 2 }\n" +
                 "}\n");
@@ -387,7 +387,7 @@ namespace RigiCompiler.Tests
             // 目标的 exit——return@_ 1（外层 seq 表达式值块）与
             // return@inner（内层 named seq）各登一条 route，region 收尾
             // 生成两分支 else-if 链
-            var (unit2, _, lowered2) = LowerUnit(
+            var (unit2, _, lowered2) = LowerUnitWithStdlib(
                 "func h(a: bool, b: bool): i32 {\n" +
                 "    return seq {\n" +
                 "        seq named inner {\n" +
@@ -428,7 +428,7 @@ namespace RigiCompiler.Tests
         {
             // 多语句值块尾 return@_：exit 处 region 尾位（落尾与 break
             // 同落点）→ 只写结果局部、省略冗余 break
-            var (unit, _, lowered) = LowerUnit(
+            var (unit, _, lowered) = LowerUnitWithStdlib(
                 "func f(c: bool): i32 {\n" +
                 "    return if (c) {\n" +
                 "        const x = 1\n" +
@@ -451,7 +451,7 @@ namespace RigiCompiler.Tests
             // /named seq 的同层 exit 已提前截断其后语句（源码层构造不出
             // 非尾位 same-region exit），故直接构造 LoweredTree 调
             // pass——exit 后随语句时 break 不省略、后随语句静死截断
-            var (unit2, bound2, lowered2) = LowerUnit(
+            var (unit2, bound2, lowered2) = LowerUnitWithStdlib(
                 "func donor(c: bool): i32 {\n" +
                 "    return if (c) { 1 } else { 2 }\n" +
                 "}\n");
@@ -487,7 +487,7 @@ namespace RigiCompiler.Tests
             // finally 内尾位 return@ 仍发 break（finally 例外——必须以
             // abrupt completion 覆盖 SavedCompletion；递归进
             // FinallyBlock 时强制 isTail=false）
-            var (unit3, _, lowered3) = LowerUnit(
+            var (unit3, _, lowered3) = LowerUnitWithStdlib(
                 "func h(): i32 {\n" +
                 "    return seq {\n" +
                 "        try {\n" +

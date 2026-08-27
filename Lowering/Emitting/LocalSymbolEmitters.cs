@@ -89,6 +89,8 @@ namespace RigiCompiler
             foreach (var property in typeof(BootstrapSymbols).GetProperties(
                 BindingFlags.Public | BindingFlags.Instance))
             {
+                // Exception 懒解析：无 stdlib 时 getter 抛；源码化后亦非 IsBuiltin
+                if (property.Name == "Exception") continue;
                 if (property.GetValue(env.Unit.Symbols.Bootstrap) is not TypeSymbol
                     { IsBuiltin: true } builtinType) continue;
                 foreach (var field in builtinType.Fields)
@@ -129,6 +131,8 @@ namespace RigiCompiler
             foreach (var property in typeof(BootstrapSymbols).GetProperties(
                 BindingFlags.Public | BindingFlags.Instance))
             {
+                // Exception 懒解析：无 stdlib 时 getter 抛；源码化后亦非 IsBuiltin
+                if (property.Name == "Exception") continue;
                 if (property.GetValue(env.Unit.Symbols.Bootstrap) is not TypeSymbol
                     { IsBuiltin: true } builtinType) continue;
                 foreach (var method in builtinType.Methods)
