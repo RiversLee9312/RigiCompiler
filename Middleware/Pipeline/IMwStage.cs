@@ -12,7 +12,9 @@ namespace RigiCompiler.Middleware.Pipeline
     ///   编译器 bug → CompilerInternalException。
     /// 与前端层栈有意不模仿之处：线性阶段序而非真栈（语法嵌套深度运行期
     /// 才知道，后端阶段编译期确定）；无 Replay；阶段内是 MIR 图遍历而非
-    /// 逐 token 状态机。
+    /// 逐 token 状态机。指令翻译 pass：本阶段一个翻译 visitor，内部唯一
+    /// switch 分派到处理类（BIL→MIR / MIR→LLVM 用 CRTP；小改写 pass 用
+    /// 内部类隔离，默认不上 CRTP）。Layout / RcInjection 不是指令翻译 visitor。
     /// </summary>
     public interface IMwStage
     {

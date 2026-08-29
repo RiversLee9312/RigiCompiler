@@ -35,6 +35,21 @@ namespace RigiCompiler.Bil
         // ——全局函数无宿主类型可嵌套 companion，故提升为命名空间级 singleton）
         public const string GlobalMethodHostTypeName = "..globals.host";
 
+        // §14.2/§15.6：call??? 降级请求的方法符号宿主段（完整符号 =
+        // core::Any$call???(symbol:.string,namedArgs:...,unnamedArgs:...)@.any；
+        // 无符号段声明的预定义符号，Middleware 由 CallWildcardLoweringPass 改写）
+        public const string CallWildcardMethodHead = "core::Any$call???";
+
+        // call??? 方法符号判定（宿主段精确匹配，签名段之前；VM
+        // BilDataInstructions.IsCallWildcardSymbol 同口径）
+        public static bool IsCallWildcardMethod(string methodSymbol)
+        {
+            var cut = methodSymbol.IndexOf('(');
+            var head = cut < 0 ? methodSymbol : methodSymbol.Substring(0, cut);
+            return head == CallWildcardMethodHead;
+        }
+
+
         // §11 运算 opcode（§5.6：不带前导点）
         public static string Of(BilBinaryOp op)
         {

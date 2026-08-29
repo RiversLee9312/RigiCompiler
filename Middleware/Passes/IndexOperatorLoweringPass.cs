@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using RigiCompiler.Middleware.Binding;
 using RigiCompiler.Middleware.Layout;
 using RigiCompiler.Middleware.Mir;
 using RigiCompiler.Middleware.Pipeline;
@@ -9,7 +10,8 @@ namespace RigiCompiler.Middleware.Passes
     /// 数组运算符降级（MW4）：用户类型的 MirGetArray/MirSetArray 改写为
     /// MirCall($$getAtIndex/$$setAtIndex）；内建连续缓冲区（Array / Span /
     /// SharedSpan）保留原指令。读：Mir + Symbols + Layout；写：原地改写
-    /// Mir 指令列表。
+    /// Mir 指令列表。本 pass 为小改写：唯一 switch 分派到内部类，无共享
+    /// 可变状态，不上 CRTP。
     /// </summary>
     public sealed class IndexOperatorLoweringPass : IMwStage
     {
@@ -21,10 +23,15 @@ namespace RigiCompiler.Middleware.Passes
                 ?? throw new CompilerInternalException("IndexOperatorLowering 要求 Mir 已挂载");
             foreach (var fn in mir.Functions)
             {
-                foreach (var block in fn.Blocks)
-                {
-                    RewriteBlock(context, block);
-                }
+                RewriteFunction(context, fn);
+            }
+        }
+
+        internal static void RewriteFunction(MwContext context, MirFunction fn)
+        {
+            foreach (var block in fn.Blocks)
+            {
+                RewriteBlock(context, block);
             }
         }
 
@@ -33,33 +40,52 @@ namespace RigiCompiler.Middleware.Passes
             var insts = block.InstructionList;
             for (var i = 0; i < insts.Count; i++)
             {
-                switch (insts[i])
+                insts[i] = insts[i] switch
                 {
-                    case MirGetArray get when !TypeLayout.IsContiguousBuffer(get.CollectionType):
-                    {
-                        var method = MirBuilder.FindIndexOperator(context.Symbols,
-                            get.CollectionType, isGet: true)
-                            ?? throw new MwNotSupportedException(
-                                $"没有 getAtIndex：{get.CollectionType.Canonical}");
-                        insts[i] = new MirCall(method,
-                            new List<MirOperand> { get.Collection, get.Index },
-                            get.Target);
-                        break;
-                    }
-                    case MirSetArray set when !TypeLayout.IsContiguousBuffer(set.CollectionType):
-                    {
-                        var method = MirBuilder.FindIndexOperator(context.Symbols,
-                            set.CollectionType, isGet: false)
-                            ?? throw new MwNotSupportedException(
-                                $"没有 setAtIndex：{set.CollectionType.Canonical}");
-                        insts[i] = new MirCall(method,
-                            new List<MirOperand>
-                            {
-                                set.Collection, set.Index, set.Element,
-                            }, null);
-                        break;
-                    }
+                    MirGetArray get => GetArrayLowering.Rewrite(context, get),
+                    MirSetArray set => SetArrayLowering.Rewrite(context, set),
+                    var other => other,
+                };
+            }
+        }
+
+        // 用户类型下标读 → $$getAtIndex；连续缓冲区原样保留
+        private static class GetArrayLowering
+        {
+            internal static MirInst Rewrite(MwContext context, MirGetArray inst)
+            {
+                if (TypeLayout.IsContiguousBuffer(inst.CollectionType))
+                {
+                    return inst;
                 }
+                var method = ImplBinder.FindIndexOperator(context.Symbols,
+                    inst.CollectionType.Canonical, isGet: true)
+                    ?? throw new MwNotSupportedException(
+                        $"没有 getAtIndex：{inst.CollectionType.Canonical}");
+                return new MirCall(method,
+                    new List<MirOperand> { inst.Collection, inst.Index },
+                    inst.Target);
+            }
+        }
+
+        // 用户类型下标写 → $$setAtIndex；连续缓冲区原样保留
+        private static class SetArrayLowering
+        {
+            internal static MirInst Rewrite(MwContext context, MirSetArray inst)
+            {
+                if (TypeLayout.IsContiguousBuffer(inst.CollectionType))
+                {
+                    return inst;
+                }
+                var method = ImplBinder.FindIndexOperator(context.Symbols,
+                    inst.CollectionType.Canonical, isGet: false)
+                    ?? throw new MwNotSupportedException(
+                        $"没有 setAtIndex：{inst.CollectionType.Canonical}");
+                return new MirCall(method,
+                    new List<MirOperand>
+                    {
+                        inst.Collection, inst.Index, inst.Element,
+                    }, null);
             }
         }
     }

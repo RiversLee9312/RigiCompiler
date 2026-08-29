@@ -3,6 +3,7 @@ using LLVMSharp.Interop;
 using RigiCompiler.Middleware.Layout;
 using RigiCompiler.Middleware.Mir;
 using RigiCompiler.Middleware.Runtime;
+using RigiCompiler.Middleware.Symbols;
 
 namespace RigiCompiler.Middleware.Emit
 {
@@ -22,6 +23,18 @@ namespace RigiCompiler.Middleware.Emit
         internal const ulong SheetMask = 0x00FFFFFFFFFFFFFFUL;
 
         // class 对象胖引用：{typeid = ptrtoint(sheet) | tag2<<56, payload=对象指针}
+        internal sealed class Box : LlvmEmitVisitor<Box, MirBoxAny>
+        {
+            protected override void VisitCore(MirBoxAny inst, ModuleBuilder.Session session) =>
+                EmitBox(session, session.Builder, session.Slots, inst);
+        }
+
+        internal sealed class Unbox : LlvmEmitVisitor<Unbox, MirUnboxAny>
+        {
+            protected override void VisitCore(MirUnboxAny inst, ModuleBuilder.Session session) =>
+                EmitUnbox(session, session.Builder, session.Slots, inst);
+        }
+
         internal static LLVMValueRef PackObject(ModuleBuilder.Session session,
             LLVMBuilderRef builder, LLVMValueRef typeSheet, LLVMValueRef objectPointer)
         {
@@ -42,7 +55,7 @@ namespace RigiCompiler.Middleware.Emit
         private static bool IsBoxableValue(ModuleBuilder.Session session, MirType type) =>
             MirBuilder.IsScalarOrString(type) || session.IsInlineValueType(type, out _);
 
-        internal static void EmitBox(ModuleBuilder.Session session, LLVMBuilderRef builder,
+        private static void EmitBox(ModuleBuilder.Session session, LLVMBuilderRef builder,
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirBoxAny inst)
         {
             if (inst.Source is not MirLocalOperand local)
@@ -85,7 +98,7 @@ namespace RigiCompiler.Middleware.Emit
             return PackFat(session, builder, sheet, tag, payload, "box");
         }
 
-        internal static void EmitUnbox(ModuleBuilder.Session session, LLVMBuilderRef builder,
+        private static void EmitUnbox(ModuleBuilder.Session session, LLVMBuilderRef builder,
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirUnboxAny inst)
         {
             UnboxToLocal(session, builder, slots, session.LoadLocal(builder, slots, inst.Source),
@@ -111,13 +124,23 @@ namespace RigiCompiler.Middleware.Emit
             var sheetBits = builder.BuildAnd(typeId,
                 LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, SheetMask, false), "unbox.sheet");
             var wantSheet = builder.BuildPtrToInt(sheet, LLVMTypeRef.Int64, "unbox.want");
-            var mismatch = builder.BuildOr(
-                builder.BuildICmp(LLVMIntPredicate.LLVMIntNE, tag,
-                    LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, expectedTag, false),
-                    "unbox.tag.bad"),
-                builder.BuildICmp(LLVMIntPredicate.LLVMIntNE, sheetBits, wantSheet,
-                    "unbox.sheet.bad"),
-                "unbox.bad");
+            var tagBad = builder.BuildICmp(LLVMIntPredicate.LLVMIntNE, tag,
+                LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, expectedTag, false),
+                "unbox.tag.bad");
+            // 无界 typeid 目标（遗6，对齐 VM VmAny.Payload 直通）：Any 内
+            // typeid 的视图 sheet 是 Type<X> 构造（ResolveTypeIdViewSheet
+            // 按运行期 payload 选视图），与无界 core::Type<core::Any>
+            // 静态不等属预期——sheet 检查跳过，只查 tag（VM 对 Any 内
+            // typeid 拆箱本无守卫）。有界 Type<X> 目标保留 sheet 检查
+            //（Type<i32> 拆 Type<String> 抛 CastException 的既有口径）
+            var mismatch = TypeLayout.IsTypeId(targetType)
+                && MwTypeKey.Normalize(targetType.Canonical)
+                    == TypeLayout.TypeIdUnboundedCanonical
+                ? tagBad
+                : builder.BuildOr(tagBad,
+                    builder.BuildICmp(LLVMIntPredicate.LLVMIntNE, sheetBits, wantSheet,
+                        "unbox.sheet.bad"),
+                    "unbox.bad");
             EmitThrowOnMismatch(session, builder, mismatch, sheet, fromType, excTarget);
 
             if (expectedTag == TagInline)

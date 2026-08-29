@@ -397,20 +397,31 @@ RigiCompiler/
 │   ├── Symbols/                 # MW1 驻留符号表（canonical 字符串 intern 为对象，
 │   │                            #   引用相等即身份相等；MwSymbol/MwSymbolTable +
 │   │                            #   CanonicalSignature）
-│   ├── Binding/                 # 实现绑定：ImplBinding 记录族 + ImplBinder 唯一实现查询
-│   ├── Mir/                     # MIR 模型（MirFunction/MirInst/MirType）+ MirBuilder
-│   │                            #   （BIL 结构化块 → CFG 直译，从入口出发按 invoke 边
-│   │                            #   可达性构建）+ TryExpander.cs（BIL §16.7 try 十步
-│   │                            #   展开：派发垫 / finally 双入口 / completion 路由器）
-│   ├── Layout/TypeLayout.cs     # canonical → LLVM 类型唯一映射点（引用槽按
-│   │                            #   RUNTIME §2 胖引用 128-bit/16 字节对齐建模）
-│   ├── Emit/                    # LlvmHost（LLVM 一次性初始化 + 宿主 TargetMachine）+
-│   │                            #   ModuleBuilder（MIR → LLVM 模块）+ LlvmBitcode
-│   │                            #   （unsafe 编组封装：bitcode 解析 + LLVMLinkModules2
-│   │                            #   进程内合并 + 新 PM default<O2> 管线）+ RuntimeFaces
-│   │                            #   （rigi_rt 面表）+ ExceptionEmitter.cs（MW9a：可抛调用
-│   │                            #   返回后 pending 检查 + rigi_entry 顶层 reporter）+
-│   │                            #   ObjectEmitter（进程内验证/发射 .o）
+│   ├── Binding/                 # 实现绑定：ImplBinding + ImplBinder；MW10
+│   │                            #   WrapperApplicationIndex / ProxyMatcher /
+│   │                            #   SingletonPlanner（查询设施）
+│   ├── Mir/                     # MIR 模型 + MirBuilder 瘦驱动（BIL→MIR）+ FlowBuilder
+│   │                            #   组合根 + MirLowerDispatchers 唯一 switch + 簇 CRTP
+│   │                            #   （ControlFlow/Call/Data/TypeOps/WrapperVisitors）+
+│   │                            #   MirReachability + TryExpander.cs（BIL §16.7 try 十步展开）
+│   ├── Pipeline/                # IMwStage + MwPipeline（线性阶段序；MW10 插槽在
+│   │                            #   AccessorLowering 与 RcInjection 之间）
+│   ├── Passes/                  # MIR 改写（IndexOperator / Accessor 内部类隔离；
+│   │                            #   MW10 wrapper 烘焙五 pass：FieldProxyBaking /
+│   │                            #   MethodProxyBaking / ProxyBaking /
+│   │                            #   CallWildcardLowering / SingletonLowering +
+│   │                            #   ProxyBakeSupport / ProxyWildcardAbi；
+│   │                            #   RcInjection CFG 分析内核，非逐指令翻译）
+│   ├── Layout/                  # LayoutEngine 瘦驱动 + ClassLayout / ValueTypeLayout /
+│   │                            #   VTablePlanner / RefMapBuilder / ConstructedLayout /
+│   │                            #   LayoutShells / HiddenStoragePlanner / WrapperAbi；TypeLayout：canonical → LLVM 唯一映射
+│   │                            #   （RUNTIME §2 胖引用 128-bit/16 字节对齐）+ 数组前缀；
+│   │                            #   TypeSheetAbi / CallAbi：字段序与调用约定。非翻译 visitor
+│   ├── Emit/                    # LlvmHost + ModuleBuilder 瘦驱动（MIR→LLVM）+
+│   │                            #   LlvmEmitEnvironment/Context + LlvmEmitDispatchers +
+│   │                            #   簇 CRTP（*Emitter；NativeCall / VirtualCall / New /
+│   │                            #   TypeId / Nullable / Wrapper）+ LlvmBitcode /
+│   │                            #   RuntimeFaces / ExceptionEmitter / ObjectEmitter
 │   ├── Toolchain/               # ToolchainResolver（--toolchain → RIGI_LLVM →
 │   │                            #   tools/.llvm/<rid> → PATH）+ ExternalProcess
 │   │                            #   外部进程封装

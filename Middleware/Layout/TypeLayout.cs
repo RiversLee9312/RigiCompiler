@@ -245,7 +245,8 @@ namespace RigiCompiler.Middleware.Layout
                     or "float" or "double":
                     return ManagedSlotKind.Unmanaged;
             }
-            if (layout?.Find(type.Canonical) is { Kind: TypeLayoutKind.Struct or TypeLayoutKind.Enum } plan)
+            if (layout?.Find(type.Canonical) is
+                { Kind: TypeLayoutKind.Struct or TypeLayoutKind.Enum or TypeLayoutKind.Wrapper } plan)
             {
                 return plan.RefMapCount > 0
                     ? ManagedSlotKind.RichValue

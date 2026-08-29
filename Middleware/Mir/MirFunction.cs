@@ -14,8 +14,12 @@ namespace RigiCompiler.Middleware.Mir
 
         internal MirModule(IReadOnlyList<MirFunction> functions)
         {
-            Functions = functions;
+            Functions = functions as List<MirFunction> ?? new List<MirFunction>(functions);
         }
+
+        internal List<MirFunction> FunctionList => (List<MirFunction>)Functions;
+
+        internal void AddFunction(MirFunction fn) => FunctionList.Add(fn);
     }
 
     public sealed class MirFunction
@@ -71,7 +75,7 @@ namespace RigiCompiler.Middleware.Mir
     public sealed class MirLocal
     {
         public string Name { get; }
-        public MirType Type { get; }
+        public MirType Type { get; internal set; }
 
         internal MirLocal(string name, MirType type)
         {

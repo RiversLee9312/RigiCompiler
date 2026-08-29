@@ -22,7 +22,7 @@ Middleware 的 C 工具链（MW1 起编译 rigi_rt 与 lld 链接所需）：CI 
 CLI 结构为 `<COMMAND> [--sub-cmd [args...]...]`，顶层 COMMAND 五个：`compile` / `test` / `vm` / `native` / `help`。裸 `dotnet run` 等价于 `help`。
 
 ```bash
-dotnet run -- test --all                 # 全量测试（提交前验证入口；任意失败非零退出码并列出失败套件名）
+dotnet run -- test --all                 # CoreCLR 全量（迭代用；提交前验证见 §2.3，不能只跑本命令）
 dotnet run -- test                       # 打印测试套件菜单（编号 + 名称）
 dotnet run -- test --run 1 7             # 按编号运行指定套件（字面量 + 形参列表）
 dotnet run -- compile --file a.rg                    # 编译（语义分析 P1–P3 + 诊断输出；无后端子命令时只到语义）
@@ -62,13 +62,24 @@ dotnet publish -c Release -r win-x64 -o publish/win-x64
 - **反射靠两份配置保住**：`ILLink.Roots.xml`（`preserve="all"`，保整程序集类型/成员元数据，供 `Assembly.GetTypes()`、`Activator.CreateInstance`、字段/属性反射使用）+ `JsonSerializerIsReflectionEnabledByDefault=true`（强开 STJ 反射序列化，AOT 下默认禁用）。AstJsonl 序列化/反序列化（`--dump-ast`/`--parse-only`）与 ASTIntegrityValidator 依赖它们，删掉会导致 AOT 产物运行时崩溃或静默丢数据。
 - **性能注意**：AOT 无 JIT 的运行时优化（去虚拟化/PGO），重接口分派路径比 CoreCLR 慢约 3 倍——fuzz 类套件在 AOT 产物上明显更慢，日常全量测试建议仍用普通构建跑。
 - **CI**：`.github/workflows/ci.yml` 按上述流程在 `windows-latest`（win-x64）与 `ubuntu-latest`（linux-x64，均为 amd64）双平台分别发布 AOT 产物并用产物跑全量测试（AOT 不支持跨 OS 交叉编译，只能按平台分别构建）。
+- **提交前本地必须同口径**：在**本机已有的 Windows 与 Linux 环境**（本仓库开发机一般为 Windows 宿主 + WSL Ubuntu）各 `publish -c Release` 一次，并用产物跑 `test --all`。禁止只跑 `dotnet run -- test --all` 就提交——那是 CoreCLR 开发回路，不会覆盖 AOT 反射根、RID 原生库与无 JIT 路径。Linux 必须在 Linux 里 publish（不能在 Windows 上交叉编 linux-x64 AOT）。
+
+```bash
+# Windows
+dotnet publish -c Release -r win-x64 -o publish/win-x64
+./publish/win-x64/rigic.exe test --all
+
+# WSL Ubuntu / 其它可用 Linux
+dotnet publish -c Release -r linux-x64 -o publish/linux-x64
+./publish/linux-x64/rigic test --all
+```
 
 ---
 
 ## 测试策略
 
 - **不使用任何测试框架**。测试是 `Tests/` 下的静态类，每个类提供 `public static int RunAll()`（返回失败用例数），由 `Tests/TestRunner.cs` 统一驱动（`test` 命令入口）。
-- **全量入口**：`dotnet run -- test --all` 自动运行全部套件，任意失败返回非零退出码并列出失败套件名——这是提交前验证的标准方式；CI（`.github/workflows/ci.yml`）则在双平台 NativeAOT 发布产物上跑同一入口。NativeE2E 跑产物进程时设置 `RIGI_RT_MEMTRACK=1`，泄漏即 exit 1。
+- **全量入口（迭代）**：`dotnet run -- test --all` 自动运行全部套件，任意失败返回非零退出码并列出失败套件名。**提交前入口**是 §2.3 的双平台 NativeAOT publish 产物 `test --all`（与 CI 同口径），不是 `dotnet run`。NativeE2E 跑产物进程时设置 `RIGI_RT_MEMTRACK=1`，泄漏即 exit 1。
 - **统一基建**：`Tests/AstDescribe.cs` 是唯一的 AST 描述器（Expr/Stmt/Block/Decl/Root/Type/Symbol 等），`Tests/TestHarness.cs` 是唯一的驱动与断言（ParseRoot/ParseBlock/ParseWithLayer/ParseFirstDecl + Check/CheckTrue/CheckParseError/Summary）。禁止在套件里再写私有 Describe*/Format* 副本与计数样板。
 - **断言对象约定**：除查的就是命令行/日志/token 流/层协议行为的套件（Logger、CommandLineParser、LexerFuzz、TokenDisposition）外，一律断言 AST 树产物（AstDescribe 描述串 + 结构断言），不断言控制台输出文本。
 - **AST 结构断言**：表达式类测试除描述串快照外，还应断言结构性事实（Root 是否存在/已填充、Expression 的具体类型、Parent 链、子 Root 填充、无节点共享）——快照不能作为唯一验证方式。
@@ -94,7 +105,7 @@ git 跟踪的端到端语料测试：`.rg` 源文件经进程内全管线（编�
 
 ```bash
 dotnet build
-dotnet run -- test --all    # 全量；或：dotnet run -- test --run 5（单个套件）
+dotnet run -- test --all    # 迭代全量；提交前改走 §2.3 双平台 publish 产物
 ```
 
 ---
@@ -119,7 +130,7 @@ dotnet run -- test --all    # 全量；或：dotnet run -- test --run 5（单个
 git stash push -u -m "backup: <说明>" && git stash apply
 ```
 
-push 后立即 apply 把工作区原样恢复，stash 条目留存为恢复点，`-u` 含未跟踪新文件。**主代理**：委派实施型子代理**之前与完成之后**各做一次快照。**实施型子代理**：**每个小阶段验证通过后必须立即做一次快照对**（消息 `<任务>: <阶段说明>`），便于分阶段回滚；遇误删/误改等意外时允许 `git stash apply stash@{N}` 恢复**自己创建**的快照条目自救（按消息前缀识别；apply 后条目保留，不 pop 不 drop）；其余 git 变更操作仍严禁（commit / pop / drop / restore / clean / checkout / reset 等）。**提交纪律**：提交前必须检查工作区无临时文件残留（`git status` 全量过一遍——playground/ 已入 .gitignore，但 `$null` 类 shell 误产文件与探测残留不得入库）；commit 完成后整条清理 stash 备份链（回滚由 commit 承担，stash 不再保留）。实施型子代理**串行**委派（共享工作区，并发构建互相干扰）；只读调研型子代理可并行。
+push 后立即 apply 把工作区原样恢复，stash 条目留存为恢复点，`-u` 含未跟踪新文件。**主代理**：委派实施型子代理**之前与完成之后**各做一次快照。**实施型子代理**：**每个小阶段验证通过后必须立即做一次快照对**（消息 `<任务>: <阶段说明>`），便于分阶段回滚；遇误删/误改等意外时允许 `git stash apply stash@{N}` 恢复**自己创建**的快照条目自救（按消息前缀识别；apply 后条目保留，不 pop 不 drop）；其余 git 变更操作仍严禁（commit / pop / drop / restore / clean / checkout / reset 等）。**提交纪律**：提交前必须检查工作区无临时文件残留（`git status` 全量过一遍——playground/ 已入 .gitignore，但 `$null` 类 shell 误产文件与探测残留不得入库）；commit 完成后整条清理 stash 备份链（回滚由 commit 承担，stash 不再保留）。实施型子代理（会修改代码的）**绝对禁止并行使用，只允许串行委派**（安全红线：共享工作区，并发编辑与并发构建会互相破坏）；只有只读调研型子代理才允许并行。
 
 **实施型任务提示词风格**（缺第 1 块曾致子代理陷入权限幻觉、空转整个上下文零产出）：
 
@@ -159,7 +170,7 @@ push 后立即 apply 把工作区原样恢复，stash 条目留存为恢复点�
 
 ## 注意事项与已知限制
 
-- 项目已在 **Git 版本控制**下（`main` 分支）：执行 `git commit` 等变更操作前先获得用户确认；提交前确保 `dotnet build` 通过且 `dotnet run -- test --all` 无失败。
+- 项目已在 **Git 版本控制**下（`main` 分支）：执行 `git commit` 等变更操作前先获得用户确认；提交前确保 `dotnet build` 通过，且已用 publish 配置在可用的 Windows 与 Linux（如 WSL Ubuntu）环境分别跑通 `test --all`（见 §2.3；禁止只靠 `dotnet run`）。
 - Verbose 调试日志默认关闭，不再刷屏；需要时加 `--verbose` 子命令（控制台）或 `--log-to PATH`（全量 JSONL 落盘）。
 - 无安全敏感面：本项目是本地控制台工具，不处理网络、凭据或用户隐私数据。唯一文件操作是 `Program.cs` 读取用户指定路径的 `.rg` 文件。
 

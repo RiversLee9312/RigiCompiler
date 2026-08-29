@@ -47,12 +47,40 @@ namespace RigiCompiler.Middleware.Emit
                 }
                 session.RegisterStaticField(member.Canonical, global, fieldType);
             }
+            EmitSingletonSlots(session);
         }
 
-        internal static void EmitGet(ModuleBuilder.Session session, LLVMBuilderRef builder,
-            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirGetStatic inst)
+        // MW10 刀5：singleton 三态/缓存合成槽（符号段无对应成员——
+        // SingletonLoweringPass 的合成物）。state = i32 零值（未构造），
+        // cache = 胖引用零值（空）；缓存槽持有 +1 引用，随
+        // rigi_globals_cleanup 释放（RegisterStaticField 登记即纳入）
+        private static void EmitSingletonSlots(ModuleBuilder.Session session)
         {
-            var global = session.StaticFieldFor(inst.FieldSymbol);
+            foreach (var entry in session.Singletons)
+            {
+                var stateGlobal = session.Module.AddGlobal(LLVMTypeRef.Int32,
+                    "static." + entry.StateFieldSymbol);
+                stateGlobal.Linkage = LLVMLinkage.LLVMInternalLinkage;
+                stateGlobal.Initializer = LLVMValueRef.CreateConstNull(LLVMTypeRef.Int32);
+                session.RegisterStaticField(entry.StateFieldSymbol, stateGlobal,
+                    MirType.Of(".i32"));
+                var cacheType = MirType.Of(entry.TypeCanonical);
+                var cacheSlotType = TypeLayout.MapType(session.Context, cacheType);
+                var cacheGlobal = session.Module.AddGlobal(cacheSlotType,
+                    "static." + entry.CacheFieldSymbol);
+                cacheGlobal.Linkage = LLVMLinkage.LLVMInternalLinkage;
+                cacheGlobal.Initializer = LLVMValueRef.CreateConstNull(cacheSlotType);
+                session.RegisterStaticField(entry.CacheFieldSymbol, cacheGlobal, cacheType);
+            }
+        }
+
+        internal sealed class Get : LlvmEmitVisitor<Get, MirGetStatic>
+        {
+            protected override void VisitCore(MirGetStatic inst, ModuleBuilder.Session session)
+            {
+                var builder = session.Builder;
+                var slots = session.Slots;
+                var global = session.StaticFieldFor(inst.FieldSymbol);
             var fieldType = MirType.Of(FieldTypeOf(inst.FieldSymbol));
             if (session.IsInlineValueType(fieldType, out _))
             {
@@ -74,12 +102,16 @@ namespace RigiCompiler.Middleware.Emit
                     return;
             }
             builder.BuildStore(value, slots[inst.Target].Slot);
+            }
         }
 
-        internal static void EmitSet(ModuleBuilder.Session session, LLVMBuilderRef builder,
-            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirSetStatic inst)
+        internal sealed class Set : LlvmEmitVisitor<Set, MirSetStatic>
         {
-            var global = session.StaticFieldFor(inst.FieldSymbol);
+            protected override void VisitCore(MirSetStatic inst, ModuleBuilder.Session session)
+            {
+                var builder = session.Builder;
+                var slots = session.Slots;
+                var global = session.StaticFieldFor(inst.FieldSymbol);
             var fieldType = MirType.Of(FieldTypeOf(inst.FieldSymbol));
             if (session.IsInlineValueType(fieldType, out _))
             {
@@ -103,6 +135,7 @@ namespace RigiCompiler.Middleware.Emit
                     return;
             }
             builder.BuildStore(value, global);
+            }
         }
 
         private static bool IsStaticField(Symbols.MwMemberSymbol member) =>

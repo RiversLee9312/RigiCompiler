@@ -1,5 +1,4 @@
 using System.Collections.Generic;
-using System.Collections.Generic;
 using LLVMSharp.Interop;
 using RigiCompiler.Bil;
 using RigiCompiler.Middleware.Layout;
@@ -21,11 +20,14 @@ namespace RigiCompiler.Middleware.Emit
         internal static LLVMTypeRef InfoStructType(LLVMContextRef context)
         {
             var pointer = LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0);
-            return context.GetStructType(new[]
-            {
-                StringAbi.ValueType(context), pointer, pointer, LLVMTypeRef.Int32,
-                pointer, LLVMTypeRef.Int32,
-            }, false);
+            var fields = new LLVMTypeRef[TypeSheetAbi.InfoFieldCount];
+            fields[TypeSheetAbi.InfoFieldName] = StringAbi.ValueType(context);
+            fields[TypeSheetAbi.InfoFieldSheet] = pointer;
+            fields[TypeSheetAbi.InfoFieldWrappers] = pointer;
+            fields[TypeSheetAbi.InfoFieldWrapperCount] = LLVMTypeRef.Int32;
+            fields[TypeSheetAbi.InfoFieldIfaceClosure] = pointer;
+            fields[TypeSheetAbi.InfoFieldIfaceClosureCount] = LLVMTypeRef.Int32;
+            return context.GetStructType(fields, false);
         }
 
         internal static void EmitAll(ModuleBuilder.Session session, LayoutPlanTable layout)

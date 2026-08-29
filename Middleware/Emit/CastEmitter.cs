@@ -11,7 +11,7 @@ namespace RigiCompiler.Middleware.Emit
     /// 走 rigi_try_cast；不相容则抛 core.CastException（MW9b-G，与 VM
     /// 同型同消息）或产 null（cast.safe）。
     /// </summary>
-    internal static class CastEmitter
+    internal sealed class CastEmitter : LlvmEmitVisitor<CastEmitter, MirCast>
     {
         // 与 typecheck.c rigi_cast_f64_to_int 的 kind 对齐
         private const int KindI32Sat = 0;
@@ -19,9 +19,10 @@ namespace RigiCompiler.Middleware.Emit
         private const int KindI64Sat = 2;
         private const int KindU64Sat = 3;
 
-        internal static void Emit(ModuleBuilder.Session session, LLVMBuilderRef builder,
-            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirCast inst)
+        protected override void VisitCore(MirCast inst, ModuleBuilder.Session session)
         {
+            var builder = session.Builder;
+            var slots = session.Slots;
             if (inst.Source is not MirLocalOperand source)
             {
                 throw new CompilerInternalException("cast 源必须是局部");

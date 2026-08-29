@@ -1180,6 +1180,1798 @@ namespace RigiCompiler.Tests
                 "    if (p with Mark) { Console.println(\"BAD with\") }\n" +
                 "    return 0\n" +
                 "}\n"),
+            Case("wrapper Entity 字段读写",
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Logged {\n" +
+                "    pub var level: i32\n" +
+                "    pub init() { level = 7 }\n" +
+                "}\n" +
+                "@Logged\n" +
+                "pub class Service { pub init() }\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    if (s:Logged.level != 7) { return 1 }\n" +
+                "    s:Logged.level = 42\n" +
+                "    return s:Logged.level\n" +
+                "}\n"),
+            Case("wrapper Entity 方法调用",
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Logged {\n" +
+                "    pub var level: i32\n" +
+                "    pub init() { level = 11 }\n" +
+                "    pub func dump(): i32 { return level }\n" +
+                "}\n" +
+                "@Logged\n" +
+                "pub class Service { pub init() }\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    return s:Logged.dump()\n" +
+                "}\n"),
+            Case("wrapper Entity specific proxy（self + inner）",
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Logged\\<TTarget> {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.doSomething(arg: i32): i32 {\n" +
+                "        var host = self\n" +
+                "        return (inner(arg) + 1)\n" +
+                "    }\n" +
+                "}\n" +
+                "@Logged\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    pub func doSomething(arg: i32): i32 { return arg }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    return s.doSomething(5)\n" +
+                "}\n"),
+            // MW10 刀3c：proxy 环 receiver 原地访问宿主隐藏槽（§14.5）——
+            // wrapper 可变状态跨调用持久（VM 为基准；用例①转录自
+            // BilVmTests.TestEntityProxyStatePersists）
+            Case("wrapper Entity specific proxy 状态跨调用持久",
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Counting {\n" +
+                "    pub var calls: i32\n" +
+                "    pub init() { calls = 0 }\n" +
+                "    operator .proxy.fetch(x: i32): i32 {\n" +
+                "        calls = (calls + 1)\n" +
+                "        return (inner(x) + calls)\n" +
+                "    }\n" +
+                "}\n" +
+                "@Counting\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    pub func fetch(x: i32): i32 { return x }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    var a = s.fetch(10)\n" +
+                "    var b = s.fetch(10)\n" +
+                "    if (((a == 11) and (b == 12))) { return 1 } else { return 0 }\n" +
+                "}\n"),
+            // 遗3 用例①：基类 @W 有状态 wrapper，子类按 §14.9 重申覆盖，
+            // 子类实例调基类未 override 方法——VM HiddenEntityKey 仅含
+            // wrapper TypeRef（重申覆盖同一键），native 物理槽同归首次
+            // 声明（最基类）偏移，计数跨调用递增。init 置 100 起计以区分
+            // 「读到未安装的零槽」（零槽原地写回会伪造递增假象）：分歧前
+            // 环读基类零槽得 11/12，对拍必败
+            Case("wrapper Entity 重申覆盖状态跨调用持久（子类走基类链）",
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Counting {\n" +
+                "    pub var calls: i32\n" +
+                "    pub init() { calls = 100 }\n" +
+                "    operator .proxy.fetch(x: i32): i32 {\n" +
+                "        calls = (calls + 1)\n" +
+                "        return (inner(x) + calls)\n" +
+                "    }\n" +
+                "}\n" +
+                "@Counting\n" +
+                "pub open class Base {\n" +
+                "    pub init()\n" +
+                "    pub func fetch(x: i32): i32 { return x }\n" +
+                "}\n" +
+                "@Counting\n" +
+                "pub class Child : Base {\n" +
+                "    pub init()\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var c = new Child()\n" +
+                "    var a = c.fetch(10)\n" +
+                "    var b = c.fetch(10)\n" +
+                "    if (((a == 111) and (b == 112))) { return 42 } else { return 0 }\n" +
+                "}\n"),
+            // 遗3 用例②（回归）：三级重申链——Leaf 实例经 Mid 静态类型
+            // 调 Base 未 override 方法，环读/安装同归 Base 槽（下探越过
+            // 无自有槽的 Mid）；Base 实例直调同槽不回归
+            Case("wrapper Entity 三级重申链经中间基类读槽",
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Counting {\n" +
+                "    pub var calls: i32\n" +
+                "    pub init() { calls = 100 }\n" +
+                "    operator .proxy.fetch(x: i32): i32 {\n" +
+                "        calls = (calls + 1)\n" +
+                "        return (inner(x) + calls)\n" +
+                "    }\n" +
+                "}\n" +
+                "@Counting\n" +
+                "pub open class Base {\n" +
+                "    pub init()\n" +
+                "    pub func fetch(x: i32): i32 { return x }\n" +
+                "}\n" +
+                "@Counting\n" +
+                "pub open class Mid : Base {\n" +
+                "    pub init()\n" +
+                "}\n" +
+                "@Counting\n" +
+                "pub class Leaf : Mid {\n" +
+                "    pub init()\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const m: Mid = new Leaf()\n" +
+                "    var a = m.fetch(10)\n" +
+                "    var b = m.fetch(10)\n" +
+                "    var s = new Base()\n" +
+                "    var c = s.fetch(10)\n" +
+                "    var d = s.fetch(10)\n" +
+                "    if ((((a == 111) and (b == 112)) and ((c == 111) and (d == 112)))) {\n" +
+                "        return 42\n" +
+                "    } else { return 0 }\n" +
+                "}\n"),
+            // 遗3 用例③（加压 o2）：Method wrapper 槽钥匙归方法声明类
+            // （VM HiddenMethodKey 含方法符号天然唯一）——子类实例经基类
+            // 静态类型调继承方法两次，wrapper 状态跨调用持久（刀6 既有
+            // 归一口径的加压锁死）
+            Case("Method wrapper 继承方法槽归一状态持久（基类静态类型）",
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Counted {\n" +
+                "    pub var calls: i32\n" +
+                "    pub init() { calls = 0 }\n" +
+                "    operator .proxy.call\\<TReturn>(x: i32): TReturn {\n" +
+                "        calls = (calls + 1)\n" +
+                "        var r = inner(x)\n" +
+                "        return (((r as i32) + calls) as TReturn)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub open class Base {\n" +
+                "    pub init()\n" +
+                "    @Counted\n" +
+                "    pub open func work(x: i32): i32 { return (x * 10) }\n" +
+                "}\n" +
+                "pub class Child : Base {\n" +
+                "    pub init()\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const b: Base = new Child()\n" +
+                "    var a = b.work(1)\n" +
+                "    var c = b.work(1)\n" +
+                "    if (((a == 11) and (c == 12))) { return 42 } else { return 0 }\n" +
+                "}\n"),
+            // 刀3c 用例②：字段-Value wrapper 链环内状态持久（.proxy.set
+            // 计数，二次写读到 1，三次写读到 2）
+            Case("wrapper Value 链环内状态跨调用持久",
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper SetCount {\n" +
+                "    pub var sets: i32\n" +
+                "    pub init() { sets = 0 }\n" +
+                "    operator .proxy.get\\<TValue>(value: TValue): TValue { return value }\n" +
+                "    operator .proxy.set\\<TValue>(value: TValue) {\n" +
+                "        sets = (sets + 1)\n" +
+                "        inner(value)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub class Hero {\n" +
+                "    @SetCount\n" +
+                "    pub var hp: i32\n" +
+                "    pub init() { hp = 0 }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var h = new Hero()\n" +
+                "    h.hp = 10\n" +
+                "    var one = h.hp:SetCount.sets\n" +
+                "    h.hp = 20\n" +
+                "    var two = h.hp:SetCount.sets\n" +
+                "    if ((((one == 1) and (two == 2)) and (h.hp == 20))) {\n" +
+                "        return 1\n" +
+                "    } else { return 0 }\n" +
+                "}\n"),
+            // 刀3c 用例③：wildcard 环状态持久（每次拦截累加，读回 2）
+            Case("wrapper Entity wildcard 环状态跨调用持久",
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper WCount {\n" +
+                "    pub var calls: i32\n" +
+                "    pub init() { calls = 0 }\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., " +
+                "unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn {\n" +
+                "        calls = (calls + 1)\n" +
+                "        return inner(symbol=symbol, namedArgs=namedArgs, " +
+                "unnamedArgs=unnamedArgs)\n" +
+                "    }\n" +
+                "}\n" +
+                "@WCount\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    pub func ping(x: i32): i32 { return x }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    var a = s.ping(1)\n" +
+                "    var b = s.ping(2)\n" +
+                "    if ((((a == 1) and (b == 2)) and (s:WCount.calls == 2))) {\n" +
+                "        return 1\n" +
+                "    } else { return 0 }\n" +
+                "}\n"),
+            // MW10 刀3a：wildcard Entity 方法 proxy 链（VM↔native 对拍，
+            // 用例转录/改写自 BilVmTests wrapper 段）
+            // ===== MW10 刀6：Method wrapper（.proxy.call）链 =====
+            // ① 虚/接口/中间层静态类型调用全命中（转录
+            // Tests/e2e/rigi/o1_method_wrapper_virtual_dispatch.rg——
+            // trampoline 在实现槽 fn，vtable/iMap 派发自然命中）
+            Case("Method wrapper 虚/接口派发命中实现槽",
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Trace {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call\\<TReturn>(): TReturn {\n" +
+                "        core.io.Console.println(\"trace\")\n" +
+                "        return inner()\n" +
+                "    }\n" +
+                "}\n" +
+                "pub open class Base {\n" +
+                "    pub init()\n" +
+                "    @Trace()\n" +
+                "    pub open func work(): i32 { return 1 }\n" +
+                "}\n" +
+                "pub class Child : Base {\n" +
+                "    pub init()\n" +
+                "    @Trace()\n" +
+                "    pub override func work(): i32 { return 2 }\n" +
+                "}\n" +
+                "pub interface Work {\n" +
+                "    func work(): i32\n" +
+                "}\n" +
+                "pub class Job implements Work {\n" +
+                "    pub init()\n" +
+                "    @Trace()\n" +
+                "    pub override func work(): i32 { return 3 }\n" +
+                "}\n" +
+                "pub open class Mid : Base {\n" +
+                "    pub init()\n" +
+                "    @Trace()\n" +
+                "    pub override func work(): i32 { return 2 }\n" +
+                "}\n" +
+                "pub class Leaf : Mid {\n" +
+                "    pub init()\n" +
+                "    @Trace()\n" +
+                "    pub override func work(): i32 { return 3 }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const b: Base = new Child()\n" +
+                "    core.io.Console.println(\"${b.work()}\")\n" +
+                "    const w: Work = new Job()\n" +
+                "    core.io.Console.println(\"${w.work()}\")\n" +
+                "    const m: Mid = new Leaf()\n" +
+                "    core.io.Console.println(\"${m.work()}\")\n" +
+                "    return 0\n" +
+                "}\n"),
+            // ② 继承方法 wrapper（转录 o2_inherited_method_wrapper.rg——
+            // 子类 ..init.wrapper 闭包缝合安装，槽钥匙归声明类）
+            Case("Method wrapper 继承方法命中（子类不 override）",
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Trace {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call\\<TReturn>(): TReturn {\n" +
+                "        core.io.Console.println(\"trace\")\n" +
+                "        return inner()\n" +
+                "    }\n" +
+                "}\n" +
+                "pub open class Base {\n" +
+                "    pub init()\n" +
+                "    @Trace()\n" +
+                "    pub open func work(): i32 { return 1 }\n" +
+                "}\n" +
+                "pub class Child : Base {\n" +
+                "    pub init()\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    core.io.Console.println(\"${new Child().work()}\")\n" +
+                "    return 0\n" +
+                "}\n"),
+            // ③a specific 双层 outer→inner 序（转录 BilVmTests
+            // TestMethodWrapperDoubleLayerOrder）
+            Case("Method wrapper specific 双层 outer→inner 序",
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper A {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call\\<TReturn>(x: i32): TReturn {\n" +
+                "        core.io.Console.println(\"A\")\n" +
+                "        return inner(x)\n" +
+                "    }\n" +
+                "}\n" +
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper B {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call\\<TReturn>(x: i32): TReturn {\n" +
+                "        core.io.Console.println(\"B\")\n" +
+                "        return inner(x)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    @A\n" +
+                "    @B\n" +
+                "    pub func fetch(x: i32): i32 {\n" +
+                "        core.io.Console.println(\"body\")\n" +
+                "        return x\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    return s.fetch(42)\n" +
+                "}\n"),
+            // ③b specific 环绕 + inner 改参/改返回值（转录
+            // TestMethodWrapperCallSpecificSurrounds）
+            Case("Method wrapper specific 环绕改参",
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Timed {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call\\<TReturn>(x: i32): TReturn {\n" +
+                "        core.io.Console.println(\"before\")\n" +
+                "        var r = inner(x)\n" +
+                "        core.io.Console.println(\"after\")\n" +
+                "        return (((r as i32) + 1) as TReturn)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    @Timed\n" +
+                "    pub func fetch(x: i32): i32 {\n" +
+                "        core.io.Console.println(\"body\")\n" +
+                "        return (x * 2)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    return s.fetch(21)\n" +
+                "}\n"),
+            // ④ wildcard .proxy.call：.name = 实现槽 canonical（转录
+            // TestMethodWrapperWildcardInnerFullShape）
+            Case("Method wrapper wildcard .name = 实现槽 canonical",
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Timed {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call(.name: String, args: named Any...): Any {\n" +
+                "        core.io.Console.println(\"name=\" + .name)\n" +
+                "        return inner(.name, args)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    @Timed\n" +
+                "    pub func fetch(x: i32): i32 { return (x + 1) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    return s.fetch(41)\n" +
+                "}\n"),
+            // ④b wildcard 在双层链中间（specific 外环打包进 wildcard
+            // 内环；转录改写自 TestWildcardInnerMiddleOfWrapperChain 的
+            // Method 面）
+            Case("Method wrapper specific→wildcard 混合链",
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper WOut {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call\\<TReturn>(x: i32): TReturn {\n" +
+                "        core.io.Console.println(\"out\")\n" +
+                "        return inner(x)\n" +
+                "    }\n" +
+                "}\n" +
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper WIn {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call(.name: String, args: named Any...): Any {\n" +
+                "        core.io.Console.println(\"in:\" + .name)\n" +
+                "        return inner(.name, args)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    @WOut\n" +
+                "    @WIn\n" +
+                "    pub func ping(x: i32): i32 { return (x + 1) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    return s.ping(41)\n" +
+                "}\n"),
+            // ⑤ 静态方法经 companion（转录
+            // TestMethodWrapperStaticViaCompanion；companion 实例 fn 被
+            // trampoline，静态壳调它自然命中）
+            Case("Method wrapper 静态方法经 companion",
+                "@WrapperTarget(.Method)\n" +
+                "pub shared wrapper Timed {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call\\<TReturn>(x: i32): TReturn { return inner(x) }\n" +
+                "}\n" +
+                "pub class Calc {\n" +
+                "    pub init()\n" +
+                "    @Timed\n" +
+                "    pub static func total(x: i32): i32 { return (x + 1) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    return Calc.total(41)\n" +
+                "}\n"),
+            // ⑥ 全局函数经 ..globals.host（转录
+            // TestGlobalMethodWrapperEndToEnd）
+            Case("Method wrapper 全局函数经 globals.host",
+                "@WrapperTarget(.Method)\n" +
+                "pub shared wrapper Trace {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call\\<TReturn>(): TReturn {\n" +
+                "        core.io.Console.println(\"trace\")\n" +
+                "        return inner()\n" +
+                "    }\n" +
+                "}\n" +
+                "@Trace()\n" +
+                "pub func heavy(): i32 { return 21 }\n" +
+                "pub func main(): i32 {\n" +
+                "    var r = heavy()\n" +
+                "    return (r * 2)\n" +
+                "}\n"),
+            // ⑦ lambda 头 Method wrapper 经 invoke.indirect（转录
+            // TestLambdaMethodWrapperEndToEnd 的环绕例 + wildcard 例的
+            // .name 合成符号）
+            Case("Method wrapper lambda 经 invoke.indirect",
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Timed {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call\\<TReturn>(x: i32): TReturn {\n" +
+                "        core.io.Console.println(\"before\")\n" +
+                "        var r = inner(x)\n" +
+                "        core.io.Console.println(\"after\")\n" +
+                "        return (((r as i32) + 1) as TReturn)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var f = func{ @Timed (x: i32): i32 -> (x + 1) }\n" +
+                "    return f(41)\n" +
+                "}\n"),
+            Case("Method wrapper lambda wildcard .name 合成符号",
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Timed {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call(.name: String, args: named Any...): Any {\n" +
+                "        core.io.Console.println(\"name=\" + .name)\n" +
+                "        return inner(.name, args)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var fn = func{ @Timed (x: i32): i32 -> (x + 1) }\n" +
+                "    return fn(41)\n" +
+                "}\n"),
+            // ⑧ 环内 wrapper 状态跨调用持久（转录
+            // TestMethodWrapperStatePersists——刀3c 槽地址原地访问语义）
+            Case("Method wrapper 环内状态跨调用持久",
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Counted {\n" +
+                "    pub var calls: i32\n" +
+                "    pub init() { calls = 0 }\n" +
+                "    operator .proxy.call\\<TReturn>(x: i32): TReturn {\n" +
+                "        calls = (calls + 1)\n" +
+                "        var r = inner(x)\n" +
+                "        return (((r as i32) + calls) as TReturn)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    @Counted\n" +
+                "    pub func fetch(x: i32): i32 { return (x * 10) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    var a = s.fetch(1)\n" +
+                "    var b = s.fetch(1)\n" +
+                // 语言内校验（linux 退出码 8-bit 截断规避）：分步小码保诊断
+                "    if ((a != 11)) { return 1 }\n" +
+                "    if ((b != 12)) { return 2 }\n" +
+                "    return 42\n" +
+                "}\n"),
+            // ⑧b 具名包乱序还原（遗留12 任务①，对齐 VM
+            // UnboxNamedArgs）：wildcard 环模板调换包内 Pair 次序后经
+            // inner 转发，链末按名还原——a/b 不得错位（VM 按名读取同
+            // 口径；按位还原会得到 (b - a) = -7）
+            Case("Method wrapper wildcard 具名包乱序按名还原",
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Swap {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call(.name: String, args: named Any...): Any {\n" +
+                "        var p0 = (args[0] if? new Pair\\<String, Any>(\"\", (0 as Any)))\n" +
+                "        var p1 = (args[1] if? new Pair\\<String, Any>(\"\", (0 as Any)))\n" +
+                "        args[0] = p1\n" +
+                "        args[1] = p0\n" +
+                "        return inner(.name, args)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    @Swap\n" +
+                "    pub func sub(a: i32, b: i32): i32 { return (a - b) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    return s.sub(10, 3)\n" +
+                "}\n"),
+            // ⑧c super 绕过 Method wrapper 链（遗留12 任务②，转录
+            // TestSuperBypassesMethodWrapper）：override 体内 super()
+            // 直落基类原始实现，不触发基类方法键上的 wrapper——仅外层
+            // 一次 trace（VM ResolveSuper 直接压帧同口径）
+            Case("super 绕过 Method wrapper 链",
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Trace {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call\\<TReturn>(): TReturn {\n" +
+                "        core.io.Console.println(\"trace\")\n" +
+                "        return inner()\n" +
+                "    }\n" +
+                "}\n" +
+                "pub open class Base {\n" +
+                "    pub init()\n" +
+                "    @Trace()\n" +
+                "    pub open func work(): i32 { return 1 }\n" +
+                "}\n" +
+                "pub class Child : Base {\n" +
+                "    pub init()\n" +
+                "    @Trace()\n" +
+                "    pub override func work(): i32 { return (super() + 10) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    return new Child().work()\n" +
+                "}\n"),
+            // ⑧d super 绕过 Entity wrapper 链（同口径）：基类 Entity
+            // wrapper 的 .proxy.work 不得经 super 触发
+            Case("super 绕过 Entity wrapper 链",
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Trace {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.work(): i32 {\n" +
+                "        core.io.Console.println(\"trace\")\n" +
+                "        return inner()\n" +
+                "    }\n" +
+                "}\n" +
+                "@Trace()\n" +
+                "pub open class Base {\n" +
+                "    pub init()\n" +
+                "    pub open func work(): i32 { return 1 }\n" +
+                "}\n" +
+                "@Trace()\n" +
+                "pub class Child : Base {\n" +
+                "    pub init()\n" +
+                "    pub override func work(): i32 { return (super() + 10) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    return new Child().work()\n" +
+                "}\n"),
+            // ===== MW10 刀5：singleton 运行时（VM 为基准）=====
+            // ① 基本语义：两次 new 同一实例、状态共享（VM §8.7）
+            Case("singleton 基本语义（两次 new 同一实例）",
+                "pub shared singleton class S {\n" +
+                "    pub var v: i32\n" +
+                "    pub init() { v = 7 }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = new S()\n" +
+                "    var b = new S()\n" +
+                "    b.v = (a.v + 1)\n" +
+                "    return new S().v\n" +
+                "}\n"),
+            // ② 急切初始化：用户 singleton init 副作用先于 main 首句；
+            // 从不触达的 singleton 同样急切初始化
+            Case("singleton 急切初始化先于 main",
+                "import core.io.Console\n" +
+                "pub shared singleton class Boot {\n" +
+                "    pub var answer: i32\n" +
+                "    pub init() {\n" +
+                "        answer = 42\n" +
+                "        Console.println(\"boot init\")\n" +
+                "    }\n" +
+                "}\n" +
+                "pub shared singleton class Idle {\n" +
+                "    pub init() { Console.println(\"idle init\") }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    Console.println(\"main first\")\n" +
+                "    return new Boot().answer\n" +
+                "}\n"),
+            // ②b companion 急切初始化：静态 wrapped 字段的 cell/wrapper
+            // 构造副作用先于 main（companion 不被显式 new）
+            Case("companion 急切初始化（cell wrapper 构造先于 main）",
+                "import core.io.Console\n" +
+                "@WrapperTarget(.Value)\n" +
+                "pub shared wrapper Trace {\n" +
+                "    pub init() { Console.println(\"wrapper init\") }\n" +
+                "    operator .proxy.get\\<TValue>(value: TValue): TValue { return value }\n" +
+                "    operator .proxy.set\\<TValue>(value: TValue) { inner(value) }\n" +
+                "}\n" +
+                "pub class Holder {\n" +
+                "    @Trace\n" +
+                "    pub static var level: i32 = 5\n" +
+                "    pub init()\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    Console.println(\"main first\")\n" +
+                "    return Holder.level\n" +
+                "}\n"),
+            // ③ init 互访递归触发：A 的 init 用 B → B 恰好构造一次
+            Case("singleton init 互访递归触发",
+                "import core.io.Console\n" +
+                "pub shared singleton class A {\n" +
+                "    pub var b: i32\n" +
+                "    pub init() {\n" +
+                "        Console.println(\"A init\")\n" +
+                "        b = (new B().value + 1)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub shared singleton class B {\n" +
+                "    pub var value: i32\n" +
+                "    pub init() {\n" +
+                "        Console.println(\"B init\")\n" +
+                "        value = 41\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    Console.println(\"main first\")\n" +
+                "    return new A().b\n" +
+                "}\n"),
+            // ④ 构造环：急切初始化期互引 → 异常（自定义 runner：VM 侧
+            // 该异常是基础设施级 VmException，BilVm.Run 直接抛出，不能走
+            // RunFailCase 的 BilVmResult.Exception 通道）
+            ("singleton 构造环抛异常（急切初始化期）", RunSingletonCycleCase),
+            // ⑤ 静态字段 Value wrapper：companion cell 读写经 proxy 链
+            //（playground/mw10_probe.rg 的 Holder.level 形态）
+            Case("静态字段 Value wrapper（companion cell 链）",
+                "@WrapperTarget(.Value)\n" +
+                "pub shared wrapper SClamp {\n" +
+                "    pub var floor: i32\n" +
+                "    pub init(_ -> floor)\n" +
+                "    operator .proxy.get\\<TValue>(value: TValue): TValue { return value }\n" +
+                "    operator .proxy.set\\<TValue>(value: TValue) { inner(value) }\n" +
+                "}\n" +
+                "pub class Holder {\n" +
+                "    @SClamp(0)\n" +
+                "    pub static var level: i32 = 5\n" +
+                "    pub init()\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    Holder.level = (Holder.level + 1)\n" +
+                "    return Holder.level\n" +
+                "}\n"),
+            // ⑥ 全局字段 Value wrapper：cell 即 singleton（带 wrapper 实参，
+            // 实参在 cell ..init.wrapper 体内求值）
+            Case("全局字段 Value wrapper（cell 单例）",
+                "@WrapperTarget(.Value)\n" +
+                "pub shared wrapper SClamp {\n" +
+                "    pub var min: i32\n" +
+                "    pub var max: i32\n" +
+                "    pub init(_ -> min, _ -> max)\n" +
+                "    operator .proxy.get\\<TValue>(value: TValue): TValue { return value }\n" +
+                "    operator .proxy.set\\<TValue>(value: TValue) { inner(value) }\n" +
+                "}\n" +
+                "@SClamp(40, 2)\n" +
+                "var h: i32 = 40\n" +
+                "pub func main(): i32 {\n" +
+                "    h = (h + 1)\n" +
+                "    return h\n" +
+                "}\n"),
+            Case("wrapper Entity wildcard 拦截改返与原样转发",
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Router {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., " +
+                "unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn {\n" +
+                "        core.io.Console.println(symbol)\n" +
+                "        if (symbol == \"Service$zap(x:.i32)@.i32\") {\n" +
+                "            return (99 as TReturn)\n" +
+                "        }\n" +
+                "        return inner(symbol=symbol, namedArgs=namedArgs, " +
+                "unnamedArgs=unnamedArgs)\n" +
+                "    }\n" +
+                "}\n" +
+                "@Router\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    pub func ping(x: i32): i32 { return (x + 1) }\n" +
+                "    pub func zap(x: i32): i32 { return x }\n" +
+                "    pub func poke() { core.io.Console.println(\"poke\") }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    s.poke()\n" +
+                "    var a = s.ping(41)\n" +
+                "    var b = s.zap(1)\n" +
+                // 语言内校验（linux 退出码 8-bit 截断规避）：分步小码保诊断
+                "    if ((a != 42)) { return 1 }\n" +
+                "    if ((b != 99)) { return 2 }\n" +
+                "    return 42\n" +
+                "}\n"),
+            Case("wrapper Entity 同层 specific 压 wildcard",
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Mix {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.ping(x: i32): i32 {\n" +
+                "        core.io.Console.println(\"specific\")\n" +
+                "        return (inner(x) + 1)\n" +
+                "    }\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., " +
+                "unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn {\n" +
+                "        core.io.Console.println(\"wild\")\n" +
+                "        return inner(symbol=symbol, namedArgs=namedArgs, " +
+                "unnamedArgs=unnamedArgs)\n" +
+                "    }\n" +
+                "}\n" +
+                "@Mix\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    pub func ping(x: i32): i32 { return x }\n" +
+                "    pub func pong(x: i32): i32 { return x }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    var a = s.ping(1)\n" +
+                "    var b = s.pong(1)\n" +
+                "    return ((a * 10) + b)\n" +
+                "}\n"),
+            Case("wrapper Entity 双层 specific→wildcard 顺序",
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper WOuter {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.ping(x: i32): i32 {\n" +
+                "        core.io.Console.println(\"outer\")\n" +
+                "        return inner(x)\n" +
+                "    }\n" +
+                "}\n" +
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper WInner {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., " +
+                "unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn {\n" +
+                "        core.io.Console.println(\"inner\")\n" +
+                "        return inner(symbol=symbol, namedArgs=namedArgs, " +
+                "unnamedArgs=unnamedArgs)\n" +
+                "    }\n" +
+                "}\n" +
+                "@WOuter\n" +
+                "@WInner\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    pub func ping(x: i32): i32 { return (x + 1) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    return s.ping(41)\n" +
+                "}\n"),
+            Case("wrapper Entity 双层 wildcard→wildcard 顺序",
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper WA {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., " +
+                "unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn {\n" +
+                "        core.io.Console.println(\"A\")\n" +
+                "        return inner(symbol=symbol, namedArgs=namedArgs, " +
+                "unnamedArgs=unnamedArgs)\n" +
+                "    }\n" +
+                "}\n" +
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper WB {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., " +
+                "unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn {\n" +
+                "        core.io.Console.println(\"B\")\n" +
+                "        return inner(symbol=symbol, namedArgs=namedArgs, " +
+                "unnamedArgs=unnamedArgs)\n" +
+                "    }\n" +
+                "}\n" +
+                "@WA\n" +
+                "@WB\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    pub func ping(x: i32): i32 { return (x + 1) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    return s.ping(41)\n" +
+                "}\n"),
+            Case("wrapper Entity wildcard 改写 symbol 重路由",
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Router {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., " +
+                "unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn {\n" +
+                "        if (symbol == \"Service$ping(x:.i32)@.i32\") {\n" +
+                "            symbol = \"Service$pong(x:.i32)@.i32\"\n" +
+                "            return inner(symbol=symbol, namedArgs=namedArgs, " +
+                "unnamedArgs=unnamedArgs)\n" +
+                "        }\n" +
+                "        if (symbol == \"Service$zap(x:.i32)@.i32\") {\n" +
+                "            return (99 as TReturn)\n" +
+                "        }\n" +
+                "        return inner(symbol=symbol, namedArgs=namedArgs, " +
+                "unnamedArgs=unnamedArgs)\n" +
+                "    }\n" +
+                "}\n" +
+                "@Router\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    pub func ping(x: i32): i32 { return (x + 1) }\n" +
+                "    pub func pong(x: i32): i32 { return (x * 10) }\n" +
+                "    pub func zap(x: i32): i32 { return x }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    var a = s.ping(5)\n" +
+                "    var b = s.zap(1)\n" +
+                "    var c = s.pong(2)\n" +
+                // 语言内校验（linux 退出码 8-bit 截断规避）：分步小码保诊断
+                "    if ((a != 50)) { return 1 }\n" +
+                "    if ((b != 99)) { return 2 }\n" +
+                "    if ((c != 20)) { return 3 }\n" +
+                "    return 42\n" +
+                "}\n"),
+            // 遗6：泛型宿主成员经 wildcard 的完整烘焙（VM↔native 对拍。
+            // VM 语义：方法级 typeid 隐藏实参随值实参同装箱进 unnamed
+            // 位置包（声明序居值参前），环末解包恢复作隐藏形参调原始
+            // 泛型体；.generic.TUnnamedArgs 类型包恒空不承载 typeid）
+            // ①+② 泛型方法经 wildcard 被拦截（打印 symbol + inner 原样
+            // 转发、T 推断正确）+ 返回 T 的装箱往返值正确
+            Case("wrapper Entity wildcard 泛型方法拦截原样转发",
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Tracer {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., " +
+                "unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn {\n" +
+                "        core.io.Console.println(symbol)\n" +
+                "        return inner(symbol=symbol, namedArgs=namedArgs, " +
+                "unnamedArgs=unnamedArgs)\n" +
+                "    }\n" +
+                "}\n" +
+                "@Tracer\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    pub func pick\\<T>(x: T): T { return x }\n" +
+                "    pub func ping(x: i32): i32 { return (x + 1) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    var a = s.pick\\<i32>(41)\n" +
+                "    var b = s.ping(1)\n" +
+                // 语言内校验（linux 退出码 8-bit 截断规避）：分步小码保诊断
+                "    if ((a != 41)) { return 1 }\n" +
+                "    if ((b != 2)) { return 2 }\n" +
+                "    return 42\n" +
+                "}\n"),
+            // ②b 泛型调用的 unnamed 包 = [typeid, 值]（proxy 可观察包长
+            // 并拦截改返；非泛型 ping 包长 1 原样转发）
+            Case("wrapper Entity wildcard 泛型方法包首 typeid 可观察",
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Tracer3 {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., " +
+                "unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn {\n" +
+                "        if (unnamedArgs.length == 2) {\n" +
+                "            return (7 as TReturn)\n" +
+                "        }\n" +
+                "        return inner(symbol=symbol, namedArgs=namedArgs, " +
+                "unnamedArgs=unnamedArgs)\n" +
+                "    }\n" +
+                "}\n" +
+                "@Tracer3\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    pub func pick\\<T>(x: T): T { return x }\n" +
+                "    pub func ping(x: i32): i32 { return (x + 1) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    var a = s.pick\\<i32>(41)\n" +
+                "    var b = s.ping(1)\n" +
+                "    if (a == 7) {\n" +
+                "        core.io.Console.println(\"pack2-intercepted\")\n" +
+                "    } else {\n" +
+                "        core.io.Console.println(\"pack-other\")\n" +
+                "    }\n" +
+                "    if (b == 2) {\n" +
+                "        core.io.Console.println(\"ping-ok\")\n" +
+                "    }\n" +
+                // 语言内校验（linux 退出码 8-bit 截断规避）：分步小码保诊断
+                "    if ((a != 7)) { return 1 }\n" +
+                "    if ((b != 2)) { return 2 }\n" +
+                "    return 42\n" +
+                "}\n"),
+            // ③+⑤ 多泛型参数 + 混合值参 + 显式泛型实参形态
+            //（s.mix\<i32, String\>(...)）：unnamed 包 = [T typeid,
+            // U typeid, 值...]，终态逐槽恢复
+            Case("wrapper Entity wildcard 多泛型参数混合值参",
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Tracer4 {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., " +
+                "unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn {\n" +
+                "        core.io.Console.println(symbol)\n" +
+                "        return inner(symbol=symbol, namedArgs=namedArgs, " +
+                "unnamedArgs=unnamedArgs)\n" +
+                "    }\n" +
+                "}\n" +
+                "@Tracer4\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    pub func mix\\<T, U>(x: T, y: U, n: i32): T { return x }\n" +
+                "    pub func size\\<T, U>(x: T, y: U): U { return y }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    var a = s.mix\\<i32, String>(41, \"hej\", 1)\n" +
+                "    var n = s.size\\<i32, i32>(1, 5)\n" +
+                // 语言内校验（linux 退出码 8-bit 截断规避）：分步小码保诊断
+                "    if ((a != 41)) { return 1 }\n" +
+                "    if ((n != 5)) { return 2 }\n" +
+                "    return 42\n" +
+                "}\n"),
+            // ④ 泛型方法经 inner 改写 symbol 重路由到另一泛型方法
+            //（包形状一致 [typeid, 值]；router 分支解包恢复 typeid 调
+            // gank 的 $.wrapped. 体——gank 把 x 当 i32 加 100 再 as T，
+            // 41 → 141；重路由到非泛型方法 VM 侧实参个数不匹配抛错，
+            // 不进对拍）
+            Case("wrapper Entity wildcard 泛型方法改写 symbol 重路由泛型",
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Rerouter {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., " +
+                "unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn {\n" +
+                "        if (symbol == \"Service$pick(x:.generic<$.generic.T>)" +
+                "@.generic<$.generic.T>\") {\n" +
+                "            symbol = \"Service$gank(x:.generic<$.generic.T>)" +
+                "@.generic<$.generic.T>\"\n" +
+                "            return inner(symbol=symbol, namedArgs=namedArgs, " +
+                "unnamedArgs=unnamedArgs)\n" +
+                "        }\n" +
+                "        return inner(symbol=symbol, namedArgs=namedArgs, " +
+                "unnamedArgs=unnamedArgs)\n" +
+                "    }\n" +
+                "}\n" +
+                "@Rerouter\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    pub func pick\\<T>(x: T): T { return x }\n" +
+                "    pub func gank\\<T>(x: T): T { return ((((x as i32) + 100)) as T) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    var a = s.pick\\<i32>(41)\n" +
+                "    return a\n" +
+                "}\n"),
+            // 类级泛型宿主边界：类级 typeid 不进包（调用约定剔除，
+            // 被调方从 .this 隐藏字段自取）；trampoline 打包与终态
+            // 实参拼装均跳过类级槽（VM PushFrame 重注入同口径）
+            Case("wrapper Entity wildcard 类级泛型宿主成员",
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Tracer2 {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., " +
+                "unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn {\n" +
+                "        core.io.Console.println(symbol)\n" +
+                "        return inner(symbol=symbol, namedArgs=namedArgs, " +
+                "unnamedArgs=unnamedArgs)\n" +
+                "    }\n" +
+                "}\n" +
+                "@Tracer2\n" +
+                "pub class Box\\<T> {\n" +
+                "    pub var value: T\n" +
+                "    pub init(v: T) { value = v }\n" +
+                "    pub func get(): T { return value }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var b = new Box\\<i32>(7)\n" +
+                "    var a = b.get()\n" +
+                "    return a\n" +
+                "}\n"),
+            // MW10 刀4：call??? 降级全链（VM↔native 对拍，用例转录/参照
+            // BilVmTests TestDowngradeCallWildcard /
+            // TestEntityWildcardMethodProxyBothDirections）
+            // ① 未声明方法命中 .proxy.*（proxy 改返 99）+ 已声明 ping
+            // 原样转发经环到原始体；返回 .any 的 cast 拆箱由前端既有
+            // cast 承担（(s.fetchUserById(42) as i32) 顺带覆盖）
+            Case("wrapper call??? 未声明命中 proxy 改返与原样转发",
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Router {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., " +
+                "unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn {\n" +
+                "        core.io.Console.println(symbol)\n" +
+                "        if (symbol == \"Service$fetchUserById(.i32)@.any\") {\n" +
+                "            return (99 as TReturn)\n" +
+                "        } else {\n" +
+                "            return inner(symbol=symbol, namedArgs=namedArgs, " +
+                "unnamedArgs=unnamedArgs)\n" +
+                "        }\n" +
+                "    }\n" +
+                "}\n" +
+                "@Router\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    pub func ping(x: i32): i32 { return (x + 1) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    var a = s.ping(41)\n" +
+                "    var b = (s.fetchUserById(42) as i32)\n" +
+                // 语言内校验（linux 退出码 8-bit 截断规避）：分步小码保诊断
+                "    if ((a != 42)) { return 1 }\n" +
+                "    if ((b != 99)) { return 2 }\n" +
+                "    return 42\n" +
+                "}\n"),
+            // ② call??? 进环后经 router 重路由命中另一已声明成员的剩余
+            // 环（外层 wildcard 改写 symbol 原样 inner，内层 specific
+            // .proxy.ping 环接管返回；VM RerouteWildcardInner 同口径）
+            Case("wrapper call??? 重路由命中已声明成员剩余环",
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper WA {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., " +
+                "unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn {\n" +
+                "        if (symbol == \"Service$fetchUserById(.i32)@.any\") {\n" +
+                "            symbol = \"Service$ping(x:.i32)@.i32\"\n" +
+                "            return inner(symbol=symbol, namedArgs=namedArgs, " +
+                "unnamedArgs=unnamedArgs)\n" +
+                "        }\n" +
+                "        return inner(symbol=symbol, namedArgs=namedArgs, " +
+                "unnamedArgs=unnamedArgs)\n" +
+                "    }\n" +
+                "}\n" +
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper WB {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.ping(x: i32): i32 { return (x + 100) }\n" +
+                "}\n" +
+                "@WA\n" +
+                "@WB\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    pub func ping(x: i32): i32 { return (x + 1) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    return (s.fetchUserById(42) as i32)\n" +
+                "}\n"),
+            // ③ 未路由抛 NoSuchMethodException 且可被 try/catch 捕获
+            //（消息口径对齐 VM「未路由的降级请求：」+ symbol）
+            Case("wrapper call??? 未路由抛 NoSuchMethod 可 catch",
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper W {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., " +
+                "unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn { return inner(symbol=symbol, namedArgs=namedArgs, " +
+                "unnamedArgs=unnamedArgs) }\n" +
+                "}\n" +
+                "@W\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var service = new Service()\n" +
+                "    try {\n" +
+                "        service.fetchUserById(42)\n" +
+                "    } catch (e: core.NoSuchMethodException) {\n" +
+                "        core.io.Console.println(e.getMessage())\n" +
+                "        return 7\n" +
+                "    }\n" +
+                "    return 0\n" +
+                "}\n"),
+            // ④ 子类实例的降级调用命中基类 wrapper（继承闭包：Child
+            // 重申 @W，dispatch 深度序先命中 Child entry 环；继承方法
+            // ping 经基类烘焙链同被拦截——转录 BilVmDispatchTests
+            // WrapperFixes 子类拦截形态）
+            Case("wrapper call??? 子类实例命中基类 wrapper",
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper W {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., " +
+                "unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn {\n" +
+                "        core.io.Console.println(\"hit:\" + symbol)\n" +
+                "        return (99 as TReturn)\n" +
+                "    }\n" +
+                "}\n" +
+                "@W\n" +
+                "pub open class Base {\n" +
+                "    pub init()\n" +
+                "    pub func ping(x: i32): i32 { return (x + 1) }\n" +
+                "}\n" +
+                "@W\n" +
+                "pub class Child : Base { pub init() }\n" +
+                "pub func main(): i32 {\n" +
+                "    var c = new Child()\n" +
+                "    var a = c.ping(1)\n" +
+                "    var b = (c.fetchUserById(42) as i32)\n" +
+                // 语言内校验（linux 退出码 8-bit 截断规避）：分步小码保诊断
+                "    if ((a != 99)) { return 1 }\n" +
+                "    if ((b != 99)) { return 2 }\n" +
+                "    return 42\n" +
+                "}\n"),
+            Case("wrapper 字段-Value 读写",
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper Clamped {\n" +
+                "    pub var min: i32\n" +
+                "    pub init() { min = 3 }\n" +
+                "}\n" +
+                "pub class Hero {\n" +
+                "    @Clamped\n" +
+                "    pub var hp: i32\n" +
+                "    pub init() { }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var h = new Hero()\n" +
+                "    if (h.hp:Clamped.min != 3) { return 1 }\n" +
+                "    h.hp:Clamped.min = 9\n" +
+                "    return h.hp:Clamped.min\n" +
+                "}\n"),
+            // MW10 刀2：字段-Value wrapper get/set 链（VM↔native 对拍，
+            // 用例转录自 BilVmTests wrapper 段）
+            Case("wrapper Value 局部双层链序（A.set→B.set→B.get→A.get）",
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper A {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.get\\<TValue>(value: TValue): TValue {\n" +
+                "        core.io.Console.println(\"A.get\")\n" +
+                "        return value\n" +
+                "    }\n" +
+                "    operator .proxy.set\\<TValue>(value: TValue) {\n" +
+                "        core.io.Console.println(\"A.set\")\n" +
+                "        inner(value)\n" +
+                "    }\n" +
+                "}\n" +
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper B {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.get\\<TValue>(value: TValue): TValue {\n" +
+                "        core.io.Console.println(\"B.get\")\n" +
+                "        return value\n" +
+                "    }\n" +
+                "    operator .proxy.set\\<TValue>(value: TValue) {\n" +
+                "        core.io.Console.println(\"B.set\")\n" +
+                "        inner(value)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    @A\n" +
+                "    @B\n" +
+                "    var x: i32 = 0\n" +
+                "    x = 1\n" +
+                "    var r = x\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("wrapper Value 局部 Clamped 写夹取",
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper Clamped {\n" +
+                "    pub var min: i32\n" +
+                "    pub var max: i32\n" +
+                "    pub init() {\n" +
+                "        min = 0\n" +
+                "        max = 100\n" +
+                "    }\n" +
+                "    operator .proxy.get\\<TValue>(value: TValue): TValue { return value }\n" +
+                "    operator .proxy.set\\<TValue>(value: TValue) {\n" +
+                "        var v = (value as i32)\n" +
+                "        if ((v > max)) { v = max }\n" +
+                "        if ((v < min)) { v = min }\n" +
+                "        inner((v as TValue))\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    @Clamped\n" +
+                "    var health: i32 = 50\n" +
+                "    health = 200\n" +
+                "    var a = health\n" +
+                "    health = -20\n" +
+                "    var b = health\n" +
+                "    if (((a == 100) and (b == 0))) { return 0 }\n" +
+                "    return 1\n" +
+                "}\n"),
+            Case("wrapper Value get-only 修饰 const 局部可读",
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper ReadOnly {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.get\\<TValue>(value: TValue): TValue {\n" +
+                "        return (((value as i32) + 1) as TValue)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    @ReadOnly\n" +
+                "    const y: i32 = 1\n" +
+                "    var v = y\n" +
+                "    return v\n" +
+                "}\n"),
+            Case("wrapper Value 实例字段读写",
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper Clamped {\n" +
+                "    pub var max: i32\n" +
+                "    pub init() { max = 100 }\n" +
+                "    operator .proxy.get\\<TValue>(value: TValue): TValue { return value }\n" +
+                "    operator .proxy.set\\<TValue>(value: TValue) {\n" +
+                "        var v = (value as i32)\n" +
+                "        if ((v > max)) { v = max }\n" +
+                "        inner((v as TValue))\n" +
+                "    }\n" +
+                "}\n" +
+                "pub class Hero {\n" +
+                "    @Clamped\n" +
+                "    pub var hp: i32 = 0\n" +
+                "    pub init()\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var h = new Hero()\n" +
+                "    h.hp = 200\n" +
+                "    return h.hp\n" +
+                "}\n"),
+            Case("wrapper Value 写序 wrapper.set→user.set",
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper Shift {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.get\\<TValue>(value: TValue): TValue { return value }\n" +
+                "    operator .proxy.set\\<TValue>(value: TValue) {\n" +
+                "        core.io.Console.println(\"wrapper.set\")\n" +
+                "        var v = (value as i32)\n" +
+                "        inner(((v + 10) as TValue))\n" +
+                "    }\n" +
+                "}\n" +
+                "pub class Hero {\n" +
+                "    @Shift()\n" +
+                "    pub var hp: i32 {\n" +
+                "        pub get(value: _) { return value }\n" +
+                "        pub set(value: _) {\n" +
+                "            core.io.Console.println(\"user.set\")\n" +
+                "            value = value * 2\n" +
+                "        }\n" +
+                "    } = 0\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var h = new Hero()\n" +
+                "    h.hp = 5\n" +
+                "    return h.hp\n" +
+                "}\n"),
+            Case("wrapper Value 读序 user.get→wrapper.get",
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper Shift {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.get\\<TValue>(value: TValue): TValue {\n" +
+                "        core.io.Console.println(\"wrapper.get\")\n" +
+                "        var v = (value as i32)\n" +
+                "        return ((v + 1) as TValue)\n" +
+                "    }\n" +
+                "    operator .proxy.set\\<TValue>(value: TValue) { inner(value) }\n" +
+                "}\n" +
+                "pub class Hero {\n" +
+                "    @Shift()\n" +
+                "    pub var hp: i32 {\n" +
+                "        pub get(value: _) {\n" +
+                "            core.io.Console.println(\"user.get\")\n" +
+                "            return value * 2\n" +
+                "        }\n" +
+                "        pub set(value: _) { }\n" +
+                "    } = 10\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    return new Hero().hp\n" +
+                "}\n"),
+            Case("wrapper Value init 写豁免经用户 setter",
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper W {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.get\\<TValue>(value: TValue): TValue { return value }\n" +
+                "    operator .proxy.set\\<TValue>(value: TValue) { inner(value) }\n" +
+                "}\n" +
+                "pub class Hero {\n" +
+                "    @W()\n" +
+                "    pub var hp: i32 {\n" +
+                "        pub get(value: _) { return value }\n" +
+                "        pub set(value: _) { if (value > 100) { value = 100 } }\n" +
+                "    } = 150\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    return new Hero().hp\n" +
+                "}\n"),
+            // MW10 刀3b：Entity 字段 get/set proxy 链（VM↔native 对拍，
+            // 用例转录自 BilVmTests/BilVmStressTests wrapper 段与
+            // Tests/e2e/rigi/o7_base_init_wrapper_installed.rg）
+            Case("wrapper Entity o7 基类 init 读命中 get.*",
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Audit {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.get.*\\<TValue>(symbol: String, value: TValue): TValue {\n" +
+                "        core.io.Console.println(\"audit\")\n" +
+                "        return value\n" +
+                "    }\n" +
+                "}\n" +
+                "@Audit()\n" +
+                "pub open class Base {\n" +
+                "    pub var hp: i32 = 10\n" +
+                "    pub init() { hp = (this.hp + 1) }\n" +
+                "}\n" +
+                "@Audit()\n" +
+                "pub class Hero : Base {\n" +
+                "    pub init() { super() }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    return new Hero().hp\n" +
+                "}\n"),
+            // specific get/set 各绕一层（写 s、读 g 打印序 + 字段值生效）。
+            // 注：BilVmTests TestEntityGetterSetterProxyCounts 的计数器形态
+            // 依赖 wrapper 实例状态持久——native 隐藏槽是内联值拷贝 ABI
+            //（get.wrapper 拷贝出槽，环内写 .this 字段不落回），方法面
+            // 刀1 起同病，属既有缺口非本刀引入；此处以打印序对拍同等语义
+            Case("wrapper Entity specific get/set 各绕一层",
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Echo {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.get.name\\<TField>(value: TField): TField {\n" +
+                "        core.io.Console.println(\"g\")\n" +
+                "        return value\n" +
+                "    }\n" +
+                "    operator .proxy.set.name\\<TField>(value: TField) {\n" +
+                "        core.io.Console.println(\"s\")\n" +
+                "        inner(value)\n" +
+                "    }\n" +
+                "}\n" +
+                "@Echo\n" +
+                "pub class Service {\n" +
+                "    pub var name: String\n" +
+                "    pub init() { name = \"a\" }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    s.name = \"b\"\n" +
+                "    var n = s.name\n" +
+                "    if (n == \"b\") { return 1 } else { return 0 }\n" +
+                "}\n"),
+            Case("wrapper Entity wildcard get.* 收符号变值",
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Audited {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.get.*\\<TValue>(symbol: String, value: TValue): TValue {\n" +
+                "        core.io.Console.println(\"get:\" + symbol)\n" +
+                "        return value\n" +
+                "    }\n" +
+                "}\n" +
+                "@Audited\n" +
+                "pub class Service {\n" +
+                "    pub var name: String\n" +
+                "    pub init() { name = \"a\" }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    var n = s.name\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("wrapper Entity wildcard set.* 落原始写",
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Audited {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.set.*\\<TValue>(symbol: String, value: TValue) {\n" +
+                "        core.io.Console.println(\"set:\" + symbol)\n" +
+                "        inner(symbol=symbol, value=value)\n" +
+                "    }\n" +
+                "}\n" +
+                "@Audited\n" +
+                "pub class Service {\n" +
+                "    pub var name: String\n" +
+                "    pub init() { name = \"a\" }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    s.name = \"b\"\n" +
+                "    if (s.name == \"b\") { return 1 } else { return 0 }\n" +
+                "}\n"),
+            // MW10 遗留⑧回归：访问器调用被 .proxy.* 拦截重路由为 Set 链
+            //（胖值 ABI），wildcard set 环 inner 改写 symbol 后链末落带用户
+            // setter 的字段——修前 VM 未拆 VmAny 装箱，setter 内 == 抛
+            //「没有用户 operator equals：.any」；修后双端一致落 setter 写
+            // backing（改写只影响后续环查找，链末写目标双端同为原字段 hp）
+            Case("wrapper set 环 inner 改写 symbol 重路由落用户 setter",
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Audit {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., " +
+                "unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn {\n" +
+                "        return inner(symbol=symbol, namedArgs=namedArgs, unnamedArgs=unnamedArgs)\n" +
+                "    }\n" +
+                "    operator .proxy.set.*\\<TValue>(symbol: String, value: TValue) {\n" +
+                "        if (symbol == \"Entity#hp@.i32\") {\n" +
+                "            symbol = \"Entity#hp2@.i32\"\n" +
+                "        }\n" +
+                "        inner(symbol=symbol, value=value)\n" +
+                "    }\n" +
+                "}\n" +
+                "@Audit()\n" +
+                "pub class Entity {\n" +
+                "    pub var hp: i32 {\n" +
+                "        pub get(value: _) { return value }\n" +
+                "        pub set(value: _) {\n" +
+                "            if (value == 10) { core.io.Console.println(\"hp setter sees 10\") }\n" +
+                "        }\n" +
+                "    } = 10\n" +
+                "    pub var hp2: i32 {\n" +
+                "        pub get(value: _) { return value }\n" +
+                "        pub set(value: _) {\n" +
+                "            if (value == 10) { core.io.Console.println(\"hp2 setter sees 10\") }\n" +
+                "        }\n" +
+                "    } = 0\n" +
+                "    pub init() {}\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const e = new Entity()\n" +
+                "    core.io.Console.println(\"hp=${e.hp} hp2=${e.hp2}\")\n" +
+                "    return 0\n" +
+                "}\n"),
+            // MW10 遗留④：wildcard set 环 inner 改写 symbol 到另一无 proxy
+            // 字段——剩余层无环可进，VM RerouteWildcardInner 只改 MemberName、
+            // FieldSymbol 恒为原字段，链末落**原字段**的 setter/backing
+            Case("wrapper set 环 inner 改写 symbol 到无 proxy 字段落原字段终态",
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Audit {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.set.*\\<TValue>(symbol: String, value: TValue) {\n" +
+                "        if (symbol == \"Entity#hp@.i32\") {\n" +
+                "            symbol = \"Entity#mp@.i32\"\n" +
+                "        }\n" +
+                "        inner(symbol=symbol, value=value)\n" +
+                "    }\n" +
+                "}\n" +
+                "@Audit()\n" +
+                "pub class Entity {\n" +
+                "    pub var hp: i32 {\n" +
+                "        pub get(value: _) { return value }\n" +
+                "        pub set(value: _) {\n" +
+                "            if (value == 7) { core.io.Console.println(\"hp setter 7\") }\n" +
+                "        }\n" +
+                "    } = 0\n" +
+                "    pub var mp: i32 {\n" +
+                "        pub get(value: _) { return value }\n" +
+                "        pub set(value: _) {\n" +
+                "            if (value == 7) { core.io.Console.println(\"mp setter 7\") }\n" +
+                "        }\n" +
+                "    } = 0\n" +
+                "    pub init() {}\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const e = new Entity()\n" +
+                "    e.hp = 7\n" +
+                "    core.io.Console.println(\"hp=${e.hp} mp=${e.mp}\")\n" +
+                "    return 0\n" +
+                "}\n"),
+            // MW10 遗留④：改写到有 specific set proxy 的字段——剩余层命中
+            // .proxy.set.mp 进新字段环（打印 WB.mp）；环 inner 到底后 VM
+            // 链末仍写原字段 hp（FieldSymbol 不随改写变）
+            Case("wrapper set 环 inner 改写 symbol 进他字段 specific 环",
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper WA {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.set.*\\<TValue>(symbol: String, value: TValue) {\n" +
+                "        if (symbol == \"Entity#hp@.i32\") {\n" +
+                "            symbol = \"Entity#mp@.i32\"\n" +
+                "        }\n" +
+                "        inner(symbol=symbol, value=value)\n" +
+                "    }\n" +
+                "}\n" +
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper WB {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.set.mp\\<TField>(value: TField) {\n" +
+                "        core.io.Console.println(\"WB.mp\")\n" +
+                "        inner(value)\n" +
+                "    }\n" +
+                "}\n" +
+                "@WA\n" +
+                "@WB\n" +
+                "pub class Entity {\n" +
+                "    pub var hp: i32 = 0\n" +
+                "    pub var mp: i32 = 0\n" +
+                "    pub init() {}\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const e = new Entity()\n" +
+                "    e.hp = 7\n" +
+                "    core.io.Console.println(\"hp=${e.hp} mp=${e.mp}\")\n" +
+                "    e.mp = 9\n" +
+                "    core.io.Console.println(\"hp=${e.hp} mp=${e.mp}\")\n" +
+                "    return 0\n" +
+                "}\n"),
+            // MW10 遗留④：三层 set 环，中间层（WB，layer 1）改写 hp→mp，
+            // 重路由自 layer 2 起命中 WC 的 .proxy.set.mp（层序正确：
+            // WA identity → WB 改写 → WC.mp 接管），链末落原字段 hp
+            Case("wrapper set 环内层改写 symbol 剩余层序",
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper WA {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.set.*\\<TValue>(symbol: String, value: TValue) {\n" +
+                "        core.io.Console.println(\"WA\")\n" +
+                "        inner(symbol=symbol, value=value)\n" +
+                "    }\n" +
+                "}\n" +
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper WB {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.set.*\\<TValue>(symbol: String, value: TValue) {\n" +
+                "        core.io.Console.println(\"WB\")\n" +
+                "        if (symbol == \"Entity#hp@.i32\") {\n" +
+                "            symbol = \"Entity#mp@.i32\"\n" +
+                "        }\n" +
+                "        inner(symbol=symbol, value=value)\n" +
+                "    }\n" +
+                "}\n" +
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper WC {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.set.mp\\<TField>(value: TField) {\n" +
+                "        core.io.Console.println(\"WC.mp\")\n" +
+                "        inner(value)\n" +
+                "    }\n" +
+                "}\n" +
+                "@WA\n" +
+                "@WB\n" +
+                "@WC\n" +
+                "pub class Entity {\n" +
+                "    pub var hp: i32 = 0\n" +
+                "    pub var mp: i32 = 0\n" +
+                "    pub init() {}\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const e = new Entity()\n" +
+                "    e.hp = 7\n" +
+                "    core.io.Console.println(\"hp=${e.hp} mp=${e.mp}\")\n" +
+                "    e.mp = 9\n" +
+                "    core.io.Console.println(\"hp=${e.hp} mp=${e.mp}\")\n" +
+                "    return 0\n" +
+                "}\n"),
+            // MW10 遗留④：改写到可解析但不存在的字段名——VM 按
+            // FieldSimpleName 查环无果（剩余层无 wildcard），链末落
+            // 原字段终态（不抛异常；FieldSymbol 恒为原字段）
+            Case("wrapper set 环 inner 改写 symbol 未知名落原字段终态",
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Audit {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.set.*\\<TValue>(symbol: String, value: TValue) {\n" +
+                "        if (symbol == \"Entity#hp@.i32\") {\n" +
+                "            symbol = \"Entity#ghost@.i32\"\n" +
+                "        }\n" +
+                "        inner(symbol=symbol, value=value)\n" +
+                "    }\n" +
+                "}\n" +
+                "@Audit()\n" +
+                "pub class Entity {\n" +
+                "    pub var hp: i32 = 0\n" +
+                "    pub init() {}\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const e = new Entity()\n" +
+                "    e.hp = 7\n" +
+                "    core.io.Console.println(\"hp=${e.hp}\")\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("wrapper Entity 双层字段链写序 outer→inner",
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper WO {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.get.*\\<TValue>(symbol: String, value: TValue): TValue {\n" +
+                "        core.io.Console.println(\"O.get\")\n" +
+                "        return value\n" +
+                "    }\n" +
+                "    operator .proxy.set.*\\<TValue>(symbol: String, value: TValue) {\n" +
+                "        core.io.Console.println(\"O.set\")\n" +
+                "        inner(symbol=symbol, value=value)\n" +
+                "    }\n" +
+                "}\n" +
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper WI {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.get.*\\<TValue>(symbol: String, value: TValue): TValue {\n" +
+                "        core.io.Console.println(\"I.get\")\n" +
+                "        return value\n" +
+                "    }\n" +
+                "    operator .proxy.set.*\\<TValue>(symbol: String, value: TValue) {\n" +
+                "        core.io.Console.println(\"I.set\")\n" +
+                "        inner(symbol=symbol, value=value)\n" +
+                "    }\n" +
+                "}\n" +
+                "@WO\n" +
+                "@WI\n" +
+                "pub class Service {\n" +
+                "    pub var name: String\n" +
+                "    pub init() { name = \"a\" }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    s.name = \"b\"\n" +
+                "    var n = s.name\n" +
+                "    if (n == \"b\") { return 1 } else { return 0 }\n" +
+                "}\n"),
+            // ===== 遗1：用户运算符 native 分派（VM 为基准逐类对拍） =====
+            Case("用户运算符 算术/比较/一元/复合赋值",
+                "class Vec {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(_ -> x) { }\n" +
+                "    pub operator plus(another: Vec): Vec { return new Vec((x + another.x)) }\n" +
+                "    pub operator minus(another: Vec): Vec { return new Vec((x - another.x)) }\n" +
+                "    pub operator equals(another: Vec): bool { return (x == another.x) }\n" +
+                "    pub operator compareTo(another: Vec): ComparisonResult {\n" +
+                "        if ((x < another.x)) { return .LesserThanAnother }\n" +
+                "        if ((x > another.x)) { return .GreaterThanAnother }\n" +
+                "        return .Equal\n" +
+                "    }\n" +
+                "    pub operator opposite(): Vec { return new Vec((0 - x)) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = new Vec(1)\n" +
+                "    var b = new Vec(2)\n" +
+                "    var n = 0\n" +
+                "    if (((a + b).x == 3)) { n = (n + 1) }\n" +
+                "    if (((b - a).x == 1)) { n = (n + 2) }\n" +
+                "    if ((a == new Vec(1))) { n = (n + 4) }\n" +
+                "    if ((a != b)) { n = (n + 8) }\n" +
+                "    if ((a < b)) { n = (n + 16) }\n" +
+                "    if ((a <= new Vec(1))) { n = (n + 32) }\n" +
+                "    if ((b > a)) { n = (n + 64) }\n" +
+                "    if ((b >= b)) { n = (n + 128) }\n" +
+                "    if (((-a).x == (0 - 1))) { n = (n + 256) }\n" +
+                "    var c = new Vec(10)\n" +
+                "    c += b\n" +
+                "    if ((c.x == 12)) { n = (n + 512) }\n" +
+                "    if ((b < a)) { n = (n + 1024) }\n" +
+                "    core.io.Console.println(n.toString())\n" +
+                // 语言内校验（linux 退出码 8-bit 截断规避）：位标累计值整体比对
+                "    if ((n != 1023)) { return 1 }\n" +
+                "    return 42\n" +
+                "}\n"),
+            // 混合类型操作数（重载按右操作数形参可赋匹配）+ 继承下探
+            //（子类未定义运算符时沿 extends 链命中基类实现）
+            Case("用户运算符 混合类型操作数与继承下探",
+                "class Vec {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(_ -> x) { }\n" +
+                "    pub operator plus(another: Vec): Vec { return new Vec((x + another.x)) }\n" +
+                "    pub operator plus(n: i32): Vec { return new Vec((x + n)) }\n" +
+                "}\n" +
+                "open class Animal {\n" +
+                "    pub var legs: i32\n" +
+                "    pub init(_ -> legs) { }\n" +
+                "    pub operator equals(other: Animal): bool { return (legs == other.legs) }\n" +
+                "}\n" +
+                "class Dog : Animal {\n" +
+                "    pub init(n: i32) { super(n) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = new Vec(1)\n" +
+                "    var m = a + 10\n" +
+                "    var n = 0\n" +
+                "    if ((m.x == 11)) { n = (n + 1) }\n" +
+                "    var v = a + new Vec(2)\n" +
+                "    if ((v.x == 3)) { n = (n + 2) }\n" +
+                "    var d1: Animal = new Dog(4)\n" +
+                "    var d2: Animal = new Dog(4)\n" +
+                "    var d3: Animal = new Dog(3)\n" +
+                "    if ((d1 == d2)) { n = (n + 4) }\n" +
+                "    if ((d1 != d3)) { n = (n + 8) }\n" +
+                "    var e1 = new Dog(4)\n" +
+                "    var e2 = new Dog(4)\n" +
+                "    if ((e1 == e2)) { n = (n + 16) }\n" +
+                "    core.io.Console.println(n.toString())\n" +
+                "    return n\n" +
+                "}\n"),
+            // shadow 派发：operator 不可 override 但可同名再定义（静默
+            // hiding）；VM 按左操作数实际类型沿派生链命中最具体实现，
+            // native 经 vtable 槽覆盖对齐（Derived$$equals → false → 0）
+            Case("用户运算符 shadow 实际类型派发",
+                "open class Base {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(_ -> x) { }\n" +
+                "    pub operator equals(other: Base): bool { return (x == other.x) }\n" +
+                "}\n" +
+                "class Derived : Base {\n" +
+                "    pub init(n: i32) { super(n) }\n" +
+                "    pub operator equals(other: Base): bool { return false }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var a: Base = new Derived(1)\n" +
+                "    var b: Base = new Base(1)\n" +
+                "    var r = if ((a == b)) { return@_ 1 } else { return@_ 0 }\n" +
+                "    core.io.Console.println(r.toString())\n" +
+                "    return r\n" +
+                "}\n"),
+            // 遗1 刀3a 首次行为对拍：Entity wrapper 的 specific
+            // .proxy.opr.plus 拦截 + inner 落原始体 + 状态跨调用持久
+            //（转录 BilVmTests.TestEntityProxyStatePersists 形状到运算符）
+            Case("wrapper 运算符 specific proxy 链",
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Counting {\n" +
+                "    pub var hits: i32\n" +
+                "    pub init() { hits = 0 }\n" +
+                "    operator .proxy.opr.plus(another: Vec): Vec {\n" +
+                "        hits = (hits + 1)\n" +
+                "        var r = inner(another)\n" +
+                "        return new Vec((r.x + 100))\n" +
+                "    }\n" +
+                "}\n" +
+                "@Counting\n" +
+                "pub class Vec {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(_ -> x) { }\n" +
+                "    pub operator plus(another: Vec): Vec { return new Vec((x + another.x)) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = new Vec(1)\n" +
+                "    var b = new Vec(2)\n" +
+                "    var c = a + b\n" +
+                "    var d = a + b\n" +
+                "    var n = ((c.x + a:Counting.hits))\n" +
+                "    core.io.Console.println(n.toString())\n" +
+                "    return n\n" +
+                "}\n"),
+            // wildcard .proxy.opr.* 拦截（转录 BilVmTests:1828
+            // WrappedVecOperatorProxyModule 的源码级形态）：proxy 直接
+            // 返回 99，原始 plus 不执行
+            Case("wrapper 运算符 wildcard proxy 拦截",
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper W {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.opr.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String,\n" +
+                "        namedArgs: named TNamedArgs...,\n" +
+                "        unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn {\n" +
+                "        return (new Vec(99) as TReturn)\n" +
+                "    }\n" +
+                "}\n" +
+                "@W\n" +
+                "pub class Vec {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(_ -> x) { }\n" +
+                "    pub operator plus(another: Vec): Vec { return new Vec((x + another.x)) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = new Vec(1)\n" +
+                "    var b = new Vec(2)\n" +
+                "    var c = a + b\n" +
+                "    core.io.Console.println(c.x.toString())\n" +
+                "    return c.x\n" +
+                "}\n"),
             Case("位置值包 0/1/3 实参",
                 "import core.io.Console\n" +
                 "func sum(nums: i32...): i32 {\n" +
@@ -2811,6 +4603,75 @@ namespace RigiCompiler.Tests
                     nativeErr.Contains(nativeNeedle ?? keyword), nativeErr);
                 TestHarness.Check(label + "：stdout 一致",
                     NormalizeNewlines(nativeOut), NormalizeNewlines(vm.Stdout));
+            }
+            finally
+            {
+                Directory.Delete(dir, recursive: true);
+            }
+        }
+
+        // MW10 刀5 ④：A↔B init 互引 → 急切初始化期构造环。VM 侧：环
+        // 异常是基础设施级 VmException（VmContext.SingletonCycleException），
+        // 从 InitializeSingletons 经 BilVm.Run 直接抛出（无 BilVmResult
+        // 通道，RunFailCase 不适用）；native：get fn 在途检测抛
+        // core::RuntimeException 未捕获 → reporter（"{类型全名}: {message}"）
+        // → exit 1。已知分歧（以 VM 为准）：VM 消息带在途栈全链
+        //（"A → B → A"），native v1 静态槽形态无在途链对象，只报触发类型
+        private static void RunSingletonCycleCase()
+        {
+            const string label = "singleton 构造环抛异常（急切初始化期）";
+            var source =
+                "pub shared singleton class A {\n" +
+                "    pub var b: i32\n" +
+                "    pub init() { b = new B().value }\n" +
+                "}\n" +
+                "pub shared singleton class B {\n" +
+                "    pub var value: i32\n" +
+                "    pub init() { value = new A().b }\n" +
+                "}\n" +
+                "pub func main(): i32 { return 0 }\n";
+            var dir = Path.Combine(Path.GetTempPath(), $"rigi_e2e_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(dir);
+            try
+            {
+                var (_, module, _) = BilTestHarness.EmitBilUnit(source);
+                var text = BilWriter.Write(module);
+
+                // VM 侧：构造环在急切初始化期以 VmException 炸出
+                VmException? cycle = null;
+                try
+                {
+                    BilVm.Run(BilReader.Read(text));
+                }
+                catch (VmException ex)
+                {
+                    cycle = ex;
+                }
+                TestHarness.CheckTrue(label + "：VM 抛构造环异常", cycle != null);
+                TestHarness.CheckTrue(label + "：VM 消息含循环链前缀",
+                    cycle != null && cycle.Message.Contains("singleton 初始化循环依赖"),
+                    cycle?.Message ?? "");
+
+                // native 侧：编译链接成功，运行 exit 1 + stderr 同前缀
+                var bilPath = Path.Combine(dir, "case.bil");
+                File.WriteAllText(bilPath, text, new UTF8Encoding(false));
+                var exePath = Path.Combine(dir,
+                    RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "case.exe" : "case");
+                var compiled = RunNative("native", "--file", bilPath, "--out", exePath);
+                TestHarness.CheckTrue(label + "：native 编译链接成功", compiled.Code == 0,
+                    compiled.Err);
+                if (compiled.Code != 0)
+                {
+                    return;
+                }
+                var runExit = ExternalProcess.Run(exePath, Array.Empty<string>(),
+                    out var nativeOut, out var nativeErr, environment: MemtrackEnv);
+                TestHarness.CheckTrue(label + "：native 退出码 1", runExit == 1,
+                    $"exit={runExit} stderr={nativeErr}");
+                TestHarness.CheckTrue(label + "：native stderr 含循环链前缀",
+                    nativeErr.Contains("singleton 初始化循环依赖"), nativeErr);
+                TestHarness.CheckTrue(label + "：native stdout 为空（与 VM 一致）",
+                    NormalizeNewlines(nativeOut) == "", nativeOut);
             }
             finally
             {

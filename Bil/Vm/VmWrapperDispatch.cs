@@ -199,14 +199,20 @@ namespace RigiCompiler.Bil.Vm
         // 二者同形取末位）；访问器调用被 .proxy.* 拦截后重路由而来的 Set 链
         //（MethodSymbol 是 $.set. 访问器符号）inner 走胖值 ABI——末位是
         // unnamed 包，写入值是包内最后一个元素（setter 的唯一位置参数；
-        // 空包防御落 null）
+        // 空包防御落 null），且包内元素是 VmAny 装箱，须拆为载荷值
+        //（同 UnboxConcreteArgs 口径；恒等路径不受影响）
         private static VmValue ValueOfSetInner(VmWrapperDispatchFrame frame,
             IReadOnlyList<VmValue> innerArgs)
         {
             var last = innerArgs.Count > 0 ? innerArgs[innerArgs.Count - 1] : VmNull.Instance;
             if (frame.MethodSymbol != null && last is VmArray pack)
             {
-                return pack.Length > 0 ? pack.GetAt(pack.Length - 1) : VmNull.Instance;
+                if (pack.Length == 0)
+                {
+                    return VmNull.Instance;
+                }
+                var element = pack.GetAt(pack.Length - 1);
+                return element is VmAny any ? any.Payload : element;
             }
             return last;
         }

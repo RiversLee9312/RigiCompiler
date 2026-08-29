@@ -133,7 +133,9 @@ namespace RigiCompiler.Middleware.Mir
 
     // invoke / invoke.noret：目标为驻留成员符号（含 native 声明；
     // 派发形态——native 面/直接调用/虚调用/interface 调用——由
-    // Binding.BindCall 回答）
+    // Binding.BindCall 回答）。OperatorDispatch = 遗1 intrinsic 运算
+    // 符直译形态（Binding.BindOperatorCall 回答派发：class 虚/interface
+    // iMap/值类型直调；对齐 VM 按左操作数实际类型查 operator 的语义）
     public sealed class MirCall : MirInst
     {
         public MwMemberSymbol Target { get; }
@@ -142,14 +144,16 @@ namespace RigiCompiler.Middleware.Mir
         public string? Result { get; }
         // MW9a：异常边目标（同 MirInvokeIndirect.ExcTarget 口径）
         public MirBlock? ExcTarget { get; }
+        public bool OperatorDispatch { get; }
 
         internal MirCall(MwMemberSymbol target, IReadOnlyList<MirOperand> args, string? result,
-            MirBlock? excTarget = null)
+            MirBlock? excTarget = null, bool operatorDispatch = false)
         {
             Target = target;
             Args = args;
             Result = result;
             ExcTarget = excTarget;
+            OperatorDispatch = operatorDispatch;
         }
     }
 
@@ -175,23 +179,34 @@ namespace RigiCompiler.Middleware.Mir
     }
 
     // new type(T)（MW4 批 2，class）：rigi_alloc(TypeSheet) → 可选
-    // ..init.wrapper（字段初始值缝合）→ init 调用 → 胖引用结果
+    // ..init.wrapper（字段初始值缝合）→ init 调用 → 胖引用结果。
+    // MW10 刀5：new.wrapped（§14.4.1 有参 ..init.wrapper 构造）经
+    // WrapperArgs 携带 wrapper 实参（空 = 无参 ..init.wrapper 或缺省）
     public sealed class MirNewObject : MirInst
     {
         public MwTypeSymbol Type { get; }
         public MwMemberSymbol? InitWrapper { get; }
         public MwMemberSymbol Init { get; }
         public IReadOnlyList<MirOperand> Args { get; }
+        public IReadOnlyList<MirOperand> WrapperArgs { get; }
         public string Target { get; }
+        // MW10 刀5：构造异常边（init/..init.wrapper 内抛出 → 释放新建
+        // 实例后沿边传播，VM New 同步抛出同语义）。null = 历史形态
+        //（不带边直调，pending 推迟到下一检查点）；仅 singleton get fn
+        // 的合成构造点带边（RcInjection 不改写本字段——带边即已定）
+        public MirBlock? ExcTarget { get; }
 
         internal MirNewObject(MwTypeSymbol type, MwMemberSymbol? initWrapper,
-            MwMemberSymbol init, IReadOnlyList<MirOperand> args, string target)
+            MwMemberSymbol init, IReadOnlyList<MirOperand> args, string target,
+            IReadOnlyList<MirOperand>? wrapperArgs = null, MirBlock? excTarget = null)
         {
             Type = type;
             InitWrapper = initWrapper;
             Init = init;
             Args = args;
+            WrapperArgs = wrapperArgs ?? (IReadOnlyList<MirOperand>)System.Array.Empty<MirOperand>();
             Target = target;
+            ExcTarget = excTarget;
         }
     }
 
@@ -226,29 +241,37 @@ namespace RigiCompiler.Middleware.Mir
         public MwMemberSymbol? InitWrapper { get; }
         public MwMemberSymbol Init { get; }
         public IReadOnlyList<MirOperand> Args { get; }
+        // MW10 刀5：new.wrapped 的 wrapper 实参（同 MirNewObject）
+        public IReadOnlyList<MirOperand> WrapperArgs { get; }
         public string Target { get; }
 
         internal MirNewValue(MwTypeSymbol type, MwMemberSymbol? initWrapper,
-            MwMemberSymbol init, IReadOnlyList<MirOperand> args, string target)
+            MwMemberSymbol init, IReadOnlyList<MirOperand> args, string target,
+            IReadOnlyList<MirOperand>? wrapperArgs = null)
         {
             Type = type;
             InitWrapper = initWrapper;
             Init = init;
             Args = args;
+            WrapperArgs = wrapperArgs ?? (IReadOnlyList<MirOperand>)System.Array.Empty<MirOperand>();
             Target = target;
         }
     }
 
     // new.case（MW4 批 3，enum）：槽内偏移 0 写 u32 判别常量 → init 直调
-    //（实参 = enum init 参数序；enum 无零值不写零，判别+init 覆盖）
+    //（实参 = enum init 参数序；enum 无零值不写零，判别+init 覆盖）。
+    // 遗1：无 init 声明 + 零实参的 enum（stdlib ComparisonResult 形态）
+    // Init = null——仅写判别（VM NewCase 同口径：TryFindInit 未命中且
+    // 零实参时不调 init；无 init 有实参 VM 运行期抛错，native 编译期
+    // 拒绝）
     public sealed class MirNewCase : MirInst
     {
         public MwCaseSymbol Case { get; }
-        public MwMemberSymbol Init { get; }
+        public MwMemberSymbol? Init { get; }
         public IReadOnlyList<MirOperand> Args { get; }
         public string Target { get; }
 
-        internal MirNewCase(MwCaseSymbol caseSymbol, MwMemberSymbol init,
+        internal MirNewCase(MwCaseSymbol caseSymbol, MwMemberSymbol? init,
             IReadOnlyList<MirOperand> args, string target)
         {
             Case = caseSymbol;
@@ -321,6 +344,201 @@ namespace RigiCompiler.Middleware.Mir
             Object = objectOperand;
             FieldSymbol = fieldSymbol;
             Target = target;
+            ExcTarget = excTarget;
+        }
+    }
+
+    // get.wrapper：从宿主隐藏槽拷贝 wrapper 值（Entity 应用）
+    public sealed class MirGetWrapper : MirInst
+    {
+        public MirOperand Host { get; }
+        public string WrapperType { get; }
+        public string Target { get; }
+
+        internal MirGetWrapper(MirOperand host, string wrapperType, string target)
+        {
+            Host = host;
+            WrapperType = wrapperType;
+            Target = target;
+        }
+    }
+
+    // get.wrapper.field：从字段-Value 隐藏槽拷贝 wrapper 值
+    public sealed class MirGetWrapperField : MirInst
+    {
+        public MirOperand Host { get; }
+        public string FieldSymbol { get; }
+        public string WrapperType { get; }
+        public string Target { get; }
+
+        internal MirGetWrapperField(MirOperand host, string fieldSymbol, string wrapperType,
+            string target)
+        {
+            Host = host;
+            FieldSymbol = fieldSymbol;
+            WrapperType = wrapperType;
+            Target = target;
+        }
+    }
+
+    // get.wrapper.addr：proxy 环 receiver 取址（MW10 刀3c §14.5 原地访问
+    // 修订）——目标局部的槽重定向为宿主 Entity 隐藏槽地址，不产生值拷贝：
+    // 环 fn 的值类型 .this 本就是槽地址约定，调用点直传隐藏槽 GEP 地址，
+    // 环内对 wrapper 自身字段的写入原地生效、跨调用持久。仅 proxy 烘焙环
+    // receiver 使用；obj:W 方法调用的值拷贝 receiver 语义不动
+    public sealed class MirGetWrapperAddr : MirInst
+    {
+        public MirOperand Host { get; }
+        public string WrapperType { get; }
+        public string Target { get; }
+
+        internal MirGetWrapperAddr(MirOperand host, string wrapperType, string target)
+        {
+            Host = host;
+            WrapperType = wrapperType;
+            Target = target;
+        }
+    }
+
+    // get.wrapper.field.addr：字段-Value 隐藏槽同口径取址（proxy 环
+    // receiver 专用，语义同 MirGetWrapperAddr）
+    public sealed class MirGetWrapperFieldAddr : MirInst
+    {
+        public MirOperand Host { get; }
+        public string FieldSymbol { get; }
+        public string WrapperType { get; }
+        public string Target { get; }
+
+        internal MirGetWrapperFieldAddr(MirOperand host, string fieldSymbol, string wrapperType,
+            string target)
+        {
+            Host = host;
+            FieldSymbol = fieldSymbol;
+            WrapperType = wrapperType;
+            Target = target;
+        }
+    }
+
+    // get.wrapper.method.addr：Method wrapper 隐藏槽同口径取址（MW10 刀6
+    // method 链环 receiver / trampoline 专用，语义同 MirGetWrapperAddr；
+    // 槽键 = 实现槽方法符号 + wrapper 类型）
+    public sealed class MirGetWrapperMethodAddr : MirInst
+    {
+        public MirOperand Host { get; }
+        public string MethodSymbol { get; }
+        public string WrapperType { get; }
+        public string Target { get; }
+
+        internal MirGetWrapperMethodAddr(MirOperand host, string methodSymbol, string wrapperType,
+            string target)
+        {
+            Host = host;
+            MethodSymbol = methodSymbol;
+            WrapperType = wrapperType;
+            Target = target;
+        }
+    }
+
+    // set.wrapper.field 链元素：field(F) 或 wrapper(W)
+    public abstract class MirWrapperChainElem
+    {
+    }
+
+    public sealed class MirWrapperChainField : MirWrapperChainElem
+    {
+        public string FieldSymbol { get; }
+
+        internal MirWrapperChainField(string fieldSymbol)
+        {
+            FieldSymbol = fieldSymbol;
+        }
+    }
+
+    public sealed class MirWrapperChainWrapper : MirWrapperChainElem
+    {
+        public string WrapperType { get; }
+
+        internal MirWrapperChainWrapper(string wrapperType)
+        {
+            WrapperType = wrapperType;
+        }
+    }
+
+    // set.wrapper.field：沿链定位隐藏槽后写 wrapper 内字段
+    public sealed class MirSetWrapperField : MirInst
+    {
+        public MirOperand Source { get; }
+        public MirOperand Host { get; }
+        public IReadOnlyList<MirWrapperChainElem> Chain { get; }
+        public string InnerField { get; }
+
+        internal MirSetWrapperField(MirOperand source, MirOperand host,
+            IReadOnlyList<MirWrapperChainElem> chain, string innerField)
+        {
+            Source = source;
+            Host = host;
+            Chain = chain;
+            InnerField = innerField;
+        }
+    }
+
+    public enum MirWrapperInstallKind
+    {
+        Entity,
+        Field,
+        Method,
+    }
+
+    // new.wrapper.*：在宿主 .this 的隐藏槽上构造 wrapper 值
+    public sealed class MirNewWrapper : MirInst
+    {
+        public MirOperand Host { get; }
+        public MirWrapperInstallKind Kind { get; }
+        public string WrapperType { get; }
+        public string? FieldSymbol { get; }
+        public string? MethodSymbol { get; }
+        public MwMemberSymbol? Init { get; }
+        public MwMemberSymbol? InitWrapper { get; }
+        public IReadOnlyList<MirOperand> Args { get; }
+
+        internal MirNewWrapper(MirOperand host, MirWrapperInstallKind kind, string wrapperType,
+            string? fieldSymbol, string? methodSymbol, MwMemberSymbol? init,
+            MwMemberSymbol? initWrapper, IReadOnlyList<MirOperand> args)
+        {
+            Host = host;
+            Kind = kind;
+            WrapperType = wrapperType;
+            FieldSymbol = fieldSymbol;
+            MethodSymbol = methodSymbol;
+            Init = init;
+            InitWrapper = initWrapper;
+            Args = args;
+        }
+    }
+
+    // get.self：从 wrapper .this 的宿主回指槽取出 TTarget（proxy 模板）
+    public sealed class MirGetSelf : MirInst
+    {
+        public string Target { get; }
+
+        internal MirGetSelf(string target)
+        {
+            Target = target;
+        }
+    }
+
+    // invoke fn(..inner)：烘焙前占位，ProxyBaking 改写为 MirCall
+    public sealed class MirInnerCall : MirInst
+    {
+        public IReadOnlyList<MirOperand> Args { get; }
+        public string? Result { get; }
+        public MirBlock? ExcTarget { get; }
+
+        internal MirInnerCall(IReadOnlyList<MirOperand> args, string? result,
+            MirBlock? excTarget = null)
+        {
+            Args = args;
+            Result = result;
             ExcTarget = excTarget;
         }
     }

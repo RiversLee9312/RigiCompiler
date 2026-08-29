@@ -20,18 +20,35 @@ Rigi 源码 (.rg) → Frontend (Lexer + Parser) → 语义分析（P1–P3）→
 
 ## 2. 构建与验证（动手前后必跑）
 
+日常开发回路：
+
 ```bash
 dotnet build                 # 须 0 错误 0 警告
-dotnet run -- test --all     # 全量测试（提交前验证入口；CI 在 win-x64/linux-x64 双平台 NativeAOT 产物上跑同一命令）
 dotnet run -- test --run N   # 按编号跑单套件（编号见裸 dotnet run -- test 菜单）
+dotnet run -- test --all     # CoreCLR 全量（迭代用，**不能**代替提交前验证）
 ```
+
+**提交前验证（必须，禁止只跑 `dotnet run`）**：用 **Release + NativeAOT publish** 产物在**本机已有的 Windows 与 Linux 环境各跑一遍全量测试**。本仓库开发机典型组合是 Windows 宿主 + WSL Ubuntu。AOT 与 CoreCLR 的行为差（反射根、RID 原生库、无 JIT）只在发布产物上暴露；CI 也是双平台 AOT，本地提交前必须同口径。
+
+```bash
+# Windows（仓库内层目录 RigiCompiler/RigiCompiler）
+dotnet publish -c Release -r win-x64 -o publish/win-x64
+./publish/win-x64/rigic.exe test --all
+
+# Linux（WSL Ubuntu 等；AOT 不能跨 OS 交叉编译，必须在 Linux 里 publish）
+dotnet publish -c Release -r linux-x64 -o publish/linux-x64
+./publish/linux-x64/rigic test --all
+```
+
+Linux 侧前置：`dotnet-sdk-10.0` + `clang` + `zlib1g-dev`。细节见 `docs/agent_guide/development.md` §2.3。
+
 
 ## 3. 核心纪律（必须遵守）
 
 - **文档驱动**：先读 `docs/SYNTAX.md` 相关章节再写代码，不凭其他语言的经验猜语法（项目已因此返工过）。
 - **Rigi 没有运算符优先级**：连续运算符必须括号化；实现表达式功能时不要引入优先级概念。
-- **git**：`git commit` 等变更操作先获得用户确认；提交前确保 build 通过且 `test --all` 无失败。**备份纪律（快照对）**：工作区常有大量未提交变更（误删/误改无法用 git restore 恢复），快照统一为「stash 对」——`git stash push -u -m "<说明>" && git stash apply`（push 后立即 apply 原样恢复工作区，stash 条目留存为恢复点）。主代理：委派实施型子代理**之前与完成之后**各做一次快照。实施型子代理：**每个小阶段验证通过后必须立即做一次快照对**（消息 `<任务>: <阶段说明>`），便于分阶段回滚；遇误删/误改等意外时允许 `git stash apply stash@{N}` 恢复**自己创建**的快照条目自救（按消息前缀识别；apply 后条目保留，不 pop 不 drop）；其余 git 变更操作仍严禁（commit / pop / drop / restore / clean / checkout / reset 等）。**提交纪律**：提交前必须检查工作区无临时文件残留（`git status` 全量过一遍——playground/ 已入 .gitignore，但 `$null` 类 shell 误产文件与探测残留不得入库）；commit 完成后整条清理 stash 备份链（回滚由 commit 承担，stash 不再保留）。
-- **子代理委派**：实施型任务的提示词必须含「操作须知」块（权限确认/环境事实/临时文件纪律/分阶段验证），规范全文见 `docs/agent_guide/development.md`「子代理委派规范」——缺此块曾致子代理权限幻觉空转零产出。
+- **git**：`git commit` 等变更操作先获得用户确认；提交前确保 `dotnet build` 通过，且**已用 publish 配置在可用的 Windows 与 Linux（如本机 WSL Ubuntu）环境分别跑通 `test --all`**（见 §2；禁止只靠 `dotnet run` 当作提交验证）。**备份纪律（快照对）**：工作区常有大量未提交变更（误删/误改无法用 git restore 恢复），快照统一为「stash 对」——`git stash push -u -m "<说明>" && git stash apply`（push 后立即 apply 原样恢复工作区，stash 条目留存为恢复点）。主代理：委派实施型子代理**之前与完成之后**各做一次快照。实施型子代理：**每个小阶段验证通过后必须立即做一次快照对**（消息 `<任务>: <阶段说明>`），便于分阶段回滚；遇误删/误改等意外时允许 `git stash apply stash@{N}` 恢复**自己创建**的快照条目自救（按消息前缀识别；apply 后条目保留，不 pop 不 drop）；其余 git 变更操作仍严禁（commit / pop / drop / restore / clean / checkout / reset 等）。**提交纪律**：提交前必须检查工作区无临时文件残留（`git status` 全量过一遍——playground/ 已入 .gitignore，但 `$null` 类 shell 误产文件与探测残留不得入库）；commit 完成后整条清理 stash 备份链（回滚由 commit 承担，stash 不再保留）。
+- **子代理委派**：实施型任务的提示词必须含「操作须知」块（权限确认/环境事实/临时文件纪律/分阶段验证），规范全文见 `docs/agent_guide/development.md`「子代理委派规范」——缺此块曾致子代理权限幻觉空转零产出。**串行铁律（安全红线）**：会修改代码的实施型子代理**绝对禁止并行使用，只允许串行使用**（共享工作区，并发编辑与并发构建会互相破坏）；只有只读调研型子代理才允许并行。
 - **语言**：注释与文档一律中文，关键逻辑必须注释；思考也用中文；向子代理下达任务时必须明确要求它也用中文思考。
 - **日志**：编译器内部日志一律走 `Core/Logger`，禁止直接 `Console.WriteLine`（测试报告输出除外）；控制台日志走 stderr，不污染 stdout 数据流。
 - **简洁优先**：新增代码前自问三问——真的有必要存在吗？有没有更简洁优雅的方法？可不可以复用已有的轮子？新代码模仿相邻文件风格；项目无 linter/格式化工具配置。

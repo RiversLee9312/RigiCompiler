@@ -96,7 +96,8 @@ namespace RigiCompiler.Middleware.Passes
                     insts[i] = insts[i] switch
                     {
                         MirCall call when call.ExcTarget == null => new MirCall(
-                            call.Target, call.Args, call.Result, pad),
+                            call.Target, call.Args, call.Result, pad,
+                            operatorDispatch: call.OperatorDispatch),
                         MirSuperCall superCall when superCall.ExcTarget == null => new MirSuperCall(
                             superCall.Target, superCall.Args, superCall.Result, pad),
                         MirInvokeIndirect invoke when invoke.ExcTarget == null => new MirInvokeIndirect(
@@ -163,6 +164,7 @@ namespace RigiCompiler.Middleware.Passes
         private static List<string> BuildReleaseOrder(MirFunction fn,
             Dictionary<string, ManagedSlotKind> kinds)
         {
+            var addrAliases = CollectAddrAliasTargets(fn);
             var order = new List<string>();
             foreach (var local in fn.Locals)
             {
@@ -174,15 +176,48 @@ namespace RigiCompiler.Middleware.Passes
                 {
                     continue;
                 }
+                if (addrAliases.Contains(local.Name))
+                {
+                    continue;
+                }
                 order.Add(local.Name);
             }
             return order;
         }
 
+        // get.wrapper[.field/.method].addr 目标局部：槽已重定向为宿主隐藏槽地址
+        //（MW10 刀3c 环 receiver 取址），非自有 +1 存储——地址读取不产生
+        // 值拷贝，不引入 acquire/release 义务，排除出 release 序列（否则
+        // 出口 release 会落到宿主隐藏槽上造成重复释放）
+        private static HashSet<string> CollectAddrAliasTargets(MirFunction fn)
+        {
+            var targets = new HashSet<string>(System.StringComparer.Ordinal);
+            foreach (var block in fn.Blocks)
+            {
+                foreach (var inst in block.Instructions)
+                {
+                    switch (inst)
+                    {
+                        case MirGetWrapperAddr addr:
+                            targets.Add(addr.Target);
+                            break;
+                        case MirGetWrapperFieldAddr fieldAddr:
+                            targets.Add(fieldAddr.Target);
+                            break;
+                        case MirGetWrapperMethodAddr methodAddr:
+                            targets.Add(methodAddr.Target);
+                            break;
+                    }
+                }
+            }
+            return targets;
+        }
+
         // 值类型宿主的 .this 是调用方存储别名，不纳入所有权
         private static bool IsExemptThis(MirFunction fn, string name) =>
             name == ".this"
-            && fn.Symbol.Owner?.Declaration.Kind is BilTypeKind.Struct or BilTypeKind.EnumStruct;
+            && fn.Symbol.Owner?.Declaration.Kind is BilTypeKind.Struct
+                or BilTypeKind.EnumStruct or BilTypeKind.Wrapper;
 
         // 值类型参数的 +1 由 EmitInitRichValue 落槽建立，避免与规则 1 双计
         private static bool ShouldAcquireParam(MirFunction fn, MirLocal parameter,
@@ -286,6 +321,10 @@ namespace RigiCompiler.Middleware.Passes
             MirNewObject newObject => newObject.Target,
             MirNewValue newValue => newValue.Target,
             MirNewCase newCase => newCase.Target,
+            MirGetWrapper getWrapper => getWrapper.Target,
+            MirGetWrapperField getWrapperField => getWrapperField.Target,
+            MirGetSelf getSelf => getSelf.Target,
+            MirInnerCall inner when inner.Result != null => inner.Result,
             MirGetField getField => getField.Target,
             MirGetStatic getStatic => getStatic.Target,
             MirGetArray getArray => getArray.Target,

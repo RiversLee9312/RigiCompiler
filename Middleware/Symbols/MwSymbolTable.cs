@@ -88,7 +88,23 @@ namespace RigiCompiler.Middleware.Symbols
                         }
                         foreach (var memberDecl in type.Members.OfType<BilSimpleMemberDeclaration>())
                         {
-                            if (_members.ContainsKey(memberDecl.Symbol)) continue;
+                            // 合成成员双登记（companion/cell 的 init 族既列
+                            // 顶层段又列类型段——发射器合成序所致，VM
+                            // IndexMembers 以类型段声明为权威同口径）：
+                            // 顶层占位（Owner=null）被类型段条目替换升级，
+                            // 否则 type.Members 丢成员（singleton get 合成
+                            // 与 new 的 init 匹配依赖完整成员表）
+                            if (_members.TryGetValue(memberDecl.Symbol, out var existing))
+                            {
+                                if (existing.Owner == null && !existing.IsExternal)
+                                {
+                                    var upgraded = new MwMemberSymbol(memberDecl, typeSymbol,
+                                        isExternal);
+                                    _members[memberDecl.Symbol] = upgraded;
+                                    members.Add(upgraded);
+                                }
+                                continue;
+                            }
                             var memberSymbol = new MwMemberSymbol(memberDecl, typeSymbol, isExternal);
                             members.Add(memberSymbol);
                             _members.Add(memberDecl.Symbol, memberSymbol);

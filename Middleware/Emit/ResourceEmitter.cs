@@ -11,12 +11,12 @@ namespace RigiCompiler.Middleware.Emit
     /// 字面量 → LLVM 常量并落目标局部槽。字符串常量构建委托 StringAbi
     /// （表示的唯一事实源）。
     /// </summary>
-    internal static class ResourceEmitter
+    internal sealed class ResourceEmitter : LlvmEmitVisitor<ResourceEmitter, MirLoadResource>
     {
-        internal static void EmitLoad(ModuleBuilder.Session session, LLVMBuilderRef builder,
-            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
-            MirLoadResource load)
+        protected override void VisitCore(MirLoadResource load, ModuleBuilder.Session session)
         {
+            var builder = session.Builder;
+            var slots = session.Slots;
             var targetType = slots[load.Target].Local.Type;
             if (load.Resource is BilScalarResource scalar
                 && scalar.Type is BilScalarType.RawHex or BilScalarType.RawBin)

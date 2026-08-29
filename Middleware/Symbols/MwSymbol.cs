@@ -101,10 +101,15 @@ namespace RigiCompiler.Middleware.Symbols
             }
         }
 
-        // vtable 成员资格（VM VmTypeSheet.IsVirtualMember 同口径，MW4）：
-        // 实例方法；排除 init/ext/static 与除 $$call 外的运算符（callable
-        // 协议例外：operator call 可 override，入表）。Binding 的派发分类
-        // 与 Layout 的 vtable 槽分配共用此判定
+        // vtable 成员资格（MW4 起；遗1 起纳入全部运算符）：实例方法；排除
+        // init/ext/static。运算符（$$ 族）入表服务于 native 的 intrinsic
+        // 运算符实际类型派发（对齐 VM FindOperator 按左操作数实际类型沿
+        // 派生链解析，BilComputeInstructions.DispatchUserBinary）；VM 侧
+        // VmTypeSheet.IsVirtualMember 维持「除 $$call 外运算符不入表」的
+        // 旧口径（VM 显式 invoke operator 直调静态符号）——两端 vtable
+        // 各自独立，无需同形。Binding 的派发分类与 Layout 的 vtable 槽
+        // 分配共用此判定；显式 invoke operator 的直调口径由
+        // ImplBinder.BindCall 的运算符特判保持。
         public bool IsVirtualMember
         {
             get
@@ -126,9 +131,26 @@ namespace RigiCompiler.Middleware.Symbols
                 }
                 if (rest.Length > 0 && rest[0] == '$')
                 {
-                    return rest.StartsWith("$call(", System.StringComparison.Ordinal);
+                    return true;
                 }
                 return true;
+            }
+        }
+
+        // $$ 族运算符（含 $$call）：符号形态判定（宿主$ 后紧跟 $ 即
+        // 运算符段，如 Vec$$plus(...)@Vec）
+        public bool IsOperatorMember
+        {
+            get
+            {
+                if (Declaration.Kind != BilMemberKind.Method)
+                {
+                    return false;
+                }
+                var dollar = Canonical.IndexOf('$');
+                return dollar >= 0
+                    && dollar + 1 < Canonical.Length
+                    && Canonical[dollar + 1] == '$';
             }
         }
     }

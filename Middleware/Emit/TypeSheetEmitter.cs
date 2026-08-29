@@ -10,31 +10,30 @@ namespace RigiCompiler.Middleware.Emit
     /// vtable / iMap / refMap / TypeSheet。typeInfoId 指向 TypeInfo 全局
     ///（TypeInfoEmitter）；baseTypeId 指向基类 TypeSheet（interface/wrapper
     /// 取 ExtendsType）；vTable 未进 MIR 的方法为 null。
-    /// 字段序与 arc.h RigiTypeSheet 逐位镜像；DynamicNewEmitter 读槽 0
-    /// 分发器时按 FieldVTable 内联 GEP（互指锚点）。
+    /// 字段序见 TypeSheetAbi（arc.h RigiTypeSheet 逐位镜像）；DynamicNewEmitter
+    /// 读槽 0 分发器时按 TypeSheetAbi.FieldVTable 内联 GEP。
     /// </summary>
     internal static class TypeSheetEmitter
     {
-        // TypeSheet 字段序（arc.h RigiTypeSheet / DynamicNewEmitter 互指）
-        internal const int FieldTypeInfoId = 0;
-        internal const int FieldBaseTypeId = 1;
-        internal const int FieldTypeSize = 2;
-        internal const int FieldTypeFlags = 3;
-        internal const int FieldVTableSize = 4;
-        internal const int FieldVTable = 5;
-        internal const int FieldIMapSize = 6;
-        internal const int FieldIMap = 7;
-        internal const int FieldRefMapSize = 8;
-        internal const int FieldRefMap = 9;
+        // TypeSheet 字段序见 TypeSheetAbi（与 arc.h 镜像）；本类只填 LLVM 结构与常量。
+        // DynamicNewEmitter 读槽 0 分发器时按 TypeSheetAbi.FieldVTable 内联 GEP。
 
         internal static LLVMTypeRef SheetStructType(LLVMContextRef context)
         {
             var pointer = LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0);
             var i32 = LLVMTypeRef.Int32;
-            return context.GetStructType(new[]
-            {
-                pointer, pointer, i32, i32, i32, pointer, i32, pointer, i32, pointer,
-            }, false);
+            var fields = new LLVMTypeRef[TypeSheetAbi.SheetFieldCount];
+            fields[TypeSheetAbi.FieldTypeInfoId] = pointer;
+            fields[TypeSheetAbi.FieldBaseTypeId] = pointer;
+            fields[TypeSheetAbi.FieldTypeSize] = i32;
+            fields[TypeSheetAbi.FieldTypeFlags] = i32;
+            fields[TypeSheetAbi.FieldVTableSize] = i32;
+            fields[TypeSheetAbi.FieldVTable] = pointer;
+            fields[TypeSheetAbi.FieldIMapSize] = i32;
+            fields[TypeSheetAbi.FieldIMap] = pointer;
+            fields[TypeSheetAbi.FieldRefMapSize] = i32;
+            fields[TypeSheetAbi.FieldRefMap] = pointer;
+            return context.GetStructType(fields, false);
         }
 
         internal static void EmitAll(ModuleBuilder.Session session, LayoutPlanTable layout)
@@ -103,7 +102,7 @@ namespace RigiCompiler.Middleware.Emit
             {
                 var info = session.TypeInfoFor(GenericAbi.PlanKey(plan.Symbol));
                 var baseSheet = ResolveBaseSheet(plan, sheetGlobals, nullPointer);
-                if (plan.Kind is TypeLayoutKind.Interface or TypeLayoutKind.Wrapper)
+                if (plan.Kind is TypeLayoutKind.Interface)
                 {
                     var shell = sheetGlobals[GenericAbi.PlanKey(plan.Symbol)];
                     shell.Initializer = BuildSheetConst(context, i32, info, baseSheet,

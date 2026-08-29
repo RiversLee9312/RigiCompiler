@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using RigiCompiler.Bil;
 using RigiCompiler.Middleware.Layout;
 using RigiCompiler.Middleware.Mir;
@@ -26,6 +27,11 @@ namespace RigiCompiler.Middleware
 
         // MW4 产物：布局计划表（LayoutStage 挂载；只依赖符号表，不依赖 MIR）
         public LayoutPlanTable? Layout { get; internal set; }
+
+        // MW10 刀5 产物：singleton 运行时条目表（SingletonLoweringPass
+        // 挂载；Emit 侧发射合成静态槽 + rigi_entry 急切初始化调用）
+        public IReadOnlyList<Binding.SingletonEntry> Singletons { get; internal set; } =
+            System.Array.Empty<Binding.SingletonEntry>();
 
         // 派发闭包查询（Layout 实现、Mir 消费；Layout 未挂载时为 null）
         public IMwDispatchQuery? DispatchQuery => Layout;

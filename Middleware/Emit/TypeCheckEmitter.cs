@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using LLVMSharp.Interop;
 using RigiCompiler.Middleware.Layout;
 using RigiCompiler.Middleware.Mir;
+using RigiCompiler.Middleware.Runtime;
 
 namespace RigiCompiler.Middleware.Emit
 {
@@ -10,11 +11,12 @@ namespace RigiCompiler.Middleware.Emit
     /// 目标 sheet = TypeSheetFor(静态 canonical) 或 typeid 局部；值类型操作数
     /// 合成 tag0 胖引用（实际 sheet = 静态类型 sheet）。
     /// </summary>
-    internal static class TypeCheckEmitter
+    internal sealed class TypeCheckEmitter : LlvmEmitVisitor<TypeCheckEmitter, MirTypeCheck>
     {
-        internal static void Emit(ModuleBuilder.Session session, LLVMBuilderRef builder,
-            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirTypeCheck inst)
+        protected override void VisitCore(MirTypeCheck inst, ModuleBuilder.Session session)
         {
+            var builder = session.Builder;
+            var slots = session.Slots;
             var fat = LoadAsFat(session, builder, slots, inst.Value);
             var typeId = builder.BuildExtractValue(fat, 0, "ck.typeid");
             var payload = builder.BuildExtractValue(fat, 1, "ck.payload");
@@ -71,12 +73,14 @@ namespace RigiCompiler.Middleware.Emit
 
         private static string FaceNameOf(MirTypeCheck inst)
         {
-            var tail = inst.IsIndirect ? "_indirect" : "";
-            return inst.Kind switch
+            return (inst.Kind, inst.IsIndirect) switch
             {
-                MirTypeCheckKind.Is => "rigi_type_is" + tail,
-                MirTypeCheckKind.Supers => "rigi_type_supers" + tail,
-                MirTypeCheckKind.With => "rigi_type_with" + tail,
+                (MirTypeCheckKind.Is, false) => RuntimeFaces.TypeIs,
+                (MirTypeCheckKind.Is, true) => RuntimeFaces.TypeIsIndirect,
+                (MirTypeCheckKind.Supers, false) => RuntimeFaces.TypeSupers,
+                (MirTypeCheckKind.Supers, true) => RuntimeFaces.TypeSupersIndirect,
+                (MirTypeCheckKind.With, false) => RuntimeFaces.TypeWith,
+                (MirTypeCheckKind.With, true) => RuntimeFaces.TypeWithIndirect,
                 _ => throw new CompilerInternalException("未知 MirTypeCheckKind: " + inst.Kind),
             };
         }

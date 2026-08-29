@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using RigiCompiler.Bil;
+using RigiCompiler.Middleware.Binding;
 using RigiCompiler.Middleware.Layout;
 using RigiCompiler.Middleware.Mir;
 using RigiCompiler.Middleware.Pipeline;
@@ -9,8 +10,16 @@ namespace RigiCompiler.Middleware.Passes
 {
     /// <summary>
     /// 访问器改写（MW4）：字段访问命中 computed getter/setter 时改写为
-    /// MirCall；伪字段 #..value@ 直读写 backing；wrapper 字段受控拒绝。
-    /// 读：Mir + Symbols + Layout；写：原地改写 Mir 指令列表。
+    /// MirCall；伪字段 #..value@ 直读写 backing（含 ..cell.. 隐藏子类
+    /// getValue/setValue 的 VM 同口径回退）；字段自身 wrapped 放行不降级
+    ///（交下游 FieldProxyBakingPass 成链）；宿主 wrapped 自刀3b 起同样
+    /// 放行不降级（Entity 字段链与无 proxy 层的访问器兜底都归
+    /// FieldProxyBakingPass）。静态字段访问自刀5 起放行：前端 BIL 里
+    /// wrapped 静态字段已搬入 companion cell（符号段无独立条目），幸存
+    /// 的静态符号（含 Entity wrapped 宿主上的普通静态字段）按 VM 静态
+    /// 槽直读写语义处理——Entity wrapper 只作用于实例。
+    /// 读：Mir + Symbols + Layout；写：原地改写 Mir 指令列表。本 pass
+    /// 为小改写：唯一 switch 分派到内部类，无共享可变状态，不上 CRTP。
     /// </summary>
     public sealed class AccessorLoweringPass : IMwStage
     {
@@ -22,10 +31,15 @@ namespace RigiCompiler.Middleware.Passes
                 ?? throw new CompilerInternalException("AccessorLowering 要求 Mir 已挂载");
             foreach (var fn in mir.Functions)
             {
-                foreach (var block in fn.Blocks)
-                {
-                    RewriteBlock(context, fn, block);
-                }
+                RewriteFunction(context, fn);
+            }
+        }
+
+        internal static void RewriteFunction(MwContext context, MirFunction fn)
+        {
+            foreach (var block in fn.Blocks)
+            {
+                RewriteBlock(context, fn, block);
             }
         }
 
@@ -36,130 +50,237 @@ namespace RigiCompiler.Middleware.Passes
             {
                 insts[i] = insts[i] switch
                 {
-                    MirGetField get => LowerGetField(context, fn, get),
-                    MirSetField set => LowerSetField(context, fn, set),
-                    MirGetStatic getStatic => LowerGetStatic(context, fn, getStatic),
-                    MirSetStatic setStatic => LowerSetStatic(context, fn, setStatic),
+                    MirGetField get => GetFieldLowering.Rewrite(context, fn, get),
+                    MirSetField set => SetFieldLowering.Rewrite(context, fn, set),
+                    MirGetStatic getStatic => GetStaticLowering.Rewrite(context, fn, getStatic),
+                    MirSetStatic setStatic => SetStaticLowering.Rewrite(context, fn, setStatic),
                     var other => other,
                 };
             }
         }
 
         // 原 FlowBuilder.EmitGetField 同口径：#..value@ → backing 直读；
-        // .length 不触碰；其余 wrapper 拒绝后按访问器改写
-        private static MirInst LowerGetField(MwContext context, MirFunction fn, MirGetField inst)
+        // .length 不触碰；字段自身 wrapped 放行（交 FieldProxyBakingPass
+        // 成链，不降级访问器）；宿主 wrapped 放行（同交 FieldProxyBakingPass，
+        // 刀3b）；其余按访问器改写
+        private static class GetFieldLowering
         {
-            var fieldSymbol = inst.FieldSymbol;
-            if (fieldSymbol.Contains("#..value@", System.StringComparison.Ordinal))
+            internal static MirInst Rewrite(MwContext context, MirFunction fn, MirGetField inst)
             {
-                return new MirGetField(inst.Object, CurrentAccessorField(fn.Symbol), inst.Target);
-            }
-            if (TypeLayout.IsLengthField(fieldSymbol))
-            {
+                var fieldSymbol = inst.FieldSymbol;
+                if (fieldSymbol.Contains("#..value@", System.StringComparison.Ordinal))
+                {
+                    return new MirGetField(inst.Object,
+                        AccessorRules.CurrentField(fn.Symbol, fieldSymbol), inst.Target);
+                }
+                if (TypeLayout.IsLengthField(fieldSymbol))
+                {
+                    return inst;
+                }
+                // 类级隐藏 typeid 字段（#..generic.，遗6：泛型宿主成员
+                // 烘焙的终态实参拼装就地读）不进成员表，直通发射层
+                //（FieldEmitter.Resolve 按布局计划偏移解析）
+                if (fieldSymbol.Contains(GenericAbi.HiddenFieldInfix,
+                        System.StringComparison.Ordinal))
+                {
+                    return inst;
+                }
+                var field = AccessorRules.RequireField(context.Symbols, fieldSymbol);
+                if (AccessorRules.IsFieldWrapped(field)
+                    || AccessorRules.IsHostWrapped(field))
+                {
+                    return inst;
+                }
+                if (!AccessorRules.IsCurrentOf(fn.Symbol, fieldSymbol)
+                    && ImplBinder.FindAccessor(context.Symbols, fieldSymbol,
+                        BilAccessorKind.Getter, fn.Symbol.Canonical) is { } getter)
+                {
+                    return new MirCall(getter, new List<MirOperand> { inst.Object }, inst.Target);
+                }
                 return inst;
             }
-            RejectIfWrappedField(context.Symbols, fieldSymbol);
-            if (!IsCurrentAccessorOf(fn.Symbol, fieldSymbol)
-                && MirBuilder.FindAccessor(context.Symbols, fieldSymbol,
-                    BilAccessorKind.Getter, fn.Symbol.Canonical) is { } getter)
-            {
-                return new MirCall(getter, new List<MirOperand> { inst.Object }, inst.Target);
-            }
-            return inst;
         }
 
         // 原 FlowBuilder.EmitSetField 同口径
-        private static MirInst LowerSetField(MwContext context, MirFunction fn, MirSetField inst)
+        private static class SetFieldLowering
         {
-            var fieldSymbol = inst.FieldSymbol;
-            if (fieldSymbol.Contains("#..value@", System.StringComparison.Ordinal))
+            internal static MirInst Rewrite(MwContext context, MirFunction fn, MirSetField inst)
             {
-                return new MirSetField(inst.Source, inst.Object, CurrentAccessorField(fn.Symbol));
+                var fieldSymbol = inst.FieldSymbol;
+                if (fieldSymbol.Contains("#..value@", System.StringComparison.Ordinal))
+                {
+                    return new MirSetField(inst.Source, inst.Object,
+                        AccessorRules.CurrentField(fn.Symbol, fieldSymbol));
+                }
+                var field = AccessorRules.RequireField(context.Symbols, fieldSymbol);
+                if (AccessorRules.IsFieldWrapped(field)
+                    || AccessorRules.IsHostWrapped(field))
+                {
+                    return inst;
+                }
+                if (!AccessorRules.IsCurrentOf(fn.Symbol, fieldSymbol)
+                    && ImplBinder.FindAccessor(context.Symbols, fieldSymbol,
+                        BilAccessorKind.Setter, fn.Symbol.Canonical) is { } setter)
+                {
+                    return new MirCall(setter,
+                        new List<MirOperand> { inst.Object, inst.Source }, null);
+                }
+                return inst;
             }
-            RejectIfWrappedField(context.Symbols, fieldSymbol);
-            if (!IsCurrentAccessorOf(fn.Symbol, fieldSymbol)
-                && MirBuilder.FindAccessor(context.Symbols, fieldSymbol,
-                    BilAccessorKind.Setter, fn.Symbol.Canonical) is { } setter)
-            {
-                return new MirCall(setter,
-                    new List<MirOperand> { inst.Object, inst.Source }, null);
-            }
-            return inst;
         }
 
-        // 原 FlowBuilder.EmitGetStatic 同口径（无 #..value@ / IsCurrentAccessorOf）
-        private static MirInst LowerGetStatic(MwContext context, MirFunction fn, MirGetStatic inst)
+        // 原 FlowBuilder.EmitGetStatic 同口径（无 #..value@ / IsCurrentOf）。
+        // 刀5 解除 wrapped 静态受控拒绝：wrapped 静态字段经 companion
+        // cell 间接、自身符号不进符号段（RequireField 的存在性守卫仍在）；
+        // Entity wrapped 宿主上的普通静态字段按 VM 静态槽直读写放行
+        private static class GetStaticLowering
         {
-            RejectIfWrappedField(context.Symbols, inst.FieldSymbol);
-            if (MirBuilder.FindAccessor(context.Symbols, inst.FieldSymbol,
-                BilAccessorKind.Getter, fn.Symbol.Canonical) is { } getter)
+            internal static MirInst Rewrite(MwContext context, MirFunction fn, MirGetStatic inst)
             {
-                return new MirCall(getter, new List<MirOperand>(), inst.Target);
+                AccessorRules.RequireField(context.Symbols, inst.FieldSymbol);
+                if (ImplBinder.FindAccessor(context.Symbols, inst.FieldSymbol,
+                    BilAccessorKind.Getter, fn.Symbol.Canonical) is { } getter)
+                {
+                    return new MirCall(getter, new List<MirOperand>(), inst.Target);
+                }
+                return inst;
             }
-            return inst;
         }
 
         // 原 FlowBuilder.EmitSetStatic 同口径
-        private static MirInst LowerSetStatic(MwContext context, MirFunction fn, MirSetStatic inst)
+        private static class SetStaticLowering
         {
-            RejectIfWrappedField(context.Symbols, inst.FieldSymbol);
-            if (MirBuilder.FindAccessor(context.Symbols, inst.FieldSymbol,
-                BilAccessorKind.Setter, fn.Symbol.Canonical) is { } setter)
+            internal static MirInst Rewrite(MwContext context, MirFunction fn, MirSetStatic inst)
             {
-                return new MirCall(setter, new List<MirOperand> { inst.Source }, null);
+                AccessorRules.RequireField(context.Symbols, inst.FieldSymbol);
+                if (ImplBinder.FindAccessor(context.Symbols, inst.FieldSymbol,
+                        BilAccessorKind.Setter, fn.Symbol.Canonical) is { } setter)
+                {
+                    return new MirCall(setter, new List<MirOperand> { inst.Source }, null);
+                }
+                return inst;
             }
-            return inst;
         }
 
-        // 当前 fn 即该字段的访问器（体内直访 backing）。FindAccessor 的
-        // excludingFn 只跳过自身符号，派生 getter 体内读字段仍会命中基类
-        // getter，故需此判定（原 FlowBuilder.IsCurrentAccessorOf 同口径）
-        private static bool IsCurrentAccessorOf(MwMemberSymbol current, string fieldSymbol) =>
-            CurrentAccessorFieldOrNull(current) == fieldSymbol;
-
-        private static string? CurrentAccessorFieldOrNull(MwMemberSymbol current)
+        // 访问器体判定与 wrapper 处置：跨四个 lowering 共享的纯查询，无可变状态
+        private static class AccessorRules
         {
-            foreach (var modifier in current.Declaration.Modifiers)
-            {
-                if (modifier is BilAccessorModifier accessor)
-                {
-                    return accessor.FieldSymbol;
-                }
-            }
-            return null;
-        }
+            // 当前 fn 即该字段的访问器（体内直访 backing）。FindAccessor 的
+            // excludingFn 只跳过自身符号，派生 getter 体内读字段仍会命中基类
+            // getter，故需此判定（原 FlowBuilder.IsCurrentAccessorOf 同口径）
+            internal static bool IsCurrentOf(MwMemberSymbol current, string fieldSymbol) =>
+                CurrentFieldOrNull(current) == fieldSymbol;
 
-        private static string CurrentAccessorField(MwMemberSymbol current) =>
-            CurrentAccessorFieldOrNull(current)
-            ?? throw new CompilerInternalException(
-                $"#..value@ 伪字段出现在非访问器 fn: {current.Canonical}");
+            internal static string CurrentField(MwMemberSymbol current, string pseudoFieldSymbol) =>
+                CurrentFieldOrNull(current)
+                ?? CellBackingField(current, pseudoFieldSymbol)
+                ?? throw new CompilerInternalException(
+                    $"#..value@ 伪字段出现在非访问器 fn: {current.Canonical}");
 
-        // wrapper 标记字段/宿主（链语义随 MW10；此处受控拒绝）
-        private static void RejectIfWrappedField(MwSymbolTable symbols, string fieldSymbol)
-        {
-            var field = symbols.FindMember(fieldSymbol);
-            if (field == null)
+            private static string? CurrentFieldOrNull(MwMemberSymbol current)
             {
-                throw new MwNotSupportedException(
-                    $"MW4 暂不支持的字段访问（外部/特殊字段）: {fieldSymbol}");
-            }
-            foreach (var modifier in field.Declaration.Modifiers)
-            {
-                if (modifier is BilWrappedModifier)
+                foreach (var modifier in current.Declaration.Modifiers)
                 {
-                    throw new MwNotSupportedException($"wrapper 字段访问随 MW10: {fieldSymbol}");
+                    if (modifier is BilAccessorModifier accessor)
+                    {
+                        return accessor.FieldSymbol;
+                    }
                 }
+                return null;
             }
-            if (field.Owner != null)
+
+            // cell getValue/setValue 回退（VM VmContext.TryResolveBackingValue
+            // 同口径）：..cell.. 隐藏子类的 getValue/setValue 体无 accessor
+            // 修饰符，其 #..value@ 伪字段直映宿主 #value@ 同型字段
+            private static string? CellBackingField(MwMemberSymbol current, string pseudoFieldSymbol)
             {
+                var canonical = current.Canonical;
+                var dollar = canonical.IndexOf('$');
+                if (dollar < 0)
+                {
+                    return null;
+                }
+                var owner = canonical.Substring(0, dollar);
+                if (!IsCellTypeRef(owner))
+                {
+                    return null;
+                }
+                var rest = canonical.Substring(dollar + 1);
+                var open = rest.IndexOf('(');
+                var name = open < 0 ? rest : rest.Substring(0, open);
+                if (name != "getValue" && name != "setValue")
+                {
+                    return null;
+                }
+                if (!BilVerificationContext.TryParseFieldSymbol(pseudoFieldSymbol,
+                        out var pseudoOwner, out _, out var fieldType)
+                    || pseudoOwner != owner)
+                {
+                    return null;
+                }
+                return owner + "#value@" + fieldType;
+            }
+
+            // cell 隐藏子类判定（VM VmContext.IsCellTypeRef 同口径）：
+            // 剥泛型实参与命名空间前缀后名以 ..cell.. 起头
+            private static bool IsCellTypeRef(string typeRef)
+            {
+                var name = typeRef;
+                var generic = name.IndexOf('<');
+                if (generic >= 0)
+                {
+                    name = name.Substring(0, generic);
+                }
+                var sep = name.LastIndexOf("::", System.StringComparison.Ordinal);
+                if (sep >= 0)
+                {
+                    name = name.Substring(sep + 2);
+                }
+                return name.StartsWith("..cell..", System.StringComparison.Ordinal);
+            }
+
+            // 字段符号解析（外部/特殊字段受控拒绝）；宿主 wrapped 的处置
+            // 由调用方按方向定（实例路径放行交 FieldProxyBakingPass，静态
+            // 路径刀5 起放行——见 GetStaticLowering/SetStaticLowering）；
+            // 字段自身 wrapped 由调用方按方向处置
+            internal static MwMemberSymbol RequireField(MwSymbolTable symbols, string fieldSymbol)
+            {
+                var field = symbols.FindMember(fieldSymbol);
+                if (field == null)
+                {
+                    throw new MwNotSupportedException(
+                        $"MW4 暂不支持的字段访问（外部/特殊字段）: {fieldSymbol}");
+                }
+                return field;
+            }
+
+            // 宿主类型 wrapped 判定（Entity 面，刀3b）
+            internal static bool IsHostWrapped(MwMemberSymbol field)
+            {
+                if (field.Owner == null)
+                {
+                    return false;
+                }
                 foreach (var modifier in field.Owner.Declaration.Modifiers)
                 {
                     if (modifier is BilWrappedModifier)
                     {
-                        throw new MwNotSupportedException(
-                            $"wrapper 宿主字段访问随 MW10: {fieldSymbol}");
+                        return true;
                     }
                 }
+                return false;
+            }
+
+            internal static bool IsFieldWrapped(MwMemberSymbol field)
+            {
+                foreach (var modifier in field.Declaration.Modifiers)
+                {
+                    if (modifier is BilWrappedModifier)
+                    {
+                        return true;
+                    }
+                }
+                return false;
             }
         }
     }

@@ -12,7 +12,19 @@ namespace RigiCompiler.Middleware.Emit
     /// </summary>
     internal static class EnumEmitter
     {
-        internal static void EmitNewCase(ModuleBuilder.Session session, LLVMBuilderRef builder,
+        internal sealed class NewCase : LlvmEmitVisitor<NewCase, MirNewCase>
+        {
+            protected override void VisitCore(MirNewCase inst, ModuleBuilder.Session session) =>
+                EmitNewCase(session, session.Builder, session.Slots, inst);
+        }
+
+        internal sealed class IsCase : LlvmEmitVisitor<IsCase, MirIsCase>
+        {
+            protected override void VisitCore(MirIsCase inst, ModuleBuilder.Session session) =>
+                EmitIsCase(session, session.Builder, session.Slots, inst);
+        }
+
+        private static void EmitNewCase(ModuleBuilder.Session session, LLVMBuilderRef builder,
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirNewCase inst)
         {
             var slot = slots[inst.Target].Slot;
@@ -20,6 +32,11 @@ namespace RigiCompiler.Middleware.Emit
             builder.BuildStore(
                 LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, inst.Case.Discriminant, false),
                 slot);
+            if (inst.Init == null)
+            {
+                // 无 init 声明 + 零实参的 enum：仅写判别（VM NewCase 同口径）
+                return;
+            }
             var init = session.FunctionOf(inst.Init.Canonical);
             var temps = new List<ArcEmitter.RichTemp>();
             var initArgs = new LLVMValueRef[inst.Args.Count + 1];
@@ -33,7 +50,7 @@ namespace RigiCompiler.Middleware.Emit
             ArcEmitter.DestroyRichTemps(session, builder, temps);
         }
 
-        internal static void EmitIsCase(ModuleBuilder.Session session, LLVMBuilderRef builder,
+        private static void EmitIsCase(ModuleBuilder.Session session, LLVMBuilderRef builder,
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirIsCase inst)
         {
             if (inst.Value is not MirLocalOperand local

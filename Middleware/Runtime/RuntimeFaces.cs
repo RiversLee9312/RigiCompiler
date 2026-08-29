@@ -56,6 +56,13 @@ namespace RigiCompiler.Middleware.Runtime
         // noreturn（exit 1，调用方补 unreachable）
         public const string TypeNameOf = "rigi_type_name_of";
         public const string ExcHalt = "rigi_exc_halt";
+        // type.is / supers / with（含 .indirect）：目标 sheet 判定，i32 三态
+        public const string TypeIs = "rigi_type_is";
+        public const string TypeIsIndirect = "rigi_type_is_indirect";
+        public const string TypeSupers = "rigi_type_supers";
+        public const string TypeSupersIndirect = "rigi_type_supers_indirect";
+        public const string TypeWith = "rigi_type_with";
+        public const string TypeWithIndirect = "rigi_type_with_indirect";
 
         public static IReadOnlyList<RuntimeFaceParam> ShapeOf(string faceSymbol)
         {

@@ -12,7 +12,7 @@ namespace RigiCompiler.Middleware.Emit
     /// 动态构造 ABI（MW8b/MW8c）：调用点物化 argSheets / 胖槽实参、读
     /// TypeSheet vTable[0] 分发器、合成 ctor thunk（class 胖返回 / struct
     /// sret）。标量/String 零参走内建零值特判。TypeSheet 字段偏移与
-    /// TypeSheetEmitter.FieldVTable 互指。
+    /// TypeSheetAbi.FieldVTable 互指。
     /// </summary>
     internal static class DynamicNewEmitter
     {
@@ -62,6 +62,12 @@ namespace RigiCompiler.Middleware.Emit
                 }
                 EmitOne(session, builder, plan);
             }
+        }
+
+        internal sealed class Call : LlvmEmitVisitor<Call, MirNewIndirect>
+        {
+            protected override void VisitCore(MirNewIndirect inst, ModuleBuilder.Session session) =>
+                EmitCall(session, session.Builder, session.Slots, inst);
         }
 
         internal static void EmitCall(ModuleBuilder.Session session, LLVMBuilderRef builder,
@@ -133,7 +139,7 @@ namespace RigiCompiler.Middleware.Emit
             // c) 内联 GEP 读 sheet→vTable[0]（FieldVTable 与 TypeSheetEmitter 互指）
             var sheetTy = TypeSheetEmitter.SheetStructType(session.Context);
             var vtField = builder.BuildStructGEP2(sheetTy, sheet,
-                (uint)TypeSheetEmitter.FieldVTable, "dynnew.vt.field");
+                (uint)TypeSheetAbi.FieldVTable, "dynnew.vt.field");
             var vTable = builder.BuildLoad2(ptr, vtField, "dynnew.vt");
             builder.BuildCondBr(
                 builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, vTable,
@@ -300,7 +306,7 @@ namespace RigiCompiler.Middleware.Emit
             var structPath = fn.AppendBasicBlock("dynnew.struct");
             var sheetTy = TypeSheetEmitter.SheetStructType(session.Context);
             var flagsField = builder.BuildStructGEP2(sheetTy, sheet,
-                (uint)TypeSheetEmitter.FieldTypeFlags, "dynnew.flags.f");
+                (uint)TypeSheetAbi.FieldTypeFlags, "dynnew.flags.f");
             var flags = builder.BuildLoad2(LLVMTypeRef.Int32, flagsField, "dynnew.flags");
             var isInline = builder.BuildICmp(LLVMIntPredicate.LLVMIntNE,
                 builder.BuildAnd(flags,
@@ -334,7 +340,7 @@ namespace RigiCompiler.Middleware.Emit
             var join = fn.AppendBasicBlock("dynnew.sret.join");
             var sheetTy = TypeSheetEmitter.SheetStructType(session.Context);
             var sizeField = builder.BuildStructGEP2(sheetTy, sheet,
-                (uint)TypeSheetEmitter.FieldTypeSize, "dynnew.size.f");
+                (uint)TypeSheetAbi.FieldTypeSize, "dynnew.size.f");
             var typeSize = builder.BuildLoad2(LLVMTypeRef.Int32, sizeField, "dynnew.size");
             builder.BuildCondBr(
                 builder.BuildICmp(LLVMIntPredicate.LLVMIntULE, typeSize,
@@ -565,12 +571,12 @@ namespace RigiCompiler.Middleware.Emit
                 // sret：在 out 指针上完成零初始化 → wrapper → init
                 var slot = thunk.Fn.GetParam(0);
                 slot.Name = "out";
-                CallEmitter.EmitInitValueOnSlot(session, builder, slot,
+                NewEmitter.EmitInitValueOnSlot(session, builder, slot,
                     plan.Symbol.Canonical, init.Wrapper, init.Member, userArgs);
                 builder.BuildRetVoid();
                 return;
             }
-            var fatResult = CallEmitter.EmitAllocAndInit(session, builder, emptySlots,
+            var fatResult = NewEmitter.EmitAllocAndInit(session, builder, emptySlots,
                 plan.Symbol.Canonical, init.Wrapper, init.Member, userArgs);
             builder.BuildRet(fatResult);
         }

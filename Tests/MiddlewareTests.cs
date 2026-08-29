@@ -13,6 +13,7 @@ using RigiCompiler.Middleware.Cli;
 using RigiCompiler.Middleware.Emit;
 using RigiCompiler.Middleware.Gate;
 using RigiCompiler.Middleware.Mir;
+using RigiCompiler.Middleware.Passes;
 using RigiCompiler.Middleware.Runtime;
 using RigiCompiler.Middleware.Symbols;
 
@@ -167,6 +168,36 @@ namespace RigiCompiler.Tests
             ("TestLayoutPlans", TestLayoutPlans),
             ("TestTypeSheetEmission", TestTypeSheetEmission),
             ("TestTypeCheckEmission", TestTypeCheckEmission),
+            ("TestWrapperStorageEmission", TestWrapperStorageEmission),
+            ("TestProxyBakingEmission", TestProxyBakingEmission),
+            ("TestProxyRingReceiverAddrEmission", TestProxyRingReceiverAddrEmission),
+            ("TestValueProxyBakingEmission", TestValueProxyBakingEmission),
+            ("TestEntityFieldProxyBakingEmission", TestEntityFieldProxyBakingEmission),
+            ("TestEntityFieldRouterBranchEmission", TestEntityFieldRouterBranchEmission),
+            ("TestSetRingInnerRerouteDispatchEmission",
+                TestSetRingInnerRerouteDispatchEmission),
+            ("TestSetRingInnerRerouteLinearWhenNoBranches",
+                TestSetRingInnerRerouteLinearWhenNoBranches),
+            ("TestWildcardProxyBakingEmission", TestWildcardProxyBakingEmission),
+            ("TestGenericWildcardBakingEmission", TestGenericWildcardBakingEmission),
+            ("TestMixedSpecificWildcardBakingEmission", TestMixedSpecificWildcardBakingEmission),
+            ("TestOperatorAndSameLayerProxyBakingEmission",
+                TestOperatorAndSameLayerProxyBakingEmission),
+            ("TestUserOperatorDispatchEmission", TestUserOperatorDispatchEmission),
+            ("TestWrapperIndexInheritanceClosure", TestWrapperIndexInheritanceClosure),
+            ("TestHiddenSlotEntityDedupAcrossHierarchy",
+                TestHiddenSlotEntityDedupAcrossHierarchy),
+            ("TestCallWildcardLoweringEmission", TestCallWildcardLoweringEmission),
+            ("TestSingletonLoweringEmission", TestSingletonLoweringEmission),
+            ("TestSingletonEntryStubOrder", TestSingletonEntryStubOrder),
+            ("TestMethodProxyBakingEmission", TestMethodProxyBakingEmission),
+            ("TestMethodProxyBakingDoubleLayer", TestMethodProxyBakingDoubleLayer),
+            ("TestMethodProxyBakingWildcard", TestMethodProxyBakingWildcard),
+            ("TestMethodProxyWildcardUnpackByName", TestMethodProxyWildcardUnpackByName),
+            ("TestMethodProxyBakingHostForms", TestMethodProxyBakingHostForms),
+            ("TestMethodProxyEntityComposition", TestMethodProxyEntityComposition),
+            ("TestMethodProxyWildcardRerouteRejects", TestMethodProxyWildcardRerouteRejects),
+            ("TestSuperCallBypassesWrapperBaking", TestSuperCallBypassesWrapperBaking),
             ("TestGetTypeIdVarEmission", TestGetTypeIdVarEmission),
             ("TestTypeIdConstructedSheets", TestTypeIdConstructedSheets),
             ("TestObjectPathEmission", TestObjectPathEmission),
@@ -1375,6 +1406,14 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("MIR 含 type.is.indirect",
                 allInsts.OfType<MirTypeCheck>().Any(c =>
                     c.Kind == MirTypeCheckKind.Is && c.IsIndirect));
+            var taggedPlan = context.Layout!.Find("Tagged");
+            TestHarness.CheckTrue("Tagged Entity 隐藏存储 §5.3",
+                taggedPlan != null && taggedPlan.Fields.Any(f =>
+                    f.Symbol.Contains("#.wrapper.") && f.Symbol.Contains("Mark@")));
+            var markPlan = context.Layout.Find("Mark");
+            TestHarness.CheckTrue("Mark wrapper 为内联实例布局",
+                markPlan != null
+                && markPlan.Kind == RigiCompiler.Middleware.Layout.TypeLayoutKind.Wrapper);
 
             using var module = ModuleBuilder.Build(context, context.Mir!);
             var ll = module.PrintToString();
@@ -1398,8 +1437,2208 @@ namespace RigiCompiler.Tests
                 ll.Contains("call i32 @rigi_type_is_indirect("), ll);
         }
 
-        // ===== getid.var + typeid 装箱 .any（MW8a）=====
+        // ===== wrapper 隐藏槽内存路径（MW10）：get/set/new.wrapper.* =====
 
+        private static void TestWrapperStorageEmission()
+        {
+            var (_, _, text) = BilTestHarness.EmitBilUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Logged {\n" +
+                "    pub var level: i32\n" +
+                "    pub init() { level = 7 }\n" +
+                "    pub func dump(): i32 { return level }\n" +
+                "}\n" +
+                "@Logged\n" +
+                "pub class Service { pub init() }\n" +
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper Clamped {\n" +
+                "    pub var min: i32\n" +
+                "    pub init() { min = 3 }\n" +
+                "}\n" +
+                "pub class Hero {\n" +
+                "    @Clamped\n" +
+                "    pub var hp: i32\n" +
+                "    pub init()\n" +
+                "}\n" +
+                "pub func readEntity(s: Service): i32 {\n" +
+                "    return s:Logged.level\n" +
+                "}\n" +
+                "pub func writeEntity(s: Service) {\n" +
+                "    s:Logged.level = 42\n" +
+                "}\n" +
+                "pub func callEntity(s: Service): i32 {\n" +
+                "    return s:Logged.dump()\n" +
+                "}\n" +
+                "pub func readField(hero: Hero): i32 {\n" +
+                "    return hero.hp:Clamped.min\n" +
+                "}\n" +
+                "pub func writeField(hero: Hero) {\n" +
+                "    hero.hp:Clamped.min = 9\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    writeEntity(s)\n" +
+                "    var h = new Hero()\n" +
+                "    writeField(h)\n" +
+                "    var a = readEntity(s)\n" +
+                "    var b = readField(h)\n" +
+                "    var c = callEntity(s)\n" +
+                "    return a\n" +
+                "}\n");
+            var gate = BilGate.Accept(text, "wrapper.store.bil");
+            TestHarness.CheckTrue("wrapper 存储用例门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            var context = new MwContext(gate.Module!);
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+            var allInsts = context.Mir!.Functions.SelectMany(f => f.Blocks)
+                .SelectMany(b => b.Instructions).ToList();
+            TestHarness.CheckTrue("MIR 含 get.wrapper", allInsts.OfType<MirGetWrapper>().Any());
+            TestHarness.CheckTrue("BIL 含 get.wrapper.field",
+                text.Contains("get.wrapper.field"), text);
+            TestHarness.CheckTrue("MIR 含 get.wrapper.field",
+                allInsts.OfType<MirGetWrapperField>().Any());
+            TestHarness.CheckTrue("MIR 含 set.wrapper.field",
+                allInsts.OfType<MirSetWrapperField>().Any());
+            TestHarness.CheckTrue("MIR 含 new.wrapper.entity",
+                allInsts.OfType<MirNewWrapper>().Any(n => n.Kind == MirWrapperInstallKind.Entity));
+            TestHarness.CheckTrue("MIR 含 new.wrapper.field",
+                allInsts.OfType<MirNewWrapper>().Any(n => n.Kind == MirWrapperInstallKind.Field));
+            var index = WrapperApplicationIndex.Build(context.Symbols);
+            TestHarness.CheckTrue("应用索引 Entity(Service)=Logged",
+                index.EntityWrappers("Service").Contains("Logged"));
+            TestHarness.CheckTrue("应用索引字段-Value(Hero#hp)=Clamped",
+                index.FieldWrappers("Hero#hp@.i32").Contains("Clamped"));
+            TestHarness.CheckTrue("Logged init 可达",
+                context.Mir.Functions.Any(f => f.Symbol.Canonical.Contains("Logged$init")));
+
+            using var module = ModuleBuilder.Build(context, context.Mir!);
+            var ll = module.PrintToString();
+            TestHarness.CheckTrue("LLVM 模块含 Logged init",
+                ll.Contains("Logged$init") || ll.Contains("Logged$init("), ll);
+        }
+
+        // ===== specific Entity proxy 烘焙（MW10）：get.self + inner 链接 =====
+
+        private static void TestProxyBakingEmission()
+        {
+            var (_, _, text) = BilTestHarness.EmitBilUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Logged\\<TTarget> {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.doSomething(arg: i32): i32 {\n" +
+                "        var host = self\n" +
+                "        return (inner(arg) + 1)\n" +
+                "    }\n" +
+                "}\n" +
+                "@Logged\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    pub func doSomething(arg: i32): i32 { return arg }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    return s.doSomething(5)\n" +
+                "}\n");
+            var gate = BilGate.Accept(text, "wrapper.proxy.bil");
+            TestHarness.CheckTrue("proxy 烘焙用例门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            var context = new MwContext(gate.Module!);
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+            var functions = context.Mir!.Functions;
+            var allInsts = functions.SelectMany(f => f.Blocks)
+                .SelectMany(b => b.Instructions).ToList();
+            TestHarness.CheckTrue("烘焙后无残留 MirInnerCall",
+                !allInsts.OfType<MirInnerCall>().Any());
+            TestHarness.CheckTrue("特化体含 get.self",
+                allInsts.OfType<MirGetSelf>().Any());
+            TestHarness.CheckTrue("合成 .wrapped. 原始体",
+                functions.Any(f => f.Symbol.Canonical.Contains(
+                    ProxyBakeSupport.WrappedInfix)));
+            TestHarness.CheckTrue("合成 .bake. 特化体",
+                functions.Any(f => f.Symbol.Canonical.Contains(ProxyBakeSupport.BakeInfix)));
+            var trampoline = functions.Single(f =>
+                f.Symbol.Canonical.Contains("Service$doSomething")
+                && !f.Symbol.Canonical.Contains(ProxyBakeSupport.WrappedInfix)
+                && !f.Symbol.Canonical.Contains(ProxyBakeSupport.BakeInfix));
+            TestHarness.CheckTrue("原名槽是 trampoline（get.wrapper.addr + call）",
+                trampoline.Blocks.SelectMany(b => b.Instructions).OfType<MirGetWrapperAddr>()
+                    .Any()
+                && trampoline.Blocks.SelectMany(b => b.Instructions).OfType<MirCall>().Any());
+
+            using var module = ModuleBuilder.Build(context, context.Mir!);
+            var ll = module.PrintToString();
+            TestHarness.CheckTrue("LLVM 含原名 doSomething",
+                ll.Contains("Service$doSomething"), ll);
+            TestHarness.CheckTrue("LLVM 含 .wrapped. 原始体",
+                ll.Contains(".wrapped."), ll);
+            TestHarness.CheckTrue("LLVM 含 .bake. 特化体",
+                ll.Contains(".bake."), ll);
+        }
+
+        // ===== proxy 环 receiver 取址形态（MW10 刀3c §14.5 原地访问） =====
+
+        // 环 receiver 一律 get.wrapper[.field].addr（宿主隐藏槽就地地址，
+        // 非值拷贝）；别名目标局部不进 acquire/release 序列（RichValue
+        // wrapper 带 String 字段强制 managed 分类以覆盖该判别）；place
+        // 路径的 get.wrapper/get.wrapper.field 值拷贝语义不回归
+        private static void TestProxyRingReceiverAddrEmission()
+        {
+            var (_, _, text) = BilTestHarness.EmitBilUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Counting {\n" +
+                "    pub var calls: i32\n" +
+                "    pub var tag: String\n" +
+                "    pub init() {\n" +
+                "        calls = 0\n" +
+                "        tag = \"t\"\n" +
+                "    }\n" +
+                "    operator .proxy.fetch(x: i32): i32 {\n" +
+                "        calls = (calls + 1)\n" +
+                "        return (inner(x) + calls)\n" +
+                "    }\n" +
+                "}\n" +
+                "@Counting\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    pub func fetch(x: i32): i32 { return x }\n" +
+                "}\n" +
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper Tag {\n" +
+                "    pub var label: String\n" +
+                "    pub init() { label = \"L\" }\n" +
+                "    operator .proxy.get\\<TValue>(value: TValue): TValue { return value }\n" +
+                "    operator .proxy.set\\<TValue>(value: TValue) { inner(value) }\n" +
+                "}\n" +
+                "pub class Hero {\n" +
+                "    @Tag\n" +
+                "    pub var name: String\n" +
+                "    pub init() { name = \"a\" }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    var a = s.fetch(1)\n" +
+                "    var b = s.fetch(1)\n" +
+                "    var h = new Hero()\n" +
+                "    h.name = \"b\"\n" +
+                "    var n = h.name\n" +
+                "    var e = s:Counting.calls\n" +
+                "    var z = h.name:Tag.label\n" +
+                "    return (((a + b) + e))\n" +
+                "}\n");
+            var gate = BilGate.Accept(text, "wrapper.addr.bil");
+            TestHarness.CheckTrue("环 receiver 取址用例门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            var context = new MwContext(gate.Module!);
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+            var functions = context.Mir!.Functions;
+            var allInsts = functions.SelectMany(f => f.Blocks)
+                .SelectMany(b => b.Instructions).ToList();
+
+            // trampoline 首环 receiver：get.wrapper.addr（无拷贝形态残留）
+            var trampoline = functions.Single(f =>
+                f.Symbol.Canonical.Contains("Service$fetch")
+                && !f.Symbol.Canonical.Contains(ProxyBakeSupport.WrappedInfix)
+                && !f.Symbol.Canonical.Contains(ProxyBakeSupport.BakeInfix));
+            var trampAddr = trampoline.Blocks.SelectMany(b => b.Instructions)
+                .OfType<MirGetWrapperAddr>().ToList();
+            TestHarness.CheckTrue("trampoline receiver 为 get.wrapper.addr",
+                trampAddr.Any(g => g.WrapperType == "Counting")
+                && !trampoline.Blocks.SelectMany(b => b.Instructions)
+                    .OfType<MirGetWrapper>().Any());
+            // RichValue wrapper（含 String 字段）：别名目标不进 acquire/release
+            var trampRc = trampoline.Blocks.SelectMany(b => b.Instructions).ToList();
+            foreach (var addr in trampAddr)
+            {
+                TestHarness.CheckTrue("trampoline 别名目标无 release/acquire（" + addr.Target + "）",
+                    !trampRc.OfType<MirReleaseSlot>().Any(r => r.Local == addr.Target)
+                    && !trampRc.OfType<MirAcquireSlot>().Any(r => r.Local == addr.Target));
+            }
+
+            // Value 链使用点 receiver：get.wrapper.field.addr；别名目标同样免 release
+            var main = functions.Single(f => f.Symbol.Canonical.Contains("$main"));
+            var mainInsts = main.Blocks.SelectMany(b => b.Instructions).ToList();
+            var fieldAddr = mainInsts.OfType<MirGetWrapperFieldAddr>()
+                .Where(g => g.WrapperType == "Tag").ToList();
+            TestHarness.CheckTrue("Value 链使用点 receiver 为 get.wrapper.field.addr（get+set 各一）",
+                fieldAddr.Count == 2);
+            foreach (var addr in fieldAddr)
+            {
+                TestHarness.CheckTrue("使用点别名目标无 release（" + addr.Target + "）",
+                    !mainInsts.OfType<MirReleaseSlot>().Any(r => r.Local == addr.Target));
+            }
+
+            // place 路径值拷贝语义不回归：s:Counting.calls → get.wrapper、
+            // h.name:Tag.label → get.wrapper.field（拷贝形态仍在）
+            TestHarness.CheckTrue("place Entity wrapper 读保持 get.wrapper 拷贝",
+                allInsts.OfType<MirGetWrapper>().Any(g => g.WrapperType == "Counting"));
+            TestHarness.CheckTrue("place 字段-Value wrapper 读保持 get.wrapper.field 拷贝",
+                allInsts.OfType<MirGetWrapperField>().Any(g => g.WrapperType == "Tag"));
+
+            // .ll 形状：trampoline 体内无 wrapper 值拷贝 acquire（取址不产生
+            // 值拷贝，旧形态此处必有 rigi_value_acquire）
+            using var module = ModuleBuilder.Build(context, context.Mir!);
+            var ll = module.PrintToString();
+            var marker = ll.IndexOf("Service$fetch", System.StringComparison.Ordinal);
+            TestHarness.CheckTrue("LLVM 含原名 fetch", marker >= 0, ll);
+            var tail = ll.IndexOf("\ndefine ", marker, System.StringComparison.Ordinal);
+            var slice = tail < 0 ? ll.Substring(marker) : ll.Substring(marker, tail - marker);
+            TestHarness.CheckTrue("trampoline 体无 rigi_value_acquire（无值拷贝）",
+                !slice.Contains("rigi_value_acquire"), slice);
+        }
+
+        // ===== 字段-Value wrapper get/set 链烘焙（MW10 刀2） =====
+
+        // 单字段双 wrapper（@A 外 @B 内）：set 链环间 MirCall 链接、get 链
+        // 内→外调用序、init 写豁免、cell getValue/setValue 壳化成链
+        private static void TestValueProxyBakingEmission()
+        {
+            const string wrappers =
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper A {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.get\\<TValue>(value: TValue): TValue { return value }\n" +
+                "    operator .proxy.set\\<TValue>(value: TValue) { inner(value) }\n" +
+                "}\n" +
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper B {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.get\\<TValue>(value: TValue): TValue { return value }\n" +
+                "    operator .proxy.set\\<TValue>(value: TValue) { inner(value) }\n" +
+                "}\n";
+            var (_, _, text) = BilTestHarness.EmitBilUnit(
+                wrappers +
+                "pub class Hero {\n" +
+                "    @A\n" +
+                "    @B\n" +
+                "    pub var hp: i32 = 0\n" +
+                "    pub init()\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    @A\n" +
+                "    @B\n" +
+                "    var x: i32 = 0\n" +
+                "    x = 1\n" +
+                "    var h = new Hero()\n" +
+                "    h.hp = 5\n" +
+                "    var a = x\n" +
+                "    var b = h.hp\n" +
+                "    return ((a + b))\n" +
+                "}\n");
+            var gate = BilGate.Accept(text, "wrapper.value.bil");
+            TestHarness.CheckTrue("Value 链用例门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            var context = new MwContext(gate.Module!);
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+            var functions = context.Mir!.Functions;
+            var allInsts = functions.SelectMany(f => f.Blocks)
+                .SelectMany(b => b.Instructions).ToList();
+            TestHarness.CheckTrue("Value 链烘焙后无残留 MirInnerCall",
+                !allInsts.OfType<MirInnerCall>().Any());
+
+            MirFunction Fn(string needle) => functions.Single(f =>
+                f.Symbol.Canonical.Contains(needle));
+            var calls = new Func<MirFunction, List<MirCall>>(f =>
+                f.Blocks.SelectMany(b => b.Instructions).OfType<MirCall>().ToList());
+
+            // set 链：环符号存在 + 环间 MirCall 链接（A.set→B.set→终态）
+            var aSet = Fn("A$.bake.Hero$hp$.set");
+            var bSet = Fn("B$.bake.Hero$hp$.set");
+            var terminalSet = Fn("Hero$hp$.wrapped.set");
+            TestHarness.CheckTrue("A.set 环内经 get.wrapper.field.addr 取 B 槽地址并 MirCall B.set",
+                aSet.Blocks.SelectMany(b => b.Instructions).OfType<MirGetWrapperFieldAddr>()
+                    .Any(g => g.WrapperType == "B")
+                && calls(aSet).Any(c => c.Target.Canonical == bSet.Symbol.Canonical));
+            TestHarness.CheckTrue("B.set 环 MirCall 链末终态",
+                calls(bSet).Any(c => c.Target.Canonical == terminalSet.Symbol.Canonical));
+            TestHarness.CheckTrue("hp 无用户 setter：终态裸写 backing",
+                terminalSet.Blocks.SelectMany(b => b.Instructions).OfType<MirSetField>()
+                    .Any(s => s.FieldSymbol == "Hero#hp@.i32"));
+
+            // get 链：使用点（main 读 h.hp）环序 = 终态 → B（内）→ A（外）
+            var main = Fn("$main");
+            var mainInsts = main.Blocks.SelectMany(b => b.Instructions).ToList();
+            var getSeq = mainInsts.Where(inst =>
+                inst is MirCall c && (c.Target.Canonical == "Hero$hp$.wrapped.get()@core::i32"
+                    || c.Target.Canonical.Contains("$.bake.Hero$hp$.get"))).ToList();
+            TestHarness.CheckTrue("get 链使用点三步：终态 → B.get → A.get",
+                getSeq.Count == 3
+                && getSeq[0] is MirCall c0
+                    && c0.Target.Canonical == "Hero$hp$.wrapped.get()@core::i32"
+                && getSeq[1] is MirCall c1
+                    && c1.Target.Canonical.StartsWith("B$.bake.Hero$hp$.get")
+                && getSeq[2] is MirCall c2
+                    && c2.Target.Canonical.StartsWith("A$.bake.Hero$hp$.get"),
+                string.Join(" | ", getSeq));
+
+            // get 环形参表：隐藏 typeid 形参已剔除（.this + value 二参）
+            TestHarness.CheckTrue("get 环形参剔除 .generic.TValue",
+                Fn("A$.bake.Hero$hp$.get").Parameters.Count == 2);
+
+            // init 写豁免：..init.field.hp 内 MirSetField 未被改写为链
+            var initField = Fn("Hero$..init.field.hp");
+            TestHarness.CheckTrue("init 族写豁免（MirSetField 保持裸写）",
+                initField.Blocks.SelectMany(b => b.Instructions).OfType<MirSetField>()
+                    .Any(s => s.FieldSymbol == "Hero#hp@.i32")
+                && !calls(initField).Any(c =>
+                    c.Target.Canonical.Contains(ProxyBakeSupport.BakeInfix)));
+
+            // cell：wrapped 局部的 getValue/setValue 壳化成链，使用点
+            // invoke core::Cell$getValue/setValue 不动
+            var cellGet = Fn("$getValue");
+            var cellSet = Fn("$setValue");
+            TestHarness.CheckTrue("cell getValue 壳：终态调用 + 环调用",
+                calls(cellGet).Any(c => c.Target.Canonical.Contains("$value$.wrapped.get"))
+                && calls(cellGet).Count(c =>
+                    c.Target.Canonical.Contains("$.bake.")) == 2);
+            TestHarness.CheckTrue("cell setValue 壳：get.wrapper.field.addr + 最外环（A）调用",
+                cellSet.Blocks.SelectMany(b => b.Instructions).OfType<MirGetWrapperFieldAddr>()
+                    .Any(g => g.WrapperType == "A")
+                && calls(cellSet).Any(c =>
+                    c.Target.Canonical.StartsWith("A$.bake.")));
+            TestHarness.CheckTrue("cell 使用点 invoke 不动",
+                calls(main).Any(c => c.Target.Canonical.StartsWith("core::Cell$getValue"))
+                && calls(main).Any(c => c.Target.Canonical.StartsWith("core::Cell$setValue")));
+            // cell 终态 = 原访问器体（裸读写 backing）
+            var cellTerminalSet = functions.Single(f =>
+                f.Symbol.Canonical.Contains("$value$.wrapped.set"));
+            TestHarness.CheckTrue("cell set 终态裸写 backing",
+                cellTerminalSet.Blocks.SelectMany(b => b.Instructions).OfType<MirSetField>()
+                    .Any(s => s.FieldSymbol.Contains("#value@.i32")));
+
+            using var module = ModuleBuilder.Build(context, context.Mir!);
+            var ll = module.PrintToString();
+            TestHarness.CheckTrue("LLVM 含 Value 链烘焙环",
+                ll.Contains(".bake.Hero$hp"), ll);
+        }
+
+        // ===== Entity 字段 get/set proxy 链烘焙（MW10 刀3b） =====
+
+        // specific get/set 链形状（环符号、环序、终态、零 MirInnerCall、
+        // Entity 隐藏槽 get.wrapper）+ wildcard get.* 的 symbol 资源 =
+        // 字段 canonical + W 短路 E + init 读命中/写豁免 + 无 proxy 层
+        // 透明跳过与访问器兜底
+        private static void TestEntityFieldProxyBakingEmission()
+        {
+            const string valueWrapper =
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper A {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.get\\<TValue>(value: TValue): TValue { return value }\n" +
+                "    operator .proxy.set\\<TValue>(value: TValue) { inner(value) }\n" +
+                "}\n";
+            var (_, _, text) = BilTestHarness.EmitBilUnit(
+                valueWrapper +
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Counting {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.get.name\\<TField>(value: TField): TField {\n" +
+                "        return value\n" +
+                "    }\n" +
+                "    operator .proxy.set.name\\<TField>(value: TField) {\n" +
+                "        inner(value)\n" +
+                "    }\n" +
+                "}\n" +
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Audit {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.get.*\\<TValue>(symbol: String, value: TValue): TValue {\n" +
+                "        return value\n" +
+                "    }\n" +
+                "}\n" +
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Empty {\n" +
+                "    pub init()\n" +
+                "}\n" +
+                "@Counting\n" +
+                "pub class Service {\n" +
+                "    pub var name: String\n" +
+                "    pub init() {\n" +
+                "        name = \"a\"\n" +
+                "        var c = name\n" +
+                "    }\n" +
+                "}\n" +
+                "@Audit\n" +
+                "pub class S2 {\n" +
+                "    pub var title: String\n" +
+                "    pub init() { title = \"t\" }\n" +
+                "}\n" +
+                "@Counting\n" +
+                "pub class Dual {\n" +
+                "    @A\n" +
+                "    pub var hp: i32 = 0\n" +
+                "    pub init()\n" +
+                "}\n" +
+                "@Empty\n" +
+                "pub class Plain {\n" +
+                "    pub var raw: i32 = 0\n" +
+                "    pub var computed: i32 {\n" +
+                "        pub get(value: _) { return value }\n" +
+                "        pub set(value: _) { computed = value }\n" +
+                "    } = 0\n" +
+                "    pub init()\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    s.name = \"b\"\n" +
+                "    var n = s.name\n" +
+                "    var s2 = new S2()\n" +
+                "    var t = s2.title\n" +
+                "    var d = new Dual()\n" +
+                "    d.hp = 5\n" +
+                "    var h = d.hp\n" +
+                "    var p = new Plain()\n" +
+                "    p.computed = 3\n" +
+                "    var c2 = p.computed\n" +
+                "    p.raw = 4\n" +
+                "    var r2 = p.raw\n" +
+                "    return 0\n" +
+                "}\n");
+            var gate = BilGate.Accept(text, "wrapper.entityfield.bil");
+            TestHarness.CheckTrue("Entity 字段链用例门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            var context = new MwContext(gate.Module!);
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+            var functions = context.Mir!.Functions;
+            var allInsts = functions.SelectMany(f => f.Blocks)
+                .SelectMany(b => b.Instructions).ToList();
+            TestHarness.CheckTrue("Entity 字段链烘焙后无残留 MirInnerCall",
+                !allInsts.OfType<MirInnerCall>().Any());
+
+            MirFunction Fn(string needle) => functions.Single(f =>
+                f.Symbol.Canonical.Contains(needle));
+            var calls = new Func<MirFunction, List<MirCall>>(f =>
+                f.Blocks.SelectMany(b => b.Instructions).OfType<MirCall>().ToList());
+
+            // specific set 链：环符号 + 终态 + 环内经 get.self 宿主裸写
+            var cSet = Fn("Counting$.bake.Service$name$.set");
+            var terminalSet = Fn("Service$name$.wrapped.set");
+            TestHarness.CheckTrue("Counting.set 环 MirCall 链末终态",
+                calls(cSet).Any(c => c.Target.Canonical == terminalSet.Symbol.Canonical));
+            TestHarness.CheckTrue("name 无用户 setter：终态裸写 backing",
+                terminalSet.Blocks.SelectMany(b => b.Instructions).OfType<MirSetField>()
+                    .Any(s => s.FieldSymbol == "Service#name@.string"));
+
+            // specific get 使用点（main 读 s.name）：终态 → get.wrapper
+            //（Entity 隐藏槽，非 get.wrapper.field）→ Counting.get 环
+            var main = Fn("$main");
+            var mainInsts = main.Blocks.SelectMany(b => b.Instructions).ToList();
+            var getSeq = mainInsts.Where(inst =>
+                inst is MirCall c && (c.Target.Canonical == "Service$name$.wrapped.get()@core::String"
+                    || c.Target.Canonical.StartsWith("Counting$.bake.Service$name$.get"))).ToList();
+            TestHarness.CheckTrue("Entity get 使用点两步：终态 → Counting.get 环",
+                getSeq.Count == 2
+                && getSeq[0] is MirCall c0
+                    && c0.Target.Canonical == "Service$name$.wrapped.get()@core::String"
+                && getSeq[1] is MirCall c1
+                    && c1.Target.Canonical.StartsWith("Counting$.bake.Service$name$.get"),
+                string.Join(" | ", getSeq));
+            TestHarness.CheckTrue("Entity 环 receiver 经 get.wrapper.addr（非字段槽）",
+                mainInsts.OfType<MirGetWrapperAddr>().Any(g => g.WrapperType == "Counting")
+                && !mainInsts.OfType<MirGetWrapperFieldAddr>()
+                    .Any(g => g.WrapperType == "Counting"));
+
+            // specific set 使用点（main 写 s.name）：get.wrapper.addr + 最外环调用
+            TestHarness.CheckTrue("Entity set 使用点：get.wrapper.addr + Counting.set 环调用",
+                mainInsts.OfType<MirGetWrapperAddr>().Any(g => g.WrapperType == "Counting")
+                && calls(main).Any(c =>
+                    c.Target.Canonical.StartsWith("Counting$.bake.Service$name$.set")));
+
+            // wildcard get 环：symbol 形参剔除（.this + value 二参）且
+            // symbol 资源 = 字段 canonical 全串
+            var aGet = Fn("Audit$.bake.S2$title$.get");
+            TestHarness.CheckTrue("wildcard get 环形参剔除 symbol（二参）",
+                aGet.Parameters.Count == 2);
+            TestHarness.CheckTrue("wildcard get 环 symbol 资源 = 字段 canonical",
+                aGet.Blocks.SelectMany(b => b.Instructions).OfType<MirLoadResource>().Any()
+                && context.Module.Resources.OfType<BilScalarResource>()
+                    .Any(r => r.LiteralText.Contains("S2#title@.string")));
+
+            // W 短路 E：Dual.hp 自身 wrapped → 只跑 Value 链，无 Entity 环
+            TestHarness.CheckTrue("W 短路 E：hp 走 Value 链且无 Entity 环",
+                functions.Any(f => f.Symbol.Canonical.Contains("A$.bake.Dual$hp"))
+                && !functions.Any(f =>
+                    f.Symbol.Canonical.Contains("Counting$.bake.Dual$hp")));
+
+            // init 读命中/写豁免：Service$init 内 name 裸写（无 set 环调用）
+            // 且读走 get 链（终态调用存在）
+            var init = functions.Single(f => f.Symbol.Canonical == "Service$init()@.void");
+            var initInsts = init.Blocks.SelectMany(b => b.Instructions).ToList();
+            TestHarness.CheckTrue("init 写豁免（MirSetField 保持裸写）",
+                initInsts.OfType<MirSetField>().Any(s => s.FieldSymbol == "Service#name@.string")
+                && !calls(init).Any(c =>
+                    c.Target.Canonical.Contains("$.bake.Service$name$.set")));
+            TestHarness.CheckTrue("init 读命中 get 链（终态 + 环调用）",
+                calls(init).Any(c => c.Target.Canonical == "Service$name$.wrapped.get()@core::String")
+                && calls(init).Any(c =>
+                    c.Target.Canonical.StartsWith("Counting$.bake.Service$name$.get")));
+
+            // 无 proxy 层：有用户访问器 → 访问器调用兜底；无 → 保持裸访
+            TestHarness.CheckTrue("无 proxy 层读兜底为 getter 调用",
+                calls(main).Any(c => c.Target.Canonical == "Plain$.get.computed@.i32"));
+            TestHarness.CheckTrue("无 proxy 层写兜底为 setter 调用",
+                calls(main).Any(c => c.Target.Canonical == "Plain$.set.computed@.i32"));
+            TestHarness.CheckTrue("无 proxy 层无访问器字段保持裸访",
+                mainInsts.OfType<MirSetField>().Any(s => s.FieldSymbol == "Plain#raw@.i32")
+                && mainInsts.OfType<MirGetField>().Any(g => g.FieldSymbol == "Plain#raw@.i32"));
+
+            using var module = ModuleBuilder.Build(context, context.Mir!);
+            var ll = module.PrintToString();
+            TestHarness.CheckTrue("LLVM 含 Entity 字段链烘焙环",
+                ll.Contains(".bake.Service$name"), ll);
+        }
+
+        // ===== router get/set 分支（MW10 刀3b） =====
+
+        // 双层宿主（外 A 内 B，均带 .proxy.*/.proxy.get.*/.proxy.set.*）：
+        // router(1) 的 if 链覆盖字段访问器符号（S3$.get|set.title@T），
+        // 分支自 fromLayer=1 起进字段 Entity 环链——get 分支调 getter
+        // 旁路体（$.wrapped..get.）+B 层 get 环，set 分支调 B 层 set 环
+        private static void TestEntityFieldRouterBranchEmission()
+        {
+            const string wrapper =
+                "    pub init()\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., " +
+                "unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn {\n" +
+                "        return inner(symbol=symbol, namedArgs=namedArgs, " +
+                "unnamedArgs=unnamedArgs)\n" +
+                "    }\n" +
+                "    operator .proxy.get.*\\<TValue>(symbol: String, value: TValue): TValue {\n" +
+                "        return value\n" +
+                "    }\n" +
+                "    operator .proxy.set.*\\<TValue>(symbol: String, value: TValue) {\n" +
+                "        inner(symbol=symbol, value=value)\n" +
+                "    }\n";
+            var (_, _, text) = BilTestHarness.EmitBilUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper A {\n" + wrapper + "}\n" +
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper B {\n" + wrapper + "}\n" +
+                "@A\n" +
+                "@B\n" +
+                "pub class S3 {\n" +
+                "    pub var title: String {\n" +
+                "        pub get(value: _) { return value }\n" +
+                "        pub set(value: _) { }\n" +
+                "    } = \"t\"\n" +
+                "    pub init()\n" +
+                "    pub func ping(): i32 { return 1 }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new S3()\n" +
+                "    return s.ping()\n" +
+                "}\n");
+            var gate = BilGate.Accept(text, "wrapper.entityrouter.bil");
+            TestHarness.CheckTrue("router 字段分支用例门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            var context = new MwContext(gate.Module!);
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+            var functions = context.Mir!.Functions;
+
+            var router = functions.Single(f =>
+                f.Symbol.Canonical.StartsWith("S3$.mw.router.1("));
+            var routerCalls = router.Blocks.SelectMany(b => b.Instructions)
+                .OfType<MirCall>().ToList();
+            var resources = context.Module.Resources.OfType<BilScalarResource>()
+                .Select(r => r.LiteralText).ToList();
+            TestHarness.CheckTrue("router 资源含 get/set 访问器符号",
+                resources.Any(r => r.Contains("S3$.get.title@.string"))
+                && resources.Any(r => r.Contains("S3$.set.title@.string")));
+            TestHarness.CheckTrue("router get 分支调 getter 旁路体",
+                routerCalls.Any(c =>
+                    c.Target.Canonical.StartsWith("S3$.wrapped..get.title@")));
+            TestHarness.CheckTrue("router get 分支自 fromLayer 起调 B 层 get 环",
+                routerCalls.Any(c =>
+                    c.Target.Canonical.StartsWith("B$.bake.S3$title$.get")));
+            TestHarness.CheckTrue("router set 分支自 fromLayer 起调 B 层 set 环",
+                routerCalls.Any(c =>
+                    c.Target.Canonical.StartsWith("B$.bake.S3$title$.set")));
+            TestHarness.CheckTrue("router 无 A 层字段环（layer < fromLayer 不进链）",
+                !routerCalls.Any(c =>
+                    c.Target.Canonical.StartsWith("A$.bake.S3$title$")));
+            TestHarness.CheckTrue("访问器不落方法成员分支（无 $.wrapped..set.title 直调外环）",
+                !routerCalls.Any(c =>
+                    c.Target.Canonical.StartsWith("A$.bake.S3$.set.title@")
+                    || c.Target.Canonical.StartsWith("A$.bake.S3$.get.title@")));
+
+            using var module = ModuleBuilder.Build(context, context.Mir!);
+            var ll = module.PrintToString();
+            TestHarness.CheckTrue("LLVM 含 router 与字段环",
+                ll.Contains(".mw.router.1") && ll.Contains(".bake.S3$title"), ll);
+        }
+
+        // MW10 遗留④：wildcard set 环 inner 的跨字段重路由分派形状——
+        // WA 层 wildcard 环 inner 改写为「symbol == 原字段 canonical 的
+        // fast-path（静态链路）+ 否则调分派辅助 H$.mw.srt.1.<名>」双分支；
+        // 分派辅助按 canonical 逐字段比对：specific 分支进他字段环变体
+        //（$.setr.，终态仍指原字段），miss 落原字段终态；零 MirInnerCall
+        private static void TestSetRingInnerRerouteDispatchEmission()
+        {
+            var (_, _, text) = BilTestHarness.EmitBilUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper WA {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.set.*\\<TValue>(symbol: String, value: TValue) {\n" +
+                "        if (symbol == \"Entity#hp@.i32\") {\n" +
+                "            symbol = \"Entity#mp@.i32\"\n" +
+                "        }\n" +
+                "        inner(symbol=symbol, value=value)\n" +
+                "    }\n" +
+                "}\n" +
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper WB {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.set.mp\\<TField>(value: TField) { inner(value) }\n" +
+                "}\n" +
+                "@WA\n" +
+                "@WB\n" +
+                "pub class Entity {\n" +
+                "    pub var hp: i32 = 0\n" +
+                "    pub var mp: i32 = 0\n" +
+                "    pub init() {}\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const e = new Entity()\n" +
+                "    e.hp = 7\n" +
+                "    return e.hp\n" +
+                "}\n");
+            var gate = BilGate.Accept(text, "wrapper.setreroute.bil");
+            TestHarness.CheckTrue("set 重路由分派用例门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            var context = new MwContext(gate.Module!);
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+            var functions = context.Mir!.Functions;
+            var allInsts = functions.SelectMany(f => f.Blocks)
+                .SelectMany(b => b.Instructions).ToList();
+            TestHarness.CheckTrue("set 重路由烘焙后无残留 MirInnerCall",
+                !allInsts.OfType<MirInnerCall>().Any());
+
+            MirFunction Fn(string needle) => functions.Single(f =>
+                f.Symbol.Canonical.Contains(needle));
+            var callsOf = new Func<MirFunction, List<MirCall>>(f =>
+                f.Blocks.SelectMany(b => b.Instructions).OfType<MirCall>().ToList());
+
+            // hp 的 WA 层 wildcard 环：fast/slow CFG 分割（恒等 fast-path
+            // 调原字段终态，slow 调分派辅助）
+            var ring = Fn("WA$.bake.Entity$hp$.set(");
+            var ringCalls = callsOf(ring);
+            TestHarness.CheckTrue("hp 环含条件分支（fast-path + 分派双分支）",
+                ring.Blocks.Any(b => b.Terminator is MirCondBranch));
+            TestHarness.CheckTrue("hp 环 fast-path 直调原字段终态",
+                ringCalls.Any(c =>
+                    c.Target.Canonical.StartsWith("Entity$hp$.wrapped.set(")));
+            TestHarness.CheckTrue("hp 环 slow 路径调分派辅助",
+                ringCalls.Any(c =>
+                    c.Target.Canonical.StartsWith("Entity$.mw.srt.1.hp(")));
+
+            // 分派辅助：specific 分支（mp canonical 比对）进变体环，
+            // miss 落原字段终态
+            var dispatch = Fn("Entity$.mw.srt.1.hp(symbol:.string,value:.any)@.void");
+            var dispatchCalls = callsOf(dispatch);
+            var resources = context.Module.Resources.OfType<BilScalarResource>()
+                .Select(r => r.LiteralText).ToList();
+            TestHarness.CheckTrue("分派辅助资源含 mp 字段 canonical 比对字面量",
+                resources.Any(r => r.Contains("Entity#mp@.i32")));
+            TestHarness.CheckTrue("分派辅助 specific 分支进 mp 变体环",
+                dispatchCalls.Any(c =>
+                    c.Target.Canonical.StartsWith("WB$.bake.Entity$mp$.setr.hp.1(")));
+            TestHarness.CheckTrue("分派辅助 miss 落原字段终态",
+                dispatchCalls.Any(c =>
+                    c.Target.Canonical.StartsWith("Entity$hp$.wrapped.set(")));
+
+            // 变体环：inner 续跑无更多环 → 落原字段终态（VM FieldSymbol
+            // 恒为原字段同口径）
+            var variant = Fn("WB$.bake.Entity$mp$.setr.hp.1(");
+            TestHarness.CheckTrue("mp 变体环 inner 落原字段终态",
+                callsOf(variant).Any(c =>
+                    c.Target.Canonical.StartsWith("Entity$hp$.wrapped.set(")));
+
+            using var module2 = ModuleBuilder.Build(context, context.Mir!);
+            var ll2 = module2.PrintToString();
+            TestHarness.CheckTrue("LLVM 含分派辅助与变体环",
+                ll2.Contains(".mw.srt.1.hp") && ll2.Contains(".setr.hp.1"), ll2);
+        }
+
+        // MW10 遗留④形状守恒：剩余层无任何 set proxy 时分派恒落原字段
+        // 终态（与恒等等价），环 inner 保持线性链接不引 CFG 分割、不产
+        // 分派辅助
+        private static void TestSetRingInnerRerouteLinearWhenNoBranches()
+        {
+            var (_, _, text) = BilTestHarness.EmitBilUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Audit {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.set.*\\<TValue>(symbol: String, value: TValue) {\n" +
+                "        inner(symbol=symbol, value=value)\n" +
+                "    }\n" +
+                "}\n" +
+                "@Audit()\n" +
+                "pub class Entity {\n" +
+                "    pub var hp: i32 = 0\n" +
+                "    pub init() {}\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const e = new Entity()\n" +
+                "    e.hp = 7\n" +
+                "    return e.hp\n" +
+                "}\n");
+            var gate = BilGate.Accept(text, "wrapper.setreroute.linear.bil");
+            TestHarness.CheckTrue("线性守恒用例门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            var context = new MwContext(gate.Module!);
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+            var functions = context.Mir!.Functions;
+            TestHarness.CheckTrue("线性守恒烘焙后无残留 MirInnerCall",
+                !functions.SelectMany(f => f.Blocks).SelectMany(b => b.Instructions)
+                    .OfType<MirInnerCall>().Any());
+            var ring = functions.Single(f =>
+                f.Symbol.Canonical.Contains("Audit$.bake.Entity$hp$.set("));
+            TestHarness.CheckTrue("无分派需求时环保持线性（无 CondBranch）",
+                !ring.Blocks.Any(b => b.Terminator is MirCondBranch));
+            TestHarness.CheckTrue("无分派需求时不产分派辅助 fn",
+                !functions.Any(f => f.Symbol.Canonical.Contains("$.mw.srt.")));
+        }
+
+        // ===== wildcard Entity proxy 烘焙（MW10 刀3a）：胖值 ABI 链 =====
+
+        // 单层 wildcard 全链形状：trampoline 打包（symbol 资源 + 空 named
+        // 包 + unnamed 装箱包）→ baked 环（动态分派块：symbol 字符串比对
+        // 命中解包直进 $.wrapped.，miss 调 router）→ router（if 链覆盖全部
+        // 可烘焙成员，miss 抛 NoSuchMethodException）
+        private static void TestWildcardProxyBakingEmission()
+        {
+            var (_, _, text) = BilTestHarness.EmitBilUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Router {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., " +
+                "unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn {\n" +
+                "        if (symbol == \"Service$zap(x:.i32)@.i32\") {\n" +
+                "            return (99 as TReturn)\n" +
+                "        }\n" +
+                "        return inner(symbol=symbol, namedArgs=namedArgs, " +
+                "unnamedArgs=unnamedArgs)\n" +
+                "    }\n" +
+                "}\n" +
+                "@Router\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    pub func ping(x: i32): i32 { return (x + 1) }\n" +
+                "    pub func zap(x: i32): i32 { return x }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    return s.ping(41)\n" +
+                "}\n");
+            var gate = BilGate.Accept(text, "wrapper.wildcard.bil");
+            TestHarness.CheckTrue("wildcard 烘焙用例门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            var context = new MwContext(gate.Module!);
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+            var functions = context.Mir!.Functions;
+            var allInsts = functions.SelectMany(f => f.Blocks)
+                .SelectMany(b => b.Instructions).ToList();
+            TestHarness.CheckTrue("wildcard 烘焙后无残留 MirInnerCall",
+                !allInsts.OfType<MirInnerCall>().Any());
+
+            MirFunction Fn(string needle) => functions.Single(f =>
+                f.Symbol.Canonical.Contains(needle));
+            var instsOf = new Func<MirFunction, List<MirInst>>(f =>
+                f.Blocks.SelectMany(b => b.Instructions).ToList());
+            var calls = new Func<MirFunction, List<MirCall>>(f =>
+                instsOf(f).OfType<MirCall>().ToList());
+
+            // 环符号：TReturn 代入成员返回类型；ping/zap 各一环 + $.wrapped. 终态
+            var pingRing = Fn("Router$.bake.Service$ping(x:.i32)@core::i32");
+            var zapRing = Fn("Router$.bake.Service$zap(x:.i32)@core::i32");
+            var pingWrapped = Fn("Service$.wrapped.ping");
+            TestHarness.CheckTrue("zap 有 $.wrapped. 终态",
+                functions.Any(f => f.Symbol.Canonical.Contains("Service$.wrapped.zap")));
+
+            // trampoline：get.wrapper + symbol 资源 + 两个包数组 + 调环
+            var trampoline = functions.Single(f =>
+                f.Symbol.Canonical == "Service$ping(x:.i32)@.i32");
+            var trampInsts = instsOf(trampoline);
+            TestHarness.CheckTrue("wildcard trampoline 打包（get.wrapper.addr + symbol 资源 + 包数组）",
+                trampInsts.OfType<MirGetWrapperAddr>().Any(g => g.WrapperType == "Router")
+                && trampInsts.OfType<MirLoadResource>().Any()
+                && trampInsts.OfType<MirNewArray>().Count() == 2
+                && calls(trampoline).Any(c =>
+                    c.Target.Canonical == pingRing.Symbol.Canonical));
+            TestHarness.CheckTrue("trampoline unnamed 包逐参装箱 .any",
+                trampInsts.OfType<MirBoxAny>().Any());
+
+            // 环形参：.generic 三包已擦除/代入（.this + symbol + 两包）
+            TestHarness.CheckTrue("wildcard 环形参擦除 .generic 三包",
+                pingRing.Parameters.Count == 4
+                && !pingRing.Parameters.Any(p => p.Name.StartsWith(".generic.")));
+
+            // 动态分派块：字符串比对 + 双分支；hit 解包直进 $.wrapped.，
+            // miss 调 router 并拆回 .any
+            TestHarness.CheckTrue("环内含 symbol 字符串比对",
+                instsOf(pingRing).OfType<MirBinaryIntrinsic>().Any(b =>
+                    b.Op == BilBinaryOp.CmpEq && b.LeftType.IsString));
+            TestHarness.CheckTrue("环内含条件分支（hit/miss）",
+                pingRing.Blocks.SelectMany(b => new[] { b.Terminator })
+                    .OfType<MirCondBranch>().Any());
+            TestHarness.CheckTrue("hit 分支解包直进 $.wrapped.（get.array + unbox）",
+                instsOf(pingRing).OfType<MirGetArray>().Any()
+                && instsOf(pingRing).OfType<MirUnboxAny>().Any()
+                && calls(pingRing).Any(c =>
+                    c.Target.Canonical == pingWrapped.Symbol.Canonical));
+            var router = Fn("Service$.mw.router.1");
+            TestHarness.CheckTrue("miss 分支调 router(H, 2 层界=1)",
+                calls(pingRing).Any(c => c.Target.Canonical == router.Symbol.Canonical));
+
+            // zap 环：(99 as TReturn) 的 .generic.TReturn 就地物化 getid.type
+            TestHarness.CheckTrue("zap 环物化 .generic.TReturn typeid",
+                instsOf(zapRing).OfType<MirGetTypeId>().Any(g =>
+                    g.TypeRef.Contains("i32") && g.Target == ".generic.TReturn"));
+
+            // router：if 链覆盖 ping/zap 两成员（fromLayer=1 无环 → 直调
+            // $.wrapped. 终态），miss 抛 NoSuchMethodException
+            TestHarness.CheckTrue("router 分支直调 $.wrapped. 终态（不回调 trampoline）",
+                calls(router).Any(c => c.Target.Canonical == pingWrapped.Symbol.Canonical)
+                && calls(router).Any(c => c.Target.Canonical.Contains("Service$.wrapped.zap"))
+                && !calls(router).Any(c =>
+                    c.Target.Canonical == trampoline.Symbol.Canonical));
+            TestHarness.CheckTrue("router miss 抛 NoSuchMethodException",
+                instsOf(router).OfType<MirNewObject>().Any(n =>
+                    n.Type.Canonical == "core::NoSuchMethodException")
+                && instsOf(router).OfType<MirThrow>().Any()
+                && router.Blocks.Any(b => b.Terminator is MirRetThrow));
+            TestHarness.CheckTrue("router 结果装箱 .any（值类型 box）",
+                instsOf(router).OfType<MirBoxAny>().Any());
+
+            using var module = ModuleBuilder.Build(context, context.Mir!);
+            var ll = module.PrintToString();
+            TestHarness.CheckTrue("LLVM 含 wildcard 环", ll.Contains(".bake.Service$ping"), ll);
+            TestHarness.CheckTrue("LLVM 含 router", ll.Contains(".mw.router.1"), ll);
+            TestHarness.CheckTrue("LLVM 含 $.wrapped. 原始体", ll.Contains(".wrapped."), ll);
+        }
+
+        // 遗6：泛型宿主成员经 wildcard 的烘焙形状——trampoline 把方法级
+        // typeid 隐藏形参随值实参同装箱进 unnamed 位置包（声明序居值参
+        // 前：MirBoxAny 两次）；环特化 TReturn 擦除 .any（泛型占位返回
+        // 无 TypeSheet，环 ABI 以胖值承载）；终态 hit 分支从包首解包
+        // typeid（MirGetArray + MirUnboxAny 到 .typeid 槽）再解值参，
+        // 调 $.wrapped. 原始泛型体；router 直调分支同形（typeid 随包
+        // 透传，无独立类型包渠道）
+        private static void TestGenericWildcardBakingEmission()
+        {
+            var (_, _, text) = BilTestHarness.EmitBilUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Router {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., " +
+                "unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn {\n" +
+                "        return inner(symbol=symbol, namedArgs=namedArgs, " +
+                "unnamedArgs=unnamedArgs)\n" +
+                "    }\n" +
+                "}\n" +
+                "@Router\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    pub func pick\\<T>(x: T): T { return x }\n" +
+                "    pub func ping(x: i32): i32 { return (x + 1) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    return s.pick\\<i32>(41)\n" +
+                "}\n");
+            var gate = BilGate.Accept(text, "wrapper.generic.wildcard.bil");
+            TestHarness.CheckTrue("泛型 wildcard 烘焙用例门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            var context = new MwContext(gate.Module!);
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+            var functions = context.Mir!.Functions;
+            var allInsts = functions.SelectMany(f => f.Blocks)
+                .SelectMany(b => b.Instructions).ToList();
+            TestHarness.CheckTrue("泛型 wildcard 烘焙后无残留 MirInnerCall",
+                !allInsts.OfType<MirInnerCall>().Any());
+
+            MirFunction Fn(string needle) => functions.Single(f =>
+                f.Symbol.Canonical.Contains(needle));
+            var instsOf = new Func<MirFunction, List<MirInst>>(f =>
+                f.Blocks.SelectMany(b => b.Instructions).ToList());
+            var calls = new Func<MirFunction, List<MirCall>>(f =>
+                instsOf(f).OfType<MirCall>().ToList());
+
+            // 环符号：TReturn 擦除 .any（泛型占位返回无 TypeSheet）
+            var pickRing = Fn("Router$.bake.Service$pick");
+            TestHarness.CheckTrue("泛型成员环返回擦除 .any",
+                pickRing.ReturnType.IsAny);
+            var pickWrapped = Fn("Service$.wrapped.pick");
+
+            // trampoline：原名槽保留原签名（含 .generic.T 隐藏形参），
+            // 打包 = symbol 资源 + 空 named 包 + unnamed 装箱包——
+            // typeid 经 MirBoxAny 装箱居包首，占位值参是胖槽透转
+            //（装箱在调用点边界已完成；VM BoxConcreteArgs 全量 VmAny
+            // 包装的同构形态），unnamed 包恰 2 元素
+            var trampoline = functions.Single(f =>
+                f.Symbol.Canonical == "Service$pick(x:.generic<$.generic.T>)@.generic<$.generic.T>");
+            TestHarness.CheckTrue("泛型 trampoline 保留 .generic.T 隐藏形参",
+                trampoline.Parameters.Any(p => p.Name == ".generic.T"));
+            var trampInsts = instsOf(trampoline);
+            TestHarness.CheckTrue("泛型 trampoline 打包（typeid 装箱 + 占位值透转）",
+                trampInsts.OfType<MirGetWrapperAddr>().Any()
+                && trampInsts.OfType<MirBoxAny>().Any()
+                && trampInsts.OfType<MirNewArray>().Any(n =>
+                    n.Elements.Count == 2)
+                && calls(trampoline).Any(c =>
+                    c.Target.Canonical == pickRing.Symbol.Canonical));
+
+            // 终态 hit 分支：包首 MirGetArray + MirUnboxAny 到 .typeid
+            // 槽（方法级 typeid 恢复），随后调 $.wrapped. 原始泛型体
+            var ringInsts = instsOf(pickRing);
+            TestHarness.CheckTrue("泛型终态解包含 typeid 槽",
+                ringInsts.OfType<MirUnboxAny>().Any(u =>
+                    pickRing.FindLocal(u.Target).Type.Canonical.Contains(".typeid")
+                    || pickRing.FindLocal(u.Target).Type.Canonical.Contains("core::Type")));
+            TestHarness.CheckTrue("泛型终态直调 $.wrapped. 体",
+                calls(pickRing).Any(c =>
+                    c.Target.Canonical == pickWrapped.Symbol.Canonical));
+
+            // router：分支直调 $.wrapped. 终态（typeid 随包透传，签名
+            // 仍三包无独立类型包渠道），不调 trampoline
+            var router = Fn("Service$.mw.router.1");
+            TestHarness.CheckTrue("泛型 router 直调 $.wrapped.（包透传）",
+                calls(router).Any(c => c.Target.Canonical == pickWrapped.Symbol.Canonical)
+                && !calls(router).Any(c =>
+                    c.Target.Canonical == trampoline.Symbol.Canonical)
+                && router.Parameters.Count == 4);
+
+            using var module = ModuleBuilder.Build(context, context.Mir!);
+            var ll = module.PrintToString();
+            TestHarness.CheckTrue("LLVM 含泛型 wildcard 环", ll.Contains(".bake.Service$pick"),
+                ll);
+        }
+
+        // specific+wildcard 混合链：外层 WOuter specific、内层 WInner
+        // wildcard（转录 VM TestWildcardInnerMiddleOfWrapperChain）——
+        // specific 环 inner 打包进 wildcard 环；wildcard 环 hit 直进终态；
+        // 只合成 router(H,2)
+        private static void TestMixedSpecificWildcardBakingEmission()
+        {
+            var (_, _, text) = BilTestHarness.EmitBilUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper WOuter {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.ping(x: i32): i32 { return inner(x) }\n" +
+                "}\n" +
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper WInner {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., " +
+                "unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn {\n" +
+                "        return inner(symbol=symbol, namedArgs=namedArgs, " +
+                "unnamedArgs=unnamedArgs)\n" +
+                "    }\n" +
+                "}\n" +
+                "@WOuter\n" +
+                "@WInner\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    pub func ping(x: i32): i32 { return (x + 1) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    return s.ping(41)\n" +
+                "}\n");
+            var gate = BilGate.Accept(text, "wrapper.mixed.bil");
+            TestHarness.CheckTrue("混合链用例门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            var context = new MwContext(gate.Module!);
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+            var functions = context.Mir!.Functions;
+            var allInsts = functions.SelectMany(f => f.Blocks)
+                .SelectMany(b => b.Instructions).ToList();
+            TestHarness.CheckTrue("混合链烘焙后无残留 MirInnerCall",
+                !allInsts.OfType<MirInnerCall>().Any());
+
+            MirFunction Fn(string needle) => functions.Single(f =>
+                f.Symbol.Canonical.Contains(needle));
+            var calls = new Func<MirFunction, List<MirCall>>(f =>
+                f.Blocks.SelectMany(b => b.Instructions).OfType<MirCall>().ToList());
+
+            var outerRing = Fn("WOuter$.bake.Service$ping");
+            var innerRing = Fn("WInner$.bake.Service$ping");
+            // specific 环 inner → wildcard 下一环：get.wrapper.addr(WInner) +
+            // symbol 资源 + unnamed 装箱包 + 调内层环
+            var outerInsts = outerRing.Blocks.SelectMany(b => b.Instructions).ToList();
+            TestHarness.CheckTrue("specific 环 inner 打包进 wildcard 环",
+                outerInsts.OfType<MirGetWrapperAddr>().Any(g => g.WrapperType == "WInner")
+                && outerInsts.OfType<MirLoadResource>().Any()
+                && outerInsts.OfType<MirNewArray>().Any()
+                && outerInsts.OfType<MirBoxAny>().Any()
+                && calls(outerRing).Any(c =>
+                    c.Target.Canonical == innerRing.Symbol.Canonical));
+            // wildcard 环 hit 直进 $.wrapped. 终态
+            TestHarness.CheckTrue("wildcard 内环 hit 直进 $.wrapped.",
+                calls(innerRing).Any(c =>
+                    c.Target.Canonical.Contains("Service$.wrapped.ping")));
+            // 首环 specific：trampoline 为既有直传形态（不打包）
+            var trampoline = functions.Single(f =>
+                f.Symbol.Canonical == "Service$ping(x:.i32)@.i32");
+            TestHarness.CheckTrue("首环 specific：trampoline 直调外环不打包",
+                calls(trampoline).Any(c =>
+                    c.Target.Canonical == outerRing.Symbol.Canonical)
+                && !trampoline.Blocks.SelectMany(b => b.Instructions)
+                    .OfType<MirNewArray>().Any());
+            // wildcard 在第 1 层（inner）：只合成 router(H,2)
+            TestHarness.CheckTrue("只合成 router(H,2)",
+                functions.Any(f => f.Symbol.Canonical.Contains("Service$.mw.router.2"))
+                && !functions.Any(f => f.Symbol.Canonical.Contains("Service$.mw.router.1")));
+
+            using var module = ModuleBuilder.Build(context, context.Mir!);
+            var ll = module.PrintToString();
+            TestHarness.CheckTrue("LLVM 含混合链双环",
+                ll.Contains("WOuter$.bake.") && ll.Contains("WInner$.bake."), ll);
+        }
+
+        // 同层 specific 压 wildcard + 运算符 specific/wildcard 烘焙形状
+        //（运算符 fn 原名槽换 trampoline；native 调用点经 add 等内建指令
+        // 分派属 ImplBinder 既有空白，此处只断言 MIR 烘焙形状）
+        private static void TestOperatorAndSameLayerProxyBakingEmission()
+        {
+            var (_, _, text) = BilTestHarness.EmitBilUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Mix {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.ping(x: i32): i32 { return inner(x) }\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., " +
+                "unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn {\n" +
+                "        return inner(symbol=symbol, namedArgs=namedArgs, " +
+                "unnamedArgs=unnamedArgs)\n" +
+                "    }\n" +
+                "}\n" +
+                "@Mix\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    pub func ping(x: i32): i32 { return x }\n" +
+                "    pub func pong(x: i32): i32 { return x }\n" +
+                "}\n" +
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper WO {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.opr.plus(another: VecA): VecA { return inner(another) }\n" +
+                "    operator .proxy.opr.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., " +
+                "unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn {\n" +
+                "        return inner(symbol=symbol, namedArgs=namedArgs, " +
+                "unnamedArgs=unnamedArgs)\n" +
+                "    }\n" +
+                "}\n" +
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper WW {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.opr.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., " +
+                "unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn {\n" +
+                "        return inner(symbol=symbol, namedArgs=namedArgs, " +
+                "unnamedArgs=unnamedArgs)\n" +
+                "    }\n" +
+                "}\n" +
+                "@WO\n" +
+                "pub class VecA {\n" +
+                "    pub init()\n" +
+                "    pub operator plus(another: VecA): VecA { return new VecA() }\n" +
+                "}\n" +
+                "@WW\n" +
+                "pub class VecB {\n" +
+                "    pub init()\n" +
+                "    pub operator plus(another: VecB): VecB { return new VecB() }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    return ((s.ping(1) + s.pong(2)))\n" +
+                "}\n");
+            var gate = BilGate.Accept(text, "wrapper.opr.bil");
+            TestHarness.CheckTrue("运算符烘焙用例门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            var context = new MwContext(gate.Module!);
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+            var functions = context.Mir!.Functions;
+            var allInsts = functions.SelectMany(f => f.Blocks)
+                .SelectMany(b => b.Instructions).ToList();
+            TestHarness.CheckTrue("运算符用例烘焙后无残留 MirInnerCall",
+                !allInsts.OfType<MirInnerCall>().Any());
+
+            // 同层择一：ping 走 specific 环（不打包），pong 走 wildcard 环
+            var pingRing = functions.Single(f =>
+                f.Symbol.Canonical.Contains("Mix$.bake.Service$ping"));
+            TestHarness.CheckTrue("同层 specific 环直传（无打包）",
+                !pingRing.Blocks.SelectMany(b => b.Instructions).OfType<MirNewArray>().Any()
+                && pingRing.Blocks.SelectMany(b => b.Instructions).OfType<MirCall>()
+                    .Any(c => c.Target.Canonical.Contains("Service$.wrapped.ping")));
+            TestHarness.CheckTrue("同层 wildcard 环兜底（pong）",
+                functions.Any(f => f.Symbol.Canonical.Contains("Mix$.bake.Service$pong")));
+
+            // 运算符 specific：VecA$$plus 原名槽换 trampoline（直传形态）
+            var plusATrampoline = functions.Single(f =>
+                f.Symbol.Canonical == "VecA$$plus(another:VecA)@VecA");
+            TestHarness.CheckTrue("运算符 specific trampoline（get.wrapper.addr + 调环）",
+                plusATrampoline.Blocks.SelectMany(b => b.Instructions)
+                    .OfType<MirGetWrapperAddr>()
+                    .Any(g => g.WrapperType == "WO")
+                && plusATrampoline.Blocks.SelectMany(b => b.Instructions).OfType<MirCall>()
+                    .Any(c => c.Target.Canonical.Contains("WO$.bake.VecA$$plus")));
+            TestHarness.CheckTrue("运算符 specific $.wrapped. 原始体",
+                functions.Any(f =>
+                    f.Symbol.Canonical.Contains("VecA$.wrapped.$plus")));
+            // 运算符 wildcard：VecB$$plus trampoline 打包 + 环动态分派 +
+            // router 覆盖 VecB$$plus 分支
+            var plusBTrampoline = functions.Single(f =>
+                f.Symbol.Canonical == "VecB$$plus(another:VecB)@VecB");
+            TestHarness.CheckTrue("运算符 wildcard trampoline 打包",
+                plusBTrampoline.Blocks.SelectMany(b => b.Instructions).OfType<MirNewArray>()
+                    .Count() == 2
+                && plusBTrampoline.Blocks.SelectMany(b => b.Instructions).OfType<MirCall>()
+                    .Any(c => c.Target.Canonical.Contains("WW$.bake.VecB$$plus")));
+            var oprRouter = functions.Single(f =>
+                f.Symbol.Canonical.Contains("VecB$.mw.router.1"));
+            TestHarness.CheckTrue("运算符 router 覆盖 $$plus 分支并直调终态",
+                oprRouter.Blocks.SelectMany(b => b.Instructions).OfType<MirCall>()
+                    .Any(c => c.Target.Canonical.Contains("VecB$.wrapped.$plus")));
+
+            using var module = ModuleBuilder.Build(context, context.Mir!);
+            var ll = module.PrintToString();
+            TestHarness.CheckTrue("LLVM 含运算符烘焙环", ll.Contains(".bake.VecB$$plus"), ll);
+        }
+
+        // ===== 遗1：用户运算符 native 分派（VM FindOperator 口径） =====
+
+        // intrinsic 直译形状：用户类型操作数的 add/cmp/opposite → MirCall
+        //（OperatorDispatch，目标 operator fn）；!= = equals + not；
+        // </<= = compareTo + ComparisonResult case 判别（VM OrderCompare
+        // 同口径）；内建标量运算保持 MirBinaryIntrinsic 原形状
+        private static void TestUserOperatorDispatchEmission()
+        {
+            var (_, _, text) = BilTestHarness.EmitBilUnit(
+                "pub class Vec {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(_ -> x) { }\n" +
+                "    pub operator plus(another: Vec): Vec { return new Vec((x + another.x)) }\n" +
+                "    pub operator equals(another: Vec): bool { return (x == another.x) }\n" +
+                "    pub operator compareTo(another: Vec): ComparisonResult {\n" +
+                "        if ((x < another.x)) { return .LesserThanAnother }\n" +
+                "        return .Equal\n" +
+                "    }\n" +
+                "    pub operator opposite(): Vec { return new Vec((0 - x)) }\n" +
+                "}\n" +
+                "pub struct Meter {\n" +
+                "    pub var v: i32\n" +
+                "    pub init(_ -> v) { }\n" +
+                "    pub operator plus(another: Meter): Meter { return new Meter((v + another.v)) }\n" +
+                "}\n" +
+                "pub interface Equatable { pub operator equals(other: Equatable): bool }\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = new Vec(1)\n" +
+                "    var b = new Vec(2)\n" +
+                "    var c = a + b\n" +
+                "    var d = (a == b)\n" +
+                "    var e = (a != b)\n" +
+                "    var f = (a < b)\n" +
+                "    var g = (a <= b)\n" +
+                "    var h = -a\n" +
+                "    var m1 = new Meter(1)\n" +
+                "    var m2 = new Meter(2)\n" +
+                "    var m3 = m1 + m2\n" +
+                "    return c.x\n" +
+                "}\n");
+            var gate = BilGate.Accept(text, "user.opr.bil");
+            TestHarness.CheckTrue("用户运算符用例门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            var context = new MwContext(gate.Module!);
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+            var functions = context.Mir!.Functions;
+            var main = functions.Single(f => f.Symbol.Canonical == "$main()@.i32");
+            var insts = main.Blocks.SelectMany(b => b.Instructions).ToList();
+            var dispatchCalls = insts.OfType<MirCall>().Where(c => c.OperatorDispatch).ToList();
+
+            TestHarness.Check("运算符直译调用数（Vec plus/equals×2/compareTo×2/opposite + Meter plus）",
+                dispatchCalls.Count.ToString(), "7");
+            TestHarness.CheckTrue("add → Vec$$plus（OperatorDispatch）",
+                dispatchCalls.Any(c => c.Target.Canonical == "Vec$$plus(another:Vec)@Vec"));
+            TestHarness.CheckTrue("==/!= → Vec$$equals 两次（== 直存、!= 取反）",
+                dispatchCalls.Count(c =>
+                    c.Target.Canonical == "Vec$$equals(another:Vec)@.bool") == 2);
+            TestHarness.CheckTrue("</<= → Vec$$compareTo 两次",
+                dispatchCalls.Count(c =>
+                    c.Target.Canonical == "Vec$$compareTo(another:Vec)@core::ComparisonResult") == 2);
+            TestHarness.CheckTrue("一元 - → Vec$$opposite",
+                dispatchCalls.Any(c => c.Target.Canonical == "Vec$$opposite()@Vec"));
+
+            // != 的 MIR 形状：equals 调用结果槽经 not 取反
+            TestHarness.CheckTrue("!= 形状：equals 后跟 not",
+                insts.OfType<MirUnaryIntrinsic>().Any(u => u.Op == BilUnaryOp.Not));
+            // < 的 MIR 形状：compareTo + is.case(.LesserThanAnother)；
+            // <= 多一个 is.case(.Equal) + or 组合
+            var cases = insts.OfType<MirIsCase>().Select(
+                c => c.Case.Declaration.QualifiedName).ToList();
+            TestHarness.CheckTrue("< 形状：is.case LesserThanAnother 命中",
+                cases.Contains("core::ComparisonResult.LesserThanAnother"));
+            TestHarness.CheckTrue("<= 形状：is.case Equal + or 组合",
+                cases.Contains("core::ComparisonResult.Equal")
+                && insts.OfType<MirBinaryIntrinsic>().Any(b => b.Op == BilBinaryOp.Or));
+
+            // 内建标量运算保持原形状（Vec$$plus 体内的 i32 add 不走用户派发）
+            var plusFn = functions.Single(f =>
+                f.Symbol.Canonical == "Vec$$plus(another:Vec)@Vec");
+            TestHarness.CheckTrue("内建 i32 add 保持 MirBinaryIntrinsic",
+                plusFn.Blocks.SelectMany(b => b.Instructions).OfType<MirBinaryIntrinsic>()
+                    .Any(b => b.Op == BilBinaryOp.Add)
+                && !plusFn.Blocks.SelectMany(b => b.Instructions).OfType<MirCall>()
+                    .Any(c => c.OperatorDispatch));
+
+            // struct 的 add：Meter$$plus 直译（OperatorDispatch；直调分流
+            // 归 Binding）
+            TestHarness.CheckTrue("struct add → Meter$$plus（OperatorDispatch）",
+                insts.OfType<MirCall>().Any(c => c.OperatorDispatch
+                    && c.Target.Canonical == "Meter$$plus(another:Meter)@Meter"));
+
+            // 绑定分流：class 运算符 → 虚派发（运行期按实际类型落最派生
+            // 实现，VM 口径）；struct → 直调；interface → iMap 派发
+            var vecPlus = context.Symbols.FindMember("Vec$$plus(another:Vec)@Vec")!;
+            TestHarness.CheckTrue("class 运算符绑定 → VirtualCallBinding",
+                ImplBinder.BindOperatorCall(vecPlus) is VirtualCallBinding);
+            var meterPlus = context.Symbols.FindMember("Meter$$plus(another:Meter)@Meter")!;
+            TestHarness.CheckTrue("struct 运算符绑定 → DirectCallBinding",
+                ImplBinder.BindOperatorCall(meterPlus) is DirectCallBinding);
+            var ifaceEquals = context.Symbols.FindMember(
+                "Equatable$$equals(other:Equatable)@.bool")!;
+            TestHarness.CheckTrue("interface 运算符绑定 → InterfaceCallBinding",
+                ImplBinder.BindOperatorCall(ifaceEquals) is InterfaceCallBinding);
+            // 显式 invoke 运算符保持静态直调（VM ResolveDispatchSymbol
+            // 对 operator 原样返回调用点符号的同口径）
+            TestHarness.CheckTrue("显式 invoke 运算符保持 DirectCallBinding",
+                ImplBinder.BindCall(vecPlus) is DirectCallBinding);
+        }
+
+        // ===== wrapper 应用索引继承闭包（MW10 刀4） =====
+
+        // 闭包语义：本类声明序 outer→inner 在前；祖先未重申应用按基→本
+        // 追加在后；同定义重申覆盖只装一次（VM CollectEntityWrappers 靠
+        // §14.9 重申约束等价的同一口径）
+        private static void TestWrapperIndexInheritanceClosure()
+        {
+            var (_, _, text) = BilTestHarness.EmitBilUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Logged { pub init() }\n" +
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Extra { pub init() }\n" +
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Third { pub init() }\n" +
+                "@Logged\n" +
+                "@Extra\n" +
+                "pub open class Base { pub init() }\n" +
+                "@Logged\n" +
+                "@Extra\n" +
+                "@Third\n" +
+                "pub open class Mid : Base { pub init() }\n" +
+                "@Logged\n" +
+                "@Extra\n" +
+                "@Third\n" +
+                "pub class Leaf : Mid { pub init() }\n" +
+                "pub func main(): i32 { return 0 }\n");
+            var gate = BilGate.Accept(text, "wrapper.index.closure.bil");
+            TestHarness.CheckTrue("闭包索引用例门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            var context = new MwContext(gate.Module!);
+            var index = WrapperApplicationIndex.Build(context.Symbols);
+
+            // 重申去重：Mid/Leaf 重申 Logged/Extra 后各只装一次，声明序保持
+            TestHarness.CheckTrue("Base 闭包=本类声明",
+                index.EntityWrappers("Base").SequenceEqual(new[] { "Logged", "Extra" }));
+            TestHarness.CheckTrue("Mid 闭包=重申+追加、无重复",
+                index.EntityWrappers("Mid").SequenceEqual(
+                    new[] { "Logged", "Extra", "Third" }));
+            TestHarness.CheckTrue("Leaf 闭包沿链去重不翻倍",
+                index.EntityWrappers("Leaf").SequenceEqual(
+                    new[] { "Logged", "Extra", "Third" }));
+
+            // 手写 BIL（绕过 §14.9 重申；§21.3 门禁会拦安装侧不一致，
+            // 故直读文本不入门禁）：子类声明剔除 wrapped 后，闭包仍并入
+            // 基类应用（VM CollectEntityWrappers 只读本类属重申等价偷懒，
+            // 此处按 §9.7 安装侧闭包口径购齐）
+            var hand = text.Replace(
+                "        pub open wrapped(Logged) wrapped(Extra) wrapped(Third) {",
+                "        pub open {");
+            TestHarness.CheckTrue("探测：BIL 文本确含可剔除的重申段", hand != text);
+            var handIndex = WrapperApplicationIndex.Build(
+                new MwContext(BilReader.Read(hand)).Symbols);
+            TestHarness.CheckTrue("未重申子类闭包并入基类应用（基→本追加）",
+                handIndex.EntityWrappers("Mid").SequenceEqual(
+                    new[] { "Logged", "Extra" }));
+        }
+
+        // ===== Entity 隐藏槽跨层级去重（MW10 遗3） =====
+
+        // VM HiddenEntityKey 仅含 wrapper TypeRef（不含声明类），子类重申
+        // 同 ref 覆盖同一隐藏键——native 物理槽同口径：重申不另开槽，
+        // 槽恒归首次声明（最基类）偏移，随 basePlan.Fields 原名逐层拷入。
+        // 布局形状断言：Base 恰一个 Entity 槽；Mid/Leaf 无本类名前缀槽、
+        // 各恰含一枚原名拷入的基类槽且偏移与 Base 一致
+        private static void TestHiddenSlotEntityDedupAcrossHierarchy()
+        {
+            var (_, _, text) = BilTestHarness.EmitBilUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Logged {\n" +
+                "    pub var hits: i32\n" +
+                "    pub init() { hits = 0 }\n" +
+                "}\n" +
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Extra { pub init() }\n" +
+                "@Logged\n" +
+                "@Extra\n" +
+                "pub open class Base { pub init() }\n" +
+                "@Logged\n" +
+                "@Extra\n" +
+                "pub open class Mid : Base { pub init() }\n" +
+                "@Logged\n" +
+                "@Extra\n" +
+                "pub class Leaf : Mid { pub init() }\n" +
+                "pub func main(): i32 { return 0 }\n");
+            var gate = BilGate.Accept(text, "wrapper.slot.dedup.bil");
+            TestHarness.CheckTrue("槽去重用例门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            var context = new MwContext(gate.Module!);
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+            TestHarness.CheckTrue("管线挂载布局", context.Layout != null);
+
+            var basePlan = context.Layout!.Find("Base");
+            var midPlan = context.Layout.Find("Mid");
+            var leafPlan = context.Layout.Find("Leaf");
+            TestHarness.CheckTrue("三级布局计划齐全",
+                basePlan != null && midPlan != null && leafPlan != null);
+            if (basePlan == null || midPlan == null || leafPlan == null)
+            {
+                return;
+            }
+            const string baseLogged = "Base#.wrapper.Logged@Logged";
+            const string baseExtra = "Base#.wrapper.Extra@Extra";
+            TestHarness.CheckTrue("Base 含两枚本类槽",
+                basePlan.Fields.Count(f => f.Symbol == baseLogged) == 1
+                    && basePlan.Fields.Count(f => f.Symbol == baseExtra) == 1);
+            TestHarness.CheckTrue("Mid 重申不另开槽（无 Mid# 前缀 wrapper 槽）",
+                !midPlan.Fields.Any(f => f.Symbol.StartsWith("Mid#.wrapper.",
+                    System.StringComparison.Ordinal)));
+            TestHarness.CheckTrue("Leaf 重申不另开槽（无 Leaf# 前缀 wrapper 槽）",
+                !leafPlan.Fields.Any(f => f.Symbol.StartsWith("Leaf#.wrapper.",
+                    System.StringComparison.Ordinal)));
+            TestHarness.CheckTrue("Mid 恰含原名拷入的基类槽各一枚",
+                midPlan.Fields.Count(f => f.Symbol == baseLogged) == 1
+                    && midPlan.Fields.Count(f => f.Symbol == baseExtra) == 1);
+            TestHarness.CheckTrue("Leaf 恰含原名拷入的基类槽各一枚",
+                leafPlan.Fields.Count(f => f.Symbol == baseLogged) == 1
+                    && leafPlan.Fields.Count(f => f.Symbol == baseExtra) == 1);
+            var baseOffset = basePlan.Fields.First(f => f.Symbol == baseLogged).Offset;
+            TestHarness.CheckTrue("基类槽偏移跨层级一致",
+                midPlan.Fields.First(f => f.Symbol == baseLogged).Offset == baseOffset
+                    && leafPlan.Fields.First(f => f.Symbol == baseLogged).Offset
+                        == baseOffset);
+        }
+
+        // ===== call??? 降级改写（MW10 刀4） =====
+
+        // 全链形状：调用点 invoke core::Any$call??? → $mw.call???.dispatch
+        //（候选 if 链按继承深度深→浅、hit 取槽调 entry 首环、miss 抛
+        // NoSuchMethodException）；entry 环（TReturn 擦除 .any、.generic
+        // 剔除）inner 原地改写——末环 → router(T, 层+1)（无可烘焙成员
+        // 宿主亦预建零分支 router）；无残留 MirInnerCall/call??? 调用
+        private static void TestCallWildcardLoweringEmission()
+        {
+            var (_, _, text) = BilTestHarness.EmitBilUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Router {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., " +
+                "unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn {\n" +
+                "        if (symbol == \"Base$fetchUserById(x:.i32)@.any\") {\n" +
+                "            return (99 as TReturn)\n" +
+                "        }\n" +
+                "        return inner(symbol=symbol, namedArgs=namedArgs, " +
+                "unnamedArgs=unnamedArgs)\n" +
+                "    }\n" +
+                "}\n" +
+                "@Router\n" +
+                "pub open class Base {\n" +
+                "    pub init()\n" +
+                "    pub func ping(x: i32): i32 { return (x + 1) }\n" +
+                "}\n" +
+                "@Router\n" +
+                "pub class Child : Base { pub init() }\n" +
+                "pub func main(): i32 {\n" +
+                "    var c = new Child()\n" +
+                "    return (c.fetchUserById(42) as i32)\n" +
+                "}\n");
+            var gate = BilGate.Accept(text, "wrapper.callwildcard.bil");
+            TestHarness.CheckTrue("call??? 用例门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            var context = new MwContext(gate.Module!);
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+            var functions = context.Mir!.Functions;
+            var allInsts = functions.SelectMany(f => f.Blocks)
+                .SelectMany(b => b.Instructions).ToList();
+            TestHarness.CheckTrue("call??? 烘焙后无残留 MirInnerCall",
+                !allInsts.OfType<MirInnerCall>().Any());
+            TestHarness.CheckTrue("调用点无残留 core::Any$call??? 调用",
+                !allInsts.OfType<MirCall>().Any(c =>
+                    c.Target.Canonical.StartsWith("core::Any$call???",
+                        System.StringComparison.Ordinal)));
+
+            MirFunction Fn(string needle) => functions.Single(f =>
+                f.Symbol.Canonical.Contains(needle));
+            var instsOf = new Func<MirFunction, List<MirInst>>(f =>
+                f.Blocks.SelectMany(b => b.Instructions).ToList());
+            var calls = new Func<MirFunction, List<MirCall>>(f =>
+                instsOf(f).OfType<MirCall>().ToList());
+
+            // dispatch fn：两候选（Child 深于 Base）if 链 + miss 抛
+            var dispatch = Fn("$mw.call???.dispatch");
+            var main = functions.Single(f => f.Symbol.Canonical == "$main()@.i32");
+            TestHarness.CheckTrue("main 调用点改写为 dispatch",
+                calls(main).Any(c => c.Target.Canonical == dispatch.Symbol.Canonical));
+            var checks = instsOf(dispatch).OfType<MirTypeCheck>()
+                .Where(t => t.Kind == MirTypeCheckKind.Is).ToList();
+            TestHarness.CheckTrue("dispatch 含两候选实际类型判定",
+                checks.Count == 2);
+            TestHarness.CheckTrue("dispatch 候选按深度深→浅（Child 先 Base 后）",
+                checks[0].TargetTypeRef == "Child" && checks[1].TargetTypeRef == "Base");
+            TestHarness.CheckTrue("dispatch hit 取槽调 entry 首环并返回",
+                instsOf(dispatch).OfType<MirGetWrapperAddr>().Any()
+                && calls(dispatch).Any(c =>
+                    c.Target.Canonical.Contains("$.mw.call???.entry."))
+                && dispatch.Blocks.Any(b => b.Terminator is MirRet));
+            TestHarness.CheckTrue("dispatch miss 抛 NoSuchMethodException",
+                instsOf(dispatch).OfType<MirNewObject>().Any(n =>
+                    n.Type.Canonical == "core::NoSuchMethodException")
+                && instsOf(dispatch).OfType<MirThrow>().Any()
+                && dispatch.Blocks.Any(b => b.Terminator is MirRetThrow));
+
+            // entry 环：Child/Base 各一环（单层 wildcard）；返回 .any、
+            // 无 .generic 形参；inner → router(T, 1)
+            var childEntry = Fn("Child$.mw.call???.entry.0");
+            TestHarness.CheckTrue("entry 环返回擦除 .any", childEntry.ReturnType.IsAny);
+            TestHarness.CheckTrue("entry 环形参剔除 .generic",
+                !childEntry.Parameters.Any(p => p.Name.StartsWith(".generic.")));
+            TestHarness.CheckTrue("entry 环含 .proxy.* 模板体（symbol 比对）",
+                instsOf(childEntry).OfType<MirBinaryIntrinsic>().Any(b =>
+                    b.Op == BilBinaryOp.CmpEq && b.LeftType.IsString));
+            TestHarness.CheckTrue("Child entry 末环 inner → router(Child, 1)",
+                calls(childEntry).Any(c =>
+                    c.Target.Canonical.Contains("Child$.mw.router.1")));
+            var baseEntry = Fn("Base$.mw.call???.entry.0");
+            TestHarness.CheckTrue("Base entry 末环 inner → router(Base, 1)",
+                calls(baseEntry).Any(c =>
+                    c.Target.Canonical.Contains("Base$.mw.router.1")));
+            TestHarness.CheckTrue("router 预建覆盖无可烘焙成员宿主（Child 零分支亦建）",
+                functions.Any(f => f.Symbol.Canonical.Contains("Child$.mw.router.1")));
+
+            using var module = ModuleBuilder.Build(context, context.Mir!);
+            var ll = module.PrintToString();
+            TestHarness.CheckTrue("LLVM 含 dispatch", ll.Contains(".mw.call???"), ll);
+            TestHarness.CheckTrue("LLVM 含 entry 环", ll.Contains(".mw.call???.entry"), ll);
+        }
+
+        // ===== singleton 运行时（MW10 刀5）=====
+
+        // get fn 三态/缓存/异常边形状 + new 改写 + Singletons 条目挂载
+        private static void TestSingletonLoweringEmission()
+        {
+            var (_, _, text) = BilTestHarness.EmitBilUnit(
+                "pub shared singleton class S {\n" +
+                "    pub var v: i32\n" +
+                "    pub init() { v = 7 }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = new S()\n" +
+                "    var b = new S()\n" +
+                "    return b.v\n" +
+                "}\n");
+            var gate = BilGate.Accept(text, "singleton.bil");
+            TestHarness.CheckTrue("singleton 用例门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            var context = new MwContext(gate.Module!);
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+            var functions = context.Mir!.Functions;
+
+            MirFunction Fn(string needle) => functions.Single(f =>
+                f.Symbol.Canonical.Contains(needle));
+            var instsOf = new Func<MirFunction, List<MirInst>>(f =>
+                f.Blocks.SelectMany(b => b.Instructions).ToList());
+
+            // 合成条目：get fn / state / cache 符号
+            TestHarness.CheckTrue("Singletons 条目挂载（S）",
+                context.Singletons.Count == 1
+                && context.Singletons[0].TypeCanonical == "S"
+                && context.Singletons[0].GetFnCanonical == "S$.static.mw.singleton.get()@S"
+                && context.Singletons[0].StateFieldSymbol == "S#.mw.singleton.state@.i32"
+                && context.Singletons[0].CacheFieldSymbol == "S#.mw.singleton.cache@S");
+
+            // get fn 形状：三态读写 + 带异常边的真构造 + 失败块置回 + 环抛
+            var get = Fn("S$.static.mw.singleton.get");
+            TestHarness.CheckTrue("get fn 无参、返回单例类型",
+                get.Parameters.Count == 0 && get.ReturnType.Canonical == "S");
+            var getInsts = instsOf(get);
+            TestHarness.CheckTrue("get fn 读三态槽（entry）",
+                getInsts.OfType<MirGetStatic>().Any(g =>
+                    g.FieldSymbol == "S#.mw.singleton.state@.i32"));
+            TestHarness.CheckTrue("get fn 读缓存槽（ready）",
+                getInsts.OfType<MirGetStatic>().Any(g =>
+                    g.FieldSymbol == "S#.mw.singleton.cache@S"));
+            TestHarness.CheckTrue("get fn 三态槽三写（在途/就绪/置回）",
+                getInsts.OfType<MirSetStatic>().Count(s =>
+                    s.FieldSymbol == "S#.mw.singleton.state@.i32") == 3);
+            TestHarness.CheckTrue("get fn 登记缓存槽",
+                getInsts.OfType<MirSetStatic>().Any(s =>
+                    s.FieldSymbol == "S#.mw.singleton.cache@S"));
+            var construct = getInsts.OfType<MirNewObject>().Single(n =>
+                n.Type.Canonical == "S");
+            TestHarness.CheckTrue("get fn 真构造带异常边（init 抛出置回在途）",
+                construct.ExcTarget != null
+                && construct.ExcTarget.Id == "mw.sg.fail"
+                && construct.Init.Canonical == "S$init()@.void");
+            TestHarness.CheckTrue("get fn 环检测抛异常",
+                getInsts.OfType<MirThrow>().Any()
+                && getInsts.OfType<MirNewObject>().Any(n =>
+                    n.Type.Canonical == "core::RuntimeException"));
+            TestHarness.CheckTrue("get fn 失败块置回未构造（state=0）",
+                get.Blocks.Any(b => b.Id == "mw.sg.fail"
+                    && b.Instructions.OfType<MirSetStatic>().Any(s =>
+                        s.FieldSymbol == "S#.mw.singleton.state@.i32")));
+
+            // new 改写：main 里两次 new type(S) → 两处 get 调用，无残留构造
+            var main = Fn("$main");
+            var mainInsts = instsOf(main);
+            TestHarness.CheckTrue("main 无残留 MirNewObject(S)",
+                !mainInsts.OfType<MirNewObject>().Any(n => n.Type.Canonical == "S"));
+            TestHarness.CheckTrue("main 两处 new 均改写为 get 调用",
+                mainInsts.OfType<MirCall>().Count(c =>
+                    c.Target.Canonical == "S$.static.mw.singleton.get()@S") == 2);
+
+            // LL：合成静态槽 + get fn 发射
+            using var module = ModuleBuilder.Build(context, context.Mir!);
+            var ll = module.PrintToString();
+            TestHarness.CheckTrue("合成三态槽发射（i32 全局）",
+                ll.Contains("@\"static.S#.mw.singleton.state@.i32\" = internal global i32 0"), ll);
+            TestHarness.CheckTrue("合成缓存槽发射（胖引用全局）",
+                ll.Contains("@\"static.S#.mw.singleton.cache@S\" = internal global { i64, i64 } zeroinitializer"), ll);
+            TestHarness.CheckTrue("get fn 发射",
+                ll.Contains("@\"S$.static.mw.singleton.get()@S\"()"), ll);
+            TestHarness.CheckTrue("缓存槽纳入 rigi_globals_cleanup",
+                ll.Contains("define void @rigi_globals_cleanup()"), ll);
+        }
+
+        // rigi_entry 急切初始化调用序（VM InitializeSingletons →
+        // InvokeGlobalInitializers → main 同口径）：singleton get 族 →
+        // ..globals.init → main
+        private static void TestSingletonEntryStubOrder()
+        {
+            var (_, _, text) = BilTestHarness.EmitBilUnit(
+                "var g: i32 = 40\n" +
+                "pub shared singleton class S {\n" +
+                "    pub var v: i32\n" +
+                "    pub init() { v = 7 }\n" +
+                "}\n" +
+                "pub func main(): i32 { return new S().v }\n");
+            var gate = BilGate.Accept(text, "singleton.entry.bil");
+            TestHarness.CheckTrue("入口序用例门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            var context = new MwContext(gate.Module!);
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+            using var module = ModuleBuilder.Build(context, context.Mir!);
+            var ll = module.PrintToString();
+
+            var stubAt = ll.IndexOf("define i32 @rigi_entry()", StringComparison.Ordinal);
+            TestHarness.CheckTrue("rigi_entry stub 存在", stubAt >= 0, ll);
+            var stub = ll.Substring(stubAt);
+            var getAt = stub.IndexOf("S$.static.mw.singleton.get()@S", StringComparison.Ordinal);
+            var globalsAt = stub.IndexOf("$..globals.init()@.void", StringComparison.Ordinal);
+            var mainAt = stub.IndexOf("$main()@.i32", StringComparison.Ordinal);
+            TestHarness.CheckTrue("急切初始化序：get 族 → globals.init → main",
+                getAt > 0 && globalsAt > getAt && mainAt > globalsAt,
+                stub.Substring(0, Math.Min(stub.Length, 1200)));
+            // 急切初始化丢弃的返回值归还（防泄漏：释放调用紧贴 get 调用）
+            TestHarness.CheckTrue("get 返回值即弃即释放",
+                stub.Contains("singleton.get") && stub.Contains("rigi_ref_release"), stub);
+        }
+
+        // ===== Method wrapper 烘焙（MW10 刀6，§14.4） =====
+
+        // specific 实例方法链：trampoline 在实现槽 fn（
+        // MirGetWrapperMethodAddr 取槽 → 调首环），原始体外移
+        // $.mwrapped.，环 inner 直调 $.mwrapped.（接收者 = 宿主本体）
+        private static void TestMethodProxyBakingEmission()
+        {
+            var (_, _, text) = BilTestHarness.EmitBilUnit(
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Timed {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call\\<TReturn>(x: i32): TReturn {\n" +
+                "        core.io.Console.println(\"before\")\n" +
+                "        var r = inner(x)\n" +
+                "        return r\n" +
+                "    }\n" +
+                "}\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    @Timed\n" +
+                "    pub func fetch(x: i32): i32 { return (x * 2) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    return s.fetch(21)\n" +
+                "}\n");
+            var gate = BilGate.Accept(text, "wrapper.method.bil");
+            TestHarness.CheckTrue("Method wrapper 用例门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            var context = new MwContext(gate.Module!);
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+            var functions = context.Mir!.Functions;
+            var allInsts = functions.SelectMany(f => f.Blocks)
+                .SelectMany(b => b.Instructions).ToList();
+            TestHarness.CheckTrue("Method 烘焙后无残留 MirInnerCall",
+                !allInsts.OfType<MirInnerCall>().Any());
+
+            MirFunction Fn(string needle) => functions.Single(f =>
+                f.Symbol.Canonical.Contains(needle));
+            var calls = new Func<MirFunction, List<MirCall>>(f =>
+                f.Blocks.SelectMany(b => b.Instructions).OfType<MirCall>().ToList());
+
+            // trampoline = 原名槽 fn（Service$fetch）
+            var trampoline = functions.Single(f =>
+                f.Symbol.Canonical == "Service$fetch(x:.i32)@.i32");
+            var trampInsts = trampoline.Blocks.SelectMany(b => b.Instructions).ToList();
+            TestHarness.CheckTrue("trampoline 经 get.wrapper.method.addr 取 Timed 槽",
+                trampInsts.OfType<MirGetWrapperMethodAddr>().Any(g =>
+                    g.MethodSymbol == "Service$fetch(x:.i32)@.i32" && g.WrapperType == "Timed"));
+            var ring = Fn("Timed$.bake.Service$fetch");
+            TestHarness.CheckTrue("trampoline 调首环（specific 不打包）",
+                calls(trampoline).Any(c => c.Target.Canonical == ring.Symbol.Canonical)
+                && !trampInsts.OfType<MirNewArray>().Any());
+            // 环 inner → $.mwrapped. 终态（receiver = 宿主）
+            var raw = Fn("Service$.mwrapped.fetch");
+            TestHarness.CheckTrue("环 inner 直调 $.mwrapped. 原始体",
+                calls(ring).Any(c => c.Target.Canonical == raw.Symbol.Canonical));
+            TestHarness.CheckTrue("$.mwrapped. 保留原始方法体（mul 指令）",
+                raw.Blocks.SelectMany(b => b.Instructions).OfType<MirBinaryIntrinsic>()
+                    .Any(b => b.Op == RigiCompiler.Bil.BilBinaryOp.Mul));
+            TestHarness.CheckTrue("环特化剔除 .generic.TReturn 形参",
+                ring.Parameters.Count == 2 && ring.Parameters[0].Name == ".this"
+                && ring.Parameters[1].Name == "x");
+
+            using var module = ModuleBuilder.Build(context, context.Mir!);
+            var ll = module.PrintToString();
+            TestHarness.CheckTrue("LLVM 含 method 环与 $.mwrapped. 体",
+                ll.Contains("Timed$.bake.Service$fetch") && ll.Contains("$.mwrapped.fetch"),
+                ll);
+        }
+
+        // 双层 specific：outer 环 inner → inner 环（receiver 经槽地址），
+        // inner 环 → $.mwrapped.（outer→inner 声明序 = 安装序）
+        private static void TestMethodProxyBakingDoubleLayer()
+        {
+            var (_, _, text) = BilTestHarness.EmitBilUnit(
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper A {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call\\<TReturn>(x: i32): TReturn { return inner(x) }\n" +
+                "}\n" +
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper B {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call\\<TReturn>(x: i32): TReturn { return inner(x) }\n" +
+                "}\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    @A\n" +
+                "    @B\n" +
+                "    pub func fetch(x: i32): i32 { return x }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    return s.fetch(42)\n" +
+                "}\n");
+            var gate = BilGate.Accept(text, "wrapper.method2.bil");
+            TestHarness.CheckTrue("双层 Method wrapper 用例门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            var context = new MwContext(gate.Module!);
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+            var functions = context.Mir!.Functions;
+
+            MirFunction Fn(string needle) => functions.Single(f =>
+                f.Symbol.Canonical.Contains(needle));
+            var calls = new Func<MirFunction, List<MirCall>>(f =>
+                f.Blocks.SelectMany(b => b.Instructions).OfType<MirCall>().ToList());
+
+            var outer = Fn("A$.bake.Service$fetch");
+            var inner = Fn("B$.bake.Service$fetch");
+            var raw = Fn("Service$.mwrapped.fetch");
+            var trampoline = functions.Single(f =>
+                f.Symbol.Canonical == "Service$fetch(x:.i32)@.i32");
+            TestHarness.CheckTrue("trampoline 调最外环 A",
+                calls(trampoline).Any(c => c.Target.Canonical == outer.Symbol.Canonical)
+                && trampoline.Blocks.SelectMany(b => b.Instructions)
+                    .OfType<MirGetWrapperMethodAddr>().Any(g => g.WrapperType == "A"));
+            TestHarness.CheckTrue("A 环 inner → B 环（receiver 经 B 槽地址）",
+                calls(outer).Any(c => c.Target.Canonical == inner.Symbol.Canonical)
+                && outer.Blocks.SelectMany(b => b.Instructions)
+                    .OfType<MirGetWrapperMethodAddr>().Any(g => g.WrapperType == "B"));
+            TestHarness.CheckTrue("B 环 inner → $.mwrapped. 终态",
+                calls(inner).Any(c => c.Target.Canonical == raw.Symbol.Canonical));
+        }
+
+        // wildcard 环：trampoline 打包（.name 资源 = 实现槽 canonical +
+        // 具名包 Pair 逐项），环 inner 恒等转发解包直进 $.mwrapped.；
+        // 环 ABI 返回 .any、trampoline 拆回原返回类型
+        private static void TestMethodProxyBakingWildcard()
+        {
+            var (_, _, text) = BilTestHarness.EmitBilUnit(
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Timed {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call(.name: String, args: named Any...): Any {\n" +
+                "        core.io.Console.println(.name)\n" +
+                "        return inner(.name, args)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    @Timed\n" +
+                "    pub func fetch(x: i32): i32 { return (x + 1) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    return s.fetch(41)\n" +
+                "}\n");
+            var gate = BilGate.Accept(text, "wrapper.methodwc.bil");
+            TestHarness.CheckTrue("wildcard Method wrapper 用例门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            var context = new MwContext(gate.Module!);
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+            var functions = context.Mir!.Functions;
+            var allInsts = functions.SelectMany(f => f.Blocks)
+                .SelectMany(b => b.Instructions).ToList();
+            TestHarness.CheckTrue("wildcard Method 烘焙后无残留 MirInnerCall",
+                !allInsts.OfType<MirInnerCall>().Any());
+
+            MirFunction Fn(string needle) => functions.Single(f =>
+                f.Symbol.Canonical.Contains(needle));
+            var calls = new Func<MirFunction, List<MirCall>>(f =>
+                f.Blocks.SelectMany(b => b.Instructions).OfType<MirCall>().ToList());
+
+            var trampoline = functions.Single(f =>
+                f.Symbol.Canonical == "Service$fetch(x:.i32)@.i32");
+            var trampInsts = trampoline.Blocks.SelectMany(b => b.Instructions).ToList();
+            var ring = Fn("Timed$.bake.Service$fetch");
+            TestHarness.CheckTrue("wildcard trampoline 打包具名包（Pair 逐项 + 数组）",
+                trampInsts.OfType<MirNewObject>().Any(n =>
+                    n.Type.Canonical.Contains("Pair"))
+                && trampInsts.OfType<MirNewArray>().Any());
+            TestHarness.CheckTrue(".name 资源 = 实现槽 canonical",
+                context.Module.Resources.OfType<BilScalarResource>().Any(r =>
+                    r.LiteralText.Contains("Service$fetch(x:.i32)@.i32")));
+            TestHarness.CheckTrue("wildcard trampoline 调首环",
+                calls(trampoline).Any(c => c.Target.Canonical == ring.Symbol.Canonical));
+            // 环 inner：按名解包（$mw.named.lookup 逐形参查找）→ 调终态，
+            // 结果装箱 .any
+            var ringInsts = ring.Blocks.SelectMany(b => b.Instructions).ToList();
+            TestHarness.CheckTrue("wildcard 环 inner 按名解包直进 $.mwrapped.",
+                calls(ring).Any(c => c.Target.Canonical.Contains("$mw.named.lookup"))
+                && calls(ring).Any(c =>
+                    c.Target.Canonical.Contains("Service$.mwrapped.fetch"))
+                && ringInsts.OfType<MirBoxAny>().Any());
+            // 按名还原合成 fn：单实例、key 内容相等比对（string CmpEq）、
+            // 命中取 value、缺名补 null（VM UnboxNamedArgs 同口径）
+            var lookup = functions.Single(f =>
+                f.Symbol.Canonical.StartsWith("$mw.named.lookup("));
+            var lookupInsts = lookup.Blocks.SelectMany(b => b.Instructions).ToList();
+            TestHarness.CheckTrue("$mw.named.lookup 按 key 内容相等查找",
+                lookupInsts.OfType<MirGetField>().Any(g =>
+                    g.FieldSymbol == ProxyWildcardAbi.PairKeyFieldSymbol)
+                && lookupInsts.OfType<MirBinaryIntrinsic>().Any(b =>
+                    b.Op == RigiCompiler.Bil.BilBinaryOp.CmpEq
+                    && b.LeftType.IsString)
+                && lookupInsts.OfType<MirGetField>().Any(g =>
+                    g.FieldSymbol == ProxyWildcardAbi.PairValueFieldSymbol));
+            TestHarness.CheckTrue("$mw.named.lookup 缺名补 null（.any 零值胖引用）",
+                lookupInsts.OfType<MirLoadResource>().Any(l =>
+                    l.Resource is BilNullResource nullRes && nullRes.TypeRef == ".any")
+                && lookup.Blocks.Any(b => b.Terminator is MirCondBranch)
+                && lookupInsts.OfType<MirGetArray>().Any());
+
+            using var module = ModuleBuilder.Build(context, context.Mir!);
+            var ll = module.PrintToString();
+            TestHarness.CheckTrue("LLVM 含 wildcard method 环",
+                ll.Contains("Timed$.bake.Service$fetch"), ll);
+        }
+
+        // 按名还原（遗留12 任务①，对齐 VM UnboxNamedArgs）：乱序/缺名
+        // 与位置无关——环 inner 对每具名形参发一次 $mw.named.lookup
+        //（名资源逐参物化），合成 fn 模块级单实例（多方法烘焙共享）；
+        // 缺名支返 .any 零值胖引用（VM 缺名补 VmNull 同口径）
+        private static void TestMethodProxyWildcardUnpackByName()
+        {
+            var (_, _, text) = BilTestHarness.EmitBilUnit(
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Timed {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call(.name: String, args: named Any...): Any {\n" +
+                "        return inner(.name, args)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    @Timed\n" +
+                "    pub func add(a: i32, b: i32): i32 { return (a + b) }\n" +
+                "    @Timed\n" +
+                "    pub func sub(a: i32, b: i32): i32 { return (a - b) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    return (s.add(1, 2) + s.sub(3, 4))\n" +
+                "}\n");
+            var gate = BilGate.Accept(text, "wrapper.methodwc.names.bil");
+            TestHarness.CheckTrue("按名还原用例门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            var context = new MwContext(gate.Module!);
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+            var functions = context.Mir!.Functions;
+            var calls = new Func<MirFunction, List<MirCall>>(f =>
+                f.Blocks.SelectMany(b => b.Instructions).OfType<MirCall>().ToList());
+
+            // 模块级单实例（两方法烘焙共享同一 lookup）
+            var lookups = functions.Where(f =>
+                f.Symbol.Canonical.StartsWith("$mw.named.lookup(")).ToList();
+            TestHarness.CheckTrue("$mw.named.lookup 模块级单实例", lookups.Count == 1);
+            var lookup = lookups[0];
+
+            foreach (var name in new[] { "add", "sub" })
+            {
+                var ring = functions.Single(f =>
+                    f.Symbol.Canonical.Contains("Timed$.bake.Service$" + name));
+                var ringInsts = ring.Blocks.SelectMany(b => b.Instructions).ToList();
+                var lookupCalls = calls(ring).Where(c =>
+                    c.Target.Canonical == lookup.Symbol.Canonical).ToList();
+                TestHarness.CheckTrue(name + " 环 inner 逐具名形参一次 lookup",
+                    lookupCalls.Count == 2);
+                // 每参名资源物化后作 lookup 第二实参（按名而非按位）
+                var nameArgs = lookupCalls.Select(c =>
+                    ((MirLocalOperand)c.Args[1]).Name).ToList();
+                var literals = ringInsts.OfType<MirLoadResource>()
+                    .Where(l => nameArgs.Contains(l.Target))
+                    .Select(l => ((BilScalarResource)l.Resource).LiteralText).ToList();
+                TestHarness.CheckTrue(name + " 环 lookup 名资源 = 形参名（a/b）",
+                    literals.Contains("\"a\"") && literals.Contains("\"b\""));
+                TestHarness.CheckTrue(name + " 环 inner 直进 $.mwrapped.",
+                    calls(ring).Any(c =>
+                        c.Target.Canonical.Contains("Service$.mwrapped." + name)));
+            }
+
+            // 乱序/缺名由 lookup 按名语义兜底：key 内容相等命中、全包
+            // 扫描环、缺名返 null（VM UnboxNamedArgs 同口径）
+            var lookupInsts = lookup.Blocks.SelectMany(b => b.Instructions).ToList();
+            TestHarness.CheckTrue("lookup 读 Pair key 字段",
+                lookupInsts.OfType<MirGetField>().Any(g =>
+                    g.FieldSymbol == ProxyWildcardAbi.PairKeyFieldSymbol));
+            TestHarness.CheckTrue("lookup key 内容相等比对（string CmpEq）",
+                lookupInsts.OfType<MirBinaryIntrinsic>().Any(b =>
+                    b.Op == RigiCompiler.Bil.BilBinaryOp.CmpEq
+                    && b.LeftType.IsString));
+            TestHarness.CheckTrue("lookup 全包扫描环（CondBranch + Branch）",
+                lookup.Blocks.Any(b => b.Terminator is MirCondBranch)
+                && lookup.Blocks.Any(b => b.Terminator is MirBranch));
+            TestHarness.CheckTrue("lookup 缺名补 null（VM 同口径）",
+                lookupInsts.OfType<MirLoadResource>().Any(l =>
+                    l.Resource is BilNullResource nullRes && nullRes.TypeRef == ".any"));
+
+            using var module = ModuleBuilder.Build(context, context.Mir!);
+            var ll = module.PrintToString();
+            TestHarness.CheckTrue("LLVM 含 $mw.named.lookup",
+                ll.Contains("mw.named.lookup"), ll);
+        }
+
+        // 宿主形态覆盖：静态方法（companion 实例 fn 被 trampoline、静态
+        // 壳不动）、全局函数（..globals.host 实例 fn）、lambda（
+        // ..lambda..UUID$$call fn）
+        private static void TestMethodProxyBakingHostForms()
+        {
+            var (_, _, text) = BilTestHarness.EmitBilUnit(
+                "@WrapperTarget(.Method)\n" +
+                "pub shared wrapper Timed {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call\\<TReturn>(x: i32): TReturn { return inner(x) }\n" +
+                "}\n" +
+                "pub class Calc {\n" +
+                "    pub init()\n" +
+                "    @Timed\n" +
+                "    pub static func total(x: i32): i32 { return (x + 1) }\n" +
+                "}\n" +
+                "@Timed\n" +
+                "pub func heavy(x: i32): i32 { return (x + 2) }\n" +
+                "pub func main(): i32 {\n" +
+                "    var fn = func{ @Timed (x: i32): i32 -> (x + 3) }\n" +
+                "    return ((Calc.total(1) + heavy(1)) + fn(1))\n" +
+                "}\n");
+            var gate = BilGate.Accept(text, "wrapper.methodhosts.bil");
+            TestHarness.CheckTrue("宿主形态用例门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            var context = new MwContext(gate.Module!);
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+            var functions = context.Mir!.Functions;
+
+            bool IsMethodTrampoline(MirFunction f) =>
+                f.Blocks.SelectMany(b => b.Instructions).OfType<MirGetWrapperMethodAddr>()
+                    .Any();
+
+            // 静态：companion 实例 fn 换 trampoline；壳体直调之（自然命中）
+            var companionFn = functions.Single(f =>
+                f.Symbol.Canonical.StartsWith("Calc...companion$total("));
+            TestHarness.CheckTrue("companion 实例 fn 是 method trampoline",
+                IsMethodTrampoline(companionFn));
+            var shell = functions.Single(f =>
+                f.Symbol.Canonical.StartsWith("Calc$.static.total("));
+            TestHarness.CheckTrue("静态壳体不是 trampoline（直调 companion fn）",
+                !IsMethodTrampoline(shell)
+                && shell.Blocks.SelectMany(b => b.Instructions).OfType<MirCall>()
+                    .Any(c => c.Target.Canonical == companionFn.Symbol.Canonical));
+            TestHarness.CheckTrue("companion 原始体外移 $.mwrapped.",
+                functions.Any(f => f.Symbol.Canonical.Contains(
+                    "Calc...companion$.mwrapped.total")));
+
+            // 全局函数：..globals.host 实例 fn 换 trampoline；$heavy 壳不动
+            var hostFn = functions.Single(f =>
+                f.Symbol.Canonical == "..globals.host$heavy(x:.i32)@.i32");
+            TestHarness.CheckTrue("globals.host 实例 fn 是 method trampoline",
+                IsMethodTrampoline(hostFn));
+            TestHarness.CheckTrue("globals.host 原始体外移 $.mwrapped.",
+                functions.Any(f => f.Symbol.Canonical.Contains(
+                    "..globals.host$.mwrapped.heavy")));
+
+            // lambda：$$call fn 换 trampoline（invoke.indirect 经 vtable 命中）
+            var callFn = functions.Single(f =>
+                f.Symbol.Canonical.StartsWith("..lambda..")
+                && f.Symbol.Canonical.Contains("$$call(x:.i32)"));
+            TestHarness.CheckTrue("lambda $$call fn 是 method trampoline",
+                IsMethodTrampoline(callFn));
+            TestHarness.CheckTrue("lambda 原始体外移 $.mwrapped.",
+                functions.Any(f => f.Symbol.Canonical.Contains("$.mwrapped.")
+                    && f.Symbol.Canonical.Contains("$call(x:.i32)")));
+
+            using var module = ModuleBuilder.Build(context, context.Mir!);
+            var ll = module.PrintToString();
+            TestHarness.CheckTrue("LLVM 含三形态烘焙环",
+                ll.Contains("Timed$.bake.Calc...companion$total")
+                && ll.Contains("Timed$.bake...globals.host$heavy")
+                && ll.Contains("$$call"), ll);
+        }
+
+        // Entity×Method 三层组合：M 原名槽 = Entity trampoline
+        //（get.wrapper.addr），$.wrapped. = method trampoline（
+        // get.wrapper.method.addr），$.mwrapped. = 最深层原始体
+        private static void TestMethodProxyEntityComposition()
+        {
+            var (_, _, text) = BilTestHarness.EmitBilUnit(
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Ent {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.work(): i32 { return inner() }\n" +
+                "}\n" +
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Met {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call\\<TReturn>(): TReturn { return inner() }\n" +
+                "}\n" +
+                "@Ent\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    @Met\n" +
+                "    pub func work(): i32 { return 7 }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    return s.work()\n" +
+                "}\n");
+            var gate = BilGate.Accept(text, "wrapper.compose.bil");
+            TestHarness.CheckTrue("Entity×Method 组合用例门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            var context = new MwContext(gate.Module!);
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+            var functions = context.Mir!.Functions;
+            var allInsts = functions.SelectMany(f => f.Blocks)
+                .SelectMany(b => b.Instructions).ToList();
+            TestHarness.CheckTrue("组合烘焙后无残留 MirInnerCall",
+                !allInsts.OfType<MirInnerCall>().Any());
+
+            var outermost = functions.Single(f =>
+                f.Symbol.Canonical == "Service$work()@.i32");
+            TestHarness.CheckTrue("原名槽 = Entity trampoline（get.wrapper.addr Ent）",
+                outermost.Blocks.SelectMany(b => b.Instructions).OfType<MirGetWrapperAddr>()
+                    .Any(g => g.WrapperType == "Ent"));
+            var entityRing = functions.Single(f =>
+                f.Symbol.Canonical.Contains("Ent$.bake.Service$work"));
+            TestHarness.CheckTrue("Entity 环 inner → $.wrapped.（method trampoline）",
+                entityRing.Blocks.SelectMany(b => b.Instructions).OfType<MirCall>()
+                    .Any(c => c.Target.Canonical == "Service$.wrapped.work()@core::i32"));
+            var methodLayer = functions.Single(f =>
+                f.Symbol.Canonical == "Service$.wrapped.work()@core::i32");
+            TestHarness.CheckTrue("$.wrapped. = method trampoline（Met 槽地址 → Met 环）",
+                methodLayer.Blocks.SelectMany(b => b.Instructions)
+                    .OfType<MirGetWrapperMethodAddr>().Any(g => g.WrapperType == "Met")
+                && methodLayer.Blocks.SelectMany(b => b.Instructions).OfType<MirCall>()
+                    .Any(c => c.Target.Canonical.Contains("Met$.bake.Service$work")));
+            var methodRing = functions.Single(f =>
+                f.Symbol.Canonical.Contains("Met$.bake.Service$work"));
+            TestHarness.CheckTrue("Method 环 inner → $.mwrapped. 最深层原始体",
+                methodRing.Blocks.SelectMany(b => b.Instructions).OfType<MirCall>()
+                    .Any(c => c.Target.Canonical == "Service$.mwrapped.work()@core::i32"));
+
+            using var module = ModuleBuilder.Build(context, context.Mir!);
+            var ll = module.PrintToString();
+            TestHarness.CheckTrue("LLVM 含三层组合",
+                ll.Contains("Ent$.bake.Service$work")
+                && ll.Contains("$.wrapped.work") && ll.Contains("$.mwrapped.work"), ll);
+        }
+
+        // wildcard 环改写 .name 重路由：受控拒绝（VM 已支持，后续补）。
+        // 前端 + BIL 验证器（§21.3 保留首参恒等）已先行拒绝，本用例绕过
+        // 门禁直读 BIL 文本，压 MW 层第二道防线
+        private static void TestMethodProxyWildcardRerouteRejects()
+        {
+            var (_, _, text) = BilTestHarness.EmitBilUnit(
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Timed {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call(.name: String, args: named Any...): Any {\n" +
+                "        return inner(\"other\", args)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    @Timed\n" +
+                "    pub func fetch(x: i32): i32 { return x }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    return s.fetch(1)\n" +
+                "}\n");
+            var context = new MwContext(BilReader.Read(text));
+            var rejected = false;
+            try
+            {
+                RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+            }
+            catch (RigiCompiler.Middleware.MwNotSupportedException)
+            {
+                rejected = true;
+            }
+            TestHarness.CheckTrue("wildcard 环改写 .name 受控拒绝", rejected);
+        }
+
+        // ===== super 绕过 wrapper 链（遗留12 任务②，对齐 VM
+        // ResolveSuper 直接压帧） =====
+
+        // MirSuperCall 目标改写：基类方法被 Method wrapper 烘焙 →
+        // $.mwrapped.（Entity×Method 组合的最深层）；被 Entity wrapper
+        // 烘焙 → $.wrapped.；无 wrapper 烘焙的基类方法保持原名槽不动
+        private static void TestSuperCallBypassesWrapperBaking()
+        {
+            var (_, _, text) = BilTestHarness.EmitBilUnit(
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Met {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call\\<TReturn>(): TReturn { return inner() }\n" +
+                "}\n" +
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper Ent {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.ping(): i32 { return inner() }\n" +
+                "}\n" +
+                "pub open class BaseM {\n" +
+                "    pub init()\n" +
+                "    @Met\n" +
+                "    pub open func work(): i32 { return 1 }\n" +
+                "}\n" +
+                "pub class ChildM : BaseM {\n" +
+                "    pub init()\n" +
+                "    pub override func work(): i32 { return (super() + 10) }\n" +
+                "}\n" +
+                "@Ent\n" +
+                "pub open class BaseE {\n" +
+                "    pub init()\n" +
+                "    pub open func ping(): i32 { return 2 }\n" +
+                "}\n" +
+                "@Ent\n" +
+                "pub class ChildE : BaseE {\n" +
+                "    pub init()\n" +
+                "    pub override func ping(): i32 { return (super() + 20) }\n" +
+                "}\n" +
+                "pub open class BaseN {\n" +
+                "    pub init()\n" +
+                "    pub open func plain(): i32 { return 3 }\n" +
+                "}\n" +
+                "pub class ChildN : BaseN {\n" +
+                "    pub init()\n" +
+                "    pub override func plain(): i32 { return (super() + 30) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    return ((new ChildM().work() + new ChildE().ping())\n" +
+                "        + new ChildN().plain())\n" +
+                "}\n");
+            var gate = BilGate.Accept(text, "super.bypass.bil");
+            TestHarness.CheckTrue("super 绕链用例门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            var context = new MwContext(gate.Module!);
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+            var functions = context.Mir!.Functions;
+            // 子类 override 体自身亦可能被烘焙外移（ChildE 带 @Ent），
+            // MirSuperCall 全模块扫描按目标归组
+            var superTargets = functions.SelectMany(f => f.Blocks)
+                .SelectMany(b => b.Instructions).OfType<MirSuperCall>()
+                .Select(s => s.Target.Canonical).ToList();
+
+            // Method wrapper：super 目标 → $.mwrapped. 最深层原始体
+            TestHarness.CheckTrue("super 目标改写为 $.mwrapped.（Method wrapper）",
+                superTargets.Contains("BaseM$.mwrapped.work()@core::i32"));
+            TestHarness.CheckTrue("$.mwrapped. 原始体 fn 存在",
+                functions.Any(f => f.Symbol.Canonical == "BaseM$.mwrapped.work()@core::i32"));
+
+            // Entity wrapper：super 目标 → $.wrapped. 原始体
+            TestHarness.CheckTrue("super 目标改写为 $.wrapped.（Entity wrapper）",
+                superTargets.Contains("BaseE$.wrapped.ping()@core::i32"));
+            TestHarness.CheckTrue("$.wrapped. 原始体 fn 存在",
+                functions.Any(f => f.Symbol.Canonical == "BaseE$.wrapped.ping()@core::i32"));
+
+            // 无 wrapper：super 目标保持原名槽不动
+            TestHarness.CheckTrue("无 wrapper 的 super 目标不动",
+                superTargets.Contains("BaseN$plain()@.i32"));
+
+            // 全模块不再残留指向被烘焙原名槽的 MirSuperCall
+            TestHarness.CheckTrue("无残留指向 trampoline 的 MirSuperCall",
+                !superTargets.Any(t => t == "BaseM$work()@.i32"
+                    || t == "BaseE$ping()@.i32"));
+
+            using var module = ModuleBuilder.Build(context, context.Mir!);
+            var ll = module.PrintToString();
+            TestHarness.CheckTrue("LLVM 含 super 直调最深层原始体",
+                ll.Contains("$.mwrapped.work") && ll.Contains("$.wrapped.ping"), ll);
+        }
+
+        // ===== getid.var + typeid 装箱 .any（MW8a）=====
         private static void TestGetTypeIdVarEmission()
         {
             var (_, _, text) = BilTestHarness.EmitBilUnit(

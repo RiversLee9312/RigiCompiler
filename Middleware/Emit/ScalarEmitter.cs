@@ -13,48 +13,62 @@ namespace RigiCompiler.Middleware.Emit
     /// </summary>
     internal static class ScalarEmitter
     {
-        internal static LLVMValueRef EmitBinary(ModuleBuilder.Session session, LLVMBuilderRef builder,
-            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirBinaryIntrinsic inst)
+        internal sealed class Binary : LlvmEmitVisitor<Binary, MirBinaryIntrinsic>
         {
-            var left = session.LoadLocal(builder, slots, inst.Left);
-            var right = session.LoadLocal(builder, slots, inst.Right);
-            switch (ImplBinder.BindBinary(inst.Op, inst.LeftType.Canonical, inst.RightType.Canonical, inst.ResultType.Canonical))
+            protected override void VisitCore(MirBinaryIntrinsic inst, ModuleBuilder.Session session)
             {
-                case PrimitiveOpBinding primitive:
-                    // 整数除法：先经策略注入点发射运行时检查（MW9b-G 抛
-                    // DividedByZeroException；异常边 = 本指令 ExcTarget）
-                    if (primitive.Kind is PrimitiveOpKind.IntSDiv or PrimitiveOpKind.IntUDiv)
-                    {
-                        session.Checks.EmitDivGuard(session, builder, left, right,
-                            isSigned: primitive.Kind == PrimitiveOpKind.IntSDiv,
-                            inst.ExcTarget);
-                    }
-                    return SelectPrimitive(builder, primitive.Kind, left, right);
-                case RuntimeFaceBinding face:
-                    return CallEmitter.EmitFaceCall(session, builder, face.FaceSymbol, new[] { left, right });
-                case StringCompareBinding:
-                    return EmitStringCompare(session, builder, inst.Op, left, right);
-                default:
-                    throw new CompilerInternalException("二元运算的非预期绑定形态");
+                var builder = session.Builder;
+                var slots = session.Slots;
+                var left = session.LoadLocal(builder, slots, inst.Left);
+                var right = session.LoadLocal(builder, slots, inst.Right);
+                LLVMValueRef value;
+                switch (ImplBinder.BindBinary(inst.Op, inst.LeftType.Canonical, inst.RightType.Canonical, inst.ResultType.Canonical))
+                {
+                    case PrimitiveOpBinding primitive:
+                        // 整数除法：先经策略注入点发射运行时检查（MW9b-G 抛
+                        // DividedByZeroException；异常边 = 本指令 ExcTarget）
+                        if (primitive.Kind is PrimitiveOpKind.IntSDiv or PrimitiveOpKind.IntUDiv)
+                        {
+                            session.Checks.EmitDivGuard(session, builder, left, right,
+                                isSigned: primitive.Kind == PrimitiveOpKind.IntSDiv,
+                                inst.ExcTarget);
+                        }
+                        value = SelectPrimitive(builder, primitive.Kind, left, right);
+                        break;
+                    case RuntimeFaceBinding face:
+                        value = CallEmitter.EmitFaceCall(session, builder, face.FaceSymbol, new[] { left, right });
+                        break;
+                    case StringCompareBinding:
+                        value = EmitStringCompare(session, builder, inst.Op, left, right);
+                        break;
+                    default:
+                        throw new CompilerInternalException("二元运算的非预期绑定形态");
+                }
+                builder.BuildStore(value, slots[inst.Target].Slot);
             }
         }
 
-        internal static LLVMValueRef EmitUnary(ModuleBuilder.Session session, LLVMBuilderRef builder,
-            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirUnaryIntrinsic inst)
+        internal sealed class Unary : LlvmEmitVisitor<Unary, MirUnaryIntrinsic>
         {
-            var operand = session.LoadLocal(builder, slots, inst.Operand);
-            if (ImplBinder.BindUnary(inst.Op, inst.OperandType.Canonical, inst.ResultType.Canonical) is not PrimitiveOpBinding primitive)
+            protected override void VisitCore(MirUnaryIntrinsic inst, ModuleBuilder.Session session)
             {
-                throw new CompilerInternalException("一元运算的非预期绑定形态");
+                var builder = session.Builder;
+                var slots = session.Slots;
+                var operand = session.LoadLocal(builder, slots, inst.Operand);
+                if (ImplBinder.BindUnary(inst.Op, inst.OperandType.Canonical, inst.ResultType.Canonical) is not PrimitiveOpBinding primitive)
+                {
+                    throw new CompilerInternalException("一元运算的非预期绑定形态");
+                }
+                var value = primitive.Kind switch
+                {
+                    PrimitiveOpKind.IntNeg => builder.BuildNeg(operand, "neg"),
+                    PrimitiveOpKind.FloatNeg => builder.BuildFNeg(operand, "fneg"),
+                    PrimitiveOpKind.LogicNot => builder.BuildNot(operand, "not"),
+                    PrimitiveOpKind.BitNot => builder.BuildNot(operand, "binnot"),
+                    _ => throw new CompilerInternalException($"未覆盖的一元指令选择: {primitive.Kind}"),
+                };
+                builder.BuildStore(value, slots[inst.Target].Slot);
             }
-            return primitive.Kind switch
-            {
-                PrimitiveOpKind.IntNeg => builder.BuildNeg(operand, "neg"),
-                PrimitiveOpKind.FloatNeg => builder.BuildFNeg(operand, "fneg"),
-                PrimitiveOpKind.LogicNot => builder.BuildNot(operand, "not"),
-                PrimitiveOpKind.BitNot => builder.BuildNot(operand, "binnot"),
-                _ => throw new CompilerInternalException($"未覆盖的一元指令选择: {primitive.Kind}"),
-            };
         }
 
         // string 比较降级（VM 基准：eq/ne 内容相等；排序为字典序三态）：

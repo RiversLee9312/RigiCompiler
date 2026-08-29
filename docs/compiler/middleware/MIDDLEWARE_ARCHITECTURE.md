@@ -107,9 +107,25 @@ try 的 catch-table 形式在本层展开为 EH 边与 pad 块（机制见 §8�
 
 ### MW4 MIR pass 群
 
-语言语义 pass 全在此层（§9 归属表），pass 之间以 MIR 为唯一交换物。关键 pass：
+语言语义 pass 全在此层（§9 归属表），pass 之间以 MIR 为唯一交换物。
 
-- **WrapperBaking**（§5）
+**翻译 pass 纪律**（与中端 P3/P4 同构，按 pass 切开）：每个指令翻译
+`IMwStage` 对应一个翻译 visitor——内部**唯一 switch**（Dispatcher）把指令
+种类分到处理类。BIL→MIR 与 MIR→LLVM 的处理类是 CRTP（静态 `Visit` 唯一
+入口，`Enter`/`Exit` `finally` 配对）。小改写 pass（IndexOperator /
+Accessor）用 **内部类** 隔离各 case，默认不上 CRTP——只有出现栈类生命
+周期才升 CRTP。Layout 不是翻译 visitor（类型闭包求解）；RcInjection
+不是逐指令翻译（全函数 CFG 配平）。新增 MIR 指令：消费它的翻译 pass
+的 Dispatcher 加一行 + 一个处理类，禁止往 `MirBuilder` / `ModuleBuilder`
+/ `CallEmitter` 堆分支。MW10 wrapper 烘焙按同一纪律拆成多个 pass，不收
+成单 `WrapperBakingPass`。插槽：AccessorLowering 之后、RcInjection 之前。
+
+关键 pass：
+
+- **WrapperBaking 群**（§5；MW10 已收口：插槽在 AccessorLowering 之后、
+  RcInjection 之前，五个小改写 pass——FieldProxyBaking → MethodProxyBaking
+  → ProxyBaking → CallWildcardLowering → SingletonLowering，共享设施
+  ProxyBakeSupport / ProxyWildcardAbi）
 - **RcInjection**（§4.2，安全攸关）
 - **CoroutineSplit**（§6）
 - **CellElim**：`.cell<T>`/`.readonly_cell<T>` 特权拼写识别（BIL §6 约定），
@@ -120,7 +136,9 @@ try 的 catch-table 形式在本层展开为 EH 边与 pad 块（机制见 §8�
 
 字段偏移、对齐、Box 物理形态、TypeSheet/vtable/iMap/refMap 的发射计划、调用
 约定（typeid 隐藏参数位置、胖引用传参与返回、sret、vargs/kwargs 包形态）。
-布局决策在此定稿，MW6 只消费。
+布局决策在此定稿，MW6 只消费。ABI 常数落点：数组前缀 32B 在 `TypeLayout`；
+TypeSheet/TypeInfo 字段序在 `TypeSheetAbi`（镜像 `arc.h`）；C 边界 out 首参
+与内联值类型返回形态在 `CallAbi`。Emit 只填 LLVM 类型、函数指针与常量。
 
 ### MW6 LLVM 模块构建与发射
 
@@ -275,11 +293,51 @@ M88 边界：frontend 只携带标记，烘焙全归 Middleware。
 
 - proxy 模板 fn（specific/wildcard）按应用标记烘焙为独立合成 fn，骑静态
   vtable；调用点 invoke 原名不改，链替换在烘焙中完成；
-- 隐藏存储 `.wrapper.<wrapper 类型全称>` 合成（BIL §5.3 ABI 约定）；
-- `call???` 类别路由体合成（降级调用点恒 `invoke core::Any$call???`，类别细分
-  插入点在 Middleware）；
-- `..init.wrapper` 在实体 init 前自动调用；`..companion.UUID` singleton 壳体的
-  构造时机；
+- 隐藏存储 `.wrapper.<wrapper 类型全称>` 合成（BIL §5.3 ABI 约定；`WrapperAbi` +
+  `HiddenStoragePlanner` 把 Entity/字段-Value/Method 槽写入宿主布局并进 refMap；
+  wrapper 类型本身按内联 rich struct 布局，不再用空壳）。槽身份对齐 VM 隐藏键
+  （`VmContext.HiddenEntityKey/FieldKey/MethodKey`）：Entity 键仅含 wrapper
+  精确 TypeRef——子类重申同 ref 不另开物理槽，槽恒归首次声明（最基类）偏移、
+  随 basePlan 原名逐层拷入，重申的安装与环读经发射期 extends 下探同归该槽；
+  Field/Method 键含字段/方法符号，天然归声明类唯一。内存路径已落地：
+  `get.wrapper` / `get.wrapper.field` 从隐藏槽值拷贝，`set.wrapper.field` 沿链
+  GEP 后写内层字段，`new.wrapper.*` 在 `..init.wrapper` 的 `.this` 上调 wrapper
+  init 安装；wrapper 布局偏移 0 为宿主回指胖值（不进 refMap），`get.self`
+  从该槽 ProduceFatValue。环 receiver 槽是原地访问（SYNTAX §14.5）：各
+  trampoline 经 `MirGetWrapper` / `MirGetWrapperMethodAddr` 取最外环隐藏槽
+  地址后调首环，wrapper 状态跨调用持久；
+- pass 群构成（均为小改写 pass，读写集与排序见 MwPipeline）：
+  - **ProxyBakingPass**：Entity 方法/运算符链——specific 环特化 + inner 链接
+    （下一环为 wildcard 时具体实参打包胖值 ABI）；wildcard 环特化 canonical
+    模板（标量 typeid 代入、包占位按 Any 擦除），环内 `MirInnerCall` 改写为
+    动态分派块（symbol 命中 → 解包直进下一环，否则调 router 重路由）；
+    原名槽改 trampoline（首环 wildcard 时打包 symbol/包）；
+  - **FieldProxyBakingPass**：字段 get/set 链唯一拦截点，Value（字段自身
+    wrapped）与 Entity（宿主类型 wrapped）双源——写链 outer→inner 逐环特化
+    `.proxy.set`，读链终态后自内向外逐环变值；Entity 面按字段名 specific
+    优先、wildcard 兜底、None 跳过；字段同时双 wrapped 时只跑字段链（VM
+    短路语义对齐）；
+  - **MethodProxyBakingPass**：Method wrapper `.proxy.call` 链——应用事实源
+    为 `..init.wrapper` 体安装指令；原始方法体外移为 `$.mwrapped.` 中缀，
+    实现槽 fn 替换为 trampoline。排在 ProxyBaking 之前是组合关键：Entity
+    烘焙把 method trampoline 整体外移为 `$.wrapped.` 并换 Entity
+    trampoline，天然形成 Entity→Method→raw 三层；绕过全链的旁路落点指向
+    `$.mwrapped.` 最深层原始体；
+  - **CallWildcardLoweringPass**：`call???` 降级——前端对静态类型未声明且
+    链上有 `.proxy.*` 的调用恒发 `invoke core::Any$call???`，本 pass 改写为
+    模块级分发 fn `$mw.call???.dispatch`：对候选宿主按继承深度（子类
+    wrapper 集优先）做 `rigi_type_is` if 链，命中调该宿主 entry 环链
+    （外层→内层特化的 `$mw.call???.entry.<层>`，末环落 router）；全不中抛
+    `core.NoSuchMethodException`；
+  - **SingletonLoweringPass**：singleton 三态 get fn 与 `new type(singleton)`
+    改写（机制见 §7 singleton 段）；
+- inner 重路由与 call??? 复用同一 per(宿主, fromLayer) router：router if 链
+  先覆盖字段访问器符号（自 fromLayer 起进该字段的 Entity get/set 环链，
+  分支发射委托 FieldProxyBakingPass 钩子——字段链环已先行烘焙，无循环
+  引用、不重复烘焙），再覆盖宿主全部可烘焙方法/运算符，链末 miss 抛
+  `core.NoSuchMethodException`；
+- `..init.wrapper` 在实体 init 前自动调用；`..companion` singleton 壳体（无名
+  称 UUID，BIL §8.7）随 singleton 急切初始化构造（§7）；
 - inner 链接与可变泛型包的解包/shim 合成。
 
 ## 6. 协程降级
@@ -373,6 +431,16 @@ MW9b-G 起三占位 abort 面（`rigi_abort_divided_by_zero` / `rigi_abort_inval
 MirReachability 恒可达白名单保证可发射）；保留 `rigi_abort_arithmetic_overflow`
 （i64 MIN/-1 基础设施溢出失败，VM 基准非语言级异常）与
 `rigi_abort_array_negative_length`（分配负长度）。
+
+**singleton 运行时（MW10 定稿）**：每个 singleton 类型合成三态取实例 fn
+（合成静态槽 state：未构造/在途/就绪 + cache 胖引用槽；VM 的双表在 native
+收敛为 state+cache 两槽，state==就绪 ⇔ cache 非空）；在途 = 构造环 → 抛
+`core::RuntimeException`。全部 `new type(singleton)` 改写为 get 调用（实参
+按 VM 口径丢弃——急切初始化保证用户代码执行时恒已构造）；无零参 init 者
+合成空 init 凑齐构造尾，只有有参 init 者编译期受控拒绝（VM 急切初始化期
+同口径必败）。`rigi_entry` 启动序：singleton 族急切初始化 →
+`..globals.init` → main（此序经实证对齐 VM InitializeSingletons 启动序）；
+并发 v1 简单标志（MW11 Worker 线程模型上线后复核原子性）。
 
 ## 8. 异常机制
 
@@ -472,11 +540,11 @@ Middleware/                 # 本仓库顶层目录（C#，.NET 10 LTS）
 ├── Gate/                   # BilReader 接线 + BilVerifier 门禁（多文件经 BilModuleMerger 合并）
 ├── Symbols/                # MW 符号图 / 类型表（canonical intern 驻留）
 ├── Binding/                # 实现绑定（ImplBinding 记录族 + ImplBinder 唯一实现查询）
-├── Mir/                    # MIR 模型 + MirBuilder（BIL 结构化块 → CFG 直译）+ MirReachability（invoke 边可达闭包）+ TryExpander.cs（BIL §16.7 try 十步展开：派发垫 / finally 双入口 / completion 路由器）
-├── Pipeline/               # IMwStage + MwPipeline 驱动器（线性阶段序，仿前端层栈纪律；MW4 pass 群在此登记）
-├── Passes/                 # MIR pass 群（已建立：IndexOperatorLowering / AccessorLowering / RcInjectionPass.cs；WrapperBaking / CoroutineSplit / CellElim / Devirt 仍随各自阶段）
-├── Layout/                 # TypeLayout：canonical → LLVM 类型唯一映射点（引用槽按 RUNTIME §2 胖引用 128-bit/16 字节对齐建模）
-├── Emit/                   # ModuleBuilder / ArcEmitter.cs（MirAcquireSlot/MirReleaseSlot → ref/value/string 面）/ ExceptionEmitter.cs（可抛调用返回后 pending 检查 + rigi_entry 顶层 reporter）/ DynamicNewEmitter.cs（new.indirect 调用点 + 分发器/thunk）/ LlvmBitcode（unsafe 编组封装：bitcode 解析、LLVMLinkModules2 进程内合并、新 PM default<O2> 管线）/ RuntimeFaces（rigi_rt 面表）/ ObjectEmitter（.o 发射）
+├── Mir/                    # MIR 模型 + MirBuilder 瘦驱动（BIL→MIR 翻译 pass）+ FlowBuilder 组合根 + MirLowerDispatchers 唯一 switch + 簇 CRTP（ControlFlow/Call/Data/TypeOps）+ MirReachability + TryExpander.cs
+├── Pipeline/               # IMwStage + MwPipeline 驱动器（线性阶段序；翻译 pass = visitor + 唯一 Dispatcher + 处理类）
+├── Passes/                 # MIR 改写 pass（IndexOperator / Accessor：内部类隔离各 case，默认非 CRTP；MW10 wrapper 烘焙五 pass——FieldProxyBaking / MethodProxyBaking / ProxyBaking / CallWildcardLowering / SingletonLowering + 共享设施 ProxyBakeSupport / ProxyWildcardAbi；RcInjection：CFG 分析内核，非逐指令翻译）
+├── Layout/                 # LayoutEngine 瘦驱动 + ClassLayout / ValueTypeLayout / VTablePlanner / RefMapBuilder / ConstructedLayout / LayoutShells / HiddenStoragePlanner / WrapperAbi；TypeLayout：canonical → LLVM 类型唯一映射点（引用槽按 RUNTIME §2 胖引用 128-bit/16 字节对齐建模）+ 数组前缀 ABI；TypeSheetAbi / CallAbi：TypeSheet 字段序与调用约定描述符。非翻译 visitor
+├── Emit/                   # ModuleBuilder 瘦驱动（MIR→LLVM 翻译 pass）+ LlvmEmitEnvironment/Context 组合根 + LlvmEmitDispatchers 唯一 switch + 簇 CRTP（*Emitter；new 归 NewEmitter，native 归 NativeCallEmitter，虚/接口归 VirtualCallEmitter，getid 归 TypeIdEmitter，Nullable 归 NullableEmitter）+ LlvmBitcode / ObjectEmitter
 ├── Toolchain/              # ToolchainResolver（--toolchain → RIGI_LLVM → tools/.llvm/<rid> → PATH）/ ExternalProcess 外部进程封装
 ├── Runtime/                # RigiRtBuilder：rigi_rt 源 EmbeddedResource 内嵌 → 内容哈希缓存 → clang -emit-llvm -c 编成 bitcode（unity build）
 └── Cli/                    # native 驱动（--file/--out/--emit-obj/--emit-ll/--toolchain）
@@ -508,7 +576,7 @@ rigi_rt/                    # 本仓库顶层目录（C，EmbeddedResource 内�
 | MW7 | 值语义运行时 + ARC：Box 物化、RcInjection、region 协议发射（**MW7a 已收口**）；Span 物化（**MW7b 已收口**：Span=内建 class 定稿） | MW7a/MW7b：NativeE2E 全绿且台账零泄漏 |
 | MW8 | 泛型运行时：`Type\<T\>`/typeOf/new、is/supers/with/cast（**MW8a/MW8b 已收口**；**MW8c 推进中**） | MW8a typeid 装箱；MW8b 动态 new 槽 0 分发器；MW8c-1 `.typeid<X>` 构造 sheet；MW8c-2 泛型占位 cast + 数值/String/struct 转换；MW8c-3 struct sret thunk + 标量零值 T() + VM 无匹配 init 必抛 |
 | MW9 | 异常：try/catch/finally → checked-flag 便携传输（§8；**MW9a 已收口**：rigi_rt eh 三面 + reporter、MIR 构件（MirThrow/MirTakePending/MirRetThrow/ExcTarget）、TryExpander 十步展开、RcInjection 传播垫、Emit pending 检查、NativeE2E 捕获型对拍 13 例；**MW9b 已收口**：内置异常 message 模板源码化（stdlib init 重载）+ VM/native 构造全走真 init、VM 顶层格式对齐 `{类型全名}: {message}`、三占位 abort + 数组/Span 越界写 abort 全转真异常（守卫指令 ExcTarget 扩面 + ExceptionEmitter 共享抛出辅助 + core 异常恒可达白名单；除零策略换 Throw 实现）、SYNTAX §8.1 加第 6 异常类 `core.OutOfBoundException` + §8.2 未捕获进程行为） | 异常对拍套件 |
-| MW10 | wrapper 烘焙全链（specific/wildcard/call???） | |
+| MW10 | wrapper 烘焙全链（**已收口**：Entity/Value/Method 三类 proxy 链 + wildcard router 与 call??? 降级 + singleton 三态 get fn 与急切初始化，§5/§7） | |
 | MW11 | 协程：状态机、Executor/Worker、Alarm（libuv 底座）、Task、eager spawn | ASYNC §8 集成测试 |
 | MW12 | macroGC：收集器、候选账本、GC 协程与内置 Executor、fence 激活、§25 检查 | 循环回收与泄漏检查套件 |
 | MW13 | 优化收尾（move/cursor、CellElim 激进化）、工具链捆绑与发布 | |

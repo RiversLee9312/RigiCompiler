@@ -27,10 +27,10 @@ namespace RigiCompiler.Middleware.Mir
     /// </summary>
     internal sealed class TryExpander
     {
-        private readonly MirBuilder.FlowBuilder _f;
+        private readonly FlowBuilder _f;
         private string? _retvLocal;   // $mw.retv：fn 级共享（嵌套 try 逐层外跳时值随行）
 
-        internal TryExpander(MirBuilder.FlowBuilder flow)
+        internal TryExpander(FlowBuilder flow)
         {
             _f = flow;
         }
@@ -81,7 +81,7 @@ namespace RigiCompiler.Middleware.Mir
         }
 
         // try 作用域：词法栈条目 + 展开期累积的合成块/路由码状态
-        private sealed class TryScope : MirBuilder.Scope
+        private sealed class TryScope : Scope
         {
             internal int N { get; }
             internal string BreakIdVar { get; }
@@ -371,7 +371,7 @@ namespace RigiCompiler.Middleware.Mir
             {
                 switch (_f.Scopes[i])
                 {
-                    case MirBuilder.RegionScope region
+                    case RegionScope region
                         when key.Kind != CompletionKind.Return && region.BreakIdVar == key.Var:
                         if (key.Kind == CompletionKind.Continue && region.ContinueTarget == null)
                         {

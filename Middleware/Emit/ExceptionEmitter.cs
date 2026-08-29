@@ -17,6 +17,18 @@ namespace RigiCompiler.Middleware.Emit
     /// </summary>
     internal static class ExceptionEmitter
     {
+        internal sealed class TakePending : LlvmEmitVisitor<TakePending, MirTakePending>
+        {
+            protected override void VisitCore(MirTakePending inst, ModuleBuilder.Session session) =>
+                EmitTakePending(session, session.Builder, session.Slots, inst);
+        }
+
+        internal sealed class Throw : LlvmEmitVisitor<Throw, MirThrow>
+        {
+            protected override void VisitCore(MirThrow inst, ModuleBuilder.Session session) =>
+                EmitThrow(session, session.Builder, session.Slots, inst);
+        }
+
         // MirTakePending：take 得 void* → 构造胖引用写目标 alloca
         //（typeid 半 = 目标槽静态类型的 TypeSheet 全局，tag2 对象形态；
         // +1 所有权随 take 移动给目标槽，不另 acquire）
@@ -56,7 +68,7 @@ namespace RigiCompiler.Middleware.Emit
         // ===== MW9b-G：守卫点抛真异常（与 VM 同型同消息，可被 try/catch）=====
 
         // 共享抛出辅助：rigi_alloc 分配 + 调对应 init（普通 Rigi 调用，走
-        // CallEmitter.EmitAllocAndInit 设施）+ rigi_exc_raise + 归还构造侧
+        // NewEmitter.EmitAllocAndInit 设施）+ rigi_exc_raise + 归还构造侧
         // 临时 +1（raise 已 acquire 进 TLS）。excTarget 非空（函数体内守卫
         // 点，RcInjection 已解析）：br 到异常边目标块（入口 MirTakePending
         // 取回 pending）；excTarget == null（ctor thunk 内部，无 MIR 块
@@ -85,7 +97,7 @@ namespace RigiCompiler.Middleware.Emit
                 System.StringComparer.Ordinal);
             var wrapper = session.Symbols.FindMember(
                 type!.Canonical + "$..init.wrapper()@.void");
-            var fat = CallEmitter.EmitAllocAndInit(session, builder, emptySlots,
+            var fat = NewEmitter.EmitAllocAndInit(session, builder, emptySlots,
                 type.Canonical, wrapper, init!, args);
             var payload = builder.BuildExtractValue(fat, 1, "guard.payload");
             var obj = builder.BuildIntToPtr(payload, PointerType(), "guard.obj");
@@ -145,10 +157,10 @@ namespace RigiCompiler.Middleware.Emit
         {
             var sheetTy = TypeSheetEmitter.SheetStructType(session.Context);
             var infoField = builder.BuildStructGEP2(sheetTy, sheet,
-                (uint)TypeSheetEmitter.FieldTypeInfoId, "exc.ti.f");
+                (uint)TypeSheetAbi.FieldTypeInfoId, "exc.ti.f");
             var info = builder.BuildLoad2(PointerType(), infoField, "exc.ti");
             var nameField = builder.BuildStructGEP2(TypeInfoEmitter.InfoStructType(session.Context),
-                info, 0, "exc.name.f");
+                info, (uint)TypeSheetAbi.InfoFieldName, "exc.name.f");
             return builder.BuildLoad2(StringAbi.ValueType(session.Context), nameField,
                 "exc.name");
         }

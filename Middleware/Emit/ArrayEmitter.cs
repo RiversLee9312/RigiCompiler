@@ -8,12 +8,29 @@ namespace RigiCompiler.Middleware.Emit
 {
     /// <summary>
     /// 数组 / Span 发射（MW4/MW7b）：alloc_array / span_alloc /
-    /// new type(.array) / get.array / set.array / getid.type / getid.var /
-    /// Nullable 值类型装拆箱。Array 与 Span/SharedSpan 元素访问共用同一套
-    /// stride/越界/wrap 路径。布局见 TypeLayout 前缀与元素 ABI。
+    /// new type(.array) / get.array / set.array。getid 归 TypeIdEmitter，
+    /// Nullable 装拆箱归 NullableEmitter。
     /// </summary>
     internal static class ArrayEmitter
     {
+        internal sealed class Get : LlvmEmitVisitor<Get, MirGetArray>
+        {
+            protected override void VisitCore(MirGetArray inst, ModuleBuilder.Session session) =>
+                EmitGet(session, session.Builder, session.Slots, inst);
+        }
+
+        internal sealed class Set : LlvmEmitVisitor<Set, MirSetArray>
+        {
+            protected override void VisitCore(MirSetArray inst, ModuleBuilder.Session session) =>
+                EmitSet(session, session.Builder, session.Slots, inst);
+        }
+
+        internal sealed class New : LlvmEmitVisitor<New, MirNewArray>
+        {
+            protected override void VisitCore(MirNewArray inst, ModuleBuilder.Session session) =>
+                EmitNew(session, session.Builder, session.Slots, inst);
+        }
+
         internal static void EmitAllocArrayCall(ModuleBuilder.Session session,
             LLVMBuilderRef builder,
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirCall call)
@@ -57,7 +74,7 @@ namespace RigiCompiler.Middleware.Emit
                 slots[call.Result].Slot);
         }
 
-        internal static void EmitNew(ModuleBuilder.Session session, LLVMBuilderRef builder,
+        private static void EmitNew(ModuleBuilder.Session session, LLVMBuilderRef builder,
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirNewArray inst)
         {
             if (!TypeLayout.TryGetArrayElement(inst.Type, out var elementType))
@@ -78,7 +95,7 @@ namespace RigiCompiler.Middleware.Emit
             builder.BuildStore(WrapArrayRef(session, builder, obj), slots[inst.Target].Slot);
         }
 
-        internal static void EmitGet(ModuleBuilder.Session session, LLVMBuilderRef builder,
+        private static void EmitGet(ModuleBuilder.Session session, LLVMBuilderRef builder,
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirGetArray inst)
         {
             if (!TypeLayout.TryGetContiguousElement(inst.CollectionType, out var elementType))
@@ -116,7 +133,7 @@ namespace RigiCompiler.Middleware.Emit
             builder.PositionAtEnd(joinBlock);
         }
 
-        internal static void EmitSet(ModuleBuilder.Session session, LLVMBuilderRef builder,
+        private static void EmitSet(ModuleBuilder.Session session, LLVMBuilderRef builder,
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirSetArray inst)
         {
             if (!TypeLayout.TryGetContiguousElement(inst.CollectionType, out var elementType))
@@ -163,71 +180,6 @@ namespace RigiCompiler.Middleware.Emit
                     data, bytes.Length);
             }
             builder.BuildStore(WrapArrayRef(session, builder, obj), destSlot);
-        }
-
-        internal static void EmitGetTypeId(ModuleBuilder.Session session, LLVMBuilderRef builder,
-            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirGetTypeId inst)
-        {
-            builder.BuildStore(TypeSheetPointer(session, builder, MirType.Of(inst.TypeRef)),
-                slots[inst.Target].Slot);
-        }
-
-        internal static void EmitGetTypeIdVar(ModuleBuilder.Session session, LLVMBuilderRef builder,
-            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirGetTypeIdVar inst)
-        {
-            if (inst.Value is not MirLocalOperand local)
-            {
-                throw new CompilerInternalException("getid.var 操作数必须是局部");
-            }
-            var type = slots[local.Name].Local.Type;
-            // 非开放值类型：静态类型即实际类型，直接 store TypeSheet*
-            if (IsClosedValueForTypeOf(session, type))
-            {
-                builder.BuildStore(TypeSheetPointer(session, builder, type),
-                    slots[inst.Target].Slot);
-                return;
-            }
-            // class / .any / 泛型占位胖槽：运行时取实际 sheet
-            var fat = session.LoadLocal(builder, slots, inst.Value);
-            var typeId = builder.BuildExtractValue(fat, 0, "typeof.typeid");
-            var payload = builder.BuildExtractValue(fat, 1, "typeof.payload");
-            var (fn, fnType) = CallEmitter.DeclareHelperFace(session, RuntimeFaces.TypeOf,
-                PointerType(), new[] { LLVMTypeRef.Int64, LLVMTypeRef.Int64 });
-            var sheet = builder.BuildCall2(fnType, fn, new[] { typeId, payload }, "typeof.raw");
-            // C 侧 null 胖引用仍返 NULL；内部链接的 .null sheet 在此替换
-            var nullSheet = CastToBytePtr(builder,
-                session.TypeSheetFor(TypeLayout.NullSheetCanonical));
-            var isNull = builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, sheet,
-                LLVMValueRef.CreateConstPointerNull(PointerType()), "typeof.isnull");
-            sheet = builder.BuildSelect(isNull, nullSheet, sheet, "typeof.sheet");
-            builder.BuildStore(sheet, slots[inst.Target].Slot);
-        }
-
-        // 标量 / String / struct / enum / .typeid：布局可得 sheet，零运行时开销
-        private static bool IsClosedValueForTypeOf(ModuleBuilder.Session session, MirType type)
-        {
-            if (TypeLayout.IsGenericPlaceholder(type))
-            {
-                return false;
-            }
-            return MirBuilder.IsScalarOrString(type)
-                || TypeLayout.IsTypeId(type)
-                || session.IsInlineValueType(type, out _);
-        }
-
-        internal static void EmitWrap(ModuleBuilder.Session session, LLVMBuilderRef builder,
-            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirWrapNullable inst)
-        {
-            var value = session.LoadLocal(builder, slots, inst.Source);
-            builder.BuildStore(WrapValue(session, builder, slots, inst.Source, value, inst.InnerType),
-                slots[inst.Target].Slot);
-        }
-
-        internal static void EmitUnwrap(ModuleBuilder.Session session, LLVMBuilderRef builder,
-            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirUnwrapNullable inst)
-        {
-            var fat = session.LoadLocal(builder, slots, inst.Source);
-            UnwrapToSlot(session, builder, slots, fat, inst.InnerType, inst.Target);
         }
 
         // ===== 分配 / 胖引用 =====
@@ -314,7 +266,7 @@ namespace RigiCompiler.Middleware.Emit
 
         // ===== 元素地址 / 读写 =====
 
-        private static ArrayElementAbi ElementAbi(ModuleBuilder.Session session, MirType element) =>
+        internal static ArrayElementAbi ElementAbi(ModuleBuilder.Session session, MirType element) =>
             TypeLayout.ClassifyElement(element, session.Layout?.Find(element.Canonical));
 
         private static LLVMValueRef ElementPointer(LLVMBuilderRef builder, LLVMValueRef obj,
@@ -412,207 +364,26 @@ namespace RigiCompiler.Middleware.Emit
             // WrapFromSlot；位模式即 payload，tag0 内联包装
             if (TypeLayout.IsTypeId(elementType))
             {
-                builder.BuildStore(WrapScalar(session, builder, loaded, elementType),
+                builder.BuildStore(NullableEmitter.WrapScalar(session, builder, loaded, elementType),
                     slots[target].Slot);
                 return;
             }
             if (loaded.TypeOf.Kind == LLVMTypeKind.LLVMPointerTypeKind)
             {
-                builder.BuildStore(WrapFromSlot(session, builder, loaded, elementType),
+                builder.BuildStore(NullableEmitter.WrapFromSlot(session, builder, loaded, elementType),
                     slots[target].Slot);
                 return;
             }
-            builder.BuildStore(WrapScalar(session, builder, loaded, elementType),
+            builder.BuildStore(NullableEmitter.WrapScalar(session, builder, loaded, elementType),
                 slots[target].Slot);
-        }
-
-        // ===== Nullable 装拆箱（typeid = sheet | tag<<56；废除哨兵 1）=====
-
-        private static LLVMValueRef WrapValue(ModuleBuilder.Session session, LLVMBuilderRef builder,
-            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirOperand source,
-            LLVMValueRef value, MirType inner)
-        {
-            if (IsReferenceElement(session, inner))
-            {
-                return ArcEmitter.ProduceFatValue(session, builder, value, "opt.wrap");
-            }
-            var abi = ElementAbi(session, inner);
-            if (IsTag0Wrap(abi))
-            {
-                if (abi.Kind == ArrayElementKind.InlineValue)
-                {
-                    if (source is not MirLocalOperand local)
-                    {
-                        throw new CompilerInternalException("Nullable 装箱源必须是局部");
-                    }
-                    return WrapFromSlot(session, builder, slots[local.Name].Slot, inner);
-                }
-                return WrapScalar(session, builder, value, inner);
-            }
-            if (source is not MirLocalOperand boxed)
-            {
-                throw new CompilerInternalException("Nullable 装箱源必须是局部");
-            }
-            return WrapFromSlot(session, builder, slots[boxed.Name].Slot, inner);
-        }
-
-        private static void UnwrapToSlot(ModuleBuilder.Session session, LLVMBuilderRef builder,
-            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
-            LLVMValueRef fat, MirType inner, string target)
-        {
-            if (IsReferenceElement(session, inner))
-            {
-                builder.BuildStore(ArcEmitter.ProduceFatValue(session, builder, fat, "opt.unwrap"),
-                    slots[target].Slot);
-                return;
-            }
-            var typeId = builder.BuildExtractValue(fat, 0, "opt.typeid");
-            var payload = builder.BuildExtractValue(fat, 1, "opt.payload");
-            var tag = builder.BuildLShr(typeId,
-                LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, BoxEmitter.TagShift, false),
-                "opt.tag");
-            var isTag0 = builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, tag,
-                LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, BoxEmitter.TagInline, false),
-                "opt.tag0");
-            var fn = session.CurrentFunction;
-            var tag0Block = fn.AppendBasicBlock("opt.tag0");
-            var tag1Block = fn.AppendBasicBlock("opt.tag1");
-            var joinBlock = fn.AppendBasicBlock("opt.join");
-            builder.BuildCondBr(isTag0, tag0Block, tag1Block);
-
-            var abi = ElementAbi(session, inner);
-            builder.PositionAtEnd(tag0Block);
-            if (abi.Kind is ArrayElementKind.InlineValue or ArrayElementKind.String)
-            {
-                var tmp = builder.BuildAlloca(LLVMTypeRef.Int64, "opt.bits");
-                builder.BuildStore(payload, tmp);
-                session.EmitMemCopy(builder, slots[target].Slot, tmp,
-                    System.Math.Min(abi.Stride, 8));
-            }
-            else
-            {
-                builder.BuildStore(UnboxScalarBits(builder, payload, inner),
-                    slots[target].Slot);
-            }
-            builder.BuildBr(joinBlock);
-
-            builder.PositionAtEnd(tag1Block);
-            var box = builder.BuildIntToPtr(payload, PointerType(), "opt.box");
-            session.EmitMemCopy(builder, slots[target].Slot, box, abi.Stride);
-            ArcEmitter.EmitValueAcquire(session, builder, slots[target].Slot, inner);
-            builder.BuildBr(joinBlock);
-
-            builder.PositionAtEnd(joinBlock);
         }
 
         private static bool IsReferenceElement(ModuleBuilder.Session session, MirType element) =>
             ElementAbi(session, element).Kind == ArrayElementKind.Reference;
 
-        // 标量 / ≤8B 非 rich 内联值 → tag0；String / 大 struct / rich → tag1
-        private static bool IsTag0Wrap(ArrayElementAbi abi)
-        {
-            if (abi.Kind == ArrayElementKind.String)
-            {
-                return false;
-            }
-            if (abi.Kind == ArrayElementKind.InlineValue)
-            {
-                var rich = abi.Plan is { } plan
-                    && (plan.TypeFlags & TypeLayoutPlan.FlagRich) != 0;
-                return !rich && abi.Stride <= BoxEmitter.InlineLimit;
-            }
-            return abi.Kind == ArrayElementKind.Scalar;
-        }
-
-        private static LLVMValueRef WrapFromSlot(ModuleBuilder.Session session,
-            LLVMBuilderRef builder, LLVMValueRef slot, MirType inner)
-        {
-            var abi = ElementAbi(session, inner);
-            var sheet = BoxEmitter.TypeSheetOf(session, inner);
-            if (IsTag0Wrap(abi))
-            {
-                var bits = BoxEmitter.BitsFromSlot(session, builder, slot, abi.Stride);
-                return BoxEmitter.PackFat(session, builder, sheet, BoxEmitter.TagInline,
-                    bits, "opt");
-            }
-            var box = Malloc(session, builder, abi.Stride);
-            session.EmitMemCopy(builder, box, slot, abi.Stride);
-            ArcEmitter.EmitValueAcquire(session, builder, box, inner);
-            var payload = builder.BuildPtrToInt(box, LLVMTypeRef.Int64, "opt.box");
-            return BoxEmitter.PackFat(session, builder, sheet, BoxEmitter.TagHeapValue,
-                payload, "opt");
-        }
-
-        private static LLVMValueRef WrapScalar(ModuleBuilder.Session session,
-            LLVMBuilderRef builder, LLVMValueRef value, MirType inner)
-        {
-            var sheet = BoxEmitter.TypeSheetOf(session, inner);
-            var bits = ScalarToI64(builder, value, inner);
-            return BoxEmitter.PackFat(session, builder, sheet, BoxEmitter.TagInline,
-                bits, "opt");
-        }
-
-        private static LLVMValueRef ScalarToI64(LLVMBuilderRef builder, LLVMValueRef value,
-            MirType inner)
-        {
-            // .typeid：TypeSheet* 位模式即 payload
-            if (value.TypeOf.Kind == LLVMTypeKind.LLVMPointerTypeKind)
-            {
-                return builder.BuildPtrToInt(value, LLVMTypeRef.Int64, "opt.tid");
-            }
-            switch (inner.Key)
-            {
-                case "float":
-                    return builder.BuildZExt(
-                        builder.BuildBitCast(value, LLVMTypeRef.Int32, "opt.fbits"),
-                        LLVMTypeRef.Int64, "opt.z");
-                case "double":
-                    return builder.BuildBitCast(value, LLVMTypeRef.Int64, "opt.dbits");
-                case "bool":
-                    return builder.BuildZExt(value, LLVMTypeRef.Int64, "opt.z");
-                default:
-                    return value.TypeOf.IntWidth < 64
-                        ? builder.BuildZExt(value, LLVMTypeRef.Int64, "opt.z")
-                        : value;
-            }
-        }
-
-        private static LLVMValueRef UnboxScalarBits(LLVMBuilderRef builder, LLVMValueRef bits,
-            MirType inner)
-        {
-            switch (inner.Key)
-            {
-                case "float":
-                    return builder.BuildBitCast(
-                        builder.BuildTrunc(bits, LLVMTypeRef.Int32, "opt.t"),
-                        LLVMTypeRef.Float, "opt.f");
-                case "double":
-                    return builder.BuildBitCast(bits, LLVMTypeRef.Double, "opt.d");
-                case "bool":
-                    return builder.BuildTrunc(bits, LLVMTypeRef.Int1, "opt.b");
-                default:
-                    if (TypeLayout.IsTypeId(inner))
-                    {
-                        return builder.BuildIntToPtr(bits, PointerType(), "opt.tid");
-                    }
-                    var width = inner.Key switch
-                    {
-                        "i8" or "u8" => LLVMTypeRef.Int8,
-                        "char" or "i16" or "u16" => LLVMTypeRef.Int16,
-                        "i32" or "u32" => LLVMTypeRef.Int32,
-                        "i64" or "u64" => LLVMTypeRef.Int64,
-                        _ => throw new CompilerInternalException(
-                            $"未覆盖的 Nullable 标量拆箱: {inner.Canonical}"),
-                    };
-                    return inner.Key is "i64" or "u64"
-                        ? bits
-                        : builder.BuildTrunc(bits, width, "opt.t");
-            }
-        }
-
         // ===== TypeSheet / 地址 =====
 
-        private static LLVMValueRef TypeSheetPointer(ModuleBuilder.Session session,
+        internal static LLVMValueRef TypeSheetPointer(ModuleBuilder.Session session,
             LLVMBuilderRef builder, MirType type)
         {
             var key = TypeLayout.IsArray(type)
@@ -641,16 +412,6 @@ namespace RigiCompiler.Middleware.Emit
             return builder.BuildGEP2(LLVMTypeRef.Int8, basePointer,
                 new[] { LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, (ulong)offset, false) },
                 "arr.gep");
-        }
-
-        private static LLVMValueRef Malloc(ModuleBuilder.Session session, LLVMBuilderRef builder,
-            int size)
-        {
-            var (fn, fnType) = CallEmitter.DeclareHelperFace(session, RuntimeFaces.Malloc,
-                PointerType(), new[] { LLVMTypeRef.Int32 });
-            return builder.BuildCall2(fnType, fn,
-                new[] { LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, (ulong)size, false) },
-                "box.mem");
         }
 
         // MW9b-G：写越界抛可捕获 core.OutOfBoundException（取代

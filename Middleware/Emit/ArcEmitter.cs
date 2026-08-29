@@ -39,6 +39,18 @@ namespace RigiCompiler.Middleware.Emit
             }
         }
 
+        internal sealed class Acquire : LlvmEmitVisitor<Acquire, MirAcquireSlot>
+        {
+            protected override void VisitCore(MirAcquireSlot inst, ModuleBuilder.Session session) =>
+                EmitAcquireSlot(session, session.Builder, session.Slots, inst.Local);
+        }
+
+        internal sealed class Release : LlvmEmitVisitor<Release, MirReleaseSlot>
+        {
+            protected override void VisitCore(MirReleaseSlot inst, ModuleBuilder.Session session) =>
+                EmitReleaseSlot(session, session.Builder, session.Slots, inst.Local);
+        }
+
         internal static void EmitAcquireSlot(ModuleBuilder.Session session,
             LLVMBuilderRef builder,
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, string name)

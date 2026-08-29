@@ -148,6 +148,15 @@ namespace RigiCompiler.Middleware.Binding
                 }
                 return new NativeDirectBinding(library, nativeSymbol);
             }
+            // 显式 invoke 运算符（除 $$call）保持静态直调：VM 的
+            // ResolveDispatchSymbol 对不在 VM vtable 的 operator 原样返回
+            // 调用点符号（直调），本特判与之对齐；intrinsic 运算符位置的
+            // 实际类型派发走 BindOperatorCall，不经本路径
+            if (target.IsOperatorMember
+                && !target.Canonical.Contains("$$call(", System.StringComparison.Ordinal))
+            {
+                return new DirectCallBinding(target);
+            }
             // 实例方法按 VM 同口径细分（MW4）：class → vtable 虚调用；
             // interface → iMap 派发；init/ext/static/struct/enum 方法与全局
             // fn 直调（struct/enum 的 .this 形态随批 3）
@@ -351,5 +360,337 @@ namespace RigiCompiler.Middleware.Binding
             }
             return result;
         }
+
+        // ===== 用户运算符查询（遗1：native 运算符分派） =====
+        // VM 口径（BilComputeInstructions.DispatchUserBinary / ExecuteUnary
+        // + VmContext.FindOperator）：intrinsic 指令按左操作数实际类型沿
+        // extends 链找 operator fn，右操作数仅参与形参可赋匹配。native
+        // 编译期按左操作数静态类型解析声明符号；运行期的实际类型派发由
+        // vtable 槽完成（运算符已入 native vtable，MwSymbol.IsVirtualMember），
+        // 与 VM 的实际类型解析殊途同归。运算符名映射与
+        // VmTypeOps.BinaryOperatorName/UnaryOperatorName 同表（VM 层设施
+        // 不被本层引用，两张表靠 MiddlewareTests 锚定防漂移）。
+
+        // 内建二元操作数族（BindBinary 已覆盖的左操作数类型）：标量族 /
+        // string / Nullable 比较。左操作数在此族内不查用户 operator
+        public static bool IsBuiltinBinaryOperand(string leftType)
+        {
+            var key = MwTypeKey.Of(MwTypeKey.Normalize(leftType));
+            return key is "i8" or "i16" or "i32" or "i64"
+                or "u8" or "u16" or "u32" or "u64"
+                or "float" or "double" or "bool" or "char" or "String"
+                || key.StartsWith("core::Nullable<", System.StringComparison.Ordinal);
+        }
+
+        // 内建一元操作数族（BindUnary 已覆盖；string 无一元运算但同样
+        // 不落用户派发——VM 对 string 一元走内建求值后响亮失败同口径）
+        public static bool IsBuiltinUnaryOperand(string operandType)
+        {
+            var key = MwTypeKey.Of(MwTypeKey.Normalize(operandType));
+            return key is "i8" or "i16" or "i32" or "i64"
+                or "u8" or "u16" or "u32" or "u64"
+                or "float" or "double" or "bool" or "char" or "String";
+        }
+
+        public static string UserBinaryOperatorName(BilBinaryOp op)
+        {
+            return op switch
+            {
+                BilBinaryOp.Add => "plus",
+                BilBinaryOp.Sub => "minus",
+                BilBinaryOp.Mul => "times",
+                BilBinaryOp.Div => "div",
+                BilBinaryOp.And => "and",
+                BilBinaryOp.Or => "or",
+                BilBinaryOp.BinAnd => "bitwiseAnd",
+                BilBinaryOp.BinOr => "bitwiseOr",
+                BilBinaryOp.BinXor => "bitwiseXor",
+                BilBinaryOp.ShiftLeft => "leftShift",
+                BilBinaryOp.ShiftRight => "rightShift",
+                BilBinaryOp.ShiftRightUnsigned => "unsignedRightShift",
+                BilBinaryOp.CmpEq => "equals",
+                BilBinaryOp.CmpNe => "equals",
+                BilBinaryOp.CmpLt => "compareTo",
+                BilBinaryOp.CmpLe => "compareTo",
+                BilBinaryOp.CmpGt => "compareTo",
+                BilBinaryOp.CmpGe => "compareTo",
+                _ => throw new CompilerInternalException($"未知二元运算: {op}"),
+            };
+        }
+
+        public static string UserUnaryOperatorName(BilUnaryOp op)
+        {
+            return op switch
+            {
+                BilUnaryOp.Opposite => "opposite",
+                BilUnaryOp.Not => "not",
+                BilUnaryOp.BinNot => "bitwiseNot",
+                _ => throw new CompilerInternalException($"未知一元运算: {op}"),
+            };
+        }
+
+        public static bool IsOrderCompare(BilBinaryOp op)
+        {
+            return op is BilBinaryOp.CmpLt or BilBinaryOp.CmpLe
+                or BilBinaryOp.CmpGt or BilBinaryOp.CmpGe;
+        }
+
+        // 二元用户运算符解析：按左操作数静态类型沿 extends 链（VM
+        // FindOperator 同口径；含成员表兜底扫描——预定义宿主不进符号段
+        // 类型声明时的防御）；右操作数静态类型参与形参可赋匹配。找不到
+        // 返回 null（调用方按受控拒绝处理，消息对齐 VM 运行期异常文本）
+        public static MwMemberSymbol? FindUserBinaryOperator(MwSymbolTable symbols,
+            BilBinaryOp op, string leftType, string rightType)
+        {
+            return FindUserOperator(symbols, UserBinaryOperatorName(op), leftType,
+                new[] { rightType });
+        }
+
+        public static MwMemberSymbol? FindUserUnaryOperator(MwSymbolTable symbols,
+            BilUnaryOp op, string operandType)
+        {
+            return FindUserOperator(symbols, UserUnaryOperatorName(op), operandType,
+                System.Array.Empty<string>());
+        }
+
+        private static MwMemberSymbol? FindUserOperator(MwSymbolTable symbols,
+            string operatorName, string ownerType, IReadOnlyList<string> argTypes)
+        {
+            var current = MwTypeKey.Normalize(ownerType);
+            // 泛型占位左操作数（T extends Bound 内的运算）：静态无法解析
+            // 到唯一声明（VM 运行期按实际 typeid 派发）——遗1 不支持，
+            // 由调用方受控拒绝
+            if (current.Contains(".generic<", System.StringComparison.Ordinal))
+            {
+                return null;
+            }
+            var visited = new HashSet<string>(System.StringComparer.Ordinal);
+            while (visited.Add(BilVerificationContext.StripTypeArguments(current)))
+            {
+                var type = symbols.FindTypeByRef(current);
+                if (type == null)
+                {
+                    break;
+                }
+                foreach (var member in type.Members)
+                {
+                    if (IsOperatorNamed(member, operatorName)
+                        && OperatorParamsMatchStatic(symbols, member, type.Declaration,
+                            current, argTypes))
+                    {
+                        return member;
+                    }
+                }
+                if (type.Declaration.ExtendsType == null)
+                {
+                    break;
+                }
+                current = MwTypeKey.Normalize(type.Declaration.ExtendsType);
+            }
+            return null;
+        }
+
+        private static bool IsOperatorNamed(MwMemberSymbol member, string operatorName)
+        {
+            if (member.Declaration.Kind != BilMemberKind.Method)
+            {
+                return false;
+            }
+            foreach (var modifier in member.Declaration.Modifiers)
+            {
+                if (modifier is BilOperatorModifier op && op.Name == operatorName)
+                {
+                    return true;
+                }
+            }
+            return member.Canonical.Contains("$" + operatorName + "(",
+                System.StringComparison.Ordinal);
+        }
+
+        // 形参匹配（静态口径）：剥 .generic./.vargs./.kwargs. 隐藏形参；
+        // 宿主泛型代入（SubstituteHostGenerics 同 BindIndirectCall 口径）
+        // 后逐个可赋（实参静态类型 → 形参类型，沿 extends/implements 闭包）
+        private static bool OperatorParamsMatchStatic(MwSymbolTable symbols,
+            MwMemberSymbol member,
+            BilTypeDeclaration declaration, string hostTypeRef,
+            IReadOnlyList<string> argTypes)
+        {
+            if (!BilVerificationContext.TryParseMethodSymbol(member.Canonical,
+                    out _, out _, out var parameters, out _))
+            {
+                return false;
+            }
+            var ordinary = new List<(string Name, string TypeRef)>();
+            foreach (var parameter in parameters)
+            {
+                if (parameter.Name.StartsWith(".generic.", System.StringComparison.Ordinal)
+                    || parameter.Name.StartsWith(".vargs.", System.StringComparison.Ordinal)
+                    || parameter.Name.StartsWith(".kwargs.", System.StringComparison.Ordinal))
+                {
+                    continue;
+                }
+                ordinary.Add(parameter);
+            }
+            if (ordinary.Count != argTypes.Count)
+            {
+                return false;
+            }
+            for (var i = 0; i < ordinary.Count; i++)
+            {
+                var expected = SubstituteHostGenerics(ordinary[i].TypeRef, declaration,
+                    hostTypeRef);
+                if (!TypeAssignableStatic(symbols, argTypes[i], expected))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        // 静态可赋（VM TypeAssignable 的编译期投影）：canonical 全等（含
+        // .generic 降级）或 from 的 extends/implements 闭包命中 to
+        private static bool TypeAssignableStatic(MwSymbolTable symbols, string from, string to)
+        {
+            if (BilVerificationContext.TypesCompatible(from, to))
+            {
+                return true;
+            }
+            var normalizedTo = MwTypeKey.Normalize(to);
+            if (MwTypeKey.IsAny(normalizedTo))
+            {
+                return true;
+            }
+            var visited = new HashSet<string>(System.StringComparer.Ordinal);
+            var stack = new Stack<string>();
+            stack.Push(MwTypeKey.Normalize(from));
+            while (stack.Count > 0)
+            {
+                var current = stack.Pop();
+                if (!visited.Add(BilVerificationContext.StripTypeArguments(current)))
+                {
+                    continue;
+                }
+                var type = symbols.FindTypeByRef(current);
+                if (type == null)
+                {
+                    continue;
+                }
+                if (type.Declaration.ExtendsType is { } baseRef)
+                {
+                    var normalizedBase = MwTypeKey.Normalize(baseRef);
+                    if (BilVerificationContext.TypesCompatible(normalizedBase, normalizedTo))
+                    {
+                        return true;
+                    }
+                    stack.Push(normalizedBase);
+                }
+                foreach (var iface in type.Declaration.ImplementsTypes)
+                {
+                    var normalizedIface = MwTypeKey.Normalize(iface);
+                    if (BilVerificationContext.TypesCompatible(normalizedIface, normalizedTo))
+                    {
+                        return true;
+                    }
+                    stack.Push(normalizedIface);
+                }
+            }
+            return false;
+        }
+
+        // intrinsic 运算符调用的派发绑定：class → vtable 虚调用（实际类型
+        // 派发，VM FindOperator 口径）；interface → iMap 派发；struct/enum
+        // → 直调（值类型无继承，静态即实际）
+        public static ImplBinding BindOperatorCall(MwMemberSymbol target)
+        {
+            if (target.Owner != null && target.IsVirtualMember)
+            {
+                return target.Owner.Declaration.Kind switch
+                {
+                    BilTypeKind.Class => new VirtualCallBinding(target),
+                    BilTypeKind.Interface => new InterfaceCallBinding(target),
+                    _ => new DirectCallBinding(target),
+                };
+            }
+            return new DirectCallBinding(target);
+        }
+
+        // ===== 成员查询（访问器 / 索引运算符；不依赖 MIR 类型对象） =====
+
+        // 字段访问器查找（沿宿主基类链；excludingFn = 当前 fn，访问器
+        // 体内不递归自调——VM TryFindAccessor 同口径）
+        public static MwMemberSymbol? FindAccessor(MwSymbolTable symbols, string fieldSymbol,
+            BilAccessorKind kind, string excludingFn)
+        {
+            for (var type = symbols.FindType(FieldOwnerOf(fieldSymbol));
+                type != null; type = BaseOf(symbols, type))
+            {
+                foreach (var member in type.Members)
+                {
+                    if (member.Canonical == excludingFn)
+                    {
+                        continue;
+                    }
+                    foreach (var modifier in member.Declaration.Modifiers)
+                    {
+                        if (modifier is BilAccessorModifier accessor
+                            && accessor.Kind == kind && accessor.FieldSymbol == fieldSymbol)
+                        {
+                            return member;
+                        }
+                    }
+                }
+            }
+            return null;
+        }
+
+        // 用户索引运算符（VM FindIndexOperator 同口径）：$$getAtIndex /
+        // $$setAtIndex，宿主按剥泛型后的类型名匹配
+        public static MwMemberSymbol? FindIndexOperator(MwSymbolTable symbols,
+            string collectionTypeCanonical, bool isGet)
+        {
+            var needle = isGet ? "$$getAtIndex(" : "$$setAtIndex(";
+            var hosts = new HashSet<string>(System.StringComparer.Ordinal)
+            {
+                collectionTypeCanonical,
+                BilVerificationContext.StripTypeArguments(collectionTypeCanonical),
+            };
+            for (var type = symbols.FindType(collectionTypeCanonical)
+                    ?? symbols.FindType(
+                        BilVerificationContext.StripTypeArguments(collectionTypeCanonical));
+                type != null; type = BaseOf(symbols, type))
+            {
+                hosts.Add(type.Canonical);
+                if (type.Declaration.ExtendsType is { } baseRef)
+                {
+                    hosts.Add(BilVerificationContext.StripTypeArguments(baseRef));
+                }
+            }
+            foreach (var member in symbols.Members)
+            {
+                if (!member.Canonical.Contains(needle, System.StringComparison.Ordinal))
+                {
+                    continue;
+                }
+                var owner = member.Owner?.Canonical;
+                if (owner != null && (hosts.Contains(owner)
+                    || hosts.Contains(BilVerificationContext.StripTypeArguments(owner))))
+                {
+                    return member;
+                }
+            }
+            return null;
+        }
+
+        // 字段符号宿主段：Counter#count@.i32 → Counter
+        public static string FieldOwnerOf(string fieldSymbol)
+        {
+            var hash = fieldSymbol.IndexOf('#');
+            return hash < 0
+                ? throw new CompilerInternalException($"字段符号缺宿主段: {fieldSymbol}")
+                : fieldSymbol.Substring(0, hash);
+        }
+
+        private static MwTypeSymbol? BaseOf(MwSymbolTable symbols, MwTypeSymbol type) =>
+            type.Declaration.ExtendsType is { } baseRef ? symbols.FindTypeByRef(baseRef) : null;
     }
 }
