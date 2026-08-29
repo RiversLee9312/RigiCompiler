@@ -63,6 +63,11 @@ dotnet publish -c Release -r win-x64 -o publish/win-x64
 - **性能注意**：AOT 无 JIT 的运行时优化（去虚拟化/PGO），重接口分派路径比 CoreCLR 慢约 3 倍——fuzz 类套件在 AOT 产物上明显更慢，日常全量测试建议仍用普通构建跑。
 - **CI**：`.github/workflows/ci.yml` 按上述流程在 `windows-latest`（win-x64）与 `ubuntu-latest`（linux-x64，均为 amd64）双平台分别发布 AOT 产物并用产物跑全量测试（AOT 不支持跨 OS 交叉编译，只能按平台分别构建）。
 - **提交前本地必须同口径**：在**本机已有的 Windows 与 Linux 环境**（本仓库开发机一般为 Windows 宿主 + WSL Ubuntu）各 `publish -c Release` 一次，并用产物跑 `test --all`。禁止只跑 `dotnet run -- test --all` 就提交——那是 CoreCLR 开发回路，不会覆盖 AOT 反射根、RID 原生库与无 JIT 路径。Linux 必须在 Linux 里 publish（不能在 Windows 上交叉编 linux-x64 AOT）。
+- **本机 WSL 的 dotnet 路径（环境事实）**：WSL Ubuntu 的 PATH 上是 apt 装的 .NET 8（`dotnet-sdk-8.0`，**不满足**本项目 net10.0）；.NET 10 SDK 由 dotnet-install 脚本装在 **`~/.dotnet`（不在 PATH）**。WSL 侧构建/测试前先导出：
+
+```bash
+export DOTNET_ROOT=$HOME/.dotnet && export PATH=$HOME/.dotnet:$PATH
+```
 
 ```bash
 # Windows
