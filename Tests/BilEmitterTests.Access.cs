@@ -124,15 +124,45 @@ namespace RigiCompiler.Tests
                 && !ratioMembers.Any(d => d.Symbol.Contains("set.doubled")));
 
             // 资源形状（§19.1 标量去重：..globals.init 的 height 初值 200
-            // 在最前——N1 起全局字段初始值落地执行；init 的 i32 0 在
-            // S9f 后自 stdlib 基线移除，转为用户模块新增一条）
+            // 在最前；init 的 i32 0 与 stdlib 基线同键去重，尾部 null 是
+            // Task<TReturn> 初值）
             BilTestHarness.CheckResShape("资源（访问器样例）", module,
-                "#0 = i32 200\n#1 = string \"\\n\"\n#2 = bool false\n#3 = i32 1\n" +
+                
+                "#0 = i32 200\n" +
+                "#1 = string \"\\n\"\n" +
+                "#2 = bool false\n" +
+                "#3 = i32 1\n" +
                 "#4 = bool true\n" +
-                "#5 = string \"无法将 \"\n#6 = string \" 转换为 \"\n" +
-                "#7 = string \"new.indirect 目标不可构造：不匹配任何 init：\"\n" +
-                "#8 = string \"整数除以零\"\n#9 = string \"数组下标越界：\"\n" +
-                "#10 = string \"（长度 \"\n#11 = string \"）\"\n#12 = i32 0");
+                "#5 = i32 0\n" +
+                "#6 = string \"Task 只允许启动一次：对已完成启动的 Task 调用 run\"\n" +
+                "#7 = string \"冷 Task body 无法 spawn-into：无匹配闭包\"\n" +
+                "#8 = i32 2\n" +
+                "#9 = i32 3\n" +
+                "#10 = i32 4\n" +
+                "#11 = i32 5\n" +
+                "#12 = null type(core.coroutine::I64Queue)\n" +
+                "#13 = catch-table {  }\n" +
+                "#14 = string \"Mutex.release：令牌不属于此 Mutex 或已释放\"\n" +
+                "#15 = catch-table {  }\n" +
+                "#16 = catch-table {  }\n" +
+                "#17 = string \"Timer.RepeatOption.Repeat：repeatCount 必须 > 0\"\n" +
+                "#18 = null type(.generic<$.generic.TValue>)\n" +
+                "#19 = catch-table {  }\n" +
+                "#20 = catch-table {  }\n" +
+                "#21 = i32 8\n" +
+                "#22 = null type(core.coroutine::Executor)\n" +
+                "#23 = i32 -1\n" +
+                "#24 = string \"无法将 \"\n" +
+                "#25 = string \" 转换为 \"\n" +
+                "#26 = string \"new.indirect 目标不可构造：不匹配任何 init：\"\n" +
+                "#27 = string \"整数除以零\"\n" +
+                "#28 = string \"数组下标越界：\"\n" +
+                "#29 = string \"（长度 \"\n" +
+                "#30 = string \"）\"\n" +
+                "#31 = i32 999999\n" +
+                "#32 = string \"TimeStamp.nanoseconds 越界：\"\n" +
+                "#33 = string \"（范围 0..999999）\"\n" +
+                "#34 = null type(.generic<$.generic.TReturn>)");
 
             // fn 形状黄金：backing getter/setter（setter 体首隐含赋值合成）
             BilTestHarness.CheckFnShape("backing getter fn（value → get.field）",

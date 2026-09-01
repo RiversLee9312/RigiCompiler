@@ -525,7 +525,15 @@ namespace RigiCompiler.Tests
             CheckNoErrors("全管线无诊断（跨函数同形 try/catch）", unit);
             BilTestHarness.CheckBilValid("验证器零错误（跨函数同形 try/catch）", module);
             // 模型断言：两函数各持独立 catch-table 资源，条目 block 属本 fn
-            var tables = module.Resources.OfType<BilCatchTableResource>().ToList();
+            //（MW11c 起 stdlib Mutex.runSynchronously 也产 catch-table——
+            // 只数本用例两函数 try 指令引用的表，不再按全模块计数）
+            var tables = module.Functions
+                .Where(f => f.Symbol == "$helper()@.i32" || f.Symbol == "$main()@.i32")
+                .SelectMany(f => f.Blocks)
+                .SelectMany(b => b.Instructions)
+                .OfType<TryInstruction>()
+                .Select(t => (BilCatchTableResource)t.CatchTable!)
+                .Distinct().ToList();
             TestHarness.CheckTrue("两函数各登记独立 catch-table（跨函数不去重）",
                 tables.Count == 2, "实际 " + tables.Count);
             foreach (var function in module.Functions.Where(

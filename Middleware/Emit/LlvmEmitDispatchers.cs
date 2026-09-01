@@ -133,6 +133,17 @@ namespace RigiCompiler.Middleware.Emit
                 case MirThrow throwInst:
                     ExceptionEmitter.Throw.Visit(throwInst, session);
                     break;
+                // MW11c 棒5a：协程三指令（split 后形态；旧五面指令族
+                // 已随 C 调度面删除）
+                case MirCoroutineCreate create:
+                    CoroutineEmitter.Create.Visit(create, session);
+                    break;
+                case MirFailureLoad failureLoad:
+                    CoroutineEmitter.FailureLoad.Visit(failureLoad, session);
+                    break;
+                case MirCoroutineDone done:
+                    CoroutineEmitter.Done.Visit(done, session);
+                    break;
                 default:
                     throw new CompilerInternalException($"未覆盖的 MIR 指令: {inst.GetType().Name}");
             }

@@ -65,8 +65,8 @@ namespace RigiCompiler.Tests
                 new[] { "--file", "--max-steps", "--entry-point", "--verbose", "--log-to" }.All(vmSubs.Contains));
             var native = commands.First(c => c.Mask.Name == "native");
             var nativeSubs = native.SubCommands.Select(s => s.Mask.Name).ToList();
-            Check("native 子命令齐全（--file/--out/--verbose/--log-to）",
-                new[] { "--file", "--out", "--verbose", "--log-to" }.All(nativeSubs.Contains));
+            Check("native 子命令齐全（--file/--out/--libuv-dir/--verbose/--log-to）",
+                new[] { "--file", "--out", "--libuv-dir", "--verbose", "--log-to" }.All(nativeSubs.Contains));
             Check("help 无子命令", help.SubCommands.Count == 0);
             Console.WriteLine();
         }

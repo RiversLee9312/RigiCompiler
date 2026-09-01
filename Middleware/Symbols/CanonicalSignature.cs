@@ -25,26 +25,21 @@ namespace RigiCompiler.Middleware.Symbols
 
         public static CanonicalSignature Parse(string canonical)
         {
-            var open = canonical.IndexOf('(');
+            // 参数列表锚定尾部 ")@"（返回段分隔符）反向取匹配 '('：
+            // 类型引用与成员名段均不含圆括号，而 MW11a 合成 canonical
+            //（$mw.frame.<fn canonical>$init()@.void）内嵌的 fn 签名自带
+            // 括号，正向首 '(' 会误中内嵌段
+            var closeAt = canonical.LastIndexOf(")@", System.StringComparison.Ordinal);
+            if (closeAt < 0)
+            {
+                throw new CompilerInternalException($"canonical 符号缺参数列表: {canonical}");
+            }
+            var open = canonical.LastIndexOf('(', closeAt);
             if (open < 0)
             {
                 throw new CompilerInternalException($"canonical 符号缺参数列表: {canonical}");
             }
-            var depth = 0;
-            var close = -1;
-            for (var i = open; i < canonical.Length; i++)
-            {
-                switch (canonical[i])
-                {
-                    case '<': depth++; break;
-                    case '>': depth--; break;
-                    case ')' when depth == 0: close = i; i = canonical.Length; break;
-                }
-            }
-            if (close < 0 || close + 1 >= canonical.Length || canonical[close + 1] != '@')
-            {
-                throw new CompilerInternalException($"canonical 符号形状非法: {canonical}");
-            }
+            var close = closeAt;
 
             var parameters = new List<(string, string)>();
             var inner = canonical.Substring(open + 1, close - open - 1);

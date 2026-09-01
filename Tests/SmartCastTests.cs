@@ -59,7 +59,7 @@ namespace RigiCompiler.Tests
 
         private static BoundFunctionBody BodyOf(IReadOnlyList<BoundFunctionBody> bodies, string name)
         {
-            return bodies.Single(b => b.Method.Name == name);
+            return TestHarness.UniqueNamedBody(bodies, name, b => b.Method);
         }
 
         private static bool ContainsSmartCast(BoundBlock block)

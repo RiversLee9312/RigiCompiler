@@ -17,7 +17,7 @@ namespace RigiCompiler.Middleware.Pipeline
         // MirReachability 的派发闭包要查 vtable 计划）→ MIR 构建 →
         // IndexOperatorLowering → AccessorLowering → FieldProxyBaking →
         // MethodProxyBaking → ProxyBaking → CallWildcardLowering →
-        // SingletonLowering → RcInjection。MW10 wrapper 烘焙：
+        // SingletonLowering → CoroutineSplit → RcInjection。MW10 wrapper 烘焙：
         // AccessorLowering 之后、RcInjection 之前（字段 get/set 链
         //（Value + Entity 双源）先于方法链——后者烘焙体重跑前者钩子，
         // 且 router 的 get/set 分支要求字段链环已烘焙）。
@@ -34,8 +34,13 @@ namespace RigiCompiler.Middleware.Pipeline
         // SingletonLowering（刀5）合成 singleton 三态 get fn 并把
         // new type(单例) 改写为 get 调用——排在 RcInjection 之前（get
         // fn 内含托管槽，须被 ARC 配平覆盖），晚于各烘焙 pass（烘焙
-        // 产物体内的 new type(单例) 同样须被改写收编）。缺 pass 不放空
-        // stub；读写集与相对位置见 MIDDLEWARE_ARCHITECTURE §3/§5。
+        // 产物体内的 new type(单例) 同样须被改写收编）。
+        // CoroutineSplit（MW11a 棒2）在 SingletonLowering 之后、
+        // RcInjection 之前：async fn 切状态机（stub + resume fn + frame
+        // 类型注册），生成的全部代码由 RcInjection 统一 ARC 配平（split
+        // 不插 acquire/release；move 槽/frame 借用约定见 RcInjectionPass
+        // MW11a 段）。缺 pass 不放空 stub；读写集与相对位置见
+        // MIDDLEWARE_ARCHITECTURE §3/§5/§6。
         public static MwPipeline CreateDefault()
         {
             return new MwPipeline()
@@ -48,6 +53,7 @@ namespace RigiCompiler.Middleware.Pipeline
                 .Add(new ProxyBakingPass())
                 .Add(new CallWildcardLoweringPass())
                 .Add(new SingletonLoweringPass())
+                .Add(new CoroutineSplitPass())
                 .Add(new RcInjectionPass());
         }
 

@@ -20,8 +20,8 @@ namespace RigiCompiler.Tests
     ///    native 双注解）；collections（namespace core.collections +
     ///    2 interface + 2 class + alloc_array/arrayOf/arrayOfElements +
     ///    span_alloc/spanOf/shared_span_alloc/sharedSpanOf）；
-    ///    coroutine（namespace core.coroutine +
-    ///    9 class + make_sleep_alarm native + sleep 包装）；disposable（namespace core +
+    ///    coroutine（namespace core.coroutine + 15 类型 +
+    ///    laneOfExecutor + 29 native 原语 + sleep 包装）；disposable（namespace core +
     ///    IDisposable 接口）；exceptions（namespace core + 5 异常子类）
     /// 3. Console 整棵 Root 的 AstDescribe 描述串精确比对
     /// </summary>
@@ -38,6 +38,7 @@ namespace RigiCompiler.Tests
             TestCoroutineStructure();
             TestDisposableStructure();
             TestExceptionsStructure();
+            TestTimeStructure();
             TestConsoleDescribe();
 
             return TestHarness.Summary("StdlibSources");
@@ -49,12 +50,12 @@ namespace RigiCompiler.Tests
             TestHarness.Section("ParseAll: Count & SourceName");
 
             var roots = StdlibSources.ParseAll();
-            TestHarness.CheckTrue("ParseAll 返回恰好 6 棵 RootASTNode",
-                roots.Count == 6, $"实际 {roots.Count} 棵");
-            if (roots.Count < 6) { TestHarness.Blank(); return; }
+            TestHarness.CheckTrue("ParseAll 返回恰好 7 棵 RootASTNode",
+                roots.Count == 7, $"实际 {roots.Count} 棵");
+            if (roots.Count < 7) { TestHarness.Blank(); return; }
 
             // 逻辑名 Ordinal 排序：'.'(0x2E) < 'c'；'C'(0x43) < 'c'(0x63)；
-            // collections < coroutine（'l' < 'r'）；d < e
+            // collections < coroutine（'l' < 'r'）；d < e < t
             TestHarness.Check("sourceName[0]（点开头文件名反推）",
                 roots[0].Span?.sourceName ?? "<null>", "<stdlib>/.bootstrap.rg");
             TestHarness.Check("sourceName[1]",
@@ -67,6 +68,8 @@ namespace RigiCompiler.Tests
                 roots[4].Span?.sourceName ?? "<null>", "<stdlib>/core/disposable.rg");
             TestHarness.Check("sourceName[5]",
                 roots[5].Span?.sourceName ?? "<null>", "<stdlib>/core/exceptions.rg");
+            TestHarness.Check("sourceName[6]（MW11c core.time）",
+                roots[6].Span?.sourceName ?? "<null>", "<stdlib>/core/time.rg");
 
             TestHarness.Blank();
         }
@@ -356,7 +359,7 @@ namespace RigiCompiler.Tests
             TestHarness.Blank();
         }
 
-        // ===== 2d. coroutine 结构（namespace + 9 class + make_sleep_alarm + sleep）=====
+        // ===== 2d. coroutine 结构（MW11c：15 类型 + 29 native + sleep）=====
         private static void TestCoroutineStructure()
         {
             TestHarness.Section("Structure: namespace core.coroutine");
@@ -371,42 +374,63 @@ namespace RigiCompiler.Tests
             }
             var root = roots[3];
 
-            // 顶层：namespace + Task\<TResult\>/Task/Executor/MainExecutor/
-            // ComputeExecutor/IOExecutor/PollingAlarm/EventAlarm/
-            // CoroutineLocal\<TValue\> 9 个 class + make_sleep_alarm native
-            // + sleep Rigi 包装（共 12 个声明，RUNTIME §19.4）
-            TestHarness.CheckTrue("顶层恰好 12 个声明（namespace + 9 class + 2 func）",
-                root.Declarations.Count == 12, $"实际 {root.Declarations.Count}");
-            if (root.Declarations.Count < 12) { TestHarness.Blank(); return; }
+            // MW11c 顶层：namespace + 15 类型（Task/Task\<TReturn\> +
+            // TaskState + Executor 族 4 + PollingAlarm/EventAlarm/
+            // SleepAlarm + Mutex + Timer + CoroutineLocal + I64Queue/
+            // Dispatcher）+ laneOfExecutor 助手 + 29 个 rigi_ native
+            // 原语 + sleep Rigi 包装（共 47 个声明）。棒5a：删
+            // make_sleep_alarm；增 SleepAlarm/laneOfExecutor 与句柄
+            // lane/current、alarm_wait、poll_*、failure_record/drop；
+            // 其后增 coro_local_push/pop/get/inherit（§20.2）
+            TestHarness.CheckTrue("顶层恰好 47 个声明（namespace + 15 类型 + 31 func）",
+                root.Declarations.Count == 47, $"实际 {root.Declarations.Count}");
+            if (root.Declarations.Count < 47) { TestHarness.Blank(); return; }
 
             var ns = root.Declarations[0] as NamespaceDeclarationASTNode;
             TestHarness.CheckTrue("首声明是 namespace core.coroutine",
                 ns != null && AstDescribe.Symbol(ns.Name.symbol) == "core.coroutine");
 
-            TestHarness.CheckTrue("声明[1] 是泛型 class Task（abstract）",
-                root.Declarations[1] is ClassDeclarationASTNode task1
+            TestHarness.CheckTrue("声明[1] 是非泛型 class Task（具体 shared，非 abstract）",
+                root.Declarations[1] is ClassDeclarationASTNode task0
+                && task0.ClassName == "Task"
+                && (task0.GenericParameters == null
+                    || task0.GenericParameters.Parameters.Count == 0)
+                && task0.Modifiers.Contains(Keywords.SHARED)
+                && !task0.Modifiers.Contains(Keywords.ABSTRACT)
+                && task0.Members.OfType<CallableDeclarationASTNode>()
+                    .Count(m => m.Kind == CallableKind.Init) == 1
+                && task0.Members.OfType<CallableDeclarationASTNode>()
+                    .Count(m => m.Name == "run") == 2);
+            TestHarness.CheckTrue("声明[2] 是泛型 class Task（具体 shared，同名不同元数）",
+                root.Declarations[2] is ClassDeclarationASTNode task1
                 && task1.ClassName == "Task"
                 && task1.GenericParameters?.Parameters.Count == 1
-                && task1.Modifiers.Contains(Keywords.ABSTRACT));
-            TestHarness.CheckTrue("声明[2] 是非泛型 class Task（abstract，同名不同元数）",
-                root.Declarations[2] is ClassDeclarationASTNode task2
-                && task2.ClassName == "Task"
-                && (task2.GenericParameters == null
-                    || task2.GenericParameters.Parameters.Count == 0)
-                && task2.Modifiers.Contains(Keywords.ABSTRACT));
-            TestHarness.CheckTrue("声明[3] 是 class Executor（abstract）",
-                root.Declarations[3] is ClassDeclarationASTNode exec
+                && task1.Modifiers.Contains(Keywords.SHARED)
+                && !task1.Modifiers.Contains(Keywords.ABSTRACT));
+            TestHarness.CheckTrue("声明[3] 是 TaskState enum struct（六 case）",
+                root.Declarations[3] is EnumStructDeclarationASTNode taskState
+                && taskState.EnumName == "TaskState"
+                && taskState.Cases.Count == 6
+                && taskState.Cases.Select(c => c.CaseName).SequenceEqual(
+                    new[] { "Created", "Runnable", "Suspended", "Completed",
+                        "Failed", "Cancelled" }));
+            TestHarness.CheckTrue("声明[4] 是 class Executor（abstract）",
+                root.Declarations[4] is ClassDeclarationASTNode exec
                 && exec.ClassName == "Executor"
                 && exec.Modifiers.Contains(Keywords.ABSTRACT));
-            TestHarness.CheckTrue("声明[4..6] 是三个内置 Executor 子类",
-                root.Declarations[4] is ClassDeclarationASTNode mainExec
+            TestHarness.CheckTrue("声明[5..7] 是三个内置 Executor（pub shared singleton）",
+                root.Declarations[5] is ClassDeclarationASTNode mainExec
                 && mainExec.ClassName == "MainExecutor"
-                && root.Declarations[5] is ClassDeclarationASTNode computeExec
+                && root.Declarations[6] is ClassDeclarationASTNode computeExec
                 && computeExec.ClassName == "ComputeExecutor"
-                && root.Declarations[6] is ClassDeclarationASTNode ioExec
-                && ioExec.ClassName == "IOExecutor");
-            TestHarness.CheckTrue("声明[7] 是 PollingAlarm（abstract，含 isReady 抽象方法）",
-                root.Declarations[7] is ClassDeclarationASTNode alarm
+                && root.Declarations[7] is ClassDeclarationASTNode ioExec
+                && ioExec.ClassName == "IOExecutor"
+                && new[] { mainExec, computeExec, ioExec }.All(e =>
+                    e.Modifiers.Contains(Keywords.SINGLETON)
+                    && e.Modifiers.Contains(Keywords.SHARED)
+                    && !e.Modifiers.Contains(Keywords.ABSTRACT)));
+            TestHarness.CheckTrue("声明[8] 是 PollingAlarm（abstract，含 isReady 抽象方法）",
+                root.Declarations[8] is ClassDeclarationASTNode alarm
                 && alarm.ClassName == "PollingAlarm"
                 && alarm.Modifiers.Contains(Keywords.ABSTRACT)
                 && alarm.Members.Count == 1
@@ -414,25 +438,106 @@ namespace RigiCompiler.Tests
                 && ready.Name == "isReady"
                 && ready.Modifiers.Contains(Keywords.ABSTRACT)
                 && ready.Body == null);
-            TestHarness.CheckTrue("声明[8] 是 EventAlarm（abstract）",
-                root.Declarations[8] is ClassDeclarationASTNode eventAlarm
+            TestHarness.CheckTrue("声明[9] 是 EventAlarm（abstract）",
+                root.Declarations[9] is ClassDeclarationASTNode eventAlarm
                 && eventAlarm.ClassName == "EventAlarm"
                 && eventAlarm.Modifiers.Contains(Keywords.ABSTRACT));
-            TestHarness.CheckTrue("声明[9] 是泛型 class CoroutineLocal（abstract）",
-                root.Declarations[9] is ClassDeclarationASTNode coroutineLocal
+            TestHarness.CheckTrue("声明[10] 是 SleepAlarm : EventAlarm（priv shared）",
+                root.Declarations[10] is ClassDeclarationASTNode sleepAlarm
+                && sleepAlarm.ClassName == "SleepAlarm"
+                && sleepAlarm.Modifiers.Contains(Keywords.PRIV)
+                && sleepAlarm.Modifiers.Contains(Keywords.SHARED)
+                && sleepAlarm.BaseClass != null);
+            TestHarness.CheckTrue("声明[11] 是 Mutex（具体 shared，嵌套 Lock + acquire/release/runSynchronously）",
+                root.Declarations[11] is ClassDeclarationASTNode mutex
+                && mutex.ClassName == "Mutex"
+                && mutex.Modifiers.Contains(Keywords.SHARED)
+                && !mutex.Modifiers.Contains(Keywords.ABSTRACT)
+                && mutex.Members.OfType<ClassDeclarationASTNode>()
+                    .Any(nested => nested.ClassName == "Lock")
+                && mutex.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "acquire")
+                && mutex.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "release")
+                && mutex.Members.OfType<CallableDeclarationASTNode>()
+                    .Count(m => m.Name == "runSynchronously") == 2);
+            TestHarness.CheckTrue("声明[12] 是 Timer : EventAlarm（嵌套 RepeatOption 三 case）",
+                root.Declarations[12] is ClassDeclarationASTNode timer
+                && timer.ClassName == "Timer"
+                && timer.Modifiers.Contains(Keywords.SHARED)
+                && timer.BaseClass != null
+                && timer.Members.OfType<EnumStructDeclarationASTNode>()
+                    .Any(nested => nested.EnumName == "RepeatOption"
+                        && nested.Cases.Count == 3
+                        && nested.Cases.Select(c => c.CaseName).SequenceEqual(
+                            new[] { "NoRepeat", "Repeat", "InfiniteRepeat" })));
+            TestHarness.CheckTrue("声明[13] 是泛型 class CoroutineLocal（具体 shared，withValue/get）",
+                root.Declarations[13] is ClassDeclarationASTNode coroutineLocal
                 && coroutineLocal.ClassName == "CoroutineLocal"
                 && coroutineLocal.GenericParameters?.Parameters.Count == 1
-                && coroutineLocal.Modifiers.Contains(Keywords.ABSTRACT));
-            TestHarness.CheckTrue("声明[10] 是 make_sleep_alarm priv native（返回 EventAlarm）",
-                root.Declarations[10] is CallableDeclarationASTNode makeSleep
-                && makeSleep.Name == "make_sleep_alarm"
-                && makeSleep.Modifiers.Contains(Keywords.NATIVE)
-                && makeSleep.Modifiers.Contains(Keywords.PRIV)
-                && makeSleep.Body == null
-                && makeSleep.Annotations.Count == 2
-                && makeSleep.ReturnType != null);
-            TestHarness.CheckTrue("声明[11] 是 sleep Rigi 包装（非 native，有体）",
-                root.Declarations[11] is CallableDeclarationASTNode sleep
+                && coroutineLocal.Modifiers.Contains(Keywords.SHARED)
+                && !coroutineLocal.Modifiers.Contains(Keywords.ABSTRACT)
+                && coroutineLocal.Members.OfType<CallableDeclarationASTNode>()
+                    .Count(m => m.Kind == CallableKind.Init) == 2
+                && coroutineLocal.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "get")
+                && coroutineLocal.Members.OfType<CallableDeclarationASTNode>()
+                    .Count(m => m.Name == "withValue") == 2);
+            // 棒4a：§17.4 Rigi 世界调度逻辑（内部 API，均 priv）
+            TestHarness.CheckTrue("声明[14] 是 I64Queue（priv 内部环形队列）",
+                root.Declarations[14] is ClassDeclarationASTNode i64Queue
+                && i64Queue.ClassName == "I64Queue"
+                && i64Queue.Modifiers.Contains(Keywords.PRIV));
+            TestHarness.CheckTrue("声明[15] 是 Dispatcher（priv shared singleton）",
+                root.Declarations[15] is ClassDeclarationASTNode dispatcher
+                && dispatcher.ClassName == "Dispatcher"
+                && dispatcher.Modifiers.Contains(Keywords.PRIV)
+                && dispatcher.Modifiers.Contains(Keywords.SHARED)
+                && dispatcher.Modifiers.Contains(Keywords.SINGLETON));
+            TestHarness.CheckTrue("声明[16] 是 laneOfExecutor 模块级助手（非 native，有体）",
+                root.Declarations[16] is CallableDeclarationASTNode laneOf
+                && laneOf.Name == "laneOfExecutor"
+                && !laneOf.Modifiers.Contains(Keywords.NATIVE)
+                && laneOf.Modifiers.Contains(Keywords.PRIV)
+                && laneOf.Body != null);
+
+            // 声明[17..45]：§17.4 native 原语面（rigi_ 前缀，priv native；
+            // 棒5a 增 coroutine_current/lane、alarm_wait、poll_*、
+            // failure_record/drop；make_sleep_alarm 已删；其后增
+            // coro_local_* 四面）
+            string[] expectedNatives = {
+                "rigi_worker_create", "rigi_worker_destroy", "rigi_worker_enqueue",
+                "rigi_worker_park", "rigi_coroutine_create", "rigi_coroutine_resume",
+                "rigi_coroutine_destroy", "rigi_timer_create", "rigi_timer_cancel",
+                "rigi_timer_destroy", "rigi_sync_mutex_create",
+                "rigi_sync_mutex_acquire", "rigi_sync_mutex_release",
+                "rigi_tls_current_context", "rigi_time_now",
+                "rigi_coroutine_current", "rigi_coroutine_get_lane",
+                "rigi_coroutine_set_lane", "rigi_alarm_wait",
+                "rigi_poll_arm", "rigi_poll_pending", "rigi_poll_schedule",
+                "rigi_poll_clear", "rigi_failure_record", "rigi_failure_drop",
+                "rigi_coro_local_push", "rigi_coro_local_pop",
+                "rigi_coro_local_get", "rigi_coro_local_inherit" };
+            for (int i = 0; i < expectedNatives.Length; i++)
+            {
+                var index = i + 17;
+                if (root.Declarations[index] is CallableDeclarationASTNode nativeFunc)
+                {
+                    TestHarness.CheckTrue($"声明[{index}] 是 {expectedNatives[i]} priv native",
+                        nativeFunc.Name == expectedNatives[i]
+                        && nativeFunc.Modifiers.Contains(Keywords.NATIVE)
+                        && nativeFunc.Modifiers.Contains(Keywords.PRIV)
+                        && nativeFunc.Body == null
+                        && nativeFunc.Annotations.Count >= 1);
+                }
+                else
+                {
+                    TestHarness.CheckTrue($"声明[{index}] 是 {expectedNatives[i]} native",
+                        false, root.Declarations[index].GetType().Name);
+                }
+            }
+            TestHarness.CheckTrue("声明[46] 是 sleep Rigi 包装（非 native，有体）",
+                root.Declarations[46] is CallableDeclarationASTNode sleep
                 && sleep.Name == "sleep"
                 && !sleep.Modifiers.Contains(Keywords.NATIVE)
                 && sleep.Body != null
@@ -490,18 +595,20 @@ namespace RigiCompiler.Tests
             var root = roots[5];
 
             // 顶层：namespace + RuntimeException/IOException/CastException/
-            // NoSuchMethodException/DividedByZeroException/OutOfBoundException
-            // 6 个 open class（共 8 个声明；MW9b 增 OutOfBoundException）
-            TestHarness.CheckTrue("顶层恰好 8 个声明（namespace + Exception + 6 class）",
-                root.Declarations.Count == 8, $"实际 {root.Declarations.Count}");
-            if (root.Declarations.Count < 8) { TestHarness.Blank(); return; }
+            // NoSuchMethodException/DividedByZeroException/OutOfBoundException/
+            // IllegalStateException 7 个 open class（共 9 个声明；MW9b 增
+            // OutOfBoundException，MW11c 增 IllegalStateException）
+            TestHarness.CheckTrue("顶层恰好 9 个声明（namespace + Exception + 7 class）",
+                root.Declarations.Count == 9, $"实际 {root.Declarations.Count}");
+            if (root.Declarations.Count < 9) { TestHarness.Blank(); return; }
 
             var ns = root.Declarations[0] as NamespaceDeclarationASTNode;
             TestHarness.CheckTrue("首声明是 namespace core",
                 ns != null && AstDescribe.Symbol(ns.Name.symbol) == "core");
 
             string[] expected = { "Exception", "RuntimeException", "IOException", "CastException",
-                "NoSuchMethodException", "DividedByZeroException", "OutOfBoundException" };
+                "NoSuchMethodException", "DividedByZeroException", "OutOfBoundException",
+                "IllegalStateException" };
             for (int i = 0; i < expected.Length; i++)
             {
                 var index = i + 1;
@@ -529,6 +636,70 @@ namespace RigiCompiler.Tests
                         root.Declarations[index].GetType().Name);
                 }
             }
+
+            TestHarness.Blank();
+        }
+
+        // ===== 2g. time 结构（MW11c：namespace core.time + 3 struct + native）=====
+        private static void TestTimeStructure()
+        {
+            TestHarness.Section("Structure: namespace core.time");
+
+            var roots = StdlibSources.ParseAll();
+            if (roots.Count < 7)
+            {
+                TestHarness.CheckTrue("ParseAll 至少 7 棵（结构断言前置）", false,
+                    $"实际 {roots.Count} 棵");
+                TestHarness.Blank();
+                return;
+            }
+            var root = roots[6];
+
+            // 顶层：namespace + TimeStamp/TimeSpan/DateTime 3 个 struct
+            // + rigi_time_now native（共 5 个声明，RUNTIME §19.7/§17.4）
+            TestHarness.CheckTrue("顶层恰好 5 个声明（namespace + 3 struct + native）",
+                root.Declarations.Count == 5, $"实际 {root.Declarations.Count}");
+            if (root.Declarations.Count < 5) { TestHarness.Blank(); return; }
+
+            var ns = root.Declarations[0] as NamespaceDeclarationASTNode;
+            TestHarness.CheckTrue("首声明是 namespace core.time",
+                ns != null && AstDescribe.Symbol(ns.Name.symbol) == "core.time");
+
+            TestHarness.CheckTrue("声明[1] 是 TimeStamp struct（milliseconds + nanoseconds 访问器）",
+                root.Declarations[1] is StructDeclarationASTNode timeStamp
+                && timeStamp.StructName == "TimeStamp"
+                && timeStamp.Members.OfType<VariableDeclarationASTNode>()
+                    .Any(f => f.Name == "milliseconds")
+                && timeStamp.Members.OfType<VariableDeclarationASTNode>()
+                    .Any(f => f.Name == "nanoseconds" && f.Getter != null && f.Setter != null));
+            TestHarness.CheckTrue("声明[2] 是 TimeSpan struct（fromMilliseconds + totalMilliseconds + 比较）",
+                root.Declarations[2] is StructDeclarationASTNode timeSpan
+                && timeSpan.StructName == "TimeSpan"
+                && timeSpan.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "fromMilliseconds"
+                        && m.Modifiers.Contains(Keywords.STATIC))
+                && timeSpan.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "compareTo")
+                && timeSpan.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "equals"));
+            TestHarness.CheckTrue("声明[3] 是 DateTime struct（now minus compareTo equals）",
+                root.Declarations[3] is StructDeclarationASTNode dateTime
+                && dateTime.StructName == "DateTime"
+                && dateTime.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "now" && m.Modifiers.Contains(Keywords.STATIC))
+                && dateTime.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "minus")
+                && dateTime.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "compareTo")
+                && dateTime.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "equals"));
+            TestHarness.CheckTrue("声明[4] 是 rigi_time_now priv native（返回 i64）",
+                root.Declarations[4] is CallableDeclarationASTNode timeNow
+                && timeNow.Name == "rigi_time_now"
+                && timeNow.Modifiers.Contains(Keywords.NATIVE)
+                && timeNow.Modifiers.Contains(Keywords.PRIV)
+                && timeNow.Body == null
+                && timeNow.ReturnType != null);
 
             TestHarness.Blank();
         }

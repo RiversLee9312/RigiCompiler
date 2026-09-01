@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using RigiCompiler.Bil;
 using RigiCompiler.Middleware.Symbols;
 
 namespace RigiCompiler.Middleware.Layout
@@ -133,9 +134,36 @@ namespace RigiCompiler.Middleware.Layout
                 return plan;
             }
             var normalized = MwTypeKey.Normalize(canonical);
-            return normalized != canonical && _plans.TryGetValue(normalized, out plan)
+            if (normalized != canonical && _plans.TryGetValue(normalized, out plan))
+            {
+                return plan;
+            }
+            // 仅声明形（Task<TReturn>）回退到模板键 Task<1>；闭合构造
+            // Task<core::i32> 不得命中模板，否则 ConstructedLayout 被短路
+            if (!LooksLikeOpenGenericQuery(normalized))
+            {
+                return null;
+            }
+            var declKey = BilVerificationContext.DeclarationKeyOf(normalized);
+            return declKey != normalized && _plans.TryGetValue(declKey, out plan)
                 ? plan
                 : null;
+        }
+
+        private static bool LooksLikeOpenGenericQuery(string typeRef)
+        {
+            var angle = typeRef.IndexOf('<');
+            if (angle < 0 || !typeRef.EndsWith(">", System.StringComparison.Ordinal))
+            {
+                return false;
+            }
+            var inner = typeRef.Substring(angle + 1, typeRef.Length - angle - 2);
+            if (inner.Length == 0 || int.TryParse(inner, out _))
+            {
+                return false;
+            }
+            return inner.IndexOf(':') < 0 && inner.IndexOf('.') < 0
+                && inner.IndexOf('<') < 0;
         }
 
         internal void Add(TypeLayoutPlan plan)

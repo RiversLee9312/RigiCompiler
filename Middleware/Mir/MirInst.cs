@@ -809,6 +809,109 @@ namespace RigiCompiler.Middleware.Mir
         }
     }
 
+    // ===== MW11a 协程（棒2：状态机改造）=====
+    // lowering 层（BIL→MIR 直译，CoroutineSplitPass 之前）与 split 产出层
+    //（split 保证消除全部 MirAwait/MirYieldBare）两族。
+    // MW11c 棒5a 转向（RUNTIME §17.4）：split 产出的运行时交互点从
+    // rigi_rt C 面族改为「Rigi 世界方法调（Task/Dispatcher，普通
+    // MirCall/MirGetField 等）+ 最小原语指令」。保留的专用指令只剩
+    // 三条：MirCoroutineCreate（fn 指针物化——Rigi 无此通道）、
+    // MirCoroutineDone（DONE 出口标记，RcInjection frame 最终 release
+    // 依据）、probe fn 已退为普通 MIR 调用（C ABI 特判随
+    // rigi_yield_alarm 面一并退场）。
+
+    // await 直译（split 前）：TaskSlot = Task/Task<T> 胖引用槽；ResultSlot
+    // 非空 = await Task<T> 的结果槽（严格 T）。await 可重抛 Task 失败异常：
+    // ExcTarget 语义与 MirCall 相同（本词法上下文的异常落点；null 由
+    // RcInjection 兜底进函数级传播垫——split 不为 resume fn 预解析 null，
+    // 留 RcInjection 统一进垫，垫尾分叉为失败终态序列）
+    public sealed class MirAwait : MirInst
+    {
+        public string TaskSlot { get; }
+        public string? ResultSlot { get; }
+        public MirBlock? ExcTarget { get; }
+
+        internal MirAwait(string taskSlot, string? resultSlot, MirBlock? excTarget)
+        {
+            TaskSlot = taskSlot;
+            ResultSlot = resultSlot;
+            ExcTarget = excTarget;
+        }
+    }
+
+    // 裸 yield 直译（split 前，BIL §17.2 无 Alarm 形态）
+    public sealed class MirYieldBare : MirInst
+    {
+        internal MirYieldBare()
+        {
+        }
+    }
+
+    // 带 Alarm 的 yield 直译（split 前，MW11b 棒3；BIL §17.2
+    // yield ALARM 形态）：AlarmSlot = Alarm 胖引用槽（PollingAlarm/
+    // EventAlarm 运行时分类——split 产物经 MirTypeCheck 分流，MIR
+    // 不区分）。无 ExcTarget——探测异常在恢复块异步发生（对齐
+    // VM：isReady 抛出 = yield 点失败走 Task FAILED，await 点重抛），
+    // 非本指令同步抛出；split 保证消除本指令
+    public sealed class MirYieldAlarm : MirInst
+    {
+        public string AlarmSlot { get; }
+
+        internal MirYieldAlarm(string alarmSlot)
+        {
+            AlarmSlot = alarmSlot;
+        }
+    }
+
+    // rigi_coroutine_create（split 产出；spawn stub 与冷 Task 工厂专用）：
+    // FrameSlot = 合成 frame 胖引用槽（+1 所有权随本指令 move 进协程
+    // 续体，RcInjection 免配平——resume fn DONE 出口最终 release；
+    // 冷 Task 永不启动的 frame/cohandle 泄漏是已知边缘，见
+    // MIDDLEWARE_ARCHITECTURE §6）；ResumeFn = 合成状态机 fn 符号
+    //（Emit 取 LLVM fn 地址 ptrtoint i64——fn 指针物化的唯一通道）；
+    // HandleSlot = i64 协程句柄产出槽
+    public sealed class MirCoroutineCreate : MirInst
+    {
+        public string FrameSlot { get; }
+        public MwMemberSymbol ResumeFn { get; }
+        public string HandleSlot { get; }
+
+        internal MirCoroutineCreate(string frameSlot, MwMemberSymbol resumeFn,
+            string handleSlot)
+        {
+            FrameSlot = frameSlot;
+            ResumeFn = resumeFn;
+            HandleSlot = handleSlot;
+        }
+    }
+
+    // DONE 出口标记（split 产出 + RcInjection resume 垫尾）：纯标记
+    // 指令——RcInjection 据此在出口追加 frame 最终 release
+    //（IsCoroutineDoneExit）；Emit 无操作。语义由同块的
+    // complete/fail + publishAll + noteTerminal 普通 MIR 序列承载
+    public sealed class MirCoroutineDone : MirInst
+    {
+        internal MirCoroutineDone()
+        {
+        }
+    }
+
+    // rigi_failure_get（split 产出；await 失败快路径）：NodeIdSlot =
+    // i64 失败注册表节点 id（task.failureNodeId 字段读出）；
+    // OutFatSlot = 异常拷入的 .any 胖槽（+1 随拷贝移交，产出类指令；
+    // 节点在 record 后恒存活至进程退出，读取必然命中）
+    public sealed class MirFailureLoad : MirInst
+    {
+        public string NodeIdSlot { get; }
+        public string OutFatSlot { get; }
+
+        internal MirFailureLoad(string nodeIdSlot, string outFatSlot)
+        {
+            NodeIdSlot = nodeIdSlot;
+            OutFatSlot = outFatSlot;
+        }
+    }
+
     public abstract class MirTerminator
     {
     }

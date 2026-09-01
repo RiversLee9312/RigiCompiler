@@ -1,4 +1,4 @@
-namespace RigiCompiler.Bil.Vm
+﻿namespace RigiCompiler.Bil.Vm
 {
     // Coroutine（BIL_VM_DESIGN §4.1 / RUNTIME §17 / BIL_STANDARD §16）：
     // 调用帧链 + 块执行栈 + 逻辑状态机；状态以 Interlocked 原子转换。
@@ -161,22 +161,31 @@ namespace RigiCompiler.Bil.Vm
         private int _state = (int)VmCoroutineState.Created;
         private VmCompletion? _pending;
         private VmContext? _context;
-        private VmTask? _awaitTask;
+        private long _awaitHandle;
         private string? _awaitResultSlot;
         private VmValue? _pollingAlarm;
         private int _pollBackoffMs = 1;
         private Timer? _pollTimer;
-        // 唤醒纪元：每次成功挂起（Running→Suspended）递增一次，
-        // 标识「第几次挂起」。唤醒方登记时捕获当前纪元，发布失败时以
-        // 「仍 Suspended 且纪元未变」区分唤醒丢失与 benign 竞态
-        // （见 VmExecutor.PublishWakeup）。
-        private long _wakeupEpoch;
 
-        public VmExecutor BoundExecutor { get; }
-        public VmTask Task { get; }
-        // 执行所有权锁：Execute 的「Runnable→Running 转换 + Settle + Step
+        // MW11c 棒4a（§17.4）：调度逻辑在 Rigi 世界（Dispatcher/Task），
+        // 本对象只是执行引擎侧的协程实体：状态机 + 帧链 + 原语桥引用
+        internal VmDispatch Dispatch { get; }
+        // 调度句柄（0 = ad-hoc：singleton/globals 初始化与桥调用的一次性
+        // 协程，不进 Dispatcher 台账）
+        public long Handle { get; private set; }
+        // 归属 Rigi Task 对象（attachRuntime 由桥触发；ad-hoc 为 null）
+        public VmObject? TaskObject { get; private set; }
+        // MW11c 棒4b（§17.1/§18.4）：Executor 绑定——创建时继承的默认
+        // 绑定（null = MainExecutor）。有效绑定 = Task.executor 预设/换绑
+        // 字段 ?? 本默认；恢复发布目标在发布时读取最新绑定（执行段内不
+        // 迁移），换绑无需引擎侧动作（VmDispatch.Publish 逐次换算 lane）
+        internal VmObject? BoundExecutor { get; set; }
+        // CoroutineLocal 绑定栈（§20.2）：顶在列表末尾；get 自顶向下
+        // 按键对象身份命中。inherit 只拷每个键的有效顶，不是整段父栈。
+        internal List<(VmValue Key, VmValue Value)> Locals { get; } = new();
+        // 执行所有权锁：resume 的「Runnable→Running 转换 + Settle + Step
         // 循环」整体在此锁内，保证任一时刻至多一个 worker 执行本协程
-        // （handoff 单所有者，见 VmExecutor.Execute 与 BIL_VM_DESIGN §4.2）
+        // （handoff 单所有者，见 VmDispatch.ResumeSegment）
         internal object SyncRoot { get; } = new object();
         public Stack<VmCallFrame> CallStack { get; }
         // wrapper 派发上下文栈：invoke fn(..inner) 在执行期解析「下一环」
@@ -219,16 +228,30 @@ namespace RigiCompiler.Bil.Vm
 
         public VmCoroutineState State => (VmCoroutineState)Volatile.Read(ref _state);
 
-        // 当前唤醒纪元（只读视图；递增只发生在 TrySuspend 内）
-        public long WakeupEpoch => Volatile.Read(ref _wakeupEpoch);
-
         public bool HasAbruptCompletion => _pending != null && _pending.IsAbrupt;
 
-        public VmCoroutine(VmExecutor boundExecutor, string taskTypeRef)
+        internal VmCoroutine(VmDispatch dispatch)
         {
-            BoundExecutor = boundExecutor;
-            Task = new VmTask(taskTypeRef);
+            Dispatch = dispatch;
             CallStack = new Stack<VmCallFrame>();
+        }
+
+        internal void AttachHandle(long handle)
+        {
+            Handle = handle;
+        }
+
+        internal void AttachTaskObject(VmObject taskObject)
+        {
+            TaskObject = taskObject;
+        }
+
+        // await 登记（VmDispatch.Await 在 task gate 临界区内调用，随后
+        // 同一临界区内 TrySuspend）
+        internal void MarkAwaiting(long taskHandle, string? resultSlot)
+        {
+            _awaitHandle = taskHandle;
+            _awaitResultSlot = resultSlot;
         }
 
         public VmCallFrame CurrentFrame => CallStack.Peek();
@@ -238,18 +261,13 @@ namespace RigiCompiler.Bil.Vm
             return Interlocked.CompareExchange(ref _state, (int)next, (int)expected) == (int)expected;
         }
 
-        // 统一挂起点：CAS Running→Suspended，成功后递增唤醒纪元。
-        // 全部进入 Suspended 的转换必须走此方法（VmTask/VmEventAlarm 的
-        // TryAwait 锁内 CAS、ProbePolling 轮询挂起），保证「纪元」与
-        // 「挂起次数」严格一一对应，唤醒丢失判定才有依据。
+        // 统一挂起点：CAS Running→Suspended。全部进入 Suspended 的转换
+        // 必须走此方法（VmDispatch.Await 的 gate 临界区内、VmEventAlarm
+        // 的 TryAwait 锁内、ProbePolling 轮询挂起），挂起与等待登记在
+        // 各自的临界区内原子完成，保证唤醒不丢失
         public bool TrySuspend()
         {
-            if (!TryTransition(VmCoroutineState.Running, VmCoroutineState.Suspended))
-            {
-                return false;
-            }
-            Interlocked.Increment(ref _wakeupEpoch);
-            return true;
+            return TryTransition(VmCoroutineState.Running, VmCoroutineState.Suspended);
         }
 
         public VmValue ReadVar(string name)
@@ -328,12 +346,11 @@ namespace RigiCompiler.Bil.Vm
             if (CallStack.Count == 0)
             {
                 Result = result;
-                Task.Complete(result);
                 if (!TryTransition(VmCoroutineState.Running, VmCoroutineState.Completed))
                 {
                     Interlocked.Exchange(ref _state, (int)VmCoroutineState.Completed);
                 }
-                BoundExecutor.NotifyTerminal(this);
+                Dispatch.OnTerminal(this);
                 return;
             }
             if (frame.ResultSlot != null)
@@ -412,50 +429,40 @@ namespace RigiCompiler.Bil.Vm
             var vmException = exception as VmException
                 ?? new VmException(exception.Message, inner: exception);
             Failure = vmException;
-            Task.Fail(vmException);
             Interlocked.Exchange(ref _state, (int)VmCoroutineState.Failed);
             _pending = null;
-            BoundExecutor.NotifyTerminal(this);
-        }
-
-        public void AwaitTask(VmTask task, string? resultSlot)
-        {
-            _awaitTask = task;
-            _awaitResultSlot = resultSlot;
-            if (task.TryAwait(this, out var state, out var result, out var exception))
-            {
-                return;
-            }
-            _awaitTask = null;
-            _awaitResultSlot = null;
-            ApplyTaskOutcome(state, result, exception, resultSlot);
+            Dispatch.OnTerminal(this);
         }
 
         public void YieldBare()
         {
-            BoundExecutor.Publish(this);
+            Dispatch.Publish(this, "yield");
         }
 
         public void YieldAlarm(VmContext context, VmValue alarm)
         {
             if (VmTypeOps.Is(context, this, alarm, "core.coroutine::EventAlarm"))
             {
-                if (alarm is not VmEventAlarm eventAlarm)
+                // 棒5a：Timer 与 sleep 的 SleepAlarm 统一走 VM 侧定时器
+                // 记录通道（EventAlarm 基类 handle 字段 → 排程/waiter/
+                // signaled；handle==0 的用户直继子类在 TryAwaitTimer 内
+                // 拒绝）；VmEventAlarm 专用表示已退役
+                if (alarm is VmObject alarmObject)
                 {
-                    throw new VmException("yield EventAlarm 仅支持 sleep 产生的运行时 Alarm");
-                }
-                if (eventAlarm.TryAwait(this))
-                {
+                    if (Dispatch.TryAwaitTimer(alarmObject, this))
+                    {
+                        return;
+                    }
+                    Dispatch.Publish(this, "yield EventAlarm（已触发）");
                     return;
                 }
-                BoundExecutor.Publish(this);
-                return;
+                throw new VmException("yield EventAlarm 仅支持 sleep/Timer 产生的运行时 Alarm");
             }
             if (VmTypeOps.Is(context, this, alarm, "core.coroutine::PollingAlarm"))
             {
                 _pollingAlarm = alarm;
                 _pollBackoffMs = 1;
-                BoundExecutor.Publish(this);
+                Dispatch.Publish(this, "yield PollingAlarm");
                 return;
             }
             throw new VmException("yield 操作数不是 Alarm：" + alarm.TypeRef);
@@ -464,14 +471,13 @@ namespace RigiCompiler.Bil.Vm
         public bool SettleAfterResume(VmContext context)
         {
             _context = context;
-            if (_awaitTask != null)
+            if (_awaitHandle != 0)
             {
-                var task = _awaitTask;
+                var handle = _awaitHandle;
                 var slot = _awaitResultSlot;
-                _awaitTask = null;
+                _awaitHandle = 0;
                 _awaitResultSlot = null;
-                task.Observe(out var state, out var result, out var exception);
-                ApplyTaskOutcome(state, result, exception, slot);
+                Dispatch.SettleAwait(this, handle, slot);
                 return State == VmCoroutineState.Running;
             }
             if (_pollingAlarm != null)
@@ -488,22 +494,31 @@ namespace RigiCompiler.Bil.Vm
             return delay;
         }
 
-        public void AttachTimer(Timer timer)
+        // 唤醒债务标记（与 _pollTimer 配对；死锁判定的在途唤醒源）
+        private VmDispatch.WakeupMarker? _pollMarker;
+
+        internal void AttachTimer(Timer timer, VmDispatch.WakeupMarker? marker = null)
         {
             var previous = _pollTimer;
+            var previousMarker = _pollMarker;
             _pollTimer = timer;
+            _pollMarker = marker;
             previous?.Dispose();
+            previousMarker?.Disarm();
         }
 
-        // 终态统一释放轮询 timer（AttachTimer 的对偶，由 executor
-        // NotifyTerminal 这一终态 choke point 调用）。timer 回调可能正在
+        // 终态统一释放轮询 timer（AttachTimer 的对偶，由
+        // VmDispatch.OnTerminal 这一终态 choke point 调用）。timer 回调可能正在
         // 执行：只用 Dispose()、不用 Dispose(WaitHandle) 阻塞版；置 null
         // 保证幂等并供测试断言
         internal void DisposePollTimer()
         {
             var timer = _pollTimer;
+            var marker = _pollMarker;
             _pollTimer = null;
+            _pollMarker = null;
             timer?.Dispose();
+            marker?.Disarm();
         }
 
         // 是否有在途轮询 timer（测试断言用）
@@ -512,28 +527,6 @@ namespace RigiCompiler.Bil.Vm
         public void PushBlock(BilBlock block)
         {
             CurrentFrame.BlockStack.Push(VmBlockFrame.Plain(block));
-        }
-
-        private void ApplyTaskOutcome(VmTaskState state, VmValue? result, VmException? exception,
-            string? resultSlot)
-        {
-            switch (state)
-            {
-                case VmTaskState.Succeeded:
-                    if (resultSlot != null)
-                    {
-                        WriteVar(resultSlot, (result ?? VmVoid.Instance).Copy());
-                    }
-                    break;
-                case VmTaskState.Failed:
-                    Complete(VmCompletion.Throw(exception ?? new VmException("Task 失败")));
-                    break;
-                case VmTaskState.Cancelled:
-                    Complete(VmCompletion.Throw(new VmException("Task 已取消")));
-                    break;
-                default:
-                    throw new VmException("恢复时 Task 仍未终态");
-            }
         }
 
         private bool ProbePolling(VmContext context)
@@ -570,7 +563,8 @@ namespace RigiCompiler.Bil.Vm
             {
                 throw new VmException("PollingAlarm 未就绪时无法挂起");
             }
-            BoundExecutor.SchedulePoll(this);
+            Dispatch.NoteSuspended(this);
+            Dispatch.SchedulePoll(this);
             return false;
         }
 
@@ -595,7 +589,7 @@ namespace RigiCompiler.Bil.Vm
                 {
                     Interlocked.Exchange(ref _state, (int)VmCoroutineState.Completed);
                 }
-                BoundExecutor.NotifyTerminal(this);
+                Dispatch.OnTerminal(this);
                 return;
             }
             var frame = CurrentFrame;
@@ -1030,6 +1024,62 @@ namespace RigiCompiler.Bil.Vm
             CurrentFrame.BlockStack.Pop();
             _pending = PropagateAfterRegionPop(region, pending);
         }
+
+        internal void LocalPush(VmValue key, VmValue value) =>
+            Locals.Add((key, value));
+
+        internal void LocalPop(VmValue key)
+        {
+            for (var i = Locals.Count - 1; i >= 0; i--)
+            {
+                if (SameLocalKey(Locals[i].Key, key))
+                {
+                    Locals.RemoveAt(i);
+                    return;
+                }
+            }
+            throw new VmException("coro_local_pop 栈上无对应键");
+        }
+
+        internal VmValue LocalGet(VmValue key)
+        {
+            for (var i = Locals.Count - 1; i >= 0; i--)
+            {
+                if (SameLocalKey(Locals[i].Key, key))
+                {
+                    return Locals[i].Value.Copy();
+                }
+            }
+            return VmNull.Instance;
+        }
+
+        internal void InheritLocalsFrom(VmCoroutine source)
+        {
+            for (var i = source.Locals.Count - 1; i >= 0; i--)
+            {
+                var pair = source.Locals[i];
+                var seen = false;
+                foreach (var existing in Locals)
+                {
+                    if (SameLocalKey(existing.Key, pair.Key))
+                    {
+                        seen = true;
+                        break;
+                    }
+                }
+                if (seen)
+                {
+                    continue;
+                }
+                Locals.Add((pair.Key.Copy(), pair.Value.Copy()));
+            }
+        }
+
+        internal static VmValue UnwrapLocal(VmValue value) =>
+            value is VmAny any ? UnwrapLocal(any.Payload) : value;
+
+        internal static bool SameLocalKey(VmValue left, VmValue right) =>
+            ReferenceEquals(UnwrapLocal(left), UnwrapLocal(right));
 
         private static BilBlock FindEntrypointBlock(BilFunction function)
         {

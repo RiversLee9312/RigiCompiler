@@ -36,6 +36,13 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
 
+      # libuv 静态库缓存（MW11b 事件底座；runner 预装 cmake，双平台同一脚本，
+      # pwsh 为 GitHub Actions 内建 shell）。须在 publish 之前：NativeE2E 的
+      # --out 用例链接时经 LibuvResolver 命中 tools/.libuv/<rid>/
+      - name: Fetch libuv static lib (${{ matrix.rid }})
+        shell: pwsh
+        run: tools/Fetch-Libuv.ps1 -Rid ${{ matrix.rid }}
+
       - name: Publish NativeAOT (${{ matrix.rid }})
         run: dotnet publish RigiCompiler.csproj -c Release -r ${{ matrix.rid }} -o publish
 

@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Text;
 
 namespace RigiCompiler.Bil.Vm
@@ -11,6 +11,9 @@ namespace RigiCompiler.Bil.Vm
         public BilModule Module { get; }
         public VmHooks Hooks { get; }
         internal BilVerificationContext Types { get; }
+        // MW11c 棒4a（§17.4）：native 原语实现 + 调度桥（Rigi 世界的
+        // Dispatcher/Task 与 VM 引擎之间的粘合）
+        internal VmDispatch Dispatch { get; }
 
         // 实现级指令步数上限：0 = 不限制（默认）。每条 Step 计 1（含嵌套）。
         public long MaxSteps { get; set; }
@@ -66,6 +69,7 @@ namespace RigiCompiler.Bil.Vm
             _accessorFields = new Dictionary<string, string>();
             IndexMembers(module.LocalSymbols);
             IndexMembers(module.ExternalSymbols);
+            Dispatch = new VmDispatch(this);
         }
 
         // 每执行一条 BIL 指令调用一次；超限抛 VmStepLimitException（受控）。
@@ -339,6 +343,21 @@ namespace RigiCompiler.Bil.Vm
                 return "core.coroutine::Task";
             }
             return "core.coroutine::Task<" + resultType + ">";
+        }
+
+        // MW11c 棒4a：运行时桥按符号前缀解析 stdlib 内部 fn
+        // （Dispatcher/Task 的 priv 运行时通道；canonical 参数段随形状
+        // 微调，前缀锁定「宿主$方法名(」）
+        public BilFunction? FindRuntimeFunction(string symbolPrefix)
+        {
+            foreach (var function in _functions.Values)
+            {
+                if (function.Symbol.StartsWith(symbolPrefix, StringComparison.Ordinal))
+                {
+                    return function;
+                }
+            }
+            return null;
         }
 
         public bool TryResolveNative(string methodSymbol, out string library, out string nativeSymbol)
@@ -1056,7 +1075,7 @@ namespace RigiCompiler.Bil.Vm
         // （companion 的 init 即完成 cell 构造与 wrapper 安装）。初始化
         // 依赖（companion init 引用别的 singleton）由 New 的递归构造触发；
         // 本循环按声明序逐一补全尚未构造者
-        public void InitializeSingletons(VmExecutor executor)
+        public void InitializeSingletons()
         {
             foreach (var declaration in _types.Values)
             {
@@ -1073,15 +1092,15 @@ namespace RigiCompiler.Bil.Vm
                 if (!singleton) continue;
                 var typeRef = declaration.Symbol;
                 if (GetSingleton(typeRef) != null) continue;
-                ConstructSingleton(executor, typeRef);
+                ConstructSingleton(typeRef);
             }
         }
 
         // 同步构造单个 singleton：借一次性协程跑 new（分配 + init +
         // ..init.wrapper），驱动至构造帧完全退回引导帧
-        private void ConstructSingleton(VmExecutor executor, string typeRef)
+        private void ConstructSingleton(string typeRef)
         {
-            var coroutine = new VmCoroutine(executor, "core.coroutine::Task");
+            var coroutine = new VmCoroutine(Dispatch);
             coroutine.TryTransition(VmCoroutineState.Created, VmCoroutineState.Running);
             coroutine.PushFrame(SingletonBootstrapFunction, Array.Empty<VmValue>(), null);
             BilDataExecution.New(this, coroutine, typeRef, SingletonBootstrapTarget,
@@ -1101,7 +1120,7 @@ namespace RigiCompiler.Bil.Vm
         // set.field.static），本方法在 singleton 初始化之后、main 之前
         // 同步驱动它跑完（参照 §8.7 companion 统一设计：静态初值的执行
         // 时机归 VM 启动序列；多模块合并时逐 fn 各跑一次）
-        public void InvokeGlobalInitializers(VmExecutor executor)
+        public void InvokeGlobalInitializers()
         {
             foreach (var function in _functions.Values)
             {
@@ -1109,7 +1128,7 @@ namespace RigiCompiler.Bil.Vm
                 {
                     continue;
                 }
-                var coroutine = new VmCoroutine(executor, "core.coroutine::Task");
+                var coroutine = new VmCoroutine(Dispatch);
                 coroutine.TryTransition(VmCoroutineState.Created, VmCoroutineState.Running);
                 coroutine.PushFrame(function, Array.Empty<VmValue>(), null);
                 while (coroutine.CallStack.Count > 0
@@ -1805,7 +1824,18 @@ namespace RigiCompiler.Bil.Vm
                 }
                 else if (entry is BilTypeDeclaration type)
                 {
-                    _types[type.Symbol] = type;
+                    // MW11c 棒4a：同名不同元数类型（SYNTAX §15.3，首例 =
+                    // stdlib Task / Task<TReturn>）的 declaration.Symbol 相同
+                    // ——裸符号键必须归 arity-0 声明（FindType 裸 typeRef 的
+                    // 语义即非泛型）；构造 typeRef（带 <>）走 _typesByKey
+                    // 的 arity 键不受影响。旧实现后者覆盖前者，导致非泛型
+                    // Task 的 sheet/派发全部错绑到 Task<TReturn>（字段键
+                    // 错位：waiter 排空读空、唤醒丢失挂死）
+                    if (!_types.TryGetValue(type.Symbol, out var existing)
+                        || existing.GenericParameters.Count > type.GenericParameters.Count)
+                    {
+                        _types[type.Symbol] = type;
+                    }
                     var key = type.Symbol + "`" + type.GenericParameters.Count;
                     if (!_typesByKey.ContainsKey(key))
                     {

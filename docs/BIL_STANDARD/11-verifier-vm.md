@@ -224,7 +224,7 @@ VM 执行到对 `native` 方法声明的 `invoke` / `invoke.noret` 时，不寻�
 | `rigi_rt` | `print` | `text: .string` | 将字符串写入标准输出 |
 | `rigi_rt` | `printErr` | `text: .string` | 将字符串写入标准错误 |
 | `rigi_rt` | `alloc_array` | 泛型 hidden `.typeid`（经 `.generic.T` 物化）+ `size: .i32` | 分配并返回元素零值初始化的 `.array<T>`；T 为 enum struct 按宿主错误（§14.3 无零值）。仅供 stdlib `arrayOf`/`arrayOfElements` 系列的私有 native 声明调用，用户代码不可直达 |
-| `rigi_rt` | `make_sleep_alarm` | `milliseconds: .i64` | 创建并返回 `core.coroutine::EventAlarm`：基于单调时钟、到期转 ready 的粘滞事件 Alarm（`RUNTIME.md` §19.3/§19.4），配合 §17 `yield ALARM` 实现非阻塞睡眠。仅供 stdlib `sleep` 的私有 native 声明调用，用户代码不可直达 |
+| `rigi_rt` | `timer_create` | `owner/delay/repeat/callback/ctx: .i64` | 创建时钟底座句柄：`sleep`/`Timer` 经 stdlib `SleepAlarm`/`Timer` init 调用。旧 `make_sleep_alarm` 面已删除 |
 | `rigi_rt` | `any_to_string` | `value: .any` | 返回值的字符串表示（`SYNTAX.md` §3.8）：内建数值/`bool`/`char` 为标准文本；未覆写 `toString` 的对象为其类型 canonical 名。仅供 stdlib `.bootstrap.rg` 的私有 native 全局声明调用，用户代码不可直达 |
 | `rigi_rt` | `i64_to_string` | `value: .i64` | 标量标准文本（StringOut）；`any_to_string` 的格式化底座 |
 | `rigi_rt` | `f64_to_string` | `value: .f64` | 同上（Ryu 最短往返 + .NET 默认呈现） |

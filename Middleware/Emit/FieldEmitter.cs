@@ -90,7 +90,33 @@ namespace RigiCompiler.Middleware.Emit
                     return field;
                 }
             }
+            // 泛型模板计划复用字段表：成员 canonical 是声明形
+            // Task<TReturn>#result@.nullable<.generic<…>>，调用点符号
+            // 带构造类型段 Task<TReturn>#result@.nullable<core::i32>。
+            // 偏移由模板决定，LLVM 类型仍走调用点符号（FieldMirType）
+            var instName = FieldNameOf(fieldSymbol);
+            if (instName != null)
+            {
+                foreach (var field in plan.Fields)
+                {
+                    if (FieldNameOf(field.Symbol) == instName)
+                    {
+                        return field;
+                    }
+                }
+            }
             throw new CompilerInternalException($"字段不在宿主布局计划内: {fieldSymbol}");
+        }
+
+        private static string? FieldNameOf(string fieldSymbol)
+        {
+            var hash = fieldSymbol.LastIndexOf('#');
+            var at = fieldSymbol.LastIndexOf('@');
+            if (hash < 0 || at < 0 || at <= hash)
+            {
+                return null;
+            }
+            return fieldSymbol.Substring(hash + 1, at - hash - 1);
         }
 
         // 宿主地址：值类型宿主 = alloca 槽地址（内联存储）；class 宿主 =
@@ -174,7 +200,9 @@ namespace RigiCompiler.Middleware.Emit
 
         internal static MirType FieldMirType(string fieldSymbol)
         {
-            var at = fieldSymbol.IndexOf('@');
+            // 末位 '@'：MW11a frame 字段符号内嵌 fn canonical（自带 '@'，
+            // 如 $mw.frame.$work(n:.i32)@.i32#n@core::i32），首 '@' 会截错
+            var at = fieldSymbol.LastIndexOf('@');
             if (at < 0)
             {
                 throw new CompilerInternalException($"字段符号缺类型段: {fieldSymbol}");

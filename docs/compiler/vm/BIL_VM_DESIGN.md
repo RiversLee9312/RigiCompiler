@@ -238,11 +238,11 @@ indirect 是表达正常 Rigi 程序（泛型、lambda、运行时类型驱动�
 | `rigi_rt` / `printErr` | 写 stderr（同上） |
 | `rigi_rt` / `any_to_string` | §3.8 标准文本；未覆写者为 canonical 类型名（toString 成员方法不再直接 hook——其默认实现是编译器合成 fn，经 .bootstrap.rg 的 priv 全局 native `any_to_string` 触达本 hook） |
 | `rigi_rt` / `alloc_array` | 零值初始化 `.array<T>`；T 为 enum struct 按宿主错误（§14.3） |
-| `rigi_rt` / `make_sleep_alarm` | 粘滞 EventAlarm，单调时钟到期 signal（RUNTIME §19.4） |
+| `rigi_rt` / `timer_create` | 时钟底座句柄；`sleep`/`Timer` 经 stdlib 构造调用（RUNTIME §19.4/§19.5）。旧 `make_sleep_alarm` 已删除 |
 | （方法 hook）`core::Any$call???` | 按 symbol 路由；无路由抛 `core::NoSuchMethodException` |
 
 表外 `(lib, symbol)` 拒绝执行并报错；表只随 BIL 标准修订扩充
-（`alloc_array` 与 `make_sleep_alarm` 即两次修订扩充，均经用户裁定）。
+（`alloc_array` 与后续协程原语均经用户裁定）。
 GC 类设施（GCAlarm 等）永不进表：BIL 禁止对 GC 机制与实现作任何假设
 （§1.1/§22.1），其为 Middleware 内部细节。
 

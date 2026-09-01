@@ -65,3 +65,10 @@ pub open class OutOfBoundException : RuntimeException {
     }
     pub override func getMessage(): String { return message }
 }
+
+// 对象当前状态不允许该操作（MW11c）：重复启动已启动 Task（§4.5）、
+// Timer.RepeatOption 非正 repeatCount（RUNTIME §19.5）等
+pub open class IllegalStateException : RuntimeException {
+    pub init(text: String) { message = text }
+    pub override func getMessage(): String { return message }
+}

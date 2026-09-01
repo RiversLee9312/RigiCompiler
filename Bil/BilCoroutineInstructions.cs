@@ -20,12 +20,10 @@ namespace RigiCompiler.Bil
 
         internal override void Execute(VmContext context, VmCoroutine coroutine)
         {
-            var value = coroutine.ReadVar(Task.Name);
-            if (value is not VmTask task)
-            {
-                throw new VmException("await 操作数不是 Task：" + value.TypeRef);
-            }
-            coroutine.AwaitTask(task, Result?.Name);
+            // MW11c 棒4a（§18.3）：await 决策进 Rigi 世界——桥调 Task 的
+            // registerWaiter Rigi 方法，按返回码继续（终态快读）/挂起
+            // （登记 waiter 后在同一 gate 临界区内转 Suspended）
+            context.Dispatch.Await(coroutine, coroutine.ReadVar(Task.Name), Result?.Name);
         }
     }
 

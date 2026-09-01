@@ -70,7 +70,7 @@ BilModule（BIL 内存对象模型）
 | GC 引擎底座 | 教学级 Bacon-Rajan C 模板改造 | 候选底座 `rjungemann/turmeric` gc.c（MIT，纯 C、可剥离）；教学参照 `fitzgen/bacon-rajan-cc`（Rust，注释最全）；语义对照 Nim `lib/system/orc.nim`（位打包、rootIdx、自适应阈值）。论文并发版（Red/Orange/transfer buffer）无限期推迟 |
 | 分配器 | 首版用 CRT malloc；mimalloc（MIT）为后续可选替换 | GC 主堆自研；分配器层与 GC 解耦，可后换 |
 | rigi_rt 编译 | **clang 现场编译**（MW1 起；获取链与 lld 同：CI 用 runner 预装 clang，开发机 PATH 优先、缺则 Fetch-LlvmToolchain.ps1 钉版缓存）。产物形态：LLVM bitcode（`-emit-llvm -c`，unity build）+ EmbeddedResource 内嵌源 + 内容哈希缓存；Emit 阶段 `LLVMLinkModules2` 进程内合并进模块，运行时面经统一优化管线内联——C 写的 access helper 由此获得零成本内联 | 预编译 .lib/.a 入库排除（双平台二进制漂移与审查成本）；源码即真相，与本仓库同纪律；clang 编 .c 需 CRT 头文件——Windows 自动探测已装 VS/SDK，Linux 用系统 glibc 头文件 |
-| 事件/定时底座 | **libuv**（MIT，静态链接） | 跨平台事件循环 + 定时器 + 线程池 + 同步原语一体；win-x64（IOCP）/linux-x64（epoll）均一等公民；每 Worker 一个 loop，EventAlarm/sleep 以其为底座；Worker 唤醒走 `uv_async_send` |
+| 事件/定时底座 | **libuv**（MIT，静态链接）；获取链定稿（MW11b）：官方无预编译二进制，渠道②=钉版源码 + 本地构建——`tools/Fetch-Libuv.ps1` 下载 GitHub tag v1.52.1 源码 tarball（SHA256 钉版校验；dist.libuv.org 的 dist tarball 是 autotools 形态无顶层 CMakeLists.txt，弃用），cmake 最小配置（`-DBUILD_TESTING=OFF` + Release，win 优先 tools/.llvm clang-cl+Ninja、缺退 VS 生成器；linux clang/cc）构建静态库，缓存 `tools/.libuv/<rid>/`（`lib/uv_a.lib` | `lib/libuv_a.a` + `include/` + VERSION.txt，gitignored，CI 双平台 job 各跑一步）。解析顺序 `--libuv-dir` → `RIGI_LIBUV` → `tools/.libuv/<rid>` → 编译器 exe 旁 `.libuv/<rid>`；`native --out` 命中时链接行追加静态库全路径 + 系统库（win：psapi user32 advapi32 iphlpapi userenv ws2_32 dbghelp ole32 shell32；linux：pthread dl），未命中按现状降级（Alarm 面 abort）；rigi_rt 命中时带 `-I<include>` + `-DRIGI_HAS_LIBUV=1` 编译（参数入内容哈希；C 侧 uv 用法一律包 `#ifdef RIGI_HAS_LIBUV`） | 跨平台事件循环 + 定时器 + 线程池 + 同步原语一体；win-x64（IOCP）/linux-x64（epoll）均一等公民；每 Worker 一个 loop，EventAlarm/sleep 以其为底座；Worker 唤醒走 `uv_async_send` |
 | 协程降级 | **自做状态机**，不用 `llvm.coro.*` | llvm.coro 跨版本 ABI 不保证兼容；frame 内精确根映射不可控（Rust 弃用先例）；RUNTIME §21 要求精确活跃引用映射 |
 | native FFI | 编译期直接生成调用，**不用 libffi** | ABI 编译期已知；libffi 只服务运行时动态签名场景 |
 | 可嵌入 GC 库 | **不采用** Boehm / MPS | Boehm 保守、非移动、位图粒度粗；MPS 重量、学习曲线陡；均不匹配「编译器握全 refMap」的精确模型 |
@@ -272,7 +272,7 @@ rigi_rt 导出（命名待定，形态固定）：
 | `rigi_typeof` | 取胖引用实际 TypeSheet*（typeOf 值形态）；tag2 取对象头 sheet，tag0/tag1 掩码 typeid |
 | `rigi_exc_raise` / `rigi_exc_pending` / `rigi_exc_take` | checked-flag 异常传输三面（§8）：raise = 异常对象 acquire+1 写线程局部 pending 槽；pending = 借用查询（不动计数）；take = 取走并清槽（+1 所有权随返回值移交） |
 | `rigi_type_name_of` / `rigi_exc_halt` | 顶层未捕获 reporter（§8）：obj→对象头 typeId→TypeInfo.name 诊断名拷出（借用语义）+ exit(1) 收尾（noreturn） |
-| 协程七项保留面 | 见 `ASYNC_LOWERING_DESIGN.md` §7 表（coroutine.spawn / task.await / coroutine.yield / coroutine.complete/fail/cancel / coroutine.frame / gc.ownership-region / alarm.poll/event） |
+| 协程原语面族 | **MW11c 定稿形态（RUNTIME §17.4）**：调度逻辑在 Rigi 世界（`core.coroutine` Dispatcher/Task/Worker），rigi_rt 只留原语——Worker（创建/销毁/入队 + 跨线程唤醒/park）、协程句柄（`create(resumeFn, frame)` / `resume(handle)`→执行段归宿 / `destroy`）、定时器、同步 Mutex（仅 Dispatcher 内部队列一致性，与语言级异步 `Mutex` 是两个东西）、TLS 当前上下文、时钟（`core.time.DateTime.now()` 底座）、未观察失败注册表（`rigi_failure_record/get/drop/take_unobserved`）。native 经 fn 指针回调 Rigi（resume / `rigi_dispatcher_entry` / `rigi_dispatch_publish` / `rigi_alarm_ring`）。生成代码交互点：spawn stub → 建 Task + 句柄 + Dispatcher.publish；await → Task 方法决策码；DONE → complete/fail；yield → Dispatcher 重排。均无 String 编组，Emit 经 `DeclareHelperFace` 直接声明 |
 | GC Alarm 族 | GCAlarm 与 GC 唤醒 Alarm 的创建与触发 |
 
 注：运行时面一律经 bitcode 合并进模块参与优化；频繁调用的面（如胖引用 access
@@ -350,6 +350,109 @@ M88 边界：frontend 只携带标记，烘焙全归 Middleware。
 - eager spawn、Task waiter 原子登记、与 fence 的交互按 ASYNC §3–§4；
 - 不用 llvm.coro（理由见 §2）。
 
+**MW11c 架构转向（定稿目标形态）**：协程运行时从「C 侧重实现」转向
+「**Rigi 世界重实现 + native 只留原语**」（RUNTIME §17.4）：
+
+- Task/Task\<TReturn\> 完全用 Rigi 实现（`core.coroutine`，具体 shared
+  class），与 Dispatcher 交互解决生命周期钩子；Dispatcher 调度逻辑用 Rigi
+  实现（runnable 队列、publish/next、quiescence、未观察失败清单、alarm
+  集成、Polling 探测表）；Worker = Rigi 世界里 OS 线程的抽象（内部 API，
+  不暴露给用户），线程体 = 入口 fn 指针进 Dispatcher 循环；Executor 为
+  singleton 门面（RUNTIME §20.1），持 Dispatcher + Worker 配置。VM 与
+  native 共享同一份 Rigi 调度逻辑——VM 重构其执行模型配合（Worker = 跑
+  Dispatcher BIL 的解释线程，resume 钩子嵌套驱动用户协程栈）。
+- **保留**（MW11a/b 既有实现继续有效）：CoroutineSplit 状态机（MIR/Emit
+  编译侧 stub/resume/frame 合成类型）、checked-flag EH（§8）、ARC/region
+  （§4）、alarm 定时原语底座与 libuv 获取链（§2）。
+- **重构**：rigi_rt 的 C 侧 Task 终态/waiter/Executor 队列/drain 逻辑 →
+  Rigi 实现替换，rigi_rt 瘦身为 §4.8 协程原语面族（Worker/协程句柄/
+  定时器/同步 Mutex/TLS/时钟）；VM 的 VmTask/VmExecutor 调度逻辑 → VM
+  执行模型改造。
+- **生成代码交互点（目标形态）**：spawn stub → 建 Task 对象 + 协程句柄 +
+  Dispatcher.publish；await → Task 方法返回决策码（快路径读终态/冷启动/
+  登记 waiter），Suspend 码才走编译侧挂起；DONE → Task.complete/fail
+  Rigi 方法；yield → Dispatcher 重排当前任务。
+- **冷 Task**（RUNTIME §18.4）：spawn-into 复用 Task 对象建协程，Task↔
+  协程 1:1；`run`/`executor` 预设与换绑、TaskState 投影由 Rigi 侧 Task
+  方法承载。多 Worker 与取消入口随本阶段定稿。
+
+**MW11a 已收口（中间形态：C 侧重实现，单线程垂直切片）**：
+
+- **stub/resume 分工**（CoroutineSplitPass，SingletonLowering 之后、RcInjection
+  之前）：async fn 拆为 spawn stub（原符号、调用点零改动：new frame → 参数/
+  类级 typeid 落 frame 字段 → MirSpawn → ret 热 Task）+ 合成 resume fn
+  （`$mw.resume.<fn canonical>`，MIR 签名 frame 胖引用 → i32，entry
+  `switch(frame.state)` 分发；state 0 = 原入口，N = 各挂起点恢复块）。await
+  改写为 MirTaskWait + 四路 switch（SUSPENDED 存活跃槽 ret 0 / COMPLETED
+  解包续行 / FAILED 沿原 ExcTarget 重抛 / **CANCELLED 防御性
+  MirUnreachable**——v1 无取消入口）；裸 yield 改写为存 frame +
+  MirYieldCall + ret YIELDED；各 MirRet 出口改写为结果装箱 +
+  MirTaskComplete + ret DONE；resume 传播垫尾（RcInjection 分叉）=
+  MirTakePending + MirTaskFail + release 全托管槽 + frame 最终 release +
+  ret DONE（未捕获异常归宿 Task FAILED，不跨协程帧传播）。
+- **frame 合成类型**（SyntheticTypePlanner）：内部 class
+  `$mw.frame.<fn canonical>`（state i32 + 保存槽平铺、托管槽进 refMap、
+  vtable 仅槽 0 init 分发器占位），pass 期注册进 Symbols + Layout 计划表，
+  Emit 的 TypeSheet/refMap 发射零特例消费；frame 经 rigi_alloc 分配（零
+  初始化由 memset 承担，RcInjection 不变量依赖）。
+- **Emit**（CoroutineEmitter + ModuleBuilder 特判）：五指令到面族的机械
+  映射（Emit 不插 acquire/release，move 语义已由 RcInjection 配平）；
+  resume fn 有意特判 C ABI 为 `i32(ptr)`（函数指针必须匹配
+  RigiResumeFn），entry prologue 把裸 ptr 重构为 frame 胖引用落
+  `$mw.frame` 槽；开放 `Task<T 占位>`（泛型 async fn / 泛型类 async 方法）
+  的 typeid 物化回退无元数 Task sheet（可见区恒 16B 对象头，sheet 仅作
+  运行时簿记身份）。
+- **单线程 MainExecutor**：rigi_entry 对齐 VM `BilVm.Run`——
+  `rigi_root_begin` → singletons → globals.init → main（同步直调）→ main
+  pending 收进合成槽（不立即报告）→ `rigi_root_end` →
+  `rigi_executor_run`（drain 至 quiescence，fire-and-forget 同被等待）→
+  失败汇总（main 失败 > 未观察失败，同 MW9 顶层 reporter 出口）。
+- **非 async fn 挂起点受控拒绝**（VM 栈式跨界语义，棒2 起
+  MwNotSupportedException）：native 侧 main 是同步根协程，await/yield 只
+  能出现在 async fn 体内。
+- Alarm / 多 Worker / 取消入口随 MW11c 转向定稿（coroutine.c 内以
+  「MW11c」标注加锁点，实体已按并发语义设计——C11 原子 CAS、Task 闸、
+  Executor 锁）；按转向，这些 C 侧实体按本节首段保留/重构清单迁移进
+  Rigi 世界。
+
+**MW11b 已收口（中间形态：Alarm 族 + libuv 底座）**：
+
+- **yield Alarm 全链**：lowering 直译 MirYieldAlarm（alarm 槽；运行时
+  分类归面内 is 链，MIR 不区分 Polling/Event）→ CoroutineSplitPass 改写
+  为存 frame + state=N + 两分类 sheet 经 getid.type 物化
+  （`core.coroutine::PollingAlarm`/`EventAlarm`）+ MirYieldAlarmCall
+  （alarm 槽地址 + 两 sheet + probe fn 地址四面实参）+ ret SUSPENDED；
+  恢复块恢复活跃槽后落原后继**不重调面**（面内已登记 waiter/探测项，
+  与 await 恢复块重回 wait 重调 MirTaskWait 的模式不同；EventAlarm 已
+  触发时面内立即重发布，但当前执行段仍结束，对齐 VM YieldAlarm）。
+- **probe 合成 fn**（`$mw.poll_probe`，模块级懒建一次，$mw.named.lookup
+  先例）：MIR 签名 alarm 胖引用 → i32，本体 = PollingAlarm.isReady 虚
+  派发 + bool 双分支转 i32（1 ready / 0 not）；isReady 抛异常走
+  ExcTarget 进函数级传播垫，RcInjection 第二垫尾分叉（IsPollProbe
+  标记，仿 IsCoroutineResume）= release 配平 + ret -1 + **pending 保持
+  置位**（drain 探测轮 probe 返 -1 后 rigi_exc_take 取走，走 yield 点
+  失败路径：Task FAILED → await 点重抛）。Emit 与 resume fn 共用
+  `i32(ptr)` 签名特判机制；prologue 从 RigiFatRef\* 直接装载胖引用
+  （保留实际 typeid 半，无需 sheet 重构）；alarm 参数借用约定（C 侧
+  登记项持有 +1 至摘链，probe 不 acquire/release）。
+- **可达性**：带 Alarm 的 yield 在 BIL 级收编 isReady 虚调用闭包
+  （MirReachability：静态目标 + 全部 override 后代——probe 是 MIR 期
+  合成，BIL 可达性不可见）；两分类 sheet 由 Layout 全类型计划覆盖，
+  无需显式收编。
+- **drain×uv 集成**（rigi_rt alarm.c/.h + coroutine.c）：uv loop 懒建
+  （首个 alarm 需求时，普通程序零 uv 开销）；sleep EventAlarm 内部
+  子类 sheet 由运行时合成（stdlib EventAlarm abstract 无构造入口），
+  首次 rigi_yield_alarm 时懒补 baseTypeId 供用户侧 is 链；EventAlarm
+  闸内「检查 signaled + 挂起 + 登记」原子握手（RUNTIME §19.3）；drain
+  队列空转点先探测一轮 PollingAlarm，仍空则 UV_RUN_ONCE 阻塞至最近
+  定时器（sleep 到期/探测退避唤醒），uv_loop_alive 为假不阻塞防空转；
+  探测退避 1→32ms 指数（对齐 VM TakePollDelay），退避 timer 回调只
+  承担唤醒，isReady 一律 drain 线程执行（callback 不执行用户代码）。
+- **probe 失败路径 frame 释放**：协程 Suspended→FAILED 不再恢复，
+  resume fn DONE 出口（frame 最终 release 点）永不执行——由探测轮
+  失败分支代为最终 release（memtrack 抓获的 32B 泄漏修复）。
+- 多 Worker / 取消入口随 MW11c 转向一并在 Rigi 世界定稿（见本节首段）。
+
 ## 7. 泛型、调用与 ABI
 
 - reified 泛型：共享代码体 + typeid 隐藏参数（RUNTIME §1 既定取舍：不提供泛型
@@ -358,7 +461,7 @@ M88 边界：frontend 只携带标记，烘焙全归 Middleware。
   打包（逐元素 BoxToAny），Middleware 直译；
 - `invoke fn(..super)` → 直接基类原始实现；`..create` 仅属 Middleware/VM 生命
   周期阶段；
-- `invoke.indirect` → callable 协议（`$$call` 虚调用）；
+- `invoke.indirect` → callable 协议（`$$call` 虚调用；async `$$call` 同槽，结果为 `Task`/`Task<T>`，CoroutineSplit 改写目标 stub）；
 - native 函数：直接生成对 `rigi_rt` shim 的调用；返回用户引用类型的 FFI ABI
   在此定稿（SYNTAX §4.6 / RUNTIME §26 的留白）。
 
@@ -540,11 +643,11 @@ Middleware/                 # 本仓库顶层目录（C#，.NET 10 LTS）
 ├── Gate/                   # BilReader 接线 + BilVerifier 门禁（多文件经 BilModuleMerger 合并）
 ├── Symbols/                # MW 符号图 / 类型表（canonical intern 驻留）
 ├── Binding/                # 实现绑定（ImplBinding 记录族 + ImplBinder 唯一实现查询）
-├── Mir/                    # MIR 模型 + MirBuilder 瘦驱动（BIL→MIR 翻译 pass）+ FlowBuilder 组合根 + MirLowerDispatchers 唯一 switch + 簇 CRTP（ControlFlow/Call/Data/TypeOps）+ MirReachability + TryExpander.cs
+├── Mir/                    # MIR 模型 + MirBuilder 瘦驱动（BIL→MIR 翻译 pass）+ FlowBuilder 组合根 + MirLowerDispatchers 唯一 switch + 簇 CRTP（ControlFlow/Call/Data/TypeOps；MW11a CoroutineVisitors：await/yield 直译；MW11b 增 MirYieldAlarm 直译）+ MirReachability + TryExpander.cs
 ├── Pipeline/               # IMwStage + MwPipeline 驱动器（线性阶段序；翻译 pass = visitor + 唯一 Dispatcher + 处理类）
-├── Passes/                 # MIR 改写 pass（IndexOperator / Accessor：内部类隔离各 case，默认非 CRTP；MW10 wrapper 烘焙五 pass——FieldProxyBaking / MethodProxyBaking / ProxyBaking / CallWildcardLowering / SingletonLowering + 共享设施 ProxyBakeSupport / ProxyWildcardAbi；RcInjection：CFG 分析内核，非逐指令翻译）
-├── Layout/                 # LayoutEngine 瘦驱动 + ClassLayout / ValueTypeLayout / VTablePlanner / RefMapBuilder / ConstructedLayout / LayoutShells / HiddenStoragePlanner / WrapperAbi；TypeLayout：canonical → LLVM 类型唯一映射点（引用槽按 RUNTIME §2 胖引用 128-bit/16 字节对齐建模）+ 数组前缀 ABI；TypeSheetAbi / CallAbi：TypeSheet 字段序与调用约定描述符。非翻译 visitor
-├── Emit/                   # ModuleBuilder 瘦驱动（MIR→LLVM 翻译 pass）+ LlvmEmitEnvironment/Context 组合根 + LlvmEmitDispatchers 唯一 switch + 簇 CRTP（*Emitter；new 归 NewEmitter，native 归 NativeCallEmitter，虚/接口归 VirtualCallEmitter，getid 归 TypeIdEmitter，Nullable 归 NullableEmitter）+ LlvmBitcode / ObjectEmitter
+├── Passes/                 # MIR 改写 pass（IndexOperator / Accessor：内部类隔离各 case，默认非 CRTP；MW10 wrapper 烘焙五 pass——FieldProxyBaking / MethodProxyBaking / ProxyBaking / CallWildcardLowering / SingletonLowering + 共享设施 ProxyBakeSupport / ProxyWildcardAbi；MW11a CoroutineSplitPass：async fn 状态机改造 stub+resume；MW11b 增 MirYieldAlarm 切分 + $mw.poll_probe 合成；RcInjection：CFG 分析内核，非逐指令翻译）
+├── Layout/                 # LayoutEngine 瘦驱动 + ClassLayout / ValueTypeLayout / VTablePlanner / RefMapBuilder / ConstructedLayout / LayoutShells / HiddenStoragePlanner / WrapperAbi；MW11a SyntheticTypePlanner：协程 frame 合成类型通道（pass 期注册 Symbols + Layout 计划表）；TypeLayout：canonical → LLVM 类型唯一映射点（引用槽按 RUNTIME §2 胖引用 128-bit/16 字节对齐建模）+ 数组前缀 ABI；TypeSheetAbi / CallAbi：TypeSheet 字段序与调用约定描述符。非翻译 visitor
+├── Emit/                   # ModuleBuilder 瘦驱动（MIR→LLVM 翻译 pass；rigi_entry 合成 = VM BilVm.Run 语义：singletons/globals.init/main → Dispatcher.workerLoop → 失败汇总）+ LlvmEmitEnvironment/Context 组合根 + LlvmEmitDispatchers 唯一 switch + 簇 CRTP（*Emitter；new 归 NewEmitter，native 归 NativeCallEmitter，虚/接口归 VirtualCallEmitter，getid 归 TypeIdEmitter，Nullable 归 NullableEmitter，MW11c 协程三指令归 CoroutineEmitter）+ LlvmBitcode / ObjectEmitter
 ├── Toolchain/              # ToolchainResolver（--toolchain → RIGI_LLVM → tools/.llvm/<rid> → PATH）/ ExternalProcess 外部进程封装
 ├── Runtime/                # RigiRtBuilder：rigi_rt 源 EmbeddedResource 内嵌 → 内容哈希缓存 → clang -emit-llvm -c 编成 bitcode（unity build）
 └── Cli/                    # native 驱动（--file/--out/--emit-obj/--emit-ll/--toolchain）
@@ -556,7 +659,10 @@ rigi_rt/                    # 本仓库顶层目录（C，EmbeddedResource 内�
 ├── memtrack.c              # 台账：RIGI_RT_MEMTRACK=1 时跟踪 malloc/free，退出未清零 exit 1
 ├── arc.c/.h                # microGC / microSGC、值语义四面族、region 协议、对象头
 ├── macrogc.c/.h            # （随后续阶段）Bacon-Rajan 收集器、候选账本、GC 协程实体
-├── coroutine.c/.h          # （随后续阶段）Coroutine / Executor / Worker / Alarm（含内置 GC Executor）
+├── coroutine.h             # MW11c 瘦身：RigiFatRef / RigiResumeCode 共享 ABI 类型（旧 C 调度面已删）
+├── cohandle.c/.h           # 协程句柄原语：create/resume/destroy + lane + PollingAlarm 轮询状态
+├── worker.c/.h             # Worker 原语：OS 线程/入队/park/同步 Mutex/定时器/TLS/主 Worker 收尾
+├── failreg.c               # 未观察失败注册表（Task 失败异常 native 承载；shared class 不得持 local Exception）
 └── eh.c/.h                 # MW9a checked-flag 便携异常传输：TLS pending 槽三面（rigi_exc_raise/pending/take）+ 顶层 reporter（rigi_type_name_of/rigi_exc_halt），不使用平台原生 EH
 ```
 
@@ -577,7 +683,7 @@ rigi_rt/                    # 本仓库顶层目录（C，EmbeddedResource 内�
 | MW8 | 泛型运行时：`Type\<T\>`/typeOf/new、is/supers/with/cast（**MW8a/MW8b 已收口**；**MW8c 推进中**） | MW8a typeid 装箱；MW8b 动态 new 槽 0 分发器；MW8c-1 `.typeid<X>` 构造 sheet；MW8c-2 泛型占位 cast + 数值/String/struct 转换；MW8c-3 struct sret thunk + 标量零值 T() + VM 无匹配 init 必抛 |
 | MW9 | 异常：try/catch/finally → checked-flag 便携传输（§8；**MW9a 已收口**：rigi_rt eh 三面 + reporter、MIR 构件（MirThrow/MirTakePending/MirRetThrow/ExcTarget）、TryExpander 十步展开、RcInjection 传播垫、Emit pending 检查、NativeE2E 捕获型对拍 13 例；**MW9b 已收口**：内置异常 message 模板源码化（stdlib init 重载）+ VM/native 构造全走真 init、VM 顶层格式对齐 `{类型全名}: {message}`、三占位 abort + 数组/Span 越界写 abort 全转真异常（守卫指令 ExcTarget 扩面 + ExceptionEmitter 共享抛出辅助 + core 异常恒可达白名单；除零策略换 Throw 实现）、SYNTAX §8.1 加第 6 异常类 `core.OutOfBoundException` + §8.2 未捕获进程行为） | 异常对拍套件 |
 | MW10 | wrapper 烘焙全链（**已收口**：Entity/Value/Method 三类 proxy 链 + wildcard router 与 call??? 降级 + singleton 三态 get fn 与急切初始化，§5/§7） | |
-| MW11 | 协程：状态机、Executor/Worker、Alarm（libuv 底座）、Task、eager spawn | ASYNC §8 集成测试 |
+| MW11 | 协程：状态机、Executor/Worker、Alarm（libuv 时钟底座）、Task、eager spawn。**MW11a/b** 曾以 C 侧重实现收口中间形态（单线程 drain + Alarm waiter）。**MW11c**：架构转向落地——Dispatcher/Task 调度在 Rigi 世界，rigi_rt 瘦身为 Worker/协程句柄/定时器/同步 Mutex/TLS/失败注册表原语；冷 Task、TaskState、executor 换绑、多 Worker 懒起、Timer/`sleep`、语言级 Mutex（VM 方法 hook；native 由 CoroutineSplit 改写 `enter` + Rigi `release` 真体，判定在 `tryEnter`/`releaseNext`） | ASYNC §8 集成测试 |
 | MW12 | macroGC：收集器、候选账本、GC 协程与内置 Executor、fence 激活、§25 检查 | 循环回收与泄漏检查套件 |
 | MW13 | 优化收尾（move/cursor、CellElim 激进化）、工具链捆绑与发布 | |
 

@@ -124,7 +124,10 @@ namespace RigiCompiler.Middleware.Mir
             locals.AddRange(flowBuilder.SyntheticLocals);
 
             var isEntrypoint = symbol.HasKeyword(BilKeyword.Entrypoint);
-            return new MirFunction(symbol, returnType, parameters, locals, blocks, isEntrypoint);
+            // MW11a：async 关键字随符号带入（CoroutineSplitPass 的处理标记）
+            var isAsync = symbol.HasKeyword(BilKeyword.Async);
+            return new MirFunction(symbol, returnType, parameters, locals, blocks,
+                isEntrypoint, isAsync);
         }
 
         // cast 子集判定的内建标量/String 键
@@ -199,8 +202,8 @@ namespace RigiCompiler.Middleware.Mir
                 {
                     var expected = Layout.ConstructedTypeCollector.Substitute(
                         signature.Parameters[i].TypeRef, substitution);
-                    if (MwTypeKey.Normalize(expected)
-                        != MwTypeKey.Normalize(argTypeRefs[i + skipReceiver]))
+                    if (!InitArgCompatible(symbols, expected, argTypeRefs[i + skipReceiver],
+                        substitution))
                     {
                         all = false;
                         break;
@@ -217,6 +220,53 @@ namespace RigiCompiler.Middleware.Mir
                 match = member;
             }
             return match ?? throw new MwNotSupportedException($"new/super 无匹配 init: {type.Canonical}");
+        }
+
+        // init 实参匹配：精确 canonical；构造类型下实参仍带模板占位时
+        // 经同一 substitution 代入；冷 Task body 是具体 lambda 类时按
+        // ExtendsType 判定（CoroutineSplit 随后改写为工厂）
+        private static bool InitArgCompatible(MwSymbolTable symbols, string expected,
+            string actual, Dictionary<string, string>? substitution)
+        {
+            var expectedSubst = Layout.ConstructedTypeCollector.Substitute(expected, substitution);
+            var actualSubst = Layout.ConstructedTypeCollector.Substitute(actual, substitution);
+            if (substitution != null)
+            {
+                expectedSubst = SubstituteBareParams(expectedSubst, substitution);
+                actualSubst = SubstituteBareParams(actualSubst, substitution);
+            }
+            if (MwTypeKey.Normalize(expectedSubst) == MwTypeKey.Normalize(actualSubst))
+            {
+                return true;
+            }
+            var actualType = symbols.FindTypeByRef(actualSubst)
+                ?? symbols.FindTypeByRef(actual);
+            var extends = actualType?.Declaration.ExtendsType;
+            if (extends == null)
+            {
+                return false;
+            }
+            var extendsSubst = Layout.ConstructedTypeCollector.Substitute(extends, substitution);
+            if (substitution != null)
+            {
+                extendsSubst = SubstituteBareParams(extendsSubst, substitution);
+            }
+            return MwTypeKey.Normalize(extendsSubst) == MwTypeKey.Normalize(expectedSubst);
+        }
+
+        // ConstructedTypeCollector.Substitute 只替换 `.generic<…>` 占位；
+        // init 签名里的 `AsyncFunc<TReturn>` 是声明形裸参数名，需按构造
+        // 代入表改写成实参
+        private static string SubstituteBareParams(string typeRef,
+            Dictionary<string, string> substitution)
+        {
+            var result = typeRef;
+            foreach (var pair in substitution)
+            {
+                result = result.Replace("<" + pair.Key + ">", "<" + pair.Value + ">",
+                    System.StringComparison.Ordinal);
+            }
+            return result;
         }
 
         // ..init.wrapper 按名 + 实参个数解析（VM TryFindInitWrapper 同

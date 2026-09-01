@@ -25,6 +25,14 @@ namespace RigiCompiler
         {
             // Any.call??? 参数签名落定（stdlib Pair 可能已入图）
             env.B.EnsureCallWildcard(env.Unit.Symbols);
+            // 阶段 1.5（S11，SYNTAX §12.1）：enum case init 模板绑定
+            // （声明点作用域，先于一切函数体绑定）。
+            // MW11c 提前到默认值绑定之前：enum case 作参数默认值
+            // （Timer.init 的 repeat = RepeatOption.NoRepeat，§19.5）需要
+            // case 模板已登记，否则默认值绑定静默失败、调用点缺省失效；
+            // 模板体内调用带默认值函数经 GetParameterDefault 记忆化按需
+            // 触发，反向依赖安全
+            BindEnumCaseTemplates();
             // 阶段 1（S8d）：参数默认值绑定（SYNTAX §4.2 声明点作用域）。
             // GetParameterDefault 记忆化按需绑定——前向依赖（f(a = h())
             // 声明先于 h）由调用点查表递归触发，声明顺序不影响语义
@@ -35,9 +43,6 @@ namespace RigiCompiler
                     if (parameter.DefaultValue != null) env.GetParameterDefault(parameter);
                 }
             });
-            // 阶段 1.5（S11，SYNTAX §12.1）：enum case init 模板绑定
-            // （声明点作用域，先于一切函数体绑定）
-            BindEnumCaseTemplates();
             // 阶段 1.6（统一 cell 存储，SYNTAX §14.3）：静态/全局字段的
             // wrapper cell 化——逐字段合成 cell 隐藏子类（实例字段不在此列：
             // 其 wrapper 存储是宿主隐藏存储，M88；cell 的构造时机归

@@ -217,22 +217,33 @@ namespace RigiCompiler.Middleware.Emit
         internal static void EmitPendingCheck(ModuleBuilder.Session session,
             LLVMBuilderRef builder, MirBlock? excTarget)
         {
-            if (excTarget == null)
-            {
-                throw new CompilerInternalException(
-                    "可抛调用 ExcTarget 未解析（RcInjection 传播垫缺失）");
-            }
-            var blocks = session.CurrentBlocks
-                ?? throw new CompilerInternalException("pending 检查缺少当前函数块映射");
             var (pendFn, pendType) = CallEmitter.DeclareHelperFace(session,
                 RuntimeFaces.ExcPending, PointerType(), System.Array.Empty<LLVMTypeRef>());
             var pending = builder.BuildCall2(pendType, pendFn,
                 System.Array.Empty<LLVMValueRef>(), "exc.pending");
             var hasPending = builder.BuildICmp(LLVMIntPredicate.LLVMIntNE, pending,
                 LLVMValueRef.CreateConstNull(PointerType()), "exc.has");
-            var cont = session.CurrentFunction.AppendBasicBlock("exc.cont");
-            builder.BuildCondBr(hasPending, blocks[excTarget.Id], cont);
-            builder.PositionAtEnd(cont);
+            if (excTarget == null)
+            {
+                // 传播垫内部 / ctor thunk：无再入异常边。pending 则未捕获
+                // 出口（halt），否则续行——避免垫内 fail/publish 虚调把
+                // ExcTarget==null 当成 RcInjection 遗漏
+                var halt = session.CurrentFunction.AppendBasicBlock("exc.halt");
+                var cont = session.CurrentFunction.AppendBasicBlock("exc.cont");
+                builder.BuildCondBr(hasPending, halt, cont);
+                builder.PositionAtEnd(halt);
+                var (haltFn, haltType) = CallEmitter.DeclareVoidFace(session,
+                    RuntimeFaces.ExcHalt);
+                builder.BuildCall2(haltType, haltFn, System.Array.Empty<LLVMValueRef>(), "");
+                builder.BuildUnreachable();
+                builder.PositionAtEnd(cont);
+                return;
+            }
+            var blocks = session.CurrentBlocks
+                ?? throw new CompilerInternalException("pending 检查缺少当前函数块映射");
+            var contResolved = session.CurrentFunction.AppendBasicBlock("exc.cont");
+            builder.BuildCondBr(hasPending, blocks[excTarget.Id], contResolved);
+            builder.PositionAtEnd(contResolved);
         }
     }
 }

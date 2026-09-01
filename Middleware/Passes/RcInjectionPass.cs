@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using RigiCompiler.Bil;
 using RigiCompiler.Middleware.Layout;
 using RigiCompiler.Middleware.Mir;
@@ -30,22 +31,87 @@ namespace RigiCompiler.Middleware.Passes
                 {
                     continue;
                 }
-                InjectFunction(context, fn);
-                CheckFunction(context, fn);
+                InjectFunction(context, fn, out var releaseOrder);
+                CheckFunction(context, fn, releaseOrder);
             }
         }
 
-        private static void InjectFunction(MwContext context, MirFunction fn)
+        private static void InjectFunction(MwContext context, MirFunction fn,
+            out List<string> releaseOrder)
         {
             var kinds = ClassifyAll(context, fn);
-            var releaseOrder = BuildReleaseOrder(fn, kinds);
+            var moveSlots = CollectMoveSlots(fn);
+            releaseOrder = BuildReleaseOrder(fn, kinds, moveSlots);
             foreach (var block in fn.Blocks)
             {
                 RewriteBlock(context, fn, block, kinds, releaseOrder);
             }
             InsertEntryAcquires(fn, kinds);
-            ResolveExceptionEdges(fn, releaseOrder);
+            ResolveExceptionEdges(context, fn, releaseOrder);
         }
+
+        // MW11a：所有权转移（move）槽收集——面取走 +1，本地不再 release：
+        // MirCoroutineCreate.FrameSlot（frame +1 移交协程续体，
+        // cohandle 借用语义，由 resume fn 在 DONE 出口做最终 release）。
+        // 这是 ARC 最易错点：move 槽进 release 序列 = UAF/双降
+        private static HashSet<string> CollectMoveSlots(MirFunction fn)
+        {
+            var slots = new HashSet<string>(System.StringComparer.Ordinal);
+            foreach (var block in fn.Blocks)
+            {
+                foreach (var inst in block.Instructions)
+                {
+                    if (inst is MirCoroutineCreate create)
+                    {
+                        slots.Add(create.FrameSlot);
+                    }
+                }
+            }
+            return slots;
+        }
+
+        // MW11a：resume fn 的 frame 参数是借用约定（+1 由 spawn 点 move
+        // 进续体持有；SUSPENDED/YIELDED 出口不释放——续体仍存活；DONE
+        // 出口做最终 release）
+        private static bool IsResumeFrameParam(MirFunction fn, string name) =>
+            fn.IsCoroutineResume && name == CoroutineSplitPass.FrameParamName;
+
+        // MW11b 棒3：probe fn 的 alarm 参数同为借用约定（+1 由 C 侧
+        // 探测登记项持有至摘链；probe 借用读取，入口不 acquire、出口
+        // 不 release——无 DONE 出口式的最终 release 点）
+        private static bool IsProbeAlarmParam(MirFunction fn, string name) =>
+            fn.IsPollProbe && name == CoroutineSplitPass.ProbeParamName;
+
+        // DONE 出口判定（resume fn）：块内含 MirCoroutineDone 标记
+        //（split 的 complete/fail 终态序列与传播垫共有），frame 在此
+        // 出口最终 release
+        private static bool IsCoroutineDoneExit(MirFunction fn, MirBlock block) =>
+            fn.IsCoroutineResume && block.Instructions.Any(
+                i => i is MirCoroutineDone);
+
+        // 出口有效 release 序列：基础序列（releaseOrder，已排除 move 槽
+        // 与 frame 参数）+ DONE 出口/传播垫（block==null）追加 frame
+        // 参数最终 release
+        private static List<string> EffectiveReleaseOrder(MirFunction fn, MirBlock? block,
+            List<string> releaseOrder)
+        {
+            if (!fn.IsCoroutineResume)
+            {
+                return releaseOrder;
+            }
+            if (block == null || IsCoroutineDoneExit(fn, block))
+            {
+                var effective = new List<string>(releaseOrder) { CoroutineSplitPass.FrameParamName };
+                return effective;
+            }
+            return releaseOrder;
+        }
+
+        // RigiResumeCode DONE（rigi_rt/cohandle.h 口径；resume fn 传播垫尾）
+        // MW11b 棒3：probe fn 传播垫尾返回码（RigiPollProbeFn -1 =
+        // isReady 抛异常，pending 保持置位由恢复块失败尾取走——棒5a 起
+        // 探测由恢复块直调 $mw.poll_probe，-1 语义不变）
+        private const int ProbeCodeError = -1;
 
         // MW9a：ExcTarget==null 的可抛指令（MirCall/MirSuperCall/
         // MirInvokeIndirect/MirThrow；MW9b-G 扩面 MirBinaryIntrinsic（除零
@@ -55,7 +121,23 @@ namespace RigiCompiler.Middleware.Passes
         // 路径无返回值）+ MirRetThrow 收尾；MirThrow 出厂块的终结符同步
         // 从 MirRetThrow 改道 MirBranch(垫)。try 展开产物的 ExcTarget
         // 恒非空（B 棒契约），此处只触用户函数体直写 throw/调用的 null
-        private static void ResolveExceptionEdges(MirFunction fn, List<string> releaseOrder)
+        // MW9a：ExcTarget==null 的可抛指令（MirCall/MirSuperCall/
+        // MirInvokeIndirect/MirThrow；MW9b-G 扩面 MirBinaryIntrinsic（除零
+        // 守卫）/MirCast/MirUnboxAny/MirSetArray/MirNewIndirect）统一改写
+        // 指向函数级共享传播垫。
+        // 垫 = 按 ret 出口同口径 release 全部托管槽（无任何豁免——异常
+        // 路径无返回值）+ MirRetThrow 收尾；MirThrow 出厂块的终结符同步
+        // 从 MirRetThrow 改道 MirBranch(垫)。try 展开产物的 ExcTarget
+        // 恒非空（B 棒契约），此处只触用户函数体直写 throw/调用的 null。
+        // MW11c 棒5a 分叉：resume fn 的垫尾 = 失败终态序列
+        //（take pending → native 失败注册表 → task.failureNodeId →
+        // fail() → publishAll → noteTerminal → MirCoroutineDone →
+        // ret DONE——CoroutineSplitPass.EmitFailTerminal）+ 垫自带托管
+        // 局部显式 release + 标准 release 序列 + frame 最终 release
+        //（未捕获异常不跨协程帧传播，归宿是 Task FAILED）；普通 fn
+        // 维持 release + MirRetThrow
+        private static void ResolveExceptionEdges(MwContext context, MirFunction fn,
+            List<string> releaseOrder)
         {
             var needsPad = false;
             foreach (var block in fn.Blocks)
@@ -77,12 +159,62 @@ namespace RigiCompiler.Middleware.Passes
             {
                 return;
             }
-            var padInsts = new List<MirInst>(releaseOrder.Count);
-            foreach (var name in releaseOrder)
+            MirBlock pad;
+            if (fn.IsPollProbe)
             {
-                padInsts.Add(new MirReleaseSlot(name));
+                // MW11b 棒3 垫尾分叉：probe fn 的传播垫 = release 全托管
+                // 槽 + ret -1——pending 保持置位（不 MirTakePending），
+                // 由 drain 探测轮在 probe 返 -1 后 rigi_exc_take 取走，
+                // 走 yield 点失败路径（Task FAILED）
+                var errorCode = ProxyWildcardAbi.FreshLocal(fn, "$mw.code.",
+                    MirType.Of(".i32"));
+                var padInsts = new List<MirInst>(releaseOrder.Count + 2)
+                {
+                    new MirLoadResource(
+                        ProxyWildcardAbi.AddI32Resource(context, ProbeCodeError), errorCode),
+                };
+                foreach (var name in releaseOrder)
+                {
+                    padInsts.Add(new MirReleaseSlot(name));
+                }
+                pad = new MirBlock(PropagateBlockId, padInsts,
+                    new MirRet(new MirLocalOperand(errorCode)));
             }
-            var pad = new MirBlock(PropagateBlockId, padInsts, new MirRetThrow());
+            else if (fn.IsCoroutineResume)
+            {
+                // 棒5a 垫尾分叉：失败终态序列（take pending → native
+                // 失败注册表登记 → task.failureNodeId → fail() →
+                // publishAll → noteTerminal → MirCoroutineDone → ret
+                // DONE；未捕获异常归宿 Task FAILED，不跨协程帧传播）。
+                // 垫在 releaseOrder 冻结后合成：序列新建的托管局部显式
+                // 释放（先于标准序列），标准序列 + frame 最终 release
+                // 收尾（EffectiveReleaseOrder block==null 通道）
+                var padManaged = new List<string>();
+                var padInsts = new List<MirInst>();
+                var terminator = CoroutineSplitPass.EmitFailTerminal(context,
+                    context.Mir!, fn, padInsts, CoroutineSplitPass.TaskFieldSymbolOfResume(
+                        context, fn, out var taskTypeRef), taskTypeRef,
+                    CoroutineSplitPass.ResolveRuntime(context, context.Mir!),
+                    padManaged);
+                foreach (var name in padManaged)
+                {
+                    padInsts.Add(new MirReleaseSlot(name));
+                }
+                foreach (var name in EffectiveReleaseOrder(fn, null!, releaseOrder))
+                {
+                    padInsts.Add(new MirReleaseSlot(name));
+                }
+                pad = new MirBlock(PropagateBlockId, padInsts, terminator);
+            }
+            else
+            {
+                var padInsts = new List<MirInst>(releaseOrder.Count);
+                foreach (var name in releaseOrder)
+                {
+                    padInsts.Add(new MirReleaseSlot(name));
+                }
+                pad = new MirBlock(PropagateBlockId, padInsts, new MirRetThrow());
+            }
             fn.AddBlock(pad);
             foreach (var block in fn.Blocks)
             {
@@ -162,7 +294,7 @@ namespace RigiCompiler.Middleware.Passes
         }
 
         private static List<string> BuildReleaseOrder(MirFunction fn,
-            Dictionary<string, ManagedSlotKind> kinds)
+            Dictionary<string, ManagedSlotKind> kinds, HashSet<string> moveSlots)
         {
             var addrAliases = CollectAddrAliasTargets(fn);
             var order = new List<string>();
@@ -177,6 +309,19 @@ namespace RigiCompiler.Middleware.Passes
                     continue;
                 }
                 if (addrAliases.Contains(local.Name))
+                {
+                    continue;
+                }
+                // MW11a：move 槽（所有权已移交运行时）与 resume fn 的
+                // frame 借用参数不进基础 release 序列（frame 的最终
+                // release 由 EffectiveReleaseOrder 在 DONE 出口/垫追加）；
+                // MW11b：probe fn 的 alarm 借用参数同样不进（无任何出口
+                // release 点——C 侧登记项持有）
+                if (moveSlots.Contains(local.Name))
+                {
+                    continue;
+                }
+                if (IsResumeFrameParam(fn, local.Name) || IsProbeAlarmParam(fn, local.Name))
                 {
                     continue;
                 }
@@ -219,11 +364,17 @@ namespace RigiCompiler.Middleware.Passes
             && fn.Symbol.Owner?.Declaration.Kind is BilTypeKind.Struct
                 or BilTypeKind.EnumStruct or BilTypeKind.Wrapper;
 
-        // 值类型参数的 +1 由 EmitInitRichValue 落槽建立，避免与规则 1 双计
+        // 值类型参数的 +1 由 EmitInitRichValue 落槽建立，避免与规则 1 双计。
+        // MW11a：resume fn 的 frame 参数是借用（spawn 点 move 进续体的
+        // +1），入口不 acquire
         private static bool ShouldAcquireParam(MirFunction fn, MirLocal parameter,
             Dictionary<string, ManagedSlotKind> kinds)
         {
             if (IsExemptThis(fn, parameter.Name))
+            {
+                return false;
+            }
+            if (IsResumeFrameParam(fn, parameter.Name) || IsProbeAlarmParam(fn, parameter.Name))
             {
                 return false;
             }
@@ -268,7 +419,7 @@ namespace RigiCompiler.Middleware.Passes
                     }
                     block.Terminator = new MirRet(new MirLocalOperand(RetLocalName));
                 }
-                foreach (var name in releaseOrder)
+                foreach (var name in EffectiveReleaseOrder(fn, block, releaseOrder))
                 {
                     rewritten.Add(new MirReleaseSlot(name));
                 }
@@ -337,13 +488,22 @@ namespace RigiCompiler.Middleware.Passes
             // MW9a：pending 移入目标槽（移动语义建立 owned +1，不插 acquire；
             // 旧值按产出类前置 release）。MirThrow 不消耗操作数槽，无动作
             MirTakePending takePending => takePending.TargetLocal,
+            // MW11a：MirSpawn 产出热 Task 胖引用（+1 随 out 移交）；
+            // MirTaskWait 终态路径产出结果/异常拷贝（+1 随拷贝移交；
+            // SUSPENDED 路径不写槽，零值 release 无操作）。
+            // MW11c 棒5a：MirFailureLoad 产出异常拷贝（+1 随拷贝移交）
+            MirFailureLoad failureLoad => failureLoad.OutFatSlot,
             _ => null,
         };
 
-        private static void CheckFunction(MwContext context, MirFunction fn)
+        private static void CheckFunction(MwContext context, MirFunction fn,
+            List<string> releaseOrder)
         {
             var kinds = ClassifyAll(context, fn);
-            var releaseOrder = BuildReleaseOrder(fn, kinds);
+            var moveSlots = CollectMoveSlots(fn);
+            // 期望出口序列必须用注入期冻结的 releaseOrder：棒5a 传播垫
+            // EmitFailTerminal 在冻结之后追加托管局部（垫内自释放），
+            // 重建 order 会把垫专用槽算进所有 MirRet 出口而误报不完整
             foreach (var block in fn.Blocks)
             {
                 if (block.Terminator is not MirRet && block.Terminator is not MirRetThrow)
@@ -357,16 +517,20 @@ namespace RigiCompiler.Middleware.Passes
                         $"RcInjection 自检失败：{fn.Symbol.Canonical} 块 {block.Id} 非传播垫却 MirRetThrow 收尾");
                 }
                 var insts = block.InstructionList;
-                if (insts.Count < releaseOrder.Count)
+                // MW11a：DONE 出口/垫的有效序列含 frame 最终 release
+                var effective = block.Id == PropagateBlockId
+                    ? EffectiveReleaseOrder(fn, null, releaseOrder)
+                    : EffectiveReleaseOrder(fn, block, releaseOrder);
+                if (insts.Count < effective.Count)
                 {
                     throw new CompilerInternalException(
                         $"RcInjection 自检失败：{fn.Symbol.Canonical} 块 {block.Id} release 序列不完整");
                 }
-                var start = insts.Count - releaseOrder.Count;
-                for (var i = 0; i < releaseOrder.Count; i++)
+                var start = insts.Count - effective.Count;
+                for (var i = 0; i < effective.Count; i++)
                 {
                     if (insts[start + i] is not MirReleaseSlot release
-                        || release.Local != releaseOrder[i])
+                        || release.Local != effective[i])
                     {
                         throw new CompilerInternalException(
                             $"RcInjection 自检失败：{fn.Symbol.Canonical} 块 {block.Id} release 序列不匹配");
@@ -375,6 +539,11 @@ namespace RigiCompiler.Middleware.Passes
                     {
                         throw new CompilerInternalException(
                             $"RcInjection 自检失败：{fn.Symbol.Canonical} 出口 release 含 {RetLocalName}");
+                    }
+                    if (moveSlots.Contains(release.Local))
+                    {
+                        throw new CompilerInternalException(
+                            $"RcInjection 自检失败：{fn.Symbol.Canonical} 出口 release 含 move 槽 ${release.Local}（所有权已移交运行时）");
                     }
                 }
             }
@@ -420,15 +589,47 @@ namespace RigiCompiler.Middleware.Passes
                 }
             }
             // MW9a：全部可抛指令的 ExcTarget 必须已解析（指向派发垫/逃逸垫/
-            // 传播垫）；残留 null = 传播垫创建或改写遗漏
+            // 传播垫）；残留 null = 传播垫创建或改写遗漏。传播垫自身的
+            // MirCall（棒5a EmitFailTerminal：failure_record/fail/publishAll）
+            // 是终点，改写进自己会重入，故意保持 null
             foreach (var block in fn.Blocks)
             {
+                if (block.Id == PropagateBlockId)
+                {
+                    continue;
+                }
                 foreach (var inst in block.Instructions)
                 {
                     if (HasNullExcTarget(inst))
                     {
                         throw new CompilerInternalException(
                             $"RcInjection 自检失败：{fn.Symbol.Canonical} 残留 ExcTarget==null 的 {inst.GetType().Name}");
+                    }
+                }
+            }
+            // MW11a：move 槽全局免配平断言——任何 MirReleaseSlot 命中
+            // move 槽即 ARC 配平错误（面已取走 +1，本地 release 会双降）。
+            // 唯一合法例外：产出前置 release（紧挨着产出该槽的指令之前，
+            // 释放的是旧值——move 槽合成时零初始化，实为无操作）
+            foreach (var block in fn.Blocks)
+            {
+                var insts = block.InstructionList;
+                for (var i = 0; i < insts.Count; i++)
+                {
+                    if (insts[i] is not MirReleaseSlot release
+                        || !moveSlots.Contains(release.Local))
+                    {
+                        continue;
+                    }
+                    var isPreProduction = i + 1 < insts.Count
+                        && (ProductionTarget(insts[i + 1]) == release.Local
+                            // 托管 CopyLocal 三段式的首段 release（旧值）
+                            || (insts[i + 1] is MirCopyLocal copy
+                                && copy.Target == release.Local));
+                    if (!isPreProduction)
+                    {
+                        throw new CompilerInternalException(
+                            $"RcInjection 自检失败：{fn.Symbol.Canonical} 块 {block.Id} release 命中 move 槽 ${release.Local}");
                     }
                 }
             }

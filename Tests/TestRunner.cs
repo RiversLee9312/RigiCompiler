@@ -60,6 +60,7 @@ namespace RigiCompiler.Tests
             ("BilVm", BilVmTests.RunAll, BilVmTests.RunWithArgs),
             ("BilVmDispatch", BilVmDispatchTests.RunAll, BilVmDispatchTests.RunWithArgs),
             ("BilVmWakeup", BilVmWakeupTests.RunAll, BilVmWakeupTests.RunWithArgs),
+            ("VmPrimitive", VmPrimitiveTests.RunAll, VmPrimitiveTests.RunWithArgs),
             ("BilReader", BilReaderTests.RunAll, BilReaderTests.RunWithArgs),
             ("BilVmStress", BilVmStressTests.RunAll, BilVmStressTests.RunWithArgs),
             ("EscapingSeqExpr", EscapingSeqExprTests.RunAll, EscapingSeqExprTests.RunWithArgs),
@@ -69,6 +70,7 @@ namespace RigiCompiler.Tests
             ("E2e", E2eCorpusTests.RunAll, E2eCorpusTests.RunWithArgs),
             ("Middleware", MiddlewareTests.RunAll, MiddlewareTests.RunWithArgs),
             ("NativeE2E", NativeE2ETests.RunAll, NativeE2ETests.RunWithArgs),
+            ("BilVmTask", BilVmTaskTests.RunAll, BilVmTaskTests.RunWithArgs),
         };
 
         // 套件数量（对外编号 1..SuiteCount，即注册表顺序）

@@ -5176,12 +5176,20 @@ namespace RigiCompiler.Tests
             IReadOnlyList<VmValue> arguments)
         {
             var context = new VmContext(module);
-            var executor = new VmExecutor(context);
             var function = context.FindFunction(functionSymbol);
             TestHarness.CheckTrue("预备 fn 存在", function != null, functionSymbol);
-            var coroutine = executor.Spawn(function!, arguments);
-            executor.Publish(coroutine);
-            executor.WaitQuiescence();
+            // 直建模块（无 stdlib Dispatcher）走降级通道；否则完整调度链
+            if (!context.Dispatch.HasDispatcher)
+            {
+                var standalone = context.Dispatch.RunStandalone(function!,
+                    arguments.ToArray());
+                return new BilVmResult(context.Stdout, context.Stderr,
+                    standalone.Result, standalone.Failure);
+            }
+            context.InitializeSingletons();
+            context.InvokeGlobalInitializers();
+            var coroutine = context.Dispatch.Spawn(function!, arguments, caller: null);
+            context.Dispatch.RunMainLoop();
             return new BilVmResult(context.Stdout, context.Stderr, coroutine.Result,
                 coroutine.Failure);
         }

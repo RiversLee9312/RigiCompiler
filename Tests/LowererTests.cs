@@ -140,7 +140,7 @@ namespace RigiCompiler.Tests
         private static LoweredFunctionBody BodyOf(IReadOnlyList<LoweredFunctionBody> bodies,
             string name)
         {
-            return bodies.Single(b => b.Method.Name == name);
+            return TestHarness.UniqueNamedBody(bodies, name, b => b.Method);
         }
     }
 }

@@ -15,6 +15,8 @@ dotnet clean
 
 Middleware 的 C 工具链（MW1 起编译 rigi_rt 与 lld 链接所需）：CI 用 runner 预装 clang/lld；开发机 PATH 优先，缺则跑 `pwsh tools/Fetch-LlvmToolchain.ps1`（钉版官方 20.1.2 选择性部件，缓存 `tools/.llvm/`，gitignored）。详见 `MIDDLEWARE_ARCHITECTURE.md` §2 链接器/rigi_rt 编译行。`native --out` 走全链：clang 驱动（`-fuse-ld=lld`）链接 CRT 出可执行文件；`--emit-obj`/`--emit-ll` 免工具链（中间产物与合并 rigi_rt 前的黄金快照）。rigi_rt 源改动经内容哈希缓存自动重编，无需手工清理。
 
+libuv 静态库（MW11b 起协程 Alarm 族事件底座）：CI 双平台 job 各跑一步 `tools/Fetch-Libuv.ps1`（runner 预装 cmake）；开发机跑 `pwsh tools/Fetch-Libuv.ps1`（钉版 GitHub tag v1.52.1 源码 + SHA256 校验，cmake 现场构建静态库，缓存 `tools/.libuv/<rid>/`，gitignored，幂等 / `-Force` 重建）。native 解析顺序 `--libuv-dir` → 环境变量 `RIGI_LIBUV` → `tools/.libuv/<rid>` → 编译器 exe 旁 `.libuv/<rid>`；命中时 `--out` 链接行追加静态库 + 平台系统库、rigi_rt 带 `-DRIGI_HAS_LIBUV=1` 编译，未命中按无 libuv 降级。详见 `MIDDLEWARE_ARCHITECTURE.md` §2 事件/定时底座行。
+
 `RIGI_RT_MEMTRACK=1` 打开 rigi_rt 内置堆台账：进程退出时未释放块即 stderr 报告并以 exit 1 失败。NativeE2E 对拍跑产物进程时默认开启（泄漏即该用例失败）；日常 `native --out` 不设此变量。
 
 ### 2.2 运行
@@ -91,6 +93,12 @@ dotnet publish -c Release -r linux-x64 -o publish/linux-x64
 - **独立 Layer 测试**：经 `Parser.Parse(tokens, new TestRootParserLayer(), entryLayer)` 驱动（`TestHarness.ParseWithLayer` 封装）。`TestRootParserLayer` 只接受 EOF——被测 Layer 提前结束或漏消费普通 token 会立即失败，能发现 Layer 边界问题。
 - **约定：每新增一个 ParserLayer，必须在 `Tests/` 添加对应测试类，并在 `TestRunner` 注册表注册（`test` 菜单与 `test --run N` 的编号即注册表顺序）。**
 - **fuzz 并行子进程超时**：`SemanticsFuzz` 区间 >100 例时切多子进程并行，父进程默认**不限时**等待（NativeAOT 产物比 CoreCLR 慢约 3 倍，固定预算会误杀）；需要时限时用 `--suite-args <from> <to> child-timeout-ms=<毫秒>` 显式给出（套件参数不能带 `--` 前缀，会被解析成 test 子命令）。
+- **挂死调试纪律（必须设超时）**：调试可能引入死锁/活锁/进程不退出的改动（调度器、线程、等待-唤醒协议、quiescence 类计数）时，**任何测试运行都必须带超时**，禁止裸跑无限等待：① 优先用单例进程内复现通道（`--suite-args <i> <i>`）逐条验证，先单例绿再跑并行；② 必须跑子进程/产物进程时显式给超时（套件的 `child-timeout-ms`、或 shell 层看门狗）；③ 运行被中止后先检查并结束残留的 rigic/dotnet 测试子进程（文件锁会干扰重跑），再继续。
+- **子进程进程树管理（2026-08 rigic 孤儿事件经验，权威分析见用户侧调查报告）**：在本仓库的 shell（Windows PowerShell 5.1）里用 `Start-Process` 拉起 `dotnet run`/rigic 跑探测时，四条铁律——
+  1. **stdin 必须断开**：rigic 默认继承一条通往宿主进程的 stdin 管道，会永远等输入（0 输出 0 CPU 全线程 Wait 的形态即此）。跑法必须带 `< NUL`（`cmd /c "dotnet run -- ... < NUL > out.txt 2> err.txt"`）或等价物。
+  2. **看门狗不可用 `$p.Kill($true)`**：该重载是 .NET Core 3.0+ API，PS 5.1（.NET Framework CLR 4.0）没有——看门狗会抛 MethodException 自崩、零杀伤。PS 5.1 下用 `taskkill /PID $p.Id /T /F`（局限：父进程先死则 PPID 树断、杀不到孙进程）。
+  3. **推荐 Job Object 根治**：`CreateJobObject` + `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE(0x2000)` + `AssignProcessToJobObject`——后代出生即入 job，job 句柄随看门狗退出（无论正常/被杀）关闭时内核自动灭整树；PS 5.1 可经 Add-Type P/Invoke 使用（注意嵌套 struct 赋值须整体拷出改完再塞回）。C# 测试代码同理。
+  4. **提权边界**：本机工具链若以管理员运行，残留孤儿只能提权清理；能不求管理员就不求。
 - 测试数量与通过状态等易变数字不写入文档，以实际运行为准。
 
 ### e2e 语料通道（`E2e` 套件）

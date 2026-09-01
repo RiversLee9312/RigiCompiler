@@ -56,6 +56,13 @@ namespace RigiCompiler.Middleware.Runtime
         // noreturn（exit 1，调用方补 unreachable）
         public const string TypeNameOf = "rigi_type_name_of";
         public const string ExcHalt = "rigi_exc_halt";
+        // MW11c 棒5a：MW11a/b 旧协程面族（rigi_root_begin/end、
+        // rigi_executor_run、rigi_take_unobserved_failure、rigi_spawn、
+        // rigi_task_current/wait/complete/fail、rigi_yield、
+        // rigi_yield_alarm）已随转向删除——运行时交互点改为 Rigi 世界
+        // 方法调（Task/Dispatcher，普通 MirCall）+ 最小原语指令
+        //（MirCoroutineCreate/MirFailureLoad，Emit 内字面量声明），
+        // 不占用本表
         // type.is / supers / with（含 .indirect）：目标 sheet 判定，i32 三态
         public const string TypeIs = "rigi_type_is";
         public const string TypeIsIndirect = "rigi_type_is_indirect";

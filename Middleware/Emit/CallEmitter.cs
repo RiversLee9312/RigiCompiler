@@ -91,6 +91,7 @@ namespace RigiCompiler.Middleware.Emit
         }
 
         // invoke.indirect：发射期 BindIndirectCall → EmitIndirectCall
+        //（含 async $$call：虚派发 spawn stub，结果槽为 Task/Task<T>）
         private static void EmitIndirectInvoke(ModuleBuilder.Session session, LLVMBuilderRef builder,
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirInvokeIndirect inst)
         {

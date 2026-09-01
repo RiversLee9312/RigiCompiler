@@ -1,5 +1,4 @@
 using System;
-using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -56,7 +55,9 @@ namespace RigiCompiler.Tests
             var clang = ToolchainResolver.ResolveClang(null);
             if (clang != null)
             {
-                RigiRtBuilder.EnsureBitcode(clang, out _);
+                // 与 NativeCommand 同一 libuv 解析（预热同一份内容哈希缓存，
+                // 否则并行用例会各自重建带 RIGI_HAS_LIBUV 的 bitcode）
+                RigiRtBuilder.EnsureBitcode(clang, out _, LibuvResolver.Resolve(null));
             }
         }
 
@@ -4199,6 +4200,584 @@ namespace RigiCompiler.Tests
                 "    a[9] = 2\n" +
                 "    return 0\n" +
                 "}\n", "数组下标越界", "core::OutOfBoundException: 数组下标越界：9（长度 3）"),
+            // ===== MW11a 棒3 协程对拍（VM 母本移植；main 是同步根协程
+            // ——非 async fn 挂起点受控拒绝，await 一律收进 async fn
+            // 体内，main spawn 后返回常量；stdout 打印只放 await/join
+            // 之后的数据依赖确定位置，不断言并发交错序）=====
+            // ① fork/join 取值（VM TestForkJoinAndFireAndForget join 母本）：
+            // 三路 spawn → run 内 await → 求和打印 9
+            Case("协程 fork/join 取值",
+                "import core.io.Console\n" +
+                "async func add(n: i32): i32 { return n + 1 }\n" +
+                "async func run() {\n" +
+                "    var a = add(1)\n" +
+                "    var b = add(2)\n" +
+                "    var c = add(3)\n" +
+                "    var x = await a\n" +
+                "    var y = await b\n" +
+                "    var z = await c\n" +
+                "    Console.println(((x + y) + z).toString())\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n"),
+            // ② await 已完成 Task + 二次 await 同结果（VM
+            // TestAwaitExceptionAndCompleted twice 母本）：打印 10
+            Case("协程二次 await 同结果",
+                "import core.io.Console\n" +
+                "async func quick(): i32 { return 5 }\n" +
+                "async func run() {\n" +
+                "    var t = quick()\n" +
+                "    var a = await t\n" +
+                "    var b = await t\n" +
+                "    Console.println((a + b).toString())\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n"),
+            // ③ async 抛异常 → await 点重抛 → try/catch 捕获打印（VM
+            // TestAwaitExceptionAndCompleted caught 母本）
+            Case("协程 await 异常重抛捕获",
+                "import core.io.Console\n" +
+                "async func boom(): i32 {\n" +
+                "    throw new core.RuntimeException(\"x\")\n" +
+                "}\n" +
+                "async func run() {\n" +
+                "    try {\n" +
+                "        await boom()\n" +
+                "        Console.println(\"no\")\n" +
+                "    } catch (e: core.RuntimeException) {\n" +
+                "        Console.println(\"caught:\" + e.getMessage())\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n"),
+            // ④ fire-and-forget：spawn 后不 await，main return 后协程仍
+            // 被 drain 等待执行完成，其打印出现在 stdout
+            Case("协程 fire-and-forget drain 等待",
+                "import core.io.Console\n" +
+                "async func bg() {\n" +
+                "    yield\n" +
+                "    Console.println(\"bg-done\")\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    bg()\n" +
+                "    return 0\n" +
+                "}\n"),
+            // ⑤ 未观察失败（FailCase）：fire-and-forget 抛异常 → main
+            // 正常返回 0 后 drain 到终态 → 进程 exit 1 + stderr
+            // 「{类型全名}: {message}」（VM 侧查消息关键字，native 侧查
+            // reporter 全名前缀格式）
+            FailCase("协程未观察失败顶层格式",
+                "async func ghost() {\n" +
+                "    throw new core.RuntimeException(\"bg\")\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    ghost()\n" +
+                "    return 0\n" +
+                "}\n", "bg", "core::RuntimeException: bg"),
+            // ⑥ 裸 yield：两协程各 yield 后完成 join，断言最终求和值
+            //（交错序不断言）
+            Case("协程裸 yield join",
+                "import core.io.Console\n" +
+                "async func step(n: i32): i32 {\n" +
+                "    yield\n" +
+                "    return n\n" +
+                "}\n" +
+                "async func run() {\n" +
+                "    var a = step(20)\n" +
+                "    var b = step(22)\n" +
+                "    var x = await a\n" +
+                "    var y = await b\n" +
+                "    Console.println((x + y).toString())\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n"),
+            // ⑦ await 穿越 try/finally 双路径（VM
+            // TestAwaitThroughTryFinally 母本）：正常返回与异常路径
+            // finally 均执行（单协程内顺序确定）
+            Case("协程 await 穿越 try/finally 双路径",
+                "import core.io.Console\n" +
+                "async func pause(): i32 {\n" +
+                "    yield\n" +
+                "    return 9\n" +
+                "}\n" +
+                "async func boom(): i32 {\n" +
+                "    yield\n" +
+                "    throw new core.RuntimeException(\"x\")\n" +
+                "}\n" +
+                "async func run() {\n" +
+                "    try {\n" +
+                "        var n = await pause()\n" +
+                "        Console.println(\"ok:\" + n.toString())\n" +
+                "    } finally(_) {\n" +
+                "        Console.println(\"fin1\")\n" +
+                "    }\n" +
+                "    try {\n" +
+                "        await boom()\n" +
+                "        Console.println(\"no\")\n" +
+                "    } catch (_: core.RuntimeException) {\n" +
+                "        Console.println(\"caught\")\n" +
+                "    } finally(_) {\n" +
+                "        Console.println(\"fin2\")\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n"),
+            // ⑧ async 无挂起点 fn（统一切分后直跑到底）
+            Case("协程无挂起点 async fn",
+                "import core.io.Console\n" +
+                "async func straight(): i32 { return 7 }\n" +
+                "async func run() {\n" +
+                "    var t = straight()\n" +
+                "    var n = await t\n" +
+                "    Console.println(n.toString())\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n"),
+            // ⑨ 泛型类 async 方法（类级 typeid 捕获进 frame）+ 泛型
+            // async fn（方法级 typeid 跨挂起）
+            Case("协程泛型类 async 方法 + 泛型 async fn",
+                "import core.io.Console\n" +
+                "shared class Box\\<T> {\n" +
+                "    pub var v: T\n" +
+                "    pub init(x: T) { v = x }\n" +
+                "    pub async func get(): T {\n" +
+                "        yield\n" +
+                "        return v\n" +
+                "    }\n" +
+                "}\n" +
+                "async func one(): i32 { return 1 }\n" +
+                "async func echo\\<T>(x: T): T {\n" +
+                "    var t = one()\n" +
+                "    await t\n" +
+                "    return x\n" +
+                "}\n" +
+                "async func run() {\n" +
+                "    var b = new Box\\<String>(\"boxed\")\n" +
+                "    var g = b.get()\n" +
+                "    var s = await g\n" +
+                "    var e = echo\\<String>(s + \"!\")\n" +
+                "    var r = await e\n" +
+                "    Console.println(r)\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n"),
+            // ⑩ 协程树（VM TestCoroutineStressForkJoin tree(7)=128
+            // 母本）：断言最终求和值
+            Case("协程树 tree(7)=128",
+                "import core.io.Console\n" +
+                "async func tree(n: i32): i32 {\n" +
+                "    if (n <= 0) {\n" +
+                "        return 1\n" +
+                "    }\n" +
+                "    var left = tree(n - 1)\n" +
+                "    var right = tree(n - 1)\n" +
+                "    var a = await left\n" +
+                "    var b = await right\n" +
+                "    return a + b\n" +
+                "}\n" +
+                "async func run() {\n" +
+                "    var root = tree(7)\n" +
+                "    var n = await root\n" +
+                "    Console.println(n.toString())\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n"),
+            // ===== MW11b 棒3：yield Alarm 对拍（VM 基准已逐例实测；
+            // 计时断言全部避免墙钟——sleep 毫秒只作唤醒源，断言落
+            // stdout 次序/最终值；RIGI_RT_MEMTRACK=1 零泄漏口径）=====
+            // ⑪ yield sleep 基础 + fork/join 求和 42（VM
+            // BilVmWakeupTests sleep(1) 端到端母本）
+            Case("协程 yield sleep fork/join 42",
+                "import core.io.Console\n" +
+                "import core.coroutine.*\n" +
+                "async func nap(n: i32): i32 {\n" +
+                "    yield sleep(1)\n" +
+                "    return n + 1\n" +
+                "}\n" +
+                "async func run() {\n" +
+                "    var a = nap(19)\n" +
+                "    var b = nap(20)\n" +
+                "    var c = nap(0)\n" +
+                "    var x = await a\n" +
+                "    var y = await b\n" +
+                "    var z = await c\n" +
+                "    Console.println(((x + y) + z).toString())\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n"),
+            // ⑫ sleep(0) 立即触发仍结束执行段（对齐 VM Arm(<=0) →
+            // Publish 语义）：立即触发 = 不死锁不挂起即恢复完成；跨
+            // 协程交错次序在 VM ThreadPool 下不确定，打印只放同协程
+            // 程序序（a1→a2）与 await 数据依赖（done 在终态后）确定处
+            Case("协程 sleep(0) 立即触发仍完成",
+                "import core.io.Console\n" +
+                "import core.coroutine.*\n" +
+                "async func a(): i32 {\n" +
+                "    Console.println(\"a1\")\n" +
+                "    yield sleep(0)\n" +
+                "    Console.println(\"a2\")\n" +
+                "    return 3\n" +
+                "}\n" +
+                "async func run() {\n" +
+                "    var t = a()\n" +
+                "    var n = await t\n" +
+                "    Console.println(\"done \" + n.toString())\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n"),
+            // ⑬ 双协程不同毫秒 sleep 的完成次序（10ms vs 300ms 给足
+            // 余量；断言次序串，无墙钟断言）
+            Case("协程双毫秒 sleep 完成次序",
+                "import core.io.Console\n" +
+                "import core.coroutine.*\n" +
+                "async func slow() {\n" +
+                "    yield sleep(300)\n" +
+                "    Console.println(\"slow\")\n" +
+                "}\n" +
+                "async func fast() {\n" +
+                "    yield sleep(10)\n" +
+                "    Console.println(\"fast\")\n" +
+                "}\n" +
+                "async func run() {\n" +
+                "    slow()\n" +
+                "    fast()\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n"),
+            // ⑭ PollingAlarm 翻牌（VM BilVmTests Flip 母本）两形态：
+            // (a) 先翻牌后 yield——双端首探即中，isReady 探测计数恰 1
+            //     锁死（次数语义）；(b) arm 协程裸 yield 后翻牌——覆盖
+            //     未就绪→退避→就绪路径；探测节奏（每执行段末一轮 vs VM
+            //     恢复点探测）是 §19.2 实现选择（VM 文档明言退避非语言
+            //     语义），跨端次数不必一致，本形态只断言恢复事实
+            Case("协程 PollingAlarm 首探即中",
+                "import core.io.Console\n" +
+                "import core.coroutine.*\n" +
+                "pub shared class Flip : PollingAlarm {\n" +
+                "    pub var ready: bool = false\n" +
+                "    pub var probes: i32 = 0\n" +
+                "    pub override func isReady(): bool {\n" +
+                "        probes = probes + 1\n" +
+                "        return ready\n" +
+                "    }\n" +
+                "}\n" +
+                "async func run() {\n" +
+                "    var f = new Flip()\n" +
+                "    f.ready = true\n" +
+                "    yield f\n" +
+                "    Console.println(\"polled \" + f.probes.toString())\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("协程 PollingAlarm 退避翻牌",
+                "import core.io.Console\n" +
+                "import core.coroutine.*\n" +
+                "pub shared class Flip : PollingAlarm {\n" +
+                "    pub var ready: bool = false\n" +
+                "    pub override func isReady(): bool { return ready }\n" +
+                "}\n" +
+                "async func arm(f: Flip) {\n" +
+                "    yield\n" +
+                "    f.ready = true\n" +
+                "}\n" +
+                "async func run() {\n" +
+                "    var f = new Flip()\n" +
+                "    arm(f)\n" +
+                "    yield f\n" +
+                "    Console.println(\"polled\")\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n"),
+            // ⑮ using 清理穿越 alarm yield（ASYNC §8 验收项）：正常
+            // 路径 return 与异常路径 throw 的 dispose 均执行且次序正确
+            //（dispose 先于 Task 终态 → 先于 await 续行打印）
+            Case("协程 using 清理穿越 alarm yield 双路径",
+                "import core.io.Console\n" +
+                "import core.coroutine.*\n" +
+                "pub shared class Res implements core.IDisposable {\n" +
+                "    pub var tag: i32\n" +
+                "    pub init(t: i32) { tag = t }\n" +
+                "    pub override func dispose() {\n" +
+                "        Console.println(\"dispose \" + tag.toString())\n" +
+                "    }\n" +
+                "}\n" +
+                "async func work(): i32 {\n" +
+                "    seq using(const r = new Res(1)) {\n" +
+                "        yield sleep(1)\n" +
+                "        return 7\n" +
+                "    }\n" +
+                "}\n" +
+                "async func boom(): i32 {\n" +
+                "    seq using(const r = new Res(2)) {\n" +
+                "        yield sleep(1)\n" +
+                "        throw new core.RuntimeException(\"x\")\n" +
+                "    }\n" +
+                "}\n" +
+                "async func run() {\n" +
+                "    var t = work()\n" +
+                "    var n = await t\n" +
+                "    Console.println(n.toString())\n" +
+                "    var b = boom()\n" +
+                "    try {\n" +
+                "        await b\n" +
+                "    } catch (_: core.RuntimeException) {\n" +
+                "        Console.println(\"caught\")\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n"),
+            // ⑯ isReady 抛异常 = yield 点失败（§19.2 第 6 条）：probe
+            // ret -1（pending 保持置位）→ drain 取走 → Task FAILED →
+            // await 点重抛捕获
+            Case("协程 isReady 抛异常 await 重抛捕获",
+                "import core.io.Console\n" +
+                "import core.coroutine.*\n" +
+                "pub shared class Boom : PollingAlarm {\n" +
+                "    pub init() { }\n" +
+                "    pub override func isReady(): bool {\n" +
+                "        throw new core.RuntimeException(\"probe\")\n" +
+                "    }\n" +
+                "}\n" +
+                "async func waitIt() {\n" +
+                "    var b = new Boom()\n" +
+                "    yield b\n" +
+                "}\n" +
+                "async func run() {\n" +
+                "    var t = waitIt()\n" +
+                "    try {\n" +
+                "        await t\n" +
+                "        Console.println(\"miss\")\n" +
+                "    } catch (_: core.RuntimeException) {\n" +
+                "        Console.println(\"caught\")\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n"),
+            // ===== MW11c 棒5a 阶段4：跨 Executor 对拍（VM
+            // BilVmTaskTests.TestCrossExecutorCombination 母本）。main
+            // 不得 await（native 非 async 挂起点受控拒绝），包进 async
+            // run()。先 Main 冷 Task（无懒起 Worker），再 Compute/IO
+            // 懒起；join 回 Main；memtrack 零泄漏 =====
+            Case("协程冷 Task Main join",
+                "import core.io.Console\n" +
+                "import core.coroutine.*\n" +
+                "async func run() {\n" +
+                "    const t = new Task\\<i32>(func{async (): i32 -> {\n" +
+                "        return@_ 41\n" +
+                "    } })\n" +
+                "    t.run()\n" +
+                "    const n = await t\n" +
+                "    Console.println(n.toString())\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("协程 ComputeExecutor 冷 Task join",
+                "import core.io.Console\n" +
+                "import core.coroutine.*\n" +
+                "async func run() {\n" +
+                "    const t = new Task\\<i32>(func{async (): i32 -> {\n" +
+                "        return@_ 41\n" +
+                "    } })\n" +
+                "    t.run(new ComputeExecutor())\n" +
+                "    const n = await t\n" +
+                "    Console.println(n.toString())\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("协程跨 Executor Compute+IO join",
+                "import core.io.Console\n" +
+                "import core.coroutine.*\n" +
+                "async func run() {\n" +
+                "    const c = new Task\\<i32>(func{async (): i32 -> {\n" +
+                "        return@_ 40\n" +
+                "    } })\n" +
+                "    c.run(new ComputeExecutor())\n" +
+                "    const io = new Task\\<i32>(func{async (): i32 -> {\n" +
+                "        yield sleep(20)\n" +
+                "        return@_ 2\n" +
+                "    } })\n" +
+                "    io.run(new IOExecutor())\n" +
+                "    const a = await c\n" +
+                "    const b = await io\n" +
+                "                    Console.println((a + b).toString())\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n"),
+            // 语言级 Mutex（§19.6）：VM 方法 hook / native CoroutineSplit
+            // 改写 enter + Rigi release 真体。互斥：临界区内 yield 仍持
+            // 锁，竞争者不得进入——否则日志交织成 "[a[b..." 形态
+            Case("协程 Mutex 临界区不交织",
+                "import core.io.Console\n" +
+                "import core.coroutine.*\n" +
+                "pub shared class Log { pub var order: String = \"\" }\n" +
+                "async func critical(m: Mutex, log: Log, tag: String) {\n" +
+                "    const l = await m.acquire()\n" +
+                "    log.order = (log.order + (\"[\" + tag))\n" +
+                "    yield sleep(20)\n" +
+                "    log.order = (log.order + (tag + \"]\"))\n" +
+                "    m.release(l)\n" +
+                "}\n" +
+                "async func run() {\n" +
+                "    const m = new Mutex()\n" +
+                "    const log = new Log()\n" +
+                "    const a = critical(m, log, \"a\")\n" +
+                "    const b = critical(m, log, \"b\")\n" +
+                "    await a\n" +
+                "    await b\n" +
+                "    Console.println(log.order)\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("协程 Mutex 他锁令牌释放抛异常",
+                "import core.io.Console\n" +
+                "import core.coroutine.*\n" +
+                "async func run() {\n" +
+                "    const m = new Mutex()\n" +
+                "    const n = new Mutex()\n" +
+                "    const l = await m.acquire()\n" +
+                "    try {\n" +
+                "        n.release(l)\n" +
+                "        Console.println(\"no\")\n" +
+                "    } catch (_: core.IllegalStateException) {\n" +
+                "        Console.println(\"caught\")\n" +
+                "    }\n" +
+                "    m.release(l)\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n"),
+            // invoke.indirect async $$call：AsyncFunc 经变量调用产 Task，
+            // 再 await。Mutex.runSynchronously 同通道（vtable 闭包也会
+            // 把这条路径收进任何 `new Mutex()` 的 native 模块）
+            Case("协程 await async lambda",
+                "import core.io.Console\n" +
+                "async func run() {\n" +
+                "    const f = func{async (): i32 -> 41}\n" +
+                "    const n = await f()\n" +
+                "    Console.println(n.toString())\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("协程 Mutex.runSynchronously 取值",
+                "import core.io.Console\n" +
+                "import core.coroutine.*\n" +
+                "async func run() {\n" +
+                "    const m = new Mutex()\n" +
+                "    const n = await m.runSynchronously\\<i32>(func{async (): i32 -> 7})\n" +
+                "    Console.println(n.toString())\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("协程不透明 body 冷 Task",
+                "import core.io.Console\n" +
+                "import core.coroutine.*\n" +
+                "func wrap(body: core.AsyncAction): Task {\n" +
+                "    return new Task(body)\n" +
+                "}\n" +
+                "func wrapI(body: core.AsyncFunc\\<i32>): Task\\<i32> {\n" +
+                "    return new Task\\<i32>(body)\n" +
+                "}\n" +
+                "async func run() {\n" +
+                "    const t = wrap(func{async () -> { Console.println(\"opaque\") }})\n" +
+                "    await t\n" +
+                "    const n = await wrapI(func{async (): i32 -> 9})\n" +
+                "    Console.println(n.toString())\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("协程 CoroutineLocal withValue/get",
+                "import core.io.Console\n" +
+                "import core.coroutine.*\n" +
+                "async func run() {\n" +
+                "    const id = new CoroutineLocal\\<String>()\n" +
+                "    const def = new CoroutineLocal\\<String>(\"def\")\n" +
+                "    Console.println((id.get() == null).toString())\n" +
+                "    Console.println(def.get() as String)\n" +
+                "    await id.withValue(\"hi\", func{async () -> {\n" +
+                "        Console.println(id.get() as String)\n" +
+                "        await id.withValue(\"nest\", func{async () -> {\n" +
+                "            Console.println(id.get() as String)\n" +
+                "        }})\n" +
+                "        Console.println(id.get() as String)\n" +
+                "    }})\n" +
+                "    Console.println((id.get() == null).toString())\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("协程 CoroutineLocal spawn 继承",
+                "import core.io.Console\n" +
+                "import core.coroutine.*\n" +
+                "func wrap(body: core.AsyncAction): Task {\n" +
+                "    return new Task(body)\n" +
+                "}\n" +
+                "async func run() {\n" +
+                "    const id = new CoroutineLocal\\<String>()\n" +
+                "    await id.withValue(\"x\", func{async () -> {\n" +
+                "        const spawned = func{async () -> {\n" +
+                "            Console.println(id.get() as String)\n" +
+                "        }}\n" +
+                "        await spawned()\n" +
+                "        const t = new Task(func{async () -> {\n" +
+                "            Console.println(id.get() as String)\n" +
+                "        }})\n" +
+                "        await t\n" +
+                "        const u = wrap(func{async () -> {\n" +
+                "            Console.println(id.get() as String)\n" +
+                "        }})\n" +
+                "        await u\n" +
+                "    }})\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n"),
         };
 
         // 单用例：源 → 中端全管线 → BIL 文本 → VM 执行 + native 编译执行，

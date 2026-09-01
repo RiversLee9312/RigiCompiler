@@ -130,9 +130,40 @@ namespace RigiCompiler
         {
             if (owner != null)
             {
-                return CanonicalTypeName(owner);
+                return CanonicalTypeName(owner) + ArityDisambiguation(owner);
             }
             return ns is { FullName: { Length: > 0 } fullName } ? fullName + "::" : "";
+        }
+
+        // MW11c 同名不同元数消歧（SYNTAX §15.3，Task/Task\<TResult\> 首例同
+        // 签名成员碰撞）：宿主段是定义级泛型类型、且同容器存在同名不同元数
+        // 兄弟时，canonical 名后追加裸泛型参数名单（core.coroutine::
+        // Task<TResult>$run()——非泛型兄弟保持裸名，两侧天然不同）。类型
+        // 声明符号与类型引用不受影响（declaration 键已是 符号+元数；
+        // DeclarationKeyOf 对 Task<TResult> 反查得元数 1）。参数名单不含
+        // $/#/@，TryParseMethodSymbol/TryParseFieldSymbol/SignatureKeyOf
+        // 的切分口径全部兼容
+        private static string ArityDisambiguation(TypeSymbol owner)
+        {
+            if (owner.ConstructedFrom != null || owner.GenericParameters.Count == 0)
+            {
+                return "";
+            }
+            var siblings = owner.DeclaringType?.NestedTypes ?? owner.Namespace?.Types;
+            if (siblings == null)
+            {
+                return "";
+            }
+            foreach (var sibling in siblings)
+            {
+                if (!ReferenceEquals(sibling, owner) && sibling.Name == owner.Name
+                    && sibling.GenericParameters.Count != owner.GenericParameters.Count)
+                {
+                    return "<" + string.Join(",",
+                        owner.GenericParameters.Select(p => p.Name)) + ">";
+                }
+            }
+            return "";
         }
 
         // 参数段（§5.2：(参数名:参数类型,...)）。

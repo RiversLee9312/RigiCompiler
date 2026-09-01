@@ -74,6 +74,19 @@ namespace RigiCompiler.Middleware.Cli
         };
     }
 
+    /// <summary>native --libuv-dir：显式指定 libuv 静态库目录（解析顺序最优先）。</summary>
+    public class NativeLibuvDirOption : ICommandLineOption
+    {
+        public CommandLineMask Mask { get; } = new()
+        {
+            Name = "--libuv-dir",
+            Description = "显式指定 libuv 目录（解析顺序：--libuv-dir → RIGI_LIBUV → tools/.libuv → 编译器旁 .libuv）",
+            ArgsHint = "<目录>",
+            MinArgs = 1,
+            MaxArgs = 1,
+        };
+    }
+
     /// <summary>
     /// native：Middleware 驱动（MIDDLEWARE_ARCHITECTURE §11 Cli/）——BIL 文本经
     /// Gate 门禁 → MwContext（符号表 + MIR）→ 进程内 LLVM 管线（模块构建 →
@@ -94,6 +107,7 @@ namespace RigiCompiler.Middleware.Cli
             new NativeEmitObjOption(),
             new NativeEmitLlOption(),
             new NativeToolchainOption(),
+            new NativeLibuvDirOption(),
             new VerboseOption(),
             new LogToOption(),
         };
@@ -156,7 +170,7 @@ namespace RigiCompiler.Middleware.Cli
             try
             {
                 return EmitAndLink(gate.Module!, outPath, emitObjPath, emitLlPath,
-                    result.Get("--toolchain")?[0]);
+                    result.Get("--toolchain")?[0], result.Get("--libuv-dir")?[0]);
             }
             catch (MwNotSupportedException ex)
             {
@@ -166,7 +180,8 @@ namespace RigiCompiler.Middleware.Cli
         }
 
         private static int EmitAndLink(Bil.BilModule module, string? outPath,
-            string? emitObjPath, string? emitLlPath, string? toolchainDir)
+            string? emitObjPath, string? emitLlPath, string? toolchainDir,
+            string? libuvDir)
         {
             var context = new MwContext(module);
             MwPipeline.CreateDefault().Run(context);
@@ -219,11 +234,19 @@ namespace RigiCompiler.Middleware.Cli
             }
             Logger.Verbose("Middleware", $"工具链 clang: {clang}");
 
+            // libuv 静态库解析（--libuv-dir → RIGI_LIBUV → tools/.libuv → exe 旁）；
+            // 命中则 rigi_rt 带 RIGI_HAS_LIBUV 编译且链接行追加静态库 + 系统库；
+            // 未命中按现状降级（Alarm 面届时 abort，MW11b 棒2 收口）
+            var libuv = LibuvResolver.Resolve(libuvDir);
+            Logger.Verbose("Middleware", libuv != null
+                ? $"libuv: {libuv.StaticLibPath}"
+                : "libuv 未命中，降级链接。解析顺序：" + LibuvResolver.DescribeSearchOrder());
+
             // rigi_rt 现场编译为 bitcode（内容哈希缓存）→ 进程内合并 → 统一优化
             string bitcode;
             try
             {
-                bitcode = RigiRtBuilder.EnsureBitcode(clang, out _);
+                bitcode = RigiRtBuilder.EnsureBitcode(clang, out _, libuv);
             }
             catch (InvalidOperationException ex)
             {
@@ -242,9 +265,16 @@ namespace RigiCompiler.Middleware.Cli
                     Console.Error.WriteLine($"目标文件发射失败: {emitError}");
                     return 2;
                 }
-                // clang 驱动 lld 链接（-fuse-ld=lld；CRT 发现交 clang）
-                var linkExit = ExternalProcess.Run(clang,
-                    new[] { tempObject, "-o", outPath, "-fuse-ld=lld" },
+                // clang 驱动 lld 链接（-fuse-ld=lld；CRT 发现交 clang）。
+                // libuv 命中时追加静态库全路径 + 平台系统库（win 九个 /
+                // linux pthread+dl，见 LibuvResolver.SystemLibraryArgs）
+                var linkArgs = new List<string> { tempObject, "-o", outPath, "-fuse-ld=lld" };
+                if (libuv != null)
+                {
+                    linkArgs.Add(libuv.StaticLibPath);
+                    linkArgs.AddRange(LibuvResolver.SystemLibraryArgs());
+                }
+                var linkExit = ExternalProcess.Run(clang, linkArgs,
                     out _, out var linkStderr);
                 if (linkExit != 0)
                 {

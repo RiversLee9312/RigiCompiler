@@ -23,8 +23,12 @@ namespace RigiCompiler.Middleware.Runtime
         /// 确保 rigi_rt.bc 就绪并返回其全路径。
         /// rebuilt=false 表示命中缓存直接复用；true 表示本次现场编译。
         /// clang 退出码非 0 抛 <see cref="InvalidOperationException"/>（带 stderr 摘要）。
+        /// libuv 非 null 时（LibuvResolver 命中）追加 -I&lt;include&gt; 与
+        /// -DRIGI_HAS_LIBUV=1（MW11b 棒2 预留：rigi_rt 的 uv 用法一律包在
+        /// #ifdef RIGI_HAS_LIBUV 内）；两个参数纳入内容哈希，命中/未命中间不串味。
         /// </summary>
-        public static string EnsureBitcode(string clangPath, out bool rebuilt)
+        public static string EnsureBitcode(string clangPath, out bool rebuilt,
+            LibuvLayout? libuv = null)
         {
             // ① 读出全部 rigi_rt 源文本（逻辑名序保证可重现）；.c 是编译
             //    单元，.h 仅解出供 #include（MW4 arc.h 起）
@@ -52,7 +56,9 @@ namespace RigiCompiler.Middleware.Runtime
                     "rigi_rt 内嵌源缺失：程序集中未找到任何 rigi_rt/**/*.{c,h} 资源（EmbeddedResource 配置失效）");
             }
 
-            // ② 全部源拼接的 SHA256（按逻辑名序拼接，可重现）
+            // ② 全部源拼接的 SHA256（按逻辑名序拼接，可重现）；libuv 编译参数
+            //    （-I 目录 + RIGI_HAS_LIBUV 定义）一并入哈希，否则同一批源在
+            //    libuv 命中/未命中间会命中同一缓存目录而串味
             string hash;
             using (var sha = SHA256.Create())
             {
@@ -60,6 +66,12 @@ namespace RigiCompiler.Middleware.Runtime
                 foreach (var (fileName, text) in sources)
                 {
                     builder.Append(fileName).Append('\n').Append(text).Append('\n');
+                }
+                builder.Append("-D_POSIX_C_SOURCE=200809L\n");
+                if (libuv != null)
+                {
+                    builder.Append("-I").Append(libuv.IncludeDir).Append('\n')
+                        .Append("-DRIGI_HAS_LIBUV=1\n");
                 }
                 hash = Convert.ToHexString(
                     sha.ComputeHash(Encoding.UTF8.GetBytes(builder.ToString())));
@@ -87,6 +99,9 @@ namespace RigiCompiler.Middleware.Runtime
             // .bc 后无法合并；-c 配多文件又禁止 -o。故生成 unity.c 逐文件
             // #include 聚合（仅 .c 编译单元；.h 已由上文解出到同目录）
             var unity = new StringBuilder();
+            // unity 是单一翻译单元：POSIX 钟面（clock_gettime）必须在
+            // 任何系统头之前可见。-std=c11 默认不暴露该声明。
+            unity.Append("#define _POSIX_C_SOURCE 200809L\n");
             foreach (var (fileName, _) in sources)
             {
                 if (fileName.EndsWith(".c", StringComparison.Ordinal))
@@ -97,10 +112,23 @@ namespace RigiCompiler.Middleware.Runtime
             var unityPath = Path.Combine(cacheDir, "unity.c");
             File.WriteAllText(unityPath, unity.ToString());
 
-            // win/linux 通用参数；不传目标三元组，用 clang 默认宿主目标
-            var exitCode = ExternalProcess.Run(clangPath,
-                new[] { "-emit-llvm", "-c", "-O1", "-std=c11", "-Wall",
-                        unityPath, "-o", bitcodePath },
+            // win/linux 通用参数；不传目标三元组，用 clang 默认宿主目标。
+            // libuv 命中时加 -I<include> 与 -DRIGI_HAS_LIBUV=1（棒2 的 uv 用法
+            // 一律包在 #ifdef RIGI_HAS_LIBUV 内，未命中时零影响）
+            var args = new List<string>
+            {
+                "-emit-llvm", "-c", "-O1", "-std=c11", "-Wall",
+                "-D_POSIX_C_SOURCE=200809L",
+            };
+            if (libuv != null)
+            {
+                args.Add("-I" + libuv.IncludeDir);
+                args.Add("-DRIGI_HAS_LIBUV=1");
+            }
+            args.Add(unityPath);
+            args.Add("-o");
+            args.Add(bitcodePath);
+            var exitCode = ExternalProcess.Run(clangPath, args,
                 out var stdout, out var stderr,
                 workingDirectory: cacheDir);
             if (exitCode != 0 || !File.Exists(bitcodePath))

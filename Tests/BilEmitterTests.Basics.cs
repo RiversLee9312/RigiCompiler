@@ -20,8 +20,8 @@ namespace RigiCompiler.Tests
                 && module.Metadata[0].Key == "module"
                 && module.Metadata[0].Type == BilScalarType.String
                 && module.Metadata[0].LiteralText == "\"hello\"");
-            TestHarness.CheckTrue("Resources 恰 13 条且含 \"Hello, world!\" 标量资源",
-                module.Resources.Count == 13
+            TestHarness.CheckTrue("Resources 恰 35 条且含 \"Hello, world!\" 标量资源",
+                module.Resources.Count == 35
                 && module.Resources.Any(r => r is BilScalarResource s
                     && s.Type == BilScalarType.String
                     && s.LiteralText == "\"Hello, world!\""));
@@ -168,20 +168,28 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("全管线无诊断（资源去重）", unit);
             BilTestHarness.CheckBilValid("验证器零错误（资源去重）", module);
-            // stdlib 基线 R_0..R_10（"\n"/false/1/true + MW9b 异常消息模板
-            // 7 条字符串字面量）+ R_11 = "same"——"same" 不重复登记；
-            // return 0 自 stdlib 移除后登记为新资源
+            // stdlib 基线 R_0..R_33（"\n"/false/1/true/0 + 棒5a
+            // 「Task 只允许启动一次」+ bindColdBody 文案 + 调度骨架 i32 2/3/4/5 + null
+            // I64Queue + Mutex.release finally 空 catch-table + Mutex 校验消息
+            // + 两 catch-table + Repeat 校验消息 + CoroutineLocal TValue? 初值
+            // null + withValue 两 catch-table + i32 8 + Task.executor null
+            // + i32 -1 + MW9b 异常消息模板 7 条 + core.time 3 条
+            // + Task<TReturn> 初值 null）
+            // + R_34 = "same"——"same" 不重复登记；return 0 与基线 i32 0
+            // 同键去重
             TestHarness.CheckTrue("相同字面量只登记一个资源",
-                module.Resources.Count == 13
+                module.Resources.Count == 35
                 && module.Resources.Count(r => r is BilScalarResource s
                     && s.LiteralText == "\"same\"") == 1,
                 string.Join(", ", module.Resources.Select(r => r.Name)));
             var main = module.Functions.Single(f => f.Symbol == "$main()@.i32");
             var loads = main.Blocks[0].Instructions.Where(i => i is LoadInstruction).ToList();
-            // main 共三条 load（两次 "same" + return 0），两条指向同一资源 R_11
-            TestHarness.CheckTrue("两处引用同一资源（R_11）",
-                loads.Count == 3 && loads.Count(l => l.Operands[0] is BilResourceOperand ro
-                    && ro.Resource.Name == "R_11") == 2);
+            var same = module.Resources.OfType<BilScalarResource>()
+                .Single(r => r.LiteralText == "\"same\"");
+            TestHarness.CheckTrue("两处引用同一资源（去重）",
+                loads.Count(l => l.Operands[0] is BilResourceOperand ro
+                    && ReferenceEquals(ro.Resource, same)) == 2,
+                "same=" + same.Name + " loads=" + loads.Count);
         }
 
         // ===== 局部声明 + 初始化器（set.var）与赋值 =====
@@ -219,15 +227,44 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("全管线无诊断（一元与比较）", unit);
             BilTestHarness.CheckBilValid("验证器零错误（一元与比较）", module);
-            // 两处 5 共用同一资源（stdlib 基线 11 条资源在前：S9f 基线 4 条
-            // + MW9b 异常消息模板 7 条字符串字面量）
+            // 两处 5 共用同一资源（stdlib 基线 34 条在前：用户 5
+            // 与基线 #10 同键去重，尾部 null 是 Task<TReturn> 初值）
             BilTestHarness.CheckResShape("资源（5 去重）", module,
-                "#0 = string \"\\n\"\n#1 = bool false\n#2 = i32 1\n" +
+                
+                "#0 = string \"\\n\"\n" +
+                "#1 = bool false\n" +
+                "#2 = i32 1\n" +
                 "#3 = bool true\n" +
-                "#4 = string \"无法将 \"\n#5 = string \" 转换为 \"\n" +
-                "#6 = string \"new.indirect 目标不可构造：不匹配任何 init：\"\n" +
-                "#7 = string \"整数除以零\"\n#8 = string \"数组下标越界：\"\n" +
-                "#9 = string \"（长度 \"\n#10 = string \"）\"\n#11 = i32 5");
+                "#4 = i32 0\n" +
+                "#5 = string \"Task 只允许启动一次：对已完成启动的 Task 调用 run\"\n" +
+                "#6 = string \"冷 Task body 无法 spawn-into：无匹配闭包\"\n" +
+                "#7 = i32 2\n" +
+                "#8 = i32 3\n" +
+                "#9 = i32 4\n" +
+                "#10 = i32 5\n" +
+                "#11 = null type(core.coroutine::I64Queue)\n" +
+                "#12 = catch-table {  }\n" +
+                "#13 = string \"Mutex.release：令牌不属于此 Mutex 或已释放\"\n" +
+                "#14 = catch-table {  }\n" +
+                "#15 = catch-table {  }\n" +
+                "#16 = string \"Timer.RepeatOption.Repeat：repeatCount 必须 > 0\"\n" +
+                "#17 = null type(.generic<$.generic.TValue>)\n" +
+                "#18 = catch-table {  }\n" +
+                "#19 = catch-table {  }\n" +
+                "#20 = i32 8\n" +
+                "#21 = null type(core.coroutine::Executor)\n" +
+                "#22 = i32 -1\n" +
+                "#23 = string \"无法将 \"\n" +
+                "#24 = string \" 转换为 \"\n" +
+                "#25 = string \"new.indirect 目标不可构造：不匹配任何 init：\"\n" +
+                "#26 = string \"整数除以零\"\n" +
+                "#27 = string \"数组下标越界：\"\n" +
+                "#28 = string \"（长度 \"\n" +
+                "#29 = string \"）\"\n" +
+                "#30 = i32 999999\n" +
+                "#31 = string \"TimeStamp.nanoseconds 越界：\"\n" +
+                "#32 = string \"（范围 0..999999）\"\n" +
+                "#33 = null type(.generic<$.generic.TReturn>)");
             BilTestHarness.CheckFnShape("main 指令与 .vars", module, "$main()@.i32",
                 ".vars { .i32 a, .i32 n, .bool b, .i32 .t0, .i32 .t1, .i32 .t2, .bool .t3 }\n" +
                 "load res(#0) $.t0\n" +
@@ -348,22 +385,45 @@ namespace RigiCompiler.Tests
             CheckNoErrors("全管线无诊断（标量资源）", unit);
             BilTestHarness.CheckBilValid("验证器零错误（标量资源）", module);
             BilTestHarness.CheckResShape("Resources 全形态", module,
+                
                 "#0 = string \"\\n\"\n" +
                 "#1 = bool false\n" +
                 "#2 = i32 1\n" +
                 "#3 = bool true\n" +
-                "#4 = string \"无法将 \"\n" +
-                "#5 = string \" 转换为 \"\n" +
-                "#6 = string \"new.indirect 目标不可构造：不匹配任何 init：\"\n" +
-                "#7 = string \"整数除以零\"\n" +
-                "#8 = string \"数组下标越界：\"\n" +
-                "#9 = string \"（长度 \"\n" +
-                "#10 = string \"）\"\n" +
-                "#11 = f64 0.5\n" +
-                "#12 = f32 0.1\n" +
-                "#13 = char 'A'\n" +
-                "#14 = null type(.string)\n" +
-                "#15 = i32 0");
+                "#4 = i32 0\n" +
+                "#5 = string \"Task 只允许启动一次：对已完成启动的 Task 调用 run\"\n" +
+                "#6 = string \"冷 Task body 无法 spawn-into：无匹配闭包\"\n" +
+                "#7 = i32 2\n" +
+                "#8 = i32 3\n" +
+                "#9 = i32 4\n" +
+                "#10 = i32 5\n" +
+                "#11 = null type(core.coroutine::I64Queue)\n" +
+                "#12 = catch-table {  }\n" +
+                "#13 = string \"Mutex.release：令牌不属于此 Mutex 或已释放\"\n" +
+                "#14 = catch-table {  }\n" +
+                "#15 = catch-table {  }\n" +
+                "#16 = string \"Timer.RepeatOption.Repeat：repeatCount 必须 > 0\"\n" +
+                "#17 = null type(.generic<$.generic.TValue>)\n" +
+                "#18 = catch-table {  }\n" +
+                "#19 = catch-table {  }\n" +
+                "#20 = i32 8\n" +
+                "#21 = null type(core.coroutine::Executor)\n" +
+                "#22 = i32 -1\n" +
+                "#23 = string \"无法将 \"\n" +
+                "#24 = string \" 转换为 \"\n" +
+                "#25 = string \"new.indirect 目标不可构造：不匹配任何 init：\"\n" +
+                "#26 = string \"整数除以零\"\n" +
+                "#27 = string \"数组下标越界：\"\n" +
+                "#28 = string \"（长度 \"\n" +
+                "#29 = string \"）\"\n" +
+                "#30 = i32 999999\n" +
+                "#31 = string \"TimeStamp.nanoseconds 越界：\"\n" +
+                "#32 = string \"（范围 0..999999）\"\n" +
+                "#33 = f64 0.5\n" +
+                "#34 = f32 0.1\n" +
+                "#35 = char 'A'\n" +
+                "#36 = null type(.string)\n" +
+                "#37 = null type(.generic<$.generic.TReturn>)");
             BilTestHarness.CheckFnShape("main 指令与 .vars", module, "$main()@.i32",
                 ".vars { .bool b, .f64 d, .f32 f, .char c, .nullable<.string> s, " +
                 ".bool .t0, .f64 .t1, .f32 .t2, .char .t3, .nullable<.string> .t4, .i32 .t5 }\n" +

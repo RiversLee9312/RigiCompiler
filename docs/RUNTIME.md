@@ -16,7 +16,7 @@
 | §6–§9 | TypeSheet / vtable 模型 / iMap、refMap 与 GC 追踪 / 加载期扁平化 | [RUNTIME/03-type-metadata.md](RUNTIME/03-type-metadata.md) |
 | §10–§13 | 泛型的运行时实现 / `Type\<T>`·typeOf·new / is·supers·with / cast | [RUNTIME/04-generics-cast.md](RUNTIME/04-generics-cast.md) |
 | §14–§16 | Wrapper 派发管线 / 派发链诊断工具 / enum struct 的运行时表示 | [RUNTIME/05-wrapper-dispatch-enum.md](RUNTIME/05-wrapper-dispatch-enum.md) |
-| §17–§21 | 原生协程、Executor 与 Worker / async 调用与 Task / yield 与 Alarm / 内置 Executor 与 CoroutineLocal / 协程、GC 与同步边界 | [RUNTIME/06-coroutines.md](RUNTIME/06-coroutines.md) |
+| §17–§21 | 原生协程、Executor 与 Worker（含 Rigi 世界/native 原语分层）/ async 调用与 Task（含冷 Task、TaskState 与 executor 换绑）/ yield 与 Alarm（含 Timer/RepeatOption、Mutex、core.time）/ 内置 Executor 与 CoroutineLocal / 协程、GC 与同步边界 | [RUNTIME/06-coroutines.md](RUNTIME/06-coroutines.md) |
 | §22–§24 | 三级 GC / macroGC ownership fence / macroGC 的性能取向与可观察语义 | [RUNTIME/07-gc.md](RUNTIME/07-gc.md) |
 | §25–§26 | 确定性资源管理（IDisposable、using 与全局泄漏异常）/ native 互操作与 `rigi_rt` | [RUNTIME/08-resources-native.md](RUNTIME/08-resources-native.md) |
 

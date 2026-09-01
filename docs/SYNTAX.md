@@ -7,7 +7,7 @@
 |---|---|---|
 | §1–§2 | 基本规则 / 变量声明 | [SYNTAX/01-basics.md](SYNTAX/01-basics.md) |
 | §3 | 类型系统（层级 / rich·shared / 基本类型 / 字面量 / 空安全 / 转换与检查 / 泛型 / 反射 / 字符串转换与插值） | [SYNTAX/02-type-system.md](SYNTAX/02-type-system.md) |
-| §4 | 函数（声明 / 调用与重载 / 可变参数 / 扩展 / async / native） | [SYNTAX/03-functions.md](SYNTAX/03-functions.md) |
+| §4 | 函数（声明 / 调用与重载 / 可变参数 / 扩展 / async 与 Task API / native） | [SYNTAX/03-functions.md](SYNTAX/03-functions.md) |
 | §5 | Lambda 表达式 | [SYNTAX/04-lambda.md](SYNTAX/04-lambda.md) |
 | §6 | `seq` 块（语句块） | [SYNTAX/05-seq-block.md](SYNTAX/05-seq-block.md) |
 | §7–§8 | 控制流 / 异常处理 | [SYNTAX/06-control-flow.md](SYNTAX/06-control-flow.md) |

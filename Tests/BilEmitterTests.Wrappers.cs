@@ -1,4 +1,4 @@
-﻿using System.Linq;
+using System.Linq;
 using RigiCompiler.Bil;
 
 namespace RigiCompiler.Tests
@@ -1648,7 +1648,8 @@ namespace RigiCompiler.Tests
                 "load res(#0) $.t0\n" +
                 "set.field $.t0 $.this field(..cell..UUID#value@.i32)\n" +
                 "ret\n");
-            var iwFn = module.Functions.Single(f => f.Symbol.Contains("..init.wrapper"));
+            var iwFn = module.Functions.Single(f => f.Symbol.StartsWith("..cell..")
+                && f.Symbol.Contains("..init.wrapper"));
             BilTestHarness.CheckFnShape("全局字段 cell ..init.wrapper（new.wrapper.field）",
                 module, iwFn.Symbol,
                 ".vars {  }\n" +
@@ -1670,7 +1671,8 @@ namespace RigiCompiler.Tests
                 "pub func g(): i32 { return h }\n");
             CheckNoErrors("全管线无诊断（全局 wrapped 字段带实参）", unit2);
             BilTestHarness.CheckBilValid("验证器零错误（全局 wrapped 字段带实参）", module2);
-            var iwFn2 = module2.Functions.Single(f => f.Symbol.Contains("..init.wrapper"));
+            var iwFn2 = module2.Functions.Single(f => f.Symbol.StartsWith("..cell..")
+                && f.Symbol.Contains("..init.wrapper"));
             BilTestHarness.CheckFnShape("全局字段 cell ..init.wrapper（体内求值实参）",
                 module2, iwFn2.Symbol,
                 ".vars { .i32 .t0, .i32 .t1 }\n" +
@@ -2221,7 +2223,8 @@ namespace RigiCompiler.Tests
                 cellType.Members.OfType<BilSimpleMemberDeclaration>()
                     .Any(d => d.Symbol.Contains("..init.wrapper") && d.Symbol.Contains("w0:")));
 
-            var iwFn = module.Functions.Single(f => f.Symbol.Contains("..init.wrapper"));
+            var iwFn = module.Functions.Single(f => f.Symbol.StartsWith("..cell..")
+                && f.Symbol.Contains("..init.wrapper"));
             BilTestHarness.CheckFnShape("cell ..init.wrapper 体（field + 参数转发）",
                 module, iwFn.Symbol,
                 ".vars {  }\n" +

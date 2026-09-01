@@ -166,10 +166,11 @@ namespace RigiCompiler.Middleware.Layout
 
         public static ArrayElementAbi ClassifyElement(MirType element, TypeLayoutPlan? plan)
         {
+            // 未单态化的 T：与 ClassifySlot 同口径走胖引用（模板 fn 体
+            // 可含 Array<T>；真正执行的是构造形态，元素 ABI 由构造计划决定）
             if (IsGenericPlaceholder(element))
             {
-                throw new MwNotSupportedException(
-                    $"泛型数组元素布局随单态化: {element.Canonical}");
+                return ArrayElementAbi.Reference();
             }
             if (IsArray(element) || IsNullable(element))
             {

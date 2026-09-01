@@ -58,6 +58,25 @@ namespace RigiCompiler.Middleware.Passes
             return resource;
         }
 
+        // MW11c 棒5a：协程改造面的 i64/bool 常量（同 i32 口径）
+        internal static BilScalarResource AddI64Resource(MwContext context, long value)
+        {
+            var name = "$mw.proxy.i64." + (_resourceCounter++).ToString(CultureInfo.InvariantCulture);
+            var resource = new BilScalarResource(name, BilScalarType.I64,
+                value.ToString(CultureInfo.InvariantCulture));
+            context.Module.Resources.Add(resource);
+            return resource;
+        }
+
+        internal static BilScalarResource AddBoolResource(MwContext context, bool value)
+        {
+            var name = "$mw.proxy.bool." + (_resourceCounter++).ToString(CultureInfo.InvariantCulture);
+            var resource = new BilScalarResource(name, BilScalarType.Bool,
+                value ? "true" : "false");
+            context.Module.Resources.Add(resource);
+            return resource;
+        }
+
         // void 落点的 .any 零值胖引用（null type(.any)：双段零，
         // ResourceEmitter 对齐 VM Any 空形态）
         internal static BilNullResource AddNullAnyResource(MwContext context)

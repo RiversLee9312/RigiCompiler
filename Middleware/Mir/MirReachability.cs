@@ -138,6 +138,13 @@ namespace RigiCompiler.Middleware.Mir
             // 原始体（含源码中未被直接调用的，VM RerouteWildcardInner
             // 同口径可被路由到）
             EnqueueWildcardHostMembers(context, bySymbol, queue);
+            // MW11c 棒5a：协程运行时段（§17.4 Rigi 世界）恒收编——
+            // Dispatcher/Task 的桥方法由生成代码（split 产物 stub/
+            // resume/DONE 尾）与 rigi_entry/导出符号引用，BIL 级可达性
+            // 看不到这些边（与 MW9b-G 异常类型白名单同机制）。stdlib
+            // 自身即含 async fn（Mutex.acquire 等），按内容门控无意义；
+            // 无协程程序的 workerLoop 经 quiescent 先检直返，零挂起
+            EnqueueCoroutineRuntime(context, bySymbol, queue);
             while (queue.Count > 0)
             {
                 var (symbol, fromTentative) = queue.Dequeue();
@@ -165,6 +172,50 @@ namespace RigiCompiler.Middleware.Mir
                 }
             }
             return (order, tentative);
+        }
+
+        // MW11c 棒5a：协程运行时段类型清单（有体方法全收——成员自身的
+        // 调用边由 BFS 正常展开）。Dispatcher 是 priv singleton（零参
+        // init/wrapper 已由 singleton 急切初始化块收编）
+        private static readonly string[] CoroutineRuntimeTypes =
+        {
+            "core.coroutine::Dispatcher",
+            "core.coroutine::I64Queue",
+            "core.coroutine::Task",
+            "core.coroutine::Task<TReturn>",
+            "core.coroutine::SleepAlarm",
+        };
+
+        private static void EnqueueCoroutineRuntime(MwContext context,
+            Dictionary<string, BilFunction> bySymbol,
+            Queue<(string Symbol, bool FromTentative)> queue)
+        {
+            foreach (var typeCanonical in CoroutineRuntimeTypes)
+            {
+                var type = context.Symbols.FindTypeByRef(typeCanonical);
+                if (type == null)
+                {
+                    continue;   // 无 stdlib 的合成模块（单元测试形态）
+                }
+                foreach (var member in type.Members)
+                {
+                    if (member.Declaration.Kind == BilMemberKind.Method
+                        && bySymbol.ContainsKey(member.Canonical))
+                    {
+                        queue.Enqueue((member.Canonical, false));
+                    }
+                }
+            }
+            // laneOfExecutor 模块级助手（Task executor setter/startCold
+            // 调用——那些 fn 已在表内，边会随后展开；此处兜底防御；
+            // 顶层 fn 在 GlobalMembers：core.coroutine::$laneOfExecutor）
+            var laneHelper = context.Symbols.GlobalMembers.FirstOrDefault(m =>
+                m.Canonical.StartsWith("core.coroutine::$laneOfExecutor(",
+                    System.StringComparison.Ordinal));
+            if (laneHelper != null && bySymbol.ContainsKey(laneHelper.Canonical))
+            {
+                queue.Enqueue((laneHelper.Canonical, false));
+            }
         }
 
         // 被应用 wrapper（类型/成员声明上 wrapped(W) 标记指向的类型，刀6
@@ -550,6 +601,31 @@ namespace RigiCompiler.Middleware.Mir
                         case UnaryIntrinsicInstruction unary:
                             AddUserOperatorEdges(context, unary.Op,
                                 localTypes[unary.Operand.Name], edges);
+                            break;
+                        // MW11a：await/裸 yield 不产生调用边——操作数是
+                        // 已有局部（Task 句柄/结果槽），无 invoke/new/
+                        // 访问器目标；async fn 体经自身符号（split 后 =
+                        // stub）可达，体内的调用边不变
+                        case AwaitInstruction:
+                            break;
+                        // MW11b 棒3：带 Alarm 的 yield —— 运行时 Polling
+                        // 探测回调是 MIR 期合成的 $mw.poll_probe（虚派发
+                        // PollingAlarm.isReady），BIL 级不可见；须收编
+                        // isReady 虚调用闭包（静态目标 + 全部 override
+                        // 后代），否则用户子类的 isReady 实现无 MIR 可
+                        // 发射。两分类 sheet（PollingAlarm/EventAlarm）
+                        // 由 Layout 全类型计划覆盖，无需显式收编
+                        case YieldInstruction yieldInst:
+                            if (yieldInst.Alarm != null)
+                            {
+                                var isReady = context.Symbols.FindMember(
+                                    Passes.CoroutineSplitPass.PollProbeIsReadyCanonical);
+                                if (isReady != null
+                                    && ImplBinder.BindCall(isReady) is VirtualCallBinding)
+                                {
+                                    AddVirtualEdges(context, isReady, edges);
+                                }
+                            }
                             break;
                     }
                 }

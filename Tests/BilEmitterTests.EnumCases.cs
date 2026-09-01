@@ -206,14 +206,44 @@ namespace RigiCompiler.Tests
                 && secondRes.Type == BilScalarType.I32 && secondRes.LiteralText == "2"
                 && thirdRes.Type == BilScalarType.I32 && thirdRes.LiteralText == "1");
             // 资源段黄金：判别值资源随声明段先行登记（先于 fn 体资源）；
-            // 判别值 1 与 stdlib 字面量 1、main 的 0 与判别值 0 同键去重
+            // 判别值 1 与 stdlib 字面量 1、判别值 0 与 MW11c 基线 i32 0、
+            // main 的 0 同键去重；尾部 null 是 Task.executor 初值
             BilTestHarness.CheckResShape("资源（判别值登记 + 同键去重）", module,
-                "#0 = i32 0\n#1 = i32 2\n#2 = i32 1\n#3 = string \"\\n\"\n" +
-                "#4 = bool false\n#5 = bool true\n" +
-                "#6 = string \"无法将 \"\n#7 = string \" 转换为 \"\n" +
-                "#8 = string \"new.indirect 目标不可构造：不匹配任何 init：\"\n" +
-                "#9 = string \"整数除以零\"\n#10 = string \"数组下标越界：\"\n" +
-                "#11 = string \"（长度 \"\n#12 = string \"）\"");
+                
+                "#0 = i32 0\n" +
+                "#1 = i32 2\n" +
+                "#2 = i32 1\n" +
+                "#3 = string \"\\n\"\n" +
+                "#4 = bool false\n" +
+                "#5 = bool true\n" +
+                "#6 = string \"Task 只允许启动一次：对已完成启动的 Task 调用 run\"\n" +
+                "#7 = string \"冷 Task body 无法 spawn-into：无匹配闭包\"\n" +
+                "#8 = i32 3\n" +
+                "#9 = i32 4\n" +
+                "#10 = i32 5\n" +
+                "#11 = null type(core.coroutine::I64Queue)\n" +
+                "#12 = catch-table {  }\n" +
+                "#13 = string \"Mutex.release：令牌不属于此 Mutex 或已释放\"\n" +
+                "#14 = catch-table {  }\n" +
+                "#15 = catch-table {  }\n" +
+                "#16 = string \"Timer.RepeatOption.Repeat：repeatCount 必须 > 0\"\n" +
+                "#17 = null type(.generic<$.generic.TValue>)\n" +
+                "#18 = catch-table {  }\n" +
+                "#19 = catch-table {  }\n" +
+                "#20 = i32 8\n" +
+                "#21 = null type(core.coroutine::Executor)\n" +
+                "#22 = i32 -1\n" +
+                "#23 = string \"无法将 \"\n" +
+                "#24 = string \" 转换为 \"\n" +
+                "#25 = string \"new.indirect 目标不可构造：不匹配任何 init：\"\n" +
+                "#26 = string \"整数除以零\"\n" +
+                "#27 = string \"数组下标越界：\"\n" +
+                "#28 = string \"（长度 \"\n" +
+                "#29 = string \"）\"\n" +
+                "#30 = i32 999999\n" +
+                "#31 = string \"TimeStamp.nanoseconds 越界：\"\n" +
+                "#32 = string \"（范围 0..999999）\"\n" +
+                "#33 = null type(.generic<$.generic.TReturn>)");
         }
 
         // ===== 丢弃式全形 case 构造：语句语境 E.A(1) 发 new.case 后丢弃 =====

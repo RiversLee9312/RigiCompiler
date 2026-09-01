@@ -37,7 +37,10 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckBilValid("验证器零错误（异常端到端）", module);
 
             // catch-table 引用 stdlib 异常子类（§19.5 保序）
-            var catchTable = module.Resources.OfType<BilCatchTableResource>().Single();
+            //（MW11c 起 stdlib Mutex.runSynchronously 的 try/finally 也产
+            // catch-table——按本用例条目内容过滤，不再全模块唯一）
+            var catchTable = module.Resources.OfType<BilCatchTableResource>()
+                .Single(t => t.Entries.Any(e => e.Render().Contains("core::IOException")));
             TestHarness.Check("catch-table 元素（stdlib 异常子类保序）",
                 string.Join("\n", catchTable.Entries.Select(e => e.Render())),
                 "type(core::IOException) -> blk(try0-catch0)\n" +
@@ -213,8 +216,15 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("await 发射严格 TASK [RESULT]",
                 module.Functions.Single(f => f.Symbol == "$main()@.void").Blocks
                     .SelectMany(b => b.Instructions).OfType<AwaitInstruction>().Count() == 2);
+            // MW11c 起 stdlib Mutex.runSynchronously 也含 await 指令——
+            // 文本行数统计限定在 $main 的 fn 段内
+            var mainStart = text.IndexOf("fn($main()", StringComparison.Ordinal);
+            var mainEnd = text.IndexOf("\nfn(", mainStart + 1, StringComparison.Ordinal);
+            var mainText = mainEnd < 0 ? text.Substring(mainStart)
+                : text.Substring(mainStart, mainEnd - mainStart);
             TestHarness.CheckTrue("await 文本含值与无值两形态",
-                text.Contains("await $") && text.Split('\n').Count(line => line.StartsWith("        await ")) == 2);
+                mainText.Contains("await $")
+                && mainText.Split('\n').Count(line => line.StartsWith("        await ")) == 2);
         }
 
         private static void TestYieldEmission()

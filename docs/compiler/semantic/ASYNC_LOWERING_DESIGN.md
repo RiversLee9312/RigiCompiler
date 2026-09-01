@@ -144,7 +144,9 @@ P3 对每个 lambda 记录按符号身份排序的捕获集；捕获在 lambda �
 ## 7. stdlib 与 Middleware native 面
 
 `stdlib/core/coroutine.rg` 是源码可见的类型面，不暴露 Coroutine、frame、waiter 或
-GC fence。保留 `Task`/`Task<T>` 无公开构造入口、Executor/Alarm 类型与 `sleep`；不以
+GC fence。`Task`/`Task<T>` 是具体 shared class（pub init 冷 Task 构造，
+SYNTAX §4.5），Executor 家族为 singleton 门面（RUNTIME §20.1），另有
+TaskState/Mutex/Timer 类型与 `sleep`；不以
 扩充用户可调用 native 函数为首要前提。
 
 Middleware 必须提供以下保留运行时面；这些是实现接口而非 BIL canonical symbol，也不得
@@ -160,11 +162,14 @@ Middleware 必须提供以下保留运行时面；这些是实现接口而非 BI
 | `gc.ownership-region` | 引用槽发布/回收 | 执行 RUNTIME §23 双检与 GCAlarm 等待 |
 | `alarm.poll/event` | yield Alarm 与 `sleep` | Polling 探测、Event waiter 注册/触发 |
 
-`rigi_rt.make_sleep_alarm(i64): EventAlarm` 仍是当前唯一需要由 stdlib 声明的协程 native
-函数（`sleep(i32)` 是它在 Rigi 层的包装，RUNTIME §19.4）。
-以后若公开 Executor 选择或 CoroutineLocal 的 get/set，必须先在 `SYNTAX.md` 的 native
-形状限制、`coroutine.rg` 签名、BIL §22.5 VM hook 和 Middleware 接口四处同时确定；
-本专项不以私有 native ABI 绕过现有强类型声明规则。
+`sleep(i32)` 是 Rigi 层包装：构造内部 `SleepAlarm`，经 `rigi_timer_create`
+排程（RUNTIME §19.4）。旧 `make_sleep_alarm` native 面已删除。
+`CoroutineLocal\<TValue>` 公开面已定稿（RUNTIME §20.2）：具体 shared class，
+实例作进程稳定键；`withValue` 作用域绑定（非裸 set）；`get(): TValue?`
+（可选构造默认值；无绑定且无默认 → null）；eager spawn 与冷 Task 启动
+默认继承调用方当前有效顶。实现通道是协程句柄上的绑定栈
+（`rigi_coro_local_push/pop/get/inherit`）与 VM `VmCoroutine` 同构栈，
+不是 OS ThreadLocal。
 
 ## 8. 实施顺序与验收
 

@@ -5,6 +5,8 @@ obj/
 .claude/
 # LLVM 工具链本地缓存（tools/Fetch-LlvmToolchain.ps1 现场下载提取，不入库）
 tools/.llvm/
+# libuv 静态库本地缓存（tools/Fetch-Libuv.ps1 现场构建，不入库）
+tools/.libuv/
 # fuzz 失败落盘（StressFuzz）
 Tests/fuzz-failures/
 publish/

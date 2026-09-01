@@ -74,13 +74,84 @@ namespace RigiCompiler.Bil.Vm
             // span_alloc 与 shared_span_alloc 共用此键；Invoke 按 callee 分流
             hooks.Register("rigi_rt", "span_alloc",
                 (ctx, args) => AllocSpan(ctx, args, shared: false));
-            hooks.Register("rigi_rt", "make_sleep_alarm", MakeSleepAlarm);
+            // MW11c 棒5a：make_sleep_alarm 面删除（sleep 迁 Rigi 实现——
+            // SleepAlarm 构造经 rigi_timer_create 排程）；新增协程句柄
+            // lane/当前协程三面（stdlib Dispatcher.publish/executor
+            // setter/spawn-into 的 Rigi 体会调用）
+            hooks.Register("rigi_rt", "coroutine_current",
+                (ctx, args) => ctx.Dispatch.CoroutineCurrent(args));
+            hooks.Register("rigi_rt", "coroutine_get_lane",
+                (ctx, args) => ctx.Dispatch.CoroutineGetLane(args));
+            hooks.Register("rigi_rt", "coroutine_set_lane",
+                (ctx, args) => ctx.Dispatch.CoroutineSetLane(args));
+            // MW11c 棒4a（RUNTIME §17.4）：native 原语面真实现，全部由
+            // VmDispatch 承载（Worker 线程/sem 交接/协程句柄 resume/同步
+            // Mutex/TLS/时钟；timer 回调语义归棒4b）。hook 键 =
+            // @NativeSymbol 短名（C 符号 = rigi_ + 短名，与 rigi_rt
+            // 导出一一对应）
+            hooks.Register("rigi_rt", "worker_create",
+                (ctx, args) => ctx.Dispatch.WorkerCreate(args));
+            hooks.Register("rigi_rt", "worker_destroy",
+                (ctx, args) => ctx.Dispatch.WorkerDestroy(args));
+            hooks.Register("rigi_rt", "worker_enqueue",
+                (ctx, args) => ctx.Dispatch.WorkerEnqueue(args));
+            hooks.Register("rigi_rt", "worker_park",
+                (ctx, args) => ctx.Dispatch.WorkerPark(args));
+            hooks.Register("rigi_rt", "coroutine_create",
+                (ctx, args) => ctx.Dispatch.CoroutineCreate(args));
+            hooks.Register("rigi_rt", "coroutine_resume",
+                (ctx, args) => ctx.Dispatch.CoroutineResume(args));
+            hooks.Register("rigi_rt", "coroutine_destroy",
+                (ctx, args) => ctx.Dispatch.CoroutineDestroy(args));
+            hooks.Register("rigi_rt", "timer_create",
+                (ctx, args) => ctx.Dispatch.TimerCreate(args));
+            hooks.Register("rigi_rt", "timer_cancel",
+                (ctx, args) => ctx.Dispatch.TimerCancel(args));
+            hooks.Register("rigi_rt", "timer_destroy",
+                (ctx, args) => ctx.Dispatch.TimerDestroy(args));
+            hooks.Register("rigi_rt", "sync_mutex_create",
+                (ctx, args) => ctx.Dispatch.SyncMutexCreate(args));
+            hooks.Register("rigi_rt", "sync_mutex_acquire",
+                (ctx, args) => ctx.Dispatch.SyncMutexAcquire(args));
+            hooks.Register("rigi_rt", "sync_mutex_release",
+                (ctx, args) => ctx.Dispatch.SyncMutexRelease(args));
+            hooks.Register("rigi_rt", "tls_current_context",
+                (ctx, args) => ctx.Dispatch.TlsCurrentContext(args));
+            hooks.Register("rigi_rt", "time_now",
+                (ctx, args) => ctx.Dispatch.TimeNow(args));
+            hooks.Register("rigi_rt", "coro_local_push",
+                (ctx, args) => ctx.Dispatch.CoroLocalPush(args));
+            hooks.Register("rigi_rt", "coro_local_pop",
+                (ctx, args) => ctx.Dispatch.CoroLocalPop(args));
+            hooks.Register("rigi_rt", "coro_local_get",
+                (ctx, args) => ctx.Dispatch.CoroLocalGet(args));
+            hooks.Register("rigi_rt", "coro_local_inherit",
+                (ctx, args) => ctx.Dispatch.CoroLocalInherit(args));
+            // core.time.DateTime.now() 的私有声明未带 @NativeSymbol，
+            // 默认符号 = 函数名本身（与 coroutine.rg 的 time_now 同一
+            // native 符号两声明，VM 两键同实现）
+            hooks.Register("rigi_rt", "rigi_time_now",
+                (ctx, args) => ctx.Dispatch.TimeNow(args));
             hooks.Register("rigi_rt", "i64_to_string", I64ToString);
             hooks.Register("rigi_rt", "u64_to_string", U64ToString);
             hooks.Register("rigi_rt", "f32_to_string", F32ToString);
             hooks.Register("rigi_rt", "f64_to_string", F64ToString);
             hooks.Register("rigi_rt", "bool_to_string", BoolToString);
             hooks.Register("rigi_rt", "char_to_string", CharToString);
+            // MW11c 棒4b（§18.4）：冷 Task 启动壳——spawn-into/一次性
+            // 判定/IllegalStateException 由 VmDispatch.StartCold 承载
+            // （gate 临界区 + 引擎建协程，Rigi 体无法自举的部分）
+            hooks.RegisterMethod("core.coroutine::Task$startCold",
+                (ctx, args) => ctx.Dispatch.StartCold(args));
+            hooks.RegisterMethod("core.coroutine::Task<TReturn>$startCold",
+                (ctx, args) => ctx.Dispatch.StartCold(args));
+            // MW11c 棒4b（§19.6）：Mutex 的挂起/唤醒引擎动作——判定逻辑
+            // （tryEnter/releaseNext）留在 Rigi 层，hook 承载「判定 +
+            // 挂起同临界区」与 waiter 发布
+            hooks.RegisterMethod("core.coroutine::Mutex$enter",
+                (ctx, args) => ctx.Dispatch.MutexEnter(args));
+            hooks.RegisterMethod("core.coroutine::Mutex$release",
+                (ctx, args) => ctx.Dispatch.MutexRelease(args));
             hooks.RegisterMethod("core::Any$call???", CallWildcard);
             return hooks;
         }
@@ -215,16 +286,9 @@ namespace RigiCompiler.Bil.Vm
             return new VmArray(typeId.TypeSymbol, size, context.ZeroOf(typeId.TypeSymbol));
         }
 
-        // §22.5 make_sleep_alarm：i64 毫秒 → 粘滞 EventAlarm（RUNTIME §19.4）。
-        // Timer 到期 signal 并重新发布 waiter；复用 VmEventAlarm。
-        private static VmValue MakeSleepAlarm(VmContext context, IReadOnlyList<VmValue> arguments)
-        {
-            if (arguments.Count != 1 || arguments[0] is not VmI64 milliseconds)
-            {
-                throw new VmException("make_sleep_alarm 需要恰好 1 个 i64 参数");
-            }
-            return VmEventAlarm.Sleep(milliseconds.Value);
-        }
+        // §22.5 make_sleep_alarm 面已随 MW11c 棒5a 删除：sleep 迁 Rigi
+        // 实现（VmEventAlarm 同步退役；sleep → SleepAlarm →
+        // rigi_timer_create → VmTimerRecord 通道）
 
         // §22.5 方法 hook（RUNTIME §14.2 / SYNTAX §14.7）：wrapper 降级请求的
         // 链末默认实现。派发链烘焙（specific/wildcard 特化合成）归 Middleware，

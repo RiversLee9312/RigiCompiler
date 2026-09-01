@@ -158,7 +158,48 @@ flushLogs()              // 启动后继续执行
 const user = await loadUser(42)
 ```
 
-每个新协程在创建时永久绑定一个 `core.coroutine.Executor`。未显式指定时继承当前协程的 Executor；程序只能选择 Executor，不能选择其中的 Worker。Executor 的具体选择接口由 `core.coroutine` API 提供。
+每个新协程在创建时绑定一个 `core.coroutine.Executor`（默认终身不变，唯一例外是 Task.executor 显式换绑，`RUNTIME.md` §17.1/§18.4）。未显式指定时继承当前协程的 Executor；程序只能选择 Executor，不能选择其中的 Worker。内置 Executor（`MainExecutor` / `ComputeExecutor` / `IOExecutor`）是 `pub shared singleton class`（基类 `Executor` 保持 abstract），经 `new ComputeExecutor()` 等 singleton 构造表达式取得进程内唯一实例，Worker 懒建（`RUNTIME.md` §20.1）。
+
+#### `core.coroutine.Task` API
+
+`Task` / `Task\<TReturn\>` 是具体 shared class（非 abstract），支持显式构造：
+
+```rigi
+pub shared class Task {
+    pub init(body: core.AsyncAction)
+    pub func run()
+    pub func run(executor: Executor)
+    // state: TaskState（pub get；写通道受限，语义见下）
+    // executor: Executor?（读写语义见下）
+}
+
+pub shared class Task\<TReturn\> {
+    pub init(body: core.AsyncFunc\<TReturn\>)
+    // run / state / executor 同上
+}
+```
+
+- **构造只存 body 不执行**（冷 Task）；`run()` 以「executor 预设值 ?? 当前 Executor」启动，`run(executor)` 先设预设再启动。Task 只允许启动一次：对已启动 Task（含直接调用 async 函数/lambda 返回的热 Task）调用 `run` 抛 `core.IllegalStateException`（§8.1）。
+- **首次启动是 spawn-into**：复用该 Task 对象建立协程，Task 与协程保持 1:1（`RUNTIME.md` §18.4）。多个协程并发 await/start 同一冷 Task 时，竞争输家不抛异常，按普通 waiter 等待终态。
+- **`state`** 返回 `core.coroutine.TaskState`：`Created` / `Runnable` / `Suspended` / `Completed` / `Failed` / `Cancelled` 六 case（Running 与 Runnable 对用户不可区分，合并为 Runnable）；`TaskState` 的只读成员 `isRunning` 仅当状态为 Runnable/Suspended（即已启动未终止）时为 `true`。
+- **`executor: Executor?`**：未启动时读取 = 预设或 `null`、写入 = 设预设；已启动后写入 = **换绑协程 Executor**——下一个恢复点生效，执行段内永不迁移（`RUNTIME.md` §17.1/§18.4）。
+- **`await` 未启动的冷 Task** 等价于在当前 Executor 启动并等待（§7.5）；Task 终态语义不变。
+
+`state` / `executor` 按 Rigi 访问器语法（§9.4）落地；本条只规定读写语义，不规定访问器拼写细节。
+
+推荐两范式——需要指定 Executor 或推迟启动时用冷 Task 显式启动，其余直接 `await` async 调用：
+
+```rigi
+// 范式一：冷 Task 显式启动到指定 Executor
+const task = new Task(func{async () -> computeHeavy()})
+task.run(new ComputeExecutor())
+await task
+
+// 范式二：eager spawn，直接 await
+const user = await loadUser(42)
+```
+
+带结果的冷 Task 同理：`new Task\<i32\>(func{async (x: i32): i32 -> compute(x)})` 经 `run` 启动后由 `await` 取得 `i32` 结果。
 
 async 调用会把一批值从当前协程送进新协程，因此以下**五处**的类型都必须是 §3.1.1 定义的共享安全类型（shared class、shared interface、shared rich struct/wrapper、非 rich ValueType，以及 `T` 共享安全的 `Nullable\<T>`）：
 
@@ -204,7 +245,7 @@ pub class Console {
 - 作为类型成员声明时必须同时是 `static`；不得用于 `init`、`operator`、getter/setter；
 - 不得与 `async` 组合；同一容器内不得与同名函数构成重载；允许声明泛型参数列表（generic native：hidden typeid 按 `RUNTIME.md` §10 传参形态物化，首例 `alloc_array`，`BIL_STANDARD.md` §22.5）；
 - 参数类型仅限 §3.2 基本类型中的整数、浮点、`bool`、`char` 与 `String`，另放行 `Any`（统一胖值槽，VM 直传任意值——首例 `.bootstrap.rg` 的 `any_to_string(value: Any)`，§3.8）；不允许 Object、泛型参数、用户声明类型，也不允许可变参数；
-- **返回类型**：允许 §3.2 基本类型中的整数、浮点、`bool`、`char` 与 `String`，也允许用户声明的**引用类型**（class/interface，如 `core.coroutine.make_sleep_alarm(...): EventAlarm`）；不允许值类型、泛型参数与可变参数。native 只负责声明运行时原生方法面的形状，FFI 参数/返回值 ABI 与 `rigi_rt` 的转换细节在 Middleware 阶段定稿（`RUNTIME.md` §26），编译器不做形状之外的检查；
+- **返回类型**：允许 §3.2 基本类型中的整数、浮点、`bool`、`char` 与 `String`，也允许用户声明的**引用类型**（class/interface，如 `core.coroutine.sleep(...): EventAlarm`）；不允许值类型、泛型参数与可变参数。native 只负责声明运行时原生方法面的形状，FFI 参数/返回值 ABI 与 `rigi_rt` 的转换细节在 Middleware 阶段定稿（`RUNTIME.md` §26），编译器不做形状之外的检查；
 - `@NativeLibrary("...")` 必填，给出原生库标识；`@NativeSymbol("...")` 可省，缺省时取函数名；两个注解的实参必须各为一个字符串字面量；
 - `@NativeLibrary` / `@NativeSymbol` 是编译器内建注解，只允许出现在 native 函数声明上；它们不属于 wrapper 体系（§14），不产生 wrapper 组合链。
 

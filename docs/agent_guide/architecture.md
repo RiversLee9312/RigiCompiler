@@ -402,25 +402,32 @@ RigiCompiler/
 │   │                            #   SingletonPlanner（查询设施）
 │   ├── Mir/                     # MIR 模型 + MirBuilder 瘦驱动（BIL→MIR）+ FlowBuilder
 │   │                            #   组合根 + MirLowerDispatchers 唯一 switch + 簇 CRTP
-│   │                            #   （ControlFlow/Call/Data/TypeOps/WrapperVisitors）+
+│   │                            #   （ControlFlow/Call/Data/TypeOps/WrapperVisitors +
+│   │                            #   MW11a CoroutineVisitors：await/yield 直译）+
 │   │                            #   MirReachability + TryExpander.cs（BIL §16.7 try 十步展开）
 │   ├── Pipeline/                # IMwStage + MwPipeline（线性阶段序；MW10 插槽在
-│   │                            #   AccessorLowering 与 RcInjection 之间）
+│   │                            #   AccessorLowering 与 RcInjection 之间；MW11a
+│   │                            #   CoroutineSplit 在 SingletonLowering 之后）
 │   ├── Passes/                  # MIR 改写（IndexOperator / Accessor 内部类隔离；
 │   │                            #   MW10 wrapper 烘焙五 pass：FieldProxyBaking /
 │   │                            #   MethodProxyBaking / ProxyBaking /
 │   │                            #   CallWildcardLowering / SingletonLowering +
-│   │                            #   ProxyBakeSupport / ProxyWildcardAbi；
-│   │                            #   RcInjection CFG 分析内核，非逐指令翻译）
+│   │                            #   ProxyBakeSupport / ProxyWildcardAbi；MW11a
+│   │                            #   CoroutineSplitPass：async fn → stub + resume +
+│   │                            #   frame 合成类型；RcInjection CFG 分析内核，
+│   │                            #   非逐指令翻译）
 │   ├── Layout/                  # LayoutEngine 瘦驱动 + ClassLayout / ValueTypeLayout /
 │   │                            #   VTablePlanner / RefMapBuilder / ConstructedLayout /
-│   │                            #   LayoutShells / HiddenStoragePlanner / WrapperAbi；TypeLayout：canonical → LLVM 唯一映射
+│   │                            #   LayoutShells / HiddenStoragePlanner / WrapperAbi +
+│   │                            #   MW11a SyntheticTypePlanner（协程 frame 合成类型通道）；
+│   │                            #   TypeLayout：canonical → LLVM 唯一映射
 │   │                            #   （RUNTIME §2 胖引用 128-bit/16 字节对齐）+ 数组前缀；
 │   │                            #   TypeSheetAbi / CallAbi：字段序与调用约定。非翻译 visitor
 │   ├── Emit/                    # LlvmHost + ModuleBuilder 瘦驱动（MIR→LLVM）+
 │   │                            #   LlvmEmitEnvironment/Context + LlvmEmitDispatchers +
 │   │                            #   簇 CRTP（*Emitter；NativeCall / VirtualCall / New /
-│   │                            #   TypeId / Nullable / Wrapper）+ LlvmBitcode /
+│   │                            #   TypeId / Nullable / Wrapper + MW11a
+│   │                            #   CoroutineEmitter 协程五指令）+ LlvmBitcode /
 │   │                            #   RuntimeFaces / ExceptionEmitter / ObjectEmitter
 │   ├── Toolchain/               # ToolchainResolver（--toolchain → RIGI_LLVM →
 │   │                            #   tools/.llvm/<rid> → PATH）+ ExternalProcess
@@ -433,15 +440,23 @@ RigiCompiler/
 │                             #   bitcode 合并进模块；架构同上文档）
 │   └── shim.c                   # MW1 最小面：rigi_string {data,len} UTF-8 / rigi_print /
 │                                #   rigi_print_err / rigi_string_concat / main → rigi_entry
-│                                #   （arc/macrogc/coroutine 随后续阶段）
+│                                #   （macrogc 随后续阶段）
 │   └── eh.c/.h                  # MW9a checked-flag 便携异常传输：TLS pending 槽三面
 │                                #   （rigi_exc_raise/pending/take）+ 顶层 reporter
 │                                #   （rigi_type_name_of/rigi_exc_halt）
+│   └── coroutine.h              # MW11c 瘦身：RigiFatRef / RigiResumeCode 共享 ABI
+│   └── cohandle.c/.h            # 协程句柄原语（create/resume/destroy + lane + 轮询）
+│   └── worker.c/.h              # Worker 原语（线程/入队/park/同步 Mutex/定时器/TLS）
+│   └── failreg.c                # 未观察失败注册表
 ├── tools/                    # 开发工具链脚本（不入 CI 主流程）：
 │   ├── Fetch-LlvmToolchain.ps1  # 开发机 LLVM 工具链获取（钉 20.1.2 + SHA256 校验，
 │   │                            #   选择性提取 clang/lld/内建头文件 → tools/.llvm/ 缓存，
 │   │                            #   gitignored；CI 用 runner 预装 clang/lld 不跑本脚本，
 │   │                            #   见 MIDDLEWARE_ARCHITECTURE §2 链接器/rigi_rt 编译行）
+│   ├── Fetch-Libuv.ps1          # MW11b libuv 获取（钉 v1.52.1 源码 tarball + SHA256
+│   │                            #   校验，cmake 本地构建静态库 → tools/.libuv/<rid>/ 缓存，
+│   │                            #   gitignored；解析序 --libuv-dir → RIGI_LIBUV →
+│   │                            #   tools/.libuv → 编译器旁 .libuv，§2 获取链定稿）
 ├── stdlib/                   # 编译器自携标准库源（EmbeddedResource 内嵌，见 StdlibSources；
 │                             #   六源，与用户源同走 P1–P4）
 │   ├── .bootstrap.rg         # 基元自举源（EnumerateInRange + core.Pair\<TKey, TValue>
@@ -450,9 +465,9 @@ RigiCompiler/
 │                                #   （IEnumerable/IEnumerator 双接口 + RangeI32/
 │                                #   RangeEnumeratorI32；RangeEnumerator\<T> 抽象基类）
 │                                #   + coroutine.rg（core.coroutine 类型面——Task/
-│                                #   Task\<TResult>/Executor 家族/PollingAlarm/EventAlarm/
-│                                #   CoroutineLocal\<TValue> 全 shared abstract + sleep native，
-│                                #   SYNTAX §15.3）+ disposable.rg（core.IDisposable，
+│                                #   Task\<TReturn>/Executor 家族/PollingAlarm/EventAlarm/
+│                                #   CoroutineLocal\<TValue> 具体 shared class + sleep，
+│                                #   SYNTAX §15.3）+ time.rg（core.time）+ disposable.rg（core.IDisposable，
 │                                #   §6.2）+ exceptions.rg（RuntimeException/IOException/
 │                                #   CastException/NoSuchMethodException 四异常子类，§8.1）
 ├── Tests/                    # 自研控制台测试（非 xUnit/NUnit，见 development.md 测试策略）

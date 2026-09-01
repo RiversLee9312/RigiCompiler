@@ -35,13 +35,27 @@ namespace RigiCompiler.Middleware.Mir
         public IReadOnlyList<MirBlock> Blocks { get; }
         // 入口函数标记（§8.4 成员级 entrypoint 修饰符）
         public bool IsEntrypoint { get; }
+        // MW11a：async 成员（BIL fn 的 async 关键字随符号带入）——
+        // CoroutineSplitPass 的处理对象；split 后 stub 保留此标记
+        public bool IsAsync { get; }
+        // MW11a：协程 resume 状态机 fn（CoroutineSplitPass 合成）——
+        // RcInjection 传播垫尾部分叉（棒5a：失败终态序列 + ret DONE）
+        // 与 frame 参数借用约定的识别标记
+        public bool IsCoroutineResume { get; }
+        // MW11b 棒3：PollingAlarm 探测 fn（$mw.poll_probe，CoroutineSplitPass
+        // 懒合成）——棒5a 起是普通 MIR fn（native 不再回调，探测由恢复块
+        // 直调）；RcInjection 传播垫尾分叉（releases + ret -1，pending
+        // 保持置位由恢复块失败尾取走）与 alarm 参数借用约定的识别标记
+        public bool IsPollProbe { get; }
 
         private readonly List<MirLocal> _locals;
         private readonly Dictionary<string, MirLocal> _localMap;
 
         internal MirFunction(MwMemberSymbol symbol, MirType returnType,
             IReadOnlyList<MirLocal> parameters, IReadOnlyList<MirLocal> locals,
-            IReadOnlyList<MirBlock> blocks, bool isEntrypoint)
+            IReadOnlyList<MirBlock> blocks, bool isEntrypoint,
+            bool isAsync = false, bool isCoroutineResume = false,
+            bool isPollProbe = false)
         {
             Symbol = symbol;
             ReturnType = returnType;
@@ -49,6 +63,9 @@ namespace RigiCompiler.Middleware.Mir
             _locals = locals as List<MirLocal> ?? new List<MirLocal>(locals);
             Blocks = blocks;
             IsEntrypoint = isEntrypoint;
+            IsAsync = isAsync;
+            IsCoroutineResume = isCoroutineResume;
+            IsPollProbe = isPollProbe;
             _localMap = new Dictionary<string, MirLocal>(System.StringComparer.Ordinal);
             foreach (var local in _locals)
             {

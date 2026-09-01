@@ -202,15 +202,14 @@ namespace RigiCompiler.Middleware.Binding
                         continue;
                     }
                     if (!TryMatchCallOperator(member, type.Declaration, current, argTypes,
-                            resultType, functions, out var isAsync))
+                            resultType, functions, out _))
                     {
                         continue;
                     }
-                    if (isAsync)
-                    {
-                        throw new MwNotSupportedException(
-                            $"invoke.indirect async $$call 随 MW11: {member.Canonical}");
-                    }
+                    // async $$call（AsyncAction/AsyncFunc）与同步同一绑定：
+                    // 调用点结果已是 Task/Task<T>（TryMatchCallOperator 按
+                    // §15.2 包装），发射走虚派发；CoroutineSplit 把目标
+                    // $$call 改成 spawn stub，await 是后续 MirAwait
                     return new IndirectCallBinding(member);
                 }
                 if (type.Declaration.ExtendsType == null)

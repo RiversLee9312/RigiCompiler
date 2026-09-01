@@ -121,7 +121,7 @@ namespace RigiCompiler
             }
             // 返回类型白名单（§4.6，S10 放宽）：基本类型，或用户声明的引用类型
             // （class/interface，含构造类型——运行时原生方法面可返回其句柄，
-            // 如 core.coroutine.make_sleep_alarm → EventAlarm；值类型、泛型参数与可变参数
+            // 如 core.coroutine.sleep 返回 EventAlarm；值类型、泛型参数与可变参数
             // 仍不允许；FFI 参数/返回值 ABI 细节归 Middleware，编译器只做形状校验）
             if (method.ReturnType is not null and not ErrorTypeSymbol &&
                 !compatibleTypes.Contains(method.ReturnType))

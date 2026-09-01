@@ -71,7 +71,10 @@ void rigi_acquire_shared(void *object)
 }
 
 /* §25 IDisposable 检查挂点（MW4 批 1 no-op）：typeFlags 含 DISPOSABLE
- * 时的 dispose 调用在此挂接，随资源合约批定稿 */
+ * 时的 dispose 调用在此挂接，随资源合约批定稿。MW11c 棒5a：旧 C 侧
+ * Task/sleep EventAlarm 簿记已随调度面删除——Task 是 Rigi 对象（refMap
+ * 扫描字段），时钟底座由 Worker 定时器原语 + Rigi SleepAlarm/Timer
+ * 持有句柄，不再经本钩子拆除。 */
 static void rigi_dispose_hook(void *object, const RigiTypeSheet *desc)
 {
     (void)object;

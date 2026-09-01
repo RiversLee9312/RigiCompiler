@@ -803,7 +803,8 @@ namespace RigiCompiler.Tests
                 lambdaType.Members.OfType<BilSimpleMemberDeclaration>()
                     .Any(m => m.Symbol.Contains("..init.wrapper(w0:.string)")));
 
-            var iwFn = module.Functions.Single(f => f.Symbol.Contains("..init.wrapper"));
+            var iwFn = module.Functions.Single(f => f.Symbol.StartsWith("..lambda..")
+                && f.Symbol.Contains("..init.wrapper"));
             BilTestHarness.CheckFnShape("lambda ..init.wrapper 体（method + 参数转发）",
                 module, iwFn.Symbol,
                 ".vars {  }\n" +

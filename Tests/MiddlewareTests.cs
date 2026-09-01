@@ -216,6 +216,11 @@ namespace RigiCompiler.Tests
             ("TestNativeCli", TestNativeCli),
             ("TestRcInjection", TestRcInjection),
             ("TestRcPropagatePad", TestRcPropagatePad),
+            ("TestCoroutineLowering", TestCoroutineLowering),
+            ("TestSyntheticFrameTypePlan", TestSyntheticFrameTypePlan),
+            ("TestCoroutineSplit", TestCoroutineSplit),
+            ("TestCoroutineYieldAlarm", TestCoroutineYieldAlarm),
+            ("TestCoroutineEmit", TestCoroutineEmit),
             ("TestExceptionEmission", TestExceptionEmission),
             ("TestRefMapMw7a", TestRefMapMw7a),
             ("TestDynamicNew", TestDynamicNew),
@@ -532,6 +537,859 @@ namespace RigiCompiler.Tests
         // ===== MIR try 展开（MW9a 第 B 棒）=====
         // 直调 MirBuilder.Build：try/catch/finally 子图形状（checked-flag
         // 便携模型；ExcTarget==null 的解析与发射归后续棒）
+
+        private static MirModule BuildMirModule(string source, string fileName)
+        {
+            var (_, _, text) = BilTestHarness.EmitBilUnit(source);
+            var gate = BilGate.Accept(text, fileName);
+            TestHarness.CheckTrue(fileName + " 门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            return MirBuilder.Build(new MwContext(gate.Module!));
+        }
+
+        // ===== MW11a 棒2 阶段1：协程 lowering 形状 =====
+
+        private static void TestCoroutineLowering()
+        {
+            // ① await 直译 MirAwait（task/result 槽 + ExcTarget==null 兜底）
+            var mir = BuildMirModule(
+                "async func add(n: i32): i32 { return n + 1 }\n" +
+                "pub func main(): i32 {\n" +
+                "    var t = add(41)\n" +
+                "    var n = await t\n" +
+                "    return n\n" +
+                "}\n", "coro.await.bil");
+            var main = mir.Functions.Single(f => f.IsEntrypoint);
+            var awaitInst = main.Blocks.SelectMany(b => b.Instructions)
+                .OfType<MirAwait>().Single();
+            TestHarness.CheckTrue("① await→MirAwait：task 槽携带",
+                awaitInst.TaskSlot == "t", awaitInst.TaskSlot);
+            TestHarness.CheckTrue("① await→MirAwait：result 槽携带（前端发临时槽）",
+                awaitInst.ResultSlot != null
+                && main.TryFindLocal(awaitInst.ResultSlot, out var awaitResultLocal)
+                && awaitResultLocal.Type.Key == "i32",
+                awaitInst.ResultSlot ?? "<null>");
+            TestHarness.CheckTrue("① await→MirAwait：try 外 ExcTarget==null",
+                awaitInst.ExcTarget == null);
+            TestHarness.CheckTrue("① IsAsync 传播：add 为 async",
+                mir.Functions.Single(f => f.Symbol.Canonical.Contains("$add(")).IsAsync);
+            TestHarness.CheckTrue("① IsAsync 传播：main 非 async", !main.IsAsync);
+
+            // ② await 无结果形态（await Task）：ResultSlot==null
+            mir = BuildMirModule(
+                "async func ping() { }\n" +
+                "pub func main(): i32 {\n" +
+                "    await ping()\n" +
+                "    return 1\n" +
+                "}\n", "coro.awaitvoid.bil");
+            main = mir.Functions.Single(f => f.IsEntrypoint);
+            TestHarness.CheckTrue("② await Task 无结果槽",
+                main.Blocks.SelectMany(b => b.Instructions).OfType<MirAwait>()
+                    .Single().ResultSlot == null);
+
+            // ③ 裸 yield → MirYieldBare
+            mir = BuildMirModule(
+                "async func ping() { yield }\n" +
+                "pub func main(): i32 {\n" +
+                "    await ping()\n" +
+                "    return 1\n" +
+                "}\n", "coro.yield.bil");
+            var ping = mir.Functions.Single(f => f.Symbol.Canonical.Contains("$ping("));
+            TestHarness.CheckTrue("③ 裸 yield→MirYieldBare",
+                ping.Blocks.SelectMany(b => b.Instructions).OfType<MirYieldBare>().Any());
+
+            // ④ 带 Alarm 的 yield → MirYieldAlarm（MW11b 棒3 解锁，
+            // split 改写与 probe 合成归 TestCoroutineYieldAlarm）
+            mir = BuildMirModule(
+                "import core.coroutine.*\n" +
+                "async func nap() { yield sleep(1) }\n" +
+                "pub func main(): i32 {\n" +
+                "    await nap()\n" +
+                "    return 1\n" +
+                "}\n", "coro.yieldalarm.bil");
+            var nap = mir.Functions.Single(f => f.Symbol.Canonical.Contains("$nap("));
+            TestHarness.CheckTrue("④ yield Alarm→MirYieldAlarm 携 alarm 槽",
+                nap.Blocks.SelectMany(b => b.Instructions).OfType<MirYieldAlarm>()
+                    .SingleOrDefault() is { } yieldAlarm
+                && yieldAlarm.AlarmSlot.Length > 0);
+
+            // ⑤ try 内 await：ExcTarget 指向本词法 try 派发垫
+            mir = BuildMirModule(
+                "async func boom(): i32 { throw new core.RuntimeException(\"x\") }\n" +
+                "pub func main(): i32 {\n" +
+                "    try {\n" +
+                "        await boom()\n" +
+                "        return 0\n" +
+                "    } catch (_: core.RuntimeException) {\n" +
+                "        return 3\n" +
+                "    }\n" +
+                "}\n", "coro.awaittry.bil");
+            main = mir.Functions.Single(f => f.IsEntrypoint);
+            awaitInst = main.Blocks.SelectMany(b => b.Instructions)
+                .OfType<MirAwait>().Single();
+            TestHarness.CheckTrue("⑤ try 内 await：ExcTarget 为派发垫",
+                awaitInst.ExcTarget != null
+                && awaitInst.ExcTarget.Id.Contains(".dispatch")
+                && awaitInst.ExcTarget.Instructions.Count > 0
+                && awaitInst.ExcTarget.Instructions[0] is MirTakePending,
+                awaitInst.ExcTarget?.Id ?? "<null>");
+        }
+
+        // ===== MW11a 棒2 阶段2：合成 frame 类型的 Layout 通道 =====
+
+        private static void TestSyntheticFrameTypePlan()
+        {
+            var context = PipelineFromSource(
+                "pub func main(): i32 { return 0 }\n", "frame.plan.bil");
+            var frameCanonical = SyntheticTypePlanner.FrameCanonicalOf("$main()@.i32");
+            var slots = new (string SlotName, MirType Type)[]
+            {
+                ("obj", MirType.Of("core::Object")),
+                ("text", MirType.Of(".string")),
+                ("tid", MirType.Of(".typeid")),
+                ("num", MirType.Of(".i32")),
+            };
+            var typeSymbol = SyntheticTypePlanner.EnsureFrameType(context, frameCanonical, slots);
+            TestHarness.CheckTrue("frame 类型注册进 Symbols 驻留",
+                ReferenceEquals(typeSymbol, context.Symbols.FindType(frameCanonical)));
+            TestHarness.CheckTrue("frame 类型注册幂等（同 canonical 同对象）",
+                ReferenceEquals(typeSymbol,
+                    SyntheticTypePlanner.EnsureFrameType(context, frameCanonical, slots)));
+            TestHarness.CheckTrue("frame 空 init 成员可查",
+                context.Symbols.FindMember(
+                    SyntheticTypePlanner.FrameInitCanonicalOf(frameCanonical)) != null);
+
+            var plan = context.Layout!.Find(frameCanonical);
+            TestHarness.CheckTrue("frame 布局计划注册可查（TypeSheet 发射零特例）",
+                plan != null && plan.Kind == TypeLayoutKind.Class);
+            // 偏移：state@16(i32) → obj@32(16B 对齐) → text@48 → tid@64(8B)
+            // → num@72；size 补齐 80
+            TestHarness.CheckTrue("frame 字段数 = state + 保存槽",
+                plan!.Fields.Count == 5, plan.Fields.Count.ToString());
+            var state = plan.Fields[0];
+            TestHarness.CheckTrue("state 字段：偏移 16 / i32",
+                state.Symbol == SyntheticTypePlanner.FrameFieldSymbol(
+                    frameCanonical, SyntheticTypePlanner.StateFieldName, "core::i32")
+                && state.Offset == 16 && state.Size == 4 && !state.IsReferenceSlot,
+                state.Symbol + "@" + state.Offset);
+            var obj = plan.Fields[1];
+            TestHarness.CheckTrue("托管槽：16B 胖引用 16 对齐 @32",
+                obj.Offset == 32 && obj.Size == 16 && obj.IsReferenceSlot,
+                obj.Offset.ToString());
+            var text = plan.Fields[2];
+            TestHarness.CheckTrue("String 槽：@48 kind1",
+                text.Offset == 48 && text.IsStringSlot, text.Offset.ToString());
+            var tid = plan.Fields[3];
+            TestHarness.CheckTrue("typeid 槽：8B 内联 @64 不进 refMap",
+                tid.Offset == 64 && tid.Size == 8 && !tid.IsReferenceSlot
+                && !tid.IsStringSlot, tid.Offset.ToString());
+            TestHarness.CheckTrue("frame size 16 对齐补齐 80", plan.Size == 80,
+                plan.Size.ToString());
+            // refMap：obj（kind0 hop1：16→32）+ text（kind1 hop0：48→48）；
+            // tid/num 非托管
+            TestHarness.CheckTrue("refMap 恰两条（托管槽入射）",
+                plan.RefMapCount == 2, plan.RefMapCount.ToString());
+            TestHarness.CheckTrue("refMap[0] = kind0 hop1（obj）",
+                plan.RefMap.Length == 2
+                && TypeLayout.RefMapKindOf(plan.RefMap[0]) == TypeLayout.RefMapKindFatRef
+                && TypeLayout.RefMapHopOf(plan.RefMap[0]) == 1);
+            TestHarness.CheckTrue("refMap[1] = kind1 hop0（text）",
+                plan.RefMap.Length == 2
+                && TypeLayout.RefMapKindOf(plan.RefMap[1]) == TypeLayout.RefMapKindString
+                && TypeLayout.RefMapHopOf(plan.RefMap[1]) == 0);
+            TestHarness.CheckTrue("frame 无 vtable 槽（仅槽 0 init 分发器占位）",
+                plan.VTableSlots.Count == 1
+                && plan.VTableSlots[0] == LayoutEngine.InitDispatchSlot);
+            TestHarness.CheckTrue("frame 无 iMap/基类",
+                plan.IMap.Count == 0 && plan.BasePlan == null);
+        }
+
+        // ===== MW11a 棒2 阶段3：CoroutineSplit + RcInjection 扩展形状 =====
+
+        // 按 stub 精确前缀找 fn（resume 合成名含 stub canonical，contains
+        // 会误命中）
+        private static MirFunction StubOf(MwContext context, string prefix) =>
+            context.Mir!.Functions.Single(f => f.Symbol.Canonical.StartsWith(prefix,
+                StringComparison.Ordinal));
+
+        private static MirFunction ResumeOf(MwContext context, MirFunction stub) =>
+            context.Mir!.Functions.Single(f => f.Symbol.Canonical
+                == "$mw.resume." + stub.Symbol.Canonical);
+
+        private static MirBlock BlockOf(MirFunction fn, string id) =>
+            fn.Blocks.Single(b => b.Id == id);
+
+        private static void TestCoroutineSplit()
+        {
+            // ① 单 await 切分形态（全管线：split 后 RcInjection 自检通过
+            // 即扩展生效——move 槽免配平/resume 垫分叉由下方显式断言复核）
+            var ctx = PipelineFromSource(
+                "async func one(): i32 { return 1 }\n" +
+                "async func work(n: i32): i32 {\n" +
+                "    var t = one()\n" +
+                "    var r = await t\n" +
+                "    return r + n\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var t = work(41)\n" +
+                "    return 0\n" +
+                "}\n", "coro.split1.bil");
+            var stub = StubOf(ctx, "$work(");
+            var frameCanonical = "$mw.frame." + stub.Symbol.Canonical;
+            TestHarness.CheckTrue("① stub 保留原符号、返回 Task<T>",
+                stub.IsAsync && !stub.IsCoroutineResume
+                && stub.ReturnType.Canonical == "core.coroutine::Task<core::i32>",
+                stub.ReturnType.Canonical);
+            TestHarness.CheckTrue("① stub 单 entry 块（RcInjection 可另附传播垫）",
+                stub.Blocks[0].Id == "entry"
+                && stub.Blocks.All(b => b.Id == "entry"
+                    || b.Id == RcInjectionPass.PropagateBlockId));
+            var stubInsts = stub.Blocks[0].Instructions;
+            // 棒5a 新形态：new frame + 参数落 frame + new Task（合成空
+            // init）+ frame.task 回填 + MirCoroutineCreate + lane 继承 +
+            // attachRuntime/noteSpawn/publish（Rigi 世界方法调）
+            var create = stubInsts.OfType<MirCoroutineCreate>().SingleOrDefault();
+            TestHarness.CheckTrue("① stub 含 MirCoroutineCreate",
+                create != null, string.Join(",", stubInsts.Select(i => i.GetType().Name)));
+            TestHarness.CheckTrue("① MirCoroutineCreate 携 resume 符号与 i64 句柄槽",
+                create!.ResumeFn.Canonical == "$mw.resume." + stub.Symbol.Canonical
+                && stub.FindLocal(create.HandleSlot).Type.Key == "i64");
+            TestHarness.CheckTrue("① stub：new frame + new Task + 参数落 frame 字段",
+                stubInsts.OfType<MirNewObject>().Any(n => n.Type.Canonical == frameCanonical)
+                && stubInsts.OfType<MirNewObject>().Any(n =>
+                    n.Type.Canonical.StartsWith("core.coroutine::Task",
+                        StringComparison.Ordinal))
+                && stubInsts.OfType<MirSetField>().Any(s => s.FieldSymbol.Contains("#n@")));
+            TestHarness.CheckTrue("① stub：frame.task 回填 + Rigi 桥方法调用",
+                stubInsts.OfType<MirSetField>().Any(s =>
+                    s.FieldSymbol.Contains("#" + CoroutineSplitPass.TaskSlotName + "@"))
+                && stubInsts.OfType<MirCall>().Any(c =>
+                    c.Target.Canonical.Contains("$attachRuntime("))
+                && stubInsts.OfType<MirCall>().Any(c =>
+                    c.Target.Canonical.Contains("$noteSpawn("))
+                && stubInsts.OfType<MirCall>().Any(c =>
+                    c.Target.Canonical.Contains("$publish(")));
+            // move 免配平：create 之后不得再有 frame 槽 release（create 前
+            // 的产出前置 release 放的是零值，合法）
+            var createIndex = stubInsts.Select((inst, i) => (inst, i))
+                .First(t => ReferenceEquals(t.inst, create)).i;
+            TestHarness.CheckTrue("① frame 槽 move 免配平（create 后无其 release）",
+                stubInsts.Skip(createIndex).OfType<MirReleaseSlot>()
+                    .All(r => r.Local != create.FrameSlot),
+                string.Join(",", stubInsts.OfType<MirReleaseSlot>().Select(r => r.Local)));
+
+            var resume = ResumeOf(ctx, stub);
+            TestHarness.CheckTrue("① resume fn 标记与形态（frame→i32）",
+                resume.IsCoroutineResume && resume.ReturnType.Key == "i32"
+                && resume.Parameters.Count == 1
+                && resume.Parameters[0].Name == CoroutineSplitPass.FrameParamName);
+            TestHarness.CheckTrue("① resume entry：读 state + switch 分发",
+                resume.Blocks[0].Id == "mw.entry"
+                && resume.Blocks[0].Instructions[0] is MirGetField
+                && resume.Blocks[0].Terminator is MirSwitch sw0
+                && sw0.ItemTargets.Count == 2
+                && sw0.ItemTargets[0] == "mw.state.0"
+                && sw0.ItemTargets[1] == "mw.state.1"
+                && sw0.DefaultTarget == "mw.state.bad");
+            // 棒5a：wait 块 = gate 临界区 + registerWaiter 决策；reg 块
+            // 四路 switch（0 挂起 / 1 成功 / 2 失败 / 3 防御）
+            var regBlock = resume.Blocks.Single(b => b.Id.EndsWith(".wait1.reg",
+                StringComparison.Ordinal));
+            TestHarness.CheckTrue("① reg 块：registerWaiter + release + 四路 switch",
+                regBlock.Instructions.OfType<MirCall>().Any(c =>
+                    c.Target.Canonical.Contains("$registerWaiter("))
+                && regBlock.Instructions.OfType<MirCall>().Any(c =>
+                    c.Target.Canonical.Contains("rigi_sync_mutex_release("))
+                && regBlock.Terminator is MirSwitch swWait
+                && swWait.ItemTargets.Count == 4);
+            var waitBlock = resume.Blocks.Single(b => b.Id.EndsWith(".wait1",
+                StringComparison.Ordinal));
+            TestHarness.CheckTrue("① wait 块：gate 读取 + acquire + 冷启动判位",
+                waitBlock.Instructions.OfType<MirGetField>().Any(g =>
+                    g.FieldSymbol.Contains("#gate@"))
+                && waitBlock.Instructions.OfType<MirCall>().Any(c =>
+                    c.Target.Canonical.Contains("rigi_sync_mutex_acquire("))
+                && waitBlock.Terminator is MirCondBranch);
+            var coldGo = resume.Blocks.Single(b => b.Id.Contains(".wait1.coldgo"));
+            TestHarness.CheckTrue("① 冷启动分支：spawnIntoLocked + noteSpawn + publish",
+                coldGo.Instructions.OfType<MirCall>().Any(c =>
+                    c.Target.Canonical.Contains("$spawnIntoLocked("))
+                && coldGo.Instructions.OfType<MirCall>().Any(c =>
+                    c.Target.Canonical.Contains("$noteSpawn("))
+                && coldGo.Instructions.OfType<MirCall>().Any(c =>
+                    c.Target.Canonical.Contains("$publish(")));
+            var suspend = resume.Blocks.Single(b => b.Id.Contains(".wait1.suspend"));
+            TestHarness.CheckTrue("① suspend 块：直返（frame 已在 reg 临界区写完）",
+                suspend.Terminator is MirRet);
+            TestHarness.CheckTrue("① reg 块：存 frame + state 常量化（临界区内）",
+                regBlock.Instructions.OfType<MirSetField>().Any(
+                    s => s.FieldSymbol.Contains("#state@")));
+            TestHarness.CheckTrue("① suspend 出口 release 不含 frame（续体持有）",
+                suspend.Instructions.OfType<MirReleaseSlot>().All(
+                    r => r.Local != CoroutineSplitPass.FrameParamName));
+            TestHarness.CheckTrue("① suspend 出口 release 含活跃托管槽 t",
+                suspend.Instructions.OfType<MirReleaseSlot>().Any(r => r.Local == "t"),
+                string.Join(",", suspend.Instructions.OfType<MirReleaseSlot>()
+                    .Select(r => r.Local)));
+            var done = resume.Blocks.Single(b => b.Id.Contains(".wait1.done"));
+            TestHarness.CheckTrue("① done 块：读 result 字段 + 解包续行",
+                done.Instructions.OfType<MirGetField>().Any(g =>
+                    g.FieldSymbol.Contains("#result@"))
+                && done.Instructions.OfType<MirUnwrapNullable>().Any()
+                && done.Terminator is MirBranch brDone && brDone.Target.Contains(".cont1"));
+            var fail = resume.Blocks.Single(b => b.Id.Contains(".wait1.fail"));
+            var pad = BlockOf(resume, RcInjectionPass.PropagateBlockId);
+            TestHarness.CheckTrue("① FAILED 块：注册表读异常 + MirThrow 沿边进垫",
+                fail.Instructions.OfType<MirFailureLoad>().Any()
+                && fail.Instructions.OfType<MirThrow>().Any()
+                && fail.Terminator is MirBranch brFail
+                && brFail.Target == RcInjectionPass.PropagateBlockId);
+            TestHarness.CheckTrue("① resume 垫尾：TakePending + 失败终态序列 + ret DONE",
+                pad.Instructions[0] is MirTakePending
+                && pad.Instructions.OfType<MirCall>().Any(c =>
+                    c.Target.Canonical.Contains("rigi_failure_record("))
+                && pad.Instructions.OfType<MirCall>().Any(c =>
+                    c.Target.Canonical.Contains("$fail("))
+                && pad.Instructions.OfType<MirCoroutineDone>().Any()
+                && pad.Terminator is MirRet);
+            TestHarness.CheckTrue("① resume 垫尾 frame 最终 release（末位）",
+                pad.Instructions.OfType<MirReleaseSlot>().LastOrDefault()?.Local
+                    == CoroutineSplitPass.FrameParamName,
+                string.Join(",", pad.Instructions.OfType<MirReleaseSlot>()
+                    .Select(r => r.Local)));
+            var complete = resume.Blocks.Single(
+                b => b.Instructions.OfType<MirCoroutineDone>().Any()
+                    && b.Id != RcInjectionPass.PropagateBlockId
+                    && b.Instructions.OfType<MirCall>().Any(c =>
+                        c.Target.Canonical.Contains("$complete(")));
+            TestHarness.CheckTrue("① DONE 出口：complete + noteTerminal + ret + frame 末位 release",
+                complete.Instructions.OfType<MirCall>().Any(c =>
+                    c.Target.Canonical.Contains("$noteTerminal("))
+                && complete.Terminator is MirRet
+                && complete.Instructions.OfType<MirReleaseSlot>().Last().Local
+                    == CoroutineSplitPass.FrameParamName);
+            TestHarness.CheckTrue("① 结果写 Task<T>.result（MirWrapNullable + setfield）",
+                complete.Instructions.OfType<MirWrapNullable>().Any()
+                && complete.Instructions.OfType<MirSetField>().Any(s =>
+                    s.FieldSymbol.Contains("#result@")));
+            var framePlan = ctx.Layout!.Find(frameCanonical);
+            TestHarness.CheckTrue("① frame 字段：state + task + 参数 n + 活跃槽 t",
+                framePlan != null
+                && framePlan.Fields.Any(f => f.Symbol.Contains("#state@"))
+                && framePlan.Fields.Any(f => f.Symbol.Contains(
+                    "#" + CoroutineSplitPass.TaskSlotName + "@"))
+                && framePlan.Fields.Any(f => f.Symbol.Contains("#n@"))
+                && framePlan.Fields.Any(f => f.Symbol.Contains("#t@")),
+                framePlan == null ? "<null>" : string.Join(",", framePlan.Fields
+                    .Select(f => f.Symbol)));
+
+            // ② 无挂起点 async fn 统一切分 + Task 零结果完成（无包装）
+            ctx = PipelineFromSource(
+                "async func ping() { }\n" +
+                "pub func main(): i32 {\n" +
+                "    var t = ping()\n" +
+                "    return 1\n" +
+                "}\n", "coro.split2.bil");
+            stub = StubOf(ctx, "$ping(");
+            TestHarness.CheckTrue("② 无挂起点 async fn 同样切 stub",
+                stub.ReturnType.Canonical == "core.coroutine::Task"
+                && stub.Blocks[0].Instructions.OfType<MirCoroutineCreate>().Any());
+            resume = ResumeOf(ctx, stub);
+            TestHarness.CheckTrue("② 无挂起点：switch 仅 state 0",
+                resume.Blocks[0].Terminator is MirSwitch swPing
+                && swPing.ItemTargets.Count == 1);
+            complete = resume.Blocks.Single(
+                b => b.Instructions.OfType<MirCoroutineDone>().Any()
+                    && b.Id != RcInjectionPass.PropagateBlockId);
+            TestHarness.CheckTrue("② Task 完成无结果包装（无 MirWrapNullable）",
+                !complete.Instructions.OfType<MirWrapNullable>().Any()
+                && complete.Instructions.OfType<MirCall>().Any(c =>
+                    c.Target.Canonical.Contains("$complete(")));
+
+            // ②b void Task await Task<T>：result 字段必须走 Task<TReturn>
+            // 声明（不得误用当前协程自身的 void Task 前缀）
+            ctx = PipelineFromSource(
+                "async func add(n: i32): i32 { return n + 1 }\n" +
+                "async func run() {\n" +
+                "    var x = await add(1)\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n", "coro.split.void-await-generic.bil");
+            resume = ResumeOf(ctx, StubOf(ctx, "$run("));
+            var doneVoidAwait = resume.Blocks.Single(b => b.Id.Contains(".done",
+                StringComparison.Ordinal) && b.Id.Contains(".wait",
+                StringComparison.Ordinal));
+            TestHarness.CheckTrue(
+                "②b void Task await Task<T>：result 宿主是 Task<TReturn>",
+                doneVoidAwait.Instructions.OfType<MirGetField>().Any(g =>
+                    g.FieldSymbol.StartsWith("core.coroutine::Task<TReturn>#result@",
+                        StringComparison.Ordinal)),
+                string.Join(",", doneVoidAwait.Instructions.OfType<MirGetField>()
+                    .Select(g => g.FieldSymbol)));
+
+            // ②c invoke.indirect async $$call：变量调用 async lambda 产
+            // Task，await 仍是挂起点；间接调用留在 resume 里走虚派发
+            ctx = PipelineFromSource(
+                "async func run(): i32 {\n" +
+                "    const f = func{async (): i32 -> 1}\n" +
+                "    return await f()\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var t = run()\n" +
+                "    return 0\n" +
+                "}\n", "coro.split.async-indirect.bil");
+            resume = ResumeOf(ctx, StubOf(ctx, "$run("));
+            TestHarness.CheckTrue("②c resume 含 MirInvokeIndirect（async $$call）",
+                resume.Blocks.SelectMany(b => b.Instructions)
+                    .OfType<MirInvokeIndirect>().Any(),
+                string.Join(",", resume.Blocks.SelectMany(b => b.Instructions)
+                    .Select(i => i.GetType().Name)));
+            TestHarness.CheckTrue("②c async lambda 调用仍切出 wait/registerWaiter",
+                resume.Blocks.Any(b => b.Id.Contains(".wait"))
+                && resume.Blocks.SelectMany(b => b.Instructions)
+                    .OfType<MirCall>().Any(c =>
+                        c.Target.Canonical.Contains("$registerWaiter(")));
+
+            // ③ 同 fn 多 await：每挂起点恰一恢复 state
+            ctx = PipelineFromSource(
+                "async func one(): i32 { return 1 }\n" +
+                "async func sum(): i32 {\n" +
+                "    var a = await one()\n" +
+                "    var b = await one()\n" +
+                "    return a + b\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var t = sum()\n" +
+                "    return 0\n" +
+                "}\n", "coro.split3.bil");
+            stub = StubOf(ctx, "$sum(");
+            resume = ResumeOf(ctx, stub);
+            TestHarness.CheckTrue("③ 双 await：switch 三项（0/1/2）",
+                resume.Blocks[0].Terminator is MirSwitch swSum
+                && swSum.ItemTargets.Count == 3
+                && swSum.ItemTargets[2] == "mw.state.2");
+            TestHarness.CheckTrue("③ 双 await：两个 wait 块",
+                resume.Blocks.Count(b => b.Id.Contains(".wait")) >= 2
+                && resume.Blocks.SelectMany(b => b.Instructions)
+                    .OfType<MirCall>().Count(c =>
+                        c.Target.Canonical.Contains("$registerWaiter(")) == 2);
+
+            // ④ 裸 yield：挂起段 = 存 frame + Dispatcher.publish 自重排
+            // + ret YIELDED；恢复块落原后继
+            ctx = PipelineFromSource(
+                "async func step(): i32 {\n" +
+                "    yield\n" +
+                "    return 5\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var t = step()\n" +
+                "    return 0\n" +
+                "}\n", "coro.split4.bil");
+            stub = StubOf(ctx, "$step(");
+            resume = ResumeOf(ctx, stub);
+            TestHarness.CheckTrue("④ 裸 yield：publish 自重排入挂起段",
+                resume.Blocks.SelectMany(b => b.Instructions).OfType<MirCall>()
+                    .Count(c => c.Target.Canonical.Contains("$publish(")) == 1
+                && !resume.Blocks.SelectMany(b => b.Instructions).OfType<MirYieldBare>()
+                    .Any());
+            TestHarness.CheckTrue("④ yield：switch 两项 + 恢复块落原后继",
+                resume.Blocks[0].Terminator is MirSwitch swYield
+                && swYield.ItemTargets.Count == 2
+                && BlockOf(resume, "mw.state.1").Terminator is MirBranch brY
+                && brY.Target.Contains(".cont"));
+
+            // ⑤ loop 内 await：循环控制槽进 frame
+            ctx = PipelineFromSource(
+                "async func one(): i32 { return 1 }\n" +
+                "async func acc(): i32 {\n" +
+                "    var s = 0\n" +
+                "    for (i in 0 to 2) {\n" +
+                "        var t = one()\n" +
+                "        s = s + await t\n" +
+                "    }\n" +
+                "    return s\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var t = acc()\n" +
+                "    return 0\n" +
+                "}\n", "coro.split5.bil");
+            stub = StubOf(ctx, "$acc(");
+            framePlan = ctx.Layout!.Find("$mw.frame." + stub.Symbol.Canonical);
+            TestHarness.CheckTrue("⑤ loop 内 await：累加器/枚举器控制槽进 frame",
+                framePlan != null
+                && framePlan.Fields.Any(f => f.Symbol.Contains("#s@"))
+                && framePlan.Fields.Any(f => f.Symbol.Contains("#.s0@")),
+                framePlan == null ? "<null>" : string.Join(",", framePlan.Fields
+                    .Select(f => f.Symbol)));
+
+            // ⑥ try/finally 穿越 await：finally 清理状态（$mw.retv）进 frame
+            ctx = PipelineFromSource(
+                "async func one(): i32 { return 1 }\n" +
+                "async func f(): i32 {\n" +
+                "    try {\n" +
+                "        return 7\n" +
+                "    } finally(_) {\n" +
+                "        var t = one()\n" +
+                "        await t\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var t = f()\n" +
+                "    return 0\n" +
+                "}\n", "coro.split6.bil");
+            stub = StubOf(ctx, "$f(");
+            framePlan = ctx.Layout!.Find("$mw.frame." + stub.Symbol.Canonical);
+            TestHarness.CheckTrue("⑥ finally 内 await：待返回槽 $mw.retv 进 frame",
+                framePlan != null && framePlan.Fields.Any(f => f.Symbol.Contains("retv")),
+                framePlan == null ? "<null>" : string.Join(",", framePlan.Fields
+                    .Select(f => f.Symbol)));
+
+            // ⑦ async 实例方法：.this 进 frame
+            ctx = PipelineFromSource(
+                "async func one(): i32 { return 1 }\n" +
+                "shared class Counter {\n" +
+                "    pub var n: i32\n" +
+                "    pub init(v: i32) { n = v }\n" +
+                "    pub async func bump(): i32 {\n" +
+                "        var t = one()\n" +
+                "        var r = await t\n" +
+                "        return n + r\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var c = new Counter(1)\n" +
+                "    var t = c.bump()\n" +
+                "    return 0\n" +
+                "}\n", "coro.split7.bil");
+            stub = StubOf(ctx, "Counter$bump(");
+            framePlan = ctx.Layout!.Find("$mw.frame." + stub.Symbol.Canonical);
+            TestHarness.CheckTrue("⑦ 实例方法：.this 进 frame",
+                framePlan != null && framePlan.Fields.Any(f => f.Symbol.Contains("#.this@")),
+                framePlan == null ? "<null>" : string.Join(",", framePlan.Fields
+                    .Select(f => f.Symbol)));
+
+            // ⑧ 泛型类 async 方法：类级 typeid 恒进 frame
+            ctx = PipelineFromSource(
+                "shared class Box\\<T> {\n" +
+                "    pub var v: T\n" +
+                "    pub init(x: T) { v = x }\n" +
+                "    pub async func get(): T { return v }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var b = new Box\\<String>(\"x\")\n" +
+                "    var t = b.get()\n" +
+                "    return 0\n" +
+                "}\n", "coro.split8.bil");
+            stub = StubOf(ctx, "Box$get(");
+            framePlan = ctx.Layout!.Find("$mw.frame." + stub.Symbol.Canonical);
+            TestHarness.CheckTrue("⑧ 泛型类：类级 .generic.T typeid 进 frame",
+                framePlan != null
+                && framePlan.Fields.Any(f => f.Symbol.Contains("#.generic.T@")),
+                framePlan == null ? "<null>" : string.Join(",", framePlan.Fields
+                    .Select(f => f.Symbol)));
+            // 泛型 async 返回 Task<T>：NewObject 不得落 arity-0 void Task
+            // sheet（gate@72 vs Task<T> gate@88 → native 空 mutex 句柄）
+            TestHarness.CheckTrue("⑧ new Task 身份带实参（非 void Task sheet）",
+                stub.Blocks[0].Instructions.OfType<MirNewObject>().Any(n =>
+                    n.Type.Canonical.StartsWith("core.coroutine::Task<",
+                        StringComparison.Ordinal)),
+                string.Join(",", stub.Blocks[0].Instructions.OfType<MirNewObject>()
+                    .Select(n => n.Type.Canonical)));
+
+            // ⑨ FAILED 重抛沿用原 ExcTarget（try 内 await → 派发垫，非传播垫）
+            ctx = PipelineFromSource(
+                "async func boom(): i32 { throw new core.RuntimeException(\"x\") }\n" +
+                "async func guarded(): i32 {\n" +
+                "    try {\n" +
+                "        var t = boom()\n" +
+                "        var r = await t\n" +
+                "        return r\n" +
+                "    } catch (_: core.RuntimeException) {\n" +
+                "        return 3\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var t = guarded()\n" +
+                "    return 0\n" +
+                "}\n", "coro.split9.bil");
+            stub = StubOf(ctx, "$guarded(");
+            resume = ResumeOf(ctx, stub);
+            fail = resume.Blocks.Single(b => b.Id.Contains(".wait") && b.Id.Contains(".fail"));
+            TestHarness.CheckTrue("⑨ FAILED 块：MirThrow 沿原 ExcTarget 进 try 派发垫",
+                fail.Instructions.OfType<MirThrow>().SingleOrDefault() is { } throwInst
+                && throwInst.ExcTarget != null
+                && throwInst.ExcTarget.Id.Contains(".dispatch")
+                && fail.Terminator is MirBranch brG
+                && brG.Target == throwInst.ExcTarget.Id,
+                fail.Terminator?.GetType().Name ?? "<null>");
+
+            // ⑩ 非 async fn 的挂起点受控拒绝（VM 栈式跨界语义，棒2 不支持）
+            var rejected = false;
+            var rejectDetail = "";
+            try
+            {
+                PipelineFromSource(
+                    "async func one(): i32 { return 1 }\n" +
+                    "pub func main(): i32 {\n" +
+                    "    var t = one()\n" +
+                    "    var r = await t\n" +
+                    "    return r\n" +
+                    "}\n", "coro.split10.bil");
+            }
+            catch (MwNotSupportedException ex)
+            {
+                rejected = ex.Message.Contains("非 async");
+                rejectDetail = ex.Message;
+            }
+            TestHarness.CheckTrue("⑩ 非 async fn 挂起点受控拒绝", rejected, rejectDetail);
+
+            // ⑪ 不透明 AsyncAction 槽：跳过 coldtask 工厂，bindColdBody
+            // 改写为 type.is 链 + $mw.bindcold.*（不再 MwNotSupported）
+            ctx = PipelineFromSource(
+                "import core.coroutine.*\n" +
+                "func wrap(body: core.AsyncAction): Task {\n" +
+                "    return new Task(body)\n" +
+                "}\n" +
+                "async func run() {\n" +
+                "    const t = wrap(func{async () -> { }})\n" +
+                "    await t\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n", "coro.split11.bil");
+            TestHarness.CheckTrue("⑪ 不透明 body 冷 Task 含 $mw.bindcold helper",
+                ctx.Mir!.Functions.Any(f =>
+                    f.Symbol.Canonical.Contains("$mw.bindcold.", StringComparison.Ordinal)),
+                string.Join(",", ctx.Mir!.Functions.Select(f => f.Symbol.Canonical)
+                    .Where(c => c.Contains("$mw.", StringComparison.Ordinal))));
+            var bindBody = ctx.Mir.Functions.FirstOrDefault(f =>
+                f.Symbol.Canonical.StartsWith("core.coroutine::Task$bindColdBody(",
+                    StringComparison.Ordinal));
+            TestHarness.CheckTrue("⑪ bindColdBody 含 type.is 链",
+                bindBody != null
+                && bindBody.Blocks.SelectMany(b => b.Instructions)
+                    .OfType<MirTypeCheck>().Any(),
+                bindBody == null ? "<null>" : string.Join(",",
+                    bindBody.Blocks.SelectMany(b => b.Instructions)
+                        .Select(i => i.GetType().Name)));
+        }
+
+        // ===== MW11b 棒3：yield Alarm 切分形态 + probe 合成 fn =====
+
+        private static void TestCoroutineYieldAlarm()
+        {
+            // ① sleep 形态（棒5a）：挂起段 = 存 frame + state 常量化 +
+            // PollingAlarm sheet 物化 + MirTypeCheck 分流（poll/event）；
+            // event 分支 rigi_alarm_wait 闸内登记；恢复块落 pollgate
+            //（pending 判位）而非直续原后继；lowering 层指令全消除
+            var ctx = PipelineFromSource(
+                "import core.coroutine.*\n" +
+                "async func nap(): i32 {\n" +
+                "    yield sleep(1)\n" +
+                "    return 6\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var t = nap()\n" +
+                "    return 0\n" +
+                "}\n", "coro.alarm1.bil");
+            var stub = StubOf(ctx, "$nap(");
+            var resume = ResumeOf(ctx, stub);
+            var allInsts = resume.Blocks.SelectMany(b => b.Instructions).ToList();
+            TestHarness.CheckTrue("① lowering 层指令全消除",
+                !allInsts.OfType<MirYieldAlarm>().Any()
+                && !allInsts.OfType<MirYieldBare>().Any(),
+                string.Join(",", allInsts.Select(i => i.GetType().Name).Distinct()));
+            TestHarness.CheckTrue("① PollingAlarm sheet 经 getid.type 物化 + MirTypeCheck 分流",
+                allInsts.OfType<MirGetTypeId>().Any(g => g.TypeRef
+                    == CoroutineSplitPass.PollingAlarmCanonical)
+                && allInsts.OfType<MirTypeCheck>().Any(c =>
+                    c.Kind == MirTypeCheckKind.Is && c.IsIndirect));
+            var yieldBlock = resume.Blocks.Single(b => b.Id.EndsWith(".yield1",
+                StringComparison.Ordinal) && b.Terminator is MirCondBranch);
+            TestHarness.CheckTrue("① 挂起段：state 常量化存 frame + 分流条件分支",
+                yieldBlock.Instructions.OfType<MirSetField>().Any(
+                    s => s.FieldSymbol.Contains("#state@"))
+                && yieldBlock.Terminator is MirCondBranch);
+            var eventBlock = resume.Blocks.Single(b => b.Id.Contains(".yield1.event"));
+            TestHarness.CheckTrue("① event 分支：读 EventAlarm.handle + rigi_alarm_wait 登记",
+                eventBlock.Instructions.OfType<MirGetField>().Any(g =>
+                    g.FieldSymbol == CoroutineSplitPass.EventAlarmHandleField)
+                && eventBlock.Instructions.OfType<MirCall>().Any(c =>
+                    c.Target.Canonical.Contains("rigi_alarm_wait(")));
+            var signaledBlock = resume.Blocks.Single(b => b.Id.Contains(".yield1.signaled"));
+            TestHarness.CheckTrue("① 已触发分支：自重排（publish）+ ret SUSPENDED",
+                signaledBlock.Instructions.OfType<MirCall>().Any(c =>
+                    c.Target.Canonical.Contains("$publish("))
+                && signaledBlock.Terminator is MirRet);
+            TestHarness.CheckTrue("① switch 两项 + 恢复块落 pollgate（不重调面）",
+                resume.Blocks[0].Terminator is MirSwitch swAlarm
+                && swAlarm.ItemTargets.Count == 2
+                && BlockOf(resume, "mw.state.1").Terminator is MirBranch brAlarm
+                && brAlarm.Target.Contains(".pollgate"));
+            var pollGate = BlockOf(resume,
+                ((MirBranch)BlockOf(resume, "mw.state.1").Terminator).Target);
+            TestHarness.CheckTrue("① pollgate：poll_pending 判位 + 分支",
+                pollGate.Instructions.OfType<MirCall>().Any(c =>
+                    c.Target.Canonical.Contains("rigi_poll_pending("))
+                && pollGate.Terminator is MirCondBranch);
+            var probeBlock = resume.Blocks.Single(b => b.Id.Contains(".pollgate1.probe"));
+            TestHarness.CheckTrue("① probe 块：$mw.poll_probe 直调 + 三路 switch",
+                probeBlock.Instructions.OfType<MirCall>().Any(c =>
+                    c.Target.Canonical == CoroutineSplitPass.PollProbeCanonical)
+                && probeBlock.Terminator is MirSwitch swProbe
+                && swProbe.ItemTargets.Count == 3);
+            var pollWait = resume.Blocks.Single(b => b.Id.Contains(".pollgate1.wait"));
+            TestHarness.CheckTrue("① 未就绪：poll_schedule 退避 + ret SUSPENDED",
+                pollWait.Instructions.OfType<MirCall>().Any(c =>
+                    c.Target.Canonical.Contains("rigi_poll_schedule("))
+                && pollWait.Terminator is MirRet);
+            var pollReady = resume.Blocks.Single(b => b.Id.Contains(".pollgate1.ready"));
+            TestHarness.CheckTrue("① 就绪：poll_clear + 落原后继",
+                pollReady.Instructions.OfType<MirCall>().Any(c =>
+                    c.Target.Canonical.Contains("rigi_poll_clear("))
+                && pollReady.Terminator is MirBranch brReady
+                && brReady.Target.Contains(".cont"));
+
+            // ② probe 合成 fn 结构：IsPollProbe 标记 + alarm 胖引用参数
+            // 借用（无 acquire/release）+ isReady 虚派发 + bool 双分支
+            // 转 i32；异常垫尾 = ret -1 且 pending 不取（无 TakePending）
+            var probe = ctx.Mir!.Functions.Single(f => f.Symbol.Canonical
+                == CoroutineSplitPass.PollProbeCanonical);
+            TestHarness.CheckTrue("② probe fn 标记与形态（alarm→i32）",
+                probe.IsPollProbe && !probe.IsCoroutineResume
+                && probe.ReturnType.Key == "i32"
+                && probe.Parameters.Count == 1
+                && probe.Parameters[0].Name == CoroutineSplitPass.ProbeParamName
+                && probe.Parameters[0].Type.Canonical
+                    == CoroutineSplitPass.PollingAlarmCanonical);
+            TestHarness.CheckTrue("② probe entry：isReady 虚派发目标 + bool 分支",
+                probe.Blocks[0].Instructions.OfType<MirCall>().Any(c =>
+                    c.Target.Canonical == CoroutineSplitPass.PollProbeIsReadyCanonical)
+                && probe.Blocks[0].Terminator is MirCondBranch);
+            TestHarness.CheckTrue("② probe alarm 参数借用（全 fn 无其 acquire/release）",
+                !probe.Blocks.SelectMany(b => b.Instructions).OfType<MirAcquireSlot>()
+                    .Any(a => a.Local == CoroutineSplitPass.ProbeParamName)
+                && !probe.Blocks.SelectMany(b => b.Instructions).OfType<MirReleaseSlot>()
+                    .Any(r => r.Local == CoroutineSplitPass.ProbeParamName));
+            var probePad = BlockOf(probe, RcInjectionPass.PropagateBlockId);
+            TestHarness.CheckTrue("② probe 垫尾：ret -1 + pending 不取（无 TakePending）",
+                probePad.Terminator is MirRet
+                && !probePad.Instructions.OfType<MirTakePending>().Any()
+                && probePad.Instructions.OfType<MirLoadResource>().Any(l =>
+                    l.Resource is BilScalarResource error && error.LiteralText == "-1"),
+                string.Join(",", probePad.Instructions.Select(i => i.GetType().Name)));
+
+            // ③ 用户 PollingAlarm 子类：isReady override 经可达边收编
+            //（probe 是 MIR 期合成，BIL 级不可见，无边则无 MIR 可发射）
+            ctx = PipelineFromSource(
+                "import core.coroutine.*\n" +
+                "pub shared class Flip : PollingAlarm {\n" +
+                "    pub var ready: bool = false\n" +
+                "    pub override func isReady(): bool { return ready }\n" +
+                "}\n" +
+                "async func arm(f: Flip): i32 {\n" +
+                "    yield f\n" +
+                "    return 1\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var f = new Flip()\n" +
+                "    var t = arm(f)\n" +
+                "    return 0\n" +
+                "}\n", "coro.alarm2.bil");
+            TestHarness.CheckTrue("③ isReady override 可达边收编",
+                ctx.Mir!.Functions.Any(f => f.Symbol.Canonical.Contains("Flip$isReady")),
+                string.Join(",", ctx.Mir.Functions.Select(f => f.Symbol.Canonical)
+                    .Where(c => c.Contains("isReady"))));
+        }
+
+        // ===== MW11c 棒5a：协程 Emit 发射形态（.ll 黄金锚点，新模型）=====
+
+        private static void TestCoroutineEmit()
+        {
+            // 单 await + 裸 yield 混合源：create 调用点、resume 签名与
+            // switch 分发、frame sheet、Rigi 桥方法调用、导出符号包装、
+            // rigi_entry 的 workerLoop drain 段一次覆盖
+            var ctx = PipelineFromSource(
+                "async func one(): i32 { return 1 }\n" +
+                "async func work(n: i32): i32 {\n" +
+                "    var t = one()\n" +
+                "    yield\n" +
+                "    var r = await t\n" +
+                "    return r + n\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var t = work(41)\n" +
+                "    return 0\n" +
+                "}\n", "coro.emit1.bil");
+            using var module = ModuleBuilder.Build(ctx, ctx.Mir!);
+            var ll = module.PrintToString();
+
+            var stub = StubOf(ctx, "$work(");
+            var resumeCanonical = "$mw.resume." + stub.Symbol.Canonical;
+            var frameCanonical = "$mw.frame." + stub.Symbol.Canonical;
+            TestHarness.CheckTrue("Emit① rigi_coroutine_create 声明与调用（i64 双参）",
+                ll.Contains("declare i64 @rigi_coroutine_create(i64, i64)")
+                && ll.Contains("call i64 @rigi_coroutine_create("), ll);
+            TestHarness.CheckTrue("Emit① resume fn 以 i32(ptr) C ABI 发射",
+                ll.Contains("define internal i32 @\"" + resumeCanonical + "\"(ptr"), ll);
+            TestHarness.CheckTrue("Emit① resume entry 读 state + switch 分发",
+                ll.Contains("switch i32"), ll);
+            TestHarness.CheckTrue("Emit① frame sheet 全局已发射",
+                ll.Contains(GenericAbi.EscapeGlobalName("typesheet.", frameCanonical)), ll);
+            TestHarness.CheckTrue("Emit① Rigi 桥方法调用（registerWaiter/publish）",
+                ll.Contains("$registerWaiter(") && ll.Contains("$publish("), ll);
+            TestHarness.CheckTrue("Emit① 导出符号包装恒发射（外部链接）",
+                ll.Contains("define void @rigi_dispatcher_entry()")
+                && ll.Contains("define void @rigi_dispatch_publish(i64"), ll);
+            TestHarness.CheckTrue("Emit① rigi_entry：Dispatcher workerLoop drain 段",
+                ll.Contains("$workerLoop(")
+                && ll.Contains("declare void @rigi_main_worker_shutdown()"), ll);
+
+            // 异常路径：resume 垫尾 = 失败注册表登记 + fail + ret DONE
+            ctx = PipelineFromSource(
+                "async func boom(): i32 { throw new core.RuntimeException(\"x\") }\n" +
+                "pub func main(): i32 {\n" +
+                "    var t = boom()\n" +
+                "    return 0\n" +
+                "}\n", "coro.emit2.bil");
+            using var module2 = ModuleBuilder.Build(ctx, ctx.Mir!);
+            var ll2 = module2.PrintToString();
+            TestHarness.CheckTrue("Emit② resume 垫尾调 rigi_failure_record",
+                ll2.Contains("declare i64 @rigi_failure_record(")
+                && ll2.Contains("call i64 @rigi_failure_record("), ll2);
+            TestHarness.CheckTrue("Emit② rigi_entry 未观察失败走注册表",
+                ll2.Contains("declare i32 @rigi_failure_take_unobserved(ptr)")
+                && ll2.Contains("call i32 @rigi_failure_take_unobserved("), ll2);
+
+            // ③ yield Alarm：event 分支 alarm_wait + probe fn 普通 MIR
+            // 形态发射 + 两分类 sheet
+            ctx = PipelineFromSource(
+                "import core.coroutine.*\n" +
+                "async func nap(): i32 {\n" +
+                "    yield sleep(1)\n" +
+                "    return 6\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var t = nap()\n" +
+                "    return 0\n" +
+                "}\n", "coro.emit3.bil");
+            using var module3 = ModuleBuilder.Build(ctx, ctx.Mir!);
+            var ll3 = module3.PrintToString();
+            TestHarness.CheckTrue("Emit③ rigi_alarm_wait 声明与调用",
+                ll3.Contains("declare i32 @rigi_alarm_wait(i64, i64)")
+                && ll3.Contains("call i32 @rigi_alarm_wait("), ll3);
+            TestHarness.CheckTrue("Emit③ probe fn 以普通 MIR 形态发射（无 C ABI 特判）",
+                ll3.Contains("define internal i32 @\""
+                    + CoroutineSplitPass.PollProbeCanonical + "\"("), ll3);
+            TestHarness.CheckTrue("Emit③ probe 垫尾 ret -1（pending 不取）",
+                ll3.Contains("i32 -1"), ll3);
+            TestHarness.CheckTrue("Emit③ 两分类 sheet 全局已发射",
+                ll3.Contains("typesheet." + CoroutineSplitPass.PollingAlarmCanonical)
+                && ll3.Contains("typesheet." + CoroutineSplitPass.EventAlarmCanonical), ll3);
+        }
 
         private static MirFunction BuildMainMir(string source, string fileName)
         {
@@ -2982,12 +3840,18 @@ namespace RigiCompiler.Tests
                 f.Blocks.SelectMany(b => b.Instructions).ToList());
 
             // 合成条目：get fn / state / cache 符号
+            //（MW11c：stdlib 三内置 Executor singleton 恒在模块——按
+            // TypeCanonical 找 S 条目，不再全模块唯一）
+            var sEntry = context.Singletons.SingleOrDefault(s => s.TypeCanonical == "S");
             TestHarness.CheckTrue("Singletons 条目挂载（S）",
-                context.Singletons.Count == 1
-                && context.Singletons[0].TypeCanonical == "S"
-                && context.Singletons[0].GetFnCanonical == "S$.static.mw.singleton.get()@S"
-                && context.Singletons[0].StateFieldSymbol == "S#.mw.singleton.state@.i32"
-                && context.Singletons[0].CacheFieldSymbol == "S#.mw.singleton.cache@S");
+                sEntry != null
+                && sEntry.GetFnCanonical == "S$.static.mw.singleton.get()@S"
+                && sEntry.StateFieldSymbol == "S#.mw.singleton.state@.i32"
+                && sEntry.CacheFieldSymbol == "S#.mw.singleton.cache@S");
+            TestHarness.CheckTrue("Singletons 含 stdlib 三内置 Executor（MW11c）",
+                context.Singletons.Any(s => s.TypeCanonical == "core.coroutine::MainExecutor")
+                && context.Singletons.Any(s => s.TypeCanonical == "core.coroutine::ComputeExecutor")
+                && context.Singletons.Any(s => s.TypeCanonical == "core.coroutine::IOExecutor"));
 
             // get fn 形状：三态读写 + 带异常边的真构造 + 失败块置回 + 环抛
             var get = Fn("S$.static.mw.singleton.get");
@@ -5358,6 +6222,28 @@ namespace RigiCompiler.Tests
                 ll.Contains("call void @rigi_ref_release("), ll);
             TestHarness.CheckTrue("reporter 出口 rigi_exc_halt",
                 ll.Contains("call void @rigi_exc_halt()"), ll);
+            // MW11c 棒5a：rigi_entry 固定序列锚点（对齐 VM BilVm.Run：
+            // singletons → globals.init → main →（协程运行时段收编时）
+            // Dispatcher workerLoop drain → 失败汇总（main 失败 >
+            // 未观察失败——native 注册表）→ ret；无协程程序同样发射
+            // workerLoop 段（quiescent 先检直返，零挂起））
+            var stubStart = ll.IndexOf("define i32 @rigi_entry()", StringComparison.Ordinal);
+            var stubLl = stubStart >= 0 ? ll.Substring(stubStart) : "";
+            var firstCall = stubLl.IndexOf("call ", StringComparison.Ordinal);
+            TestHarness.CheckTrue("rigi_entry 固定序列：singleton 急切初始化最先（stub 首调用）",
+                firstCall >= 0 && stubLl.IndexOf("mw.singleton.get",
+                    StringComparison.Ordinal) >= 0
+                && stubLl.IndexOf("mw.singleton.get", StringComparison.Ordinal)
+                    < stubLl.IndexOf("entry.mainexc:", StringComparison.Ordinal), ll);
+            TestHarness.CheckTrue("rigi_entry 固定序列：workerLoop drain + 主 Worker 收尾",
+                ll.Contains("$workerLoop(")
+                && ll.Contains("call void @rigi_main_worker_shutdown()"), ll);
+            TestHarness.CheckTrue("rigi_entry 固定序列：main 失败 take 进合成槽",
+                ll.Contains("entry.mainexc:") && ll.Contains("entry.take:")
+                && ll.Contains("entry.drain:"), ll);
+            TestHarness.CheckTrue("rigi_entry 固定序列：未观察失败查询（native 注册表）",
+                ll.Contains("call i32 @rigi_failure_take_unobserved(ptr")
+                && ll.Contains("entry.unobserved:"), ll);
         }
 
         // MW7a 边界：enum String payload / 嵌套 rich 折算序 / 非 rich 含 String 也产 refMap

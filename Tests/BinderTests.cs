@@ -123,6 +123,7 @@ namespace RigiCompiler.Tests
             TestLambdaBinding();
             TestVoidLambdaExpressionBodyStatementSemantics();
             TestNamedImportValueConsumption();
+            TestMw11cCoroutineShapes();
             return TestHarness.Summary("Binder");
         }
 
@@ -159,7 +160,7 @@ namespace RigiCompiler.Tests
 
         private static BoundFunctionBody BodyOf(IReadOnlyList<BoundFunctionBody> bodies, string name)
         {
-            return bodies.Single(b => b.Method.Name == name);
+            return TestHarness.UniqueNamedBody(bodies, name, b => b.Method);
         }
 
     }

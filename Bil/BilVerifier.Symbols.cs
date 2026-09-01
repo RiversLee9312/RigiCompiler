@@ -638,6 +638,39 @@ namespace RigiCompiler.Bil
         }
 
         // ===== §21.2（fn 级）+ §21.7 泛型与参数包 =====
+        // MW11c 同名不同元数消歧（CanonicalSymbolPrinter.ArityDisambiguation）：
+        // 泛型定义的宿主段带裸泛型参数名单后缀（core.coroutine::Task<TResult>），
+        // 而 .this 恒为定义级裸名（core.coroutine::Task，Pair/Array 先例）——
+        // 剥掉「实参全为裸标识符」的尾部 <...> 后再按常口径比对。真实构造
+        // 宿主（ext 禁泛型定义目标，成员宿主恒为定义）不会呈现此形态，不误伤
+        private static bool ThisCompatibleWithDisambiguatedOwner(string thisTypeRef,
+            string owner)
+        {
+            var angle = owner.IndexOf('<');
+            if (angle < 0 || !owner.EndsWith(">"))
+            {
+                return false;
+            }
+            var inner = owner.Substring(angle + 1, owner.Length - angle - 2);
+            foreach (var arg in BilVerificationContext.SplitTopLevel(inner))
+            {
+                var trimmed = arg.Trim();
+                if (trimmed.Length == 0 || !Keywords.IsIdentifierStart(trimmed))
+                {
+                    return false;
+                }
+                foreach (var c in trimmed)
+                {
+                    if (!char.IsLetterOrDigit(c) && c != '_')
+                    {
+                        return false;
+                    }
+                }
+            }
+            return BilVerificationContext.TypesCompatible(thisTypeRef,
+                owner.Substring(0, angle));
+        }
+
         // .args 顺序（§7.2）与签名一致性（§9.2：参数名称和顺序必须与方法
         // 符号的规范签名一致；hidden 参数与符号互相比对的部分跳过）
         private static void VerifyFunctionSignature(BilFunctionContext context,
@@ -701,7 +734,8 @@ namespace RigiCompiler.Bil
                     errors.Add(new BilVerificationError("21.7", function.Symbol,
                         "实例方法 .args 缺少 .this（应位于 .return 之后）"));
                 }
-                else if (!BilVerificationContext.TypesCompatible(args[index].TypeRef, owner))
+                else if (!BilVerificationContext.TypesCompatible(args[index].TypeRef, owner)
+                    && !ThisCompatibleWithDisambiguatedOwner(args[index].TypeRef, owner))
                 {
                     errors.Add(new BilVerificationError("21.7", function.Symbol,
                         $".this 类型 \"{args[index].TypeRef}\" 与宿主类型 \"{owner}\" 不一致"));

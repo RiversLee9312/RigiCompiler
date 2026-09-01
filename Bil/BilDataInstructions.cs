@@ -1683,16 +1683,17 @@ namespace RigiCompiler.Bil
             return head == "core::Any$call???";
         }
 
-        // RUNTIME §18.1：求实参（已完成）→ 建 Coroutine/Task → 绑定 Executor
-        // → 转 Runnable 发布 → 返回 Task。不以全局锁串行化。
+        // RUNTIME §18.1：求实参（已完成）→ 建 Coroutine + Rigi Task 对象
+        // → noteSpawn → 转 Runnable 发布到 Dispatcher → 返回 Task 对象。
+        // MW11c 棒4a：调度逻辑（Task 建物/发布）进 Rigi 世界，VM 侧只
+        // 经 VmDispatch 桥同步解释对应 Rigi 方法。不以全局锁串行化。
         private static void EagerSpawn(VmCoroutine caller,
             BilFunction function, IReadOnlyList<VmValue> args, string? resultSlot)
         {
-            var child = caller.BoundExecutor.Spawn(function, args);
-            caller.BoundExecutor.Publish(child);
+            var child = caller.Dispatch.Spawn(function, args, caller);
             if (resultSlot != null)
             {
-                caller.WriteVar(resultSlot, child.Task);
+                caller.WriteVar(resultSlot, child.TaskObject!);
             }
         }
     }

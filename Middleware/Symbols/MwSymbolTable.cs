@@ -45,6 +45,37 @@ namespace RigiCompiler.Middleware.Symbols
         public MwMemberSymbol? FindMember(string canonical) =>
             _members.TryGetValue(canonical, out var symbol) ? symbol : null;
 
+        // MW11a：合成类型注册口（CoroutineSplitPass 的协程 frame 类型；
+        // 驻留纪律同 Build——同 canonical 幂等直返，成员双登记进反查表）。
+        // 合成类型无泛型参数，declKey 即裸符号
+        internal MwTypeSymbol RegisterSyntheticType(BilTypeDeclaration declaration)
+        {
+            if (declaration.GenericParameters.Count != 0)
+            {
+                throw new CompilerInternalException(
+                    $"合成类型不得带泛型参数: {declaration.Symbol}");
+            }
+            if (_types.TryGetValue(declaration.Symbol, out var existing))
+            {
+                return existing;
+            }
+            var members = new List<MwMemberSymbol>();
+            var typeSymbol = new MwTypeSymbol(declaration, isExternal: false, members,
+                new List<MwCaseSymbol>());
+            _types.Add(declaration.Symbol, typeSymbol);
+            _typesByDeclKey.Add(declaration.Symbol, typeSymbol);
+            foreach (var memberDecl in declaration.Members.OfType<BilSimpleMemberDeclaration>())
+            {
+                var memberSymbol = new MwMemberSymbol(memberDecl, typeSymbol, isExternal: false);
+                members.Add(memberSymbol);
+                if (!_members.ContainsKey(memberDecl.Symbol))
+                {
+                    _members.Add(memberDecl.Symbol, memberSymbol);
+                }
+            }
+            return typeSymbol;
+        }
+
         public static MwSymbolTable Build(BilModule module)
         {
             var table = new MwSymbolTable();

@@ -67,7 +67,10 @@ namespace RigiCompiler.Tests
                 && tryInstruction.Operands[3] is BilBlockOperand
                 && tryInstruction.Operands[4].Render() == "$.b0");
             // §19.5 catch-table：多行形态、元素保序（表序即匹配序）
-            var catchTable = module.Resources.OfType<BilCatchTableResource>().Single();
+            //（MW11c 起 stdlib Mutex.runSynchronously 的 try/finally 也产
+            // catch-table——按本用例条目内容过滤，不再全模块唯一）
+            var catchTable = module.Resources.OfType<BilCatchTableResource>()
+                .Single(t => t.Entries.Any(e => e.Render().Contains("DerivedError")));
             TestHarness.Check("catch-table 元素（保序）",
                 string.Join("\n", catchTable.Entries.Select(e => e.Render())),
                 "type(DerivedError) -> blk(try0-catch0)\n" +

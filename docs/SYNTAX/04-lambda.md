@@ -130,5 +130,6 @@ const user = await task
 - 调用约定与 async 函数相同（§4.5）：立即创建新协程，调用表达式类型为 `core.coroutine.Task\<TResult>` / `core.coroutine.Task`；
 - 普通 lambda 在当前协程中执行；async lambda 在新协程中执行；
 - **shared 拦截**：因 Async 基类是 shared，非共享安全的捕获 / 参数 / 返回值在 async lambda 上是编译错误——与 §4.5 五项闸门一致（闸门 4 专查捕获；参数与返回值同闸门 2、3）。类型系统亦因 shared 基类天然拦截「非 shared-safe 的值无法被 async lambda 捕获」。
+- **与 Task 构造衔接**：`core.AsyncAction` / `core.AsyncFunc\<TReturn\>` 正是 `core.coroutine.Task` / `Task\<TReturn\>` 的 `init` 形参类型（§4.5）——async lambda 隐藏类经普通向上转换即可作为实参：`new Task(func{async () -> ...})` 构造冷 Task、`new Task\<i32\>(func{async (x: i32): i32 -> ...})` 构造带结果的冷 Task；构造不执行 body，启动时机与目标 Executor 由 `run` / `executor` 控制。
 
 ---

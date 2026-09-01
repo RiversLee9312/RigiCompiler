@@ -138,6 +138,12 @@ namespace RigiCompiler.Middleware.Mir
                 case CastInstruction cast:
                     CastLowering.Visit(cast, flow);
                     break;
+                case AwaitInstruction awaitInst:
+                    AwaitLowering.Visit(awaitInst, flow);
+                    break;
+                case YieldInstruction yieldInst:
+                    YieldLowering.Visit(yieldInst, flow);
+                    break;
                 default:
                     throw new MwNotSupportedException(
                         $"MW3 不支持指令 {inst.Opcode}（fn {flow.FnSymbol}）");

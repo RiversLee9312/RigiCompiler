@@ -169,6 +169,44 @@ namespace RigiCompiler.Tests
             return string.Join("; ", parts);
         }
 
+        // 按短名取函数体：stdlib 与用户源可能同名（如 CoroutineLocal.get
+        // 与用例 `func get()`）。唯一命中直接返回；多名时优先非
+        // `<stdlib>/` 源。再歧义则抛，避免 Single() 把套件打崩。
+        public static T UniqueNamedBody<T>(IReadOnlyList<T> bodies, string name,
+            Func<T, MethodSymbol> methodOf)
+        {
+            T? any = default;
+            T? user = default;
+            var anyCount = 0;
+            var userCount = 0;
+            foreach (var body in bodies)
+            {
+                var method = methodOf(body);
+                if (method.Name != name)
+                {
+                    continue;
+                }
+                anyCount++;
+                any = body;
+                var source = method.SourceFile?.Span?.sourceName ?? "";
+                if (!source.StartsWith("<stdlib>/", StringComparison.Ordinal))
+                {
+                    userCount++;
+                    user = body;
+                }
+            }
+            if (anyCount == 1)
+            {
+                return any!;
+            }
+            if (userCount == 1)
+            {
+                return user!;
+            }
+            throw new InvalidOperationException(
+                $"UniqueNamedBody('{name}') 匹配 {anyCount} 个，用户源 {userCount} 个");
+        }
+
         // 套件汇总（打印并返回失败数）
         public static int Summary(string suiteName)
         {
