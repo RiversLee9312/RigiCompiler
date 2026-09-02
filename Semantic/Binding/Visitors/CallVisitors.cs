@@ -1,3 +1,5 @@
+using RigiCompiler.Bil;
+
 namespace RigiCompiler
 {
     // 调用绑定（S5/S7c-2/S8d）与 new 构造（S5）。
@@ -775,6 +777,14 @@ namespace RigiCompiler
             BindEnvironment env, List<TypeReferenceASTNode>? genericArguments = null)
         {
             if (receiver.Type is ErrorTypeSymbol) return null;
+            // MW11d-B2：obj:Serializable.toParcel() → 宿主 ..toParcel()
+            // （wrapper 源码无法写 `..` 成员名；此处最窄改写）
+            if (receiver is BoundWrapperAccessExpression place
+                && SerializationFacts.IsSerializableWrapper(place.Wrapper)
+                && name == "toParcel")
+            {
+                return BindSerializableToParcel(node, place.Receiver, arguments, scope, ctx, env);
+            }
             var receiverType = SymbolLookup.EffectiveMemberType(receiver.Type, env);
             var candidates = SymbolLookup.FindInstanceMethods(receiverType, name,
                 env.Unit.Symbols);
@@ -841,6 +851,34 @@ namespace RigiCompiler
                 GenericPack = genericPack,
                 // S10：async 调用表达式类型改写（同 BindCall 口径）
                 ResultType = AsyncResultType(selected, selectedResultType, env),
+            };
+        }
+
+        // MW11d-B2：Serializable.toParcel 改写为宿主 ..toParcel。
+        // 具体类型走合成实现槽；T with Serializable 走 ..ISerializable 接口槽
+        // （VM/native 均按接口/签名派发到实际类型）。
+        private static CallBinding? BindSerializableToParcel(ASTNode node, BoundExpression host,
+            List<ArgumentASTNode> arguments, Scope scope, BindContext ctx, BindEnvironment env)
+        {
+            if (arguments.Count != 0)
+            {
+                env.Error(node.Span, "Serializable.toParcel takes no arguments");
+                return null;
+            }
+            var parcel = SerializationFacts.FindParcel(env.Unit.Symbols);
+            var method = SerializationSynthesis.FindToParcelMethod(host.Type, env);
+            if (parcel == null || method == null)
+            {
+                env.Error(node.Span, "Serializable.toParcel is unavailable on this host");
+                return null;
+            }
+            return new CallBinding
+            {
+                Method = method,
+                Arguments = new List<BoundExpression>(),
+                IsVoid = false,
+                Receiver = host,
+                ResultType = parcel,
             };
         }
 
@@ -1348,7 +1386,8 @@ namespace RigiCompiler
             // ConstructedFrom；init 形参的宿主泛型参数由 Resolve 的
             // receiverType 代入——`new C\<i32>(1)` 的 init(x: T) 实参按 i32 绑定）
             var inits = (typeSymbol.ConstructedFrom ?? typeSymbol).Methods
-                .Where(m => m.Kind == MethodKind.Init).ToList();
+                .Where(m => m.Kind == MethodKind.Init
+                    && m.Name != BilSpellings.InitSerializableMethodName).ToList();
             if (inits.Count == 0)
             {
                 // 无显式 init 的零参构造（§9.3 默认构造）

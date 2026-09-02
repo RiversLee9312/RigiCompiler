@@ -123,3 +123,193 @@ priv native func shared_span_alloc\<T>(size: i32): SharedSpan\<T>
 pub func sharedSpanOf\<T>(size: i32): SharedSpan\<T> {
     return shared_span_alloc\<T>(size)
 }
+
+// MW11d-B1：最小完备动态数组。backing 为 Array\<T>，扩容倍增。
+// getAtIndex 越界读 null（与语言索引协议 §13.2 对齐，方法面非 [] 运算符）；
+// removeAt 越界抛 core.OutOfBoundException。
+pub class List\<T> implements IEnumerable\<T> {
+    priv var items: Array\<T>
+    priv var count: i32
+
+    pub init() {
+        items = arrayOf\<T>(8)
+        count = 0
+    }
+
+    pub func add(item: T) {
+        if (count == items.length) { grow() }
+        items[count] = item
+        count = (count + 1)
+    }
+
+    pub func getAtIndex(index: i64): T? {
+        if ((index < (0 as i64)) or (index >= (count as i64))) {
+            return null
+        }
+        return items[(index as i32)]
+    }
+
+    pub var length: i64 {
+        pub get(_: _) { return (count as i64) }
+    }
+
+    pub func setAtIndex(index: i64, item: T) {
+        if ((index < (0 as i64)) or (index >= (count as i64))) {
+            throw new core.OutOfBoundException(index, (count as i64))
+        }
+        items[(index as i32)] = item
+    }
+
+    pub func removeAt(index: i64) {
+        if ((index < (0 as i64)) or (index >= (count as i64))) {
+            throw new core.OutOfBoundException(index, (count as i64))
+        }
+        var i: i32 = (index as i32)
+        while (i < (count - 1)) {
+            items[i] = (items[(i + 1)] as T)
+            i = (i + 1)
+        }
+        count = (count - 1)
+    }
+
+    pub override func iterate(): IEnumerator\<T> {
+        return new ListEnumerator\<T>(items, count)
+    }
+
+    priv func grow() {
+        const bigger = arrayOf\<T>((items.length * 2))
+        var i: i32 = 0
+        while (i < count) {
+            bigger[i] = (items[i] as T)
+            i = (i + 1)
+        }
+        items = bigger
+    }
+}
+
+pub class ListEnumerator\<T> implements IEnumerator\<T> {
+    priv const items: Array\<T>
+    priv const count: i32
+    priv var index: i32
+
+    pub init(_ -> items, _ -> count) {
+        index = (0 - 1)
+    }
+
+    pub override func moveNext(): bool {
+        index = (index + 1)
+        return (index < count)
+    }
+
+    pub override func current(): T {
+        return (items[index] as T)
+    }
+}
+
+// MW11d-B1：关联数组（内部 Pair\<K,V> 动态数组 + 线性查找）。
+// 刻意不引哈希——规避 identity/hash contract；未来可换哈希实现、
+// 对外语义不变。
+// K 相等：无约束泛型不可用 `==`（§13.3：无约束/仅 supers·with 的有效
+// 成员类型是 Any，Any 只承诺 toString，不承诺 operator equals）。
+// 通道：两侧 toString 后走 String 内建 ==（Parcel 键为 String 时
+// toString 即自身；标量为十进制文本）。不硬编码 String 特化。
+pub class Map\<K, V> implements IEnumerable\<core.Pair\<K, V>> {
+    priv var ks: List\<K>
+    priv var vs: List\<V>
+
+    pub init() {
+        ks = new List\<K>()
+        vs = new List\<V>()
+    }
+
+    pub func set(key: K, value: V) {
+        var i: i64 = (0 as i64)
+        while (i < ks.length) {
+            const k = ks.getAtIndex(i)
+            if (keysEqual((k as K), key)) {
+                vs.setAtIndex(i, value)
+                return
+            }
+            i = (i + (1 as i64))
+        }
+        ks.add(key)
+        vs.add(value)
+    }
+
+    pub func tryGet(key: K): V? {
+        var i: i64 = (0 as i64)
+        while (i < ks.length) {
+            const k = ks.getAtIndex(i)
+            if (keysEqual((k as K), key)) {
+                return vs.getAtIndex(i)
+            }
+            i = (i + (1 as i64))
+        }
+        return null
+    }
+
+    pub func containsKey(key: K): bool {
+        var i: i64 = (0 as i64)
+        while (i < ks.length) {
+            const k = ks.getAtIndex(i)
+            if (keysEqual((k as K), key)) {
+                return true
+            }
+            i = (i + (1 as i64))
+        }
+        return false
+    }
+
+    pub func remove(key: K): bool {
+        var i: i64 = (0 as i64)
+        while (i < ks.length) {
+            const k = ks.getAtIndex(i)
+            if (keysEqual((k as K), key)) {
+                ks.removeAt(i)
+                vs.removeAt(i)
+                return true
+            }
+            i = (i + (1 as i64))
+        }
+        return false
+    }
+
+    pub var count: i64 {
+        pub get(_: _) { return ks.length }
+    }
+
+    pub func keyAtIndex(index: i64): K? {
+        return ks.getAtIndex(index)
+    }
+
+    pub func valueAtIndex(index: i64): V? {
+        return vs.getAtIndex(index)
+    }
+
+    pub override func iterate(): IEnumerator\<core.Pair\<K, V>> {
+        return new MapEnumerator\<K, V>(ks, vs)
+    }
+
+    priv func keysEqual(a: K, b: K): bool {
+        return a.toString() == b.toString()
+    }
+}
+
+pub class MapEnumerator\<K, V> implements IEnumerator\<core.Pair\<K, V>> {
+    priv const ks: List\<K>
+    priv const vs: List\<V>
+    priv var index: i64
+
+    pub init(_ -> ks, _ -> vs) {
+        index = ((0 as i64) - (1 as i64))
+    }
+
+    pub override func moveNext(): bool {
+        index = (index + (1 as i64))
+        return (index < ks.length)
+    }
+
+    pub override func current(): core.Pair\<K, V> {
+        return new core.Pair\<K, V>((ks.getAtIndex(index) as K), (vs.getAtIndex(index) as V))
+    }
+}

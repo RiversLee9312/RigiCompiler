@@ -594,3 +594,8 @@ priv native func any_to_string(value: Any): String
 // 声明形态，本注释仅作登记锚点）。修饰任意命名空间的一个静态方法即把它
 // 登记为程序入口（BIL entrypoint 修饰符）；多入口并存时运行前经
 // vm --entry-point <符号> 显式指定。
+//
+// @Terminal（修饰器组合终点，MW11d）：同族内建注解。标在 wrapper 声明上
+// 表示该 wrapper 处于组合终点，其内层不得再嵌套其它 wrapper。
+// @Internal（命名空间内建应用限制，MW11d）：同族内建注解。标在声明上后，
+// 非声明命名空间的代码不得拿它修饰自己的声明；API 签名暴露与 pub 可见性不变。

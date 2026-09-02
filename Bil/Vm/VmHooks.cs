@@ -70,6 +70,8 @@ namespace RigiCompiler.Bil.Vm
             hooks.Register("rigi_rt", "print", Print);
             hooks.Register("rigi_rt", "printErr", PrintErr);
             hooks.Register("rigi_rt", "any_to_string", ToStringHook);
+            // MW11d-D：对象身份原语（交接 §14 listener 身份键）
+            hooks.Register("rigi_rt", "object_id", ObjectId);
             hooks.Register("rigi_rt", "alloc_array", AllocArray);
             // span_alloc 与 shared_span_alloc 共用此键；Invoke 按 callee 分流
             hooks.Register("rigi_rt", "span_alloc",
@@ -109,6 +111,25 @@ namespace RigiCompiler.Bil.Vm
                 (ctx, args) => ctx.Dispatch.TimerCancel(args));
             hooks.Register("rigi_rt", "timer_destroy",
                 (ctx, args) => ctx.Dispatch.TimerDestroy(args));
+            // MW11d-C MessageQueue 传输层（rigi_rt/message.c 同语义镜像）
+            hooks.Register("rigi_rt", "mq_create",
+                (ctx, args) => ctx.Dispatch.MqCreate(args));
+            hooks.Register("rigi_rt", "mq_add",
+                (ctx, args) => ctx.Dispatch.MqAdd(args));
+            hooks.Register("rigi_rt", "mq_release",
+                (ctx, args) => ctx.Dispatch.MqRelease(args));
+            hooks.Register("rigi_rt", "mq_post",
+                (ctx, args) => ctx.Dispatch.MqPost(args));
+            hooks.Register("rigi_rt", "mq_try_next",
+                (ctx, args) => ctx.Dispatch.MqTryNext(args));
+            hooks.Register("rigi_rt", "mq_take",
+                (ctx, args) => ctx.Dispatch.MqTake(args));
+            hooks.Register("rigi_rt", "mq_alarm",
+                (ctx, args) => ctx.Dispatch.MqAlarm(args));
+            hooks.Register("rigi_rt", "mq_next_enter",
+                (ctx, args) => ctx.Dispatch.MqNextEnter(args));
+            hooks.Register("rigi_rt", "mq_next_exit",
+                (ctx, args) => ctx.Dispatch.MqNextExit(args));
             hooks.Register("rigi_rt", "sync_mutex_create",
                 (ctx, args) => ctx.Dispatch.SyncMutexCreate(args));
             hooks.Register("rigi_rt", "sync_mutex_acquire",
@@ -232,6 +253,26 @@ namespace RigiCompiler.Bil.Vm
                 throw new VmException("any_to_string 需要恰好 1 个参数");
             }
             return new VmString(arguments[0].ToStandardText());
+        }
+
+        // object_id（MW11d-D，交接 §14）：对象身份原语。语言层无引用相等
+        // ==（lambda 隐藏类无 operator equals），Receiver listener 身份键
+        // 需要机制层身份通道。Any 胖值拆包取 payload，身份 = 宿主对象引用
+        // 的稳定身份哈希（RuntimeHelpers.GetHashCode——同一 VmObject 恒同
+        // 值；VmAny 构造对引用类型 payload 不复制，身份穿透装箱）。
+        // 标量 payload 无身份语义（每次装箱是新宿主对象），调用方不应依赖。
+        private static VmValue ObjectId(VmContext context, IReadOnlyList<VmValue> arguments)
+        {
+            if (arguments.Count != 1)
+            {
+                throw new VmException("object_id 需要恰好 1 个参数");
+            }
+            var value = arguments[0];
+            if (value is VmAny any)
+            {
+                value = any.Payload;
+            }
+            return new VmI64(System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(value));
         }
 
         // §22.5 span_alloc：签名与 alloc_array 对照——hidden typeid（.generic.T 物化）+ size。

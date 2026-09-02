@@ -374,7 +374,9 @@ namespace RigiCompiler.Bil.Vm
             // 是构造协议自身的环节（PushConstructorTail 在新 init 原则下先执行
             // 实际类型的 ..init.wrapper——含闭包 wrapper 安装与字段初值——再
             // 进入 init 链，§9.7/§14.2）；wrapper 链只拦普通成员调用
-            if (memberName == "init" || memberName == BilSpellings.InitWrapperMethodName)
+            if (memberName == "init" || memberName == BilSpellings.InitWrapperMethodName
+                || memberName == BilSpellings.ToParcelMethodName
+                || memberName == BilSpellings.FromParcelMethodName)
             {
                 return false;
             }
@@ -447,7 +449,9 @@ namespace RigiCompiler.Bil.Vm
             {
                 return false;
             }
-            if (memberName == "init" || memberName == BilSpellings.InitWrapperMethodName)
+            if (memberName == "init" || memberName == BilSpellings.InitWrapperMethodName
+                || memberName == BilSpellings.ToParcelMethodName
+                || memberName == BilSpellings.FromParcelMethodName)
             {
                 return false;
             }

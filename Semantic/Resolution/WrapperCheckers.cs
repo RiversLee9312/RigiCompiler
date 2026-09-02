@@ -167,11 +167,9 @@ namespace RigiCompiler
                         }
                         continue;
                     }
-                    // @NativeLibrary/@NativeSymbol 是编译器内建注解（§4.6），不属于
-                    // wrapper 体系；合法性已在 CheckNativeDeclarations 处理
-                    if (ResolveEnvironment.NativeAnnotationNameOf(annotation) != null) continue;
-                    // @EntryPoint 同为内建注解（§17），目标校验归 EntryPointChecker
-                    if (ResolveEnvironment.IsEntryPointAnnotation(annotation)) continue;
+                    // 编译器内建注解（§4.6 native / §17 EntryPoint / MW11d Terminal·Internal）
+                    // 不属于 wrapper 体系；目标校验归各自 Checker
+                    if (ResolveEnvironment.IsNonWrapperBuiltinAnnotation(annotation)) continue;
                     var resolved = env.Names.ResolveSymbolPath(annotation.Name.symbol, entry.Context,
                         entry.DeclaringType, declaringMethod: null,
                         allowImports: true, reportErrors: true,
@@ -184,6 +182,8 @@ namespace RigiCompiler
                             $"'{NameResolver.PathText(annotation.Name.symbol)}' is not a wrapper type");
                         continue;
                     }
+                    CheckInternalApplication(wrapperType, entry.Context.Namespace,
+                        annotation.Span ?? entry.Node.Span, env.Error);
                     // wrapper 自身的 @WrapperTarget 缺失/非法已在声明处报过，此处静默
                     if (wrapperType.WrapperTarget is { } targetKind)
                     {
@@ -191,17 +191,67 @@ namespace RigiCompiler
                     }
                     // S11a：应用登记为 WrapperApplication 记录——Entity wrapper 恰一
                     // 泛型参数时 TTarget 代入宿主构造（泛型实参显形）；元数非法的
-                    // Entity wrapper 由 ProxyShapeChecker 诊断，此处按定义原样登记
-                    var appliedType = wrapperType;
-                    if (wrapperType.WrapperTarget == WrapperTargetKind.Entity
-                        && wrapperType.GenericParameters.Count == 1
-                        && entry.Symbol is TypeSymbol applicationHost)
-                    {
-                        appliedType = env.Unit.Symbols.GetConstructedType(wrapperType, applicationHost);
-                    }
+                    // Entity wrapper 由 ProxyShapeChecker 诊断，此处按定义原样登记。
+                    // MW11d：Value wrapper 恰一泛型参数时 TField 代入字段/变量类型。
+                    var appliedType = SubstituteWrapperApplication(wrapperType, entry.Symbol,
+                        env.Unit.Symbols);
                     ResolveEnvironment.AppliedWrappersOf(entry.Symbol)?.Add(
                         new WrapperApplication(appliedType, annotation));
                 }
+                var applied = ResolveEnvironment.AppliedWrappersOf(entry.Symbol);
+                if (applied != null)
+                    CheckTerminalCombination(applied, entry.Node.Span, env.Error);
+            }
+        }
+
+        // Entity：TTarget ← 宿主类型；Value：TField ← 字段静态类型。其余原样。
+        internal static TypeSymbol SubstituteWrapperApplication(TypeSymbol wrapperType,
+            SemanticSymbol host, SymbolGraph symbols)
+        {
+            if (wrapperType.WrapperTarget == WrapperTargetKind.Entity
+                && wrapperType.GenericParameters.Count == 1
+                && host is TypeSymbol applicationHost)
+            {
+                return symbols.GetConstructedType(wrapperType, applicationHost);
+            }
+            if (wrapperType.WrapperTarget == WrapperTargetKind.Value
+                && wrapperType.GenericParameters.Count == 1)
+            {
+                var fieldType = host switch
+                {
+                    FieldSymbol f => f.FieldType,
+                    LocalSymbol l => l.Type,
+                    _ => null,
+                };
+                if (fieldType != null && fieldType is not ErrorTypeSymbol)
+                    return symbols.GetConstructedType(wrapperType, fieldType);
+            }
+            return wrapperType;
+        }
+
+        // @Internal wrapper：应用点文件命名空间必须等于 wrapper 声明命名空间。
+        // 编译器内部登记（SerializationBaseRegistrar）不走本检查。
+        internal static void CheckInternalApplication(TypeSymbol wrapper, NamespaceSymbol siteNs,
+            CharRange? span, Action<CharRange?, string> error)
+        {
+            var definition = wrapper.ConstructedFrom ?? wrapper;
+            if (!definition.IsInternal) return;
+            if (ReferenceEquals(definition.Namespace, siteNs)) return;
+            error(span,
+                $"'{definition.Name}' is internal and cannot be applied outside its declaring namespace");
+        }
+
+        // terminal wrapper 之后（内层侧）再出现任何 wrapper = 编译错误。
+        // 只作用于同一声明上的应用列表；with 约束不构成嵌套。
+        internal static void CheckTerminalCombination(IReadOnlyList<WrapperApplication> applications,
+            CharRange? fallbackSpan, Action<CharRange?, string> error)
+        {
+            for (int i = 0; i < applications.Count; i++)
+            {
+                var definition = applications[i].WrapperDefinition;
+                if (!definition.IsTerminal || i >= applications.Count - 1) continue;
+                error(applications[i].Syntax?.Span ?? fallbackSpan,
+                    $"{definition.Name} is terminal and cannot contain another modifier.");
             }
         }
 

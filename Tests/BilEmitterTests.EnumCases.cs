@@ -1,4 +1,4 @@
-using System.Linq;
+﻿using System.Linq;
 using RigiCompiler.Bil;
 
 namespace RigiCompiler.Tests
@@ -216,34 +216,74 @@ namespace RigiCompiler.Tests
                 "#3 = string \"\\n\"\n" +
                 "#4 = bool false\n" +
                 "#5 = bool true\n" +
-                "#6 = string \"Task 只允许启动一次：对已完成启动的 Task 调用 run\"\n" +
-                "#7 = string \"冷 Task body 无法 spawn-into：无匹配闭包\"\n" +
-                "#8 = i32 3\n" +
-                "#9 = i32 4\n" +
-                "#10 = i32 5\n" +
-                "#11 = null type(core.coroutine::I64Queue)\n" +
-                "#12 = catch-table {  }\n" +
-                "#13 = string \"Mutex.release：令牌不属于此 Mutex 或已释放\"\n" +
-                "#14 = catch-table {  }\n" +
+                "#6 = i32 8\n" +
+                "#7 = null type(.generic<$.generic.T>)\n" +
+                "#8 = null type(.generic<$.generic.V>)\n" +
+                "#9 = string \"Task 只允许启动一次：对已完成启动的 Task 调用 run\"\n" +
+                "#10 = string \"冷 Task body 无法 spawn-into：无匹配闭包\"\n" +
+                "#11 = i32 3\n" +
+                "#12 = i32 4\n" +
+                "#13 = i32 5\n" +
+                "#14 = null type(core.coroutine::I64Queue)\n" +
                 "#15 = catch-table {  }\n" +
-                "#16 = string \"Timer.RepeatOption.Repeat：repeatCount 必须 > 0\"\n" +
-                "#17 = null type(.generic<$.generic.TValue>)\n" +
+                "#16 = string \"Mutex.release：令牌不属于此 Mutex 或已释放\"\n" +
+                "#17 = catch-table {  }\n" +
                 "#18 = catch-table {  }\n" +
-                "#19 = catch-table {  }\n" +
-                "#20 = i32 8\n" +
-                "#21 = null type(core.coroutine::Executor)\n" +
-                "#22 = i32 -1\n" +
-                "#23 = string \"无法将 \"\n" +
-                "#24 = string \" 转换为 \"\n" +
-                "#25 = string \"new.indirect 目标不可构造：不匹配任何 init：\"\n" +
-                "#26 = string \"整数除以零\"\n" +
-                "#27 = string \"数组下标越界：\"\n" +
-                "#28 = string \"（长度 \"\n" +
-                "#29 = string \"）\"\n" +
-                "#30 = i32 999999\n" +
-                "#31 = string \"TimeStamp.nanoseconds 越界：\"\n" +
-                "#32 = string \"（范围 0..999999）\"\n" +
-                "#33 = null type(.generic<$.generic.TReturn>)");
+                "#19 = string \"Timer.RepeatOption.Repeat：repeatCount 必须 > 0\"\n" +
+                "#20 = null type(.generic<$.generic.TValue>)\n" +
+                "#21 = catch-table {  }\n" +
+                "#22 = catch-table {  }\n" +
+                "#23 = null type(core.coroutine::Executor)\n" +
+                "#24 = i32 -1\n" +
+                "#25 = string \"无法将 \"\n" +
+                "#26 = string \" 转换为 \"\n" +
+                "#27 = string \"new.indirect 目标不可构造：不匹配任何 init：\"\n" +
+                "#28 = string \"整数除以零\"\n" +
+                "#29 = string \"数组下标越界：\"\n" +
+                "#30 = string \"（长度 \"\n" +
+                "#31 = string \"）\"\n" +
+                "#32 = catch-table {  }\n" +
+                "#33 = null type(.generic<$.generic.TMessage>)\n" +
+                "#34 = string \"MessageQueue: 句柄已释放或不存在\"\n" +
+                "#35 = i32 -2\n" +
+                "#36 = string \"MessageQueue: 句柄重复释放\"\n" +
+                "#37 = i32 -3\n" +
+                "#38 = string \"MessageQueue: 不能派生 Owner\"\n" +
+                "#39 = i32 -4\n" +
+                "#40 = string \"MessageQueue: 不能从该句柄派生 Sender\"\n" +
+                "#41 = i32 -5\n" +
+                "#42 = string \"MessageQueue: 不能从该句柄派生 Reader\"\n" +
+                "#43 = i32 -6\n" +
+                "#44 = string \"MessageQueue: 该句柄不能 post\"\n" +
+                "#45 = i32 -7\n" +
+                "#46 = string \"MessageQueue: 该句柄不能 next\"\n" +
+                "#47 = i32 -8\n" +
+                "#48 = string \"MessageQueue: 队列已 sealed，不能 post\"\n" +
+                "#49 = i32 -9\n" +
+                "#50 = string \"MessageQueue: 队列已 sealed，不能派生 Sender\"\n" +
+                "#51 = i32 -10\n" +
+                "#52 = string \"MessageQueue: 同一 Reader 同时只能有一个 outstanding next\"\n" +
+                "#53 = string \"MessageQueue: 非法操作\"\n" +
+                "#54 = catch-table {  }\n" +
+                "#55 = string \"Receiver.addListener：Receiver 已 dispose\"\n" +
+                "#56 = catch-table {  }\n" +
+                "#57 = catch-table {  }\n" +
+                "#58 = string \"Receiver.setExecutor：listener 未注册\"\n" +
+                "#59 = catch-table {  }\n" +
+                "#60 = catch-table {  }\n" +
+                "#61 = catch-table { type(core::IllegalStateException) -> blk(try0-catch0) }\n" +
+                "#62 = null type(core.messaging::Receiver<.generic<$.generic.TMessage>>)\n" +
+                "#63 = catch-table {  }\n" +
+                "#64 = null type(.generic<$.generic.TField>)\n" +
+                "#65 = null type(.any)\n" +
+                "#66 = string \"Parcel 中不存在键：\"\n" +
+                "#67 = i32 999999\n" +
+                "#68 = string \"TimeStamp.nanoseconds 越界：\"\n" +
+                "#69 = string \"（范围 0..999999）\"\n" +
+                "#70 = null type(.generic<$.generic.TReturn>)"
+                
+                
+                );
         }
 
         // ===== 丢弃式全形 case 构造：语句语境 E.A(1) 发 new.case 后丢弃 =====

@@ -22,6 +22,14 @@ namespace RigiCompiler.Middleware.Layout
             if (ConstructedTypeCollector.IsConstructed(normalized)
                 && !GenericAbi.IsClosedConstructed(normalized))
             {
+                // 开放 I\<T\>：iMap 仍挂接口模板段（invoke 擦成 I），
+                // 否则 MapEnumerator 模板对 IEnumerator 查表失败。
+                if (symbols.FindTypeByRef(normalized) is { } openIface
+                    && openIface.Declaration.Kind == BilTypeKind.Interface)
+                {
+                    AppendInterfaceSegment(slots, iMap, openIface.Canonical, symbols, table,
+                        ownerCanonical, bodies);
+                }
                 return;
             }
             if (symbols.FindTypeByRef(normalized) is not { IsExternal: false } ifaceType
@@ -32,11 +40,32 @@ namespace RigiCompiler.Middleware.Layout
             var imapKey = GenericAbi.IsClosedConstructed(normalized)
                 ? normalized
                 : ifaceType.Canonical;
+            // 菱形去重：同一父接口只占一段
+            foreach (var (existing, _) in iMap)
+            {
+                if (existing == imapKey || existing == ifaceType.Canonical)
+                {
+                    return;
+                }
+            }
             if (GenericAbi.IsClosedConstructed(normalized))
             {
                 EnsureConstructedInterfacePlan(normalized, ifaceType, symbols, table);
             }
             var subst = ConstructedTypeCollector.BuildSubstitution(normalized, ifaceType.Declaration);
+            // 先展开传递父接口（ExtendsType + ImplementsTypes），再写本接口段
+            if (ifaceType.Declaration.ExtendsType is { } extends)
+            {
+                AppendInterfaceSegment(slots, iMap,
+                    ConstructedTypeCollector.Substitute(extends, subst),
+                    symbols, table, ownerCanonical, bodies);
+            }
+            foreach (var parent in ifaceType.Declaration.ImplementsTypes)
+            {
+                AppendInterfaceSegment(slots, iMap,
+                    ConstructedTypeCollector.Substitute(parent, subst),
+                    symbols, table, ownerCanonical, bodies);
+            }
             var baseOffset = slots.Count;
             foreach (var ifaceMethod in LayoutEngine.InstanceMethods(ifaceType))
             {
@@ -152,6 +181,14 @@ namespace RigiCompiler.Middleware.Layout
             if (ConstructedTypeCollector.IsConstructed(normalized)
                 && !GenericAbi.IsClosedConstructed(normalized))
             {
+                // 开放 I\<T\>：具化键跳过，但模板 I 仍进闭包，否则泛型
+                // 类（MapEnumerator）try_cast 到擦除 IEnumerator 失败。
+                if (symbols.FindTypeByRef(normalized) is { } openIface
+                    && openIface.Declaration.Kind == BilTypeKind.Interface
+                    && visited.Add(openIface.Canonical))
+                {
+                    result.Add(openIface.Canonical);
+                }
                 return;
             }
             if (symbols.FindTypeByRef(normalized) is not { } ifaceType
@@ -167,6 +204,13 @@ namespace RigiCompiler.Middleware.Layout
                 return;
             }
             result.Add(key);
+            // 前端 invoke/cast 常把 I<T> 擦成模板 I（与 iMap 模板键别名
+            // 同口径）；ifaceClosure 不含模板键时 try_cast 把
+            // MapEnumerator\<K,V\> 当成无法转 IEnumerator。
+            if (key != ifaceType.Canonical && visited.Add(ifaceType.Canonical))
+            {
+                result.Add(ifaceType.Canonical);
+            }
             stack.Push((key, ifaceType));
         }
 

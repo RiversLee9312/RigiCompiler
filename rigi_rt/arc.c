@@ -255,11 +255,28 @@ static void rigi_destruct(void *object, const RigiTypeSheet *desc)
             void *elem = (void *)(elems + (size_t)idx * (size_t)stride);
             if (elemSheet == NULL)
             {
+                /* new List<K> 开放构造未写入隐藏 T 时 elemSheet 为空，
+                 * 元素仍按 16B 胖槽存储（TryStoreViaTypeId → Any/AssignFat）。 */
+                uint64_t type_id = *(const uint64_t *)elem;
+                uint64_t payload = *(const uint64_t *)((const char *)elem + 8);
+                rigi_ref_release(type_id, payload);
                 continue;
             }
             if ((elemSheet->typeFlags & RIGI_TYPE_STRING) != 0)
             {
-                rigi_string_release(*(char *const *)elem);
+                /* 泛型 List\<T\> 对 String 仍按胖引用写入（tag1 盒）；
+                 * 仅当槽是真 String ABI 才 string_release。 */
+                uint64_t elem_tid = *(const uint64_t *)elem;
+                uint64_t elem_tag = elem_tid >> RIGI_TAG_SHIFT;
+                if (elem_tag == RIGI_TAG_HEAP_VALUE || elem_tag == RIGI_TAG_OBJECT)
+                {
+                    uint64_t elem_pl = *(const uint64_t *)((const char *)elem + 8);
+                    rigi_ref_release(elem_tid, elem_pl);
+                }
+                else
+                {
+                    rigi_string_release(*(char *const *)elem);
+                }
             }
             else if ((elemSheet->typeFlags & RIGI_TYPE_INLINE_VALUE) != 0)
             {

@@ -67,7 +67,20 @@ namespace RigiCompiler.Middleware.Emit
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirOperand source,
             LLVMValueRef value, MirType inner)
         {
-            if (IsReferenceElement(session, inner))
+            var srcType = source is MirLocalOperand loc
+                ? slots[loc.Name].Local.Type
+                : inner;
+            // extraSubst 把源烤成标量但 inner 仍是占位：按源 ABI 包装，
+            // 禁止对 i32 做 ExtractValue。
+            if (MirBuilder.IsScalarOrString(srcType))
+            {
+                if (srcType.IsString && source is MirLocalOperand str)
+                {
+                    return WrapFromSlot(session, builder, slots[str.Name].Slot, srcType);
+                }
+                return WrapScalar(session, builder, value, srcType);
+            }
+            if (IsReferenceElement(session, inner) || IsReferenceElement(session, srcType))
             {
                 return ArcEmitter.ProduceFatValue(session, builder, value, "opt.wrap");
             }
@@ -95,7 +108,12 @@ namespace RigiCompiler.Middleware.Emit
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
             LLVMValueRef fat, MirType inner, string target)
         {
-            if (IsReferenceElement(session, inner))
+            var destType = slots[target].Local.Type;
+            if (MirBuilder.IsScalarOrString(destType))
+            {
+                inner = destType;
+            }
+            else if (IsReferenceElement(session, inner) || IsReferenceElement(session, destType))
             {
                 builder.BuildStore(ArcEmitter.ProduceFatValue(session, builder, fat, "opt.unwrap"),
                     slots[target].Slot);

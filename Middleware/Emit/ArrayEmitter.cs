@@ -43,6 +43,7 @@ namespace RigiCompiler.Middleware.Emit
             {
                 throw new CompilerInternalException("alloc_array 缺结果槽");
             }
+            // args[0] = T 的运行时 TypeSheet*（hidden typeid / getid.type）
             var elemSheet = session.LoadLocal(builder, slots, call.Args[0]);
             var length = session.LoadLocal(builder, slots, call.Args[1]);
             var obj = EmitAlloc(session, builder, elemSheet, length);
@@ -140,6 +141,12 @@ namespace RigiCompiler.Middleware.Emit
             {
                 throw new CompilerInternalException($"set.array 缺元素类型: {inst.CollectionType.Canonical}");
             }
+            if (TypeLayout.IsGenericPlaceholder(elementType)
+                && (TryStoreBakedScalar(session, builder, slots, inst)
+                    || TryStoreViaTypeId(session, builder, slots, inst)))
+            {
+                return;
+            }
             var abi = ElementAbi(session, elementType);
             var obj = ObjectPointer(session, builder, slots, inst.Collection);
             var index = session.LoadLocal(builder, slots, inst.Index);
@@ -153,6 +160,295 @@ namespace RigiCompiler.Middleware.Emit
             EmitThrowOob(session, builder, oob, index, length, inst.ExcTarget);
             StoreElement(session, builder, slots, inst.Element,
                 ElementPointer(builder, obj, abi, index), abi);
+        }
+
+        private static bool TryStoreBakedScalar(ModuleBuilder.Session session, LLVMBuilderRef builder,
+            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirSetArray inst)
+        {
+            if (inst.Element is not MirLocalOperand srcLocal)
+            {
+                return false;
+            }
+            var srcType = slots[srcLocal.Name].Local.Type;
+            if (!MirBuilder.IsScalarOrString(srcType)
+                || TypeLayout.IsGenericPlaceholder(srcType))
+            {
+                return false;
+            }
+            var stride = srcType.Key switch
+            {
+                "bool" or "i8" or "u8" => 1,
+                "char" or "i16" or "u16" => 2,
+                "i32" or "u32" or "float" => 4,
+                "i64" or "u64" or "double" => 8,
+                "String" => TypeLayout.ReferenceSlotSize,
+                _ => 0,
+            };
+            if (stride == 0)
+            {
+                return false;
+            }
+            var obj = ObjectPointer(session, builder, slots, inst.Collection);
+            var index = session.LoadLocal(builder, slots, inst.Index);
+            var length = builder.BuildLoad2(LLVMTypeRef.Int32,
+                OffsetPointer(builder, obj, TypeLayout.ArrayLengthOffset), "arr.len");
+            var oob = builder.BuildOr(
+                builder.BuildICmp(LLVMIntPredicate.LLVMIntSLT, index,
+                    LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, 0, true), "arr.neg"),
+                builder.BuildICmp(LLVMIntPredicate.LLVMIntSGE, index, length, "arr.hi"),
+                "arr.oob");
+            EmitThrowOob(session, builder, oob, index, length, inst.ExcTarget);
+            var off = builder.BuildMul(
+                builder.BuildSExt(index, LLVMTypeRef.Int64, "arr.idx64"),
+                LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, (ulong)stride, false), "arr.off");
+            var ptr = builder.BuildGEP2(LLVMTypeRef.Int8,
+                OffsetPointer(builder, obj, TypeLayout.ArrayPrefixSize), new[] { off }, "arr.elem");
+            if (srcType.IsString)
+            {
+                ArcEmitter.AssignStringFromSlot(session, builder, ptr, slots[srcLocal.Name].Slot);
+            }
+            else
+            {
+                builder.BuildStore(session.LoadLocal(builder, slots, srcLocal), ptr);
+            }
+            return true;
+        }
+
+        private static bool TryStoreViaTypeId(ModuleBuilder.Session session, LLVMBuilderRef builder,
+            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirSetArray inst)
+        {
+            if (!slots.ContainsKey(".generic.T") || inst.Element is not MirLocalOperand srcLocal)
+            {
+                return false;
+            }
+            var sheet = session.LoadLocal(builder, slots, new MirLocalOperand(".generic.T"));
+            var sheetOk = builder.BuildICmp(LLVMIntPredicate.LLVMIntNE, sheet,
+                LLVMValueRef.CreateConstPointerNull(PointerType()), "arr.tid.ok");
+            var safeSheet = builder.BuildSelect(sheetOk, sheet,
+                CastToBytePtr(builder, session.TypeSheetFor("core::Any")), "arr.tid.sheet");
+            var size = builder.BuildLoad2(LLVMTypeRef.Int32,
+                OffsetPointer(builder, safeSheet, 16), "arr.tid.sz");
+            var stride = builder.BuildSelect(
+                builder.BuildAnd(
+                    builder.BuildICmp(LLVMIntPredicate.LLVMIntSGT, size,
+                        LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, 0, true), "arr.tid.lo"),
+                    builder.BuildICmp(LLVMIntPredicate.LLVMIntSLE, size,
+                        LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, 8, true), "arr.tid.hi"),
+                    "arr.tid.ok"),
+                builder.BuildZExt(size, LLVMTypeRef.Int64, "arr.tid.st"),
+                LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, 16, false), "arr.tid.stride");
+            var obj = ObjectPointer(session, builder, slots, inst.Collection);
+            var index = session.LoadLocal(builder, slots, inst.Index);
+            var length = builder.BuildLoad2(LLVMTypeRef.Int32,
+                OffsetPointer(builder, obj, TypeLayout.ArrayLengthOffset), "arr.len");
+            var oob = builder.BuildOr(
+                builder.BuildICmp(LLVMIntPredicate.LLVMIntSLT, index,
+                    LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, 0, true), "arr.neg"),
+                builder.BuildICmp(LLVMIntPredicate.LLVMIntSGE, index, length, "arr.hi"),
+                "arr.oob");
+            EmitThrowOob(session, builder, oob, index, length, inst.ExcTarget);
+            var off = builder.BuildMul(
+                builder.BuildSExt(index, LLVMTypeRef.Int64, "arr.idx64"), stride, "arr.off");
+            var ptr = builder.BuildGEP2(LLVMTypeRef.Int8,
+                OffsetPointer(builder, obj, TypeLayout.ArrayPrefixSize), new[] { off }, "arr.elem");
+            var value = session.LoadLocal(builder, slots, srcLocal);
+            if (value.TypeOf.Kind != LLVMTypeKind.LLVMStructTypeKind)
+            {
+                builder.BuildStore(value, ptr);
+                return true;
+            }
+            var small = builder.BuildAnd(
+                builder.BuildICmp(LLVMIntPredicate.LLVMIntSGT, size,
+                    LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, 0, true), "arr.tid.slo"),
+                builder.BuildICmp(LLVMIntPredicate.LLVMIntSLE, size,
+                    LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, 8, true), "arr.tid.shi"),
+                "arr.tid.small");
+            var fn = session.CurrentFunction;
+            var scBlock = fn.AppendBasicBlock("arr.tid.sc");
+            var fatBlock = fn.AppendBasicBlock("arr.tid.fat");
+            var join = fn.AppendBasicBlock("arr.tid.join");
+            builder.BuildCondBr(small, scBlock, fatBlock);
+            builder.PositionAtEnd(scBlock);
+            var payload = builder.BuildExtractValue(value, 1, "arr.tid.pl");
+            var bits = builder.BuildAlloca(LLVMTypeRef.Int64, "arr.tid.bits");
+            builder.BuildStore(payload, bits);
+            session.EmitMemCopyN(builder, ptr, bits,
+                builder.BuildZExt(size, LLVMTypeRef.Int64, "arr.tid.n"));
+            builder.BuildBr(join);
+            builder.PositionAtEnd(fatBlock);
+            ArcEmitter.AssignFatValue(session, builder, ptr, value);
+            builder.BuildBr(join);
+            builder.PositionAtEnd(join);
+            return true;
+        }
+
+        private static void EmitPlaceholderGet(ModuleBuilder.Session session, LLVMBuilderRef builder,
+            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirGetArray inst)
+        {
+            var obj = ObjectPointer(session, builder, slots, inst.Collection);
+            var index = session.LoadLocal(builder, slots, inst.Index);
+            var length = builder.BuildLoad2(LLVMTypeRef.Int32,
+                OffsetPointer(builder, obj, TypeLayout.ArrayLengthOffset), "arr.len");
+            var oob = builder.BuildOr(
+                builder.BuildICmp(LLVMIntPredicate.LLVMIntSLT, index,
+                    LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, 0, true), "arr.neg"),
+                builder.BuildICmp(LLVMIntPredicate.LLVMIntSGE, index, length, "arr.hi"),
+                    "arr.oob");
+            var fn = session.CurrentFunction;
+            var oobBlock = fn.AppendBasicBlock("arr.pg.oob");
+            var hitBlock = fn.AppendBasicBlock("arr.pg.hit");
+            var joinBlock = fn.AppendBasicBlock("arr.pg.join");
+            builder.BuildCondBr(oob, oobBlock, hitBlock);
+            builder.PositionAtEnd(oobBlock);
+            builder.BuildStore(
+                LLVMValueRef.CreateConstNull(TypeLayout.FatReferenceType(session.Context)),
+                slots[inst.Target].Slot);
+            builder.BuildBr(joinBlock);
+            builder.PositionAtEnd(hitBlock);
+            var (elemPtr, sheet, flags, size) = RuntimeElem(session, builder, obj, index);
+            var inline = IsInlineElem(builder, flags, size);
+            var fat = LoadRuntimeElemAsFat(session, builder, elemPtr, sheet, inline, size);
+            builder.BuildStore(ArcEmitter.ProduceFatValue(session, builder, fat, "arr.pg"),
+                slots[inst.Target].Slot);
+            builder.BuildBr(joinBlock);
+            builder.PositionAtEnd(joinBlock);
+        }
+
+        private static void EmitPlaceholderSet(ModuleBuilder.Session session, LLVMBuilderRef builder,
+            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirSetArray inst)
+        {
+            var obj = ObjectPointer(session, builder, slots, inst.Collection);
+            var index = session.LoadLocal(builder, slots, inst.Index);
+            var length = builder.BuildLoad2(LLVMTypeRef.Int32,
+                OffsetPointer(builder, obj, TypeLayout.ArrayLengthOffset), "arr.len");
+            var oob = builder.BuildOr(
+                builder.BuildICmp(LLVMIntPredicate.LLVMIntSLT, index,
+                    LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, 0, true), "arr.neg"),
+                builder.BuildICmp(LLVMIntPredicate.LLVMIntSGE, index, length, "arr.hi"),
+                "arr.oob");
+            EmitThrowOob(session, builder, oob, index, length, inst.ExcTarget);
+            var (elemPtr, sheet, flags, size) = RuntimeElem(session, builder, obj, index);
+            var inline = IsInlineElem(builder, flags, size);
+            if (inst.Element is not MirLocalOperand srcLocal)
+            {
+                throw new CompilerInternalException("set.array 源必须是局部");
+            }
+            var srcType = slots[srcLocal.Name].Local.Type;
+            var value = session.LoadLocal(builder, slots, srcLocal);
+            if (value.TypeOf.Kind != LLVMTypeKind.LLVMStructTypeKind)
+            {
+                builder.BuildStore(value, elemPtr);
+                return;
+            }
+            LLVMValueRef fat;
+            if (MirBuilder.IsScalarOrString(srcType) && !TypeLayout.IsGenericPlaceholder(srcType))
+            {
+                fat = BoxEmitter.BoxFromLocal(session, builder, slots, srcLocal.Name);
+            }
+            else
+            {
+                fat = value;
+            }
+            StoreRuntimeElemFromFat(session, builder, elemPtr, fat, inline, size);
+        }
+
+        private static (LLVMValueRef Ptr, LLVMValueRef Sheet, LLVMValueRef Flags, LLVMValueRef Size)
+            RuntimeElem(ModuleBuilder.Session session, LLVMBuilderRef builder, LLVMValueRef obj,
+            LLVMValueRef index)
+        {
+            var sheet = builder.BuildLoad2(PointerType(),
+                OffsetPointer(builder, obj, TypeLayout.ArrayElemSheetOffset), "arr.es");
+            var nullSheet = LLVMValueRef.CreateConstPointerNull(PointerType());
+            var hasSheet = builder.BuildICmp(LLVMIntPredicate.LLVMIntNE, sheet, nullSheet,
+                "arr.es.ok");
+            var anySheet = CastToBytePtr(builder, session.TypeSheetFor("core::Any"));
+            sheet = builder.BuildSelect(hasSheet, sheet, anySheet, "arr.es.use");
+            var size = builder.BuildLoad2(LLVMTypeRef.Int32,
+                OffsetPointer(builder, sheet, 16), "arr.es.sz");
+            var flags = builder.BuildLoad2(LLVMTypeRef.Int32,
+                OffsetPointer(builder, sheet, 20), "arr.es.fl");
+            var inline = IsInlineElem(builder, flags, size);
+            var stride = builder.BuildSelect(inline,
+                builder.BuildZExt(size, LLVMTypeRef.Int64, "arr.st.i"),
+                LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, 16, false), "arr.st");
+            var basePtr = OffsetPointer(builder, obj, TypeLayout.ArrayPrefixSize);
+            var off = builder.BuildMul(
+                builder.BuildSExt(index, LLVMTypeRef.Int64, "arr.idx64"), stride, "arr.off");
+            var ptr = builder.BuildGEP2(LLVMTypeRef.Int8, basePtr, new[] { off }, "arr.elem");
+            return (ptr, sheet, flags, size);
+        }
+
+        private static LLVMValueRef IsInlineElem(LLVMBuilderRef builder, LLVMValueRef flags,
+            LLVMValueRef size)
+        {
+            var hasInline = builder.BuildICmp(LLVMIntPredicate.LLVMIntNE,
+                builder.BuildAnd(flags,
+                    LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, TypeLayoutPlan.FlagInlineValue,
+                        false), "arr.fl.in"),
+                LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, 0, false), "arr.in");
+            var lo = builder.BuildICmp(LLVMIntPredicate.LLVMIntSGT, size,
+                LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, 0, true), "arr.sz.lo");
+            var hi = builder.BuildICmp(LLVMIntPredicate.LLVMIntSLE, size,
+                LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, 16, true), "arr.sz.hi");
+            var nz = builder.BuildAnd(lo, hi, "arr.sz");
+            return builder.BuildAnd(hasInline, nz, "arr.inline");
+        }
+
+        private static LLVMValueRef LoadRuntimeElemAsFat(ModuleBuilder.Session session,
+            LLVMBuilderRef builder, LLVMValueRef elemPtr, LLVMValueRef sheet, LLVMValueRef inline,
+            LLVMValueRef size)
+        {
+            var fn = session.CurrentFunction;
+            var slot = builder.BuildAlloca(TypeLayout.FatReferenceType(session.Context),
+                "arr.ld.slot");
+            var inBlock = fn.AppendBasicBlock("arr.ld.in");
+            var fatBlock = fn.AppendBasicBlock("arr.ld.fat");
+            var join = fn.AppendBasicBlock("arr.ld.join");
+            builder.BuildCondBr(inline, inBlock, fatBlock);
+            builder.PositionAtEnd(inBlock);
+            var bitsTmp = builder.BuildAlloca(LLVMTypeRef.Int64, "arr.ld.bits");
+            builder.BuildStore(LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, 0, false), bitsTmp);
+            MemCopyN(session, builder, bitsTmp, elemPtr, size);
+            var bits = builder.BuildLoad2(LLVMTypeRef.Int64, bitsTmp, "arr.ld.b");
+            builder.BuildStore(BoxEmitter.PackFat(session, builder, sheet, BoxEmitter.TagInline,
+                bits, "arr.ld.nf"), slot);
+            builder.BuildBr(join);
+            builder.PositionAtEnd(fatBlock);
+            var fat = builder.BuildLoad2(TypeLayout.FatReferenceType(session.Context), elemPtr,
+                "arr.ld.f");
+            builder.BuildStore(fat, slot);
+            builder.BuildBr(join);
+            builder.PositionAtEnd(join);
+            return builder.BuildLoad2(TypeLayout.FatReferenceType(session.Context), slot,
+                "arr.ld.out");
+        }
+
+        private static void StoreRuntimeElemFromFat(ModuleBuilder.Session session,
+            LLVMBuilderRef builder, LLVMValueRef elemPtr, LLVMValueRef fat, LLVMValueRef inline,
+            LLVMValueRef size)
+        {
+            var fn = session.CurrentFunction;
+            var inBlock = fn.AppendBasicBlock("arr.st.in");
+            var fatBlock = fn.AppendBasicBlock("arr.st.fat");
+            var join = fn.AppendBasicBlock("arr.st.join");
+            builder.BuildCondBr(inline, inBlock, fatBlock);
+            builder.PositionAtEnd(inBlock);
+            var payload = builder.BuildExtractValue(fat, 1, "arr.st.pl");
+            var bitsTmp = builder.BuildAlloca(LLVMTypeRef.Int64, "arr.st.bits");
+            builder.BuildStore(payload, bitsTmp);
+            MemCopyN(session, builder, elemPtr, bitsTmp, size);
+            builder.BuildBr(join);
+            builder.PositionAtEnd(fatBlock);
+            ArcEmitter.AssignFatValue(session, builder, elemPtr, fat);
+            builder.BuildBr(join);
+            builder.PositionAtEnd(join);
+        }
+
+        private static void MemCopyN(ModuleBuilder.Session session, LLVMBuilderRef builder,
+            LLVMValueRef dest, LLVMValueRef src, LLVMValueRef size)
+        {
+            session.EmitMemCopyN(builder, dest, src,
+                builder.BuildZExt(size, LLVMTypeRef.Int64, "arr.cpy.n"));
         }
 
         internal static void MaterializeU8Array(ModuleBuilder.Session session,
@@ -297,10 +593,13 @@ namespace RigiCompiler.Middleware.Emit
                         slots[srcLocal.Name].Slot, srcType);
                     return;
                 }
-                if (srcType.Key == "String")
+                // extraSubst 把源烤成标量/String 但槽 ABI 仍是胖引用：
+                // 装箱后 move 进槽，禁止按 String ABI 写入胖槽。
+                if (MirBuilder.IsScalarOrString(srcType)
+                    && !TypeLayout.IsGenericPlaceholder(srcType))
                 {
-                    ArcEmitter.AssignStringFromSlot(session, builder, dest,
-                        slots[srcLocal.Name].Slot);
+                    var boxed = BoxEmitter.BoxFromLocal(session, builder, slots, srcLocal.Name);
+                    ArcEmitter.MoveFatValue(session, builder, dest, boxed);
                     return;
                 }
                 ArcEmitter.AssignFatFromSlot(session, builder, dest,

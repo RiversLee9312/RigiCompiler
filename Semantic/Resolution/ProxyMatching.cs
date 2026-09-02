@@ -130,9 +130,12 @@ namespace RigiCompiler
 
         public static bool HasInvalidGenericArity(TypeSymbol wrapperDefinition)
         {
-            return wrapperDefinition.WrapperTarget == WrapperTargetKind.Entity
-                ? wrapperDefinition.GenericParameters.Count > 1
-                : wrapperDefinition.GenericParameters.Count > 0;
+            if (wrapperDefinition.WrapperTarget == WrapperTargetKind.Entity
+                || wrapperDefinition.WrapperTarget == WrapperTargetKind.Value)
+            {
+                return wrapperDefinition.GenericParameters.Count > 1;
+            }
+            return wrapperDefinition.GenericParameters.Count > 0;
         }
 
         public static bool SpecificShapeMatches(MethodSymbol proxy, MethodSymbol member,

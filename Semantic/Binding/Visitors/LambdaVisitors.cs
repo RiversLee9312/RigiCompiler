@@ -275,6 +275,18 @@ namespace RigiCompiler
                         "@EntryPoint can only be applied to static methods");
                     continue;
                 }
+                if (ResolveEnvironment.IsTerminalAnnotation(annotation))
+                {
+                    env.Error(annotation.Span ?? lambda.Span,
+                        "@Terminal can only be applied to wrapper declarations");
+                    continue;
+                }
+                if (ResolveEnvironment.IsInternalAnnotation(annotation))
+                {
+                    env.Error(annotation.Span ?? lambda.Span,
+                        "@Internal can only be applied to wrapper declarations");
+                    continue;
+                }
                 var resolved = env.Names.ResolveSymbolPath(annotation.Name.symbol,
                     ctx.Frame.FileCtx, ctx.Frame.DeclaringType, ctx.Frame.Method,
                     allowImports: true, reportErrors: true,
@@ -306,6 +318,8 @@ namespace RigiCompiler
                         continue;
                     }
                 }
+                WrapperApplicationChecker.CheckInternalApplication(wrapperType,
+                    ctx.Frame.FileCtx.Namespace, annotation.Span ?? lambda.Span, env.Error);
                 var app = new WrapperApplication(wrapperType, annotation);
                 // 实参在 lambda 表达式求值语境（外层函数作用域）绑定
                 WrapperInitSynthesis.BindInitArgsInScope(app, scope, ctx, env, lambda);
@@ -320,6 +334,8 @@ namespace RigiCompiler
                         "does not match the shape of lambda call (§14.4)");
                 }
             }
+            WrapperApplicationChecker.CheckTerminalCombination(call.AppliedWrappers,
+                lambda.Span, env.Error);
         }
 
         // lambda 隐藏类 ..init.wrapper 合成（§14.4）：Method wrapper 应用挂

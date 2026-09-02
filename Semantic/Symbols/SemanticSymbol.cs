@@ -103,6 +103,13 @@ namespace RigiCompiler
         public string? LikeTarget { get; internal set; }
         // wrapper 目标类别（@WrapperTarget(.X)，P2 解析；非 wrapper 声明为 null）
         public WrapperTargetKind? WrapperTarget { get; internal set; }
+        // @Terminal 内建注解（P2 BuiltinAnnotationChecker 落定）：该 wrapper
+        // 处于修饰器组合终点，内层不得再嵌套其它 wrapper。只认定义级——
+        // 构造类型经 WrapperDefinition 回退读取。
+        public bool IsTerminal { get; internal set; }
+        // @Internal 内建注解（P2 BuiltinAnnotationChecker 落定）：非声明
+        // 命名空间不得拿它修饰自己的声明；API 签名暴露与 pub 可见性不变。
+        public bool IsInternal { get; internal set; }
         // 挂载的 wrapper 应用（声明顺序，外层在前；P2 解析填充）
         public List<WrapperApplication> AppliedWrappers { get; } = new List<WrapperApplication>();
         // 编译器硬编码内建（bootstrap 直造，无源码声明；core.rg 载入的不算）

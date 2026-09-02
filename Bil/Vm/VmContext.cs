@@ -177,6 +177,19 @@ namespace RigiCompiler.Bil.Vm
             }
             var actualType = VmTypeOps.ActualType(receiver);
             var actualSheet = SheetOf(actualType);
+            // MW11d-B2：..toParcel/..fromParcel 按签名在实际类型表上找实现槽
+            // （接口符号 owner 含 `..` 时 FindType 可能未命中；签名键不含 owner）
+            var memberName = MethodNameOf(staticSymbol);
+            if (actualSheet != null
+                && (memberName == BilSpellings.ToParcelMethodName
+                    || memberName == BilSpellings.FromParcelMethodName))
+            {
+                var synthOffset = FindSlotBySignature(actualSheet, staticSymbol);
+                if (synthOffset >= 0)
+                {
+                    return ResolveSlotSymbol(actualSheet, synthOffset, staticSymbol, actualType);
+                }
+            }
             var ownerDeclaration = FindType(owner);
             if (ownerDeclaration != null && actualSheet != null)
             {
@@ -1899,7 +1912,20 @@ namespace RigiCompiler.Bil.Vm
                 // 静态类型与形参 TypesEqual（不是运行期 typeid 可赋值性）
                 if (!TypesEqual(argumentStaticTypes[i], parameters[i].TypeRef))
                 {
-                    return false;
+                    // MW11d-D：构造泛型实参代入后形参为具体构造形态
+                    //（Host<.i32>），而实参静态类型可能是定义级裸名
+                    //（$.this / 局部声明即 Host）——编译期已 cast 校验
+                    //（§14.1），声明级同型即放行；两侧都带类型实参
+                    //（Host<.i32> vs Host<.string>）不在此放宽范围
+                    var staticType = argumentStaticTypes[i];
+                    var paramType = parameters[i].TypeRef;
+                    var staticBare = !staticType.Contains('<');
+                    var paramBare = !paramType.Contains('<');
+                    if (staticBare == paramBare
+                        || StripTypeArguments(staticType) != StripTypeArguments(paramType))
+                    {
+                        return false;
+                    }
                 }
             }
             return true;

@@ -138,8 +138,9 @@ namespace RigiCompiler.Middleware.Layout
             {
                 return plan;
             }
-            // 仅声明形（Task<TReturn>）回退到模板键 Task<1>；闭合构造
-            // Task<core::i32> 不得命中模板，否则 ConstructedLayout 被短路
+            // 开放查询回退模板键 Task<1>：声明形 Task<TReturn> 与运行形
+            // List<.generic<$.generic.K>>。闭合构造 Task<core::i32> 不得
+            // 命中模板，否则 ConstructedLayout 被短路。
             if (!LooksLikeOpenGenericQuery(normalized))
             {
                 return null;
@@ -161,6 +162,10 @@ namespace RigiCompiler.Middleware.Layout
             if (inner.Length == 0 || int.TryParse(inner, out _))
             {
                 return false;
+            }
+            if (inner.IndexOf(".generic<", System.StringComparison.Ordinal) >= 0)
+            {
+                return true;
             }
             return inner.IndexOf(':') < 0 && inner.IndexOf('.') < 0
                 && inner.IndexOf('<') < 0;

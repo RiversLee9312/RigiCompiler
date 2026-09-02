@@ -124,6 +124,7 @@ namespace RigiCompiler.Tests
             TestVoidLambdaExpressionBodyStatementSemantics();
             TestNamedImportValueConsumption();
             TestMw11cCoroutineShapes();
+            TestMw11dSerializationFront();
             return TestHarness.Summary("Binder");
         }
 

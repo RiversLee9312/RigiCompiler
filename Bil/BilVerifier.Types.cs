@@ -1143,8 +1143,13 @@ namespace RigiCompiler.Bil
                         $"实例方法 \"{methodSymbol}\" 的 invoke 缺少 receiver 首实参"));
                     return;
                 }
-                CheckHostAssignable(context, VarType(context, arguments[0]), owner, location,
-                    "invoke receiver(.this)", errors);
+                var invokeName = MethodNameSegment(methodSymbol);
+                if (invokeName != BilSpellings.ToParcelMethodName
+                    && invokeName != BilSpellings.FromParcelMethodName)
+                {
+                    CheckHostAssignable(context, VarType(context, arguments[0]), owner, location,
+                        "invoke receiver(.this)", errors);
+                }
                 argumentIndex = 1;
             }
             // 类级 .generic.* 可由 VM 从 .this 构造形态注入，调用点允许省略

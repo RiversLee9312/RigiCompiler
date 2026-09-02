@@ -14,7 +14,8 @@ namespace RigiCompiler
         // Seal 结果。Track 的必须是最终形态（EnsureDeclaredType 之后）
         public static List<LoweredExpression>? LowerArguments(
             IReadOnlyList<BoundExpression> arguments, IReadOnlyList<ParameterSymbol>? parameters,
-            LowerContext ctx, LowerEnvironment env, EvalOrderGuard? guard = null)
+            LowerContext ctx, LowerEnvironment env, EvalOrderGuard? guard = null,
+            TypeSymbol? parameterConstructedHost = null)
         {
             var own = guard == null;
             guard ??= new EvalOrderGuard(ctx);
@@ -29,7 +30,20 @@ namespace RigiCompiler
                     result.Add(lowered);
                     continue;
                 }
-                lowered = EnsureDeclaredType(arguments[i], lowered, parameters?[i].Type);
+                // 构造宿主的形参代入（MW11d-C 修复）：声明侧形参类型里的宿主
+                // 泛型参数按构造类型实参代入（QueueItem<TMessage> 的 init 形参
+                // .nullable<.generic.T> → .nullable<.generic.TMessage>）——
+                // 否则转换目标在当前帧是悬空 .generic 引用（声明类型的泛型
+                // 参数名与调用帧不同名时 native 运行期必崩，VM 按名碰巧解析）
+                var declaredParamType = parameters?[i].Type;
+                if (parameterConstructedHost is { ConstructedFrom: not null }
+                    && declaredParamType != null)
+                {
+                    declaredParamType = SymbolLookup.SubstituteHost(declaredParamType,
+                        parameterConstructedHost.ConstructedFrom, parameterConstructedHost,
+                        env.Unit.Symbols);
+                }
+                lowered = EnsureDeclaredType(arguments[i], lowered, declaredParamType);
                 guard.Track(arguments[i], lowered);
                 result.Add(lowered);
             }

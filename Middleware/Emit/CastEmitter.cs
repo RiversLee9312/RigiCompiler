@@ -29,19 +29,52 @@ namespace RigiCompiler.Middleware.Emit
             }
             var sourceType = slots[source.Name].Local.Type;
             var resultType = slots[inst.Target].Local.Type;
-            if (inst.IsIndirect || TypeLayout.IsGenericPlaceholder(sourceType))
+            var targetType = inst.TargetTypeRef != null
+                ? MirType.Of(inst.TargetTypeRef)
+                : resultType;
+            // 标量/String 装入 T?（含占位 Nullable\<T\>）：走装箱包装，不是 try_cast。
+            // String 16B 超 InlineLimit，必须 WrapFromSlot（tag1 堆盒），
+            // 不可走 CastEmitter.WrapScalar 的 tag0 截 8B（否则 Mix.s 往返丢串）。
+            if (MirBuilder.IsScalarOrString(sourceType) && TypeLayout.IsNullable(resultType))
+            {
+                var wrapped = sourceType.IsString
+                    ? NullableEmitter.WrapFromSlot(session, builder, slots[source.Name].Slot,
+                        sourceType)
+                    : WrapScalar(session, builder, session.LoadLocal(builder, slots, source),
+                        sourceType);
+                builder.BuildStore(wrapped, slots[inst.Target].Slot);
+                return;
+            }
+            // 占位源或占位目标（`boxed as T`）须走 try_cast，不得当静态
+            // 不相容落入 EmitFail。
+            if (inst.IsIndirect || TypeLayout.IsGenericPlaceholder(sourceType)
+                || TypeLayout.IsGenericPlaceholder(targetType)
+                || TypeLayout.IsGenericPlaceholder(resultType))
             {
                 EmitDynamic(session, builder, slots, inst, source, sourceType, resultType);
                 return;
             }
-            var targetType = inst.TargetTypeRef != null
-                ? MirType.Of(inst.TargetTypeRef)
-                : resultType;
             if (MirBuilder.IsNumericScalar(sourceType)
                 && MirBuilder.IsNumericScalar(targetType))
             {
                 EmitNumeric(session, builder, slots, inst, source, sourceType, targetType,
                     resultType);
+                return;
+            }
+            // 具体值 → Any/Object：CastLowering 在源仍为占位时留下 MirCast
+            //（非 MirBoxAny、非 Indirect）；烘焙 extraSubst 把源改成 i32 后
+            // 落入此支。按装箱发射，避免 EmitFail 抛 .i32 → .any。
+            if (targetType.IsAnyOrObject)
+            {
+                var fat = LoadSourceFat(session, builder, slots, source.Name, sourceType);
+                StoreConverted(session, builder, slots, inst, sourceType, resultType, fat);
+                return;
+            }
+            // Any/Object → 具体：数组快照还原 `Any as i32` 等。原先落入
+            // EmitFail；getElement\<T\> 能过是因为 T 占位走了 EmitDynamic。
+            if (sourceType.IsAnyOrObject)
+            {
+                EmitDynamic(session, builder, slots, inst, source, sourceType, resultType);
                 return;
             }
             EmitFail(session, builder, slots, inst, sourceType, targetType, resultType);

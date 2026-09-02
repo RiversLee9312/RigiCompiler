@@ -45,6 +45,11 @@ namespace RigiCompiler.Middleware.Emit
                         inst.Target, fieldType, inst.ExcTarget);
                     return;
                 }
+                if (IsBorrowField(field.Symbol))
+                {
+                    builder.BuildStore(value, slots[inst.Target].Slot);
+                    return;
+                }
                 switch (TypeLayout.ClassifySlot(session.Layout, fieldType))
                 {
                     case ManagedSlotKind.FatReference:
@@ -119,6 +124,10 @@ namespace RigiCompiler.Middleware.Emit
             return fieldSymbol.Substring(hash + 1, at - hash - 1);
         }
 
+        private static bool IsBorrowField(string fieldSymbol) =>
+            fieldSymbol.Contains(".capture.this", System.StringComparison.Ordinal)
+            || fieldSymbol.Contains(WrapperAbi.HostFieldInfix, System.StringComparison.Ordinal);
+
         // 宿主地址：值类型宿主 = alloca 槽地址（内联存储）；class 宿主 =
         // 胖引用 payload → 对象指针
         internal static LLVMValueRef HostBasePointer(ModuleBuilder.Session session,
@@ -180,6 +189,11 @@ namespace RigiCompiler.Middleware.Emit
                 return;
             }
             var value = session.LoadLocal(builder, slots, source);
+            if (IsBorrowField(field.Symbol))
+            {
+                builder.BuildStore(value, pointer);
+                return;
+            }
             switch (TypeLayout.ClassifySlot(session.Layout, fieldType))
             {
                 case ManagedSlotKind.FatReference:

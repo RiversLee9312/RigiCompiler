@@ -108,7 +108,8 @@ namespace RigiCompiler.Middleware.Mir
             try
             {
                 init = MirBuilder.ResolveInit(flow.Context.Symbols, template,
-                    flow.ArgTypes(arguments), skipReceiver: 0);
+                    flow.ArgTypes(arguments), skipReceiver: 0,
+                    constructedTypeRef: wrapperType);
             }
             catch (MwNotSupportedException) when (arguments.Count == 0)
             {

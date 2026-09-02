@@ -106,11 +106,35 @@ namespace RigiCompiler.Middleware.Emit
             {
                 return global;
             }
-            var builtin = TypeLayout.BuiltinSheetCanonical(MirType.Of(canonical));
+            var mirType = MirType.Of(canonical);
+            var builtin = TypeLayout.BuiltinSheetCanonical(mirType);
             if (_typeSheets.TryGetValue(builtin, out global))
             {
                 return global;
             }
+            // 构造 Array/Span/Nullable\<占位\> 无独立 sheet，回退定义级 builtin
+            if (TypeLayout.IsArray(mirType)
+                && _typeSheets.TryGetValue(TypeLayout.ArrayTypeCanonical, out global))
+            {
+                return global;
+            }
+            if (TypeLayout.IsSpan(mirType)
+                && _typeSheets.TryGetValue(TypeLayout.SpanTypeCanonical, out global))
+            {
+                return global;
+            }
+            if (TypeLayout.IsSharedSpan(mirType)
+                && _typeSheets.TryGetValue(TypeLayout.SharedSpanTypeCanonical, out global))
+            {
+                return global;
+            }
+            if (TypeLayout.IsNullable(mirType)
+                && _typeSheets.TryGetValue(TypeLayout.NullableTypeCanonical, out global))
+            {
+                return global;
+            }
+            // 不得剥实参回退 arity-0：Task<.generic<T>> 剥成 void Task
+            // 后 gate 偏移错（void@72 vs Task<T>@88），泛型 async 空句柄。
             if (Symbols.FindTypeByRef(canonical) is { } template)
             {
                 var planKey = GenericAbi.PlanKey(template);
@@ -127,6 +151,32 @@ namespace RigiCompiler.Middleware.Emit
             _typeSheets.TryGetValue(canonical, out global)
             || _typeSheets.TryGetValue(MwTypeKey.Normalize(canonical), out global);
 
+        private bool TryDefinitionSheet(string canonical, out LLVMValueRef global)
+        {
+            global = default;
+            var stripped = BilVerificationContext.StripTypeArguments(canonical);
+            if (stripped.Length > 0 && stripped != canonical
+                && _typeSheets.TryGetValue(stripped, out global))
+            {
+                return true;
+            }
+            var declKey = BilVerificationContext.DeclarationKeyOf(canonical);
+            if (declKey != canonical && _typeSheets.TryGetValue(declKey, out global))
+            {
+                return true;
+            }
+            if (Symbols.FindTypeByRef(stripped.Length > 0 ? stripped : canonical) is { } def)
+            {
+                var planKey = GenericAbi.PlanKey(def);
+                if (_typeSheets.TryGetValue(planKey, out global)
+                    || _typeSheets.TryGetValue(def.Canonical, out global))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         internal void RegisterTypeInfo(string canonical, LLVMValueRef global) =>
             _typeInfos.Add(canonical, global);
 
@@ -138,6 +188,17 @@ namespace RigiCompiler.Middleware.Emit
             }
             var normalized = MwTypeKey.Normalize(canonical);
             if (_typeInfos.TryGetValue(normalized, out global))
+            {
+                return global;
+            }
+            var mirType = MirType.Of(canonical);
+            if (TypeLayout.IsNullable(mirType)
+                && _typeInfos.TryGetValue(TypeLayout.NullableTypeCanonical, out global))
+            {
+                return global;
+            }
+            if (TypeLayout.IsArray(mirType)
+                && _typeInfos.TryGetValue(TypeLayout.ArrayTypeCanonical, out global))
             {
                 return global;
             }
@@ -210,12 +271,18 @@ namespace RigiCompiler.Middleware.Emit
         internal void EmitMemCopy(LLVMBuilderRef builder, LLVMValueRef dest,
             LLVMValueRef src, int size)
         {
+            EmitMemCopyN(builder, dest, src,
+                LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, (ulong)size, false));
+        }
+
+        internal void EmitMemCopyN(LLVMBuilderRef builder, LLVMValueRef dest,
+            LLVMValueRef src, LLVMValueRef sizeI64)
+        {
             var (fn, fnType) = DeclareIntrinsic("llvm.memcpy.p0.p0.i64", LLVMTypeRef.Void,
                 new[] { BytePointer(), BytePointer(), LLVMTypeRef.Int64, LLVMTypeRef.Int1 });
             builder.BuildCall2(fnType, fn, new[]
             {
-                dest, src,
-                LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, (ulong)size, false),
+                dest, src, sizeI64,
                 LLVMValueRef.CreateConstInt(LLVMTypeRef.Int1, 0, false),
             }, "");
         }

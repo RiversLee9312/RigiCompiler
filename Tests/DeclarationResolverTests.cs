@@ -38,6 +38,8 @@ namespace RigiCompiler.Tests
             TestDowngradeChains();
             TestNativeDeclarations();
             TestEntryPointAnnotations();
+            TestTerminalAndInternalAnnotations();
+            TestSerializableFields();
             TestAccessibility();
             TestAccessorDeclarations();
             TestOverrideModifiers();
@@ -1282,15 +1284,18 @@ namespace RigiCompiler.Tests
         {
             TestHarness.Section("P2 Proxy Shape Checking (§14.2–§14.4)");
 
-            // 泛型元数：Entity 至多一个（TTarget 角色），Value/Method 零个
+            // 泛型元数：Entity/Value 至多一个，Method 零个
             var (g1, _) = ResolveUnit(
                 "@WrapperTarget(.Entity)\nwrapper W\\<TTarget, TExtra> { }\n");
             TestHarness.CheckSemanticError("Entity wrapper 两个泛型参数", g1.Diagnostics,
                 "Entity wrapper 'W' must declare at most one generic parameter (the TTarget role)");
             var (g2, _) = ResolveUnit(
                 "@WrapperTarget(.Value)\nwrapper W\\<TValue> { }\n");
-            TestHarness.CheckSemanticError("Value wrapper 泛型参数", g2.Diagnostics,
-                "Value wrapper 'W' cannot declare generic parameters (§14.2)");
+            CheckNoErrors("Value wrapper 一个泛型参数合法", g2);
+            var (g2b, _) = ResolveUnit(
+                "@WrapperTarget(.Value)\nwrapper W\\<TValue, TExtra> { }\n");
+            TestHarness.CheckSemanticError("Value wrapper 两个泛型参数", g2b.Diagnostics,
+                "Value wrapper 'W' must declare at most one generic parameter (the TField role)");
             var (g3, _) = ResolveUnit(
                 "@WrapperTarget(.Method)\nwrapper W\\<TTarget> { }\n");
             TestHarness.CheckSemanticError("Method wrapper 泛型参数", g3.Diagnostics,
@@ -1709,6 +1714,235 @@ namespace RigiCompiler.Tests
             CheckNoErrors("全局 main + @EntryPoint 无诊断（不进 wrapper 检查）", ok4);
             TestHarness.CheckTrue("全局 main 的 IsEntryPoint 标记位",
                 ok4.Symbols.GlobalNamespace.Methods.Single(m => m.Name == "main").IsEntryPoint);
+        }
+
+        // ===== @Terminal / @Internal 内建注解（MW11d Phase A）=====
+        private static void TestTerminalAndInternalAnnotations()
+        {
+            TestHarness.Section("P2 @Terminal / @Internal（MW11d）");
+
+            var termPrelude =
+                "@WrapperTarget(.Entity)\n@Terminal\nwrapper TermW { }\n" +
+                "@WrapperTarget(.Entity)\nwrapper OtherW { }\n" +
+                "@WrapperTarget(.Entity)\nwrapper ExtraW { }\n" +
+                "@WrapperTarget(.Value)\n@Terminal\nwrapper TermV { }\n" +
+                "@WrapperTarget(.Value)\nwrapper OtherV { }\n";
+
+            // terminal 为唯一 / 最内层 → 合法
+            var (okOnly, _) = ResolveUnit(termPrelude + "@TermW\nclass C { }\n");
+            CheckNoErrors("terminal 为唯一 wrapper 合法", okOnly);
+            TestHarness.CheckTrue("TermW.IsTerminal 标志位",
+                GlobalType(okOnly, "TermW").IsTerminal);
+            TestHarness.CheckTrue("OtherW 非 terminal",
+                !GlobalType(okOnly, "OtherW").IsTerminal);
+
+            var (okInner, _) = ResolveUnit(termPrelude + "@OtherW\n@TermW\nclass C { }\n");
+            CheckNoErrors("terminal 为最内层合法", okInner);
+
+            var (okValInner, _) = ResolveUnit(termPrelude +
+                "class C { @OtherV\n@TermV\nvar f: i32 }\n");
+            CheckNoErrors("字段 Value wrapper：terminal 最内层合法", okValInner);
+
+            // 非 terminal 任意组合 → 合法
+            var (okCombo, _) = ResolveUnit(termPrelude + "@OtherW\n@ExtraW\nclass C { }\n");
+            CheckNoErrors("非 terminal 任意组合合法", okCombo);
+
+            // terminal 之后（内层）再跟 wrapper → 报错含规定英文句
+            var (badOuter, _) = ResolveUnit(termPrelude + "@TermW\n@OtherW\nclass C { }\n");
+            CheckP2Error("Entity：terminal 内层再嵌套", badOuter,
+                "TermW is terminal and cannot contain another modifier.");
+
+            var (badVal, _) = ResolveUnit(termPrelude +
+                "class C { @TermV\n@OtherV\nvar f: i32 }\n");
+            CheckP2Error("Value：terminal 内层再嵌套", badVal,
+                "TermV is terminal and cannot contain another modifier.");
+
+            // @Terminal 标在非 wrapper 声明上
+            var (badClass, _) = ResolveUnit("@Terminal\nclass C { }\n");
+            CheckP2Error("@Terminal 挂 class", badClass,
+                "@Terminal can only be applied to wrapper declarations");
+            var (badField, _) = ResolveUnit("@Terminal\nvar x: i32\n");
+            CheckP2Error("@Terminal 挂字段", badField,
+                "@Terminal can only be applied to wrapper declarations");
+            var (badArgs, _) = ResolveUnit(
+                "@WrapperTarget(.Entity)\n@Terminal()\nwrapper W { }\n");
+            CheckP2Error("@Terminal 拒绝实参", badArgs, "@Terminal does not take arguments");
+
+            // 不是 wrapper 体系：不得误报 'Terminal' is not a wrapper type
+            var (okSkip, _) = ResolveUnit(
+                "@WrapperTarget(.Entity)\n@Terminal\nwrapper W { }\n@W\nclass C { }\n");
+            CheckNoErrors("@Terminal 不进 wrapper 应用检查", okSkip);
+
+            // @Internal：外部命名空间应用报错；声明命名空间内部合法
+            var (badExt, _) = ResolveUnit(
+                "namespace lib\n" +
+                "@WrapperTarget(.Entity)\n@Internal\npub wrapper Hidden { }\n",
+                "namespace app\nimport lib.Hidden\n@Hidden\nclass C { }\n");
+            CheckP2Error("外部命名空间应用 @Internal wrapper", badExt,
+                "'Hidden' is internal and cannot be applied outside its declaring namespace");
+
+            var (okSame, _) = ResolveUnit(
+                "namespace lib\n" +
+                "@WrapperTarget(.Entity)\n@Internal\npub wrapper Hidden { }\n" +
+                "@Hidden\nclass C { }\n");
+            CheckNoErrors("声明命名空间内部应用 @Internal wrapper 合法", okSame);
+            TestHarness.CheckTrue("Hidden.IsInternal 标志位",
+                NsOf(okSame, "lib").Types.Single(t => t.Name == "Hidden").IsInternal);
+
+            // @Internal 类型出现在 API 签名不报错
+            var (okSig, _) = ResolveUnit(
+                "namespace lib\n" +
+                "@WrapperTarget(.Entity)\n@Internal\npub wrapper Hidden { pub init() }\n",
+                "namespace app\nimport lib.Hidden\nfunc f(x: Hidden): Hidden { return x }\n");
+            CheckNoErrors("@Internal wrapper 作 API 签名不报错", okSig);
+
+            var (badIntClass, _) = ResolveUnit("@Internal\nclass C { }\n");
+            CheckP2Error("@Internal 挂 class", badIntClass,
+                "@Internal can only be applied to wrapper declarations");
+            var (badIntArgs, _) = ResolveUnit(
+                "@WrapperTarget(.Entity)\n@Internal()\nwrapper W { }\n");
+            CheckP2Error("@Internal 拒绝实参", badIntArgs, "@Internal does not take arguments");
+        }
+
+        // ===== MW11d A4/A5：SerializationBase 登记 + @Serializable 字段检查 =====
+        private static void TestSerializableFields()
+        {
+            TestHarness.Section("P2 @Serializable 字段可序列性（MW11d A5）");
+
+            var (okScalar, _) = ResolveUnitWithStdlib(
+                "import core.serialization.Serializable\n" +
+                "@Serializable\n" +
+                "class Point { pub var x: i32\n    pub var name: String }\n");
+            CheckNoErrors("@Serializable 全标量字段合法", okScalar);
+            TestHarness.CheckTrue("i32 已登记 SerializationBase",
+                okScalar.Symbols.Bootstrap.Int32.AppliedWrappers.Any(w =>
+                    w.WrapperDefinition.Name == "SerializationBase"));
+            TestHarness.CheckTrue("String 已登记 SerializationBase",
+                okScalar.Symbols.Bootstrap.String.AppliedWrappers.Any(w =>
+                    w.WrapperDefinition.Name == "SerializationBase"));
+
+            var (badPlain, _) = ResolveUnitWithStdlib(
+                "import core.serialization.Serializable\n" +
+                "class Other { }\n" +
+                "@Serializable\n" +
+                "class Box { pub var o: Other }\n");
+            CheckP2Error("未修饰 class 字段报错", badPlain,
+                "可序列化类型 'Box' 的字段 'o' 不可序列化");
+
+            var (okTemp, _) = ResolveUnitWithStdlib(
+                "import core.serialization.Serializable\n" +
+                "import core.serialization.Temporary\n" +
+                "class Other { pub init() }\n" +
+                "@Serializable\n" +
+                "class Box {\n" +
+                "    @Temporary(func{ (): Other -> new Other() })\n" +
+                "    pub var o: Other\n" +
+                "}\n");
+            CheckNoErrors("同字段加 @Temporary 后合法", okTemp);
+
+            var (badBox, _) = ResolveUnitWithStdlib(
+                "import core.serialization.Serializable\n" +
+                "@Serializable\n" +
+                "class Box\\<T> { pub var value: T }\n");
+            CheckP2Error("无约束泛型参数字段报错", badBox,
+                "无约束泛型参数 'T'");
+
+            var (okConstrained, _) = ResolveUnitWithStdlib(
+                "import core.serialization.Serializable\n" +
+                "@Serializable\n" +
+                "class Box\\<T with Serializable> { pub var value: T }\n");
+            CheckNoErrors("T with Serializable 合法", okConstrained);
+
+            var (okNested, _) = ResolveUnitWithStdlib(
+                "import core.serialization.Serializable\n" +
+                "@Serializable\n" +
+                "class Inner { pub var n: i32 }\n" +
+                "@Serializable\n" +
+                "class Outer { pub var nested: Inner }\n");
+            CheckNoErrors("嵌套 @Serializable 类型字段合法", okNested);
+
+            var (okInternalCore, _) = ResolveUnitWithStdlib(
+                "namespace core.serialization\n" +
+                "@SerializationBase\n" +
+                "class LocalMark { }\n");
+            CheckNoErrors("core.serialization 内部应用 SerializationBase 合法", okInternalCore);
+
+            var (badInternalExt, _) = ResolveUnitWithStdlib(
+                "import core.serialization.SerializationBase\n" +
+                "@SerializationBase\n" +
+                "class C { }\n");
+            CheckP2Error("外部命名空间应用 @SerializationBase", badInternalExt,
+                "'SerializationBase' is internal and cannot be applied outside its declaring namespace");
+
+            var (okArray, _) = ResolveUnitWithStdlib(
+                "import core.serialization.Serializable\n" +
+                "@Serializable\n" +
+                "class Box { pub var xs: Array\\<i32> }\n");
+            CheckNoErrors("Array<i32> 字段合法", okArray);
+
+            var (okNestedArr, _) = ResolveUnitWithStdlib(
+                "import core.serialization.Serializable\n" +
+                "@Serializable\n" +
+                "class Box { pub var xs: Array\\<Array\\<i32>> }\n");
+            CheckNoErrors("嵌套 Array<Array<i32>> 字段合法", okNestedArr);
+
+            var (okList, _) = ResolveUnitWithStdlib(
+                "import core.serialization.Serializable\n" +
+                "import core.collections.List\n" +
+                "@Serializable\n" +
+                "class Box { pub var xs: List\\<String> }\n");
+            CheckNoErrors("List<String> 字段合法", okList);
+
+            var (okMap, _) = ResolveUnitWithStdlib(
+                "import core.serialization.Serializable\n" +
+                "import core.collections.Map\n" +
+                "@Serializable\n" +
+                "class Box { pub var m: Map\\<String, i32> }\n");
+            CheckNoErrors("Map<String, i32> 字段合法", okMap);
+
+            var (okParcelField, _) = ResolveUnitWithStdlib(
+                "import core.serialization.Serializable\n" +
+                "import core.serialization.Parcel\n" +
+                "@Serializable\n" +
+                "class Box { pub var p: Parcel }\n");
+            CheckNoErrors("Parcel 字段合法", okParcelField);
+
+            var (badArrPlain, _) = ResolveUnitWithStdlib(
+                "import core.serialization.Serializable\n" +
+                "class Other { }\n" +
+                "@Serializable\n" +
+                "class Box { pub var xs: Array\\<Other> }\n");
+            CheckP2Error("Array<未修饰 class> 字段报错", badArrPlain,
+                "Array 元素不可序列化");
+
+            var (badListPlain, _) = ResolveUnitWithStdlib(
+                "import core.serialization.Serializable\n" +
+                "import core.collections.List\n" +
+                "class Other { }\n" +
+                "@Serializable\n" +
+                "class Box { pub var xs: List\\<Other> }\n");
+            CheckP2Error("List<未修饰 class> 字段报错", badListPlain,
+                "List 元素不可序列化");
+
+            var (badMapKey, _) = ResolveUnitWithStdlib(
+                "import core.serialization.Serializable\n" +
+                "import core.collections.Map\n" +
+                "@Serializable\n" +
+                "class Box { pub var m: Map\\<i32, i32> }\n");
+            CheckP2Error("Map 键非 String 报错", badMapKey,
+                "Map 的键类型必须是 String");
+            TestHarness.CheckTrue("Map 键诊断建议 @Temporary",
+                badMapKey.Diagnostics.Diagnostics.Any(d =>
+                    d.Message.Contains("可改用 @Temporary")));
+
+            var (badMapVal, _) = ResolveUnitWithStdlib(
+                "import core.serialization.Serializable\n" +
+                "import core.collections.Map\n" +
+                "class Other { }\n" +
+                "@Serializable\n" +
+                "class Box { pub var m: Map\\<String, Other> }\n");
+            CheckP2Error("Map 值不可序列化报错", badMapVal,
+                "Map 值不可序列化");
         }
 
         // ===== P2 收尾：符号图冻结 =====

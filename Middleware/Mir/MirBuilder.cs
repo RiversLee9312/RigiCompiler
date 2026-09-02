@@ -239,6 +239,16 @@ namespace RigiCompiler.Middleware.Mir
             {
                 return true;
             }
+            // MW11d-D：形参代入后为具体构造形态（Host<.i32>）而实参静态
+            // 类型是定义级裸名（Host——$.this/局部声明形态）——声明级同型
+            // 即放行（VM ParametersMatch 同口径降级；§14.1 编译期已选定
+            // 唯一目标，此处只是验证）。两侧都带类型实参的实质分歧
+            //（Host<.i32> vs Host<.string>）不在此放宽范围
+            if (expectedSubst.Contains('<') != actualSubst.Contains('<')
+                && StripTypeArguments(expectedSubst) == StripTypeArguments(actualSubst))
+            {
+                return true;
+            }
             var actualType = symbols.FindTypeByRef(actualSubst)
                 ?? symbols.FindTypeByRef(actual);
             var extends = actualType?.Declaration.ExtendsType;
@@ -252,6 +262,13 @@ namespace RigiCompiler.Middleware.Mir
                 extendsSubst = SubstituteBareParams(extendsSubst, substitution);
             }
             return MwTypeKey.Normalize(extendsSubst) == MwTypeKey.Normalize(expectedSubst);
+        }
+
+        // 去类型实参（声明级比较用）：Host<A<B>> → Host
+        private static string StripTypeArguments(string typeRef)
+        {
+            var angle = typeRef.IndexOf('<');
+            return angle < 0 ? typeRef : typeRef.Substring(0, angle);
         }
 
         // ConstructedTypeCollector.Substitute 只替换 `.generic<…>` 占位；

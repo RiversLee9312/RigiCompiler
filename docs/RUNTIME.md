@@ -19,6 +19,7 @@
 | §17–§21 | 原生协程、Executor 与 Worker（含 Rigi 世界/native 原语分层）/ async 调用与 Task（含冷 Task、TaskState 与 executor 换绑）/ yield 与 Alarm（含 Timer/RepeatOption、Mutex、core.time）/ 内置 Executor 与 CoroutineLocal / 协程、GC 与同步边界 | [RUNTIME/06-coroutines.md](RUNTIME/06-coroutines.md) |
 | §22–§24 | 三级 GC / macroGC ownership fence / macroGC 的性能取向与可观察语义 | [RUNTIME/07-gc.md](RUNTIME/07-gc.md) |
 | §25–§26 | 确定性资源管理（IDisposable、using 与全局泄漏异常）/ native 互操作与 `rigi_rt` | [RUNTIME/08-resources-native.md](RUNTIME/08-resources-native.md) |
+| §27 | 消息传递（MessageQueue 传输模型 / Reader / Receiver / Messenger / 对象身份原语） | [RUNTIME/09-messaging.md](RUNTIME/09-messaging.md) |
 
 ## 维护约定
 

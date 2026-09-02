@@ -65,9 +65,18 @@ namespace RigiCompiler.Middleware.Layout
             {
                 var info = LayoutEngine.ClassifyFieldType(LayoutEngine.FieldTypeOf(member), symbols, table, visiting);
                 offset = LayoutEngine.AlignUp(offset, info.Alignment);
+                // lambda .capture.this：与 wrapper #.host 同口径借用，
+                // 不进 refMap——否则 Temporary 字段初始化器捕获 this 与
+                // 宿主成环，native memtrack 泄漏。
+                var thisCapture = member.Canonical.Contains(".capture.this",
+                    System.StringComparison.Ordinal);
                 fields.Add(new FieldPlan(member.Canonical, offset, info.Size, info.Alignment,
-                    info.IsReferenceSlot, info.EmbeddedPlan, isStringSlot: info.IsStringSlot));
-                RefMapBuilder.CollectRefSite(refEntries, info, offset);
+                    info.IsReferenceSlot && !thisCapture, info.EmbeddedPlan,
+                    isStringSlot: info.IsStringSlot && !thisCapture));
+                if (!thisCapture)
+                {
+                    RefMapBuilder.CollectRefSite(refEntries, info, offset);
+                }
                 offset += info.Size;
             }
             // MW10：本类 Entity / 字段-Value / Method 隐藏存储（基类槽已随

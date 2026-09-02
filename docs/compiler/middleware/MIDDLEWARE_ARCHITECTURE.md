@@ -662,6 +662,11 @@ rigi_rt/                    # 本仓库顶层目录（C，EmbeddedResource 内�
 ├── coroutine.h             # MW11c 瘦身：RigiFatRef / RigiResumeCode 共享 ABI 类型（旧 C 调度面已删）
 ├── cohandle.c/.h           # 协程句柄原语：create/resume/destroy + lane + PollingAlarm 轮询状态
 ├── worker.c/.h             # Worker 原语：OS 线程/入队/park/同步 Mutex/定时器/TLS/主 Worker 收尾
+│                             #   + MW11d 手动事件三面（rigi_event_create/signal/destroy——
+│                             #   MessageQueue「消息可得」唤醒底座，先信号后销毁）
+├── message.c/.h            # MW11d MessageQueue 传输层 native 面：句柄注册表（id 不复用）/
+│                             #   capability 矩阵校验/broadcast 日志 + 独立 cursor/watermark 回收/
+│                             #   EOS/单 outstanding next 登记；只搬运 Parcel，不回调 Rigi
 ├── failreg.c               # 未观察失败注册表（Task 失败异常 native 承载；shared class 不得持 local Exception）
 └── eh.c/.h                 # MW9a checked-flag 便携异常传输：TLS pending 槽三面（rigi_exc_raise/pending/take）+ 顶层 reporter（rigi_type_name_of/rigi_exc_halt），不使用平台原生 EH
 ```
@@ -684,6 +689,7 @@ rigi_rt/                    # 本仓库顶层目录（C，EmbeddedResource 内�
 | MW9 | 异常：try/catch/finally → checked-flag 便携传输（§8；**MW9a 已收口**：rigi_rt eh 三面 + reporter、MIR 构件（MirThrow/MirTakePending/MirRetThrow/ExcTarget）、TryExpander 十步展开、RcInjection 传播垫、Emit pending 检查、NativeE2E 捕获型对拍 13 例；**MW9b 已收口**：内置异常 message 模板源码化（stdlib init 重载）+ VM/native 构造全走真 init、VM 顶层格式对齐 `{类型全名}: {message}`、三占位 abort + 数组/Span 越界写 abort 全转真异常（守卫指令 ExcTarget 扩面 + ExceptionEmitter 共享抛出辅助 + core 异常恒可达白名单；除零策略换 Throw 实现）、SYNTAX §8.1 加第 6 异常类 `core.OutOfBoundException` + §8.2 未捕获进程行为） | 异常对拍套件 |
 | MW10 | wrapper 烘焙全链（**已收口**：Entity/Value/Method 三类 proxy 链 + wildcard router 与 call??? 降级 + singleton 三态 get fn 与急切初始化，§5/§7） | |
 | MW11 | 协程：状态机、Executor/Worker、Alarm（libuv 时钟底座）、Task、eager spawn。**MW11a/b** 曾以 C 侧重实现收口中间形态（单线程 drain + Alarm waiter）。**MW11c**：架构转向落地——Dispatcher/Task 调度在 Rigi 世界，rigi_rt 瘦身为 Worker/协程句柄/定时器/同步 Mutex/TLS/失败注册表原语；冷 Task、TaskState、executor 换绑、多 Worker 懒起、Timer/`sleep`、语言级 Mutex（VM 方法 hook；native 由 CoroutineSplit 改写 `enter` + Rigi `release` 真体，判定在 `tryEnter`/`releaseNext`） | ASYNC §8 集成测试 |
+| MW11d | 序列化 + 消息全链（**已收口**）：`core.serialization`（@Serializable/@SerializationBase/@Temporary/@Terminal 四修饰器 + Parcel + toParcel/fromParcel/deepCopy 合成，SYNTAX §20）；MessageQueue 传输层五原语 + capability 矩阵 + EOS/broadcast/深复制双端对拍；Reader/Receiver/Messenger 高层 API + listener 身份（`rigi_object_id` 对象身份原语）+ Executor 路由（默认 IOExecutor），RUNTIME §27。泛型基建两处顺手补齐：闸门 2 裸 GP 实参与 receiver/类型实参同口径声明侧跳过；裸模板 new 隐藏 typeid 取当前 fn 的 `.generic.*` 局部 | BilVm Messaging 电池 + NativeE2E 对拍 + e2e 负例 |
 | MW12 | macroGC：收集器、候选账本、GC 协程与内置 Executor、fence 激活、§25 检查 | 循环回收与泄漏检查套件 |
 | MW13 | 优化收尾（move/cursor、CellElim 激进化）、工具链捆绑与发布 | |
 

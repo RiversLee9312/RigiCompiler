@@ -855,7 +855,8 @@ namespace RigiCompiler.Middleware.Mir
             try
             {
                 edges.Add(MirBuilder.ResolveInit(context.Symbols, type,
-                    ArgTypesOf(arguments, localTypes), skipReceiver: 0).Canonical);
+                    ArgTypesOf(arguments, localTypes), skipReceiver: 0,
+                    constructedTypeRef: wrapperTypeRef).Canonical);
             }
             catch (MwNotSupportedException) when (arguments.Count == 0)
             {

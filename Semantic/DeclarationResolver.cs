@@ -59,6 +59,10 @@ namespace RigiCompiler
             // 未代入快照）：必须在消费基类链的全部后续阶段（OverrideChecker/
             // Contagion/FieldClosure 等）之前
             unit.Symbols.BackfillConstructedBaseTypes();
+            // MW11d A4：内建类型合成 SerializationBase 应用——须在
+            // TypeReferenceResolver 的 with 填入检查之前，使 i32/String
+            // 等实参通过 with SerializationBase。
+            SerializationBaseRegistrar.Visit(env);
             TypeReferenceResolver.Visit(env);
             // 声明点签名泄漏检查（§16.1，bug S5 修复1）：紧随类型引用解析——
             // 签名类型刚就绪，可见性在 EntryCollector 已落定
@@ -72,6 +76,8 @@ namespace RigiCompiler
             NativeDeclarationChecker.Visit(env);
             // §17 @EntryPoint 内建注解：紧随 native 注解检查（同族内建注解）
             EntryPointChecker.Visit(env);
+            // MW11d：@Terminal/@Internal 同族内建注解（标志位落定，目标校验）
+            BuiltinAnnotationChecker.Visit(env);
             ConversionOperatorChecker.Visit(env);
             EnumerateInRangeOperatorChecker.Visit(env);
             // Q6：getAtIndex 声明形状（§13.2：恰 1 形参 + 返回 T?）
@@ -94,6 +100,7 @@ namespace RigiCompiler
             StaticGenericBanChecker.Visit(env);
             VarianceChecker.Visit(env);
             WrapperApplicationChecker.Visit(env);
+            SerializableFieldChecker.Visit(env);
             WrapperInheritanceChecker.Visit(env);
             // S11a：proxy 声明侧形状校验（§14.2/§14.3/§14.4 canonical shape 与
             // 类别矩阵；依赖 WrapperTarget 与参数/返回类型已解析）

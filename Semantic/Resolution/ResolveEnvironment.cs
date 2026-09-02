@@ -148,6 +148,29 @@ namespace RigiCompiler
             return elements.Count > 0 && elements[^1].name == "EntryPoint";
         }
 
+        // @Terminal/@Internal 同族内建注解（MW11d）：按末段名硬编码识别，
+        // 不属于 wrapper 体系，wrapper 应用检查经此豁免
+        public static bool IsTerminalAnnotation(AnnotationASTNode annotation)
+        {
+            var elements = annotation.Name.symbol.elements;
+            return elements.Count > 0 && elements[^1].name == "Terminal";
+        }
+
+        public static bool IsInternalAnnotation(AnnotationASTNode annotation)
+        {
+            var elements = annotation.Name.symbol.elements;
+            return elements.Count > 0 && elements[^1].name == "Internal";
+        }
+
+        // 非 wrapper 的编译器内建注解（应用检查一律豁免，目标校验归各自 Checker）
+        public static bool IsNonWrapperBuiltinAnnotation(AnnotationASTNode annotation)
+        {
+            return NativeAnnotationNameOf(annotation) != null
+                || IsEntryPointAnnotation(annotation)
+                || IsTerminalAnnotation(annotation)
+                || IsInternalAnnotation(annotation);
+        }
+
         // 内建注解实参校验：必须恰好一个字符串字面量（§4.6）；非法报错并返回 null
         public string? NativeAnnotationStringArgument(AnnotationASTNode annotation, DeclEntry entry)
         {

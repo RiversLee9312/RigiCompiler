@@ -1275,7 +1275,7 @@
                             ? new BoundCallExpression(segment, call.Method, call.Arguments,
                                 env.B.Any, call.TypeArguments, call.GenericPack,
                                 isIndirect: true, indirectTarget: call.IndirectTarget)
-                            : new BoundInstanceCallExpression(segment, receiver,
+                            : new BoundInstanceCallExpression(segment, call.Receiver ?? receiver,
                                 call.Method, call.Arguments, env.B.Any, call.TypeArguments,
                                 call.GenericPack);
                     }
@@ -1287,7 +1287,7 @@
                     ? new BoundCallExpression(segment, call.Method, call.Arguments,
                         call.ResultType!, call.TypeArguments, call.GenericPack,
                         isIndirect: true, indirectTarget: call.IndirectTarget)
-                    : new BoundInstanceCallExpression(segment, receiver,
+                    : new BoundInstanceCallExpression(segment, call.Receiver ?? receiver,
                         call.Method, call.Arguments, call.ResultType!, call.TypeArguments,
                         call.GenericPack);
                 consumed = 1;

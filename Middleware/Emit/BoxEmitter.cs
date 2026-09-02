@@ -42,9 +42,12 @@ namespace RigiCompiler.Middleware.Emit
             return PackFat(session, builder, typeSheet, TagObject, payload, "new");
         }
 
+        // 占位槽或 Any/Object：值类型实参须装箱（调用点 i32 → .any 与
+        // extraSubst 后静态 MirCast 同源）
         internal static bool NeedsBox(ModuleBuilder.Session session, MirType from, MirType to) =>
-            TypeLayout.IsGenericPlaceholder(to)
+            (TypeLayout.IsGenericPlaceholder(to) || to.IsAnyOrObject)
             && !TypeLayout.IsGenericPlaceholder(from)
+            && !from.IsAnyOrObject
             && IsBoxableValue(session, from);
 
         internal static bool NeedsUnbox(ModuleBuilder.Session session, MirType from, MirType to) =>
@@ -374,7 +377,7 @@ namespace RigiCompiler.Middleware.Emit
             {
                 return sheet;
             }
-            throw new CompilerInternalException($"Box 缺 TypeSheet: {key}");
+            return session.TypeSheetFor(type.Canonical);
         }
 
         // TypeId 运行期类型 = Type<payload>：按已收集的构造 sheet 选视图。

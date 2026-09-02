@@ -455,6 +455,39 @@ namespace RigiCompiler.Tests
                 "    callName(n)\n" +
                 "    return 0\n" +
                 "}\n"),
+            // 传递父接口：IC implements IA，C implements IC，经 IC 静态类型
+            // 调 IA 方法。native iMap 须含 IA 条目，否则 imap lookup failed
+            Case("imap 传递父接口 override 经 IC 调 IA",
+                "pub interface IA {\n" +
+                "    pub func f(): i32\n" +
+                "}\n" +
+                "pub interface IC implements IA {\n" +
+                "}\n" +
+                "pub class C implements IC {\n" +
+                "    pub init()\n" +
+                "    pub override func f(): i32 { return 42 }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const ic: IC = new C()\n" +
+                "    var a = ic.f()\n" +
+                "    if ((a != 42)) { return 1 }\n" +
+                "    return 42\n" +
+                "}\n"),
+            Case("imap 传递父接口默认方法经 IC 调 IA",
+                "pub interface IA {\n" +
+                "    pub func f(): i32 { return 7 }\n" +
+                "}\n" +
+                "pub interface IC implements IA {\n" +
+                "}\n" +
+                "pub class C implements IC {\n" +
+                "    pub init()\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const ic: IC = new C()\n" +
+                "    var a = ic.f()\n" +
+                "    if ((a != 7)) { return 1 }\n" +
+                "    return 42\n" +
+                "}\n"),
             Case("computed getter/setter",
                 "import core.io.Console\n" +
                 "pub class Counter {\n" +
@@ -1250,6 +1283,29 @@ namespace RigiCompiler.Tests
                 "    var b = s.fetch(10)\n" +
                 "    if (((a == 11) and (b == 12))) { return 1 } else { return 0 }\n" +
                 "}\n"),
+            // Entity specific .proxy.get.<名>：TField 占位源赋给 Any，烘焙
+            // extraSubst 后静态 .i32 → .any 须装箱（与 Method inner 经 Any
+            // 同根因）
+            Case("wrapper Entity specific get 经 Any 往返",
+                "@WrapperTarget(.Entity)\n" +
+                "pub wrapper W {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.get.hp\\<TField>(value: TField): TField {\n" +
+                "        var a: Any = value\n" +
+                "        return (a as TField)\n" +
+                "    }\n" +
+                "}\n" +
+                "@W\n" +
+                "pub class Hero {\n" +
+                "    pub var hp: i32\n" +
+                "    pub init() { hp = 41 }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var h = new Hero()\n" +
+                "    var a = h.hp\n" +
+                "    if ((a != 41)) { return 1 }\n" +
+                "    return 42\n" +
+                "}\n"),
             // 遗3 用例①：基类 @W 有状态 wrapper，子类按 §14.9 重申覆盖，
             // 子类实例调基类未 override 方法——VM HiddenEntityKey 仅含
             // wrapper TypeRef（重申覆盖同一键），native 物理槽同归首次
@@ -1534,6 +1590,29 @@ namespace RigiCompiler.Tests
                 "pub func main(): i32 {\n" +
                 "    var s = new Service()\n" +
                 "    return s.fetch(21)\n" +
+                "}\n"),
+            // 占位源 inner 结果经 extraSubst 落 i32 后静态 cast → .any：
+            // CastLowering 留下 MirCast（非 BoxAny），native 须装箱而非
+            // EmitFail（CastException: .i32 → .any）
+            Case("Method wrapper specific inner 经 Any 往返",
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Timed {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call\\<TReturn>(x: i32): TReturn {\n" +
+                "        var a: Any = inner(x)\n" +
+                "        return (a as TReturn)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    @Timed()\n" +
+                "    pub func fetch(x: i32): i32 { return (x * 2) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    var a = s.fetch(21)\n" +
+                "    if ((a != 42)) { return 1 }\n" +
+                "    return 42\n" +
                 "}\n"),
             // ④ wildcard .proxy.call：.name = 实现槽 canonical（转录
             // TestMethodWrapperWildcardInnerFullShape）
@@ -4773,6 +4852,504 @@ namespace RigiCompiler.Tests
                 "        }})\n" +
                 "        await u\n" +
                 "    }})\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("序列化平铺标量深复制",
+                "import core.serialization.*\n" +
+                "@Serializable\n" +
+                "pub class Mix {\n" +
+                "    pub var n: i32 = 0\n" +
+                "    pub var f: double = 0.0\n" +
+                "    pub var b: bool = false\n" +
+                "    pub var c: char = 'x'\n" +
+                "    pub var s: String = \"\"\n" +
+                "    pub init(_ -> n, _ -> f, _ -> b, _ -> c, _ -> s)\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var src = new Mix(1, 2.5, true, 'a', \"hi\")\n" +
+                "    var copy = deepCopy\\<Mix>(src)\n" +
+                "    src.n = 9\n" +
+                "    src.s = \"bye\"\n" +
+                "    if (((((copy.n == 1) and (copy.f == 2.5)) and (copy.b == true)) and (copy.c == 'a')) and (copy.s == \"hi\")) {\n" +
+                "        return 42\n" +
+                "    }\n" +
+                "    return 1\n" +
+                "}\n"),
+            Case("序列化嵌套对象图独立副本",
+                "import core.serialization.*\n" +
+                "@Serializable\n" +
+                "pub class Inner {\n" +
+                "    pub var n: i32 = 0\n" +
+                "    pub init(_ -> n)\n" +
+                "}\n" +
+                "@Serializable\n" +
+                "pub class Outer {\n" +
+                "    pub var a: Inner\n" +
+                "    pub var b: Inner\n" +
+                "    pub init(x: Inner) { a = x\n        b = x }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var kid = new Inner(7)\n" +
+                "    var src = new Outer(kid)\n" +
+                "    var copy = deepCopy\\<Outer>(src)\n" +
+                "    copy.a.n = 3\n" +
+                "    if (((src.a.n == 7) and (copy.b.n == 7)) and (copy.a.n == 3)) {\n" +
+                "        return 42\n" +
+                "    }\n" +
+                "    return 1\n" +
+                "}\n"),
+            Case("序列化集合字段快照不变量",
+                "import core.serialization.*\n" +
+                "import core.collections.*\n" +
+                "@Serializable\n" +
+                "pub class Box {\n" +
+                "    pub var nums: Array\\<i32>\n" +
+                "    pub var names: List\\<String> = new List\\<String>()\n" +
+                "    pub var ages: Map\\<String, i32> = new Map\\<String, i32>()\n" +
+                "    pub init(_ -> nums)\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var nums = arrayOfElements\\<i32>(1, 2)\n" +
+                "    var src = new Box(nums)\n" +
+                "    src.names.add(\"a\")\n" +
+                "    src.ages.set(\"k\", 4)\n" +
+                "    var copy = deepCopy\\<Box>(src)\n" +
+                "    src.nums[0] = 99\n" +
+                "    src.names.add(\"b\")\n" +
+                "    src.ages.set(\"k\", 5)\n" +
+                "    const cn = copy.nums[0]\n" +
+                "    const cl = copy.names.getAtIndex(0L)\n" +
+                "    const cm = copy.ages.tryGet(\"k\")\n" +
+                "    if (((((cn if? 0) == 1) and ((cl if? \"\") == \"a\")) and ((cm if? 0) == 4)) and (copy.names.length == 1L)) {\n" +
+                "        return 42\n" +
+                "    }\n" +
+                "    return 1\n" +
+                "}\n"),
+            Case("序列化 Temporary 往返新 resume",
+                "import core.serialization.*\n" +
+                "@Serializable\n" +
+                "pub class Host {\n" +
+                "    pub var n: i32 = 0\n" +
+                "    @Temporary((func{ (): i32 -> {\n" +
+                "        return@_ (n * 2)\n" +
+                "    }} as core.Func\\<i32>))\n" +
+                "    pub var derived: i32 = 0\n" +
+                "    pub init(_ -> n)\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var src = new Host(5)\n" +
+                "    var copy = deepCopy\\<Host>(src)\n" +
+                "    src.n = 9\n" +
+                "    src.derived = 1\n" +
+                "    if (((copy.n == 5) and (copy.derived == 10)) and (src.derived == 1)) {\n" +
+                "        return 42\n" +
+                "    }\n" +
+                "    return 1\n" +
+                "}\n"),
+            Case("序列化 with Serializable 泛型 clone",
+                "import core.serialization.*\n" +
+                "@Serializable\n" +
+                "pub class Marked {\n" +
+                "    pub var n: i32 = 0\n" +
+                "    pub init(_ -> n)\n" +
+                "}\n" +
+                "func clone\\<T with Serializable>(x: T): T {\n" +
+                "    return deepCopy\\<T>(x)\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var src = new Marked(11)\n" +
+                "    var copy = clone\\<Marked>(src)\n" +
+                "    src.n = 0\n" +
+                "    if (copy.n == 11) {\n" +
+                "        return 42\n" +
+                "    }\n" +
+                "    return 1\n" +
+                "}\n"),
+            // ===== MW11d-C MessageQueue 传输层对拍（冒烟）=====：
+            // create/post/next/EOS/release 全链；深复制经 Parcel 往返
+            // （post 完成后改源对象不影响已入队消息）；负载 shared class
+            // + @Serializable（async 边界共享安全 §4.5 + 可复制 §3.1）
+            Case("MessageQueue 冒烟：post/next/EOS/release 全链",
+                "import core.io.Console\n" +
+                "import core.serialization.Serializable\n" +
+                "import core.messaging.MessageQueue\n" +
+                "import core.messaging.QueueHandleType\n" +
+                "@Serializable\n" +
+                "pub shared class Greeting {\n" +
+                "    pub var code: i32\n" +
+                "    pub var text: String\n" +
+                "    pub init(_ -> code, _ -> text)\n" +
+                "}\n" +
+                "async func run() {\n" +
+                "    const owner = MessageQueue.create_queue\\<Greeting>()\n" +
+                "    const sender = MessageQueue.add_queue_handle\\<Greeting>(owner, QueueHandleType.Sender)\n" +
+                "    const reader = MessageQueue.add_queue_handle\\<Greeting>(owner, QueueHandleType.Reader)\n" +
+                "    const live = new Greeting(7, \"hello\")\n" +
+                "    await MessageQueue.post(sender, live)\n" +
+                "    live.code = 0\n" +
+                "    live.text = \"mutated\"\n" +
+                "    var item = await MessageQueue.next(reader)\n" +
+                "    if (item.isEos) { Console.println(\"FAIL eos\") }\n" +
+                "    var g = (item.item as Greeting)\n" +
+                "    Console.println(g.code.toString())\n" +
+                "    Console.println(g.text)\n" +
+                "    await MessageQueue.post(sender, new Greeting(8, \"a\"))\n" +
+                "    await MessageQueue.post(sender, new Greeting(9, \"b\"))\n" +
+                "    item = await MessageQueue.next(reader)\n" +
+                "    g = (item.item as Greeting)\n" +
+                "    Console.println(g.code.toString())\n" +
+                "    item = await MessageQueue.next(reader)\n" +
+                "    g = (item.item as Greeting)\n" +
+                "    Console.println(g.code.toString())\n" +
+                "    MessageQueue.release_queue_handle(owner)\n" +
+                "    MessageQueue.release_queue_handle(sender)\n" +
+                "    item = await MessageQueue.next(reader)\n" +
+                "    if (item.isEos) { Console.println(\"EOS\") }\n" +
+                "    MessageQueue.release_queue_handle(reader)\n" +
+                "    Console.println(\"smoke ok\")\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n"),
+            // ===== MW11d-Cb MessageQueue 对拍补齐（§28 电池）=====：
+            // 与 Tests/BilVmTests.Messaging.cs 同款 Rigi 源；VM 为参考
+            // 实现，native 须逐字节同 stdout/退出码
+            // §11/§12 broadcast：两 reader 独立 cursor 见全部新消息、读速
+            // 互不影响、新 reader 从队尾起、释放一个 reader 不影响兄弟
+            Case("MessageQueue 对拍：broadcast 双 reader 独立 cursor",
+                "import core.io.Console\n" +
+                "import core.serialization.Serializable\n" +
+                "import core.messaging.MessageQueue\n" +
+                "import core.messaging.QueueHandleType\n" +
+                "@Serializable\n" +
+                "pub shared class Msg {\n" +
+                "    pub var n: i32\n" +
+                "    pub init(_ -> n)\n" +
+                "}\n" +
+                "async func run() {\n" +
+                "    const owner = MessageQueue.create_queue\\<Msg>()\n" +
+                "    const sender = MessageQueue.add_queue_handle\\<Msg>(owner, QueueHandleType.Sender)\n" +
+                "    const ra = MessageQueue.add_queue_handle\\<Msg>(owner, QueueHandleType.Reader)\n" +
+                "    const rb = MessageQueue.add_queue_handle\\<Msg>(owner, QueueHandleType.Reader)\n" +
+                "    await MessageQueue.post(sender, new Msg(1))\n" +
+                "    await MessageQueue.post(sender, new Msg(2))\n" +
+                "    const a1 = await MessageQueue.next(ra)\n" +
+                "    const a2 = await MessageQueue.next(ra)\n" +
+                "    Console.println(((a1.item as Msg).n).toString())\n" +
+                "    Console.println(((a2.item as Msg).n).toString())\n" +
+                "    const b1 = await MessageQueue.next(rb)\n" +
+                "    Console.println(((b1.item as Msg).n).toString())\n" +
+                "    const rc = MessageQueue.add_queue_handle\\<Msg>(owner, QueueHandleType.Reader)\n" +
+                "    await MessageQueue.post(sender, new Msg(3))\n" +
+                "    const c1 = await MessageQueue.next(rc)\n" +
+                "    Console.println(((c1.item as Msg).n).toString())\n" +
+                "    MessageQueue.release_queue_handle(rb)\n" +
+                "    await MessageQueue.post(sender, new Msg(4))\n" +
+                "    const a3 = await MessageQueue.next(ra)\n" +
+                "    Console.println(((a3.item as Msg).n).toString())\n" +
+                "    const c2 = await MessageQueue.next(rc)\n" +
+                "    Console.println(((c2.item as Msg).n).toString())\n" +
+                "    MessageQueue.release_queue_handle(owner)\n" +
+                "    MessageQueue.release_queue_handle(sender)\n" +
+                "    MessageQueue.release_queue_handle(ra)\n" +
+                "    MessageQueue.release_queue_handle(rc)\n" +
+                "    Console.println(\"ok\")\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n"),
+            // §9.2/§25 EOS 状态机：冷 Task next 挂起（Owner 活+0 Sender
+            // 不 EOS）→ post 唤醒；Owner 去+Sender 活不 EOS；双去 sealed
+            // 可 drain 后 EOS；sealed 后派生 Sender 拒绝（不可复活）
+            Case("MessageQueue 对拍：EOS 状态机（挂起唤醒/sealed/drain/复活拒绝）",
+                "import core.io.Console\n" +
+                "import core.serialization.Serializable\n" +
+                "import core.messaging.MessageQueue\n" +
+                "import core.messaging.QueueHandleType\n" +
+                "import core.messaging.QueueItem\n" +
+                "import core.coroutine.*\n" +
+                "@Serializable\n" +
+                "pub shared class Msg {\n" +
+                "    pub var n: i32\n" +
+                "    pub init(_ -> n)\n" +
+                "}\n" +
+                "async func run() {\n" +
+                "    const owner = MessageQueue.create_queue\\<Msg>()\n" +
+                "    const reader = MessageQueue.add_queue_handle\\<Msg>(owner, QueueHandleType.Reader)\n" +
+                // 冷 Task（§18.4）：直接调 async 函数是热 Task，须
+                // new Task(func{async ...}) 才能 run()
+                "    const pending = new Task\\<QueueItem\\<Msg>>(func{async (): QueueItem\\<Msg> -> {\n" +
+                "        return@_ (await MessageQueue.next\\<Msg>(reader))\n" +
+                "    } })\n" +
+                "    pending.run()\n" +
+                "    const sender = MessageQueue.add_queue_handle\\<Msg>(owner, QueueHandleType.Sender)\n" +
+                "    await MessageQueue.post(sender, new Msg(1))\n" +
+                "    const woken = await pending\n" +
+                "    if (woken.isEos) {\n" +
+                "        Console.println(\"FAIL early eos\")\n" +
+                "    } else {\n" +
+                "        Console.println((\"woken \" + ((woken.item as Msg).n).toString()))\n" +
+                "    }\n" +
+                "    MessageQueue.release_queue_handle(owner)\n" +
+                "    await MessageQueue.post(sender, new Msg(2))\n" +
+                "    await MessageQueue.post(sender, new Msg(3))\n" +
+                "    MessageQueue.release_queue_handle(sender)\n" +
+                "    const d1 = await MessageQueue.next(reader)\n" +
+                "    Console.println(((d1.item as Msg).n).toString())\n" +
+                "    const d2 = await MessageQueue.next(reader)\n" +
+                "    Console.println(((d2.item as Msg).n).toString())\n" +
+                "    const tail = await MessageQueue.next(reader)\n" +
+                "    if (tail.isEos) { Console.println(\"EOS\") }\n" +
+                "    try {\n" +
+                "        const bad = MessageQueue.add_queue_handle\\<Msg>(reader, QueueHandleType.Sender)\n" +
+                "        Console.println(\"FAIL revive\")\n" +
+                "    } catch (e: core.IllegalStateException) {\n" +
+                "        Console.println(e.getMessage())\n" +
+                "    }\n" +
+                "    MessageQueue.release_queue_handle(reader)\n" +
+                "    Console.println(\"ok\")\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n"),
+            // §17 接受点（无 reader 也完成）+ §18 单 sender 顺序 +
+            // §24 单 outstanding next 违规捕获。t1.run() 后裸 yield
+            // 一圈：让 t1 内层 next 先 enter 入眠，t2 的 enter 才违规
+            Case("MessageQueue 对拍：接受点+顺序+outstanding 违规捕获",
+                "import core.io.Console\n" +
+                "import core.serialization.Serializable\n" +
+                "import core.messaging.MessageQueue\n" +
+                "import core.messaging.QueueHandleType\n" +
+                "import core.messaging.QueueItem\n" +
+                "import core.coroutine.*\n" +
+                "@Serializable\n" +
+                "pub shared class Msg {\n" +
+                "    pub var n: i32\n" +
+                "    pub init(_ -> n)\n" +
+                "}\n" +
+                "async func run() {\n" +
+                "    const owner = MessageQueue.create_queue\\<Msg>()\n" +
+                "    const sender = MessageQueue.add_queue_handle\\<Msg>(owner, QueueHandleType.Sender)\n" +
+                "    await MessageQueue.post(sender, new Msg(1))\n" +
+                "    Console.println(\"post accepted no reader\")\n" +
+                "    const reader = MessageQueue.add_queue_handle\\<Msg>(owner, QueueHandleType.Reader)\n" +
+                "    await MessageQueue.post(sender, new Msg(1))\n" +
+                "    await MessageQueue.post(sender, new Msg(2))\n" +
+                "    await MessageQueue.post(sender, new Msg(3))\n" +
+                "    const i1 = await MessageQueue.next(reader)\n" +
+                "    const i2 = await MessageQueue.next(reader)\n" +
+                "    const i3 = await MessageQueue.next(reader)\n" +
+                "    Console.println((((i1.item as Msg).n).toString() + ((i2.item as Msg).n).toString()) + ((i3.item as Msg).n).toString())\n" +
+                "    const t1 = new Task\\<QueueItem\\<Msg>>(func{async (): QueueItem\\<Msg> -> {\n" +
+                "        return@_ (await MessageQueue.next\\<Msg>(reader))\n" +
+                "    } })\n" +
+                "    t1.run()\n" +
+                "    yield\n" +
+                "    const t2 = MessageQueue.next(reader)\n" +
+                "    try {\n" +
+                "        const bad = await t2\n" +
+                "        Console.println(\"FAIL outstanding\")\n" +
+                "    } catch (e: core.IllegalStateException) {\n" +
+                "        Console.println(e.getMessage())\n" +
+                "    }\n" +
+                "    MessageQueue.release_queue_handle(owner)\n" +
+                "    MessageQueue.release_queue_handle(sender)\n" +
+                "    const eos = await t1\n" +
+                "    if (eos.isEos) { Console.println(\"EOS\") }\n" +
+                "    MessageQueue.release_queue_handle(reader)\n" +
+                "    Console.println(\"ok\")\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n"),
+            // 违规直抛（不捕获）：Reader 上 post → IllegalStateException
+            // 穿透 await 到 run 协程顶层（VM 未观察失败；native 顶层
+            // reporter + exit 1）
+            FailCase("MessageQueue 违规：Reader 上 post 直抛",
+                "import core.io.Console\n" +
+                "import core.serialization.Serializable\n" +
+                "import core.messaging.MessageQueue\n" +
+                "import core.messaging.QueueHandleType\n" +
+                "@Serializable\n" +
+                "pub shared class Msg {\n" +
+                "    pub var n: i32\n" +
+                "    pub init(_ -> n)\n" +
+                "}\n" +
+                "async func run() {\n" +
+                "    const owner = MessageQueue.create_queue\\<Msg>()\n" +
+                "    const reader = MessageQueue.add_queue_handle\\<Msg>(owner, QueueHandleType.Reader)\n" +
+                "    await MessageQueue.post(reader, new Msg(1))\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n",
+                "该句柄不能 post"),
+            // 重复释放：墓碑诊断直抛（同步路径，main 内直接触发）
+            FailCase("MessageQueue 违规：重复释放句柄直抛",
+                "import core.serialization.Serializable\n" +
+                "import core.messaging.MessageQueue\n" +
+                "import core.messaging.QueueHandleType\n" +
+                "@Serializable\n" +
+                "pub shared class Msg {\n" +
+                "    pub var n: i32\n" +
+                "    pub init(_ -> n)\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const owner = MessageQueue.create_queue\\<Msg>()\n" +
+                "    const sender = MessageQueue.add_queue_handle\\<Msg>(owner, QueueHandleType.Sender)\n" +
+                "    MessageQueue.release_queue_handle(sender)\n" +
+                "    MessageQueue.release_queue_handle(sender)\n" +
+                "    return 0\n" +
+                "}\n",
+                "句柄重复释放"),
+            // ===== MW11d-D Reader/Receiver/Messenger 高层 API 对拍 =====：
+            // 与 Tests/BilVmTests.Messaging.cs 同款源；VM 参考，native
+            // 逐字节同 stdout/退出码
+            // Messenger 端到端 happy path：receiver 懒建 + listener 收
+            // 消息 + 深复制快照（send 后改源对象）+ dispose → EOS 停泵
+            Case("Messenger 对拍：send→receiver listener 深复制快照 + EOS 停泵",
+                "import core.io.Console\n" +
+                "import core.serialization.Serializable\n" +
+                "import core.messaging.*\n" +
+                "import core.coroutine.*\n" +
+                "@Serializable\n" +
+                "pub shared class Msg {\n" +
+                "    pub var n: i32\n" +
+                "    pub init(_ -> n)\n" +
+                "}\n" +
+                "pub shared class Sink {\n" +
+                "    pub var got: i32\n" +
+                "    pub init() { got = 0 }\n" +
+                "}\n" +
+                "async func run() {\n" +
+                "    const msgr = new Messenger\\<Msg>()\n" +
+                "    const recv = msgr.receiver\n" +
+                "    const sink = new Sink()\n" +
+                "    recv.addListener(func{async (m: Msg) -> {\n" +
+                "        sink.got = m.n\n" +
+                "    } })\n" +
+                "    const live = new Msg(7)\n" +
+                "    await msgr.send(live)\n" +
+                "    live.n = 0\n" +
+                "    var spins: i32 = 0\n" +
+                "    while ((sink.got != 7) and (spins < 400)) {\n" +
+                "        yield sleep(5)\n" +
+                "        spins = spins + 1\n" +
+                "    }\n" +
+                "    Console.println((\"snapshot \" + sink.got.toString()))\n" +
+                "    msgr.dispose()\n" +
+                "    yield sleep(20)\n" +
+                "    recv.dispose()\n" +
+                "    Console.println(\"ok\")\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n"),
+            // 一条消息多 listener：默认均 IOExecutor（同 lane FIFO →
+            // 注册序确定）；removeListener 后只剩后者
+            Case("Receiver 对拍：多 listener 注册序派发 + removeListener",
+                "import core.io.Console\n" +
+                "import core.serialization.Serializable\n" +
+                "import core.messaging.*\n" +
+                "import core.coroutine.*\n" +
+                "@Serializable\n" +
+                "pub shared class Msg {\n" +
+                "    pub var n: i32\n" +
+                "    pub init(_ -> n)\n" +
+                "}\n" +
+                "pub shared class Sink {\n" +
+                "    pub var a: i32\n" +
+                "    pub var b: i32\n" +
+                "    pub init() {\n" +
+                "        a = 0\n" +
+                "        b = 0\n" +
+                "    }\n" +
+                "}\n" +
+                "async func run() {\n" +
+                "    const msgr = new Messenger\\<Msg>()\n" +
+                "    const recv = msgr.receiver\n" +
+                "    const sink = new Sink()\n" +
+                "    const l1 = func{async (m: Msg) -> {\n" +
+                "        sink.a = m.n\n" +
+                "        Console.println((\"L1:\" + m.n.toString()))\n" +
+                "    } }\n" +
+                "    const l2 = func{async (m: Msg) -> {\n" +
+                "        sink.b = m.n\n" +
+                "        Console.println((\"L2:\" + m.n.toString()))\n" +
+                "    } }\n" +
+                "    recv.addListener(l1)\n" +
+                "    recv.addListener(l2)\n" +
+                "    await msgr.send(new Msg(1))\n" +
+                "    var spins: i32 = 0\n" +
+                "    while (((sink.a != 1) or (sink.b != 1)) and (spins < 400)) {\n" +
+                "        yield sleep(5)\n" +
+                "        spins = spins + 1\n" +
+                "    }\n" +
+                "    recv.removeListener(l1)\n" +
+                "    await msgr.send(new Msg(2))\n" +
+                "    spins = 0\n" +
+                "    while ((sink.b != 2) and (spins < 400)) {\n" +
+                "        yield sleep(5)\n" +
+                "        spins = spins + 1\n" +
+                "    }\n" +
+                "    if (sink.a == 1) {\n" +
+                "        Console.println(\"l1 removed\")\n" +
+                "    } else {\n" +
+                "        Console.println(\"FAIL l1\")\n" +
+                "    }\n" +
+                "    msgr.dispose()\n" +
+                "    yield sleep(20)\n" +
+                "    recv.dispose()\n" +
+                "    Console.println(\"ok\")\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n"),
+            // 生命周期隔离：Reader.createReceiver 不消费源 cursor；
+            // Receiver dispose 不影响其 createReader 出的 Reader
+            Case("Receiver 对拍：cursor 独立 + dispose 隔离",
+                "import core.io.Console\n" +
+                "import core.serialization.Serializable\n" +
+                "import core.messaging.*\n" +
+                "import core.coroutine.*\n" +
+                "@Serializable\n" +
+                "pub shared class Msg {\n" +
+                "    pub var n: i32\n" +
+                "    pub init(_ -> n)\n" +
+                "}\n" +
+                "async func run() {\n" +
+                "    const msgr = new Messenger\\<Msg>()\n" +
+                "    const ra = msgr.createReader()\n" +
+                "    const recvA = ra.createReceiver()\n" +
+                "    recvA.addListener(func{async (m: Msg) -> { } })\n" +
+                "    recvA.dispose()\n" +
+                "    await msgr.send(new Msg(1))\n" +
+                "    const a1 = await ra.next()\n" +
+                "    Console.println(((a1.item as Msg).n).toString())\n" +
+                "    const recvB = msgr.receiver\n" +
+                "    const rb = recvB.createReader()\n" +
+                "    recvB.dispose()\n" +
+                "    await msgr.send(new Msg(2))\n" +
+                "    const b1 = await rb.next()\n" +
+                "    Console.println(((b1.item as Msg).n).toString())\n" +
+                "    msgr.dispose()\n" +
+                "    const a2 = await ra.next()\n" +
+                "    Console.println(((a2.item as Msg).n).toString())\n" +
+                "    const eos = await ra.next()\n" +
+                "    if (eos.isEos) { Console.println(\"EOS\") }\n" +
+                "    ra.dispose()\n" +
+                "    rb.dispose()\n" +
+                "    Console.println(\"ok\")\n" +
                 "}\n" +
                 "pub func main(): i32 {\n" +
                 "    run()\n" +

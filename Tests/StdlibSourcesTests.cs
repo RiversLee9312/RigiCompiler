@@ -39,6 +39,8 @@ namespace RigiCompiler.Tests
             TestDisposableStructure();
             TestExceptionsStructure();
             TestTimeStructure();
+            TestSerializationStructure();
+            TestMessagingStructure();
             TestConsoleDescribe();
 
             return TestHarness.Summary("StdlibSources");
@@ -50,9 +52,9 @@ namespace RigiCompiler.Tests
             TestHarness.Section("ParseAll: Count & SourceName");
 
             var roots = StdlibSources.ParseAll();
-            TestHarness.CheckTrue("ParseAll 返回恰好 7 棵 RootASTNode",
-                roots.Count == 7, $"实际 {roots.Count} 棵");
-            if (roots.Count < 7) { TestHarness.Blank(); return; }
+            TestHarness.CheckTrue("ParseAll 返回恰好 9 棵 RootASTNode",
+                roots.Count == 9, $"实际 {roots.Count} 棵");
+            if (roots.Count < 9) { TestHarness.Blank(); return; }
 
             // 逻辑名 Ordinal 排序：'.'(0x2E) < 'c'；'C'(0x43) < 'c'(0x63)；
             // collections < coroutine（'l' < 'r'）；d < e < t
@@ -68,8 +70,12 @@ namespace RigiCompiler.Tests
                 roots[4].Span?.sourceName ?? "<null>", "<stdlib>/core/disposable.rg");
             TestHarness.Check("sourceName[5]",
                 roots[5].Span?.sourceName ?? "<null>", "<stdlib>/core/exceptions.rg");
-            TestHarness.Check("sourceName[6]（MW11c core.time）",
-                roots[6].Span?.sourceName ?? "<null>", "<stdlib>/core/time.rg");
+            TestHarness.Check("sourceName[6]（MW11d-C core.messaging）",
+                roots[6].Span?.sourceName ?? "<null>", "<stdlib>/core/messaging.rg");
+            TestHarness.Check("sourceName[7]（MW11d core.serialization）",
+                roots[7].Span?.sourceName ?? "<null>", "<stdlib>/core/serialization.rg");
+            TestHarness.Check("sourceName[8]（MW11c core.time）",
+                roots[8].Span?.sourceName ?? "<null>", "<stdlib>/core/time.rg");
 
             TestHarness.Blank();
         }
@@ -266,11 +272,12 @@ namespace RigiCompiler.Tests
             // 顶层：namespace + IEnumerator/IEnumerable 接口 +
             // RangeEnumerator\<T\> 抽象基类 + RangeEnumeratorI32/RangeI32
             // 具体类（共 6 个声明，S9f）
-            TestHarness.CheckTrue("顶层恰好 13 个声明（namespace + 2 interface + " +
+            TestHarness.CheckTrue("顶层恰好 17 个声明（namespace + 2 interface + " +
                 "abstract 基类 + 2 class + alloc_array/arrayOf/arrayOfElements + " +
-                "span_alloc/spanOf/shared_span_alloc/sharedSpanOf）",
-                root.Declarations.Count == 13, $"实际 {root.Declarations.Count}");
-            if (root.Declarations.Count < 13) { TestHarness.Blank(); return; }
+                "span_alloc/spanOf/shared_span_alloc/sharedSpanOf + List/ListEnumerator + " +
+                "Map/MapEnumerator）",
+                root.Declarations.Count == 17, $"实际 {root.Declarations.Count}");
+            if (root.Declarations.Count < 17) { TestHarness.Blank(); return; }
 
             var ns = root.Declarations[0] as NamespaceDeclarationASTNode;
             TestHarness.CheckTrue("首声明是 namespace core.collections",
@@ -330,6 +337,44 @@ namespace RigiCompiler.Tests
                 && sharedSpanOf.Name == "sharedSpanOf"
                 && sharedSpanOf.Body != null
                 && sharedSpanOf.GenericParameters?.Parameters.Count == 1);
+            TestHarness.CheckTrue("声明[13] 是 class List（一个泛型参数）",
+                root.Declarations[13] is ClassDeclarationASTNode listCls
+                && listCls.ClassName == "List"
+                && listCls.GenericParameters?.Parameters.Count == 1
+                && listCls.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Kind == CallableKind.Init)
+                && listCls.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "add")
+                && listCls.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "getAtIndex")
+                && listCls.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "removeAt")
+                && listCls.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "iterate" && m.Modifiers.Contains(Keywords.OVERRIDE)));
+            TestHarness.CheckTrue("声明[14] 是 class ListEnumerator",
+                root.Declarations[14] is ClassDeclarationASTNode listEnum
+                && listEnum.ClassName == "ListEnumerator"
+                && listEnum.GenericParameters?.Parameters.Count == 1);
+            TestHarness.CheckTrue("声明[15] 是 class Map（两个泛型参数）",
+                root.Declarations[15] is ClassDeclarationASTNode mapCls
+                && mapCls.ClassName == "Map"
+                && mapCls.GenericParameters?.Parameters.Count == 2
+                && mapCls.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Kind == CallableKind.Init)
+                && mapCls.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "set")
+                && mapCls.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "tryGet")
+                && mapCls.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "containsKey")
+                && mapCls.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "remove")
+                && mapCls.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "iterate" && m.Modifiers.Contains(Keywords.OVERRIDE)));
+            TestHarness.CheckTrue("声明[16] 是 class MapEnumerator",
+                root.Declarations[16] is ClassDeclarationASTNode mapEnum
+                && mapEnum.ClassName == "MapEnumerator"
+                && mapEnum.GenericParameters?.Parameters.Count == 2);
 
             // 接口方法无体（§11）；抽象基类有 abstract 方法；实现类成员带 override
             if (root.Declarations[1] is InterfaceDeclarationASTNode enumerator)
@@ -596,11 +641,12 @@ namespace RigiCompiler.Tests
 
             // 顶层：namespace + RuntimeException/IOException/CastException/
             // NoSuchMethodException/DividedByZeroException/OutOfBoundException/
-            // IllegalStateException 7 个 open class（共 9 个声明；MW9b 增
-            // OutOfBoundException，MW11c 增 IllegalStateException）
-            TestHarness.CheckTrue("顶层恰好 9 个声明（namespace + Exception + 7 class）",
-                root.Declarations.Count == 9, $"实际 {root.Declarations.Count}");
-            if (root.Declarations.Count < 9) { TestHarness.Blank(); return; }
+            // IllegalStateException/NoSuchElementException 8 个 open class
+            // （共 10 个声明；MW9b 增 OutOfBoundException，MW11c 增
+            // IllegalStateException，MW11d-B1 增 NoSuchElementException）
+            TestHarness.CheckTrue("顶层恰好 10 个声明（namespace + Exception + 8 class）",
+                root.Declarations.Count == 10, $"实际 {root.Declarations.Count}");
+            if (root.Declarations.Count < 10) { TestHarness.Blank(); return; }
 
             var ns = root.Declarations[0] as NamespaceDeclarationASTNode;
             TestHarness.CheckTrue("首声明是 namespace core",
@@ -608,7 +654,7 @@ namespace RigiCompiler.Tests
 
             string[] expected = { "Exception", "RuntimeException", "IOException", "CastException",
                 "NoSuchMethodException", "DividedByZeroException", "OutOfBoundException",
-                "IllegalStateException" };
+                "IllegalStateException", "NoSuchElementException" };
             for (int i = 0; i < expected.Length; i++)
             {
                 var index = i + 1;
@@ -646,14 +692,14 @@ namespace RigiCompiler.Tests
             TestHarness.Section("Structure: namespace core.time");
 
             var roots = StdlibSources.ParseAll();
-            if (roots.Count < 7)
+            if (roots.Count < 9)
             {
-                TestHarness.CheckTrue("ParseAll 至少 7 棵（结构断言前置）", false,
+                TestHarness.CheckTrue("ParseAll 至少 9 棵（结构断言前置）", false,
                     $"实际 {roots.Count} 棵");
                 TestHarness.Blank();
                 return;
             }
-            var root = roots[6];
+            var root = roots[8];
 
             // 顶层：namespace + TimeStamp/TimeSpan/DateTime 3 个 struct
             // + rigi_time_now native（共 5 个声明，RUNTIME §19.7/§17.4）
@@ -700,6 +746,104 @@ namespace RigiCompiler.Tests
                 && timeNow.Modifiers.Contains(Keywords.PRIV)
                 && timeNow.Body == null
                 && timeNow.ReturnType != null);
+
+            TestHarness.Blank();
+        }
+
+        // ===== 2h. serialization 结构（MW11d：namespace core.serialization + 3 wrapper）=====
+        private static void TestSerializationStructure()
+        {
+            TestHarness.Section("Structure: namespace core.serialization");
+
+            var roots = StdlibSources.ParseAll();
+            if (roots.Count < 8)
+            {
+                TestHarness.CheckTrue("ParseAll 至少 8 棵（结构断言前置）", false,
+                    $"实际 {roots.Count} 棵");
+                TestHarness.Blank();
+                return;
+            }
+            var root = roots[7];
+
+            TestHarness.CheckTrue("顶层恰好 7 个声明（namespace + 3 wrapper + Parcel + fromParcel + deepCopy）",
+                root.Declarations.Count == 7, $"实际 {root.Declarations.Count}");
+            if (root.Declarations.Count < 7) { TestHarness.Blank(); return; }
+
+            var ns = root.Declarations[0] as NamespaceDeclarationASTNode;
+            TestHarness.CheckTrue("首声明是 namespace core.serialization",
+                ns != null && AstDescribe.Symbol(ns.Name.symbol) == "core.serialization");
+
+            TestHarness.CheckTrue("声明[1] 是 SerializationBase wrapper",
+                root.Declarations[1] is WrapperDeclarationASTNode baseW
+                && baseW.WrapperName == "SerializationBase");
+            TestHarness.CheckTrue("声明[2] 是 Serializable wrapper",
+                root.Declarations[2] is WrapperDeclarationASTNode ser
+                && ser.WrapperName == "Serializable");
+            TestHarness.CheckTrue("声明[3] 是 Temporary wrapper（一个泛型参数）",
+                root.Declarations[3] is WrapperDeclarationASTNode tmp
+                && tmp.WrapperName == "Temporary"
+                && tmp.GenericParameters?.Parameters.Count == 1);
+            TestHarness.CheckTrue("声明[4] 是 class Parcel（@SerializationBase + iterate）",
+                root.Declarations[4] is ClassDeclarationASTNode parcel
+                && parcel.ClassName == "Parcel"
+                && parcel.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Kind == CallableKind.Init)
+                && parcel.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "getElement")
+                && parcel.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "setElement")
+                && parcel.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "iterate" && m.Modifiers.Contains(Keywords.OVERRIDE)));
+            TestHarness.CheckTrue("声明[5] 是 fromParcel",
+                root.Declarations[5] is CallableDeclarationASTNode fromP
+                && fromP.Name == "fromParcel");
+            TestHarness.CheckTrue("声明[6] 是 deepCopy",
+                root.Declarations[6] is CallableDeclarationASTNode deep
+                && deep.Name == "deepCopy");
+
+            TestHarness.Blank();
+        }
+
+        // ===== 2i. messaging 结构（MW11d-C：namespace core.messaging）=====
+        private static void TestMessagingStructure()
+        {
+            TestHarness.Section("Structure: namespace core.messaging");
+
+            var roots = StdlibSources.ParseAll();
+            if (roots.Count < 7)
+            {
+                TestHarness.CheckTrue("ParseAll 至少 7 棵（结构断言前置）", false,
+                    $"实际 {roots.Count} 棵");
+                TestHarness.Blank();
+                return;
+            }
+            var root = roots[6];
+
+            var ns = root.Declarations[0] as NamespaceDeclarationASTNode;
+            TestHarness.CheckTrue("首声明是 namespace core.messaging",
+                ns != null && AstDescribe.Symbol(ns.Name.symbol) == "core.messaging");
+            TestHarness.CheckTrue("含 QueueHandleType enum struct（三 case）",
+                root.Declarations.OfType<EnumStructDeclarationASTNode>()
+                    .Any(e => e.EnumName == "QueueHandleType" && e.Cases.Count == 3
+                        && e.Cases.Select(c => c.CaseName).SequenceEqual(
+                            new[] { "Reader", "Owner", "Sender" })));
+            // MW11d-C：QueueHandle/QueueItem 落地为 shared class——native 尚不
+            // 支持泛型值类型构造（Middleware CallVisitors/FlowBuilder 的 MW5
+            // 受控拒绝）；capability 语义由 id 承载，与对象身份无关
+            TestHarness.CheckTrue("含 QueueHandle / QueueItem class",
+                root.Declarations.OfType<ClassDeclarationASTNode>()
+                    .Any(s => s.ClassName == "QueueHandle")
+                && root.Declarations.OfType<ClassDeclarationASTNode>()
+                    .Any(s => s.ClassName == "QueueItem"));
+            TestHarness.CheckTrue("含 MessageQueue class（create_queue/post/next）",
+                root.Declarations.OfType<ClassDeclarationASTNode>()
+                    .Any(c => c.ClassName == "MessageQueue"
+                        && c.Members.OfType<CallableDeclarationASTNode>()
+                            .Any(m => m.Name == "create_queue" && m.Modifiers.Contains(Keywords.STATIC))
+                        && c.Members.OfType<CallableDeclarationASTNode>()
+                            .Any(m => m.Name == "post")
+                        && c.Members.OfType<CallableDeclarationASTNode>()
+                            .Any(m => m.Name == "next")));
 
             TestHarness.Blank();
         }

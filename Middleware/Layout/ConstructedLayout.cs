@@ -40,6 +40,19 @@ namespace RigiCompiler.Middleware.Layout
                 || symbols.FindTypeByRef(canonical) is not { } template
                 || !GenericAbi.ShouldMaterialize(template))
             {
+                // MW11d-D：开放构造（AsyncAction<TMessage> 等 GP 在内的
+                // 形态）不具化自身计划，但模板计划必须在——模板只按
+                // 「裸符号首个元数」进 LayoutEngine.Build 首批（0 元
+                // AsyncAction 在列、1 元不在），而 invoke.indirect 的
+                // 静态接收者是开放构造时 callOperator 归模板成员，
+                // VirtualSlotOf 按模板 PlanKey 查槽（虚槽缺失实证）。
+                // 此处把模板计划补进表（不改构造具化语义）。
+                if (!GenericAbi.IsClosedConstructed(canonical)
+                    && symbols.FindTypeByRef(canonical) is { IsExternal: false } openTemplate)
+                {
+                    LayoutEngine.Resolve(openTemplate, symbols, table,
+                        new HashSet<string>(System.StringComparer.Ordinal), bodies);
+                }
                 return null;
             }
             if (!visiting.Add(canonical))

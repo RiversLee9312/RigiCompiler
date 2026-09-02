@@ -311,7 +311,11 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckBilValid("块体 lambda 验证器零错误", module);
             AssertLambdaClass(module, "块体", "core::Func<.i32>", hasCaptureField: true,
                 captureTypeFragment: "..cell..");
-            var callFn = module.Functions.First(f => f.Symbol.Contains("$$call"));
+            // StartsWith("..lambda..")：stdlib 的 core.messaging::InvokeAction
+            //（MW11d-D 手写 AsyncAction 壳）也有 $$call fn 且排在用户代码前，
+            // 本用例取自身顶层 lambda
+            var callFn = module.Functions.First(f => f.Symbol.StartsWith("..lambda..")
+                && f.Symbol.Contains("$$call"));
             // Stage B：$$call 值块体包 LoweredSeqBlock（region breakId
             // 承载 return@ 目标），entry 仅 call + ret
             BilTestHarness.CheckFnShape("块体 lambda $$call 含 ret（值块降级）", module,
@@ -345,7 +349,9 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckBilValid("复合赋值捕获写回验证器零错误", module);
             AssertLambdaClass(module, "复合赋值捕获", "core::Action<.i32>", hasCaptureField: true,
                 captureTypeFragment: "..cell..");
-            var callFn = module.Functions.First(f => f.Symbol.Contains("$$call"));
+            // StartsWith("..lambda..")：避开 stdlib InvokeAction 的 $$call
+            var callFn = module.Functions.First(f => f.Symbol.StartsWith("..lambda..")
+                && f.Symbol.Contains("$$call"));
             BilTestHarness.CheckFnShape("复合赋值捕获 $$call getValue→add→setValue", module,
                 callFn.Symbol,
                 ".vars { .i32 .s0, ..cell..UUID .t0, .i32 .t1, .i32 .t2, ..cell..UUID .t3 }\n" +

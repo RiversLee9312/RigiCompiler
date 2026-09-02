@@ -59,6 +59,9 @@ namespace RigiCompiler
             // class/struct 且（含声明处初始化器的实例字段或基类需要初始化
             // 链）时合成零参 init（基类初始化先行，再跑本类初始化器）
             SynthesizeDefaultConstructors();
+            // 阶段 1.8b（MW11d-B2）：@Serializable 宿主合成 ..toParcel /
+            // ..fromParcel / ..init.serializable，并填充 fromParcel 顶层函数
+            SerializationSynthesis.Synthesize(env);
             // 阶段 1.9（SYNTAX §9.6）：like 委托转发成员合成——委托字段类型
             // 提供同签名具体实现的待实现成员，合成本类 override 转发方法
             SynthesizeLikeDelegations();
@@ -73,6 +76,12 @@ namespace RigiCompiler
             // 阶段 2：逐函数体绑定（含字段访问器体 + proxy 模板态，M88）
             WalkSkeleton((fn, symbol, fileCtx, owner) =>
             {
+                // MW11d-B2：合成体已入 SyntheticCellBodies 的源函数（fromParcel）
+                // 跳过再绑，避免 stub 体覆盖合成体
+                if (env.SyntheticCellBodies.Any(b => ReferenceEquals(b.Method, symbol)))
+                {
+                    return;
+                }
                 // M109b-2：静态 Method wrapper 壳体——体迁 companion 实例方法，
                 // 原方法合成 invoke 壳体
                 if (symbol.Companion is { } companionInfo)

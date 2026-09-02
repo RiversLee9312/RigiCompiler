@@ -204,6 +204,10 @@ namespace RigiCompiler.Middleware.Emit
             LLVMValueRef obj, string typeRef)
         {
             var plan = session.Layout?.Find(typeRef);
+            if (plan == null && session.Symbols.FindTypeByRef(typeRef) is { } template)
+            {
+                plan = session.Layout?.Find(GenericAbi.PlanKey(template));
+            }
             if (plan == null)
             {
                 return;
@@ -249,6 +253,17 @@ namespace RigiCompiler.Middleware.Emit
                     var sheet = session.TypeSheetFor(arg);
                     sheetPtr = LLVMValueRef.CreateConstBitCast(sheet,
                         LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0));
+                }
+                else if (substitution == null
+                    && slots.ContainsKey(".generic." + paramName))
+                {
+                    // MW11d-D：裸模板 new——泛型 fn 内 new Reader\<TMessage\>
+                    // 的 MIR typeRef 退化为模板 canonical（subst=null），
+                    // GP 实参不经 subst 携带；类级/方法级 typeid 取当前 fn
+                    // 的 .generic.* 局部（实例方法的 prologue 自取局部与
+                    // 泛型函数的隐藏 typeid 参数同形，与上方占位分支同源）
+                    sheetPtr = session.LoadLocal(builder, slots,
+                        new MirLocalOperand(".generic." + paramName));
                 }
                 else
                 {

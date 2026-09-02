@@ -29,6 +29,10 @@ namespace RigiCompiler.Middleware.Layout
         public const int ArrayElemSheetOffset = 16;
         public const string ArrayLengthField = "core::Array#length@.i32";
         public const string ArrayTypeCanonical = "core::Array";
+        // Nullable\<T\> 与 Array 同为 bootstrap 泛型 class，定义不进 BIL
+        // 类型段；开放构造 core::Nullable<.generic<...>> 无独立 sheet，
+        // 回退本键（对照 ArrayTypeCanonical）。
+        public const string NullableTypeCanonical = "core::Nullable";
         // .typeid 构造族主键经 MwTypeKey.Normalize 为 core::Type<X>；
         // 无界成员 ≡ core::Type<core::Any>。不再坍缩单键 ".typeid"。
         public const string TypeIdUnboundedCanonical = "core::Type<core::Any>";
@@ -276,6 +280,7 @@ namespace RigiCompiler.Middleware.Layout
                 "core::String" => (16, TypeLayoutPlan.FlagInlineValue | TypeLayoutPlan.FlagString),
                 "core::Any" or "core::Object" => (ReferenceSlotSize, 0u),
                 ArrayTypeCanonical => (ArrayPrefixSize, TypeLayoutPlan.FlagArray),
+                NullableTypeCanonical => (ReferenceSlotSize, 0u),
                 NullSheetCanonical => (0, 0u),
                 _ => IsTypeIdCanonical(canonical)
                     ? (8, TypeLayoutPlan.FlagInlineValue)
@@ -291,6 +296,7 @@ namespace RigiCompiler.Middleware.Layout
             "core::float", "core::double", "core::String",
             "core::Any", "core::Object",
             ArrayTypeCanonical,
+            NullableTypeCanonical,
             NullSheetCanonical,
         };
 

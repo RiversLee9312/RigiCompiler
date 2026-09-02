@@ -195,7 +195,8 @@ namespace RigiCompiler
             // 与 NewExpressionEmitter 发射序一致）
             var guard = new EvalOrderGuard(ctx);
             var arguments = LoweringFacility.LowerArguments(newExpression.Arguments,
-                newExpression.Init?.Parameters, ctx, env, guard);
+                newExpression.Init?.Parameters, ctx, env, guard,
+                newExpression.Type as TypeSymbol);
             if (arguments == null) return null;
             // cell 隐藏子类构造（companion init 里构造静态字段 cell，§8.7）：
             // 有参 ..init.wrapper → new.wrapped 前缀实参（与局部 cell 构造点同）
@@ -746,7 +747,8 @@ namespace RigiCompiler
             }
             guard.Track(instanceCall.Receiver, receiver);
             var arguments = LoweringFacility.LowerArguments(instanceCall.Arguments,
-                instanceCall.Method.Parameters, ctx, env, guard);
+                instanceCall.Method.Parameters, ctx, env, guard,
+                instanceCall.Receiver.Type as TypeSymbol);
             if (arguments == null) return null;
             var genericPack = instanceCall.GenericPack == null ? null
                 : new LoweredGenericVarArgsArgument(instanceCall.GenericPack,
@@ -776,7 +778,8 @@ namespace RigiCompiler
             var guard = new EvalOrderGuard(ctx);
             guard.Track(instanceCall.Receiver, receiver);
             var arguments = LoweringFacility.LowerArguments(instanceCall.Arguments,
-                instanceCall.Method.Parameters, ctx, env, guard);
+                instanceCall.Method.Parameters, ctx, env, guard,
+                instanceCall.Receiver.Type as TypeSymbol);
             if (arguments == null) return null;
             var genericPack = instanceCall.GenericPack == null ? null
                 : new LoweredGenericVarArgsArgument(instanceCall.GenericPack,

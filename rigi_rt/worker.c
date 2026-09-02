@@ -176,6 +176,8 @@ struct RigiTimer
     int signaled;                 /* 粘滞已触发（耗尽/单次响铃后） */
     int64_t rings_remaining;      /* -1 = 无限 */
     int armed_counted;            /* 已计入 rigi_stat_armed（看门狗） */
+    int manual;                   /* 1 = 无 uv_timer 的手动 EventAlarm */
+    int auto_reset;               /* 1 = wait 消费 signaled（消息队列） */
     struct RigiTimer *next_live;
 };
 
@@ -561,6 +563,8 @@ int64_t rigi_timer_create(int64_t owner, int64_t delay_ms,
     timer->closed = 0;
     timer->waiters = NULL;
     timer->signaled = 0;
+    timer->manual = 0;
+    timer->auto_reset = 0;
     /* 响铃形态：ctx = 重复配置（0 单次 / -1 无限 / n 有限次数） */
     timer->rings_remaining = callback_fn == 0
         ? (ctx == 0 ? 1 : ctx) : 0;
@@ -668,7 +672,17 @@ int32_t rigi_alarm_wait(int64_t timer, int64_t waiter)
     t = (RigiTimer *)(uintptr_t)timer;
     uv_mutex_lock(&t->gate);
     registered = 0;
-    if (!t->signaled)
+    if (t->signaled)
+    {
+        /* 手动事件（MW11d-C auto_reset）：粘滞 signaled 被本次 wait
+         * 消费复位，下次 wait 重新阻塞；定时器 signaled 是响铃终态，
+         * 不清（迟到 yield 仍读得到） */
+        if (t->auto_reset)
+        {
+            t->signaled = 0;
+        }
+    }
+    else
     {
         RigiAlarmWaitNode *node =
             (RigiAlarmWaitNode *)rigi_track_malloc(sizeof(RigiAlarmWaitNode));
@@ -679,6 +693,89 @@ int32_t rigi_alarm_wait(int64_t timer, int64_t waiter)
     }
     uv_mutex_unlock(&t->gate);
     return registered;
+}
+
+/* 手动 EventAlarm（MW11d-C 消息队列「消息可得」）：复用 RigiTimer
+ * 台账块（gate/waiters/signaled 与 rigi_alarm_wait 握手兼容），但
+ * 零 uv 接触——无 owner 绑定、无 uv_timer、不进 live 链；signal/
+ * destroy 允许任意线程调用（gate 保护；waiter 重发布走
+ * rigi_dispatch_publish 跨线程安全通道，同 rigi_timer_alarm_ring
+ * 「闸外逐个发布」纪律）。armed 计入/归还看门狗口径与定时器一致。 */
+int64_t rigi_event_create(void)
+{
+    RigiTimer *ev = (RigiTimer *)rigi_track_malloc(sizeof(RigiTimer));
+    memset(ev, 0, sizeof(*ev));
+    ev->manual = 1;
+    ev->auto_reset = 1;
+    if (uv_mutex_init(&ev->gate) != 0)
+    {
+        fprintf(stderr, "rigi_rt: uv_mutex_init 失败（环境耗尽）\n");
+        abort();
+    }
+    ev->armed_counted = 1;
+    atomic_fetch_add_explicit(&rigi_stat_armed, 1, memory_order_relaxed);
+    return (int64_t)(uintptr_t)ev;
+}
+
+void rigi_event_signal(int64_t ev)
+{
+    RigiTimer *e;
+    RigiAlarmWaitNode *waiters;
+    if (ev == 0)
+    {
+        fprintf(stderr, "rigi_rt: rigi_event_signal 收到空句柄（编译器 bug）\n");
+        abort();
+    }
+    e = (RigiTimer *)(uintptr_t)ev;
+    uv_mutex_lock(&e->gate);
+    waiters = e->waiters;
+    e->waiters = NULL;
+    if (waiters == NULL)
+    {
+        /* 无 waiter：置粘滞 signaled，下一个 wait 立即消费（auto_reset） */
+        e->signaled = 1;
+    }
+    uv_mutex_unlock(&e->gate);
+    while (waiters != NULL)
+    {
+        RigiAlarmWaitNode *next = waiters->next;
+        rigi_dispatch_publish(waiters->waiter);
+        rigi_track_free(waiters);
+        waiters = next;
+    }
+}
+
+void rigi_event_destroy(int64_t ev)
+{
+    RigiTimer *e;
+    if (ev == 0)
+    {
+        return;
+    }
+    e = (RigiTimer *)(uintptr_t)ev;
+    uv_mutex_lock(&e->gate);
+    if (e->closed)
+    {
+        uv_mutex_unlock(&e->gate);
+        return; /* 幂等 */
+    }
+    e->closed = 1;
+    if (e->armed_counted)
+    {
+        e->armed_counted = 0;
+        atomic_fetch_sub_explicit(&rigi_stat_armed, 1,
+            memory_order_relaxed);
+    }
+    /* 残余 waiter 防御清扫（正常路径队列回收先 signal 唤醒再 destroy） */
+    while (e->waiters != NULL)
+    {
+        RigiAlarmWaitNode *next = e->waiters->next;
+        rigi_track_free(e->waiters);
+        e->waiters = next;
+    }
+    uv_mutex_unlock(&e->gate);
+    uv_mutex_destroy(&e->gate);
+    rigi_track_free(e);
 }
 
 /* 残余定时器清扫（Worker 线程体收尾钩子）：全部 stop + close +
@@ -1140,6 +1237,31 @@ int32_t rigi_alarm_wait(int64_t timer, int64_t waiter)
     fprintf(stderr, "rigi_rt: EventAlarm waiter 登记需要 libuv"
         "（RIGI_HAS_LIBUV 未定义）\n");
     abort();
+}
+
+/* 手动 EventAlarm 降级形态：无协程原语即无 waiter 场景（Worker/
+ * alarm_wait 均 abort），只保粘滞 signaled 单线程语义供同步路径 */
+int64_t rigi_event_create(void)
+{
+    int *flag = (int *)rigi_track_malloc(sizeof(int));
+    *flag = 0;
+    return (int64_t)(uintptr_t)flag;
+}
+
+void rigi_event_signal(int64_t ev)
+{
+    if (ev != 0)
+    {
+        *(int *)(uintptr_t)ev = 1;
+    }
+}
+
+void rigi_event_destroy(int64_t ev)
+{
+    if (ev != 0)
+    {
+        rigi_track_free((void *)(uintptr_t)ev);
+    }
 }
 
 void rigi_main_worker_shutdown(void)

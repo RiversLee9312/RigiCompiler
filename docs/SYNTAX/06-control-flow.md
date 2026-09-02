@@ -243,7 +243,7 @@ pub abstract class Exception { ... }   // 实际声明在 stdlib/core/exceptions
 - `protected var message: String` 字段——异常的人类可读描述；
 - `pub func getMessage(): String` 方法——message 的唯一公共读取通道（abstract，由各具体异常子类 override 实现；`toString` 不覆写，插值/打印仍走 `Object` 的默认实现）。
 
-`throw` 操作数类型与 `catch` 子句类型必须是 `core.Exception` 或其子类（§3.1 层级兼容判定）。标准库在 `stdlib/core/exceptions.rg` 提供七个具体子类（均可继承，用户自定义异常以同样的 `: core.Exception` 声明）：
+`throw` 操作数类型与 `catch` 子句类型必须是 `core.Exception` 或其子类（§3.1 层级兼容判定）。标准库在 `stdlib/core/exceptions.rg` 提供八个具体子类（均可继承，用户自定义异常以同样的 `: core.Exception` 声明）：
 
 | 类型 | 含义 |
 |------|------|
@@ -254,6 +254,7 @@ pub abstract class Exception { ... }   // 实际声明在 stdlib/core/exceptions
 | `core.DividedByZeroException` | 整数除法除零（BIL §11.2；float/double 除零按 IEEE 754 产 inf/NaN，不抛） |
 | `core.OutOfBoundException` | 内建数组/Span 越界**写入**抛出（可捕获；越界读取不抛，按空安全得 `null`，§13.2） |
 | `core.IllegalStateException` | 对象当前状态不允许该操作：重复启动已启动 Task（§4.5）、`Timer.RepeatOption` 非正 repeatCount（`RUNTIME.md` §19.5）等 |
+| `core.NoSuchElementException` | 集合/映射缺键：`Parcel.getElement` 对 absent key 抛出（与「存了 null」返回 `null` 区分） |
 
 内置异常的消息模板烘在 stdlib 源码中——各子类在 `init(text: String)` 之外自持便捷 init 重载（如 `DividedByZeroException.init()`、`CastException.init(fromType, toType)`、`OutOfBoundException.init(index, length)`），两态宿主构造内置异常时经这些 init 派发，VM 与 native 的消息文本天然一致。
 

@@ -469,7 +469,9 @@ namespace RigiCompiler.Tests
                 "[$health, $.t3]\n" +
                 "invoke.indirect $g $.t4 []\n" +
                 "ret $.t4\n");
-            var callFn = moduleCap.Functions.First(f => f.Symbol.Contains("$$call"));
+            // StartsWith("..lambda..")：避开 stdlib InvokeAction 的 $$call
+            var callFn = moduleCap.Functions.First(f => f.Symbol.StartsWith("..lambda..")
+                && f.Symbol.Contains("$$call"));
             BilTestHarness.CheckFnShape("wrapped 局部捕获 $$call getValue",
                 moduleCap, callFn.Symbol,
                 ".vars { ..cell..UUID .t0, .i32 .t1 }\n" +

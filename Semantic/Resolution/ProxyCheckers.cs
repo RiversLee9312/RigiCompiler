@@ -9,7 +9,8 @@ namespace RigiCompiler
     // 校验规则（M81 定稿 + M82 修订——Entity wrapper 泛型参数放宽为至多一个，
     // 见 SYNTAX §14.2）：
     //   1. 泛型元数：Entity wrapper 至多一个泛型参数（恰一个即 TTarget 角色，
-    //      self 的类型来源）；Value/Method wrapper 不得声明泛型参数（proxy
+    //      self 的类型来源）；Value wrapper 至多一个（恰一个即 TField 角色，
+    //      MW11d Temporary\<TField>）；Method wrapper 不得声明泛型参数（proxy
     //      方法自身的泛型参数不受此限）。
     //   2. 类别矩阵：Entity 允许 specific 四类（.proxy.<名>/.proxy.opr.<名>/
     //      .proxy.get.<名>/.proxy.set.<名>）与 wildcard 四类（.proxy.*/
@@ -157,7 +158,7 @@ namespace RigiCompiler
             };
         }
 
-        // 规则 1：泛型元数（Entity 至多一个 = TTarget 角色；Value/Method 零个）
+        // 规则 1：泛型元数（Entity/Value 至多一个；Method 零个）
         private static void CheckGenericArity(TypeSymbol type, WrapperTargetKind targetKind,
             DeclEntry entry, ResolveEnvironment env)
         {
@@ -168,6 +169,15 @@ namespace RigiCompiler
                     env.Error(entry.Node.Span,
                         $"Entity wrapper '{type.Name}' must declare at most one generic parameter " +
                         "(the TTarget role)");
+                }
+            }
+            else if (targetKind == WrapperTargetKind.Value)
+            {
+                if (type.GenericParameters.Count > 1)
+                {
+                    env.Error(entry.Node.Span,
+                        $"Value wrapper '{type.Name}' must declare at most one generic parameter " +
+                        "(the TField role)");
                 }
             }
             else if (type.GenericParameters.Count > 0)

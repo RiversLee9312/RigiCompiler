@@ -323,12 +323,19 @@ namespace RigiCompiler
             }
         }
 
-        // 单实参闸门 2 判定：实际类型须共享安全（泛型参数类型判型后不
-        // 可判，按非共享安全拒绝；ErrorType 毒化静默）
+        // 单实参闸门 2 判定：实际类型须共享安全。
+        // 泛型参数类型判型后不可静态判定——按 S9a receiver / 闸门 5 同口径
+        // 跳过（声明侧），安全性由构造点检查兜底（§3.1.1 声明侧跳过、构造
+        // 点重跑——GenericConstraints.CheckInstantiationLimits 对 async
+        // 签名代入实参重查共享安全；MW11d-D Messenger/Receiver 的 GP 值
+        // 泛型转发——send→post、dispatch→listener——须经此通道才可达，
+        // 否则任何泛型 async 基础设施都无法在泛型代码内组合）。
+        // ErrorType 毒化静默
         private static void CheckArgumentSharedSafe(BoundExpression argument, MethodSymbol method,
             ASTNode syntax, BindEnvironment env)
         {
-            if (argument.Type is ErrorTypeSymbol) return;
+            if (argument.Type is ErrorTypeSymbol
+                || argument.Type is GenericParameterSymbol) return;
             if (argument.Type is not TypeSymbol argumentType
                 || !argumentType.IsSharedSafe())
             {

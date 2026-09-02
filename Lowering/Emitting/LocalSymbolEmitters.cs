@@ -236,7 +236,9 @@ namespace RigiCompiler
             // 全局字段 singleton cell（裁定 1）同样标记 compiler-generated
             if ((type.CompanionInfo != null
                     && ReferenceEquals(type.CompanionInfo.CompanionType, type))
-                || (type.CellStorage != null && type.IsSingleton))
+                || (type.CellStorage != null && type.IsSingleton)
+                || type.Name == BilSpellings.SerializableIfaceName
+                || type.Name == BilSpellings.SerializableTokenName)
             {
                 declaration.Modifiers.Add(new BilKeywordModifier(BilKeyword.CompilerGenerated));
             }
@@ -412,6 +414,9 @@ namespace RigiCompiler
                 || method.Name.StartsWith(BilSpellings.InitFieldMethodPrefix,
                     StringComparison.Ordinal)
                 || method.Name == BilSpellings.GlobalsInitFunctionName
+                || method.Name == BilSpellings.ToParcelMethodName
+                || method.Name == BilSpellings.FromParcelMethodName
+                || method.Name == BilSpellings.InitSerializableMethodName
                 || method.IsCompanionInstance
                 || method.Companion != null)
             {

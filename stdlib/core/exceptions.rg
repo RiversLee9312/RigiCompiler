@@ -72,3 +72,10 @@ pub open class IllegalStateException : RuntimeException {
     pub init(text: String) { message = text }
     pub override func getMessage(): String { return message }
 }
+
+// 集合/映射缺键或枚举器无当前元素（MW11d-B1）：Parcel.getElement
+// 对 absent key 抛出；与「存了 null」区分（后者返回 null）
+pub open class NoSuchElementException : RuntimeException {
+    pub init(text: String) { message = text }
+    pub override func getMessage(): String { return message }
+}

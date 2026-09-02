@@ -18,6 +18,21 @@ namespace RigiCompiler.Middleware.Layout
             {
                 slots.Add(member.Canonical);
             }
+            // 父接口槽接在自身成员之后（VM 拍平：自有槽 → 接口段）；自身
+            // 下标不变，InterfaceSlotOf 对本接口方法仍从 0 计
+            foreach (var parentKey in VTablePlanner.CollectIfaceClosure(type.Canonical, type,
+                symbols))
+            {
+                var parent = symbols.FindTypeByRef(parentKey);
+                if (parent == null || parent.Declaration.Kind != BilTypeKind.Interface)
+                {
+                    continue;
+                }
+                foreach (var member in LayoutEngine.InstanceMethods(parent))
+                {
+                    slots.Add(member.Canonical);
+                }
+            }
             return new TypeLayoutPlan(type, TypeLayoutKind.Interface, 0, 1,
                 LayoutEngine.TypeFlagsOf(type), System.Array.Empty<FieldPlan>(), slots,
                 System.Array.Empty<(string, int)>(), System.Array.Empty<ushort>(),

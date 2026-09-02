@@ -165,6 +165,10 @@ namespace RigiCompiler.Middleware.Emit
                 LLVMValueRef src, int size) =>
                 Env.EmitMemCopy(builder, dest, src, size);
 
+            internal void EmitMemCopyN(LLVMBuilderRef builder, LLVMValueRef dest,
+                LLVMValueRef src, LLVMValueRef sizeI64) =>
+                Env.EmitMemCopyN(builder, dest, src, sizeI64);
+
             internal void EmitMemSetZero(LLVMBuilderRef builder, LLVMValueRef dest, int size) =>
                 Env.EmitMemSetZero(builder, dest, size);
 

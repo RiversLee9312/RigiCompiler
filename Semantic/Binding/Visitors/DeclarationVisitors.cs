@@ -161,6 +161,24 @@
                         $"@{builtinName} can only be applied to native functions");
                     continue;
                 }
+                if (ResolveEnvironment.IsEntryPointAnnotation(annotation))
+                {
+                    env.Error(annotation.Span ?? decl.Span,
+                        "@EntryPoint can only be applied to functions");
+                    continue;
+                }
+                if (ResolveEnvironment.IsTerminalAnnotation(annotation))
+                {
+                    env.Error(annotation.Span ?? decl.Span,
+                        "@Terminal can only be applied to wrapper declarations");
+                    continue;
+                }
+                if (ResolveEnvironment.IsInternalAnnotation(annotation))
+                {
+                    env.Error(annotation.Span ?? decl.Span,
+                        "@Internal can only be applied to wrapper declarations");
+                    continue;
+                }
                 var resolved = env.Names.ResolveSymbolPath(annotation.Name.symbol,
                     ctx.Frame.FileCtx, ctx.Frame.DeclaringType, ctx.Frame.Method,
                     allowImports: true, reportErrors: true,
@@ -193,11 +211,17 @@
                         "(§14.3: only read-only variables)");
                     continue;
                 }
-                var app = new WrapperApplication(wrapperType, annotation);
+                WrapperApplicationChecker.CheckInternalApplication(wrapperType,
+                    ctx.Frame.FileCtx.Namespace, annotation.Span ?? decl.Span, env.Error);
+                var appliedType = WrapperApplicationChecker.SubstituteWrapperApplication(
+                    wrapperType, local, env.Unit.Symbols);
+                var app = new WrapperApplication(appliedType, annotation);
                 // M109b-1：cell 场景实参在声明点词法作用域绑定（外层局部/参数）
                 WrapperInitSynthesis.BindInitArgsInScope(app, scope, ctx, env, decl);
                 local.AppliedWrappers.Add(app);
             }
+            WrapperApplicationChecker.CheckTerminalCombination(local.AppliedWrappers,
+                decl.Span, env.Error);
         }
 
         // 解构声明（S7f，SYNTAX §18）：var (a, b) = pair——初始化器类型

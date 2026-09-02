@@ -18,6 +18,17 @@ namespace RigiCompiler.Bil
         // override 时生成同族 override 版，虚派发选中最高派生实现
         public const string InitFieldMethodPrefix = "..init.field.";
 
+        // MW11d-B2：@Serializable 宿主合成方法（走正常 BIL 产物流）。
+        // ..toParcel / ..fromParcel 是 ..ISerializable 的实现槽；
+        // ..init.serializable 是特权构造（token 实参，不依赖用户 init）。
+        public const string ToParcelMethodName = "..toParcel";
+        public const string FromParcelMethodName = "..fromParcel";
+        public const string InitSerializableMethodName = "..init.serializable";
+        public const string SerializableIfaceName = "..ISerializable";
+        public const string SerializableTokenName = "..serializable.token";
+        // Map 字段物化的嵌套 Parcel.typeName
+        public const string MapParcelTypeName = "core.collections.Map";
+
         // §9.3/§8.4.1：全局（及静态）字段初始化器函数保留名——编译器合成
         // 的无参 void 全局 fn，main 前由 VM 同步执行（参照 §8.7 companion
         // 统一设计：静态初值的执行时机归 VM 启动序列）

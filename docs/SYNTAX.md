@@ -17,6 +17,7 @@
 | §14 | Wrapper（修饰器） | [SYNTAX/10-wrapper.md](SYNTAX/10-wrapper.md) |
 | §15–§18 | 模块系统 / 访问修饰符 / 程序入口 / 解构声明 | [SYNTAX/11-modules-access-entry.md](SYNTAX/11-modules-access-entry.md) |
 | §19 | 关键字一览 | [SYNTAX/12-keywords.md](SYNTAX/12-keywords.md) |
+| §20 | 序列化（@Serializable / @SerializationBase / @Temporary / @Terminal 与 Parcel） | [SYNTAX/13-serialization.md](SYNTAX/13-serialization.md) |
 
 ## 维护约定
 

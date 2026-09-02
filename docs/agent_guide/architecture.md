@@ -458,18 +458,23 @@ RigiCompiler/
 │   │                            #   gitignored；解析序 --libuv-dir → RIGI_LIBUV →
 │   │                            #   tools/.libuv → 编译器旁 .libuv，§2 获取链定稿）
 ├── stdlib/                   # 编译器自携标准库源（EmbeddedResource 内嵌，见 StdlibSources；
-│                             #   六源，与用户源同走 P1–P4）
+│                             #   八源，与用户源同走 P1–P4）
 │   ├── .bootstrap.rg         # 基元自举源（EnumerateInRange + core.Pair\<TKey, TValue>
-│   │                            #   解构协议根，SYNTAX §18/§15.3）
+│   │                            #   解构协议根 + lambda 对象模型四家族 + any_to_string
+│   │                            #   触达点，SYNTAX §18/§15.3/§3.8）
 │   └── core/                    # Console.rg（core.io::Console）+ collections.rg
 │                                #   （IEnumerable/IEnumerator 双接口 + RangeI32/
-│                                #   RangeEnumeratorI32；RangeEnumerator\<T> 抽象基类）
+│                                #   RangeEnumeratorI32 + List\<T>/Map\<K, V\> 最小集合面）
 │                                #   + coroutine.rg（core.coroutine 类型面——Task/
 │                                #   Task\<TReturn>/Executor 家族/PollingAlarm/EventAlarm/
 │                                #   CoroutineLocal\<TValue> 具体 shared class + sleep，
 │                                #   SYNTAX §15.3）+ time.rg（core.time）+ disposable.rg（core.IDisposable，
 │                                #   §6.2）+ exceptions.rg（RuntimeException/IOException/
 │                                #   CastException/NoSuchMethodException 四异常子类，§8.1）
+│                                #   + serialization.rg（core.serialization：@Serializable/
+│                                #   @SerializationBase/@Temporary/@Terminal + Parcel，SYNTAX §20）
+│                                #   + messaging.rg（core.messaging：MessageQueue 五原语 +
+│                                #   Reader/Receiver/Messenger 高层 API，RUNTIME §27）
 ├── Tests/                    # 自研控制台测试（非 xUnit/NUnit，见 development.md 测试策略）
 │   ├── AstDescribe.cs           # 统一 AST 描述器（全部套件共用）
 │   ├── BoundDescribe.cs         # 统一 BoundTree 描述器（P3 套件共用，仿 AstDescribe）
@@ -482,7 +487,12 @@ RigiCompiler/
 │   ├── TestRootParserLayer.cs   # 独立 Layer 测试垫底层（只接受 EOF）
 │   ├── TokenDispositionTests.cs # Token 流转协议测试（四种组合）
 │   ├── ASTIntegrityValidatorTests.cs # Validator 直调测试（合法树 + 结构破坏拒绝）
-│   └── LexerFuzzTests.cs        # Lexer fuzz 测试（Slash/EOF/注释 + 6000 随机用例）
+│   ├── LexerFuzzTests.cs        # Lexer fuzz 测试（Slash/EOF/注释 + 6000 随机用例）
+│   ├── BilVmTests.Serialization.cs / BilVmTests.Messaging.cs  # MW11d 序列化与
+│   │                            #   消息行为电池（BilVm 套件 partial；消息含 §28
+│   │                            #   capability/EOS/broadcast/Receiver 电池）
+│   ├── BinderTests.Mw11d.cs     # MW11d 修饰器/with 约束 P3 正反例
+│   └── e2e/rigi/mw11dd_*.rg     # Messenger/Reader 负例语料（E2e 套件）
 └── docs/                     # 设计与规范文档（全部为权威参考）
 ```
 

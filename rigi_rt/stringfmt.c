@@ -496,3 +496,22 @@ void rigi_any_to_string(rigi_string *out, const void *anySlot)
     /* tag0 非标量（小 struct、enum 等）：类型 canonical 名 */
     rigi_copy_type_name(out, sheet);
 }
+
+/*
+ * 对象身份原语（MW11d-D，交接 §14）：语言层无引用相等 ==（lambda 隐藏类
+ * 无 operator equals），Receiver listener 身份键需要机制层身份通道。
+ * Any 经 16B 对齐槽指针（type_id + payload），与 rigi_any_to_string 同
+ * 布局；对象身份的进程内唯一标识 = payload（堆指针，对象存活期稳定且
+ * 唯一——调用纪律要求被身份化的对象此刻仍被引用）。标量 payload 无身份
+ * 语义（值装箱），本面不拒绝但调用方不应依赖。
+ */
+int64_t rigi_object_id(const void *anySlot)
+{
+    uint64_t payload;
+    if (anySlot == NULL)
+    {
+        return 0;
+    }
+    memcpy(&payload, (const char *)anySlot + 8, sizeof(payload));
+    return (int64_t)payload;
+}

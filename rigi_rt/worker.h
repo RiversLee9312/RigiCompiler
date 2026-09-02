@@ -130,6 +130,14 @@ void rigi_timer_destroy(int64_t timer);
  * 统一由属主 Worker 收尾清扫/主 Worker shutdown 回收。 */
 int32_t rigi_alarm_wait(int64_t timer, int64_t waiter);
 
+/* 手动 EventAlarm（MW11d-C 消息可得）：无 uv_timer，自动复位握手。
+ * create 计入 armed（死锁看门狗）；signal = 有 waiter 则排空发布，
+ * 否则置 signaled；wait 经 rigi_alarm_wait 消费 signaled。
+ * destroy 不走 live_timers 清扫，由队列回收显式调用。 */
+int64_t rigi_event_create(void);
+void rigi_event_signal(int64_t ev);
+void rigi_event_destroy(int64_t ev);
+
 /* 主 Worker 收尾（rigi_entry 在 Dispatcher workerLoop 返回后调用）：
  * 交接队列残余令牌排空（quiescence 直返时 noteTerminal 末次唤醒
  * 可能未 park 消耗；主 Worker 不经 destroy）+ 残余定时器
