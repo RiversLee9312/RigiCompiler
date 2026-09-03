@@ -47,6 +47,20 @@ pub interface IDisposable {
 
 该异常不绑定到“恰好触发最后一次 release 或 macroGC”的普通用户调用栈，因此普通 `try/catch` 不能接住。它只能通过 `core.GlobalExceptionHandler` 提供的全局处理方法接收。运行时应至少携带对象实际类型；实现还可以附加创建位置、最后释放位置等诊断信息。
 
+**MW12b 定稿形态**：
+
+- **API 面**（stdlib `core/global_exceptions.rg`，namespace `core`）：
+  ```rigi
+  pub class GlobalExceptionHandler {
+      pub static func register(handler: core.Action\<core.Exception>)
+      pub static func dispatch(exc: core.Exception)
+  }
+  ```
+  事件载荷类型为 `core.UndisposedResourceException : RuntimeException`，唯一 init `init(resourceType: String)`，message 模板「对象在销毁前从未调用 dispose()：${resourceType}」；`resourceType` 是违规对象的**实际类型全名**。处理器注册表存 native（rigi_rt `gexc.c` 三面 `gexc_register_handler/handler_count/handler_at`，+1 持有，注册序=下标序）——SYNTAX §3.1.1 共享安全闸门禁止静态字段持 local `Action`。
+- **派发时机**：入口收尾统一派发——native 由生成代码 entry stub 在 main/drain 之后、失败汇总之前循环 `rigi_gexc_take` 逐条真构造异常并调 `dispatch`；VM 由 `BilVm.Run` 在同一时点经 C# 终结器（`VmObject.DisposedMarked` 未标记且类型 implements `IDisposable` → 入队）+ `GC.Collect`/`WaitForPendingFinalizers` 后逐条派发。每次 `dispatch` 调用后做 pending 检查，处理器自身抛异常走正常失败汇总。
+- **默认行为**：注册表为空时 `dispatch` 打印默认 stderr 行 `core::UndisposedResourceException: 对象在销毁前从未调用 dispose()：<类型全名>`。**进程继续，退出码不变**。
+- **晚到事件**：native 侧 `globals_cleanup`（静态槽释放）与 GC 终轮收集阶段入队的事件不经用户处理器，由 `rigi_gexc_flush_default` 在 atexit 打印同文本默认行；VM 侧静态槽/单例保持根住、不模拟退出清理，因而不产生晚到事件。
+
 这一分工保持三类生命周期彼此独立：
 
 ```text

@@ -197,7 +197,7 @@ namespace RigiCompiler.Middleware.Emit
         {
             if (session.IsInlineValueType(targetType, out _))
             {
-                var tmp = builder.BuildAlloca(LLVMTypeRef.Int64, "unbox.bits");
+                var tmp = LlvmEmitEnvironment.BuildEntryAlloca(builder, LLVMTypeRef.Int64, "unbox.bits");
                 builder.BuildStore(payload, tmp);
                 session.EmitMemCopy(builder, slots[target].Slot, tmp, size);
                 return;
@@ -248,12 +248,12 @@ namespace RigiCompiler.Middleware.Emit
             }
             if (session.IsInlineValueType(declared, out var plan))
             {
-                var tmp = builder.BuildAlloca(
+                var tmp = LlvmEmitEnvironment.BuildEntryAlloca(builder, 
                     LLVMTypeRef.CreateArray(LLVMTypeRef.Int8, (uint)plan.Size), "ctor.val");
                 tmp.Alignment = (uint)plan.Alignment;
                 if (plan.Size <= InlineLimit)
                 {
-                    var bits = builder.BuildAlloca(LLVMTypeRef.Int64, "ctor.bits");
+                    var bits = LlvmEmitEnvironment.BuildEntryAlloca(builder, LLVMTypeRef.Int64, "ctor.bits");
                     builder.BuildStore(payload, bits);
                     session.EmitMemCopy(builder, tmp, bits, plan.Size);
                 }
@@ -266,7 +266,7 @@ namespace RigiCompiler.Middleware.Emit
             }
             if (declared.IsString)
             {
-                var tmp = builder.BuildAlloca(StringAbi.ValueType(session.Context), "ctor.str");
+                var tmp = LlvmEmitEnvironment.BuildEntryAlloca(builder, StringAbi.ValueType(session.Context), "ctor.str");
                 var block = builder.BuildIntToPtr(payload, PointerType(), "ctor.sblk");
                 session.EmitMemCopy(builder, tmp, block, 16);
                 return builder.BuildLoad2(StringAbi.ValueType(session.Context), tmp, "ctor.sld");
@@ -277,7 +277,7 @@ namespace RigiCompiler.Middleware.Emit
         internal static LLVMValueRef BitsFromSlot(ModuleBuilder.Session session,
             LLVMBuilderRef builder, LLVMValueRef slot, int size)
         {
-            var tmp = builder.BuildAlloca(LLVMTypeRef.Int64, "box.bits");
+            var tmp = LlvmEmitEnvironment.BuildEntryAlloca(builder, LLVMTypeRef.Int64, "box.bits");
             builder.BuildStore(LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, 0, false), tmp);
             if (size > 0)
             {

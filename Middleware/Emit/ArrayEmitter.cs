@@ -270,7 +270,7 @@ namespace RigiCompiler.Middleware.Emit
             builder.BuildCondBr(small, scBlock, fatBlock);
             builder.PositionAtEnd(scBlock);
             var payload = builder.BuildExtractValue(value, 1, "arr.tid.pl");
-            var bits = builder.BuildAlloca(LLVMTypeRef.Int64, "arr.tid.bits");
+            var bits = LlvmEmitEnvironment.BuildEntryAlloca(builder, LLVMTypeRef.Int64, "arr.tid.bits");
             builder.BuildStore(payload, bits);
             session.EmitMemCopyN(builder, ptr, bits,
                 builder.BuildZExt(size, LLVMTypeRef.Int64, "arr.tid.n"));
@@ -399,14 +399,14 @@ namespace RigiCompiler.Middleware.Emit
             LLVMValueRef size)
         {
             var fn = session.CurrentFunction;
-            var slot = builder.BuildAlloca(TypeLayout.FatReferenceType(session.Context),
+            var slot = LlvmEmitEnvironment.BuildEntryAlloca(builder, TypeLayout.FatReferenceType(session.Context),
                 "arr.ld.slot");
             var inBlock = fn.AppendBasicBlock("arr.ld.in");
             var fatBlock = fn.AppendBasicBlock("arr.ld.fat");
             var join = fn.AppendBasicBlock("arr.ld.join");
             builder.BuildCondBr(inline, inBlock, fatBlock);
             builder.PositionAtEnd(inBlock);
-            var bitsTmp = builder.BuildAlloca(LLVMTypeRef.Int64, "arr.ld.bits");
+            var bitsTmp = LlvmEmitEnvironment.BuildEntryAlloca(builder, LLVMTypeRef.Int64, "arr.ld.bits");
             builder.BuildStore(LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, 0, false), bitsTmp);
             MemCopyN(session, builder, bitsTmp, elemPtr, size);
             var bits = builder.BuildLoad2(LLVMTypeRef.Int64, bitsTmp, "arr.ld.b");
@@ -434,7 +434,7 @@ namespace RigiCompiler.Middleware.Emit
             builder.BuildCondBr(inline, inBlock, fatBlock);
             builder.PositionAtEnd(inBlock);
             var payload = builder.BuildExtractValue(fat, 1, "arr.st.pl");
-            var bitsTmp = builder.BuildAlloca(LLVMTypeRef.Int64, "arr.st.bits");
+            var bitsTmp = LlvmEmitEnvironment.BuildEntryAlloca(builder, LLVMTypeRef.Int64, "arr.st.bits");
             builder.BuildStore(payload, bitsTmp);
             MemCopyN(session, builder, elemPtr, bitsTmp, size);
             builder.BuildBr(join);

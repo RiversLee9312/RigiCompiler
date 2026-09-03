@@ -45,7 +45,100 @@ namespace RigiCompiler.Middleware.Layout
                 ConstructedLayout.ResolveConstructed(typeRef, symbols, table,
                     new HashSet<string>(System.StringComparer.Ordinal), functionsWithBody);
             }
+            // MW12b §25.2：dispose 实现槽目标集合（Emit prologue 置位
+            // disposed 的 fn 成员判定）随布局一次算好
+            table.DisposeImplementations = CollectDisposeImplementations(table, symbols);
             return table;
+        }
+
+        // MW12b：core::IDisposable 的 canonical（stdlib core/disposable.rg）
+        internal const string DisposableCanonical = "core::IDisposable";
+
+        internal static bool ImplementsDisposable(IReadOnlyList<string> ifaceClosure)
+        {
+            foreach (var iface in ifaceClosure)
+            {
+                if (iface == DisposableCanonical)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // 「IDisposable.dispose 槽的目标 fn 符号」集合：对 interface 闭包
+        // 含 IDisposable 的 class 计划，取 iMap 段基址 + 接口壳内槽序解析
+        // 出 vtable 槽目标（与 MirReachability.AddInterfaceEdges 同口径；
+        // iMap 不沿继承复制——条目沿 BasePlan 链上查，槽下标按本类
+        // vtable 取，override 复用基槽的同偏移不变量保证命中本类实现）。
+        // 槽目标是烘焙后的身份（wrapper 烘焙外移体 $.mwrapped. 中缀由
+        // 槽符号天然兼容）；async dispose 的槽目标是 stub 原符号（调用即
+        // 进入，置位语义正确），resume 合成 fn 不入集合。
+        private static IReadOnlySet<string> CollectDisposeImplementations(
+            LayoutPlanTable table, MwSymbolTable symbols)
+        {
+            var result = new HashSet<string>(System.StringComparer.Ordinal);
+            var iface = symbols.FindTypeByRef(DisposableCanonical);
+            if (iface == null || table.Find(DisposableCanonical) is not { } shell)
+            {
+                return result;   // 无 stdlib 的合成模块（单元测试形态）
+            }
+            string? disposeCanonical = null;
+            foreach (var member in iface.Members)
+            {
+                if (member.SignatureKey == "dispose()")
+                {
+                    disposeCanonical = member.Canonical;
+                    break;
+                }
+            }
+            if (disposeCanonical == null)
+            {
+                return result;
+            }
+            var slot = -1;
+            for (var i = 0; i < shell.VTableSlots.Count; i++)
+            {
+                if (shell.VTableSlots[i] == disposeCanonical)
+                {
+                    slot = i;
+                    break;
+                }
+            }
+            if (slot < 0)
+            {
+                return result;
+            }
+            foreach (var plan in table.Plans)
+            {
+                if (plan.Kind != TypeLayoutKind.Class
+                    || !ImplementsDisposable(plan.IfaceClosure))
+                {
+                    continue;
+                }
+                for (var host = plan; host != null; host = host.BasePlan)
+                {
+                    var baseOffset = -1;
+                    foreach (var (ifaceType, off) in host.IMap)
+                    {
+                        if (ifaceType == DisposableCanonical)
+                        {
+                            baseOffset = off;
+                            break;
+                        }
+                    }
+                    if (baseOffset < 0)
+                    {
+                        continue;
+                    }
+                    if (baseOffset + slot < plan.VTableSlots.Count)
+                    {
+                        result.Add(plan.VTableSlots[baseOffset + slot]);
+                    }
+                    break;
+                }
+            }
+            return result;
         }
 
         internal static TypeLayoutPlan? Resolve(MwTypeSymbol type, MwSymbolTable symbols,

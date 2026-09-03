@@ -86,7 +86,7 @@ namespace RigiCompiler.Middleware.Emit
             else
             {
                 var arrTy = LLVMTypeRef.CreateArray(ptr, (uint)argc);
-                var arr = builder.BuildAlloca(arrTy, "dynnew.sheets");
+                var arr = LlvmEmitEnvironment.BuildEntryAlloca(builder, arrTy, "dynnew.sheets");
                 for (var i = 0; i < argc; i++)
                 {
                     if (inst.Args[i] is not MirLocalOperand local)
@@ -249,7 +249,7 @@ namespace RigiCompiler.Middleware.Emit
             {
                 var block = Malloc(session, builder,
                     LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, 16, false));
-                var tmp = builder.BuildAlloca(StringAbi.ValueType(session.Context), "znew.str");
+                var tmp = LlvmEmitEnvironment.BuildEntryAlloca(builder, StringAbi.ValueType(session.Context), "znew.str");
                 builder.BuildStore(NativeZeroOf(session, MirType.Of("core::String")), tmp);
                 session.EmitMemCopy(builder, block, tmp, 16);
                 var payload = builder.BuildPtrToInt(block, LLVMTypeRef.Int64, "znew.s.pl");
@@ -349,7 +349,7 @@ namespace RigiCompiler.Middleware.Emit
                 small, large);
 
             builder.PositionAtEnd(small);
-            var tmp = builder.BuildAlloca(
+            var tmp = LlvmEmitEnvironment.BuildEntryAlloca(builder, 
                 LLVMTypeRef.CreateArray(LLVMTypeRef.Int8, BoxEmitter.InlineLimit), "dynnew.sret");
             tmp.Alignment = BoxEmitter.InlineLimit;
             session.EmitMemSetZero(builder, tmp, BoxEmitter.InlineLimit);
@@ -616,7 +616,7 @@ namespace RigiCompiler.Middleware.Emit
                 return BoxEmitter.PackFat(session, builder, sheet, BoxEmitter.TagInline,
                     inline, "dynnew");
             }
-            var block = builder.BuildAlloca(
+            var block = LlvmEmitEnvironment.BuildEntryAlloca(builder, 
                 LLVMTypeRef.CreateArray(LLVMTypeRef.Int8, (uint)size), "dynnew.stack");
             block.Alignment = StackBorrowAlign(session, type);
             session.EmitMemCopy(builder, block, slots[localName].Slot, size);

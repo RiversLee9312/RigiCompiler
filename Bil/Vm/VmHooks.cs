@@ -69,6 +69,10 @@ namespace RigiCompiler.Bil.Vm
             var hooks = new VmHooks();
             hooks.Register("rigi_rt", "print", Print);
             hooks.Register("rigi_rt", "printErr", PrintErr);
+            // MW12b：global_exceptions.rg 的 printErr 声明用
+            // @NativeSymbol("print_err)（rigi_ 直拼命中 shim.c 的
+            // rigi_print_err；Console.rg 的 printErr 键保留），两键同实现
+            hooks.Register("rigi_rt", "print_err", PrintErr);
             hooks.Register("rigi_rt", "any_to_string", ToStringHook);
             // MW11d-D：对象身份原语（交接 §14 listener 身份键）
             hooks.Register("rigi_rt", "object_id", ObjectId);
@@ -148,6 +152,17 @@ namespace RigiCompiler.Bil.Vm
                 (ctx, args) => ctx.Dispatch.CoroLocalGet(args));
             hooks.Register("rigi_rt", "coro_local_inherit",
                 (ctx, args) => ctx.Dispatch.CoroLocalInherit(args));
+            // MW12b §25.2：GlobalExceptionHandler 注册表三面（rigi_rt
+            // gexc.c 同语义镜像；VM 侧处理器本体直接持 VmValue——无共享
+            // 安全闸门问题，注册表留在 hook 宿主上）。undisposed 事件
+            // 通道见 VmDisposal.cs/VmObject 终结器 + BilVm.Run 收尾派发
+            //（B2 已接：注册与 dispatch 在 VM 均真实生效）
+            hooks.Register("rigi_rt", "gexc_register_handler",
+                (ctx, args) => hooks.GexcRegisterHandler(args));
+            hooks.Register("rigi_rt", "gexc_handler_count",
+                (ctx, args) => hooks.GexcHandlerCount(args));
+            hooks.Register("rigi_rt", "gexc_handler_at",
+                (ctx, args) => hooks.GexcHandlerAt(args));
             // core.time.DateTime.now() 的私有声明未带 @NativeSymbol，
             // 默认符号 = 函数名本身（与 coroutine.rg 的 time_now 同一
             // native 符号两声明，VM 两键同实现）
@@ -356,6 +371,42 @@ namespace RigiCompiler.Bil.Vm
                 throw new VmException(hookName + " 需要 .string 参数");
             }
             return text.Value;
+        }
+
+        // ===== MW12b：全局异常处理器注册表（rigi_rt gexc.c 镜像）=====
+        // 注册序 = 下标序；Any 胖值原样持存（VM 对象引用即本体）
+        private readonly List<VmValue> _gexcHandlers = new List<VmValue>();
+
+        private VmValue GexcRegisterHandler(IReadOnlyList<VmValue> arguments)
+        {
+            if (arguments.Count != 1)
+            {
+                throw new VmException("gexc_register_handler 需要恰好 1 个参数");
+            }
+            _gexcHandlers.Add(arguments[0]);
+            return new VmI64(_gexcHandlers.Count - 1);
+        }
+
+        private VmValue GexcHandlerCount(IReadOnlyList<VmValue> arguments)
+        {
+            if (arguments.Count != 0)
+            {
+                throw new VmException("gexc_handler_count 不接受参数");
+            }
+            return new VmI64(_gexcHandlers.Count);
+        }
+
+        private VmValue GexcHandlerAt(IReadOnlyList<VmValue> arguments)
+        {
+            if (arguments.Count != 1 || arguments[0] is not VmI64 index)
+            {
+                throw new VmException("gexc_handler_at 需要恰好 1 个 i64 参数");
+            }
+            if (index.Value < 0 || index.Value >= _gexcHandlers.Count)
+            {
+                throw new VmException("gexc_handler_at 下标越界：" + index.Value);
+            }
+            return _gexcHandlers[(int)index.Value];
         }
     }
 }

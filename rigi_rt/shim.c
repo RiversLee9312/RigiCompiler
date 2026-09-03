@@ -97,9 +97,24 @@ _Noreturn void rigi_abort_arithmetic_overflow(void)
 extern int32_t rigi_entry(void);
 extern void rigi_globals_cleanup(void);
 
+/* macrogc.c（MW12）：GC 协程承载线程 + fence 平台事件。init 在
+ * rigi_entry 之前（运行时初始化时创建、进程常驻，RUNTIME §23.2）。
+ * gexc.c（MW12b）：全局异常通道 flush——globals_cleanup 与 GC 终轮
+ * 收集阶段入队的晚到 undisposed 事件由 C 侧默认打印（不经用户处理器）。
+ * atexit 注册序 = mem_report, gexc_flush, gc_shutdown, globals_cleanup
+ *（LIFO 执行 = globals_cleanup → gc_shutdown（终轮收集兜底全局槽释放
+ * 产生的末批候选）→ gexc_flush（晚到事件默认打印 + 队列缓冲归还，
+ * 保住 memtrack 零泄漏口径）→ mem_report）。 */
+extern void rigi_gc_init(void);
+extern void rigi_gc_shutdown(void);
+extern void rigi_gexc_flush_default(void);
+
 int main(void)
 {
-    atexit(rigi_mem_report);       /* 先注册后执行：报告最后跑 */
-    atexit(rigi_globals_cleanup);  /* LIFO：cleanup 先于 report 执行 */
+    atexit(rigi_mem_report);          /* 先注册后执行：报告最后跑 */
+    atexit(rigi_gexc_flush_default);  /* LIFO 序：cleanup → gc_shutdown → gexc_flush → report */
+    atexit(rigi_gc_shutdown);
+    atexit(rigi_globals_cleanup);
+    rigi_gc_init();
     return rigi_entry();
 }

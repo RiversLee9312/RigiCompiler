@@ -533,6 +533,10 @@ namespace RigiCompiler.Middleware.Emit
                     ArcEmitter.EmitReleaseFatValue(this, builder, disp);
                 }
 
+                // MW12b §25.2：undisposed 全局异常事件 drain（派发时机
+                // 定稿：main/drain 之后、失败汇总之前）
+                EmitGexcDrain(builder, stub, reporterAvailable, takeEntry);
+
                 if (reporterAvailable)
                 {
                     // 失败汇总：main 失败优先，其次未观察失败，都无 ret
@@ -777,6 +781,7 @@ namespace RigiCompiler.Middleware.Emit
                     }
                 }
                 EmitClassTypeIdPrologue(builder, emitted, slots);
+                EmitDisposeMarkPrologue(builder, emitted, slots);
 
                 foreach (var block in fn.Blocks)
                 {
@@ -792,6 +797,120 @@ namespace RigiCompiler.Middleware.Emit
                 {
                     Ctx.EndBody();
                 }
+            }
+
+            // ===== MW12b §25.2：dispose 进入置位 =====
+
+            // fn 是 core::IDisposable.dispose 的实现槽目标（Layout 期按
+            // iMap 段基址 + 接口壳槽序收集的 DisposeImplementations 成员）
+            // 时，prologue 发射 rigi_mark_disposed(this)——进入即置位
+            //（调用了但抛异常也算负责过；挂起中的 dispose 对象被 frame
+            // 保持不进销毁检查，单 bit 足够）。槽目标身份判定天然兼容
+            // wrapper 烘焙外移体（$.mwrapped. 中缀 trampoline 即槽目标）
+            // 与 async dispose（槽目标 = stub 原符号，调用即进入；
+            // resume 合成 fn 不在集合）
+            private void EmitDisposeMarkPrologue(LLVMBuilderRef builder, EmittedFunction emitted,
+                Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots)
+            {
+                if (Layout == null
+                    || !Layout.DisposeImplementations.Contains(emitted.Mir.Symbol.Canonical)
+                    || !slots.ContainsKey(".this"))
+                {
+                    return;
+                }
+                // class 宿主的 .this 是胖引用槽（EmitClassTypeIdPrologue
+                // 同款物化形态）：payload 半 = 对象裸指针
+                var fat = LoadLocal(builder, slots, new MirLocalOperand(".this"));
+                var obj = builder.BuildIntToPtr(
+                    builder.BuildExtractValue(fat, 1, "this.payload"),
+                    BytePointer(), "this.obj");
+                var (markFn, markType) = CallEmitter.DeclareHelperFace(this,
+                    RuntimeFaces.MarkDisposed, LLVMTypeRef.Void, new[] { BytePointer() });
+                builder.BuildCall2(markType, markFn, new[] { obj }, "");
+            }
+
+            // ===== MW12b §25.2：entry stub 全局异常事件 drain =====
+
+            // undisposed 事件 drain（main/drain 之后、失败汇总之前）：
+            // rigi_gexc_take 弹空为止——逐条构造
+            // core::UndisposedResourceException（真 alloc+init，不 raise）→
+            // 调 core::GlobalExceptionHandler.dispatch（Rigi 静态方法；
+            // 每次调用后 EmitEntryPendingCheck 同款 pending 检查，处理器
+            // 抛异常进正常失败汇总）。dispatch/init/TypeSheet 任一缺失
+            //（模块未收编该运行时段）→ 整个 drain 不发射。
+            // 晚到事件（globals_cleanup 与 GC 终轮收集阶段入队）不经本
+            // 段，由 rigi_rt gexc.c 的 atexit flush 默认打印
+            private void EmitGexcDrain(LLVMBuilderRef builder, LLVMValueRef stub,
+                bool reporterAvailable, LLVMBasicBlockRef takeEntry)
+            {
+                MwMemberSymbol? dispatch = null;
+                if (Symbols.FindTypeByRef("core::GlobalExceptionHandler") is { } handlerType)
+                {
+                    foreach (var member in handlerType.Members)
+                    {
+                        if (member.Declaration.Kind is BilMemberKind.Method
+                                or BilMemberKind.StaticMethod
+                            && member.SignatureKey == ".static.dispatch(exc:core::Exception)")
+                        {
+                            dispatch = member;
+                            break;
+                        }
+                    }
+                }
+                var excType = Symbols.FindTypeByRef("core::UndisposedResourceException");
+                MwMemberSymbol? init = null;
+                if (excType != null)
+                {
+                    foreach (var member in excType.Members)
+                    {
+                        if (member.HasKeyword(BilKeyword.Init)
+                            && CanonicalSignature.Parse(member.Canonical).Parameters.Count == 1)
+                        {
+                            init = member;
+                            break;
+                        }
+                    }
+                }
+                if (dispatch == null || excType == null || init == null
+                    || !TryGetFunction(dispatch.Canonical, out var dispatchFn)
+                    || !TryGetFunction(init.Canonical, out _)
+                    || !TryGetTypeSheet(excType.Canonical, out _))
+                {
+                    return;
+                }
+                var wrapper = Symbols.FindMember(
+                    excType.Canonical + "$..init.wrapper()@.void");
+
+                var nameSlot = builder.BuildAlloca(StringAbi.ValueType(Context), "gexc.name");
+                var loop = stub.AppendBasicBlock("gexc.loop");
+                var bodyBlock = stub.AppendBasicBlock("gexc.body");
+                var done = stub.AppendBasicBlock("gexc.done");
+                builder.BuildBr(loop);
+                builder.PositionAtEnd(loop);
+                var (takeFn, takeType) = CallEmitter.DeclareHelperFace(this,
+                    RuntimeFaces.GexcTake, LLVMTypeRef.Int32,
+                    new[] { StringAbi.PointerType(Context) });
+                var got = builder.BuildCall2(takeType, takeFn, new[] { nameSlot }, "gexc.take");
+                var has = builder.BuildICmp(LLVMIntPredicate.LLVMIntNE, got,
+                    LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, 0, false), "gexc.has");
+                builder.BuildCondBr(has, bodyBlock, done);
+                builder.PositionAtEnd(bodyBlock);
+                // 类型全名是 TypeInfo.name 的借用拷出（IMMORTAL 字面量块，
+                // 不 acquire 不 release——init 体内的字段赋值 acquire 对
+                // IMMORTAL 是 no-op）
+                var name = builder.BuildLoad2(StringAbi.ValueType(Context), nameSlot,
+                    "gexc.type");
+                var emptySlots = new Dictionary<string, (LLVMValueRef Slot, MirLocal Local)>(
+                    System.StringComparer.Ordinal);
+                var fat = NewEmitter.EmitAllocAndInit(this, builder, emptySlots,
+                    excType.Canonical, wrapper, init, new[] { name });
+                builder.BuildCall2(dispatchFn.Type, dispatchFn.Value, new[] { fat }, "");
+                // 构造侧 +1 归还（dispatch 形参借用；release 触发析构时
+                // 异常类型非 DISPOSABLE，不会回流事件）
+                ArcEmitter.EmitReleaseFatValue(this, builder, fat);
+                EmitEntryPendingCheck(builder, stub, reporterAvailable, takeEntry);
+                builder.BuildBr(loop);
+                builder.PositionAtEnd(done);
             }
 
             // 类级 .generic.X 初值：从 .this 隐藏 typeid 字段装入（不进调用约定）

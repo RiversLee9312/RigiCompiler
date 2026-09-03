@@ -223,6 +223,14 @@ RUNTIME §3：胖引用槽读写**非原子**；多线程并发竞争同一引�
 - 回收前执行 RUNTIME §25 的 IDisposable 合约检查（只检查上报，绝不代跑
   dispose）。
 
+> **MW12 落地形态（macrogc.c/.h 已收口）**：颜色/候选索引打包在对象头
+> `packedFlags`——颜色 2bit + 候选账本索引 24bit（[8..32)），bit2 兼作
+> §25 disposed 位；候选账本是动态数组 + 自旋锁；全局原子债务默认阈值
+> 1MiB（`RIGI_RT_GC_THRESHOLD` 环境变量覆盖）；白色集合**两段式清理**——
+> 先攒批 → 对存活子引用补偿计数 → 先全量走边、后统一 `track_free`（同批
+> 白色对象的头在清理期互相可读）；收集期间 `gc_in_collect` + fence 冻结
+> 双保险禁止二次登记；诊断旋钮 `RIGI_RT_GC_OFF=1` / `RIGI_RT_GC_TRACE=1`。
+
 ### 4.6 触发与执行体
 
 - **检测内嵌在 `release()` 实现内**：候选登记与债务累计后比较阈值；跨越时经
@@ -240,11 +248,29 @@ RUNTIME §3：胖引用槽读写**非原子**；多线程并发竞争同一引�
   于唤醒 Alarm。
 - 生命周期：运行时初始化时创建，进程常驻。
 
+> **MW12 落地形态**：GC 协程的 native 承载是**常驻专用线程**
+> （CreateThread/pthread_create 双平台薄封装，不依赖 libuv，不经 Rigi
+> Dispatcher 通道）；`GCWakeAlarm`/`GCAlarm` 降级为双平台手动复位事件
+> （Win32 Event / pthread condvar），§19.3 sticky/幂等语义保持，不进
+> stdlib/VM hook 表。§23.2 六步握手原样执行（STARTING 独占 CAS → fence →
+> 自旋排空 cFlag，30s 超时亮红灯 abort → PROCESSING → 染色清理 → fence →
+> IDLE + 触发 GCAlarm）；清空 pending + 债务复查仍超阈值立即再来一轮。
+> shim.c 启动序：main → `rigi_gc_init` → `rigi_entry`；atexit LIFO 注册序
+> mem_report → gexc_flush → gc_shutdown → globals_cleanup（执行序：
+> globals_cleanup 释放静态槽 → gc_shutdown 终轮收集兜底 → gexc_flush 打印
+> 晚到 undisposed 事件 → mem_report 零泄漏报告）。
+
 ### 4.7 ownership fence（RUNTIME §23 保留）
 
 macroGC 维持全局性：进入 pass 即冻结**全部**托管引用 acquire/release（local 与
 shared），单一 pass 可安全处理跨 Coroutine 的混合候选闭包（local→shared 边）；
 跨协程 shared 环**支持回收**。§23.6 放行不变（分配与纯值执行不停）。
+
+> **MW12 落地形态**：§23.3 隐藏 yield GCAlarm 的 native 降级 = `region_enter`
+> 内**阻塞等平台事件**——region 内禁止挂起点 + 同步函数无法挂起，阻塞 OS
+> 线程是唯一直译；阻塞期间协程不迁移。cFlag 用 OS 线程槽（懒认领的 256 槽
+> cache-line 独占注册表）即满足 §23.1 身份要求。codegen 零变化（RcInjection
+> region 协议 MW7 起常驻）。
 
 ### 4.8 运行时面（C ABI 草案）
 
@@ -257,7 +283,7 @@ rigi_rt 导出（命名待定，形态固定）：
 | `rigi_ref_acquire` / `rigi_ref_release` | 值语义四面族·胖引用槽：按 tag 分派对象/堆值/内联；生成代码只见此对 |
 | `rigi_value_acquire` / `rigi_value_release` | 值语义四面族·值类型：按 TypeSheet.refMap 走查内部胖引用/String 槽 |
 | `rigi_string_acquire` / `rigi_string_release` / `rigi_string_new` | String 槽 ARC（块头 `{atomic u32 rc, u32 reserved}`，data=块+8；字面量 rc=`0xFFFFFFFF` 永生） |
-| `region_enter/region_exit` | RUNTIME §23.3 cFlag 协议（含双重检查与 GCAlarm 挂起路径）；面内自包含 |
+| `region_enter/region_exit` | RUNTIME §23.3 cFlag 协议（MW12 已落地：OS 线程槽 cFlag 注册表 + region_enter 内阻塞等平台事件，无双检挂起路径）；面内自包含 |
 | `rigi_track_malloc` / `rigi_track_free` / `rigi_mem_report` | 台账三面：`RIGI_RT_MEMTRACK=1` 时跟踪堆块，进程退出未清零即 stderr + exit 1 |
 | `string_concat` 等内建面 | String 内建 `+` 等特权操作的实现（String 字符数据是特权裸缓冲区，非托管引用，RUNTIME §4） |
 | `i64_to_string` / `u64_to_string` / `f64_to_string` / `f32_to_string` / `bool_to_string` / `char_to_string` | 标量标准文本（StringOut 首参；any_to_string 的格式化底座；窄整数在 any_to_string 内按符号性 widen 到 i64/u64；f64/f32 为 Ryu 最短往返 + .NET 默认呈现） |
@@ -272,8 +298,11 @@ rigi_rt 导出（命名待定，形态固定）：
 | `rigi_typeof` | 取胖引用实际 TypeSheet*（typeOf 值形态）；tag2 取对象头 sheet，tag0/tag1 掩码 typeid |
 | `rigi_exc_raise` / `rigi_exc_pending` / `rigi_exc_take` | checked-flag 异常传输三面（§8）：raise = 异常对象 acquire+1 写线程局部 pending 槽；pending = 借用查询（不动计数）；take = 取走并清槽（+1 所有权随返回值移交） |
 | `rigi_type_name_of` / `rigi_exc_halt` | 顶层未捕获 reporter（§8）：obj→对象头 typeId→TypeInfo.name 诊断名拷出（借用语义）+ exit(1) 收尾（noreturn） |
+| `rigi_mark_disposed` | §25.2 disposal 标记（对象头 packedFlags bit2，原子 or）；Emit 在「iMap 中 IDisposable.dispose 槽目标」函数（烘焙后身份，async stub 含）prologue 发射 |
+| `rigi_gexc_report_undisposed` / `rigi_gexc_take` / `rigi_gexc_flush_default` | §25.2 全局异常通道队列三面：销毁检查（`rigi_dispose_check`，rigi_destruct 双路径 + macroGC teardown 共用）发现未 dispose 即入队（payload=违规对象实际 TypeSheet*）；entry stub 在 drain 后、失败汇总前循环 take（StringOut 借用语义）统一派发；atexit 晚到事件（globals_cleanup/GC 终轮）按默认文本打印 |
+| `rigi_gexc_register_handler` / `rigi_gexc_handler_count` / `rigi_gexc_handler_at` | `core.GlobalExceptionHandler` 处理器注册表三面（RigiFatRef +1 持有，注册序=下标序；§3.1.1 共享安全闸门禁止静态字段持 local Action，注册表沉 native） |
 | 协程原语面族 | **MW11c 定稿形态（RUNTIME §17.4）**：调度逻辑在 Rigi 世界（`core.coroutine` Dispatcher/Task/Worker），rigi_rt 只留原语——Worker（创建/销毁/入队 + 跨线程唤醒/park）、协程句柄（`create(resumeFn, frame)` / `resume(handle)`→执行段归宿 / `destroy`）、定时器、同步 Mutex（仅 Dispatcher 内部队列一致性，与语言级异步 `Mutex` 是两个东西）、TLS 当前上下文、时钟（`core.time.DateTime.now()` 底座）、未观察失败注册表（`rigi_failure_record/get/drop/take_unobserved`）。native 经 fn 指针回调 Rigi（resume / `rigi_dispatcher_entry` / `rigi_dispatch_publish` / `rigi_alarm_ring`）。生成代码交互点：spawn stub → 建 Task + 句柄 + Dispatcher.publish；await → Task 方法决策码；DONE → complete/fail；yield → Dispatcher 重排。均无 String 编组，Emit 经 `DeclareHelperFace` 直接声明 |
-| GC Alarm 族 | GCAlarm 与 GC 唤醒 Alarm 的创建与触发 |
+| GC Alarm 族 | 内部平台事件形态（MW12 已落地）：GCWakeAlarm/GCAlarm = 双平台手动复位事件（Win32 Event / pthread condvar），§19.3 sticky/幂等语义保持；不经 Dispatcher 通道、不进 RuntimeFaces，无跨层可见形态 |
 
 注：运行时面一律经 bitcode 合并进模块参与优化；频繁调用的面（如胖引用 access
 helper）由优化管线内联，必要时以 `noinline` 标注例外。
@@ -603,7 +632,12 @@ invoke、传播垫改 landingpad/catchswitch），MIR 与 RcInjection 不变。
 
 **全局异常通道 carve-out**：RUNTIME §25.2 undisposed-resource 等不绑定用
 户调用栈的事件不经 checked-flag、不可 try/catch，走
-`core.GlobalExceptionHandler` API 通道，随 MW12 定稿。
+`core.GlobalExceptionHandler` API 通道（**MW12b 已定稿**：API 在
+stdlib/core/global_exceptions.rg，register/dispatch 静态二面 +
+UndisposedResourceException；事件队列与处理器注册表沉 rigi_rt gexc.c；
+entry stub 在 main/drain 后、失败汇总前循环 `rigi_gexc_take` 统一派发；
+晚到事件——globals_cleanup 与 GC 终轮收集阶段入队——不经用户处理器，
+由 `rigi_gexc_flush_default` 在 atexit 打印默认文本）。
 
 ## 9. 优化 pass 归属表
 
@@ -658,7 +692,11 @@ rigi_rt/                    # 本仓库顶层目录（C，EmbeddedResource 内�
 ├── span.c                  # MW7b：rigi_span_alloc，复用 alloc_contiguous（数组同构布局）
 ├── memtrack.c              # 台账：RIGI_RT_MEMTRACK=1 时跟踪 malloc/free，退出未清零 exit 1
 ├── arc.c/.h                # microGC / microSGC、值语义四面族、region 协议、对象头
-├── macrogc.c/.h            # （随后续阶段）Bacon-Rajan 收集器、候选账本、GC 协程实体
+├── macrogc.c/.h            # MW12 Bacon-Rajan 三阶段收集器（显式 trace 栈）、候选账本、
+│                             #   GC 常驻线程 + fence（region_enter 双重检查）+ 阈值/终轮兜底；
+│                             #   诊断 env：RIGI_RT_GC_THRESHOLD/OFF/TRACE
+├── gexc.c/.h               # MW12b §25.2 全局异常通道：undisposed 事件队列 + 处理器注册表
+│                             #   + atexit flush（drain/dispatch 晚到规则）
 ├── coroutine.h             # MW11c 瘦身：RigiFatRef / RigiResumeCode 共享 ABI 类型（旧 C 调度面已删）
 ├── cohandle.c/.h           # 协程句柄原语：create/resume/destroy + lane + PollingAlarm 轮询状态
 ├── worker.c/.h             # Worker 原语：OS 线程/入队/park/同步 Mutex/定时器/TLS/主 Worker 收尾
@@ -690,7 +728,7 @@ rigi_rt/                    # 本仓库顶层目录（C，EmbeddedResource 内�
 | MW10 | wrapper 烘焙全链（**已收口**：Entity/Value/Method 三类 proxy 链 + wildcard router 与 call??? 降级 + singleton 三态 get fn 与急切初始化，§5/§7） | |
 | MW11 | 协程：状态机、Executor/Worker、Alarm（libuv 时钟底座）、Task、eager spawn。**MW11a/b** 曾以 C 侧重实现收口中间形态（单线程 drain + Alarm waiter）。**MW11c**：架构转向落地——Dispatcher/Task 调度在 Rigi 世界，rigi_rt 瘦身为 Worker/协程句柄/定时器/同步 Mutex/TLS/失败注册表原语；冷 Task、TaskState、executor 换绑、多 Worker 懒起、Timer/`sleep`、语言级 Mutex（VM 方法 hook；native 由 CoroutineSplit 改写 `enter` + Rigi `release` 真体，判定在 `tryEnter`/`releaseNext`） | ASYNC §8 集成测试 |
 | MW11d | 序列化 + 消息全链（**已收口**）：`core.serialization`（@Serializable/@SerializationBase/@Temporary/@Terminal 四修饰器 + Parcel + toParcel/fromParcel/deepCopy 合成，SYNTAX §20）；MessageQueue 传输层五原语 + capability 矩阵 + EOS/broadcast/深复制双端对拍；Reader/Receiver/Messenger 高层 API + listener 身份（`rigi_object_id` 对象身份原语）+ Executor 路由（默认 IOExecutor），RUNTIME §27。泛型基建两处顺手补齐：闸门 2 裸 GP 实参与 receiver/类型实参同口径声明侧跳过；裸模板 new 隐藏 typeid 取当前 fn 的 `.generic.*` 局部 | BilVm Messaging 电池 + NativeE2E 对拍 + e2e 负例 |
-| MW12 | macroGC：收集器、候选账本、GC 协程与内置 Executor、fence 激活、§25 检查 | 循环回收与泄漏检查套件 |
+| MW12 | macroGC：收集器、候选账本、GC 协程（native 常驻专用线程承载）、fence 激活、§25 检查（**已收口**：MW12a 收集器+fence 上线 / MW12b §25.2 全链 + GlobalExceptionHandler / MW12c 循环回收套件，全量 59 套件 0 failed） | NativeE2E mw12c 循环回收 9 例 + mw12b 4 例（含双宿主对拍）；顺带清偿两个既有 bug：FieldEmitter 借用字段读侧 ARC 失衡、Emit 临时 alloca 落非 entry 块栈泄漏（BuildEntryAlloca 统一） |
 | MW13 | 优化收尾（move/cursor、CellElim 激进化）、工具链捆绑与发布 | |
 
 注：

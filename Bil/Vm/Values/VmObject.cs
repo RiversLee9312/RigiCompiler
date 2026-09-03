@@ -78,6 +78,16 @@ namespace RigiCompiler.Bil.Vm
     {
         private readonly IVmFieldHost _slots;
         private readonly bool _valueType;
+        // MW12b §25.2：undisposed 销毁检查。判定在 AllocateObject 构造期
+        // 完成——实现闭包含 core::IDisposable 的 class 引用对象才挂事件
+        // 队列引用（struct/wrapper 值拷贝与 native 只对 class 计划检查的
+        // 口径一致，不追踪）；dispose 槽目标进入即置位 DisposedMarked。
+        // 「一被回收就爆炸」：VM=.NET GC 与 native=ARC+macroGC 事件时机
+        // 天然不同，语义本就禁止假设底层 GC 实现
+        private readonly VmUndisposedTracker? _undisposedTracker;
+        // 解释器线程写、终结器线程读（volatile 保证跨线程可见）
+        internal volatile bool DisposedMarked;
+        internal bool IsDisposalTracked => _undisposedTracker != null;
 
         public override string TypeRef => _slots.TypeRef;
         public bool IsValueType => _valueType;
@@ -88,15 +98,34 @@ namespace RigiCompiler.Bil.Vm
         }
 
         public VmObject(string typeRef, bool valueType)
+            : this(typeRef, valueType, undisposedTracker: null)
+        {
+        }
+
+        internal VmObject(string typeRef, bool valueType,
+            VmUndisposedTracker? undisposedTracker)
         {
             _slots = new VmInstanceSlots(typeRef);
             _valueType = valueType;
+            _undisposedTracker = undisposedTracker;
         }
 
         private VmObject(IVmFieldHost slots, bool valueType)
         {
             _slots = slots;
             _valueType = valueType;
+        }
+
+        // 销毁时检查：从未经 dispose 调用就被 .NET GC 回收 → 入队
+        // undisposed 事件（类型 canonical 名）。finalizer 只做入队——
+        // 触碰 VM 解释器状态在终结器线程上不安全；同一对象 finalizer
+        // 只跑一次，天然防重复上报
+        ~VmObject()
+        {
+            if (_undisposedTracker != null && !DisposedMarked)
+            {
+                _undisposedTracker.Enqueue(TypeRef);
+            }
         }
 
         public override VmValue Copy()

@@ -4,6 +4,8 @@
  * 生成代码只见四面族与 string 面；析构级联复用嵌套 region 计数。
  */
 #include "arc.h"
+#include "gexc.h"
+#include "macrogc.h"
 
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -11,22 +13,16 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* MW12 前恒 IDLE；region 最外层见非 0 则 stub abort */
-uint32_t rigi_gc_flag = 0;
-
+/* region 嵌套计数（TLS）；最外层 enter/exit 的 fence 双重检查与
+ * cFlag 协议在 macrogc.c（MW12 上线：gc_flag 非 IDLE 时 ENTERING
+ * 阻塞等 GCAlarm，恢复后完整重检，codegen 零变化） */
 static _Thread_local uint32_t rigi_region_depth = 0;
-static _Thread_local uint32_t rigi_region_c_flag = 0;
 
 void rigi_region_enter(void)
 {
     if (rigi_region_depth++ == 0)
     {
-        if (rigi_gc_flag != 0)
-        {
-            fprintf(stderr, "rigi_rt: gc fence 未就绪（MW12）\n");
-            abort();
-        }
-        rigi_region_c_flag = 2; /* PROCESSING */
+        rigi_gc_region_fence_enter();
     }
 }
 
@@ -34,9 +30,8 @@ void rigi_region_exit(void)
 {
     if (--rigi_region_depth == 0)
     {
-        rigi_region_c_flag = 0;
+        rigi_gc_region_fence_exit();
     }
-    (void)rigi_region_c_flag;
 }
 
 void *rigi_alloc(const RigiTypeSheet *desc)
@@ -70,15 +65,39 @@ void rigi_acquire_shared(void *object)
     rigi_region_exit();
 }
 
-/* §25 IDisposable 检查挂点（MW4 批 1 no-op）：typeFlags 含 DISPOSABLE
- * 时的 dispose 调用在此挂接，随资源合约批定稿。MW11c 棒5a：旧 C 侧
- * Task/sleep EventAlarm 簿记已随调度面删除——Task 是 Rigi 对象（refMap
- * 扫描字段），时钟底座由 Worker 定时器原语 + Rigi SleepAlarm/Timer
- * 持有句柄，不再经本钩子拆除。 */
-static void rigi_dispose_hook(void *object, const RigiTypeSheet *desc)
+/* §25.2 IDisposable 销毁时强制检查（MW12b 真检查）：typeFlags 含
+ * DISPOSABLE 且 disposed 位未置位 → undisposed-resource 全局异常事件
+ * 入队（gexc.c；派发时机与晚到规则见 gexc.h）。绝不代跑 dispose、
+ * 不延迟释放、不复活。三销毁入口共用：microGC/microSGC 经
+ * rigi_destruct，macroGC 清理步经 macrogc.c gc_teardown。
+ * MW11c 棒5a：旧 C 侧 Task/sleep EventAlarm 簿记已随调度面删除——
+ * Task 是 Rigi 对象（refMap 扫描字段），时钟底座由 Worker 定时器
+ * 原语 + Rigi SleepAlarm/Timer 持有句柄，不再经本钩子拆除。 */
+void rigi_dispose_check(void *object, const RigiTypeSheet *desc)
 {
-    (void)object;
-    (void)desc;
+    RigiObjectHeader *hdr = (RigiObjectHeader *)object;
+    uint32_t pf;
+    if (hdr == NULL || desc == NULL
+        || (desc->typeFlags & RIGI_TYPE_DISPOSABLE) == 0)
+    {
+        return;
+    }
+    pf = atomic_load_explicit(
+        (const _Atomic uint32_t *)&hdr->packedFlags, memory_order_relaxed);
+    if ((pf & RIGI_PF_DISPOSED) == 0)
+    {
+        rigi_gexc_report_undisposed(desc);
+    }
+}
+
+void rigi_mark_disposed(void *object)
+{
+    if (object != NULL)
+    {
+        atomic_fetch_or_explicit(
+            (_Atomic uint32_t *)&((RigiObjectHeader *)object)->packedFlags,
+            RIGI_PF_DISPOSED, memory_order_relaxed);
+    }
 }
 
 static void rigi_value_walk(void *ptr, const RigiTypeSheet *sheet, bool is_acquire)
@@ -225,13 +244,16 @@ void rigi_ref_release(uint64_t type_id, uint64_t payload)
     rigi_region_exit();
 }
 
-/* release 归零的库内自动析构：数组走元素表；否则挂点 → kind 感知
- * refMap → track_free。嵌套走查经 region 计数天然安全。 */
+/* release 归零的库内自动析构：数组走元素表；否则 §25 挂点 → kind 感知
+ * refMap → track_free。嵌套走查经 region 计数天然安全。
+ * MW12：头部先摘除在册候选（swap-remove；非候选零开销）。 */
 static void rigi_destruct(void *object, const RigiTypeSheet *desc)
 {
     const char *base = (const char *)object;
     size_t cursor;
     uint32_t i;
+
+    rigi_gc_forget_candidate(object);
 
     if (desc != NULL && (desc->typeFlags & RIGI_TYPE_ARRAY) != 0)
     {
@@ -298,7 +320,7 @@ static void rigi_destruct(void *object, const RigiTypeSheet *desc)
     }
 
     cursor = sizeof(RigiObjectHeader);
-    rigi_dispose_hook(object, desc);
+    rigi_dispose_check(object, desc);
     if (desc == NULL || desc->refMap == NULL)
     {
         rigi_track_free(object);
@@ -329,9 +351,17 @@ void rigi_release_local(void *object)
 {
     RigiObjectHeader *header = (RigiObjectHeader *)object;
     rigi_region_enter();
-    if (header != NULL && --header->rc == 0)
+    if (header != NULL)
     {
-        rigi_destruct(object, header->typeId);
+        if (--header->rc == 0)
+        {
+            rigi_destruct(object, header->typeId);
+        }
+        else
+        {
+            /* MW12：减至非零 → 候选登记 + 债务累计 + 阈值触发（同 region） */
+            rigi_gc_note_release(object, header->typeId);
+        }
     }
     rigi_region_exit();
 }
@@ -339,13 +369,21 @@ void rigi_release_local(void *object)
 void rigi_release_shared(void *object)
 {
     RigiObjectHeader *header = (RigiObjectHeader *)object;
+    uint32_t old;
     rigi_region_enter();
-    if (header != NULL
-        && atomic_fetch_sub_explicit(
-               &(((_Atomic uint32_t *)&header->rc)[0]),
-               1, memory_order_acq_rel) == 1)
+    if (header != NULL)
     {
-        rigi_destruct(object, header->typeId);
+        old = atomic_fetch_sub_explicit(
+            &(((_Atomic uint32_t *)&header->rc)[0]), 1, memory_order_acq_rel);
+        if (old == 1)
+        {
+            rigi_destruct(object, header->typeId);
+        }
+        else
+        {
+            /* MW12：减至非零 → 候选登记 + 债务累计 + 阈值触发（同 region） */
+            rigi_gc_note_release(object, header->typeId);
+        }
     }
     rigi_region_exit();
 }

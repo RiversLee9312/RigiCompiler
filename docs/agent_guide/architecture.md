@@ -440,7 +440,10 @@ RigiCompiler/
 │                             #   bitcode 合并进模块；架构同上文档）
 │   └── shim.c                   # MW1 最小面：rigi_string {data,len} UTF-8 / rigi_print /
 │                                #   rigi_print_err / rigi_string_concat / main → rigi_entry
-│                                #   （macrogc 随后续阶段）
+│   └── macrogc.c/.h             # MW12 Bacon-Rajan 收集器（显式 trace 栈）+ 候选账本 +
+│                                #   GC 线程/fence；env：RIGI_RT_GC_THRESHOLD/OFF/TRACE
+│   └── gexc.c/.h                # MW12b §25.2 全局异常通道（undisposed 事件队列 +
+│                                #   注册表 + atexit flush）
 │   └── eh.c/.h                  # MW9a checked-flag 便携异常传输：TLS pending 槽三面
 │                                #   （rigi_exc_raise/pending/take）+ 顶层 reporter
 │                                #   （rigi_type_name_of/rigi_exc_halt）
@@ -457,6 +460,10 @@ RigiCompiler/
 │   │                            #   校验，cmake 本地构建静态库 → tools/.libuv/<rid>/ 缓存，
 │   │                            #   gitignored；解析序 --libuv-dir → RIGI_LIBUV →
 │   │                            #   tools/.libuv → 编译器旁 .libuv，§2 获取链定稿）
+│   ├── Watch-Command.ps1        # shell 层看门狗（development.md 测试策略节）：Job Object
+│   │                            #   KILL_ON_JOB_CLOSE 灭整树 + stdin 断开 + 超时退出码 124
+│   │                            #   + -CleanupOrphans 孤儿清扫；所有可能挂死的测试/产物
+│   │                            #   进程运行必须经它带超时拉起
 ├── stdlib/                   # 编译器自携标准库源（EmbeddedResource 内嵌，见 StdlibSources；
 │                             #   八源，与用户源同走 P1–P4）
 │   ├── .bootstrap.rg         # 基元自举源（EnumerateInRange + core.Pair\<TKey, TValue>
@@ -471,6 +478,8 @@ RigiCompiler/
 │                                #   SYNTAX §15.3）+ time.rg（core.time）+ disposable.rg（core.IDisposable，
 │                                #   §6.2）+ exceptions.rg（RuntimeException/IOException/
 │                                #   CastException/NoSuchMethodException 四异常子类，§8.1）
+│                                #   + global_exceptions.rg（core.UndisposedResourceException +
+│                                #   GlobalExceptionHandler 全局异常通道，§25.2/MW12b）
 │                                #   + serialization.rg（core.serialization：@Serializable/
 │                                #   @SerializationBase/@Temporary/@Terminal + Parcel，SYNTAX §20）
 │                                #   + messaging.rg（core.messaging：MessageQueue 五原语 +

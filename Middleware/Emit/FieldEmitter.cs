@@ -45,11 +45,11 @@ namespace RigiCompiler.Middleware.Emit
                         inst.Target, fieldType, inst.ExcTarget);
                     return;
                 }
-                if (IsBorrowField(field.Symbol))
-                {
-                    builder.BuildStore(value, slots[inst.Target].Slot);
-                    return;
-                }
+                // MW12 清偿：借用字段（.capture.this / #.host@）的读侧不再
+                // 裸取——目标是 MIR 托管槽，RcInjection 出口恒 release，
+                // 裸取 = 净 -1（宿主提前析构/UAF，macroGC 上线后暴露为
+                // 崩溃）。借用设计只豁免「字段本身不计数」（写侧 raw store
+                // + 不进 refMap 破环），读侧的临时 +1/-1 配平不破坏该设计。
                 switch (TypeLayout.ClassifySlot(session.Layout, fieldType))
                 {
                     case ManagedSlotKind.FatReference:

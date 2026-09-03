@@ -20,8 +20,8 @@ namespace RigiCompiler.Tests
                 && module.Metadata[0].Key == "module"
                 && module.Metadata[0].Type == BilScalarType.String
                 && module.Metadata[0].LiteralText == "\"hello\"");
-            TestHarness.CheckTrue("Resources 恰 72 条且含 \"Hello, world!\" 标量资源",
-                module.Resources.Count == 72
+            TestHarness.CheckTrue("Resources 恰 74 条且含 \"Hello, world!\" 标量资源",
+                module.Resources.Count == 74
                 && module.Resources.Any(r => r is BilScalarResource s
                     && s.Type == BilScalarType.String
                     && s.LiteralText == "\"Hello, world!\""));
@@ -181,7 +181,7 @@ namespace RigiCompiler.Tests
             // + R_34 = "same"——"same" 不重复登记；return 0 与基线 i32 0
             // 同键去重
             TestHarness.CheckTrue("相同字面量只登记一个资源",
-                module.Resources.Count == 72
+                module.Resources.Count == 74
                 && module.Resources.Count(r => r is BilScalarResource s
                     && s.LiteralText == "\"same\"") == 1,
                 string.Join(", ", module.Resources.Select(r => r.Name)));
@@ -266,45 +266,47 @@ namespace RigiCompiler.Tests
                 "#29 = string \"数组下标越界：\"\n" +
                 "#30 = string \"（长度 \"\n" +
                 "#31 = string \"）\"\n" +
-                "#32 = catch-table {  }\n" +
-                "#33 = null type(.generic<$.generic.TMessage>)\n" +
-                "#34 = string \"MessageQueue: 句柄已释放或不存在\"\n" +
-                "#35 = i32 -2\n" +
-                "#36 = string \"MessageQueue: 句柄重复释放\"\n" +
-                "#37 = i32 -3\n" +
-                "#38 = string \"MessageQueue: 不能派生 Owner\"\n" +
-                "#39 = i32 -4\n" +
-                "#40 = string \"MessageQueue: 不能从该句柄派生 Sender\"\n" +
-                "#41 = i32 -5\n" +
-                "#42 = string \"MessageQueue: 不能从该句柄派生 Reader\"\n" +
-                "#43 = i32 -6\n" +
-                "#44 = string \"MessageQueue: 该句柄不能 post\"\n" +
-                "#45 = i32 -7\n" +
-                "#46 = string \"MessageQueue: 该句柄不能 next\"\n" +
-                "#47 = i32 -8\n" +
-                "#48 = string \"MessageQueue: 队列已 sealed，不能 post\"\n" +
-                "#49 = i32 -9\n" +
-                "#50 = string \"MessageQueue: 队列已 sealed，不能派生 Sender\"\n" +
-                "#51 = i32 -10\n" +
-                "#52 = string \"MessageQueue: 同一 Reader 同时只能有一个 outstanding next\"\n" +
-                "#53 = string \"MessageQueue: 非法操作\"\n" +
-                "#54 = catch-table {  }\n" +
-                "#55 = string \"Receiver.addListener：Receiver 已 dispose\"\n" +
+                "#32 = string \"对象在销毁前从未调用 dispose()：\"\n" +
+                "#33 = string \"core::UndisposedResourceException: \"\n" +
+                "#34 = catch-table {  }\n" +
+                "#35 = null type(.generic<$.generic.TMessage>)\n" +
+                "#36 = string \"MessageQueue: 句柄已释放或不存在\"\n" +
+                "#37 = i32 -2\n" +
+                "#38 = string \"MessageQueue: 句柄重复释放\"\n" +
+                "#39 = i32 -3\n" +
+                "#40 = string \"MessageQueue: 不能派生 Owner\"\n" +
+                "#41 = i32 -4\n" +
+                "#42 = string \"MessageQueue: 不能从该句柄派生 Sender\"\n" +
+                "#43 = i32 -5\n" +
+                "#44 = string \"MessageQueue: 不能从该句柄派生 Reader\"\n" +
+                "#45 = i32 -6\n" +
+                "#46 = string \"MessageQueue: 该句柄不能 post\"\n" +
+                "#47 = i32 -7\n" +
+                "#48 = string \"MessageQueue: 该句柄不能 next\"\n" +
+                "#49 = i32 -8\n" +
+                "#50 = string \"MessageQueue: 队列已 sealed，不能 post\"\n" +
+                "#51 = i32 -9\n" +
+                "#52 = string \"MessageQueue: 队列已 sealed，不能派生 Sender\"\n" +
+                "#53 = i32 -10\n" +
+                "#54 = string \"MessageQueue: 同一 Reader 同时只能有一个 outstanding next\"\n" +
+                "#55 = string \"MessageQueue: 非法操作\"\n" +
                 "#56 = catch-table {  }\n" +
-                "#57 = catch-table {  }\n" +
-                "#58 = string \"Receiver.setExecutor：listener 未注册\"\n" +
+                "#57 = string \"Receiver.addListener：Receiver 已 dispose\"\n" +
+                "#58 = catch-table {  }\n" +
                 "#59 = catch-table {  }\n" +
-                "#60 = catch-table {  }\n" +
-                "#61 = catch-table { type(core::IllegalStateException) -> blk(try0-catch0) }\n" +
-                "#62 = null type(core.messaging::Receiver<.generic<$.generic.TMessage>>)\n" +
-                "#63 = catch-table {  }\n" +
-                "#64 = null type(.generic<$.generic.TField>)\n" +
-                "#65 = null type(.any)\n" +
-                "#66 = string \"Parcel 中不存在键：\"\n" +
-                "#67 = i32 999999\n" +
-                "#68 = string \"TimeStamp.nanoseconds 越界：\"\n" +
-                "#69 = string \"（范围 0..999999）\"\n" +
-                "#70 = null type(.generic<$.generic.TReturn>)");
+                "#60 = string \"Receiver.setExecutor：listener 未注册\"\n" +
+                "#61 = catch-table {  }\n" +
+                "#62 = catch-table {  }\n" +
+                "#63 = catch-table { type(core::IllegalStateException) -> blk(try0-catch0) }\n" +
+                "#64 = null type(core.messaging::Receiver<.generic<$.generic.TMessage>>)\n" +
+                "#65 = catch-table {  }\n" +
+                "#66 = null type(.generic<$.generic.TField>)\n" +
+                "#67 = null type(.any)\n" +
+                "#68 = string \"Parcel 中不存在键：\"\n" +
+                "#69 = i32 999999\n" +
+                "#70 = string \"TimeStamp.nanoseconds 越界：\"\n" +
+                "#71 = string \"（范围 0..999999）\"\n" +
+                "#72 = null type(.generic<$.generic.TReturn>)");
             BilTestHarness.CheckFnShape("main 指令与 .vars", module, "$main()@.i32",
                 ".vars { .i32 a, .i32 n, .bool b, .i32 .t0, .i32 .t1, .i32 .t2, .bool .t3 }\n" +
                 "load res(#0) $.t0\n" +
@@ -458,49 +460,51 @@ namespace RigiCompiler.Tests
                 "#29 = string \"数组下标越界：\"\n" +
                 "#30 = string \"（长度 \"\n" +
                 "#31 = string \"）\"\n" +
-                "#32 = catch-table {  }\n" +
-                "#33 = null type(.generic<$.generic.TMessage>)\n" +
-                "#34 = string \"MessageQueue: 句柄已释放或不存在\"\n" +
-                "#35 = i32 -2\n" +
-                "#36 = string \"MessageQueue: 句柄重复释放\"\n" +
-                "#37 = i32 -3\n" +
-                "#38 = string \"MessageQueue: 不能派生 Owner\"\n" +
-                "#39 = i32 -4\n" +
-                "#40 = string \"MessageQueue: 不能从该句柄派生 Sender\"\n" +
-                "#41 = i32 -5\n" +
-                "#42 = string \"MessageQueue: 不能从该句柄派生 Reader\"\n" +
-                "#43 = i32 -6\n" +
-                "#44 = string \"MessageQueue: 该句柄不能 post\"\n" +
-                "#45 = i32 -7\n" +
-                "#46 = string \"MessageQueue: 该句柄不能 next\"\n" +
-                "#47 = i32 -8\n" +
-                "#48 = string \"MessageQueue: 队列已 sealed，不能 post\"\n" +
-                "#49 = i32 -9\n" +
-                "#50 = string \"MessageQueue: 队列已 sealed，不能派生 Sender\"\n" +
-                "#51 = i32 -10\n" +
-                "#52 = string \"MessageQueue: 同一 Reader 同时只能有一个 outstanding next\"\n" +
-                "#53 = string \"MessageQueue: 非法操作\"\n" +
-                "#54 = catch-table {  }\n" +
-                "#55 = string \"Receiver.addListener：Receiver 已 dispose\"\n" +
+                "#32 = string \"对象在销毁前从未调用 dispose()：\"\n" +
+                "#33 = string \"core::UndisposedResourceException: \"\n" +
+                "#34 = catch-table {  }\n" +
+                "#35 = null type(.generic<$.generic.TMessage>)\n" +
+                "#36 = string \"MessageQueue: 句柄已释放或不存在\"\n" +
+                "#37 = i32 -2\n" +
+                "#38 = string \"MessageQueue: 句柄重复释放\"\n" +
+                "#39 = i32 -3\n" +
+                "#40 = string \"MessageQueue: 不能派生 Owner\"\n" +
+                "#41 = i32 -4\n" +
+                "#42 = string \"MessageQueue: 不能从该句柄派生 Sender\"\n" +
+                "#43 = i32 -5\n" +
+                "#44 = string \"MessageQueue: 不能从该句柄派生 Reader\"\n" +
+                "#45 = i32 -6\n" +
+                "#46 = string \"MessageQueue: 该句柄不能 post\"\n" +
+                "#47 = i32 -7\n" +
+                "#48 = string \"MessageQueue: 该句柄不能 next\"\n" +
+                "#49 = i32 -8\n" +
+                "#50 = string \"MessageQueue: 队列已 sealed，不能 post\"\n" +
+                "#51 = i32 -9\n" +
+                "#52 = string \"MessageQueue: 队列已 sealed，不能派生 Sender\"\n" +
+                "#53 = i32 -10\n" +
+                "#54 = string \"MessageQueue: 同一 Reader 同时只能有一个 outstanding next\"\n" +
+                "#55 = string \"MessageQueue: 非法操作\"\n" +
                 "#56 = catch-table {  }\n" +
-                "#57 = catch-table {  }\n" +
-                "#58 = string \"Receiver.setExecutor：listener 未注册\"\n" +
+                "#57 = string \"Receiver.addListener：Receiver 已 dispose\"\n" +
+                "#58 = catch-table {  }\n" +
                 "#59 = catch-table {  }\n" +
-                "#60 = catch-table {  }\n" +
-                "#61 = catch-table { type(core::IllegalStateException) -> blk(try0-catch0) }\n" +
-                "#62 = null type(core.messaging::Receiver<.generic<$.generic.TMessage>>)\n" +
-                "#63 = catch-table {  }\n" +
-                "#64 = null type(.generic<$.generic.TField>)\n" +
-                "#65 = null type(.any)\n" +
-                "#66 = string \"Parcel 中不存在键：\"\n" +
-                "#67 = i32 999999\n" +
-                "#68 = string \"TimeStamp.nanoseconds 越界：\"\n" +
-                "#69 = string \"（范围 0..999999）\"\n" +
-                "#70 = f64 0.5\n" +
-                "#71 = f32 0.1\n" +
-                "#72 = char 'A'\n" +
-                "#73 = null type(.string)\n" +
-                "#74 = null type(.generic<$.generic.TReturn>)");
+                "#60 = string \"Receiver.setExecutor：listener 未注册\"\n" +
+                "#61 = catch-table {  }\n" +
+                "#62 = catch-table {  }\n" +
+                "#63 = catch-table { type(core::IllegalStateException) -> blk(try0-catch0) }\n" +
+                "#64 = null type(core.messaging::Receiver<.generic<$.generic.TMessage>>)\n" +
+                "#65 = catch-table {  }\n" +
+                "#66 = null type(.generic<$.generic.TField>)\n" +
+                "#67 = null type(.any)\n" +
+                "#68 = string \"Parcel 中不存在键：\"\n" +
+                "#69 = i32 999999\n" +
+                "#70 = string \"TimeStamp.nanoseconds 越界：\"\n" +
+                "#71 = string \"（范围 0..999999）\"\n" +
+                "#72 = f64 0.5\n" +
+                "#73 = f32 0.1\n" +
+                "#74 = char 'A'\n" +
+                "#75 = null type(.string)\n" +
+                "#76 = null type(.generic<$.generic.TReturn>)");
             BilTestHarness.CheckFnShape("main 指令与 .vars", module, "$main()@.i32",
                 ".vars { .bool b, .f64 d, .f32 f, .char c, .nullable<.string> s, " +
                 ".bool .t0, .f64 .t1, .f32 .t2, .char .t3, .nullable<.string> .t4, .i32 .t5 }\n" +

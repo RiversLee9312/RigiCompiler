@@ -266,7 +266,7 @@ pub open class IOException : core.Exception {
 }
 ```
 
-`getMessage()` 返回 message 的当前值；未显式赋值时为 String 零值（空字符串）。`core.GlobalExceptionHandler` 与运行时内部类型（`GCAlarm` 等）不在 stdlib 声明，随 BIL VM 定稿。
+`getMessage()` 返回 message 的当前值；未显式赋值时为 String 零值（空字符串）。`core.GlobalExceptionHandler` 已定稿进 stdlib（`core/global_exceptions.rg`：register/dispatch 静态面 + `UndisposedResourceException`）；运行时内部类型（`GCAlarm` 等）仍不在 stdlib 声明。
 
 ### 8.2 未捕获异常的进程行为
 

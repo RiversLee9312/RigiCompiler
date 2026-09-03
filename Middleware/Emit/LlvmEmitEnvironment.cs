@@ -326,9 +326,39 @@ namespace RigiCompiler.Middleware.Emit
 
         internal LLVMValueRef StoreToTemp(LLVMBuilderRef builder, LLVMValueRef value)
         {
-            var slot = builder.BuildAlloca(value.TypeOf, "tmp");
+            var slot = BuildEntryAlloca(builder, value.TypeOf, "tmp");
             builder.BuildStore(value, slot);
             return slot;
+        }
+
+        // 临时槽一律落当前函数 entry 块开头：mem2reg/SROA 只提升 entry 块
+        // alloca，循环体内的内联 alloca 是逐迭代栈消耗（LLVM 无 pass 把非
+        // entry 块 alloca 提上 entry；escaping 进调用的更是永不消除）——
+        // 100k 级循环会烧穿 1MiB 默认栈（MW12c stress 暴露）。槽即临时，
+        // 每轮迭代先写后读，跨迭代复用语义安全
+        internal static LLVMValueRef BuildEntryAlloca(LLVMBuilderRef builder,
+            LLVMTypeRef type, string name)
+        {
+            var fn = builder.InsertBlock.Parent;
+            var entry = fn.FirstBasicBlock;
+            var first = entry.FirstInstruction;
+            var tmp = LLVMBuilderRef.Create(type.Context);
+            try
+            {
+                if (first.Handle == System.IntPtr.Zero)
+                {
+                    tmp.PositionAtEnd(entry);
+                }
+                else
+                {
+                    tmp.Position(entry, first);
+                }
+                return tmp.BuildAlloca(type, name);
+            }
+            finally
+            {
+                tmp.Dispose();
+            }
         }
 
         // 非标量、非 String、非 typeid 的引用类局部 = 胖引用槽

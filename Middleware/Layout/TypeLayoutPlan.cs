@@ -127,6 +127,12 @@ namespace RigiCompiler.Middleware.Layout
 
         public IReadOnlyList<TypeLayoutPlan> Plans => _order;
 
+        // MW12b §25.2：core::IDisposable.dispose 实现槽目标的 fn canonical
+        // 集合（LayoutEngine.Build 收尾挂载；Emit 侧函数体 prologue 据此
+        // 对槽目标发射 rigi_mark_disposed(this)）
+        public IReadOnlySet<string> DisposeImplementations { get; internal set; } =
+            new HashSet<string>(System.StringComparer.Ordinal);
+
         public TypeLayoutPlan? Find(string canonical)
         {
             if (_plans.TryGetValue(canonical, out var plan))

@@ -980,7 +980,11 @@ namespace RigiCompiler.Bil.Vm
         public VmObject AllocateObject(string typeRef)
         {
             var valueType = IsValueType(typeRef);
-            var instance = new VmObject(typeRef, valueType);
+            // MW12b §25.2：class 引用对象且实现闭包含 core::IDisposable
+            // 才挂销毁检查（判定结果按类型缓存，热路径仅一次字典读）
+            var instance = new VmObject(typeRef, valueType,
+                !valueType && DisposeSlotTargetOf(typeRef) != null
+                    ? UndisposedTracker : null);
             foreach (var field in CollectInstanceFields(typeRef))
             {
                 if (!BilVerificationContext.TryParseFieldSymbol(field.Symbol,
@@ -1318,6 +1322,198 @@ namespace RigiCompiler.Bil.Vm
             var instance = AllocateObject(typeRef);
             instance.WriteField("core::Exception#message@.string", new VmString(message));
             return new VmException(message, instance);
+        }
+
+        // ===== MW12b §25.2 VM 半场：IDisposable 销毁时检查 + 事件派发 =====
+
+        // undisposed 事件队列（finalizer 入队、Run 收尾派发；语义见
+        // VmDisposal.cs 与 VmObject 终结器注释）
+        internal VmUndisposedTracker UndisposedTracker { get; } = new VmUndisposedTracker();
+
+        // core::IDisposable 的 canonical（stdlib core/disposable.rg），与
+        // native LayoutEngine.DisposableCanonical 同口径
+        internal const string DisposableCanonical = "core::IDisposable";
+
+        // dispose 槽目标缓存：类型声明 key → impl fn 符号（null = 实现闭包
+        // 不含 IDisposable / 槽无实现）；槽序事实都在 TypeSheet 缓存上，
+        // 本缓存只是把「判定 + iMap 换算」摊成一次字典读，防热路径拖慢
+        private readonly Dictionary<string, string?> _disposeSlotTargets =
+            new Dictionary<string, string?>(StringComparer.Ordinal);
+        private readonly object _disposeSlotLock = new object();
+
+        // type 的 core::IDisposable.dispose 槽目标 impl 符号——判定口径与
+        // native CollectDisposeImplementations 对齐：实现闭包含 IDisposable
+        // 的 class，取 iMap 段基址（InterfaceBase 拍平含继承条目，等价
+        // native 沿 BasePlan 链上查）+ 接口壳内相对 offset 的槽实现；
+        // wrapper 烘焙外移体/async stub 天然兼容（槽目标即其符号）
+        internal string? DisposeSlotTargetOf(string typeRef)
+        {
+            var declaration = FindType(typeRef);
+            var key = declaration != null
+                ? VmTypeSheetBuilder.TypeKeyOf(declaration) : typeRef;
+            lock (_disposeSlotLock)
+            {
+                if (_disposeSlotTargets.TryGetValue(key, out var cached))
+                {
+                    return cached;
+                }
+            }
+            var target = ResolveDisposeSlotTarget(declaration, typeRef);
+            lock (_disposeSlotLock)
+            {
+                _disposeSlotTargets[key] = target;
+            }
+            return target;
+        }
+
+        private string? ResolveDisposeSlotTarget(BilTypeDeclaration? declaration,
+            string typeRef)
+        {
+            if (declaration == null || IsValueType(typeRef))
+            {
+                return null;
+            }
+            var disposable = FindType(DisposableCanonical);
+            if (disposable == null)
+            {
+                return null;   // 无 stdlib 的合成模块（单元测试形态）
+            }
+            var sheet = SheetOf(declaration.Symbol);
+            var disposableSheet = SheetOf(disposable.Symbol);
+            if (sheet == null || disposableSheet == null
+                || !sheet.InterfaceBase.TryGetValue(
+                       VmTypeSheetBuilder.TypeKeyOf(disposable), out var baseOffset))
+            {
+                return null;
+            }
+            // 接口壳内 dispose 的相对 offset（接口自身 sheet 的槽下标）
+            string? disposeSymbol = null;
+            foreach (var member in disposable.Members)
+            {
+                if (member is BilSimpleMemberDeclaration simple
+                    && VmTypeSheetBuilder.SignatureKeyOf(simple.Symbol)
+                        .StartsWith("dispose()@", StringComparison.Ordinal))
+                {
+                    disposeSymbol = simple.Symbol;
+                    break;
+                }
+            }
+            if (disposeSymbol == null
+                || !disposableSheet.OffsetBySymbol.TryGetValue(disposeSymbol,
+                       out var relative))
+            {
+                return null;
+            }
+            var slotIndex = baseOffset + relative;
+            if (slotIndex < 0 || slotIndex >= sheet.Slots.Count)
+            {
+                return null;
+            }
+            return sheet.Slots[slotIndex].ImplSymbol;
+        }
+
+        // dispose 进入即置位（调用侧：BilInvokeExecution.InvokeResolved /
+        // PushSuperFrame 压帧前）。按方法符号身份判定——impl 恰为 receiver
+        // 实际类型的 dispose 槽目标；调用了但抛异常也算负责过（与 native
+        // prologue 置位同语义），async dispose 的 stub 进入即命中
+        internal void MarkDisposedIfDisposeImpl(string implSymbol, VmObject receiver)
+        {
+            if (!receiver.IsDisposalTracked || receiver.DisposedMarked)
+            {
+                return;
+            }
+            var target = DisposeSlotTargetOf(receiver.TypeRef);
+            if (target != null
+                && string.Equals(target, implSymbol, StringComparison.Ordinal))
+            {
+                receiver.DisposedMarked = true;
+            }
+        }
+
+        // 派发时机对齐 native entry stub：main/drain 之后、失败汇总之前。
+        // 逼 GC（Collect + WaitForPendingFinalizers）让未 dispose 对象的
+        // finalizer 入队事件，再逐条经 VM 真构造 UndisposedResourceException
+        //（走真 init——同 LanguageException 的正常派发调用机制，此处借
+        // 一次性协程同步驱动）并调 GlobalExceptionHandler.dispatch。
+        // dispatch 内抛出的异常作为返回值上交，走 Run 的未捕获异常归宿。
+        // VM 静态槽（_statics/_singletons）保持根住：不模拟静态槽退出
+        // 清理的销毁检查——native 侧晚到事件走 C 默认打印（atexit flush），
+        // 两宿主 stdout 都不产生静态末批事件，对拍安全
+        internal VmException? CollectAndDispatchUndisposed()
+        {
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            var pending = UndisposedTracker.DrainAll();
+            if (pending.Count == 0)
+            {
+                return null;
+            }
+            var dispatch = FindRuntimeFunction(
+                "core::GlobalExceptionHandler$.static.dispatch(");
+            if (dispatch == null)
+            {
+                return null;   // 无 stdlib 的合成模块无事件通道
+            }
+            var coroutine = new VmCoroutine(Dispatch);
+            coroutine.TryTransition(VmCoroutineState.Created, VmCoroutineState.Running);
+            coroutine.PushFrame(SingletonBootstrapFunction, Array.Empty<VmValue>(), null);
+            foreach (var typeName in pending)
+            {
+                try
+                {
+                    var exception = AllocateObject("core::UndisposedResourceException");
+                    if (TryFindInit("core::UndisposedResourceException",
+                            new VmValue[] { new VmString(typeName) },
+                            new[] { ".string" }, out var init)
+                        && init.Length > 0)
+                    {
+                        BilInvokeExecution.InvokeValues(this, coroutine, init,
+                            new VmValue[] { exception, new VmString(typeName) },
+                            resultSlot: null);
+                        StepBackTo(coroutine, 1);
+                    }
+                    else
+                    {
+                        // 防御性回落（init 匹配落空）：直写字段，同
+                        // LanguageException 回落路径口径
+                        exception.WriteField("core::Exception#message@.string",
+                            new VmString("对象在销毁前从未调用 dispose()：" + typeName));
+                        exception.WriteField(
+                            "core::UndisposedResourceException#resourceType@.string",
+                            new VmString(typeName));
+                    }
+                    if (coroutine.State != VmCoroutineState.Running)
+                    {
+                        return coroutine.Failure
+                            ?? new VmException("undisposed 事件构造失败：" + typeName);
+                    }
+                    BilInvokeExecution.InvokeValues(this, coroutine, dispatch.Symbol,
+                        new VmValue[] { exception }, resultSlot: null);
+                    StepBackTo(coroutine, 1);
+                    if (coroutine.State != VmCoroutineState.Running)
+                    {
+                        return coroutine.Failure
+                            ?? new VmException("undisposed 事件派发失败：" + typeName);
+                    }
+                }
+                catch (VmException failure)
+                {
+                    return failure;
+                }
+            }
+            return null;
+        }
+
+        // 同步驱动协程回落至指定栈深（ConstructSingleton 同式；dispatch
+        // 与 stdlib init 均为同步 fn，handler 是同步 Action）
+        private void StepBackTo(VmCoroutine coroutine, int depth)
+        {
+            while (coroutine.CallStack.Count > depth
+                && coroutine.State == VmCoroutineState.Running
+                && !coroutine.HasAbruptCompletion)
+            {
+                coroutine.Step(this);
+            }
         }
 
         // 同签名 init 重载的精确甄别（init(text: String) vs

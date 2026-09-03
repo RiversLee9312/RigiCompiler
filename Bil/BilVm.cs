@@ -67,13 +67,21 @@ namespace RigiCompiler.Bil
             if (!context.Dispatch.HasDispatcher)
             {
                 var standalone = context.Dispatch.RunStandalone(entry, Array.Empty<VmValue>());
+                // MW12b §25.2：main 之后、失败汇总之前派发 undisposed 事件
+                var standaloneDrain = context.CollectAndDispatchUndisposed();
                 return new BilVmResult(context.Stdout, context.Stderr,
-                    standalone.Result, standalone.Failure);
+                    standalone.Result, standalone.Failure ?? standaloneDrain);
             }
             var main = context.Dispatch.Spawn(entry, Array.Empty<VmValue>(), caller: null);
             context.Dispatch.MainHandle = main.Handle;
             context.Dispatch.RunMainLoop();
-            var exception = main.Failure ?? context.Dispatch.UnobservedFailure;
+            // MW12b §25.2（VM 半场）：main/drain 之后、失败汇总之前——逼 GC
+            // 收出未 dispose 对象的终结器事件，逐条真构造异常调
+            // GlobalExceptionHandler.dispatch；派发失败走未捕获异常归宿。
+            // main 帧在终态已全弹（ReturnFromFrame），局部对象不再被根住；
+            // 静态槽/单例保持根住（不模拟静态退出清理的销毁检查）
+            var drainFailure = context.CollectAndDispatchUndisposed();
+            var exception = main.Failure ?? context.Dispatch.UnobservedFailure ?? drainFailure;
             return new BilVmResult(context.Stdout, context.Stderr, main.Result, exception);
         }
 

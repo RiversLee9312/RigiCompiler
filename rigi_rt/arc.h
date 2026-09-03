@@ -84,7 +84,8 @@ struct RigiTypeInfo
 };
 
 /* 对象头 16B：[0..8) TypeSheet* + [8..12) RC u32 + [12..16) 位打包域
- *（颜色 2bit + 候选索引/标志位，MW12 前恒 0）；对象 16B 对齐 */
+ *（颜色 2bit + disposed 位（MW12b，RIGI_PF_DISPOSED）+ 候选索引，
+ * 位段分配见 macrogc.h）；对象 16B 对齐 */
 typedef struct
 {
     const RigiTypeSheet *typeId;
@@ -125,9 +126,21 @@ void rigi_string_acquire(const char *data);
 void rigi_string_release(const char *data);
 char *rigi_string_new(int64_t len);   /* 分配 rc=1 字符串块，返回 data 指针 */
 
-/* region 协议（MW7a；MW12 前 gc_flag 恒 IDLE） */
+/* region 协议（MW7a；MW12 起 fence 真协议在 macrogc.c：gc_flag 非 IDLE
+ * 时最外层 enter 阻塞等 GCAlarm，恢复后完整重检） */
 void rigi_region_enter(void);
 void rigi_region_exit(void);
+
+/* §25 IDisposable 销毁前检查（MW12b 真检查）：typeFlags 含 DISPOSABLE 且
+ * 对象头 packedFlags 的 disposed 位（RIGI_PF_DISPOSED，macrogc.h）未置位
+ * → rigi_gexc_report_undisposed 入队 undisposed 事件。绝不代跑 dispose、
+ * 不延迟释放、不复活；三销毁入口共用 */
+void rigi_dispose_check(void *object, const RigiTypeSheet *desc);
+
+/* MW12b：dispose 进入即置位 disposed 位（生成代码在 IDisposable.dispose
+ * 实现槽目标的 prologue 调用；调用了但抛异常也算负责过）。对象可能
+ * shared → 原子 or */
+void rigi_mark_disposed(void *object);
 
 /* 内存台账：16B 头 {size_t size; size_t pad;}，返回头后指针 */
 void *rigi_track_malloc(size_t size);

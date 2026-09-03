@@ -21,7 +21,9 @@ namespace RigiCompiler.Middleware.Mir
     public static class MirReachability
     {
         // MW9b-G：恒可达白名单的 core 异常类型（stdlib core/exceptions.rg；
-        // 抽象 Exception 无 init/getMessage 体，列入仅为成员扫描完备）
+        // 抽象 Exception 无 init/getMessage 体，列入仅为成员扫描完备）。
+        // MW12b：UndisposedResourceException（core/global_exceptions.rg）
+        // 同族——entry stub 的 gexc drain 段经真 init 构造（发射期引用）
         private static readonly string[] CoreExceptionTypes =
         {
             "core::Exception",
@@ -31,6 +33,7 @@ namespace RigiCompiler.Middleware.Mir
             "core::NoSuchMethodException",
             "core::DividedByZeroException",
             "core::OutOfBoundException",
+            "core::UndisposedResourceException",
         };
 
         // 可达 fn 的 canonical 序（入口优先，BFS 发现序）。
@@ -145,6 +148,11 @@ namespace RigiCompiler.Middleware.Mir
             // 自身即含 async fn（Mutex.acquire 等），按内容门控无意义；
             // 无协程程序的 workerLoop 经 quiescent 先检直返，零挂起
             EnqueueCoroutineRuntime(context, bySymbol, queue);
+            // MW12b §25.2：GlobalExceptionHandler 恒收编（有体方法全收，
+            // 同协程运行时段粒度）——dispatch 由 rigi_entry stub 的 gexc
+            // drain 段（生成代码）调用，register 体内 new List<...> 等边
+            // 由 BFS 正常展开；BIL 级可达性看不到 stub 这条边
+            EnqueueTypeMethods(context, bySymbol, queue, "core::GlobalExceptionHandler");
             while (queue.Count > 0)
             {
                 var (symbol, fromTentative) = queue.Dequeue();
@@ -192,19 +200,7 @@ namespace RigiCompiler.Middleware.Mir
         {
             foreach (var typeCanonical in CoroutineRuntimeTypes)
             {
-                var type = context.Symbols.FindTypeByRef(typeCanonical);
-                if (type == null)
-                {
-                    continue;   // 无 stdlib 的合成模块（单元测试形态）
-                }
-                foreach (var member in type.Members)
-                {
-                    if (member.Declaration.Kind == BilMemberKind.Method
-                        && bySymbol.ContainsKey(member.Canonical))
-                    {
-                        queue.Enqueue((member.Canonical, false));
-                    }
-                }
+                EnqueueTypeMethods(context, bySymbol, queue, typeCanonical);
             }
             // laneOfExecutor 模块级助手（Task executor setter/startCold
             // 调用——那些 fn 已在表内，边会随后展开；此处兜底防御；
@@ -215,6 +211,30 @@ namespace RigiCompiler.Middleware.Mir
             if (laneHelper != null && bySymbol.ContainsKey(laneHelper.Canonical))
             {
                 queue.Enqueue((laneHelper.Canonical, false));
+            }
+        }
+
+        // 类型全部有体方法入队（协程运行时段 / MW12b
+        // GlobalExceptionHandler 共用的恒收编粒度；无 stdlib 的合成模块
+        // 静默跳过）。Method + StaticMethod 双 kind（GlobalExceptionHandler
+        // 全静态）
+        private static void EnqueueTypeMethods(MwContext context,
+            Dictionary<string, BilFunction> bySymbol,
+            Queue<(string Symbol, bool FromTentative)> queue, string typeCanonical)
+        {
+            var type = context.Symbols.FindTypeByRef(typeCanonical);
+            if (type == null)
+            {
+                return;   // 无 stdlib 的合成模块（单元测试形态）
+            }
+            foreach (var member in type.Members)
+            {
+                if (member.Declaration.Kind is BilMemberKind.Method
+                        or BilMemberKind.StaticMethod
+                    && bySymbol.ContainsKey(member.Canonical))
+                {
+                    queue.Enqueue((member.Canonical, false));
+                }
             }
         }
 

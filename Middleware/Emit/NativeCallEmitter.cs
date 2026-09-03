@@ -30,7 +30,7 @@ namespace RigiCompiler.Middleware.Emit
             LLVMValueRef? outSlot = null;
             if (hasOut)
             {
-                var slot = builder.BuildAlloca(outType, outName);
+                var slot = LlvmEmitEnvironment.BuildEntryAlloca(builder, outType, outName);
                 if (outAlign != 0)
                 {
                     slot.Alignment = outAlign;
@@ -136,7 +136,7 @@ namespace RigiCompiler.Middleware.Emit
             }
             if (paramType.IsAny)
             {
-                var slot = builder.BuildAlloca(TypeLayout.FatReferenceType(session.Context),
+                var slot = LlvmEmitEnvironment.BuildEntryAlloca(builder, TypeLayout.FatReferenceType(session.Context),
                     "native.any");
                 slot.Alignment = (uint)TypeLayout.ReferenceSlotAlignment;
                 builder.BuildStore(argValue, slot);

@@ -51,6 +51,11 @@ namespace RigiCompiler.Middleware.Runtime
         public const string ExcRaise = "rigi_exc_raise";
         public const string ExcPending = "rigi_exc_pending";
         public const string ExcTake = "rigi_exc_take";
+        // MW12b §25.2：dispose 进入置位（void(ptr)，Emit 经 DeclareHelperFace
+        // 直用）与全局异常通道出队（i32(rigi_string*)，entry stub drain 用；
+        // 同族的 report/flush 只被 C 内部与 shim atexit 引用，不占本表）
+        public const string MarkDisposed = "rigi_mark_disposed";
+        public const string GexcTake = "rigi_gexc_take";
         // MW9a 第 C 棒顶层 reporter 两面：诊断名取回 void(ptr, rigi_string*)
         // （obj→sheet→TypeInfo.name 借用拷出）；未捕获出口 void(void)
         // noreturn（exit 1，调用方补 unreachable）

@@ -119,11 +119,21 @@ namespace RigiCompiler.Middleware.Layout
                     bodies);
             }
 
+            var ifaceClosure = VTablePlanner.CollectIfaceClosure(type.Canonical, type, symbols);
+            // MW12b §25.2：interface 闭包含 core::IDisposable 的 class 置
+            // DISPOSABLE 位（销毁时强制检查的 C 侧门；闭合构造类型经
+            // ConstructedLayout 复用模板 TypeFlags 天然继承）
+            var flags = LayoutEngine.TypeFlagsOf(type);
+            if (LayoutEngine.ImplementsDisposable(ifaceClosure))
+            {
+                flags |= TypeLayoutPlan.FlagDisposable;
+            }
+
             return new TypeLayoutPlan(type, TypeLayoutKind.Class, size, LayoutEngine.ReferenceSlotSize,
-                LayoutEngine.TypeFlagsOf(type), fields, slots, iMap,
+                flags, fields, slots, iMap,
                 RefMapBuilder.BuildRefMap(fields, refEntries, LayoutEngine.ObjectHeaderSize),
                 System.Array.Empty<(MwCaseSymbol, uint)>(), basePlan, hiddenSlots,
-                VTablePlanner.CollectIfaceClosure(type.Canonical, type, symbols));
+                ifaceClosure);
         }
     }
 }

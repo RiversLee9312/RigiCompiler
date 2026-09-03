@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Runtime.InteropServices;
 using RigiCompiler.Middleware.Emit;
 using RigiCompiler.Middleware.Gate;
 using RigiCompiler.Middleware.Pipeline;
@@ -273,6 +274,13 @@ namespace RigiCompiler.Middleware.Cli
                 {
                     linkArgs.Add(libuv.StaticLibPath);
                     linkArgs.AddRange(LibuvResolver.SystemLibraryArgs());
+                }
+                // MW12：macrogc.c 的 GC 协程承载线程用 pthread_create，
+                // 与 libuv 命中与否无关，linux 链接恒需 pthread
+                if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+                    && libuv == null)
+                {
+                    linkArgs.Add("-lpthread");
                 }
                 var linkExit = ExternalProcess.Run(clang, linkArgs,
                     out _, out var linkStderr);

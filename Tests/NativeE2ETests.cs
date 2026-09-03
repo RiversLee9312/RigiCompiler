@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -75,6 +75,30 @@ namespace RigiCompiler.Tests
         private static (string Label, Action Run) FailCase(string label, string source,
             string needle, string nativeNeedle) =>
             (label, () => RunFailCase(label, source, needle, nativeNeedle));
+
+        // MW12b §25.2：native stderr 断言形态——VM 参照对拍 stdout + 退出
+        // 码一致（VM 侧暂无 undisposed 事件通道，stdout 不受影响），额外
+        // 断言 native stderr 含/不含 needle
+        private static (string Label, Action Run) NativeErrCase(string label, string source,
+            string needle, bool needlePresent = true) =>
+            (label, () => RunNativeErrCase(label, source, needle, needlePresent));
+
+        // MW12c：per-case env——env 与 MemtrackEnv 合并（MEMTRACK 恒在，
+        // 泄漏即 exit 1 的判定口径不可关），per-case 同名键覆盖
+        private static (string Label, Action Run) EnvCase(string label, string source,
+            IReadOnlyDictionary<string, string> env)
+        {
+            var merged = new Dictionary<string, string>(MemtrackEnv);
+            foreach (var pair in env)
+            {
+                merged[pair.Key] = pair.Value;
+            }
+            return (label, () => RunCase(label, source, merged));
+        }
+
+        // 注：声明须在 Cases 之前（静态初始化按文本序，EnvCase 合并要用）
+        private static readonly Dictionary<string, string> MemtrackEnv =
+            new() { ["RIGI_RT_MEMTRACK"] = "1" };
 
         private static readonly (string Label, Action Run)[] Cases =
         {
@@ -1905,7 +1929,7 @@ namespace RigiCompiler.Tests
             // ④ 构造环：急切初始化期互引 → 异常（自定义 runner：VM 侧
             // 该异常是基础设施级 VmException，BilVm.Run 直接抛出，不能走
             // RunFailCase 的 BilVmResult.Exception 通道）
-            ("singleton 构造环抛异常（急切初始化期）", RunSingletonCycleCase),
+            ("singleton 构造环抛异常（急切初始化期）", () => RunSingletonCycleCase()),
             // ⑤ 静态字段 Value wrapper：companion cell 读写经 proxy 链
             //（playground/mw10_probe.rg 的 Holder.level 形态）
             Case("静态字段 Value wrapper（companion cell 链）",
@@ -5355,11 +5379,339 @@ namespace RigiCompiler.Tests
                 "    run()\n" +
                 "    return 0\n" +
                 "}\n"),
+            // ===== MW12b §25.2：IDisposable 销毁时强制检查 + 全局异常通道 =====
+            // 局部 IDisposable 对象未 dispose，作用域结束销毁 → 入队 →
+            // drain → 空注册表默认分支 stderr 打印（退出码不变；VM 半场
+            // B2 已接，stderr needle 双宿主同文本断言）
+            NativeErrCase("mw12b_undisposed_default",
+                "import core.io.Console\n" +
+                "pub class Res implements core.IDisposable {\n" +
+                "    pub var tag: i32\n" +
+                "    pub init(t: i32) { tag = t }\n" +
+                "    pub override func dispose() { }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const r = new Res(1)\n" +
+                "    Console.println(\"made \" + r.tag.toString())\n" +
+                "    return 0\n" +
+                "}\n",
+                "core::UndisposedResourceException: 对象在销毁前从未调用 dispose()：Res"),
+            // 正常 using 清理：dispose 进入即置位 → 无事件（双宿主
+            // stderr 均无默认打印），stdout 双宿主对拍一致
+            NativeErrCase("mw12b_disposed_ok",
+                "import core.io.Console\n" +
+                "pub class Res implements core.IDisposable {\n" +
+                "    pub init() { }\n" +
+                "    pub override func dispose() { Console.println(\"disposed\") }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    seq using(const r = new Res()) {\n" +
+                "        Console.println(\"in\")\n" +
+                "    }\n" +
+                "    Console.println(\"out\")\n" +
+                "    return 0\n" +
+                "}\n",
+                "UndisposedResourceException", needlePresent: false),
+            // 注册 GlobalExceptionHandler 处理器：drain 逐条调 dispatch →
+            // 处理器打印 got:<类型名> 到 stdout。VM 半场 B2 已接事件通道
+            // （VM 终结器入队 → Run 收尾 drain → dispatch），双宿主 stdout
+            // 全对拍（made 行序先于 got 行——两宿主 drain 都在 main 之后）；
+            // 有注册处理器不走默认分支，双宿主 stderr 无默认打印
+            NativeErrCase("mw12b_undisposed_handler",
+                "import core.io.Console\n" +
+                "pub class Res implements core.IDisposable {\n" +
+                "    pub init() { }\n" +
+                "    pub override func dispose() { }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    core.GlobalExceptionHandler.register(func{ (e: core.Exception) -> {\n" +
+                "        if (e is core.UndisposedResourceException) {\n" +
+                "            Console.println(\"got:\" +\n" +
+                "                (e as core.UndisposedResourceException).resourceType)\n" +
+                "        }\n" +
+                "    } })\n" +
+                "    const r = new Res()\n" +
+                "    Console.println(\"made\")\n" +
+                "    return 0\n" +
+                "}\n",
+                "UndisposedResourceException", needlePresent: false),
+            // 环中对象未 dispose：局部环 main 结束时成候选（阈值不到不
+            // 触发），shutdown 终轮收集兜底 → 晚到事件不经用户处理器，
+            // 由 C 侧 atexit flush 默认打印（同一文本）。VM 侧 .NET GC
+            // 一轮即收环，事件走 Run 收尾 drain 的默认分支——stderr
+            // needle 同文本（事件时机两宿主天然不同，只断言文本）
+            NativeErrCase("mw12b_undisposed_in_cycle",
+                "import core.io.Console\n" +
+                "pub class Node implements core.IDisposable {\n" +
+                "    pub var next: Node?\n" +
+                "    pub init() { }\n" +
+                "    pub override func dispose() { }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = new Node()\n" +
+                "    var b = new Node()\n" +
+                "    a.next = b\n" +
+                "    b.next = a\n" +
+                "    Console.println(\"cycled\")\n" +
+                "    return 0\n" +
+                "}\n",
+                "core::UndisposedResourceException: 对象在销毁前从未调用 dispose()：Node"),
+            // MW12b VM 半场（mw12b2）：非 main 帧局部 undisposed 对象——
+            // 辅助 fn 帧弹出后对象脱根 → 默认 stderr 打印；覆盖「销毁检查
+            // 不限于 main 帧」的帧根释放路径，stderr needle 双宿主同文本
+            NativeErrCase("mw12b2_undisposed_default_vm",
+                "import core.io.Console\n" +
+                "pub class Res implements core.IDisposable {\n" +
+                "    pub init() { }\n" +
+                "    pub override func dispose() { }\n" +
+                "}\n" +
+                "func leak() {\n" +
+                "    const r = new Res()\n" +
+                "    Console.println(\"leaked\")\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    leak()\n" +
+                "    return 0\n" +
+                "}\n",
+                "core::UndisposedResourceException: 对象在销毁前从未调用 dispose()：Res"),
+            // ===== MW12c：macroGC 循环回收与泄漏检查套件 =====
+            // 口径：VM 对拍 stdout/退出码 + 产物恒带 RIGI_RT_MEMTRACK=1，
+            // memtrack 零泄漏即「环被收掉」。默认阈值（1MiB）下局部环靠
+            // shutdown 终轮收集兜底；低阈值例走 EnvCase 触发 mid-run pass
+            // 双对象环：函数作用域释放后成纯环，终轮收集兜底
+            Case("mw12c_cycle_two",
+                "import core.io.Console\n" +
+                "pub class Node {\n" +
+                "    pub var next: Node?\n" +
+                "    pub init() { }\n" +
+                "}\n" +
+                "func makeCycle() {\n" +
+                "    var a = new Node()\n" +
+                "    var b = new Node()\n" +
+                "    a.next = b\n" +
+                "    b.next = a\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    makeCycle()\n" +
+                "    Console.println(\"two dropped\")\n" +
+                "    return 0\n" +
+                "}\n"),
+            // 自环：单对象 next 指向自身，作用域释放后终轮收集
+            Case("mw12c_cycle_self",
+                "import core.io.Console\n" +
+                "pub class Node {\n" +
+                "    pub var next: Node?\n" +
+                "    pub init() { }\n" +
+                "}\n" +
+                "func makeCycle() {\n" +
+                "    var s = new Node()\n" +
+                "    s.next = s\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    makeCycle()\n" +
+                "    Console.println(\"self dropped\")\n" +
+                "    return 0\n" +
+                "}\n"),
+            // mid-run 触发：RIGI_RT_GC_THRESHOLD=1024，5000 轮双对象环
+            // → 多轮 pass（fence 慢路径真实触发），stdout 对拍 + 零泄漏
+            EnvCase("mw12c_cycle_midrun",
+                "import core.io.Console\n" +
+                "pub class Node {\n" +
+                "    pub var next: Node?\n" +
+                "    pub var pad: i32\n" +
+                "    pub init() { pad = 0 }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var i = 0\n" +
+                "    var n = 0\n" +
+                "    while (i < 5000) {\n" +
+                "        var a = new Node()\n" +
+                "        var b = new Node()\n" +
+                "        a.next = b\n" +
+                "        b.next = a\n" +
+                "        a.pad = i\n" +
+                "        n = (n + 1)\n" +
+                "        i = (i + 1)\n" +
+                "    }\n" +
+                "    if (n == 5000) { Console.println(\"midrun ok\") }\n" +
+                "    return 0\n" +
+                "}\n",
+                new Dictionary<string, string> { ["RIGI_RT_GC_THRESHOLD"] = "1024" }),
+            // 超长环：10 万节点链表首尾相接——收集器显式 trace 栈防深
+            // 递归（退化成递归这里会爆栈），终轮收集后零泄漏
+            Case("mw12c_cycle_long_chain",
+                "import core.io.Console\n" +
+                "pub class Node {\n" +
+                "    pub var next: Node?\n" +
+                "    pub init() { }\n" +
+                "}\n" +
+                "func makeRing() {\n" +
+                "    var head = new Node()\n" +
+                "    var prev = head\n" +
+                "    var i = 1\n" +
+                "    while (i < 100000) {\n" +
+                "        var cur = new Node()\n" +
+                "        prev.next = cur\n" +
+                "        prev = cur\n" +
+                "        i = (i + 1)\n" +
+                "    }\n" +
+                "    prev.next = head\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    makeRing()\n" +
+                "    Console.println(\"ring dropped\")\n" +
+                "    return 0\n" +
+                "}\n"),
+            // 环带外部活引用：低阈值 mid-run pass 后继续使用活引用
+            // （打印经环边到达的对端字段）→ 存活对象不误收；断开活引用
+            // 后环脱根 → 终轮收掉
+            EnvCase("mw12c_cycle_live_ref",
+                "import core.io.Console\n" +
+                "pub class Node {\n" +
+                "    pub var next: Node?\n" +
+                "    pub var tag: i32\n" +
+                "    pub init(t: i32) { tag = t }\n" +
+                "}\n" +
+                "func makeCycle(): Node {\n" +
+                "    var a = new Node(7)\n" +
+                "    var b = new Node(8)\n" +
+                "    a.next = b\n" +
+                "    b.next = a\n" +
+                "    return a\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var keep: Node? = makeCycle()\n" +
+                "    var i = 0\n" +
+                "    while (i < 3000) {\n" +
+                "        var x = new Node(i)\n" +
+                "        var y = new Node(i)\n" +
+                "        x.next = y\n" +
+                "        y.next = x\n" +
+                "        i = (i + 1)\n" +
+                "    }\n" +
+                "    var t = keep?.next?.tag if? -1\n" +
+                "    Console.println(t.toString())\n" +
+                "    keep = null\n" +
+                "    Console.println(\"released\")\n" +
+                "    return 0\n" +
+                "}\n",
+                new Dictionary<string, string> { ["RIGI_RT_GC_THRESHOLD"] = "1024" }),
+            // 经数组元素成环：a → peers 数组 → b → peers 数组，收集器
+            // 数组 32B 前缀元素走查必须命中（漏走=泄漏）
+            Case("mw12c_cycle_through_array",
+                "import core.collections.*\n" +
+                "import core.io.Console\n" +
+                "pub class Node {\n" +
+                "    pub var peers: Array\\<Node>?\n" +
+                "    pub init() { }\n" +
+                "}\n" +
+                "func makeCycle() {\n" +
+                "    var arr = arrayOf\\<Node>(2)\n" +
+                "    var a = new Node()\n" +
+                "    var b = new Node()\n" +
+                "    arr[0] = a\n" +
+                "    arr[1] = b\n" +
+                "    a.peers = arr\n" +
+                "    b.peers = arr\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    makeCycle()\n" +
+                "    Console.println(\"array cycle dropped\")\n" +
+                "    return 0\n" +
+                "}\n"),
+            // 环边经过 tag1 盒：rich struct（含 class 引用字段）装箱成
+            // Any 存进另一对象字段——盒内递归走查漏走=泄漏、误走=UAF
+            Case("mw12c_cycle_through_box",
+                "import core.io.Console\n" +
+                "pub class Node {\n" +
+                "    pub var payload: Any?\n" +
+                "    pub init() { }\n" +
+                "}\n" +
+                "pub struct Ref {\n" +
+                "    pub var target: Node?\n" +
+                "    pub init(_ -> target)\n" +
+                "}\n" +
+                "func makeCycle() {\n" +
+                "    var a = new Node()\n" +
+                "    var b = new Node()\n" +
+                "    var r = new Ref(a)\n" +
+                "    b.payload = (r as Any)\n" +
+                "    a.payload = b\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    makeCycle()\n" +
+                "    Console.println(\"box cycle dropped\")\n" +
+                "    return 0\n" +
+                "}\n"),
+            // 跨协程 shared 环（§4.7）：两个 async 协程各持一端互指，
+            // await 完成后读取对端字段（数据依赖确定位置），run 帧弹出
+            // 后环脱根 → 终轮收集
+            Case("mw12c_cycle_shared_cross_coroutine",
+                "import core.io.Console\n" +
+                "pub shared class Node {\n" +
+                "    pub var next: Node?\n" +
+                "    pub var tag: i32\n" +
+                "    pub init(t: i32) { tag = t }\n" +
+                "}\n" +
+                "async func holdA(a: Node, b: Node) {\n" +
+                "    a.next = b\n" +
+                "    yield\n" +
+                "}\n" +
+                "async func holdB(a: Node, b: Node) {\n" +
+                "    b.next = a\n" +
+                "    yield\n" +
+                "}\n" +
+                "async func run() {\n" +
+                "    var a = new Node(1)\n" +
+                "    var b = new Node(2)\n" +
+                "    var ta = holdA(a, b)\n" +
+                "    var tb = holdB(a, b)\n" +
+                "    await ta\n" +
+                "    await tb\n" +
+                "    var x = a.next?.tag if? -1\n" +
+                "    Console.println(x.toString())\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n"),
+            // 混合压力：环 + 普通垃圾 + 字符串 + 数组，低阈值长跑
+            // （10 万级），sum 双宿主对拍 + 零泄漏
+            EnvCase("mw12c_stress_mixed",
+                "import core.collections.*\n" +
+                "import core.io.Console\n" +
+                "pub class Node {\n" +
+                "    pub var next: Node?\n" +
+                "    pub var tag: i32\n" +
+                "    pub init(t: i32) { tag = t }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var i = 0\n" +
+                "    var sum = 0\n" +
+                "    while (i < 100000) {\n" +
+                "        var a = new Node(i)\n" +
+                "        var b = new Node((i + 1))\n" +
+                "        a.next = b\n" +
+                "        b.next = a\n" +
+                "        var s = (\"n\" + i.toString())\n" +
+                "        var arr = arrayOf\\<String>(2)\n" +
+                "        arr[0] = s\n" +
+                "        arr[1] = \"x\"\n" +
+                "        var t = arr[0] if? \"\"\n" +
+                "        if (t == s) { sum = (sum + 1) }\n" +
+                "        if ((i & 3) == 0) { sum = (sum + a.tag) } else { sum = (sum + b.tag) }\n" +
+                "        i = (i + 1)\n" +
+                "    }\n" +
+                "    Console.println(sum.toString())\n" +
+                "    return 0\n" +
+                "}\n",
+                new Dictionary<string, string> { ["RIGI_RT_GC_THRESHOLD"] = "512" }),
         };
 
         // 单用例：源 → 中端全管线 → BIL 文本 → VM 执行 + native 编译执行，
         // 比 stdout（行尾归一）与退出码（main 的 i32 返回）
-        private static void RunCase(string label, string source)
+        private static void RunCase(string label, string source,
+            IReadOnlyDictionary<string, string>? env = null)
         {
             var dir = Path.Combine(Path.GetTempPath(), $"rigi_e2e_{Guid.NewGuid():N}");
             Directory.CreateDirectory(dir);
@@ -5387,7 +5739,7 @@ namespace RigiCompiler.Tests
                     return;
                 }
                 var runExit = ExternalProcess.Run(exePath, Array.Empty<string>(),
-                    out var nativeOut, out var nativeErr, environment: MemtrackEnv);
+                    out var nativeOut, out var nativeErr, environment: env ?? MemtrackEnv);
                 TestHarness.Check(label + "：stdout 一致",
                     NormalizeNewlines(nativeOut), NormalizeNewlines(vm.Stdout));
                 TestHarness.CheckTrue(label + "：退出码一致",
@@ -5399,8 +5751,56 @@ namespace RigiCompiler.Tests
             }
         }
 
-        private static readonly Dictionary<string, string> MemtrackEnv =
-            new() { ["RIGI_RT_MEMTRACK"] = "1" };
+        // MW12b §25.2：流程同 RunCase（VM 参照对拍 stdout + 退出码一致，
+        // VM 无异常），额外断言 native stderr 含/不含 needle；VM 半场 B2
+        // 已接事件通道，VM stderr 同文本一并断言（needle 形态对事件条数/
+        // 排序不敏感——多事件场景两宿主顺序天然不同）
+        private static void RunNativeErrCase(string label, string source, string needle,
+            bool needlePresent)
+        {
+            var dir = Path.Combine(Path.GetTempPath(), $"rigi_e2e_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(dir);
+            try
+            {
+                var (_, module, _) = BilTestHarness.EmitBilUnit(source);
+                var text = BilWriter.Write(module);
+
+                // VM 侧（行为参考实现）：stdout/退出码即参照，stderr 经
+                // Run 收尾 drain 的事件通道产生（与 native 同文本）
+                var vm = BilVm.Run(BilReader.Read(text));
+                TestHarness.CheckTrue(label + "：VM 无异常", vm.Exception == null,
+                    vm.Exception?.Message ?? "");
+                var expectedExit = vm.ReturnValue is VmI32 value ? value.Value : 0;
+                TestHarness.CheckTrue(
+                    label + (needlePresent ? "：VM stderr 含关键字" : "：VM stderr 无事件"),
+                    vm.Stderr.Contains(needle) == needlePresent, vm.Stderr);
+
+                var bilPath = Path.Combine(dir, "case.bil");
+                File.WriteAllText(bilPath, text, new UTF8Encoding(false));
+                var exePath = Path.Combine(dir,
+                    RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "case.exe" : "case");
+                var compiled = RunNative("native", "--file", bilPath, "--out", exePath);
+                TestHarness.CheckTrue(label + "：native 编译链接成功", compiled.Code == 0,
+                    compiled.Err);
+                if (compiled.Code != 0)
+                {
+                    return;
+                }
+                var runExit = ExternalProcess.Run(exePath, Array.Empty<string>(),
+                    out var nativeOut, out var nativeErr, environment: MemtrackEnv);
+                TestHarness.Check(label + "：stdout 一致",
+                    NormalizeNewlines(nativeOut), NormalizeNewlines(vm.Stdout));
+                TestHarness.CheckTrue(label + "：退出码一致",
+                    runExit == expectedExit, $"native={runExit} vm={expectedExit} stderr={nativeErr}");
+                TestHarness.CheckTrue(
+                    label + (needlePresent ? "：native stderr 含关键字" : "：native stderr 无事件"),
+                    nativeErr.Contains(needle) == needlePresent, nativeErr);
+            }
+            finally
+            {
+                Directory.Delete(dir, recursive: true);
+            }
+        }
 
         private static string NormalizeNewlines(string text) => text.Replace("\r\n", "\n");
 
@@ -5723,7 +6123,7 @@ namespace RigiCompiler.Tests
         // 同 keyword；新格式全名前缀经 nativeNeedle 单断）、native 退出
         // 码 1 对齐 vm 命令未捕获异常出口、stdout 一致
         private static void RunFailCase(string label, string source, string keyword,
-            string? nativeNeedle)
+            string? nativeNeedle, IReadOnlyDictionary<string, string>? env = null)
         {
             var dir = Path.Combine(Path.GetTempPath(), $"rigi_e2e_{Guid.NewGuid():N}");
             Directory.CreateDirectory(dir);
@@ -5752,7 +6152,7 @@ namespace RigiCompiler.Tests
                     return;
                 }
                 var runExit = ExternalProcess.Run(exePath, Array.Empty<string>(),
-                    out var nativeOut, out var nativeErr, environment: MemtrackEnv);
+                    out var nativeOut, out var nativeErr, environment: env ?? MemtrackEnv);
                 TestHarness.CheckTrue(label + "：native 退出码 1", runExit == 1,
                     $"exit={runExit}");
                 TestHarness.CheckTrue(label + "：native stderr 含关键字",
@@ -5773,7 +6173,8 @@ namespace RigiCompiler.Tests
         // core::RuntimeException 未捕获 → reporter（"{类型全名}: {message}"）
         // → exit 1。已知分歧（以 VM 为准）：VM 消息带在途栈全链
         //（"A → B → A"），native v1 静态槽形态无在途链对象，只报触发类型
-        private static void RunSingletonCycleCase()
+        private static void RunSingletonCycleCase(
+            IReadOnlyDictionary<string, string>? env = null)
         {
             const string label = "singleton 构造环抛异常（急切初始化期）";
             var source =
@@ -5821,7 +6222,7 @@ namespace RigiCompiler.Tests
                     return;
                 }
                 var runExit = ExternalProcess.Run(exePath, Array.Empty<string>(),
-                    out var nativeOut, out var nativeErr, environment: MemtrackEnv);
+                    out var nativeOut, out var nativeErr, environment: env ?? MemtrackEnv);
                 TestHarness.CheckTrue(label + "：native 退出码 1", runExit == 1,
                     $"exit={runExit} stderr={nativeErr}");
                 TestHarness.CheckTrue(label + "：native stderr 含循环链前缀",
@@ -5926,7 +6327,8 @@ namespace RigiCompiler.Tests
 
         // BIL 级对拍（前端尚未降级的合法内建形态）：手写 BIL 直接驱 VM 与
         // native，比对口径与 RunCase 相同
-        private static void RunBilCase(string label, string bilText)
+        private static void RunBilCase(string label, string bilText,
+            IReadOnlyDictionary<string, string>? env = null)
         {
             var dir = Path.Combine(Path.GetTempPath(), $"rigi_e2e_{Guid.NewGuid():N}");
             Directory.CreateDirectory(dir);
@@ -5951,7 +6353,7 @@ namespace RigiCompiler.Tests
                     return;
                 }
                 var runExit = ExternalProcess.Run(exePath, Array.Empty<string>(),
-                    out var nativeOut, out var nativeErr, environment: MemtrackEnv);
+                    out var nativeOut, out var nativeErr, environment: env ?? MemtrackEnv);
                 TestHarness.Check(label + "：stdout 一致",
                     NormalizeNewlines(nativeOut), NormalizeNewlines(vm.Stdout));
                 TestHarness.CheckTrue(label + "：退出码一致",

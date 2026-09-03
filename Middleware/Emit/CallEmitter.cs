@@ -206,7 +206,7 @@ namespace RigiCompiler.Middleware.Emit
             {
                 values[0] = result != null
                     ? slots[result].Slot
-                    : builder.BuildAlloca(
+                    : LlvmEmitEnvironment.BuildEntryAlloca(builder, 
                         LLVMTypeRef.CreateArray(LLVMTypeRef.Int8, (uint)outPlan.Size), "call.out");
                 if (result == null && outPlan.RefMapCount > 0)
                 {
@@ -250,7 +250,7 @@ namespace RigiCompiler.Middleware.Emit
             {
                 values[0] = result != null
                     ? slots[result].Slot
-                    : builder.BuildAlloca(
+                    : LlvmEmitEnvironment.BuildEntryAlloca(builder, 
                         LLVMTypeRef.CreateArray(LLVMTypeRef.Int8, (uint)outPlan.Size), "call.out");
                 if (result == null && outPlan.RefMapCount > 0)
                 {
@@ -318,7 +318,7 @@ namespace RigiCompiler.Middleware.Emit
             {
                 return slot;
             }
-            var temp = builder.BuildAlloca(
+            var temp = LlvmEmitEnvironment.BuildEntryAlloca(builder, 
                 LLVMTypeRef.CreateArray(LLVMTypeRef.Int8, (uint)plan.Size), "call.arg");
             temp.Alignment = (uint)plan.Alignment;
             var argType = slots[local.Name].Local.Type;
@@ -390,7 +390,7 @@ namespace RigiCompiler.Middleware.Emit
             {
                 if (param == RuntimeFaceParam.StringOut)
                 {
-                    outSlot = builder.BuildAlloca(StringAbi.ValueType(session.Context), "face.out");
+                    outSlot = LlvmEmitEnvironment.BuildEntryAlloca(builder, StringAbi.ValueType(session.Context), "face.out");
                     args.Add(outSlot.Value);
                 }
                 else

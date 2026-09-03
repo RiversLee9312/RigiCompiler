@@ -89,8 +89,8 @@ namespace RigiCompiler.Middleware.Emit
             var typeId = builder.BuildExtractValue(fat, 0, "cast.tid");
             var payload = builder.BuildExtractValue(fat, 1, "cast.pl");
             var targetSheet = TargetSheet(session, builder, slots, inst);
-            var outTid = builder.BuildAlloca(LLVMTypeRef.Int64, "cast.otid");
-            var outPl = builder.BuildAlloca(LLVMTypeRef.Int64, "cast.opl");
+            var outTid = LlvmEmitEnvironment.BuildEntryAlloca(builder, LLVMTypeRef.Int64, "cast.otid");
+            var outPl = LlvmEmitEnvironment.BuildEntryAlloca(builder, LLVMTypeRef.Int64, "cast.opl");
             var (fn, fnType) = CallEmitter.DeclareHelperFace(session, RuntimeFaces.TryCast,
                 LLVMTypeRef.Int32,
                 new[]
@@ -324,7 +324,7 @@ namespace RigiCompiler.Middleware.Emit
         private static LLVMValueRef WrapScalar(ModuleBuilder.Session session,
             LLVMBuilderRef builder, LLVMValueRef value, MirType inner)
         {
-            var tmp = builder.BuildAlloca(TypeLayout.MapType(session.Context, inner), "cast.nv");
+            var tmp = LlvmEmitEnvironment.BuildEntryAlloca(builder, TypeLayout.MapType(session.Context, inner), "cast.nv");
             builder.BuildStore(value, tmp);
             var size = BoxEmitter.ValueByteSize(session, inner);
             var bits = BoxEmitter.BitsFromSlot(session, builder, tmp, size);

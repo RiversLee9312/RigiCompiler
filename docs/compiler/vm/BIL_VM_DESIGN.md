@@ -236,6 +236,8 @@ indirect 是表达正常 Rigi 程序（泛型、lambda、运行时类型驱动�
 |---|---|
 | `rigi_rt` / `print` | 写 stdout（加锁，单次调用原子） |
 | `rigi_rt` / `printErr` | 写 stderr（同上） |
+| `rigi_rt` / `print_err` | `printErr` 别名键（MW12b：`core.GlobalExceptionHandler` 的 native 声明经 `rigi_` 直拼命中 shim.c `rigi_print_err`；两键同实现） |
+| `rigi_rt` / `gexc_register_handler` / `gexc_handler_count` / `gexc_handler_at` | MW12b §25.2 `core.GlobalExceptionHandler` 处理器注册表三面（VM 侧注册表存 VmHooks，注册序=下标序；dispatch 空注册表走默认 `print_err` 文本，与 native atexit flush 一致） |
 | `rigi_rt` / `any_to_string` | §3.8 标准文本；未覆写者为 canonical 类型名（toString 成员方法不再直接 hook——其默认实现是编译器合成 fn，经 .bootstrap.rg 的 priv 全局 native `any_to_string` 触达本 hook） |
 | `rigi_rt` / `alloc_array` | 零值初始化 `.array<T>`；T 为 enum struct 按宿主错误（§14.3） |
 | `rigi_rt` / `timer_create` | 时钟底座句柄；`sleep`/`Timer` 经 stdlib 构造调用（RUNTIME §19.4/§19.5）。旧 `make_sleep_alarm` 已删除 |

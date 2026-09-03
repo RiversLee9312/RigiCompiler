@@ -137,7 +137,7 @@ namespace RigiCompiler.Middleware.Emit
             builder.PositionAtEnd(tag0Block);
             if (abi.Kind is ArrayElementKind.InlineValue or ArrayElementKind.String)
             {
-                var tmp = builder.BuildAlloca(LLVMTypeRef.Int64, "opt.bits");
+                var tmp = LlvmEmitEnvironment.BuildEntryAlloca(builder, LLVMTypeRef.Int64, "opt.bits");
                 builder.BuildStore(payload, tmp);
                 session.EmitMemCopy(builder, slots[target].Slot, tmp,
                     System.Math.Min(abi.Stride, 8));

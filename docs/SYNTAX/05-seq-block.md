@@ -95,6 +95,6 @@ seq using(const resource = openResource()) {
 - `dispose()` 是普通函数，因此可以执行 `await` 或 `yield`。若逆序清理中的某次 `dispose()` 挂起，清理栈、当前资源和尚未清理的资源继续保存在 Coroutine frame 中；恢复后从同一清理进度继续。
 - 外层函数的正常 `return`、异常传播或其他终止流程，只有在所有已建立的 `using` 清理完成后才真正继续完成；可挂起的清理不会被跳过。
 
-如果一个实现 `core.IDisposable` 的对象在销毁前从未调用 `dispose()`，无论销毁来自编译器生成的 ARC 路径还是 macroGC，运行时都会立即触发只能由 `core.GlobalExceptionHandler` 提供的机制接收的全局异常。GC 绝不代替用户隐式调用 `dispose()`；普通 `try/catch` 不能拦截该异常。详见 `RUNTIME.md`。
+如果一个实现 `core.IDisposable` 的对象在销毁前从未调用 `dispose()`，无论销毁来自编译器生成的 ARC 路径还是 macroGC，运行时都会立即触发只能由 `core.GlobalExceptionHandler` 提供的机制接收的全局异常（定稿 API 见 stdlib `core/global_exceptions.rg`）。GC 绝不代替用户隐式调用 `dispose()`；普通 `try/catch` 不能拦截该异常。详见 `RUNTIME.md`。
 
 ---

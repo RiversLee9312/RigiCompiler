@@ -1472,6 +1472,13 @@ namespace RigiCompiler.Bil
                 }
                 args = unboxed;
             }
+            // MW12b §25.2：dispose 进入即置位（槽目标身份判定，与 native
+            // EmitDisposeMarkPrologue 同口径；放在 async 分叉之前——async
+            // dispose 的槽目标是 stub 原符号，进入 stub 即标记）
+            if (args.Count > 0 && args[0] is VmObject disposeReceiver)
+            {
+                context.MarkDisposedIfDisposeImpl(function.Symbol, disposeReceiver);
+            }
             if (context.IsAsyncMethod(function.Symbol) || context.IsAsyncMethod(methodSymbol))
             {
                 EagerSpawn(coroutine, function, args, resultSlot);
@@ -1536,6 +1543,12 @@ namespace RigiCompiler.Bil
         private static void PushSuperFrame(VmContext context, VmCoroutine coroutine,
             BilFunction target, IReadOnlyList<VmValue> args, string? resultSlot)
         {
+            // MW12b §25.2：super.dispose() 直落基类实现也须置位（native
+            // 在实现 fn prologue 置位，与调用路径无关）
+            if (args.Count > 0 && args[0] is VmObject superReceiver)
+            {
+                context.MarkDisposedIfDisposeImpl(target.Symbol, superReceiver);
+            }
             if (context.IsAsyncMethod(target.Symbol))
             {
                 EagerSpawn(coroutine, target, args, resultSlot);
